@@ -36,6 +36,14 @@ them into one row per trial:
   ``--dist`` box throw's nearest grid throw is open on the torque layer of a
   ``catch_gate_map`` output, and truth success over that open subset; see
   :func:`gate_map_verdict`.
+* **validity** (S8-E, plan §4.4 D-S8-16 ①) — each trial's ``invalid_reason``
+  (a rig failure, one of :data:`INVALID_REASONS` in precedence order, "" =
+  valid; see :func:`record_invalid_reason` and :func:`lane_invalid_reason`).
+  Every summary statistic is over the valid trials; the ITT bound counts the
+  invalid ones as failures. :mod:`rtc_tools.analysis.catching_pool` pools
+  these outputs across units and arms.
+* **tick overrun** covariate from the RT loop's timing lane — see
+  :func:`_cm_timing` for why it joins through the clock lane.
 
 and offers the statistics the S8 gates are judged with: Wilson intervals and
 the S0.9 power / required-n computation, a whitened cross-covariance test with
@@ -112,6 +120,14 @@ DEFAULT_N_BOOT = 2000
 DEFAULT_SEED = 0
 DEFAULT_HOLD_WINDOW_S = 0.1  # hand-joint capture calibration window before t_hold_end
 TRUTH_TIME_AXES = ("stamp", "recv")
+# Rig-failure (invalid) reasons, in precedence order — plan §4.4 D-S8-16 ①: a
+# trial gets the FIRST that matches, anything else that goes wrong (no plan,
+# abort, HAND_TIMEOUT, cycle not closed, supervisor Missed) is a FAILURE.
+INVALID_REASONS = ("srv_refused", "not_launched", "controller_silent", "lane_drop", "sim_stall")
+SIM_STALL_STEP_FACTOR = 5.0  # sim_stall: a sim_time_sec gap above this × the nominal step
+CM_TIMING_LOG = ("timing", "cm_timing_log.csv")  # the RT loop's per-tick timing lane
+STREAK_BIN_WIDTH = 10  # G8-C3 ref_saturated streak histogram bin width [ticks]
+B3_SPEARMAN_N_MIN = 50  # G7-B3: below this n the rank correlations are not evaluated
 # The catchability_map / catch_gate_map throw-grid axes a --dist box trial's
 # raw JSON record carries (S8-D, #537) — see :func:`trial_axis_values`. Every
 # axis the map grid can vary must be here: an axis left out makes grid throws
@@ -184,6 +200,70 @@ def required_n(
         if wilson_power(n, p, floor, z) < power:
             last_below = n
     return None if last_below >= n_max else last_below + 1
+
+
+def floor_verdict(
+    k: int, n: int, floor: float, n_valid_target: int | None = None, z: float = 1.96
+) -> str:
+    """G8-D verdict: PASS when the Wilson lower bound of k/n is ≥ ``floor``.
+
+    ``INSUFFICIENT_N(<n> < <target>)`` first when a target n is given and not
+    reached (D-S8-3 n_valid 200) — the verdict is never taken on a short set.
+    """
+    if n_valid_target is not None and n < n_valid_target:
+        return f"INSUFFICIENT_N({n} < {n_valid_target})"
+    if n <= 0:
+        return "INSUFFICIENT_N(0 valid)"
+    return "PASS" if wilson_interval(k, n, z)[0] >= floor else "FAIL"
+
+
+def mcnemar_exact(b: int, c: int) -> float:
+    """Exact two-sided McNemar p-value: the discordant pairs under Binomial(b + c, ½)."""
+    if b + c == 0:
+        return 1.0
+    from scipy.stats import binomtest  # noqa: PLC0415
+
+    return float(binomtest(b, b + c, 0.5, alternative="two-sided").pvalue)
+
+
+def ols_with_bootstrap(
+    x: np.ndarray, y: np.ndarray, n_boot: int, seed: int
+) -> tuple[float, float, list[float] | None, list[float] | None]:
+    """OLS ``y = slope·x + intercept`` and trial-bootstrap 95 % percentile CIs.
+
+    Each point is one trial, so resampling points IS the trial bootstrap. A
+    resample whose x is constant has no slope and is skipped.
+    """
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    if x.size < 3 or np.ptp(x) == 0:
+        return math.nan, math.nan, None, None
+    slope, intercept = (float(v) for v in np.polyfit(x, y, 1))
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, x.size, size=(n_boot, x.size))
+    xb, yb = x[idx], y[idx]
+    xc = xb - xb.mean(axis=1, keepdims=True)
+    sxx = (xc**2).sum(axis=1)
+    ok = sxx > 0
+    if not ok.any():
+        return slope, intercept, None, None
+    b_slope = (xc[ok] * (yb[ok] - yb[ok].mean(axis=1, keepdims=True))).sum(axis=1) / sxx[ok]
+    b_icpt = yb[ok].mean(axis=1) - b_slope * xb[ok].mean(axis=1)
+    ci = [float(v) for v in np.percentile(b_slope, [2.5, 97.5])]
+    ci_i = [float(v) for v in np.percentile(b_icpt, [2.5, 97.5])]
+    return slope, intercept, ci, ci_i
+
+
+def spearman(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Spearman ρ and its two-sided p-value (NaN when either side is constant or n < 3)."""
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    if x.size < 3 or np.ptp(x) == 0 or np.ptp(y) == 0:
+        return math.nan, math.nan
+    from scipy.stats import spearmanr  # noqa: PLC0415
+
+    res = spearmanr(x, y)
+    return float(res[0]), float(res[1])
 
 
 def _whitener(samples: np.ndarray) -> np.ndarray:
@@ -1061,6 +1141,34 @@ class ClockLane:
     # sim-sync the offset drifts when RTF < 1, so a per-trial window uses its
     # own offset, not the session median (see :func:`_planner_cycle_times`).
     trial_offsets: dict[int, float] = field(default_factory=dict)
+    # Rig checks (D-S8-16 ① lane_drop / sim_stall) read EVERY row of a launch,
+    # not only the in-flight ones: launch_seq → (n, 3) [sim_s, steady_s,
+    # dropped_total] in lane order, and the dropped_total of the row just
+    # before that launch's first row (a drop that swallowed the launch rows
+    # themselves shows only against it).
+    seq_rows: dict[int, np.ndarray] = field(default_factory=dict)
+    dropped_before: dict[int, float] = field(default_factory=dict)
+    # Median sim_time_sec spacing over the whole lane — the physics step.
+    nominal_step_s: float = math.nan
+
+    def rig_check(self, seq: int, steady_end_s: float = math.inf) -> tuple[float, float]:
+        """(dropped_total increase, largest sim_time_sec gap [s]) over one trial's rows.
+
+        The rows are those carrying ``seq`` up to ``steady_end_s`` (the trial's
+        end on the steady clock). ``launch_seq`` stays at a launch's number
+        until the NEXT launch, so without the cut the rows would run on
+        through the next throw's homing — a rig failure there never touched
+        this trial. The first row is always kept.
+        """
+        rows = self.seq_rows.get(seq)
+        if rows is None or len(rows) == 0:
+            return math.nan, math.nan
+        keep = rows[:, 1] <= steady_end_s
+        keep[0] = True
+        rows = rows[keep]
+        dropped = float(rows[-1, 2] - self.dropped_before.get(seq, rows[0, 2]))
+        gap = float(np.max(np.diff(rows[:, 0]))) if len(rows) >= 2 else 0.0
+        return dropped, gap
 
     def to_t_relative(self, seq: int, sim_s: float) -> float:
         seg = self.segments[seq]
@@ -1105,8 +1213,20 @@ def load_clock_lane(
                 shutil.copyfileobj(src, dst)
             return load_clock_lane(plain, trials, interval_tol_s)
     stats = clock_phase.read_lane(path)
-    df = pd.read_csv(path)
+    df = pd.read_csv(path).reset_index(drop=True)
     active = df[df["ball_active"].astype(str).isin(("1", "true", "True"))]
+    sim_all = df["sim_time_sec"].to_numpy(float)
+    dropped_all = (
+        df["dropped_total"].to_numpy(float) if "dropped_total" in df.columns else np.zeros(len(df))
+    )
+    steady_all = df["steady_ns"].to_numpy(float) * 1e-9
+    seq_all = df["launch_seq"].to_numpy(int)
+    seq_rows, dropped_before = {}, {}
+    for seq in np.unique(seq_all[seq_all > 0]):
+        pos = np.nonzero(seq_all == seq)[0]
+        seq_rows[int(seq)] = np.column_stack([sim_all[pos], steady_all[pos], dropped_all[pos]])
+        dropped_before[int(seq)] = float(dropped_all[pos[0] - 1] if pos[0] > 0 else dropped_all[0])
+    nominal = float(np.median(np.diff(sim_all))) if len(sim_all) >= 2 else math.nan
     segments = {
         int(seq): np.column_stack(
             [g["sim_time_sec"].to_numpy(float), g["steady_ns"].to_numpy(float) * 1e-9]
@@ -1135,6 +1255,9 @@ def load_clock_lane(
         dropped_total=stats.dropped_total,
         trial_to_seq={runs[j].idx: lane_all[i].launch_seq for j, i in pairs},
         trial_offsets={runs[j].idx: float(steady0[i] - t0[j]) for j, i in pairs},
+        seq_rows=seq_rows,
+        dropped_before=dropped_before,
+        nominal_step_s=nominal,
     )
 
 
@@ -1646,6 +1769,8 @@ class Settings:
     seed: int = DEFAULT_SEED
     window_margin_s: float = 0.05
     hold_window_s: float = DEFAULT_HOLD_WINDOW_S
+    floor: float | None = None  # G8-D floor (D-S8-3); None → no verdict
+    n_valid_target: int | None = None  # verdict is INSUFFICIENT_N below this n_valid
 
 
 @dataclass
@@ -1687,8 +1812,10 @@ def analyse_session(
         contacts = load_contacts(contact_lane_path, robot_links)
     planner_wakes = _planner_cycle_times(ctl, lane)
     # Raw records (not the trimmed `Trial` dataclass) — the gate-map axis
-    # values (:func:`trial_axis_values`) live only there.
-    records_by_idx = {int(r["idx"]): r for r in doc["records"]} if gate_map is not None else {}
+    # values (:func:`trial_axis_values`), the seed and the rig-failure fields
+    # (:func:`record_invalid_reason`) live only there.
+    records_by_idx = {int(r["idx"]): r for r in doc["records"]}
+    timing, timing_status = _cm_timing(Path(session), lane)
     hand_effort = _hand_effort(ctl, profile)
     hand_profile = hand_caging_profile(profile)
     hand_kin = _hand_kinematics(ctl, profile, hand_profile) if hand_profile is not None else None
@@ -1700,18 +1827,31 @@ def analyse_session(
     rows, hand_window_rows = [], []
     lag_t, lag_cmd, lag_meas, lag_moving, lag_cluster = [], [], [], [], []
     for trial in trials:
+        record = records_by_idx.get(trial.idx, {})
         row = {"idx": trial.idx, "kind": trial.kind, "supervisor": trial.outcome}
         row["accepted"] = trial.accepted
+        row["seed"] = record.get("seed")
+        # D-S8-16 ①: rules 1–3 from the record; 3's "no diag rows" and the
+        # lane rules 4–5 below, once the window and the lane segment are known.
+        reason = record_invalid_reason(record)
+        row["invalid_reason"] = reason
         if gate_map is not None:
             # Independent of `accepted`/diag data — the axis values are the
             # runner's own launch request, known whether or not it landed.
-            axes = trial_axis_values(records_by_idx.get(trial.idx, {}))
+            axes = trial_axis_values(record)
             row.update(gate_map_verdict(axes, gate_map))
         if not trial.accepted or not np.isfinite(trial.t_launch):
+            # Not accepted → srv_refused; accepted without an offset →
+            # controller_silent (or not_launched, which outranks it).
+            row["invalid_reason"] = reason or "controller_silent"
             rows.append(row)
             continue
         m = settings.window_margin_s
         sel = (t_all >= trial.t_launch - m) & (t_all <= trial.t_end + m)
+        if not sel.any():
+            row["invalid_reason"] = reason or "controller_silent"
+            rows.append(row)
+            continue
         w = diag[sel]
         ctx = TrialContext(
             t=w["t_relative_s"].to_numpy(float),
@@ -1813,6 +1953,13 @@ def analyse_session(
             )
         )
         row["t_release_to_pre_ms"] = hand_release_to_preshape_ms(ctx.t, ctx.mode, ctx.hand_phase)
+        if lane is not None:
+            lane_reason, lane_diag = lane_invalid_reason(lane, trial, settings.window_margin_s)
+            row.update(lane_diag)
+            reason = reason or lane_reason
+        row["invalid_reason"] = reason
+        if timing is not None:
+            row.update(tick_overrun(timing, lane.trial_offsets.get(trial.idx), trial, dt))
         row["hand_persist_met"] = hand_persist_met(
             row.get("hand_blocked_s_judge", math.nan), dt, t_persist_s
         )
@@ -1845,6 +1992,9 @@ def analyse_session(
         )
     summary = _summarise(
         rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source, gate_map
+    )
+    summary["tick_overrun"] = tick_overrun_summary(
+        [r for r in rows if not r.get("invalid_reason")], timing_status, dt
     )
     summary["t_lead_s_range"] = _range(rows, "t_lead_s")
     summary["t_lead_source"] = lead_source
@@ -2133,6 +2283,284 @@ def capture_would_fire(
     return n >= min_joints
 
 
+def record_invalid_reason(record: Mapping) -> str:
+    """D-S8-16 ① rules 1–3 as far as the runner's record decides them ("" = none).
+
+    1. ``srv_refused`` — the launch srv answered ``accepted == false``;
+    2. ``not_launched`` — accepted, but the runner recorded no ground-truth
+       row (``n_truth_rows == 0``; a record older than the field is not judged);
+    3. ``controller_silent`` — no ``wall_t_relative_offset``: the runner saw no
+       controller state message in the trial. The other half of rule 3 (the
+       window holds no diag row) needs the diag and is applied by the caller.
+    """
+    if not record.get("accepted"):
+        return "srv_refused"
+    n_truth = record.get("n_truth_rows")
+    if n_truth is not None and int(n_truth) == 0:
+        return "not_launched"
+    if record.get("wall_t_relative_offset") is None:
+        return "controller_silent"
+    return ""
+
+
+def lane_invalid_reason(lane: ClockLane, trial: Trial, margin_s: float) -> tuple[str, dict]:
+    """D-S8-16 ① rules 4–5 from the clock lane, and the diagnostics they read.
+
+    4. ``lane_drop`` — no launch segment on the lane pairs with this trial
+       (:func:`load_clock_lane`; a segment needs ≥ 2 in-flight rows), or
+       ``dropped_total`` rises across the trial's rows;
+    5. ``sim_stall`` — a consecutive ``sim_time_sec`` gap inside the trial's
+       rows above :data:`SIM_STALL_STEP_FACTOR` × the lane's nominal step
+       (median spacing over the whole lane).
+
+    The trial's rows are those carrying its ``launch_seq`` from the launch to
+    the trial's end (+ ``margin_s``, the diag window's margin) on the steady
+    clock, via the trial's own lane offset — see :meth:`ClockLane.rig_check`.
+    """
+    seq = lane.trial_to_seq.get(trial.idx)
+    if seq is None:
+        return "lane_drop", {"lane_dropped_delta": math.nan, "lane_max_sim_gap_s": math.nan}
+    offset = lane.trial_offsets.get(trial.idx)
+    end = trial.t_end + margin_s + offset if offset is not None else math.inf
+    dropped, gap = lane.rig_check(seq, end)
+    diag = {"lane_dropped_delta": dropped, "lane_max_sim_gap_s": gap}
+    if dropped > 0:
+        return "lane_drop", diag
+    if np.isfinite(gap) and gap > SIM_STALL_STEP_FACTOR * lane.nominal_step_s:
+        return "sim_stall", diag
+    return "", diag
+
+
+def _cm_timing(session: Path, lane: ClockLane | None):
+    """The RT loop's per-tick timing lane as ``(t_steady_s, t_total_us, jitter_us)``.
+
+    ``t_wall_ns`` is NOT wall time: ``ThreadTimingProducer::NowNs`` reads
+    ``std::chrono::steady_clock`` (rtc_base/include/rtc_base/timing/
+    thread_timing_producer.hpp), the same CLOCK_MONOTONIC the clock lane's
+    ``steady_ns`` uses, while the runner's ``launch_wall_time`` is
+    ``time.time()`` (epoch). The join is therefore the lane's per-trial offset
+    (steady − t_relative_s), not the runner's wall offset, and without a lane
+    there is none. The lane read is ``cm_timing_log.csv`` (one row per RT
+    tick); ``rt_callback_timing_log.csv`` is one row per device state
+    callback, not per tick, so a per-tick overrun cannot be read from it.
+    Returns ``(None, "NOT_EVALUATED(<why>)")`` when unavailable.
+    """
+    path = _exists(session.joinpath(*CM_TIMING_LOG))
+    if path is None:
+        return None, "NOT_EVALUATED(no timing log)"
+    if lane is None:
+        return None, (
+            "NOT_EVALUATED(no clock lane — timing t_wall_ns is steady_clock and only the "
+            "lane maps it onto t_relative_s)"
+        )
+    df = _read_csv(path, usecols=["t_wall_ns", "t_total_us", "jitter_us"])
+    df = df.sort_values("t_wall_ns")
+    timing = (
+        df["t_wall_ns"].to_numpy(float) * 1e-9,
+        df["t_total_us"].to_numpy(float),
+        df["jitter_us"].to_numpy(float),
+    )
+    return timing, None
+
+
+def tick_overrun(timing, offset: float | None, trial: Trial, dt: float) -> dict:
+    """Ticks over the control period and the largest jitter in [launch, trial end]."""
+    out = {"tick_overrun_n": math.nan, "tick_jitter_max_us": math.nan}
+    if offset is None:
+        return out
+    t_s, total_us, jitter_us = timing
+    lo = np.searchsorted(t_s, trial.t_launch + offset, side="left")
+    hi = np.searchsorted(t_s, trial.t_end + offset, side="right")
+    if hi <= lo:
+        return out
+    out["tick_overrun_n"] = int(np.sum(total_us[lo:hi] > dt * 1e6))
+    out["tick_jitter_max_us"] = float(np.max(jitter_us[lo:hi]))
+    return out
+
+
+def tick_overrun_summary(
+    rows: Sequence[Mapping], status: str | None, dt: float | None
+) -> dict | str:
+    """Tick-overrun covariate over ``rows`` (a covariate, not a verdict — plan §4.4 S8-E)."""
+    if status is not None:
+        return status
+    have = [r for r in rows if np.isfinite(_num(r.get("tick_overrun_n")))]
+    if not have:
+        return "NOT_EVALUATED(no trial window on the timing log)"
+    out = {
+        "source": "/".join(CM_TIMING_LOG),
+        "n_trials": len(have),
+        "n_trials_with_overrun": sum(1 for r in have if _num(r["tick_overrun_n"]) > 0),
+        "overrun_ticks_total": int(sum(_num(r["tick_overrun_n"]) for r in have)),
+        "tick_overrun_n_p50_p95_max": _p50_p95_max(have, "tick_overrun_n"),
+        "tick_jitter_max_us_p50_p95_max": _p50_p95_max(have, "tick_jitter_max_us"),
+    }
+    if dt is not None:
+        out["period_us"] = dt * 1e6
+    return out
+
+
+def _is_true(value) -> bool:
+    """A real boolean True (a NaN / None / missing cell is not a success)."""
+    return isinstance(value, bool | np.bool_) and bool(value)
+
+
+def _num(value) -> float:
+    """A row cell as a float (None / non-numeric → NaN)."""
+    if value is None or isinstance(value, str):
+        return math.nan
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def streak_distribution(rows: Sequence[Mapping], bin_width: int = STREAK_BIN_WIDTH) -> dict:
+    """G8-C3 frequency distribution of per-trial ``ref_saturated_max_streak``.
+
+    The gate was deleted (D-S8-16) — this is a record, not a verdict.
+    Histogram bins: ``0``, then ``1-w``, ``w+1-2w``, … up to the largest streak.
+    """
+    values = [
+        int(_num(r.get("ref_saturated_max_streak")))
+        for r in rows
+        if np.isfinite(_num(r.get("ref_saturated_max_streak")))
+    ]
+    out: dict = {"note": "G8-C3 deleted (D-S8-16) — distribution recorded, no verdict"}
+    out["n_trials"] = len(values)
+    out["n_streak_gt0"] = sum(1 for v in values if v > 0)
+    if not values:
+        out.update(p50=None, p95=None, p99=None, max=None, histogram={})
+        return out
+    out["p50"] = float(np.median(values))
+    out["p95"] = float(clock_phase.quantile(values, 0.95))
+    out["p99"] = float(clock_phase.quantile(values, 0.99))
+    out["max"] = int(max(values))
+    hist = {"0": sum(1 for v in values if v == 0)}
+    for lo in range(1, max(values) + 1, bin_width):
+        hi = lo + bin_width - 1
+        hist[f"{lo}-{hi}"] = sum(1 for v in values if lo <= v <= hi)
+    out["bin_width"] = bin_width
+    out["histogram"] = hist
+    return out
+
+
+def impulse_correlation(rows: Sequence[Mapping], n_boot: int, seed: int) -> dict:
+    """G7-B3: predicted Δp = m·v_rel vs the measured contact impulse ∫F dt.
+
+    First hand–ball contact episode only (:func:`first_hand_contact`), over
+    the rows with both finite. OLS slope/intercept with a trial-bootstrap
+    95 % CI, and Spearman ρ (with p) of Δp vs the impulse and vs the episode's
+    peak force. No pass threshold is defined, so ρ is reported, and below
+    :data:`B3_SPEARMAN_N_MIN` trials it is marked not evaluated. The joint
+    torque half is not evaluated in sim: the hand's forcerange clamps it.
+    """
+    pts = [
+        (
+            _num(r.get("contact_mv_rel_ns")),
+            _num(r.get("contact_impulse_ns")),
+            _num(r.get("contact_peak_force_n")),
+        )
+        for r in rows
+    ]
+    pts = [p for p in pts if np.isfinite(p[0]) and np.isfinite(p[1])]
+    x = np.array([p[0] for p in pts], float)
+    y = np.array([p[1] for p in pts], float)
+    slope, intercept, slope_ci, icpt_ci = ols_with_bootstrap(x, y, n_boot, seed)
+    rho, p = spearman(x, y)
+    has_f = np.array([np.isfinite(q[2]) for q in pts], bool)
+    f = np.array([q[2] for q in pts], float)
+    rho_f, p_f = spearman(x[has_f], f[has_f]) if pts else (math.nan, math.nan)
+    n = len(pts)
+    return {
+        "episode": "first hand–ball contact",
+        "x": "predicted Δp = m·v_rel [N·s] (contact_mv_rel_ns)",
+        "y": "measured ∫F dt [N·s] (contact_impulse_ns)",
+        "n": n,
+        "ols_slope": slope,
+        "ols_slope_ci95": slope_ci,
+        "ols_intercept_ns": intercept,
+        "ols_intercept_ci95": icpt_ci,
+        "spearman_rho_impulse": rho,
+        "spearman_p_impulse": p,
+        "n_peak_force": int(has_f.sum()) if pts else 0,
+        "spearman_rho_peak_force": rho_f,
+        "spearman_p_peak_force": p_f,
+        "spearman_verdict": f"NOT_EVALUATED(n < {B3_SPEARMAN_N_MIN})"
+        if n < B3_SPEARMAN_N_MIN
+        else "REPORTED(no pass threshold defined)",
+        "torque": "NOT_EVALUATED(sim clamp)",
+    }
+
+
+def truth_block(
+    valid: Sequence[Mapping],
+    n_total: int,
+    floor: float | None = None,
+    n_valid_target: int | None = None,
+    z: float = 1.96,
+) -> dict:
+    """G8-D over the VALID trials, with the ITT bound (invalid counted as failure).
+
+    ``lower_975`` is the Wilson lower bound at ``z`` — the 97.5 % one-sided
+    bound at the default 1.96 (plan §1a).
+    """
+    k = sum(1 for r in valid if _is_true(r.get("truth_success")))
+    n = len(valid)
+    confusion: dict[str, dict[str, int]] = {}
+    for r in valid:
+        cell = confusion.setdefault(
+            str(r.get("supervisor")), {"truth_success": 0, "truth_fail": 0}
+        )
+        cell["truth_success" if _is_true(r.get("truth_success")) else "truth_fail"] += 1
+    lo, hi = wilson_interval(k, n, z)
+    itt = wilson_interval(k, n_total, z)
+    out = {
+        "successes": k,
+        "n": n,
+        "p_hat": k / n if n else math.nan,
+        "wilson95": (lo, hi),
+        "lower_975": lo,
+        "z": z,
+        "itt": {
+            "successes": k,
+            "n": n_total,
+            "p_hat": k / n_total if n_total else math.nan,
+            "wilson95": itt,
+            "lower_975": itt[0],
+            "note": "invalid trials counted as failures",
+        },
+        "confusion_supervisor_vs_truth": confusion,
+    }
+    if floor is not None:
+        out["floor"] = floor
+        out["verdict"] = floor_verdict(k, n, floor, n_valid_target, z)
+    elif n_valid_target is not None:
+        out["n_valid_target"] = n_valid_target
+    return out
+
+
+def validity_block(rows: Sequence[Mapping], lane_rules_evaluated: bool) -> dict:
+    """D-S8-16 ①: every trial counted once — valid, or invalid for exactly one reason."""
+    n_invalid = dict.fromkeys(INVALID_REASONS, 0)
+    for r in rows:
+        reason = r.get("invalid_reason")
+        if reason:
+            if reason not in n_invalid:
+                raise ValueError(f"trial {r.get('idx')}: unknown invalid_reason {reason!r}")
+            n_invalid[reason] += 1
+    out = {
+        "n_total": len(rows),
+        "n_invalid": n_invalid,
+        "n_invalid_total": sum(n_invalid.values()),
+        "n_valid": len(rows) - sum(n_invalid.values()),
+        "lane_rules_evaluated": lane_rules_evaluated,
+    }
+    if not lane_rules_evaluated:
+        out["lane_rules"] = "NOT_EVALUATED(no clock lane — lane_drop / sim_stall not checked)"
+    return out
+
+
 def _clock_covariate(lane: ClockLane, trial: Trial, row: Mapping, settings: Settings) -> dict:
     seq = lane.trial_to_seq.get(trial.idx)
     if seq is None:
@@ -2227,6 +2655,9 @@ def _summarise(
     rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source, gate_map=None
 ) -> dict:
     run = [r for r in rows if r.get("accepted")]
+    # D-S8-16 ①: every statistic below is over the VALID trials — invalid is a
+    # rig failure, not an attempt (the ITT bound is the one exception).
+    valid = [r for r in rows if not r.get("invalid_reason")]
     verdicts: dict[str, int] = {}
     for r in run:
         verdicts[str(r["supervisor"])] = verdicts.get(str(r["supervisor"]), 0) + 1
@@ -2242,10 +2673,12 @@ def _summarise(
         "truth_time_axis": settings.truth_axis,
         "trials": len(rows),
         "accepted": len(run),
+        "seeds": sorted({r["seed"] for r in rows if r.get("seed") is not None}),
+        "validity": validity_block(rows, lane is not None),
         "supervisor_verdicts": verdicts,
         "servo_lag": [asdict(x) for x in lag],
         "medians": {
-            k: _median(run, k)
+            k: _median(valid, k)
             for k in (
                 "clik_mm",
                 "servo_mm",
@@ -2259,26 +2692,23 @@ def _summarise(
                 "contact_t_minus_tc_ms",
             )
         },
-        "gamma_f_planned_range": _range(run, "gamma_f_planned"),
-        "approach_plan_switches_total": int(sum(r.get("approach_plan_switches", 0) for r in run)),
-        "ref_saturated_max_streak": int(
-            max((r.get("ref_saturated_max_streak", 0) for r in run), default=0)
+        "gamma_f_planned_range": _range(valid, "gamma_f_planned"),
+        "approach_plan_switches_total": int(
+            sum(r.get("approach_plan_switches", 0) for r in valid)
         ),
+        "ref_saturated_max_streak": int(
+            max((r.get("ref_saturated_max_streak", 0) for r in valid), default=0)
+        ),
+        "ref_saturated_streak": streak_distribution(valid),
+        "g7b3": impulse_correlation(valid, settings.n_boot, settings.seed),
     }
+    if lane is not None:
+        summary["validity"]["nominal_step_s"] = lane.nominal_step_s
+        summary["validity"]["sim_stall_gap_factor"] = SIM_STALL_STEP_FACTOR
     if hold_radius is not None:
-        k = sum(1 for r in run if r.get("truth_success"))
-        confusion: dict[str, dict[str, int]] = {}
-        for r in run:
-            cell = confusion.setdefault(
-                str(r["supervisor"]), {"truth_success": 0, "truth_fail": 0}
-            )
-            cell["truth_success" if r.get("truth_success") else "truth_fail"] += 1
         summary["truth"] = {
             "hold_radius_m": hold_radius,
-            "successes": k,
-            "n": len(run),
-            "wilson95": wilson_interval(k, len(run)),
-            "confusion_supervisor_vs_truth": confusion,
+            **truth_block(valid, len(rows), settings.floor, settings.n_valid_target),
         }
     if lane is not None:
         d3: dict = {
@@ -2286,26 +2716,28 @@ def _summarise(
             "dropped_total": lane.dropped_total,
             # Trials the lane has a launch for (the rest have no covariate and
             # are not counted as valid — see load_clock_lane).
-            "paired": sum(1 for r in run if r.get("launch_seq") is not None),
+            "paired": sum(1 for r in valid if r.get("launch_seq") is not None),
+            # Over every accepted trial: an unpaired trial is lane_drop-invalid,
+            # so a valid-only list would always be empty.
             "unpaired_trials": [r["idx"] for r in run if r.get("d3_unpaired")],
-            "delta_max_ms_p50_p95_max": _p50_p95_max(run, "delta_max_ms"),
-            "delta_commit_ms_p50_p95_max": _p50_p95_max(run, "delta_commit_ms", absolute=True),
-            "delta_tc_ms_p50_p95_max": _p50_p95_max(run, "delta_tc_ms", absolute=True),
+            "delta_max_ms_p50_p95_max": _p50_p95_max(valid, "delta_max_ms"),
+            "delta_commit_ms_p50_p95_max": _p50_p95_max(valid, "delta_commit_ms", absolute=True),
+            "delta_tc_ms_p50_p95_max": _p50_p95_max(valid, "delta_tc_ms", absolute=True),
         }
         if settings.v_max is not None:
             d3.update(v_max_m_s=settings.v_max, a_bound_m_s2=settings.a_bound)
             d3["valid"] = {
-                f"{eps:g}mm": int(sum(1 for r in run if r.get(f"d3_valid@{eps:g}mm")))
+                f"{eps:g}mm": int(sum(1 for r in valid if r.get(f"d3_valid@{eps:g}mm")))
                 for eps in settings.eps_mm
             }
         else:
             d3["valid"] = "NOT_EVALUATED(v_max not given)"
         summary["d3"] = d3
-    if any("planner_cycles" in r for r in run):
-        with_cycles = [r for r in run if r.get("planner_cycles", 0) > 0]
+    if any("planner_cycles" in r for r in valid):
+        with_cycles = [r for r in valid if r.get("planner_cycles", 0) > 0]
         ratios = [r["plan_valid_ratio"] for r in with_cycles if np.isfinite(r["plan_valid_ratio"])]
         switches: dict[str, int] = {}
-        for r in run:
+        for r in valid:
             key = str(int(r.get("approach_plan_switches", 0)))
             switches[key] = switches.get(key, 0) + 1
         summary["g3d"] = {
@@ -2320,7 +2752,7 @@ def _summarise(
             "approach_plan_switches_distribution": switches,
         }
     if gate_map is not None:
-        verdicted = [r for r in run if r.get("map_open") is not None]
+        verdicted = [r for r in valid if r.get("map_open") is not None]
         open_rows = [r for r in verdicted if r["map_open"]]
         gm: dict = {
             "map_dir": str(gate_map.map_dir),
@@ -2357,8 +2789,8 @@ def _range(rows, key):
 
 
 def _p50_p95_max(rows, key, absolute=False):
-    values = [abs(r[key]) if absolute else r[key] for r in rows if key in r]
-    values = [v for v in values if np.isfinite(v)]
+    values = [_num(r[key]) for r in rows if key in r]
+    values = [abs(v) if absolute else v for v in values if np.isfinite(v)]
     if not values:
         return None
     return [
@@ -2425,6 +2857,63 @@ def write_outputs(result: SessionResult, out_dir: Path) -> tuple[Path, Path, Pat
     return csv_path, json_path, hand_csv_path
 
 
+def _fmt(value, spec: str = ".4f") -> str:
+    return "n/a" if value is None or not np.isfinite(value) else format(value, spec)
+
+
+def _fmt_ci(ci) -> str:
+    return "[n/a]" if ci is None else f"[{_fmt(ci[0], '.3f')}, {_fmt(ci[1], '.3f')}]"
+
+
+def validity_line(v: Mapping) -> str:
+    reasons = " · ".join(f"{k} {n}" for k, n in v["n_invalid"].items())
+    lane = "" if v["lane_rules_evaluated"] else " — lane rules NOT evaluated (no clock lane)"
+    return (
+        f"validity: n_total {v['n_total']} · n_valid {v['n_valid']} · invalid "
+        f"{v['n_invalid_total']} ({reasons}){lane}"
+    )
+
+
+def verdict_line(tr: Mapping) -> str:
+    itt = tr["itt"]
+    out = (
+        f"G8-D: p̂ {_fmt(tr['p_hat'], '.3f')} · lower_975 {_fmt(tr['lower_975'])} (z "
+        f"{tr['z']:g}) · ITT {itt['successes']}/{itt['n']} lower_975 {_fmt(itt['lower_975'])}"
+    )
+    if "verdict" in tr:
+        out += f" · floor {tr['floor']:g} → {tr['verdict']}"
+    return out
+
+
+def streak_line(c3: Mapping) -> str:
+    return (
+        f"G8-C3 (record only): ref_saturated streak > 0 in {c3['n_streak_gt0']}/"
+        f"{c3['n_trials']} · p50/p95/p99/max {c3['p50']}/{c3['p95']}/{c3['p99']}/{c3['max']} · "
+        f"histogram {c3['histogram']}"
+    )
+
+
+def b3_line(b3: Mapping) -> str:
+    return (
+        f"G7-B3: n {b3['n']} · OLS slope {_fmt(b3['ols_slope'], '.3f')} "
+        f"{_fmt_ci(b3['ols_slope_ci95'])} · intercept {_fmt(b3['ols_intercept_ns'], '+.4f')} N·s · "
+        f"Spearman ρ(Δp, impulse) {_fmt(b3['spearman_rho_impulse'], '.3f')} "
+        f"(p {_fmt(b3['spearman_p_impulse'], '.2g')}), ρ(Δp, peak force) "
+        f"{_fmt(b3['spearman_rho_peak_force'], '.3f')} (p {_fmt(b3['spearman_p_peak_force'], '.2g')})"
+        f" · {b3['spearman_verdict']} · torque {b3['torque']}"
+    )
+
+
+def tick_line(tick) -> str:
+    if not isinstance(tick, Mapping):
+        return f"tick overrun: {tick}"
+    return (
+        f"tick overrun (> {tick.get('period_us', math.nan):.0f} µs): {tick['n_trials_with_overrun']}"
+        f"/{tick['n_trials']} trials, {tick['overrun_ticks_total']} ticks · per-trial p50/p95/max "
+        f"{tick['tick_overrun_n_p50_p95_max']} · jitter max µs {tick['tick_jitter_max_us_p50_p95_max']}"
+    )
+
+
 def report(result: SessionResult) -> str:
     s = result.summary
     med = s["medians"]
@@ -2453,14 +2942,19 @@ def report(result: SessionResult) -> str:
         f"APPROACH plan switches {s['approach_plan_switches_total']} · ref_saturated max "
         f"streak {s['ref_saturated_max_streak']}"
     )
+    lines.append(validity_line(s["validity"]))
     if "truth" in s:
         tr = s["truth"]
         lo, hi = tr["wilson95"]
         lines.append(
-            f"truth success {tr['successes']}/{tr['n']} (Wilson 95 % [{lo:.2f}, {hi:.2f}], "
+            f"truth success {tr['successes']}/{tr['n']} valid (Wilson 95 % [{lo:.2f}, {hi:.2f}], "
             f"hold radius {tr['hold_radius_m'] * 1e3:.1f} mm); supervisor × truth "
             f"{tr['confusion_supervisor_vs_truth']}"
         )
+        lines.append(verdict_line(tr))
+    lines.append(streak_line(s["ref_saturated_streak"]))
+    lines.append(b3_line(s["g7b3"]))
+    lines.append(tick_line(s.get("tick_overrun")))
     if "d3" in s:
         d3 = s["d3"]
         lines.append(
@@ -2538,6 +3032,17 @@ def main(argv: list[str] | None = None) -> int:
         "catchability_map grid, and truth success over the map-open subset. Only trials drawn "
         "from a --dist box (catching_sim_trials) carry the axis values a verdict needs",
     )
+    ap.add_argument(
+        "--floor",
+        type=float,
+        help="G8-D floor (D-S8-3): truth.verdict PASS when the valid trials' Wilson lower bound "
+        "(z 1.96, the 97.5 %% one-sided bound) is ≥ this. No default — without it no verdict",
+    )
+    ap.add_argument(
+        "--n-valid-target",
+        type=int,
+        help="the verdict is INSUFFICIENT_N while n_valid is below this (D-S8-3: 200)",
+    )
     args = ap.parse_args(argv)
 
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text  # noqa: PLC0415
@@ -2556,6 +3061,8 @@ def main(argv: list[str] | None = None) -> int:
         n_boot=args.n_boot,
         seed=args.seed,
         hold_window_s=args.hold_window_s,
+        floor=args.floor,
+        n_valid_target=args.n_valid_target,
     )
     result = analyse_session(
         args.session, args.trials_dir, profile, urdf_text, settings, clock, contact, gate_map

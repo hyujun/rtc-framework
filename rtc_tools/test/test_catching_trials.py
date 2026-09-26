@@ -1250,3 +1250,281 @@ def test_robot_config_skips_a_file_without_urdf_and_refuses_when_none_has_it(tmp
         robot_config_params(tmp_path)
     _write_params(tmp_path / "sim.yaml", {"urdf": {"from": "sim"}})
     assert robot_config_params(tmp_path)["urdf"] == {"from": "sim"}
+
+
+# ── Validity (D-S8-16 ①): rig failures are invalid, not failures ─────────────
+
+
+def test_golden_every_trial_is_valid_and_truth_is_unchanged(pilot):
+    v = pilot.summary["validity"]
+    assert v["n_total"] == 25 and v["n_valid"] == 25
+    assert v["n_invalid"] == dict.fromkeys(ct.INVALID_REASONS, 0)
+    assert v["lane_rules_evaluated"] is True
+    assert all(r["invalid_reason"] == "" for r in pilot.rows)
+    truth = pilot.summary["truth"]
+    assert (truth["successes"], truth["n"]) == (0, 25)
+    assert truth["itt"]["successes"] == 0 and truth["itt"]["n"] == 25
+    assert truth["lower_975"] == truth["wilson95"][0] == ct.wilson_interval(0, 25)[0]
+    assert truth["confusion_supervisor_vs_truth"] == {
+        "MISSED": {"truth_success": 0, "truth_fail": 25}
+    }
+    # The pilot session has no timing/ dir — tolerated, and said so.
+    assert pilot.summary["tick_overrun"] == "NOT_EVALUATED(no timing log)"
+
+
+# Trial idx → the rig failure injected into a copy of the pilot fixture. Two
+# trials carry two defects each (precedence); the rest must stay valid.
+INJECTED = {
+    2: "srv_refused",  # + n_truth_rows 0 (rule 1 outranks rule 2)
+    3: "not_launched",  # + no offset (rule 2 outranks rule 3)
+    5: "controller_silent",  # no wall_t_relative_offset
+    6: "controller_silent",  # window moved off the diag (rule 3 outranks the lane's 4)
+    8: "lane_drop",  # its launch removed from the lane
+    10: "lane_drop",  # dropped_total rises inside its rows
+    12: "sim_stall",  # 10 consecutive rows cut out of its rows
+    14: "lane_drop",  # dropped rise AND a gap (rule 4 outranks rule 5)
+    18: "not_launched",  # no truth rows AND no lane launch (rule 2 outranks rule 4)
+}
+TIMING_TRIAL = 16
+
+
+def _mutated_fixture(tmp: Path) -> tuple[Path, Path, Path]:
+    import gzip
+    import json
+    import shutil
+
+    import pandas as pd
+
+    session, trials_dir = tmp / "session", tmp / "trials"
+    shutil.copytree(FIXTURE / "session", session)
+    shutil.copytree(FIXTURE / "trials", trials_dir)
+    trials, _ = ct.load_trials(FIXTURE / "trials")
+    lane0 = ct.load_clock_lane(LANE, trials)
+    seq = lane0.trial_to_seq
+
+    records = json.loads((trials_dir / "trial_results.json").read_text())
+    by_idx = {r["idx"]: r for r in records}
+    for r in records:
+        r["seed"] = 601
+    by_idx[2].update(accepted=False, n_truth_rows=0)
+    by_idx[3].update(n_truth_rows=0, wall_t_relative_offset=None)
+    by_idx[5]["wall_t_relative_offset"] = None
+    by_idx[18]["n_truth_rows"] = 0
+    by_idx[6]["launch_wall_time"] += 1000.0
+    by_idx[6]["mode_log"] = [[m[0] + 1000.0, *m[1:]] for m in by_idx[6]["mode_log"]]
+    (trials_dir / "trial_results.json").write_text(json.dumps(records))
+
+    with gzip.open(LANE, "rt") as handle:
+        df = pd.read_csv(handle)
+    df = df[~df["launch_seq"].isin((seq[8], seq[18]))]
+    for idx in (10, 14):
+        rows = df.index[df["launch_seq"] == seq[idx]]
+        # Cumulative counter: every row from the middle of this flight on.
+        df.loc[df.index >= rows[len(rows) // 2], "dropped_total"] += 1
+    for idx in (12, 14):
+        rows = df.index[df["launch_seq"] == seq[idx]]
+        mid = len(rows) // 3
+        df = df.drop(rows[mid : mid + 10])
+    lane_path = session / "sim" / "clock_lane.csv"
+    df.to_csv(lane_path, index=False)
+
+    # A tick timing lane (steady clock, like the lane) with three overruns and
+    # one jitter spike inside trial 16's window, and one of each just outside.
+    t16 = next(t for t in trials if t.idx == TIMING_TRIAL)
+    off = lane0.trial_offsets[TIMING_TRIAL]
+    lo, hi = t16.t_launch + off, t16.t_end + off
+    t = np.arange(lo - 0.1, hi + 0.1, 0.002)
+    total = np.full(t.size, 100.0)
+    jitter = np.zeros(t.size)
+    inside = np.nonzero((t >= lo) & (t <= hi))[0]
+    total[inside[[5, 50, 100]]] = 5000.0
+    jitter[inside[70]] = 123.0
+    total[0], jitter[0] = 9000.0, 999.0  # before the launch — must not count
+    (session / "timing").mkdir()
+    pd.DataFrame(
+        {
+            "t_wall_ns": (t * 1e9).astype(np.int64),
+            "tick_count": np.arange(t.size),
+            "run_id": 0,
+            "t_state_us": 0.0,
+            "t_compute_us": 0.0,
+            "t_publish_us": 0.0,
+            "t_total_us": total,
+            "jitter_us": jitter,
+        }
+    ).to_csv(session / "timing" / "cm_timing_log.csv", index=False)
+    return session, trials_dir, lane_path
+
+
+@pytest.fixture(scope="module")
+def mutated(tmp_path_factory):
+    pytest.importorskip("pinocchio")
+    session, trials_dir, lane_path = _mutated_fixture(tmp_path_factory.mktemp("rig"))
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    settings = ct.Settings(n_boot=20, floor=0.35, n_valid_target=200)
+    with_lane = ct.analyse_session(session, trials_dir, profile, urdf, settings, lane_path)
+    without = ct.analyse_session(session, trials_dir, profile, urdf, settings)
+    return with_lane, without
+
+
+def test_each_injected_rig_failure_gets_exactly_its_reason(mutated):
+    result, _ = mutated
+    reasons = {r["idx"]: r["invalid_reason"] for r in result.rows}
+    for idx, reason in INJECTED.items():
+        assert reasons[idx] == reason, idx
+    assert all(reasons[i] == "" for i in reasons if i not in INJECTED)
+    v = result.summary["validity"]
+    assert v["n_invalid"] == {
+        "srv_refused": 1,
+        "not_launched": 2,
+        "controller_silent": 2,
+        "lane_drop": 3,
+        "sim_stall": 1,
+    }
+    assert (v["n_total"], v["n_valid"]) == (25, 25 - len(INJECTED))
+
+
+def test_invalid_trials_do_not_leak_into_the_failure_count(mutated):
+    result, _ = mutated
+    truth = result.summary["truth"]
+    n_valid = 25 - len(INJECTED)
+    assert truth["n"] == n_valid
+    cells = truth["confusion_supervisor_vs_truth"].values()
+    assert sum(c["truth_success"] + c["truth_fail"] for c in cells) == n_valid
+    # ITT keeps them — as failures, over every trial.
+    assert truth["itt"]["n"] == 25
+    assert truth["itt"]["lower_975"] == ct.wilson_interval(truth["successes"], 25)[0]
+    assert truth["verdict"] == f"INSUFFICIENT_N({n_valid} < 200)"
+
+
+def test_lane_rule_diagnostics_show_the_injected_defect(mutated):
+    result, _ = mutated
+    rows = {r["idx"]: r for r in result.rows}
+    nominal = result.summary["validity"]["nominal_step_s"]
+    assert nominal == pytest.approx(0.002, rel=1e-3)
+    assert rows[10]["lane_dropped_delta"] == 1 and rows[14]["lane_dropped_delta"] == 1
+    assert rows[12]["lane_dropped_delta"] == 0
+    assert rows[12]["lane_max_sim_gap_s"] == pytest.approx(11 * nominal, rel=1e-3)
+    assert rows[0]["lane_max_sim_gap_s"] == pytest.approx(nominal, rel=1e-3)
+    # The trial AFTER the drop starts from the raised baseline: not a drop.
+    assert rows[11]["invalid_reason"] == "" and rows[11]["lane_dropped_delta"] == 0
+
+
+def test_without_a_lane_only_the_record_rules_apply_and_the_summary_says_so(mutated):
+    _, result = mutated
+    reasons = {r["idx"]: r["invalid_reason"] for r in result.rows}
+    for idx, reason in INJECTED.items():
+        expected = "" if reason in ("lane_drop", "sim_stall") else reason
+        assert reasons[idx] == expected, idx
+    v = result.summary["validity"]
+    assert v["lane_rules_evaluated"] is False
+    assert "NOT_EVALUATED" in v["lane_rules"]
+    assert v["n_invalid"]["lane_drop"] == v["n_invalid"]["sim_stall"] == 0
+    # No lane → no steady-clock join for the timing log either.
+    assert result.summary["tick_overrun"].startswith("NOT_EVALUATED(no clock lane")
+
+
+def test_tick_overrun_is_joined_on_the_steady_clock_through_the_lane(mutated):
+    result, _ = mutated
+    rows = {r["idx"]: r for r in result.rows}
+    assert rows[TIMING_TRIAL]["tick_overrun_n"] == 3
+    assert rows[TIMING_TRIAL]["tick_jitter_max_us"] == 123.0
+    tick = result.summary["tick_overrun"]
+    assert tick["n_trials_with_overrun"] == 1 and tick["overrun_ticks_total"] == 3
+    assert tick["period_us"] == pytest.approx(2000.0)
+
+
+def test_seed_column_is_the_records_seed(mutated):
+    result, _ = mutated
+    assert all(r["seed"] == 601 for r in result.rows)
+    assert result.summary["seeds"] == [601]
+
+
+def test_record_invalid_reason_rules():
+    assert ct.record_invalid_reason({"accepted": False, "n_truth_rows": 0}) == "srv_refused"
+    ok = {"accepted": True, "n_truth_rows": 5, "wall_t_relative_offset": 1.0}
+    assert ct.record_invalid_reason(ok) == ""
+    # A record older than n_truth_rows is not judged on it.
+    assert ct.record_invalid_reason({"accepted": True, "wall_t_relative_offset": 1.0}) == ""
+
+
+# ── Verdict statistics ───────────────────────────────────────────────────────
+
+
+def test_wilson_lower_bound_hand_value_and_the_floor_line():
+    # k=5, n=10, z=1.96: centre 0.5, half 1.96·√(0.025 + 3.8416/400)/1.38416.
+    lo, hi = ct.wilson_interval(5, 10)
+    assert lo == pytest.approx(0.2366, abs=1e-4) and hi == pytest.approx(0.7634, abs=1e-4)
+    # The S8-E pass line at floor 0.35 (plan §1a: pass = ≥ 84/200).
+    assert ct.wilson_interval(84, 200)[0] == pytest.approx(0.3537, abs=1e-4)
+    assert ct.wilson_interval(83, 200)[0] == pytest.approx(0.3489, abs=1e-4)
+    assert ct.floor_verdict(84, 200, 0.35, 200) == "PASS"
+    assert ct.floor_verdict(83, 200, 0.35, 200) == "FAIL"
+    assert ct.floor_verdict(84, 199, 0.35, 200) == "INSUFFICIENT_N(199 < 200)"
+
+
+def test_truth_block_valid_and_itt():
+    valid = [{"truth_success": True, "supervisor": "CAUGHT"}] * 3 + [
+        {"truth_success": False, "supervisor": "MISSED"}
+    ] * 3
+    tb = ct.truth_block(valid, 8, floor=0.2)
+    assert (tb["successes"], tb["n"]) == (3, 6)
+    assert tb["lower_975"] == ct.wilson_interval(3, 6)[0]
+    assert (tb["itt"]["successes"], tb["itt"]["n"]) == (3, 8)
+    assert tb["itt"]["lower_975"] == ct.wilson_interval(3, 8)[0]
+    assert tb["confusion_supervisor_vs_truth"] == {
+        "CAUGHT": {"truth_success": 3, "truth_fail": 0},
+        "MISSED": {"truth_success": 0, "truth_fail": 3},
+    }
+    assert tb["verdict"] == ("PASS" if ct.wilson_interval(3, 6)[0] >= 0.2 else "FAIL")
+    # A NaN cell (not analysed) is not a success.
+    assert ct.truth_block([{"truth_success": math.nan}], 1)["successes"] == 0
+
+
+def test_mcnemar_exact_hand_value():
+    # b=7, c=1: 2·P(X ≤ 1 | Bin(8, ½)) = 2·9/256.
+    assert ct.mcnemar_exact(7, 1) == pytest.approx(18 / 256)
+    assert ct.mcnemar_exact(1, 7) == pytest.approx(18 / 256)
+    assert ct.mcnemar_exact(0, 0) == 1.0
+
+
+def test_streak_distribution_bins():
+    rows = [{"ref_saturated_max_streak": v} for v in (0, 0, 1, 10, 11, 25)] + [{}]
+    d = ct.streak_distribution(rows)
+    assert (d["n_trials"], d["n_streak_gt0"], d["max"]) == (6, 4, 25)
+    assert d["histogram"] == {"0": 2, "1-10": 2, "11-20": 1, "21-30": 1}
+    assert "no verdict" in d["note"]
+
+
+def _linear_contacts(n, seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(0.05, 0.4, n)
+    y = 0.8 * x + 0.01 + rng.normal(0.0, 0.002, n)
+    f = 200.0 * x + rng.normal(0.0, 0.5, n)
+    return [
+        {"contact_mv_rel_ns": a, "contact_impulse_ns": b, "contact_peak_force_n": c}
+        for a, b, c in zip(x, y, f, strict=True)
+    ]
+
+
+def test_impulse_correlation_recovers_a_linear_law():
+    rows = _linear_contacts(60) + [{"contact_mv_rel_ns": math.nan, "contact_impulse_ns": 0.1}]
+    b3 = ct.impulse_correlation(rows, n_boot=300, seed=1)
+    assert b3["n"] == 60
+    assert b3["ols_slope"] == pytest.approx(0.8, abs=0.02)
+    assert b3["ols_intercept_ns"] == pytest.approx(0.01, abs=0.005)
+    lo, hi = b3["ols_slope_ci95"]
+    assert lo < 0.8 < hi and hi - lo < 0.05
+    assert b3["spearman_rho_impulse"] > 0.95 and b3["spearman_p_impulse"] < 1e-6
+    assert b3["spearman_rho_peak_force"] > 0.95
+    assert b3["spearman_verdict"] == "REPORTED(no pass threshold defined)"
+    assert b3["torque"] == "NOT_EVALUATED(sim clamp)"
+
+
+def test_impulse_correlation_below_50_is_not_evaluated():
+    b3 = ct.impulse_correlation(_linear_contacts(20), n_boot=50, seed=1)
+    assert b3["spearman_verdict"] == "NOT_EVALUATED(n < 50)"
+    assert b3["ols_slope"] == pytest.approx(0.8, abs=0.05)
+    empty = ct.impulse_correlation([], n_boot=50, seed=1)
+    assert empty["n"] == 0 and math.isnan(empty["ols_slope"])
