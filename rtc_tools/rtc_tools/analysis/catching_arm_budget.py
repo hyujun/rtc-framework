@@ -456,6 +456,17 @@ def _rank_rates(path: Path | None) -> dict:
     out["gamma_f_p50"] = (
         float(valid["gamma_f"].median()) if "gamma_f" in valid and len(valid) else math.nan
     )
+    # S8-I: the chosen candidate's γ window as the planner judged it (L3 §4.5),
+    # logged since #537 5850509543 — absent in older sessions (NaN then).
+    for k in ("g_min", "g_max", "v_dir_max", "max_catchable"):
+        out[f"{k}_p50"] = (
+            float(valid[k].median()) if k in valid and valid[k].notna().any() else math.nan
+        )
+    out["window_open_frac"] = (
+        float((valid["g_min"] <= valid["g_max"]).mean())
+        if "g_min" in valid and "g_max" in valid and valid["g_max"].notna().any()
+        else math.nan
+    )
     return out
 
 
@@ -820,7 +831,7 @@ def report(units: Sequence[dict]) -> str:
             f"  C clik  q̈ envelope p95 {[_fmt(v) for v in c['envelope_p95_rad_s2']]} max {[_fmt(v) for v in c['envelope_max_rad_s2']]} rad/s² · velocity box hit {_fmt(100 * c['velocity_box_hit_frac'])} % · ticks over planner box {_fmt(100 * c['ticks_over_planner_box_frac'])} %"
         )
         lines.append(
-            f"  B plan  reach ok: box {_fmt(100 * pl['reach_ok_frac_box'])} % (t p50 {_fmt(pl['t_reach_box_p50_s'], 2)} s) vs envelope {_fmt(100 * pl['reach_ok_frac_envelope'])} % (t p50 {_fmt(pl['t_reach_envelope_p50_s'], 2)} s), lead avail p50 {_fmt(pl['lead_avail_p50_s'], 2)} s · valid plans {pl.get('valid_plans')} rank fail reach {_fmt(100 * pl.get('rank_reach', math.nan))} % gamma {_fmt(100 * pl.get('rank_gamma', math.nan))} % rollout {_fmt(100 * pl.get('rank_rollout', math.nan))} %"
+            f"  B plan  reach ok: box {_fmt(100 * pl['reach_ok_frac_box'])} % (t p50 {_fmt(pl['t_reach_box_p50_s'], 2)} s) vs envelope {_fmt(100 * pl['reach_ok_frac_envelope'])} % (t p50 {_fmt(pl['t_reach_envelope_p50_s'], 2)} s), lead avail p50 {_fmt(pl['lead_avail_p50_s'], 2)} s · valid plans {pl.get('valid_plans')} rank fail reach {_fmt(100 * pl.get('rank_reach', math.nan))} % gamma {_fmt(100 * pl.get('rank_gamma', math.nan))} % rollout {_fmt(100 * pl.get('rank_rollout', math.nan))} % · γ window (logged) g_min {_fmt(pl.get('g_min_p50', math.nan), 2)} g_max {_fmt(pl.get('g_max_p50', math.nan), 2)} v_dir,max {_fmt(pl.get('v_dir_max_p50', math.nan), 2)} m/s open {_fmt(100 * pl.get('window_open_frac', math.nan))} %"
         )
         lines.append(
             f"  gap mm  e(commit) {_fmt(g['e_commit_mm']['p50'])} → e(t_c−T_arm) {_fmt(g['e_last_mm']['p50'])} (p90 {_fmt(g['e_last_mm']['p90'])}) · ref_vs_true {_fmt(g['ref_vs_true_mm']['p50'])} · live pred ≥ {_fmt(g['pred_live_lb_mm']['p50'])} · hand–ball {_fmt(g['total_mm']['p50'])} · d_min {_fmt(g['d_min_mm']['p50'])} · CLIK {_fmt(g['clik_mm']['p50'])} · servo {_fmt(g['servo_mm']['p50'])}"
