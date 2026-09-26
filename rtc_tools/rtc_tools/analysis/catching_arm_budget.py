@@ -64,6 +64,7 @@ import numpy as np
 import yaml
 
 from rtc_tools.analysis import catching_trials as ct
+from rtc_tools.analysis.catch_gate_map import load_accel_box
 
 TOOL = "catching_arm_budget"
 ACTIVE_MODES = (ct.MODE_APPROACH, ct.MODE_COMMITTED, ct.MODE_CLOSING)
@@ -76,7 +77,7 @@ MOVING_RAD_S = 0.05  # q̇_meas above this enters the servo-lag fit
 COMMIT_JOIN_TOL_S = 0.02
 DEFAULT_N_BOOT = 200
 DEFAULT_SEED = 0
-PLANNER_TIME_MARGIN_S = 0.03  # planner.time.margin default (L3 §6); overridable
+PLANNER_TIME_MARGIN_S = 0.03  # planner.time.margin default (PlannerParams::time_margin, L3 §4.3)
 
 
 # ── Reach time (L3 §4.3 closed form, the runtime's `TMinChecked`) ────────────
@@ -148,6 +149,7 @@ class ArmBudget:
     qdd_box: list[float]  # rad/s², the D-16 box the planner judged with ([] = none)
     t_arm_s: float
     dt: float
+    time_margin_s: float = PLANNER_TIME_MARGIN_S  # planner.time.margin the reach gate used
     source: dict = field(default_factory=dict)
 
     @property
@@ -188,7 +190,12 @@ def _deep_merge(base: Mapping, over: Mapping) -> dict:
 
 
 def _overlay_catching(path: Path, controller: str) -> dict:
-    """The ``catching`` subtree an RT-node overlay writes for ``controller`` ({} if none)."""
+    """The ``catching`` subtree a node-level YAML writes for ``controller`` ({} if none).
+
+    Serves both a ``sim_overlays/*.yaml`` and the robot config's ``sim.yaml``:
+    the launch feeds both to the RT node, which lays ``<controller>.catching``
+    over the controller YAML (``ApplyControllerParamOverrides``).
+    """
     doc = ct._load_yaml(path)
     for node in doc.values():
         params = (node or {}).get("ros__parameters") or {}
@@ -198,8 +205,14 @@ def _overlay_catching(path: Path, controller: str) -> dict:
     return {}
 
 
-def _box_from_file(config_dir: Path, package: str, rel_path: str, group: str) -> list[float]:
-    """``derived_accel_limits.<group>.qdd_max`` from the profile's package-relative path."""
+def _box_from_file(
+    config_dir: Path, package: str, rel_path: str, group: str, n: int
+) -> list[float]:
+    """``derived_accel_limits.<group>.qdd_max`` from the profile's package-relative path.
+
+    [] when the file is absent or its box is not ``adopted`` — what the
+    controller does (``LoadDerivedAccelLimits`` refuses a non-adopted box).
+    """
     share = Path(config_dir).parent.parent  # <share>/config/<robot> → <share>
     candidates = [share / rel_path]
     try:
@@ -210,11 +223,7 @@ def _box_from_file(config_dir: Path, package: str, rel_path: str, group: str) ->
         pass
     for path in candidates:
         if path.is_file():
-            doc = ct._load_yaml(path)
-            entry = (doc.get("derived_accel_limits") or {}).get(group) or {}
-            if not entry.get("adopted", False):
-                return []
-            return [float(v) for v in entry.get("qdd_max") or []]
+            return [float(v) for v in load_accel_box(path, group, n, require_adopted=True)]
     return []
 
 
@@ -228,7 +237,13 @@ def resolve_budget(
     dt: float,
     t_arm_s: float,
 ) -> ArmBudget:
-    """The limits one unit ran with: the controller's mirror first, the profile + overlays else."""
+    """The limits one unit ran with: the controller's mirror first, the files else.
+
+    The file path composes what the launch composes, in its order: the
+    controller YAML, then the robot config's ``sim.yaml`` (which may carry a
+    ``<controller>.catching`` override — R2 of D-S8-18 points the sim planner's
+    box there), then the ``--overlay`` files.
+    """
     limits, lim_src = _device_limits(config_dir, profile.arm_device)
     n = len(joints)
     tau_max = [float(v) for v in (limits.get("max_torque") or [math.nan] * n)]
@@ -241,23 +256,39 @@ def resolve_budget(
     source = {"max_torque": lim_src.get("max_torque"), "max_velocity": lim_src.get("max_velocity")}
     mirror = meta.get("controller_mirror") or {}
     catching = dict(node.get("catching") or {})
+    composed = ["profile"]
+    sim_yaml = Path(config_dir) / "sim.yaml"
+    if sim_yaml.is_file():
+        sim_tree = _overlay_catching(sim_yaml, profile.controller)
+        if sim_tree:
+            catching = _deep_merge(catching, sim_tree)
+            composed.append("sim.yaml")
     for path in overlays:
         catching = _deep_merge(catching, _overlay_catching(path, profile.controller))
+    if overlays:
+        composed.append("overlays")
+    files = "+".join(composed)
     ref = catching.get("reference") or {}
-    gamma = (catching.get("planner") or {}).get("gamma") or {}
+    planner = catching.get("planner") or {}
+    gamma = planner.get("gamma") or {}
     arm = (catching.get("robot") or {}).get("arm") or {}
 
     def pick(mirror_key: str, file_value, label: str) -> float:
         if mirror.get(mirror_key) is not None:
             source[label] = "controller_mirror"
             return float(mirror[mirror_key])
-        source[label] = "profile+overlays" if overlays else "profile"
+        source[label] = files
         return math.nan if file_value is None else float(file_value)
 
     omega = pick("reference.omega", ref.get("omega", 10.0), "omega")
     a_max = pick("reference.a_max", ref.get("a_max"), "a_max")
     v_max = pick("reference.v_max", ref.get("v_max"), "v_max")
     eta_v = pick("planner.gamma.eta_v", gamma.get("eta_v", 0.9), "eta_v")
+    time_margin = pick(
+        "planner.time.margin",
+        (planner.get("time") or {}).get("margin", PLANNER_TIME_MARGIN_S),
+        "time_margin",
+    )
     if mirror.get("robot.arm.qdd_max") is not None:
         qdd_box = [float(v) for v in mirror["robot.arm.qdd_max"]]
         source["qdd_box"] = "controller_mirror"
@@ -267,14 +298,24 @@ def resolve_budget(
             str(arm.get("accel_limits_package", "")),
             str(arm.get("accel_limits_path", "")),
             str(arm.get("accel_limits_group", "")),
+            n,
         )
-        source["qdd_box"] = (
-            f"{arm.get('accel_limits_path')} ({'profile+overlays' if overlays else 'profile'})"
-        )
+        source["qdd_box"] = f"{arm.get('accel_limits_path')} ({files})"
     if qdd_box and len(qdd_box) != n:
         raise SystemExit(f"the D-16 box has {len(qdd_box)} entries, the arm {n} joints")
     return ArmBudget(
-        list(joints), tau_max, qd_box, omega, a_max, v_max, eta_v, qdd_box, t_arm_s, dt, source
+        list(joints),
+        tau_max,
+        qd_box,
+        omega,
+        a_max,
+        v_max,
+        eta_v,
+        qdd_box,
+        t_arm_s,
+        dt,
+        time_margin,
+        source,
     )
 
 
@@ -374,14 +415,12 @@ def _effort_utilisation(
     lane = ct._read_csv(path, usecols=["t_relative_s", *cols])
     t_lane = lane["t_relative_s"].to_numpy(dtype=float)
     t_active = t[active]
-    idx = np.clip(np.searchsorted(t_lane, t_active), 0, max(len(t_lane) - 1, 0))
-    left = np.clip(idx - 1, 0, max(len(t_lane) - 1, 0))
+    if len(t_lane) == 0 or len(t_active) == 0:
+        return {**empty, "source": f"{path.name}: no lane row (header only)"}
+    idx = np.clip(np.searchsorted(t_lane, t_active), 0, len(t_lane) - 1)
+    left = np.clip(idx - 1, 0, len(t_lane) - 1)
     take = np.where(np.abs(t_lane[left] - t_active) < np.abs(t_lane[idx] - t_active), left, idx)
-    ok = (
-        np.abs(t_lane[take] - t_active) <= 0.5 * dt
-        if len(t_lane)
-        else np.zeros(len(t_active), dtype=bool)
-    )
+    ok = np.abs(t_lane[take] - t_active) <= 0.5 * dt
     if not ok.any():
         return {
             **empty,
@@ -427,11 +466,15 @@ def analyse_unit(
     *,
     controller: str | None = None,
     overlays: Sequence[Path] = (),
-    time_margin_s: float = PLANNER_TIME_MARGIN_S,
+    time_margin_s: float | None = None,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
 ) -> dict:
-    """Everything the module docstring lists, for one unit."""
+    """Everything the module docstring lists, for one unit.
+
+    ``time_margin_s`` None = the ``planner.time.margin`` the unit ran with
+    (mirror, else the composed files); a number overrides it.
+    """
     meta = json.loads((unit / "trials" / "run_meta.json").read_text())
     profile = ct.load_profile(config_dir, controller, session)
     node = ct._catching_controllers(config_dir)[profile.controller]
@@ -452,6 +495,8 @@ def analyse_unit(
         else (ct._mirror_lead(meta) or 0.0)
     )
     budget = resolve_budget(profile, node, config_dir, joints, meta, overlays, dt, t_arm)
+    if time_margin_s is None:
+        time_margin_s = budget.time_margin_s
 
     q_cmd = diag[[f"q_cmd_{j}" for j in joints]].to_numpy(dtype=float)
     q_meas = diag[[f"q_meas_{j}" for j in joints]].to_numpy(dtype=float)
@@ -493,7 +538,10 @@ def analyse_unit(
     velocity_box_hit_frac = float((qd_ratio.max(axis=1) >= VELOCITY_BOX_HIT).mean())
     over_box_frac = math.nan
     if budget.qdd_box:
-        over_box_frac = float((qdd_abs.max(axis=1) > np.asarray(budget.qdd_box).max()).mean())
+        # Per joint against ITS box entry — the envelope box is far from uniform.
+        over_box_frac = float(
+            (qdd_abs > np.asarray(budget.qdd_box, dtype=float)).any(axis=1).mean()
+        )
 
     # ── P: plant ─────────────────────────────────────────────────────────────
     qd_meas = np.zeros_like(q_meas)
@@ -599,6 +647,7 @@ def analyse_unit(
             "qdd_box": budget.qdd_box,
             "tau_max": budget.tau_max,
             "t_arm_s": budget.t_arm_s,
+            "time_margin_s": time_margin_s,
             "dt": dt,
             "source": budget.source,
         },
@@ -666,7 +715,14 @@ def envelope_box_document(
     """
     if not units:
         raise ValueError("no units")
-    joints = units[0]["summary"]["budget"]["joints"]
+    joints = list(units[0]["summary"]["budget"]["joints"])
+    for u in units:
+        got = list(u["summary"]["budget"]["joints"])
+        if got != joints:
+            raise SystemExit(
+                f"{u['summary']['unit']}: arm joints {got} differ from {units[0]['summary']['unit']}'s "
+                f"{joints} — an envelope box pools one arm, joint order included"
+            )
     env = np.array([u["summary"]["clik"]["envelope_p95_rad_s2"] for u in units], dtype=float)
     box = [round(float(v), 4) for v in env.max(axis=0)]
     return {
@@ -811,8 +867,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--time-margin-s",
         type=float,
-        default=PLANNER_TIME_MARGIN_S,
-        help="planner.time.margin used in the reach re-judgement",
+        help="override planner.time.margin in the reach re-judgement (default: what the unit ran "
+        "with — mirror, else the composed files)",
     )
     ap.add_argument("--n-boot", type=int, default=DEFAULT_N_BOOT)
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)

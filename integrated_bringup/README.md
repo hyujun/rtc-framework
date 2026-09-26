@@ -241,8 +241,9 @@ S8-E 의 공 arm `catch_lead_on_beanbag` 은 컨트롤러 섹션이 `catch_lead_
 `ros2 param get /mujoco_simulator projectile_ball.ball_type` 으로 적용을 확인합니다.
 
 dynamic_catching S8-G (팔 예산) 는 `s8g_w{10,15,20}_a{21,30}` 여섯 arm 으로 `reference.omega` × `reference.a_max` 를
-스윕합니다 — 각 arm 은 S8-F-1 의 `s8f_reach_first` 에 그 두 잎만 더한 것이라 S8-F-1 의 cliff unit 이 기준 쌍둥이입니다
-(ω 10 · a_max 21 이 S8-G 전 출하 쌍; **결과로 출하 `reference.a_max` 는 30** 이 되어 `s8g_w10_a30` 이 지금 출하 쌍이고, sim 은 `sim.yaml` 이 계획기 box 를 `derived_accel_limits_s8g_envelope.yaml` 로 덮습니다 — 그 파일 헤더가 근거). `s8g_w10_a21_envbox` 는 기준 arm 에서 `robot.arm.accel_limits_path` 하나만 바꿔
+스윕합니다 — 각 arm 은 S8-F-1 의 `s8f_reach_first` 에 그 두 잎과 **측정 당시의 계획기 box 핀** (`robot.arm.accel_limits_path` = 출하
+`derived_accel_limits.yaml`) 을 더한 것이라 S8-F-1 의 cliff unit 이 기준 쌍둥이입니다
+(ω 10 · a_max 21 이 S8-G 전 출하 쌍; **결과로 출하 `reference.a_max` 는 30** 이 되어 `s8g_w10_a30` 이 지금 출하 쌍이고, sim 은 `sim.yaml` 이 계획기 box 를 `derived_accel_limits_s8g_envelope.yaml` 로 덮습니다 — 그 파일 헤더가 근거). **`sim.yaml` 의 override 는 overlay 아래에 깔리므로** overlay 가 box 경로를 명시하지 않으면 그 overlay 도 envelope box 로 돕니다 — S8-G 격자 여섯은 핀으로 기록된 구성을 재현하지만, S8-F 이전 overlay (`s8f_*`, `catch_lead_*`) 는 지금 띄우면 a_max 30 · envelope box 아래에서 도는 새 구성이라 기록된 unit 의 복제가 아닙니다. `s8g_w10_a21_envbox` 는 기준 arm 에서 `robot.arm.accel_limits_path` 하나만 바꿔
 계획기 도달시간 (L3 §4.3) 이 판정하는 D-16 box 를 출하 `derived_accel_limits.yaml` (2.03 rad/s²) 대신
 `derived_accel_limits_s8g_envelope.yaml` — `rtc_tools catching_arm_budget --write-envelope-box` 가 S8-F-1 unit 아홉 개의
 **실행된** 관절 가속 envelope 에서 쓴 sim 전용·provisional 파일 — 로 돌립니다 (결정 K 이후 CLIK 은 dynamic 토크
@@ -877,7 +878,7 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 3. 순환이 닫히면 (RETREAT 뒤 ARMED) 끝낸다. IDLE·FAULT 로 가거나 `--record-s` (기본 12 s) 가 지나도 끝낸다. 시행의 판정은 RETREAT 진입 때 발행된 `outcome` 이다 (L7 §4.7). RETREAT 에서 손이 `robot.hand.T_release_timeout` 안에 `q_pre` 에 정착하지 못하면 컨트롤러가 IDLE (`HAND_TIMEOUT`) 로 가며 스스로 disarm 한다 (S8-C) — 순환은 닫히지 않은 것으로 기록되고, 다음 투척의 1 단계 재무장이 복구한다.
 4. 공을 리셋한다.
 
-관절 이름·상태 토픽은 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). **대기 자세·`T_freeze`·`T_arm`·`lead_enable`·`control.dt`, 그리고 팔 예산 층 `reference.{omega, a_max, v_max}`·`planner.gamma.eta_v`·`robot.arm.qdd_max` (계획기가 도달시간을 재는 D-16 box; S8-G) 는 떠 있는 컨트롤러의 read-only 미러 파라미터에서 읽는다** (S8-A) — `sim_overlay:=` 가 이 값들을 바꿔도 설치된 YAML 은 그대로이기 때문이다. 미러가 없으면 (컨트롤러가 configure 에서 park 됨 — 그 로그가 값을 댄다) 시작하지 않는다. 미러 값은 `<out>/run_meta.json` 과 시행 기록마다 `controller_mirror` 로 남는다.
+관절 이름·상태 토픽은 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). **대기 자세·`T_freeze`·`T_arm`·`lead_enable`·`control.dt`, 그리고 팔 예산 층 `reference.{omega, a_max, v_max}`·`planner.gamma.eta_v`·`planner.time.margin`·`robot.arm.qdd_max` (계획기가 도달시간을 재는 D-16 box; S8-G — TBD 잎은 컨트롤러가 실행한 기본값으로 나온다) 는 떠 있는 컨트롤러의 read-only 미러 파라미터에서 읽는다** (S8-A) — `sim_overlay:=` 가 이 값들을 바꿔도 설치된 YAML 은 그대로이기 때문이다. 미러가 없으면 (컨트롤러가 configure 에서 park 됨 — 그 로그가 값을 댄다) 시작하지 않는다. 미러 값은 `<out>/run_meta.json` 과 시행 기록마다 `controller_mirror` 로 남는다.
 
 투척 계열은 `--dist` 가 고른다.
 

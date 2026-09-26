@@ -13,6 +13,12 @@
 # baseline twin (same seed 901, same 56 throws). test_catch_lead_overlays.py
 # pins the leaves.
 #
+# Measured BEFORE D-S8-18 (#537 5847356796), which moved two sim defaults: the
+# shipped a_max (21 → 30, pinned here anyway) and the planner box sim.yaml now
+# points at the executed envelope. A cell therefore also pins the shipped
+# torque-derived D-16 box it was judged with — overlays are laid over sim.yaml —
+# so launching it today replays the recorded configuration (replicate rule R4).
+#
 # The validator's cross checks these cells must satisfy: reference.omega in
 # [1, 25] and ω·h < 0.828 (ω 20 · h 0.002 = 0.04), supervisor.decel.a_dec 10
 # ≤ reference.a_max. Sim only — the real arm's a_max is S10's.
@@ -37,3 +43,6 @@ integrated_rt_controller:
         reference:
           omega: 20.0
           a_max: 21.0
+        robot:
+          arm:
+            accel_limits_path: "config/ur5e_p1b/derived_accel_limits.yaml"

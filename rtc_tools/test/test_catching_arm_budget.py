@@ -443,6 +443,79 @@ def test_without_a_mirror_the_budget_comes_from_the_profile_and_the_overlay(tmp_
     )
 
 
+def test_without_a_mirror_sim_yaml_lies_between_the_profile_and_the_overlay(tmp_path):
+    """The launch feeds sim.yaml to the RT node after the controller YAML and before
+    the overlay (R2 of D-S8-18 points the sim planner's box there), so the file
+    path composes in that order: sim.yaml moves the box and the time margin, an
+    overlay on top of it wins."""
+    cfg = make_config(tmp_path / "share")
+    unit, session, _ = make_session(tmp_path, n_trials=1, mirror=False)
+    env = tmp_path / "share" / "config" / "robot" / "envelope.yaml"
+    _write_yaml(env, {"derived_accel_limits": {ARM: {"qdd_max": [9.0, 9.0], "adopted": True}}})
+    sim = yaml.safe_load((cfg / "sim.yaml").read_text())
+    sim["/**"]["ros__parameters"][CONTROLLER] = {
+        "catching": {
+            "robot": {"arm": {"accel_limits_path": "config/robot/envelope.yaml"}},
+            "planner": {"time": {"margin": 0.05}},
+        }
+    }
+    _write_yaml(cfg / "sim.yaml", sim)
+    res = ab.analyse_unit(unit, session, cfg, n_boot=5)
+    b = res["summary"]["budget"]
+    assert b["qdd_box"] == [9.0, 9.0]
+    assert b["source"]["qdd_box"] == "config/robot/envelope.yaml (profile+sim.yaml)"
+    assert b["source"]["omega"] == "profile+sim.yaml"
+    assert b["time_margin_s"] == 0.05
+    assert res["trials"][0]["lead_avail_s"] == pytest.approx(0.37 - 0.05 - 0.05)
+    overlay = tmp_path / "ov.yaml"
+    _write_yaml(
+        overlay,
+        {
+            "integrated_rt_controller": {
+                "ros__parameters": {
+                    CONTROLLER: {
+                        "catching": {
+                            "robot": {
+                                "arm": {
+                                    "accel_limits_path": "config/robot/derived_accel_limits.yaml"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    )
+    res = ab.analyse_unit(unit, session, cfg, overlays=[overlay], n_boot=5)
+    b = res["summary"]["budget"]
+    assert b["qdd_box"] == list(BOX)
+    assert b["source"]["qdd_box"] == (
+        "config/robot/derived_accel_limits.yaml (profile+sim.yaml+overlays)"
+    )
+    # an explicit override beats what the unit ran with
+    res = ab.analyse_unit(unit, session, cfg, time_margin_s=0.0, n_boot=5)
+    assert res["trials"][0]["lead_avail_s"] == pytest.approx(0.37 - 0.05)
+
+
+def test_ticks_over_the_planner_box_compare_each_joint_with_its_own_entry(tmp_path):
+    """The envelope box is far from uniform: a joint over ITS entry counts even
+    when the box's largest entry is far above every joint."""
+    cfg = make_config(tmp_path / "share")
+    unit, session, meta = make_session(tmp_path, n_trials=1)
+    meta["controller_mirror"]["robot.arm.qdd_max"] = [2.0, 100.0]  # j_a ramps at 8 against 2
+    (unit / "trials" / "run_meta.json").write_text(json.dumps(meta))
+    over = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]["clik"][
+        "ticks_over_planner_box_frac"
+    ]
+    assert 0.2 < over < 0.5
+    meta["controller_mirror"]["robot.arm.qdd_max"] = [100.0, 2.0]  # j_b never accelerates
+    (unit / "trials" / "run_meta.json").write_text(json.dumps(meta))
+    over = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]["clik"][
+        "ticks_over_planner_box_frac"
+    ]
+    assert over == 0.0
+
+
 def test_a_box_that_is_not_adopted_or_absent_reads_as_no_box(tmp_path):
     cfg = make_config(tmp_path / "share", box=None)
     unit, session, _ = make_session(tmp_path, n_trials=1, mirror=False)
@@ -453,7 +526,7 @@ def test_a_box_that_is_not_adopted_or_absent_reads_as_no_box(tmp_path):
     assert res["trials"][0]["reach_ok_box"] is None
     box = tmp_path / "share" / "config" / "robot" / "derived_accel_limits.yaml"
     _write_yaml(box, {"derived_accel_limits": {ARM: {"qdd_max": [5.0, 5.0], "adopted": False}}})
-    assert ab._box_from_file(cfg, "pkg", "config/robot/derived_accel_limits.yaml", ARM) == []
+    assert ab._box_from_file(cfg, "pkg", "config/robot/derived_accel_limits.yaml", ARM, 2) == []
 
 
 def test_the_envelope_box_document_pools_the_per_joint_max_and_carries_provenance():
@@ -486,6 +559,24 @@ def test_the_envelope_box_document_pools_the_per_joint_max_and_carries_provenanc
     assert entry["provenance"]["sim_only"] is True
     with pytest.raises(ValueError):
         ab.envelope_box_document([], ARM)
+
+
+def test_the_envelope_box_document_refuses_units_of_different_arms():
+    def unit(name, joints):
+        return {
+            "summary": {
+                "arm": "a",
+                "unit": name,
+                "trials_committed": 1,
+                "budget": {"joints": joints},
+                "clik": {"envelope_p95_rad_s2": [1.0] * len(joints)},
+            }
+        }
+
+    with pytest.raises(SystemExit, match="joint order"):
+        ab.envelope_box_document([unit("u1", ["j_a", "j_b"]), unit("u2", ["j_b", "j_a"])], ARM)
+    with pytest.raises(SystemExit, match="differ"):
+        ab.envelope_box_document([unit("u1", ["j_a", "j_b"]), unit("u2", ["j_a"])], ARM)
 
 
 def test_main_writes_the_outputs_and_the_envelope_box(tmp_path, capsys):
@@ -539,3 +630,8 @@ def test_a_device_lane_with_a_dropped_row_is_matched_by_time_not_position(tmp_pa
     res = ab.analyse_unit(unit, session, cfg, n_boot=5)
     assert all(math.isnan(v) for v in res["summary"]["plant"]["torque_util_max"])
     assert "no lane row" in res["summary"]["plant"]["torque_source"]
+    lane.write_text("t_relative_s,effort_j_a,effort_j_b\n")  # header only: the lane never flushed
+    res = ab.analyse_unit(unit, session, cfg, n_boot=5)
+    assert all(math.isnan(v) for v in res["summary"]["plant"]["torque_util_max"])
+    assert "header only" in res["summary"]["plant"]["torque_source"]
+    assert res["summary"]["plant"]["torque_matched_ticks"] == 0

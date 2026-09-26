@@ -106,6 +106,7 @@ MIRROR_PARAMETERS = (
     "reference.a_max",
     "reference.v_max",
     "planner.gamma.eta_v",
+    "planner.time.margin",
     "robot.arm.qdd_max",
 )
 

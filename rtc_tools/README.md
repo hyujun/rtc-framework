@@ -435,14 +435,17 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
 - **B**: 같은 운동 (commit → 마지막 활성 tick 의 Δq, 초기 속도 포함) 의 도달시간을 컨트롤러가 로드한 D-16 box 와 실행 envelope 로
   **두 번** 재 (L3 §4.3 닫힌해 이식; `test/…` 가 손 유도 케이스로 검사) commit 시점 가용 lead 와 비교 — box 의 비관이 숫자가
   된다. `planner_events.csv` 의 유효 plan 중 rank gate 실패율도 함께
-- **한계의 출처** (ARCH-1): 관절은 diag `q_cmd_*`, 토크·속도 정격은 프로파일 device 명세, ω/`a_max`/`v_max`/η_v/box 는 러너가
-  `run_meta.json` 에 남긴 컨트롤러 **미러** (S8-G 부터) → 없으면 프로파일 + `--overlay`. 출처를 `budget.source` 로 보고한다
+- **한계의 출처** (ARCH-1): 관절은 diag `q_cmd_*`, 토크·속도 정격은 프로파일 device 명세, ω/`a_max`/`v_max`/η_v/`planner.time.margin`/box 는
+  러너가 `run_meta.json` 에 남긴 컨트롤러 **미러** (S8-G 부터; 미러는 TBD 잎도 컨트롤러가 *실행한* 기본값으로 낸다) → 없으면
+  launch 와 같은 순서로 파일을 합성한다: 컨트롤러 YAML → `sim.yaml` 의 `<controller>.catching` override → `--overlay`. 출처를
+  `budget.source` 로 보고한다. `--time-margin-s` 는 그 해소값을 덮는 명시 override 다
 - `--write-envelope-box`: unit 들의 envelope p95 를 관절별 max 로 모아 `derived_accel_limits` 형식 (`adopted: true`,
   `provisional: true`, provenance 에 unit 목록·방법) 으로 쓴다 — sim overlay 의 `robot.arm.accel_limits_path` 가 가리킬 파일.
   토크 도출이 아니라 실행값이므로 sim 전용
-- 합성 positive control (`test/test_catching_arm_budget.py`, 20 케이스): 알려진 τ·ω·포화 구간·램프 가속·토크 비율·rank 비트를
+- 합성 positive control (`test/test_catching_arm_budget.py`, 24 케이스): 알려진 τ·ω·포화 구간·램프 가속·토크 비율·rank 비트를
   심은 unit 에서 각각을 복원 (τ ±5 %, 잔여 = 이론값, envelope = 램프 가속), 닫힌해 도달시간 7 케이스, 미러 없는 경우의
-  profile+overlay 경로, `adopted: false` box 거부, CLI end-to-end
+  profile → sim.yaml → overlay 합성 순서, `adopted: false` box 거부, 관절별 box 초과 판정, lane 행 누락·헤더만 있는 lane,
+  다른 팔 unit 의 envelope 합치기 거부, CLI end-to-end
 
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 

@@ -67,6 +67,7 @@ S8G_GRID = {
 }
 S8G_ENVBOX = "s8g_w10_a21_envbox"
 S8G_ENVBOX_FILE = "config/ur5e_p1b/derived_accel_limits_s8g_envelope.yaml"
+S8G_SHIPPED_BOX_FILE = "config/ur5e_p1b/derived_accel_limits.yaml"
 OMEGA_RANGE = (1.0, 25.0)  # L4 §6
 OMEGA_H_STABLE = 0.828  # L4 §4.7 discrete stability bound on ω·h
 SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
@@ -355,10 +356,12 @@ def test_s8g_every_leaf_is_a_shipped_key_of_the_same_type(name, s8g_arms, shippe
 
 
 @pytest.mark.parametrize("name", sorted(S8G_GRID))
-def test_s8g_cell_is_reach_first_plus_its_two_reference_leaves(name, s8g_arms, s8f_arms):
-    """Each cell differs from s8f_reach_first by ω and a_max ONLY, at the grid
-    values its name says — so the S8-F-1 cliff unit is the sweep's baseline
-    twin and a cell measures the two numbers and nothing else."""
+def test_s8g_cell_is_reach_first_plus_its_two_reference_leaves(name, s8g_arms, s8f_arms, shipped):
+    """Each cell differs from s8f_reach_first by ω and a_max at the grid values
+    its name says, plus the pin of the torque-derived D-16 box it was measured
+    with — sim.yaml has since moved the sim default to the executed envelope
+    (D-S8-18 R2) and an overlay is laid over sim.yaml, so without the pin a
+    replay (R4) would run a different planner gate with no warning."""
     omega, a_max = S8G_GRID[name]
     base = _leaves(s8f_arms["s8f_reach_first"])
     leaves = _leaves(s8g_arms[name])
@@ -366,8 +369,10 @@ def test_s8g_cell_is_reach_first_plus_its_two_reference_leaves(name, s8g_arms, s
     assert extra == {
         ("catching", "reference", "omega"): omega,
         ("catching", "reference", "a_max"): a_max,
+        ("catching", "robot", "arm", "accel_limits_path"): S8G_SHIPPED_BOX_FILE,
     }
     assert {k: v for k, v in leaves.items() if k in base} == base
+    assert shipped["catching"]["robot"]["arm"]["accel_limits_path"] == S8G_SHIPPED_BOX_FILE
 
 
 @pytest.mark.parametrize("name", sorted(S8G_GRID))
@@ -400,9 +405,11 @@ def test_s8g_envbox_arm_is_the_baseline_with_the_planner_box_swapped(s8g_arms, s
     overlay = _controller_tree(_load(os.path.join(OVERLAY_DIR, S8G_ENVBOX + ".yaml")))
     base = _leaves(s8g_arms["s8g_w10_a21"])
     leaves = _leaves(overlay)
-    extra = {k: v for k, v in leaves.items() if k not in base}
-    assert extra == {("catching", "robot", "arm", "accel_limits_path"): S8G_ENVBOX_FILE}
-    assert {k: v for k, v in leaves.items() if k in base} == base
+    key = ("catching", "robot", "arm", "accel_limits_path")
+    assert {k: v for k, v in leaves.items() if k != key} == {
+        k: v for k, v in base.items() if k != key
+    }
+    assert (base[key], leaves[key]) == (S8G_SHIPPED_BOX_FILE, S8G_ENVBOX_FILE)
     assert _unread_leaves(overlay, shipped) == []
     box = _load(os.path.join(CONFIG_ROOT, "..", S8G_ENVBOX_FILE))["derived_accel_limits"]
     group = shipped["catching"]["robot"]["arm"]["accel_limits_group"]

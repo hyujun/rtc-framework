@@ -141,6 +141,24 @@ namespace {
 
 }  // namespace
 
+rtc::catching::SoftCatchTranslation::Params DemoCatchingController::ResolvedReferenceParams()
+    const {
+  // A TBD a_max / v_max runs the struct default (L4 §6) — the one place that
+  // says so, read by the reference's setup and by the mirror alike.
+  rtc::catching::SoftCatchTranslation::Params p;
+  p.omega = params_.reference_omega.value;
+  p.zeta = params_.reference_zeta.value;
+  p.a_max = params_.reference_a_max.tbd ? p.a_max : params_.reference_a_max.value;
+  p.v_max = params_.reference_v_max.tbd ? p.v_max : params_.reference_v_max.value;
+  return p;
+}
+
+double DemoCatchingController::ResolvedPlannerEtaV() const {
+  // A TBD η_v runs the planner's own default (D-9) — as above, one place.
+  return params_.planner_gamma_eta_v.tbd ? rtc::catching::PlannerConstants{}.eta_v
+                                         : params_.planner_gamma_eta_v.value;
+}
+
 void DemoCatchingController::DeclareProfileParameters() {
   if (!node_) {
     return;
@@ -204,17 +222,21 @@ void DemoCatchingController::DeclareProfileParameters() {
           "L5 §4.5 lead axis on (now_lead = now + T_arm)");
   // The arm-budget layers (dynamic_catching S8-G, #537): an overlay moves any
   // of them, and an off-process analysis must read what THIS controller
-  // loaded, not the file — the lesson the mirror exists for (S8-B: an overlay
-  // one level short ran the shipped profile with no warning).
-  const auto tbd = [nan](const rtc::catching::TbdDouble& v) { return v.tbd ? nan : v.value; };
-  declare("reference.omega", tbd(params_.reference_omega),
-          "L4 §6 reference natural frequency ω [rad/s] (NaN = TBD)");
-  declare("reference.a_max", tbd(params_.reference_a_max),
-          "L4 §6 reference acceleration limit [m/s²] (NaN = TBD)");
-  declare("reference.v_max", tbd(params_.reference_v_max),
-          "L4 §6 reference TCP speed limit [m/s] (NaN = TBD)");
-  declare("planner.gamma.eta_v", tbd(params_.planner_gamma_eta_v),
-          "L3 §4.5 speed margin η_v on v_max and the joint ratings (D-9)");
+  // RUNS, not the file — the lesson the mirror exists for (S8-B: an overlay
+  // one level short ran the shipped profile with no warning). A TBD leaf is
+  // therefore mirrored as the value the setup substituted for it (the
+  // reference's struct default, the planner's η_v default), through the same
+  // resolvers SetupArmCommand / SetupPlannerSearch use.
+  declare("reference.omega", params_.reference_omega.value,
+          "L4 §6 reference natural frequency ω [rad/s]");
+  declare("reference.a_max", ResolvedReferenceParams().a_max,
+          "L4 §6 reference acceleration limit [m/s²] as run (struct default when TBD)");
+  declare("reference.v_max", ResolvedReferenceParams().v_max,
+          "L4 §6 reference TCP speed limit [m/s] as run (struct default when TBD)");
+  declare("planner.gamma.eta_v", ResolvedPlannerEtaV(),
+          "L3 §4.5 speed margin η_v on v_max and the joint ratings (D-9) as run");
+  declare("planner.time.margin", planner_params_.time_margin,
+          "L3 §4.3 reach-time margin T_margin [s] the planner's gate uses");
   declare("robot.arm.qdd_max", arm_qdd_max_,
           "D-16 acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
@@ -648,11 +670,7 @@ void DemoCatchingController::SetupArmCommand() {
   q_eval_ = Eigen::VectorXd::Zero(model.nq);
   v_eval_ = Eigen::VectorXd::Zero(nv);
 
-  rtc::catching::SoftCatchTranslation::Params ref_params;
-  ref_params.omega = params_.reference_omega.value;
-  ref_params.zeta = params_.reference_zeta.value;
-  ref_params.a_max = params_.reference_a_max.tbd ? ref_params.a_max : params_.reference_a_max.value;
-  ref_params.v_max = params_.reference_v_max.tbd ? ref_params.v_max : params_.reference_v_max.value;
+  const rtc::catching::SoftCatchTranslation::Params ref_params = ResolvedReferenceParams();
   reference_.emplace(ref_params);
   if (!reference_->ParamsValid()) {
     RCLCPP_ERROR(logger_, "reference parameters rejected (omega/zeta/a_max/v_max)");
@@ -1590,7 +1608,7 @@ bool DemoCatchingController::SetupPlannerSearch() {
     return v.tbd ? std::numeric_limits<double>::quiet_NaN() : v.value;
   };
   rtc::catching::PlannerConstants pc;
-  pc.eta_v = params_.planner_gamma_eta_v.tbd ? 0.9 : params_.planner_gamma_eta_v.value;
+  pc.eta_v = ResolvedPlannerEtaV();
   pc.v_max = val(params_.reference_v_max);
   pc.a_dec = val(params_.supervisor_decel_a_dec);
   pc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
