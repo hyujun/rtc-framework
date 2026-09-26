@@ -1250,3 +1250,704 @@ def test_robot_config_skips_a_file_without_urdf_and_refuses_when_none_has_it(tmp
         robot_config_params(tmp_path)
     _write_params(tmp_path / "sim.yaml", {"urdf": {"from": "sim"}})
     assert robot_config_params(tmp_path)["urdf"] == {"from": "sim"}
+
+
+# ── Validity (D-S8-16 ①): rig failures are invalid, not failures ─────────────
+
+
+def test_golden_every_trial_is_valid_and_truth_is_unchanged(pilot):
+    v = pilot.summary["validity"]
+    assert v["n_total"] == 25 and v["n_valid"] == 25
+    assert v["n_invalid"] == dict.fromkeys(ct.INVALID_REASONS, 0)
+    assert v["lane_rules_evaluated"] is True
+    assert all(r["invalid_reason"] == "" for r in pilot.rows)
+    truth = pilot.summary["truth"]
+    assert (truth["successes"], truth["n"]) == (0, 25)
+    assert truth["itt"]["successes"] == 0 and truth["itt"]["n"] == 25
+    assert truth["lower_975"] == truth["wilson95"][0] == ct.wilson_interval(0, 25)[0]
+    assert truth["confusion_supervisor_vs_truth"] == {
+        "MISSED": {"truth_success": 0, "truth_fail": 25}
+    }
+    # The pilot session has no timing/ dir — tolerated, and said so.
+    assert pilot.summary["tick_overrun"] == "NOT_EVALUATED(no timing log)"
+
+
+# Trial idx → the rig failure injected into a copy of the pilot fixture. Two
+# trials carry two defects each (precedence); the rest must stay valid.
+INJECTED = {
+    2: "srv_refused",  # + n_truth_rows 0 (rule 1 outranks rule 2)
+    3: "not_launched",  # + no offset (rule 2 outranks rule 3)
+    5: "controller_silent",  # no wall_t_relative_offset
+    6: "controller_silent",  # window moved off the diag (rule 3 outranks the lane's 4)
+    8: "lane_drop",  # its launch removed from the lane
+    10: "lane_drop",  # dropped_total rises inside its rows
+    12: "sim_stall",  # 10 consecutive rows cut out of its rows
+    14: "lane_drop",  # dropped rise AND a gap (rule 4 outranks rule 5)
+    18: "not_launched",  # no truth rows AND no lane launch (rule 2 outranks rule 4)
+}
+TIMING_TRIAL = 16
+
+
+def _mutated_fixture(tmp: Path) -> tuple[Path, Path, Path]:
+    import gzip
+    import json
+    import shutil
+
+    import pandas as pd
+
+    session, trials_dir = tmp / "session", tmp / "trials"
+    shutil.copytree(FIXTURE / "session", session)
+    shutil.copytree(FIXTURE / "trials", trials_dir)
+    trials, _ = ct.load_trials(FIXTURE / "trials")
+    lane0 = ct.load_clock_lane(LANE, trials)
+    seq = lane0.trial_to_seq
+
+    records = json.loads((trials_dir / "trial_results.json").read_text())
+    by_idx = {r["idx"]: r for r in records}
+    for r in records:
+        r["seed"] = 601
+    by_idx[2].update(accepted=False, n_truth_rows=0)
+    by_idx[3].update(n_truth_rows=0, wall_t_relative_offset=None)
+    by_idx[5]["wall_t_relative_offset"] = None
+    by_idx[18]["n_truth_rows"] = 0
+    by_idx[6]["launch_wall_time"] += 1000.0
+    by_idx[6]["mode_log"] = [[m[0] + 1000.0, *m[1:]] for m in by_idx[6]["mode_log"]]
+    (trials_dir / "trial_results.json").write_text(json.dumps(records))
+
+    with gzip.open(LANE, "rt") as handle:
+        df = pd.read_csv(handle)
+    df = df[~df["launch_seq"].isin((seq[8], seq[18]))]
+    for idx in (10, 14):
+        rows = df.index[df["launch_seq"] == seq[idx]]
+        # Cumulative counter: every row from the middle of this flight on.
+        df.loc[df.index >= rows[len(rows) // 2], "dropped_total"] += 1
+    for idx in (12, 14):
+        rows = df.index[df["launch_seq"] == seq[idx]]
+        mid = len(rows) // 3
+        df = df.drop(rows[mid : mid + 10])
+    lane_path = session / "sim" / "clock_lane.csv"
+    df.to_csv(lane_path, index=False)
+
+    # A tick timing lane (steady clock, like the lane) with three overruns and
+    # one jitter spike inside trial 16's window, and one of each just outside.
+    t16 = next(t for t in trials if t.idx == TIMING_TRIAL)
+    off = lane0.trial_offsets[TIMING_TRIAL]
+    lo, hi = t16.t_launch + off, t16.t_end + off
+    t = np.arange(lo - 0.1, hi + 0.1, 0.002)
+    total = np.full(t.size, 100.0)
+    jitter = np.zeros(t.size)
+    inside = np.nonzero((t >= lo) & (t <= hi))[0]
+    total[inside[[5, 50, 100]]] = 5000.0
+    jitter[inside[70]] = 123.0
+    total[0], jitter[0] = 9000.0, 999.0  # before the launch — must not count
+    (session / "timing").mkdir()
+    pd.DataFrame(
+        {
+            "t_wall_ns": (t * 1e9).astype(np.int64),
+            "tick_count": np.arange(t.size),
+            "run_id": 0,
+            "t_state_us": 0.0,
+            "t_compute_us": 0.0,
+            "t_publish_us": 0.0,
+            "t_total_us": total,
+            "jitter_us": jitter,
+        }
+    ).to_csv(session / "timing" / "cm_timing_log.csv", index=False)
+    return session, trials_dir, lane_path
+
+
+@pytest.fixture(scope="module")
+def mutated(tmp_path_factory):
+    pytest.importorskip("pinocchio")
+    session, trials_dir, lane_path = _mutated_fixture(tmp_path_factory.mktemp("rig"))
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    settings = ct.Settings(n_boot=20, floor=0.35, n_valid_target=200)
+    with_lane = ct.analyse_session(session, trials_dir, profile, urdf, settings, lane_path)
+    without = ct.analyse_session(session, trials_dir, profile, urdf, settings)
+    return with_lane, without
+
+
+def test_each_injected_rig_failure_gets_exactly_its_reason(mutated):
+    result, _ = mutated
+    reasons = {r["idx"]: r["invalid_reason"] for r in result.rows}
+    for idx, reason in INJECTED.items():
+        assert reasons[idx] == reason, idx
+    assert all(reasons[i] == "" for i in reasons if i not in INJECTED)
+    v = result.summary["validity"]
+    assert v["n_invalid"] == {
+        "srv_refused": 1,
+        "not_launched": 2,
+        "controller_silent": 2,
+        "lane_drop": 3,
+        "sim_stall": 1,
+    }
+    assert (v["n_total"], v["n_valid"]) == (25, 25 - len(INJECTED))
+
+
+def test_invalid_trials_do_not_leak_into_the_failure_count(mutated):
+    result, _ = mutated
+    truth = result.summary["truth"]
+    n_valid = 25 - len(INJECTED)
+    assert truth["n"] == n_valid
+    cells = truth["confusion_supervisor_vs_truth"].values()
+    assert sum(c["truth_success"] + c["truth_fail"] for c in cells) == n_valid
+    # ITT keeps them — as failures, over every trial.
+    assert truth["itt"]["n"] == 25
+    assert truth["itt"]["lower_975"] == ct.wilson_interval(truth["successes"], 25)[0]
+    assert truth["verdict"] == f"INSUFFICIENT_N({n_valid} < 200)"
+
+
+def test_lane_rule_diagnostics_show_the_injected_defect(mutated):
+    result, _ = mutated
+    rows = {r["idx"]: r for r in result.rows}
+    nominal = result.summary["validity"]["nominal_step_s"]
+    assert nominal == pytest.approx(0.002, rel=1e-3)
+    assert rows[10]["lane_dropped_delta"] == 1 and rows[14]["lane_dropped_delta"] == 1
+    assert rows[12]["lane_dropped_delta"] == 0
+    assert rows[12]["lane_max_sim_gap_s"] == pytest.approx(11 * nominal, rel=1e-3)
+    assert rows[0]["lane_max_sim_gap_s"] == pytest.approx(nominal, rel=1e-3)
+    # The trial AFTER the drop starts from the raised baseline: not a drop.
+    assert rows[11]["invalid_reason"] == "" and rows[11]["lane_dropped_delta"] == 0
+
+
+def test_without_a_lane_only_the_record_rules_apply_and_the_summary_says_so(mutated):
+    _, result = mutated
+    reasons = {r["idx"]: r["invalid_reason"] for r in result.rows}
+    for idx, reason in INJECTED.items():
+        expected = "" if reason in ("lane_drop", "sim_stall") else reason
+        assert reasons[idx] == expected, idx
+    v = result.summary["validity"]
+    assert v["lane_rules_evaluated"] is False
+    assert "NOT_EVALUATED" in v["lane_rules"]
+    assert v["n_invalid"]["lane_drop"] == v["n_invalid"]["sim_stall"] == 0
+    # No lane → no steady-clock join for the timing log either.
+    assert result.summary["tick_overrun"].startswith("NOT_EVALUATED(no clock lane")
+
+
+def test_tick_overrun_is_joined_on_the_steady_clock_through_the_lane(mutated):
+    result, _ = mutated
+    rows = {r["idx"]: r for r in result.rows}
+    assert rows[TIMING_TRIAL]["tick_overrun_n"] == 3
+    assert rows[TIMING_TRIAL]["tick_jitter_max_us"] == 123.0
+    tick = result.summary["tick_overrun"]
+    assert tick["n_trials_with_overrun"] == 1 and tick["overrun_ticks_total"] == 3
+    assert tick["period_us"] == pytest.approx(2000.0)
+
+
+def test_seed_column_is_the_records_seed(mutated):
+    result, _ = mutated
+    assert all(r["seed"] == 601 for r in result.rows)
+    assert result.summary["seeds"] == [601]
+
+
+def test_record_invalid_reason_rules():
+    assert ct.record_invalid_reason({"accepted": False, "n_truth_rows": 0}) == "srv_refused"
+    ok = {"accepted": True, "n_truth_rows": 5, "wall_t_relative_offset": 1.0}
+    assert ct.record_invalid_reason(ok) == ""
+    # A record older than n_truth_rows is not judged on it.
+    assert ct.record_invalid_reason({"accepted": True, "wall_t_relative_offset": 1.0}) == ""
+
+
+# ── Verdict statistics ───────────────────────────────────────────────────────
+
+
+def test_wilson_lower_bound_hand_value_and_the_floor_line():
+    # k=5, n=10, z=1.96: centre 0.5, half 1.96·√(0.025 + 3.8416/400)/1.38416.
+    lo, hi = ct.wilson_interval(5, 10)
+    assert lo == pytest.approx(0.2366, abs=1e-4) and hi == pytest.approx(0.7634, abs=1e-4)
+    # The S8-E pass line at floor 0.35 (plan §1a: pass = ≥ 84/200).
+    assert ct.wilson_interval(84, 200)[0] == pytest.approx(0.3537, abs=1e-4)
+    assert ct.wilson_interval(83, 200)[0] == pytest.approx(0.3489, abs=1e-4)
+    assert ct.floor_verdict(84, 200, 0.35, 200) == "PASS"
+    assert ct.floor_verdict(83, 200, 0.35, 200) == "FAIL"
+    assert ct.floor_verdict(84, 199, 0.35, 200) == "INSUFFICIENT_N(199 < 200)"
+
+
+def test_truth_block_valid_and_itt():
+    valid = [{"truth_success": True, "supervisor": "CAUGHT"}] * 3 + [
+        {"truth_success": False, "supervisor": "MISSED"}
+    ] * 3
+    tb = ct.truth_block(valid, 8, floor=0.2)
+    assert (tb["successes"], tb["n"]) == (3, 6)
+    assert tb["lower_975"] == ct.wilson_interval(3, 6)[0]
+    assert (tb["itt"]["successes"], tb["itt"]["n"]) == (3, 8)
+    assert tb["itt"]["lower_975"] == ct.wilson_interval(3, 8)[0]
+    assert tb["confusion_supervisor_vs_truth"] == {
+        "CAUGHT": {"truth_success": 3, "truth_fail": 0},
+        "MISSED": {"truth_success": 0, "truth_fail": 3},
+    }
+    assert tb["verdict"] == ("PASS" if ct.wilson_interval(3, 6)[0] >= 0.2 else "FAIL")
+    # A NaN cell (not analysed) is not a success.
+    assert ct.truth_block([{"truth_success": math.nan}], 1)["successes"] == 0
+
+
+def test_mcnemar_exact_hand_value():
+    # b=7, c=1: 2·P(X ≤ 1 | Bin(8, ½)) = 2·9/256.
+    assert ct.mcnemar_exact(7, 1) == pytest.approx(18 / 256)
+    assert ct.mcnemar_exact(1, 7) == pytest.approx(18 / 256)
+    assert ct.mcnemar_exact(0, 0) == 1.0
+
+
+def test_streak_distribution_bins():
+    rows = [{"ref_saturated_max_streak": v} for v in (0, 0, 1, 10, 11, 25)] + [{}]
+    d = ct.streak_distribution(rows)
+    assert (d["n_trials"], d["n_streak_gt0"], d["max"]) == (6, 4, 25)
+    assert d["histogram"] == {"0": 2, "1-10": 2, "11-20": 1, "21-30": 1}
+    assert "no verdict" in d["note"]
+
+
+def _linear_contacts(n, seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(0.05, 0.4, n)
+    y = 0.8 * x + 0.01 + rng.normal(0.0, 0.002, n)
+    f = 200.0 * x + rng.normal(0.0, 0.5, n)
+    return [
+        {"contact_mv_rel_ns": a, "contact_impulse_ns": b, "contact_peak_force_n": c}
+        for a, b, c in zip(x, y, f, strict=True)
+    ]
+
+
+def test_impulse_correlation_recovers_a_linear_law():
+    rows = _linear_contacts(60) + [{"contact_mv_rel_ns": math.nan, "contact_impulse_ns": 0.1}]
+    b3 = ct.impulse_correlation(rows, n_boot=300, seed=1)
+    assert b3["n"] == 60
+    assert b3["ols_slope"] == pytest.approx(0.8, abs=0.02)
+    assert b3["ols_intercept_ns"] == pytest.approx(0.01, abs=0.005)
+    lo, hi = b3["ols_slope_ci95"]
+    assert lo < 0.8 < hi and hi - lo < 0.05
+    assert b3["spearman_rho_impulse"] > 0.95 and b3["spearman_p_impulse"] < 1e-6
+    assert b3["spearman_rho_peak_force"] > 0.95
+    assert b3["spearman_verdict"] == "REPORTED(no pass threshold defined)"
+    assert b3["torque"] == "NOT_EVALUATED(sim clamp)"
+
+
+def test_impulse_correlation_below_50_is_not_evaluated():
+    b3 = ct.impulse_correlation(_linear_contacts(20), n_boot=50, seed=1)
+    assert b3["spearman_verdict"] == "NOT_EVALUATED(n < 50)"
+    assert b3["ols_slope"] == pytest.approx(0.8, abs=0.05)
+    empty = ct.impulse_correlation([], n_boot=50, seed=1)
+    assert empty["n"] == 0 and math.isnan(empty["ols_slope"])
+
+
+# ── Lane time alignment (S8-E C3): robust to a sim slower than the wall ──────
+
+DT = 0.002
+C_TRUE = 7 * DT  # sim − t_relative_s: the steps the sim took before the CM's first tick
+K_WALL = 1.7e9  # CLOCK_REALTIME − CLOCK_MONOTONIC
+LAUNCH_SIMS = (2.0, 6.0, 10.0, 14.0, 18.0)
+TRIAL_RTF = (1.0, 0.6, 0.8, 0.5, 1.0)  # wall RTF from launch to the trial's end
+EVENT_SIMS = (0.1, 0.4, 0.5, 2.5)  # mode changes after the launch; the last closes the cycle
+RECV_LATENCY_S = 0.001
+
+
+def _slow_sim_session(tmp: Path, idle_rtf: float = 1.0):
+    """A lane, trials dir and truth CSVs of a sim that runs at TRIAL_RTF during each
+    trial — what the S8-E loaded unit did (RTF 0.62) — and at ``idle_rtf`` between
+    trials. Returns (lane path, trials dir, steady(sim) function)."""
+    import json
+
+    import pandas as pd
+
+    n = int(22.0 / DT)
+    sim = np.arange(1, n + 1) * DT
+    rtf = np.full(n, idle_rtf)
+    for launch, r in zip(LAUNCH_SIMS, TRIAL_RTF, strict=True):
+        rtf[(sim > launch) & (sim <= launch + 3.0)] = r
+    steady = 100.0 + np.cumsum(DT / rtf)
+    seq = np.zeros(n, dtype=int)
+    active = np.zeros(n, dtype=int)
+    for k, launch in enumerate(LAUNCH_SIMS):
+        seq[sim > launch + DT / 2] = k + 1
+        active[(sim > launch + DT / 2) & (sim <= launch + 0.7)] = 1
+    lane_path = tmp / "clock_lane.csv"
+    pd.DataFrame(
+        {
+            "step": np.arange(1, n + 1),
+            "sim_time_sec": sim,
+            "steady_ns": (steady * 1e9).astype(np.int64),
+            "launch_seq": seq,
+            "ball_active": active,
+            "dropped_total": 0,
+        }
+    ).to_csv(lane_path, index=False)
+
+    def steady_at(s):
+        return float(np.interp(s, np.concatenate([[0.0], sim]), np.concatenate([[100.0], steady])))
+
+    trials_dir = tmp / "trials"
+    trials_dir.mkdir()
+    records = []
+    for k, launch in enumerate(LAUNCH_SIMS):
+        anchor = K_WALL + steady_at(launch)  # the sim stamps the launch sample at this instant
+        ticks = np.arange(launch, launch + EVENT_SIMS[-1], DT)
+        # The runner's offset: the MEDIAN of (receipt wall − t_relative_s) over the trial.
+        offs = [K_WALL + steady_at(s) + RECV_LATENCY_S - (s - C_TRUE) for s in ticks]
+        truth = [
+            [K_WALL + steady_at(launch + j * 0.01) + RECV_LATENCY_S, anchor + j * 0.01]
+            + [1.0 - j * 0.02, 0.0, 0.2 + j * 0.03, -2.0, 0.0, 3.0]
+            for j in range(60)
+        ]
+        pd.DataFrame(
+            truth, columns=["wall_recv_s", "stamp_s", "x", "y", "z", "vx", "vy", "vz"]
+        ).to_csv(trials_dir / f"truth_trial_{k:02d}.csv", index=False)
+        records.append(
+            {
+                "idx": k,
+                "accepted": True,
+                "pos": [1.0, 0.0, 0.2],
+                "n_truth_rows": 60,
+                "truth_csv": f"/elsewhere/truth_trial_{k:02d}.csv",
+                "launch_wall_time": anchor + 0.0003,
+                "mode_log": [
+                    [K_WALL + steady_at(launch + e) + RECV_LATENCY_S, "M", 0] for e in EVENT_SIMS
+                ],
+                "wall_t_relative_offset": float(np.median(offs)),
+            }
+        )
+    (trials_dir / "trial_results.json").write_text(json.dumps(records))
+    return lane_path, trials_dir, steady_at
+
+
+def test_a_slow_sim_run_pairs_on_the_wall_clock_where_t_relative_pairing_fails(tmp_path):
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    assert sorted(lane.trial_to_seq.items()) == [(k, k + 1) for k in range(5)]
+    assert lane.wall_offset_s == pytest.approx(K_WALL, abs=5e-3)
+    # Positive control: the old key — t_launch from the runner's drifting median
+    # offset — no longer pairs the slow trials under one offset.
+    steady0 = np.array([lane.segments[k + 1][0, 1] for k in range(5)])
+    t_old = np.array([t.t_launch for t in trials])
+    assert len(ct._pair_by_offset(steady0, t_old, 0.05)) < 5
+
+
+def _commit_diag(steady_at, c=C_TRUE):
+    """Diag arrays with one commit per trial 0.3 s after launch; the tick runs 0.5 ms
+    after the lane row of its state. Returns (t, mode, plan_id, plan_t_c, bridge)."""
+    t, mode, pid, ptc = [], [], [], []
+    wake, lead = {}, {}
+    for k, launch in enumerate(LAUNCH_SIMS):
+        sims = np.arange(launch + 0.25, launch + 0.35, DT)
+        commit = int(np.argmin(np.abs(sims - (launch + 0.3))))
+        for i, s in enumerate(sims):
+            t.append(s - c)
+            mode.append(ct.MODE_COMMITTED if i >= commit else ct.MODE_APPROACH)
+            pid.append(k + 1)
+            ptc.append(0.37)
+        tick_steady = steady_at(sims[commit]) + 0.0005
+        lead[k + 1] = 0.47
+        wake[k + 1] = tick_steady + 0.37 - 0.47
+    bridge = ct.PlanBridge(wake_s=wake, lead_s=lead, snapshot={})
+    return np.array(t), np.array(mode), np.array(pid), np.array(ptc), bridge
+
+
+def test_sim_minus_t_relative_is_read_from_the_commit_ticks(tmp_path):
+    lane_path, trials_dir, steady_at = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    t, mode, pid, ptc, bridge = _commit_diag(steady_at)
+    c, info = ct.estimate_sim_minus_t_rel(t, mode, pid, ptc, bridge, lane)
+    assert c == pytest.approx(C_TRUE, abs=1e-9)
+    assert info["n"] == 5 and info["spread_s"] < 1e-9
+    # A diag shifted by one tick is read as a c one tick smaller — the estimate
+    # follows the data, it is not a constant.
+    c2, _ = ct.estimate_sim_minus_t_rel(t + DT, mode, pid, ptc, bridge, lane)
+    assert c2 == pytest.approx(C_TRUE - DT, abs=1e-9)
+    assert ct.estimate_sim_minus_t_rel(t, mode, pid, ptc, None, lane)[0] is None
+
+
+def test_lane_alignment_is_exact_where_the_median_offset_drifts(tmp_path):
+    lane_path, trials_dir, steady_at = _slow_sim_session(tmp_path)
+    trials, doc = ct.load_trials(trials_dir)
+    records = {r["idx"]: r for r in doc["records"]}
+    lane = ct.load_clock_lane(lane_path, trials)
+    lane.c_s = C_TRUE
+    aligned = ct.align_trials_to_lane(trials, records, lane)
+    for old, new, launch, rtf in zip(trials, aligned, LAUNCH_SIMS, TRIAL_RTF, strict=True):
+        assert new.alignment == "lane" and new.stamp_anchor == "truth"
+        assert new.t_launch == pytest.approx(launch - C_TRUE, abs=1e-6)
+        t_end_true = launch + EVENT_SIMS[-1] - C_TRUE
+        # Off only by the runner's receipt latency plus the launch-pairing wall
+        # offset's few-ms bias, both run through the lane at this trial's RTF.
+        assert new.t_end == pytest.approx(t_end_true, abs=5e-3)
+        truth = ct.load_truth(new.truth_path, new.stamp_offset)
+        assert np.allclose(truth.t, launch + np.arange(60) * 0.01 - C_TRUE, atol=1e-6)
+        if rtf < 0.9:
+            # Positive control: the runner's median offset puts the launch and
+            # the end off by (1 − RTF) × a share of the trial.
+            assert abs(old.t_launch - new.t_launch) > 0.1
+            assert abs(ct.load_truth(old.truth_path, old.offset).t[0] - truth.t[0]) > 0.1
+    # The recv axis goes through the same lane map (wall → steady → sim).
+    recv = ct.load_truth(aligned[3].truth_path, math.nan, "recv", lane.wall_to_t_rel)
+    assert recv.t[10] == pytest.approx(LAUNCH_SIMS[3] + 0.1 - C_TRUE, abs=5e-3)
+
+
+def test_rtf_covariates_read_the_lane(tmp_path):
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    for k, rtf in enumerate(TRIAL_RTF):
+        launch = LAUNCH_SIMS[k]
+        out = ct.trial_rtf(lane, k + 1, launch + 0.4, launch + 2.5)
+        assert out["rtf_flight"] == pytest.approx(rtf, rel=1e-3)
+        assert out["rtf_trial_min"] == pytest.approx(rtf, rel=1e-3)
+
+
+def test_truth_of_another_run_is_refused_and_the_local_copy_wins(tmp_path, capsys):
+    import json
+    import shutil
+
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path)
+    doc = json.loads((trials_dir / "trial_results.json").read_text())
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    # The recorded absolute path now holds a DIFFERENT run's file (same throw,
+    # stamps 1606 s later) and the local copy is gone for trial 0.
+    for k, rec in enumerate(doc):
+        rec["truth_csv"] = str(elsewhere / f"truth_trial_{k:02d}.csv")
+        text = (trials_dir / f"truth_trial_{k:02d}.csv").read_text()
+        lines = text.splitlines()
+        shifted = [lines[0]] + [
+            ",".join(
+                [f"{float(v) + 1606.0:.6f}" if i < 2 else v for i, v in enumerate(ln.split(","))]
+            )
+            for ln in lines[1:]
+        ]
+        (elsewhere / f"truth_trial_{k:02d}.csv").write_text("\n".join(shifted) + "\n")
+    (trials_dir / "trial_results.json").write_text(json.dumps(doc))
+    (trials_dir / "truth_trial_00.csv").unlink()
+    trials, _ = ct.load_trials(trials_dir)
+    assert trials[0].truth_path is None
+    assert "another run's truth" in capsys.readouterr().err
+    assert trials[1].truth_path == trials_dir / "truth_trial_01.csv"
+    shutil.copy(trials_dir / "truth_trial_01.csv", elsewhere / "truth_trial_01.csv")
+    assert ct.load_trials(trials_dir)[0][1].truth_path == trials_dir / "truth_trial_01.csv"
+
+
+def _drifted_fixture(tmp: Path, drift_s: float, drifted: tuple[int, ...]):
+    """The pilot's trials dir with the runner's offset pushed by drift_s on some
+    trials — the error a median offset makes when the sim ran slow."""
+    import json
+    import shutil
+
+    trials_dir = tmp / "trials"
+    shutil.copytree(FIXTURE / "trials", trials_dir)
+    records = json.loads((trials_dir / "trial_results.json").read_text())
+    for r in records:
+        if r["idx"] in drifted:
+            r["wall_t_relative_offset"] += drift_s
+    (trials_dir / "trial_results.json").write_text(json.dumps(records))
+    return trials_dir
+
+
+def test_drifted_runner_offsets_do_not_move_the_lane_aligned_analysis(pilot, tmp_path):
+    """End to end on the pilot: the runner's median offset pushed 0.4 s on three
+    trials. The lane path reads only the launch instant and the lane, so every
+    row is the pilot's; the median-offset path (no lane) moves those trials."""
+    drifted = (3, 7, 11)
+    trials_dir = _drifted_fixture(tmp_path, 0.4, drifted)
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    settings = ct.Settings(v_max=PILOT_V_MAX_M_S, n_boot=20)
+    lane = ct.analyse_session(FIXTURE / "session", trials_dir, profile, urdf, settings, LANE)
+    assert lane.summary["time_alignment"] == "lane"
+    detail = lane.summary["time_alignment_detail"]
+    assert detail["sim_minus_t_rel_s"] == pytest.approx(0.014, abs=1e-9)
+    assert detail["stamp_anchor"] == {"truth": 25, "lane_estimate": 0}
+    ref = {r["idx"]: r for r in pilot.rows}
+    for r in lane.rows:
+        for key in ("t_launch", "first_plan_s", "arrival_ms", "pred_mm"):
+            assert r[key] == pytest.approx(ref[r["idx"]][key], abs=1e-9, nan_ok=True), (
+                r["idx"],
+                key,
+            )
+        assert r["truth_success"] == ref[r["idx"]]["truth_success"]
+    old = ct.analyse_session(FIXTURE / "session", trials_dir, profile, urdf, settings)
+    assert old.summary["time_alignment"] == "median_offset"
+    rows = {r["idx"]: r for r in old.rows}
+    for idx in drifted:
+        assert rows[idx]["first_plan_s"] - ref[idx]["first_plan_s"] == pytest.approx(0.4, abs=0.01)
+
+
+def test_golden_g8b_and_c2_end_to_end(pilot, tmp_path):
+    """G8-B binding and G8-C2 through analyse_session on the pilot's own axes.
+
+    Samples: one at the launch (kept), one whose target is after the ball hit
+    the robot and one from before the launch (both NEES 1e6 — they must be
+    dropped). Dump: the planner snapshot holds p_c (mapped into the sim world)
+    at the pilot's t_c, and a snapshot received before the commit (the pilot
+    diag predates the input-key columns → the approximate join) holds p_c + 1 cm
+    in x, so B is exactly (0.01, 0, 0) and |A + B| is the decomposition's pred.
+    """
+    import pandas as pd
+
+    row0 = next(
+        r
+        for r in pilot.rows
+        if np.isfinite(r.get("t_first_impact", math.nan)) and np.isfinite(r.get("t_c", math.nan))
+    )
+    off = row0["stamp_minus_t_rel_s"]
+    launch_ns = int(round((row0["t_launch"] + off) * 1e9))
+    impact_ns = int(round((row0["t_first_impact"] + off) * 1e9))
+    ms = 1_000_000
+    samples = pd.DataFrame(
+        {
+            "record": ["prediction"] * 3,
+            "time_ns": [launch_ns, impact_ns, launch_ns - 1000 * ms],
+            "horizon_ns": [100 * ms] * 3,
+            "ground_truth_stamp_ns": [0] * 3,
+            "position_error_x_m": [0.01, 1.0, 1.0],
+            "position_error_y_m": [0.0, 1.0, 1.0],
+            "position_error_z_m": [0.0, 1.0, 1.0],
+            "position_nees": [2.0, 1e6, 1e6],
+        }
+    )
+    samples_path = tmp_path / "eval_samples.csv"
+    samples.to_csv(samples_path, index=False)
+
+    ctl = FIXTURE / "session" / "controllers" / "demo_catching_controller"
+    diag = ct._read_csv(ctl / "catching_diag.csv")
+    k = int(np.argmin(np.abs(diag["t_relative_s"].to_numpy() - row0["t_commit"])))
+    plan_id = int(diag["plan_id"].iloc[k])
+    p_c_model = diag[["plan_p_c_x", "plan_p_c_y", "plan_p_c_z"]].to_numpy(float)[k]
+    events = ct._read_csv(ctl / "planner_events.csv")
+    ev = events[(events["plan_id"] == plan_id) & (events["publish_ns"] > 0)].iloc[0]
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    fk = ct.CatchFrameFk(urdf, ct.arm_joints_from_diag(ct._csv_header(_diag_path())), profile)
+    p_c_world = ct.transform_point(p_c_model[None], fk.world_t_model)[0]
+    t_c_ns = int(round((row0["t_c"] + off) * 1e9))
+    plan_t_c = float(diag["plan_t_c_s"].iloc[k])
+    commit_steady_ns = int((ev["wake_ns"] + ev["lead_s"] * 1e9) - plan_t_c * 1e9)
+    rows = []
+    for seq, gen, recv, dx in (
+        (
+            int(ev["snapshot_sequence"]),
+            int(ev["track_generation"]),
+            commit_steady_ns - 90 * ms,
+            0.0,
+        ),
+        (99_999, 1, commit_steady_ns - 10 * ms, 0.01),
+    ):
+        for i in range(20):
+            h = (i + 1) * 50 * ms
+            stamp = t_c_ns - 500 * ms
+            p = p_c_world + [dx, 0.0, 0.0]
+            rows.append([recv, "reliable", stamp, "world", seq, gen, h, *p, 0, 0, 0, 0, 0, 0])
+    dump = pd.DataFrame(
+        rows,
+        columns=[
+            "recv_ns",
+            "sub",
+            "stamp_ns",
+            "frame_id",
+            "snapshot_sequence",
+            "generation",
+            "horizon_ns",
+            "x",
+            "y",
+            "z",
+            "vx",
+            "vy",
+            "vz",
+            "ax",
+            "ay",
+            "az",
+        ],
+    )
+    # Only the 500 ms point of the planner snapshot is p_c (the others are
+    # moved away), so the plan-point match picks exactly t_c.
+    planner = dump["snapshot_sequence"] == int(ev["snapshot_sequence"])
+    dump.loc[planner & (dump["horizon_ns"] != 500 * ms), "x"] += 1.0
+    dump_path = tmp_path / "lane_prediction_dump.csv"
+    dump.to_csv(dump_path, index=False)
+
+    settings = ct.Settings(v_max=PILOT_V_MAX_M_S, n_boot=20)
+    res = ct.analyse_session(
+        FIXTURE / "session",
+        FIXTURE / "trials",
+        profile,
+        urdf,
+        settings,
+        LANE,
+        FIXTURE / "session" / "sim" / "ball_contact_lane.csv.gz",
+        eval_samples_path=samples_path,
+        probe_dump_path=dump_path,
+    )
+    r0 = next(r for r in res.rows if r["idx"] == row0["idx"])
+    assert r0["nees_h100ms_n"] == 1 and r0["nees_h100ms_mean"] == pytest.approx(2.0)
+    assert all(r.get("nees_h100ms_n", 0) == 0 for r in res.rows if r["idx"] != row0["idx"])
+    assert r0["c2_tc_source"] == "plan_point" and r0["c2_pc_match_mm"] < 1e-6
+    assert r0["c2_tc_minus_tc_ms"] == pytest.approx(0.0, abs=1e-3)
+    assert r0["c2_join"] == "approx"  # no input-key columns in the pilot diag
+    assert (r0["c2_B_x"], r0["c2_B_y"], r0["c2_B_z"]) == pytest.approx((0.01, 0.0, 0.0))
+    a_plus_b = np.array([r0[f"c2_A_{x}"] + r0[f"c2_B_{x}"] for x in "xyz"])
+    # t_c went through an int ns stamp (~0.2 µs of float resolution at epoch scale).
+    assert np.linalg.norm(a_plus_b) * 1e3 == pytest.approx(r0["pred_mm"], abs=1e-2)
+    c2 = res.summary["c2"]
+    assert c2["n_approx"] >= 1 and c2["independence"] == "NOT_EVALUATED(n < 100)"
+
+
+def test_commits_that_disagree_on_c_fall_back_to_the_median_offset(tmp_path):
+    """No single sim − t_relative_s maps a session whose commits disagree (a sim
+    reset mid-session, dropped lane rows): the lane path would misplace one side
+    of it, so the whole session falls back, and says why."""
+    lane_path, trials_dir, steady_at = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    t, mode, pid, ptc, bridge = _commit_diag(steady_at)
+    late = t > LAUNCH_SIMS[2] - 1.0  # trials 2–4 read 3 ticks later
+    c, info = ct.estimate_sim_minus_t_rel(
+        np.where(late, t + 3 * DT, t), mode, pid, ptc, bridge, lane
+    )
+    assert c is None
+    assert "spread 6.000 ms" in info["source"] and info["spread_s"] == pytest.approx(3 * DT)
+    summary = ct.time_alignment_summary(trials, lane, info)
+    assert summary["time_alignment"] == "median_offset"
+    assert "commits disagree" in summary["time_alignment_detail"]["sim_minus_t_rel"]["source"]
+    # One tick apart is within the bound (1.5 steps): still one constant.
+    one = np.where(late, t + DT, t)
+    assert ct.estimate_sim_minus_t_rel(one, mode, pid, ptc, bridge, lane)[0] is not None
+
+
+def test_rtf_trial_min_stops_at_the_trial_end_without_lane_alignment(tmp_path):
+    """launch_seq stays at a launch's number until the next launch, so its rows run
+    on through homing and idle. With the sim idling at RTF 0.3 between trials, an
+    uncut scan reports the idle, not the trial (RTF 1.0)."""
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path, idle_rtf=0.3)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    assert not lane.aligned
+    end = ct.trial_steady_end(lane, trials[0], 1, 0.0)
+    cut = ct.trial_rtf(lane, 1, math.nan, math.inf, end)
+    assert cut["rtf_trial_min"] == pytest.approx(TRIAL_RTF[0], rel=1e-2)
+    uncut = ct.trial_rtf(lane, 1, math.nan, math.inf)
+    assert uncut["rtf_trial_min"] == pytest.approx(0.3, rel=1e-2)
+
+
+def test_steady_offset_spread_shows_the_slow_sim_drift_and_pairing_jitter_does_not(tmp_path):
+    """clock_steady_offset_spread_ms keeps its meaning — steady − t_relative_s
+    across the launches, t_relative_s from the runner's offset — so a sim that
+    ran slow shows up there; the wall-launch pairing jitter is its own key."""
+    lane_path, trials_dir, _ = _slow_sim_session(tmp_path)
+    trials, _ = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    assert lane.offset_spread_s > 0.1
+    assert lane.pairing_jitter_s < 5e-3
+
+
+def test_gate_map_truth_is_one_predicate_for_session_and_pool():
+    rows = [
+        {"map_open": True, "truth_success": True},
+        {"map_open": True, "truth_success": math.nan},  # not analysed: not a success
+        {"map_open": False, "truth_success": True},
+        {"map_open": None, "truth_success": True},  # reference throw: not verdicted
+        {"truth_success": True},
+    ]
+    gm = ct.gate_map_truth(rows)
+    assert (gm["verdicted"], gm["open"], gm["open_fraction"]) == (3, 2, pytest.approx(2 / 3))
+    assert (gm["truth_whole"]["successes"], gm["truth_whole"]["n"]) == (2, 3)
+    assert (gm["truth_open"]["successes"], gm["truth_open"]["n"]) == (1, 2)
+    no_radius = ct.gate_map_truth(rows, with_truth=False)
+    assert no_radius["truth_whole"] == "NOT_EVALUATED(no hold radius)"

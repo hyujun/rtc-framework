@@ -235,6 +235,11 @@ dynamic_catching S8-B 의 lead 보상 소거실험은 컨트롤러 섹션 (`inte
 MJCF 게인 그대로면 0.2 s 입니다. 근거는 `catch_lead_on.yaml` 헤더, 경로 고정은
 `test/test_catch_lead_overlays.py` 가 갖습니다.
 
+S8-E 의 공 arm `catch_lead_on_beanbag` 은 컨트롤러 섹션이 `catch_lead_on` 과 같고, 시뮬레이터 섹션에서
+`projectile_ball.ball_type` 만 `beanbag` 으로 바꿉니다. 이 preset 은 반발뿐 아니라 마찰·구름·항력·양력도
+바꾸므로 결과는 그 복합 효과입니다 (근거는 파일 헤더). 시뮬레이터는 기동 때 공 종류를 로그하지 않으므로
+`ros2 param get /mujoco_simulator projectile_ball.ball_type` 으로 적용을 확인합니다.
+
 `sim_iiwa7_leap.launch.py` 도 같은 규칙으로 `config/iiwa7_leap/sim_overlays/` 를 읽습니다 (S8-D).
 `catch_lead_on` 은 `T_arm` 0.05 · `lead_enable` 을 켜고 (`T_freeze` 는 출하 0.19 가 이미 하한 0.1847 을 덮는다 —
 기동 로그 `commit at t_c − 0.190 s`), 테이블·물체 없는 씬 `scene_right.xml` 로 바꿉니다 — 출하 씬의 테이블 물체가
@@ -894,7 +899,7 @@ ros2 launch ball_perception_sim sim_estimator.launch.py \
 ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dist s35b --n 50 --seed 503
 ```
 
-`trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다. 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다. `armed_at_throw` 는 투척 직전 컨트롤러가 발행한 무장 상태다. demo_controller_gui 의 Catching 패널은 같은 기준 (RETREAT 진입 때의 판정) 으로 이 패널이 본 시행 수를 판정별로 센다 (`this panel: attempts N: …`, 패널을 다시 띄우면 새로 센다).
+`trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다 (시행 중앙값이라 sim 이 벽시계보다 느리면 흐른다 — `rtc_tools` `catching_trials` 는 clock lane 이 있으면 쓰지 않는다). `truth_csv` 는 trials dir 기준 파일 이름이다 (절대경로였던 예전 기록은 dir 을 옮기고 같은 `<out>` 으로 다시 돌리면 다른 run 의 파일을 가리켰다). 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다. `armed_at_throw` 는 투척 직전 컨트롤러가 발행한 무장 상태다. demo_controller_gui 의 Catching 패널은 같은 기준 (RETREAT 진입 때의 판정) 으로 이 패널이 본 시행 수를 판정별로 센다 (`this panel: attempts N: …`, 패널을 다시 띄우면 새로 센다).
 
 ---
 

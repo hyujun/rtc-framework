@@ -14,8 +14,10 @@ So every leaf an overlay writes must name a key the shipped
 ``demo_catching_controller.yaml`` already has, with the same YAML type. The
 arm-to-arm differences are pinned too, because the ablation is only an ablation
 if lead (or the γ grid) is the one thing that changes. Both profiles that ship
-overlays are covered: ur5e_p1b (S8-B, four ablation arms) and iiwa7_leap (S8-D,
-a lead-on arm plus its calibration twin with the supervisor thresholds off).
+overlays are covered: ur5e_p1b (S8-B, four ablation arms, plus the S8-E beanbag
+arm that changes the simulated ball and nothing on the controller) and
+iiwa7_leap (S8-D, a lead-on arm plus its calibration twin with the supervisor
+thresholds off).
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ ARMS = {
     "catch_lead_on_gamma0": {"lead_enable": True, "gamma0": True},
     "catch_lead_off_gamma0": {"lead_enable": False, "gamma0": True},
 }
+BEANBAG = "catch_lead_on_beanbag"
+SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
 LEAP = "iiwa7_leap"
 LEAP_ARMS = ("catch_lead_on", "catch_lead_on_unbounded")
 # Where each profile keeps control_rate (the launch files read the same file).
@@ -213,6 +217,30 @@ def _check_commit_window(catching: dict, ship: dict, profile: str) -> None:
     # The 1e-9 absorbs a quotient landing a hair above an integer in binary.
     dt = effective("prediction", "dt_expected")
     assert effective("io", "n_min") == math.ceil(horizon / dt - 1e-9) + 1
+
+
+def _beanbag_sections() -> tuple[dict, dict]:
+    """(simulator section, the rest) of the beanbag overlay."""
+    overlay = _load(os.path.join(OVERLAY_DIR, BEANBAG + ".yaml"))
+    sim = overlay.pop("mujoco_simulator")
+    return sim, overlay
+
+
+def test_beanbag_arm_changes_only_the_ball_type():
+    """S8-E ball arm (D-S8-11, D-S8-16 ④): the simulator section carries the
+    ball preset and nothing else — shape and mass stay the shipped ones, which
+    the controller's ball model also assumes — and the key is the one the
+    shipped simulator YAML sets (a path one level off would run tennis)."""
+    sim, _ = _beanbag_sections()
+    assert sim == {"ros__parameters": {"projectile_ball": {"ball_type": "beanbag"}}}
+    ship = _load(SIM_CONFIG)["mujoco_simulator"]["ros__parameters"]["projectile_ball"]
+    assert ship["ball_type"] == "tennis", "the arm must differ from the shipped ball"
+
+
+def test_beanbag_arm_runs_the_lead_on_controller(arms):
+    """The pair is only a ball comparison if the controller is catch_lead_on's."""
+    _, rest = _beanbag_sections()
+    assert _controller_tree(rest) == arms["catch_lead_on"]
 
 
 def test_the_commit_window_is_derived_from_t_arm(arms, shipped):

@@ -375,10 +375,10 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | G7-A | 위 시나리오 전부 기대 상태열과 일치, 전이표 완전성 검사 통과 | `[SIM-ANY]` |
 | G7-B | 감속 전환 시 기준 상태 $(x,\dot x)$ 연속 (< 1e-9) | `[SIM-ANY]` |
 | G7-B2 | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8) | – |
-| G7-B3 | 충격량 $\Delta p$ 기록과 시뮬레이션 접촉 참값의 최대 접촉력 상관 확인, 손가락 관절 토크가 한계 이내 (한계 권위 출처 D-12 확정 전까지 토크 비교 부분은 `NOT_EVALUATED`) | `[SIM-P1B]` |
+| G7-B3 | 충격량 $\Delta p$ 기록과 시뮬레이션 접촉 참값의 최대 접촉력 상관 확인, 손가락 관절 토크가 한계 이내 (한계 권위 출처 D-12 확정 전까지 토크 비교 부분은 `NOT_EVALUATED`). **S8-E (2026-09-26)**: 충격량 상관 기록 (판정 임계 없음), 토크 `NOT_EVALUATED(sim clamp)` — plan §4.4 S8-E 결과 | `[SIM-P1B]` |
 | G7-C | 합성 잡음에서 접촉 오경보율 기록 (임계는 사용자 결정) | `[SIM-ANY]` |
 | G7-D | RT 할당 0 (`ScopedNoMalloc`·`ScopedAllocGate`), 틱 최악 실행시간 기록 | `[SIM-ANY]` |
-| G7-E | `ur5e_p1b` 시뮬레이션 폐루프에서 결과 판정과 MuJoCo 참값 일치율 기록 (부호 규약 재확인 포함) | `[SIM-P1B]` |
+| G7-E | `ur5e_p1b` 시뮬레이션 폐루프에서 결과 판정과 MuJoCo 참값 일치율 기록 (부호 규약 재확인 포함). **S8-E (2026-09-26)**: 기록 — plan §4.4 S8-E 결과 (슈퍼바이저 × truth) | `[SIM-P1B]` |
 | G7-F | 실기 speed scaling·시계·센서 stale 경로 동작 확인 (S10, 신호 출처 확보 후) | `[HW-P1B]` |
 | G7-G | 관절 fresh + 지문 센서 dropout negative control 에서 `TIP_STALE` 또는 결과 `Undetermined` 발화, 옛 힘을 새 접촉으로 판정 0 (D-24) | `[SIM-ANY]` |
 | G7-H | E-8 최소 계약(S5.1): (a) deactivate → 다른 컨트롤러가 팔 이동 → 재activate 첫 tick 이 옛 자세를 명령하지 않음, (b) trigger·clear·deactivate race 에서 reset writer 가 RT tick 하나, (c) 자동 재개 0, (d) `ClearEstop` 후 latched fault 유지 | `[SIM-ANY]` |
