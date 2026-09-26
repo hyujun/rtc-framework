@@ -177,6 +177,24 @@ def test_mcnemar_pairs_by_seed_and_sample_and_counts_discordance():
     assert hn.paired_arms(a, b)["unpaired_b"] == 1
 
 
+def test_mcnemar_pairs_within_a_kind_so_same_seed_designs_do_not_collide():
+    # Every design restarts sample_idx at 0: a cliff and an lhs unit of the
+    # same seed share (seed, sample_idx) and must NOT be paired or overwrite
+    # each other (PR #583 review).
+    a = synthetic_trials(20, 5, arm="A", kind="hand_cliff") + synthetic_trials(
+        30, 5, arm="A", kind="hand_lhs"
+    )
+    b = synthetic_trials(20, 5, arm="B", kind="hand_cliff") + synthetic_trials(
+        30, 5, arm="B", kind="hand_lhs"
+    )
+    res = hn.paired_arms(a, b)
+    assert res["pairs"] == 50 and res["unpaired_a"] == 0 and res["unpaired_b"] == 0
+    assert res["truth_success"]["a_only"] == 0 and res["truth_success"]["b_only"] == 0
+    # Arms of different composition pair only the kind they share.
+    res = hn.paired_arms(a, b[20:])
+    assert res["pairs"] == 30 and res["unpaired_a"] == 20
+
+
 def test_fit_logistic_survives_a_perfectly_separated_cliff():
     v = np.linspace(3.5, 7.0, 40)
     y = (v < 5.0).astype(float)
@@ -190,8 +208,20 @@ def test_aim_check_flags_the_trials_over_tolerance():
     trials = synthetic_trials(5, 2)
     trials[3].aim_error_mm = 2.4
     res = hn.aim_check(trials, 2.0)
-    assert res["over_tol_idx"] == [3] and not res["pass"] and res["max_mm"] == 2.4
-    assert hn.aim_check(trials[:3], 2.0)["pass"]
+    assert res["over_tol_idx"] == [3] and res["pass"] is False and res["max_mm"] == 2.4
+    assert hn.aim_check(trials[:3], 2.0)["pass"] is True
+    # A model that flew a different ball than the sim shows up in model_rms,
+    # not in aim_error (which is computed with the aiming parameters).
+    trials[1].model_rms_mm = 12.0
+    res = hn.aim_check(trials[:3], 2.0)
+    assert res["pass"] is False and res["model_rms_over_tol_idx"] == [1]
+    assert res["model_rms_max_mm"] == 12.0 and res["over_tol_idx"] == []
+    # No aim data at all is "no data", not a miss.
+    for t in trials:
+        t.aim_error_mm = math.nan
+        t.model_rms_mm = math.nan
+    res = hn.aim_check(trials, 2.0)
+    assert res["pass"] is None and res["n"] == 0
 
 
 def _write_unit(
@@ -214,6 +244,8 @@ def _write_unit(
                 "incidence_deg": 43.6,
                 "aim_error_m": t.aim_error_mm / 1e3,
                 "aim_pass_speed_m_s": t.aim_pass_speed_m_s,
+                "model_rms_m": t.model_rms_mm / 1e3,
+                **t.derived,
             }
         )
     (unit / "trials" / "trial_results.json").write_text(json.dumps(records))
@@ -296,6 +328,11 @@ def test_a_unit_round_trips_through_the_loader_and_the_cli(tmp_path):
     a = synthetic_trials(60, 7, arm="reach_first")
     b = synthetic_trials(60, 7, arm="shipped_score")
     a[2].invalid_reason = "lane_drop"
+    for t in a:
+        t.model_rms_mm = 1.5
+    # Records of an older runner lack a derived key a newer one writes; the
+    # trials CSV must take the union of keys (PR #583 review).
+    b[0].derived = {"apex_z_m": 1.2}
     unit_a, events = _write_unit(tmp_path, "reach_first", a)
     unit_b, _ = _write_unit(tmp_path, "shipped_score", b, planner=False)
     loaded = hn.load_unit(unit_a, events)
@@ -325,6 +362,8 @@ def test_a_unit_round_trips_through_the_loader_and_the_cli(tmp_path):
     assert rc == 0
     summary = json.loads((out / "hand_near_summary.json").read_text())
     assert set(summary["arms"]) == {"reach_first", "shipped_score"}
+    assert summary["aim"]["model_rms_max_mm"] == pytest.approx(1.5)
+    assert summary["aim"]["pass"] is True
     assert summary["ab"]["pairs"] == 59  # the invalid trial drops out of the pairing
     assert (
         (out / "hand_near_trials.csv").is_file()
@@ -334,6 +373,9 @@ def test_a_unit_round_trips_through_the_loader_and_the_cli(tmp_path):
     with (out / "hand_near_trials.csv").open() as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 120 and {r["arm"] for r in rows} == {"reach_first", "shipped_score"}
+    assert "apex_z_m" in rows[0] and rows[0]["apex_z_m"] == ""  # union header, empty cell
+    assert float(next(r for r in rows if r["arm"] == "shipped_score")["apex_z_m"]) == 1.2
+    assert float(rows[0]["model_rms_mm"]) == pytest.approx(1.5)
 
 
 def test_a_unit_of_non_hand_throws_is_refused(tmp_path):

@@ -19,6 +19,7 @@ Oracles independent of the code under test:
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 import pytest
@@ -252,6 +253,31 @@ def test_closest_approach_finds_a_minimum_between_coarse_samples():
     )
     with pytest.raises(ValueError):
         cm.closest_approach([], np.zeros((0, 3)), np.zeros((0, 3)), target)
+
+
+def test_closest_approach_refines_only_around_the_closest_sample_and_is_cheap():
+    # The runner calls this on a 2 s / 1 ms model flight between throws; a
+    # golden section on every segment cost 1.4 s (PR #583 review). Refining
+    # the segments around the closest sample gives the same answer.
+    times = np.arange(0.0, 2.0, 1e-3)
+    p0 = np.array([2.0, 0.3, 0.1])
+    v0 = np.array([-3.0, -0.5, 4.5])
+    g = np.array([0.0, 0.0, -G])
+    pos = p0 + np.outer(times, v0) + 0.5 * np.outer(times**2, g)
+    vel = v0 + np.outer(times, g)
+    t_star = 0.4373  # between samples
+    target = p0 + v0 * t_star + 0.5 * g * t_star**2
+    t0 = time.perf_counter()
+    dist, at, _ = cm.closest_approach(times, pos, vel, target)
+    elapsed = time.perf_counter() - t0
+    assert dist < 1e-6 and at == pytest.approx(t_star, abs=1e-5)
+    assert elapsed < 0.2, elapsed
+    # The refined window is the SSoT of how far from the closest sample the
+    # search looks; the answer must not depend on the sample landing exactly
+    # on a stationary point (here t* is a sample time).
+    exact = cm.closest_approach(times, pos, vel, pos[437])
+    assert exact[0] < 1e-9 and exact[1] == pytest.approx(times[437], abs=1e-6)
+    assert cm.CLOSEST_APPROACH_REFINE_SEGMENTS >= 1
 
 
 def test_free_flight_prefix_stops_at_the_first_contact():

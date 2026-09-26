@@ -113,6 +113,22 @@ def test_the_lhs_box_replays_stays_inside_and_clears_the_floor(geometry):
     assert all(3.5 <= t["speed_m_s"] <= 7.0 for t in a)
 
 
+def test_a_box_the_floor_refuses_entirely_stops_instead_of_spinning(geometry):
+    # A floor above the hand refuses every draw; the redraw loop must give up
+    # after HAND_LHS_MAX_DRAWS_PER_THROW * n draws and say why.
+    high_floor = cst.HandGeometry(
+        p_c_m=geometry.p_c_m,
+        approach_axis=geometry.approach_axis,
+        floor_z_m=geometry.p_c_m[2] + 0.5,
+        params=geometry.params,
+        sources={},
+    )
+    with pytest.raises(ValueError, match="entirely refused"):
+        cst.hand_near_throws("hand_lhs", 1, 1, high_floor)
+    # n 0 asks for nothing and gets nothing, whatever the floor.
+    assert cst.hand_near_throws("hand_lhs", 0, 1, high_floor) == []
+
+
 def test_the_lhs_covers_the_speed_range_with_one_point_per_stratum(geometry):
     """The Latin property on the axis the floor does not bite (ψ): 20 draws,
     20 strata, each hit once — when no redraw happened in that hypercube."""

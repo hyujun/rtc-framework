@@ -404,11 +404,11 @@ ros2 run rtc_tools catching_hand_near \
 # → hn/{hand_near_summary.json, hand_near_trials.csv, v50_map.csv, wilson_cells.csv}; rc 1 이면 조준 오차 초과
 ```
 
-- **조준 검증**: 시행마다 러너가 남긴 `aim_error_m` 의 최대·p50 과 `--aim-tol-mm` (기본 2) 초과 시행 목록. 하나라도 넘으면 rc 1 — 그 unit 은 던진 곳이 설계와 다르다
+- **조준 검증**: 시행마다 러너가 남긴 `aim_error_m` 의 최대·p50 과 `--aim-tol-mm` (기본 2) 초과 시행 목록, 그리고 `model_rms_m` (첫 접촉 전 truth 대 모델) 의 최대·초과 목록 — `aim_error_m` 은 조준에 쓴 공 파라미터로 다시 적분한 값이라 항력 법칙이 틀려도 0 이므로 (beanbag unit 을 tennis Cd 로 돌린 경우) 두 번째가 그것을 잡는다. 어느 쪽이든 하나라도 넘으면 rc 1 — 그 unit 은 던진 곳이 설계와 다르다. `aim_error_m` 이 한 시행에도 없으면 `pass: null` ("no data") 로 적고 rc 1
 - **grid arm** (`hand_cliff`·`hand_lob`): 속력별 n·commit·catch 와 Wilson 95 % (catch · plan · catch | plan) 표, 속력 하나에 대한 로지스틱의 v50 (catch / plan / catch | plan) + 시행 부트스트랩 CI (`--n-boot`, 기본 500; 유한 복제 20 미만이면 NaN)
 - **LHS arm** (`hand_lhs`): 설계 인자 [1, v, r, r², T − 0.7, α, v·r, sin ψ, cos ψ] 의 로지스틱 GLM (numpy IRLS, 기울기에 1e-4 ridge — 절벽은 완전 분리라 ridge 없이 발산) 을 commit · catch | commit · 전체 성공 셋에 적합하고, r ∈ {0, 0.05, 0.1, 0.15, 0.2} 에서 **설계 중심 (T 0.7 · 정면 · ψ 평균)** 의 v50(r) 과 두 단계 곱 P(plan)·P(catch | plan) = 0.5 의 v50 (이분법) 을 부트스트랩 CI 와 함께 `v50_map.csv` 로. (r 구간 × v 구간) pooled Wilson (`wilson_cells.csv`) 이 모델 없는 검산. 도달량은 자유도가 아니라 도출량이므로 (Δz·입사각은 (v, T, α) 의 함수) GLM 에 넣지 않는다
 - **v_rel**: commit 된 시행의 **측정** 접촉 상대속도 (`contact_v_rel`) 하나에 대한 로지스틱 → v_rel50 — L6 §4.5 fly-in 허용량의 폐루프 대응값
-- **A/B** (`--ab A B`): 두 arm 라벨 (`run_meta.json` 의 `arm`) 을 `(seed, sample_idx)` 로 짝지어 catch 와 commit 각각 McNemar 정확 검정 (`catching_pool` 과 같은 `binomtest`); 짝 없는 시행 수를 따로 적는다
+- **A/B** (`--ab A B`): 두 arm 라벨 (`run_meta.json` 의 `arm`) 을 `(kind, seed, sample_idx)` 로 짝지어 (설계마다 `sample_idx` 가 0 부터라 `kind` 없이는 같은 seed 의 cliff 와 lhs 가 겹친다) catch 와 commit 각각 McNemar 정확 검정 (`catching_pool` 과 같은 `binomtest`); 짝 없는 시행 수를 따로 적는다
 - **planner_events**: 게시된 plan 중 `rank_reach`·`rank_gamma` 순위 gate 에 걸린 비율과 판정 거부 수 (`rej_workspace` 등). 넓힌 상자에서도 예측 궤적의 바닥 아래·먼 표본은 상자 밖이라 0 이 아니다 — 상자 overlay 의 센서는 P(plan) 이다
 - 합성 positive control (`test/test_catching_hand_near.py`, 10 케이스): 심은 로지스틱 법칙 (plan v50 6.0 → 5.0, catch 4.5 → 3.5 at r 0 → 0.2) 에서 600 발을 뽑아 v50 을 ±0.2 m/s 로 복원, 30 % 뒤집으면 벗어남 (negative control), Wilson 93/200 = [0.397, 0.534], 완전 분리 절벽에서 IRLS 생존, McNemar 짝짓기 (무효·짝 없는 시행 제외), 러너·`catching_trials` 형식으로 쓴 unit 의 round trip + CLI, hand 가 아닌 unit 거부
 

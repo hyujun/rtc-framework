@@ -698,6 +698,12 @@ def _hermite_rate(seg: tuple, s: float) -> np.ndarray:
     )
 
 
+# Segments on each side of the closest SAMPLE that closest_approach refines.
+# One would do for a convex distance; two absorb a sample landing exactly on a
+# stationary point of the sampled distance.
+CLOSEST_APPROACH_REFINE_SEGMENTS = 2
+
+
 def closest_approach(
     times_s: Sequence[float],
     positions_m: np.ndarray,
@@ -707,8 +713,12 @@ def closest_approach(
     """(distance, time, speed) of a sampled flight's closest pass to ``target_m``.
 
     The samples are joined by cubic Hermite segments (position and velocity at
-    both ends), so the answer does not depend on where the samples fall; the
-    minimum on each segment is found by a golden-section search. This is the
+    both ends), so the answer does not depend on where the samples fall. The
+    sampled distance is evaluated everywhere; only the segments within
+    ``CLOSEST_APPROACH_REFINE_SEGMENTS`` of the closest sample are refined by a
+    golden-section search — the distance along a ballistic arc is convex
+    around its minimum at any sampling the callers use (≤ 10 ms), so the true
+    minimum lies in a segment adjacent to the closest sample. This is the
     experiment's truth check: the ball's recorded trajectory against the point
     :func:`aim_at_hand` aimed at.
     """
@@ -724,16 +734,20 @@ def closest_approach(
         return float(np.linalg.norm(p[0] - target)), float(t[0]), float(np.linalg.norm(v[0]))
     order = np.argsort(t, kind="stable")
     t, p, v = t[order], p[order], v[order]
-    best = (float(np.linalg.norm(p[0] - target)), float(t[0]), float(np.linalg.norm(v[0])))
+    sampled = np.linalg.norm(p - target, axis=1)
+    k = int(np.argmin(sampled))
+    best = (float(sampled[k]), float(t[k]), float(np.linalg.norm(v[k])))
     phi = (math.sqrt(5.0) - 1.0) / 2.0
-    for i in range(t.size - 1):
+    lo = max(0, k - CLOSEST_APPROACH_REFINE_SEGMENTS)
+    hi = min(t.size - 1, k + CLOSEST_APPROACH_REFINE_SEGMENTS)
+    for i in range(lo, hi):
         dt = float(t[i + 1] - t[i])
         if not dt > 0.0:
             continue
         seg = (p[i], v[i] * dt, p[i + 1], v[i + 1] * dt)
         a, b = 0.0, 1.0
         c, d = b - phi * (b - a), a + phi * (b - a)
-        for _ in range(60):
+        for _ in range(40):  # phi**40 ≈ 4e-9 of the segment
             if np.linalg.norm(_hermite(seg, c) - target) < np.linalg.norm(
                 _hermite(seg, d) - target
             ):

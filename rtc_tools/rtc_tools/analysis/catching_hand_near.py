@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import math
 from collections.abc import Iterable, Sequence
@@ -34,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from rtc_tools.analysis import catching_trials
 
 TOOL = "catching_hand_near"
 FACTORS = ("speed_m_s", "flight_time_s", "offset_m", "offset_angle_deg", "incidence_offset_deg")
@@ -73,17 +76,13 @@ def _int0(value) -> int:
 
 
 def _read_csv_rows(path: Path) -> list[dict]:
-    """All rows of a CSV, plain or ``.gz`` beside it; SystemExit when neither exists."""
-    if path.is_file():
-        with path.open(newline="") as f:
-            return list(csv.DictReader(f))
-    alt = path.with_name(path.name + ".gz")
-    if alt.is_file():
-        import gzip  # noqa: PLC0415
-
-        with gzip.open(alt, "rt", newline="") as f:
-            return list(csv.DictReader(f))
-    raise SystemExit(f"missing {path}")
+    """All rows of a CSV, plain or ``.gz`` beside it (``catching_trials._exists`` resolves which)."""
+    found = catching_trials._exists(path)
+    if found is None:
+        raise SystemExit(f"missing {path} (or {path.name}.gz)")
+    opener = gzip.open if found.suffix == ".gz" else open
+    with opener(found, "rt", newline="") as f:
+        return list(csv.DictReader(f))
 
 
 # ── Statistics ────────────────────────────────────────────────────────────────
@@ -94,14 +93,11 @@ def _sigmoid(x: float) -> float:
 
 
 def wilson(k: int, n: int, z: float = Z_95) -> tuple[float, float, float]:
-    """(p̂, lower, upper) — Wilson score interval, two-sided ``z``. NaN for n 0."""
+    """(p̂, lower, upper) — ``catching_trials.wilson_interval`` with the point estimate in front. NaN for n 0."""
     if n <= 0:
         return math.nan, math.nan, math.nan
-    p = k / n
-    denom = 1.0 + z * z / n
-    centre = (p + z * z / (2 * n)) / denom
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
-    return p, max(0.0, centre - half), min(1.0, centre + half)
+    lo, hi = catching_trials.wilson_interval(k, n, z)
+    return k / n, lo, hi
 
 
 def fit_logistic(
@@ -239,6 +235,7 @@ class Trial:
     rtf_trial_min: float
     aim_error_mm: float
     aim_pass_speed_m_s: float
+    model_rms_mm: float = math.nan
 
     @property
     def valid(self) -> bool:
@@ -267,6 +264,7 @@ class Trial:
             "rtf_trial_min": self.rtf_trial_min,
             "aim_error_mm": self.aim_error_mm,
             "aim_pass_speed_m_s": self.aim_pass_speed_m_s,
+            "model_rms_mm": self.model_rms_mm,
         }
 
 
@@ -337,6 +335,7 @@ def load_unit(unit_dir: Path, planner_events: Path | None = None, *, ct_dir: str
                 rtf_trial_min=_num(ct.get("rtf_trial_min")),
                 aim_error_mm=1e3 * float(aim_error) if aim_error is not None else math.nan,
                 aim_pass_speed_m_s=_num(rec.get("aim_pass_speed_m_s")),
+                model_rms_mm=1e3 * _num(rec.get("model_rms_m")),
             )
         )
     planner = planner_events_summary(planner_events) if planner_events else None
@@ -381,15 +380,32 @@ def planner_events_summary(path: Path) -> dict:
 
 
 def aim_check(trials: Iterable[Trial], tol_mm: float) -> dict:
+    """Did every throw pass where it was aimed?
+
+    ``aim_error_mm`` is the model's closest approach to the target from the
+    first truth sample, integrated with the SAME ball parameters the throw was
+    aimed with — it cannot see a wrong drag law. ``model_rms_mm`` (model vs
+    truth over the free flight) can, so both are reported and both are gated
+    by ``tol_mm``. ``pass`` is ``None`` (not ``False``) when no trial carries an
+    aim error at all: that is "no data", not a miss.
+    """
+    trials = list(trials)
     errs = [t.aim_error_mm for t in trials if math.isfinite(t.aim_error_mm)]
+    rms = [t.model_rms_mm for t in trials if math.isfinite(t.model_rms_mm)]
     over = [t.idx for t in trials if math.isfinite(t.aim_error_mm) and t.aim_error_mm > tol_mm]
+    model_over = [
+        t.idx for t in trials if math.isfinite(t.model_rms_mm) and t.model_rms_mm > tol_mm
+    ]
     return {
         "tol_mm": tol_mm,
         "n": len(errs),
         "max_mm": max(errs) if errs else math.nan,
         "p50_mm": float(np.median(errs)) if errs else math.nan,
         "over_tol_idx": over,
-        "pass": bool(errs) and not over,
+        "model_rms_n": len(rms),
+        "model_rms_max_mm": max(rms) if rms else math.nan,
+        "model_rms_over_tol_idx": model_over,
+        "pass": (not over and not model_over) if errs else None,
     }
 
 
@@ -630,8 +646,12 @@ def wilson_cells(
 
 
 def paired_arms(a: Sequence[Trial], b: Sequence[Trial]) -> dict:
-    """A/B on the same throws (paired by (seed, sample_idx)): McNemar on catch and on commit."""
-    key = lambda t: (t.seed, t.sample_idx)  # noqa: E731
+    """A/B on the same throws (paired by (kind, seed, sample_idx)): McNemar on catch and on commit.
+
+    ``kind`` is part of the key: every design restarts ``sample_idx`` at 0, so
+    a cliff and an lhs throw of the same seed would otherwise collide.
+    """
+    key = lambda t: (t.kind, t.seed, t.sample_idx)  # noqa: E731
     ma = {key(t): t for t in a if t.valid}
     mb = {key(t): t for t in b if t.valid}
     common = sorted(set(ma) & set(mb))
@@ -767,8 +787,11 @@ def write_outputs(summary: dict, units: Sequence[Unit], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = [t.row() for u in units for t in u.trials]
     if rows:
+        # Union of keys, first-seen order: ``derived`` differs between runner
+        # versions and DictWriter raises on a key its header lacks.
+        fieldnames = list(dict.fromkeys(k for row in rows for k in row))
         with (out_dir / "hand_near_trials.csv").open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w = csv.DictWriter(f, fieldnames=fieldnames, restval="")
             w.writeheader()
             w.writerows(rows)
     (out_dir / "hand_near_summary.json").write_text(
@@ -870,9 +893,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_outputs(summary, units, args.out)
     aim = summary["aim"]
     print(f"{TOOL}: {sum(len(u.trials) for u in units)} trials in {len(units)} units → {args.out}")
-    print(
-        f"  aim: max {aim['max_mm']:.3f} mm (tol {aim['tol_mm']}), over: {aim['over_tol_idx'] or 'none'}"
-    )
+    if aim["pass"] is None:
+        print(
+            "  aim: NO DATA — no trial carries aim_error_m (every launch refused, or not a hand series)"
+        )
+    else:
+        print(
+            f"  aim: max {aim['max_mm']:.3f} mm over {aim['n']} trials (tol {aim['tol_mm']}), "
+            f"over: {aim['over_tol_idx'] or 'none'}; model vs truth RMS max "
+            f"{aim['model_rms_max_mm']:.3f} mm, over: {aim['model_rms_over_tol_idx'] or 'none'}"
+        )
     for arm, a in summary["arms"].items():
         print(f"  {arm}: valid {a['n_valid']} committed {a['n_committed']} caught {a['n_caught']}")
         for kind, g in a["grid_v50"].items():
@@ -886,7 +916,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"  A/B {ab['a']} vs {ab['b']}: pairs {ab['pairs']}, catch {ab['truth_success']['p_a']:.3f} vs "
             f"{ab['truth_success']['p_b']:.3f} (McNemar p {ab['truth_success']['mcnemar_p']:.3g})"
         )
-    return 0 if aim["pass"] else 1
+    return 0 if aim["pass"] else 1  # None (no data) exits 1 too, but says so above
 
 
 if __name__ == "__main__":

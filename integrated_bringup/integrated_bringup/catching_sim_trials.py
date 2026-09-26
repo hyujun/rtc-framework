@@ -34,7 +34,7 @@ parameters (``planner.wait_pose``, ``planner.freeze.T_freeze``,
 changes them without changing the installed YAML (plan §4.4 S8-A). They are
 written to ``run_meta.json`` and to every trial record.
 
-Two throw series (``--dist``):
+Throw series (``--dist``):
 
 * ``reference`` (default, unchanged since S6-C): ``--n-ref`` S3.5b reference
   throws then ``--n-pert`` seeded perturbations. A regression set — repeated
@@ -43,6 +43,15 @@ Two throw series (``--dist``):
   gate-map box (D-S8-2; ur5e_p1b's is the S3.5b 90 % box, iiwa7_leap's the
   S8-D re-run's), built by ``rtc_tools.analysis.catchability_map`` so the
   geometry is the one the gate map judged.
+* ``hand_cliff`` / ``hand_lob`` / ``hand_lhs`` (dynamic_catching S8-F): throws
+  specified by their ARRIVAL state at the catch frame of the wait pose the
+  running controller loaded (speed, flight time, lateral offset, incidence),
+  integrated backwards through the sim's drag model by
+  ``rtc_tools.analysis.catchability_map.aim_at_hand``. The two grids repeat a
+  fixed design and ignore ``--n``; ``hand_lhs`` draws ``--n`` Latin-hypercube
+  points with ``--seed`` (``HAND_DESIGNS`` is the SSoT of the factors). A draw
+  the table floor refuses is redrawn, at most ``HAND_LHS_MAX_DRAWS_PER_THROW``
+  times per accepted throw.
 """
 
 from __future__ import annotations
@@ -383,6 +392,10 @@ HAND_BOX_AXES = (
     "offset_angle_deg",
     "incidence_offset_deg",
 )
+# A Latin-hypercube draw the table floor (or the vertical) refuses is redrawn;
+# this many draws per accepted throw without filling the design means the box
+# itself is wrong for this geometry, and the runner stops instead of spinning.
+HAND_LHS_MAX_DRAWS_PER_THROW = 100
 
 
 @dataclasses.dataclass(frozen=True)
@@ -537,7 +550,15 @@ def hand_near_throws(dist: str, n: int, seed: int, geometry: HandGeometry) -> li
         raise ValueError(f"n must be >= 0, got {n}")
     rng = random.Random(seed)
     draws = 0
+    refusals: list[str] = []
     while len(throws) < n:
+        if draws >= HAND_LHS_MAX_DRAWS_PER_THROW * n:
+            raise ValueError(
+                f"{dist}: {draws} draws yielded only {len(throws)}/{n} throws — the box "
+                f"{HAND_BOX_AXES} is (almost) entirely refused at p_c {geometry.p_c_m}, "
+                f"axis elevation {geometry.axis_elevation_deg:.1f}°, floor "
+                f"{geometry.floor_z_m}; last refusal: {refusals[-1] if refusals else '-'}"
+            )
         # One Latin hypercube of n points: each axis split into n strata, one
         # point per stratum, strata paired by independent permutations.
         columns = {}
@@ -553,7 +574,8 @@ def hand_near_throws(dist: str, n: int, seed: int, geometry: HandGeometry) -> li
             factors = {axis: columns[axis][i] for axis in HAND_BOX_AXES}
             try:
                 throw = aim(**factors)
-            except ValueError:
+            except ValueError as exc:
+                refusals.append(str(exc))
                 continue  # the floor (or the vertical) refused it: redraw
             throws.append(_hand_record(dist, seed, len(throws), throw, draws=draws))
     return throws
@@ -1008,12 +1030,10 @@ def main(argv=None) -> int:
         config_dir = os.path.join(share, "config", args.profile)
     file_profile = load_arm_profile(config_dir)
     os.makedirs(args.out_dir, exist_ok=True)
-    # A hand-near series is aimed at the wait pose the controller LOADED, so it
-    # is built after the mirror is read (below); the others need no controller.
+    # Every series is built after the controller's mirror is read (below): a
+    # hand-near series is aimed at the wait pose the controller LOADED, and one
+    # build site keeps ``--limit`` in one place.
     hand = args.dist in HAND_DESIGNS
-    throws = [] if hand else build_throws(args, args.profile)
-    if args.limit is not None and not hand:
-        throws = throws[: max(args.limit, 0)]
 
     rclpy, TrialDriver = _make_driver(file_profile, args)
     rclpy.init()
@@ -1043,10 +1063,11 @@ def main(argv=None) -> int:
                 air_density_source=args.air_density_source,
                 urdf=args.urdf,
             )
-            throws = build_throws(args, args.profile, geometry)
             node.ball_params = geometry.params
-            if args.limit is not None:
-                throws = throws[: max(args.limit, 0)]
+        throws = build_throws(args, args.profile, geometry)
+        if args.limit is not None:
+            throws = throws[: max(args.limit, 0)]
+        if geometry is not None:
             node.get_logger().info(
                 f"hand-near series {args.dist}: {len(throws)} throws at p_c {geometry.p_c_m} "
                 f"axis {geometry.approach_axis} (elevation {geometry.axis_elevation_deg:.1f}°)"
