@@ -1189,8 +1189,24 @@ if have_ruff; then
     expect_not_contains "a file format-code.sh just wrote is not graded as drift" "$out" "written_by_write.py"
     expect_exit "a file format-code.sh just wrote does not block" "$rc" 0
     rm -rf "$dir"
+
+    # 48. An import added by one Edit and used by a later one survives the Edit
+    #     in between: format-code.sh runs after every Edit, and autofixing F401
+    #     deleted the import before the code that used it was written. The
+    #     other safe fixes still apply (UP015 drops "r" in the same file).
+    dir=$(make_fixture)
+    mkdir -p "$dir/rtc_demo/rtc_demo"
+    printf '[tool.ruff]\nline-length = 99\n\n[tool.ruff.lint]\nselect = ["F401", "UP015"]\n' \
+      >"$dir/pyproject.toml"
+    f="$dir/rtc_demo/rtc_demo/import_first.py"
+    printf 'import os\n\n\ndef g(p):\n    with open(p, "r") as fh:\n        return fh.read()\n' >"$f"
+    jq -n --arg p "$f" '{tool_input: {file_path: $p}}' | bash "$REPO_ROOT/.claude/hooks/format-code.sh"
+    body=$(cat "$f")
+    expect_contains "a not-yet-used import survives the format hook" "$body" "import os"
+    expect_not_contains "other safe fixes still apply" "$body" '"r"'
+    rm -rf "$dir"
   else
-    skip "format-code.sh round-trip (47): no jq"
+    skip "format-code.sh round-trip (47-48): no jq"
   fi
 else
   skip "Phase 5 newline / deadline / format-code cases (45-47): no ruff the hook can resolve"
