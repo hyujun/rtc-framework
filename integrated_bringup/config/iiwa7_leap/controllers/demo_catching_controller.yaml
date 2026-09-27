@@ -490,16 +490,21 @@ demo_catching_controller:
       # controller ends up aborting in a loop with nothing that escalates.
       n_qp: 3
       # Motion deadlines (#537 S9b, D-S9-D1): past either, the supervisor
-      # latches a fault (ABORT_ESCALATED -> FAULT). Twice the longest stage
-      # this robot ran in the S8 sim sessions (the 4 S8-E gate sessions, 191
-      # RETREATs, no ABORT_SAFE), floored at 0.5 s:
-      #   stop_s   = 2 x RETREAT stop 0.066 s -> 0.13, floored -> 0.50
+      # latches a fault (ABORT_ESCALATED -> FAULT). The rule is twice the
+      # longest stage this robot ran in the S8 sim sessions, floored at 0.5 s
+      # (the 4 S8-E gate sessions: 191 RETREATs, no ABORT_SAFE):
       #   return_s = 2 x RETREAT return 3.044 s -> 6.09
-      # This profile has no abort in its corpus, so the stop deadline rests on
-      # the floor alone. PROVISIONAL: sim values — the real arm's are S10's
-      # (D-S9-G), so a real-arm configuration stays parked until then.
+      #   stop_s   = 4.28, ur5e_p1b's value (user, #537 2026-09-27) — NOT this
+      #            robot's rule value (2 x 0.066 s, floored -> 0.50): with no
+      #            abort in the corpus that floor bounds a catch-up after a
+      #            TRACK_ERR abort nobody has measured here (ur5e_p1b's took
+      #            2.1 s), so the first such abort could have been a FAULT.
+      #            Measuring it needs a throw design that makes this robot
+      #            abort — left to S10 / a later experiment.
+      # PROVISIONAL: sim values — the real arm's are S10's (D-S9-G), so a
+      # real-arm configuration stays parked until then.
       deadline:
-        stop_s: 0.50
+        stop_s: 4.28
         return_s: 6.09
         provisional: true
       decel:
