@@ -3279,6 +3279,155 @@ class TestCatchingS7:
         assert "never owned the hand" in capsys.readouterr().out
 
 
+class TestCatchingLatchShading:
+    """S9a (D-S9-H): E-STOP and fault intervals shaded on the catching_diag
+    figure. The interval rule is "post" — a row's flag holds until the next
+    row — so a band starts on the tick the latch rose and ends on the tick it
+    was seen down, the same convention the mode trace is stepped with."""
+
+    @staticmethod
+    def _frame(flags, column="estop_active"):
+        df = _catching_diag_frame(n=len(flags))
+        df["timestamp"] = df["t_relative_s"]
+        df[column] = flags
+        return df
+
+    @staticmethod
+    def _t(df, i):
+        return float(df["timestamp"].iloc[i])
+
+    def test_a_run_in_the_middle_ends_on_the_first_row_seen_down(self):
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        df = self._frame([0, 0, 1, 1, 1, 0, 0])
+        assert flag_intervals(df, "estop_active") == [(self._t(df, 2), self._t(df, 5))]
+
+    def test_a_run_from_the_first_row(self):
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        df = self._frame([1, 1, 0, 0])
+        assert flag_intervals(df, "estop_active") == [(self._t(df, 0), self._t(df, 2))]
+
+    def test_a_run_to_the_last_row_ends_at_the_last_row(self):
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        df = self._frame([0, 0, 1, 1])
+        assert flag_intervals(df, "estop_active") == [(self._t(df, 2), self._t(df, 3))]
+
+    def test_a_single_row_is_one_period_wide(self):
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        df = self._frame([0, 1, 0, 0])
+        assert flag_intervals(df, "estop_active") == [(self._t(df, 1), self._t(df, 2))]
+
+    def test_a_single_row_at_the_end_is_kept_at_zero_width(self):
+        """Dropping it would undercount the latch episodes the run had."""
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        df = self._frame([0, 0, 0, 1])
+        assert flag_intervals(df, "estop_active") == [(self._t(df, 3), self._t(df, 3))]
+
+    def test_all_set_is_one_interval_over_the_whole_run(self):
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        df = self._frame([1, 1, 1, 1])
+        assert flag_intervals(df, "estop_active") == [(self._t(df, 0), self._t(df, 3))]
+
+    def test_two_runs_are_two_intervals(self):
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        df = self._frame([1, 0, 0, 1, 1, 0])
+        assert flag_intervals(df, "estop_active") == [
+            (self._t(df, 0), self._t(df, 1)),
+            (self._t(df, 3), self._t(df, 5)),
+        ]
+
+    def test_no_rows_no_set_rows_nan_and_a_missing_column_give_nothing(self):
+        """An absent flag is not evidence the latch was up."""
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        assert flag_intervals(self._frame([0, 0, 0]), "estop_active") == []
+        assert flag_intervals(self._frame([]), "estop_active") == []
+        assert flag_intervals(self._frame([math.nan] * 3), "estop_active") == []
+        df = self._frame([1, 1]).drop(columns=["fault_latched"])
+        assert flag_intervals(df, "fault_latched") == []
+
+    def test_nan_cells_break_a_run(self):
+        from rtc_tools.plotting.plotters.catching import flag_intervals
+
+        df = self._frame([1, math.nan, 1, 0])
+        assert flag_intervals(df, "estop_active") == [
+            (self._t(df, 0), self._t(df, 1)),
+            (self._t(df, 2), self._t(df, 3)),
+        ]
+
+    def _render(self, df, tmp_path, monkeypatch):
+        """Draw the figure and return it, with plot_catching_diag's own close
+        suppressed so the artists can be counted."""
+        import matplotlib.pyplot as plt
+
+        from rtc_tools.plotting.plotters import catching
+
+        real_close = plt.close
+        monkeypatch.setattr(catching.plt, "close", lambda *a, **k: None)
+        catching.plot_catching_diag(df, save_dir=str(tmp_path))
+        fig = plt.gcf()
+        monkeypatch.setattr(catching.plt, "close", real_close)
+        return fig
+
+    @staticmethod
+    def _spans(fig, column):
+        return [p for ax in fig.axes for p in ax.patches if p.get_gid() == f"latch_{column}"]
+
+    def test_an_estop_span_is_shaded_on_every_panel_and_labelled_once(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        df = self._frame([0, 0, 1, 1, 1, 0, 0, 0])
+        fig = self._render(df, tmp_path, monkeypatch)
+        try:
+            spans = self._spans(fig, "estop_active")
+            # One per stacked panel; the solve-time twin shares x and is not
+            # shaded again.
+            assert len(spans) == 4, len(spans)
+            assert not self._spans(fig, "fault_latched")
+            # matplotlib's own legend rule: a None / "_"-prefixed label is not
+            # an entry.
+            labels = [
+                p.get_label() for p in spans if p.get_label() and not p.get_label().startswith("_")
+            ]
+            assert labels == ["E-STOP"], labels
+        finally:
+            plt.close("all")
+
+    def test_the_fault_latch_is_shaded_separately(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        df = self._frame([0, 1, 1, 0, 0, 0])
+        df["fault_latched"] = [0, 0, 1, 1, 1, 0]
+        fig = self._render(df, tmp_path, monkeypatch)
+        try:
+            assert len(self._spans(fig, "estop_active")) == 4
+            assert len(self._spans(fig, "fault_latched")) == 4
+            colours = {
+                self._spans(fig, c)[0].get_facecolor()[:3]
+                for c in ("estop_active", "fault_latched")
+            }
+            assert len(colours) == 2, "the two latches must not share a colour"
+        finally:
+            plt.close("all")
+
+    def test_a_run_with_no_latch_is_not_shaded(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        fig = self._render(self._frame([0] * 8), tmp_path, monkeypatch)
+        try:
+            assert not self._spans(fig, "estop_active")
+            assert not self._spans(fig, "fault_latched")
+            assert (tmp_path / "catching_diag.png").exists()
+        finally:
+            plt.close("all")
+
+
 class TestCatchingDiagStatistics:
     def test_reports_solve_budget_and_mode_occupancy(self, capsys):
         from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
