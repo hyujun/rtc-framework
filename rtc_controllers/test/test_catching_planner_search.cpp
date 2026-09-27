@@ -236,6 +236,107 @@ TEST(PlannerSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
   EXPECT_EQ(plan.gamma_t0_ns,
             std::max<std::int64_t>(kNow, plan.t_c_ns - static_cast<std::int64_t>(
                                                            std::llround(stats.chosen_t_w * 1e9))));
+  // S8-I: the chosen candidate's γ window is reported as judged (L3 §4.5),
+  // so an analysis reads it instead of rebuilding it from FK.
+  const double speed = Eigen::Vector3d(plan.v_c[0], plan.v_c[1], plan.v_c[2]).norm();
+  ASSERT_TRUE(std::isfinite(stats.chosen_v_dir_max));
+  EXPECT_GT(stats.chosen_v_dir_max, 0.0);
+  const double v_tcp = rig->constants.eta_v * rig->constants.v_max;
+  const double v_arm = std::min(stats.chosen_v_dir_max, v_tcp);
+  EXPECT_NEAR(stats.chosen_g_max, std::clamp(v_arm / speed, 0.0, 1.0), 1e-12);
+  EXPECT_NEAR(
+      stats.chosen_g_min,
+      std::clamp(1.0 - rig->params.d_eff / (speed * rig->constants.t_close_total), 0.0, 1.0),
+      1e-12);
+  EXPECT_NEAR(stats.chosen_max_catchable, v_arm + rig->params.d_eff / rig->constants.t_close_total,
+              1e-12);
+  EXPECT_NEAR(plan.gamma_min, stats.chosen_g_min, 1e-12);
+}
+
+TEST(PlannerSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
+  // S8-I (`planner.wait_pose_source: current`): the RT hands the adopted pose
+  // over in PlannerRtState; the search seeds its IK from it. Handing over the
+  // configured pose changes nothing; a different pose still yields a plan.
+  auto rig = std::make_unique<Rig>();
+  ASSERT_TRUE(rig->Configure());
+  const auto traj = rig->Traj();
+  SearchStats stats;
+  const PlanSnapshot base =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  ASSERT_TRUE(base.valid);
+
+  PlannerRtState same = rig->Rt();
+  same.wait_pose_adopted = true;
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    same.wait_pose[static_cast<std::size_t>(j)] =
+        rig->params.wait_pose[static_cast<std::size_t>(j)];
+  }
+  const PlanSnapshot again =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, same, NowReal{kNow}, stats);
+  ASSERT_TRUE(again.valid);
+  for (int j = 0; j < base.nv; ++j) {
+    EXPECT_DOUBLE_EQ(again.q_star[static_cast<std::size_t>(j)],
+                     base.q_star[static_cast<std::size_t>(j)]);
+  }
+  EXPECT_DOUBLE_EQ(again.score, base.score);
+
+  PlannerRtState moved = same;
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    moved.wait_pose[static_cast<std::size_t>(j)] += 0.3;
+  }
+  const PlanSnapshot shifted =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, moved, NowReal{kNow}, stats);
+  EXPECT_TRUE(shifted.valid) << "a plan from a different seed, reason "
+                             << static_cast<int>(shifted.reason);
+  // The handover is not a no-op: the seed in force IS the handed pose, and the
+  // score (w_q·|q* − seed|²) or the IK solution moved with it.
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j],
+                     moved.wait_pose[static_cast<std::size_t>(j)]);
+  }
+  bool differs = shifted.score != base.score;
+  for (int j = 0; j < base.nv; ++j) {
+    differs = differs || shifted.q_star[static_cast<std::size_t>(j)] !=
+                             base.q_star[static_cast<std::size_t>(j)];
+  }
+  EXPECT_TRUE(differs) << "a seed 0.3 rad away changed neither q* nor the score";
+
+  // A later cycle WITHOUT an adopted pose (a refused switch-in, source yaml)
+  // is back on the configure-time seed — not on the pose adopted before.
+  const PlanSnapshot back =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  ASSERT_TRUE(back.valid);
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j],
+                     rig->params.wait_pose[static_cast<std::size_t>(j)]);
+  }
+  for (int j = 0; j < base.nv; ++j) {
+    EXPECT_DOUBLE_EQ(back.q_star[static_cast<std::size_t>(j)],
+                     base.q_star[static_cast<std::size_t>(j)]);
+  }
+  EXPECT_DOUBLE_EQ(back.score, base.score);
+}
+
+TEST(PlannerSearchPlan, TheAdoptedWaitPoseIsReadInDeviceOrder) {
+  // The RT hands the pose over in DEVICE order; the seed is in model order.
+  // A rig whose model order is the device order reversed tells the two apart.
+  auto rig = std::make_unique<Rig>();
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    rig->model.device_of_model[static_cast<std::size_t>(j)] = rig->arm.nv - 1 - j;
+  }
+  ASSERT_TRUE(rig->Configure());
+  PlannerRtState rt = rig->Rt();
+  rt.wait_pose_adopted = true;
+  for (int d = 0; d < rig->arm.nv; ++d) {
+    rt.wait_pose[static_cast<std::size_t>(d)] = 0.1 * (d + 1);  // distinct per device joint
+  }
+  const auto traj = rig->Traj();
+  SearchStats stats;
+  (void)rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats);
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j], 0.1 * (rig->arm.nv - j))
+        << "model joint " << j << " must read device joint " << rig->arm.nv - 1 - j;
+  }
 }
 
 TEST(PlannerSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {

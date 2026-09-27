@@ -191,6 +191,13 @@ struct SearchStats {
   double chosen_gamma_f{0.0};
   double chosen_t_w{0.0};                  ///< the γ window the rollout chose [s]
   bool chosen_rollout_window_only{false};  ///< γ_f chosen on window peaks (approach saturates)
+  /// The chosen candidate's γ window (L3 §4.5) as judged — what an offline
+  /// analysis had to rebuild from FK before S8-I (#537 5847660329). NaN when
+  /// the window was unjudgeable (`gamma_usable` false) or no plan was produced.
+  double chosen_g_min{std::numeric_limits<double>::quiet_NaN()};
+  double chosen_g_max{std::numeric_limits<double>::quiet_NaN()};
+  double chosen_v_dir_max{std::numeric_limits<double>::quiet_NaN()};      ///< [m/s], DLS
+  double chosen_max_catchable{std::numeric_limits<double>::quiet_NaN()};  ///< [m/s]
   SwitchDecision decision{SwitchDecision::kNoCurrent};
   /// Whether the caller should publish the returned snapshot. False when the
   /// switching rule holds the RT's current plan.
@@ -235,6 +242,9 @@ class PlannerSearch {
   /// σ_max = √λ_max(Σ_pp) of sample k, or NaN when unknown (L3 §4.4).
   [[nodiscard]] static double SigmaMax(const CovarianceSnapshot& cov, int k) noexcept;
 
+  /// The IK seed in force after the last `Plan` call, model order (tests).
+  [[nodiscard]] const Eigen::VectorXd& IkSeedForTesting() const noexcept { return seed_; }
+
  private:
   struct Candidate {
     int k{0};
@@ -264,7 +274,12 @@ class PlannerSearch {
   /// estimate's error rather than by one whole candidate (G3-C).
   std::int64_t ik_cost_ns_{0};
   std::int64_t rollout_cost_ns_{0};
-  Eigen::VectorXd seed_;  // model order, sized in Configure
+  Eigen::VectorXd seed_;  // model order, sized in Configure; the seed in force this cycle
+  /// The configure-time (YAML) seed, model order. `Plan` starts every cycle
+  /// from it and lays the RT's adopted wait pose over it, so an activation
+  /// that does not adopt (refused, or source `yaml`) never inherits the
+  /// pose an earlier activation adopted.
+  Eigen::VectorXd seed_yaml_;
   std::array<double, kMaxPlanNv> q_star_{};
   std::array<double, kMaxPlanNv> qdot_u_{};
   std::array<double, kMaxPlanNv> q0_{};

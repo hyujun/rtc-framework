@@ -7,8 +7,10 @@
 # 0.2 m of the waiting hand (catching_sim_trials --dist hand_*), asking how fast
 # a ball can be and still be caught with a small correction. It runs the
 # catch_lead_on controller (that header owns the T_arm / T_freeze rationale)
-# with two changes the experiment needs. This file owns the rationale for all
-# three s8f_* overlays; the other two differ only where their headers say.
+# with two changes the experiment needs. It is the base arm of the hand-near
+# work (S8-G/S8-I arms were this plus their leaves; catch_wait_pose_current is
+# this plus `wait_pose_source`). The paired control s8f_shipped_score and the
+# beanbag twin were pruned after S8-F-1 was recorded (plan §4.4 S8-F).
 #
 # 1. THE CATCH BOX IS WIDENED. The shipped `planner.workspace.catch_box` is the
 #    hull of the S3.5b gate-open candidates around the shipped wait pose plus
@@ -30,9 +32,9 @@
 #    reach-time ratio (w_gamma 5.0 vs w_t 1.0, L3 §4.10). This arm inverts the
 #    two weights so a candidate the arm can reach in time outranks one with a
 #    better velocity match. `penalty` is one key for every rank gate, so it
-#    stays. s8f_shipped_score.yaml is the paired control with the shipped
-#    weights and the same box; the difference between the two arms on the same
-#    seeds is the measured effect of the priority (McNemar, plan §4.4 S8-F).
+#    stays. S8-F-1 measured the priority against a paired control with the
+#    shipped weights and the same box (same seeds, McNemar): no effect, 17 vs
+#    21 (plan §4.4 S8-F-1). The arm stays because the hand-near throws need it.
 #
 # THE PATH IS THE TRAP. `ApplyControllerParamOverrides` creates any key that is
 # not in the shipped YAML without a warning (catch_lead_on.yaml header), so

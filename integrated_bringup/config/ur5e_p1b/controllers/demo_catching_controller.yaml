@@ -442,6 +442,21 @@ demo_catching_controller:
       # the S3.5b gate map's wait pose for this arm. PROVISIONAL. Consumed from S6-B (the IK seed); homing to it
       # is S7.2.
       wait_pose: [0.212, -1.376, 1.107, -1.978, -3.296, 0.121]
+      # Where the wait pose comes from (S8-I, #537 5850509543). `yaml` = the
+      # list above. `current` = the arm's measured pose on the first readable
+      # tick AT REST of each activation (a moving arm defers the decision; armed
+      # while moving, under an E-STOP, or outside the margined box = refused
+      # with a WARN, the list stays) — "put the arm somewhere with demo_joint /
+      # demo_task, switch to this controller, that is the wait pose": homing is
+      # a no-op and the planner seeds its IK from it (the list above stays the
+      # configure-time seed and the fallback when that pose is outside the
+      # margined joint box). An E-STOP or fault reset keeps the adopted pose.
+      # The read-only mirror `planner.wait_pose` is the LIST, so with `current`
+      # the trial runner (which aims at the mirror) refuses at its alignment
+      # gate — run experiments with `yaml` and an overlay. `workspace.catch_box`
+      # below does not follow the pose: an arbitrary pose needs a box that
+      # covers its surroundings (the S8-F overlays widen it).
+      wait_pose_source: yaml
       # ── Search (L3 §4, S6-B) ──────────────────────────────────────────────
       # The robot config's catch sub-model (R-3): arm root → catch frame parent.
       sub_model: "ur5e_catch"

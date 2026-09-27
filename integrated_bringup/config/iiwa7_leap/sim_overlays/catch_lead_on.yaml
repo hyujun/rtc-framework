@@ -3,8 +3,9 @@
 #   ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_mpc:=true \
 #       sim_lanes:=true sim_overlay:=catch_lead_on
 #
-# This file owns the rationale for both catch_lead_* overlays of this profile;
-# catch_lead_on_unbounded.yaml differs only where its header says.
+# The only overlay of this profile. Its S8-D calibration twin (supervisor
+# thresholds lifted, for the uncensored streak/error/age distributions) was
+# pruned once the gate map was calibrated; git history has it.
 #
 # WHAT IT IS FOR. The shipped controller runs with `joint_cmd.lag.T_arm: 0`
 # because a real-arm actuation lag is an S10 measurement. The sim arm is not

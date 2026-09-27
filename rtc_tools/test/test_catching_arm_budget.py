@@ -209,6 +209,10 @@ def make_session(root: Path, *, n_trials: int = 3, mirror: bool = True) -> tuple
             "rank_commit_lead": 0,
             "lead_s": 0.0,
             "gamma_f": 0.0,
+            "g_min": float("nan"),
+            "g_max": float("nan"),
+            "v_dir_max": float("nan"),
+            "max_catchable": float("nan"),
         }
     ] * 5
     events += [
@@ -222,6 +226,11 @@ def make_session(root: Path, *, n_trials: int = 3, mirror: bool = True) -> tuple
             "rank_commit_lead": 0,
             "lead_s": 0.45,
             "gamma_f": 0.4,
+            # S8-I: the window as judged — open for the first 3 plans only
+            "g_min": 0.8,
+            "g_max": 0.9 if i < 3 else 0.4,
+            "v_dir_max": 2.0 + 0.1 * i,
+            "max_catchable": 3.0 + 0.1 * i,
         }
         for i in range(10)
     ]
@@ -398,6 +407,12 @@ def test_the_planner_box_is_re_judged_against_the_envelope(synthetic):
     # the same motion: slow box → longer time than the executed envelope's
     assert pl["t_reach_box_p50_s"] > pl["t_reach_envelope_p50_s"] > 0.0
     assert pl["valid_plans"] == 10 and pl["rank_reach"] == pytest.approx(0.9)
+    # S8-I: the logged window is summarised over the valid plans only
+    assert pl["g_min_p50"] == pytest.approx(0.8) and pl["g_max_p50"] == pytest.approx(0.4)
+    assert pl["v_dir_max_p50"] == pytest.approx(2.45) and pl["max_catchable_p50"] == pytest.approx(
+        3.45
+    )
+    assert pl["window_open_frac"] == pytest.approx(0.3)
     assert pl["rank_gamma"] == 1.0 and pl["rank_rollout"] == 0.0
     assert pl["lead_s_p50"] == 0.45 and pl["gamma_f_p50"] == 0.4
     for row in trials:
@@ -635,3 +650,20 @@ def test_a_device_lane_with_a_dropped_row_is_matched_by_time_not_position(tmp_pa
     assert all(math.isnan(v) for v in res["summary"]["plant"]["torque_util_max"])
     assert "header only" in res["summary"]["plant"]["torque_source"]
     assert res["summary"]["plant"]["torque_matched_ticks"] == 0
+
+
+def test_an_unjudged_window_is_not_counted_as_closed(tmp_path):
+    """A candidate whose γ window could not be judged logs NaN for both bounds.
+    `NaN <= NaN` is False, so counting those rows would report "open 60 %" for a
+    session whose every JUDGED window is open (2026-09-27 /code-review)."""
+    path = tmp_path / "planner_events.csv"
+    rows = ["plan_valid,g_min,g_max,v_dir_max,max_catchable"]
+    rows += ["1,0.2,0.5,2.0,3.0"] * 6  # judged, open
+    rows += ["1,nan,nan,nan,nan"] * 4  # valid plan, window not judged
+    rows += ["0,0.9,0.1,1.0,2.0"] * 3  # not a valid plan: outside the summary
+    path.write_text("\n".join(rows) + "\n")
+    out = ab._rank_rates(path)
+    assert out["valid_plans"] == 10
+    assert out["window_judged_n"] == 6
+    assert out["window_open_frac"] == pytest.approx(1.0)
+    assert out["g_max_p50"] == pytest.approx(0.5)

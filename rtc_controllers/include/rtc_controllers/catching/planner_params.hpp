@@ -77,6 +77,13 @@ struct PlannerParams {
   /// `planner.wait_pose` [rad] — IK seed, ARM joint (device) order. 0 = absent.
   std::array<double, kMaxPlanNv> wait_pose{};
   std::int32_t wait_pose_n{0};
+  /// `planner.wait_pose_source` (S8-I, #537): where the wait pose the trial
+  /// homes to and seeds the IK from comes from. `kYaml` = `wait_pose` above.
+  /// `kCurrent` = the arm's measured pose on the first readable tick of each
+  /// activation ("the pose the arm was switched in at"); `wait_pose` stays the
+  /// configure-time seed and the fallback when that pose is refused.
+  enum class WaitPoseSource : std::uint8_t { kYaml = 0, kCurrent = 1 };
+  WaitPoseSource wait_pose_source{WaitPoseSource::kYaml};
   /// `planner.provisional` (invented, same shape as `reference.provisional`):
   /// the block as a whole is provisional — sim warns, a real arm is parked.
   bool provisional{true};

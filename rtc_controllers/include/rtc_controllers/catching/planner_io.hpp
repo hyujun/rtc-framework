@@ -72,6 +72,14 @@ struct PlannerRtState {
   std::array<double, kMaxPlanNv> q_cmd{};
   std::array<double, kMaxPlanNv> qd_cmd{};
 
+  /// The wait pose the RT homes to and the planner seeds its IK from, DEVICE
+  /// order (S8-I, `planner.wait_pose_source: current`). `wait_pose_adopted`
+  /// false means the RT runs the configure-time YAML pose, which the planner
+  /// already holds as its seed; true means the arrays carry the pose adopted
+  /// on this activation's first readable tick and the seed must follow it.
+  bool wait_pose_adopted{false};
+  std::array<double, kMaxPlanNv> wait_pose{};
+
   /// The L4 reference state (x, ẋ, γ, γ̇, γ̈) the tracking law produced on
   /// this tick — the input to the §4.7 switching rule (γ̇ and γ̈ size the step
   /// a replacement's restarted γ ramp puts into u_des). `ref_valid` false on

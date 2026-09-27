@@ -40,6 +40,7 @@ setup(
             "catching_pool = rtc_tools.analysis.catching_pool:main",
             "catching_hand_near = rtc_tools.analysis.catching_hand_near:main",
             "catching_arm_budget = rtc_tools.analysis.catching_arm_budget:main",
+            "catching_wait_pose_search = rtc_tools.analysis.catching_wait_pose_search:main",
         ],
     },
 )

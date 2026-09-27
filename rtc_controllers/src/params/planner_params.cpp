@@ -163,6 +163,16 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
     }
     out.wait_pose_n = static_cast<std::int32_t>(pose.size());
   }
+  if (const YAML::Node v = planner["wait_pose_source"]; v) {
+    const std::string spelled = v.IsScalar() ? v.Scalar() : std::string{};
+    if (spelled == "yaml") {
+      out.wait_pose_source = PlannerParams::WaitPoseSource::kYaml;
+    } else if (spelled == "current") {
+      out.wait_pose_source = PlannerParams::WaitPoseSource::kCurrent;
+    } else {
+      Reject(Key("wait_pose_source") + " must be \"yaml\" or \"current\", got " + Spelling(v));
+    }
+  }
 
   // ── Search ─────────────────────────────────────────────────────────────────
   if (const YAML::Node v = planner["sub_model"]; v) {

@@ -150,6 +150,28 @@ struct CatchingDiagLogPod {
   double hand_effort_frac{std::numeric_limits<double>::quiet_NaN()};
   double hand_blocked_s{0.0};
   std::uint8_t outcome_source{0};
+  /// S8-I (`planner.wait_pose_source`): the wait pose the trial homes to and
+  /// the planner seeds from. `wait_pose_adopted` is 1 when it is the arm's
+  /// switched-in pose (source `current`), 0 when it is the YAML's; the
+  /// per-joint values below are the pose in force either way, so a reader
+  /// never has to consult the read-only mirror (which is the YAML value).
+  /// `wait_pose_adopt_seq` moves once per adoption — the non-RT log's edge.
+  bool wait_pose_adopted{false};
+  std::uint32_t wait_pose_adopt_seq{0};
+  /// Why a switched-in pose was NOT adopted (source `current`). Not a CSV
+  /// column: `wait_pose_adopted` 0 plus the publish thread's WARN carry it.
+  enum class WaitPoseRefusal : std::uint8_t {
+    kNone = 0,
+    kNoBox = 1,       ///< no margined joint box to admit the pose against
+    kOutsideBox = 2,  ///< a joint reading outside the margined box (or NaN)
+    kMoving = 3,      ///< armed before the arm came to rest
+    kEstop = 4,       ///< the deciding tick was under an E-STOP
+  };
+  std::uint32_t wait_pose_refuse_seq{0};
+  WaitPoseRefusal wait_pose_refuse_reason{WaitPoseRefusal::kNone};
+  int wait_pose_refuse_joint{-1};
+  double wait_pose_refuse_value{0.0};
+  std::array<double, kMaxArmJoints> wait_pose{};
 
   // ── Fingertip sensors (D-24) ─────────────────────────────────────────────
   // `tip_age_s` is filled from S5.4 because it is a MEASUREMENT — the D-24
@@ -294,7 +316,7 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
                                        const CatchingDiagLogColumns& cols) {
   os << "t_relative_s,tick,t_arm_s";
   os << ",mode,mode_name,reason,reason_name,outcome";
-  os << ",armed,estop_active,fault_latched,armable,law_enabled,real_arm_config";
+  os << ",armed,estop_active,fault_latched,armable,law_enabled,real_arm_config,wait_pose_adopted";
   os << ",input_valid,input_stale,input_expired,input_new,input_n";
   os << ",input_generation,input_snapshot_sequence,input_activation_generation";
   os << ",input_age_s,input_horizon_s";
@@ -324,6 +346,9 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ",q_meas_" << arm_joint_names[i];
   }
+  for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
+    os << ",q_wait_" << arm_joint_names[i];
+  }
   for (std::size_t i = 0; i < cols.num_tips; ++i) {
     os << ",tip_force_" << tip_names[i];
   }
@@ -347,7 +372,7 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
      << static_cast<int>(p.outcome);
   os << ',' << (p.armed ? 1 : 0) << ',' << (p.estop_active ? 1 : 0) << ','
      << (p.fault_latched ? 1 : 0) << ',' << (p.armable ? 1 : 0) << ',' << (p.law_enabled ? 1 : 0)
-     << ',' << (p.real_arm_config ? 1 : 0);
+     << ',' << (p.real_arm_config ? 1 : 0) << ',' << (p.wait_pose_adopted ? 1 : 0);
   os << ',' << (p.input_valid ? 1 : 0) << ',' << (p.input_stale ? 1 : 0) << ','
      << (p.input_expired ? 1 : 0) << ',' << (p.input_new ? 1 : 0) << ',' << p.input_n;
   os << ',' << p.input_generation << ',' << p.input_snapshot_sequence << ','
@@ -382,6 +407,9 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
   }
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ',' << p.q_meas[i];
+  }
+  for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
+    os << ',' << p.wait_pose[i];
   }
   for (std::size_t i = 0; i < cols.num_tips; ++i) {
     os << ',' << p.tip_force[i];

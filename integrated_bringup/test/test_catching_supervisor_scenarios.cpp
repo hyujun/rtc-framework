@@ -787,6 +787,209 @@ TEST_F(SupervisorScenarioTest, ActivatedOutsideTheWaitPoseHomesThenArms) {
   EXPECT_EQ(ctrl_->GetHandOutputForTesting().phase, HandPhase::kPreshape);
 }
 
+TEST_F(SupervisorScenarioTest, ASwitchedInPoseIsTheWaitPoseAndNeedsNoHoming) {
+  // S8-I (`planner.wait_pose_source: current`): activated OFF the YAML pose,
+  // the arm's own pose is the wait pose — IDLE → ARMED without one homing tick,
+  // the carried command stays where the arm was, and the diag says adopted.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[0] += 0.06;
+  off[2] -= 0.05;
+  off[4] += 0.04;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off));
+  publishing_ = false;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 800)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed});
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.homing; }), 0)
+      << "homing to the pose the arm is already at";
+  EXPECT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_TRUE(ctrl_->GetLastTickRecord().wait_pose_adopted);
+  // The Q13 skip holds the arm where it is (the hold latch, not the homing
+  // law — the carried command is seeded later, by the first plan), so the
+  // OUTPUT never leaves the switched-in pose.
+  const ControllerOutput held = ctrl_->Compute(state_);
+  ASSERT_EQ(held.devices[0].num_channels, kUr5eArmDof);
+  const auto wp = ctrl_->GetWaitPoseForTesting();
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    EXPECT_NEAR(held.devices[0].commands[u], off[u], 1e-9)
+        << "joint " << i << ": the output left the switched-in pose";
+    EXPECT_NEAR(wp[u], off[u], 1e-12) << "joint " << i;
+  }
+  EXPECT_EQ(ctrl_->GetHandOutputForTesting().phase, HandPhase::kPreshape);
+}
+
+TEST_F(SupervisorScenarioTest, TheAdoptedWaitPoseSurvivesAnEstopAndIsRetakenOnActivation) {
+  // S8-I, the three edges of "once per activation": an E-STOP keeps the
+  // adopted pose (where the arm stopped is not a wait pose), a new activation
+  // adopts wherever the arm is then, and a pose outside the margined joint box
+  // is refused in favour of the YAML pose.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[0] += 0.06;
+  off[2] -= 0.05;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off));
+  publishing_ = false;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 800)) << Transitions();
+  ASSERT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting());
+  const std::uint32_t seq1 = ctrl_->GetLastTickRecord().wait_pose_adopt_seq;
+
+  // E-STOP with the arm moved: still the first pose.
+  std::array<double, kUr5eArmDof> moved = off;
+  moved[1] += 0.1;
+  ctrl_->TriggerEstop();
+  ctrl_->ClearEstop();
+  state_ = MakeState(moved);
+  Ticks(3);
+  EXPECT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_adopt_seq, seq1);
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                off[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i << ": an E-STOP re-adopted";
+  }
+
+  // A new activation adopts where the arm is now.
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_->on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  Ticks(2);
+  ASSERT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_adopt_seq, seq1 + 1);
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                moved[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i << ": re-activation kept the old pose";
+  }
+
+  // Outside the margined joint box: refused, the YAML pose stands.
+  std::array<double, kUr5eArmDof> outside = off;
+  outside[2] = 100.0;
+  ASSERT_EQ(ctrl_->on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  state_ = MakeState(outside);
+  Ticks(2);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_reason,
+            integrated_bringup::CatchingDiagLogPod::WaitPoseRefusal::kOutsideBox);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_joint, 2);
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                kUr5eHome[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i << ": a refused pose must leave the YAML pose in force";
+  }
+}
+
+TEST_F(SupervisorScenarioTest, ATrialFromASwitchedInPoseReturnsToIt) {
+  // S8-I: RETREAT homes to the ADOPTED pose, not the YAML's — a full cycle from
+  // an off-YAML switch-in re-arms where it started.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[0] += 0.06;
+  off[2] -= 0.05;
+  off[4] += 0.04;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
+  const int armed = Entry(Mode::kArmed, 1);
+  ASSERT_GT(armed, 0);
+  const auto& back = log_[static_cast<std::size_t>(armed)];
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    EXPECT_NEAR(back.q_cmd[u], off[u], 1e-12) << "joint " << i
+                                              << ": RETREAT did not return to "
+                                                 "the adopted wait pose";
+  }
+  EXPECT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting()) << "a re-arm is not a new activation";
+}
+
+TEST_F(SupervisorScenarioTest, AMovingArmDefersTheAdoptionUntilItRests) {
+  // S8-I (2026-09-27 /code-review): a switch made while the previous
+  // controller's motion is still running must not adopt a pose in passing.
+  // Unarmed, the decision waits for rest and takes the pose the arm rests at.
+  std::array<double, kUr5eArmDof> passing = kUr5eHome;
+  passing[1] += 0.05;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, passing,
+      /*arm=*/false));
+  publishing_ = false;
+  state_.devices[0].velocities[1] = 0.5;  // far above the homing arrival tolerance
+  Ticks(5);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting()) << "adopted a pose the arm was passing";
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 0U) << "deferring is not refusing";
+
+  std::array<double, kUr5eArmDof> rest = kUr5eHome;
+  rest[1] += 0.12;
+  state_ = MakeState(rest);
+  Ticks(1);
+  ASSERT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting());
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                rest[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i;
+  }
+}
+
+TEST_F(SupervisorScenarioTest, ArmingWhileTheArmMovesRefusesTheSwitchedInPose) {
+  // Homing needs its target on the tick the operator arms: an arm still moving
+  // then gets the YAML pose, once, and a later rest does not re-decide.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[0] += 0.06;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off));
+  publishing_ = false;
+  state_.devices[0].velocities[0] = 0.5;
+  Ticks(2);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_reason,
+            integrated_bringup::CatchingDiagLogPod::WaitPoseRefusal::kMoving);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_joint, 0);
+  state_ = MakeState(off);
+  Ticks(3);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting()) << "one decision per activation";
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                kUr5eHome[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i;
+  }
+}
+
+TEST_F(SupervisorScenarioTest, ASwitchInUnderAnEstopIsNotAdopted) {
+  // Where the arm was STOPPED is not where the operator put it: an activation
+  // whose deciding tick is under an E-STOP keeps the YAML pose, also after the
+  // stop clears.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[2] -= 0.05;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off,
+      /*arm=*/false));
+  publishing_ = false;
+  ctrl_->TriggerEstop();
+  Ticks(2);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_reason,
+            integrated_bringup::CatchingDiagLogPod::WaitPoseRefusal::kEstop);
+  ctrl_->ClearEstop();
+  Ticks(3);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+}
+
 TEST_F(SupervisorScenarioTest, AMissedBallIsJudgedMissedAndTheHandStillWaitsForTheWaitPose) {
   ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
   tips_enabled_ = true;

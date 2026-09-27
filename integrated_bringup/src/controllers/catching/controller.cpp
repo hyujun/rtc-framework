@@ -808,6 +808,13 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
       s.q_cmd[static_cast<std::size_t>(i)] = dev.positions[static_cast<std::size_t>(i)];
     }
   }
+  // S8-I: the wait pose the planner must seed from when it is not the YAML's.
+  s.wait_pose_adopted = wait_pose_adopted_;
+  if (wait_pose_adopted_) {
+    for (int i = 0; i < nv && i < kDemoCatchingMaxArmDof; ++i) {
+      s.wait_pose[static_cast<std::size_t>(i)] = wait_pose_[static_cast<std::size_t>(i)];
+    }
+  }
   // The reference block of THIS tick's record: RecordReference fills it only on
   // a tick that ran the generator, and the record is fresh every tick.
   s.ref_valid = tick_record_.ref_valid;
@@ -1010,6 +1017,71 @@ bool DemoCatchingController::ArmCommandStopped() const noexcept {
     }
   }
   return true;
+}
+
+void DemoCatchingController::AdoptWaitPoseIfConfigured(const rtc::DeviceState& dev) noexcept {
+  // S8-I (`planner.wait_pose_source: current`): the wait pose is the pose the
+  // arm was switched in at — the first readable tick after the activation
+  // reset on which the arm is AT REST, armed or not. Once per activation: a
+  // fresh activation restores the YAML pose and clears the flag
+  // (ResetTrialState); an E-STOP or fault reset does not, so where the arm
+  // stopped never becomes its wait pose.
+  if (!wait_pose_from_current_ || wait_pose_decided_) {
+    return;
+  }
+  using Refusal = CatchingDiagLogPod::WaitPoseRefusal;
+  const auto n = static_cast<std::size_t>(std::min(arm_dof_, kDemoCatchingMaxArmDof));
+  // Under an E-STOP the arm is where it was stopped, not where the operator
+  // put it: that pose is never adopted, the YAML pose stays (2026-09-27
+  // /code-review).
+  if (estop_active_) {
+    RefuseWaitPose(Refusal::kEstop, -1, 0.0);
+    return;
+  }
+  // A switch made while the arm still moves (a trajectory of the previous
+  // controller, a settling servo) would adopt a pose in passing and then home
+  // BACK to it. Wait for rest — the same velocity tolerance ARMED asks for —
+  // but not past the operator's arm request: homing starts from that tick and
+  // needs its target, so an arm that is still moving then gets the YAML pose.
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!(std::abs(dev.velocities[i]) <= homing_qd_tol_)) {
+      if (arm_requested_.load(std::memory_order_relaxed)) {
+        RefuseWaitPose(Refusal::kMoving, static_cast<int>(i), dev.velocities[i]);
+      }
+      return;
+    }
+  }
+  // No margined box (no arm limits / no model — the validator parks trials on
+  // the same absence) means nothing to admit the pose against: refused.
+  if (arm_q_min_margined_.size() < n || arm_q_max_margined_.size() < n) {
+    RefuseWaitPose(Refusal::kNoBox, -1, 0.0);
+    return;
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    // Inside the margined box, like the YAML pose the validator admits; a pose
+    // outside it (or NaN) is refused and the YAML pose stays in force.
+    if (!(dev.positions[i] >= arm_q_min_margined_[i]) ||
+        !(dev.positions[i] <= arm_q_max_margined_[i])) {
+      RefuseWaitPose(Refusal::kOutsideBox, static_cast<int>(i), dev.positions[i]);
+      return;
+    }
+  }
+  wait_pose_decided_ = true;
+  for (std::size_t i = 0; i < n; ++i) {
+    wait_pose_[i] = dev.positions[i];
+  }
+  wait_pose_adopted_ = true;
+  ++wait_pose_adopt_seq_;
+}
+
+void DemoCatchingController::RefuseWaitPose(CatchingDiagLogPod::WaitPoseRefusal reason, int joint,
+                                            double value) noexcept {
+  wait_pose_decided_ = true;
+  wait_pose_refuse_reason_ = reason;
+  wait_pose_refuse_joint_ = joint;
+  wait_pose_refuse_value_ = value;
+  ++wait_pose_refuse_seq_;
+  wait_pose_refused_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool DemoCatchingController::ArmAtWaitPose(const ControllerState& state) const noexcept {
@@ -1588,6 +1660,12 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   if (reset_mode) {
     mode_ = rtc::catching::Mode::kIdle;
     last_reason_ = rtc::catching::Reason::kNone;
+    // S8-I: a fresh activation starts from the YAML wait pose; the first
+    // readable tick adopts the switched-in pose again if so configured. An
+    // E-STOP / fault reset (reset_mode false) keeps the adopted pose.
+    wait_pose_ = wait_pose_yaml_;
+    wait_pose_adopted_ = false;
+    wait_pose_decided_ = false;
   }
   // The plan lane (S6-A). The box is NOT cleared here — the RT is not its
   // writer when a planner runs. Instead: forget which plan was taken, refuse
@@ -2272,6 +2350,17 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
   tick_record_.fault_latched = fault_latched_.load(std::memory_order_relaxed);
   tick_record_.armable = armable_;
   tick_record_.law_enabled = clik_enabled_;
+  tick_record_.wait_pose_adopted = wait_pose_adopted_;
+  tick_record_.wait_pose_adopt_seq = wait_pose_adopt_seq_;
+  tick_record_.wait_pose_refuse_seq = wait_pose_refuse_seq_;
+  tick_record_.wait_pose_refuse_reason = wait_pose_refuse_reason_;
+  tick_record_.wait_pose_refuse_joint = wait_pose_refuse_joint_;
+  tick_record_.wait_pose_refuse_value = wait_pose_refuse_value_;
+  for (int i = 0; i < arm_dof_ && i < kDemoCatchingMaxArmDof &&
+                  static_cast<std::size_t>(i) < CatchingDiagLogPod::kMaxArmJoints;
+       ++i) {
+    tick_record_.wait_pose[static_cast<std::size_t>(i)] = wait_pose_[static_cast<std::size_t>(i)];
+  }
   tick_record_.real_arm_config = real_arm_config_;
   tick_record_.qp_fail_streak = qp_fail_streak_;
   tick_record_.abort_stopped = abort_stopped_;
@@ -2402,6 +2491,49 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
   const auto tick = catching_state_lock_.Load();
   const auto ingress = ingress_diag_box_.Load();
   PublishCatchingStateFromSnapshot(snap, owned_topics_, tick, &ingress);
+  // S8-I: one line per adoption of a switched-in wait pose (source `current`),
+  // from this non-RT thread on the sequence edge the tick recorded.
+  if (tick.wait_pose_adopted && tick.wait_pose_adopt_seq != wait_pose_logged_seq_) {
+    wait_pose_logged_seq_ = tick.wait_pose_adopt_seq;
+    std::string pose;
+    for (int i = 0; i < arm_dof_ && static_cast<std::size_t>(i) < CatchingDiagLogPod::kMaxArmJoints;
+         ++i) {
+      pose += (i ? ", " : "") + std::to_string(tick.wait_pose[static_cast<std::size_t>(i)]);
+    }
+    RCLCPP_INFO(
+        logger_,
+        "wait pose adopted from the arm's switched-in pose (planner.wait_pose_source: "
+        "current): [%s] rad, arm joint order — homing is a no-op, the planner seeds from it",
+        pose.c_str());
+  }
+  // ... and one WARN per refusal: the arm is about to home to the YAML pose,
+  // which can be a long way from where the operator left it.
+  if (tick.wait_pose_refuse_seq != wait_pose_refuse_logged_seq_) {
+    wait_pose_refuse_logged_seq_ = tick.wait_pose_refuse_seq;
+    using Refusal = CatchingDiagLogPod::WaitPoseRefusal;
+    const char* why = "unknown";
+    switch (tick.wait_pose_refuse_reason) {
+      case Refusal::kNoBox:
+        why = "no margined joint box (arm limits / model missing)";
+        break;
+      case Refusal::kOutsideBox:
+        why = "a joint is outside the margined joint box";
+        break;
+      case Refusal::kMoving:
+        why = "armed while the arm was still moving";
+        break;
+      case Refusal::kEstop:
+        why = "the switch-in happened under an E-STOP";
+        break;
+      case Refusal::kNone:
+        break;
+    }
+    RCLCPP_WARN(logger_,
+                "switched-in wait pose REFUSED (planner.wait_pose_source: current): %s "
+                "[arm joint %d, reading %.4f] — the YAML planner.wait_pose stays in force and "
+                "arming homes the arm to it",
+                why, tick.wait_pose_refuse_joint, tick.wait_pose_refuse_value);
+  }
 }
 
 ControllerOutput DemoCatchingController::Compute(const ControllerState& state) noexcept {
@@ -2441,6 +2573,12 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   // and anything that wrote a command first would command the pose the reset
   // has just decided not to trust.
   (void)ServiceResetRequests(state);
+  // S8-I: after the reset (a fresh activation restores the YAML pose) and
+  // before anything reads the wait pose this tick — the first readable tick of
+  // an activation adopts the switched-in pose, armed or not.
+  if (arm_readable_ && state.num_devices > kCatchingArmDeviceIdx) {
+    AdoptWaitPoseIfConfigured(state.devices[kCatchingArmDeviceIdx]);
+  }
 
   if (estop_active_) {
     // Drained AND DISCARDED while stopped. Not skipped: the mailbox is a

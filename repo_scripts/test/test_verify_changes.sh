@@ -822,6 +822,22 @@ expect_contains "the tail shows how the build was invoked" "$out" "stub-build ar
 expect_exit "a real build failure blocks the turn" "$rc" 2
 rm -rf "$dir" "$stub"
 
+# 37b. A test is not STARTED when its bound would cross the deadline: the Stop
+#      budget kills the whole hook, report included, so the package must be
+#      named UNVERIFIED instead. The stub build succeeds; the deadline of 0
+#      stands for "the budget is already spent", and the fixture cannot serve a
+#      real `colcon test`, so reaching one would fail this case differently.
+dir=$(make_fixture)
+stub=$(make_build_stub 0)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$stub/build.sh" \
+    RTC_VERIFY_TEST_DEADLINE_S=0 bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_contains "a test past the deadline is reported, not started" "$out" "rtc_demo: colcon test NOT RUN"
+expect_contains "the skipped test names its bound" "$out" "its 120s bound"
+expect_not_contains "a skipped test is not reported as a timeout" "$out" "TIMED OUT"
+expect_exit "a skipped test still blocks the turn" "$rc" 2
+rm -rf "$dir" "$stub"
+
 # 38. The PROC-3 path (rtc_base / rtc_msgs -> ./build.sh full) had the same
 #     defect. Fixing only the per-package branch leaves it on the highest-impact
 #     path, so both are pinned.

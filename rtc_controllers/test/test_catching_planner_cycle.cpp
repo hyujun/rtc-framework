@@ -276,6 +276,23 @@ planner:
   ASSERT_TRUE(p.catch_box.set);
   EXPECT_TRUE(p.catch_box.Contains(0.5, 0.0, 0.5));
   EXPECT_FALSE(p.catch_box.Contains(0.5, 0.31, 0.5));
+  EXPECT_EQ(p.wait_pose_source, rtc::catching::PlannerParams::WaitPoseSource::kYaml)
+      << "absent = the YAML pose";
+}
+
+TEST(PlannerParams, TheWaitPoseSourceIsYamlOrCurrentAndNothingElse) {
+  // S8-I: `current` adopts the arm's switched-in pose; anything but the two
+  // spellings is refused rather than silently read as the default.
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {wait_pose_source: yaml}")).wait_pose_source,
+            rtc::catching::PlannerParams::WaitPoseSource::kYaml);
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {wait_pose_source: current}")).wait_pose_source,
+            rtc::catching::PlannerParams::WaitPoseSource::kCurrent);
+  for (const char* bad :
+       {"planner: {wait_pose_source: Current}", "planner: {wait_pose_source: 1}",
+        "planner: {wait_pose_source: ''}", "planner: {wait_pose_source: [yaml]}"}) {
+    EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
+        << bad;
+  }
 }
 
 TEST(PlannerParams, ADecisionLeftOutOrTbdIsUnsetNotDefaulted) {

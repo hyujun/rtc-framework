@@ -1,4 +1,4 @@
-"""The S8-B/S8-D ``catch_lead_*`` sim overlays must write keys the controller READS.
+"""The catching sim overlays must write keys the controller READS.
 
 **The failure this exists for is silent.** The controller config is not a ROS
 parameter tree: ``ApplyControllerParamOverrides`` (rtc_controller_manager) pokes
@@ -7,17 +7,18 @@ loaded, and creates whatever key is not there. An overlay path one level short
 (``demo_catching_controller: joint_cmd: ...`` without ``catching:``) is written
 to a key nothing reads, the controller configures, and the run is the shipped
 profile — measured 2026-09-24: the startup log read ``commit at t_c − 0.360 s``
-(shipped) with no warning anywhere. Every lead-ablation number from such a run
-would describe the wrong arm.
+(shipped) with no warning anywhere. Every number from such a run would describe
+the wrong arm.
 
 So every leaf an overlay writes must name a key the shipped
-``demo_catching_controller.yaml`` already has, with the same YAML type. The
-arm-to-arm differences are pinned too, because the ablation is only an ablation
-if lead (or the γ grid) is the one thing that changes. Both profiles that ship
-overlays are covered: ur5e_p1b (S8-B, four ablation arms, plus the S8-E beanbag
-arm that changes the simulated ball and nothing on the controller) and
-iiwa7_leap (S8-D, a lead-on arm plus its calibration twin with the supervisor
-thresholds off).
+``demo_catching_controller.yaml`` already has, with the same YAML type, and the
+arm-to-arm differences are pinned so each overlay changes exactly what its
+header says. Shipped are the operational arms only (the experiment arms of
+S8-B/E/F/G/I were pruned once recorded, 2026-09-27): ur5e_p1b ``catch_lead_on``
+(the runner's standard arm), ``s8f_reach_first`` (hand-near throws) and
+``catch_wait_pose_current`` (the switched-in pose as the wait pose), iiwa7_leap
+``catch_lead_on``. The sim robot config's one controller override (the planner's
+envelope box, S8-G R2) is pinned here too.
 """
 
 from __future__ import annotations
@@ -34,18 +35,15 @@ CONFIG_DIR = os.path.join(CONFIG_ROOT, "ur5e_p1b")
 SHIPPED = os.path.join(CONFIG_DIR, "controllers", "demo_catching_controller.yaml")
 OVERLAY_DIR = os.path.join(CONFIG_DIR, "sim_overlays")
 CONTROLLER = "demo_catching_controller"
-ARMS = {
-    "catch_lead_on": {"lead_enable": True, "gamma0": False},
-    "catch_lead_off": {"lead_enable": False, "gamma0": False},
-    "catch_lead_on_gamma0": {"lead_enable": True, "gamma0": True},
-    "catch_lead_off_gamma0": {"lead_enable": False, "gamma0": True},
+LEAD_ON = "catch_lead_on"
+LEAD_ON_LEAVES = {
+    ("catching", "joint_cmd", "lag", "T_arm"): 0.05,
+    ("catching", "joint_cmd", "lag", "lead_enable"): True,
+    ("catching", "planner", "freeze", "T_freeze"): 0.37,
 }
-BEANBAG = "catch_lead_on_beanbag"
-# S8-F-1 (#537, 2026-09-26): catch_lead_on with the widened catch box, with
-# (reach_first) and without (shipped_score) the inverted score weights, and the
-# reach-first arm catching the beanbag preset.
-S8F_ARMS = ("s8f_reach_first", "s8f_shipped_score")
-S8F_BEANBAG = "s8f_reach_first_beanbag"
+# S8-F-1 (#537, 2026-09-26): catch_lead_on with the widened catch box and the
+# inverted score weights.
+REACH_FIRST = "s8f_reach_first"
 S8F_BOX = {
     ("catching", "planner", "workspace", "catch_box", "min"): [-1.1, -1.1, 0.15],
     ("catching", "planner", "workspace", "catch_box", "max"): [1.1, 1.1, 1.2],
@@ -54,28 +52,16 @@ S8F_SCORE = {
     ("catching", "planner", "score", "w_t"): 5.0,
     ("catching", "planner", "score", "w_gamma"): 1.0,
 }
-# S8-G (#537 5846760878): the (reference.omega × reference.a_max) sweep — six
-# arms that are s8f_reach_first plus exactly the two `reference` leaves — and the
-# reach-first arm with the planner's D-16 box pointed at the executed envelope.
-S8G_GRID = {
-    "s8g_w10_a21": (10.0, 21.0),
-    "s8g_w10_a30": (10.0, 30.0),
-    "s8g_w15_a21": (15.0, 21.0),
-    "s8g_w15_a30": (15.0, 30.0),
-    "s8g_w20_a21": (20.0, 21.0),
-    "s8g_w20_a30": (20.0, 30.0),
-}
-S8G_ENVBOX = "s8g_w10_a21_envbox"
+# S8-I (#537 5850509543): the reach-first arm with the wait pose taken from
+# the arm's switched-in pose.
+WAIT_POSE_CURRENT = "catch_wait_pose_current"
+WAIT_POSE_SOURCE = ("catching", "planner", "wait_pose_source")
 S8G_ENVBOX_FILE = "config/ur5e_p1b/derived_accel_limits_s8g_envelope.yaml"
 S8G_SHIPPED_BOX_FILE = "config/ur5e_p1b/derived_accel_limits.yaml"
-OMEGA_RANGE = (1.0, 25.0)  # L4 §6
-OMEGA_H_STABLE = 0.828  # L4 §4.7 discrete stability bound on ω·h
 SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
 LEAP = "iiwa7_leap"
-LEAP_ARMS = ("catch_lead_on", "catch_lead_on_unbounded")
 # Where each profile keeps control_rate (the launch files read the same file).
 RATE_FILE = {"ur5e_p1b": "_base.yaml", LEAP: "sim.yaml"}
-SUPERVISOR_OFF = ("sat_ticks", "track_err_abort", "stale_committed_max_s")
 
 
 def _load(path: str) -> dict:
@@ -134,6 +120,10 @@ def _unread_leaves(tree: dict, shipped: dict) -> list[str]:
     return problems
 
 
+def _arm(name: str) -> dict:
+    return _controller_tree(_load(os.path.join(OVERLAY_DIR, name + ".yaml")))
+
+
 @pytest.fixture(scope="module")
 def shipped() -> dict:
     return _load(SHIPPED)[CONTROLLER]
@@ -141,9 +131,7 @@ def shipped() -> dict:
 
 @pytest.fixture(scope="module")
 def arms() -> dict[str, dict]:
-    return {
-        name: _controller_tree(_load(os.path.join(OVERLAY_DIR, name + ".yaml"))) for name in ARMS
-    }
+    return {name: _arm(name) for name in (LEAD_ON, REACH_FIRST, WAIT_POSE_CURRENT)}
 
 
 @pytest.fixture(scope="module")
@@ -153,25 +141,38 @@ def leap_shipped() -> dict:
     ]
 
 
-@pytest.fixture(scope="module")
-def leap_arms() -> dict[str, dict]:
-    overlay_dir = os.path.join(CONFIG_ROOT, LEAP, "sim_overlays")
-    return {name: _controller_tree(_leap_rt_only(overlay_dir, name)) for name in LEAP_ARMS}
-
-
 LEAP_SCENE = "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"
 
 
-def _leap_rt_only(overlay_dir: str, name: str) -> dict:
-    """The leap overlays also swap the sim scene (their header says why); the
+@pytest.fixture(scope="module")
+def leap_arm() -> dict:
+    """The leap overlay also swaps the sim scene (its header says why); the
     sim section may carry that and nothing else, the rest is the RT node's."""
-    overlay = _load(os.path.join(overlay_dir, name + ".yaml"))
+    overlay = _load(os.path.join(CONFIG_ROOT, LEAP, "sim_overlays", LEAD_ON + ".yaml"))
     sim = overlay.pop("mujoco_simulator")
-    assert sim == {"ros__parameters": {"model_path": LEAP_SCENE}}, (name, sim)
-    return overlay
+    assert sim == {"ros__parameters": {"model_path": LEAP_SCENE}}, sim
+    return _controller_tree(overlay)
 
 
-@pytest.mark.parametrize("name", sorted(ARMS))
+def test_the_shipped_overlays_are_exactly_the_operational_arms():
+    """A new experiment arm belongs outside the repo (README §Scene overlay); a
+    shipped overlay is one somebody operates with, and it is pinned below."""
+    shipped_names = sorted(f[:-5] for f in os.listdir(OVERLAY_DIR) if f.endswith(".yaml"))
+    assert shipped_names == sorted(
+        [
+            LEAD_ON,
+            REACH_FIRST,
+            WAIT_POSE_CURRENT,
+            "fingertip_grasp",
+            "fingertip_grasp_free",
+            "inference_pole",
+        ]
+    )
+    leap_dir = os.path.join(CONFIG_ROOT, LEAP, "sim_overlays")
+    assert sorted(os.listdir(leap_dir)) == [LEAD_ON + ".yaml"]
+
+
+@pytest.mark.parametrize("name", (LEAD_ON, REACH_FIRST, WAIT_POSE_CURRENT))
 def test_every_leaf_is_a_shipped_key_of_the_same_type(name, arms, shipped):
     assert _unread_leaves(arms[name], shipped) == []
 
@@ -182,35 +183,23 @@ def test_the_check_catches_a_path_one_level_short(arms, shipped):
     Without this the leaf check could pass vacuously — e.g. if the shipped tree
     ever grew a top-level ``joint_cmd`` block for another reason.
     """
-    shallow = arms["catch_lead_on"]["catching"]
+    shallow = arms[LEAD_ON]["catching"]
     problems = _unread_leaves(shallow, shipped)
     assert len(problems) == len(_leaves(shallow)), problems
 
 
 def test_the_check_catches_a_type_change(arms, shipped):
-    tree = yaml.safe_load(yaml.safe_dump(arms["catch_lead_on"]))
+    tree = yaml.safe_load(yaml.safe_dump(arms[LEAD_ON]))
     tree["catching"]["planner"]["freeze"]["T_freeze"] = 1
     assert _unread_leaves(tree, shipped) == [
         "catching.planner.freeze.T_freeze: shipped float, overlay int"
     ]
 
 
-def test_lead_and_the_gamma_policy_are_the_only_differences(arms):
-    """γ 0 needs the grid AND d_eff (see catch_lead_on_gamma0.yaml): a grid of
-    [0.0] alone is replaced by the γ window's floor, which is not 0."""
-    base = _leaves(arms["catch_lead_on"])
-    lead = ("catching", "joint_cmd", "lag", "lead_enable")
-    gamma0 = {
-        ("catching", "planner", "gamma", "grid"): [0.0],
-        ("catching", "planner", "hand", "d_eff"): 10.0,
-    }
-    for name, arm in ARMS.items():
-        leaves = _leaves(arms[name])
-        assert leaves[lead] is arm["lead_enable"], name
-        policy = {k: leaves[k] for k in gamma0 if k in leaves}
-        assert policy == (gamma0 if arm["gamma0"] else {}), name
-        rest = {k: v for k, v in leaves.items() if k != lead and k not in gamma0}
-        assert rest == {k: v for k, v in base.items() if k != lead}, name
+def test_lead_on_writes_the_lead_and_its_commit_window_only(arms):
+    """The arm is the lead compensation of the sim plant's 0.05 s servo lag and
+    the T_freeze that lag moves (catch_lead_on.yaml header) — nothing else."""
+    assert _leaves(arms[LEAD_ON]) == LEAD_ON_LEAVES
 
 
 def _check_commit_window(catching: dict, ship: dict, profile: str) -> None:
@@ -248,56 +237,20 @@ def _check_commit_window(catching: dict, ship: dict, profile: str) -> None:
     assert effective("io", "n_min") == math.ceil(horizon / dt - 1e-9) + 1
 
 
-def _beanbag_sections() -> tuple[dict, dict]:
-    """(simulator section, the rest) of the beanbag overlay."""
-    overlay = _load(os.path.join(OVERLAY_DIR, BEANBAG + ".yaml"))
-    sim = overlay.pop("mujoco_simulator")
-    return sim, overlay
-
-
-def test_beanbag_arm_changes_only_the_ball_type():
-    """S8-E ball arm (D-S8-11, D-S8-16 ④): the simulator section carries the
-    ball preset and nothing else — shape and mass stay the shipped ones, which
-    the controller's ball model also assumes — and the key is the one the
-    shipped simulator YAML sets (a path one level off would run tennis)."""
-    sim, _ = _beanbag_sections()
-    assert sim == {"ros__parameters": {"projectile_ball": {"ball_type": "beanbag"}}}
-    ship = _load(SIM_CONFIG)["mujoco_simulator"]["ros__parameters"]["projectile_ball"]
-    assert ship["ball_type"] == "tennis", "the arm must differ from the shipped ball"
-
-
-def test_beanbag_arm_runs_the_lead_on_controller(arms):
-    """The pair is only a ball comparison if the controller is catch_lead_on's."""
-    _, rest = _beanbag_sections()
-    assert _controller_tree(rest) == arms["catch_lead_on"]
-
-
-def test_the_commit_window_is_derived_from_t_arm(arms, shipped):
-    _check_commit_window(arms["catch_lead_on"]["catching"], shipped["catching"], "ur5e_p1b")
+@pytest.mark.parametrize("name", (LEAD_ON, REACH_FIRST, WAIT_POSE_CURRENT))
+def test_the_commit_window_is_derived_from_t_arm(name, arms, shipped):
+    _check_commit_window(arms[name]["catching"], shipped["catching"], "ur5e_p1b")
 
 
 # ── ur5e_p1b S8-F-1 (hand-near throws) ───────────────────────────────────────
 
 
-@pytest.fixture(scope="module")
-def s8f_arms() -> dict[str, dict]:
-    return {
-        name: _controller_tree(_load(os.path.join(OVERLAY_DIR, name + ".yaml")))
-        for name in S8F_ARMS
-    }
-
-
-@pytest.mark.parametrize("name", S8F_ARMS)
-def test_s8f_every_leaf_is_a_shipped_key_of_the_same_type(name, s8f_arms, shipped):
-    assert _unread_leaves(s8f_arms[name], shipped) == []
-
-
-def test_s8f_reach_first_is_lead_on_plus_the_box_and_the_inverted_weights(arms, s8f_arms, shipped):
+def test_s8f_reach_first_is_lead_on_plus_the_box_and_the_inverted_weights(arms, shipped):
     """The arm differs from catch_lead_on ONLY by the widened box and the two
     score weights — and the weights really are inverted relative to the shipped
-    ones, so the pair measures the priority and nothing else."""
-    base = _leaves(arms["catch_lead_on"])
-    leaves = _leaves(s8f_arms["s8f_reach_first"])
+    ones, so the arm measures the priority and nothing else."""
+    base = _leaves(arms[LEAD_ON])
+    leaves = _leaves(arms[REACH_FIRST])
     extra = {k: v for k, v in leaves.items() if k not in base}
     assert extra == {**S8F_BOX, **S8F_SCORE}
     assert {k: v for k, v in leaves.items() if k in base} == base
@@ -312,12 +265,6 @@ def test_s8f_reach_first_is_lead_on_plus_the_box_and_the_inverted_weights(arms, 
     )
 
 
-def test_s8f_shipped_score_is_reach_first_without_the_score(s8f_arms):
-    reach = _leaves(s8f_arms["s8f_reach_first"])
-    control = _leaves(s8f_arms["s8f_shipped_score"])
-    assert control == {k: v for k, v in reach.items() if k not in S8F_SCORE}
-
-
 def test_s8f_box_contains_the_shipped_one_and_clears_the_table(shipped):
     ship = shipped["catching"]["planner"]["workspace"]["catch_box"]
     lo = S8F_BOX[("catching", "planner", "workspace", "catch_box", "min")]
@@ -329,88 +276,35 @@ def test_s8f_box_contains_the_shipped_one_and_clears_the_table(shipped):
     assert lo[2] > 0.05
 
 
-def test_s8f_beanbag_arm_changes_only_the_ball_type(s8f_arms):
-    overlay = _load(os.path.join(OVERLAY_DIR, S8F_BEANBAG + ".yaml"))
-    sim = overlay.pop("mujoco_simulator")
-    assert sim == {"ros__parameters": {"projectile_ball": {"ball_type": "beanbag"}}}
-    assert _controller_tree(overlay) == s8f_arms["s8f_reach_first"]
+# ── ur5e_p1b S8-I (the switched-in pose as the wait pose) ────────────────────
 
 
-@pytest.mark.parametrize("name", S8F_ARMS)
-def test_s8f_commit_window_is_derived_from_t_arm(name, s8f_arms, shipped):
-    _check_commit_window(s8f_arms[name]["catching"], shipped["catching"], "ur5e_p1b")
+def test_wait_pose_current_is_reach_first_plus_the_source_leaf(arms, shipped):
+    """ONE leaf on top of the reach-first arm: `wait_pose_source: current`. The
+    widened box is not optional (the shipped box is the hull around the SHIPPED
+    wait pose — another pose's surroundings are outside it), and the shipped
+    source must be `yaml` for the arm to change anything."""
+    base = _leaves(arms[REACH_FIRST])
+    leaves = _leaves(arms[WAIT_POSE_CURRENT])
+    assert {k: v for k, v in leaves.items() if k != WAIT_POSE_SOURCE} == base
+    assert leaves[WAIT_POSE_SOURCE] == "current"
+    assert shipped["catching"]["planner"]["wait_pose_source"] == "yaml"
 
 
-# ── ur5e_p1b S8-G (arm-budget sweep) ──────────────────────────────────────────
-@pytest.fixture(scope="module")
-def s8g_arms() -> dict[str, dict]:
-    return {
-        name: _controller_tree(_load(os.path.join(OVERLAY_DIR, name + ".yaml")))
-        for name in S8G_GRID
-    }
+# ── ur5e_p1b sim.yaml (S8-G R2: the planner's envelope box) ──────────────────
 
 
-@pytest.mark.parametrize("name", sorted(S8G_GRID))
-def test_s8g_every_leaf_is_a_shipped_key_of_the_same_type(name, s8g_arms, shipped):
-    assert _unread_leaves(s8g_arms[name], shipped) == []
-
-
-@pytest.mark.parametrize("name", sorted(S8G_GRID))
-def test_s8g_cell_is_reach_first_plus_its_two_reference_leaves(name, s8g_arms, s8f_arms, shipped):
-    """Each cell differs from s8f_reach_first by ω and a_max at the grid values
-    its name says, plus the pin of the torque-derived D-16 box it was measured
-    with — sim.yaml has since moved the sim default to the executed envelope
-    (D-S8-18 R2) and an overlay is laid over sim.yaml, so without the pin a
-    replay (R4) would run a different planner gate with no warning."""
-    omega, a_max = S8G_GRID[name]
-    base = _leaves(s8f_arms["s8f_reach_first"])
-    leaves = _leaves(s8g_arms[name])
-    extra = {k: v for k, v in leaves.items() if k not in base}
-    assert extra == {
-        ("catching", "reference", "omega"): omega,
-        ("catching", "reference", "a_max"): a_max,
-        ("catching", "robot", "arm", "accel_limits_path"): S8G_SHIPPED_BOX_FILE,
-    }
-    assert {k: v for k, v in leaves.items() if k in base} == base
+def test_sim_yaml_points_the_planner_box_at_the_envelope_file_and_names_shipped_keys(shipped):
+    """R2 (S8-G): the sim robot config overrides ONE controller key — the
+    planner's D-16 box file — and only that, at a shipped key of the same type,
+    at a file that exists, is `adopted`, is marked provisional and carries the
+    tool's provenance (lifecycle.cpp refuses a box that is not adopted). The
+    real robot.yaml must not carry it."""
+    sim = _load(os.path.join(CONFIG_DIR, "sim.yaml"))["/**"]["ros__parameters"]
+    tree = sim[CONTROLLER]
+    assert _leaves(tree) == {("catching", "robot", "arm", "accel_limits_path"): S8G_ENVBOX_FILE}
+    assert _unread_leaves(tree, shipped) == []
     assert shipped["catching"]["robot"]["arm"]["accel_limits_path"] == S8G_SHIPPED_BOX_FILE
-
-
-@pytest.mark.parametrize("name", sorted(S8G_GRID))
-def test_s8g_cell_satisfies_the_validators_cross_checks(name, s8g_arms, shipped):
-    """The configure-time validator refuses a_dec > a_max, ω outside [1, 25]
-    and ω·h at the stability bound (lifecycle.cpp ReasonText); a cell that
-    trips one would park the controller and the unit would fail at startup."""
-    omega, a_max = S8G_GRID[name]
-    a_dec = shipped["catching"]["supervisor"]["decel"]["a_dec"]
-    assert a_dec <= a_max
-    assert OMEGA_RANGE[0] <= omega <= OMEGA_RANGE[1]
-    rate = _load(os.path.join(CONFIG_DIR, RATE_FILE["ur5e_p1b"]))["/**"]["ros__parameters"][
-        "control_rate"
-    ]
-    assert omega / rate < OMEGA_H_STABLE
-
-
-def test_s8g_grid_covers_the_shipped_cell(shipped):
-    ref = shipped["catching"]["reference"]
-    assert (ref["omega"], ref["a_max"]) in S8G_GRID.values(), (
-        "the baseline cell IS the shipped pair"
-    )
-
-
-def test_s8g_envbox_arm_is_the_baseline_with_the_planner_box_swapped(s8g_arms, shipped):
-    """The envelope arm changes ONE leaf of the baseline cell — where the
-    planner's D-16 box comes from — and that file exists, is `adopted`, is
-    marked provisional and carries the tool's provenance (lifecycle.cpp
-    refuses a box that is not adopted)."""
-    overlay = _controller_tree(_load(os.path.join(OVERLAY_DIR, S8G_ENVBOX + ".yaml")))
-    base = _leaves(s8g_arms["s8g_w10_a21"])
-    leaves = _leaves(overlay)
-    key = ("catching", "robot", "arm", "accel_limits_path")
-    assert {k: v for k, v in leaves.items() if k != key} == {
-        k: v for k, v in base.items() if k != key
-    }
-    assert (base[key], leaves[key]) == (S8G_SHIPPED_BOX_FILE, S8G_ENVBOX_FILE)
-    assert _unread_leaves(overlay, shipped) == []
     box = _load(os.path.join(CONFIG_ROOT, "..", S8G_ENVBOX_FILE))["derived_accel_limits"]
     group = shipped["catching"]["robot"]["arm"]["accel_limits_group"]
     entry = box[group]
@@ -423,23 +317,11 @@ def test_s8g_envbox_arm_is_the_baseline_with_the_planner_box_swapped(s8g_arms, s
     assert len(entry["qdd_max"]) == n and all(v > 0 for v in entry["qdd_max"])
     assert entry["provenance"]["tool"] == "rtc_tools.analysis.catching_arm_budget"
     assert entry["provenance"]["sim_only"] is True
-    # The point of the arm: the envelope is well above the shipped derived box.
+    # The point of the override: the envelope is well above the shipped derived box.
     shipped_box = _load(os.path.join(CONFIG_DIR, "derived_accel_limits.yaml"))[
         "derived_accel_limits"
     ][group]["qdd_max"]
     assert all(e > 2 * s for e, s in zip(entry["qdd_max"], shipped_box, strict=True))
-
-
-def test_sim_yaml_points_the_planner_box_at_the_envelope_file_and_names_shipped_keys(shipped):
-    """R2 (S8-G): the sim robot config overrides ONE controller key — the
-    planner's D-16 box file — and only that, at a shipped key of the same type,
-    at a file that exists and is adopted. The real robot.yaml must not carry it."""
-    sim = _load(os.path.join(CONFIG_DIR, "sim.yaml"))["/**"]["ros__parameters"]
-    tree = sim[CONTROLLER]
-    assert _leaves(tree) == {("catching", "robot", "arm", "accel_limits_path"): S8G_ENVBOX_FILE}
-    assert _unread_leaves(tree, shipped) == []
-    box = _load(os.path.join(CONFIG_ROOT, "..", S8G_ENVBOX_FILE))["derived_accel_limits"]
-    assert box[shipped["catching"]["robot"]["arm"]["accel_limits_group"]]["adopted"] is True
     robot = _load(os.path.join(CONFIG_DIR, "robot.yaml"))["/**"]["ros__parameters"]
     assert CONTROLLER not in robot, (
         "the real arm keeps the torque-derived box (S10 measures its own)"
@@ -449,48 +331,26 @@ def test_sim_yaml_points_the_planner_box_at_the_envelope_file_and_names_shipped_
 # ── iiwa7_leap (S8-D) ────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", LEAP_ARMS)
-def test_leap_every_leaf_is_a_shipped_key_of_the_same_type(name, leap_arms, leap_shipped):
-    assert _unread_leaves(leap_arms[name], leap_shipped) == []
+def test_leap_every_leaf_is_a_shipped_key_of_the_same_type(leap_arm, leap_shipped):
+    assert _unread_leaves(leap_arm, leap_shipped) == []
 
 
-def test_leap_check_catches_a_path_one_level_short(leap_arms, leap_shipped):
-    shallow = leap_arms["catch_lead_on_unbounded"]["catching"]
+def test_leap_check_catches_a_path_one_level_short(leap_arm, leap_shipped):
+    shallow = leap_arm["catching"]
     problems = _unread_leaves(shallow, leap_shipped)
     assert len(problems) == len(_leaves(shallow)), problems
 
 
-@pytest.mark.parametrize("name", LEAP_ARMS)
-def test_leap_commit_window_is_derived_from_t_arm(name, leap_arms, leap_shipped):
-    """No leap overlay writes T_freeze: the shipped 0.19 must already cover T_arm."""
-    _check_commit_window(leap_arms[name]["catching"], leap_shipped["catching"], LEAP)
+def test_leap_commit_window_is_derived_from_t_arm(leap_arm, leap_shipped):
+    """The leap overlay writes no T_freeze: the shipped 0.19 must already cover T_arm."""
+    _check_commit_window(leap_arm["catching"], leap_shipped["catching"], LEAP)
 
 
-def test_leap_arms_lead_the_sim_plant(leap_arms):
-    for name, arm in leap_arms.items():
-        lag = arm["catching"]["joint_cmd"]["lag"]
-        assert lag == {"T_arm": 0.05, "lead_enable": True}, name
-
-
-def test_leap_calibration_arm_only_lifts_the_supervisor_thresholds(leap_arms, leap_shipped):
-    """The calibration twin measures the UNCENSORED streak / error / age
-    distributions, so it must differ from the lead-on arm in exactly the three
-    thresholds, each set past anything a trial can produce (and inside the
-    parser's range — stale_committed_max_s is capped at 1.0)."""
-    on = _leaves(leap_arms["catch_lead_on"])
-    off = _leaves(leap_arms["catch_lead_on_unbounded"])
-    lifted = {("catching", "supervisor", k) for k in SUPERVISOR_OFF}
-    assert set(off) - set(on) == lifted
-    assert {k: v for k, v in off.items() if k not in lifted} == on
-    shipped = leap_shipped["catching"]["supervisor"]
-    for key in SUPERVISOR_OFF:
-        assert off[("catching", "supervisor", key)] > shipped[key], key
-    assert off[("catching", "supervisor", "stale_committed_max_s")] <= 1.0
-    # A trial is a few seconds; 10 s at this robot's control rate is a streak
-    # no trial can reach, whatever rate the profile ships.
-    base = _load(os.path.join(CONFIG_ROOT, LEAP, RATE_FILE[LEAP]))
-    rate = base["/**"]["ros__parameters"]["control_rate"]
-    assert off[("catching", "supervisor", "sat_ticks")] >= 10 * rate
+def test_leap_arm_leads_the_sim_plant(leap_arm):
+    assert _leaves(leap_arm) == {
+        ("catching", "joint_cmd", "lag", "T_arm"): 0.05,
+        ("catching", "joint_cmd", "lag", "lead_enable"): True,
+    }
 
 
 @pytest.mark.parametrize("profile", ("ur5e_p1b", LEAP))
