@@ -303,7 +303,7 @@ struct CatchingParams {
 
   // supervisor: (L7 §6) — the two keys the joint command layer reports to.
   TbdDouble supervisor_track_err_abort;  // rad, > 0 — L7 owns this key, L5 only reads it
-  int supervisor_n_qp{0};                // consecutive QP failures before FAULT, >= 1
+  int supervisor_n_qp{0};  // consecutive trials ended by a CLIK failure before FAULT, >= 1
 
   // supervisor: (L7 §6) — the S7.2 driver's keys. Defaults are the #537 S7
   // decisions (2026-09-23, D-S7-2 / Q6 / Q8), all provisional until S8.
@@ -328,6 +328,21 @@ struct CatchingParams {
   double supervisor_homing_v_max{0.5};
   double supervisor_homing_eta_a{0.5};
   double supervisor_homing_qd_tol{0.02};
+  /// Motion deadlines (#537 S9b, D-S9-D1) [s], > 0. `stop_s` bounds a stop —
+  /// ABORT_SAFE's ramp, and RETREAT's stop stage until the measured arm has
+  /// caught up with the stopped command; `return_s` bounds RETREAT's return to
+  /// the wait pose. Past either, the supervisor latches a fault
+  /// (ABORT_ESCALATED → FAULT). Two keys because a return scales with the
+  /// distance to the wait pose and a stop does not: one key would have to be
+  /// as loose as the longest return. Defaults are twice the longest such stage
+  /// in the S8 sim sessions, floored at 0.5 s; each shipped profile sets its
+  /// own robot's, and these parser defaults are the larger robot's (2 × 2.138
+  /// s stop, 2 × 7.380 s return), so a config without the keys is not the
+  /// tighter one. `deadline.provisional` blocks a real-arm configuration
+  /// (L0 §5.3) until S10 measures the real arm.
+  TbdDouble supervisor_deadline_stop_s{TbdDouble::Resolved(4.28)};
+  TbdDouble supervisor_deadline_return_s{TbdDouble::Resolved(14.76)};
+  bool supervisor_deadline_provisional{true};
   /// "At the wait pose": max |q − wait_pose| [rad] > 0 (Q13's skip test too).
   double supervisor_ready_pose_tol{0.02};
   /// Contact judgement (L7 §4.4, S7.3; #537 S7 Q1 / D-S7-3). A fingertip is

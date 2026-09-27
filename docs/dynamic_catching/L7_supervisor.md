@@ -52,9 +52,9 @@
 | `CLOSING` | 폐쇄 명령 | 손 `Close` | $now_{lead}\ge t_c$ → `DECEL` / 치명 조건 → `ABORT_SAFE` |
 | `DECEL` | $now_{lead}\ge t_c$ | 가상 감속 대상 추종(§4.3), 접촉 판정 | 감속 대상 정지($\tau\ge\tau_s$) → `HOLD` / 치명 조건 → `ABORT_SAFE` |
 | `HOLD` | 정지 | 유지, 결과 판정 확정 | $T_{hold}$ 경과 → `RETREAT` |
-| `RETREAT` | 종료·실패 | 정지 램프(`JointSpaceDecelStep`, ABORT_SAFE 경유 시 no-op) + 관절공간 `wait_pose` 복귀. 손은 결과에 따라 순서가 갈린다(§4.8 "RETREAT 순서") | `wait_pose` 도착(이미 안이면 즉시) + 손 `q_pre` 도달 → `ResetForRearm` → `ARMED` |
-| `ABORT_SAFE` | 치명 조건(상태 무관) | 즉시 감속 후 정지. L5 가 정상이면 §4.3 감속 대상을 L4→L5 로, **`QP_FAILED`·`JOINT_CONFLICT` 이면 QP 비의존 관절공간 감속**(아래) | 정지 → `RETREAT` / 재차 치명 조건 → `FAULT` |
-| `FAULT` | `QP_FAILED` 연속 $N_{qp}$회, 또는 `ABORT_SAFE` 중 재차 치명 조건 | QP 비의존 관절공간 감속으로 정지 후 $q_c$ 고정, 컨트롤러 fault 래치 (`HasLatchedFault()` true). **RT 에서 deactivate 를 요청하지 않는다** | `/rtc_cm/reset_fault` → `ResetFault()` → `IDLE` (P-1 reseed) |
+| `RETREAT` | 종료·실패 | 정지 램프(`JointSpaceDecelStep`, ABORT_SAFE 경유 시 no-op) + 관절공간 `wait_pose` 복귀. 손은 결과에 따라 순서가 갈린다(§4.8 "RETREAT 순서") | `wait_pose` 도착(이미 안이면 즉시) + 손 `q_pre` 도달 → `ResetForRearm` → `ARMED` / 정지·복귀 단계가 운동 기한 초과, 또는 fault latch → `FAULT` (`ABORT_ESCALATED`, D-S9-D1) |
+| `ABORT_SAFE` | 치명 조건(상태 무관) | 즉시 감속 후 정지. L5 가 정상이면 §4.3 감속 대상을 L4→L5 로, **`QP_FAILED`·`JOINT_CONFLICT` 이면 QP 비의존 관절공간 감속**(아래) | 정지 → `RETREAT` / fault latch 또는 정지 기한 초과 → `FAULT` (`ABORT_ESCALATED`) |
+| `FAULT` | CLIK 실패로 끝난 **시행**이 연속 $N_{qp}$ 회 (D-S9-D2), 또는 운동 기한 초과 — `ABORT_SAFE` 정지 램프·`RETREAT` 정지·`RETREAT` 복귀 (D-S9-D1) | QP 비의존 관절공간 감속으로 정지 후 $q_c$ 고정, 컨트롤러 fault 래치 (`HasLatchedFault()` true), 비무장. **RT 에서 deactivate 를 요청하지 않는다** | `/rtc_cm/reset_fault` → `ResetFault()` → 팔 정지 판정 통과 (D-S9-D3) → `IDLE` (P-1 reseed) |
 
 **전이는 (상태 × 사유) 표를 데이터로 둔다 `[확정 S1.8]`.** 위 표와 §4.2 표는 사람이 읽는 형태이고, 코드는 둘을 합친 표 하나를 단일 출처로 삼는다. 기동 시 완전성을 검사한다 — 모든 상태에 진입·이탈이 최소 1개씩 있고, 모든 `Reason` 이 최소 한 칸에서 쓰이며, 미정의 칸이 없어야 한다(G7-A).
 
@@ -79,7 +79,11 @@
 - **손도 측정 자세로 hold (D-S9-A).** 열지도 조이지도 않는다. `HOLD`·`RETREAT` 중이면 닫힌 자세 그대로 멈추는데, position servo 는 명령과 측정의 간극으로 힘을 내므로 **간극 0 이 되어 공을 놓는다** — 확정 동작이다 (compliance 의 #504 와 같은 기전). 긴 정지에서는 이 "측정 자세" 자체가 움직인다 — CM 이 매 tick 새 측정값으로 hold 를 다시 만들어 servo 정상상태 오차가 누적된다 (sim 에서 손 약 3.4 mrad/s, #588). 해제 뒤에도 손 latch 는 측정 자세로 재시드되어 재무장 전까지 그 자세다. device 별 hold 정책은 CM 변경이라 S9 범위 밖.
 - **단계와 무관하게 한 가지 반응 (D-S9-B).** 어느 모드든 정지 tick 에 `IDLE` (사유 `ESTOP`)·비무장, plan·손 시퀀스 무효화. `FAULT` 만 예외로 유지한다 ({FAULT, ESTOP} → FAULT). 진행 중 시행은 `Aborted` 로 끝나 정지 동안 그 값을 싣고, 해제의 리셋이 `None` 으로 되돌린다 (다음 시행은 판정 없이 시작). `HOLD` 끝에서 이미 판정된 시행은 진행 중이 아니다 — 판정은 `RETREAT` 진입 tick 에 발행되고 (§4.4 결과 판정, 시행 러너가 읽는 곳), 복귀 중 E-STOP 이나 `ABORT_SAFE` 재진입은 그것을 `Aborted` 로 덮지 않는다. 감속이 필요한 조건은 E-STOP 이 아니라 컨트롤러 소유 (`ABORT_SAFE`·`FAULT`) 다.
 - **해제 뒤 자동 재개 금지 (D-S9-C, P-1 (c)).** `IDLE`·비무장으로 남고, $q_c$ 와 CLIK 앵커를 $q_{meas}$ 로 reseed 한다. 운용자가 `catching.enable` 로 재무장하면 homing 부터 다시 한다. 채택된 `wait_pose` 는 유지하고 정지 자세를 새로 채택하지 않는다.
-- **fault 는 별개 래치 (D-S9-E1, P-1 (d)).** `ClearEstop` 은 fault 를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않으며, `FAULT` 를 global E-STOP 으로 승격하지 않는다. RT 경로의 try/catch·deactivate 는 쓰지 않는다 (RT-2). fault 의 원인·reset 거부·운동 기한은 S9b (D-S9-D1·D2·D3·K) 가 바꾼다 — 아래 §4.2 의 "재차 치명 조건" 은 그때까지 코드에 없다.
+- **fault 는 별개 래치 (D-S9-E1, P-1 (d)).** `ClearEstop` 은 fault 를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않으며, `FAULT` 를 global E-STOP 으로 승격하지 않는다. RT 경로의 try/catch·deactivate 는 쓰지 않는다 (RT-2).
+- **fault 의 원인 (S9b, D-S9-D1·D2).** 둘 뿐이고, 어느 쪽이든 전이는 `ABORT_ESCALATED` → `FAULT` 다 (새 `Reason`·메시지 필드 없음). ① **운동 기한** — `ABORT_SAFE` 의 정지 램프와 `RETREAT` 정지 단계 (명령 정지 + 측정 팔이 `track_err_abort` 안으로 따라잡음) 는 `supervisor.deadline.stop_s`, `RETREAT` 복귀 단계는 `supervisor.deadline.return_s` 안에 끝나야 한다. 시계는 각 단계의 진입 tick 에 새로 시작한다 (`ABORT_SAFE` ↔ `RETREAT` 순환마다 다시 — 순환 카운터는 두지 않는다, D-S9-I). 판정은 escalation 계층 (R-PREC 의 두 번째) 이라 준비 상실 (disarm) 보다 앞선다 — 멈추지 못한 정지를 disarm 이 감시 없는 `IDLE` 로 바꾸지 못하게. `ABORT_SAFE` 에서는 abort 를 일으킨 `track_err_` 를 읽지 않는다 (램프 완료 `abort_stopped_` 만 본다). ② **`n_qp` 시행 연속** — CLIK 실패 (`QP_FAILED`·`JOINT_CONFLICT`) 로 끝난 시행마다 +1, `HOLD` 판정 (Captured·Missed·Undetermined) 에 이른 시행이 0 으로, 다른 사유의 abort 와 E-STOP 은 값을 바꾸지 않는다. 0 으로 되돌리는 것은 그 판정·fault reset·activation 뿐이다. 이전에는 연속 **solve** 실패를 셌고 좋은 solve 가 0 으로 되돌려, 첫 solve 에서 실패하는 시행만 `n_qp` 에 닿았다. latch 가 `RETREAT` 중에 서면 `FAULT` 로 가서 복귀를 멈추고 명령을 정지까지 램프한다. 원인은 CSV 열 `fault_cause` (latch 동안 매 tick) 와 publish 스레드의 WARN 한 줄이 남긴다. latch 는 **서는 tick 에** 비무장한다 — `n_qp` latch 는 법칙 tick 안, 그 tick 의 리셋 처리 뒤에 서므로, 다음 tick 에야 내리면 그 사이에 들어온 reset 이 무장이 살아 있는 채 latch 를 풀어 abort 가 `RETREAT` → `ARMED` → 새 시행으로 이어졌다 (HEAD 에도 있던 1 tick 창, S9b `/security-review` 로 닫음).
+- **팔을 읽을 수 없을 때 (D-S9-K).** 시행 중에 팔 상태가 게이트를 통과하지 못하게 되면 (폭 부족·빈 자리 — 멈춘 stale 과 다르고 CM watchdog 이 잡지 않는다) `RETREAT` 는 정지 단계에서 복귀로 넘어가지 않고, 복귀 중이면 명령을 정지까지 램프한 뒤 유지한다 (얼리지 않는다 — latch 뒤 명령은 계속 나가므로 한 tick 속도 계단이 된다). 기한은 계속 가서 넘으면 `FAULT`, 기한 안에 다시 읽히면 정지된 명령에서 복귀를 이어 간다.
+- **fault reset 은 팔이 정지해야 받는다 (D-S9-D3).** reset 요청 tick 에 ① carried 명령 속도가 0, ② 팔 속도 lane 이 판독 가능 (`IsLaneReadable`; 아니면 거부 — fail-closed), ③ 측정 |q̇| ≤ `supervisor.homing.qd_tol` (새 키 없음). 하나라도 아니면 latch 가 남고 그 tick 의 CSV `fault_reset_refused` (1 명령 램프 중 · 2 측정 속도 · 3 lane 판독 불가) 와 WARN 한 줄로 알린다. 거부는 대기열에 쌓이지 않는다 — 운용자가 다시 부른다. CM 의 응답 문구는 "원인이 남아 있다" 로 바뀌지 않는다.
+- **E-STOP 중 reset (D-S9-L).** 정지 판정을 통과하면 latch 는 그 tick 에 내려가지만 모드는 E-STOP 이 풀릴 때까지 `FAULT` 로 보이고 (ESTOP 최우선, R-PREC), 해제 tick 에 `FAULT_RESET` 으로 `IDLE`·비무장이 된다. 이 구간의 "`FAULT` 표시 + `fault_latched` 0" 은 "reset 은 받았고 해제를 기다린다" 는 뜻이다. `ABORT_SAFE` 에서 latch 가 선 tick 과 escalation tick 사이에 E-STOP 이 오면 `IDLE` 에 latch 만 남는다 — 그 상태의 reset 은 `IDLE` 에 머물고 사유 `FAULT_RESET` 을 한 tick 싣는다.
 - **운용 절차.** ① E-STOP 해제 (`/rtc_cm/clear_estop` — 빈 `reason_ack` 로 한 번 호출해 거부 메시지에서 사유를 읽고, 확인 뒤 그 사유로 다시 호출; GUI 헤더의 "Clear E-STOP" 이 이 2 단계다) → ② fault 가 있으면 reset (`/rtc_cm/reset_fault`, 활성 컨트롤러의 `Name()`; GUI "Reset fault") → ③ 손에 남은 공 제거 → ④ `catching.enable` 로 재무장. `catching_diag` 플롯은 두 latch 구간을 색을 달리해 음영으로 보인다.
 - 실기 쪽 (드라이브 hold 반응, 실기 E-stop·보호정지와 소프트웨어 latch 의 관계, 해제 뒤 드라이버 재개 절차) 은 S10 (D-S9-G).
 
@@ -114,13 +118,13 @@
 | `PRED_INCONSISTENT` | L1 예측 일관성 지표 $\bar\nu$ 가 임계 초과 (L1 §4.5) | `TRACKING`, `APPROACH` | `RETREAT` (`TRACKING` 이면 `ARMED`). 동결 후에는 기록만. **명시 면제 — 발화 0 (2026-09-24 D-S8-7 (a))**: $\bar\nu$ 생산자를 만들지 않기로 했다 (`io.pred.nu_reg` 은퇴, L1 §6). 전이표 행 (`kPredInconsistent`) 은 남고 완전성 검사 대상이지만 어떤 tick 도 이 사유를 내지 않는다. 예측 일관성은 추정기 innovation/nis 를 오프라인으로 본다 (plan §7.3) |
 | `NO_CATCHABLE_PLAN` | 계획기가 plan 없음을 게시 (catchability manipulability 미달 D-18, IK 실패, 도달 불가 — 세부 사유는 L3 plan 사유 코드) | `TRACKING` | 비치명. `TRACKING` 유지, 기록 |
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
-| `QP_FAILED` | L5 QP 실패 status | 전 구간 | `ABORT_SAFE` (QP 비의존 경로, §4.1). 연속 $N_{qp}$회면 `FAULT` |
+| `QP_FAILED` | L5 QP 실패 status | 전 구간 | `ABORT_SAFE` (QP 비의존 경로, §4.1). 이 실패로 끝난 **시행**이 연속 $N_{qp}$ 회면 `FAULT` (D-S9-D2 — solve 단위가 아니다, §4.1) |
 | `REF_SATURATED` | L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick (기본 **60** = 0.12 s @ 500 Hz, provisional — S7 설계 확정, D-8: γ 하향 없음. 처음 제안한 5 는 정지 상태에서 접근을 시작한 reference 의 정상 포화 (단위 fixture 실측 10·76 tick) 를 잘랐다. 100 으로 올린 뒤 sim 25 투척 (`260923_2336`) 의 정상 연속 길이가 max 44 · p99 42.5 로 나와 50 으로 내렸다. 50 재측정 (`260924_0013`) 에서 이미 빗나간 공의 CLOSING 에서 1 회 발화했고 미발화 최장이 40·33 이라 여유를 두어 60 으로 올렸다, #537 결정 2026-09-24) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]`. `sat_ticks` 는 sim 정상 시행의 연속 길이 분포로 확인 후 확정한다 (D-S7-4, plan §7.3) — **S8-B 확정 (2026-09-24)**: p1b 80 (판정을 끈 200 투척 재측정 연속 max 61), iiwa7_leap 60 명시 (S8-D 재측정); 두 profile YAML 이 값을 명시하고 기본 60 은 키가 없는 config 용 (§6) |
 | `GAMMA_DERATED` | v0.5 에서 삭제 — γ 하향은 v1 범위 밖 (D-8, §4.6) | – | – |
 | `SAT_NEAR_TC` | v0.5 에서 삭제 — `REF_SATURATED` 로 대체 (D-8) | – | – |
 | `JOINT_CONFLICT` | L5 `bound_conflict` | 전 구간 | `ABORT_SAFE` (QP 비의존 경로) |
 | `TRACK_ERR` | $\Vert q-q_c(now-T_{arm})\Vert>$ 임계. ⚠️ **구현 편차 (2026-09-24 확인)**: `DemoCatchingController::UpdateTrackError` 는 지연 링 없이 $\Vert q_{meas}-q_c(now)\Vert$ 를 쓴다 (§5.2 의 링은 구현되지 않았다) — 선행을 켜도 명령이 측정보다 T_arm 앞서므로 피크가 줄지 않는다 (τ 0.2 sim 관측 ~0.77 rad → 종전 `track_err_abort` 1.54). 정의를 링으로 바꾸는 것은 RT 변경이라 S8 범위 밖. S8-B (τ 0.05 sim) 의 t_c 전 피크는 lead on·off 모두 0.21 rad 라 p1b 임계는 0.42. leap (S8-D, τ 0.05 sim) 은 검사 구간 전체 최대가 첫 homing 0.238 rad 라 0.48 | 전 구간 | `ABORT_SAFE` |
-| `ABORT_ESCALATED` | `ABORT_SAFE` 중 재차 치명 조건 | `ABORT_SAFE` | `FAULT` |
+| `ABORT_ESCALATED` | fault latch (`n_qp` 시행 연속, D-S9-D2) 또는 운동 기한 초과 (D-S9-D1) — 원인은 CSV `fault_cause` | `ABORT_SAFE`, `RETREAT` | `FAULT` |
 | `ESTOP` | E-STOP 발동·해제 (§4.1 P-1, S5.1 최소 계약) | 전 구간 | 발동: 상태 정리, 해제: `IDLE`. 단 `FAULT` 에서는 `FAULT` 유지 — 해제가 fault 래치를 풀지 않는다 (P-1, S5.1(d)) |
 | `FAULT_RESET` | `ResetFault` | `FAULT` | `IDLE` |
 | `SPEED_SCALING` | speed scaling ≠ 1 | 전 구간 | `ABORT_SAFE`. **repo 에 신호 출처 없음 → sim 비활성, S10** |
@@ -256,7 +260,7 @@ $$\Delta p=m_{ball}\,(1-\gamma_f)\Vert v(t_c)\Vert$$
 | L7 접촉 debounce 카운터 | L7 | 둘 다 | $N_{deb}$ 연속 카운터를 0 으로 | 직전 시행 종료 시점의 연속 참 카운트가 남아 새 시행 초반에 한두 샘플만으로 접촉 확정된다 |
 | L7 stale 타이머 | L7 | 둘 다 | `BALL_STALE_COMMITTED` 지속 시간 0 | 직전 시행의 stale 누적으로 `BALL_STALE_LONG` 오abort |
 | L7 트랙 identity (`committed_generation_`, `last_trial_generation_`) | L7 (§4.1 R-TRACK, Q15) | 분리(우측 참고) | `ResetForRearm` 이 `last_trial_generation_` 을 **쓰고**(직전 시행 generation 을 거부 대상으로 기록), `ResetTrialState` 가 그 값을 **지운다** | 지우지 않으면 그 트랙이 E-STOP·fault 리셋을 넘어 계속되는 경우(track epoch 는 activation 과 별개, D-4) 여전히 유효한 그 generation 이 다음 활성화 이후에도 usable 로 보이지 않아, 새 vision generation 이 도착할 때까지 계획을 영영 못 받는다 |
-| L7 `QP_FAILED` 연속 카운터 (`qp_fail_streak_`) | L7 | **`ResetTrialState` 전용 — `ResetForRearm` 은 면제(C-29)** | `ResetTrialState` 만 0 으로. 재무장에서 지우면 안 된다 | 재무장마다 지우면 연속 QP 실패가 시행 경계를 못 넘어 `FAULT` 에스컬레이션(`n_qp`)에 **영영 도달하지 못한다** — 반대 방향의 결함이다 |
+| L7 `QP_FAILED` 시행 카운터 (`qp_fail_streak_`) | L7 | **activation 과 fault reset 만 — `ResetForRearm`(C-29)·E-STOP 은 면제 (D-S9-D2)** | activation (`ResetTrialState` 의 `reset_mode`) 과 fault reset 에서 0. 그 밖에는 `HOLD` 판정이 0 으로 되돌린다 | 재무장마다 지우면 CLIK 실패 시행이 시행 경계를 못 넘어 `FAULT` 에스컬레이션(`n_qp`)에 **영영 도달하지 못한다** — 반대 방향의 결함이다. E-STOP 이 지우면 정지가 풀이 불가능성에 대해 아무것도 말하지 않는데도 기록을 잃는다 |
 | L7 결과·사유 | L7 | 둘 다 | `Outcome::None`, `Reason::None` | 진단 오염 |
 
 **완전성 규칙.** 전이표 완전성 검사(§4.1 G7-A)와 같은 방식으로, **모든 stateful 멤버는 이 표에 있거나 명시적으로 면제되어야 한다** — 새 stateful 멤버를 추가하면서 이 표를 갱신하지 않는 것을 금지한다 (S7.4 게이트, G8-A2). 표의 주장이 참인지는 **런타임 poison 테스트**로 검증한다 — 테스트 전용 accessor 로 모든 RT 멤버에 비기본값을 채운 뒤 `ResetForRearm`/`ResetTrialState` 를 불러, 표가 주장하는 멤버만 바뀌고 면제는 그대로인지 단언한다(존재 린터만으로는 값이 실제로 리셋되는지 보장하지 못한다).
@@ -311,7 +315,10 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.gamma.*` | — | – | – | – | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8). `eta_sat`·`max_derates`·`min_interval`·`ramp`·`derate_step` 전부 |
 | `supervisor.impact.dp_max` | double | kg·m/s | `TBD` | >0 | §4.7 `TBD-IMP-01` |
 | `supervisor.stale_committed_max_s` | double | s | **0.10** (provisional, #537 S7 결정 2026-09-23; S8-B 튜닝 세트의 COMMITTED 스냅샷 age 최대 65 ms < `io.t_stale` 라 조일 근거가 없어 유지, 두 로봇 YAML 에 명시; leap 도 S8-D 교정 나이 max 66 ms 로 유지) | ≥0 | §4.2 `[확정 A-6]` |
-| `supervisor.n_qp` | int | – | `TBD` | ≥1 | §4.1 `FAULT` 진입 연속 `QP_FAILED` 수 |
+| `supervisor.n_qp` | int | – | `TBD` (두 로봇 YAML **3**) | ≥1 | §4.1 `FAULT` 진입 — CLIK 실패 (`QP_FAILED`·`JOINT_CONFLICT`) 로 끝난 **시행**의 연속 수 (S9b, D-S9-D2; 전에는 solve 수) |
+| `supervisor.deadline.stop_s` | double | s | 파서 **4.28**. YAML: ur5e_p1b **4.28** (S8 sim 최대 — `ABORT_SAFE` 램프 1.546 s · `RETREAT` 정지 2.138 s — 의 2 배), iiwa7_leap **0.50** (정지 최대 0.066 s 의 2 배가 하한 아래; 코퍼스에 abort 없음) | >0 | §4.1 운동 기한 (D-S9-D1): `ABORT_SAFE` 램프·`RETREAT` 정지 단계. 넘으면 `FAULT` |
+| `supervisor.deadline.return_s` | double | s | 파서 **14.76**. YAML: ur5e_p1b **14.76** (복귀 최대 7.380 s 의 2 배 — S8-F 손 근처 투척의 큰 복귀), iiwa7_leap **6.09** (3.044 s 의 2 배) | >0 | §4.1 운동 기한 (D-S9-D1): `RETREAT` 복귀 단계 |
+| `supervisor.deadline.provisional` | bool | – | `true` (fail-closed) | – | 두 기한의 L0 §5.3 플래그 — sim 은 경고, 실기 구성은 park. 실기 값은 S10 (D-S9-G) |
 | `supervisor.track_err_abort` | double | rad | `TBD` (YAML: ur5e_p1b **0.42** — S8-B sim 피크 0.21 의 2 배; iiwa7_leap **0.48** — S8-D sim 첫 homing 피크 0.238 의 2 배) | >0 | **단일 원천.** L5 는 이 키를 참조만 한다. 실기 값은 S10 |
 | `supervisor.decel.a_dec` | double | m/s² | **10.0** (provisional — 2026-09-22 사용자 확정, S3.5b gate 지도가 돌린 값; `reference.a_max` 확정 시 ≤ 재검, plan §7.3) | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3). 두 로봇 `demo_catching_controller.yaml` 에 기록 — 소비자는 S6 계획기의 정지점 예약 (`planner_search.cpp`) 과 S7 DECEL 이다 |
 | `supervisor.decel.ramp_time` | double | s | 0.0 | 0–0.1 | §4.3 |
@@ -367,10 +374,13 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | catchability 탈락 | Tracking 유지, `NoCatchablePlan` 기록 |
 | 동결 전 포화 | … → Approach → Retreat, `RefSaturated` |
 | 동결 후 포화 | … → Committed → AbortSafe, `RefSaturated` |
-| QP 실패 | 임의 상태 → AbortSafe(QP 비의존 감속), `QpFailed`. 연속 $N_{qp}$회 → Fault |
+| QP 실패 | 임의 상태 → AbortSafe(QP 비의존 감속), `QpFailed`. CLIK 실패로 끝난 시행 연속 $N_{qp}$회 → Fault (좋은 solve 뒤의 실패도 센다, `HOLD` 판정이 끼면 0 — D-S9-D2) |
 | 관절 경계 충돌 | 임의 상태 → AbortSafe(QP 비의존 감속), `JointConflict` |
 | E-STOP 발동·해제 | 임의 상태 → (CM hold) → Idle, 자동 재개 없음, $q_c$·앵커 = $q_{meas}$ |
-| fault 리셋 | Fault → Idle (`ResetFault`) |
+| fault 리셋 | Fault → Idle (`ResetFault`, 팔 정지 뒤). 정지 전·속도 lane 판독 불가면 Fault 유지, `fault_reset_refused` 기록 (D-S9-D3) |
+| 운동 기한 초과 (D-S9-D1) | AbortSafe 램프·Retreat 정지·Retreat 복귀 → Fault, `AbortEscalated`, `fault_cause` 가 기한을 가리킴. Fault 는 명령을 정지까지 램프 |
+| 복귀 중 팔 판독 불가 (D-S9-K) | Retreat 에서 명령 정지 유지 → 기한 초과면 Fault, 기한 안에 다시 읽히면 복귀 재개 → Armed |
+| E-STOP 중 fault 리셋 (D-S9-L) | Fault (latch 내려감) → 해제 tick 에 Idle, `FaultReset` |
 | TBD 파라미터 | Idle 유지, `ParamsTbd` |
 
 | 게이트 | 기준 | 태그 |
@@ -388,4 +398,4 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 
 ## 10. 미확정 항목
 
-TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(0.10, S8-B 로 유지·YAML 명시), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`(값은 provisional 로 닫힘, S8 튜닝), `supervisor.impact.dp_max`, `supervisor.sat_ticks`(S8-B: p1b 80; S8-D: iiwa7_leap 60 유지), QP 비의존 감속 식(S5.3), E-STOP·fault 정책(S9, D-13). homing 은 `IDLE` 하위 단계로 닫혔다(S1.8 헤더 해석, §4.1). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).
+TBD-HAND-03(잡음), TBD-IMP-01(§4.7), `supervisor.stale_committed_max_s`(0.10, S8-B 로 유지·YAML 명시), `supervisor.n_qp`, `supervisor.decel.a_dec`, `supervisor.contact.*`(값은 provisional 로 닫힘, S8 튜닝), `supervisor.impact.dp_max`, `supervisor.sat_ticks`(S8-B: p1b 80; S8-D: iiwa7_leap 60 유지), QP 비의존 감속 식(S5.3). E-STOP·fault 정책은 S9 로 닫혔다 (D-13 — S9a 현행 고정, S9b FAULT 확장); 남은 것은 `supervisor.deadline.*` 의 실기 값 (provisional, 실기 구성은 S10 까지 park — D-S9-G). homing 은 `IDLE` 하위 단계로 닫혔다(S1.8 헤더 해석, §4.1). S10 이월: TBD-ARM-03(speed scaling), TBD-NET-01(PTP).

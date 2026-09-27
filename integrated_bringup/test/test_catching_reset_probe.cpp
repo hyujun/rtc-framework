@@ -260,6 +260,32 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c_.wait_pose_[0], 9.0);
   }
 
+  /// #537 S9b (D-S9-D2): the QP-failure streak survives an E-STOP reset and is
+  /// cleared by an activation; the fault's cause is left to the fault reset,
+  /// and the deadline clock restarts with the RETREAT stage T puts back.
+  void CheckTheStreakAndTheFaultRowsAcrossResets() {
+    using Cause = CatchingDiagLogPod::FaultCause;
+    Poison();
+    c_.fault_cause_ = Cause::kQpFailures;
+    c_.motion_start_ns_ = kNs;
+    TrialReset(/*reset_mode=*/false);
+    EXPECT_EQ(c_.qp_fail_streak_, 2) << "D-S9-D2: an E-STOP does not clear the streak";
+    EXPECT_EQ(c_.fault_cause_, Cause::kQpFailures) << "the cause goes with the latch";
+    EXPECT_GT(c_.motion_start_ns_, kNs)
+        << "the clock restarts with the stage the reset puts back to kStop";
+
+    Poison();
+    c_.fault_cause_ = Cause::kStopDeadline;
+    c_.motion_start_ns_ = kNs;
+    Rearm();
+    EXPECT_EQ(c_.fault_cause_, Cause::kStopDeadline);
+    EXPECT_EQ(c_.motion_start_ns_, kNs);
+
+    Poison();
+    TrialReset(/*reset_mode=*/true);
+    EXPECT_EQ(c_.qp_fail_streak_, 0) << "an activation starts the count again";
+  }
+
  private:
   DemoCatchingController& c_;
 };
@@ -300,6 +326,12 @@ TEST(CatchingResetProbe, IdleEnteredFromArmedResetsNoTrialState) {
   DemoCatchingController ctrl{""};
   Probe p(ctrl);
   p.CheckIdleFromArmedResetsNothing();
+}
+
+TEST(CatchingResetProbe, AnEstopKeepsTheQpStreakAndResetsLeaveTheFaultRowsAlone) {
+  DemoCatchingController ctrl{""};
+  Probe p(ctrl);
+  p.CheckTheStreakAndTheFaultRowsAcrossResets();
 }
 
 TEST(CatchingResetProbe, AnEstopResetLeavesTheModeToTheTable) {

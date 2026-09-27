@@ -2355,6 +2355,546 @@ TEST_F(TickBodyTest, TheHandWitnessIsThisTicksAndEmptyOnceTheHandLetsGo) {
   EXPECT_DOUBLE_EQ(log_[ru].body.hand_blocked_s, 0.0);
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// #537 S9b — the FAULT extension (D-S9-D1 / D2 / D3 / K / L)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// What each decision adds, and the case that pins it:
+//   D1  a stop (ABORT_SAFE ramp, RETREAT stop) or a return that runs past its
+//       deadline latches a fault — ABORT_ESCALATED → FAULT — and FAULT brings
+//       the carried command to rest inside the acceleration box;
+//   K   RETREAT does not move an arm it cannot read: the return is ramped to
+//       rest and held, its deadline keeps running, and a readable arm resumes;
+//   D2  n_qp counts TRIALS ended by a CLIK failure — a failure after good
+//       solves counts, a verdict at HOLD ends the run, nothing else does;
+//   D3  a fault reset is refused until the arm is at rest (command AND
+//       measurement, velocity lane vouched for);
+//   L   a reset under an E-STOP drops the latch at once and leaves FAULT on
+//       the clear.
+// The within-deadline counterparts of D1 are the existing cases that abort,
+// lag or return and re-arm: ATrackErrAbort…, AServoStillLagging… (the 60-tick
+// lag), and every trial that reaches ARMED again — all run with the default
+// deadlines, unchanged.
+
+using FaultCause = integrated_bringup::CatchingDiagLogPod::FaultCause;
+using FaultResetRefusal = integrated_bringup::CatchingDiagLogPod::FaultResetRefusal;
+
+class FaultExtensionTest : public SupervisorScenarioTest {
+ protected:
+  static double Speed(const TickRec& r) {
+    double s = 0.0;
+    for (double v : r.qd_cmd) {
+      s = std::max(s, std::abs(v));
+    }
+    return s;
+  }
+
+  /// First tick at or after `from` satisfying `pred`, or -1.
+  int First(const std::function<bool(const TickRec&)>& pred, std::size_t from = 0) const {
+    for (std::size_t i = from; i < log_.size(); ++i) {
+      if (pred(log_[i])) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
+
+  static std::function<void(YAML::Node&)> Deadlines(double stop_s, double return_s) {
+    return [stop_s, return_s](YAML::Node& y) {
+      y["catching"]["supervisor"]["deadline"]["stop_s"] = stop_s;
+      y["catching"]["supervisor"]["deadline"]["return_s"] = return_s;
+    };
+  }
+
+  static void OracleOff(YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; }
+
+  /// A plan for `generation`, published now, catching at NearPc() `t_c_s`
+  /// from now. `degenerate_axis` zeroes the approach axis — the plan CLIK
+  /// cannot solve (QpFailuresAbortAndTheThirdLatches… uses the same, through
+  /// the oracle).
+  PlanSnapshot PlanFor(std::uint64_t generation, double t_c_s, bool degenerate_axis) {
+    PlanSnapshot p{};
+    const std::int64_t now = rtc::SteadyNowNs();
+    p.valid = true;
+    p.token.activation_generation = ctrl_->GetPlannerRtState().activation_generation;
+    p.token.generation = generation;
+    p.plan_id = next_plan_id_++;
+    const Eigen::Vector3d pc = NearPc();
+    const Eigen::Vector3d ad = degenerate_axis ? Eigen::Vector3d::Zero() : StartAxis();
+    p.p_c = {pc.x(), pc.y(), pc.z()};
+    p.a_d = {ad.x(), ad.y(), ad.z()};
+    p.publish_ns = now;
+    p.gamma_t0_ns = now;
+    p.t_c_ns = now + static_cast<std::int64_t>(t_c_s * 1e9);
+    p.t_cmd_ns = p.t_c_ns;
+    p.gamma_t1_ns = p.t_c_ns;
+    return p;
+  }
+
+  /// From ARMED on the current ball: a trial that the solver ends AFTER a run
+  /// of good solves — a good plan, `good_ticks` law ticks, then a replacement
+  /// plan (§4.7) with an axis CLIK cannot solve. Ends on the ABORT_SAFE entry.
+  void MidTrialClikFailure(int good_ticks = 20) {
+    ASSERT_TRUE(TickUntilMode(Mode::kTracking, 200)) << Transitions();
+    ctrl_->PlanBoxForTesting().Store(PlanFor(generation_, 2.0, false));
+    ASSERT_TRUE(TickUntilMode(Mode::kApproach, 5)) << Transitions();
+    const std::size_t approach = log_.size() - 1;
+    Ticks(good_ticks);
+    ASSERT_EQ(ctrl_->GetMode(), Mode::kApproach) << Transitions();
+    ASSERT_GT(CountTicks([](const TickRec& r) { return r.body.clik_converged; }, approach),
+              good_ticks / 2)
+        << "precondition: the trial was not solving before the failure";
+    ctrl_->PlanBoxForTesting().Store(PlanFor(generation_, 2.0, true));
+    ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 5)) << Transitions();
+    ASSERT_EQ(ctrl_->GetLastReason(), Reason::kQpFailed) << Transitions();
+  }
+
+  /// In RETREAT: tick until the RETURN moves — the carried speed RISING (the
+  /// stop only brings a residual speed down), as AnAbortDuringTheReturn… does.
+  bool TickUntilTheReturnMoves(int max_ticks) {
+    double prev = std::numeric_limits<double>::infinity();
+    return TickUntil(
+        [this, &prev] {
+          const double s = Speed(log_.back());
+          const bool rising = s > prev;
+          prev = s;
+          return ctrl_->GetMode() == Mode::kRetreat && rising;
+        },
+        max_ticks);
+  }
+
+  /// FAULT by the stop deadline, from an ABORT_SAFE whose ramp needs more than
+  /// the one tick a sub-tick deadline allows. Leaves the log at the FAULT entry.
+  void FaultByTheStopDeadline() {
+    ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(3.0), StartAxis(), 0.0, 1.0, Deadlines(0.001, 5.0)));
+    ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();
+    const std::vector<double> qdd = DerivedQddMax();
+    ASSERT_TRUE(TickUntil(
+        [this, &qdd] {
+          const auto& v = ctrl_->GetArmVelocityCommandForTesting();
+          for (int j = 0; j < kUr5eArmDof; ++j) {
+            const auto u = static_cast<std::size_t>(j);
+            if (std::abs(v[u]) > 2.0 * qdd[u] * kDt) {
+              return true;
+            }
+          }
+          return false;
+        },
+        300))
+        << "precondition: the approach never got fast enough to need a two-tick stop\n"
+        << Transitions();
+    ASSERT_EQ(ctrl_->GetMode(), Mode::kApproach) << Transitions();
+    state_.devices[0].positions[1] += 0.6;  // one tick of TRACK_ERR (see ATrackErrAbort…)
+    ASSERT_TRUE(TickUntilMode(Mode::kFault, 20)) << Transitions();
+  }
+
+  /// From `from` on, the carried command only decelerates, inside the D-16
+  /// box (no one-tick velocity step), and ends at rest, holding still.
+  void ExpectRampedToRestFrom(std::size_t from, const char* what) const {
+    ASSERT_GT(from, 0U);
+    const std::vector<double> qdd = DerivedQddMax();
+    for (std::size_t i = from; i < log_.size(); ++i) {
+      for (int j = 0; j < kUr5eArmDof; ++j) {
+        const auto u = static_cast<std::size_t>(j);
+        const double dv = log_[i].qd_cmd[u] - log_[i - 1].qd_cmd[u];
+        ASSERT_LE(std::abs(dv), qdd[u] * kDt + 1e-9)
+            << what << ": tick " << i << " joint " << j << " steps its velocity by " << dv << '\n'
+            << Window(static_cast<int>(i), 2);
+        ASSERT_LE(std::abs(log_[i].qd_cmd[u]), std::abs(log_[i - 1].qd_cmd[u]) + 1e-12)
+            << what << ": tick " << i << " joint " << j << " speeds up\n"
+            << Window(static_cast<int>(i), 2);
+      }
+    }
+    const int rest = First([](const TickRec& r) { return Speed(r) == 0.0; }, from);
+    ASSERT_GE(rest, 0) << what << ": the command never came to rest\n" << Transitions();
+    for (std::size_t i = static_cast<std::size_t>(rest); i < log_.size(); ++i) {
+      for (int j = 0; j < kUr5eArmDof; ++j) {
+        const auto u = static_cast<std::size_t>(j);
+        ASSERT_EQ(log_[i].q_cmd[u], log_[static_cast<std::size_t>(rest)].q_cmd[u])
+            << what << ": tick " << i << " joint " << j << " moves after the stop";
+      }
+    }
+  }
+
+  std::uint32_t next_plan_id_{1};
+};
+
+// ── D-S9-D1: the motion deadlines ───────────────────────────────────────────
+
+TEST_F(FaultExtensionTest, AnAbortSafeRampPastTheStopDeadlineFaultsAndStillStops) {
+  ASSERT_NO_FATAL_FAILURE(FaultByTheStopDeadline());
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kFault});
+  const int f = Entry(Mode::kFault);
+  ASSERT_GT(f, 0);
+  const auto fu = static_cast<std::size_t>(f);
+  EXPECT_EQ(log_[fu].reason, Reason::kAbortEscalated);
+  EXPECT_EQ(log_[fu].body.fault_cause, FaultCause::kStopDeadline);
+  EXPECT_TRUE(log_[fu].body.fault_latched);
+  EXPECT_GT(Speed(log_[fu - 1]), 0.0) << "precondition: the ramp had not finished at the deadline";
+  // FAULT does not drop the stop the deadline interrupted: it finishes it.
+  Ticks(100);
+  ExpectRampedToRestFrom(fu, "FAULT after a late ramp");
+  EXPECT_EQ(ctrl_->GetMode(), Mode::kFault);
+  EXPECT_TRUE(ctrl_->HasLatchedFault());
+  EXPECT_FALSE(ctrl_->IsArmRequested()) << "a latched fault must disarm";
+  EXPECT_EQ(log_.back().body.fault_cause, FaultCause::kStopDeadline) << "the cause is a state";
+}
+
+TEST_F(FaultExtensionTest, ARetreatStopWhoseServoNeverCatchesUpFaultsAtTheStopDeadline) {
+  // AServoStillLagging… recovers inside the default deadline. This servo never
+  // does: RETREAT waits in its stop for a catch-up that does not come, and the
+  // stop deadline ends the wait in FAULT — without starting the return, which
+  // would drive an arm that is not following.
+  constexpr double kStopS = 0.3;
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 1.0, Deadlines(kStopS, 5.0)));
+  ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();
+  Ticks(20);
+  pre_tick_ = [this] { state_.devices[0].positions[1] += 0.6; };
+  ASSERT_TRUE(TickUntilMode(Mode::kFault, 800)) << Transitions();
+  pre_tick_ = nullptr;
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kRetreat, Mode::kFault});
+  const int r = Entry(Mode::kRetreat);
+  const int f = Entry(Mode::kFault);
+  ASSERT_GT(r, 0);
+  ASSERT_GT(f, r);
+  const auto ru = static_cast<std::size_t>(r);
+  const auto fu = static_cast<std::size_t>(f);
+  EXPECT_EQ(log_[fu].reason, Reason::kAbortEscalated);
+  EXPECT_EQ(log_[fu].body.fault_cause, FaultCause::kStopDeadline);
+  // On time: the RETREAT entry tick's clock read is inside [before, after] of
+  // that tick, the FAULT tick's inside its own.
+  const double waited = static_cast<double>(log_[fu].after_ns - log_[ru].before_ns) * 1e-9;
+  EXPECT_GE(waited, kStopS) << Window(f, 2);
+  EXPECT_LT(waited, kStopS + 0.1) << Window(f, 2);
+  // No return was started: the command stood still through the whole RETREAT.
+  for (std::size_t i = ru; i < fu; ++i) {
+    ASSERT_EQ(Speed(log_[i]), 0.0) << "RETREAT moved an arm that never caught up\n"
+                                   << Window(static_cast<int>(i), 2);
+  }
+}
+
+TEST_F(FaultExtensionTest, AReturnPastItsDeadlineFaultsAndTheReturnStops) {
+  // A caught ball's return (NearPc(2.0): a few tenths of a second) against a
+  // 50 ms return deadline. A latch during RETREAT stops the return: FAULT
+  // ramps the command to rest where it is, short of the wait pose.
+  constexpr double kReturnS = 0.05;
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(2.0), StartAxis(), 0.0, 0.6, Deadlines(2.0, kReturnS)));
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kFault, 400)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kFault});
+  const int f = Entry(Mode::kFault);
+  const auto fu = static_cast<std::size_t>(f);
+  EXPECT_EQ(log_[fu].reason, Reason::kAbortEscalated);
+  EXPECT_EQ(log_[fu].body.fault_cause, FaultCause::kReturnDeadline);
+  EXPECT_GT(Speed(log_[fu - 1]), 0.0) << "precondition: the return was under way";
+  Ticks(100);
+  ExpectRampedToRestFrom(fu, "FAULT during the return");
+  EXPECT_FALSE(ArmMeasuredAtWait(log_.back())) << "the return went on after the latch";
+  EXPECT_FALSE(ctrl_->IsArmRequested());
+}
+
+TEST_F(FaultExtensionTest, AnEstopPairBetweenTwoTicksDoesNotTimeTheStopOnTheReturnsClock) {
+  // A trigger→clear pair that lands between two ticks is seen as one epoch
+  // move: the reset puts RETREAT back to its stop stage while the mode stays
+  // RETREAT. That stop must be timed from the reset, not from when the return
+  // began — else a stop deadline shorter than the return so far reads it as
+  // overdue on its first tick (2026-09-27 /code-review).
+  // stop_s 0.15: above RETREAT's own stop here (the HOLD leaves ~0.1 rad/s on
+  // the command, ~0.05 s to ramp out at the fixture's 2.03 rad/s² box), below
+  // how far into the return the pair lands.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(2.0), StartAxis(), 0.0, 0.6, Deadlines(0.15, 5.0)));
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilTheReturnMoves(300)) << Transitions();
+  const std::int64_t return_seen = log_.back().before_ns;
+  Ticks(85);
+  ASSERT_GT(log_.back().after_ns - return_seen, 150 * kMsNs) << "precondition: past stop_s";
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kRetreat) << "precondition: still returning\n" << Transitions();
+  ctrl_->TriggerEstop();
+  ctrl_->ClearEstop();
+  const std::size_t pair = log_.size();
+  Ticks(50);
+  EXPECT_EQ(CountTicks([](const TickRec& r) { return r.mode == Mode::kFault; }, pair), 0)
+      << "a false stop-deadline FAULT\n"
+      << Window(static_cast<int>(pair), 3);
+  EXPECT_FALSE(ctrl_->HasLatchedFault());
+  EXPECT_EQ(ctrl_->GetMode(), Mode::kIdle) << "the pair disarms (P-1 (c))\n" << Transitions();
+  EXPECT_FALSE(ctrl_->IsArmRequested());
+}
+
+// ── D-S9-K: an arm the controller cannot read ───────────────────────────────
+
+TEST_F(FaultExtensionTest, AnArmUnreadableDuringTheReturnIsStoppedAndFaultsAtTheDeadline) {
+  constexpr double kReturnS = 0.3;
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(2.0), StartAxis(), 0.0, 0.6, Deadlines(2.0, kReturnS)));
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilTheReturnMoves(300)) << Transitions();
+  // Slot 0 never written: the gate closes (a hole, not a stale value).
+  state_.devices[0].hole_mask = 1;
+  const std::size_t cut = log_.size();
+  ASSERT_TRUE(TickUntilMode(Mode::kFault, 400)) << Transitions();
+  const int f = Entry(Mode::kFault, 0, cut);
+  ASSERT_GT(f, static_cast<int>(cut));
+  const auto fu = static_cast<std::size_t>(f);
+  EXPECT_EQ(log_[fu - 1].mode, Mode::kRetreat);
+  EXPECT_EQ(log_[fu].reason, Reason::kAbortEscalated);
+  EXPECT_EQ(log_[fu].body.fault_cause, FaultCause::kReturnDeadline);
+  Ticks(20);
+  // From the cut on: ramped to rest inside the box and held — no return motion
+  // onto an arm nobody can see, in RETREAT or after it.
+  ExpectRampedToRestFrom(cut, "RETREAT with the arm unreadable");
+  const int rest = First([](const TickRec& r) { return Speed(r) == 0.0; }, cut);
+  EXPECT_LT(rest, f) << "the command was still moving when the deadline fired";
+}
+
+TEST_F(FaultExtensionTest, AnArmReadableAgainInsideTheDeadlineResumesTheReturn) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(2.0), StartAxis(), 0.0, 0.6, Deadlines(2.0, 3.0)));
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilTheReturnMoves(300)) << Transitions();
+  state_.devices[0].hole_mask = 1;
+  const std::size_t cut = log_.size();
+  Ticks(60);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kRetreat) << Transitions();
+  const std::size_t back = log_.size();
+  ExpectRampedToRestFrom(cut, "RETREAT with the arm unreadable");
+  EXPECT_EQ(Speed(log_[back - 1]), 0.0) << "held at rest while unreadable";
+  EXPECT_FALSE(ArmMeasuredAtWait(log_[back - 1])) << "precondition: the return was not over";
+  state_.devices[0].hole_mask = 0;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+  EXPECT_GT(CountTicks([](const TickRec& r) { return Speed(r) > 0.0; }, back), 0)
+      << "the return did not resume";
+  EXPECT_TRUE(ArmMeasuredAtWait(log_.back()));
+  EXPECT_EQ(CountTicks([](const TickRec& r) { return r.mode == Mode::kFault; }), 0)
+      << Transitions();
+  EXPECT_FALSE(ctrl_->HasLatchedFault());
+}
+
+// ── D-S9-D2: n_qp counts trials ─────────────────────────────────────────────
+
+TEST_F(FaultExtensionTest, ThreeTrialsInARowThatTheSolverEndsMidTrialLatchAFault) {
+  // Each trial solves for a while first. A per-SOLVE streak (the old count)
+  // was reset by those good solves and never reached n_qp = 3 here.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, OracleOff));
+  for (int k = 0; k < 3; ++k) {
+    ASSERT_NO_FATAL_FAILURE(MidTrialClikFailure()) << "trial " << k;
+    EXPECT_EQ(log_.back().body.qp_fail_streak, k + 1) << "trial " << k;
+    if (k < 2) {
+      ++generation_;  // the thrower retries with a new ball (Q15)
+      ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+    }
+  }
+  ASSERT_TRUE(TickUntilMode(Mode::kFault, 5)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kRetreat, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kRetreat, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kFault});
+  EXPECT_EQ(ctrl_->GetLastReason(), Reason::kAbortEscalated);
+  EXPECT_EQ(log_.back().body.fault_cause, FaultCause::kQpFailures);
+  EXPECT_TRUE(ctrl_->HasLatchedFault());
+}
+
+TEST_F(FaultExtensionTest, OnlyAVerdictOrAFaultResetEndsTheRunOfSolverEndedTrials) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, OracleOff));
+  const auto streak = [this] { return log_.back().body.qp_fail_streak; };
+
+  // 1 — the solver ends it: 1.
+  ASSERT_NO_FATAL_FAILURE(MidTrialClikFailure());
+  EXPECT_EQ(streak(), 1);
+  ++generation_;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+
+  // 2 — another reason ends it (a new ball, TRACK_CHANGED): unchanged.
+  ASSERT_TRUE(TickUntilMode(Mode::kTracking, 200)) << Transitions();
+  ctrl_->PlanBoxForTesting().Store(PlanFor(generation_, 2.0, false));
+  ASSERT_TRUE(TickUntilMode(Mode::kApproach, 5)) << Transitions();
+  Ticks(10);
+  ++generation_;
+  PublishNow();
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 5)) << Transitions();
+  EXPECT_EQ(ctrl_->GetLastReason(), Reason::kTrackChanged);
+  EXPECT_EQ(streak(), 1) << "an abort the solver did not cause moved the count";
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+
+  // An E-STOP and its clear: unchanged (the stop says nothing about the solver).
+  ctrl_->TriggerEstop();
+  Ticks(5);
+  EXPECT_EQ(streak(), 1) << "the E-STOP reset cleared the count";
+  ctrl_->ClearEstop();
+  Ticks(5);
+  EXPECT_EQ(streak(), 1) << "the clear cleared the count";
+  // The E-STOP reset forgot the last trial's ball (R-TRACK memory), so the new
+  // ball must be in the box BEFORE the re-arm, or TRACKING starts on the old one.
+  ++generation_;
+  PublishNow();
+  SetArmed(true);
+
+  // 3 — the solver again: 2.
+  ASSERT_NO_FATAL_FAILURE(MidTrialClikFailure());
+  EXPECT_EQ(streak(), 2);
+  ++generation_;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+
+  // 4 — a trial that reaches HOLD's verdict (Undetermined: no fingertips): 0.
+  ASSERT_TRUE(TickUntilMode(Mode::kTracking, 200)) << Transitions();
+  ctrl_->PlanBoxForTesting().Store(PlanFor(generation_, 0.6, false));
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(log_[log_.size() - 2].mode, Mode::kHold) << "precondition: the trial reached HOLD";
+  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kUndetermined);
+  EXPECT_EQ(streak(), 0) << "a verdict did not end the run";
+  ++generation_;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+
+  // 5 — the solver: 1, not 3 — the verdict broke the run, so no fault.
+  ASSERT_NO_FATAL_FAILURE(MidTrialClikFailure());
+  EXPECT_EQ(streak(), 1);
+  Ticks(5);
+  EXPECT_FALSE(ctrl_->HasLatchedFault()) << Transitions();
+  EXPECT_EQ(CountTicks([](const TickRec& r) { return r.mode == Mode::kFault; }), 0);
+}
+
+// ── D-S9-D3: no fault reset while the arm moves ─────────────────────────────
+
+TEST_F(FaultExtensionTest, AFaultResetIsRefusedUntilTheArmIsAtRest) {
+  ASSERT_NO_FATAL_FAILURE(FaultByTheStopDeadline());
+  const auto reset_once = [this] {
+    ctrl_->ResetFault();
+    const std::size_t t = log_.size();
+    Ticks(1);
+    return t;
+  };
+
+  // (1) The command is still ramping to rest.
+  ASSERT_GT(Speed(log_.back()), 0.0) << "precondition: FAULT entered with the ramp unfinished";
+  std::size_t t = reset_once();
+  EXPECT_EQ(log_[t].body.fault_reset_refused, FaultResetRefusal::kCommandMoving)
+      << Window(static_cast<int>(t), 1);
+  EXPECT_EQ(log_[t].mode, Mode::kFault);
+  EXPECT_NE(log_[t].reason, Reason::kFaultReset);
+  EXPECT_TRUE(ctrl_->HasLatchedFault());
+  EXPECT_EQ(ctrl_->GetFaultResetRefusedCount(), 1U);
+  Ticks(1);
+  EXPECT_EQ(log_.back().body.fault_reset_refused, FaultResetRefusal::kNone)
+      << "a refusal is its own tick's, and it is not queued";
+  EXPECT_TRUE(ctrl_->HasLatchedFault()) << "a refused reset was acted on later";
+  ASSERT_TRUE(TickUntil([this] { return Speed(log_.back()) == 0.0; }, 500)) << Transitions();
+
+  // (2) The command is at rest, the measured arm is not.
+  state_.devices[0].velocities[2] = 0.05;  // > homing.qd_tol (0.02)
+  t = reset_once();
+  EXPECT_EQ(log_[t].body.fault_reset_refused, FaultResetRefusal::kArmMoving);
+  EXPECT_TRUE(ctrl_->HasLatchedFault());
+  state_.devices[0].velocities[2] = 0.0;
+
+  // (3) The velocity lane is not vouched for: fail-closed.
+  state_.devices[0].velocity_hole_mask = 1;
+  t = reset_once();
+  EXPECT_EQ(log_[t].body.fault_reset_refused, FaultResetRefusal::kVelocityUnreadable);
+  EXPECT_TRUE(ctrl_->HasLatchedFault());
+  state_.devices[0].velocity_hole_mask = 0;
+  EXPECT_EQ(ctrl_->GetFaultResetRefusedCount(), 3U);
+
+  // (4) At rest: IDLE, disarmed, the cause gone with the latch.
+  t = reset_once();
+  Ticks(2);
+  EXPECT_EQ(log_[t].body.fault_reset_refused, FaultResetRefusal::kNone);
+  EXPECT_EQ(log_[t].mode, Mode::kIdle) << Window(static_cast<int>(t), 2);
+  EXPECT_EQ(log_[t].reason, Reason::kFaultReset);
+  EXPECT_FALSE(ctrl_->HasLatchedFault());
+  EXPECT_EQ(log_.back().body.fault_cause, FaultCause::kNone);
+  EXPECT_FALSE(ctrl_->IsArmRequested()) << "no automatic resume (P-1 (c))";
+  EXPECT_EQ(ctrl_->GetFaultResetRefusedCount(), 3U);
+}
+
+// ── D-S9-L and a latch that reached IDLE ────────────────────────────────────
+
+TEST_F(FaultExtensionTest, AFaultResetUnderAnEstopShowsFaultUntilTheClearThenIdle) {
+  ASSERT_NO_FATAL_FAILURE(FaultByTheStopDeadline());
+  ASSERT_TRUE(TickUntil([this] { return Speed(log_.back()) == 0.0; }, 500)) << Transitions();
+  ctrl_->TriggerEstop();
+  Ticks(3);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kFault) << "P-1 (d): the stop keeps FAULT";
+  ctrl_->ResetFault();
+  const std::size_t reset = log_.size();
+  Ticks(10);
+  EXPECT_FALSE(ctrl_->HasLatchedFault()) << "the latch goes down on the reset's own tick";
+  EXPECT_FALSE(log_[reset].body.fault_latched);
+  for (std::size_t i = reset; i < log_.size(); ++i) {
+    ASSERT_EQ(log_[i].mode, Mode::kFault) << "ESTOP outranks the reset (R-PREC)\n"
+                                          << Window(static_cast<int>(i), 2);
+    ASSERT_EQ(log_[i].reason, Reason::kEstop);
+  }
+  ctrl_->ClearEstop();
+  const std::size_t clear = log_.size();
+  Ticks(3);
+  EXPECT_EQ(log_[clear].mode, Mode::kIdle) << Window(static_cast<int>(clear), 2);
+  EXPECT_EQ(log_[clear].reason, Reason::kFaultReset);
+  EXPECT_FALSE(ctrl_->IsArmRequested());
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kFault, Mode::kIdle});
+}
+
+TEST_F(FaultExtensionTest, AResetBetweenTheLatchAndItsEscalationDoesNotResumeTrials) {
+  // The n_qp latch rises inside the law tick, after that tick's reset service.
+  // A reset that lands before the next tick clears it while the mode is still
+  // ABORT_SAFE (no FAULT to leave). The controller must end disarmed, not
+  // carry the abort on through RETREAT into ARMED and a new trial.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+    y["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
+    y["catching"]["supervisor"]["n_qp"] = 1;
+  }));
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->HasLatchedFault(); }, 600)) << Transitions();
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kAbortSafe) << "precondition: the latch tick";
+  EXPECT_FALSE(ctrl_->IsArmRequested()) << "the latch tick did not disarm";
+  ctrl_->ResetFault();
+  const std::size_t reset = log_.size();
+  Ticks(1);
+  ASSERT_FALSE(ctrl_->HasLatchedFault()) << "precondition: the reset was taken in ABORT_SAFE";
+  ASSERT_EQ(log_[reset].mode, Mode::kAbortSafe) << Window(static_cast<int>(reset), 2);
+  ++generation_;  // a fresh ball is in view: nothing but the arm latch stops a new trial
+  Ticks(400);
+  EXPECT_EQ(ctrl_->GetMode(), Mode::kIdle) << Transitions();
+  EXPECT_FALSE(ctrl_->IsArmRequested());
+  EXPECT_EQ(CountTicks([](const TickRec& r) { return r.mode == Mode::kArmed; }, reset), 0)
+      << "the abort resumed into a new trial after the reset\n"
+      << Transitions();
+}
+
+TEST_F(FaultExtensionTest, AFaultLatchedIntoIdleByAnEstopIsResetInIdleAndArmsAgain) {
+  // n_qp = 1: the first trial the solver ends latches the fault on the tick it
+  // enters ABORT_SAFE. An E-STOP that lands before the next tick sends
+  // ABORT_SAFE to IDLE with the latch still up — no FAULT mode to leave.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+    y["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
+    y["catching"]["supervisor"]["n_qp"] = 1;
+  }));
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->HasLatchedFault(); }, 600)) << Transitions();
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kAbortSafe) << "precondition: the latch tick";
+  ctrl_->TriggerEstop();
+  Ticks(3);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kIdle) << Transitions();
+  ASSERT_TRUE(ctrl_->HasLatchedFault());
+  ctrl_->ClearEstop();
+  SetArmed(true);  // the operator tries: the latch disarms again on every tick
+  Ticks(20);
+  EXPECT_EQ(ctrl_->GetMode(), Mode::kIdle);
+  EXPECT_FALSE(ctrl_->IsArmRequested()) << "armed with a fault latched";
+  ctrl_->ResetFault();
+  const std::size_t t = log_.size();
+  Ticks(3);
+  EXPECT_EQ(log_[t].mode, Mode::kIdle);
+  EXPECT_EQ(log_[t].reason, Reason::kFaultReset) << Window(static_cast<int>(t), 2);
+  EXPECT_FALSE(ctrl_->HasLatchedFault());
+  EXPECT_FALSE(ctrl_->IsArmRequested());
+  SetArmed(true);
+  EXPECT_TRUE(TickUntilMode(Mode::kArmed, 1500))
+      << "the operator could not re-arm after the reset\n"
+      << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kIdle, Mode::kArmed});
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

@@ -290,6 +290,24 @@ TEST(TransitionTable, AHandTimeoutEndsTheReturnInIdleAndIsRecordedElsewhere) {
   EXPECT_FALSE(LookupTransition(kTransitionTable, Mode::kHold, Reason::kHandTimeout, to));
 }
 
+TEST(TransitionTable, AnEscalationEndsAbortSafeAndRetreatInFaultAndNothingElse) {
+  // #537 S9b (D-S9-D1): the two motions the motion deadlines watch — the
+  // ABORT_SAFE ramp and the RETREAT stop/return — escalate to FAULT on the
+  // one reason. No other mode answers it: the law modes reach FAULT only
+  // through ABORT_SAFE, so a fault raised there still stops the arm first.
+  Mode to = Mode::kIdle;
+  ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kAbortSafe, Reason::kAbortEscalated, to));
+  EXPECT_EQ(to, Mode::kFault);
+  ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kRetreat, Reason::kAbortEscalated, to));
+  EXPECT_EQ(to, Mode::kFault);
+  for (const TransitionRow& row : kTransitionTable) {
+    if (row.reason == Reason::kAbortEscalated) {
+      EXPECT_TRUE(row.from == Mode::kAbortSafe || row.from == Mode::kRetreat)
+          << "unexpected ABORT_ESCALATED row from mode " << static_cast<int>(row.from);
+    }
+  }
+}
+
 TEST(TransitionTable, LookupFindsEveryShippedRow) {
   for (const TransitionRow& row : kTransitionTable) {
     Mode to{};

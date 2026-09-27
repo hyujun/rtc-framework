@@ -183,7 +183,8 @@ int32 clik_status          # ProxQP QPSolverOutput (0 = SOLVED), −1 = not solv
 int32 clik_iterations
 float64 clik_solve_us      # wall time of the solve [µs] — the G5-C budget's input
 uint64 clik_conflict_mask  # bit i = velocity index i conflicted
-int32 qp_fail_streak       # consecutive failures; supervisor.n_qp of them latch a fault
+int32 qp_fail_streak       # consecutive TRIALS ended by a CLIK failure (not solves; a trial
+                           # reaching HOLD's verdict resets it); supervisor.n_qp latch a fault
 
 # ── Tracking ────────────────────────────────────────────────────────────────
 # ‖q_meas − q_cmd‖ is the ONLY place the measured arm state enters the loop

@@ -376,11 +376,29 @@ demo_catching_controller:
       # above that max. 200 throws cannot show the S8-B target of ≤ 0.5 % per
       # throw on their own; S8-E re-reads the distribution.
       sat_ticks: 80
-      # Consecutive failed solves before the controller latches a fault
-      # (L7 §4.2). Three ticks of a solve that cannot succeed is not a
-      # transient, and retrying it forever is how a controller ends up
-      # aborting in a loop with nothing in the log that escalates.
+      # Consecutive TRIALS ended by a CLIK failure before the controller
+      # latches a fault (L7 §4.2; per trial since #537 S9b, D-S9-D2 — a trial
+      # that reaches HOLD's verdict resets the count). Three trials the solver
+      # ends in a row is not a transient, and retrying forever is how a
+      # controller ends up aborting in a loop with nothing that escalates.
       n_qp: 3
+      # Motion deadlines (#537 S9b, D-S9-D1): past either, the supervisor
+      # latches a fault (ABORT_ESCALATED -> FAULT). Twice the longest stage
+      # this robot ran in the S8 sim sessions (32 sessions, S8-E/F/G/I; the
+      # envelope-qdd_max ones ramp faster and never set the max), floored at
+      # 0.5 s:
+      #   stop_s   = 2 x max(ABORT_SAFE ramp 1.546 s, RETREAT stop 2.138 s)
+      #            -> 4.28. The worst stop was a degraded S8-F abort cycle: the
+      #            command was already at rest and the arm took 2.1 s to catch
+      #            up with it (track_err 0.47 > 0.42) — the catch-up, not the ramp.
+      #   return_s = 2 x RETREAT return 7.380 s (an S8-F reach-first catch
+      #            3.4 rad of wrist_3 from the wait pose at homing.v_max) -> 14.76.
+      # PROVISIONAL: sim values — the real arm's are S10's (D-S9-G), so a
+      # real-arm configuration stays parked until then.
+      deadline:
+        stop_s: 4.28
+        return_s: 14.76
+        provisional: true
       decel:
         a_dec: 10.0
 

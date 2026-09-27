@@ -2965,6 +2965,8 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
     "qp_fail_streak",
     "track_err_rad",
     "abort_stopped",
+    "fault_cause",
+    "fault_reset_refused",
     "hand_phase_valid",
     "hand_phase",
     "hand_rho",
@@ -3438,6 +3440,36 @@ class TestCatchingDiagStatistics:
         assert "approach" in out
         assert "CLIK solve" in out
         assert "budget p99" in out
+
+    def test_fault_latches_are_counted_by_cause_and_refused_resets_by_reason(self, capsys):
+        from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+
+        # #537 S9b: two latches (a stop deadline, then — after a reset — a QP
+        # streak), each held for several ticks, and two refused resets.
+        df = _catching_diag_frame(n=30)
+        cause = [0] * 30
+        cause[3:8] = [2] * 5
+        cause[15:25] = [1] * 10
+        df["fault_cause"] = cause
+        refused = [0] * 30
+        refused[5] = 1
+        refused[6] = 2
+        df["fault_reset_refused"] = refused
+        print_catching_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "Fault latches: " in out, out
+        assert "stop_deadline×1" in out, out
+        assert "qp_failures×1" in out, out
+        assert "command_moving×1" in out, out
+        assert "arm_moving×1" in out, out
+
+    def test_a_run_with_no_fault_prints_no_fault_line(self, capsys):
+        from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+
+        print_catching_diag_statistics(_catching_diag_frame(n=20))
+        out = capsys.readouterr().out
+        assert "Fault latches" not in out, out
+        assert "Fault resets refused" not in out, out
 
     def test_a_run_where_the_law_never_ran_says_so(self, capsys):
         from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics

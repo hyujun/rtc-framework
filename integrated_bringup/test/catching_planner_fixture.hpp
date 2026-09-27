@@ -70,6 +70,8 @@ catching:
   supervisor:
     track_err_abort: 0.3
     n_qp: 3
+    deadline:
+      provisional: false
   planner:
     enabled: )" +
          (planner_enabled ? "true" : "false") + R"(

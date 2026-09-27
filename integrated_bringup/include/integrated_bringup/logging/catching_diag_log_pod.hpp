@@ -134,6 +134,37 @@ struct CatchingDiagLogPod {
   std::array<double, kMaxArmJoints> q_meas{};
   bool abort_stopped{false};
 
+  // ── Fault latch (#537 S9b, D-S9-D1/D2/D3) ────────────────────────────────
+  /// What raised the fault latch that is up NOW (0 while it is down). The
+  /// transition that follows is ABORT_ESCALATED whatever the cause, so this is
+  /// the only place a reader can tell a QP failure streak from a motion that
+  /// missed its deadline. CSV column; not on the state message.
+  enum class FaultCause : std::uint8_t {
+    kNone = 0,
+    kQpFailures = 1,      ///< supervisor.n_qp trials in a row ended by a CLIK failure
+    kStopDeadline = 2,    ///< a stop (ABORT_SAFE ramp / RETREAT stop) passed deadline.stop_s
+    kReturnDeadline = 3,  ///< RETREAT's return passed deadline.return_s
+  };
+  FaultCause fault_cause{FaultCause::kNone};
+  /// Moves once per latch; the publish thread WARNs on its edge. Not a column.
+  std::uint32_t fault_latch_seq{0};
+  /// Why a fault reset was REFUSED on this tick (0 on every other tick, and on
+  /// a reset that cleared the latch). The latch stays up; the operator asks
+  /// again once the arm has stopped (D-S9-D3). CSV column.
+  enum class FaultResetRefusal : std::uint8_t {
+    kNone = 0,
+    kCommandMoving = 1,       ///< the carried arm command still has a velocity
+    kArmMoving = 2,           ///< a measured |q̇| above supervisor.homing.qd_tol
+    kVelocityUnreadable = 3,  ///< the arm's velocity lane is not vouched for (fail-closed)
+  };
+  FaultResetRefusal fault_reset_refused{FaultResetRefusal::kNone};
+  /// Moves once per refusal; the publish thread WARNs on its edge with the
+  /// reason and, for kArmMoving, the joint and |q̇|. Not columns.
+  std::uint32_t fault_reset_refuse_seq{0};
+  FaultResetRefusal fault_reset_refuse_reason{FaultResetRefusal::kNone};
+  int fault_reset_refuse_joint{-1};
+  double fault_reset_refuse_value{0.0};
+
   // ── Hand (L6, from S7) ───────────────────────────────────────────────────
   bool hand_phase_valid{false};
   std::uint8_t hand_phase{0};
@@ -335,7 +366,7 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   os << ",ref_gamma,ref_gamma_d,ref_gamma_dd";
   os << ",clik_ran,clik_converged,clik_bound_conflict,clik_command_mismatch";
   os << ",clik_status,clik_iterations,clik_solve_us,clik_conflict_mask,qp_fail_streak";
-  os << ",track_err_rad,abort_stopped";
+  os << ",track_err_rad,abort_stopped,fault_cause,fault_reset_refused";
   os << ",hand_phase_valid,hand_phase,hand_rho,hand_timeout";
   os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source";
   // Per-joint and per-tip blocks come LAST, so everything above is a fixed
@@ -397,7 +428,8 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
      << (p.clik_bound_conflict ? 1 : 0) << ',' << (p.clik_command_mismatch ? 1 : 0);
   os << ',' << p.clik_status << ',' << p.clik_iterations << ',' << p.clik_solve_us << ','
      << p.clik_conflict_mask << ',' << p.qp_fail_streak;
-  os << ',' << p.track_err_rad << ',' << (p.abort_stopped ? 1 : 0);
+  os << ',' << p.track_err_rad << ',' << (p.abort_stopped ? 1 : 0) << ','
+     << static_cast<int>(p.fault_cause) << ',' << static_cast<int>(p.fault_reset_refused);
   os << ',' << (p.hand_phase_valid ? 1 : 0) << ',' << static_cast<int>(p.hand_phase) << ','
      << p.hand_rho << ',' << (p.hand_timeout ? 1 : 0);
   os << ',' << static_cast<int>(p.hand_stalled_n) << ',' << p.hand_effort_frac << ','

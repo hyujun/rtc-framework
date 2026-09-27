@@ -245,7 +245,7 @@ struct TickRecord {                   // 고정 크기, POD
 - 오차 원인 분해: 간극을 L3 §4.6의 항별($A=p_{true}-\hat p_{live}$, $B=\hat p_{live}-p_c$, 추종, 시계)로 분해해 표로 만든다. 시뮬레이션은 truth 가 있으므로 각 항을 직접 계산할 수 있고, $A\perp B$ 가정도 검증할 수 있다(G8-C2).
 - 충격 구간 분해: $t_c$ 전후 100 ms의 접촉력·관절 토크·$q-q_c$ 괴리를 겹쳐 그린다(L7 §4.7).
 - 무효 시행 급증: §4.5 clock 위상 오차(δ_max·pause) 로그와 부하 구성을 확인한다.
-- E-STOP·fault 구간: `catching_diag` 플롯이 `estop_active` (CM 의 global latch) 와 `fault_latched` (컨트롤러 latch) 구간을 색을 달리해 음영으로 보인다 — 두 latch 는 해제 수단이 달라 한쪽만 끝나는 구간이 있을 수 있다. 해제는 GUI 헤더의 "Clear E-STOP" (사유 조회 → 확인 뒤 해제, 2 단계)·"Reset fault", 절차는 L7 §4.1. 사유 코드 `FAULT_RESET`·`ABORT_ESCALATED` 는 그 한 tick 에만 실리므로 (다음 tick 은 비무장 `IDLE` 의 `PARAMS_TBD`, `FAULT` 의 `NONE`) 상태 토픽을 폴링하는 쪽은 놓치기 쉽다 — CSV 로 본다.
+- E-STOP·fault 구간: `catching_diag` 플롯이 `estop_active` (CM 의 global latch) 와 `fault_latched` (컨트롤러 latch) 구간을 색을 달리해 음영으로 보인다 — 두 latch 는 해제 수단이 달라 한쪽만 끝나는 구간이 있을 수 있다. 해제는 GUI 헤더의 "Clear E-STOP" (사유 조회 → 확인 뒤 해제, 2 단계)·"Reset fault", 절차는 L7 §4.1. 사유 코드 `FAULT_RESET`·`ABORT_ESCALATED` 는 그 한 tick 에만 실리므로 (다음 tick 은 비무장 `IDLE` 의 `PARAMS_TBD`, `FAULT` 의 `NONE`) 상태 토픽을 폴링하는 쪽은 놓치기 쉽다 — CSV 로 본다. fault 의 **원인**은 `ABORT_ESCALATED` 가 말하지 않으므로 CSV 열 `fault_cause` (latch 가 선 동안 매 tick; 1 `n_qp` 시행 연속 · 2 정지 기한 · 3 복귀 기한) 로 보고, 거부된 reset 은 그 tick 의 `fault_reset_refused` (1 명령 램프 중 · 2 측정 속도 · 3 속도 lane 판독 불가) 로 본다 — 둘 다 상태 메시지에는 없는 CSV 전용 열이고, 같은 내용을 publish 스레드가 WARN 한 줄로 남긴다 (S9b). `rtc_tools` 의 catching 요약이 둘을 원인별로 센다.
 
 ## 9. 검증 방법과 합격 게이트
 

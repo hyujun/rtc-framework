@@ -236,7 +236,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | | `ref_e` / `ref_ed` / `ref_gamma` / `ref_gamma_d` / `ref_gamma_dd` | `float64[3]` / `float64` | DS 오차 (한 tick 이전 기준) 와 γ 프로파일 |
 | **관절 명령 (L5)** | `clik_ran` / `clik_converged` / `clik_bound_conflict` / `clik_command_mismatch` | `bool` | solve 도달 여부 · 수렴 · box 충돌 · `evaluate_at_command` 불일치 |
 | | `clik_status` / `clik_iterations` / `clik_solve_us` / `clik_conflict_mask` | `int32` / `float64` / `uint64` | ProxQP 상태 (0 = SOLVED, −1 = 미해결) · 반복 · solve 시간 (G5-C 예산의 입력) · 충돌 비트 |
-| | `qp_fail_streak` | `int32` | 연속 실패 수. `supervisor.n_qp` 회에서 fault 래치 |
+| | `qp_fail_streak` | `int32` | CLIK 실패로 끝난 **시행**의 연속 수 (solve 수가 아니다 — `HOLD` 판정에 이른 시행이 0 으로). `supervisor.n_qp` 회에서 fault 래치 |
 | **추종** | `track_err_rad` | `float64` | ‖q_meas − q_cmd‖. D-6 이 측정값을 CLIK 밖에 두므로 **팔이 명령 위치에 없다는 것을 아는 유일한 감시자** |
 | | `q_cmd` / `q_meas` / `arm_joint_names` | `float64[]` / `string[]` | device 순서, 이름은 configure 에서 한 번 박힌다. `q_cmd` 는 **그 tick 에 실제로 나간 명령** (법칙 비활성 구간의 hold latch 포함) 이고, 명령이 없는 tick (latch 전 침묵) 은 **NaN** 이다 — 0.0 을 쓰면 위 `track_err_rad` 을 오프라인으로 재계산하는 소비자가 존재하지 않는 수 rad 오차를 본다 |
 | | `abort_stopped` | `bool` | QP 비의존 관절공간 정지가 완료됐는가 |

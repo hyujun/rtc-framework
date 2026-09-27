@@ -36,6 +36,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -93,7 +94,7 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
 
   /// `s8c`: the hand-joint capture witness on (the hand device given its
   /// max_torque) and a short RETREAT release timeout (#537 S8-C).
-  void BringUp(bool s8c = false) {
+  void BringUp(bool s8c = false, const std::function<void(YAML::Node&)>& tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
@@ -118,6 +119,9 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
       hand["capture"]["effort_frac_min"] = 0.5;
       hand["capture"]["t_persist"] = 0.05;
       hand["capture"]["provisional"] = false;  // this fixture is judged a real-arm config
+    }
+    if (tweak) {
+      tweak(yaml);
     }
     const rclcpp_lifecycle::State prev;
     ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
@@ -314,6 +318,41 @@ TEST_F(DemoCatchingAllocS7Test, TheHandWitnessAndTheReleaseTimeoutTickWithoutAll
   EXPECT_TRUE(timed_out) << "RETREAT did not end on the release timeout — not measured";
   // (No fingertip lane in this fixture: the verdict is Undetermined whatever
   // the hand says — the scenario suite owns the verdict; this case, the heap.)
+}
+
+TEST_F(DemoCatchingAllocS7Test, TheFaultLatchAndBothFaultResetAnswersTickWithoutAllocating) {
+  // #537 S9b: n_qp = 1 and a degenerate axis latch the fault on the first law
+  // tick; FAULT then runs, a reset is refused (the measured arm moves) and one
+  // is accepted. Every tick is gated.
+  ASSERT_NO_FATAL_FAILURE(BringUp(false, [](YAML::Node& y) {
+    y["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
+    y["catching"]["supervisor"]["n_qp"] = 1;
+  }));
+  std::uint64_t sequence = 1;
+  std::uint64_t allocations = 0;
+  double us = 0.0;
+  bool faulted = false;
+  for (int t = 0; t < 1500 && !faulted; ++t) {
+    if (t % 15 == 0) {
+      Publish(sequence++);
+    }
+    Tick(/*gated=*/true, allocations, us);
+    EXPECT_EQ(allocations, 0U) << "mode " << static_cast<int>(ctrl_->GetMode());
+    faulted = ctrl_->GetMode() == Mode::kFault;
+    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+  }
+  ASSERT_TRUE(faulted) << "precondition: the fault never latched";
+  state_.devices[0].velocities[0] = 0.5;  // the measured arm moves: refused
+  ctrl_->ResetFault();
+  Tick(/*gated=*/true, allocations, us);
+  EXPECT_EQ(allocations, 0U) << "the refused reset";
+  ASSERT_TRUE(ctrl_->HasLatchedFault());
+  ASSERT_EQ(ctrl_->GetFaultResetRefusedCount(), 1U) << "precondition: the refusal path ran";
+  state_.devices[0].velocities[0] = 0.0;
+  ctrl_->ResetFault();
+  Tick(/*gated=*/true, allocations, us);
+  EXPECT_EQ(allocations, 0U) << "the accepted reset";
+  EXPECT_FALSE(ctrl_->HasLatchedFault()) << "precondition: the accept path ran";
 }
 
 TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
