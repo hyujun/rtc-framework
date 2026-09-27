@@ -500,3 +500,212 @@ def test_missing_wait_pose_requires_reference_pose_override(tmp_path):
                 str(tmp_path / "out"),
             ]
         )
+
+
+# ── (i) --objective robust (S8-I-2): neighbourhood p10, nominal direction, LP cap ──
+
+
+def test_robust_speed_matches_direct_oracle_and_uses_the_nominal_direction(tmp_path):
+    """The robust value is the p10 over ``q + δ`` of catch_speed_budget's own DLS toward
+    the NOMINAL pose's -axis — recomputed here without the tool's helpers. Scoring each
+    perturbed pose toward its OWN axis instead gives a different number (the ball's
+    direction is fixed when it is thrown, so that variant would be the wrong quantity)."""
+    urdf = _urdf_file(tmp_path)
+    arm = oracle_arm(urdf)
+    qd_plan = ETA_V * np.asarray(SIM_QD)
+    q = np.array(WAIT_POSE)
+    lo, hi = np.full(N, Q_LO), np.full(N, Q_HI)
+    deltas = cws.perturbation_set(7, N, 0.1, 24)
+    assert deltas.shape == (24, N) and np.all(np.abs(deltas) <= 0.1)
+    assert np.array_equal(deltas, cws.perturbation_set(7, N, 0.1, 24))  # deterministic
+
+    v_hat = -arm.frame_axis(q)
+    nominal, own = [], []
+    for d in deltas:
+        qk = np.clip(q + d, lo, hi)
+        t = arm.terms(qk, np.zeros(N))
+        nominal.append(csb.directional_speed_dls(t["jp"], t["jw"], v_hat, qd_plan).v_dir_max)
+        own.append(
+            csb.directional_speed_dls(t["jp"], t["jw"], -arm.frame_axis(qk), qd_plan).v_dir_max
+        )
+    expected = float(np.percentile(nominal, cws.ROBUST_PERCENTILE))
+    got = cws.robust_speed(arm, q, qd_plan, deltas, lo, hi)
+    assert got == pytest.approx(expected, rel=1e-12, abs=1e-12)
+    assert got != pytest.approx(float(np.percentile(own, cws.ROBUST_PERCENTILE)), rel=1e-6)
+    # ε = 0 collapses the neighbourhood onto the point: robust == the point DLS.
+    zero = cws.perturbation_set(7, N, 0.0, 8)
+    _, dls, _ = cws.eval_self_consistent(arm, q, qd_plan)
+    assert cws.robust_speed(arm, q, qd_plan, zero, lo, hi) == pytest.approx(dls, rel=1e-12)
+    with pytest.raises(ValueError):
+        cws.perturbation_set(1, N, -0.1, 8)
+
+
+def test_sigma_min_is_the_smallest_singular_value_of_the_five_row_jacobian(tmp_path):
+    urdf = _urdf_file(tmp_path)
+    arm = oracle_arm(urdf)
+    q = np.array(WAIT_POSE)
+    t = arm.terms(q, np.zeros(N))
+    expected = np.linalg.svd(np.vstack([t["jp"], t["jw"]]), compute_uv=False).min()
+    assert cws.sigma_min_5(arm, q) == pytest.approx(float(expected), rel=1e-12)
+    assert cws.sigma_min_5(arm, q) > 0.0
+
+
+def test_robust_objective_ranks_by_its_own_key_and_never_exceeds_the_lp(tmp_path):
+    cfg = make_config(tmp_path / "share")
+    urdf = _urdf_file(tmp_path)
+    setup = _load_setup(cfg, urdf)
+    arm = setup["arm"]
+    qd_plan = setup["eta_v"] * np.asarray(setup["qd_box"])
+    q_ref = np.array(setup["wait_pose"])
+    result = cws.search_wait_poses(
+        arm,
+        qd_plan,
+        q_ref,
+        radius_m=None,
+        axis_tol_deg=60.0,
+        box=None,
+        min_z=None,
+        samples=600,
+        seed=5,
+        walk_frac=0.6,
+        refine_top=2,
+        objective="robust",
+        robust_eps_rad=0.1,
+        robust_samples=8,
+    )
+    assert result["objective_key"] == "v_dir_robust"
+    assert result["deltas"].shape == (8, N)
+    rows = result["raw"] + result["refined"]
+    assert rows
+    for r in rows:
+        assert math.isfinite(r["v_dir_robust"]) and math.isfinite(r["sigma_min"])
+        assert r["v_dir_robust"] <= r["v_dir_lp"] + 1e-12  # capped by the nominal LP
+        # the p10 of a neighbourhood is at most its best point, so it cannot beat the
+        # point value's own ceiling by more than the perturbation can move it — and it
+        # is recomputable from the returned perturbation set.
+        assert r["v_dir_robust"] == pytest.approx(
+            min(
+                cws.robust_speed(
+                    arm, r["q"], qd_plan, result["deltas"], result["lo"], result["hi"]
+                ),
+                r["v_dir_lp"],
+            ),
+            rel=1e-12,
+        )
+    best = max(result["refined"], key=lambda r: r["v_dir_robust"])
+    assert best["v_dir_robust"] >= max(r["v_dir_robust"] for r in rows) - 1e-9
+    # A point-DLS search of the same draw reports NaN for the robust column (not computed).
+    point = cws.search_wait_poses(
+        arm,
+        qd_plan,
+        q_ref,
+        radius_m=None,
+        axis_tol_deg=60.0,
+        box=None,
+        min_z=None,
+        samples=600,
+        seed=5,
+        walk_frac=0.6,
+        refine_top=2,
+    )
+    assert point["deltas"] is None
+    assert all(math.isnan(r["v_dir_robust"]) for r in point["raw"] + point["refined"])
+    assert all(math.isfinite(r["sigma_min"]) for r in point["raw"] + point["refined"])
+
+
+def test_min_sigma_drops_candidates_and_every_reported_row_clears_it(tmp_path):
+    cfg = make_config(tmp_path / "share")
+    urdf = _urdf_file(tmp_path)
+    setup = _load_setup(cfg, urdf)
+    arm = setup["arm"]
+    qd_plan = setup["eta_v"] * np.asarray(setup["qd_box"])
+    q_ref = np.array(setup["wait_pose"])
+    common = {
+        "radius_m": None,
+        "axis_tol_deg": 60.0,
+        "box": None,
+        "min_z": None,
+        "samples": 800,
+        "seed": 5,
+        "walk_frac": 0.6,
+        "refine_top": 3,
+    }
+    free = cws.search_wait_poses(arm, qd_plan, q_ref, **common)
+    assert free["n_sigma_dropped"] == 0
+    # A floor at the median sigma of the free search's own candidates must drop some.
+    sigmas = sorted(r["sigma_min"] for r in free["raw"])
+    floor = sigmas[len(sigmas) // 2]
+    gated = cws.search_wait_poses(arm, qd_plan, q_ref, min_sigma=floor, **common)
+    assert gated["n_sigma_dropped"] > 0
+    for r in gated["raw"] + gated["refined"]:
+        assert r["sigma_min"] >= floor - 1e-6
+    assert gated["n_lp_valid"] + gated["n_sigma_dropped"] <= free["n_lp_valid"] + 1
+
+
+def test_cli_robust_objective_writes_the_columns_and_the_summary(tmp_path, capsys):
+    cfg = make_config(tmp_path / "share")
+    urdf = _urdf_file(tmp_path)
+    out = tmp_path / "out"
+    rc = cws.main(
+        [
+            "--config-dir",
+            str(cfg),
+            "--urdf",
+            str(urdf),
+            "--radius-m",
+            "0.5",
+            "--axis-tol-deg",
+            "30",
+            "--samples",
+            "600",
+            "--seed",
+            "17",
+            "--refine-top",
+            "2",
+            "--objective",
+            "robust",
+            "--robust-eps-rad",
+            "0.08",
+            "--robust-samples",
+            "8",
+            "--out",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    with (out / "wait_pose_candidates.csv").open() as fh:
+        rows = list(csv.DictReader(fh))
+    assert {"v_dir_robust", "sigma_min"} <= set(rows[0])
+    for row in rows:  # the reference row carries the robust value too
+        robust, lp = float(row["v_dir_robust"]), float(row["v_dir_lp"])
+        assert math.isfinite(robust) and robust <= lp + 1e-9
+        assert float(row["sigma_min"]) > 0.0
+    summary = yaml.safe_load((out / "wait_pose_search_summary.yaml").read_text())
+    assert summary["objective"] == "robust"
+    assert summary["robust"] == {
+        "eps_rad": 0.08,
+        "samples": 8,
+        "percentile": cws.ROBUST_PERCENTILE,
+        "direction": "nominal -axis(q); capped by the nominal LP",
+    }
+    assert math.isfinite(summary["reference_pose"]["v_dir_robust"])
+    assert math.isfinite(summary["best"]["v_dir_robust"]) and summary["best"]["sigma_min"] > 0
+    assert "v_dir_robust" in capsys.readouterr().out
+    # --evaluate-pose prints the same two quantities for one pose.
+    rc = cws.main(
+        [
+            "--config-dir",
+            str(cfg),
+            "--urdf",
+            str(urdf),
+            "--evaluate-pose",
+            " ".join(str(v) for v in WAIT_POSE),
+            "--robust-eps-rad",
+            "0.08",
+            "--robust-samples",
+            "8",
+        ]
+    )
+    assert rc == 0
+    text = capsys.readouterr().out
+    assert "v_dir_robust" in text and "sigma_min" in text

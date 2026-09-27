@@ -459,6 +459,14 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
 γ_max 가 최대), `--objective lp` 면 `directional_speed_lp` (LP 물리 상한). 두 값은 행마다 같이 내고 DLS 는
 LP 를 넘지 않는다.
 
+**`--objective robust` (S8-I-2).** 한 점의 정적 DLS 최대값은 지렛대가 아니었다 — S8-I 의 최적점은 `jw` 특이점
+옆의 바늘 봉우리 (|Δq|∞ 0.05 rad 섭동에 DLS 절반) 였고, 계획기가 실제로 가는 IK 포구 자세는 0.3 rad 떨어져
+속력이 1/4 이었다 (#537 5852292540). 그래서 이 목적은 **이웃**의 값이다: `--robust-samples` 개 (기본 32) 의
+관절 섭동 |δ|∞ ≤ `--robust-eps-rad` (기본 0.1) 에 대해 **명목 자세의 접근축** (공은 대기 자세를 향해 던져지므로
+방향은 고정) 방향 DLS 를 재고 그 p10 을 명목 LP 로 cap 한 값 (`v_dir_robust`). 섭동 집합은 탐색당 한 번 뽑아
+(common random numbers) 모든 후보를 같은 오프셋으로 채점한다. 행마다 `sigma_min` (DLS 가 역산하는 5행 `[J_p; J_w]`
+의 최소 특이값 — 단위가 섞인 조건수 지표) 도 내고, `--min-sigma` 를 주면 제약이 된다. IK 수락·충돌은 여전히 안 본다.
+
 ```bash
 ros2 run rtc_tools catching_wait_pose_search --config-dir <config>/ur5e_p1b \
     --radius-m 0.15 --axis-tol-deg 2 --samples 20000 --seed 20260928 --out <out>
@@ -481,19 +489,20 @@ ros2 run rtc_tools catching_wait_pose_search --config-dir <config>/ur5e_p1b \
   벗어나면 (드문 경우) 이미 제약을 만족하는 raw 표본으로 되돌린다 — 보고되는 모든 행이 제약을 어기지
   않는다는 것이 벌점의 세기가 아니라 이 fallback 이 주는 보장이다
 - 출력: `wait_pose_candidates.csv` (참조 행 + raw/refined 상위 `--refine-top`; rank·stage·관절별
-  `q_<joint>`·p·axis·`v_dir_lp`·`v_dir_dls`·`max_dq_rad`·`dist_m`·`axis_deg`·`in_box`·`within_limits` —
+  `q_<joint>`·p·axis·`v_dir_lp`·`v_dir_dls`·`v_dir_robust` (robust 목적일 때 모든 행, 아니면 참조 행만; 나머지 NaN)·`sigma_min`·`max_dq_rad`·`dist_m`·`axis_deg`·`in_box`·`within_limits` —
   참조 행은 `--box` 를 만족하지 않아도 비교 기준으로 그대로 실린다), `wait_pose_search_summary.yaml`
   (provenance: config 파일·η_v·q̇_max+출처·참조 자세와 그 자신의 v_dir_lp/dls/elevation·제약·샘플링·런타임·
   최선 정련 자세 + `overlay_snippet` — `planner: wait_pose: [...]` 소수 4자리)
 - **자체 검증 (fail-closed).** 보고되는 모든 행 — 참조·raw·refined — 이 FK(q) 로 재계산한 위치가 보고값과
   1e-9 m 이내로 일치해야 하고, URDF 관절 한계 안이어야 하고, `v_dir_dls` 가 그 행의 `v_dir_lp` 를
-  1e-9 넘게 초과하지 않아야 한다 — 하나라도 어기면 아무것도 쓰지 않고 종료한다
+  허용치 (상대 1e-3 + 1e-6 m/s) 넘게 초과하지 않아야 하고 (탐색 중 그런 후보는 "DLS 아티팩트" 로 버린다),
+  `v_dir_robust` 도 LP 를 넘지 않아야 한다 — 하나라도 어기면 아무것도 쓰지 않고 종료한다
 - **LP 의 의미를 docstring 에 명시**: 접근축 **회전 속도**를 0 으로 고정할 뿐 — 그 자세를 유지하며 이동이
   실제로 가능한지, 자기/환경 충돌이 없는지, IK/gate-map 이 그 자세를 받아줄지는 검사하지 않는다
   (kinematic 속력 상한만; sim smoke 가 나머지를 본다)
 - `--evaluate-pose`: 탐색 없이 자세 하나만 자기 일치 v_dir_lp/dls·elevation·FK 를 찍고 종료 — 운영자가
   고른 자세를 확인하는 경로
-- 테스트 `test/test_catching_wait_pose_search.py` (12 케이스, pinocchio·scipy 없으면 skip — `--objective dls|lp` 가 각자 키의 최대 행을 고르고 DLS 아티팩트를 버리는지 포함): 합성 6R fixture
+- 테스트 `test/test_catching_wait_pose_search.py` (17 케이스, pinocchio·scipy 없으면 skip — `--objective dls|lp|robust` 가 각자 키의 최대 행을 고르고 DLS 아티팩트를 버리는지, robust 값이 `catch_speed_budget` 직접 재계산 p10 과 일치하고 명목 방향을 쓰며 LP 를 넘지 않는지, `--min-sigma` 가 후보를 떨어뜨리고 보고 행이 모두 그 위인지 포함): 합성 6R fixture
   (혼합 관절축 — 5 (위치 3 + 접근축 방향 2) 보다 적은 관절수는 LP 가 거의 모든 자세에서 퇴화하므로 6 관절;
   자세가 방향속력에 영향을 주도록 설계) 에서 `--evaluate-pose` 가 `catch_speed_budget` 직접호출과 일치,
   탐색이 참조 자세 이상 + 거친 브루트포스 격자 최적의 95 % 이상, 보고된 모든 행의 반경/각/한계/DLS≤LP,

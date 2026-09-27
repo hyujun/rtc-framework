@@ -25,6 +25,23 @@ that maximises it maximises the planner's own γ_max; ``--objective lp`` ranks
 by ``directional_speed_lp``, the physical ceiling. Both are reported for every
 row, the DLS never above the LP.
 
+``--objective robust`` (S8-I-2) ranks by the **neighbourhood** speed: the 10th
+percentile, over ``--robust-samples`` joint perturbations with
+``|δ|∞ <= --robust-eps-rad``, of the DLS speed toward the NOMINAL pose's own
+inbound direction, capped by the nominal LP. S8-I measured why the point
+objective fails: its optimum was a needle next to a ``jw`` singularity — a
+0.05 rad perturbation halved the DLS, and the IK catch posture the planner
+actually reached sat 0.3 rad away with a quarter of the speed (#537
+5852292540). The ball's direction is fixed when it is thrown at the wait
+pose, and the arm is not exactly at the wait pose when it catches, so the
+quantity that predicts the catch is the speed the NEIGHBOURHOOD gives toward
+that fixed direction. The perturbation set is drawn once per search (common
+random numbers), so every candidate is scored on the same offsets and the
+refine step sees a deterministic surface. Every row also reports
+``sigma_min``, the smallest singular value of the 5-row ``[J_p; J_w]`` the DLS
+inverts (m/rad rows over dimensionless rows — a conditioning indicator, not a
+metric); ``--min-sigma`` turns it into a constraint.
+
 Every limit is read from the robot profile, never from code (ARCH-1): joints
 from ``devices.<arm>.joint_state_names``, the joint speed box from
 ``devices.<arm>.joint_limits.max_velocity`` composed the same way
@@ -104,6 +121,13 @@ LIMIT_TOL_RAD = 1e-9
 # plus 1e-6 m/s; anything larger is a real inconsistency.
 DLS_LP_REL_TOL = 1e-3
 DLS_LP_ABS_TOL = 1e-6
+# --objective robust: neighbourhood size, sample count and the percentile (S8-I-2).
+# 0.1 rad is twice the perturbation at which the S8-I point optimum had already
+# halved and about the catch-posture excursion the shipped pose shows (0.12 rad).
+DEFAULT_ROBUST_EPS_RAD = 0.1
+DEFAULT_ROBUST_SAMPLES = 32
+ROBUST_PERCENTILE = 10.0
+PEN_SIGMA = 50.0
 
 
 # ── Configuration: joints, velocity box, reference pose (all from the profile) ──
@@ -197,6 +221,56 @@ def eval_self_consistent(
     return lp.v_dir_max, dls_v, True
 
 
+def perturbation_set(seed: int, n: int, eps_rad: float, k: int) -> np.ndarray:
+    """``k`` joint offsets with ``|δ|∞ <= eps_rad``, drawn once per search.
+
+    Common random numbers: every candidate is scored on the SAME offsets, so the
+    robust objective is a deterministic function of ``q`` (Nelder-Mead needs
+    that) and two candidates differ by their neighbourhoods, not by the draw.
+    """
+    if not (eps_rad >= 0.0) or k < 1:
+        raise ValueError("robust: eps_rad must be >= 0 and samples >= 1")
+    rng = np.random.default_rng(seed)
+    return rng.uniform(-eps_rad, eps_rad, size=(k, n))
+
+
+def sigma_min_5(arm: ArmKinematics, q: np.ndarray) -> float:
+    """Smallest singular value of the 5-row ``[J_p; J_w]`` at ``q`` (what the DLS inverts)."""
+    terms = arm.terms(q, np.zeros(arm.n))
+    j5 = np.vstack([terms["jp"], terms["jw"]])
+    if not np.all(np.isfinite(j5)):
+        return math.nan
+    return float(np.linalg.svd(j5, compute_uv=False)[-1])
+
+
+def robust_speed(
+    arm: ArmKinematics,
+    q: np.ndarray,
+    qd_plan: np.ndarray,
+    deltas: np.ndarray,
+    lo: np.ndarray,
+    hi: np.ndarray,
+) -> float:
+    """``ROBUST_PERCENTILE`` over ``q + deltas`` (clipped to the limits) of the DLS speed
+    toward the NOMINAL pose's inbound direction ``v_hat = -axis(q)``.
+
+    The direction is the nominal pose's, not each perturbed pose's own: the ball
+    is aimed at the wait pose before the arm moves, and the perturbation stands
+    for where the arm actually is when it catches. An invalid/undetermined DLS
+    at a perturbed pose counts as 0 — a neighbourhood that contains such poses
+    is exactly what this objective must punish.
+    """
+    zeros = np.zeros(arm.n)
+    v_hat = -arm.frame_axis(q)
+    vals = np.empty(len(deltas))
+    for i, d in enumerate(deltas):
+        terms = arm.terms(np.clip(q + d, lo, hi), zeros)
+        dls = directional_speed_dls(terms["jp"], terms["jw"], v_hat, qd_plan)
+        ok = not (dls.limits_invalid or dls.input_invalid or dls.undetermined)
+        vals[i] = dls.v_dir_max if ok and math.isfinite(dls.v_dir_max) else 0.0
+    return float(np.percentile(vals, ROBUST_PERCENTILE))
+
+
 def elevation_below_horizontal_deg(v_hat: np.ndarray) -> float:
     """Positive = the inbound direction descends toward the pose (as the private analysis defines it)."""
     return -math.degrees(math.asin(float(np.clip(v_hat[2], -1.0, 1.0))))
@@ -257,8 +331,8 @@ def constraint_mask(
     return mask, ang
 
 
-OBJECTIVES = ("dls", "lp")
-OBJECTIVE_KEY = {"dls": "v_dir_dls", "lp": "v_dir_lp"}
+OBJECTIVES = ("dls", "lp", "robust")
+OBJECTIVE_KEY = {"dls": "v_dir_dls", "lp": "v_dir_lp", "robust": "v_dir_robust"}
 
 
 def dls_artefact(v_dir_dls: float, v_dir_lp: float) -> bool:
@@ -285,10 +359,15 @@ def refine_pose(
     lo: np.ndarray,
     hi: np.ndarray,
     objective: str = "dls",
+    deltas: np.ndarray | None = None,
+    min_sigma: float | None = None,
 ) -> np.ndarray:
-    """Nelder-Mead on the self-consistent speed (``objective`` = the runtime's DLS, or the
-    LP ceiling) under a constraint-violation penalty."""
+    """Nelder-Mead on the self-consistent speed (``objective`` = the runtime's DLS, the
+    LP ceiling, or the robust neighbourhood p10) under a constraint-violation penalty."""
     from scipy.optimize import minimize  # noqa: PLC0415
+
+    if objective == "robust" and deltas is None:
+        raise ValueError("robust objective needs the perturbation set")
 
     def obj(qvec: np.ndarray) -> float:
         q = np.clip(qvec, lo, hi)
@@ -298,8 +377,16 @@ def refine_pose(
         # The DLS objective is capped by the LP: a damped solution that breaks the
         # approach-axis constraint reads as a speed the constrained arm cannot
         # give (see dls_artefact), and the optimiser must not climb into it.
-        chosen = min(v_dls, v_lp) if objective == "dls" else v_lp
+        if objective == "robust":
+            chosen = min(robust_speed(arm, q, qd_plan, deltas, lo, hi), v_lp)
+        elif objective == "dls":
+            chosen = min(v_dls, v_lp)
+        else:
+            chosen = v_lp
         base = chosen if valid and math.isfinite(chosen) else 0.0
+        sigma_pen = 0.0
+        if min_sigma is not None:
+            sigma_pen = max(0.0, min_sigma - sigma_min_5(arm, q))
         pos_pen = 0.0
         if radius_m is not None:
             pos_pen += max(0.0, float(np.linalg.norm(p - p_ref)) - radius_m)
@@ -310,7 +397,14 @@ def refine_pose(
         ang_pen = max(0.0, ang - axis_tol_deg) if axis_tol_deg is not None else 0.0
         clip_pen = float(np.sum(np.maximum(0.0, lo - qvec)) + np.sum(np.maximum(0.0, qvec - hi)))
         z_pen = max(0.0, min_z - p[2]) if min_z is not None else 0.0
-        return -base + PEN_POS * pos_pen + PEN_ANG * ang_pen + PEN_CLIP * clip_pen + PEN_Z * z_pen
+        return (
+            -base
+            + PEN_POS * pos_pen
+            + PEN_ANG * ang_pen
+            + PEN_CLIP * clip_pen
+            + PEN_Z * z_pen
+            + PEN_SIGMA * sigma_pen
+        )
 
     res = minimize(
         obj,
@@ -331,10 +425,16 @@ def describe_pose(
     lo: np.ndarray,
     hi: np.ndarray,
     box: tuple[np.ndarray, np.ndarray] | None,
+    deltas: np.ndarray | None = None,
 ) -> dict:
+    """One reported row. ``v_dir_robust`` (the neighbourhood p10 capped by the LP) is
+    computed when a perturbation set is given, else NaN; ``sigma_min`` always."""
     p = arm.frame_position(q)
     axis = arm.frame_axis(q)
     v_dir_lp, v_dir_dls, valid = eval_self_consistent(arm, q, qd_plan)
+    v_dir_robust = math.nan
+    if deltas is not None and valid and math.isfinite(v_dir_lp):
+        v_dir_robust = min(robust_speed(arm, q, qd_plan, deltas, lo, hi), v_dir_lp)
     ang = math.degrees(math.acos(float(np.clip(axis @ axis_ref, -1.0, 1.0))))
     within_limits = bool(np.all(q >= lo - LIMIT_TOL_RAD) and np.all(q <= hi + LIMIT_TOL_RAD))
     in_box = None
@@ -347,6 +447,8 @@ def describe_pose(
         "axis": axis,
         "v_dir_lp": v_dir_lp,
         "v_dir_dls": v_dir_dls,
+        "v_dir_robust": v_dir_robust,
+        "sigma_min": sigma_min_5(arm, q),
         "valid": valid,
         "max_dq_rad": float(np.max(np.abs(np.asarray(q) - q_ref))),
         "dist_m": float(np.linalg.norm(p - p_ref)),
@@ -363,6 +465,7 @@ def _feasible(
     axis_tol_deg: float | None,
     box: tuple[np.ndarray, np.ndarray] | None,
     min_z: float | None,
+    min_sigma: float | None = None,
     tol: float = 1e-6,
 ) -> bool:
     """Hard check of the same constraints the penalty in :func:`refine_pose` only discourages.
@@ -381,6 +484,8 @@ def _feasible(
         return False
     if box is not None and row["in_box"] is False:
         return False
+    if min_sigma is not None and not (row["sigma_min"] >= min_sigma - tol):
+        return False
     return not (min_z is not None and row["p"][2] < min_z - tol)
 
 
@@ -398,19 +503,30 @@ def search_wait_poses(
     walk_frac: float,
     refine_top: int,
     objective: str = "dls",
+    robust_eps_rad: float = DEFAULT_ROBUST_EPS_RAD,
+    robust_samples: int = DEFAULT_ROBUST_SAMPLES,
+    min_sigma: float | None = None,
 ) -> dict:
     """Sample, filter, rank, and refine. Returns raw/refined candidate dicts + counts.
 
     ``objective`` ranks and refines by ``v_dir_dls`` (default — what the runtime's
     ``DirectionalSpeedMax`` feeds the γ window, so the pose that maximises it
-    maximises the planner's own γ_max) or by ``v_dir_lp`` (the physical ceiling).
-    Both numbers are reported for every row either way.
+    maximises the planner's own γ_max), by ``v_dir_lp`` (the physical ceiling), or
+    by ``v_dir_robust`` (the neighbourhood p10 of the DLS toward the nominal
+    direction, capped by the LP — S8-I-2). Both point numbers are reported for
+    every row either way; the robust one for every row when it is the objective.
+    ``min_sigma`` drops candidates whose ``sigma_min`` (5-row Jacobian) is below it.
     """
     if objective not in OBJECTIVES:
         raise SystemExit(f"--objective must be one of {OBJECTIVES}, got {objective!r}")
     key = OBJECTIVE_KEY[objective]
     lo = np.asarray(arm.model.lowerPositionLimit, dtype=float)[arm.iq]
     hi = np.asarray(arm.model.upperPositionLimit, dtype=float)[arm.iq]
+    deltas = (
+        perturbation_set(seed, arm.n, robust_eps_rad, robust_samples)
+        if objective == "robust"
+        else None
+    )
     p_ref = arm.frame_position(q_ref)
     axis_ref = arm.frame_axis(q_ref)
 
@@ -438,20 +554,29 @@ def search_wait_poses(
     n_pass = int(mask.sum())
     idxs = np.nonzero(mask)[0]
     evaluated = []
+    n_sigma = 0
     for i in idxs:
         v_lp, v_dls, valid = eval_self_consistent(arm, qs[i], qd_plan)
         if not valid:
             continue
-        evaluated.append(
-            {
-                "q": qs[i],
-                "p": p[i],
-                "axis": axis[i],
-                "v_dir_lp": v_lp,
-                "v_dir_dls": v_dls,
-                "ang": float(ang[i]),
-            }
-        )
+        if min_sigma is not None and not (sigma_min_5(arm, qs[i]) >= min_sigma):
+            n_sigma += 1
+            continue
+        cand = {
+            "q": qs[i],
+            "p": p[i],
+            "axis": axis[i],
+            "v_dir_lp": v_lp,
+            "v_dir_dls": v_dls,
+            "ang": float(ang[i]),
+        }
+        if deltas is not None:
+            cand["v_dir_robust"] = (
+                min(robust_speed(arm, qs[i], qd_plan, deltas, lo, hi), v_lp)
+                if math.isfinite(v_lp)
+                else math.nan
+            )
+        evaluated.append(cand)
     n_artefact = sum(dls_artefact(d["v_dir_dls"], d["v_dir_lp"]) for d in evaluated)
     evaluated = [
         d
@@ -461,7 +586,8 @@ def search_wait_poses(
     evaluated.sort(key=lambda d: d[key], reverse=True)
     top = evaluated[:refine_top]
     raw_rows = [
-        describe_pose(arm, c["q"], qd_plan, q_ref, p_ref, axis_ref, lo, hi, box) for c in top
+        describe_pose(arm, c["q"], qd_plan, q_ref, p_ref, axis_ref, lo, hi, box, deltas)
+        for c in top
     ]
     refined_rows = []
     for raw_row, cand in zip(raw_rows, top, strict=True):
@@ -478,10 +604,17 @@ def search_wait_poses(
             lo=lo,
             hi=hi,
             objective=objective,
+            deltas=deltas,
+            min_sigma=min_sigma,
         )
-        refined_row = describe_pose(arm, q_r, qd_plan, q_ref, p_ref, axis_ref, lo, hi, box)
+        refined_row = describe_pose(arm, q_r, qd_plan, q_ref, p_ref, axis_ref, lo, hi, box, deltas)
         feasible = _feasible(
-            refined_row, radius_m=radius_m, axis_tol_deg=axis_tol_deg, box=box, min_z=min_z
+            refined_row,
+            radius_m=radius_m,
+            axis_tol_deg=axis_tol_deg,
+            box=box,
+            min_z=min_z,
+            min_sigma=min_sigma,
         )
         if (
             not feasible
@@ -496,6 +629,7 @@ def search_wait_poses(
         "n_pass_constraints": n_pass,
         "n_lp_valid": len(evaluated),
         "n_dls_artefact_dropped": int(n_artefact),
+        "n_sigma_dropped": int(n_sigma),
         "raw": raw_rows,
         "refined": refined_rows,
         "lo": lo,
@@ -504,6 +638,7 @@ def search_wait_poses(
         "axis_ref": axis_ref,
         "objective": objective,
         "objective_key": key,
+        "deltas": deltas,
     }
 
 
@@ -526,6 +661,12 @@ def _check_row(
     if dls_artefact(row["v_dir_dls"], row["v_dir_lp"]):
         raise SystemExit(
             f"{stage} rank {rank}: v_dir_dls ({row['v_dir_dls']:.6f}) exceeds v_dir_lp "
+            f"({row['v_dir_lp']:.6f}) — refusing to report"
+        )
+    robust = row.get("v_dir_robust", math.nan)
+    if math.isfinite(robust) and robust > row["v_dir_lp"] + DLS_LP_ABS_TOL:
+        raise SystemExit(
+            f"{stage} rank {rank}: v_dir_robust ({robust:.6f}) exceeds v_dir_lp "
             f"({row['v_dir_lp']:.6f}) — refusing to report"
         )
 
@@ -567,6 +708,8 @@ def _row_dict(joints: Sequence[str], rank: int, stage: str, row: dict) -> dict:
     out["axis_x"], out["axis_y"], out["axis_z"] = row["axis"]
     out["v_dir_lp"] = row["v_dir_lp"]
     out["v_dir_dls"] = row["v_dir_dls"]
+    out["v_dir_robust"] = row.get("v_dir_robust", math.nan)
+    out["sigma_min"] = row.get("sigma_min", math.nan)
     out["max_dq_rad"] = row["max_dq_rad"]
     out["dist_m"] = row["dist_m"]
     out["axis_deg"] = row["axis_deg"]
@@ -590,6 +733,8 @@ def write_candidates_csv(
             "axis_z",
             "v_dir_lp",
             "v_dir_dls",
+            "v_dir_robust",
+            "sigma_min",
             "max_dq_rad",
             "dist_m",
             "axis_deg",
@@ -608,6 +753,7 @@ def report(setup: dict, ref_row: dict, result: dict, runtime_s: float) -> str:
     lines = [f"{TOOL}: controller={setup['controller']} config_dir={setup['config_dir']}"]
     lines.append(
         f"  reference pose: v_dir_lp={ref_row['v_dir_lp']:.4f} m/s v_dir_dls={ref_row['v_dir_dls']:.4f} m/s "
+        f"v_dir_robust={ref_row['v_dir_robust']:.4f} m/s sigma_min={ref_row['sigma_min']:.4f} "
         f"elevation={elevation_below_horizontal_deg(-ref_row['axis']):.2f} deg"
     )
     lines.append(
@@ -617,8 +763,10 @@ def report(setup: dict, ref_row: dict, result: dict, runtime_s: float) -> str:
     if result["refined"]:
         best = max(result["refined"], key=lambda d: d[result["objective_key"]])
         lines.append(
-            f"  best refined: v_dir_lp={best['v_dir_lp']:.4f} m/s v_dir_dls={best['v_dir_dls']:.4f} m/s "
-            f"(reference {ref_row['v_dir_lp']:.4f}/{ref_row['v_dir_dls']:.4f}) "
+            f"  best refined ({result['objective']}): v_dir_lp={best['v_dir_lp']:.4f} m/s "
+            f"v_dir_dls={best['v_dir_dls']:.4f} m/s v_dir_robust={best['v_dir_robust']:.4f} m/s "
+            f"sigma_min={best['sigma_min']:.4f} (reference {ref_row['v_dir_lp']:.4f}/"
+            f"{ref_row['v_dir_dls']:.4f}/{ref_row['v_dir_robust']:.4f}) "
             f"dist={best['dist_m']:.4f} m axis_deg={best['axis_deg']:.2f} within_limits={best['within_limits']}"
         )
     else:
@@ -662,6 +810,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="rank/refine by the runtime's DLS speed (default; the planner's γ_max uses it) or "
         "by the LP ceiling — both are reported per row",
     )
+    ap.add_argument(
+        "--robust-eps-rad",
+        type=float,
+        default=DEFAULT_ROBUST_EPS_RAD,
+        help="robust objective: |δ|∞ of the joint perturbations (also reported for the reference "
+        "pose and --evaluate-pose)",
+    )
+    ap.add_argument(
+        "--robust-samples",
+        type=int,
+        default=DEFAULT_ROBUST_SAMPLES,
+        help="robust objective: perturbations per candidate (drawn once per search from --seed)",
+    )
+    ap.add_argument(
+        "--min-sigma",
+        type=float,
+        help="drop candidates whose sigma_min (5-row [J_p; J_w]) is below this (conditioning floor)",
+    )
     ap.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ap.add_argument("--walk-frac", type=float, default=DEFAULT_WALK_FRAC)
@@ -687,6 +853,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         axis = arm.frame_axis(q)
         v_dir_lp, v_dir_dls, valid = eval_self_consistent(arm, q, qd_plan)
         elev = elevation_below_horizontal_deg(-axis)
+        lo_e = np.asarray(arm.model.lowerPositionLimit, dtype=float)[arm.iq]
+        hi_e = np.asarray(arm.model.upperPositionLimit, dtype=float)[arm.iq]
+        deltas_e = perturbation_set(args.seed, n, args.robust_eps_rad, args.robust_samples)
+        robust = (
+            min(robust_speed(arm, q, qd_plan, deltas_e, lo_e, hi_e), v_dir_lp)
+            if valid and math.isfinite(v_dir_lp)
+            else math.nan
+        )
         print(f"{TOOL} --evaluate-pose: q={q.tolist()}")
         print(f"  p = {p.tolist()}")
         print(f"  axis (approach) = {axis.tolist()}")
@@ -695,6 +869,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"  v_dir_lp = {v_dir_lp:.4f} m/s  v_dir_dls = {v_dir_dls:.4f} m/s  (lp_valid={valid})"
         )
         print(f"  elevation below horizontal = {elev:.2f} deg")
+        print(
+            f"  v_dir_robust (p{ROBUST_PERCENTILE:.0f} over {args.robust_samples} x |δ|∞ <= "
+            f"{args.robust_eps_rad} rad, toward the nominal -axis, capped by the LP) = {robust:.4f} m/s"
+        )
+        print(f"  sigma_min ([J_p; J_w]) = {sigma_min_5(arm, q):.4f}")
         return 0
 
     if args.axis_tol_deg is None:
@@ -727,12 +906,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "devices.<arm>.joint_limits.max_velocity (a NaN or non-positive entry fails closed)"
         )
     p_ref, axis_ref = arm.frame_position(q_ref), arm.frame_axis(q_ref)
+    lo_r = np.asarray(arm.model.lowerPositionLimit, dtype=float)[arm.iq]
+    hi_r = np.asarray(arm.model.upperPositionLimit, dtype=float)[arm.iq]
+    deltas_ref = perturbation_set(args.seed, n, args.robust_eps_rad, args.robust_samples)
     ref_row = {
         "q": q_ref,
         "p": p_ref,
         "axis": axis_ref,
         "v_dir_lp": ref_lp,
         "v_dir_dls": ref_dls,
+        "v_dir_robust": min(robust_speed(arm, q_ref, qd_plan, deltas_ref, lo_r, hi_r), ref_lp),
+        "sigma_min": sigma_min_5(arm, q_ref),
         "valid": ref_valid,
         "max_dq_rad": 0.0,
         "dist_m": 0.0,
@@ -757,6 +941,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         walk_frac=args.walk_frac,
         refine_top=args.refine_top,
         objective=args.objective,
+        robust_eps_rad=args.robust_eps_rad,
+        robust_samples=args.robust_samples,
+        min_sigma=args.min_sigma,
     )
     runtime_s = time.time() - t_start
 
@@ -791,6 +978,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "axis": [float(v) for v in axis_ref],
             "v_dir_lp": ref_lp,
             "v_dir_dls": ref_dls,
+            "v_dir_robust": ref_row["v_dir_robust"],
+            "sigma_min": ref_row["sigma_min"],
             "elevation_below_horizontal_deg": elevation_below_horizontal_deg(-axis_ref),
         },
         "constraints": {
@@ -798,6 +987,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "axis_tol_deg": args.axis_tol_deg,
             "box": None if args.box is None else [args.box[0].tolist(), args.box[1].tolist()],
             "min_z": args.min_z,
+            "min_sigma": args.min_sigma,
+        },
+        "robust": {
+            "eps_rad": args.robust_eps_rad,
+            "samples": args.robust_samples,
+            "percentile": ROBUST_PERCENTILE,
+            "direction": "nominal -axis(q); capped by the nominal LP",
         },
         "sampling": {
             "samples": args.samples,
@@ -809,6 +1005,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "n_pass_constraints": result["n_pass_constraints"],
         "n_lp_valid": result["n_lp_valid"],
         "n_dls_artefact_dropped": result["n_dls_artefact_dropped"],
+        "n_sigma_dropped": result["n_sigma_dropped"],
         "runtime_s": runtime_s,
         "date": _dt.date.today().isoformat(),
         "note": "v_hat = -axis(q): the objective is the pose's OWN inbound direction, matching "
@@ -821,6 +1018,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "axis": [float(v) for v in best["axis"]],
             "v_dir_lp": best["v_dir_lp"],
             "v_dir_dls": best["v_dir_dls"],
+            "v_dir_robust": best["v_dir_robust"],
+            "sigma_min": best["sigma_min"],
             "dist_m": best["dist_m"],
             "axis_deg": best["axis_deg"],
             "within_limits": best["within_limits"],
