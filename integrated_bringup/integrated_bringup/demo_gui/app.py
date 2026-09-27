@@ -17,6 +17,9 @@ their own modules.
                        controller refuses the switch unless the hand is quiet
                        and the reason is shown verbatim
 - E-STOP status      → /system/estop_status (subscribe)
+- Clear E-STOP       → /rtc_cm/clear_estop srv, two calls: an empty ack to learn
+                       the latched reason, then the operator-confirmed echo
+- Reset fault        → /rtc_cm/reset_fault srv on the active controller's Name()
 - Robot/hand target  → /<active>/<group>/joint_goal (RobotTarget pub); the arm
                        and hand group names come from the active controller's
                        claimed_groups (_active_groups), not hard-coded
@@ -60,7 +63,7 @@ from rtc_msgs.msg import (
     RobotTarget,
     WbcState,
 )
-from rtc_msgs.srv import GraspCommand, LaunchBall, SwitchController
+from rtc_msgs.srv import ClearEstop, GraspCommand, LaunchBall, ResetFault, SwitchController
 
 from .ball_launch import (
     BALL_PREDICTION_TOPIC,
@@ -120,6 +123,15 @@ from .hand_step import (
     PROFILE_PARAMETERS,
     HandStepPanel,
     StepPose,
+)
+from .latch_clear import (
+    CLEAR_ESTOP_SERVICE,
+    RESET_FAULT_LOST_S,
+    RESET_FAULT_SERVICE,
+    EstopClearFlow,
+    ReplySummary,
+    reset_fault_target,
+    summarize_reply,
 )
 from .preset_toggle import (
     PresetToggleState,
@@ -225,6 +237,14 @@ class DemoControllerGUI(Node):
         self.switch_controller_client = self.create_client(
             SwitchController, "/rtc_cm/switch_controller"
         )
+
+        # The two latch clears (S9a, D-S9-H) — separate services for separate
+        # latches (E-8); see demo_gui.latch_clear. The flow object is touched on
+        # the Tk thread only: service replies are marshalled there.
+        self._clear_estop_client = self.create_client(ClearEstop, CLEAR_ESTOP_SERVICE)
+        self._reset_fault_client = self.create_client(ResetFault, RESET_FAULT_SERVICE)
+        self._estop_clear = EstopClearFlow()
+        self._reset_fault_sent_at: float | None = None  # monotonic; None = no call pending
 
         # Projectile ball (dynamic_catching §13 S3). Sim-only lanes: on hardware
         # nothing serves them and the panel stays on "never received", which is
@@ -1475,6 +1495,7 @@ class DemoControllerGUI(Node):
         tk.Label(
             header_frame, text="E-STOP:", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 9)
         ).pack(side="right", padx=(0, 4))
+        self._build_latch_row(scrollable_frame)
 
         # ── Notebook (Tabs) ──────────────────────────────────────────────
         notebook = ttk.Notebook(scrollable_frame)
@@ -2029,6 +2050,160 @@ class DemoControllerGUI(Node):
             return
         self._prev_ball_text = text
         label.config(text=text)
+
+    # ---- Latch clears: Clear E-STOP / Reset fault (S9a, D-S9-H) --------------
+
+    def _build_latch_row(self, parent: tk.Frame) -> None:
+        """Header row shared by every tab — both latches belong to whichever
+        controller is running, so neither button lives in a controller panel.
+        Pure logic (reason parsing, the two-call flow, reply lines) is in
+        demo_gui.latch_clear; this is only the Tk/rclpy wiring."""
+        row = tk.Frame(parent, bg="#1e1e2e")
+        row.pack(fill="x", padx=8, pady=(0, 2))
+        ttk.Button(row, text="Clear E-STOP", command=self._on_clear_estop).pack(side="left")
+        ttk.Button(row, text="Reset fault", command=self._on_reset_fault).pack(
+            side="left", padx=(4, 0)
+        )
+        self._latch_reply_label = tk.Label(
+            row,
+            text="",
+            bg="#1e1e2e",
+            fg="#a6adc8",
+            font=("Courier New", 8),
+            justify="left",
+            anchor="w",
+            wraplength=900,
+        )
+        self._latch_reply_label.pack(side="left", fill="x", expand=True, padx=(8, 0))
+
+    def _show_latch_reply(self, summary: ReplySummary | None) -> None:
+        """Tk thread only."""
+        if summary is None:
+            return
+        self._latch_reply_label.config(
+            text=summary.text, fg="#f38ba8" if summary.alarm else "#a6e3a1"
+        )
+
+    def _on_clear_estop(self) -> None:
+        """Step 1: an empty ack. It cannot clear anything — the refusal is what
+        names the latched reason (ClearEstop.srv)."""
+        if not self._clear_estop_client.service_is_ready():
+            self._show_latch_reply(
+                ReplySummary(f"{CLEAR_ESTOP_SERVICE} not available — nothing sent", True)
+            )
+            return
+        generation = self._estop_clear.begin(time.monotonic())
+        if generation is None:
+            # A call or a confirmation is already pending. Said, not swallowed:
+            # a press that does nothing visible gets pressed again.
+            self._latch_reply_label.config(text="clear_estop: already in progress — wait for it")
+            return
+        self._latch_reply_label.config(text="clear_estop: reading the latched reason…")
+        req = ClearEstop.Request()
+        req.reason_ack = ""
+        future = self._clear_estop_client.call_async(req)
+        future.add_done_callback(
+            lambda fut: self.root.after(0, self._on_clear_estop_query_done, generation, fut)
+        )
+
+    def _on_clear_estop_query_done(self, generation: int, fut) -> None:
+        """Tk thread. Step 2: show the reason, and send the echo only if the
+        operator confirms it."""
+        try:
+            resp = fut.result()
+        except Exception as exc:  # noqa: BLE001 - surfaced in the header
+            self._show_latch_reply(self._estop_clear.on_call_failed(generation, str(exc)))
+            return
+        summary = self._estop_clear.on_query_reply(generation, resp.ok, resp.message)
+        if summary is not None or not self._estop_clear.awaiting_confirm(generation):
+            self._show_latch_reply(summary)
+            return
+        try:
+            confirmed = messagebox.askyesno(
+                "Clear E-STOP",
+                "The global E-STOP is latched with reason:\n\n"
+                f"    {self._estop_clear.reason}\n\n"
+                "Clear it? This does not clear a controller fault and does not re-arm "
+                "anything.",
+            )
+        except Exception:  # noqa: BLE001 - e.g. a TclError while the window closes
+            # The flow must not stay AWAITING_CONFIRM: that would refuse every
+            # later press until the GUI restarts.
+            confirmed = False
+        if not confirmed:
+            self._estop_clear.cancel()
+            self._latch_reply_label.config(text="clear_estop: cancelled — nothing cleared")
+            return
+        ack = self._estop_clear.confirm(time.monotonic())
+        if ack is None:
+            return
+        req = ClearEstop.Request()
+        req.reason_ack = ack
+        future = self._clear_estop_client.call_async(req)
+        future.add_done_callback(
+            lambda f: self.root.after(0, self._on_clear_estop_done, generation, f)
+        )
+
+    def _on_clear_estop_done(self, generation: int, fut) -> None:
+        """Tk thread."""
+        try:
+            resp = fut.result()
+        except Exception as exc:  # noqa: BLE001 - surfaced in the header
+            self._show_latch_reply(self._estop_clear.on_call_failed(generation, str(exc)))
+            return
+        self._show_latch_reply(self._estop_clear.on_clear_reply(generation, resp.ok, resp.message))
+
+    def _on_reset_fault(self) -> None:
+        """Reset the ACTIVE controller's fault latch. The name sent is the
+        controller's Name() from the catalog; a stale one is refused by the CM,
+        never applied to another controller."""
+        if not self._reset_fault_client.service_is_ready():
+            self._show_latch_reply(
+                ReplySummary(f"{RESET_FAULT_SERVICE} not available — nothing sent", True)
+            )
+            return
+        name = reset_fault_target(self._catalog.latest(), self._active_ctrl)
+        if name is None:
+            self._show_latch_reply(
+                ReplySummary(
+                    "reset_fault: active controller not known yet "
+                    "(/rtc_cm/list_controllers) — nothing sent",
+                    True,
+                )
+            )
+            return
+        # One call at a time: each one occupies the CM's non-RT service group
+        # for up to a few control periods, and replies to repeated presses
+        # would overwrite each other in the one header label. A call with no
+        # reply after RESET_FAULT_LOST_S is presumed lost and stops blocking.
+        now = time.monotonic()
+        if self._reset_fault_sent_at is not None and now - self._reset_fault_sent_at < (
+            RESET_FAULT_LOST_S
+        ):
+            self._latch_reply_label.config(text="reset_fault: already in progress — wait for it")
+            return
+        self._reset_fault_sent_at = now
+        req = ResetFault.Request()
+        req.controller_name = name
+        self._latch_reply_label.config(text=f"reset_fault: resetting '{name}'…")
+        future = self._reset_fault_client.call_async(req)
+
+        def _on_done(fut):
+            # rclpy executor thread — marshal onto Tk.
+            try:
+                resp = fut.result()
+            except Exception as exc:  # noqa: BLE001 - surfaced in the header
+                summary = ReplySummary(f"reset_fault: call failed — {exc}", True)
+            else:
+                summary = summarize_reply(RESET_FAULT_SERVICE, resp.ok, resp.message)
+            self.root.after(0, self._on_reset_fault_done, summary)
+
+        future.add_done_callback(_on_done)
+
+    def _on_reset_fault_done(self, summary: ReplySummary) -> None:
+        """Tk thread."""
+        self._reset_fault_sent_at = None
+        self._show_latch_reply(summary)
 
     # ---- Hand step panel (dynamic_catching §13 S4) ---------------------------
 

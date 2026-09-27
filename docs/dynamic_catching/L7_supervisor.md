@@ -74,11 +74,14 @@
 
 **감속은 시각 기준으로 시작한다 `[확정 A-5]`.** 실기 접촉 신호가 지문 센서뿐이라, 공이 손바닥에 먼저 닿으면 손가락이 닫히기 전까지 검출이 늦을 수 있다. 따라서 `DECEL` 진입은 $now_{lead}\ge t_c$ 로 하고, 지문 센서는 결과 판정과 abort에만 쓴다.
 
-**E-STOP·fault 임시 기준 `[확정 P-1]` (S9 전까지).**
-- E-STOP 중 출력은 CM 이 `BuildHoldOutput` 으로 대체한다. 슈퍼바이저는 출력을 만들지 않고 **상태만 정리**한다 (`TriggerEstop` 에서 진행 중 시행을 `Aborted` 로 종결, plan·손 시퀀스 무효화). HOLD 끝에서 이미 판정된 시행은 진행 중이 아니다 — 복귀 중 E-STOP 이나 `ABORT_SAFE` 재진입은 그 판정을 `Aborted` 로 덮지 않는다.
-- `ClearEstop` 후 **자동 재개 금지** — `IDLE` 로 가고, $q_c$ 와 CLIK 앵커를 $q_{meas}$ 로 reseed 한다. 다음 시행은 homing 부터 다시 한다.
-- fault 는 E-STOP 과 분리된 컨트롤러 래치다. `ClearEstop` 은 fault 를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않는다. RT 경로의 try/catch·deactivate 는 쓰지 않는다 (RT-2).
-- 손 자세 유지로 인한 파지력 소실 등 부작용 검토와 정책 전체는 S9 (D-13).
+**E-STOP·fault 정책 `[확정 D-13]` (S9, plan §4.4 S9 — D-S9-A·B·C·E1 은 현행 동작이고 S9a 테스트가 고정한다).**
+- **출력은 CM 이 정한다.** E-STOP latch 가 서 있는 동안 CM 이 컨트롤러 출력 전체를 버리고 모든 device 를 매 tick 의 측정 위치로 쓴다 (`BuildHoldOutput`). 슈퍼바이저는 출력에 관여할 수 없고 **상태만 정리**한다. 그래도 컨트롤러 자신의 출력도 같은 자세다 — 정지 tick 의 리셋이 팔·손 hold latch 를 그 tick 의 측정값으로 다시 잡으므로, CM 치환이 없어도 정지가 운동이 되지 않는다.
+- **손도 측정 자세로 hold (D-S9-A).** 열지도 조이지도 않는다. `HOLD`·`RETREAT` 중이면 닫힌 자세 그대로 멈추는데, position servo 는 명령과 측정의 간극으로 힘을 내므로 **간극 0 이 되어 공을 놓는다** — 확정 동작이다 (compliance 의 #504 와 같은 기전). 긴 정지에서는 이 "측정 자세" 자체가 움직인다 — CM 이 매 tick 새 측정값으로 hold 를 다시 만들어 servo 정상상태 오차가 누적된다 (sim 에서 손 약 3.4 mrad/s, #588). 해제 뒤에도 손 latch 는 측정 자세로 재시드되어 재무장 전까지 그 자세다. device 별 hold 정책은 CM 변경이라 S9 범위 밖.
+- **단계와 무관하게 한 가지 반응 (D-S9-B).** 어느 모드든 정지 tick 에 `IDLE` (사유 `ESTOP`)·비무장, plan·손 시퀀스 무효화. `FAULT` 만 예외로 유지한다 ({FAULT, ESTOP} → FAULT). 진행 중 시행은 `Aborted` 로 끝나 정지 동안 그 값을 싣고, 해제의 리셋이 `None` 으로 되돌린다 (다음 시행은 판정 없이 시작). `HOLD` 끝에서 이미 판정된 시행은 진행 중이 아니다 — 판정은 `RETREAT` 진입 tick 에 발행되고 (§4.4 결과 판정, 시행 러너가 읽는 곳), 복귀 중 E-STOP 이나 `ABORT_SAFE` 재진입은 그것을 `Aborted` 로 덮지 않는다. 감속이 필요한 조건은 E-STOP 이 아니라 컨트롤러 소유 (`ABORT_SAFE`·`FAULT`) 다.
+- **해제 뒤 자동 재개 금지 (D-S9-C, P-1 (c)).** `IDLE`·비무장으로 남고, $q_c$ 와 CLIK 앵커를 $q_{meas}$ 로 reseed 한다. 운용자가 `catching.enable` 로 재무장하면 homing 부터 다시 한다. 채택된 `wait_pose` 는 유지하고 정지 자세를 새로 채택하지 않는다.
+- **fault 는 별개 래치 (D-S9-E1, P-1 (d)).** `ClearEstop` 은 fault 를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않으며, `FAULT` 를 global E-STOP 으로 승격하지 않는다. RT 경로의 try/catch·deactivate 는 쓰지 않는다 (RT-2). fault 의 원인·reset 거부·운동 기한은 S9b (D-S9-D1·D2·D3·K) 가 바꾼다 — 아래 §4.2 의 "재차 치명 조건" 은 그때까지 코드에 없다.
+- **운용 절차.** ① E-STOP 해제 (`/rtc_cm/clear_estop` — 빈 `reason_ack` 로 한 번 호출해 거부 메시지에서 사유를 읽고, 확인 뒤 그 사유로 다시 호출; GUI 헤더의 "Clear E-STOP" 이 이 2 단계다) → ② fault 가 있으면 reset (`/rtc_cm/reset_fault`, 활성 컨트롤러의 `Name()`; GUI "Reset fault") → ③ 손에 남은 공 제거 → ④ `catching.enable` 로 재무장. `catching_diag` 플롯은 두 latch 구간을 색을 달리해 음영으로 보인다.
+- 실기 쪽 (드라이브 hold 반응, 실기 E-stop·보호정지와 소프트웨어 latch 의 관계, 해제 뒤 드라이버 재개 절차) 은 S10 (D-S9-G).
 
 **S5.1 최소 E-STOP 계약 (plan §4.4 S5.1, `[CONCERN] E-8` — 2026-09-22 승인, S5 에서 구현 — PR #564).** 이 계약은 위 P-1 임시 기준을 구현 수준에서 좁힌 것이다.
 - (a) `TriggerEstop`·`ClearEstop`·`ResetFault`·`ResetTargetInitialization` 훅은 **atomic 요청·epoch 만 갱신**한다. reset 자체(값을 되돌리는 동작)의 **유일한 writer 는 RT tick** 이다 — 훅이 직접 상태를 되돌리지 않는다.

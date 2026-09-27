@@ -139,7 +139,7 @@ class CatchingController final : public rtc::RTControllerInterface {
   //  on_deactivate: 계획기 Pause (join 은 소멸자에서만)
   // RT
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;  // §4.1
-  // E-STOP·fault: TriggerEstop/ClearEstop/SetHandEstop, ResetFault/HasLatchedFault — P-1 임시 기준(S5.1 최소 계약, L7 §4.1), 정책은 S9.
+  // E-STOP·fault: TriggerEstop/ClearEstop/SetHandEstop, ResetFault/HasLatchedFault — 정책 D-13 (L7 §4.1; S5.1 최소 계약 위에 S9a 가 고정, S9b 가 FAULT 확장).
   //   S5.1 구현: 네 훅은 atomic 요청·epoch 만 갱신하고, 되돌리는 동작의 유일 writer 는 Compute() 다.
   //   운용자 무장 채널은 파라미터 `catching.enable` (A-S5-3) — 콜백은 atomic 만 쓰고 tick 이 소비하며,
   //   tick 이 E-STOP·fault 에서 그 latch 를 내린다 (P-1 (c) 를 메커니즘으로 만든다).
@@ -245,6 +245,7 @@ struct TickRecord {                   // 고정 크기, POD
 - 오차 원인 분해: 간극을 L3 §4.6의 항별($A=p_{true}-\hat p_{live}$, $B=\hat p_{live}-p_c$, 추종, 시계)로 분해해 표로 만든다. 시뮬레이션은 truth 가 있으므로 각 항을 직접 계산할 수 있고, $A\perp B$ 가정도 검증할 수 있다(G8-C2).
 - 충격 구간 분해: $t_c$ 전후 100 ms의 접촉력·관절 토크·$q-q_c$ 괴리를 겹쳐 그린다(L7 §4.7).
 - 무효 시행 급증: §4.5 clock 위상 오차(δ_max·pause) 로그와 부하 구성을 확인한다.
+- E-STOP·fault 구간: `catching_diag` 플롯이 `estop_active` (CM 의 global latch) 와 `fault_latched` (컨트롤러 latch) 구간을 색을 달리해 음영으로 보인다 — 두 latch 는 해제 수단이 달라 한쪽만 끝나는 구간이 있을 수 있다. 해제는 GUI 헤더의 "Clear E-STOP" (사유 조회 → 확인 뒤 해제, 2 단계)·"Reset fault", 절차는 L7 §4.1. 사유 코드 `FAULT_RESET`·`ABORT_ESCALATED` 는 그 한 tick 에만 실리므로 (다음 tick 은 비무장 `IDLE` 의 `PARAMS_TBD`, `FAULT` 의 `NONE`) 상태 토픽을 폴링하는 쪽은 놓치기 쉽다 — CSV 로 본다.
 
 ## 9. 검증 방법과 합격 게이트
 
@@ -254,7 +255,7 @@ struct TickRecord {                   // 고정 크기, POD
 |---|---|---|
 | G8-A | 전체 시행에서 RT 위반 0 (할당, 틱 초과 기준은 RTC 규약). 계획기 스레드가 RT 와 다른 코어에 있는지 확인. **개발 PC (PREEMPT_RT 아님) 의 RT·CPU 격리 결과는 smoke 로만 보고, 판정은 제어 PC 에서** 한다. **S8-E 판정 (2026-09-26, plan §4.4 S8-E 결과)**: `NOT_EVALUATED(제어 PC)` — dev PC smoke: 주기 초과 tick 이 있는 시행 tennis 27/200 (재실행 뒤 2/200) · beanbag 16/200 · leap 3/200 | `[SIM-ANY]` |
 | G8-A2 | **연속 2회 투척**과 **abort 직후 재투척** 시나리오에서 L7 §4.8 재무장 리셋 목록이 전부 동작 (옛 plan 재사용 0, 복귀 위치가 `wait_pose`, 첫 틱 `bound_conflict` 0). **S8-E 판정 (2026-09-26, plan §4.4 S8-E 결과)**: PASS (S8-B 600/600 · 재투척 5/5 기록; S8-E 재무장 585/600, 미종결 15 는 계획 전 TRACKING↔ARMED) | `[SIM-ANY]` |
-| G8-H | early-return 분기(E-STOP·stale·generation 불일치·지평 부족·plan 없음·abort)마다 그 tick 의 body 가 실렸는지 보는 실패 경로 테스트 (PROC-7, `EstopTickPublishesThisTicksBody*` 선례). S7 에서 늘어난 분기까지 확장. **S8-E 판정 (2026-09-26, plan §4.4 S8-E 결과)**: **FAIL** (9 분기 중 2 — E-STOP·stale 입력만 선례를 따른다) — Compute 는 매 tick 무조건 기록을 발행하므로 (`controller.cpp:2581`) 결함이 아니라 테스트 공백, 나머지 7 분기는 후속 | `[SIM-ANY]` |
+| G8-H | early-return 분기(E-STOP·stale·generation 불일치·지평 부족·plan 없음·abort)마다 그 tick 의 body 가 실렸는지 보는 실패 경로 테스트 (PROC-7, `EstopTickPublishesThisTicksBody*` 선례). S7 에서 늘어난 분기까지 확장. **S8-E 판정 (2026-09-26, plan §4.4 S8-E 결과)**: **FAIL** (9 분기 중 2 — E-STOP·stale 입력만 선례를 따른다) — Compute 는 매 tick 무조건 기록을 발행하므로 (`controller.cpp:2581`) 결함이 아니라 테스트 공백, 나머지 7 분기는 후속. **S9a (2026-09-27): PASS (9/9)** — 나머지 7 분기 (generation 불일치·지평 부족·plan 없음·`ABORT_SAFE`·손 단계 조기 반환·`HAND_TIMEOUT`·손 관절 캡처) 를 `test_catching_supervisor_scenarios` 의 `TickBodyTest.*` 가 실제 슈퍼바이저로 몰아 고정한다 (식별 필드 + 그 분기의 블록). `HAND_TIMEOUT` 은 `RETREAT` 의 해제 기한으로만 도달한다 — 닫힘 기한은 `2·T_close_e2e` 라 `CLOSING` (`T_close_e2e`) 안에서 발화하지 않는다. mutation: tick 머리의 레코드 재생성을 지우면 3/7 red (나머지 4 는 그 분기 블록을 매 tick 덮어써 이 mutation 과 무관), 손 witness 비움을 지우면 red | `[SIM-ANY]` |
 | G8-B | ball_perception 예측의 NEES 평균이 [R8] 구간 안 (지평별, NaN 공분산 제외, §4.4). **판정식 (2026-09-26, plan D-S8-16 ②c)**: `sim_estimator.launch.py record:=true` 의 capture 를 `sim_capture_evaluate` 로 평가하고, 표본을 발사 창으로 시행에 묶은 시행별·지평별 평균 NEES 의 시행 부트스트랩 95 % CI 가 3 (위치 차원) 을 포함하면 PASS; coverage_95·부호 있는 편향은 보고 (추정기가 중력만 모델하므로 긴 지평 편향은 예상값). NaN 공분산 > 10 % 인 지평 bin 은 `NOT_EVALUATED`. 캡처는 S8-E 모든 unit 에서 필수 — S8-B~D 세션에는 capture 가 없다. **S8-E 판정 (2026-09-26, plan §4.4 S8-E 결과)**: **FAIL** (3 arm, 지평 0.1·0.25 s; leap 0.5 s `NOT_EVALUATED(첫 접촉 전 표본 0)`) — 평균 NEES ≈ 0.17–0.60 ≪ 3: 공분산이 과대 (보수적), coverage_95 1.00, NaN 0 % (첫 접촉 전 목표 시각 표본만 — `sim_capture_evaluate` 는 접촉 후 참값도 평가한다) | `[SIM-ANY]` |
 | G8-B2 | L1 파서가 ball_perception 실제 레이아웃(필드 이름·datatype)을 검사하고 레이아웃 해시 진단이 변경을 감지 — sim·실기가 같은 발행기 계열이라 복제 레이아웃 대조는 불필요 (D-4, P-3). **S8-E 판정 (2026-09-26, plan §4.4 S8-E 결과)**: PASS (S5.2 레이아웃 해시 테스트 기록) | `[SIM-ANY]` |
 | G8-B3 | 실기 vision 공분산의 일관성: §6 세 수단 중 S10 에서 고른 방법 (G8-C2와 짝). S8-E: `NOT_EVALUATED(실기 — S10)` | `[HW-P1B]` |

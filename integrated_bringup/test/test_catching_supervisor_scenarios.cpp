@@ -227,15 +227,20 @@ struct TickRec {
   std::array<double, kUr5eArmDof> q_meas{};  // the measured arm this tick was given
   std::array<double, kUr5eArmDof> q_out{};   // the arm command it wrote
   bool q_out_valid{false};
-  std::array<double, kUr5eArmDof> q_cmd{};   // carried command (GetArmCommandForTesting)
-  std::array<double, kUr5eArmDof> qd_cmd{};  // carried velocity
+  std::array<double, kUr5eArmDof> q_cmd{};     // carried command (GetArmCommandForTesting)
+  std::array<double, kUr5eArmDof> qd_cmd{};    // carried velocity
+  std::array<double, kP1bHandDof> hand_out{};  // the hand command it wrote
+  bool hand_out_valid{false};
   bool ref_valid{false};
   std::array<double, 3> ref_e{};
   std::array<double, 3> ref_ed{};
   std::array<bool, kTips> tip_contact{};
   std::array<bool, kTips> tip_fresh{};
-  bool hand_blocked{false};        // D-S8-8 (b): the stall has run unbroken
-  std::uint8_t outcome_source{0};  // 0 none, 1 fingertips, 2 hand, 3 both
+  bool hand_blocked{false};                       // D-S8-8 (b): the stall has run unbroken
+  std::uint8_t outcome_source{0};                 // 0 none, 1 fingertips, 2 hand, 3 both
+  std::uint64_t iteration{0};                     // the state.iteration this tick was given
+  double t_relative_s{0.0};                       // … and its t_relative_s
+  integrated_bringup::CatchingDiagLogPod body{};  // the row this tick published (G8-H)
 };
 
 class SupervisorScenarioTest : public ::testing::Test {
@@ -343,7 +348,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     auto msg = integrated_bringup::testing::MakeCloud(spec);
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     const std::int64_t wall =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count() - 5'000'000;
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count() - stamp_age_ns_;
     msg.header.stamp.sec = static_cast<std::int32_t>(wall / 1'000'000'000LL);
     msg.header.stamp.nanosec = static_cast<std::uint32_t>(wall % 1'000'000'000LL);
     pub_->publish(msg);
@@ -456,6 +461,9 @@ class SupervisorScenarioTest : public ::testing::Test {
     }
     rec.hand_blocked = record.hand_blocked_s > 0.0;
     rec.outcome_source = record.outcome_source;
+    rec.iteration = state_.iteration;
+    rec.t_relative_s = state_.t_relative_s;
+    rec.body = record;
 
     // ── The plant ───────────────────────────────────────────────────────────
     std::array<double, kUr5eArmDof> cmd{};
@@ -469,6 +477,13 @@ class SupervisorScenarioTest : public ::testing::Test {
     } else {
       for (int i = 0; i < kUr5eArmDof; ++i) {
         cmd[static_cast<std::size_t>(i)] = state_.devices[0].positions[static_cast<std::size_t>(i)];
+      }
+    }
+    if (out.devices[1].num_channels >= kP1bHandDof) {
+      rec.hand_out_valid = true;
+      for (int i = 0; i < kP1bHandDof; ++i) {
+        const auto u = static_cast<std::size_t>(i);
+        rec.hand_out[u] = out.devices[1].commands[u];
       }
     }
     std::array<double, kUr5eArmDof> measured = cmd;
@@ -691,6 +706,9 @@ class SupervisorScenarioTest : public ::testing::Test {
   std::uint64_t seq_{1};
   std::uint64_t generation_{42};
   std::int64_t last_pub_ns_{0};
+  /// How old the origin stamp is on receipt. Past the cloud's 0.35 s window
+  /// every sample is behind the tick while the message is still fresh.
+  std::int64_t stamp_age_ns_{5 * kMsNs};
 
   // Plant.
   bool servo_hand_{true};
@@ -1203,6 +1221,157 @@ TEST_F(SupervisorScenarioTest, EstopGoesToIdleAndTheClearDoesNotResume) {
   SetArmed(true);
   ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
   EXPECT_GT(CountTicks([](const TickRec& t) { return t.homing; }, rearm), 0);
+}
+
+// ── E-STOP in every stage of an attempt (S9a, D-S9-A/B/C) ───────────────────
+//
+// The case above stops an APPROACH. These stop the stages after it, where the
+// hand is doing something: the reaction is the SAME in all of them (D-S9-B) —
+// IDLE on the stop tick, disarmed, no resume on the clear — and the hand is not
+// opened and not squeezed but held where it was measured (D-S9-A). In HOLD and
+// RETREAT that pose is the closed one, which is the documented cost: under the
+// CM's hold the position servo has no gap left to push with, so the ball goes.
+//
+// WHAT THIS DOES NOT SEE. These are the CONTROLLER's outputs. Under a real
+// E-STOP the CM discards them and writes each device's measured position
+// itself (rt_controller_node_rt_loop.cpp, BuildHoldOutput); that substitution
+// has its own tests in rtc_controller_manager, and the sim run of S9a is what
+// sees both together. What the controller's side has to guarantee is that the
+// value it would fall back to is the same pose, so a CM that stopped
+// substituting would not turn the stop into a motion.
+//
+// THE MEASUREMENT IS MOVED OFF THE LAST COMMAND BEFORE THE STOP TICK. The
+// fixture's plant is a perfect servo — its next measurement is whatever it
+// was just commanded — so without this a controller that REPLAYED its last
+// command would be indistinguishable from one that held the MEASUREMENT, and
+// D-S9-A is about the measurement. The stop tick is given a pose a few mrad
+// away from the last command, and the snapshot compared against is that pose,
+// taken before the tick (never read back from the tick that follows).
+
+class EstopInStageTest : public SupervisorScenarioTest {
+ protected:
+  static constexpr double kHandOffset = 0.01;  // rad; + so q_pre = 0 stays inside the box
+  static constexpr double kArmOffset = 0.002;  // rad; far below track_err_abort
+
+  void StopIn(Mode stage) {
+    ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+    tips_enabled_ = true;
+    ball_in_hand_ = true;
+    ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+    ASSERT_TRUE(TickUntilMode(stage, 1500)) << "never reached " << ModeName(stage) << '\n'
+                                            << Transitions();
+    const Outcome before = ctrl_->GetOutcomeForTesting();
+
+    std::array<double, kP1bHandDof> hand_meas{};
+    for (int i = 0; i < kP1bHandDof; ++i) {
+      const auto u = static_cast<std::size_t>(i);
+      state_.devices[1].positions[u] += kHandOffset;
+      hand_meas[u] = state_.devices[1].positions[u];
+      ASSERT_NE(hand_meas[u], log_.back().hand_out[u]) << "precondition: measurement = command";
+    }
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      state_.devices[0].positions[static_cast<std::size_t>(i)] += kArmOffset;
+    }
+    const std::size_t trig = log_.size();
+    ctrl_->TriggerEstop();
+    Ticks(20);
+    const std::size_t clear = log_.size();
+    ctrl_->ClearEstop();
+    Ticks(100);  // the ball is still being published
+
+    // D-S9-B: one reaction, on the stop tick.
+    EXPECT_EQ(log_[trig].mode, Mode::kIdle) << Window(static_cast<int>(trig), 2);
+    EXPECT_EQ(log_[trig].reason, Reason::kEstop) << Window(static_cast<int>(trig), 2);
+    EXPECT_FALSE(log_[trig].armed_latch) << "the stop tick left the controller armed";
+    for (std::size_t i = trig; i < clear; ++i) {
+      ASSERT_EQ(log_[i].reason, Reason::kEstop) << Window(static_cast<int>(i), 2);
+    }
+    // P-1 (c) / D-S9-C: the clear does not resume anything.
+    ExpectSeq({stage, Mode::kIdle}, trig);
+    EXPECT_FALSE(ctrl_->IsArmRequested()) << "the clear re-armed the controller";
+    // An attempt still in progress ends Aborted, and says so for the whole
+    // stop. One already judged is NOT rewritten as Aborted (L7 §4.1): its
+    // verdict went out on the RETREAT entry tick, which is where the trial
+    // runner reads it, and the stop is not a second opinion on the catch.
+    // (The CLEAR is a reset too and puts the field back to None — the next
+    // attempt starts with no verdict — so the stop window is where it is read.)
+    for (std::size_t i = trig; i < clear; ++i) {
+      if (before == Outcome::kNone) {
+        ASSERT_EQ(log_[i].outcome, Outcome::kAborted) << Window(static_cast<int>(i), 2);
+      } else {
+        ASSERT_NE(log_[i].outcome, Outcome::kAborted) << "the stop rewrote a judged attempt\n"
+                                                      << Window(static_cast<int>(i), 2);
+      }
+    }
+
+    // D-S9-A: the hand stays where it was measured — through the stop and after
+    // the clear, until an operator re-arms.
+    for (std::size_t i = trig; i < log_.size(); ++i) {
+      ASSERT_TRUE(log_[i].hand_out_valid) << "tick " << i << " silenced the hand";
+      for (int j = 0; j < kP1bHandDof; ++j) {
+        const auto u = static_cast<std::size_t>(j);
+        ASSERT_DOUBLE_EQ(log_[i].hand_out[u], hand_meas[u])
+            << "tick " << i << " hand joint " << j << ": the hand moved "
+            << (i < clear ? "during the stop" : "after the clear");
+      }
+    }
+    // The arm likewise: the pose the stop tick measured, never a step away.
+    for (std::size_t i = trig; i < log_.size(); ++i) {
+      ASSERT_TRUE(log_[i].q_out_valid) << "tick " << i << " silenced the arm";
+      for (int j = 0; j < kUr5eArmDof; ++j) {
+        const auto u = static_cast<std::size_t>(j);
+        ASSERT_DOUBLE_EQ(log_[i].q_out[u], log_[trig].q_meas[u])
+            << "tick " << i << " arm joint " << j << ": the arm moved "
+            << (i < clear ? "during the stop" : "after the clear");
+      }
+    }
+    stop_hand_ = hand_meas;
+    stop_tick_ = trig;
+  }
+
+  /// A stop in a stage where the hand has closed on the ball: the hand was
+  /// commanded q_close (TrackingYaml: 0.5 on every joint) up to the stop, and
+  /// the pose it is held at is the closed one as measured — not q_pre.
+  void ExpectHeldClosed() const {
+    ASSERT_GT(stop_tick_, 0U);
+    const auto& last = log_[stop_tick_ - 1];
+    for (int j = 0; j < kP1bHandDof; ++j) {
+      const auto u = static_cast<std::size_t>(j);
+      EXPECT_NEAR(last.hand_out[u], 0.5, 1e-9)
+          << "hand joint " << j << " was not commanded closed when the stop landed";
+      EXPECT_NEAR(stop_hand_[u], 0.5 + kHandOffset, 1e-9) << "hand joint " << j;
+    }
+  }
+
+  std::array<double, kP1bHandDof> stop_hand_{};
+  std::size_t stop_tick_{0};
+};
+
+TEST_F(EstopInStageTest, InCommittedTheArmAndHandHoldAndTheClearDoesNotResume) {
+  ASSERT_NO_FATAL_FAILURE(StopIn(Mode::kCommitted));
+}
+
+TEST_F(EstopInStageTest, InClosingTheArmAndHandHoldAndTheClearDoesNotResume) {
+  ASSERT_NO_FATAL_FAILURE(StopIn(Mode::kClosing));
+}
+
+TEST_F(EstopInStageTest, InDecelTheArmAndHandHoldAndTheClearDoesNotResume) {
+  ASSERT_NO_FATAL_FAILURE(StopIn(Mode::kDecel));
+}
+
+TEST_F(EstopInStageTest, InHoldTheClosedHandIsHeldAndTheClearDoesNotResume) {
+  ASSERT_NO_FATAL_FAILURE(StopIn(Mode::kHold));
+  ExpectHeldClosed();
+}
+
+TEST_F(EstopInStageTest, InRetreatTheClosedHandIsHeldAndTheVerdictIsKept) {
+  ASSERT_NO_FATAL_FAILURE(StopIn(Mode::kRetreat));
+  ExpectHeldClosed();
+  const int r = Entry(Mode::kRetreat);
+  ASSERT_GT(r, 0);
+  EXPECT_EQ(log_[static_cast<std::size_t>(r)].outcome, Outcome::kCaptured)
+      << "the verdict the runner reads is not on the RETREAT entry tick\n"
+      << Window(r, 2);
 }
 
 TEST_F(SupervisorScenarioTest, AnUnarmableProfileParksAndAnUnarmedControllerStaysIdle) {
@@ -1946,6 +2115,244 @@ TEST_F(SupervisorScenarioTest, AStaleFingertipIsNeverContactAndMakesTheOutcomeUn
       << Transitions();
   // Undetermined from HOLD keeps the hand closed into RETREAT, like every verdict.
   EXPECT_EQ(log_.back().phase, HandPhase::kHold);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// G8-H — every branch that decides to do less publishes THIS tick's body
+// ════════════════════════════════════════════════════════════════════════════
+//
+// PROC-7 (L8 §9, G8-H). Compute() has one exit and default-constructs the
+// record at the top of every tick, so a branch cannot skip the publish — but
+// that is a property of today's layout, and S8-E counted only two of the nine
+// branches (E-STOP, stale input: test_demo_catching_controller.cpp's
+// `DemoCatchingRecord`) as pinned by a test. These are the other seven, each
+// driven through the real supervisor rather than asserted from the layout.
+//
+// Each case checks two things on the branch's tick: the IDENTITY fields say it
+// is this tick's row (a republished previous row and a skipped tick look the
+// same downstream otherwise), and the BLOCK the branch is about says what this
+// tick found — including, where the branch computes less, that the block is
+// empty rather than the previous tick's.
+
+class TickBodyTest : public SupervisorScenarioTest {
+ protected:
+  /// The row the tick at `i` published names that tick and its decision.
+  void ExpectThisTicksBody(std::size_t i, const char* branch) const {
+    ASSERT_LT(i, log_.size());
+    const auto& r = log_[i];
+    EXPECT_EQ(r.body.tick, r.iteration) << branch << ": the row is not from this tick\n"
+                                        << Window(static_cast<int>(i), 2);
+    EXPECT_DOUBLE_EQ(r.body.t_relative_s, r.t_relative_s) << branch;
+    EXPECT_EQ(r.body.mode, static_cast<std::uint8_t>(r.mode)) << branch;
+    EXPECT_EQ(r.body.reason, static_cast<std::uint8_t>(r.reason)) << branch;
+  }
+
+  /// The first log index at or after `from` whose tick satisfies `pred`.
+  int First(const std::function<bool(const TickRec&)>& pred, std::size_t from = 0) const {
+    for (std::size_t i = from; i < log_.size(); ++i) {
+      if (pred(log_[i])) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
+};
+
+TEST_F(TickBodyTest, AGenerationMismatchTickCarriesTheSnapshotItRefused) {
+  // A snapshot received under the PREVIOUS activation is still in the box when
+  // the controller is re-activated (D-23: the subscription outlives the
+  // activation). The first tick after must judge it stale on the generation
+  // alone — it is younger than t_stale — and say so in its own row.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  ASSERT_TRUE(TickUntilMode(Mode::kTracking, 200)) << Transitions();
+  const std::uint32_t old_gen = ctrl_->ActivationGeneration();
+  ASSERT_EQ(log_.back().body.input_activation_generation, old_gen) << "precondition";
+  ASSERT_FALSE(log_.back().body.input_stale) << "precondition: the lane was fresh";
+
+  publishing_ = false;
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_->on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_NE(ctrl_->ActivationGeneration(), old_gen) << "precondition: the generation moved";
+  const std::size_t t = log_.size();
+  Ticks(1);
+
+  ASSERT_NO_FATAL_FAILURE(ExpectThisTicksBody(t, "generation mismatch"));
+  const auto& b = log_[t].body;
+  EXPECT_TRUE(b.input_valid) << "the refused snapshot is a valid one";
+  EXPECT_EQ(b.input_activation_generation, old_gen) << "the row does not name what it refused";
+  EXPECT_GE(b.input_age_s, 0.0);
+  EXPECT_LT(b.input_age_s, 0.2) << "precondition: the snapshot was still inside t_stale";
+  EXPECT_TRUE(b.input_stale) << "a previous activation's snapshot was not refused";
+  EXPECT_EQ(log_[t].mode, Mode::kIdle) << "an activation starts in IDLE";
+  EXPECT_FALSE(b.plan_valid);
+  EXPECT_FALSE(b.ref_valid);
+}
+
+TEST_F(TickBodyTest, AHorizonExtrapTickCarriesTheExhaustedWindow) {
+  // No other test reaches HORIZON_EXTRAP. Fresh messages (received now) whose
+  // every sample is already behind the tick: the window is exhausted while the
+  // lane is not stale, which is the one combination that names this reason.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();
+  stamp_age_ns_ = 400 * kMsNs;  // > the 0.35 s the fixture cloud spans
+  last_pub_ns_ = 0;             // the next tick publishes one
+  const std::size_t from = log_.size();
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->GetLastReason() == Reason::kHorizonExtrap; }, 50))
+      << Transitions();
+  const auto t = static_cast<std::size_t>(log_.size() - 1);
+
+  ASSERT_NO_FATAL_FAILURE(ExpectThisTicksBody(t, "horizon exhausted"));
+  const auto& b = log_[t].body;
+  EXPECT_TRUE(b.input_valid);
+  EXPECT_FALSE(b.input_stale) << "the reason should have been BALL_STALE, not HORIZON_EXTRAP";
+  EXPECT_TRUE(b.input_expired);
+  EXPECT_NEAR(b.input_horizon_s, 0.35, 1e-6) << "the row does not carry the window it judged";
+  EXPECT_EQ(log_[t].mode, Mode::kRetreat) << "{APPROACH, HORIZON_EXTRAP} → RETREAT";
+  ExpectSeq({Mode::kApproach, Mode::kRetreat}, from);
+}
+
+TEST_F(TickBodyTest, ANoPlanTickCarriesTheBallAndAnEmptyPlan) {
+  // TRACKING with a fresh ball and no plan anywhere (no planner, no oracle):
+  // the tick saw the ball, found nothing to follow, and its row says both.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+    y["diagnostic"]["oracle_plan"]["enabled"] = false;
+  }));
+  Ticks(80);
+  const auto t = static_cast<std::size_t>(log_.size() - 1);
+  ASSERT_EQ(log_[t].mode, Mode::kTracking) << Transitions();
+  ASSERT_EQ(log_[t].reason, Reason::kNoCatchablePlan);
+
+  ASSERT_NO_FATAL_FAILURE(ExpectThisTicksBody(t, "no plan"));
+  const auto& b = log_[t].body;
+  EXPECT_TRUE(b.input_valid);
+  EXPECT_FALSE(b.input_stale);
+  EXPECT_EQ(b.input_generation, generation_);
+  EXPECT_FALSE(b.plan_valid);
+  EXPECT_EQ(b.plan_id, 0U);
+  EXPECT_DOUBLE_EQ(b.plan_p_c[0], 0.0);
+  EXPECT_FALSE(b.ref_valid) << "no plan, yet the row carries a reference";
+  EXPECT_FALSE(b.clik_ran);
+}
+
+TEST_F(TickBodyTest, AnAbortSafeTickCarriesTheRampAndNoReference) {
+  // After the entry, ABORT_SAFE runs the joint-space ramp and nothing else: no
+  // reference, no CLIK. Its rows carry the ramp's command of THAT tick and an
+  // empty reference/CLIK block, not the last law tick's.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 1.0));
+  ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();
+  Ticks(20);
+  ASSERT_TRUE(log_.back().body.ref_valid) << "precondition: the law was running";
+  state_.devices[0].positions[1] += 0.6;  // one tick of TRACK_ERR (see ATrackErrAbort…)
+  const std::size_t kick = log_.size();
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 400)) << Transitions();
+  ASSERT_EQ(log_[kick].mode, Mode::kAbortSafe) << Window(static_cast<int>(kick), 3);
+
+  int n = 0;
+  for (std::size_t i = kick + 1; i < log_.size() && log_[i].mode == Mode::kAbortSafe; ++i) {
+    ++n;
+    ASSERT_NO_FATAL_FAILURE(ExpectThisTicksBody(i, "ABORT_SAFE"));
+    const auto& b = log_[i].body;
+    ASSERT_FALSE(b.ref_valid) << "tick " << i << " carries a reference ABORT_SAFE did not compute";
+    ASSERT_FALSE(b.clik_ran) << "tick " << i;
+    for (int j = 0; j < kUr5eArmDof; ++j) {
+      const auto u = static_cast<std::size_t>(j);
+      ASSERT_DOUBLE_EQ(b.q_cmd[u], log_[i].q_out[u])
+          << "tick " << i << " joint " << j << ": the row's command is not the one that went out";
+    }
+  }
+  ASSERT_GT(n, 0) << "precondition: the abort ended on its entry tick\n" << Transitions();
+  const int last = static_cast<int>(kick) + n;
+  // The edge is taken at the NEXT tick's head (EvaluateReason reads
+  // abort_stopped_), so the stop is recorded on the last ABORT_SAFE tick.
+  EXPECT_TRUE(log_[static_cast<std::size_t>(last)].body.abort_stopped)
+      << "the last ABORT_SAFE tick does not say the arm stopped\n"
+      << Window(last, 2);
+}
+
+TEST_F(TickBodyTest, AHandStageEarlyReturnEmptiesTheHandBlock) {
+  // A disarm in ARMED: the hand stage returns early (disarmed IDLE — the latch
+  // takes the hand), so the row that says IDLE must not still carry ARMED's
+  // sequencer phase.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 200)) << Transitions();
+  Ticks(5);
+  ASSERT_TRUE(log_.back().body.hand_phase_valid) << "precondition: the sequencer had the hand";
+  SetArmed(false);
+  const std::size_t t = log_.size();
+  Ticks(1);
+
+  ASSERT_EQ(log_[t].mode, Mode::kIdle) << Window(static_cast<int>(t), 2);
+  ASSERT_NO_FATAL_FAILURE(ExpectThisTicksBody(t, "hand stage early return"));
+  const auto& b = log_[t].body;
+  EXPECT_FALSE(b.hand_phase_valid) << "the row carries a sequencer phase the tick did not run";
+  EXPECT_DOUBLE_EQ(b.hand_rho, 0.0);
+  EXPECT_FALSE(b.hand_timeout);
+  EXPECT_EQ(b.hand_stalled_n, 0);
+  EXPECT_TRUE(std::isnan(b.hand_effort_frac)) << "a witness the tick did not compute";
+}
+
+TEST_F(TickBodyTest, AHandTimeoutTickIsTheDisarmingTicksRow) {
+  // The HAND_TIMEOUT a test can reach is RETREAT's release timeout (D-S8-6 (a),
+  // the AHandThatNeverReachesQPre… setup): CLOSING/DECEL record the sequencer's
+  // close timeout only if it fires inside them, and it cannot — it is
+  // 2·T_close_e2e after the close, and CLOSING is T_close_e2e long. The edge
+  // disarms and ends in IDLE on one tick, so that tick's row must say IDLE,
+  // disarmed, and the latch holding the hand — not the Release it left.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+    y["catching"]["robot"]["hand"]["T_release_timeout"] = 0.35;
+  }));
+  pre_tick_ = [this] {
+    if (ctrl_->GetMode() == Mode::kRetreat) {
+      servo_hand_ = false;
+    }
+  };
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kIdle, 1500)) << Transitions();
+  const int t = First([](const TickRec& r) { return r.reason == Reason::kHandTimeout; });
+  ASSERT_GE(t, 1) << "HAND_TIMEOUT was never recorded\n" << Transitions();
+
+  const auto u = static_cast<std::size_t>(t);
+  ASSERT_NO_FATAL_FAILURE(ExpectThisTicksBody(u, "HAND_TIMEOUT"));
+  ASSERT_EQ(log_[u - 1].body.hand_phase, static_cast<std::uint8_t>(HandPhase::kRelease))
+      << "precondition: the tick before was waiting on the release";
+  const auto& b = log_[u].body;
+  EXPECT_EQ(log_[u].mode, Mode::kIdle);
+  EXPECT_FALSE(b.armed) << "the row does not show the disarm its own tick did";
+  EXPECT_FALSE(b.hand_phase_valid) << "the row carries the Release the tick left";
+  EXPECT_FALSE(b.hand_timeout);
+}
+
+TEST_F(TickBodyTest, TheHandWitnessIsThisTicksAndEmptyOnceTheHandLetsGo) {
+  // D-S8-8 (b): the hand-joint capture witness is computed only while the hand
+  // is in Hold. Its rows carry this tick's reading while it is; the first tick
+  // after the release carries NONE — NaN, not the last stall — because a
+  // witness the tick did not compute must not read as one it did.
+  hand_max_torque_ = std::vector<double>(kP1bHandDof, kHandTauMax);
+  hand_stall_ = HandStall{5, 0.6 * 0.5, 0.9 * kHandTauMax};
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, CaptureTweak));
+  tips_enabled_ = true;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();  // through the release
+
+  const int s = First([](const TickRec& r) { return r.body.hand_stalled_n > 0; });
+  ASSERT_GE(s, 0) << "precondition: the witness never saw the stall\n" << Transitions();
+  const auto su = static_cast<std::size_t>(s);
+  ASSERT_NO_FATAL_FAILURE(ExpectThisTicksBody(su, "hand witness"));
+  EXPECT_EQ(log_[su].phase, HandPhase::kHold);
+  EXPECT_TRUE(std::isfinite(log_[su].body.hand_effort_frac));
+  EXPECT_NEAR(log_[su].body.hand_effort_frac, 0.9, 1e-6) << "not this tick's effort";
+
+  const int rel = First([](const TickRec& r) { return r.phase == HandPhase::kRelease; }, su);
+  ASSERT_GT(rel, s) << "precondition: the hand never released\n" << Transitions();
+  const auto ru = static_cast<std::size_t>(rel);
+  ASSERT_NO_FATAL_FAILURE(ExpectThisTicksBody(ru, "hand released"));
+  EXPECT_EQ(log_[ru].body.hand_stalled_n, 0) << "the release row carries the last stall";
+  EXPECT_TRUE(std::isnan(log_[ru].body.hand_effort_frac))
+      << "the release row carries a witness it did not compute";
+  EXPECT_DOUBLE_EQ(log_[ru].body.hand_blocked_s, 0.0);
 }
 
 }  // namespace

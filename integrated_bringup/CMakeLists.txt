@@ -772,6 +772,28 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # S9a: /rtc_cm/clear_estop and /rtc_cm/reset_fault over the wire, on a real
+  # RtControllerNode hosting the catching controller and running the CM's own
+  # tick body — the seam between the CM's latch services and the catching P-1
+  # contract that the operator GUI drives. Opens participants (the CM node, a
+  # service client, the controller's LifecycleNode), hence the package domain.
+  ament_add_gtest(test_catching_cm_services test/test_catching_cm_services.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_catching_cm_services
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_catching_cm_services
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    rtc_msgs
+    sensor_msgs
+    ament_index_cpp
+  )
+
   # ── #282 two-tier DLS convergence harness ──────────────────────────────────
   # Pure numerics: the pre-#282 inline block (oracle) against
   # compliance::DifferentialIk. Its own binary because it installs the Eigen
@@ -1658,6 +1680,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_grasp_mode test/test_demo_gui_grasp_mode.py)
   ament_add_pytest_test(test_demo_gui_hand_step test/test_demo_gui_hand_step.py)
   ament_add_pytest_test(test_demo_gui_catching test/test_demo_gui_catching.py)
+  ament_add_pytest_test(test_demo_gui_latch_clear test/test_demo_gui_latch_clear.py)
   # S7 G8-A2 (existence half): every RT-owned member of the catching
   # controller has a row in its header's reset table.
   ament_add_pytest_test(test_catching_reset_table test/test_catching_reset_table.py)

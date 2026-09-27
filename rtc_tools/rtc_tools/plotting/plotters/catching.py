@@ -24,6 +24,13 @@ the reference and the error it happened on. A second figure, `catching_hand`,
 stacks the hand sequencer (phase, ρ, timeout) and the fingertip lane (|F − b|,
 debounced contact, freshness) with the attempt's verdict.
 
+THE TWO LATCHES ARE SHADED (S9a, D-S9-H). Every panel of `catching_diag` shades
+the ticks with `estop_active` (the CM's global E-STOP) and `fault_latched` (this
+controller's own latch) set. They are separate latches with separate clears, so
+they get separate colours: a run where the fault was reset but the E-STOP was
+not reads as one band ending while the other goes on. The mode trace alone
+cannot say this — an E-STOP does not move the supervisor to FAULT.
+
 WHAT IS NOT HERE. There is no ball-truth column in this file — the controller
 does not have one — so whether the verdict was RIGHT is not a question this
 plot answers. The sim trial analysis owns that (G7-E, plan §8).
@@ -32,6 +39,8 @@ plot answers. The sim trial analysis owns that (G7-E, plan §8).
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 # rtc::catching::Mode wire values, in the enum's own order. Used for the mode
 # band's y ticks so the trace reads as states rather than as small integers.
@@ -73,6 +82,72 @@ def mode_transitions(df):
     for i in changed.nonzero()[0]:
         out.append((float(t.iloc[i]), int(mode.iloc[i - 1]), int(mode.iloc[i])))
     return out
+
+
+def flag_intervals(df, column):
+    """(t_start, t_end) for every run of consecutive rows where `column` is set.
+
+    A row's flag holds from its own time to the NEXT row's, the same "post"
+    convention the mode trace is stepped with, so a band and the mode edge it
+    caused line up. A run that is still set on the last row ends AT the last
+    row (there is no next row to end on) — a flag raised on the final tick is
+    therefore a zero-width interval, returned rather than dropped so the count
+    of latch episodes stays honest.
+
+    A missing column, or one whose cells do not parse as numbers (NaN), yields
+    no intervals: an absent flag is not evidence that the latch was up.
+    """
+    time_col = "timestamp" if "timestamp" in df.columns else "t_relative_s"
+    if column not in df.columns or time_col not in df.columns or len(df) == 0:
+        return []
+    t = pd.to_numeric(df[time_col], errors="coerce")
+    on = pd.to_numeric(df[column], errors="coerce") > 0.5  # NaN compares False
+    keep = t.notna()
+    t = t[keep].to_numpy(dtype=float)
+    on = on[keep].to_numpy(dtype=bool)
+    # Run edges, vectorised (a long session is millions of rows): +1 where a
+    # run starts, -1 one past where it ends — the padding closes a run that is
+    # still set on the last row.
+    edges = np.diff(np.concatenate(([0], on.astype(np.int8), [0])))
+    starts = np.flatnonzero(edges == 1)
+    stops = np.flatnonzero(edges == -1)  # exclusive: the first row after the run
+    return [
+        (float(t[a]), float(t[b] if b < len(t) else t[-1]))
+        for a, b in zip(starts, stops, strict=True)
+    ]
+
+
+# (column, legend label, colour). E-STOP and the controller fault are distinct
+# latches with distinct clears (/rtc_cm/clear_estop vs /rtc_cm/reset_fault), so
+# they never share a colour.
+LATCH_SHADES = (
+    ("estop_active", "E-STOP", "crimson"),
+    ("fault_latched", "fault latched", "darkorange"),
+)
+
+
+def _shade_latches(axes, df, legend_axis=None):
+    """Shade every latch interval on every panel; label each latch once.
+
+    Returns True when anything was shaded, so the caller knows whether a legend
+    entry exists to show.
+    """
+    shaded = False
+    for column, label, colour in LATCH_SHADES:
+        for k, (t0, t1) in enumerate(flag_intervals(df, column)):
+            for ax in axes:
+                ax.axvspan(
+                    t0,
+                    t1,
+                    color=colour,
+                    alpha=0.15,
+                    linewidth=0,
+                    zorder=0,
+                    gid=f"latch_{column}",
+                    label=label if (k == 0 and ax is legend_axis) else None,
+                )
+            shaded = True
+    return shaded
 
 
 def _mode_label(value):
@@ -236,6 +311,10 @@ def plot_catching_diag(df, save_dir=None):
     axes[3].set_xlabel("Time (s)")
     axes[3].grid(True, alpha=0.3)
     _draw_transitions(axes, mode_transitions(df), label_axis=axes[0])
+    # After the other panels' legend() calls, so the bands do not crowd those
+    # legends; the supervisor panel has none of its own and carries the key.
+    if _shade_latches(axes, df, legend_axis=axes[3]):
+        axes[3].legend(fontsize=7, loc="upper right")
 
     plt.tight_layout()
     if save_dir:

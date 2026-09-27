@@ -6,7 +6,7 @@
 # Trigger: every Edit / Write tool call by Claude. Reads {tool_input.file_path}
 #          from stdin JSON.
 # Format : C++ (.cpp/.hpp/.h/.cc)  -> clang-format -i (uses repo .clang-format)
-#          Python (.py)            -> ruff check --fix, THEN ruff format
+#          Python (.py)            -> ruff check --fix (F401 unfixable), THEN ruff format
 # Lookup : clang-format prefers a system binary; if absent, falls back to the
 #          repo-pinned version via `uvx` (so environments without a system
 #          clang-format — e.g. fresh dev boxes / CI — still auto-format instead
@@ -71,7 +71,15 @@ case "$FILE_PATH" in
       # `open(name, "r")` across three lines, UP015 then drops `"r"`, and the
       # call that now fits on one line stays split -- which verify-changes.sh
       # Phase 5 grades as drift and blocks.
-      "$RUFF_BIN" check --fix --quiet "$FILE_PATH" 2>/dev/null || true
+      #
+      # F401 (unused import) is NOT autofixed here. This hook runs after EVERY
+      # Edit, and a change is several Edits: an import added in one is unused
+      # until a later one writes the code that needs it, so the fix deleted it
+      # in between -- and the next Edit's code then referenced a name that was
+      # gone (twice in one S9a GUI change, #537). An import that really stays
+      # unused is still a `ruff check` finding (AGENTS.md §4); Phase 5 grades
+      # formatting only, so this changes no gate.
+      "$RUFF_BIN" check --fix --unfixable F401 --quiet "$FILE_PATH" 2>/dev/null || true
       "$RUFF_BIN" format --quiet "$FILE_PATH" 2>/dev/null || true
     fi
     ;;
