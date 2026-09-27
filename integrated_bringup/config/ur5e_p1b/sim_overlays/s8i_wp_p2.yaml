@@ -14,6 +14,9 @@
 # three P arms differ in `planner.wait_pose` ONLY (test_catch_lead_overlays.py
 # pins the leaves). Sim only — a real-arm wait pose needs a collision and safety
 # check this search does not do (kinematic model only, no IK-acceptance check).
+# RESULT (S8-I, #537 5852292540): WORSE than P0 — the IK catch posture sits
+# 0.58 rad / 0.40 m away with DLS 1.2–1.4 m/s; catches 5/112 vs 18/112
+# (McNemar p 0.007). Kept for reproducibility.
 integrated_rt_controller:
   ros__parameters:
     demo_catching_controller:
