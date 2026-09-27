@@ -100,7 +100,7 @@ LIMIT_TOL_RAD = 1e-9
 # "DLS never above LP" is not exact: the damped (λ = 1e-3) minimum-norm solution
 # meets the approach-axis constraint only to O(λ), so where the DLS objective
 # drives a pose to the LP optimum the DLS can sit a little ABOVE the constrained
-# LP (1.7e-4 relative seen on ur5e_p1b). The check keeps a 1e-3 relative margin
+# LP (1.7e-4 relative seen on a 6-axis profile). The check keeps a 1e-3 relative margin
 # plus 1e-6 m/s; anything larger is a real inconsistency.
 DLS_LP_REL_TOL = 1e-3
 DLS_LP_ABS_TOL = 1e-6
