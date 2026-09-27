@@ -1,0 +1,51 @@
+# sim overlay — dynamic_catching S8-I, "the switched-in pose is the wait pose" (#537 5850509543)
+#
+#   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_mpc:=true \
+#       sim_lanes:=true sim_overlay:=catch_wait_pose_current
+#
+# WHAT IT IS FOR. Put the arm somewhere with demo_joint_controller (a joint
+# goal) or demo_task_controller (a TCP goal), then switch to
+# demo_catching_controller: the controller adopts the arm's measured pose on
+# its first readable tick as `planner.wait_pose` (`wait_pose_source: current`,
+# the shipped YAML keeps `yaml`). Homing is then a no-op, ARMED is immediate,
+# the planner seeds its IK from that pose and RETREAT returns to it. The
+# startup log says which pose was adopted ("wait pose adopted from the arm's
+# switched-in pose: [...]", once per activation) and the diag CSV carries it
+# (`wait_pose_adopted`, `wait_pose_<joint>`). A pose outside the margined joint
+# box is refused: the controller then homes to the YAML pose (12 s for a
+# wrist wound to 6.25 rad — verified 2026-09-27, headless sim, six switches
+# from both source controllers plus one refusal).
+#
+# It is the s8f_reach_first arm plus that one leaf. The widened catch box is
+# not optional here: the shipped `planner.workspace.catch_box` is the hull
+# around the SHIPPED wait pose, so a ball passing the hand at another pose is
+# "outside the box" and gets no plan. Sim only — a real arm needs the
+# collision and safety check the shipped box is.
+#
+# NOT for catching_sim_trials: the runner aims and aligns at the read-only
+# mirror `planner.wait_pose`, which is the YAML list, so with `current` its
+# ARMED alignment gate refuses every trial. Throw by hand (`/sim/launch_ball_at`,
+# the viewer's K key) or from a script that FKs the adopted pose.
+#
+# THE PATH IS THE TRAP (catch_lead_on.yaml header): every leaf below names a
+# shipped key of the same type, pinned by `test_catch_lead_overlays.py`.
+
+integrated_rt_controller:
+  ros__parameters:
+    demo_catching_controller:
+      catching:
+        joint_cmd:
+          lag:
+            T_arm: 0.05
+            lead_enable: true
+        planner:
+          freeze:
+            T_freeze: 0.37
+          score:
+            w_t: 5.0
+            w_gamma: 1.0
+          workspace:
+            catch_box:
+              min: [-1.1, -1.1, 0.15]
+              max: [1.1, 1.1, 1.2]
+          wait_pose_source: current

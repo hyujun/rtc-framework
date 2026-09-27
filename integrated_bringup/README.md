@@ -225,38 +225,40 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # h
 정확히 출하 씬입니다. `demo_inference_controller` 의 정책이 학습된 씬(바닥 위 원통 1개 + 학습
 reset 자세)은 `inference_pole` 이고, 물체 자산은 `robot_descriptions/objects/pole` 에 있습니다.
 
-dynamic_catching S8-B 의 lead 보상 소거실험은 컨트롤러 섹션 (`integrated_rt_controller`) 을 쓰는 overlay
-네 개로 돕니다: `catch_lead_on` · `catch_lead_off` · `catch_lead_on_gamma0` · `catch_lead_off_gamma0`
-(sim 팔의 1차 지연 0.05 s 를 `joint_cmd.lag.T_arm` 으로 주고, 그 하한에 맞춰 `T_freeze` 를 0.37 로 올립니다.
-γ0 두 개는 `planner.gamma.grid: [0.0]` 에 `planner.hand.d_eff: 10.0` 을 더합니다 — grid 만으로는 γ 창 하한이
-대신 쓰입니다). 컨트롤러 키는 경로가 한 단계만 어긋나도 **경고 없이 무시되고 출하값으로 돌기 때문에**,
-기동 로그의 `commit at t_c − 0.370 s` 로 적용을 확인합니다. sim 팔 지연 0.05 s 자체는 overlay 가 아니라
+**출하 overlay 는 운용에 쓰는 것만 둡니다** — 실험 arm (S8-B 소거 `catch_lead_off`·`*_gamma0`, S8-E beanbag,
+S8-F 대조 `s8f_shipped_score`·beanbag, S8-G 격자 `s8g_*`, S8-I 자세 `s8i_wp_*`, leap 교정 쌍둥이) 은 결과가
+plan §4.4 와 #537 에 기록된 뒤 정리했고 (2026-09-27), 재현은 git 이력의 파일을 **경로로** 넘깁니다
+(`sim_overlay:=/path/to/arm.yaml` — overlay 는 다른 overlay 를 include 하지 못하므로 잎을 전부 적은 자기완결 파일).
+새 실험 arm 도 repo 밖 (private 도구 디렉터리) 에서 경로로 씁니다.
+
+포구 컨트롤러 overlay 는 컨트롤러 섹션 (`integrated_rt_controller`) 을 씁니다. `catch_lead_on` 은 러너의 표준 arm
+(sim 팔의 1차 지연 0.05 s 를 `joint_cmd.lag.T_arm` 으로 주고, 그 하한에 맞춰 `T_freeze` 를 0.37 로 올립니다), 나머지
+둘은 그 위에 잎을 더합니다 — `s8f_reach_first` (손 근처 투척: 넓힌 `catch_box` + 도달 우선 점수) ·
+`catch_wait_pose_current` (아래 §Catching sim trials 의 switch 흐름). 컨트롤러 키는 경로가 한 단계만 어긋나도
+**경고 없이 무시되고 출하값으로 돌기 때문에**, 기동 로그의 `commit at t_c − 0.370 s` 로 적용을 확인합니다. sim 팔 지연 0.05 s 자체는 overlay 가 아니라
 `config/ur5e_p1b/mujoco_simulator.yaml` 의 서보 게인 (`use_yaml_servo_gains: true`, kd/kp = 0.05 s) 이 정합니다 —
 MJCF 게인 그대로면 0.2 s 입니다. 근거는 `catch_lead_on.yaml` 헤더, 경로 고정은
 `test/test_catch_lead_overlays.py` 가 갖습니다.
 
-S8-E 의 공 arm `catch_lead_on_beanbag` 은 컨트롤러 섹션이 `catch_lead_on` 과 같고, 시뮬레이터 섹션에서
-`projectile_ball.ball_type` 만 `beanbag` 으로 바꿉니다. 이 preset 은 반발뿐 아니라 마찰·구름·항력·양력도
-바꾸므로 결과는 그 복합 효과입니다 (근거는 파일 헤더). 시뮬레이터는 기동 때 공 종류를 로그하지 않으므로
-`ros2 param get /mujoco_simulator projectile_ball.ball_type` 으로 적용을 확인합니다.
+공 종류는 overlay 의 시뮬레이터 섹션에서 바꿉니다 (`mujoco_simulator.ros__parameters.projectile_ball.ball_type: beanbag`
+— S8-E·S8-F-1 의 beanbag arm 이 그렇게 했습니다). 이 preset 은 반발뿐 아니라 마찰·구름·항력·양력도 바꾸므로 결과는
+그 복합 효과입니다. 시뮬레이터는 기동 때 공 종류를 로그하지 않으므로 `ros2 param get /mujoco_simulator projectile_ball.ball_type`
+으로 적용을 확인합니다.
 
-dynamic_catching S8-G (팔 예산) 는 `s8g_w{10,15,20}_a{21,30}` 여섯 arm 으로 `reference.omega` × `reference.a_max` 를
-스윕합니다 — 각 arm 은 S8-F-1 의 `s8f_reach_first` 에 그 두 잎과 **측정 당시의 계획기 box 핀** (`robot.arm.accel_limits_path` = 출하
-`derived_accel_limits.yaml`) 을 더한 것이라 S8-F-1 의 cliff unit 이 기준 쌍둥이입니다
-(ω 10 · a_max 21 이 S8-G 전 출하 쌍; **결과로 출하 `reference.a_max` 는 30** 이 되어 `s8g_w10_a30` 이 지금 출하 쌍이고, sim 은 `sim.yaml` 이 계획기 box 를 `derived_accel_limits_s8g_envelope.yaml` 로 덮습니다 — 그 파일 헤더가 근거). **`sim.yaml` 의 override 는 overlay 아래에 깔리므로** overlay 가 box 경로를 명시하지 않으면 그 overlay 도 envelope box 로 돕니다 — S8-G 격자 여섯은 핀으로 기록된 구성을 재현하지만, S8-F 이전 overlay (`s8f_*`, `catch_lead_*`) 는 지금 띄우면 a_max 30 · envelope box 아래에서 도는 새 구성이라 기록된 unit 의 복제가 아닙니다. `s8g_w10_a21_envbox` 는 기준 arm 에서 `robot.arm.accel_limits_path` 하나만 바꿔
-계획기 도달시간 (L3 §4.3) 이 판정하는 D-16 box 를 출하 `derived_accel_limits.yaml` (2.03 rad/s²) 대신
-`derived_accel_limits_s8g_envelope.yaml` — `rtc_tools catching_arm_budget --write-envelope-box` 가 S8-F-1 unit 아홉 개의
-**실행된** 관절 가속 envelope 에서 쓴 sim 전용·provisional 파일 — 로 돌립니다 (결정 K 이후 CLIK 은 dynamic 토크
-제약을 쓰므로 그 box 는 실행을 묶지 않는데, 계획기만 그것으로 도달시간을 재 S8-F-1 의 plan 이 전부 `rank_reach` 에
-걸렸습니다; #537). 적용 확인은 컨트롤러 미러 `ros2 param get /demo_catching_controller/demo_catching_controller
+팔 예산 층 (`reference.omega`·`reference.a_max`·`robot.arm.accel_limits_path`) 은 S8-G 가 격자 overlay 로 스윕해 **출하
+`reference.a_max` 30** 으로 반영했고, sim 은 `sim.yaml` 이 계획기 D-16 box 를 `derived_accel_limits_s8g_envelope.yaml`
+(`rtc_tools catching_arm_budget --write-envelope-box` 가 S8-F-1 unit 아홉 개의 **실행된** 관절 가속 envelope 에서 쓴
+sim 전용·provisional 파일; 그 헤더가 근거) 로 덮습니다. **`sim.yaml` 의 override 는 overlay 아래에 깔리므로** overlay 가
+box 경로를 명시하지 않으면 그 overlay 도 envelope box 로 돕니다 — S8-F 이전에 기록된 unit 은 a_max 21 · 출하 box 아래에서
+돌았으니, 지금 같은 overlay 로 띄우면 그 복제가 아닙니다 (재현은 overlay 에 `reference.a_max`·`accel_limits_path` 를
+핀합니다 — S8-G 격자 arm 이 그 형태였습니다). 적용 확인은 컨트롤러 미러 `ros2 param get /demo_catching_controller/demo_catching_controller
 reference.omega` (· `reference.a_max` · `robot.arm.qdd_max` · `robot.arm.accel_limits_path`) 로 합니다 — 기동 로그에는
-안 찍힙니다. 검증기 교차 조건 (`a_dec` ≤ `a_max`, ω ∈ [1, 25], ω·h < 0.828) 은 `test/test_catch_lead_overlays.py` 가 핀합니다.
+안 찍힙니다. `sim.yaml` 의 override 가 출하 키 하나뿐이고 그 파일이 adopted 인 것은 `test/test_catch_lead_overlays.py` 가 핀합니다.
 
 `sim_iiwa7_leap.launch.py` 도 같은 규칙으로 `config/iiwa7_leap/sim_overlays/` 를 읽습니다 (S8-D).
 `catch_lead_on` 은 `T_arm` 0.05 · `lead_enable` 을 켜고 (`T_freeze` 는 출하 0.19 가 이미 하한 0.1847 을 덮는다 —
 기동 로그 `commit at t_c − 0.190 s`), 테이블·물체 없는 씬 `scene_right.xml` 로 바꿉니다 — 출하 씬의 테이블 물체가
-대기 자세 바로 아래라 homing 중 손가락이 걸립니다. `catch_lead_on_unbounded` 는 교정 세트용으로
-`supervisor.{sat_ticks, track_err_abort, stale_committed_max_s}` 를 사실상 끈 쌍둥이입니다. 이 로봇의 sim 팔
+대기 자세 바로 아래라 homing 중 손가락이 걸립니다. 이 로봇의 sim 팔
 지연 0.05 s 도 `config/iiwa7_leap/mujoco_simulator.yaml` 의 서보 게인 (kp ×4) 이 정합니다.
 
 ```bash
@@ -869,7 +871,9 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 ### Catching sim trials — 한 투척 = 한 S7 순환
 
-S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 러너는 미러 `planner.wait_pose` 로 조준·정렬하므로 **`planner.wait_pose_source: yaml` 전제**다 — `current` 로 띄우면 채택 자세와 미러가 달라 ARMED 정렬 gate 가 거부한다; 자세 실험은 overlay `planner.wait_pose` 로 한다 (S8-I). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED). 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
+S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 러너는 미러 `planner.wait_pose` 로 조준·정렬하므로 **`planner.wait_pose_source: yaml` 전제**다 — `current` 로 띄우면 채택 자세와 미러가 달라 ARMED 정렬 gate 가 거부한다; 자세 실험은 overlay `planner.wait_pose` 로 한다 (S8-I). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED).
+
+**switch 시점 자세를 대기 자세로 (S8-I, `planner.wait_pose_source: current`, overlay `catch_wait_pose_current`).** 러너 없이 손으로 쓰는 흐름이다: `demo_joint_controller` 에 관절 목표 (`/demo_joint_controller/ur5e/joint_goal`, `goal_type: joint`) 나 `demo_task_controller` 에 TCP 목표 (`/demo_task_controller/ur5e/joint_goal`, `goal_type: task`, `base` 프레임 (x, y, z, roll, pitch, yaw) ZYX — 출하 `trajectory_speed` 0.01 m/s 라 0.1 m 에 10 s) 를 보내 팔을 두고, `/rtc_cm/switch_controller` 로 포구 컨트롤러를 활성화한다. 첫 팔 판독 tick 이 그 자세를 채택하고 (기동 로그 `wait pose adopted from the arm's switched-in pose: [...]`, diag `wait_pose_adopted`·`wait_pose_<joint>`), `catching.enable` 은 homing 없이 곧 ARMED 다. 2026-09-27 headless sim 검증: 관절 목표 3 자세 + TCP 목표 2 자세 (출하 자세에서 최대 0.35 rad · 8–11 cm) + 출하 복귀 재채택 — 채택 오차 ≤ 1.2e-4 rad, 채택 로그 0.11 s, 무장 시 팔 이동 ≤ 1e-4 rad, 각 자세에서 손 근처 투척 한 발이 plan → HOLD → RETREAT 로 채택 자세에 복귀 (6/6, 포획 2); wrist_3 6.25 rad (margined box 밖) 은 거부되어 YAML 자세로 12.8 s homing. 미러 `planner.wait_pose` 는 YAML 값이므로 채택 자세는 로그·diag 로만 읽는다. 그래서 S6 까지 쓰던 외부 정렬 (`demo_joint_controller` 전환 → 관절 목표 → 복귀, #537 결정 ④) 은 없앴다. 대기 자세 밖에서 시작하는 시행은 이제 드라이버가 가려 줄 일이 아니라 컨트롤러의 결함으로 드러나야 한다.
 
 `catching_sim_trials` 는 떠 있는 sim 을 구동만 한다. 투척마다 다음을 한다.
 
@@ -904,8 +908,7 @@ ros2 run integrated_bringup catching_sim_trials <out> --dist s35b --n 25 --seed 
 #    손 근처 투척 (S8-F): sim 은 sim_overlay:=s8f_reach_first 로 띄운다
 ros2 run integrated_bringup catching_sim_trials <out> --dist hand_cliff --seed 901 --arm s8f_reach_first
 ros2 run integrated_bringup catching_sim_trials <out> --dist hand_lhs --n 150 --seed 911 --arm s8f_reach_first
-#    팔 예산 스윕 (S8-G): 같은 56 발을 arm 마다 — sim 은 sim_overlay:=s8g_w15_a30 (등) 로 띄운다
-ros2 run integrated_bringup catching_sim_trials <out> --dist hand_cliff --seed 901 --arm s8g_w15_a30
+#    다른 arm (예: 다른 wait_pose, 예산 스윕) 은 s8f_reach_first 의 잎 + 그 잎을 적은 자기완결 overlay 를 경로로 띄운다
 
 # iiwa7_leap (S8-D): 같은 순서, launch·profile·overlay 만 다르다. `catch_lead_on`
 # overlay 는 T_arm 0.05 선행을 켜고 테이블·물체 없는 씬 (scene_right.xml) 을 쓴다.
