@@ -52,6 +52,10 @@ class ControllerEntry:
     is_active: bool
     claimed_groups: tuple[str, ...]
     has_gain_schema: bool  # True iff config_key has a GAIN_DEFS entry
+    # ``ControllerState.name`` (``Name()``, e.g. 'DemoJointController'). Not an
+    # identity key for anything else in the GUI — it is kept because
+    # /rtc_cm/reset_fault matches ``controller_name`` against it (S9a).
+    controller_name: str = ""
 
 
 def build_entries(
@@ -89,6 +93,7 @@ def build_entries(
                 is_active=cs.is_active,
                 claimed_groups=tuple(cs.claimed_groups),
                 has_gain_schema=(config_key in schema),
+                controller_name=cs.name,
             )
         )
     return tuple(entries)
