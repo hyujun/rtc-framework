@@ -169,6 +169,10 @@ catching:
     track_err_abort: )"
      << gains.track_err_abort << R"(
     n_qp: 3
+    # Cleared like the other provisional flags here (real-arm axis); the two
+    # deadlines themselves are left to the parser defaults (#537 S9b).
+    deadline:
+      provisional: false
     decel:
       a_dec: 10.0
   robot:

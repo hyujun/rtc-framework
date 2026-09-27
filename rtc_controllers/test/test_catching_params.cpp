@@ -85,6 +85,10 @@ supervisor:
     a_dec: 3.0
   track_err_abort: 0.3
   n_qp: 3
+  deadline:
+    stop_s: 1.0
+    return_s: 5.0
+    provisional: false
 joint_cmd:
   K_p: 20.0
   K_a: 8.0
@@ -725,6 +729,65 @@ TEST(CatchingParams, AProvisionalCaptureBlocksTheRealArmAndWarnsInSim) {
   EXPECT_TRUE(sim.armable);
   EXPECT_TRUE(
       ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "robot.hand.capture"));
+}
+
+// ── supervisor.deadline (#537 S9b, D-S9-D1) ─────────────────────────────────
+
+TEST(CatchingParams, MotionDeadlinesAreReadAndDefaultWhenAbsent) {
+  const CatchingParams given = ParseCatchingParams(ValidRoot());
+  EXPECT_DOUBLE_EQ(given.supervisor_deadline_stop_s.value, 1.0);
+  EXPECT_DOUBLE_EQ(given.supervisor_deadline_return_s.value, 5.0);
+  EXPECT_FALSE(given.supervisor_deadline_provisional);
+
+  YAML::Node root = ValidRoot();
+  root["supervisor"].remove("deadline");
+  const CatchingParams absent = ParseCatchingParams(root);
+  const CatchingParams defaults{};
+  EXPECT_FALSE(absent.supervisor_deadline_stop_s.tbd);
+  EXPECT_DOUBLE_EQ(absent.supervisor_deadline_stop_s.value,
+                   defaults.supervisor_deadline_stop_s.value);
+  EXPECT_DOUBLE_EQ(absent.supervisor_deadline_return_s.value,
+                   defaults.supervisor_deadline_return_s.value);
+  // Fail-closed, like every provisional flag: silence is not a measurement.
+  EXPECT_TRUE(absent.supervisor_deadline_provisional);
+  // The floor D-S9-D1 put under the S8-derived defaults.
+  EXPECT_GE(defaults.supervisor_deadline_stop_s.value, 0.5);
+  EXPECT_GE(defaults.supervisor_deadline_return_s.value, 0.5);
+}
+
+TEST(CatchingParams, AMotionDeadlineThatIsTbdOrNotPositiveBlocksArming) {
+  for (const char* key : {"stop_s", "return_s"}) {
+    const std::string full = std::string("supervisor.deadline.") + key;
+    YAML::Node tbd = ValidRoot();
+    tbd["supervisor"]["deadline"][key] = "TBD";
+    const CatchingValidationReport r_tbd =
+        ValidateCatchingParams(ParseCatchingParams(tbd), kControlRateHz, false);
+    EXPECT_FALSE(r_tbd.armable) << full;
+    EXPECT_TRUE(ReportHasFailure(r_tbd, CatchingValidationReason::kActiveConfigTbd, full)) << full;
+    for (const double bad : {0.0, -0.1}) {
+      YAML::Node root = ValidRoot();
+      root["supervisor"]["deadline"][key] = bad;
+      const CatchingValidationReport r =
+          ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+      EXPECT_FALSE(r.armable) << full << " = " << bad;
+      EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation, full))
+          << full << " = " << bad;
+    }
+  }
+}
+
+TEST(CatchingParams, ProvisionalMotionDeadlinesBlockTheRealArmAndWarnInSim) {
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["deadline"]["provisional"] = true;
+  const CatchingParams p = ParseCatchingParams(root);
+  const CatchingValidationReport real = ValidateCatchingParams(p, kControlRateHz, true);
+  EXPECT_FALSE(real.armable);
+  EXPECT_TRUE(ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm,
+                               "supervisor.deadline"));
+  const CatchingValidationReport sim = ValidateCatchingParams(p, kControlRateHz, false);
+  EXPECT_TRUE(sim.armable);
+  EXPECT_TRUE(
+      ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "supervisor.deadline"));
 }
 
 TEST(CatchingParams, CaptureProvisionalDefaultsToTrue) {

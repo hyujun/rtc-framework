@@ -488,7 +488,9 @@ class CatchingStatus:
         if self.clik_bound_conflict:
             parts.append("BOUND CONFLICT")
         if self.qp_fail_streak > 0:
-            parts.append(f"QP fail streak {self.qp_fail_streak}")
+            # Trials in a row the solver ended (#537 S9b), not failed solves:
+            # it stays up across good solves until a verdict or a fault reset.
+            parts.append(f"QP fail streak {self.qp_fail_streak} trial(s)")
         return "  |  ".join(parts)
 
     def _hand_line(self) -> str:

@@ -115,6 +115,8 @@ catching:
   supervisor:
     track_err_abort: 0.3
     n_qp: 3
+    deadline:
+      provisional: false
   robot:
     arm:
       limit_margin: 0.05

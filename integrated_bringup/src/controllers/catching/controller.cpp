@@ -497,12 +497,11 @@ void DemoCatchingController::SeedArmCommand(const ControllerState& state) noexce
     }
     arm_cmd_seeded_ = true;
   }
-  // NOT the QP failure streak. "Consecutive" (L7 §4.2) means "with no
-  // successful solve in between", and the retry cycle an abort goes through —
-  // ABORT_SAFE, RETREAT, ARMED, TRACKING, a fresh plan — contains no solve at
-  // all. Clearing the streak here would make the fault latch unreachable: the
-  // controller would retry a solve that cannot succeed, forever, one abort at
-  // a time. It is cleared by a solve that works, and by a real reset.
+  // NOT the QP failure streak. It counts TRIALS ended by a CLIK failure
+  // (D-S9-D2), and a new trial starting here is exactly what it counts across:
+  // clearing it would make the fault latch unreachable — the controller would
+  // retry a solve that cannot succeed, forever, one abort at a time. It is
+  // cleared by a trial that reaches HOLD's verdict, and by a real reset.
   // The posture target is the command the trial STARTS from — the wait pose
   // once S7 has homed the arm there, else the pose the operator armed in. It
   // carries a small weight and only resolves the redundant degree of freedom,
@@ -657,13 +656,11 @@ rtc::catching::Reason DemoCatchingController::StepReferenceAndSolve(
   const auto& solve = clik_.LastSolve();
   RecordClikSolve(solve);
   if (!ok) {
-    ++qp_fail_streak_;
     // `bound_conflict` is a DIFFERENT failure from a solver that did not
     // converge: the boxes disagreed, which the supervisor routes the same way
     // but which names a configuration problem rather than a numerical one.
     return solve.bound_conflict ? Reason::kJointConflict : Reason::kQpFailed;
   }
-  qp_fail_streak_ = 0;
 
   const auto& q_ref = clik_.QRef();
   const auto& v_ref = clik_.VRef();
@@ -939,6 +936,7 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       plan_active_ = false;
       reference_seeded_ = false;
       retreat_stage_ = RetreatStage::kStop;
+      motion_start_ns_ = tick_now_.ns;  // the stop's deadline (D-S9-D1)
       release_start_ns_ = 0;
       // A HOLD that ends has already judged the attempt (EvaluateDecelOrHold).
       // Any other way in is an abort of an attempt, if one was under way.
@@ -970,11 +968,13 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       homing_ = false;
       homing_done_ = false;
       break;
+    case Mode::kAbortSafe:
+      motion_start_ns_ = tick_now_.ns;  // the ramp's deadline (D-S9-D1)
+      break;
     case Mode::kTracking:
     case Mode::kApproach:
     case Mode::kClosing:
     case Mode::kDecel:
-    case Mode::kAbortSafe:
     case Mode::kFault:
       break;
   }
@@ -982,20 +982,106 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
 
 void DemoCatchingController::NoteLawVerdict(rtc::catching::Reason law) noexcept {
   using rtc::catching::Reason;
-  // BOTH CLIK failure reasons count toward the streak, because both increment
-  // it: `kJointConflict` is a solve that could not honour its own boxes, and a
-  // box that keeps conflicting is exactly as unrecoverable as a solver that
-  // keeps failing. Counting only one of them leaves a controller that loops
+  // BOTH CLIK failure reasons count, because both end the trial:
+  // `kJointConflict` is a solve that could not honour its own boxes, and a box
+  // that keeps conflicting is exactly as unrecoverable as a solver that keeps
+  // failing. Counting only one of them leaves a controller that loops
   // APPROACH → ABORT_SAFE → RETREAT → ARMED → TRACKING forever without ever
   // escalating. Checked in every mode the law runs in (#537 S7), not only in
-  // APPROACH: a streak that completes after the freeze is the same streak.
+  // APPROACH: a failure after the freeze ends the trial the same way.
+  //
+  // One increment per TRIAL (D-S9-D2). Every law mode answers a CLIK failure
+  // with ABORT_SAFE on this same tick, so this call is the trial's last law
+  // verdict and cannot run twice for one trial. The streak used to count
+  // consecutive failed SOLVES and a good solve cleared it — which made n_qp
+  // reachable only by trials that failed on their FIRST solve: a trial that
+  // failed after a run of good ones started from 0 every time.
   const bool clik_failed = (law == Reason::kQpFailed || law == Reason::kJointConflict);
-  if (clik_failed && n_qp_fault_ > 0 && qp_fail_streak_ >= n_qp_fault_) {
-    // L7 §4.2: a streak of QP failures is not a transient. The latch is what
-    // stops the controller from retrying forever against a solve that is
-    // never going to succeed.
-    fault_latched_.store(true, std::memory_order_release);
+  if (!clik_failed) {
+    return;
   }
+  ++qp_fail_streak_;
+  if (n_qp_fault_ > 0 && qp_fail_streak_ >= n_qp_fault_) {
+    // L7 §4.2: a run of trials the solver ends is not a transient. The latch
+    // is what stops the controller from retrying forever against a solve that
+    // is never going to succeed.
+    LatchFault(CatchingDiagLogPod::FaultCause::kQpFailures);
+  }
+}
+
+void DemoCatchingController::LatchFault(CatchingDiagLogPod::FaultCause cause) noexcept {
+  // The first cause names the latch: a second one while it is up would only
+  // be the controller noticing the same unrecoverable state again.
+  if (!fault_latched_.load(std::memory_order_relaxed)) {
+    fault_cause_ = cause;
+    ++fault_latch_seq_;
+  }
+  fault_latched_.store(true, std::memory_order_release);
+  // Disarm on the latch tick itself, not on the next tick's reset service. A
+  // law-tick latch is raised AFTER this tick's reset service, and a fault
+  // reset landing before the next tick is judged there first: without this
+  // the latch would be cleared with the arm request still up, and the abort
+  // would carry on RETREAT → ARMED into a new trial (2026-09-27
+  // /security-review, a window HEAD already had).
+  arm_requested_.store(false, std::memory_order_relaxed);
+}
+
+CatchingDiagLogPod::FaultCause DemoCatchingController::MotionDeadlineOverrun() const noexcept {
+  using rtc::catching::Mode;
+  using Cause = CatchingDiagLogPod::FaultCause;
+  const std::int64_t elapsed = tick_now_.ns - motion_start_ns_;
+  const auto past = [elapsed](std::int64_t deadline) { return deadline > 0 && elapsed > deadline; };
+  if (mode_ == Mode::kAbortSafe) {
+    // The ramp is the whole of ABORT_SAFE, and `abort_stopped_` is its end:
+    // a stop that has finished is not late, even on the deadline's tick. The
+    // abort's own TRACK_ERR is NOT read here — it is what sent the controller
+    // to ABORT_SAFE, and judging the stop by it would fire on every such abort.
+    return (!abort_stopped_ && past(stop_deadline_ns_)) ? Cause::kStopDeadline : Cause::kNone;
+  }
+  if (mode_ == Mode::kRetreat) {
+    // The stage the motion stage left on the previous tick: a stage that
+    // finished then has already restarted the clock for the next one.
+    switch (retreat_stage_) {
+      case RetreatStage::kStop:
+        return past(stop_deadline_ns_) ? Cause::kStopDeadline : Cause::kNone;
+      case RetreatStage::kReturn:
+        return past(return_deadline_ns_) ? Cause::kReturnDeadline : Cause::kNone;
+      case RetreatStage::kRelease:
+        break;  // the hand's wait has its own bound (T_release_timeout)
+    }
+  }
+  return Cause::kNone;
+}
+
+CatchingDiagLogPod::FaultResetRefusal DemoCatchingController::ArmNotAtRestForReset(
+    const ControllerState& state, int& joint, double& value) const noexcept {
+  using Refusal = CatchingDiagLogPod::FaultResetRefusal;
+  joint = -1;
+  value = 0.0;
+  // The command first: a stop still ramping is a moving arm whatever the
+  // servo reports this tick.
+  if (!ArmCommandStopped()) {
+    return Refusal::kCommandMoving;
+  }
+  // Fail-closed (2026-09-27, #537 5855489704 Q2): a velocity nobody vouches
+  // for is not a zero velocity. The operator can ask again; a reset that let a
+  // moving arm re-arm cannot be asked back.
+  if (state.num_devices <= kCatchingArmDeviceIdx ||
+      !rtc::IsLaneReadable(state.devices[kCatchingArmDeviceIdx], rtc::StateLane::kVelocity,
+                           arm_dof_)) {
+    return Refusal::kVelocityUnreadable;
+  }
+  const auto& dev = state.devices[kCatchingArmDeviceIdx];
+  for (int i = 0; i < arm_dof_ && i < kDemoCatchingMaxArmDof; ++i) {
+    const double qd = dev.velocities[static_cast<std::size_t>(i)];
+    // Written as "within" so a NaN reading is moving, like ArmAtWaitPose.
+    if (!(std::abs(qd) <= homing_qd_tol_)) {
+      joint = i;
+      value = qd;
+      return Refusal::kArmMoving;
+    }
+  }
+  return Refusal::kNone;
 }
 
 namespace {
@@ -1324,6 +1410,9 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHo
     const Judgement judged = JudgeOutcome();
     outcome_ = judged.outcome;
     outcome_source_ = judged.source;
+    // A trial that reached a verdict — any verdict — was not ended by the
+    // solver, so the run of trials that were is broken (D-S9-D2).
+    qp_fail_streak_ = 0;
     // The attempt is over and judged. An abort during the return (RETREAT →
     // ABORT_SAFE → RETREAT) or an E-STOP must not rewrite it as Aborted.
     // R-TRACK still refuses this ball: HOLD implies trial_committed_.
@@ -1358,14 +1447,27 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     // The latch is raised while the controller is still in ABORT_SAFE (the
     // failure that raised it sent it there). THAT is the escalation L7 §4.2
     // names — an abort that cannot recover — and it is the only edge out of
-    // ABORT_SAFE that does not lead back toward another attempt.
-    if (mode_ == Mode::kAbortSafe) {
+    // ABORT_SAFE that does not lead back toward another attempt. RETREAT
+    // answers it too (#537 S9b, D-S9-D1): a latch that rises during the
+    // return stops the return — FAULT ramps the arm to rest and holds it.
+    if (mode_ == Mode::kAbortSafe || mode_ == Mode::kRetreat) {
       return {Reason::kAbortEscalated, true};
     }
     // Anywhere else, hold. In Mode::kFault the table has rows only for
     // kFaultReset and kEstop, so holding is what makes the latch persistent —
     // a property of the driver, not of an invented "still faulted" reason.
     return {Reason::kNone, false};
+  }
+  // D-S9-D1: a stop or a return that has run past its deadline is the same
+  // escalation — the motion that makes leaving safe is not going to finish.
+  // In this tier, ahead of readiness, so a deadline that has passed is a
+  // FAULT even on the tick the operator disarms. A disarm BEFORE the deadline
+  // still ends the stop in IDLE, whose ramp has no deadline (R-IDLE) — as
+  // before S9b.
+  if (const auto overrun = MotionDeadlineOverrun();
+      overrun != CatchingDiagLogPod::FaultCause::kNone) {
+    LatchFault(overrun);
+    return {Reason::kAbortEscalated, true};
   }
   if (!armable_ || !arm_requested_.load(std::memory_order_relaxed)) {
     // §4.5's readiness conditions are not met — either the profile is not
@@ -1680,7 +1782,12 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   ++planner_reset_epoch_;
   arm_cmd_seeded_ = false;
   reference_seeded_ = false;
-  qp_fail_streak_ = 0;
+  // D-S9-D2: an activation starts the count again; an E-STOP does not — the
+  // stop says nothing about whether the solver can succeed. The fault reset
+  // clears it where it clears the latch (ServiceResetRequests).
+  if (reset_mode) {
+    qp_fail_streak_ = 0;
+  }
   track_err_ = 0.0;
   traj_hint_ = 0;
   std::fill(arm_qd_cmd_.begin(), arm_qd_cmd_.end(), 0.0);
@@ -1702,6 +1809,11 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   homing_ = false;
   homing_done_ = false;
   retreat_stage_ = RetreatStage::kStop;
+  // The deadline clock goes with the stage it times (D-S9-D1). A trigger→clear
+  // pair between two ticks leaves the mode in RETREAT but the stage back at
+  // kStop: judged against the old clock (the return's, or RETREAT's entry)
+  // that stop would read as overdue on its first tick — a false FAULT.
+  motion_start_ns_ = SteadyNowNs();
   trial_committed_ = false;
   committed_t_c_ns_ = 0;
   committed_t_cmd_ns_ = 0;
@@ -1990,12 +2102,25 @@ void DemoCatchingController::RunRetreatMotion(const ControllerState& state) noex
         // ABORT_SAFE ↔ RETREAT until it converged.
         caught_up = !(track_err_abort_rad_ > 0.0 && track_err_ > track_err_abort_rad_);
       }
-      if (stopped && caught_up) {
+      // D-S9-K: and only onto an arm that can be seen. An unreadable arm can
+      // neither show it has caught up nor seed a return; the stop's deadline
+      // keeps counting while it waits here.
+      if (stopped && caught_up && arm_readable_) {
         retreat_stage_ = RetreatStage::kReturn;
+        motion_start_ns_ = tick_now_.ns;  // the return's deadline (D-S9-D1)
       }
       break;
     }
     case RetreatStage::kReturn:
+      if (!arm_readable_) {
+        // D-S9-K: no return motion onto an arm the controller cannot see —
+        // the command is ramped to rest (not frozen: that is a one-tick
+        // velocity step, and the command still goes out) and held there. The
+        // return's deadline keeps counting; a readable arm picks the return
+        // up from the stopped command, inside the same deadline.
+        static_cast<void>(RampArmToStop(state));
+        break;
+      }
       if (!arm_cmd_seeded_) {
         SeedArmCommand(state);
       }
@@ -2069,7 +2194,6 @@ void DemoCatchingController::RunHandStage(const ControllerState& state) noexcept
 }
 
 bool DemoCatchingController::ServiceResetRequests(const ControllerState& state) noexcept {
-  static_cast<void>(state);
   bool reset = false;
 
   // D-23: the activation boundary is decided from the generation, not from a
@@ -2108,24 +2232,38 @@ bool DemoCatchingController::ServiceResetRequests(const ControllerState& state) 
   const std::uint32_t fault_epoch = fault_reset_epoch_.load(std::memory_order_acquire);
   if (fault_epoch != serviced_fault_reset_epoch_) {
     serviced_fault_reset_epoch_ = fault_epoch;
-    // The cause is gone as soon as it is asked about, at S5.1: the only thing
-    // that can raise this latch is the supervisor reaching Mode::kFault, and
-    // no S5.1 path reaches it (the QP failure streak that does is S5.3). When
-    // that path lands, this is where "refuse the clear while the cause is
-    // still present" belongs.
+    // "Refuse the clear while the cause is still present" (#537 S9b,
+    // D-S9-D3). Every cause of this latch — a run of trials the solver ended
+    // (D-S9-D2), a stop or a return past its deadline (D-S9-D1) — is a
+    // statement about a motion, and the one thing that must be true before
+    // the controller may be armed again is that the arm is not moving. Judged
+    // on THIS tick: a refusal is not queued, the operator asks again. The CM
+    // reports the still-raised latch as "cause still present".
     if (fault_latched_.load(std::memory_order_relaxed)) {
-      fault_latched_.store(false, std::memory_order_release);
-      fault_reset_serviced_ = true;
-      reset = true;
+      int joint = -1;
+      double value = 0.0;
+      const auto refusal = ArmNotAtRestForReset(state, joint, value);
+      if (refusal == CatchingDiagLogPod::FaultResetRefusal::kNone) {
+        fault_latched_.store(false, std::memory_order_release);
+        fault_cause_ = CatchingDiagLogPod::FaultCause::kNone;
+        qp_fail_streak_ = 0;  // D-S9-D2: the reset starts the count again
+        fault_reset_serviced_ = true;
+        reset = true;
+      } else {
+        tick_record_.fault_reset_refused = refusal;
+        fault_reset_refuse_reason_ = refusal;
+        fault_reset_refuse_joint_ = joint;
+        fault_reset_refuse_value_ = value;
+        ++fault_reset_refuse_seq_;
+        fault_reset_refused_count_.fetch_add(1, std::memory_order_relaxed);
+      }
     }
   }
 
   // A latched fault disarms too, and it does so on EVERY tick the latch is up
   // rather than on the edge that raised it: the latch outlives the reset that
   // noticed it, so an operator setting `catching.enable` while faulted must not
-  // find the controller armed the moment the fault is cleared. (Nothing raises
-  // this latch before S5.3's QP-failure streak — this is the rule being in
-  // place before the cause exists, not dead code for its own sake.)
+  // find the controller armed the moment the fault is cleared.
   if (fault_latched_.load(std::memory_order_relaxed)) {
     arm_requested_.store(false, std::memory_order_relaxed);
   }
@@ -2364,6 +2502,14 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
   tick_record_.real_arm_config = real_arm_config_;
   tick_record_.qp_fail_streak = qp_fail_streak_;
   tick_record_.abort_stopped = abort_stopped_;
+  // `fault_reset_refused` is the refusal tick's own, written where it was
+  // decided (ServiceResetRequests); the cause is a state, current every tick.
+  tick_record_.fault_cause = fault_cause_;
+  tick_record_.fault_latch_seq = fault_latch_seq_;
+  tick_record_.fault_reset_refuse_seq = fault_reset_refuse_seq_;
+  tick_record_.fault_reset_refuse_reason = fault_reset_refuse_reason_;
+  tick_record_.fault_reset_refuse_joint = fault_reset_refuse_joint_;
+  tick_record_.fault_reset_refuse_value = fault_reset_refuse_value_;
   tick_record_.outcome = static_cast<std::uint8_t>(outcome_);
 
   // ── The hand (L6, S7.1) ─────────────────────────────────────────────────
@@ -2533,6 +2679,60 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
                 "[arm joint %d, reading %.4f] — the YAML planner.wait_pose stays in force and "
                 "arming homes the arm to it",
                 why, tick.wait_pose_refuse_joint, tick.wait_pose_refuse_value);
+  }
+  // #537 S9b: one WARN per fault latch, naming the cause — the transition that
+  // follows is ABORT_ESCALATED whatever raised it, so this line (and the CSV's
+  // `fault_cause`) is where the operator learns which.
+  if (tick.fault_latch_seq != fault_latch_logged_seq_) {
+    fault_latch_logged_seq_ = tick.fault_latch_seq;
+    using Cause = CatchingDiagLogPod::FaultCause;
+    const char* why = "unknown";
+    switch (tick.fault_cause) {
+      case Cause::kQpFailures:
+        why = "supervisor.n_qp trials in a row were ended by a CLIK failure";
+        break;
+      case Cause::kStopDeadline:
+        why = "a stop (ABORT_SAFE ramp or RETREAT stop) ran past supervisor.deadline.stop_s";
+        break;
+      case Cause::kReturnDeadline:
+        why = "RETREAT's return to the wait pose ran past supervisor.deadline.return_s";
+        break;
+      case Cause::kNone:
+        // The latch was reset between the tick and this read; the reset's own
+        // path reports that.
+        why = "already reset";
+        break;
+    }
+    RCLCPP_WARN(logger_,
+                "catching FAULT latched: %s — the arm is ramped to rest and held; stop it "
+                "moving, then /rtc_cm/reset_fault (disarmed IDLE after)",
+                why);
+  }
+  // ... and one per REFUSED fault reset (D-S9-D3): the CM's reply only says
+  // the cause is still present, this says what the controller saw.
+  if (tick.fault_reset_refuse_seq != fault_reset_refuse_logged_seq_) {
+    fault_reset_refuse_logged_seq_ = tick.fault_reset_refuse_seq;
+    using Refusal = CatchingDiagLogPod::FaultResetRefusal;
+    switch (tick.fault_reset_refuse_reason) {
+      case Refusal::kCommandMoving:
+        RCLCPP_WARN(logger_,
+                    "fault reset REFUSED: the arm command is still ramping to rest — ask again "
+                    "once it has stopped");
+        break;
+      case Refusal::kArmMoving:
+        RCLCPP_WARN(logger_,
+                    "fault reset REFUSED: arm joint %d moves at %.4f rad/s (> "
+                    "supervisor.homing.qd_tol %.4f) — ask again once the arm is at rest",
+                    tick.fault_reset_refuse_joint, tick.fault_reset_refuse_value, homing_qd_tol_);
+        break;
+      case Refusal::kVelocityUnreadable:
+        RCLCPP_WARN(logger_,
+                    "fault reset REFUSED: the arm's velocity lane is not readable, so rest "
+                    "cannot be shown (fail-closed) — check the arm device's state message");
+        break;
+      case Refusal::kNone:
+        break;
+    }
   }
 }
 

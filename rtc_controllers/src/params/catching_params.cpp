@@ -31,7 +31,8 @@ namespace {
 //   - `core.ball.provisional`                              (D-12 공 사양)
 //   - `planner.catchability.manipulability_min.provisional` (D-18)
 //   - `robot.hand.provisional`                              (L6 §6, whole profile)
-// All three default to `true` (fail-closed: unconfirmed until the YAML says
+//   - `supervisor.deadline.provisional`                     (D-S9-D1, both deadlines)
+// All of them default to `true` (fail-closed: unconfirmed until the YAML says
 // otherwise), matching how every other provisional flag in this repo defaults
 // to blocking the real arm rather than trusting silence.
 
@@ -408,6 +409,12 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.supervisor_homing_v_max = ReadOptional(homing, "v_max", out.supervisor_homing_v_max);
   out.supervisor_homing_eta_a = ReadOptional(homing, "eta_a", out.supervisor_homing_eta_a);
   out.supervisor_homing_qd_tol = ReadOptional(homing, "qd_tol", out.supervisor_homing_qd_tol);
+  const YAML::Node deadline = ReadSection(supervisor, "deadline");
+  out.supervisor_deadline_stop_s =
+      ReadTbdDouble(deadline, "stop_s", out.supervisor_deadline_stop_s);
+  out.supervisor_deadline_return_s =
+      ReadTbdDouble(deadline, "return_s", out.supervisor_deadline_return_s);
+  out.supervisor_deadline_provisional = ReadOptional(deadline, "provisional", true);
   const YAML::Node ready = ReadSection(supervisor, "ready");
   if (ready["wait_pose"]) {
     // L7 §6 once named the wait pose here as well as under `planner`. Two
@@ -789,6 +796,20 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     AddFailure(report, CatchingValidationReason::kRangeViolation, "supervisor.homing.eta_a");
   }
   CheckPositive(report, "supervisor.homing.qd_tol", params.supervisor_homing_qd_tol);
+  // The motion deadlines (#537 S9b, D-S9-D1). A TBD or non-positive deadline
+  // is refused rather than read as "off": a stop with no bound is the state
+  // the key exists to end.
+  if (CheckActiveTbd(report, params.supervisor_deadline_stop_s, "supervisor.deadline.stop_s",
+                     true)) {
+    CheckPositive(report, "supervisor.deadline.stop_s", params.supervisor_deadline_stop_s.value);
+  }
+  if (CheckActiveTbd(report, params.supervisor_deadline_return_s, "supervisor.deadline.return_s",
+                     true)) {
+    CheckPositive(report, "supervisor.deadline.return_s",
+                  params.supervisor_deadline_return_s.value);
+  }
+  CheckProvisional(report, "supervisor.deadline", params.supervisor_deadline_provisional,
+                   real_arm_config);
   CheckPositive(report, "supervisor.ready.pose_tol", params.supervisor_ready_pose_tol);
   CheckRange(report, "supervisor.contact.f_min", params.supervisor_contact_f_min, 0.0,
              std::numeric_limits<double>::infinity());

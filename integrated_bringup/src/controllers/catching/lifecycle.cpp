@@ -109,6 +109,12 @@ namespace {
       k == "supervisor.track_err_abort" || k == "supervisor.n_qp") {
     return true;
   }
+  // #537 S9b (D-S9-D1): the motion deadlines, and — without a trailing dot,
+  // like `robot.hand` below — their block's provisional flag, which must be
+  // consumed for the real-arm gate to see it.
+  if (k == "supervisor.deadline" || k.starts_with("supervisor.deadline.")) {
+    return true;
+  }
   if (k == "sim.io.future_tol") {
     return true;
   }
@@ -250,6 +256,12 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("robot.arm.qdd_max", arm_qdd_max_,
           "D-16 acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
+  // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
+  // can move either, and a FAULT is read against the value in force.
+  declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,
+          "D-S9-D1 motion deadline for a stop (ABORT_SAFE ramp, RETREAT stop stage) [s]");
+  declare("supervisor.deadline.return_s", params_.supervisor_deadline_return_s.value,
+          "D-S9-D1 motion deadline for RETREAT's return to the wait pose [s]");
   declare("robot.arm.accel_limits_path", accel_limits_path_,
           "the profile's package-relative D-16 box file (robot.arm.accel_limits_path)");
 }
@@ -262,9 +274,15 @@ void DemoCatchingController::DeclareArmParameter() {
   // Declared with `false` so a bring-up never starts armed.
   if (!node_->has_parameter(kCatchingEnableParam)) {
     rcl_interfaces::msg::ParameterDescriptor d;
+    // What the tick lowers on an E-STOP or a fault is its own copy of the
+    // request (arm_requested_, an atomic), not this parameter — a parameter
+    // write is a ROS call the RT tick may not make. So the value can
+    // read `true` on a disarmed controller, and the description has to say so
+    // (#537 S9a finding).
     d.description =
-        "Arm the catching supervisor (A-S5-3). The controller lowers this itself on E-STOP and on "
-        "a latched fault — P-1 (c), no automatic resume.";
+        "Arm request for the catching supervisor (A-S5-3). Each write of true is a request; the "
+        "RT tick drops it on E-STOP and on a latched fault (P-1 (c), no automatic resume) WITHOUT "
+        "changing this value, so it can read true while disarmed — re-arm by setting true again.";
     node_->declare_parameter(kCatchingEnableParam, false, d);
   }
   // Mirror whatever the declaration left behind (a parameter override on the
@@ -1372,6 +1390,8 @@ void DemoCatchingController::SetupSupervisor() {
   t_hold_ns_ = to_ns(params_.hand.T_hold);
   t_close_e2e_ns_ = to_ns(params_.hand.T_close_e2e);
   t_release_timeout_ns_ = to_ns(params_.hand.T_release_timeout);
+  stop_deadline_ns_ = to_ns(params_.supervisor_deadline_stop_s);
+  return_deadline_ns_ = to_ns(params_.supervisor_deadline_return_s);
   stale_committed_max_ns_ = to_ns(params_.supervisor_stale_committed_max_s);
   sat_ticks_ = params_.supervisor_sat_ticks;
   // The sequencer owns the hand unless the S4 step rig does (never both).
@@ -1430,12 +1450,16 @@ void DemoCatchingController::SetupSupervisor() {
   if (trials_enabled_) {
     RCLCPP_INFO(logger_,
                 "supervisor: trials enabled — commit at t_c − %.3f s, wait pose (%d joints, tol "
-                "%.3f rad), hand %s, T_hold %.3f s, T_release_timeout %.3f s%s",
+                "%.3f rad), hand %s, T_hold %.3f s, T_release_timeout %.3f s%s, motion deadlines "
+                "stop %.3f s / return %.3f s%s",
                 static_cast<double>(plan_freeze_ns_) * 1e-9, planner_params_.wait_pose_n, pose_tol_,
                 hand_seq_enabled_ ? "sequenced" : "on the step rig",
                 static_cast<double>(t_hold_ns_) * 1e-9,
                 static_cast<double>(t_release_timeout_ns_) * 1e-9,
-                params_.hand.T_release_timeout_derived ? " (derived)" : "");
+                params_.hand.T_release_timeout_derived ? " (derived)" : "",
+                static_cast<double>(stop_deadline_ns_) * 1e-9,
+                static_cast<double>(return_deadline_ns_) * 1e-9,
+                params_.supervisor_deadline_provisional ? " (provisional)" : "");
   }
 }
 
@@ -1470,6 +1494,11 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
   }
   if (!(decel_a_dec_ > 0.0)) {
     return "supervisor.decel.a_dec";
+  }
+  // D-S9-D1: a trial whose stop or return has no deadline can hang in either
+  // with the arm commanded and nothing escalating.
+  if (stop_deadline_ns_ <= 0 || return_deadline_ns_ <= 0) {
+    return "supervisor.deadline.stop_s / return_s";
   }
   if (t_hold_ns_ <= 0 && params_.hand.T_hold.tbd) {
     return "robot.hand.T_hold";

@@ -62,6 +62,20 @@ MODE_NAMES = (
 # rtc::catching::HandPhase / Outcome wire values (rtc_msgs/CatchingState).
 HAND_PHASE_NAMES = ("open", "preshape", "close", "hold", "release")
 OUTCOME_NAMES = ("none", "captured", "missed", "undetermined", "aborted")
+# The CSV-only fault columns (#537 S9b), CatchingDiagLogPod's enums in order.
+FAULT_CAUSE_NAMES = ("none", "qp_failures", "stop_deadline", "return_deadline")
+FAULT_RESET_REFUSAL_NAMES = ("none", "command_moving", "arm_moving", "velocity_unreadable")
+
+
+def _code_name(names, k):
+    """The name of wire code `k` in `names`, or the raw code if it is unknown."""
+    return names[k] if 0 <= k < len(names) else str(k)
+
+
+def _named_counts(values, names):
+    """`k×n` per distinct code, named from `names` (the raw code if unknown)."""
+    counts = values.map(lambda k: _code_name(names, k)).value_counts()
+    return ", ".join(f"{k}×{v}" for k, v in counts.items())
 
 
 def mode_transitions(df):
@@ -151,7 +165,7 @@ def _shade_latches(axes, df, legend_axis=None):
 
 
 def _mode_label(value):
-    return MODE_NAMES[value] if 0 <= value < len(MODE_NAMES) else str(value)
+    return _code_name(MODE_NAMES, value)
 
 
 def _draw_transitions(axes, transitions, label_axis=None):
@@ -471,7 +485,7 @@ def print_catching_diag_statistics(df):
             if to_mode != retreat:
                 continue
             k = int(out[t == t_edge].iloc[0])
-            name = OUTCOME_NAMES[k] if 0 <= k < len(OUTCOME_NAMES) else str(k)
+            name = _code_name(OUTCOME_NAMES, k)
             verdicts[name] = verdicts.get(name, 0) + 1
         if verdicts:
             print("Attempt verdicts: " + ", ".join(f"{k}×{v}" for k, v in verdicts.items()))
@@ -483,6 +497,19 @@ def print_catching_diag_statistics(df):
             print("Reasons fired: none")
         else:
             print("Reasons fired: " + ", ".join(f"{k}×{v}" for k, v in fired.items()))
+    # #537 S9b: every latch escalates as ABORT_ESCALATED, so the reason column
+    # cannot say what raised it — `fault_cause` can. One count per latch (its
+    # first tick), and the resets the controller refused because the arm moved.
+    if "fault_cause" in df.columns:
+        cause = df["fault_cause"].fillna(0).astype(int)
+        raised = cause[(cause > 0) & (cause.shift(fill_value=0) != cause)]
+        if len(raised) > 0:
+            print("Fault latches: " + _named_counts(raised, FAULT_CAUSE_NAMES))
+    if "fault_reset_refused" in df.columns:
+        refused = df["fault_reset_refused"].fillna(0).astype(int)
+        refused = refused[refused > 0]
+        if len(refused) > 0:
+            print("Fault resets refused: " + _named_counts(refused, FAULT_RESET_REFUSAL_NAMES))
 
     # ── The input lane ─────────────────────────────────────────────────────
     if "input_stale" in df.columns:
@@ -550,7 +577,8 @@ def print_catching_diag_statistics(df):
                 "velocity ∩ position"
             )
     if "qp_fail_streak" in df.columns:
-        print(f"Longest QP failure streak: {int(df['qp_fail_streak'].max())}")
+        # Trials in a row ended by a CLIK failure (#537 S9b), not failed solves.
+        print(f"Longest QP failure streak (trials): {int(df['qp_fail_streak'].max())}")
     if "track_err_rad" in live.columns:
         err = live["track_err_rad"].astype(float)
         print(f"Tracking error [rad]: median {err.median():.4f}  max {err.max():.4f}")

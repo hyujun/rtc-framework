@@ -164,7 +164,7 @@ struct TransitionRow {
 
 // ── The merged (Mode × Reason) → Mode table ─────────────────────────────────
 // clang-format off
-inline constexpr std::array<TransitionRow, 94> kTransitionTable = {{
+inline constexpr std::array<TransitionRow, 95> kTransitionTable = {{
     // IDLE (§4.1 row 1; §4.2 PARAMS_TBD, CLOCK_UNHEALTHY "IDLE 진입 거부")
     {Mode::kIdle, Reason::kNone, Mode::kArmed},
     {Mode::kIdle, Reason::kParamsTbd, Mode::kIdle},
@@ -287,6 +287,12 @@ inline constexpr std::array<TransitionRow, 94> kTransitionTable = {{
     // disarms on the same tick — a hand that cannot settle must not re-arm on
     // its own. IDLE has no row: it never waits on the hand.
     {Mode::kRetreat, Reason::kHandTimeout, Mode::kIdle},
+    // #537 S9b (D-S9-D1): the stop or the return did not finish within its
+    // motion deadline, or a fault latched while returning. RETREAT is a motion
+    // like ABORT_SAFE's ramp, and a motion that cannot finish is the same
+    // "abort that cannot recover" whichever of the two it happens in — so the
+    // same reason, and FAULT (which ramps the arm to rest and holds it).
+    {Mode::kRetreat, Reason::kAbortEscalated, Mode::kFault},
 
     // ABORT_SAFE (§4.1 row 10; ABORT_ESCALATED → FAULT, ESTOP clear)
     {Mode::kAbortSafe, Reason::kNone, Mode::kRetreat},

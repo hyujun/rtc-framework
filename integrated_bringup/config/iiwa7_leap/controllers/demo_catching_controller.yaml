@@ -483,11 +483,30 @@ demo_catching_controller:
       # tick at all on 100 calibration throws (longest streak 0), so the data
       # cannot place a threshold — the S7 value stays, owned here.
       sat_ticks: 60
-      # Consecutive failed solves before the controller latches a fault
-      # (L7 §4.2). Three ticks of a solve that cannot succeed is not a
-      # transient, and retrying it forever is how a controller ends up
-      # aborting in a loop with nothing in the log that escalates.
+      # Consecutive TRIALS ended by a CLIK failure before the controller
+      # latches a fault (L7 §4.2; per trial since #537 S9b, D-S9-D2 — a trial
+      # that reaches HOLD's verdict resets the count). Three trials the solver
+      # ends in a row is not a transient, and retrying forever is how a
+      # controller ends up aborting in a loop with nothing that escalates.
       n_qp: 3
+      # Motion deadlines (#537 S9b, D-S9-D1): past either, the supervisor
+      # latches a fault (ABORT_ESCALATED -> FAULT). The rule is twice the
+      # longest stage this robot ran in the S8 sim sessions, floored at 0.5 s
+      # (the 4 S8-E gate sessions: 191 RETREATs, no ABORT_SAFE):
+      #   return_s = 2 x RETREAT return 3.044 s -> 6.09
+      #   stop_s   = 4.28, ur5e_p1b's value (user, #537 2026-09-27) — NOT this
+      #            robot's rule value (2 x 0.066 s, floored -> 0.50): with no
+      #            abort in the corpus that floor bounds a catch-up after a
+      #            TRACK_ERR abort nobody has measured here (ur5e_p1b's took
+      #            2.1 s), so the first such abort could have been a FAULT.
+      #            Measuring it needs a throw design that makes this robot
+      #            abort — left to S10 / a later experiment.
+      # PROVISIONAL: sim values — the real arm's are S10's (D-S9-G), so a
+      # real-arm configuration stays parked until then.
+      deadline:
+        stop_s: 4.28
+        return_s: 6.09
+        provisional: true
       decel:
         a_dec: 10.0
 

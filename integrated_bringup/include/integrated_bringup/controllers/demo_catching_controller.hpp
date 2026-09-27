@@ -428,6 +428,12 @@ class DemoCatchingController final : public RTControllerInterface {
     return wait_pose_refused_count_.load(std::memory_order_relaxed);
   }
 
+  /// #537 S9b (D-S9-D3): fault resets the tick refused because the arm had not
+  /// stopped (or its velocity could not be read). The latch stays up on each.
+  [[nodiscard]] std::uint64_t GetFaultResetRefusedCount() const noexcept {
+    return fault_reset_refused_count_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] std::uint64_t GetRtResetCount() const noexcept {
     return rt_reset_count_.load(std::memory_order_relaxed);
   }
@@ -764,8 +770,24 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] ReasonDecision EvaluateRetreat() noexcept;
   [[nodiscard]] ReasonDecision EvaluateCommitted(const ControllerState& state) noexcept;
   [[nodiscard]] ReasonDecision EvaluateDecelOrHold(const ControllerState& state) noexcept;
-  /// A CLIK failure this tick counts toward the n_qp fault latch.
+  /// A CLIK failure this tick ends the trial, and counts that trial toward the
+  /// n_qp fault latch (D-S9-D2).
   void NoteLawVerdict(rtc::catching::Reason law) noexcept;
+  /// Raise the fault latch and record why (#537 S9b). RT only; the latch's
+  /// only other writer is the fault reset, also on the tick (P-1 (d)).
+  void LatchFault(CatchingDiagLogPod::FaultCause cause) noexcept;
+  /// D-S9-D1: the motion deadline the current mode (and RETREAT stage) has
+  /// overrun this tick, or kNone. ABORT_SAFE's ramp and RETREAT's stop answer
+  /// to `supervisor.deadline.stop_s`, RETREAT's return to `return_s`; every
+  /// other mode and RETREAT's release have none. RT only.
+  [[nodiscard]] CatchingDiagLogPod::FaultCause MotionDeadlineOverrun() const noexcept;
+  /// D-S9-D3: why the arm is not at rest enough for a fault reset, or kNone —
+  /// the carried command must be stopped and every measured |q̇| within
+  /// `supervisor.homing.qd_tol`, judged on this one tick. An arm whose
+  /// velocity lane is not vouched for is refused (fail-closed). `joint` /
+  /// `value` name the moving joint and its |q̇| for kArmMoving. RT only.
+  [[nodiscard]] CatchingDiagLogPod::FaultResetRefusal ArmNotAtRestForReset(
+      const ControllerState& state, int& joint, double& value) const noexcept;
   /// Edge actions of a mode change (freeze, hold stamp, retreat, re-arm).
   void OnModeEntered(rtc::catching::Mode prev) noexcept;
   /// The post-decision motion stage: the joint-space stop, homing and return
@@ -932,6 +954,8 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint64_t> rt_reset_count_{0};
   /// S8-I: switched-in poses refused as the wait pose (outside the margined box).
   std::atomic<std::uint64_t> wait_pose_refused_count_{0};
+  /// #537 S9b: fault resets refused because the arm was not at rest (D-S9-D3).
+  std::atomic<std::uint64_t> fault_reset_refused_count_{0};
   std::atomic<std::uint64_t> estop_tick_count_{0};
   // RT-OWNED END
 
@@ -949,6 +973,18 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Set when a fault reset was actually performed, consumed by the next
   /// EvaluateReason so the FSM edge and the state reset land on one tick.
   bool fault_reset_serviced_{false};
+  /// What raised the fault latch that is up (#537 S9b); kNone while it is
+  /// down. Written with the latch (LatchFault) and cleared with it.
+  CatchingDiagLogPod::FaultCause fault_cause_{CatchingDiagLogPod::FaultCause::kNone};
+  /// Moves once per LatchFault; the publish thread WARNs on its edge.
+  std::uint32_t fault_latch_seq_{0};
+  /// The last refused fault reset (D-S9-D3), for the publish thread's WARN on
+  /// the sequence edge. The refusal tick's CSV column is written directly.
+  std::uint32_t fault_reset_refuse_seq_{0};
+  CatchingDiagLogPod::FaultResetRefusal fault_reset_refuse_reason_{
+      CatchingDiagLogPod::FaultResetRefusal::kNone};
+  int fault_reset_refuse_joint_{-1};
+  double fault_reset_refuse_value_{0.0};
   /// The activation generation the tick last reseeded for. D-23: a change here
   /// is how the tick learns an activation boundary was crossed, without
   /// waiting for a quiescence the lifecycle thread cannot establish.
@@ -1119,7 +1155,12 @@ class DemoCatchingController final : public RTControllerInterface {
   /// a plan — not at seed time, because the pose it needs comes from the model
   /// cache and the cache is only current inside the tick.
   bool reference_seeded_{false};
-  /// Consecutive failed CLIK solves. `supervisor.n_qp` of them latch a fault.
+  /// Consecutive TRIALS ended by a CLIK failure (#537 S9b, D-S9-D2) —
+  /// `supervisor.n_qp` of them latch a fault. A trial that reaches HOLD's
+  /// verdict (Captured / Missed / Undetermined) puts it back to 0; an abort for
+  /// any other reason leaves it alone. Counted per trial, not per solve: a
+  /// solve that fails after a run of good ones ends the trial just the same,
+  /// and a per-solve streak that good solves reset never reached n_qp.
   int qp_fail_streak_{0};
   /// Whether the joint-space stop has brought every joint to rest. The
   /// supervisor holds ABORT_SAFE until it has.
@@ -1152,6 +1193,11 @@ class DemoCatchingController final : public RTControllerInterface {
   std::int64_t t_close_e2e_ns_{0};
   /// RETREAT's wait for the hand at q_pre (D-S8-6); 0 = no timeout.
   std::int64_t t_release_timeout_ns_{0};
+  /// Motion deadlines (#537 S9b, D-S9-D1): a stop (ABORT_SAFE ramp, RETREAT
+  /// stop stage) and RETREAT's return. The validator refuses a missing or
+  /// non-positive value, so a configuration that runs trials has both.
+  std::int64_t stop_deadline_ns_{0};
+  std::int64_t return_deadline_ns_{0};
   /// The hand-joint capture witness (D-S8-8 (b)): the profile's thresholds and
   /// the hand device's max_torque. Off without a valid `robot.hand.capture`.
   rtc::catching::HandCaptureConfig hand_capture_cfg_{};
@@ -1175,6 +1221,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// kStop, then kReturn, then kRelease. The hand is released only on
   /// arrival at kRelease, whatever the verdict (#537 S7, 2026-09-24).
   RetreatStage retreat_stage_{RetreatStage::kStop};
+  /// When the motion the deadlines watch began (#537 S9b, D-S9-D1): the entry
+  /// of ABORT_SAFE, of RETREAT (its stop stage) and of RETREAT's return. Each
+  /// of those restarts the clock on its first tick, before anything reads it;
+  /// ResetTrialState restarts it with the stage it puts back to kStop.
+  std::int64_t motion_start_ns_{0};
   /// A plan was adopted this trial (an abort from here on is an attempt).
   /// Cleared once HOLD has judged it, so a later abort keeps the verdict.
   bool trial_active_{false};
@@ -1258,7 +1309,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   wait_pose_refuse_reason_, wait_pose_refuse_joint_, wait_pose_refuse_value_   exempt: describe the LAST refusal, read only on the wait_pose_refuse_seq_ edge
   //   arm_qd_cmd_                                R, T
   //   reference_seeded_, traj_hint_              R, T
-  //   qp_fail_streak_                            T; exempt from R (C-29: a retry cycle has no solve in it)
+  //   qp_fail_streak_                            T (activation only) and the fault reset; exempt from R (C-29) and from an E-STOP (D-S9-D2)
   //   track_err_                                 R, T
   //   abort_stopped_                             exempt: written on every ABORT_SAFE / FAULT tick
   //   consumed_, last_track_generation_, track_seen_, traj_new_track_, traj_view_
@@ -1267,6 +1318,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   hand_out_                                  T; exempt from R: the hand stage rewrites it every tick
   //   homing_, homing_done_                      R (done), T
   //   retreat_stage_                             R, T
+  //   motion_start_ns_                           T (restarted with retreat_stage_, which T puts back to kStop); exempt from R: restarted on every ABORT_SAFE / RETREAT / return entry before it is read (D-S9-D1)
   //   trial_active_, trial_committed_, committed_t_c_ns_, committed_t_cmd_ns_, committed_generation_
   //                                              R, T
   //   law_snapshot_                              R, T
@@ -1292,8 +1344,12 @@ class DemoCatchingController final : public RTControllerInterface {
   //   estop_requested_, estop_epoch_, reset_requested_, fault_reset_epoch_, arm_requested_
   //                                              exempt: hook REQUESTS (P-1 (a)); the tick lowers arm_requested_
   //   fault_latched_                             cleared only by a fault reset (P-1 (d))
-  //   mode_observed_, reason_observed_, rt_reset_count_, estop_tick_count_, arm_target_reject_count_,
-  //   hand_step_disabled_reject_count_, hand_target_width_reject_count_, task_target_reject_count_,
+  //   fault_cause_                               cleared only with the latch it describes (the fault reset)
+  //   fault_latch_seq_, fault_reset_refuse_seq_  exempt: edge counters the publish thread warns on; never reset so no edge is missed
+  //   fault_reset_refuse_reason_, fault_reset_refuse_joint_, fault_reset_refuse_value_
+  //                                              exempt: describe the LAST refusal, read only on the fault_reset_refuse_seq_ edge
+  //   mode_observed_, reason_observed_, rt_reset_count_, estop_tick_count_, fault_reset_refused_count_,
+  //   arm_target_reject_count_, hand_step_disabled_reject_count_, hand_target_width_reject_count_, task_target_reject_count_,
   //   hand_step_applied_count_, plan_refusal_observed_, plan_admitted_count_, plan_replaced_count_
   //                                              exempt: observation counters
   //   planner wake eventfd                       exempt: never drained on any reset (C-7)
@@ -1316,6 +1372,10 @@ class DemoCatchingController final : public RTControllerInterface {
   std::uint32_t wait_pose_logged_seq_{0};
   /// Publish-thread (non-RT) memory of the last refusal it warned about.
   std::uint32_t wait_pose_refuse_logged_seq_{0};
+  /// Publish-thread (non-RT) memory of the last fault latch / refused fault
+  /// reset it warned about (#537 S9b).
+  std::uint32_t fault_latch_logged_seq_{0};
+  std::uint32_t fault_reset_refuse_logged_seq_{0};
   /// Subscription writer, publish-thread reader. The counters advance on
   /// message arrival, so they cannot ride the per-tick record.
   rtc::SeqLock<CatchingIngressSnapshot> ingress_diag_box_{};
