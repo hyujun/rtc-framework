@@ -2901,6 +2901,7 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
     "armable",
     "law_enabled",
     "real_arm_config",
+    "wait_pose_adopted",
     "input_valid",
     "input_stale",
     "input_expired",
@@ -2978,6 +2979,7 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
 _CATCHING_DIAG_BLOCK_PREFIXES = [
     "q_cmd_",
     "q_meas_",
+    "wait_pose_",
     "tip_force_",
     "tip_contact_",
     "tip_fresh_",
@@ -2992,7 +2994,7 @@ def _catching_diag_columns(joints=None, tips=None):
     joints = _CATCHING_ARM_JOINTS if joints is None else joints
     tips = _CATCHING_TIPS if tips is None else tips
     cols = list(_CATCHING_DIAG_FIXED_COLUMNS)
-    for prefix in ("q_cmd_", "q_meas_"):
+    for prefix in ("q_cmd_", "q_meas_", "wait_pose_"):
         cols += [prefix + j for j in joints]
     for prefix in ("tip_force_", "tip_contact_", "tip_fresh_", "tip_age_s_"):
         cols += [prefix + t for t in tips]
@@ -3368,6 +3370,10 @@ _PLANNER_EVENTS_COLUMNS = [
     "rollout_window_only",
     "n_rollouts",
     "rollout_us_max",
+    "g_min",
+    "g_max",
+    "v_dir_max",
+    "max_catchable",
 ]
 
 # RankGateBit order (rtc_controllers/catching/planner_search.hpp) — bit

@@ -303,7 +303,7 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
                                        const CatchingDiagLogColumns& cols) {
   os << "t_relative_s,tick,t_arm_s";
   os << ",mode,mode_name,reason,reason_name,outcome";
-  os << ",armed,estop_active,fault_latched,armable,law_enabled,real_arm_config";
+  os << ",armed,estop_active,fault_latched,armable,law_enabled,real_arm_config,wait_pose_adopted";
   os << ",input_valid,input_stale,input_expired,input_new,input_n";
   os << ",input_generation,input_snapshot_sequence,input_activation_generation";
   os << ",input_age_s,input_horizon_s";
@@ -324,7 +324,7 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   os << ",clik_status,clik_iterations,clik_solve_us,clik_conflict_mask,qp_fail_streak";
   os << ",track_err_rad,abort_stopped";
   os << ",hand_phase_valid,hand_phase,hand_rho,hand_timeout";
-  os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source,wait_pose_adopted";
+  os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source";
   // Per-joint and per-tip blocks come LAST, so everything above is a fixed
   // column list a reader can rely on without knowing the robot.
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
@@ -359,7 +359,7 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
      << static_cast<int>(p.outcome);
   os << ',' << (p.armed ? 1 : 0) << ',' << (p.estop_active ? 1 : 0) << ','
      << (p.fault_latched ? 1 : 0) << ',' << (p.armable ? 1 : 0) << ',' << (p.law_enabled ? 1 : 0)
-     << ',' << (p.real_arm_config ? 1 : 0);
+     << ',' << (p.real_arm_config ? 1 : 0) << ',' << (p.wait_pose_adopted ? 1 : 0);
   os << ',' << (p.input_valid ? 1 : 0) << ',' << (p.input_stale ? 1 : 0) << ','
      << (p.input_expired ? 1 : 0) << ',' << (p.input_new ? 1 : 0) << ',' << p.input_n;
   os << ',' << p.input_generation << ',' << p.input_snapshot_sequence << ','
@@ -388,8 +388,7 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
   os << ',' << (p.hand_phase_valid ? 1 : 0) << ',' << static_cast<int>(p.hand_phase) << ','
      << p.hand_rho << ',' << (p.hand_timeout ? 1 : 0);
   os << ',' << static_cast<int>(p.hand_stalled_n) << ',' << p.hand_effort_frac << ','
-     << p.hand_blocked_s << ',' << static_cast<int>(p.outcome_source) << ','
-     << (p.wait_pose_adopted ? 1 : 0);
+     << p.hand_blocked_s << ',' << static_cast<int>(p.outcome_source);
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ',' << p.q_cmd[i];
   }
