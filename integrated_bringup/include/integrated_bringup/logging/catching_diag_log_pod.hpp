@@ -158,6 +158,19 @@ struct CatchingDiagLogPod {
   /// `wait_pose_adopt_seq` moves once per adoption — the non-RT log's edge.
   bool wait_pose_adopted{false};
   std::uint32_t wait_pose_adopt_seq{0};
+  /// Why a switched-in pose was NOT adopted (source `current`). Not a CSV
+  /// column: `wait_pose_adopted` 0 plus the publish thread's WARN carry it.
+  enum class WaitPoseRefusal : std::uint8_t {
+    kNone = 0,
+    kNoBox = 1,       ///< no margined joint box to admit the pose against
+    kOutsideBox = 2,  ///< a joint reading outside the margined box (or NaN)
+    kMoving = 3,      ///< armed before the arm came to rest
+    kEstop = 4,       ///< the deciding tick was under an E-STOP
+  };
+  std::uint32_t wait_pose_refuse_seq{0};
+  WaitPoseRefusal wait_pose_refuse_reason{WaitPoseRefusal::kNone};
+  int wait_pose_refuse_joint{-1};
+  double wait_pose_refuse_value{0.0};
   std::array<double, kMaxArmJoints> wait_pose{};
 
   // ── Fingertip sensors (D-24) ─────────────────────────────────────────────
@@ -334,7 +347,7 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
     os << ",q_meas_" << arm_joint_names[i];
   }
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
-    os << ",wait_pose_" << arm_joint_names[i];
+    os << ",q_wait_" << arm_joint_names[i];
   }
   for (std::size_t i = 0; i < cols.num_tips; ++i) {
     os << ",tip_force_" << tip_names[i];

@@ -96,12 +96,18 @@
 #          report. Claude Code overrides the hook after 8 CONSECUTIVE blocks
 #          (documented: code.claude.com/docs/en/best-practices) -- that cap
 #          is an unverified stop, not an exit; do not lean on it.
-# Limits : per-package bounds: 180s build + 120s test, rtc_tools 240s test
+# Limits : per-package bounds: 180s build + 120s test, rtc_tools 300s test
 #          (60s until 2026-09-22: rtc_tools' suite alone took ~66s unloaded,
 #          48s of it test_plot_rtc_log, so a legitimate change there was always
 #          UNVERIFIED; 120s until 2026-09-27: the suite had grown to 1111 tests
 #          / 2min57s under colcon, so the same blind spot came back for that
-#          one package -- TEST_BOUND_S below is per package for that reason).
+#          one package -- TEST_BOUND_S below is per package for that reason;
+#          300s leaves room for host load over the 177s measured idle).
+#          A test is only STARTED if its bound fits before
+#          RTC_VERIFY_TEST_DEADLINE_S (default 480s, the format phase's own
+#          deadline): past it the package is reported UNVERIFIED "NOT RUN"
+#          instead of letting the 540s Stop budget SIGKILL the hook mid-test,
+#          which would end the turn with no report at all.
 #          PROC-3 path: 300s build + 180s test. A build OR test that hits its timeout (exit 124) or fails
 #          to launch (exit >=125) blocks as UNVERIFIED -- overrun is no longer
 #          silent -- and says so in a message DISTINCT from a real failure's.
@@ -1366,12 +1372,20 @@ else
     # Preserve the exit code (see PROC-3 path above): distinguish timeout /
     # launch failure / real test failure instead of inferring from test-result.
     # Per-package test bound. rtc_tools' pytest suite is the one that outgrew
-    # the shared 120s (1111 tests, 2min57s measured 2026-09-27 on this box);
+    # the shared 120s (1111 tests, 2min57s measured 2026-09-27 on this box; 300s
+    # leaves room for host load);
     # every other package stays at 120s so the loop's worst case against the
     # 540s Stop budget does not grow for them. Add a case here, with the
     # measurement, when another package legitimately exceeds its bound.
     TEST_BOUND_S=120
-    case "$pkg" in rtc_tools) TEST_BOUND_S=240 ;; esac
+    case "$pkg" in rtc_tools) TEST_BOUND_S=300 ;; esac
+    # Never start a test whose bound would cross the deadline: the Stop budget
+    # (settings.json, 540s) kills the whole hook, report included. An explicit
+    # UNVERIFIED for this package is the honest outcome (2026-09-27 /code-review).
+    if [ $((SECONDS + TEST_BOUND_S)) -gt "${RTC_VERIFY_TEST_DEADLINE_S:-480}" ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test NOT RUN — ${SECONDS}s of the Stop budget already spent and its ${TEST_BOUND_S}s bound would cross the ${RTC_VERIFY_TEST_DEADLINE_S:-480}s deadline — UNVERIFIED, run 'colcon test --packages-select ${pkg}' manually\n"
+      continue
+    fi
     TEST_RC=0
     timeout "$TEST_BOUND_S" bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
     RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)

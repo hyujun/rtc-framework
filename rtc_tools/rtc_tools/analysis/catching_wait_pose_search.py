@@ -42,6 +42,14 @@ refine step sees a deterministic surface. Every row also reports
 inverts (m/rad rows over dimensionless rows — a conditioning indicator, not a
 metric); ``--min-sigma`` turns it into a constraint.
 
+The search box is the one the runtime admits a wait pose in: the profile's
+``devices.<arm>.joint_limits.position_lower/upper`` pulled inwards by the
+controller's ``catching.robot.arm.limit_margin`` (the midpoint rule of the
+controller's own margined box), intersected with the URDF limits. A pose the
+search reports can therefore be pasted into ``planner.wait_pose`` — the
+validator and ``wait_pose_source: current`` refuse anything outside that box.
+A profile without position limits falls back to the URDF's, and says so.
+
 Every limit is read from the robot profile, never from code (ARCH-1): joints
 from ``devices.<arm>.joint_state_names``, the joint speed box from
 ``devices.<arm>.joint_limits.max_velocity`` composed the same way
@@ -144,6 +152,49 @@ def _catching_node(config_dir: Path, controller: str) -> dict:
     return ct._catching_controllers(config_dir)[controller]
 
 
+def admitted_joint_box(
+    urdf_lo: np.ndarray,
+    urdf_hi: np.ndarray,
+    limits: Mapping,
+    limit_source: Mapping,
+    margin: float | None,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """The joint box the runtime admits a wait pose in, with its provenance.
+
+    Profile ``position_lower/upper`` pulled inwards by ``margin`` — never past
+    the midpoint, as the controller builds its margined box — intersected with
+    the URDF limits. Without profile limits the URDF box is used unmargined
+    (the controller has no margined box then either, and parks trials).
+    """
+    n = len(urdf_lo)
+    lower, upper = limits.get("position_lower"), limits.get("position_upper")
+    if lower is None or upper is None or len(lower) != n or len(upper) != n:
+        return urdf_lo.copy(), urdf_hi.copy(), {"limits": "urdf", "margin_rad": 0.0}
+    lower = np.asarray(lower, dtype=float)
+    upper = np.asarray(upper, dtype=float)
+    if not (np.all(np.isfinite(lower)) and np.all(np.isfinite(upper)) and np.all(upper >= lower)):
+        raise SystemExit("devices.<arm>.joint_limits.position_lower/upper are not a valid box")
+    m = 0.0 if margin is None else float(margin)
+    if not (m >= 0.0):
+        raise SystemExit(f"catching.robot.arm.limit_margin must be >= 0, got {margin!r}")
+    mid = 0.5 * (lower + upper)
+    lo = np.maximum(np.minimum(lower + m, mid), urdf_lo)
+    hi = np.minimum(np.maximum(upper - m, mid), urdf_hi)
+    if np.any(hi < lo):
+        raise SystemExit("the profile's joint box and the URDF limits do not overlap")
+    return (
+        lo,
+        hi,
+        {
+            "limits": f"{limit_source.get('position_lower', '?')} devices.<arm>.joint_limits",
+            "margin_rad": m,
+            "margin_source": "catching.robot.arm.limit_margin"
+            if margin is not None
+            else "absent (0)",
+        },
+    )
+
+
 def load_search_setup(
     config_dir: Path,
     *,
@@ -156,7 +207,8 @@ def load_search_setup(
     Returns a dict: ``arm`` (:class:`ArmKinematics`), ``joints``, ``qd_box``
     (rad/s, before η_v), ``qd_source`` (per-key file name), ``eta_v``,
     ``eta_v_source``, ``wait_pose`` (``None`` if the controller has none),
-    ``controller``, ``urdf_label``, ``config_dir``.
+    ``controller``, ``urdf_label``, ``config_dir``, and the admitted joint box
+    ``q_lo``/``q_hi`` with ``q_box_source`` (see :func:`admitted_joint_box`).
     """
     config_dir = Path(config_dir)
     profile = ct.load_profile(config_dir, controller, catch_frame=catch_frame)
@@ -184,8 +236,19 @@ def load_search_setup(
     arm = ArmKinematics(
         urdf_text, joints, profile.catch_frame, np.zeros(n), profile.catch_frame_name
     )
+    margin = ((catching.get("robot") or {}).get("arm") or {}).get("limit_margin")
+    q_lo, q_hi, q_box_source = admitted_joint_box(
+        np.asarray(arm.model.lowerPositionLimit, dtype=float)[arm.iq],
+        np.asarray(arm.model.upperPositionLimit, dtype=float)[arm.iq],
+        limits,
+        source,
+        margin,
+    )
     return {
         "arm": arm,
+        "q_lo": q_lo,
+        "q_hi": q_hi,
+        "q_box_source": q_box_source,
         "joints": joints,
         "qd_box": qd_box,
         "qd_source": {"max_velocity": source.get("max_velocity")},
@@ -506,8 +569,13 @@ def search_wait_poses(
     robust_eps_rad: float = DEFAULT_ROBUST_EPS_RAD,
     robust_samples: int = DEFAULT_ROBUST_SAMPLES,
     min_sigma: float | None = None,
+    q_lo: np.ndarray | None = None,
+    q_hi: np.ndarray | None = None,
 ) -> dict:
     """Sample, filter, rank, and refine. Returns raw/refined candidate dicts + counts.
+
+    ``q_lo``/``q_hi`` are the joint box the search stays in — the profile's
+    margined box from :func:`load_search_setup`; the URDF limits when omitted.
 
     ``objective`` ranks and refines by ``v_dir_dls`` (default — what the runtime's
     ``DirectionalSpeedMax`` feeds the γ window, so the pose that maximises it
@@ -520,8 +588,16 @@ def search_wait_poses(
     if objective not in OBJECTIVES:
         raise SystemExit(f"--objective must be one of {OBJECTIVES}, got {objective!r}")
     key = OBJECTIVE_KEY[objective]
-    lo = np.asarray(arm.model.lowerPositionLimit, dtype=float)[arm.iq]
-    hi = np.asarray(arm.model.upperPositionLimit, dtype=float)[arm.iq]
+    lo = (
+        np.asarray(arm.model.lowerPositionLimit, dtype=float)[arm.iq]
+        if q_lo is None
+        else np.asarray(q_lo, dtype=float)
+    )
+    hi = (
+        np.asarray(arm.model.upperPositionLimit, dtype=float)[arm.iq]
+        if q_hi is None
+        else np.asarray(q_hi, dtype=float)
+    )
     deltas = (
         perturbation_set(seed, arm.n, robust_eps_rad, robust_samples)
         if objective == "robust"
@@ -577,6 +653,7 @@ def search_wait_poses(
                 else math.nan
             )
         evaluated.append(cand)
+    n_lp_valid = len(evaluated)  # before the ranking filters below
     n_artefact = sum(dls_artefact(d["v_dir_dls"], d["v_dir_lp"]) for d in evaluated)
     evaluated = [
         d
@@ -627,7 +704,8 @@ def search_wait_poses(
     return {
         "n_sampled": int(len(qs)),
         "n_pass_constraints": n_pass,
-        "n_lp_valid": len(evaluated),
+        "n_lp_valid": n_lp_valid,
+        "n_ranked": len(evaluated),
         "n_dls_artefact_dropped": int(n_artefact),
         "n_sigma_dropped": int(n_sigma),
         "raw": raw_rows,
@@ -758,7 +836,8 @@ def report(setup: dict, ref_row: dict, result: dict, runtime_s: float) -> str:
     )
     lines.append(
         f"  sampled {result['n_sampled']}, {result['n_pass_constraints']} pass the constraints, "
-        f"{result['n_lp_valid']} LP-valid"
+        f"{result['n_lp_valid']} LP-valid, {result['n_dls_artefact_dropped']} DLS artefacts and "
+        f"{result['n_sigma_dropped']} below --min-sigma dropped, {result['n_ranked']} ranked"
     )
     if result["refined"]:
         best = max(result["refined"], key=lambda d: d[result["objective_key"]])
@@ -807,8 +886,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--objective",
         choices=OBJECTIVES,
         default="dls",
-        help="rank/refine by the runtime's DLS speed (default; the planner's γ_max uses it) or "
-        "by the LP ceiling — both are reported per row",
+        help="rank/refine by the runtime's DLS speed (default; the planner's γ_max uses it), by "
+        "the LP ceiling, or by the robust neighbourhood p10 of the DLS (use this one to choose a "
+        "wait pose: the point optimum is a needle) — the point values are reported per row",
     )
     ap.add_argument(
         "--robust-eps-rad",
@@ -853,8 +933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         axis = arm.frame_axis(q)
         v_dir_lp, v_dir_dls, valid = eval_self_consistent(arm, q, qd_plan)
         elev = elevation_below_horizontal_deg(-axis)
-        lo_e = np.asarray(arm.model.lowerPositionLimit, dtype=float)[arm.iq]
-        hi_e = np.asarray(arm.model.upperPositionLimit, dtype=float)[arm.iq]
+        lo_e, hi_e = setup["q_lo"], setup["q_hi"]
         deltas_e = perturbation_set(args.seed, n, args.robust_eps_rad, args.robust_samples)
         robust = (
             min(robust_speed(arm, q, qd_plan, deltas_e, lo_e, hi_e), v_dir_lp)
@@ -874,6 +953,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{args.robust_eps_rad} rad, toward the nominal -axis, capped by the LP) = {robust:.4f} m/s"
         )
         print(f"  sigma_min ([J_p; J_w]) = {sigma_min_5(arm, q):.4f}")
+        inside = bool(np.all(q >= lo_e - LIMIT_TOL_RAD) and np.all(q <= hi_e + LIMIT_TOL_RAD))
+        print(
+            f"  inside the admitted joint box ({setup['q_box_source']['limits']}, margin "
+            f"{setup['q_box_source']['margin_rad']} rad) = {inside}"
+        )
         return 0
 
     if args.axis_tol_deg is None:
@@ -906,8 +990,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "devices.<arm>.joint_limits.max_velocity (a NaN or non-positive entry fails closed)"
         )
     p_ref, axis_ref = arm.frame_position(q_ref), arm.frame_axis(q_ref)
-    lo_r = np.asarray(arm.model.lowerPositionLimit, dtype=float)[arm.iq]
-    hi_r = np.asarray(arm.model.upperPositionLimit, dtype=float)[arm.iq]
+    lo_r, hi_r = setup["q_lo"], setup["q_hi"]
     deltas_ref = perturbation_set(args.seed, n, args.robust_eps_rad, args.robust_samples)
     ref_row = {
         "q": q_ref,
@@ -924,7 +1007,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "in_box": None
         if args.box is None
         else bool(np.all(p_ref >= args.box[0]) and np.all(p_ref <= args.box[1])),
-        "within_limits": True,
+        "within_limits": bool(
+            np.all(q_ref >= lo_r - LIMIT_TOL_RAD) and np.all(q_ref <= hi_r + LIMIT_TOL_RAD)
+        ),
     }
 
     t_start = time.time()
@@ -944,6 +1029,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         robust_eps_rad=args.robust_eps_rad,
         robust_samples=args.robust_samples,
         min_sigma=args.min_sigma,
+        q_lo=setup["q_lo"],
+        q_hi=setup["q_hi"],
     )
     runtime_s = time.time() - t_start
 
@@ -971,6 +1058,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "eta_v_source": setup["eta_v_source"],
         "qd_max_rad_s": [float(v) for v in setup["qd_box"]],
         "qd_max_source": setup["qd_source"],
+        "joint_box": {
+            "lower_rad": [float(v) for v in setup["q_lo"]],
+            "upper_rad": [float(v) for v in setup["q_hi"]],
+            **setup["q_box_source"],
+        },
         "reference_pose": {
             "source": ref_source,
             "q": [float(v) for v in q_ref],
@@ -1004,6 +1096,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "n_sampled": result["n_sampled"],
         "n_pass_constraints": result["n_pass_constraints"],
         "n_lp_valid": result["n_lp_valid"],
+        "n_ranked": result["n_ranked"],
         "n_dls_artefact_dropped": result["n_dls_artefact_dropped"],
         "n_sigma_dropped": result["n_sigma_dropped"],
         "runtime_s": runtime_s,

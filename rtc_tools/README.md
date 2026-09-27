@@ -404,6 +404,9 @@ ros2 run rtc_tools catching_hand_near \
 # → hn/{hand_near_summary.json, hand_near_trials.csv, v50_map.csv, wilson_cells.csv}; rc 1 이면 조준 오차 초과
 ```
 
+`--ab` 의 두 이름은 unit 의 `run_meta.json` 에 남은 arm 라벨이다 (위 예는 S8-F-1 의 기록된 unit — 대조 arm `s8f_shipped_score` overlay 는 결과 기록 뒤 repo 에서 제거됐고, 재현은 git 이력의 파일을 `sim_overlay:=<경로>` 로 띄운다).
+
+
 - **조준 검증**: 시행마다 러너가 남긴 `aim_error_m` 의 최대·p50 과 `--aim-tol-mm` (기본 2) 초과 시행 목록, 그리고 `model_rms_m` (첫 접촉 전 truth 대 모델) 의 최대·초과 목록 — `aim_error_m` 은 조준에 쓴 공 파라미터로 다시 적분한 값이라 항력 법칙이 틀려도 0 이므로 (beanbag unit 을 tennis Cd 로 돌린 경우) 두 번째가 그것을 잡는다. 어느 쪽이든 하나라도 넘으면 rc 1 — 그 unit 은 던진 곳이 설계와 다르다. `aim_error_m` 이 한 시행에도 없으면 `pass: null` ("no data") 로 적고 rc 1
 - **grid arm** (`hand_cliff`·`hand_lob`): 속력별 n·commit·catch 와 Wilson 95 % (catch · plan · catch | plan) 표, 속력 하나에 대한 로지스틱의 v50 (catch / plan / catch | plan) + 시행 부트스트랩 CI (`--n-boot`, 기본 500; 유한 복제 20 미만이면 NaN)
 - **LHS arm** (`hand_lhs`): 설계 인자 [1, v, r, r², T − 0.7, α, v·r, sin ψ, cos ψ] 의 로지스틱 GLM (numpy IRLS, 기울기에 1e-4 ridge — 절벽은 완전 분리라 ridge 없이 발산) 을 commit · catch | commit · 전체 성공 셋에 적합하고, r ∈ {0, 0.05, 0.1, 0.15, 0.2} 에서 **설계 중심 (T 0.7 · 정면 · ψ 평균)** 의 v50(r) 과 두 단계 곱 P(plan)·P(catch | plan) = 0.5 의 v50 (이분법) 을 부트스트랩 CI 와 함께 `v50_map.csv` 로. (r 구간 × v 구간) pooled Wilson (`wilson_cells.csv`) 이 모델 없는 검산. 도달량은 자유도가 아니라 도출량이므로 (Δz·입사각은 (v, T, α) 의 함수) GLM 에 넣지 않는다
@@ -478,7 +481,7 @@ ros2 run rtc_tools catching_wait_pose_search --config-dir <config>/ur5e_p1b \
     --evaluate-pose '0.212 -1.376 1.107 -1.978 -3.296 0.121'
 ```
 
-- **한계의 출처** (ARCH-1): 관절은 `devices.<arm>.joint_state_names`, 속도 box 는
+- **한계의 출처** (ARCH-1): 관절은 `devices.<arm>.joint_state_names`, **탐색 관절 상자는 런타임이 대기 자세를 받아 주는 상자** (`joint_limits.position_lower/upper` 를 `catching.robot.arm.limit_margin` 만큼 안으로 — 중점 규칙 — 당기고 URDF 한계와 교집합; 프로파일에 위치 한계가 없으면 URDF), 속도 box 는
   `catching_arm_budget._device_limits` 와 같은 합성 (`_base.yaml` 위에 `sim.yaml` 의 같은 키가 있으면
   그것), η_v·`planner.wait_pose` 는 캐칭 컨트롤러 YAML. `ArmKinematics` 가 받는 rotor inertia 인자는
   이 도구와 무관해 (LP/DLS 는 질량을 쓰지 않는다) 항상 0

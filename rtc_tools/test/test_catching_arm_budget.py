@@ -650,3 +650,20 @@ def test_a_device_lane_with_a_dropped_row_is_matched_by_time_not_position(tmp_pa
     assert all(math.isnan(v) for v in res["summary"]["plant"]["torque_util_max"])
     assert "header only" in res["summary"]["plant"]["torque_source"]
     assert res["summary"]["plant"]["torque_matched_ticks"] == 0
+
+
+def test_an_unjudged_window_is_not_counted_as_closed(tmp_path):
+    """A candidate whose γ window could not be judged logs NaN for both bounds.
+    `NaN <= NaN` is False, so counting those rows would report "open 60 %" for a
+    session whose every JUDGED window is open (2026-09-27 /code-review)."""
+    path = tmp_path / "planner_events.csv"
+    rows = ["plan_valid,g_min,g_max,v_dir_max,max_catchable"]
+    rows += ["1,0.2,0.5,2.0,3.0"] * 6  # judged, open
+    rows += ["1,nan,nan,nan,nan"] * 4  # valid plan, window not judged
+    rows += ["0,0.9,0.1,1.0,2.0"] * 3  # not a valid plan: outside the summary
+    path.write_text("\n".join(rows) + "\n")
+    out = ab._rank_rates(path)
+    assert out["valid_plans"] == 10
+    assert out["window_judged_n"] == 6
+    assert out["window_open_frac"] == pytest.approx(1.0)
+    assert out["g_max_p50"] == pytest.approx(0.5)

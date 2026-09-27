@@ -2979,7 +2979,7 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
 _CATCHING_DIAG_BLOCK_PREFIXES = [
     "q_cmd_",
     "q_meas_",
-    "wait_pose_",
+    "q_wait_",
     "tip_force_",
     "tip_contact_",
     "tip_fresh_",
@@ -2994,7 +2994,7 @@ def _catching_diag_columns(joints=None, tips=None):
     joints = _CATCHING_ARM_JOINTS if joints is None else joints
     tips = _CATCHING_TIPS if tips is None else tips
     cols = list(_CATCHING_DIAG_FIXED_COLUMNS)
-    for prefix in ("q_cmd_", "q_meas_", "wait_pose_"):
+    for prefix in ("q_cmd_", "q_meas_", "q_wait_"):
         cols += [prefix + j for j in joints]
     for prefix in ("tip_force_", "tip_contact_", "tip_fresh_", "tip_age_s_"):
         cols += [prefix + t for t in tips]

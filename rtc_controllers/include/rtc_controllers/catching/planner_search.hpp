@@ -242,6 +242,9 @@ class PlannerSearch {
   /// σ_max = √λ_max(Σ_pp) of sample k, or NaN when unknown (L3 §4.4).
   [[nodiscard]] static double SigmaMax(const CovarianceSnapshot& cov, int k) noexcept;
 
+  /// The IK seed in force after the last `Plan` call, model order (tests).
+  [[nodiscard]] const Eigen::VectorXd& IkSeedForTesting() const noexcept { return seed_; }
+
  private:
   struct Candidate {
     int k{0};
@@ -271,7 +274,12 @@ class PlannerSearch {
   /// estimate's error rather than by one whole candidate (G3-C).
   std::int64_t ik_cost_ns_{0};
   std::int64_t rollout_cost_ns_{0};
-  Eigen::VectorXd seed_;  // model order, sized in Configure
+  Eigen::VectorXd seed_;  // model order, sized in Configure; the seed in force this cycle
+  /// The configure-time (YAML) seed, model order. `Plan` starts every cycle
+  /// from it and lays the RT's adopted wait pose over it, so an activation
+  /// that does not adopt (refused, or source `yaml`) never inherits the
+  /// pose an earlier activation adopted.
+  Eigen::VectorXd seed_yaml_;
   std::array<double, kMaxPlanNv> q_star_{};
   std::array<double, kMaxPlanNv> qdot_u_{};
   std::array<double, kMaxPlanNv> q0_{};

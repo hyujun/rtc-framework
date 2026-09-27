@@ -129,6 +129,7 @@ bool PlannerSearch::Configure(const PlannerModel& model, const PlannerConstants&
     seed_[j] = params.wait_pose[static_cast<std::size_t>(
         model.device_of_model[static_cast<std::size_t>(j)])];
   }
+  seed_yaml_ = seed_;
   ResetTrial();
   configured_ = true;
   return true;
@@ -235,7 +236,11 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   current_ = Followed(rt);
   // S8-I: the IK seed is the wait pose (D-18). With `wait_pose_source:
   // current` the RT adopts the arm's switched-in pose and hands it over here
-  // (device order); otherwise the configure-time YAML seed stands.
+  // (device order); otherwise the configure-time YAML seed stands — restored
+  // every cycle, so a later activation that adopts nothing (refused, width
+  // mismatch) does not keep the pose an earlier one adopted. Same size, no
+  // allocation.
+  seed_ = seed_yaml_;
   if (rt.wait_pose_adopted && rt.nv == model_.nv) {
     for (int j = 0; j < model_.nv; ++j) {
       seed_[j] = rt.wait_pose[static_cast<std::size_t>(

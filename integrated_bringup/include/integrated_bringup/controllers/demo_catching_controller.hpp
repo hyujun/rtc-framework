@@ -784,8 +784,15 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] bool ArmAtWaitPose(const ControllerState& state) const noexcept;
   /// S8-I: on the first readable tick of an activation, with
   /// `planner.wait_pose_source: current`, take the arm's measured pose as the
-  /// wait pose (inside the margined box, else refused and counted). RT only.
+  /// wait pose. Adopted only when the arm is AT REST (every |q̇| within the
+  /// homing arrival tolerance), not under an E-STOP, and inside the margined
+  /// box; a moving arm defers the decision until it rests or the operator
+  /// arms, whichever comes first. A refusal is counted and logged with its
+  /// reason (`RefuseWaitPose`). RT only.
   void AdoptWaitPoseIfConfigured(const rtc::DeviceState& dev) noexcept;
+  /// Records one refusal of the switched-in pose (the YAML pose stays in
+  /// force) for the publish thread's WARN. `joint` < 0 when no joint names it.
+  void RefuseWaitPose(CatchingDiagLogPod::WaitPoseRefusal reason, int joint, double value) noexcept;
   [[nodiscard]] bool ArmCommandStopped() const noexcept;
   [[nodiscard]] bool HandSettledAtPre(const ControllerState& state) const noexcept;
   /// ‖q_meas − q_cmd‖ into `track_err_` (and this tick's record).
@@ -1101,6 +1108,13 @@ class DemoCatchingController final : public RTControllerInterface {
   bool wait_pose_decided_{false};
   /// Moves once per adoption; the publish thread logs the pose on its edge.
   std::uint32_t wait_pose_adopt_seq_{0};
+  /// Moves once per refusal; the publish thread WARNs on its edge with the
+  /// reason, and the joint and reading that failed the box when one did.
+  std::uint32_t wait_pose_refuse_seq_{0};
+  CatchingDiagLogPod::WaitPoseRefusal wait_pose_refuse_reason_{
+      CatchingDiagLogPod::WaitPoseRefusal::kNone};
+  int wait_pose_refuse_joint_{-1};
+  double wait_pose_refuse_value_{0.0};
   /// The L4 generator is reset from the measured TCP pose on the first tick of
   /// a plan — not at seed time, because the pose it needs comes from the model
   /// cache and the cache is only current inside the tick.
@@ -1240,6 +1254,8 @@ class DemoCatchingController final : public RTControllerInterface {
   //   wait_pose_adopted_, wait_pose_decided_     T (activation only: the YAML pose is restored and the first readable tick decides again; an E-STOP keeps the adopted pose — S8-I)
   //   wait_pose_adopt_seq_                       exempt: an edge counter the publish thread logs on (S8-I); never reset so no edge is missed
   //   wait_pose_refused_count_                   exempt: a diagnostic counter (refused switched-in poses, S8-I), like rt_reset_count_
+  //   wait_pose_refuse_seq_                      exempt: an edge counter the publish thread warns on (S8-I); never reset so no edge is missed
+  //   wait_pose_refuse_reason_, wait_pose_refuse_joint_, wait_pose_refuse_value_   exempt: describe the LAST refusal, read only on the wait_pose_refuse_seq_ edge
   //   arm_qd_cmd_                                R, T
   //   reference_seeded_, traj_hint_              R, T
   //   qp_fail_streak_                            T; exempt from R (C-29: a retry cycle has no solve in it)
@@ -1298,6 +1314,8 @@ class DemoCatchingController final : public RTControllerInterface {
   rtc::SeqLock<CatchingDiagLogPod> catching_state_lock_{};
   /// Publish-thread (non-RT) memory of the last adoption it logged.
   std::uint32_t wait_pose_logged_seq_{0};
+  /// Publish-thread (non-RT) memory of the last refusal it warned about.
+  std::uint32_t wait_pose_refuse_logged_seq_{0};
   /// Subscription writer, publish-thread reader. The counters advance on
   /// message arrival, so they cannot ride the per-tick record.
   rtc::SeqLock<CatchingIngressSnapshot> ingress_diag_box_{};

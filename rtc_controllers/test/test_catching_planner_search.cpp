@@ -288,6 +288,55 @@ TEST(PlannerSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
       rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, moved, NowReal{kNow}, stats);
   EXPECT_TRUE(shifted.valid) << "a plan from a different seed, reason "
                              << static_cast<int>(shifted.reason);
+  // The handover is not a no-op: the seed in force IS the handed pose, and the
+  // score (w_q·|q* − seed|²) or the IK solution moved with it.
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j],
+                     moved.wait_pose[static_cast<std::size_t>(j)]);
+  }
+  bool differs = shifted.score != base.score;
+  for (int j = 0; j < base.nv; ++j) {
+    differs = differs || shifted.q_star[static_cast<std::size_t>(j)] !=
+                             base.q_star[static_cast<std::size_t>(j)];
+  }
+  EXPECT_TRUE(differs) << "a seed 0.3 rad away changed neither q* nor the score";
+
+  // A later cycle WITHOUT an adopted pose (a refused switch-in, source yaml)
+  // is back on the configure-time seed — not on the pose adopted before.
+  const PlanSnapshot back =
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  ASSERT_TRUE(back.valid);
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j],
+                     rig->params.wait_pose[static_cast<std::size_t>(j)]);
+  }
+  for (int j = 0; j < base.nv; ++j) {
+    EXPECT_DOUBLE_EQ(back.q_star[static_cast<std::size_t>(j)],
+                     base.q_star[static_cast<std::size_t>(j)]);
+  }
+  EXPECT_DOUBLE_EQ(back.score, base.score);
+}
+
+TEST(PlannerSearchPlan, TheAdoptedWaitPoseIsReadInDeviceOrder) {
+  // The RT hands the pose over in DEVICE order; the seed is in model order.
+  // A rig whose model order is the device order reversed tells the two apart.
+  auto rig = std::make_unique<Rig>();
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    rig->model.device_of_model[static_cast<std::size_t>(j)] = rig->arm.nv - 1 - j;
+  }
+  ASSERT_TRUE(rig->Configure());
+  PlannerRtState rt = rig->Rt();
+  rt.wait_pose_adopted = true;
+  for (int d = 0; d < rig->arm.nv; ++d) {
+    rt.wait_pose[static_cast<std::size_t>(d)] = 0.1 * (d + 1);  // distinct per device joint
+  }
+  const auto traj = rig->Traj();
+  SearchStats stats;
+  (void)rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats);
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j], 0.1 * (rig->arm.nv - j))
+        << "model joint " << j << " must read device joint " << rig->arm.nv - 1 - j;
+  }
 }
 
 TEST(PlannerSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {

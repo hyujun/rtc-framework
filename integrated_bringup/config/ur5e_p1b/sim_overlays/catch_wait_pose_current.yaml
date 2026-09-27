@@ -6,13 +6,14 @@
 # WHAT IT IS FOR. Put the arm somewhere with demo_joint_controller (a joint
 # goal) or demo_task_controller (a TCP goal), then switch to
 # demo_catching_controller: the controller adopts the arm's measured pose on
-# its first readable tick as `planner.wait_pose` (`wait_pose_source: current`,
+# its first readable tick AT REST as `planner.wait_pose` (`wait_pose_source: current`,
 # the shipped YAML keeps `yaml`). Homing is then a no-op, ARMED is immediate,
 # the planner seeds its IK from that pose and RETREAT returns to it. The
 # startup log says which pose was adopted ("wait pose adopted from the arm's
 # switched-in pose: [...]", once per activation) and the diag CSV carries it
-# (`wait_pose_adopted`, `wait_pose_<joint>`). A pose outside the margined joint
-# box is refused: the controller then homes to the YAML pose (12 s for a
+# (`wait_pose_adopted`, `q_wait_<joint>`). A pose outside the margined joint
+# box, an arm request while the arm still moves, or a switch under an E-STOP
+# is refused with a WARN: the controller then homes to the YAML pose (12 s for a
 # wrist wound to 6.25 rad — verified 2026-09-27, headless sim, six switches
 # from both source controllers plus one refusal).
 #

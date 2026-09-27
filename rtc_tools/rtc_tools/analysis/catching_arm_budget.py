@@ -462,11 +462,16 @@ def _rank_rates(path: Path | None) -> dict:
         out[f"{k}_p50"] = (
             float(valid[k].median()) if k in valid and valid[k].notna().any() else math.nan
         )
-    out["window_open_frac"] = (
-        float((valid["g_min"] <= valid["g_max"]).mean())
-        if "g_min" in valid and "g_max" in valid and valid["g_max"].notna().any()
-        else math.nan
-    )
+    # Over the JUDGED windows only: an unjudgeable candidate logs NaN for both
+    # bounds, `NaN <= NaN` is False, and counting it as "closed" would make the
+    # fraction a function of the unjudgeable rate (the p50s above skip NaN too).
+    out["window_open_frac"] = math.nan
+    out["window_judged_n"] = 0
+    if "g_min" in valid and "g_max" in valid:
+        judged = valid[valid["g_min"].notna() & valid["g_max"].notna()]
+        out["window_judged_n"] = len(judged)
+        if len(judged):
+            out["window_open_frac"] = float((judged["g_min"] <= judged["g_max"]).mean())
     return out
 
 

@@ -873,6 +873,9 @@ TEST_F(SupervisorScenarioTest, TheAdoptedWaitPoseSurvivesAnEstopAndIsRetakenOnAc
   Ticks(2);
   EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
   EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_reason,
+            integrated_bringup::CatchingDiagLogPod::WaitPoseRefusal::kOutsideBox);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_joint, 2);
   for (int i = 0; i < kUr5eArmDof; ++i) {
     EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
                 kUr5eHome[static_cast<std::size_t>(i)], 1e-12)
@@ -907,6 +910,84 @@ TEST_F(SupervisorScenarioTest, ATrialFromASwitchedInPoseReturnsToIt) {
                                                  "the adopted wait pose";
   }
   EXPECT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting()) << "a re-arm is not a new activation";
+}
+
+TEST_F(SupervisorScenarioTest, AMovingArmDefersTheAdoptionUntilItRests) {
+  // S8-I (2026-09-27 /code-review): a switch made while the previous
+  // controller's motion is still running must not adopt a pose in passing.
+  // Unarmed, the decision waits for rest and takes the pose the arm rests at.
+  std::array<double, kUr5eArmDof> passing = kUr5eHome;
+  passing[1] += 0.05;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, passing,
+      /*arm=*/false));
+  publishing_ = false;
+  state_.devices[0].velocities[1] = 0.5;  // far above the homing arrival tolerance
+  Ticks(5);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting()) << "adopted a pose the arm was passing";
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 0U) << "deferring is not refusing";
+
+  std::array<double, kUr5eArmDof> rest = kUr5eHome;
+  rest[1] += 0.12;
+  state_ = MakeState(rest);
+  Ticks(1);
+  ASSERT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting());
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                rest[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i;
+  }
+}
+
+TEST_F(SupervisorScenarioTest, ArmingWhileTheArmMovesRefusesTheSwitchedInPose) {
+  // Homing needs its target on the tick the operator arms: an arm still moving
+  // then gets the YAML pose, once, and a later rest does not re-decide.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[0] += 0.06;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off));
+  publishing_ = false;
+  state_.devices[0].velocities[0] = 0.5;
+  Ticks(2);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_reason,
+            integrated_bringup::CatchingDiagLogPod::WaitPoseRefusal::kMoving);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_joint, 0);
+  state_ = MakeState(off);
+  Ticks(3);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting()) << "one decision per activation";
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                kUr5eHome[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i;
+  }
+}
+
+TEST_F(SupervisorScenarioTest, ASwitchInUnderAnEstopIsNotAdopted) {
+  // Where the arm was STOPPED is not where the operator put it: an activation
+  // whose deciding tick is under an E-STOP keeps the YAML pose, also after the
+  // stop clears.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[2] -= 0.05;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off,
+      /*arm=*/false));
+  publishing_ = false;
+  ctrl_->TriggerEstop();
+  Ticks(2);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_reason,
+            integrated_bringup::CatchingDiagLogPod::WaitPoseRefusal::kEstop);
+  ctrl_->ClearEstop();
+  Ticks(3);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
 }
 
 TEST_F(SupervisorScenarioTest, AMissedBallIsJudgedMissedAndTheHandStillWaitsForTheWaitPose) {

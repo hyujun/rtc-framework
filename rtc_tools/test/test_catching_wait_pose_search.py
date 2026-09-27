@@ -709,3 +709,79 @@ def test_cli_robust_objective_writes_the_columns_and_the_summary(tmp_path, capsy
     assert rc == 0
     text = capsys.readouterr().out
     assert "v_dir_robust" in text and "sigma_min" in text
+
+
+# ── (j) the search box is the one the runtime admits a wait pose in ────────────
+
+
+def test_the_search_stays_inside_the_profiles_margined_joint_box(tmp_path):
+    """Profile position limits narrower than the URDF's, pulled in by the
+    controller's limit_margin: every reported pose is inside THAT box, so it can
+    be pasted into planner.wait_pose (the validator and `current` refuse the rest)."""
+    cfg = make_config(tmp_path / "share")
+    base = yaml.safe_load((cfg / "_base.yaml").read_text())
+    limits = base["/**"]["ros__parameters"]["devices"][ARM]["joint_limits"]
+    limits["position_lower"] = [-2.0] * N
+    limits["position_upper"] = [2.0] * N
+    (cfg / "_base.yaml").write_text(yaml.safe_dump(base, sort_keys=False))
+    ctrl_path = cfg / "controllers" / f"{CONTROLLER}.yaml"
+    ctrl = yaml.safe_load(ctrl_path.read_text())
+    ctrl[CONTROLLER]["catching"]["robot"] = {"arm": {"limit_margin": 0.25}}
+    ctrl_path.write_text(yaml.safe_dump(ctrl, sort_keys=False))
+    urdf = _urdf_file(tmp_path)
+
+    setup = _load_setup(cfg, urdf)
+    assert setup["q_lo"] == pytest.approx([-1.75] * N) and setup["q_hi"] == pytest.approx(
+        [1.75] * N
+    )
+    assert setup["q_box_source"]["margin_rad"] == 0.25
+
+    out = tmp_path / "out"
+    rc = cws.main(
+        [
+            "--config-dir",
+            str(cfg),
+            "--urdf",
+            str(urdf),
+            "--axis-tol-deg",
+            "60",
+            "--samples",
+            "1500",
+            "--seed",
+            "5",
+            "--refine-top",
+            "3",
+            "--out",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    with (out / "wait_pose_candidates.csv").open() as fh:
+        rows = [r for r in csv.DictReader(fh) if r["stage"] != "reference"]
+    assert rows
+    for row in rows:
+        q = [float(row[f"q_{j}"]) for j in JOINTS]
+        assert all(-1.75 - 1e-9 <= v <= 1.75 + 1e-9 for v in q), q
+        assert row["within_limits"] == "True"
+    summary = yaml.safe_load((out / "wait_pose_search_summary.yaml").read_text())
+    assert summary["joint_box"]["upper_rad"] == pytest.approx([1.75] * N)
+    # the funnel adds up: LP-valid = ranked + dropped
+    assert summary["n_lp_valid"] >= summary["n_ranked"]
+
+
+def test_the_admitted_box_never_inverts_and_falls_back_to_the_urdf():
+    lo, hi = np.full(3, -3.0), np.full(3, 3.0)
+    # a joint narrower than twice the margin keeps its midpoint
+    box_lo, box_hi, src = cws.admitted_joint_box(
+        lo,
+        hi,
+        {"position_lower": [-1.0, -0.02, -5.0], "position_upper": [1.0, 0.04, 5.0]},
+        {"position_lower": "_base.yaml"},
+        0.05,
+    )
+    assert box_lo == pytest.approx([-0.95, 0.01, -3.0])  # joint 3: the URDF is tighter
+    assert box_hi == pytest.approx([0.95, 0.01, 3.0])
+    assert src["margin_rad"] == 0.05
+    box_lo, box_hi, src = cws.admitted_joint_box(lo, hi, {}, {}, 0.05)
+    assert np.array_equal(box_lo, lo) and np.array_equal(box_hi, hi)
+    assert src == {"limits": "urdf", "margin_rad": 0.0}
