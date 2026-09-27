@@ -447,6 +447,60 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
   profile → sim.yaml → overlay 합성 순서, `adopted: false` box 거부, 관절별 box 초과 판정, lane 행 누락·헤더만 있는 lane,
   다른 팔 unit 의 envelope 합치기 거부, CLI end-to-end
 
+### `catching_wait_pose_search.py` — 대기 자세 탐색 (dynamic_catching S8-I)
+
+`catch_speed_budget` 이 **수락된** 포구 자세에서의 속력 예산을 답한다면, 이 도구는 그보다 앞선 질문을
+답한다 — 공이 보이기도 전에 팔이 서 있는 **대기 자세** (`planner.wait_pose`, IK seed) 를 바꾸면 그 자세가
+낼 수 있는 방향 속력 상한이 얼마나 오르는가. 목적함수는 **자기 자신의 접근축 기준**이다:
+`v_hat(q) = -axis(q)` (axis = catch frame 의 +z, model world). 고정된 풀링 방향이 아닌 이유는 손-근처
+투척 (S8-F) 생성기 (`catchability_map.aim_at_hand`) 가 각 공을 **미러링된 대기 자세 자신의 palm normal**
+로 조준하기 때문 — 자세가 기울면 조준도 같이 기운다. 목적은 기본 **`--objective dls`** =
+`directional_speed_dls` (런타임 `DirectionalSpeedMax` 가 γ 창에 넣는 값 — 이것을 최대화하면 계획기 자신의
+γ_max 가 최대), `--objective lp` 면 `directional_speed_lp` (LP 물리 상한). 두 값은 행마다 같이 내고 DLS 는
+LP 를 넘지 않는다.
+
+```bash
+ros2 run rtc_tools catching_wait_pose_search --config-dir <config>/ur5e_p1b \
+    --radius-m 0.15 --axis-tol-deg 2 --samples 20000 --seed 20260928 --out <out>
+# --box 로 위치 상자 (S8-F catch_box 등) 를 걸 수도 있다 (반경과 함께 또는 대신):
+ros2 run rtc_tools catching_wait_pose_search --config-dir <config>/ur5e_p1b \
+    --box '-1.1 -1.1 0.15 1.1 1.1 1.2' --axis-tol-deg 10 --out <out>
+# 자세 하나만 확인 (탐색 없음, --out 불필요):
+ros2 run rtc_tools catching_wait_pose_search --config-dir <config>/ur5e_p1b \
+    --evaluate-pose '0.212 -1.376 1.107 -1.978 -3.296 0.121'
+```
+
+- **한계의 출처** (ARCH-1): 관절은 `devices.<arm>.joint_state_names`, 속도 box 는
+  `catching_arm_budget._device_limits` 와 같은 합성 (`_base.yaml` 위에 `sim.yaml` 의 같은 키가 있으면
+  그것), η_v·`planner.wait_pose` 는 캐칭 컨트롤러 YAML. `ArmKinematics` 가 받는 rotor inertia 인자는
+  이 도구와 무관해 (LP/DLS 는 질량을 쓰지 않는다) 항상 0
+- **탐색**: joint-limit box 균등 표본 + 대기 자세에서의 log-scale 랜덤워크를 `--radius-m`
+  (‖p − p_ref‖ ≤ r) · `--axis-tol-deg` (참조축과의 각) · `--box` (위치 상자) · `--min-z` 로 거르고, 자기
+  일치 LP 로 순위를 매겨 상위 `--refine-top` 개를 제약 위반 벌점을 준 Nelder-Mead 로 국소 정련한다
+  (S8-H pre-analysis 의 방법을 그대로 제품화). **정련은 벌점(soft)만 걸므로** 그 국소해가 하드 제약을
+  벗어나면 (드문 경우) 이미 제약을 만족하는 raw 표본으로 되돌린다 — 보고되는 모든 행이 제약을 어기지
+  않는다는 것이 벌점의 세기가 아니라 이 fallback 이 주는 보장이다
+- 출력: `wait_pose_candidates.csv` (참조 행 + raw/refined 상위 `--refine-top`; rank·stage·관절별
+  `q_<joint>`·p·axis·`v_dir_lp`·`v_dir_dls`·`max_dq_rad`·`dist_m`·`axis_deg`·`in_box`·`within_limits` —
+  참조 행은 `--box` 를 만족하지 않아도 비교 기준으로 그대로 실린다), `wait_pose_search_summary.yaml`
+  (provenance: config 파일·η_v·q̇_max+출처·참조 자세와 그 자신의 v_dir_lp/dls/elevation·제약·샘플링·런타임·
+  최선 정련 자세 + `overlay_snippet` — `planner: wait_pose: [...]` 소수 4자리)
+- **자체 검증 (fail-closed).** 보고되는 모든 행 — 참조·raw·refined — 이 FK(q) 로 재계산한 위치가 보고값과
+  1e-9 m 이내로 일치해야 하고, URDF 관절 한계 안이어야 하고, `v_dir_dls` 가 그 행의 `v_dir_lp` 를
+  1e-9 넘게 초과하지 않아야 한다 — 하나라도 어기면 아무것도 쓰지 않고 종료한다
+- **LP 의 의미를 docstring 에 명시**: 접근축 **회전 속도**를 0 으로 고정할 뿐 — 그 자세를 유지하며 이동이
+  실제로 가능한지, 자기/환경 충돌이 없는지, IK/gate-map 이 그 자세를 받아줄지는 검사하지 않는다
+  (kinematic 속력 상한만; sim smoke 가 나머지를 본다)
+- `--evaluate-pose`: 탐색 없이 자세 하나만 자기 일치 v_dir_lp/dls·elevation·FK 를 찍고 종료 — 운영자가
+  고른 자세를 확인하는 경로
+- 테스트 `test/test_catching_wait_pose_search.py` (12 케이스, pinocchio·scipy 없으면 skip — `--objective dls|lp` 가 각자 키의 최대 행을 고르고 DLS 아티팩트를 버리는지 포함): 합성 6R fixture
+  (혼합 관절축 — 5 (위치 3 + 접근축 방향 2) 보다 적은 관절수는 LP 가 거의 모든 자세에서 퇴화하므로 6 관절;
+  자세가 방향속력에 영향을 주도록 설계) 에서 `--evaluate-pose` 가 `catch_speed_budget` 직접호출과 일치,
+  탐색이 참조 자세 이상 + 거친 브루트포스 격자 최적의 95 % 이상, 보고된 모든 행의 반경/각/한계/DLS≤LP,
+  seed 재현성, `--box` 가 raw/refined 를 상자 밖으로 내지 않음 (참조 행은 예외), `overlay_snippet` 이
+  최선 자세로 파싱, `sim.yaml` 이 `_base.yaml` 을 이기고 출처에 이름이 남음, NaN 한계 fail-closed, CLI
+  인자 검증 2 종
+
 ### `catchability_map.py` — catchability 지도 (dynamic_catching S3.5a)
 
 투척 grid → 항력 비행 → 포구 후보 → **C++ judge** → 집계·제안·플롯. 판정은 재구현하지 않고

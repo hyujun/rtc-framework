@@ -66,6 +66,10 @@ S8G_GRID = {
     "s8g_w20_a30": (20.0, 30.0),
 }
 S8G_ENVBOX = "s8g_w10_a21_envbox"
+# S8-I wait-pose A/B (#537 5850509543): P0 = the shipped pose pinned, P1/P2 =
+# catching_wait_pose_search optima (the values live in the overlays; their
+# provenance in the overlay headers and the private tool outputs).
+S8I_POSES = ("s8i_wp_p0", "s8i_wp_p1", "s8i_wp_p2")
 S8G_ENVBOX_FILE = "config/ur5e_p1b/derived_accel_limits_s8g_envelope.yaml"
 S8G_SHIPPED_BOX_FILE = "config/ur5e_p1b/derived_accel_limits.yaml"
 OMEGA_RANGE = (1.0, 25.0)  # L4 §6
@@ -428,6 +432,47 @@ def test_s8g_envbox_arm_is_the_baseline_with_the_planner_box_swapped(s8g_arms, s
         "derived_accel_limits"
     ][group]["qdd_max"]
     assert all(e > 2 * s for e, s in zip(entry["qdd_max"], shipped_box, strict=True))
+
+
+# ── ur5e_p1b S8-I (wait-pose A/B) ─────────────────────────────────────────────
+@pytest.fixture(scope="module")
+def s8i_arms() -> dict[str, dict]:
+    return {
+        name: _controller_tree(_load(os.path.join(OVERLAY_DIR, name + ".yaml")))
+        for name in S8I_POSES
+    }
+
+
+@pytest.mark.parametrize("name", S8I_POSES)
+def test_s8i_arm_is_reach_first_plus_a_wait_pose_inside_the_arm_limits(
+    name, s8i_arms, s8f_arms, shipped
+):
+    """Each P arm differs from s8f_reach_first by `planner.wait_pose` ONLY, one
+    value per arm joint inside the device position limits; P0 pins the shipped
+    pose, P1/P2 move it. The source stays the YAML's (the runner aims at the
+    mirror), so no arm sets `wait_pose_source`."""
+    base = _leaves(s8f_arms["s8f_reach_first"])
+    leaves = _leaves(s8i_arms[name])
+    extra = {k: v for k, v in leaves.items() if k not in base}
+    assert list(extra) == [("catching", "planner", "wait_pose")]
+    assert {k: v for k, v in leaves.items() if k in base} == base
+    assert _unread_leaves(s8i_arms[name], shipped) == []
+    pose = extra[("catching", "planner", "wait_pose")]
+    dev = _load(os.path.join(CONFIG_DIR, "_base.yaml"))["/**"]["ros__parameters"]["devices"]
+    group = shipped["catching"]["robot"]["arm"]["accel_limits_group"]
+    limits = dev[group]["joint_limits"]
+    assert len(pose) == len(dev[group]["joint_state_names"])
+    for q, lo, hi in zip(pose, limits["position_lower"], limits["position_upper"], strict=True):
+        assert isinstance(q, float) and math.isfinite(q) and lo <= q <= hi
+    if name == "s8i_wp_p0":
+        assert pose == shipped["catching"]["planner"]["wait_pose"]
+    else:
+        assert pose != shipped["catching"]["planner"]["wait_pose"]
+
+
+def test_s8i_the_three_poses_differ_from_each_other(s8i_arms):
+    poses = [tuple(s8i_arms[name]["catching"]["planner"]["wait_pose"]) for name in S8I_POSES]
+    assert len(set(poses)) == len(poses)
 
 
 def test_sim_yaml_points_the_planner_box_at_the_envelope_file_and_names_shipped_keys(shipped):
