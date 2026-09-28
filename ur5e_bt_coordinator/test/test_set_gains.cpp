@@ -8,6 +8,7 @@
 /// against that mock and tests verify parameter values or recorded grasp
 /// calls (polling via TickUntilComplete since the node is now async).
 
+#include "bt_tree_fixture.hpp"
 #include "test_helpers.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
 #include <rtc_msgs/srv/grasp_command.hpp>
@@ -26,9 +27,7 @@ class SetGainsTest : public RosTestFixture {
   }
 
   BT::Tree CreateTree(const std::string& xml) {
-    const std::string full =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
-    return factory_.createTreeFromText(full);
+    return rtc_bt::test::CreateSnippetTree(factory_, xml);
   }
 
   // TickUntilComplete (poll a StatefulActionNode across ticks) lives in

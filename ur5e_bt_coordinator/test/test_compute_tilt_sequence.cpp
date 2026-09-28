@@ -4,6 +4,7 @@
 /// waypoint sequence alternating pitch (even steps) / roll (odd steps), plus a
 /// final return-to-base waypoint. Previously only providedPorts() was covered.
 
+#include "bt_tree_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
 #include "ur5e_bt_coordinator/bt_types.hpp"
 
@@ -20,9 +21,7 @@ class ComputeTiltSequenceTest : public ::testing::Test {
   void SetUp() override { factory_.registerNodeType<ComputeTiltSequence>("ComputeTiltSequence"); }
 
   BT::Tree CreateTree(const std::string& xml) {
-    const std::string full =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
-    return factory_.createTreeFromText(full);
+    return rtc_bt::test::CreateSnippetTree(factory_, xml);
   }
 
   BT::BehaviorTreeFactory factory_;
@@ -74,8 +73,8 @@ TEST_F(ComputeTiltSequenceTest, ClampsNumStepsToMinimumTwo) {
 
 TEST_F(ComputeTiltSequenceTest, UsesPortDefaultsWhenOmitted) {
   // amplitude_deg / num_steps omitted → defaults 15.0 / 6 → 7 waypoints.
-  auto tree = CreateTree(
-      R"(<ComputeTiltSequence base_pose="0.0;0.0;0.0;0.0;0.0;0.0" waypoints="{wp}"/>)");
+  auto tree =
+      CreateTree(R"(<ComputeTiltSequence base_pose="0.0;0.0;0.0;0.0;0.0;0.0" waypoints="{wp}"/>)");
   ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(tree.rootBlackboard()->get<std::vector<Pose6D>>("wp").size(), 7u);
 }

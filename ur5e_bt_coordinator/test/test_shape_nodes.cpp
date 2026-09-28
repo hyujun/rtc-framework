@@ -1,6 +1,7 @@
 /// Unit tests for shape estimation nodes:
 /// TriggerShapeEstimation, WaitShapeResult.
 
+#include "bt_tree_fixture.hpp"
 #include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
@@ -22,9 +23,7 @@ class ShapeNodeTest : public InjectTestFixture {
   }
 
   BT::Tree CreateTree(const std::string& xml) {
-    const std::string full =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
-    return factory_.createTreeFromText(full);
+    return rtc_bt::test::CreateSnippetTree(factory_, xml);
   }
 
   BT::BehaviorTreeFactory factory_;

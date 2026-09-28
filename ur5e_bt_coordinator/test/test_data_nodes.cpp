@@ -7,6 +7,7 @@
 /// via PublishArmState() (tf2 base→tool0_actual) and read back through the
 /// quaternion↔RPY round-trip GetTcpPose() performs.
 
+#include "bt_tree_fixture.hpp"
 #include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
@@ -30,9 +31,7 @@ class DataNodeTest : public InjectTestFixture {
   }
 
   BT::Tree CreateTree(const std::string& xml) {
-    const std::string full =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
-    return factory_.createTreeFromText(full);
+    return rtc_bt::test::CreateSnippetTree(factory_, xml);
   }
 
   BT::BehaviorTreeFactory factory_;

@@ -1,5 +1,6 @@
 /// Unit tests for SetPoseZ action node.
 
+#include "bt_tree_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
 #include "ur5e_bt_coordinator/bt_types.hpp"
 
@@ -15,11 +16,8 @@ class SetPoseZTest : public ::testing::Test {
  protected:
   void SetUp() override { factory_.registerNodeType<SetPoseZ>("SetPoseZ"); }
 
-  /// Create a single-node tree with the given XML snippet.
   BT::Tree CreateTree(const std::string& xml) {
-    const std::string full_xml =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="Test">)" + xml + R"(</BehaviorTree></root>)";
-    return factory_.createTreeFromText(full_xml);
+    return rtc_bt::test::CreateSnippetTree(factory_, xml);
   }
 
   BT::BehaviorTreeFactory factory_;

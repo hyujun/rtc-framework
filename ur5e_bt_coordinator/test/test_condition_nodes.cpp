@@ -1,5 +1,6 @@
 /// Unit tests for all condition nodes.
 
+#include "bt_tree_fixture.hpp"
 #include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
@@ -30,9 +31,7 @@ class ConditionNodeTest : public InjectTestFixture {
   }
 
   BT::Tree CreateTree(const std::string& xml) {
-    const std::string full =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
-    return factory_.createTreeFromText(full);
+    return rtc_bt::test::CreateSnippetTree(factory_, xml);
   }
 
   CachedGraspState MakeGraspState(int contacts, float max_force, bool detected,

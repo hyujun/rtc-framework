@@ -78,7 +78,8 @@ TEST_F(ConfigSafetyTest, ShapeNodeGatedByHasShape) {
   BT::BehaviorTreeFactory factory;
   std::shared_ptr<BtRosBridge> null_bridge;
   RegisterBtNodes(factory, null_bridge, RobotCapabilities{true, true, /*has_shape=*/false});
-  EXPECT_THROW((void)factory.createTreeFromText(LeafTree("TriggerShapeEstimation")), std::exception);
+  EXPECT_THROW((void)factory.createTreeFromText(LeafTree("TriggerShapeEstimation")),
+               std::exception);
 }
 
 TEST_F(ConfigSafetyTest, GraspNodeGatedByHasGraspSensing) {
