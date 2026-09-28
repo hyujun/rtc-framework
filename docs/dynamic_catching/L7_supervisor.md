@@ -3,7 +3,7 @@
 - 문서 버전: v0.5 (2026-09-19) — 결정·단계의 SSoT 는 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (충돌 시 plan 우선)
 - 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
 - 배치 `[확정 D-1]`: 순수 조각(감속 목표, 전이표 데이터, 접촉 debounce)은 rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`), FSM 은 포구 컨트롤러(`RTControllerInterface::Compute` 안)에서 구동, YAML 은 `integrated_bringup` 바인딩. 별도 패키지를 만들지 않는다
-- 단계: **S1.8** 순수 조각, **S5.1** E-STOP·fault 최소 계약(P-1, `[CONCERN] E-8` 승인 후), **S7** 손 시퀀서·FSM·접촉 판정·감속·충격량 예산·재무장. E-STOP·fault 정책 전체는 **S9 (D-13 보류)** — 그 전까지는 §4.1 의 임시 기준(P-1)만 구현
+- 단계: **S1.8** 순수 조각, **S5.1** E-STOP·fault 최소 계약(P-1, `[CONCERN] E-8` 승인 후), **S7** 손 시퀀서·FSM·접촉 판정·감속·충격량 예산·재무장. E-STOP·fault 정책 전체는 **S9** (D-13 = D-S9-A~L 확정 2026-09-27, S9a PR #589 · S9b PR #590) — §4.1 이 그 결과다. CM 쪽 hold latch·해제 검증 창은 pre-S10 R2 (PR #597, #588)
 - 선행: 단계 W, L1–L6
 - 산출물: 전이표(데이터), `Mode`/`Reason`/`Outcome` enum, 감속 목표, 접촉 판정기, 전이 로그 레코드
 
@@ -27,7 +27,7 @@
 
 | ID | 확인 항목 | 기록 |
 |---|---|---|
-| G7-1 | RTC 프레임워크의 기존 상태 머신·모드 전환 규약, 컨트롤러 활성/비활성 시 명령 유지 방식 | 닫힘 — FSM 선례는 compliance 코어의 `ComplianceState`. 명령 유지는 CM 의 `BuildHoldOutput`, 컨트롤러 fault 는 `ResetFault`/`HasLatchedFault` 래치 (E-STOP 과 분리, `/rtc_cm/reset_fault`) (W) |
+| G7-1 | RTC 프레임워크의 기존 상태 머신·모드 전환 규약, 컨트롤러 활성/비활성 시 명령 유지 방식 | 닫힘 — FSM 선례는 compliance 코어의 `ComplianceState`. 명령 유지는 CM 의 `BuildHoldOutput` (E-STOP·해제 검증 창 동안은 slot 별 latch 의 `BuildLatchedHoldOutput`, pre-S10 R2), 컨트롤러 fault 는 `ResetFault`/`HasLatchedFault` 래치 (E-STOP 과 분리, `/rtc_cm/reset_fault`) (W) |
 | G7-2 | UR 드라이버의 speed scaling 상태 인터페이스 이름과 의미 ([R11]) | 닫힘 — repo 에 speed scaling 노출 없음 (W). 신호 출처 확보는 S10. TBD-ARM-03 은 S10 으로 이월 |
 | G7-3 | 지문 센서 잡음 수준, 주기, 스탬프 (시뮬레이션·실기) | 부분 닫힘 — 실기 P1b `HandSensorState` 250 Hz, sim `rtc_mujoco_sim` 발행 모두 **finger-on-object 부호** (커밋 0fcc1d23 이후 코드 확인, §4.4). 잡음 수준은 TBD-HAND-03 |
 | G7-4 | PTP 동기 상태 확인 방법 | 닫힘 — repo 에 시계 건강 신호 없음 (W). S10. TBD-NET-01 은 S10 으로 이월 |

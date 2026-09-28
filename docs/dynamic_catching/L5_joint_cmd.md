@@ -32,7 +32,7 @@
 
 | ID | 확인 항목 | 기록 |
 |---|---|---|
-| G5-1 | 명령을 싣는 자리의 형태 | 닫힘 — `RTControllerInterface::Compute` 가 돌려주는 `ControllerOutput` 의 `devices[0].commands` (팔 device 0 관례, rad, `CommandType::kPosition`). CM 이 같은 RT tick 안에서 `ValidateControllerOutput` → (실패·E-STOP 시 `BuildHoldOutput` 대체) → `DeviceBackend::WriteCommand` 로 보낸다. ros2_control `command_interface` 아님 (W4-1) |
+| G5-1 | 명령을 싣는 자리의 형태 | 닫힘 — `RTControllerInterface::Compute` 가 돌려주는 `ControllerOutput` 의 `devices[0].commands` (팔 device 0 관례, rad, `CommandType::kPosition`). CM 이 같은 RT tick 안에서 `ValidateControllerOutput` → (실패 시 `BuildHoldOutput`, E-STOP·해제 검증 창 동안 `BuildLatchedHoldOutput` 대체) → `DeviceBackend::WriteCommand` 로 보낸다. ros2_control `command_interface` 아님 (W4-1) |
 | G5-2 | backend 가 이미 하는 일 | 닫힘 — 관절 위치 clamp(YAML `devices.<g>.joint_limits` ∩ URDF) 와 출력 검증·hold 만 있다. **지연 보상 없음**, 컨트롤러 쪽 외의 속도·변화량 제한 없음, speed scaling 노출 없음, `ApplySafetyLayer` production 호출 없음 (W4-2, W4-3) |
 | G5-3 | CLIK 입력·출력·적분 상태 | 닫힘 — `ClikReferenceGenerator::Compute` 는 **측정 q** 에서 e·J 를 평가하고, 적분 anchor 는 `reseed_anchor` 로 측정/carry-forward 를 고른다 (`anchor_drift_max` clamp). 적분 상태 소유자는 CLIK. q_c 평가는 새 옵션 `[확정 D-6]` |
 | G5-4 | 마스크 지원 | 닫힘 — CLIK 은 LWA 6행 고정, LOCAL 고정축 마스크 없음. `rtc_tsid` TaskBase 계열(SE3Task mask 는 LWA 행)은 acceleration-level 이라 쓰지 않는다 → **CLIK 에 접근축 2행 옵션 신설** (S2.2b) |

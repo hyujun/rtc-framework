@@ -49,7 +49,7 @@
 5. 기준 생성: soft-catch 기준, 축 정렬 (L4)
 6. 관절 명령: 확장 CLIK (`rtc::tsid::ClikReferenceGenerator`, D-5·D-6) → $q_c$ (L5). QP 실패 시 QP 비의존 관절공간 경로 (L7 §4.1)
 7. 손: 손 시퀀서 → 손 device slot (L6, D-11)
-8. 명령 쓰기: `ControllerOutput.devices[0]` (팔, `kPosition`), `devices[1]` (손). 이후 CM 이 검증·E-STOP 대체(`BuildHoldOutput`)·`WriteCommand` 를 한다
+8. 명령 쓰기: `ControllerOutput.devices[0]` (팔, `kPosition`), `devices[1]` (손). 이후 CM 이 검증 (실패 시 `BuildHoldOutput`)·E-STOP 대체 (`BuildLatchedHoldOutput`)·`WriteCommand` 를 한다
 9. RT 상태 게시: 계획기용 `rtc::SeqLock<RtStatePod>` write, 상태 publisher 용 SeqLock write, 기록 레코드 SPSC push
 
 ### 4.2 투척 생성 (시뮬레이션)

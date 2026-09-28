@@ -45,7 +45,7 @@
 | CLIK | `rtc::tsid::ClikReferenceGenerator`(ProxQP dense box-QP, pose 목표, LWA 6행, 위치∩속도 box, `max_iter` 20 고정). **옵션(기본 off)으로 확장**: twist feedforward, LOCAL 접근축 2행, 가속 box, status 노출, `max_iter` 설정, q_c 평가 모드. off 시 기존 출력 bit-identical | W3-6~8, D-5·D-6 |
 | IK | 독립 IK 없음 → `rtc::compliance::DifferentialIk`(σ_min 적응 λ, heap-free) 재사용 | D-7d |
 | SE(3)/SO(3) 헬퍼 | `rtc_math` se3 `log3`/`exp3`/`Jlog3`, `rtc_tsid` se3_error `ComputeTaskPoseError`(LWA BodyLog6) | W3-9 |
-| 명령 경로 | 컨트롤러가 `ControllerOutput.devices[]`(팔 device 0, 손 device 1 관례)를 채우면 CM 이 `ValidateControllerOutput` → 실패·E-STOP 시 `BuildHoldOutput` → `DeviceBackend::WriteCommand`(RT 스레드 inline). backend: `ur_driver_native`·`mujoco_native`·`udp_hand_native`. **명령은 position**(`CommandType` kPosition) | W4 |
+| 명령 경로 | 컨트롤러가 `ControllerOutput.devices[]`(팔 device 0, 손 device 1 관례)를 채우면 CM 이 `ValidateControllerOutput` → 실패 시 `BuildHoldOutput`, E-STOP (과 해제 검증 창) 동안 slot 별 latch 로 `BuildLatchedHoldOutput` → `DeviceBackend::WriteCommand`(RT 스레드 inline). backend: `ur_driver_native`·`mujoco_native`·`udp_hand_native`. **명령은 position**(`CommandType` kPosition) | W4 |
 | RT 원시형 | `rtc::SeqLock`, `rtc::SpscQueue`, `rtc::PeriodicRtThread`, eventfd, lifecycle 훅, 할당 게이트(`ScopedAllocGate`·`ScopedNoMalloc`) | W2 |
 | sim | `rtc_mujoco_sim`: lock-step, 공 발사·리셋 서비스, ground truth·카메라 위치 토픽, 항력·Magnus 자체 구현 | W6 |
 
