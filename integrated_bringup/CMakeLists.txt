@@ -1201,10 +1201,6 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # ── Phase 0 unified kin/dyn RT-cost benchmark (controller-unification) ──────
-  # Measures per-call latency of baseline arm-only FK/Jacobian (joint/task
-  # controllers today) vs unified PinocchioCache::Update on the combined
-  # arm+hand model, for iiwa7_leap + ur5e_p1b. Report-only (no timing asserts).
   # dynamic_catching S2.3a: shipped urdf.extra_frames.catch_frame on the real
   # robot models (placement in every derived model, palm-normal sign, nv).
   ament_add_gtest(test_catch_frame_models test/test_catch_frame_models.cpp)
@@ -1218,19 +1214,6 @@ if(BUILD_TESTING)
     yaml-cpp
   )
   target_link_libraries(test_catch_frame_models yaml-cpp)
-
-  ament_add_gtest(test_unified_kindyn_bench test/test_unified_kindyn_bench.cpp)
-  target_link_libraries(test_unified_kindyn_bench
-    ${PROJECT_NAME}_demo_controllers
-  )
-  ament_target_dependencies(test_unified_kindyn_bench
-    ament_index_cpp
-    rtc_urdf_bridge
-    rtc_tsid
-    rtc_base
-    pinocchio
-    Eigen3
-  )
 
   # ── Phase 2 (unified kin&dyn): arm TCP cache-vs-arm_handle equivalence ───────
   # Proves the WBC controller's clik_tcp/clik_base cache oMf equals the arm-only
@@ -1667,6 +1650,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_catch_lead_overlays test/test_catch_lead_overlays.py)
   ament_add_pytest_test(test_catching_sim_trials test/test_catching_sim_trials.py)
   ament_add_pytest_test(test_catching_sim_trials_s8 test/test_catching_sim_trials_s8.py)
+  ament_add_pytest_test(test_catching_sim_trials_s8f test/test_catching_sim_trials_s8f.py)
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
   ament_add_pytest_test(test_launch_session_wiring
