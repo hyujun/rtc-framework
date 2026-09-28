@@ -81,18 +81,8 @@ int CountBallContacts(const mjData* data, int ball_geom) {
 // scene dangerous: MuJoCo treats it as a halfspace, so a parked ball with its
 // contact filters enabled is ejected.
 MuJoCoSimulator::Config MakeFloorSceneConfigWithBall() {
-  MuJoCoSimulator::Config config;
-  config.model_path = POOL_SCENE_MJCF_PATH;
-  config.enable_viewer = false;
-  config.n_substeps = 1;
-  JointGroupConfig group;
-  group.name = "arm";
-  group.command_joint_names = {"j1", "j2"};
-  group.state_joint_names = {"j1", "j2"};
-  group.command_topic = "/arm/cmd";
-  group.state_topic = "/arm/state";
-  group.is_robot = true;
-  config.groups.push_back(group);
+  auto config = test::HeadlessConfig(POOL_SCENE_MJCF_PATH, /*sync_timeout_ms=*/50.0);
+  config.groups.push_back(test::RobotGroup("arm", {"j1", "j2"}));
   config.projectile_ball.enabled = true;
   config.projectile_ball.park_position_m = {0.0, 0.0, -5.0};
   config.projectile_ball.launch_direction = {1.0, 0.0, 0.0};

@@ -17,6 +17,7 @@
 //   (xmat -> mju_mulMatTMat -> mju_mat2Quat).
 // ────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
+#include "sim_config_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -95,13 +96,7 @@ void ExpectSameRotation(const std::array<double, 4>& actual, const std::array<do
 
 MuJoCoSimulator::Config MakeConfig(bool enabled, const std::string& reference_body,
                                    bool with_pool) {
-  MuJoCoSimulator::Config cfg;
-  cfg.model_path = OBJECT_STATE_MJCF_PATH;
-  cfg.enable_viewer = false;
-  cfg.sync_timeout_ms = 10.0;
-  cfg.max_rtf = 0.0;
-  cfg.n_substeps = 1;
-  cfg.viewer_refresh_rate = 60.0;
+  auto cfg = test::HeadlessConfig(OBJECT_STATE_MJCF_PATH, 10.0);
 
   cfg.object_state.enabled = enabled;
   cfg.object_state.topic = "object_transforms";
@@ -118,14 +113,7 @@ MuJoCoSimulator::Config MakeConfig(bool enabled, const std::string& reference_bo
     cfg.object_pool.seed = 42;
   }
 
-  JointGroupConfig grp;
-  grp.name = "arm";
-  grp.command_joint_names = {"j1", "j2"};
-  grp.state_joint_names = {"j1", "j2"};
-  grp.command_topic = "/arm/cmd";
-  grp.state_topic = "/arm/state";
-  grp.is_robot = true;
-  cfg.groups.push_back(grp);
+  cfg.groups.push_back(test::RobotGroup("arm", {"j1", "j2"}));
   return cfg;
 }
 

@@ -5,6 +5,7 @@
 // gravcomp on the robot's body chain only.
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
+#include "sim_config_fixture.hpp"
 
 #include <gtest/gtest.h>
 #include <mujoco/mujoco.h>
@@ -23,22 +24,8 @@ namespace rtc {
 namespace {
 
 MuJoCoSimulator::Config MakeSceneConfig() {
-  MuJoCoSimulator::Config cfg;
-  cfg.model_path = SCENE_WITH_OBJECT_MJCF_PATH;
-  cfg.enable_viewer = false;
-  cfg.sync_timeout_ms = 10.0;
-  cfg.max_rtf = 0.0;
-  cfg.n_substeps = 1;
-  cfg.use_yaml_servo_gains = false;
-
-  JointGroupConfig group;
-  group.name = "arm";
-  group.command_joint_names = {"j1", "j2"};
-  group.state_joint_names = {"j1", "j2"};
-  group.command_topic = "/arm/cmd";
-  group.state_topic = "/arm/state";
-  group.is_robot = true;
-  cfg.groups.push_back(group);
+  auto cfg = test::HeadlessConfig(SCENE_WITH_OBJECT_MJCF_PATH, 10.0);
+  cfg.groups.push_back(test::RobotGroup("arm", {"j1", "j2"}));
   return cfg;
 }
 

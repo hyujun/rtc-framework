@@ -14,6 +14,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
 #include "rtc_mujoco_sim/object_pool.hpp"
+#include "sim_config_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -47,21 +48,8 @@ constexpr double kSpawnZ = 0.50;
 constexpr double kCubeHalf = 0.03;
 
 MuJoCoSimulator::Config MakeConfig(bool pool_enabled) {
-  MuJoCoSimulator::Config cfg;
-  cfg.model_path = POOL_SCENE_MJCF_PATH;
-  cfg.enable_viewer = false;
-  cfg.sync_timeout_ms = 10.0;
-  cfg.max_rtf = 0.0;
-  cfg.n_substeps = 1;
-
-  JointGroupConfig g;
-  g.name = "arm";
-  g.command_joint_names = {"j1", "j2"};
-  g.state_joint_names = {"j1", "j2"};
-  g.command_topic = "/arm/cmd";
-  g.state_topic = "/arm/state";
-  g.is_robot = true;
-  cfg.groups.push_back(g);
+  auto cfg = test::HeadlessConfig(POOL_SCENE_MJCF_PATH, 10.0);
+  cfg.groups.push_back(test::RobotGroup("arm", {"j1", "j2"}));
 
   cfg.object_pool.enabled = pool_enabled;
   cfg.object_pool.directory = POOL_OBJECTS_DIR;
