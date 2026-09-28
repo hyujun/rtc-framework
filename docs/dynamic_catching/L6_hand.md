@@ -303,7 +303,7 @@ v0.4 의 `robot.hand.effort_limit_hold`, `robot.hand.T_link`, `robot.hand.port`,
 - 폐쇄가 늦다: 명령 시각 오차(양자화 규칙) → 실기면 `udp_hand_node` 주기(250 Hz)와 링크 상태 → actuator 게인·속도 한계 순으로 확인.
 - 폐쇄 후 손가락이 튄다: 유지 목표 전환 시점과 값을 확인.
 - 실기와 시뮬레이션 $T_{close}$ 차이가 크다: L6.6 보정 전에는 시뮬레이션 성공률을 `[SIM-P1B]` 한정 결과로 표기한다 (plan §12: sim $T_{close}$ 는 MJCF 게인에 의존).
-- 손 명령이 안 나간다: 포구 컨트롤러가 활성인지 (활성 컨트롤러 하나만, G6-6), `ValidateControllerOutput` 실패로 `BuildHoldOutput` 이 대체했는지 확인.
+- 손 명령이 안 나간다: 포구 컨트롤러가 활성인지 (활성 컨트롤러 하나만, G6-6), `ValidateControllerOutput` 실패로 `BuildHoldOutput` 이, 또는 E-STOP·해제 검증 창으로 `BuildLatchedHoldOutput` 이 대체했는지 확인.
 
 ## 9. 검증 방법과 합격 게이트
 
