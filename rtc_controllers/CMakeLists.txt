@@ -438,7 +438,8 @@ if(BUILD_TESTING)
 
   # ── catching core (dynamic_catching S1, rtc::catching) ─────────────────────
   # ROS-free numerical core for ball catching. The suites port the reference
-  # tests under docs/dynamic_catching/ with their thresholds unchanged; the gate
+  # tests once under docs/dynamic_catching/ (removed; `git show 482d18b3:...`)
+  # with their thresholds unchanged; the gate
   # IDs (G0-*, G2-*, G3-*, G4-*, G7-*) are those of the L0–L7 design docs.
   #
   # Ball flight fixture (G0-A). Test-only: it generates the reference
@@ -482,9 +483,9 @@ if(BUILD_TESTING)
   target_compile_options(test_catching_soft_catch PRIVATE -Wno-mismatched-new-delete)
 
   # Reachability gates (G3-A, G3-B): minimum joint time against a fixed table
-  # from verify_l3.py's independent closed form, γ window with the D-9 TCP
-  # speed, directional speed, stopping distance, error budget. Same two-sensor
-  # allocation gate (the planner may run SCHED_FIFO).
+  # from the reference script's (removed) independent closed form, γ window
+  # with the D-9 TCP speed, directional speed, stopping distance, error budget.
+  # Same two-sensor allocation gate (the planner may run SCHED_FIFO).
   ament_add_gtest(test_catching_time_feasibility test/test_catching_time_feasibility.cpp)
   target_link_libraries(test_catching_time_feasibility rtc_controllers)
   target_include_directories(test_catching_time_feasibility PRIVATE

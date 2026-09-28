@@ -38,7 +38,8 @@ using rtc::catching::TrajectorySnapshot;
 constexpr double kTc = 0.8;
 constexpr double kK = 0.0229;
 
-// The reference scenario of docs/dynamic_catching/test_l3.cpp.
+// The reference scenario of test_l3.cpp (removed from docs;
+// `git show 482d18b3:docs/dynamic_catching/test_l3.cpp`).
 fx::BallState BallAt(double t) {
   fx::BallState x;
   x << -2.5, 0.2, 0.8, 4.0, -0.2, 3.5, kK;

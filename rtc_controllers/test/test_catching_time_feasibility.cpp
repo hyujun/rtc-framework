@@ -2,15 +2,17 @@
 // plus the S1.5 fixes (invalid-limit flag, directional-speed projection and
 // zero guards) and the error-budget / stopping-distance formulas.
 //
-// Ported from docs/dynamic_catching/test_l3.cpp with thresholds unchanged.
-// The reference also wrote cases.txt for verify_l3.py; that round trip only
+// Ported from the reference test_l3.cpp with thresholds unchanged. The
+// reference also wrote cases.txt for its Python checker; that round trip only
 // compared the C++ closed form with its own output. G3-A's "fixed table vs the
-// script" is now a literal table (below) produced by verify_l3.py's
+// script" is now a literal table (below) produced by that script's
 // independently written Python closed form `t_min`, whose agreement with the
 // velocity/acceleration LP + bisection is ≤ 1.2e-5 s on these rows (LP grid
 // resolution) — S1 sub-plan F-5. Generator: numpy default_rng(20260919),
 // q0, q1 ~ U(−2, 2), a ~ U(5, 20), w0 ~ U(−π, π), w_max = π, 40 rows, plus two
-// |w0| > w_max rows; values printed with %.17g.
+// |w0| > w_max rows; values printed with %.17g. Both reference files were
+// removed from docs; read them with
+// `git show 482d18b3:docs/dynamic_catching/{test_l3.cpp,verify_l3.py}`.
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
@@ -56,7 +58,7 @@ namespace fx = rtc::catching::fixture;
 
 constexpr double kPi = 3.14159265358979323846;
 
-// {q0, w0, q1, w_max, a_max, t_min from verify_l3.py}
+// {q0, w0, q1, w_max, a_max, t_min from the reference script (see header)}
 constexpr std::array<std::array<double, 6>, 42> kTMinTable{{
     {-1.1714685612925249, 1.7783477058907851, 1.4605408346209012, 3.1415926535897931,
      16.31626680993239, 0.9521942928466931},

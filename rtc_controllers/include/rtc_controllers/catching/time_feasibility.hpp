@@ -10,8 +10,9 @@
 //   StoppingPoint              — stopping-distance reservation (§4.9)
 //   CatchErrorSigma            — catch error budget σ_gap (§4.6)
 //
-// Ported from docs/dynamic_catching/time_feasibility.hpp with the reference's
-// silent failures made explicit (fail-closed, NUM-2/NUM-4):
+// Ported from the reference time_feasibility.hpp (v0.4; removed from docs,
+// `git show 482d18b3:docs/dynamic_catching/time_feasibility.hpp`) with the
+// reference's silent failures made explicit (fail-closed, NUM-2/NUM-4):
 //  • invalid limits (a_max ≤ 0, w_max ≤ 0, NaN) used to return t = 0 with no
 //    flag — a reach-time gate that always passed. Now `limits_invalid` is set
 //    and t = +∞, so even a caller that ignores the flag rejects the candidate;

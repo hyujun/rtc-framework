@@ -3,7 +3,7 @@
 - 문서 버전: v0.5 (2026-09-19)
 - 대상 독자: 구현자(Claude Code 포함), 이론 검토자(Junho)
 - 구현 대상: **기존 `rtc-framework` workspace** (신규 workspace·신규 패키지 아님, D-1)
-- 문서 세트: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)(결정·단계의 SSoT) + 본 마스터 + `WORKSPACE_ANALYSIS.md`(단계 W 기록) + `L0_core.md` … `L8_bringup.md` + 같은 폴더의 참조 구현·테스트(`README.md` 참조)
+- 문서 세트: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)(결정·단계의 SSoT) + 본 마스터 + `WORKSPACE_ANALYSIS.md`(단계 W 기록) + `L0_core.md` … `L8_bringup.md` (v0.4 참조 구현·테스트는 S1 이식 뒤 삭제 — `README.md` "삭제된 참조 구현")
 - 상태 표기: `[확정]` 사용자 결정, `[확정 D-x]` plan 결정 로그의 결정, `[권장]` 설계 권장안, `[TBD-xx]` 미확정(추측 금지, §9 참조), `[논문 외 유도]` 원문에 없는 본 문서의 유도
 
 ### 0.1 개정 이력
@@ -18,7 +18,7 @@
 
 [R3] 식 대조는 v0.2에서 완료했다(L4 §4.1). v0.1이 "T-RO 본문 대조 미완"으로 남겨 둔 항목이다.
 
-**v0.5 주의.** 단계 W 가 끝났으므로 상세 구현은 **[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) 의 결정과 단계(S0~S10)를 따른다.** 설계 문서와 plan 이 충돌하면 plan 이 우선한다. 같은 폴더의 참조 헤더·테스트는 v0.4 검증 산출물이며, 알려진 결함(`README.md`)은 S1 이식 시 고친다.
+**v0.5 주의.** 단계 W 가 끝났으므로 상세 구현은 **[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) 의 결정과 단계(S0~S10)를 따른다.** 설계 문서와 plan 이 충돌하면 plan 이 우선한다. v0.4 참조 헤더·테스트는 S1 에서 이식하며 알려진 결함을 고쳤고, 원본은 삭제됐다 (`README.md` "삭제된 참조 구현").
 
 ---
 
@@ -313,7 +313,7 @@ catching:
 
 ## 7. 이론 ↔ 코드 대응 색인
 
-코드 위치는 D-1 기준이다. 참조 헤더(파일 이름만 적은 것)는 같은 폴더의 v0.4 산출물이며 S1 에서 해당 위치로 이식한다. 아직 없는 위치는 경로 없이 적는다.
+코드 위치는 D-1 기준이다. 참조 헤더(파일 이름만 적은 것)는 v0.4 산출물이며 S1 에서 해당 위치로 이식됐다 (원본 삭제 — `README.md` "삭제된 참조 구현"). 아직 없는 위치는 경로 없이 적는다.
 
 | 이론 항목 | 출처 | 문서 | 코드 위치 |
 |---|---|---|---|

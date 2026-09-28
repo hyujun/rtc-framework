@@ -102,9 +102,9 @@ $$\dot\Phi=A(x(t))\,\Phi,\qquad \Phi(t_0)=I$$
 
 ## 5. C++ 구현
 
-### 5.1 `ball_dynamics.hpp` (참조 구현, 검증 완료)
+### 5.1 `ball_dynamics` (S1.6 이식 완료)
 
-v0.5 에서 코드 복사본을 삭제했다. **SSoT 는 같은 폴더의 `ball_dynamics.hpp` (v0.4)** 다. S1 이식 시 변경:
+v0.5 에서 코드 복사본을 삭제했다. 참조 구현 `ball_dynamics.hpp` (v0.4) 는 S1.6 에서 test fixture `rtc_controllers/test/include/rtc_controllers/testing/catching_ball_fixture.hpp` 로 이식됐고 (지금의 SSoT), 원본은 (삭제됨 — [README](README.md#삭제된-참조-구현)). 이식 시 변경:
 
 - 위치: test fixture 전용 (S1.6). RT·프로덕션 타깃에서 include 하지 않는다
 - 명명: namespace `rtc::catching` 아래 fixture 네임스페이스, 함수 PascalCase (`f`/`jacobian`/`rk4`/`rk4WithStm`/`propagate` → `F`/`Jacobian`/`Rk4`/`Rk4WithStm`/`Propagate`)

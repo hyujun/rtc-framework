@@ -2,8 +2,9 @@
 // (docs/dynamic_catching/L2_prediction.md §9) plus the count / NaN / spacing
 // items of L1 G1-A that belong to the ROS-free core.
 //
-// Ported from the reference docs/dynamic_catching/test_l2.cpp with thresholds
-// unchanged. Two fixture changes, both forced by the port and approved at S1
+// Ported from the reference test_l2.cpp with thresholds unchanged (removed
+// from docs; `git show 482d18b3:docs/dynamic_catching/test_l2.cpp`). Two
+// fixture changes, both forced by the port and approved at S1
 // kick-off (sub-plan F-3):
 //  • the reference built 60 points at 1/60 s; the snapshot holds kCap = 40, so
 //    the fixture is 40 points (horizon 0.65 s) and every in-horizon sweep stops
