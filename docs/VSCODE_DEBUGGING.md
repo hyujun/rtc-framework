@@ -159,7 +159,7 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 ```
 ${workspaceFolder}/../../build/rtc_base/test_seqlock
 ${workspaceFolder}/../../build/rtc_controllers/test_grasp_controller
-${workspaceFolder}/../../build/rtc_tsid/test_tsid_wqp
+${workspaceFolder}/../../build/rtc_tsid/test_tsid_formulations
 ```
 
 전체 테스트 실행은 `Ctrl+Shift+P` → `Run Task` → **`colcon: Test All`** 또는 **`colcon: Test Selected Package`**.

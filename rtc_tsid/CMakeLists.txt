@@ -113,68 +113,75 @@ if(BUILD_TESTING)
         "Path to panda.urdf used by rtc_tsid tests" FORCE)
   endif()
 
-  # One test binary per file: linked to rtc_tsid and given the Panda path
-  # (test/panda_fixture.hpp).
+  # add_tsid_gtest(<target> [<stem>...]): one test binary linked to rtc_tsid and
+  # given the Panda path (test/panda_fixture.hpp). Without stems it builds
+  # test/<target>.cpp; with stems those files share the binary, so the suite
+  # pays one process start and one link instead of one per file. A file that
+  # replaces the global operator new (test/alloc_counter.hpp or an inline copy)
+  # stays in a binary of its own — a replacement is one definition per program.
+  # The timeout is the default 60 s per file, so a shared binary keeps the
+  # budget each file had on its own.
   function(add_tsid_gtest name)
-    ament_add_gtest(${name} test/${name}.cpp)
+    set(_stems ${ARGN})
+    if(NOT _stems)
+      set(_stems ${name})
+    endif()
+    list(LENGTH _stems _n)
+    math(EXPR _timeout "60 * ${_n}")
+    list(TRANSFORM _stems PREPEND test/)
+    list(TRANSFORM _stems APPEND .cpp)
+    ament_add_gtest(${name} ${_stems} TIMEOUT ${_timeout})
     target_link_libraries(${name} rtc_tsid)
     target_compile_definitions(${name} PRIVATE RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
   endfunction()
 
-  add_tsid_gtest(test_qp_solver_wrapper)
+  # QP wrapper, WBC types, the fixed-dim QP refactor (Stage A-5a) and the
+  # activation ramp + √s weight scaling (Stage A-5b).
+  add_tsid_gtest(test_tsid_core
+    test_qp_solver_wrapper
+    test_wbc_types
+    test_fixed_dim_qp
+    test_activation_ramp
+    test_weight_scaling)
 
-  add_tsid_gtest(test_wbc_types)
+  # Task residuals / Jacobians.
+  add_tsid_gtest(test_tsid_tasks
+    test_posture_task
+    test_task_se3_error
+    test_force_task
+    test_com_task
+    test_momentum_task
+    test_contact_consistency_task)
 
-  add_tsid_gtest(test_posture_task)
+  # Equality / inequality constraints.
+  add_tsid_gtest(test_tsid_constraints
+    test_eom_constraint
+    test_contact_constraint
+    test_friction_cone_constraint
+    test_torque_limit_constraint
+    test_joint_limit_constraint)
 
+  # WQP / HQP formulations end to end.
+  add_tsid_gtest(test_tsid_formulations
+    test_tsid_wqp
+    test_tsid_hqp
+    test_tsid_wqp_hqp_compare
+    test_tsid_performance
+    test_phase3_integration)
+
+  # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
+  # (LDLT pinv + P_N) + ObjectWrenchTask, InternalForceTask (rank-based nullity
+  # + P_N reference projection).
+  add_tsid_gtest(test_tsid_grasp
+    test_grasp_matrix
+    test_grasp_cache
+    test_object_wrench_task
+    test_internal_force_task)
+
+  # Own binaries from here on: test_se3_task / test_object_se3_task include
+  # test/alloc_counter.hpp, the three CLIK suites carry an inline replacement,
+  # and test_clik_golden needs its own compile definition.
   add_tsid_gtest(test_se3_task)
-
-  add_tsid_gtest(test_task_se3_error)
-
-  add_tsid_gtest(test_force_task)
-
-  add_tsid_gtest(test_com_task)
-
-  add_tsid_gtest(test_momentum_task)
-
-  add_tsid_gtest(test_contact_consistency_task)
-
-  add_tsid_gtest(test_phase3_integration)
-
-  add_tsid_gtest(test_eom_constraint)
-
-  add_tsid_gtest(test_contact_constraint)
-
-  add_tsid_gtest(test_friction_cone_constraint)
-
-  add_tsid_gtest(test_torque_limit_constraint)
-
-  add_tsid_gtest(test_joint_limit_constraint)
-
-  add_tsid_gtest(test_tsid_wqp)
-
-  add_tsid_gtest(test_tsid_hqp)
-
-  add_tsid_gtest(test_tsid_wqp_hqp_compare)
-
-  add_tsid_gtest(test_tsid_performance)
-
-  # Stage A-5a: fixed-dim QP refactor regression.
-  add_tsid_gtest(test_fixed_dim_qp)
-
-  # Stage A-5b: activation ramp + √s weight scaling.
-  add_tsid_gtest(test_activation_ramp)
-  add_tsid_gtest(test_weight_scaling)
-
-  # Stage B-1: ObjectFrame + Grasp matrix G + ContactManager.
-  add_tsid_gtest(test_grasp_matrix)
-
-  # Stage B-2: GraspCache (LDLT pinv + P_N) + ObjectWrenchTask.
-  add_tsid_gtest(test_grasp_cache)
-  add_tsid_gtest(test_object_wrench_task)
-
-  # Stage B-3: InternalForceTask (rank-based nullity + P_N reference projection).
-  add_tsid_gtest(test_internal_force_task)
 
   # Stage B-4: ObjectSE3Task ((Gᵀ)⁺·J_c kinematic) + ObjectStateProvider.
   add_tsid_gtest(test_object_se3_task)
