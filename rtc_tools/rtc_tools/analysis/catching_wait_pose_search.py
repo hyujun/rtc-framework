@@ -22,8 +22,9 @@ fixed external direction would overstate the lever a tilted pose actually
 gets. The default objective (``--objective dls``) is ``directional_speed_dls``
 — what the runtime's ``DirectionalSpeedMax`` feeds the γ window, so the pose
 that maximises it maximises the planner's own γ_max; ``--objective lp`` ranks
-by ``directional_speed_lp``, the physical ceiling. Both are reported for every
-row, the DLS never above the LP.
+by ``directional_speed_lp``, the physical ceiling (its optimum, solved exactly
+by ``directional_speed_lp_value``). Both are reported for every row, the DLS
+never above the LP.
 
 ``--objective robust`` (S8-I-2) ranks by the **neighbourhood** speed: the 10th
 percentile, over ``--robust-samples`` joint perturbations with
@@ -102,7 +103,7 @@ from rtc_tools.analysis.catch_speed_budget import (
     DEFAULT_CATCH_FRAME,
     ArmKinematics,
     directional_speed_dls,
-    directional_speed_lp,
+    directional_speed_lp_value,
 )
 from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text
 
@@ -272,7 +273,7 @@ def eval_self_consistent(
     axis = arm.frame_axis(q)
     v_hat = -axis
     terms = arm.terms(q, zeros)
-    lp, _ = directional_speed_lp(terms["jp"], terms["jw"], v_hat, qd_plan)
+    lp = directional_speed_lp_value(terms["jp"], terms["jw"], v_hat, qd_plan)
     if lp.limits_invalid or lp.input_invalid or lp.undetermined:
         return math.nan, math.nan, False
     dls = directional_speed_dls(terms["jp"], terms["jw"], v_hat, qd_plan)

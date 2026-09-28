@@ -23,6 +23,7 @@
 // display. What is under test is everything that decides WHAT gets drawn.
 // ─────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
+#include "sim_config_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -41,25 +42,9 @@ namespace {
 // overlaps a static ground box at j1 = 0, so contact is reached by holding the
 // commanded position rather than by staging a grasp.
 MuJoCoSimulator::Config MakeVizConfig(bool visualize, double scale) {
-  MuJoCoSimulator::Config cfg;
-  cfg.model_path = CONTACT_MJCF_PATH;
-  cfg.enable_viewer = false;
-  cfg.sync_timeout_ms = 10.0;
-  cfg.n_substeps = 1;
-
-  JointGroupConfig grp;
-  grp.name = "slider";
-  grp.command_joint_names = {"j1"};
-  grp.state_joint_names = {"j1"};
-  grp.command_topic = "/slider/cmd";
-  grp.state_topic = "/slider/state";
+  auto cfg = test::HeadlessConfig(CONTACT_MJCF_PATH, 10.0);
+  auto grp = test::ContactWrenchGroup("slider", {"j1"}, "/test/contact_wrench");
   grp.sensor_topic = "/slider/sensors";
-  grp.sensor_names = {"auto"};
-  grp.is_robot = true;
-  grp.contact_wrench.enabled = true;
-  grp.contact_wrench.topic_prefix = "/test/contact_wrench";
-  grp.contact_wrench.sensor_name_suffixes = {"_contact"};
-  grp.contact_wrench.reference_site_suffixes = {"_ft_site"};
   grp.contact_wrench.visualize = visualize;
   grp.contact_wrench.visualize_scale = scale;
   cfg.groups.push_back(grp);

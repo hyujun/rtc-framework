@@ -6,6 +6,7 @@
 // AllTimeoutDevicesReceived). These are safety-critical paths (escalation
 // trigger E-8) that previously had 0% coverage.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_test_access.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -22,20 +23,8 @@ namespace {
 
 using namespace std::chrono_literals;
 
-class EstopTest : public ::testing::Test {
+class EstopTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     node_ = std::make_shared<RtControllerNode>("test_estop_node");
 

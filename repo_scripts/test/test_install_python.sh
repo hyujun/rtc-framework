@@ -43,22 +43,8 @@ _RT_LOG_PREFIX="test"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/rt_common.sh"
 
-PASS=0
-FAIL=0
-FAIL_MSGS=()
-
-fail() { FAIL=$((FAIL+1)); FAIL_MSGS+=("$1"); }
-pass() { PASS=$((PASS+1)); }
-
-expect_eq() {
-  # expect_eq "label" expected actual
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then
-    pass
-  else
-    fail "[$label] expected='$expected' actual='$actual'"
-  fi
-}
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/assert.sh"
 
 # 링크 대상과 비교하므로 TMP 자체를 정규화해 둔다 (TMPDIR 이 symlink 아래일 수 있다).
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
@@ -428,12 +414,4 @@ test_get_system_python_ignores_venv_and_path
 test_venv_uses_system_python
 test_append_cmake_python_args
 
-echo
-echo "── test_install_python.sh summary ──"
-echo "  PASS: $PASS"
-echo "  FAIL: $FAIL"
-if (( FAIL > 0 )); then
-  printf '  %s\n' "${FAIL_MSGS[@]}"
-  exit 1
-fi
-exit 0
+summary_and_exit test_install_python.sh

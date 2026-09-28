@@ -6,22 +6,20 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/multibody.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 
 namespace rtc::tsid {
 namespace {
-
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 // ──────────────────────────────────────────────
 // RobotModelInfo
 // ──────────────────────────────────────────────
 class RobotModelInfoTest : public ::testing::Test {
  protected:
-  void SetUp() override { pinocchio::urdf::buildModel(kPandaUrdf, model_); }
+  void SetUp() override { model_ = *test::LoadPandaModel(); }
 
   pinocchio::Model model_;
 };
@@ -219,9 +217,7 @@ TEST(ContactStateTest, InitAndRecompute) {
 class PinocchioCacheTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
+    model_ = test::LoadPandaModel();
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;

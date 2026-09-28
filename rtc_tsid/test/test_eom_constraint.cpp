@@ -5,38 +5,15 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
-
-class EomConstraintTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
-
-    ContactManagerConfig contact_cfg;
-    contact_cfg.max_contacts = 0;
-    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
-
-    contacts_.Init(0);
-  }
-
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
-  PinocchioCache cache_;
-  ContactState contacts_;
-};
+class EomConstraintTest : public test::PandaNoContactTest {};
 
 TEST_F(EomConstraintTest, FixedBaseNoDimension) {
   EomConstraint eom;
@@ -111,7 +88,7 @@ TEST_F(EomConstraintTest, MixedPointSurfaceContactOffsets) {
   Eigen::VectorXd v = Eigen::VectorXd::Zero(fb_info.nv);
   cache.Update(q, v);
 
-  const int n_eq = eom.EqDim(cs);    // 6
+  const int n_eq = eom.EqDim(cs);     // 6
   const int n_vars = fb_info.nv + 9;  // 6 + n_actuated + 3 + 6
   Eigen::MatrixXd A(n_eq, n_vars);
   Eigen::VectorXd b(n_eq);

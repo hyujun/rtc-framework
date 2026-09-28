@@ -1,5 +1,6 @@
 /// Unit tests for GraspControl action node.
 
+#include "bt_tree_fixture.hpp"
 #include "test_helpers.hpp"
 #include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
 
@@ -19,9 +20,7 @@ class GraspControlTest : public RosTestFixture {
   }
 
   BT::Tree CreateTree(const std::string& xml) {
-    const std::string full =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" + xml + R"(</BehaviorTree></root>)";
-    return factory_.createTreeFromText(full);
+    return rtc_bt::test::CreateSnippetTree(factory_, xml);
   }
 
   BT::BehaviorTreeFactory factory_;

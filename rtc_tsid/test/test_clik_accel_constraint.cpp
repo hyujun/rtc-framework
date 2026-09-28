@@ -28,9 +28,9 @@
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 
 // ── TU-local alloc counter (test_clik_options.cpp pattern) ──────────────────
@@ -102,7 +102,6 @@ void operator delete[](void* p, std::size_t) noexcept {
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 constexpr int kNv = 9;  // Panda: 7 arm + 2 finger, nq == nv
 constexpr int kArm = 7;
 constexpr double kDt = 0.002;
@@ -123,9 +122,7 @@ using Mode = ClikReferenceGenerator::AccelConstraint;
 class ClikAccelTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
+    model_ = test::LoadPandaModel();
     ASSERT_EQ(model_->nv, kNv);
     oracle_data_ = std::make_unique<pinocchio::Data>(*model_);
     ContactManagerConfig contact_cfg;

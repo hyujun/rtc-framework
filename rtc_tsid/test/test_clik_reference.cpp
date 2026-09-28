@@ -19,9 +19,9 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "rtc_tsid/kinematics/se3_error.hpp"
 
@@ -99,21 +99,14 @@ void operator delete[](void* p, std::size_t) noexcept {
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
-
 using Vec6 = Eigen::Matrix<double, 6, 1>;
 
 // Panda fixture: 7 revolute arm + 2 prismatic finger joints → nq == nv == 9,
 // which matches the generator's reduced-tree contract.
-class ClikReferenceTest : public ::testing::Test {
+class ClikReferenceTest : public test::PandaTest {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
+    test::PandaTest::SetUp();
     ASSERT_EQ(robot_info_.nq, robot_info_.nv);
     ASSERT_EQ(robot_info_.nv, 9);
 
@@ -149,8 +142,6 @@ class ClikReferenceTest : public ::testing::Test {
     return base.oMf.actInv(tip.oMf);
   }
 
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
   PinocchioCache cache_;
   ContactState contacts_;
   int tcp_idx_{-1};

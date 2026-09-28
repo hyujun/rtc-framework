@@ -23,6 +23,7 @@
 // No registration is added at runtime here, so this file does not pollute the
 // registry and its test order is not load-bearing.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rt_cm_test_access.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
@@ -61,20 +62,8 @@ rclcpp_lifecycle::State StateInactive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "inactive");
 }
 
-class CmIdentifierResolutionTest : public ::testing::Test {
+class CmIdentifierResolutionTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     PipelineTestController::ResetCaptured();
     PipelineStubBackend::ResetCaptured();

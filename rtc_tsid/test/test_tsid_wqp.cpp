@@ -6,9 +6,9 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 #include "rtc_tsid/controller/tsid_controller.hpp"
@@ -19,34 +19,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
-
-class WQPFormulationTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
-
-    contact_cfg_.max_contacts = 0;
-    contact_cfg_.max_contact_vars = 0;
-
-    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
-    contacts_.Init(0);
-
-    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
-  }
-
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
-  ContactManagerConfig contact_cfg_;
-  PinocchioCache cache_;
-  ContactState contacts_;
-  ControlReference ref_;
-};
+class WQPFormulationTest : public test::PandaNoContactTest {};
 
 // ──────────────────────────────────────────────
 // Posture-only WQP (no contacts)

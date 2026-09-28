@@ -68,6 +68,7 @@ using integrated_bringup::testfx::kCatchFrame;
 using integrated_bringup::testfx::kCatchXyz;
 using integrated_bringup::testfx::kDt;
 using integrated_bringup::testfx::MakeConfigWithCatchFrame;
+using integrated_bringup::testfx::SharedCatchFrameBuilder;
 using integrated_bringup::testfx::TrackingYaml;
 
 using namespace std::chrono_literals;
@@ -77,7 +78,7 @@ class CatchingTrackingTest : public ::testing::Test {
   void SetUp() override {
     FakeSteadyClock::Restart();
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_tracking_test");
-    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
+    builder_ = SharedCatchFrameBuilder();
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
     arm_names_ =
         integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names;

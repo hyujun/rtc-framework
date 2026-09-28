@@ -32,6 +32,7 @@
 #pragma GCC diagnostic pop
 
 #include "rtc_mpc/ocp/contact_light_ocp.hpp"
+#include "test_utils/panda_fixture.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -43,7 +44,9 @@
 
 namespace {
 
-constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
+using rtc::mpc::test_utils::kPandaTwoFingerYaml;
+using rtc::mpc::test_utils::kPandaUrdf;
+using rtc::mpc::test_utils::NeutralEeTarget;
 
 constexpr const char* kCostYaml = R"(
 horizon_length: 20
@@ -67,16 +70,8 @@ class ContactLightOCPTest : public ::testing::Test {
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto robot_cfg = YAML::Load(R"(
-end_effector_frame: panda_hand
-base_frame: panda_link0
-contact_frames:
-  - name: panda_leftfinger
-    dim: 3
-  - name: panda_rightfinger
-    dim: 3
-)");
-    ASSERT_EQ(handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, YAML::Load(kPandaTwoFingerYaml)),
+              rtc::mpc::RobotModelInitError::kNoError);
 
     auto cost_node = YAML::Load(kCostYaml);
     ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cost_node, handler_, cfg_),
@@ -90,10 +85,7 @@ contact_frames:
     ctx_.cost_config = cfg_;
     ctx_.contact_plan = {};  // no frames, no phases
 
-    pinocchio::Data pdata(model_);
-    const Eigen::VectorXd q0 = pinocchio::neutral(model_);
-    pinocchio::framesForwardKinematics(model_, pdata, q0);
-    ctx_.ee_target = pdata.oMf[handler_.end_effector_frame_id()];
+    ctx_.ee_target = NeutralEeTarget(model_, handler_);
   }
 
   pinocchio::Model model_;

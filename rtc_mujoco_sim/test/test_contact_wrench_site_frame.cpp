@@ -19,6 +19,7 @@
 // the clock taken out, so both runs land on the same number.
 // ────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
+#include "sim_config_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -49,26 +50,8 @@ namespace {
 
 MuJoCoSimulator::Config MakeConfig(const std::string& reference_frame,
                                    const std::string& site_suffix) {
-  MuJoCoSimulator::Config cfg;
-  cfg.model_path = CONTACT_SITE_FRAME_MJCF_PATH;
-  cfg.enable_viewer = false;
-  cfg.sync_timeout_ms = 10.0;
-  cfg.max_rtf = 0.0;
-  cfg.n_substeps = 1;
-  cfg.viewer_refresh_rate = 60.0;
-
-  JointGroupConfig grp;
-  grp.name = "slider";
-  grp.command_joint_names = {"j1"};
-  grp.state_joint_names = {"j1"};
-  grp.command_topic = "/slider/cmd";
-  grp.state_topic = "/slider/state";
-  grp.sensor_names = {"auto"};
-  grp.is_robot = true;
-  grp.contact_wrench.enabled = true;
-  grp.contact_wrench.topic_prefix = "/test/contact_wrench";
-  grp.contact_wrench.sensor_name_suffixes = {"_contact"};
-  grp.contact_wrench.reference_site_suffixes = {site_suffix};
+  auto cfg = test::HeadlessConfig(CONTACT_SITE_FRAME_MJCF_PATH, 10.0);
+  auto grp = test::ContactWrenchGroup("slider", {"j1"}, "/test/contact_wrench", site_suffix);
   grp.contact_wrench.reference_frame = reference_frame;
   cfg.groups.push_back(grp);
   return cfg;

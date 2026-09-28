@@ -41,7 +41,6 @@ class ProfilerStubController : public rtc::RTControllerInterface {
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "ProfilerStub"; }
 
-
   void set_busy_wait_us(double us) noexcept { busy_wait_us_ = us; }
 
  private:

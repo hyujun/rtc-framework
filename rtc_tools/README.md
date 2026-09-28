@@ -460,7 +460,9 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
 로 조준하기 때문 — 자세가 기울면 조준도 같이 기운다. 목적은 기본 **`--objective dls`** =
 `directional_speed_dls` (런타임 `DirectionalSpeedMax` 가 γ 창에 넣는 값 — 이것을 최대화하면 계획기 자신의
 γ_max 가 최대), `--objective lp` 면 `directional_speed_lp` (LP 물리 상한). 두 값은 행마다 같이 내고 DLS 는
-LP 를 넘지 않는다.
+LP 를 넘지 않는다. 탐색은 LP 의 **값만** `directional_speed_lp_value` 로 구한다 — 5행 `[J_p; J_w]` 가 full
+rank 이고 여유 관절이 1 개 이하면 영공간 1차원 위의 구간선형 최소화로 정확히 풀고 (6 축에서 HiGHS 호출보다 약 14 배 빠름),
+그 밖 (7 축·rank 부족) 은 LP 로 넘긴다.
 
 **`--objective robust` (S8-I-2).** 한 점의 정적 DLS 최대값은 지렛대가 아니었다 — S8-I 의 최적점은 `jw` 특이점
 옆의 바늘 봉우리 (|Δq|∞ 0.05 rad 섭동에 DLS 절반) 였고, 계획기가 실제로 가는 IK 포구 자세는 0.3 rad 떨어져
@@ -699,7 +701,8 @@ ros2 run rtc_tools catch_speed_budget \
 - **자체 검증 (fail-closed).** 모든 수락 q\* 에서 catch frame FK 가 `p_model` 과
   `--fk-tolerance-m` (기본 2.5 mm = judge `eps_pos` + 여유) 안에 들어와야 한다. 벗어나면 관절 순서·
   frame·모델 중 하나가 judge 와 다른 것이므로 **보고하지 않고 종료**한다. 최소노름 속력이 LP 를 넘어도 종료
-- 테스트 `test/test_catch_speed_budget.py` (23 케이스): 2-관절 LP 닫힌해, LP ≥ 최소노름 (6·7 축),
+- 테스트 `test/test_catch_speed_budget.py` (26 케이스): 2-관절 LP 닫힌해, LP ≥ 최소노름 (6·7 축),
+  LP 값 fast path = LP 최적값 (5·6·7 축, rank 부족 포함, fast path 사용 여부까지),
   투영 분자, 한계 무효 플래그, 속력 해의 유한차분 FK 대조 (접근축 고정 포함), **프레임 비대칭**
   (base 가 모델 root 에서 반 바퀴 돈 fixture), **관절 이름 순서 ≠ 모델 순서**, 가속 LP 의 RNEA·2차 FK
   재대입 (한계가 어딘가에서 tight), 회전자 관성 효과, 중력만으로 한계 초과 시 NaN, stroke·ramp 닫힌해,

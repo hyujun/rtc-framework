@@ -21,6 +21,7 @@
 #pragma GCC diagnostic pop
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
+#include "test_utils/panda_fixture.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -28,7 +29,7 @@
 
 namespace {
 
-constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
+using rtc::mpc::test_utils::kPandaUrdf;
 
 class RobotModelHandlerTest : public ::testing::Test {
  protected:

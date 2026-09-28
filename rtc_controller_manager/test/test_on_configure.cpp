@@ -14,6 +14,7 @@
 // uses the repo-vendored panda model via the installed robot_descriptions
 // share dir (ament runtime lookup, ARCH-5 compliant — see <test_depend>).
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_test_access.hpp"
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -81,20 +82,8 @@ rclcpp_lifecycle::State StateActive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "active");
 }
 
-class OnConfigureTest : public ::testing::Test {
+class OnConfigureTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     OnConfigureTestController::fail_load_config.store(false, std::memory_order_relaxed);
   }

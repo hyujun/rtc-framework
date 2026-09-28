@@ -5,9 +5,9 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/contact/contact_manager.hpp"
 #include "rtc_tsid/types/object_frame.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
@@ -17,8 +17,6 @@
 
 namespace rtc::tsid {
 namespace {
-
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 // Cross-product / skew helper for hand-rolled reference G computation.
 Eigen::Matrix3d Skew(const Eigen::Vector3d& v) {
@@ -48,16 +46,10 @@ std::vector<std::string> PickFrames(const pinocchio::Model& model,
   return out;
 }
 
-class GraspMatrixTest : public ::testing::Test {
+class GraspMatrixTest : public test::PandaTest {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
-
+    test::PandaTest::SetUp();
     q_ = pinocchio::neutral(*model_);
     v_ = Eigen::VectorXd::Zero(robot_info_.nv);
   }
@@ -91,8 +83,6 @@ class GraspMatrixTest : public ::testing::Test {
     mgr_.Init(contact_cfg_, robot_info_.nv);
   }
 
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
   ContactManagerConfig contact_cfg_;
   PinocchioCache cache_;
   ContactState contacts_;

@@ -28,6 +28,7 @@
 // bottom go one step further and run on_configure on a real LifecycleNode. Only
 // those need DDS, which is why this target claims the package ROS_DOMAIN_ID.
 
+#include "csv_log_fixture.hpp"
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
@@ -149,84 +150,9 @@ TEST(MomentumObserverBuild, ExpandsGainsAndRejectsAWrongLengthList) {
 
 // ── The CSV surface ──────────────────────────────────────────────────────────
 
-class ScopedSessionDir {
- public:
-  ScopedSessionDir() {
-    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
-      had_prev_ = true;
-      prev_value_ = prev;
-    }
-    auto base = fs::temp_directory_path() / "rtc_momentum_observer_test";
-    fs::create_directories(base);
-    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFU));
-    fs::remove_all(dir_);
-    fs::create_directories(dir_);
-    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
-  }
-
-  ~ScopedSessionDir() {
-    if (had_prev_) {
-      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
-    } else {
-      ::unsetenv("RTC_SESSION_DIR");
-    }
-    std::error_code ec;
-    fs::remove_all(dir_, ec);
-  }
-
-  ScopedSessionDir(const ScopedSessionDir&) = delete;
-  ScopedSessionDir& operator=(const ScopedSessionDir&) = delete;
-
- private:
-  fs::path dir_;
-  bool had_prev_{false};
-  std::string prev_value_;
-};
-
-std::vector<std::string> SplitCsv(const std::string& line) {
-  std::vector<std::string> out;
-  std::string cur;
-  for (char c : line) {
-    if (c == ',') {
-      out.push_back(cur);
-      cur.clear();
-    } else {
-      cur.push_back(c);
-    }
-  }
-  out.push_back(cur);
-  return out;
-}
-
-struct CsvFile {
-  std::vector<std::string> header;
-  std::vector<std::vector<std::string>> rows;
-
-  [[nodiscard]] std::size_t Column(const std::string& name) const {
-    for (std::size_t i = 0; i < header.size(); ++i) {
-      if (header[i] == name) {
-        return i;
-      }
-    }
-    return header.size();
-  }
-};
-
-CsvFile ReadCsv(const fs::path& path) {
-  CsvFile out;
-  std::ifstream in(path);
-  std::string line;
-  if (!std::getline(in, line)) {
-    return out;
-  }
-  out.header = SplitCsv(line);
-  while (std::getline(in, line)) {
-    if (!line.empty()) {
-      out.rows.push_back(SplitCsv(line));
-    }
-  }
-  return out;
-}
+using integrated_bringup::testfx::CsvFile;
+using integrated_bringup::testfx::ReadCsv;
+using integrated_bringup::testfx::ScopedSessionDir;
 
 /// g(q) for the arm sub-model, in the arm DEVICE order — what a resting arm's
 /// joint torque sensor reads while holding this posture with nothing in its
@@ -521,7 +447,7 @@ std::vector<double> ResidualRow(const CsvFile& csv, std::size_t row) {
 /// tick that freezes rather than zeroes.
 template <class Ctrl>
 void CheckEmbedding(const std::string& yaml, const char* who) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"momentum_observer"};
   rtc::ControllerLogSet log_set{std::string("momentum_embed_") + who};
 
   auto ctrl = BringUp<Ctrl>(yaml + kMomentumBlock);
@@ -591,7 +517,7 @@ TEST(MomentumObserverEmbedding, ComplianceControllerLogsAConvergedResidualAndHol
 // controller so the tick's gate call is the one under test, and observed on the
 // CSV so a deleted gate shows up as valid=1 rows instead of nothing.
 TEST(MomentumObserverEmbedding, AHoledEffortLaneHoldsTheResidualThroughTheController) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"momentum_observer"};
   rtc::ControllerLogSet log_set{"momentum_embed_gate"};
 
   auto ctrl =
@@ -651,7 +577,7 @@ TEST(MomentumObserverEmbedding, AHoledEffortLaneHoldsTheResidualThroughTheContro
 // asked with the SAME enable gate on_configure uses, so a block-less variant
 // that somehow registered would show up here.
 TEST(MomentumObserverEmbedding, NoBlockMeansNoObserverAndNoFile) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"momentum_observer"};
   rtc::ControllerLogSet log_set{"momentum_embed_off"};
 
   auto ctrl = BringUp<integrated_bringup::DemoJointController>(kJointYaml);

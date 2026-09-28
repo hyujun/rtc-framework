@@ -74,6 +74,7 @@ using integrated_bringup::testfx::kUr5eArmDof;
 using integrated_bringup::testfx::kUr5eHome;
 using integrated_bringup::testfx::MakeConfigWithCatchFrame;
 using integrated_bringup::testfx::ReferenceGains;
+using integrated_bringup::testfx::SharedCatchFrameBuilder;
 using integrated_bringup::testfx::TrackingYaml;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
@@ -135,7 +136,7 @@ class ClikSweepTest : public ::testing::Test {
     // measurement, not this clock.
     FakeSteadyClock::Restart();
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_clik_sweep");
-    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
+    builder_ = SharedCatchFrameBuilder();
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
     arm_names_ =
         integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names;

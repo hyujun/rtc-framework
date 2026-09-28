@@ -113,130 +113,91 @@ if(BUILD_TESTING)
         "Path to panda.urdf used by rtc_tsid tests" FORCE)
   endif()
 
-  ament_add_gtest(test_qp_solver_wrapper test/test_qp_solver_wrapper.cpp)
-  target_link_libraries(test_qp_solver_wrapper rtc_tsid)
+  # One test binary per file: linked to rtc_tsid and given the Panda path
+  # (test/panda_fixture.hpp).
+  function(add_tsid_gtest name)
+    ament_add_gtest(${name} test/${name}.cpp)
+    target_link_libraries(${name} rtc_tsid)
+    target_compile_definitions(${name} PRIVATE RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
+  endfunction()
 
-  ament_add_gtest(test_wbc_types test/test_wbc_types.cpp)
-  target_link_libraries(test_wbc_types rtc_tsid)
+  add_tsid_gtest(test_qp_solver_wrapper)
 
-  ament_add_gtest(test_posture_task test/test_posture_task.cpp)
-  target_link_libraries(test_posture_task rtc_tsid)
+  add_tsid_gtest(test_wbc_types)
 
-  ament_add_gtest(test_se3_task test/test_se3_task.cpp)
-  target_link_libraries(test_se3_task rtc_tsid)
+  add_tsid_gtest(test_posture_task)
 
-  ament_add_gtest(test_task_se3_error test/test_task_se3_error.cpp)
-  target_link_libraries(test_task_se3_error rtc_tsid)
+  add_tsid_gtest(test_se3_task)
 
-  ament_add_gtest(test_force_task test/test_force_task.cpp)
-  target_link_libraries(test_force_task rtc_tsid)
+  add_tsid_gtest(test_task_se3_error)
 
-  ament_add_gtest(test_com_task test/test_com_task.cpp)
-  target_link_libraries(test_com_task rtc_tsid)
+  add_tsid_gtest(test_force_task)
 
-  ament_add_gtest(test_momentum_task test/test_momentum_task.cpp)
-  target_link_libraries(test_momentum_task rtc_tsid)
+  add_tsid_gtest(test_com_task)
 
-  ament_add_gtest(test_contact_consistency_task test/test_contact_consistency_task.cpp)
-  target_link_libraries(test_contact_consistency_task rtc_tsid)
+  add_tsid_gtest(test_momentum_task)
 
-  ament_add_gtest(test_phase3_integration test/test_phase3_integration.cpp)
-  target_link_libraries(test_phase3_integration rtc_tsid)
+  add_tsid_gtest(test_contact_consistency_task)
 
-  ament_add_gtest(test_eom_constraint test/test_eom_constraint.cpp)
-  target_link_libraries(test_eom_constraint rtc_tsid)
+  add_tsid_gtest(test_phase3_integration)
 
-  ament_add_gtest(test_contact_constraint test/test_contact_constraint.cpp)
-  target_link_libraries(test_contact_constraint rtc_tsid)
+  add_tsid_gtest(test_eom_constraint)
 
-  ament_add_gtest(test_friction_cone_constraint test/test_friction_cone_constraint.cpp)
-  target_link_libraries(test_friction_cone_constraint rtc_tsid)
+  add_tsid_gtest(test_contact_constraint)
 
-  ament_add_gtest(test_torque_limit_constraint test/test_torque_limit_constraint.cpp)
-  target_link_libraries(test_torque_limit_constraint rtc_tsid)
+  add_tsid_gtest(test_friction_cone_constraint)
 
-  ament_add_gtest(test_joint_limit_constraint test/test_joint_limit_constraint.cpp)
-  target_link_libraries(test_joint_limit_constraint rtc_tsid)
+  add_tsid_gtest(test_torque_limit_constraint)
 
-  ament_add_gtest(test_tsid_wqp test/test_tsid_wqp.cpp)
-  target_link_libraries(test_tsid_wqp rtc_tsid)
+  add_tsid_gtest(test_joint_limit_constraint)
 
-  ament_add_gtest(test_tsid_hqp test/test_tsid_hqp.cpp)
-  target_link_libraries(test_tsid_hqp rtc_tsid)
+  add_tsid_gtest(test_tsid_wqp)
 
-  ament_add_gtest(test_tsid_wqp_hqp_compare test/test_tsid_wqp_hqp_compare.cpp)
-  target_link_libraries(test_tsid_wqp_hqp_compare rtc_tsid)
+  add_tsid_gtest(test_tsid_hqp)
 
-  ament_add_gtest(test_tsid_performance test/test_tsid_performance.cpp)
-  target_link_libraries(test_tsid_performance rtc_tsid)
+  add_tsid_gtest(test_tsid_wqp_hqp_compare)
+
+  add_tsid_gtest(test_tsid_performance)
 
   # Stage A-5a: fixed-dim QP refactor regression.
-  ament_add_gtest(test_fixed_dim_qp test/test_fixed_dim_qp.cpp)
-  target_link_libraries(test_fixed_dim_qp rtc_tsid)
+  add_tsid_gtest(test_fixed_dim_qp)
 
   # Stage A-5b: activation ramp + √s weight scaling.
-  ament_add_gtest(test_activation_ramp test/test_activation_ramp.cpp)
-  target_link_libraries(test_activation_ramp rtc_tsid)
-  ament_add_gtest(test_weight_scaling test/test_weight_scaling.cpp)
-  target_link_libraries(test_weight_scaling rtc_tsid)
+  add_tsid_gtest(test_activation_ramp)
+  add_tsid_gtest(test_weight_scaling)
 
   # Stage B-1: ObjectFrame + Grasp matrix G + ContactManager.
-  ament_add_gtest(test_grasp_matrix test/test_grasp_matrix.cpp)
-  target_link_libraries(test_grasp_matrix rtc_tsid)
+  add_tsid_gtest(test_grasp_matrix)
 
   # Stage B-2: GraspCache (LDLT pinv + P_N) + ObjectWrenchTask.
-  ament_add_gtest(test_grasp_cache test/test_grasp_cache.cpp)
-  target_link_libraries(test_grasp_cache rtc_tsid)
-  ament_add_gtest(test_object_wrench_task test/test_object_wrench_task.cpp)
-  target_link_libraries(test_object_wrench_task rtc_tsid)
+  add_tsid_gtest(test_grasp_cache)
+  add_tsid_gtest(test_object_wrench_task)
 
   # Stage B-3: InternalForceTask (rank-based nullity + P_N reference projection).
-  ament_add_gtest(test_internal_force_task test/test_internal_force_task.cpp)
-  target_link_libraries(test_internal_force_task rtc_tsid)
+  add_tsid_gtest(test_internal_force_task)
 
   # Stage B-4: ObjectSE3Task ((Gᵀ)⁺·J_c kinematic) + ObjectStateProvider.
-  ament_add_gtest(test_object_se3_task test/test_object_se3_task.cpp)
-  target_link_libraries(test_object_se3_task rtc_tsid)
+  add_tsid_gtest(test_object_se3_task)
 
   # Stage C-1: ClikReferenceGenerator (velocity-level CLIK reference).
-  ament_add_gtest(test_clik_reference test/test_clik_reference.cpp)
-  target_link_libraries(test_clik_reference rtc_tsid)
+  add_tsid_gtest(test_clik_reference)
 
   # dynamic_catching S2.2a: golden-vector regression of the default CLIK path.
   # Bit-exact only in the configuration the table was recorded in (Release, no
   # sanitizer); other builds compare with a relative tolerance (see the test
   # file header).
-  ament_add_gtest(test_clik_golden test/test_clik_golden.cpp)
-  target_link_libraries(test_clik_golden rtc_tsid)
+  add_tsid_gtest(test_clik_golden)
   target_include_directories(test_clik_golden PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
   if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT CMAKE_CXX_FLAGS MATCHES "sanitize")
     target_compile_definitions(test_clik_golden PRIVATE RTC_CLIK_GOLDEN_EXACT=1)
   endif()
 
   # dynamic_catching S2.2b: CLIK options (each defaults off).
-  ament_add_gtest(test_clik_options test/test_clik_options.cpp)
-  target_link_libraries(test_clik_options rtc_tsid)
+  add_tsid_gtest(test_clik_options)
 
   # dynamic_catching decision K (S6-C2): kinematic / dynamic acceleration rows,
   # judged against pinocchio's RNEA / classical acceleration on a fresh Data.
-  ament_add_gtest(test_clik_accel_constraint test/test_clik_accel_constraint.cpp)
-  target_link_libraries(test_clik_accel_constraint rtc_tsid)
-
-  # Apply PANDA_URDF_PATH macro to every test target above.
-  foreach(_t
-      test_qp_solver_wrapper test_wbc_types test_posture_task test_se3_task
-      test_force_task test_com_task test_momentum_task test_contact_consistency_task
-      test_phase3_integration
-      test_eom_constraint test_contact_constraint test_friction_cone_constraint
-      test_torque_limit_constraint test_joint_limit_constraint test_tsid_wqp
-      test_tsid_hqp test_tsid_wqp_hqp_compare test_tsid_performance
-      test_fixed_dim_qp test_activation_ramp test_weight_scaling
-      test_grasp_matrix test_grasp_cache test_object_wrench_task
-      test_internal_force_task test_object_se3_task test_clik_reference
-      test_clik_golden test_clik_options test_clik_accel_constraint)
-    target_compile_definitions(${_t} PRIVATE
-        RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
-  endforeach()
+  add_tsid_gtest(test_clik_accel_constraint)
 endif()
 
 ament_package()

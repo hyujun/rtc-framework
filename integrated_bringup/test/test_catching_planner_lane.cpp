@@ -55,6 +55,7 @@ using integrated_bringup::testfx::kP1bHandDof;
 using integrated_bringup::testfx::kUr5eArmDof;
 using integrated_bringup::testfx::kUr5eHome;
 using integrated_bringup::testfx::MakeConfigWithCatchFrame;
+using integrated_bringup::testfx::SharedCatchFrameBuilder;
 using integrated_bringup::testfx::TrackingYaml;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
@@ -286,7 +287,7 @@ class CatchingPlanLaneTest : public ::testing::Test {
   void SetUp() override {
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_plan_lane_" +
                                                               std::to_string(++counter_));
-    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
+    builder_ = SharedCatchFrameBuilder();
     topic_ = "/test_catching_plan_lane/prediction_" + std::to_string(counter_);
   }
 

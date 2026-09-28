@@ -16,6 +16,7 @@
 // robot_descriptions share dir (ament runtime lookup, ARCH-5 compliant —
 // configure-time fixture, same as test_on_configure.cpp).
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rt_cm_test_access.hpp"
 
@@ -47,20 +48,8 @@ rclcpp_lifecycle::State StateInactive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "inactive");
 }
 
-class CmConfigPipelineTest : public ::testing::Test {
+class CmConfigPipelineTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override { PipelineTestController::ResetCaptured(); }
 
   // Node with the test_fixtures config variant active and low-side-effect

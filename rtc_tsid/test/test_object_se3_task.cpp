@@ -5,10 +5,10 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
 #include "alloc_counter.hpp"
+#include "panda_fixture.hpp"
 #include "rtc_tsid/contact/contact_manager.hpp"
 #include "rtc_tsid/contact/grasp_cache.hpp"
 #include "rtc_tsid/contact/object_state_provider.hpp"
@@ -22,18 +22,10 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
-
-class ObjectSE3TaskTest : public ::testing::Test {
+class ObjectSE3TaskTest : public test::PandaTest {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
-
+    test::PandaTest::SetUp();
     q_ = pinocchio::neutral(*model_);
     v_ = Eigen::VectorXd::Zero(robot_info_.nv);
 
@@ -89,8 +81,6 @@ class ObjectSE3TaskTest : public ::testing::Test {
     task.SetObjectStateProvider(&provider_);
   }
 
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
   ContactManagerConfig contact_cfg_;
   PinocchioCache cache_;
   ContactState contacts_;

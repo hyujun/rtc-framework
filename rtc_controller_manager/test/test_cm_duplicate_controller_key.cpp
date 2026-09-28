@@ -17,6 +17,7 @@
 // is still pristine first, and fails naming the real cause instead of looking
 // like a scan bug.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
@@ -48,20 +49,8 @@ rclcpp_lifecycle::State StateInactive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "inactive");
 }
 
-class CmDuplicateKeyTest : public ::testing::Test {
+class CmDuplicateKeyTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override { PipelineTestController::ResetCaptured(); }
 
   static std::shared_ptr<RtControllerNode> MakeNode(const std::string& name) {

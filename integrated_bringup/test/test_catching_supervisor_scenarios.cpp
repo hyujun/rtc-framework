@@ -68,6 +68,7 @@ using integrated_bringup::testfx::kP1bHandDof;
 using integrated_bringup::testfx::kUr5eArmDof;
 using integrated_bringup::testfx::kUr5eHome;
 using integrated_bringup::testfx::MakeConfigWithCatchFrame;
+using integrated_bringup::testfx::SharedCatchFrameBuilder;
 using integrated_bringup::testfx::TrackingYaml;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
@@ -257,7 +258,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     // field; from here on only Tick() moves it.
     FakeSteadyClock::Restart();
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_supervisor_scenarios");
-    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
+    builder_ = SharedCatchFrameBuilder();
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
     arm_names_ =
         integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names;

@@ -41,6 +41,7 @@
 // test_pull_estimator_known_wrench.cpp, for what that consumer does with it.
 // ─────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
+#include "sim_config_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -91,28 +92,9 @@ constexpr double kStableForceN = 5.0e-2;
 constexpr auto kStableWindow = std::chrono::milliseconds(150);
 
 MuJoCoSimulator::Config MakePinchConfig() {
-  MuJoCoSimulator::Config cfg;
-  cfg.model_path = PINCH_MJCF_PATH;
-  cfg.enable_viewer = false;
-  cfg.sync_timeout_ms = 1.0;
-  cfg.max_rtf = 0.0;
-  cfg.n_substeps = 1;
-  cfg.viewer_refresh_rate = 60.0;
-  cfg.use_yaml_servo_gains = false;
-
-  JointGroupConfig grp;
-  grp.name = "pinch";
-  grp.command_joint_names = {"ja"};
-  grp.state_joint_names = {"ja"};
-  grp.command_topic = "/pinch/cmd";
-  grp.state_topic = "/pinch/state";
+  auto cfg = test::HeadlessConfig(PINCH_MJCF_PATH, 1.0);
+  auto grp = test::ContactWrenchGroup("pinch", {"ja"}, "/test/pinch_contact");
   grp.sensor_topic = "/pinch/sensors";
-  grp.sensor_names = {"auto"};
-  grp.is_robot = true;
-  grp.contact_wrench.enabled = true;
-  grp.contact_wrench.topic_prefix = "/test/pinch_contact";
-  grp.contact_wrench.sensor_name_suffixes = {"_contact"};
-  grp.contact_wrench.reference_site_suffixes = {"_ft_site"};
   cfg.groups.push_back(grp);
   return cfg;
 }

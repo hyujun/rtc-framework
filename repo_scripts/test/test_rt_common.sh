@@ -17,22 +17,8 @@ _RT_LOG_PREFIX="test"
 # shellcheck disable=SC1091
 source "${LIB_DIR}/rt_common.sh"
 
-PASS=0
-FAIL=0
-FAIL_MSGS=()
-
-fail() { FAIL=$((FAIL+1)); FAIL_MSGS+=("$1"); }
-pass() { PASS=$((PASS+1)); }
-
-expect_eq() {
-  # expect_eq "label" expected actual
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then
-    pass
-  else
-    fail "[$label] expected='$expected' actual='$actual'"
-  fi
-}
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/assert.sh"
 
 # ── Mock sysfs builder ──────────────────────────────────────────────────────
 # Creates $ROOT/devices/system/cpu/cpuN/topology/{physical_package_id,core_id}
@@ -2297,12 +2283,4 @@ test_with_temporary_disable_restores_on_success
 test_with_temporary_disable_restores_on_failure
 test_with_temporary_disable_missing_hook
 
-echo
-echo "── test_rt_common.sh summary ──"
-echo "  PASS: $PASS"
-echo "  FAIL: $FAIL"
-if (( FAIL > 0 )); then
-  printf '  %s\n' "${FAIL_MSGS[@]}"
-  exit 1
-fi
-exit 0
+summary_and_exit test_rt_common.sh

@@ -7,6 +7,7 @@
 // arm_handle_ FK is guarded (mirrors DemoWbcController) so only the
 // grasp/sensor logic runs. arm/task-space output is not asserted here.
 
+#include "csv_log_fixture.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
@@ -1336,7 +1337,6 @@ TEST(JointForcePiFeedTest, TheTwoBanksHaveIndependentCutoffs) {
 
 }  // namespace
 
-
 // ── grasp_diag.csv (#428) ───────────────────────────────────────────────────
 //
 // This channel exists because #426 had to measure the force noise sigma of the
@@ -1351,73 +1351,10 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// RTC_SESSION_DIR redirect, mirroring rtc_controller_interface's own log tests.
-class ScopedSessionDir {
- public:
-  ScopedSessionDir() {
-    if (const char* prev = std::getenv("RTC_SESSION_DIR")) {
-      had_prev_ = true;
-      prev_value_ = prev;
-    }
-    auto base = fs::temp_directory_path() / "rtc_grasp_diag_test";
-    fs::create_directories(base);
-    dir_ = base / ("s_" + std::to_string(reinterpret_cast<std::uintptr_t>(this) & 0xFFFFFFFFU));
-    fs::create_directories(dir_);
-    ::setenv("RTC_SESSION_DIR", dir_.c_str(), 1);
-  }
-  ~ScopedSessionDir() {
-    if (had_prev_) {
-      ::setenv("RTC_SESSION_DIR", prev_value_.c_str(), 1);
-    } else {
-      ::unsetenv("RTC_SESSION_DIR");
-    }
-    std::error_code ec;
-    fs::remove_all(dir_, ec);
-  }
-  ScopedSessionDir(const ScopedSessionDir&) = delete;
-  ScopedSessionDir& operator=(const ScopedSessionDir&) = delete;
-
- private:
-  fs::path dir_;
-  bool had_prev_{false};
-  std::string prev_value_;
-};
-
-std::vector<std::string> ReadLines(const fs::path& p) {
-  std::vector<std::string> out;
-  std::ifstream in(p);
-  std::string line;
-  while (std::getline(in, line)) {
-    if (!line.empty()) {
-      out.push_back(line);
-    }
-  }
-  return out;
-}
-
-std::vector<std::string> SplitCsv(const std::string& line) {
-  std::vector<std::string> out;
-  std::string cur;
-  for (char c : line) {
-    if (c == ',') {
-      out.push_back(cur);
-      cur.clear();
-    } else {
-      cur.push_back(c);
-    }
-  }
-  out.push_back(cur);
-  return out;
-}
-
-std::size_t ColumnIndex(const std::vector<std::string>& header, const std::string& name) {
-  for (std::size_t i = 0; i < header.size(); ++i) {
-    if (header[i] == name) {
-      return i;
-    }
-  }
-  return header.size();
-}
+using integrated_bringup::testfx::ColumnIndex;
+using integrated_bringup::testfx::ReadLines;
+using integrated_bringup::testfx::ScopedSessionDir;
+using integrated_bringup::testfx::SplitCsv;
 
 // Bind a real grasp_diag channel to the controller so the per-tick push in
 // Compute() reaches a file. Registration goes through RegisterControllerLogs,
@@ -1425,7 +1362,7 @@ std::size_t ColumnIndex(const std::vector<std::string>& header, const std::strin
 // on the tested path too.
 class JointGraspDiagLogTest : public JointForcePiBuiltTest {
  protected:
-  ScopedSessionDir session_;
+  ScopedSessionDir session_{"grasp_diag"};
   rtc::ControllerLogSet log_set_{"joint_diag_test"};
   std::vector<std::string> finger_names_{"thumb", "index", "middle"};
 
@@ -1435,9 +1372,8 @@ class JointGraspDiagLogTest : public JointForcePiBuiltTest {
   };
 
   void BindGraspDiag(bool enabled) {
-    const std::vector<Entry> entries{
-        {std::string(integrated_bringup::kGraspDiagLogMsgType),
-         std::string(integrated_bringup::kGraspDiagLogInstance)}};
+    const std::vector<Entry> entries{{std::string(integrated_bringup::kGraspDiagLogMsgType),
+                                      std::string(integrated_bringup::kGraspDiagLogInstance)}};
     integrated_bringup::LogRegistrationContext ctx{
         .logger = rclcpp::get_logger("grasp_diag_test"),
         .log_set = log_set_,
@@ -1474,21 +1410,21 @@ class JointGraspDiagLogTest : public JointForcePiBuiltTest {
 // logging_data/260808_2314, where a 59-column header sat over 3-column rows for
 // 138,248 rows with no error and no warning.
 TEST(DeviceSensorLogRegistration, HeaderAndRowWidthsAgreeWhenDeviceReportsNoFingertips) {
-  ScopedSessionDir session;
+  ScopedSessionDir session{"grasp_diag"};
   rtc::ControllerLogSet log_set{"sensor_width_test"};
 
   struct Entry {
     std::string msg_type;
     std::string instance;
   };
+
   const std::string instance = "p1b_sensor";
   const std::vector<Entry> entries{{"rtc_msgs/DeviceSensorLog", instance}};
 
   integrated_bringup::LogRegistrationContext ctx{
       .logger = rclcpp::get_logger("sensor_width_test"),
       .log_set = log_set,
-      .sensor_logs = {{instance,
-                       {{"thumb", "index", "middle", "ring"}, /*values_per_group=*/0}}},
+      .sensor_logs = {{instance, {{"thumb", "index", "middle", "ring"}, /*values_per_group=*/0}}},
   };
   auto reg = integrated_bringup::RegisterControllerLogs(entries, ctx);
   ASSERT_EQ(reg.status, integrated_bringup::LogRegistrationStatus::kSuccess);
@@ -1608,7 +1544,8 @@ TEST_F(JointGraspDiagLogTest, EstopTickIsAZeroedValidZeroRowNotAGap) {
   const auto prev = SplitCsv(lines[lines.size() - 2U]);
   EXPECT_EQ(std::stoull(last[tick_col]), tick) << "the E-STOP tick left no row at all";
   EXPECT_EQ(last[valid_col], "0");
-  EXPECT_EQ(prev[valid_col], "1") << "the preceding servo tick must be valid, or this proves nothing";
+  EXPECT_EQ(prev[valid_col], "1")
+      << "the preceding servo tick must be valid, or this proves nothing";
   EXPECT_FLOAT_EQ(std::stof(last[k_col]), 0.0F) << "estimate frozen instead of zeroed";
   EXPECT_GT(std::stof(prev[k_col]), 0.0F) << "the previous row must carry the live estimate";
 }

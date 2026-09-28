@@ -19,6 +19,7 @@
 // write can still land in the two instructions between the reset and the
 // close. Closing that would need executor quiescence, which CM cannot request.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_test_access.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
@@ -73,20 +74,8 @@ class TeardownProbeBackend : public DeviceBackend {
   Observation& out_;
 };
 
-class EventfdTeardownOrderTest : public ::testing::Test {
+class EventfdTeardownOrderTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     node_ = std::make_shared<RtControllerNode>("test_eventfd_teardown_order_node");
     // Real descriptors, opened the way on_configure opens them, so close()

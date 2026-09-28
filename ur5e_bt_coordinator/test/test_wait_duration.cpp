@@ -1,5 +1,6 @@
 /// Unit tests for WaitDuration action node.
 
+#include "bt_tree_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
@@ -15,9 +16,7 @@ class WaitDurationTest : public ::testing::Test {
   void SetUp() override { factory_.registerNodeType<WaitDuration>("WaitDuration"); }
 
   BT::Tree CreateTree(const std::string& xml) {
-    const std::string full_xml =
-        R"(<root BTCPP_format="4"><BehaviorTree ID="Test">)" + xml + R"(</BehaviorTree></root>)";
-    return factory_.createTreeFromText(full_xml);
+    return rtc_bt::test::CreateSnippetTree(factory_, xml);
   }
 
   BT::BehaviorTreeFactory factory_;

@@ -15,6 +15,7 @@
 // first, polluting case last — and the clean case asserts a pristine registry
 // so a reordering fails naming itself rather than looking like a guard bug.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
@@ -46,20 +47,8 @@ rclcpp_lifecycle::State StateInactive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "inactive");
 }
 
-class CmNameCollisionTest : public ::testing::Test {
+class CmNameCollisionTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     PipelineTestController::ResetCaptured();
     PipelineStubBackend::ResetCaptured();

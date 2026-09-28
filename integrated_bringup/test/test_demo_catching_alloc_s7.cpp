@@ -18,6 +18,11 @@
 // The predictions are published OUTSIDE the gate — DDS allocates on publish
 // (a known, accepted RT exception that is not this tick's) — and so is the
 // executor spin that delivers them.
+//
+// TIME IS STEPPED where the case allows: the controller reads
+// FakeSteadyClock (SetClockForTesting), advanced one control period per tick
+// instead of slept through. The fault-latch case keeps the real steady clock,
+// so the production clock read stays inside a gated Compute().
 
 #include "catching_cloud_fixture.hpp"
 #include "catching_tracking_fixture.hpp"
@@ -47,11 +52,13 @@ namespace {
 
 using integrated_bringup::DemoCatchingController;
 using integrated_bringup::testfx::CatchFrameOracle;
+using integrated_bringup::testfx::FakeSteadyClock;
 using integrated_bringup::testfx::kDt;
 using integrated_bringup::testfx::kP1bHandDof;
 using integrated_bringup::testfx::kUr5eArmDof;
 using integrated_bringup::testfx::kUr5eHome;
 using integrated_bringup::testfx::MakeConfigWithCatchFrame;
+using integrated_bringup::testfx::SharedCatchFrameBuilder;
 using integrated_bringup::testfx::TrackingYaml;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
@@ -70,8 +77,9 @@ TEST(DemoCatchingAllocS7, TheGateSeesAnAllocation) {
 class DemoCatchingAllocS7Test : public ::testing::Test {
  protected:
   void SetUp() override {
+    FakeSteadyClock::Restart();
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_alloc_s7_test");
-    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
+    builder_ = SharedCatchFrameBuilder();
     CatchFrameOracle oracle(*builder_);
     std::array<double, 64> home{};
     for (int i = 0; i < kUr5eArmDof; ++i) {
@@ -96,6 +104,9 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
   /// max_torque) and a short RETREAT release timeout (#537 S8-C).
   void BringUp(bool s8c = false, const std::function<void(YAML::Node&)>& tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
+    if (!real_clock_) {
+      ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
+    }
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
     auto configs = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
@@ -128,6 +139,8 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
               DemoCatchingController::CallbackReturn::SUCCESS);
     ASSERT_TRUE(ctrl_->AreTrialsEnabled());
     ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_EQ(ctrl_->GetPlannerThread(), nullptr)
+        << "precondition: the planner wakes on the real clock (SetClockForTesting)";
     node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
     executor_->add_node(node_->get_node_base_interface());
@@ -213,8 +226,19 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
     }
   }
 
+  /// One control period: stepped on the fake clock, slept on the real one.
+  void Advance() {
+    if (real_clock_) {
+      std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    } else {
+      FakeSteadyClock::Step();
+    }
+  }
+
   bool stall_in_hold_{false};
   bool freeze_hand_in_retreat_{false};
+  /// Set by a case before BringUp reads it.
+  bool real_clock_{false};
 
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
@@ -266,7 +290,7 @@ TEST_F(DemoCatchingAllocS7Test, EveryModeOfATrialTicksWithoutAllocating) {
       break;  // one full trial
     }
     prev = ctrl_->GetMode();
-    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    Advance();
   }
   // The trial passed through every mode of the nominal cycle.
   for (const Mode m :
@@ -312,7 +336,7 @@ TEST_F(DemoCatchingAllocS7Test, TheHandWitnessAndTheReleaseTimeoutTickWithoutAll
       break;
     }
     prev = ctrl_->GetMode();
-    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    Advance();
   }
   EXPECT_TRUE(blocked_seen) << "the witness never evaluated a stalled joint — not measured";
   EXPECT_TRUE(timed_out) << "RETREAT did not end on the release timeout — not measured";
@@ -323,7 +347,8 @@ TEST_F(DemoCatchingAllocS7Test, TheHandWitnessAndTheReleaseTimeoutTickWithoutAll
 TEST_F(DemoCatchingAllocS7Test, TheFaultLatchAndBothFaultResetAnswersTickWithoutAllocating) {
   // #537 S9b: n_qp = 1 and a degenerate axis latch the fault on the first law
   // tick; FAULT then runs, a reset is refused (the measured arm moves) and one
-  // is accepted. Every tick is gated.
+  // is accepted. Every tick is gated. On the real clock (file header).
+  real_clock_ = true;
   ASSERT_NO_FATAL_FAILURE(BringUp(false, [](YAML::Node& y) {
     y["diagnostic"]["oracle_plan"]["a_d"] = YAML::Load("[0.0, 0.0, 0.0]");
     y["catching"]["supervisor"]["n_qp"] = 1;
@@ -339,7 +364,7 @@ TEST_F(DemoCatchingAllocS7Test, TheFaultLatchAndBothFaultResetAnswersTickWithout
     Tick(/*gated=*/true, allocations, us);
     EXPECT_EQ(allocations, 0U) << "mode " << static_cast<int>(ctrl_->GetMode());
     faulted = ctrl_->GetMode() == Mode::kFault;
-    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    Advance();
   }
   ASSERT_TRUE(faulted) << "precondition: the fault never latched";
   state_.devices[0].velocities[0] = 0.5;  // the measured arm moves: refused
@@ -368,7 +393,7 @@ TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
     std::uint64_t allocations = 0;
     double us = 0.0;
     Tick(/*gated=*/false, allocations, us);
-    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    Advance();
     approaching = ctrl_->GetMode() == Mode::kApproach;
   }
   ASSERT_TRUE(approaching) << "precondition: the approach never started";

@@ -86,17 +86,36 @@ inline std::vector<std::string> SplitCsv(const std::string& line) {
   return out;
 }
 
+/// The index of `name` in `header`, or header.size() when it is absent.
+inline std::size_t ColumnIndex(const std::vector<std::string>& header, const std::string& name) {
+  for (std::size_t i = 0; i < header.size(); ++i) {
+    if (header[i] == name) {
+      return i;
+    }
+  }
+  return header.size();
+}
+
+/// Every non-empty line, header first — for a test that reports a raw row
+/// next to the header text it failed against.
+inline std::vector<std::string> ReadLines(const fs::path& path) {
+  std::vector<std::string> out;
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty()) {
+      out.push_back(line);
+    }
+  }
+  return out;
+}
+
 struct CsvFile {
   std::vector<std::string> header;
   std::vector<std::vector<std::string>> rows;
 
   [[nodiscard]] std::size_t Column(const std::string& name) const {
-    for (std::size_t i = 0; i < header.size(); ++i) {
-      if (header[i] == name) {
-        return i;
-      }
-    }
-    return header.size();
+    return ColumnIndex(header, name);
   }
 
   [[nodiscard]] bool Has(const std::string& name) const { return Column(name) < header.size(); }

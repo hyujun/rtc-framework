@@ -5,6 +5,7 @@
 // known a priori.
 // ────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
+#include "sim_config_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -24,28 +25,9 @@ namespace {
 using namespace std::chrono_literals;
 
 MuJoCoSimulator::Config MakeContactConfig() {
-  MuJoCoSimulator::Config cfg;
-  cfg.model_path = CONTACT_MJCF_PATH;
-  cfg.enable_viewer = false;
-  cfg.sync_timeout_ms = 10.0;
-  cfg.max_rtf = 0.0;
-  cfg.n_substeps = 1;
-  cfg.viewer_refresh_rate = 60.0;
-
-  JointGroupConfig grp;
-  grp.name = "slider";
-  grp.command_joint_names = {"j1"};
-  grp.state_joint_names = {"j1"};
-  grp.command_topic = "/slider/cmd";
-  grp.state_topic = "/slider/state";
+  auto cfg = test::HeadlessConfig(CONTACT_MJCF_PATH, 10.0);
+  auto grp = test::ContactWrenchGroup("slider", {"j1"}, "/test/contact_wrench");
   grp.sensor_topic = "/slider/sensors";
-  grp.sensor_names = {"auto"};  // includes mjSENS_CONTACT
-  grp.is_robot = true;
-  grp.contact_wrench.enabled = true;
-  grp.contact_wrench.topic_prefix = "/test/contact_wrench";
-  // suffix defaults already match "_contact" / "_ft_site" — explicit for clarity:
-  grp.contact_wrench.sensor_name_suffixes = {"_contact"};
-  grp.contact_wrench.reference_site_suffixes = {"_ft_site"};
   cfg.groups.push_back(grp);
   return cfg;
 }
