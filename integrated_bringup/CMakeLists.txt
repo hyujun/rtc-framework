@@ -279,15 +279,24 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
 
-  # ── Header-only helpers, one binary ────────────────────────────────────────
-  # Files that share a binary below keep their own claims; the binary only
+  # Shared binaries: files that share one keep their own claims; the binary only
   # saves the process start and the link. A file that replaces the global
-  # operator new, installs the Eigen malloc tripwire, owns process state (env,
-  # a throttle window, --whole-archive registration, LD_PRELOAD) or opens a DDS
+  # operator new, installs the Eigen malloc tripwire, owns process state (env, a
+  # throttle window, --whole-archive registration, LD_PRELOAD) or opens a DDS
   # participant keeps a binary of its own — the comments at those targets say
-  # which. A shared binary's TIMEOUT is the default 60 s per file, so it keeps
-  # the budget each file had on its own (the Debug+gcov build runs about two
-  # orders slower; see test_momentum_observer_wiring).
+  # which. Sources stay literal in ament_add_gtest (validate_test_domains.py
+  # reads them); ib_timeout_per_file then sets TIMEOUT to the default 60 s per
+  # source, so a shared binary keeps the budget each file had on its own (the
+  # Debug+gcov build runs about two orders slower; see
+  # test_momentum_observer_wiring). Call it before anything else adds sources.
+  function(ib_timeout_per_file target)
+    get_target_property(_srcs ${target} SOURCES)
+    list(LENGTH _srcs _n)
+    math(EXPR _timeout "60 * ${_n}")
+    set_tests_properties(${target} PROPERTIES TIMEOUT ${_timeout})
+  endfunction()
+
+  # ── Header-only helpers, one binary ────────────────────────────────────────
   #   test_device_log_pods   DeviceStateLog / DeviceSensorLog POD mirrors;
   #                          pull_estimator_log_pod.hpp mirrors
   #                          rtc::grasp::PullEstimate (#167).
@@ -300,8 +309,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_header_only_helpers
     test/test_device_log_pods.cpp
     test/test_virtual_tcp.cpp
-    test/test_task_vel_binding.cpp
-    TIMEOUT 180)
+    test/test_task_vel_binding.cpp)
+  ib_timeout_per_file(test_header_only_helpers)
   target_include_directories(test_header_only_helpers PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
@@ -332,8 +341,8 @@ if(BUILD_TESTING)
     test/test_demo_wbc_mpc_integration.cpp
     test/test_wbc_layout_profile_gate.cpp
     test/test_wbc_position_margin_box.cpp
-    test/test_demo_wbc_config_lint.cpp
-    TIMEOUT 360)
+    test/test_demo_wbc_config_lint.cpp)
+  ib_timeout_per_file(test_demo_wbc_suite)
   target_link_libraries(test_demo_wbc_suite
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
@@ -367,8 +376,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_demo_joint_suite
     test/test_demo_joint_controller.cpp
     test/test_demo_joint_controller_urdf.cpp
-    test/test_activation_generation_gate.cpp
-    TIMEOUT 180)
+    test/test_activation_generation_gate.cpp)
+  ib_timeout_per_file(test_demo_joint_suite)
   target_link_libraries(test_demo_joint_suite
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
@@ -1015,8 +1024,8 @@ if(BUILD_TESTING)
     test/test_pull_estimator_wiring.cpp
     test/test_pull_estimator_known_wrench.cpp
     test/test_pull_estimator_leakage_bound.cpp
-    test/test_compliance_wrench_source.cpp
-    TIMEOUT 240)
+    test/test_compliance_wrench_source.cpp)
+  ib_timeout_per_file(test_pull_estimator_suite)
   target_link_libraries(test_pull_estimator_suite
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
@@ -1080,8 +1089,8 @@ if(BUILD_TESTING)
     test/test_wbc_arm_tcp_cache_equivalence.cpp
     test/test_wbc_fallback_omf_freshness.cpp
     test/test_task_arm_cache_equivalence.cpp
-    test/test_joint_arm_cache_equivalence.cpp
-    TIMEOUT 480)
+    test/test_joint_arm_cache_equivalence.cpp)
+  ib_timeout_per_file(test_unified_kindyn_suite)
   target_include_directories(test_unified_kindyn_suite PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
   target_link_libraries(test_unified_kindyn_suite
