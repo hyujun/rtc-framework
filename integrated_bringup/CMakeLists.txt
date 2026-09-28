@@ -279,61 +279,116 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
 
-  # ── DeviceStateLog / DeviceSensorLog POD mirrors (header-only) ────────────
-  ament_add_gtest(test_device_log_pods test/test_device_log_pods.cpp)
-  target_include_directories(test_device_log_pods PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-  )
-  # pull_estimator_log_pod.hpp mirrors rtc::grasp::PullEstimate (#167).
-  ament_target_dependencies(test_device_log_pods
-    rtc_controllers
-    Eigen3
-  )
+  # Shared binaries: files that share one keep their own claims; the binary only
+  # saves the process start and the link. A file that replaces the global
+  # operator new, installs the Eigen malloc tripwire, owns process state (env, a
+  # throttle window, --whole-archive registration, LD_PRELOAD) or opens a DDS
+  # participant keeps a binary of its own — the comments at those targets say
+  # which. Sources stay literal in ament_add_gtest (validate_test_domains.py
+  # reads them); ib_timeout_per_file then sets TIMEOUT to the default 60 s per
+  # source, so a shared binary keeps the budget each file had on its own (the
+  # Debug+gcov build runs about two orders slower; see
+  # test_momentum_observer_wiring). Call it before anything else adds sources.
+  function(ib_timeout_per_file target)
+    get_target_property(_srcs ${target} SOURCES)
+    list(LENGTH _srcs _n)
+    math(EXPR _timeout "60 * ${_n}")
+    set_tests_properties(${target} PROPERTIES TIMEOUT ${_timeout})
+  endfunction()
 
-  # ── virtual_tcp header-only tests ──────────────────────────────────────────
-  ament_add_gtest(test_virtual_tcp test/test_virtual_tcp.cpp)
-  target_include_directories(test_virtual_tcp PRIVATE
+  # ── Header-only helpers, one binary ────────────────────────────────────────
+  #   test_device_log_pods   DeviceStateLog / DeviceSensorLog POD mirrors;
+  #                          pull_estimator_log_pod.hpp mirrors
+  #                          rtc::grasp::PullEstimate (#167).
+  #   test_virtual_tcp       virtual_tcp.
+  #   test_task_vel_binding  Task-velocity assembly convergence (#314): compares
+  #                          two pure functions, so it needs no URDF, no
+  #                          controller library and no pinocchio — only the core
+  #                          header and the never-installed bit_compare.hpp, by
+  #                          source-relative include dir.
+  ament_add_gtest(test_header_only_helpers
+    test/test_device_log_pods.cpp
+    test/test_virtual_tcp.cpp
+    test/test_task_vel_binding.cpp)
+  ib_timeout_per_file(test_header_only_helpers)
+  target_include_directories(test_header_only_helpers PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include"
   )
-  target_link_libraries(test_virtual_tcp pinocchio::pinocchio)
-  ament_target_dependencies(test_virtual_tcp
+  target_link_libraries(test_header_only_helpers pinocchio::pinocchio)
+  ament_target_dependencies(test_header_only_helpers
+    rtc_controllers
     rtc_base
     pinocchio
     Eigen3
   )
 
-  # ── demo_wbc_controller tests ──────────────────────────────────────────────
-  ament_add_gtest(test_demo_wbc_controller test/test_demo_wbc_controller.cpp)
-  target_link_libraries(test_demo_wbc_controller
+  # ── demo_wbc_controller, model-less and layout suites, one binary ─────────
+  #   test_demo_wbc_controller               unit tests.
+  #   test_demo_wbc_base_frame_consistency   base_frame consistency (F-2).
+  #   test_demo_wbc_mpc_integration          MPC integration (Phase 5).
+  #   test_wbc_layout_profile_gate           the shipped layout profile gate.
+  #   test_wbc_position_margin_box           position_margin vs the CLIK
+  #                                          position box (#473).
+  #   test_demo_wbc_config_lint              shipped-config lint (C-0.2): parses
+  #                                          the shipped YAML directly (no model
+  #                                          / lifecycle); RTC_WBC_CONFIG_DIR
+  #                                          points at integrated_bringup/config.
+  ament_add_gtest(test_demo_wbc_suite
+    test/test_demo_wbc_controller.cpp
+    test/test_demo_wbc_base_frame_consistency.cpp
+    test/test_demo_wbc_mpc_integration.cpp
+    test/test_wbc_layout_profile_gate.cpp
+    test/test_wbc_position_margin_box.cpp
+    test/test_demo_wbc_config_lint.cpp)
+  ib_timeout_per_file(test_demo_wbc_suite)
+  target_link_libraries(test_demo_wbc_suite
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
-  ament_target_dependencies(test_demo_wbc_controller
+  target_compile_definitions(test_demo_wbc_suite PRIVATE
+    RTC_UR5E_URDF_PATH="${RTC_UR5E_URDF_PATH}"
+    RTC_WBC_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/ur5e_p1a/controllers/demo_wbc_controller.yaml"
+    RTC_WBC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  ament_target_dependencies(test_demo_wbc_suite
     rclcpp
     rtc_controllers
     rtc_base
     pinocchio
     rtc_tsid
+    rtc_mpc
     Eigen3
   )
 
-  # ── demo_joint_controller grasp-detection tests ────────────────────────────
-  # Empty-URDF unit test: grasp detection / fingertip derivation / ToF gate /
-  # none no-op. No rtc_tsid (joint controller is joint-space only).
-  # Activation generation gate (#196 §3): stale targets queued while Inactive
-  # must not reach the target slot after re-activation.
-  ament_add_gtest(test_activation_generation_gate
+  # ── demo_joint_controller + activation generation gate, one binary ────────
+  #   test_demo_joint_controller       empty-URDF unit test: grasp detection /
+  #                                    fingertip derivation / ToF gate / none
+  #                                    no-op. No rtc_tsid (joint controller is
+  #                                    joint-space only).
+  #   test_demo_joint_controller_urdf  URDF-backed (#149): model-dependent joint
+  #                                    paths the empty-URDF sister cannot reach —
+  #                                    arm quintic trajectory, fingertip FK/TF,
+  #                                    virtual TCP, ToF populate, E-STOP FK.
+  #   test_activation_generation_gate  #196 §3: stale targets queued while
+  #                                    Inactive must not reach the target slot
+  #                                    after re-activation.
+  ament_add_gtest(test_demo_joint_suite
+    test/test_demo_joint_controller.cpp
+    test/test_demo_joint_controller_urdf.cpp
     test/test_activation_generation_gate.cpp)
-  target_link_libraries(test_activation_generation_gate
+  ib_timeout_per_file(test_demo_joint_suite)
+  target_link_libraries(test_demo_joint_suite
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
-  ament_target_dependencies(test_activation_generation_gate
+  ament_target_dependencies(test_demo_joint_suite
+    ament_index_cpp
     rclcpp
     rclcpp_lifecycle
     rtc_controllers
     rtc_base
+    rtc_urdf_bridge
     pinocchio
     Eigen3
   )
@@ -465,19 +520,6 @@ if(BUILD_TESTING)
     rtc_inference
     rtc_base
     rtc_urdf_bridge
-    pinocchio
-    Eigen3
-  )
-
-  ament_add_gtest(test_demo_joint_controller test/test_demo_joint_controller.cpp)
-  target_link_libraries(test_demo_joint_controller
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  ament_target_dependencies(test_demo_joint_controller
-    rclcpp
-    rtc_controllers
-    rtc_base
     pinocchio
     Eigen3
   )
@@ -823,54 +865,6 @@ if(BUILD_TESTING)
   # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
   target_compile_options(test_task_dls_convergence PRIVATE -Wno-mismatched-new-delete)
 
-  # ── Task-velocity assembly convergence (#314) ──────────────────────────────
-  # Compares two pure functions, so unlike its #282 sibling it needs no URDF, no
-  # controller library and no pinocchio — only the core header and the
-  # never-installed bit_compare.hpp, by source-relative include dir.
-  ament_add_gtest(test_task_vel_binding test/test_task_vel_binding.cpp)
-  target_include_directories(test_task_vel_binding PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
-  ament_target_dependencies(test_task_vel_binding
-    rtc_controllers
-    Eigen3
-  )
-
-  # ── demo_joint_controller URDF-backed tests (#149) ─────────────────────────
-  # Model-dependent joint paths the empty-URDF sister cannot reach: arm quintic
-  # trajectory, fingertip FK/TF, virtual TCP, ToF populate, E-STOP FK.
-  ament_add_gtest(test_demo_joint_controller_urdf
-    test/test_demo_joint_controller_urdf.cpp)
-  target_link_libraries(test_demo_joint_controller_urdf
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  ament_target_dependencies(test_demo_joint_controller_urdf
-    ament_index_cpp
-    rclcpp
-    rtc_controllers
-    rtc_base
-    rtc_urdf_bridge
-    pinocchio
-    Eigen3
-  )
-
-  # ── demo_wbc_controller base_frame consistency (F-2) ───────────────────────
-  ament_add_gtest(test_demo_wbc_base_frame_consistency
-    test/test_demo_wbc_base_frame_consistency.cpp)
-  target_link_libraries(test_demo_wbc_base_frame_consistency
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  ament_target_dependencies(test_demo_wbc_base_frame_consistency
-    rclcpp
-    rtc_controllers
-    rtc_base
-    pinocchio
-    rtc_tsid
-    rtc_mpc
-    Eigen3
-  )
-
   # ── demo_wbc_controller TSID-path tests (#189) ─────────────────────────────
   # The only DemoWbcController test that brings up a real TSID + CLIK stack:
   # it drives the iiwa7_leap URDF fixture through LoadConfig(tsid:) AND
@@ -909,14 +903,6 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # ── demo_wbc_controller shipped-config lint (C-0.2) ────────────────────────
-  # Parses the shipped YAML directly (no model / lifecycle); RTC_WBC_CONFIG_DIR
-  # points at integrated_bringup/config.
-  ament_add_gtest(test_demo_wbc_config_lint test/test_demo_wbc_config_lint.cpp)
-  target_link_libraries(test_demo_wbc_config_lint yaml-cpp)
-  target_compile_definitions(test_demo_wbc_config_lint PRIVATE
-    RTC_WBC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
-
   # ── #175: closed-chain 사영 공유 (컨트롤러 레벨) ───────────────────────────
   # 실제 ur5e_p1b URDF+closure 와 shipped WBC config 로 bring-up 을 재생한다 —
   # 사영 2→1 계측과 입력 provenance 는 URDF 없는 하네스에서는 관측되지 않는다.
@@ -939,63 +925,6 @@ if(BUILD_TESTING)
     rtc_urdf_bridge
     rtc_tsid
     pinocchio
-    Eigen3
-  )
-
-  # ── demo_wbc_controller MPC integration tests (Phase 5) ────────────────────
-  ament_add_gtest(test_demo_wbc_mpc_integration
-    test/test_demo_wbc_mpc_integration.cpp)
-  target_link_libraries(test_demo_wbc_mpc_integration
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  ament_target_dependencies(test_demo_wbc_mpc_integration
-    rclcpp
-    rtc_controllers
-    rtc_base
-    pinocchio
-    rtc_tsid
-    rtc_mpc
-    Eigen3
-  )
-
-  # ── GraspPhaseManager FSM tests (Phase 7a) ─────────────────────────────────
-    ament_add_gtest(test_wbc_layout_profile_gate
-    test/test_wbc_layout_profile_gate.cpp)
-  target_link_libraries(test_wbc_layout_profile_gate
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  target_compile_definitions(test_wbc_layout_profile_gate PRIVATE
-    RTC_UR5E_URDF_PATH="${RTC_UR5E_URDF_PATH}"
-    RTC_WBC_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/ur5e_p1a/controllers/demo_wbc_controller.yaml")
-  ament_target_dependencies(test_wbc_layout_profile_gate
-    rclcpp
-    rtc_controllers
-    rtc_base
-    pinocchio
-    rtc_tsid
-    rtc_mpc
-    Eigen3
-  )
-
-  # ── position_margin vs the CLIK position box (#473) ────────────────────────
-  ament_add_gtest(test_wbc_position_margin_box
-    test/test_wbc_position_margin_box.cpp)
-  target_link_libraries(test_wbc_position_margin_box
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  target_compile_definitions(test_wbc_position_margin_box PRIVATE
-    RTC_UR5E_URDF_PATH="${RTC_UR5E_URDF_PATH}"
-    RTC_WBC_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/ur5e_p1a/controllers/demo_wbc_controller.yaml")
-  ament_target_dependencies(test_wbc_position_margin_box
-    rclcpp
-    rtc_controllers
-    rtc_base
-    pinocchio
-    rtc_tsid
-    rtc_mpc
     Eigen3
   )
 
@@ -1075,31 +1004,35 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # ── Pull-estimator wiring test (#167 P3) ───────────────────────────────────
-  ament_add_gtest(test_pull_estimator_wiring test/test_pull_estimator_wiring.cpp)
-  target_link_libraries(test_pull_estimator_wiring
+  # ── Pull estimator + compliance wrench source, one binary ─────────────────
+  #   test_pull_estimator_wiring         wiring (#167 P3).
+  #   test_pull_estimator_known_wrench   shipped-profile estimator vs a known
+  #                                      load (#177 crit#4): parses the shipped
+  #                                      iiwa7_leap demo_shared.yaml so the
+  #                                      deployed force_sign is what runs.
+  #   test_pull_estimator_leakage_bound  shipped-profile leakage bound (#177
+  #                                      crit#6 (1)): the regression the
+  #                                      hardware runbook gates on, run against
+  #                                      every shipped profile's own
+  #                                      alignment_error_rad; the free-disk
+  #                                      MuJoCo route cannot close this
+  #                                      criterion (see the file banner).
+  #   test_compliance_wrench_source      compliance wrench source adapter (#469
+  #                                      S1), driven through the same known load.
+  # The last three share pull_known_load_fixture.hpp.
+  ament_add_gtest(test_pull_estimator_suite
+    test/test_pull_estimator_wiring.cpp
+    test/test_pull_estimator_known_wrench.cpp
+    test/test_pull_estimator_leakage_bound.cpp
+    test/test_compliance_wrench_source.cpp)
+  ib_timeout_per_file(test_pull_estimator_suite)
+  target_link_libraries(test_pull_estimator_suite
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
-  ament_target_dependencies(test_pull_estimator_wiring
-    rclcpp
-    rtc_controllers
-    rtc_base
-    pinocchio
-    Eigen3
-  )
-
-  # ── Shipped-profile pull estimator vs a known load (#177 crit#4) ───────────
-  # Parses the shipped iiwa7_leap demo_shared.yaml (same RTC_DEMO_SHARED_CONFIG_DIR
-  # route as test_demo_shared_config) so the deployed force_sign is what runs.
-  ament_add_gtest(test_pull_estimator_known_wrench test/test_pull_estimator_known_wrench.cpp)
-  target_link_libraries(test_pull_estimator_known_wrench
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  target_compile_definitions(test_pull_estimator_known_wrench PRIVATE
+  target_compile_definitions(test_pull_estimator_suite PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
-  ament_target_dependencies(test_pull_estimator_known_wrench
+  ament_target_dependencies(test_pull_estimator_suite
     rclcpp
     rtc_controllers
     rtc_base
@@ -1107,92 +1040,64 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # ── Shipped-profile leakage bound (#177 crit#6 (1)) ───────────────────────
-  # The regression the hardware runbook gates on, run against every shipped
-  # profile's own alignment_error_rad. Shares pull_known_load_fixture.hpp with
-  # the crit#4 test above; the free-disk MuJoCo route cannot close this
-  # criterion (see the file banner).
-  ament_add_gtest(test_pull_estimator_leakage_bound test/test_pull_estimator_leakage_bound.cpp)
-  target_link_libraries(test_pull_estimator_leakage_bound
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  target_compile_definitions(test_pull_estimator_leakage_bound PRIVATE
-    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
-  ament_target_dependencies(test_pull_estimator_leakage_bound
-    rclcpp
-    rtc_controllers
-    rtc_base
-    pinocchio
-    Eigen3
-  )
-
-  # ── Compliance wrench source adapter (#469 S1) ─────────────────────────────
-  # Shares pull_known_load_fixture.hpp with the crit#4 test above, so both drive
-  # the same known load through the shipped profile.
-  ament_add_gtest(test_compliance_wrench_source test/test_compliance_wrench_source.cpp)
-  target_link_libraries(test_compliance_wrench_source
-    ${PROJECT_NAME}_demo_controllers
-    yaml-cpp
-  )
-  target_compile_definitions(test_compliance_wrench_source PRIVATE
-    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
-  ament_target_dependencies(test_compliance_wrench_source
-    rclcpp
-    rtc_controllers
-    rtc_base
-    pinocchio
-    Eigen3
-  )
-
-  # ── Closed-chain hand FK helper test (#121 Phase 2c) ───────────────────────
+  # ── Closed-chain kinematics + unified kin&dyn cache equivalence, one binary
   # Reuses rtc_urdf_bridge/test fixtures (closure_test_fixtures.hpp,
   # test_urdf_path.hpp) — test-only, never-installed headers resolved via a
   # source-relative include dir (same pattern as rtc_controllers tests).
-  ament_add_gtest(test_closed_chain_hand_fk test/test_closed_chain_hand_fk.cpp)
-  target_include_directories(test_closed_chain_hand_fk PRIVATE
+  #   test_closed_chain_hand_fk          closed-chain hand FK helper (#121
+  #                                      Phase 2c).
+  #   test_wbc_reduced_dynamics_provider #120: WbcReducedDynamicsProvider —
+  #                                      coordinate order (name permutation),
+  #                                      scatter values, held last-good,
+  #                                      open-chain fallback.
+  #   test_wbc_contact_kinematics_loop_consistent
+  #                                      Phase 3: FillReducedFrameKinematics
+  #                                      raises loop-downstream contact frame
+  #                                      J/oMf to loop-consistent values
+  #                                      (matching the non-RT converged handle,
+  #                                      differing from frozen-loop), with L1
+  #                                      last-good hold / L2-zero dJv / serial
+  #                                      byte-for-byte.
+  #   test_wbc_contact_permutation_real  Phase ③ scatter permutation on the REAL
+  #                                      ur5e_p1b closure (non-identity
+  #                                      cache_v_idx_ column map, which the
+  #                                      CrankRocker nv==1 cases cannot reach).
+  # The cache-equivalence trio proves each controller's move off arm_handle_
+  # onto the combined-model PinocchioCache is value-preserving, on both the
+  # serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles:
+  #   test_wbc_arm_tcp_cache_equivalence Phase 2: the WBC clik_tcp/clik_base
+  #                                      cache oMf equals the arm-only FK it
+  #                                      replaces in FillLog/FillPublish/
+  #                                      ComputeTcpError.
+  #   test_wbc_fallback_omf_freshness    Task B (option B): cache.Update moved to
+  #                                      ComputeControl, so arm/contact oMf
+  #                                      refresh every non-E-STOP tick
+  #                                      (kFallback/non-TSID included) — they
+  #                                      TRACK measured across consecutive
+  #                                      Updates and equal the FK each tick
+  #                                      (1e-12).
+  #   test_task_arm_cache_equivalence    Phase 4: DemoTaskController FK oMf AND
+  #                                      the arm-column extraction of the
+  #                                      combined Jacobian.
+  #   test_joint_arm_cache_equivalence   Phase 5: DemoJointController arm TCP
+  #                                      oMf (FK-only — no Jacobian consumer).
+  ament_add_gtest(test_unified_kindyn_suite
+    test/test_closed_chain_hand_fk.cpp
+    test/test_wbc_reduced_dynamics_provider.cpp
+    test/test_wbc_contact_kinematics_loop_consistent.cpp
+    test/test_wbc_contact_permutation_real.cpp
+    test/test_wbc_arm_tcp_cache_equivalence.cpp
+    test/test_wbc_fallback_omf_freshness.cpp
+    test/test_task_arm_cache_equivalence.cpp
+    test/test_joint_arm_cache_equivalence.cpp)
+  ib_timeout_per_file(test_unified_kindyn_suite)
+  target_include_directories(test_unified_kindyn_suite PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
-  target_link_libraries(test_closed_chain_hand_fk
+  target_link_libraries(test_unified_kindyn_suite
     ${PROJECT_NAME}_demo_controllers
   )
-  ament_target_dependencies(test_closed_chain_hand_fk
-    rclcpp
-    rtc_urdf_bridge
-    rtc_base
-    pinocchio
-    Eigen3
-  )
-
-  # #120: closed-chain 축약 동역학 provider (WbcReducedDynamicsProvider) 단위 테스트.
-  # 좌표 정렬(이름 permutation)·scatter 값 일치·held last-good·open-chain fallback 검증.
-  ament_add_gtest(test_wbc_reduced_dynamics_provider test/test_wbc_reduced_dynamics_provider.cpp)
-  target_include_directories(test_wbc_reduced_dynamics_provider PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
-  target_link_libraries(test_wbc_reduced_dynamics_provider
-    ${PROJECT_NAME}_demo_controllers
-  )
-  ament_target_dependencies(test_wbc_reduced_dynamics_provider
-    rclcpp
-    rtc_urdf_bridge
-    rtc_tsid
-    rtc_base
-    pinocchio
-    Eigen3
-  )
-
-  # ── Phase 3 (unified kin&dyn): loop-consistent contact frame J·oMf ──────────
-  # Proves WbcReducedDynamicsProvider::FillReducedFrameKinematics raises loop-
-  # downstream contact frame J/oMf to loop-consistent values (matching the
-  # non-RT converged handle, differing from frozen-loop), with L1 last-good hold
-  # / L2-zero dJv / serial byte-for-byte. Reuses rtc_urdf_bridge/test fixtures.
-  ament_add_gtest(test_wbc_contact_kinematics_loop_consistent
-    test/test_wbc_contact_kinematics_loop_consistent.cpp)
-  target_include_directories(test_wbc_contact_kinematics_loop_consistent PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
-  target_link_libraries(test_wbc_contact_kinematics_loop_consistent
-    ${PROJECT_NAME}_demo_controllers
-  )
-  ament_target_dependencies(test_wbc_contact_kinematics_loop_consistent
+  ament_target_dependencies(test_unified_kindyn_suite
+    ament_index_cpp
     rclcpp
     rtc_urdf_bridge
     rtc_tsid
@@ -1214,61 +1119,6 @@ if(BUILD_TESTING)
     yaml-cpp
   )
   target_link_libraries(test_catch_frame_models yaml-cpp)
-
-  # ── Phase 2 (unified kin&dyn): arm TCP cache-vs-arm_handle equivalence ───────
-  # Proves the WBC controller's clik_tcp/clik_base cache oMf equals the arm-only
-  # arm_handle_ FK it replaces in FillLog/FillPublish/ComputeTcpError, on both
-  # the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
-  ament_add_gtest(test_wbc_arm_tcp_cache_equivalence
-    test/test_wbc_arm_tcp_cache_equivalence.cpp)
-  target_link_libraries(test_wbc_arm_tcp_cache_equivalence
-    ${PROJECT_NAME}_demo_controllers
-  )
-  ament_target_dependencies(test_wbc_arm_tcp_cache_equivalence
-    ament_index_cpp
-    rtc_urdf_bridge
-    rtc_tsid
-    rtc_base
-    pinocchio
-    Eigen3
-  )
-
-  # Unified kin&dyn Task B (옵션 B): WBC cache.Update relocated to ComputeControl
-  # so arm/contact oMf refresh every non-E-STOP tick (kFallback/non-TSID included).
-  # Proves the registered clik_tcp/clik_base oMf TRACK measured across consecutive
-  # per-tick Updates (not frozen) and equal arm_handle_ FK each tick (1e-12), on
-  # both the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
-  ament_add_gtest(test_wbc_fallback_omf_freshness
-    test/test_wbc_fallback_omf_freshness.cpp)
-  target_link_libraries(test_wbc_fallback_omf_freshness
-    ${PROJECT_NAME}_demo_controllers
-  )
-  ament_target_dependencies(test_wbc_fallback_omf_freshness
-    ament_index_cpp
-    rtc_urdf_bridge
-    rtc_tsid
-    rtc_base
-    pinocchio
-    Eigen3
-  )
-
-  # Unified kin&dyn Phase 4: task arm TCP FK + tip Jacobian cache equivalence.
-  # Proves DemoTaskController's move off arm_handle_ onto the combined-model
-  # PinocchioCache is value-preserving — FK oMf AND the arm-column extraction of
-  # the combined Jacobian — on both the serial (iiwa7_leap) and closed-chain
-  # (ur5e_p1b) profiles.
-  ament_add_gtest(test_task_arm_cache_equivalence
-    test/test_task_arm_cache_equivalence.cpp)
-  target_link_libraries(test_task_arm_cache_equivalence
-    ${PROJECT_NAME}_demo_controllers
-  )
-  ament_target_dependencies(test_task_arm_cache_equivalence
-    ament_index_cpp
-    rtc_urdf_bridge
-    rtc_base
-    pinocchio
-    Eigen3
-  )
 
   # #135 Layer 1: the momentum-observer wiring — the lane gate plus the
   # coordinate contract (device order in, Pinocchio order out), checked against
@@ -1322,39 +1172,6 @@ if(BUILD_TESTING)
     rtc_base
     rtc_tsid
     rtc_mpc
-    pinocchio
-    Eigen3
-  )
-
-  # Unified kin&dyn Phase 5: joint arm TCP FK cache equivalence (FK-only — the
-  # joint controller has no Jacobian consumer). Proves DemoJointController's move
-  # off arm_handle_ onto the combined-model PinocchioCache preserves the arm TCP
-  # oMf on both the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
-  ament_add_gtest(test_joint_arm_cache_equivalence
-    test/test_joint_arm_cache_equivalence.cpp)
-  target_link_libraries(test_joint_arm_cache_equivalence
-    ${PROJECT_NAME}_demo_controllers
-  )
-  ament_target_dependencies(test_joint_arm_cache_equivalence
-    ament_index_cpp
-    rtc_urdf_bridge
-    rtc_base
-    pinocchio
-    Eigen3
-  )
-
-  # Phase ③ scatter permutation on the REAL ur5e_p1b closure (non-identity
-  # cache_v_idx_ column map, which the CrankRocker nv==1 cases cannot exercise).
-  ament_add_gtest(test_wbc_contact_permutation_real
-    test/test_wbc_contact_permutation_real.cpp)
-  target_link_libraries(test_wbc_contact_permutation_real
-    ${PROJECT_NAME}_demo_controllers
-  )
-  ament_target_dependencies(test_wbc_contact_permutation_real
-    ament_index_cpp
-    rtc_urdf_bridge
-    rtc_tsid
-    rtc_base
     pinocchio
     Eigen3
   )

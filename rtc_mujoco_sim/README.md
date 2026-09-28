@@ -1242,7 +1242,7 @@ colcon test --packages-select rtc_mujoco_sim --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `colcon test-result --verbose` 실측 — 표에 개수를 박지 않는다 (drift 방지):
+GTest 스위트 (`test/` 디렉토리, 표는 파일 이름). 최신 케이스 수·pass/fail 은 `colcon test-result --verbose` 실측 — 표에 개수를 박지 않는다 (drift 방지). 같은 fixture 를 쓰는 파일은 한 바이너리를 공유한다 (예: `test_lifecycle.cpp` → `test_simulator_core`) — 파일↔바이너리 대응은 `CMakeLists.txt` 가 SSoT 이고, 한 파일만 돌리려면 그 바이너리에 `--gtest_filter` 를 준다:
 
 | Test | Scope |
 |------|-------|

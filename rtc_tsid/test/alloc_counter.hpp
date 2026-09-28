@@ -5,9 +5,10 @@
 // ignored. (rtc_mpc test_utils::AllocCounter pattern.)
 //
 // This header DEFINES the global operator new/delete replacements, so it must be
-// included in exactly ONE translation unit per test executable. Every
-// ament_add_gtest target here is a single .cpp, so that invariant holds
-// naturally — each test binary gets its own private copy of the overrides.
+// included in exactly ONE translation unit per test executable. Some test
+// binaries here link several .cpp files (add_tsid_gtest with stems in
+// CMakeLists.txt); a file that includes this header is registered as a binary
+// of its own, so each gets its own private copy of the overrides.
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>

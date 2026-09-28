@@ -329,9 +329,9 @@ colcon test --packages-select rtc_tsid --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-대표 테스트 (전체 목록은 `CMakeLists.txt` `ament_add_gtest` 등록, 실측 카운트는 [agent_docs/testing-debug.md](../agent_docs/testing-debug.md) 참조):
+대표 테스트 파일 (`test/<이름>.cpp`; 실측 카운트는 [agent_docs/testing-debug.md](../agent_docs/testing-debug.md) 참조). 여러 파일이 한 바이너리를 공유한다 (예: `test_tsid_wqp.cpp` → `test_tsid_formulations`) — 파일↔바이너리 대응은 `CMakeLists.txt` 의 `add_tsid_gtest` 등록이 SSoT 이고, 한 파일만 돌리려면 그 바이너리에 `--gtest_filter` 를 준다.
 
-| 테스트 | 설명 |
+| 테스트 파일 | 설명 |
 |--------|------|
 | `test_qp_solver_wrapper` | ProxSuite QP 래퍼 기본 동작 + `ResetWarmStart()` 순서 독립성 (positive control 로 warm start 누출이 이 fixture 에서 실제로 보이는지 함께 잰다) |
 | `test_wbc_types` | WBC 타입 시스템 초기화/갱신 |
