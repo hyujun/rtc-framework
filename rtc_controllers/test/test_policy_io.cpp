@@ -22,7 +22,6 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <ostream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -125,9 +124,10 @@ PolicyIoParams ParseText(const std::string& yaml) {
 ///
 /// `ADD_FAILURE` rather than `FAIL` because a gtest fatal inside a helper
 /// returns from the HELPER only; the caller would carry on regardless.
-void ExpectRejectMentioning(const std::string& yaml, std::string_view needle) {
+void ExpectRejectMentioning(const std::string& yaml, std::string_view needle,
+                            PolicyIoParams (*parse)(const std::string&) = ParseText) {
   try {
-    static_cast<void>(ParseText(yaml));
+    static_cast<void>(parse(yaml));
   } catch (const std::invalid_argument& e) {
     const std::string what = e.what();
     EXPECT_NE(what.find(needle), std::string::npos)
@@ -539,11 +539,6 @@ struct WrittenReject {
   const char* needle;
 };
 
-// gtest prints a failing row by its name, not as raw bytes.
-void PrintTo(const WrittenReject& row, std::ostream* os) {
-  *os << row.name;
-}
-
 /// @c base with @c from swapped for @c to must be refused for @c needle.
 struct EditedReject {
   const char* name;
@@ -552,10 +547,6 @@ struct EditedReject {
   const char* to;
   const char* needle;
 };
-
-void PrintTo(const EditedReject& row, std::ostream* os) {
-  *os << row.name;
-}
 
 constexpr WrittenReject kWrittenRejects[] = {
     {"RejectsUnnamedInputTensor_D1", R"(
@@ -1176,19 +1167,6 @@ PolicyIoParams ParseNamed(const std::string& yaml) {
   return ParsePolicyIoParams(YAML::Load(yaml), NamedFeatureSize, NamedFeatureRows);
 }
 
-void ExpectNamedRejectMentioning(const std::string& yaml, std::string_view needle) {
-  try {
-    static_cast<void>(ParseNamed(yaml));
-  } catch (const std::invalid_argument& e) {
-    const std::string what = e.what();
-    EXPECT_NE(what.find(needle), std::string::npos)
-        << "rejected, but for a different reason than this case tests.\n"
-        << "  expected to mention: " << needle << "\n  actual: " << what;
-    return;
-  }
-  ADD_FAILURE() << "expected the schema to be refused, but it parsed";
-}
-
 }  // namespace
 
 TEST(PolicyIoNamed, EachRowLandsWhereTheExportPutItNotWhereTheDeviceListsIt) {
@@ -1293,11 +1271,6 @@ struct NamedReject {
   const char* needle;
 };
 
-// gtest prints a failing row by its name, not as raw bytes.
-void PrintTo(const NamedReject& row, std::ostream* os) {
-  *os << row.name;
-}
-
 constexpr NamedReject kNamedRejects[] = {
     {"RejectsNamesThatDoNotDivideTheTensor",
      R"(["a0", "a1", "passive", "h0", "loop:0", "loop:1", "h1"])",
@@ -1379,7 +1352,7 @@ class PolicyIoNamedReject : public ::testing::TestWithParam<NamedReject> {};
 
 TEST_P(PolicyIoNamedReject, IsRefusedForItsStatedReason) {
   const NamedReject& row = GetParam();
-  ExpectNamedRejectMentioning(Edited(kNamedYaml, row.from, row.to), row.needle);
+  ExpectRejectMentioning(Edited(kNamedYaml, row.from, row.to), row.needle, ParseNamed);
 }
 
 INSTANTIATE_TEST_SUITE_P(PolicyIoNamed, PolicyIoNamedReject, ::testing::ValuesIn(kNamedRejects),

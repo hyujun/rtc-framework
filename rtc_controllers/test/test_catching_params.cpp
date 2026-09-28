@@ -32,7 +32,6 @@
 
 #include <cmath>
 #include <cstddef>
-#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -920,13 +919,7 @@ struct OneReasonCase {
   CatchingValidationReason reason;
   const char* key;
   int index = -1;
-  double control_rate_hz = kControlRateHz;
 };
-
-// gtest prints a failing row by its name, not as raw bytes.
-void PrintTo(const OneReasonCase& row, std::ostream* os) {
-  *os << row.name;
-}
 
 std::string OneReasonCaseName(const ::testing::TestParamInfo<OneReasonCase>& info) {
   return info.param.name;
@@ -935,7 +928,7 @@ std::string OneReasonCaseName(const ::testing::TestParamInfo<OneReasonCase>& inf
 CatchingValidationReport ValidateEdited(const OneReasonCase& row) {
   YAML::Node root = ValidRoot();
   row.edit(root);
-  return ValidateCatchingParams(ParseCatchingParams(root), row.control_rate_hz, false);
+  return ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
 }
 
 // The edit blocks arming, and does so for this row's reason at this row's key.
@@ -992,11 +985,6 @@ constexpr OneReasonCase kBlocksArming[] = {
     // L4 §4.4: reference.zeta must be exactly 1 in v1.
     {"ZetaNotOneFails", [](YAML::Node& root) { root["reference"]["zeta"] = 0.9; },
      CatchingValidationReason::kZetaNotCriticallyDamped, "reference.zeta"},
-    // control_rate range [100, 5000] Hz: the baseline, at a rate outside it.
-    {"ControlRateBelowRangeFails", [](YAML::Node&) {},
-     CatchingValidationReason::kControlRateOutOfRange, "control_rate", -1, 99.0},
-    {"ControlRateAboveRangeFails", [](YAML::Node&) {},
-     CatchingValidationReason::kControlRateOutOfRange, "control_rate", -1, 5001.0},
 };
 
 // The inclusive bound of a rule above: the edit does NOT trip that reason
@@ -1038,6 +1026,22 @@ INSTANTIATE_TEST_SUITE_P(CatchingParams, CatchingParamsSparesTheBound,
                          ::testing::ValuesIn(kSparesTheBound), OneReasonCaseName);
 
 // ── control_rate range [100, 5000] Hz ────────────────────────────────────────
+
+TEST(CatchingParams, ControlRateBelowRangeFails) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  const CatchingValidationReport r = ValidateCatchingParams(p, 99.0, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kControlRateOutOfRange, "control_rate"));
+}
+
+TEST(CatchingParams, ControlRateAboveRangeFails) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  const CatchingValidationReport r = ValidateCatchingParams(p, 5001.0, false);
+  EXPECT_FALSE(r.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kControlRateOutOfRange, "control_rate"));
+}
 
 TEST(CatchingParams, ControlRateAtBoundsPasses) {
   const CatchingParams p = ParseCatchingParams(ValidRoot());
