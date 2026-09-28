@@ -61,19 +61,8 @@ for _fn in normalise_cpu_set shield_isolation_method shield_actual_user_cpus \
   fi
 done
 
-PASS=0
-FAIL=0
-FAIL_MSGS=()
-
-fail() { FAIL=$((FAIL+1)); FAIL_MSGS+=("$1"); }
-pass() { PASS=$((PASS+1)); }
-
-expect_eq() {
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then pass; else
-    fail "[$label] expected='$expected' actual='$actual'"
-  fi
-}
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/assert.sh"
 
 expect_rc() {
   # expect_rc "label" <expected_rc> <cmd...>

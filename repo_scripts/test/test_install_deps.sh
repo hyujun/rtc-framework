@@ -19,22 +19,8 @@ set -eu -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../scripts/lib"
 
-PASS=0
-FAIL=0
-FAIL_MSGS=()
-
-fail() { FAIL=$((FAIL+1)); FAIL_MSGS+=("$1"); }
-pass() { PASS=$((PASS+1)); }
-
-expect_eq() {
-  # expect_eq "label" expected actual
-  local label="$1" expected="$2" actual="$3"
-  if [[ "$expected" == "$actual" ]]; then
-    pass
-  else
-    fail "[$label] expected='$expected' actual='$actual'"
-  fi
-}
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/assert.sh"
 
 # ── Logger stubs (install_deps.sh 가 caller scope 에서 기대) ─────────────────
 # subshell 안에서도 보이도록 파일에 적는다.
@@ -540,12 +526,4 @@ test_prune_spares_trees_it_did_not_name
 test_keep_other_versions_opt_out
 test_production_pins_are_intact
 
-echo
-echo "── test_install_deps.sh summary ──"
-echo "  PASS: $PASS"
-echo "  FAIL: $FAIL"
-if (( FAIL > 0 )); then
-  printf '  %s\n' "${FAIL_MSGS[@]}"
-  exit 1
-fi
-exit 0
+summary_and_exit test_install_deps.sh
