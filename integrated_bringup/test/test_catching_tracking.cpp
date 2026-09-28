@@ -44,7 +44,6 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -64,6 +63,7 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 // Moved to catching_tracking_fixture.hpp so the CLIK sweep shares ONE profile.
 using integrated_bringup::testfx::CatchFrameOracle;
+using integrated_bringup::testfx::FakeSteadyClock;
 using integrated_bringup::testfx::kCatchFrame;
 using integrated_bringup::testfx::kCatchXyz;
 using integrated_bringup::testfx::kDt;
@@ -72,21 +72,10 @@ using integrated_bringup::testfx::TrackingYaml;
 
 using namespace std::chrono_literals;
 
-/// The controller's clock (file header); SetUp restarts it per case.
-std::atomic<std::int64_t> g_now_ns{0};
-
-std::int64_t NowNs() noexcept {
-  return g_now_ns.load(std::memory_order_relaxed);
-}
-
-void StepClock() noexcept {
-  g_now_ns.fetch_add(static_cast<std::int64_t>(std::llround(kDt * 1e9)), std::memory_order_relaxed);
-}
-
 class CatchingTrackingTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    g_now_ns.store(rtc::SteadyNowNs(), std::memory_order_relaxed);
+    FakeSteadyClock::Restart();
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_tracking_test");
     builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
@@ -126,7 +115,7 @@ class CatchingTrackingTest : public ::testing::Test {
                const std::function<void(std::map<std::string, rtc::DeviceNameConfig>&)>&
                    device_tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
-    ctrl_->SetClockForTesting(&NowNs);
+    ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
     // `device_tweak` edits the DEVICE limits, which the catching YAML cannot
@@ -148,6 +137,8 @@ class CatchingTrackingTest : public ::testing::Test {
     ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
               DemoCatchingController::CallbackReturn::SUCCESS);
     ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_EQ(ctrl_->GetPlannerThread(), nullptr)
+        << "precondition: the planner wakes on the real clock (SetClockForTesting)";
     node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
 
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
@@ -215,7 +206,7 @@ class CatchingTrackingTest : public ::testing::Test {
           state_.devices[0].positions[ui] = out.devices[0].commands[ui];
         }
       }
-      StepClock();
+      FakeSteadyClock::Step();
     }
   }
 
@@ -635,7 +626,7 @@ TEST_F(CatchingTrackingTest, LeadCompensationReducesTheErrorUnderAnActuationDela
         commanded_[ui] = cmd[ui];
         state_.devices[0].positions[ui] = measured[ui];
       }
-      StepClock();
+      FakeSteadyClock::Step();
     }
     // Judged on the MEASURED configuration: the delay is the whole point, so
     // scoring the command would score a pose the arm has not reached.

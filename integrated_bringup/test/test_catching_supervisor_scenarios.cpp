@@ -48,7 +48,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -63,6 +62,7 @@ namespace {
 
 using integrated_bringup::DemoCatchingController;
 using integrated_bringup::testfx::CatchFrameOracle;
+using integrated_bringup::testfx::FakeSteadyClock;
 using integrated_bringup::testfx::kDt;
 using integrated_bringup::testfx::kP1bHandDof;
 using integrated_bringup::testfx::kUr5eArmDof;
@@ -81,7 +81,8 @@ using rtc::catching::Reason;
 using namespace std::chrono_literals;
 
 constexpr std::int64_t kMsNs = 1'000'000;
-constexpr std::int64_t kHNs = 2 * kMsNs;            // state.dt, the tick the sequencer rounds to
+constexpr std::int64_t kHNs = 2 * kMsNs;  // state.dt, the tick the sequencer rounds to
+static_assert(kHNs == integrated_bringup::testfx::kDtNs, "the fake clock steps state.dt");
 constexpr std::int64_t kTCloseE2eNs = 280 * kMsNs;  // TrackingYaml robot.hand.T_close_e2e
 constexpr double kPoseTol = 0.02;                   // supervisor.ready.pose_tol default
 constexpr int kTips = 4;                            // the fixture hand's sensor_names
@@ -214,14 +215,6 @@ std::vector<double> DerivedQddMax() {
 }
 
 /// What one tick left behind.
-/// The fake clock (file header). A function pointer carries no state, so the
-/// instant lives here; SupervisorScenarioTest::SetUp restarts it per case.
-std::atomic<std::int64_t> g_fake_now_ns{0};
-
-std::int64_t FakeNowNs() noexcept {
-  return g_fake_now_ns.load(std::memory_order_relaxed);
-}
-
 struct TickRec {
   Mode mode{Mode::kIdle};
   Reason reason{Reason::kNone};
@@ -262,7 +255,7 @@ class SupervisorScenarioTest : public ::testing::Test {
   void SetUp() override {
     // A real instant, so stamps look like the ones the controller sees in the
     // field; from here on only Tick() moves it.
-    g_fake_now_ns.store(rtc::SteadyNowNs(), std::memory_order_relaxed);
+    FakeSteadyClock::Restart();
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_supervisor_scenarios");
     builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
@@ -297,7 +290,7 @@ class SupervisorScenarioTest : public ::testing::Test {
 
   /// The clock the controller reads (file header).
   [[nodiscard]] std::int64_t Now() const noexcept {
-    return real_clock_ ? rtc::SteadyNowNs() : FakeNowNs();
+    return real_clock_ ? rtc::SteadyNowNs() : FakeSteadyClock::Now();
   }
 
   /// TrackingYaml plus `T_hold` shortened to 0.02 s (applied BEFORE `tweak`,
@@ -307,7 +300,7 @@ class SupervisorScenarioTest : public ::testing::Test {
                const std::array<double, kUr5eArmDof>& start_arm = kUr5eHome, bool arm = true) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
     if (!real_clock_) {
-      ctrl_->SetClockForTesting(&FakeNowNs);
+      ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
     }
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
@@ -332,6 +325,8 @@ class SupervisorScenarioTest : public ::testing::Test {
                                              << static_cast<int>(ctrl_->GetParkReason()) << ")";
     ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
     ASSERT_TRUE(ctrl_->AreTrialsEnabled()) << "precondition: the S7 supervisor is not wired";
+    ASSERT_EQ(ctrl_->GetPlannerThread(), nullptr)
+        << "precondition: the planner wakes on the real clock (SetClockForTesting)";
     if (arm) {
       SetArmed(true);
     }
@@ -541,7 +536,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     if (real_clock_) {
       std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
     } else {
-      g_fake_now_ns.fetch_add(kHNs, std::memory_order_relaxed);
+      FakeSteadyClock::Step();
     }
   }
 
@@ -700,9 +695,6 @@ class SupervisorScenarioTest : public ::testing::Test {
         << Window(release, 2);
   }
 
-  /// DECEL at t_c on the LEAD axis (R-DECEL-ENTRY): the tick before did not
-  /// see now_lead ≥ t_c and the entry tick did. Bounded by the stamps around
-  /// the controller's own clock read, so it is exact rather than grid-based.
   /// NormalTrialIsCapturedAndReArms, shared by both clocks.
   void NormalTrialCase() {
     ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
@@ -748,6 +740,9 @@ class SupervisorScenarioTest : public ::testing::Test {
     }
   }
 
+  /// DECEL at t_c on the LEAD axis (R-DECEL-ENTRY): the tick before did not
+  /// see now_lead ≥ t_c and the entry tick did. Bounded by the stamps around
+  /// the controller's own clock read, so it is exact rather than grid-based.
   void ExpectDecelAtTc(std::int64_t t_arm_ns = 0) const {
     const int d = Entry(Mode::kDecel);
     ASSERT_GT(d, 0) << Transitions();
@@ -2513,8 +2508,6 @@ class FaultExtensionTest : public SupervisorScenarioTest {
         max_ticks);
   }
 
-  /// FAULT by the stop deadline, from an ABORT_SAFE whose ramp needs more than
-  /// the one tick a sub-tick deadline allows. Leaves the log at the FAULT entry.
   /// AnAbortSafeRampPastTheStopDeadlineFaultsAndStillStops, shared by both
   /// clocks.
   void StopDeadlineCase() {
@@ -2538,6 +2531,8 @@ class FaultExtensionTest : public SupervisorScenarioTest {
     EXPECT_EQ(log_.back().body.fault_cause, FaultCause::kStopDeadline) << "the cause is a state";
   }
 
+  /// FAULT by the stop deadline, from an ABORT_SAFE whose ramp needs more than
+  /// the one tick a sub-tick deadline allows. Leaves the log at the FAULT entry.
   void FaultByTheStopDeadline() {
     ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(3.0), StartAxis(), 0.0, 1.0, Deadlines(0.001, 5.0)));
     ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();

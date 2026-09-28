@@ -50,8 +50,8 @@ N = len(JOINTS)
 # Refinement (one scipy minimize per candidate, ~2 s each here) is what these
 # tests pay for — the sampling itself is ~1 s per 1,500 draws. The property
 # tests below assert per-row invariants, which hold for any number of refined
-# rows, so they refine this many; the search-QUALITY claim
-# (test_search_beats_brute_force_grid) keeps its own count.
+# rows, so they refine this many; a test that compares optima across searches
+# (test_search_beats_brute_force_grid, the objective test) keeps its own count.
 PROPERTY_REFINE_TOP = 2
 
 
@@ -271,7 +271,9 @@ def test_the_objective_picks_the_largest_of_its_own_key(tmp_path):
         "samples": 1500,
         "seed": 5,
         "walk_frac": 0.6,
-        "refine_top": PROPERTY_REFINE_TOP,
+        # Not PROPERTY_REFINE_TOP: the last assertion compares two searches'
+        # optima, which depends on which rows were refined.
+        "refine_top": 4,
     }
     by_dls = cws.search_wait_poses(arm, qd_plan, q_ref, **common)
     by_lp = cws.search_wait_poses(arm, qd_plan, q_ref, objective="lp", **common)

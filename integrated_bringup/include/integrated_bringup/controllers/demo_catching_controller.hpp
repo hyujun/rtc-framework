@@ -495,15 +495,17 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Steady-clock source for every instant this controller reads itself: the
   /// tick's `now`, the plan admission's, the motion deadlines and reset floor,
-  /// and the vision ingress's receipt stamp. Same signature and default as
-  /// rtc::catching::PlannerCycle::ClockFn.
-  using ClockFn = std::int64_t (*)() noexcept;
+  /// and the vision ingress's receipt stamp. The planner's own type, so the
+  /// two cannot drift; the default is the same rtc::SteadyNowNs.
+  using ClockFn = rtc::catching::PlannerCycle::ClockFn;
 
   /// Replace the clock so a closed-loop test can step time by `state.dt`
   /// instead of sleeping through it. Non-RT: call before on_configure, while
-  /// no callback or thread can read it. The planner thread's wake is NOT
-  /// covered (it reads rtc::SteadyNowNs itself) — a test that injects a clock
-  /// runs with `planner.enabled: false`, which is the default.
+  /// no callback or thread can read it. The planner is NOT covered: its thread
+  /// wakes on the real clock and stamps plans with it, so an injected clock
+  /// with `planner.enabled: true` would judge real-clock plans against fake
+  /// instants. A test that injects one keeps the planner disabled (the
+  /// default) and checks GetPlannerThread() is null after activation.
   void SetClockForTesting(ClockFn clock) noexcept { clock_ = clock; }
 
   /// The ARM's position box as the solver received it — margined, device
