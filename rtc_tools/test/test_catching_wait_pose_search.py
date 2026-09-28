@@ -47,6 +47,12 @@ WAIT_POSE = [0.4, -0.9, 0.6, -0.3, 0.5, -0.4]
 FRAME = csb.ExtraFrame("tool", (0.05, 0.0, 0.03), (0.3, -0.2, 0.1))
 Q_LO, Q_HI = -3.0, 3.0
 N = len(JOINTS)
+# Refinement (one scipy minimize per candidate, ~2 s each here) is what these
+# tests pay for — the sampling itself is ~1 s per 1,500 draws. The property
+# tests below assert per-row invariants, which hold for any number of refined
+# rows, so they refine this many; a test that compares optima across searches
+# (test_search_beats_brute_force_grid, the objective test) keeps its own count.
+PROPERTY_REFINE_TOP = 2
 
 
 def arm_urdf() -> str:
@@ -265,6 +271,8 @@ def test_the_objective_picks_the_largest_of_its_own_key(tmp_path):
         "samples": 1500,
         "seed": 5,
         "walk_frac": 0.6,
+        # Not PROPERTY_REFINE_TOP: the last assertion compares two searches'
+        # optima, which depends on which rows were refined.
         "refine_top": 4,
     }
     by_dls = cws.search_wait_poses(arm, qd_plan, q_ref, **common)
@@ -308,6 +316,8 @@ def test_every_reported_row_satisfies_constraints(tmp_path):
             "3000",
             "--seed",
             "5",
+            "--refine-top",
+            str(PROPERTY_REFINE_TOP),
             "--out",
             str(out),
         ]
@@ -344,6 +354,8 @@ def test_seed_reproducibility(tmp_path):
         "1500",
         "--seed",
         "11",
+        "--refine-top",
+        str(PROPERTY_REFINE_TOP),
     ]
     out_a, out_b = tmp_path / "a", tmp_path / "b"
     assert cws.main([*argv_common, "--out", str(out_a)]) == 0
@@ -387,6 +399,8 @@ def test_box_constraint_end_to_end_keeps_every_row_inside(tmp_path):
             "3000",
             "--seed",
             "9",
+            "--refine-top",
+            str(PROPERTY_REFINE_TOP),
             "--out",
             str(out),
         ]
@@ -424,6 +438,8 @@ def test_overlay_snippet_parses_to_the_best_pose(tmp_path):
             "2000",
             "--seed",
             "13",
+            "--refine-top",
+            str(PROPERTY_REFINE_TOP),
             "--out",
             str(out),
         ]
@@ -628,7 +644,7 @@ def test_min_sigma_drops_candidates_and_every_reported_row_clears_it(tmp_path):
         "samples": 800,
         "seed": 5,
         "walk_frac": 0.6,
-        "refine_top": 3,
+        "refine_top": PROPERTY_REFINE_TOP,
     }
     free = cws.search_wait_poses(arm, qd_plan, q_ref, **common)
     assert free["n_sigma_dropped"] == 0
@@ -750,7 +766,7 @@ def test_the_search_stays_inside_the_profiles_margined_joint_box(tmp_path):
             "--seed",
             "5",
             "--refine-top",
-            "3",
+            str(PROPERTY_REFINE_TOP),
             "--out",
             str(out),
         ]

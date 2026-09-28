@@ -62,13 +62,13 @@
 #include <fstream>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
 
 using integrated_bringup::DemoCatchingController;
 using integrated_bringup::testfx::CatchFrameOracle;
+using integrated_bringup::testfx::FakeSteadyClock;
 using integrated_bringup::testfx::kDt;
 using integrated_bringup::testfx::kUr5eArmDof;
 using integrated_bringup::testfx::kUr5eHome;
@@ -126,15 +126,14 @@ struct CaseResult {
   std::string end_mode;
 };
 
-std::int64_t SteadyNs() {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
 class ClikSweepTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    // The controller's clock and this file's stamps: stepped one control
+    // period per tick, not slept through. The sweep measures the law on the
+    // tick grid; the solve-time budget it asserts is the solver's own
+    // measurement, not this clock.
+    FakeSteadyClock::Restart();
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_clik_sweep");
     builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
@@ -181,6 +180,7 @@ class ClikSweepTest : public ::testing::Test {
     const double t_c = kDetectRangeM / speed;
 
     ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
     ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
@@ -202,6 +202,8 @@ class ClikSweepTest : public ::testing::Test {
     EXPECT_EQ(ctrl_->on_configure(prev, node_, yaml),
               DemoCatchingController::CallbackReturn::SUCCESS);
     EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+    EXPECT_EQ(ctrl_->GetPlannerThread(), nullptr)
+        << "precondition: the planner wakes on the real clock (SetClockForTesting)";
     node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
 
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
@@ -246,7 +248,7 @@ class ClikSweepTest : public ::testing::Test {
         // start at the message stamp — republishing a fixed origin would make
         // the ball jump backwards every 10 ticks and the measured error would
         // be an artefact of the fixture.
-        const std::int64_t now = SteadyNs();
+        const std::int64_t now = FakeSteadyClock::Now();
         const double to_catch = t_c_abs == 0 ? t_c : static_cast<double>(t_c_abs - now) * 1e-9;
         const Eigen::Vector3d p0 = p_c - v_ball * to_catch;
         integrated_bringup::testing::CloudSpec spec;
@@ -280,7 +282,7 @@ class ClikSweepTest : public ::testing::Test {
 
       const auto rec = ctrl_->GetLastTickRecord();
       if (t_c_abs == 0 && rec.plan_valid) {
-        t_c_abs = SteadyNs() + static_cast<std::int64_t>(t_c * 1e9);
+        t_c_abs = FakeSteadyClock::Now() + static_cast<std::int64_t>(t_c * 1e9);
       }
       if (rec.clik_ran) {
         r.ticks += 1;
@@ -313,8 +315,8 @@ class ClikSweepTest : public ::testing::Test {
         }
       }
 
-      std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
-      if (t_c_abs != 0 && SteadyNs() >= t_c_abs) {
+      FakeSteadyClock::Step();
+      if (t_c_abs != 0 && FakeSteadyClock::Now() >= t_c_abs) {
         break;  // the catch instant: this is where the numbers are read
       }
     }
@@ -431,6 +433,7 @@ TEST_F(ClikSweepTest, HowLongTheShippedLawNeedsForOneCatchPose) {
       (Eigen::AngleAxisd(kMaxTiltDeg * M_PI / 180.0, axis) * z0).normalized();
 
   ctrl_ = std::make_unique<DemoCatchingController>("");
+  ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
   ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
   ctrl_->SetSharedModelBuilder(builder_);
   ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
@@ -445,6 +448,8 @@ TEST_F(ClikSweepTest, HowLongTheShippedLawNeedsForOneCatchPose) {
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
   ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_->GetPlannerThread(), nullptr)
+      << "precondition: the planner wakes on the real clock (SetClockForTesting)";
   node_->set_parameter(rclcpp::Parameter(integrated_bringup::kCatchingEnableParam, true));
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_node(node_->get_node_base_interface());
@@ -507,7 +512,7 @@ TEST_F(ClikSweepTest, HowLongTheShippedLawNeedsForOneCatchPose) {
     if (t_axis_1deg < 0.0 && ax_err < 1.0) {
       t_axis_1deg = state.t_relative_s;
     }
-    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    FakeSteadyClock::Step();
   }
 
   const pinocchio::SE3 pose = oracle_->PoseAt(arm_names_, commanded, kUr5eArmDof);

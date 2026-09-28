@@ -493,6 +493,21 @@ class DemoCatchingController final : public RTControllerInterface {
     catching_diag_log_handle_ = std::move(handle);
   }
 
+  /// Steady-clock source for every instant this controller reads itself: the
+  /// tick's `now`, the plan admission's, the motion deadlines and reset floor,
+  /// and the vision ingress's receipt stamp. The planner's own type, so the
+  /// two cannot drift; the default is the same rtc::SteadyNowNs.
+  using ClockFn = rtc::catching::PlannerCycle::ClockFn;
+
+  /// Replace the clock so a closed-loop test can step time by `state.dt`
+  /// instead of sleeping through it. Non-RT: call before on_configure, while
+  /// no callback or thread can read it. The planner is NOT covered: its thread
+  /// wakes on the real clock and stamps plans with it, so an injected clock
+  /// with `planner.enabled: true` would judge real-clock plans against fake
+  /// instants. A test that injects one keeps the planner disabled (the
+  /// default) and checks GetPlannerThread() is null after activation.
+  void SetClockForTesting(ClockFn clock) noexcept { clock_ = clock; }
+
   /// The ARM's position box as the solver received it — margined, device
   /// order, empty when the box is incomplete. Exposed so a test can assert
   /// that the abort ramp and CLIK were handed the SAME box rather than
@@ -1491,6 +1506,16 @@ class DemoCatchingController final : public RTControllerInterface {
 
   rclcpp::Logger logger_{rclcpp::get_logger("integrated_bringup.demo_catching_controller")};
   rclcpp::Clock log_clock_{RCL_STEADY_TIME};
+  /// The controller's own reading of the steady clock (SetClockForTesting).
+  ///
+  /// Read per tick rather than accumulated as `iteration * dt` (plan §3): the
+  /// two diverge by exactly the jitter and overrun this controller's deadlines
+  /// are about, and the accumulated version cannot see a missed tick at all.
+  /// The axis itself is `rtc::SteadyNowNs` — the same read the device backends
+  /// use for their receipt stamps, which is what makes an age computed here
+  /// comparable to one computed there. Configuration, not tick state: no
+  /// reset row.
+  ClockFn clock_{&rtc::SteadyNowNs};
 };
 
 }  // namespace integrated_bringup

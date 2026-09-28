@@ -10,6 +10,7 @@
 #pragma once
 
 #include "catching_cloud_fixture.hpp"
+#include "rtc_base/types/types.hpp"  // rtc::SteadyNowNs
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
@@ -18,6 +19,8 @@
 #include <pinocchio/algorithm/kinematics.hpp>
 
 #include <array>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -26,6 +29,29 @@
 namespace integrated_bringup::testfx {
 
 constexpr double kDt = 0.002;  // 500 Hz, the shipped control_rate
+/// kDt on the steady axis: one tick of FakeSteadyClock.
+constexpr std::int64_t kDtNs = 2'000'000;
+static_assert(static_cast<double>(kDtNs) == kDt * 1e9, "kDtNs must be kDt in ns");
+
+/// The clock a closed-loop suite hands DemoCatchingController::
+/// SetClockForTesting: advanced exactly one control period per tick instead
+/// of slept through, so the controller's clock and `state.dt` agree by
+/// construction. A function pointer carries no state, hence one instant per
+/// process; Restart() (per case) puts it on the real steady axis so a stamp
+/// the test takes from rtc::SteadyNowNs stays comparable. The planner thread
+/// does not read it — a suite that injects it keeps the planner disabled.
+class FakeSteadyClock {
+ public:
+  static std::int64_t Now() noexcept { return now_ns_.load(std::memory_order_relaxed); }
+
+  static void Step() noexcept { now_ns_.fetch_add(kDtNs, std::memory_order_relaxed); }
+
+  static void Restart() noexcept { now_ns_.store(rtc::SteadyNowNs(), std::memory_order_relaxed); }
+
+ private:
+  static inline std::atomic<std::int64_t> now_ns_{0};
+};
+
 constexpr const char* kCatchFrame = "catch_frame";
 /// The shipped offset (config/ur5e_p1b/_base.yaml urdf.extra_frames).
 const Eigen::Vector3d kCatchXyz{0.015, 0.145, 0.052};
