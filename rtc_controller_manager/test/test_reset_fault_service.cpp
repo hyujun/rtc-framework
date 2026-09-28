@@ -20,6 +20,7 @@
 // tick thread to supply those Compute() calls. Clearing the latch inside
 // ResetFault() itself would make the service's wait for an RT tick untestable —
 // a service that never waited would pass just as well.
+#include "rclcpp_suite_fixture.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_msgs/srv/reset_fault.hpp>
 
@@ -155,20 +156,8 @@ class ControllerLifecycleTestAccess {
 
 // ── Fixture ─────────────────────────────────────────────────────────────
 
-class ResetFaultServiceTest : public ::testing::Test {
+class ResetFaultServiceTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     node_ = std::make_shared<RtControllerNode>("test_reset_fault_node");
 

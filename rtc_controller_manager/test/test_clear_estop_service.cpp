@@ -13,6 +13,7 @@
 // /rtc_cm/reset_fault's, because here the latch really is down by the time the
 // reply is written.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_test_access.hpp"
 #include <rtc_msgs/srv/clear_estop.hpp>
 
@@ -29,20 +30,8 @@
 namespace rtc {
 namespace {
 
-class ClearEstopServiceTest : public ::testing::Test {
+class ClearEstopServiceTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     node_ = std::make_shared<RtControllerNode>("test_clear_estop_node");
 

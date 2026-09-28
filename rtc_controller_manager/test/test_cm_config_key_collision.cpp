@@ -27,6 +27,7 @@
 // reordering (--gtest_shuffle / --gtest_repeat / a TEST_F appended below) fails
 // naming itself instead of looking like a guard bug.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
@@ -58,20 +59,8 @@ rclcpp_lifecycle::State StateInactive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "inactive");
 }
 
-class CmConfigKeyCollisionTest : public ::testing::Test {
+class CmConfigKeyCollisionTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     PipelineTestController::ResetCaptured();
     PipelineStubBackend::ResetCaptured();

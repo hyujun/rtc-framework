@@ -8,6 +8,7 @@
 // helpers can be exercised without going through the full on_configure
 // pipeline (which requires a complete URDF + controllers YAML config).
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -129,20 +130,8 @@ class ControllerLifecycleTestAccess {
 
 // ── Fixture ─────────────────────────────────────────────────────────────
 
-class ControllerLifecycleTest : public ::testing::Test {
+class ControllerLifecycleTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     node_ = std::make_shared<RtControllerNode>("test_lifecycle_node");
 

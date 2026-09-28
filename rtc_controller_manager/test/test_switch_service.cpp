@@ -17,6 +17,7 @@
 // and re-declared here as a friend bridge) to inject MockController instances
 // without going through the full on_configure pipeline.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_msgs/srv/list_controllers.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
@@ -125,7 +126,8 @@ class ControllerLifecycleTestAccess {
   // lifecycle. CM's CreateServices() requires cb_group_nrt_callback_ already set.
   static void BringServicesOnline(RtControllerNode& node) {
     if (!node.cb_group_nrt_callback_) {
-      node.cb_group_nrt_callback_ = node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+      node.cb_group_nrt_callback_ =
+          node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     }
     node.CreateServices();
   }
@@ -133,20 +135,8 @@ class ControllerLifecycleTestAccess {
 
 // ── Fixture ─────────────────────────────────────────────────────────────
 
-class SwitchServiceTest : public ::testing::Test {
+class SwitchServiceTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     node_ = std::make_shared<RtControllerNode>("test_switch_node");
 

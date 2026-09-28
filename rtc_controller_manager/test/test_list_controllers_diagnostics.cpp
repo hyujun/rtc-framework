@@ -22,6 +22,7 @@
 // contain the defect for the field to have anything to say. Its Compute() is
 // called from the test body rather than by a stand-in RT loop — these fields
 // are cumulative, so the tests need to know exactly how many drains happened.
+#include "rclcpp_suite_fixture.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_msgs/srv/list_controllers.hpp>
 
@@ -141,20 +142,8 @@ class ControllerLifecycleTestAccess {
 
 // ── Fixture ─────────────────────────────────────────────────────────────
 
-class ListControllersDiagnosticsTest : public ::testing::Test {
+class ListControllersDiagnosticsTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override {
     node_ = std::make_shared<RtControllerNode>("test_list_diag_node");
 

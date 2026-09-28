@@ -20,6 +20,7 @@
 // the bounds check in SwitchActiveController cannot catch it, because the wrong
 // index is still in range.
 
+#include "rclcpp_suite_fixture.hpp"
 #include "rt_cm_test_access.hpp"
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -90,20 +91,8 @@ rclcpp_lifecycle::State StateUnconfigured() {
                                  "unconfigured");
 }
 
-class RequiredConfigTest : public ::testing::Test {
+class RequiredConfigTest : public RclcppSuiteTest {
  protected:
-  static void SetUpTestSuite() {
-    if (!rclcpp::ok()) {
-      rclcpp::init(0, nullptr);
-    }
-  }
-
-  static void TearDownTestSuite() {
-    if (rclcpp::ok()) {
-      rclcpp::shutdown();
-    }
-  }
-
   void SetUp() override { RequiredConfigController::load_config_calls.store(0); }
 
   static std::shared_ptr<RtControllerNode> MakeNode() {
