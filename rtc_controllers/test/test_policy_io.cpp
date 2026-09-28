@@ -22,6 +22,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -135,6 +136,26 @@ void ExpectRejectMentioning(const std::string& yaml, std::string_view needle) {
     return;
   }
   ADD_FAILURE() << "expected the schema to be refused, but it parsed";
+}
+
+/// @p base with the first occurrence of @p from replaced by @p to. Fails the
+/// calling case (rather than silently testing the unedited fixture) when the
+/// anchor is gone.
+std::string Edited(std::string_view base, std::string_view from, std::string_view to) {
+  std::string yaml(base);
+  const auto at = yaml.find(from);
+  EXPECT_NE(at, std::string::npos) << "fixture anchor missing: " << from;
+  if (at != std::string::npos) {
+    yaml.replace(at, from.size(), to);
+  }
+  return yaml;
+}
+
+/// Row name of a refusal table: the name the case had as a standalone TEST, so
+/// `--gtest_filter='*<that name>*'` still finds it.
+template <typename Row>
+std::string RowName(const ::testing::TestParamInfo<Row>& info) {
+  return info.param.name;
 }
 
 }  // namespace
@@ -299,79 +320,7 @@ output_features:
   EXPECT_FLOAT_EQ(aux[0], 5.0F);
 }
 
-// ── Tensor names are mandatory (#511 D-1) ───────────────────────────────────
-
-TEST(PolicyIoParams, RejectsUnnamedInputTensor) {
-  const std::string yaml = R"(
-inputs:
-  - shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "a"
-    shape: [1, 6]
-output_features:
-  - { tensor: "a", role: "joint_target", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml, "inputs[0] is missing 'name'");
-}
-
-TEST(PolicyIoParams, RejectsUnnamedOutputTensor) {
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - shape: [1, 6]
-output_features:
-  - { tensor: "a", role: "joint_target", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml, "outputs[0] is missing 'name'");
-}
-
-TEST(PolicyIoParams, RejectsDuplicateTensorName) {
-  // Two inputs called "obs" bind the same .onnx tensor twice, leaving a real
-  // model input unwritten — and the engine's own arity check would still pass.
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-  - name: "obs"
-    shape: [1, 3]
-    features: ["palm.position"]
-outputs:
-  - name: "a"
-    shape: [1, 6]
-output_features:
-  - { tensor: "a", role: "joint_target", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml, "inputs[1] repeats tensor name 'obs'");
-}
-
 // ── Output slices refer to a tensor by NAME ─────────────────────────────────
-
-TEST(PolicyIoParams, RejectsSliceOfUndeclaredTensor) {
-  std::string yaml = kBaseYaml;
-  yaml.replace(yaml.find("tensor: \"posture\""), std::string("tensor: \"posture\"").size(),
-               "tensor: \"postrue\"");
-  ExpectRejectMentioning(yaml, "names output tensor 'postrue'");
-}
-
-TEST(PolicyIoParams, RejectsSliceWithoutTensorReference) {
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "a"
-    shape: [1, 6]
-output_features:
-  - { role: "joint_target", device: "arm", offset: 0, count: 6 }
-)";
-  ExpectRejectMentioning(yaml, "must name the output tensor it slices");
-}
 
 TEST(PolicyIoParams, SliceOrderIsIndependentOfTensorOrder) {
   // The two lists are deliberately crossed: `posture` is sliced first while
@@ -451,81 +400,6 @@ output_features:
 
 // ── Schema rejections ───────────────────────────────────────────────────────
 
-TEST(PolicyIoParams, RejectsUnknownFeatureId) {
-  std::string yaml = kBaseYaml;
-  yaml.replace(yaml.find("\"palm.position\""), std::string("\"palm.position\"").size(),
-               "\"palm.postion\"");  // typo, and it is 3 wide so the sum still works out
-  ExpectRejectMentioning(yaml, "unknown id 'palm.postion'");
-}
-
-TEST(PolicyIoParams, RejectsFeatureSumMismatch) {
-  // Declared width 33, features sum to 34 — the single most likely edit after a
-  // retrain that added or dropped one observation.
-  std::string yaml = kBaseYaml;
-  yaml.replace(yaml.find("[1, 34]"), std::string("[1, 34]").size(), "[1, 33]");
-  ExpectRejectMentioning(yaml, "features sum to 34 elements but its shape declares 33");
-}
-
-TEST(PolicyIoParams, RejectsDuplicateFeatureIdWithinOneTensor) {
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 12]
-    features: ["palm.position", "palm.position", "object.position", "object.position"]
-outputs:
-  - name: "a"
-    shape: [1, 1]
-output_features:
-  - { tensor: "a", role: "posture_scalar", device: "hand" }
-)";
-  ExpectRejectMentioning(yaml, "repeats id 'palm.position'");
-}
-
-TEST(PolicyIoParams, RejectsDuplicateFeatureIdAcrossTensors) {
-  // #511 D-6. The message names BOTH places: which of the two copies is the
-  // mistake is not knowable from here, and an operator handed only the second
-  // one will delete the wrong line half the time.
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-  - name: "aux"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "a"
-    shape: [1, 6]
-output_features:
-  - { tensor: "a", role: "joint_target", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml,
-                         "inputs[1].features[0] repeats id 'ur5e.position', already "
-                         "declared at inputs[0].features[0]");
-}
-
-TEST(PolicyIoParams, RejectsNonPositiveShapeDimension) {
-  std::string yaml = kBaseYaml;
-  yaml.replace(yaml.find("[1, 34]"), std::string("[1, 34]").size(), "[0, 34]");
-  ExpectRejectMentioning(yaml, "inputs[0].shape[0] must be > 0");
-}
-
-TEST(PolicyIoParams, RejectsOverlappingSlicesOnOneTensor) {
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "action"
-    shape: [1, 6]
-output_features:
-  - { tensor: "action", role: "joint_target",   device: "arm",  offset: 0, count: 4 }
-  - { tensor: "action", role: "posture_scalar", device: "hand", offset: 3, count: 3 }
-)";
-  ExpectRejectMentioning(yaml, "overlaps output_features[0]");
-}
-
 TEST(PolicyIoParams, AllowsSameOffsetOnDifferentTensors) {
   // The mirror of the case above: two tensors both starting at 0 is the shipped
   // layout, so the overlap check must be per tensor and not global.
@@ -533,62 +407,6 @@ TEST(PolicyIoParams, AllowsSameOffsetOnDifferentTensors) {
   EXPECT_EQ(p.output_features[0].slice.offset, 0);
   EXPECT_EQ(p.output_features[1].slice.offset, 0);
   EXPECT_NE(p.output_features[0].slice.tensor, p.output_features[1].slice.tensor);
-}
-
-TEST(PolicyIoParams, RejectsSlicePastTensor) {
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "action"
-    shape: [1, 6]
-output_features:
-  - { tensor: "action", role: "joint_target", device: "arm", offset: 4, count: 4 }
-)";
-  ExpectRejectMentioning(yaml, "past tensor 'action's 6 elements");
-}
-
-TEST(PolicyIoParams, RejectsAMalformedOffsetInsteadOfReadingItAsZero) {
-  // `offset` is optional (the whole tensor is the default), and the naive way
-  // to spell that — `as<int>(0)` — cannot tell "the key is absent" from "the
-  // key is there and unparseable". 0 is a perfectly legal offset, so a typed
-  // `6.0` would slice [0, 6) of a tensor whose arm half starts at 6: the arm
-  // driven by the hand's elements, finite and inside the joint limits, with no
-  // diagnostic anywhere. `count` cannot fail this way because its own default
-  // of 0 is already illegal.
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "action"
-    shape: [1, 12]
-output_features:
-  - { tensor: "action", role: "joint_target", device: "arm", offset: 6.0, count: 6 }
-)";
-  ExpectRejectMentioning(yaml, "must declare an integer offset >= 0");
-}
-
-TEST(PolicyIoParams, RejectsTheSameRoleTwiceOnOneDevice) {
-  // Two disjoint slices, so nothing overlaps and both widths fit — the config
-  // is wrong only in that one device cannot be driven twice in the same role.
-  // The pre-#511 binding resolved this by keeping whichever came last.
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "action"
-    shape: [1, 6]
-output_features:
-  - { tensor: "action", role: "joint_target", device: "arm", offset: 0, count: 3 }
-  - { tensor: "action", role: "joint_target", device: "arm", offset: 3, count: 3 }
-)";
-  ExpectRejectMentioning(yaml, "repeats arm/joint_target, already declared at output_features[0]");
 }
 
 TEST(PolicyIoParams, AllowsTheSameRoleOnDifferentDevices) {
@@ -618,46 +436,6 @@ output_features:
   EXPECT_EQ(p.output_features[1].slice.count, 10);
 }
 
-TEST(PolicyIoParams, RejectsAnOutputFeatureWithoutARole) {
-  // Written out rather than edited out of kBaseYaml: string surgery on a
-  // fixture that clang-format may realign is a case that fails for the wrong
-  // reason the day the alignment moves (it did, once, in this very file).
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "action"
-    shape: [1, 6]
-output_features:
-  - { tensor: "action", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml, "must declare what the slice means");
-}
-
-TEST(PolicyIoParams, RejectsAnOutputFeatureWithoutADevice) {
-  const std::string yaml = R"(
-inputs:
-  - name: "obs"
-    shape: [1, 6]
-    features: ["ur5e.position"]
-outputs:
-  - name: "action"
-    shape: [1, 6]
-output_features:
-  - { tensor: "action", role: "joint_target" }
-)";
-  ExpectRejectMentioning(yaml, "must declare the device group it drives");
-}
-
-TEST(PolicyIoParams, RejectsPartialAffineLane) {
-  std::string yaml = kBaseYaml;
-  // 3 of 34 — would normalise a prefix only.
-  yaml.replace(yaml.find("    features:"), 0, "    scale: [1.0, 1.0, 1.0]\n");
-  ExpectRejectMentioning(yaml, "inputs[0].scale has 3 entries");
-}
-
 TEST(PolicyIoParams, AcceptsEmptyAffineLaneAsIdentity) {
   std::string yaml = kBaseYaml;
   yaml.replace(yaml.find("    features:"), 0, "    scale: []\n    offset: []\n");
@@ -678,12 +456,6 @@ TEST(PolicyIoParams, RejectsNonFiniteAffineValue) {
   std::string yaml = kBaseYaml;
   yaml.replace(yaml.find("    features:"), 0, lane);
   ExpectRejectMentioning(yaml, "inputs[0].scale[5] must be finite");
-}
-
-TEST(PolicyIoParams, RejectsDecimationBelowOne) {
-  std::string yaml = kBaseYaml;
-  yaml.replace(yaml.find("decimation: 10"), std::string("decimation: 10").size(), "decimation: 0");
-  ExpectRejectMentioning(yaml, "decimation must be >= 1");
 }
 
 TEST(PolicyIoParams, DecimationDefaultsToEveryTick) {
@@ -750,10 +522,215 @@ TEST(PolicyIoParams, AFeedForwardSchemaHasNoLinks) {
   EXPECT_TRUE(ParseText(kBaseYaml).recurrent_links.empty());
 }
 
-TEST(PolicyIoParams, RejectsAnInputThatIsBothFeaturesAndRecurrent) {
-  // Every step after the first would overwrite the observation with the
-  // policy's own last answer, and the actions would stay finite throughout.
-  const std::string yaml = R"(
+// ── Schema refusals, one row per case ───────────────────────────────────────
+//
+// Every row is a case that used to stand alone as TEST(PolicyIoParams, <name>)
+// and keeps that name as its row name. A suffix names the #511 decision the row
+// enforces, so one `--gtest_filter` finds all of a decision's rows: D1 — tensor
+// names are mandatory; D6 — a feature id is declared once across all inputs;
+// P5 — recurrent links.
+
+namespace {
+
+/// A config written out in full that must be refused for @c needle.
+struct WrittenReject {
+  const char* name;
+  const char* yaml;
+  const char* needle;
+};
+
+// gtest prints a failing row by its name, not as raw bytes.
+void PrintTo(const WrittenReject& row, std::ostream* os) {
+  *os << row.name;
+}
+
+/// @c base with @c from swapped for @c to must be refused for @c needle.
+struct EditedReject {
+  const char* name;
+  const char* base;
+  const char* from;
+  const char* to;
+  const char* needle;
+};
+
+void PrintTo(const EditedReject& row, std::ostream* os) {
+  *os << row.name;
+}
+
+constexpr WrittenReject kWrittenRejects[] = {
+    {"RejectsUnnamedInputTensor_D1", R"(
+inputs:
+  - shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "a"
+    shape: [1, 6]
+output_features:
+  - { tensor: "a", role: "joint_target", device: "arm" }
+)",
+     "inputs[0] is missing 'name'"},
+    {"RejectsUnnamedOutputTensor_D1", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - shape: [1, 6]
+output_features:
+  - { tensor: "a", role: "joint_target", device: "arm" }
+)",
+     "outputs[0] is missing 'name'"},
+    // Two inputs called "obs" bind the same .onnx tensor twice, leaving a real
+    // model input unwritten — and the engine's own arity check would still
+    // pass.
+    {"RejectsDuplicateTensorName_D1", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+  - name: "obs"
+    shape: [1, 3]
+    features: ["palm.position"]
+outputs:
+  - name: "a"
+    shape: [1, 6]
+output_features:
+  - { tensor: "a", role: "joint_target", device: "arm" }
+)",
+     "inputs[1] repeats tensor name 'obs'"},
+    {"RejectsSliceWithoutTensorReference", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "a"
+    shape: [1, 6]
+output_features:
+  - { role: "joint_target", device: "arm", offset: 0, count: 6 }
+)",
+     "must name the output tensor it slices"},
+    {"RejectsDuplicateFeatureIdWithinOneTensor", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 12]
+    features: ["palm.position", "palm.position", "object.position", "object.position"]
+outputs:
+  - name: "a"
+    shape: [1, 1]
+output_features:
+  - { tensor: "a", role: "posture_scalar", device: "hand" }
+)",
+     "repeats id 'palm.position'"},
+    // The message names BOTH places: which of the two copies is the mistake is
+    // not knowable from here, and an operator handed only the second one will
+    // delete the wrong line half the time.
+    {"RejectsDuplicateFeatureIdAcrossTensors_D6", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+  - name: "aux"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "a"
+    shape: [1, 6]
+output_features:
+  - { tensor: "a", role: "joint_target", device: "arm" }
+)",
+     "inputs[1].features[0] repeats id 'ur5e.position', already declared at "
+     "inputs[0].features[0]"},
+    {"RejectsOverlappingSlicesOnOneTensor", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", role: "joint_target",   device: "arm",  offset: 0, count: 4 }
+  - { tensor: "action", role: "posture_scalar", device: "hand", offset: 3, count: 3 }
+)",
+     "overlaps output_features[0]"},
+    {"RejectsSlicePastTensor", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", role: "joint_target", device: "arm", offset: 4, count: 4 }
+)",
+     "past tensor 'action's 6 elements"},
+    // `offset` is optional (the whole tensor is the default), and the naive way
+    // to spell that — `as<int>(0)` — cannot tell "the key is absent" from "the
+    // key is there and unparseable". 0 is a perfectly legal offset, so a typed
+    // `6.0` would slice [0, 6) of a tensor whose arm half starts at 6: the arm
+    // driven by the hand's elements, finite and inside the joint limits, with
+    // no diagnostic anywhere. `count` cannot fail this way because its own
+    // default of 0 is already illegal.
+    {"RejectsAMalformedOffsetInsteadOfReadingItAsZero", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 12]
+output_features:
+  - { tensor: "action", role: "joint_target", device: "arm", offset: 6.0, count: 6 }
+)",
+     "must declare an integer offset >= 0"},
+    // Two disjoint slices, so nothing overlaps and both widths fit — the config
+    // is wrong only in that one device cannot be driven twice in the same role.
+    // The pre-#511 binding resolved this by keeping whichever came last.
+    {"RejectsTheSameRoleTwiceOnOneDevice", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", role: "joint_target", device: "arm", offset: 0, count: 3 }
+  - { tensor: "action", role: "joint_target", device: "arm", offset: 3, count: 3 }
+)",
+     "repeats arm/joint_target, already declared at output_features[0]"},
+    // Written out rather than edited out of kBaseYaml: string surgery on a
+    // fixture that clang-format may realign is a case that fails for the wrong
+    // reason the day the alignment moves (it did, once, in this very file).
+    {"RejectsAnOutputFeatureWithoutARole", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", device: "arm" }
+)",
+     "must declare what the slice means"},
+    {"RejectsAnOutputFeatureWithoutADevice", R"(
+inputs:
+  - name: "obs"
+    shape: [1, 6]
+    features: ["ur5e.position"]
+outputs:
+  - name: "action"
+    shape: [1, 6]
+output_features:
+  - { tensor: "action", role: "joint_target" }
+)",
+     "must declare the device group it drives"},
+    // Every step after the first would overwrite the observation with the
+    // policy's own last answer, and the actions would stay finite throughout.
+    {"RejectsAnInputThatIsBothFeaturesAndRecurrent_P5", R"(
 inputs:
   - name: "obs"
     shape: [1, 6]
@@ -764,12 +741,9 @@ outputs:
     shape: [1, 6]
 output_features:
   - { tensor: "action", role: "joint_target", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml, "not both and not neither");
-}
-
-TEST(PolicyIoParams, RejectsAnInputThatIsNeitherFeaturesNorRecurrent) {
-  const std::string yaml = R"(
+)",
+     "not both and not neither"},
+    {"RejectsAnInputThatIsNeitherFeaturesNorRecurrent_P5", R"(
 inputs:
   - name: "obs"
     shape: [1, 6]
@@ -778,52 +752,9 @@ outputs:
     shape: [1, 6]
 output_features:
   - { tensor: "action", role: "joint_target", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml, "not both and not neither");
-}
-
-TEST(PolicyIoParams, RejectsAnUnknownInputSource) {
-  // "sensor" is a name no filler owns. The case used to spell `constant` here,
-  // which stops being unknown once a policy needs a tensor held at fixed values
-  // (a root pose the observation already expresses in its own frame).
-  std::string yaml = kRecurrentYaml;
-  yaml.replace(yaml.find("source: recurrent"), std::string("source: recurrent").size(),
-               "source: sensor");
-  ExpectRejectMentioning(yaml, "declares source 'sensor'");
-}
-
-TEST(PolicyIoParams, RejectsAnAffineLaneOnARecurrentTensor) {
-  std::string yaml = kRecurrentYaml;
-  yaml.replace(yaml.find("    source: recurrent"), std::string("    source: recurrent").size(),
-               "    source: recurrent\n    scale: [1.0, 1.0, 1.0, 1.0]");
-  ExpectRejectMentioning(yaml, "cannot carry an affine lane");
-}
-
-TEST(PolicyIoParams, RejectsFeedsToAnUndeclaredInput) {
-  std::string yaml = kRecurrentYaml;
-  yaml.replace(yaml.find("    feeds: \"h_in\""), std::string("    feeds: \"h_in\"").size(),
-               "    feeds: \"c_in\"");
-  ExpectRejectMentioning(yaml, "feeds 'c_in' but no such input tensor is declared");
-}
-
-TEST(PolicyIoParams, RejectsFeedsToAnObservationInput) {
-  std::string yaml = kRecurrentYaml;
-  yaml.replace(yaml.find("    feeds: \"h_in\""), std::string("    feeds: \"h_in\"").size(),
-               "    feeds: \"obs\"");
-  ExpectRejectMentioning(yaml, "filled by observation features");
-}
-
-TEST(PolicyIoParams, RejectsAFeedsWidthMismatch) {
-  // The failure a retrain that changed the hidden width produces. Both tensors
-  // are perfectly valid on their own.
-  std::string yaml = kRecurrentYaml;
-  yaml.replace(yaml.rfind("    shape: [1, 1, 4]"), std::string("    shape: [1, 1, 4]").size(),
-               "    shape: [1, 1, 8]");
-  ExpectRejectMentioning(yaml, "8 elements but feeds input 'h_in', which has 4");
-}
-
-TEST(PolicyIoParams, RejectsTwoOutputsFeedingOneInput) {
-  const std::string yaml = R"(
+)",
+     "not both and not neither"},
+    {"RejectsTwoOutputsFeedingOneInput_P5", R"(
 inputs:
   - name: "obs"
     shape: [1, 6]
@@ -842,45 +773,86 @@ outputs:
     feeds: "h_in"
 output_features:
   - { tensor: "action", role: "joint_target", device: "arm" }
-)";
-  ExpectRejectMentioning(yaml, "already feeds");
-}
-
-TEST(PolicyIoParams, RejectsARecurrentInputNothingFeeds) {
-  // Never written after the initial zero, so the policy reads a constant zero
-  // state forever while looking exactly like a working recurrent policy.
-  std::string yaml = kRecurrentYaml;
-  yaml.replace(yaml.find("    feeds: \"h_in\"\n"), std::string("    feeds: \"h_in\"\n").size(), "");
-  ExpectRejectMentioning(yaml, "no output declares `feeds:");
-}
-
-TEST(PolicyIoParams, RejectsSlicingATensorThatFeedsAnInput) {
-  // Hidden units read as radians: finite, in range, and driving the arm.
-  std::string yaml = kRecurrentYaml;
-  yaml.replace(
-      yaml.find("  - { tensor: \"action\", role: \"joint_target\", device: \"arm\" }"),
-      std::string("  - { tensor: \"action\", role: \"joint_target\", device: \"arm\" }").size(),
-      "  - { tensor: \"action\", role: \"joint_target\", device: \"arm\" }\n"
-      "  - { tensor: \"h_out\", role: \"posture_scalar\", device: \"hand\", offset: 0, "
-      "count: 1 }");
-  ExpectRejectMentioning(yaml, "which feeds recurrent input 'h_in'");
-}
-
-// ── The pre-#511 schema is named, not left to fail obscurely ────────────────
-
-TEST(PolicyIoParams, RejectsLegacyFlatSchemaByName) {
-  // A config left on the old format would otherwise fail as "inputs must be a
-  // non-empty sequence", which is true and tells the operator nothing about
-  // what changed.
-  const std::string yaml = R"(
+)",
+     "already feeds"},
+    // The pre-#511 schema is named, not left to fail obscurely: a config left
+    // on the old format would otherwise fail as "inputs must be a non-empty
+    // sequence", which is true and tells the operator nothing about what
+    // changed.
+    {"RejectsLegacyFlatSchemaByName", R"(
 input_shape: [1, 6]
 output_shapes: [[1, 6]]
 input_features: ["ur5e.position"]
 output_features:
   - { name: "a", head: 0, offset: 0, count: 6 }
-)";
-  ExpectRejectMentioning(yaml, "'input_shape' is the pre-#511 flat schema");
+)",
+     "'input_shape' is the pre-#511 flat schema"},
+};
+
+constexpr EditedReject kEditedRejects[] = {
+    {"RejectsSliceOfUndeclaredTensor", kBaseYaml, R"(tensor: "posture")", R"(tensor: "postrue")",
+     "names output tensor 'postrue'"},
+    // A typo, and it is 3 wide so the sum still works out.
+    {"RejectsUnknownFeatureId", kBaseYaml, R"("palm.position")", R"("palm.postion")",
+     "unknown id 'palm.postion'"},
+    // Declared width 33, features sum to 34 — the single most likely edit after
+    // a retrain that added or dropped one observation.
+    {"RejectsFeatureSumMismatch", kBaseYaml, "[1, 34]", "[1, 33]",
+     "features sum to 34 elements but its shape declares 33"},
+    {"RejectsNonPositiveShapeDimension", kBaseYaml, "[1, 34]", "[0, 34]",
+     "inputs[0].shape[0] must be > 0"},
+    // 3 of 34 — would normalise a prefix only.
+    {"RejectsPartialAffineLane", kBaseYaml,
+     "    features:", "    scale: [1.0, 1.0, 1.0]\n    features:", "inputs[0].scale has 3 entries"},
+    {"RejectsDecimationBelowOne", kBaseYaml, "decimation: 10", "decimation: 0",
+     "decimation must be >= 1"},
+    // "sensor" is a name no filler owns. The case used to spell `constant`
+    // here, which stops being unknown once a policy needs a tensor held at
+    // fixed values (a root pose the observation already expresses in its own
+    // frame).
+    {"RejectsAnUnknownInputSource_P5", kRecurrentYaml, "source: recurrent", "source: sensor",
+     "declares source 'sensor'"},
+    {"RejectsAnAffineLaneOnARecurrentTensor_P5", kRecurrentYaml, "    source: recurrent",
+     "    source: recurrent\n    scale: [1.0, 1.0, 1.0, 1.0]", "cannot carry an affine lane"},
+    {"RejectsFeedsToAnUndeclaredInput_P5", kRecurrentYaml, R"(    feeds: "h_in")",
+     R"(    feeds: "c_in")", "feeds 'c_in' but no such input tensor is declared"},
+    {"RejectsFeedsToAnObservationInput_P5", kRecurrentYaml, R"(    feeds: "h_in")",
+     R"(    feeds: "obs")", "filled by observation features"},
+    // The failure a retrain that changed the hidden width produces. Both
+    // tensors are perfectly valid on their own.
+    {"RejectsAFeedsWidthMismatch_P5", kRecurrentYaml, "    shape: [1, 1, 4]\n    feeds:",
+     "    shape: [1, 1, 8]\n    feeds:", "8 elements but feeds input 'h_in', which has 4"},
+    // Never written after the initial zero, so the policy reads a constant zero
+    // state forever while looking exactly like a working recurrent policy.
+    {"RejectsARecurrentInputNothingFeeds_P5", kRecurrentYaml, "    feeds: \"h_in\"\n", "",
+     "no output declares `feeds:"},
+    // Hidden units read as radians: finite, in range, and driving the arm.
+    {"RejectsSlicingATensorThatFeedsAnInput_P5", kRecurrentYaml, R"(device: "arm" })",
+     "device: \"arm\" }\n"
+     "  - { tensor: \"h_out\", role: \"posture_scalar\", device: \"hand\", "
+     "offset: 0, count: 1 }",
+     "which feeds recurrent input 'h_in'"},
+};
+
+class PolicyIoParamsWrittenReject : public ::testing::TestWithParam<WrittenReject> {};
+
+class PolicyIoParamsEditedReject : public ::testing::TestWithParam<EditedReject> {};
+
+}  // namespace
+
+TEST_P(PolicyIoParamsWrittenReject, IsRefusedForItsStatedReason) {
+  ExpectRejectMentioning(GetParam().yaml, GetParam().needle);
 }
+
+TEST_P(PolicyIoParamsEditedReject, IsRefusedForItsStatedReason) {
+  const EditedReject& row = GetParam();
+  ExpectRejectMentioning(Edited(row.base, row.from, row.to), row.needle);
+}
+
+INSTANTIATE_TEST_SUITE_P(PolicyIoParams, PolicyIoParamsWrittenReject,
+                         ::testing::ValuesIn(kWrittenRejects), RowName<WrittenReject>);
+INSTANTIATE_TEST_SUITE_P(PolicyIoParams, PolicyIoParamsEditedReject,
+                         ::testing::ValuesIn(kEditedRejects), RowName<EditedReject>);
 
 // ── PackSegment: all-or-nothing ─────────────────────────────────────────────
 
@@ -1217,19 +1189,6 @@ void ExpectNamedRejectMentioning(const std::string& yaml, std::string_view needl
   ADD_FAILURE() << "expected the schema to be refused, but it parsed";
 }
 
-/// kNamedYaml with the first occurrence of @p from replaced by @p to. Fails the
-/// calling case (rather than silently testing the unedited fixture) when the
-/// anchor is gone.
-std::string Edited(std::string_view from, std::string_view to) {
-  std::string yaml = kNamedYaml;
-  const auto at = yaml.find(from);
-  EXPECT_NE(at, std::string::npos) << "fixture anchor missing: " << from;
-  if (at != std::string::npos) {
-    yaml.replace(at, from.size(), to);
-  }
-  return yaml;
-}
-
 }  // namespace
 
 TEST(PolicyIoNamed, EachRowLandsWhereTheExportPutItNotWhereTheDeviceListsIt) {
@@ -1320,154 +1279,111 @@ TEST(PolicyIoNamed, ResolvingNamesListsEveryMissingJoint) {
   }
 }
 
-// ── By-name rejections ───────────────────────────────────────────────────────
+// ── By-name refusals, one row per case ──────────────────────────────────────
+//
+// kNamedYaml with @c from swapped for @c to must be refused for @c needle. Each
+// row used to stand alone as TEST(PolicyIoNamed, <name>) and keeps that name.
 
-TEST(PolicyIoNamed, RejectsNamesThatDoNotDivideTheTensor) {
-  ExpectNamedRejectMentioning(Edited(R"(["a0", "a1", "passive", "h0", "loop:0", "loop:1", "h1"])",
-                                     R"(["a0", "a1", "h0", "loop:0", "loop:1", "h1"])"),
-                              "does not divide the tensor's 7 elements");
+namespace {
+
+struct NamedReject {
+  const char* name;
+  const char* from;
+  const char* to;
+  const char* needle;
+};
+
+// gtest prints a failing row by its name, not as raw bytes.
+void PrintTo(const NamedReject& row, std::ostream* os) {
+  *os << row.name;
 }
 
-TEST(PolicyIoNamed, RejectsARepeatedElementName) {
-  ExpectNamedRejectMentioning(Edited(R"("passive")", R"("a0")"), "repeats 'a0'");
+constexpr NamedReject kNamedRejects[] = {
+    {"RejectsNamesThatDoNotDivideTheTensor",
+     R"(["a0", "a1", "passive", "h0", "loop:0", "loop:1", "h1"])",
+     R"(["a0", "a1", "h0", "loop:0", "loop:1", "h1"])", "does not divide the tensor's 7 elements"},
+    {"RejectsARepeatedElementName", R"("passive")", R"("a0")", "repeats 'a0'"},
+    {"RejectsARowTheExportDoesNotList", R"("loop:1", "h1"])", R"("loop:1", "h9"])",
+     "fills row 'h1', which 'joint_pos'.element_names does not list"},
+    {"RejectsAFeatureWithNoRowNamesInANamedTensor",
+     R"(features: ["arm.position", "hand.position"])",
+     R"(features: ["arm.position", "hand.position", "hand.index.force_norm"])", "has no row names"},
+    {"RejectsAFeatureWhoseRowWidthIsNotTheStride",
+     R"(features: ["link.palm.position", "link.tip_a.position"])",
+     R"(features: ["link.palm.position", "link.tip_b.orientation_xyzw"])",
+     "has 4 elements for 1 rows, but a row of 'body_pos' is 3 elements"},
+    {"RejectsTwoFeaturesClaimingOneElement", R"(features: ["arm.position", "hand.position"])",
+     R"(features: ["arm.position", "hand.position", "arm0.position"])",
+     "claims element 0 of 'joint_pos', which 'arm.position' already fills"},
+    // Self-overlap, and it names ITSELF as the first claimant. The one feature
+    // both stamps the owner slot and reads it back to build the message, so the
+    // message has to come from a list that already holds this feature — reading
+    // it from a list the feature is appended to afterwards is a read past the
+    // end while the rejection is being formatted.
+    {"RejectsAFeatureThatClaimsOneElementTwiceByItself",
+     R"(features: ["arm.position", "hand.position"])",
+     R"(features: ["arm.repeated_row", "hand.position"])",
+     "claims element 0 of 'joint_pos', which 'arm.repeated_row' already fills"},
+    {"RejectsANamedTensorWithUncoveredRowsAndNoFill",
+     "    fill: [0.0]\n    features: [\"arm.position\"", "    features: [\"arm.position\"",
+     "leaves 3 of 7 elements with no feature and declares no `fill:`"},
+    {"RejectsAPartialPositionalTensorWithoutAFill",
+     "    fill: [0.0]\n    features: [\"hand.thumb.force_norm\"]",
+     "    features: [\"hand.thumb.force_norm\"]",
+     "features sum to 1 elements but its shape declares 3"},
+    {"RejectsAFillWhoseLengthDoesNotDivideTheTensor", "fill: [0.0, 0.0, 0.0, 1.0]",
+     "fill: [0.0, 0.0, 1.0]", "a fill pattern is repeated over the tensor"},
+    {"RejectsANonFiniteFill", "fill: [0.0, 0.0, 0.0, 1.0]", "fill: [0.0, 0.0, 0.0, .nan]",
+     ".fill[3] must be finite"},
+    // The lane would normalise the filler — a "zero" slot would arrive as
+    // −offset·scale.
+    {"RejectsAnAffineLaneOnAPartlyCoveredTensor",
+     "    fill: [0.0]\n    features: [\"arm.position\"",
+     "    fill: [0.0]\n    scale: [1, 1, 1, 1, 1, 1, 1]\n    features: "
+     "[\"arm.position\"",
+     "only partly covered"},
+    {"RejectsAConstantWithoutValues", "    values: [0.0, 0.0, 0.0, 1.0]\n", "",
+     ".values must be a non-empty sequence"},
+    {"RejectsAConstantThatDoesNotSpellOutTheTensor", "values: [0.0, 0.0, 0.0, 1.0]",
+     "values: [0.0, 0.0, 1.0]", "must spell out all 4 elements"},
+    {"RejectsAConstantThatAlsoHasFeatures", "    source: constant\n",
+     "    source: constant\n    features: [\"link.base.orientation_xyzw\"]\n",
+     "not both and not neither"},
+    {"RejectsAConstantWithAFill", "    source: constant\n",
+     "    source: constant\n    fill: [0.0]\n", "its `values` already are the whole tensor"},
+    {"RejectsAConstantWithAnAffineLane", "    source: constant\n",
+     "    source: constant\n    scale: [1, 1, 1, 1]\n",
+     "is constant and cannot carry an affine lane"},
+    {"RejectsASeedOnATensorThatIsNotRecurrent", "    features: [\"hand.thumb.force_norm\"]",
+     "    features: [\"hand.thumb.force_norm\"]\n    seed: \"arm.position\"",
+     "only a recurrent tensor has a state to seed"},
+    {"RejectsASeedOfTheWrongWidth", R"(seed: "arm.position")", R"(seed: "hand.thumb.force_norm")",
+     "which has 1 elements, but the tensor has 2"},
+    {"RejectsASeedFromAnUnknownFeature", R"(seed: "arm.position")", R"(seed: "arm.positon")",
+     "seeded from unknown id 'arm.positon'"},
+    {"RejectsAFillOnARecurrentTensor", "    source: recurrent\n",
+     "    source: recurrent\n    fill: [0.0]\n", "a `fill:` would never be seen"},
+    {"RejectsOutputNamesThatDoNotMatchTheWidth", R"(element_names: ["a1", "a0"])",
+     R"(element_names: ["a1"])", "lists 1 names but tensor 'arm_action' has 2"},
+    {"RejectsARepeatedOutputName", R"(element_names: ["a1", "a0"])",
+     R"(element_names: ["a1", "a1"])", "repeats 'a1'"},
+    {"RejectsASliceOfANamedHead",
+     R"({ tensor: "arm_action",  role: "joint_target", device: "arm" })",
+     R"({ tensor: "arm_action",  role: "joint_target", device: "arm", offset: 0 })",
+     "a named head is read whole, by name"},
+};
+
+class PolicyIoNamedReject : public ::testing::TestWithParam<NamedReject> {};
+
+}  // namespace
+
+TEST_P(PolicyIoNamedReject, IsRefusedForItsStatedReason) {
+  const NamedReject& row = GetParam();
+  ExpectNamedRejectMentioning(Edited(kNamedYaml, row.from, row.to), row.needle);
 }
 
-TEST(PolicyIoNamed, RejectsARowTheExportDoesNotList) {
-  ExpectNamedRejectMentioning(Edited(R"("loop:1", "h1"])", R"("loop:1", "h9"])"),
-                              "fills row 'h1', which 'joint_pos'.element_names does not list");
-}
-
-TEST(PolicyIoNamed, RejectsAFeatureWithNoRowNamesInANamedTensor) {
-  ExpectNamedRejectMentioning(
-      Edited(R"(features: ["arm.position", "hand.position"])",
-             R"(features: ["arm.position", "hand.position", "hand.index.force_norm"])"),
-      "has no row names");
-}
-
-TEST(PolicyIoNamed, RejectsAFeatureWhoseRowWidthIsNotTheStride) {
-  ExpectNamedRejectMentioning(
-      Edited(R"(features: ["link.palm.position", "link.tip_a.position"])",
-             R"(features: ["link.palm.position", "link.tip_b.orientation_xyzw"])"),
-      "has 4 elements for 1 rows, but a row of 'body_pos' is 3 elements");
-}
-
-TEST(PolicyIoNamed, RejectsTwoFeaturesClaimingOneElement) {
-  ExpectNamedRejectMentioning(
-      Edited(R"(features: ["arm.position", "hand.position"])",
-             R"(features: ["arm.position", "hand.position", "arm0.position"])"),
-      "claims element 0 of 'joint_pos', which 'arm.position' already fills");
-}
-
-TEST(PolicyIoNamed, RejectsAFeatureThatClaimsOneElementTwiceByItself) {
-  // Self-overlap, and it names ITSELF as the first claimant. The one feature
-  // both stamps the owner slot and reads it back to build the message, so the
-  // message has to come from a list that already holds this feature — reading
-  // it from a list the feature is appended to afterwards is a read past the end
-  // while the rejection is being formatted.
-  ExpectNamedRejectMentioning(
-      Edited(R"(features: ["arm.position", "hand.position"])",
-             R"(features: ["arm.repeated_row", "hand.position"])"),
-      "claims element 0 of 'joint_pos', which 'arm.repeated_row' already fills");
-}
-
-TEST(PolicyIoNamed, RejectsANamedTensorWithUncoveredRowsAndNoFill) {
-  ExpectNamedRejectMentioning(
-      Edited("    fill: [0.0]\n    features: [\"arm.position\"", "    features: [\"arm.position\""),
-      "leaves 3 of 7 elements with no feature and declares no `fill:`");
-}
-
-TEST(PolicyIoNamed, RejectsAPartialPositionalTensorWithoutAFill) {
-  ExpectNamedRejectMentioning(Edited("    fill: [0.0]\n    features: [\"hand.thumb.force_norm\"]",
-                                     "    features: [\"hand.thumb.force_norm\"]"),
-                              "features sum to 1 elements but its shape declares 3");
-}
-
-TEST(PolicyIoNamed, RejectsAFillWhoseLengthDoesNotDivideTheTensor) {
-  ExpectNamedRejectMentioning(Edited("fill: [0.0, 0.0, 0.0, 1.0]", "fill: [0.0, 0.0, 1.0]"),
-                              "a fill pattern is repeated over the tensor");
-}
-
-TEST(PolicyIoNamed, RejectsANonFiniteFill) {
-  ExpectNamedRejectMentioning(Edited("fill: [0.0, 0.0, 0.0, 1.0]", "fill: [0.0, 0.0, 0.0, .nan]"),
-                              ".fill[3] must be finite");
-}
-
-TEST(PolicyIoNamed, RejectsAnAffineLaneOnAPartlyCoveredTensor) {
-  // The lane would normalise the filler — a "zero" slot would arrive as −offset·scale.
-  ExpectNamedRejectMentioning(
-      Edited("    fill: [0.0]\n    features: [\"arm.position\"",
-             "    fill: [0.0]\n    scale: [1, 1, 1, 1, 1, 1, 1]\n    features: [\"arm.position\""),
-      "only partly covered");
-}
-
-TEST(PolicyIoNamed, RejectsAConstantWithoutValues) {
-  ExpectNamedRejectMentioning(Edited("    values: [0.0, 0.0, 0.0, 1.0]\n", ""),
-                              ".values must be a non-empty sequence");
-}
-
-TEST(PolicyIoNamed, RejectsAConstantThatDoesNotSpellOutTheTensor) {
-  ExpectNamedRejectMentioning(Edited("values: [0.0, 0.0, 0.0, 1.0]", "values: [0.0, 0.0, 1.0]"),
-                              "must spell out all 4 elements");
-}
-
-TEST(PolicyIoNamed, RejectsAConstantThatAlsoHasFeatures) {
-  ExpectNamedRejectMentioning(
-      Edited("    source: constant\n",
-             "    source: constant\n    features: [\"link.base.orientation_xyzw\"]\n"),
-      "not both and not neither");
-}
-
-TEST(PolicyIoNamed, RejectsAConstantWithAFill) {
-  ExpectNamedRejectMentioning(
-      Edited("    source: constant\n", "    source: constant\n    fill: [0.0]\n"),
-      "its `values` already are the whole tensor");
-}
-
-TEST(PolicyIoNamed, RejectsAConstantWithAnAffineLane) {
-  ExpectNamedRejectMentioning(
-      Edited("    source: constant\n", "    source: constant\n    scale: [1, 1, 1, 1]\n"),
-      "is constant and cannot carry an affine lane");
-}
-
-TEST(PolicyIoNamed, RejectsASeedOnATensorThatIsNotRecurrent) {
-  ExpectNamedRejectMentioning(
-      Edited("    features: [\"hand.thumb.force_norm\"]",
-             "    features: [\"hand.thumb.force_norm\"]\n    seed: \"arm.position\""),
-      "only a recurrent tensor has a state to seed");
-}
-
-TEST(PolicyIoNamed, RejectsASeedOfTheWrongWidth) {
-  ExpectNamedRejectMentioning(Edited(R"(seed: "arm.position")", R"(seed: "hand.thumb.force_norm")"),
-                              "which has 1 elements, but the tensor has 2");
-}
-
-TEST(PolicyIoNamed, RejectsASeedFromAnUnknownFeature) {
-  ExpectNamedRejectMentioning(Edited(R"(seed: "arm.position")", R"(seed: "arm.positon")"),
-                              "seeded from unknown id 'arm.positon'");
-}
-
-TEST(PolicyIoNamed, RejectsAFillOnARecurrentTensor) {
-  ExpectNamedRejectMentioning(
-      Edited("    source: recurrent\n", "    source: recurrent\n    fill: [0.0]\n"),
-      "a `fill:` would never be seen");
-}
-
-TEST(PolicyIoNamed, RejectsOutputNamesThatDoNotMatchTheWidth) {
-  ExpectNamedRejectMentioning(Edited(R"(element_names: ["a1", "a0"])", R"(element_names: ["a1"])"),
-                              "lists 1 names but tensor 'arm_action' has 2");
-}
-
-TEST(PolicyIoNamed, RejectsARepeatedOutputName) {
-  ExpectNamedRejectMentioning(
-      Edited(R"(element_names: ["a1", "a0"])", R"(element_names: ["a1", "a1"])"), "repeats 'a1'");
-}
-
-TEST(PolicyIoNamed, RejectsASliceOfANamedHead) {
-  ExpectNamedRejectMentioning(
-      Edited(R"({ tensor: "arm_action",  role: "joint_target", device: "arm" })",
-             R"({ tensor: "arm_action",  role: "joint_target", device: "arm", offset: 0 })"),
-      "a named head is read whole, by name");
-}
+INSTANTIATE_TEST_SUITE_P(PolicyIoNamed, PolicyIoNamedReject, ::testing::ValuesIn(kNamedRejects),
+                         RowName<NamedReject>);
 
 TEST(PolicyIoNamed, RejectsNamedPlacementWithoutARowResolver) {
   try {
