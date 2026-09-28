@@ -12,6 +12,7 @@
 /// the large composite tree files); the capability flags and finger-map range
 /// check are the actual units under test.
 
+#include "bt_tree_fixture.hpp"
 #include "ur5e_bt_coordinator/bt_node_registration.hpp"
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
 
@@ -38,9 +39,8 @@ class ConfigSafetyTest : public ::testing::Test {
 
   // A single-leaf tree referencing `node_name`, used to probe whether that node
   // type is registered under a given capability set.
-  static std::string LeafTree(const std::string& node_name) {
-    return R"(<root BTCPP_format="4"><BehaviorTree ID="T"><)" + node_name +
-           R"(/></BehaviorTree></root>)";
+  static BT::Tree BuildLeafTree(BT::BehaviorTreeFactory& factory, const std::string& node_name) {
+    return rtc_bt::test::CreateSnippetTree(factory, "<" + node_name + "/>");
   }
 
   // A LifecycleNode carrying the given parameter overrides (auto-declared),
@@ -62,7 +62,7 @@ TEST_F(ConfigSafetyTest, ToFNodeNotRegisteredWhenCapabilityAbsent) {
   RegisterBtNodes(factory, null_bridge, RobotCapabilities{true, /*has_tof=*/false, true});
   // StartToFCollection is gated behind has_tof; unregistered → build throws the
   // factory's "unknown node" error (what on_configure catches into a FAILURE).
-  EXPECT_THROW((void)factory.createTreeFromText(LeafTree("StartToFCollection")), std::exception);
+  EXPECT_THROW((void)BuildLeafTree(factory, "StartToFCollection"), std::exception);
 }
 
 TEST_F(ConfigSafetyTest, ToFNodeRegisteredWhenCapabilityPresent) {
@@ -71,22 +71,21 @@ TEST_F(ConfigSafetyTest, ToFNodeRegisteredWhenCapabilityPresent) {
   RegisterBtNodes(factory, null_bridge, RobotCapabilities{true, /*has_tof=*/true, true});
   // Registered → the tree builds (a null bridge is fine; nodes only deref it on
   // tick, which we never do here).
-  EXPECT_NO_THROW((void)factory.createTreeFromText(LeafTree("StartToFCollection")));
+  EXPECT_NO_THROW((void)BuildLeafTree(factory, "StartToFCollection"));
 }
 
 TEST_F(ConfigSafetyTest, ShapeNodeGatedByHasShape) {
   BT::BehaviorTreeFactory factory;
   std::shared_ptr<BtRosBridge> null_bridge;
   RegisterBtNodes(factory, null_bridge, RobotCapabilities{true, true, /*has_shape=*/false});
-  EXPECT_THROW((void)factory.createTreeFromText(LeafTree("TriggerShapeEstimation")),
-               std::exception);
+  EXPECT_THROW((void)BuildLeafTree(factory, "TriggerShapeEstimation"), std::exception);
 }
 
 TEST_F(ConfigSafetyTest, GraspNodeGatedByHasGraspSensing) {
   BT::BehaviorTreeFactory factory;
   std::shared_ptr<BtRosBridge> null_bridge;
   RegisterBtNodes(factory, null_bridge, RobotCapabilities{/*has_grasp_sensing=*/false, true, true});
-  EXPECT_THROW((void)factory.createTreeFromText(LeafTree("IsGrasped")), std::exception);
+  EXPECT_THROW((void)BuildLeafTree(factory, "IsGrasped"), std::exception);
 }
 
 // ── LoadFingerMap range validation ──────────────────────────────────────────

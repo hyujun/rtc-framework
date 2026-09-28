@@ -191,9 +191,4 @@ expect_eq "isolation.none" "none" "$(shield_isolation_method)"
 STUB_RC=0; STUB_ACTUAL="2-9"
 
 # ── 결과 ────────────────────────────────────────────────────────────────────
-echo "PASS=${PASS} FAIL=${FAIL}"
-if [[ "$FAIL" -gt 0 ]]; then
-  printf '  %s\n' "${FAIL_MSGS[@]}" >&2
-  exit 1
-fi
-exit 0
+summary_and_exit test_cpu_shield_mask.sh

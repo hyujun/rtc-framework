@@ -1,7 +1,8 @@
 // The Panda model the rtc_tsid suites run on (RTC_PANDA_URDF_PATH, set per
 // test target in CMakeLists.txt), and the two fixture prefixes most of them
 // share. A suite that needs contacts or extra state derives and extends
-// SetUp(); one that mutates the model calls LoadPandaModel() for its own copy.
+// SetUp(); one that mutates or copies the model calls LoadPandaModel() for its
+// own, since PandaTest's model is parsed once and shared read-only.
 
 #pragma once
 
@@ -28,11 +29,17 @@ inline std::shared_ptr<pinocchio::Model> LoadPandaModel() {
   return model;
 }
 
+/// One Panda model per process, read-only — what PandaTest cases share.
+inline std::shared_ptr<const pinocchio::Model> SharedPandaModel() {
+  static const std::shared_ptr<const pinocchio::Model> model = LoadPandaModel();
+  return model;
+}
+
 /// The Panda model and its RobotModelInfo built from an empty config.
 class PandaTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    model_ = LoadPandaModel();
+    model_ = SharedPandaModel();
     robot_info_.Build(*model_, YAML::Node{});
   }
 
