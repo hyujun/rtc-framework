@@ -2,7 +2,7 @@
  "schema": {
   "name": "ball_perception.sim_profile",
   "major": 0,
-  "minor": 1
+  "minor": 2
  },
  "input": {
   "topic": "/sim/ball/camera_position",
@@ -45,7 +45,16 @@
   ]
  },
  "process": {
-  "accel_psd_m2_per_s3": 1.0
+  "accel_psd_m2_per_s3": 0.01,
+  "drag": {
+   "model": "quadratic_still_air",
+   "k": {
+    "mode": "fixed",
+    "value_per_m": 0.02,
+    "sigma_per_m": 0.01
+   },
+   "max_integration_step_s": 0.01
+  }
  },
  "init": {
   "min_points": 5,
