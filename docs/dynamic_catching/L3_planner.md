@@ -159,7 +159,7 @@ $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LW
 
 **잘못된 한계 입력은 flag 로 보고한다.** 참조 구현 `tMinChecked` 는 $\bar a\le0$ 또는 $\bar\omega\le0$ (또는 NaN) 이면 $t=0$ 을 **아무 표시 없이** 돌려준다 — 도달시간 게이트가 무조건 통과하는 결함이다. S1.5 이식 시 한계 무효 플래그를 추가하고, 플래그가 서면 후보를 탈락시킨다 (clamp 플래그와 같은 처리). 한계 값 자체의 범위 검사는 파라미터 검증(S1.7)이 한다.
 
-검증: 무작위 40개 조건에서 속도·가속 제약 선형계획(시간 이분 탐색) 해와 최대 차이 — python 거울 $8.3\times10^{-6}$ s, C++ `tMin` $9.5\times10^{-6}$ s (LP 격자 이산화 수준). `test_l3.cpp`가 `cases.txt`를 만들고 `verify_l3.py`가 대조한다.
+검증: 무작위 40개 조건에서 속도·가속 제약 선형계획(시간 이분 탐색) 해와 최대 차이 — python 거울 $8.3\times10^{-6}$ s, C++ `tMin` $9.5\times10^{-6}$ s (LP 격자 이산화 수준). `test_l3.cpp`가 `cases.txt`를 만들고 `verify_l3.py`가 대조했다 — 두 파일 모두 (삭제됨 — [README](README.md#삭제된-참조-구현)), 결과는 `test_catching_time_feasibility` 고정 테이블.
 
 제약:
 
@@ -360,9 +360,9 @@ $\gamma_f$ 를 사실상 절대 우선으로 두고 싶으면 $w_\gamma$ 를 크
 
 ## 5. C++ 구현
 
-### 5.1 `time_feasibility.hpp` (참조 구현, 검증 완료)
+### 5.1 `time_feasibility.hpp` (S1.5 이식 완료)
 
-SSoT 는 같은 폴더의 `time_feasibility.hpp` (v0.4) 다 — 문서에 코드를 복제하지 않는다. 내용: `tRest` (정지→정지 최소시간), `tMinChecked`/`TMinResult` (§4.3, `w0_clamped` 플래그), 편의 래퍼 `tMin`, `GammaWindow`/`gammaWindow` (§4.5, `input_invalid` 플래그), `maxCatchableSpeed`.
+SSoT 는 `rtc_controllers/include/rtc_controllers/catching/time_feasibility.hpp` 다 — 문서에 코드를 복제하지 않는다. 참조 구현 (v0.4, 같은 이름) 원본은 (삭제됨 — [README](README.md#삭제된-참조-구현)). 참조의 내용: `tRest` (정지→정지 최소시간), `tMinChecked`/`TMinResult` (§4.3, `w0_clamped` 플래그), 편의 래퍼 `tMin`, `GammaWindow`/`gammaWindow` (§4.5, `input_invalid` 플래그), `maxCatchableSpeed`.
 
 S1.5 이식 시 변경:
 
@@ -370,7 +370,7 @@ S1.5 이식 시 변경:
 - `tMinChecked`: 한계 $\le0$·NaN 이면 $t=0$ 을 무표시로 돌려주는 결함 → 한계 무효 플래그 추가, 호출자는 후보 탈락 (§4.3)
 - 가속 한계 인자는 D-16 도출 상수 box (CLIK 가속 box 와 같은 값) (§4.3)
 - `gammaWindow` 의 `v_tcp_max` 인자는 호출부에서 $\eta_v\cdot$`reference.v_max` 로 넘긴다 (D-9, §4.5)
-- 테스트: `test_l3.cpp` → `cases.txt` → `verify_l3.py` 대조 결과를 GTest 고정 테이블로 이식 (S1.1), 한계 무효 경로 회귀 테스트 추가
+- 테스트: `test_l3.cpp` → `cases.txt` → `verify_l3.py` (삭제됨) 대조 결과를 GTest 고정 테이블로 이식 (S1.1), 한계 무효 경로 회귀 테스트 추가
 
 ### 5.2 `PlanSnapshot`
 
@@ -504,7 +504,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 
 단계 매핑 (plan §4, §14.2): L3.1·L3.3·L3.5 = **S1.5**, L3.2 = **S1.9** (IK+catchability 함수 — S3.5a/b 지도 도구와 S6.2 런타임이 공유) → **S6.2** (스레드로 배선), L3.4·L3.6·L3.7 = **S6** (S6.3 γ 창·rollout, S6.4 선택·commit, S6.1 스레드, S6.5 D-7a 측정).
 
-- **L3.1** `time_feasibility.hpp` + LP 대조 테스트(`test_l3.cpp` → `cases.txt` → `verify_l3.py`, 결과를 고정 테이블로 GTest화) + `w0_clamped` 경로 테스트.
+- **L3.1** `time_feasibility.hpp` + LP 대조 테스트(`test_l3.cpp` → `cases.txt` → `verify_l3.py` (삭제됨), 결과를 고정 테이블로 GTest화) + `w0_clamped` 경로 테스트.
 - **L3.2** 포구 자세 IK (`DifferentialIk` m=5 + 전용 `RtModelHandle`, seed = wait_pose) + manipulability 게이트 (D-18, S3.5a/b 도구와 같은 함수) + 수렴률·콘·스케일($\rho$) 테스트.
 - **L3.3** 방향 속력 (§5.4, 투영·0 가드) + γ 창 테스트([R1] 수치 sanity, `v_tcp_max` 구속, `maxCatchableSpeed` 포함).
 - **L3.4** γ rollout (L4 코드 호출, $now_{lead}$ 축) + §4.8 표 재현 테스트 + coarse-to-fine (예산 초과 시, S6.3).

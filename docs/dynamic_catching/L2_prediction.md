@@ -132,9 +132,9 @@ ball_perception 은 $a$ 를 상수 $g$ 로 준다(G2-3). 그러면 점별 $(p,v,
 
 ## 5. C++ 구현
 
-### 5.1 `traj_sampler.hpp` (참조 구현, 검증 완료)
+### 5.1 `traj_sampler.hpp` (S1.2 이식 완료)
 
-v0.5 에서 코드 복사본(v0.2 그대로였음)을 삭제했다. **SSoT 는 같은 폴더의 `traj_sampler.hpp` (v0.4)** 다 — `before_horizon`/`after_horizon` 분리, `track_epoch` 필드 등 v0.4 변경은 헤더에만 있다. S1.2 이식 시 변경:
+v0.5 에서 코드 복사본(v0.2 그대로였음)을 삭제했다. 참조 구현 `traj_sampler.hpp` (v0.4 — `before_horizon`/`after_horizon` 분리, `track_epoch` 필드) 는 S1.2 에서 `rtc_controllers/include/rtc_controllers/catching/traj_sampler.hpp` (+ 궤적 타입 `trajectory.hpp`) 로 이식됐고 (지금의 SSoT), 원본은 (삭제됨 — [README](README.md#삭제된-참조-구현)). 이식 시 변경:
 
 - **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `check`·`sampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). 런타임 상한 `n_max` (S3.6 이 20 으로 정했다, ≤ `kCap`) 로 더 좁혀 검사한다
 - **NaN 거부.** NaN 시각·값은 `check` 에서 거부, `sampleAt(NaN)` 은 invalid 를 반환한다(참조 구현은 valid 반환)

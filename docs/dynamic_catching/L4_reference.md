@@ -143,7 +143,7 @@ $$\dot e_a=J_a\,\omega,\qquad \boxed{J_a=f'(c)\,mm^\top+f(c)\,[a_d]_\times[z]_\t
 
 $\theta\to0$ 극한은 $f\to1$, $f'\to-1/3$ 로 유한하고, 이때 $J_a\to[a_d]_\times[z]_\times$ 라 v0.1 식과 일치한다(v0.1 식은 $\theta\to0$ 근사였다). $\theta\to\pi$ 에서는 $f\to\infty$ 로 발산한다 — 축이 정의되지 않기 때문이며, 이는 정의의 결함이 아니라 문제의 성질이다. L5가 마스크 방식(§L5 4.2)을 쓰면 $J_a$ 자체가 필요 없다.
 
-유한차분 검증: 1–170° 구간 최대 오차 $2.4\times10^{-6}$ (`test_l4.cpp`), `verify_l3.py` [3]도 같은 식을 독립 구현으로 대조한다.
+유한차분 검증: 1–170° 구간 최대 오차 $2.4\times10^{-6}$ (`test_l4.cpp`), `verify_l3.py` [3]도 같은 식을 독립 구현으로 대조했다 (삭제됨 — [README](README.md#삭제된-참조-구현)).
 
 **구현 주의 두 가지.**
 
@@ -238,9 +238,9 @@ v0.1 표와의 차이: $\gamma_f=0.4,\delta=0$ 행이 0.6 → 1.1 mm, 상대속�
 
 ## 5. C++ 구현
 
-### 5.1 `soft_catch_reference.hpp` (참조 구현, 검증 완료)
+### 5.1 `soft_catch_reference.hpp` (S1.4·S2.1 이식 완료)
 
-SSoT 는 같은 폴더의 `soft_catch_reference.hpp` (v0.4) 다 — 문서에 코드를 복제하지 않는다. 내용: `TargetState`, `GammaProfile` (5차 램프), `TranslationOutput` (`x`·`xd`·`xdd`·`u_des`·`e`·`ed`·γ 3종·`saturated`), `SoftCatchTranslation` (`reset`·`setIntercept`·`step`, 그리고 v1 범위 밖인 `derateJump`·`derateGamma`·`DerateResult`), `AxisAlignParams`·`axisAlignError`·`axisAlignOmega`·`axisAlignJacobian` (§4.5), `criticallyDampedError` (§4.4).
+SSoT 는 이식본 `rtc_controllers/include/rtc_controllers/catching/soft_catch.hpp` (병진 기준·γ 프로파일) 와 `rtc_math/include/rtc_math/se3/axis_align.hpp` (축 정렬) 다 — 문서에 코드를 복제하지 않는다. 참조 구현 `soft_catch_reference.hpp` (v0.4) 원본은 (삭제됨 — [README](README.md#삭제된-참조-구현)). 참조의 내용: `TargetState`, `GammaProfile` (5차 램프), `TranslationOutput` (`x`·`xd`·`xdd`·`u_des`·`e`·`ed`·γ 3종·`saturated`), `SoftCatchTranslation` (`reset`·`setIntercept`·`step`, 그리고 v1 범위 밖인 `derateJump`·`derateGamma`·`DerateResult`), `AxisAlignParams`·`axisAlignError`·`axisAlignOmega`·`axisAlignJacobian` (§4.5), `criticallyDampedError` (§4.4).
 
 S1 이식 시 변경:
 
@@ -347,7 +347,7 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 - **L4.6** (v1 범위 밖, D-8) `derateGamma` + §5.2.1 연속성 테스트.
 - **L4.7** 복귀 기준.
 
-참조 구현: `soft_catch_reference.hpp`, `test_l4.cpp` (같은 폴더). S1.1 에서 GTest로 옮긴다.
+참조 구현: `soft_catch_reference.hpp`, `test_l4.cpp` (삭제됨 — [README](README.md#삭제된-참조-구현)). S1.1 에서 GTest (`test_catching_soft_catch`) 로 옮겼다.
 
 ## 8. 디버깅 방법
 

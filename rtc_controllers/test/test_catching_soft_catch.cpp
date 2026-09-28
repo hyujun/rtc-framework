@@ -2,7 +2,8 @@
 // G4-I (docs/dynamic_catching/L4_reference.md §9) plus the reference's A5 and
 // reset() regressions.
 //
-// Ported from docs/dynamic_catching/test_l4.cpp with thresholds unchanged.
+// Ported from the reference test_l4.cpp with thresholds unchanged (removed
+// from docs; `git show 482d18b3:docs/dynamic_catching/test_l4.cpp`).
 // Deliberately NOT ported:
 //  • D3a/D3b/D3c (γ derate) — the feature is out of v1 (D-8, G4-E); the tests
 //    go with it, they are not weakened (S1 sub-plan F-4);

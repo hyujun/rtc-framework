@@ -1,6 +1,7 @@
 // G0-A — sanity checks of the catching suites' ball flight fixture
-// (docs/dynamic_catching/L0_core.md §4.4). Ported from the reference
-// docs/dynamic_catching/test_l0.cpp with its thresholds unchanged. The fixture
+// (docs/dynamic_catching/L0_core.md §4.4). Ported from the reference test_l0.cpp
+// with its thresholds unchanged (removed from docs; read it with
+// `git show 482d18b3:docs/dynamic_catching/test_l0.cpp`). The fixture
 // generates the reference trajectories every other catching suite compares
 // against, so a wrong fixture would make those suites agree with a wrong answer.
 #include "rtc_controllers/testing/catching_ball_fixture.hpp"

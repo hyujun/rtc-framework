@@ -9,7 +9,8 @@
 //
 // then |u| ≤ a_max and |ẋ| ≤ v_max by radial saturation, semi-implicit Euler.
 //
-// Ported from docs/dynamic_catching/soft_catch_reference.hpp (v0.4) with:
+// Ported from the reference soft_catch_reference.hpp (v0.4; removed from docs,
+// `git show 482d18b3:docs/dynamic_catching/soft_catch_reference.hpp`) with:
 //  • γ derate (derateGamma / derateJump / DerateResult) NOT ported — D-8 takes
 //    it out of v1: after COMMITTED no plan change is allowed;
 //  • the axis-alignment functions NOT ported here — they move to rtc_math se3
