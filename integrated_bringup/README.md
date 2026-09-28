@@ -842,7 +842,9 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 >
 > ball_perception 의 `sim_estimator_node` 를 이 씬에 붙일 때의 profile 은 `config/ur5e_p1b/ball_perception_sim_profile.json`
 > (지평 1.0 s / 간격 0.05 s / 20 점, 측정 공분산 (5 mm)² 대각 — `projectile_ball.publish.position_noise_stddev_m` 과 짝,
-> `max_future_skew_s` 0.1 — 공 토픽의 stamp 축이 sim 축이라 wall 을 위상 오차만큼 앞설 수 있다) 이다:
+> `max_future_skew_s` 0.1 — 공 토픽의 stamp 축이 sim 축이라 wall 을 위상 오차만큼 앞설 수 있다,
+> `sim_profile` 0.2 — 과정 잡음 q 0.01 m²/s³ + 이차 항력 `process.drag` k 0.02 ± 0.01 1/m, 근거는 plan §4.4 S8-E "후속 ① G8-B";
+> 두 로봇의 사본은 같은 값이다) 이다:
 > `ros2 launch ball_perception_sim sim_estimator.launch.py profile_path:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json producer_revision:=<rtc-framework 커밋>`.
 > `ball_perception_sim` 은 이 workspace 가 아니라 ball_perception 의 별도 colcon workspace 에 있으므로 그 `install/setup.bash` 를 추가로 source 해야 하고, `producer_revision` 은 필수 인자다 (출력 provenance).
 > 값의 근거 (포구 제어기의 요구 사양, D-15) 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) §4.4 S3.6 결과이고,
