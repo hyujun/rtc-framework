@@ -32,6 +32,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -304,16 +305,6 @@ TEST(CatchingParams, AFormsKeysUnderAnotherFormAreRefused) {
 
 // ── L6 §4.2: q_close != q_pre on caging joints ──────────────────────────────
 
-TEST(CatchingParams, HandCagingGapEqualToPreFails) {
-  YAML::Node root = ValidRoot();
-  root["robot"]["hand"]["q_close"][0] = 0.0;  // == q_pre[0], caging_mask[0] == true
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kHandCagingGapTooSmall,
-                               "robot.hand.q_close", 0));
-}
-
 TEST(CatchingParams, HandCagingGapIgnoredOffCagingMask) {
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["q_close"][1] = 0.0;        // == q_pre[1] ...
@@ -391,16 +382,6 @@ TEST(CatchingParams, RejectsQOpenScalarThatIsNotTbd) {
   ExpectRejectMentioning(root, "robot.hand.q_open must be a sequence");
 }
 
-TEST(CatchingParams, HandEtaCloseTbdBlocksArming) {
-  YAML::Node root = ValidRoot();
-  root["robot"]["hand"]["eta_close"] = "TBD";
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.eta_close"));
-}
-
 TEST(CatchingParams, HandEtaCloseOutOfRangeFails) {
   for (const double eta : {0.49, 1.01}) {
     YAML::Node root = ValidRoot();
@@ -423,26 +404,6 @@ TEST(CatchingParams, HandEtaCloseAtBoundsPasses) {
     const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
     EXPECT_TRUE(r.armable) << "eta_close = " << eta;
   }
-}
-
-TEST(CatchingParams, HandTCloseE2eTbdBlocksArming) {
-  YAML::Node root = ValidRoot();
-  root["robot"]["hand"]["T_close_e2e"] = "TBD";
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.T_close_e2e"));
-}
-
-TEST(CatchingParams, HandTCloseE2eNegativeFails) {
-  YAML::Node root = ValidRoot();
-  root["robot"]["hand"]["T_close_e2e"] = -0.01;
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kRangeViolation, "robot.hand.T_close_e2e"));
 }
 
 TEST(CatchingParams, HandTCloseE2eZeroPasses) {
@@ -502,16 +463,6 @@ TEST(CatchingParams, HandCloseTimeoutIsTbdWhenTheClosureTimeIs) {
       ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd, "robot.hand.T_close_e2e"));
 }
 
-TEST(CatchingParams, HandCloseTimeoutEqualToTheClosureTimeFails) {
-  YAML::Node root = ValidRoot();
-  root["robot"]["hand"]["T_close_timeout"] = 0.15;  // == T_close_e2e
-  const CatchingValidationReport r =
-      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kCloseTimeoutNotAboveE2e,
-                               "robot.hand.T_close_timeout"));
-}
-
 TEST(CatchingParams, HandCloseTimeoutJustAboveTheClosureTimePasses) {
   YAML::Node root = ValidRoot();
   root["robot"]["hand"]["T_close_timeout"] = 0.1501;
@@ -562,38 +513,6 @@ TEST(CatchingParams, ReleaseTimeoutExplicitValueOverridesTheDerivation) {
   const CatchingParams p = ParseCatchingParams(root);
   ASSERT_FALSE(p.hand.T_release_timeout.tbd);
   EXPECT_DOUBLE_EQ(p.hand.T_release_timeout.value, 1.25);
-}
-
-TEST(CatchingParams, ReleaseTimeoutIsTbdWhenTheClosureTimeIs) {
-  YAML::Node root = ValidRoot();
-  root["robot"]["hand"]["T_close_e2e"] = "TBD";
-  const CatchingValidationReport r =
-      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd,
-                               "robot.hand.T_release_timeout"));
-}
-
-TEST(CatchingParams, ReleaseTimeoutNotAboveTheClosureTimeFails) {
-  YAML::Node root = ValidRoot();
-  root["robot"]["hand"]["T_release_timeout"] = 0.15;  // == T_close_e2e
-  const CatchingValidationReport r =
-      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kReleaseTimeoutNotAboveE2e,
-                               "robot.hand.T_release_timeout"));
-}
-
-TEST(CatchingParams, AZeroClosureTimeDerivesAZeroReleaseTimeoutThatIsRefused) {
-  // A derived 0 s timeout would disarm every release on its first tick.
-  YAML::Node root = ValidRoot();
-  root["robot"]["hand"]["T_close_e2e"] = 0.0;
-  root["robot"]["hand"]["T_close_timeout"] = 0.1;
-  const CatchingValidationReport r =
-      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kRangeViolation,
-                               "robot.hand.T_release_timeout"));
 }
 
 // ── Hand-joint capture witness (#537 S8-C, D-S8-8 (b)) ──────────────────────
@@ -985,87 +904,140 @@ TEST(CatchingParams, FreezeWindowUnsetIsLeftToItsOwnCheck) {
   EXPECT_EQ(r.failure_count, before);
 }
 
-// ── D-9: 0 < eta_v <= 1 ──────────────────────────────────────────────────────
+// ── One field, one reason: rows ─────────────────────────────────────────────
+//
+// Every row is a case that used to stand alone as TEST(CatchingParams, <name>)
+// and keeps that name as its row name: the baseline with one edit, judged on
+// ONE reason code at ONE key. A suffix names the decision the row enforces, so
+// one `--gtest_filter` finds all of its rows: D9 — 0 < eta_v <= 1 (see the
+// file-header NOTE); DS8_6 — the RETREAT release timeout (#537 S8-C, D-S8-6).
 
-TEST(CatchingParams, EtaVZeroFails) {
+namespace {
+
+struct OneReasonCase {
+  const char* name;
+  void (*edit)(YAML::Node& root);
+  CatchingValidationReason reason;
+  const char* key;
+  int index = -1;
+  double control_rate_hz = kControlRateHz;
+};
+
+// gtest prints a failing row by its name, not as raw bytes.
+void PrintTo(const OneReasonCase& row, std::ostream* os) {
+  *os << row.name;
+}
+
+std::string OneReasonCaseName(const ::testing::TestParamInfo<OneReasonCase>& info) {
+  return info.param.name;
+}
+
+CatchingValidationReport ValidateEdited(const OneReasonCase& row) {
   YAML::Node root = ValidRoot();
-  root["planner"]["gamma"]["eta_v"] = 0.0;
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+  row.edit(root);
+  return ValidateCatchingParams(ParseCatchingParams(root), row.control_rate_hz, false);
+}
+
+// The edit blocks arming, and does so for this row's reason at this row's key.
+constexpr OneReasonCase kBlocksArming[] = {
+    // L6 §4.2: q_close != q_pre on caging joints.
+    {"HandCagingGapEqualToPreFails",
+     [](YAML::Node& root) {
+       root["robot"]["hand"]["q_close"][0] = 0.0;  // == q_pre[0], caging_mask[0] == true
+     },
+     CatchingValidationReason::kHandCagingGapTooSmall, "robot.hand.q_close", 0},
+    // L6 §5.1/§6 (S4.1).
+    {"HandEtaCloseTbdBlocksArming",
+     [](YAML::Node& root) { root["robot"]["hand"]["eta_close"] = "TBD"; },
+     CatchingValidationReason::kActiveConfigTbd, "robot.hand.eta_close"},
+    {"HandTCloseE2eTbdBlocksArming",
+     [](YAML::Node& root) { root["robot"]["hand"]["T_close_e2e"] = "TBD"; },
+     CatchingValidationReason::kActiveConfigTbd, "robot.hand.T_close_e2e"},
+    {"HandTCloseE2eNegativeFails",
+     [](YAML::Node& root) { root["robot"]["hand"]["T_close_e2e"] = -0.01; },
+     CatchingValidationReason::kRangeViolation, "robot.hand.T_close_e2e"},
+    // Hand sequencer keys (S7.1, L6 §6).
+    {"HandCloseTimeoutEqualToTheClosureTimeFails",
+     [](YAML::Node& root) {
+       root["robot"]["hand"]["T_close_timeout"] = 0.15;  // == T_close_e2e
+     },
+     CatchingValidationReason::kCloseTimeoutNotAboveE2e, "robot.hand.T_close_timeout"},
+    // RETREAT release timeout (#537 S8-C, D-S8-6).
+    {"ReleaseTimeoutIsTbdWhenTheClosureTimeIs_DS8_6",
+     [](YAML::Node& root) { root["robot"]["hand"]["T_close_e2e"] = "TBD"; },
+     CatchingValidationReason::kActiveConfigTbd, "robot.hand.T_release_timeout"},
+    {"ReleaseTimeoutNotAboveTheClosureTimeFails_DS8_6",
+     [](YAML::Node& root) {
+       root["robot"]["hand"]["T_release_timeout"] = 0.15;  // == T_close_e2e
+     },
+     CatchingValidationReason::kReleaseTimeoutNotAboveE2e, "robot.hand.T_release_timeout"},
+    // A derived 0 s timeout would disarm every release on its first tick.
+    {"AZeroClosureTimeDerivesAZeroReleaseTimeoutThatIsRefused_DS8_6",
+     [](YAML::Node& root) {
+       root["robot"]["hand"]["T_close_e2e"] = 0.0;
+       root["robot"]["hand"]["T_close_timeout"] = 0.1;
+     },
+     CatchingValidationReason::kRangeViolation, "robot.hand.T_release_timeout"},
+    // D-9: 0 < eta_v <= 1.
+    {"EtaVZeroFails_D9", [](YAML::Node& root) { root["planner"]["gamma"]["eta_v"] = 0.0; },
+     CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"},
+    {"EtaVAboveOneFails_D9", [](YAML::Node& root) { root["planner"]["gamma"]["eta_v"] = 1.5; },
+     CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"},
+    // L7 §4.3: a_dec <= reference.a_max.
+    {"DecelExceedingAMaxFails",
+     [](YAML::Node& root) {
+       root["supervisor"]["decel"]["a_dec"] = 10.0;  // > a_max (5.0)
+     },
+     CatchingValidationReason::kDecelExceedsAMax, "supervisor.decel.a_dec"},
+    // L4 §4.4: reference.zeta must be exactly 1 in v1.
+    {"ZetaNotOneFails", [](YAML::Node& root) { root["reference"]["zeta"] = 0.9; },
+     CatchingValidationReason::kZetaNotCriticallyDamped, "reference.zeta"},
+    // control_rate range [100, 5000] Hz: the baseline, at a rate outside it.
+    {"ControlRateBelowRangeFails", [](YAML::Node&) {},
+     CatchingValidationReason::kControlRateOutOfRange, "control_rate", -1, 99.0},
+    {"ControlRateAboveRangeFails", [](YAML::Node&) {},
+     CatchingValidationReason::kControlRateOutOfRange, "control_rate", -1, 5001.0},
+};
+
+// The inclusive bound of a rule above: the edit does NOT trip that reason
+// there.
+constexpr OneReasonCase kSparesTheBound[] = {
+    {"EtaVExactlyOnePasses_D9",
+     [](YAML::Node& root) {
+       root["planner"]["gamma"]["eta_v"] = 1.0;  // upper bound is inclusive (D-9: 0 < eta_v <= 1)
+     },
+     CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"},
+    {"DecelEqualToAMaxPasses",
+     [](YAML::Node& root) {
+       root["supervisor"]["decel"]["a_dec"] = 5.0;  // == a_max, inclusive bound
+     },
+     CatchingValidationReason::kDecelExceedsAMax, "supervisor.decel.a_dec"},
+};
+
+class CatchingParamsBlocksArming : public ::testing::TestWithParam<OneReasonCase> {};
+
+class CatchingParamsSparesTheBound : public ::testing::TestWithParam<OneReasonCase> {};
+
+}  // namespace
+
+TEST_P(CatchingParamsBlocksArming, ForItsReasonAtItsKey) {
+  const OneReasonCase& row = GetParam();
+  const CatchingValidationReport r = ValidateEdited(row);
   EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"));
+  EXPECT_TRUE(ReportHasFailure(r, row.reason, row.key, row.index));
 }
 
-TEST(CatchingParams, EtaVAboveOneFails) {
-  YAML::Node root = ValidRoot();
-  root["planner"]["gamma"]["eta_v"] = 1.5;
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"));
+TEST_P(CatchingParamsSparesTheBound, WithoutItsReasonAtItsKey) {
+  const OneReasonCase& row = GetParam();
+  EXPECT_FALSE(ReportHasFailure(ValidateEdited(row), row.reason, row.key, row.index));
 }
 
-TEST(CatchingParams, EtaVExactlyOnePasses) {
-  YAML::Node root = ValidRoot();
-  root["planner"]["gamma"]["eta_v"] = 1.0;  // upper bound is inclusive (D-9: 0 < eta_v <= 1)
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(
-      ReportHasFailure(r, CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"));
-}
-
-// ── L7 §4.3: a_dec <= reference.a_max ────────────────────────────────────────
-
-TEST(CatchingParams, DecelExceedingAMaxFails) {
-  YAML::Node root = ValidRoot();
-  root["supervisor"]["decel"]["a_dec"] = 10.0;  // > a_max (5.0)
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kDecelExceedsAMax, "supervisor.decel.a_dec"));
-}
-
-TEST(CatchingParams, DecelEqualToAMaxPasses) {
-  YAML::Node root = ValidRoot();
-  root["supervisor"]["decel"]["a_dec"] = 5.0;  // == a_max, inclusive bound
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(
-      ReportHasFailure(r, CatchingValidationReason::kDecelExceedsAMax, "supervisor.decel.a_dec"));
-}
-
-// ── L4 §4.4: reference.zeta must be exactly 1 in v1 ─────────────────────────
-
-TEST(CatchingParams, ZetaNotOneFails) {
-  YAML::Node root = ValidRoot();
-  root["reference"]["zeta"] = 0.9;
-  const CatchingParams p = ParseCatchingParams(root);
-  const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kZetaNotCriticallyDamped, "reference.zeta"));
-}
+INSTANTIATE_TEST_SUITE_P(CatchingParams, CatchingParamsBlocksArming,
+                         ::testing::ValuesIn(kBlocksArming), OneReasonCaseName);
+INSTANTIATE_TEST_SUITE_P(CatchingParams, CatchingParamsSparesTheBound,
+                         ::testing::ValuesIn(kSparesTheBound), OneReasonCaseName);
 
 // ── control_rate range [100, 5000] Hz ────────────────────────────────────────
-
-TEST(CatchingParams, ControlRateBelowRangeFails) {
-  const CatchingParams p = ParseCatchingParams(ValidRoot());
-  const CatchingValidationReport r = ValidateCatchingParams(p, 99.0, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kControlRateOutOfRange, "control_rate"));
-}
-
-TEST(CatchingParams, ControlRateAboveRangeFails) {
-  const CatchingParams p = ParseCatchingParams(ValidRoot());
-  const CatchingValidationReport r = ValidateCatchingParams(p, 5001.0, false);
-  EXPECT_FALSE(r.armable);
-  EXPECT_TRUE(
-      ReportHasFailure(r, CatchingValidationReason::kControlRateOutOfRange, "control_rate"));
-}
 
 TEST(CatchingParams, ControlRateAtBoundsPasses) {
   const CatchingParams p = ParseCatchingParams(ValidRoot());
