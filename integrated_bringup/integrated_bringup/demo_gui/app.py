@@ -343,7 +343,16 @@ class DemoControllerGUI(Node):
         self.current_hand_positions = [0.0] * self._shape.hand_dof
 
         self.estop_active = False
-        self.create_subscription(Bool, "/system/estop_status", self._estop_cb, 1)
+        # transient_local, like the CM writer (#588): the status is published on
+        # change only, and a volatile reader never receives a transient_local
+        # writer's history — a GUI started after the latch read NORMAL until the
+        # next transition.
+        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+        estop_qos = QoSProfile(depth=1)
+        estop_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+        estop_qos.reliability = QoSReliabilityPolicy.RELIABLE
+        self.create_subscription(Bool, "/system/estop_status", self._estop_cb, estop_qos)
 
         # Per-group JointState lives on /rtc_cm/<group>/joint_states. The group
         # names are robot-specific (iiwa7/leap vs ur5e/p1a), so these subs are

@@ -1512,16 +1512,18 @@ class ROSNode(Node):
         self._tf_parent_frame = "base"
         self._tf_child_frame = "tool0_actual"
 
-        # Manager-owned topics (fixed paths)
-        self.estop_sub = self.create_subscription(
-            Bool, "/system/estop_status", self.estop_callback, self._qos
-        )
-
         from rclpy.qos import DurabilityPolicy
 
         latched_qos = QoSProfile(depth=1)
         latched_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         latched_qos.reliability = ReliabilityPolicy.RELIABLE
+
+        # Manager-owned topics (fixed paths). E-STOP is latched on both ends
+        # (#588): a volatile reader never gets the transient_local writer's
+        # current value, so an editor started after the latch showed NORMAL.
+        self.estop_sub = self.create_subscription(
+            Bool, "/system/estop_status", self.estop_callback, latched_qos
+        )
         self.create_subscription(
             String, "/rtc_cm/active_controller_name", self._on_active_controller, latched_qos
         )

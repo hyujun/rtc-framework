@@ -240,7 +240,7 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 - `TriggerGlobalEstop()`: 멱등(idempotent), `compare_exchange_strong`으로 1회만 실행
 - 모든 컨트롤러에 `TriggerEstop()` + `SetHandEstop(true)` 전파
 - **actuator 로 나가는 command 를 CM 이 차단** — 아래 절 참조
-- `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조). **transient_local** (#588) — 값이 바뀔 때만 발행되므로 volatile writer 로는 latch 뒤에 뜬 구독자가 다음 전이까지 "NORMAL" 을 봤다. 늦게 뜬 구독자가 현재 값을 받으려면 **구독자도 transient_local** 이어야 한다 (volatile 구독자는 매칭은 되지만 이력을 받지 않는다)
+- `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조). **transient_local** (#588) — 값이 바뀔 때만 발행되므로 volatile writer 로는 latch 뒤에 뜬 구독자가 다음 전이까지 "NORMAL" 을 봤다. 늦게 뜬 구독자가 현재 값을 받으려면 **구독자도 transient_local** 이어야 한다 (volatile 구독자는 매칭은 되지만 이력을 받지 않는다) — in-tree 구독자 (demo GUI · motion editor · BT bridge · shape_estimation) 는 모두 transient_local 이다
 - RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
 - **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음). RCLCPP 로깅은 `estop_log_pending_`, `/system/estop_status` publish 는 `estop_status_pending_` atomic 플래그를 통해 non-RT `DrainLog()` (100 Hz) 에서 지연 수행 — `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT 루프에서 도달 가능하므로 plain publisher 를 그 자리에서 호출하면 RT-10 위반이다. 드레인은 *드레인 시점의* 보고값 (`global_estop_` ∨ 해제 검증 창 — 아래 해제 절) 을 발행하므로 두 드레인 사이의 trigger/clear 쌍은 stale 값이 아니라 최종 상태로 수렴한다. lifecycle teardown 은 `drain_timer_` 를 없애므로 `FlushEstopStatus()` 가 마지막 전이를 직접 흘린다
 

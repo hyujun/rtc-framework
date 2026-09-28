@@ -71,7 +71,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 | `<ns>/transforms` | `tf2_msgs/TFMessage` | RELIABLE, depth 1 | active controller의 FK `base → tool0_actual` (controller-owned, rewire). `tf_buffer_`에 직접 feed → TCP pose lookup 소스 |
 | `/world_target_info` | `geometry_msgs/Polygon` | RELIABLE, depth 1 | 비전 물체 위치 (`points[0]` = x,y,z, orientation 없음). `IsObjectDetected`/`IsVisionTargetReady`가 출력 시 orientation 을 현재 TCP pose 로 채운다 |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
-| `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 1 | E-STOP 상태 |
+| `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 1, transient_local | E-STOP 상태 — CM 발행자와 같은 durability 라 E-STOP 뒤에 떠도 현재 값을 받는다 (#588) |
 | `/shape/estimate` | `shape_estimation_msgs/ShapeEstimate` | RELIABLE, depth 1 | shape estimation 결과 (`WaitShapeResult` / `CheckShapeType` 가 소비) |
 
 ### 서비스 클라이언트
