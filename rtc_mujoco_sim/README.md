@@ -1242,7 +1242,7 @@ colcon test --packages-select rtc_mujoco_sim --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-GTest 스위트 (`test/` 디렉토리). 최신 케이스 수·pass/fail 은 `colcon test-result --verbose` 실측 — 표에 개수를 박지 않는다 (drift 방지):
+GTest 스위트 (`test/` 디렉토리, 표는 파일 이름). 최신 케이스 수·pass/fail 은 `colcon test-result --verbose` 실측 — 표에 개수를 박지 않는다 (drift 방지). `minimal.xml` fixture 를 쓰는 7개 파일 (`test_simulator_init` · `test_solver_config` · `test_command_state_io` · `test_lifecycle` · `test_runtime_controls` · `test_data_flow` · `test_sim_effort_force`) 은 한 바이너리 `test_simulator_core` 를 공유하고, 나머지는 파일당 바이너리다 (대응의 SSoT: `CMakeLists.txt`):
 
 | Test | Scope |
 |------|-------|

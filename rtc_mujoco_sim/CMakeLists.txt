@@ -215,7 +215,11 @@ if(mujoco_FOUND)
       target_link_libraries(test_resource_provider mujoco_simulator_lib)
     endif()
 
-    # Phase 2 + 3: MJCF-fixture-based tests
+    # Phase 2 + 3: MJCF-fixture-based tests. Same fixture, same link, so one
+    # binary: the suite pays one process start and one link instead of seven.
+    # The timeout is the default 60 s per file, so the shared binary keeps the
+    # budget each file had on its own.
+    set(_minimal_mjcf_tests)
     foreach(t test_simulator_init
               test_solver_config
               test_command_state_io
@@ -224,13 +228,18 @@ if(mujoco_FOUND)
               test_data_flow
               test_sim_effort_force)
       if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/${t}.cpp")
-        ament_add_gtest(${t} test/${t}.cpp)
-        target_link_libraries(${t} mujoco_simulator_lib)
-        rtc_base_add_test_includes(${t})  # rtc::testing::WaitUntil
-        target_compile_definitions(${t} PRIVATE
-          MINIMAL_MJCF_PATH="${MJCF_FIXTURE}")
+        list(APPEND _minimal_mjcf_tests test/${t}.cpp)
       endif()
     endforeach()
+    if(_minimal_mjcf_tests)
+      list(LENGTH _minimal_mjcf_tests _n)
+      math(EXPR _timeout "60 * ${_n}")
+      ament_add_gtest(test_simulator_core ${_minimal_mjcf_tests} TIMEOUT ${_timeout})
+      target_link_libraries(test_simulator_core mujoco_simulator_lib)
+      rtc_base_add_test_includes(test_simulator_core)  # rtc::testing::WaitUntil
+      target_compile_definitions(test_simulator_core PRIVATE
+        MINIMAL_MJCF_PATH="${MJCF_FIXTURE}")
+    endif()
 
     # initial_qpos precedence (YAML > keyframe > zeros): needs BOTH a scene
     # whose keyframe is non-zero and the keyframe-less minimal fixture, since
