@@ -29,18 +29,6 @@ inline constexpr double kFallbackPositionLower = -6.2832;
 inline constexpr double kFallbackPositionUpper = 6.2832;
 inline constexpr double kFallbackMaxVelocity = 2.0;
 
-/// The tick's own reading of the steady clock.
-///
-/// Read per tick rather than accumulated as `iteration * dt` (plan §3): the
-/// two diverge by exactly the jitter and overrun this controller's deadlines
-/// are about, and the accumulated version cannot see a missed tick at all.
-/// The axis itself is `rtc::SteadyNowNs` — the same read the device backends
-/// use for their receipt stamps, which is what makes an age computed here
-/// comparable to one computed there.
-[[nodiscard]] std::int64_t SteadyNowNs() noexcept {
-  return rtc::SteadyNowNs();
-}
-
 }  // namespace
 
 DemoCatchingController::DemoCatchingController(std::string_view urdf_path) : urdf_path_(urdf_path) {
@@ -407,7 +395,7 @@ void DemoCatchingController::OnTrajectoryCloud(const sensor_msgs::msg::PointClou
   // The two instants are sampled TOGETHER and FIRST. They are the pair the
   // D-2 conversion stands on, and any work between them lands in the origin
   // delay as if the publisher had been slow.
-  const std::int64_t recv_steady = SteadyNowNs();
+  const std::int64_t recv_steady = clock_();
   const std::int64_t recv_wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                      std::chrono::system_clock::now().time_since_epoch())
                                      .count();
@@ -1778,7 +1766,7 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   plan_ = rtc::catching::PlanSnapshot{};
   plan_active_ = false;
   admitted_plan_ = rtc::catching::AdmittedPlan{};
-  reset_floor_ns_ = SteadyNowNs();
+  reset_floor_ns_ = clock_();
   ++planner_reset_epoch_;
   arm_cmd_seeded_ = false;
   reference_seeded_ = false;
@@ -1813,7 +1801,7 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   // pair between two ticks leaves the mode in RETREAT but the stage back at
   // kStop: judged against the old clock (the return's, or RETREAT's entry)
   // that stop would read as overdue on its first tick — a false FAULT.
-  motion_start_ns_ = SteadyNowNs();
+  motion_start_ns_ = clock_();
   trial_committed_ = false;
   committed_t_c_ns_ = 0;
   committed_t_cmd_ns_ = 0;
@@ -2809,7 +2797,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   // snapshot's receive instant cannot be later than `now`. Everything below —
   // the vision verdict, the law, the sequencer, every edge — judges this
   // instant; the plan admission alone takes its own (see there).
-  tick_now_ = rtc::catching::NowReal{SteadyNowNs()};
+  tick_now_ = rtc::catching::NowReal{clock_()};
   tick_now_lead_ = rtc::catching::MakeNowLead(tick_now_, t_arm_ns_);
   law_horizon_extrap_ = false;
   const rtc::catching::NowReal now = tick_now_;
@@ -2857,7 +2845,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     // read): a planner on the same steady clock may publish between the two,
     // and judging its plan against the earlier instant would call a brand-new
     // plan "from the future" (JudgePlan (e)) and slip its adoption a tick.
-    ctx.now = rtc::catching::NowReal{SteadyNowNs()};
+    ctx.now = rtc::catching::NowReal{clock_()};
     // A plan older than the ingress staleness bound was computed against a
     // prediction this tick would itself refuse as stale.
     ctx.max_age_ns = t_stale_ns_;

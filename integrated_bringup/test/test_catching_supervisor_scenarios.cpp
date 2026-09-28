@@ -15,13 +15,18 @@
 // freezes the hand on purpose; and injected fingertip samples (one new sample
 // per tick, 7-value stride, force in slots 1..3) for the contact lane.
 //
-// REAL TIME IS REAL, as in test_catching_tracking: the controller reads the
-// steady clock, so every tick sleeps one control period. Timing assertions are
-// written against steady stamps taken immediately before and after each
-// Compute(), so they bound the controller's own clock read rather than
-// assuming a perfect tick grid.
+// TIME IS STEPPED, NOT SLEPT. The controller reads its clock through
+// SetClockForTesting, and this file hands it a fake one that advances one
+// control period per tick; every stamp the file takes (fingertip receipt,
+// plan publish, the before/after pair around Compute()) reads the same clock.
+// Timing assertions are written against the before/after pair, so they bound
+// the controller's own clock read rather than assuming a tick grid — on the
+// fake clock the pair collapses onto that read, which makes them exact.
+// The *RealClock fixtures run representative cases on the real steady clock,
+// sleeping one period per tick, so the production clock path stays covered.
 //
-// This file adds no production seam: every observation is an existing getter.
+// The one production seam is the clock; every observation is an existing
+// getter.
 
 #include "arm_lag_fixture.hpp"
 #include "catching_cloud_fixture.hpp"
@@ -43,6 +48,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -208,6 +214,14 @@ std::vector<double> DerivedQddMax() {
 }
 
 /// What one tick left behind.
+/// The fake clock (file header). A function pointer carries no state, so the
+/// instant lives here; SupervisorScenarioTest::SetUp restarts it per case.
+std::atomic<std::int64_t> g_fake_now_ns{0};
+
+std::int64_t FakeNowNs() noexcept {
+  return g_fake_now_ns.load(std::memory_order_relaxed);
+}
+
 struct TickRec {
   Mode mode{Mode::kIdle};
   Reason reason{Reason::kNone};
@@ -246,6 +260,9 @@ struct TickRec {
 class SupervisorScenarioTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    // A real instant, so stamps look like the ones the controller sees in the
+    // field; from here on only Tick() moves it.
+    g_fake_now_ns.store(rtc::SteadyNowNs(), std::memory_order_relaxed);
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_supervisor_scenarios");
     builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
@@ -278,12 +295,20 @@ class SupervisorScenarioTest : public ::testing::Test {
 
   Eigen::Vector3d StartAxis() const { return start_pose_.rotation().col(2); }
 
+  /// The clock the controller reads (file header).
+  [[nodiscard]] std::int64_t Now() const noexcept {
+    return real_clock_ ? rtc::SteadyNowNs() : FakeNowNs();
+  }
+
   /// TrackingYaml plus `T_hold` shortened to 0.02 s (applied BEFORE `tweak`,
   /// so a case can set its own). Arms the controller unless `arm` is false.
   void BringUp(const Eigen::Vector3d& p_c, const Eigen::Vector3d& a_d, double gamma_f,
                double t_c_offset_s, const std::function<void(YAML::Node&)>& tweak = nullptr,
                const std::array<double, kUr5eArmDof>& start_arm = kUr5eHome, bool arm = true) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
+    if (!real_clock_) {
+      ctrl_->SetClockForTesting(&FakeNowNs);
+    }
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
     auto configs = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
@@ -355,7 +380,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     for (int i = 0; i < 8; ++i) {
       executor_->spin_some(2ms);
     }
-    last_pub_ns_ = rtc::SteadyNowNs();
+    last_pub_ns_ = Now();
   }
 
   // ── Fingertips ────────────────────────────────────────────────────────────
@@ -386,7 +411,7 @@ class SupervisorScenarioTest : public ::testing::Test {
   void InjectTips() {
     auto& h = state_.devices[1];
     h.num_inference_groups = kTips;
-    const std::int64_t now = rtc::SteadyNowNs();
+    const std::int64_t now = Now();
     for (int g = 0; g < kTips; ++g) {
       const auto u = static_cast<std::size_t>(g);
       h.inference_enable[u] = true;
@@ -410,7 +435,7 @@ class SupervisorScenarioTest : public ::testing::Test {
     if (pre_tick_) {
       pre_tick_();
     }
-    if (publishing_ && (last_pub_ns_ == 0 || rtc::SteadyNowNs() - last_pub_ns_ >= 30 * kMsNs)) {
+    if (publishing_ && (last_pub_ns_ == 0 || Now() - last_pub_ns_ >= 30 * kMsNs)) {
       PublishNow();
     }
     if (tips_enabled_) {
@@ -425,9 +450,9 @@ class SupervisorScenarioTest : public ::testing::Test {
       rec.q_meas[static_cast<std::size_t>(i)] =
           state_.devices[0].positions[static_cast<std::size_t>(i)];
     }
-    rec.before_ns = rtc::SteadyNowNs();
+    rec.before_ns = Now();
     const ControllerOutput out = ctrl_->Compute(state_);
-    rec.after_ns = rtc::SteadyNowNs();
+    rec.after_ns = Now();
 
     rec.mode = ctrl_->GetMode();
     rec.reason = ctrl_->GetLastReason();
@@ -513,7 +538,11 @@ class SupervisorScenarioTest : public ::testing::Test {
       d.efforts[j] = holding ? hand_stall_->effort : 0.0;
     }
     log_.push_back(rec);
-    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    if (real_clock_) {
+      std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    } else {
+      g_fake_now_ns.fetch_add(kHNs, std::memory_order_relaxed);
+    }
   }
 
   void Ticks(int n) {
@@ -674,6 +703,51 @@ class SupervisorScenarioTest : public ::testing::Test {
   /// DECEL at t_c on the LEAD axis (R-DECEL-ENTRY): the tick before did not
   /// see now_lead ≥ t_c and the entry tick did. Bounded by the stamps around
   /// the controller's own clock read, so it is exact rather than grid-based.
+  /// NormalTrialIsCapturedAndReArms, shared by both clocks.
+  void NormalTrialCase() {
+    ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+    tips_enabled_ = true;
+    ball_in_hand_ = true;
+    ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+    ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+    ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+
+    ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+               Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
+    EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kCaptured) << Transitions();
+    ExpectDecelAtTc();
+
+    // G7-B: the DECEL entry step is τ = 0 from the reference's own state, so the
+    // reference error it records is zero.
+    const int d = Entry(Mode::kDecel);
+    ASSERT_GT(d, 0);
+    const auto& entry = log_[static_cast<std::size_t>(d)];
+    ASSERT_TRUE(entry.ref_valid) << "the DECEL entry tick did not step the reference";
+    const double e = Eigen::Vector3d(entry.ref_e[0], entry.ref_e[1], entry.ref_e[2]).norm();
+    const double ed = Eigen::Vector3d(entry.ref_ed[0], entry.ref_ed[1], entry.ref_ed[2]).norm();
+    RecordProperty("decel_entry_ref_e_nm", static_cast<int>(e * 1e9));
+    EXPECT_LT(e, 1e-9) << "|e| at DECEL entry " << e;
+    EXPECT_LT(ed, 1e-9) << "|ė| at DECEL entry " << ed;
+
+    // The hand keeps the ball until the arm is back, then releases.
+    const int r = Entry(Mode::kRetreat);
+    const int armed = Entry(Mode::kArmed, 1);
+    ASSERT_GT(r, 0);
+    ASSERT_GT(armed, r);
+    ASSERT_NO_FATAL_FAILURE(ExpectHeldUntilTheWaitPose(r));
+    // Re-armed at the wait pose, hand at q_pre.
+    const auto& back = log_[static_cast<std::size_t>(armed)];
+    EXPECT_TRUE(ArmMeasuredAtWait(back));
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      EXPECT_NEAR(back.q_cmd[static_cast<std::size_t>(i)], kUr5eHome[static_cast<std::size_t>(i)],
+                  1e-12)
+          << "joint " << i;
+    }
+    for (int i = 0; i < kP1bHandDof; ++i) {
+      EXPECT_NEAR(state_.devices[1].positions[static_cast<std::size_t>(i)], 0.0, 1e-9);
+    }
+  }
+
   void ExpectDecelAtTc(std::int64_t t_arm_ns = 0) const {
     const int d = Entry(Mode::kDecel);
     ASSERT_GT(d, 0) << Transitions();
@@ -700,6 +774,8 @@ class SupervisorScenarioTest : public ::testing::Test {
   ControllerState state_{};
   Mode initial_mode_{Mode::kIdle};
   std::vector<TickRec> log_;
+  /// Set by the *RealClock fixtures' constructors, before BringUp reads it.
+  bool real_clock_{false};
 
   // Ball lane.
   bool publishing_{true};
@@ -741,47 +817,17 @@ class SupervisorScenarioTest : public ::testing::Test {
 // ════════════════════════════════════════════════════════════════════════════
 
 TEST_F(SupervisorScenarioTest, NormalTrialIsCapturedAndReArms) {
-  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
-  tips_enabled_ = true;
-  ball_in_hand_ = true;
-  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
-  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
-  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+  NormalTrialCase();
+}
 
-  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
-             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
-  EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kCaptured) << Transitions();
-  ExpectDecelAtTc();
+/// Representative cases on the real steady clock (file header).
+class SupervisorScenarioRealClockTest : public SupervisorScenarioTest {
+ protected:
+  SupervisorScenarioRealClockTest() { real_clock_ = true; }
+};
 
-  // G7-B: the DECEL entry step is τ = 0 from the reference's own state, so the
-  // reference error it records is zero.
-  const int d = Entry(Mode::kDecel);
-  ASSERT_GT(d, 0);
-  const auto& entry = log_[static_cast<std::size_t>(d)];
-  ASSERT_TRUE(entry.ref_valid) << "the DECEL entry tick did not step the reference";
-  const double e = Eigen::Vector3d(entry.ref_e[0], entry.ref_e[1], entry.ref_e[2]).norm();
-  const double ed = Eigen::Vector3d(entry.ref_ed[0], entry.ref_ed[1], entry.ref_ed[2]).norm();
-  RecordProperty("decel_entry_ref_e_nm", static_cast<int>(e * 1e9));
-  EXPECT_LT(e, 1e-9) << "|e| at DECEL entry " << e;
-  EXPECT_LT(ed, 1e-9) << "|ė| at DECEL entry " << ed;
-
-  // The hand keeps the ball until the arm is back, then releases.
-  const int r = Entry(Mode::kRetreat);
-  const int armed = Entry(Mode::kArmed, 1);
-  ASSERT_GT(r, 0);
-  ASSERT_GT(armed, r);
-  ASSERT_NO_FATAL_FAILURE(ExpectHeldUntilTheWaitPose(r));
-  // Re-armed at the wait pose, hand at q_pre.
-  const auto& back = log_[static_cast<std::size_t>(armed)];
-  EXPECT_TRUE(ArmMeasuredAtWait(back));
-  for (int i = 0; i < kUr5eArmDof; ++i) {
-    EXPECT_NEAR(back.q_cmd[static_cast<std::size_t>(i)], kUr5eHome[static_cast<std::size_t>(i)],
-                1e-12)
-        << "joint " << i;
-  }
-  for (int i = 0; i < kP1bHandDof; ++i) {
-    EXPECT_NEAR(state_.devices[1].positions[static_cast<std::size_t>(i)], 0.0, 1e-9);
-  }
+TEST_F(SupervisorScenarioRealClockTest, NormalTrialIsCapturedAndReArms) {
+  NormalTrialCase();
 }
 
 TEST_F(SupervisorScenarioTest, ActivatedOutsideTheWaitPoseHomesThenArms) {
@@ -1048,9 +1094,9 @@ TEST_F(SupervisorScenarioTest, AShortStaleAfterTheFreezeIsOnlyRecorded) {
   // (0.3), so the lane is stale for ~40 ms and never long-stale.
   PublishNow();
   publishing_ = false;
-  const std::int64_t gap_start = rtc::SteadyNowNs();
+  const std::int64_t gap_start = Now();
   pre_tick_ = [this, gap_start] {
-    if (!publishing_ && rtc::SteadyNowNs() - gap_start >= 240 * kMsNs) {
+    if (!publishing_ && Now() - gap_start >= 240 * kMsNs) {
       publishing_ = true;
     }
   };
@@ -1841,7 +1887,7 @@ TEST_F(SupervisorScenarioTest, AnImmediateReThrowRefusesThePlansOfTheAbortedTria
     return p;
   };
   ASSERT_TRUE(TickUntilMode(Mode::kTracking, 100)) << Transitions();
-  ctrl_->PlanBoxForTesting().Store(plan_for(42, 1, rtc::SteadyNowNs()));
+  ctrl_->PlanBoxForTesting().Store(plan_for(42, 1, Now()));
   ASSERT_TRUE(TickUntilMode(Mode::kApproach, 5)) << Transitions();
   Ticks(20);
   // The re-throw: a new ball, which ends the attempt (TRACK_CHANGED).
@@ -1850,7 +1896,11 @@ TEST_F(SupervisorScenarioTest, AnImmediateReThrowRefusesThePlansOfTheAbortedTria
   ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 5)) << Transitions();
   EXPECT_EQ(ctrl_->GetLastReason(), Reason::kTrackChanged);
   ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
-  const std::int64_t before_rearm = log_.back().before_ns;
+  // The re-arm tick takes the reset floor from its own clock read; on the
+  // stepped clock that read IS the tick's before stamp, so "before the re-arm"
+  // is one nanosecond earlier (on the real clock the gap was the stamp-to-read
+  // latency).
+  const std::int64_t before_rearm = log_.back().before_ns - 1;
   ASSERT_TRUE(TickUntilMode(Mode::kTracking, 20)) << Transitions();
 
   // (1) The box still holds the aborted trial's plan: refused (another track).
@@ -1866,7 +1916,7 @@ TEST_F(SupervisorScenarioTest, AnImmediateReThrowRefusesThePlansOfTheAbortedTria
   EXPECT_EQ(ctrl_->GetLastReason(), Reason::kNoCatchablePlan);
   EXPECT_EQ(ctrl_->GetPlanAdmittedCount(), 1U);
   // Positive control: the same plan published now is taken.
-  ctrl_->PlanBoxForTesting().Store(plan_for(43, 3, rtc::SteadyNowNs()));
+  ctrl_->PlanBoxForTesting().Store(plan_for(43, 3, Now()));
   Ticks(1);
   EXPECT_EQ(ctrl_->GetMode(), Mode::kApproach) << Transitions();
   EXPECT_EQ(ctrl_->GetPlanAdmittedCount(), 2U);
@@ -1945,7 +1995,7 @@ TEST_F(SupervisorScenarioTest, AStallShorterThanTPersistIsNotACapture) {
     if (ctrl_->GetMode() != Mode::kHold) {
       return;
     }
-    const std::int64_t now = rtc::SteadyNowNs();
+    const std::int64_t now = Now();
     if (hold_seen_ns == 0) {
       hold_seen_ns = now;
     }
@@ -2414,7 +2464,7 @@ class FaultExtensionTest : public SupervisorScenarioTest {
   /// the oracle).
   PlanSnapshot PlanFor(std::uint64_t generation, double t_c_s, bool degenerate_axis) {
     PlanSnapshot p{};
-    const std::int64_t now = rtc::SteadyNowNs();
+    const std::int64_t now = Now();
     p.valid = true;
     p.token.activation_generation = ctrl_->GetPlannerRtState().activation_generation;
     p.token.generation = generation;
@@ -2465,6 +2515,29 @@ class FaultExtensionTest : public SupervisorScenarioTest {
 
   /// FAULT by the stop deadline, from an ABORT_SAFE whose ramp needs more than
   /// the one tick a sub-tick deadline allows. Leaves the log at the FAULT entry.
+  /// AnAbortSafeRampPastTheStopDeadlineFaultsAndStillStops, shared by both
+  /// clocks.
+  void StopDeadlineCase() {
+    ASSERT_NO_FATAL_FAILURE(FaultByTheStopDeadline());
+    ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+               Mode::kFault});
+    const int f = Entry(Mode::kFault);
+    ASSERT_GT(f, 0);
+    const auto fu = static_cast<std::size_t>(f);
+    EXPECT_EQ(log_[fu].reason, Reason::kAbortEscalated);
+    EXPECT_EQ(log_[fu].body.fault_cause, FaultCause::kStopDeadline);
+    EXPECT_TRUE(log_[fu].body.fault_latched);
+    EXPECT_GT(Speed(log_[fu - 1]), 0.0)
+        << "precondition: the ramp had not finished at the deadline";
+    // FAULT does not drop the stop the deadline interrupted: it finishes it.
+    Ticks(100);
+    ExpectRampedToRestFrom(fu, "FAULT after a late ramp");
+    EXPECT_EQ(ctrl_->GetMode(), Mode::kFault);
+    EXPECT_TRUE(ctrl_->HasLatchedFault());
+    EXPECT_FALSE(ctrl_->IsArmRequested()) << "a latched fault must disarm";
+    EXPECT_EQ(log_.back().body.fault_cause, FaultCause::kStopDeadline) << "the cause is a state";
+  }
+
   void FaultByTheStopDeadline() {
     ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(3.0), StartAxis(), 0.0, 1.0, Deadlines(0.001, 5.0)));
     ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();
@@ -2522,23 +2595,18 @@ class FaultExtensionTest : public SupervisorScenarioTest {
 // ── D-S9-D1: the motion deadlines ───────────────────────────────────────────
 
 TEST_F(FaultExtensionTest, AnAbortSafeRampPastTheStopDeadlineFaultsAndStillStops) {
-  ASSERT_NO_FATAL_FAILURE(FaultByTheStopDeadline());
-  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
-             Mode::kFault});
-  const int f = Entry(Mode::kFault);
-  ASSERT_GT(f, 0);
-  const auto fu = static_cast<std::size_t>(f);
-  EXPECT_EQ(log_[fu].reason, Reason::kAbortEscalated);
-  EXPECT_EQ(log_[fu].body.fault_cause, FaultCause::kStopDeadline);
-  EXPECT_TRUE(log_[fu].body.fault_latched);
-  EXPECT_GT(Speed(log_[fu - 1]), 0.0) << "precondition: the ramp had not finished at the deadline";
-  // FAULT does not drop the stop the deadline interrupted: it finishes it.
-  Ticks(100);
-  ExpectRampedToRestFrom(fu, "FAULT after a late ramp");
-  EXPECT_EQ(ctrl_->GetMode(), Mode::kFault);
-  EXPECT_TRUE(ctrl_->HasLatchedFault());
-  EXPECT_FALSE(ctrl_->IsArmRequested()) << "a latched fault must disarm";
-  EXPECT_EQ(log_.back().body.fault_cause, FaultCause::kStopDeadline) << "the cause is a state";
+  StopDeadlineCase();
+}
+
+/// A deadline case on the real steady clock (file header): the fault latch's
+/// timing through the production clock path.
+class FaultExtensionRealClockTest : public FaultExtensionTest {
+ protected:
+  FaultExtensionRealClockTest() { real_clock_ = true; }
+};
+
+TEST_F(FaultExtensionRealClockTest, AnAbortSafeRampPastTheStopDeadlineFaultsAndStillStops) {
+  StopDeadlineCase();
 }
 
 TEST_F(FaultExtensionTest, ARetreatStopWhoseServoNeverCatchesUpFaultsAtTheStopDeadline) {
