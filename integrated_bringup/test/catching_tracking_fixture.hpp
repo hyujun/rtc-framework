@@ -70,6 +70,16 @@ rtc_urdf_bridge::ModelConfig MakeConfigWithCatchFrame() {
   return cfg;
 }
 
+/// The builder of MakeConfigWithCatchFrame(), built once per process. The
+/// xacro → Pinocchio parse (~90 ms) is nearly all of a case's bring-up, and a
+/// builder has no mutators once built — production shares one across every
+/// controller the same way (RTControllerInterface::SetSharedModelBuilder).
+std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> SharedCatchFrameBuilder() {
+  static const auto builder =
+      std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
+  return builder;
+}
+
 /// The INDEPENDENT oracle: a second model, driven at the joints the controller
 /// commanded, answering "where is the catch frame really".
 class CatchFrameOracle {

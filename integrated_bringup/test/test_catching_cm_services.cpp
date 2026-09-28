@@ -205,6 +205,7 @@ using integrated_bringup::testfx::kP1bHandDof;
 using integrated_bringup::testfx::kUr5eArmDof;
 using integrated_bringup::testfx::kUr5eHome;
 using integrated_bringup::testfx::MakeConfigWithCatchFrame;
+using integrated_bringup::testfx::SharedCatchFrameBuilder;
 using integrated_bringup::testfx::TrackingYaml;
 using rtc::catching::Mode;
 using rtc::catching::Reason;
@@ -303,9 +304,7 @@ class CatchingCmServicesTest : public ::testing::Test {
     if (!rclcpp::ok()) {
       rclcpp::init(0, nullptr);
     }
-    // The xacro → Pinocchio parse dominates the bring-up; one builder serves
-    // every case, as production shares one across controllers.
-    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
+    builder_ = SharedCatchFrameBuilder();
   }
 
   static void TearDownTestSuite() {

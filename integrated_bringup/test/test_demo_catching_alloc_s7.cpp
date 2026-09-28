@@ -52,6 +52,7 @@ using integrated_bringup::testfx::kP1bHandDof;
 using integrated_bringup::testfx::kUr5eArmDof;
 using integrated_bringup::testfx::kUr5eHome;
 using integrated_bringup::testfx::MakeConfigWithCatchFrame;
+using integrated_bringup::testfx::SharedCatchFrameBuilder;
 using integrated_bringup::testfx::TrackingYaml;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
@@ -71,7 +72,7 @@ class DemoCatchingAllocS7Test : public ::testing::Test {
  protected:
   void SetUp() override {
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_alloc_s7_test");
-    builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
+    builder_ = SharedCatchFrameBuilder();
     CatchFrameOracle oracle(*builder_);
     std::array<double, 64> home{};
     for (int i = 0; i < kUr5eArmDof; ++i) {
