@@ -129,7 +129,7 @@ void RtControllerNode::FlushEstopStatus() {
     return;
   }
   if (estop_pub_) {
-    PublishEstopStatus(global_estop_.load(std::memory_order_acquire));
+    PublishEstopStatus(EstopStatusValue());
   }
 }
 

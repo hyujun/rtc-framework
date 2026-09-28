@@ -59,11 +59,18 @@ void RtControllerNode::CreateFixedSafetyPublishers() {
   // Use standalone rclcpp::create_publisher so these remain regular
   // rclcpp::Publisher (not LifecyclePublisher) — E-STOP status and active
   // controller name must be publishable regardless of lifecycle state.
-  estop_pub_ = rclcpp::create_publisher<std_msgs::msg::Bool>(
-      this->get_node_topics_interface(), "/system/estop_status", rclcpp::QoS(1));
-
+  //
+  // Both are transient_local: the status is published on change only, so a
+  // volatile writer left a subscriber started after the latch reading
+  // "NORMAL" until the next transition (issue #588, decision Q3). Volatile
+  // readers still match a transient_local writer, so the GUI and BT bridge
+  // are unaffected, and shape_estimation's transient_local reader — which
+  // never matched the volatile writer — now connects.
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();
+  estop_pub_ = rclcpp::create_publisher<std_msgs::msg::Bool>(this->get_node_topics_interface(),
+                                                             "/system/estop_status", latch_qos);
+
   active_ctrl_name_pub_ = rclcpp::create_publisher<std_msgs::msg::String>(
       this->get_node_topics_interface(), "/rtc_cm/active_controller_name", latch_qos);
 }

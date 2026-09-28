@@ -38,25 +38,89 @@ namespace {
 }  // namespace
 
 // ── Hold command for a rejected ControllerOutput ─────────────────────────────
+namespace {
+
+// Top-level fields every hold shares. The resolved type is stamped once at the
+// top level and every device is left inheriting it (command_type == nullopt).
+// Per-device overrides exist for mixed-mode controllers, but reconstructing
+// that mix would require trusting the rejected output — a hold is uniform by
+// design.
+void BeginHold(urtc::ControllerOutput& out, urtc::CommandType cmd_type, std::size_t nd) noexcept {
+  out.valid = true;
+  out.command_type = cmd_type;
+  out.num_devices = static_cast<int>(nd);
+}
+
+// Shared lanes are cleared rather than carried over: a pose left from an
+// earlier tick would be republished as if it were current.
+void ClearSharedHoldLanes(urtc::ControllerOutput& out) noexcept {
+  out.actual_task_positions.fill(0.0);
+  out.task_goal_positions.fill(0.0);
+  out.trajectory_task_positions.fill(0.0);
+  out.trajectory_task_velocities.fill(0.0);
+  out.arm_tip_pose_valid = false;
+  out.virtual_tcp_pose_valid = false;
+  out.task_link_pose_valid.fill(false);
+}
+
+// A device the hold has no honest position for: zero channels, which the
+// WriteCommand dispatch turns into WriteSafeCommand().
+void SilenceHoldDevice(urtc::DeviceOutput& dout) noexcept {
+  dout.num_channels = 0;
+  dout.command_type.reset();
+  dout.goal_type = urtc::GoalType::kJoint;
+}
+
+}  // namespace
+
+void RtControllerNode::FillHoldDevice(urtc::DeviceOutput& dout, const double* positions,
+                                      std::size_t nc, urtc::CommandType cmd_type) noexcept {
+  dout.num_channels = static_cast<int>(nc);
+  dout.command_type.reset();
+  dout.goal_type = urtc::GoalType::kJoint;
+  // Only [0, nc) is written each tick — the snapshot fill copies exactly
+  // that many entries, so entries past nc are never read and re-zeroing the
+  // whole 64-wide array on every held tick would be wasted RT budget.
+  for (std::size_t c = 0; c < nc; ++c) {
+    const double held = positions[c];
+    // kPosition / kPdFeedforward servo to where the joint already is, which
+    // is a true stop. kTorque has no such command: the CM carries no dynamic
+    // model, so it cannot synthesise a gravity-compensating torque and 0 N·m
+    // is the only value it can honestly emit. That means a torque-mode arm
+    // sags under gravity for up to kOutputRejectEstopSeconds before the
+    // E-STOP escalation lands.
+    //
+    // That window is NOT tunable — kOutputRejectEstopSeconds is a
+    // compile-time constant with no YAML knob, and above the tick floor a
+    // higher control_rate leaves the wall-clock window unchanged. An earlier
+    // version of this comment told torque configurations to "tune that window
+    // down", which pointed at a knob that does not exist. What exists is the
+    // configure-time advisory in ValidateCommandTypePairing() (issue #339):
+    // the exposure is reported, not silently inherited. Making it tunable
+    // would change when the latch trips and is therefore an E-8 decision, not
+    // a comment fix.
+    dout.commands[c] = (cmd_type == urtc::CommandType::kTorque) ? 0.0 : held;
+    // Position-semantics telemetry stays position-valued in every mode so
+    // the GUI/log lanes show where the hold is parked, not a 0 that would
+    // read as "commanded to origin".
+    dout.goal_positions[c] = held;
+    dout.target_positions[c] = held;
+    dout.trajectory_positions[c] = held;
+    dout.target_velocities[c] = 0.0;
+    dout.trajectory_velocities[c] = 0.0;
+    dout.feedforward[c] = 0.0;
+  }
+}
+
 bool RtControllerNode::BuildHoldOutput(const urtc::ControllerState& state,
                                        urtc::CommandType cmd_type) noexcept {
   bool complete = true;
-  hold_output_.valid = true;
-  // The resolved type is stamped once at the top level and every device is
-  // left inheriting it (command_type == nullopt). Per-device overrides exist
-  // for mixed-mode controllers, but reconstructing that mix would require
-  // trusting the rejected output — a hold is uniform by design.
-  hold_output_.command_type = cmd_type;
-
   const auto nd = BoundedCount(state.num_devices, urtc::ControllerOutput::kMaxDevices);
-  hold_output_.num_devices = static_cast<int>(nd);
+  BeginHold(hold_output_, cmd_type, nd);
   for (std::size_t i = 0; i < nd; ++i) {
     const auto& dstate = state.devices[i];
     auto& dout = hold_output_.devices[i];
     const auto nc = BoundedCount(dstate.num_channels, urtc::kMaxDeviceChannels);
-    dout.num_channels = static_cast<int>(nc);
-    dout.command_type.reset();
-    dout.goal_type = urtc::GoalType::kJoint;
 
     // The hold is only as trustworthy as the state it is built from, and the
     // device read path bounds counts but copies the position doubles verbatim
@@ -75,55 +139,132 @@ bool RtControllerNode::BuildHoldOutput(const urtc::ControllerState& state,
       }
     }
     if (!device_finite) {
-      dout.num_channels = 0;
+      SilenceHoldDevice(dout);
       complete = false;
       continue;
     }
+    FillHoldDevice(dout, dstate.positions.data(), nc, cmd_type);
+  }
+  ClearSharedHoldLanes(hold_output_);
+  return complete;
+}
 
-    // Only [0, nc) is written each tick — the snapshot fill copies exactly
-    // that many entries, so entries past nc are never read and re-zeroing the
-    // whole 64-wide array on every rejected tick would be wasted RT budget.
+// ── E-STOP hold latch (issue #588) ──────────────────────────────────────────
+void RtControllerNode::RecordReadablePositions(const urtc::ControllerState& state,
+                                               const ControllerSlotMapping& mapping) noexcept {
+  const int nd = std::min(
+      {state.num_devices, mapping.num_groups, static_cast<int>(ControllerSlotMapping::kMaxSlots)});
+  for (int di = 0; di < nd; ++di) {
+    const int slot = mapping.slots[static_cast<std::size_t>(di)];
+    const auto& dev = state.devices[static_cast<std::size_t>(di)];
+    if (slot < 0 || slot >= kMaxDevices || !dev.valid) {
+      continue;
+    }
+    const auto uslot = static_cast<std::size_t>(slot);
+    const auto nc = BoundedCount(dev.num_channels, urtc::kMaxDeviceChannels);
     for (std::size_t c = 0; c < nc; ++c) {
-      const double measured = dstate.positions[c];
-      // kPosition / kPdFeedforward servo to where the joint already is, which
-      // is a true stop. kTorque has no such command: the CM carries no dynamic
-      // model, so it cannot synthesise a gravity-compensating torque and 0 N·m
-      // is the only value it can honestly emit. That means a torque-mode arm
-      // sags under gravity for up to kOutputRejectEstopSeconds before the
-      // E-STOP escalation lands.
-      //
-      // That window is NOT tunable — kOutputRejectEstopSeconds is a
-      // compile-time constant with no YAML knob, and above the tick floor a
-      // higher control_rate leaves the wall-clock window unchanged. An earlier
-      // version of this comment told torque configurations to "tune that window
-      // down", which pointed at a knob that does not exist. What exists is the
-      // configure-time advisory in ValidateCommandTypePairing() (issue #339):
-      // the exposure is reported, not silently inherited. Making it tunable
-      // would change when the latch trips and is therefore an E-8 decision, not
-      // a comment fix.
-      dout.commands[c] = (cmd_type == urtc::CommandType::kTorque) ? 0.0 : measured;
-      // Position-semantics telemetry stays position-valued in every mode so
-      // the GUI/log lanes show where the hold is parked, not a 0 that would
-      // read as "commanded to origin".
-      dout.goal_positions[c] = measured;
-      dout.target_positions[c] = measured;
-      dout.trajectory_positions[c] = measured;
-      dout.target_velocities[c] = 0.0;
-      dout.trajectory_velocities[c] = 0.0;
-      dout.feedforward[c] = 0.0;
+      if (((dev.hole_mask >> c) & 1U) == 0U && std::isfinite(dev.positions[c])) {
+        last_readable_positions_[uslot][c] = dev.positions[c];
+        last_readable_mask_[uslot] |= std::uint64_t{1} << c;
+      }
     }
   }
+}
 
-  // Shared lanes are cleared rather than carried over: a pose left from an
-  // earlier tick would be republished as if it were current.
-  hold_output_.actual_task_positions.fill(0.0);
-  hold_output_.task_goal_positions.fill(0.0);
-  hold_output_.trajectory_task_positions.fill(0.0);
-  hold_output_.trajectory_task_velocities.fill(0.0);
-  hold_output_.arm_tip_pose_valid = false;
-  hold_output_.virtual_tcp_pose_valid = false;
-  hold_output_.task_link_pose_valid.fill(false);
+bool RtControllerNode::CaptureEstopHold(std::size_t slot, const urtc::DeviceState& dev) noexcept {
+  const auto nc = BoundedCount(dev.num_channels, urtc::kMaxDeviceChannels);
+  auto& held = estop_hold_positions_[slot];
+  for (std::size_t c = 0; c < nc; ++c) {
+    const bool written = ((dev.hole_mask >> c) & 1U) == 0U;
+    const double measured = dev.positions[c];
+    if (written && std::isfinite(measured)) {
+      held[c] = measured;
+    } else if (((last_readable_mask_[slot] >> c) & 1U) != 0U) {
+      // Unreadable NOW: the one value known to be untrustworthy is not a hold
+      // target, so hold at the last reading instead (6bbc4d22's rule).
+      held[c] = last_readable_positions_[slot][c];
+    } else if (std::isfinite(measured)) {
+      // Never read on this slot — the cache value is the only position there
+      // is, and it is what the per-tick hold commanded before the latch. A
+      // reorder map's permanently unmatched channels land here every time, so
+      // silencing the whole device instead would make every E-STOP worse for
+      // it than it was.
+      held[c] = measured;
+    } else {
+      return false;  // no finite value of any kind — nothing honest to hold
+    }
+  }
+  estop_hold_num_channels_[slot] = static_cast<int>(nc);
+  estop_hold_latched_slots_ |= std::uint32_t{1} << slot;
+  return true;
+}
+
+bool RtControllerNode::BuildLatchedHoldOutput(const urtc::ControllerState& state,
+                                              urtc::CommandType cmd_type,
+                                              const ControllerSlotMapping& mapping) noexcept {
+  bool complete = true;
+  const auto nd = BoundedCount(state.num_devices, urtc::ControllerOutput::kMaxDevices);
+  BeginHold(hold_output_, cmd_type, nd);
+  for (std::size_t i = 0; i < nd; ++i) {
+    auto& dout = hold_output_.devices[i];
+    const int slot = i < static_cast<std::size_t>(ControllerSlotMapping::kMaxSlots) &&
+                             static_cast<int>(i) < mapping.num_groups
+                         ? mapping.slots[i]
+                         : -1;
+    if (slot < 0 || slot >= kMaxDevices) {
+      // No slot means no backend, so nothing of this device reaches a wire and
+      // there is nothing to latch against.
+      SilenceHoldDevice(dout);
+      continue;
+    }
+    const auto uslot = static_cast<std::size_t>(slot);
+    if (((estop_hold_latched_slots_ >> uslot) & 1U) == 0U &&
+        !CaptureEstopHold(uslot, state.devices[i])) {
+      // Retried next tick — a slot latches on its first tick with a value.
+      SilenceHoldDevice(dout);
+      complete = false;
+      continue;
+    }
+    // Never wider than the device reports NOW: a driver that narrowed its
+    // message since the capture must not be handed channels it did not send.
+    const auto nc = std::min(static_cast<std::size_t>(estop_hold_num_channels_[uslot]),
+                             BoundedCount(state.devices[i].num_channels, urtc::kMaxDeviceChannels));
+    FillHoldDevice(dout, estop_hold_positions_[uslot].data(), nc, cmd_type);
+  }
+  ClearSharedHoldLanes(hold_output_);
   return complete;
+}
+
+bool RtControllerNode::AdvanceEstopClearVerification(bool estopped) noexcept {
+  std::uint32_t token = estop_verify_token_.load(std::memory_order_acquire);
+  if (token == 0U) {
+    estop_verify_ticks_ = 0;
+    return false;
+  }
+  // Latch up (the clear has not happened yet, or a detector re-latched) or a
+  // new window since we last looked: count from zero. The token is never
+  // cleared here — the service raises it BEFORE lowering the latch, so a tick
+  // between the two sees "latch up, token set", and clearing it then would
+  // let the latch drop with no window at all.
+  if (estopped || token != estop_verify_counted_token_) {
+    estop_verify_counted_token_ = token;
+    estop_verify_ticks_ = 0;
+    return true;
+  }
+  if (++estop_verify_ticks_ < EstopVerifyWindowTicks()) {
+    return true;
+  }
+  // Survived the window. Fails, leaving the window open, if a new clear
+  // replaced the token after the load above — its window starts over.
+  if (!estop_verify_token_.compare_exchange_strong(token, 0U, std::memory_order_acq_rel,
+                                                   std::memory_order_acquire)) {
+    return true;
+  }
+  estop_verify_ticks_ = 0;
+  // The reported value just fell to false (decision Q13) — the drain publishes
+  // it; this is the only place the window closes on the RT side.
+  estop_status_pending_.store(true, std::memory_order_release);
+  return false;
 }
 
 // ── Resolved per-device command type vs backend capability (issue #342) ─────
@@ -459,6 +600,10 @@ void RtControllerNode::ControlLoop() {
                              : std::chrono::duration<double>(t0 - log_start_time_).count();
   }
 
+  // Every tick, held or not: the last reading of each channel is what an
+  // E-STOP latches when that channel is unreadable on the stop tick (#588).
+  RecordReadablePositions(state, slot_mapping);
+
   rt_loop_.StampStateAcquired();
 
   // ── Phase 2: compute control law ───────────────────────────────────────
@@ -468,6 +613,25 @@ void RtControllerNode::ControlLoop() {
       timing_profiler_.MeasuredCompute(active_controller, state);
 
   rt_loop_.StampComputeDone();
+
+  // Clear-verification window (issue #588, decisions Q2 · Q12 (a)). Advanced
+  // once per tick, before either hold is built, so both phases below agree on
+  // whether this tick is still E-STOP. While it is open the latch is down but
+  // the hold stays: /rtc_cm/clear_estop lowered the latch, and the controller's
+  // output reaches the wire only after the cause detectors have had
+  // EstopVerifyWindowTicks() to re-latch it.
+  //
+  // The latch is snapshotted BEFORE the token is read, and the snapshot is
+  // part of every hold decision below. The service stores the token and only
+  // then lowers the latch (both release), so a snapshot that already sees the
+  // latch down is guaranteed to see the token too. Re-reading only the latch
+  // later would let a whole clear land in between — token read as 0 here,
+  // latch read as down in 2c — and forward one tick of output computed while
+  // the controller was still estopped.
+  const bool estopped_at_verify = IsGlobalEstopped();
+  const bool verifying = AdvanceEstopClearVerification(estopped_at_verify);
+  // Which hold Phase 2b built this tick, so 2c does not build it twice.
+  bool hold_is_latched = false;
 
   // ── Phase 2b: actuator-boundary validation (issue #196 Phase 4) ────────
   //
@@ -490,7 +654,16 @@ void RtControllerNode::ControlLoop() {
                                              ? FindUnhonouredCommandType(raw_output, slot_mapping)
                                              : CommandTypeRejection{};
   if (!validation.Ok() || ct_reject.Rejected()) {
-    const bool hold_complete = BuildHoldOutput(state, active_controller.GetCommandType());
+    // Under E-STOP (or a clear still being verified) a rejected output gets the
+    // same latched hold the substitution below would give it — a per-tick
+    // hold here would re-target the latched devices for this one tick.
+    // Outside it the per-tick hold stays: the window it covers is at most
+    // kOutputRejectEstopSeconds before the escalation hands over to the latch.
+    hold_is_latched = verifying || estopped_at_verify || IsGlobalEstopped();
+    const bool hold_complete =
+        hold_is_latched
+            ? BuildLatchedHoldOutput(state, active_controller.GetCommandType(), slot_mapping)
+            : BuildHoldOutput(state, active_controller.GetCommandType());
     // Each guard keeps its own total: all of them emit the identical hold, so
     // a test of any one of them can only tell which fired from its counter.
     // The consecutive count is deliberately shared — both causes mean "this
@@ -558,10 +731,19 @@ void RtControllerNode::ControlLoop() {
   // implementations are the point) and SetHandEstop's base is still a no-op,
   // so "no counterexample in tree" is not a reason to drop this guard.
   //
-  // The substitution is the same BuildHoldOutput the invalid-output path
-  // uses, so when both fire the command is identical — but the two keep
-  // separate counters, because "which guard stopped the write" is exactly
-  // what a test of either guard has to be able to see.
+  // The substitution holds each slot at the position latched on its first
+  // substituted tick (BuildLatchedHoldOutput, issue #588), not at this tick's
+  // measurement: re-targeting a position servo to its own measurement every
+  // tick is a zero-stiffness follower, and a live device walks by its
+  // steady-state error for as long as the stop lasts. The latch is dropped on
+  // the first tick that is neither latched nor verifying, so a stop inside a
+  // verification window keeps the ORIGINAL latch (the hold never paused) and
+  // the next stop after a verified clear latches afresh.
+  //
+  // It keeps separate counters from the invalid-output path — latch-up ticks
+  // and verification-window ticks each have their own — because "which guard
+  // stopped the write" is exactly what a test of either guard has to be able
+  // to see.
   //
   // What this deliberately drops: every in-tree ComputeEstop slews toward a
   // configured `safe_position_` rather than holding. That retreat is a
@@ -570,24 +752,29 @@ void RtControllerNode::ControlLoop() {
   // the backend safe-output contract (Phase 4), where position / torque /
   // hand each get their own semantics — not in a manager that would have to
   // trust the output it just decided not to trust.
-  const bool estopped = IsGlobalEstopped();
-  if (estopped) {
-    estop_substituted_outputs_.fetch_add(1, std::memory_order_relaxed);
-    if (validation.Ok() && !ct_reject.Rejected()) {
-      // Phase 2b already rebuilt hold_output_ from this tick's state when it
-      // rejected the output — for EITHER cause. Rebuilding it would be
-      // redundant, not different: same `state`, same controller-global type,
-      // byte-identical result. The command-type cause has to be named here
-      // explicitly because the steady state right after it escalates is
-      // exactly "latch set AND still rejecting", so omitting it pays
-      // BuildHoldOutput's device × channel walk twice on every tick of it.
-      static_cast<void>(BuildHoldOutput(state, active_controller.GetCommandType()));
+  // Re-read as well as the snapshot: a 2b escalation raises the latch on this
+  // very tick, and that tick must already go out held.
+  const bool estopped = estopped_at_verify || IsGlobalEstopped();
+  const bool estop_hold = estopped || verifying;
+  if (estop_hold) {
+    (estopped ? estop_substituted_outputs_ : estop_verify_held_outputs_)
+        .fetch_add(1, std::memory_order_relaxed);
+    if (!hold_is_latched) {
+      // Phase 2b already built the latched hold when it rejected the output
+      // under E-STOP — for EITHER cause — and building it again would be
+      // redundant, not different. It did NOT when it rejected before the
+      // latch was up: a 2b escalation raises the latch this very tick, and
+      // its per-tick hold must not go out as the first E-STOP command.
+      static_cast<void>(
+          BuildLatchedHoldOutput(state, active_controller.GetCommandType(), slot_mapping));
     }
+  } else {
+    estop_hold_latched_slots_ = 0;  // released — the next stop latches afresh
   }
   // Every cause that rebuilt hold_output_ above must appear here, or the hold
   // is built and then not used — the rejection would be counted, logged and
   // escalated while the offending output went to the wire anyway.
-  const bool substituted = estopped || !validation.Ok() || ct_reject.Rejected();
+  const bool substituted = estop_hold || !validation.Ok() || ct_reject.Rejected();
   const urtc::ControllerOutput& output = substituted ? hold_output_ : raw_output;
 
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
@@ -839,9 +1026,12 @@ void RtControllerNode::DrainLog() {
   // the aux lane rather than a plain publish on the RT thread. Publishing the
   // latch's value at drain time (not a value captured at trigger time) is
   // what makes a trigger/clear pair landing between two drains converge on
-  // the final state instead of a stale one.
+  // the final state instead of a stale one. The value is latch OR an open
+  // clear-verification window (issue #588, decision Q13): a clear the window
+  // refuses never shows a false edge, and a verified one shows false only
+  // once the controller's output is actually back on the wire.
   if (estop_status_pending_.exchange(false, std::memory_order_acquire)) {
-    PublishEstopStatus(global_estop_.load(std::memory_order_acquire));
+    PublishEstopStatus(EstopStatusValue());
   }
 
   // Drain deferred E-STOP log messages (set by TriggerGlobalEstop /

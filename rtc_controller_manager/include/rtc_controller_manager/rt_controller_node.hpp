@@ -324,6 +324,35 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     return global_estop_.load(std::memory_order_acquire);
   }
 
+  /// Opens a clear-verification window (issue #588, decision Q12 (a)). Call
+  /// BEFORE ClearGlobalEstop(): from the moment the latch drops, the RT loop
+  /// keeps substituting the E-STOP hold until it has counted
+  /// EstopVerifyWindowTicks() ticks with the latch down, and only then lets the
+  /// controller's output through. The RT loop ends the window; nothing else
+  /// may, so a caller that times out or dies cannot leave the arm unheld.
+  /// Returns the token that identifies this window. Service thread only.
+  std::uint32_t BeginEstopClearVerification() noexcept;
+
+  /// True while a clear-verification window is open. The window counts as
+  /// E-STOP everywhere outside the latch itself: the hold, /system/estop_status
+  /// and the controller-switch refusal all use IsEstopHoldActive().
+  [[nodiscard]] bool IsEstopClearVerifying() const noexcept {
+    return estop_verify_token_.load(std::memory_order_acquire) != 0U;
+  }
+
+  /// Latch up, or a clear still being verified.
+  [[nodiscard]] bool IsEstopHoldActive() const noexcept {
+    return IsGlobalEstopped() || IsEstopClearVerifying();
+  }
+
+  /// Latch-down ticks a clear must survive before the RT loop releases the
+  /// hold: one full device-watchdog period plus the two-tick proof the
+  /// /rtc_cm/clear_estop observation window has always used, so every cause
+  /// detector has had a turn with the latch down (issue #288).
+  [[nodiscard]] std::uint64_t EstopVerifyWindowTicks() const noexcept {
+    return static_cast<std::uint64_t>(watchdog_check_divisor_) + kEstopVerifyProofTicks;
+  }
+
   /// Every TriggerGlobalEstop() ENTRY, including the calls its CAS turns away
   /// because the latch is already up. Monotonic for the node's lifetime, never
   /// reset by a clear. ClearGlobalEstop() compares it across its propagation
@@ -382,6 +411,13 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   /// indistinguishable at the backend. Monotonic for the node's lifetime.
   [[nodiscard]] uint64_t EstopSubstitutedOutputCount() const noexcept {
     return estop_substituted_outputs_.load(std::memory_order_relaxed);
+  }
+
+  /// Total ticks held *because a clear was still being verified* — latch down,
+  /// verification window open (issue #588). Separate from
+  /// EstopSubstitutedOutputCount, which keeps meaning "the latch was up".
+  [[nodiscard]] uint64_t EstopVerifyHeldOutputCount() const noexcept {
+    return estop_verify_held_outputs_.load(std::memory_order_relaxed);
   }
 
   /// Total ticks whose output was replaced by a hold *because a device's
@@ -764,6 +800,52 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::atomic<uint64_t> rejected_output_count_{0};
   std::atomic<uint64_t> consecutive_rejected_outputs_{0};
   std::atomic<uint64_t> estop_substituted_outputs_{0};
+  std::atomic<uint64_t> estop_verify_held_outputs_{0};
+
+  // ── E-STOP hold latch (issue #588) ────────────────────────────────────────
+  //
+  // Under E-STOP the hold commands a position captured ONCE per slot, not the
+  // tick's measurement. A position servo with a steady-state error (gravity,
+  // friction, PD lag) re-targeted to its own measurement every tick walks —
+  // #588 measured ~3.4 mrad/s on a live hand joint in sim — so a
+  // measurement-following "hold" is a zero-stiffness follower, the same defect
+  // 6bbc4d22 fixed inside the inference controller.
+  //
+  // Keyed by SLOT, not by the active controller's device index, and captured
+  // at each slot's FIRST substituted tick rather than once at the stop: the
+  // switch service can pass its E-STOP check just before a trigger lands, so
+  // the device index → slot map can change under a live hold, and an
+  // index-keyed latch would then command one group's positions to another.
+  //
+  // RT thread only. The lifecycle resets them (ResetEstopHoldState) only while
+  // the RT thread is joined. Fixed-size members — no allocation.
+  static_assert(kMaxDevices <= 32, "estop_hold_latched_slots_ has one bit per slot");
+  std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices> estop_hold_positions_{};
+  std::array<int, kMaxDevices> estop_hold_num_channels_{};
+  std::uint32_t estop_hold_latched_slots_{0};
+  // The last value each (slot, channel) reported while written and finite —
+  // the latch source for a channel that is a hole (or non-finite) on the
+  // capture tick: the one reading known to be untrustworthy is not a hold
+  // target. Refreshed every tick whether or not anything is held.
+  std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices> last_readable_positions_{};
+  std::array<uint64_t, kMaxDevices> last_readable_mask_{};
+
+  // ── Clear verification (issue #588, decisions Q2 · Q12 (a) · Q13) ─────────
+  //
+  // 0 = no window open. /rtc_cm/clear_estop sets a fresh non-zero token BEFORE
+  // lowering the latch; the RT loop counts EstopVerifyWindowTicks() latch-down
+  // ticks and then clears it with a compare-exchange against the token it
+  // counted for. A value rather than a bool because the RT side decides "the
+  // window has passed" and clears in two steps: a trigger + a new clear landing
+  // in between must not have ITS window erased — the token changed, so the CAS
+  // fails, and the changed token also restarts the count.
+  std::atomic<std::uint32_t> estop_verify_token_{0};
+  // Service thread only (the clear_estop callback group is MutuallyExclusive).
+  std::uint32_t estop_verify_last_token_{0};
+  // RT thread only.
+  std::uint32_t estop_verify_counted_token_{0};
+  std::uint64_t estop_verify_ticks_{0};
+  static constexpr std::uint64_t kEstopVerifyProofTicks = 2;
 
   // ── Resolved per-device command type vs backend capability (issue #342) ───
   //
@@ -923,4 +1005,38 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // backend, so the hold cannot assume them finite.
   [[nodiscard]] bool BuildHoldOutput(const rtc::ControllerState& state,
                                      rtc::CommandType cmd_type) noexcept;
+
+  // The E-STOP form of BuildHoldOutput (issue #588): same shape and the same
+  // false-means-incomplete contract, but each device commands its slot's
+  // LATCHED position, capturing it on the slot's first substituted tick (see
+  // estop_hold_positions_). RT thread only.
+  [[nodiscard]] bool BuildLatchedHoldOutput(const rtc::ControllerState& state,
+                                            rtc::CommandType cmd_type,
+                                            const ControllerSlotMapping& mapping) noexcept;
+
+  // Captures `slot`'s hold position from `dev` — per channel the measurement
+  // if written and finite, else the last readable value, else (never read)
+  // the cache value if finite. False, and nothing latched, when some channel
+  // has no finite value at all. RT thread only.
+  [[nodiscard]] bool CaptureEstopHold(std::size_t slot, const rtc::DeviceState& dev) noexcept;
+
+  // Refreshes last_readable_* from this tick's state. RT thread only.
+  void RecordReadablePositions(const rtc::ControllerState& state,
+                               const ControllerSlotMapping& mapping) noexcept;
+
+  // Advances the clear-verification window for this tick and reports whether
+  // it is still open. Clears the token (and schedules the estop_status
+  // publish) on the tick the window completes. RT thread only.
+  [[nodiscard]] bool AdvanceEstopClearVerification(bool estopped) noexcept;
+
+  // Common fill of one held device: `nc` channels at `positions`.
+  static void FillHoldDevice(rtc::DeviceOutput& dout, const double* positions, std::size_t nc,
+                             rtc::CommandType cmd_type) noexcept;
+
+  // Drops every latch, reading and window. Lifecycle thread, RT joined only.
+  void ResetEstopHoldState() noexcept;
+
+  // Value /system/estop_status reports: latch up OR a clear still being
+  // verified (decision Q13), so a refused clear never shows a false edge.
+  [[nodiscard]] bool EstopStatusValue() const noexcept { return IsEstopHoldActive(); }
 };

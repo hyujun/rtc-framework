@@ -19,7 +19,7 @@
 - 계획 계산(L3)
 - 기준 생성 수식(L4)
 - 관절 한계 처리(L5)
-- E-STOP 시 출력 대체 — CM 이 `ValidateControllerOutput` 실패·E-STOP 시 `BuildHoldOutput` 으로 대체한다. 슈퍼바이저는 상태 정리만 한다 (§4.1)
+- E-STOP 시 출력 대체 — CM 이 `ValidateControllerOutput` 실패 시 `BuildHoldOutput`, E-STOP (과 해제 검증 창) 동안 `BuildLatchedHoldOutput` 으로 대체한다. 슈퍼바이저는 상태 정리만 한다 (§4.1)
 - E-STOP·fault 정책 전체 (S9, D-13)
 - UR 드라이버 자체의 보호 정지(드라이버·로봇 제어기 소관)
 
@@ -75,8 +75,8 @@
 **감속은 시각 기준으로 시작한다 `[확정 A-5]`.** 실기 접촉 신호가 지문 센서뿐이라, 공이 손바닥에 먼저 닿으면 손가락이 닫히기 전까지 검출이 늦을 수 있다. 따라서 `DECEL` 진입은 $now_{lead}\ge t_c$ 로 하고, 지문 센서는 결과 판정과 abort에만 쓴다.
 
 **E-STOP·fault 정책 `[확정 D-13]` (S9, plan §4.4 S9 — D-S9-A·B·C·E1 은 현행 동작이고 S9a 테스트가 고정한다).**
-- **출력은 CM 이 정한다.** E-STOP latch 가 서 있는 동안 CM 이 컨트롤러 출력 전체를 버리고 모든 device 를 매 tick 의 측정 위치로 쓴다 (`BuildHoldOutput`). 슈퍼바이저는 출력에 관여할 수 없고 **상태만 정리**한다. 그래도 컨트롤러 자신의 출력도 같은 자세다 — 정지 tick 의 리셋이 팔·손 hold latch 를 그 tick 의 측정값으로 다시 잡으므로, CM 치환이 없어도 정지가 운동이 되지 않는다.
-- **손도 측정 자세로 hold (D-S9-A).** 열지도 조이지도 않는다. `HOLD`·`RETREAT` 중이면 닫힌 자세 그대로 멈추는데, position servo 는 명령과 측정의 간극으로 힘을 내므로 **간극 0 이 되어 공을 놓는다** — 확정 동작이다 (compliance 의 #504 와 같은 기전). 긴 정지에서는 이 "측정 자세" 자체가 움직인다 — CM 이 매 tick 새 측정값으로 hold 를 다시 만들어 servo 정상상태 오차가 누적된다 (sim 에서 손 약 3.4 mrad/s, #588). 해제 뒤에도 손 latch 는 측정 자세로 재시드되어 재무장 전까지 그 자세다. device 별 hold 정책은 CM 변경이라 S9 범위 밖.
+- **출력은 CM 이 정한다.** E-STOP latch 가 서 있는 동안 (그리고 해제 뒤 검증 창 동안) CM 이 컨트롤러 출력 전체를 버리고 모든 device 를 **정지 tick 에 latch 한 측정 위치**로 쓴다 (`BuildLatchedHoldOutput`, #588 — 그 tick 에 읽을 수 없는 채널은 마지막 판독값). 슈퍼바이저는 출력에 관여할 수 없고 **상태만 정리**한다. 그래도 컨트롤러 자신의 출력도 같은 자세다 — 정지 tick 의 리셋이 팔·손 hold latch 를 그 tick 의 측정값으로 다시 잡으므로, CM 치환이 없어도 정지가 운동이 되지 않는다.
+- **손도 측정 자세로 hold (D-S9-A).** 열지도 조이지도 않는다. `HOLD`·`RETREAT` 중이면 닫힌 자세 그대로 멈추는데, position servo 는 명령과 측정의 간극으로 힘을 내므로 **간극 0 이 되어 공을 놓는다** — 확정 동작이다 (compliance 의 #504 와 같은 기전). "측정 자세" 는 **정지 tick 의 측정**이다 — CM 이 hold 목표를 그 tick 에 한 번 잡고 해제 (검증 통과) 까지 유지한다 (pre-S10 R2, #588; 이전에는 매 tick 새 측정값으로 다시 만들어 servo 정상상태 오차가 누적됐다 — sim 에서 손 약 3.4 mrad/s). 간극 0 에서 잡으므로 공을 놓는 것은 그대로다. 해제 뒤에도 손 latch 는 측정 자세로 재시드되어 재무장 전까지 그 자세다. 해제는 검증 창 (`watchdog_check_divisor_ + 2` tick) 동안 hold 를 유지한 뒤에만 컨트롤러 출력을 내보낸다 — 창 동안 이 컨트롤러는 이미 E-STOP 이 풀린 상태로 돌고 CSV `estop_active` 도 0 이다.
 - **단계와 무관하게 한 가지 반응 (D-S9-B).** 어느 모드든 정지 tick 에 `IDLE` (사유 `ESTOP`)·비무장, plan·손 시퀀스 무효화. `FAULT` 만 예외로 유지한다 ({FAULT, ESTOP} → FAULT). 진행 중 시행은 `Aborted` 로 끝나 정지 동안 그 값을 싣고, 해제의 리셋이 `None` 으로 되돌린다 (다음 시행은 판정 없이 시작). `HOLD` 끝에서 이미 판정된 시행은 진행 중이 아니다 — 판정은 `RETREAT` 진입 tick 에 발행되고 (§4.4 결과 판정, 시행 러너가 읽는 곳), 복귀 중 E-STOP 이나 `ABORT_SAFE` 재진입은 그것을 `Aborted` 로 덮지 않는다. 감속이 필요한 조건은 E-STOP 이 아니라 컨트롤러 소유 (`ABORT_SAFE`·`FAULT`) 다.
 - **해제 뒤 자동 재개 금지 (D-S9-C, P-1 (c)).** `IDLE`·비무장으로 남고, $q_c$ 와 CLIK 앵커를 $q_{meas}$ 로 reseed 한다. 운용자가 `catching.enable` 로 재무장하면 homing 부터 다시 한다. 채택된 `wait_pose` 는 유지하고 정지 자세를 새로 채택하지 않는다.
 - **fault 는 별개 래치 (D-S9-E1, P-1 (d)).** `ClearEstop` 은 fault 를 풀지 않고 `ResetFault` 는 E-STOP 을 풀지 않으며, `FAULT` 를 global E-STOP 으로 승격하지 않는다. RT 경로의 try/catch·deactivate 는 쓰지 않는다 (RT-2).

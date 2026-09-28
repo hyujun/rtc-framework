@@ -24,8 +24,15 @@
 namespace urtc = rtc;
 
 bool RtControllerNode::SwitchActiveController(const std::string& name, std::string& message) {
+  // A clear still being verified is E-STOP here too (issue #588): the hold is
+  // still on the wire and /system/estop_status still reads true, so a switch
+  // that succeeded now would contradict both.
   if (IsGlobalEstopped()) {
     message = "E-STOP active";
+    return false;
+  }
+  if (IsEstopClearVerifying()) {
+    message = "E-STOP active (clear still being verified)";
     return false;
   }
   const auto it = controller_name_to_idx_.find(name);

@@ -101,8 +101,41 @@ RtControllerNode::EstopClearOutcome RtControllerNode::ClearGlobalEstop() noexcep
   }
 
   global_estop_.store(false, std::memory_order_release);
-  estop_status_pending_.store(true, std::memory_order_release);
+  // With a verification window open the reported value does not change here —
+  // it is latch OR window (decision Q13) — and the RT loop raises the publish
+  // when the window closes. Raising it anyway would only re-publish `true`.
+  if (!IsEstopClearVerifying()) {
+    estop_status_pending_.store(true, std::memory_order_release);
+  }
   // Defer the RCLCPP_INFO to the non-RT log thread (DrainLog).
   estop_log_pending_.store(true, std::memory_order_release);
   return EstopClearOutcome::kCleared;
+}
+
+// ── Clear verification (issue #588) ─────────────────────────────────────────
+std::uint32_t RtControllerNode::BeginEstopClearVerification() noexcept {
+  // A fresh value per call, never 0 (0 = no window). The RT loop restarts its
+  // count whenever the value changes, so a second clear never inherits the
+  // ticks the first one had already survived.
+  if (++estop_verify_last_token_ == 0U) {
+    ++estop_verify_last_token_;
+  }
+  estop_verify_token_.store(estop_verify_last_token_, std::memory_order_release);
+  return estop_verify_last_token_;
+}
+
+void RtControllerNode::ResetEstopHoldState() noexcept {
+  // Dropping an open window changes the reported value (latch OR window) just
+  // as the RT side closing it does, so it schedules the same publish. Without
+  // it a deactivate that lands mid-window — RT joined before the closing tick,
+  // then ClearGlobalEstop() finding the latch already down (kNotLatched) —
+  // leaves the transient_local topic reading `true` for good.
+  if (estop_verify_token_.exchange(0U, std::memory_order_acq_rel) != 0U) {
+    estop_status_pending_.store(true, std::memory_order_release);
+  }
+  estop_verify_counted_token_ = 0U;
+  estop_verify_ticks_ = 0;
+  estop_hold_latched_slots_ = 0;
+  estop_hold_num_channels_.fill(0);
+  last_readable_mask_.fill(0);
 }

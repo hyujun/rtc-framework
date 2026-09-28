@@ -111,7 +111,7 @@ ROS 비의존 순수 C++ FSM 기반 탐색 모션 생성기. `enable_exploration
 |-------|------|-----|-------------|
 | `/tof/snapshot` | `rtc_msgs/ToFSnapshot` | SensorData(5) | ToF + fingertip pose @500Hz |
 | `/shape/trigger` | `std_msgs/String` | Reliable | `start`/`stop`/`pause`/`resume`/`single` |
-| `/system/estop_status` | `std_msgs/Bool` | Reliable | E-STOP signal |
+| `/system/estop_status` | `std_msgs/Bool` | Reliable, transient_local | E-STOP signal — CM writer is transient_local too (#588); before that it was volatile and this reader never matched it |
 | `/object/pose_estimate` | `geometry_msgs/PoseStamped` | Reliable | Object position override |
 
 ### TF

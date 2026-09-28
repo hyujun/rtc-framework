@@ -79,8 +79,11 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
       "/rtc_cm/active_controller_name", rclcpp::QoS{1}.transient_local(),
       [this](std_msgs::msg::String::SharedPtr msg) { OnActiveController(std::move(msg)); });
 
+  // transient_local on both ends (#588): the CM publishes on change only, and
+  // a volatile reader never receives the latched value — a coordinator started
+  // after an E-STOP would otherwise believe there is none until the next edge.
   estop_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
-      "/system/estop_status", rclcpp::QoS{1},
+      "/system/estop_status", rclcpp::QoS{1}.transient_local(),
       [this](std_msgs::msg::Bool::SharedPtr msg) { OnEstop(std::move(msg)); });
 
   // ── Shape estimation ──────────────────────────────────────────────────

@@ -115,6 +115,13 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_rviz_markers test/test_rviz_markers.cpp)
   target_link_libraries(test_rviz_markers shape_estimation_ros)
+
+  # Node-level: the E-STOP subscription matches the CM publisher (issue #588).
+  # Own domain — it creates a /system/estop_status writer.
+  ament_add_gtest(test_estop_subscription test/test_estop_subscription.cpp
+    ENV ROS_DOMAIN_ID=59
+    TIMEOUT 60)
+  target_link_libraries(test_estop_subscription shape_estimation_ros)
 endif()
 
 ament_package()

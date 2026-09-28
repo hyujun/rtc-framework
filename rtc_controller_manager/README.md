@@ -240,9 +240,9 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 - `TriggerGlobalEstop()`: 멱등(idempotent), `compare_exchange_strong`으로 1회만 실행
 - 모든 컨트롤러에 `TriggerEstop()` + `SetHandEstop(true)` 전파
 - **actuator 로 나가는 command 를 CM 이 차단** — 아래 절 참조
-- `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조)
+- `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조). **transient_local** (#588) — 값이 바뀔 때만 발행되므로 volatile writer 로는 latch 뒤에 뜬 구독자가 다음 전이까지 "NORMAL" 을 봤다. 늦게 뜬 구독자가 현재 값을 받으려면 **구독자도 transient_local** 이어야 한다 (volatile 구독자는 매칭은 되지만 이력을 받지 않는다) — in-tree 구독자 (demo GUI · motion editor · BT bridge · shape_estimation) 는 모두 transient_local 이다
 - RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
-- **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음). RCLCPP 로깅은 `estop_log_pending_`, `/system/estop_status` publish 는 `estop_status_pending_` atomic 플래그를 통해 non-RT `DrainLog()` (100 Hz) 에서 지연 수행 — `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT 루프에서 도달 가능하므로 plain publisher 를 그 자리에서 호출하면 RT-10 위반이다. 드레인은 *드레인 시점의* `global_estop_` 값을 발행하므로 두 드레인 사이의 trigger/clear 쌍은 stale 값이 아니라 최종 상태로 수렴한다. lifecycle teardown 은 `drain_timer_` 를 없애므로 `FlushEstopStatus()` 가 마지막 전이를 직접 흘린다
+- **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음). RCLCPP 로깅은 `estop_log_pending_`, `/system/estop_status` publish 는 `estop_status_pending_` atomic 플래그를 통해 non-RT `DrainLog()` (100 Hz) 에서 지연 수행 — `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT 루프에서 도달 가능하므로 plain publisher 를 그 자리에서 호출하면 RT-10 위반이다. 드레인은 *드레인 시점의* 보고값 (`global_estop_` ∨ 해제 검증 창 — 아래 해제 절) 을 발행하므로 두 드레인 사이의 trigger/clear 쌍은 stale 값이 아니라 최종 상태로 수렴한다. lifecycle teardown 은 `drain_timer_` 를 없애므로 `FlushEstopStatus()` 가 마지막 전이를 직접 흘린다
 
 ### 글로벌 E-STOP 해제 (`/rtc_cm/clear_estop` 서비스)
 
@@ -250,7 +250,17 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 
 > **wire 계약** — 요청 `reason_ack` 의 의미, `ok` 의 판정 기준, 거부 4종의 구분은 [`rtc_msgs/srv/ClearEstop.srv`](../rtc_msgs/srv/ClearEstop.srv) 주석이 SSoT. 아래는 **CM 쪽 메커니즘**만 다룬다 ([conventions.md](../agent_docs/conventions.md) §Documentation Requirements).
 
-**관측 창 = `watchdog_check_divisor_ + 2` tick** (deadline 은 그 4배). 해제 후 원인 detector 가 한 번은 돌아야 `IsGlobalEstopped()` 재판독이 의미를 갖는데, 가장 느린 detector 가 디바이스 워치독이고 그것은 `watchdog_check_divisor_` tick 마다만 돈다 (위 워치독 절). `reset_fault` 의 2-tick 을 그대로 쓰면 **워치독이 아직 안 돌아** 죽은 디바이스가 "복구됨" 으로 보고된다. default 500 Hz 기준 (10+2)×4×2 ms ≈ 96 ms.
+**검증 창 = `EstopVerifyWindowTicks()` = `watchdog_check_divisor_ + 2` tick** (서비스 deadline 은 그 4배). 해제 후 원인 detector 가 한 번은 돌아야 해제가 검증되는데, 가장 느린 detector 가 디바이스 워치독이고 그것은 `watchdog_check_divisor_` tick 마다만 돈다 (위 워치독 절). `reset_fault` 의 2-tick 을 그대로 쓰면 **워치독이 아직 안 돌아** 죽은 디바이스가 "복구됨" 으로 보고된다. default 500 Hz 기준 창 12 tick (24 ms), deadline (10+2)×4×2 ms ≈ 96 ms.
+
+**창 동안 hold 는 그대로다 (#588 ③, 결정 Q2·Q12·Q13).** 래치를 먼저 내리고 창 안의 재 latch 를 기다리던 이전 구현은, 원인이 남아 있어 거부될 해제에서도 그 사이 tick (워치독 원인이면 ~12 tick) 동안 **컨트롤러 출력을 치환 없이 내보내고** `/system/estop_status` 에 false→true 토글을 남겼다. 지금은:
+
+- 서비스가 `BeginEstopClearVerification()` 으로 **래치를 내리기 전에** 검증 토큰 (`estop_verify_token_`, 호출마다 새 0 아닌 값) 을 세운다 — 래치가 내려간 tick 이 "창 없음" 을 보는 순간이 없다
+- RT loop 가 래치가 내려간 tick 을 세고 창을 채우면 **RT 가** 토큰을 CAS 로 내린다. 래치가 다시 서거나 토큰이 바뀌면 처음부터 센다. 서비스는 토큰을 내리지 않는다 — deadline 을 넘긴 응답 (`the latch is DOWN … but unverified`) 뒤에도 hold 는 RT 가 창을 돌 때까지 유지된다 (서비스 timeout·종료로 팔이 검증 없이 풀리는 경로가 없다)
+- 치환 조건 = 래치 ∨ 토큰. `IsGlobalEstopped()` 의 의미는 그대로라 "clear 직후 래치 down" (#299) 은 변하지 않는다. 창 동안의 치환은 `EstopVerifyHeldOutputCount` 로 따로 센다
+- `/system/estop_status` 보고값 = 래치 ∨ 토큰 — 거부된 해제는 false 를 내지 않고, 검증된 해제는 컨트롤러 출력이 실제로 다시 나가는 tick 에 false 를 낸다 (RT 가 창을 닫으며 발행 플래그를 세운다)
+- 창 동안 `/rtc_cm/switch_controller` 는 거부된다 (`E-STOP active (clear still being verified)`) — 밖에서 보면 아직 E-STOP 이다
+- `ClearGlobalEstop()` 직접 호출 (`on_deactivate`, 테스트) 은 토큰을 세우지 않으므로 창이 없다. lifecycle (`on_configure`·`on_activate`·`on_deactivate`·`on_error`) 은 RT 스레드가 멈춘 상태에서 토큰과 latch 를 비운다
+- 포구 컨트롤러 등의 CSV `estop_active` 는 **컨트롤러 자신의** latch 라 창 동안 이미 0 이다 — CM 이 hold 중인지는 CM 카운터로 본다
 
 **전파 중 재트리거 (`kRetriggered`)** — clear 는 래치를 든 채 전파하므로, 그 사이 도착한 trigger 는 CAS 실패로 early-return 하며 **사유도 전파도 남기지 않는다**. 그대로 래치를 내리면 그 안전 이벤트는 흔적 없이 사라진다. 그래서 `TriggerGlobalEstop` 은 **CAS 앞에서** `estop_trigger_requests_` 를 올리고, `ClearGlobalEstop` 은 전파 전후로 그 값을 대조해 달라졌으면 **해제를 포기하고 래치를 유지**한 뒤 컨트롤러를 다시 estop 상태로 되돌린다 (fail-closed). 되돌리는 이유는 "래치 up + 컨트롤러 cleared" 가 전파 루프 안의 안전한 *과도 상태*일 뿐, **머무는 상태로는 스스로 낫지 않기** 때문이다. 위 트리거 표에서 이 경로에 걸릴 수 있는 것은 **가드가 없는 `consecutive_overrun` / `sim_sync_timeout`** 뿐이다 — `{group}_timeout` 과 output validation·command-type 거부는 호출 전에 `IsGlobalEstopped()` 를 검사한다.
 
@@ -300,6 +310,7 @@ configure 게이트가 볼 수 없는 값 — 컨트롤러가 매 tick 자유롭
 | output validation | `RejectedOutputCount` | 셋 다 **동일한 hold** 를 내므로, 카운터가 갈라지지 않으면 어느 가드가 막았는지 테스트가 구분할 수 없다 |
 | command-type | `RejectedCommandTypeCount` | |
 | E-STOP 치환 | `EstopSubstitutedOutputCount` | |
+| 해제 검증 창 | `EstopVerifyHeldOutputCount` | 래치가 내려간 뒤 창 동안의 hold (#588) |
 
 consecutive 카운터는 **공유**한다 — 두 사유 모두 "이 tick 의 출력은 보낼 수 없다" 이고, 사유가 번갈아 나타나며 지속되는 것도 똑같이 안전 이벤트이기 때문이다.
 
@@ -323,12 +334,20 @@ pure virtual 인 이유: 아무것도 안 하는 default 는 이것이 대체하
 
 ### E-STOP 시 actuator command 차단
 
-latch 가 서면 controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildHoldOutput()` 로 치환되는데, **치환의 물리적 의미는 lane 마다 다르다**:
+latch 가 서면 (또는 해제 검증 창 동안) controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildLatchedHoldOutput()` 로 치환되는데, **치환의 물리적 의미는 lane 마다 다르다**:
 
 | command type | hold 값 | 물리적 의미 |
 |---|---|---|
-| `kPosition` / `kPdFeedforward` | 측정 위치 | **진짜 정지** — 드라이브가 자세를 잡는다 |
+| `kPosition` / `kPdFeedforward` | **latch 한 위치** (아래) | **진짜 정지** — 드라이브가 그 자세를 잡는다 |
 | `kTorque` | `0 N·m` | 팔이 중력에 **sag** 한다 |
+
+**hold 목표는 매 tick 의 측정이 아니라 latch 다 (#588 ①, 결정 Q1).** 매 tick 목표를 그 tick 의 측정으로 다시 잡으면 position servo 의 정상상태 오차 (중력·마찰·PD 지연) 만큼 목표가 측정 쪽으로 따라가 누적된다 — 강성 0 의 추종자다 (sim 실측: E-STOP 137 s 동안 손 thumb_mcp 0.46 rad, 팔 wrist_2 41 s 동안 0.049 rad; 컨트롤러 안의 같은 결함은 `6bbc4d22`). 규칙:
+
+- **slot 단위, slot 별 첫 치환 tick 에 캡처** — 채널마다 그 tick 의 측정 (hole 이 아니고 유한할 때), 아니면 RT 가 매 tick 갱신하는 **마지막 판독값**, 한 번도 읽힌 적 없으면 cache 값 (reorder map 의 영구 unmatched 채널이 여기에 온다). 유한한 값이 하나도 없는 채널이 있으면 그 device 만 `WriteSafeCommand()` 하고 다음 tick 에 다시 잡는다. device index 가 아니라 slot 으로 잡는 이유: switch 가 E-STOP 검사 직후 trigger 를 만나면 device index → slot 대응이 hold 도중 바뀐다
+- **이미 hold 중인 재 trigger 는 재캡처하지 않는다** — 검증 창 안의 재 trigger 포함 (hold 가 한 번도 멈추지 않았다)
+- **폐기**: latch 도 창도 아닌 첫 tick. 다음 E-STOP 은 새로 잡는다
+- 채널 수는 캡처 때와 지금 보고 폭 중 작은 쪽
+- Phase 2b (E-STOP 아닌 출력 거부) 의 hold 는 여전히 매 tick 측정이다 — 그 창은 `kOutputRejectEstopSeconds` 로 짧고 넘으면 E-STOP 으로 승격해 latch 로 넘어간다. E-STOP·창 중의 2b 거부는 latch hold 를 쓴다
 
 `kTorque` 에 등가물이 없는 이유: CM 은 동역학 모델을 들고 있지 않아 중력 보상 토크를 합성할 수 없고, `0 N·m` 이 정직하게 낼 수 있는 유일한 값이다.
 
@@ -488,7 +507,7 @@ compliance 계열은 critical fault (`nan_inf` · `pose_error_exceeded` · `sigm
 
 | 토픽 | 타입 | QoS | 설명 |
 |------|------|-----|------|
-| `/system/estop_status` | `Bool` | RELIABLE/10 | 글로벌 E-STOP 상태 |
+| `/system/estop_status` | `Bool` | RELIABLE/1, transient_local | 글로벌 E-STOP 상태 (래치 ∨ 해제 검증 창) |
 | `/{robot_ns}/active_controller_name` | `String` | TRANSIENT_LOCAL/1 | 활성 컨트롤러의 `config_key` (snake_case). 외부 rewire 소비자가 이 페이로드를 그대로 prefix 로 사용해 `/<config_key>/...` 형태로 컨트롤러-owned 토픽 namespace 를 조립하므로, payload 는 컨트롤러 LifecycleNode 의 namespace (`/<config_key>`) 와 1:1 일치해야 한다. `RTControllerInterface::Name()` (클래스 라벨) 가 아님 |
 
 ### DeviceBackend 토픽 (`devices.<group>.backend:` SSoT)
