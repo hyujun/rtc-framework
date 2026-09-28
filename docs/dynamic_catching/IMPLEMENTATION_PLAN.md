@@ -810,7 +810,7 @@ S2.2a 중 발견 (2026-09-19): `QPSolverWrapper` 는 비유한 해 한 번 뒤 �
 
 - 실기 단계: D (G8-A · G5-F · G6-D · G6-E · D-S9-G · 운동 기한 실기 값) → E (bag replay·가상 공 — G8-F · G7-F) → F (실투척 — G8-G)
 - 실기 도구 현황 (2026-09-28 코드 대조): launch·`hand_close` 분석은 있다, `servo_lag_ls` 는 일부, bag 재스탬프 replay · 가상 공 발행기 · speed scaling·PTP 감시는 없다. 게이트 도구는 G6-D 만 준비됐고 G5-F 일부, G6-E · G7-F · G8-F · G8-G 는 절차부터 없다
-- 실기 park 키: 현재 provisional 이면 실기 구성을 막는 키 7 개 — R3 뒤 9 개 (`derived_accel_limits`·`joint_cmd.lag` 추가). 각 키의 실기 값을 정해야 무장할 수 있다
+- 실기 park 키: provisional 이면 실기 구성을 막는 키 9 개 (pre-S10 R3 에서 `derived_accel_limits.<group>.provisional`·`joint_cmd.lag.provisional` 추가). 각 키의 실기 값을 정해야 무장할 수 있다
 - #588 hold creep 의 실기 크기 (R2 가 sim 에서 닫았다 — 60 s drift 0.085 → 1.8e-9 rad; 실기 드라이브에서의 값은 여기서 잰다)
 - 결정: 실기 성공 기준 · G8-G 대체 지표 · D-12 손 토크 권위 출처 · 공 사양 · speed scaling·PTP (v1 은 운용 절차로 두는 것을 권장)
 
@@ -1410,9 +1410,9 @@ $$\gamma_{\min}=1-\frac{d_{eff}}{\Vert v\Vert\,T_{close,tot}},\qquad \gamma_{\ma
 | ~~D-13 을 S9 로 미뤄 S5~S7 의 abort·FAULT·손 유지 경로가 정책 확정 때 바뀔 수 있다~~ — S9 로 닫힘 (S9a 현행 정책 고정 · S9b FAULT 확장, 기존 assertion 무수정) | S9 (완료 2026-09-27) |
 | ~~E-STOP 중 살아 있는 device 가 서서히 밀린다 — CM 이 hold 를 매 tick 의 측정값으로 다시 만든다 (sim thumb 약 3.4 mrad/s). 해제 검증 동안 컨트롤러 출력이 새고, latch 뒤에 뜬 구독자는 "NORMAL" 을 본다 (#588)~~ | **pre-S10 R2 에서 닫음** — slot 별 hold latch · 해제 검증 창 동안 hold 유지 · `estop_status` transient_local (§4.4 pre-S10). 실기 creep 크기는 S10 |
 | `/system/estop_status` 를 구독하는 `shape_estimation` 은 transient_local 로 구독해 volatile 발행자와 한 번도 연결되지 않았다 — E-STOP 에 탐색을 abort 하는 경로가 죽어 있다 | 구독 연결은 **pre-S10 R2 에서 닫음** (Q14). 단 abort 경로는 여전히 도달 불가 — `/shape/explore` accept 핸들러가 자기 single-threaded executor 안에서 `switch_controller` 응답을 기다려 늘 timeout 나고 탐색이 시작되지 않는다 (R2 에서 발견 — issue 분리 안 함, 사용자 2026-09-29) |
-| `derived_accel_limits` 는 `adopted` 만 검사하고 `provisional: true` 는 실기에서도 통과한다. 두 로봇 출하 파일이 모두 provisional 이다 | pre-S10 R3 (Q4) |
-| `joint_cmd.lag` 의 `T_arm` 0 · `lead_enable` false 가 실기에서 경고 없이 통과한다 (`T_arm` 미식별) | pre-S10 R3 (Q5), 값은 S10 |
-| 대기 자세 채택·ARMED 판정·손 정착 판정이 속도 lane 판독 여부를 묻지 않고 속도를 읽는다 — 읽을 수 없는 lane 의 0 을 정지로 본다 | pre-S10 R3 (Q9·Q16) |
+| ~~`derived_accel_limits` 는 `adopted` 만 검사하고 `provisional: true` 는 실기에서도 통과한다. 두 로봇 출하 파일이 모두 provisional 이다~~ | **pre-S10 R3 에서 닫음** (Q4) — provisional (또는 키 부재) 은 sim 경고 · 실기 park. 실기 box 확인은 S10 |
+| ~~`joint_cmd.lag` 의 `T_arm` 0 · `lead_enable` false 가 실기에서 경고 없이 통과한다 (`T_arm` 미식별)~~ | **pre-S10 R3 에서 닫음** (Q5) — `joint_cmd.lag.provisional` (기본 true). 값은 S10 |
+| ~~대기 자세 채택·ARMED 판정·손 정착 판정이 속도 lane 판독 여부를 묻지 않고 속도를 읽는다 — 읽을 수 없는 lane 의 0 을 정지로 본다~~ | **pre-S10 R3 에서 닫음** (Q9·Q16) — 세 판정 모두 `IsLaneReadable(kVelocity)` 를 먼저 묻는다 (비판독 = 채택 미룸/거부 · 대기 자세 아님 · 정착 아님) |
 | UR 벤더 position 컨트롤러 자체의 가감속·보호 정지 | S10 |
 | w₅·w₆ 를 매 후보 계산하면 계획 예산을 먹는다 (L3 §4.8 은 이미 coarse-to-fine 이 필요하다고 본다) | S6.3 예산 측정 |
 | 브랜치 장기 체류로 main 과 어긋난다 (#538 로 1회 발현, 2026-09-19 병합으로 해소) | 단계 착수 때마다 main 병합 |

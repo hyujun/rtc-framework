@@ -341,6 +341,12 @@ demo_catching_controller:
         # 0.05 s (#537 D-S8-13) — and the sim runs with the lead on only
         # through the sim_overlays/catch_lead_* files (T_arm 0.05, T_freeze
         # 0.37, the L3 §4.11 bound T_close,tot + T_arm + margin for T_arm 0.05).
+        #
+        # `provisional` is about the REAL arm's T_arm (#537 pre-S10 R3): sim
+        # warns, a real arm parks until S10 identifies it — whatever the value
+        # and with the lead off too, since T_arm also sits in the T_freeze
+        # floor. Absent reads as true.
+        provisional: true
         T_arm: 0.0
         lead_enable: false
 
@@ -545,11 +551,13 @@ demo_catching_controller:
           min: [0.19, -0.30, 0.21]
           max: [1.04, 0.31, 0.96]
       # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
+      # That flag is the only one `planner:` has — it covers `hand.d_eff` and
+      # `hand.r_cap` below too, which carry no flag of their own (#537 pre-S10
+      # R3: the parser never read one there).
       provisional: true
       hand:
         d_eff: 0.2815
         r_cap: 0.024
-        provisional: true
 
       # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
       # Read at configure by `ParseCatchPoseIkParams` (rtc_controllers) — the

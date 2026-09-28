@@ -1117,6 +1117,16 @@ void DemoCatchingController::AdoptWaitPoseIfConfigured(const rtc::DeviceState& d
   // BACK to it. Wait for rest — the same velocity tolerance ARMED asks for —
   // but not past the operator's arm request: homing starts from that tick and
   // needs its target, so an arm that is still moving then gets the YAML pose.
+  //
+  // A velocity nobody vouches for is not a velocity at rest (#537 Q9): same
+  // shape as a moving arm, so a hole that lasts a tick does not cost the one
+  // decision an activation gets, and no pose is adopted on an unknown reading.
+  if (!rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, arm_dof_)) {
+    if (arm_requested_.load(std::memory_order_relaxed)) {
+      RefuseWaitPose(Refusal::kVelocityUnreadable, -1, 0.0);
+    }
+    return;
+  }
   for (std::size_t i = 0; i < n; ++i) {
     if (!(std::abs(dev.velocities[i]) <= homing_qd_tol_)) {
       if (arm_requested_.load(std::memory_order_relaxed)) {
@@ -1163,6 +1173,12 @@ bool DemoCatchingController::ArmAtWaitPose(const ControllerState& state) const n
     return false;
   }
   const auto& dev = state.devices[kCatchingArmDeviceIdx];
+  // Fail-closed (#537 Q9), like ArmNotAtRestForReset: "at the pose" includes
+  // "at rest", and a velocity lane with a hole cannot say so. Homing's arrival
+  // asks the same question, so it keeps commanding the wait pose meanwhile.
+  if (!rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, arm_dof_)) {
+    return false;
+  }
   for (int i = 0; i < arm_dof_ && i < kDemoCatchingMaxArmDof; ++i) {
     const auto u = static_cast<std::size_t>(i);
     // Written as "within" so a NaN reading is not at the pose.
@@ -1179,6 +1195,11 @@ bool DemoCatchingController::HandSettledAtPre(const ControllerState& state) cons
     return false;
   }
   const auto& dev = state.devices[kCatchingHandDeviceIdx];
+  // Fail-closed (#537 Q16): the contact baseline is learned from a hand AT
+  // REST, which a velocity lane with a hole cannot vouch for.
+  if (!rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, hand_dof_)) {
+    return false;
+  }
   const auto& hand = params_.hand;
   for (int i = 0; i < hand_dof_ && i < hand.dof; ++i) {
     const auto u = static_cast<std::size_t>(i);
@@ -2658,6 +2679,9 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
         break;
       case Refusal::kEstop:
         why = "the switch-in happened under an E-STOP";
+        break;
+      case Refusal::kVelocityUnreadable:
+        why = "armed while the arm's velocity lane was unreadable";
         break;
       case Refusal::kNone:
         break;

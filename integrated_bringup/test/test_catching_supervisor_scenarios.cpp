@@ -44,14 +44,18 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -61,6 +65,8 @@
 namespace {
 
 using integrated_bringup::DemoCatchingController;
+using integrated_bringup::testfx::AccelBoxFlag;
+using integrated_bringup::testfx::AccelLimitsCopy;
 using integrated_bringup::testfx::CatchFrameOracle;
 using integrated_bringup::testfx::FakeSteadyClock;
 using integrated_bringup::testfx::kDt;
@@ -2957,6 +2963,291 @@ TEST_F(FaultExtensionTest, AFaultLatchedIntoIdleByAnEstopIsResetInIdleAndArmsAga
       << Transitions();
   ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
              Mode::kIdle, Mode::kArmed});
+}
+
+// ── pre-S10 R3 (#537 Q4 · Q5): what parks a real-arm configuration ──────────
+//
+// The park's observable beyond the verdict IS the configure log: the operator
+// learns WHICH value is not cleared from that line and nowhere else (the park
+// reason is one enum value for every consumed key). So the assertion goes to
+// the sink the line reaches — same shape as test_gate_closure_diagnostic.cpp;
+// the handler is process-global, which a single-TU binary can afford.
+class LogSink {
+ public:
+  static void Install() {
+    Clear();
+    Previous() = rcutils_logging_get_output_handler();
+    rcutils_logging_set_output_handler(&LogSink::Handler);
+  }
+
+  static void Restore() {
+    if (Previous() != nullptr) {
+      rcutils_logging_set_output_handler(Previous());
+      Previous() = nullptr;
+    }
+  }
+
+  static void Clear() {
+    const std::lock_guard<std::mutex> lock(Mutex());
+    Lines().clear();
+  }
+
+  /// Captured lines of `severity` containing every needle.
+  static std::vector<std::string> Matching(int severity, const std::vector<std::string>& needles) {
+    const std::lock_guard<std::mutex> lock(Mutex());
+    std::vector<std::string> hits;
+    for (const auto& [sev, text] : Lines()) {
+      if (sev != severity) {
+        continue;
+      }
+      const bool all = std::all_of(needles.begin(), needles.end(), [&text](const auto& needle) {
+        return text.find(needle) != std::string::npos;
+      });
+      if (all) {
+        hits.push_back(text);
+      }
+    }
+    return hits;
+  }
+
+ private:
+  static void Handler(const rcutils_log_location_t* /*location*/, int severity,
+                      const char* /*name*/, rcutils_time_point_value_t /*timestamp*/,
+                      const char* format, va_list* args) {
+    // Value-initialised: on an encoding failure vsnprintf need not terminate.
+    char buffer[2048]{};
+    va_list copy;
+    va_copy(copy, *args);
+    std::vsnprintf(buffer, sizeof(buffer), format, copy);
+    va_end(copy);
+    const std::lock_guard<std::mutex> lock(Mutex());
+    Lines().emplace_back(severity, std::string(buffer));
+  }
+
+  static std::vector<std::pair<int, std::string>>& Lines() {
+    static std::vector<std::pair<int, std::string>> lines;
+    return lines;
+  }
+
+  static std::mutex& Mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  static rcutils_logging_output_handler_t& Previous() {
+    static rcutils_logging_output_handler_t previous = nullptr;
+    return previous;
+  }
+};
+
+class SafetyGateParkTest : public SupervisorScenarioTest {
+ protected:
+  void SetUp() override {
+    SupervisorScenarioTest::SetUp();
+    LogSink::Install();
+  }
+
+  void TearDown() override {
+    LogSink::Restore();
+    SupervisorScenarioTest::TearDown();
+  }
+
+  /// The fixture profile — every park key cleared — with `tweak` applied,
+  /// configured on the real-arm axis (no backend declared) or the sim one.
+  void Configure(const std::function<void(YAML::Node&)>& tweak, bool sim) {
+    ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
+    ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+    ctrl_->SetSharedModelBuilder(builder_);
+    auto configs = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
+    if (sim) {
+      rtc::DeviceBackendBinding backend;
+      backend.type = integrated_bringup::kCatchingSimBackendType;
+      for (auto& [name, cfg] : configs) {
+        cfg.backend = backend;
+      }
+    }
+    ctrl_->SetDeviceNameConfigs(configs);
+    YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
+    if (tweak) {
+      tweak(yaml);
+    }
+    LogSink::Clear();
+    ASSERT_EQ(ctrl_->on_configure(prev_, node_, yaml),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << "a park is a SUCCESSFUL configure: the robot must still come up";
+    ASSERT_EQ(ctrl_->IsRealArmConfig(), !sim) << "precondition: the axis this case is judged on";
+  }
+
+  void ExpectParked(const std::vector<std::string>& needles) {
+    EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+    EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kConsumedValues);
+    EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, needles).empty())
+        << "the configure log must name the value that parked it";
+    EXPECT_NE(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+
+  void ExpectActivates() {
+    EXPECT_FALSE(ctrl_->IsSimOnlyDisabled())
+        << "parked (reason " << static_cast<int>(ctrl_->GetParkReason()) << ")";
+    EXPECT_TRUE(ctrl_->AreTrialsEnabled());
+    ASSERT_EQ(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+    EXPECT_EQ(ctrl_->on_deactivate(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+
+  static std::function<void(YAML::Node&)> AccelBox(AccelBoxFlag flag) {
+    return [flag](YAML::Node& y) {
+      y["catching"]["robot"]["arm"]["accel_limits_path"] = AccelLimitsCopy(flag);
+    };
+  }
+
+  static void ProvisionalLag(YAML::Node& y) {
+    y["catching"]["joint_cmd"]["lag"]["provisional"] = true;
+  }
+
+  const rclcpp_lifecycle::State prev_;
+};
+
+TEST_F(SafetyGateParkTest, TheFixtureProfileWithEveryParkKeyClearedActivatesOnTheRealArm) {
+  // Positive control for every park below: same fixture, nothing provisional.
+  ASSERT_NO_FATAL_FAILURE(Configure(nullptr, /*sim=*/false));
+  ExpectActivates();
+}
+
+TEST_F(SafetyGateParkTest, AProvisionalAccelerationBoxParksTheRealArm) {
+  // Q4: the derived box is adopted (reviewed) but still provisional — the real
+  // arm's is not identified. Every ramp and the CLIK box run on it.
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kProvisional), /*sim=*/false));
+  ExpectParked(
+      {"derived_accel_limits.ur5e.provisional", AccelLimitsCopy(AccelBoxFlag::kProvisional)});
+}
+
+TEST_F(SafetyGateParkTest, AnAccelerationBoxWithoutTheFlagIsProvisional) {
+  // Fail-closed: a file that does not say is not a file that was cleared.
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kAbsent), /*sim=*/false));
+  ExpectParked({"derived_accel_limits.ur5e.provisional", AccelLimitsCopy(AccelBoxFlag::kAbsent)});
+}
+
+TEST_F(SafetyGateParkTest, AProvisionalAccelerationBoxOnlyWarnsInSim) {
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kProvisional), /*sim=*/true));
+  EXPECT_FALSE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"derived_accel_limits.ur5e.provisional"})
+          .empty());
+  ExpectActivates();
+}
+
+TEST_F(SafetyGateParkTest, APackageRelativeAccelerationBoxStillLoads) {
+  // The absolute form is an addition: the shipped profiles name the box
+  // relative to a package share directory. Judged in sim, so that the flag the
+  // SHIPPED file carries does not decide this case.
+  ASSERT_NO_FATAL_FAILURE(Configure(
+      [](YAML::Node& y) {
+        YAML::Node arm = y["catching"]["robot"]["arm"];
+        arm["accel_limits_package"] = "integrated_bringup";
+        arm["accel_limits_path"] = "config/ur5e_p1b/derived_accel_limits.yaml";
+      },
+      /*sim=*/true));
+  ExpectActivates();
+}
+
+TEST_F(SafetyGateParkTest, AProvisionalArmLagParksTheRealArm) {
+  // Q5: T_arm is not identified on the real arm. Parked whatever its value and
+  // with the lead compensation off, as the fixture has it.
+  ASSERT_NO_FATAL_FAILURE(Configure(ProvisionalLag, /*sim=*/false));
+  ExpectParked({"joint_cmd.lag"});
+}
+
+TEST_F(SafetyGateParkTest, AProvisionalArmLagOnlyWarnsInSim) {
+  ASSERT_NO_FATAL_FAILURE(Configure(ProvisionalLag, /*sim=*/true));
+  EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"joint_cmd.lag"}).empty());
+  ExpectActivates();
+}
+
+// ── pre-S10 R3 (#537 Q9 · Q16): a velocity nobody vouches for ───────────────
+//
+// The position lane stays readable in every case here: what is missing is the
+// velocity lane's word, and the slots then hold whatever was there (zeros in
+// this fixture — exactly the reading that would pass every "at rest" check).
+
+TEST_F(SupervisorScenarioTest, AnArmWhoseVelocityIsUnreadableIsNotAtTheWaitPose) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  state_.devices[0].velocity_hole_mask = 1;
+  Ticks(20);
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.mode != Mode::kIdle; }), 0)
+      << "armed on a velocity lane with a hole\n"
+      << Transitions();
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    EXPECT_NEAR(log_.back().q_cmd[u], kUr5eHome[u], 1e-12)
+        << "joint " << i << ": the arm must keep being held at the wait pose";
+    EXPECT_EQ(log_.back().qd_cmd[u], 0.0) << "joint " << i;
+  }
+  // Positive control: the same arm, vouched for, arms.
+  state_.devices[0].velocity_hole_mask = 0;
+  EXPECT_TRUE(TickUntilMode(Mode::kArmed, 20)) << Transitions();
+}
+
+TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableIsNotSettled) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  state_.devices[1].velocity_hole_mask = 1ULL << 3;
+  Ticks(20);
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.mode != Mode::kIdle; }), 0)
+      << "armed on a hand whose rest nobody vouches for\n"
+      << Transitions();
+  state_.devices[1].velocity_hole_mask = 0;
+  EXPECT_TRUE(TickUntilMode(Mode::kArmed, 20)) << Transitions();
+}
+
+TEST_F(SupervisorScenarioTest, AnUnreadableArmVelocityDefersTheAdoptionUntilItIsReadable) {
+  // Unarmed, like a moving arm: a hole that lasts a tick must not cost the one
+  // decision an activation gets.
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[1] += 0.05;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off,
+      /*arm=*/false));
+  publishing_ = false;
+  state_.devices[0].velocity_hole_mask = 1;
+  Ticks(5);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting()) << "adopted a pose at an unknown velocity";
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 0U) << "deferring is not refusing";
+  state_.devices[0].velocity_hole_mask = 0;
+  Ticks(1);
+  ASSERT_TRUE(ctrl_->IsWaitPoseAdoptedForTesting());
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                off[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i;
+  }
+}
+
+TEST_F(SupervisorScenarioTest, ArmingWhileTheArmVelocityIsUnreadableRefusesTheSwitchedInPose) {
+  std::array<double, kUr5eArmDof> off = kUr5eHome;
+  off[0] += 0.06;
+  ASSERT_NO_FATAL_FAILURE(BringUp(
+      NearPc(), StartAxis(), 0.0, 0.6,
+      [](YAML::Node& y) { y["catching"]["planner"]["wait_pose_source"] = "current"; }, off));
+  publishing_ = false;
+  state_.devices[0].velocity_hole_mask = 1ULL << 2;
+  Ticks(2);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting());
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_reason,
+            integrated_bringup::CatchingDiagLogPod::WaitPoseRefusal::kVelocityUnreadable);
+  EXPECT_EQ(ctrl_->GetLastTickRecord().wait_pose_refuse_joint, -1)
+      << "the lane is refused, not a joint of it";
+  state_.devices[0].velocity_hole_mask = 0;
+  Ticks(3);
+  EXPECT_FALSE(ctrl_->IsWaitPoseAdoptedForTesting()) << "one decision per activation";
+  EXPECT_EQ(ctrl_->GetWaitPoseRefusedCount(), 1U);
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    EXPECT_NEAR(ctrl_->GetWaitPoseForTesting()[static_cast<std::size_t>(i)],
+                kUr5eHome[static_cast<std::size_t>(i)], 1e-12)
+        << "joint " << i << ": a refused pose must leave the YAML pose in force";
+  }
 }
 
 }  // namespace

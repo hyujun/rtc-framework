@@ -201,9 +201,9 @@ $$\text{stalled}_i=\big[\rho_{\min}\le\rho_i\le\rho_{\max}\big]\wedge\big[|\dot 
 1. L0 파라미터 검증 통과(TBD 없음)
 2. 시계 건강(실기) — 신호 출처 없음, sim 비활성, S10
 3. L5 `lead_enable=true`이면 `T_arm` 확정
-4. 로봇이 대기 자세 허용오차 안에 있음 (`IDLE` homing 으로 도달, §4.1)
+4. 로봇이 대기 자세 허용오차 안에 있음 (`IDLE` homing 으로 도달, §4.1) — 위치 `pose_tol` **과 정지** (|q̇| ≤ `homing.qd_tol`). 팔 속도 lane 을 읽을 수 없으면 (hole) 대기 자세가 아니다: homing 도착 판정도 같은 검사라 끝나지 않고 대기 자세를 계속 명령한다 (pre-S10 R3, #537 Q9)
 5. speed scaling = 1(실기) — 신호 출처 없음, sim 비활성, S10
-6. 손 `q_pre` 도달 (Q4, 2026-09-23 사용자 확정 — `q_open` 은 homing 중에만 쓰고 대기 중 손은 항상 `q_pre` 다, §4.1)
+6. 손 `q_pre` 도달 (Q4, 2026-09-23 사용자 확정 — `q_open` 은 homing 중에만 쓰고 대기 중 손은 항상 `q_pre` 다, §4.1) **과 정지** — 손 속도 lane 을 읽을 수 없으면 정착이 아니다 (pre-S10 R3, #537 Q16)
 
 **조건 상실의 처리 `[확정 S5, 2026-09-23 코드리뷰]`.** §4.2 에 전용 사유가 없어 전이표는 `PARAMS_TBD` 를 재사용한다(전이표 헤더가 근거를 갖는다). 어디로 가는지는 **그 모드가 운동을 싣고 있을 수 있는가**로 갈린다:
 
@@ -356,7 +356,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 - 포획했는데 `Missed`: 판정 창과 센서 수신 시각 정렬(실기 async 센서 지연), 부호 규약(§4.4)을 확인한다. sim 에서는 공이 링크·손바닥에 얹힌 구조적 false-Missed 가 흔하다 (§4.4 S8-B 측정).
 - 감속 중 흔들림: `a_dec` 값과 L5 가속 한계의 정합, 램프 적용 여부를 확인한다.
 - `REF_SATURATED` 가 자주 발생: L3 rollout의 여유율(`eta_a`, η_v)이 낮거나 $T_w$ 가 짧은지 확인한다. 빈도는 S8 에서 D-8 재검토 입력으로 기록한다.
-- `ARMED` 에 안 들어감: homing 목표 `wait_pose` 와 `pose_tol`, 손 `q_pre` 도달, `PARAMS_TBD` 를 확인한다.
+- `ARMED` 에 안 들어감: homing 목표 `wait_pose` 와 `pose_tol`, 손 `q_pre` 도달, `PARAMS_TBD`, 그리고 팔·손 **속도 lane 의 판독 여부** (backend 가 속도를 싣지 않으면 §4.5 의 4·6 이 성립하지 않는다) 를 확인한다.
 - 접촉 직후 `TRACK_ERR` abort: 충격 구간에서 임계를 완화했는지 확인한다(§4.7-3).
 
 ## 9. 검증 방법과 합격 게이트

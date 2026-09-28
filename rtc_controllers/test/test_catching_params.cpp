@@ -101,6 +101,7 @@ joint_cmd:
   qp:
     max_iter: 20
   lag:
+    provisional: false
     T_arm: 0.0
     lead_enable: false
 io:
@@ -706,6 +707,60 @@ TEST(CatchingParams, ProvisionalMotionDeadlinesBlockTheRealArmAndWarnInSim) {
   EXPECT_TRUE(sim.armable);
   EXPECT_TRUE(
       ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "supervisor.deadline"));
+}
+
+// ── joint_cmd.lag.provisional (#537 pre-S10 R3, Q5) ─────────────────────────
+
+TEST(CatchingParams, AProvisionalArmLagBlocksTheRealArmAndWarnsInSim) {
+  // T_arm is a plant constant nobody has identified on the real arm yet. The
+  // flag parks whatever the value and whether or not the lead compensation
+  // reads it: T_arm also sits in the T_freeze floor.
+  for (const bool lead : {false, true}) {
+    YAML::Node root = ValidRoot();
+    root["joint_cmd"]["lag"]["provisional"] = true;
+    root["joint_cmd"]["lag"]["lead_enable"] = lead;
+    const CatchingParams p = ParseCatchingParams(root);
+    const CatchingValidationReport real = ValidateCatchingParams(p, kControlRateHz, true);
+    EXPECT_FALSE(real.armable) << "lead_enable " << lead;
+    EXPECT_TRUE(
+        ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm, "joint_cmd.lag"))
+        << "lead_enable " << lead;
+    const CatchingValidationReport sim = ValidateCatchingParams(p, kControlRateHz, false);
+    EXPECT_TRUE(sim.armable) << "lead_enable " << lead;
+    EXPECT_TRUE(
+        ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning, "joint_cmd.lag"))
+        << "lead_enable " << lead;
+  }
+}
+
+TEST(CatchingParams, AnArmLagWithoutTheFlagIsProvisional) {
+  // Fail-closed, like every provisional flag: silence is not a measurement.
+  YAML::Node root = ValidRoot();
+  ASSERT_TRUE(root["joint_cmd"]["lag"]["provisional"]) << "precondition: the fixture clears it";
+  EXPECT_FALSE(ParseCatchingParams(root).joint_cmd_lag_provisional);
+  root["joint_cmd"]["lag"].remove("provisional");
+  EXPECT_TRUE(ParseCatchingParams(root).joint_cmd_lag_provisional);
+  const CatchingValidationReport real =
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, true);
+  EXPECT_FALSE(real.armable);
+  EXPECT_TRUE(
+      ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm, "joint_cmd.lag"));
+  // A profile with no `lag` block at all is no different.
+  YAML::Node none = ValidRoot();
+  none["joint_cmd"].remove("lag");
+  const CatchingValidationReport real_none =
+      ValidateCatchingParams(ParseCatchingParams(none), kControlRateHz, true);
+  EXPECT_TRUE(ReportHasFailure(real_none, CatchingValidationReason::kProvisionalOnRealArm,
+                               "joint_cmd.lag"));
+}
+
+TEST(CatchingParams, AClearedArmLagFlagLeavesTheRealArmArmable) {
+  // Positive control for the two cases above: same root, flag cleared.
+  const CatchingValidationReport real =
+      ValidateCatchingParams(ParseCatchingParams(ValidRoot()), kControlRateHz, true);
+  EXPECT_FALSE(
+      ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm, "joint_cmd.lag"));
+  EXPECT_TRUE(real.armable);
 }
 
 TEST(CatchingParams, CaptureProvisionalDefaultsToTrue) {

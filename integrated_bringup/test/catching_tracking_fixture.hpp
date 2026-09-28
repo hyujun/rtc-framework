@@ -15,14 +15,21 @@
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
+
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
+#include <unistd.h>
+#include <yaml-cpp/yaml.h>
 
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -127,6 +134,78 @@ class CatchFrameOracle {
   Eigen::VectorXd q_;
 };
 
+/// What a copy of the shipped D-16 box says about its own `provisional` flag.
+enum class AccelBoxFlag { kCleared, kProvisional, kAbsent };
+
+/// The SHIPPED ur5e_p1b derived acceleration box with only its `provisional`
+/// flag rewritten, as an absolute path `robot.arm.accel_limits_path` can name.
+///
+/// The shipped file stays `provisional: true` until the real arm's box is
+/// identified (#537 Q4), and this fixture is judged on the real-arm axis —
+/// where that flag parks the controller. A copy rather than a second file in
+/// the package: the values are read from the installed file on every run, so
+/// they cannot drift from it, and no "cleared" box ships next to the real one.
+/// One file per process and flag, removed when the process exits.
+std::string AccelLimitsCopy(AccelBoxFlag flag = AccelBoxFlag::kCleared) {
+  struct Copy {
+    std::filesystem::path path;
+    Copy(const Copy&) = delete;
+    Copy& operator=(const Copy&) = delete;
+
+    explicit Copy(AccelBoxFlag f) {
+      const std::string shipped =
+          ament_index_cpp::get_package_share_directory("integrated_bringup") +
+          "/config/ur5e_p1b/derived_accel_limits.yaml";
+      YAML::Node doc = YAML::LoadFile(shipped);
+      YAML::Node group = doc["derived_accel_limits"]["ur5e"];
+      if (!group || !group.IsMap()) {
+        throw std::runtime_error(shipped + " has no derived_accel_limits.ur5e");
+      }
+      const char* tag = "cleared";
+      switch (f) {
+        case AccelBoxFlag::kCleared:
+          group["provisional"] = false;
+          break;
+        case AccelBoxFlag::kProvisional:
+          group["provisional"] = true;
+          tag = "provisional";
+          break;
+        case AccelBoxFlag::kAbsent:
+          group.remove("provisional");
+          tag = "absent";
+          break;
+      }
+      path = std::filesystem::temp_directory_path() /
+             ("rtc_catching_accel_box_" + std::to_string(::getpid()) + "_" + tag + ".yaml");
+      std::ofstream out(path);
+      out << doc << '\n';
+      if (!out) {
+        throw std::runtime_error("could not write " + path.string());
+      }
+    }
+
+    ~Copy() {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+    }
+  };
+
+  switch (flag) {
+    case AccelBoxFlag::kProvisional: {
+      static const Copy copy{AccelBoxFlag::kProvisional};
+      return copy.path.string();
+    }
+    case AccelBoxFlag::kAbsent: {
+      static const Copy copy{AccelBoxFlag::kAbsent};
+      return copy.path.string();
+    }
+    case AccelBoxFlag::kCleared:
+      break;
+  }
+  static const Copy copy{AccelBoxFlag::kCleared};
+  return copy.path.string();
+}
+
 /// The reference generator's gains. Defaulted to what the S5.3 suite was
 /// written against; the sweep passes the SHIPPED profile's values instead,
 /// because "how well does the law track" is a question about the law that is
@@ -200,6 +279,8 @@ catching:
     qp:
       max_iter: 30
     lag:
+      # Cleared like the other provisional flags here (real-arm axis, #537 Q5).
+      provisional: false
       T_arm: 0.0
   supervisor:
     track_err_abort: )"
@@ -215,7 +296,9 @@ catching:
     arm:
       limit_margin: 0.05
       accel_limits_package: "integrated_bringup"
-      accel_limits_path: "config/ur5e_p1b/derived_accel_limits.yaml"
+      # The shipped box with its provisional flag cleared (AccelLimitsCopy).
+      accel_limits_path: ")"
+     << AccelLimitsCopy() << R"("
       accel_limits_group: "ur5e"
     hand:
       provisional: false

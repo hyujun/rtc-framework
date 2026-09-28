@@ -197,6 +197,9 @@ struct CatchingDiagLogPod {
     kOutsideBox = 2,  ///< a joint reading outside the margined box (or NaN)
     kMoving = 3,      ///< armed before the arm came to rest
     kEstop = 4,       ///< the deciding tick was under an E-STOP
+    /// Armed while nobody vouched for the arm's velocity lane (#537 Q9): a
+    /// reading that may be a hole is not a reading of rest.
+    kVelocityUnreadable = 5,
   };
   std::uint32_t wait_pose_refuse_seq{0};
   WaitPoseRefusal wait_pose_refuse_reason{WaitPoseRefusal::kNone};
