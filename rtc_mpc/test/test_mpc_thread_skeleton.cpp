@@ -49,8 +49,8 @@ TEST(MpcThreadLifecycle, StartAndStopCleanly) {
   mgr.Init(MinimalConfig(), 1, 1, 0);
 
   MpcThreadLaunchConfig launch{};
-  launch.main.cpu_core = -1;     // no pinning
-  launch.main.sched_policy = 0;  // SCHED_OTHER fallback via ApplyThreadConfig
+  launch.main.cpu_core = -1;           // no pinning
+  launch.main.sched_policy = 0;        // SCHED_OTHER fallback via ApplyThreadConfig
   launch.target_frequency_hz = 100.0;  // fast for the test
 
   NopMPCThread thread;

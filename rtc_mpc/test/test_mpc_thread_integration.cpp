@@ -12,8 +12,8 @@
 ///     polling loop (mirrors `test_mpc_thread_mock.cpp`).
 ///   - Injected handler failure does not crash the thread; recovery works.
 ///
-/// Robot-agnostic invariant — this file names `panda` only via the
-/// `kPandaUrdf` constant (same pattern as every other Phase 3–5 test). The
+/// Robot-agnostic invariant — this file names `panda` only via
+/// test_utils/panda_fixture.hpp (same pattern as every other Phase 3–5 test). The
 /// `MockPhaseManager` does not know about Panda; the fixture injects the
 /// contact-frame ids resolved by `RobotModelHandler`.
 
@@ -42,6 +42,7 @@
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
+#include "test_utils/panda_fixture.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -53,7 +54,9 @@
 
 namespace {
 
-constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
+using rtc::mpc::test_utils::kPandaTwoFingerYaml;
+using rtc::mpc::test_utils::kPandaUrdf;
+using rtc::mpc::test_utils::NeutralEeTarget;
 
 constexpr const char* kPhaseACostYaml = R"(
 horizon_length: 15
@@ -103,16 +106,8 @@ class MpcThreadIntegrationTest : public ::testing::Test {
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto robot_cfg = YAML::Load(R"(
-end_effector_frame: panda_hand
-base_frame: panda_link0
-contact_frames:
-  - name: panda_leftfinger
-    dim: 3
-  - name: panda_rightfinger
-    dim: 3
-)");
-    ASSERT_EQ(model_handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(model_handler_.Init(model_, YAML::Load(kPandaTwoFingerYaml)),
+              rtc::mpc::RobotModelInitError::kNoError);
 
     // Pre-build both phase cost configs once.
     ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kPhaseACostYaml), model_handler_,
@@ -123,10 +118,7 @@ contact_frames:
               rtc::mpc::PhaseCostConfigError::kNoError);
 
     // EE target at neutral FK; Phase B shifts +10 cm along z.
-    pinocchio::Data pdata(model_);
-    const Eigen::VectorXd q0 = pinocchio::neutral(model_);
-    pinocchio::framesForwardKinematics(model_, pdata, q0);
-    ee_target_A_ = pdata.oMf[model_handler_.end_effector_frame_id()];
+    ee_target_A_ = NeutralEeTarget(model_, model_handler_);
     ee_target_B_ = ee_target_A_;
     ee_target_B_.translation().z() += 0.10;
   }

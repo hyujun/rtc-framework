@@ -49,6 +49,7 @@
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 #include "test_utils/alloc_counter.hpp"
+#include "test_utils/panda_fixture.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -123,7 +124,10 @@ void operator delete[](void* p, std::size_t) noexcept {
 
 namespace {
 
-constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
+using rtc::mpc::test_utils::kPandaTwoFingerYaml;
+using rtc::mpc::test_utils::kPandaUrdf;
+using rtc::mpc::test_utils::NeutralEeTarget;
+using rtc::mpc::test_utils::NeutralStateSnapshot;
 
 constexpr const char* kLightCostYaml = R"(
 horizon_length: 15
@@ -160,16 +164,8 @@ class AllocTracerTest : public ::testing::Test {
       GTEST_SKIP() << "Panda URDF not installed — run ./install.sh verify";
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
-    auto robot_cfg = YAML::Load(R"(
-end_effector_frame: panda_hand
-base_frame: panda_link0
-contact_frames:
-  - name: panda_leftfinger
-    dim: 3
-  - name: panda_rightfinger
-    dim: 3
-)");
-    ASSERT_EQ(handler_.Init(model_, robot_cfg), rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, YAML::Load(kPandaTwoFingerYaml)),
+              rtc::mpc::RobotModelInitError::kNoError);
   }
 
   rtc::mpc::PhaseContext MakeLightContext() {
@@ -181,10 +177,7 @@ contact_frames:
     ctx.ocp_type = "contact_light";
     ctx.cost_config = cfg;
     ctx.contact_plan = {};
-    pinocchio::Data pdata(model_);
-    const Eigen::VectorXd q0 = pinocchio::neutral(model_);
-    pinocchio::framesForwardKinematics(model_, pdata, q0);
-    ctx.ee_target = pdata.oMf[handler_.end_effector_frame_id()];
+    ctx.ee_target = NeutralEeTarget(model_, handler_);
     return ctx;
   }
 
@@ -201,26 +194,12 @@ contact_frames:
     const int rf = handler_.contact_frames()[1].frame_id;
     ctx.contact_plan.frames = handler_.contact_frames();
     ctx.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{lf, rf}, 0.0, 100.0});
-    pinocchio::Data pdata(model_);
-    const Eigen::VectorXd q0 = pinocchio::neutral(model_);
-    pinocchio::framesForwardKinematics(model_, pdata, q0);
-    ctx.ee_target = pdata.oMf[handler_.end_effector_frame_id()];
+    ctx.ee_target = NeutralEeTarget(model_, handler_);
     return ctx;
   }
 
   rtc::mpc::MPCStateSnapshot MakeStateSnapshot() const {
-    rtc::mpc::MPCStateSnapshot s{};
-    const Eigen::VectorXd q = pinocchio::neutral(model_);
-    s.nq = handler_.nq();
-    s.nv = handler_.nv();
-    for (int i = 0; i < s.nq; ++i) {
-      s.q[static_cast<std::size_t>(i)] = q[i];
-    }
-    for (int i = 0; i < s.nv; ++i) {
-      s.v[static_cast<std::size_t>(i)] = 0.0;
-    }
-    s.timestamp_ns = 0;
-    return s;
+    return NeutralStateSnapshot(model_, handler_);
   }
 
   // Touch every code path that might lazily initialise static / thread_local

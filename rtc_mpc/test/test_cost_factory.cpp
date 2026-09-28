@@ -32,6 +32,7 @@
 #pragma GCC diagnostic pop
 
 #include "rtc_mpc/ocp/cost_factory.hpp"
+#include "test_utils/panda_fixture.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -40,7 +41,9 @@
 
 namespace {
 
-constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
+using rtc::mpc::test_utils::kPandaTwoFingerYaml;
+using rtc::mpc::test_utils::kPandaUrdf;
+using rtc::mpc::test_utils::NeutralEeTarget;
 
 // Baseline cost config matching Panda (nq=9, 2 × 3D contacts).
 constexpr const char* kBaselineYaml = R"(
@@ -65,26 +68,15 @@ class CostFactoryTest : public ::testing::Test {
     }
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
 
-    auto model_cfg = YAML::Load(R"(
-end_effector_frame: panda_hand
-base_frame: panda_link0
-contact_frames:
-  - name: panda_leftfinger
-    dim: 3
-  - name: panda_rightfinger
-    dim: 3
-)");
-    ASSERT_EQ(handler_.Init(model_, model_cfg), rtc::mpc::RobotModelInitError::kNoError);
+    ASSERT_EQ(handler_.Init(model_, YAML::Load(kPandaTwoFingerYaml)),
+              rtc::mpc::RobotModelInitError::kNoError);
 
     auto cfg_node = YAML::Load(kBaselineYaml);
     ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(cfg_node, handler_, cfg_),
               rtc::mpc::PhaseCostConfigError::kNoError);
 
     // Use FK at neutral as ee_target baseline.
-    pinocchio::Data pdata(model_);
-    const Eigen::VectorXd q0 = pinocchio::neutral(model_);
-    pinocchio::framesForwardKinematics(model_, pdata, q0);
-    ee_target_ = pdata.oMf[handler_.end_effector_frame_id()];
+    ee_target_ = NeutralEeTarget(model_, handler_);
   }
 
   pinocchio::Model model_;

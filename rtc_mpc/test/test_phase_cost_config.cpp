@@ -17,6 +17,7 @@
 #pragma GCC diagnostic pop
 
 #include "rtc_mpc/phase/phase_cost_config.hpp"
+#include "test_utils/panda_fixture.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -24,7 +25,7 @@
 
 namespace {
 
-constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
+using rtc::mpc::test_utils::kPandaUrdf;
 
 // YAML template with placeholders; swap via string::replace in cases that
 // need to mutate one entry. Provides a well-formed baseline matching

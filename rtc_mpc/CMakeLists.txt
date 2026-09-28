@@ -148,134 +148,44 @@ if(BUILD_TESTING)
         "Path to panda.urdf used by rtc_mpc tests" FORCE)
   endif()
 
-  ament_add_gtest(test_scaffold test/test_scaffold.cpp)
-  if(TARGET test_scaffold)
-    target_link_libraries(test_scaffold rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_mpc_types test/test_mpc_types.cpp)
-  if(TARGET test_mpc_types)
-    target_link_libraries(test_mpc_types rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_triple_buffer test/test_triple_buffer.cpp)
-  if(TARGET test_triple_buffer)
-    target_link_libraries(test_triple_buffer rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_trajectory_interpolator
-    test/test_trajectory_interpolator.cpp)
-  if(TARGET test_trajectory_interpolator)
-    target_link_libraries(test_trajectory_interpolator rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_riccati_feedback test/test_riccati_feedback.cpp)
-  if(TARGET test_riccati_feedback)
-    target_link_libraries(test_riccati_feedback rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_mpc_solution_manager
-    test/test_mpc_solution_manager.cpp)
-  if(TARGET test_mpc_solution_manager)
-    target_link_libraries(test_mpc_solution_manager rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_mpc_timing_logger
-    test/test_mpc_timing_logger.cpp)
-  if(TARGET test_mpc_timing_logger)
-    target_link_libraries(test_mpc_timing_logger rtc_mpc)
-  endif()
-
-  # rtc_base/testing/wait_until.hpp: the sleep-poll wait these thread tests use,
+  # rtc_base/testing/wait_until.hpp: the sleep-poll wait the thread tests use,
   # a test-only, never-installed header (#356 — promoted out of this package's
   # own test/wait_until.hpp). rtc_base owns the path and fails loudly if its
   # source tree is not reachable — see rtc_base/cmake/rtc_base-test-include.cmake.in.
   rtc_base_test_include_dir(rtc_base_test_include)
 
-  ament_add_gtest(test_mpc_thread_skeleton
-    test/test_mpc_thread_skeleton.cpp)
-  if(TARGET test_mpc_thread_skeleton)
-    target_include_directories(test_mpc_thread_skeleton PRIVATE
-      ${rtc_base_test_include})
-    target_link_libraries(test_mpc_thread_skeleton rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_mpc_thread_mock test/test_mpc_thread_mock.cpp)
-  if(TARGET test_mpc_thread_mock)
-    target_link_libraries(test_mpc_thread_mock rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_robot_model_handler
-    test/test_robot_model_handler.cpp)
-  if(TARGET test_robot_model_handler)
-    target_link_libraries(test_robot_model_handler rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_phase_cost_config
-    test/test_phase_cost_config.cpp)
-  if(TARGET test_phase_cost_config)
-    target_link_libraries(test_phase_cost_config rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_cost_factory test/test_cost_factory.cpp)
-  if(TARGET test_cost_factory)
-    target_link_libraries(test_cost_factory rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_contact_light_ocp test/test_contact_light_ocp.cpp)
-  if(TARGET test_contact_light_ocp)
-    target_link_libraries(test_contact_light_ocp rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_contact_rich_ocp test/test_contact_rich_ocp.cpp)
-  if(TARGET test_contact_rich_ocp)
-    target_include_directories(test_contact_rich_ocp PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/test)
-    target_link_libraries(test_contact_rich_ocp rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_contact_light_mpc test/test_contact_light_mpc.cpp)
-  if(TARGET test_contact_light_mpc)
-    target_link_libraries(test_contact_light_mpc rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_contact_rich_mpc test/test_contact_rich_mpc.cpp)
-  if(TARGET test_contact_rich_mpc)
-    target_link_libraries(test_contact_rich_mpc rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_mpc_factory test/test_mpc_factory.cpp)
-  if(TARGET test_mpc_factory)
-    target_link_libraries(test_mpc_factory rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_mpc_thread_integration
-    test/test_mpc_thread_integration.cpp)
-  if(TARGET test_mpc_thread_integration)
-    target_include_directories(test_mpc_thread_integration PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/test ${rtc_base_test_include})
-    target_link_libraries(test_mpc_thread_integration rtc_mpc)
-  endif()
-
-  ament_add_gtest(test_mpc_handler_alloc_tracer
-    test/test_mpc_handler_alloc_tracer.cpp)
-  if(TARGET test_mpc_handler_alloc_tracer)
-    target_include_directories(test_mpc_handler_alloc_tracer PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/test)
-    target_link_libraries(test_mpc_handler_alloc_tracer rtc_mpc)
-  endif()
-
-  # Apply PANDA_URDF_PATH macro to every test target that uses it.
-  foreach(_t
-      test_robot_model_handler test_phase_cost_config test_cost_factory
-      test_contact_light_ocp test_contact_rich_ocp test_contact_light_mpc
-      test_contact_rich_mpc test_mpc_factory test_mpc_thread_integration
-      test_mpc_handler_alloc_tracer)
-    if(TARGET ${_t})
-      target_compile_definitions(${_t} PRIVATE
-          RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
+  # One test binary per file: linked to rtc_mpc, with the test-local headers
+  # (test_utils/), wait_until.hpp and the Panda path (test_utils/panda_fixture.hpp).
+  function(add_mpc_gtest name)
+    ament_add_gtest(${name} test/${name}.cpp)
+    if(TARGET ${name})
+      target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test ${rtc_base_test_include})
+      target_link_libraries(${name} rtc_mpc)
+      target_compile_definitions(${name} PRIVATE
+        RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
     endif()
-  endforeach()
+  endfunction()
+
+  add_mpc_gtest(test_scaffold)
+  add_mpc_gtest(test_mpc_types)
+  add_mpc_gtest(test_triple_buffer)
+  add_mpc_gtest(test_trajectory_interpolator)
+  add_mpc_gtest(test_riccati_feedback)
+  add_mpc_gtest(test_mpc_solution_manager)
+  add_mpc_gtest(test_mpc_timing_logger)
+  add_mpc_gtest(test_mpc_thread_skeleton)
+  add_mpc_gtest(test_mpc_thread_mock)
+  add_mpc_gtest(test_robot_model_handler)
+  add_mpc_gtest(test_phase_cost_config)
+  add_mpc_gtest(test_cost_factory)
+  add_mpc_gtest(test_contact_light_ocp)
+  add_mpc_gtest(test_contact_rich_ocp)
+  add_mpc_gtest(test_contact_light_mpc)
+  add_mpc_gtest(test_contact_rich_mpc)
+  add_mpc_gtest(test_mpc_factory)
+  add_mpc_gtest(test_mpc_thread_integration)
+  add_mpc_gtest(test_mpc_handler_alloc_tracer)
 
   # Aligator's ProxDDP solve path allocates via mimalloc but frees can route
   # through glibc (and vice-versa) across the pinocchio/aligator boundary; with
