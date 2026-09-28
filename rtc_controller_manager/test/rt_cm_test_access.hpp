@@ -501,6 +501,70 @@ class ControllerLifecycleTestAccess {
   static void SetPrintTimingSummary(RtControllerNode& node, bool v) {
     node.print_timing_summary_.store(v, std::memory_order_relaxed);
   }
+
+  // ── Hand-driven ticks (issue #588) ──────────────────────────────────────────
+  // One production ControlLoop() on the calling thread — no RT thread, so a
+  // test decides exactly what each tick reads and can assert on every write.
+  static void Tick(RtControllerNode& node) { node.ControlLoop(); }
+
+  // What on_configure leaves behind once the backends exist. Without it every
+  // slot's command-type mask is empty and every output is rejected.
+  static void CacheCommandTypeMasks(RtControllerNode& node) { node.CacheSlotCommandTypeMasks(); }
+
+  // Controller `ctrl_idx` claims `groups` in that order, device i → slot
+  // slots[i]. Mirrors what BuildControllerSlotMappings derives from YAML.
+  static void HostGroups(RtControllerNode& node, std::size_t ctrl_idx,
+                         const std::vector<std::string>& groups, const std::vector<int>& slots) {
+    rtc::TopicConfig tc;
+    RtControllerNode::ControllerSlotMapping mapping;
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+      tc[groups[i]];
+      mapping.slots[i] = slots[i];
+    }
+    mapping.num_groups = static_cast<int>(groups.size());
+    node.controller_topic_configs_[ctrl_idx] = std::move(tc);
+    node.controller_slot_mappings_[ctrl_idx] = mapping;
+  }
+
+  // ── Clear verification (issue #588) ─────────────────────────────────────────
+  static std::uint32_t BeginClearVerification(RtControllerNode& node) {
+    return node.BeginEstopClearVerification();
+  }
+
+  static bool IsClearVerifying(const RtControllerNode& node) {
+    return node.IsEstopClearVerifying();
+  }
+
+  static bool EstopStatusValue(const RtControllerNode& node) { return node.EstopStatusValue(); }
+
+  static bool IsHoldActive(const RtControllerNode& node) { return node.IsEstopHoldActive(); }
+
+  static std::chrono::microseconds GetControlPeriod(const RtControllerNode& node) {
+    return node.ControlPeriod();
+  }
+
+  static std::uint64_t GetEstopVerifyHeldOutputCount(const RtControllerNode& node) {
+    return node.EstopVerifyHeldOutputCount();
+  }
+
+  static std::uint64_t VerifyWindowTicks(const RtControllerNode& node) {
+    return node.EstopVerifyWindowTicks();
+  }
+
+  static bool CallSwitch(RtControllerNode& node, const std::string& name, std::string& message) {
+    return node.SwitchActiveController(name, message);
+  }
+
+  // The real /system/estop_status publisher (QoS included), not the
+  // EnsureEstopPublisher stand-in.
+  static void CallCreateFixedSafetyPublishers(RtControllerNode& node) {
+    node.CreateFixedSafetyPublishers();
+  }
+
+  static void MarkActive(RtControllerNode& node, int idx) {
+    node.active_controller_idx_.store(idx, std::memory_order_release);
+    node.controller_states_[static_cast<std::size_t>(idx)].store(1, std::memory_order_release);
+  }
 };
 
 }  // namespace rtc

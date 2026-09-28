@@ -361,7 +361,7 @@ shape_estimation_node의 QoS는 코드에 하드코딩:
 |-------------|-----|--------|
 | `/tof/snapshot` | SensorData (BEST_EFFORT, keep_last=5) | RT 데이터 손실 허용, 최신 우선 |
 | `/shape/trigger` | Reliable (keep_last=10) | 명령 손실 방지 |
-| `/system/estop_status` | Reliable | 안전 신호 |
+| `/system/estop_status` | Reliable, transient_local | 안전 신호 — latch 뒤에 떠도 현재 값을 받는다 (CM 발행자도 transient_local, #588) |
 
 Publication은 모두 기본 QoS (Reliable, keep_last=10).
 

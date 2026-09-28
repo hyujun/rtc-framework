@@ -295,6 +295,19 @@ void RtControllerNode::CreateServices() {
         };
 
         if (!IsGlobalEstopped()) {
+          // Latch down but an earlier clear's window still open — that call
+          // timed out waiting for it. The arm is still held, so "not latched
+          // (no-op)" would be the wrong answer; this is the same unverified
+          // state that call already reported.
+          if (IsEstopClearVerifying()) {
+            resp->ok = false;
+            resp->message =
+                "the latch is DOWN but a previous clear is still being verified — the hold stays "
+                "on until the RT loop completes the verification window (if this persists the "
+                "loop is stalled, overrunning, or not running)" +
+                fault_note();
+            return;
+          }
           resp->ok = true;
           resp->message = "global E-STOP is not latched (no-op)" + fault_note();
           return;
@@ -321,29 +334,30 @@ void RtControllerNode::CreateServices() {
           return;
         }
 
-        // Enough ticks for the CAUSE DETECTORS to get a turn, which is a
-        // different quantity from reset_fault's two-tick proof: the slowest
-        // one here is the device watchdog, and it only runs every
-        // watchdog_check_divisor_ ticks (kWatchdogCheckHz). Two ticks would
-        // report "cleared" on a dead device every time, because the check that
-        // would have re-latched had not run yet.
+        // Verification (issue #588, decisions Q2 · Q12 (a)). The window is
+        // opened BEFORE the latch drops, so no tick can see "latch down, no
+        // window" and forward the controller's output unverified. From then on
+        // the RT loop owns it: it counts EstopVerifyWindowTicks() latch-down
+        // ticks — one full device-watchdog period plus the two-tick proof, so
+        // every cause detector gets a turn (the slowest, the watchdog, runs
+        // only every watchdog_check_divisor_ ticks) — and only then lets the
+        // controller's output through. This callback just waits for that
+        // verdict. It never closes the window itself: a reply that gives up
+        // leaves the arm held rather than unverified-and-moving.
         //
-        // The +2 on top of the watchdog period is reset_fault's proof term and
-        // is there for the same reason: the tick that produces the first
-        // increment may have started before our store.
-        static constexpr std::uint64_t kProofTicks = 2;
         // Deadline, not a bound on the RT loop — expiring is itself a
         // diagnosis. 4× leaves room for overrun and jitter on top of a window
         // that is already tens of periods long.
         static constexpr long kDeadlineMultiple = 4;
-        const auto ticks_proving =
-            static_cast<std::uint64_t>(watchdog_check_divisor_) + kProofTicks;
+        const auto window_ticks = static_cast<long>(EstopVerifyWindowTicks());
         const auto period = ControlPeriod();
         const auto poll_interval = std::max(period / 4, std::chrono::microseconds(100));
-        const std::uint64_t ticks_before = RtTickCount();
 
+        static_cast<void>(BeginEstopClearVerification());
         const auto outcome = ClearGlobalEstop();
         if (outcome == EstopClearOutcome::kRetriggered) {
+          // The window stays open behind the still-set latch; the RT loop
+          // counts nothing while latched and the next clear replaces it.
           resp->ok = false;
           resp->message =
               "an E-STOP was requested while the clear was propagating — the clear was abandoned "
@@ -351,27 +365,19 @@ void RtControllerNode::CreateServices() {
               latched_reason + "')" + fault_note();
           return;
         }
-        if (outcome == EstopClearOutcome::kNotLatched) {
-          // Another caller cleared it between our check and this call.
-          resp->ok = true;
-          resp->message =
-              "global E-STOP was already cleared by another caller (no-op)" + fault_note();
-          return;
-        }
+        // kNotLatched (another caller lowered it between our check and the
+        // call) falls through: our window is open all the same, and the arm
+        // stays held until it passes.
 
-        const auto deadline = std::chrono::steady_clock::now() +
-                              period * (static_cast<long>(ticks_proving) * kDeadlineMultiple);
-        bool rt_observed = false;
-        while (std::chrono::steady_clock::now() < deadline) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + period * (window_ticks * kDeadlineMultiple);
+        while (std::chrono::steady_clock::now() < deadline && !IsGlobalEstopped() &&
+               IsEstopClearVerifying()) {
           std::this_thread::sleep_for(poll_interval);
-          if (RtTickCount() - ticks_before >= ticks_proving) {
-            rt_observed = true;
-            break;
-          }
         }
 
-        // Checked before the tick verdict: a re-latch is conclusive on its own,
-        // however few ticks we counted.
+        // Checked first: a re-latch is conclusive on its own, however far the
+        // window got.
         if (IsGlobalEstopped()) {
           resp->ok = false;
           resp->message =
@@ -385,13 +391,15 @@ void RtControllerNode::CreateServices() {
         // "nothing consumed it" was the whole answer. Here the latch IS down
         // and only the verification is missing, which the message has to say
         // outright — an operator who reads this as "nothing happened" would
-        // re-issue it and then be surprised by an unlatched arm.
-        if (!rt_observed) {
+        // re-issue it. The arm is still held: the window closes only when the
+        // RT loop has run it, whenever that is.
+        if (IsEstopClearVerifying()) {
           resp->ok = false;
           resp->message =
               "the latch is DOWN (was: '" + latched_reason +
-              "') but unverified — the RT loop completed no tick within the deadline, so no "
-              "detector re-evaluated the cause (loop stalled, overrunning, or not running)" +
+              "') but unverified — the RT loop did not complete the verification window within "
+              "the deadline, so no detector re-evaluated the cause (loop stalled, overrunning, or "
+              "not running); the hold stays on until it does" +
               fault_note();
           return;
         }

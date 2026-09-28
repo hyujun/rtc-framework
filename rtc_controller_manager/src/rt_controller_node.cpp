@@ -104,6 +104,8 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   RCLCPP_INFO(get_logger(), "Configuring RtControllerNode...");
 
   CreateCallbackGroups();
+  // No RT thread yet — a window or latch left by an earlier session goes.
+  ResetEstopHoldState();
   // Fail-closed (issue #196 §1): controller bring-up decides whether this node
   // may configure at all. Returning FAILURE here means no publisher, no device
   // backend, no service, no timer, and no RT thread is ever created — the
@@ -217,6 +219,10 @@ RtControllerNode::CallbackReturn RtControllerNode::on_activate(
     return rc;
   }
 
+  // Last point before the RT thread owns the hold state (issue #588): a new
+  // session starts with no latch, no readings and no clear-verification window.
+  ResetEstopHoldState();
+
   const auto cfgs = urtc::SelectThreadConfigs();
   StartRtLoop(cfgs.rt_control);
   // Controller-owned non-RT publish lane: drains nrt_publish_buffer_ on the
@@ -270,6 +276,11 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
       backend->Deactivate();
     }
   }
+
+  // The RT thread is joined, so nothing will ever count an open verification
+  // window down — drop it first, so the flush below reports the cleared latch
+  // as false rather than "still verifying" (issue #588).
+  ResetEstopHoldState();
 
   // StopRtLoop() above already joined the RT thread, so no trigger can race
   // this propagation and kRetriggered is unreachable here. Reported rather than
@@ -425,6 +436,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   TriggerGlobalEstop("lifecycle_error");
   StopRtLoop();
   StopNrtPublishLoop();
+  // RT joined: no one would ever close a verification window now, and the
+  // latch is up regardless (issue #588).
+  ResetEstopHoldState();
 
   // Full cleanup for recovery to Unconfigured state
   FlushEstopStatus();
