@@ -55,6 +55,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -62,7 +63,6 @@
 #include <fstream>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -126,15 +126,24 @@ struct CaseResult {
   std::string end_mode;
 };
 
-std::int64_t SteadyNs() {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
+/// The clock the controller reads (SetClockForTesting) and this file stamps
+/// with. Stepped one control period per tick instead of slept through: the
+/// sweep measures the law on the tick grid, and the solve-time budget it
+/// asserts is the solver's own measurement, not this clock.
+std::atomic<std::int64_t> g_now_ns{0};
+
+std::int64_t SteadyNs() noexcept {
+  return g_now_ns.load(std::memory_order_relaxed);
+}
+
+void StepClock() noexcept {
+  g_now_ns.fetch_add(static_cast<std::int64_t>(std::llround(kDt * 1e9)), std::memory_order_relaxed);
 }
 
 class ClikSweepTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    g_now_ns.store(rtc::SteadyNowNs(), std::memory_order_relaxed);
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_clik_sweep");
     builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
@@ -181,6 +190,7 @@ class ClikSweepTest : public ::testing::Test {
     const double t_c = kDetectRangeM / speed;
 
     ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetClockForTesting(&SteadyNs);
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
     ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
@@ -313,7 +323,7 @@ class ClikSweepTest : public ::testing::Test {
         }
       }
 
-      std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+      StepClock();
       if (t_c_abs != 0 && SteadyNs() >= t_c_abs) {
         break;  // the catch instant: this is where the numbers are read
       }
@@ -431,6 +441,7 @@ TEST_F(ClikSweepTest, HowLongTheShippedLawNeedsForOneCatchPose) {
       (Eigen::AngleAxisd(kMaxTiltDeg * M_PI / 180.0, axis) * z0).normalized();
 
   ctrl_ = std::make_unique<DemoCatchingController>("");
+  ctrl_->SetClockForTesting(&SteadyNs);
   ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
   ctrl_->SetSharedModelBuilder(builder_);
   ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
@@ -507,7 +518,7 @@ TEST_F(ClikSweepTest, HowLongTheShippedLawNeedsForOneCatchPose) {
     if (t_axis_1deg < 0.0 && ax_err < 1.0) {
       t_axis_1deg = state.t_relative_s;
     }
-    std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+    StepClock();
   }
 
   const pinocchio::SE3 pose = oracle_->PoseAt(arm_names_, commanded, kUr5eArmDof);

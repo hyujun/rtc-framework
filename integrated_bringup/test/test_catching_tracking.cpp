@@ -16,12 +16,14 @@
 // deliberate, because it makes a position-error assertion mean "the law
 // converges" rather than "the plant is slow".
 //
-// REAL TIME IS REAL. The controller reads the steady clock per tick (plan §3
-// forbids tick×dt), so the test SLEEPS one control period between ticks. That
-// costs a fraction of a second and it is what keeps the reference's own time
-// axis and the integration step consistent; a loop that spun as fast as it
-// could would advance `dt` per tick while the clock stood still, and every
-// number downstream would describe a system that does not exist.
+// TIME IS STEPPED WITH THE TICKS. The controller reads its clock per tick
+// (plan §3 forbids tick×dt), and this file hands it a fake one
+// (SetClockForTesting) that advances exactly one control period per tick. That
+// is what keeps the reference's own time axis and the integration step
+// consistent; a loop that spun with the REAL clock would advance `dt` per tick
+// while the clock barely moved, and every number downstream would describe a
+// system that does not exist. The real clock path is covered by
+// test_catching_supervisor_scenarios' *RealClock fixtures.
 
 #include "arm_lag_fixture.hpp"
 #include "catching_cloud_fixture.hpp"
@@ -42,13 +44,13 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -70,9 +72,21 @@ using integrated_bringup::testfx::TrackingYaml;
 
 using namespace std::chrono_literals;
 
+/// The controller's clock (file header); SetUp restarts it per case.
+std::atomic<std::int64_t> g_now_ns{0};
+
+std::int64_t NowNs() noexcept {
+  return g_now_ns.load(std::memory_order_relaxed);
+}
+
+void StepClock() noexcept {
+  g_now_ns.fetch_add(static_cast<std::int64_t>(std::llround(kDt * 1e9)), std::memory_order_relaxed);
+}
+
 class CatchingTrackingTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    g_now_ns.store(rtc::SteadyNowNs(), std::memory_order_relaxed);
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_tracking_test");
     builder_ = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(MakeConfigWithCatchFrame());
     oracle_ = std::make_unique<CatchFrameOracle>(*builder_);
@@ -112,6 +126,7 @@ class CatchingTrackingTest : public ::testing::Test {
                const std::function<void(std::map<std::string, rtc::DeviceNameConfig>&)>&
                    device_tweak = nullptr) {
     ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetClockForTesting(&NowNs);
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
     // `device_tweak` edits the DEVICE limits, which the catching YAML cannot
@@ -181,8 +196,8 @@ class CatchingTrackingTest : public ::testing::Test {
   }
 
   /// Run `ticks` closed-loop control periods, re-publishing a prediction about
-  /// every 30 ms so the lane never goes stale, and sleeping one period each
-  /// tick so the controller's clock and its `dt` agree.
+  /// every 30 ms so the lane never goes stale, and stepping the clock one
+  /// period each tick so the controller's clock and its `dt` agree.
   void RunClosedLoop(int ticks, bool publish = true) {
     for (int t = 0; t < ticks; ++t) {
       if (publish && t % 15 == 0) {
@@ -200,7 +215,7 @@ class CatchingTrackingTest : public ::testing::Test {
           state_.devices[0].positions[ui] = out.devices[0].commands[ui];
         }
       }
-      std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+      StepClock();
     }
   }
 
@@ -620,7 +635,7 @@ TEST_F(CatchingTrackingTest, LeadCompensationReducesTheErrorUnderAnActuationDela
         commanded_[ui] = cmd[ui];
         state_.devices[0].positions[ui] = measured[ui];
       }
-      std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
+      StepClock();
     }
     // Judged on the MEASURED configuration: the delay is the whole point, so
     // scoring the command would score a pose the arm has not reached.
