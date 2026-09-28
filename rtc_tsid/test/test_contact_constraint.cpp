@@ -5,26 +5,18 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/contact_constraint.hpp"
 
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
-
-class ContactConstraintTest : public ::testing::Test {
+class ContactConstraintTest : public test::PandaTest {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
-
+    test::PandaTest::SetUp();
     // Find a valid frame for contact
     for (size_t i = 0; i < model_->frames.size(); ++i) {
       if (model_->frames[i].name.find("link7") != std::string::npos) {
@@ -52,8 +44,6 @@ class ContactConstraintTest : public ::testing::Test {
     contacts_.RecomputeActive(contact_cfg_);
   }
 
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
   ContactManagerConfig contact_cfg_;
   PinocchioCache cache_;
   ContactState contacts_;

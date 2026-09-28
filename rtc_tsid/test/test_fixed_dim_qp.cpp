@@ -13,9 +13,9 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/contact_constraint.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
@@ -25,18 +25,10 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
-
-class FixedDimQpTest : public ::testing::Test {
+class FixedDimQpTest : public test::PandaTest {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
-
+    test::PandaTest::SetUp();
     // 2 point contacts on panda links → max_contact_vars = 6.
     mgr_.contacts.resize(2);
     mgr_.contacts[0].name = "ee0";
@@ -59,8 +51,6 @@ class FixedDimQpTest : public ::testing::Test {
     cs_.SeedNormals(mgr_);
   }
 
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
   ContactManagerConfig mgr_;
   PinocchioCache cache_;
   ContactState cs_;

@@ -5,26 +5,18 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/tasks/contact_consistency_task.hpp"
 
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
-
-class ContactConsistencyTaskTest : public ::testing::Test {
+class ContactConsistencyTaskTest : public test::PandaTest {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
-
+    test::PandaTest::SetUp();
     // 1 point contact on panda_hand
     YAML::Node contact_yaml;
     YAML::Node c1;
@@ -43,8 +35,6 @@ class ContactConsistencyTaskTest : public ::testing::Test {
               contact_cfg_.max_contact_vars);
   }
 
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
   ContactManagerConfig contact_cfg_;
   PinocchioCache cache_;
   ContactState contacts_;

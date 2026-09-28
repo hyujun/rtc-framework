@@ -43,9 +43,9 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 
 namespace rtc::tsid {
@@ -54,7 +54,6 @@ namespace {
 // Recorded table: kClikGoldenBits (IEEE-754 bits), kClikGoldenHash (FNV-1a 64).
 #include "golden/clik_golden_data.inc"
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 constexpr int kNv = 9;  // Panda: 7 arm + 2 finger, nq == nv
 // Per tick: ok, q_ref[nv], v_ref[nv], manipulability, tcp_error_norm.
 constexpr int kRecordWidth = 1 + 2 * kNv + 2;
@@ -89,14 +88,10 @@ constexpr Scenario kScenarios[] = {
     {"no_position_box", 20, 1.5, false, 0.0, false},
 };
 
-class ClikGoldenTest : public ::testing::Test {
+class ClikGoldenTest : public test::PandaTest {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
+    test::PandaTest::SetUp();
     ASSERT_EQ(robot_info_.nq, kNv);
     ASSERT_EQ(robot_info_.nv, kNv);
 
@@ -217,8 +212,6 @@ class ClikGoldenTest : public ::testing::Test {
     return all;
   }
 
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
   PinocchioCache cache_;
   int tcp_idx_{-1};
   int base_idx_{-1};

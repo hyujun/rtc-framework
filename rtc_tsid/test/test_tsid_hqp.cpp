@@ -5,9 +5,9 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/formulation/formulation_factory.hpp"
 #include "rtc_tsid/formulation/hqp_formulation.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
@@ -15,33 +15,7 @@
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
-
-class HQPFormulationTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
-
-    contact_cfg_.max_contacts = 0;
-    contact_cfg_.max_contact_vars = 0;
-
-    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
-    contacts_.Init(0);
-    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
-  }
-
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
-  ContactManagerConfig contact_cfg_;
-  PinocchioCache cache_;
-  ContactState contacts_;
-  ControlReference ref_;
-};
+class HQPFormulationTest : public test::PandaNoContactTest {};
 
 TEST_F(HQPFormulationTest, FactoryCreatesHQP) {
   YAML::Node config;
@@ -115,7 +89,7 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
   Eigen::VectorXd q_offset = q_neutral;
   q_offset.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.5);
   posture_low->SetReference(q_offset, Eigen::VectorXd::Zero(robot_info_.nv),
-                             Eigen::VectorXd::Zero(robot_info_.nv));
+                            Eigen::VectorXd::Zero(robot_info_.nv));
   formulation->AddTask(std::move(posture_low));
 
   Eigen::VectorXd q = q_neutral;

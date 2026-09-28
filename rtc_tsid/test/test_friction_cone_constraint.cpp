@@ -4,9 +4,9 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 
 namespace rtc::tsid {
@@ -18,8 +18,7 @@ namespace {
 class FrictionConeTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    model_ = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model_);
+    model_ = test::LoadPandaModel();
     YAML::Node config;
     info_.Build(*model_, config);
   }

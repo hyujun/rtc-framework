@@ -26,9 +26,9 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 
 // ── TU-local alloc counter (test_clik_reference.cpp pattern) ────────────────
@@ -100,7 +100,6 @@ void operator delete[](void* p, std::size_t) noexcept {
 namespace rtc::tsid {
 namespace {
 
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 constexpr int kNv = 9;  // Panda: 7 arm + 2 finger, nq == nv
 constexpr double kDt = 0.002;
 // ProxQP eps_abs (QPSolverConfig default): the box holds only to this tolerance.
@@ -108,14 +107,10 @@ constexpr double kSolverEps = 1e-6;
 
 using Vec6 = Eigen::Matrix<double, 6, 1>;
 
-class ClikOptionsTest : public ::testing::Test {
+class ClikOptionsTest : public test::PandaTest {
  protected:
   void SetUp() override {
-    auto model = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model);
-    model_ = model;
-    YAML::Node config;
-    robot_info_.Build(*model_, config);
+    test::PandaTest::SetUp();
     ASSERT_EQ(robot_info_.nv, kNv);
 
     ContactManagerConfig contact_cfg;
@@ -153,8 +148,6 @@ class ClikOptionsTest : public ::testing::Test {
     return des;
   }
 
-  std::shared_ptr<const pinocchio::Model> model_;
-  RobotModelInfo robot_info_;
   PinocchioCache cache_;
   int tcp_idx_{-1};
   int base_idx_{-1};

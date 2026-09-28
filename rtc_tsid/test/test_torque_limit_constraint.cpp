@@ -5,15 +5,13 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "panda_fixture.hpp"
 #include "rtc_tsid/constraints/torque_limit_constraint.hpp"
 
 namespace rtc::tsid {
 namespace {
-
-const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 // Fixture: build the Panda model once per test in SetUp(), shared via model_ /
 // info_. Each TEST_F gets a fresh fixture instance, so behaviour is identical
@@ -21,8 +19,7 @@ const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 class TorqueLimitTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    model_ = std::make_shared<pinocchio::Model>();
-    pinocchio::urdf::buildModel(kPandaUrdf, *model_);
+    model_ = test::LoadPandaModel();
     YAML::Node config;
     info_.Build(*model_, config);
   }
