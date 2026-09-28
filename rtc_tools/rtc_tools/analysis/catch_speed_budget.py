@@ -68,6 +68,10 @@ DEFAULT_CATCH_FRAME = "catch_frame"
 DEFAULT_GAMMA_MARGIN_M_S = 0.1  # L3 §6 planner.gamma.margin
 DEFAULT_SPEED_STEP_M_S = 0.25
 DEFAULT_DLS_DAMPING = 1e-3
+# directional_speed_lp_value hands [J_p; J_w]·diag(q̇_max) to the LP instead of
+# solving it itself once σ_min/σ_max falls to this — a rank that is not clearly
+# full is where HiGHS's own tolerances decide what "reachable" means.
+LP_VALUE_RANK_RTOL = 1e-9
 DEFAULT_FK_TOLERANCE_M = 2.5e-3  # the judge's eps_pos (2 mm) plus rounding room
 _TRUE = ("1", "True", "true")
 
@@ -124,6 +128,54 @@ def directional_speed_lp(
     if res.status != 0:
         return DirectionalSpeed(undetermined=True), np.zeros(n)
     return DirectionalSpeed(v_dir_max=float(res.x[n])), np.asarray(res.x[:n])
+
+
+def directional_speed_lp_value(
+    jp: np.ndarray, jw: np.ndarray, v_hat: np.ndarray, qd_max: np.ndarray
+) -> DirectionalSpeed:
+    """The optimum of ``directional_speed_lp`` without the joint velocity, solved exactly.
+
+    With ``q̇ = diag(q̇_max)·u`` the LP reads ``v* = 1 / min{‖u‖∞ : A u = e}``,
+    ``A = [J_p; J_w]·diag(q̇_max)``, ``e = [v̂; 0; 0]``. When ``A`` has full row rank
+    and at most one spare joint, ``u = u₀ + t·z`` over the null direction ``z``, and
+    ``max_i |u₀ᵢ + t zᵢ|`` is a convex piecewise-linear function of ``t`` whose
+    minimum sits where two of its pieces cross — a handful of candidates, no solver.
+    The value is unique even where the optimal ``q̇`` is not, which is why only the
+    value is offered here. Anything else (more spare joints, a rank that is not
+    clearly full) goes to the LP. A search that scores thousands of poses calls
+    this instead of paying HiGHS's per-call setup each time.
+    """
+    n = jp.shape[1]
+    qd_max = np.asarray(qd_max, dtype=float)
+    if qd_max.shape != (n,) or not _limits_ok(qd_max):
+        return DirectionalSpeed(limits_invalid=True)
+    if not _direction_ok(v_hat) or not (np.all(np.isfinite(jp)) and np.all(np.isfinite(jw))):
+        return DirectionalSpeed(input_invalid=True)
+    a = np.vstack([jp, jw]) * qd_max[None, :]
+    rows = a.shape[0]
+    if not rows <= n <= rows + 1:
+        return directional_speed_lp(jp, jw, v_hat, qd_max)[0]
+    u_svd, s, vt = np.linalg.svd(a)
+    if not s[-1] > LP_VALUE_RANK_RTOL * s[0]:
+        return directional_speed_lp(jp, jw, v_hat, qd_max)[0]
+    e = np.concatenate([v_hat, np.zeros(rows - 3)])
+    u0 = vt[:rows].T @ ((u_svd.T @ e) / s)
+    if n == rows:
+        best = float(np.max(np.abs(u0)))
+    else:
+        z = vt[rows]
+        # Pieces σ·(u₀ᵢ + t zᵢ), σ = ±1: every pairwise crossing (i = j with
+        # opposite signs is where |u₀ᵢ + t zᵢ| itself is 0).
+        c = np.concatenate([u0, -u0])
+        g = np.concatenate([z, -z])
+        dg = g[None, :] - g[:, None]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = (c[:, None] - c[None, :]) / dg
+        t = t[np.isfinite(t)]
+        best = float(np.min(np.max(np.abs(u0[None, :] + t[:, None] * z[None, :]), axis=1)))
+    if not (best > 0.0) or not math.isfinite(best):
+        return DirectionalSpeed(undetermined=True)
+    return DirectionalSpeed(v_dir_max=1.0 / best)
 
 
 def dls_unit_velocity(

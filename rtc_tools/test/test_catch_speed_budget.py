@@ -109,6 +109,36 @@ def test_minimum_norm_speed_never_exceeds_the_lp(n):
     assert min(ratios) < (0.9 if n == 7 else 1.0 + 1e-6)
 
 
+@pytest.mark.parametrize("n", [5, 6, 7])
+def test_lp_value_is_the_lp_optimum(n, monkeypatch):
+    """directional_speed_lp_value solves n <= 6 itself and hands n = 7 and a rank-deficient
+    [J_p; J_w] to the LP; the value and the flags must be the LP's either way."""
+    lp_solve = csb.directional_speed_lp
+    fallbacks = []
+
+    def counting_lp(*args):
+        fallbacks.append(1)
+        return lp_solve(*args)
+
+    monkeypatch.setattr(csb, "directional_speed_lp", counting_lp)
+    rng = np.random.default_rng(10 + n)
+    for k in range(150):
+        jp, jw = rng.normal(size=(3, n)), rng.normal(size=(2, n))
+        deficient = k % 5 == 0
+        if deficient:
+            jw[1] = 2.0 * jw[0]  # rank 4: [v̂; 0] may be out of reach
+        v_hat = unit(rng.normal(size=3))
+        qd_max = rng.uniform(0.5, 4.0, size=n)
+        want, _ = lp_solve(jp, jw, v_hat, qd_max)
+        before = len(fallbacks)
+        got = csb.directional_speed_lp_value(jp, jw, v_hat, qd_max)
+        assert got.undetermined == want.undetermined
+        assert got.v_dir_max == pytest.approx(want.v_dir_max, rel=1e-6, abs=1e-9)
+        # the full-rank square and one-spare cases are the solver-free path, or this
+        # test would only be comparing the LP with itself
+        assert (len(fallbacks) > before) == (n == 7 or deficient)
+
+
 def test_dls_numerator_is_the_projection_on_v_hat_not_the_norm():
     # With heavy damping the DLS solution does not reach [v̂; 0]: part of what it achieves points
     # off v̂. L3 §4.5 counts only the v̂ component — the norm would report speed the ball never sees.
@@ -135,6 +165,8 @@ def test_invalid_speed_limit_is_flagged_and_reports_zero(bad):
     dls = csb.directional_speed_dls(jp, jw, v_hat, qd_max)
     assert lp.limits_invalid and lp.v_dir_max == 0.0 and not np.any(qd)
     assert dls.limits_invalid and dls.v_dir_max == 0.0
+    value = csb.directional_speed_lp_value(jp, jw, v_hat, qd_max)
+    assert value.limits_invalid and value.v_dir_max == 0.0
 
 
 def test_non_unit_direction_is_an_input_error():
@@ -142,6 +174,8 @@ def test_non_unit_direction_is_an_input_error():
     jp, jw = rng.normal(size=(3, 6)), rng.normal(size=(2, 6))
     lp, _ = csb.directional_speed_lp(jp, jw, np.array([2.0, 0.0, 0.0]), QD_MAX)
     assert lp.input_invalid and lp.v_dir_max == 0.0
+    value = csb.directional_speed_lp_value(jp, jw, np.array([2.0, 0.0, 0.0]), QD_MAX)
+    assert value.input_invalid and value.v_dir_max == 0.0
 
 
 # ── Model integration ─────────────────────────────────────────────────────────
