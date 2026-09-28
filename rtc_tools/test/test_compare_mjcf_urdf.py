@@ -64,17 +64,18 @@ class TestParseFloats:
 
 
 class TestClose:
-    def test_equal(self):
-        assert _close(1.0, 1.0, 1e-6) is True
-
-    def test_within_tolerance(self):
-        assert _close(1.0, 1.0 + 1e-5, 1e-4) is True
-
-    def test_outside_tolerance(self):
-        assert _close(1.0, 1.1, 1e-4) is False
-
-    def test_zero(self):
-        assert _close(0.0, 0.0, 1e-10) is True
+    @pytest.mark.parametrize(
+        "a, b, tolerance, expected",
+        [
+            (1.0, 1.0, 1e-6, True),
+            (1.0, 1.0 + 1e-5, 1e-4, True),
+            (1.0, 1.1, 1e-4, False),
+            (0.0, 0.0, 1e-10, True),
+        ],
+        ids=["equal", "within_tolerance", "outside_tolerance", "zero"],
+    )
+    def test_close(self, a, b, tolerance, expected):
+        assert _close(a, b, tolerance) is expected
 
     def test_near_zero(self):
         assert _close(0.0, 1e-5, 1e-4) is True
@@ -82,21 +83,19 @@ class TestClose:
 
 
 class TestFmt:
-    def test_zero(self):
-        assert _fmt(0.0) == "0"
-
-    def test_near_zero(self):
-        assert _fmt(1e-12) == "0"
-
-    def test_integer_like(self):
-        assert _fmt(150.0) == "150"
-
-    def test_decimal(self):
-        assert _fmt(3.14159) == "3.14159"
-
-    def test_negative(self):
-        result = _fmt(-2.5)
-        assert result == "-2.5"
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (0.0, "0"),
+            (1e-12, "0"),
+            (150.0, "150"),
+            (3.14159, "3.14159"),
+            (-2.5, "-2.5"),
+        ],
+        ids=["zero", "near_zero", "integer_like", "decimal", "negative"],
+    )
+    def test_fmt(self, value, expected):
+        assert _fmt(value) == expected
 
 
 # ═══════════════════════════════════════════════════════════════════════════
