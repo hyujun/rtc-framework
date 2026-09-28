@@ -192,39 +192,32 @@ class TestPeekCsvHeader:
 class TestAutoSubplotGrid:
     """_auto_subplot_grid: n개 subplot의 (nrows, ncols) 최적 배치."""
 
-    def test_zero(self):
-        assert _auto_subplot_grid(0) == (1, 1)
-
-    def test_negative(self):
-        assert _auto_subplot_grid(-5) == (1, 1)
-
-    def test_one(self):
-        assert _auto_subplot_grid(1) == (1, 1)
-
-    def test_two(self):
-        assert _auto_subplot_grid(2) == (1, 2)
-
-    def test_three(self):
-        assert _auto_subplot_grid(3) == (1, 3)
-
-    def test_four(self):
-        assert _auto_subplot_grid(4) == (2, 2)
+    @pytest.mark.parametrize(
+        "n, expected",
+        [
+            (0, (1, 1)),
+            (-5, (1, 1)),
+            (1, (1, 1)),
+            (2, (1, 2)),
+            (3, (1, 3)),
+            (4, (2, 2)),
+            (9, (3, 3)),
+            (16, (4, 4)),
+        ],
+        ids=["zero", "negative", "one", "two", "three", "four", "nine", "sixteen"],
+    )
+    def test_exact_grid(self, n, expected):
+        assert _auto_subplot_grid(n) == expected
 
     def test_six(self):
         nrows, ncols = _auto_subplot_grid(6)
         assert nrows * ncols >= 6
         assert ncols >= nrows  # wider than tall
 
-    def test_nine(self):
-        assert _auto_subplot_grid(9) == (3, 3)
-
     def test_ten(self):
         nrows, ncols = _auto_subplot_grid(10)
         assert nrows * ncols >= 10
         assert ncols >= nrows
-
-    def test_sixteen(self):
-        assert _auto_subplot_grid(16) == (4, 4)
 
     def test_wider_than_tall(self):
         """모든 케이스에서 ncols >= nrows."""
