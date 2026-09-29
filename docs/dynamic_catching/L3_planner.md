@@ -258,9 +258,31 @@ commit 시점에는 $\sigma_\ell$ 을 아직 모른다. 두 경로를 둔다.
 1. **계획 단계**: 보수적으로 $\sigma_\ell=\sigma_c$ 로 둔다. 그러면 식이 $\sigma_c^2$ 로 환원되는데, 이것은 **직교성 가정 없이도 상한**이다 — $\mathrm{Var}(A+\lambda B)$ 는 $\lambda=1-\gamma$ 의 볼록 2차식이라 $\lambda\in[0,1]$ 에서 최대가 끝점이고, $\sigma_\ell\le\sigma_c$ 인 한 그 값이 $\sigma_c^2$ 다.
 2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신해 `PlanSnapshot` 에 싣는다. L7이 이 값의 성장을 보고 abort를 판단한다 (γ 하향은 v1 범위 밖, D-8 — §4.7). 이 경로가 없으면 §4.6의 직교 분해 이득이 실현되지 않고 `sigma_l` 은 죽은 필드가 된다.
 
-**직교성이 깨질 때의 방향.** 정확한 오차항은 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 이고 $\gamma=0,1$ 에서 사라져 $\gamma=0.5$ 에서 최대다. **새 측정을 과소 반영하는(sluggish) 예측기** — 측정잡음 과대설정, 공정잡음 과소설정 같은 흔한 튜닝 실패 — 는 $\mathrm{Cov}(A,B)>0$ 을 만들어 위 식이 $\sigma_{gap}$ 을 **과소평가**하게 한다(모의 실험에서 7–8%). v0.1의 $\gamma^2$ 오류와 같은 방향이다. 반대로 과잉반응 예측기는 보수적이 된다.
+**직교성이 깨질 때의 방향.** 정확한 오차항은 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 이고 $\gamma=0,1$ 에서 사라져 $\gamma=0.5$ 에서 최대다. **새 측정을 과소 반영하는(sluggish) 예측기** — 측정잡음 과대설정, 공정잡음 과소설정 같은 흔한 튜닝 실패 — 는 $\mathrm{Cov}(A,B)>0$ 을 만들어 위 식이 $\sigma_{gap}$ 을 **과소평가**하게 한다(모의 실험에서 7–8%). v0.1의 $\gamma^2$ 오류와 같은 방향이다. 반대로 $\mathrm{Cov}(A,B)<0$ 이면 위 식은 $\sigma_{gap}$ 을 **과대평가**한다 (보수적). **sim 에서 잰 것은 이쪽이다** — 아래 "측정과 결정".
 
 NEES가 정상이어도 $\mathrm{Cov}(A,B)=0$ 은 보장되지 않으므로, **혁신 백색성(innovation whiteness) 검정**을 게이트에 넣는다(G3-H). L1 §4.5의 $\bar\nu$ 추세가 그 대용이다.
+
+**측정과 결정 `[확정 2026-09-29, #600]`.** G8-C2 (= G3-H) 는 sim truth 로 $A$·$B$ 를 직접 재어 직교성을 **기각**했다. 상관은 음이고, vision sim profile 수정 (PR #595) 뒤에도 부호가 남는다 — 크기만 줄었다.
+
+| arm (profile 수정 뒤, 2026-09-28) | 표본 (정확 결합) | $E\Vert A+B\Vert^2$ [mm²] | $E\Vert A\Vert^2+E\Vert B\Vert^2$ [mm²] | 비 | 백색화 교차공분산 대각 |
+|---|---|---|---|---|---|
+| `ur5e_p1b` tennis | 200 | 625 | 1051 | 1.68 | −0.48 · −0.46 · −0.54 |
+| `ur5e_p1b` beanbag | 200 | 657 | 1092 | 1.66 | −0.44 · −0.40 · −0.60 |
+| `iiwa7_leap` | 178 | 771 | 850 | 1.10 | −0.31 · −0.06 · −0.17 |
+
+- profile 수정 전 (S8-E) 의 비는 2.1–2.7 이었다 (tennis 7136 대 16660 mm²). p1b 두 arm 은 대각 세 축 모두 부트스트랩 CI 가 0 을 포함하지 않는다
+- **이 비는 항등식 $\sigma_c^2=\sigma_\ell^2+\sigma_B^2$ 가 깨진 정도이지 $\sigma_{gap}^2$ 의 과대추정 배수가 아니다.** 예산식의 오차는 위의 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 로, $\gamma$ 에 따라 0 에서 $\tfrac12\vert\mathrm{Cov}\vert$ 사이다
+- `iiwa7_leap` 은 표본 178 로 목표 (arm 당 ≥ 190) 에 못 미친다. 그대로 받아들인다 — 이 arm 의 투척 상자는 공이 상승 중 대기 손에 닿는 투척을 포함하고 (plan §12), 같은 상자로 다시 던지면 같은 접촉이 난다. leap 의 값은 그 상자 위의 값이다
+
+**결정: 식을 유지한다.** 근거는 셋이다.
+
+1. **런타임 검사는 직교 가정을 쓰지 않는다.** 계획기는 위 경로 1 대로 $\sigma_\ell=\sigma_c$ 를 넣으므로 (`PlannerSearch` 의 `CatchErrorSigma(γ_f, σ, σ, …)`) 검사는 $\gamma$ 와 무관하게 $n_\sigma\sqrt{\sigma_c^2+\sigma_{trk}^2+(\Vert v\Vert\delta)^2}\le r_{cap}$ 이다. 직교 분해의 $\gamma$ 의존 항은 어느 판정에도 들어가지 않는다
+2. **어긋남의 방향이 보수적이다.** 음의 상관은 식이 간극을 크게 잡게 할 뿐이고, 이 검사는 순위 게이트라 (§4.1, D-27) 초과해도 후보가 탈락하지 않는다
+3. **식을 바꿔 얻을 것이 지금은 없다.** $\gamma$ 의존 예산을 판정에 쓰려면 $\sigma_\ell$ 의 commit 시점 예측이 필요한데 그 경로가 없다
+
+식을 다시 볼 조건: $\gamma$ 의존 예산 (경로 2 의 $\sigma_\ell$) 을 판정이나 $\gamma$ 선택에 쓰기로 할 때. 그때는 교차항을 경험적으로 보정하거나 직교 가정 없는 상한으로 바꾼다. **경로 1 의 상한은 $\sigma_\ell\le\sigma_c$ 를 전제한다** — 음의 상관이 커서 $2\vert\mathrm{Cov}(A,B)\vert>\sigma_B^2$ 이면 이 전제가 깨지므로, 그 재검토는 $E\Vert A\Vert^2$ 대 $E\Vert A+B\Vert^2$ 를 먼저 본다.
+
+**구현 현황 (2026-09-29 코드 대조).** 경로 2 의 $\sigma_\ell$ 은 `PlannerSearch::Monitor` 가 계산해 `planner_events.csv` 의 `sigma_l` 열로 **기록만** 한다. 이 값을 읽어 abort 를 판단하는 소비자는 없고, 게시되는 `PlanSnapshot::sigma_l` 은 $\sigma_c$ 와 같은 값이다. 출하 profile 은 $\sigma_{trk}=0$, $\delta=0$ 이고 $\kappa_\sigma<1/n_\sigma$ 라서 (§6 기본값) 이 검사가 실패하는 후보는 §4.4 불확실성 게이트도 이미 실패한다 — 이 검사는 독립된 정보가 아니라 같은 $\sigma_c$ 에 대한 두 번째 임계로 동작한다.
 
 $\sigma$ 는 스칼라로 썼지만 실제는 3×3이다. §4.4의 $\lambda_{\max}$ 규약으로 읽으며, $\lambda_{\max}(\Sigma_A+\lambda^2\Sigma_B)\le\lambda_{\max}(\Sigma_A)+\lambda^2\lambda_{\max}(\Sigma_B)$ 이므로 그 경우에도 보수적 상한이다.
 
@@ -535,7 +557,7 @@ L3.1·L3.3·L3.4는 `test_l3.cpp`가 참조 구현을 이미 돌리고 있다. *
 | G3-E | `ur5e_p1b` 시뮬레이션에서 선택된 plan의 L4/L5 실행 시 포화 0, 한계 활성 비율, **포화 발생 빈도** 기록 (D-8 재검토 입력). **S8-E (2026-09-26): 기록만** (= L8 G8-C3 삭제) — `ref_saturated` 연속 > 0 시행 tennis 165/200 (재실행; 원 158/200) · beanbag 161/200 · leap 5/200 (plan §4.4 S8-E 결과) | `[SIM-P1B]` |
 | G3-F | 실측 $T_{close}$, $T_{arm}$, $\sigma_{trk}$ 반영 후 γ 창·오차 예산 재산정. $\Vert v\Vert_{\max}$(§4.5)가 목표 투척 속도를 덮는지 확인 | `[HW-P1B]` |
 | G3-G | IK 수렴률: 합성 후보 1000개에서 `max_iter` 내 수락 비율과 실패 시 잔차 분포 기록 (§4.2는 Gauss-Newton이 아니므로 수렴 보장이 없다) | `[SIM-ANY]` |
-| G3-H | 오차 예산 모델 검증: L8에서 §4.6 예측 간극 분포와 실제 간극 분포 비교 (직교 분해 식이 맞는지) — 판정은 S8-E 의 G8-C2 (L8 §9.1; p̂_live 결합 규칙은 plan D-S8-16 ②b). **S8-E (2026-09-26): FAIL (직교성 기각)** — A·B 음의 상관, §4.6 직교 분해가 간극 분산을 ≈ 2.1–2.7 배 과대추정; §4.6 예산식 재검토는 후속 (plan §4.4 S8-E 결과) | `[SIM-P1B]` |
+| G3-H | 오차 예산 모델 검증: L8에서 §4.6 예측 간극 분포와 실제 간극 분포 비교 (직교 분해 식이 맞는지) — 판정은 S8-E 의 G8-C2 (L8 §9.1; p̂_live 결합 규칙은 plan D-S8-16 ②b). **S8-E (2026-09-26): FAIL (직교성 기각)** — A·B 음의 상관, $E\Vert A\Vert^2+E\Vert B\Vert^2$ 가 $E\Vert A+B\Vert^2$ 의 ≈ 2.1–2.7 배 (profile 수정 뒤 1.1–1.7 배). 판정은 FAIL 그대로이고 **예산식은 유지** (§4.6 "측정과 결정", #600) | `[SIM-P1B]` |
 | G3-I | catchability 게이트 (D-18): $w_5$ 가 유한차분·해석 대조와 일치, threshold 미만 후보 탈락 + 사유 코드, 전부 탈락 시 plan 없음 (함수 자체의 판정은 **S1.9**). S3.5a/b 지도 도구와 S6 런타임이 같은 입력에서 같은 판정을 내는 동치성은 **S3.5a/b·S6** 에서 판정 | `[SIM-ANY]` |
 | G3-J | D-7a 측정 (S6.5): 제어 PC 부하 상태에서 FIFO·OTHER 각각 수신 → plan 게시 지연 p50·p99·최대, 예산 초과율 (≥ 1000 시행) → plan §7.2 기준으로 정책 확정. 판정은 제어 PC 에서만 — dev PC 결과는 `NOT_EVALUATED(제어 PC)` (PREEMPT_RT 아님). 각 run 은 planner 스레드 이름에 맞는 모든 TID 의 실제 policy·priority·논리 CPU·cpuset mask 를 `verify_rt_runtime.sh` 로 기록하고, `{snapshot_sequence, recv_steady_ns, wake_ns, publish_ns}` 이벤트 레코드를 SPSC 로 남긴다 (plan §7.2) | `[SIM-ANY]` **생략 (사용자, 2026-09-23)** — 초기값 FIFO 유지, 재판정 CLI 는 #537 코멘트 5793878042 |
 | G3-K | RT 할당 게이트: 계획기 스레드 한 사이클(탐색·IK·rollout·게시)이 `ScopedAllocGate`·`ScopedNoMalloc` 아래 할당 0, `noexcept`, 로깅 없음 (진단은 SPSC) | `[SIM-ANY]` |
