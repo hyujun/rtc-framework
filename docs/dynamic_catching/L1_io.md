@@ -140,7 +140,7 @@ struct FieldMap {                                  // 해시가 바뀔 때만 �
 메시지 형식 검사 — **점을 복사하기 전에** 모두 통과해야 한다:
 
 - `is_bigendian == false` (바이트 스왑 미지원)
-- `height == 1`, `width` ∈ [`io.n_min`, `n_max`] (S3.6 이 정한 11·20, `n_max ≤ kCap`) — 상한 검사를 복사 전에, **인덱싱 전에** 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 에서 `kCap` 검사로 수정)
+- `height == 1`, `width` ∈ [`io.n_min`, `kCap`] (`io.n_min` 12; `n_max` 키는 없다 — S3.6 의 20 점은 profile 의 속성, L2 §5.1) — 상한 검사를 복사 전에, **인덱싱 전에** 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 에서 `kCap` 검사로 수정)
 - **`width == 0` 은 거부가 아니라 "트랙 없음" 이다** (pre-S10 R4, plan Q7·Q15). vision 은 예측이 없을 때 `height 1`·`width 0` 인 빈 cloud 를 제 주기로 발행한다 — 공이 없는 동안 계속. 이를 `no_track` 으로 따로 세고 (거부 histogram 의 마지막 bucket) 경고하지 않는다. 분류 자리는 byte order·`frame_id`·`height` 검사 **뒤**, `width` 범위 검사 **앞**: 다른 frame 이나 `height ≠ 1` 의 빈 메시지는 그 결함 그대로 거부하고, `0 < width < n_min` 은 계속 `shape` 다. "트랙 없음" 은 **빈 행**이다 — `width 0` 인데 `row_step ≠ 0` 이거나 `data` 가 비어 있지 않으면 헤더와 본문이 어긋난 메시지라 `size` 로 거부한다 (#611). 저장하는 것은 없다 — 수락 카운트·진단·sequence 기억·스냅숏은 마지막으로 **수락한** 예측의 것으로 남고, stale 판정은 그 예측의 수신 나이로 계속 흐른다
 - `data.size() == point_step × width`, `row_step == point_step × width`
 - 필드 값은 `std::memcpy` 로 읽는다(정렬·aliasing UB 방지)
