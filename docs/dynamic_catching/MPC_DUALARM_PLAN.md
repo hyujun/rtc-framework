@@ -1,7 +1,7 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 작성일: 2026-09-30 (r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
-- 상태: **E0 진행 중** — E0-F01 · E0-F03 완료, 다음은 E0-F02 · E0-F04 (코드 미착수)
+- 작성일: 2026-09-30 (r6 — E0-F02 baseline 결과: §8, 결정 MD-19. r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
+- 상태: **E0 진행 중** — E0-F01 · E0-F02 · E0-F03 완료, 다음은 E0-F04
 - 범위: DECEL 의 MPC 전환 → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → MPC catch controller
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — v0.4, 사용자 확정 2026-09-29. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
@@ -35,7 +35,7 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 사용
 - 같은 투척을 **v1 끼리 먼저 비교**해 불일치율을 잰다. 필요한 N 은 비열등 한계와 이 불일치율로 정해진다.
 - 비열등 한계 (절대값인지 상대값인지 포함) 와 시행 수 N 은 **시행 전에 고정**한다 (E1-F06 spec, 사용자 컨펌).
 - 예측 격자는 출하 조건 (horizon 1.0 s, 20 점) 으로 고정한다. 격자의 영향은 E0-F04 가 따로 잰다.
-- `iiwa7_leap` 은 v1 baseline 이 낮다 (상자 전체 86/200, v1 계획 §4.4). 판정은 절대 성공률이 아니라 같은 투척의 paired 비교로 하고, 검정력 계산에 이 baseline 을 쓴다.
+- 대조군은 E0-F02 가 잰 현재 구성의 값이다 (§8, MD-19): `ur5e_p1b` 287/400, `iiwa7_leap` 204/400, 같은 투척의 불일치율 0.27 · 0.24. 판정은 절대 성공률이 아니라 같은 투척의 paired 비교로 하고, 검정력 계산에 이 값을 쓴다.
 - 기준을 본 뒤에 바꾸지 않는다. 미정인 값으로 판정하면 `PASS(provisional)` 로 표기한다.
 
 ## 2. 관리 방식
@@ -80,6 +80,7 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 사용
 - γ 창을 묶는 것은 포구 자세의 접근축 속도다 (D-S8-19). 대기 자세로 그 속도를 올려도 성공률은 오르지 않았다 (D-S8-20).
 - 문헌도 같은 방향이다. 궤적 계획 방식을 바꿔도 성공률에 유의한 차이가 없었다는 보고와, 실패의 주원인이 예측 오차라는 보고가 있다 (formulation §6.1, [Dong2020] [Bauml2010]).
 - 따라서 단일 팔에서 MPC 가 성공률을 올린다고 기대하지 않는다. MPC 의 근거는 waist + dual-arm 에서 v1 구조가 표현하지 못하는 문제 (여유 자유도 분배, 협조, 충돌) 다.
+- 위 표는 v1 계획이 잰 값이다. **지금 구성의 대조군은 §8 의 E0-F02 값**이며 `ur5e_p1b` 는 위 표보다 낮다 (287/400).
 - 위 값은 모두 sim 값이다. v1 의 S10 실기 식별 (servo 지연, 토크 한계) 이 바뀌면 MPC 의 튜닝과 측정도 다시 한다.
 
 ### 3.3 v1 결정과의 관계
@@ -119,6 +120,7 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 사용
 | MD-16 | QP solver 의 기본은 ProxQP dense 다. 계획기 한 주기의 p99 를 실측하고, 구조를 쓰는 solver 와의 오프라인 비교는 선택 사항이다 | 이 문제 크기의 warm start 된 MPC QP 를 잰 공개 benchmark 가 없다 | — | 2026-09-29 |
 | MD-17 | rtc-framework · `hand_description` · ball_perception 은 서로를 모른다 — 빌드 스크립트와 manifest 에 서로의 이름을 넣지 않는다. `rtc_ws` 는 rtc-framework 와 `hand_description` 을 ws root 의 `colcon build` 로 함께 빌드하고, ball_perception 은 별도 workspace 의 sim 용 고정 사본에서 `ball_perception_sim` 과 그 upstream 만 빌드한다 | 사용자 결정. 세 저장소는 독립 project 다. ball_perception 의 개발용 workspace 는 코드가 계속 바뀌므로 sim 이 쓰는 사본을 따로 둔다 | — | 2026-09-29 |
 | MD-18 | sim 추정기의 profile (`ball_perception.sim_profile`) 은 ball_perception 저장소가 소유하고 거기서 읽는다. rtc-framework 의 로봇별 사본은 읽지 않는다 | 사용자 결정. rtc-framework 는 제어 PC, ball_perception 은 vision PC 에서 돈다 — 서로의 파일을 볼 수 없다 (MD-17 의 귀결) | — | 2026-09-30 |
+| MD-19 | G-1 의 대조군은 E0-F02 가 잰 **현재 구성의 값**이다 (§8). v1 계획의 값 (`ur5e_p1b` 180/200) 과의 차이는 조사하지 않는다 | 사용자 결정. G-1 은 같은 구성에서 같은 투척을 짝지어 비교하므로 대조군은 MPC arm 과 같은 구성이어야 한다 | §1 의 "검정력 계산에 이 baseline 을 쓴다" 가 가리키는 값 | 2026-09-30 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 정지 구간 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
@@ -168,7 +170,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
 | E0-F01 | [#624](https://github.com/hyujun/rtc-framework/issues/624) | 빌드 경로 확정 (rtc-framework + hand_description + ball_perception) | — | 완료 (2026-09-30) |
-| E0-F02 | [#625](https://github.com/hyujun/rtc-framework/issues/625) | closed-form DECEL baseline 측정 (ur5e_p1b · iiwa7_leap) | E0-F01 | 대기 |
+| E0-F02 | [#625](https://github.com/hyujun/rtc-framework/issues/625) | closed-form DECEL baseline 측정 (ur5e_p1b · iiwa7_leap) | E0-F01 | 완료 (2026-09-30) — §8 |
 | E0-F03 | [#626](https://github.com/hyujun/rtc-framework/issues/626) | formulation v0.4 — G1 기구 · 단일 팔 환원형 · 토크 기반 제약 · 문헌 대조 | — | 완료 (2026-09-29) — v0.4 확정 |
 | E0-F04 | [#647](https://github.com/hyujun/rtc-framework/issues/647) | 예측 격자 sweep — v1 계획기 기준선 (horizon 0.75 s · 1.0 s) | E0-F01 | 대기 |
 
@@ -316,3 +318,75 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 ## 8. 게이트 결과
 
 (G-1 과 epic 게이트의 결과를 완료 시 기록한다.)
+
+### E0-F02 — closed-form DECEL baseline (2026-09-30, [#625](https://github.com/hyujun/rtc-framework/issues/625))
+
+v1 의 closed-form DECEL 을 현재 구성으로 잰 값이다. E1-F06 의 A/B 가 쓰는 대조군이다.
+
+**측정 조건.**
+
+| 항목 | 값 |
+|---|---|
+| 저장소 | rtc-framework `9b9dfaa1`, ball_perception `dd0f390` (sim 용 고정 사본) |
+| 추정기 profile | rtc-framework 의 로봇별 사본 (두 로봇 바이트 동일), sha256 `fb61cbfc…fdd6aa`. 지평 1.0 s · 20 점 |
+| overlay | 두 로봇 모두 출하 `catch_lead_on` (`T_arm` 0.05, p1b `T_freeze` 0.37 · leap 0.19) |
+| 컨트롤러 | `supervisor.decel.a_dec` 10, `reference.omega` 10, `reference.a_max` p1b 30 · leap 35, `control.dt` 2 ms |
+| 투척 | `--dist s35b`, tennis, seed p1b 601–604 · leap 701–704, unit 당 50 발. 같은 seed 를 두 번 (복제 a · b) |
+| 시행 수 | 로봇당 400 발 (200 × 2), 무효 0 |
+| host | 개발 PC, 기동 시 load average 1.9–3.8. unit 은 `--host-watch abort` (RTF 하한 0.95) |
+| RTF | 판정에 쓴 unit 의 시행별 최솟값 0.980–0.993 |
+
+unit 재실행 (v1 D-S8-17 규칙, 같은 seed): `p1b_601_a` (RTF 0.943 시행 — 원본 35/50, 재실행 37/50), `p1b_603_b` (host-watch 중단 1회), `leap_704_b` (추정기 미활성 1회, host-watch 중단 1회). 중단 시각에 host 에 빌드 · 테스트 프로세스는 없었다 — 원인 미확인.
+
+**성공률 (truth 기반, v1 과 같은 정의 — HOLD 끝부터 release 까지 공이 손에 있음).**
+
+| 로봇 | 복제 a | 복제 b | 합산 | Wilson 95 % | v1 계획의 값 |
+|---|---|---|---|---|---|
+| ur5e_p1b | 140/200 | 147/200 | 287/400 (0.718) | [0.671, 0.759] | 180/200 (0.900) |
+| iiwa7_leap | 100/200 | 104/200 | 204/400 (0.510) | [0.461, 0.559] | 86/200 (0.430) |
+
+- 무효가 없어 ITT 구간은 위와 같다.
+- `ur5e_p1b` 는 v1 계획의 값보다 낮다. 부하가 없는 unit 도 31–39/50 이다. 구성의 차이는 ball_perception 의 개정 (`dc17ae8` → `dd0f390`) 과 그 뒤의 rtc-framework 변경이다. 원인은 조사하지 않고 이 값을 대조군으로 쓴다 (MD-19).
+
+**같은 투척의 복제 불일치 (a 대 b, 로봇당 200 쌍).**
+
+| 로봇 | 둘 다 성공 | a 만 | b 만 | 둘 다 실패 | 불일치율 ψ | Wilson 95 % | McNemar p |
+|---|---|---|---|---|---|---|---|
+| ur5e_p1b | 117 | 23 | 30 | 30 | 0.265 | [0.209, 0.330] | 0.41 |
+| iiwa7_leap | 78 | 22 | 26 | 74 | 0.240 | [0.186, 0.304] | 0.67 |
+
+paired 단측 비열등 검정에 필요한 쌍 수 (α 0.025 단측, 검정력 0.8, 참 차이 0, 정규 근사):
+
+| 로봇 | 한계 0.05 (절대) | 한계 0.10 (절대) |
+|---|---|---|
+| ur5e_p1b | 832 (ψ 상한에서 1037) | 208 (260) |
+| iiwa7_leap | 754 (954) | 189 (239) |
+
+sim 은 같은 투척을 재현하지 않는다 — 네 번에 한 번은 결과가 바뀐다. E1-F06 의 N 은 이 표에서 정한다.
+
+**DECEL 지표 (시행별 값의 p50 / p95 / max).** 창은 첫 DECEL tick 부터 측정 catch frame 속도가 0.02 m/s 아래로 0.05 s 머무는 첫 tick 까지다. 미분은 5 tick 평균이다. 정의와 도구: [rtc_tools README](../../rtc_tools/README.md) `catching_decel`.
+
+| 지표 | ur5e_p1b (400 시행) | iiwa7_leap (377 시행) |
+|---|---|---|
+| 관절 가속 피크, 명령 [rad/s²] | 25.4 / 32.0 / 117.3 | 9.2 / 9.2 / 31.2 |
+| 관절 가속 피크, 측정 [rad/s²] | 14.9 / 17.7 / 93.0 | 9.5 / 10.7 / 89.9 |
+| jerk 피크, 명령 [rad/s³] | 1579 / 2087 / 20079 | 1564 / 1564 / 5785 |
+| jerk 피크, 측정 [rad/s³] | 561 / 759 / 7043 | 470 / 778 / 7222 |
+| 정지 거리 (손의 변위) [mm] | 332.9 / 417.6 / 475.0 | 80.1 / 161.0 / 275.1 |
+| 닫힌식 정지 거리 (참고) [mm] | 240.6 / 309.3 / 358.5 | 42.4 / 94.7 / 158.4 |
+| 정지 시간 [s] | 0.348 / 0.394 / 0.666 | 0.324 / 0.546 / 0.682 |
+| DECEL mode 길이 (참고) [s] | 0.222 / 0.252 / 0.270 | 0.096 / 0.140 / 0.182 |
+| 진입 속력, 기준 · 측정 손 [m/s] (p50) | 2.19 · 1.77 | 0.92 · 0.23 |
+| 위치 한계까지의 최소 여유 [rad] | 1.453 | 0.128 |
+| 속도 비 \|q̇\| / q̇_max | 0.699 / 0.896 / 0.983 | 0.462 / 0.750 / 0.979 |
+| 토크 비 \|τ\| / τ_max | 0.613 / 0.740 / 1.142 | 0.429 / 0.468 / 0.906 |
+| 한계 위반 시행 (위치 · 속도 · 토크) | 0 · 0 · 1 | 0 · 0 · 0 |
+| RETREAT 전에 손이 정지한 시행 | 399 / 400 | 372 / 377 |
+
+- `iiwa7_leap` 의 23 시행은 DECEL 에 들어가지 않았다 (abort 등). 성공률의 분모에는 실패로 남는다.
+- 팔은 DECEL mode 가 끝난 뒤에도 0.1–0.4 s 더 움직인다. 실제 정지 거리는 닫힌식보다 p50 기준 p1b 1.4 배, leap 1.9 배다. MPC 와의 비교는 mode 길이가 아니라 위 창으로 한다.
+- 최댓값은 소수의 시행이 만든다. 측정 가속 피크가 25 rad/s² 를 넘는 시행은 로봇마다 2 개이고 (99 백분위 p1b 19.5 · leap 11.6), 대부분 손이 RETREAT 전에 정지하지 못한 시행이다. `ur5e_p1b` 의 토크 위반 1 건 (`p1b_603_a` 30번, 비 1.14) 도 그중 하나다. 원인은 조사하지 않았다.
+- 성공 · 실패 시행의 지표 차이는 작다 (측정 가속 p50 p1b 15.2 대 14.2, leap 9.8 대 9.2).
+- `iiwa7_leap` 은 HOLD 동안 관절이 계속 움직인다 — 관절 속도 기준 (0.01 rad/s) 으로는 377 중 2 시행만 정지다. 그래서 정지는 손의 속도로 판정한다.
+
+원자료와 실험 도구는 repo 밖에 있다. 값은 모두 sim 값이며 v1 의 S10 실기 식별이 바뀌면 다시 잰다.
