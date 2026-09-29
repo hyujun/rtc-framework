@@ -24,7 +24,7 @@ namespace {
 // frame (D-17, plan §10), which already has one (`provisional: true`) but
 // lives in the robot's `urdf:` tree, a different YAML root than `catching:` —
 // CheckCatchFrameProvisional (S2.3a) applies the same rule to it from the
-// model config. For the three provisional groups this validator DOES own,
+// model config. For the provisional groups this validator DOES own,
 // the chosen key sits as a sibling of the group's other fields, mirroring
 // the catch frame's own placement:
 //   - `reference.provisional`                              (L4 §6, whole block)
@@ -32,6 +32,7 @@ namespace {
 //   - `planner.catchability.manipulability_min.provisional` (D-18)
 //   - `robot.hand.provisional`                              (L6 §6, whole profile)
 //   - `supervisor.deadline.provisional`                     (D-S9-D1, both deadlines)
+//   - `joint_cmd.lag.provisional`                           (#537 Q5, T_arm)
 // All of them default to `true` (fail-closed: unconfirmed until the YAML says
 // otherwise), matching how every other provisional flag in this repo defaults
 // to blocking the real arm rather than trusting silence.
@@ -395,6 +396,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   const YAML::Node lag = ReadSection(joint_cmd, "lag");
   out.joint_cmd_lag_t_arm = ReadTbdDouble(lag, "T_arm", out.joint_cmd_lag_t_arm);
   out.joint_cmd_lag_lead_enable = ReadOptional(lag, "lead_enable", false);
+  out.joint_cmd_lag_provisional = ReadOptional(lag, "provisional", true);
 
   const YAML::Node robot_arm = ReadSection(ReadSection(node, "robot"), "arm");
   out.robot_arm_limit_margin = ReadTbdDouble(robot_arm, "limit_margin", out.robot_arm_limit_margin);
@@ -734,6 +736,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   if (CheckActiveTbd(report, params.joint_cmd_lag_t_arm, "joint_cmd.lag.T_arm", true)) {
     CheckRange(report, "joint_cmd.lag.T_arm", params.joint_cmd_lag_t_arm.value, 0.0, 0.5);
   }
+  CheckProvisional(report, "joint_cmd.lag", params.joint_cmd_lag_provisional, real_arm_config);
   if (CheckActiveTbd(report, params.robot_arm_limit_margin, "robot.arm.limit_margin", true)) {
     CheckRange(report, "robot.arm.limit_margin", params.robot_arm_limit_margin.value, 0.0, 0.3);
   }

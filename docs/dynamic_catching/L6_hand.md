@@ -314,7 +314,7 @@ v0.4 의 `robot.hand.effort_limit_hold`, `robot.hand.T_link`, `robot.hand.port`,
 | G6-C | 시뮬레이션 두 손의 $T_{close,e2e}(\eta)$ 분포 산출, S4.4 go/no-go 판정 기록 | `[SIM-P1B]` |
 | G6-D | 실기 P1b $T_{close,tot}$ 종단 간 분포 산출, 99% 값을 YAML에 반영 | `[HW-P1B]` |
 | G6-E | 고정 공 fixture에서 폐쇄 후 유지 성공 (position 목표 유지 규칙, 반복 횟수는 사용자 결정) | `[HW-P1B]` |
-| G6-F | $d_{eff}$ **와 $r_{cap}$** 의 산정식·실측값·provisional 표시가 YAML (`planner.hand.*`) 과 이 문서에 기록됨 (S4.5) — LEAP PASS, P1b PASS (2026-09-21, 탐색한 자세 — §4.5). 둘 다 provisional | `[SIM-ANY]` |
+| G6-F | $d_{eff}$ **와 $r_{cap}$** 의 산정식·실측값·provisional 표시가 YAML (`planner.hand.*`) 과 이 문서에 기록됨 (S4.5) — LEAP PASS, P1b PASS (2026-09-21, 탐색한 자세 — §4.5). 둘 다 provisional — YAML 의 표시는 값 옆 키가 아니라 블록 전체의 `planner.provisional` 이다 (pre-S10 R3, #537 Q6: 읽히지 않던 `planner.hand.provisional` 줄 삭제) | `[SIM-ANY]` |
 
 ## 10. 미확정 항목
 

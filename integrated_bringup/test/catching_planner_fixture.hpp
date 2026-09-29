@@ -66,6 +66,7 @@ catching:
     qp:
       max_iter: 20
     lag:
+      provisional: false
       T_arm: 0.0
   supervisor:
     track_err_abort: 0.3

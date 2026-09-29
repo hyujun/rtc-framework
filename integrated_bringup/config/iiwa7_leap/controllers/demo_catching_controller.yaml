@@ -363,11 +363,13 @@ demo_catching_controller:
           min: [-0.96, -0.30, 0.00]
           max: [1.05, 0.30, 1.10]
       # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
+      # That flag is the only one `planner:` has — it covers `hand.d_eff` and
+      # `hand.r_cap` below too, which carry no flag of their own (#537 pre-S10
+      # R3: the parser never read one there).
       provisional: true
       hand:
         d_eff: 0.1047
         r_cap: 0.031
-        provisional: true
 
       # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
       # Read at configure by `ParseCatchPoseIkParams` (rtc_controllers) — the
@@ -453,6 +455,12 @@ demo_catching_controller:
         # NOT lag-free: its position servo is a first-order lag of kd/kp, set
         # to 0.05 s in ../mujoco_simulator.yaml (S8-D), and the S8-D sim runs
         # lead it with ../sim_overlays/catch_lead_on.yaml.
+        #
+        # `provisional` is about the REAL arm's T_arm (#537 pre-S10 R3): sim
+        # warns, a real arm parks until S10 identifies it — whatever the value
+        # and with the lead off too, since T_arm also sits in the T_freeze
+        # floor. Absent reads as true.
+        provisional: true
         T_arm: 0.0
         lead_enable: false
 

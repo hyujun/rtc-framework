@@ -292,6 +292,11 @@ struct CatchingParams {
   /// hardware identification (S10) or the axis-confusion fixture.
   TbdDouble joint_cmd_lag_t_arm{TbdDouble::Resolved(0.0)};  // s, >= 0
   bool joint_cmd_lag_lead_enable{false};
+  /// `lag.provisional` blocks a real-arm configuration until T_arm has been
+  /// identified on the arm it runs on (#537 pre-S10 R3, Q5) — whatever the
+  /// value and whether or not the lead compensation reads it, since T_arm also
+  /// sits in the `T_freeze` floor. Absent = true (fail-closed).
+  bool joint_cmd_lag_provisional{true};
 
   // robot.arm: (L5 §6) — the boxes CLIK is given.
   /// How far INSIDE the device's own position limits the CLIK box sits. The

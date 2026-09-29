@@ -197,7 +197,17 @@ struct CatchingDiagLogPod {
     kOutsideBox = 2,  ///< a joint reading outside the margined box (or NaN)
     kMoving = 3,      ///< armed before the arm came to rest
     kEstop = 4,       ///< the deciding tick was under an E-STOP
+    /// Armed while nobody vouched for the arm's velocity lane (#537 Q9): a
+    /// reading that may be a hole is not a reading of rest.
+    kVelocityUnreadable = 5,
   };
+  /// The device's positions are readable but its VELOCITY lane has a hole
+  /// this tick (#537 pre-S10 R3). While it lasts the controller does not
+  /// enter ARMED, does not finish homing or the RETREAT return, does not
+  /// adopt a switched-in wait pose (arm) and refuses a fault reset (arm). Not
+  /// a CSV column: the publish thread warns on the edge.
+  bool arm_velocity_unreadable{false};
+  bool hand_velocity_unreadable{false};
   std::uint32_t wait_pose_refuse_seq{0};
   WaitPoseRefusal wait_pose_refuse_reason{WaitPoseRefusal::kNone};
   int wait_pose_refuse_joint{-1};
