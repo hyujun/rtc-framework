@@ -71,7 +71,7 @@ v0.4 의 자체 vision 발행기(측정 모사 + 참조 EKF + `PointCloud2`)는 
 - 제어 경로에서 truth 토픽을 쓰지 않는다. truth 는 지표·NEES 전용
 - 자체 fixture EKF 는 만들지 않는다. `ball_dynamics` 는 test fixture 전용 위치로 옮긴다 (S1.6)
 
-**vision 요구 사양 `[확정 D-15]` — S3.6 완료 (2026-09-22).** 목표 투척 분포에서 "검출 이후 포구 창 종료까지 최대 비행 시간" → 필요 지평, L2 보간 게이트를 만족하는 간격 → 점 수 → 런타임 상한 `n_max` 를 산출했다: $H_{req}$ **0.99 s** · 간격 **0.05 s** · **n 20** → **sim profile 1.0 s / 0.05 s / 20 점 / ≤ 30 Hz — 설정됨** (`integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json`, `sim_estimator.launch.py profile_path:=` 에 준다; 2026-09-22 사용자 결정, 공 lane stamp 수정 + T_det 재실측 후). 값·유도·한계는 plan §4.4 "S3.6 결과"·"T_det 실측" 이 SSoT 다. 수신 궤적의 지평이 요구 (`io.horizon_min` 0.51 s, L1 §6) 보다 짧으면 제어기는 계획 후보에서 제외하고 진단한다.
+**vision 요구 사양 `[확정 D-15]` — S3.6 완료 (2026-09-22).** 목표 투척 분포에서 "검출 이후 포구 창 종료까지 최대 비행 시간" → 필요 지평, L2 보간 게이트를 만족하는 간격 → 점 수를 산출했다 (구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다, L2 §5.1): $H_{req}$ **0.99 s** · 간격 **0.05 s** · **n 20** → **sim profile 1.0 s / 0.05 s / 20 점 / ≤ 30 Hz — 설정됨** (`integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json`, `sim_estimator.launch.py profile_path:=` 에 준다; 2026-09-22 사용자 결정, 공 lane stamp 수정 + T_det 재실측 후). 값·유도·한계는 plan §4.4 "S3.6 결과"·"T_det 실측" 이 SSoT 다. 수신 궤적의 지평이 요구 (`io.horizon_min` 0.51 s, L1 §6) 보다 짧으면 제어기는 계획 후보에서 제외하고 진단한다.
 
 ### 4.4 지표
 

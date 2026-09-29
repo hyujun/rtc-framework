@@ -28,9 +28,9 @@
 | G3-1 | 모델 로드 경로와 FK/Jacobian API (폐쇄 체인 손 포함 시 팔 부분만 쓰는 방법) | 닫힘 — CM 이 공유하는 `PinocchioModelBuilder` 1개 + 계획기 스레드 전용 `RtModelHandle` 1개 (스레드별 1개, heap-free, LOCAL/LWA/WORLD). P1b 손바닥 frame 은 폐쇄 루프 상류라 팔 관절 열만 쓴다 (W, D-18) |
 | G3-2 | RT → 계획기 상태 전달 경로(현재 $q_c,\dot q_c$, L4 기준 상태) | 닫힘 — `rtc::SeqLock` 사용. payload 는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지) (W, plan §6) |
 | G3-3 | 계획기 스레드 생성·우선순위 규약 | 닫힘 — D-7: MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), ~~새 thread layout role~~ → 기존 `mpc` role 재사용 (E-7 결정 J, 2026-09-23), 초기 FIFO. D-7a 측정은 사용자 결정으로 생략 — 초기값 유지 (plan §6, §7.2) |
-| G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | 닫힘(provisional) — LEAP 80 mm / 31.0 mm, P1b ≥ 95 mm / 24 mm (S4.5, L6 §4.5). P1b 는 사용자 제공 자세가 파지 불가여서 2026-09-21 에 탐색한 자세 기준. 투척 보정은 미수행 — S7.1 로 선행조건 해소, sim S8 · 실기 S10 (TBD-HAND-04) |
+| G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | 닫힘(provisional) — LEAP 80 mm / 31.0 mm, P1b ≥ 95 mm / 24 mm (S4.5, L6 §4.5). P1b 는 사용자 제공 자세가 파지 불가여서 2026-09-21 에 탐색한 자세 기준. 투척 보정은 미수행 — sim 보정은 하지 않고 실기 S10 (#613) 에서만 한다 (사용자 2026-09-29, plan §7.3) (TBD-HAND-04) |
 | G3-5 | 포구 허용 작업공간, 감속 여유 공간 | TBD-BALL-02 (W7-3) |
-| G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | sim 실측 간격 0.05 s · 지평 0.80 s · N 16 (S3.4 2026-09-20, TBD-VIS-04). **요구 사양 (S3.6, 2026-09-22)**: 간격 0.05 s · 지평 1.0 s (설정) · `n_max` 20 (plan §4.4 S3.6 결과) |
+| G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | sim 실측 간격 0.05 s · 지평 0.80 s · N 16 (S3.4 2026-09-20, TBD-VIS-04). **요구 사양 (S3.6, 2026-09-22)**: 간격 0.05 s · 지평 1.0 s (설정) · 점 수 20 (plan §4.4 S3.6 결과) |
 | G3-7 | **독립 IK/포즈 해석기가 있는지**와 그 API | 닫힘 — 독립 IK 없음. `rtc::compliance::DifferentialIk` (σ_min 적응 λ, heap-free) 를 m=5 로 재사용 (D-7d). 수렴은 G3-G 로 검증 |
 
 ## 3. 참고자료
@@ -543,7 +543,7 @@ L3.1·L3.3·L3.4는 `test_l3.cpp`가 참조 구현을 이미 돌리고 있다. *
 
 ## 10. 미확정 항목
 
-TBD-HAND-01, TBD-HAND-04 (투척 보정만 — 기하값은 두 손 모두 S4.5 로 provisional 닫힘), TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max` (provisional 0.26 — 값은 위 §6 에서 코드와 일치시켰고 닫는 근거만 남았다), `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `planner.ik` 의 S1.9 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol` — 값은 S3.5a 지도 실측으로 제안하고 사용자가 확정), 점수 가중치 (S6~S8), D-7a 정책 (S6.5), NLP 전환 여부 (§4.1, S6·S8 후). TBD-RTC-14~16 은 닫힘 (§2).
+TBD-HAND-01, TBD-HAND-04 (투척 보정만 — 기하값은 두 손 모두 S4.5 로 provisional 닫힘), TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max` (provisional 0.26 — 값은 위 §6 에서 코드와 일치시켰고 닫는 근거만 남았다), `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `planner.ik` 의 S1.9 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol` — 값은 S3.5a 지도 실측으로 제안하고 사용자가 확정), 점수 가중치 (S6~S8), D-7a 정책 (S6.5). NLP 전환은 v1 에서 하지 않는다 (사용자 2026-09-29, plan §7.3·§8). TBD-RTC-14~16 은 닫힘 (§2).
 
 ---
 
