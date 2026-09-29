@@ -14,17 +14,23 @@ give each a different question. The window therefore runs
 
 * from ``k0``, the trial's first ``DECEL`` tick,
 * to ``k1``, the first tick of the first stretch of ``rest_s`` seconds in which
-  the measured catch frame's speed stays below ``rest_speed``,
+  the measured catch frame rests in its TASK pose: its linear speed below
+  ``rest_speed`` and the angular rate of its approach axis below
+  ``rest_axis_rate``,
 
 and never past the first ``RETREAT`` tick (the arm then moves on purpose): a
 trial that does not rest before it has ``rest_reached = False`` and ends there.
 The mode-based length is reported beside it as a reference.
 
-Rest is judged on the HAND, not on the joints: through ``HOLD`` the joints keep
-creeping (posture and orientation still converge, 0.02–0.1 rad/s in the sim)
-while the catch frame has stopped, so a joint-speed threshold reads the length
-of ``HOLD`` instead of the stop. ``joint_rest_reached`` reports the joint
-criterion (every joint below ``joint_rest_speed`` for ``rest_s``) beside it.
+Rest is judged on the hand's task pose, not on the joints. The catching
+controller adds a null-space motion that ascends the manipulability measure,
+so the joints keep moving while the task pose stands still; a joint-speed
+threshold then reads the length of ``HOLD`` instead of the stop. The task is
+the catch frame's position and its approach axis (the frame's +z): the roll
+about that axis is not a task row, so it belongs to the null space too and
+does not count. Beside the verdict the tool reports, as references,
+``joint_rest_reached`` (every joint below ``joint_rest_speed`` for ``rest_s``)
+and the full angular speed of the frame, roll included.
 
 Per trial, inside the window:
 
@@ -75,6 +81,9 @@ from rtc_tools.analysis import catching_arm_budget as ab, catching_trials as ct
 TOOL = "catching_decel"
 SMOOTH_TICKS = ab.ACCEL_SMOOTH_TICKS
 REST_SPEED_M_S = 0.02
+# 0.02 m/s at a 0.1 m lever: the two thresholds ask the same of a point on the hand.
+REST_AXIS_RATE_RAD_S = 0.2
+APPROACH_AXIS = 2  # the catch frame's +z (the column of its rotation)
 JOINT_REST_SPEED_RAD_S = 0.01
 REST_S = 0.05
 PAD_TICKS = 25
@@ -96,6 +105,9 @@ SUMMARY_KEYS = (
     "entry_speed_m_s",
     "hand_speed_entry_m_s",
     "hand_speed_peak_m_s",
+    "axis_rate_peak_rad_s",
+    "angular_speed_peak_rad_s",
+    "angular_speed_at_rest_rad_s",
     "position_margin_rad",
     "velocity_ratio",
     "torque_ratio",
@@ -145,6 +157,22 @@ def decel_entries(mode: np.ndarray) -> list[tuple[int, int, int]]:
     return out
 
 
+def angular_speed(rotations: np.ndarray, dt: float) -> np.ndarray:
+    """Angular speed [rad/s] of a sequence of rotation matrices (central differences)."""
+    n = len(rotations)
+    out = np.zeros(n)
+    for k in range(n):
+        a, b = max(0, k - 1), min(n - 1, k + 1)
+        if a == b:
+            continue
+        rel = rotations[a].T @ rotations[b]
+        sin = 0.5 * np.linalg.norm(
+            [rel[2, 1] - rel[1, 2], rel[0, 2] - rel[2, 0], rel[1, 0] - rel[0, 1]]
+        )
+        out[k] = math.atan2(sin, 0.5 * (np.trace(rel) - 1.0)) / ((b - a) * dt)
+    return out
+
+
 def rest_tick(
     speed: np.ndarray, k0: int, k_limit: int, rest_speed: float, rest_ticks: int
 ) -> tuple[int, bool]:
@@ -169,7 +197,7 @@ def window_metrics(
     k0: int,
     k_mode_end: int,
     k_limit: int,
-    fk: Callable[[np.ndarray], np.ndarray],
+    fk: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]],
     *,
     position_lower: Sequence[float],
     position_upper: Sequence[float],
@@ -179,6 +207,7 @@ def window_metrics(
     torque_ratio: np.ndarray | None = None,
     smooth_ticks: int = SMOOTH_TICKS,
     rest_speed: float = REST_SPEED_M_S,
+    rest_axis_rate: float = REST_AXIS_RATE_RAD_S,
     joint_rest_speed: float = JOINT_REST_SPEED_RAD_S,
     rest_s: float = REST_S,
     pad_ticks: int = PAD_TICKS,
@@ -186,17 +215,25 @@ def window_metrics(
     """The module docstring's per-trial numbers for one DECEL stretch.
 
     ``torque_ratio`` is ``|effort| / τ_max`` per diag tick and joint (NaN rows
-    where the lane had no matching tick), or None without a lane.
+    where the lane had no matching tick), or None without a lane. ``fk`` maps
+    a posture to the catch frame's ``(position, rotation 3×3)``.
     """
     n = len(q_cmd)
     lo = max(0, k0 - pad_ticks)
     hi = min(n, k_limit + pad_ticks)
     cmd = derivatives(q_cmd[lo:hi], dt, smooth_ticks)
     meas = derivatives(q_meas[lo:hi], dt, smooth_ticks)
-    p_all = np.array([fk(q) for q in q_meas[lo:hi]])
+    poses = [fk(q) for q in q_meas[lo:hi]]
+    p_all = np.array([p for p, _ in poses])
+    r_all = np.array([r for _, r in poses])
     hand_speed = np.linalg.norm(np.gradient(p_all, dt, axis=0), axis=1)
+    axis_rate = np.linalg.norm(np.gradient(r_all[:, :, APPROACH_AXIS], dt, axis=0), axis=1)
+    turn = angular_speed(r_all, dt)
     rest_ticks = max(1, round(rest_s / dt))
-    k1_local, rested = rest_tick(hand_speed, k0 - lo, k_limit - lo, rest_speed, rest_ticks)
+    # One measure for both rows of the task: the larger of the two ratios to
+    # its threshold, at rest below 1.
+    task_motion = np.maximum(hand_speed / rest_speed, axis_rate / rest_axis_rate)
+    k1_local, rested = rest_tick(task_motion, k0 - lo, k_limit - lo, 1.0, rest_ticks)
     _, joints_rested = rest_tick(
         np.abs(meas["qd"]).max(axis=1), k0 - lo, k_limit - lo, joint_rest_speed, rest_ticks
     )
@@ -222,6 +259,9 @@ def window_metrics(
         "joint_rest_reached": bool(joints_rested),
         "hand_speed_entry_m_s": float(hand_speed[k0 - lo]),
         "hand_speed_peak_m_s": float(hand_speed[sel].max()),
+        "axis_rate_peak_rad_s": float(axis_rate[sel].max()),
+        "angular_speed_peak_rad_s": float(turn[sel].max()),
+        "angular_speed_at_rest_rad_s": float(turn[k1_local]),
         "qdd_cmd_peak": peak(cmd["qdd"]),
         "qdd_meas_peak": peak(meas["qdd"]),
         "jerk_cmd_peak": peak(cmd["jerk"]),
@@ -408,6 +448,7 @@ def analyse_unit(
     ct_dir: Path | None = None,
     smooth_ticks: int = SMOOTH_TICKS,
     rest_speed: float = REST_SPEED_M_S,
+    rest_axis_rate: float = REST_AXIS_RATE_RAD_S,
     joint_rest_speed: float = JOINT_REST_SPEED_RAD_S,
     rest_s: float = REST_S,
 ) -> dict:
@@ -460,7 +501,7 @@ def analyse_unit(
     a_dec, a_dec_src = composed_a_dec(node, config_dir, profile.controller, overlays)
     ratio, torque_src = _torque_ratio(session, profile, joints, limits["max_torque"], t, dt)
     urdf_text, _ = resolve_urdf_text(profile.robot_params, urdf)
-    fk = ct.CatchFrameFk(urdf_text, joints, profile)
+    fk = ct.CatchFrameFk(urdf_text, joints, profile).pose_world
 
     trials = _trial_table(unit, ct_dir or unit / "ct")
     launches = np.array([r["t_launch"] for r in trials], dtype=float)
@@ -492,6 +533,7 @@ def analyse_unit(
             torque_ratio=ratio,
             smooth_ticks=smooth_ticks,
             rest_speed=rest_speed,
+            rest_axis_rate=rest_axis_rate,
             joint_rest_speed=joint_rest_speed,
             rest_s=rest_s,
         )
@@ -514,6 +556,7 @@ def analyse_unit(
         "settings": {
             "smooth_ticks": smooth_ticks,
             "rest_speed_m_s": rest_speed,
+            "rest_axis_rate_rad_s": rest_axis_rate,
             "joint_rest_speed_rad_s": joint_rest_speed,
             "rest_s": rest_s,
             "pad_ticks": PAD_TICKS,
@@ -619,7 +662,7 @@ def _fmt_stats(s: Mapping, scale: float = 1.0, nd: int = 1) -> str:
 def report_block(name: str, b: Mapping) -> list[str]:
     d = b["decel"]
     lines = [
-        f"[{name}] DECEL trials {d['n']} · hand rested before RETREAT {d['rest_reached']} "
+        f"[{name}] DECEL trials {d['n']} · task pose rested before RETREAT {d['rest_reached']} "
         f"(joints {d['joint_rest_reached']})"
     ]
     if "n_valid" in b:
@@ -643,7 +686,9 @@ def report_block(name: str, b: Mapping) -> list[str]:
     )
     lines.append(
         f"  stop time s: {_fmt_stats(d['stop_time_s'], nd=3)} · DECEL mode "
-        f"{_fmt_stats(d['mode_decel_s'], nd=3)}"
+        f"{_fmt_stats(d['mode_decel_s'], nd=3)} · approach axis rate peak rad/s "
+        f"{_fmt_stats(d['axis_rate_peak_rad_s'], nd=2)} · frame angular speed at rest "
+        f"{_fmt_stats(d['angular_speed_at_rest_rad_s'], nd=3)} (roll included, reference)"
     )
     pm = d["position_margin_rad"]
     lines.append(
@@ -736,6 +781,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--smooth-ticks", type=int, default=SMOOTH_TICKS)
     ap.add_argument("--rest-speed", type=float, default=REST_SPEED_M_S, help="catch frame, m/s")
     ap.add_argument(
+        "--rest-axis-rate",
+        type=float,
+        default=REST_AXIS_RATE_RAD_S,
+        help="approach axis of the catch frame, rad/s",
+    )
+    ap.add_argument(
         "--joint-rest-speed", type=float, default=JOINT_REST_SPEED_RAD_S, help="rad/s (reference)"
     )
     ap.add_argument("--rest-s", type=float, default=REST_S)
@@ -765,6 +816,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 urdf=args.urdf,
                 smooth_ticks=args.smooth_ticks,
                 rest_speed=args.rest_speed,
+                rest_axis_rate=args.rest_axis_rate,
                 joint_rest_speed=args.joint_rest_speed,
                 rest_s=args.rest_s,
             )

@@ -467,11 +467,16 @@ ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --config-dir $CFG 
 # → decel/{decel_summary.json, decel_trials.csv}; 리포트는 stdout
 ```
 
-- **창은 mode 가 아니라 팔이 정한다**: 시행의 첫 `DECEL` tick 부터, 측정 catch frame 속도가 `--rest-speed` (기본 0.02 m/s)
-  아래로 `--rest-s` (0.05 s) 동안 머무는 첫 구간의 첫 tick 까지. 첫 `RETREAT` tick 을 넘지 않고, 그 전에 멈추지 못하면
-  `rest_reached = false` 다. v1 은 가상 목표가 멈추는 tick 에 `DECEL` 을 떠나지만 팔은 서보 지연만큼 더 움직이므로
-  mode 길이 (`mode_decel_s`) 는 참고값이다. 정지를 관절이 아니라 손으로 판정하는 이유: `HOLD` 내내 관절은 자세 수렴으로
-  0.02–0.1 rad/s 로 움직이고 손은 멈춰 있다 — 관절 기준 (`joint_rest_reached`, `--joint-rest-speed`) 은 병기만 한다
+- **창은 mode 가 아니라 손의 task pose 가 정한다**: 시행의 첫 `DECEL` tick 부터, 측정 catch frame 이 task pose 에서
+  정지한 첫 tick 까지 — 선속도가 `--rest-speed` (기본 0.02 m/s) 아래**이고** 접근축 (catch frame +z) 의 각속도가
+  `--rest-axis-rate` (0.2 rad/s — 0.1 m 지렛대에서 0.02 m/s) 아래인 상태가 `--rest-s` (0.05 s) 동안 이어지는 첫 구간의
+  첫 tick. 첫 `RETREAT` tick 을 넘지 않고, 그 전에 멈추지 못하면 `rest_reached = false` 다. v1 은 가상 목표가 멈추는
+  tick 에 `DECEL` 을 떠나지만 팔은 서보 지연만큼 더 움직이므로 mode 길이 (`mode_decel_s`) 는 참고값이다
+- **관절이 아니라 task pose 인 이유**: 포구 컨트롤러는 manipulability 를 올리는 null-space 운동을 더하므로 task pose 가
+  멈춘 뒤에도 관절은 계속 움직인다. 관절 속도로 판정하면 정지가 아니라 `HOLD` 의 길이를 읽게 된다. task 는 catch frame 의
+  위치와 접근축이고 **접근축 둘레의 roll 은 task 행이 아니다** — roll 도 null space 에 속하므로 판정에 넣지 않는다.
+  참고값으로 관절 기준 (`joint_rest_reached`, `--joint-rest-speed`) 과 roll 을 포함한 frame 전체 각속도
+  (`angular_speed_*`) 를 병기한다
 - **가속·jerk 피크**: 창 안 관절·tick 최댓값, 명령과 측정 각각. tick 격자의 `np.gradient` 미분을 `--smooth-ticks`
   (기본 5 — `catching_arm_budget` 과 같은 값) box 평균한다. v1 의 기준 가속은 진입과 정지에서 계단이라 평활하지 않은
   jerk 는 tick 길이의 함수다 — `jerk_cmd_raw_peak` 는 참고값이다. 미분은 창 앞뒤 25 tick 을 붙여 구한 뒤 자른다
@@ -485,9 +490,10 @@ ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --config-dir $CFG 
 - **`--a` / `--b`**: `(kind, seed, sample_idx)` 로 짝지은 truth 성공의 2×2 표, 불일치율 ψ 와 Wilson 구간, McNemar 정확 검정,
   그리고 paired 단측 비열등 검정이 요구하는 쌍 수 `(z_α + z_β)² (ψ − d²)/(δ + d)²` 를 `--margin` 마다 ψ̂ 와 ψ 상한에서.
   같은 arm 을 두 번 돌린 ψ 가 게이트 G-1 의 시행 수 입력이다 (`docs/dynamic_catching/MPC_DUALARM_PLAN.md` §1)
-- 합성 positive control (`test/test_catching_decel.py`, 28 케이스): `q̈ = −A sin²(πt/T)` 로 멈추는 관절과 지렛대 FK 에서
+- 합성 positive control (`test/test_catching_decel.py`, 31 케이스): `q̈ = −A sin²(πt/T)` 로 멈추는 관절과 지렛대 FK 에서
   피크 가속 A · 피크 jerk Aπ/T · 정지 거리 · 한계 여유 · 심은 토크 비를 복원, 심은 값을 2 배·½ 배 하면 지표도 따라 움직임,
-  관절이 기어가도 손의 정지를 읽음, 멈추지 않는 팔은 한계 tick 에서 끝나고 그렇게 보고, 창 밖 (진입 전·RETREAT) 의 값은
+  null-space 운동 (관절 하나가 접근축 둘레로 roll) 이 있어도 task pose 의 정지를 같은 tick 에서 읽음, 접근축이 계속
+  도는 팔은 정지가 아님, 접근축이 위치보다 늦게 멈추면 창이 그때 끝남, 멈추지 않는 팔은 한계 tick 에서 끝나고 그렇게 보고, 창 밖 (진입 전·RETREAT) 의 값은
   피크가 아님, 1 tick 가속 bump 는 평활 창으로 나뉨, 2×2 표와 손 계산 시행 수, `a_dec` 합성 순서, CLI end-to-end,
   실제 FK 를 타는 파일럿 세션 (pinocchio 없으면 skip)
 

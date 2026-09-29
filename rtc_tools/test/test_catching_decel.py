@@ -13,6 +13,7 @@ import csv
 import json
 import math
 import shutil
+import types
 from pathlib import Path
 
 import numpy as np
@@ -37,8 +38,22 @@ A_DEC = 10.0
 FIXTURE = Path(__file__).parent / "data" / "catching_pilot_260924_1218"
 
 
-def lever_fk(q: np.ndarray) -> np.ndarray:
-    return np.array([LEVER * q[0], 0.0, 0.0])
+TILT = 0.4  # rad/rad, the planted FK tilts the approach axis with j_a
+
+
+def _rot_x(a: float) -> np.ndarray:
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+
+def _rot_z(a: float) -> np.ndarray:
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def lever_fk(q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """j_a moves the task (position and approach axis), j_b only rolls about the axis."""
+    return np.array([LEVER * q[0], 0.0, 0.0]), _rot_x(TILT * q[0]) @ _rot_z(q[1])
 
 
 def stop_profile(a_peak: float = A_PEAK, t_stop: float = T_STOP) -> tuple[np.ndarray, int, int]:
@@ -108,13 +123,64 @@ def test_window_runs_to_the_hands_rest_not_to_the_end_of_the_mode():
     assert m["stop_time_s"] == pytest.approx((m["k1"] - k0) * DT)
 
 
-def test_a_joint_that_creeps_does_not_hide_the_hands_stop():
+def test_a_null_space_motion_does_not_hide_the_task_poses_stop():
     q, k0, k_stop = stop_profile()
+    still = metrics(q, k0, len(q) - N_RETREAT)
     q = q.copy()
-    q[:, 1] = 0.05 * np.arange(len(q)) * DT  # j_b creeps at 0.05 rad/s; the lever ignores it
+    q[:, 1] = 0.5 * np.arange(len(q)) * DT  # j_b rolls the hand about its axis at 0.5 rad/s
     m = metrics(q, k0, len(q) - N_RETREAT)
     assert m["rest_reached"] and not m["joint_rest_reached"]
-    assert m["k1"] <= k_stop
+    assert m["k1"] == still["k1"]
+    assert m["axis_rate_peak_rad_s"] == pytest.approx(still["axis_rate_peak_rad_s"], rel=1e-6)
+    # The roll is seen, and reported as what it is.
+    assert m["angular_speed_at_rest_rad_s"] == pytest.approx(0.5, rel=0.02)
+
+
+def test_an_approach_axis_that_keeps_turning_is_not_at_rest():
+    def tilting(q):
+        return np.array([LEVER * q[0], 0.0, 0.0]), _rot_x(q[1])
+
+    q, k0, _ = stop_profile()
+    q = q.copy()
+    q[:, 1] = 0.5 * np.arange(len(q)) * DT  # the position stops, the axis tilts at 0.5 rad/s
+    k_limit = len(q) - N_RETREAT
+    m = cd.window_metrics(
+        q,
+        q,
+        DT,
+        k0,
+        k0 + 50,
+        k_limit,
+        tilting,
+        position_lower=[-3.0, -3.0],
+        position_upper=[3.0, 3.0],
+        max_velocity=[2.0, 2.0],
+    )
+    assert not m["rest_reached"] and m["k1"] == k_limit
+    assert m["axis_rate_peak_rad_s"] == pytest.approx(0.5, rel=0.02)
+
+
+def test_the_axis_is_what_ends_the_window_when_it_stops_last():
+    # A steep tilt gain: the approach axis is still above its threshold when
+    # the position already rests.
+    def steep(q):
+        return np.array([LEVER * q[0], 0.0, 0.0]), _rot_x(20.0 * LEVER * q[0])
+
+    q, k0, k_stop = stop_profile()
+    args = {
+        "position_lower": [-3.0, -3.0],
+        "position_upper": [3.0, 3.0],
+        "max_velocity": [2.0, 2.0],
+    }
+    by_position = metrics(q, k0, len(q) - N_RETREAT)
+    m = cd.window_metrics(q, q, DT, k0, k0 + 50, len(q) - N_RETREAT, steep, **args)
+    assert m["rest_reached"]
+    assert by_position["k1"] < m["k1"] <= k_stop
+
+
+def test_angular_speed_reads_a_planted_rotation_rate():
+    rotations = np.array([_rot_z(0.3 * k * DT) @ _rot_x(0.1) for k in range(50)])
+    assert cd.angular_speed(rotations, DT) == pytest.approx(np.full(50, 0.3), rel=1e-6)
 
 
 def test_an_arm_that_never_rests_ends_at_the_limit_and_says_so():
@@ -431,7 +497,7 @@ def lever(monkeypatch):
     from rtc_tools.analysis import derive_accel_limits
 
     monkeypatch.setattr(derive_accel_limits, "resolve_urdf_text", lambda *_: ("<robot/>", "x"))
-    monkeypatch.setattr(ct, "CatchFrameFk", lambda *_: lever_fk)
+    monkeypatch.setattr(ct, "CatchFrameFk", lambda *_: types.SimpleNamespace(pose_world=lever_fk))
 
 
 def test_unit_reads_its_files_and_skips_the_trial_that_never_decelerated(tmp_path, lever):
