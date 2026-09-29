@@ -466,6 +466,49 @@ TEST(HandSequencer, AnUnreadableHandIsAtNothing) {
   EXPECT_FALSE(out.at_target);
 }
 
+// ── Velocities unreadable, positions readable (#606) ────────────────────────
+// The caller passes an empty velocity span when its velocity lane has a hole.
+// "Settled" needs a velocity and must say no; the close judgement and the hold
+// offset read positions only and must go on working.
+
+TEST(HandSequencer, WithoutVelocitiesTheHandIsNeverSettled) {
+  const HandSequencerConfig c = MakeConfig();
+  HandSequencer seq = Ready(c);
+  const HandState caged = Between(c, 0.8);
+  ASSERT_EQ(CloseToHold(seq, c, caged).phase, HandPhase::kHold);
+  seq.Release();
+  // Exactly at q_pre, every tick, with no velocity to vouch for "at rest".
+  const HandState pre = At(c.q_pre);
+  for (int k = 2; k < 50; ++k) {
+    const HandSequencerOutput out = seq.Update(NowReal{k * kH}, kH, pre.Q(), {});
+    EXPECT_EQ(out.phase, HandPhase::kRelease) << "tick " << k;
+    EXPECT_FALSE(out.at_target) << "tick " << k;
+  }
+  // Positive control: the same reading with its velocities settles at once.
+  const HandSequencerOutput out = seq.Update(NowReal{50 * kH}, kH, pre.Q(), pre.Qd());
+  EXPECT_EQ(out.phase, HandPhase::kPreshape);
+  EXPECT_TRUE(out.at_target);
+}
+
+TEST(HandSequencer, WithoutVelocitiesTheCloseStillEndsOnRhoAndHoldsFromTheReading) {
+  HandSequencerConfig c = MakeConfig();
+  c.hold_mode = HandHoldMode::kMeasuredOffset;
+  c.hold_delta_rad = 0.05;
+  HandSequencer seq = Ready(c);
+  ASSERT_TRUE(seq.Commit(BallTime{150 * kMs}));
+  const HandState pre = At(c.q_pre);
+  ASSERT_TRUE(seq.Update(NowReal{0}, kH, pre.Q(), {}).close_issued_now);
+  const HandState caged = Between(c, 0.8);
+  const HandSequencerOutput out = seq.Update(NowReal{kH}, kH, caged.Q(), {});
+  // Closed by ρ on the first tick — not by the timeout 300 ms later.
+  ASSERT_EQ(out.phase, HandPhase::kHold);
+  EXPECT_FALSE(out.timeout);
+  EXPECT_NEAR(out.rho, 0.8, 1e-9);
+  EXPECT_NEAR(out.target[0], caged.q[0] + 0.05, 1e-12);
+  EXPECT_NEAR(out.target[1], caged.q[1] - 0.05, 1e-12);
+  EXPECT_FALSE(out.at_target);
+}
+
 // ── RT: no allocation in Update (G7-D's pure half) ──────────────────────────
 
 TEST(HandSequencer, UpdateDoesNotAllocate) {
