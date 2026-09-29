@@ -2517,6 +2517,9 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
   tick_record_.hand_velocity_unreadable =
       hand_readable_ && !rtc::IsLaneReadable(state.devices[kCatchingHandDeviceIdx],
                                              rtc::StateLane::kVelocity, hand_dof_);
+  tick_record_.arm_velocity_judged = arm_readable_;
+  tick_record_.hand_velocity_judged = hand_readable_;
+  tick_record_.velocity_report_activation = ActivationGeneration();
   tick_record_.wait_pose_refuse_seq = wait_pose_refuse_seq_;
   tick_record_.wait_pose_refuse_reason = wait_pose_refuse_reason_;
   tick_record_.wait_pose_refuse_joint = wait_pose_refuse_joint_;
@@ -2713,9 +2716,19 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
   // #537 pre-S10 R3: a velocity lane with a hole blocks ARMED (and more)
   // without any transition to show for it — one WARN when it starts, one INFO
   // when it ends, per axis.
-  const auto report_velocity_lane = [this](bool unreadable, bool& logged, const char* axis,
-                                           const char* blocked) {
-    if (unreadable == logged) {
+  // The memory is per activation (#610): a hole that outlives a deactivate is
+  // news to whoever activated, and a recovery line about the last activation's
+  // episode is not.
+  if (tick.velocity_report_activation != velocity_report_activation_) {
+    velocity_report_activation_ = tick.velocity_report_activation;
+    arm_velocity_unreadable_logged_ = false;
+    hand_velocity_unreadable_logged_ = false;
+  }
+  const auto report_velocity_lane = [this](bool judged, bool unreadable, bool& logged,
+                                           const char* axis, const char* blocked) {
+    // A closed position gate judges nothing (#610): the episode stands as it
+    // is, neither begun nor ended, until the lane can be asked again.
+    if (!judged || unreadable == logged) {
       return;
     }
     logged = unreadable;
@@ -2729,11 +2742,13 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
       RCLCPP_INFO(logger_, "%s velocity lane readable again", axis);
     }
   };
-  report_velocity_lane(tick.arm_velocity_unreadable, arm_velocity_unreadable_logged_, "arm",
+  report_velocity_lane(tick.arm_velocity_judged, tick.arm_velocity_unreadable,
+                       arm_velocity_unreadable_logged_, "arm",
                        "the controller does not enter ARMED, homing and the RETREAT return do "
                        "not arrive (the return then ends at its deadline), a switched-in wait "
                        "pose is not adopted and a fault reset is refused");
-  report_velocity_lane(tick.hand_velocity_unreadable, hand_velocity_unreadable_logged_, "hand",
+  report_velocity_lane(tick.hand_velocity_judged, tick.hand_velocity_unreadable,
+                       hand_velocity_unreadable_logged_, "hand",
                        "the hand is not settled at q_pre, the controller does not enter ARMED "
                        "(a RETREAT then ends at the release timeout) and no contact baseline is "
                        "learned");

@@ -3365,6 +3365,54 @@ TEST_F(VelocityLaneReportTest, AClosedPositionGateIsNotReportedAsAVelocityHole) 
   EXPECT_EQ(Warned("arm"), 0U);
 }
 
+// #610: the flag is "positions readable AND velocity lane holed", so a position
+// gate that closes DURING an episode used to read as the episode ending.
+
+TEST_F(VelocityLaneReportTest, AClosingPositionGateDoesNotEndAVelocityEpisode) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  LogSink::Clear();
+  state_.devices[0].velocity_hole_mask = 1;
+  TicksThenPublish(2);
+  ASSERT_EQ(Warned("arm"), 1U);
+
+  // The device drops out altogether; the velocity lane is as holed as it was.
+  state_.devices[0].valid = false;
+  TicksThenPublish(3);
+  EXPECT_TRUE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"arm velocity lane readable again"}).empty())
+      << "reported a recovery nobody observed";
+
+  // Back, and still holed: the same episode, not a second WARN.
+  state_.devices[0].valid = true;
+  TicksThenPublish(3);
+  EXPECT_EQ(Warned("arm"), 1U);
+
+  // Positive control: the real recovery is reported.
+  state_.devices[0].velocity_hole_mask = 0;
+  TicksThenPublish(3);
+  EXPECT_FALSE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"arm velocity lane readable again"}).empty());
+}
+
+TEST_F(VelocityLaneReportTest, ANewActivationWarnsAgainAboutAHoleThatIsStillThere) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  LogSink::Clear();
+  state_.devices[1].velocity_hole_mask = 1;
+  TicksThenPublish(2);
+  ASSERT_EQ(Warned("hand"), 1U);
+
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_->on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  LogSink::Clear();
+  TicksThenPublish(2);
+  EXPECT_EQ(Warned("hand"), 1U) << "the operator of this activation was never told";
+  EXPECT_TRUE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"hand velocity lane readable again"}).empty());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

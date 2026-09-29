@@ -1405,6 +1405,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// lane has been reported (#537 pre-S10 R3): the WARN is on the edge.
   bool arm_velocity_unreadable_logged_{false};
   bool hand_velocity_unreadable_logged_{false};
+  /// ... and the activation that memory belongs to (#610).
+  std::uint32_t velocity_report_activation_{0};
   /// Publish-thread (non-RT) memory of the last fault latch / refused fault
   /// reset it warned about (#537 S9b).
   std::uint32_t fault_latch_logged_seq_{0};

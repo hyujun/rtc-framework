@@ -208,6 +208,15 @@ struct CatchingDiagLogPod {
   /// a CSV column: the publish thread warns on the edge.
   bool arm_velocity_unreadable{false};
   bool hand_velocity_unreadable{false};
+  /// Whether this tick could JUDGE the lane at all, i.e. the device's
+  /// positions were readable (#610). With the position gate closed the flag
+  /// above is false whatever the lane holds, and the publish thread must keep
+  /// the episode it is in rather than read that as a recovery.
+  bool arm_velocity_judged{false};
+  bool hand_velocity_judged{false};
+  /// The activation this tick belongs to: the publish thread's edge memory
+  /// starts over with each one (#610). Not a CSV column.
+  std::uint32_t velocity_report_activation{0};
   std::uint32_t wait_pose_refuse_seq{0};
   WaitPoseRefusal wait_pose_refuse_reason{WaitPoseRefusal::kNone};
   int wait_pose_refuse_joint{-1};
