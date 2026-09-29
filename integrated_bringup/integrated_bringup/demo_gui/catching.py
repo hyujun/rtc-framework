@@ -134,6 +134,14 @@ HAND_PHASE_NAMES = (
 # Modes the operator should be able to spot without reading the word.
 _ALARM_MODES = frozenset({"ABORT_SAFE", "FAULT"})
 
+# Histogram buckets that count messages which were not stored but are not a
+# defect of the lane either. `no_track` is the publisher's idle state (an empty
+# cloud while no ball is in view) and is non-zero on every healthy run, so
+# listing it under "input rejects" would make that line permanent and hide the
+# counter that moved for a reason. Matched by NAME — the publisher stamps them
+# — so a bag from a build without the bucket reads the same way.
+_NOT_A_REJECT = frozenset({"no_track"})
+
 
 def mode_name(value: int) -> str:
     """Name for a wire mode, or the raw value when this build does not know it.
@@ -360,12 +368,14 @@ class CatchingStatus:
     def reject_summary(self) -> str:
         """Non-zero reject counters only, named. Empty string when the lane has
         refused nothing — a row of zeroes is noise that hides the one that is
-        not zero."""
+        not zero. Buckets in ``_NOT_A_REJECT`` are never listed."""
         pairs = []
         for i, count in enumerate(self.input_reject_counts):
             if count <= 0:
                 continue
             name = self.input_reject_names[i] if i < len(self.input_reject_names) else f"#{i}"
+            if name in _NOT_A_REJECT:
+                continue
             # `name=count`, the same shape DrainControllerLogs uses for its
             # drop counters. An `x` separator ran once and read as part of the
             # name on screen ("shapex90").

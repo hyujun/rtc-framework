@@ -225,7 +225,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | **입력 (L1)** | `input_valid` / `input_stale` / `input_expired` / `input_new` | `bool` | 이 tick 이 스냅샷에 내린 판정. stale 은 **steady 수신축** 기준 (D-2) |
 | | `input_n` / `input_generation` / `input_snapshot_sequence` / `input_activation_generation` | `int32` / `uint64` | 표본 수와 provenance token (D-22) |
 | | `input_age_s` / `input_horizon_s` | `float64` | 수신축 나이 · 예측 지평. **`input_age_s` 는 미수신이면 음수** (`tip_age_s` 와 같은 "never") — 센티넬이 없으면 `now − 0` 이라 발행자의 steady-clock uptime 이 나이로 실린다 |
-| | `input_accept_count` / `input_reject_counts` / `input_reject_names` | `uint64` / `uint64[]` / `string[]` | **메시지 도착 시점** 갱신. 거부되는 lane 과 조용한 lane 은 RT 쪽에서 구분되지 않으므로, "전부 stale" 일 때 처음 읽을 값 |
+| | `input_accept_count` / `input_reject_counts` / `input_reject_names` | `uint64` / `uint64[]` / `string[]` | **메시지 도착 시점** 갱신. 거부되는 lane 과 조용한 lane 은 RT 쪽에서 구분되지 않으므로, "전부 stale" 일 때 처음 읽을 값. 마지막 bucket `no_track` 은 결함이 아니다 — vision 이 트랙 없이 보낸 빈 cloud 의 수이고 정상 운용에서 늘 오른다 (소비자는 이름으로 구분한다; 이 bucket 이 없는 옛 bag 은 배열이 하나 짧다) |
 | | `input_layout_rebuilds` / `input_origin_delay_s` / `input_jump_m` | `uint64` / `float64` | 레이아웃 변경 추종 횟수 · `recv_wall − stamp` (진단 전용, 판정 금지) · 직전 예측과의 점프 J (< 0 = 비교 안 함) |
 | **plan (L3)** | `plan_valid` / `plan_id` / `plan_t_c_s` / `plan_age_s` | `bool` / `uint32` / `float64` | 포구 시각까지 남은 시간과 plan 나이 |
 | | `plan_p_c` / `plan_a_d` / `plan_v_c` | `float64[3]` | 포구점 · 접근축 (단위) · 예상 공 속도 |

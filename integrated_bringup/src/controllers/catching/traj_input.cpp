@@ -153,6 +153,8 @@ const char* CloudRejectName(CloudReject r) noexcept {
       return "inconsistent_id";
     case CloudReject::kMalformed:
       return "malformed";
+    case CloudReject::kNoTrack:
+      return "no_track";
   }
   return "unknown";
 }
@@ -215,7 +217,13 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
                                        std::uint64_t activation_generation,
                                        TrajectorySnapshot& snap, CovarianceSnapshot& cov) noexcept {
   const auto fail = [this](CloudReject r) {
-    rejects_[static_cast<std::size_t>(r)] += 1;
+    // Guarded: the histogram is sized from the enum's last value, and a value
+    // appended after it without moving that must lose its count, not write
+    // past the array.
+    const auto idx = static_cast<std::size_t>(r);
+    if (idx < rejects_.size()) {
+      rejects_[idx] += 1;
+    }
     return r;
   };
 
@@ -237,6 +245,17 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
   }
   if (msg.height != 1) {
     return fail(CloudReject::kShape);
+  }
+  if (msg.width == 0) {
+    // The publisher has no track and says so with an empty row. AFTER the
+    // byte-order, frame and height checks — an empty message from a publisher
+    // we would not otherwise listen to is that defect, not a statement about
+    // the ball — and BEFORE the width range, which would file it under `shape`
+    // at the publisher's full rate for as long as no ball is in view. Nothing
+    // else is touched: the diagnostics, the sequence memory and the caller's
+    // snapshot describe the last ACCEPTED prediction, whose age is what the
+    // stale judgement downstream runs on.
+    return fail(CloudReject::kNoTrack);
   }
   const auto width = static_cast<std::int64_t>(msg.width);
   if (width < cfg_.n_min || width > cfg_.n_max ||

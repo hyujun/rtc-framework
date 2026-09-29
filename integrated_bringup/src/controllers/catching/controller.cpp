@@ -420,10 +420,14 @@ void DemoCatchingController::OnTrajectoryCloud(const sensor_msgs::msg::PointClou
   if (reject != CloudReject::kNone) {
     // Counted inside the ingress. Throttled here so a publisher that has
     // started producing garbage is visible without a per-message log on the
-    // executor the lifecycle services share.
-    RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
-                         "vision message refused (%s); check the reject counters",
-                         CloudRejectName(reject));
+    // executor the lifecycle services share. Not for `kNoTrack`: that is the
+    // publisher's idle state, and a warning that fires between every pair of
+    // throws is one nobody reads when it fires for a reason.
+    if (IsCloudDefect(reject)) {
+      RCLCPP_WARN_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                           "vision message refused (%s); check the reject counters",
+                           CloudRejectName(reject));
+    }
     return;
   }
 

@@ -244,6 +244,132 @@ TEST_F(TrajInputTest, RefusesShapeAndSizeDefects) {
   }
 }
 
+// ── No track (pre-S10 R4) ───────────────────────────────────────────────────
+
+TEST_F(TrajInputTest, AnEmptyCloudIsNoTrackNotAShapeDefect) {
+  // What the publisher sends while it has no ball: one row, zero points, the
+  // layout and frame of a real prediction. It arrives at the publisher's full
+  // rate between throws, so filing it under `shape` makes that counter — the
+  // one that says the publisher's profile and n_min disagree — climb on every
+  // healthy run.
+  CloudSpec spec;
+  spec.n = 0;
+  const auto msg = MakeCloud(spec);
+  ASSERT_EQ(msg.width, 0U);
+  ASSERT_TRUE(msg.data.empty());
+
+  EXPECT_EQ(Feed(input_, msg, snap_, cov_), CloudReject::kNoTrack);
+  EXPECT_EQ(input_.RejectCount(CloudReject::kNoTrack), 1U);
+  EXPECT_EQ(input_.RejectCount(CloudReject::kShape), 0U);
+  EXPECT_EQ(input_.AcceptCount(), 0U);
+  EXPECT_FALSE(snap_.valid);
+  EXPECT_FALSE(cov_.valid);
+}
+
+TEST_F(TrajInputTest, AShortCloudIsStillAShapeDefect) {
+  // The boundary of the case above: ONE point is a publisher that tried to
+  // predict and produced less than this controller can use.
+  CloudSpec spec;
+  spec.n = 1;
+  EXPECT_EQ(Feed(input_, MakeCloud(spec), snap_, cov_), CloudReject::kShape);
+  EXPECT_EQ(input_.RejectCount(CloudReject::kNoTrack), 0U);
+}
+
+TEST_F(TrajInputTest, AnEmptyCloudDoesNotExcuseADefectInItsEnvelope) {
+  // "No track" is a statement by a publisher we recognise. An empty message
+  // from the wrong frame, in the wrong byte order or with rows is still the
+  // defect it would be with points in it.
+  struct Case {
+    const char* what;
+    CloudSpec spec;
+    CloudReject expect;
+  };
+
+  std::vector<Case> cases;
+  {
+    CloudSpec s;
+    s.n = 0;
+    s.frame_id = "camera_optical";
+    cases.push_back({"wrong frame", s, CloudReject::kFrameId});
+  }
+  {
+    CloudSpec s;
+    s.n = 0;
+    s.big_endian = true;
+    cases.push_back({"big endian", s, CloudReject::kBigEndian});
+  }
+  {
+    CloudSpec s;
+    s.n = 0;
+    s.height = 2;
+    cases.push_back({"height != 1", s, CloudReject::kShape});
+  }
+  {
+    CloudSpec s;
+    s.n = 0;
+    s.height = 0;
+    cases.push_back({"height 0", s, CloudReject::kShape});
+  }
+  for (const auto& c : cases) {
+    CatchingTrajInput in;
+    in.Configure(MakeConfig());
+    TrajectorySnapshot snap{};
+    CovarianceSnapshot cov{};
+    EXPECT_EQ(Feed(in, MakeCloud(c.spec), snap, cov), c.expect) << c.what;
+    EXPECT_EQ(in.RejectCount(CloudReject::kNoTrack), 0U) << c.what;
+  }
+}
+
+TEST_F(TrajInputTest, NoTrackLeavesTheAcceptedPredictionAndItsMemoryAlone) {
+  // The stale / expiry judgement downstream runs on the age of the last
+  // ACCEPTED prediction. An empty cloud must not refresh it, replace it or
+  // reopen the sequence memory — the ball it described is as old as it was.
+  const auto first = MakeCloud({});
+  ASSERT_EQ(Feed(input_, first, snap_, cov_), CloudReject::kNone);
+  const auto before = input_.Snapshot();
+  const TrajectorySnapshot held = snap_;
+
+  CloudSpec empty;
+  empty.n = 0;
+  ASSERT_EQ(Feed(input_, MakeCloud(empty), snap_, cov_, kRecvSteady + 40 * kMs),
+            CloudReject::kNoTrack);
+
+  const auto after = input_.Snapshot();
+  EXPECT_EQ(after.accept_count, before.accept_count);
+  EXPECT_EQ(after.diag.accepted_sequence, before.diag.accepted_sequence);
+  EXPECT_EQ(after.diag.accepted_generation, before.diag.accepted_generation);
+  EXPECT_EQ(after.diag.n, before.diag.n);
+  EXPECT_EQ(after.diag.origin_delay_ns, before.diag.origin_delay_ns);
+  EXPECT_EQ(after.diag.horizon_ns, before.diag.horizon_ns);
+  EXPECT_EQ(after.diag.layout_rebuilds, before.diag.layout_rebuilds);
+  EXPECT_EQ(snap_.token.traj_recv_ns, held.token.traj_recv_ns);
+  EXPECT_EQ(snap_.token.snapshot_sequence, held.token.snapshot_sequence);
+  EXPECT_EQ(snap_.n, held.n);
+  EXPECT_TRUE(snap_.valid);
+
+  // The memory: the accepted sequence is still a duplicate afterwards.
+  EXPECT_EQ(Feed(input_, first, snap_, cov_), CloudReject::kStaleSequence);
+}
+
+TEST(CloudRejectTest, NoTrackIsCountedAndNamedButIsNotADefect) {
+  using integrated_bringup::CloudRejectName;
+  using integrated_bringup::IsCloudDefect;
+  using integrated_bringup::kCloudRejectCount;
+
+  EXPECT_STREQ(CloudRejectName(CloudReject::kNoTrack), "no_track");
+  // Appended: the indices stored bags carry for the older values stand.
+  EXPECT_EQ(static_cast<std::size_t>(CloudReject::kMalformed), 13U);
+  EXPECT_EQ(static_cast<std::size_t>(CloudReject::kNoTrack), 14U);
+  EXPECT_EQ(kCloudRejectCount, 15U);
+
+  EXPECT_FALSE(IsCloudDefect(CloudReject::kNone));
+  EXPECT_FALSE(IsCloudDefect(CloudReject::kNoTrack));
+  for (std::size_t i = 1; i < kCloudRejectCount - 1; ++i) {
+    EXPECT_TRUE(IsCloudDefect(static_cast<CloudReject>(i)))
+        << CloudRejectName(static_cast<CloudReject>(i));
+  }
+}
+
 TEST_F(TrajInputTest, RefusesFieldDefects) {
   {
     CloudSpec s;

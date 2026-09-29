@@ -29,6 +29,7 @@
 #include "catching_cloud_fixture.hpp"
 #include "csv_log_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
+#include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
@@ -40,16 +41,20 @@
 #include <rclcpp_lifecycle/state.hpp>
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 #include <yaml-cpp/yaml.h>
 
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstddef>
+#include <cstdio>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2073,6 +2078,117 @@ TEST_F(CatchingVisionTest, TheIngressCountersReachThePublishSideWhetherOrNotAMes
   const auto accepted = ctrl_.GetIngressSnapshot();
   EXPECT_EQ(accepted.accept_count, 1U);
   EXPECT_EQ(accepted.diag.accepted_sequence, 2U);
+}
+
+// ── pre-S10 R4: an empty cloud is the publisher's idle state ────────────────
+
+/// Every WARN that reaches the log, for the one test below that asserts on a
+/// line NOT being written. The handler is process-global; the test restores it.
+class WarnSink {
+ public:
+  WarnSink() : previous_(rcutils_logging_get_output_handler()) {
+    {
+      const std::lock_guard<std::mutex> lock(Mutex());
+      Lines().clear();
+    }
+    rcutils_logging_set_output_handler(&WarnSink::Handler);
+  }
+
+  ~WarnSink() { rcutils_logging_set_output_handler(previous_); }
+
+  WarnSink(const WarnSink&) = delete;
+  WarnSink& operator=(const WarnSink&) = delete;
+
+  [[nodiscard]] static std::vector<std::string> Containing(const std::string& needle) {
+    const std::lock_guard<std::mutex> lock(Mutex());
+    std::vector<std::string> hits;
+    for (const auto& line : Lines()) {
+      if (line.find(needle) != std::string::npos) {
+        hits.push_back(line);
+      }
+    }
+    return hits;
+  }
+
+ private:
+  static void Handler(const rcutils_log_location_t* /*location*/, int severity,
+                      const char* /*name*/, rcutils_time_point_value_t /*timestamp*/,
+                      const char* format, va_list* args) {
+    if (severity != RCUTILS_LOG_SEVERITY_WARN) {
+      return;
+    }
+    // Value-initialised: on an encoding failure vsnprintf need not terminate.
+    char buffer[1024]{};
+    va_list copy;
+    va_copy(copy, *args);
+    std::vsnprintf(buffer, sizeof(buffer), format, copy);
+    va_end(copy);
+    const std::lock_guard<std::mutex> lock(Mutex());
+    Lines().emplace_back(buffer);
+  }
+
+  static std::vector<std::string>& Lines() {
+    static std::vector<std::string> lines;
+    return lines;
+  }
+
+  static std::mutex& Mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  rcutils_logging_output_handler_t previous_;
+};
+
+TEST_F(CatchingVisionTest, AnEmptyCloudIsCountedAsNoTrackAndWarnsNobody) {
+  using integrated_bringup::CloudReject;
+  BringUpWithVision();
+
+  const auto stamp_now = [](sensor_msgs::msg::PointCloud2& msg) {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const std::int64_t wall = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    msg.header.stamp.sec = static_cast<std::int32_t>(wall / 1'000'000'000LL);
+    msg.header.stamp.nanosec = static_cast<std::uint32_t>(wall % 1'000'000'000LL);
+  };
+  const auto spin_until_counted = [this](CloudReject which) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+    while (std::chrono::steady_clock::now() < deadline &&
+           ctrl_.GetIngressSnapshot().rejects[static_cast<std::size_t>(which)] == 0U) {
+      executor_->spin_some(std::chrono::milliseconds(20));
+    }
+    return ctrl_.GetIngressSnapshot().rejects[static_cast<std::size_t>(which)];
+  };
+
+  // The refusal warning is throttled per call site, and an earlier test in
+  // this binary may have fired it. Wait the window out, or "no line" below
+  // would be the throttle's doing and pass with the warning still in place.
+  std::this_thread::sleep_for(
+      std::chrono::milliseconds(::integrated_bringup::logging::kThrottleSlowMs + 100));
+  const WarnSink sink;
+
+  integrated_bringup::testing::CloudSpec idle;
+  idle.n = 0;
+  auto empty = integrated_bringup::testing::MakeCloud(idle);
+  stamp_now(empty);
+  pub_->publish(empty);
+  ASSERT_EQ(spin_until_counted(CloudReject::kNoTrack), 1U) << "the empty cloud was not counted";
+
+  const auto counted = ctrl_.GetIngressSnapshot();
+  EXPECT_EQ(counted.accept_count, 0U);
+  EXPECT_EQ(counted.rejects[static_cast<std::size_t>(CloudReject::kShape)], 0U);
+  EXPECT_TRUE(WarnSink::Containing("vision message refused").empty())
+      << WarnSink::Containing("vision message refused").front();
+
+  // Positive control, same sink and same call site: a DEFECT does warn. It
+  // also shows the throttle was open when the empty cloud went through.
+  integrated_bringup::testing::CloudSpec wrong;
+  wrong.n = 8;
+  wrong.frame_id = "not_the_configured_frame";
+  auto bad = integrated_bringup::testing::MakeCloud(wrong);
+  stamp_now(bad);
+  pub_->publish(bad);
+  ASSERT_EQ(spin_until_counted(CloudReject::kFrameId), 1U);
+  EXPECT_EQ(WarnSink::Containing("vision message refused (frame_id)").size(), 1U);
 }
 
 // ── 10. catching_diag.csv (L8 §5.2) ─────────────────────────────────────────
