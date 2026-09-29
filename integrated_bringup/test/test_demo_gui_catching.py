@@ -46,6 +46,7 @@ REJECT_NAMES = [
     "stale_sequence",
     "inconsistent_id",
     "malformed",
+    "no_track",
 ]
 
 
@@ -289,6 +290,22 @@ def test_only_the_reject_counters_that_moved_are_shown():
     clean.update(make_msg(), now_s=100.0)
     assert clean.reject_summary() == ""
     assert "input rejects" not in text(clean)
+
+
+def test_no_track_is_not_listed_as_a_reject():
+    # The publisher's idle state: non-zero on every healthy run. Listed, it
+    # would make the "input rejects" line permanent.
+    counts = [0] * len(REJECT_NAMES)
+    counts[REJECT_NAMES.index("no_track")] = 4096
+    idle = CatchingStatus()
+    idle.update(make_msg(input_reject_counts=counts), now_s=100.0)
+    assert idle.reject_summary() == ""
+    assert "input rejects" not in text(idle)
+    # And it does not take a real refusal down with it.
+    counts[REJECT_NAMES.index("shape")] = 2
+    both = CatchingStatus()
+    both.update(make_msg(input_reject_counts=counts), now_s=100.0)
+    assert both.reject_summary() == "shape=2"
 
 
 def test_a_counter_without_a_name_still_appears():

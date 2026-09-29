@@ -141,6 +141,7 @@ struct FieldMap {                                  // 해시가 바뀔 때만 �
 
 - `is_bigendian == false` (바이트 스왑 미지원)
 - `height == 1`, `width` ∈ [`io.n_min`, `n_max`] (S3.6 이 정한 11·20, `n_max ≤ kCap`) — 상한 검사를 복사 전에, **인덱싱 전에** 한다. v0.4 참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다(ASan 확인, S1.2 에서 `kCap` 검사로 수정)
+- **`width == 0` 은 거부가 아니라 "트랙 없음" 이다** (pre-S10 R4, plan Q7·Q15). vision 은 예측이 없을 때 `height 1`·`width 0` 인 빈 cloud 를 제 주기로 발행한다 — 공이 없는 동안 계속. 이를 `no_track` 으로 따로 세고 (거부 histogram 의 마지막 bucket) 경고하지 않는다. 분류 자리는 byte order·`frame_id`·`height` 검사 **뒤**, `width` 범위 검사 **앞**: 다른 frame 이나 `height ≠ 1` 의 빈 메시지는 그 결함 그대로 거부하고, `0 < width < n_min` 은 계속 `shape` 다. 저장하는 것은 없다 — 수락 카운트·진단·sequence 기억·스냅숏은 마지막으로 **수락한** 예측의 것으로 남고, stale 판정은 그 예측의 수신 나이로 계속 흐른다
 - `data.size() == point_step × width`, `row_step == point_step × width`
 - 필드 값은 `std::memcpy` 로 읽는다(정렬·aliasing UB 방지)
 
@@ -274,7 +275,7 @@ v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.
 
 - 파싱이 통째로 실패: `ros2 topic echo --once --field fields` 로 실제 `PointField` 배열을 덤프해 필수 필드 표(§5.1)와 비교한다. 레이아웃 해시 변경 진단이 먼저 떴는지 본다.
 - 값이 그럴듯하지만 틀림: endianness, `horizon_ns` 해석(상대 ns), uint64 low/high 순서, cov 순서 $(p,v)$ 를 의심한다. 한 점을 손으로 바이트 단위로 읽어 대조한다.
-- 모든 메시지가 stale: stale 은 steady 수신 나이이므로 발행이 멈췄거나 거부되고 있는 것이다 — 거부 사유 카운터를 먼저 본다.
+- 모든 메시지가 stale: stale 은 steady 수신 나이이므로 발행이 멈췄거나 거부되고 있는 것이다 — 거부 사유 카운터를 먼저 본다. `no_track` 만 오르고 있으면 lane 은 살아 있고 vision 에 트랙이 없는 것이다 (공이 시야에 없거나 추정기가 초기화 전).
 - `FutureStamp` 발생: 실기에서 PTP offset, sim 에서 누군가 `use_sim_time=true` 로 떠서 stamp 가 sim time 인지 확인한다(G1-7).
 - 순서 역전 거부가 계속됨: vision 노드 재시작으로 `snapshot_sequence` 가 되감긴 것인지 `generation` 과 함께 본다(§4.4).
 - 트랙이 자주 새로 잡힘: vision 쪽 `generation` 변화 빈도를 직접 기록한다(제어 PC 가 만들지 않는다).

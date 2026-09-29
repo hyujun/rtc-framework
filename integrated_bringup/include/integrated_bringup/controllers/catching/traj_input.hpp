@@ -45,7 +45,7 @@ namespace integrated_bringup {
 enum class CloudReject : std::uint8_t {
   kNone = 0,
   kBigEndian,       // byte-swapping is not implemented (and no publisher needs it)
-  kShape,           // height != 1, or width outside [n_min, n_max]
+  kShape,           // height != 1, or width outside [n_min, n_max] (width 0: see kNoTrack)
   kSize,            // data / row_step disagree with point_step x width
   kMissingField,    // a required field is absent by name
   kFieldType,       // a required field has the wrong datatype or count
@@ -57,11 +57,25 @@ enum class CloudReject : std::uint8_t {
   kStaleSequence,   // duplicate or overtaken snapshot_sequence within a track
   kInconsistentId,  // generation / sequence differ between points of one message
   kMalformed,       // failed the trajectory format check (finite, monotone, spacing)
+  // An unpadded one-row cloud of ZERO points: the publisher's way of saying it
+  // has no track to predict from. Nothing is stored, as for every other value
+  // here, but it is not a defect — see IsCloudDefect. LAST, so the histogram
+  // indices of the values above are the ones stored bags already carry.
+  kNoTrack,
 };
 
 [[nodiscard]] const char* CloudRejectName(CloudReject r) noexcept;
 
-inline constexpr std::size_t kCloudRejectCount = 14;
+inline constexpr std::size_t kCloudRejectCount =
+    static_cast<std::size_t>(CloudReject::kNoTrack) + 1;
+
+/// Whether a verdict says something is WRONG with the lane. `kNoTrack` is
+/// counted like a refusal and stores nothing like a refusal, but a publisher
+/// with no ball in view sends it at its full rate for as long as that lasts:
+/// warning on it buries the defects this enum exists to tell apart.
+[[nodiscard]] constexpr bool IsCloudDefect(CloudReject r) noexcept {
+  return r != CloudReject::kNone && r != CloudReject::kNoTrack;
+}
 
 /// One located field.
 struct FieldSlot {
