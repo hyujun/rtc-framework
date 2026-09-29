@@ -253,10 +253,10 @@ $$n_\sigma\sqrt{(1-\gamma)^2\sigma_c^2+(2\gamma-\gamma^2)\,\sigma_\ell^2+\sigma_
 
 $\sigma_c$는 **commit 시점 메시지**의 $t_c$ 샘플 공분산에서, $\sigma_\ell$은 **포구 직전 최신 메시지**의 같은 시각 샘플 공분산에서 뽑는다. 둘 다 vision이 준 값이다(§4.4). $\sigma_{trk}$와 $\delta$는 실측값(L5, 인프라)이며 나머지와 독립으로 두는 것은 타당하다.
 
-commit 시점에는 $\sigma_\ell$ 을 아직 모른다. 두 경로를 둔다.
+commit 시점에는 $\sigma_\ell$ 을 아직 모른다. v0.5 설계는 두 경로를 뒀고, **v1 은 경로 1 만 쓴다**.
 
 1. **계획 단계**: 보수적으로 $\sigma_\ell=\sigma_c$ 로 둔다. 그러면 식이 $\sigma_c^2$ 로 환원되는데, 이것은 **직교성 가정 없이도 상한**이다 — $\mathrm{Var}(A+\lambda B)$ 는 $\lambda=1-\gamma$ 의 볼록 2차식이라 $\lambda\in[0,1]$ 에서 최대가 끝점이고, $\sigma_\ell\le\sigma_c$ 인 한 그 값이 $\sigma_c^2$ 다.
-2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신해 `PlanSnapshot` 에 싣는다. 설계는 L7이 이 값의 성장을 보고 abort를 판단하는 것이지만 **그 소비자는 구현되지 않았다** — 아래 "구현 현황" (γ 하향은 v1 범위 밖, D-8 — §4.7). 이 경로가 없으면 §4.6의 직교 분해 이득이 실현되지 않고 `sigma_l` 은 죽은 필드가 된다.
+2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신한다. **이 값으로 abort 를 판단하는 것은 v1 설계에서 제외했다** `[확정 2026-09-29 사용자 — plan D-S8-7 (a), §7.3 "σ_ℓ abort"]` — $\sigma_\ell$ 은 `planner_events.csv` 에 기록만 하고, 동결 뒤의 낡은 입력은 steady 수신 나이로 판정한다 (L7). 따라서 직교 분해의 $\gamma$ 의존 이득은 v1 에서 쓰이지 않는다. 재검토는 실기 공분산 검증 수단 결정 (S10, #613) 과 함께 한다.
 
 **직교성이 깨질 때의 방향.** 정확한 오차항은 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 이고 $\gamma=0,1$ 에서 사라져 $\gamma=0.5$ 에서 최대다. **새 측정을 과소 반영하는(sluggish) 예측기** — 측정잡음 과대설정, 공정잡음 과소설정 같은 흔한 튜닝 실패 — 는 $\mathrm{Cov}(A,B)>0$ 을 만들어 위 식이 $\sigma_{gap}$ 을 **과소평가**하게 한다(모의 실험에서 7–8%). v0.1의 $\gamma^2$ 오류와 같은 방향이다. 반대로 $\mathrm{Cov}(A,B)<0$ 이면 위 식은 $\sigma_{gap}$ 을 **과대평가**한다 (보수적). **sim 에서 잰 것은 이쪽이다** — 아래 "측정과 결정".
 
@@ -280,9 +280,9 @@ NEES가 정상이어도 $\mathrm{Cov}(A,B)=0$ 은 보장되지 않으므로, **�
 2. **어긋남의 방향이 보수적이다.** 음의 상관은 식이 간극을 크게 잡게 할 뿐이고, 이 검사는 순위 게이트라 (§4.1, D-27) 초과해도 후보가 탈락하지 않는다
 3. **식을 바꿔 얻을 것이 지금은 없다.** $\gamma$ 의존 예산을 판정에 쓰려면 $\sigma_\ell$ 의 commit 시점 예측이 필요한데 그 경로가 없다
 
-식을 다시 볼 조건: $\gamma$ 의존 예산 (경로 2 의 $\sigma_\ell$) 을 판정이나 $\gamma$ 선택에 쓰기로 할 때. 그때는 교차항을 경험적으로 보정하거나 직교 가정 없는 상한으로 바꾼다. **경로 1 의 상한은 $\sigma_\ell\le\sigma_c$ 를 전제한다** — 음의 상관이 커서 $2\vert\mathrm{Cov}(A,B)\vert>\sigma_B^2$ 이면 이 전제가 깨지므로, 그 재검토는 $E\Vert A\Vert^2$ 대 $E\Vert A+B\Vert^2$ 를 먼저 본다.
+식을 다시 볼 조건: v1 에서 제외한 경로 2 를 되살려 $\gamma$ 의존 예산을 판정이나 $\gamma$ 선택에 쓰기로 할 때. 그때는 교차항을 경험적으로 보정하거나 직교 가정 없는 상한으로 바꾼다. **경로 1 의 상한은 $\sigma_\ell\le\sigma_c$ 를 전제한다** — 음의 상관이 커서 $2\vert\mathrm{Cov}(A,B)\vert>\sigma_B^2$ 이면 이 전제가 깨지므로, 그 재검토는 $E\Vert A\Vert^2$ 대 $E\Vert A+B\Vert^2$ 를 먼저 본다.
 
-**구현 현황 (2026-09-29 코드 대조).** 경로 2 의 $\sigma_\ell$ 은 `PlannerSearch::Monitor` 가 계산해 `planner_events.csv` 의 `sigma_l` 열로 **기록만** 한다. 이 값을 읽어 abort 를 판단하는 소비자는 없고, 게시되는 `PlanSnapshot::sigma_l` 은 $\sigma_c$ 와 같은 값이다. 출하 profile 은 $\sigma_{trk}=0$, $\delta=0$ 이고 $\kappa_\sigma<1/n_\sigma$ 라서 (§6 기본값) 이 검사가 실패하는 후보는 §4.4 불확실성 게이트도 이미 실패한다 — 이 검사는 독립된 정보가 아니라 같은 $\sigma_c$ 에 대한 두 번째 임계로 동작한다.
+**구현 현황 (2026-09-29 코드 대조).** 경로 2 의 $\sigma_\ell$ 은 `PlannerSearch::Monitor` 가 계산해 `planner_events.csv` 의 `sigma_l` 열로 **기록만** 한다. 이 값을 읽는 소비자는 없고 (위 경로 2 — v1 제외), 게시되는 `PlanSnapshot::sigma_l` 은 $\sigma_c$ 와 같은 값이다. 출하 profile 은 $\sigma_{trk}=0$, $\delta=0$ 이고 $\kappa_\sigma<1/n_\sigma$ 라서 (§6 기본값) 이 검사가 실패하는 후보는 §4.4 불확실성 게이트도 이미 실패한다 — 이 검사는 독립된 정보가 아니라 같은 $\sigma_c$ 에 대한 두 번째 임계로 동작한다.
 
 $\sigma$ 는 스칼라로 썼지만 실제는 3×3이다. §4.4의 $\lambda_{\max}$ 규약으로 읽으며, $\lambda_{\max}(\Sigma_A+\lambda^2\Sigma_B)\le\lambda_{\max}(\Sigma_A)+\lambda^2\lambda_{\max}(\Sigma_B)$ 이므로 그 경우에도 보수적 상한이다.
 
@@ -414,7 +414,7 @@ S1.5 이식 시 변경:
 | `gamma_min` | `double` | §4.5 γ 창 하한 (진단. v0.4 의 derate 하한 용도는 v1 범위 밖, D-8) |
 | `q_star`, `nv` | `std::array<double, kMaxPlanNv>`, `int` | IK 해 (L5 posture 참고). 용량 `kMaxPlanNv` 는 **계획기 control 모델 nv** 를 담는 컴파일 타임 상수이고 (S1.2: 32), configure 에서 nv ≤ `kMaxPlanNv` 를 검사한다. 궤적 점 용량 `kCap` 과는 다른 상수다 (v0.5 문서가 둘을 같은 이름으로 불렀다) |
 | `w5`, `w6` | `double` | §4.2 catchability manipulability — IK·게이트 판정용 $w_5$ 와 검증용 $w_6$ 를 정의(`planner.catchability.definition`)와 무관하게 매 후보 **항상 함께** 기록한다 (D-18, C-3, plan §11) |
-| `score`, `sigma_c`, `sigma_l` | `double` | §4.10 점수, §4.6 오차 예산 두 항 (`sigma_l` 은 동결 후 `monitorOnly` 가 갱신) |
+| `score`, `sigma_c`, `sigma_l` | `double` | §4.10 점수, §4.6 오차 예산 두 항 (v1 에서 게시되는 `sigma_l` 은 `sigma_c` 와 같은 값 — §4.6 경로 2 는 v1 제외) |
 | `dp_impact` | `double` | L7 §4.7 예상 충격량 [kg m/s] |
 | `reason` | `uint8` enum | plan 없음·탈락 사유 (게이트별: 불확실성, IK 실패, manipulability 미달, 도달시간, 한계 무효, γ 창, 정지거리, rollout, 오차 예산, 충격량, 지평 부족(D-15), 예산 초과) |
 | `valid` | `bool` | |
@@ -449,7 +449,7 @@ S1.5 이식 시 변경:
 5. 후보가 없으면 invalid + 사유 게시, 있으면 §4.7 히스테리시스를 거쳐 게시
 
 - `isFrozen(mode)` 는 술어 함수로 둔다. `mode >= Mode::Committed` 같은 enum 나열 순서 의존은 상태를 추가하면 조용히 깨진다.
-- **동결 중에도 `monitorOnly()` 는 돈다**(§4.6): $\sigma_\ell$, σ 성장률, L1 $\bar\nu$ 를 갱신한다 — 구현은 $\sigma_\ell$ 만 계산해 `planner_events.csv` 에 기록하고, 이를 읽어 abort 를 판단하는 소비자는 없다 (§4.6 "구현 현황"; $\bar\nu$ 는 L1 §4.5 대로 생산자가 없다). v0.2는 즉시 return 해서 `PlanSnapshot::sigma_l` 이 영구히 죽은 필드였다.
+- **동결 중에도 `monitorOnly()` 는 돈다**(§4.6): $\sigma_\ell$ 을 계산해 `planner_events.csv` 에 **기록만** 한다. 이 값이나 σ 성장률·L1 $\bar\nu$ 로 abort 를 판단하는 것은 v1 설계에서 제외했다 (§4.6 경로 2, plan D-S8-7 (a)).
 - 시행 종료 시 plan 무효화는 L7이 한다(L7 §4.8).
 - 후보 시각은 vision 샘플 격자를 그대로 쓴다. `planner.slice.dt`가 카메라 주기보다 크면 격자를 솎아 쓰고, 작으면 보간해 쓴다(L2 `SampleAt`). 어느 쪽이든 격자 간격은 `TBD-VIS-04` 확정 후 정한다.
 
