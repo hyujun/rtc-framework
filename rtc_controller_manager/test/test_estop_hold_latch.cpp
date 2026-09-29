@@ -745,6 +745,60 @@ TEST_F(EstopClearServiceWindowTest, ADeactivateMidWindowStillReportsTheClear) {
   })) << "estop_status stuck at true after a mid-window deactivate";
 }
 
+// ── A publisher that starts with the value it stands for (#607) ──────────────
+//
+// transient_local keeps the LAST PUBLISHED sample, and the status is published
+// on change only — so a publisher created after the change holds nothing, and
+// a subscriber that joins it reads "no E-STOP" by default.
+
+namespace {
+
+/// What a transient_local subscriber created NOW receives within `timeout`.
+std::vector<bool> LateSubscriberReceives(
+    const char* name, std::chrono::milliseconds timeout = std::chrono::milliseconds(1500)) {
+  auto node = std::make_shared<rclcpp::Node>(name);
+  std::vector<bool> got;
+  rclcpp::QoS latched{1};
+  latched.transient_local();
+  auto sub = node->create_subscription<std_msgs::msg::Bool>(
+      "/system/estop_status", latched,
+      [&got](std_msgs::msg::Bool::SharedPtr m) { got.push_back(m->data); });
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (got.empty() && std::chrono::steady_clock::now() < deadline) {
+    exec.spin_some(std::chrono::milliseconds(20));
+  }
+  return got;
+}
+
+}  // namespace
+
+TEST_F(EstopClearServiceWindowTest, AFreshPublisherReportsNoEstopWithoutWaitingForAChange) {
+  // SetUp created the publisher; nothing has happened since.
+  Access::CallDrainLog(*node_);
+  const auto got = LateSubscriberReceives("test_estop_hold_latch_fresh");
+  ASSERT_FALSE(got.empty()) << "a subscriber cannot tell 'no E-STOP' from 'no controller manager'";
+  EXPECT_FALSE(got.back());
+}
+
+TEST_F(EstopClearServiceWindowTest, APublisherRecreatedUnderALatchedEstopReportsIt) {
+  Access::CallTriggerEstop(*node_, "test_estop");
+  Access::CallFlushEstopStatus(*node_);
+  const rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
+                                         "inactive");
+  ASSERT_EQ(node_->on_error(inactive), RtControllerNode::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(Access::IsEstopped(*node_)) << "precondition: on_error leaves the latch up";
+
+  // What the next on_configure does, then one pass of the drain.
+  Access::CallCreateFixedSafetyPublishers(*node_);
+  Access::CallDrainLog(*node_);
+  const auto got = LateSubscriberReceives("test_estop_hold_latch_recreated");
+  ASSERT_FALSE(got.empty()) << "the recreated publisher holds no sample: a GUI started now "
+                               "shows NORMAL over a held arm";
+  EXPECT_TRUE(got.back());
+}
+
 // ── Concurrency (for the TSAN build) ─────────────────────────────────────────
 //
 // The RT tick, a non-RT trigger (on_error's path) and a clear with its window

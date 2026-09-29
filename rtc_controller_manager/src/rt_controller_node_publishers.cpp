@@ -62,14 +62,21 @@ void RtControllerNode::CreateFixedSafetyPublishers() {
   //
   // Both are transient_local: the status is published on change only, so a
   // volatile writer left a subscriber started after the latch reading
-  // "NORMAL" until the next transition (issue #588, decision Q3). Volatile
-  // readers still match a transient_local writer, so the GUI and BT bridge
-  // are unaffected, and shape_estimation's transient_local reader — which
-  // never matched the volatile writer — now connects.
+  // "NORMAL" until the next transition (issue #588, decision Q3). Every
+  // in-tree reader is transient_local too (GUI, motion editor, BT bridge,
+  // shape_estimation); a volatile one still matches, it just gets no history.
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();
   estop_pub_ = rclcpp::create_publisher<std_msgs::msg::Bool>(this->get_node_topics_interface(),
                                                              "/system/estop_status", latch_qos);
+
+  // A new publisher holds no sample, whatever the latch is (#607): on_error
+  // leaves it UP and drops the publisher, so the one created here would tell a
+  // late subscriber nothing while the arm is held. Published inline — this is
+  // a lifecycle callback, not the RT loop — so a first configure also says
+  // "no E-STOP" instead of leaving that to be inferred from silence. A change
+  // racing this still goes out through the pending flag, after it.
+  PublishEstopStatus(EstopStatusValue());
 
   active_ctrl_name_pub_ = rclcpp::create_publisher<std_msgs::msg::String>(
       this->get_node_topics_interface(), "/rtc_cm/active_controller_name", latch_qos);
