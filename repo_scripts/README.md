@@ -562,6 +562,22 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMM
 
 build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다.
 
+#### workspace 에 다른 저장소가 함께 있을 때
+
+이 저장소의 빌드 스크립트와 manifest 는 다른 저장소의 패키지 이름을 갖지 않는다. 그래서 `<rtc_ws>/src` 에 함께 둔 저장소는 두 경로에서 다르게 다뤄진다.
+
+| 경로 | 빌드 대상 | 다른 저장소의 패키지 |
+|---|---|---|
+| `build.sh` | `rt_common.sh` 의 고정 목록 (`--packages-select`) | 빌드하지 않는다 |
+| ws root 의 plain `colcon build` | `src/` 아래의 모든 패키지 | 함께 빌드한다 |
+
+- **ws root 의 첫 빌드는 plain `colcon build` 로 한다** — 위 명령 형태 그대로다. `src/` 의 저장소가 한 번에 빌드된다. `build.sh` 를 쓰면 나머지 저장소를 `colcon build --base-paths src/<저장소>` 로 따로 빌드한다.
+- **`build.sh -c` 는 ws root 의 `build/` · `install/` · `log/` 를 통째로 지운다.** 다른 저장소의 설치본도 함께 사라지므로, 그 뒤에는 plain `colcon build` 로 전체를 다시 빌드한다.
+- **한 저장소만 고르려면 `--base-paths src/<저장소>` 를 쓴다.** 패키지 이름을 적지 않으므로 그 저장소의 패키지가 늘거나 줄어도 명령이 바뀌지 않는다. `colcon test` · `colcon test-result` 에도 같게 적용한다.
+- **자기 빌드 절차와 환경을 가진 저장소는 별도 workspace 에 둔다.** 이 workspace 에서 빌드하면 `setup_env.sh` 의 colcon defaults 와 `.venv` 가 그 빌드에 섞인다. 그 패키지를 쓰는 터미널에서만 그 workspace 의 `install/setup.bash` 를 이 workspace 다음에 source 한다.
+
+로봇 config 가 `package://<패키지>/...` 로 가리키는 패키지는 런타임 선행조건이다 — 설치돼 있지 않으면 launch 가 `package '<패키지>' not found` 로 멈춘다. 어느 config 가 어느 패키지를 가리키는지는 [integrated_bringup/README.md](../integrated_bringup/README.md) 가 갖는다.
+
 ---
 
 ### build_deps.sh

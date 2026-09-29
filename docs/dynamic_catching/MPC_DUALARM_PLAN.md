@@ -1,7 +1,7 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 작성일: 2026-09-29 (r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
-- 상태: **E0 진행 중** — E0-F03 완료, 다음은 E0-F01 (코드 미착수)
+- 작성일: 2026-09-30 (r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
+- 상태: **E0 진행 중** — E0-F03 완료, E0-F01 검증 완료 (merge 대기), 다음은 E0-F02 · E0-F04 (코드 미착수)
 - 범위: DECEL 의 MPC 전환 → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → MPC catch controller
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — v0.4, 사용자 확정 2026-09-29. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
@@ -116,12 +116,15 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 사용
 | MD-14 | CLIK 에 제동 거리 기반 속도 한계 (opt-in), 충돌 damper (선택), 오차 되먹임 상한을 둔다. 앞의 둘은 기본 꺼짐이다 | 위치 box 와 가속 · 토크 한계는 한 tick 에서 양립하지 않을 수 있다. 기본값을 끄는 것은 기존 로봇의 golden 회귀를 지키기 위해서다 | — | 2026-09-29 |
 | MD-15 | 예측 격자 sweep 을 한다. horizon 은 0.75 s 와 1.0 s, 조건은 8개 (formulation §1.7). v1 계획기로 먼저 돌려 기준선을 만든다 | 사용자 결정. horizon 을 나누는 이유는 추정기 (EKF) 의 정확도다. 조건은 점 수 상한 40, horizon 이 step 의 배수, 지평 요구 0.51 s 에서 나왔다. horizon 0.5 s 는 지평 요구에 못 미쳐 쓰지 않는다 | — | 2026-09-29 |
 | MD-16 | QP solver 의 기본은 ProxQP dense 다. 계획기 한 주기의 p99 를 실측하고, 구조를 쓰는 solver 와의 오프라인 비교는 선택 사항이다 | 이 문제 크기의 warm start 된 MPC QP 를 잰 공개 benchmark 가 없다 | — | 2026-09-29 |
+| MD-17 | rtc-framework · `hand_description` · ball_perception 은 서로를 모른다 — 빌드 스크립트와 manifest 에 서로의 이름을 넣지 않는다. `rtc_ws` 는 rtc-framework 와 `hand_description` 을 ws root 의 `colcon build` 로 함께 빌드하고, ball_perception 은 별도 workspace 의 sim 용 고정 사본에서 `ball_perception_sim` 과 그 upstream 만 빌드한다 | 사용자 결정. 세 저장소는 독립 project 다. ball_perception 의 개발용 workspace 는 코드가 계속 바뀌므로 sim 이 쓰는 사본을 따로 둔다 | — | 2026-09-29 |
+| MD-18 | sim 추정기의 profile (`ball_perception.sim_profile`) 은 ball_perception 저장소가 소유하고 거기서 읽는다. rtc-framework 의 로봇별 사본은 읽지 않는다 | 사용자 결정. rtc-framework 는 제어 PC, ball_perception 은 vision PC 에서 돈다 — 서로의 파일을 볼 수 없다 (MD-17 의 귀결) | — | 2026-09-30 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 정지 구간 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- E0-F04: sweep 의 시행 수와 판정 기준, 조건별 설정을 둘 위치
+- MD-18 의 실행: rtc-framework 의 로봇별 profile 사본과 그것을 고정하는 테스트 (`test_catch_lead_overlays.py`) 의 처리 (E-6), ball_perception 쪽 profile 의 schema minor — 담당 feature 와 함께 정한다
+- E0-F04: sweep 의 시행 수와 판정 기준, 조건별 설정을 둘 위치 (MD-18 에 따라 ball_perception 쪽)
 - E1-F03: 정지 구간의 노드 수와 간격, 포구 전 초기 상태의 예측 방법
 - E1-F06: 비열등 한계와 N, MPC DECEL 을 기본값으로 바꿀지
 - E3-F01: MPC 계획기와 v1 L3 계획기의 관계 (대체 · 병행)
@@ -150,10 +153,10 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 ### 빌드
 
-- ws root 에 `build/` · `install/` · `log/` 가 없다. 첫 빌드다.
+- ws root 에 `build/` · `install/` · `log/` 가 없었다. E0-F01 이 첫 빌드를 했고, 그때의 `colcon test` 기준은 [#624](https://github.com/hyujun/rtc-framework/issues/624) 에 있다.
 - `build.sh` 는 고정 목록만 `--packages-select` 로 빌드하고, 그 목록에 `hand_description` 과 `ball_perception*` 이 없다.
 - `integrated_bringup` 의 `ur5e_p1b` config 는 `package://hand_description/...` 을 런타임에 참조하지만 `package.xml` 에는 선언이 없다.
-- 두 패키지의 빌드 절차는 E0-F01 에서 확정한다.
+- 두 패키지의 빌드 절차는 E0-F01 에서 확정했다 (MD-17). `build.sh` 와 `package.xml` 은 고치지 않는다. 절차는 [repo_scripts/README.md](../../repo_scripts/README.md) 에 있다.
 
 ## 6. Epic · Feature
 
@@ -163,7 +166,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E0-F01 | [#624](https://github.com/hyujun/rtc-framework/issues/624) | 빌드 경로 확정 (rtc-framework + hand_description + ball_perception) | — | 대기 |
+| E0-F01 | [#624](https://github.com/hyujun/rtc-framework/issues/624) | 빌드 경로 확정 (rtc-framework + hand_description + ball_perception) | — | 검증 완료 (2026-09-30) — merge 대기 |
 | E0-F02 | [#625](https://github.com/hyujun/rtc-framework/issues/625) | closed-form DECEL baseline 측정 (ur5e_p1b · iiwa7_leap) | E0-F01 | 대기 |
 | E0-F03 | [#626](https://github.com/hyujun/rtc-framework/issues/626) | formulation v0.4 — G1 기구 · 단일 팔 환원형 · 토크 기반 제약 · 문헌 대조 | — | 완료 (2026-09-29) — v0.4 확정 |
 | E0-F04 | [#647](https://github.com/hyujun/rtc-framework/issues/647) | 예측 격자 sweep — v1 계획기 기준선 (horizon 0.75 s · 1.0 s) | E0-F01 | 대기 |
@@ -240,7 +243,7 @@ feature 24개를 브랜치 17개로 묶는다. 브랜치 하나가 PR 하나다.
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
 | `docs/mpc-dualarm-plan` | E0-F03 | 문서 4개 (계획, formulation, README, v1 계획 개정). 가장 먼저 올린다 — 이슈의 문서 링크가 이 merge 로 살아난다 |
-| `chore/ws-first-build-path` | E0-F01 | 빌드 스크립트와 `package.xml`. 다른 feature 의 선행이라 단독으로 빨리 닫는다 |
+| `chore/ws-first-build-path` | E0-F01 | 빌드 절차 문서 (MD-17 — 빌드 스크립트와 `package.xml` 은 고치지 않는다). 다른 feature 의 선행이라 단독으로 빨리 닫는다 |
 | `feat/catching-baseline-grid-sweep` | E0-F02, E0-F04 | 둘 다 `catching_sim_trials` 로 시행을 모으고 `rtc_tools` 의 분석을 확장한다. 같은 시행 도구와 같은 host 조건을 쓴다. **나누는 조건**: sweep 의 조건별 설정이 출하 config 를 건드리게 되면 E0-F04 를 분리한다 |
 
 E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_perception) 의 브랜치와 PR 로 따로 한다.
