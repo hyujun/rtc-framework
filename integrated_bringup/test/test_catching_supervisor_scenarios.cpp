@@ -3200,6 +3200,50 @@ TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableIsNotSettled) {
   EXPECT_TRUE(TickUntilMode(Mode::kArmed, 20)) << Transitions();
 }
 
+// #606: the same question on the two paths that read the hand sequencer's
+// `at_target` instead of HandSettledAtPre — the re-arm out of RETREAT and the
+// contact baseline.
+
+TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableDoesNotReArmAfterATrial) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kHold, 1500)) << Transitions();
+  // The hole opens while the hand holds the ball. The close is over, so what
+  // is left to judge with a velocity is the release.
+  state_.devices[1].velocity_hole_mask = 1ULL << 3;
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  const std::size_t retreat = log_.size();
+  Ticks(1500);
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.mode == Mode::kArmed; }, retreat), 0)
+      << "re-armed on a hand whose rest nobody vouches for\n"
+      << Transitions();
+  EXPECT_FALSE(ctrl_->GetHandOutputForTesting().at_target);
+}
+
+TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableLearnsNoContactBaseline) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  publishing_ = false;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 20)) << Transitions();
+  // Armed on a readable hand (it could not have armed otherwise); the hole
+  // opens on the next tick and stays through the wait.
+  const int before = ctrl_->GetTipBaselineCountForTesting();
+  state_.devices[1].velocity_hole_mask = 1ULL << 3;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  // One sample at most: the contact lane runs before the hand stage and reads
+  // LAST tick's `at_target`, so the first tick of the hole is still judged on
+  // the tick before it — which was vouched for. 30 ticks would have learned 30.
+  EXPECT_LE(ctrl_->GetTipBaselineCountForTesting(), before + 1)
+      << "a baseline was learned from a hand whose rest nobody vouches for";
+  // Positive control: the same wait, vouched for, learns it.
+  state_.devices[1].velocity_hole_mask = 0;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  EXPECT_GE(ctrl_->GetTipBaselineCountForTesting(), 20);
+}
+
 TEST_F(SupervisorScenarioTest, AnUnreadableArmVelocityDefersTheAdoptionUntilItIsReadable) {
   // Unarmed, like a moving arm: a hole that lasts a tick must not cost the one
   // decision an activation gets.

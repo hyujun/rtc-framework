@@ -2200,7 +2200,13 @@ void DemoCatchingController::RunHandStage(const ControllerState& state) noexcept
     const auto& dev = state.devices[kCatchingHandDeviceIdx];
     const auto n = static_cast<std::size_t>(hand_dof_);
     q = std::span<const double>(dev.positions.data(), n);
-    qd = std::span<const double>(dev.velocities.data(), n);
+    // Fail-closed (#606, as HandSettledAtPre): a velocity lane with a hole
+    // leaves qd empty, so the sequencer is "at" nothing — no Release → Preshape,
+    // hence no re-arm out of RETREAT, and no contact baseline — while ρ and the
+    // hold offset, which read positions only, go on working.
+    if (rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, hand_dof_)) {
+      qd = std::span<const double>(dev.velocities.data(), n);
+    }
   }
   hand_out_ = hand_seq_.Update(tick_now_, static_cast<std::int64_t>(state.dt * 1e9), q, qd);
   UpdateHandCapture(state);
@@ -2728,7 +2734,9 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
                        "not arrive (the return then ends at its deadline), a switched-in wait "
                        "pose is not adopted and a fault reset is refused");
   report_velocity_lane(tick.hand_velocity_unreadable, hand_velocity_unreadable_logged_, "hand",
-                       "the hand is not settled at q_pre and the controller does not enter ARMED");
+                       "the hand is not settled at q_pre, the controller does not enter ARMED "
+                       "(a RETREAT then ends at the release timeout) and no contact baseline is "
+                       "learned");
   // #537 S9b: one WARN per fault latch, naming the cause — the transition that
   // follows is ABORT_ESCALATED whatever raised it, so this line (and the CSV's
   // `fault_cause`) is where the operator learns which.
