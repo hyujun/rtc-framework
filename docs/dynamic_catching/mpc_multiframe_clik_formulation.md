@@ -463,7 +463,7 @@ horizon 은 0.75 s 와 1.0 s 둘을 시험한다 (사용자 지시 2026-09-29). 
 | ball_perception `ball_perception_sim/config/sim_profile.example.json` | 0.5 s | 0.05 s | 10 |
 | ball_perception `ball_perception_estimation/config/bearing_run_config.template.json` | 0.5 s | 0.05 s | 10 |
 
-sim 포구 시행이 읽는 것은 rtc-framework 쪽 profile 이다 (`integrated_bringup` README 의 launch 명령).
+sim 포구 시행이 지금 읽는 것은 rtc-framework 쪽 profile 이다 (`integrated_bringup` README 의 launch 명령). 계획 MD-18 에 따라 E0-F04 에서 ball_perception 쪽 profile 로 바꾸고 rtc-framework 의 사본은 제거한다.
 
 **조건 — horizon 1.0 s.** $10^9$ ns 를 나누어떨어지게 하는 점 수 가운데 20 이상 40 이하인 것은 넷이다.
 

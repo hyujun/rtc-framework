@@ -54,7 +54,7 @@ $$t_{ref}^{steady}=t_{recv}^{steady}-\big(t_{recv}^{wall}-t_{stamp}\big),\qquad 
 - 원점 지연 $t_{recv}^{wall}-t_{stamp}$ 는 **진단**(분포 기록)이다. 음수가 $T_{future}$ 보다 크면(미래 스탬프) 변환 결과가 틀리므로 시계 이상으로 거부한다.
 - stale 임계 $T_{stale}$: 발행 주기 + 여유(예시 profile ≤ 30 Hz). YAML, S3.4·S8 실측 후.
 - 지평 끝 소진: 마지막 점 `BallTime` 을 **now_lead** 와 비교한다(plan §3 "궤적 지평 끝 경고 = now_lead"). 샘플링이 선행축으로 읽으므로 소진 판정도 같은 축이어야 한다 — v0.4 `readTraj` 는 실제 나이를 지평 상대시각과 비교해 두 축을 섞었다.
-- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 S3.6 이 정하고 sim profile 을 그에 맞춘다 — `io.horizon_min` 0.51 s (R1, §6), sim profile **1.0 s / 0.05 s / 20 점** (기구학 reachable 창 + T_det 재실측 기준, plan D-27·§4.4 S3.6 결과 — `integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json`, 2026-09-22 설정; 종전 0.8 s / 16 점은 계획기가 보는 창 끝이 0.78 s 라 늦게 잡는 후보가 빠진다. ball_perception 의 예시 profile 0.5 s / 최대 10 점은 그대로는 부족하다).
+- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 S3.6 이 정하고 sim profile 을 그에 맞춘다 — `io.horizon_min` 0.51 s (R1, §6), sim profile **1.0 s / 0.05 s / 20 점** (기구학 reachable 창 + T_det 재실측 기준, plan D-27·§4.4 S3.6 결과, 2026-09-22 설정 — profile 파일의 위치는 plan D-15 행; 종전 0.8 s / 16 점은 계획기가 보는 창 끝이 0.78 s 라 늦게 잡는 후보가 빠진다. ball_perception 의 예시 profile 0.5 s / 최대 10 점은 그대로는 부족하다).
 
 ### 4.2 시계 오차의 영향
 

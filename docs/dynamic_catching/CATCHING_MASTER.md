@@ -250,7 +250,7 @@ $$\Vert v(t_c)\Vert>\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 
 **v0.4 의 결손이 닫혔다.** 트랙 식별·상태는 `generation`·`validity`·`snapshot_sequence` 로 판정한다(TBD-VIS-07 닫힘). 레이아웃 변경은 필드 이름·datatype 검사와 **레이아웃 해시 진단**이 감지한다(P-3, L1 §5.1). NIS 같은 추정기 건강도 필드는 여전히 없다.
 
-**요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. **S3.6 산출 (2026-09-22, provisional — plan §4.4 "S3.6 결과"·"T_det 실측")**: `ur5e_p1b` 기구학 reachable 창 (plan D-27) 과 T_det 실측에서 $H_{req}$ **0.99 s**, 간격 **0.05 s**, **n 20** → sim profile **1.0 s / 0.05 s / 20 점 / ≤ 30 Hz** (공 lane stamp 수정 + T_det 재실측 후). 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다 (2026-09-20 정정). **설정됨 (2026-09-22 사용자)**: `integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json` — 종전 0.8 s / 16 점은 S3.4 가 실측한 값이다. 궤적 용량 `kCap` 은 S0.7 제안값(40)으로 S1.2 가 provisional 로 두고, S3.6 의 점 수 요구는 **20 ≤ `kCap`** 이다 (구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다, L2 §5.1; L0 §5, L2 §6).
+**요구 사양은 제어기가 정한다 `[확정 D-15]`.** 지평·간격·점 수·발행률은 S3.6 이 목표 투척 분포에서 산출하고, sim 에서는 ball_perception sim profile 을 그에 맞춘다(설정은 사용자). 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외하고 진단한다. **S3.6 산출 (2026-09-22, provisional — plan §4.4 "S3.6 결과"·"T_det 실측")**: `ur5e_p1b` 기구학 reachable 창 (plan D-27) 과 T_det 실측에서 $H_{req}$ **0.99 s**, 간격 **0.05 s**, **n 20** → sim profile **1.0 s / 0.05 s / 20 점 / ≤ 30 Hz** (공 lane stamp 수정 + T_det 재실측 후). 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다 (2026-09-20 정정). **설정됨 (2026-09-22 사용자)** — profile 파일의 위치는 plan D-15 행이 갖는다 (MD-18 로 개정). 종전 0.8 s / 16 점은 S3.4 가 실측한 값이다. 궤적 용량 `kCap` 은 S0.7 제안값(40)으로 S1.2 가 provisional 로 두고, S3.6 의 점 수 요구는 **20 ≤ `kCap`** 이다 (구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다, L2 §5.1; L0 §5, L2 §6).
 
 QoS는 vision 노드가 정한 것을 따른다 — publisher RELIABLE/VOLATILE, 구독은 `best_effort` KEEP_LAST(1) 로 손실 0 실측(`TBD-VIS-08` 닫힘, S3.4). 제어 PC는 수신 나이(`now_steady − recv_steady`) 검사를 기본 감시로 쓴다(L1).
 
@@ -449,7 +449,7 @@ v0.3의 `TBD-RTC-06`(결번)과 `TBD-RTC-15`(W2-2가 01로 이미 다룸)는 폐
 | 위험 | 영향 | 완화 |
 |---|---|---|
 | **$T_{close,tot}$ 실측값이 예산 초과** | 목표 속도 전 구간에서 γ 창이 비어 포구 자체가 불가 | §4.1 선행 측정(S4.4 go/no-go). 초과 시 목표 속도를 낮추고 `planner.*`·`reference.*` 재산정. sim $T_{close}$ 는 MJCF 게인에 의존하므로 실기 측정 전까지 S4 결론은 잠정 |
-| **토크 도출 가속 box 가 보수적** (D-16) | 받을 수 있는 공 속력이 낮아짐 | S4.4 에서 판정 (2026-09-22): 방향 가속 기준 **약 50 배 (`ur5e_p1b`) · 10 배 (`iiwa7_leap`)** 보수적이고 `ur5e_p1b` 는 이 box 로는 γ 창이 열리지 않는다 → D-16 개정 `[제안]` (plan §9) |
+| **토크 도출 가속 box 가 보수적** (D-16) | 받을 수 있는 공 속력이 낮아짐 | S4.4 에서 판정 (2026-09-22): 방향 가속 기준 **약 50 배 (`ur5e_p1b`) · 10 배 (`iiwa7_leap`)** 보수적이고 `ur5e_p1b` 는 이 box 로는 γ 창이 열리지 않는다 → D-16 개정 **채택** (결정 B · D-S8-18, plan §7.3·§9): 런타임 CLIK 은 `accel_constraint: dynamic`, 계획기의 도달시간 한계는 실행 envelope (실기 값은 S10) |
 | **접촉 충격량** | 손가락 관절·감속기 손상, UR5e 보호 정지, 공 튕겨나감 | L7 §4.7 충격량 예산, γ 최대화, `effort_limit_hold`, 저속 단계적 도입(L8 §9.2) |
 | 시계 오차 | 위치 오차 ≈ $\Vert v\Vert\,\delta$ | PTP, 시작 시 점검, D-2 수신 시 1회 변환, stale 판정 |
 | **sim 시간축 (D-3)** | clock 이 벌어지는 구간에서 wall 기준 예측과 sim 공이 어긋남. D-3 이 검증에서 떨어지면 S3·S5 시간 경로 재작업 | 시행별 clock 위상 오차 게이트(δ_max·pause, plan §5), S3.1a·S3.1b 검증 |
