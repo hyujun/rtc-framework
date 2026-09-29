@@ -75,6 +75,16 @@
 #        - takes what is left of the Stop budget: past
 #          RTC_VERIFY_FORMAT_DEADLINE_S (480s) the rest is listed as ungraded.
 #
+# Verdict reuse (what keeps an unchanged tree from being re-verified):
+#   - the WHOLE working tree is identical to the one this hook last passed at
+#     -> nothing is run (see "Nothing changed since the last pass");
+#   - a package whose change set is identical to the one it last built and
+#     tested green at -> its build/test is not repeated, every other gate still
+#     runs (see "Package verdict reuse").
+#   Both are keyed on content, never on time, and only a PASS is remembered.
+#   A measurement that holds the host (see workspace_holds) DEFERS build/test
+#   the way a running simulator does.
+#
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
 #   HEAD after running it through the project's formatter (clang-format for
@@ -239,6 +249,62 @@ advance_verify_base() {
   git rev-parse HEAD > "$VERIFY_BASE_FILE" 2>/dev/null || true
 }
 
+# ── Verdict reuse: state and helpers ────────────────────────────────────────
+#
+# Measured 2026-09-30 (one session, 16 turn ends over a tree that did not
+# change between them): every one of them rebuilt and re-tested the same two
+# packages, 3-5 minutes each, because the watermark above is a COMMIT -- an
+# uncommitted change stays "changed since the last pass" however often it has
+# passed, and committing it afterwards makes it changed once more. The verdict
+# of a tree is a function of its content, so the content is what is remembered.
+#
+# Kept in .git/ beside the watermark: per clone, never committed.
+#   rtc-verify-pass-tree   tree id of the working tree at the last full pass
+#   rtc-verify-pass-pkgs   "<pkg> <change-set key>" per package that built and
+#                          tested green
+#   rtc-verify-timing.log  one line per run: when, verdict, seconds, packages
+# RTC_VERIFY_NO_REUSE=1 switches both reuses off (every gate runs, nothing is
+# read from the two pass files; a pass is still recorded).
+GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null || echo .git)"
+PASS_TREE_FILE="$GIT_DIR_PATH/rtc-verify-pass-tree"
+PASS_PKGS_FILE="$GIT_DIR_PATH/rtc-verify-pass-pkgs"
+TIMING_LOG="$GIT_DIR_PATH/rtc-verify-timing.log"
+
+# Tree id of the working tree as it is now: tracked changes, untracked files,
+# deletions -- what `git add -A` would stage, written through a throwaway index
+# so the real one is not touched. Ignored files are left out, like the change
+# set below leaves them out; a nested repository counts by its HEAD, as it does
+# for `git diff`. Prints nothing when git cannot do it, which every caller
+# reads as "no reuse".
+#
+# The index starts EMPTY, so every file is hashed (about 0.3 s here). Starting
+# from a copy of the real index costs 25 ms and is wrong: git trusts a cached
+# entry whose size and mtime match unless the entry is as young as the index
+# file, and a copy is always younger than the entries in it -- so a same-size
+# edit made in the second the index was written (`return 0` -> `return 1`
+# right after a commit) read as unchanged. Measured in this hook's own suite.
+work_tree_id() {
+  local idx tree=""
+  idx=$(mktemp -u) || return 0
+  if GIT_INDEX_FILE="$idx" git add -A . >/dev/null 2>&1; then
+    tree=$(GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null || true)
+  fi
+  rm -f "$idx" "$idx.lock"
+  printf '%s' "$tree"
+}
+
+# $1 = verdict, $2 = packages built/tested, $3 = packages reused. Append-only,
+# trimmed to the last 500 runs, and never allowed to fail the hook.
+log_timing() {
+  {
+    printf '%s\t%s\t%ss\tbuilt=[%s]\treused=[%s]\n' \
+      "$(date -Is 2>/dev/null || date)" "$1" "$SECONDS" "${2# }" "${3# }" >> "$TIMING_LOG"
+    if [ "$(wc -l < "$TIMING_LOG")" -gt 600 ]; then
+      tail -n 500 "$TIMING_LOG" > "$TIMING_LOG.tmp" && mv "$TIMING_LOG.tmp" "$TIMING_LOG"
+    fi
+  } 2>/dev/null || true
+}
+
 # Changed files = tracked modifications vs $VERIFY_BASE, PLUS untracked new files.
 #
 # `git diff --name-only` alone cannot see a file that was never added,
@@ -313,6 +379,26 @@ if [ -n "$IN_FLIGHT" ]; then
     if [ "$n" -gt 5 ]; then echo "  (+$((n - 5)) more)"; fi
     echo "Everything changed since $(git rev-parse --short "$VERIFY_BASE" 2>/dev/null || echo "$VERIFY_BASE") is graded at the first turn end with none in flight."
   } >&2
+  exit 0
+fi
+
+# ── Nothing changed since the last pass ─────────────────────────────────────
+#
+# The working tree, byte for byte, is the one this hook last passed at: every
+# gate below would read the same input and the build would be a no-op followed
+# by the same tests. Committing a verified change, or ending a turn that only
+# talked, lands here.
+#
+# What the tree id does NOT cover is the world outside the repository: the
+# install tree, system packages, another repository in the workspace. The
+# watermark never covered those either -- a change there was not re-verified
+# before this existed unless the repository changed too.
+WORK_TREE=$(work_tree_id)
+if [ -n "$WORK_TREE" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] \
+   && [ "$(cat "$PASS_TREE_FILE" 2>/dev/null || true)" = "$WORK_TREE" ]; then
+  echo "verify-changes: the working tree is the one this gate last passed at (tree ${WORK_TREE:0:12}) -- nothing re-run." >&2
+  advance_verify_base
+  log_timing "pass-unchanged" "" ""
   exit 0
 fi
 
@@ -1289,6 +1375,84 @@ workspace_sim_rivals() {
     printf '%s: %s\n' "$pid" "$(cut -c1-120 <<<"$cmd")"
   done
 }
+# A measurement holding the host -- looked for with the sim rivals.
+#
+# The sim check above sees a simulator that is RUNNING. An evaluation that
+# launches one simulator per unit has none running between two units, for a
+# few seconds each time -- and a turn that ends on "unit N done" ends exactly
+# there. Observed 2026-09-30: nine turn ends in a row started `colcon test`
+# in that gap, each ran 2-3 minutes beside the next unit, and one unit was
+# aborted by its own host-load watch (RTF 0.944, `colcon test --packages-select
+# rtc_tools` named as the cause).
+#
+# So the driver of such a run says so: a line "<pid> [<start time>]" in
+# <workspace>/.rtc-verify-hold, where the start time is field 22 of
+# /proc/<pid>/stat. While a listed process is alive, build/test is deferred on
+# the simulator's terms (other gates run, watermark kept). A dead pid, or a
+# live one whose start time differs (the pid was reused), holds nothing, so a
+# driver that died without cleaning up cannot switch the gate off.
+# Prints "<pid>: <cmdline>".
+HOLD_FILE="$WORKSPACE/.rtc-verify-hold"
+workspace_holds() {
+  [ -f "$HOLD_FILE" ] || return 0
+  local pid start now cmd
+  while read -r pid start _; do
+    case "$pid" in '' | *[!0-9]*) continue ;; esac
+    [ -r "/proc/$pid/stat" ] || continue
+    if [ -n "${start:-}" ]; then
+      # comm may hold spaces; what follows the LAST ')' starts at field 3.
+      now=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
+      [ "$now" = "$start" ] || continue
+    fi
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-120) || cmd="?"
+    printf '%s: %s\n' "$pid" "${cmd% }"
+  done < "$HOLD_FILE"
+}
+
+# ── Package verdict reuse ───────────────────────────────────────────────────
+#
+# A package that built and tested green is not built and tested again while
+# the change set it was graded with is the same. The key is the content of
+# every changed file that lies in a PACKAGE -- this one or any other, source or
+# not -- so an edit anywhere in any package re-grades all of them, as before.
+# What the key leaves out is the repository-level files (docs/, agent_docs/,
+# .github/, .claude/, the root): no package's build reads them, and the turn
+# that fixes a plan document after the code passed is the common case this
+# serves. repo_scripts is the exception -- its tests run the validators and
+# this hook against the repository itself -- so its key takes every file.
+#
+# Only a green build AND a green test is remembered, per package, at the moment
+# it happens: a turn blocked by another gate keeps the verdicts it did earn.
+PKG_DIRS_CHANGED=$(printf '%s\n' "$CHANGED_PKGS" "$BUILD_PKGS" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
+change_set_key() {  # $1 = package the key is for
+  [ -n "${WORK_TREE:-}" ] || return 0
+  local f top blob
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    top=${f%%/*}
+    if [ "$1" != "repo_scripts" ] && [ "$1" != "PROC-3" ]; then
+      grep -qxF "$top" <<<"$PKG_DIRS_CHANGED" || continue
+    fi
+    blob=$(git rev-parse -q --verify "$WORK_TREE:$f" 2>/dev/null || echo deleted)
+    printf '%s %s\n' "$blob" "$f"
+  done <<<"$CHANGED" | git hash-object --stdin 2>/dev/null || true
+}
+pkg_verdict_reusable() {  # $1 = package, $2 = key
+  [ -n "$2" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] \
+    && grep -qxF "$1 $2" "$PASS_PKGS_FILE" 2>/dev/null
+}
+remember_pkg_verdict() {  # $1 = package, $2 = key
+  [ -n "$2" ] || return 0
+  {
+    grep -v "^$1 " "$PASS_PKGS_FILE" > "$PASS_PKGS_FILE.tmp" || true
+    printf '%s %s\n' "$1" "$2" >> "$PASS_PKGS_FILE.tmp"
+    mv "$PASS_PKGS_FILE.tmp" "$PASS_PKGS_FILE"
+  } 2>/dev/null || true
+}
+BUILT_PKGS=""
+REUSED_PKGS=""
+PROC3_KEY=""
+
 PROC3=$(echo "$BUILD_PKGS" | tr ' ' '\n' | grep -E '^(rtc_base|rtc_msgs)$' || true)
 if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
   # Emit the routing decision before discarding it. Blanking BUILD_PKGS is what
@@ -1301,12 +1465,43 @@ if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
   BUILD_PKGS=""
 fi
 
+# Packages whose verdict stands are taken out before anything is looked for:
+# a turn with nothing left to build neither blocks on a rival build nor defers
+# for a simulator. PROC-3 is all-or-nothing -- one broad build, one verdict,
+# keyed on every changed file.
+if [ -n "$PROC3" ]; then
+  PROC3_KEY=$(change_set_key PROC-3)
+  if pkg_verdict_reusable "PROC-3" "$PROC3_KEY"; then
+    REUSED_PKGS="$BUILD_PKGS"
+    PROC3=""
+    BUILD_PKGS=""
+  fi
+else
+  REMAINING=""
+  for pkg in $BUILD_PKGS; do
+    if pkg_verdict_reusable "$pkg" "$(change_set_key "$pkg")"; then
+      REUSED_PKGS="${REUSED_PKGS} ${pkg}"
+    else
+      REMAINING="${REMAINING} ${pkg}"
+    fi
+  done
+  BUILD_PKGS="$REMAINING"
+fi
+if [ -n "$REUSED_PKGS" ]; then
+  echo "verify-changes: build/test not repeated for [${REUSED_PKGS# }] -- green at this same change set." >&2
+fi
+
 RIVALS=""
 SIM_RIVALS=""
 SIM_DEFERRED=""
 if [ -n "$PROC3$BUILD_PKGS" ]; then
   RIVALS=$(workspace_build_rivals)
   SIM_RIVALS=$(workspace_sim_rivals)
+  HOLDS=$(workspace_holds)
+  if [ -n "$HOLDS" ]; then
+    SIM_RIVALS="${SIM_RIVALS:+$SIM_RIVALS
+}$HOLDS"
+  fi
 fi
 if [ -n "$SIM_RIVALS" ] && [ -z "$RIVALS" ]; then
   # Deferred, not failed: reported at the end (see workspace_sim_rivals).
@@ -1343,8 +1538,11 @@ elif [ -n "$PROC3" ]; then
       TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test failed:\n${FAILED_TESTS}\n"
     elif [ "$TEST_RC" -ne 0 ]; then
       TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' exited ${TEST_RC} with no parseable result summary — UNVERIFIED\n"
+    else
+      remember_pkg_verdict "PROC-3" "$PROC3_KEY"
     fi
   fi
+  BUILT_PKGS=" PROC-3"
 else
   for pkg in $BUILD_PKGS; do
     # 180s build bound mirrors the PROC-3 path's `timeout 300 ./build.sh full`.
@@ -1386,9 +1584,22 @@ else
       TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test NOT RUN — ${SECONDS}s of the Stop budget already spent and its ${TEST_BOUND_S}s bound would cross the ${RTC_VERIFY_TEST_DEADLINE_S:-480}s deadline — UNVERIFIED, run 'colcon test --packages-select ${pkg}' manually\n"
       continue
     fi
+    # RTC_VERIFY_TEST_CMD is the test-side twin of RTC_VERIFY_BUILD_CMD: an
+    # executable taking the package name, whose exit code stands for `colcon
+    # test`'s and whose output for `colcon test-result`'s. It is what lets the
+    # suite reach a GREEN package without a colcon workspace. Never set in
+    # normal operation.
+    BUILT_PKGS="${BUILT_PKGS} ${pkg}"
     TEST_RC=0
-    timeout "$TEST_BOUND_S" bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
-    RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)
+    if [ -n "${RTC_VERIFY_TEST_CMD:-}" ]; then
+      RESULT=$(timeout "$TEST_BOUND_S" "$RTC_VERIFY_TEST_CMD" "$pkg" 2>&1) || TEST_RC=$?
+      # `colcon test` exits 0 on a failing test and leaves the verdict to
+      # test-result; the stand-in's red is carried by its summary alone.
+      [ "$TEST_RC" -eq 1 ] && TEST_RC=0
+    else
+      timeout "$TEST_BOUND_S" bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
+      RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)
+    fi
 
     if [ "$TEST_RC" -eq 124 ]; then
       TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test TIMED OUT after ${TEST_BOUND_S}s — UNVERIFIED, treat as failure (raise the bound in verify-changes.sh or run 'colcon test' manually)\n"
@@ -1399,6 +1610,8 @@ else
       TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: ${FAILED_TESTS}\n"
     elif [ "$TEST_RC" -ne 0 ]; then
       TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test exited ${TEST_RC} with no parseable result summary — UNVERIFIED\n"
+    else
+      remember_pkg_verdict "$pkg" "$(change_set_key "$pkg")"
     fi
   done
 fi
@@ -1585,7 +1798,7 @@ fi
 
 SIM_NOTE=""
 if [ -n "$SIM_DEFERRED" ]; then
-  SIM_NOTE="Build/test deferred -- a simulator from this colcon workspace (${WORKSPACE}) is running:\n$(sed -n '1,3p' <<<"$SIM_RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/  /')\nBuilding beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). Everything changed since $(git rev-parse --short "$VERIFY_BASE" 2>/dev/null || echo "$VERIFY_BASE") is built and tested at the first turn end with no sim running. Do not stop a sim that is not yours to get past this.\n"
+  SIM_NOTE="Build/test deferred -- a simulator from this colcon workspace (${WORKSPACE}) is running, or a measurement holds the host (${HOLD_FILE}):\n$(sed -n '1,3p' <<<"$SIM_RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/  /')\nBuilding beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). Everything changed since $(git rev-parse --short "$VERIFY_BASE" 2>/dev/null || echo "$VERIFY_BASE") is built and tested at the first turn end with no sim running. Do not stop a sim or a measurement that is not yours to get past this.\n"
 fi
 
 if [ -n "$REPORT" ]; then
@@ -1596,6 +1809,7 @@ if [ -n "$REPORT" ]; then
     REPORT="${REPORT}Doc checklist (reminder — not itself blocking):\n${CHECKLIST}\n"
   fi
   echo -e "${REPORT}See agent_docs/modification-guide.md for the full checklist." >&2
+  log_timing "blocked" "$BUILT_PKGS" "$REUSED_PKGS"
   exit 2
 fi
 
@@ -1609,8 +1823,16 @@ fi
 if [ -n "$SIM_NOTE" ]; then
   # Deferral: the turn ends, the watermark stays.
   echo -e "${SIM_NOTE}" >&2
+  log_timing "deferred" "$BUILT_PKGS" "$REUSED_PKGS"
   exit 0
 fi
 
+# A full pass. The tree id taken at the start is remembered only if the tree is
+# still that one: something that wrote the checkout while the gates ran was
+# not graded.
+if [ -n "${WORK_TREE:-}" ] && [ "$(work_tree_id)" = "$WORK_TREE" ]; then
+  printf '%s\n' "$WORK_TREE" > "$PASS_TREE_FILE" 2>/dev/null || true
+fi
 advance_verify_base
+log_timing "pass" "$BUILT_PKGS" "$REUSED_PKGS"
 exit 0
