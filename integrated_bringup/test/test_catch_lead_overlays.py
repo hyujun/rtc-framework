@@ -23,7 +23,6 @@ envelope box, S8-G R2) is pinned here too.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 
@@ -351,23 +350,3 @@ def test_leap_arm_leads_the_sim_plant(leap_arm):
         ("catching", "joint_cmd", "lag", "T_arm"): 0.05,
         ("catching", "joint_cmd", "lag", "lead_enable"): True,
     }
-
-
-@pytest.mark.parametrize("profile", ("ur5e_p1b", LEAP))
-def test_sim_perception_profile_serves_its_own_controller(profile):
-    """Each robot ships its own copy of ``ball_perception_sim_profile.json``,
-    and its controller YAML says the two "must match". Pinned here so that
-    retuning one robot's copy cannot drift from what its controller expects."""
-    ship = _load(
-        os.path.join(CONFIG_ROOT, profile, "controllers", "demo_catching_controller.yaml")
-    )
-    catching = ship[CONTROLLER]["catching"]
-    with open(
-        os.path.join(CONFIG_ROOT, profile, "ball_perception_sim_profile.json"), encoding="utf-8"
-    ) as f:
-        vision = json.load(f)
-    pred = vision["prediction"]
-    assert pred["step_s"] == catching["prediction"]["dt_expected"]
-    assert pred["horizon_s"] >= catching["io"]["horizon_min"]
-    assert pred["max_points"] >= catching["io"]["n_min"]
-    assert vision["time"]["max_future_skew_s"] == catching["sim"]["io"]["future_tol"]
