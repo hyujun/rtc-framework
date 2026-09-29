@@ -35,6 +35,7 @@ rtc_tools/
 │   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4) · `--dump` 전 지평·공분산·innovation·nis (S8-A)
 │   │   ├── camera_relay.py              ← 카메라 lane 릴레이 + 드롭·지연 주입 (S3.4)
 │   │   ├── catching_trials.py           ← 포구 sim 시행 오프라인 평가: τ̂·t_c 분해·truth 성공·Wilson·D-3 공변량·접촉 (S8-A) · 무효 판정·ITT (S8-E)
+│   │   ├── catching_decel.py            ← DECEL 정지 구간 지표 (관절 가속·jerk 피크, 정지 거리, 한계 여유) · 같은 투척의 복제 불일치율 (MPC 계획 E0-F02)
 │   │   ├── catching_pool.py             ← catching_trials 출력 여러 unit·arm 합산: 보충 절단·G8-D 판정·McNemar·D-3 S3.1b (S8-E)
 │   │   └── catching_vision.py           ← G8-B (예측 NEES, 발사~첫 접촉 창 결합)·G8-C2 (A/B, probe dump 정확 결합) 순수 함수 (S8-E)
 │   ├── conversion/
@@ -79,6 +80,7 @@ rtc_tools/
 | `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
 | `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
 | `ros2 run rtc_tools catching_trials` | `analysis.catching_trials` | `catching_sim_trials` 한 run (세션 CSV + trials dir + sim lane) → 시행별 표·요약 JSON (S8-A) |
+| `ros2 run rtc_tools catching_decel` | `analysis.catching_decel` | unit 들의 DECEL 정지 구간 지표 (시행별 표·요약 JSON) · `--a`/`--b` 로 같은 투척의 2×2 표·불일치율·paired 비열등 시행 수 (MPC 계획 E0-F02) |
 | `ros2 run rtc_tools catching_pool` | `analysis.catching_pool` | arm 별 `catching_trials` 출력 dir 여러 개 → 합산 G8-D 판정·ITT·McNemar·D-3 S3.1b (S8-E) |
 
 **Python 의존성**: `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `numpy`, `matplotlib`, `pandas`, `scipy`, `mujoco`
@@ -450,6 +452,59 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
   심은 unit 에서 각각을 복원 (τ ±5 %, 잔여 = 이론값, envelope = 램프 가속), 닫힌해 도달시간 7 케이스, 미러 없는 경우의
   profile → sim.yaml → overlay 합성 순서, `adopted: false` box 거부, 관절별 box 초과 판정, lane 행 누락·헤더만 있는 lane,
   다른 팔 unit 의 envelope 합치기 거부, CLI end-to-end
+
+### `catching_decel.py` — DECEL 정지 구간 지표 (MPC · dual-arm 계획 E0-F02)
+
+포구 뒤 팔을 세우는 방식 (v1 의 closed-form 가상 목표, MPC 궤적의 꼬리) 을 같은 잣대로 재는 도구다. 입력은 unit
+(`catching_sim_trials` 출력 + 그 `catching_trials` 평가 `<unit>/ct`) 과 컨트롤러 세션이고, 읽는 것은 포구 diag 의
+`mode`·`q_cmd_*`·`q_meas_*`·`ref_xd_*` 와 팔 device lane 의 `effort_*` 다. `<unit>[:<session>]` (세션 기본
+`<unit>/session`, 없으면 `<unit>/session_copy`).
+
+```bash
+ros2 run rtc_tools catching_decel units/p1b_601 units/p1b_602 --config-dir $CFG --overlay <overlay.yaml> --out decel/
+# A/B 의 두 arm: 2×2 표 · 불일치율 · 시행 수, 합산은 arm 별로만
+ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --config-dir $CFG --overlay <overlay.yaml> --out decel/
+# 같은 arm 을 같은 seed 로 두 번 돌린 두 집합 (복제): 둘을 합친 합산 블록도 낸다
+ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --same-arm --config-dir $CFG --out decel/
+# → decel/{decel_summary.json, decel_trials.csv}; 리포트는 stdout
+```
+
+- **창은 mode 가 아니라 손의 task pose 가 정한다**: 시행의 첫 `DECEL` tick 부터, 측정 catch frame 이 task pose 에서
+  정지한 첫 tick 까지 — 선속도가 `--rest-speed` (기본 0.02 m/s) 아래**이고** 접근축 (catch frame +z) 의 각속도가
+  `--rest-axis-rate` (0.2 rad/s — 0.1 m 지렛대에서 0.02 m/s) 아래인 상태가 `--rest-s` (0.05 s) 동안 이어지는 첫 구간의
+  첫 tick. 첫 `RETREAT` tick 을 넘지 않고, 그 전에 멈추지 못하면 `rest_reached = false` 다. v1 은 가상 목표가 멈추는
+  tick 에 `DECEL` 을 떠나지만 팔은 서보 지연만큼 더 움직이므로 mode 길이 (`mode_decel_s`) 는 참고값이다
+- **관절이 아니라 task pose 인 이유**: 포구 컨트롤러는 manipulability 를 올리는 null-space 운동을 더하므로 task pose 가
+  멈춘 뒤에도 관절은 계속 움직인다. 관절 속도로 판정하면 정지가 아니라 `HOLD` 의 길이를 읽게 된다. task 는 catch frame 의
+  위치와 접근축이고 **접근축 둘레의 roll 은 task 행이 아니다** — roll 도 null space 에 속하므로 판정에 넣지 않는다.
+  참고값으로 관절 기준 (`joint_rest_reached`, `--joint-rest-speed`) 과 roll 을 포함한 frame 전체 각속도
+  (`angular_speed_*`) 를 병기한다
+- **가속·jerk 피크**: 창 안 관절·tick 최댓값, 명령과 측정 각각. tick 격자의 `np.gradient` 미분을 `--smooth-ticks`
+  (기본 5 — `catching_arm_budget` 과 같은 값) box 평균한다. v1 의 기준 가속은 진입과 정지에서 계단이라 평활하지 않은
+  jerk 는 tick 길이의 함수다 — `jerk_cmd_raw_peak` 는 참고값이다. 미분은 창 앞뒤 25 tick 을 붙여 구한 뒤 자른다
+- **정지 거리·시간**: 측정 catch frame 의 변위와 경로 길이, `t(k1) − t(k0)`. 닫힌식 `‖ẋ_s‖²/(2 a_dec)` (진입 tick 의
+  `ref_xd`, `supervisor.decel.a_dec`) 는 참고값 — diag 에 `ref_xd_*` 가 없으면 NaN
+- **한계 여유**: 위치 한계까지의 최소 거리, `|q̇_meas|/q̇_max`·`|effort|/τ_max` 의 최댓값. 위반은 여유 < 0 또는 비 > 1 인 시행 수.
+  정격은 `catching_arm_budget._device_limits` 와 같은 합성 (`_base.yaml` 위에 `sim.yaml`), `a_dec` 는 컨트롤러 YAML →
+  `sim.yaml` override → `--overlay` 순서 (ARCH-1 — 코드에 로봇 상수 없음). 넷 중 하나라도 없으면 거부한다
+- **요약**: 시행별 값의 p50/p95/max 를 unit·합산, 전체와 truth 성공·실패로 나눠. `DECEL` 에 들어가지 않은 시행은 지표에서
+  빠지고 성공률 분모에는 남는다 (abort 는 실패다). 한 시행의 두 번째 `DECEL` 구간은 세지 않는다. log 가 `DECEL` 안에서
+  끝나는 시행 (마지막 시행의 abort) 은 창이 마지막 tick 에서 끝난다
+- **합산 블록은 한 arm 의 것이다**: `pooled` 는 위치 인자로 준 unit 만 합친다. `--a`/`--b` 는 집합마다 `pooled_a`·`pooled_b`
+  를 내고, 둘을 합친 `pooled` 는 `--same-arm` (두 집합이 같은 arm 의 복제) 일 때만 낸다 — A/B 의 두 arm 을 합친 분포는
+  어느 쪽의 것도 아니다
+- **`--a` / `--b`**: `(kind, seed, sample_idx)` 로 짝지은 truth 성공의 2×2 표, 불일치율 ψ 와 Wilson 구간, McNemar 정확 검정,
+  그리고 paired 단측 비열등 검정이 요구하는 쌍 수 `(z_α + z_β)² (ψ − d²)/(δ + d)²` 를 `--margin` 마다 ψ̂ 와 ψ 상한에서.
+  같은 arm 을 두 번 돌린 ψ 가 게이트 G-1 의 시행 수 입력이다 (`docs/dynamic_catching/MPC_DUALARM_PLAN.md` §1).
+  두 집합에 공통 throw 가 없거나 (seed 가 다름) 불일치 쌍이 하나도 없으면 그 쌍 수는 `null` 이다 — 0 은 "쌍이 필요 없다" 로 읽힌다.
+  truth 셀은 `catching_hand_near` 와 같은 규칙으로 읽는다 (`True`·`true`·`1`, 앞뒤 공백·대소문자 무시)
+- 합성 positive control (`test/test_catching_decel.py`, 42 케이스): `q̈ = −A sin²(πt/T)` 로 멈추는 관절과 지렛대 FK 에서
+  피크 가속 A · 피크 jerk Aπ/T · 정지 거리 · 한계 여유 · 심은 토크 비를 복원, 심은 값을 2 배·½ 배 하면 지표도 따라 움직임,
+  null-space 운동 (관절 하나가 접근축 둘레로 roll) 이 있어도 task pose 의 정지를 같은 tick 에서 읽음, 접근축이 계속
+  도는 팔은 정지가 아님, 접근축이 위치보다 늦게 멈추면 창이 그때 끝남, 멈추지 않는 팔은 한계 tick 에서 끝나고 그렇게 보고, 창 밖 (진입 전·RETREAT) 의 값은
+  피크가 아님, 1 tick 가속 bump 는 평활 창으로 나뉨, 2×2 표와 손 계산 시행 수, `a_dec` 합성 순서, CLI end-to-end,
+  log 가 `DECEL` 안에서 끝나는 시행, 공통 throw 가 없는 두 집합, 불일치 0, 두 arm 을 합치지 않는 기본값과 `--same-arm`,
+  실제 FK 를 타는 파일럿 세션 (pinocchio 없으면 skip)
 
 ### `catching_wait_pose_search.py` — 대기 자세 탐색 (dynamic_catching S8-I)
 

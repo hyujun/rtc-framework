@@ -930,7 +930,9 @@ ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dis
 | `abort` | 그 투척까지 기록하고 런을 끝낸다 — **exit code 3** | 위와 같고 `aborted: true` |
 | `off` | 재지 않는다 | 위 키가 하나도 생기지 않는다 |
 
-**성공률 판정에 쓰는 unit 은 `abort` 로 돌리고, exit code 3 이면 같은 seed 로 unit 전체를 다시 돌린다** — 시행 단위 무효 + 보충 투척은 모집단을 바꾸므로 하지 않는다 (D-S8-17). `detections[].processes` 는 그 순간 host 에 있던 `colcon build|test`·`pytest`·`ctest` 프로세스 (러너 자신의 조상·자손은 제외) 로, 원인 후보일 뿐 판정이 아니다: 목록이 비어도 sim 이 느렸으면 부하다. sim 을 `max_rtf` ≠ 1 로 띄운 실행은 `--host-rtf-min` 을 그에 맞추거나 `off` 로 한다.
+**unit 을 여럿 이어 돌리는 드라이버는 `repo_scripts/scripts/with_verify_hold.sh <드라이버> [인자…]` 로 띄운다.** 이 wrapper 가 도는 동안 `<workspace>/.rtc-verify-hold` 에 자기 `<pid> <start time>` 줄이 있고, 드라이버가 끝나면 그 줄을 지운다 (형식은 hook 의 `workspace_holds` 가 SSoT — 드라이버가 직접 쓰지 않는다). Claude Code 의 Stop hook 은 sim 이 돌면 빌드·테스트를 미루지만 unit 사이에는 sim 이 없어, 그 틈에서 끝난 턴이 `colcon test` 를 다음 unit 옆에서 돌린다 (2026-09-30 실측 — 16 unit 중 8 개). hold 가 그 틈을 덮는다.
+
+**성공률 판정에 쓰는 unit 은 `abort` 로 돌리고, exit code 3 이면 같은 seed 로 unit 전체를 다시 돌린다** — 시행 단위 무효 + 보충 투척은 모집단을 바꾸므로 하지 않는다 (D-S8-17). `detections[].processes` 는 그 순간 host 에 있던 `colcon build|test`·`pytest`·`ctest` 프로세스 (러너 자신의 조상·자손은 제외; 공백이 든 인자 — 셸의 `-c` 스크립트·커밋 메시지 — 는 `<text>` 로 바꿔 읽으므로 그 이름을 *언급만* 하는 프로세스는 빠진다. 인자가 하나뿐인 command line 은 그대로 읽는다 — 제목을 고쳐 쓴 프로세스다) 로, 원인 후보일 뿐 판정이 아니다: 목록이 비어도 sim 이 느렸으면 부하다. sim 을 `max_rtf` ≠ 1 로 띄운 실행은 `--host-rtf-min` 을 그에 맞추거나 `off` 로 한다.
 
 `trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다 (시행 중앙값이라 sim 이 벽시계보다 느리면 흐른다 — `rtc_tools` `catching_trials` 는 clock lane 이 있으면 쓰지 않는다). `truth_csv` 는 trials dir 기준 파일 이름이다 (절대경로였던 예전 기록은 dir 을 옮기고 같은 `<out>` 으로 다시 돌리면 다른 run 의 파일을 가리켰다). 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다. `armed_at_throw` 는 투척 직전 컨트롤러가 발행한 무장 상태다. demo_controller_gui 의 Catching 패널은 같은 기준 (RETREAT 진입 때의 판정) 으로 이 패널이 본 시행 수를 판정별로 센다 (`this panel: attempts N: …`, 패널을 다시 띄우면 새로 센다).
 

@@ -26,6 +26,7 @@ from integrated_bringup.catching_sim_trials import (
     HOST_WATCH_MODES,
     HostWatch,
     busy_processes,
+    command_line,
     parse_args,
     process_family,
     process_table,
@@ -201,6 +202,39 @@ def test_the_runner_does_not_report_its_own_family():
     assert busy_processes(table, me) == [
         "30 /usr/bin/python3 /usr/bin/colcon build --packages-up-to rtc_tools",
         "31 /usr/bin/ctest",
+    ]
+
+
+def test_a_command_that_only_mentions_a_test_runner_is_not_one():
+    # A shell left behind by another session: its -c script greps for the
+    # runners' names, it runs none of them.
+    watcher = command_line(
+        b"/bin/bash\0-c\0while true; do ps -eo args | grep -E 'colcon test|ctest|pytest'; "
+        b"sleep 10; done\0"
+    )
+    commit = command_line(b"git\0commit\0-m\0fix the pytest fixture\0")
+    real = command_line(b"/usr/bin/python3\0/usr/bin/colcon\0test\0--packages-select\0rtc_tools\0")
+    table = [
+        (1, 0, "/sbin/init"),
+        (50, 1, watcher),
+        (51, 1, commit),
+        (52, 1, real),
+        (53, 52, command_line(b"/usr/bin/python3\0-m\0pytest\0--tb=short\0")),
+    ]
+    assert watcher == "/bin/bash -c <text>"
+    assert busy_processes(table, os.getpid()) == [
+        "52 /usr/bin/python3 /usr/bin/colcon test --packages-select rtc_tools",
+        "53 /usr/bin/python3 -m pytest --tb=short",
+    ]
+
+
+def test_a_process_that_rewrote_its_title_is_read_by_that_title():
+    # setproctitle leaves one string without separators: it is the command,
+    # not a text the command carries.
+    title = command_line(b"colcon test --packages-select rtc_tools\0")
+    assert title == "colcon test --packages-select rtc_tools"
+    assert busy_processes([(1, 0, "/sbin/init"), (60, 1, title)], os.getpid()) == [
+        "60 colcon test --packages-select rtc_tools"
     ]
 
 

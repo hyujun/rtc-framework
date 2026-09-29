@@ -341,17 +341,20 @@ def active_segments(mode: np.ndarray, min_ticks: int = MIN_SEGMENT_TICKS) -> lis
     return out
 
 
+def box_smooth(x: np.ndarray, window: int) -> np.ndarray:
+    """Column-wise box average, same length (``window`` ≤ 1 returns ``x``)."""
+    if window <= 1:
+        return x
+    kernel = np.ones(window) / window
+    return np.column_stack([np.convolve(x[:, j], kernel, mode="same") for j in range(x.shape[1])])
+
+
 def smoothed_accel(
     q_cmd: np.ndarray, dt: float, window: int = ACCEL_SMOOTH_TICKS
 ) -> tuple[np.ndarray, np.ndarray]:
     """(q̇, q̈) of a command trajectory; q̈ box-averaged over ``window`` ticks (QP output is stepwise)."""
     qd = np.gradient(q_cmd, dt, axis=0)
-    qdd = np.gradient(qd, dt, axis=0)
-    kernel = np.ones(window) / window
-    qdd_s = np.column_stack(
-        [np.convolve(qdd[:, j], kernel, mode="same") for j in range(q_cmd.shape[1])]
-    )
-    return qd, qdd_s
+    return qd, box_smooth(np.gradient(qd, dt, axis=0), window)
 
 
 def _diag_columns(header: Sequence[str], joints: Sequence[str]) -> list[str]:
