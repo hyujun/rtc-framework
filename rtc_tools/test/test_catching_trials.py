@@ -1951,3 +1951,144 @@ def test_gate_map_truth_is_one_predicate_for_session_and_pool():
     assert (gm["truth_open"]["successes"], gm["truth_open"]["n"]) == (1, 2)
     no_radius = ct.gate_map_truth(rows, with_truth=False)
     assert no_radius["truth_whole"] == "NOT_EVALUATED(no hold radius)"
+
+
+# ── t_c axis flag (#602): the t_c column under a sim slower than the wall ────
+
+FLIGHT_S = 0.7  # launch → the ball is at p_c (sim / stamp axis)
+COMMIT_S = 0.3  # launch → the commit tick
+
+
+def _tc_axis_trials(tmp: Path):
+    """The slow-sim session with one committed plan per trial, built from the
+    definitions: the plan's t_c is a ball STAMP (launch anchor + FLIGHT_S), and
+    the diag's ``plan_t_c_s`` is that instant minus the tick's steady now.
+    Returns (lane, bridge, [(trial, ctx, truth, rtf)])."""
+    lane_path, trials_dir, steady_at = _slow_sim_session(tmp)
+    trials, doc = ct.load_trials(trials_dir)
+    lane = ct.load_clock_lane(lane_path, trials)
+    lane.c_s = C_TRUE
+    trials = ct.align_trials_to_lane(trials, {r["idx"]: r for r in doc["records"]}, lane)
+    wake, lead, out = {}, {}, []
+    p_c = _ball(FLIGHT_S)[0]
+    for k, (launch, rtf) in enumerate(zip(LAUNCH_SIMS, TRIAL_RTF, strict=True)):
+        sims = np.arange(launch, launch + 1.0, DT)
+        n = len(sims)
+        t_c_steady = steady_at(launch) + FLIGHT_S  # stamp t_c − K_WALL
+        lead[k + 1] = 0.5
+        wake[k + 1] = t_c_steady - 0.5
+        mode = np.where(sims >= launch + COMMIT_S - DT / 2, ct.MODE_COMMITTED, ct.MODE_APPROACH)
+        arm = np.tile(p_c, (n, 1))  # the arm waits AT p_c: nothing is wrong with this catch
+        ctx = ct.TrialContext(
+            t=sims - C_TRUE,
+            mode=mode,
+            hand_phase=np.zeros(n, int),
+            plan_id=np.full(n, k + 1),
+            plan_t_c=np.array([t_c_steady - steady_at(s) for s in sims]),
+            plan_p_c=arm,
+            plan_gamma_f=np.full(n, 0.4),
+            ref=arm,
+            ref_valid=np.ones(n, bool),
+            ref_saturated=np.zeros(n, bool),
+            q_cmd=arm,
+            q_meas=arm,
+            fk=_IdentityFk(),
+        )
+        tt = np.arange(0.0, 1.0, 0.01)
+        truth = ct.Truth(launch - C_TRUE + tt, _ball(tt), _V0 + np.outer(tt, _G))
+        out.append((trials[k], ctx, truth, rtf))
+    return lane, ct.PlanBridge(wake_s=wake, lead_s=lead, snapshot={}), out
+
+
+def test_a_slow_sim_row_says_its_tc_column_is_off_the_catch_instant(tmp_path):
+    lane, bridge, trials = _tc_axis_trials(tmp_path)
+    for trial, ctx, truth, rtf in trials:
+        row = ct.decompose_at_tc(ctx, truth, window_s=0.12)
+        flag = ct.tc_axis_columns(ctx, trial, row, None, bridge, lane, None)
+        # The commit tick counted the remainder on a steady clock that had run
+        # COMMIT_S / rtf since the launch, the sim only COMMIT_S.
+        expected_ms = COMMIT_S * (1.0 / rtf - 1.0) * 1e3
+        assert flag["tc_stamp_minus_tc_ms"] == pytest.approx(expected_ms, abs=4.0)
+        assert flag["tc_axis_source"] == "planner_wake"
+        assert flag["tc_axis"] == ("ok" if rtf == 1.0 else "shifted")
+        assert trial.idx is not None and row["t_c"] + flag[
+            "tc_stamp_minus_tc_ms"
+        ] * 1e-3 == pytest.approx(truth.t[0] + FLIGHT_S, abs=4e-3)
+
+
+def test_positive_control_the_decomposition_alone_does_not_say_so(tmp_path):
+    """What #602 reported: the arm is AT p_c when the ball is, and the slow
+    trial's columns still read a miss of decimetres with nothing to mark it."""
+    lane, bridge, trials = _tc_axis_trials(tmp_path)
+    by_rtf = {rtf: ct.decompose_at_tc(ctx, truth, window_s=0.12) for _, ctx, truth, rtf in trials}
+    assert by_rtf[1.0]["pred_mm"] == pytest.approx(0.0, abs=1.0)
+    assert by_rtf[1.0]["total_mm"] == pytest.approx(0.0, abs=1.0)
+    assert by_rtf[0.5]["pred_mm"] > 500.0 and by_rtf[0.5]["total_mm"] > 500.0
+    assert by_rtf[0.8]["pred_mm"] > 100.0
+    assert not any(key.startswith("tc_axis") or "stamp" in key for key in by_rtf[0.5])
+
+
+def test_a_row_without_a_stamp_axis_source_is_unknown_not_ok(tmp_path):
+    lane, bridge, trials = _tc_axis_trials(tmp_path)
+    trial, ctx, truth, _ = trials[3]  # the slowest
+    row = ct.decompose_at_tc(ctx, truth, window_s=0.12)
+    for kwargs in ({"bridge": None, "lane": lane}, {"bridge": bridge, "lane": None}):
+        flag = ct.tc_axis_columns(ctx, trial, row, None, kwargs["bridge"], kwargs["lane"], None)
+        assert flag["tc_axis"] == "unknown" and flag["tc_axis_source"] == ""
+        assert math.isnan(flag["tc_stamp_minus_tc_ms"])
+    # No commit: no t_c column to judge.
+    ctx.mode[:] = ct.MODE_APPROACH
+    none = ct.tc_axis_columns(ctx, trial, {}, None, bridge, lane, None)
+    assert none["tc_axis"] == ""
+
+
+def test_the_threshold_is_the_settings_value(tmp_path):
+    lane, bridge, trials = _tc_axis_trials(tmp_path)
+    trial, ctx, truth, rtf = trials[2]  # RTF 0.8: 75 ms
+    row = ct.decompose_at_tc(ctx, truth, window_s=0.12)
+    assert ct.tc_axis_columns(ctx, trial, row, None, bridge, lane, None, 100.0)["tc_axis"] == "ok"
+    assert (
+        ct.tc_axis_columns(ctx, trial, row, None, bridge, lane, None, 50.0)["tc_axis"] == "shifted"
+    )
+    assert ct.Settings().tc_shift_max_ms == ct.TC_SHIFT_MAX_MS == 5.0
+
+
+def test_golden_tc_axis_is_ok_on_every_trial_and_the_medians_are_the_full_ones(pilot):
+    assert [r["tc_axis"] for r in pilot.rows] == ["ok"] * 25
+    assert {r["tc_axis_source"] for r in pilot.rows} == {"planner_wake"}
+    ta = pilot.summary["tc_axis"]
+    assert (ta["n_ok"], ta["n_shifted"], ta["n_unknown"]) == (25, 0, 0)
+    assert ta["shifted_trials"] == []
+    assert ta["shift_ms_abs_p50_p95_max"][2] < 2.0
+    for key in ct.TC_COLUMN_KEYS:
+        assert pilot.summary["medians"][key] == pytest.approx(ct._median(pilot.rows, key))
+
+
+def test_shifted_rows_are_left_out_of_the_tc_medians_and_counted(pilot):
+    import copy
+
+    rows = copy.deepcopy(pilot.rows)
+    shifted = list(range(0, 25, 2))  # 13 of 25: included, they would BE the median
+    for i in shifted:
+        rows[i]["tc_axis"] = "shifted"
+        rows[i]["tc_stamp_minus_tc_ms"] = 120.0
+        for key in ct.TC_COLUMN_KEYS:
+            rows[i][key] = 1e4
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    s = pilot.summary
+    summary = ct._summarise(
+        rows, [], ct.Settings(n_boot=50), None, None, profile, s["arm_joints"], s["dt_s"], "test"
+    )
+    kept = [r for i, r in enumerate(pilot.rows) if i not in shifted]
+    for key in ct.TC_COLUMN_KEYS:
+        assert summary["medians"][key] == pytest.approx(ct._median(kept, key))
+        assert summary["medians"][key] < 1e3
+    # Columns that do not read the t_c column keep every valid trial.
+    assert summary["medians"]["first_plan_s"] == pytest.approx(s["medians"]["first_plan_s"])
+    assert summary["medians"]["gamma_f_planned"] == pytest.approx(s["medians"]["gamma_f_planned"])
+    ta = summary["tc_axis"]
+    assert (ta["n_ok"], ta["n_shifted"], ta["n_unknown"]) == (12, 13, 0)
+    assert ta["shifted_trials"] == [rows[i]["idx"] for i in shifted]
+    line = ct.tc_axis_line(ta)
+    assert "shifted 13" in line and "LEFT OUT" in line
+    assert "LEFT OUT" not in ct.tc_axis_line(pilot.summary["tc_axis"])
