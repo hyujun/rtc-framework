@@ -52,6 +52,20 @@ Throw series (``--dist``):
   points with ``--seed`` (``HAND_DESIGNS`` is the SSoT of the factors). A draw
   the table floor refuses is redrawn, at most ``HAND_LHS_MAX_DRAWS_PER_THROW``
   times per accepted throw.
+
+Host load (``--host-watch``, #601): a sim that runs slower than the wall (RTF < 1,
+another session's build or test on the same host) makes the ball's stamp fall
+behind the controller's steady clock, and the controller drops a healthy input
+as ``BALL_STALE`` — the success rate then measures the host, not the catch
+(plan D-S8-17). After every throw the runner reads the sim's speed off the
+truth rows it already records (stamp span / receive span, the slowest
+``--host-window`` of sim time) and judges it against ``--host-rtf-min``:
+``warn`` (default) records and logs, ``abort`` also ends the run with exit code
+``EXIT_HOST_BUSY`` so the caller re-runs the unit with the same seed — a
+per-trial invalidation with a top-up throw would change the population
+(D-S8-17). ``off`` measures nothing and writes no key. The build / test
+processes found on the host at that moment are recorded as the likely cause,
+never as the verdict.
 """
 
 from __future__ import annotations
@@ -63,7 +77,9 @@ import json
 import math
 import os
 import random
+import re
 import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import yaml
@@ -668,6 +684,195 @@ def _cycle_closed(modes: list[str]) -> bool:
     return "ARMED" in modes[modes.index("RETREAT") + 1 :]
 
 
+# ── host load watch (#601) ────────────────────────────────────────────────────
+
+HOST_WATCH_MODES = ("off", "warn", "abort")
+# The analyser's covariate (rtc_tools catching_trials ``rtf_trial_min``) and the
+# D-S8-17 re-run rule use the same window and threshold; a runner that judged
+# differently would pass runs the analyser calls loaded.
+HOST_WATCH_RTF_MIN = 0.95
+HOST_WATCH_WINDOW_S = 0.25
+# What the S8-E driver looked for. A cause to report, not the verdict: the RTF
+# is the symptom whatever slowed the sim.
+HOST_BUSY_PATTERN = r"\bcolcon\s+(build|test)\b|\bpytest\b|\bctest\b"
+EXIT_HOST_BUSY = 3
+
+
+def truth_rtf(rows: Sequence[Sequence[float]], window_s: float = HOST_WATCH_WINDOW_S) -> dict:
+    """Sim speed over one trial from its truth rows ``(wall_recv_s, stamp_s, ...)``.
+
+    ``host_rtf_min`` is the slowest ``window_s`` window of SIM time (stamp span /
+    receive span; a window needs two rows spanning half of it — the analyser's
+    ``trial_rtf`` rule), ``host_lag_max_ms`` the largest ``receive − stamp``,
+    i.e. the oldest the ball looked to a steady-clock reader. None when the
+    rows decide nothing (an unlaunched ball is rule ``not_launched``, not load).
+    """
+    out = {"host_rtf_min": None, "host_lag_max_ms": None}
+    pairs = [(float(r[0]), float(r[1])) for r in rows]
+    pairs = [(w, s) for w, s in pairs if math.isfinite(w) and math.isfinite(s)]
+    if len(pairs) < 2 or not window_s > 0.0:
+        return out
+    out["host_lag_max_ms"] = max(w - s for w, s in pairs) * 1e3
+    s0 = pairs[0][1]
+    windows: dict[int, list[tuple[float, float]]] = {}
+    for w, s in pairs:
+        windows.setdefault(math.floor((s - s0) / window_s), []).append((w, s))
+    rtfs = []
+    for win in windows.values():
+        ds = win[-1][1] - win[0][1]
+        dw = win[-1][0] - win[0][0]
+        if len(win) >= 2 and ds >= window_s / 2 and dw > 0.0:
+            rtfs.append(ds / dw)
+    if rtfs:
+        out["host_rtf_min"] = min(rtfs)
+    return out
+
+
+def process_table() -> list[tuple[int, int, str]]:
+    """``(pid, ppid, command line)`` of every process readable in /proc."""
+    table = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat") as f:
+                # comm may hold spaces and parentheses; ppid is the second
+                # field after the LAST ')'.
+                ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+            with open(f"/proc/{name}/cmdline", "rb") as f:
+                args = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
+        except (OSError, ValueError, IndexError):
+            continue  # gone between listdir and open
+        table.append((int(name), ppid, args))
+    return table
+
+
+def process_family(table: Sequence[tuple[int, int, str]], pid: int) -> set[int]:
+    """``pid``, its ancestors and its descendants."""
+    parent = {p: pp for p, pp, _ in table}
+    family = {pid}
+    up = pid
+    while up in parent and parent[up] not in family and parent[up] > 0:
+        up = parent[up]
+        family.add(up)
+    ancestors = set(family)
+    grew = True
+    down = {pid}
+    while grew:
+        grew = False
+        for p, pp, _ in table:
+            if pp in down and p not in down and p not in ancestors:
+                down.add(p)
+                grew = True
+    return family | down
+
+
+def busy_processes(
+    table: Sequence[tuple[int, int, str]], own_pid: int, pattern: str = HOST_BUSY_PATTERN
+) -> list[str]:
+    """Build / test processes on the host that are not the runner's own family.
+
+    The family is excluded both ways: the runner's tests run UNDER ``pytest``
+    (under ``colcon test``), and whatever the runner starts is its own load.
+    """
+    family = process_family(table, own_pid)
+    rx = re.compile(pattern)
+    return [f"{p} {args}" for p, _, args in table if p not in family and rx.search(args)]
+
+
+@dataclasses.dataclass
+class HostWatch:
+    """The per-run host load watch; ``judge`` is called once per throw."""
+
+    mode: str = "warn"
+    rtf_min: float = HOST_WATCH_RTF_MIN
+    window_s: float = HOST_WATCH_WINDOW_S
+    table: Callable[[], Sequence[tuple[int, int, str]]] = process_table
+    own_pid: int = dataclasses.field(default_factory=os.getpid)
+    detections: list = dataclasses.field(default_factory=list)
+    aborted: bool = False
+
+    def __post_init__(self) -> None:
+        if self.mode not in HOST_WATCH_MODES:
+            raise ValueError(f"host watch mode {self.mode!r} is not one of {HOST_WATCH_MODES}")
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "off"
+
+    def judge(self, idx: int, rows: Sequence[Sequence[float]]) -> dict:
+        """The keys this throw's record gets ({} with the watch off)."""
+        if not self.enabled:
+            return {}
+        out = truth_rtf(rows, self.window_s)
+        rtf = out["host_rtf_min"]
+        out["host_busy"] = rtf is not None and rtf < self.rtf_min
+        if out["host_busy"]:
+            detection = {
+                "idx": idx,
+                **out,
+                "processes": busy_processes(self.table(), self.own_pid),
+            }
+            del detection["host_busy"]
+            self.detections.append(detection)
+            self.aborted = self.mode == "abort"
+        return out
+
+    def as_record(self) -> dict:
+        return {
+            "mode": self.mode,
+            "rtf_min": self.rtf_min,
+            "window_s": self.window_s,
+            "busy_pattern": HOST_BUSY_PATTERN,
+            "detections": self.detections,
+            "aborted": self.aborted,
+        }
+
+
+def write_run_meta(out_dir: str, meta: dict, watch: HostWatch) -> None:
+    """``run_meta.json``; the ``host_watch`` key exists only with the watch on."""
+    doc = dict(meta)
+    if watch.enabled:
+        doc["host_watch"] = watch.as_record()
+    with open(os.path.join(out_dir, "run_meta.json"), "w") as f:
+        json.dump(doc, f, indent=2, default=str)
+
+
+def run_trials(
+    node, throws: Sequence[dict], mirror: dict, watch: HostWatch, results: list[dict]
+) -> None:
+    """Home, throw and record every throw; stops early when the watch aborts.
+
+    ``node`` is the ROS driver (``home`` / ``throw`` / ``spin_for`` /
+    ``truth_rows`` / ``get_logger``). ``results`` is filled in place, so a
+    raise mid-run leaves the finished trials with the caller.
+    """
+    for idx, throw in enumerate(throws):
+        alignment = node.home()
+        node.get_logger().info(f"trial {idx}: aligned {alignment}")
+        record = node.throw(idx, throw)
+        record.update(alignment)
+        record["controller_mirror"] = mirror
+        verdict = watch.judge(idx, node.truth_rows)
+        record.update(verdict)
+        results.append(record)
+        if verdict.get("host_busy"):
+            found = watch.detections[-1]["processes"]
+            node.get_logger().error(
+                f"trial {idx}: the sim ran slow (RTF {verdict['host_rtf_min']:.3f} < "
+                f"{watch.rtf_min} over {watch.window_s} s of sim time, ball up to "
+                f"{verdict['host_lag_max_ms']:.0f} ms old) — host load; build/test processes "
+                f"found: {found if found else 'none'}"
+            )
+            if watch.aborted:
+                node.get_logger().error(
+                    f"--host-watch abort: run ended after trial {idx} of {len(throws)}; "
+                    "re-run the unit with the same seed (plan D-S8-17)"
+                )
+                break
+        node.spin_for(0.3)
+
+
 def _make_driver(profile: ArmProfile, args):
     # ROS imports stay here so the helpers above are importable without a
     # sourced ROS environment.
@@ -1026,6 +1231,28 @@ def parse_args(argv=None):
     parser.add_argument(
         "--record-s", type=float, default=12.0, help="longest window per throw (cycle end first)"
     )
+    parser.add_argument(
+        "--host-watch",
+        choices=HOST_WATCH_MODES,
+        default="warn",
+        help=(
+            "host load watch on the sim's speed per throw: warn records and logs, abort also "
+            f"ends the run with exit code {EXIT_HOST_BUSY} (a statistical-gate unit), off "
+            "measures nothing"
+        ),
+    )
+    parser.add_argument(
+        "--host-rtf-min",
+        type=float,
+        default=HOST_WATCH_RTF_MIN,
+        help="a throw whose slowest window ran below this real-time factor is host-loaded",
+    )
+    parser.add_argument(
+        "--host-window",
+        type=float,
+        default=HOST_WATCH_WINDOW_S,
+        help="window of sim time the real-time factor is taken over [s]",
+    )
     return parser.parse_args(argv)
 
 
@@ -1044,6 +1271,8 @@ def main(argv=None) -> int:
     # build site keeps ``--limit`` in one place.
     hand = args.dist in HAND_DESIGNS
 
+    watch = HostWatch(mode=args.host_watch, rtf_min=args.host_rtf_min, window_s=args.host_window)
+    meta = None
     rclpy, TrialDriver = _make_driver(file_profile, args)
     rclpy.init()
     node = TrialDriver()
@@ -1081,28 +1310,16 @@ def main(argv=None) -> int:
                 f"hand-near series {args.dist}: {len(throws)} throws at p_c {geometry.p_c_m} "
                 f"axis {geometry.approach_axis} (elevation {geometry.axis_elevation_deg:.1f}°)"
             )
-        with open(os.path.join(args.out_dir, "run_meta.json"), "w") as f:
-            json.dump(
-                {
-                    "args": dict(vars(args)),
-                    "config_dir": config_dir,
-                    "controller_mirror": mirror,
-                    "n_throws": len(throws),
-                    "arm": args.arm,
-                    "hand_geometry": geometry.as_record() if geometry else None,
-                },
-                f,
-                indent=2,
-                default=str,
-            )
-        for idx, throw in enumerate(throws):
-            alignment = node.home()
-            node.get_logger().info(f"trial {idx}: aligned {alignment}")
-            record = node.throw(idx, throw)
-            record.update(alignment)
-            record["controller_mirror"] = mirror
-            results.append(record)
-            node.spin_for(0.3)
+        meta = {
+            "args": dict(vars(args)),
+            "config_dir": config_dir,
+            "controller_mirror": mirror,
+            "n_throws": len(throws),
+            "arm": args.arm,
+            "hand_geometry": geometry.as_record() if geometry else None,
+        }
+        write_run_meta(args.out_dir, meta, watch)
+        run_trials(node, throws, mirror, watch, results)
         verdicts: dict[str, int] = {}
         for r in results:
             key = str(r.get("outcome"))
@@ -1114,6 +1331,8 @@ def main(argv=None) -> int:
     finally:
         with open(os.path.join(args.out_dir, "trial_results.json"), "w") as f:
             json.dump(results, f, indent=2, default=str)
+        if meta is not None and watch.enabled:
+            write_run_meta(args.out_dir, meta, watch)  # now with what the watch found
         node.destroy_node()
         rclpy.shutdown()
-    return 0
+    return EXIT_HOST_BUSY if watch.aborted else 0

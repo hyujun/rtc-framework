@@ -93,7 +93,7 @@ integrated_bringup/
 │   ├── sim_ur5e_p1b.launch.py          <- MuJoCo 시뮬레이션 launch (ur5e_p1b, closed-chain)
 │   └── sim_iiwa7_leap.launch.py        <- MuJoCo 시뮬레이션 launch (iiwa7 + LEAP Hand)
 ├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈 · sim 도구)
-│   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 (투척마다 한 S7 순환, §Catching sim trials)
+│   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 (투척마다 한 S7 순환 + host 부하 감시, §Catching sim trials)
 │   ├── sim_overlay.py                  <- `sim_overlay:=` 해석 (sim launch 공용)
 │   ├── sim_lanes.py                    <- `sim_lanes:=` → clock/ball contact lane 파라미터 (sim launch 공용)
 │   └── demo_gui/
@@ -921,6 +921,16 @@ ros2 launch ball_perception_sim sim_estimator.launch.py \
   producer_revision:=<rtc-framework 커밋>
 ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dist s35b --n 50 --seed 503
 ```
+
+**host 부하 감시 (`--host-watch`, #601).** sim 이 벽시계보다 느리게 돌면 (RTF < 1 — 같은 host 의 다른 세션 빌드·테스트 등) 공 stamp 가 컨트롤러의 steady 시계보다 뒤처져 정상 입력이 `BALL_STALE` 로 끊기고, 성공률이 포구가 아니라 host 를 잰다 (dynamic_catching plan D-S8-17). 러너는 투척마다 자기가 기록하는 truth 행에서 sim 속도를 읽는다 — stamp 구간 / 수신 구간, sim 시간 `--host-window` (기본 0.25 s) 창 중 가장 느린 값. `sim_lanes:=true` 는 필요 없다. 그 값이 `--host-rtf-min` (기본 0.95) 아래면 부하다 (`rtc_tools` `catching_trials` 의 `rtf_trial_min` 과 같은 창·임계).
+
+| `--host-watch` | 부하를 본 투척에서 | 출력 |
+|---|---|---|
+| `warn` (기본) | ERROR 로그를 남기고 계속 던진다 | 시행 기록에 `host_rtf_min`·`host_lag_max_ms` (수신 − stamp 의 최댓값: steady 시계 독자가 본 공의 나이)·`host_busy`, `run_meta.json` 에 `host_watch` (`mode`·`rtf_min`·`window_s`·`busy_pattern`·`detections`·`aborted`) |
+| `abort` | 그 투척까지 기록하고 런을 끝낸다 — **exit code 3** | 위와 같고 `aborted: true` |
+| `off` | 재지 않는다 | 위 키가 하나도 생기지 않는다 |
+
+**성공률 판정에 쓰는 unit 은 `abort` 로 돌리고, exit code 3 이면 같은 seed 로 unit 전체를 다시 돌린다** — 시행 단위 무효 + 보충 투척은 모집단을 바꾸므로 하지 않는다 (D-S8-17). `detections[].processes` 는 그 순간 host 에 있던 `colcon build|test`·`pytest`·`ctest` 프로세스 (러너 자신의 조상·자손은 제외) 로, 원인 후보일 뿐 판정이 아니다: 목록이 비어도 sim 이 느렸으면 부하다. sim 을 `max_rtf` ≠ 1 로 띄운 실행은 `--host-rtf-min` 을 그에 맞추거나 `off` 로 한다.
 
 `trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다 (시행 중앙값이라 sim 이 벽시계보다 느리면 흐른다 — `rtc_tools` `catching_trials` 는 clock lane 이 있으면 쓰지 않는다). `truth_csv` 는 trials dir 기준 파일 이름이다 (절대경로였던 예전 기록은 dir 을 옮기고 같은 `<out>` 으로 다시 돌리면 다른 run 의 파일을 가리켰다). 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다. `armed_at_throw` 는 투척 직전 컨트롤러가 발행한 무장 상태다. demo_controller_gui 의 Catching 패널은 같은 기준 (RETREAT 진입 때의 판정) 으로 이 패널이 본 시행 수를 판정별로 센다 (`this panel: attempts N: …`, 패널을 다시 띄우면 새로 센다).
 

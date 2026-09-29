@@ -588,7 +588,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 
 **S8-E 본 평가 (2026-09-26, PR #582 → `9e7967b5`: `f0ff9818` · `8baf18cc` · `79a025de` · `879957c0`; #537 5842632283 · 5843117293 · 5843232090).** tennis·beanbag (seed 601–604) · leap (701–704), 각 4 × 50 발. RT tick 무변경.
 - **무효 0** → ITT = Wilson. **원 판정**: tennis **83/200** (하한 **0.3489** FAIL, 통과선 84) · beanbag 167/200 · leap **83/200** (0.3489 FAIL).
-- **host 부하**: tennis 3 unit·beanbag 1 unit 에서 도중에 다른 세션의 테스트가 겹쳐 sim 이 느려졌다 (`rtf_trial_min` < 0.95 시행 28·13). 공 stamp 가 sim 축이라 steady 나이 검사가 stale 로 본다 (`BALL_STALE`); `sim_stall` 은 이것을 못 잡는다. D-S8-17 재실행에서 private 드라이버가 unit 도중 host 의 colcon build/test·pytest·ctest 출현을 감시·중단했다 (repo 러너엔 없음 — #601). 부하 시행 회복 (604 1 → 13/20) 이 기전 확인.
+- **host 부하**: tennis 3 unit·beanbag 1 unit 에서 도중에 다른 세션의 테스트가 겹쳐 sim 이 느려졌다 (`rtf_trial_min` < 0.95 시행 28·13). 공 stamp 가 sim 축이라 steady 나이 검사가 stale 로 본다 (`BALL_STALE`); `sim_stall` 은 이것을 못 잡는다. D-S8-17 재실행에서 private 드라이버가 unit 도중 host 의 colcon build/test·pytest·ctest 출현을 감시·중단했다 (repo 러너에는 #601 에서 `--host-watch` 로 이식 — 판정량은 프로세스가 아니라 truth 행에서 읽은 RTF). 부하 시행 회복 (604 1 → 13/20) 이 기전 확인.
 - **재실행 반영**: **G8-D 93/200 (하한 0.3972) PASS** · beanbag **175/200** (0.8220) · **G8-D2 83/200 FAIL** (대상 아님). **sim 재현 편차: 같은 투척에서 unit 당 ±5 발** (원인 미확인).
 - G7-E: tennis 재실행 CAPTURED 79/79 참, false-Missed 14 · beanbag 일치 142/200 (링크·손바닥 위 공) · leap 197/200. beanbag 대 tennis McNemar 91 대 9 (p 3.3e-18). leap 미종결 9 발은 `TRACK_CHANGED` 반복.
 - **S3.1b 부하 검증 충족** (수치는 §5, S3.1a 는 §5.1). t_c 분해 (tennis / leap): 서보 2.6 / 6.7 · pred 79 / 44 mm.
@@ -788,7 +788,7 @@ Q1–Q3 은 #537 5855489704 (2026-09-27 사용자) 이다.
 **R7 결과 (2026-09-29).** issue 셋을 만들었다 — 원자료 삭제 (Q11) 뒤에도 읽히도록 근거 수치를 본문에 실었고, 초안을 코드와 대조하며 계획의 서술 둘을 바로잡았다.
 
 - [#600](https://github.com/hyujun/rtc-framework/issues/600) L3 §4.6 예산식 재검토 — 구현은 문서식과 일치하고 (재검토 대상은 직교 가정), 검사는 순위 게이트다. S8-E 측정이 vision profile 수정 전이라 재측정이 첫 단계
-- [#601](https://github.com/hyujun/rtc-framework/issues/601) `catching_sim_trials` host 부하 감시 — private 드라이버가 본 것은 loadavg 가 아니라 **빌드·테스트 프로세스의 존재**였다
+- [#601](https://github.com/hyujun/rtc-framework/issues/601) `catching_sim_trials` host 부하 감시 — private 드라이버가 본 것은 loadavg 가 아니라 **빌드·테스트 프로세스의 존재**였다. **닫음**: 러너는 증상 (RTF) 을 판정하고 프로세스는 원인 후보로만 기록한다
 - [#602](https://github.com/hyujun/rtc-framework/issues/602) 분석기 `t_c` 열 — `plan_t_c_s` 의 기록 (잔여 시간) 과 분석기의 변환은 옳다. 결함은 그 `t_c` 가 **steady 축**이라 RTF < 1 에서 어긋나는데 분해 열·δ(t_c) 에 표시가 없는 것
 
 #### S10 실기 단계 도입 (HW-P1B)
@@ -1344,7 +1344,7 @@ $$\gamma_{\min}=1-\frac{d_{eff}}{\Vert v\Vert\,T_{close,tot}},\qquad \gamma_{\ma
 | sim T_close 는 MJCF 게인에 의존 — 실기 측정 전까지 S4 결론은 잠정 | S4.3, S10 (#613) |
 | γ derate 제외(D-8)로 abort 가 늘 수 있다 | S8 측정 (시행별 `ref_saturated` max streak, G8-C3) — **S8-E 기록 (2026-09-26)**, 판정 없음 (수치는 §4.4 S8 게이트 표 G8-C3) |
 | sim 팔 actuator 는 1차 지연이다 (MJCF 게인 τ ≈ 200 ms → D-S8-13 으로 p1b sim 은 **τ 0.05 s**) — 선행 보상 (순수 지연) 은 비-순수지연분을 남기고, sim 에서 잰 lead 이득은 UR5e 이득을 예측하지 않는다 (L5 §4.4) | S8-B (G8-E 잔여 보고), S10 (#613) |
-| sim 이 실시간보다 느려지면 (host 부하, RTF < 1) 공 stamp 가 벽시계보다 뒤처져 steady 나이 검사가 입력을 `BALL_STALE` 로 끊는다 — 성공률이 host 부하에 좌우된다 (S8-E 원 판정: tennis 부하 시행 5/28 성공). `sim_stall` 규칙은 sim 스텝 간격만 봐서 못 잡는다 | D-S8-17 (unit 재실행 규칙, 2026-09-26). unit 도중 부하 감시·중단은 private 드라이버에만 있다 (`catching_sim_trials` 에 없음, `catching_trials` 는 `rtf_trial_min` 을 공변량으로만) — #601 (pre-S10 R7). 같은 원인으로 분석기의 `t_c` 분해 열·δ(t_c) 가 표시 없이 어긋난다 — #602 |
+| sim 이 실시간보다 느려지면 (host 부하, RTF < 1) 공 stamp 가 벽시계보다 뒤처져 steady 나이 검사가 입력을 `BALL_STALE` 로 끊는다 — 성공률이 host 부하에 좌우된다 (S8-E 원 판정: tennis 부하 시행 5/28 성공). `sim_stall` 규칙은 sim 스텝 간격만 봐서 못 잡는다 | D-S8-17 (unit 재실행 규칙, 2026-09-26). unit 도중 부하 감시·중단은 **#601 에서 닫음** — `catching_sim_trials --host-watch abort` 가 투척마다 truth 행의 RTF (sim 0.25 s 창 최솟값 < 0.95) 를 판정해 런을 끝내고 (exit code 3), 같은 seed 로 unit 을 다시 돌린다 (사용법은 integrated_bringup README). 원인 쪽 (sim stamp 축) 은 그대로라 감시를 끈 실행은 여전히 host 에 좌우된다. 같은 원인으로 분석기의 `t_c` 분해 열·δ(t_c) 가 표시 없이 어긋난다 — #602 |
 | sim 폐루프 재현 편차 — 부하가 없던 시행도 같은 투척에서 unit 당 ±5 발 달라진다 (S8-E D-S8-17 재실행, 원인 미확인 — 노드 간 메시지 타이밍 추정). G8-D 의 원 판정 83 FAIL 대 재실행 93 PASS (통과선 84) 는 부하 제거와 이 편차를 함께 담는다 | **미배정 (후속)** — #613 도 이것을 담당 없는 위험으로 적고 있다 |
 | L3 §4.6 직교 분해 오차 예산이 간극 분산을 과대추정한다 (A·B 음의 상관, S8-E G8-C2 FAIL) — 예산식이 보수적이다. 측정은 vision sim profile 수정 (PR #595) 전이다 | #600 (pre-S10 R7) — 현 profile 에서 재측정부터 |
 | iiwa7_leap 투척 상자의 공이 **상승 중 대기 손에 닿는다** — S8-D 유효성 검사 (D-S8-15) 가 손을 qpos0 로 두고 간격을 재어 `hand.q_pre` 의 손끝을 못 봤다. S8-E leap 200 발 중 손끝 접촉 44 발에 판정 없음·`TRACK_CHANGED` 반복이 전부 들어 있다 (pre-S10 R6). leap 의 G8-D·G8-D2 수치는 이 상자 위의 값이다 | **보정 기준 재판정으로 닫음** (사용자 2026-09-29, 수치는 §4.4 pre-S10 R6 결과). 상자·대기 자세는 그대로라 같은 상자로 다시 던지면 같은 접촉이 난다 — leap 을 다시 평가할 때는 clearance 검사의 손 자세부터 `q_pre` 로 |
