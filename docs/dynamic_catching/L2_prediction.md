@@ -51,7 +51,7 @@ vision의 예측기와 제어 PC가 각자 전파하면 두 모델이 어긋날 
 
 - L0의 이차 항력 모델과 RK4 (→ test fixture 전용, S1.6)
 - $k$ 최소제곱 식별 (→ fixture 전용)
-- 변분방정식·상태전이행렬 (`rk4WithStm`)
+- 변분방정식·상태전이행렬 (`Rk4WithStm`)
 - 공정잡음 $Q$ 설정과 vision과의 값 합의 (v0.2의 `TBD-PRED-01` 폐기)
 
 남는 것은 **보간**뿐이다.
@@ -136,8 +136,8 @@ ball_perception 이 주는 $a$ 는 profile 에 달렸다 (G2-3). 항력 절이 �
 
 v0.5 에서 코드 복사본(v0.2 그대로였음)을 삭제했다. 참조 구현 `traj_sampler.hpp` (v0.4 — `before_horizon`/`after_horizon` 분리, `track_epoch` 필드) 는 S1.2 에서 `rtc_controllers/include/rtc_controllers/catching/traj_sampler.hpp` (+ 궤적 타입 `trajectory.hpp`) 로 이식됐고 (지금의 SSoT), 원본은 (삭제됨 — [README](README.md#삭제된-참조-구현)). 이식 시 변경:
 
-- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `check`·`sampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). S3.6 이 정한 점 수는 20 (≤ `kCap`) 이다. 구현 (S5.2) 은 `n_max` 키를 두지 않고 런타임 상한을 `kCap` 으로 둔다 — 20 점은 vision profile 의 속성이라, profile 이 바뀌면 거부가 아니라 진단의 점 수로 드러난다
-- **NaN 거부.** NaN 시각·값은 `check` 에서 거부, `sampleAt(NaN)` 은 invalid 를 반환한다(참조 구현은 valid 반환)
+- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `Check`·`SampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). S3.6 이 정한 점 수는 20 (≤ `kCap`) 이다. 구현 (S5.2) 은 `n_max` 키를 두지 않고 런타임 상한을 `kCap` 으로 둔다 — 20 점은 vision profile 의 속성이라, profile 이 바뀌면 거부가 아니라 진단의 점 수로 드러난다
+- **NaN 거부.** NaN 시각·값은 `Check` 에서 거부, `SampleAt(NaN)` 은 invalid 를 반환한다(참조 구현은 valid 반환)
 - **`dt_min` 거부.** 최소 샘플 간격 미만 구간은 경고가 아니라 거부한다 — `interpolate` 가 극소 $h$ 를 받아 $1/h^2$ 로 폭주하는 것을 막는다
 - **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — `Sample` 의 `Eigen::Vector3d` 멤버를 `std::array<double, 3>` 으로 바꾸고, 계산은 `Eigen::Map` 으로 한다(L0 §5.2, plan §6). `static_assert(std::is_trivially_copyable_v<…>)`
 - **시간 타입.** 샘플 시각은 `BallTime`(절대 steady ns), 샘플링 인자는 `NowLead` (L0 §4.5). 스냅샷 필드: `generation`·`snapshot_sequence` (uint64, `track_epoch`·`seq` 대체), `recv_steady_ns`, `n`, `valid`
@@ -159,11 +159,11 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `prediction.max_samples` | int | – | 40 (provisional, S0.7 제안) | 16–512 | `kCap` (컴파일 상수와 일치 검사, S0.7 제안값 — plan §4.4 S0 결과). 점 수 요구는 S3.6 요구 사양으로 정한다 (D-15; 구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다, §5.1) — **20 점** (provisional, S3.6: 기구학 reachable 창 기준 (plan D-27) 과 T_det 재실측으로 H_req 0.99 s → ⌈0.988/0.05⌉ = 20, 설정 sim profile 1.0 s 의 20 점과 같게; plan §4.4 S3.6 결과·T_det 재실측). 20 ≤ 40 이라 S1.2 backfill 은 PASS |
+| `prediction.max_samples` | int | – | 40 (provisional, S0.7 제안) | 16–512 | **YAML 키로 구현되지 않았다** — 값은 컴파일 상수 `kCap` 이다 (2026-09-29 코드 대조). `kCap` (컴파일 상수와 일치 검사, S0.7 제안값 — plan §4.4 S0 결과). 점 수 요구는 S3.6 요구 사양으로 정한다 (D-15; 구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다, §5.1) — **20 점** (provisional, S3.6: 기구학 reachable 창 기준 (plan D-27) 과 T_det 재실측으로 H_req 0.99 s → ⌈0.988/0.05⌉ = 20, 설정 sim profile 1.0 s 의 20 점과 같게; plan §4.4 S3.6 결과·T_det 재실측). 20 ≤ 40 이라 S1.2 backfill 은 PASS |
 | `prediction.n_min` | – | – | – | – | v0.5 삭제 — 단일 키 `io.n_min` (L1 §6) 을 쓴다 (plan S0.3) |
 | `prediction.t_horizon_margin` | double | s | 0.05 | 0–0.3 | §4.6 지평 끝 여유 |
 | `prediction.dt_expected` | double | s | **0.05** (provisional, S3.6) | >0 | vision 점 간격. 검사용. S1.2 실측 0.05 s 간격 보간 오차 2.0e-11 m (G2-C 1e-10 m 안, plan §4.4 S1 결과) 이라 더 촘촘할 이유가 없고, ball_perception 은 `horizon % step == 0` 을 요구한다 (plan §4.4 S3.6 결과) |
-| `prediction.dt_tol` | double | – | 0.2 | 0–1 | 샘플 간격 허용 상대편차 (경고) |
+| ~~`prediction.dt_tol`~~ | double | – | — | – | 구현되지 않았다 — 코드·출하 YAML 에 이 키는 없다 (2026-09-29 코드 대조) |
 | `prediction.dt_min` | double | s | `TBD` | >0 | 이 미만 간격은 **거부** (S1.2) |
 | `prediction.z_floor` | double | m | `TBD` | – | G2-5 |
 | `prediction.workcell` | box | m | `TBD` | – | G2-5 |

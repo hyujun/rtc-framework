@@ -143,9 +143,10 @@ v0.3에서 자체 메시지 패키지를 폐기했다. 입력은 vision의 `sens
 
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
-| `core.ball.diameter` | double | m | `TBD` | 0.02–0.3 | TBD-BALL-01, D-12 (provisional). L3 $d_{eff}$·L7 충격량에 쓰임 |
-| `core.ball.mass` | double | kg | `TBD` | 0.005–1.0 | TBD-BALL-01, D-12 (provisional). L7 §4.7 충격량 |
-| `core.ball.restitution` | double | – | `TBD` | 0–1 | TBD-BALL-01, D-12 (provisional). L3 §4.5 $d(1+1/e)$ |
+| `core.ball.diameter` | double | m | 0.067 (provisional) | 0.02–0.3 | TBD-BALL-01, D-12 (provisional). L3 $d_{eff}$·L7 충격량에 쓰임 |
+| `core.ball.mass` | double | kg | 0.057 (provisional) | 0.005–1.0 | TBD-BALL-01, D-12 (provisional). L7 §4.7 충격량 |
+| `core.ball.restitution` | double | – | 0.75 (provisional) | 0–1 | TBD-BALL-01, D-12 (provisional). L3 §4.5 $d(1+1/e)$ |
+| `core.ball.provisional` | bool | – | true | – | 위 세 값이 sim 공 (`projectile_ball`, ITF Type 2) 의 값이라는 표시 — sim 경고 · 실기 park. 실제 공 사양은 D-12 (S10) |
 | `sim.ball.gravity` | double[3] | m/s² | `[0, 0, -9.81]` | 크기 9.7–9.9 | fixture 전용 |
 | `sim.ball.drag_k` | double | 1/m | `TBD` | 0–0.2 | fixture 전용, §7 식별값. **TBD 로 남는다** — S3.8 이 S3a 범위 밖 (2026-09-20) |
 | `sim.ball.v_eps` | double | m/s | 1e-3 | 1e-6–1e-1 | 특이점 방어 (fixture) |

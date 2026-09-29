@@ -109,7 +109,7 @@ sim 은 wall clock 을 유지한다 (D-3). D-2 변환이 실기와 같은 경로
 
 **시행 수·무효율.** 구성별(로봇 2종) 발사 ≥ 200 회, 무효율 ≤ 5 %. 이 두 값은 **제안값**이다(사용자 확인, plan §7.3). 어느 구성이든 무효율이 상한을 넘으면 `/clock` 방식을 포함해 D-3 을 다시 결정한다. **이 상한은 S3.1a (무부하) 판정에만 쓴다 — S8 시행에서는 ε_clk,alloc 이 판정이 아니라 공변량이다** (2026-09-24 D-S8-4 (c), plan §5 표): 시행별 δ(t_commit)·δ(t_c)·tick overrun 수·최대 tick 간격을 기록하고, D-3 효과는 같은 seed 투척의 부하 A/B 로 상계한다.
 
-**이 결정은 S3.1a(무부하) · S3.1b(부하: 포구 컨트롤러 + 계획기 + `sim_estimator_node`) 검증(plan §5) 결과로 다시 검토한다** — 예측 오차가 δ 가 큰 구간에서만 커지는지, `sim_estimator_node` stamp 가 `use_sim_time=false` 에서 wall 인지도 함께 본다. S3.1b 는 S6 에서 수행되지 않았고 **S8-E 자체 시행 (p1b 400 + leap 200) 으로 ≥ 200** 을 충족하며 S8-B 튜닝 200 은 요약 합산으로 병기한다 (plan D-S8-16 ⑤; clock lane 은 launch 인자 `sim_lanes:=true`). **S3.1b 충족 (2026-09-26, S8-E — 공변량)**: 시계 공변량 시행 600 (+ S8-B 요약 198 합산 병기), |δ(t_commit)| p50/p95/max leap 0.06 / 1.1 / 5.1 ms · tennis 재실행 0.24 / 1.25 / 5.1 ms (원 0.27 / 118 / 230 ms). 원 tennis 의 큰 δ 는 host 부하 unit (sim 이 실시간보다 느림, `rtf_trial_min` < 0.95) 이 원인이었고, 이때 발사 기준 sim 시간축의 공 stamp 가 벽시계보다 뒤처져 컨트롤러 steady 나이 검사가 입력을 `BALL_STALE` 로 끊었다 — 무효 규칙 `sim_stall` 은 이를 잡지 못해 unit 재실행 규칙 plan D-S8-17 로 다뤘다 (plan §4.4 S8-E 결과). 성공률 평가(S8)의 무효는 **rig 실패만** (srv 거부·lane drop·sim stall·미발사 — 기계 판정 5 종·우선순위는 plan D-S8-16 ①) 이고 "plan 없음·abort" 는 실패다 — 전체 발사 수·무효 사유·무효를 실패로 센 ITT 하한을 함께 보고한다 (§9.1 G8-D).
+**이 결정은 S3.1a(무부하) · S3.1b(부하: 포구 컨트롤러 + 계획기 + `sim_estimator_node`) 검증(plan §5) 결과로 다시 검토한다** — 예측 오차가 δ 가 큰 구간에서만 커지는지, `sim_estimator_node` stamp 가 `use_sim_time=false` 에서 wall 인지도 함께 본다. S3.1b 는 S6 에서 수행되지 않았고 **S8-E 자체 시행 (p1b 400 + leap 200) 으로 ≥ 200** 을 충족하며 S8-B 튜닝 200 은 요약 합산으로 병기한다 (plan D-S8-16 ⑤; clock lane 은 launch 인자 `sim_lanes:=true`). **S3.1b 충족 (2026-09-26, S8-E — 공변량)**: 시계 공변량 시행 600 (+ S8-B 요약 198 합산 병기), |δ(t_commit)| p50/p95/max leap 0.06 / 1.1 / 5.1 ms · tennis 재실행 0.24 / 1.25 / 5.1 ms (원 0.27 / 118 / 230 ms). 원 tennis 의 큰 δ 는 host 부하 unit (sim 이 실시간보다 느림, `rtf_trial_min` < 0.95) 이 원인이었고, 이때 발사 기준 sim 시간축의 공 stamp 가 벽시계보다 뒤처져 컨트롤러 steady 나이 검사가 입력을 `BALL_STALE` 로 끊었다 — 무효 규칙 `sim_stall` 은 이를 잡지 못해 unit 재실행 규칙 plan D-S8-17 로 다뤘다 (plan §4.4 S8-E 결과). 그 뒤 러너 `catching_sim_trials --host-watch off|warn|abort` 가 투척마다 truth 행의 RTF 를 판정하고 (#601 — `abort` 는 exit code 3, 같은 seed 로 unit 재실행), 분석기 `catching_trials` 는 같은 원인으로 `t_c` 열이 포구 순간에서 벗어난 행을 `tc_axis` 로 표시해 `t_c` 중앙값에서 뺀다 (#602). 사용법은 `integrated_bringup`·`rtc_tools` README. 성공률 평가(S8)의 무효는 **rig 실패만** (srv 거부·lane drop·sim stall·미발사 — 기계 판정 5 종·우선순위는 plan D-S8-16 ①) 이고 "plan 없음·abort" 는 실패다 — 전체 발사 수·무효 사유·무효를 실패로 센 ITT 하한을 함께 보고한다 (§9.1 G8-D).
 
 처리량: lock-step 에서 `max_rtf` 1.0 은 상한이므로 RTF ≤ 1 이다. 시행당 발사·비행·감속·복귀·재무장을 합쳐 수 초가 걸려 **200 시행에 약 12 분** 이상이 든다 — 평가 일정은 이를 전제로 짠다.
 
@@ -203,7 +203,7 @@ struct TickRecord {                   // 고정 크기, POD
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
 | `logging.decimation` | int | – | 1 | 1–50 | 기록 부하 |
-| `logging.ring_capacity` | int | – | 4096 | 256–65536 | SPSC 용량 (drain 지연 흡수) |
+| ~~`logging.ring_capacity`~~ | int | – | — | – | 구현되지 않았다 — 코드·출하 YAML 에 이 키는 없다 (2026-09-29 코드 대조) |
 | `logging.dir` | — | – | – | – | v0.5 에서 삭제 — 기존 CSV 인프라의 세션 디렉토리를 쓴다 |
 | `sim.throw.*` | — | – | – | – | v0.5 에서 삭제 — `sim.throw_region` (plan §11, D-18) 로 대체 예정이었으나 그 키도 만들어지지 않았다 (2026-09-24 확인, §4.2 — 분포는 러너 인자) |
 | `sim.meas.rate` | — | – | – | – | v0.5 에서 삭제 — 측정은 `rtc_mujoco_sim` `publish.sample_rate_hz`, 예측 발행률은 ball_perception profile (D-15) |
@@ -213,8 +213,8 @@ struct TickRecord {                   // 고정 크기, POD
 | `sim.vision.layout` | — | – | – | – | v0.5 에서 삭제 — 실제 발행기 레이아웃 사용 (D-4) |
 | `sim.rtf_min` | — | – | – | – | v0.5 에서 삭제 — RTF 비율 판정은 §4.5 clock 위상 오차 판정으로 대체 (D-3, plan §5) |
 | `sim.clock.eps_alloc_m` | double | m | `TBD` | >0 | §4.5 ε_clk,alloc — r_cap 확정 후 재판정 완료 (plan §5.1). 값은 **목표 속력에 비례**하므로 S4.4 가 속력을 확정한 뒤에 박는다 |
-| `sim.clock.min_launches` | int | – | 200 | ≥1 | §4.5 구성별 최소 발사 수 (제안값, plan §7.3) |
-| `sim.clock.max_invalid_rate` | double | – | 0.05 | (0, 1] | §4.5 무효율 상한 (제안값, plan §7.3) — S3.1a 무부하 판정 전용. S8 성공률에서는 쓰지 않는다 (D-S8-4 (c): δ 는 공변량) |
+| `sim.clock.min_launches` | int | – | 200 | ≥1 | §4.5 구성별 최소 발사 수 (제안값, plan §7.3). **YAML 키로 구현되지 않았다** (2026-09-29 코드 대조) |
+| `sim.clock.max_invalid_rate` | double | – | 0.05 | (0, 1] | §4.5 무효율 상한 (제안값, plan §7.3) — S3.1a 무부하 판정 전용. S8 성공률에서는 쓰지 않는다 (D-S8-4 (c): δ 는 공변량). **YAML 키로 구현되지 않았다** (2026-09-29 코드 대조) |
 | `sim.trials` | int | – | D-12 | ≥30 | 신뢰구간 폭과 연동, 성공률 하한 D-12 |
 
 **실기에서 검증 불가능한 것 `[권장]`.** 실기에는 $p_{true}(t_c)$ 가 없으므로 "예측 간극 분포"를 직접 잴 수 없다. 관측 가능한 것은 포획/실패 이진 결과와 지문 접촉 시각뿐이다. 따라서 실기 게이트(G8-G)는 다음 중 하나로 대체한다 — **선택은 S10** (plan §7.3).
@@ -284,4 +284,4 @@ S10 착수 전 S9 (E-STOP·fault 정책, D-13) 완료가 필수다. 각 단계 �
 
 ## 10. 미확정 항목
 
-TBD-HAND-03, ~~TBD-VIS-04/06~~ (S3.4 닫힘), D-3 재검토 (S3.1a·S3.1b — S3.1b 는 S8-E 로 충족, host 부하 시 `BALL_STALE` 는 plan D-S8-17·§12), `sim.clock.eps_alloc_m`·시행 수·무효율 제안값 (S3.1a), D-12 값 (투척 속도·성공률 하한 — 시행 수는 n_valid 200 확정, floor 는 0.35 로 동결, plan D-S8-16), ~~`sim.throw_region` 값 (S3.5a/b)~~ (키 없음 — 러너 `--dist`, D-S8-2), 지연·드롭 주입 위치 (S3.4), 오프라인 도구 위치 (S3), 포구 launch 인자·컨트롤러 YAML 파일명 (S5), 실기 공분산 검증 수단 (S10), 재스탬프 도구 (S10).
+TBD-HAND-03, ~~TBD-VIS-04/06~~ (S3.4 닫힘), D-3 재검토 (S3.1a·S3.1b — S3.1b 는 S8-E 로 충족, host 부하 시 `BALL_STALE` 는 plan D-S8-17·§12, 감시는 러너 `--host-watch`), `sim.clock.eps_alloc_m`·시행 수·무효율 제안값 (S3.1a), D-12 값 (투척 속도·성공률 하한 — 시행 수는 n_valid 200 확정, floor 는 0.35 로 동결, plan D-S8-16), ~~`sim.throw_region` 값 (S3.5a/b)~~ (키 없음 — 러너 `--dist`, D-S8-2), 지연·드롭 주입 위치 (S3.4), 오프라인 도구 위치 (S3), 포구 launch 인자·컨트롤러 YAML 파일명 (S5), 실기 공분산 검증 수단 (S10), 재스탬프 도구 (S10).

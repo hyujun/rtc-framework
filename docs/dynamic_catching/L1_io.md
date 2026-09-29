@@ -241,7 +241,7 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
 |---|---|---|---|---|---|
 | `io.traj_topic` | string | – | ball_perception debug 예측 궤적 토픽 | – | G1-2, D-4 (stable ABI 아님) |
-| `io.qos_reliability` | enum | – | `best_effort` | – | S3.4 실측으로 확정 (TBD-VIS-08 닫힘, G1-2). depth 는 `KEEP_LAST(1)` 고정(ARCH-6)이라 설정 키가 아니다 |
+| ~~`io.qos_reliability`~~ | enum | – | `best_effort` (코드 고정) | – | **설정 키가 아니다** — 구독은 `best_effort` 로 고정돼 있다 (`lifecycle.cpp`). 값은 S3.4 실측으로 확정 (TBD-VIS-08 닫힘, G1-2). depth 는 `KEEP_LAST(1)` 고정(ARCH-6)이라 설정 키가 아니다 |
 | `io.expected_frame` | string | – | `world` | – | 마스터 §3. sim 실측 `world` (TBD-VIS-06 닫힘). 다르면 §4.3 변환 |
 | `io.arm_base_frame` | string | – | (없음 → 경고 후 vision frame 을 모델 world 로 취급) | 모델의 frame, root 에 강체 | §1 비범위 주석 (S6-C). p1b `base`, leap `link_0`. 모델에 없거나 움직이는 관절 뒤면 configure 거부 |
 | `io.base_T_world` | map | deg, m | `{yaw_deg: 0, translation: [0,0,0]}` | 유한 | $p_{base}=R_z(\text{yaw})\,p_{world}+t$. sim 실측 항등 (plan §11). 실기는 카메라 보정 (S10). `arm_base_frame` 없이 주면 거부 |
@@ -251,8 +251,7 @@ struct TrajView { bool stale; bool expired; bool is_new; };
 | `io.horizon_min` | double | s | **0.51** (provisional, S3.6) | >0 | D-15 지평 요구. S3.6 산출 — **R1 (commit 조건) 기준**, R2 (정지 출발) 로 잡지 않는다 (plan §4.4 S0 결과, 2026-09-19): $T_{freeze}+L$ = ($T_{close,tot}$ 0.2815 + $T_{arm}$ 0.05 + $T_{margin}$ 0.03) + L 0.14 = 0.5015 → 10 ms 로 **올림** 0.51 s (내림 0.50 은 R1 을 1.5 ms 미달하는 궤적을 통과시킨다; 0.05 s 간격에서 11 점 = 0.55 s). L 0.14 s 는 S0.7 가정값이라 provisional. sim profile 지평은 이 게이트가 아니라 목표 분포 요구 H_req 가 정한다 — 기구학 reachable 창 + T_det 재실측 기준 0.99 s → 설정 1.0 s / 20 점 (plan D-27·§4.4 S3.6 결과) |
 | `io.track.eval_offset` | double | s | 0.05 | 0–0.3 | §4.4 비교 시각 오프셋 |
 | `io.track.j_warn` | double | m | `TBD` | >0 | §4.4 점프 경고 |
-| `io.pred.nu_window` | int | – | 30 | 5–300 | §4.5 창 길이 |
-| `io.pred.nu_alpha` | double | – | 0.05 | 0.001–0.2 | §4.5 |
+| ~~`io.pred.nu_window`~~ · ~~`io.pred.nu_alpha`~~ | – | – | — | – | §4.5 와 함께 구현하지 않는다 (아래 `nu_reg` 와 같은 결정) |
 | ~~`io.pred.nu_reg`~~ | double | m² | — | — | **은퇴 (2026-09-24, D-S8-7 (a))** — $\bar\nu$ 생산자를 만들지 않는다. A-S5-5 에서 S7 로, S7 에서 S8 로 미뤘던 §4.5 정규화 λ (NUM-1) 는 소비자 (`PRED_INCONSISTENT`, L7 §4.2 명시 면제) 도 공분산 시각 보간 규칙도 없어 파서에 넣지 않는다. 예측 일관성은 추정기 `/ball_perception/debug/{innovation,nis}` 를 오프라인으로 본다 (plan §7.3) |
 | `sim.io.future_tol` | double | s | **0.1** (확정 S5.2) | 1e-4–0.5 | **A-S5-2 sim 전용 overlay**. sim config 에서만 활성이고 `io.future_tol` 을 덮는다 (`sim.ball.drag_k` 와 같은 활성 규칙). 두 값이 두 자릿수 다른 이유는 재는 대상이 다르기 때문이다 — sim 공 lane 의 stamp 는 sim 시간축이라 비행 안 위상 오차만큼 wall 을 앞서고 (D-3), 실기 카메라는 capture 시각이라 시계 동기 오차뿐이다. 한 키에 한 범위로는 둘 중 하나만 지킬 수 있고, sim 값을 실기 범위 안에 넣으면 하드웨어에서 100 ms 시계 오차를 조용히 수락한다. 부재는 실패가 아니다 — 그 경우 엄격한 공용 키를 물려받는다 (fail-closed) |
 | `prediction.dt_expected` | double | s | **0.05** | 1e-3–1.0 | vision profile 의 간격. `io.n_min` 이 이 값에서 유도되고 (⌈horizon_min / dt_expected⌉), 디코더의 간격 하한도 이 값의 1/10 로 파생된다 — 두 곳에 같은 수를 박지 않는다 |
@@ -276,7 +275,7 @@ v0.5 삭제: `io.max_age` (stamp 기반 나이 거부 — invariant 위반, §4.
 - 파싱이 통째로 실패: `ros2 topic echo --once --field fields` 로 실제 `PointField` 배열을 덤프해 필수 필드 표(§5.1)와 비교한다. 레이아웃 해시 변경 진단이 먼저 떴는지 본다.
 - 값이 그럴듯하지만 틀림: endianness, `horizon_ns` 해석(상대 ns), uint64 low/high 순서, cov 순서 $(p,v)$ 를 의심한다. 한 점을 손으로 바이트 단위로 읽어 대조한다.
 - 모든 메시지가 stale: stale 은 steady 수신 나이이므로 발행이 멈췄거나 거부되고 있는 것이다 — 거부 사유 카운터를 먼저 본다. `no_track` 만 오르고 있으면 lane 은 살아 있고 vision 에 트랙이 없는 것이다 (공이 시야에 없거나 추정기가 초기화 전).
-- `FutureStamp` 발생: 실기에서 PTP offset, sim 에서 누군가 `use_sim_time=true` 로 떠서 stamp 가 sim time 인지 확인한다(G1-7).
+- `kFutureStamp` (`StampStatus`·`CloudReject`) 발생: 실기에서 PTP offset, sim 에서 누군가 `use_sim_time=true` 로 떠서 stamp 가 sim time 인지 확인한다(G1-7).
 - 순서 역전 거부가 계속됨: vision 노드 재시작으로 `snapshot_sequence` 가 되감긴 것인지 `generation` 과 함께 본다(§4.4).
 - 트랙이 자주 새로 잡힘: vision 쪽 `generation` 변화 빈도를 직접 기록한다(제어 PC 가 만들지 않는다).
 - 궤적이 계속 이상: `/sim/ball/ground_truth`(sim)와 수신 궤적을 같은 steady 축에 그린다.
