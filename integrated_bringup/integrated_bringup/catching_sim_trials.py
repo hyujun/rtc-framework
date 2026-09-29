@@ -740,8 +740,14 @@ def command_line(cmdline: bytes) -> str:
     It becomes ``HOST_ARG_TEXT``: a watcher loop whose script mentions
     ``pytest`` is otherwise reported as a test run (seen on a host where another
     session had left one behind). A wrapper's real child has its own row.
+
+    A command line that is ONE argument is kept as it is: a process that
+    rewrote its title (``setproctitle``) has no separators left, and its one
+    string is what it runs.
     """
     args = [a.decode(errors="replace") for a in cmdline.split(b"\0") if a]
+    if len(args) == 1:
+        return args[0]
     return " ".join(HOST_ARG_TEXT if any(c.isspace() for c in a) else a for a in args)
 
 

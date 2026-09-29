@@ -228,6 +228,16 @@ def test_a_command_that_only_mentions_a_test_runner_is_not_one():
     ]
 
 
+def test_a_process_that_rewrote_its_title_is_read_by_that_title():
+    # setproctitle leaves one string without separators: it is the command,
+    # not a text the command carries.
+    title = command_line(b"colcon test --packages-select rtc_tools\0")
+    assert title == "colcon test --packages-select rtc_tools"
+    assert busy_processes([(1, 0, "/sbin/init"), (60, 1, title)], os.getpid()) == [
+        "60 colcon test --packages-select rtc_tools"
+    ]
+
+
 def test_the_real_process_table_holds_this_process_and_excludes_its_pytest():
     table = process_table()
     pids = {p for p, _, _ in table}
