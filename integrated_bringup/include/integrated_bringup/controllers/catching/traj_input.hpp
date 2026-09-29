@@ -46,7 +46,7 @@ enum class CloudReject : std::uint8_t {
   kNone = 0,
   kBigEndian,       // byte-swapping is not implemented (and no publisher needs it)
   kShape,           // height != 1, or width outside [n_min, n_max] (width 0: see kNoTrack)
-  kSize,            // data / row_step disagree with point_step x width
+  kSize,            // data / row_step disagree with point_step x width (width 0 included)
   kMissingField,    // a required field is absent by name
   kFieldType,       // a required field has the wrong datatype or count
   kFieldBounds,     // a field would read past point_step

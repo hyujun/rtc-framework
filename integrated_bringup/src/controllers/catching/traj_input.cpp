@@ -246,6 +246,11 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
   if (msg.height != 1) {
     return fail(CloudReject::kShape);
   }
+  if (msg.width == 0 && (msg.row_step != 0 || !msg.data.empty())) {
+    // Zero points over a payload (#611) is not the publisher's "no track" —
+    // that row is empty — but a message whose header and body disagree.
+    return fail(CloudReject::kSize);
+  }
   if (msg.width == 0) {
     // The publisher has no track and says so with an empty row. AFTER the
     // byte-order, frame and height checks — an empty message from a publisher
