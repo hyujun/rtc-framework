@@ -509,8 +509,9 @@ class EstopClearServiceWindowTest : public EstopHoldLatchTest {
     Access::BringServicesOnline(*node_);
 
     obs_node_ = std::make_shared<rclcpp::Node>("test_estop_hold_latch_obs");
-    // Volatile, like the GUI and the BT bridge — the readers that must never
-    // see a false edge from a refused clear.
+    // Volatile and deep, so every sample published while it is up is kept in
+    // order — what the "never a false edge from a refused clear" cases read.
+    // (The in-tree readers are transient_local; they see the same edges.)
     status_sub_ = obs_node_->create_subscription<std_msgs::msg::Bool>(
         "/system/estop_status", rclcpp::QoS(10), [this](std_msgs::msg::Bool::SharedPtr m) {
           std::lock_guard<std::mutex> lock(mutex_);
@@ -766,7 +767,7 @@ TEST_F(EstopClearServiceWindowTest, AWindowDroppedByALifecycleResetIsNotReported
   const auto resp = fut.get();
   ASSERT_NE(resp, nullptr);
   EXPECT_FALSE(resp->ok) << "replied '" << resp->message << "' for a window nobody ran";
-  EXPECT_NE(resp->message.find("not verified"), std::string::npos) << resp->message;
+  EXPECT_NE(resp->message.find("NOT verified"), std::string::npos) << resp->message;
 }
 
 // ── A publisher that starts with the value it stands for (#607) ──────────────

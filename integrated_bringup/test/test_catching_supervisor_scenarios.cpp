@@ -3232,11 +3232,25 @@ TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableDoesNotReArmAfterAT
   state_.devices[1].velocity_hole_mask = 1ULL << 3;
   ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
   const std::size_t retreat = log_.size();
-  Ticks(1500);
+  // The way out is the release timeout (D-S8-6 (a)), into a disarmed IDLE —
+  // never the re-arm. The plant has long put the hand at q_pre by then.
+  ASSERT_TRUE(TickUntil(
+      [this] { return !log_.empty() && log_.back().reason == Reason::kHandTimeout; }, 3000))
+      << "RETREAT neither re-armed nor timed out\n"
+      << Transitions();
   EXPECT_EQ(CountTicks([](const TickRec& t) { return t.mode == Mode::kArmed; }, retreat), 0)
       << "re-armed on a hand whose rest nobody vouches for\n"
       << Transitions();
-  EXPECT_FALSE(ctrl_->GetHandOutputForTesting().at_target);
+  EXPECT_EQ(CountTicks(
+                [](const TickRec& t) {
+                  return t.mode == Mode::kRetreat && t.hand_active &&
+                         t.phase == HandPhase::kPreshape;
+                },
+                retreat),
+            0)
+      << "the sequencer called the hand settled at q_pre\n"
+      << Transitions();
+  EXPECT_EQ(ctrl_->GetMode(), Mode::kIdle) << Transitions();
 }
 
 TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableLearnsNoContactBaseline) {
@@ -3255,10 +3269,12 @@ TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableLearnsNoContactBase
   // the tick before it — which was vouched for. 30 ticks would have learned 30.
   EXPECT_LE(ctrl_->GetTipBaselineCountForTesting(), before + 1)
       << "a baseline was learned from a hand whose rest nobody vouches for";
-  // Positive control: the same wait, vouched for, learns it.
+  // Positive control: the same wait, vouched for, learns it — counted from
+  // where the holed wait left off, on the fingertip that learned LEAST.
+  const int holed = ctrl_->GetTipBaselineCountForTesting();
   state_.devices[1].velocity_hole_mask = 0;
   ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
-  EXPECT_GE(ctrl_->GetTipBaselineCountForTesting(), 20);
+  EXPECT_GE(ctrl_->GetTipBaselineMinCountForTesting() - holed, 20);
 }
 
 TEST_F(SupervisorScenarioTest, AnUnreadableArmVelocityDefersTheAdoptionUntilItIsReadable) {

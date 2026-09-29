@@ -256,15 +256,16 @@ bool RtControllerNode::AdvanceEstopClearVerification(bool estopped) noexcept {
   }
   // Survived the window. Fails, leaving the window open, if a new clear
   // replaced the token after the load above — its window starts over.
-  // Said BEFORE the window is closed (#608): the service reads this only once
-  // it has seen the window gone, so it must already be there by then. Only
-  // here — a window the lifecycle dropped verified nothing.
-  estop_verified_token_.store(token, std::memory_order_release);
+  const std::uint32_t closing = token;
   if (!estop_verify_token_.compare_exchange_strong(token, 0U, std::memory_order_acq_rel,
                                                    std::memory_order_acquire)) {
-    estop_verified_token_.store(0U, std::memory_order_release);
     return true;
   }
+  // Only here, and only AFTER the close succeeded (#608): a window the
+  // lifecycle dropped or a later clear replaced verified nothing, and saying
+  // so first would let the service read "verified" for a window this CAS then
+  // fails to close. The service allows for the gap between the two stores.
+  estop_verified_token_.store(closing, std::memory_order_release);
   estop_verify_ticks_ = 0;
   // The reported value just fell to false (decision Q13) — the drain publishes
   // it; this is the only place the window closes on the RT side.

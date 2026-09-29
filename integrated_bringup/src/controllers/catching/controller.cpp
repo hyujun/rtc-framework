@@ -172,7 +172,13 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   // law cannot be exercised — in a test or in the sim — without SOMETHING
   // naming a catch point, and inventing one inside the controller would make
   // the verification run measure the invention.
+  // Every value reset, not only the switch (#609): an enabled oracle without a
+  // key runs on that key's default, not on the last profile's measurement.
   oracle_enabled_ = false;
+  oracle_p_c_ = {0.0, 0.0, 0.0};
+  oracle_a_d_ = {0.0, 0.0, -1.0};
+  oracle_t_c_offset_s_ = 1.0;
+  oracle_gamma_f_ = 0.3;
   if (const YAML::Node diag = cfg["diagnostic"]; diag) {
     if (const YAML::Node oracle = diag["oracle_plan"]; oracle) {
       if (!oracle.IsMap()) {

@@ -76,7 +76,13 @@ void RtControllerNode::CreateFixedSafetyPublishers() {
   // a lifecycle callback, not the RT loop — so a first configure also says
   // "no E-STOP" instead of leaving that to be inferred from silence. A change
   // racing this still goes out through the pending flag, after it.
-  PublishEstopStatus(EstopStatusValue());
+  const bool in_force = EstopStatusValue();
+  PublishEstopStatus(in_force);
+  if (EstopStatusValue() != in_force) {
+    // It changed under the publish: whichever of the two samples landed last,
+    // the drain settles it on the value in force.
+    estop_status_pending_.store(true, std::memory_order_release);
+  }
 
   active_ctrl_name_pub_ = rclcpp::create_publisher<std_msgs::msg::String>(
       this->get_node_topics_interface(), "/rtc_cm/active_controller_name", latch_qos);

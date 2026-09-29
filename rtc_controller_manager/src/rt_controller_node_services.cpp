@@ -408,12 +408,25 @@ void RtControllerNode::CreateServices() {
         // verification (#608). A lifecycle transition drops it as well
         // (ResetEstopHoldState), and a later clear replaces it; neither had a
         // detector look at the cause on this call's behalf.
-        if (estop_verified_token_.load(std::memory_order_acquire) != token) {
+        // The RT loop closes the window and THEN records the token, so a
+        // reader landing between the two stores sees "gone, not yet verified":
+        // a few polls cover that gap before it is taken for a drop.
+        static constexpr int kVerifiedReadAttempts = 4;
+        bool verified = false;
+        for (int attempt = 0; attempt < kVerifiedReadAttempts && !verified; ++attempt) {
+          verified = estop_verified_token_.load(std::memory_order_acquire) == token;
+          if (!verified) {
+            std::this_thread::sleep_for(poll_interval);
+          }
+        }
+        if (!verified) {
           resp->ok = false;
           resp->message =
               "the latch is DOWN (was: '" + latched_reason +
-              "') but not verified — the verification window was dropped by a lifecycle "
-              "transition or replaced by another clear before the RT loop completed it" +
+              "') and NOT verified — the verification window was dropped by a lifecycle "
+              "transition or replaced by another clear before the RT loop completed it. No "
+              "detector re-evaluated the cause on this call's behalf and this window no longer "
+              "holds the output: check /system/estop_status for what is in force now" +
               fault_note();
           return;
         }
