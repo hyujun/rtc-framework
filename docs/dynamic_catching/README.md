@@ -15,6 +15,12 @@ kinematics·dynamics·CLIK/QP·joint command backend를 재사용한다(마스�
 진행 기록은 Epic [#537](https://github.com/hyujun/rtc-framework/issues/537), S10 의 잔여 작업은 [#613](https://github.com/hyujun/rtc-framework/issues/613) 이다.
 plan 은 2026-09-29 에 제자리 압축했다 (절 번호·식별자 불변) — 압축 전 전문은 `git show b0ea0996:docs/dynamic_catching/IMPLEMENTATION_PLAN.md`.
 
+## 확장 — MPC · dual-arm
+
+DECEL 의 MPC 전환, G1 + proto_1b bring-up, MPC catch controller 는 별도 계획으로 관리한다. 계획·결정(`MD-n`)·상태의
+SSoT 는 [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md), 정식화는 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md),
+추적은 GitHub project [rtc-framework — MPC · dual-arm catching](https://github.com/users/hyujun/projects/2) 다.
+
 ## 단계 W (완료) 와 문서 동기화 상태
 
 단계 W 는 코드 대조로 끝났다(2026-09-19). 기록은 `WORKSPACE_ANALYSIS.md`, 요약은 plan §2 에 있다.
@@ -45,6 +51,8 @@ D-4). 점 하나가 $(p, v, a)$ + 공분산 $\Sigma_{6\times6}$(NaN = 모름) + 
 | `L6_hand.md` | L6 | 손 시퀀서·손 프로파일·`T_close` 식별 |
 | `L7_supervisor.md` | L7 | 상태 머신·접촉 판정·감속·abort |
 | `L8_bringup.md` | L8 | 컨트롤러 통합·launch·YAML·sim 기반·로깅·시스템 검증 |
+| `MPC_DUALARM_PLAN.md` | — | MPC · dual-arm 확장의 epic·feature 계획, 결정 로그, 게이트 결과 (SSoT) |
+| `mpc_multiframe_clik_formulation.md` | — | waist + dual-arm MPC 계획기와 다중 frame CLIK 의 수학적 정리 |
 
 ## 삭제된 참조 구현
 
