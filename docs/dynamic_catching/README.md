@@ -35,6 +35,9 @@ D-4). 점 하나가 $(p, v, a)$ + 공분산 $\Sigma_{6\times6}$(NaN = 모름) + 
 `snapshot_sequence` 이고, `header.stamp` 가 예측 원점 시각이다. debug 토픽이라 stable ABI 가 아니다. 제어 PC는 이
 궤적을 **재전파하지 않고 그대로 신뢰**하며, 샘플 사이만 보간한다(L2).
 
+vision 은 vision PC, 제어기는 제어 PC 에서 돈다. 두 쪽은 위 토픽으로만 만나고 서로의 파일을 읽지 않는다 — 추정기의
+profile 은 ball_perception 저장소가 소유한다 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) MD-17 · MD-18).
+
 ## 파일
 
 | 파일 | Layer | 내용 |

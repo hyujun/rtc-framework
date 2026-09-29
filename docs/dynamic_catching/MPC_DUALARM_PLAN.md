@@ -1,7 +1,7 @@
 # MPC · dual-arm catching — 구현 계획
 
 - 작성일: 2026-09-30 (r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
-- 상태: **E0 진행 중** — E0-F03 완료, E0-F01 검증 완료 (merge 대기), 다음은 E0-F02 · E0-F04 (코드 미착수)
+- 상태: **E0 진행 중** — E0-F01 · E0-F03 완료, 다음은 E0-F02 · E0-F04 (코드 미착수)
 - 범위: DECEL 의 MPC 전환 → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → MPC catch controller
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — v0.4, 사용자 확정 2026-09-29. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
@@ -95,6 +95,7 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 사용
 | `supervisor.sat_ticks` | 로봇별 포화 임계 (sim 분포에서 도출) | MPC DECEL 에서 재확인 — E1-F06 |
 | D-2 · D-6 · D-21 | 시간 규약 · 명령값 평가 · SeqLock 소비 규약 | 적용 |
 | D-7 (E-7 결정 J) | 계획기 스레드는 `mpc_main` 슬롯 공유 | 적용 — 새 스레드 없음 |
+| D-15 | vision 예측 사양은 포구 제어기가 요구하고, sim profile 은 rtc-framework 의 로봇별 파일에 설정 | 요구 사양은 적용. profile 의 위치는 **개정** — MD-18 |
 
 ## 4. 결정 로그
 
@@ -146,7 +147,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | G1 파일 | flat `.urdf` 는 없고 `.urdf.xacro` 만 있다. closure sidecar 와 fixed-base MJCF 는 있다 | `rtc_urdf_bridge` 가 xacro 를 직접 읽는다 (G1 파일로는 미검증 — E2-F01) |
 | 오른손 | proto_1b 는 폐쇄 체인 (수동 관절 10, loop closure 5) 이고 왼손 형상 · `l_*` 이름으로 오른 손목에 장착돼 있다 | 장착 자세는 실기 미검증이다 |
 | 용량 | `kMaxPlanNv`, `kMaxDeviceChannels` 모두 G1 관절 수를 담는다 | 상수 변경 불필요 |
-| 예측 격자 | 예측 메시지는 sim 실측 30 Hz 로 온다. 예측점 수의 상한 `kCap` 은 40, 지평 요구 `io.horizon_min` 은 0.51 s 다. sim 시행이 읽는 profile 은 rtc-framework 의 로봇별 사본 (horizon 1.0 s, 20 점) 이고, ball_perception 저장소의 예시 · 템플릿 JSON 은 horizon 0.5 s, 10 점이다 | sweep 조건의 근거 (MD-15). ball_perception 쪽 JSON 은 지평 요구를 만족하지 못하므로 갱신한다 (E0-F04) |
+| 예측 격자 | 예측 메시지는 sim 실측 30 Hz 로 온다. 제약 (`kCap`, `io.horizon_min`) 과 두 저장소의 현재 설정값은 formulation §1.7 의 표에 있다 | sweep 조건의 근거 (MD-15). profile 은 ball_perception 쪽으로 옮기고 (MD-18) 그쪽 JSON 을 지평 요구에 맞춰 갱신한다 (E0-F04) |
 | armature | G1 URDF 에는 없고 MJCF 에만 있다 | 로봇 config 에서 읽는다 (MD-13, E1-F01 · E2-F02) |
 | GUI | 컨트롤러는 런타임 발견, 로봇은 `demo_gui/discovery.py` 의 `RobotProfile` 정적 정의 | G1 profile 을 추가한다 |
 | plot | 파일명 기반 log type → plotter registry | 컬럼 추가와 plotter 확장 |
@@ -166,7 +167,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E0-F01 | [#624](https://github.com/hyujun/rtc-framework/issues/624) | 빌드 경로 확정 (rtc-framework + hand_description + ball_perception) | — | 검증 완료 (2026-09-30) — merge 대기 |
+| E0-F01 | [#624](https://github.com/hyujun/rtc-framework/issues/624) | 빌드 경로 확정 (rtc-framework + hand_description + ball_perception) | — | 완료 (2026-09-30) |
 | E0-F02 | [#625](https://github.com/hyujun/rtc-framework/issues/625) | closed-form DECEL baseline 측정 (ur5e_p1b · iiwa7_leap) | E0-F01 | 대기 |
 | E0-F03 | [#626](https://github.com/hyujun/rtc-framework/issues/626) | formulation v0.4 — G1 기구 · 단일 팔 환원형 · 토크 기반 제약 · 문헌 대조 | — | 완료 (2026-09-29) — v0.4 확정 |
 | E0-F04 | [#647](https://github.com/hyujun/rtc-framework/issues/647) | 예측 격자 sweep — v1 계획기 기준선 (horizon 0.75 s · 1.0 s) | E0-F01 | 대기 |
