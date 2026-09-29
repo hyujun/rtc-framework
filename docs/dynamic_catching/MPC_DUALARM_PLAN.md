@@ -123,7 +123,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- MD-18 의 실행: rtc-framework 의 로봇별 profile 사본과 그것을 고정하는 테스트 (`test_catch_lead_overlays.py`) 의 처리 (E-6), ball_perception 쪽 profile 의 schema minor — 담당 feature 와 함께 정한다
+- MD-18 의 실행 (E0-F04 에 묶는다): rtc-framework 의 로봇별 profile 사본의 제거, ball_perception 쪽 profile 의 위치와 schema minor. 사본을 고정하던 테스트는 E0-F01 에서 삭제했다 (E-6, 사용자 승인 2026-09-30)
 - E0-F04: sweep 의 시행 수와 판정 기준, 조건별 설정을 둘 위치 (MD-18 에 따라 ball_perception 쪽)
 - E1-F03: 정지 구간의 노드 수와 간격, 포구 전 초기 상태의 예측 방법
 - E1-F06: 비열등 한계와 N, MPC DECEL 을 기본값으로 바꿀지
@@ -303,7 +303,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 | E3-F01 | 계획기 interface 신설 (ARCH-3) | code review |
 | E1-F01, E3-F03 | 신규 수치 코어 (100+ 줄) | code review |
 | E2-F05 | 신규 controller | Sprint Contract = spec |
-| E0-F04 | ball_perception 은 별도 저장소다 | 그쪽 변경은 그 저장소의 절차를 따른다. 출하 profile 을 직접 바꾸면 `test_catch_lead_overlays.py` 가 걸린다 |
+| E0-F04 | ball_perception 은 별도 저장소다 | 그쪽 변경은 그 저장소의 절차를 따른다. profile 은 그쪽이 소유한다 (MD-18) — 컨트롤러 YAML 과의 정합을 보는 자동 검사는 없으므로 양쪽 값을 함께 확인한다 |
 
 공통 규칙:
 
