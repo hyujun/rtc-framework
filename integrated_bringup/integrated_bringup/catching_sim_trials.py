@@ -728,6 +728,23 @@ def truth_rtf(rows: Sequence[Sequence[float]], window_s: float = HOST_WATCH_WIND
     return out
 
 
+# What stands in a command line for an argument that is itself text.
+HOST_ARG_TEXT = "<text>"
+
+
+def command_line(cmdline: bytes) -> str:
+    """A /proc ``cmdline`` as one line, judged by what RUNS rather than what is quoted.
+
+    An argument that holds whitespace is text the process carries — a shell's
+    ``-c`` script, a commit message, a ``grep`` pattern — not a program it is.
+    It becomes ``HOST_ARG_TEXT``: a watcher loop whose script mentions
+    ``pytest`` is otherwise reported as a test run (seen on a host where another
+    session had left one behind). A wrapper's real child has its own row.
+    """
+    args = [a.decode(errors="replace") for a in cmdline.split(b"\0") if a]
+    return " ".join(HOST_ARG_TEXT if any(c.isspace() for c in a) else a for a in args)
+
+
 def process_table() -> list[tuple[int, int, str]]:
     """``(pid, ppid, command line)`` of every process readable in /proc."""
     table = []
@@ -740,7 +757,7 @@ def process_table() -> list[tuple[int, int, str]]:
                 # field after the LAST ')'.
                 ppid = int(f.read().rsplit(")", 1)[1].split()[1])
             with open(f"/proc/{name}/cmdline", "rb") as f:
-                args = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
+                args = command_line(f.read())
         except (OSError, ValueError, IndexError):
             continue  # gone between listdir and open
         table.append((int(name), ppid, args))
