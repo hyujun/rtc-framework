@@ -148,7 +148,7 @@ flowchart TB
 | 좌표계 | `W` world(공 추정·계획·기준 생성 전부), `B` robot base(CLIK `base_frame`), `C` catch frame(손), `S_i` 지문 센서 i |
 | 공 상태 | vision이 준 샘플 $(p,v,a)$ + 점별 지평 `horizon_ns`, 공분산 $\Sigma_{6\times6}$(NaN = 모름). 제어 PC는 이 사이를 보간만 한다 (§5, L2). 공분산은 계획기 버퍼에만 둔다 `[확정 A-3]` |
 | 공 모델 | $\dot p=v,\ \dot v=g-k\Vert v\Vert v$ — **시뮬레이션 fixture 전용**(L0 §1, S1.6). 실시간 경로에서는 쓰지 않는다 |
-| 접근축 | $\hat z_C$ = catch frame 의 **+z** = 손바닥 바깥 방향 법선 (규약). 목표 $a_d=-\hat v(t_c)$ `[확정 D-17]` — catch frame 의 부모·offset·자세는 YAML, 값은 provisional (§6, plan §10) |
+| 접근축 | $\hat z_C$ = catch frame 의 **+z** = 손바닥 바깥 방향 법선 (규약). 목표 $a_d=-\hat v(t_c)$ `[확정 D-17]` — catch frame 의 부모·offset·자세는 YAML, 값은 확정 (`provisional: false`, 2026-09-21 — plan §10) |
 | 접근축 오차 | 회전벡터 $e_a=\theta\,\hat u$, $\hat u=\dfrac{z\times a_d}{\Vert z\times a_d\Vert}$, $\theta=\mathrm{atan2}(\Vert z\times a_d\Vert,\ z^\top a_d)$. $\exp([e_a]_\times)z=a_d$ (L4 §4.5). 구현 위치는 `rtc_math` se3 (D-1, S2.1) |
 | 회전 | Hamilton quaternion, 회전행렬 $R_{WC}$ (C → W). $\mathrm{Log}:SO(3)\to\mathbb R^3$ |
 | 각속도 | 기본 표현은 world $\omega^W$, $\dot R_{WC}=[\omega^W]_\times R_{WC}$. LOCAL은 $\omega^L=R_{WC}^\top\omega^W$ |
@@ -300,7 +300,7 @@ catching:
 
 | 키 A | 키 B | 관계 |
 |---|---|---|
-| L3 `gammaWindow` 의 TCP 속도 | `reference.v_max` | $= \eta_v\cdot$ `reference.v_max`, $0<\eta_v\le1$ `[확정 D-9]` (η_v 키 이름은 S1.7) |
+| L3 `ComputeGammaWindow` 의 TCP 속도 | `reference.v_max` | $= \eta_v\cdot$ `reference.v_max`, $0<\eta_v\le1$ `[확정 D-9]` (η_v 키 이름은 S1.7) |
 | `supervisor.decel.a_dec` | `reference.a_max` | $a_{dec}\le a_{\max}$ (L7 §4.3) |
 | `prediction.lead` | `joint_cmd.lag.T_arm` × `lead_enable` | 같은 값 (L2 §4.4) |
 | `robot.hand.T_pre` | `planner.freeze.T_freeze` | $T_{pre}\le T_{freeze}$, $T_{freeze}$ 하한에 $T_{arm}$ 포함 (L6 §5.3, plan §3) |
@@ -321,10 +321,10 @@ catching:
 | 궤적 샘플링 (5차 Hermite, $C^2$) | 논문 외 유도 | L2 §4.2 | `traj_sampler.hpp` → rtc_controllers `catching` (S1.2) |
 | 시간 타입 `BallTime`/`NowReal`/`NowLead` | 논문 외 설계 | §3, L2 §4.4 | rtc_controllers `catching` (S1.3, D-2) |
 | `PointCloud2` 파싱·레이아웃 검증 | 논문 외 설계 | L1 §5.1 | `integrated_bringup` 바인딩 (S5.2, D-4) |
-| 관절 최소 도달시간 (P1 램프 제약) | [R1] + 논문 외 유도 | L3 §4.3 | `time_feasibility.hpp` (`tMinChecked`) → `catching` (S1.5) |
+| 관절 최소 도달시간 (P1 램프 제약) | [R1] + 논문 외 유도 | L3 §4.3 | `time_feasibility.hpp` (`TMinChecked`) → `catching` (S1.5) |
 | 5-DoF 포구 자세, 접근축 제약 | [R1] 식(3)의 변형 | L3 §4.2 | `rtc::compliance::DifferentialIk` (m=5) 호출, 계획기 코어 `catching` (S6.2, D-7d) |
 | catchability (arm 5행 manipulability) | 논문 외 설계 | L3, plan §11 | `catching` 단일 함수 — 지도 도구(S3.5a/b)와 계획기(S6.2) 공용 (D-18) |
-| γ 창 부등식, 방향 속력 | 논문 외 유도 | L3 §4.5 | `time_feasibility.hpp` (`gammaWindow`, `maxCatchableSpeed`) → `catching` (S1.5, 투영 속력·0 가드) |
+| γ 창 부등식, 방향 속력 | 논문 외 유도 | L3 §4.5 | `time_feasibility.hpp` (`ComputeGammaWindow`, `MaxCatchableSpeed`) → `catching` (S1.5, 투영 속력·0 가드) |
 | 포구 오차 예산 (직교 분해) | 논문 외 유도 | L3 §4.6 | 계획기 코어 `catching` (S1.5·S6) |
 | 계획기 스레드 | 논문 외 설계 | L3, plan §6 | `rtc::PeriodicRtThread` subclass, `integrated_bringup` 소유 (S6, D-7) |
 | 오차 좌표 soft-catch DS | [R3] 식(4)(5) | L4 §4.1 | `soft_catch_reference.hpp` → `catching` (S1.4) |
@@ -434,7 +434,7 @@ layer 문서들이 개별 번호를 인용하므로 여기에 정의를 모은�
 | TBD-RTC-12 | frame Jacobian 함수 이름·`ReferenceFrame` 인자 | L5 G5-6 | W3-3 닫힘 — `PinocchioCache`(`RegisterFrame` 후 `Update`, LWA 고정), `RtModelHandle`(LOCAL/LWA/WORLD) |
 | TBD-RTC-13 | 기존 `DemoWbcController` 버그(Stage C-0)의 영향 | L5 G5-8 | W2-8 닫힘 — 열린 버그 없음, Stage C-0 수정 병합됨 |
 | TBD-RTC-14 | 모델 로드 경로·FK API (폐쇄 체인 손 포함) | L3 G3-1 | W3-1~3 닫힘 — CM 공유 `PinocchioModelBuilder`, 폐쇄 체인 sidecar closure YAML, 손바닥 frame 은 루프 상류 |
-| TBD-RTC-16 | non-RT 스레드 생성·우선순위, CPU 격리 | L3 G3-3 | W2-1 닫힘 — `rtc::PeriodicRtThread` subclass + `thread_layout.yaml` role (D-7, D-7b). 스케줄러는 측정으로 확정(D-7a, S6.5) |
+| TBD-RTC-16 | non-RT 스레드 생성·우선순위, CPU 격리 | L3 G3-3 | W2-1 닫힘 — `rtc::PeriodicRtThread` subclass + `thread_layout.yaml` role (D-7, D-7b). 스케줄러는 초기값 FIFO 유지 — D-7a 측정은 생략 (2026-09-23, plan §7.2) |
 | TBD-RTC-17 | 기존 WBC 손 명령 경로와의 충돌 | L6 G6-6 | W4-9 닫힘 — 포구 컨트롤러가 손 device slot 에 직접 기록(D-11) |
 | TBD-RTC-18 | 기존 상태 머신·lifecycle 과 L7 `Mode` 의 매핑 | L7 G7-1 | W2-1 닫힘 — lifecycle 훅(`on_configure`/`on_activate`/`on_deactivate`, noexcept), E-STOP 훅 `TriggerEstop`/`ClearEstop`/`SetHandEstop`, fault 래치 `ResetFault`/`HasLatchedFault`. 정책은 D-13(S9), 임시 기준 P-1 (S5.1 최소 계약, `[CONCERN] E-8`) |
 | TBD-RTC-19 | 컨트롤러 기반 클래스·lifecycle 훅 | L8 G8-1 | W2-1 닫힘 — `RTControllerInterface`, `RTC_REGISTER_CONTROLLER`, 코어+바인딩 2층 |
@@ -465,7 +465,7 @@ v0.3의 `TBD-RTC-06`(결번)과 `TBD-RTC-15`(W2-2가 01로 이미 다룸)는 폐
 | 재무장 상태 오염 | 두 번째 투척이 다르게 동작 (옛 plan 재사용, 직전 포구점 복귀, 첫 틱 `bound_conflict`) | L7 §4.8 재무장 리셋 목록 + G8-A2 연속 투척 시나리오 (S7.4) |
 | QP 반복 폭주 | RT 틱에서 유일하게 상한 없는 항목 | `max_iter` 상한(S2.2 에서 설정 가능) + 실패 시 q_ref = q_meas·v = 0 + QP 비의존 관절공간 abort 경로(S5.3) |
 | **1차원 탐색 분해의 한계** | 시각·자세 결합 후보를 놓침 → NLP 전환 시 S6 재작업 | 계획기 코어 단일 진입 함수 경계 유지, 전환 신호 기록 (plan §8, S6.6) |
-| **계획 예산 초과** | 참조 rollout 추정 ~26 ms vs 예산 10 ms | coarse-to-fine (S6.3), D-7a 측정(S6.5) |
+| **계획 예산 초과** | 참조 rollout 추정 ~26 ms vs 예산 (당시 10 ms, 현 `planner.budget_s` 0.020) | **종결 (S6, G3-C PASS)** — R-2 사전 필터·coarse-to-fine (S6.3). D-7a 측정은 생략 (plan §12) |
 | 기존 기능 중복 구현 | 유지보수 이원화, 동작 불일치 | §1.2 재사용 목록, P5 일반화(D-5 CLIK 확장, D-7 스레드 기반 공유) |
 | 공개 코드(R5) 이식 | 정상상태 추종 오차 | 논문 식 기준 구현, 코드 대조 금지 목록(L4 §4.6) |
 | 참조 구현이 여러 벌로 갈라짐 | L3 rollout과 L4 실행이 다른 코드가 되어 계획이 무의미해짐 | `soft_catch_reference.hpp` 1벌을 S1 에서 `catching` 으로 이식, 테스트가 그 코드를 쓰는지 리뷰에서 확인. catchability 도 지도·계획기 공용 1벌(D-18) |

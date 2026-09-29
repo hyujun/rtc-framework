@@ -159,7 +159,7 @@ $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LW
 
 **잘못된 한계 입력은 flag 로 보고한다.** 참조 구현 `tMinChecked` 는 $\bar a\le0$ 또는 $\bar\omega\le0$ (또는 NaN) 이면 $t=0$ 을 **아무 표시 없이** 돌려준다 — 도달시간 게이트가 무조건 통과하는 결함이다. S1.5 이식 시 한계 무효 플래그를 추가하고, 플래그가 서면 후보를 탈락시킨다 (clamp 플래그와 같은 처리). 한계 값 자체의 범위 검사는 파라미터 검증(S1.7)이 한다.
 
-검증: 무작위 40개 조건에서 속도·가속 제약 선형계획(시간 이분 탐색) 해와 최대 차이 — python 거울 $8.3\times10^{-6}$ s, C++ `tMin` $9.5\times10^{-6}$ s (LP 격자 이산화 수준). `test_l3.cpp`가 `cases.txt`를 만들고 `verify_l3.py`가 대조했다 — 두 파일 모두 (삭제됨 — [README](README.md#삭제된-참조-구현)), 결과는 `test_catching_time_feasibility` 고정 테이블.
+검증: 무작위 40개 조건에서 속도·가속 제약 선형계획(시간 이분 탐색) 해와 최대 차이 — python 거울 $8.3\times10^{-6}$ s, C++ `TMin` $9.5\times10^{-6}$ s (LP 격자 이산화 수준). `test_l3.cpp`가 `cases.txt`를 만들고 `verify_l3.py`가 대조했다 — 두 파일 모두 (삭제됨 — [README](README.md#삭제된-참조-구현)), 결과는 `test_catching_time_feasibility` 고정 테이블.
 
 제약:
 
@@ -198,13 +198,13 @@ $d_{eff}$는 손바닥 접촉 전 폐쇄를 요구하면 포켓 깊이 $d$, 반�
 
 $$\gamma\le\gamma_{\max}=\frac{\min(v_{dir,\max},\ \eta_vv_{\max})}{\Vert v\Vert}$$
 
-TCP 속도 한계를 빠뜨리면 계획이 통과시킨 γ가 L4에서 속도 포화를 일으킨다. `gammaWindow`는 두 값을 모두 인자로 받는다(v0.1 코드는 $v_{dir,\max}$만 썼다).
+TCP 속도 한계를 빠뜨리면 계획이 통과시킨 γ가 L4에서 속도 포화를 일으킨다. `ComputeGammaWindow`는 두 값을 모두 인자로 받는다(v0.1 코드는 $v_{dir,\max}$만 썼다).
 
 > **S8-H 실측 (2026-09-27, plan §4.4 S8-H · D-S8-19).** p1b sim 의 손 근처 투척 391 committed 시행에서 이 상한을 정한 것은 **99 % 가 $v_{dir,\max}$** (포구 자세, p50 2.07 m/s) 이고 $\eta_vv_{\max}$ (3.15) 는 **0 %** 였다. 창은 96 % 가 비었고 ($\gamma_{\min}$ 0.81 > $\gamma_{\max}$ 0.39), 그때 `ChooseGamma` 의 window-rule 은 $\gamma_f=\gamma_{\max}$ (팔 한계) 를 채택해 나머지 상대속도를 손에 넘긴다 — 창이 비어도 계획은 이미 팔 한계에 있으므로 창의 *정의* 를 바꿔 풀 γ 가 없다. 포획 가능 속력은 아래 $\Vert v\Vert_{\max}$ ≈ 2.07 + 1.0 = 3.1 m/s (S8-F-1 v50 3.6 과 같은 급). 지렛대는 포구 자세 ($v_{dir,\max}$ ≤ 1.5 m/s 성공 0 %, 2.5–3.0 20 %) 와 손 흡수 ($d_{eff}/T_{close,tot}$ 1.0 대 sim 손 50 % ≈ 1.5 m/s) 다. 계획기는 $\gamma_{\min}$·$\gamma_{\max}$·$v_{dir,\max}$ 를 기록하지 않아 이 분해는 오프라인 FK 로 했다 — S8-I 부터 `planner_events` 가 채택 후보의 네 값을 기록한다. **④ 결과 (S8-I/S8-I-2, D-S8-20)**: 대기 자세는 이 $v_{dir,\max}$ 를 **+25 % 까지** 올릴 수 있는 지렛대다 — 단 한 점의 정적 DLS 최대값이 아니라 이웃 (|Δq|∞ ≤ 0.1 rad) 의 p10 을 최대화한 자세여야 한다 (점 최적은 `jw` 특이점 옆 바늘 봉우리라 IK 포구 자세에서 1/4 로 무너진다). 그렇게 얻은 자세로 런타임 $v_{dir,\max}$ p50 2.2 → 2.6 m/s, $\gamma_{\max}$ 0.42 → 0.50 이 됐지만 포획은 18 → 20/112 (p 0.86) — 접촉 상대속도 감소 (3.5 m/s 공에서 0.25 m/s) 가 손 흡수 곡선의 경사 구간 (3.5 m/s) 에서만 드러난다. 출하 `wait_pose` 는 유지.
 
-**여유율 `[확정 D-9]`.** `gammaWindow` 의 TCP 속도 인자는 $v_{tcp}=\eta_v\cdot$`reference.v_max` ($0<\eta_v\le1$) 이다. γ 창이 $v_{\max}$ 전체를, rollout 수락(§4.8)이 $\eta_vv_{\max}$ 를 쓰면 창은 통과했는데 rollout 에서만 탈락하는 후보가 구조적으로 생기고, 계획이 한계 끝을 쓰면 실행 중 예측 변화로 L4 가 포화한다. γ derate 가 v1 에서 빠졌으므로(D-8) 이 여유가 실행 중 유일한 완충이다. 마스터 §6 교차제약도 이 식으로 고친다 (검증은 S1.7 교차제약 표).
+**여유율 `[확정 D-9]`.** `ComputeGammaWindow` 의 TCP 속도 인자는 $v_{tcp}=\eta_v\cdot$`reference.v_max` ($0<\eta_v\le1$) 이다. γ 창이 $v_{\max}$ 전체를, rollout 수락(§4.8)이 $\eta_vv_{\max}$ 를 쓰면 창은 통과했는데 rollout 에서만 탈락하는 후보가 구조적으로 생기고, 계획이 한계 끝을 쓰면 실행 중 예측 변화로 L4 가 포화한다. γ derate 가 v1 에서 빠졌으므로(D-8) 이 여유가 실행 중 유일한 완충이다. 마스터 §6 교차제약도 이 식으로 고친다 (검증은 S1.7 교차제약 표).
 
-**입력 방어.** $v_{dir,\max}$ 는 아래 DLS 정규화식의 결과라 수치 문제로 음수가 나올 수 있다. 음수면 clamp 가 $\gamma_{\max}$ 를 0으로 **올려** 판정을 뒤집으므로, `gammaWindow` 가 비물리적 입력을 검사해 플래그를 세운다(`tMinChecked` 가 $|w_0|>\bar\omega$ 를 검사하는 것과 같은 수준).
+**입력 방어.** $v_{dir,\max}$ 는 아래 DLS 정규화식의 결과라 수치 문제로 음수가 나올 수 있다. 음수면 clamp 가 $\gamma_{\max}$ 를 0으로 **올려** 판정을 뒤집으므로, `ComputeGammaWindow` 가 비물리적 입력을 검사해 플래그를 세운다(`tMinChecked` 가 $|w_0|>\bar\omega$ 를 검사하는 것과 같은 수준).
 
 **방향 속력 계산.** 접근축 각속도 0을 유지하며 $\hat v$ 방향 단위 속도를 내는 관절속도 $\dot q^u$를 damped least-squares로 구하고
 
@@ -226,7 +226,7 @@ $$v_{dir,\max}\approx\frac{\max\big(0,\ \hat v^\top J_p\dot q^u\big)}{\displayst
 
 $$\Vert v\Vert_{\max}=\min(v_{dir,\max},\eta_vv_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 
-이고 이를 넘는 후보는 탈락이다(`maxCatchableSpeed`). **이 식이 시스템 전체의 실현 가능성을 결정한다** — 마스터 §4.1을 볼 것. $v_{dir,\max}=1.5$ m/s, $d_{eff}=4$ cm, $T_{close,tot}=60$ ms이면 상한이 2.17 m/s에 불과하다.
+이고 이를 넘는 후보는 탈락이다(`MaxCatchableSpeed`). **이 식이 시스템 전체의 실현 가능성을 결정한다** — 마스터 §4.1을 볼 것. $v_{dir,\max}=1.5$ m/s, $d_{eff}=4$ cm, $T_{close,tot}=60$ ms이면 상한이 2.17 m/s에 불과하다.
 
 ### 4.6 포구 오차 예산 `[논문 외 유도]`
 
@@ -256,7 +256,7 @@ $\sigma_c$는 **commit 시점 메시지**의 $t_c$ 샘플 공분산에서, $\sig
 commit 시점에는 $\sigma_\ell$ 을 아직 모른다. 두 경로를 둔다.
 
 1. **계획 단계**: 보수적으로 $\sigma_\ell=\sigma_c$ 로 둔다. 그러면 식이 $\sigma_c^2$ 로 환원되는데, 이것은 **직교성 가정 없이도 상한**이다 — $\mathrm{Var}(A+\lambda B)$ 는 $\lambda=1-\gamma$ 의 볼록 2차식이라 $\lambda\in[0,1]$ 에서 최대가 끝점이고, $\sigma_\ell\le\sigma_c$ 인 한 그 값이 $\sigma_c^2$ 다.
-2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신해 `PlanSnapshot` 에 싣는다. L7이 이 값의 성장을 보고 abort를 판단한다 (γ 하향은 v1 범위 밖, D-8 — §4.7). 이 경로가 없으면 §4.6의 직교 분해 이득이 실현되지 않고 `sigma_l` 은 죽은 필드가 된다.
+2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신해 `PlanSnapshot` 에 싣는다. 설계는 L7이 이 값의 성장을 보고 abort를 판단하는 것이지만 **그 소비자는 구현되지 않았다** — 아래 "구현 현황" (γ 하향은 v1 범위 밖, D-8 — §4.7). 이 경로가 없으면 §4.6의 직교 분해 이득이 실현되지 않고 `sigma_l` 은 죽은 필드가 된다.
 
 **직교성이 깨질 때의 방향.** 정확한 오차항은 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 이고 $\gamma=0,1$ 에서 사라져 $\gamma=0.5$ 에서 최대다. **새 측정을 과소 반영하는(sluggish) 예측기** — 측정잡음 과대설정, 공정잡음 과소설정 같은 흔한 튜닝 실패 — 는 $\mathrm{Cov}(A,B)>0$ 을 만들어 위 식이 $\sigma_{gap}$ 을 **과소평가**하게 한다(모의 실험에서 7–8%). v0.1의 $\gamma^2$ 오류와 같은 방향이다. 반대로 $\mathrm{Cov}(A,B)<0$ 이면 위 식은 $\sigma_{gap}$ 을 **과대평가**한다 (보수적). **sim 에서 잰 것은 이쪽이다** — 아래 "측정과 결정".
 
@@ -335,7 +335,7 @@ $$\omega^2(1-\gamma)\Vert\Delta p_c\Vert+\bigl(2\zeta\omega|\dot\gamma|+|\ddot\g
 
 수락 조합 중 $\gamma_f$ 최대를 고르고, 동률이면 최대 가속이 작은 것을 고른다. 수락 조합이 없으면 $\gamma_{\min}$을 한 번 더 검사한다. 그것도 실패하면 후보를 탈락시킨다.
 
-**연산 예산 (S6.3).** 참조 구현 기준 추정으로 전 격자 rollout 이 약 26 ms 로 `planner.budget_s` (10 ms) 를 넘는다. 전 격자 × 전 후보 × 매 tick 적분을 그대로 돌릴 수 없으므로 **coarse-to-fine 이 필수**다 — 거친 단계로 먼저 거르고 통과한 조합만 세밀하게 재검사한다. **S6.3 구현** (`gamma_rollout.hpp`): 격자 전체를 `planner.rollout.dt_coarse` (10 ms) 로 거르고, 고른 조합 하나만 제어 주기로 확인한다. **거친 단계는 최대치 ($u$, $\dot x$) 만 판정하고 $\Vert e(t_k)\Vert$ 는 확인 단계만 판정한다** — semi-implicit Euler 가 거친 간격에서 움직이는 대상을 약 $\gamma\Vert v\Vert\,dt$ 만큼 뒤따르므로, 2026-09-23 G3-C 투구에서 10 ms 의 잔여 오차가 3–11 mm (제어 주기에서는 0.2–1.5 mm, 최대치 차이는 3 % 이내) 였고 거친 단계에서 $\epsilon_{term}$ 을 판정하면 모든 soft catch 가 자기 이산화 오차로 탈락했다. 전 구간 수락이 없을 때 γ 는 창 안의 최대치로 고르고 판정은 "실패" 로 둔다 (접근 구간이 포화한다는 뜻 — §4.1 의 순위 벌점). 실측 사이클 시간은 G3-C (`test_catching_planner_g3c`) 가 기록한다.
+**연산 예산 (S6.3).** 참조 구현 기준 추정으로 전 격자 rollout 이 약 26 ms 로 `planner.budget_s` (당시 10 ms — 현 0.020, §6) 를 넘는다. 전 격자 × 전 후보 × 매 tick 적분을 그대로 돌릴 수 없으므로 **coarse-to-fine 이 필수**다 — 거친 단계로 먼저 거르고 통과한 조합만 세밀하게 재검사한다. **S6.3 구현** (`gamma_rollout.hpp`): 격자 전체를 `planner.rollout.dt_coarse` (10 ms) 로 거르고, 고른 조합 하나만 제어 주기로 확인한다. **거친 단계는 최대치 ($u$, $\dot x$) 만 판정하고 $\Vert e(t_k)\Vert$ 는 확인 단계만 판정한다** — semi-implicit Euler 가 거친 간격에서 움직이는 대상을 약 $\gamma\Vert v\Vert\,dt$ 만큼 뒤따르므로, 2026-09-23 G3-C 투구에서 10 ms 의 잔여 오차가 3–11 mm (제어 주기에서는 0.2–1.5 mm, 최대치 차이는 3 % 이내) 였고 거친 단계에서 $\epsilon_{term}$ 을 판정하면 모든 soft catch 가 자기 이산화 오차로 탈락했다. 전 구간 수락이 없을 때 γ 는 창 안의 최대치로 고르고 판정은 "실패" 로 둔다 (접근 구간이 포화한다는 뜻 — §4.1 의 순위 벌점). 실측 사이클 시간은 G3-C (`test_catching_planner_g3c`) 가 기록한다.
 
 참고 수치(`test_l3.cpp`, 한 시나리오, 포화 없는 rollout의 창 내 최대 $\Vert u_{des}\Vert$ [m/s²]):
 
@@ -391,7 +391,7 @@ S1.5 이식 시 변경:
 - 배치·명명: rtc_controllers `catching` (namespace `rtc::catching`), 함수 PascalCase (D-1, S0.3). 구조체 `GammaWindow` 와 함수 이름이 겹치지 않게 정리한다
 - `tMinChecked`: 한계 $\le0$·NaN 이면 $t=0$ 을 무표시로 돌려주는 결함 → 한계 무효 플래그 추가, 호출자는 후보 탈락 (§4.3)
 - 가속 한계 인자는 D-16 도출 상수 box (CLIK 가속 box 와 같은 값) (§4.3)
-- `gammaWindow` 의 `v_tcp_max` 인자는 호출부에서 $\eta_v\cdot$`reference.v_max` 로 넘긴다 (D-9, §4.5)
+- `ComputeGammaWindow` 의 `v_tcp_max` 인자는 호출부에서 $\eta_v\cdot$`reference.v_max` 로 넘긴다 (D-9, §4.5)
 - 테스트: `test_l3.cpp` → `cases.txt` → `verify_l3.py` (삭제됨) 대조 결과를 GTest 고정 테이블로 이식 (S1.1), 한계 무효 경로 회귀 테스트 추가
 
 ### 5.2 `PlanSnapshot`
@@ -437,7 +437,7 @@ S1.5 이식 시 변경:
 - 데이터: RT → 계획기 `rtc::SeqLock` (POD: $q_c,\dot q_c$, L4 기준 상태, 모드), 궤적 스냅샷은 nrt 파서가 게시한 SeqLock, **공분산은 계획기 쪽 버퍼에만** (A-3 — NaN(모름) 처리도 계획기 한 곳에서), 출력은 `rtc::SeqLock<PlanSnapshot>` — **S6 구현**: RT → 계획기는 `PlannerRtState` (activation generation · tick · 시각 · mode · 팔 명령 $q_c,\dot q_c$ · L4 기준 상태 $x,\dot x,\gamma,\dot\gamma$ · 현재 `plan_id` · 리셋 epoch) 를 RT tick 이 **매 tick** Store 한다. 깨우는 쪽은 nrt 파서 (새 궤적 수락 시 eventfd write) 이고 RT tick 은 eventfd 에 손대지 않는다. 재무장 리셋 (L7 §4.8) 은 RT 가 리셋 epoch 을 올리고 reset floor 를 적는 것뿐이다 (box 의 writer 는 하나). 끝난 시행을 위해 올라온 wake 신호는 따로 비우지 않는다 — 깨어날 때의 read 가 이미 소비하고, 그 시행용으로 계산된 plan 은 RT 가 reset floor 로 거른다. 리셋을 본 wake 도중에 올라온 신호는 **새 시행**의 궤적이므로 남겨 둔다 (비우면 새 시행의 첫 plan 이 wake timeout 만큼 늦는다 — 2026-09-23 `/code-review`). 수명: 계획기 스레드는 **한 configuration 의 것**이다 — `on_cleanup` 에서 join 하고 다음 activation 이 새 설정으로 다시 띄운다 (DemoWbc MPC 처럼 소멸자까지 두면 oracle 로 재구성한 뒤에도 resume 돼 box writer 가 둘이 된다)
 - **RT-1~10 준수 코드** (plan §7.2 결정 방식 1): 할당 0, `noexcept`, 락·블로킹 I/O 없음, 로깅 금지. 진단(후보 수, 게이트별 탈락, 실행시간, 선택 결과)은 `rtc::SpscQueue` 로 넘기고 aux 타이머가 drain 해 CSV 로 쓴다. 그러면 FIFO/OTHER 는 thread layout 값 하나로 바뀌고 코드가 바뀌지 않는다 — 단, RT 쪽 `PlanSnapshot` 읽기는 writer 가 SCHED_OTHER 여도 D-21 의 측정(최악 재시도 시간)을 통과해야 한다 (plan §7.2 결정 방식 1)
 - 배치 `[확정 D-7b → E-7 결정 J 로 대체, 2026-09-23]`: ~~빈 slot 에 새 thread layout role~~ → **기존 `mpc` role 재사용** (`SelectThreadConfigs().mpc.main`, 스레드 이름 `mpc_main`, tier ≥ 6 slot 3 FIFO 60 · tier 4 OTHER). 계획기는 MPC 와 같은 역할이고 CM 이 active 컨트롤러를 하나만 두므로 같은 코어에 동시에 도는 FIFO 는 하나다 (plan §6). activate 게이트: `planner.enabled` && profile `mpc_off` 면 `on_activate` 첫 문장 FAILURE
-- 스케줄러 D-7a: S6.5 에서 제어 PC 부하 상태로 FIFO·OTHER 각각 측정 (수신 → plan 게시 지연 p50·p99·최대, 예산 초과율, ≥ 1000 시행). FIFO 가 p99 를 `budget_s` 의 10% 이상 줄이거나 예산 초과율을 줄이면 FIFO 유지, 아니면 SCHED_OTHER (A-2)
+- 스케줄러 D-7a (**측정은 생략, 초기값 FIFO 유지** — 2026-09-23 사용자 결정, plan §7.2; 아래는 측정 절차의 기록): S6.5 에서 제어 PC 부하 상태로 FIFO·OTHER 각각 측정 (수신 → plan 게시 지연 p50·p99·최대, 예산 초과율, ≥ 1000 시행). FIFO 가 p99 를 `budget_s` 의 10% 이상 줄이거나 예산 초과율을 줄이면 FIFO 유지, 아니면 SCHED_OTHER (A-2)
 - 복사하지 않을 것: 현 MPC 경로의 `MPCSolutionManager::PublishSolution` mutex·try/catch, `HandlerMPCThread` 의 `fprintf` (plan §6)
 
 **한 번 깨어났을 때의 순서** (§4.1 단일 진입 함수의 본문):
@@ -449,9 +449,9 @@ S1.5 이식 시 변경:
 5. 후보가 없으면 invalid + 사유 게시, 있으면 §4.7 히스테리시스를 거쳐 게시
 
 - `isFrozen(mode)` 는 술어 함수로 둔다. `mode >= Mode::Committed` 같은 enum 나열 순서 의존은 상태를 추가하면 조용히 깨진다.
-- **동결 중에도 `monitorOnly()` 는 돈다**(§4.6): $\sigma_\ell$, σ 성장률, L1 $\bar\nu$ 를 갱신 발행해 L7이 abort 판단에 쓴다. v0.2는 즉시 return 해서 `PlanSnapshot::sigma_l` 이 영구히 죽은 필드였다.
+- **동결 중에도 `monitorOnly()` 는 돈다**(§4.6): $\sigma_\ell$, σ 성장률, L1 $\bar\nu$ 를 갱신한다 — 구현은 $\sigma_\ell$ 만 계산해 `planner_events.csv` 에 기록하고, 이를 읽어 abort 를 판단하는 소비자는 없다 (§4.6 "구현 현황"; $\bar\nu$ 는 L1 §4.5 대로 생산자가 없다). v0.2는 즉시 return 해서 `PlanSnapshot::sigma_l` 이 영구히 죽은 필드였다.
 - 시행 종료 시 plan 무효화는 L7이 한다(L7 §4.8).
-- 후보 시각은 vision 샘플 격자를 그대로 쓴다. `planner.slice.dt`가 카메라 주기보다 크면 격자를 솎아 쓰고, 작으면 보간해 쓴다(L2 `sampleAt`). 어느 쪽이든 격자 간격은 `TBD-VIS-04` 확정 후 정한다.
+- 후보 시각은 vision 샘플 격자를 그대로 쓴다. `planner.slice.dt`가 카메라 주기보다 크면 격자를 솎아 쓰고, 작으면 보간해 쓴다(L2 `SampleAt`). 어느 쪽이든 격자 간격은 `TBD-VIS-04` 확정 후 정한다.
 
 ### 5.4 방향 속력 (§4.5)
 
@@ -480,7 +480,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.slice.t_lead_min` | double | s | = `planner.freeze.T_freeze` | >0 | $T_{freeze}$ 이상 (2026-09-23: 같은 값으로 정함) |
 | `planner.slice.t_max` | double | s | = 지평 − margin | 0.2–1.5 | vision 지평 − `prediction.t_horizon_margin` 이하 (S3.6 설정 profile 1.0 s 면 ≤ 0.95 s). 2026-09-23: 그 상한 그대로로 정함 |
 | `planner.n_settle` | int | – | 3 | 0–20 | §4.4 트랙 epoch 변경 후 대기 메시지 수 |
-| `planner.gamma.margin` | double | m/s | 0.1 | 0–1 | §4.5 `maxCatchableSpeed` 경계 여유 (1 ulp 엇갈림 방지) |
+| `planner.gamma.margin` | double | m/s | 0.1 | 0–1 | §4.5 `MaxCatchableSpeed` 경계 여유 (1 ulp 엇갈림 방지) |
 | `planner.ik.max_iter` | int | – | 20 | 1–100 | 연산 예산 |
 | `planner.ik.lambda` | – | – | – | – | v0.5 에서 삭제 — 고정 λ 대신 `DifferentialIk` 의 σ_min 적응 λ (D-7d). 그 파라미터는 아래 `sigma0`·`lambda_max` 다 |
 | `planner.ik.sigma0` | double | – | 1e-3 (**provisional**) | >0 | §6.5 감쇠 shell 진입 σ_min — **영공간 투영 $N$ 만** 파라미터화한다 (과제 스텝은 QP, D-26). **S6.2 가 아니라 S1.9 에서 정한다** — S3.5a 지도가 S6.2 보다 먼저 같은 함수를 돌리고 지도와 런타임은 같은 키를 써야 한다 (plan §11) |
@@ -505,14 +505,14 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.hand.r_cap` | double | m | LEAP **0.031** / P1b **0.024** | >0 | S4.5 실측 (L6 §4.5), provisional (자체 키는 없다 — 아래 주). 측면 허용량이며 공 중심 좌표계라 공 반지름이 이미 포함돼 있다. S6-B 소비 (불확실성·오차 예산), 결정값 |
 | `planner.gamma.grid` | double[] | – | [0.0, 0.1, …, 0.6] | 0–1 | §4.8 |
 | `planner.gamma.window_grid` | double[] | s | [0.3, 0.45, 0.6] | >0 | §4.8 |
-| `planner.gamma.eta_a`, `eta_v` | double | – | 0.8, 0.9 | (0, 1] | 여유율. `eta_v` 는 D-9 의 $\eta_v$ — `gammaWindow` 와 rollout 수락이 같은 값을 쓴다 (§4.5, §4.8) |
+| `planner.gamma.eta_a`, `eta_v` | double | – | 0.8, 0.9 | (0, 1] | 여유율. `eta_v` 는 D-9 의 $\eta_v$ — `ComputeGammaWindow` 와 rollout 수락이 같은 값을 쓴다 (§4.5, §4.8) |
 | `planner.gamma.eps_term` | double | m | 0.002 | – | §4.8 |
 | `planner.rollout.dt_coarse` | double | s | 0.01 | 1e-4–0.05 | 발명 키 (S6.3): rollout 거친 단계 간격. 확인 단계는 제어 주기 (§4.8) |
 | `planner.budget.n_sigma` | double | – | 2.0 | 1–3 | §4.6 |
 | `planner.budget.sigma_trk` | double | m | `TBD` | ≥0 | L5 실측. ⚠️ **sim 초기값 출처가 없다** — S3.7 이 2026-09-20 결정으로 빠져 (L5 §7 L5.7) **S10 실기 식별까지 TBD 로 남는다** |
 | `planner.budget.clock_err` | double | s | `TBD` | ≥0 | 인프라 실측 |
 | `planner.stop.a_dec` | – | – | – | – | v0.5 에서 삭제 — 단일 키 `supervisor.decel.a_dec` (L7 §6) 를 읽는다 (§4.9) |
-| `planner.stop.check_ik` | bool | – | true | – | §4.9 |
+| ~~`planner.stop.check_ik`~~ | bool | – | — | – | 구현되지 않았다 — 코드·출하 YAML 에 이 키는 없다 (2026-09-29 코드 대조) |
 | `planner.switch.delta_J` | double | – | 0.1 | ≥0 | §4.7 |
 | `planner.switch.eta_jump` | double | – | 0.25 | (0, 1] | §4.7 규칙 2: 교체가 $u_{des}$ 에 넣는 계단 ≤ `eta_jump` × `reference.a_max` (결정 ⑥, 2026-09-23). provisional |
 | `planner.switch.e_jump_max`, `ed_jump_max` | – | – | – | – | 결정 ⑥ 으로 삭제 — `eta_jump` 가 대체. 파서가 **거부**한다 (옛 값으로 튜닝된 profile 을 기본값으로 조용히 돌리지 않는다) |
@@ -528,7 +528,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 
 - **L3.1** `time_feasibility.hpp` + LP 대조 테스트(`test_l3.cpp` → `cases.txt` → `verify_l3.py` (삭제됨), 결과를 고정 테이블로 GTest화) + `w0_clamped` 경로 테스트.
 - **L3.2** 포구 자세 IK (`DifferentialIk` m=5 + 전용 `RtModelHandle`, seed = wait_pose) + manipulability 게이트 (D-18, S3.5a/b 도구와 같은 함수) + 수렴률·콘·스케일($\rho$) 테스트.
-- **L3.3** 방향 속력 (§5.4, 투영·0 가드) + γ 창 테스트([R1] 수치 sanity, `v_tcp_max` 구속, `maxCatchableSpeed` 포함).
+- **L3.3** 방향 속력 (§5.4, 투영·0 가드) + γ 창 테스트([R1] 수치 sanity, `v_tcp_max` 구속, `MaxCatchableSpeed` 포함).
 - **L3.4** γ rollout (L4 코드 호출, $now_{lead}$ 축) + §4.8 표 재현 테스트 + coarse-to-fine (예산 초과 시, S6.3).
 - **L3.5** 오차 예산(§4.6 직교 분해)·정지거리 게이트.
 - **L3.6** 선택·히스테리시스·commit (γ 하향 경로는 v1 범위 밖, D-8).
@@ -550,7 +550,7 @@ L3.1·L3.3·L3.4는 `test_l3.cpp`가 참조 구현을 이미 돌리고 있다. *
 
 | 게이트 | 기준 | 태그 |
 |---|---|---|
-| G3-A | `tMin` 고정 테이블 일치 (< 1e-9, 스크립트 기준값 대비) + `w0_clamped`·한계 무효 플래그 시 후보 탈락 | `[SIM-ANY]` |
+| G3-A | `TMin` 고정 테이블 일치 (< 1e-9, 스크립트 기준값 대비) + `w0_clamped`·한계 무효 플래그 시 후보 탈락 | `[SIM-ANY]` |
 | G3-B | γ 창 sanity ([R1] 3 cm / 6 m/s → 5 ms 통과, 6 ms 탈락), `v_tcp_max` = $\eta_v$`reference.v_max` 구속 (D-9), §4.8 표 재현(±5%), 방향 속력 투영·0 가드 | `[SIM-ANY]` |
 | G3-C | 합성 투척 1000회: 계획 실행시간 99% < `budget_s`, 탈락 사유 분포 기록 | `[SIM-ANY]` |
 | G3-D | `iiwa7_leap` 시뮬레이션에서 plan 유효율, 교체 빈도 기록. **S8-E (2026-09-26): PASS (기록)** — plan 유효율 p50 p1b tennis 0.14 · beanbag 0.13 · leap 0.17, APPROACH 중 교체 0/600, 첫 plan 0.20 s (plan §4.4 S8-E 결과) | `[SIM-ANY]` |

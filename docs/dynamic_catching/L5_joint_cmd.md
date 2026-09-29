@@ -261,7 +261,7 @@ def equivalent_delay(tau, T, f):
 | `robot.arm.qd_max` | double[n] | rad/s | 로봇 config `max_velocity` | ≤ 데이터시트 | 기존 CLIK 은 스칼라 `v_limit` — 관절별 적용은 S2.2b 에서 확인 |
 | `robot.arm.qdd_max` | double[n] | rad/s² | S2.5 도출값 | >0 | `[확정 D-16]` 토크 한계에서 도출한 상수 box, provenance 포함. `max_acceleration` placeholder 사용 금지. 파일 (`robot.arm.accel_limits_path` — 패키지 share 상대경로, 또는 절대경로면 그대로) 의 `adopted: false` 는 로드 거부, **`provisional: true` (또는 키 부재) 는 sim 경고 · 실기 구성 park** — 로그가 `derived_accel_limits.<group>.provisional` 과 파일 경로를 댄다 (pre-S10 R3, #537 Q4). 출하 두 파일은 provisional 이다 (실기 토크 한계·모델 확인은 S10) |
 | `robot.arm.limit_margin` | double | rad | 0.05 | 0–0.3 | CLIK 에 넘기는 위치 box 를 좁힘 (§4.3) |
-| `robot.arm.q_nominal` | double[n] | rad | `TBD` | – | posture 과제 (wait_pose 와 관계는 L7) |
+| ~~`robot.arm.q_nominal`~~ | double[n] | rad | — | – | **쓰지 않는다** — posture 목표는 시행 시작 자세다 (§7 L5.6, 2026-09-22). 코드·출하 YAML 에 이 키는 없다 |
 | `joint_cmd.K_p` | double | 1/s | 20.0 | 1–100 | CLIK 대역 (L4 `k_axis`보다 크게) |
 | `joint_cmd.K_a` | double | 1/s | `TBD` | >0 | 접근축 게인 |
 | `joint_cmd.w_task`, `w_a`, `w_arm` | double | – | 1.0, 0.5, 1e-2 | >0 | 기존 CLIK 가중 체계 (`w_task ≫ w_arm ≫ μ²`) |
@@ -276,7 +276,7 @@ def equivalent_delay(tau, T, f):
 | `joint_cmd.lag.T_arm` | double | s | **0.0** (sim, S5.3) | 0–0.5 | §4.4 식별 (S10). **출하 sim 값 0** — 에뮬레이션 지연을 주입하지 않는다 (2026-09-20); sim actuator 의 고유 지연 (`ur5e_p1b` 0.05 s — YAML 서보 게인, D-S8-13) 은 **S8-B overlay 에서만** 보상한다 (D-S8-1 (a)) — overlay 는 `T_arm` 0.05 와 함께 `planner.freeze.T_freeze` 0.37 을 넣는다 (L3 §4.11 하한 T_close,tot + T_arm + margin = 0.3615 — 검증기 `CheckFreezeCoversClose` 는 margin 없이 0.3325 만 보므로 출하 0.36 도 활성은 되지만 설계 하한에 못 미친다). `io.horizon_min` 0.51 · `n_min` 12 는 출하값이 이미 T_arm 0.05 로 유도됐다. ⚠️ `lead_enable` 과 무관하게 검증기는 이 값을 T_freeze 하한에 넣는다. 0 이 아닌 값은 §4.5 의 축 혼동 fixture 와 G5-E 지연 fixture 에서만 쓴다. `lead_enable` 이 false 면 읽히지 않는다 (선행축 = 실제축) |
 | `joint_cmd.lag.provisional` | bool | – | `true` (fail-closed) | – | **pre-S10 R3 (2026-09-29, #537 Q5).** `T_arm` 의 L0 §5.3 플래그 — sim 은 경고, 실기 구성은 park (키 `joint_cmd.lag`). `T_arm` 값·`lead_enable` 과 무관하다 (선행을 꺼도 `T_arm` 은 `T_freeze` 하한에 들어간다). 키가 없으면 true. 출하 두 프로파일은 true 를 명시한다 — 실기 `T_arm` 식별 (S10, G5-F) 뒤에 false |
 | `joint_cmd.lag.per_joint` | double[n] | s | `TBD` | ≥0 | §4.4 |
-| `joint_cmd.lag.lead_enable` | bool | – | false | – | 식별 전에는 false. S8-B sim overlay 에서 lead on arm 만 true (off arm 은 같은 T_arm·T_freeze 로 false — 선행만 다르다). overlay 는 `integrated_bringup/config/ur5e_p1b/sim_overlays/catch_lead_{on,off}{,_gamma0}.yaml` 이고, 키 경로가 출하 YAML 에 있는지는 `test_catch_lead_overlays.py` 가 고정한다 (한 단계 얕은 경로는 경고 없이 출하값으로 돈다) |
+| `joint_cmd.lag.lead_enable` | bool | – | false | – | 식별 전에는 false. S8-B sim overlay 에서 lead on arm 만 true (off arm 은 같은 T_arm·T_freeze 로 false — 선행만 다르다). overlay 는 `integrated_bringup/config/ur5e_p1b/sim_overlays/catch_lead_on.yaml` 이고 (off·`_gamma0` arm 은 기록 뒤 2026-09-27 에 지웠다), 키 경로가 출하 YAML 에 있는지는 `test_catch_lead_overlays.py` 가 고정한다 (한 단계 얕은 경로는 경고 없이 출하값으로 돈다) |
 | `supervisor.track_err_abort` | double | rad | `TBD` | >0 | **L7 §6 단일 원천.** L5 는 참조만 한다 |
 
 v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 관절공간 abort). `robot.arm.limit_beta` 도 삭제한다 (§4.3).
@@ -324,6 +324,6 @@ v0.4 의 `joint_cmd.qp.beta_fallback` 은 삭제한다 (실패 경로는 §4.3 �
 
 - 닫힘 (S2.2a, §5.1 표): 확장 구조, q_c 평가 cache 소유, 실패 후 재앵커, 명령값 모드의 `anchor_drift_max`, 관절별 속도 한계
 - S5.3 관절공간 abort 감속 법칙 세부
-- `joint_cmd.K_a`, `robot.arm.q_nominal`, `supervisor.track_err_abort` (L7), `joint_cmd.lag.*` (S10)
+- `joint_cmd.K_a`, `supervisor.track_err_abort` (L7), `joint_cmd.lag.*` (S10)
 - E-STOP·fault 전체 정책 (D-13, S9)
 - 닫힘: TBD-RTC-09~13, TBD-ARM-01, TBD-ARM-02 (→ D-16), TBD-SIM-01, TBD-FRAME-01 (→ D-17)

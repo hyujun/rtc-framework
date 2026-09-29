@@ -4,7 +4,7 @@
 - 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
 - 배치 `[확정 D-1]`: soft-catch 병진 기준·γ 프로파일·복귀 기준은 rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`), **축 정렬 오차·각속도·Jacobian 은 `rtc_math` se3** 로 옮긴다
 - 단계: **S1.4** soft-catch 기준 생성기 (NaN 가드, derate 없음), **S2.1** 축 정렬 함수의 `rtc_math` se3 이식 (deadband·반평행에서 유한), CLIK 기준 공급은 **S2.2b** (CLIK twist feedforward 옵션, D-5) · **S5.3** (스트리밍 기준 → 확장 CLIK)
-- 선행: 단계 W, L0 (L2 궤적 샘플러 `traj::sampleAt()` 출력을 입력으로 받음)
+- 선행: 단계 W, L0 (L2 궤적 샘플러 `SampleAt()` 출력을 입력으로 받음)
 - 산출물: soft-catch 병진 기준 (참조: `soft_catch_reference.hpp`), 복귀 기준, 수렴 한계
 - 비고: L3가 γ rollout에서 **이 layer의 같은 코드**를 호출한다.
 
@@ -255,7 +255,7 @@ S1 이식 시 변경:
 ### 5.2 사용 규약
 
 - **시간축 (plan §3, D-2).** γ 프로파일 평가와 대상 샘플링은 **선행 시각 $now_{lead}=now+T_{arm}$** 축이다 (팔 명령은 $T_{arm}$ 뒤 실현). `PlanSnapshot` 의 시각(γ 프로파일 `t0`·`t1`, $t_c$)은 절대 steady ns 이고, `step(o, t, dt)` 의 `t` 와 `GammaProfile` 의 `t0`·`t1` 은 **수치 코어 경계에서** 같은 원점의 상대 초로 바꾼 값이다. 대상 `o` 는 L2 샘플러로 같은 $now_{lead}$ 에서 샘플링한다. 매 tick 의 $now$ 는 steady 실측이며 tick 수 × dt 로 계산하지 않는다. T_arm ≠ 0 fixture 로 두 축을 구분해 테스트한다
-- `setIntercept()`는 L7이 `COMMITTED` 이전에만 호출한다. **v1 에서 `COMMITTED` 이후 허용되는 계획 변경은 없다** (γ 하향은 v1 범위 밖, D-8 — §5.2.1).
+- `SetIntercept()`는 L7이 `COMMITTED` 이전에만 호출한다. **v1 에서 `COMMITTED` 이후 허용되는 계획 변경은 없다** (γ 하향은 v1 범위 밖, D-8 — §5.2.1).
 - **반환값의 시간축이 섞여 있다.** `x`, `xd`는 $t+\Delta t$ 기준(다음 틱 명령), `xdd`는 $[t,t+\Delta t]$ 구간의 실현 가속도, `e`, `ed`는 $t$ 기준 진단값이다. L8 `TickRecord`에 함께 기록할 때 1틱 오정렬을 감안한다.
 - **`xdd` vs `u_des`.** 속도 포화가 걸리면 DS가 요구한 가속도 `u_des`는 실현되지 않는다. 실현값이 필요한 곳(CLIK 공급, 기록)에는 `xdd`를, L3 rollout 판정과 포화 진단에는 `u_des`를 쓴다. v0.1은 포화 후에도 `u_des`를 `xdd`로 돌려주어, 예를 들어 $v_{max}=0.5$ m/s 조건에서 실현 5.0 m/s² 대신 490 m/s²를 보고했다.
 - **CLIK 공급 (S2.2b·S5.3).** 현 `rtc::tsid::ClikReferenceGenerator` 는 pose 목표만 받으므로, 기준 `x` 와 접근축 목표를 pose 로 넘기고 `xd`·$\omega_{ref}$ 는 twist feedforward 옵션(D-5)으로 넘긴다. 어떤 성분을 어느 행에 싣는지(LOCAL 접근축 2행, 가속 box 와의 관계)는 S2.2b CLIK 확장 설계에서 확정한다 (구조 자체는 S2.2a 에서 먼저 결정).
@@ -312,7 +312,7 @@ $$u=-\omega^2(x-p_c)-2\zeta\omega\,\dot x$$
 
 가 되어 $o.p,\,o.v,\,o.a$ 가 모두 소거되고, 끌개는 오직 $p_c$ 다. 따라서 정지 목표는 **$p_c$ 로** 지정해야 한다.
 
-$$\texttt{setIntercept}(p_{home},\ \texttt{GammaProfile}\{0,0,\cdot,\cdot\})$$
+$$\texttt{SetIntercept}(p_{home},\ \texttt{GammaProfile}\{0,0,\cdot,\cdot\})$$
 
 v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적었는데 이것은 **no-op** 이다. 실측하면 대상을 홈으로 주든 임의의 점으로 주든 똑같이 **직전 포구점**으로 수렴한다. 그러면 L7 §4.5 조건 4(대기 자세 허용오차)가 영원히 거짓이라 `RETREAT → ARMED` 전이가 막힌다. `test_l4.cpp` 의 `A5` 가 회귀 검사한다.
 
@@ -326,14 +326,13 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 |---|---|---|---|---|---|
 | `reference.omega` | double | rad/s | 10.0 | 1–25 | §4.7. 검증기가 실제 $h$ = `ControllerState::dt` 로 $s=\omega h$ 를 검사 (경계 0.828 이상 armable=false, 0.05 초과 경고)  **S8-G (2026-09-26)**: 임계감쇠 참조의 잔여는 $(1+\omega T)e^{-\omega T}$ — commit → t_c−T_arm 0.318 s 에서 ω 10 은 17 % (측정 13–20 %); ω 15·20 은 잔여를 절반으로 줄이지만 예측 잡음을 따라가 손–공 간극 42–44 → 48–57 mm, 포획 1/4–1/5 (plan §4.4 S8-G 결과) — ω 10 의 지연이 저역 필터 역할을 한다 |
 | `reference.zeta` | double | – | 1.0 | v1: 1 만 허용 | 닫힌해(§4.4)·이산 경계(§4.7)가 1에서만 유효 — ≠1 이면 검증기가 armable=false (L0 §5.3) |
-| `reference.a_max` | double | m/s² | `TBD` | >0 | TBD-ARM-02, 로봇·자세 의존. S4.4 (2026-09-22): 포구 자세에서 토크 한계로 푼 $\hat v$ 방향 가속은 중앙값 43 (`ur5e_p1b`) · 79 (`iiwa7_leap`) m/s², 회전자 관성 10 배 가정에서 21–23 · 35–36 — D-16 box 가 주는 0.74 · 6.8 과 자릿수가 다르다 (plan §9). 값은 D-16 개정과 함께 정한다. **S5.4 (2026-09-22)**: 소비 키가 된 뒤 출하 프로파일이 이 값 없이는 sim configure 를 못 하게 됐으므로 (그리고 CM 이 한 컨트롤러 실패로 전체를 거부하므로) 보수적 끝 (`ur5e_p1b` 21 · `iiwa7_leap` 35) 을 `reference.provisional: true` 와 함께 출하한다 — sim 경고, 실기 차단. 값 확정은 여전히 D-16 개정 소관 (A-S5-11)  **S8-G (2026-09-26, plan §4.4 S8-G 결과)**: sim 에서 21 은 활성 tick 의 18–25 % 에서 포화해 `REF_SATURATED` abort 7–12/56 을 내고, 30 은 abort 0 · 포화 1 % 로 포획 차이 없이 (10 대 11) 깨끗하다 — **출하 30 확정 (2026-09-27, plan D-S8-18; 블록은 provisional 유지, 실기 값은 S10)**. ω 와 짝이다: ω 15·20 은 요구 가속 $\omega^2 e$ 로 포화가 늘 뿐 아니라 참조가 live 예측 잡음을 따라가 손–공 간극이 커진다 (ω 10 유지) |
-| `reference.v_max` | double | m/s | `TBD` | >0 | 로봇 TCP 속도 한계. L3 `gammaWindow` 는 $\eta_v\cdot$ 이 값을 쓴다 `[확정 D-9]` (L3 §4.5). **`[확정 2026-09-22]` 실측이 아니라 도출값** (S4.4 제안 → S3.5b 결정 D; 오프라인 도출은 `rtc_tools catch_gate_map --v-max-m-s derived`) — URDF·제조사 자료에는 관절 정격만 있다. 수락 후보의 LP $v_{dir,\max}$ 최대 (정격, $\eta_v$ 0.9: `ur5e_p1b` 3.5 · `iiwa7_leap` 1.8 m/s) 로 두면 포화는 관절 정격 안에서는 발화하지 않는다. 실기 컨트롤러의 TCP 안전 한계는 S10 에서 식별하고 이 값을 **낮출 수만** 있다. **S5.4 출하값**: `ur5e_p1b` 3.5 · `iiwa7_leap` 1.8 (위 도출 그대로 전사) |
+| `reference.a_max` | double | m/s² | `ur5e_p1b` 30 · `iiwa7_leap` 35 (provisional) | >0 | TBD-ARM-02, 로봇·자세 의존. S4.4 (2026-09-22): 포구 자세에서 토크 한계로 푼 $\hat v$ 방향 가속은 중앙값 43 (`ur5e_p1b`) · 79 (`iiwa7_leap`) m/s², 회전자 관성 10 배 가정에서 21–23 · 35–36 — D-16 box 가 주는 0.74 · 6.8 과 자릿수가 다르다 (plan §9). 값은 D-16 개정과 함께 정한다. **S5.4 (2026-09-22)**: 소비 키가 된 뒤 출하 프로파일이 이 값 없이는 sim configure 를 못 하게 됐으므로 (그리고 CM 이 한 컨트롤러 실패로 전체를 거부하므로) 보수적 끝 (`ur5e_p1b` 21 · `iiwa7_leap` 35) 을 `reference.provisional: true` 와 함께 출하한다 — sim 경고, 실기 차단. 값 확정은 여전히 D-16 개정 소관 (A-S5-11)  **S8-G (2026-09-26, plan §4.4 S8-G 결과)**: sim 에서 21 은 활성 tick 의 18–25 % 에서 포화해 `REF_SATURATED` abort 7–12/56 을 내고, 30 은 abort 0 · 포화 1 % 로 포획 차이 없이 (10 대 11) 깨끗하다 — **출하 30 확정 (2026-09-27, plan D-S8-18; 블록은 provisional 유지, 실기 값은 S10)**. ω 와 짝이다: ω 15·20 은 요구 가속 $\omega^2 e$ 로 포화가 늘 뿐 아니라 참조가 live 예측 잡음을 따라가 손–공 간극이 커진다 (ω 10 유지) |
+| `reference.v_max` | double | m/s | `ur5e_p1b` 3.5 · `iiwa7_leap` 1.8 (provisional, 도출값) | >0 | 로봇 TCP 속도 한계. L3 `ComputeGammaWindow` 는 $\eta_v\cdot$ 이 값을 쓴다 `[확정 D-9]` (L3 §4.5). **`[확정 2026-09-22]` 실측이 아니라 도출값** (S4.4 제안 → S3.5b 결정 D; 오프라인 도출은 `rtc_tools catch_gate_map --v-max-m-s derived`) — URDF·제조사 자료에는 관절 정격만 있다. 수락 후보의 LP $v_{dir,\max}$ 최대 (정격, $\eta_v$ 0.9: `ur5e_p1b` 3.5 · `iiwa7_leap` 1.8 m/s) 로 두면 포화는 관절 정격 안에서는 발화하지 않는다. 실기 컨트롤러의 TCP 안전 한계는 S10 에서 식별하고 이 값을 **낮출 수만** 있다. **S5.4 출하값**: `ur5e_p1b` 3.5 · `iiwa7_leap` 1.8 (위 도출 그대로 전사) |
 | `reference.axis.k_axis` | double | 1/s | 8.0 | 1–30 | 튜닝. $\Vert\omega_{ref}\Vert=K_a\theta$ 이므로 $\theta=\pi$ 에서 $K_a\pi$ |
 | `reference.axis.w_max` | double | rad/s | `TBD` | >0 | 손목 관절 한계에서 산정 |
 | `reference.axis.sin_eps` | double | – | 1e-6 | 1e-9–1e-3 | 반평행 축 정의 하한 $\Vert z\times a_d\Vert$ (§4.5) |
 | `reference.gamma_derate.ramp` | – | – | – | – | v1 범위 밖 (D-8, §5.2.1). 기본 0.05 s 는 가속 피크를 키웠다 — 재도입 시 단일 키로 다시 정한다 |
-| `reference.retreat.omega` | double | rad/s | 3.0 | 0.5–10 | 튜닝 |
-| `reference.retreat.home_pose` | pose | m, quat | `TBD` | – | 로봇별 |
+| ~~`reference.retreat.omega`~~ · ~~`reference.retreat.home_pose`~~ | – | – | — | – | 구현되지 않았다 — 복귀는 관절공간 `joint_home.hpp`·`supervisor.homing.*` 가 한다 (§5.3, L7 §4.1) |
 
 ## 7. 단위 기술 구현 순서
 
@@ -341,7 +340,7 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 
 - **L4.1** `GammaProfile` + 미분 일치(유한차분) 테스트.
 - **L4.2** `SoftCatchTranslation` + §4.9 1–4, 6 테스트 + NaN 가드 회귀 (§5.1).
-- **L4.3** 재예측 점프 테스트: `setIntercept` 교체 직후 $e,\dot e$ 변화가 §4.3 식과 일치.
+- **L4.3** 재예측 점프 테스트: `SetIntercept` 교체 직후 $e,\dot e$ 변화가 §4.3 식과 일치.
 - **L4.4** `axisAlignError`/`Omega`/`Jacobian` 을 `rtc_math` se3 로 이식 + 연속성 sweep + 반평행 + Jacobian 유한차분 + 데드밴드·반평행 유한성 (L3·L5와 공유).
 - **L4.5** 이산 안정 경계 테스트 ($s=0.8$ 수렴, $s=0.85$ 발산), 100·500·5000 Hz 의 $h$ 로.
 - **L4.6** (v1 범위 밖, D-8) `derateGamma` + §5.2.1 연속성 테스트.
@@ -377,4 +376,4 @@ v0.2는 "대상을 홈 위치로, γ를 0으로 넣어 재사용"이라고 적�
 
 ## 10. 미확정 항목
 
-TBD-ARM-02 (`reference.a_max`; 출하는 provisional 로 — A-S5-11), TBD-REF-01(§4.6 [R4]/[R5] 재확인), `reference.axis.w_max`, `reference.retreat.home_pose`, CLIK 공급 성분 배치 (S2.2b). 축 정렬 Jacobian 의 데드밴드 처리는 닫힘 (S2.1, §4.5). TBD-RTC-07·TBD-RTC-08·TBD-FRAME-01 은 닫힘 (§2), γ derate 는 v1 범위 밖 (D-8).
+TBD-ARM-02 (`reference.a_max`; 출하는 provisional 로 — A-S5-11), TBD-REF-01(§4.6 [R4]/[R5] 재확인), `reference.axis.w_max`, CLIK 공급 성분 배치 (S2.2b). 축 정렬 Jacobian 의 데드밴드 처리는 닫힘 (S2.1, §4.5). TBD-RTC-07·TBD-RTC-08·TBD-FRAME-01 은 닫힘 (§2), γ derate 는 v1 범위 밖 (D-8).

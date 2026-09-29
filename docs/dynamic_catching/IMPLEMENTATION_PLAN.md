@@ -21,7 +21,7 @@ ID 는 한 번만 정의한다. 사용자 결정은 D-·C-·P- 로, 착수 전 �
 | D-6 | CLIK 오차·J 를 명령값 q_c 에서 평가하는 옵션 추가 | **확정** | 측정 q 평가는 servo 지연을 루프에 품고 선행 보상과 이중 보상. 실추종은 `TRACK_ERR` 로 별도 감시, 재앵커 시점 규정 필수 |
 | D-7 | 계획기 스레드는 **기존 MPC 스레드와 같은 생성 방식**으로 만들고 기능만 planner 로 한다 | **확정** — D-7b~d 확정. D-7a 측정은 2026-09-23 사용자 결정으로 생략, 초기값 FIFO 유지 (§6, §7.2). 배치는 E-7 승인 (S6) | nrt_callback executor 는 단일 스레드라 계획 계산(수십 ms)을 올리면 궤적 수신·서비스가 막힌다 |
 | D-8 | γ derate 는 v1 에서 제외. 실행 중 포화 → COMMITTED 전 RETREAT, 이후 ABORT_SAFE. S8 에서 포화 빈도 측정 후 재설계안 도입 여부 결정 | **확정** | 참조 구현 probe: Frozen 분기 γ_min 미보장, 완화 분기 무효, 기본 램프가 가속 피크를 키움, 램프가 t_c 초과 가능 |
-| D-9 | `gammaWindow` 의 TCP 속도 = η_v · `reference.v_max` (0 < η_v ≤ 1). 마스터 §6 교차제약을 이 식으로 수정 | **확정** | 계획이 한계 끝을 쓰면 실행 중 예측 변화로 포화. D-8 로 derate 가 빠져 유일한 완충 |
+| D-9 | `ComputeGammaWindow` 의 TCP 속도 = η_v · `reference.v_max` (0 < η_v ≤ 1). 마스터 §6 교차제약을 이 식으로 수정 | **확정** | 계획이 한계 끝을 쓰면 실행 중 예측 변화로 포화. D-8 로 derate 가 빠져 유일한 완충 |
 | D-10 | catch frame: 후보 p1b `l_palm_link` +z, iiwa7_leap `palm_lower` −z (FK 도출) + 포켓 중심 offset. `rtc_urdf_bridge` 모델 빌더가 로봇 config 의 `urdf.extra_frames.<name>` 을 **full 모델에** frame 으로 추가하고, 파생 모델(sub·tree·actuated)은 그것을 상속한다 (§10) | **확정** (값은 D-17) | CLIK 은 모델 frame id 만 받아 binding 로컬 offset 은 CLIK 까지 못 간다. 파생 모델은 모두 full 모델에서 `buildReducedModel` 로 만들어지므로 한 곳에서 추가하면 된다 |
 | D-11 | 손 명령 포트 추상화 폐기. 손은 `ControllerOutput` 의 손 device slot 에 직접 기록. T_link 분리 측정 대신 종단 간 T_close,tot 실측 | **확정** | P1b·LEAP 모두 이미 device group. `udp_hand_node` 는 명령 stamp 를 읽지 않는다 |
 | D-12 | 사용자 제공 값: 공 사양, 실기 T_close,tot 측정 시점, 성공률 하한·시행 수, **P1b 손 관절 운용 토크 한계의 권위 출처** (§7.3). 투척 목표는 D-18, 관절 가속 한계는 D-16, catch frame 은 D-17 로 대체 | **방식 확정, 값 일부 확정** — 성공률 floor **0.35** (2026-09-24 회신, 2026-09-26 동결 D-S8-16) · 시행 수 n_valid **200** (D-S8-3). 실기 T_close,tot 측정은 S10 (S4.3 이월, 2026-09-20). **대기 → S10 #613**: 공 사양 (sim 은 tennis provisional) · 손 토크 권위 출처 (sim 3.0 · 실기 1.5 N·m provisional, 그때까지 G7-B3 토크 비교 NOT_EVALUATED) | 추측 금지. 임시값은 YAML 에 provisional 표시, 값에 의존하는 게이트는 NOT_EVALUATED (§4.1) |
@@ -188,7 +188,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 | S7 손 시퀀서·슈퍼바이저 | 완료 (2026-09-24, PR #571 → `c61fd32a`) | G6-A · G7-A · G7-B · G7-D · G7-G · G8-A2 PASS · G7-E 기록 · 포획 0/25 · `sat_ticks` 60 (provisional) · C-20 · C-12 · G7-B3 이월 → S8 · 토크 NOT_EVALUATED (D-12) · 리뷰 Critical 0, 6 건 수정 · 이월 #537 5804113629 — §4.4 S7 |
 | S8 sim 통합 평가 | 완료 (2026-09-27) — S8-A · S8-B (PR #575 → `ac34893a`, #574) · S8-C (PR #579 → `126e3513`) · S8-D (PR #581) · S8-E (PR #582 → `9e7967b5`) · S8-F-1 (PR #583 → `3278963a`) · S8-G (PR #584 → `769f99e9`) · S8-H · S8-I · S8-I-2. 후속 ②①④ 종결, ③ 미진행 (#537 5846528236) | G8-D PASS · beanbag PASS · G8-D2 FAIL (§1a) · G8-B FAIL (pre-S10 재정의 뒤 PASS) · G8-C PASS · G8-C2 FAIL · G8-E PASS (sim) · G8-H FAIL · G7-B3 기록 · S3.1b 충족 · S8-F 게이트 밖 · 결정 D-S8-1~12 + C-25 (#537 5804952754 → 5807767896), D-S8-3, D-S8-13, D-S8-16, D-S8-17, D-S8-18, D-S8-19, D-S8-20 · 대조 C-1~C-24 — §4.4 S8 |
 | S9 E-STOP·fault 정책 (D-13) | 완료 (2026-09-27) — S9a PR #589 → `f4bc14ed` · S9b PR #590 → `18507711` (CM 발견 #588) | 정책 PASS (기존 assertion 무수정) · G8-H 9/9 · S9b `/security-review` Critical 0 · §13 S9 PASS — §4.4 S9 |
-| pre-S10 S10 착수 전 잔여 | 완료 (2026-09-29) — R1 PR #596 → `70057aef` · R2 PR #597 → `1307576f` (#588 닫힘) · R3 PR #599 → `6b6dcb96` · R4 · R6 · R7 issue #600–#602 (PR #603 → `1b64a9f2`) · R5 · 리뷰 후속 PR #612 (#606–#611, 결정 D-1·D-2) | §4.4 pre-S10 |
+| pre-S10 S10 착수 전 잔여 | 완료 (2026-09-29) — R1 PR #596 → `70057aef` · R2 PR #597 → `1307576f` (#588 닫힘) · R3 PR #599 → `6b6dcb96` · R4 PR #603 → `1b64a9f2` · R6 (코드 변경 없음) · R7 issue #600–#602 (닫음: PR #616 → `6085499a` · #617 → `a4f187c7` · #618 → `b6da7384`) · R5 PR #605 → `5abfbeab` · #615 → `9f020ef8` · 리뷰 후속 PR #612 (#606–#611, 결정 D-1·D-2) | §4.4 pre-S10 |
 | S10 실기 단계 도입 | 대기 (pre-S10 뒤) — 추적 issue #613 | — (§4.4 S10) |
 
 ### 4.4 단계별 작업과 게이트
@@ -593,7 +593,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 - G7-E: tennis 재실행 CAPTURED 79/79 참, false-Missed 14 · beanbag 일치 142/200 (링크·손바닥 위 공) · leap 197/200. beanbag 대 tennis McNemar 91 대 9 (p 3.3e-18). leap 미종결 9 발은 `TRACK_CHANGED` 반복.
 - **S3.1b 부하 검증 충족** (수치는 §5, S3.1a 는 §5.1). t_c 분해 (tennis / leap): 서보 2.6 / 6.7 · pred 79 / 44 mm.
 - 도구 (사용법 SSoT 는 rtc_tools README): `catching_trials` `invalid_reason`·ITT·`--floor`, `catching_pool` 합산·McNemar, lane 발사 시각 정렬, `--eval-samples` 는 첫 접촉 전 표본만, `--probe-dump`.
-- **후속 배정 (§4.4 pre-S10).** ① G8-B → profile 수정 + D-1 · ② G8-C2 → #600 · ③ G8-H → S9a (9/9) · ④ 분석기 `t_c` 열 ±100 ms (sim 이 느릴 때) → #602 · ⑤ leap `TRACK_CHANGED`·판정 없음 9 → 20 → R6 (평가 기하) · ⑥ host 부하 감시 → #601 (R7).
+- **후속 배정 (§4.4 pre-S10).** ① G8-B → profile 수정 + D-1 · ② G8-C2 → #600 (닫음 — 식 유지) · ③ G8-H → S9a (9/9) · ④ 분석기 `t_c` 열 ±100 ms (sim 이 느릴 때) → #602 (닫음) · ⑤ leap `TRACK_CHANGED`·판정 없음 9 → 20 → R6 (평가 기하) · ⑥ host 부하 감시 → #601 (R7, 닫음).
 
 **후속 ① G8-B profile 수정 (2026-09-28, PR #595 → `482d18b3`).** 원인은 추정기가 아니라 profile (q 1.0 · drag 없음). `ball_perception_sim_profile.json` → **schema 0.2 · q 0.01 · `process.drag` (`quadratic_still_air`, k 0.02 ± 0.01 1/m)** (지평 1.0 s / 0.05 s / 20 점 불변). 재평가 NEES tennis **1.60 / 1.21 / 1.71** (0.1 / 0.25 / 0.5 s) · leap 0.5 s `NOT_EVALUATED`, coverage_95 0.97–1.00 — 원 판정식 FAIL, **D-1 로 PASS**. 포획 tennis **180/200** (0.851) · beanbag **196/200** (0.950) · leap **86/200** (0.363, PASS 로 올리지 않음). 옛 profile 대조 75/200 (McNemar 111 대 6) — profile 효과. 실제 공의 q·k 는 ADR-0008 소관.
 
@@ -717,7 +717,7 @@ Q1–Q3 은 #537 5855489704 (2026-09-27 사용자) 이다.
 | R4 | 빈 vision cloud 분류 — `width == 0` 을 "트랙 없음" bucket 으로 (Q7·Q15) | 완료 (PR #603 → `1b64a9f2`, R6·R7 기록과 한 PR) |
 | R5 | 마감 — #537 갱신, 원자료 정리 (Q11) | 완료 (2026-09-29) — S8 원자료 22 GB 삭제, 남긴 것은 아래 |
 | R6 | leap `TRACK_CHANGED` 조사 (코드 변경 없음, Q10) | 완료 (2026-09-29, #537 5881444338) — 결정: 보정 기준 재판정만 |
-| R7 | issue 분리 3 건 — G8-C2 예산식 · 부하 감시 러너 이식 · 분석기 `t_c` 열 (Q10) | 완료 (2026-09-29) — #600 · #601 · #602 |
+| R7 | issue 분리 3 건 — G8-C2 예산식 · 부하 감시 러너 이식 · 분석기 `t_c` 열 (Q10) | 완료 (2026-09-29) — #600 · #601 · #602, 셋 다 같은 날 닫음 (PR #618 · #616 · #617) |
 
 - **R5 가 남긴 private 원자료**: S8-G `w20_a21.fail1` · R6 재판정 근거 (간격 표) · 드라이버 스크립트 사본 · S8-E 와 profile 수정 뒤 G8-B 재평가 unit 의 `eval_report.json` 과 로그. S8-E 의 capture·eval (Q11 예외) 과 G8-B 재평가 unit 의 capture·eval·trials 는 G8-B 가 PASS 로 끝나 보존 사유가 해소돼 2026-09-29 에 삭제했다 (사용자 결정, 662 MB) — 표본 단위 재분석은 재실행이 필요하다. `session_copy`·probe dump 6.6 GB 는 같은 날 먼저 삭제했다.
 

@@ -66,7 +66,7 @@
 | W3-7 | 과제(task) 클래스 구조: frame 위치 과제, 각속도 과제, 마스크 지원 방식(LOCAL 고정축 가능 여부), posture 과제 | TBD-RTC-10 | 닫힘 — `rtc_tsid` TaskBase 계열(`SE3Task`·`PostureTask` 등)은 acceleration-level 이고 `SE3Task` mask 는 LWA 행 선택이라 LOCAL 고정축 불가. CLIK 은 6 LWA 행 고정·마스크 없음. `ApproachAxisTask` 신설 대신 **D-5** CLIK 옵션 (LOCAL 접근축 2행, S2.2). 확인: 코드 심볼 (2026-09-19) |
 | W3-8 | QP solver 사용 방식: ProxQP dense, box 제약 지원, warm start, 차원 고정 | TBD-RTC-11 | 닫힘 — `QPSolverWrapper` 가 `Init` 에서 최대 차원으로 ProxQP dense 객체를 1회 할당하고 `Solve` 는 update + warm start. CLIK 은 위치∩속도 box, `max_iter` 20 고정, 가속 box·status 노출 없음 → D-5 확장 (S2.2). 확인: 코드 심볼 (2026-09-19) |
 | W3-9 | 기존 SE(3)/SO(3) 오차 헬퍼(U1 공유 헬퍼)의 규약과 L4 §4.5 축 정렬 오차의 공존 방식 | TBD-RTC-08 | 닫힘 — U1 = `rtc_tsid` se3_error `ComputeTaskPoseError` (LWA, BodyLog6), 저수준 `rtc_math` se3 `log3`/`exp3`/`Jlog3`. 축 정렬 오차·각속도·Jacobian 은 `rtc_math` se3 에 추가 (D-1, S2.1) 하여 공존. 확인: 코드 심볼 (2026-09-19) |
-| W3-10 | catch frame 후보: 두 로봇의 frame 이름과 손바닥 바깥 법선 축 | TBD-FRAME-01 | 방식 닫힘 — 후보 p1b `l_palm_link` +z, iiwa7_leap `palm_lower` −z (URDF link 존재 확인, 축은 FK 도출). 부모 frame·위치 offset·자세는 YAML `extra_frames` 로 열고 (**D-10·D-17**, plan §10) 축 초기 제안값은 S2.3a, 위치(포켓 중심)는 S2.3b (S4.1 이후), 사용자 sim 확인 후 확정. 값은 미확인 — S2.3a/b (2026-09-19) |
+| W3-10 | catch frame 후보: 두 로봇의 frame 이름과 손바닥 바깥 법선 축 | TBD-FRAME-01 | 방식 닫힘 — 후보 p1b `l_palm_link` +z, iiwa7_leap `palm_lower` −z (URDF link 존재 확인, 축은 FK 도출). 부모 frame·위치 offset·자세는 YAML `extra_frames` 로 열고 (**D-10·D-17**, plan §10) 축 초기 제안값은 S2.3a, 위치(포켓 중심)는 S2.3b (S4.1 이후), 사용자 sim 확인 후 확정. 값은 미확인 — S2.3a/b (2026-09-19). **이후**: S2.3a/b 완료, 값 확정 `provisional: false` (2026-09-21, plan §10) |
 | W3-11 | **독립 IK / 포즈 해석기가 있는지**와 그 API | L3 G3-7 | 닫힘 — 독립 IK 없음. `rtc::compliance::DifferentialIk` (σ_min 적응 λ, heap-free) 를 재사용 (**D-7d**, m=5, S6.2). L3 §4.2 DLS 는 새로 짜지 않는다. 확인: 코드 심볼 (2026-09-19) |
 | W3-12 | **CLIK이 받는 과제 기준의 형식**: 위치+속도+가속도인지 속도만인지 | TBD-RTC-07 (L4 G4-1) | 닫힘 — **pose 만** (feedforward twist·가속 없음). twist feedforward 는 **D-5** 옵션으로 추가 (기본 off, S2.2). 확인: 코드 심볼 (2026-09-19) |
 
@@ -140,7 +140,7 @@ kinematics·dynamics·QP·과제 클래스·적분은 **전부 기존 것**이�
 | W7-1 | 바닥 높이·작업셀 경계의 `W` 좌표 (`TBD-WS-01`) | 미확인 — 사용자 제공 값 (D-12). 발사 영역 높이(world z 1.5–2.0 m)는 D-18 로 정의됨. 작업셀 경계는 S3.5a catchability 지도 착수 시 입력으로 함께 정한다 (plan §7.3) |
 | W7-2 | 공 지름·질량·재질(반발) (`TBD-BALL-01`), 허용 충격량 (`TBD-IMP-01`) | 미확인 — 사용자 제공 값 대기 (D-12, provisional 표시). sim 은 tennis preset (r 0.025 m, m 0.05 kg) 으로 진행 |
 | W7-3 | 투척 속도·거리 범위, 포구 허용 작업공간 (`TBD-BALL-02`) | 방식 닫힘 — **D-18**: 발사 영역 = base frame 수평 거리 4 m 원호, world z 1.5–2.0 m, 비행시간 T_f ≥ 1.0 s. 속도·앙각·방위 범위는 catchability 지도 (manipulability w₅ ≥ 0.1 provisional) 결과로 정한다 — S3.5a/b (plan §11) |
-| W7-4 | P1b 사양 실측: 구동 좌표 정의, preshape/폐쇄 자세, 전류·토크 한계, 포켓 유효 깊이 (`TBD-HAND-04, 05`) | 미확인 — 손 프로파일 S4.1, T_close,tot 실측 S4.3 (D-11), 포켓 중심은 catch frame 제안값 S2.3b (D-17, S4.1 이후) |
+| W7-4 | P1b 사양 실측: 구동 좌표 정의, preshape/폐쇄 자세, 전류·토크 한계, 포켓 유효 깊이 (`TBD-HAND-04, 05`) | 미확인 — 손 프로파일 S4.1, T_close,tot 실측 S4.3 (D-11), 포켓 중심은 catch frame 제안값 S2.3b (D-17, S4.1 이후). **이후**: 손 프로파일 S4.1·포켓 중심 S2.3b 완료 (2026-09-21), T_close,tot 실기 실측은 S10 으로 이월 (plan §4.4 S4a) |
 
 ## 4. 수행 순서
 
@@ -151,7 +151,7 @@ kinematics·dynamics·QP·과제 클래스·적분은 **전부 기존 것**이�
 2. W1 → W2 → W3 — 완료 (코드).
 3. W5의 나머지 — 코드로 닫힌 것은 닫고, 실제 토픽 데이터가 필요한 W5-5·W5-6 실측은 S3.4 로 넘긴다.
 4. W6, W7 — W6 완료 (코드), W7 은 사용자 값 대기 (D-12) 와 D-18 지도(S3.5a/b).
-5. 기록을 각 layer 문서의 §2 게이트 표와 §10 미확정 항목에 반영하고, 어긋나는 서술을 고친다 — S0.3 진행 중.
+5. 기록을 각 layer 문서의 §2 게이트 표와 §10 미확정 항목에 반영하고, 어긋나는 서술을 고친다 — S0.3 (완료 2026-09-19, plan §4.4 S0).
 6. 그 다음에야 구현을 시작한다 — 단계 순서는 plan §4 (S1 ∥ S2 ∥ S3 부터).
 
 마스터 §4.1의 **$T_{close,tot}$ 선행 측정(L6a)** 은 S4 (go/no-go) 로 옮겼다 (D-11).
@@ -162,9 +162,9 @@ kinematics·dynamics·QP·과제 클래스·적분은 **전부 기존 것**이�
 |---|---|---|
 | GW-A | W4-1, W5-2, W5-3, W5-4, W5-5가 실제 코드·데이터로 확정 | 부분 통과 — W4-1·W5-2·W5-3·W5-4 는 코드로 확정. W5-5 (`frame_id`) 는 S3.4 실측 |
 | GW-B | W3-1, W3-2, W3-3, W3-6, W3-7, W3-10, W3-11, W3-12가 확정되고, L5가 어댑터로 충분한지 판정 | 통과 — 판정: 얇은 어댑터로는 부족, CLIK 확장(D-5·D-6) + 새 컨트롤러. W3-10 은 방식 확정 (D-10·D-17), 값은 S2.3a/b |
-| GW-C | W2-2, W2-3이 확정되고 L1 스냅샷 브리지 설계가 그 원시형에 맞게 수정됨 | W2-2·W2-3 확정 (POD 스냅샷, D-2). L1 수정은 S0.3 진행 중 |
+| GW-C | W2-2, W2-3이 확정되고 L1 스냅샷 브리지 설계가 그 원시형에 맞게 수정됨 | W2-2·W2-3 확정 (POD 스냅샷, D-2). L1 수정은 S0.3 (완료 2026-09-19) |
 | GW-D | 마스터 §9.1의 `TBD-RTC-*` 전부, `TBD-VIS-*`, `TBD-ARM-01`, `TBD-FRAME-01`, W4-3(backend 중복 범위), W4-4(제어 주기), W5-6(발행 주기·$N$)이 닫힘 | 부분 통과 — `TBD-RTC-*`·`TBD-ARM-01`·W4-3·W4-4 닫힘, `TBD-VIS-01/02/03/05/07` 닫힘. `TBD-VIS-04` (W5-6 실측·요구 사양 D-15) 는 S3.4·S3.6, `TBD-VIS-06` 은 S3.4, `TBD-FRAME-01` 값은 S2.3a/b |
-| GW-E | 위 결과로 L0–L8 문서를 수정하고, 남은 TBD가 §9 표에만 존재 | 진행 중 — S0.3 설계 문서 v0.5 동기화 |
+| GW-E | 위 결과로 L0–L8 문서를 수정하고, 남은 TBD가 §9 표에만 존재 | 통과 — S0.3 설계 문서 v0.5 동기화 완료 (2026-09-19, plan §4.4 S0) |
 
 **§1 "단계 W 완료" 와 위 표의 관계.** "단계 W 완료"는 **조사 작업**(코드 대조, §4)이 끝났다는 뜻이지 GW-A~E 게이트가 전부 통과했다는 뜻이 아니다 — 위 표대로 GW-A·GW-D 는 **부분 통과**, GW-E 는 **진행 중**이며 여기서 "통과"로 올려 적지 않는다. 아직 남은 부분은 각각 plan §4.4 의 단계 게이트가 이어받는다:
 
@@ -174,7 +174,7 @@ kinematics·dynamics·QP·과제 클래스·적분은 **전부 기존 것**이�
 | ~~GW-D (부분)~~ | `TBD-VIS-04` (발행 주기·N·지평 실측) | **닫힘** — 실측 S3.4 (30 Hz · 16 · 0.8 s), 요구 사양 S3.6 (지평 1.0 s · 간격 0.05 s · 20 점 설정, plan §4.4 S3.6 결과) |
 | GW-D (부분) | `TBD-VIS-06` (`frame_id` 관계) | 닫힘 (S3.4: `world`) |
 | GW-D (부분) | `TBD-FRAME-01` 값 (catch frame 부모·offset·자세) | S2.3a (축), S2.3b (위치, S4.1 이후) (plan §4.4 S2) |
-| GW-E (진행 중) | L0–L8 문서 동기화 잔여, 남은 TBD 를 §9 표로 수렴 | S0.3 (plan §4.4 S0), 이후 각 TBD 는 위 표·§9 가 가리키는 단계 |
+| GW-E (완료 2026-09-19) | L0–L8 문서 동기화 잔여, 남은 TBD 를 §9 표로 수렴 | S0.3 (plan §4.4 S0), 이후 각 TBD 는 위 표·§9 가 가리키는 단계 |
 
 즉 이후 구현은 plan §4 의 단계 게이트를 따라 진행하고, 위 잔여 항목들은 "GW 통과 보류" 상태가 아니라 **그 이름 붙은 단계의 게이트**로 이관된 것이다.
 
