@@ -1468,6 +1468,10 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_catching_sim_trials test/test_catching_sim_trials.py)
   ament_add_pytest_test(test_catching_sim_trials_s8 test/test_catching_sim_trials_s8.py)
   ament_add_pytest_test(test_catching_sim_trials_s8f test/test_catching_sim_trials_s8f.py)
+  # #601 host load watch: a slow sim is found from the truth rows, the run
+  # aborts / warns / stays silent by mode, the runner's own pytest is not load.
+  ament_add_pytest_test(test_catching_sim_trials_host_watch
+    test/test_catching_sim_trials_host_watch.py)
   ament_add_pytest_test(test_launch_description_evaluates
     test/test_launch_description_evaluates.py)
   ament_add_pytest_test(test_launch_session_wiring
