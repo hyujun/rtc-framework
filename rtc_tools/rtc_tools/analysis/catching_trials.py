@@ -21,6 +21,10 @@ them into one row per trial:
   to 1.0 on the DECEL entry tick and is not the plan); first-plan latency; plan
   switches during APPROACH. See :func:`decompose_at_tc` for why the command
   side is read ``T_lead`` earlier (the actuation-lag lead, diag ``t_arm_s``).
+  ``plan_t_c_s`` counts STEADY time, so when the sim ran slower than the wall
+  between the commit and the catch the column lies after the catch instant:
+  ``tc_axis`` (:func:`tc_axis_columns`, #602) marks such a row ``shifted`` and
+  the summary leaves it out of the t_c medians (``summary["tc_axis"]``).
 * **truth success** (G8-D, plan §1a) and the supervisor-vs-truth confusion
   matrix — see :func:`truth_success`.
 * **D-3 covariate** (plan §5, D-S8-4 (c)) from the clock lane, reusing
@@ -2204,6 +2208,24 @@ def first_robot_contact(contacts, seg_sim, lane: ClockLane, seq: int) -> float:
 # ══ Session driver ════════════════════════════════════════════════════════════
 
 
+# |stamp-axis t_c − the t_c column| above which a row's decomposition is read
+# at another instant than the catch (#602). An unloaded run measured p95 1.25 /
+# max 5.1 ms, a host-loaded one p95 118 ms (S8-E tennis, 200 throws); 5 ms is
+# 24–35 mm of ball travel at 4.75–7 m/s.
+TC_SHIFT_MAX_MS = 5.0
+# The decomposition columns read at (or relative to) the t_c column.
+TC_COLUMN_KEYS = (
+    "clik_mm",
+    "servo_mm",
+    "cmd_meas_gap_mm",
+    "pred_mm",
+    "ref_vs_true_mm",
+    "total_mm",
+    "arrival_ms",
+    "contact_t_minus_tc_ms",
+)
+
+
 @dataclass
 class Settings:
     truth_axis: str = "stamp"
@@ -2218,6 +2240,7 @@ class Settings:
     hold_window_s: float = DEFAULT_HOLD_WINDOW_S
     floor: float | None = None  # G8-D floor (D-S8-3); None → no verdict
     n_valid_target: int | None = None  # verdict is INSUFFICIENT_N below this n_valid
+    tc_shift_max_ms: float = TC_SHIFT_MAX_MS  # #602: beyond it a row's t_c columns are "shifted"
 
 
 @dataclass
@@ -2426,6 +2449,9 @@ def analyse_session(
             )
         if lane is not None:
             row.update(_clock_covariate(lane, trial, row, settings))
+        row.update(
+            tc_axis_columns(ctx, trial, row, dump, bridge, lane, fk, settings.tc_shift_max_ms)
+        )
         # The contact episode is located on the lane's launch segment, so a
         # trial the lane has no launch for has none — `seg_sim` would otherwise
         # be the PREVIOUS trial's segment (it is only assigned when paired).
@@ -3144,6 +3170,93 @@ def refine_wall_offset(lane: ClockLane, diag, bridge: PlanBridge, dump, fk: Catc
         )
 
 
+def stamp_axis_tc(
+    ctx: TrialContext,
+    k: int,
+    dump,
+    bridge: PlanBridge | None,
+    lane: ClockLane | None,
+    fk: CatchFrameFk,
+) -> tuple[float, str, float]:
+    """The committed plan's ``t_c`` on the ball-stamp axis [ns], its source, and
+    the ``p_c`` match distance [mm] (NaN unless the source is ``plan_point``).
+
+    ``plan_point``: the stamp of the planner snapshot's point that IS ``p_c``
+    (needs the probe dump; exact). ``planner_wake``: the planner's steady
+    ``t_c`` + the lane's wall offset. ``""`` and NaN when neither is available.
+    """
+    pid = int(ctx.plan_id[k])
+    t_c_ns, source, match_mm = math.nan, "", math.nan
+    if dump is not None and bridge is not None and pid in bridge.snapshot:
+        p_c_w = transform_point(ctx.plan_p_c[k][None], fk.world_t_model)[0]
+        t_c_ns, dist = cv.plan_point_stamp(dump, bridge.snapshot[pid], p_c_w)
+        match_mm = dist * 1e3
+        if np.isfinite(t_c_ns):
+            source = "plan_point"
+    if not np.isfinite(t_c_ns) and bridge is not None and lane is not None:
+        t_c_steady = bridge.t_c_steady(pid)
+        if np.isfinite(t_c_steady) and np.isfinite(lane.wall_offset_s):
+            t_c_ns = (t_c_steady + lane.wall_offset_s) * 1e9
+            source = "planner_wake"
+    return t_c_ns, source, match_mm
+
+
+def tc_axis_columns(
+    ctx: TrialContext,
+    trial: Trial,
+    row: Mapping,
+    dump,
+    bridge: PlanBridge | None,
+    lane: ClockLane | None,
+    fk: CatchFrameFk,
+    max_shift_ms: float = TC_SHIFT_MAX_MS,
+) -> dict:
+    """Whether this row's ``t_c`` column is the catch instant (#602).
+
+    The column is ``t_commit + plan_t_c_s``: a tick on the controller's
+    (sim-synchronous) axis plus a remainder counted on the STEADY clock. When
+    the sim runs slower than the wall between the commit and the catch, that
+    sum lands after the instant the ball reaches ``p_c``, and every column of
+    :data:`TC_COLUMN_KEYS` is read there.
+
+    * ``tc_stamp_minus_tc_ms`` — stamp-axis ``t_c`` (:func:`stamp_axis_tc`)
+      minus the column;
+    * ``tc_axis_source`` — where the stamp-axis ``t_c`` came from;
+    * ``tc_axis`` — ``ok`` / ``shifted`` (|shift| > ``max_shift_ms``) /
+      ``unknown`` (no source: no clock lane or planner events — the row is
+      then as unmarked as it was before this column existed).
+    """
+    out = {"tc_stamp_minus_tc_ms": math.nan, "tc_axis_source": "", "tc_axis": ""}
+    k = _first(ctx.mode == MODE_COMMITTED)
+    if k is None:
+        return out  # no commit: no t_c column either
+    t_c_ns, source, _ = stamp_axis_tc(ctx, k, dump, bridge, lane, fk)
+    shift = (t_c_ns * 1e-9 - trial.stamp_offset - row.get("t_c", math.nan)) * 1e3
+    if not np.isfinite(shift):
+        out["tc_axis"] = "unknown"
+        return out
+    out.update(
+        tc_stamp_minus_tc_ms=float(shift),
+        tc_axis_source=source,
+        tc_axis="shifted" if abs(shift) > max_shift_ms else "ok",
+    )
+    return out
+
+
+def tc_axis_summary(rows: Sequence[Mapping], max_shift_ms: float) -> dict:
+    """The ``tc_axis`` block of the summary over ``rows`` (the valid trials)."""
+    committed = [r for r in rows if r.get("tc_axis")]
+    return {
+        "max_shift_ms": max_shift_ms,
+        "n_ok": sum(1 for r in committed if r["tc_axis"] == "ok"),
+        "n_shifted": sum(1 for r in committed if r["tc_axis"] == "shifted"),
+        "n_unknown": sum(1 for r in committed if r["tc_axis"] == "unknown"),
+        "shifted_trials": [r["idx"] for r in committed if r["tc_axis"] == "shifted"],
+        "shift_ms_abs_p50_p95_max": _p50_p95_max(committed, "tc_stamp_minus_tc_ms", absolute=True),
+        "medians_exclude": list(TC_COLUMN_KEYS),
+    }
+
+
 def c2_for_trial(
     ctx: TrialContext,
     trial: Trial,
@@ -3176,20 +3289,10 @@ def c2_for_trial(
     k = _first(ctx.mode == MODE_COMMITTED)
     if k is None:
         return {}
-    out: dict = {"c2_join": "none", "c2_tc_source": "", "c2_pc_match_mm": math.nan}
     pid = int(ctx.plan_id[k])
     p_c_w = transform_point(ctx.plan_p_c[k][None], fk.world_t_model)[0]
-    t_c_ns = math.nan
-    if bridge is not None and pid in bridge.snapshot:
-        t_c_ns, dist = cv.plan_point_stamp(dump, bridge.snapshot[pid], p_c_w)
-        out["c2_pc_match_mm"] = dist * 1e3
-        if np.isfinite(t_c_ns):
-            out["c2_tc_source"] = "plan_point"
-    if not np.isfinite(t_c_ns) and bridge is not None and lane is not None:
-        t_c_steady = bridge.t_c_steady(pid)
-        if np.isfinite(t_c_steady) and np.isfinite(lane.wall_offset_s):
-            t_c_ns = (t_c_steady + lane.wall_offset_s) * 1e9
-            out["c2_tc_source"] = "planner_wake"
+    t_c_ns, source, match_mm = stamp_axis_tc(ctx, k, dump, bridge, lane, fk)
+    out: dict = {"c2_join": "none", "c2_tc_source": source, "c2_pc_match_mm": match_mm}
     if not np.isfinite(t_c_ns) and np.isfinite(row.get("t_c", math.nan)):
         t_c_ns = (row["t_c"] + trial.stamp_offset) * 1e9
         out["c2_tc_source"] = "t_rel"
@@ -3363,6 +3466,7 @@ def _summarise(
     # D-S8-16 ①: every statistic below is over the VALID trials — invalid is a
     # rig failure, not an attempt (the ITT bound is the one exception).
     valid = [r for r in rows if not r.get("invalid_reason")]
+    on_axis = [r for r in valid if r.get("tc_axis") != "shifted"]
     verdicts: dict[str, int] = {}
     for r in run:
         verdicts[str(r["supervisor"])] = verdicts.get(str(r["supervisor"]), 0) + 1
@@ -3382,8 +3486,10 @@ def _summarise(
         "validity": validity_block(rows, lane is not None),
         "supervisor_verdicts": verdicts,
         "servo_lag": [asdict(x) for x in lag],
+        # A row whose t_c column is off the catch instant (#602) is left out of
+        # the medians read at that column; ``tc_axis`` below counts them.
         "medians": {
-            k: _median(valid, k)
+            k: _median(on_axis if k in TC_COLUMN_KEYS else valid, k)
             for k in (
                 "clik_mm",
                 "servo_mm",
@@ -3406,6 +3512,7 @@ def _summarise(
         ),
         "ref_saturated_streak": streak_distribution(valid),
         "g7b3": impulse_correlation(valid, settings.n_boot, settings.seed),
+        "tc_axis": tc_axis_summary(valid, settings.tc_shift_max_ms),
     }
     # Not a rig-failure rule (D-S8-16 ①): a valid trial whose truth file is
     # missing or belongs to another run counts as a failure — listed so a
@@ -3660,6 +3767,22 @@ def c2_line(c2) -> str:
     )
 
 
+def tc_axis_line(ta: Mapping) -> str:
+    text = (
+        f"t_c axis (#602): stamp-axis t_c within {ta['max_shift_ms']:g} ms of the column in "
+        f"{ta['n_ok']} trials, shifted {ta['n_shifted']}, unknown {ta['n_unknown']} · "
+        f"|shift| p50/p95/max {ta['shift_ms_abs_p50_p95_max']} ms"
+    )
+    if ta["n_shifted"]:
+        text += (
+            f" — trials {ta['shifted_trials']} are LEFT OUT of the t_c medians "
+            "(their columns are read off the catch instant: the sim ran slow)"
+        )
+    if ta["n_unknown"]:
+        text += " — unknown rows are unmarked, not cleared (no clock lane / planner events)"
+    return text
+
+
 def report(result: SessionResult) -> str:
     s = result.summary
     med = s["medians"]
@@ -3683,6 +3806,7 @@ def report(result: SessionResult) -> str:
         f"{med['arrival_ms']:+.1f} ms; first hand contact − t_c "
         f"{med['contact_t_minus_tc_ms']:+.1f} ms"
     )
+    lines.append(tc_axis_line(s["tc_axis"]))
     lines.append(
         f"planned γ_f {s['gamma_f_planned_range']} · first plan {med['first_plan_s']:.3f} s · "
         f"APPROACH plan switches {s['approach_plan_switches_total']} · ref_saturated max "
@@ -3805,6 +3929,13 @@ def main(argv: list[str] | None = None) -> int:
         help="the verdict is INSUFFICIENT_N while n_valid is below this (D-S8-3: 200)",
     )
     ap.add_argument(
+        "--tc-shift-max-ms",
+        type=float,
+        default=TC_SHIFT_MAX_MS,
+        help="a row whose stamp-axis t_c is further than this from its t_c column is "
+        "tc_axis=shifted and left out of the t_c medians (a sim that ran slow, #602)",
+    )
+    ap.add_argument(
         "--eval-samples",
         type=Path,
         help="G8-B: sim_capture_evaluate eval_samples.csv of this session's capture",
@@ -3840,6 +3971,7 @@ def main(argv: list[str] | None = None) -> int:
         hold_window_s=args.hold_window_s,
         floor=args.floor,
         n_valid_target=args.n_valid_target,
+        tc_shift_max_ms=args.tc_shift_max_ms,
     )
     result = analyse_session(
         args.session,
