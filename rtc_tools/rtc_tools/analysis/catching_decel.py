@@ -55,7 +55,9 @@ split by truth success (``catching_trials.csv`` of the unit).
 ``--a`` / ``--b`` name two sets of units that threw the SAME throws (same
 seeds): trials are paired by ``(kind, seed, sample_idx)`` and the 2×2 table of
 truth success is reported with the discordance rate ψ, its Wilson interval and
-the exact McNemar p. ψ between two runs of the same arm is what the paired
+the exact McNemar p. Each set has its own pooled block; the two are pooled
+TOGETHER only with ``--same-arm`` (two runs of one arm — two arms of a
+comparison are not one population). ψ between two runs of the same arm is what the paired
 non-inferiority test of G-1 needs for its sample size
 (:func:`paired_noninferiority_n`).
 
@@ -77,6 +79,7 @@ from statistics import NormalDist
 import numpy as np
 
 from rtc_tools.analysis import catching_arm_budget as ab, catching_trials as ct
+from rtc_tools.analysis.catching_hand_near import _is_true as _truth_cell
 
 TOOL = "catching_decel"
 SMOOTH_TICKS = ab.ACCEL_SMOOTH_TICKS
@@ -115,12 +118,7 @@ SUMMARY_KEYS = (
 
 
 # ── Pure numerics ────────────────────────────────────────────────────────────
-def box_smooth(x: np.ndarray, window: int) -> np.ndarray:
-    """Column-wise box average, same length (``window`` ≤ 1 returns ``x``)."""
-    if window <= 1:
-        return x
-    kernel = np.ones(window) / window
-    return np.column_stack([np.convolve(x[:, j], kernel, mode="same") for j in range(x.shape[1])])
+box_smooth = ab.box_smooth  # one kernel for the budget's q̈ and the stop's q̈ and jerk
 
 
 def derivatives(q: np.ndarray, dt: float, smooth_ticks: int = SMOOTH_TICKS) -> dict:
@@ -219,6 +217,9 @@ def window_metrics(
     a posture to the catch frame's ``(position, rotation 3×3)``.
     """
     n = len(q_cmd)
+    # A stretch the log ends in has no tick at its limit: its window ends at
+    # the last one.
+    k_limit = min(k_limit, n - 1)
     lo = max(0, k0 - pad_ticks)
     hi = min(n, k_limit + pad_ticks)
     cmd = derivatives(q_cmd[lo:hi], dt, smooth_ticks)
@@ -430,7 +431,7 @@ def _trial_table(unit: Path, ct_dir: Path) -> list[dict]:
                 "sample_idx": rec.get("sample_idx"),
                 "t_launch": num("t_launch"),
                 "invalid_reason": r.get("invalid_reason", ""),
-                "truth_success": r.get("truth_success", "") in ("True", "true", "1"),
+                "truth_success": _truth_cell(r.get("truth_success")),
                 "supervisor": r.get("supervisor", ""),
             }
         )
@@ -608,7 +609,7 @@ def summarise(rows: Sequence[Mapping]) -> dict:
 
 
 def pool(units: Sequence[dict]) -> dict:
-    """The pooled block over several units of one robot and arm."""
+    """The pooled block over several units of one robot and ONE arm of a comparison."""
     rows = [r for u in units for r in u["trials"]]
     valid = [r for u in units for r in u["all_trials"] if not r["invalid_reason"]]
     total = sum(len(u["all_trials"]) for u in units)
@@ -726,11 +727,16 @@ def report(units: Sequence[dict], pooled: Mapping | None, pairs: Mapping | None)
             f"{pairs['neither']} · ψ {pairs['discordance']:.3f} [{ci[0]:.3f}, {ci[1]:.3f}] · "
             f"McNemar p {pairs['mcnemar_p']:.3g}"
         )
+        if not pairs["n_pairs"]:
+            lines.append("  no throw is in both sets (seed, sample_idx): nothing to pair")
         for row in pairs.get("sample_size", []):
+            at, upper = (
+                "— (no discordant pair seen)" if row[k] is None else row[k]
+                for k in ("n_at_psi", "n_at_psi_upper")
+            )
             lines.append(
                 f"  paired non-inferiority n (α {row['alpha']}, power {row['power']}, true "
-                f"difference 0): margin {row['margin']:.2f} → ψ̂ {row['n_at_psi']} · ψ upper "
-                f"{row['n_at_psi_upper']}"
+                f"difference 0): margin {row['margin']:.2f} → ψ̂ {at} · ψ upper {upper}"
             )
     return "\n".join(lines)
 
@@ -763,6 +769,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     ap.add_argument("--a", nargs="+", default=[], help="units of set a (paired with --b)")
     ap.add_argument("--b", nargs="+", default=[], help="units of set b: the same throws as --a")
+    ap.add_argument(
+        "--same-arm",
+        action="store_true",
+        help="sets a and b are two runs of ONE arm (replicates): pool them together too. "
+        "Without it the pooled block takes the plain units only — two arms of a "
+        "comparison are not one population",
+    )
     ap.add_argument(
         "--config-dir",
         type=Path,
@@ -825,25 +838,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     plain, set_a, set_b = load(args.units), load(args.a), load(args.b)
     units = plain + set_a + set_b
-    pooled = pool(units) if len(units) > 1 else None
+    pooled_over = units if args.same_arm else plain
+    pooled = pool(pooled_over) if len(pooled_over) > 1 else None
     pairs = None
     if set_a:
         pairs = pair_table(outcome_map(set_a), outcome_map(set_b))
         pairs["pooled_a"], pairs["pooled_b"] = pool(set_a), pool(set_b)
-        psi, psi_hi = pairs["discordance"], pairs["discordance_ci95"][1]
+
+        def pairs_needed(psi: float, margin: float) -> int | None:
+            # No pair, or no discordant one: ψ says nothing about a sample size,
+            # and 0 would read as "no pair needed".
+            if not (math.isfinite(psi) and psi > 0.0):
+                return None
+            return paired_noninferiority_n(psi, margin, alpha=args.alpha, power=args.power)
+
         pairs["sample_size"] = [
             {
                 "margin": m,
                 "alpha": args.alpha,
                 "power": args.power,
-                "n_at_psi": (
-                    paired_noninferiority_n(psi, m, alpha=args.alpha, power=args.power)
-                    if psi > 0.0
-                    else 0
-                ),
-                "n_at_psi_upper": paired_noninferiority_n(
-                    psi_hi, m, alpha=args.alpha, power=args.power
-                ),
+                "n_at_psi": pairs_needed(pairs["discordance"], m),
+                "n_at_psi_upper": pairs_needed(pairs["discordance_ci95"][1], m),
             }
             for m in args.margin
         ]

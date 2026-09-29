@@ -462,8 +462,10 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
 
 ```bash
 ros2 run rtc_tools catching_decel units/p1b_601 units/p1b_602 --config-dir $CFG --overlay <overlay.yaml> --out decel/
-# 같은 seed 를 두 번 돌린 두 집합 (또는 A/B 의 두 arm): 2×2 표 · 불일치율 · 시행 수
+# A/B 의 두 arm: 2×2 표 · 불일치율 · 시행 수, 합산은 arm 별로만
 ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --config-dir $CFG --overlay <overlay.yaml> --out decel/
+# 같은 arm 을 같은 seed 로 두 번 돌린 두 집합 (복제): 둘을 합친 합산 블록도 낸다
+ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --same-arm --config-dir $CFG --out decel/
 # → decel/{decel_summary.json, decel_trials.csv}; 리포트는 stdout
 ```
 
@@ -486,15 +488,22 @@ ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --config-dir $CFG 
   정격은 `catching_arm_budget._device_limits` 와 같은 합성 (`_base.yaml` 위에 `sim.yaml`), `a_dec` 는 컨트롤러 YAML →
   `sim.yaml` override → `--overlay` 순서 (ARCH-1 — 코드에 로봇 상수 없음). 넷 중 하나라도 없으면 거부한다
 - **요약**: 시행별 값의 p50/p95/max 를 unit·합산, 전체와 truth 성공·실패로 나눠. `DECEL` 에 들어가지 않은 시행은 지표에서
-  빠지고 성공률 분모에는 남는다 (abort 는 실패다). 한 시행의 두 번째 `DECEL` 구간은 세지 않는다
+  빠지고 성공률 분모에는 남는다 (abort 는 실패다). 한 시행의 두 번째 `DECEL` 구간은 세지 않는다. log 가 `DECEL` 안에서
+  끝나는 시행 (마지막 시행의 abort) 은 창이 마지막 tick 에서 끝난다
+- **합산 블록은 한 arm 의 것이다**: `pooled` 는 위치 인자로 준 unit 만 합친다. `--a`/`--b` 는 집합마다 `pooled_a`·`pooled_b`
+  를 내고, 둘을 합친 `pooled` 는 `--same-arm` (두 집합이 같은 arm 의 복제) 일 때만 낸다 — A/B 의 두 arm 을 합친 분포는
+  어느 쪽의 것도 아니다
 - **`--a` / `--b`**: `(kind, seed, sample_idx)` 로 짝지은 truth 성공의 2×2 표, 불일치율 ψ 와 Wilson 구간, McNemar 정확 검정,
   그리고 paired 단측 비열등 검정이 요구하는 쌍 수 `(z_α + z_β)² (ψ − d²)/(δ + d)²` 를 `--margin` 마다 ψ̂ 와 ψ 상한에서.
-  같은 arm 을 두 번 돌린 ψ 가 게이트 G-1 의 시행 수 입력이다 (`docs/dynamic_catching/MPC_DUALARM_PLAN.md` §1)
-- 합성 positive control (`test/test_catching_decel.py`, 31 케이스): `q̈ = −A sin²(πt/T)` 로 멈추는 관절과 지렛대 FK 에서
+  같은 arm 을 두 번 돌린 ψ 가 게이트 G-1 의 시행 수 입력이다 (`docs/dynamic_catching/MPC_DUALARM_PLAN.md` §1).
+  두 집합에 공통 throw 가 없거나 (seed 가 다름) 불일치 쌍이 하나도 없으면 그 쌍 수는 `null` 이다 — 0 은 "쌍이 필요 없다" 로 읽힌다.
+  truth 셀은 `catching_hand_near` 와 같은 규칙으로 읽는다 (`True`·`true`·`1`, 앞뒤 공백·대소문자 무시)
+- 합성 positive control (`test/test_catching_decel.py`, 42 케이스): `q̈ = −A sin²(πt/T)` 로 멈추는 관절과 지렛대 FK 에서
   피크 가속 A · 피크 jerk Aπ/T · 정지 거리 · 한계 여유 · 심은 토크 비를 복원, 심은 값을 2 배·½ 배 하면 지표도 따라 움직임,
   null-space 운동 (관절 하나가 접근축 둘레로 roll) 이 있어도 task pose 의 정지를 같은 tick 에서 읽음, 접근축이 계속
   도는 팔은 정지가 아님, 접근축이 위치보다 늦게 멈추면 창이 그때 끝남, 멈추지 않는 팔은 한계 tick 에서 끝나고 그렇게 보고, 창 밖 (진입 전·RETREAT) 의 값은
   피크가 아님, 1 tick 가속 bump 는 평활 창으로 나뉨, 2×2 표와 손 계산 시행 수, `a_dec` 합성 순서, CLI end-to-end,
+  log 가 `DECEL` 안에서 끝나는 시행, 공통 throw 가 없는 두 집합, 불일치 0, 두 arm 을 합치지 않는 기본값과 `--same-arm`,
   실제 FK 를 타는 파일럿 세션 (pinocchio 없으면 skip)
 
 ### `catching_wait_pose_search.py` — 대기 자세 탐색 (dynamic_catching S8-I)

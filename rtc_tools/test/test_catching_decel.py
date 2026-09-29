@@ -193,6 +193,23 @@ def test_an_arm_that_never_rests_ends_at_the_limit_and_says_so():
     assert m["k1"] == k_limit
 
 
+def test_a_stretch_the_log_ends_in_has_its_window_end_at_the_last_tick():
+    # An aborted last trial: no RETREAT, no later stretch, so the limit
+    # decel_entries names is the length of the log — one past its last tick.
+    q, k0, _ = stop_profile()
+    q = q.copy()
+    q[:, 0] += 0.2 * np.arange(len(q)) * DT
+    mode = np.full(len(q), ct.MODE_APPROACH)
+    mode[k0:] = ct.MODE_DECEL
+    ((_, _, k_limit),) = cd.decel_entries(mode)
+    assert k_limit == len(q)
+    m = metrics(q, k0, k_limit)
+    assert not m["rest_reached"]
+    assert m["k1"] == len(q) - 1
+    assert m["stop_time_s"] == pytest.approx((len(q) - 1 - k0) * DT)
+    assert math.isfinite(m["angular_speed_at_rest_rad_s"])
+
+
 # ── Planted values come back ─────────────────────────────────────────────────
 def test_planted_peaks_distance_and_margins_are_recovered():
     q, k0, _ = stop_profile()
@@ -550,10 +567,75 @@ def test_cli_pairs_two_sets_and_writes_the_sample_size(tmp_path, lever, capsys):
     assert (pairs["n_pairs"], pairs["only_a"], pairs["only_b"]) == (4, 1, 2)
     assert pairs["discordance"] == pytest.approx(0.75)
     assert [r["margin"] for r in pairs["sample_size"]] == [0.05, 0.10]
-    assert doc["pooled"]["n_valid"] == 8 and doc["pooled"]["truth_success"] == 5
+    # Two arms of a comparison are not one population: each has its own block.
+    assert doc["pooled"] is None
+    assert [pairs[k]["truth_success"] for k in ("pooled_a", "pooled_b")] == [2, 3]
     with (tmp_path / "out" / "decel_trials.csv").open() as f:
         assert len(list(csv.DictReader(f))) == 6
-    assert "ψ 0.750" in capsys.readouterr().out
+    text = capsys.readouterr().out
+    assert "ψ 0.750" in text and "[pooled]" not in text
+
+
+def _cli(tmp_path, cfg, a, b, *extra) -> dict:
+    out = tmp_path / "out"
+    argv = ["--a", str(a), "--b", str(b), "--config-dir", str(cfg), "--out", str(out), *extra]
+    assert cd.main(argv) == 0
+    return json.loads((out / "decel_summary.json").read_text())
+
+
+def test_two_runs_of_one_arm_are_pooled_when_the_caller_says_so(tmp_path, lever):
+    cfg = make_config(tmp_path / "share")
+    a = make_unit(tmp_path, "a", [True, True, False, False])
+    b = make_unit(tmp_path, "b", [True, False, True, True])
+    doc = _cli(tmp_path, cfg, a, b, "--same-arm")
+    assert doc["pooled"]["n_valid"] == 8 and doc["pooled"]["truth_success"] == 5
+
+
+def test_sets_that_share_no_throw_are_reported_not_crashed_on(tmp_path, lever, capsys):
+    cfg = make_config(tmp_path / "share")
+    a = make_unit(tmp_path, "a", [True, False], seed=601)
+    b = make_unit(tmp_path, "b", [True, False], seed=602)
+    pairs = _cli(tmp_path, cfg, a, b)["pairs"]
+    assert (pairs["n_pairs"], pairs["unpaired_a"], pairs["unpaired_b"]) == (0, 2, 2)
+    assert all(r["n_at_psi"] is None and r["n_at_psi_upper"] is None for r in pairs["sample_size"])
+    assert "nothing to pair" in capsys.readouterr().out
+
+
+def test_no_discordant_pair_is_not_a_sample_size_of_zero(tmp_path, lever, capsys):
+    cfg = make_config(tmp_path / "share")
+    a = make_unit(tmp_path, "a", [True, False, True, False])
+    b = make_unit(tmp_path, "b", [True, False, True, False])
+    pairs = _cli(tmp_path, cfg, a, b)["pairs"]
+    assert pairs["discordance"] == 0.0
+    for row in pairs["sample_size"]:
+        assert row["n_at_psi"] is None
+        # The interval's upper end is above 0 and does name a size.
+        assert row["n_at_psi_upper"] > 0
+    assert "no discordant pair seen" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("cell", "truth"),
+    [("True", True), ("TRUE", True), (" true ", True), ("1", True), ("False", False), ("", False)],
+)
+def test_a_truth_cell_is_read_like_the_other_catching_tools_read_it(tmp_path, lever, cell, truth):
+    cfg = make_config(tmp_path / "share")
+    unit = make_unit(tmp_path, "u", [True])
+    path = unit / "ct" / "catching_trials.csv"
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    rows[0]["truth_success"] = cell
+    _write_csv(path, rows)
+    out = cd.analyse_unit(*cd.parse_unit_arg(str(unit)), cfg)
+    assert out["summary"]["truth_success"] == int(truth)
+
+
+def test_the_smoothing_kernel_is_the_arm_budgets():
+    from rtc_tools.analysis import catching_arm_budget as ab
+
+    q, _, _ = stop_profile()
+    _, qdd = ab.smoothed_accel(q, DT)
+    np.testing.assert_array_equal(cd.derivatives(q, DT)["qdd"], qdd)
 
 
 def test_the_same_throw_twice_in_one_set_is_refused(tmp_path, lever):
