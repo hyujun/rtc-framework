@@ -840,6 +840,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // in between must not have ITS window erased — the token changed, so the CAS
   // fails, and the changed token also restarts the count.
   std::atomic<std::uint32_t> estop_verify_token_{0};
+  /// The last token whose window the RT loop ran to its end (#608). A window
+  /// can also go away because a lifecycle transition dropped it, and the two
+  /// look the same from `estop_verify_token_` alone — this is how the service
+  /// tells "verified" from "gone". RT writer, service reader.
+  std::atomic<std::uint32_t> estop_verified_token_{0};
   // Service thread only (the clear_estop callback group is MutuallyExclusive).
   std::uint32_t estop_verify_last_token_{0};
   // RT thread only.

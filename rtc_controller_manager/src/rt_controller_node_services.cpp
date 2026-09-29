@@ -353,7 +353,7 @@ void RtControllerNode::CreateServices() {
         const auto period = ControlPeriod();
         const auto poll_interval = std::max(period / 4, std::chrono::microseconds(100));
 
-        static_cast<void>(BeginEstopClearVerification());
+        const std::uint32_t token = BeginEstopClearVerification();
         const auto outcome = ClearGlobalEstop();
         if (outcome == EstopClearOutcome::kRetriggered) {
           // The window stays open behind the still-set latch; the RT loop
@@ -400,6 +400,33 @@ void RtControllerNode::CreateServices() {
               "') but unverified — the RT loop did not complete the verification window within "
               "the deadline, so no detector re-evaluated the cause (loop stalled, overrunning, or "
               "not running); the hold stays on until it does" +
+              fault_note();
+          return;
+        }
+
+        // The window is gone — but only the RT loop running it to the end is a
+        // verification (#608). A lifecycle transition drops it as well
+        // (ResetEstopHoldState), and a later clear replaces it; neither had a
+        // detector look at the cause on this call's behalf.
+        // The RT loop closes the window and THEN records the token, so a
+        // reader landing between the two stores sees "gone, not yet verified":
+        // a few polls cover that gap before it is taken for a drop.
+        static constexpr int kVerifiedReadAttempts = 4;
+        bool verified = false;
+        for (int attempt = 0; attempt < kVerifiedReadAttempts && !verified; ++attempt) {
+          verified = estop_verified_token_.load(std::memory_order_acquire) == token;
+          if (!verified) {
+            std::this_thread::sleep_for(poll_interval);
+          }
+        }
+        if (!verified) {
+          resp->ok = false;
+          resp->message =
+              "the latch is DOWN (was: '" + latched_reason +
+              "') and NOT verified — the verification window was dropped by a lifecycle "
+              "transition or replaced by another clear before the RT loop completed it. No "
+              "detector re-evaluated the cause on this call's behalf and this window no longer "
+              "holds the output: check /system/estop_status for what is in force now" +
               fault_note();
           return;
         }

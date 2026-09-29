@@ -3122,6 +3122,23 @@ TEST_F(SafetyGateParkTest, AProvisionalAccelerationBoxParksTheRealArm) {
       {"derived_accel_limits.ur5e.provisional", AccelLimitsCopy(AccelBoxFlag::kProvisional)});
 }
 
+TEST_F(SafetyGateParkTest, AReconfigureWithoutABoxDoesNotKeepTheLastOnes) {
+  // #609: the box DATA was cleared per configure, its PATH was not — so a
+  // profile that names no box silently ran on the one the last configure
+  // named. No box is a supervisor park (nothing to ramp within).
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kCleared), /*sim=*/false));
+  ASSERT_FALSE(ctrl_->IsSimOnlyDisabled()) << "precondition: the first profile activates";
+  ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
+  yaml["catching"]["robot"]["arm"].remove("accel_limits_path");
+  ASSERT_EQ(ctrl_->on_configure(prev_, node_, yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl_->IsSimOnlyDisabled()) << "ran on the box of a profile it no longer has";
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kSupervisorUnset);
+  EXPECT_NE(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
 TEST_F(SafetyGateParkTest, AnAccelerationBoxWithoutTheFlagIsProvisional) {
   // Fail-closed: a file that does not say is not a file that was cleared.
   ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kAbsent), /*sim=*/false));
@@ -3198,6 +3215,66 @@ TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableIsNotSettled) {
       << Transitions();
   state_.devices[1].velocity_hole_mask = 0;
   EXPECT_TRUE(TickUntilMode(Mode::kArmed, 20)) << Transitions();
+}
+
+// #606: the same question on the two paths that read the hand sequencer's
+// `at_target` instead of HandSettledAtPre — the re-arm out of RETREAT and the
+// contact baseline.
+
+TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableDoesNotReArmAfterATrial) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kHold, 1500)) << Transitions();
+  // The hole opens while the hand holds the ball. The close is over, so what
+  // is left to judge with a velocity is the release.
+  state_.devices[1].velocity_hole_mask = 1ULL << 3;
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  const std::size_t retreat = log_.size();
+  // The way out is the release timeout (D-S8-6 (a)), into a disarmed IDLE —
+  // never the re-arm. The plant has long put the hand at q_pre by then.
+  ASSERT_TRUE(TickUntil(
+      [this] { return !log_.empty() && log_.back().reason == Reason::kHandTimeout; }, 3000))
+      << "RETREAT neither re-armed nor timed out\n"
+      << Transitions();
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.mode == Mode::kArmed; }, retreat), 0)
+      << "re-armed on a hand whose rest nobody vouches for\n"
+      << Transitions();
+  EXPECT_EQ(CountTicks(
+                [](const TickRec& t) {
+                  return t.mode == Mode::kRetreat && t.hand_active &&
+                         t.phase == HandPhase::kPreshape;
+                },
+                retreat),
+            0)
+      << "the sequencer called the hand settled at q_pre\n"
+      << Transitions();
+  EXPECT_EQ(ctrl_->GetMode(), Mode::kIdle) << Transitions();
+}
+
+TEST_F(SupervisorScenarioTest, AHandWhoseVelocityIsUnreadableLearnsNoContactBaseline) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  publishing_ = false;
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 20)) << Transitions();
+  // Armed on a readable hand (it could not have armed otherwise); the hole
+  // opens on the next tick and stays through the wait.
+  const int before = ctrl_->GetTipBaselineCountForTesting();
+  state_.devices[1].velocity_hole_mask = 1ULL << 3;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  // One sample at most: the contact lane runs before the hand stage and reads
+  // LAST tick's `at_target`, so the first tick of the hole is still judged on
+  // the tick before it — which was vouched for. 30 ticks would have learned 30.
+  EXPECT_LE(ctrl_->GetTipBaselineCountForTesting(), before + 1)
+      << "a baseline was learned from a hand whose rest nobody vouches for";
+  // Positive control: the same wait, vouched for, learns it — counted from
+  // where the holed wait left off, on the fingertip that learned LEAST.
+  const int holed = ctrl_->GetTipBaselineCountForTesting();
+  state_.devices[1].velocity_hole_mask = 0;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  EXPECT_GE(ctrl_->GetTipBaselineMinCountForTesting() - holed, 20);
 }
 
 TEST_F(SupervisorScenarioTest, AnUnreadableArmVelocityDefersTheAdoptionUntilItIsReadable) {
@@ -3319,6 +3396,54 @@ TEST_F(VelocityLaneReportTest, AClosedPositionGateIsNotReportedAsAVelocityHole) 
   state_.devices[0].velocity_hole_mask = 1;
   TicksThenPublish(3);
   EXPECT_EQ(Warned("arm"), 0U);
+}
+
+// #610: the flag is "positions readable AND velocity lane holed", so a position
+// gate that closes DURING an episode used to read as the episode ending.
+
+TEST_F(VelocityLaneReportTest, AClosingPositionGateDoesNotEndAVelocityEpisode) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  LogSink::Clear();
+  state_.devices[0].velocity_hole_mask = 1;
+  TicksThenPublish(2);
+  ASSERT_EQ(Warned("arm"), 1U);
+
+  // The device drops out altogether; the velocity lane is as holed as it was.
+  state_.devices[0].valid = false;
+  TicksThenPublish(3);
+  EXPECT_TRUE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"arm velocity lane readable again"}).empty())
+      << "reported a recovery nobody observed";
+
+  // Back, and still holed: the same episode, not a second WARN.
+  state_.devices[0].valid = true;
+  TicksThenPublish(3);
+  EXPECT_EQ(Warned("arm"), 1U);
+
+  // Positive control: the real recovery is reported.
+  state_.devices[0].velocity_hole_mask = 0;
+  TicksThenPublish(3);
+  EXPECT_FALSE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"arm velocity lane readable again"}).empty());
+}
+
+TEST_F(VelocityLaneReportTest, ANewActivationWarnsAgainAboutAHoleThatIsStillThere) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  LogSink::Clear();
+  state_.devices[1].velocity_hole_mask = 1;
+  TicksThenPublish(2);
+  ASSERT_EQ(Warned("hand"), 1U);
+
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_->on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  LogSink::Clear();
+  TicksThenPublish(2);
+  EXPECT_EQ(Warned("hand"), 1U) << "the operator of this activation was never told";
+  EXPECT_TRUE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"hand velocity lane readable again"}).empty());
 }
 
 }  // namespace

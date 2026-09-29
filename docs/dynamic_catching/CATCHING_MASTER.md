@@ -241,7 +241,7 @@ $$\Vert v(t_c)\Vert>\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 |---|---|---|
 | `x, y, z` | FLOAT64 ×3 @0 | 예측 위치 [m] |
 | `vx, vy, vz` | FLOAT64 ×3 @24 | 예측 속도 [m/s] |
-| `ax, ay, az` | FLOAT64 ×3 @48 | 가속도 [m/s²] = **상수 $g$** (항력 미포함) |
+| `ax, ay, az` | FLOAT64 ×3 @48 | 가속도 [m/s²] — profile 이 정한다: 항력 profile (출하 sim, PR #595) 은 그 점의 총 가속도 $g - k\lVert v\rVert v$, 항력 절이 없으면 상수 $g$ |
 | `covariance` | FLOAT64 ×36 @72 | 6×6 row-major, 순서 $(p_x,p_y,p_z,v_x,v_y,v_z)$. 모르면 NaN |
 | `snapshot_sequence` | UINT32 ×2 @360 | 스냅샷 순번 |
 | `generation` | UINT32 ×2 @368 | uint64 low/high. 트랙 세대 |
@@ -406,7 +406,7 @@ catching:
 | TBD-VIS-02 | `PointField` 실제 레이아웃(offset·datatype·count), `point_step` 372 B의 미설명 4–8 B | L1 | 닫힘 — 384 B, §5.1 표 (W, D-4) |
 | TBD-VIS-03 | `t` 필드 타입·기준 (float64 초 / uint32 ns) | L1, L2 | 닫힘 — `horizon_ns` UINT32, `header.stamp`(예측 원점) 기준 상대 ns (W, D-4) |
 | TBD-VIS-04 | 발행 주기, $N$ 범위, 지평 길이, 지연 분포 → L2 버퍼·L3 슬라이스 범위 | L1, L2, L3 | 요구 사양은 제어기가 정한다(D-15), sim 실측은 S3.4. **sim 실측 (S3.4 2026-09-20)**: 30.0 Hz (p05 30.3 / p95 29.7), N = 16, 지평 0.05…0.80 s — 당시 프로파일 그대로; stamp→수신 지연 p50 32 / p95 41 / max 430 ms (30 Hz 발행 주기 포함). **요구 사양 확정 (S3.6, 2026-09-22)**: 설정 profile **1.0 s · 0.05 s · 20 점 · ≤ 30 Hz**, 런타임 `n_max` 20 (plan §4.4 S3.6 결과). 같은 rig 에서 공 lane 의 wall stamp 간격이 p95 33.6 ms 로 흔들리던 결함은 2026-09-22 에 고쳤다 (stamp = 발사 기준 sim 시간축을 wall 에 얹은 값; 재실측 p95 10.00 ms — plan §4.4 T_det 재실측) |
-| TBD-VIS-05 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | L0, L2, L4 | 닫힘 — 상수 $g$ (W) |
+| TBD-VIS-05 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | L0, L2, L4 | 닫힘 — profile 이 정한다 — 출하 sim profile (`sim_profile` 0.2, PR #595) 은 이차 항력 모델이라 **그 점의 총 가속도 $g - k\lVert v\rVert v$**, 항력 절이 없는 profile (0.1) 은 상수 $g$ (W) |
 | TBD-VIS-06 | `header.frame_id`와 `world`의 관계 | L1 | **닫힘** — `world`, 변환 없음 (S3.4 실측 2026-09-20) |
 | TBD-VIS-07 | 트랙 식별·상태(소실) 판정 수단 | L1, L3, L7 | 닫힘 — `generation`·`validity`·`snapshot_sequence` 필드 존재 (W, D-4) |
 | TBD-VIS-08 | vision 토픽 QoS | L1 | **닫힘** — 구독 `best_effort` KEEP_LAST(1) (S3.4 실측: reliable 과 identity 동일, 지연·드롭 주입에서도 손실 0) |

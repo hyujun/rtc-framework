@@ -141,6 +141,13 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── robot.arm / catch_frame / oracle: the binding-level keys ────────────
+  // Reset like the io keys above (#609): a profile that names no box must not
+  // inherit the path the last configure named — that reads as "box present"
+  // where the profile says there is none.
+  accel_limits_package_ = "integrated_bringup";
+  accel_limits_path_.clear();
+  accel_limits_group_.clear();
+  catch_frame_name_ = "catch_frame";
   if (catching_section_present_) {
     if (const YAML::Node frame = catching["catch_frame"]; frame) {
       catch_frame_name_ = frame.as<std::string>();
@@ -165,7 +172,13 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   // law cannot be exercised — in a test or in the sim — without SOMETHING
   // naming a catch point, and inventing one inside the controller would make
   // the verification run measure the invention.
+  // Every value reset, not only the switch (#609): an enabled oracle without a
+  // key runs on that key's default, not on the last profile's measurement.
   oracle_enabled_ = false;
+  oracle_p_c_ = {0.0, 0.0, 0.0};
+  oracle_a_d_ = {0.0, 0.0, -1.0};
+  oracle_t_c_offset_s_ = 1.0;
+  oracle_gamma_f_ = 0.3;
   if (const YAML::Node diag = cfg["diagnostic"]; diag) {
     if (const YAML::Node oracle = diag["oracle_plan"]; oracle) {
       if (!oracle.IsMap()) {
@@ -2200,7 +2213,13 @@ void DemoCatchingController::RunHandStage(const ControllerState& state) noexcept
     const auto& dev = state.devices[kCatchingHandDeviceIdx];
     const auto n = static_cast<std::size_t>(hand_dof_);
     q = std::span<const double>(dev.positions.data(), n);
-    qd = std::span<const double>(dev.velocities.data(), n);
+    // Fail-closed (#606, as HandSettledAtPre): a velocity lane with a hole
+    // leaves qd empty, so the sequencer is "at" nothing — no Release → Preshape,
+    // hence no re-arm out of RETREAT, and no contact baseline — while ρ and the
+    // hold offset, which read positions only, go on working.
+    if (rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, hand_dof_)) {
+      qd = std::span<const double>(dev.velocities.data(), n);
+    }
   }
   hand_out_ = hand_seq_.Update(tick_now_, static_cast<std::int64_t>(state.dt * 1e9), q, qd);
   UpdateHandCapture(state);
@@ -2511,6 +2530,9 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
   tick_record_.hand_velocity_unreadable =
       hand_readable_ && !rtc::IsLaneReadable(state.devices[kCatchingHandDeviceIdx],
                                              rtc::StateLane::kVelocity, hand_dof_);
+  tick_record_.arm_velocity_judged = arm_readable_;
+  tick_record_.hand_velocity_judged = hand_readable_;
+  tick_record_.velocity_report_activation = ActivationGeneration();
   tick_record_.wait_pose_refuse_seq = wait_pose_refuse_seq_;
   tick_record_.wait_pose_refuse_reason = wait_pose_refuse_reason_;
   tick_record_.wait_pose_refuse_joint = wait_pose_refuse_joint_;
@@ -2707,9 +2729,19 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
   // #537 pre-S10 R3: a velocity lane with a hole blocks ARMED (and more)
   // without any transition to show for it — one WARN when it starts, one INFO
   // when it ends, per axis.
-  const auto report_velocity_lane = [this](bool unreadable, bool& logged, const char* axis,
-                                           const char* blocked) {
-    if (unreadable == logged) {
+  // The memory is per activation (#610): a hole that outlives a deactivate is
+  // news to whoever activated, and a recovery line about the last activation's
+  // episode is not.
+  if (tick.velocity_report_activation != velocity_report_activation_) {
+    velocity_report_activation_ = tick.velocity_report_activation;
+    arm_velocity_unreadable_logged_ = false;
+    hand_velocity_unreadable_logged_ = false;
+  }
+  const auto report_velocity_lane = [this](bool judged, bool unreadable, bool& logged,
+                                           const char* axis, const char* blocked) {
+    // A closed position gate judges nothing (#610): the episode stands as it
+    // is, neither begun nor ended, until the lane can be asked again.
+    if (!judged || unreadable == logged) {
       return;
     }
     logged = unreadable;
@@ -2723,12 +2755,16 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
       RCLCPP_INFO(logger_, "%s velocity lane readable again", axis);
     }
   };
-  report_velocity_lane(tick.arm_velocity_unreadable, arm_velocity_unreadable_logged_, "arm",
+  report_velocity_lane(tick.arm_velocity_judged, tick.arm_velocity_unreadable,
+                       arm_velocity_unreadable_logged_, "arm",
                        "the controller does not enter ARMED, homing and the RETREAT return do "
                        "not arrive (the return then ends at its deadline), a switched-in wait "
                        "pose is not adopted and a fault reset is refused");
-  report_velocity_lane(tick.hand_velocity_unreadable, hand_velocity_unreadable_logged_, "hand",
-                       "the hand is not settled at q_pre and the controller does not enter ARMED");
+  report_velocity_lane(tick.hand_velocity_judged, tick.hand_velocity_unreadable,
+                       hand_velocity_unreadable_logged_, "hand",
+                       "the hand is not settled at q_pre, the controller does not enter ARMED "
+                       "(a RETREAT then ends at the release timeout) and no contact baseline is "
+                       "learned");
   // #537 S9b: one WARN per fault latch, naming the cause — the transition that
   // follows is ABORT_ESCALATED whatever raised it, so this line (and the CSV's
   // `fault_cause`) is where the operator learns which.

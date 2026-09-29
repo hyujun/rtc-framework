@@ -382,6 +382,17 @@ class DemoCatchingController final : public RTControllerInterface {
     return hand_out_;
   }
 
+  /// The most contact-baseline samples any fingertip has learned this trial.
+  [[nodiscard]] int GetTipBaselineCountForTesting() const noexcept {
+    return *std::max_element(tip_baseline_n_.begin(), tip_baseline_n_.end());
+  }
+
+  /// ... and the fewest, over the fingertips the lane reports this tick.
+  [[nodiscard]] int GetTipBaselineMinCountForTesting() const noexcept {
+    const auto n = static_cast<std::ptrdiff_t>(std::clamp(tip_count_, 1, static_cast<int>(kTips)));
+    return *std::min_element(tip_baseline_n_.begin(), tip_baseline_n_.begin() + n);
+  }
+
   /// How the last attempt ended (L7 §4.7). Kept across a re-arm — it is the
   /// LAST attempt's verdict — and cleared by an activation or E-STOP reset.
   [[nodiscard]] rtc::catching::Outcome GetOutcomeForTesting() const noexcept { return outcome_; }
@@ -1400,6 +1411,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// lane has been reported (#537 pre-S10 R3): the WARN is on the edge.
   bool arm_velocity_unreadable_logged_{false};
   bool hand_velocity_unreadable_logged_{false};
+  /// ... and the activation that memory belongs to (#610).
+  std::uint32_t velocity_report_activation_{0};
   /// Publish-thread (non-RT) memory of the last fault latch / refused fault
   /// reset it warned about (#537 S9b).
   std::uint32_t fault_latch_logged_seq_{0};

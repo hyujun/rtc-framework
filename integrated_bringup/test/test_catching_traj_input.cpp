@@ -320,6 +320,35 @@ TEST_F(TrajInputTest, AnEmptyCloudDoesNotExcuseADefectInItsEnvelope) {
   }
 }
 
+TEST_F(TrajInputTest, AZeroWidthCloudThatCarriesBytesIsASizeDefectNotNoTrack) {
+  // #611: "no track" is the publisher's empty row — no bytes, row_step 0. A
+  // width of 0 over a payload is a malformed message, and filing it under
+  // no_track would hide it: that bucket neither warns nor shows in the GUI.
+  struct Case {
+    const char* what;
+    std::function<void(sensor_msgs::msg::PointCloud2&)> spoil;
+  };
+
+  const std::vector<Case> cases = {
+      {"data left behind", [](auto& m) { m.data.assign(m.point_step, 0U); }},
+      {"row_step left behind", [](auto& m) { m.row_step = m.point_step; }},
+  };
+  for (const auto& c : cases) {
+    CatchingTrajInput in;
+    in.Configure(MakeConfig());
+    CloudSpec spec;
+    spec.n = 0;
+    auto msg = MakeCloud(spec);
+    c.spoil(msg);
+    ASSERT_EQ(msg.width, 0U);
+    TrajectorySnapshot snap{};
+    CovarianceSnapshot cov{};
+    EXPECT_EQ(Feed(in, msg, snap, cov), CloudReject::kSize) << c.what;
+    EXPECT_EQ(in.RejectCount(CloudReject::kNoTrack), 0U) << c.what;
+    EXPECT_TRUE(integrated_bringup::IsCloudDefect(CloudReject::kSize));
+  }
+}
+
 TEST_F(TrajInputTest, NoTrackLeavesTheAcceptedPredictionAndItsMemoryAlone) {
   // The stale / expiry judgement downstream runs on the age of the last
   // ACCEPTED prediction. An empty cloud must not refresh it, replace it or

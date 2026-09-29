@@ -242,8 +242,11 @@ class HandSequencer {
   }
 
   /// One tick. `q` / `qd` are the hand's measured positions and velocities
-  /// (device order, at least `dof` wide — a narrower span is "not readable"
-  /// and makes the hand at nothing). `h_ns` is this tick's period.
+  /// (device order, at least `dof` wide — a narrower span is "not readable").
+  /// The two are judged apart (#606): ρ and the hold offset read positions
+  /// only, while "settled" needs both, so a caller whose velocities cannot be
+  /// read passes an empty `qd` and gets a hand that closes and holds as usual
+  /// but is at nothing. `h_ns` is this tick's period.
   [[nodiscard]] HandSequencerOutput Update(NowReal now, std::int64_t h_ns,
                                            std::span<const double> q,
                                            std::span<const double> qd) noexcept {
@@ -252,7 +255,8 @@ class HandSequencer {
       return out;
     }
     const auto n = static_cast<std::size_t>(cfg_.dof);
-    const bool readable = q.size() >= n && qd.size() >= n;
+    const bool readable = q.size() >= n;
+    const bool settle_readable = readable && qd.size() >= n;
     const double rho = readable ? Rho(q) : std::nan("");
 
     // ── Transitions, in phase order. At most one per tick: a phase entered
@@ -278,7 +282,7 @@ class HandSequencer {
         break;
       }
       case HandPhase::kRelease:
-        if (readable && AtTarget(cfg_.q_pre, q, qd)) {
+        if (settle_readable && AtTarget(cfg_.q_pre, q, qd)) {
           phase_ = HandPhase::kPreshape;
         }
         break;
@@ -294,7 +298,7 @@ class HandSequencer {
     out.phase = phase_;
     out.rho = std::isfinite(rho) ? std::clamp(rho, 0.0, 1.0) : 0.0;
     out.close_issued = close_issued_;
-    out.at_target = readable && AtTarget(target, q, qd);
+    out.at_target = settle_readable && AtTarget(target, q, qd);
     out.timeout = timeout_;
     return out;
   }
