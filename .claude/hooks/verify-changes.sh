@@ -78,10 +78,11 @@
 # Verdict reuse (what keeps an unchanged tree from being re-verified):
 #   - the WHOLE working tree is identical to the one this hook last passed at
 #     -> nothing is run (see "Nothing changed since the last pass");
-#   - a package whose change set is identical to the one it last built and
-#     tested green at -> its build/test is not repeated, every other gate still
-#     runs (see "Package verdict reuse").
-#   Both are keyed on content, never on time, and only a PASS is remembered.
+#   - the package directories are, in content, the ones a package last built
+#     and tested green with -> its build/test is not repeated, every other
+#     gate still runs (see "Package verdict reuse").
+#   Both are keyed on content, never on time or on the watermark, and only a
+#   PASS that went through build/test is remembered.
 #   A measurement that holds the host (see workspace_holds) DEFERS build/test
 #   the way a running simulator does.
 #
@@ -260,7 +261,7 @@ advance_verify_base() {
 #
 # Kept in .git/ beside the watermark: per clone, never committed.
 #   rtc-verify-pass-tree   tree id of the working tree at the last full pass
-#   rtc-verify-pass-pkgs   "<pkg> <change-set key>" per package that built and
+#   rtc-verify-pass-pkgs   "<pkg> <content key>" per package that built and
 #                          tested green
 #   rtc-verify-timing.log  one line per run: when, verdict, seconds, packages
 # RTC_VERIFY_NO_REUSE=1 switches both reuses off (every gate runs, nothing is
@@ -277,17 +278,33 @@ TIMING_LOG="$GIT_DIR_PATH/rtc-verify-timing.log"
 # for `git diff`. Prints nothing when git cannot do it, which every caller
 # reads as "no reuse".
 #
+# Nothing is left behind in the repository: the objects `git add` writes go to
+# a scratch object directory that is removed when the hook exits, with the real
+# store as its alternate (so only content the store does not have is written
+# at all). Written into the real store, every modified or untracked file would
+# become a loose, unreachable blob at every turn end. Whoever reads an object
+# of that tree afterwards goes through git_scratch.
+#
 # The index starts EMPTY, so every file is hashed (about 0.3 s here). Starting
 # from a copy of the real index costs 25 ms and is wrong: git trusts a cached
 # entry whose size and mtime match unless the entry is as young as the index
 # file, and a copy is always younger than the entries in it -- so a same-size
 # edit made in the second the index was written (`return 0` -> `return 1`
 # right after a commit) read as unchanged. Measured in this hook's own suite.
+OBJ_STORE=$(git rev-parse --path-format=absolute --git-path objects 2>/dev/null || true)
+OBJ_SCRATCH=$(mktemp -d 2>/dev/null || true)
+trap '[ -n "$OBJ_SCRATCH" ] && rm -rf "$OBJ_SCRATCH"' EXIT
+git_scratch() {  # git, reading the scratch objects beside the repository's
+  GIT_ALTERNATE_OBJECT_DIRECTORIES="$OBJ_SCRATCH" git "$@"
+}
 work_tree_id() {
   local idx tree=""
+  [ -d "$OBJ_STORE" ] && [ -d "$OBJ_SCRATCH" ] || return 0
   idx=$(mktemp -u) || return 0
-  if GIT_INDEX_FILE="$idx" git add -A . >/dev/null 2>&1; then
-    tree=$(GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null || true)
+  if GIT_INDEX_FILE="$idx" GIT_OBJECT_DIRECTORY="$OBJ_SCRATCH" \
+     GIT_ALTERNATE_OBJECT_DIRECTORIES="$OBJ_STORE" git add -A . >/dev/null 2>&1; then
+    tree=$(GIT_INDEX_FILE="$idx" GIT_OBJECT_DIRECTORY="$OBJ_SCRATCH" \
+           GIT_ALTERNATE_OBJECT_DIRECTORIES="$OBJ_STORE" git write-tree 2>/dev/null || true)
   fi
   rm -f "$idx" "$idx.lock"
   printf '%s' "$tree"
@@ -1396,7 +1413,9 @@ HOLD_FILE="$WORKSPACE/.rtc-verify-hold"
 workspace_holds() {
   [ -f "$HOLD_FILE" ] || return 0
   local pid start now cmd
-  while read -r pid start _; do
+  # `read` fails on a last line that has no newline and still fills the
+  # variables: a driver that wrote the file with printf holds the host too.
+  while read -r pid start _ || [ -n "${pid:-}" ]; do
     case "$pid" in '' | *[!0-9]*) continue ;; esac
     [ -r "/proc/$pid/stat" ] || continue
     if [ -n "${start:-}" ]; then
@@ -1412,30 +1431,39 @@ workspace_holds() {
 # ── Package verdict reuse ───────────────────────────────────────────────────
 #
 # A package that built and tested green is not built and tested again while
-# the change set it was graded with is the same. The key is the content of
-# every changed file that lies in a PACKAGE -- this one or any other, source or
-# not -- so an edit anywhere in any package re-grades all of them, as before.
-# What the key leaves out is the repository-level files (docs/, agent_docs/,
-# .github/, .claude/, the root): no package's build reads them, and the turn
-# that fixes a plan document after the code passed is the common case this
-# serves. repo_scripts is the exception -- its tests run the validators and
-# this hook against the repository itself -- so its key takes every file.
+# the packages are what they were graded as. The key is the content of EVERY
+# package directory of the working tree (the tree id of each) -- this package
+# or any other, source or not -- so an edit anywhere in any package re-grades
+# all of them, as before. What the key leaves out is the repository-level
+# files (docs/, agent_docs/, .github/, .claude/, the root): no package's build
+# reads them, and the turn that fixes a plan document after the code passed is
+# the common case this serves. repo_scripts is the exception -- its tests run
+# the validators and this hook against the repository itself -- so its key is
+# the whole tree.
+#
+# The key is NOT the diff against the watermark. That one (the blobs of the
+# changed files) named the same key for different packages once the watermark
+# had moved: a.py changed against B1 and graded, then b.py committed and the
+# watermark advanced past it without a build -- a.py is again the whole change
+# set, and b.py was never graded.
 #
 # Only a green build AND a green test is remembered, per package, at the moment
 # it happens: a turn blocked by another gate keeps the verdicts it did earn.
-PKG_DIRS_CHANGED=$(printf '%s\n' "$CHANGED_PKGS" "$BUILD_PKGS" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
+PKG_CONTENT_KEY=""
+if [ -n "${WORK_TREE:-}" ]; then
+  PKG_CONTENT_KEY=$(
+    git_scratch ls-tree -r --name-only "$WORK_TREE" 2>/dev/null \
+      | sed -n 's|^\([^/]*\)/package\.xml$|\1|p' \
+      | while IFS= read -r d; do git_scratch ls-tree "$WORK_TREE" -- "$d"; done 2>/dev/null \
+      | git hash-object --stdin 2>/dev/null || true
+  )
+fi
 change_set_key() {  # $1 = package the key is for
   [ -n "${WORK_TREE:-}" ] || return 0
-  local f top blob
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    top=${f%%/*}
-    if [ "$1" != "repo_scripts" ] && [ "$1" != "PROC-3" ]; then
-      grep -qxF "$top" <<<"$PKG_DIRS_CHANGED" || continue
-    fi
-    blob=$(git rev-parse -q --verify "$WORK_TREE:$f" 2>/dev/null || echo deleted)
-    printf '%s %s\n' "$blob" "$f"
-  done <<<"$CHANGED" | git hash-object --stdin 2>/dev/null || true
+  case "$1" in
+    repo_scripts | PROC-3) printf '%s' "$WORK_TREE" ;;
+    *) printf '%s' "$PKG_CONTENT_KEY" ;;
+  esac
 }
 pkg_verdict_reusable() {  # $1 = package, $2 = key
   [ -n "$2" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] \
@@ -1488,7 +1516,7 @@ else
   BUILD_PKGS="$REMAINING"
 fi
 if [ -n "$REUSED_PKGS" ]; then
-  echo "verify-changes: build/test not repeated for [${REUSED_PKGS# }] -- green at this same change set." >&2
+  echo "verify-changes: build/test not repeated for [${REUSED_PKGS# }] -- green with these same packages." >&2
 fi
 
 RIVALS=""
@@ -1829,8 +1857,12 @@ fi
 
 # A full pass. The tree id taken at the start is remembered only if the tree is
 # still that one: something that wrote the checkout while the gates ran was
-# not graded.
-if [ -n "${WORK_TREE:-}" ] && [ "$(work_tree_id)" = "$WORK_TREE" ]; then
+# not graded. And only if Phase 2 was not switched off -- under
+# RTC_VERIFY_SKIP_BUILD the packages were neither built nor tested, and a tree
+# remembered then is passed unbuilt by every later stop over it (this
+# happened: a run of the hook with the build off, by hand, in the real clone).
+if [ -z "${RTC_VERIFY_SKIP_BUILD:-}" ] && [ -n "${WORK_TREE:-}" ] \
+   && [ "$(work_tree_id)" = "$WORK_TREE" ]; then
   printf '%s\n' "$WORK_TREE" > "$PASS_TREE_FILE" 2>/dev/null || true
 fi
 advance_verify_base

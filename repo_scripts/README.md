@@ -53,6 +53,7 @@ repo_scripts/
     ├── cpu_shield.sh                     <- 동적 CPU 격리 (cset/cgroup)
     ├── check_rt_setup.sh                 <- 정적 RT 환경 검증 (9개 카테고리)
     ├── verify_rt_runtime.sh              <- 런타임 스레드 검증 (7개 카테고리)
+    ├── with_verify_hold.sh               <- 측정이 도는 동안 Stop hook 의 빌드·테스트를 미룬다
     │
     │   # ── LTTng 트레이싱 ──────────────────────────────────────────
     ├── timeline.sh                       <- LTTng CTF trace -> Chrome Trace JSON 변환 (스레드/CPU swimlane)
@@ -87,6 +88,7 @@ repo_scripts/
 | 스크립트 | 용도 | sudo |
 |---------|------|------|
 | `cpu_shield.sh` | 런타임 CPU 격리 (Tier 1/2, robot/sim 모드) | on/off 시 필수 |
+| `with_verify_hold.sh <명령> [인자…]` | 명령이 도는 동안 `<workspace>/.rtc-verify-hold` 에 자기 줄을 두어 Claude Code Stop hook 의 빌드·테스트를 미룬다. unit 마다 sim 을 새로 띄우는 평가는 unit 사이에 sim 이 없는 틈이 있고, 그 틈에서 끝난 턴이 `colcon test` 를 다음 unit 옆에서 돌리기 때문이다. 명령의 exit code 를 그대로 돌려주고, 끝나면 자기 줄만 지운다. 죽은 wrapper 의 줄은 hook 이 stale 로 읽는다 (install 대상 아님 — 소스 트리에서 실행) | 불필요 |
 
 ### 검증 스크립트 (Verification) -- 필요 시
 

@@ -1423,6 +1423,37 @@ expect_not_contains "an edit after a pass is not called unchanged" "$out" "nothi
 if [ "$(calls "$count")" = $((before + 1)) ]; then pass "an edit after a pass is tested"; else fail "an edit after a pass was not tested"; fi
 rm -rf "$dir" "$bstub" "$tstub" "$count"
 
+# 54e. A pass with Phase 2 switched off is not a verdict on the tree: the next
+#      stop over the same tree builds and tests it.
+dir=$(make_fixture)
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook "$dir"); rc=$?
+expect_exit "a stop with the build switched off passes" "$rc" 0
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_not_contains "a tree passed without a build is not called unchanged" "$out" "nothing re-run"
+if [ "$(calls "$count")" = 1 ]; then pass "a tree passed without a build is tested"; else fail "a tree passed without a build was never tested"; fi
+rm -rf "$dir" "$bstub" "$tstub" "$count"
+
+# 54f. Taking the tree id leaves nothing in the repository's object store.
+dir=$(make_fixture)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub /dev/null 0)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+echo 'scratch that nobody added' >"$dir/untracked_note.txt"
+before=$(find "$dir/.git/objects" -type f | sort)
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_contains "the tree id still finds the unchanged tree" "$out" "nothing re-run"
+if [ "$(find "$dir/.git/objects" -type f | sort)" = "$before" ]; then
+  pass "the hook writes no object into the repository"
+else
+  fail "the hook left objects in .git/objects"
+fi
+rm -rf "$dir" "$bstub" "$tstub"
+
 # 55. Only a pass is remembered: a blocked tree is graded again, whole.
 dir=$(make_fixture)
 add_missing_dep "$dir"
@@ -1474,6 +1505,36 @@ echo 'int existing() { return 9; }' >"$dir/rtc_demo/src/existing.cpp"
 out=$(run_hook_green "$dir" "$bstub" "$tstub")
 if [ "$(calls "$count")" = 3 ]; then pass "a new package content is tested"; else fail "a new package content was not tested"; fi
 rm -rf "$dir" "$bstub" "$tstub" "$count"
+
+# 56e. The verdict is of the packages' content, not of the diff against the
+#      watermark. A package graded green beside a blocking gate keeps its key;
+#      another file of the package then changes and the watermark moves past
+#      it without a build. The first file is again the whole change set -- and
+#      the package is not the one that was graded.
+if have_pyyaml; then
+  dir=$(make_fixture)
+  count=$(mktemp)
+  bstub=$(make_build_stub 0)
+  tstub=$(make_test_stub "$count" 0)
+  echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+  mkdir -p "$dir/docs"
+  printf 'a: [1, 2\n' >"$dir/docs/broken.yaml"
+  out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+  expect_exit "56e setup: the other gate blocks" "$rc" 2
+  if [ "$(calls "$count")" = 1 ]; then pass "56e setup: the package is graded beside the blocking gate"; else fail "56e setup: tested $(calls "$count") times"; fi
+  rm -rf "$dir/docs"
+  git -C "$dir" stash -q
+  echo '# demo, changed and never graded' >"$dir/rtc_demo/README.md"
+  git -C "$dir" commit -qam "another file of the package"
+  git -C "$dir" rev-parse HEAD >"$dir/.git/rtc-verify-base"
+  git -C "$dir" stash pop -q
+  out=$(run_hook_green "$dir" "$bstub" "$tstub")
+  expect_not_contains "a moved watermark does not revive the old verdict" "$out" "not repeated"
+  if [ "$(calls "$count")" = 2 ]; then pass "the package is graded with the file the watermark skipped"; else fail "the package was not re-graded (calls $(calls "$count"))"; fi
+  rm -rf "$dir" "$bstub" "$tstub" "$count"
+else
+  skip "56e needs PyYAML"
+fi
 
 # 56d. The reuse leaves the other gates on: a blocking defect in a repository
 #      document still blocks while the package verdict is reused.
@@ -1528,6 +1589,14 @@ echo "$hpid 1" >"$ws/.rtc-verify-hold"
 out=$(run_hook_green "$dir" "$bstub" "$tstub")
 expect_not_contains "a reused pid does not hold the host" "$out" "Build/test deferred"
 if [ "$(calls "$count")" = 1 ]; then pass "the change is tested when the holder is not the one listed"; else fail "a reused pid kept the gate off"; fi
+# 57d. A hold line without a newline at its end is still a hold.
+printf '%s %s' "$hpid" "$(start_time_of "$hpid")" >"$ws/.rtc-verify-hold"
+echo 'int existing() { return 5; }' >"$dir/rtc_demo/src/existing.cpp"
+before=$(calls "$count")
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_contains "a hold line without a newline defers build/test" "$out" "Build/test deferred"
+if [ "$(calls "$count")" = "$before" ]; then pass "nothing is tested beside an unterminated hold line"; else fail "an unterminated hold line was ignored"; fi
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
 kill "$hpid" 2>/dev/null
 wait "$hpid" 2>/dev/null
 # 57c. A dead holder holds nothing: a driver that died cannot switch the gate off.
@@ -1538,20 +1607,58 @@ expect_not_contains "a dead holder does not hold the host" "$out" "Build/test de
 if [ "$(calls "$count")" = 2 ]; then pass "the change is tested once the holder is gone"; else fail "a dead holder kept the gate off"; fi
 rm -rf "$ws" "$bstub" "$tstub" "$count"
 
+# 57e. The wrapper writes the line the hook reads: a command run under
+#      with_verify_hold.sh holds the host while it runs, and not after.
+HOLD_WRAPPER="$REPO_ROOT/repo_scripts/scripts/with_verify_hold.sh"
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+echo "1 1" >"$ws/.rtc-verify-hold"   # another holder's line, stale
+RTC_VERIFY_WORKSPACE="$ws" "$HOLD_WRAPPER" sleep 60 &
+wpid=$!
+for _ in $(seq 50); do grep -q "^$wpid " "$ws/.rtc-verify-hold" 2>/dev/null && break; sleep 0.1; done
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_contains "a command under the wrapper holds the host" "$out" "Build/test deferred"
+expect_contains "the holder named is the wrapper" "$out" "$wpid: "
+if [ "$(calls "$count")" = 0 ]; then pass "nothing is tested beside a wrapped command"; else fail "a wrapped command was tested beside"; fi
+pkill -P "$wpid" sleep 2>/dev/null
+wait "$wpid" 2>/dev/null
+if [ "$(cat "$ws/.rtc-verify-hold" 2>/dev/null)" = "1 1" ]; then
+  pass "the wrapper takes its own line out and leaves the others"
+else
+  fail "after the wrapper the hold file reads [$(cat "$ws/.rtc-verify-hold" 2>&1)]"
+fi
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_not_contains "the host is free once the wrapped command is over" "$out" "Build/test deferred"
+if [ "$(calls "$count")" = 1 ]; then pass "the change is tested after the wrapped command"; else fail "the change was not tested after the wrapped command"; fi
+# 57f. The wrapper returns the command's exit code and removes a file it emptied.
+rm -f "$ws/.rtc-verify-hold"
+RTC_VERIFY_WORKSPACE="$ws" "$HOLD_WRAPPER" bash -c 'exit 7'; rc=$?
+expect_exit "the wrapper returns the command's exit code" "$rc" 7
+if [ ! -e "$ws/.rtc-verify-hold" ]; then pass "the wrapper removes a hold file it emptied"; else fail "the wrapper left an empty hold file"; fi
+"$HOLD_WRAPPER" >/dev/null 2>&1; rc=$?
+expect_exit "the wrapper without a command is a usage error" "$rc" 2
+rm -rf "$ws" "$bstub" "$tstub" "$count"
+
 # 58. Every run leaves one line in the timing log, with its verdict.
 dir=$(make_fixture)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub /dev/null 0)
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
-run_hook "$dir" >/dev/null
-run_hook "$dir" >/dev/null
+run_hook_green "$dir" "$bstub" "$tstub" >/dev/null
+run_hook_green "$dir" "$bstub" "$tstub" >/dev/null
 add_missing_dep "$dir"
-run_hook "$dir" >/dev/null
+run_hook_green "$dir" "$bstub" "$tstub" >/dev/null
 log=$(cut -f2 "$dir/.git/rtc-verify-timing.log" 2>/dev/null | tr '\n' ' ')
 if [ "$log" = "pass pass-unchanged blocked " ]; then
   pass "the timing log records pass, pass-unchanged and blocked"
 else
   fail "the timing log reads [$log]"
 fi
-rm -rf "$dir"
+rm -rf "$dir" "$bstub" "$tstub"
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
