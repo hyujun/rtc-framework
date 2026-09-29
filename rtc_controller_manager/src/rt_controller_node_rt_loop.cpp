@@ -256,8 +256,13 @@ bool RtControllerNode::AdvanceEstopClearVerification(bool estopped) noexcept {
   }
   // Survived the window. Fails, leaving the window open, if a new clear
   // replaced the token after the load above — its window starts over.
+  // Said BEFORE the window is closed (#608): the service reads this only once
+  // it has seen the window gone, so it must already be there by then. Only
+  // here — a window the lifecycle dropped verified nothing.
+  estop_verified_token_.store(token, std::memory_order_release);
   if (!estop_verify_token_.compare_exchange_strong(token, 0U, std::memory_order_acq_rel,
                                                    std::memory_order_acquire)) {
+    estop_verified_token_.store(0U, std::memory_order_release);
     return true;
   }
   estop_verify_ticks_ = 0;

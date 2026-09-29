@@ -353,7 +353,7 @@ void RtControllerNode::CreateServices() {
         const auto period = ControlPeriod();
         const auto poll_interval = std::max(period / 4, std::chrono::microseconds(100));
 
-        static_cast<void>(BeginEstopClearVerification());
+        const std::uint32_t token = BeginEstopClearVerification();
         const auto outcome = ClearGlobalEstop();
         if (outcome == EstopClearOutcome::kRetriggered) {
           // The window stays open behind the still-set latch; the RT loop
@@ -400,6 +400,20 @@ void RtControllerNode::CreateServices() {
               "') but unverified — the RT loop did not complete the verification window within "
               "the deadline, so no detector re-evaluated the cause (loop stalled, overrunning, or "
               "not running); the hold stays on until it does" +
+              fault_note();
+          return;
+        }
+
+        // The window is gone — but only the RT loop running it to the end is a
+        // verification (#608). A lifecycle transition drops it as well
+        // (ResetEstopHoldState), and a later clear replaces it; neither had a
+        // detector look at the cause on this call's behalf.
+        if (estop_verified_token_.load(std::memory_order_acquire) != token) {
+          resp->ok = false;
+          resp->message =
+              "the latch is DOWN (was: '" + latched_reason +
+              "') but not verified — the verification window was dropped by a lifecycle "
+              "transition or replaced by another clear before the RT loop completed it" +
               fault_note();
           return;
         }

@@ -745,6 +745,30 @@ TEST_F(EstopClearServiceWindowTest, ADeactivateMidWindowStillReportsTheClear) {
   })) << "estop_status stuck at true after a mid-window deactivate";
 }
 
+TEST_F(EstopClearServiceWindowTest, AWindowDroppedByALifecycleResetIsNotReportedAsVerified) {
+  // #608: the service waits for the window to go away and took "gone" to mean
+  // "the RT loop ran it". A lifecycle transition drops the window too — no
+  // tick, no watchdog turn, nothing re-evaluated the cause.
+  Access::CallTriggerEstop(*node_, "test_estop");
+  Access::CallFlushEstopStatus(*node_);
+  // No ticking: whatever closes the window below, it is not the RT loop.
+  auto req = std::make_shared<rtc_msgs::srv::ClearEstop::Request>();
+  req->reason_ack = "test_estop";
+  auto fut = client_->async_send_request(req);
+  ASSERT_TRUE(WaitFor([this] {
+    return !Access::IsEstopped(*node_) && Access::IsClearVerifying(*node_);
+  })) << "precondition: the service lowered the latch and is waiting on its window";
+
+  const rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "active");
+  ASSERT_EQ(node_->on_deactivate(active), RtControllerNode::CallbackReturn::SUCCESS);
+
+  ASSERT_EQ(fut.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  const auto resp = fut.get();
+  ASSERT_NE(resp, nullptr);
+  EXPECT_FALSE(resp->ok) << "replied '" << resp->message << "' for a window nobody ran";
+  EXPECT_NE(resp->message.find("not verified"), std::string::npos) << resp->message;
+}
+
 // ── A publisher that starts with the value it stands for (#607) ──────────────
 //
 // transient_local keeps the LAST PUBLISHED sample, and the status is published
