@@ -719,7 +719,7 @@ Q1–Q3 은 #537 5855489704 (2026-09-27 사용자) 이다.
 | R6 | leap `TRACK_CHANGED` 조사 (코드 변경 없음, Q10) | 완료 (2026-09-29, #537 5881444338) — 결정: 보정 기준 재판정만 |
 | R7 | issue 분리 3 건 — G8-C2 예산식 · 부하 감시 러너 이식 · 분석기 `t_c` 열 (Q10) | 완료 (2026-09-29) — #600 · #601 · #602 |
 
-- **R5 가 남긴 private 원자료**: S8-E 의 capture·eval (Q11 예외, G8-B 종료 확인까지) · S8-G `w20_a21.fail1` · profile 수정 뒤 G8-B 재평가 unit 의 capture·eval·trials·로그 (G8-B 판정을 기다리며 S8-E 와 같은 집합으로 보존했다 — G8-B 는 2026-09-29 에 PASS 로 끝나 보존 사유는 해소됐고, 삭제 여부는 정하지 않았다; `session_copy`·probe dump 6.6 GB 는 같은 날 사용자 결정으로 삭제) · R6 재판정 근거 (간격 표) · 드라이버 스크립트 사본.
+- **R5 가 남긴 private 원자료**: S8-G `w20_a21.fail1` · R6 재판정 근거 (간격 표) · 드라이버 스크립트 사본 · S8-E 와 profile 수정 뒤 G8-B 재평가 unit 의 `eval_report.json` 과 로그. S8-E 의 capture·eval (Q11 예외) 과 G8-B 재평가 unit 의 capture·eval·trials 는 G8-B 가 PASS 로 끝나 보존 사유가 해소돼 2026-09-29 에 삭제했다 (사용자 결정, 662 MB) — 표본 단위 재분석은 재실행이 필요하다. `session_copy`·probe dump 6.6 GB 는 같은 날 먼저 삭제했다.
 
 | # | 결정 (2026-09-28 사용자, 모두 권장안) |
 |---|---|
