@@ -203,7 +203,7 @@ $$\text{stalled}_i=\big[\rho_{\min}\le\rho_i\le\rho_{\max}\big]\wedge\big[|\dot 
 3. L5 `lead_enable=true`이면 `T_arm` 확정
 4. 로봇이 대기 자세 허용오차 안에 있음 (`IDLE` homing 으로 도달, §4.1) — 위치 `pose_tol` **과 정지** (|q̇| ≤ `homing.qd_tol`). 팔 속도 lane 을 읽을 수 없으면 (hole) 대기 자세가 아니다: homing 도착 판정도 같은 검사라 끝나지 않고 대기 자세를 계속 명령한다 (pre-S10 R3, #537 Q9)
 5. speed scaling = 1(실기) — 신호 출처 없음, sim 비활성, S10
-6. 손 `q_pre` 도달 (Q4, 2026-09-23 사용자 확정 — `q_open` 은 homing 중에만 쓰고 대기 중 손은 항상 `q_pre` 다, §4.1) **과 정지** — 손 속도 lane 을 읽을 수 없으면 정착이 아니다 (pre-S10 R3, #537 Q16)
+6. 손 `q_pre` 도달 (Q4, 2026-09-23 사용자 확정 — `q_open` 은 homing 중에만 쓰고 대기 중 손은 항상 `q_pre` 다, §4.1) **과 정지** — 손 속도 lane 을 읽을 수 없으면 정착이 아니다 (pre-S10 R3, #537 Q16). 손 시퀀서의 `at_target` 도 같은 규칙이다 (#606) — 속도 lane 비판독이면 `RELEASE → PRESHAPE` 가 일어나지 않아 `RETREAT` 는 재무장하지 않고 release timeout 으로 끝나며, 접촉 baseline 도 학습되지 않는다. 닫힘 판정 (ρ) 과 hold offset 은 위치만 읽으므로 그대로 동작한다
 
 **조건 상실의 처리 `[확정 S5, 2026-09-23 코드리뷰]`.** §4.2 에 전용 사유가 없어 전이표는 `PARAMS_TBD` 를 재사용한다(전이표 헤더가 근거를 갖는다). 어디로 가는지는 **그 모드가 운동을 싣고 있을 수 있는가**로 갈린다:
 
@@ -356,7 +356,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 - 포획했는데 `Missed`: 판정 창과 센서 수신 시각 정렬(실기 async 센서 지연), 부호 규약(§4.4)을 확인한다. sim 에서는 공이 링크·손바닥에 얹힌 구조적 false-Missed 가 흔하다 (§4.4 S8-B 측정).
 - 감속 중 흔들림: `a_dec` 값과 L5 가속 한계의 정합, 램프 적용 여부를 확인한다.
 - `REF_SATURATED` 가 자주 발생: L3 rollout의 여유율(`eta_a`, η_v)이 낮거나 $T_w$ 가 짧은지 확인한다. 빈도는 S8 에서 D-8 재검토 입력으로 기록한다.
-- `ARMED` 에 안 들어감: homing 목표 `wait_pose` 와 `pose_tol`, 손 `q_pre` 도달, `PARAMS_TBD`, 그리고 팔·손 **속도 lane 의 판독 여부** (backend 가 속도를 싣지 않으면 §4.5 의 4·6 이 성립하지 않는다) 를 확인한다. 속도 lane 은 전이를 남기지 않으므로 로그가 유일한 표시다 — publish 스레드가 축별로 닫힐 때 WARN `<arm|hand> velocity lane UNREADABLE …` 한 줄, 열릴 때 INFO 한 줄을 낸다 (위치 gate 가 닫힌 경우는 F5 gate 진단이 말한다).
+- `ARMED` 에 안 들어감: homing 목표 `wait_pose` 와 `pose_tol`, 손 `q_pre` 도달, `PARAMS_TBD`, 그리고 팔·손 **속도 lane 의 판독 여부** (backend 가 속도를 싣지 않으면 §4.5 의 4·6 이 성립하지 않는다) 를 확인한다. 속도 lane 은 전이를 남기지 않으므로 로그가 유일한 표시다 — publish 스레드가 축별로 닫힐 때 WARN `<arm|hand> velocity lane UNREADABLE …` 한 줄, 열릴 때 INFO 한 줄을 낸다 (위치 gate 가 닫힌 경우는 F5 gate 진단이 말한다 — 그동안 속도 lane 은 판정되지 않으므로 episode 는 시작도 끝도 나지 않고, 기억은 activation 마다 새로 시작한다, #610).
 - `RETREAT` 복귀가 복귀 기한 fault 로 끝나고 reset 이 `kVelocityUnreadable` 로 거부됨: 같은 WARN 을 본다 — 팔 속도 lane 이 닫혀 있으면 도착 판정이 성립하지 않는다.
 - 접촉 직후 `TRACK_ERR` abort: 충격 구간에서 임계를 완화했는지 확인한다(§4.7-3).
 

@@ -240,7 +240,7 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 - `TriggerGlobalEstop()`: 멱등(idempotent), `compare_exchange_strong`으로 1회만 실행
 - 모든 컨트롤러에 `TriggerEstop()` + `SetHandEstop(true)` 전파
 - **actuator 로 나가는 command 를 CM 이 차단** — 아래 절 참조
-- `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조). **transient_local** (#588) — 값이 바뀔 때만 발행되므로 volatile writer 로는 latch 뒤에 뜬 구독자가 다음 전이까지 "NORMAL" 을 봤다. 늦게 뜬 구독자가 현재 값을 받으려면 **구독자도 transient_local** 이어야 한다 (volatile 구독자는 매칭은 되지만 이력을 받지 않는다) — in-tree 구독자 (demo GUI · motion editor · BT bridge · shape_estimation) 는 모두 transient_local 이다
+- `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조). **transient_local** (#588) — 값이 바뀔 때만 발행되므로 volatile writer 로는 latch 뒤에 뜬 구독자가 다음 전이까지 "NORMAL" 을 봤다. 늦게 뜬 구독자가 현재 값을 받으려면 **구독자도 transient_local** 이어야 한다 (volatile 구독자는 매칭은 되지만 이력을 받지 않는다) — in-tree 구독자 (demo GUI · motion editor · BT bridge · shape_estimation) 는 모두 transient_local 이다. 발행자는 **만들어질 때 현재 값을 한 번 발행한다** (#607): transient_local 이 보관하는 것은 마지막으로 발행한 표본이라, `on_error` (latch 를 올린 채 발행자를 없앤다) 뒤의 configure 가 만든 새 발행자는 그러지 않으면 아무것도 갖고 있지 않다
 - RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
 - **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음). RCLCPP 로깅은 `estop_log_pending_`, `/system/estop_status` publish 는 `estop_status_pending_` atomic 플래그를 통해 non-RT `DrainLog()` (100 Hz) 에서 지연 수행 — `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT 루프에서 도달 가능하므로 plain publisher 를 그 자리에서 호출하면 RT-10 위반이다. 드레인은 *드레인 시점의* 보고값 (`global_estop_` ∨ 해제 검증 창 — 아래 해제 절) 을 발행하므로 두 드레인 사이의 trigger/clear 쌍은 stale 값이 아니라 최종 상태로 수렴한다. lifecycle teardown 은 `drain_timer_` 를 없애므로 `FlushEstopStatus()` 가 마지막 전이를 직접 흘린다
 
@@ -255,7 +255,7 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 **창 동안 hold 는 그대로다 (#588 ③, 결정 Q2·Q12·Q13).** 래치를 먼저 내리고 창 안의 재 latch 를 기다리던 이전 구현은, 원인이 남아 있어 거부될 해제에서도 그 사이 tick (워치독 원인이면 ~12 tick) 동안 **컨트롤러 출력을 치환 없이 내보내고** `/system/estop_status` 에 false→true 토글을 남겼다. 지금은:
 
 - 서비스가 `BeginEstopClearVerification()` 으로 **래치를 내리기 전에** 검증 토큰 (`estop_verify_token_`, 호출마다 새 0 아닌 값) 을 세운다 — 래치가 내려간 tick 이 "창 없음" 을 보는 순간이 없다
-- RT loop 가 래치가 내려간 tick 을 세고 창을 채우면 **RT 가** 토큰을 CAS 로 내린다. 래치가 다시 서거나 토큰이 바뀌면 처음부터 센다. 서비스는 토큰을 내리지 않는다 — deadline 을 넘긴 응답 (`the latch is DOWN … but unverified`) 뒤에도 hold 는 RT 가 창을 돌 때까지 유지된다 (서비스 timeout·종료로 팔이 검증 없이 풀리는 경로가 없다)
+- RT loop 가 래치가 내려간 tick 을 세고 창을 채우면 **RT 가** 토큰을 CAS 로 내린다. 래치가 다시 서거나 토큰이 바뀌면 처음부터 센다. 서비스는 토큰을 내리지 않는다 — deadline 을 넘긴 응답 (`the latch is DOWN … but unverified`) 뒤에도 hold 는 RT 가 창을 돌 때까지 유지된다 (서비스 timeout·종료로 팔이 검증 없이 풀리는 경로가 없다). 창은 lifecycle 전이가 비워도 사라지므로 서비스는 "사라짐" 을 검증으로 읽지 않는다 (#608): RT loop 가 끝까지 돈 창의 토큰을 `estop_verified_token_` 에 남기고, 서비스는 그것이 자기 토큰일 때만 `ok=true` 로 답한다 — 아니면 `the latch is DOWN … but not verified`
 - 치환 조건 = 래치 ∨ 토큰. `IsGlobalEstopped()` 의 의미는 그대로라 "clear 직후 래치 down" (#299) 은 변하지 않는다. 창 동안의 치환은 `EstopVerifyHeldOutputCount` 로 따로 센다
 - `/system/estop_status` 보고값 = 래치 ∨ 토큰 — 거부된 해제는 false 를 내지 않고, 검증된 해제는 컨트롤러 출력이 실제로 다시 나가는 tick 에 false 를 낸다 (RT 가 창을 닫으며 발행 플래그를 세운다)
 - 창 동안 `/rtc_cm/switch_controller` 는 거부된다 (`E-STOP active (clear still being verified)`) — 밖에서 보면 아직 E-STOP 이다
