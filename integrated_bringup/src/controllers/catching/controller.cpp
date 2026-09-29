@@ -2499,6 +2499,14 @@ void DemoCatchingController::PublishTickRecord(const ControllerState& state) noe
   tick_record_.law_enabled = clik_enabled_;
   tick_record_.wait_pose_adopted = wait_pose_adopted_;
   tick_record_.wait_pose_adopt_seq = wait_pose_adopt_seq_;
+  // Only with the positions readable: a closed gate is ReportGateClosure's to
+  // say, and it silences the axis whatever the velocity lane holds.
+  tick_record_.arm_velocity_unreadable =
+      arm_readable_ && !rtc::IsLaneReadable(state.devices[kCatchingArmDeviceIdx],
+                                            rtc::StateLane::kVelocity, arm_dof_);
+  tick_record_.hand_velocity_unreadable =
+      hand_readable_ && !rtc::IsLaneReadable(state.devices[kCatchingHandDeviceIdx],
+                                             rtc::StateLane::kVelocity, hand_dof_);
   tick_record_.wait_pose_refuse_seq = wait_pose_refuse_seq_;
   tick_record_.wait_pose_refuse_reason = wait_pose_refuse_reason_;
   tick_record_.wait_pose_refuse_joint = wait_pose_refuse_joint_;
@@ -2692,6 +2700,31 @@ void DemoCatchingController::PublishNonRtSnapshot(const rtc::PublishSnapshot& sn
                 "arming homes the arm to it",
                 why, tick.wait_pose_refuse_joint, tick.wait_pose_refuse_value);
   }
+  // #537 pre-S10 R3: a velocity lane with a hole blocks ARMED (and more)
+  // without any transition to show for it — one WARN when it starts, one INFO
+  // when it ends, per axis.
+  const auto report_velocity_lane = [this](bool unreadable, bool& logged, const char* axis,
+                                           const char* blocked) {
+    if (unreadable == logged) {
+      return;
+    }
+    logged = unreadable;
+    if (unreadable) {
+      RCLCPP_WARN(logger_,
+                  "%s velocity lane UNREADABLE (positions are readable): a velocity nobody "
+                  "vouches for is not a velocity at rest, so %s while it lasts. The state message "
+                  "must carry a velocity for every joint of the group",
+                  axis, blocked);
+    } else {
+      RCLCPP_INFO(logger_, "%s velocity lane readable again", axis);
+    }
+  };
+  report_velocity_lane(tick.arm_velocity_unreadable, arm_velocity_unreadable_logged_, "arm",
+                       "the controller does not enter ARMED, homing and the RETREAT return do "
+                       "not arrive (the return then ends at its deadline), a switched-in wait "
+                       "pose is not adopted and a fault reset is refused");
+  report_velocity_lane(tick.hand_velocity_unreadable, hand_velocity_unreadable_logged_, "hand",
+                       "the hand is not settled at q_pre and the controller does not enter ARMED");
   // #537 S9b: one WARN per fault latch, naming the cause — the transition that
   // follows is ABORT_ESCALATED whatever raised it, so this line (and the CSV's
   // `fault_cause`) is where the operator learns which.

@@ -3250,6 +3250,77 @@ TEST_F(SupervisorScenarioTest, ArmingWhileTheArmVelocityIsUnreadableRefusesTheSw
   }
 }
 
+// The operator's only sign of the above: nothing transitions, so the publish
+// thread says it — once when the lane closes, once when it opens.
+class VelocityLaneReportTest : public SupervisorScenarioTest {
+ protected:
+  void SetUp() override {
+    SupervisorScenarioTest::SetUp();
+    LogSink::Install();
+  }
+
+  void TearDown() override {
+    LogSink::Restore();
+    SupervisorScenarioTest::TearDown();
+  }
+
+  /// Ticks, then one pass of the publish thread's body.
+  void TicksThenPublish(int n) {
+    Ticks(n);
+    ctrl_->PublishNonRtSnapshot(rtc::PublishSnapshot{});
+  }
+
+  static std::size_t Warned(const char* axis) {
+    return LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN,
+                             {std::string(axis) + " velocity lane UNREADABLE"})
+        .size();
+  }
+};
+
+TEST_F(VelocityLaneReportTest, AnUnreadableVelocityLaneIsWarnedOncePerAxisAndPerEpisode) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  LogSink::Clear();
+  // Negative control: readable lanes say nothing.
+  TicksThenPublish(3);
+  EXPECT_EQ(Warned("arm"), 0U);
+  EXPECT_EQ(Warned("hand"), 0U);
+
+  state_.devices[0].velocity_hole_mask = 1ULL << 4;
+  TicksThenPublish(2);
+  TicksThenPublish(2);
+  EXPECT_EQ(Warned("arm"), 1U) << "one WARN per episode, not per publish";
+  EXPECT_EQ(Warned("hand"), 0U);
+  EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN,
+                                 {"arm velocity lane UNREADABLE", "ARMED", "fault reset"})
+                   .empty())
+      << "the line must say what the hole blocks";
+
+  state_.devices[0].velocity_hole_mask = 0;
+  state_.devices[1].velocity_hole_mask = 1;
+  TicksThenPublish(2);
+  EXPECT_EQ(Warned("hand"), 1U);
+  EXPECT_FALSE(
+      LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"arm velocity lane readable again"}).empty());
+
+  // A second episode on the arm is a second WARN.
+  state_.devices[0].velocity_hole_mask = 1;
+  TicksThenPublish(2);
+  EXPECT_EQ(Warned("arm"), 2U);
+}
+
+TEST_F(VelocityLaneReportTest, AClosedPositionGateIsNotReportedAsAVelocityHole) {
+  // The gate's own diagnostic owns that case; two lines for one cause would
+  // send the operator after the wrong lane.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+  publishing_ = false;
+  LogSink::Clear();
+  state_.devices[0].valid = false;
+  state_.devices[0].velocity_hole_mask = 1;
+  TicksThenPublish(3);
+  EXPECT_EQ(Warned("arm"), 0U);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

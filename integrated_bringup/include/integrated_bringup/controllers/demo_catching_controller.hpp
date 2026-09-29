@@ -1396,6 +1396,10 @@ class DemoCatchingController final : public RTControllerInterface {
   std::uint32_t wait_pose_logged_seq_{0};
   /// Publish-thread (non-RT) memory of the last refusal it warned about.
   std::uint32_t wait_pose_refuse_logged_seq_{0};
+  /// Publish-thread (non-RT) memory of whether each axis's unreadable velocity
+  /// lane has been reported (#537 pre-S10 R3): the WARN is on the edge.
+  bool arm_velocity_unreadable_logged_{false};
+  bool hand_velocity_unreadable_logged_{false};
   /// Publish-thread (non-RT) memory of the last fault latch / refused fault
   /// reset it warned about (#537 S9b).
   std::uint32_t fault_latch_logged_seq_{0};
