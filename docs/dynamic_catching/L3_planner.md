@@ -129,10 +129,10 @@ $N=I-J^\dagger J$ 는 **`DifferentialIk` 가 계속 만든다** — 영공간 �
 
 $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LWA}\\ S\,J^{L}_\omega\end{bmatrix}_{\text{팔 관절 열}}\in\mathbb R^{5\times n_{arm}}$$
 
-를 재고, 게이트 정의(`planner.catchability.definition`, 기본 `arm_5row`)의 값이 그 정의의 threshold (`planner.catchability.manipulability_min.arm_5row` = 0.1, provisional) 미만이면 후보를 사유 코드와 함께 탈락시킨다. 검증용으로 $w_6=\sqrt{\det(J_6J_6^\top)}$ (팔 열 6×6, roll 포함) 도 함께 계산·기록한다 (C-3, plan §11). 모든 후보가 탈락하면 plan 없음(포기)이다. 정의 세부 (plan §11):
+를 재고, 게이트 정의(`planner.catchability.definition`, 기본 `arm_5row`)의 값이 그 정의의 threshold (`planner.catchability.manipulability_min.arm_5row` — 출하값은 로봇별: ur5e_p1b 0.1 · iiwa7_leap 0.174, 둘 다 provisional) 미만이면 후보를 사유 코드와 함께 탈락시킨다. 검증용으로 $w_6=\sqrt{\det(J_6J_6^\top)}$ (팔 열 6×6, roll 포함) 도 함께 계산·기록한다 (C-3, plan §11). 모든 후보가 탈락하면 plan 없음(포기)이다. 정의 세부 (plan §11):
 
 - 손바닥 법선 둘레 roll 은 포구에 무관해 행에서 뺀다. 손 관절은 손바닥 frame 에 영향이 없다 (P1b 손바닥은 폐쇄 루프 상류)
-- m 와 rad 가 섞인 값이라 threshold 0.1 은 **이 정의에 대한 값**이다. 정의를 바꾸면 다시 맞춘다
+- m 와 rad 가 섞인 값이라 threshold 는 **이 정의에 대한 값**이다. 정의를 바꾸면 다시 맞춘다
 - 이 게이트는 도달시간·γ 창·정지거리 게이트에 **추가되는 AND 조건**이다. manipulability 만으로 시간 안 도달은 보장되지 않는다
 
 **fail-closed 수치 규칙 (NUM-7, NUM-1, plan §11).** $w_5$·$w_6$ 는 고정 크기 분해(사전 할당 LDLT 의 대각 곱, 또는 고정 크기 `JacobiSVD` 의 특이값 곱·log 곱)로 계산한다 — 계획기 스레드가 FIFO 라 RT-1 이 걸리므로 동적 크기 `JacobiSVD<MatrixXd>` (할당 발생) 는 쓸 수 없다. 판정은 `det > 0` 이 아니라 분해 도중의 모든 중간값이 `isfinite` 이고 `w ≥ threshold` 인지로 한다 — 특이 근처에서 반올림으로 det 가 음수가 되거나 NaN 이 나오면 탈락이다. **기존 `ClikReferenceGenerator::Manipulability` (팔 6×6 damped) 는 게이트로 재사용하지 않는다** — roll 을 포함해 같은 값이 아닐 뿐 아니라, damped(μ² > 0) 라 특이 자세에서도 $w>0$ 을 내고 `det > 0.0` 검사가 NaN 을 0 으로 세탁한다. 진단 로그에는 둘 다 남긴다.
@@ -475,7 +475,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.ik.eps_pos` | double | m | 0.002 | – | 수락 |
 | `planner.ik.alpha_max` | double | rad | **0.26 (provisional)** | 0–π/2 | 손 형상 허용 콘 ($\theta\le\alpha_{\max}$). 2026-09-21: `TBD` 로 적혀 있었으나 코드에는 provisional 기본값 0.26 rad (≈15°) 가 살아 있었다 — `ParseCatchPoseIkParams` 신설 때 드러난 불일치이고, 값은 코드 쪽으로 맞췄다. 닫는 근거는 S3.5a 지도의 `theta` 분포 (이 콘이 실제로 구속하는지) 다 |
 | `planner.ik.manip_min` | – | – | – | – | v0.5 에서 삭제 — `planner.catchability.manipulability_min` 이 대체 (§4.5) |
-| `planner.catchability.manipulability_min.arm_5row` / `.arm_6row` | double | – | 0.1 (**provisional**) / TBD | ≥0 | §4.2 D-18 정의별 하한 (차원이 달라 따로 둔다, C-3). `arm_6row` 값은 S3.5a/b 지도 결과로 제안. 사용자가 sim 에서 자세 확인 후 갱신. provisional 이면 실기 구성 arm 차단 (L0 §5.3). S3.5a/b 지도 도구와 **같은 키** |
+| `planner.catchability.manipulability_min.arm_5row` / `.arm_6row` | double | – | ur5e_p1b 0.1 · iiwa7_leap 0.174 (**provisional**) / TBD | ≥0 | §4.2 D-18 정의별 하한 (차원이 달라 따로 둔다, C-3). `arm_6row` 값은 S3.5a/b 지도 결과로 제안. 사용자가 sim 에서 자세 확인 후 갱신. provisional 이면 실기 구성 arm 차단 (L0 §5.3). S3.5a/b 지도 도구와 **같은 키** |
 | `planner.catchability.definition` | string | – | `"arm_5row"` | `arm_5row` \| `arm_6row` | §4.2 게이트에 쓸 정의. w₅·w₆ 는 정의와 무관하게 둘 다 기록 |
 | `planner.time.margin` | double | s | 0.03 | 0–0.2 | §4.3 |
 | `planner.unc.kappa_sigma` | double | – | 0.3 | 0.05–1 | §4.4 |

@@ -291,7 +291,7 @@ catching:
 **새 키 (plan 이 SSoT).**
 
 - catch frame `[확정 D-17]`: 로봇 config 의 `extra_frames`(이름·부모·`xyz`·`rpy`·`provisional`)를 `rtc_urdf_bridge` 모델 빌더가 Pinocchio 모델에 추가하고, 포구 YAML 은 frame 이름만 참조한다(`catch_frame`). 스키마·초기값 산출: plan §10
-- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(0.1 provisional / TBD), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3), `sim.throw_region.*`(발사 영역·속도·앙각 — 제안 스키마, **YAML 키로는 만들어지지 않았다**: S8 동결 분포는 러너 인자, plan §11 ⚠️·D-S8-2). 정의·스키마: plan §11. S3.5a/b 지도 도구와 S6.2 계획기가 **같은 키**를 쓴다
+- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(ur5e_p1b 0.1 · iiwa7_leap 0.174 provisional / TBD), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3), `sim.throw_region.*`(발사 영역·속도·앙각 — 제안 스키마, **YAML 키로는 만들어지지 않았다**: S8 동결 분포는 러너 인자, plan §11 ⚠️·D-S8-2). 정의·스키마: plan §11. S3.5a/b 지도 도구와 S6.2 계획기가 **같은 키**를 쓴다
 - 관절 가속 한계 `[확정 D-16]`: 토크 한계에서 도출한 보수적 상수 box 를 provenance(표본 범위·η_τ·모델 버전·일자)와 함께 YAML 로 출력한다(S2.5, plan §9). 기존 `max_acceleration`(5.0 rad/s², placeholder)은 쓰지 않는다. 키 이름은 S2.5 에서 정한다
 
 **TBD 검사는 "현재 활성 구성이 참조하는 키"에만 적용한다 `[권장]`.** 전체 키에 걸면 절대 `ARMED` 가 되지 않는다 — 실기에서 `sim.*` 가 영구히 TBD로 남기 때문이다. L0 검증기는 launch 구성(실기/시뮬, `lead_enable`)에 따라 검사 대상 집합을 정한다. `provisional: true` 인 값(D-12 사용자 값, catch frame)은 실기 arm 을 막는다(D-12, D-17).
@@ -386,7 +386,7 @@ catching:
 |---|---|---|---|
 | TBD-FRAME-01 | 두 로봇의 catch frame 이름, 손바닥 바깥 법선 축 | L3, L4, L5 | **→ D-17** — 부모·offset·자세를 YAML 로 열고 접근축은 catch frame +z. 후보 p1b `l_palm_link` +z, iiwa7_leap `palm_lower` −z(D-10). 값은 provisional, S2.3a/b 제안 후 사용자 sim 확인 |
 | TBD-BALL-01 | 공 지름·질량·재질(반발) | L0, L3 | 사용자 제공 (D-12). sim tennis preset(r 0.025 m, m 0.05 kg)은 임시값일 뿐 |
-| TBD-BALL-02 | 투척 속도·거리 범위, 포구 허용 작업공간 | L3, L8 | **→ D-18** — catchability 판정으로 정한다. 발사 영역은 base 수평 거리 4 m 원호, world z 1.5–2.0 m, 비행시간 T_f ≥ 1.0 s. 속도·앙각·방위 범위는 S3.5a/b 지도 결과, threshold 0.1 provisional |
+| TBD-BALL-02 | 투척 속도·거리 범위, 포구 허용 작업공간 | L3, L8 | **→ D-18** — catchability 판정으로 정한다. 발사 영역은 base 수평 거리 4 m 원호, world z 1.5–2.0 m, 비행시간 T_f ≥ 1.0 s. 속도·앙각·방위 범위는 S3.5a/b 지도 결과, threshold 는 로봇별 (ur5e_p1b 0.1 · iiwa7_leap 0.174, 둘 다 provisional) |
 | TBD-HAND-01 | P1b `T_close` | L3, L6 | S4 식별 도구(sim) + S4.3 실기 $T_{close,tot}$ `[HW-P1B]` |
 | TBD-HAND-02 | P1b 명령 경로(메시지·노드)와 `T_link` | L6 | 닫힘 — 손 device slot → `udp_hand_native` → `/p1b/joint_command` → `udp_hand_node`(250 Hz). 명령 stamp 미사용이라 $T_{link}$ 대신 종단 간 $T_{close,tot}$ 를 잰다 (W, D-11) |
 | TBD-HAND-03 | 지문 센서 인터페이스·주기·부호·frame | L6, L7 | 인터페이스·주기·부호 닫힘 — 실기 `HandSensorState` 250 Hz finger-on-object, sim `WrenchStamped` 도 finger-on-object (0fcc1d23). S7.3 판정은 ‖F − b‖ 크기만 써 부호·frame 무관 — 남은 것은 실기 잡음 (L6 §10) |

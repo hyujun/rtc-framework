@@ -183,4 +183,4 @@ v0.3에서 자체 메시지 패키지를 폐기했다. 입력은 vision의 `sens
 
 ## 10. 미확정 항목
 
-TBD-BALL-01 (D-12 값 대기), `kCap` 제안값 (S0.7 → S1.2), 공분산 버퍼 전달 수단 (S5.2/S6), fixture 사용 여부 (S3.5a). 런타임 `n_max` 는 S3.6 이 21 로 닫았다 (provisional). TBD-SIM-02·TBD-WS-02·TBD-RTC-01~03 은 닫힘 (§2).
+TBD-BALL-01 (D-12 값 대기), `kCap` 제안값 (S0.7 → S1.2), 공분산 버퍼 전달 수단 (S5.2/S6), fixture 사용 여부 (S3.5a). 런타임 점 수 요구는 S3.6 이 20 으로 닫았다 (provisional; 구현은 `n_max` 키 없이 상한을 `kCap` 으로 둔다 — L2). TBD-SIM-02·TBD-WS-02·TBD-RTC-01~03 은 닫힘 (§2).

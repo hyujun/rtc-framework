@@ -136,12 +136,12 @@ ball_perception 이 주는 $a$ 는 profile 에 달렸다 (G2-3). 항력 절이 �
 
 v0.5 에서 코드 복사본(v0.2 그대로였음)을 삭제했다. 참조 구현 `traj_sampler.hpp` (v0.4 — `before_horizon`/`after_horizon` 분리, `track_epoch` 필드) 는 S1.2 에서 `rtc_controllers/include/rtc_controllers/catching/traj_sampler.hpp` (+ 궤적 타입 `trajectory.hpp`) 로 이식됐고 (지금의 SSoT), 원본은 (삭제됨 — [README](README.md#삭제된-참조-구현)). 이식 시 변경:
 
-- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `check`·`sampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). 런타임 상한 `n_max` (S3.6 이 20 으로 정했다, ≤ `kCap`) 로 더 좁혀 검사한다
+- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `check`·`sampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). S3.6 이 정한 점 수는 20 (≤ `kCap`) 이다. 구현 (S5.2) 은 `n_max` 키를 두지 않고 런타임 상한을 `kCap` 으로 둔다 — 20 점은 vision profile 의 속성이라, profile 이 바뀌면 거부가 아니라 진단의 점 수로 드러난다
 - **NaN 거부.** NaN 시각·값은 `check` 에서 거부, `sampleAt(NaN)` 은 invalid 를 반환한다(참조 구현은 valid 반환)
 - **`dt_min` 거부.** 최소 샘플 간격 미만 구간은 경고가 아니라 거부한다 — `interpolate` 가 극소 $h$ 를 받아 $1/h^2$ 로 폭주하는 것을 막는다
 - **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — `Sample` 의 `Eigen::Vector3d` 멤버를 `std::array<double, 3>` 으로 바꾸고, 계산은 `Eigen::Map` 으로 한다(L0 §5.2, plan §6). `static_assert(std::is_trivially_copyable_v<…>)`
 - **시간 타입.** 샘플 시각은 `BallTime`(절대 steady ns), 샘플링 인자는 `NowLead` (L0 §4.5). 스냅샷 필드: `generation`·`snapshot_sequence` (uint64, `track_epoch`·`seq` 대체), `recv_steady_ns`, `n`, `valid`
-- **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kCap` 은 이 타입이 단독 소유하고(L0 의 중복 상수·`static_assert` 짝맞춤 삭제), 값은 40 (S0.7 제안, 2026-09-19 결정, provisional) 으로 S1.2 가 구현한다. 런타임 상한 `n_max` 는 S3.6 이 **21** 로 정했고 (≤ `kCap`, backfill PASS — plan §4.4 S3.6 결과)
+- **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kCap` 은 이 타입이 단독 소유하고(L0 의 중복 상수·`static_assert` 짝맞춤 삭제), 값은 40 (S0.7 제안, 2026-09-19 결정, provisional) 으로 S1.2 가 구현한다. 런타임 점 수 요구는 S3.6 이 **20** 으로 정했고 (≤ `kCap`, backfill PASS — plan §4.4 S3.6 결과)
 - **명명.** namespace `rtc::catching`, 함수 PascalCase (`hermite5`/`interpolate`/`extrapolate`/`sampleAt`/`check` → `Hermite5`/`Interpolate`/`Extrapolate`/`SampleAt`/`Check`)
 
 RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleAt()`은 hint 커서로 평균 $O(1)$ 이고, 커서가 어긋나면 이진 탐색으로 복구한다($O(\log N)$ 상한).
@@ -153,7 +153,7 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 - `hint_`는 컨트롤러 멤버로 유지하고, **`snapshot_sequence` 가 바뀌면 0으로 초기화**한다. 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다.
 - `Interpolate()` 가 `valid=false` 를 돌려주면(비단조 샘플 쌍 등) 그 틱은 invalid 로 처리한다.
 
-**스냅샷 복사 비용.** 스냅샷은 `kCap` 고정이라 실제 $n$ 과 무관하게 전체를 **매 tick** 복사한다 — `SeqLock::sequence()` 로 새 메시지 도착 tick 에만 복사를 한정하는 최적화는 D-21 이 금지한다(payload 안 token 으로만 새 스냅샷을 판정). 점당 시각 + 9 double ≈ 80 B, 512 샘플이면 약 41 KB. `rtc::SeqLock::Load` 는 재시도 상한이 없으므로(L1 G1-8) 복사 시간이 곧 writer 와의 경합 창이며, 최악 재시도 시간은 G1-C 로 측정한다. 유일한 대응은 `kCap` 을 S3.6 요구 $N$ 상한 (`n_max` = 21) 에 여유를 둔 값으로 줄이는 것이다 (S0.7 제안 `kCap` 40 이면 약 3.2 KB, 권장 profile 은 21 점).
+**스냅샷 복사 비용.** 스냅샷은 `kCap` 고정이라 실제 $n$ 과 무관하게 전체를 **매 tick** 복사한다 — `SeqLock::sequence()` 로 새 메시지 도착 tick 에만 복사를 한정하는 최적화는 D-21 이 금지한다(payload 안 token 으로만 새 스냅샷을 판정). 점당 시각 + 9 double ≈ 80 B, 512 샘플이면 약 41 KB. `rtc::SeqLock::Load` 는 재시도 상한이 없으므로(L1 G1-8) 복사 시간이 곧 writer 와의 경합 창이며, 최악 재시도 시간은 G1-C 로 측정한다. 유일한 대응은 `kCap` 을 S3.6 요구 $N$ 상한 (20 점) 에 여유를 둔 값으로 줄이는 것이다 (S0.7 제안 `kCap` 40 이면 약 3.2 KB, 설정 profile 은 20 점).
 
 ## 6. YAML 파라미터
 
@@ -203,4 +203,4 @@ v0.2의 `prediction.rt.*`, `prediction.rollout.*`, `q_acc`, `q_k`는 전부 삭�
 
 ## 10. 미확정 항목
 
-TBD-WS-01 (닫는 단계 미지정), `kCap` 제안값 (S0.7 → S1.2), `prediction.dt_min` (S1.2), `prediction.lead` 의 $T_{arm}$ (S10). 런타임 `n_max` 20·`prediction.dt_expected` 0.05 s·`io.n_min` 11 은 S3.6 이 provisional 로 정했다 (§6, L1 §6, plan §4.4 S3.6 결과) — `n_max` 는 T_det 재실측 (2026-09-22, 공 lane stamp 수정 후) 을 이미 반영했고, `io.n_min` 은 L 이 정해지는 S5–S6 후 재검.
+TBD-WS-01 (닫는 단계 미지정), `kCap` 제안값 (S0.7 → S1.2), `prediction.dt_min` (S1.2), `prediction.lead` 의 $T_{arm}$ (S10). 런타임 `n_max` 20·`prediction.dt_expected` 0.05 s·`io.n_min` 12 (S3.6 산식의 11 을 S5.2 가 정정) 는 S3.6 이 provisional 로 정했다 (§6, L1 §6, plan §4.4 S3.6 결과) — `n_max` 는 T_det 재실측 (2026-09-22, 공 lane stamp 수정 후) 을 이미 반영했고, `io.n_min` 은 L 이 정해지는 S5–S6 후 재검.
