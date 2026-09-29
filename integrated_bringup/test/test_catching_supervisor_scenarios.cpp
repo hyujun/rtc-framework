@@ -3122,6 +3122,23 @@ TEST_F(SafetyGateParkTest, AProvisionalAccelerationBoxParksTheRealArm) {
       {"derived_accel_limits.ur5e.provisional", AccelLimitsCopy(AccelBoxFlag::kProvisional)});
 }
 
+TEST_F(SafetyGateParkTest, AReconfigureWithoutABoxDoesNotKeepTheLastOnes) {
+  // #609: the box DATA was cleared per configure, its PATH was not — so a
+  // profile that names no box silently ran on the one the last configure
+  // named. No box is a supervisor park (nothing to ramp within).
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kCleared), /*sim=*/false));
+  ASSERT_FALSE(ctrl_->IsSimOnlyDisabled()) << "precondition: the first profile activates";
+  ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
+  yaml["catching"]["robot"]["arm"].remove("accel_limits_path");
+  ASSERT_EQ(ctrl_->on_configure(prev_, node_, yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl_->IsSimOnlyDisabled()) << "ran on the box of a profile it no longer has";
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kSupervisorUnset);
+  EXPECT_NE(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
 TEST_F(SafetyGateParkTest, AnAccelerationBoxWithoutTheFlagIsProvisional) {
   // Fail-closed: a file that does not say is not a file that was cleared.
   ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kAbsent), /*sim=*/false));

@@ -141,6 +141,13 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── robot.arm / catch_frame / oracle: the binding-level keys ────────────
+  // Reset like the io keys above (#609): a profile that names no box must not
+  // inherit the path the last configure named — that reads as "box present"
+  // where the profile says there is none.
+  accel_limits_package_ = "integrated_bringup";
+  accel_limits_path_.clear();
+  accel_limits_group_.clear();
+  catch_frame_name_ = "catch_frame";
   if (catching_section_present_) {
     if (const YAML::Node frame = catching["catch_frame"]; frame) {
       catch_frame_name_ = frame.as<std::string>();

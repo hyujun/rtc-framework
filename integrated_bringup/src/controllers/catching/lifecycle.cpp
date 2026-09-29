@@ -263,7 +263,9 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("supervisor.deadline.return_s", params_.supervisor_deadline_return_s.value,
           "D-S9-D1 motion deadline for RETREAT's return to the wait pose [s]");
   declare("robot.arm.accel_limits_path", accel_limits_path_,
-          "the profile's package-relative D-16 box file (robot.arm.accel_limits_path)");
+          "the profile's D-16 box file (robot.arm.accel_limits_path): absolute, or relative to "
+          "the share directory of robot.arm.accel_limits_package. As of the FIRST configure "
+          "of this node — read_only mirrors cannot follow a re-configure");
 }
 
 void DemoCatchingController::DeclareArmParameter() {
