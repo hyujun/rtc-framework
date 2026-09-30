@@ -832,6 +832,111 @@ TEST_F(SupervisorScenarioRealClockTest, NormalTrialIsCapturedAndReArms) {
   NormalTrialCase();
 }
 
+// ── MPC E1-F04 step 0: which reference instant the v1 command carries ───────
+
+/// FNV-1a over every tick's mode and the arm / hand commands it wrote — the
+/// digest a behaviour-preserving refactor must leave unchanged (recorded, and
+/// compared by hand across the refactor's commits).
+std::uint64_t CommandTraceDigest(const std::vector<TickRec>& log) {
+  std::uint64_t h = 1469598103934665603ULL;
+  const auto mix = [&h](const void* p, std::size_t n) {
+    const auto* b = static_cast<const unsigned char*>(p);
+    for (std::size_t i = 0; i < n; ++i) {
+      h ^= b[i];
+      h *= 1099511628211ULL;
+    }
+  };
+  for (const auto& r : log) {
+    const auto mode = static_cast<std::uint8_t>(r.mode);
+    mix(&mode, sizeof(mode));
+    if (r.q_out_valid) {
+      mix(r.q_out.data(), sizeof(r.q_out));
+    }
+    mix(r.qd_cmd.data(), sizeof(r.qd_cmd));
+    if (r.hand_out_valid) {
+      mix(r.hand_out.data(), sizeof(r.hand_out));
+    }
+  }
+  return h;
+}
+
+TEST_F(SupervisorScenarioTest, TheNormalTrialCommandTraceHasARecordedDigest) {
+  // Not a claim about the values: the number a refactor of the law tick is
+  // compared against, commit to commit (MPC E1-F04, "기본값 동등 (b)"). The
+  // trace is deterministic on the fake clock — γ = 0 keeps the ball's wall
+  // stamps out of the reference.
+  ASSERT_NO_FATAL_FAILURE(NormalTrialCase());
+  std::ostringstream hex;
+  hex << std::hex << CommandTraceDigest(log_);
+  RecordProperty("normal_trial_command_digest", hex.str());
+  std::printf("[ MEASURED ] normal_trial_command_digest %s\n", hex.str().c_str());
+}
+
+TEST_F(SupervisorScenarioTest, TheV1CommandsTimeOffsetFromItsReferenceIsMeasured) {
+  // MD-40, recorded rather than judged. The reference's output on tick n is
+  // the reference for t_n + h; this measures which instant of it the command
+  // leaving tick n sits at, along the reference velocity:
+  //   label_n = h + (FK(q_n) − x(t_n + h))·ẋ / |ẋ|².
+  // A first-order model of the CLIK (fixed point 2h) does not describe it:
+  // the error starts at 0 when the reference is seeded at the arm, needs
+  // 1/(hK_p) = 25 ticks to settle, and the posture row (w_arm · K_a) pulls the
+  // task back by more than hẋ on this approach. The decel convention does not
+  // rest on this number — while the RT follows a segment every target comes
+  // from q_ref(s), so the command is q_ref(s + h) by construction, and that is
+  // what the MPC follow scenarios assert. Under the shipped torque rows: the
+  // fixture's derived box (2.03 rad/s²) binds on this approach and the arm
+  // then lags by ẋ/K_p, which would measure the box.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [](YAML::Node& y) {
+    y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
+  }));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kHold, 1500)) << Transitions();
+
+  constexpr double h = kDt;
+  const int a = Entry(Mode::kApproach);
+  const int d = Entry(Mode::kDecel);
+  ASSERT_GT(a, 0);
+  ASSERT_GT(d, a);
+  std::array<double, 64> q{};
+  std::vector<double> labels;
+  double peak_speed = 0.0;
+  double peak_label = 0.0;
+  for (int n = a; n < d; ++n) {
+    const auto& r = log_[static_cast<std::size_t>(n)];
+    if (!(r.q_out_valid && r.body.ref_valid)) {
+      continue;
+    }
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      q[static_cast<std::size_t>(i)] = r.q_out[static_cast<std::size_t>(i)];
+    }
+    const Eigen::Vector3d fk = oracle_->PoseAt(arm_names_, q, kUr5eArmDof).translation();
+    const Eigen::Vector3d x(r.body.ref_x[0], r.body.ref_x[1], r.body.ref_x[2]);  // x(t_n + h)
+    const Eigen::Vector3d v(r.body.ref_xd[0], r.body.ref_xd[1], r.body.ref_xd[2]);
+    const double speed = v.norm();
+    if (speed < 0.02) {
+      continue;
+    }
+    const double label = h + (fk - x).dot(v) / (speed * speed);
+    labels.push_back(label);
+    if (speed > peak_speed) {
+      peak_speed = speed;
+      peak_label = label;
+    }
+  }
+  ASSERT_GT(labels.size(), 20U) << "too few moving ticks to measure on";
+  std::sort(labels.begin(), labels.end());
+  std::ostringstream os;
+  os.precision(3);
+  os << "at peak speed " << peak_label / h << " h (|x_dot| " << peak_speed << " m/s), range ["
+     << labels.front() / h << ", " << labels.back() / h << "] h, median "
+     << labels[labels.size() / 2] / h << " h over " << labels.size() << " ticks";
+  RecordProperty("v1_command_time_label", os.str());
+  std::printf("[ MEASURED ] v1 command time label: %s\n", os.str().c_str());
+  EXPECT_TRUE(std::isfinite(peak_label)) << os.str();
+}
+
 TEST_F(SupervisorScenarioTest, ActivatedOutsideTheWaitPoseHomesThenArms) {
   std::array<double, kUr5eArmDof> off = kUr5eHome;
   off[0] += 0.06;  // ≈ 3.4°
