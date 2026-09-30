@@ -118,20 +118,22 @@ Suite 고유의 poll 예산이 있으면 헬퍼를 감싸지 말고 **인자로 
 - **production 처럼 주기적으로 drain 한다** — 드라이버 헬퍼가 N tick 마다 `log_set.DrainAll()` 을 부르게 한다. 끝에서 한 번만 부르는 것은 512행짜리 관측 창을 쓰겠다는 뜻이다.
 - **행 수 단언 옆에 `EXPECT_EQ(log_set.TotalDropCount(), 0U)` 를 둔다** — 이것이 "잘렸다" 와 "push 가 애초에 안 됐다" 를 가르는 유일한 신호다. 없으면 나중에 Capacity 가 바뀌거나 프로그램이 길어질 때 같은 실패가 다시 값 불일치로 위장한다. `DrainControllerLogs` 는 drop 을 WARN 으로 알리지만 **테스트가 직접 부르는 `DrainAll()` 은 아무 말도 하지 않는다.**
 
-## RT-1 zero-allocation 게이트 — 두 종류이고 서로의 맹점을 덮는다
+## RT-1 zero-allocation 게이트 — 세 종류이고 서로의 맹점을 덮는다
 
-RT tick 이 heap 을 안 만진다는 주장(RT-1)을 재는 sensor 는 **두 개**이고, 어느 것을 쓸지는 취향이 아니라 두 질문으로 결정된다: **(a) 측정 대상이 Eigen 을 쓰는가, (b) 측정 대상 코드가 테스트와 같은 TU 에 인스턴스화되는가.**
+RT tick 이 heap 을 안 만진다는 주장(RT-1)을 재는 sensor 는 **세 개**이고, 어느 것을 쓸지는 취향이 아니라 두 질문으로 결정된다: **(a) 측정 대상이 Eigen 을 쓰는가, (b) 측정 대상 코드가 테스트와 같은 TU 에 인스턴스화되는가.**
 
 | 게이트 | 보는 것 | 못 보는 것 |
 |---|---|---|
 | `rtc::testing::ScopedAllocGate` (`rtc_controllers/test/include/rtc_controllers/testing/alloc_gate.hpp`) — 전역 `operator new` 교체 | `operator new` 를 타는 모든 할당 (`std::vector`, header-inline helper, 다른 TU 포함) | **Eigen 할당 전부** — `internal::aligned_malloc` 이 `std::malloc` 을 직접 부르고 `operator new` 를 타지 않는다. **그리고 C 라이브러리 `malloc` 전부** — `libddsc` 의 `ddsrt_malloc` 처럼 C 코드가 부르는 할당은 `operator new` 를 안 타므로 이 게이트에 안 잡힌다 (#222 가 이 구멍에서 tick 당 156 B 를 찾았다; 재려면 그 이슈 부록의 `LD_PRELOAD` interposer) |
 | `rtc::testing::ScopedNoMalloc` (`rtc_base/test/include/rtc_base/testing/no_malloc_scope.hpp`) — `eigen_assert` + `EIGEN_RUNTIME_NO_MALLOC` | Eigen 동적 할당 (Release 에서도 유효) | non-Eigen heap; **그리고 다른 TU 의 Eigen** — 이 매크로는 정의된 TU 안의 Eigen inline 만 계측한다 |
+| `rtc::testing::ScopedMallocGate` (`rtc_controllers/test/include/rtc_controllers/testing/malloc_gate.hpp`) — 실행 파일이 `malloc`·`calloc`·`realloc`·aligned 계열을 **정의**해 glibc `__libc_*` 로 넘기며 센다 | C 수준 할당 전부 — **공유 라이브러리 안 포함** (동적 링커가 실행 파일의 정의를 먼저 잡는다). Pinocchio `.so`, `rtc_tsid` 의 ProxQP, 다른 TU 의 Eigen, `operator new` (malloc 을 거치므로) | glibc 가 아닌 C 라이브러리 (링크 실패로 드러난다); `free` 는 세지 않는다 |
 
 따라서:
 
 - **순수 Eigen 코어 (header-inline 법칙)** → **둘 다** 무장한다. 하나만 쓰면 가장 유력한 RT-1 회귀 (인자·임시가 `Eigen::VectorXd` 같은 runtime-sized 로 퇴화) 가 green 으로 통과한다. `test_task_accel_core` / `test_task_vel_core` 가 이 형태.
 - **Eigen-free 코어** → `ScopedAllocGate` 만. Eigen 트립와이어는 여기서 진짜로 vacuous 하다 (`test_joint_pd_core`).
 - **컨트롤러 `Compute()` 처럼 라이브러리 TU 에 컴파일된 코드** → `ScopedAllocGate` 만. Eigen 트립와이어는 관측 대상이 다른 TU 라 vacuous 하다 (integrated_bringup 의 `test_task_dls_convergence` — 바인딩 `compute.cpp` 경로가 이 형태).
+- **Pinocchio · ProxQP 같은 라이브러리를 부르는 코드** → `ScopedAllocGate` + `ScopedMallocGate`. 앞의 둘만으로는 라이브러리 안의 Eigen/C 할당이 **보이지 않는다** — `test_catching_decel_mpc` 가 이 게이트로 wrapper 경유 ProxQP `update()`·`solve()` 의 호출당 할당을 처음 잡았다 (operator-new 게이트는 같은 구간에서 0). positive control 은 **라이브러리 안** 할당 (`pinocchio::Data` 생성) 이어야 한다 — 테스트 TU 의 할당은 operator-new 게이트가 이미 증명하는 것만 증명한다. 교체 `operator new` 와 한 TU 에 둘 수 있다.
 
 **게이트는 반드시 RAII 로 무장한다** — `g_alloc_active = true; … = false;` 같은 맨 대입은 측정 구역에 `ASSERT_*` 가 들어오는 순간 disarm 이 실행되지 않고, 읽는 곳이 없으므로 이후 모든 테스트가 계수되는 상태가 조용히 남는다.
 
