@@ -294,8 +294,10 @@ struct AdmittedDecel {
 
 /// Judge a decel segment the caller has already loaded (D-21: Load() every
 /// tick, unconditionally). Checks run in the enum's order; the node scan
-/// (kMalformed) is last because it is the only one that costs anything, and
-/// a caller that admits a segment runs it once per decel_seq.
+/// (kMalformed) is last because it is the only one that costs anything. A
+/// caller that admits a segment runs it once per decel_seq; one it DEFERS (a
+/// full pending slot) is judged again every tick until taken or aged — the
+/// age check ahead of the scan bounds that to max_age_ns.
 [[nodiscard]] inline DecelRefusal JudgeDecelPlan(const DecelPlanSnapshot& p,
                                                  const DecelAdmissionContext& ctx,
                                                  const AdmittedDecel& admitted) noexcept {
@@ -352,12 +354,13 @@ struct AdmittedDecel {
 }
 
 /// Which segment the RT samples this tick (the effective-instant switch
-/// rule, MD-10 · MD-32). An admitted segment is PENDING until now_lead
-/// reaches its node 0 (t0 = t_eff): before that the RT keeps sampling the
-/// segment it follows — the sampler refuses t < t0 anyway (jerk_segment.hpp).
-/// At t0 the pending one takes over; the planner built its node 0 as the
-/// state the current one reaches there, so the switch is continuous to the
-/// accuracy of that prediction.
+/// rule, MD-10 · MD-32). An admitted segment is PENDING until the tick's
+/// sample instant (now_lead + h, MD-40) reaches its node 0 (t0 = t_eff):
+/// before that the RT keeps sampling the segment it follows — the sampler
+/// refuses t < t0 anyway (jerk_segment.hpp). At t0 the pending one takes
+/// over (subject to the switch gate below); the planner built its node 0 as
+/// the state the current one reaches there, so the switch is continuous to
+/// the accuracy of that prediction.
 enum class DecelSegmentChoice : std::uint8_t {
   kNone = 0,  ///< nothing to sample yet (closed form / pre-DECEL continues)
   kCurrent,   ///< keep sampling the followed segment
@@ -367,8 +370,8 @@ enum class DecelSegmentChoice : std::uint8_t {
 [[nodiscard]] constexpr DecelSegmentChoice ChooseDecelSegment(bool current_valid,
                                                               bool pending_valid,
                                                               std::int64_t pending_t0_ns,
-                                                              std::int64_t now_lead_ns) noexcept {
-  if (pending_valid && now_lead_ns >= pending_t0_ns) {
+                                                              std::int64_t sample_ns) noexcept {
+  if (pending_valid && sample_ns >= pending_t0_ns) {
     return DecelSegmentChoice::kPending;
   }
   return current_valid ? DecelSegmentChoice::kCurrent : DecelSegmentChoice::kNone;
@@ -384,7 +387,9 @@ enum class DecelSegmentChoice : std::uint8_t {
 /// heuristic measure, recorded to be tightened on measurement.
 struct DecelSwitchVerdict {
   bool pass{false};
-  /// max_i lhs_i / d_i over the joints that have a d_i (+inf without one).
+  /// max_i lhs_i / d_i; a joint without headroom (d_i not a positive finite
+  /// number) or with a non-finite lhs_i counts as +inf, so one such joint
+  /// makes ρ +inf — it also refuses the switch.
   double rho{0.0};
   /// The first joint that refused, −1 when it passed.
   int joint{-1};

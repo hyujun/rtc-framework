@@ -160,4 +160,22 @@ bool NodeTrajectoryFollower::NodesInsideBox(const DecelPlanSnapshot& plan,
   return true;
 }
 
+bool NodeTrajectoryFollower::NodePosition(const DecelPlanSnapshot& plan, int k,
+                                          std::array<double, 3>& p) noexcept {
+  if (model_ == nullptr || plan.nv != nv_ || !ShapeOk(plan) || k < 0 || k > plan.n_nodes) {
+    return false;
+  }
+  for (int m = 0; m < nv_; ++m) {
+    const auto d = static_cast<std::size_t>(device_of_model_[static_cast<std::size_t>(m)]);
+    q_model_[m] = plan.q[static_cast<std::size_t>(k) * kMaxDecelNv + d];
+  }
+  pinocchio::forwardKinematics(*model_, data_, q_model_);
+  pinocchio::updateFramePlacement(*model_, data_, frame_);
+  const Eigen::Vector3d& fk = data_.oMf[frame_].translation();
+  for (int a = 0; a < 3; ++a) {
+    p[static_cast<std::size_t>(a)] = fk[a];
+  }
+  return true;
+}
+
 }  // namespace rtc::catching

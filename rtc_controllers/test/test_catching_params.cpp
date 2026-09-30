@@ -282,6 +282,10 @@ TEST(CatchingParams, DecelSwitchMarginMustBePositive) {
     root["supervisor"]["decel"]["switch_margin"] = YAML::Load(bad);
     ExpectRejectMentioning(root, "supervisor.decel.switch_margin");
   }
+  // The message quotes the value as written: a tiny negative is not "0.000000".
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["decel"]["switch_margin"] = YAML::Load("-1e-7");
+  ExpectRejectMentioning(root, "-1e-7");
 }
 
 TEST(CatchingParams, KinematicFormNeedsItsBoundsAndOnlyThen) {

@@ -432,6 +432,20 @@ TEST_F(NodeFollowerTest, NodesInsideBoxChecksEveryNodeInTheModelWorld) {
   NodeTrajectoryFollower unbound;
   EXPECT_FALSE(unbound.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first));
   EXPECT_EQ(first, -1);
+
+  // NodePosition: the same FK, one node; out of range or unbound leaves `x`.
+  for (int k : {0, 5, p.n_nodes}) {
+    std::array<double, 3> x{};
+    ASSERT_TRUE(follower_.NodePosition(p, k, x));
+    for (int a = 0; a < 3; ++a) {
+      EXPECT_NEAR(x[static_cast<std::size_t>(a)], pos[static_cast<std::size_t>(k)][a], 1e-12);
+    }
+  }
+  std::array<double, 3> untouched{7.0, 7.0, 7.0};
+  EXPECT_FALSE(follower_.NodePosition(p, p.n_nodes + 1, untouched));
+  EXPECT_FALSE(follower_.NodePosition(p, -1, untouched));
+  EXPECT_FALSE(unbound.NodePosition(p, 0, untouched));
+  EXPECT_EQ(untouched[0], 7.0);
 }
 
 TEST_F(NodeFollowerTest, DeviceOrderIsMappedBeforeFk) {

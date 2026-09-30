@@ -224,6 +224,12 @@ bool DecelPlanner::PredictX0(const PlannerRtState& rt, std::int64_t t_eff_ns,
   DecelMpcInput& in = inputs_[U(rec.k)];
   // The instant the reported command belongs to on the segment's axis:
   // real → lead (T_arm), then the command's own lead over the tick (MD-40).
+  // Path (ii) reads a v1 command the same way although that command sits only
+  // δ = 0.2 – 0.8 h past its tick: what has to line up is the RT's switch,
+  // which compares the command the tick starts from (the previous tick's,
+  // at t − h + δ) with the segment at t + h. Read at + L, the segment is the
+  // command's trajectory delayed by L − δ, and the two meet when L = 2h —
+  // whatever δ is. L = δ would put 2h between them.
   const std::int64_t t_rep = rt.rt_state_ns + t_arm_ns_ + report_lead_ns_;
   rec.h_s = static_cast<double>(t_eff_ns - t_rep) * 1e-9;
   // Path (i): the RT follows the planner's latest segment — evaluate it at

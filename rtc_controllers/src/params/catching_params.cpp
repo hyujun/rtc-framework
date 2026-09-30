@@ -356,7 +356,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
     if (!(std::isfinite(out.supervisor_decel_switch_margin) &&
           out.supervisor_decel_switch_margin > 0.0)) {
       Reject("'supervisor.decel.switch_margin' must be a positive number, got ",
-             std::to_string(out.supervisor_decel_switch_margin));
+             params_detail::Spelling(decel["switch_margin"]));
     }
   }
 

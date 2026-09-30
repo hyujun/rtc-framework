@@ -105,6 +105,12 @@ class NodeTrajectoryFollower {
                                     const std::array<double, 3>* anchor = nullptr,
                                     int* first_outside = nullptr) noexcept;
 
+  /// @brief The catch frame's position at node `k` in the model world (RT-safe,
+  /// one FK). Same shape checks as NodesInsideBox(); false — `p` untouched —
+  /// on those or a `k` outside 0 .. n_nodes.
+  [[nodiscard]] bool NodePosition(const DecelPlanSnapshot& plan, int k,
+                                  std::array<double, 3>& p) noexcept;
+
  private:
   std::shared_ptr<const pinocchio::Model> model_;
   pinocchio::Data data_;
