@@ -227,7 +227,7 @@ bool DecelPlanner::PredictX0(const PlannerRtState& rt, std::int64_t t_eff_ns,
   const std::int64_t t_rep = rt.rt_state_ns + t_arm_ns_ + report_lead_ns_;
   rec.h_s = static_cast<double>(t_eff_ns - t_rep) * 1e-9;
   // Path (i): the RT follows the planner's latest segment — evaluate it at
-  // t_eff (exact on the segment). Only reachable once E1-F04 reports it.
+  // t_eff (exact on the segment). The RT reports it under mode mpc (E1-F04).
   if (have_published_ && rt.decel_active && rt.decel_seq == last_.decel_seq) {
     std::array<double, kMaxDecelNv> q{};
     std::array<double, kMaxDecelNv> qd{};

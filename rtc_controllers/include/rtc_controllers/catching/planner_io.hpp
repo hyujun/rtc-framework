@@ -15,7 +15,7 @@
 //     a torn read waiting to happen.
 //   - `DecelPlanSnapshot` planner → RT (trajectory.hpp, MPC E1-F02). Stored
 //     by the planner only; judged by `JudgeDecelPlan` below. The RT tick reads
-//     it from E1-F04 on (MD-32).
+//     it under `supervisor.decel.mode: mpc` only (E1-F04, MD-44).
 //
 // WHY `plan_id` DECIDES NEWNESS (L3 §5.2, S6 implementation note). The
 // provenance token's `snapshot_sequence` belongs to the TRAJECTORY the plan
@@ -119,7 +119,8 @@ struct PlannerRtState {
   /// Whether the RT is following a decel segment this tick, and which one
   /// (its decel_seq). The planner predicts the next segment's initial state
   /// from that segment when it is its own latest (MD-28 path (i)). Always
-  /// false / 0 until E1-F04 wires the RT side (MD-32).
+  /// false / 0 under `supervisor.decel.mode: closed_form`, and outside
+  /// DECEL / HOLD (E1-F04).
   bool decel_active{false};
   std::uint32_t decel_seq{0};
 
@@ -274,7 +275,8 @@ struct DecelAdmissionContext {
   NowReal now{0};
   /// Upper bound on `now − publish_ns` [ns]. NOT the trajectory's staleness
   /// bound: a segment solved t_pre before t_c is adopted around t_c and
-  /// followed for N_s·Δ_s after. The binding (E1-F04) picks it; 0 disables.
+  /// followed for N_s·Δ_s after, so it is read once, at admission (MD-37 —
+  /// the binding's kDecelAdmissionMaxAgeNs). 0 disables.
   std::int64_t max_age_ns{0};
   std::int64_t reset_floor_ns{0};
   /// Floor on the RT state the segment was PREDICTED from (`rt_state_ns`),

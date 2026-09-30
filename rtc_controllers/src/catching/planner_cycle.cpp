@@ -29,8 +29,9 @@ void PlannerCycle::RunDecel(const PlannerRtState& rt, PlannerCycleRecord& rec) n
   // that resets, which can precede this stamp. That guard is the plan match
   // (JudgeDecelPlan kPlan): the reset drops plan_active and plan ids are
   // monotone, so the segment names a plan the RT no longer follows — and the
-  // next wake withdraws it (reset_seen in Run). Moving the floor to the reset
-  // instant is an E-STOP-path change, E1-F04's (E-8).
+  // next wake withdraws it (reset_seen in Run). The RT also refuses a segment
+  // PREDICTED from a state older than its floor (state_floor_ns, MD-37), so a
+  // stamp that postdates the reset cannot carry the stopped trial's state.
   const std::int64_t publish_ns = clock_();
   const PlannerRtState rt_now = io_.rt->Load();
   const auto m = static_cast<Mode>(rt_now.mode);

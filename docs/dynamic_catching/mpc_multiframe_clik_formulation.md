@@ -348,7 +348,7 @@ $A^\omega_G$는 $3\times n$이라 영공간이 넓다. 오른팔이 공을 향�
 1. **시간 스케줄.** $W_{\dot k}(k)=W_{\dot k}^{-}$ ($k\lt k_c$, 작게), $W_{\dot k}^{+}$ ($k\ge k_c$, 크게). 포구 전에는 상대속도가 우선이고, 포구 후 정지 구간은 시간 제약이 느슨해 각운동량을 줄이며 멈출 여유가 있다. 공 운동량 유입 $r\times m_bv_{rel}$도 이 구간에서 흡수된다 ($m_b\approx0.05$ kg이라 작다).
 2. **사전적(lexicographic) 처리 `[선택]`.** 포구 항만으로 푼 최적 비용 $J^\ast_{catch}$에 대해 $J_{catch}\le(1+\epsilon)J^\ast_{catch}$ 제약 아래 $J_{\dot k}$를 최소화한다. QP 두 번이지만 "포구를 $\epsilon$ 이상 희생하지 않는다"가 보장된다. 엄격한 계층 해법은 [Escande2014].
 
-$t_c$ 이후 실제 실행은 기존 DECEL 법칙(L7 §4.3)이 맡으므로, 정지 구간의 각운동량 최소화를 실제로 반영하려면 DECEL 중에도 RT가 MPC 궤적의 꼬리를 따르도록 바꿔야 한다. 이 변경이 계획 E1-F04 이고, L7 전이 동작 변경이라 E-8 검토 대상이다. 단일 팔에서의 형태는 §1.6 에 있다.
+$t_c$ 이후 실제 실행은 `supervisor.decel.mode` 가 정한다. `closed_form` 이면 기존 DECEL 법칙(L7 §4.3), `mpc` 면 RT 가 DECEL 내내 MPC 궤적의 꼬리를 따른다 (계획 E1-F04, L7 §4.3a — 둘은 한 구성 안에서 섞이지 않는다, 계획 MD-44). 정지 구간의 각운동량 최소화가 실제로 반영되는 것은 `mpc` 에서다. 단일 팔에서의 형태는 §1.6 에 있다.
 
 Pinocchio `computeCentroidalMap`·`computeCentroidalMapTimeVariation`의 `RtModelHandle` 노출과 할당 0은 `[확인 필요]`.
 
@@ -383,7 +383,7 @@ $$
 $$
 
 - CLIK 입력 형식 (pose + twist feedforward) 은 그대로다.
-- 손의 목표와 자세 기준이 같은 $q_{ref}$ 에서 나오므로 서로 정확히 일치한다. 제약이 비활성이고 $q_c=q_{ref}$ 이면 $v^\ast=\dot q_{ref}$ 가 세 과제의 잔차를 모두 0 으로 만든다 — 단 자세 과제가 $\dot q_{ref}$ 를 feedforward 로 받을 때만이다. 현 `ClikReferenceGenerator` 의 자세 과제는 위치 오차 항 $k_a(q_{des}-q)$ 뿐이라 이 일치가 성립하지 않는다 (계획 MD-30 — feedforward 는 E1-F04).
+- 손의 목표와 자세 기준이 같은 $q_{ref}$ 에서 나오므로 서로 정확히 일치한다. 제약이 비활성이고 $q_c=q_{ref}$ 이면 $v^\ast=\dot q_{ref}$ 가 세 과제의 잔차를 모두 0 으로 만든다 — 단 자세 과제가 $\dot q_{ref}$ 를 feedforward 로 받을 때만이다. `ClikReferenceGenerator` 의 자세 과제는 위치 오차 항 $k_a(q_{des}-q)$ 뿐이라, E1-F04 의 RT 는 자세 목표를 $q_{ref}+\dot q_{ref}/k_a$ 로 넘겨 feedforward 를 같은 QP 로 넣는다 (계획 MD-36 — `rtc_tsid` 는 바꾸지 않는다). 그래도 여유 자유도 방향은 자세 행 (가중치 $w_{arm}$, $k_a$ 1) 만 붙잡고 smoothing 항이 끌어, 따르는 중의 관절 오차는 손의 목표 오차보다 크다 (E1-F04 측정: 관절 최대 5.9e-4 rad, catch frame 최대 1.4e-4 m, 0.3 rad/s bump).
 - 회전벡터 보간이 없으므로 각속도와 회전벡터 미분의 구분, world 축과 body 축의 변환이 필요 없다. v0.2 의 5차 Hermite 보간은 이 구분을 빠뜨렸다 [Sola2018] [Zefran1998].
 - $V^{ff}$ 는 Jacobian 없이 속도를 포함한 FK 로 얻을 수 있다.
 - RT 는 tick 마다 $q_{ref}$ 에서 FK 를 한 번 더 한다 (CLIK 은 $q_c$ 에서 이미 한다). 이 비용이 tick 예산에 드는지는 `[확인 필요]`.
@@ -688,9 +688,9 @@ $$
 | CLIK 자세 과제 | $\dot q_n$ 또는 영공간 기준 입력 | §2.2, 여유 자유도 일치 — v0.2에서 필수 |
 | `RtModelHandle` | 두 함수는 설치된 Pinocchio 에 있고 고정 베이스 모델에서도 정의된다. `RtModelHandle` 노출과 할당 0 은 미확인 | §1.4 |
 | 속도 미분 | `getFrameVelocityDerivatives` 의 결과가 $H_v$ 와 같은지 (유한 차분 대조) | §1.2 |
-| RT 의 FK | **확인됨** (E1-F02, 계획 §8) — 속도 FK 한 번으로 $T^d$ 와 $V^{ff}$ 를 함께 얻고 할당 0. payload 복사를 더해 1 kHz writer 경합에서 p99 0.5 µs (개발 PC). RT tick 배선은 E1-F04 | §1.5 |
+| RT 의 FK | **확인됨** (E1-F02 · E1-F04, 계획 §8) — 속도 FK 한 번으로 $T^d$ 와 $V^{ff}$ 를 함께 얻고 할당 0. payload 복사를 더해 1 kHz writer 경합에서 p99 0.5 µs (개발 PC). E1-F04 에서 RT tick 에 배선됐고, 샘플러의 sub-model 과 CLIK 의 통합 모델이 같은 $q$ 에서 catch frame 을 1e-9 안으로 같게 준다 (G7-B′ 테스트) | §1.5 |
 | 재계획 주기 | 예측 메시지 주기의 실측값과 흔들림 (v1 실측 30 Hz, 드롭 시 15 Hz) | §1.2 |
-| 환원형 | **정함** (계획 MD-24 · MD-28 · MD-31) — $N_s$ 14 · $\Delta_s$ 0.025 s, $x_0$ 는 RT 명령 상태의 외삽, 정지 끝 고정. 예측 오차의 크기는 E1-F04 가 잰다 | §1.6 |
+| 환원형 | **정함** (계획 MD-24 · MD-28 · MD-31) — $N_s$ 14 · $\Delta_s$ 0.025 s, $x_0$ 는 RT 명령 상태의 외삽, 정지 끝 고정. 예측 오차는 E1-F04 의 실시계 테스트 한 투척에서 진입 게이트 $\rho$ 1.13 – 1.18 ($\vert\Delta\dot q\vert$ 0.22 rad/s 가 지배, $t_{pre}$ 0.1 s 앞 예측) — 판단은 E1-F05 뒤 200 발로 한다 (계획 MD-41) | §1.6 |
 | sweep 조건 | 여덟 조건의 profile 이 load 되는지, 점 수가 늘 때 발행 주기가 유지되는지 | §1.7 |
 | 후보 수 | 사전 거르기 뒤 한 주기에 푸는 후보 수 $K_{\max}$ 와 예산 | §1.3 바깥 루프 |
 | 토크 미분 | **확인됨** (E1-F01, #627) — `computeRNEADerivatives` 는 할당 0 (C `malloc` 까지 보는 게이트). 노드 12 개 선형화 p50 약 40 µs (6 자유도) · 50 µs (7 자유도), Release. 출력의 $M$ 은 상삼각만 채워지고 armature 는 출력 대각에 **더해지므로** 매 호출 0 으로 지운다 | §1.2 |
