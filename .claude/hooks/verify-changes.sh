@@ -52,6 +52,9 @@
 #        gates validate_test_domains.py + validate_test_fixtures.py, WHOLE repo
 #        (a domain collision spans two packages; CI keeps main clean)
 #   2. Build + test on changed packages
+#        - a package is "changed" for this phase by its source (.cpp/.hpp/.h/
+#          .cc/.py), its CMakeLists.txt / package.xml, or a shell script in
+#          its source directories (see CHANGED_SH_BUILD)
 #        - rtc_base / rtc_msgs change -> ./build.sh full + colcon test all
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> + colcon test <pkg>
@@ -475,6 +478,18 @@ CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ '
   || true)
 CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRACKED" \
   | grep -v '^[[:space:]]*$' | sort -u || true)
+# A shell script in one of those directories routes its package to build/test
+# too, tracked or not. It was linted (Phase 4) and nothing else: a package
+# whose tests ARE shell scripts, or drive one, had them run for a .py edit and
+# not for an edit of the script under test. Seen 2026-09-30 -- a turn that
+# changed only *.sh in a package tested every other changed package and not
+# that one. Kept out of CHANGED_SRC_BUILD, which also feeds the pure-format
+# check and knows no formatter for a shell script.
+CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
+  NF >= 3 && $NF ~ /\.sh$/ \
+    && ($2 == "src" || $2 == "include" || $2 == "test" \
+        || $2 == "launch" || $2 == "scripts" || $2 == $1)' \
+  || true)
 
 # --- Pure-format fast path detection ---
 # Returns 0 if every changed source file is identical to HEAD after
@@ -631,7 +646,7 @@ while IFS= read -r pkg_dir; do
   [ -n "$pkg_dir" ] || continue
   [ -f "$pkg_dir/package.xml" ] || continue
   BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}"
-done <<< "$(printf '%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" \
+done <<< "$(printf '%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
              | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
 
 # Emit `name<TAB>exempt<TAB>lineno` for every add_executable() in the CMake
@@ -1479,6 +1494,7 @@ remember_pkg_verdict() {  # $1 = package, $2 = key
 }
 BUILT_PKGS=""
 REUSED_PKGS=""
+BUILD_SWITCHED_OFF=""
 PROC3_KEY=""
 
 PROC3=$(echo "$BUILD_PKGS" | tr ' ' '\n' | grep -E '^(rtc_base|rtc_msgs)$' || true)
@@ -1489,6 +1505,9 @@ if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
   # scoping ("a new header under <pkg>/include/ IS built, a scratch file is
   # not") had no assertion behind it. This probe is the seam the tests read.
   echo "verify-changes[probe]: BUILD_PKGS=[${BUILD_PKGS# }] PROC3=[$(echo "$PROC3" | tr '\n' ' ' | sed 's/ *$//')]" >&2
+  # What was switched off is remembered: a pass that skipped a build it owed
+  # verified less than a pass claims (see the end of the hook).
+  [ -n "$PROC3$BUILD_PKGS" ] && BUILD_SWITCHED_OFF=1
   PROC3=""
   BUILD_PKGS=""
 fi
@@ -1857,12 +1876,19 @@ fi
 
 # A full pass. The tree id taken at the start is remembered only if the tree is
 # still that one: something that wrote the checkout while the gates ran was
-# not graded. And only if Phase 2 was not switched off -- under
-# RTC_VERIFY_SKIP_BUILD the packages were neither built nor tested, and a tree
-# remembered then is passed unbuilt by every later stop over it (this
-# happened: a run of the hook with the build off, by hand, in the real clone).
-if [ -z "${RTC_VERIFY_SKIP_BUILD:-}" ] && [ -n "${WORK_TREE:-}" ] \
-   && [ "$(work_tree_id)" = "$WORK_TREE" ]; then
+# not graded.
+#
+# A run whose build was switched off (RTC_VERIFY_SKIP_BUILD) while packages
+# were waiting for one claims neither: the tree is not remembered and the
+# watermark stays, so the next stop still owes those packages their build.
+# Both were claimed once -- a run of the hook by hand, build off, in the real
+# clone -- and every later stop passed the branch head unbuilt.
+if [ -n "$BUILD_SWITCHED_OFF" ]; then
+  echo "verify-changes: build/test was switched off (RTC_VERIFY_SKIP_BUILD) with packages waiting -- watermark kept, nothing remembered." >&2
+  log_timing "pass-unbuilt" "" ""
+  exit 0
+fi
+if [ -n "${WORK_TREE:-}" ] && [ "$(work_tree_id)" = "$WORK_TREE" ]; then
   printf '%s\n' "$WORK_TREE" > "$PASS_TREE_FILE" 2>/dev/null || true
 fi
 advance_verify_base
