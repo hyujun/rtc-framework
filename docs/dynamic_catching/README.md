@@ -17,7 +17,7 @@ plan 은 2026-09-29 에 제자리 압축했다 (절 번호·식별자 불변) �
 
 ## 확장 — MPC · dual-arm
 
-DECEL 의 MPC 전환, G1 + proto_1b bring-up, MPC catch controller 는 별도 계획으로 관리한다. 계획·결정(`MD-n`)·상태의
+MPC 는 waist + dual-arm (G1) 용으로 설계하고, ur5e_p1b · iiwa7_leap 에서 dual arm · waist 항을 뺀 같은 MPC 로 먼저 시험한 뒤 (APPROACH–정지), G1 + proto_1b bring-up 을 거쳐 같은 코어에 그 항을 더한다. closed_form 과 mpc 는 입력 (공의 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 다. 이 확장은 별도 계획으로 관리한다. 계획·결정(`MD-n`)·상태의
 SSoT 는 [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md), 정식화는 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md),
 추적은 GitHub project [rtc-framework — MPC · dual-arm catching](https://github.com/users/hyujun/projects/2) 다.
 

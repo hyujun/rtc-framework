@@ -1,7 +1,7 @@
 # Waist 포함 dual-arm manipulator의 오른손 단일 포구 — MPC 계획기와 다중 frame CLIK의 수학적 정리
 
-- 작성일: 2026-09-29 (v0.4 — 문헌 대조의 "빠진 것" · "근거가 약한 것" 반영, 예측 격자 sweep 추가), 2026-09-30 v0.4a
-- 대상: `rtc-framework` dynamic_catching 확장 설계 (waist + dual-arm, 오른손 한 손 파지 물체)
+- 작성일: 2026-09-29 (v0.4 — 문헌 대조의 "빠진 것" · "근거가 약한 것" 반영, 예측 격자 sweep 추가), 2026-09-30 v0.4a, 2026-09-30 v0.5 (단일 팔 구성을 §1.3 의 부분집합으로 재정의)
+- 대상: `rtc-framework` dynamic_catching 확장 설계 (waist + dual-arm, 오른손 한 손 파지 물체). 단일 팔 로봇은 같은 문제에서 dual-arm · waist 항을 뺀 것을 푼다 (§1.6)
 - 전제: estimator(ball_perception PointCloud2)와 CLIK 입력 형식(pose + twist feedforward)은 고정. CLIK는 다중 frame 확장형.
 - 상태 표기: `[가정]` 기구·구성 가정, `[확인 필요]` 코드 대조 전 항목, `[선택]` 옵션.
 - 인용 표기: `[Heins2023]` 같은 key 는 §7 참고 문헌의 항목이다. 문헌 대조 결과는 §6 에 있다 — "고칠 것" (§6.2) 은 v0.3 에, "빠진 것" (§6.3) 과 "근거가 약한 것" (§6.4) 은 v0.4 에 반영했다.
@@ -17,6 +17,7 @@
 | v0.3 | **G1 기구** ($n_w=3$, $n=17$, frame 이름), **토크 기반 제약** (가속 box 삭제, 토크 행을 활성 관절 전체로 — 계획 MD-7), **단일 팔 환원형** (§1.6), **§6.2 의 R-1 – R-9 반영**: 속도 선형화의 1차 항 포함, RTI 주기당 1회와 shift 절차, 재계획 주기 0.05 s, 종단 정지 제약의 위상 정정, 한계 여유의 성립 조건, 자기충돌 쌍의 두 부류, RT 보간기 삭제 (관절 기준에서 FK), 이산 tick 의 오차 점화식 |
 | v0.4 | **§6.3 · §6.4 반영** (사용자 승인 2026-09-29): 포구 구간의 상대속도 · 경로 비용과 방향별 가중, 토크 · 충돌 행의 slack, 토크 행의 1차 선형화, 예측 공분산에 비례하는 일관성 가중, 후보 순위의 공통 가중, 손을 잠근 축소 모델, CLIK 의 제동 거리 한계 · 충돌 damper · 되먹임 상한. **각운동량 항은 유지** — 목적을 왼팔 운동 생성과 floating base 확장으로 명시 (§1.4). **예측 격자 sweep** 추가 (§1.7) — horizon 0.75 s 와 1.0 s, 조건은 기존 제약 (점 수 상한 40, horizon 이 step 의 배수) 안에서 도출. **v0.3 의 오류 정정**: 재계획 주기는 예측 메시지 주기이고 예측점 간격과 다르다 (§1.2) |
 | v0.4a | 계획 E1-F02 · E1-F03 의 spec 반영 (계획 MD-24 – MD-31): armature 를 제어 모델에서 뺌 (§1.3), 노드 payload 를 `PlanSnapshot` 밖의 형제 POD 로 (§1.5), §1.5 · §4 항목 8 의 "잔차 0" 이 자세 과제의 속도 feedforward 를 전제함을 명시, 정지 구간의 $x_0$ 를 효력 시각의 예측으로 정정하고 지평 · 정지 끝 정책을 확정 (§1.6) |
+| v0.5 | 계획 MD-46 – MD-50 반영 (사용자 결정 2026-09-30). **단일 팔 구성을 §1.3 의 부분집합으로 재정의** — 설계는 §1.3 하나이고 단일 팔은 dual-arm · waist 항만 뺀다 (§0 "기본 구성과 G1 구성"). §1.6 을 "정지 구간 환원형" 에서 "단일 팔 구성" 으로 다시 씀 — 항 목록, APPROACH 부터 정지까지의 지평 (계획 MD-45), 바깥 루프 대신 v1 L3 탐색. `closed_form` 과 `mpc` 를 입출력 계약이 같은 두 planner로 정리. §1.1 · §1.3 · §1.4 · §1.5 · §3 의 G1 전용 표기, §4 의 단일 팔 · additive 회귀 항목, §5 의 미결 항목, §6.1 · §6.5 의 G-1 서술을 갱신. **§1.3 의 식은 불변** |
 
 ### 수식 표기 규칙
 
@@ -35,6 +36,8 @@ markdown 이 수식 안의 문자를 먼저 해석하므로 (GitHub 기준), 수
 ---
 
 ## 0. 가정과 표기
+
+**기본 구성과 G1 구성** (계획 MD-46). 설계는 §1.3 하나다 — waist + dual-arm (G1) 의 문제다. 단일 팔 로봇 (ur5e_p1b, iiwa7_leap) 은 같은 MPC 에서 dual-arm · waist 에 고유한 항만 뺀 것을 푼다 (항 목록은 §1.6). g1_p1b 는 같은 코어에 그 항을 더한다 — 더하기만 하고 코어의 기존 항은 바꾸지 않는다. `closed_form` 과 `mpc` 는 입출력 계약이 같은 두 planner 다 — planner 는 스레드가 아니라 공 궤적 → CLIK 입력의 사상이고, 단일 팔의 두 planner 는 L3 계획기 스레드의 탐색을 공유한다 (계획 §3.1). 입력은 estimator 의 공 미래 궤적 (과 공분산), 출력은 CLIK 입력 (task pose · twist feedforward · 접근축 + null space 자세 목표) 이다. estimator, supervisor, 손 시퀀서, CLIK, `ABORT_SAFE` 는 두 planner 가 공유한다. 아래 §0.1 의 waist · 왼팔 · 몸통 frame 은 G1 구성의 것이다.
 
 ### 0.1 기구 가정 `[가정]`
 
@@ -55,7 +58,7 @@ G1 (`g1_with_proto_1b_fixed_base`) 에서의 값:
 
 동역학 모델은 **오른손 관절을 기준 자세로 잠근 축소 모델**이다 (Pinocchio `buildReducedModel`). 손의 질량과 관성은 손목 링크에 합쳐진다. 폐쇄 체인 구속은 MPC 와 CLIK 의 $M,h$ 에 들어가지 않는다 — 손 자세에 따른 관성 변화는 무시하며, 그 크기는 토크 여유 $\eta' _ \tau$ 가 담는다. 폐쇄 체인 동역학 자체는 [Carpentier2021] 이 다룬다. 오른손 catch frame $C_R$ 의 link 이름은 `[확인 필요]`.
 
-왼손은 포구에 참여하지 않는다. 그러나 **왼팔은 MPC 결정변수에 포함**된다 — 역할은 (i) 자세 유지(비용), (ii) 각운동량 상쇄, (iii) 공·오른팔과의 충돌 회피(제약)다.
+왼손은 포구에 참여하지 않는다. 그러나 G1 구성에서 **왼팔은 MPC 결정변수에 포함**된다 — 역할은 (i) 자세 유지(비용), (ii) 각운동량 상쇄, (iii) 공·오른팔과의 충돌 회피(제약)다.
 
 ### 0.2 기호
 
@@ -75,7 +78,7 @@ G1 (`g1_with_proto_1b_fixed_base`) 에서의 값:
 | $\Delta$, $N$, $k_c$ | MPC 노드 간격, 노드 수, 포구 노드 ($t_c=t_s+k_c\Delta$) |
 | $\Delta_v$ | vision 예측점 간격. 예측점은 메시지의 기준 시각에서 $\Delta_v,2\Delta_v,\dots$ 떨어져 있다. 출하값 0.05 s, sweep 대상 (§1.7) |
 | $T_r$ | 재계획 주기 = 예측 메시지의 주기. sim 실측 30 Hz (v1 L2 G2-1). $\Delta$ · $\Delta_v$ 와 다른 양이다 |
-| $T_{close}$, $\mathcal K_c$ | 손 폐쇄 시간과, 포구 구간의 노드 집합 $\lbrace k_c,\dots,k_c+\lceil T_{close}/\Delta\rceil\rbrace$ |
+| $T_{close}$, $\mathcal K_c$ | 손 폐쇄 시간과, 포구 구간의 노드 집합 $\lbrace k_c,\dots,k_c+\lceil T_{close}/\Delta\rceil\rbrace$. $\mathcal K_c$ 는 손마다의 파라미터다 — 단일 팔 구성에서는 $\lbrace k_c\rbrace$ (§1.6) |
 | $\hat d_k$, $P_{\perp,k}$ | 공 진행 방향 $\hat v_b(t_k)/\Vert\hat v_b(t_k)\Vert$ 와 그에 수직인 성분의 사영 $I-\hat d_k\hat d_k^\top$ |
 | $t_s$ | 새 계획이 효력을 갖는 시각 ($t_k+T_{pipe}$) |
 | $h$ | RT tick (`ControllerState::dt`) |
@@ -119,7 +122,7 @@ $$
 
 Condensing: $\mathbf x=\Phi x_0+\Gamma\mathbf u$, $\Phi=[A;A^2;\dots;A^N]$, $\Gamma_{kj}=A^{k-1-j}B$ ($j\lt k$). 결정변수는 $\mathbf u\in\mathbb R^{nN}$ 하나다 [BockPlitt1984] [Frison2016].
 
-**Move blocking.** $n=17$, $N=20$이면 결정변수 340개이고, dense 분해 비용은 변수 수의 세제곱 규모로 는다. 입력을 블록 $\mathcal B=\lbrace[k_0,k_1),[k_1,k_2),\dots\rbrace$로 묶어 $u_k=\tilde u_b\enspace(k\in b)$로 두면 $\mathbf u=E \tilde{\mathbf u}$, $E\in\mathbb R^{nN\times n|\mathcal B|}$이고 condensing은 $\mathbf x=\Phi x_0+(\Gamma E)\tilde{\mathbf u}$로 그대로 성립한다. 권장 분할: 오른팔·waist는 $k\lt k_c$에서 1노드, $k\ge k_c$(정지 구간)에서 2–3노드; 왼팔은 전 구간 2–3노드. 관절군별로 다른 블록을 쓰려면 $E$를 관절군마다 따로 구성한다. 고정된 블록 패턴에서는 직전 해를 한 노드 민 것이 새 문제의 결정변수로 표현되지 않으므로 재귀적 실행 가능성이 보장되지 않는다 [Cagienard2007]. 이 문서는 그 보장을 주장하지 않는다 (§1.3 "종단 정지 제약의 위상").
+**Move blocking.** $n=17$, $N=20$이면 결정변수 340개이고, dense 분해 비용은 변수 수의 세제곱 규모로 는다. 입력을 블록 $\mathcal B=\lbrace[k_0,k_1),[k_1,k_2),\dots\rbrace$로 묶어 $u_k=\tilde u_b\enspace(k\in b)$로 두면 $\mathbf u=E \tilde{\mathbf u}$, $E\in\mathbb R^{nN\times n|\mathcal B|}$이고 condensing은 $\mathbf x=\Phi x_0+(\Gamma E)\tilde{\mathbf u}$로 그대로 성립한다. 권장 분할: 오른팔·waist는 $k\lt k_c$에서 1노드, $k\ge k_c$(정지 구간)에서 2–3노드; 왼팔은 전 구간 2–3노드. 관절군별로 다른 블록을 쓰려면 $E$를 관절군마다 따로 구성한다. 관절군별 $E$ 와 왼팔 · waist 블록은 G1 구성의 것이다 — 코어는 항별로 비용 · 제약을 조립하고 관절군별 $E$ 의 자리를 남기며, 여러 관절군으로의 일반화는 E3 다 (계획 MD-49). 단일 팔의 크기 ($n=6$ · 7) 는 §1.6. 고정된 블록 패턴에서는 직전 해를 한 노드 민 것이 새 문제의 결정변수로 표현되지 않으므로 재귀적 실행 가능성이 보장되지 않는다 [Cagienard2007]. 이 문서는 그 보장을 주장하지 않는다 (§1.3 "종단 정지 제약의 위상").
 
 **정지 구간의 블록 수.** 종단 등식은 관절마다 2개 ($\dot q_N=0$, $\ddot q_N=0$) 다. 포구 구간 뒤에 관절마다 자유 블록이 2개면 등식만으로 해가 정해져 한계를 피할 여지가 없다. 그래서 **포구 구간 뒤의 블록은 관절마다 3개 이상**으로 둔다. 이 조건은 이 문서의 계산이며 구현에서 rank 로 확인한다.
 
@@ -135,6 +138,7 @@ Condensing: $\mathbf x=\Phi x_0+\Gamma\mathbf u$, $\Phi=[A;A^2;\dots;A^N]$, $\Ga
 | 종단 등식 | 34 |
 
 - 양쪽 부등식 약 1400 행에 충돌 행이 더해진다.
+- 위 표는 G1 구성이다. 단일 팔 ($n=6$ · 7) 의 노드 수는 격자 결정 (§1.6, 미정) 을 따르고, 현재 코어 (E1-F01) 의 부등식 행은 $5nN$ 이다 (§1.6).
 - condensed QP 를 만드는 비용은 horizon 의 제곱 규모이고 주기마다 든다 [Verschueren2022]. dense 분해는 세제곱 규모다 [Frison2016].
 - 행을 줄이는 수단은 한계 행을 일부 노드에만 거는 것이다 `[선택]`. 거르는 기준은 직전 해에서 한계까지의 거리다.
 
@@ -265,7 +269,7 @@ $$
 | 토크 행 | **가속 제약** (계획 MD-7) | 활성 관절 전체에 건다. 유도 가속 box 는 쓰지 않는다. waist 행에는 두 팔의 중력과 **왼팔 counter-swing의 반력** 모멘트가 들어간다. G1 의 토크 한계는 관절마다 5–88 N·m 로 다르다 (손목이 가장 작다). armature 는 제어 모델에 넣지 않는다 (계획 MD-25) — G1 URDF 에는 없고 MJCF 에만 있으며, 실기 값은 기어비 · 기어 효율 때문에 확인하기 어렵다. sim 과의 토크 차이를 설명하는 분석에만 쓴다 |
 | 자기충돌 | $\mathcal P_A$ 는 두 팔 기울기, $\mathcal P_B$ 는 waist 기울기 추가 | 선형화 거리 제약은 [Faverjon1987] [Schulman2014]. 노드 사이 여유는 아래 |
 | 공–왼팔 | $k\le k_c$ | $r_b$ 공 반지름, $m^{ball} _ k$는 $\Sigma_p(t_k)$ 기반 여유 (예: $n_\sigma\sqrt{\lambda_{\max}\Sigma_p}$) |
-| $\dot q_N=\ddot q_N=0$ | 이 계획이 정지로 끝난다는 조건 | $t_c$ 이후 정지 구간 포함. 왼팔도 정지. 다음 주기의 실행 가능성은 보장하지 않는다 (아래). 종단 등식의 근거는 [Mayne2000], 포구 궤적에 쓴 사례는 [Lampariello2011] [Dong2020] |
+| $\dot q_N=\ddot q_N=0$ | 이 계획이 정지로 끝난다는 조건 | $t_c$ 이후 정지 구간 포함. G1 에서는 왼팔도 정지. 다음 주기의 실행 가능성은 보장하지 않는다 (아래). 종단 등식의 근거는 [Mayne2000], 포구 궤적에 쓴 사례는 [Lampariello2011] [Dong2020] |
 | trust region | 선형화 유효 범위 | |
 
 비용은 $\tilde{\mathbf u}$ 의 2차식과 slack 의 1차식이고 제약은 선형이므로 문제는 QP다.
@@ -310,10 +314,10 @@ $$
 | 상황 | 동작 |
 |---|---|
 | QP 가 실행 불가능하거나 예산을 넘김 | 새 계획을 게시하지 않는다. RT 는 직전 계획을 계속 따른다 (직전 계획도 정지로 끝난다) |
-| 직전 계획이 없거나 나이 한계를 넘음 | v1 의 closed-form DECEL (`EvaluateDecelTarget`). 단 E1-F04 의 `supervisor.decel.mode: mpc` 는 법칙을 섞지 않아 (계획 MD-44) 이 경우 `ABORT_SAFE` 다 |
+| 직전 계획이 없거나 나이 한계를 넘음 | v1 의 closed-form DECEL (`EvaluateDecelTarget`). 단 `supervisor.decel.mode: mpc` 는 APPROACH 부터 정지까지 MPC 구간만 따르고 법칙을 섞지 않아 (계획 MD-44 · MD-45) 따를 구간이 없으면 `ABORT_SAFE` 다 |
 | `ABORT_SAFE` | 관절 공간 정지 `JointSpaceDecelStep` — 원인과 무관, QP 독립 (v1 C-35, 불변) |
 
-**바깥 루프.** 포구 시각 후보를 열거하고 후보마다 QP 를 푼다. 발표된 포구 시스템은 포구 시각을 연속 변수로 둔다 [Bauml2010] [Lampariello2011] [Dong2020] [Abeyruwan2023] — 열거는 이 문서의 선택이다. 볼록 QP 라 그 논문들이 보고하는 국소 최소 문제가 없다.
+**바깥 루프.** 포구 시각 후보를 열거하고 후보마다 QP 를 푼다. 발표된 포구 시스템은 포구 시각을 연속 변수로 둔다 [Bauml2010] [Lampariello2011] [Dong2020] [Abeyruwan2023] — 열거는 이 문서의 선택이다. 볼록 QP 라 그 논문들이 보고하는 국소 최소 문제가 없다. 단일 팔 구성에서는 이 루프를 돌지 않고 v1 L3 의 탐색이 $t_c$ 를 고른다 (§1.6, 계획 MD-45 · MD-46).
 
 - **후보.** vision 예측점의 시각이다. 간격은 $\Delta_v$ 이고 v1 의 계획기와 같다. MPC 격자가 $t_c$ 에 고정돼 있어 후보 간격은 $\Delta$ 와 무관하다.
 - **시각 정밀도.** 팔 궤적의 포구 시각은 후보 격자에 묶이지만, 손 폐쇄 명령 시각 $t_{cmd}$ 는 손 시퀀서가 따로 정한다. 포구 구간 $\mathcal K_c$ 의 상대속도 · 경로 비용이 시각 오차의 허용 폭을 넓힌다. 문헌이 드는 수 ms 의 정밀도 [Bauml2010] [Dong2020] 는 팔과 손을 한 시각으로 묶은 시스템의 값이다. 후보 간격의 영향은 §1.7 의 sweep 으로 잰다.
@@ -323,7 +327,7 @@ $$
 - **순위.** 후보의 순위는 **공통 고정 가중**으로 매긴다 — 포구 위치 항을 $W_p$ 대신 $W^{rank} _ p$ 로 다시 평가한 비용이다. $W_p$ 는 불확실성이 큰 후보일수록 작아지므로, 그대로 비교하면 같은 오차가 불확실한 후보에서 더 싸게 보인다. $W^{rank} _ p$ 는 손의 포획 범위에서 정한다 (접근축에 수직인 방향은 손 벌림 폭, 접근축 방향은 깊이).
 - **COMMITTED 이후.** $t_c$ · $t_{cmd}$는 고정하고 $\hat p_b(t_c)$ 갱신에 따른 궤적 재계획만 계속한다. 고정된 $t_c$ 가 예측점 사이에 놓이면 공 예측은 v1 L2 의 보간 (`SampleAt`) 으로 얻는다.
 
-**연속성.** $x_0$를 직전 게시 궤적의 $t_s$ 값으로 두므로 전환 시점에 전체 $(q,\dot q,\ddot q)$가 구성상 이어진다 — 왼팔 포함. RT 채택 규칙은 token 일치·게시 나이· $t_s$ 기준 전환 셋뿐이다. 이 구성에서 MPC 는 측정 상태를 되먹이지 않는다 — 기준 궤적을 다시 계획할 뿐이고, 로봇 상태의 되먹임은 CLIK 에만 있다.
+**연속성.** $x_0$를 직전 게시 궤적의 $t_s$ 값으로 두므로 전환 시점에 전체 $(q,\dot q,\ddot q)$가 구성상 이어진다 — G1 에서는 왼팔 포함. RT 채택 규칙은 token 일치·게시 나이· $t_s$ 기준 전환 셋뿐이다. 이 구성에서 MPC 는 측정 상태를 되먹이지 않는다 — 기준 궤적을 다시 계획할 뿐이고, 로봇 상태의 되먹임은 CLIK 에만 있다.
 
 ### 1.4 각운동량 항의 위상 스케줄과 우선순위
 
@@ -348,7 +352,7 @@ $A^\omega_G$는 $3\times n$이라 영공간이 넓다. 오른팔이 공을 향�
 1. **시간 스케줄.** $W_{\dot k}(k)=W_{\dot k}^{-}$ ($k\lt k_c$, 작게), $W_{\dot k}^{+}$ ($k\ge k_c$, 크게). 포구 전에는 상대속도가 우선이고, 포구 후 정지 구간은 시간 제약이 느슨해 각운동량을 줄이며 멈출 여유가 있다. 공 운동량 유입 $r\times m_bv_{rel}$도 이 구간에서 흡수된다 ($m_b\approx0.05$ kg이라 작다).
 2. **사전적(lexicographic) 처리 `[선택]`.** 포구 항만으로 푼 최적 비용 $J^\ast_{catch}$에 대해 $J_{catch}\le(1+\epsilon)J^\ast_{catch}$ 제약 아래 $J_{\dot k}$를 최소화한다. QP 두 번이지만 "포구를 $\epsilon$ 이상 희생하지 않는다"가 보장된다. 엄격한 계층 해법은 [Escande2014].
 
-$t_c$ 이후 실제 실행은 `supervisor.decel.mode` 가 정한다. `closed_form` 이면 기존 DECEL 법칙(L7 §4.3), `mpc` 면 RT 가 DECEL 내내 MPC 궤적의 꼬리를 따른다 (계획 E1-F04, L7 §4.3a — 둘은 한 구성 안에서 섞이지 않는다, 계획 MD-44). 정지 구간의 각운동량 최소화가 실제로 반영되는 것은 `mpc` 에서다. 단일 팔에서의 형태는 §1.6 에 있다.
+실제 실행은 `supervisor.decel.mode` 가 정한다 — 이 키는 planner 를 고른다 (계획 MD-48). `closed_form` 이면 v1 의 soft-catch DS 와 closed-form DECEL (L7 §4.3), `mpc` 면 이 MPC 가 APPROACH 부터 정지까지 팔 기준을 만든다 (계획 MD-45, L7 §4.3a — 둘은 한 구성 안에서 섞이지 않는다, 계획 MD-44). 정지 구간의 각운동량 최소화가 실제로 반영되는 것은 `mpc` 에서다. 단일 팔 구성에는 각운동량 항이 없고 G1 구성에서 더한다 (§1.6).
 
 Pinocchio `computeCentroidalMap`·`computeCentroidalMapTimeVariation`의 `RtModelHandle` 노출과 할당 0은 `[확인 필요]`.
 
@@ -388,54 +392,98 @@ $$
 - $V^{ff}$ 는 Jacobian 없이 속도를 포함한 FK 로 얻을 수 있다.
 - RT 는 tick 마다 $q_{ref}$ 에서 FK 를 한 번 더 한다 (CLIK 은 $q_c$ 에서 이미 한다). 이 비용이 tick 예산에 드는지는 `[확인 필요]`.
 
-여유 자유도 (전체 $n$ 대 두 과제 12행) 를 CLIK 이 계획과 같게 채우려면 $q_{ref}$ 전체가 자세 과제로 들어가야 한다 — 왼팔 counter-swing 과 waist 분배는 손의 목표만으로는 전달되지 않는다.
+G1 에서 여유 자유도 (전체 $n$ 대 두 과제 12행) 를 CLIK 이 계획과 같게 채우려면 $q_{ref}$ 전체가 자세 과제로 들어가야 한다 — 왼팔 counter-swing 과 waist 분배는 손의 목표만으로는 전달되지 않는다.
 
-payload 는 노드당 관절 $3n$ double 이다. $n=17$, $N=20$ 이면 $3\cdot17\cdot21\cdot8$ byte, 약 8.6 KB 다. 노드 payload 는 `PlanSnapshot` 에 넣지 않고 형제 POD 와 자기 SeqLock 으로 보낸다 (SeqLock POD, D-21 소비 규약, 계획 MD-27) — RT 는 COMMITTED 뒤에 새 `PlanSnapshot` 을 받지 않는데 정지 구간은 그 뒤에도 다시 계획되고, 크기가 관절 용량에 비례해 매 tick 복사 비용이 된다.
+payload 는 노드당 관절 $3n$ double 이다. $n=17$, $N=20$ 이면 $3\cdot17\cdot21\cdot8$ byte, 약 8.6 KB 다. 단일 팔 ($n=6$ · 7) 은 노드당 18 · 21 double 이다. payload 의 노드 용량은 격자 결정 (§1.6) 을 따른다 (계획 #661). 노드 payload 는 `PlanSnapshot` 에 넣지 않고 형제 POD 와 자기 SeqLock 으로 보낸다 (SeqLock POD, D-21 소비 규약, 계획 MD-27) — RT 는 COMMITTED 뒤에 새 `PlanSnapshot` 을 받지 않는데 정지 구간은 그 뒤에도 다시 계획되고, 크기가 관절 용량에 비례해 매 tick 복사 비용이 된다.
 
-### 1.6 단일 팔 · 정지 구간 환원형 (계획 E1)
+### 1.6 단일 팔 구성 (계획 E1, MD-46)
 
-계획 E1 이 푸는 문제다. ur5e_p1b ($n=6$) 와 iiwa7_leap ($n=7$) 의 DECEL 을 v1 의 TCP 직선 등감속 대신 관절 공간 MPC 로 계획한다. §1.3 에서 다음을 빼면 얻는다.
+계획 E1 이 푸는 문제다. ur5e_p1b ($n=6$) 와 iiwa7_leap ($n=7$) 는 §1.3 과 같은 MPC 를 푼다 — dual-arm 과 waist 에 고유한 항만 뺀다 (계획 MD-46). g1_p1b 는 같은 코어에 그 항을 더한다. 코어는 항별로 비용 · 제약을 조립하므로 (계획 MD-49), 단일 팔의 해는 G1 코어에서 뺀 항의 가중을 0 으로 둔 해와 같아야 한다 (§4 항목 11 · 12). `supervisor.decel.mode: mpc` 에서 이 MPC 는 APPROACH 부터 정지까지 팔 기준을 만든다 (계획 MD-45). `closed_form` 과 입출력 계약이 같다 (§0).
 
-| §1.3 의 요소 | 환원형 |
-|---|---|
-| 활성 관절 | 팔만 ($n_w=n_L=0$). 손은 활성 관절 밖 |
-| 포구 항 (위치 · 접근축 · 상대속도 · slack) | 없음 — 정지 구간은 포구 뒤다 ($k_c=0$) |
-| 왼팔 rest, waist 억제, 각운동량 | 없음 |
-| 충돌 제약 | 없음 (v1 과 같음) |
-| 토크 행, 위치 · 속도 한계, 종단 정지 | 유지 |
+**항 목록.**
+
+| 요소 | 단일 팔 | G1 에서 | 비고 |
+|---|---|---|---|
+| jerk $\Vert u_k\Vert^2_R$ | 유지 | 왼팔 블록 추가 | 왼팔 블록을 더 크게 두는 것은 G1 의 선택 |
+| 일관성 $w_\Delta$ | 유지 — 공분산에 비례 | 같음 | $\Sigma_p$ 가 단일 팔 경로에 없으면 상수로 두고 편차로 기록한다 `[확인 필요]` |
+| waist 억제 $w_w$ | 제거 | 추가 | $n_w=0$ |
+| 왼팔 자세 유지 $W_L^{rest}$ | 제거 | 추가 | $n_L=0$ |
+| 각운동량 $J_{\dot k}$, $W_{\dot k}(k)$ 스케줄, 사전적 처리 | 제거 | 추가 | 목적이 왼팔 운동과 floating base 다 (§1.4) |
+| 포구 위치 $W_p$ | 유지 — 공분산 가중 | 같음 | $C_R$ 은 그 팔의 catch frame |
+| 접근축 $w_a$ | 유지 | 같음 | |
+| 상대속도 $W_{v,k}$, 경로 이탈 $w_{path}$ | 유지 | 같음 | $\mathcal K_c$ 는 손마다의 파라미터 — 단일 팔에서는 $\lbrace k_c\rbrace$ (아래) |
+| 상대속도 slack $s_v$ | 유지 | 같음 | $v_{rel,\mathrm{allow}}$ 는 그 손의 흡수 능력에서 정한다 `[확인 필요]` |
+| 토크 행 | 팔 행 유지 | waist 행과 왼팔 counter-swing 의 반력 추가 | 손을 잠근 축소 모델 (§0.1) |
+| 자기충돌 $\mathcal P_A$ · $\mathcal P_B$ | 제거 | 추가 | 충돌 코어는 계획 E3-F03. v1 과 같음 |
+| 공–왼팔 | 제거 | 추가 | |
+| 위치 · 속도 한계 | 유지 | 같음 | 위치 box 는 URDF 한계 ∩ CLIK 위치 box (계획 MD-42) |
+| 종단 정지 | 유지 | 왼팔 포함 | |
+| trust region | 유지 | 같음 | |
+| 관절군별 $E$ | 제거 — 팔 하나의 $E$ | 추가 | 계획 MD-49 |
+| 바깥 루프 ($t_c$ 후보 열거 · 후보별 QP · 순위 · 교체) | **편차** — v1 L3 탐색이 $t_c$ 를 고른다 | 후보 선택을 MPC 로 옮기는 것은 E3-F01 ([#640](https://github.com/hyujun/rtc-framework/issues/640)) | 계획 MD-45 · MD-46. 아래 "포구 시각" |
+| 출력 관절 노드 · RT FK | 유지 | 왼손 CLIK 과제 추가 | §1.5 |
+
+§1.2 의 선형화 가운데 $p_{C_R}$, $e_a$, $J^v_{C_R}\dot q+H_v\delta q$, $\tau^{lin}$ 은 유지하고 $d_j$, $d^{ball} _ L$, $A^\omega_G$ 는 뺀다.
+
+$\mathcal K_c$ 가 $\lbrace k_c\rbrace$ 로 줄어드는 이유: 손 폐쇄 명령은 $t_{cmd}=t_c-T_{close}$ 라 폐쇄가 $t_c$ 에 끝나고, 정지는 $t_c$ 에서 시작한다. 손이 공과 함께 움직여야 하는 구간이 $t_c$ 한 점이다.
+
+§1.3 에서 뺀 항을 지우면 다음이 남는다.
 
 $$
 \boxed{
 \begin{aligned}
-\min_{\tilde{\mathbf u}}\quad
-&\sum_{k=0}^{N_s-1}\Vert u_k\Vert_{R}^2
-+w_\Delta\sum_{k}\Vert q_{k}-q^{prev} _ {k}\Vert^2
-+w_\perp\sum_k\Vert P_\perp\big(p_{C}(\bar q_k)+J^v_{C}(\bar q_k)\delta q_k-p_c\big)\Vert^2
-+\rho_\tau\sum_k\mathbf 1^\top s_{\tau,k}\\
+\min_{\tilde{\mathbf u},s}\quad
+&\sum_{k=0}^{N-1}\Vert u_k\Vert_{R}^2
++w_\Delta\sum_{k}\Vert q_{k}-q^{prev} _ {k}\Vert^2\\
+&+\Vert p_{C_R}(q_{k_c})-\hat p_b(t_c)\Vert^2_{W_p}
++w_a\Vert e_a(q_{k_c})\Vert^2\\
+&+\Vert\hat v_b(t_c)-v_{C_R,k_c}\Vert^2_{W_{v,k_c}}
++w_{path}\Vert P_{\perp,k_c}\big(p_{C_R}(q_{k_c})-\hat p_b(t_c)\big)\Vert^2\\
+&+\rho s_v+\rho_\tau\sum_k\mathbf 1^\top s_{\tau,k}\\
 \text{s.t.}\quad
-&x_0=\hat x(t_{eff}),\qquad \mathbf u=E\tilde{\mathbf u},\\
+&x_0=\hat x(t_s)\quad(\text{따르는 구간을 }t_s\text{에서 평가}),\qquad \mathbf u=E\tilde{\mathbf u},\\
 &q_{\min}+m_q\le q_{k}\le q_{\max}-m_q,\quad
 |\dot q_{k}|\le\eta_v\dot q_{\max},\\
-&\big|\tau^{lin} _ k\big|\le\eta' _ \tau\tau_{\max}+s_{\tau,k},\quad s_{\tau,k}\ge0,\\
-&\dot q_{N_s}=0,\quad\ddot q_{N_s}=0,\qquad
+&\big|\tau^{lin} _ k\big|\le\eta' _ \tau\tau_{\max}+s_{\tau,k},\quad s_{\tau,k}\ge0
+\quad(k=0,\dots,N),\\
+&\Vert\hat v_b(t_c)-v_{C_R,k_c}\Vert_\infty\le v_{rel,\mathrm{allow}}+s_v,\quad s_v\ge0,\\
+&\dot q_{N}=0,\quad\ddot q_{N}=0,\qquad
 \Vert q_{k}-\bar q_{k}\Vert_\infty\le\delta_{tr}.
 \end{aligned}}
 $$
 
+$v_{C_R,k_c}$, $W_{v,k_c}$, $w_\Delta$ 는 §1.3 의 식 그대로다.
+
 | 기호 | 뜻 |
 |---|---|
-| $N_s$, $\Delta_s$ | 정지 구간의 노드 수와 간격. 이 절에서는 $\Delta$ 자리에 $\Delta_s$ 를 쓴다 |
-| $x_0=\hat x(t_{eff})$ | 효력 시각의 기준 상태 $(q,\dot q,\ddot q)$ 예측. 격자는 $t_c+k\Delta_s$ 이고 포구 전 계산은 $t_{eff}=t_c$ (DECEL 진입 시각), 포구 뒤 재계획은 파이프라인 지연 뒤의 첫 격자점이다 (계획 MD-10 · MD-28). 진입 직전의 기준과 이어져야 한다 (v1 L7 G7-B) |
-| $p_c$, $P_\perp$ | 포구점과, 포구 순간의 손 속도 방향에 수직인 성분을 뽑는 사영 $I-\hat d\hat d^\top$ |
-| $w_\perp$ | 손이 v1 의 직선 경로에서 옆으로 벗어나는 것에 대한 가중 — 선택 항이며 0 이면 경로는 자유다 (사용자 승인 2026-09-29) |
+| 격자 | $t_c$ 에 고정한다. 정지 구간은 $t_c+k\Delta_s$ ($k=0,\dots,N_s$), 포구 전은 음의 $k$ 쪽으로 넓힌다. 노드 번호 $0,\dots,N$ 은 효력 시각 $t_s$ 부터 센다 |
+| $k_c$ | 포구 노드 ($t_{k_c}=t_c$). 포구 전 계획에서는 $k_c\gt0$ 이다. 정지 도중의 재계획에는 포구 노드가 없으므로 포구 항이 빠지고, 노드 수 $N_s-k$ 의 정지 구간만 남는다 (계획 MD-31) |
+| $\Delta_a$, $\Delta_s$ | 포구 전 노드 간격과 정지 구간 노드 간격. 격자 구성은 미정 (아래 "격자와 지평") |
+| $N_s$, $\Delta_s$ | 정지 구간의 노드 수와 간격. 출하값 $N_s$ 14 · $\Delta_s$ 0.025 s (계획 MD-24) |
+| $T_s=N_s\Delta_s$ | 정지 구간 길이 (0.35 s). 지평 전체가 아니다 — 지평은 APPROACH 부터이고 포구 전 구간을 포함한다 |
+| $x_0=\hat x(t_s)$ | 따르는 구간을 효력 시각 $t_s$ 에서 평가한 $(q,\dot q,\ddot q)$. APPROACH 진입 때 팔은 대기 자세에 정지해 있으므로 첫 계획의 $x_0$ 는 정확하다. 이후 재계획은 따르는 자기 구간에서 평가하므로 외삽이 없다 (계획 MD-45) |
+| $\hat p_b$, $\hat v_b$, $\Sigma_p$ | estimator 의 예측 — planner 의 입력 |
 
-- 비선형은 토크 행과 $w_\perp$ 항의 FK 뿐이다. 토크 행은 §1.2 의 1차 선형화이고 slack 은 §1.3 과 같다.
+**격자와 지평.** 결정 대기 (계획 [#660](https://github.com/hyujun/rtc-framework/issues/660) 결정 5). 지평은 APPROACH 부터 정지 끝까지이고, 정지 끝은 $t_c+N_s\Delta_s$ 에 고정한다 (계획 MD-31). 두 안 가운데 하나를 계산 시간 spike (계획 E1-F07) 로 고른다. §1.2 의 $\Delta$ 와 $\Delta_s$ 를 맞추는 것도 이 결정에 속한다.
+
+| 안 | 포구 전 | 정지 구간 | 노드 수 |
+|---|---|---|---|
+| A | $\Delta_a$ 0.05 s | $\Delta_s$ 0.025 s × 14 | 최대 26 |
+| B | 0.05 s | 0.05 s × 7 | 최대 19 |
+
+- **문제 크기.** $n=6$ · 7 이고 노드 수는 위 결정을 따른다. 현재 코어 (E1-F01) 의 부등식 행은 $5nN$, 종단 등식은 $2n$ 이다 — $n=7$, $N=26$ 이면 부등식 910 행이다.
+- **포구 시각.** $t_c$ (와 $p_c$ · $a_d$) 는 v1 L3 의 탐색이 고른 plan 에서 온다 (계획 MD-45). MPC 는 그 $t_c$ 하나에 대해 푼다 — §1.3 의 바깥 루프가 없다. 알려진 한계: v1 의 후보 순위와 $\gamma_f$ 는 soft-catch DS rollout (L3 §4.8) 에서 나온다. `mpc` 에서 실제로 따르는 궤적은 DS 가 아니라 MPC 의 것이다. 후보 선택을 MPC 로 옮기는 것 (계획기 interface, ARCH-3) 은 계획 E3-F01 ([#640](https://github.com/hyujun/rtc-framework/issues/640)) 에 남는다.
+- **상대속도 목표.** 기본은 §1.3 의 형태 — $\hat v_b$ 를 방향별 가중 $W_v$ 로 맞추고 $\gamma$ 는 해의 결과 — 다 (계획 [#660](https://github.com/hyujun/rtc-framework/issues/660) 결정 7). v1 과 같은 목표 $\gamma_f\hat v_b$ 는 조정 선택지로 둔다 (계획 E1-F10 [#663](https://github.com/hyujun/rtc-framework/issues/663)).
+- $\mathcal K_c=\lbrace k_c\rbrace$ 에서 경로 이탈 항은 포구 위치 항의 수직 성분과 겹친다. 두 가중은 함께 조정한다.
+- 이전 판의 정지 경로 항 $w_\perp$ (손이 v1 의 직선 경로에서 옆으로 벗어나는 것) 는 선택 항이고 기본 0 이다 (사용자 승인 2026-09-29).
+- 비선형은 포구 항의 FK · 접근축 · 손 속도와 토크 행뿐이다. 모두 §1.2 의 1차 선형화이고 slack 은 §1.3 과 같다.
 - 손은 기준 자세로 잠근 축소 모델이다 (§0.1). p1b 는 폐쇄 체인 손이라 이 처리가 필요하다.
-- v1 의 정지 시간은 포구 속도를 감속도 (`a_dec`) 로 나눈 값이라 vision 간격보다 짧을 수 있다. 그래서 $\Delta_s$ 는 $\Delta$ 와 따로 정한다 (사용자 승인 2026-09-29). 출하값은 $N_s$ 14 · $\Delta_s$ 0.025 s (정지 시간 0.35 s, 계획 MD-24) 다. 비용에 시간 항이 없으므로 최적해는 지평 전체를 쓴다 — $N_s\Delta_s$ 는 정지 시간의 상한이 아니라 **정지 시간 그 자체**다 (계획 MD-21).
-- 정지 구간은 포구 전에 미리 계산한다 (계획 E1-F03). $x_0$ 는 RT 가 보고한 명령 상태를 효력 시각까지 외삽한 값이다 (계획 MD-28). 정지 끝은 $t_c+N_s\Delta_s$ 에 고정하고, 포구 뒤 재계획은 노드 수 $N_s-k$ 로 푼다 (계획 MD-31).
-- 출력과 RT 평가는 §1.5 와 같다. DECEL 에서는 soft-catch DS 를 건너뛰고 $q_{ref}$ 에서 만든 pose · twist 와 관절 기준을 CLIK 에 넣는다 (계획 MD-3).
-- 안전망은 §1.3 의 표와 같다. v1 의 closed-form DECEL 이 기본값으로 남고 MPC 는 YAML 로 켠다.
-- 비교 기준은 계획의 게이트 G-1 이다.
+- v1 의 정지 시간은 포구 속도를 감속도 (`a_dec`) 로 나눈 값이라 vision 간격보다 짧을 수 있다. 그래서 $\Delta_s$ 는 $\Delta$ 와 따로 정한다 (사용자 승인 2026-09-29). 정지 구간의 비용에 시간 항이 없으므로 최적해는 정지 구간 전체를 쓴다 — $T_s$ 는 정지 시간의 상한이 아니라 **정지 시간 그 자체**다 (계획 MD-21).
+- 출력과 RT 평가는 §1.5 와 같다. `mpc` 에서 soft-catch DS 는 돌지 않는다 — APPROACH 부터 정지까지 $q_{ref}$ 에서 만든 pose · twist · 접근축과 관절 기준 (null space 자세 목표) 을 CLIK 에 넣는다 (계획 MD-3 을 MD-45 가 넓힘).
+- 안전망은 §1.3 의 표와 같다. 기본값은 `closed_form` 이고 MPC 는 YAML 로 켠다. `mpc` 에서 따를 구간이 없으면 `ABORT_SAFE` 다 (계획 MD-44).
+- **이름.** `supervisor.decel.mode`, `planner.decel_mpc.*`, `DecelMpc`, `DecelPlanSnapshot` 의 Decel 은 역사적 이름이다. `mode: mpc` 에서 범위는 APPROACH 부터 정지까지이고, `supervisor.decel.mode` 는 실제로 planner 를 고른다 (계획 MD-48).
+- 비교 기준은 계획의 게이트 G-1 이다. MPC arm 은 APPROACH–정지 MPC 다 (§6.5).
+- 이전 판 (v0.4a) 의 정지 구간 환원형 — 포구 항을 끄고 $k_c=0$ — 은 코어의 회귀 케이스로 남는다 (E1-F01 의 동작, §4 항목 9).
 
 ### 1.7 예측 격자 sweep
 
@@ -655,27 +703,29 @@ $$
 | 항목 | MPC 쪽 | CLIK 쪽 |
 |---|---|---|
 | 오른손 | 게시하지 않음 | RT 가 $q_{ref}$ 에서 FK 로 $T^d_R,V^{ff} _ R$ 를 만든다. world LWA 6행 과제 |
-| 왼손 | 게시하지 않음 | RT 가 $q_{L,ref}$ 에서 FK 로 $T^d_L,V^{ff} _ L$ 를 만든다. 몸통 frame 6행 과제 — waist 열 0 |
+| 왼손 (G1 구성에서만) | 게시하지 않음 | RT 가 $q_{L,ref}$ 에서 FK 로 $T^d_L,V^{ff} _ L$ 를 만든다. 몸통 frame 6행 과제 — waist 열 0 |
 | 관절 기준 | 노드별 $q_k,\dot q_k,\ddot q_k$ (전체 $n$) — 유일한 궤적 payload | 닫힌식으로 $q_{ref},\dot q_{ref}$ 평가. 자세 과제 $\dot q_n$ — waist 분배·왼팔 counter-swing의 유일한 전달 경로 |
 | 한계 | $\eta_v,\eta' _ \tau\lt1$ — 실측 추종 오차에서 정한 여유 | 정격· $\eta_\tau=0.8$ (`dynamic`, 전체 $M,h$) |
 | 시간 | 노드 $t_s+k\Delta$, 격자는 $t_c$ 에 고정, 절대 steady ns (D-2) | now_lead에서 닫힌식 평가 |
 | 연속성 | $x_0$ = 직전 궤적의 $t_s$ 값 (전체 $n$) | 채택 규칙: token·나이· $t_s$ |
-| 손·FSM | $t_c,t_{cmd},\gamma_f$ (기존 필드) | 손 시퀀서·슈퍼바이저 불변 (왼손은 $q_{pre}$ / $q_{open}$ 유지) |
+| 손·FSM | $t_c,t_{cmd},\gamma_f$ (기존 필드) | 손 시퀀서·슈퍼바이저 불변 (G1 구성에서만: 왼손은 $q_{pre}$ / $q_{open}$ 유지) |
 
 ---
 
 ## 4. Sanity check
 
-1. **차원.** $n_w=3,\enspace n_L=n_R=7$이면 $n=17$, 과제 행 12, 영공간 5 → 자세 과제 없이는 CLIK QP가 유일해가 아니다. MPC 결정변수 $nN=340$; move blocking(오른팔·waist $k\lt k_c$ 1노드, 나머지 3노드)으로 대략 $n_wk_c+n_Rk_c+\lceil(N-k_c)/3\rceil(n_w+n_R)+\lceil N/3\rceil n_L$ ≈ 170–210. 부등식 행은 move blocking 으로 줄지 않는다 (§6 M-6).
+1. **차원.** $n_w=3,\enspace n_L=n_R=7$이면 $n=17$, 과제 행 12, 영공간 5 → 자세 과제 없이는 CLIK QP가 유일해가 아니다. MPC 결정변수 $nN=340$; move blocking(오른팔·waist $k\lt k_c$ 1노드, 나머지 3노드)으로 대략 $n_wk_c+n_Rk_c+\lceil(N-k_c)/3\rceil(n_w+n_R)+\lceil N/3\rceil n_L$ ≈ 170–210. 부등식 행은 move blocking 으로 줄지 않는다 (§6 M-6). 단일 팔 ($n=6$ · 7) 은 과제 행 6 에 영공간 0 · 1 이고, MPC 의 크기는 §1.6 이다.
 2. **단위.** $e_p$ [m], $e_o$ [rad], $K$ [1/s], $v$ [rad/s]. $W_R,W_L$의 위치·자세 블록은 각각 $\mathrm{m}^{-2},\mathrm{rad}^{-2}$ 기준 무차원화. MPC의 $R$은 $(\mathrm{rad/s^3})^{-2}$, $W_p$는 $\mathrm{m}^{-2}$, $W_v$는 $(\mathrm{m/s})^{-2}$, $W_L^{rest}$는 $\mathrm{rad}^{-2}$, $s_{\dot k}$는 N·m (waist 허용 토크의 일정 비율).
-3. **극한 — 왼팔 고정.** $W_L^{rest}\to\infty$(또는 왼팔 box 폭 0), $W_{\dot k}=0$이면 v0.1 정식화($q_L\equiv q_L^{rest}$)로 환원되고, 자기충돌은 왼팔 capsule 상수·공–왼팔 거리는 $q_w$만의 함수가 된다.
+3. **극한 — 왼팔 고정** (G1 구성). $W_L^{rest}\to\infty$(또는 왼팔 box 폭 0), $W_{\dot k}=0$이면 v0.1 정식화($q_L\equiv q_L^{rest}$)로 환원되고, 자기충돌은 왼팔 capsule 상수·공–왼팔 거리는 $q_w$만의 함수가 된다.
 4. **극한 — 단일 frame.** 항목 3에 더해 waist 잠금, $W_L,W_n\to0$, $K_q\to0$이면 CLIK QP는 기존 `ClikReferenceGenerator`(6행, 위치∩속도 box)와 같은 문제다 — golden 회귀의 기준.
 5. **정지.** $V^{ff}=0$, $e_R=e_L=0$, $q_c=q_{ref}$이면 $v^\ast=0$, 명령 불변. MPC는 $\hat v_b=0$ · $\hat p_b=p_{C_R}(x_0)$ · $q_L=q_L^{rest}$이면 $u=0$이 최적이고 $\dot k_G=\dot A_G\dot q=0$.
-6. **결합 부호.** 왼손 과제를 world에 두면 ${}^WJ_{C_L}=[ J_{L,w}\quad J_{L,L}\quad0 ]$로 waist 열이 생겨, waist yaw $\omega_w$가 왼손에 $\omega_w\times r_L$의 속도 오차를 만들고 $W_L$이 그것을 지우려 waist를 끌어당긴다. 몸통 frame 선택이 이 결합을 구조적으로 0으로 만든다.
-7. **각운동량 상쇄 확인.** 왼팔 고정($W_L^{rest}\to\infty$)에 $W_{\dot k}\to\infty$를 두면 오른팔 속도가 0 쪽으로 눌려 포구가 실패해야 한다. 왼팔을 풀면 counter-swing이 나타나고 $\max_k\Vert\dot k_G\Vert$가 줄면서 포구 항은 거의 그대로여야 한다. 그렇지 않으면 선형화나 $A_G$ frame이 틀린 것이다.
+6. **결합 부호** (G1 구성). 왼손 과제를 world에 두면 ${}^WJ_{C_L}=[ J_{L,w}\quad J_{L,L}\quad0 ]$로 waist 열이 생겨, waist yaw $\omega_w$가 왼손에 $\omega_w\times r_L$의 속도 오차를 만들고 $W_L$이 그것을 지우려 waist를 끌어당긴다. 몸통 frame 선택이 이 결합을 구조적으로 0으로 만든다.
+7. **각운동량 상쇄 확인** (G1 구성). 왼팔 고정($W_L^{rest}\to\infty$)에 $W_{\dot k}\to\infty$를 두면 오른팔 속도가 0 쪽으로 눌려 포구가 실패해야 한다. 왼팔을 풀면 counter-swing이 나타나고 $\max_k\Vert\dot k_G\Vert$가 줄면서 포구 항은 거의 그대로여야 한다. 그렇지 않으면 선형화나 $A_G$ frame이 틀린 것이다.
 8. **일치.** 제약이 비활성이고 $q_c=q_{ref}$ 이며 자세 과제가 $\dot q_{ref}$ 를 feedforward 로 받으면 CLIK 의 해는 $v^\ast=\dot q_{ref}$ 이고 두 손 과제와 자세 과제의 잔차가 모두 0 이어야 한다 (§1.5). 0 이 아니면 RT 의 FK frame 이나 몸통 기준 변환이 틀린 것이다. feedforward 가 없는 현 CLIK 에서는 FK 일관성 ($T(q_{ref})=T^d$, $J\dot q_{ref}=V^{ff}$) 만 단언한다 (계획 MD-30).
-9. **환원.** §1.6 의 환원형에서 $w_\perp=0$, $w_\Delta=0$, 토크 행과 한계 비활성, $x_0$ 의 가속 0 이면 해는 관절별로 독립인 최소 jerk 정지 궤적이다. 관절 하나의 닫힌식 해와 대조한다.
-10. **충돌 회귀.** 왼팔이 counter-swing할 때 팔–팔 거리와 공–왼팔 거리 제약이 활성화되는 노드가 진단에 찍혀야 한다. 활성 0이면 왼팔이 실제로 움직이지 않은 것이다.
+9. **환원 — 정지 구간.** §1.6 의 문제에서 포구 항을 끄고 ($k_c=0$) $w_\perp=0$, $w_\Delta=0$, 토크 행과 한계 비활성, $x_0$ 의 가속 0 이면 해는 관절별로 독립인 최소 jerk 정지 궤적이다. 관절 하나의 닫힌식 해와 대조한다 (E1-F01 코어의 회귀).
+10. **충돌 회귀** (G1 구성). 왼팔이 counter-swing할 때 팔–팔 거리와 공–왼팔 거리 제약이 활성화되는 노드가 진단에 찍혀야 한다. 활성 0이면 왼팔이 실제로 움직이지 않은 것이다.
+11. **단일 팔 = 제거 항 0.** §1.3 의 문제에서 waist · 왼팔을 잠그고 §1.6 이 제거한 항의 가중을 0 으로 두면 ($w_w=0$, $W_L^{rest}=0$, $W_{\dot k}=0$, 충돌 · 공–왼팔 행 없음) 해는 §1.6 의 해와 같아야 한다.
+12. **Additive 회귀.** 코어에 G1 항을 더해도 그 가중을 0 으로 둔 단일 팔 케이스의 해는 바뀌지 않아야 한다. 바뀌면 항의 조립이 기존 항을 건드린 것이다 (계획 MD-46 · MD-49).
 
 ---
 
@@ -690,15 +740,19 @@ $$
 | 속도 미분 | `getFrameVelocityDerivatives` 의 결과가 $H_v$ 와 같은지 (유한 차분 대조) | §1.2 |
 | RT 의 FK | **확인됨** (E1-F02 · E1-F04, 계획 §8) — 속도 FK 한 번으로 $T^d$ 와 $V^{ff}$ 를 함께 얻고 할당 0. payload 복사를 더해 1 kHz writer 경합에서 p99 0.5 µs (개발 PC). E1-F04 에서 RT tick 에 배선됐고, 샘플러의 sub-model 과 CLIK 의 통합 모델이 같은 $q$ 에서 catch frame 을 1e-9 안으로 같게 준다 (G7-B′ 테스트) | §1.5 |
 | 재계획 주기 | 예측 메시지 주기의 실측값과 흔들림 (v1 실측 30 Hz, 드롭 시 15 Hz) | §1.2 |
-| 환원형 | **정함** (계획 MD-24 · MD-28 · MD-31) — $N_s$ 14 · $\Delta_s$ 0.025 s, $x_0$ 는 RT 명령 상태의 외삽, 정지 끝 고정. 예측 오차는 E1-F04 의 실시계 테스트 한 투척에서 진입 게이트 $\rho$ 1.13 – 1.18 ($\vert\Delta\dot q\vert$ 0.22 rad/s 가 지배, $t_{pre}$ 0.1 s 앞 예측) — 판단은 E1-F05 뒤 200 발로 한다 (계획 MD-41) | §1.6 |
+| 단일 팔 구성 | **정함** (계획 MD-45 · MD-46) — §1.3 에서 dual-arm · waist 항을 뺀 것이고 지평은 APPROACH 부터 정지까지다. 정지 구간의 $N_s$ 14 · $\Delta_s$ 0.025 s 와 정지 끝 고정은 유지한다 (MD-24 · MD-31). v0.4a 의 진입 $x_0$ (RT 명령 상태의 외삽, MD-28) 는 E1-F04 sim smoke 에서 진입 게이트가 20/20 거부해 ($\rho$ 4.1 – 10.1) APPROACH 진입으로 대체됐다 | §1.6 |
+| 단일 팔의 $\Sigma_p$ | 단일 팔 경로에서 예측 공분산을 쓸 수 있는지. 없으면 $W_p$ · $w_\Delta$ 를 상수로 두고 편차로 기록한다 | §1.6 |
+| 손마다의 $\mathcal K_c$ · $v_{rel,\mathrm{allow}}$ | 손 폐쇄 시간과 흡수 능력에서 정할 값. 단일 팔은 $\mathcal K_c=\lbrace k_c\rbrace$ | §0.2, §1.6 |
+| 격자 | 포구 전 격자 (A: $\Delta_a$ 0.05 s + $\Delta_s$ 0.025 s, B: 전 구간 0.05 s) 와 §1.2 의 $\Delta$ · $\Delta_s$ 맞춤 — 계획 [#660](https://github.com/hyujun/rtc-framework/issues/660) 결정 5, 계산 시간 spike 로 | §1.6, §1.5 payload 용량 |
+| 상대속도 목표 | 기본은 §1.3 의 형태, $\gamma_f\hat v_b$ 는 조정 선택지 — 계획 [#660](https://github.com/hyujun/rtc-framework/issues/660) 결정 7 | §1.6 |
 | sweep 조건 | 여덟 조건의 profile 이 load 되는지, 점 수가 늘 때 발행 주기가 유지되는지 | §1.7 |
 | 후보 수 | 사전 거르기 뒤 한 주기에 푸는 후보 수 $K_{\max}$ 와 예산 | §1.3 바깥 루프 |
 | 토크 미분 | **확인됨** (E1-F01, #627) — `computeRNEADerivatives` 는 할당 0 (C `malloc` 까지 보는 게이트). 노드 12 개 선형화 p50 약 40 µs (6 자유도) · 50 µs (7 자유도), Release. 출력의 $M$ 은 상삼각만 채워지고 armature 는 출력 대각에 **더해지므로** 매 호출 0 으로 지운다 | §1.2 |
 | 축소 모델 | 손을 잠근 모델의 관성이 sim 의 손 자세 범위에서 얼마나 벗어나는가 | §0.1 |
 | armature | **정함** (계획 MD-25) — 제어 모델에 넣지 않는다. G1 URDF 에는 없고 MJCF 에만 있다 | §1.3 토크 행 |
-| DECEL 중 RT 추종 | MPC 정지 구간을 실제로 따르게 할지 (L7 전이, E-8) | §1.4 |
+| RT 추종 | **정함** (계획 MD-45) — `mpc` 에서 RT 는 APPROACH 부터 HOLD 까지 MPC 구간을 따른다 (계획 E1-F09 [#662](https://github.com/hyujun/rtc-framework/issues/662)). v0.4a 의 "DECEL 중 추종" 을 넓혔다 | §1.4, §1.6 |
 | `PlannerRtState` | 직전 채택 plan_id·현재 모드·전체 $q$ | §1.3 $x_0$ 계산 |
-| solve time | move blocking 후 (선형화 + condensing + dense QP) × $t_c$ 후보의 p99. 반복은 주기당 1회 | `budget_s` 20 ms 게이트 |
+| solve time | move blocking 후 (선형화 + condensing + dense QP) × $t_c$ 후보의 p99. 반복은 주기당 1회. 단일 팔은 후보 하나 (§1.6) | `budget_s` 20 ms 게이트 |
 | PlanSnapshot 크기 | 노드 payload ≈ 8.6 KB의 SeqLock 복사 비용 | tick 예산 |
 | waist backend | device 종류·servo 지연 ($T_{arm}$ 관절군별) | lead 보상 |
 
@@ -731,7 +785,7 @@ $$
 | 회전 오차 정의 | §2.1 | TSID 의 world 기준 모드와 같다. 부호 · frame 오류는 찾지 못했다 | 본문 |
 | 몸통 frame 과제의 waist 열 0 | §0.3 | G1 모델에서 waist 세 관절이 모두 `torso_link` 상류이고 양 어깨가 `torso_link` 의 자식이다. 상대 Jacobian [Lewis1990] [Jamisola2015] | 로컬 · 본문 |
 | 중심 운동량 행렬의 계산 | §1.4 | 설치된 Pinocchio 에 `computeCentroidalMap` · `computeCentroidalMapTimeVariation` 이 있다. 고정 베이스 모델에서도 정의된다 | 로컬 |
-| 단일 팔에서 성공률 상승을 기대하지 않음 | 계획 §3.2 | [Dong2020] 은 QP 계획 75 % 와 사다리꼴 계획 72.5 % (각 40 회) 로 유의한 차이가 없다고 보고한다. [Bauml2010] 은 실패의 주원인을 예측 오차로 든다 | 본문 |
+| 단일 팔에서 성공률 상승을 기대하지 않고 비열등을 목표로 함 | 계획 §3.2 · G-1 | [Dong2020] 은 QP 계획 75 % 와 사다리꼴 계획 72.5 % (각 40 회) 로 유의한 차이가 없다고 보고한다. [Bauml2010] 은 실패의 주원인을 예측 오차로 든다. APPROACH–정지 MPC 는 포구 궤적 자체를 만들므로 성공률에 직접 영향을 준다 (계획 MD-45) — 비열등은 조정으로 맞춘다 (계획 E1-F10 [#663](https://github.com/hyujun/rtc-framework/issues/663)) | 본문 |
 
 ### 6.2 고칠 것 — v0.3 에 반영
 
@@ -789,7 +843,10 @@ W-1 의 지적은 고정 베이스에 한정된 것이다. 이 작업은 floatin
 |---|---|---|---|
 | 검정 | paired 이진 결과의 단측 비열등 검정을 쓴다. McNemar 검정은 "차이 없음" 을 기각하지 못했다는 것만 말하므로 비열등의 근거가 아니다 | [Tango1998] [Liu2002] | 본문 · 서지 |
 | 시행 수 | 필요한 N 은 비열등 한계와 불일치율로 정해진다. 불일치율은 같은 투척을 v1 끼리 비교해 먼저 잰다 | [Tango1998] | 본문 · 자체 |
-| 성공 정의 | DECEL 은 포구 뒤에만 돌므로, 성공 정의에 "DECEL 이 끝날 때까지 공을 쥐고 있음" 이 들어가야 차이가 보인다 | — | 자체 |
+| 비교 대상 | 두 planner — `closed_form` 과 APPROACH–정지 MPC — 를 비교한다. estimator · supervisor · CLIK 은 공유한다 (계획 MD-46) | — | 자체 |
+| 성공 정의 | MPC 가 포구 궤적을 만들므로 성공률이 직접 영향을 받는다. 정지 구간도 MPC 가 만들므로 "정지가 끝날 때까지 공을 쥐고 있음" 은 성공 정의에 남는다 | — | 자체 |
+| 목표와 조정 | 목표는 비열등이고 조정으로 맞춘다 (계획 E1-F10 [#663](https://github.com/hyujun/rtc-framework/issues/663)). 조정에 쓰는 투척 seed 는 G-1 의 seed 와 분리한다 | — | 자체 |
+| E3 와의 관계 | G-1 은 더 이상 E3 의 관문이 아니다. E3 는 g1_p1b 가 준비되면 (E2) dual-arm · waist 항을 더하는 단계다 (계획 MD-47) | — | 자체 |
 | 한계의 단위 | 비열등 한계가 절대값인지 상대값인지 적는다. baseline 이 낮은 로봇에서 둘의 차이가 크다 | — | 자체 |
 
 ---
