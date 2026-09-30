@@ -3,8 +3,8 @@
 //
 // Replaces nothing yet — the closed-form DECEL (decel_target.hpp) and the
 // QP-independent joint stop stay the safety nets (MPC_DUALARM_PLAN MD-11). This
-// is the numeric core the planner thread will call (E1-F03); it knows no ROS,
-// no controller, no robot.
+// is the numeric core the planner thread calls through DecelPlanner
+// (decel_planner.hpp, E1-F03); it knows no ROS, no controller, no robot.
 //
 // ── Problem ───────────────────────────────────────────────────────────────────
 // State x_k = (q_k, q̇_k, q̈_k) ∈ R^{3n} at nodes k = 0..N spaced Δ, input the
@@ -37,7 +37,7 @@
 //  • The horizon IS the stopping time. The cost has no time term, so the
 //    optimum always uses all of N·Δ: a longer horizon means a gentler but
 //    longer stop, never an earlier one. Choosing N and Δ is the caller's
-//    decision (E1-F03), not this core's.
+//    decision (`planner.decel_mpc.horizon`, MD-24), not this core's.
 //  • Blocks: B ≥ 3. The terminal equality has rank 2n for any B ≥ 2; B = 2
 //    leaves no freedom (the terminal rows fix every block), so B ≥ 3 is the
 //    freedom rule, rejected as kBlocksTooFew. The rank itself is re-checked on
@@ -72,7 +72,7 @@
 //    its public update() copies the vector arguments and solve() allocates a
 //    few times per call (~7–18 C mallocs per Solve at n = 7). That is a KNOWN
 //    RT-1 gap shared with every QPSolverWrapper user, accepted for E1-F01 and
-//    tracked as a follow-up issue — not a property of this file.
+//    tracked as #654 (MD-22 / MD-23) — not a property of this file.
 //  • The model is the arm in pinocchio velocity order (nq == nv, revolute /
 //    prismatic joints only). Mapping device order to that order is the
 //    caller's job (the same rule CatchPoseIk documents).
