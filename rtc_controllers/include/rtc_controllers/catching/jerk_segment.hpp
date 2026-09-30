@@ -12,10 +12,12 @@
 //
 // This is EXACT for nodes produced by the MPC's own triple-integrator model
 // (the nodes are consistent), which is why the RT sampler (E1-F02) and the
-// planner's warm-start shift (E1-F03) evaluate this instead of interpolating:
-// both then reproduce the trajectory the QP optimised, and the result is C² at
-// every node. For inconsistent nodes (hand-made, or corrupted) position and
-// velocity jump at node k+1 — the caller that builds nodes owns consistency.
+// planner's own-segment prediction (E1-F03, MD-28 path (i)) evaluate this
+// instead of interpolating: both then reproduce the trajectory the QP
+// optimised, and the result is C² at every node. (The planner's warm-start
+// shift needs no evaluation: the stop end is fixed, so it is a column copy.)
+// For inconsistent nodes (hand-made, or corrupted) position and velocity jump
+// at node k+1 — the caller that builds nodes owns consistency.
 //
 // Pure numeric core: Eigen only, no heap, noexcept, fail-closed.
 //  • Δ ≤ 0 or non-finite, and non-finite t, are invalid (NUM-2) — outputs are
