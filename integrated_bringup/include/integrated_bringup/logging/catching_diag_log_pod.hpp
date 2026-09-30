@@ -223,6 +223,43 @@ struct CatchingDiagLogPod {
   double wait_pose_refuse_value{0.0};
   std::array<double, kMaxArmJoints> wait_pose{};
 
+  // ── Decel MPC follower (MPC E1-F04; CSV columns and the state message are
+  // E1-F05's, MD-41) ─────────────────────────────────────────────────────────
+  /// What happened to a decel segment this tick. One value per tick: the
+  /// law's (a switch, or the reason there was nothing to follow) wins over
+  /// the lane's (an admission), which ran earlier in the tick.
+  enum class DecelEvent : std::uint8_t {
+    kNone = 0,
+    kAdmitted = 1,      ///< a segment entered the pending slot
+    kDeferred = 2,      ///< admissible, left in the box: the slot is full (MD-37)
+    kWorkspace = 3,     ///< refused: a node's catch frame outside catch_box (MD-43)
+    kSwitched = 4,      ///< the pending segment became the followed one
+    kGateRefused = 5,   ///< pending dropped: the continuity gate refused it (MD-39)
+    kPlanMismatch = 6,  ///< a segment does not end the followed plan (MD-35)
+    kSampleFailed = 7,  ///< a segment could not be sampled at now_lead + h
+    kNotDue = 8,        ///< DECEL entry with a pending segment whose node 0 is later
+    kNoSegment = 9,     ///< DECEL entry with nothing pending (→ ABORT_SAFE, MD-44)
+  };
+  /// The lane judged the box this tick (mode mpc, COMMITTED / CLOSING / DECEL);
+  /// `decel_refusal` is meaningful only then (rtc::catching::DecelRefusal).
+  bool decel_judged{false};
+  std::uint8_t decel_refusal{0};
+  DecelEvent decel_event{DecelEvent::kNone};
+  /// The RT stepped the CLIK toward a segment sample this tick; seq and k0
+  /// are the followed segment's, the targets its sample at now_lead + h.
+  bool decel_following{false};
+  std::uint32_t decel_seq{0};
+  std::int32_t decel_k0{0};
+  std::array<double, 3> decel_p_d{};
+  std::array<double, 3> decel_v_ff{};
+  bool decel_held{false};  ///< past the last node (the stop is held)
+  /// The switch gate's account on a tick that judged one (kSwitched or
+  /// kGateRefused): ρ, the largest |Δq|, |Δq̇| and the refusing joint (−1).
+  double decel_rho{0.0};
+  double decel_dq_max{0.0};
+  double decel_dqd_max{0.0};
+  std::int32_t decel_gate_joint{-1};
+
   // ── Fingertip sensors (D-24) ─────────────────────────────────────────────
   // `tip_age_s` is filled from S5.4 because it is a MEASUREMENT — the D-24
   // receipt instant minus now, needing no policy. `tip_fresh` and

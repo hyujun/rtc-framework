@@ -302,6 +302,13 @@ void DemoCatchingController::DeclareProfileParameters() {
           "D-S9-D1 motion deadline for a stop (ABORT_SAFE ramp, RETREAT stop stage) [s]");
   declare("supervisor.deadline.return_s", params_.supervisor_deadline_return_s.value,
           "D-S9-D1 motion deadline for RETREAT's return to the wait pose [s]");
+  // The DECEL law as run (MPC MD-44): one per configuration, never mixed.
+  declare(
+      "supervisor.decel.mode",
+      std::string(decel_mode_ == rtc::catching::CatchingDecelMode::kMpc ? "mpc" : "closed_form"),
+      "MPC MD-44: the DECEL law — closed_form (v1 L7) or mpc (the decel MPC's stop segment)");
+  declare("supervisor.decel.switch_margin", decel_switch_margin_,
+          "MPC MD-39: rho_max of the decel segment switch gate (mode mpc)");
   declare("robot.arm.accel_limits_path", accel_limits_path_,
           "the profile's D-16 box file (robot.arm.accel_limits_path): absolute, or relative to "
           "the share directory of robot.arm.accel_limits_package. As of the FIRST configure "
@@ -554,6 +561,7 @@ void DemoCatchingController::BuildClikBoxes(int nv,
   if (v_complete) {
     cfg.v_limit_per_joint = v_limit;
   }
+  clik_v_box_complete_ = v_complete;
 
   // ── Acceleration box (D-16) ─────────────────────────────────────────────
   // Only the ARM has a derived box — it is what the torque limits produced.
@@ -762,6 +770,7 @@ void DemoCatchingController::SetupArmCommand() {
   clik_.SetPostureGains(params_.joint_cmd_k_posture.value, params_.joint_cmd_k_posture.value);
 
   q_posture_ = Eigen::VectorXd::Zero(model.nq);
+  q_posture_decel_ = Eigen::VectorXd::Zero(model.nq);
   q_eval_ = Eigen::VectorXd::Zero(model.nq);
   v_eval_ = Eigen::VectorXd::Zero(nv);
 
@@ -997,6 +1006,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     }
     report_ =
         rtc::catching::ValidateCatchingParams(params_, 1.0 / GetDefaultDt(), real_arm_config_);
+    // The DECEL law (MPC MD-44) — decided here, once, for the whole
+    // configuration: the planner's setup below builds the decel cores only
+    // for it, and the tick never changes it.
+    decel_mode_ = params_.supervisor_decel_mode;
+    decel_switch_margin_ = params_.supervisor_decel_switch_margin;
+    clik_v_box_complete_ = false;
     for (std::size_t i = 0; i < report_.warning_count; ++i) {
       const auto& w = report_.warnings[i];
       RCLCPP_WARN(logger_, "catching config warning: %s — %s", w.key, ReasonText(w.reason));
@@ -1099,6 +1114,13 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                      why);
         return CallbackReturn::SUCCESS;
       }
+    }
+    if (planner_params_.decel.enabled && decel_mode_ != rtc::catching::CatchingDecelMode::kMpc) {
+      // MD-44: under closed_form nothing follows a stop segment, so none is
+      // computed — the planner runs the closed form's part only.
+      RCLCPP_WARN(logger_,
+                  "planner.decel_mpc.enabled is true but supervisor.decel.mode is closed_form: "
+                  "the decel MPC is not built and publishes nothing (set mode: mpc to use it)");
     }
     // The planner's DECISION values (S6-B) — values nobody may guess. Same rule
     // as a consumed TBD: park, name the key, keep the robot up (A-S5-12).
@@ -1214,6 +1236,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       TearDownConfiguredResources();
       return CallbackReturn::FAILURE;
     }
+    SetupDecelFollower();
 
     // The S7 supervisor's values (commit instant, wait pose, stop box, hand
     // sequencer). A configuration whose law is wired but which cannot run a
@@ -1231,6 +1254,27 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    missing != nullptr ? missing : "<unknown>");
       TearDownConfiguredResources();
       return CallbackReturn::SUCCESS;
+    }
+    // MPC MD-34 / MD-44: under mpc every DECEL follows a segment, so a missing
+    // prerequisite would abort every trial at t_c. Parked like any other
+    // profile mistake: the robot comes up, this controller does not activate.
+    if (decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
+      if (const char* why = DecelModeUnmet(); why != nullptr) {
+        sim_only_disabled_ = true;
+        park_reason_ = CatchingParkReason::kDecelModeUnmet;
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: supervisor.decel.mode is mpc but %s. This controller will refuse "
+                     "to activate; the robot still comes up.",
+                     why);
+        TearDownConfiguredResources();
+        return CallbackReturn::SUCCESS;
+      }
+      if (oracle_enabled_) {
+        RCLCPP_WARN(logger_,
+                    "supervisor.decel.mode is mpc under the oracle plan profile: no planner "
+                    "publishes a stop segment here, so every DECEL aborts unless a test writes "
+                    "the decel box");
+      }
     }
     // #537 pre-S10 R3 (Q4): the box every ramp and the CLIK acceleration rows
     // run on is still provisional. Judged only on a box that LOADED — an
@@ -1295,6 +1339,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
                      ? "planner and oracle plan both enabled"
                  : park_reason_ == CatchingParkReason::kDecelMpcInvalid
                      ? "planner.decel_mpc cannot run in this profile"
+                 : park_reason_ == CatchingParkReason::kDecelModeUnmet
+                     ? "supervisor.decel.mode mpc lacks a prerequisite"
                      : "a consumed value is provisional or TBD");
     return CallbackReturn::FAILURE;
   }
@@ -1694,65 +1740,81 @@ bool DemoCatchingController::SetupPlanner() {
   return true;
 }
 
-bool DemoCatchingController::SetupPlannerSearch() {
+bool DemoCatchingController::ResolveCatchSubModel(
+    const char* who, std::shared_ptr<const pinocchio::Model>& model, pinocchio::FrameIndex& frame,
+    std::array<int, rtc::catching::kMaxPlanNv>& device_of_model) {
   const std::string& name = planner_params_.sub_model;
-  std::shared_ptr<const pinocchio::Model> model;
+  if (!builder_) {
+    RCLCPP_ERROR(logger_, "%s: no system model to take sub-model '%s' from", who, name.c_str());
+    return false;
+  }
   try {
     model = builder_->GetReducedModel(name);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(logger_,
-                 "planner: urdf.sub_models has no '%s' (%s) — declare the catch sub-model in the "
+                 "%s: urdf.sub_models has no '%s' (%s) — declare the catch sub-model in the "
                  "robot config (arm root → the catch frame's parent link, R-3)",
-                 name.c_str(), e.what());
+                 who, name.c_str(), e.what());
     return false;
   }
   if (!model || model->nq != model->nv || model->nv <= 0 ||
       model->nv > static_cast<int>(rtc::catching::kMaxPlanNv)) {
-    RCLCPP_ERROR(logger_, "planner: sub-model '%s' is unusable (nq %d, nv %d, capacity %d)",
+    RCLCPP_ERROR(logger_, "%s: sub-model '%s' is unusable (nq %d, nv %d, capacity %d)", who,
                  name.c_str(), model ? model->nq : -1, model ? model->nv : -1,
                  static_cast<int>(rtc::catching::kMaxPlanNv));
+    return false;
+  }
+  try {
+    frame = rtc::catching::ResolveCatchFrame(*model, catch_frame_name_);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "%s: catch frame '%s' is not in sub-model '%s': %s", who,
+                 catch_frame_name_.c_str(), name.c_str(), e.what());
+    return false;
+  }
+  for (pinocchio::JointIndex jid = 1; jid < static_cast<pinocchio::JointIndex>(model->njoints);
+       ++jid) {
+    const int qi = model->joints[jid].idx_q();
+    const std::string& jname = model->names[jid];
+    const auto it = std::find(arm_joint_names_.begin(), arm_joint_names_.end(), jname);
+    if (it == arm_joint_names_.end() || qi < 0 || qi >= model->nv) {
+      RCLCPP_ERROR(logger_,
+                   "%s: sub-model '%s' joint '%s' is not an arm joint of this controller — "
+                   "the catch sub-model must contain the arm's joints only (the hand locked)",
+                   who, name.c_str(), jname.c_str());
+      return false;
+    }
+    device_of_model[static_cast<std::size_t>(qi)] =
+        static_cast<int>(std::distance(arm_joint_names_.begin(), it));
+  }
+  if (model->nv != arm_dof_) {
+    RCLCPP_ERROR(logger_, "%s: sub-model '%s' has %d joints, the arm %d", who, name.c_str(),
+                 model->nv, arm_dof_);
+    return false;
+  }
+  return true;
+}
+
+bool DemoCatchingController::SetupPlannerSearch() {
+  const std::string& name = planner_params_.sub_model;
+  std::shared_ptr<const pinocchio::Model> model;
+  rtc::catching::PlannerModel pm;
+  pinocchio::FrameIndex frame = 0;
+  if (!ResolveCatchSubModel("planner", model, frame, pm.device_of_model)) {
     return false;
   }
   // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
   // Jacobian columns and box rows are model order). The model↔device mapping
   // is carried explicitly instead.
   planner_handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model);
-  pinocchio::FrameIndex frame = 0;
-  try {
-    frame = rtc::catching::ResolveCatchFrame(*model, catch_frame_name_);
-  } catch (const std::exception& e) {
-    RCLCPP_ERROR(logger_, "planner: catch frame '%s' is not in sub-model '%s': %s",
-                 catch_frame_name_.c_str(), name.c_str(), e.what());
-    return false;
-  }
-
-  rtc::catching::PlannerModel pm;
   pm.handle = planner_handle_.get();
   pm.catch_frame = frame;
   pm.nv = model->nv;
   const auto& vmax = device_max_velocity_[static_cast<std::size_t>(kCatchingArmDeviceIdx)];
-  for (pinocchio::JointIndex jid = 1; jid < static_cast<pinocchio::JointIndex>(model->njoints);
-       ++jid) {
-    const int qi = model->joints[jid].idx_q();
-    const std::string& jname = model->names[jid];
-    const auto it = std::find(arm_joint_names_.begin(), arm_joint_names_.end(), jname);
-    if (it == arm_joint_names_.end() || qi < 0 || qi >= pm.nv) {
-      RCLCPP_ERROR(logger_,
-                   "planner: sub-model '%s' joint '%s' is not an arm joint of this controller — "
-                   "the catch sub-model must contain the arm's joints only (the hand locked)",
-                   name.c_str(), jname.c_str());
-      return false;
-    }
-    const auto d = static_cast<std::size_t>(std::distance(arm_joint_names_.begin(), it));
-    const auto q = static_cast<std::size_t>(qi);
-    pm.device_of_model[q] = static_cast<int>(d);
-    pm.qdot_max[q] = d < vmax.size() ? vmax[d] : 0.0;
-    pm.qddot_max[q] = d < arm_qdd_max_.size() ? arm_qdd_max_[d] : 0.0;
-  }
-  if (pm.nv != arm_dof_) {
-    RCLCPP_ERROR(logger_, "planner: sub-model '%s' has %d joints, the arm %d", name.c_str(), pm.nv,
-                 arm_dof_);
-    return false;
+  for (int q = 0; q < pm.nv; ++q) {
+    const auto u = static_cast<std::size_t>(q);
+    const auto d = static_cast<std::size_t>(pm.device_of_model[u]);
+    pm.qdot_max[u] = d < vmax.size() ? vmax[d] : 0.0;
+    pm.qddot_max[u] = d < arm_qdd_max_.size() ? arm_qdd_max_[d] : 0.0;
   }
   pm.accel_box = static_cast<int>(arm_qdd_max_.size()) == arm_dof_;
 
@@ -1784,7 +1846,9 @@ bool DemoCatchingController::SetupPlannerSearch() {
                  pm.nv, planner_params_.wait_pose_n);
     return false;
   }
-  if (planner_params_.decel.enabled && !SetupDecelPlanner(model, pm)) {
+  // MD-44: the decel cores exist only for a configuration that follows them.
+  if (planner_params_.decel.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
+      !SetupDecelPlanner(model, pm)) {
     return false;
   }
   RCLCPP_INFO(logger_,
@@ -1837,10 +1901,21 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
   dm.catch_frame = pm.catch_frame;
   dm.nv = pm.nv;
   dm.device_of_model = pm.device_of_model;
+  // MD-42: the stop must be executable by the CLIK, so its position box is
+  // the URDF's AND the CLIK's margined device box (m_q then sits inside it).
+  // URDF limits alone let a published node reach past the CLIK's box (iiwa7
+  // A7 by 2.6e-5 rad on the shipped values).
+  const bool clik_box = static_cast<int>(arm_q_min_margined_.size()) == arm_dof_ &&
+                        static_cast<int>(arm_q_max_margined_.size()) == arm_dof_;
   for (int m = 0; m < pm.nv; ++m) {
     const auto u = static_cast<std::size_t>(m);
+    const auto d = static_cast<std::size_t>(pm.device_of_model[u]);
     dm.q_min[u] = model->lowerPositionLimit[m];
     dm.q_max[u] = model->upperPositionLimit[m];
+    if (clik_box) {
+      dm.q_min[u] = std::max(dm.q_min[u], arm_q_min_margined_[d]);
+      dm.q_max[u] = std::min(dm.q_max[u], arm_q_max_margined_[d]);
+    }
     dm.qdot_max[u] = pm.qdot_max[u];
     dm.tau_max[u] = (*torque)[static_cast<std::size_t>(pm.device_of_model[u])];
     dm.qddot_cap[u] = pm.qddot_max[u];
@@ -1851,6 +1926,9 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
   dc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
   dc.control_dt = GetDefaultDt();
   dc.budget_s = planner_params_.budget_s;
+  // MD-40: the RT samples a followed segment at now_lead + h, so the command
+  // it reports is the segment at now_lead + 2h.
+  dc.report_lead_s = 2.0 * GetDefaultDt();
   std::string error;
   if (!planner_cycle_.ConfigureDecel(dm, dc, &error)) {
     RCLCPP_ERROR(logger_, "planner.decel_mpc: %s", error.c_str());
@@ -1865,6 +1943,95 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
               d.slack_max, d.slack_terminal_max,
               dm.qddot_cap_valid ? "capped by the D-16 box" : "OFF");
   return true;
+}
+
+void DemoCatchingController::SetupDecelFollower() {
+  // Unbound on every configure: a re-configure to closed_form must not keep
+  // the previous sampler, and DecelModeUnmet reads Initialized().
+  decel_follower_ = rtc::catching::NodeTrajectoryFollower{};
+  decel_qd_max_.fill(0.0);
+  decel_box_lo_ = planner_params_.catch_box.min;
+  decel_box_hi_ = planner_params_.catch_box.max;
+  decel_eta_v_ = ResolvedPlannerEtaV();
+  decel_k_p_ = params_.joint_cmd_k_p.tbd ? 0.0 : params_.joint_cmd_k_p.value;
+  decel_k_n_ = params_.joint_cmd_k_posture.tbd ? 0.0 : params_.joint_cmd_k_posture.value;
+  if (decel_mode_ != rtc::catching::CatchingDecelMode::kMpc) {
+    return;
+  }
+  // The planner's catch sub-model — resolved whether or not the planner runs:
+  // the oracle profile follows segments a test writes, on the same model.
+  std::shared_ptr<const pinocchio::Model> model;
+  pinocchio::FrameIndex frame = 0;
+  std::array<int, rtc::catching::kMaxPlanNv> device_of_model{};
+  if (!ResolveCatchSubModel("supervisor.decel.mode mpc", model, frame, device_of_model)) {
+    return;
+  }
+  if (model->nv > rtc::catching::kMaxDecelNv ||
+      !decel_follower_.Init(
+          model, frame,
+          std::span<const int>(device_of_model.data(), static_cast<std::size_t>(model->nv)))) {
+    RCLCPP_ERROR(logger_,
+                 "supervisor.decel.mode mpc: the segment sampler refused the sub-model "
+                 "(nv %d, capacity %d)",
+                 model->nv, rtc::catching::kMaxDecelNv);
+    decel_follower_ = rtc::catching::NodeTrajectoryFollower{};
+    return;
+  }
+  const auto& vmax = device_max_velocity_[static_cast<std::size_t>(kCatchingArmDeviceIdx)];
+  for (int d = 0; d < arm_dof_ && d < rtc::catching::kMaxDecelNv; ++d) {
+    const auto u = static_cast<std::size_t>(d);
+    decel_qd_max_[u] = u < vmax.size() ? vmax[u] : 0.0;
+  }
+  RCLCPP_INFO(logger_,
+              "DECEL law: mpc — follows the decel MPC's stop segment on every DECEL (no "
+              "closed-form fallback, MD-44); switch margin %.2f, admission age <= %.3f s",
+              decel_switch_margin_, static_cast<double>(kDecelAdmissionMaxAgeNs) * 1e-9);
+}
+
+const char* DemoCatchingController::DecelModeUnmet() const noexcept {
+  if (!clik_enabled_) {
+    return "the arm command path is not wired (no model or CLIK)";
+  }
+  if (!decel_follower_.Initialized() || decel_follower_.Nv() != arm_dof_) {
+    return "the segment sampler has no catch sub-model (planner.sub_model, the catch frame, "
+           "at most kMaxDecelNv arm joints)";
+  }
+  if (!(decel_k_n_ > 0.0)) {
+    return "joint_cmd.K_n is not above 0 (the posture feedforward divides by it, MD-36)";
+  }
+  if (!(decel_eta_v_ < 1.0)) {
+    return "planner.gamma.eta_v is not below 1 (the switch gate's headroom is (1 - eta_v) "
+           "q_dot_max, MD-39)";
+  }
+  for (int i = 0; i < arm_dof_; ++i) {
+    const double v = decel_qd_max_[static_cast<std::size_t>(i)];
+    if (!std::isfinite(v) || !(v > 0.0)) {
+      return "the arm device lacks a positive joint_limits.max_velocity for every joint";
+    }
+  }
+  if (!clik_v_box_complete_) {
+    return "the CLIK's per-joint velocity box is off (every arm and hand joint needs "
+           "max_velocity)";
+  }
+  if (static_cast<int>(arm_q_min_margined_.size()) != arm_dof_) {
+    return "the CLIK's position box is off (device position limits incomplete)";
+  }
+  if (!planner_params_.catch_box.set) {
+    return "planner.workspace.catch_box is unset (the stop's workspace check, MD-43)";
+  }
+  if (!oracle_enabled_ && !(planner_params_.enabled && planner_params_.decel.enabled &&
+                            planner_cycle_.DecelConfigured())) {
+    return "no decel planner runs (planner.enabled and planner.decel_mpc.enabled, on a model "
+           "the cores accept)";
+  }
+  // MD-37: a segment is admitted at most a budget and a few ticks after its
+  // publish; an age bound below that would refuse every one of them.
+  const double min_age_s = planner_params_.budget_s + 3.0 * GetDefaultDt();
+  if (planner_params_.enabled &&
+      !(static_cast<double>(kDecelAdmissionMaxAgeNs) * 1e-9 > min_age_s)) {
+    return "planner.budget_s + 3 control periods is not below the decel admission age bound";
+  }
+  return nullptr;
 }
 
 void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {

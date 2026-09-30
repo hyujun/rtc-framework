@@ -845,9 +845,15 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
   // FOLLOWS — after COMMITTED it takes no new plan, so this is the committed
   // catch instant, whatever the planner last published.
   s.plan_t_c_ns = plan_active_ ? plan_.t_c_ns : 0;
-  // No decel segment is followed until E1-F04 wires the RT side (MD-32).
-  s.decel_active = false;
-  s.decel_seq = 0U;
+  // The segment the RT follows (MPC E1-F04): the planner predicts the next
+  // stop's initial state from it when it is the planner's own latest (MD-28
+  // path (i)). The FOLLOWED one — a pending segment is not yet the command.
+  const bool following =
+      decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
+      (mode_ == rtc::catching::Mode::kDecel || mode_ == rtc::catching::Mode::kHold) &&
+      decel_current_valid_;
+  s.decel_active = following;
+  s.decel_seq = following ? decel_current_.decel_seq : 0U;
   // The ramp SetIntercept was given (first adoption and replacements alike).
   s.ramp_valid = s.ref_valid && plan_active_;
   if (s.ramp_valid) {
@@ -952,6 +958,9 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       break;
     case Mode::kHold:
       hold_entry_ns_ = tick_now_.ns;
+      // HOLD follows the stop it has and takes no new one (MD-38).
+      decel_pending_ = rtc::catching::DecelPlanSnapshot{};
+      decel_pending_valid_ = false;
       break;
     case Mode::kRetreat: {
       // The plan is over, whether it ended in a catch or an abort. Dropping it
@@ -959,6 +968,7 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       // whose t_c is now in the past from being picked up again.
       plan_active_ = false;
       reference_seeded_ = false;
+      DropDecelSegments();
       retreat_stage_ = RetreatStage::kStop;
       motion_start_ns_ = tick_now_.ns;  // the stop's deadline (D-S9-D1)
       release_start_ns_ = 0;
@@ -994,6 +1004,9 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       break;
     case Mode::kAbortSafe:
       motion_start_ns_ = tick_now_.ns;  // the ramp's deadline (D-S9-D1)
+      // The stop is the ramp's now; a segment never outlives the DECEL it was
+      // for (MD-35).
+      DropDecelSegments();
       break;
     case Mode::kTracking:
     case Mode::kApproach:
@@ -1357,6 +1370,194 @@ rtc::catching::Reason DemoCatchingController::EnterDecel(const ControllerState& 
   return RunDecelLawTick(state);
 }
 
+// ── Decel MPC follower (MPC E1-F04, MD-34 – MD-44) ──────────────────────────
+
+void DemoCatchingController::DropDecelSegments() noexcept {
+  admitted_decel_ = rtc::catching::AdmittedDecel{};
+  decel_pending_ = rtc::catching::DecelPlanSnapshot{};
+  decel_pending_valid_ = false;
+  decel_current_ = rtc::catching::DecelPlanSnapshot{};
+  decel_current_valid_ = false;
+}
+
+bool DemoCatchingController::DecelSegmentMatchesPlan(
+    const rtc::catching::DecelPlanSnapshot& seg) const noexcept {
+  // The plan the RT follows, as it follows it: its id and the COMMITTED t_c
+  // (fixed from COMMITTED on, and the planner's grid anchor).
+  return plan_active_ && seg.plan_id == plan_.plan_id && seg.t_c_ns == plan_.t_c_ns &&
+         seg.t_c_ns == committed_t_c_ns_;
+}
+
+void DemoCatchingController::RunDecelLane() noexcept {
+  using rtc::catching::Mode;
+  using Event = CatchingDiagLogPod::DecelEvent;
+  if (decel_mode_ != rtc::catching::CatchingDecelMode::kMpc ||
+      !(mode_ == Mode::kCommitted || mode_ == Mode::kClosing || mode_ == Mode::kDecel)) {
+    return;
+  }
+  // D-21: loaded once per lane tick, unconditionally, then judged.
+  decel_box_.LoadInto(decel_in_);
+  rtc::catching::DecelAdmissionContext ctx{};
+  ctx.activation_generation = ActivationGeneration();
+  ctx.plan_active = plan_active_;
+  ctx.plan_id = plan_.plan_id;
+  ctx.plan_t_c_ns = plan_.t_c_ns;
+  // After the load (MD-37): the planner stamps publish_ns before it stores,
+  // so a clock read here is never earlier than a stamp this load can see.
+  ctx.now = rtc::catching::NowReal{clock_()};
+  ctx.max_age_ns = kDecelAdmissionMaxAgeNs;
+  ctx.reset_floor_ns = reset_floor_ns_;
+  // The RT state the segment was predicted from must be this trial's too: a
+  // planner can stamp its publish after the reset from a state read before it.
+  ctx.state_floor_ns = reset_floor_ns_;
+  decel_refusal_ = rtc::catching::JudgeDecelPlan(decel_in_, ctx, admitted_decel_);
+  tick_record_.decel_judged = true;
+  tick_record_.decel_refusal = static_cast<std::uint8_t>(decel_refusal_);
+  if (decel_refusal_ != rtc::catching::DecelRefusal::kNone) {
+    return;
+  }
+  if (decel_pending_valid_) {
+    // One slot, filled only when empty (MD-37): the pre-catch stop waits for
+    // t_c while replans for later grid points arrive; overwriting it would
+    // leave the entry tick nothing to take. This one is judged again next tick.
+    tick_record_.decel_event = Event::kDeferred;
+    return;
+  }
+  // Judged once per decel_seq from here, whatever the workspace says.
+  admitted_decel_ = rtc::catching::AdmittedDecel{true, decel_in_.decel_seq};
+  // MD-43: the planner reserved catch_box room for the closed-form straight
+  // stop only; the MPC's stop is longer at low speed and not straight.
+  if (!decel_follower_.NodesInsideBox(decel_in_, decel_box_lo_, decel_box_hi_)) {
+    tick_record_.decel_event = Event::kWorkspace;
+    return;
+  }
+  decel_pending_ = decel_in_;
+  decel_pending_valid_ = true;
+  tick_record_.decel_event = Event::kAdmitted;
+}
+
+rtc::catching::Reason DemoCatchingController::RunDecelMpcTick(const ControllerState& state,
+                                                              bool entry) noexcept {
+  using rtc::catching::Mode;
+  using rtc::catching::Reason;
+  using Event = CatchingDiagLogPod::DecelEvent;
+  if (!PrepareLawTick(state)) {
+    return Reason::kNone;  // nothing to run; the hold latch keeps the arm still
+  }
+  if (entry) {
+    decel_t_s_ns_ = tick_now_lead_.ns;
+    decel_stopped_ = false;
+  }
+  // MD-40: sampled one tick past the lead instant — the "reference for the
+  // next tick" the DS law hands the CLIK too. Following a segment, the
+  // command leaving this tick is then the segment at now_lead + 2h, the
+  // instant the planner reads the report as.
+  const std::int64_t s =
+      tick_now_lead_.ns + static_cast<std::int64_t>(std::llround(state.dt * 1e9));
+  const auto n = static_cast<std::size_t>(arm_dof_);
+  const auto fail = [this](Event why) {
+    tick_record_.decel_event = why;
+    return Reason::kParamsTbd;
+  };
+
+  // MD-35: the followed segment must still end the followed plan. A mismatch
+  // here has no closed form to return to (MD-44) — the soft-catch reference
+  // did not run while the segment was followed.
+  if (decel_current_valid_ && !DecelSegmentMatchesPlan(decel_current_)) {
+    return fail(Event::kPlanMismatch);
+  }
+
+  // ── The switch (MD-38): DECEL only, when the pending node 0 is due ──────
+  bool sampled = false;
+  if (entry || mode_ == Mode::kDecel) {
+    if (decel_pending_valid_) {
+      if (s < decel_pending_.t0_ns) {
+        if (entry) {
+          tick_record_.decel_event = Event::kNotDue;
+        }
+      } else if (!DecelSegmentMatchesPlan(decel_pending_)) {
+        decel_pending_valid_ = false;
+        tick_record_.decel_event = Event::kPlanMismatch;
+      } else if (!decel_follower_.Sample(decel_pending_, s, decel_sample_)) {
+        decel_pending_valid_ = false;
+        tick_record_.decel_event = Event::kSampleFailed;
+      } else {
+        // MD-39: the command this tick starts from against the new segment at
+        // the same instant — the step the switch would put into the CLIK.
+        const rtc::catching::DecelSwitchVerdict gate = rtc::catching::JudgeDecelSwitch(
+            std::span<const double>(arm_q_cmd_.data(), n),
+            std::span<const double>(arm_qd_cmd_.data(), n),
+            std::span<const double>(decel_sample_.q.data(), n),
+            std::span<const double>(decel_sample_.qd.data(), n),
+            std::span<const double>(decel_qd_max_.data(), n), arm_dof_, decel_k_p_, decel_eta_v_,
+            decel_switch_margin_);
+        tick_record_.decel_rho = gate.rho;
+        tick_record_.decel_dq_max = gate.dq_max;
+        tick_record_.decel_dqd_max = gate.dqd_max;
+        tick_record_.decel_gate_joint = gate.joint;
+        if (gate.pass) {
+          decel_current_ = decel_pending_;
+          decel_current_valid_ = true;
+          sampled = true;
+          tick_record_.decel_event = Event::kSwitched;
+        } else {
+          // A replan that would step the command is dropped and the followed
+          // segment goes on; at the entry there is none, and the trial aborts.
+          tick_record_.decel_event = Event::kGateRefused;
+        }
+        decel_pending_valid_ = false;
+      }
+    } else if (entry) {
+      tick_record_.decel_event = Event::kNoSegment;
+    }
+  }
+  if (!decel_current_valid_) {
+    // MD-44: nothing to follow is ABORT_SAFE's joint-space stop, never the
+    // closed form. The event already names why when the switch said it.
+    return fail(tick_record_.decel_event == Event::kNone ? Event::kNoSegment
+                                                         : tick_record_.decel_event);
+  }
+  if (!sampled && !decel_follower_.Sample(decel_current_, s, decel_sample_)) {
+    return fail(Event::kSampleFailed);
+  }
+
+  // ── The CLIK target (MD-9, MD-36) ───────────────────────────────────────
+  // The sampler's pose and twist are the catch frame's in the model world,
+  // the frame the DS law's target reaches the CLIK in (vision is moved there
+  // at ingress), so the same frame argument serves both.
+  rtc::tsid::ClikReferenceGenerator::PositionAxisTarget target;
+  target.position = decel_sample_.placement.translation();
+  target.axis = decel_sample_.placement.rotation().col(2);
+  target.linear_velocity_ff = decel_sample_.twist.head<3>();
+  target.angular_velocity_ff = decel_sample_.twist.tail<3>();
+  // The posture row's feedforward by the caller's equivalent form: K_n (q' −
+  // q) with q' = q_ref + q̇_ref / K_n is K_n (q_ref − q) + q̇_ref. The hand
+  // entries keep the trial's posture (the hand is velocity-locked).
+  q_posture_decel_ = q_posture_;
+  for (int i = 0; i < arm_dof_; ++i) {
+    const int pq = combined_cache_.ext_to_pin_q(i);
+    if (pq >= 0 && pq < q_posture_decel_.size()) {
+      const auto u = static_cast<std::size_t>(i);
+      q_posture_decel_[pq] = decel_sample_.q[u] + decel_sample_.qd[u] / decel_k_n_;
+    }
+  }
+  if (!q_posture_decel_.allFinite() || !target.position.allFinite()) {
+    return fail(Event::kSampleFailed);
+  }
+  tick_record_.decel_following = true;
+  tick_record_.decel_seq = decel_current_.decel_seq;
+  tick_record_.decel_k0 = decel_current_.k0;
+  tick_record_.decel_held = decel_sample_.held;
+  for (int a = 0; a < 3; ++a) {
+    tick_record_.decel_p_d[static_cast<std::size_t>(a)] = target.position[a];
+    tick_record_.decel_v_ff[static_cast<std::size_t>(a)] = target.linear_velocity_ff[a];
+  }
+  const Reason law = SolveClikAndCommand(state, target, q_posture_decel_);
+  // Past node N the sample holds the rest state: the stop has ended.
+  decel_stopped_ = decel_sample_.held;
+  return law;
+}
+
 DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted(
     const ControllerState& state) noexcept {
   using rtc::catching::Mode;
@@ -1367,7 +1568,11 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
   // this tick, so the reference never sees a tick with no target.
   if (closing &&
       rtc::catching::DecelDue(tick_now_lead_, rtc::catching::BallTime{committed_t_c_ns_})) {
-    const Reason law = EnterDecel(state);
+    // MD-44: the configured law, and only it — under mpc there is no
+    // closed-form entry to fall back to.
+    const Reason law = decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
+                           ? RunDecelMpcTick(state, /*entry=*/true)
+                           : EnterDecel(state);
     NoteLawVerdict(law);
     if (IsFatalLawReason(law)) {
       return {law, true};
@@ -1431,7 +1636,9 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHo
   using rtc::catching::Mode;
   using rtc::catching::Outcome;
   using rtc::catching::Reason;
-  const Reason law = RunDecelLawTick(state);
+  const Reason law = decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
+                         ? RunDecelMpcTick(state, /*entry=*/false)
+                         : RunDecelLawTick(state);
   NoteLawVerdict(law);
   // DECEL and HOLD have no REF_SATURATED row: a saturated reference while
   // stopping is the stop taking longer, not a failed catch.
@@ -1770,6 +1977,7 @@ void DemoCatchingController::ResetTrialScope() noexcept {
   decel_entry_ = rtc::catching::DecelEntryState{};
   decel_t_s_ns_ = 0;
   decel_stopped_ = false;
+  DropDecelSegments();
   hold_entry_ns_ = 0;
   sat_streak_ = 0;
   law_horizon_extrap_ = false;
@@ -1869,6 +2077,10 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   decel_entry_ = rtc::catching::DecelEntryState{};
   decel_t_s_ns_ = 0;
   decel_stopped_ = false;
+  // E-8 (MPC MD-35): the decel lane's memory goes with the plan it served. A
+  // segment of the stopped trial is also refused by the plan match and the
+  // floors; this is the first line.
+  DropDecelSegments();
   hold_entry_ns_ = 0;
   sat_streak_ = 0;
   law_horizon_extrap_ = false;
@@ -2972,6 +3184,10 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     plan_refusal_observed_.store(static_cast<std::uint8_t>(plan_refusal_),
                                  std::memory_order_relaxed);
   }
+  // The decel lane (MPC E1-F04): mode mpc only, and only while a stop can be
+  // pending or followed. Before the decision, so the entry tick sees a
+  // segment admitted on it.
+  RunDecelLane();
 
   const ReasonDecision decision = EvaluateReason(state, snapshot);
   if (decision.advance) {
