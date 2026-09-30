@@ -96,6 +96,11 @@ add_library(rtc_controllers STATIC
   src/params/planner_params.cpp
   src/catching/planner_cycle.cpp
   src/catching/planner_search.cpp
+  # dynamic_catching MPC E1-F01 (#627): the decel MPC numeric core — a jerk-input
+  # condensed QP over the stop segment with first-order torque rows (pinocchio
+  # RNEA derivatives) and slack, solved through rtc_tsid's QPSolverWrapper. A
+  # plain library unit like catch_pose_ik.cpp; the planner thread calls it (E1-F03).
+  src/catching/decel_mpc.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -531,6 +536,29 @@ if(BUILD_TESTING)
   # own defaults (which is also how the doc-vs-code default agreement is
   # pinned), and a typo under planner.ik is refused rather than defaulted.
   # Model-free — the parser touches no URDF and no solver.
+  # dynamic_catching MPC E1-F01 (#627): closed-form jerk segment (header-only).
+  ament_add_gtest(test_catching_jerk_segment test/test_catching_jerk_segment.cpp)
+  target_link_libraries(test_catching_jerk_segment rtc_controllers)
+
+  # dynamic_catching MPC E1-F01 (#627): the decel MPC core. Its Solve() calls
+  # into pinocchio (RNEA derivatives, frame Jacobian) and ProxQP — library code
+  # whose Eigen/C allocations neither the operator-new gate nor rtc_base's Eigen
+  # tripwire can see (testing-debug.md §RT-1). So the RT gate here is THREE
+  # sensors: operator new (${rtc_controllers_test_include}/alloc_gate.hpp),
+  # the Eigen tripwire (${rtc_base_test_include}), and the C-level
+  # malloc_gate.hpp, which defines malloc in this executable and so counts
+  # allocations made inside the shared libraries too. Real arm URDFs come from
+  # the sibling robot_descriptions tree by source path (test-only, like the
+  # rtc_urdf_bridge fixtures) for the timing distribution at real dimensions.
+  ament_add_gtest(test_catching_decel_mpc test/test_catching_decel_mpc.cpp TIMEOUT 300)
+  target_link_libraries(test_catching_decel_mpc rtc_controllers)
+  target_include_directories(test_catching_decel_mpc PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_decel_mpc PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_decel_mpc PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
+    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
   ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)
   target_link_libraries(test_catch_pose_ik_params rtc_controllers)
 
