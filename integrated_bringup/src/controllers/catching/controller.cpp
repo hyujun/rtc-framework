@@ -656,8 +656,20 @@ rtc::catching::Reason DemoCatchingController::StepReferenceAndSolve(
   // No angular feedforward: the approach axis of a fixed catch point does not
   // rotate, and a fabricated ω_ff would be the controller telling itself the
   // target is turning.
-  const bool ok = clik_.Compute(combined_cache_.cache(), catch_frame_idx_, base_frame_idx_,
-                                clik_target, q_posture_, dt, /*reseed_anchor=*/false);
+  const Reason law = SolveClikAndCommand(state, clik_target, q_posture_);
+  if (law != Reason::kNone) {
+    return law;
+  }
+  return saturated_too_long ? Reason::kRefSaturated : Reason::kNone;
+}
+
+rtc::catching::Reason DemoCatchingController::SolveClikAndCommand(
+    const ControllerState& state,
+    const rtc::tsid::ClikReferenceGenerator::PositionAxisTarget& target,
+    const Eigen::VectorXd& q_posture) noexcept {
+  using rtc::catching::Reason;
+  const bool ok = clik_.Compute(combined_cache_.cache(), catch_frame_idx_, base_frame_idx_, target,
+                                q_posture, state.dt, /*reseed_anchor=*/false);
   const auto& solve = clik_.LastSolve();
   RecordClikSolve(solve);
   if (!ok) {
@@ -688,7 +700,7 @@ rtc::catching::Reason DemoCatchingController::StepReferenceAndSolve(
   if (track_err_abort_rad_ > 0.0 && track_err_ > track_err_abort_rad_) {
     return Reason::kTrackErr;
   }
-  return saturated_too_long ? Reason::kRefSaturated : Reason::kNone;
+  return Reason::kNone;
 }
 
 void DemoCatchingController::UpdateTrackError(const ControllerState& state) noexcept {

@@ -822,6 +822,13 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] rtc::catching::Reason StepReferenceAndSolve(
       const ControllerState& state, const rtc::catching::TargetState& target, double t_rel,
       bool count_saturation) noexcept;
+  /// CLIK toward `target` with `q_posture` as the posture row's goal, then the
+  /// command it writes and TRACK_ERR — what every CLIK tick does after it has
+  /// its target, whichever law produced it.
+  [[nodiscard]] rtc::catching::Reason SolveClikAndCommand(
+      const ControllerState& state,
+      const rtc::tsid::ClikReferenceGenerator::PositionAxisTarget& target,
+      const Eigen::VectorXd& q_posture) noexcept;
   /// The DECEL/HOLD law tick: the virtual target at τ = now_lead − t_s.
   [[nodiscard]] rtc::catching::Reason RunDecelLawTick(const ControllerState& state) noexcept;
   /// Freeze the reference state as DECEL's entry and take the τ = 0 step.
