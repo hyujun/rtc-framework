@@ -12,7 +12,9 @@ This validator turns that silence into a red build.
 Checks
 ------
 D1  link / file-reference target exists (markdown links + path-shaped inline
-    code spans).  Header include shorthand (``rtc_base/types/types.hpp`` for
+    code spans).  There is no allow marker: a history line that names a file
+    since deleted cites it by name or as ``git show <commit>:<path>`` (the
+    form docs/dynamic_catching/README.md uses), which stays true.  Header include shorthand (``rtc_base/types/types.hpp`` for
     ``rtc_base/include/rtc_base/types/types.hpp``) resolves via path-component
     suffix matching, so a genuinely wrong path such as
     ``integrated_bringup/support/owned_topics.cpp`` (missing ``src/``) is still
@@ -1225,7 +1227,8 @@ def check_path_token(repo: Repo, rel: str, lineno: int, token: str, code: str) -
             lineno,
             code,
             f"path '{token}' does not exist (tried repo-, file-, and "
-            "package-relative resolution plus include shorthand)",
+            "package-relative resolution plus include shorthand). A file deleted on "
+            "purpose is cited by name or as `git show <commit>:<path>`, not as a path",
         )
     ]
 

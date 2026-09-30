@@ -34,6 +34,7 @@ of one knob, not just the launch end.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 from typing import Any
@@ -129,10 +130,8 @@ def _walk(entities, depth: int = 0):
         if depth >= 8:
             continue
         sub: list = []
-        try:
+        with contextlib.suppress(Exception):  # not every action describes children
             sub += list(entity.describe_sub_entities())
-        except Exception:  # noqa: BLE001 — not every action describes children
-            pass
         try:
             for _, conditional in entity.describe_conditional_sub_entities():
                 sub += list(conditional)
@@ -156,8 +155,8 @@ def _evaluate_in_order(
     produced: list = []
 
     def apply(entity) -> None:
-        if isinstance(entity, (DeclareLaunchArgument, SetLaunchConfiguration)) or isinstance(
-            entity, SetEnvironmentVariable
+        if isinstance(
+            entity, (DeclareLaunchArgument, SetLaunchConfiguration, SetEnvironmentVariable)
         ):
             entity.execute(context)
         elif isinstance(entity, OpaqueFunction):

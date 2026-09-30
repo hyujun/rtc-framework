@@ -642,7 +642,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 - **상태 토픽 (S5.4, D-20)**: `/<config_key>/catching_state` (`rtc_msgs/CatchingState`, `KEEP_LAST(1)`). 소유 형태는 `WbcState`·`GraspState` 와 같고 `PublishRole` 은 늘리지 않는다 (E-11). **필드는 S5~S9 superset 으로 한 번 동결**돼 있으며 이후 단계는 값만 채운다 — 단계마다 열이 늘면 한 단계 전 bag 을 못 읽는다. **모든 tick 이 body 를 싣는다** (PROC-7): E-STOP·stale·plan 없음·abort tick 도 발행하고, 그 tick 에 계산하지 않은 블록은 직전 값을 남기지 않고 지운다. 그래서 값이 고정돼 보이면 컨트롤러가 정말 같은 값을 다시 계산한 것이다
 - **tick 레코드 CSV (S5.4)**: `catching_diag.csv` (`logs:` 의 `integrated_bringup/CatchingDiagLog`). 상태 토픽과 **같은 POD 한 벌**에서 나오므로 파일의 숫자와 화면의 숫자가 갈릴 수 없다. tick 마다 한 행이라 **tick 간극은 드롭된 행**을 뜻한다 (#234 P-20). `plot_rtc_log catching_diag.csv` 가 기준 vs 실현 가속도·추종 오차·solve time·슈퍼바이저 모드를 한 시간축에 그린다 (E-STOP `estop_active`·컨트롤러 fault `fault_latched` 구간은 모든 패널에 서로 다른 색으로 음영)
 - **GUI**: `demo_controller_gui` Control 탭의 Catching 패널 — 모드·사유, 입력 lane (n·generation·sequence·수신 나이·지평, 거부 카운터는 0 이 아닌 것만 — 빈 cloud 를 세는 `no_track` 은 거부가 아니라 표시하지 않는다), plan, 추종 오차·CLIK 상태, 그리고 Arm/Disarm. **관측된 무장과 요청된 무장을 따로 보여준다** — tick 이 E-STOP·fault 에서 latch 를 내리므로 파라미터 set 이 성공해도 무장됐다는 증거가 아니고, 둘이 갈리는 순간이 봐야 할 상태다
-- **읽기 전용 미러 파라미터**: `hand.q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`/`rho_eps`/`T_close_e2e`·`control.dt`·`diagnostic.hand_step`·`planner.wait_pose`·`planner.wait_pose_source`·`planner.freeze.T_freeze`·`joint_cmd.lag.T_arm`·`joint_cmd.lag.lead_enable` (`wait_pose`·`T_freeze`·`T_arm`·`lead_enable` 은 S8-A 시행 러너용 — §Catching sim trials; `wait_pose_source` 는 S8-I) — 오프프로세스 분석기가 YAML 이 아니라 **컨트롤러가 읽은 값**을 쓰게 하려는 것이다
+- **읽기 전용 미러 파라미터**: `hand.q_open`/`q_pre`/`q_close`/`caging_mask`/`eta_close`/`rho_eps`/`T_close_e2e`·`control.dt`·`diagnostic.hand_step`·`planner.wait_pose`·`planner.wait_pose_source`·`planner.freeze.T_freeze`·`joint_cmd.lag.T_arm`·`joint_cmd.lag.lead_enable`·팔 예산 층 (`reference.*`·`planner.gamma.eta_v`·`planner.time.margin`·`robot.arm.qdd_max`, S8-G)·예측 격자 `prediction.dt_expected`·`io.n_min`·`planner.slice.dt` (E0-F04 #647 — TBD 잎은 실행값으로) (`wait_pose`·`T_freeze`·`T_arm`·`lead_enable`·예산 층·격자는 S8-A 시행 러너용 — §Catching sim trials; `wait_pose_source` 는 S8-I) — 오프프로세스 분석기가 YAML 이 아니라 **컨트롤러가 읽은 값**을 쓰게 하려는 것이다
 
 ### 로깅 레벨
 
@@ -840,14 +840,22 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 > [rtc_msgs/srv/LaunchBall.srv](../rtc_msgs/srv/LaunchBall.srv) 와
 > [rtc_mujoco_sim/README.md](../rtc_mujoco_sim/README.md) §Projectile Ball 이다.
 >
-> ball_perception 의 `sim_estimator_node` 를 이 씬에 붙일 때의 profile 은 `config/ur5e_p1b/ball_perception_sim_profile.json`
-> (지평 1.0 s / 간격 0.05 s / 20 점, 측정 공분산 (5 mm)² 대각 — `projectile_ball.publish.position_noise_stddev_m` 과 짝,
-> `max_future_skew_s` 0.1 — 공 토픽의 stamp 축이 sim 축이라 wall 을 위상 오차만큼 앞설 수 있다,
-> `sim_profile` 0.2 — 과정 잡음 q 0.01 m²/s³ + 이차 항력 `process.drag` k 0.02 ± 0.01 1/m, 근거는 plan §4.4 S8-E "후속 ① G8-B";
-> 두 로봇의 사본은 같은 값이다) 이다:
-> `ros2 launch ball_perception_sim sim_estimator.launch.py profile_path:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json producer_revision:=<rtc-framework 커밋>`.
+> ball_perception 의 `sim_estimator_node` 를 이 씬에 붙일 때의 profile 은 ball_perception 저장소가 소유하는
+> `ball_perception_sim/config/sim_profile.catching.json` 이다 (두 로봇 공용). 이 저장소는 사본을 두지 않는다 — 추정기는 vision PC,
+> 컨트롤러는 제어 PC 에서 돌아 서로의 파일을 읽지 못한다 ([MPC_DUALARM_PLAN.md](../docs/dynamic_catching/MPC_DUALARM_PLAN.md) MD-18).
+> 무엇을 고정하는지는 그 저장소의 `ball_perception_sim` README 가 갖는다:
+> `ros2 launch ball_perception_sim sim_estimator.launch.py profile_path:=$(ros2 pkg prefix ball_perception_sim)/share/ball_perception_sim/config/sim_profile.catching.json producer_revision:=<rtc-framework 커밋>`.
 > `ball_perception_sim` 은 이 workspace 가 아니라 ball_perception 의 별도 colcon workspace 에 있으므로 그 `install/setup.bash` 를 추가로 source 해야 하고, `producer_revision` 은 필수 인자다 (출력 provenance).
-> 값의 근거 (포구 제어기의 요구 사양, D-15) 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) §4.4 S3.6 결과이고,
+>
+> 이 저장소의 값 중 profile 과 맞아야 하는 것은 자동으로 검사되지 않는다. profile 을 바꾸면 함께 확인한다:
+>
+> | profile | 이 저장소 | 관계 |
+> |---|---|---|
+> | `prediction.step_s` (0.05) · `horizon_s` (1.0) · `max_points` (20) | 컨트롤러 YAML (`catching:` 아래) `prediction.dt_expected` · `io.n_min` · `planner.slice.dt` · `planner.slice.t_max` | `dt_expected` = `slice.dt` = step, `n_min` = ⌈`io.horizon_min` / step⌉ + 1 ≤ 점 수 ≤ `kCap` 40. 떠 있는 컨트롤러의 값은 read-only 미러 파라미터로 읽는다 |
+> | `time.max_future_skew_s` (0.1) | 컨트롤러 YAML (`catching:` 아래) `sim.io.future_tol` | 같은 자릿수 — 공 토픽의 stamp 축이 sim 축이라 wall 을 위상 오차만큼 앞설 수 있다 |
+> | `measurement.position_covariance_m2` ((5 mm)² 대각) | `mujoco_simulator.yaml` `projectile_ball.publish.position_noise_stddev_m` | 짝 |
+>
+> 요구 사양의 근거 (D-15) 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) §4.4 S3.6 결과이고,
 > 공 토픽의 stamp 규약은 rtc_mujoco_sim README §Projectile Ball 의 stamp 항목이다.
 >
 > † 표시한 `object_pool` / `object` / `object_seed` 세 인자는 **`sim_ur5e_p1b.launch.py` 에만** 있다. `object_pool` 블록을 config 에 가진 프로필이 현재 `ur5e_p1b` 뿐이라, 다른 launch 에 인자만 달면 켜는 순간 `directory` 가 비어 Initialize 가 실패한다. 다른 프로필에 pool 을 쓰려면 그 프로필의 `mujoco_simulator.yaml` 에 블록을 먼저 넣는다 (키 전체의 SSoT 는 [rtc_mujoco_sim/config/mujoco_default.yaml](../rtc_mujoco_sim/config/mujoco_default.yaml)).
@@ -884,7 +892,7 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 3. 순환이 닫히면 (RETREAT 뒤 ARMED) 끝낸다. IDLE·FAULT 로 가거나 `--record-s` (기본 12 s) 가 지나도 끝낸다. 시행의 판정은 RETREAT 진입 때 발행된 `outcome` 이다 (L7 §4.7). RETREAT 에서 손이 `robot.hand.T_release_timeout` 안에 `q_pre` 에 정착하지 못하면 컨트롤러가 IDLE (`HAND_TIMEOUT`) 로 가며 스스로 disarm 한다 (S8-C) — 순환은 닫히지 않은 것으로 기록되고, 다음 투척의 1 단계 재무장이 복구한다.
 4. 공을 리셋한다.
 
-관절 이름·상태 토픽은 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). **대기 자세·`T_freeze`·`T_arm`·`lead_enable`·`control.dt`, 그리고 팔 예산 층 `reference.{omega, a_max, v_max}`·`planner.gamma.eta_v`·`planner.time.margin`·`robot.arm.qdd_max` (계획기가 도달시간을 재는 D-16 box; S8-G — TBD 잎은 컨트롤러가 실행한 기본값으로 나온다) 는 떠 있는 컨트롤러의 read-only 미러 파라미터에서 읽는다** (S8-A) — `sim_overlay:=` 가 이 값들을 바꿔도 설치된 YAML 은 그대로이기 때문이다. 미러가 없으면 (컨트롤러가 configure 에서 park 됨 — 그 로그가 값을 댄다) 시작하지 않는다. 미러 값은 `<out>/run_meta.json` 과 시행 기록마다 `controller_mirror` 로 남는다.
+관절 이름·상태 토픽은 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). **대기 자세·`T_freeze`·`T_arm`·`lead_enable`·`control.dt`, 그리고 팔 예산 층 `reference.{omega, a_max, v_max}`·`planner.gamma.eta_v`·`planner.time.margin`·`robot.arm.qdd_max` (계획기가 도달시간을 재는 D-16 box; S8-G — TBD 잎은 컨트롤러가 실행한 기본값으로 나온다), 그리고 예측 격자 `prediction.dt_expected`·`io.n_min`·`planner.slice.dt` (E0-F04 #647 — vision profile 의 격자를 따라야 하는 세 키, `n_min` 은 실행값) 는 떠 있는 컨트롤러의 read-only 미러 파라미터에서 읽는다** — 하나라도 없으면 러너는 시작하지 않는다 (S8-A) — `sim_overlay:=` 가 이 값들을 바꿔도 설치된 YAML 은 그대로이기 때문이다. 미러가 없으면 (컨트롤러가 configure 에서 park 됨 — 그 로그가 값을 댄다) 시작하지 않는다. 미러 값은 `<out>/run_meta.json` 과 시행 기록마다 `controller_mirror` 로 남는다.
 
 투척 계열은 `--dist` 가 고른다.
 
@@ -917,7 +925,7 @@ ros2 run integrated_bringup catching_sim_trials <out> --dist hand_lhs --n 150 --
 ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false use_cpu_affinity:=false \
   enable_mpc:=true sim_lanes:=true sim_overlay:=catch_lead_on
 ros2 launch ball_perception_sim sim_estimator.launch.py \
-  profile_path:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/iiwa7_leap/ball_perception_sim_profile.json \
+  profile_path:=$(ros2 pkg prefix ball_perception_sim)/share/ball_perception_sim/config/sim_profile.catching.json \
   producer_revision:=<rtc-framework 커밋>
 ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dist s35b --n 50 --seed 503
 ```

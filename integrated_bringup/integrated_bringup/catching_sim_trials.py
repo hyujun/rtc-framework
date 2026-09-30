@@ -124,6 +124,12 @@ MIRROR_PARAMETERS = (
     "planner.gamma.eta_v",
     "planner.time.margin",
     "robot.arm.qdd_max",
+    # The prediction grid the controller expects (E0-F04, #647): the vision
+    # profile sets the grid, and a sweep over it must record what the
+    # controller was told to expect.
+    "prediction.dt_expected",
+    "io.n_min",
+    "planner.slice.dt",
 )
 
 
@@ -672,6 +678,8 @@ def _parameter_value(value):
         return list(value.double_array_value)
     if value.type == ParameterType.PARAMETER_DOUBLE:
         return value.double_value
+    if value.type == ParameterType.PARAMETER_INTEGER:
+        return value.integer_value
     if value.type == ParameterType.PARAMETER_BOOL:
         return value.bool_value
     return None

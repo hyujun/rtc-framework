@@ -404,8 +404,12 @@ def _torque_ratio(
     return ratio, path.name
 
 
-def _trial_table(unit: Path, ct_dir: Path) -> list[dict]:
-    """The unit's ``catching_trials.csv`` rows joined with the runner's throw identity."""
+def _trial_table(unit: Path, ct_dir: Path, extra: Sequence[str] = ()) -> list[dict]:
+    """The unit's ``catching_trials.csv`` rows joined with the runner's throw identity.
+
+    ``extra`` names further columns to carry over as they are in the CSV
+    (strings, ``""`` when absent) — the caller converts what it needs.
+    """
     path = ct_dir / "catching_trials.csv"
     if not path.is_file():
         raise SystemExit(f"{path}: run catching_trials on the unit first")
@@ -433,6 +437,7 @@ def _trial_table(unit: Path, ct_dir: Path) -> list[dict]:
                 "invalid_reason": r.get("invalid_reason", ""),
                 "truth_success": _truth_cell(r.get("truth_success")),
                 "supervisor": r.get("supervisor", ""),
+                **{k: r.get(k, "") for k in extra},
             }
         )
     return out
@@ -573,17 +578,15 @@ def analyse_unit(
     return {"summary": summary, "trials": rows, "all_trials": trials}
 
 
-def _stats(values: Sequence[float]) -> dict:
+def _stats(values: Sequence[float], qs: Sequence[float] = (50, 95)) -> dict:
+    """``n``, the percentiles ``qs`` (as ``p50`` …), ``max`` and ``min`` of the finite values."""
     v = np.asarray([x for x in values if x is not None and math.isfinite(x)], dtype=float)
-    if not v.size:
-        return {"n": 0, "p50": math.nan, "p95": math.nan, "max": math.nan, "min": math.nan}
-    return {
-        "n": int(v.size),
-        "p50": float(np.percentile(v, 50)),
-        "p95": float(np.percentile(v, 95)),
-        "max": float(v.max()),
-        "min": float(v.min()),
-    }
+    out = {"n": int(v.size)}
+    for q in qs:
+        out[f"p{q:g}"] = float(np.percentile(v, q)) if v.size else math.nan
+    out["max"] = float(v.max()) if v.size else math.nan
+    out["min"] = float(v.min()) if v.size else math.nan
+    return out
 
 
 def summarise(rows: Sequence[Mapping]) -> dict:

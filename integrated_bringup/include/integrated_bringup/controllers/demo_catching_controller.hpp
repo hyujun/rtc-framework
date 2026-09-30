@@ -611,6 +611,8 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] rtc::catching::SoftCatchTranslation::Params ResolvedReferenceParams() const;
   /// `planner.gamma.eta_v` as RUN (the planner default when TBD) — same two readers.
   [[nodiscard]] double ResolvedPlannerEtaV() const;
+  /// `io.n_min` as the trajectory decode runs it (its floor of 2 when TBD).
+  [[nodiscard]] int ResolvedTrajNMin() const;
   void DeclareProfileParameters();
 
   /// Close every CSV channel and unbind the handles (#238 — a re-configure

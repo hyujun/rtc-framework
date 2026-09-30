@@ -554,8 +554,8 @@ class TestCompare:
 
 class TestSE3Utilities:
     def test_identity_3x3(self):
-        I = _identity_3x3()
-        assert I == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        eye = _identity_3x3()
+        assert eye == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
     def test_rpy_identity(self):
         R = _rpy_to_rot3(0, 0, 0)
@@ -593,8 +593,8 @@ class TestSE3Utilities:
         assert abs(R[0][0] - (-1.0)) < 1e-12
 
     def test_compose_identity(self):
-        I = _identity_3x3()
-        R, p = _compose_transform(I, [0, 0, 0], I, [1, 2, 3])
+        eye = _identity_3x3()
+        R, p = _compose_transform(eye, [0, 0, 0], eye, [1, 2, 3])
         assert _vec_close_3(p, [1, 2, 3], 1e-12)
 
     def test_compose_rotation_then_translate(self):

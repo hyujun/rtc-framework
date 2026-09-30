@@ -21,6 +21,7 @@ import pytest
 from integrated_bringup.catching_sim_trials import (
     FROZEN_DISTRIBUTIONS,
     MIRROR_PARAMETERS,
+    _parameter_value,
     apply_mirror,
     build_throws,
     frozen_throws,
@@ -145,6 +146,9 @@ def _mirror(wait_pose):
         "planner.gamma.eta_v": 0.9,
         "planner.time.margin": 0.03,
         "robot.arm.qdd_max": [2.03] * 6,
+        "prediction.dt_expected": 0.05,
+        "io.n_min": 12,
+        "planner.slice.dt": 0.05,
     }
 
 
@@ -199,3 +203,23 @@ def test_a_full_reply_is_read_in_one_call_and_not_set_reads_as_absent():
     assert len(calls) == 1
     assert mirror["joint_cmd.lag.T_arm"] is None
     assert mirror["control.dt"] == 1.0
+
+
+def test_every_mirrored_parameter_type_decodes_to_a_value():
+    """A mirror type the decoder does not know reads as ``None`` — the same answer
+    as an undeclared parameter — so the runner would refuse a running controller
+    as parked. ``io.n_min`` is the first integer in the mirror (E0-F04)."""
+    rcl = pytest.importorskip("rcl_interfaces.msg")
+    t = rcl.ParameterType
+    cases = [
+        (rcl.ParameterValue(type=t.PARAMETER_DOUBLE, double_value=0.025), 0.025),
+        (rcl.ParameterValue(type=t.PARAMETER_INTEGER, integer_value=22), 22),
+        (rcl.ParameterValue(type=t.PARAMETER_BOOL, bool_value=True), True),
+        (
+            rcl.ParameterValue(type=t.PARAMETER_DOUBLE_ARRAY, double_array_value=[1.0, 2.0]),
+            [1.0, 2.0],
+        ),
+    ]
+    for value, expected in cases:
+        assert _parameter_value(value) == expected
+    assert _parameter_value(rcl.ParameterValue(type=t.PARAMETER_NOT_SET)) is None

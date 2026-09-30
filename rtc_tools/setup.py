@@ -41,6 +41,7 @@ setup(
             "catching_hand_near = rtc_tools.analysis.catching_hand_near:main",
             "catching_arm_budget = rtc_tools.analysis.catching_arm_budget:main",
             "catching_decel = rtc_tools.analysis.catching_decel:main",
+            "catching_grid_sweep = rtc_tools.analysis.catching_grid_sweep:main",
             "catching_wait_pose_search = rtc_tools.analysis.catching_wait_pose_search:main",
         ],
     },
