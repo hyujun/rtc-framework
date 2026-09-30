@@ -129,7 +129,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- E1-F03: 정지 구간의 노드 수와 간격 (= 정지 시간, MD-21), 포구 전 초기 상태의 예측 방법, armature YAML 키 (`robot.arm.armature` 안 — E1-F01 코어는 벡터로 받는다)
+- E1-F03: 정지 구간의 노드 수와 간격 (= 정지 시간, MD-21), 포구 전 초기 상태의 예측 방법, armature YAML 키 (`robot.arm.armature` 안 — E1-F01 코어는 `DecelMpcLimits::armature` 로 받아 모델이 이미 가진 armature 에 **더한다**), 게시 임계 (`slack_max`), 첫 주기 (pre-solve) 비용이 예산 안인지
 - E1-F06: 비열등 한계와 N, MPC DECEL 을 기본값으로 바꿀지
 - E3-F01: MPC 계획기와 v1 L3 계획기의 관계 (대체 · 병행)
 - E3-F05: 기존 `DemoCatchingController` 확장과 새 컨트롤러 중 선택
@@ -181,9 +181,9 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F01 | [#627](https://github.com/hyujun/rtc-framework/issues/627) | jerk 입력 condensed QP 코어 (토크 제약 행 · slack) | E0-F03 | 구현 완료 · review 대기 (할당 0 은 MD-22) |
-| E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | `PlanSnapshot` 관절 노드 payload + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 대기 |
-| E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 대기 |
+| E1-F01 | [#627](https://github.com/hyujun/rtc-framework/issues/627) | jerk 입력 condensed QP 코어 (토크 제약 행 · slack) | E0-F03 | 완료 ([#655](https://github.com/hyujun/rtc-framework/pull/655)). 할당 0 은 코어 경로만 (MD-22) |
+| E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | `PlanSnapshot` 관절 노드 payload + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 다음 (`feat/catching-decel-mpc-plan-path`) |
+| E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 다음 (`feat/catching-decel-mpc-plan-path`) |
 | E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 + closed-form fallback | E1-F03 | 대기 |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui | E1-F04 | 대기 |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 | E0-F02, E1-F05 | 대기 |
@@ -289,7 +289,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 |---|---|---|
 | 1 | `docs/mpc-dualarm-plan` | — |
 | 2 | `chore/ws-first-build-path` | — |
-| 3 | `feat/catching-baseline-grid-sweep` | `feat/catching-decel-mpc-core`, `feat/tsid-clik-multiframe` |
+| 3 | `feat/catching-baseline-grid-sweep` (완료), `feat/catching-decel-mpc-core` (완료) | `feat/tsid-clik-multiframe` |
 | 4 | `feat/catching-decel-mpc-plan-path` → `-l7` → `-tooling` → `docs/catching-decel-mpc-g1` | `feat/g1-p1b-bringup` |
 | 5 | `feat/demo-dualarm-controller` → `feat/g1-dualarm-tooling` | — |
 | 6 | E3 의 다섯 브랜치 (G-1 통과와 사용자 결정 뒤) | — |
@@ -476,4 +476,5 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **토크 행이 걸리면 warm 주기의 약 2.5 % 가 거짓 "실행 불가능" 판정으로 실패한다.** 호출자는 직전 계획을 유지한다 (MD-11).
 - **할당.** 코어 경로는 0 이고, ProxQP 는 Solve 마다 7–18 회 할당한다 (MD-22, #654).
 - 재평가 토크 (pre-solve 경로 RTI 1 회, 1 kHz 표본, armature 포함) 의 최대 $|\tau|/\tau_{\max}$ 는 0.70 으로 $\eta'_\tau$ 0.7 과 같다.
+- **주기 사이 속도 표류는 흡수된다.** x₀ 의 속도가 기준 node 0 에서 2.5 rad/s 벗어나도 QP 의 jerk 에 상한이 없어 7 반복 · 3.3 ms 에 풀린다. 위치 표류만 trust region 충돌로 거부한다.
 
