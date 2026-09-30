@@ -256,6 +256,18 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("robot.arm.qdd_max", arm_qdd_max_,
           "D-16 acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
+  // The prediction grid the controller expects (MPC plan E0-F04, #647). The
+  // vision profile sets the grid and these three must follow it, but nothing
+  // checks the pair: a `planner.slice.dt` left at 0.05 on a 25 ms grid thins
+  // the candidates to every other point without a warning, and the run
+  // measures the 50 ms grid under the other grid's name.
+  declare("prediction.dt_expected",
+          params_.prediction_dt_expected.tbd ? nan : params_.prediction_dt_expected.value,
+          "expected vision prediction spacing [s] (NaN = TBD); the decode's spacing floor");
+  declare("io.n_min", static_cast<std::int64_t>(params_.io_n_min),
+          "fewest prediction points a message may carry (0 = TBD)");
+  declare("planner.slice.dt", planner_params_.slice_dt,
+          "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,
@@ -831,9 +843,9 @@ void DemoCatchingController::SetupTrajInput() {
   TrajInputConfig cfg;
   cfg.n_min = params_.io_n_min > 0 ? params_.io_n_min : 2;
   // The snapshot capacity, because that is the only upper bound this schema
-  // carries: S3.6's 20 points is a property of the PROFILE (it is what
-  // `ball_perception_sim_profile.json` is set to), not a limit the controller
-  // is given a key for. A longer message is accepted up to the capacity and
+  // carries: S3.6's 20 points is a property of the vision PROFILE (it is what
+  // ball_perception's sim profile is set to), not a limit the controller is
+  // given a key for. A longer message is accepted up to the capacity and
   // refused above it — the capacity is what the decode can physically hold,
   // and the profile change would show up as a point count in the diagnostics
   // rather than as a rejection.
