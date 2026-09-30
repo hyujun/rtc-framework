@@ -14,7 +14,9 @@ void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
 
   // ProxSuite dense QP 객체 — max dimension으로 1회만 할당.
   // 이후 Solve() 는 update() 만 호출하여 RT path 에서 heap free/alloc 을 발생시키지 않는다.
-  qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(max_n_vars, max_n_eq, max_n_ineq);
+  qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
+      max_n_vars, max_n_eq, max_n_ineq, false, proxsuite::proxqp::HessianType::Dense,
+      config_.dense_backend);
 
   // Solver 설정
   qp_->settings.eps_abs = config_.eps_abs;
@@ -106,16 +108,17 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
 
   if (n_eq > 0 && n_ineq > 0) {
     qp_->update(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq),
-                C_src.topLeftCorner(n_ineq, n), l_src.head(n_ineq), u_src.head(n_ineq));
+                C_src.topLeftCorner(n_ineq, n), l_src.head(n_ineq), u_src.head(n_ineq),
+                config_.update_preconditioner);
   } else if (n_eq > 0) {
     qp_->update(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq), std::nullopt,
-                std::nullopt, std::nullopt);
+                std::nullopt, std::nullopt, config_.update_preconditioner);
   } else if (n_ineq > 0) {
     qp_->update(H_view, g_view, std::nullopt, std::nullopt, C_src.topLeftCorner(n_ineq, n),
-                l_src.head(n_ineq), u_src.head(n_ineq));
+                l_src.head(n_ineq), u_src.head(n_ineq), config_.update_preconditioner);
   } else {
     qp_->update(H_view, g_view, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
-                std::nullopt);
+                std::nullopt, config_.update_preconditioner);
   }
 
   qp_->solve();

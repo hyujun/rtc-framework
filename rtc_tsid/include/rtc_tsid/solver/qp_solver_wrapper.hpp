@@ -31,6 +31,20 @@ struct QPSolverConfig {
   // happy path.
   int max_iter_in{100};
   bool verbose{false};
+  // Re-run ProxQP's Ruiz equilibration on every Solve(). Init() equilibrates a
+  // TRIVIAL placeholder problem (H = 1e-8·I, A = 0, seeded C), and ProxQP's
+  // update() keeps that preconditioner unless told otherwise — so with the
+  // default (false) every real problem is solved under the placeholder's
+  // scaling. Default false keeps existing callers bit-for-bit; a caller whose
+  // matrices change scale between solves (or that relies on ProxQP's
+  // infeasibility verdict) should set it (dynamic_catching MPC E1-F01, #627).
+  bool update_preconditioner{false};
+  // ProxQP's KKT backend. Automatic picks PrimalLDLT when constraints outnumber
+  // variables, and that backend allocates inside solve() on every active-set
+  // change (hundreds of C-level mallocs per solve at 126 vars / 434 rows,
+  // E1-F01 #627) and ran ~3× slower there than PrimalDualLDLT. Automatic keeps
+  // existing callers unchanged.
+  proxsuite::proxqp::DenseBackend dense_backend{proxsuite::proxqp::DenseBackend::Automatic};
 };
 
 // ────────────────────────────────────────────────

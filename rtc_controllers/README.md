@@ -128,7 +128,7 @@ rtc_controllers/
 │   ├── task/
 │   │   ├── task_accel_law.hpp                -- 태스크 공간 가속도 법칙 코어 (header-only, 무상태) a_task = K_p·e + K_d·(ν_d−ν) + a_ff. 게인은 **가속도형** `[1/s²]` — `impedance_law` 의 힘형과 Λ 배 차이. pose error 정의·궤적·모델은 바인딩 몫
 │   │   └── task_vel_law.hpp                  -- 태스크 공간 속도 법칙 코어 (header-only, 무상태) task_vel = K_p ⊙ e + ν_ff. 게인은 **속도형** `[1/s]` 이고 미분항이 없다 (CLIK 이 닫는 플랜트가 적분기이므로). 6축·병진전용 두 형태. pose error 정의·궤적·**ν_ff 의 프레임 전송**은 바인딩 몫
-│   ├── catching/                             -- 공 포구 (dynamic_catching, Epic #537) ROS 비의존 수치 코어 `rtc::catching`. 설계·게이트 SSoT 는 `docs/dynamic_catching/IMPLEMENTATION_PLAN.md`. 전부 할당 0·noexcept·fail-closed (비유한/무효 입력은 invalid flag 또는 게이트를 떨어뜨리는 값)
+│   ├── catching/                             -- 공 포구 (dynamic_catching, Epic #537) ROS 비의존 수치 코어 `rtc::catching`. 설계·게이트 SSoT 는 `docs/dynamic_catching/IMPLEMENTATION_PLAN.md` (decel MPC 세 파일은 `docs/dynamic_catching/MPC_DUALARM_PLAN.md`). 전부 할당 0·noexcept·fail-closed (비유한/무효 입력은 invalid flag 또는 게이트를 떨어뜨리는 값)
 │   │   ├── time_types.hpp                    -- 시간축 강한 타입 `BallTime`·`NowReal`·`NowLead` (절대 steady ns). 섞은 비교 연산자가 없고 plan §3 의 판정마다 자기 축만 받는 함수 (`DecelDue`·`CommitDue`…) — 축을 잘못 고르면 컴파일되지 않는다. `ConvertRemoteStamp` 는 D-2 (3) E-1 기록된 예외 (미래 stamp 거부)
 │   │   ├── trajectory.hpp                    -- SeqLock payload POD: `TrajectorySnapshot` (용량 `kCap` 40, provisional) · `ProvenanceToken` (D-22) · `PlanSnapshot` (L3 §5.2)
 │   │   ├── traj_sampler.hpp                  -- 5차 Hermite 샘플러 `SampleAt(snapshot, NowLead)` + 수신 검사 `Check` (개수는 인덱싱 전에, NaN·비단조·dt_min 미만 거부)
@@ -147,7 +147,10 @@ rtc_controllers/
 │   │   ├── rank_gates.hpp                    -- 순위 게이트 공유 코어 `JudgeRankGates` (도달시간 §4.3 · γ 창 §4.5 · 정지점 §4.9, span 기반·할당 0). 오프라인 gate 지도 (`JudgeGates`) 와 런타임 계획기가 **같은 함수**를 불러 G3-I 가 구조적으로 성립한다 (refactor 전후 지도 3771 후보 판정 바이트 동일)
 │   │   ├── unit_speed.hpp                    -- q̇ᵘ (`UnitSpeedSolver`): $J_5^\top(J_5J_5^\top+\lambda^2I)^{-1}[\hat v;0;0]$, 행·λ (1e-3) 가 지도 python (`catch_speed_budget.dls_unit_velocity`) 과 같다. 고정 용량·할당 0
 │   │   ├── planner_search.hpp                -- 계획기 탐색 `PlannerSearch::Plan` (S6-B): 후보 = vision 격자 (slice.dt 로 솎음, lead ∈ [t_lead_min, t_max]) · **판정 게이트** (입력·IK·manipulability·`catch_box` 의 p_c/p_stop) 는 제거, **순위 게이트** (불확실성·도달시간·γ 창·commit 선행·오차 예산) 는 벌점 (결정 C/D) · 싼 항으로 사전 점수 → IK 는 상위 `max_ik` 개만, `budget_s` 까지 (R-2) · 최소 점수 선택 (§4.10) · 교체 히스테리시스·점프 한계 (§4.7) · freeze (결정 G) · `Monitor` (σ_ℓ). γ_f 는 rollout (S6-C) 전까지 창 하한
-│   │   └── planner_cycle.hpp                 -- 계획기 한 번 깨어남 `PlannerCycle::Run`: RT 상태 → 궤적 → 공분산 (token 불일치 1회 재독) → `PlanOnce` (A-4 단일 진입, S6-A 는 stub) → 궤적·리셋·activation 재검사 → 게시. 할당 0 (G3-K). 스레드는 `integrated_bringup` 이 소유
+│   │   ├── planner_cycle.hpp                 -- 계획기 한 번 깨어남 `PlannerCycle::Run`: RT 상태 → 궤적 → 공분산 (token 불일치 1회 재독) → `PlanOnce` (A-4 단일 진입, S6-A 는 stub) → 궤적·리셋·activation 재검사 → 게시. 할당 0 (G3-K). 스레드는 `integrated_bringup` 이 소유
+│   │   ├── decel_mpc.hpp                     -- decel MPC 코어 `DecelMpc` (MPC 계획 E1-F01, #627): 정지 구간의 jerk 입력 condensed QP (formulation §1.6). move blocking (관절 공통 블록, B ≥ 3), 종단 q̇=q̈=0 · 위치 ∪ trust region · 속도는 hard, 토크는 `computeRNEADerivatives` 1차 선형화 행 + 노드×관절 slack (τ_max 비율, 1차 벌점). 기준 x̄ 가 없으면 kinematic pre-solve (cold) 뒤 본 solve. **지평 N·Δ 가 곧 정지 시간** (MD-21) 이라 값은 호출자 (E1-F03) 가 정한다. 진입 상태가 자체 box 밖 · x₀ 가 x̄₀ 에서 δ 넘게 표류 · 기준 종단이 정지가 아님 · 비유한 입력은 QP 전에 거부하고 결과를 건드리지 않는다. `Init` 이 모델 사본 (armature 포함) 과 전부를 할당하고 `Solve` 는 noexcept. 조립은 Kronecker 구조 (`reference_assembly` 는 조밀 조립 oracle, 테스트 전용)
+│   │   ├── decel_mpc_torque.hpp              -- 한 노드의 토크 선형화 seam `LinearizeTorqueAt` → τ̄, D = [∂τ/∂q ∂τ/∂q̇ M]. pinocchio 가 M 을 상삼각만 채우고 armature 를 출력 대각에 **더하므로** 매 호출 0 으로 지우고 대칭화한다
+│   │   └── jerk_segment.hpp                  -- 구간 상수 jerk 관절 궤적의 닫힌식 평가 (formulation §1.5, header-only) `EvaluateJerkSegment` · `SampleJerkTrajectory`. MPC 노드에 대해 정확하고 노드에서 C². t<0 · Δ≤0 · 비유한은 거부, t ≥ N·Δ 는 노드 N 유지. E1-F02 RT 샘플러와 E1-F03 shift 가 공유한다
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
@@ -188,6 +191,7 @@ rtc_controllers/
 │   │   ├── catch_pose_ik_batch_main.cpp      -- `catch_pose_ik_batch` 실행파일의 `main` (ARCH-7-exempt 오프라인 검사 도구)
 │   │   ├── batch_csv.hpp                     -- 두 배치 도구가 공유하는 CSV 읽기·쓰기 (private): 헤더가 열 순서를 정하는 `ReadHeadered`/`Row` (중복 헤더·필수 열·행 폭 검사), 빈 끝 필드 보존, 유한값·정수 폭 검사, `%.17g`
 │   │   ├── catch_gate_batch.cpp              -- 위 `catch_gate_batch.hpp` 구현
+│   │   ├── decel_mpc.cpp                     -- 위 `decel_mpc.hpp` · `decel_mpc_torque.hpp` 구현 (Pinocchio RNEA 미분 · frame Jacobian + rtc_tsid `QPSolverWrapper`)
 │   │   ├── planner_cycle.cpp                 -- 위 `planner_cycle.hpp` 구현
 │   │   ├── planner_search.cpp                -- 위 `planner_search.hpp` 구현
 │   │   └── catch_gate_batch_main.cpp         -- `catch_gate_batch` 실행파일의 `main` (ARCH-7-exempt 오프라인 검사 도구, 모든 인자 필수)
@@ -793,6 +797,7 @@ rtc::joint::ComputeJointPdCommand(gains_view, inputs, dt, nq, nc0, cmd_type, pre
 - `noexcept`, 무상태 (header-only), 컨테이너·Eigen 동적 타입 없음 — 스크래치가 필요한 곳은 max-size 고정 타입 (`Matrix<double,Dyn,Dyn,0,6,6>`)
 - Eigen: `noalias()` 사용, 고정 크기 행렬(3x3, 6x6) 스택 할당
 - 각 코어 스위트의 `IsAllocationFree` 가 두 센서로 이것을 고정한다 — `operator new` 카운터(`rtc_controllers/testing/alloc_gate.hpp`)와 Eigen 자체 할당 tripwire(`rtc_base/testing/no_malloc_scope.hpp`). Eigen 은 `std::malloc` 을 직접 부르므로 전자만으로는 안 보인다
+- 라이브러리 (Pinocchio `.so` · `rtc_tsid` 의 ProxQP) 를 부르는 코어는 세 번째 센서 `test/include/rtc_controllers/testing/malloc_gate.hpp` (`ScopedMallocGate`) 를 더한다 — 실행 파일이 `malloc` 계열을 정의해 `__libc_*` 로 넘기며 세므로, 두 센서가 못 보는 라이브러리 안의 C 할당까지 본다 (`test_catching_decel_mpc`)
 
 **바인딩이 지켜야 하는 것** (여기 없고, base 와 integration 계층이 소유):
 - **SeqLock + SPSC marshal:** target 슬롯은 `rtc::SeqLock<TargetSlot>` 이 publish 하고 **RT 스레드 (Compute)** 가 유일한 writer다. Off-RT `SetDeviceTarget` 콜백은 `rtc::SpscQueue<PendingTarget, 4>` 에 lock-free push (newest-drop) 만 한다. 이 글루는 `RTControllerInterface` 가 소유하므로 (`PushPendingTarget` / `DrainPendingTargets` / `ApplyPendingTarget`) 바인딩이 복제하지 않는다. SE3 는 `is_trivially_copyable=false` (Eigen false-negative) 이므로 POD wrapper 로 마샬링한다
