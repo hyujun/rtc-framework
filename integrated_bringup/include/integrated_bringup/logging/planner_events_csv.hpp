@@ -15,6 +15,11 @@
 // the controller's tick record. Idle wakes (no RT state, a mode with nothing to
 // plan for) are not recorded unless they saw a trial reset or produced a
 // monitorOnly σ_ℓ — at 20 Hz they would drown the rows that say something.
+//
+// The `decel_*` columns (MPC E1-F03) are the decel step's account; they are
+// appended, so readers that select columns by name are unaffected. A wake
+// whose decel step only waited (not due, up to date, past the replan window)
+// does not earn a row on its own.
 
 #include "rtc_controllers/catching/planner_cycle.hpp"
 
@@ -31,14 +36,24 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "rej_not_evaluated,budget_hit,search_us,ik_us_max,rank_mask,rank_uncertainty,"
         "rank_reach,rank_gamma,rank_commit_lead,rank_error_budget,score,lead_s,gamma_f,"
         "decision,sigma_l,rank_rollout,t_w,rollout_window_only,n_rollouts,rollout_us_max,"
-        "g_min,g_max,v_dir_max,max_catchable\n";
+        "g_min,g_max,v_dir_max,max_catchable,decel_outcome,decel_k,decel_n_nodes,decel_seq,"
+        "decel_publish_ns,decel_h_s,decel_qdd_trusted,decel_x0_clamped,decel_from_segment,"
+        "decel_presolved,decel_cold_retry,decel_iterations,decel_qp_status,decel_core_reason,"
+        "decel_solve_us,decel_slack_max,decel_slack_terminal_max,decel_tau_ratio_max\n";
+}
+
+/// Whether the decel step did something worth a row on its own.
+[[nodiscard]] inline bool DecelStepWorthRecording(rtc::catching::DecelOutcome o) noexcept {
+  using rtc::catching::DecelOutcome;
+  return o != DecelOutcome::kOff && o != DecelOutcome::kNotDue && o != DecelOutcome::kUpToDate &&
+         o != DecelOutcome::kPastReplanWindow;
 }
 
 /// Whether a wake is worth a row (see the file header).
 [[nodiscard]] inline bool PlannerEventWorthRecording(
     const rtc::catching::PlannerCycleRecord& r) noexcept {
   return r.outcome != rtc::catching::CycleOutcome::kIdle || r.reset_seen ||
-         std::isfinite(r.search.sigma_l);
+         std::isfinite(r.search.sigma_l) || DecelStepWorthRecording(r.decel.outcome);
 }
 
 inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::PlannerCycleRecord& r) {
@@ -67,7 +82,14 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
      << s.sigma_l << ',' << bit(rtc::catching::kRankRollout) << ',' << s.chosen_t_w << ','
      << (s.chosen_rollout_window_only ? 1 : 0) << ',' << s.n_rollouts << ','
      << s.rollout_ns_max / 1000 << ',' << s.chosen_g_min << ',' << s.chosen_g_max << ','
-     << s.chosen_v_dir_max << ',' << s.chosen_max_catchable << '\n';
+     << s.chosen_v_dir_max << ',' << s.chosen_max_catchable << ',';
+  const auto& d = r.decel;
+  os << rtc::catching::DecelOutcomeName(d.outcome) << ',' << d.k << ',' << d.n_nodes << ','
+     << d.decel_seq << ',' << d.publish_ns << ',' << d.h_s << ',' << (d.qdd_trusted ? 1 : 0) << ','
+     << (d.x0_clamped ? 1 : 0) << ',' << (d.from_segment ? 1 : 0) << ',' << (d.presolved ? 1 : 0)
+     << ',' << (d.cold_retry ? 1 : 0) << ',' << d.iterations << ',' << d.qp_status << ','
+     << rtc::catching::DecelMpcReasonName(d.core_reason) << ',' << d.solve_ns / 1000 << ','
+     << d.slack_max << ',' << d.slack_terminal_max << ',' << d.tau_ratio_max << '\n';
 }
 
 }  // namespace integrated_bringup

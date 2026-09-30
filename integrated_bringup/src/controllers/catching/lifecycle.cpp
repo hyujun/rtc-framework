@@ -275,6 +275,23 @@ void DemoCatchingController::DeclareProfileParameters() {
           "fewest prediction points a message may carry, as run (the decode's default when TBD)");
   declare("planner.slice.dt", planner_params_.slice_dt,
           "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
+  // The decel MPC as run (MPC E1-F03): an off-process analysis must read the
+  // horizon, window and thresholds this controller used, not the file.
+  const auto& decel = planner_params_.decel;
+  declare("planner.decel_mpc.enabled", decel.enabled,
+          "MPC E1-F03: the planner pre-computes the stop segment (decel MPC)");
+  declare("planner.decel_mpc.horizon.n_nodes", static_cast<std::int64_t>(decel.n_nodes),
+          "decel MPC nodes N_s; N_s * dt_s is the stopping time (MD-21)");
+  declare("planner.decel_mpc.horizon.dt_s", decel.dt_s, "decel MPC node spacing dt_s [s]");
+  declare("planner.decel_mpc.replan.t_pre_s", decel.t_pre_s,
+          "decel MPC first solve waits until t_c - now_lead <= t_pre_s [s] (MD-26)");
+  declare("planner.decel_mpc.replan.k_max", static_cast<std::int64_t>(decel.k_max),
+          "decel MPC post-catch replans at grid points k <= k_max (MD-31)");
+  declare("planner.decel_mpc.eta_tau", decel.eta_tau, "decel MPC torque row fraction of tau_max");
+  declare("planner.decel_mpc.publish.slack_max", decel.slack_max,
+          "decel MPC publish threshold on the torque slack, nodes 1..N (MD-33)");
+  declare("planner.decel_mpc.publish.slack_terminal_max", decel.slack_terminal_max,
+          "decel MPC publish threshold on the terminal (static) torque slack (MD-33)");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,
@@ -1065,6 +1082,20 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "controller will refuse to activate; the robot still comes up.");
       return CallbackReturn::SUCCESS;
     }
+    // The decel MPC (MPC E1-F03) needs the planner, and its torque box plus
+    // publish slack must fit inside the CLIK's (MD-33). A profile mistake:
+    // park, name it, keep the robot up.
+    if (planner_params_.decel.enabled) {
+      if (const char* why = DecelMpcConfigInvalid(); why != nullptr) {
+        sim_only_disabled_ = true;
+        park_reason_ = CatchingParkReason::kDecelMpcInvalid;
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: planner.decel_mpc.enabled is true but %s. This controller will "
+                     "refuse to activate; the robot still comes up.",
+                     why);
+        return CallbackReturn::SUCCESS;
+      }
+    }
     // The planner's DECISION values (S6-B) — values nobody may guess. Same rule
     // as a consumed TBD: park, name the key, keep the robot up (A-S5-12).
     if (planner_params_.enabled) {
@@ -1258,6 +1289,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
                  "commanded — see the configure log for the values involved.",
                  park_reason_ == CatchingParkReason::kPlannerOracleConflict
                      ? "planner and oracle plan both enabled"
+                 : park_reason_ == CatchingParkReason::kDecelMpcInvalid
+                     ? "planner.decel_mpc cannot run in this profile"
                      : "a consumed value is provisional or TBD");
     return CallbackReturn::FAILURE;
   }
@@ -1605,7 +1638,7 @@ bool DemoCatchingController::SetupPlanner() {
   // binding costs nothing, and a re-configure that turns the planner on must
   // not depend on the previous configure having done it.
   planner_cycle_.Configure(planner_params_);
-  if (!planner_cycle_.Bind({&traj_box_, &cov_box_, &planner_rt_box_, &plan_box_})) {
+  if (!planner_cycle_.Bind({&traj_box_, &cov_box_, &planner_rt_box_, &plan_box_, &decel_box_})) {
     RCLCPP_ERROR(logger_, "planner: could not bind the plan/trajectory boxes");
     return false;
   }
@@ -1636,11 +1669,13 @@ bool DemoCatchingController::SetupPlanner() {
   }
   // ── The search's model (S6-B, R-3) ────────────────────────────────────────
   planner_cycle_.ClearSearch();
+  planner_cycle_.ClearDecel();
   planner_handle_.reset();
   if (!builder_) {
     RCLCPP_WARN(logger_,
                 "planner: no system model — the thread runs, but its search is the stub "
-                "(it publishes \"no plan\")");
+                "(it publishes \"no plan\")%s",
+                planner_params_.decel.enabled ? " and the decel MPC does not run" : "");
   } else if (!SetupPlannerSearch()) {
     return false;
   }
@@ -1743,11 +1778,86 @@ bool DemoCatchingController::SetupPlannerSearch() {
                  pm.nv, planner_params_.wait_pose_n);
     return false;
   }
+  if (planner_params_.decel.enabled && !SetupDecelPlanner(model, pm)) {
+    return false;
+  }
   RCLCPP_INFO(logger_,
               "planner search ready: sub-model '%s' (nv %d), catch frame '%s', accel box %s, "
               "T_freeze %.3f s, max_ik %d",
               name.c_str(), pm.nv, catch_frame_name_.c_str(), pm.accel_box ? "on" : "OFF",
               planner_params_.t_freeze, planner_params_.max_ik);
+  return true;
+}
+
+const char* DemoCatchingController::DecelMpcConfigInvalid() const noexcept {
+  const auto& d = planner_params_.decel;
+  if (!planner_params_.enabled) {
+    return "planner.enabled is false (the decel MPC runs on the planner thread)";
+  }
+  // The CLIK's torque box only exists in the dynamic form; the box and
+  // kinematic forms have none to exceed, so the pair is not judged there.
+  if (params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic &&
+      !params_.joint_cmd_eta_tau.tbd &&
+      !(d.eta_tau + d.slack_max <= params_.joint_cmd_eta_tau.value)) {
+    return "planner.decel_mpc.eta_tau + publish.slack_max exceeds joint_cmd.eta_tau (a published "
+           "stop could ask for torque the CLIK's torque box refuses, MD-33)";
+  }
+  return nullptr;
+}
+
+bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinocchio::Model>& model,
+                                               const rtc::catching::PlannerModel& pm) {
+  if (pm.nv > rtc::catching::kMaxDecelNv) {
+    RCLCPP_ERROR(logger_,
+                 "planner.decel_mpc: the arm has %d joints but a decel segment carries at most "
+                 "%d (kMaxDecelNv) — set planner.decel_mpc.enabled: false or raise the capacity",
+                 pm.nv, rtc::catching::kMaxDecelNv);
+    return false;
+  }
+  const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+  const std::vector<double>* torque = nullptr;
+  if (arm_cfg != nullptr && arm_cfg->joint_limits.has_value()) {
+    torque = &arm_cfg->joint_limits->max_torque;
+  }
+  if (torque == nullptr || static_cast<int>(torque->size()) < pm.nv) {
+    RCLCPP_ERROR(logger_,
+                 "planner.decel_mpc: the arm device has no joint_limits.max_torque for its %d "
+                 "joints — the decel MPC's torque rows need them",
+                 pm.nv);
+    return false;
+  }
+  rtc::catching::DecelPlannerModel dm;
+  dm.arm = model;
+  dm.catch_frame = pm.catch_frame;
+  dm.nv = pm.nv;
+  dm.device_of_model = pm.device_of_model;
+  for (int m = 0; m < pm.nv; ++m) {
+    const auto u = static_cast<std::size_t>(m);
+    dm.q_min[u] = model->lowerPositionLimit[m];
+    dm.q_max[u] = model->upperPositionLimit[m];
+    dm.qdot_max[u] = pm.qdot_max[u];
+    dm.tau_max[u] = (*torque)[static_cast<std::size_t>(pm.device_of_model[u])];
+    dm.qddot_cap[u] = pm.qddot_max[u];
+  }
+  dm.qddot_cap_valid = pm.accel_box;
+  rtc::catching::DecelPlannerConstants dc;
+  dc.eta_v = ResolvedPlannerEtaV();
+  dc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
+  dc.control_dt = GetDefaultDt();
+  dc.budget_s = planner_params_.budget_s;
+  std::string error;
+  if (!planner_cycle_.ConfigureDecel(dm, dc, &error)) {
+    RCLCPP_ERROR(logger_, "planner.decel_mpc: %s", error.c_str());
+    return false;
+  }
+  const auto& d = planner_params_.decel;
+  RCLCPP_INFO(logger_,
+              "decel MPC ready: %d x %.3f s (stop %.3f s), %d blocks, first solve %.3f s before "
+              "t_c, replans to k = %d, eta_tau %.2f, publish slack <= %.2f / terminal %.2f, "
+              "armature 0 (MD-25), q_ddot estimate %s",
+              d.n_nodes, d.dt_s, d.n_nodes * d.dt_s, d.n_blocks, d.t_pre_s, d.k_max, d.eta_tau,
+              d.slack_max, d.slack_terminal_max,
+              dm.qddot_cap_valid ? "capped by the D-16 box" : "OFF");
   return true;
 }
 

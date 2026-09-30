@@ -82,7 +82,7 @@ struct Catching {
   std::unique_ptr<DemoCatchingController> ctrl;
 };
 
-Catching MakeCatching(const std::string& node_name, std::string_view profile) {
+Catching MakeCatching(const std::string& node_name, std::string_view profile, bool decel = false) {
   Catching c;
   rclcpp::NodeOptions options;
   options.parameter_overrides({rclcpp::Parameter("rt_layout_profile", std::string(profile))});
@@ -90,7 +90,7 @@ Catching MakeCatching(const std::string& node_name, std::string_view profile) {
   c.ctrl = std::make_unique<DemoCatchingController>("");
   c.ctrl->SetDeviceNameConfigs(PlannerSimDevices());
   const rclcpp_lifecycle::State prev;
-  EXPECT_EQ(c.ctrl->on_configure(prev, c.node, YAML::Load(PlannerMinimalYaml(true))),
+  EXPECT_EQ(c.ctrl->on_configure(prev, c.node, YAML::Load(PlannerMinimalYaml(true, false, decel))),
             RTControllerInterface::CallbackReturn::SUCCESS);
   EXPECT_FALSE(c.ctrl->IsSimOnlyDisabled());
   return c;
@@ -193,6 +193,23 @@ TEST(CatchingMpcRoleSwitch, TheTwoSolverThreadsShareTheRoleAndOnlyOneRunsAcrossA
   ASSERT_EQ(wbc->on_deactivate(Inactive()), RTControllerInterface::CallbackReturn::SUCCESS);
   catching.ctrl.reset();
   EXPECT_EQ(WaitForThreadsNamed(name, 1).size(), 1U) << "the planner thread outlived its owner";
+}
+
+TEST(CatchingMpcRoleSwitch, TheDecelMpcRidesThePlannerThread) {
+  // MPC E1-F03: planner.decel_mpc runs inside the planner's wake, so enabling
+  // it adds no thread (the role stays one tenant per controller, E-7 J). This
+  // profile is model-free, so the decel cores are not built — the solve on the
+  // thread itself is the lane suite's (test_catching_planner_lane).
+  const std::string name = rtc::SelectThreadConfigs().mpc.main.name;
+  const auto before = ThreadsNamed(name).size();
+  auto catching = MakeCatching("r1_decel_catching", DemoWbcController::kDefaultLayoutProfile, true);
+  EXPECT_FALSE(catching.ctrl->IsDecelPlannerConfigured()) << "no system model to plan in";
+  ASSERT_EQ(catching.ctrl->on_activate(Inactive()), RTControllerInterface::CallbackReturn::SUCCESS);
+  EXPECT_EQ(WaitForThreadsNamed(name, before + 1).size(), before + 1);
+  ASSERT_EQ(catching.ctrl->on_deactivate(Inactive()),
+            RTControllerInterface::CallbackReturn::SUCCESS);
+  catching.ctrl.reset();
+  EXPECT_EQ(WaitForThreadsNamed(name, before).size(), before);
 }
 
 TEST(CatchingMpcRoleSwitch, UnderTheMpcOffProfileThePlannerNeverSpawns) {
