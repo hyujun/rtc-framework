@@ -1378,6 +1378,8 @@ void DemoCatchingController::DropDecelSegments() noexcept {
   decel_pending_valid_ = false;
   decel_current_ = rtc::catching::DecelPlanSnapshot{};
   decel_current_valid_ = false;
+  decel_stop_origin_ = {};
+  decel_stop_origin_valid_ = false;
 }
 
 bool DemoCatchingController::DecelSegmentMatchesPlan(
@@ -1429,8 +1431,21 @@ void DemoCatchingController::RunDecelLane() noexcept {
   // stop's DISPLACEMENT from p_c; the MPC's stop is longer at low speed and
   // not straight. Its own displacement is judged the same way — from p_c, not
   // from where the arm happens to be at t_c, which the closed-form stop would
-  // start from too (a v1 arm can reach t_c outside the box).
-  if (!decel_follower_.NodesInsideBox(decel_in_, decel_box_lo_, decel_box_hi_, &plan_.p_c)) {
+  // start from too (a v1 arm can reach t_c outside the box). A replan starts
+  // part-way through the stop, so its path is placed by where it starts
+  // relative to the stop's own start: p_c + (p_0 − origin) + (p_k − p_0).
+  std::array<double, 3> anchor = plan_.p_c;
+  if (decel_stop_origin_valid_) {
+    std::array<double, 3> p0{};
+    if (!decel_follower_.NodePosition(decel_in_, 0, p0)) {
+      tick_record_.decel_event = Event::kWorkspace;
+      return;
+    }
+    for (std::size_t a = 0; a < 3; ++a) {
+      anchor[a] += p0[a] - decel_stop_origin_[a];
+    }
+  }
+  if (!decel_follower_.NodesInsideBox(decel_in_, decel_box_lo_, decel_box_hi_, &anchor)) {
     tick_record_.decel_event = Event::kWorkspace;
     return;
   }
@@ -1474,7 +1489,9 @@ rtc::catching::Reason DemoCatchingController::RunDecelMpcTick(const ControllerSt
   bool sampled = false;
   if (entry || mode_ == Mode::kDecel) {
     if (decel_pending_valid_) {
-      if (s < decel_pending_.t0_ns) {
+      if (rtc::catching::ChooseDecelSegment(decel_current_valid_, decel_pending_valid_,
+                                            decel_pending_.t0_ns,
+                                            s) != rtc::catching::DecelSegmentChoice::kPending) {
         if (entry) {
           tick_record_.decel_event = Event::kNotDue;
         }
@@ -1498,11 +1515,20 @@ rtc::catching::Reason DemoCatchingController::RunDecelMpcTick(const ControllerSt
         tick_record_.decel_dq_max = gate.dq_max;
         tick_record_.decel_dqd_max = gate.dqd_max;
         tick_record_.decel_gate_joint = gate.joint;
-        if (gate.pass) {
+        bool take = gate.pass;
+        if (take && !decel_stop_origin_valid_) {
+          // The first segment of this stop fixes where it started (MD-43).
+          // Cannot fail after the Sample above (same shape checks).
+          take = decel_follower_.NodePosition(decel_pending_, 0, decel_stop_origin_);
+          decel_stop_origin_valid_ = take;
+        }
+        if (take) {
           decel_current_ = decel_pending_;
           decel_current_valid_ = true;
           sampled = true;
           tick_record_.decel_event = Event::kSwitched;
+        } else if (gate.pass) {
+          tick_record_.decel_event = Event::kSampleFailed;
         } else {
           // A replan that would step the command is dropped and the followed
           // segment goes on; at the entry there is none, and the trial aborts.

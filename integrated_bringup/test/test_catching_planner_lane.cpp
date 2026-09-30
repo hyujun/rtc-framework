@@ -456,6 +456,20 @@ class CatchingPlanLaneTest : public ::testing::Test {
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
     ctrl_->SetDeviceNameConfigs(configs);
+    YAML::Node yaml = ConfigureOnlyYaml(planner);
+    if (tweak) {
+      tweak(yaml);
+    }
+    const rclcpp_lifecycle::State prev;
+    ConfigureVerdict v;
+    v.ret = ctrl_->on_configure(prev, node_, yaml);
+    v.parked = ctrl_->IsSimOnlyDisabled();
+    v.reason = ctrl_->GetParkReason();
+    return v;
+  }
+
+  /// ConfigureOnly's profile: mode mpc, the decel MPC as `planner` says.
+  YAML::Node ConfigureOnlyYaml(bool planner) const {
     YAML::Node yaml = YAML::Load(
         TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
     yaml["diagnostic"]["oracle_plan"]["enabled"] = !planner;
@@ -470,15 +484,7 @@ class CatchingPlanLaneTest : public ::testing::Test {
     pl["provisional"] = false;
     pl["decel_mpc"]["enabled"] = planner;
     yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";
-    if (tweak) {
-      tweak(yaml);
-    }
-    const rclcpp_lifecycle::State prev;
-    ConfigureVerdict v;
-    v.ret = ctrl_->on_configure(prev, node_, yaml);
-    v.parked = ctrl_->IsSimOnlyDisabled();
-    v.reason = ctrl_->GetParkReason();
-    return v;
+    return yaml;
   }
 
   /// Tick with a fresh prediction until the supervisor reaches `mode` (or the
@@ -905,6 +911,51 @@ TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoDecelCoresEvenWhenTheyAreEnabled)
     EXPECT_FALSE(v.parked) << mode;
     EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kClosedForm) << mode;
     EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured()) << "mode '" << mode << "'";
+  }
+}
+
+TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnADecelSettingItNeverReads) {
+  // MD-44 (/code-review 2026-09-30): under closed_form no decel core is built,
+  // so a decel torque box that would not fit the CLIK's is not a profile
+  // mistake there — only the WARN that the MPC is not built. Under mpc the
+  // same setting parks.
+  const auto misfit = [](const char* mode) {
+    return [mode](YAML::Node& y) {
+      y["catching"]["supervisor"]["decel"]["mode"] = mode;
+      y["catching"]["planner"]["decel_mpc"]["eta_tau"] = 0.75;
+      y["catching"]["planner"]["decel_mpc"]["publish"]["slack_max"] = 0.1;
+      y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
+      y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
+    };
+  };
+  const ConfigureVerdict closed = ConfigureOnly(true, misfit("closed_form"));
+  ASSERT_EQ(closed.ret, DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(closed.parked) << "park reason " << static_cast<int>(closed.reason);
+  EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured());
+
+  const ConfigureVerdict mpc = ConfigureOnly(true, misfit("mpc"));
+  ASSERT_EQ(mpc.ret, DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(mpc.parked);
+  EXPECT_EQ(mpc.reason, integrated_bringup::CatchingParkReason::kDecelMpcInvalid);
+}
+
+TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheDecelPlannersBox) {
+  // The box getters report THIS configuration (/code-review 2026-09-30): a
+  // closed_form re-configure builds no decel planner, so the box is zero.
+  ASSERT_EQ(ConfigureOnly(true, nullptr).ret, DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
+  ASSERT_NE(ctrl_->GetDecelQMaxForTesting()[0], 0.0);
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_->on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  YAML::Node yaml = ConfigureOnlyYaml(true);
+  yaml["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
+  ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured());
+  for (int d = 0; d < kUr5eArmDof; ++d) {
+    const auto u = static_cast<std::size_t>(d);
+    EXPECT_EQ(ctrl_->GetDecelQMinForTesting()[u], 0.0) << "joint " << d;
+    EXPECT_EQ(ctrl_->GetDecelQMaxForTesting()[u], 0.0) << "joint " << d;
   }
 }
 

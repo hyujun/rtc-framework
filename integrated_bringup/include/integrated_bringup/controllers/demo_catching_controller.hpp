@@ -368,6 +368,14 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] bool IsFollowingDecelForTesting() const noexcept { return decel_current_valid_; }
 
+  /// Move the MD-43 catch box between ticks — a test that must size it from
+  /// a segment it only knows once the trial runs. Not for a running RT loop.
+  void SetDecelCatchBoxForTesting(const std::array<double, 3>& lo,
+                                  const std::array<double, 3>& hi) noexcept {
+    decel_box_lo_ = lo;
+    decel_box_hi_ = hi;
+  }
+
   /// The decel planner's joint position box as configured (MD-42), device
   /// order, and the CLIK's margined arm box it must sit inside.
   [[nodiscard]] const std::array<double, rtc::catching::kMaxPlanNv>& GetDecelQMinForTesting()
@@ -1514,7 +1522,8 @@ class DemoCatchingController final : public RTControllerInterface {
   //   law_snapshot_                              R, T
   //   last_trial_generation_, last_trial_generation_valid_   R writes, T clears
   //   decel_entry_, decel_t_s_ns_, decel_stopped_, hold_entry_ns_     R, T
-  //   admitted_decel_, decel_pending_, decel_pending_valid_, decel_current_, decel_current_valid_
+  //   admitted_decel_, decel_pending_, decel_pending_valid_, decel_current_, decel_current_valid_,
+  //   decel_stop_origin_, decel_stop_origin_valid_
   //                                              R, T (DropDecelSegments; also on ABORT_SAFE / RETREAT entry, and HOLD drops the pending one)
   //   decel_in_, decel_refusal_, decel_sample_   exempt: written on the tick that reads them (the tick record's decel_judged says whether the lane ran)
   //   sat_streak_, law_horizon_extrap_           R, T
@@ -1684,6 +1693,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The segment the RT follows.
   rtc::catching::DecelPlanSnapshot decel_current_{};
   bool decel_current_valid_{false};
+  /// Where this stop started: the catch frame at node 0 of the first segment
+  /// the DECEL entry took (model world). A replan's MD-43 check measures
+  /// from here, so the part of the stop already covered counts.
+  std::array<double, 3> decel_stop_origin_{};
+  bool decel_stop_origin_valid_{false};
   /// This tick's sample of a segment (the switch's and the law's).
   rtc::catching::DecelNodeSample decel_sample_{};
   // RT-OWNED END

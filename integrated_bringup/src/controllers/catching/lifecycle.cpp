@@ -302,13 +302,16 @@ void DemoCatchingController::DeclareProfileParameters() {
           "D-S9-D1 motion deadline for a stop (ABORT_SAFE ramp, RETREAT stop stage) [s]");
   declare("supervisor.deadline.return_s", params_.supervisor_deadline_return_s.value,
           "D-S9-D1 motion deadline for RETREAT's return to the wait pose [s]");
-  // The DECEL law as run (MPC MD-44): one per configuration, never mixed.
+  // The DECEL law (MPC MD-44): one per configuration, never mixed. Like every
+  // mirror here, read_only — it keeps the FIRST configure's value.
   declare(
       "supervisor.decel.mode",
       std::string(decel_mode_ == rtc::catching::CatchingDecelMode::kMpc ? "mpc" : "closed_form"),
-      "MPC MD-44: the DECEL law — closed_form (v1 L7) or mpc (the decel MPC's stop segment)");
+      "MPC MD-44: the DECEL law — closed_form (v1 L7) or mpc (the decel MPC's stop segment). "
+      "As of the FIRST configure of this node — read_only mirrors cannot follow a re-configure");
   declare("supervisor.decel.switch_margin", decel_switch_margin_,
-          "MPC MD-39: rho_max of the decel segment switch gate (mode mpc)");
+          "MPC MD-39: rho_max of the decel segment switch gate (mode mpc). As of the FIRST "
+          "configure of this node — read_only mirrors cannot follow a re-configure");
   declare("robot.arm.accel_limits_path", accel_limits_path_,
           "the profile's D-16 box file (robot.arm.accel_limits_path): absolute, or relative to "
           "the share directory of robot.arm.accel_limits_package. As of the FIRST configure "
@@ -1011,6 +1014,9 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // for it, and the tick never changes it.
     decel_mode_ = params_.supervisor_decel_mode;
     decel_switch_margin_ = params_.supervisor_decel_switch_margin;
+    // Written by SetupDecelPlanner only when this configure builds it.
+    decel_planner_q_min_.fill(0.0);
+    decel_planner_q_max_.fill(0.0);
     clik_v_box_complete_ = false;
     for (std::size_t i = 0; i < report_.warning_count; ++i) {
       const auto& w = report_.warnings[i];
@@ -1103,8 +1109,9 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     }
     // The decel MPC (MPC E1-F03) needs the planner, and its torque box plus
     // publish slack must fit inside the CLIK's (MD-33). A profile mistake:
-    // park, name it, keep the robot up.
-    if (planner_params_.decel.enabled) {
+    // park, name it, keep the robot up. Only under the law that runs it —
+    // closed_form builds no decel core and reads none of its keys (MD-44).
+    if (planner_params_.decel.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
       if (const char* why = DecelMpcConfigInvalid(); why != nullptr) {
         sim_only_disabled_ = true;
         park_reason_ = CatchingParkReason::kDecelMpcInvalid;

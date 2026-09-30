@@ -56,6 +56,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1298,6 +1299,116 @@ TEST_F(DecelMpcScenarioTest, AReplanPastTheGateIsDroppedAndTheFollowedSegmentGoe
   EXPECT_EQ(
       CountTicks([](const TickRec& t) { return t.body.decel_event == DecelEvent::kGateRefused; }),
       1)
+      << Transitions();
+  EXPECT_EQ(
+      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
+      0)
+      << "the refused replan was followed";
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+// MD-43 for a replan (/code-review 2026-09-30): it starts part-way through the
+// stop, so its path is judged from where THE STOP started — p_c + (p_k − o),
+// o the entry segment's node 0 — not from its own node 0, which would drop
+// the distance already covered. Each case sets the box from the entry
+// segment it only knows once the trial runs, and first checks that the two
+// readings disagree on it (otherwise the case would not tell them apart).
+class DecelMpcReplanBoxTest : public DecelMpcScenarioTest {
+ protected:
+  static constexpr int kShift = 6;  // the replan starts 150 ms into the stop
+
+  /// p_c + (FK(node k of the entry segment) − FK(node `from`)), k ≥ kShift.
+  std::vector<Eigen::Vector3d> Judged(int from) const {
+    const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
+    const Eigen::Vector3d p_c(plan.p_c[0], plan.p_c[1], plan.p_c[2]);
+    const Eigen::Vector3d base = NodeFk(from);
+    std::vector<Eigen::Vector3d> out;
+    for (int k = kShift; k <= entry_seg_.n_nodes; ++k) {
+      out.push_back(p_c + (NodeFk(k) - base));
+    }
+    return out;
+  }
+
+  Eigen::Vector3d NodeFk(int k) const {
+    std::array<double, 64> q{};
+    for (int j = 0; j < kUr5eArmDof; ++j) {
+      q[static_cast<std::size_t>(j)] =
+          entry_seg_.q[static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv + j)];
+    }
+    return oracle_->PoseAt(arm_names_, q, kUr5eArmDof).translation();
+  }
+
+  static void Bound(const std::vector<Eigen::Vector3d>& pts, std::array<double, 3>& lo,
+                    std::array<double, 3>& hi) {
+    constexpr double kPad = 1e-4;
+    for (std::size_t a = 0; a < 3; ++a) {
+      lo[a] = std::numeric_limits<double>::infinity();
+      hi[a] = -std::numeric_limits<double>::infinity();
+      for (const auto& x : pts) {
+        lo[a] = std::min(lo[a], x[static_cast<Eigen::Index>(a)] - kPad);
+        hi[a] = std::max(hi[a], x[static_cast<Eigen::Index>(a)] + kPad);
+      }
+    }
+  }
+
+  static bool AllInside(const std::vector<Eigen::Vector3d>& pts, const std::array<double, 3>& lo,
+                        const std::array<double, 3>& hi) {
+    for (const auto& x : pts) {
+      for (std::size_t a = 0; a < 3; ++a) {
+        const double v = x[static_cast<Eigen::Index>(a)];
+        if (v < lo[a] || v > hi[a]) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /// Follow the entry segment, move the box to `lo`/`hi`, publish the replan
+  /// on the same trajectory, and run the trial to its end.
+  void RunReplanUnder(const std::array<double, 3>& lo, const std::array<double, 3>& hi) {
+    ctrl_->SetDecelCatchBoxForTesting(lo, hi);
+    DecelPlanSnapshot replan = integrated_bringup::testfx::ShiftSegment(entry_seg_, kShift);
+    Stamp(replan, 2);
+    ctrl_->DecelBoxForTesting().Store(replan);
+    pre_tick_ = nullptr;
+    ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
+  }
+};
+
+TEST_F(DecelMpcReplanBoxTest, AReplanIsJudgedFromWhereTheStopStarted) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  WriteAtEntry();
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  // The box holds the stop's tail measured from its start, and nothing more.
+  std::array<double, 3> lo{};
+  std::array<double, 3> hi{};
+  Bound(Judged(0), lo, hi);
+  ASSERT_FALSE(AllInside(Judged(kShift), lo, hi))
+      << "the stop covered too little by node " << kShift << " to tell the readings apart";
+  ASSERT_NO_FATAL_FAILURE(RunReplanUnder(lo, hi));
+  EXPECT_GT(
+      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq == 2U; }),
+      0)
+      << "the replan was not followed\n"
+      << Transitions();
+  EXPECT_EQ(
+      CountTicks([](const TickRec& t) { return t.body.decel_event == DecelEvent::kWorkspace; }), 0);
+}
+
+TEST_F(DecelMpcReplanBoxTest, AReplanThatOnlyFitsFromItsOwnStartIsRefused) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  WriteAtEntry();
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  // The box holds the replan measured from its own node 0 only.
+  std::array<double, 3> lo{};
+  std::array<double, 3> hi{};
+  Bound(Judged(kShift), lo, hi);
+  ASSERT_FALSE(AllInside(Judged(0), lo, hi))
+      << "the stop covered too little by node " << kShift << " to tell the readings apart";
+  ASSERT_NO_FATAL_FAILURE(RunReplanUnder(lo, hi));
+  EXPECT_EQ(
+      CountTicks([](const TickRec& t) { return t.body.decel_event == DecelEvent::kWorkspace; }), 1)
       << Transitions();
   EXPECT_EQ(
       CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
