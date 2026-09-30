@@ -152,6 +152,7 @@ colcon test-result --verbose
 **계측 함정 — 비교 가능한 수치를 낼 때 필수:**
 
 - **`colcon test-result` 는 디렉토리에 남아 있는 XML 을 전부 합산한다.** CMakeLists 에서 타깃을 빼거나 브랜치를 되돌린 뒤 재측정하면 **사라진 타깃의 옛 결과가 그대로 더해진다** — 숫자가 그럴듯해서 자체 검산 없이는 안 걸린다 (#236 슬라이스 3 에서 baseline 을 298 대신 300 으로 오측하고 존재하지 않는 drift 원인까지 보고했다).
+- **같은 이유로 `colcon test` 가 돌지 않아도 `colcon test-result` 는 답한다.** `lint && colcon build && colcon test; colcon test-result` 처럼 체인의 앞이 실패하면 테스트는 실행되지 않고, 뒤의 `test-result` 는 **이전 실행의 결과**를 요약한다 (#647: 관련 없는 파일의 `ruff check` 실패가 빌드·테스트를 건너뛰었는데 `1179 tests, 0 failures` 가 찍혔다). 판정 전에 같은 출력에 `colcon test` 의 `Summary: … packages finished` 줄이 있는지 보고, 없으면 그 총계를 쓰지 않는다.
 - **`--test-result-base` 의 *범위*가 총계를 바꾼다 — 같은 트리, 같은 실행인데도.** `build/<pkg>` 를 주면 `build/<pkg>/Testing/<타임스탬프>/Test.xml`(CTest, 실행마다 **새 디렉토리로 누적**)까지 합산하고, `build/<pkg>/test_results` 를 주면 gtest/pytest/lint XML 만 센다. 실측: `integrated_bringup` 이 각각 **639 / 599**. 어느 쪽도 틀리지 않았고 **단위가 다를 뿐**이므로, 회귀 비교는 반드시 **같은 범위**로 한다. 옛 수치와 안 맞을 때 stale 로 단정하기 전에 범위부터 맞춰 볼 것 — 실제로 이 차이를 stale XML 로 오진한 적이 있다.
 - **gtest case 수와 ctest entry 수를 함께 센다.** `rtc_controllers 333` = gtest 315 + ctest 18. 옛 수치와 비교할 땐 **단위가 같은지** 먼저 확인한다.
 - **lint 도 소스 파일당 1 entry 를 낸다.** `cppcheck.xunit.xml` 의 `tests="N"` 은 그 패키지의 소스 파일 수이고 전부 **skipped** 로 집계된다. 따라서 테스트 `.cpp` 를 한 개 추가하면 총계는 **1(케이스가 1개일 때) + 1(ctest 타깃) + 1(cppcheck 파일)** 로 오르고 skipped 도 +1 이 된다 — 델타를 gtest 케이스 수만으로 예측하면 매번 어긋난다. 증감을 "삭제·신설 목록과 1:1" 로 설명해야 하는 슬라이스에서는 이 세 항을 분리해 적는다.
