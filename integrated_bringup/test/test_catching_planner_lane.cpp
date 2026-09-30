@@ -727,6 +727,8 @@ TEST_F(CatchingPlanLaneTest, WithTheDecelMpcThePlannerPublishesAStopBeforeTheCat
   cloud_n_ = 20;
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
     y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+    // MD-44: the decel cores are built only for the law that follows them.
+    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
     // This fixture holds the arm still, so the trial aborts on tracking error
     // ~0.2 s after the commit (T_freeze 0.36 s) — before the shipped 0.1 s
     // t_pre. Open the first-solve window right after the commit instead.
@@ -770,6 +772,7 @@ TEST_F(CatchingPlanLaneTest, AFittingDecelTorqueBoxConfiguresUnderTheDynamicClik
   // The passing side of MD-33's configure check: 0.7 + 0.1 ≤ 0.8.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
     y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";  // MD-44
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
     y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
   }));
