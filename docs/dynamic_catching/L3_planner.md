@@ -521,6 +521,11 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.score.w_sigma`, `w_t`, `w_q`, `w_late`, `w_gamma` | double | – | 1, 1, 0.1, 0, 5 | ≥0 | §4.10 튜닝. `w_gamma`를 크게 잡으면 사전식 선택과 같아진다 |
 | `planner.score.penalty` | double | – | 10 | ≥0 | 발명 키 (결정 D, 2026-09-23): 실패한 **순위** 게이트 하나당 점수에 더한다. 연속 항을 압도해야 한다 (§4.1 런타임 판정/순위 분리) |
 | `planner.workspace.catch_box` | box | m | p1b `[0.19, −0.30, 0.21]`–`[1.04, 0.31, 0.96]` · leap `[−0.96, −0.30, 0.00]`–`[1.05, 0.30, 1.10]` (둘 다 provisional) | min ≤ max | TBD-BALL-02. 모양 (결정 I, 2026-09-23): 모델 world 축정렬 상자 `{min: [x,y,z], max: [x,y,z]}`. 판정 게이트 — $p_c$ 와 $p_{stop}$ 이 모두 안에 있어야 한다. p1b 값은 S3.5b 세밀 격자 gate-open 967 후보의 $p_c$·$p_{stop}$(γ 창 양 끝) 외접 + 0.1 m (2026-09-23 재계산). leap 은 gate 지도가 비어 kinematic 후보 $p_c$ 외접 + 0.1 m (x, z), 측방은 p1b 의 ±0.30 m (그 지도가 방위 하나만 표본) |
+| `planner.decel_mpc.enabled` | bool | – | false | – | **MPC E1-F03** ([#629](https://github.com/hyujun/rtc-framework/issues/629), MPC 계획 MD-24 – MD-33). COMMITTED · CLOSING · DECEL 에서 decel MPC 로 정지 구간을 미리 계산해 `DecelPlanSnapshot` box 에 게시한다. `planner.enabled` 가 false 면 park. RT 가 그 구간을 따르는 것은 E1-F04 — 그 전에는 켜도 게시만 한다 (`planner_events.csv` 의 `decel_*` 열) |
+| `planner.decel_mpc.horizon.n_nodes` · `.dt_s` · `.blocks` | int · double · int[] | – · s · – | 14 · 0.025 · [1,1,2,2,4,4] | 3–24 · 0.005–0.1 (정수 ns) · Σ = n_nodes, 3 개 이상 | $N_s\Delta_s$ 가 곧 정지 시간 (MD-21) — 출하 0.35 s 는 v1 정지 시간 p50 (MD-24). 포구 뒤 재계획 k 는 가장 큰 뒤쪽 블록부터 한 노드씩 줄인 패턴을 쓴다 |
+| `planner.decel_mpc.replan.t_pre_s` · `.k_max` | double · int | s · – | 0.1 · 4 | 0–0.5 · 0–8 (k 마다 블록 3 개 이상) | 첫 (cold) 풀이는 $t_c-$now_lead $\le$ `t_pre_s` 인 첫 wake (MD-26). 포구 뒤 재계획은 격자점 $k\le$ `k_max` 에서만이고 정지 끝 $t_c+N_s\Delta_s$ 는 고정 (MD-31) |
+| `planner.decel_mpc.eta_tau` · `.m_q` | double | – · rad | 0.7 · 0.05 | 0.001–1 · 0–0.5 | 코어의 토크 행 비율 $\eta'_\tau$ 와 위치 여유. 속도 행은 `planner.gamma.eta_v` 를 쓴다 (새 키 없음). armature 는 제어에 쓰지 않는다 (MD-25) |
+| `planner.decel_mpc.publish.slack_max` · `.slack_terminal_max` | double | τ_max 비율 | 0.1 · 0.1 | 0–1 | 게시 임계 (MD-33). 둘 다 유한하고 임계 이하일 때만 게시 — 그 밖은 직전 계획 유지, 없으면 closed-form (MD-11). CLIK 이 dynamic 형태면 `eta_tau` + `slack_max` $\le$ `joint_cmd.eta_tau` 를 configure 에서 검사하고 넘으면 park. 종단 임계는 E1-F06 이 분포로 조인다 |
 
 ## 7. 단위 기술 구현 순서
 

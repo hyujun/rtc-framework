@@ -22,6 +22,7 @@
 #include "integrated_bringup/controllers/catching/planner_thread.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
@@ -278,6 +279,36 @@ TEST(PlannerEventsCsv, EveryRowHasTheHeadersWidthAndIdleWakesAreSkipped) {
   EXPECT_FALSE(integrated_bringup::PlannerEventWorthRecording(idle));
   idle.reset_seen = true;
   EXPECT_TRUE(integrated_bringup::PlannerEventWorthRecording(idle));
+}
+
+TEST(PlannerEventsCsv, ADecelStepEarnsARowOnlyWhenItDidSomething) {
+  // MPC E1-F03: the decel columns are appended (readers select by name), and
+  // a wake whose decel step only waited does not earn a row on its own — in
+  // COMMITTED every wake has a decel outcome, most of them "not due".
+  using rtc::catching::DecelOutcome;
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  EXPECT_NE(header.str().find(",max_catchable,decel_outcome,"), std::string::npos);
+  rtc::catching::PlannerCycleRecord rec{};
+  for (const DecelOutcome waited : {DecelOutcome::kOff, DecelOutcome::kNotDue,
+                                    DecelOutcome::kUpToDate, DecelOutcome::kPastReplanWindow}) {
+    rec.decel.outcome = waited;
+    EXPECT_FALSE(integrated_bringup::PlannerEventWorthRecording(rec))
+        << rtc::catching::DecelOutcomeName(waited);
+  }
+  for (const DecelOutcome acted :
+       {DecelOutcome::kPublished, DecelOutcome::kSlack, DecelOutcome::kSolveFailed,
+        DecelOutcome::kBudget, DecelOutcome::kSuperseded, DecelOutcome::kNoState}) {
+    rec.decel.outcome = acted;
+    EXPECT_TRUE(integrated_bringup::PlannerEventWorthRecording(rec))
+        << rtc::catching::DecelOutcomeName(acted);
+  }
+  rec.decel.outcome = DecelOutcome::kPublished;
+  std::ostringstream row;
+  integrated_bringup::WritePlannerEventsRow(row, rec);
+  const auto columns = [](const std::string& s) { return std::count(s.begin(), s.end(), ',') + 1; };
+  EXPECT_EQ(columns(header.str()), columns(row.str()));
+  EXPECT_NE(row.str().find(",published,"), std::string::npos) << row.str();
 }
 
 // ── The lane ────────────────────────────────────────────────────────────────
@@ -626,6 +657,123 @@ TEST_F(CatchingPlanLaneTest, ThePlannerFindsAReachableCatchPointAndTheRtFollowsI
   EXPECT_LT((off - off.dot(vel.normalized()) * vel.normalized()).norm(), 1e-9);
   const Eigen::Vector3d a_d(followed.a_d[0], followed.a_d[1], followed.a_d[2]);
   EXPECT_NEAR(a_d.dot(z), 1.0, 1e-9);
+}
+
+// ── The decel MPC on the planner thread (MPC E1-F03, #629) ──────────────────
+
+TEST_F(CatchingPlanLaneTest, TheDecelMpcIsParkedWithoutThePlanner) {
+  ctrl_ = std::make_unique<DemoCatchingController>("");
+  ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+  ctrl_->SetSharedModelBuilder(builder_);
+  ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+  YAML::Node yaml = YAML::Load(
+      TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
+  yaml["catching"]["planner"]["enabled"] = false;
+  yaml["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kDecelMpcInvalid);
+  EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+}
+
+TEST_F(CatchingPlanLaneTest, TheDecelTorqueBoxAndSlackMustFitTheCliksTorqueBox) {
+  // MD-33: η'_τ + slack_max ≤ joint_cmd.eta_tau under the dynamic CLIK form.
+  ctrl_ = std::make_unique<DemoCatchingController>("");
+  ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+  ctrl_->SetSharedModelBuilder(builder_);
+  ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+  YAML::Node yaml = YAML::Load(
+      TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
+  yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // one writer for the plan box
+  YAML::Node pl = yaml["catching"]["planner"];
+  pl["enabled"] = true;
+  pl["decel_mpc"]["enabled"] = true;
+  pl["decel_mpc"]["eta_tau"] = 0.75;
+  pl["decel_mpc"]["publish"]["slack_max"] = 0.1;
+  yaml["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
+  yaml["catching"]["joint_cmd"]["eta_tau"] = 0.8;
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kDecelMpcInvalid);
+}
+
+TEST_F(CatchingPlanLaneTest, WithTheDecelMpcThePlannerPublishesAStopBeforeTheCatch) {
+  // End to end on the real UR5e+P1b model: the reachable throw of the case
+  // above, the decel MPC enabled. Once the RT has committed to the plan, the
+  // planner thread must store a stop segment for THAT plan, at its t_c, with
+  // the fixed stop end — and the RT, which does not read the box before
+  // E1-F04, must be unaffected (the plan it follows is unchanged).
+  const pinocchio::SE3 pose = [&] {
+    CatchFrameOracle oracle(*builder_);
+    std::array<double, 64> home{};
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      home[static_cast<std::size_t>(i)] = kUr5eHome[static_cast<std::size_t>(i)];
+    }
+    return oracle.PoseAt(
+        integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names, home,
+        kUr5eArmDof);
+  }();
+  const Eigen::Vector3d z = pose.rotation().col(2);
+  const Eigen::Vector3d target = pose.translation() + 0.03 * z;
+  const Eigen::Vector3d vel = -1.5 * z;
+  const Eigen::Vector3d p0 = target - 0.5 * vel;
+  ball_set_ = true;
+  ball_p0_ = {p0.x(), p0.y(), p0.z()};
+  ball_vel_ = {vel.x(), vel.y(), vel.z()};
+  cloud_n_ = 20;
+  ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
+    y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+    // This fixture holds the arm still, so the trial aborts on tracking error
+    // ~0.2 s after the commit (T_freeze 0.36 s) — before the shipped 0.1 s
+    // t_pre. Open the first-solve window right after the commit instead.
+    y["catching"]["planner"]["decel_mpc"]["replan"]["t_pre_s"] = 0.3;
+  }));
+  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
+  bool stored = false;
+  Mode last = Mode::kIdle;
+  for (int t = 0; t < 1500 && !stored; ++t) {
+    if (t % 10 == 0) {
+      Publish(next_seq_++);
+    }
+    static_cast<void>(Tick());
+    std::this_thread::sleep_for(1ms);
+    last = ctrl_->GetMode();
+    stored = ctrl_->GetPublishedDecelPlan().valid;
+  }
+  const auto record = ctrl_->GetPlannerThread()->LastRecord();
+  ASSERT_TRUE(stored) << "no decel segment; mode " << static_cast<int>(last) << ", last decel step "
+                      << rtc::catching::DecelOutcomeName(record.decel.outcome) << " / "
+                      << rtc::catching::DecelMpcReasonName(record.decel.core_reason);
+  const rtc::catching::DecelPlanSnapshot s = ctrl_->GetPublishedDecelPlan();
+  const PlanSnapshot followed = ctrl_->GetFollowedPlanForTesting();
+  EXPECT_TRUE(rtc::catching::ValidateDecelNodes(s));
+  EXPECT_EQ(s.plan_id, followed.plan_id);
+  EXPECT_EQ(s.t_c_ns, followed.t_c_ns);
+  EXPECT_EQ(s.nv, kUr5eArmDof);
+  EXPECT_EQ(s.t0_ns + s.n_nodes * s.dt_ns, s.t_c_ns + 14 * 25'000'000LL) << "fixed stop end";
+  EXPECT_GE(s.decel_seq, 1U);
+  EXPECT_EQ(ctrl_->GetPlannerRtState().plan_t_c_ns, followed.t_c_ns)
+      << "the RT reports the followed plan's t_c";
+  EXPECT_FALSE(ctrl_->GetPlannerRtState().decel_active) << "E1-F04 wires the RT side";
+  // The solve ran on the planner thread: still exactly one mpc_main (no
+  // thread of its own — E-7).
+  EXPECT_EQ(
+      integrated_bringup::testfx::ThreadsNamed(rtc::SelectThreadConfigs().mpc.main.name).size(),
+      1U);
+}
+
+TEST_F(CatchingPlanLaneTest, AFittingDecelTorqueBoxConfiguresUnderTheDynamicClik) {
+  // The passing side of MD-33's configure check: 0.7 + 0.1 ≤ 0.8.
+  ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
+    y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+    y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
+    y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
+  }));
+  EXPECT_TRUE(ctrl_->IsDecelPlannerConfigured());
 }
 
 // ── Vision world → model world (plan §11, S6-C sim finding) ─────────────────

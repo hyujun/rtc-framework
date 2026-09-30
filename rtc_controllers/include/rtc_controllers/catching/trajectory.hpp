@@ -4,6 +4,8 @@
 //   TrajectorySnapshot — vision prediction, written by the nrt ingress
 //                        (L1), read every RT tick (L2) and by the planner (L3)
 //   PlanSnapshot       — planner (L3) → RT tick (L4/L7)
+//   DecelPlanSnapshot  — planner (L3) → RT tick: the decel MPC's stop segment
+//                        as joint nodes (MPC plan E1-F02, MD-27)
 //
 // SeqLock requires trivially copyable payloads, and Eigen::Vector3d is not one,
 // so vectors are std::array<double, 3> and the computing side views them with
@@ -15,6 +17,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <type_traits>
 
@@ -34,6 +37,17 @@ inline constexpr int kCap = 40;
 /// planner's control model). Checked against the model nv at configure time.
 /// Separate from kCap, which counts trajectory points, not joints.
 inline constexpr int kMaxPlanNv = 32;
+
+/// Node capacity of the decel MPC's stop segment: N ≤ kMaxDecelNodes, so a
+/// payload holds N + 1 node columns. Owned here, not by decel_mpc.hpp, because
+/// that header includes this one — the payload and the core share one number.
+inline constexpr int kMaxDecelNodes = 24;
+
+/// Joint capacity of DecelPlanSnapshot (E1 arms have 6 and 7). Deliberately
+/// NOT kMaxPlanNv: at 32 the payload would be 19.2 KB and the RT's SeqLock
+/// copy (and its retry window against the planner's store) four times longer
+/// for joints no E1 robot has (MD-27). Checked against the arm at configure.
+inline constexpr int kMaxDecelNv = 8;
 
 /// One predicted ball sample. The ball instant is absolute steady ns (BallTime
 /// axis, converted once on receipt by ConvertRemoteStamp + SampleBallTime).
@@ -124,9 +138,96 @@ struct PlanSnapshot {
   bool valid{false};
 };
 
+/// Planner → RT: the decel MPC's stop segment (MPC plan E1-F02, MD-27). A
+/// SIBLING of PlanSnapshot on its own SeqLock, not a field of it: the RT stops
+/// taking PlanSnapshots once it has committed (JudgePlan too_late / repeat),
+/// and the stop segment is re-planned after that, up to k_max grid points past
+/// t_c (MD-31).
+///
+/// Nodes are joint states in the arm's DEVICE order — the order PlannerRtState
+/// and PlanSnapshot::q_star speak — at t0_ns + k·dt_ns, k = 0..n_nodes. Between
+/// nodes the jerk is constant (jerk_segment.hpp), so the RT reproduces exactly
+/// the trajectory the QP optimised and derives the hand's pose and twist from
+/// it by FK (MD-9). Storage is node-major with a fixed stride of kMaxDecelNv:
+/// entry (joint j, node k) is `[k * kMaxDecelNv + j]`, which an Eigen::Map with
+/// OuterStride<kMaxDecelNv> views as the n × (N+1) node matrix the sampler
+/// takes, without a copy.
+///
+/// Instants are absolute steady ns on the LEAD axis (t_c is BallTime, which
+/// the RT compares against now_lead; plan §3). t0_ns is the EFFECTIVE instant
+/// t_eff — t_c for the pre-catch solve, a later grid point for a post-catch
+/// replan (MD-10, MD-31) — never "t_c" by assumption. All grid arithmetic is
+/// integer ns so that t0_ns lands exactly on t_c + k·dt_ns.
+struct DecelPlanSnapshot {
+  // activation_generation and track generation of the followed plan, as the
+  // RT reported them; snapshot_sequence / traj_recv_ns stay 0 (the planner
+  // does not see the plan's own token after COMMITTED).
+  ProvenanceToken token{};
+  std::uint64_t rt_iteration{0};  // RT state the stop was predicted from (D-22)
+  std::int64_t rt_state_ns{0};
+  std::int64_t publish_ns{0};
+
+  std::uint32_t plan_id{0};    // the PlanSnapshot (catch plan) this stop ends
+  std::uint32_t decel_seq{0};  // planner's own monotone counter — the "is new" signal
+  std::int64_t t_c_ns{0};      // catch instant of that plan (grid anchor)
+  std::int64_t t0_ns{0};       // node 0 instant, t_eff = t_c + k0·dt_ns
+  std::int64_t dt_ns{0};       // node spacing Δ_s
+  std::int32_t k0{0};          // grid index of node 0 (0 = pre-catch solve)
+  std::int32_t n_nodes{0};     // N; the segment ends at t0 + N·dt = t_c + N_s·dt
+  std::int32_t nv{0};
+
+  std::array<double, kMaxDecelNv*(kMaxDecelNodes + 1)> q{};    // [rad]
+  std::array<double, kMaxDecelNv*(kMaxDecelNodes + 1)> qd{};   // [rad/s]
+  std::array<double, kMaxDecelNv*(kMaxDecelNodes + 1)> qdd{};  // [rad/s²]
+
+  // The QP's own account of the published solution (MD-33 publish gate).
+  double slack_max{0.0};           // fraction of τ_max
+  double slack_terminal_max{0.0};  // node N — static torque at the stop posture
+  double tau_ratio_max{0.0};       // linearised max |τ/τ_max|, nodes 1..N
+  bool x0_clamped{false};          // the predicted q̇(t_eff) was projected into the box
+
+  bool valid{false};
+};
+
+/// |q̇|, |q̈| bound on node N of a published segment. The sampler HOLDS node N
+/// past the end (jerk_segment.hpp), so a moving node N would be followed as a
+/// frozen velocity; the MPC's terminal equality makes it zero to solver
+/// tolerance, far below this.
+inline constexpr double kDecelRestTol = 1e-3;
+
+/// Whether a DecelPlanSnapshot's shape and node values can be sampled: sizes
+/// inside the capacities, a positive spacing, node 0 ON the grid t_c + k0·Δ
+/// (k0 ≥ 0), node N at rest (kDecelRestTol), and every used node entry
+/// finite. The RT runs this once per NEW payload (by
+/// decel_seq), not per tick — the sampler itself does not check node values
+/// (jerk_segment.hpp), so an unvalidated NaN node would reach the CLIK target.
+[[nodiscard]] inline bool ValidateDecelNodes(const DecelPlanSnapshot& p) noexcept {
+  if (!p.valid || p.nv < 1 || p.nv > kMaxDecelNv || p.n_nodes < 1 || p.n_nodes > kMaxDecelNodes ||
+      p.dt_ns <= 0 || p.k0 < 0 || p.k0 > kMaxDecelNodes ||
+      p.t0_ns != p.t_c_ns + static_cast<std::int64_t>(p.k0) * p.dt_ns) {
+    return false;
+  }
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    for (int j = 0; j < p.nv; ++j) {
+      const auto i = static_cast<std::size_t>(k * kMaxDecelNv + j);
+      if (!std::isfinite(p.q[i]) || !std::isfinite(p.qd[i]) || !std::isfinite(p.qdd[i])) {
+        return false;
+      }
+      if (k == p.n_nodes &&
+          !(std::fabs(p.qd[i]) <= kDecelRestTol && std::fabs(p.qdd[i]) <= kDecelRestTol)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 static_assert(std::is_trivially_copyable_v<TrajSample>);
 static_assert(std::is_trivially_copyable_v<ProvenanceToken>);
 static_assert(std::is_trivially_copyable_v<TrajectorySnapshot>);
 static_assert(std::is_trivially_copyable_v<PlanSnapshot>);
+static_assert(std::is_trivially_copyable_v<DecelPlanSnapshot>);
+// The size MD-27 budgets: three node blocks of kMaxDecelNv × (kMaxDecelNodes + 1).
+static_assert(sizeof(DecelPlanSnapshot) < 5 * 1024);
 
 }  // namespace rtc::catching

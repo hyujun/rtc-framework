@@ -829,6 +829,13 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
   }
   s.plan_active = plan_active_;
   s.plan_id = plan_active_ ? plan_.plan_id : 0U;
+  // The decel planner's grid anchor (MPC E1-F03): the t_c of the plan the RT
+  // FOLLOWS — after COMMITTED it takes no new plan, so this is the committed
+  // catch instant, whatever the planner last published.
+  s.plan_t_c_ns = plan_active_ ? plan_.t_c_ns : 0;
+  // No decel segment is followed until E1-F04 wires the RT side (MD-32).
+  s.decel_active = false;
+  s.decel_seq = 0U;
   // The ramp SetIntercept was given (first adoption and replacements alike).
   s.ramp_valid = s.ref_valid && plan_active_;
   if (s.ramp_valid) {

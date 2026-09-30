@@ -12,6 +12,13 @@
 // throws nothing. Buffers are members sized at construction and filled with
 // SeqLock::LoadInto: the covariance snapshot alone is 11.5 KB.
 //
+// THE DECEL STEP (MPC E1-F03). When a decel planner is configured and the
+// optional fifth box is bound, the monitor modes (and DECEL, see ActivityFor)
+// also pre-compute the stop segment (decel_planner.hpp) and store it in its
+// own box. It never changes the wake's CycleOutcome (MD-29) — the PlanSnapshot
+// counters and the D-7a latency keep meaning what they meant; the decel
+// account is PlannerCycleRecord::decel.
+//
 // WHAT S6-A IMPLEMENTS. The cycle, the provenance handling and a STUB search:
 // `PlanOnce` never produces a candidate, so every search wake publishes a
 // "no plan" snapshot. That is exactly what the controller did before a planner
@@ -21,6 +28,7 @@
 #pragma once
 
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_controllers/catching/decel_planner.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/planner_search.hpp"
@@ -80,16 +88,21 @@ struct PlannerCycleRecord {
   /// The search's own account (S6-B): candidate counts, judgement rejects,
   /// the chosen candidate's rank-gate bitmask, the switching decision, timing.
   SearchStats search{};
+  /// The decel step's account (MPC E1-F03). `outcome == kOff` when no decel
+  /// step ran this wake.
+  DecelRecord decel{};
 };
 
 static_assert(std::is_trivially_copyable_v<PlannerCycleRecord>);
 
-/// The four boxes one cycle reads and writes. All owned by the controller.
+/// The boxes one cycle reads and writes. All owned by the controller. The
+/// first four are required; `decel` is optional (no decel step without it).
 struct PlannerCycleIo {
   const rtc::SeqLock<TrajectorySnapshot>* traj{nullptr};
   const rtc::SeqLock<CovarianceSnapshot>* cov{nullptr};
   const rtc::SeqLock<PlannerRtState>* rt{nullptr};
   rtc::SeqLock<PlanSnapshot>* plan{nullptr};
+  rtc::SeqLock<DecelPlanSnapshot>* decel{nullptr};
 };
 
 class PlannerCycle {
@@ -101,7 +114,7 @@ class PlannerCycle {
 
   PlannerCycle() noexcept;
 
-  /// Non-RT. Bind the boxes; false (and unbound) if any pointer is null.
+  /// Non-RT. Bind the boxes; false (and unbound) if a required pointer is null.
   bool Bind(const PlannerCycleIo& io) noexcept;
 
   [[nodiscard]] bool Bound() const noexcept { return bound_; }
@@ -121,7 +134,31 @@ class PlannerCycle {
 
   [[nodiscard]] bool SearchConfigured() const noexcept { return search_.Configured(); }
 
-  void SetClock(ClockFn clock) noexcept { clock_ = clock; }
+  /// Non-RT. Build the decel planner from `Configure`'s `params.decel` and the
+  /// cycle's clock. False (and unconfigured) with `error` naming the cause.
+  bool ConfigureDecel(const DecelPlannerModel& model, const DecelPlannerConstants& consts,
+                      std::string* error = nullptr) {
+    return decel_.Configure(model, consts, params_.decel, clock_, error);
+  }
+
+  /// Drop the decel planner (a configuration without one).
+  void ClearDecel() noexcept {
+    // An invalid configuration IS the cleared state (Configure fails closed).
+    static_cast<void>(decel_.Configure(DecelPlannerModel{}, DecelPlannerConstants{},
+                                       DecelPlannerParams{}, nullptr));
+  }
+
+  [[nodiscard]] bool DecelConfigured() const noexcept { return decel_.Configured(); }
+
+  /// The seq the last stored decel segment carries (0 = none yet). Monotone
+  /// over the cycle's lifetime — not reset by Configure — so the RT's `>`
+  /// admission never sees a re-configure's counter restart below its memory.
+  [[nodiscard]] std::uint32_t LastDecelSeq() const noexcept { return last_decel_seq_; }
+
+  void SetClock(ClockFn clock) noexcept {
+    clock_ = clock;
+    decel_.SetClock(clock);
+  }
 
   /// One wake. RT-safe. `wake` is the instant the thread woke.
   [[nodiscard]] PlannerCycleRecord Run(NowReal wake) noexcept;
@@ -146,6 +183,13 @@ class PlannerCycle {
     post_search_context_ = context;
   }
 
+  /// Test seam: called between the decel solve and its re-check (the window a
+  /// reset or a plan change must land in for that re-check to matter).
+  void SetPostDecelHookForTesting(PostSearchHook hook, void* context) noexcept {
+    post_decel_hook_ = hook;
+    post_decel_context_ = context;
+  }
+
  private:
   PlannerCycleIo io_{};
   bool bound_{false};
@@ -155,6 +199,13 @@ class PlannerCycle {
   std::uint32_t seen_reset_epoch_{0};
   PostSearchHook post_search_hook_{nullptr};
   void* post_search_context_{nullptr};
+  PostSearchHook post_decel_hook_{nullptr};
+  void* post_decel_context_{nullptr};
+  // The decel step (MPC E1-F03).
+  void RunDecel(const PlannerRtState& rt, PlannerCycleRecord& rec) noexcept;
+  DecelPlanner decel_;
+  DecelPlanSnapshot decel_out_{};
+  std::uint32_t last_decel_seq_{0};
   // Scratch copies, filled with SeqLock::LoadInto so a wake copies each
   // snapshot once, straight into these, rather than building a by-value
   // Load() on the stack first (covariance 11.5 KB, trajectory ~13 KB).

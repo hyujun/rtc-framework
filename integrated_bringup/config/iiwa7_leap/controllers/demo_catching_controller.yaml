@@ -364,6 +364,31 @@ demo_catching_controller:
         catch_box:
           min: [-0.96, -0.30, 0.00]
           max: [1.05, 0.30, 1.10]
+      decel_mpc:
+        # MPC E1-F03 (#629): pre-compute the stop segment on the planner thread
+        # (decel MPC, MD-24 – MD-33). Off: the closed-form DECEL is the default
+        # (MD-11) and E1-F04 wires the RT side; turning this on today only
+        # publishes segments nothing follows yet (planner_events.csv decel_*).
+        enabled: false
+        horizon:
+          # N_s x dt_s IS the stopping time (MD-21): 0.35 s, v1's p50 (MD-24).
+          n_nodes: 14
+          dt_s: 0.025
+          blocks: [1, 1, 2, 2, 4, 4]
+        replan:
+          # First (cold) solve when t_c - now_lead <= t_pre_s (MD-26); post-catch
+          # replans up to k_max grid points past t_c, stop end fixed (MD-31).
+          t_pre_s: 0.1
+          k_max: 4
+        eta_tau: 0.7
+        m_q: 0.05
+        publish:
+          # Largest torque slack (fraction of tau_max) a published segment may
+          # carry (MD-33). eta_tau + slack_max must not exceed joint_cmd.eta_tau
+          # under the dynamic CLIK form (checked at configure). E1-F06 tightens
+          # the terminal one from the recorded distribution.
+          slack_max: 0.1
+          slack_terminal_max: 0.1
       # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
       # That flag is the only one `planner:` has — it covers `hand.d_eff` and
       # `hand.r_cap` below too, which carry no flag of their own (#537 pre-S10

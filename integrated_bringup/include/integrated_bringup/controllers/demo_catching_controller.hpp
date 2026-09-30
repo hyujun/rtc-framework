@@ -205,6 +205,11 @@ enum class CatchingParkReason : std::uint8_t {
   /// joint-space motions ramp with, `supervisor.decel.a_dec`, or a hand profile
   /// the sequencer can run.
   kSupervisorUnset,
+  /// `planner.decel_mpc.enabled` in a profile that cannot run it: the planner
+  /// is off, or the decel MPC's torque box plus its publish slack exceeds the
+  /// CLIK's torque box (`joint_cmd.eta_tau`), so a published stop could ask
+  /// for torque the CLIK refuses (MPC E1-F03, MD-33).
+  kDecelMpcInvalid,
 };
 
 /// Controller-local device indices. This controller claims exactly two groups
@@ -319,6 +324,19 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The plan box as the RT will load it next tick.
   [[nodiscard]] rtc::catching::PlanSnapshot GetPublishedPlan() const noexcept {
     return plan_box_.Load();
+  }
+
+  /// The decel box (MPC E1-F02/F03) as the RT will load it once E1-F04 reads
+  /// it. Written by the planner thread only.
+  [[nodiscard]] rtc::catching::DecelPlanSnapshot GetPublishedDecelPlan() const noexcept {
+    return decel_box_.Load();
+  }
+
+  /// Whether the planner runs the decel MPC (`planner.decel_mpc.enabled` and a
+  /// model to plan in). Lifecycle / test callers only: it reads planner state
+  /// that a configure rewrites with the thread joined, not an atomic.
+  [[nodiscard]] bool IsDecelPlannerConfigured() const noexcept {
+    return planner_cycle_.DecelConfigured();
   }
 
   /// The box itself, for a test that plays the planner — ONLY with the planner
@@ -693,6 +711,17 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// The first planner value that is a decision and is unset, or nullptr.
   [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
+
+  /// Why `planner.decel_mpc.enabled` cannot run in this profile, or nullptr
+  /// (planner off; decel torque box + publish slack over the CLIK's).
+  [[nodiscard]] const char* DecelMpcConfigInvalid() const noexcept;
+
+  /// Build the decel planner on the search's model (MPC E1-F03): the same
+  /// sub-model, frame and joint map, the arm device's max_torque, the D-16
+  /// box as the q̈-estimate cap. Non-RT; false (and logged) on a model or
+  /// rating the cores refuse.
+  [[nodiscard]] bool SetupDecelPlanner(const std::shared_ptr<const pinocchio::Model>& model,
+                                       const rtc::catching::PlannerModel& pm);
 
   /// Spawn the planner thread on the `mpc` role (E-7 J) once per
   /// configuration, and open its timing CSV + 1 Hz drain timer. Non-RT
@@ -1449,6 +1478,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// ONE writer — the planner thread, or the RT's oracle stand-in, never both
   /// (a profile enabling both is parked). RT reader, every tick (D-21).
   rtc::SeqLock<rtc::catching::PlanSnapshot> plan_box_;
+  /// The decel MPC's stop segment (MPC E1-F02/F03, MD-27). ONE writer, the
+  /// planner thread; the RT tick reads it from E1-F04 on (MD-32). Declared
+  /// before planner_thread_ so the thread (which holds a pointer to it through
+  /// the cycle) is destroyed first.
+  rtc::SeqLock<rtc::catching::DecelPlanSnapshot> decel_box_;
   /// Non-blocking eventfd. Written by the vision subscription (non-RT) on every
   /// accepted trajectory, drained by the planner thread. Created at the first
   /// configure that enables the planner and closed only in the destructor,

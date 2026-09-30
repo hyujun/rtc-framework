@@ -166,7 +166,8 @@ TEST(PlannerActivityPredicate, SearchesOnlyInTrackingAndApproach) {
       {Mode::kApproach, PlannerActivity::kSearch},
       {Mode::kCommitted, PlannerActivity::kMonitor},
       {Mode::kClosing, PlannerActivity::kMonitor},
-      {Mode::kDecel, PlannerActivity::kIdle},
+      // MPC E1-F03 (MD-29): DECEL hosts the decel MPC's post-catch replans.
+      {Mode::kDecel, PlannerActivity::kDecel},
       {Mode::kHold, PlannerActivity::kIdle},
       {Mode::kRetreat, PlannerActivity::kIdle},
       {Mode::kAbortSafe, PlannerActivity::kIdle},

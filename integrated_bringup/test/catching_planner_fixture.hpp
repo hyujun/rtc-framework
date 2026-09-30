@@ -25,7 +25,8 @@
 
 namespace integrated_bringup::testfx {
 
-inline std::string PlannerMinimalYaml(bool planner_enabled, bool oracle_enabled = false) {
+inline std::string PlannerMinimalYaml(bool planner_enabled, bool oracle_enabled = false,
+                                      bool decel_enabled = false) {
   return std::string(R"(
 command_type: "position"
 diagnostic:
@@ -85,6 +86,8 @@ catching:
     freeze: {T_freeze: 0.36}
     hand: {d_eff: 0.28, r_cap: 0.024}
     workspace: {catch_box: {min: [-2.0, -2.0, -2.0], max: [2.0, 2.0, 2.0]}}
+    decel_mpc: {enabled: )" +
+         (decel_enabled ? "true" : "false") + R"(}
   robot:
     arm:
       limit_margin: 0.05

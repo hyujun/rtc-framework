@@ -1,7 +1,7 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 작성일: 2026-09-30 (r7 — E0-F04 예측 격자 sweep 결과: §8, 결정 MD-20. r6 — E0-F02 baseline 결과: §8, 결정 MD-19. r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
-- 상태: **E0 완료** — E0-F01 · E0-F02 · E0-F03 · E0-F04 완료, 다음은 E1
+- 작성일: 2026-09-30 (r8 — E1-F02 · E1-F03 spec 과 구현 ([#656](https://github.com/hyujun/rtc-framework/pull/656)): 결정 MD-23 – MD-33, 측정: §8. r7 — E0-F04 예측 격자 sweep 결과: §8, 결정 MD-20. r6 — E0-F02 baseline 결과: §8, 결정 MD-19. r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
+- 상태: **E0 완료**, E1 진행 중 — E1-F01 · E1-F02 · E1-F03 완료, 다음은 E1-F04 (L7 DECEL 전환, E-8)
 - 범위: DECEL 의 MPC 전환 → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → MPC catch controller
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — v0.4, 사용자 확정 2026-09-29. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
@@ -124,12 +124,23 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 사용
 | MD-20 | MD-18 의 실행: sim 추정기의 profile 은 ball_perception `ball_perception_sim/config/sim_profile.catching.json` (schema 0.2, 지금까지의 사본과 같은 내용) 이다. rtc-framework 의 로봇별 사본은 제거한다. `ball_sim_ws` 의 ball_perception 은 pull 만 하고, 변경은 개발용 checkout 에서 PR 로 한다 | 사용자 결정. 0.2 를 유지해야 E0-F02 의 대조군과 같은 추정기 동작으로 돈다. 컨트롤러 YAML 과의 정합은 자동 검사가 없어 컨트롤러가 예측 격자 세 키 (`prediction.dt_expected` · `io.n_min` · `planner.slice.dt`) 를 read-only 미러로 낸다 | — | 2026-09-30 |
 | MD-21 | decel MPC 의 지평 $N_s\Delta_s$ 는 **정지 시간 그 자체**다. 값은 E1-F03 이 정하고 E1-F01 코어는 받기만 한다 (테스트 기본값 $\Delta_s$ 0.05 s · $N_s$ 12 · 블록 {1,1,2,2,3,3}) | 비용이 jerk 제곱합뿐이고 시간 항이 없으므로 최적해는 지평 전체를 쓴다. v1 정지 시간 p50 0.35 s (§8) 보다 길게 잡으면 정지 거리가 늘어나 G-1 의 정지 거리 비교와 위치 여유에 직접 영향을 준다 | formulation §1.6 의 "E1-F01 spec 에서" 를 E1-F03 으로 정정 | 2026-09-30 |
 | MD-22 | E1-F01 의 "Solve 할당 0" 은 **코어 자신의 경로** (선형화 · FK · condensing · 결과 기록) 에 대해 단언한다. ProxQP 가 `Solve` 안에서 하는 C 할당 (warm 12 · pre-solve 18 회, n = 7) 은 알려진 한계로 기록하고 [#654](https://github.com/hyujun/rtc-framework/issues/654) 에서 다룬다 | 사용자 결정 (2026-09-30). 같은 wrapper 를 쓰는 기존 `CatchPoseIk` 도 RT 계획기 스레드에서 같은 할당을 하고, 기존 게이트는 이것을 못 봤다 (C `malloc` 게이트가 처음 잡았다). F01 만 고치는 것보다 사용자 전체를 한 번에 다루는 편이 맞다 | #627 Done when 5 부분 충족 | 2026-09-30 |
+| MD-23 | 계획기의 decel 경로도 **ProxQP 밖의 할당 0** 을 단언하고 ProxQP 의 할당 횟수는 기록만 한다. [#654](https://github.com/hyujun/rtc-framework/issues/654) 는 이 작업과 병행한다 | 사용자 결정. MD-22 와 같은 경계다. C `malloc` 게이트는 테스트 파일마다 한 번만 쓸 수 있어 준비 · 풀이 · 게시를 따로 게이트한다 | — | 2026-09-30 |
+| MD-24 | 출하 지평은 $N_s$ 14 · $\Delta_s$ 0.025 s · 블록 {1,1,2,2,4,4} 로 정지 시간 0.35 s 다. 계획기의 $\dot q_{\max}$ 는 팔 device 의 `max_velocity` 출하값이다 | v1 정지 시간 p50 (ur5e_p1b 0.348 s, iiwa7_leap 0.324 s, §8) 과 맞춘다. 같은 시간이면 최소 jerk 정지 거리는 $0.4\,v_0T$ 로 v1 의 등감속 $0.5\,v_0T$ 보다 짧다. 간격을 절반으로 해 노드 1 이 효력 시각에서 25 ms 뒤에 온다. 계획기 예산을 넘으면 7 × 0.05 s 로 물러난다 | MD-21 의 테스트 기본값은 코어 테스트에만 남는다 | 2026-09-30 |
+| MD-25 | **armature 는 제어에 쓰지 않는다.** 계획기는 코어에 0 벡터를 넘기고, armature 로 인한 토크 차이는 분석용 기록에만 남긴다. 코어의 `DecelMpcLimits::armature` 입력은 그대로 둔다 | 사용자 결정. 실기에서 확인하기 어렵고 기어비 · 기어 효율 때문에 부정확할 가능성이 높다. 코어 입력을 지우면 테스트와 분석 도구가 쓰는 경로가 사라지고, 비어 있는 입력을 0 으로 받게 바꾸면 빠뜨린 값이 조용히 0 이 된다 | §4 미결의 armature YAML 키 · formulation §1.3 토크 행 · M-11 | 2026-09-30 |
+| MD-26 | 기준 없는 첫 주기 (pre-solve + 본 solve) 는 $t_c-$now_lead $\le T_{pre}$ (기본 0.1 s) 인 첫 COMMITTED · CLOSING wake 에서 푼다. 그때까지 아무것도 게시하지 못했으면 DECEL 의 첫 wake 에서 $k\ge1$ 로 cold 풀이한다 (MD-31 의 창 안에서만). 예산은 decel 풀이를 시작한 시각부터 잰다 | 그 전 wake 에서는 초기 상태의 외삽 구간이 `T_freeze` 만큼 길어 예측이 의미가 없다. COMMITTED 뒤에는 탐색이 없어 예산 전부를 쓸 수 있다 | — | 2026-09-30 |
+| MD-27 | 노드 payload 는 `PlanSnapshot` 에 넣지 않고 형제 POD `DecelPlanSnapshot` 과 자기 SeqLock, 자기 채택 규칙으로 보낸다. 관절 용량은 8, 노드 용량은 `kMaxDecelNodes` 24 다. 노드 0 의 시각은 효력 시각이고, 격자 시각은 정수 ns 로 계산한다 | RT 는 COMMITTED 뒤에 새 `PlanSnapshot` 을 받지 않는다 (too_late · repeat 거부). 관절 용량을 `kMaxPlanNv` 32 로 잡으면 payload 가 19 KB 라 복사와 SeqLock 재시도 창이 커지고, 8 이면 4.8 KB 다 | formulation §1.5 마지막 문단 | 2026-09-30 |
+| MD-28 | 초기 상태 $x_0$ 는 효력 시각에서의 RT 기준 상태 예측이다. RT 가 보고한 명령 $(q,\dot q)$ 를 lead 축 시각 (보고 시각 + `T_arm`) 에서 효력 시각까지 외삽하고, $\ddot q$ 는 계획기의 wake 사이 차분으로 추정한다. 속도는 코어의 box 로 사영하고 사영했음을 기록한다 | RT 쪽 2 ms 유한 차분은 CLIK 기준 잡음과 재시드 계단을 키운다. box 밖의 $x_0$ 는 코어가 거부하므로 사영하지 않으면 게시할 수 없다. 예측을 DS rollout 등으로 올리는 것은 E1-F04 에서 실측한 진입 차이가 허용치를 넘을 때 한다 | formulation §1.6 $x_0=\hat x(t_c)$ | 2026-09-30 |
+| MD-29 | DECEL 모드의 계획기 activity 를 idle 에서 decel 계획으로 바꾼다. decel wake 의 주기 결과 (`CycleOutcome`) 는 idle 로 두고 decel 결과는 기록의 별도 필드로 낸다 | 기존 계획기 테스트가 COMMITTED wake 의 idle 결과와 게시 없음을 단언한다. 결과 코드까지 바꾸면 그 단언을 두 번째로 고치게 된다 (PROC-6) | 계획기 activity 표 (별도 커밋) | 2026-09-30 |
+| MD-30 | E1-F02 의 "CLIK 잔차 0" 검증은 **FK 일관성** ($T(q_{ref})=T^d$, $J\dot q_{ref}=V^{ff}$) 으로 좁히고 CLIK 속도 잔차는 정보용으로 기록한다. 자세 과제의 속도 feedforward 는 E1-F04 가 `[CONCERN]` 으로 다룬다 | 현 `ClikReferenceGenerator` 의 자세 과제는 위치 오차 항뿐이라 $q_c=q_{ref}$ 여도 $v^\ast\ne\dot q_{ref}$ 다. feedforward 를 넣는 것은 `rtc_tsid` public API 변경 (소비자 둘) 이고, $q_{ref}$ 를 CLIK 에 실제로 넣는 것은 E1-F04 다 | formulation §1.5 · §4 항목 8 | 2026-09-30 |
+| MD-31 | 정지 끝은 $t_c+N_s\Delta_s$ 에 고정한다. 포구 뒤 재계획은 격자점 $k\le k_{\max}$ (기본 4, 0.1 s) 에서만 하고, 노드 수 $N_s-k$ 인 코어를 $k$ 마다 configure 에서 만든다 | 코어의 노드 수는 Init 에서 고정이라 재계획마다 끝이 효력 시각 + $N_s\Delta_s$ 로 밀린다. 포구 뒤 첫 재계획이 포구 전 예측의 오차를 실제 RT 상태로 바로잡는 주 수단이라 포구 전에만 게시하는 안은 택하지 않았다 | — | 2026-09-30 |
+| MD-32 | E1-F03 의 RT 쪽 변경은 `PlannerRtState` 에 따르는 계획의 $t_c$ 를 채우는 것뿐이다. RT tick 의 decel payload 읽기 · 채택 · 기록은 E1-F04 가 한다. 채택 규칙과 효력 시각 전환 규칙은 E1-F03 이 순수 함수로 만든다 | RT 가 소유하는 멤버를 새로 두면 trial reset 표와 E-STOP reset 경로를 고쳐야 한다 (E-8). E1-F04 가 이미 E-8 이므로 거기서 함께 다룬다 | — | 2026-09-30 |
+| MD-33 | 게시 조건은 풀이 성공, 예산 안, 효력 시각 전, `slack_max` 와 `slack_terminal_max` 가 유한하고 임계 이하일 때다. 두 임계는 기본 0.1 이고 $\eta'_\tau+$ `slack_max` $\le$ `joint_cmd.eta_tau` 를 configure 에서 검사한다 | 임계 비교를 부정형으로 쓰면 NaN 이 통과한다. 합이 CLIK 의 토크 box 를 넘으면 계획이 CLIK 에서 실행될 수 없다. 종단 임계를 처음부터 조이면 손목의 정적 중력비가 큰 자세에서 늘 게시가 막힐 수 있어, 분포를 기록한 뒤 E1-F06 이 조인다 | — | 2026-09-30 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 정지 구간 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- E1-F03: 정지 구간의 노드 수와 간격 (= 정지 시간, MD-21), 포구 전 초기 상태의 예측 방법, armature YAML 키 (`robot.arm.armature` 안 — E1-F01 코어는 `DecelMpcLimits::armature` 로 받아 모델이 이미 가진 armature 에 **더한다**), 게시 임계 (`slack_max`), 첫 주기 (pre-solve) 비용이 예산 안인지
+- E1-F04: 자세 과제의 속도 feedforward (MD-30, `rtc_tsid` public API), 초기 상태 예측의 개선 여부 (MD-28, 실측한 진입 차이로 판단), decel 구간의 채택 나이 상한, E-STOP reset floor 를 reset 시각으로 옮길지 (지금은 plan 일치 검사가 방어한다)
 - E1-F06: 비열등 한계와 N, MPC DECEL 을 기본값으로 바꿀지
 - E3-F01: MPC 계획기와 v1 L3 계획기의 관계 (대체 · 병행)
 - E3-F05: 기존 `DemoCatchingController` 확장과 새 컨트롤러 중 선택
@@ -151,7 +162,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | 오른손 | proto_1b 는 폐쇄 체인 (수동 관절 10, loop closure 5) 이고 왼손 형상 · `l_*` 이름으로 오른 손목에 장착돼 있다 | 장착 자세는 실기 미검증이다 |
 | 용량 | `kMaxPlanNv`, `kMaxDeviceChannels` 모두 G1 관절 수를 담는다 | 상수 변경 불필요 |
 | 예측 격자 | 예측 메시지는 sim 실측 30 Hz 로 온다. 제약 (`kCap`, `io.horizon_min`) 과 두 저장소의 현재 설정값은 formulation §1.7 의 표에 있다 | sweep 조건의 근거 (MD-15). profile 은 ball_perception 쪽으로 옮기고 (MD-18) 그쪽 JSON 을 지평 요구에 맞춰 갱신한다 (E0-F04) |
-| armature | G1 URDF 에는 없고 MJCF 에만 있다 | 로봇 config 에서 읽는다 (MD-13). E1-F01 코어는 벡터 입력으로 받고 YAML 키는 E1-F03 · E2-F02 가 만든다 |
+| armature | G1 URDF 에는 없고 MJCF 에만 있다 | 제어에 쓰지 않는다 (MD-25). E1-F01 코어의 벡터 입력은 분석과 테스트용으로 남는다 |
 | GUI | 컨트롤러는 런타임 발견, 로봇은 `demo_gui/discovery.py` 의 `RobotProfile` 정적 정의 | G1 profile 을 추가한다 |
 | plot | 파일명 기반 log type → plotter registry | 컬럼 추가와 plotter 확장 |
 
@@ -182,9 +193,9 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
 | E1-F01 | [#627](https://github.com/hyujun/rtc-framework/issues/627) | jerk 입력 condensed QP 코어 (토크 제약 행 · slack) | E0-F03 | 완료 ([#655](https://github.com/hyujun/rtc-framework/pull/655)). 할당 0 은 코어 경로만 (MD-22) |
-| E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | `PlanSnapshot` 관절 노드 payload + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 다음 (`feat/catching-decel-mpc-plan-path`) |
-| E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 다음 (`feat/catching-decel-mpc-plan-path`) |
-| E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 + closed-form fallback | E1-F03 | 대기 |
+| E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | 관절 노드 payload (`DecelPlanSnapshot`, MD-27) + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). RT tick 배선은 E1-F04 (MD-32) |
+| E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). 출하는 꺼짐 — §8 |
+| E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 + closed-form fallback | E1-F03 | 다음 (`feat/catching-decel-mpc-l7`) — 넘겨받는 것은 #630 코멘트 |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui | E1-F04 | 대기 |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 | E0-F02, E1-F05 | 대기 |
 
@@ -302,7 +313,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 |---|---|---|
 | E1-F04 | L7 전이 동작 변경 (E-8) | Critical — 착수 전 `[CONCERN]` 과 컨펌, 완료 후 security review |
 | E3-F05 | E-STOP 경로를 건드리면 E-8 | Critical |
-| E1-F03 | 새 스레드가 필요해지면 E-7 | Critical |
+| E1-F03 | 새 스레드가 필요해지면 E-7 | 발동 안 함 — decel 계획기는 기존 계획기 스레드 안에서 돈다 (#656) |
 | E2-F04 | `rtc_tsid` public API 변경, 기존 소비자 둘 | code review, 기능 동등성이 성공 기준 |
 | E3-F01 | 계획기 interface 신설 (ARCH-3) | code review |
 | E1-F01, E3-F03 | 신규 수치 코어 (100+ 줄) | code review |
@@ -477,4 +488,23 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **할당.** 코어 경로는 0 이고, ProxQP 는 Solve 마다 7–18 회 할당한다 (MD-22, #654).
 - 재평가 토크 (pre-solve 경로 RTI 1 회, 1 kHz 표본, armature 포함) 의 최대 $|\tau|/\tau_{\max}$ 는 0.70 으로 $\eta'_\tau$ 0.7 과 같다.
 - **주기 사이 속도 표류는 흡수된다.** x₀ 의 속도가 기준 node 0 에서 2.5 rad/s 벗어나도 QP 의 jerk 에 상한이 없어 7 반복 · 3.3 ms 에 풀린다. 위치 표류만 trust region 충돌로 거부한다.
+
+### E1-F02 · E1-F03 — payload · 샘플러 · decel 계획기 (2026-09-30, [#628](https://github.com/hyujun/rtc-framework/issues/628) · [#629](https://github.com/hyujun/rtc-framework/issues/629))
+
+`test_catching_node_follower` 와 `test_catching_decel_planner` 의 정보용 측정이다. Release, 개발 PC (RT 스케줄링 없음), 실제 6 · 7 자유도 팔 URDF. 계획기 측정은 무작위 진입 상태 200 개 (관절마다 $\pm 0.54\,\dot q_{\max}$) 이고 출하 지평 $N_s$ 14 · $\Delta_s$ 0.025 s 다 (MD-24). 계획기 시간은 decel 단계 시작부터 풀이 끝까지다 (MD-26).
+
+| 항목 | 6 자유도 | 7 자유도 |
+|---|---|---|
+| cold 풀이 (pre-solve + 본 solve) p99 [ms] | 8.4 | 12.6 |
+| 포구 뒤 재계획, RT 가 구간을 따름 p99 [ms] | 2.0 | 2.9 |
+| 포구 뒤 재계획, RT 보고에서 예측 p99 [ms] | 1.8 | 2.2 |
+| 실패 (풀이 · slack 보류) | 0 / 200 | 0 / 200 |
+| armature 가 더할 토크 $\max\vert a\ddot q\vert/\tau_{\max}$ (정보용) | 0.026 | 0.007 |
+
+- **예산 안이다.** cold 도 `budget_s` 20 ms 의 2/3 이하라 MD-24 의 후퇴안 (7 × 0.05 s) 은 필요 없다. 재계획은 shift 한 기준 덕분에 pre-solve 없이 풀린다.
+- **할당.** 풀이 전에 끝나는 경로 (시각 미도래 · 최신 · 상태 없음 · 비유한 · x₀ box 밖) 는 0 이다. 재계획 한 번의 C 할당 10 회는 ProxQP 의 것이다 (MD-23, #654). 샘플러 `Sample` 은 0 이다.
+- **payload 복사.** 4.9 KB 를 1 kHz 로 저장하는 writer 와 경합할 때 복사 + `Sample` 의 p99 는 0.5 µs, 최악 64 µs 다. 쉬지 않고 저장하는 writer 앞에서는 reader 가 300 ms 에 224 번만 읽는다 — SeqLock 의 재시도에 상한이 없으므로 계획기는 wake 당 한 번만 저장해야 한다 (지금 그렇게 한다).
+- **armature.** MJCF 값으로 재평가한 추가 토크는 τ_max 의 3 % 미만이다. 제어에 넣지 않는 결정 (MD-25) 과 맞는다.
+- **CLIK 속도 잔차 (정보용, MD-30).** 6 자유도 합성 구간에서 $\vert v^\ast-\dot q_{ref}\vert$ 는 최대 0.16 rad/s (상대 0.14) 다. 자세 과제에 속도 feedforward 가 없기 때문이며 E1-F04 가 다룬다.
+- 정지 자세의 손목 정적 중력비 0.7 이상은 0 / 200 이다. 손이 없는 팔 URDF 라서 손을 잠근 sub-model 과는 다를 수 있다 — E1-F04 의 sim 에서 다시 본다.
 
