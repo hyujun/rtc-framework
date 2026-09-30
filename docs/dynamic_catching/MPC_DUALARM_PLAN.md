@@ -206,7 +206,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F01 | [#627](https://github.com/hyujun/rtc-framework/issues/627) | jerk 입력 condensed QP 코어 (토크 제약 행 · slack) | E0-F03 | 완료 ([#655](https://github.com/hyujun/rtc-framework/pull/655)). 할당 0 은 코어 경로만 (MD-22) |
 | E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | 관절 노드 payload (`DecelPlanSnapshot`, MD-27) + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). RT tick 배선은 E1-F04 (MD-32) |
 | E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). 출하는 꺼짐 — §8 |
-| E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 + closed-form fallback | E1-F03 | 구현 · 테스트 완료, security review · PR 대기 (`feat/catching-decel-mpc-l7`) — 결정 MD-34 – MD-44 (MD-44 로 fallback 없음), 측정 §8 |
+| E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 + closed-form fallback | E1-F03 | 구현 · 테스트 · security review · code review 완료 (`feat/catching-decel-mpc-l7`) — 결정 MD-34 – MD-44 (MD-44 로 fallback 없음), 측정 §8. sim smoke 는 진입 20/20 abort — mpc 는 APPROACH–정지 MPC 로 확장한다 (사용자 결정 2026-09-30, §8) |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui | E1-F04 | 대기 |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 | E0-F02, E1-F05 | 대기 |
 
@@ -538,5 +538,6 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **기본 게이트는 실시계 한 투척을 거부했다.** $t_{pre}$ 0.1 s 앞에서 예측한 포구 전 구간이 진입에서 $\rho$ 1.13 – 1.18 로 기본 $\rho_{\max}$ 1.0 을 넘었다. MD-44 로 그런 시행은 abort 다. 테스트는 루프가 도는지를 보려고 `switch_margin` 2.0 을 쓴다. 기본값이 얼마나 자주 거부하는지와 $x_0$ 예측을 고칠지는 MD-41 의 200 발 측정이 정한다 — $t_{pre}$ 를 줄이는 것 (외삽 오차는 $t_{pre}^3$ 에 비례) 도 후보다.
 - **작업공간 검사 (MD-43 개정).** 같은 실시계 투척에서 v1 법칙이 $t_c$ 에 손을 $p_c$ 에서 19 cm, box 아래 (z 0.19 < 0.21) 에 두었다. 절대 위치 검사는 계획기의 두 구간을 모두 거부했다. $p_c$ 로 옮긴 변위 검사로 바꾼 뒤 채택된다.
 - **할당 0.** mpc 의 lane · 진입 전환 · 재계획 전환 · 추종 tick 이 `ScopedAllocGate` 아래에서 0 이다 (`test_demo_catching_alloc_s7`).
-- sim smoke (mode mpc, 로봇당 1 unit) 는 이 PR 에서 돌리지 않았다 — 그 결과가 MD-41 의 측정 입력이 된다.
+- **sim smoke (2026-09-30, [#630 코멘트](https://github.com/hyujun/rtc-framework/issues/630#issuecomment-5912267455)).** ur5e_p1b, `catch_lead_on` + `mode: mpc` + `switch_margin` 2.0, s35b 20 발 (seed 604): **20/20 이 DECEL 진입에서 abort** (CLOSING → ABORT_SAFE). 순환은 모두 닫혔고 FAULT 는 없다. 임시 계측 5 발에서 구간은 매번 채택됐고 진입 게이트가 거부했다 — $\rho$ 4.1 – 10.1, 매번 관절 0, $\vert\Delta\dot q\vert$ 0.78 – 1.76 rad/s. k=0 구간의 $x_0$ 는 v1 명령을 74 – 96 ms 상수 q̈ 로 외삽한 값이고 (5 발 중 2 발은 한계에 clamp), 포구 직전의 v1 명령은 그 외삽을 벗어난다. 위 실시계 $\rho$ 1.13 – 1.18 은 팔을 고정한 fixture 의 값이었다.
+- **사용자 결정 (2026-09-30).** `mode: mpc` 는 APPROACH 부터 정지까지 MPC 로 간다 — 입력은 공의 미래 궤적, 출력은 CLIK task position + null space 자세. 코어 · 관절 노드 payload · RT 샘플러 · MD-36 · MD-44 는 유지하고, formulation §1.3 의 포구 항을 단일 팔 형태로 더한다 (E3-F01 을 단일 팔로 앞당김). 진입 순간의 외삽이 없어지므로 MD-41 의 $x_0$ 예측 측정은 그 기능의 설계로 대체된다. 기능 등록과 계획은 별도.
 
