@@ -62,6 +62,12 @@ namespace rtc::catching {
 /// one onto the other in a switch.
 enum class CatchingAccelConstraint : std::uint8_t { kBox, kKinematic, kDynamic };
 
+/// `supervisor.decel.mode` — the DECEL law, chosen once per configure and
+/// never mixed within an activation (MPC MD-44). kClosedForm is the v1 L7
+/// virtual target and the default (the key absent); kMpc follows the decel
+/// MPC's stop segment on every DECEL.
+enum class CatchingDecelMode : std::uint8_t { kClosedForm, kMpc };
+
 // A YAML scalar the schema may leave open as the literal string "TBD" (or an
 // unparseable/non-finite number, which L0 §5.3 treats the same way) until a
 // decision fills it in. `value` is only meaningful when `tbd` is false.
@@ -229,6 +235,10 @@ struct CatchingParams {
 
   // supervisor: (L7 §6)
   TbdDouble supervisor_decel_a_dec;  // m/s², > 0 and <= reference_a_max (L7 §4.3)
+  CatchingDecelMode supervisor_decel_mode{CatchingDecelMode::kClosedForm};  // MD-34 · MD-44
+  /// ρ_max of the segment-switch continuity gate (MD-39), > 0. Refused at
+  /// parse time when not a positive finite number; read only under kMpc.
+  double supervisor_decel_switch_margin{1.0};
 
   // io: (L1 §6) — vision ingress. Consumed from S5.2.
   //

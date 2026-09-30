@@ -121,4 +121,36 @@ bool NodeTrajectoryFollower::Sample(const DecelPlanSnapshot& plan, std::int64_t 
   return true;
 }
 
+bool NodeTrajectoryFollower::NodesInsideBox(const DecelPlanSnapshot& plan,
+                                            const std::array<double, 3>& lo,
+                                            const std::array<double, 3>& hi,
+                                            int* first_outside) noexcept {
+  if (first_outside != nullptr) {
+    *first_outside = -1;
+  }
+  if (model_ == nullptr || plan.nv != nv_ || !ShapeOk(plan)) {
+    return false;
+  }
+  for (int k = 0; k <= plan.n_nodes; ++k) {
+    for (int m = 0; m < nv_; ++m) {
+      const auto d = static_cast<std::size_t>(device_of_model_[static_cast<std::size_t>(m)]);
+      q_model_[m] = plan.q[static_cast<std::size_t>(k) * kMaxDecelNv + d];
+    }
+    pinocchio::forwardKinematics(*model_, data_, q_model_);
+    pinocchio::updateFramePlacement(*model_, data_, frame_);
+    const Eigen::Vector3d& p = data_.oMf[frame_].translation();
+    for (int a = 0; a < 3; ++a) {
+      const auto u = static_cast<std::size_t>(a);
+      // Written as "inside" so a NaN coordinate is outside.
+      if (!(p[a] >= lo[u] && p[a] <= hi[u])) {
+        if (first_outside != nullptr) {
+          *first_outside = k;
+        }
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 }  // namespace rtc::catching

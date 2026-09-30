@@ -36,8 +36,12 @@
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <limits>
+#include <span>
 #include <type_traits>
 
 namespace rtc::catching {
@@ -273,6 +277,11 @@ struct DecelAdmissionContext {
   /// followed for N_s·Δ_s after. The binding (E1-F04) picks it; 0 disables.
   std::int64_t max_age_ns{0};
   std::int64_t reset_floor_ns{0};
+  /// Floor on the RT state the segment was PREDICTED from (`rt_state_ns`),
+  /// refused as kBeforeReset below it; 0 disables (MD-37). A planner that
+  /// stamped its publish after the RT's reset can still have read the RT
+  /// state of the tick before it: the publish floor alone lets that through.
+  std::int64_t state_floor_ns{0};
 };
 
 /// The RT's memory of the last decel segment it admitted.
@@ -307,6 +316,9 @@ struct AdmittedDecel {
     return DecelRefusal::kAged;
   }
   if (p.publish_ns < ctx.reset_floor_ns) {
+    return DecelRefusal::kBeforeReset;
+  }
+  if (ctx.state_floor_ns > 0 && p.rt_state_ns < ctx.state_floor_ns) {
     return DecelRefusal::kBeforeReset;
   }
   if (!ValidateDecelNodes(p)) {
@@ -358,6 +370,57 @@ enum class DecelSegmentChoice : std::uint8_t {
     return DecelSegmentChoice::kPending;
   }
   return current_valid ? DecelSegmentChoice::kCurrent : DecelSegmentChoice::kNone;
+}
+
+/// The continuity gate at a segment switch (MD-39). Per joint i, with
+/// d_i = (1 − η_v)·q̇_max,i — the velocity headroom the MPC leaves the CLIK's
+/// feedback (formulation §2.3) — the switch passes only when
+///   |q̇_c,i − q̇_ref,i| + K_p·|q_c,i − q_ref,i| ≤ ρ_max · d_i.
+/// Written multiplied and negated so a NaN on either side refuses, and a
+/// d_i that is not a positive finite number refuses rather than divides.
+/// K_p is an eigenvalue bound of the task gain, not a per-joint one: ρ is a
+/// heuristic measure, recorded to be tightened on measurement.
+struct DecelSwitchVerdict {
+  bool pass{false};
+  /// max_i lhs_i / d_i over the joints that have a d_i (+inf without one).
+  double rho{0.0};
+  /// The first joint that refused, −1 when it passed.
+  int joint{-1};
+  double dq_max{0.0};   ///< max_i |q_c − q_ref| [rad]
+  double dqd_max{0.0};  ///< max_i |q̇_c − q̇_ref| [rad/s]
+};
+
+[[nodiscard]] inline DecelSwitchVerdict JudgeDecelSwitch(
+    std::span<const double> q_c, std::span<const double> qd_c, std::span<const double> q_ref,
+    std::span<const double> qd_ref, std::span<const double> qdot_max, int nv, double k_p,
+    double eta_v, double rho_max) noexcept {
+  DecelSwitchVerdict v;
+  const auto n = static_cast<std::size_t>(nv < 0 ? 0 : nv);
+  if (nv < 1 || q_c.size() < n || qd_c.size() < n || q_ref.size() < n || qd_ref.size() < n ||
+      qdot_max.size() < n || !(std::isfinite(k_p) && k_p >= 0.0) ||
+      !(std::isfinite(rho_max) && rho_max > 0.0) || !std::isfinite(eta_v)) {
+    v.rho = std::numeric_limits<double>::infinity();
+    return v;
+  }
+  v.pass = true;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double dq = std::fabs(q_c[i] - q_ref[i]);
+    const double dqd = std::fabs(qd_c[i] - qd_ref[i]);
+    const double lhs = dqd + k_p * dq;
+    const double d = (1.0 - eta_v) * qdot_max[i];
+    v.dq_max = std::max(v.dq_max, dq);
+    v.dqd_max = std::max(v.dqd_max, dqd);
+    const bool headroom = std::isfinite(d) && d > 0.0;
+    // std::max drops a NaN, so a non-finite ratio is recorded as +inf.
+    const double r =
+        headroom && std::isfinite(lhs) ? lhs / d : std::numeric_limits<double>::infinity();
+    v.rho = std::max(v.rho, r);
+    if (v.pass && (!headroom || !(lhs <= rho_max * d))) {
+      v.pass = false;
+      v.joint = static_cast<int>(i);
+    }
+  }
+  return v;
 }
 
 [[nodiscard]] constexpr const char* PlanRefusalName(PlanRefusal r) noexcept {

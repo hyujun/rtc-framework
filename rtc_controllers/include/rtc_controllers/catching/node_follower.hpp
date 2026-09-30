@@ -91,6 +91,15 @@ class NodeTrajectoryFollower {
                                          std::span<double> q, std::span<double> qd,
                                          std::span<double> qdd, bool* held = nullptr) noexcept;
 
+  /// @brief Whether the catch frame at EVERY node lies in the axis-aligned box
+  /// [lo, hi] of the model world (MD-43; RT-safe, one FK per node). Between
+  /// nodes is not checked. False when uninitialised, on a shape this arm
+  /// cannot sample, or on the first node outside (NaN counts as outside);
+  /// `first_outside` (if given) is that node, −1 when every node is inside.
+  [[nodiscard]] bool NodesInsideBox(const DecelPlanSnapshot& plan, const std::array<double, 3>& lo,
+                                    const std::array<double, 3>& hi,
+                                    int* first_outside = nullptr) noexcept;
+
  private:
   std::shared_ptr<const pinocchio::Model> model_;
   pinocchio::Data data_;

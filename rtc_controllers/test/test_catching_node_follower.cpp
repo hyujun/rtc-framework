@@ -363,6 +363,59 @@ TEST_F(NodeFollowerTest, FkConsistencyAlongTheSegment) {
   EXPECT_LT(worst_v, 1e-10);
 }
 
+TEST_F(NodeFollowerTest, NodesInsideBoxChecksEveryNodeInTheModelWorld) {
+  // MD-43: the catch frame at node 0..N, against an independent FK of the
+  // device-order nodes. A box around all of them passes; pulling one face in
+  // past the extreme node refuses and names the FIRST node beyond it.
+  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 33);
+  pinocchio::Data data(*arm_.model);
+  std::vector<Eigen::Vector3d> pos;
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    Eigen::VectorXd q(p.nv);
+    for (int m = 0; m < p.nv; ++m) {
+      q[m] = p.q[Idx(k, kDeviceOfModel[static_cast<std::size_t>(m)])];
+    }
+    pinocchio::framesForwardKinematics(*arm_.model, data, q);
+    pos.push_back(data.oMf[arm_.frame].translation());
+  }
+  std::array<double, 3> lo{};
+  std::array<double, 3> hi{};
+  for (int a = 0; a < 3; ++a) {
+    lo[static_cast<std::size_t>(a)] = std::numeric_limits<double>::infinity();
+    hi[static_cast<std::size_t>(a)] = -std::numeric_limits<double>::infinity();
+    for (const auto& x : pos) {
+      lo[static_cast<std::size_t>(a)] = std::min(lo[static_cast<std::size_t>(a)], x[a]);
+      hi[static_cast<std::size_t>(a)] = std::max(hi[static_cast<std::size_t>(a)], x[a]);
+    }
+  }
+  int first = 99;
+  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, &first));
+  EXPECT_EQ(first, -1);
+
+  std::array<double, 3> tight = hi;
+  tight[0] -= 1e-6;
+  int expected = -1;
+  for (int k = 0; k <= p.n_nodes && expected < 0; ++k) {
+    if (pos[static_cast<std::size_t>(k)][0] > tight[0]) {
+      expected = k;
+    }
+  }
+  ASSERT_GE(expected, 0);
+  EXPECT_FALSE(follower_.NodesInsideBox(p, lo, tight, &first));
+  EXPECT_EQ(first, expected);
+
+  DecelPlanSnapshot bad = p;
+  bad.q[Idx(3, 0)] = kNan;  // node 3's FK is NaN: outside, whatever the box
+  std::array<double, 3> huge_lo{-1e9, -1e9, -1e9};
+  std::array<double, 3> huge_hi{1e9, 1e9, 1e9};
+  EXPECT_FALSE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, &first));
+  EXPECT_EQ(first, 3);
+
+  NodeTrajectoryFollower unbound;
+  EXPECT_FALSE(unbound.NodesInsideBox(p, huge_lo, huge_hi, &first));
+  EXPECT_EQ(first, -1);
+}
+
 TEST_F(NodeFollowerTest, DeviceOrderIsMappedBeforeFk) {
   // Negative control for the mapping: FK of the DEVICE-order vector read as if
   // it were model order must differ — otherwise the permutation fixture would
