@@ -310,7 +310,7 @@ $$
 | 상황 | 동작 |
 |---|---|
 | QP 가 실행 불가능하거나 예산을 넘김 | 새 계획을 게시하지 않는다. RT 는 직전 계획을 계속 따른다 (직전 계획도 정지로 끝난다) |
-| 직전 계획이 없거나 나이 한계를 넘음 | v1 의 closed-form DECEL (`EvaluateDecelTarget`) |
+| 직전 계획이 없거나 나이 한계를 넘음 | v1 의 closed-form DECEL (`EvaluateDecelTarget`). 단 E1-F04 의 `supervisor.decel.mode: mpc` 는 법칙을 섞지 않아 (계획 MD-44) 이 경우 `ABORT_SAFE` 다 |
 | `ABORT_SAFE` | 관절 공간 정지 `JointSpaceDecelStep` — 원인과 무관, QP 독립 (v1 C-35, 불변) |
 
 **바깥 루프.** 포구 시각 후보를 열거하고 후보마다 QP 를 푼다. 발표된 포구 시스템은 포구 시각을 연속 변수로 둔다 [Bauml2010] [Lampariello2011] [Dong2020] [Abeyruwan2023] — 열거는 이 문서의 선택이다. 볼록 QP 라 그 논문들이 보고하는 국소 최소 문제가 없다.
