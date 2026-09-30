@@ -232,7 +232,7 @@ struct CatchingDiagLogPod {
     kNone = 0,
     kAdmitted = 1,      ///< a segment entered the pending slot
     kDeferred = 2,      ///< admissible, left in the box: the slot is full (MD-37)
-    kWorkspace = 3,     ///< refused: a node's catch frame outside catch_box (MD-43)
+    kWorkspace = 3,     ///< refused: the stop's path, placed at p_c, leaves catch_box (MD-43)
     kSwitched = 4,      ///< the pending segment became the followed one
     kGateRefused = 5,   ///< pending dropped: the continuity gate refused it (MD-39)
     kPlanMismatch = 6,  ///< a segment does not end the followed plan (MD-35)

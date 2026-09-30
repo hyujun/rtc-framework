@@ -389,7 +389,7 @@ TEST_F(NodeFollowerTest, NodesInsideBoxChecksEveryNodeInTheModelWorld) {
     }
   }
   int first = 99;
-  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, &first));
+  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, nullptr, &first));
   EXPECT_EQ(first, -1);
 
   std::array<double, 3> tight = hi;
@@ -401,18 +401,36 @@ TEST_F(NodeFollowerTest, NodesInsideBoxChecksEveryNodeInTheModelWorld) {
     }
   }
   ASSERT_GE(expected, 0);
-  EXPECT_FALSE(follower_.NodesInsideBox(p, lo, tight, &first));
+  EXPECT_FALSE(follower_.NodesInsideBox(p, lo, tight, nullptr, &first));
   EXPECT_EQ(first, expected);
+
+  // Anchored: the same path moved so node 0 sits at `anchor`. Anchored at node
+  // 0 itself it is the plain check; moved by d, the box moved by d passes and
+  // the original box refuses the first node the shift pushes out.
+  const std::array<double, 3> at_node0{pos[0].x(), pos[0].y(), pos[0].z()};
+  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, &at_node0, &first));
+  const Eigen::Vector3d d(0.5, -0.25, 0.125);
+  const std::array<double, 3> shifted{pos[0].x() + d.x(), pos[0].y() + d.y(), pos[0].z() + d.z()};
+  std::array<double, 3> lo_d{};
+  std::array<double, 3> hi_d{};
+  for (int a = 0; a < 3; ++a) {
+    lo_d[static_cast<std::size_t>(a)] = lo[static_cast<std::size_t>(a)] + d[a];
+    hi_d[static_cast<std::size_t>(a)] = hi[static_cast<std::size_t>(a)] + d[a];
+  }
+  EXPECT_TRUE(follower_.NodesInsideBox(p, lo_d, hi_d, &shifted, &first));
+  EXPECT_EQ(first, -1);
+  EXPECT_FALSE(follower_.NodesInsideBox(p, lo, hi, &shifted, &first));
+  EXPECT_EQ(first, 0) << "node 0 itself is placed at the anchor, outside the unshifted box";
 
   DecelPlanSnapshot bad = p;
   bad.q[Idx(3, 0)] = kNan;  // node 3's FK is NaN: outside, whatever the box
   std::array<double, 3> huge_lo{-1e9, -1e9, -1e9};
   std::array<double, 3> huge_hi{1e9, 1e9, 1e9};
-  EXPECT_FALSE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, &first));
+  EXPECT_FALSE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, nullptr, &first));
   EXPECT_EQ(first, 3);
 
   NodeTrajectoryFollower unbound;
-  EXPECT_FALSE(unbound.NodesInsideBox(p, huge_lo, huge_hi, &first));
+  EXPECT_FALSE(unbound.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first));
   EXPECT_EQ(first, -1);
 }
 

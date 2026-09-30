@@ -15,13 +15,14 @@
 // are the ones ClikReferenceGenerator's twist_ff and PositionAxisTarget use.
 //
 // WHAT THIS DOES NOT CLAIM (MD-30). With q_c = q_ref the CLIK's hand task is
-// satisfied by v* = q̇_ref, but the current CLIK posture term is
-// k_a(q_des − q) with no velocity feedforward, so the CLIK's v* is NOT q̇_ref
-// in general. The FK consistency above is what this sampler guarantees;
-// feeding q̇_ref into the posture task is E1-F04's.
+// satisfied by v* = q̇_ref, but the CLIK posture term is k_a(q_des − q) with
+// no velocity feedforward. The FK consistency above is what this sampler
+// guarantees; the RT caller feeds q̇_ref into the posture task by handing it
+// q_ref + q̇_ref / k_a as the goal (MD-36).
 //
-// WIRING. E1-F02 builds and tests the sampler; the RT tick starts calling it
-// in E1-F04 (MD-32 — new RT-owned members are E-8).
+// WIRING. The catching controller's DECEL tick under `supervisor.decel.mode:
+// mpc` (E1-F04): Sample() every mpc tick, NodesInsideBox() once per admitted
+// segment (MD-43).
 //
 // RT CONTRACT. Init() is non-RT (copies nothing heavy: shares the model, owns
 // its own pinocchio::Data, sizes every buffer). Sample() is noexcept,
@@ -92,12 +93,16 @@ class NodeTrajectoryFollower {
                                          std::span<double> qdd, bool* held = nullptr) noexcept;
 
   /// @brief Whether the catch frame at EVERY node lies in the axis-aligned box
-  /// [lo, hi] of the model world (MD-43; RT-safe, one FK per node). Between
-  /// nodes is not checked. False when uninitialised, on a shape this arm
-  /// cannot sample, or on the first node outside (NaN counts as outside);
+  /// [lo, hi] of the model world (MD-43; RT-safe, one FK per node). With an
+  /// `anchor`, the path is judged TRANSLATED so node 0 sits at the anchor —
+  /// anchor + (p_k − p_0) — i.e. the stop's displacement from where it starts,
+  /// placed at the catch point the planner checked its own stop from.
+  /// Between nodes is not checked. False when uninitialised, on a shape this
+  /// arm cannot sample, or on the first node outside (NaN counts as outside);
   /// `first_outside` (if given) is that node, −1 when every node is inside.
   [[nodiscard]] bool NodesInsideBox(const DecelPlanSnapshot& plan, const std::array<double, 3>& lo,
                                     const std::array<double, 3>& hi,
+                                    const std::array<double, 3>* anchor = nullptr,
                                     int* first_outside = nullptr) noexcept;
 
  private:

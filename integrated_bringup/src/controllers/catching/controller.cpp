@@ -1426,8 +1426,11 @@ void DemoCatchingController::RunDecelLane() noexcept {
   // Judged once per decel_seq from here, whatever the workspace says.
   admitted_decel_ = rtc::catching::AdmittedDecel{true, decel_in_.decel_seq};
   // MD-43: the planner reserved catch_box room for the closed-form straight
-  // stop only; the MPC's stop is longer at low speed and not straight.
-  if (!decel_follower_.NodesInsideBox(decel_in_, decel_box_lo_, decel_box_hi_)) {
+  // stop's DISPLACEMENT from p_c; the MPC's stop is longer at low speed and
+  // not straight. Its own displacement is judged the same way — from p_c, not
+  // from where the arm happens to be at t_c, which the closed-form stop would
+  // start from too (a v1 arm can reach t_c outside the box).
+  if (!decel_follower_.NodesInsideBox(decel_in_, decel_box_lo_, decel_box_hi_, &plan_.p_c)) {
     tick_record_.decel_event = Event::kWorkspace;
     return;
   }
@@ -1507,7 +1510,9 @@ rtc::catching::Reason DemoCatchingController::RunDecelMpcTick(const ControllerSt
         }
         decel_pending_valid_ = false;
       }
-    } else if (entry) {
+    } else if (entry && tick_record_.decel_event == Event::kNone) {
+      // The lane's own verdict on this tick (kWorkspace, kDeferred) names why
+      // the slot is empty better than this does; it stays.
       tick_record_.decel_event = Event::kNoSegment;
     }
   }
