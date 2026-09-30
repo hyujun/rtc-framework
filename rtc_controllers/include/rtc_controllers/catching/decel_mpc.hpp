@@ -138,14 +138,18 @@ struct DecelMpcParams {
   /// multipliers; larger values slow ProxQP and trigger false infeasibility
   /// verdicts. 10 was exact on every sampled stop (E1-F01 sweep, #627).
   double rho_tau{10.0};
-  double eta_v{0.95};               ///< velocity row fraction of q̇_max, (0, 1]
-  double eta_tau{0.7};              ///< torque row fraction of τ_max, (0, 1]
-  double m_q{0.05};                 ///< position margin inside the limits [rad]
-  double delta_tr{0.1};             ///< trust region half-width around q̄ [rad] (> 0, may be +inf)
-  double reference_rest_tol{1e-4};  ///< |q̇̄_N|, |q̈̄_N| bound for a supplied reference
+  double eta_v{0.95};    ///< velocity row fraction of q̇_max, (0, 1]
+  double eta_tau{0.7};   ///< torque row fraction of τ_max, (0, 1]
+  double m_q{0.05};      ///< position margin inside the limits [rad]
+  double delta_tr{0.1};  ///< trust region half-width around q̄ [rad] (> 0, may be +inf)
+  /// |q̇̄_N|, |q̈̄_N| bound for a supplied reference. Must exceed
+  /// solver.eps_abs: a shifted previous solution is at rest only to eps_abs.
+  double reference_rest_tol{1e-4};
   /// Re-equilibrated every solve; PrimalDualLDLT backend (see QPSolverConfig).
-  tsid::QPSolverConfig solver{
-      1e-6, 0.0, 200, 100, false, true, proxsuite::proxqp::DenseBackend::PrimalDualLDLT};
+  /// Designated so a field added to QPSolverConfig cannot shift these.
+  tsid::QPSolverConfig solver{.max_iter = 200,
+                              .update_preconditioner = true,
+                              .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT};
   /// Test / benchmark only: rebuild every QP matrix densely each Solve
   /// (Γ_k products instead of the Kronecker form, nothing cached). Same
   /// problem, same answer to rounding — the oracle for the structured path
@@ -158,7 +162,7 @@ struct DecelMpcLimits {
   Eigen::VectorXd q_min, q_max;  ///< [rad]; q_min ≤ q_max (equal allowed — a locked joint)
   Eigen::VectorXd qd_max;        ///< > 0 [rad/s]
   Eigen::VectorXd tau_max;       ///< > 0 [N·m]
-  Eigen::VectorXd armature;      ///< ≥ 0 [kg·m²], added to the model's diagonal inertia
+  Eigen::VectorXd armature;      ///< ≥ 0 [kg·m²], ADDED to whatever armature the model carries
 };
 
 struct DecelMpcInput {
@@ -240,7 +244,7 @@ class DecelMpc {
   void AssemblePerp() noexcept;
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
   void AssembleGradient(tsid::QPData& qp, bool main) noexcept;
-  [[nodiscard]] bool RunQp(tsid::QPData& qp, int& status, int& iterations) noexcept;
+  [[nodiscard]] DecelMpcReason RunQp(tsid::QPData& qp, int& status, int& iterations) noexcept;
   void TrajectoryFromZ() noexcept;
 
   bool initialized_{false};

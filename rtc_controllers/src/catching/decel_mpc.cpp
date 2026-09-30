@@ -1,6 +1,7 @@
 #include "rtc_controllers/catching/decel_mpc.hpp"
 
 #include "rtc_controllers/catching/decel_mpc_torque.hpp"
+#include "rtc_controllers/gain_floor.hpp"
 
 #include <Eigen/QR>
 #include <pinocchio/algorithm/frames.hpp>
@@ -23,10 +24,6 @@ constexpr double kBoxRoundingSlack = 1e-12;
 
 [[nodiscard]] bool FinitePositive(double x) noexcept {
   return std::isfinite(x) && x > 0.0;
-}
-
-[[nodiscard]] bool FiniteNonNegative(double x) noexcept {
-  return std::isfinite(x) && x >= 0.0;
 }
 
 [[nodiscard]] bool InUnitInterval(double x) noexcept {
@@ -153,13 +150,17 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
       }
     }
   }
-  if (!FinitePositive(params.u_scale) || !FiniteNonNegative(params.w_delta) ||
-      !FiniteNonNegative(params.w_perp) || !FiniteNonNegative(params.rho_tau) ||
+  if (!FinitePositive(params.u_scale) || !rtc::IsFiniteNonNegative(params.w_delta) ||
+      !rtc::IsFiniteNonNegative(params.w_perp) || !rtc::IsFiniteNonNegative(params.rho_tau) ||
 
       !InUnitInterval(params.eta_v) || !InUnitInterval(params.eta_tau) ||
-      !FiniteNonNegative(params.m_q) || std::isnan(params.delta_tr) || !(params.delta_tr > 0.0) ||
-      !FinitePositive(params.reference_rest_tol) || !FinitePositive(params.solver.eps_abs) ||
-      !FiniteNonNegative(params.solver.eps_rel) || params.solver.max_iter < 1 ||
+      !rtc::IsFiniteNonNegative(params.m_q) || std::isnan(params.delta_tr) ||
+      !(params.delta_tr > 0.0) || !FinitePositive(params.reference_rest_tol) ||
+      !FinitePositive(params.solver.eps_abs) ||
+      // A shifted previous solution meets the terminal equality only to
+      // eps_abs; a rest tolerance at or below it rejects every warm cycle.
+      !(params.reference_rest_tol > params.solver.eps_abs) ||
+      !rtc::IsFiniteNonNegative(params.solver.eps_rel) || params.solver.max_iter < 1 ||
       params.solver.max_iter_in < 1) {
     return DecelMpcReason::kParamsInvalid;
   }
@@ -190,7 +191,10 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
   torque_on_ = params.rho_tau > 0.0;
 
   model_ = arm;
-  model_.armature = limits.armature;
+  // ADDED to whatever the model already carries (pinocchio's URDF parser
+  // leaves it zero; a caller may have set it) — the limits field is the
+  // motor-side term the model lacks, not a replacement.
+  model_.armature = arm.armature + limits.armature;
   data_ = pinocchio::Data(model_);
 
   // Effective box: the margin never inverts a narrow (or locked) joint's range.
@@ -616,18 +620,19 @@ void DecelMpc::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
   }
 }
 
-bool DecelMpc::RunQp(tsid::QPData& qp, int& status, int& iterations) noexcept {
+DecelMpcReason DecelMpc::RunQp(tsid::QPData& qp, int& status, int& iterations) noexcept {
   const tsid::SolveResult& res = solver_.Solve(qp);
   status = res.status;
   iterations = res.iterations;
   if (!res.converged) {
-    return false;
+    // The wrapper reports non-finite iterates as not converged; kept as its
+    // own reason because a pre-solve answer becomes x̄ and feeds the max/min
+    // of the trust-region bounds, where a NaN would drop the row (NUM-7).
+    solver_.ResetWarmStart();
+    return res.non_finite ? DecelMpcReason::kSolutionNonFinite : DecelMpcReason::kQpFailed;
   }
   z_ = res.x_opt.head(nz_);
-  // The wrapper already refuses non-finite iterates; checked again here
-  // because the pre-solve's answer becomes x̄ and feeds the max/min of the
-  // trust-region bounds, where a NaN would silently drop the row (NUM-7).
-  return z_.allFinite();
+  return DecelMpcReason::kNone;
 }
 
 void DecelMpc::TrajectoryFromZ() noexcept {
@@ -761,14 +766,13 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
     solver_.ResetWarmStart();
     int status = -1;
     int iters = 0;
-    const bool ok = RunQp(qp_pre_, status, iters);
+    const DecelMpcReason why = RunQp(qp_pre_, status, iters);
     out.presolve_iterations = iters;
     out.presolved = true;
     out.presolve_us = MicrosSince(t0);
-    if (!ok) {
+    if (why != DecelMpcReason::kNone) {
       out.qp_status = status;
-      solver_.ResetWarmStart();
-      return fail(DecelMpcReason::kPresolveFailed);
+      return fail(why == DecelMpcReason::kQpFailed ? DecelMpcReason::kPresolveFailed : why);
     }
     TrajectoryFromZ();
     qr_ = q_out_;
@@ -786,6 +790,8 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
     const bool ok = (torque_on_ || w_perp_on_) ? Linearize() : true;
     out.linearize_us = MicrosSince(t0);
     if (!ok) {
+      // Internal-invariant guard: Init sized every operand, so the seam's
+      // size check cannot fail here. Kept rather than assumed.
       return fail(DecelMpcReason::kDimMismatch);
     }
   }
@@ -806,15 +812,15 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
         AssembleTorqueRows();
       }
     }
-    const bool bounds_ok = AssembleBounds(qp_main_, true);
+    if (!AssembleBounds(qp_main_, true)) {
+      out.condense_us = MicrosSince(t0);
+      return fail(DecelMpcReason::kTrustRegionConflict);
+    }
     AssembleGradient(qp_main_, true);
     if (w_perp_on_) {
       AssemblePerp();
     }
     out.condense_us = MicrosSince(t0);
-    if (!bounds_ok) {
-      return fail(DecelMpcReason::kTrustRegionConflict);
-    }
   }
 
   // Solve.
@@ -822,18 +828,13 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
     const auto t0 = Clock::now();
     int status = -1;
     int iters = 0;
-    const bool ok = RunQp(qp_main_, status, iters);
+    const DecelMpcReason why = RunQp(qp_main_, status, iters);
     out.solve_us = MicrosSince(t0);
     out.qp_status = status;
     out.iterations = iters;
-    if (!ok) {
-      solver_.ResetWarmStart();
-      return fail(DecelMpcReason::kQpFailed);
+    if (why != DecelMpcReason::kNone) {
+      return fail(why);
     }
-  }
-  if (!z_.allFinite()) {
-    solver_.ResetWarmStart();
-    return fail(DecelMpcReason::kSolutionNonFinite);
   }
 
   TrajectoryFromZ();

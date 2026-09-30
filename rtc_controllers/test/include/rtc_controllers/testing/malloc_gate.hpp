@@ -21,6 +21,8 @@
 //     defines non-inline C functions; a second TU is a multiple-definition link
 //     error). Same rule as alloc_gate.hpp, and the two may share that TU.
 //  2. glibc only: forwards to `__libc_malloc` & co. (exported by glibc ≥ 2.2.5).
+//     Covers malloc, calloc, realloc, memalign, aligned_alloc, posix_memalign,
+//     valloc and pvalloc — every public allocation entry point of glibc.
 //     Other C libraries are not supported and fail to link, not silently.
 //  3. Arm with ScopedMallocGate (RAII), never a bare flag — an ASSERT_* inside
 //     the measured region returns from the test (see alloc_gate.hpp item 3).
@@ -34,6 +36,8 @@
 // steady-state loop, so counting allocations is sufficient and keeps the
 // report to one number.
 #pragma once
+
+#include <unistd.h>
 
 #include <cerrno>
 #include <cstddef>
@@ -124,6 +128,20 @@ void* memalign(std::size_t alignment, std::size_t size) {
 void* aligned_alloc(std::size_t alignment, std::size_t size) {
   ::rtc::testing::detail::MallocGateNote();
   return __libc_memalign(alignment, size);
+}
+
+// glibc routes valloc/pvalloc through its internal _mid_memalign, not the
+// interposable memalign, so they need their own entry points.
+void* valloc(std::size_t size) {
+  ::rtc::testing::detail::MallocGateNote();
+  return __libc_memalign(static_cast<std::size_t>(::sysconf(_SC_PAGESIZE)), size);
+}
+
+void* pvalloc(std::size_t size) {
+  ::rtc::testing::detail::MallocGateNote();
+  const auto page = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+  const std::size_t rounded = (size + page - 1) / page * page;
+  return __libc_memalign(page, rounded);
 }
 
 int posix_memalign(void** out, std::size_t alignment, std::size_t size) {

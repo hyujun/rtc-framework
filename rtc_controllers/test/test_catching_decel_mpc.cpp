@@ -1084,6 +1084,12 @@ TEST(DecelMpc, InitValidatesParamsAndLimits) {
   p = DecelMpcParams{};
   p.jerk_weight = Eigen::VectorXd::Ones(5);
   EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid);
+  // A rest tolerance at or below eps_abs would reject every shifted reference.
+  p = DecelMpcParams{};
+  p.reference_rest_tol = p.solver.eps_abs;
+  EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid);
+  p.reference_rest_tol = 2.0 * p.solver.eps_abs;
+  EXPECT_EQ(init(p, good), DecelMpcReason::kNone);
 
   p = DecelMpcParams{};
   DecelMpcLimits l = good;
@@ -1180,9 +1186,22 @@ void Report(const std::string& key, const Samples& s) {
 
 // Cold = the first cycle (reference_valid = false → pre-solve + full solve).
 // Warm = the next cycle, reference shifted by one planner period, x_0 on it.
+// The distribution is only meaningful in an optimised build: elsewhere the
+// suite is run small enough not to trip ctest's timeout, and the failure
+// counts are recorded rather than asserted (an unoptimised ProxQP also
+// reaches max_iter differently).
+[[nodiscard]] bool OptimisedBuild() {
+  const std::string bt = RTC_TEST_BUILD_TYPE;
+  return bt == "Release" || bt == "RelWithDebInfo" || bt == "MinSizeRel";
+}
+
 void RunTiming(const ArmModel& arm, const DecelMpcParams& p, const DecelMpcLimits& lim,
                const std::string& key, int n_samples = 200, double* max_dev = nullptr,
                const DecelMpcParams* dev_ref_params = nullptr, bool require_no_failures = true) {
+  if (!OptimisedBuild()) {
+    n_samples = std::min(n_samples, 10);
+    require_no_failures = false;
+  }
   const int n = arm.model->nv;
   DecelMpc mpc;
   ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
@@ -1285,6 +1304,7 @@ TEST(DecelMpcTiming, SolverToleranceSweep7R) {
   for (const double eps : {1e-4, 1e-5, 1e-6, 1e-7}) {
     DecelMpcParams p;
     p.solver.eps_abs = eps;
+    p.reference_rest_tol = 10.0 * eps;  // a shifted reference rests only to eps_abs
     double dev = 0.0;
     char key[64];
     std::snprintf(key, sizeof(key), "real_7dof.eps_%.0e", eps);
@@ -1292,6 +1312,64 @@ TEST(DecelMpcTiming, SolverToleranceSweep7R) {
     RecordProperty(std::string(key) + ".max_q_dev_urad", static_cast<int>(std::lround(1e6 * dev)));
     std::printf("[tolerance] eps_abs %.0e: max |q - q_tight| = %.3g rad\n", eps, dev);
   }
+}
+
+// A velocity drift between cycles (x_0 off the reference's node 0 in q̇, not
+// q) does NOT make the trust region infeasible: jerk is unbounded in the QP,
+// so node 1 is correctable and the remaining blocks absorb the rest. Pinned
+// because a review predicted a slow infeasibility verdict here; the solve
+// stays a few iterations.
+TEST(DecelMpc, VelocityDriftIsAbsorbedByJerk) {
+  const ArmModel arm = RealArm7();
+  DecelMpcParams p;
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
+  DecelMpc mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
+  DecelMpcResult res;
+  mpc.ResizeResult(res);
+  DecelMpcInput in = RestInput(arm.q_nominal);
+  in.qd0 << 0.6, -0.4, 0.5, 0.7, -0.3, 0.4, 0.2;
+  ASSERT_TRUE(mpc.Solve(in, res));
+  for (const double dv : {0.5, 1.0, 2.5}) {
+    DecelMpcInput drift = in;
+    UseAsReference(res, drift);
+    drift.qd0[3] = std::min(drift.qd0[3] + dv, p.eta_v * lim.qd_max[3]);
+    DecelMpcResult r;
+    mpc.ResizeResult(r);
+    EXPECT_TRUE(mpc.Solve(drift, r)) << "dv=" << dv << " " << DecelMpcReasonName(r.reason);
+    EXPECT_LE(r.iterations, 20) << "dv=" << dv;
+    EXPECT_LE(std::abs(r.q(3, 1) - drift.q_ref(3, 1)), p.delta_tr + 1e-6) << "dv=" << dv;
+  }
+}
+
+// DecelMpcLimits::armature is ADDED to the armature the model carries — the
+// same torque rows come out of (model 0.1 + limits 0.1) and (model 0 +
+// limits 0.2).
+TEST(DecelMpc, LimitsArmatureAddsToModelArmature) {
+  const TorqueFixture f = MakeTorqueFixture();
+  const int n = f.arm.model->nv;
+  pinocchio::Model carrying = *f.arm.model;
+  carrying.armature = Eigen::VectorXd::Constant(n, 0.1);
+  DecelMpcLimits half = f.limits;
+  half.armature = Eigen::VectorXd::Constant(n, 0.1);
+  DecelMpcLimits full = f.limits;
+  full.armature = Eigen::VectorXd::Constant(n, 0.2);
+  DecelMpcLimits none = f.limits;
+  none.armature.setZero();
+
+  const auto ratios = [&](const pinocchio::Model& m, const DecelMpcLimits& l) {
+    DecelMpc mpc;
+    EXPECT_EQ(mpc.Init(m, f.arm.frame, f.params, l), DecelMpcReason::kNone);
+    DecelMpcResult r;
+    mpc.ResizeResult(r);
+    EXPECT_TRUE(mpc.Solve(f.input, r)) << DecelMpcReasonName(r.reason);
+    return Eigen::MatrixXd(r.tau_ratio);
+  };
+  const Eigen::MatrixXd a = ratios(carrying, half);
+  const Eigen::MatrixXd b = ratios(*f.arm.model, full);
+  const Eigen::MatrixXd c = ratios(carrying, none);
+  EXPECT_LE((a - b).cwiseAbs().maxCoeff(), 1e-6);
+  EXPECT_GT((a - c).cwiseAbs().maxCoeff(), 1e-3) << "the model's own armature must not be dropped";
 }
 
 }  // namespace
