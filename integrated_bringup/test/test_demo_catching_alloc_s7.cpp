@@ -438,6 +438,12 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcDecelAndHoldTickWithoutAllocating) {
   std::set<Mode> measured;
   std::uint64_t sequence = 1;
   Mode prev = ctrl_->GetMode();
+  // Reported, not judged (E1-F04's "tick time increase"): the worst tick of
+  // each kind on this host. The v1 trial above records its own worst tick.
+  double us_closing = 0.0;  // CLOSING ticks with nothing admitted (the lane's judge only)
+  double us_admit = 0.0;    // the admission tick (+ the node-wise FK, MD-43)
+  double us_switch = 0.0;   // ticks that switched segments (sample + gate)
+  double us_follow = 0.0;   // other DECEL / HOLD ticks that followed a segment
   for (int t = 0; t < 4000; ++t) {
     const Mode mode = ctrl_->GetMode();
     if (t % 15 == 0 &&
@@ -472,6 +478,16 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcDecelAndHoldTickWithoutAllocating) {
     Tick(/*gated=*/true, allocations, us);
     EXPECT_EQ(allocations, 0U) << "mode " << static_cast<int>(mode) << " (the tick's START mode)";
     const auto record = ctrl_->GetLastTickRecord();
+    using Event = integrated_bringup::CatchingDiagLogPod::DecelEvent;
+    if (record.decel_event == Event::kAdmitted) {
+      us_admit = std::max(us_admit, us);
+    } else if (record.decel_event == Event::kSwitched) {
+      us_switch = std::max(us_switch, us);
+    } else if (record.decel_following) {
+      us_follow = std::max(us_follow, us);
+    } else if (mode == Mode::kClosing) {
+      us_closing = std::max(us_closing, us);
+    }
     if (mode == Mode::kDecel || mode == Mode::kHold) {
       measured.insert(mode);
       followed = followed || record.decel_following;
@@ -490,6 +506,14 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcDecelAndHoldTickWithoutAllocating) {
   EXPECT_EQ(measured.count(Mode::kHold), 1U);
   EXPECT_TRUE(followed) << "no mpc tick followed a segment";
   EXPECT_TRUE(replanned) << "the replan switch was never gated";
+  std::printf(
+      "[ MEASURED ] mpc worst tick [us]: closing %.1f, admission %.1f, switch %.1f, "
+      "follow %.1f\n",
+      us_closing, us_admit, us_switch, us_follow);
+  RecordProperty("worst_us_closing", static_cast<int>(us_closing));
+  RecordProperty("worst_us_admission", static_cast<int>(us_admit));
+  RecordProperty("worst_us_switch", static_cast<int>(us_switch));
+  RecordProperty("worst_us_follow", static_cast<int>(us_follow));
 }
 
 }  // namespace
