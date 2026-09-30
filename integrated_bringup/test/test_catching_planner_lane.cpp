@@ -726,6 +726,8 @@ TEST_F(CatchingPlanLaneTest, TheDecelMpcIsParkedWithoutThePlanner) {
       TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
   yaml["catching"]["planner"]["enabled"] = false;
   yaml["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+  // MD-44: the decel keys are read only under the law that follows them.
+  yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
@@ -750,6 +752,7 @@ TEST_F(CatchingPlanLaneTest, TheDecelTorqueBoxAndSlackMustFitTheCliksTorqueBox) 
   pl["decel_mpc"]["publish"]["slack_max"] = 0.1;
   yaml["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
   yaml["catching"]["joint_cmd"]["eta_tau"] = 0.8;
+  yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";  // MD-44, as above
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
