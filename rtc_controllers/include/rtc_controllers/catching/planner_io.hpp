@@ -13,6 +13,9 @@
 //     (A-S5-8). The two are never enabled together; the binding parks a
 //     configuration that asks for both, because a SeqLock with two writers is
 //     a torn read waiting to happen.
+//   - `DecelPlanSnapshot` planner → RT (trajectory.hpp, MPC E1-F02). Stored
+//     by the planner only; judged by `JudgeDecelPlan` below. The RT tick reads
+//     it from E1-F04 on (MD-32).
 //
 // WHY `plan_id` DECIDES NEWNESS (L3 §5.2, S6 implementation note). The
 // provenance token's `snapshot_sequence` belongs to the TRAJECTORY the plan
@@ -104,6 +107,17 @@ struct PlannerRtState {
   /// The plan the RT is following, if any.
   bool plan_active{false};
   std::uint32_t plan_id{0};
+  /// That plan's catch instant t_c (BallTime / lead axis), 0 with no plan.
+  /// The decel planner's grid anchor t_c + k·Δ_s (MD-10): it must be the
+  /// plan the RT FOLLOWS, not the one the planner last published — after
+  /// COMMITTED the RT takes no new plan, so the two can differ.
+  std::int64_t plan_t_c_ns{0};
+  /// Whether the RT is following a decel segment this tick, and which one
+  /// (its decel_seq). The planner predicts the next segment's initial state
+  /// from that segment when it is its own latest (MD-28 path (i)). Always
+  /// false / 0 until E1-F04 wires the RT side (MD-32).
+  bool decel_active{false};
+  std::uint32_t decel_seq{0};
 
   /// The vision track epoch of the last trajectory the RT consumed (L1 §4.4),
   /// and whether it has consumed one at all in this trial.
@@ -113,7 +127,8 @@ struct PlannerRtState {
 
 static_assert(std::is_trivially_copyable_v<PlannerRtState>);
 
-/// What the planner does in a given supervisor mode (L3 §5.3).
+/// What the planner does in a given supervisor mode (L3 §5.3). The decel MPC
+/// (MPC E1-F03) runs alongside kMonitor and in kDecel when it is configured.
 ///
 /// A PREDICATE over the mode, not an ordering test: `mode >= kCommitted` would
 /// silently change meaning the day a mode is inserted into the enum (L3 §5.3
@@ -225,6 +240,120 @@ struct AdmittedPlan {
     return PlanRefusal::kTooLate;
   }
   return PlanRefusal::kNone;
+}
+
+// ── RT-side admission of a decel segment (MPC E1-F03, MD-27 · MD-32) ────────
+
+/// Why the RT did not take the decel segment in the box. `kNone` = admitted.
+enum class DecelRefusal : std::uint8_t {
+  kNone = 0,
+  kInvalid,      ///< `valid` false — the planner withdrew it (e.g. on a reset)
+  kActivation,   ///< another activation generation (D-23)
+  kPlan,         ///< not a stop for the plan the RT follows (id or t_c differ)
+  kRepeat,       ///< decel_seq not newer than the one the RT already took
+  kAged,         ///< published outside [now − max_age, now]
+  kBeforeReset,  ///< published before the RT's last trial reset
+  kMalformed,    ///< ValidateDecelNodes refused the shape or a node value
+};
+
+/// What the RT knows when it judges a decel segment.
+struct DecelAdmissionContext {
+  std::uint64_t activation_generation{0};
+  /// The plan the RT follows: a stop belongs to exactly one catch plan.
+  bool plan_active{false};
+  std::uint32_t plan_id{0};
+  std::int64_t plan_t_c_ns{0};
+  NowReal now{0};
+  /// Upper bound on `now − publish_ns` [ns]. NOT the trajectory's staleness
+  /// bound: a segment solved t_pre before t_c is adopted around t_c and
+  /// followed for N_s·Δ_s after. The binding (E1-F04) picks it; 0 disables.
+  std::int64_t max_age_ns{0};
+  std::int64_t reset_floor_ns{0};
+};
+
+/// The RT's memory of the last decel segment it admitted.
+struct AdmittedDecel {
+  bool seen{false};
+  std::uint32_t decel_seq{0};
+};
+
+/// Judge a decel segment the caller has already loaded (D-21: Load() every
+/// tick, unconditionally). Checks run in the enum's order; the node scan
+/// (kMalformed) is last because it is the only one that costs anything, and
+/// a caller that admits a segment runs it once per decel_seq.
+[[nodiscard]] inline DecelRefusal JudgeDecelPlan(const DecelPlanSnapshot& p,
+                                                 const DecelAdmissionContext& ctx,
+                                                 const AdmittedDecel& admitted) noexcept {
+  if (!p.valid) {
+    return DecelRefusal::kInvalid;
+  }
+  if (p.token.activation_generation != ctx.activation_generation) {
+    return DecelRefusal::kActivation;
+  }
+  if (!ctx.plan_active || p.plan_id != ctx.plan_id || p.t_c_ns != ctx.plan_t_c_ns) {
+    return DecelRefusal::kPlan;
+  }
+  // `>` on the planner's own counter (it starts at 1 and never wraps within a
+  // controller lifetime at one store per wake).
+  if (admitted.seen && !(p.decel_seq > admitted.decel_seq)) {
+    return DecelRefusal::kRepeat;
+  }
+  const std::int64_t age = ctx.now.ns - p.publish_ns;
+  if (p.publish_ns <= 0 || age < 0 || (ctx.max_age_ns > 0 && age > ctx.max_age_ns)) {
+    return DecelRefusal::kAged;
+  }
+  if (p.publish_ns < ctx.reset_floor_ns) {
+    return DecelRefusal::kBeforeReset;
+  }
+  if (!ValidateDecelNodes(p)) {
+    return DecelRefusal::kMalformed;
+  }
+  return DecelRefusal::kNone;
+}
+
+[[nodiscard]] constexpr const char* DecelRefusalName(DecelRefusal r) noexcept {
+  switch (r) {
+    case DecelRefusal::kNone:
+      return "none";
+    case DecelRefusal::kInvalid:
+      return "invalid";
+    case DecelRefusal::kActivation:
+      return "activation";
+    case DecelRefusal::kPlan:
+      return "plan";
+    case DecelRefusal::kRepeat:
+      return "repeat";
+    case DecelRefusal::kAged:
+      return "aged";
+    case DecelRefusal::kBeforeReset:
+      return "before_reset";
+    case DecelRefusal::kMalformed:
+      return "malformed";
+  }
+  return "unknown";
+}
+
+/// Which segment the RT samples this tick (the effective-instant switch
+/// rule, MD-10 · MD-32). An admitted segment is PENDING until now_lead
+/// reaches its node 0 (t0 = t_eff): before that the RT keeps sampling the
+/// segment it follows — the sampler refuses t < t0 anyway (jerk_segment.hpp).
+/// At t0 the pending one takes over; the planner built its node 0 as the
+/// state the current one reaches there, so the switch is continuous to the
+/// accuracy of that prediction.
+enum class DecelSegmentChoice : std::uint8_t {
+  kNone = 0,  ///< nothing to sample yet (closed form / pre-DECEL continues)
+  kCurrent,   ///< keep sampling the followed segment
+  kPending,   ///< switch: the pending segment becomes the followed one
+};
+
+[[nodiscard]] constexpr DecelSegmentChoice ChooseDecelSegment(bool current_valid,
+                                                              bool pending_valid,
+                                                              std::int64_t pending_t0_ns,
+                                                              std::int64_t now_lead_ns) noexcept {
+  if (pending_valid && now_lead_ns >= pending_t0_ns) {
+    return DecelSegmentChoice::kPending;
+  }
+  return current_valid ? DecelSegmentChoice::kCurrent : DecelSegmentChoice::kNone;
 }
 
 [[nodiscard]] constexpr const char* PlanRefusalName(PlanRefusal r) noexcept {

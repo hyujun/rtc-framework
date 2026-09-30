@@ -282,7 +282,99 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
     }
     out.catch_box.set = true;
   }
+
+  // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
+  const YAML::Node decel = Section(planner, "decel_mpc", "decel_mpc");
+  DecelPlannerParams& d = out.decel;
+  d.enabled = ReadBool(decel, "enabled", "decel_mpc.enabled", d.enabled);
+  const YAML::Node horizon = Section(decel, "horizon", "decel_mpc.horizon");
+  d.n_nodes =
+      ReadInt(horizon, "n_nodes", "decel_mpc.horizon.n_nodes", d.n_nodes, 3, kMaxDecelNodes);
+  d.dt_s = ReadBounded(horizon, "dt_s", "decel_mpc.horizon.dt_s", d.dt_s, 0.005, 0.1);
+  if (std::fabs(d.dt_s * 1e9 - static_cast<double>(d.DtNs())) > 1e-3) {
+    Reject(Key("decel_mpc.horizon.dt_s") +
+           " must be a whole number of nanoseconds (the grid "
+           "t_c + k·Δ_s is integer ns)");
+  }
+  if (const YAML::Node b = horizon["blocks"]; b) {
+    if (!b.IsSequence() || b.size() < 3 || b.size() > static_cast<std::size_t>(kMaxDecelNodes)) {
+      Reject(Key("decel_mpc.horizon.blocks") + " must be a sequence of 3.." +
+             std::to_string(kMaxDecelNodes) + " positive integers, got " + Spelling(b));
+    }
+    d.blocks = {};
+    for (std::size_t i = 0; i < b.size(); ++i) {
+      int v = 0;
+      try {
+        v = b[i].as<int>();
+      } catch (const YAML::Exception&) {
+        Reject(Key("decel_mpc.horizon.blocks[" + std::to_string(i) + "]") +
+               " must be an integer, got " + Spelling(b[i]));
+      }
+      if (v < 1) {
+        Reject(Key("decel_mpc.horizon.blocks[" + std::to_string(i) + "]") + " must be >= 1");
+      }
+      d.blocks[i] = v;
+    }
+    d.n_blocks = static_cast<int>(b.size());
+  }
+  int block_sum = 0;
+  for (int i = 0; i < d.n_blocks; ++i) {
+    block_sum += d.blocks[static_cast<std::size_t>(i)];
+  }
+  if (block_sum != d.n_nodes) {
+    Reject(Key("decel_mpc.horizon.blocks") + " sums to " + std::to_string(block_sum) +
+           " but n_nodes is " + std::to_string(d.n_nodes) + " (Σ blocks = N)");
+  }
+  const YAML::Node replan = Section(decel, "replan", "decel_mpc.replan");
+  d.t_pre_s = ReadBounded(replan, "t_pre_s", "decel_mpc.replan.t_pre_s", d.t_pre_s, 0.0, 0.5);
+  d.k_max = ReadInt(replan, "k_max", "decel_mpc.replan.k_max", d.k_max, 0, kMaxDecelReplans);
+  for (int k = 0; k <= d.k_max; ++k) {
+    std::array<int, kMaxDecelNodes> blocks{};
+    int n_blocks = 0;
+    if (!DecelBlocksFor(d, k, blocks, n_blocks)) {
+      Reject(Key("decel_mpc.replan.k_max") + " = " + std::to_string(d.k_max) +
+             ": replan instance " + std::to_string(k) + " (N = " + std::to_string(d.n_nodes - k) +
+             ") would have fewer than 3 blocks");
+    }
+  }
+  d.eta_tau = ReadBounded(decel, "eta_tau", "decel_mpc.eta_tau", d.eta_tau, 1e-3, 1.0);
+  d.m_q = ReadBounded(decel, "m_q", "decel_mpc.m_q", d.m_q, 0.0, 0.5);
+  const YAML::Node publish = Section(decel, "publish", "decel_mpc.publish");
+  d.slack_max =
+      ReadBounded(publish, "slack_max", "decel_mpc.publish.slack_max", d.slack_max, 0.0, 1.0);
+  d.slack_terminal_max =
+      ReadBounded(publish, "slack_terminal_max", "decel_mpc.publish.slack_terminal_max",
+                  d.slack_terminal_max, 0.0, 1.0);
   return out;
+}
+
+bool DecelBlocksFor(const DecelPlannerParams& p, int k, std::array<int, kMaxDecelNodes>& blocks,
+                    int& n_blocks) noexcept {
+  if (k < 0 || k >= p.n_nodes || p.n_blocks < 1 || p.n_blocks > kMaxDecelNodes) {
+    return false;
+  }
+  std::array<int, kMaxDecelNodes> b = p.blocks;
+  int n = p.n_blocks;
+  for (int step = 0; step < k; ++step) {
+    int largest = 0;
+    for (int i = 1; i < n; ++i) {
+      if (b[static_cast<std::size_t>(i)] >= b[static_cast<std::size_t>(largest)]) {
+        largest = i;  // `>=`: the LAST of equal blocks
+      }
+    }
+    if (--b[static_cast<std::size_t>(largest)] == 0) {
+      for (int i = largest; i + 1 < n; ++i) {
+        b[static_cast<std::size_t>(i)] = b[static_cast<std::size_t>(i + 1)];
+      }
+      b[static_cast<std::size_t>(--n)] = 0;
+    }
+  }
+  if (n < 3) {
+    return false;
+  }
+  blocks = b;
+  n_blocks = n;
+  return true;
 }
 
 }  // namespace rtc::catching

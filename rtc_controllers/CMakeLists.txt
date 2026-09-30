@@ -104,6 +104,10 @@ add_library(rtc_controllers STATIC
   # dynamic_catching MPC E1-F02 (#628): the RT side of the decel payload —
   # closed-form joint reference between the published nodes, hand target by FK.
   src/catching/node_follower.cpp
+  # dynamic_catching MPC E1-F03 (#629): the stop segment on the planner thread —
+  # x0 prediction at the effective instant, replan instances with a fixed stop
+  # end, the publish gate. ROS-free; PlannerCycle runs it and publishes.
+  src/catching/decel_planner.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -573,6 +577,20 @@ if(BUILD_TESTING)
   target_compile_options(test_catching_node_follower PRIVATE -Wno-mismatched-new-delete)
   target_compile_definitions(test_catching_node_follower PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
+  # dynamic_catching MPC E1-F03 (#629): the decel planner, its planner.decel_mpc
+  # keys, the decel admission / switch rules and the cycle's decel step. The
+  # planner calls the core (pinocchio + ProxQP), so the "nothing outside ProxQP"
+  # claim needs the C-level malloc gate (MD-23); the shipped-horizon timing uses
+  # the real arm URDFs and is only asserted in an optimised build.
+  ament_add_gtest(test_catching_decel_planner test/test_catching_decel_planner.cpp TIMEOUT 300)
+  target_link_libraries(test_catching_decel_planner rtc_controllers)
+  target_include_directories(test_catching_decel_planner PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_decel_planner PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_decel_planner PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
+    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
   ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)
   target_link_libraries(test_catch_pose_ik_params rtc_controllers)
