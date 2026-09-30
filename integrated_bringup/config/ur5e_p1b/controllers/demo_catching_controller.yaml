@@ -259,9 +259,11 @@ demo_catching_controller:
         j_warn: TBD
 
     # ── What the vision profile is expected to produce ──────────────────────
-    # Must match `ball_perception_sim_profile.json`'s step (0.05 s): the
+    # Must match the vision profile's `prediction.step_s` (0.05 s): the
     # spacing floor the decoder refuses below is derived from it, and `n_min`
-    # above is derived from it too.
+    # above is derived from it too. The sim profile is ball_perception's
+    # `ball_perception_sim/config/sim_profile.catching.json` — that repository
+    # owns it (MPC plan MD-18), so nothing here checks the pair; change both.
     prediction:
       dt_expected: 0.05
 
@@ -269,8 +271,8 @@ demo_catching_controller:
     # The sim ball lane's stamps ride the SIM time axis anchored at launch, so
     # they lead wall by the in-flight phase error — two orders of magnitude
     # above any clock-sync budget (D-3, `rtc_mujoco_sim` README §Projectile
-    # Ball stamp). 0.1 s is the same width `ball_perception_sim_profile.json`
-    # allows with `max_future_skew_s`. On hardware this key is not read and
+    # Ball stamp). 0.1 s is the same width the sim vision profile allows with
+    # `time.max_future_skew_s`. On hardware this key is not read and
     # `io.future_tol` above applies.
     sim:
       io:

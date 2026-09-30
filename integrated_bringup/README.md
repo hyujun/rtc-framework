@@ -840,14 +840,22 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 > [rtc_msgs/srv/LaunchBall.srv](../rtc_msgs/srv/LaunchBall.srv) 와
 > [rtc_mujoco_sim/README.md](../rtc_mujoco_sim/README.md) §Projectile Ball 이다.
 >
-> ball_perception 의 `sim_estimator_node` 를 이 씬에 붙일 때의 profile 은 `config/ur5e_p1b/ball_perception_sim_profile.json`
-> (지평 1.0 s / 간격 0.05 s / 20 점, 측정 공분산 (5 mm)² 대각 — `projectile_ball.publish.position_noise_stddev_m` 과 짝,
-> `max_future_skew_s` 0.1 — 공 토픽의 stamp 축이 sim 축이라 wall 을 위상 오차만큼 앞설 수 있다,
-> `sim_profile` 0.2 — 과정 잡음 q 0.01 m²/s³ + 이차 항력 `process.drag` k 0.02 ± 0.01 1/m, 근거는 plan §4.4 S8-E "후속 ① G8-B";
-> 두 로봇의 사본은 같은 값이다) 이다:
-> `ros2 launch ball_perception_sim sim_estimator.launch.py profile_path:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json producer_revision:=<rtc-framework 커밋>`.
+> ball_perception 의 `sim_estimator_node` 를 이 씬에 붙일 때의 profile 은 ball_perception 저장소가 소유하는
+> `ball_perception_sim/config/sim_profile.catching.json` 이다 (두 로봇 공용). 이 저장소는 사본을 두지 않는다 — 추정기는 vision PC,
+> 컨트롤러는 제어 PC 에서 돌아 서로의 파일을 읽지 못한다 ([MPC_DUALARM_PLAN.md](../docs/dynamic_catching/MPC_DUALARM_PLAN.md) MD-18).
+> 무엇을 고정하는지는 그 저장소의 `ball_perception_sim` README 가 갖는다:
+> `ros2 launch ball_perception_sim sim_estimator.launch.py profile_path:=$(ros2 pkg prefix ball_perception_sim)/share/ball_perception_sim/config/sim_profile.catching.json producer_revision:=<rtc-framework 커밋>`.
 > `ball_perception_sim` 은 이 workspace 가 아니라 ball_perception 의 별도 colcon workspace 에 있으므로 그 `install/setup.bash` 를 추가로 source 해야 하고, `producer_revision` 은 필수 인자다 (출력 provenance).
-> 값의 근거 (포구 제어기의 요구 사양, D-15) 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) §4.4 S3.6 결과이고,
+>
+> 이 저장소의 값 중 profile 과 맞아야 하는 것은 자동으로 검사되지 않는다. profile 을 바꾸면 함께 확인한다:
+>
+> | profile | 이 저장소 | 관계 |
+> |---|---|---|
+> | `prediction.step_s` (0.05) · `horizon_s` (1.0) · `max_points` (20) | 컨트롤러 YAML (`catching:` 아래) `prediction.dt_expected` · `io.n_min` · `planner.slice.dt` · `planner.slice.t_max` | `dt_expected` = `slice.dt` = step, `n_min` = ⌈`io.horizon_min` / step⌉ + 1 ≤ 점 수 ≤ `kCap` 40. 떠 있는 컨트롤러의 값은 read-only 미러 파라미터로 읽는다 |
+> | `time.max_future_skew_s` (0.1) | 컨트롤러 YAML (`catching:` 아래) `sim.io.future_tol` | 같은 자릿수 — 공 토픽의 stamp 축이 sim 축이라 wall 을 위상 오차만큼 앞설 수 있다 |
+> | `measurement.position_covariance_m2` ((5 mm)² 대각) | `mujoco_simulator.yaml` `projectile_ball.publish.position_noise_stddev_m` | 짝 |
+>
+> 요구 사양의 근거 (D-15) 는 [docs/dynamic_catching/IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) §4.4 S3.6 결과이고,
 > 공 토픽의 stamp 규약은 rtc_mujoco_sim README §Projectile Ball 의 stamp 항목이다.
 >
 > † 표시한 `object_pool` / `object` / `object_seed` 세 인자는 **`sim_ur5e_p1b.launch.py` 에만** 있다. `object_pool` 블록을 config 에 가진 프로필이 현재 `ur5e_p1b` 뿐이라, 다른 launch 에 인자만 달면 켜는 순간 `directory` 가 비어 Initialize 가 실패한다. 다른 프로필에 pool 을 쓰려면 그 프로필의 `mujoco_simulator.yaml` 에 블록을 먼저 넣는다 (키 전체의 SSoT 는 [rtc_mujoco_sim/config/mujoco_default.yaml](../rtc_mujoco_sim/config/mujoco_default.yaml)).
@@ -917,7 +925,7 @@ ros2 run integrated_bringup catching_sim_trials <out> --dist hand_lhs --n 150 --
 ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false use_cpu_affinity:=false \
   enable_mpc:=true sim_lanes:=true sim_overlay:=catch_lead_on
 ros2 launch ball_perception_sim sim_estimator.launch.py \
-  profile_path:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/iiwa7_leap/ball_perception_sim_profile.json \
+  profile_path:=$(ros2 pkg prefix ball_perception_sim)/share/ball_perception_sim/config/sim_profile.catching.json \
   producer_revision:=<rtc-framework 커밋>
 ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dist s35b --n 50 --seed 503
 ```

@@ -454,16 +454,15 @@ horizon 은 0.75 s 와 1.0 s 둘을 시험한다 (사용자 지시 2026-09-29). 
 
 예측점은 기준 시각에서 $\Delta_v$ 떨어진 곳부터 시작하므로, 첫 점에서 마지막 점까지의 길이는 horizon 이 아니라 horizon $-\Delta_v$ 다.
 
-**현재 설정값.** horizon 의 출하값이 두 저장소에서 다르다.
+**현재 설정값.** profile 은 ball_perception 저장소에만 있다 (계획 MD-18, E0-F04 에서 이전 — ball_perception `9005aab`).
 
-| 파일 | horizon | step | 점 수 |
+| 파일 (ball_perception) | horizon | step | 점 수 |
 |---|---|---|---|
-| rtc-framework `integrated_bringup/config/ur5e_p1b/ball_perception_sim_profile.json` | 1.0 s | 0.05 s | 20 |
-| rtc-framework `integrated_bringup/config/iiwa7_leap/ball_perception_sim_profile.json` | 1.0 s | 0.05 s | 20 |
-| ball_perception `ball_perception_sim/config/sim_profile.example.json` | 0.5 s | 0.05 s | 10 |
-| ball_perception `ball_perception_estimation/config/bearing_run_config.template.json` | 0.5 s | 0.05 s | 10 |
+| `ball_perception_sim/config/sim_profile.catching.json` — sim 포구 시행이 읽는 profile | 1.0 s | 0.05 s | 20 |
+| `ball_perception_sim/config/sim_profile.example.json` | 1.0 s | 0.05 s | 20 |
+| `ball_perception_estimation/config/bearing_run_config.template.json` | 1.0 s | 0.05 s | 20 |
 
-sim 포구 시행이 지금 읽는 것은 rtc-framework 쪽 profile 이다 (`integrated_bringup` README 의 launch 명령). 계획 MD-18 에 따라 E0-F04 에서 ball_perception 쪽 profile 로 바꾸고 rtc-framework 의 사본은 제거한다.
+rtc-framework 에는 사본이 없다. 이전 전의 사본 (`integrated_bringup/config/<robot>/`) 은 `sim_profile.catching.json` 과 바이트가 같았다.
 
 **조건 — horizon 1.0 s.** $10^9$ ns 를 나누어떨어지게 하는 점 수 가운데 20 이상 40 이하인 것은 넷이다.
 
@@ -492,13 +491,12 @@ sim 포구 시행이 지금 읽는 것은 rtc-framework 쪽 profile 이다 (`int
 
 | 쪽 | 파일 | 키 |
 |---|---|---|
-| ball_perception profile | 위 표의 JSON 넷 — 시행이 읽는 rtc-framework 쪽 사본 둘과, ball_perception 저장소의 예시 · 템플릿 둘 | `prediction.horizon_s`, `prediction.step_s`, `prediction.max_points` |
+| ball_perception profile | `sim_profile.catching.json` 의 사본 — 조건마다 따로 두고 출하 파일은 고치지 않는다 | `prediction.horizon_s`, `prediction.step_s`, `prediction.max_points` |
 | rtc-framework | `demo_catching_controller.yaml` (로봇별) | `prediction.dt_expected`, `io.n_min`, `planner.slice.dt` |
 
-- `prediction.dt_expected` 는 간격 검사의 기준이고 거부 하한이 여기서 나온다. profile 만 바꾸면 메시지가 거부된다.
-- ball_perception 저장소의 두 JSON 은 지금 horizon 0.5 s · 10 점이다. 이 값은 rtc-framework 의 지평 요구를 만족하지 못하므로, sweep 조건에 맞춰 갱신한다.
+- profile 만 촘촘하게 바꾸면 메시지는 받아들여진다. 거부 하한은 `prediction.dt_expected` 의 10 % (`kTrajSpacingFloorFraction`) 라 조건의 간격은 모두 그 위다. 대신 `planner.slice.dt` 가 남은 값이면 계획기가 후보를 그 간격으로 솎아 (`planner_search.cpp`) 경고 없이 옛 격자로 돈다. 세 키는 떠 있는 컨트롤러의 read-only 미러 파라미터로 확인한다.
 - 두 쪽의 값을 맞춰 보는 자동 검사는 없다. profile 은 ball_perception 쪽이 소유하고 (계획 MD-18) rtc-framework 는 그 파일을 읽을 수 없다. 위 표의 키를 바꿀 때는 양쪽을 함께 확인한다.
-- 조건별 설정은 출하값을 덮어쓰지 않고 조건마다 따로 둔다. 어디에 둘지는 계획 문서에서 정한다.
+- 조건별 설정은 출하값을 덮어쓰지 않고 조건마다 따로 둔다 — 두 저장소 밖의 profile 사본과 sim overlay 다 (계획 §8 E0-F04).
 - 25 ms (1.0 s) · 18.75 ms (0.75 s) 보다 촘촘한 조건은 `kCap` 을 올려야 한다. `kCap` 은 스냅샷의 크기이고 스냅샷은 tick 마다 통째로 복사되므로 (v1 L2 §5), 올리면 RT 비용이 함께 는다. 이 sweep 에는 넣지 않는다 `[선택]`.
 
 **바뀌는 것과 바뀌지 않는 것.**

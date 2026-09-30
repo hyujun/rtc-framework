@@ -876,8 +876,8 @@ p95 33.6 / max 52 ms). stamp 를 capture time 으로 믿는 소비자 (ball_perc
   안에서** stepper 가 뒤처지거나 (stamp 가 wall 보다 늦음) 따라잡은 (앞섬) 양 — D-3 의 위상 오차 δ
   ([Clock phase lane](#clock-phase-lane-d-3-측정) 이 재는 양) — 이지 wake 지터가 아닙니다.
 - **stamp 는 wall 을 수십 ms 앞설 수 있습니다** (sim 이 발사 때의 pace 보다 앞서는 동안). 그래서 sim 에서는 소비자의 future
-  허용치가 그 폭을 덮어야 합니다 — ball_perception profile 의 `max_future_skew_s` 는 0.1 s (`integrated_bringup` 의
-  `ball_perception_sim_profile.json`), 컨트롤러의 `io.future_tol` 도 sim overlay 에서는 같은 자릿수 (L1 §6). **앞서지 않게
+  허용치가 그 폭을 덮어야 합니다 — ball_perception profile 의 `max_future_skew_s` 는 0.1 s (ball_perception 저장소의
+  `ball_perception_sim/config/sim_profile.catching.json`), 컨트롤러의 `io.future_tol` 도 sim overlay 에서는 같은 자릿수 (L1 §6). **앞서지 않게
   발행 순간으로 clamp 하는 변형은 기각했습니다** — sim 이 발사 pace 를 앞설 때마다 stamp 가 wall 로 떨어져 wake 지터가
   그대로 돌아옵니다 (2026-09-22 재실측: 25 ms 초과 3.8 %, T_det max 0.41 s). 소비자의 stale 판정은 수신 steady 시각 기준
   (D-2) 이라 뒤처진 stamp 는 계약에 어긋나지 않습니다.
