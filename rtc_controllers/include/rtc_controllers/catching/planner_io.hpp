@@ -137,6 +137,9 @@ enum class PlannerActivity : std::uint8_t {
   kIdle,     ///< nothing to plan for — wake, publish nothing
   kSearch,   ///< TRACKING / APPROACH: search candidates, publish a plan
   kMonitor,  ///< COMMITTED / CLOSING: the plan is frozen; monitorOnly (§4.6)
+  /// DECEL: nothing to search or monitor, but the decel MPC's post-catch
+  /// replans (MD-31) happen here — a no-op without a configured decel planner.
+  kDecel,
 };
 
 [[nodiscard]] constexpr PlannerActivity ActivityFor(Mode mode) noexcept {
@@ -147,9 +150,10 @@ enum class PlannerActivity : std::uint8_t {
     case Mode::kCommitted:
     case Mode::kClosing:
       return PlannerActivity::kMonitor;
+    case Mode::kDecel:
+      return PlannerActivity::kDecel;
     case Mode::kIdle:
     case Mode::kArmed:
-    case Mode::kDecel:
     case Mode::kHold:
     case Mode::kRetreat:
     case Mode::kAbortSafe:

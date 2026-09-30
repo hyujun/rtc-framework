@@ -114,6 +114,11 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     RunDecel(rt, rec);
     return rec;
   }
+  if (activity == PlannerActivity::kDecel) {
+    // Post-catch replans only (MD-31). The outcome stays kIdle (MD-29).
+    RunDecel(rt, rec);
+    return rec;
+  }
   if (activity != PlannerActivity::kSearch) {
     return rec;
   }

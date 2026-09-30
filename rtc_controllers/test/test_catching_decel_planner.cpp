@@ -9,7 +9,7 @@
 //                                    PastTheReplanWindowPublishesNothing, ...
 //   4 within budget at N_s = 14      ShippedHorizonTiming6R / 7R (MD-24, MD-26)
 //   5 no allocation outside ProxQP   AllocatesNothingOutsideProxQp (MD-23)
-//   6 cycle integration              Cycle* (MD-29: CycleOutcome untouched)
+//   6 cycle integration              DecelCycle.* (MD-29: CycleOutcome untouched)
 // plus the informational records D-3 / D-11 asked for (armature re-evaluation,
 // static wrist torque at the stop posture).
 //
@@ -822,6 +822,27 @@ TEST(DecelCycle, DropsASolveTheFollowedPlanLeft) {
     EXPECT_EQ(rig->cycle.LastDecelSeq(), 0U);
   }
   rig->cycle.SetPostDecelHookForTesting(nullptr, nullptr);
+}
+
+TEST(DecelCycle, ReplansInDecelAfterTheCatch) {
+  auto rig = std::make_unique<CycleRig>();
+  SetClock(kT0);
+  const std::int64_t t_c = kT0 + kTArm + 70 * kMs;
+  PlannerRtState rt = Rt(rig->arm, t_c, kT0 - 2 * kMs, rig->arm.q_nominal, EntryVelocity(6));
+  rig->boxes.rt.Store(rt);
+  ASSERT_EQ(rig->cycle.Run(NowReal{kT0}).decel.outcome, DecelOutcome::kPublished);
+  const std::int64_t now = t_c - kTArm + 10 * kMs;
+  SetClock(now);
+  rt.mode = static_cast<std::uint8_t>(Mode::kDecel);
+  rt.rt_state_ns = now - 2 * kMs;
+  rig->boxes.rt.Store(rt);
+  const auto rec = rig->cycle.Run(NowReal{now});
+  EXPECT_EQ(rec.outcome, rtc::catching::CycleOutcome::kIdle);
+  ASSERT_EQ(rec.decel.outcome, DecelOutcome::kPublished) << DecelOutcomeName(rec.decel.outcome);
+  const DecelPlanSnapshot s = rig->boxes.decel.Load();
+  EXPECT_EQ(s.decel_seq, 2U);
+  EXPECT_EQ(s.k0, 2);
+  EXPECT_EQ(s.t0_ns + s.n_nodes * s.dt_ns, t_c + 14 * kDt);
 }
 
 TEST(DecelCycle, WithoutADecelBoxThereIsNoDecelStep) {
