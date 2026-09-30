@@ -9,8 +9,10 @@ pins.
 """
 
 import csv
+import gzip
 import json
 import math
+import shutil
 
 import pytest
 
@@ -230,3 +232,55 @@ def test_cli_refuses_an_unknown_reference(tmp_path):
     r = make_unit(tmp_path, "r", [True])
     with pytest.raises(SystemExit):
         gs.main(["--arm", "L-50", str(r), "--ref", "nope", "--out", str(tmp_path / "o")])
+
+
+def test_a_gzipped_session_reads_like_a_plain_one(tmp_path):
+    unit = make_unit(tmp_path, "u", [True, False], points=25)
+    ctl = unit / "session" / "controllers" / CTL
+    for name in ("catching_diag.csv", "planner_events.csv"):
+        with (ctl / name).open("rb") as src, gzip.open(ctl / (name + ".gz"), "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        (ctl / name).unlink()
+    u = gs.analyse_unit(*gs.cd.parse_unit_arg(str(unit)))
+    assert u["stream"]["points_mode"] == 25 and u["planner"]["search_us"] == [1000.0]
+
+
+def test_a_unit_without_planner_events_is_counted_not_refused(tmp_path):
+    with_events = make_unit(tmp_path, "a1", [True, False], search_us=(2000.0,))
+    without = make_unit(tmp_path, "a2", [True], seed=602)
+    (without / "session" / "controllers" / CTL / "planner_events.csv").unlink()
+    units = [gs.analyse_unit(*gs.cd.parse_unit_arg(str(u))) for u in (with_events, without)]
+    assert units[1]["planner"] is None
+    s = gs.summarise_arm("L-50", units)
+    assert s["planner_events_missing"] == 1
+    assert s["planner_search_us"]["max"] == pytest.approx(2000.0)
+    assert s["n_valid"] == 3  # the success metrics of that unit are still in
+
+
+def test_a_unit_whose_mirror_has_no_grid_is_refused_unless_allowed(tmp_path):
+    unit = make_unit(tmp_path, "old", [True, False], grid={})
+    u = gs.analyse_unit(*gs.cd.parse_unit_arg(str(unit)))
+    assert u["grid"] == dict.fromkeys(gs.GRID_KEYS)
+    with pytest.raises(SystemExit, match="no prediction-grid mirror"):
+        gs.summarise_arm("old", [u])
+    s = gs.summarise_arm("old", [u], allow_unknown_grid=True)
+    assert s["grid_known"] is False
+    assert "UNKNOWN" in gs.report([s], {})
+    # two arms of unknown grid do not pass as "the same grid" silently: refused by default
+    other = gs.analyse_unit(
+        *gs.cd.parse_unit_arg(str(make_unit(tmp_path, "old2", [True], seed=602, grid={})))
+    )
+    with pytest.raises(SystemExit, match="no prediction-grid mirror"):
+        gs.summarise_arm("old", [u, other])
+
+
+def test_a_trial_without_an_rtf_value_is_unknown_not_fine(tmp_path):
+    unit = make_unit(tmp_path, "u", [True, True, False], rtf=[1.0, math.nan, 0.5])
+    s = gs.summarise_arm("L-50", [gs.analyse_unit(*gs.cd.parse_unit_arg(str(unit)))])
+    assert (s["rtf_below_min"], s["rtf_unknown"]) == (1, 1)
+
+
+def test_the_point_step_is_the_decoder_layout_constant():
+    from rtc_tools.analysis import vision_lane
+
+    assert gs.POINT_STEP == vision_lane.EXPECTED_POINT_STEP

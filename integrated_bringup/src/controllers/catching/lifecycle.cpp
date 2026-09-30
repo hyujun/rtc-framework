@@ -159,6 +159,13 @@ rtc::catching::SoftCatchTranslation::Params DemoCatchingController::ResolvedRefe
   return p;
 }
 
+int DemoCatchingController::ResolvedTrajNMin() const {
+  // The decode's floor when the key is TBD: two points make one interval.
+  // Mirrored as run (like the other resolvers) — a 0 in run_meta.json would
+  // read as a condition value, not as "absent".
+  return params_.io_n_min > 0 ? params_.io_n_min : 2;
+}
+
 double DemoCatchingController::ResolvedPlannerEtaV() const {
   // A TBD η_v runs the planner's own default (D-9) — as above, one place.
   return params_.planner_gamma_eta_v.tbd ? rtc::catching::PlannerConstants{}.eta_v
@@ -264,8 +271,8 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("prediction.dt_expected",
           params_.prediction_dt_expected.tbd ? nan : params_.prediction_dt_expected.value,
           "expected vision prediction spacing [s] (NaN = TBD); the decode's spacing floor");
-  declare("io.n_min", static_cast<std::int64_t>(params_.io_n_min),
-          "fewest prediction points a message may carry (0 = TBD)");
+  declare("io.n_min", static_cast<std::int64_t>(ResolvedTrajNMin()),
+          "fewest prediction points a message may carry, as run (the decode's default when TBD)");
   declare("planner.slice.dt", planner_params_.slice_dt,
           "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
@@ -841,7 +848,7 @@ void DemoCatchingController::SetupTrajInput() {
   // reaches the wire decode is one the report has already had an opinion on.
   const auto to_ns = [](double seconds) { return static_cast<std::int64_t>(seconds * 1e9); };
   TrajInputConfig cfg;
-  cfg.n_min = params_.io_n_min > 0 ? params_.io_n_min : 2;
+  cfg.n_min = ResolvedTrajNMin();
   // The snapshot capacity, because that is the only upper bound this schema
   // carries: S3.6's 20 points is a property of the vision PROFILE (it is what
   // ball_perception's sim profile is set to), not a limit the controller is

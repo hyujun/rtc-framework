@@ -520,20 +520,23 @@ ros2 run rtc_tools catching_grid_sweep --arm L-50 units/L-50_* --arm L-25 units/
 ```
 
 - **조건은 unit 이 말한다**: 러너가 `run_meta.json` 에 남긴 컨트롤러 미러의 `prediction.dt_expected` · `io.n_min` · `planner.slice.dt` 를
-  arm 마다 옮겨 적고, 한 arm 의 unit 끼리 다르면 거부한다. 받은 점 수는 diag 에서 새 snapshot 을 받은 tick 의 `input_n` 최빈값이다
+  arm 마다 옮겨 적고, 한 arm 의 unit 끼리 다르면 거부한다. 미러에 세 키가 없는 unit (컨트롤러가 미러하기 전에 기록된 것) 은 격자를
+  모르므로 거부하며, `--allow-unknown-grid` 를 주면 `grid_known: false` 로 받는다 (E0-F02 unit 을 같은 투척의 대조로 쓸 때). 받은 점 수는 diag 에서 새 snapshot 을 받은 tick 의 `input_n` 최빈값이다
   (점 0 개인 snapshot 은 세지 않는다). 도구는 조건 이름도 로봇 상수도 모른다 (ARCH-1)
 - **메시지**: 크기는 `point_step` 384 B × 점 수 — 컨트롤러 decoder 는 다른 `point_step` 을 거부하므로 받아들인 메시지는 이 값이다 (header 제외).
   주기는 새 snapshot 사이 간격이고 `--flight-gap-s` (기본 0.5 s) 보다 긴 간격은 비행 사이라 뺀다. 축은 diag 의 `t_relative_s` (sim-sync 에서
   sim 시간) 이고, 추정기의 발행 주기가 아니라 **컨트롤러가 받은** 주기다
 - **오차**: `pred_mm` · `total_mm` 은 `tc_axis` 가 `shifted` 인 시행을 빼고 (그 열의 `t_c` 가 다른 순간이다 — `catching_trials`), `contact_v_rel` 과
-  `approach_plan_switches` 분포는 유효 시행 전부. `rtf_trial_min` < `--rtf-min` (0.95) 인 시행 수를 세기만 한다 — unit 재실행 판정은 수집 규칙의 몫이다
+  `approach_plan_switches` 분포는 유효 시행 전부. `rtf_trial_min` < `--rtf-min` (0.95) 인 시행 수와 값이 없는 시행 수 (`rtf_unknown` — 모르는 것은 통과가 아니다) 를 세기만 한다 — unit 재실행 판정은 수집 규칙의 몫이다
 - **계획기**: `planner_events.csv` 중 창 안에 후보가 있던 주기 (`n_in_window` > 0) 의 `search_us` p50 / p99 / max, `budget_hit`, 후보·IK 수의 최대.
-  `--budget-s` 를 주면 p99 가 그 값을 넘는 arm 을 표시한다
+  `--budget-s` 를 주면 p99 가 그 값을 넘는 arm 을 표시한다. 컨트롤러는 이 파일을 best-effort 로 열므로 파일이 없는 unit 은 거부하지 않고
+  `planner_events_missing` 으로 센다
 - **비교**: `(kind, seed, sample_idx)` 로 짝지은 2×2 (`catching_decel.pair_table`), paired 차이 `p_B − p_A` 와 Wald 95 % 구간
   (`((b + c) − (c − b)²/n) / n²`), McNemar 정확 p, 그리고 family 안의 Holm 보정 p. `--ref` 대비 비교가 한 family, `--pair` 가 다른 family 다
-- 합성 positive control (`test/test_catching_grid_sweep.py`, 10 케이스): 손 계산 Wald 구간과 Holm, 두 비행의 수신 간격 (비행 사이 간격 제외)·
+- 합성 positive control (`test/test_catching_grid_sweep.py`, 15 케이스): 손 계산 Wald 구간과 Holm, 두 비행의 수신 간격 (비행 사이 간격 제외)·
   점 0 개 snapshot 제외, 후보 없는 계획 주기 제외, `shifted` 시행의 오차 제외·RTF 계수·예산 초과 표시, 격자가 다른 unit 거부, 심은 불일치 (2:1)
-  의 표·차이·McNemar, seed 가 다른 투척은 짝짓지 않음, CLI 출력
+  의 표·차이·McNemar, seed 가 다른 투척은 짝짓지 않음, CLI 출력, `.gz` 세션, `planner_events.csv` 없는 unit 의 계수, 미러 없는 unit 의 거부와
+  `--allow-unknown-grid`, RTF 값 없는 시행의 분리, `point_step` 이 decoder 상수와 같은지
 
 ### `catching_wait_pose_search.py` — 대기 자세 탐색 (dynamic_catching S8-I)
 
