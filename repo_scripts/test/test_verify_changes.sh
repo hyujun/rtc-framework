@@ -1643,6 +1643,57 @@ if [ ! -e "$ws/.rtc-verify-hold" ]; then pass "the wrapper removes a hold file i
 expect_exit "the wrapper without a command is a usage error" "$rc" 2
 rm -rf "$ws" "$bstub" "$tstub" "$count"
 
+# 59. A run with the build switched off claims nothing while packages wait for
+#     their build: the watermark stays. With nothing to build it advances.
+dir=$(make_fixture)
+base=$(git -C "$dir" rev-parse HEAD)
+echo "$base" >"$dir/.git/rtc-verify-base"
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+git -C "$dir" commit -qam "a source edit committed in-turn"
+out=$(run_hook "$dir"); rc=$?
+expect_exit "a run with the build switched off passes" "$rc" 0
+expect_contains "...and says what it did not do" "$out" "watermark kept"
+if [ "$(cat "$dir/.git/rtc-verify-base")" = "$base" ]; then
+  pass "a build that was switched off keeps the watermark"
+else
+  fail "a build that was switched off advanced the watermark"
+fi
+rm -rf "$dir"
+dir=$(make_fixture)
+base=$(git -C "$dir" rev-parse HEAD)
+echo "$base" >"$dir/.git/rtc-verify-base"
+printf '# docs\n\nmore.\n' >"$dir/agent_docs/notes.md"
+git -C "$dir" commit -qam "a document, nothing to build"
+out=$(run_hook "$dir")
+if [ "$(cat "$dir/.git/rtc-verify-base")" = "$(git -C "$dir" rev-parse HEAD)" ]; then
+  pass "with nothing to build the switch does not hold the watermark"
+else
+  fail "a document-only change did not advance the watermark"
+fi
+rm -rf "$dir"
+
+# 60. A shell script in a package's source directories routes the package to
+#     build/test; one anywhere else is linted and no more.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/scripts" "$dir/rtc_demo/test"
+printf '#!/usr/bin/env bash\necho one\n' >"$dir/rtc_demo/scripts/tool.sh"
+printf '#!/usr/bin/env bash\necho one\n' >"$dir/rtc_demo/test/test_tool.sh"
+git -C "$dir" add -A
+git -C "$dir" commit -qm "two scripts"
+printf '#!/usr/bin/env bash\necho two\n' >"$dir/rtc_demo/scripts/tool.sh"
+out=$(run_hook "$dir")
+expect_contains "an edited script under scripts/ builds its package" "$out" "BUILD_PKGS=[rtc_demo]"
+git -C "$dir" checkout -q -- rtc_demo/scripts/tool.sh
+printf '#!/usr/bin/env bash\necho new\n' >"$dir/rtc_demo/test/test_new.sh"
+out=$(run_hook "$dir")
+expect_contains "a new shell test under test/ builds its package" "$out" "BUILD_PKGS=[rtc_demo]"
+rm -f "$dir/rtc_demo/test/test_new.sh"
+printf '#!/usr/bin/env bash\necho scratch\n' >"$dir/rtc_demo/probe.sh"
+printf '#!/usr/bin/env bash\necho root\n' >"$dir/helper.sh"
+out=$(run_hook "$dir")
+expect_contains "a script outside the source directories builds nothing" "$out" "BUILD_PKGS=[]"
+rm -rf "$dir"
+
 # 58. Every run leaves one line in the timing log, with its verdict.
 dir=$(make_fixture)
 bstub=$(make_build_stub 0)
