@@ -80,7 +80,7 @@
 //    wrongly sized result instead of resizing it.
 #pragma once
 
-#include "rtc_controllers/catching/trajectory.hpp"
+#include "rtc_controllers/catching/trajectory.hpp"  // kMaxDecelNodes (shared with the payload)
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
 
@@ -92,10 +92,6 @@
 #include <cstdint>
 
 namespace rtc::catching {
-
-/// Node capacity of the stop segment. The E1-F02 plan payload carries the same
-/// number of joint nodes and must use this constant, not its own.
-inline constexpr int kMaxDecelNodes = 24;
 
 enum class DecelMpcReason : std::uint8_t {
   kNone = 0,

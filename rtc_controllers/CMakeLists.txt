@@ -101,6 +101,9 @@ add_library(rtc_controllers STATIC
   # RNEA derivatives) and slack, solved through rtc_tsid's QPSolverWrapper. A
   # plain library unit like catch_pose_ik.cpp; the planner thread calls it (E1-F03).
   src/catching/decel_mpc.cpp
+  # dynamic_catching MPC E1-F02 (#628): the RT side of the decel payload —
+  # closed-form joint reference between the published nodes, hand target by FK.
+  src/catching/node_follower.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -558,6 +561,18 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_decel_mpc PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
+  # dynamic_catching MPC E1-F02 (#628): the decel node payload and its RT
+  # sampler. Sample() calls into pinocchio's shared object (FK), so its
+  # allocation claim needs the C-level malloc gate as well as operator new;
+  # the informational CLIK residual drives rtc_tsid's ClikReferenceGenerator.
+  ament_add_gtest(test_catching_node_follower test/test_catching_node_follower.cpp)
+  target_link_libraries(test_catching_node_follower rtc_controllers)
+  target_include_directories(test_catching_node_follower PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_node_follower PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_node_follower PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
   ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)
   target_link_libraries(test_catch_pose_ik_params rtc_controllers)
