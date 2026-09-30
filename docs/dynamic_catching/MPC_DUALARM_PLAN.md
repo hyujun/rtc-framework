@@ -1,7 +1,7 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 작성일: 2026-09-30 (r8 — E1-F02 · E1-F03 spec: 결정 MD-23 – MD-33. r7 — E0-F04 예측 격자 sweep 결과: §8, 결정 MD-20. r6 — E0-F02 baseline 결과: §8, 결정 MD-19. r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
-- 상태: **E0 완료**, E1 진행 중 — E1-F01 완료, E1-F02 · E1-F03 진행 중
+- 작성일: 2026-09-30 (r8 — E1-F02 · E1-F03 spec: 결정 MD-23 – MD-33, 구현 측정: §8. r7 — E0-F04 예측 격자 sweep 결과: §8, 결정 MD-20. r6 — E0-F02 baseline 결과: §8, 결정 MD-19. r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
+- 상태: **E0 완료**, E1 진행 중 — E1-F01 완료, E1-F02 · E1-F03 구현 (PR 대기)
 - 범위: DECEL 의 MPC 전환 → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → MPC catch controller
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — v0.4, 사용자 확정 2026-09-29. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
@@ -193,8 +193,8 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
 | E1-F01 | [#627](https://github.com/hyujun/rtc-framework/issues/627) | jerk 입력 condensed QP 코어 (토크 제약 행 · slack) | E0-F03 | 완료 ([#655](https://github.com/hyujun/rtc-framework/pull/655)). 할당 0 은 코어 경로만 (MD-22) |
-| E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | 관절 노드 payload (`DecelPlanSnapshot`, MD-27) + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 진행 중 (`feat/catching-decel-mpc-plan-path`) |
-| E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 진행 중 (`feat/catching-decel-mpc-plan-path`) |
+| E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | 관절 노드 payload (`DecelPlanSnapshot`, MD-27) + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 구현 (`feat/catching-decel-mpc-plan-path`, PR 대기). RT tick 배선은 E1-F04 (MD-32) |
+| E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 구현 (`feat/catching-decel-mpc-plan-path`, PR 대기). 출하는 꺼짐 |
 | E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 + closed-form fallback | E1-F03 | 대기 |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui | E1-F04 | 대기 |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 | E0-F02, E1-F05 | 대기 |
@@ -488,4 +488,23 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **할당.** 코어 경로는 0 이고, ProxQP 는 Solve 마다 7–18 회 할당한다 (MD-22, #654).
 - 재평가 토크 (pre-solve 경로 RTI 1 회, 1 kHz 표본, armature 포함) 의 최대 $|\tau|/\tau_{\max}$ 는 0.70 으로 $\eta'_\tau$ 0.7 과 같다.
 - **주기 사이 속도 표류는 흡수된다.** x₀ 의 속도가 기준 node 0 에서 2.5 rad/s 벗어나도 QP 의 jerk 에 상한이 없어 7 반복 · 3.3 ms 에 풀린다. 위치 표류만 trust region 충돌로 거부한다.
+
+### E1-F02 · E1-F03 — payload · 샘플러 · decel 계획기 (2026-09-30, [#628](https://github.com/hyujun/rtc-framework/issues/628) · [#629](https://github.com/hyujun/rtc-framework/issues/629))
+
+`test_catching_node_follower` 와 `test_catching_decel_planner` 의 정보용 측정이다. Release, 개발 PC (RT 스케줄링 없음), 실제 6 · 7 자유도 팔 URDF. 계획기 측정은 무작위 진입 상태 200 개 (관절마다 $\pm 0.54\,\dot q_{\max}$) 이고 출하 지평 $N_s$ 14 · $\Delta_s$ 0.025 s 다 (MD-24). 계획기 시간은 decel 단계 시작부터 풀이 끝까지다 (MD-26).
+
+| 항목 | 6 자유도 | 7 자유도 |
+|---|---|---|
+| cold 풀이 (pre-solve + 본 solve) p99 [ms] | 8.4 | 12.6 |
+| 포구 뒤 재계획, RT 가 구간을 따름 p99 [ms] | 2.0 | 2.9 |
+| 포구 뒤 재계획, RT 보고에서 예측 p99 [ms] | 1.8 | 2.2 |
+| 실패 (풀이 · slack 보류) | 0 / 200 | 0 / 200 |
+| armature 가 더할 토크 $\max\vert a\ddot q\vert/\tau_{\max}$ (정보용) | 0.026 | 0.007 |
+
+- **예산 안이다.** cold 도 `budget_s` 20 ms 의 2/3 이하라 MD-24 의 후퇴안 (7 × 0.05 s) 은 필요 없다. 재계획은 shift 한 기준 덕분에 pre-solve 없이 풀린다.
+- **할당.** 풀이 전에 끝나는 경로 (시각 미도래 · 최신 · 상태 없음 · 비유한 · x₀ box 밖) 는 0 이다. 재계획 한 번의 C 할당 10 회는 ProxQP 의 것이다 (MD-23, #654). 샘플러 `Sample` 은 0 이다.
+- **payload 복사.** 4.9 KB 를 1 kHz 로 저장하는 writer 와 경합할 때 복사 + `Sample` 의 p99 는 0.5 µs, 최악 64 µs 다. 쉬지 않고 저장하는 writer 앞에서는 reader 가 300 ms 에 224 번만 읽는다 — SeqLock 의 재시도에 상한이 없으므로 계획기는 wake 당 한 번만 저장해야 한다 (지금 그렇게 한다).
+- **armature.** MJCF 값으로 재평가한 추가 토크는 τ_max 의 3 % 미만이다. 제어에 넣지 않는 결정 (MD-25) 과 맞는다.
+- **CLIK 속도 잔차 (정보용, MD-30).** 6 자유도 합성 구간에서 $\vert v^\ast-\dot q_{ref}\vert$ 는 최대 0.16 rad/s (상대 0.14) 다. 자세 과제에 속도 feedforward 가 없기 때문이며 E1-F04 가 다룬다.
+- 정지 자세의 손목 정적 중력비 0.7 이상은 0 / 200 이다. 손이 없는 팔 URDF 라서 손을 잠근 sub-model 과는 다를 수 있다 — E1-F04 의 sim 에서 다시 본다.
 
