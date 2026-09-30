@@ -1916,6 +1916,8 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
       dm.q_min[u] = std::max(dm.q_min[u], arm_q_min_margined_[d]);
       dm.q_max[u] = std::min(dm.q_max[u], arm_q_max_margined_[d]);
     }
+    decel_planner_q_min_[d] = dm.q_min[u];
+    decel_planner_q_max_[d] = dm.q_max[u];
     dm.qdot_max[u] = pm.qdot_max[u];
     dm.tau_max[u] = (*torque)[static_cast<std::size_t>(pm.device_of_model[u])];
     dm.qddot_cap[u] = pm.qddot_max[u];

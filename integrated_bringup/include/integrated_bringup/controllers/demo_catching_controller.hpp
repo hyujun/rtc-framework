@@ -368,6 +368,26 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] bool IsFollowingDecelForTesting() const noexcept { return decel_current_valid_; }
 
+  /// The decel planner's joint position box as configured (MD-42), device
+  /// order, and the CLIK's margined arm box it must sit inside.
+  [[nodiscard]] const std::array<double, rtc::catching::kMaxPlanNv>& GetDecelQMinForTesting()
+      const noexcept {
+    return decel_planner_q_min_;
+  }
+
+  [[nodiscard]] const std::array<double, rtc::catching::kMaxPlanNv>& GetDecelQMaxForTesting()
+      const noexcept {
+    return decel_planner_q_max_;
+  }
+
+  [[nodiscard]] const std::vector<double>& GetMarginedArmQMinForTesting() const noexcept {
+    return arm_q_min_margined_;
+  }
+
+  [[nodiscard]] const std::vector<double>& GetMarginedArmQMaxForTesting() const noexcept {
+    return arm_q_max_margined_;
+  }
+
   [[nodiscard]] bool HasPendingDecelForTesting() const noexcept { return decel_pending_valid_; }
 
   /// Whether the planner runs the decel MPC (`planner.decel_mpc.enabled` and a
@@ -1287,6 +1307,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The CLIK's per-joint velocity box was built (every arm and hand joint
   /// rated) — MD-34 asks for it, since the hand is locked through it.
   bool clik_v_box_complete_{false};
+  /// The decel planner's position box as handed to its cores (device order,
+  /// MD-42), kept for the configure-time check and the tests.
+  std::array<double, rtc::catching::kMaxPlanNv> decel_planner_q_min_{};
+  std::array<double, rtc::catching::kMaxPlanNv> decel_planner_q_max_{};
   /// [nq] posture goal of an mpc tick: q_posture_ with the arm entries set to
   /// q_ref + q̇_ref / K_n (MD-36). A work buffer, sized at configure.
   Eigen::VectorXd q_posture_decel_;
@@ -1582,7 +1606,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// (a profile enabling both is parked). RT reader, every tick (D-21).
   rtc::SeqLock<rtc::catching::PlanSnapshot> plan_box_;
   /// The decel MPC's stop segment (MPC E1-F02/F03, MD-27). ONE writer, the
-  /// planner thread; the RT tick reads it from E1-F04 on (MD-32). Declared
+  /// planner thread; the RT tick reads it under `supervisor.decel.mode: mpc`
+  /// (E1-F04) — the decel lane, COMMITTED through DECEL. Declared
   /// before planner_thread_ so the thread (which holds a pointer to it through
   /// the cycle) is destroyed first.
   rtc::SeqLock<rtc::catching::DecelPlanSnapshot> decel_box_;

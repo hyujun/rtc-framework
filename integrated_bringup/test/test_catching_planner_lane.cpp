@@ -41,6 +41,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -425,7 +426,59 @@ class CatchingPlanLaneTest : public ::testing::Test {
   ControllerOutput Tick() {
     state_.iteration += 1;
     state_.t_relative_s = static_cast<double>(state_.iteration) * kDt;
-    return ctrl_->Compute(state_);
+    ControllerOutput out = ctrl_->Compute(state_);
+    if (servo_) {
+      // A perfect servo on both devices: measured q of the next tick = this
+      // tick's command. Off by default — the cases above hold the arm still.
+      for (int d = 0; d < 2; ++d) {
+        const auto& o = out.devices[static_cast<std::size_t>(d)];
+        auto& dev = state_.devices[static_cast<std::size_t>(d)];
+        for (int i = 0; i < o.num_channels; ++i) {
+          dev.positions[static_cast<std::size_t>(i)] = o.commands[static_cast<std::size_t>(i)];
+        }
+      }
+    }
+    return out;
+  }
+
+  /// Configure a fresh controller on the planner profile plus `tweak`, with
+  /// `configs` as its devices, and report what configure decided.
+  struct ConfigureVerdict {
+    DemoCatchingController::CallbackReturn ret{DemoCatchingController::CallbackReturn::ERROR};
+    bool parked{false};
+    integrated_bringup::CatchingParkReason reason{integrated_bringup::CatchingParkReason::kNone};
+  };
+
+  ConfigureVerdict ConfigureOnly(bool planner, const std::function<void(YAML::Node&)>& tweak,
+                                 std::map<std::string, rtc::DeviceNameConfig> configs =
+                                     integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs()) {
+    ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+    ctrl_->SetSharedModelBuilder(builder_);
+    ctrl_->SetDeviceNameConfigs(configs);
+    YAML::Node yaml = YAML::Load(
+        TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
+    yaml["diagnostic"]["oracle_plan"]["enabled"] = !planner;
+    YAML::Node pl = yaml["catching"]["planner"];
+    pl["enabled"] = planner;
+    pl["sub_model"] = "ur5e_catch";
+    pl["freeze"]["T_freeze"] = 0.36;
+    pl["hand"]["d_eff"] = 0.2815;
+    pl["hand"]["r_cap"] = 0.024;
+    pl["workspace"]["catch_box"]["min"] = std::vector<double>{0.19, -0.30, 0.21};
+    pl["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
+    pl["provisional"] = false;
+    pl["decel_mpc"]["enabled"] = planner;
+    yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    if (tweak) {
+      tweak(yaml);
+    }
+    const rclcpp_lifecycle::State prev;
+    ConfigureVerdict v;
+    v.ret = ctrl_->on_configure(prev, node_, yaml);
+    v.parked = ctrl_->IsSimOnlyDisabled();
+    v.reason = ctrl_->GetParkReason();
+    return v;
   }
 
   /// Tick with a fresh prediction until the supervisor reaches `mode` (or the
@@ -468,6 +521,9 @@ class CatchingPlanLaneTest : public ::testing::Test {
   std::string topic_;
   ControllerState state_{};
   std::uint64_t next_seq_{1};
+  /// Tick() servos both devices to their commands (MPC E1-F04's real-clock
+  /// case needs the arm to reach DECEL; every other case holds it still).
+  bool servo_{false};
   /// The ball the published prediction carries. Default: the decode suite's
   /// diagonal, nowhere near the arm — there is no catch point on it.
   bool ball_set_{false};
@@ -777,6 +833,189 @@ TEST_F(CatchingPlanLaneTest, AFittingDecelTorqueBoxConfiguresUnderTheDynamicClik
     y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
   }));
   EXPECT_TRUE(ctrl_->IsDecelPlannerConfigured());
+}
+
+// ── supervisor.decel.mode (MPC E1-F04, MD-34 · MD-42 · MD-44) ────────────────
+
+TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
+  using integrated_bringup::CatchingParkReason;
+  using Return = DemoCatchingController::CallbackReturn;
+  const auto expect_park = [this](const char* what, bool planner,
+                                  const std::function<void(YAML::Node&)>& tweak,
+                                  std::map<std::string, rtc::DeviceNameConfig> configs =
+                                      integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs()) {
+    const ConfigureVerdict v = ConfigureOnly(planner, tweak, std::move(configs));
+    EXPECT_EQ(v.ret, Return::SUCCESS) << what << ": a profile mistake parks, it does not fail";
+    EXPECT_TRUE(v.parked) << what;
+    EXPECT_EQ(v.reason, CatchingParkReason::kDecelModeUnmet) << what;
+    const rclcpp_lifecycle::State prev;
+    EXPECT_EQ(ctrl_->on_activate(prev), Return::FAILURE) << what;
+  };
+  // The complete profile configures, on both writers of the plan box.
+  for (const bool planner : {true, false}) {
+    const ConfigureVerdict ok = ConfigureOnly(planner, nullptr);
+    ASSERT_EQ(ok.ret, Return::SUCCESS);
+    EXPECT_FALSE(ok.parked) << "planner " << planner << ": reason " << static_cast<int>(ok.reason);
+    EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kMpc);
+    EXPECT_EQ(ctrl_->IsDecelPlannerConfigured(), planner);
+  }
+  expect_park("K_n = 0", true, [](YAML::Node& y) { y["catching"]["joint_cmd"]["K_n"] = 0.0; });
+  expect_park("eta_v = 1", true,
+              [](YAML::Node& y) { y["catching"]["planner"]["gamma"]["eta_v"] = 1.0; });
+  expect_park("no decel planner", true,
+              [](YAML::Node& y) { y["catching"]["planner"]["decel_mpc"]["enabled"] = false; });
+  expect_park("no planner and no oracle", false,
+              [](YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; });
+  expect_park("no catch sub-model", false,
+              [](YAML::Node& y) { y["catching"]["planner"]["sub_model"] = "no_such_model"; });
+  expect_park("no catch box", false,
+              [](YAML::Node& y) { y["catching"]["planner"]["workspace"].remove("catch_box"); });
+  auto slow = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
+  slow.at("ur5e").joint_limits->max_velocity[3] = 0.0;
+  expect_park("an arm joint without max_velocity", false, nullptr, slow);
+}
+
+TEST_F(CatchingPlanLaneTest, AMalformedDecelModeOrSwitchMarginFailsTheConfigure) {
+  using Return = DemoCatchingController::CallbackReturn;
+  EXPECT_EQ(ConfigureOnly(
+                true, [](YAML::Node& y) { y["catching"]["supervisor"]["decel"]["mode"] = "mcp"; })
+                .ret,
+            Return::FAILURE);
+  EXPECT_EQ(
+      ConfigureOnly(
+          true, [](YAML::Node& y) { y["catching"]["supervisor"]["decel"]["switch_margin"] = 0.0; })
+          .ret,
+      Return::FAILURE);
+}
+
+TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoDecelCoresEvenWhenTheyAreEnabled) {
+  // MD-44: the planner runs the closed form's part only.
+  for (const char* mode : {"closed_form", ""}) {
+    const ConfigureVerdict v = ConfigureOnly(true, [mode](YAML::Node& y) {
+      if (*mode == '\0') {
+        y["catching"]["supervisor"]["decel"].remove("mode");
+      } else {
+        y["catching"]["supervisor"]["decel"]["mode"] = mode;
+      }
+    });
+    ASSERT_EQ(v.ret, DemoCatchingController::CallbackReturn::SUCCESS) << mode;
+    EXPECT_FALSE(v.parked) << mode;
+    EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kClosedForm) << mode;
+    EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured()) << "mode '" << mode << "'";
+  }
+}
+
+TEST_F(CatchingPlanLaneTest, TheDecelPlannersBoxSitsInsideTheCliksMarginedBox) {
+  // MD-42. The fixture's elbow limit (±3.14) is inside the URDF's (±π), so the
+  // CLIK's margined box (±3.09) is the binding side there — the case the
+  // shipped iiwa7 A7 is on (device 3.0543 < URDF 3.05433).
+  const ConfigureVerdict v = ConfigureOnly(true, nullptr);
+  ASSERT_EQ(v.ret, DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_FALSE(v.parked);
+  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
+  const auto& lo = ctrl_->GetMarginedArmQMinForTesting();
+  const auto& hi = ctrl_->GetMarginedArmQMaxForTesting();
+  ASSERT_EQ(static_cast<int>(lo.size()), kUr5eArmDof);
+  for (int d = 0; d < kUr5eArmDof; ++d) {
+    const auto u = static_cast<std::size_t>(d);
+    EXPECT_GE(ctrl_->GetDecelQMinForTesting()[u], lo[u]) << "joint " << d;
+    EXPECT_LE(ctrl_->GetDecelQMaxForTesting()[u], hi[u]) << "joint " << d;
+  }
+  EXPECT_DOUBLE_EQ(ctrl_->GetDecelQMaxForTesting()[2], 3.14 - 0.05);
+  EXPECT_DOUBLE_EQ(ctrl_->GetDecelQMinForTesting()[2], -3.14 + 0.05);
+}
+
+TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtFollowsTheSegmentThePlannerPublished) {
+  // Planner in the loop (MPC E1-F04): the reachable throw above, decel MPC on,
+  // mode mpc, the arm servoed so the trial reaches t_c. The planner thread
+  // solves the stop t_pre before t_c from what the RT reports, the RT admits
+  // it and follows it from the DECEL entry. A structural claim — that a tick
+  // followed the planner's own segment — because a loaded host moves every
+  // timing here.
+  const pinocchio::SE3 pose = [&] {
+    CatchFrameOracle oracle(*builder_);
+    std::array<double, 64> home{};
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      home[static_cast<std::size_t>(i)] = kUr5eHome[static_cast<std::size_t>(i)];
+    }
+    return oracle.PoseAt(
+        integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names, home,
+        kUr5eArmDof);
+  }();
+  const Eigen::Vector3d z = pose.rotation().col(2);
+  const Eigen::Vector3d target = pose.translation() + 0.03 * z;
+  const Eigen::Vector3d vel = -1.5 * z;
+  const Eigen::Vector3d p0 = target - 0.5 * vel;
+  ball_set_ = true;
+  ball_p0_ = {p0.x(), p0.y(), p0.z()};
+  ball_vel_ = {vel.x(), vel.y(), vel.z()};
+  cloud_n_ = 20;
+  servo_ = true;
+  ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
+    y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    // Head-room for a loaded host: the planner's budget, not the RT's.
+    y["catching"]["planner"]["budget_s"] = 0.03;
+    // The gate's value is not what this case is about: on this throw the
+    // pre-catch segment, predicted t_pre = 0.1 s ahead, met the entry at
+    // rho 1.13 (2026-09-30, joint 4) against the provisional 1.0, and under
+    // mode mpc a refused entry is an abort (MD-44). How often that happens
+    // is MD-41's measurement; the rho is recorded below.
+    y["catching"]["supervisor"]["decel"]["switch_margin"] = 2.0;
+  }));
+  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
+  bool followed = false;
+  std::uint32_t followed_seq = 0;
+  Mode last = Mode::kIdle;
+  integrated_bringup::CatchingDiagLogPod entry_record{};
+  std::array<int, 10> events{};  // tick records per DecelEvent, for the failure message
+  auto next = std::chrono::steady_clock::now();
+  for (int t = 0; t < 2500 && !followed; ++t) {
+    if (t % 10 == 0 && last != Mode::kDecel && last != Mode::kHold) {
+      Publish(next_seq_++);
+    }
+    const Mode before = ctrl_->GetMode();
+    static_cast<void>(Tick());
+    last = ctrl_->GetMode();
+    const auto ev = static_cast<std::size_t>(ctrl_->GetLastTickRecord().decel_event);
+    if (ev < events.size()) {
+      ++events[ev];
+    }
+    if (before == Mode::kClosing && last != Mode::kClosing) {
+      entry_record = ctrl_->GetLastTickRecord();
+    }
+    if (last == Mode::kAbortSafe || last == Mode::kRetreat) {
+      break;
+    }
+    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
+    if (ctrl_->IsFollowingDecelForTesting() && rt.decel_active) {
+      followed = true;
+      followed_seq = rt.decel_seq;
+    }
+    next += std::chrono::microseconds(2000);
+    std::this_thread::sleep_until(next);
+  }
+  const auto record = ctrl_->GetPlannerThread()->LastRecord();
+  std::ostringstream counts;
+  for (std::size_t e = 1; e < events.size(); ++e) {
+    counts << e << ":" << events[e] << " ";
+  }
+  ASSERT_TRUE(followed) << "events " << counts.str()
+                        << "; no DECEL tick followed a planner segment; mode "
+                        << static_cast<int>(last) << ", entry event "
+                        << static_cast<int>(entry_record.decel_event) << ", entry refusal "
+                        << static_cast<int>(entry_record.decel_refusal) << ", gate rho "
+                        << entry_record.decel_rho << " (joint " << entry_record.decel_gate_joint
+                        << "), last decel step "
+                        << rtc::catching::DecelOutcomeName(record.decel.outcome) << " / "
+                        << rtc::catching::DecelMpcReasonName(record.decel.core_reason);
+  EXPECT_GE(followed_seq, 1U);
+  EXPECT_EQ(ctrl_->GetFollowedDecelForTesting().decel_seq, followed_seq);
+  std::ostringstream os;
+  os << "entry gate rho " << entry_record.decel_rho << ", |dq| " << entry_record.decel_dq_max
+     << ", |dqd| " << entry_record.decel_dqd_max;
+  RecordProperty("real_clock_entry_gate", os.str());
+  std::printf("[ MEASURED ] %s\n", os.str().c_str());
 }
 
 // ── Vision world → model world (plan §11, S6-C sim finding) ─────────────────
