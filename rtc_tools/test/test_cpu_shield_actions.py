@@ -374,8 +374,7 @@ def test_gate_passes_with_only_the_sudoers_this_repo_installs(gate_env):
 
     assert done.returncode == 0, done.stderr
     assert "on --robot --profile mpc_on" in shield_log, (
-        f"gate blocked the shield on a machine whose sudoers allows it: "
-        f"{done.stdout}{done.stderr}"
+        f"gate blocked the shield on a machine whose sudoers allows it: {done.stdout}{done.stderr}"
     )
     assert "WARNING" not in done.stdout
     # The fixture read the isolated file through the fake, so the branch this
@@ -395,9 +394,7 @@ def test_gate_still_refuses_when_the_shield_is_not_permitted(gate_env):
 
 
 def test_adopt_runs_when_the_shield_is_permitted(gate_env):
-    action = pinning.adopt_process_into_shield(
-        label="CM", process_grep="integrated_rt_controller"
-    )
+    action = pinning.adopt_process_into_shield(label="CM", process_grep="integrated_rt_controller")
     done, shield_log = _run_action(action, gate_env, allowed=True, pid="4242")
 
     assert done.returncode == 0, done.stderr
@@ -408,9 +405,7 @@ def test_adopt_fails_closed_when_a_live_shield_cannot_be_joined(gate_env):
     # sudo refuses AND a cset shield is up: the one branch that must NOT be a
     # benign skip, because the node would run outside the cpuset (#344, #151).
     _bin(gate_env["bin"], "cset", '#!/bin/bash\necho "  user cpuset"\n')
-    action = pinning.adopt_process_into_shield(
-        label="CM", process_grep="integrated_rt_controller"
-    )
+    action = pinning.adopt_process_into_shield(label="CM", process_grep="integrated_rt_controller")
     done, shield_log = _run_action(action, gate_env, allowed=False, pid="4242")
 
     assert done.returncode == 1, done.stdout
