@@ -63,7 +63,9 @@ using rtc::catching::DecelPlanSnapshot;
 using rtc::catching::DecelRecord;
 using rtc::catching::DecelRefusal;
 using rtc::catching::DecelSegmentChoice;
+using rtc::catching::DecelSwitchVerdict;
 using rtc::catching::JudgeDecelPlan;
+using rtc::catching::JudgeDecelSwitch;
 using rtc::catching::kMaxDecelNodes;
 using rtc::catching::kMaxDecelNv;
 using rtc::catching::Mode;
@@ -426,6 +428,67 @@ TEST(DecelAdmission, SegmentSwitchesAtItsEffectiveInstant) {
   EXPECT_EQ(ChooseDecelSegment(true, false, t0, t0 + 1), DecelSegmentChoice::kCurrent);
 }
 
+TEST(DecelAdmission, AStatePredictedBeforeTheFloorIsBeforeReset) {
+  // MD-37: the planner stamps publish_ns after it reads the RT state, so a
+  // segment can pass the publish floor and still come from the tick before
+  // the reset. The state floor catches it; 0 leaves the check off.
+  DecelPlanSnapshot p = AdmissibleSegment();
+  DecelAdmissionContext c = AdmissionContext();
+  c.reset_floor_ns = kT0 + 300 * kMs;
+  p.rt_state_ns = kT0 + 299 * kMs;
+  EXPECT_EQ(JudgeDecelPlan(p, c, AdmittedDecel{}), DecelRefusal::kNone) << "floor off by default";
+  c.state_floor_ns = kT0 + 300 * kMs;
+  EXPECT_EQ(JudgeDecelPlan(p, c, AdmittedDecel{}), DecelRefusal::kBeforeReset);
+  p.rt_state_ns = kT0 + 300 * kMs;
+  EXPECT_EQ(JudgeDecelPlan(p, c, AdmittedDecel{}), DecelRefusal::kNone) << "at the floor is after";
+}
+
+TEST(DecelSwitch, PassesInsideTheHeadroomAndNamesTheFirstJointPastIt) {
+  // MD-39: |Δq̇_i| + K_p|Δq_i| ≤ ρ_max (1 − η_v) q̇_max,i per joint.
+  const std::array<double, 3> qmax{2.0, 2.0, 4.0};  // headroom d = 0.2, 0.2, 0.4 at η_v 0.9
+  std::array<double, 3> q_c{0.0, 0.0, 0.0};
+  std::array<double, 3> qd_c{0.0, 0.0, 0.0};
+  const std::array<double, 3> q_ref{0.0, 0.0, 0.0};
+  const std::array<double, 3> qd_ref{0.0, 0.0, 0.0};
+  auto judge = [&](double rho_max) {
+    return JudgeDecelSwitch(q_c, qd_c, q_ref, qd_ref, qmax, 3, 20.0, 0.9, rho_max);
+  };
+  DecelSwitchVerdict v = judge(1.0);
+  EXPECT_TRUE(v.pass);
+  EXPECT_EQ(v.rho, 0.0);
+  EXPECT_EQ(v.joint, -1);
+
+  q_c[2] = 0.005;  // K_p·Δq = 0.1 → ρ_2 = 0.25
+  qd_c[0] = 0.1;   // ρ_0 = 0.5
+  v = judge(1.0);
+  EXPECT_TRUE(v.pass);
+  EXPECT_NEAR(v.rho, 0.5, 1e-12);
+  EXPECT_NEAR(v.dq_max, 0.005, 1e-15);
+  EXPECT_NEAR(v.dqd_max, 0.1, 1e-15);
+  v = judge(0.4);
+  EXPECT_FALSE(v.pass);
+  EXPECT_EQ(v.joint, 0);
+  EXPECT_NEAR(v.rho, 0.5, 1e-12) << "ρ is recorded over every joint, not up to the refusal";
+
+  qd_c[0] = std::numeric_limits<double>::quiet_NaN();
+  v = judge(1.0);
+  EXPECT_FALSE(v.pass) << "a NaN difference refuses";
+  EXPECT_EQ(v.joint, 0);
+  EXPECT_TRUE(std::isinf(v.rho));
+  qd_c[0] = 0.0;
+
+  // No headroom (η_v = 1, or a missing q̇_max) refuses rather than divides.
+  EXPECT_FALSE(JudgeDecelSwitch(q_c, qd_c, q_ref, qd_ref, qmax, 3, 20.0, 1.0, 1.0).pass);
+  const std::array<double, 3> no_limit{2.0, 0.0, 4.0};
+  v = JudgeDecelSwitch(q_c, qd_c, q_ref, qd_ref, no_limit, 3, 20.0, 0.9, 1.0);
+  EXPECT_FALSE(v.pass);
+  EXPECT_EQ(v.joint, 1);
+  // Bad arguments refuse outright.
+  EXPECT_FALSE(JudgeDecelSwitch(q_c, qd_c, q_ref, qd_ref, qmax, 4, 20.0, 0.9, 1.0).pass);
+  EXPECT_FALSE(JudgeDecelSwitch(q_c, qd_c, q_ref, qd_ref, qmax, 3, 20.0, 0.9, 0.0).pass);
+  EXPECT_FALSE(JudgeDecelSwitch(q_c, qd_c, q_ref, qd_ref, qmax, 0, 20.0, 0.9, 1.0).pass);
+}
+
 // ── 3. The planner ───────────────────────────────────────────────────────────
 
 TEST(DecelPlanner, ConfigureBuildsOneCorePerReplanInstance) {
@@ -469,6 +532,26 @@ TEST(DecelPlanner, WaitsForTPreThenSolvesCold) {
   EXPECT_FALSE(p.rec.from_segment);
   // h = t_eff − (rt_state_ns + T_arm) = 0.09 + 0.002 s.
   EXPECT_NEAR(p.rec.h_s, 0.092, 1e-12);
+}
+
+TEST(DecelPlanner, TheReportLeadMovesTheReportedInstant) {
+  // MD-40: with report_lead the report is the state at rt_state + T_arm +
+  // report_lead, so the extrapolation span h shrinks by exactly that much.
+  DecelPlannerConstants c = Consts();
+  c.report_lead_s = 0.004;
+  Planner p(Arm6(), DecelPlannerParams{}, c);
+  const std::int64_t now = kT0;
+  SetClock(now);
+  const std::int64_t t_c = now + kTArm + 90 * kMs;
+  ASSERT_TRUE(p.Step(Rt(p.arm, t_c, now - 2 * kMs, p.arm.q_nominal, EntryVelocity(6))))
+      << DecelOutcomeName(p.rec.outcome);
+  EXPECT_NEAR(p.rec.h_s, 0.092 - 0.004, 1e-12);
+
+  DecelPlanner bad;
+  std::string err;
+  c.report_lead_s = -0.001;
+  EXPECT_FALSE(bad.Configure(PlannerModelOf(Arm6()), c, DecelPlannerParams{}, &FakeClock, &err));
+  EXPECT_NE(err.find("report_lead_s"), std::string::npos) << err;
 }
 
 TEST(DecelPlanner, PublishedSegmentIsDeviceOrderAndEndsAtTheStop) {

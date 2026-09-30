@@ -49,8 +49,8 @@
 | `TRACKING` | 유효 궤적 수신 | 기준 유지, plan 대기, 손 `q_pre` | 유효 plan → `APPROACH` / 트랙 epoch·`generation` 변경·stale → `ARMED` / plan 없음(`NO_CATCHABLE_PLAN`) → 머무름, 기록 |
 | `APPROACH` | 유효 plan | L4 추종, plan 교체 허용, 손 `q_pre` | $t_c-now\le T_{freeze}$ → `COMMITTED` (R-ADMIT, §4.1) / 실패 조건 → `RETREAT` |
 | `COMMITTED` | 동결 | plan 교체 금지, 손은 계속 `q_pre` (시각 기반 preshape·`T_pre` 는 쓰지 않는다 — **Q4 확정, 2026-09-23 사용자**: `q_open` 은 homing 전용이고 대기 중 손은 항상 `q_pre` 다) | $now\ge t_{cmd}$ (R-CLOSE, `HandCommandDueRounded`) → `CLOSING` / 치명 조건 → `ABORT_SAFE` |
-| `CLOSING` | 폐쇄 명령 | 손 `Close` | $now_{lead}\ge t_c$ → `DECEL` / 치명 조건 → `ABORT_SAFE` |
-| `DECEL` | $now_{lead}\ge t_c$ | 가상 감속 대상 추종(§4.3), 접촉 판정 | 감속 대상 정지($\tau\ge\tau_s$) → `HOLD` / 치명 조건 → `ABORT_SAFE` |
+| `CLOSING` | 폐쇄 명령 | 손 `Close` | $now_{lead}\ge t_c$ → `DECEL` / 치명 조건 → `ABORT_SAFE` (`mode: mpc` 에서 진입 tick 에 따를 구간이 없으면 `ParamsTbd`, §4.3a) |
+| `DECEL` | $now_{lead}\ge t_c$ | 가상 감속 대상 추종(§4.3) — `supervisor.decel.mode: mpc` 면 decel MPC 정지 구간 추종(§4.3a) — 접촉 판정 | 감속 대상 정지($\tau\ge\tau_s$) 또는 구간의 마지막 노드 → `HOLD` / 치명 조건 → `ABORT_SAFE` |
 | `HOLD` | 정지 | 유지, 결과 판정 확정 | $T_{hold}$ 경과 → `RETREAT` |
 | `RETREAT` | 종료·실패 | 정지 램프(`JointSpaceDecelStep`, ABORT_SAFE 경유 시 no-op) + 관절공간 `wait_pose` 복귀. 손은 결과에 따라 순서가 갈린다(§4.8 "RETREAT 순서") | `wait_pose` 도착(이미 안이면 즉시) + 손 `q_pre` 도달 → `ResetForRearm` → `ARMED` / 정지·복귀 단계가 운동 기한 초과, 또는 fault latch → `FAULT` (`ABORT_ESCALATED`, D-S9-D1) |
 | `ABORT_SAFE` | 치명 조건(상태 무관) | 즉시 감속 후 정지. L5 가 정상이면 §4.3 감속 대상을 L4→L5 로, **`QP_FAILED`·`JOINT_CONFLICT` 이면 QP 비의존 관절공간 감속**(아래) | 정지 → `RETREAT` / fault latch 또는 정지 기한 초과 → `FAULT` (`ABORT_ESCALATED`) |
@@ -163,6 +163,17 @@ $$e=x_s-p_v(0)=0,\qquad \dot e=\dot x_s-v_v(0)=0$$
 
 감속 목표 계산은 ROS 비의존 순수 조각으로 S1.8 에서 이식한다.
 
+### 4.3a decel MPC 정지 구간 추종 (`supervisor.decel.mode: mpc`) `[MPC E1-F04]`
+
+결정의 근거는 MPC 계획 문서 MD-34 – MD-44 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) §4) 에 있다. 이 절은 동작만 적는다.
+
+- **법칙은 섞지 않는다 (MD-44).** DECEL 법칙은 configure 에서 `supervisor.decel.mode` 로 정하고 활성화 동안 바뀌지 않는다. `closed_form` (기본, 키가 없을 때 포함) 은 §4.3 그대로이고, RT 는 decel box 를 읽지 않으며 계획기는 decel 코어를 만들지 않는다. `mpc` 는 **모든** DECEL 에서 계획기의 정지 구간을 따른다. 진입 tick 에 따를 구간이 없으면 `ParamsTbd` 로 `ABORT_SAFE` 다 — closed-form 으로 들어가는 fallback 은 없다.
+- **전제 (MD-34).** `mpc` 는 catch sub-model 샘플러, `joint_cmd.K_n` > 0, $\eta_v$ < 1, 팔 관절마다 `max_velocity` 와 CLIK 의 관절별 속도 · 위치 box, `planner.workspace.catch_box`, decel 계획기 (`planner.decel_mpc.enabled`, oracle profile 은 예외) 를 요구한다. 하나라도 없으면 park (`kDecelModeUnmet`).
+- **채택 (MD-37 · MD-43).** COMMITTED · CLOSING · DECEL 의 매 tick 에 decel box 를 한 번 Load 하고 `JudgeDecelPlan` 으로 판정한다 — 나이 상한 50 ms, reset floor, 그리고 구간이 출발한 RT 상태 (`rt_state_ns`) 도 floor 이상이어야 한다. 대기 슬롯은 하나이고 비었을 때만 채운다. 채택 전에 구간의 경로를 $p_c$ 에 옮겨 놓고 (노드 $k$ 의 catch frame 위치 $p_c+(p_k-o)$, $o$ 는 진입이 넘겨받은 첫 구간의 node 0 — 진입 전에는 구간 자신의 $p_0$) 모든 노드가 `catch_box` 안인지 본다. L3 §4.9 가 closed-form 직선 정지의 **변위**만 예약하기 때문이고, 재계획은 정지가 이미 간 거리까지 센다.
+- **전환 (MD-38 · MD-39 · MD-40).** 샘플 시각은 $s=now_{lead}+h$ 다. 대기 구간은 $s\ge$ node 0 시각이고, 따르는 plan 의 id · $t_c$ 와 맞고, 관절마다 $\vert\Delta\dot q_i\vert+K_p\vert\Delta q_i\vert\le\rho_{\max}(1-\eta_v)\dot q_{\max,i}$ 일 때 따르는 구간이 된다 ($\Delta$ 는 들고 있는 명령과 구간의 $s$ 에서의 차, $\rho_{\max}$ = `supervisor.decel.switch_margin`). 진입에서 실패하면 `ABORT_SAFE`, DECEL 도중의 재계획이 실패하면 그 구간만 버리고 따르던 구간을 계속 따른다. HOLD 에서는 전환하지 않는다.
+- **추종 tick (MD-36).** 구간을 $s$ 에서 샘플해 catch frame 의 위치 · 축 · twist 를 CLIK 목표와 feedforward 로 넘기고, 자세 목표를 $q_{ref}+\dot q_{ref}/K_n$ 으로 넘긴다 ($K_n(q'-q)=K_n(q_{ref}-q)+\dot q_{ref}$). soft-catch 기준 생성기는 돌지 않는다. tick 을 나가는 명령은 구간의 $now_{lead}+2h$ 값이고 (catch frame 위치로 확인, 이웃 $h$ · $3h$ 보다 2 배 이상 가깝다), 계획기는 RT 의 보고를 같은 label 로 읽는다. 따르는 중에 plan 이 어긋나거나 샘플이 실패하면 `ParamsTbd` 로 `ABORT_SAFE` 다. 구간의 마지막 노드를 지나면 정지로 보고 `HOLD` 다.
+- **reset (MD-35, E-8).** 대기 · 따르는 구간과 채택 기억은 `ResetTrialState` (activation · E-STOP · 명시적) 와 `ResetTrialScope` (재무장 · `RETREAT → IDLE`), 그리고 `ABORT_SAFE` · `RETREAT` 진입에서 버린다. `HOLD` 진입은 대기 구간만 버린다.
+
 ### 4.4 접촉 판정
 
 **부호 규약.** sim 과 실기 두 경로 모두 **finger-on-object** 부호다 — 실기 P1b `HandSensorState` (250 Hz) 와 같게 `rtc_mujoco_sim` 이 커밋 0fcc1d23 부터 fingertip-on-environment 로 발행한다 (코드 확인. repo 규약상 sim 쪽 부호 스위치를 다시 넣지 않는다. 부호 변환 지점은 `rtc::grasp::PullContactConfig::force_sign` 한 곳). `rtc_msgs` 메시지 주석의 "sim 은 반대 부호" 서술은 stale 이다. 따라서 접촉 판정은 힘의 크기·법선 성분을 **그대로** 쓰고 별도 정규화를 두지 않는다. S7.3 구현은 바이어스를 뺀 크기 $\Vert F-b\Vert$ 만 판정하므로 (§4.4) 이 부호 규약에 의존하지 않는다. 센서 주기·스탬프는 입력단에서 기록한다 (판정 시각은 수신 steady 시각, `header.stamp` 는 staleness 판단에 쓰지 않는다).
@@ -262,6 +273,7 @@ $$\Delta p=m_{ball}\,(1-\gamma_f)\Vert v(t_c)\Vert$$
 | L7 트랙 identity (`committed_generation_`, `last_trial_generation_`) | L7 (§4.1 R-TRACK, Q15) | 분리(우측 참고) | `ResetForRearm` 이 `last_trial_generation_` 을 **쓰고**(직전 시행 generation 을 거부 대상으로 기록), `ResetTrialState` 가 그 값을 **지운다** | 지우지 않으면 그 트랙이 E-STOP·fault 리셋을 넘어 계속되는 경우(track epoch 는 activation 과 별개, D-4) 여전히 유효한 그 generation 이 다음 활성화 이후에도 usable 로 보이지 않아, 새 vision generation 이 도착할 때까지 계획을 영영 못 받는다 |
 | L7 `QP_FAILED` 시행 카운터 (`qp_fail_streak_`) | L7 | **activation 과 fault reset 만 — `ResetForRearm`(C-29)·E-STOP 은 면제 (D-S9-D2)** | activation (`ResetTrialState` 의 `reset_mode`) 과 fault reset 에서 0. 그 밖에는 `HOLD` 판정이 0 으로 되돌린다 | 재무장마다 지우면 CLIK 실패 시행이 시행 경계를 못 넘어 `FAULT` 에스컬레이션(`n_qp`)에 **영영 도달하지 못한다** — 반대 방향의 결함이다. E-STOP 이 지우면 정지가 풀이 불가능성에 대해 아무것도 말하지 않는데도 기록을 잃는다 |
 | L7 결과·사유 | L7 | 둘 다 | `Outcome::None`, `Reason::None` | 진단 오염 |
+| decel 구간 (대기 · 따르는 구간 · 채택 기억, `mode: mpc`) | L7 (§4.3a, MPC E1-F04) | 둘 다 + `ABORT_SAFE` · `RETREAT` 진입 (`HOLD` 는 대기만) | 모두 무효 | 멈춘 시행의 정지 구간이 다음 시행의 DECEL 에서 채택된다. plan id · $t_c$ 대조와 reset floor 가 2 차 방어다 (MD-35) |
 
 **완전성 규칙.** 전이표 완전성 검사(§4.1 G7-A)와 같은 방식으로, **모든 stateful 멤버는 이 표에 있거나 명시적으로 면제되어야 한다** — 새 stateful 멤버를 추가하면서 이 표를 갱신하지 않는 것을 금지한다 (S7.4 게이트, G8-A2). 표의 주장이 참인지는 **런타임 poison 테스트**로 검증한다 — 테스트 전용 accessor 로 모든 RT 멤버에 비기본값을 채운 뒤 `ResetForRearm`/`ResetTrialState` 를 불러, 표가 주장하는 멤버만 바뀌고 면제는 그대로인지 단언한다(존재 린터만으로는 값이 실제로 리셋되는지 보장하지 못한다).
 
@@ -322,6 +334,8 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.track_err_abort` | double | rad | `TBD` (YAML: ur5e_p1b **0.42** — S8-B sim 피크 0.21 의 2 배; iiwa7_leap **0.48** — S8-D sim 첫 homing 피크 0.238 의 2 배) | >0 | **단일 원천.** L5 는 이 키를 참조만 한다. 실기 값은 S10 |
 | `supervisor.decel.a_dec` | double | m/s² | **10.0** (provisional — 2026-09-22 사용자 확정, S3.5b gate 지도가 돌린 값; `reference.a_max` 확정 시 ≤ 재검, plan §7.3) | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3). 두 로봇 `demo_catching_controller.yaml` 에 기록 — 소비자는 S6 계획기의 정지점 예약 (`planner_search.cpp`) 과 S7 DECEL 이다 |
 | `supervisor.decel.ramp_time` | double | s | 0.0 | 0–0.1 | §4.3 |
+| `supervisor.decel.mode` | string | – | `closed_form` (두 로봇 YAML 에 명시) | `closed_form` · `mpc` (다른 값은 configure 실패) | §4.3a, MPC MD-44. `mpc` 는 `planner.decel_mpc.enabled` 가 필요하고, 전제가 빠지면 park. `closed_form` 은 decel MPC 키를 보지 않는다 (`enabled: true` 면 경고만, 그 설정이 틀려도 park 하지 않는다) |
+| `supervisor.decel.switch_margin` | double | – | **1.0** (provisional — E1-F05 측정으로 정함, MD-41) | >0 (아니면 configure 실패) | §4.3a 전환 게이트의 $\rho_{\max}$ (MD-39). `mpc` 에서만 읽는다 |
 | `supervisor.contact.f_min` | double | N | **0.2** (provisional, 사용자 값) | >0 | G7-3. sim fingertip lane 은 잡음이 없어(C-20) 이 값만 유효하고, `k_sigma` 는 실기 전용이다 |
 | `supervisor.contact.k_sigma` | double | – | 3.0 | 2–6 | §4.4. 실기 전용 (sim σ̂≈0) |
 | `supervisor.contact.n_debounce` | int | – | 3 | 1–20 | 센서 주기 의존 (실기 250 Hz) |
@@ -383,11 +397,16 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | 복귀 중 팔 판독 불가 (D-S9-K) | Retreat 에서 명령 정지 유지 → 기한 초과면 Fault, 기한 안에 다시 읽히면 복귀 재개 → Armed |
 | E-STOP 중 fault 리셋 (D-S9-L) | Fault (latch 내려감) → 해제 tick 에 Idle, `FaultReset` |
 | TBD 파라미터 | Idle 유지, `ParamsTbd` |
+| `mode: mpc` 정상 (§4.3a) | … → Closing → Decel (진입 tick 에 구간 전환) → Hold → Retreat → Armed, `Captured` |
+| `mode: mpc` 진입에 따를 구간 없음 (없음 · 나이 · plan 불일치 · malformed · reset 전 · 게이트 · 작업공간) | … → Closing → AbortSafe → Retreat → Armed, `ParamsTbd` — Decel 을 거치지 않는다 |
+| `mode: mpc` 재계획 | 같은 궤적의 재계획은 node 0 에서 넘겨받고, 게이트를 넘는 재계획은 버리고 따르던 구간을 계속 따른다 |
+| `mode: mpc` 중 E-STOP (발동 · tick 사이 발동+해제) | 구간을 버린다. 재무장 뒤 옛 구간은 채택되지 않는다 |
 
 | 게이트 | 기준 | 태그 |
 |---|---|---|
 | G7-A | 위 시나리오 전부 기대 상태열과 일치, 전이표 완전성 검사 통과 | `[SIM-ANY]` |
 | G7-B | 감속 전환 시 기준 상태 $(x,\dot x)$ 연속 (< 1e-9) | `[SIM-ANY]` |
+| G7-B′ | `mode: mpc` (MPC MD-39): node 0 를 진입 tick 의 명령 $(q_c,\dot q_c)$ 로 만든 구간에서 $\Vert p_d-\mathrm{FK}(q_c)\Vert$ · $\Vert V_{ff}-J\dot q_c\Vert$ · $\Delta q$ · $\Delta\dot q$ < 1e-9 | `[SIM-ANY]` |
 | G7-B2 | v0.5 에서 삭제 — γ 하향 v1 범위 밖 (D-8) | – |
 | G7-B3 | 충격량 $\Delta p$ 기록과 시뮬레이션 접촉 참값의 최대 접촉력 상관 확인, 손가락 관절 토크가 한계 이내 (한계 권위 출처 D-12 확정 전까지 토크 비교 부분은 `NOT_EVALUATED`). **S8-E (2026-09-26)**: 충격량 상관 기록 (판정 임계 없음), 토크 `NOT_EVALUATED(sim clamp)` — plan §4.4 S8-E 결과 | `[SIM-P1B]` |
 | G7-C | 합성 잡음에서 접촉 오경보율 기록 (임계는 사용자 결정) | `[SIM-ANY]` |

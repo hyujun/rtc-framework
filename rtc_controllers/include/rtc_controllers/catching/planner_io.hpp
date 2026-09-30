@@ -15,7 +15,7 @@
 //     a torn read waiting to happen.
 //   - `DecelPlanSnapshot` planner → RT (trajectory.hpp, MPC E1-F02). Stored
 //     by the planner only; judged by `JudgeDecelPlan` below. The RT tick reads
-//     it from E1-F04 on (MD-32).
+//     it under `supervisor.decel.mode: mpc` only (E1-F04, MD-44).
 //
 // WHY `plan_id` DECIDES NEWNESS (L3 §5.2, S6 implementation note). The
 // provenance token's `snapshot_sequence` belongs to the TRAJECTORY the plan
@@ -36,8 +36,12 @@
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <limits>
+#include <span>
 #include <type_traits>
 
 namespace rtc::catching {
@@ -115,7 +119,8 @@ struct PlannerRtState {
   /// Whether the RT is following a decel segment this tick, and which one
   /// (its decel_seq). The planner predicts the next segment's initial state
   /// from that segment when it is its own latest (MD-28 path (i)). Always
-  /// false / 0 until E1-F04 wires the RT side (MD-32).
+  /// false / 0 under `supervisor.decel.mode: closed_form`, and outside
+  /// DECEL / HOLD (E1-F04).
   bool decel_active{false};
   std::uint32_t decel_seq{0};
 
@@ -270,9 +275,15 @@ struct DecelAdmissionContext {
   NowReal now{0};
   /// Upper bound on `now − publish_ns` [ns]. NOT the trajectory's staleness
   /// bound: a segment solved t_pre before t_c is adopted around t_c and
-  /// followed for N_s·Δ_s after. The binding (E1-F04) picks it; 0 disables.
+  /// followed for N_s·Δ_s after, so it is read once, at admission (MD-37 —
+  /// the binding's kDecelAdmissionMaxAgeNs). 0 disables.
   std::int64_t max_age_ns{0};
   std::int64_t reset_floor_ns{0};
+  /// Floor on the RT state the segment was PREDICTED from (`rt_state_ns`),
+  /// refused as kBeforeReset below it; 0 disables (MD-37). A planner that
+  /// stamped its publish after the RT's reset can still have read the RT
+  /// state of the tick before it: the publish floor alone lets that through.
+  std::int64_t state_floor_ns{0};
 };
 
 /// The RT's memory of the last decel segment it admitted.
@@ -283,8 +294,10 @@ struct AdmittedDecel {
 
 /// Judge a decel segment the caller has already loaded (D-21: Load() every
 /// tick, unconditionally). Checks run in the enum's order; the node scan
-/// (kMalformed) is last because it is the only one that costs anything, and
-/// a caller that admits a segment runs it once per decel_seq.
+/// (kMalformed) is last because it is the only one that costs anything. A
+/// caller that admits a segment runs it once per decel_seq; one it DEFERS (a
+/// full pending slot) is judged again every tick until taken or aged — the
+/// age check ahead of the scan bounds that to max_age_ns.
 [[nodiscard]] inline DecelRefusal JudgeDecelPlan(const DecelPlanSnapshot& p,
                                                  const DecelAdmissionContext& ctx,
                                                  const AdmittedDecel& admitted) noexcept {
@@ -307,6 +320,9 @@ struct AdmittedDecel {
     return DecelRefusal::kAged;
   }
   if (p.publish_ns < ctx.reset_floor_ns) {
+    return DecelRefusal::kBeforeReset;
+  }
+  if (ctx.state_floor_ns > 0 && p.rt_state_ns < ctx.state_floor_ns) {
     return DecelRefusal::kBeforeReset;
   }
   if (!ValidateDecelNodes(p)) {
@@ -338,12 +354,13 @@ struct AdmittedDecel {
 }
 
 /// Which segment the RT samples this tick (the effective-instant switch
-/// rule, MD-10 · MD-32). An admitted segment is PENDING until now_lead
-/// reaches its node 0 (t0 = t_eff): before that the RT keeps sampling the
-/// segment it follows — the sampler refuses t < t0 anyway (jerk_segment.hpp).
-/// At t0 the pending one takes over; the planner built its node 0 as the
-/// state the current one reaches there, so the switch is continuous to the
-/// accuracy of that prediction.
+/// rule, MD-10 · MD-32). An admitted segment is PENDING until the tick's
+/// sample instant (now_lead + h, MD-40) reaches its node 0 (t0 = t_eff):
+/// before that the RT keeps sampling the segment it follows — the sampler
+/// refuses t < t0 anyway (jerk_segment.hpp). At t0 the pending one takes
+/// over (subject to the switch gate below); the planner built its node 0 as
+/// the state the current one reaches there, so the switch is continuous to
+/// the accuracy of that prediction.
 enum class DecelSegmentChoice : std::uint8_t {
   kNone = 0,  ///< nothing to sample yet (closed form / pre-DECEL continues)
   kCurrent,   ///< keep sampling the followed segment
@@ -353,11 +370,64 @@ enum class DecelSegmentChoice : std::uint8_t {
 [[nodiscard]] constexpr DecelSegmentChoice ChooseDecelSegment(bool current_valid,
                                                               bool pending_valid,
                                                               std::int64_t pending_t0_ns,
-                                                              std::int64_t now_lead_ns) noexcept {
-  if (pending_valid && now_lead_ns >= pending_t0_ns) {
+                                                              std::int64_t sample_ns) noexcept {
+  if (pending_valid && sample_ns >= pending_t0_ns) {
     return DecelSegmentChoice::kPending;
   }
   return current_valid ? DecelSegmentChoice::kCurrent : DecelSegmentChoice::kNone;
+}
+
+/// The continuity gate at a segment switch (MD-39). Per joint i, with
+/// d_i = (1 − η_v)·q̇_max,i — the velocity headroom the MPC leaves the CLIK's
+/// feedback (formulation §2.3) — the switch passes only when
+///   |q̇_c,i − q̇_ref,i| + K_p·|q_c,i − q_ref,i| ≤ ρ_max · d_i.
+/// Written multiplied and negated so a NaN on either side refuses, and a
+/// d_i that is not a positive finite number refuses rather than divides.
+/// K_p is an eigenvalue bound of the task gain, not a per-joint one: ρ is a
+/// heuristic measure, recorded to be tightened on measurement.
+struct DecelSwitchVerdict {
+  bool pass{false};
+  /// max_i lhs_i / d_i; a joint without headroom (d_i not a positive finite
+  /// number) or with a non-finite lhs_i counts as +inf, so one such joint
+  /// makes ρ +inf — it also refuses the switch.
+  double rho{0.0};
+  /// The first joint that refused, −1 when it passed.
+  int joint{-1};
+  double dq_max{0.0};   ///< max_i |q_c − q_ref| [rad]
+  double dqd_max{0.0};  ///< max_i |q̇_c − q̇_ref| [rad/s]
+};
+
+[[nodiscard]] inline DecelSwitchVerdict JudgeDecelSwitch(
+    std::span<const double> q_c, std::span<const double> qd_c, std::span<const double> q_ref,
+    std::span<const double> qd_ref, std::span<const double> qdot_max, int nv, double k_p,
+    double eta_v, double rho_max) noexcept {
+  DecelSwitchVerdict v;
+  const auto n = static_cast<std::size_t>(nv < 0 ? 0 : nv);
+  if (nv < 1 || q_c.size() < n || qd_c.size() < n || q_ref.size() < n || qd_ref.size() < n ||
+      qdot_max.size() < n || !(std::isfinite(k_p) && k_p >= 0.0) ||
+      !(std::isfinite(rho_max) && rho_max > 0.0) || !std::isfinite(eta_v)) {
+    v.rho = std::numeric_limits<double>::infinity();
+    return v;
+  }
+  v.pass = true;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double dq = std::fabs(q_c[i] - q_ref[i]);
+    const double dqd = std::fabs(qd_c[i] - qd_ref[i]);
+    const double lhs = dqd + k_p * dq;
+    const double d = (1.0 - eta_v) * qdot_max[i];
+    v.dq_max = std::max(v.dq_max, dq);
+    v.dqd_max = std::max(v.dqd_max, dqd);
+    const bool headroom = std::isfinite(d) && d > 0.0;
+    // std::max drops a NaN, so a non-finite ratio is recorded as +inf.
+    const double r =
+        headroom && std::isfinite(lhs) ? lhs / d : std::numeric_limits<double>::infinity();
+    v.rho = std::max(v.rho, r);
+    if (v.pass && (!headroom || !(lhs <= rho_max * d))) {
+      v.pass = false;
+      v.joint = static_cast<int>(i);
+    }
+  }
+  return v;
 }
 
 [[nodiscard]] constexpr const char* PlanRefusalName(PlanRefusal r) noexcept {

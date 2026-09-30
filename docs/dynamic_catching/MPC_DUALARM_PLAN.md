@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 작성일: 2026-09-30 (r8 — E1-F02 · E1-F03 spec 과 구현 ([#656](https://github.com/hyujun/rtc-framework/pull/656)): 결정 MD-23 – MD-33, 측정: §8. r7 — E0-F04 예측 격자 sweep 결과: §8, 결정 MD-20. r6 — E0-F02 baseline 결과: §8, 결정 MD-19. r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
+- 작성일: 2026-09-30 (r11 — E1-F04 구현: MD-43 을 $p_c$ 기준 변위 검사로 개정, 측정 §8. r10 — E1-F04 결정 MD-44: DECEL 법칙을 섞지 않는다, 구현 착수. r9 — E1-F04 착수 전 결정 MD-34 – MD-43 ([#630](https://github.com/hyujun/rtc-framework/issues/630)). r8 — E1-F02 · E1-F03 spec 과 구현 ([#656](https://github.com/hyujun/rtc-framework/pull/656)): 결정 MD-23 – MD-33, 측정: §8. r7 — E0-F04 예측 격자 sweep 결과: §8, 결정 MD-20. r6 — E0-F02 baseline 결과: §8, 결정 MD-19. r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
 - 상태: **E0 완료**, E1 진행 중 — E1-F01 · E1-F02 · E1-F03 완료, 다음은 E1-F04 (L7 DECEL 전환, E-8)
 - 범위: DECEL 의 MPC 전환 → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → MPC catch controller
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — v0.4, 사용자 확정 2026-09-29. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -92,7 +92,7 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 사용
 | §8 | 전환 시 재사용 후보는 `rtc_mpc` | 채택하지 않음 — MD-1 |
 | D-16 · D-S8-18 | 유도 가속 box 는 도달시간 전용, CLIK 은 토크 기반 제약 | 적용 — MD-7 |
 | C-35 | `ABORT_SAFE` 는 원인과 무관하게 관절 공간 정지 | 불변 |
-| L7 G7-B | DECEL 진입 시 기준 상태 연속 | 적용 — E1-F04 |
+| L7 G7-B | DECEL 진입 시 기준 상태 연속 | 적용 — E1-F04. 방식은 MD-39 · MD-40 |
 | `supervisor.sat_ticks` | 로봇별 포화 임계 (sim 분포에서 도출) | MPC DECEL 에서 재확인 — E1-F06 |
 | D-2 · D-6 · D-21 | 시간 규약 · 명령값 평가 · SeqLock 소비 규약 | 적용 |
 | D-7 (E-7 결정 J) | 계획기 스레드는 `mpc_main` 슬롯 공유 | 적용 — 새 스레드 없음 |
@@ -135,12 +135,23 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 사용
 | MD-31 | 정지 끝은 $t_c+N_s\Delta_s$ 에 고정한다. 포구 뒤 재계획은 격자점 $k\le k_{\max}$ (기본 4, 0.1 s) 에서만 하고, 노드 수 $N_s-k$ 인 코어를 $k$ 마다 configure 에서 만든다 | 코어의 노드 수는 Init 에서 고정이라 재계획마다 끝이 효력 시각 + $N_s\Delta_s$ 로 밀린다. 포구 뒤 첫 재계획이 포구 전 예측의 오차를 실제 RT 상태로 바로잡는 주 수단이라 포구 전에만 게시하는 안은 택하지 않았다 | — | 2026-09-30 |
 | MD-32 | E1-F03 의 RT 쪽 변경은 `PlannerRtState` 에 따르는 계획의 $t_c$ 를 채우는 것뿐이다. RT tick 의 decel payload 읽기 · 채택 · 기록은 E1-F04 가 한다. 채택 규칙과 효력 시각 전환 규칙은 E1-F03 이 순수 함수로 만든다 | RT 가 소유하는 멤버를 새로 두면 trial reset 표와 E-STOP reset 경로를 고쳐야 한다 (E-8). E1-F04 가 이미 E-8 이므로 거기서 함께 다룬다 | — | 2026-09-30 |
 | MD-33 | 게시 조건은 풀이 성공, 예산 안, 효력 시각 전, `slack_max` 와 `slack_terminal_max` 가 유한하고 임계 이하일 때다. 두 임계는 기본 0.1 이고 $\eta'_\tau+$ `slack_max` $\le$ `joint_cmd.eta_tau` 를 configure 에서 검사한다 | 임계 비교를 부정형으로 쓰면 NaN 이 통과한다. 합이 CLIK 의 토크 box 를 넘으면 계획이 CLIK 에서 실행될 수 없다. 종단 임계를 처음부터 조이면 손목의 정적 중력비가 큰 자세에서 늘 게시가 막힐 수 있어, 분포를 기록한 뒤 E1-F06 이 조인다 | — | 2026-09-30 |
+| MD-34 | RT 의 decel lane 은 `supervisor.decel.mode: mpc` 에서만 돈다. 기본은 `closed_form` (키가 없을 때 포함) 이고 그때 RT 는 `decel_box_` 를 읽지 않으며 계획기는 decel 코어를 만들지 않는다 (`planner.decel_mpc.enabled: true` 여도 WARN 만, MD-44). `mpc` 의 전제 — 샘플러 구성, `joint_cmd.K_n` $\gt0$, $\eta_v\lt1$, 팔의 관절별 속도 box, CLIK 위치 box, `planner.workspace.catch_box`, decel 계획기 구성 (`planner.decel_mpc.enabled`) — 가 빠지면 park 한다 (활성화 거부). oracle plan profile 은 decel 계획기 없이 허용한다 | 기본값의 출력 불변 (§7). 전제가 빠진 `mpc` 가 조용히 closed-form 으로 돌면 G-1 의 MPC arm 이 v1 을 재게 된다. oracle profile 은 시험 전용이고 계획기와 함께 켤 수 없어, 그 profile 에서는 테스트가 box 의 writer 다 | — | 2026-09-30 |
+| MD-35 | RT 가 새로 소유하는 상태 (채택 메모리, 대기 구간, 따르는 구간, 이 DECEL 의 법칙) 는 재무장과 E-STOP 의 reset 이 모두 되돌린다. E-STOP 경로에서 바뀌는 코드는 두 reset 함수의 대입 추가뿐이다. 구간은 쓸 때마다 따르는 plan 의 id · $t_c$ 와 대조한다. 따르는 중에 어긋나거나 샘플이 실패하면 `ABORT_SAFE` 다 | E-8 (`[CONCERN]` 컨펌 2026-09-30). reset 행이 빠져도 다른 plan 의 구간을 따르지 않게 하는 2차 방어다. 따르는 중에는 soft-catch DS 를 돌리지 않으므로 closed-form 으로 돌아가면 기준이 계단이 된다 | — | 2026-09-30 |
+| MD-36 | 자세 과제의 속도 feedforward 는 호출측 등가식으로 넣는다 — 자세 목표를 $q_{ref}+\dot q_{ref}/K_n$ 으로 넘긴다. `rtc_tsid` 는 바꾸지 않는다. CLIK 의 API 는 E2-F04 가 정한다 | $K_n(q'-q)=K_n(q_{ref}-q)+\dot q_{ref}$ 로 formulation §2.2 의 $\dot q_n$ 과 같은 QP 다. CLIK 은 자세 목표를 그 식에서만 읽는다. E-8 PR 이 public API 를 건드리지 않는다 | MD-30 의 "E1-F04 가 `[CONCERN]` 으로 다룬다" 를 닫음 | 2026-09-30 |
+| MD-37 | decel 구간의 채택: lane 은 COMMITTED · CLOSING · DECEL 에서 매 tick 판정하고, 대기 슬롯이 비었을 때만 채택한다 (차 있으면 box 에 두고 다음 tick 에 다시 본다). 나이 상한은 50 ms 상수이고 채택할 때 한 번만 본다. 나이의 now 는 box 를 읽은 뒤의 시계다 (허용 오차 없음). reset floor 는 옮기지 않고, 구간이 출발한 RT 상태의 시각 (`rt_state_ns`) 을 floor 와 비교하는 검사를 `DecelAdmissionContext` 의 새 필드로 더한다 | 게시에서 채택까지는 1 tick 이라 나이는 box 에 묵은 구간과 RT 정지만 거른다. $t_c$ 직전에는 $k\ge1$ 구간이 $k=0$ 구간보다 먼저 올 수 있어, 덮어쓰면 진입 tick 에 따를 구간이 없다. 계획기는 게시 시각을 저장 전에 찍으므로 읽은 뒤의 시계로는 나이가 음수가 되지 않는다. floor 와 tick 끝의 RT 상태 저장 사이에 찍힌 게시는 floor 를 통과하지만, reset tick 이 저장하는 `rt_state_ns` 는 floor 이상이고 그 앞 tick 은 미만이다. floor 를 옮기면 E-STOP 경로와 기존 단언을 고쳐야 한다 | §4 미결의 채택 나이 상한 · reset floor | 2026-09-30 |
+| MD-38 | 전환: 대기 구간은 샘플 시각이 node 0 에 닿고 연속성 게이트 (MD-39) 를 지날 때 따르는 구간이 된다. DECEL 진입 tick 에 넘겨받을 구간이 없으면 `ABORT_SAFE` 다 (MD-44). DECEL 도중의 재계획 구간이 게이트를 못 지나면 그 구간만 버리고 따르던 구간을 계속 따른다. HOLD 에서는 전환하지 않는다 | MD-26 의 "DECEL 첫 wake 의 $k\ge1$ 풀이" 는 따르던 구간을 새것으로 바꾸는 데 쓴다. 법칙은 섞지 않는다 (MD-44). HOLD 는 이미 정지한 상태다 | r9 의 "진입 fallback · DECEL 도중 넘겨받기" 는 MD-44 가 대체 | 2026-09-30 |
+| MD-39 | DECEL 진입의 기준 상태 연속 (v1 L7 G7-B) 은 둘로 나눠 지킨다. (1) node 0 를 RT 의 명령 상태로 정확히 만든 구간에서 진입 tick 의 기준과 명령의 차이가 1e-9 미만이다 (결정적 테스트). (2) 실제 구간은 전환 tick 에서 관절마다 $\vert\Delta\dot q_i\vert+K_p\vert\Delta q_i\vert\le\rho_{\max}(1-\eta_v)\dot q_{\max,i}$ 일 때만 넘겨받는다. $\rho_{\max}$ 는 `supervisor.decel.switch_margin` (기본 1.0, provisional) 이다 | v1 의 1e-9 는 기준 생성기를 reset 하지 않아서 성립하는 값이고, MPC 의 node 0 는 예측이다. 우변은 MPC 가 CLIK 의 되먹임을 위해 남긴 속도 여유다 (formulation §2.3). 넘는 구간은 따르지 않으므로 (진입이면 `ABORT_SAFE`, 재계획이면 따르던 구간 유지) 진입 불연속의 상한이 동작 조건이 된다. 좌변의 $K_p$ 는 고유값 상한이라 관절별 상한은 아니다 — 실측으로 조인다 | §3.3 의 "L7 G7-B — 적용" 의 적용 방식 | 2026-09-30 |
+| MD-40 | RT 는 구간을 now_lead $+\,h$ 에서 샘플한다 ($h$ = 제어 주기). 계획기는 RT 가 보고한 명령을 보고 시각 + `T_arm` $+\,2h$ 의 상태로 본다 (`DecelPlannerConstants` 의 새 필드, 기본 0 이고 바인딩이 채운다) | 구간을 따르는 동안 위치 · 축 · 자세 목표는 모두 $q_{ref}(s)$ 에서 오고 CLIK 은 들고 있는 명령에서 적분하므로, 명령이 $q_{ref}(s)$ 에 있으면 해는 $\dot q_{ref}(s)$ 이고 tick 을 나가는 명령은 $q_{ref}(s+h)$ 다 (감쇠 · smoothing 항과 $h^2\ddot q$ 만 남는다). $s$ = now_lead $+\,h$ 이면 명령의 시간 label 은 now_lead $+\,2h$ 이고, 전환 전후로 명령 궤적의 시간 축이 이어지려면 계획기도 보고를 같은 label 로 봐야 한다. v1 명령과 DS 기준 사이의 시간 차는 이 규약과 무관하다 — 측정 (E1-F04 0 단계 테스트, shipped `dynamic` 행): 최고 속도에서 0.8 $h$, 중앙값 0.2 $h$. 자세 항과 적분 과도가 정하므로 1 차 모델의 2 $h$ 는 v1 에 맞지 않는다 (r9 의 유도는 이 점에서 틀렸다). 그래도 계획기는 v1 명령 (경로 (ii), 진입 전 구간) 도 $+\,2h$ 로 읽는다. 맞춰야 하는 것은 진입 전환이고, 전환은 tick 이 출발하는 명령 (직전 tick 의 것, label $t-h+\delta$) 을 구간의 $t+h$ 와 비교한다. 보고를 $+L$ 로 읽은 구간은 명령 궤적을 $L-\delta$ 만큼 늦춘 것이므로 둘은 $\delta$ 와 무관하게 $L=2h$ 에서 만난다. v1 의 $\delta$ 로 읽으면 ($L=\delta$) 전환에서 $2h$ 가 어긋난다 | MD-28 의 "보고 시각 + `T_arm`" | 2026-09-30 |
+| MD-41 | E1-F04 는 tick record 의 decel 블록까지 만들고 `catching_diag` 컬럼은 E1-F05 가 낸다. 초기 상태 예측의 개선 여부 (MD-28) 는 E1-F05 직후 · E1-F06 전에 로봇당 200 발 (E0-F02 와 같은 투척) 로 판단한다 — 진입 tick 의 게이트 초과율이 5 % 를 넘거나 $\rho$ 의 p95 가 0.5 를 넘으면 고친다 | E-8 PR 을 `integrated_bringup` · `rtc_controllers` 안에 둔다. 컬럼 목록은 `rtc_tools` 의 테스트가 순서까지 고정한다. 판단 규칙은 값을 보기 전에 정한다 | §4 미결의 "초기 상태 예측의 개선 여부" | 2026-09-30 |
+| MD-42 | decel 계획기의 관절 위치 box 는 URDF 한계와 CLIK 위치 box (device 한계 − `limit_margin`) 의 교집합이다. `m_q` 는 그 안쪽에 더 건다 | MPC 의 해가 CLIK 에서 실행되려면 MPC ⊂ CLIK 여야 한다 (MD-7 과 같은 원칙). URDF 한계만 쓰면 출하 구성에서 iiwa7 A7 이 CLIK box 를 2.6e-5 rad 넘고 (URDF 3.05433, device 3.0543), ur5e_p1b 는 fallback 상수의 반올림 덕에 1.5e-5 rad 로 겨우 포함된다. device 한계에서의 여유는 0.1 rad 가 된다 (E0-F02 closed-form 의 최소 여유 iiwa7_leap 0.128 rad) | MD-24 의 계획기 box (URDF 한계), E1-F03 | 2026-09-30 |
+| MD-43 | RT 는 decel 구간을 채택할 때 구간의 경로를 $p_c$ 로 옮겨 본다 — 노드 $k$ 의 catch frame 위치 $p_k$ 에 대해 $p_c+(p_k-o)$ 가 모두 `planner.workspace.catch_box` 안이어야 한다. $o$ 는 이 정지의 시작점 — 진입이 넘겨받은 첫 구간의 node 0 위치 — 이고, 진입 전에 채택하는 구간은 자기 $p_0$ 다. 밖이면 채택하지 않는다 (진입이면 `ABORT_SAFE`, MD-44) | 계획기는 포구점과 closed-form 직선 정지점 $p_c+(\gamma v)^2/(2a_{dec})\,\hat v$ 이 이 box 안인 plan 만 게시한다 (L3 §4.9) — 예약하는 것은 $p_c$ 에서의 정지 **변위**다. MPC 정지는 고정 $N_s\Delta_s$ = 0.35 s 의 최소 jerk 라 변위가 약 $0.4v_0T$ 이고, $v_0\lt0.8\,a_{dec}T$ = 2.8 m/s 에서 예약보다 길다 (초과는 $v_0$ 1.4 m/s 에서 최대 약 0.1 m). 경로도 직선이 아니어서 끝점만으로는 부족하다. 노드 사이 (25 ms) 는 보지 않는다. r9 의 절대 위치 검사는 E1-F04 실시계 테스트에서 틀렸다: v1 법칙이 $t_c$ 에 손을 $p_c$ 에서 19 cm 떨어진 box 밖 (z 0.19 < 0.21) 에 두었고, closed-form 정지도 같은 자리에서 시작하는데 MPC 구간만 거부해 `mpc` 에서는 매 시행 abort 가 된다. 재계획은 정지 도중 ($t_c+k_0\Delta_s$) 에서 시작하므로 자기 $p_0$ 로 옮기면 그때까지 간 거리가 빠진다 — 그래서 기준은 정지의 시작점 $o$ 다 (E1-F04 code review, 2026-09-30) | L3 §4.9 의 정지 예약이 MPC 정지를 덮지 않음. r9 판 (절대 위치) 을 대체 | 2026-09-30 |
+| MD-44 | DECEL 법칙은 섞지 않는다. 법칙은 configure 에서 `supervisor.decel.mode` 로 정하고 활성화 동안 바뀌지 않는다. `closed_form` 은 v1 closed-form DECEL 만 쓰고 계획기는 decel 코어를 돌리지 않는다. `mpc` 는 모든 DECEL 을 MPC 구간으로 한다 — 진입 tick 에 따를 구간이 없으면 (구간 없음 · 나이 · plan 불일치 · malformed · reset 전 · 게이트 · 작업공간) `kParamsTbd` 로 `ABORT_SAFE` 다. closed-form 으로 들어가는 fallback 과 DECEL 도중의 넘겨받기는 없다 | 사용자 결정 (2026-09-30). 한 시행에 두 법칙이 섞이면 G-1 의 MPC arm 이 무엇을 쟀는지 흐려지고, 전환 경로마다 연속성과 reset 을 따로 지켜야 한다. `ABORT_SAFE` 의 정지는 closed-form DECEL 이 아니라 QP 와 무관한 관절 공간 ramp 이고 전이표 행 (`{CLOSING · DECEL, kParamsTbd}`) 은 이미 있다. 대가: `mpc` 에서는 따를 구간이 없는 시행이 전부 abort 로 끝난다 — sim smoke 에서 사유별로 센다 | MD-11 (2) 를 `mpc` 에서 대체. MD-38 의 r9 판 (진입 fallback · 넘겨받기) | 2026-09-30 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 정지 구간 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- E1-F04: 자세 과제의 속도 feedforward (MD-30, `rtc_tsid` public API), 초기 상태 예측의 개선 여부 (MD-28, 실측한 진입 차이로 판단), decel 구간의 채택 나이 상한, E-STOP reset floor 를 reset 시각으로 옮길지 (지금은 plan 일치 검사가 방어한다)
+- E1-F05 직후: 초기 상태 예측의 개선 여부 (MD-41 의 규칙)
 - E1-F06: 비열등 한계와 N, MPC DECEL 을 기본값으로 바꿀지
 - E3-F01: MPC 계획기와 v1 L3 계획기의 관계 (대체 · 병행)
 - E3-F05: 기존 `DemoCatchingController` 확장과 새 컨트롤러 중 선택
@@ -195,7 +206,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F01 | [#627](https://github.com/hyujun/rtc-framework/issues/627) | jerk 입력 condensed QP 코어 (토크 제약 행 · slack) | E0-F03 | 완료 ([#655](https://github.com/hyujun/rtc-framework/pull/655)). 할당 0 은 코어 경로만 (MD-22) |
 | E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | 관절 노드 payload (`DecelPlanSnapshot`, MD-27) + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). RT tick 배선은 E1-F04 (MD-32) |
 | E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). 출하는 꺼짐 — §8 |
-| E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 + closed-form fallback | E1-F03 | 다음 (`feat/catching-decel-mpc-l7`) — 넘겨받는 것은 #630 코멘트 |
+| E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 + closed-form fallback | E1-F03 | 구현 · 테스트 · security review · code review 완료 (`feat/catching-decel-mpc-l7`) — 결정 MD-34 – MD-44 (MD-44 로 fallback 없음), 측정 §8. sim smoke 는 진입 20/20 abort — mpc 는 APPROACH–정지 MPC 로 확장한다 (사용자 결정 2026-09-30, §8) |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui | E1-F04 | 대기 |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 | E0-F02, E1-F05 | 대기 |
 
@@ -507,4 +518,26 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **armature.** MJCF 값으로 재평가한 추가 토크는 τ_max 의 3 % 미만이다. 제어에 넣지 않는 결정 (MD-25) 과 맞는다.
 - **CLIK 속도 잔차 (정보용, MD-30).** 6 자유도 합성 구간에서 $\vert v^\ast-\dot q_{ref}\vert$ 는 최대 0.16 rad/s (상대 0.14) 다. 자세 과제에 속도 feedforward 가 없기 때문이며 E1-F04 가 다룬다.
 - 정지 자세의 손목 정적 중력비 0.7 이상은 0 / 200 이다. 손이 없는 팔 URDF 라서 손을 잠근 sub-model 과는 다를 수 있다 — E1-F04 의 sim 에서 다시 본다.
+
+### E1-F04 — DECEL 에서 MPC 구간 추종 (2026-09-30, [#630](https://github.com/hyujun/rtc-framework/issues/630))
+
+`test_catching_supervisor_scenarios` (가짜 시계, 완전 servo, oracle plan — 테스트가 decel box 를 쓴다) 와 `test_catching_planner_lane` (실시계, 계획기 스레드) 의 측정이다. Release, 개발 PC, ur5e_p1b 모델, 판정은 테스트 단언이고 표의 수치는 정보용이다.
+
+| 항목 | 값 |
+|---|---|
+| NormalTrial 명령 digest (기본값 · `closed_form` 명시 · 추출 리팩터 전후) | `58e18c86679c92d6` — 모두 같다 |
+| v1 명령과 DS 기준의 시간 차 (MD-40, 정보용) | 최고 속도에서 0.80 $h$, 중앙값 0.20 $h$ (범위 −2.95 – 0.98 $h$) |
+| G7-B′ 진입 연속 ($\Vert p_d-\mathrm{FK}(q_c)\Vert$ · $\Vert V_{ff}-J\dot q_c\Vert$ · $\Delta q$ · $\Delta\dot q$) | 모두 < 1e-9 |
+| 따르는 중 catch frame 오차 $\max\Vert\mathrm{FK}(q_{out})-\mathrm{FK}(q_{ref}(t))\Vert$, $t$ = now + $h$ / $2h$ / $3h$ | 0.46 / **0.14** / 0.67 mm ($h\vert\dot p\vert_{\max}$ 0.55 mm, 0.3 rad/s bump) |
+| 같은 측정의 관절 최대 오차 | 0.53 / 0.59 / 1.17 mrad |
+| 실시계 한 투척, 계획기 구간의 진입 게이트 $\rho$ (3 회) | 1.13 · 1.13 · 1.18 — $\vert\Delta\dot q\vert$ 0.22 rad/s (관절 4) 가 지배 |
+| tick 시간 최악 (가짜 시계, 3 회) [µs] | mpc: 채택 20 (노드 FK 15 회 포함) · 전환 25 · 추종 24 – 45 · 채택 없는 CLOSING 42 – 70. v1 한 시행 전체의 최악 111 – 121 — 추종 tick 은 soft-catch 기준을 돌리지 않아 늘지 않는다 |
+
+- **시간 규약 (MD-40).** v1 명령은 DS 기준보다 0.2 – 0.8 $h$ 앞일 뿐이다 — 자세 행과 적분 과도가 정하므로 r9 의 "2$h$" 유도는 v1 에 맞지 않았다. 규약은 추종 쪽에서 성립한다: catch frame 에서 $2h$ 가 이웃 $h$ · $3h$ 보다 3 배 이상 가깝다. 남는 0.14 mm 는 bump 의 가속 구간에서 되먹임이 늦는 몫이고 $2h$ 양쪽에서 같은 크기다.
+- **관절 오차가 손 오차보다 크다.** 여유 자유도 방향은 자세 행 ($w_{arm}$ 0.01, $K_n$ 1) 만 붙잡고 smoothing 항 ($w_{smooth}$ 0.001) 이 끈다. 게이트의 $\Delta q$ 는 관절 공간이므로 이 몫이 $\rho$ 에 들어간다 — MD-41 측정에서 따로 본다.
+- **기본 게이트는 실시계 한 투척을 거부했다.** $t_{pre}$ 0.1 s 앞에서 예측한 포구 전 구간이 진입에서 $\rho$ 1.13 – 1.18 로 기본 $\rho_{\max}$ 1.0 을 넘었다. MD-44 로 그런 시행은 abort 다. 테스트는 루프가 도는지를 보려고 `switch_margin` 2.0 을 쓴다. 기본값이 얼마나 자주 거부하는지와 $x_0$ 예측을 고칠지는 MD-41 의 200 발 측정이 정한다 — $t_{pre}$ 를 줄이는 것 (외삽 오차는 $t_{pre}^3$ 에 비례) 도 후보다.
+- **작업공간 검사 (MD-43 개정).** 같은 실시계 투척에서 v1 법칙이 $t_c$ 에 손을 $p_c$ 에서 19 cm, box 아래 (z 0.19 < 0.21) 에 두었다. 절대 위치 검사는 계획기의 두 구간을 모두 거부했다. $p_c$ 로 옮긴 변위 검사로 바꾼 뒤 채택된다.
+- **할당 0.** mpc 의 lane · 진입 전환 · 재계획 전환 · 추종 tick 이 `ScopedAllocGate` 아래에서 0 이다 (`test_demo_catching_alloc_s7`).
+- **sim smoke (2026-09-30, [#630 코멘트](https://github.com/hyujun/rtc-framework/issues/630#issuecomment-5912267455)).** ur5e_p1b, `catch_lead_on` + `mode: mpc` + `switch_margin` 2.0, s35b 20 발 (seed 604): **20/20 이 DECEL 진입에서 abort** (CLOSING → ABORT_SAFE). 순환은 모두 닫혔고 FAULT 는 없다. 임시 계측 5 발에서 구간은 매번 채택됐고 진입 게이트가 거부했다 — $\rho$ 4.1 – 10.1, 매번 관절 0, $\vert\Delta\dot q\vert$ 0.78 – 1.76 rad/s. k=0 구간의 $x_0$ 는 v1 명령을 74 – 96 ms 상수 q̈ 로 외삽한 값이고 (5 발 중 2 발은 한계에 clamp), 포구 직전의 v1 명령은 그 외삽을 벗어난다. 위 실시계 $\rho$ 1.13 – 1.18 은 팔을 고정한 fixture 의 값이었다.
+- **사용자 결정 (2026-09-30).** `mode: mpc` 는 APPROACH 부터 정지까지 MPC 로 간다 — 입력은 공의 미래 궤적, 출력은 CLIK task position + null space 자세. 코어 · 관절 노드 payload · RT 샘플러 · MD-36 · MD-44 는 유지하고, formulation §1.3 의 포구 항을 단일 팔 형태로 더한다 (E3-F01 을 단일 팔로 앞당김). 진입 순간의 외삽이 없어지므로 MD-41 의 $x_0$ 예측 측정은 그 기능의 설계로 대체된다. 기능 등록과 계획은 별도.
 

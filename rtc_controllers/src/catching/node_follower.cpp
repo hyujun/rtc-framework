@@ -121,4 +121,61 @@ bool NodeTrajectoryFollower::Sample(const DecelPlanSnapshot& plan, std::int64_t 
   return true;
 }
 
+bool NodeTrajectoryFollower::NodesInsideBox(const DecelPlanSnapshot& plan,
+                                            const std::array<double, 3>& lo,
+                                            const std::array<double, 3>& hi,
+                                            const std::array<double, 3>* anchor,
+                                            int* first_outside) noexcept {
+  if (first_outside != nullptr) {
+    *first_outside = -1;
+  }
+  if (model_ == nullptr || plan.nv != nv_ || !ShapeOk(plan)) {
+    return false;
+  }
+  // Node 0's position, the origin the anchored check measures from.
+  Eigen::Vector3d origin = Eigen::Vector3d::Zero();
+  for (int k = 0; k <= plan.n_nodes; ++k) {
+    for (int m = 0; m < nv_; ++m) {
+      const auto d = static_cast<std::size_t>(device_of_model_[static_cast<std::size_t>(m)]);
+      q_model_[m] = plan.q[static_cast<std::size_t>(k) * kMaxDecelNv + d];
+    }
+    pinocchio::forwardKinematics(*model_, data_, q_model_);
+    pinocchio::updateFramePlacement(*model_, data_, frame_);
+    const Eigen::Vector3d& fk = data_.oMf[frame_].translation();
+    if (k == 0) {
+      origin = fk;
+    }
+    for (int a = 0; a < 3; ++a) {
+      const auto u = static_cast<std::size_t>(a);
+      const double p = anchor != nullptr ? (*anchor)[u] + (fk[a] - origin[a]) : fk[a];
+      // Written as "inside" so a NaN coordinate is outside.
+      if (!(p >= lo[u] && p <= hi[u])) {
+        if (first_outside != nullptr) {
+          *first_outside = k;
+        }
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool NodeTrajectoryFollower::NodePosition(const DecelPlanSnapshot& plan, int k,
+                                          std::array<double, 3>& p) noexcept {
+  if (model_ == nullptr || plan.nv != nv_ || !ShapeOk(plan) || k < 0 || k > plan.n_nodes) {
+    return false;
+  }
+  for (int m = 0; m < nv_; ++m) {
+    const auto d = static_cast<std::size_t>(device_of_model_[static_cast<std::size_t>(m)]);
+    q_model_[m] = plan.q[static_cast<std::size_t>(k) * kMaxDecelNv + d];
+  }
+  pinocchio::forwardKinematics(*model_, data_, q_model_);
+  pinocchio::updateFramePlacement(*model_, data_, frame_);
+  const Eigen::Vector3d& fk = data_.oMf[frame_].translation();
+  for (int a = 0; a < 3; ++a) {
+    p[static_cast<std::size_t>(a)] = fk[a];
+  }
+  return true;
+}
+
 }  // namespace rtc::catching

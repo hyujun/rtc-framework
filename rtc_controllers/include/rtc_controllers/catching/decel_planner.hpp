@@ -134,6 +134,11 @@ struct DecelPlannerConstants {
   double t_arm_s{0.0};       ///< `joint_cmd.lag.T_arm` — real → lead axis
   double control_dt{0.002};  ///< the RT period [s]
   double budget_s{0.020};    ///< `planner.budget_s`
+  /// How far past its lead instant the reported command sits [s] (MD-40):
+  /// the RT samples the segment it follows at now_lead + h and the command
+  /// leaving that tick is the segment at now_lead + 2h, so the binding sets
+  /// 2·control_dt. 0 reads the report as the state AT the lead instant.
+  double report_lead_s{0.0};
 };
 
 class DecelPlanner {
@@ -197,6 +202,7 @@ class DecelPlanner {
   std::int64_t dt_ns_{0};
   std::int64_t t_pre_ns_{0};
   std::int64_t t_arm_ns_{0};
+  std::int64_t report_lead_ns_{0};  // MD-40
   std::int64_t lead_margin_ns_{0};  // budget + 2·control_dt
   std::int64_t budget_ns_{0};
 

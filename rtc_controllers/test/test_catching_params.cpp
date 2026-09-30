@@ -42,6 +42,7 @@
 namespace {
 
 using rtc::catching::CatchingAccelConstraint;
+using rtc::catching::CatchingDecelMode;
 using rtc::catching::CatchingParams;
 using rtc::catching::CatchingValidationReason;
 using rtc::catching::CatchingValidationReport;
@@ -249,6 +250,42 @@ TEST(CatchingParams, AccelConstraintRejectsAnUnknownForm) {
   YAML::Node root = ValidRoot();
   root["joint_cmd"]["accel_constraint"] = "torque";
   ExpectRejectMentioning(root, "joint_cmd.accel_constraint");
+}
+
+// ── MPC MD-34 · MD-39 · MD-44: supervisor.decel.mode / switch_margin ─────────
+
+TEST(CatchingParams, DecelModeDefaultsToClosedFormAndReadsMpc) {
+  const CatchingParams absent = ParseCatchingParams(ValidRoot());
+  EXPECT_EQ(absent.supervisor_decel_mode, CatchingDecelMode::kClosedForm);
+  EXPECT_EQ(absent.supervisor_decel_switch_margin, 1.0);
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["decel"]["mode"] = "closed_form";
+  EXPECT_EQ(ParseCatchingParams(root).supervisor_decel_mode, CatchingDecelMode::kClosedForm);
+  root["supervisor"]["decel"]["mode"] = "mpc";
+  root["supervisor"]["decel"]["switch_margin"] = 0.5;
+  const CatchingParams mpc = ParseCatchingParams(root);
+  EXPECT_EQ(mpc.supervisor_decel_mode, CatchingDecelMode::kMpc);
+  EXPECT_EQ(mpc.supervisor_decel_switch_margin, 0.5);
+  // The mode is a parse decision, not a validation one: the report is clean.
+  EXPECT_EQ(ValidateCatchingParams(mpc, kControlRateHz, false).failure_count, 0u);
+}
+
+TEST(CatchingParams, DecelModeRejectsAnUnknownLaw) {
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["decel"]["mode"] = "MPC";  // case matters: one spelling per law
+  ExpectRejectMentioning(root, "supervisor.decel.mode");
+}
+
+TEST(CatchingParams, DecelSwitchMarginMustBePositive) {
+  for (const char* bad : {"0.0", "-0.5", ".nan", ".inf"}) {
+    YAML::Node root = ValidRoot();
+    root["supervisor"]["decel"]["switch_margin"] = YAML::Load(bad);
+    ExpectRejectMentioning(root, "supervisor.decel.switch_margin");
+  }
+  // The message quotes the value as written: a tiny negative is not "0.000000".
+  YAML::Node root = ValidRoot();
+  root["supervisor"]["decel"]["switch_margin"] = YAML::Load("-1e-7");
+  ExpectRejectMentioning(root, "-1e-7");
 }
 
 TEST(CatchingParams, KinematicFormNeedsItsBoundsAndOnlyThen) {

@@ -363,6 +363,91 @@ TEST_F(NodeFollowerTest, FkConsistencyAlongTheSegment) {
   EXPECT_LT(worst_v, 1e-10);
 }
 
+TEST_F(NodeFollowerTest, NodesInsideBoxChecksEveryNodeInTheModelWorld) {
+  // MD-43: the catch frame at node 0..N, against an independent FK of the
+  // device-order nodes. A box around all of them passes; pulling one face in
+  // past the extreme node refuses and names the FIRST node beyond it.
+  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 33);
+  pinocchio::Data data(*arm_.model);
+  std::vector<Eigen::Vector3d> pos;
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    Eigen::VectorXd q(p.nv);
+    for (int m = 0; m < p.nv; ++m) {
+      q[m] = p.q[Idx(k, kDeviceOfModel[static_cast<std::size_t>(m)])];
+    }
+    pinocchio::framesForwardKinematics(*arm_.model, data, q);
+    pos.push_back(data.oMf[arm_.frame].translation());
+  }
+  std::array<double, 3> lo{};
+  std::array<double, 3> hi{};
+  for (int a = 0; a < 3; ++a) {
+    lo[static_cast<std::size_t>(a)] = std::numeric_limits<double>::infinity();
+    hi[static_cast<std::size_t>(a)] = -std::numeric_limits<double>::infinity();
+    for (const auto& x : pos) {
+      lo[static_cast<std::size_t>(a)] = std::min(lo[static_cast<std::size_t>(a)], x[a]);
+      hi[static_cast<std::size_t>(a)] = std::max(hi[static_cast<std::size_t>(a)], x[a]);
+    }
+  }
+  int first = 99;
+  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, nullptr, &first));
+  EXPECT_EQ(first, -1);
+
+  std::array<double, 3> tight = hi;
+  tight[0] -= 1e-6;
+  int expected = -1;
+  for (int k = 0; k <= p.n_nodes && expected < 0; ++k) {
+    if (pos[static_cast<std::size_t>(k)][0] > tight[0]) {
+      expected = k;
+    }
+  }
+  ASSERT_GE(expected, 0);
+  EXPECT_FALSE(follower_.NodesInsideBox(p, lo, tight, nullptr, &first));
+  EXPECT_EQ(first, expected);
+
+  // Anchored: the same path moved so node 0 sits at `anchor`. Anchored at node
+  // 0 itself it is the plain check; moved by d, the box moved by d passes and
+  // the original box refuses the first node the shift pushes out.
+  const std::array<double, 3> at_node0{pos[0].x(), pos[0].y(), pos[0].z()};
+  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, &at_node0, &first));
+  const Eigen::Vector3d d(0.5, -0.25, 0.125);
+  const std::array<double, 3> shifted{pos[0].x() + d.x(), pos[0].y() + d.y(), pos[0].z() + d.z()};
+  std::array<double, 3> lo_d{};
+  std::array<double, 3> hi_d{};
+  for (int a = 0; a < 3; ++a) {
+    lo_d[static_cast<std::size_t>(a)] = lo[static_cast<std::size_t>(a)] + d[a];
+    hi_d[static_cast<std::size_t>(a)] = hi[static_cast<std::size_t>(a)] + d[a];
+  }
+  EXPECT_TRUE(follower_.NodesInsideBox(p, lo_d, hi_d, &shifted, &first));
+  EXPECT_EQ(first, -1);
+  EXPECT_FALSE(follower_.NodesInsideBox(p, lo, hi, &shifted, &first));
+  EXPECT_EQ(first, 0) << "node 0 itself is placed at the anchor, outside the unshifted box";
+
+  DecelPlanSnapshot bad = p;
+  bad.q[Idx(3, 0)] = kNan;  // node 3's FK is NaN: outside, whatever the box
+  std::array<double, 3> huge_lo{-1e9, -1e9, -1e9};
+  std::array<double, 3> huge_hi{1e9, 1e9, 1e9};
+  EXPECT_FALSE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, nullptr, &first));
+  EXPECT_EQ(first, 3);
+
+  NodeTrajectoryFollower unbound;
+  EXPECT_FALSE(unbound.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first));
+  EXPECT_EQ(first, -1);
+
+  // NodePosition: the same FK, one node; out of range or unbound leaves `x`.
+  for (int k : {0, 5, p.n_nodes}) {
+    std::array<double, 3> x{};
+    ASSERT_TRUE(follower_.NodePosition(p, k, x));
+    for (int a = 0; a < 3; ++a) {
+      EXPECT_NEAR(x[static_cast<std::size_t>(a)], pos[static_cast<std::size_t>(k)][a], 1e-12);
+    }
+  }
+  std::array<double, 3> untouched{7.0, 7.0, 7.0};
+  EXPECT_FALSE(follower_.NodePosition(p, p.n_nodes + 1, untouched));
+  EXPECT_FALSE(follower_.NodePosition(p, -1, untouched));
+  EXPECT_FALSE(unbound.NodePosition(p, 0, untouched));
+  EXPECT_EQ(untouched[0], 7.0);
+}
+
 TEST_F(NodeFollowerTest, DeviceOrderIsMappedBeforeFk) {
   // Negative control for the mapping: FK of the DEVICE-order vector read as if
   // it were model order must differ — otherwise the permutation fixture would

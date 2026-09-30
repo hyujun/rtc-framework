@@ -92,6 +92,24 @@ class DemoCatchingControllerResetProbe {
     c_.window_confirmed_seen_ = true;
     c_.window_stale_seen_ = true;
     c_.tick_now_ = rtc::catching::NowReal{kNs * 2};
+    // MPC E1-F04 (MD-35): the decel lane's segments and its admission memory.
+    c_.admitted_decel_ = rtc::catching::AdmittedDecel{true, 9};
+    c_.decel_pending_.valid = true;
+    c_.decel_pending_.decel_seq = 9;
+    c_.decel_pending_valid_ = true;
+    c_.decel_current_.valid = true;
+    c_.decel_current_.decel_seq = 8;
+    c_.decel_current_valid_ = true;
+  }
+
+  /// Every decel segment and the admission memory gone (DropDecelSegments).
+  void ExpectNoDecelSegments() const {
+    EXPECT_FALSE(c_.admitted_decel_.seen);
+    EXPECT_EQ(c_.admitted_decel_.decel_seq, 0U);
+    EXPECT_FALSE(c_.decel_pending_valid_);
+    EXPECT_FALSE(c_.decel_pending_.valid);
+    EXPECT_FALSE(c_.decel_current_valid_);
+    EXPECT_FALSE(c_.decel_current_.valid);
   }
 
   void Rearm() { c_.ResetForRearm(); }
@@ -123,6 +141,7 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c.hold_entry_ns_, 0);
     EXPECT_EQ(c.sat_streak_, 0);
     EXPECT_FALSE(c.law_horizon_extrap_);
+    ExpectNoDecelSegments();
     EXPECT_FALSE(c.contact_.Baseline(0).initialized);
     EXPECT_FALSE(c.contact_.IsConfirmed(0));
     EXPECT_EQ(c.tip_baseline_n_[0], 0);
@@ -158,6 +177,28 @@ class DemoCatchingControllerResetProbe {
     EXPECT_TRUE(c_.window_stale_seen_);
     EXPECT_TRUE(c_.trial_committed_);
     EXPECT_EQ(c_.release_start_ns_, DemoCatchingControllerResetProbe::kNs);
+    EXPECT_TRUE(c_.decel_current_valid_);
+    EXPECT_TRUE(c_.decel_pending_valid_);
+  }
+
+  /// MD-35 / MD-38: ABORT_SAFE and RETREAT entry drop every segment; HOLD
+  /// drops only the pending one and keeps following the stop it has.
+  void CheckTheDecelRowsOnModeEntry() {
+    using rtc::catching::Mode;
+    for (const Mode m : {Mode::kAbortSafe, Mode::kRetreat}) {
+      Poison();
+      c_.mode_ = m;
+      c_.OnModeEntered(Mode::kDecel);
+      ExpectNoDecelSegments();
+    }
+    Poison();
+    c_.mode_ = Mode::kHold;
+    c_.OnModeEntered(Mode::kDecel);
+    EXPECT_FALSE(c_.decel_pending_valid_);
+    EXPECT_FALSE(c_.decel_pending_.valid);
+    EXPECT_TRUE(c_.decel_current_valid_) << "HOLD holds the stop it follows";
+    EXPECT_EQ(c_.decel_current_.decel_seq, 8U);
+    EXPECT_TRUE(c_.admitted_decel_.seen);
   }
 
   void CheckRearm() {
@@ -240,6 +281,8 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c.tip_last_seq_[0], 0U);
     EXPECT_FALSE(c.window_confirmed_seen_);
     EXPECT_FALSE(c.window_stale_seen_);
+    // E-8 (MD-35): an E-STOP / activation drops the decel lane's memory.
+    ExpectNoDecelSegments();
     // Exempt from every reset: written on ABORT_SAFE entry.
     EXPECT_TRUE(c.abort_stopped_);
   }
@@ -254,6 +297,8 @@ class DemoCatchingControllerResetProbe {
     // poison left one under way (trial_active_).
     EXPECT_EQ(c_.outcome_, rtc::catching::Outcome::kAborted);
     EXPECT_FALSE(c_.trial_active_);
+    // E-8 (MD-35): the E-STOP path itself (reset_mode false) drops the segments.
+    ExpectNoDecelSegments();
     // S8-I: where the arm stopped is not a wait pose — the adopted one stays.
     EXPECT_TRUE(c_.wait_pose_adopted_);
     EXPECT_TRUE(c_.wait_pose_decided_);
@@ -332,6 +377,12 @@ TEST(CatchingResetProbe, AnEstopKeepsTheQpStreakAndResetsLeaveTheFaultRowsAlone)
   DemoCatchingController ctrl{""};
   Probe p(ctrl);
   p.CheckTheStreakAndTheFaultRowsAcrossResets();
+}
+
+TEST(CatchingResetProbe, AbortRetreatAndHoldEntriesDropTheirDecelRows) {
+  DemoCatchingController ctrl{""};
+  Probe p(ctrl);
+  p.CheckTheDecelRowsOnModeEntry();
 }
 
 TEST(CatchingResetProbe, AnEstopResetLeavesTheModeToTheTable) {

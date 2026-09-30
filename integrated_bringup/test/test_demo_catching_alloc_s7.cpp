@@ -25,6 +25,7 @@
 // so the production clock read stays inside a gated Compute().
 
 #include "catching_cloud_fixture.hpp"
+#include "catching_decel_segment_fixture.hpp"
 #include "catching_tracking_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
@@ -409,6 +410,110 @@ TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
       << "reason " << static_cast<int>(ctrl_->GetLastReason());
   Tick(/*gated=*/true, allocations, us);  // the ramp's steady tick
   EXPECT_EQ(allocations, 0U);
+}
+
+TEST_F(DemoCatchingAllocS7Test, TheMpcDecelAndHoldTickWithoutAllocating) {
+  // MPC E1-F04 (supervisor.decel.mode mpc): the decel lane's Load and judge,
+  // the node-wise catch-box FK, the entry switch and a replan switch with their
+  // gates, the segment sample and the posture feedforward — every tick gated.
+  // The box writes (this test plays the planner) are outside the gate.
+  ASSERT_NO_FATAL_FAILURE(BringUp(false, [](YAML::Node& y) {
+    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    y["catching"]["planner"]["sub_model"] = "ur5e_catch";
+    y["catching"]["planner"]["workspace"]["catch_box"]["min"] =
+        std::vector<double>{-2.0, -2.0, -2.0};
+    y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, 2.0};
+  }));
+  const auto stamp = [this](rtc::catching::DecelPlanSnapshot& seg, std::uint32_t seq) {
+    seg.token.activation_generation = ctrl_->GetPlannerRtState().activation_generation;
+    seg.publish_ns = FakeSteadyClock::Now();
+    seg.rt_state_ns = FakeSteadyClock::Now() - integrated_bringup::testfx::kDtNs;
+    seg.decel_seq = seq;
+  };
+  rtc::catching::DecelPlanSnapshot entry{};
+  bool entry_written = false;
+  bool replan_written = false;
+  bool followed = false;
+  bool replanned = false;
+  std::set<Mode> measured;
+  std::uint64_t sequence = 1;
+  Mode prev = ctrl_->GetMode();
+  // Reported, not judged (E1-F04's "tick time increase"): the worst tick of
+  // each kind on this host. The v1 trial above records its own worst tick.
+  double us_closing = 0.0;  // CLOSING ticks with nothing admitted (the lane's judge only)
+  double us_admit = 0.0;    // the admission tick (+ the node-wise FK, MD-43)
+  double us_switch = 0.0;   // ticks that switched segments (sample + gate)
+  double us_follow = 0.0;   // other DECEL / HOLD ticks that followed a segment
+  for (int t = 0; t < 4000; ++t) {
+    const Mode mode = ctrl_->GetMode();
+    if (t % 15 == 0 &&
+        (mode == Mode::kIdle || mode == Mode::kArmed || mode == Mode::kTracking ||
+         mode == Mode::kApproach || mode == Mode::kCommitted || mode == Mode::kClosing)) {
+      Publish(sequence++);
+    }
+    const rtc::catching::PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
+    if (!entry_written && mode == Mode::kClosing && FakeSteadyClock::Now() >= plan.t_c_ns) {
+      std::array<double, kUr5eArmDof> q{};
+      std::array<double, kUr5eArmDof> qd{};
+      for (int i = 0; i < kUr5eArmDof; ++i) {
+        q[static_cast<std::size_t>(i)] =
+            ctrl_->GetArmCommandForTesting()[static_cast<std::size_t>(i)];
+        qd[static_cast<std::size_t>(i)] =
+            ctrl_->GetArmVelocityCommandForTesting()[static_cast<std::size_t>(i)];
+      }
+      entry = integrated_bringup::testfx::MakeFollowSegment(
+          q, qd, kUr5eArmDof, plan.plan_id, plan.t_c_ns, 0,
+          FakeSteadyClock::Now() + integrated_bringup::testfx::kDtNs, 0.1);
+      stamp(entry, 1);
+      ctrl_->DecelBoxForTesting().Store(entry);
+      entry_written = true;
+    } else if (entry_written && !replan_written && mode == Mode::kDecel) {
+      rtc::catching::DecelPlanSnapshot replan = integrated_bringup::testfx::ShiftSegment(entry, 1);
+      stamp(replan, 2);
+      ctrl_->DecelBoxForTesting().Store(replan);
+      replan_written = true;
+    }
+    std::uint64_t allocations = 0;
+    double us = 0.0;
+    Tick(/*gated=*/true, allocations, us);
+    EXPECT_EQ(allocations, 0U) << "mode " << static_cast<int>(mode) << " (the tick's START mode)";
+    const auto record = ctrl_->GetLastTickRecord();
+    using Event = integrated_bringup::CatchingDiagLogPod::DecelEvent;
+    if (record.decel_event == Event::kAdmitted) {
+      us_admit = std::max(us_admit, us);
+    } else if (record.decel_event == Event::kSwitched) {
+      us_switch = std::max(us_switch, us);
+    } else if (record.decel_following) {
+      us_follow = std::max(us_follow, us);
+    } else if (mode == Mode::kClosing) {
+      us_closing = std::max(us_closing, us);
+    }
+    if (mode == Mode::kDecel || mode == Mode::kHold) {
+      measured.insert(mode);
+      followed = followed || record.decel_following;
+    }
+    replanned = replanned || (record.decel_event ==
+                                  integrated_bringup::CatchingDiagLogPod::DecelEvent::kSwitched &&
+                              record.decel_seq == 2U);
+    if (ctrl_->GetMode() == Mode::kRetreat && prev == Mode::kHold) {
+      break;
+    }
+    prev = ctrl_->GetMode();
+    Advance();
+  }
+  EXPECT_TRUE(entry_written) << "the trial never reached the DECEL entry";
+  EXPECT_EQ(measured.count(Mode::kDecel), 1U);
+  EXPECT_EQ(measured.count(Mode::kHold), 1U);
+  EXPECT_TRUE(followed) << "no mpc tick followed a segment";
+  EXPECT_TRUE(replanned) << "the replan switch was never gated";
+  std::printf(
+      "[ MEASURED ] mpc worst tick [us]: closing %.1f, admission %.1f, switch %.1f, "
+      "follow %.1f\n",
+      us_closing, us_admit, us_switch, us_follow);
+  RecordProperty("worst_us_closing", static_cast<int>(us_closing));
+  RecordProperty("worst_us_admission", static_cast<int>(us_admit));
+  RecordProperty("worst_us_switch", static_cast<int>(us_switch));
+  RecordProperty("worst_us_follow", static_cast<int>(us_follow));
 }
 
 }  // namespace

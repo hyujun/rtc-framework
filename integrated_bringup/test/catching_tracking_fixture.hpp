@@ -114,6 +114,23 @@ class CatchFrameOracle {
 
   /// `arm` is in device (joint_state_names) order; the hand stays at zero,
   /// which is where this test's measured hand sits.
+  /// The catch frame's linear velocity (world axes) at arm `q` moving at
+  /// `qd`, both device order — J(q)·q̇ by velocity forward kinematics.
+  Eigen::Vector3d LinearVelocityAt(const std::vector<std::string>& arm_names,
+                                   const std::array<double, 64>& q,
+                                   const std::array<double, 64>& qd, int arm_dof) {
+    q_.setZero();
+    Eigen::VectorXd v = Eigen::VectorXd::Zero(model_->nv);
+    for (int i = 0; i < arm_dof; ++i) {
+      const auto jid = model_->getJointId(arm_names[static_cast<std::size_t>(i)]);
+      q_[model_->joints[jid].idx_q()] = q[static_cast<std::size_t>(i)];
+      v[model_->joints[jid].idx_v()] = qd[static_cast<std::size_t>(i)];
+    }
+    pinocchio::forwardKinematics(*model_, *data_, q_, v);
+    return pinocchio::getFrameVelocity(*model_, *data_, frame_id_, pinocchio::LOCAL_WORLD_ALIGNED)
+        .linear();
+  }
+
   pinocchio::SE3 PoseAt(const std::vector<std::string>& arm_names,
                         const std::array<double, 64>& arm_values, int arm_dof) {
     q_.setZero();

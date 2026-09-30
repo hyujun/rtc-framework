@@ -90,8 +90,10 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   if (!std::isfinite(consts.eta_v) || !(consts.eta_v > 0.0) || consts.eta_v > 1.0 ||
       !std::isfinite(consts.t_arm_s) || consts.t_arm_s < 0.0 || consts.t_arm_s > 1.0 ||
       !std::isfinite(consts.control_dt) || !(consts.control_dt > 0.0) || consts.control_dt > 1.0 ||
-      !std::isfinite(consts.budget_s) || !(consts.budget_s > 0.0) || consts.budget_s > 1.0) {
-    return fail("eta_v, T_arm, control_dt or budget_s is outside its range");
+      !std::isfinite(consts.budget_s) || !(consts.budget_s > 0.0) || consts.budget_s > 1.0 ||
+      !std::isfinite(consts.report_lead_s) || consts.report_lead_s < 0.0 ||
+      consts.report_lead_s > 1.0) {
+    return fail("eta_v, T_arm, control_dt, budget_s or report_lead_s is outside its range");
   }
   if (params.k_max < 0 || params.k_max > kMaxDecelReplans || params.DtNs() <= 0) {
     return fail("k_max or dt_s is outside its range");
@@ -167,6 +169,7 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   dt_ns_ = params.DtNs();
   t_pre_ns_ = SecondsToNs(params.t_pre_s);
   t_arm_ns_ = SecondsToNs(consts.t_arm_s);
+  report_lead_ns_ = SecondsToNs(consts.report_lead_s);
   budget_ns_ = SecondsToNs(consts.budget_s);
   lead_margin_ns_ = budget_ns_ + 2 * SecondsToNs(consts.control_dt);
   configured_ = true;
@@ -219,10 +222,18 @@ void DecelPlanner::UpdateAccelEstimate(const PlannerRtState& rt) noexcept {
 bool DecelPlanner::PredictX0(const PlannerRtState& rt, std::int64_t t_eff_ns,
                              DecelRecord& rec) noexcept {
   DecelMpcInput& in = inputs_[U(rec.k)];
-  const std::int64_t t_rep = rt.rt_state_ns + t_arm_ns_;
+  // The instant the reported command belongs to on the segment's axis:
+  // real → lead (T_arm), then the command's own lead over the tick (MD-40).
+  // Path (ii) reads a v1 command the same way although that command sits only
+  // δ = 0.2 – 0.8 h past its tick: what has to line up is the RT's switch,
+  // which compares the command the tick starts from (the previous tick's,
+  // at t − h + δ) with the segment at t + h. Read at + L, the segment is the
+  // command's trajectory delayed by L − δ, and the two meet when L = 2h —
+  // whatever δ is. L = δ would put 2h between them.
+  const std::int64_t t_rep = rt.rt_state_ns + t_arm_ns_ + report_lead_ns_;
   rec.h_s = static_cast<double>(t_eff_ns - t_rep) * 1e-9;
   // Path (i): the RT follows the planner's latest segment — evaluate it at
-  // t_eff (exact on the segment). Only reachable once E1-F04 reports it.
+  // t_eff (exact on the segment). The RT reports it under mode mpc (E1-F04).
   if (have_published_ && rt.decel_active && rt.decel_seq == last_.decel_seq) {
     std::array<double, kMaxDecelNv> q{};
     std::array<double, kMaxDecelNv> qd{};

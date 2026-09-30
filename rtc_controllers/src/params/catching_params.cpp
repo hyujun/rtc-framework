@@ -342,6 +342,23 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   const YAML::Node supervisor = ReadSection(node, "supervisor");
   const YAML::Node decel = ReadSection(supervisor, "decel");
   out.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", out.supervisor_decel_a_dec);
+  {
+    const std::string mode = ReadOptional<std::string>(decel, "mode", "closed_form");
+    if (mode == "closed_form") {
+      out.supervisor_decel_mode = CatchingDecelMode::kClosedForm;
+    } else if (mode == "mpc") {
+      out.supervisor_decel_mode = CatchingDecelMode::kMpc;
+    } else {
+      Reject("'supervisor.decel.mode' must be closed_form or mpc, got '", mode, "'");
+    }
+    out.supervisor_decel_switch_margin =
+        ReadOptional(decel, "switch_margin", out.supervisor_decel_switch_margin);
+    if (!(std::isfinite(out.supervisor_decel_switch_margin) &&
+          out.supervisor_decel_switch_margin > 0.0)) {
+      Reject("'supervisor.decel.switch_margin' must be a positive number, got ",
+             params_detail::Spelling(decel["switch_margin"]));
+    }
+  }
 
   const YAML::Node io = ReadSection(node, "io");
   out.io_n_min = ReadPositiveCount(io, "n_min");
