@@ -333,7 +333,8 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   /// Whether the planner runs the decel MPC (`planner.decel_mpc.enabled` and a
-  /// model to plan in).
+  /// model to plan in). Lifecycle / test callers only: it reads planner state
+  /// that a configure rewrites with the thread joined, not an atomic.
   [[nodiscard]] bool IsDecelPlannerConfigured() const noexcept {
     return planner_cycle_.DecelConfigured();
   }

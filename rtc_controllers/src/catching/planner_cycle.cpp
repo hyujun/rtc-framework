@@ -23,16 +23,24 @@ void PlannerCycle::RunDecel(const PlannerRtState& rt, PlannerCycleRecord& rec) n
   if (post_decel_hook_ != nullptr) {
     post_decel_hook_(post_decel_context_);
   }
-  // Stamped BEFORE the re-check: a reset landing after the re-check sets the
-  // RT's reset floor later than this stamp, so JudgeDecelPlan refuses the
-  // segment (kBeforeReset) — stamping after would let it through.
+  // Stamped BEFORE the re-check, so a stamp never postdates what the re-check
+  // saw. It is NOT what protects the RT from a reset that lands after the
+  // re-check: the E-STOP path takes its reset floor at the START of the tick
+  // that resets, which can precede this stamp. That guard is the plan match
+  // (JudgeDecelPlan kPlan): the reset drops plan_active and plan ids are
+  // monotone, so the segment names a plan the RT no longer follows — and the
+  // next wake withdraws it (reset_seen in Run). Moving the floor to the reset
+  // instant is an E-STOP-path change, E1-F04's (E-8).
   const std::int64_t publish_ns = clock_();
   const PlannerRtState rt_now = io_.rt->Load();
   const auto m = static_cast<Mode>(rt_now.mode);
   const bool decel_mode = m == Mode::kCommitted || m == Mode::kClosing || m == Mode::kDecel;
   if (!rt_now.valid || !decel_mode || rt_now.reset_epoch != rt.reset_epoch ||
       rt_now.activation_generation != rt.activation_generation || !rt_now.plan_active ||
-      rt_now.plan_id != rt.plan_id || rt_now.plan_t_c_ns != rt.plan_t_c_ns) {
+      rt_now.plan_id != rt.plan_id || rt_now.plan_t_c_ns != rt.plan_t_c_ns ||
+      // x0 path (i) predicted from the segment the RT followed at the first
+      // load; a switch or a drop since then makes that x0 stale.
+      rt_now.decel_active != rt.decel_active || rt_now.decel_seq != rt.decel_seq) {
     rec.decel.outcome = DecelOutcome::kSuperseded;
     return;
   }
@@ -96,7 +104,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     search_.ResetTrial();
     decel_.ResetTrial();
     // The planner is the decel box's only writer, so withdrawing the ended
-    // trial's segment is its job (the RT's reset floor refuses it as well).
+    // trial's segment is its job (the RT's plan match refuses it as well).
     if (io_.decel != nullptr) {
       io_.decel->Store(DecelPlanSnapshot{});
     }

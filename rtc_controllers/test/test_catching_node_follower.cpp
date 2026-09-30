@@ -92,6 +92,9 @@ std::size_t Idx(int k, int j) {
 // Consistent nodes: integrate a random piecewise-constant jerk from x0 (model
 // order), store in DEVICE order. Consistency is what makes the closed form
 // exact (jerk_segment.hpp), so C² is a property the sampler must reproduce.
+// Node N is then put at rest (a published segment's terminal equality, which
+// ValidateDecelNodes requires): only the last segment becomes inconsistent,
+// and the continuity check below stops short of it.
 DecelPlanSnapshot MakePlan(const Eigen::VectorXd& q0_model, std::uint32_t seed,
                            int n_nodes = kNodes, int k0 = 0) {
   const int nv = static_cast<int>(q0_model.size());
@@ -121,6 +124,12 @@ DecelPlanSnapshot MakePlan(const Eigen::VectorXd& q0_model, std::uint32_t seed,
       p.q[Idx(k, d)] = q[m];
       p.qd[Idx(k, d)] = qd[m];
       p.qdd[Idx(k, d)] = qdd[m];
+    }
+    if (k == n_nodes) {
+      for (int j = 0; j < nv; ++j) {
+        p.qd[Idx(k, j)] = 0.0;
+        p.qdd[Idx(k, j)] = 0.0;
+      }
     }
     for (int m = 0; m < nv; ++m) {
       const double u = jerk(rng);
@@ -189,13 +198,22 @@ TEST(DecelPayload, ValidateRejectsEachMalformedField) {
   expect_rejected([](DecelPlanSnapshot& p) { p.dt_ns = 0; }, "dt 0");
   expect_rejected([](DecelPlanSnapshot& p) { p.k0 = -1; }, "negative grid index");
   expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns = p.t_c_ns - 1; }, "node 0 before t_c");
+  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns = p.t_c_ns + p.dt_ns; }, "t0 off k0's point");
+  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns += 1; }, "t0 off the grid by 1 ns");
+  // Node N must be at rest: the sampler holds it past the end.
+  expect_rejected([](DecelPlanSnapshot& p) { p.qd[Idx(p.n_nodes, p.nv - 1)] = 2e-3; },
+                  "node N moving");
+  expect_rejected([](DecelPlanSnapshot& p) { p.qdd[Idx(p.n_nodes, 0)] = -2e-3; },
+                  "node N accelerating");
   // A NaN in each block, at the LAST used node and joint — a validator that
   // stopped one short of n_nodes or nv would pass it.
   expect_rejected([](DecelPlanSnapshot& p) { p.q[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "q NaN");
   expect_rejected([](DecelPlanSnapshot& p) { p.qd[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "qd NaN");
   expect_rejected([](DecelPlanSnapshot& p) { p.qdd[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "qdd NaN");
-  // Entries past the used shape are not the validator's business.
+  // Within the rest tolerance is at rest; entries past the used shape are not
+  // the validator's business.
   DecelPlanSnapshot p = good;
+  p.qd[Idx(p.n_nodes, 0)] = 5e-4;
   p.q[Idx(p.n_nodes + 1, 0)] = kNan;
   p.q[Idx(0, p.nv)] = kNan;
   EXPECT_TRUE(ValidateDecelNodes(p));

@@ -159,7 +159,10 @@ struct PlanSnapshot {
 /// replan (MD-10, MD-31) — never "t_c" by assumption. All grid arithmetic is
 /// integer ns so that t0_ns lands exactly on t_c + k·dt_ns.
 struct DecelPlanSnapshot {
-  ProvenanceToken token{};        // the trajectory the catch plan was built from
+  // activation_generation and track generation of the followed plan, as the
+  // RT reported them; snapshot_sequence / traj_recv_ns stay 0 (the planner
+  // does not see the plan's own token after COMMITTED).
+  ProvenanceToken token{};
   std::uint64_t rt_iteration{0};  // RT state the stop was predicted from (D-22)
   std::int64_t rt_state_ns{0};
   std::int64_t publish_ns{0};
@@ -186,20 +189,32 @@ struct DecelPlanSnapshot {
   bool valid{false};
 };
 
+/// |q̇|, |q̈| bound on node N of a published segment. The sampler HOLDS node N
+/// past the end (jerk_segment.hpp), so a moving node N would be followed as a
+/// frozen velocity; the MPC's terminal equality makes it zero to solver
+/// tolerance, far below this.
+inline constexpr double kDecelRestTol = 1e-3;
+
 /// Whether a DecelPlanSnapshot's shape and node values can be sampled: sizes
-/// inside the capacities, a positive spacing, node 0 not before t_c, and every
-/// used node entry finite. The RT runs this once per NEW payload (by
+/// inside the capacities, a positive spacing, node 0 ON the grid t_c + k0·Δ
+/// (k0 ≥ 0), node N at rest (kDecelRestTol), and every used node entry
+/// finite. The RT runs this once per NEW payload (by
 /// decel_seq), not per tick — the sampler itself does not check node values
 /// (jerk_segment.hpp), so an unvalidated NaN node would reach the CLIK target.
 [[nodiscard]] inline bool ValidateDecelNodes(const DecelPlanSnapshot& p) noexcept {
   if (!p.valid || p.nv < 1 || p.nv > kMaxDecelNv || p.n_nodes < 1 || p.n_nodes > kMaxDecelNodes ||
-      p.dt_ns <= 0 || p.k0 < 0 || p.t0_ns < p.t_c_ns) {
+      p.dt_ns <= 0 || p.k0 < 0 || p.k0 > kMaxDecelNodes ||
+      p.t0_ns != p.t_c_ns + static_cast<std::int64_t>(p.k0) * p.dt_ns) {
     return false;
   }
   for (int k = 0; k <= p.n_nodes; ++k) {
     for (int j = 0; j < p.nv; ++j) {
       const auto i = static_cast<std::size_t>(k * kMaxDecelNv + j);
       if (!std::isfinite(p.q[i]) || !std::isfinite(p.qd[i]) || !std::isfinite(p.qdd[i])) {
+        return false;
+      }
+      if (k == p.n_nodes &&
+          !(std::fabs(p.qd[i]) <= kDecelRestTol && std::fabs(p.qdd[i]) <= kDecelRestTol)) {
         return false;
       }
     }

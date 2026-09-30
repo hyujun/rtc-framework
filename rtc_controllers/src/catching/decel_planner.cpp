@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 namespace rtc::catching {
 
@@ -37,6 +38,8 @@ const char* DecelOutcomeName(DecelOutcome o) noexcept {
       return "off";
     case DecelOutcome::kNoState:
       return "no_state";
+    case DecelOutcome::kStaleState:
+      return "stale_state";
     case DecelOutcome::kNotDue:
       return "not_due";
     case DecelOutcome::kUpToDate:
@@ -83,9 +86,11 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
     return fail("the arm model is missing or its joint count is outside 1.." +
                 std::to_string(kMaxDecelNv) + " (kMaxDecelNv)");
   }
+  // Upper bounds keep every seconds → ns conversion far from int64 overflow.
   if (!std::isfinite(consts.eta_v) || !(consts.eta_v > 0.0) || consts.eta_v > 1.0 ||
-      !std::isfinite(consts.t_arm_s) || consts.t_arm_s < 0.0 || !std::isfinite(consts.control_dt) ||
-      !(consts.control_dt > 0.0) || !std::isfinite(consts.budget_s) || !(consts.budget_s > 0.0)) {
+      !std::isfinite(consts.t_arm_s) || consts.t_arm_s < 0.0 || consts.t_arm_s > 1.0 ||
+      !std::isfinite(consts.control_dt) || !(consts.control_dt > 0.0) || consts.control_dt > 1.0 ||
+      !std::isfinite(consts.budget_s) || !(consts.budget_s > 0.0) || consts.budget_s > 1.0) {
     return fail("eta_v, T_arm, control_dt or budget_s is outside its range");
   }
   if (params.k_max < 0 || params.k_max > kMaxDecelReplans || params.DtNs() <= 0) {
@@ -188,6 +193,12 @@ void DecelPlanner::UpdateAccelEstimate(const PlannerRtState& rt) noexcept {
   // reference's noise and its reseed steps.
   const std::int64_t span = rt.rt_state_ns - prev_rt_ns_;
   qdd_est_valid_ = false;
+  // Too close to the previous sample: keep that sample and wait — replacing
+  // it would keep every span under the floor when wakes come faster than it
+  // (a burst of trajectory signals), and the estimate would never run.
+  if (prev_valid_ && span >= 0 && span < kQddMinSpanNs) {
+    return;
+  }
   if (prev_valid_ && span >= kQddMinSpanNs && span <= kQddMaxSpanNs && qdd_cap_valid_) {
     const double inv = 1e9 / static_cast<double>(span);
     bool finite = true;
@@ -238,8 +249,8 @@ bool DecelPlanner::PredictX0(const PlannerRtState& rt, std::int64_t t_eff_ns,
       in.qdd0[m] = a;
     }
   }
-  // Finiteness BEFORE the projection: std::clamp would launder a NaN into a
-  // bound.
+  // Finiteness BEFORE the projection: a NaN passes std::clamp unchanged
+  // (every comparison is false), so the projection is no filter for it.
   if (!in.q0.allFinite() || !in.qd0.allFinite() || !in.qdd0.allFinite() ||
       !std::isfinite(rec.h_s)) {
     return false;
@@ -297,7 +308,9 @@ void DecelPlanner::Pack(const PlannerRtState& rt, int k, std::int64_t t_eff_ns,
   }
   out.slack_max = r.slack_max;
   out.slack_terminal_max = r.slack_terminal_max;
-  out.tau_ratio_max = r.tau_ratio_max;
+  // NaN = not evaluated (torque rows off): the core leaves its field stale then.
+  out.tau_ratio_max =
+      r.torque_evaluated ? r.tau_ratio_max : std::numeric_limits<double>::quiet_NaN();
   out.valid = true;
 }
 
@@ -325,6 +338,11 @@ bool DecelPlanner::Plan(const PlannerRtState& rt, DecelPlanSnapshot& out,
   // wake's tail must not count against the decel solve.
   const std::int64_t start = clock_();
   const std::int64_t now_lead = start + t_arm_ns_;
+  const std::int64_t state_age = start - rt.rt_state_ns;
+  if (state_age < 0 || state_age > kDecelMaxRtStateAgeNs) {
+    rec.outcome = DecelOutcome::kStaleState;
+    return false;
+  }
   const std::int64_t t_c = rt.plan_t_c_ns;
   if (!have_published_ && t_c - now_lead > t_pre_ns_) {
     rec.outcome = DecelOutcome::kNotDue;

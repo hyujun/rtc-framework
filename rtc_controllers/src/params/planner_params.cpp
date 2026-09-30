@@ -310,8 +310,11 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
         Reject(Key("decel_mpc.horizon.blocks[" + std::to_string(i) + "]") +
                " must be an integer, got " + Spelling(b[i]));
       }
-      if (v < 1) {
-        Reject(Key("decel_mpc.horizon.blocks[" + std::to_string(i) + "]") + " must be >= 1");
+      // Bounded above too: Σ is compared with n_nodes, and unbounded entries
+      // could overflow the sum back into range.
+      if (v < 1 || v > kMaxDecelNodes) {
+        Reject(Key("decel_mpc.horizon.blocks[" + std::to_string(i) + "]") + " must be in [1, " +
+               std::to_string(kMaxDecelNodes) + "]");
       }
       d.blocks[i] = v;
     }

@@ -283,6 +283,10 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("planner.decel_mpc.horizon.n_nodes", static_cast<std::int64_t>(decel.n_nodes),
           "decel MPC nodes N_s; N_s * dt_s is the stopping time (MD-21)");
   declare("planner.decel_mpc.horizon.dt_s", decel.dt_s, "decel MPC node spacing dt_s [s]");
+  declare("planner.decel_mpc.horizon.blocks",
+          std::vector<std::int64_t>(decel.blocks.begin(), decel.blocks.begin() + decel.n_blocks),
+          "decel MPC move-blocking pattern of the pre-catch solve (sum = n_nodes)");
+  declare("planner.decel_mpc.m_q", decel.m_q, "decel MPC position margin inside the limits [rad]");
   declare("planner.decel_mpc.replan.t_pre_s", decel.t_pre_s,
           "decel MPC first solve waits until t_c - now_lead <= t_pre_s [s] (MD-26)");
   declare("planner.decel_mpc.replan.k_max", static_cast<std::int64_t>(decel.k_max),
@@ -1642,6 +1646,9 @@ bool DemoCatchingController::SetupPlanner() {
     RCLCPP_ERROR(logger_, "planner: could not bind the plan/trajectory boxes");
     return false;
   }
+  // Dropped on every configure (the thread is joined above): a re-configure
+  // with the planner or the decel MPC off must not report the previous one.
+  planner_cycle_.ClearDecel();
   if (!planner_params_.enabled) {
     return true;
   }
@@ -1669,7 +1676,6 @@ bool DemoCatchingController::SetupPlanner() {
   }
   // ── The search's model (S6-B, R-3) ────────────────────────────────────────
   planner_cycle_.ClearSearch();
-  planner_cycle_.ClearDecel();
   planner_handle_.reset();
   if (!builder_) {
     RCLCPP_WARN(logger_,

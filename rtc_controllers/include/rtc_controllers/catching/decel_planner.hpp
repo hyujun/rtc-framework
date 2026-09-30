@@ -64,10 +64,18 @@
 
 namespace rtc::catching {
 
+/// Largest age of the RT's report (steady now − rt_state_ns) the decel step
+/// extrapolates from. The RT stores every tick, so anything older means the
+/// tick stalled; 50 ms is one default planner wake timeout, 25 ticks at 2 ms.
+inline constexpr std::int64_t kDecelMaxRtStateAgeNs = 50'000'000;
+
 /// What one decel step did (the planner events CSV's decel columns).
 enum class DecelOutcome : std::uint8_t {
-  kOff = 0,           ///< not attempted: not configured, or not a decel mode
-  kNoState,           ///< no followed plan / t_c, unseeded command, or a size mismatch
+  kOff = 0,  ///< not attempted: not configured, or not a decel mode
+  kNoState,  ///< no followed plan / t_c, unseeded command, or a size mismatch
+  /// The RT's report is older than kDecelMaxRtStateAgeNs (or from the
+  /// future): extrapolating it to t_eff would be a guess (an RT stall).
+  kStaleState,
   kNotDue,            ///< first solve waits for t_c − now_lead ≤ t_pre (MD-26)
   kUpToDate,          ///< the published segment already starts at this t_eff or later
   kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s (MD-31)

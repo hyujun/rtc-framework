@@ -5,7 +5,7 @@
 //   1 pre-computed before t_c        WaitsForTPreThenSolvesCold,
 //                                    PublishedSegmentIsDeviceOrderAndEndsAtTheStop
 //   2 continuity / fixed stop end    PostCatchReplanContinuesTheSegment (MD-31)
-//   3 fail-closed publish gate       OverBudgetWithholds, SlackOverThresholdWithholds,
+//   3 fail-closed publish gate       OverBudgetWithholds, EachSlackThresholdWithholdsOnItsOwn,
 //                                    PastTheReplanWindowPublishesNothing, ...
 //   4 within budget at N_s = 14      ShippedHorizonTiming6R / 7R (MD-24, MD-26)
 //   5 no allocation outside ProxQP   AllocatesNothingOutsideProxQp (MD-23)
@@ -563,7 +563,9 @@ TEST(DecelPlanner, PostCatchReplanContinuesTheSegment) {
   }
   EXPECT_LT(node0, 1e-9) << "node 0 must be the followed segment at t_eff";
   EXPECT_LT(drift, 5e-3) << "a replan of the same stop moved the path";
-  RecordProperty("replan_path_drift_rad", std::to_string(drift));
+  char drift_s[32];
+  std::snprintf(drift_s, sizeof(drift_s), "%.3e", drift);
+  RecordProperty("replan_path_drift_rad", drift_s);
 }
 
 TEST(DecelPlanner, PostCatchWithoutAPublishSolvesColdToTheSameEnd) {
@@ -574,6 +576,19 @@ TEST(DecelPlanner, PostCatchWithoutAPublishSolvesColdToTheSameEnd) {
   ASSERT_TRUE(p.Step(Rt(p.arm, t_c, now - 2 * kMs, p.arm.q_nominal, EntryVelocity(6))))
       << DecelOutcomeName(p.rec.outcome);
   EXPECT_TRUE(p.rec.presolved);
+  EXPECT_EQ(p.out.t0_ns + p.out.n_nodes * p.out.dt_ns, t_c + 14 * kDt);
+}
+
+TEST(DecelPlanner, TheLastReplanGridPointStillPublishes) {
+  // now_lead = t_c + 70 ms → earliest t_c + 94 ms → k = 4 = k_max.
+  Planner p(Arm6());
+  const std::int64_t t_c = kT0 + kTArm;
+  const std::int64_t now = t_c - kTArm + 70 * kMs;
+  SetClock(now);
+  ASSERT_TRUE(p.Step(Rt(p.arm, t_c, now - 2 * kMs, p.arm.q_nominal, EntryVelocity(6))))
+      << DecelOutcomeName(p.rec.outcome);
+  EXPECT_EQ(p.rec.k, 4);
+  EXPECT_EQ(p.out.n_nodes, 10);
   EXPECT_EQ(p.out.t0_ns + p.out.n_nodes * p.out.dt_ns, t_c + 14 * kDt);
 }
 
@@ -605,19 +620,46 @@ TEST(DecelPlanner, OverBudgetWithholds) {
   SetClock(kT0);
 }
 
-TEST(DecelPlanner, SlackOverThresholdWithholds) {
-  // η'_τ 0.05: the static torque alone exceeds it, so the published slack
-  // would be large — withheld, and recorded as a finite slack over threshold.
-  DecelPlannerParams params{};
-  params.eta_tau = 0.05;
-  Planner p(Arm6(), params);
+TEST(DecelPlanner, EachSlackThresholdWithholdsOnItsOwn) {
+  // η'_τ 0.05: the static torque at the stop posture alone exceeds it, so both
+  // slacks are positive. The solve is deterministic, so each threshold can be
+  // put just below (withheld) or exactly at (published, `<=`) its own value
+  // while the other is wide open — each comparison has to fire alone.
+  const std::int64_t t_c = kT0 + kTArm + 80 * kMs;
+  auto run = [&](double slack_max, double slack_terminal_max) {
+    DecelPlannerParams params{};
+    params.eta_tau = 0.05;
+    params.slack_max = slack_max;
+    params.slack_terminal_max = slack_terminal_max;
+    Planner p(Arm6(), params);
+    SetClock(kT0);
+    static_cast<void>(p.Step(Rt(p.arm, t_c, kT0 - 2 * kMs, p.arm.q_nominal, EntryVelocity(6))));
+    return p.rec;
+  };
+  const DecelRecord open = run(1.0, 1.0);
+  ASSERT_EQ(open.outcome, DecelOutcome::kReady)
+      << DecelOutcomeName(open.outcome) << " " << DecelMpcReasonName(open.core_reason);
+  ASSERT_GT(open.slack_terminal_max, 1e-3) << "fixture premise: a positive terminal slack";
+  ASSERT_GT(open.slack_max, 1e-3);
+  const double s = open.slack_max;
+  const double st = open.slack_terminal_max;
+  EXPECT_EQ(run(s - 1e-6, 1.0).outcome, DecelOutcome::kSlack) << "slack_max threshold";
+  EXPECT_EQ(run(1.0, st - 1e-6).outcome, DecelOutcome::kSlack) << "slack_terminal_max threshold";
+  EXPECT_EQ(run(s, st).outcome, DecelOutcome::kReady) << "at the thresholds is within them";
+}
+
+TEST(DecelPlanner, StaleRtReportIsNotExtrapolated) {
+  Planner p(Arm6());
   SetClock(kT0);
   const std::int64_t t_c = kT0 + kTArm + 80 * kMs;
-  EXPECT_FALSE(p.Step(Rt(p.arm, t_c, kT0 - 2 * kMs, p.arm.q_nominal, EntryVelocity(6))));
-  ASSERT_EQ(p.rec.outcome, DecelOutcome::kSlack)
-      << DecelOutcomeName(p.rec.outcome) << " " << DecelMpcReasonName(p.rec.core_reason);
-  EXPECT_TRUE(std::isfinite(p.rec.slack_max));
-  EXPECT_GT(std::max(p.rec.slack_max, p.rec.slack_terminal_max), 0.1);
+  EXPECT_FALSE(p.Step(Rt(p.arm, t_c, kT0 - rtc::catching::kDecelMaxRtStateAgeNs - 1,
+                         p.arm.q_nominal, EntryVelocity(6))));
+  EXPECT_EQ(p.rec.outcome, DecelOutcome::kStaleState) << "an RT stall";
+  EXPECT_FALSE(p.Step(Rt(p.arm, t_c, kT0 + 1, p.arm.q_nominal, EntryVelocity(6))));
+  EXPECT_EQ(p.rec.outcome, DecelOutcome::kStaleState) << "a report from the future";
+  EXPECT_TRUE(p.Step(Rt(p.arm, t_c, kT0 - rtc::catching::kDecelMaxRtStateAgeNs, p.arm.q_nominal,
+                        EntryVelocity(6))))
+      << DecelOutcomeName(p.rec.outcome);
 }
 
 TEST(DecelPlanner, UnusableStateIsNoState) {
@@ -675,23 +717,53 @@ TEST(DecelPlanner, AccelerationComesFromTheWakeToWakeDifference) {
   EXPECT_EQ(q.out.qdd[Idx(0, d)], 0.0);
 }
 
+TEST(DecelPlanner, AccelerationEstimateIsCappedAndSurvivesFastWakes) {
+  // Wakes 3 ms apart (a burst of trajectory signals), each under the 5 ms
+  // floor: the reference sample must stay the first one, so the third wake
+  // (6 ms after it) still gets an estimate — replacing it on every wake would
+  // leave every span at 3 ms and the estimate dead. The 1 rad/s step over
+  // 6 ms (≈167 rad/s²) is clamped to the fixture's 20 rad/s² cap.
+  Planner p(Arm6());
+  const std::int64_t t_c = kT0 + kTArm + 105 * kMs;  // due only at the third wake
+  const Eigen::VectorXd qd0 = EntryVelocity(6);
+  Eigen::VectorXd qd1 = qd0;
+  qd1[1] += 1.0;
+  SetClock(kT0);
+  EXPECT_FALSE(p.Step(Rt(p.arm, t_c, kT0, p.arm.q_nominal, qd0)));
+  SetClock(kT0 + 3 * kMs);
+  EXPECT_FALSE(p.Step(Rt(p.arm, t_c, kT0 + 3 * kMs, p.arm.q_nominal, qd0)));
+  EXPECT_EQ(p.rec.outcome, DecelOutcome::kNotDue);
+  SetClock(kT0 + 6 * kMs);
+  ASSERT_TRUE(p.Step(Rt(p.arm, t_c, kT0 + 6 * kMs, p.arm.q_nominal, qd1)))
+      << DecelOutcomeName(p.rec.outcome) << " " << DecelMpcReasonName(p.rec.core_reason);
+  EXPECT_TRUE(p.rec.qdd_trusted);
+  EXPECT_DOUBLE_EQ(p.out.qdd[Idx(0, Dev(p.arm, 1))], 20.0);
+}
+
 TEST(DecelPlanner, VelocityIsProjectedIntoTheBox) {
   Planner p(Arm6());
   SetClock(kT0);
+  // Model joint 0 (rating 2 rad/s, box 1.8) sits in device slot 2, whose own
+  // model joint is rated 3 rad/s (box 2.7): a planner that skipped the
+  // device↔model map would read 2.0 as within the box and publish it.
+  ASSERT_NE(Dev(p.arm, 0), 0);
   Eigen::VectorXd qd = EntryVelocity(6);
-  qd[4] = 3.0;  // device rating 3 rad/s, box η_v·3 = 2.7
+  qd[0] = 2.0;
   const std::int64_t t_c = kT0 + kTArm + 50 * kMs;
   ASSERT_TRUE(p.Step(Rt(p.arm, t_c, kT0, p.arm.q_nominal, qd))) << DecelOutcomeName(p.rec.outcome);
   EXPECT_TRUE(p.rec.x0_clamped);
   EXPECT_TRUE(p.out.x0_clamped);
-  EXPECT_DOUBLE_EQ(p.out.qd[Idx(0, Dev(p.arm, 4))], 0.9 * 3.0);
+  EXPECT_DOUBLE_EQ(p.out.qd[Idx(0, Dev(p.arm, 0))], 0.9 * 2.0);
+  for (int m = 1; m < 6; ++m) {
+    EXPECT_DOUBLE_EQ(p.out.qd[Idx(0, Dev(p.arm, m))], qd[m]) << "unclamped joint " << m;
+  }
 }
 
 TEST(DecelPlanner, NonFiniteStateIsRefusedBeforeTheProjection) {
   Planner p(Arm6());
   SetClock(kT0);
   Eigen::VectorXd qd = EntryVelocity(6);
-  qd[2] = kNan;  // std::clamp would turn this into a bound
+  qd[2] = kNan;  // std::clamp passes a NaN through — only the check stops it
   const std::int64_t t_c = kT0 + kTArm + 50 * kMs;
   EXPECT_FALSE(p.Step(Rt(p.arm, t_c, kT0, p.arm.q_nominal, qd)));
   EXPECT_EQ(p.rec.outcome, DecelOutcome::kInputNonFinite);
@@ -707,9 +779,20 @@ TEST(DecelPlanner, ANewFollowedPlanStartsANewStop) {
   const std::int64_t t_c2 = kT0 + kTArm + 400 * kMs;
   EXPECT_FALSE(p.Step(Rt(p.arm, t_c2, kT0, p.arm.q_nominal, EntryVelocity(6), 8)));
   EXPECT_EQ(p.rec.outcome, DecelOutcome::kNotDue) << DecelOutcomeName(p.rec.outcome);
-  // A trial reset drops the published stop too.
+}
+
+TEST(DecelPlanner, ATrialResetDropsThePublishedStop) {
+  Planner p(Arm6());
+  SetClock(kT0);
+  const std::int64_t t_c = kT0 + kTArm + 50 * kMs;
+  const PlannerRtState rt = Rt(p.arm, t_c, kT0, p.arm.q_nominal, EntryVelocity(6));
+  ASSERT_TRUE(p.Step(rt));
+  p.Publish(1, kT0);
+  EXPECT_FALSE(p.Step(rt));
+  EXPECT_EQ(p.rec.outcome, DecelOutcome::kUpToDate) << "same plan, same grid point";
   p.planner.ResetTrial();
-  EXPECT_TRUE(p.Step(Rt(p.arm, t_c, kT0, p.arm.q_nominal, EntryVelocity(6))));
+  EXPECT_TRUE(p.Step(rt)) << "after a reset the same plan is a new stop: "
+                          << DecelOutcomeName(p.rec.outcome);
 }
 
 // ── 3b. The cycle's decel step (MD-29) ───────────────────────────────────────
@@ -808,6 +891,13 @@ TEST(DecelCycle, DropsASolveTheFollowedPlanLeft) {
            [](PlannerRtState& s) { s.reset_epoch = 2; },
            [](PlannerRtState& s) { s.activation_generation = 4; },
            [](PlannerRtState& s) { s.mode = static_cast<std::uint8_t>(Mode::kHold); },
+           [](PlannerRtState& s) { s.plan_t_c_ns += 1; },
+           [](PlannerRtState& s) { s.plan_active = false; },
+           [](PlannerRtState& s) { s.valid = false; },
+           [](PlannerRtState& s) {
+             s.decel_active = true;
+             s.decel_seq = 9;
+           },
        }) {
     PlanSwap swap{&rig->boxes.rt, rt};
     mutate(swap.next);
@@ -886,6 +976,16 @@ TEST(DecelPlanner, AllocatesNothingOutsideProxQp) {
   const int n = 7;
   const std::int64_t t_c = kT0 + kTArm + 60 * kMs;
   SetClock(kT0);
+  // Before t_pre: every allocation here would be ours.
+  {
+    const std::int64_t far = kT0 + kTArm + 300 * kMs;
+    SetClock(kT0);
+    bool ok_far = true;
+    const Counts c_far =
+        GatedStep(p, Rt(p.arm, far, kT0 - 2 * kMs, p.arm.q_nominal, EntryVelocity(n)), ok_far);
+    EXPECT_EQ(p.rec.outcome, DecelOutcome::kNotDue);
+    EXPECT_EQ(c_far.op_new + c_far.c_malloc, 0U) << "not-due path";
+  }
   // Warm-up: the cold path once, published.
   ASSERT_TRUE(p.Step(Rt(p.arm, t_c, kT0 - 2 * kMs, p.arm.q_nominal, EntryVelocity(n))));
   p.Publish(1, kT0);
