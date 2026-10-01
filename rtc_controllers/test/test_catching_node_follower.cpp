@@ -9,6 +9,9 @@
 //                                   (+ ClikResidualIsRecorded — informational)
 //   3 RT: no allocation, cost       SampleAllocatesNothing,
 //                                   ContendedCopyNeverTearsAndIsRecorded
+// E1-F08 (#661) adds §4: segments with pre-catch nodes at a second spacing
+// (MD-60) — node times, validation, sampling against an integrating oracle,
+// shape refusal, and the RT's accept_pre_catch switch.
 //
 // Fixtures break the representation symmetries a mapping bug would hide in:
 // the device order is a non-identity permutation of the model order, and the
@@ -17,6 +20,7 @@
 #include "rtc_controllers/catching/decel_mpc.hpp"  // kMaxDecelNodes seen through the core too
 #include "rtc_controllers/catching/jerk_segment.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
+#include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
@@ -618,6 +622,294 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
   };
   run(std::chrono::microseconds(0), 1U, "back_to_back");
   run(std::chrono::microseconds(1000), 1000U, "writer_1khz");
+}
+
+// ── 4. Two spacings: APPROACH–stop segments (E1-F08 #661, MD-60) ────────────
+//
+// A segment with pre-catch nodes carries n_pre intervals of Δ_pre before t_c
+// and n_nodes − n_pre of Δ_s after it (MD-54: 0.1 s and 0.05 s). The oracle
+// below integrates the jerks the builder drew, on its own list of interval
+// durations — it never reads the payload's spacing fields — so a sampler that
+// read the segment at one spacing, put the catch node one column off, or used
+// Δ_pre after t_c disagrees with it by O(1).
+
+constexpr std::int64_t kDtPreNs = 100'000'000;  // Δ_pre 0.1 s (MD-54)
+constexpr std::int64_t kDtStopNs = 50'000'000;  // Δ_s 0.05 s (MD-54)
+
+struct MixedPlan {
+  DecelPlanSnapshot p{};
+  std::vector<double> dt_s;           // interval durations, node k → k+1
+  std::vector<Eigen::VectorXd> jerk;  // model order, one per interval
+  Eigen::VectorXd q0, qd0, qdd0;      // node 0, model order
+};
+
+// Consistent nodes as MakePlan, with the two spacings; node N then put at rest
+// (only the last interval becomes inconsistent).
+MixedPlan MakeMixedPlan(const Eigen::VectorXd& q0_model, std::uint32_t seed, int n_pre,
+                        int n_stop) {
+  const int nv = static_cast<int>(q0_model.size());
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<double> jerk(-10.0, 10.0);
+  std::uniform_real_distribution<double> vel(-0.5, 0.5);
+  MixedPlan m;
+  DecelPlanSnapshot& p = m.p;
+  p.valid = true;
+  p.nv = nv;
+  p.n_pre = n_pre;
+  p.n_nodes = n_pre + n_stop;
+  p.dt_ns = kDtStopNs;
+  p.dt_pre_ns = kDtPreNs;
+  p.k0 = 0;
+  p.t_c_ns = kTc;
+  p.t0_ns = kTc - static_cast<std::int64_t>(n_pre) * kDtPreNs;
+  p.plan_id = 7;
+  p.decel_seq = 1;
+  Eigen::VectorXd q = q0_model;
+  Eigen::VectorXd qd(nv);
+  Eigen::VectorXd qdd = Eigen::VectorXd::Zero(nv);
+  for (int j = 0; j < nv; ++j) {
+    qd[j] = vel(rng);
+  }
+  m.q0 = q;
+  m.qd0 = qd;
+  m.qdd0 = qdd;
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    for (int mj = 0; mj < nv; ++mj) {
+      const int d = kDeviceOfModel[static_cast<std::size_t>(mj)];
+      p.q[Idx(k, d)] = q[mj];
+      p.qd[Idx(k, d)] = qd[mj];
+      p.qdd[Idx(k, d)] = qdd[mj];
+    }
+    if (k == p.n_nodes) {
+      for (int j = 0; j < nv; ++j) {
+        p.qd[Idx(k, j)] = 0.0;
+        p.qdd[Idx(k, j)] = 0.0;
+      }
+      break;
+    }
+    const double dt = k < n_pre ? 0.1 : 0.05;
+    Eigen::VectorXd u(nv);
+    for (int mj = 0; mj < nv; ++mj) {
+      u[mj] = jerk(rng);
+      q[mj] += qd[mj] * dt + 0.5 * qdd[mj] * dt * dt + u[mj] * dt * dt * dt / 6.0;
+      qd[mj] += qdd[mj] * dt + 0.5 * u[mj] * dt * dt;
+      qdd[mj] += u[mj] * dt;
+    }
+    m.dt_s.push_back(dt);
+    m.jerk.push_back(u);
+  }
+  return m;
+}
+
+// State at t seconds after node 0 by integrating the drawn jerks (model order).
+void Oracle(const MixedPlan& m, double t, Eigen::VectorXd& q, Eigen::VectorXd& qd,
+            Eigen::VectorXd& qdd) {
+  q = m.q0;
+  qd = m.qd0;
+  qdd = m.qdd0;
+  for (std::size_t k = 0; k < m.dt_s.size(); ++k) {
+    const double tau = std::min(t, m.dt_s[k]);
+    const Eigen::VectorXd& u = m.jerk[k];
+    q += qd * tau + 0.5 * qdd * tau * tau + u * (tau * tau * tau / 6.0);
+    qd += qdd * tau + 0.5 * u * tau * tau;
+    qdd += u * tau;
+    t -= tau;
+    if (t <= 0.0) {
+      return;
+    }
+  }
+}
+
+TEST(DecelPayload, NodeTimesFollowTheTwoSpacings) {
+  const MixedPlan m = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 41, 3, 7);
+  const DecelPlanSnapshot& p = m.p;
+  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 0), kTc - 3 * kDtPreNs);
+  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 2), kTc - kDtPreNs);
+  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 3), kTc);  // the catch node
+  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 4), kTc + kDtStopNs);
+  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 10), kTc + 7 * kDtStopNs);
+  // Stop-only: t0 + k·Δ, as before.
+  const DecelPlanSnapshot s = MakePlan(Eigen::VectorXd::Constant(6, 0.3), 1, 10, 4);
+  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(s, 0), kTc + 4 * kDtNs);
+  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(s, 10), kTc + 14 * kDtNs);
+}
+
+TEST(DecelPayload, ValidateAcceptsAndRejectsPreCatchShapes) {
+  const DecelPlanSnapshot good = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 42, 6, 7).p;
+  ASSERT_TRUE(ValidateDecelNodes(good));
+  EXPECT_TRUE(ValidateDecelNodes(MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 43, 1, 1).p));
+  auto expect_rejected = [&](auto mutate, const char* what) {
+    DecelPlanSnapshot p = good;
+    mutate(p);
+    EXPECT_FALSE(ValidateDecelNodes(p)) << what;
+  };
+  expect_rejected([](DecelPlanSnapshot& p) { p.n_pre = -1; }, "negative n_pre");
+  expect_rejected([](DecelPlanSnapshot& p) { p.n_pre = p.n_nodes; }, "no stop interval");
+  expect_rejected([](DecelPlanSnapshot& p) { p.dt_pre_ns = 0; }, "dt_pre 0");
+  expect_rejected([](DecelPlanSnapshot& p) { p.dt_pre_ns = -kDtPreNs; }, "negative dt_pre");
+  expect_rejected(
+      [](DecelPlanSnapshot& p) {
+        p.dt_pre_ns = rtc::catching::kMaxDecelDtPreNs + 1;
+        p.t0_ns = p.t_c_ns - p.n_pre * p.dt_pre_ns;
+      },
+      "dt_pre over its bound");
+  expect_rejected([](DecelPlanSnapshot& p) { p.k0 = 1; }, "k0 with pre-catch nodes");
+  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns += 1; }, "t0 off by 1 ns");
+  // Node 0 placed as if the whole segment were at Δ_s (a uniform-spacing writer).
+  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns = p.t_c_ns - p.n_pre * p.dt_ns; },
+                  "t0 at the stop spacing");
+  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns = p.t_c_ns; }, "t0 at t_c");
+  expect_rejected([](DecelPlanSnapshot& p) { p.qd[Idx(p.n_nodes, 0)] = 2e-3; }, "node N moving");
+  expect_rejected([](DecelPlanSnapshot& p) { p.q[Idx(0, p.nv - 1)] = kNan; }, "pre node NaN");
+}
+
+TEST_F(NodeFollowerTest, TwoSpacingSampleMatchesTheIntegratedJerk) {
+  for (const int n_pre : {1, 2, 6}) {
+    const MixedPlan m =
+        MakeMixedPlan(arm_.q_nominal, 50U + static_cast<std::uint32_t>(n_pre), n_pre, 7);
+    const DecelPlanSnapshot& p = m.p;
+    std::array<double, kMaxDecelNv> q{};
+    std::array<double, kMaxDecelNv> qd{};
+    std::array<double, kMaxDecelNv> qdd{};
+    Eigen::VectorXd oq;
+    Eigen::VectorXd oqd;
+    Eigen::VectorXd oqdd;
+    // Every node exactly, then random instants up to node N − 1 (the last
+    // interval was made inconsistent by putting node N at rest).
+    std::vector<std::int64_t> instants;
+    for (int k = 0; k < p.n_nodes; ++k) {
+      instants.push_back(rtc::catching::DecelNodeTimeNs(p, k));
+    }
+    std::mt19937_64 rng(n_pre);
+    std::uniform_int_distribution<std::int64_t> pick(
+        p.t0_ns, rtc::catching::DecelNodeTimeNs(p, p.n_nodes - 1));
+    for (int i = 0; i < 400; ++i) {
+      instants.push_back(pick(rng));
+    }
+    double worst = 0.0;
+    for (const std::int64_t t : instants) {
+      ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd));
+      Oracle(m, static_cast<double>(t - p.t0_ns) * 1e-9, oq, oqd, oqdd);
+      const Eigen::VectorXd sq = ToModel(q, p.nv);
+      const Eigen::VectorXd sqd = ToModel(qd, p.nv);
+      const Eigen::VectorXd sqdd = ToModel(qdd, p.nv);
+      worst = std::max({worst, (sq - oq).cwiseAbs().maxCoeff(), (sqd - oqd).cwiseAbs().maxCoeff(),
+                        (sqdd - oqdd).cwiseAbs().maxCoeff()});
+    }
+    EXPECT_LT(worst, 1e-9) << "n_pre " << n_pre;
+  }
+}
+
+TEST_F(NodeFollowerTest, TwoSpacingSampleIsC2AtEveryNode) {
+  const MixedPlan m = MakeMixedPlan(arm_.q_nominal, 60, 4, 7);
+  const DecelPlanSnapshot& p = m.p;
+  DecelNodeSample lo{};
+  DecelNodeSample hi{};
+  double jump_q = 0.0;
+  double jump_qd = 0.0;
+  double jump_qdd = 0.0;
+  for (int k = 1; k < p.n_nodes; ++k) {
+    const std::int64_t t = rtc::catching::DecelNodeTimeNs(p, k);
+    ASSERT_TRUE(follower_.Sample(p, t - 1000, lo));
+    ASSERT_TRUE(follower_.Sample(p, t + 1000, hi));
+    for (std::size_t j = 0; j < static_cast<std::size_t>(p.nv); ++j) {
+      jump_q = std::max(jump_q, std::fabs(hi.q[j] - lo.q[j]));
+      jump_qd = std::max(jump_qd, std::fabs(hi.qd[j] - lo.qd[j]));
+      jump_qdd = std::max(jump_qdd, std::fabs(hi.qdd[j] - lo.qdd[j]));
+    }
+  }
+  EXPECT_LT(jump_q, 1e-5);
+  EXPECT_LT(jump_qd, 1e-4);
+  EXPECT_LT(jump_qdd, 1e-3);
+  // The catch node is sampled exactly at t_c.
+  DecelNodeSample at{};
+  ASSERT_TRUE(follower_.Sample(p, kTc, at));
+  for (int j = 0; j < p.nv; ++j) {
+    EXPECT_EQ(at.q[static_cast<std::size_t>(j)], p.q[Idx(p.n_pre, j)]);
+    EXPECT_EQ(at.qdd[static_cast<std::size_t>(j)], p.qdd[Idx(p.n_pre, j)]);
+  }
+}
+
+TEST_F(NodeFollowerTest, TwoSpacingHoldsNodeNPastItsEnd) {
+  const DecelPlanSnapshot p = MakeMixedPlan(arm_.q_nominal, 61, 3, 7).p;
+  const std::int64_t end = kTc + 7 * kDtStopNs;
+  ASSERT_EQ(rtc::catching::DecelNodeTimeNs(p, p.n_nodes), end);
+  DecelNodeSample s{};
+  ASSERT_TRUE(follower_.Sample(p, end - 1, s));
+  EXPECT_FALSE(s.held);
+  ASSERT_TRUE(follower_.Sample(p, end, s));
+  EXPECT_TRUE(s.held);
+  for (int j = 0; j < p.nv; ++j) {
+    EXPECT_EQ(s.q[static_cast<std::size_t>(j)], p.q[Idx(p.n_nodes, j)]);
+  }
+}
+
+TEST_F(NodeFollowerTest, RefusesABrokenPreCatchShape) {
+  const DecelPlanSnapshot good = MakeMixedPlan(arm_.q_nominal, 62, 3, 7).p;
+  DecelNodeSample s{};
+  const std::int64_t t = good.t0_ns + good.dt_pre_ns / 2;
+  ASSERT_TRUE(follower_.Sample(good, t, s));
+  auto refused = [&](auto mutate) {
+    DecelPlanSnapshot p = good;
+    mutate(p);
+    std::array<double, kMaxDecelNv> q{};
+    std::array<double, kMaxDecelNv> qd{};
+    std::array<double, kMaxDecelNv> qdd{};
+    return !follower_.Sample(p, t, s) && !NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd);
+  };
+  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.n_pre = -1; }));
+  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.n_pre = p.n_nodes; }));
+  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.n_pre = kMaxDecelNodes + 1; }));
+  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.dt_pre_ns = 0; }));
+  EXPECT_TRUE(
+      refused([](DecelPlanSnapshot& p) { p.dt_pre_ns = rtc::catching::kMaxDecelDtPreNs + 1; }));
+}
+
+TEST_F(NodeFollowerTest, TwoSpacingSampleAllocatesNothing) {
+  const DecelPlanSnapshot p = MakeMixedPlan(arm_.q_nominal, 63, 6, 7).p;
+  DecelNodeSample s{};
+  ASSERT_TRUE(follower_.Sample(p, p.t0_ns, s));
+  std::size_t news = 0;
+  std::size_t mallocs = 0;
+  {
+    rtc::testing::ScopedAllocGate new_gate;
+    rtc::testing::ScopedMallocGate malloc_gate;
+    for (int i = 0; i < 600; ++i) {
+      const std::int64_t t = p.t0_ns + i * 2'000'000;  // both parts and past the end
+      static_cast<void>(follower_.Sample(p, t, s));
+    }
+    news = new_gate.count();
+    mallocs = malloc_gate.count();
+  }
+  EXPECT_EQ(news, 0U);
+  EXPECT_EQ(mallocs, 0U);
+}
+
+TEST(DecelAdmission, PreCatchSegmentNeedsTheContextToAcceptIt) {
+  using rtc::catching::DecelRefusal;
+  DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 70, 3, 7).p;
+  p.publish_ns = kTc - 500'000'000;
+  p.rt_state_ns = p.publish_ns - 1'000'000;
+  rtc::catching::DecelAdmissionContext ctx{};
+  ctx.plan_active = true;
+  ctx.plan_id = p.plan_id;
+  ctx.plan_t_c_ns = p.t_c_ns;
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
+  ctx.max_age_ns = 50'000'000;
+  const rtc::catching::AdmittedDecel none{};
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kMalformed);
+  ctx.accept_pre_catch = true;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  // The age check stays ahead of it: an aged pre-catch segment is kAged.
+  ctx.accept_pre_catch = false;
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 60'000'000};
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kAged);
+  // A stop-only segment does not need it.
+  DecelPlanSnapshot s = MakePlan(Eigen::VectorXd::Constant(6, 0.3), 71);
+  s.publish_ns = p.publish_ns;
+  s.rt_state_ns = p.rt_state_ns;
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(s, ctx, none), DecelRefusal::kNone);
 }
 
 }  // namespace

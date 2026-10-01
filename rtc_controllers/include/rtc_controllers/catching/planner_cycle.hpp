@@ -19,6 +19,22 @@
 // counters and the D-7a latency keep meaning what they meant; the decel
 // account is PlannerCycleRecord::decel.
 //
+// THE APPROACH–STOP PAIR (MPC E1-F08 #661). With a pre-catch grid
+// (DecelPlanner::ApproachConfigured) a search wake that produces a plan also
+// solves its first segment (PlanFirst) and publishes the two as a PAIR
+// (MD-56): segment first, then the plan, under one publish_ns — or neither,
+// when the segment is withheld (kHeld). The pair's re-check accepts a newer
+// snapshot of the same track (the first solve can outlast a trajectory
+// period; demanding the same snapshot would drop every pair), refuses a pair
+// whose t_c is no longer above T_freeze or whose segment would start before
+// it can be read, and refuses one the RT started following another plan
+// during. Right after a pair the search waits until the RT state postdates it
+// by 3 ticks: a second plan published before the RT reports the first would
+// overwrite the segment it may be adopting. Once the RT follows a plan the
+// search is skipped (MD-57) and every wake through DECEL is a Replan, whose
+// re-check is that the RT still reports the same source segment.
+// `planner.decel_mpc.shadow` stores no segment at all (MD-59).
+//
 // WHAT S6-A IMPLEMENTS. The cycle, the provenance handling and a STUB search:
 // `PlanOnce` never produces a candidate, so every search wake publishes a
 // "no plan" snapshot. That is exactly what the controller did before a planner
@@ -190,6 +206,14 @@ class PlannerCycle {
     post_decel_context_ = context;
   }
 
+  /// Test seam: called between a pair's segment Store and its plan Store
+  /// (MPC E1-F08) — the only place the store ORDER is observable without a
+  /// race.
+  void SetPairStoreHookForTesting(PostSearchHook hook, void* context) noexcept {
+    pair_store_hook_ = hook;
+    pair_store_context_ = context;
+  }
+
  private:
   PlannerCycleIo io_{};
   bool bound_{false};
@@ -201,8 +225,24 @@ class PlannerCycle {
   void* post_search_context_{nullptr};
   PostSearchHook post_decel_hook_{nullptr};
   void* post_decel_context_{nullptr};
+  PostSearchHook pair_store_hook_{nullptr};
+  void* pair_store_context_{nullptr};
   // The decel step (MPC E1-F03).
   void RunDecel(const PlannerRtState& rt, PlannerCycleRecord& rec) noexcept;
+
+  // The APPROACH–stop pair and replans (MPC E1-F08).
+  [[nodiscard]] bool ApproachActive() const noexcept {
+    return io_.decel != nullptr && decel_.ApproachConfigured();
+  }
+
+  void PublishPair(const PlannerRtState& rt, PlanSnapshot& plan, PlannerCycleRecord& rec) noexcept;
+  void RunReplan(const PlannerRtState& rt, const DecelBallTarget& ball,
+                 PlannerCycleRecord& rec) noexcept;
+  // The ball at the followed plan's t_c from the scratch trajectory and
+  // covariance. Invalid when they are not that plan's track — the track of
+  // the segments published for it, not the one the RT consumed last.
+  [[nodiscard]] DecelBallTarget FollowedBall(const PlannerRtState& rt) const noexcept;
+  std::int64_t pair_publish_ns_{0};  // the last pair's stamp; 0 after a reset
   DecelPlanner decel_;
   DecelPlanSnapshot decel_out_{};
   std::uint32_t last_decel_seq_{0};

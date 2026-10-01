@@ -333,6 +333,14 @@ class DecelMpc {
   /// Instant of node k relative to node 0 [s]; NaN outside [0, N].
   [[nodiscard]] double NodeTime(int k) const noexcept;
 
+  /// The effective position box the entry state and every node are held to
+  /// [rad], model order: the limits pulled in by min(m_q, half the range), so
+  /// a narrow or locked joint never inverts it. A caller that projects a state
+  /// or a reference into the box reads it here instead of recomputing it.
+  [[nodiscard]] const Eigen::VectorXd& PositionLow() const noexcept { return q_lo_; }
+
+  [[nodiscard]] const Eigen::VectorXd& PositionHigh() const noexcept { return q_hi_; }
+
   [[nodiscard]] int NumBlocks() const noexcept { return n_blocks_; }
 
   /// Rank of the assembled terminal-equality matrix found at Init (2n).

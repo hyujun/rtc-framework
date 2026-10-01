@@ -3,7 +3,17 @@
 
 #include "rtc_base/types/types.hpp"  // rtc::SteadyNowNs
 
+#include <cmath>
+
 namespace rtc::catching {
+
+namespace {
+
+[[nodiscard]] std::int64_t SecondsToNs(double s) noexcept {
+  return static_cast<std::int64_t>(std::llround(s * 1e9));
+}
+
+}  // namespace
 
 PlannerCycle::PlannerCycle() noexcept : clock_(&rtc::SteadyNowNs) {}
 
@@ -49,6 +59,115 @@ void PlannerCycle::RunDecel(const PlannerRtState& rt, PlannerCycleRecord& rec) n
   decel_out_.decel_seq = ++last_decel_seq_;
   io_.decel->Store(decel_out_);
   decel_.NotePublished(decel_out_);
+  rec.decel.outcome = DecelOutcome::kPublished;
+  rec.decel.decel_seq = decel_out_.decel_seq;
+  rec.decel.publish_ns = publish_ns;
+}
+
+DecelBallTarget PlannerCycle::FollowedBall(const PlannerRtState& rt) const noexcept {
+  // The PLAN's track: after the freeze the RT keeps the committed one while
+  // rt.track_generation follows whatever it consumed last — another ball's
+  // prediction must not become this catch's target.
+  std::uint64_t track = 0;
+  if (!traj_.valid || traj_.token.activation_generation != rt.activation_generation ||
+      !decel_.FollowedTrack(rt, track) || traj_.token.generation != track) {
+    return DecelBallTarget{};
+  }
+  const bool matched = cov_.valid && SameSnapshot(cov_.token, traj_.token);
+  return MakeDecelBallTarget(traj_, cov_, matched, rt.plan_t_c_ns, decel_.Constants().v_eps);
+}
+
+void PlannerCycle::RunReplan(const PlannerRtState& rt, const DecelBallTarget& ball,
+                             PlannerCycleRecord& rec) noexcept {
+  if (!decel_.Replan(rt, ball, decel_out_, rec.decel)) {
+    return;
+  }
+  if (post_decel_hook_ != nullptr) {
+    post_decel_hook_(post_decel_context_);
+  }
+  // Stamped before the re-check (as RunDecel). The source is re-derived from
+  // the RT's newest report: a segment solved from what the RT no longer
+  // reports would start somewhere the arm is not. A mere decel_seq change is
+  // not a reason to drop it — in a chain that switches every 0.05 – 0.1 s that
+  // rule would discard most solves.
+  const std::int64_t publish_ns = clock_();
+  const PlannerRtState rt_now = io_.rt->Load();
+  const auto m = static_cast<Mode>(rt_now.mode);
+  const bool mode_ok = m == Mode::kTracking || m == Mode::kApproach || m == Mode::kCommitted ||
+                       m == Mode::kClosing || m == Mode::kDecel;
+  if (!rt_now.valid || !mode_ok || rt_now.reset_epoch != rt.reset_epoch ||
+      rt_now.activation_generation != rt.activation_generation || !rt_now.plan_active ||
+      rt_now.plan_id != rt.plan_id || rt_now.plan_t_c_ns != rt.plan_t_c_ns ||
+      decel_.SourceSeq(rt_now, decel_out_.t0_ns) != rec.decel.source_seq ||
+      !decel_.StartsInTime(publish_ns, decel_out_.t0_ns)) {
+    rec.decel.outcome = DecelOutcome::kSuperseded;
+    return;
+  }
+  decel_out_.publish_ns = publish_ns;
+  decel_out_.decel_seq = ++last_decel_seq_;
+  if (!decel_.Params().shadow) {
+    io_.decel->Store(decel_out_);
+  }
+  decel_.NoteApproachPublished(decel_out_);
+  rec.decel.outcome = DecelOutcome::kPublished;
+  rec.decel.decel_seq = decel_out_.decel_seq;
+  rec.decel.publish_ns = publish_ns;
+}
+
+void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
+                               PlannerCycleRecord& rec) noexcept {
+  // The id the plan will carry; the segment names it.
+  plan.plan_id = last_plan_id_ + 1;
+  const DecelBallTarget ball =
+      MakeDecelBallTarget(traj_, cov_, rec.cov_matched, plan.t_c_ns, decel_.Constants().v_eps);
+  if (!decel_.PlanFirst(rt, plan, ball, decel_out_, rec.decel)) {
+    // Withheld together (MD-62): a plan without its segment would put the RT
+    // in APPROACH with nothing to follow.
+    rec.outcome = CycleOutcome::kHeld;
+    return;
+  }
+  if (post_decel_hook_ != nullptr) {
+    post_decel_hook_(post_decel_context_);
+  }
+  const std::int64_t publish_ns = clock_();
+  io_.traj->LoadInto(traj_recheck_);
+  const PlannerRtState rt_now = io_.rt->Load();
+  const std::int64_t t_freeze_ns =
+      std::isfinite(params_.t_freeze) && params_.t_freeze > 0.0 ? SecondsToNs(params_.t_freeze) : 0;
+  // Same track, not the same snapshot: the first solve can outlast a
+  // trajectory period, and the RT's JudgePlan checks the track only. A pair
+  // the RT would refuse as too late (t_c within T_freeze), or whose segment
+  // starts before it can be read, is not published.
+  if (traj_recheck_.token.activation_generation != traj_.token.activation_generation ||
+      traj_recheck_.token.generation != traj_.token.generation ||
+      rt_now.reset_epoch != rt.reset_epoch ||
+      rt_now.activation_generation != rt.activation_generation || rt_now.plan_active ||
+      !(plan.t_c_ns - publish_ns > t_freeze_ns) ||
+      !decel_.StartsInTime(publish_ns, decel_out_.t0_ns)) {
+    rec.outcome = CycleOutcome::kSuperseded;
+    rec.decel.outcome = DecelOutcome::kSuperseded;
+    return;
+  }
+  last_plan_id_ = plan.plan_id;
+  plan.publish_ns = publish_ns;
+  decel_out_.publish_ns = publish_ns;
+  decel_out_.decel_seq = ++last_decel_seq_;
+  // Segment first: once the RT takes the plan, its first segment is there.
+  if (!decel_.Params().shadow) {
+    io_.decel->Store(decel_out_);
+  }
+  if (pair_store_hook_ != nullptr) {
+    pair_store_hook_(pair_store_context_);
+  }
+  io_.plan->Store(plan);
+  search_.NotePublished(plan);
+  decel_.NoteApproachPublished(decel_out_);
+  pair_publish_ns_ = publish_ns;
+  rec.outcome = CycleOutcome::kPublished;
+  rec.plan_id = plan.plan_id;
+  rec.plan_valid = plan.valid;
+  rec.reason = plan.reason;
+  rec.publish_ns = publish_ns;
   rec.decel.outcome = DecelOutcome::kPublished;
   rec.decel.decel_seq = decel_out_.decel_seq;
   rec.decel.publish_ns = publish_ns;
@@ -104,6 +223,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     rec.reset_seen = true;
     search_.ResetTrial();
     decel_.ResetTrial();
+    pair_publish_ns_ = 0;
     // The planner is the decel box's only writer, so withdrawing the ended
     // trial's segment is its job (the RT's plan match refuses it as well).
     if (io_.decel != nullptr) {
@@ -119,17 +239,40 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     io_.cov->LoadInto(cov_);
     search_.Monitor(traj_, cov_, cov_.valid && SameSnapshot(cov_.token, traj_.token), rt,
                     rec.search);
-    // The stop segment, after σ_ℓ is recorded (MPC E1-F03).
-    RunDecel(rt, rec);
+    // The stop segment, after σ_ℓ is recorded (MPC E1-F03); with a pre-catch
+    // grid the APPROACH–stop replan (E1-F08), still before t_c.
+    if (ApproachActive()) {
+      RunReplan(rt, FollowedBall(rt), rec);
+    } else {
+      RunDecel(rt, rec);
+    }
     return rec;
   }
   if (activity == PlannerActivity::kDecel) {
     // Post-catch replans only (MD-31). The outcome stays kIdle (MD-29).
-    RunDecel(rt, rec);
+    if (ApproachActive()) {
+      RunReplan(rt, DecelBallTarget{}, rec);
+    } else {
+      RunDecel(rt, rec);
+    }
     return rec;
   }
   if (activity != PlannerActivity::kSearch) {
     return rec;
+  }
+  if (ApproachActive()) {
+    if (rt.plan_active) {
+      // APPROACH: the RT follows a plan, the search is skipped (MD-57) and
+      // the wake replans its segment. The outcome stays kIdle (MD-29).
+      io_.traj->LoadInto(traj_);
+      io_.cov->LoadInto(cov_);
+      RunReplan(rt, FollowedBall(rt), rec);
+      return rec;
+    }
+    // Right after a pair, until the RT state could show it adopted it.
+    if (pair_publish_ns_ > 0 && rt.rt_state_ns <= pair_publish_ns_ + 3 * decel_.ControlDtNs()) {
+      return rec;
+    }
   }
 
   // ── 2. The trajectory, then its covariance (L3 §5.2 read order) ──────────
@@ -177,6 +320,12 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   // freeze G): publishing nothing IS the decision.
   if (!rec.search.publish) {
     rec.outcome = CycleOutcome::kHeld;
+    return rec;
+  }
+  // A plan and its first segment go together (MPC E1-F08, MD-56). "No plan"
+  // is published as before.
+  if (ApproachActive() && plan.valid) {
+    PublishPair(rt, plan, rec);
     return rec;
   }
 
