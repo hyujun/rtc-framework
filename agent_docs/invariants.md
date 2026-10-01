@@ -286,6 +286,8 @@ RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜�
 | AP-CTRL-1 | 게인은 `Compute()` 진입 시 **단일 snapshot** 으로 읽는다 — tick 중간에 다시 읽으면 writer 가 끼어든 절반 상태로 분기한다 |
 | AP-CTRL-5 | joint reorder map 은 config 로드 시 1회 계산하고 **identity fallback 을 두지 않는다**. 인덱싱이 device 순서인지 config 순서인지 명시하고, position limit 과 velocity limit 은 따로 적용한다 |
 | AP-PROC-1 | 완료를 주장하기 전에 대상 파일 목록을 명시하고 **전수** grep 한다 (예상치 vs 실측) |
+| AP-PROC-5 | ROS 2 parameter 는 타입과 `ParameterDescriptor` 를 명시해 선언하고 (`declare_parameter<T>(name, default, descriptor)`), launch 의 LifecycleNode 는 `namespace=''` (빈 문자열) 로 둔다 |
+| AP-PROC-6 | BT 노드를 신설하면 `registerNodeType<>` 등록과 `validate_tree()` 양쪽에 추가한다 |
 | AP-PROC-7 | **추가** 변경에서 "회귀 0 fail" 은 커버리지가 아니다. 추가한 이름으로 grep 해 테스트가 그 이름을 아는지 본다 (하드카운트 단언은 추가만으로 안 깨진다). 모르면 목록을 늘리거나 기존 형제와의 등가성 테스트로 합성하고 (갈라지는 시점을 테스트에 적는다), 신규 쪽에만 건 mutation 이 red 를 내는지 확인한다 |
 | AP-PROC-8 | 컨트롤러 픽스처는 `on_activate` 뒤에 target 을 넣는다 (Inactive 중의 target 은 버려진다). target 경로를 검사하는 테스트는 **이동량 단언** 을 비교·판정 앞에 둔다. 기존 테스트에 `on_activate` 를 넣는 것은 PROC-6 이 아니다 |
 | AP-PROC-9 | configure-time 검증은 **그 값이 채워져 있고 거부 채널이 있는 pass** 에 둔다 — 축은 pass 번호가 아니라 값의 출처다 (3-pass 계약: [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공)). 모델 파생 값은 Pass 1 `LoadConfig` 에서 유효하고, device 파생 값 (한계 밴드) 의 검증은 Pass 3 `on_configure` 에 둔다. Pass 2 (`OnDeviceConfigsSet`) 는 파생·캐시 전용이며 거부하지 않는다. 검사는 RT 경로와 같은 fallback 으로 밴드를 해석하고, 테스트는 코드의 존재가 아니라 **거부 동작** 을 잘못된 config 와 정상 config 를 쌍으로 단언하며, 임계값은 device config 에서 유도한다 |
