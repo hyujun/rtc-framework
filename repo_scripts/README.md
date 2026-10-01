@@ -180,6 +180,9 @@ repo_scripts/
 | `append_cmake_python_args()` | build.sh: `-DPython3_EXECUTABLE` 를 venv 유무와 무관하게 `CMAKE_ARGS` 에 붙이고 `catkin_pkg`·`ament_package` import 를 사전 확인 (실패 시 1), 활성 venv base 가 틀리면 경고 |
 | `get_default_build_jobs()` | 이 호스트의 기본 make job 수 = `min(물리 코어, RAM / 4 GB)` (최소 1; 메모리를 못 읽으면 2). 순수 산정식은 `build_jobs_for <cores> <mem_kB>` |
 | `resolve_build_makeflags [N]` | export 할 `MAKEFLAGS` 를 출력. job 수 우선순위: 인자 (CLI `-j`) > `RTC_BUILD_JOBS` > 기존 `MAKEFLAGS` 의 `-j` > 기본값. knob 이 양의 정수가 아니면 출력 없이 2 반환. `build.sh` · `setup_env.sh` · `build_deps.sh` 공유 |
+| `get_build_mem_max()` | 빌드 메모리 상한 (systemd 크기 표기). 기본 `MemTotal` 의 75%, `RTC_BUILD_MEM_MAX` (`24G` · `20000M` · `60%` / `off`) 로 덮어씀. 꺼졌거나 메모리를 못 읽으면 빈 문자열, 표기가 틀리면 2 |
+| `build_mem_scope_prefix()` | 그 상한이 걸린 systemd user scope 로 명령을 감쌀 prefix 를 `BUILD_MEM_SCOPE_PREFIX` 배열에 채운다 (`MemoryMax` + `MemorySwapMax=0`). user session 이 없으면 prefix 는 비고 빌드는 상한 없이 돈다 |
+| `build_mem_scope_oom_killed()` | 방금 끝난 scope 가 OOM 으로 정리됐으면 0 (`Result=oom-kill`) — 컴파일 에러와 메모리 부족을 가른다. failed 로 남은 unit 도 지운다 |
 
 ### 패키지 리스트 함수
 
@@ -612,7 +615,15 @@ colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수
 - **job 당 4 GB 인 이유**: TU 하나의 컴파일러 메모리는 대부분 2 GB 아래지만 2 GB 를 넘는 TU 가 51개, 최악은 3.5 GB 다 (`rtc_urdf_bridge/src/rt_model_handle.cpp`). 비용은 최적화가 아니라 템플릿 인스턴스화에서 나온다 — `-fsyntax-only` 만으로도 메모리의 90% 이상이 든다 — 그래서 `-O` 수준을 낮춰도 줄지 않는다.
 - **`-l` 을 넣지 않는 이유**: load 제한은 빌드와 무관한 시스템 부하까지 예산에서 깎는다 (1×`-j6 -l6` 은 20분 44초).
 
-**감별.** 빌드 중 화면이 멈추거나 `c++: fatal error: Killed signal terminated program cc1plus` 로 죽으면 메모리다. 그 빌드가 실제로 쓴 job 수는 `build.sh` 의 `Parallelism:` 줄에 찍히고, plain `colcon` 이면 `echo $MAKEFLAGS` 로 본다 — 비어 있으면 `setup_env.sh` 를 source 하지 않은 셸이고 colcon 이 논리 코어 수를 그대로 쓴다.
+**메모리 상한.** job 수는 평균을 맞추는 장치다 — job 당 4 GB 는 최악 TU 하나가 들어가는 값이지, 모든 job 이 동시에 최악인 경우의 합 (8 × 3.5 GB = 28 GB) 이 아니다. 그 꼬리는 상한으로 막는다. `build.sh` 와 `build_deps.sh` 는 빌드를 `MemoryMax` 가 걸린 systemd user scope 안에서 돌린다 (`rt_common.sh` `build_mem_scope_prefix`):
+
+- 상한은 `RTC_BUILD_MEM_MAX` (`24G` · `20000M` · `60%` / `off`), 기본은 RAM 의 75% 다
+- 한도를 넘으면 **그 빌드만** 끝난다 — scope 의 기본 `OOMPolicy=stop` 이라 프로세스 하나가 OOM 으로 죽으면 systemd 가 scope 전체 (colcon · make · 컴파일러) 를 정리하고, `build.sh` 는 `Build stopped: it needed more than the <상한> memory cap` 으로 원인과 두 knob 을 알린다 (scope 의 `Result=oom-kill` 로 판정하므로 컴파일 에러를 메모리 탓으로 돌리지 않는다)
+- `MemorySwapMax=0` 을 함께 건다 — 없으면 빌드가 한도에서 죽는 대신 swap 을 태우며 호스트를 붙잡는다
+- systemd user session 이 없는 곳 (컨테이너 · CI · lingering 없는 ssh) 에서는 scope 를 만들 수 없으므로 `Memory cap unavailable` 을 경고하고 상한 없이 빌드한다 — job 수 제한은 그대로 걸린다
+- plain `colcon` 에는 걸리지 않는다. 같은 보호를 원하면 직접 감싼다: `systemd-run --user --scope -p MemoryMax=75% -p MemorySwapMax=0 colcon build …`
+
+**감별.** 빌드가 `Build stopped: … memory cap` 으로 끝나면 상한에 닿은 것이다 — job 수를 낮추거나 (`-j N`) 다른 프로그램이 쓰는 메모리를 비운다. 상한 없이 돈 빌드 (plain `colcon`, user session 없는 호스트) 가 화면을 멈추거나 `c++: fatal error: Killed signal terminated program cc1plus` 로 죽어도 메모리다. 그 빌드가 실제로 쓴 job 수와 상한은 `build.sh` 의 `Parallelism:` · `Memory cap:` 줄에 찍히고, plain `colcon` 이면 `echo $MAKEFLAGS` 로 본다 — 비어 있으면 `setup_env.sh` 를 source 하지 않은 셸이고 colcon 이 논리 코어 수를 그대로 쓴다.
 
 ---
 

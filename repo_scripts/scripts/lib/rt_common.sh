@@ -704,6 +704,63 @@ resolve_build_makeflags() {
   makeflags_set_jobs "${MAKEFLAGS:-}" "$jobs"
 }
 
+# ── 빌드 메모리 상한 (build.sh / build_deps.sh 공유) ─────────────────────────
+# job 수 산정은 평균을 맞추는 장치다 — job 당 4 GB 는 최악 TU 하나가 들어가는
+# 값이지 모든 job 이 동시에 최악인 경우의 합이 아니다. 그 꼬리는 상한으로 막는다:
+# 빌드를 MemoryMax 가 걸린 systemd user scope 에서 돌리면 한도를 넘는 순간 그
+# scope 만 OOM 으로 정리되고 (scope 의 기본 OOMPolicy=stop — 프로세스 하나가
+# 죽으면 systemd 가 scope 전체를 끝낸다) 호스트는 남는다. MemorySwapMax=0 은
+# 빌드가 한도 대신 swap 을 태우며 호스트를 붙잡는 것을 막는다 — 느려지지 않고
+# 실패한다.
+
+# 상한 값을 systemd 크기 표기로 출력한다. $RTC_BUILD_MEM_MAX 로 덮어쓴다:
+#   24G · 20000M · 60% (물리 메모리 대비) / 0 · off · none (끔).
+# 기본은 MemTotal 의 75%. 끄였거나 메모리를 못 읽으면 빈 문자열. 표기가 틀리면 2.
+get_build_mem_max() {
+  local v="${RTC_BUILD_MEM_MAX:-}" mem_kb
+  case "$v" in
+    0|off|none) return 0 ;;
+    "")
+      mem_kb="$(get_mem_total_kb)"
+      is_positive_int "$mem_kb" || return 0
+      echo "$(( mem_kb * 3 / 4 / 1024 ))M" ;;
+    *)
+      [[ "$v" =~ ^[1-9][0-9]*(%|[KMGT])?$ ]] || return 2
+      echo "$v" ;;
+  esac
+}
+
+# 상한이 걸린 scope 로 명령을 감쌀 prefix 를 BUILD_MEM_SCOPE_PREFIX 배열에 채운다
+# (`"${BUILD_MEM_SCOPE_PREFIX[@]}" colcon build …`). 함께 채우는 전역:
+#   BUILD_MEM_SCOPE_MAX  — 적용하려던 상한 (끄였으면 빈 문자열)
+#   BUILD_MEM_SCOPE_UNIT — scope unit 이름 (실제로 걸렸을 때만)
+# systemd user session 이 없으면 (컨테이너 · CI · lingering 없는 ssh) prefix 는
+# 비고 0 을 반환한다 — 빌드는 상한 없이 돈다. 호출부는 MAX 는 있는데 UNIT 이
+# 비었는지로 그 경우를 알린다. RTC_BUILD_MEM_MAX 표기가 틀리면 2.
+build_mem_scope_prefix() {
+  BUILD_MEM_SCOPE_PREFIX=()
+  BUILD_MEM_SCOPE_UNIT=""
+  BUILD_MEM_SCOPE_MAX="$(get_build_mem_max)" || return 2
+  [[ -n "$BUILD_MEM_SCOPE_MAX" ]] || return 0
+  command -v systemd-run >/dev/null 2>&1 || return 0
+  local -a limits=(-p "MemoryMax=${BUILD_MEM_SCOPE_MAX}" -p "MemorySwapMax=0")
+  # 실제로 scope 를 만들 수 있는지는 만들어 봐야 안다 (user bus · cgroup 위임).
+  systemd-run --user --scope --quiet "${limits[@]}" true >/dev/null 2>&1 || return 0
+  BUILD_MEM_SCOPE_UNIT="rtc-build-$$-${RANDOM}"
+  BUILD_MEM_SCOPE_PREFIX=(systemd-run --user --scope --quiet
+    "--unit=${BUILD_MEM_SCOPE_UNIT}" "${limits[@]}" --)
+}
+
+# 방금 끝난 scope ($BUILD_MEM_SCOPE_UNIT) 가 OOM 으로 정리됐으면 0. 그 경우 unit 이
+# failed 로 남으므로 여기서 지운다 — 빌드가 실패한 뒤에 부른다.
+build_mem_scope_oom_killed() {
+  [[ -n "${BUILD_MEM_SCOPE_UNIT:-}" ]] || return 1
+  local result
+  result="$(systemctl --user show "${BUILD_MEM_SCOPE_UNIT}.scope" -p Result --value 2>/dev/null)" || true
+  systemctl --user reset-failed "${BUILD_MEM_SCOPE_UNIT}.scope" >/dev/null 2>&1 || true
+  [[ "$result" == "oom-kill" ]]
+}
+
 # ── 공통 argument parsing (build.sh / install.sh 공유) ─────────────────────
 # 공통 옵션을 파싱하고 전역 변수에 설정한다.
 # 각 스크립트 고유 옵션은 REMAINING_ARGS 배열로 반환된다.

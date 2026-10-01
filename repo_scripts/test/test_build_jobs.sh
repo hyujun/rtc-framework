@@ -13,9 +13,15 @@
 # -j 는 패키지 수만 줄였다. 물리 16코어 / 32 GB 호스트가 빌드 중 메모리 고갈로
 # 섰다 (무거운 TU 하나가 컴파일러에서 3.5 GB 까지 쓴다).
 #
+# 메모리 상한: build.sh · build_deps.sh 는 빌드를 MemoryMax (기본 RAM 의 75%) +
+# MemorySwapMax=0 이 걸린 systemd user scope 에서 돌리고, scope 가 OOM 으로
+# 정리된 실패를 평범한 빌드 실패와 구별해 알린다. user session 이 없으면 상한
+# 없이 빌드한다. 여기서 systemd-run · systemctl 은 stub 이므로 **cgroup 이 실제로
+# 한도를 강제하는지는 이 파일이 보지 못한다** — 고정하는 것은 넘기는 인자와 분기다.
+#
 # 격리 방식: setup_env.sh · build.sh 는 임시 가짜 워크스페이스 (<tmp>/ws/src/repo)
-# 에서 돌린다 — lib 은 실물을 symlink 하고, colcon · cmake · ros2 · cset · sudo 와 CMake
-# python 은 stub 이다. stub colcon 은 받은 인자와 MAKEFLAGS 를 파일에 남기고, 판정은
+# 에서 돌린다 — lib 은 실물을 symlink 하고, colcon · cmake · systemd-run · systemctl ·
+# ros2 · cset · sudo 와 CMake python 은 stub 이다. stub colcon 은 받은 인자와 MAKEFLAGS 를 파일에 남기고, 판정은
 # 그 파일로 한다 (build.sh 가 출력하는 안내 문구가 아니라 colcon 이 실제로 받은 것).
 # 물리 코어 수는 프로세스 경계를 넘어 shadow 할 수 없으므로 메모리 쪽을
 # RTC_PROC_MEMINFO 로 조여 기대값이 nproc 과 달라지게 한다.
@@ -182,6 +188,8 @@ FAKE_REPO="$FAKE_WS/src/repo"
 STUB_BIN="$TMP/bin"
 COLCON_LOG="$TMP/colcon.log"
 CMAKE_LOG="$TMP/cmake.log"
+SDRUN_LOG="$TMP/systemd-run.log"
+SYSTEMCTL_LOG="$TMP/systemctl.log"
 
 make_fake_workspace() {
   mkdir -p "$FAKE_REPO/repo_scripts/scripts" "$STUB_BIN"
@@ -203,6 +211,26 @@ make_fake_workspace() {
   printf 'ARG=%s\n' "\$@"
 } >>"$COLCON_LOG"
 exit "\${STUB_COLCON_RC:-0}"
+EOF
+  # systemd-run: 받은 줄을 남기고, 실물처럼 `--` 뒤의 명령을 같은 환경으로 exec
+  # 한다. `--` 가 없는 호출은 build_mem_scope_prefix 의 probe (`… true`) 다.
+  # STUB_SYSTEMD_RUN_RC≠0 은 user session 이 없는 호스트 (probe 부터 실패).
+  cat >"$STUB_BIN/systemd-run" <<EOF
+#!/bin/bash
+echo "\$*" >>"$SDRUN_LOG"
+[[ "\${STUB_SYSTEMD_RUN_RC:-0}" -ne 0 ]] && exit "\${STUB_SYSTEMD_RUN_RC}"
+while [[ \$# -gt 0 ]]; do
+  if [[ "\$1" == "--" ]]; then shift; exec "\$@"; fi
+  shift
+done
+exit 0
+EOF
+  # systemctl: `show … -p Result --value` 에 scope 의 종료 사유를 답한다.
+  cat >"$STUB_BIN/systemctl" <<EOF
+#!/bin/bash
+echo "\$*" >>"$SYSTEMCTL_LOG"
+[[ "\$*" == *" show "* ]] && echo "\${STUB_SCOPE_RESULT:-success}"
+exit 0
 EOF
   # ros2: ensure_ros2_sourced 는 PATH 에 있는지만 본다.
   printf '#!/bin/bash\nexit 0\n' >"$STUB_BIN/ros2"
@@ -363,6 +391,106 @@ test_build_deps_rejects_bad_jobs_before_cmake() {
   if [[ -e "$CMAKE_LOG" ]]; then fail "[deps bad legacy knob] cmake was invoked"; else pass; fi
 }
 
+# ── 메모리 상한 ────────────────────────────────────────────────────────────
+mem_max_with() {  # $1=RTC_BUILD_MEM_MAX ("" = 미설정) $2=meminfo 경로
+  local rc=0 out
+  out="$(RTC_BUILD_MEM_MAX="$1" RTC_PROC_MEMINFO="$2" get_build_mem_max)" || rc=$?
+  echo "rc=${rc} out=${out}"
+}
+
+test_mem_max_default_is_three_quarters_of_ram() {
+  local meminfo="$TMP/meminfo_cap"
+  write_meminfo "$meminfo" 32770940  # 개발 PC 의 실제 MemTotal
+  expect_eq "32 GB host" "rc=0 out=24002M" "$(mem_max_with "" "$meminfo")"
+  # 메모리를 못 읽으면 상한을 지어내지 않는다 (0M 같은 값은 빌드를 즉시 죽인다).
+  expect_eq "unreadable meminfo" "rc=0 out=" "$(mem_max_with "" "$TMP/does_not_exist")"
+}
+
+test_mem_max_knob() {
+  local meminfo="$TMP/meminfo_cap" v
+  write_meminfo "$meminfo" 32770940
+  for v in 12G 20000M 60% 8589934592; do
+    expect_eq "accepts '$v'" "rc=0 out=$v" "$(mem_max_with "$v" "$meminfo")"
+  done
+  for v in 0 off none; do
+    expect_eq "'$v' turns it off" "rc=0 out=" "$(mem_max_with "$v" "$meminfo")"
+  done
+  for v in banana 12GB -4G 1.5G "12 G" "%"; do
+    expect_eq "rejects '$v'" "rc=2 out=" "$(mem_max_with "$v" "$meminfo")"
+  done
+}
+
+# 가짜 워크스페이스의 기본 상한: MemTotal 8195670 kB (공칭 8 GB) 의 75%.
+FAKE_WS_CAP="6002M"
+
+run_build_capped() {  # run_build 와 같되 systemd 쪽 기록도 지운다.
+  rm -f "$SDRUN_LOG" "$SYSTEMCTL_LOG"
+  run_build "$@"
+}
+# colcon 을 감싼 systemd-run 호출 (probe 가 아닌 것) 한 줄.
+logged_scope_line() { grep -- ' -- colcon build' "$SDRUN_LOG" 2>/dev/null || true; }
+
+test_build_runs_colcon_inside_a_memory_scope() {
+  local line
+  expect_eq "rc" 0 "$(run_build_capped --)"
+  line="$(logged_scope_line)"
+  case "$line" in
+    "--user --scope --quiet --unit=rtc-build-"*" -p MemoryMax=${FAKE_WS_CAP} -p MemorySwapMax=0 -- colcon build "*) pass ;;
+    *) fail "[scope line] got '$line'" ;;
+  esac
+  # scope 안에서도 colcon 은 같은 인자와 환경을 받는다.
+  expect_eq "colcon still gets workers" 1 "$(logged_arg_after --parallel-workers)"
+  expect_eq "colcon still gets MAKEFLAGS" "-j$(expected_default_jobs)" "$(logged_makeflags)"
+}
+
+test_build_memory_cap_knob() {
+  expect_eq "rc" 0 "$(run_build_capped RTC_BUILD_MEM_MAX=12G --)"
+  case "$(logged_scope_line)" in
+    *" -p MemoryMax=12G -p MemorySwapMax=0 -- colcon build "*) pass ;;
+    *) fail "[cap knob] got '$(logged_scope_line)'" ;;
+  esac
+
+  expect_eq "rc (off)" 0 "$(run_build_capped RTC_BUILD_MEM_MAX=off --)"
+  if [[ -e "$SDRUN_LOG" ]]; then fail "[cap off] systemd-run was invoked"; else pass; fi
+  expect_eq "off still builds" pkg_a "$(logged_arg_after --packages-select)"
+
+  expect_eq "bad cap" 1 "$(run_build_capped RTC_BUILD_MEM_MAX=banana --)"
+  if [[ -e "$COLCON_LOG" ]]; then fail "[bad cap] colcon was invoked"; else pass; fi
+}
+
+test_build_without_user_session_builds_uncapped() {
+  # probe 가 실패하는 호스트 (컨테이너 · CI): 빌드는 돌고, 상한이 없다고 알린다.
+  expect_eq "rc" 0 "$(run_build_capped STUB_SYSTEMD_RUN_RC=1 --)"
+  expect_eq "colcon ran" pkg_a "$(logged_arg_after --packages-select)"
+  expect_eq "only the probe reached systemd-run" "" "$(logged_scope_line)"
+  if grep -q "Memory cap unavailable" "$TMP/build.out"; then pass; else fail "[no session] no warning"; fi
+}
+
+test_build_reports_oom_distinctly() {
+  # scope 가 OOM 으로 정리된 실패 — 원인과 두 knob 을 말한다.
+  expect_eq "oom rc" 1 "$(run_build_capped STUB_COLCON_RC=143 STUB_SCOPE_RESULT=oom-kill --)"
+  if grep -q "Build stopped: it needed more than the ${FAKE_WS_CAP} memory cap" "$TMP/build.out"; then
+    pass
+  else
+    fail "[oom message] $(tail -2 "$TMP/build.out")"
+  fi
+  if grep -q "reset-failed rtc-build-" "$SYSTEMCTL_LOG"; then pass; else fail "[oom] failed unit left behind"; fi
+  # 같은 exit code 라도 scope 가 멀쩡하면 평범한 빌드 실패다 (컴파일 에러를 메모리 탓으로 돌리지 않는다).
+  expect_eq "plain failure rc" 1 "$(run_build_capped STUB_COLCON_RC=143 STUB_SCOPE_RESULT=success --)"
+  if grep -q "Build stopped" "$TMP/build.out"; then fail "[plain failure] blamed memory"; else pass; fi
+  if grep -q "Build failed" "$TMP/build.out"; then pass; else fail "[plain failure] no message"; fi
+}
+
+test_build_deps_runs_each_dep_inside_a_memory_scope() {
+  rm -f "$SDRUN_LOG"
+  expect_eq "rc" 0 "$(run_deps)"
+  expect_eq "three capped builds" 3 "$(grep -c -- "-p MemoryMax=${FAKE_WS_CAP} -p MemorySwapMax=0 -- cmake --build" "$SDRUN_LOG")"
+  expect_eq "builds still ran" 3 "$(grep -c '^cmake --build' "$CMAKE_LOG")"
+  rm -f "$SDRUN_LOG"
+  expect_eq "bad cap" 1 "$(run_deps RTC_BUILD_MEM_MAX=banana)"
+  if [[ -e "$CMAKE_LOG" ]]; then fail "[deps bad cap] cmake was invoked"; else pass; fi
+}
+
 # ── Run ────────────────────────────────────────────────────────────────────
 test_jobs_formula_is_min_of_cores_and_ram
 test_jobs_formula_never_returns_zero
@@ -394,5 +522,13 @@ test_build_propagates_colcon_failure
 
 test_build_deps_uses_the_same_knob
 test_build_deps_rejects_bad_jobs_before_cmake
+
+test_mem_max_default_is_three_quarters_of_ram
+test_mem_max_knob
+test_build_runs_colcon_inside_a_memory_scope
+test_build_memory_cap_knob
+test_build_without_user_session_builds_uncapped
+test_build_reports_oom_distinctly
+test_build_deps_runs_each_dep_inside_a_memory_scope
 
 summary_and_exit test_build_jobs.sh

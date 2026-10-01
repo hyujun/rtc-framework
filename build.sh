@@ -70,6 +70,11 @@ show_help() {
   echo "                             (install.sh --tracing). Default OFF = zero RT overhead."
   echo "  --help                     Show this help"
   echo ""
+  echo "Environment:"
+  echo "  RTC_BUILD_JOBS=N           Same as -j N (also read by build_deps.sh and setup_env.sh)"
+  echo "  RTC_BUILD_MEM_MAX=<size>   Memory cap for the build: 24G, 20000M, 60%, or off."
+  echo "                             Default 75% of RAM. Past it the build is stopped, not the host"
+  echo ""
   echo "Examples:"
   echo "  ./build.sh robot"
   echo "  ./build.sh sim"
@@ -260,6 +265,21 @@ COLCON_ARGS+=("--parallel-workers" "1")
 BUILD_JOBS="$(makeflags_get_jobs "$MAKEFLAGS")"
 info "Parallelism: 1 package at a time, make -j${BUILD_JOBS:-<unlimited>} (MAKEFLAGS='${MAKEFLAGS}')"
 
+# ── Memory cap: the build may fail, the host may not ──────────────────────────
+# The job count sizes the build for the typical TU; this bounds the worst case.
+# colcon runs inside a systemd user scope with MemoryMax (default 75% of RAM,
+# RTC_BUILD_MEM_MAX to change or turn off) and no swap, so crossing the limit
+# ends this build instead of the session (rt_common.sh build_mem_scope_prefix).
+build_mem_scope_prefix \
+  || error "RTC_BUILD_MEM_MAX must be a size like 24G / 20000M / 60%, or 'off' (got '${RTC_BUILD_MEM_MAX:-}')"
+if [[ -n "$BUILD_MEM_SCOPE_UNIT" ]]; then
+  info "Memory cap: ${BUILD_MEM_SCOPE_MAX} (RTC_BUILD_MEM_MAX; the build is stopped if it needs more)"
+elif [[ -n "$BUILD_MEM_SCOPE_MAX" ]]; then
+  warn "Memory cap unavailable — no systemd user session here; building without one"
+else
+  info "Memory cap: off"
+fi
+
 # ONNX Runtime: /opt/onnxruntime 수동 설치 경로 cmake 전파.
 # `-DCMAKE_PREFIX_PATH` 로 주면 onnxruntime 을 안 쓰는 패키지에서 "Manually-specified
 # variables were not used" 경고가 발생하므로 환경변수로 export 한다 (colcon 이
@@ -274,7 +294,14 @@ fi
 
 COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
 
-colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
+BUILD_RC=0
+"${BUILD_MEM_SCOPE_PREFIX[@]}" colcon build "${COLCON_ARGS[@]}" || BUILD_RC=$?
+if [[ "$BUILD_RC" -ne 0 ]]; then
+  if build_mem_scope_oom_killed; then
+    error "Build stopped: it needed more than the ${BUILD_MEM_SCOPE_MAX} memory cap at make -j${BUILD_JOBS:-?}. Lower the job count (./build.sh -j N) or raise the cap (RTC_BUILD_MEM_MAX=<size>|off)."
+  fi
+  error "Build failed!"
+fi
 
 # 빌드 후 최신 overlay 소싱 (check_rt_setup.sh 등 후속 작업용)
 source "${WORKSPACE}/install/setup.bash" || true
