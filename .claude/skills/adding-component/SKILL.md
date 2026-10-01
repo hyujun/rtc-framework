@@ -5,7 +5,7 @@ description: Pre-flight and gate map for ADDING a new controller, message type /
 
 # 새 구성요소를 추가할 때
 
-이 skill 은 절차를 **복제하지 않는다**. 단계별 절차의 SSoT 는 [agent_docs/modification-guide.md](../../../agent_docs/modification-guide.md) 의 "Adding a New ..." 절이며, 그 문서는 tool-neutral 이라 Claude 밖 도구도 읽는다. 여기 있는 것은 **그 문서를 열기 전에 결정해야 하는 것**과 **이 추가에서 자동으로 발화하는 게이트**다 — 사본을 만들면 #213 이 고친 drift 가 되돌아온다.
+이 skill 은 절차를 **복제하지 않는다**. 추가할 때 성립해야 하는 것 (게이트·제약) 의 SSoT 는 [agent_docs/modification-guide.md](../../../agent_docs/modification-guide.md) 의 "Adding a New ..." 절이고, 단계별 절차는 [docs/modification-procedures.md](../../../docs/modification-procedures.md) 의 같은 이름 절이다. 둘 다 tool-neutral 이라 Claude 밖 도구도 읽는다. 여기 있는 것은 **그 문서를 열기 전에 결정해야 하는 것**과 **이 추가에서 자동으로 발화하는 게이트**다 — 사본을 만들면 #213 이 고친 drift 가 되돌아온다.
 
 ## 0. 먼저: 정말 추가인가
 

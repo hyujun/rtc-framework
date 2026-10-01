@@ -53,7 +53,7 @@
 - **문서·메타데이터** — `.md` 를 고쳤으면 `python3 repo_scripts/scripts/validate_docs.py --files <파일들>`; 고친 YAML 의 parse·default·범위·단위; public header 의 Doxygen; public surface (header/launch/config/파일 add·del/dep) 변경 시 README; `CMakeLists.txt`·`package.xml` 동기화는 필수
 - CI 는 `docs-validate` (문서·생성물·셸 검사) 뿐이다 — **빌드·테스트·포매팅의 게이트는 위 로컬 검증뿐이다**
 
-단계별 액션·grep 패턴·Completion Checklist: [modification-guide.md](agent_docs/modification-guide.md).
+게이트·Completion Checklist: [modification-guide.md](agent_docs/modification-guide.md). 단계별 절차: [docs/modification-procedures.md](docs/modification-procedures.md).
 
 ## 5. Sensors
 
@@ -165,7 +165,7 @@ Commit 완료 또는 사용자가 task 종료를 알린 후 (상세: [modificati
 
 - [architecture.md](agent_docs/architecture.md) — threading, data flow, core types, lifecycle, E-STOP, dep graph
 - [controllers.md](agent_docs/controllers.md) — 컨트롤러 계약: 게인 채널, FSM, 토픽 소유, config 로드
-- [modification-guide.md](agent_docs/modification-guide.md) — workflow, adding X 절차, completion checklist, inferential 트리거, housekeeping 상세
+- [modification-guide.md](agent_docs/modification-guide.md) — workflow, adding X 게이트, completion checklist, inferential 트리거, housekeeping 상세
 - [design-principles.md](agent_docs/design-principles.md) — `rtc_*` 5 principles, boundary rules
 - [conventions.md](agent_docs/conventions.md) — domain / code / commit conventions, doc requirements
 - [testing-debug.md](agent_docs/testing-debug.md) — 검증 규범: sensor 선택, 판정 기준, false-green 형태, 테스트 격리
