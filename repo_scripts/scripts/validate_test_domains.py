@@ -24,6 +24,9 @@ is the per-target half the per-package claim never needed: tests holding the
 same lock never run at once. The lock is named after the domain
 (`ros_domain_<n>`), so the claim and the lock cannot drift apart unnoticed, and
 RUN_SERIAL (the test runs with nothing beside it) satisfies the rule too.
+The `ament_python` spelling of going parallel is `pytest-args: ["-n", "4"]`
+(pytest-xdist workers), and xdist has no lock to hold: a python package whose
+tests open participants must not ask for workers at all.
 
 (2) is the mirror image of (1) and was the larger hole. Uniqueness only looks
 at packages that claimed something; the packages that claim NOTHING all run on
@@ -445,6 +448,55 @@ def parallel_packages(root: Path) -> dict[str, int]:
     return found
 
 
+PYTEST_ARGS_RE = re.compile(r"^pytest-args\s*:(.*?)(?=^\S|\Z)", re.M | re.S)
+PYTEST_WORKERS_RE = re.compile(
+    r"(?<![\w-])(?:-n|--numprocesses)(?![\w-])[\s\"',\[\]=-]*(\w+)?|(?<![\w-])-n(\d+)"
+)
+
+
+def parallel_pytest_workers(colcon_pkg_text: str) -> str:
+    """Worker count a `colcon.pkg` hands pytest-xdist ("4", "auto", ...), or ""
+    when the tests run in the one pytest process."""
+    text = "\n".join(strip_comment(line) for line in colcon_pkg_text.splitlines())
+    block = PYTEST_ARGS_RE.search(text)
+    if not block:
+        return ""
+    workers = ""
+    for m in PYTEST_WORKERS_RE.finditer(block.group(1)):
+        workers = m.group(1) or m.group(2) or "auto"  # the last one wins
+    return "" if workers in ("0", "no") else workers
+
+
+def parallel_pytest_packages(root: Path) -> dict[str, str]:
+    """package -> xdist worker count, for the packages that ask pytest for workers."""
+    found: dict[str, str] = {}
+    for path in sorted(root.rglob("colcon.pkg")):
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        workers = parallel_pytest_workers(_text(path))
+        if workers:
+            found[path.parent.relative_to(root).as_posix() or "<root>"] = workers
+    return found
+
+
+def pytest_worker_check(
+    py_claims: list[tuple[int, str, str]], parallel_py: dict[str, str]
+) -> list[str]:
+    """Rule (3) for `ament_python`: a package whose tests open participants runs
+    them in ONE pytest process. xdist workers are processes on the package's one
+    domain, and there is no RESOURCE_LOCK to keep two of them apart."""
+    problems: list[str] = []
+    for domain, pkg, loc in py_claims:
+        if pkg in parallel_py:
+            problems.append(
+                f"{pkg}/colcon.pkg asks pytest for {parallel_py[pkg]} xdist worker(s), and the "
+                f"package's tests open DDS participants (ROS_DOMAIN_ID={domain} claimed at "
+                f"{loc}): the workers would share that one domain, and xdist has no lock to "
+                f"keep two participant tests apart. Drop `-n` from pytest-args"
+            )
+    return problems
+
+
 def held_locks(cmake_text: str) -> dict[str, set[str]]:
     """test name -> what keeps it from overlapping: its RESOURCE_LOCK names, and
     "RUN_SERIAL" if it runs alone. From literal `set_tests_properties` calls --
@@ -749,6 +801,29 @@ def self_test() -> int:
     lock("claimant without a lock in a sequential package", {}, {}, 0)
     lock("`-j` with no number is parallel", {}, {"p": 0}, 1)
 
+    # The ament_python spelling of the same axis: xdist workers, and no lock.
+    for text, expect in (
+        ('pytest-args: ["-n", "4"]\n', "4"),
+        ('pytest-args: ["-n", "auto"]\n', "auto"),
+        ('pytest-args: ["-n4"]\n', "4"),
+        ("pytest-args:\n  - --numprocesses\n  - '6'\n", "6"),
+        ('pytest-args: ["-n", "0"]\n', ""),
+        ('pytest-args: ["-k", "test_n"]\n', ""),
+        ('# pytest-args: ["-n", "4"]\n', ""),
+        ('ctest-args: ["-j", "4"]\n', ""),
+        ("", ""),
+    ):
+        got = parallel_pytest_workers(text)
+        if got != expect:
+            failures.append(f"parallel_pytest_workers({text!r}) = {got!r}, expected {expect!r}")
+    if len(pytest_worker_check([(58, "p", "p/test/conftest.py")], {"p": "4"})) != 1:
+        failures.append("a participant-opening python package with xdist workers was not reported")
+    if pytest_worker_check([(58, "p", "p/test/conftest.py")], {}):
+        failures.append("a participant-opening python package without workers was reported")
+    # Workers are fine where no test opens a participant: no claim, no problem.
+    if pytest_worker_check([], {"q": "4"}):
+        failures.append("xdist workers in a participant-free package were reported")
+
     if failures:
         print("validate_test_domains --self-test FAILED", file=sys.stderr)
         for f in failures:
@@ -778,6 +853,7 @@ def main(argv: list[str] | None = None) -> int:
     registrations, with_participants = scan_registrations(root)
     covered = sum(1 for r in registrations if r[3] and r[4])
     parallel = parallel_packages(root)
+    parallel_py = parallel_pytest_packages(root)
     claims, held = scan_claims(root)
 
     if args.list:
@@ -789,11 +865,14 @@ def main(argv: list[str] | None = None) -> int:
                 f"  parallel ctest: {pkg} (-j {parallel[pkg] or '<unbounded>'}), "
                 f"{locked} domain claimant(s), each checked for its lock"
             )
+        for pkg in sorted(parallel_py):
+            print(f"  parallel pytest: {pkg} (-n {parallel_py[pkg]})")
         return 0
 
     problems = check(found, non_literal) + py_problems
     problems += coverage_check(registrations, with_participants)
     problems += lock_check(claims, held, parallel)
+    problems += pytest_worker_check(py_claims, parallel_py)
     if problems:
         print("Test DDS domain allocation (issue #401) -- violations:", file=sys.stderr)
         for p in problems:

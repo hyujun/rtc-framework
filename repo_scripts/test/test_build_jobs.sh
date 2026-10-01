@@ -806,8 +806,8 @@ test_host_summary_reports_what_is_missing() {
 }
 
 # install.sh 의 setup_workspace: ccache 는 깔되, 못 깔아도 설치를 멈추지 않는다.
-run_setup_workspace() {  # $1 = `apt-get install -y ccache` 의 exit code. sudo 호출 기록 + 출력 + rc.
-  local rc=0 ccache_rc="$1" sudo_log="$TMP/sudo.log"
+run_setup_workspace() {  # $1 = `apt-get install -y ccache` 의 exit code, $2 = pytest-xdist 의 것 (기본 0). sudo 호출 기록 + 출력 + rc.
+  local rc=0 ccache_rc="$1" xdist_rc="${2:-0}" sudo_log="$TMP/sudo.log"
   rm -f "$sudo_log"
   (
     ROS_PKG_PREFIX="ros-test"
@@ -816,6 +816,7 @@ run_setup_workspace() {  # $1 = `apt-get install -y ccache` 의 exit code. sudo 
     sudo() {
       echo "sudo $*" >>"$sudo_log"
       [[ "$*" == "apt-get install -y ccache" ]] && return "$ccache_rc"
+      [[ "$*" == "apt-get install -y python3-pytest-xdist" ]] && return "$xdist_rc"
       return 0
     }
     # shellcheck disable=SC1091
@@ -841,6 +842,26 @@ test_install_gets_ccache_but_does_not_require_it() {
 
   out="$(run_setup_workspace 100)"
   case "$out" in *"ccache could not be installed"*"rc=0") pass ;; *) fail "[install ccache unavailable] $out" ;; esac
+}
+
+# pytest-xdist 도 같은 규칙이다: rtc_tools 의 테스트를 worker 로 돌리는 가속 장치이고,
+# 없으면 그 패키지의 conftest 가 하나씩 돌린다.
+test_install_gets_pytest_xdist_but_does_not_require_it() {
+  local out
+  out="$(run_setup_workspace 0 0)"
+  case "$out" in *"sudo apt-get install -y python3-pytest-xdist"*) pass ;; *) fail "[install xdist] not requested: $out" ;; esac
+  case "$out" in *"pytest-xdist installed"*"rc=0") pass ;; *) fail "[install xdist ok] $out" ;; esac
+  if grep -q "python3-colcon-common-extensions.*pytest-xdist\|pytest-xdist.*python3-colcon\|ccache.*pytest-xdist" <<<"$out"; then
+    fail "[install xdist] bundled with another install call"
+  else
+    pass
+  fi
+
+  out="$(run_setup_workspace 0 100)"
+  case "$out" in *"pytest-xdist could not be installed"*"rc=0") pass ;; *) fail "[install xdist unavailable] $out" ;; esac
+  # ccache 가 실패해도 xdist 설치는 시도한다 — 둘은 서로의 전제가 아니다.
+  out="$(run_setup_workspace 100 0)"
+  case "$out" in *"pytest-xdist installed"*"sudo apt-get install -y python3-pytest-xdist"*"rc=0") pass ;; *) fail "[install xdist after a failed ccache] $out" ;; esac
 }
 
 # ── Run ────────────────────────────────────────────────────────────────────
@@ -896,5 +917,6 @@ test_build_deps_runs_each_dep_inside_a_memory_scope
 
 test_host_summary_reports_what_is_missing
 test_install_gets_ccache_but_does_not_require_it
+test_install_gets_pytest_xdist_but_does_not_require_it
 
 summary_and_exit test_build_jobs.sh

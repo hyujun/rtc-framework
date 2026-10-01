@@ -821,7 +821,7 @@ git clone <repo-url> src/rtc-framework
 
 ### 빌드가 기대는 시스템 패키지
 
-빌드 병렬도 · 메모리 상한 · ccache 가 fresh PC 에서도 같은 방식으로 걸리려면 아래가 있어야 한다. `install.sh` 가 직접 설치하는 것은 ccache 하나이고, 나머지는 Ubuntu 기본 설치에 들어 있다 (dpkg priority `required` / `important`) — 최소 컨테이너처럼 그것이 빠진 호스트에서는 해당 장치만 꺼지고 빌드는 된다.
+빌드 병렬도 · 메모리 상한 · ccache 가 fresh PC 에서도 같은 방식으로 걸리려면 아래가 있어야 한다. `install.sh` 가 직접 설치하는 것은 ccache 와 pytest-xdist 둘이고, 나머지는 Ubuntu 기본 설치에 들어 있다 (dpkg priority `required` / `important`) — 최소 컨테이너처럼 그것이 빠진 호스트에서는 해당 장치만 꺼지고 빌드는 된다.
 
 | 장치 | 쓰는 명령 | 패키지 | 없을 때 |
 |---|---|---|---|
@@ -829,6 +829,7 @@ git clone <repo-url> src/rtc-framework
 | 메모리 상한 | `systemd-run` · `systemctl` + **user session** (`systemd --user`) | `systemd` · `libpam-systemd` · `dbus-user-session` (important) | `Memory cap: unavailable — <이유>` 경고 후 상한 없이 빌드. cgroup v2 + memory controller 의 user 위임이 필요하다 (Ubuntu 24.04 기본값에서 확인) |
 | ccache | `ccache` | `ccache` (universe, optional) — **`install.sh` 의 `setup_workspace` 가 설치** | 캐시 없이 빌드. universe 가 꺼져 설치가 실패해도 `install.sh` 는 경고만 하고 계속한다 |
 | 테스트 빌드 (`--tests`) | — | `ros-<distro>-ament-cmake-gtest` 등 (`setup_workspace`) | — |
+| `rtc_tools` 테스트 병렬 실행 | `pytest -n` | `python3-pytest-xdist` (universe, optional) — **`setup_workspace` 가 설치** | 테스트가 하나씩 돈다 (판정은 같다). `rtc_tools/test/conftest.py` 가 `-n` 을 받아 무시한다 |
 
 이 호스트에서 세 장치가 실제로 걸리는지는 `./install.sh verify` (설치 끝에도 자동) 의 `Build host:` · `Memory cap:` · `ccache:` 세 줄이 알린다 (`rt_common.sh` `print_build_host_summary`). 메모리 상한 줄은 scope 를 실제로 만들어 그 cgroup 의 `memory.max` 를 읽어 본 결과다 — `systemd-run` 이 성공해도 한도가 걸리지 않는 호스트 (cgroup v1/hybrid, 위임 없음) 를 걸러낸다.
 
