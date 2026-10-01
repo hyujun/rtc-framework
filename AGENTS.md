@@ -13,7 +13,7 @@
 
 ## 2. Harness Overview
 
-**Guides** §3·§10 · **Sensors** §5·§5.5 · **Orchestration** §4 · **Escalation** §6·§6.5 · **Enforcement** (Claude Code 는 hook 이 §4 중 기계 판정 가능한 부분을 차단하고, 다른 도구는 §4 를 직접 돌린다). 이 구성의 근거: [harness-rationale.md](agent_docs/harness-rationale.md).
+**Guides** §3·§10 · **Sensors** §5·§5.5 · **Orchestration** §4 · **Escalation** §6·§6.5 · **Enforcement** (Claude Code 는 hook 이 §4 중 기계 판정 가능한 부분을 차단하고, 다른 도구는 §4 를 직접 돌린다). 이 구성의 근거: [harness-rationale.md](docs/reference/harness-rationale.md).
 
 **첫 방문**: §3 → §4 → §6 순으로 읽는다. **수정 중**: §5 검증 + §6 escalation 확인. Invariant 위반 의심 시 즉시 §6.
 

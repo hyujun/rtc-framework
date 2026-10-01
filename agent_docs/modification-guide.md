@@ -153,7 +153,7 @@ colcon test-result --verbose
 
 ## Inferential review 트리거 (LLM-as-judge, 수동 trigger)
 
-[AGENTS.md](../AGENTS.md) §5.5 가 요약한 트리거의 상세 — 트리거별 이유와 명령. computational sensor (build / test / grep) 는 **문법·빌드·기존 테스트 통과** 만 검증한다. 의미 회귀 — 설계 일관성, robot-agnostic 위반, abstract interface 누락, 재사용 가능성 — 은 잡지 못한다 (Anthropic 2026.04 *Harness design*: 에이전트의 자기 평가는 신뢰 불가, [harness-rationale.md](harness-rationale.md)).
+[AGENTS.md](../AGENTS.md) §5.5 가 요약한 트리거의 상세 — 트리거별 이유와 명령. computational sensor (build / test / grep) 는 **문법·빌드·기존 테스트 통과** 만 검증한다. 의미 회귀 — 설계 일관성, robot-agnostic 위반, abstract interface 누락, 재사용 가능성 — 은 잡지 못한다 (에이전트의 자기 평가는 그 대체가 아니다).
 
 다음 상황에서 사용자에게 inferential sensor 실행을 권한다 (`/code-review`·`/security-review`·`/simplify` 는 Claude Code slash command — 미지원 환경/툴에서는 동등한 수동 code review 로 대체):
 
