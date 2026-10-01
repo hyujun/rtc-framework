@@ -108,7 +108,7 @@ robot 모델이 필요한 gtest fixture 는 URDF 를 **`robot_descriptions/robot
 
 고정 sleep 대신 **관측 가능한 진행** (tick / solve / recv 카운터) 을 폴링한다. 공유 헬퍼는 `rtc::testing::WaitUntil` (`rtc_base/test/include/rtc_base/testing/wait_until.hpp`, `rtc_base/test/test_wait_until.cpp` 가 계약을 pin) 이며, 설치되지 않으므로 소비자는 `../rtc_base/test/include` **소스 트리 경로**로 가져온다 (`no_malloc_scope.hpp` 와 동일 레이아웃; ament symlink install 이 `install(PATTERN EXCLUDE)` 를 무시해 `include/` 에 두면 런타임 트리로 실려 나간다).
 
-이 헬퍼는 **오직 잔다**. Executor 를 pump 해야 하는 테스트는 자기 TU 에 local spin 헬퍼를 두며, 둘을 섞지 않는 것이 [invariants.md](../agent_docs/invariants.md) **PROC-8** 이다 (근거·양쪽 실패 모드·자동 gate 는 그쪽이 SSoT).
+이 헬퍼는 **오직 잔다**. Executor 를 pump 해야 하는 테스트는 자기 TU 에 local spin 헬퍼를 두며, 둘을 섞지 않는 것이 [invariants.md](../agent_docs/invariants.md) **PROC-8** 이다 (규칙·탐지는 그쪽, 근거와 양쪽 실패 모드는 [invariants-rationale.md](reference/invariants-rationale.md) §Process 의 PROC-8 행).
 
 Suite 고유의 poll 예산이 있으면 헬퍼를 감싸지 말고 **인자로 넘긴다** — `WaitUntil(pred, timeout, poll)`. 예산이 assertion 옆에 보이는 편이 낫고, 같은 이름의 wrapper 는 `using namespace rtc::testing;` 이 들어오는 순간 모호해진다. 호출 지점이 많아 예산을 한 곳에 묶어야 한다면 **다른 이름**으로 얇게 감싸고 그 값의 근거를 상수 옆에 남긴다 (`udp_hand_driver` 의 `PollUntil` = CommLoop 한 tick).
 
@@ -283,7 +283,7 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 
 `cpu_shield.sh` 는 cpuset 을 *만들기만* 하고, 런치가 CM 을 그 안으로 `adopt` 한다.
 격리가 실제로 서는지는 **실기(SMT/hybrid 호스트)** 에서만 검증된다 —
-sim 단일 실행으로 대체 불가 ([design-principles.md](../agent_docs/design-principles.md) sim-noise 원칙).
+sim 단일 실행으로 대체 불가 ([testing-debug.md](../agent_docs/testing-debug.md) §런타임 판독).
 
 ```bash
 # 1) shield cpuset 이 CM 전체 span 을 덮는가 (기대 집합 = get_cm_shield_cpus <profile> 출력; 값은 박제하지 않는다)

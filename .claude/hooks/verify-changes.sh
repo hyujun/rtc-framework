@@ -198,8 +198,8 @@
 #          workspace_sim_rivals): a sim does not end on its own the way a rival
 #          build does.
 #          Doxygen / cross-package doc consistency NOT checked
-#          (modification-guide.md "Updating an Existing Package" 6 steps cover
-#          these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
+#          (modification-guide.md "Updating an Existing Package" and its
+#          Completion Checklist cover these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
 #          untracked, where VERIFY_BASE is the watermark commit this hook last
 #          passed at (see "Verification baseline" below) — NOT HEAD, so work
 #          the agent committed during the turn is still verified;

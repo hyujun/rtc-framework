@@ -329,7 +329,7 @@ colcon test --packages-select rtc_tsid --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-대표 테스트 파일 (`test/<이름>.cpp`; 실측 카운트는 [agent_docs/testing-debug.md](../agent_docs/testing-debug.md) 참조). 여러 파일이 한 바이너리를 공유한다 (예: `test_tsid_wqp.cpp` → `test_tsid_formulations`) — 파일↔바이너리 대응은 `CMakeLists.txt` 의 `add_tsid_gtest` 등록이 SSoT 이고, 한 파일만 돌리려면 그 바이너리에 `--gtest_filter` 를 준다.
+대표 테스트 파일 (`test/<이름>.cpp`; 카운트를 재는 명령은 [docs/testing.md](../docs/testing.md) §Test 측정). 여러 파일이 한 바이너리를 공유한다 (예: `test_tsid_wqp.cpp` → `test_tsid_formulations`) — 파일↔바이너리 대응은 `CMakeLists.txt` 의 `add_tsid_gtest` 등록이 SSoT 이고, 한 파일만 돌리려면 그 바이너리에 `--gtest_filter` 를 준다.
 
 | 테스트 파일 | 설명 |
 |--------|------|

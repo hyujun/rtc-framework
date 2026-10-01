@@ -21,7 +21,7 @@ description: Pre-flight and gate map for ADDING a new controller, message type /
 
 ## 2. 무엇을 추가하는가 → SSoT 절과 그때 발화하는 게이트
 
-| 추가 대상 | 절차 SSoT (modification-guide.md) | 착수 전 걸리는 것 |
+| 추가 대상 | 절 이름 (게이트: modification-guide.md · 단계: docs/modification-procedures.md) | 착수 전 걸리는 것 |
 |---|---|---|
 | Controller | §Adding a New Controller | 코어/바인딩 2계층 분리가 전제. `Name()` 과 `config_key` 는 **한 네임스페이스**라 전역 유일 — 클래스를 복사하고 문자열을 안 고치면 bring-up 전체가 거부된다 |
 | Message / `PublishRole` | §Adding a New Message Type | **기본 답은 "추가하지 않는 것"** (controller-owned SeqLock + `owned_topics` 헬퍼). 그래도 필요하면 **E-11 → 착수 전 `[CONCERN]`**, 그리고 네 곳을 같은 변경 안에서 고친다 |
@@ -38,4 +38,4 @@ description: Pre-flight and gate map for ADDING a new controller, message type /
 
 ## 4. 끝났다고 말하기 전
 
-modification-guide.md §Completion Checklist 는 Stop hook 이 검사하는 범위의 **여집합**이다 — hook 이 green 이어도 그 4항목(`package.xml` dep 의미, YAML default·범위·unit, Doxygen, RT 자가검사)은 직접 확인한다. 센서 선택은 [agent_docs/testing-debug.md](../../../agent_docs/testing-debug.md) 가 SSoT.
+modification-guide.md §Completion Checklist 는 Stop hook 이 검사하는 범위의 **여집합**이다 — hook 이 green 이어도 그 항목들(`package.xml` dep 의미, YAML default·범위·unit, Doxygen, Python lint, RT 자가검사)은 직접 확인한다. 센서 선택은 [agent_docs/testing-debug.md](../../../agent_docs/testing-debug.md) 가 SSoT.

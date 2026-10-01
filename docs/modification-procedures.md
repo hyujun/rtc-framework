@@ -51,7 +51,7 @@ Group 이름은 config YAML 밖에도 박혀 있어서, `devices:` 블록만 고
 - **Python 스크립트 / GUI** — `integrated_bringup/scripts/`, demo GUI 등이 group 이름으로 토픽을 조립하는 경로
 - **C++ 기본값 (멤버 in-class initializer / struct default / `declare_parameter`)** — 노드가 `"hand"` 같은 group 명을 *기본값*으로 들고 있으면 YAML 을 고쳐도 미지정 실행 경로에서 old 이름이 되살아난다 (예: `ur5e_bt_coordinator` 의 `TopicNamer::hand_group`, `BTCoordinatorNode::hand_group_`)
 - **Group 파생 helper** — `GetSecondaryDeviceName()` 류 이름 조립 로직
-- **CSV / 로그 컬럼명**, **[architecture.md](../agent_docs/architecture.md) · [controllers.md](../agent_docs/controllers.md) 의 토픽 표**
+- **CSV / 로그 컬럼명**, **문서의 토픽 서술** ([docs/controllers.md](controllers.md) §ROS2 Topics 표, [architecture.md](../agent_docs/architecture.md) §RT vs non-RT Topic Ownership)
 
 검증 신호: rename 후 `ros2 topic list` 에 old 이름 토픽이 남아 있거나, 구독자 0인 신규 토픽이 보이면 위 중 하나가 갱신 안 된 것이다.
 

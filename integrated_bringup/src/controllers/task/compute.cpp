@@ -690,8 +690,8 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
       // NUM-6 at the point of use (#277). This gate never reads the gain, so
       // the floor goes straight on the gain rather than in front of the gate.
       // (The retired ClikController adapter placed it identically — #236 S7c
-      // deleted the class, not the placement rule, whose SSoT is
-      // agent_docs/modification-guide.md §Adding a New Controller item 5.)
+      // deleted the class, not the placement rule, whose SSoT is the gain-floor
+      // rule of agent_docs/modification-guide.md §Adding a New Controller.)
       // LoadConfig and the `null_kp` parameter callback floor it too; this half
       // covers neither, because the gain reaches the SeqLock POD from both and
       // a negative K_p drives the posture AWAY from its target while N hides

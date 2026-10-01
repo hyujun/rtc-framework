@@ -5,7 +5,7 @@
 > **Layout 기준**: thread-layout-v4.1. 본 문서의 thread roster · core/priority 표 · 코드 인용은 모두 v4.1 기준이다.
 >
 > **Thread layout SSoT**:
-> - [agent_docs/architecture.md](../agent_docs/architecture.md) §Threading Model — RT 정의·priority hierarchy·callback_group↔executor binding 매트릭스
+> - [agent_docs/architecture.md](../agent_docs/architecture.md) §Threading Model (priority hierarchy) · §Execution Contexts (RT 정의) · §RtControllerNode (callback_group↔executor binding 표)
 > - [rtc_base/README.md](../rtc_base/README.md) §스레드 구성 — 코어 수별 tier 표 (4/6/8/10/12/14/16)
 > - [repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml) — **레이아웃 값의 SSoT** (선언형 manifest). C++ tier 상수 + `SelectThreadConfigsForCoreCount()`, shell 헬퍼, Python launch 미러가 전부 여기서 생성된다 (issue #153 M1)
 > - [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) — `ThreadConfig` / `MpcThreadConfig` / `SystemThreadConfigs` 구조체 + 설계 산문 (생성된 `thread_config_generated.hpp` 를 include)
@@ -1078,4 +1078,4 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 
 **SSoT** (drift 방지 — 본 문서가 박제하지 않는 사실의 단일 출처):
 - Thread roster · core/priority 매트릭스: [rtc_base/README.md](../rtc_base/README.md) §스레드 구성 + [thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) (`SystemThreadConfigs` / `SelectThreadConfigs()`) + [thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) (tier 상수)
-- callback_group → executor binding · RT 정의: [agent_docs/architecture.md](../agent_docs/architecture.md) §Threading Model
+- callback_group → executor binding · RT 정의: [agent_docs/architecture.md](../agent_docs/architecture.md) §RtControllerNode · §Execution Contexts

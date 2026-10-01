@@ -11,7 +11,7 @@
 //   - Register the same class under a second config_key. The CM puts Name() and
 //     config_key in ONE lookup namespace and refuses the whole bring-up on a
 //     collision, so a class cannot answer to two keys
-//     (modification-guide.md §Adding a New Controller, item 3).
+//     (modification-guide.md §Adding a New Controller, the Name() rule).
 //   - Subclass DemoTaskController and override Compute(). Every member it would
 //     need is private, so this means editing a shipped controller's header to
 //     widen access — a PROC-6 regression surface on three deployed profiles for

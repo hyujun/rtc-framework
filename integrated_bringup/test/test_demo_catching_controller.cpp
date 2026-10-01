@@ -17,8 +17,9 @@
 //      diagnostic off, and an arm target at any time.
 //   4. A target queued while Inactive does not leak into the next activation.
 //
-// Deliberately NOT in the four shared per-controller suites (testing-debug.md
-// §28): device-readability and gate-closure assertions live HERE instead of in
+// Deliberately NOT in the four shared per-controller suites (docs/testing.md
+// §Sensor Matrix, the catching-binding row): device-readability and
+// gate-closure assertions live HERE instead of in
 // test_device_readability_gate because half of that suite's contract is the
 // E-STOP safe-position ramp, which this controller does not have (it overrides
 // no E-STOP hook — that IS the E-8 decision). The momentum-observer embedding
