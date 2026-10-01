@@ -622,6 +622,17 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
+  # ... and the cycle that pairs the first segment with the search's plan and
+  # replans it while the RT follows (E1-F08): the real search on the real
+  # steady clock (RUN_SERIAL below).
+  ament_add_gtest(test_catching_approach_cycle test/test_catching_approach_cycle.cpp TIMEOUT 300)
+  target_link_libraries(test_catching_approach_cycle rtc_controllers)
+  target_include_directories(test_catching_approach_cycle PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_approach_cycle PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_approach_cycle PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
   ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)
   target_link_libraries(test_catch_pose_ik_params rtc_controllers)
 
@@ -681,6 +692,7 @@ if(BUILD_TESTING)
   # (RecordProperty "worst_*_ns") are not protected -- quote those from a run
   # of that one test (`--ctest-args -R <name>`). testing-debug.md has the rule.
   set_tests_properties(test_catching_decel_planner PROPERTIES RUN_SERIAL TRUE)
+  set_tests_properties(test_catching_approach_cycle PROPERTIES RUN_SERIAL TRUE)
 endif()
 
 ament_package()
