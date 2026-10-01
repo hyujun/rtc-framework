@@ -1765,5 +1765,201 @@ expect_exit "PROC-3 over a tree built without tests blocks" "$rc" 2
 expect_contains "PROC-3 names the packages built without tests" "$out" "PROC-3 broad test NOT RUN — built WITHOUT tests (BUILD_TESTING=OFF in the CMake cache): rtc_demo"
 rm -rf "$ws" "$bstub" "$tstub" "$count"
 
+# --- The turn end checks the verdict; --run produces it ------------------------
+#
+# 2026-10-01: the turn-end call stopped building and testing. Over two days it
+# had spent 78% of its build/test time on tests, about 70% of that re-running a
+# full suite the agent had run minutes earlier on the same tree, and in a month
+# it had blocked 25 times without one real failure. It now only checks that
+# the changed packages carry a green verdict for their present content;
+# `verify-changes.sh --run`, called during the turn, is what builds, tests and
+# records one.
+
+# A build stand-in that succeeds and counts its calls ($1 = file to count in).
+make_counting_build_stub() {
+  local d
+  d=$(mktemp -d)
+  cat >"$d/build.sh" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$1"
+exit 0
+EOF
+  chmod +x "$d/build.sh"
+  echo "$d"
+}
+# The turn-end call with BOTH seams in place: were it to build or to test, the
+# stubs would count it. Extra environment goes in front.
+run_stop() {
+  local dir="$1" bstub="$2" tstub="$3"
+  shift 3
+  ( cd "$dir" && env "$@" CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$bstub/build.sh" \
+      RTC_VERIFY_TEST_CMD="$tstub/test.sh" \
+      bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null )
+}
+# --run with the same seams. stdin is closed: nothing there to read.
+run_run() {
+  local dir="$1" bstub="$2" tstub="$3"
+  shift 3
+  ( cd "$dir" && env "$@" CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$bstub/build.sh" \
+      RTC_VERIFY_TEST_CMD="$tstub/test.sh" \
+      bash "$HOOK" --run </dev/null 2>&1 >/dev/null )
+}
+
+# 62. A changed package with no verdict blocks the turn end, and the turn end
+#     neither builds nor tests it.
+dir=$(make_fixture)
+bcount=$(mktemp)
+tcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+tstub=$(make_test_stub "$tcount" 0)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a changed package without a verdict blocks the turn end" "$rc" 2
+expect_contains "the block names the package that is owed" "$out" "build/test verdict missing for: rtc_demo"
+expect_contains "the block names the command that pays it" "$out" ".claude/hooks/verify-changes.sh --run"
+if [ "$(calls "$bcount")" = 0 ]; then pass "the turn end does not build"; else fail "the turn end built $(calls "$bcount") times"; fi
+if [ "$(calls "$tcount")" = 0 ]; then pass "the turn end does not test"; else fail "the turn end tested $(calls "$tcount") times"; fi
+# 62b. --run builds with --tests, tests, and says it passed.
+out=$(run_run "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run over a green change passes" "$rc" 0
+expect_contains "--run says what it built and tested" "$out" "verify-changes --run: PASS"
+if [ "$(cat "$bcount")" = "-p rtc_demo --tests" ]; then pass "--run builds the package with its tests"; else fail "--run built with [$(cat "$bcount")]"; fi
+if [ "$(calls "$tcount")" = 1 ]; then pass "--run tests the package"; else fail "--run tested $(calls "$tcount") times"; fi
+# 62c. The turn end over the tree --run passed: nothing owed, nothing run.
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the turn end passes a tree --run passed" "$rc" 0
+expect_contains "...as the unchanged tree it is" "$out" "nothing re-run"
+# 62d. Committing that tree changes nothing, and the watermark moves to it.
+git -C "$dir" commit -qam "what --run passed"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the turn end passes the commit of a tree --run passed" "$rc" 0
+if [ "$(cat "$dir/.git/rtc-verify-base")" = "$(git -C "$dir" rev-parse HEAD)" ]; then
+  pass "the watermark advances to that commit"
+else
+  fail "the watermark did not advance to the commit of a verified tree"
+fi
+# 62e. A repository-level document written afterwards: the verdict stands, the
+#      other gates read the document.
+git -C "$dir" reset -q --soft HEAD~1
+git -C "$dir" rev-parse HEAD >"$dir/.git/rtc-verify-base"
+printf '# docs\n\nWritten after the code passed.\n' >"$dir/agent_docs/notes.md"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a repository-level doc after --run passes the turn end" "$rc" 0
+expect_contains "...on the package verdict --run left" "$out" "build/test not repeated for [rtc_demo]"
+# 62f. An edit inside the package voids the verdict.
+echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "an edit inside the package after --run blocks the turn end" "$rc" 2
+expect_contains "...as a missing verdict" "$out" "build/test verdict missing for: rtc_demo"
+if [ "$(calls "$bcount")" = 1 ] && [ "$(calls "$tcount")" = 1 ]; then
+  pass "five turn ends built and tested nothing"
+else
+  fail "the turn ends ran the build $(($(calls "$bcount") - 1)) and the tests $(($(calls "$tcount") - 1)) times"
+fi
+# 62g. The timing log says which call each line was.
+log=$(cut -f2,6 "$dir/.git/rtc-verify-timing.log" 2>/dev/null | tr '\t\n' '  ')
+if [ "$log" = "blocked mode=stop pass mode=run pass-unchanged mode=stop pass-unchanged mode=stop pass mode=stop blocked mode=stop " ]; then
+  pass "the timing log records the mode of each call"
+else
+  fail "the timing log reads [$log]"
+fi
+rm -rf "$dir" "$bstub" "$tstub" "$bcount" "$tcount"
+
+# 62h. A red --run leaves no verdict: the turn end still owes the package.
+dir=$(make_fixture)
+bcount=$(mktemp)
+tcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+tstub=$(make_test_stub "$tcount" 1)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_run "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run over a red test fails" "$rc" 2
+expect_not_contains "...and does not say it passed" "$out" "verify-changes --run: PASS"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the turn end after a red --run blocks" "$rc" 2
+expect_contains "...on the verdict that was never earned" "$out" "build/test verdict missing for: rtc_demo"
+rm -rf "$dir" "$bstub" "$tstub" "$bcount" "$tcount"
+
+# 63. PROC-3 (rtc_base / rtc_msgs) is owed as a whole, and not built at the
+#     turn end either.
+dir=$(make_fixture)
+add_rtc_base "$dir"
+bcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+tstub=$(make_test_stub /dev/null 0)
+echo 'int base_fn() { return 1; }' >"$dir/rtc_base/src/base.cpp"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "an rtc_base change without a verdict blocks the turn end" "$rc" 2
+expect_contains "the PROC-3 block says the whole workspace is owed" "$out" "build/test verdict missing for: every package (PROC-3"
+if [ "$(calls "$bcount")" = 0 ]; then pass "the turn end does not start the PROC-3 build"; else fail "the turn end started the PROC-3 build"; fi
+rm -rf "$dir" "$bstub" "$tstub" "$bcount"
+
+# 64. A held host: --run refuses to build and remembers nothing; the turn end
+#     defers while the hold lasts and asks for --run once it is over.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+bcount=$(mktemp)
+tcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+tstub=$(make_test_stub "$tcount" 0)
+sleep 60 &
+hpid=$!
+echo "$hpid $(start_time_of "$hpid")" >"$ws/.rtc-verify-hold"
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_run "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run on a held host does not pass" "$rc" 2
+expect_contains "--run on a held host says why nothing ran" "$out" "build/test NOT run — a simulator"
+expect_contains "...and names the holder" "$out" "$hpid: sleep 60"
+if [ "$(calls "$bcount")" = 0 ] && [ "$(calls "$tcount")" = 0 ]; then pass "--run builds and tests nothing on a held host"; else fail "--run built or tested on a held host"; fi
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the turn end on a held host does not block" "$rc" 0
+expect_contains "...it defers the missing verdict" "$out" "Build/test deferred"
+kill "$hpid" 2>/dev/null
+wait "$hpid" 2>/dev/null
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the turn end blocks once the hold is over" "$rc" 2
+expect_contains "the refused --run left no verdict behind" "$out" "build/test verdict missing for: rtc_demo"
+rm -rf "$ws" "$bstub" "$tstub" "$bcount" "$tcount"
+
+# 64b. A build running in the workspace while a verdict is missing: the turn
+#      end says to wait for it (it is most likely the --run), and builds nothing.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+bcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+tstub=$(make_test_stub /dev/null 0)
+bin=$(mktemp -d)
+write_rival "$bin/colcon"
+(cd "$ws" && exec "$bin/colcon") >/dev/null 2>&1 &
+rpid=$!
+if wait_for_name "$rpid" colcon; then
+  echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+  expect_exit "a missing verdict beside a running build blocks the turn end" "$rc" 2
+  expect_contains "...and says a build is running" "$out" "a build is running in this colcon workspace"
+  expect_contains "...naming it by pid" "$out" "$rpid: /bin/bash $bin/colcon"
+  if [ "$(calls "$bcount")" = 0 ]; then pass "the turn end builds nothing beside it"; else fail "the turn end built beside a running build"; fi
+else
+  fail "the colcon stand-in never showed up under its own name"
+fi
+kill "$rpid" 2>/dev/null
+wait "$rpid" 2>/dev/null
+rm -rf "$ws" "$bstub" "$tstub" "$bcount" "$bin"
+
+# 65. --run takes no input: with a stdin that never closes it still finishes.
+#     An unknown argument is a usage error, not a turn-end call.
+dir=$(make_fixture)
+fifo="$dir/../$(basename "$dir").fifo"
+mkfifo "$fifo"
+exec 9<>"$fifo"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" timeout 60 bash "$HOOK" --run <&9 2>&1 >/dev/null ); rc=$?
+expect_exit "--run does not wait on stdin" "$rc" 0
+exec 9<&-
+rm -f "$fifo"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" --build </dev/null 2>&1 >/dev/null ); rc=$?
+expect_exit "an unknown argument is a usage error" "$rc" 64
+expect_contains "...and prints the usage" "$out" "usage: verify-changes.sh [--run]"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
