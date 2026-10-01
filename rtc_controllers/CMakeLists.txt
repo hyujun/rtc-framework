@@ -608,6 +608,20 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
+  # dynamic_catching MPC E1-F08 (#661): the decel planner's APPROACH–stop
+  # solves on a fake clock (PlanFirst, Replan, the ball target, the publish
+  # gates, the allocation boundary). Not E1-F07's test_catching_decel_mpc_approach
+  # (the core alone). C-level malloc gate: one TU per binary.
+  ament_add_gtest(test_catching_approach_planner test/test_catching_approach_planner.cpp
+    TIMEOUT 300)
+  target_link_libraries(test_catching_approach_planner rtc_controllers)
+  target_include_directories(test_catching_approach_planner PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_approach_planner PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_approach_planner PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
+    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
   ament_add_gtest(test_catch_pose_ik_params test/test_catch_pose_ik_params.cpp)
   target_link_libraries(test_catch_pose_ik_params rtc_controllers)
 
