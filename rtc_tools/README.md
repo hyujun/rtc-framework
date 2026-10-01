@@ -1192,6 +1192,8 @@ colcon test --packages-select rtc_tools --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
+`colcon.pkg` 가 pytest 에 `-n 4` 를 넘기므로 `colcon test` 는 테스트를 pytest-xdist worker 4개로 돌립니다. xdist 가 없는 호스트에서는 `test/conftest.py` 가 그 옵션을 받아 무시하고 하나씩 돌립니다 (판정은 같고, report header 가 알려 줍니다 — `sudo apt install python3-pytest-xdist`). 하나씩 돌려 보려면 `--pytest-args -p no:xdist` 를 붙입니다. 규칙은 [testing-debug.md](../agent_docs/testing-debug.md) "패키지 안 병렬".
+
 ---
 
 ## 빌드

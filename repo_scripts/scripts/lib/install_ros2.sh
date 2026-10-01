@@ -4,7 +4,7 @@
 # 제공 함수:
 #   install_ros2 UBUNTU_VER   — ROS2 humble/jazzy 자동 설치 (locale + apt repo)
 #   check_prerequisites       — Ubuntu / ROS2 / venv 확인, ROS_PKG_PREFIX 설정
-#   setup_workspace           — ament-cmake, eigen, colcon, vcstool, ethtool, ccache (선택)
+#   setup_workspace           — ament-cmake, eigen, colcon, vcstool, ethtool, ccache · pytest-xdist (선택)
 #
 # Caller scope 의존:
 #   ROS_PKG_PREFIX (check_prerequisites가 설정), UBUNTU_VERSION, ROS_DISTRO_DETECTED
@@ -169,6 +169,16 @@ setup_workspace() {
     success "ccache installed (build.sh uses it automatically)"
   else
     warn "ccache could not be installed (optional; needs the 'universe' repository) — builds work, clean rebuilds are not cached"
+  fi
+
+  # pytest-xdist — rtc_tools 의 colcon.pkg 가 pytest 에 `-n 4` 를 넘겨 테스트를 worker
+  # 4개로 돌린다. 없어도 테스트는 돈다 (그 패키지의 test/conftest.py 가 옵션을 받아
+  # 무시하고 하나씩 돌린다 — 판정은 같고 시간만 다르다). ccache 와 같은 이유로
+  # 필수 목록과 묶지 않고, 실패해도 설치를 멈추지 않는다.
+  if sudo apt-get install -y python3-pytest-xdist > /dev/null 2>&1; then
+    success "pytest-xdist installed (rtc_tools tests run in parallel workers)"
+  else
+    warn "pytest-xdist could not be installed (optional; needs the 'universe' repository) — rtc_tools tests run one at a time"
   fi
 }
 

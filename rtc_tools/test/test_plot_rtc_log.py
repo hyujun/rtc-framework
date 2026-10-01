@@ -3548,6 +3548,24 @@ _PLANNER_EVENTS_COLUMNS = [
     "g_max",
     "v_dir_max",
     "max_catchable",
+    "decel_outcome",
+    "decel_k",
+    "decel_n_nodes",
+    "decel_seq",
+    "decel_publish_ns",
+    "decel_h_s",
+    "decel_qdd_trusted",
+    "decel_x0_clamped",
+    "decel_from_segment",
+    "decel_presolved",
+    "decel_cold_retry",
+    "decel_iterations",
+    "decel_qp_status",
+    "decel_core_reason",
+    "decel_solve_us",
+    "decel_slack_max",
+    "decel_slack_terminal_max",
+    "decel_tau_ratio_max",
 ]
 
 # RankGateBit order (rtc_controllers/catching/planner_search.hpp) — bit
@@ -3605,6 +3623,10 @@ def _planner_events_row(
     row["rollout_window_only"] = 0
     row["n_rollouts"] = n_rollouts
     row["rollout_us_max"] = rollout_us_max
+    # The two decel columns the writer fills with NAMES, as a wake with the
+    # decel planner off writes them (DecelOutcomeName / DecelMpcReasonName).
+    row["decel_outcome"] = "off"
+    row["decel_core_reason"] = "none"
     for bit_col, val in rank_bits.items():
         row[bit_col] = val
     row["rank_mask"] = sum(

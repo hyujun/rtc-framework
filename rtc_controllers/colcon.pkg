@@ -1,0 +1,6 @@
+# Arguments colcon adds to every `colcon test` of this package: ctest runs four
+# tests at a time instead of one. What has to hold for that -- the domain locks,
+# RUN_SERIAL on a test that asserts a wall-clock budget -- is at the end of the
+# test block in CMakeLists.txt. agent_docs/testing-debug.md ("패키지 안 병렬")
+# has the rule and how to run the tests one at a time again.
+ctest-args: ["-j", "4"]

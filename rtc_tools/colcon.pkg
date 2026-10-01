@@ -1,0 +1,7 @@
+# Arguments colcon adds to every `colcon test` of this package: pytest-xdist
+# runs the tests in four worker processes instead of one (105 s -> 38 s).
+# Without pytest-xdist the option is accepted and ignored -- test/conftest.py --
+# and the tests run one at a time, with the same verdict.
+# agent_docs/testing-debug.md ("패키지 안 병렬") has the rule and how to run
+# the tests one at a time again.
+pytest-args: ["-n", "4"]

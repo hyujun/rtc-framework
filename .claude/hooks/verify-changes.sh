@@ -9,6 +9,23 @@
 #          {background_tasks}: defers (exit 0, watermark kept) while a
 #          background agent may still be writing the checkout -- see
 #          "Background agents still writing the checkout".
+# Modes  : (no argument)  the turn-end call. Runs every gate EXCEPT the build
+#                         and the tests: for those it only CHECKS that the
+#                         changed packages carry a green verdict for their
+#                         present content, and blocks when one does not.
+#          --run          called by hand, during the turn. Runs every gate AND
+#                         builds and tests the changed packages, and records
+#                         the verdicts the turn-end call looks for. Reads no
+#                         stdin. Long runs: background it and wait for it.
+#          The turn end stopped building on 2026-10-01. Measured over the two
+#          days before (18 turn ends that built, 1,769 s): 78% of that time was
+#          tests, about 70% of the test time re-ran a full suite the agent had
+#          run on the same tree minutes earlier, 14 of 15 came right after a
+#          commit -- and in a month of transcripts the phase blocked 25 times
+#          without one real build or test failure (11 times a build was already
+#          running, 14 timeouts or tests not started for the Stop budget). What the
+#          turn end keeps is the part that did earn its place: a tree whose
+#          last edit came after its last full test run does not pass.
 #
 # Phases :
 #   0. ARCH grep (architecture-fitness sensor)
@@ -48,24 +65,29 @@
 #        - changed *.yaml -> parse check (config/** had no gate at all). Verdict
 #          is the interpreter exit status, and a missing PyYAML fails OPEN.
 #   1c. changed .claude/rules/*.md -> validate_claude_rules.py (globs can fire)
-#   1d. changed CMakeLists.txt / conftest.py / test sources -> the CI test
-#        gates validate_test_domains.py + validate_test_fixtures.py, WHOLE repo
-#        (a domain collision spans two packages; CI keeps main clean)
-#   2. Build + test on changed packages
+#   1d. changed CMakeLists.txt / conftest.py / colcon.pkg / test sources -> the
+#        CI test gates validate_test_domains.py + validate_test_fixtures.py,
+#        WHOLE repo (a domain collision spans two packages; CI keeps main clean)
+#   2. Build + test on changed packages -- EXECUTED under --run, only CHECKED
+#      at the turn end (see Modes and "Turn end: evidence, not execution")
 #        - a package is "changed" for this phase by its source (.cpp/.hpp/.h/
-#          .cc/.py), its CMakeLists.txt / package.xml, or a shell script in
-#          its source directories (see CHANGED_SH_BUILD)
+#          .cc/.py), its CMakeLists.txt / package.xml / colcon.pkg, or a shell
+#          script in its source directories (see CHANGED_SH_BUILD)
 #        - rtc_base / rtc_msgs change -> ./build.sh full --tests + colcon test all
 #          (PROC-3: broad downstream impact)
-#        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>
+#        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>,
+#          one package at a time (each suite has the box to itself)
 #        (--tests: build.sh skips tests by default, and a package built without
 #        them tests as "0 tests, 0 failures" -- see run_build. Independently of
 #        that flag, a package whose CMake cache says BUILD_TESTING=OFF after the
 #        build is reported UNVERIFIED and not tested -- pkgs_built_without_tests)
-#        A test run that TIMES OUT or fails to launch is reported as UNVERIFIED
-#        and blocks (exit 2) -- the colcon test exit code is preserved and
-#        handled explicitly rather than inferred from test-result alone, so a
-#        killed/partial run can no longer masquerade as "0 failures".
+#        The tests' verdict is `colcon test --return-code-on-test-failure`'s
+#        exit code plus its summary line counting the packages asked for --
+#        not a reading of result files (run_colcon_test says what that reading
+#        missed). A test run that TIMES OUT, fails to launch, fails without
+#        leaving a failing result, or finishes fewer packages than asked is
+#        reported as UNVERIFIED and blocks (exit 2), so a killed/partial run
+#        cannot masquerade as "0 failures".
 #   3. Stale install/ detection (rename-aware)
 #        - any deleted launch/*.py or config/**/*.yaml whose basename still
 #          resolves under install/ — warns about stray artefacts that
@@ -79,19 +101,30 @@
 #          a formatter fixed point); pre-existing debt passes. See Phase 5.
 #        - `ruff check` lint is NOT graded; Doxygen, YAML default/range/unit and
 #          README need stay manual (modification-guide.md Completion Checklist).
-#        - takes what is left of the Stop budget: past
-#          RTC_VERIFY_FORMAT_DEADLINE_S (480s) the rest is listed as ungraded.
+#        - at the turn end, past RTC_VERIFY_FORMAT_DEADLINE_S (480s) the rest
+#          is listed as ungraded; --run has no Stop budget and no deadline.
 #
-# Verdict reuse (what keeps an unchanged tree from being re-verified):
+# Verdict reuse (what the turn end reads, and what keeps an unchanged tree
+# from being re-verified):
 #   - the WHOLE working tree is identical to the one this hook last passed at
 #     -> nothing is run (see "Nothing changed since the last pass");
 #   - the package directories are, in content, the ones a package last built
-#     and tested green with -> its build/test is not repeated, every other
-#     gate still runs (see "Package verdict reuse").
+#     and tested green with -> its build/test is not repeated (--run) or not
+#     owed (turn end); every other gate still runs (see "Package verdict
+#     reuse").
 #   Both are keyed on content, never on time or on the watermark, and only a
-#   PASS that went through build/test is remembered.
-#   A measurement that holds the host (see workspace_holds) DEFERS build/test
-#   the way a running simulator does.
+#   PASS that went through build/test is remembered -- so committing a tree
+#   --run passed costs the turn end nothing, and editing a package after it
+#   voids the verdict.
+#   --run is made to be backgrounded, so three things hold while it runs: it
+#   takes a lock, which a second --run refuses and the turn end reads as "a
+#   build to wait for" (run_lock_holder); a package edited during the build or
+#   the tests gets no verdict (remember_tested_verdict); and the watermark and
+#   the whole-tree pass move only if the tree is still the one the gates read
+#   (end of this file) -- a commit made meanwhile is graded at the next call.
+#   A simulator from this workspace, or a measurement that holds the host (see
+#   workspace_holds), DEFERS a missing verdict at the turn end and makes --run
+#   refuse to build.
 #
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
@@ -103,9 +136,11 @@
 #   like include reordering can break compilation.
 #
 # Exit   : 0 on pass (a non-blocking doc checklist may still print to stderr).
-#          2 on any hard failure -> Claude is blocked, stderr message is
+#          2 on any hard failure -- at the turn end a changed package without
+#          a verdict is one -> Claude is blocked, stderr message is
 #          auto-injected next turn. Pointer to modification-guide.md is appended
-#          so the agent has a recovery entry point.
+#          so the agent has a recovery entry point. --run exits the same way
+#          (2 also when it refused to build); 64 on an unknown argument.
 #          Loop safety: re-entry is gated by {stop_hook_active} (read from stdin
 #          below) -- the hook fires once per stop cycle, so it cannot wedge the
 #          turn in an infinite block. Official Stop-hook exit-2 semantics:
@@ -114,64 +149,46 @@
 #          report. Claude Code overrides the hook after 8 CONSECUTIVE blocks
 #          (documented: code.claude.com/docs/en/best-practices) -- that cap
 #          is an unverified stop, not an exit; do not lean on it.
-# Limits : per-package bounds: 180s build + 120s test, rtc_tools 300s test
-#          (60s until 2026-09-22: rtc_tools' suite alone took ~66s unloaded,
-#          48s of it test_plot_rtc_log, so a legitimate change there was always
-#          UNVERIFIED; 120s until 2026-09-27: the suite had grown to 1111 tests
-#          / 2min57s under colcon, so the same blind spot came back for that
-#          one package -- TEST_BOUND_S below is per package for that reason;
-#          300s leaves room for host load over the 177s measured idle).
-#          A test is only STARTED if its bound fits before
-#          RTC_VERIFY_TEST_DEADLINE_S (default 480s, the format phase's own
-#          deadline): past it the package is reported UNVERIFIED "NOT RUN"
-#          instead of letting the 540s Stop budget SIGKILL the hook mid-test,
-#          which would end the turn with no report at all.
-#          PROC-3 path: 300s build + 180s test. A build OR test that hits its timeout (exit 124) or fails
-#          to launch (exit >=125) blocks as UNVERIFIED -- overrun is no longer
-#          silent -- and says so in a message DISTINCT from a real failure's.
-#          That distinction is what the build path lacked (#435): `if ! timeout
-#          180 ./build.sh ...` swallowed $? and the output, so a bound-kill and
-#          a compile error printed the same "<pkg>: build failed" and machine
-#          load could masquerade as broken code (measured: 179.4s killed under
-#          contention vs 2.5s idle, same commit). Now a 124 also reports loadavg
-#          and the live build/compiler count, and a real failure reports its
-#          exit code and the tail of the build log.
-#          If a package's TESTS legitimately exceed their bound, raise it here
-#          rather than letting the gate pass blind. That is NOT the answer to a
-#          BUILD 124: these bounds sit inside the per-package loop, so the worst
-#          case is (180 + 60) * N against the Stop hook's 540s budget
-#          (settings.json) -- "all within the budget" holds only for N <= 2, and
-#          raising a bound buys the SIGKILL the bounds exist to prevent.
-#          The PROC-3 path is the measured case, not a hypothetical: this dev
-#          box runs `build.sh full` in 467s cold / 209s warm, and the path the
-#          hook ACTUALLY meets -- warm tree + an rtc_base HEADER touch ->
-#          downstream recompile -- measured 388.6s (rc=0, 21 pkgs, load ~9).
-#          All three exceed the 300s bound, so PROC-3 reports UNVERIFIED even
-#          for a one-line rtc_base header edit, not only on a cold tree. Fixing
-#          it means raising BOTH this bound and settings.json's 540s, and the
-#          price is a ~13min block on every rtc_base/rtc_msgs turn. DECIDED:
-#          keep as-is (user, 2026-08-14) -- UNVERIFIED is not a silent pass
-#          (#435), so it is accepted. Do not reopen without a new reason to
-#          accept that block.
-#          Those figures predate 2026-10-01, when builds went from 8 packages x
-#          `make -j<logical cores>` to 1 package x `make -j<min(physical cores,
-#          RAM/4GB)>` (a 16-core / 32 GB host was running out of memory;
-#          repo_scripts/README.md "빌드 병렬도와 메모리"). On this 6C/12T box,
-#          `-p integrated_bringup --tests`: no-op 3s, one-TU edit 24s, whole
-#          package recompiled 279s (245s at the old -j12) -- over the 180s bound
-#          both before and after, so that case was UNVERIFIED already. A clean
-#          `build.sh full --tests` is 18m49s. The decision above stands.
+# Limits : --run bounds (seconds, each an environment override): one package
+#          build RTC_VERIFY_BUILD_BOUND_S (900), its tests
+#          RTC_VERIFY_TEST_BOUND_S (600); the PROC-3 workspace build
+#          RTC_VERIFY_FULL_BUILD_BOUND_S (2400) and its tests
+#          RTC_VERIFY_FULL_TEST_BOUND_S (1200). They are there to end a hang,
+#          not to fit a budget: --run is called by hand and nothing kills it
+#          from outside. Sized on this 6C/12T box (2026-10-01, one package at a
+#          time x make -j6; repo_scripts/README.md "빌드 병렬도와 메모리"): a
+#          whole package recompiled is 241-279s (integrated_bringup), a warm
+#          workspace after an rtc_msgs touch 353s, a clean `build.sh full
+#          --tests` 18m49s; the slowest suite, rtc_tools, is 105-177s.
+#          The bounds these replaced were cut to the Stop hook's 540s budget
+#          (180s + 120s per package, 300s + 180s for PROC-3, and a deadline
+#          past which a test was not started), and none of the three builds
+#          above fits them: PROC-3 was UNVERIFIED for a one-line rtc_base
+#          header edit, by decision (user, 2026-08-14), because the alternative
+#          was a ~13min block at every such turn end. Taking the build out of
+#          the turn end is what removed that trade.
+#          A build OR test that hits its bound (exit 124) or fails to launch
+#          (exit >=125) blocks as UNVERIFIED, in a message DISTINCT from a real
+#          failure's. That distinction is what the build path lacked (#435):
+#          `if ! timeout 180 ./build.sh ...` swallowed $? and the output, so a
+#          bound-kill and a compile error printed the same "<pkg>: build
+#          failed" and machine load could masquerade as broken code (measured:
+#          179.4s killed under contention vs 2.5s idle, same commit). A 124
+#          also reports loadavg and the live build/compiler count, and a real
+#          failure reports its exit code and the tail of the build log.
 #          A colcon / build.sh ALREADY running in this workspace (e.g. the
-#          agent's own background shell task) is looked for before building;
-#          if one is found the hook builds nothing and blocks with a message
-#          naming it -- running beside it races for CPU and writes the same
-#          build/ and install/ trees. Matched by name + cwd, so a colcon aimed
-#          here from elsewhere with an absolute --build-base is not seen (see
-#          workspace_build_rivals). A MuJoCo simulator started from this
-#          workspace's install tree DEFERS build/test instead (exit 0 with the
-#          watermark kept, unless another gate blocks; workspace_sim_rivals):
-#          building beside a timing-sensitive sim run slows it below real time,
-#          and a sim does not end on its own the way a rival build does.
+#          agent's own background shell task) is looked for first: --run
+#          builds nothing beside it -- that races for CPU and writes the same
+#          build/ and install/ trees -- and the turn end, when a verdict is
+#          missing, says to wait for it. Matched by name + cwd, so a colcon
+#          aimed here from elsewhere with an absolute --build-base is not seen
+#          (see workspace_build_rivals). A MuJoCo simulator started from this
+#          workspace's install tree makes --run refuse as well (building beside
+#          a timing-sensitive sim run slows it below real time), and at the
+#          turn end it DEFERS a missing verdict instead of blocking (exit 0
+#          with the watermark kept, unless another gate blocks;
+#          workspace_sim_rivals): a sim does not end on its own the way a rival
+#          build does.
 #          Doxygen / cross-package doc consistency NOT checked
 #          (modification-guide.md "Updating an Existing Package" 6 steps cover
 #          these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
@@ -189,14 +206,37 @@
 #          core.quotePath and is NOT handled; paths with spaces are.
 set -euo pipefail
 
-INPUT=$(cat)
+# Mode (see "Modes" in the header). The turn-end call takes no argument and
+# its input on stdin; --run is typed by hand and must not sit waiting on a
+# terminal for input that is not coming.
+RUN_MODE=""
+case "${1:-}" in
+  "") ;;
+  --run) RUN_MODE=1 ;;
+  *)
+    echo "usage: verify-changes.sh [--run]   (no argument: the Stop hook call, input on stdin)" >&2
+    exit 64
+    ;;
+esac
+
+if [ -n "$RUN_MODE" ]; then
+  INPUT='{}'
+else
+  INPUT=$(cat)
+fi
 
 # Prevent infinite loop: only fire once per stop cycle
 if [ "$(echo "$INPUT" | jq -r '.stop_hook_active')" = "true" ]; then
   exit 0
 fi
 
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+# By hand the shell's cwd is wherever the last command left it, so --run
+# falls back to the checkout this script sits in rather than to $(pwd).
+if [ -n "$RUN_MODE" ]; then
+  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)}"
+else
+  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+fi
 cd "$PROJECT_DIR" 2>/dev/null || exit 0
 
 # Resolve colcon workspace root (sibling-of-src) and source setup_env.sh so
@@ -278,13 +318,45 @@ advance_verify_base() {
 #   rtc-verify-pass-tree   tree id of the working tree at the last full pass
 #   rtc-verify-pass-pkgs   "<pkg> <content key>" per package that built and
 #                          tested green
-#   rtc-verify-timing.log  one line per run: when, verdict, seconds, packages
+#   rtc-verify-timing.log  one line per run: when, verdict, seconds, packages,
+#                          mode (stop = the turn-end call, run = --run)
 # RTC_VERIFY_NO_REUSE=1 switches both reuses off (every gate runs, nothing is
 # read from the two pass files; a pass is still recorded).
 GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null || echo .git)"
 PASS_TREE_FILE="$GIT_DIR_PATH/rtc-verify-pass-tree"
 PASS_PKGS_FILE="$GIT_DIR_PATH/rtc-verify-pass-pkgs"
 TIMING_LOG="$GIT_DIR_PATH/rtc-verify-timing.log"
+RUN_LOCK="$GIT_DIR_PATH/rtc-verify-run.lock"
+# Both pass files carry this tag in front of what they record. It names the
+# test reading the verdict came from: entries without it are from before
+# 2026-10-01, when a package whose tests ran was green whether they passed or
+# not (see run_colcon_test). Neither file is honoured without the tag, so a
+# tree that reading passed is graded once more by one that can see red.
+VERDICT_TAG="t2:"
+
+# One --run per checkout, and a turn end that can see it.
+#
+# --run holds this lock ("<pid> <start time>", the start time being field 22 of
+# /proc/<pid>/stat, as in the hold file) from its first gate to its exit. Two
+# things needed it. A turn end knew a --run was in flight only by finding its
+# colcon or build.sh, so in the seconds before the first build, between two
+# package builds and after the tests it said "verdict missing, run --run" --
+# and a second --run started on that advice builds into the same build/ and
+# install/ trees as the first. Prints "<pid>: verify-changes.sh --run" for a
+# LIVE holder other than this process; a line left by a killed --run names a
+# pid that is gone or was reused, and reads as no holder.
+run_lock_holder() {
+  local pid="" start="" now
+  [ -f "$RUN_LOCK" ] || return 0
+  read -r pid start _ <"$RUN_LOCK" 2>/dev/null || true
+  case "$pid" in '' | *[!0-9]*) return 0 ;; esac
+  [ "$pid" != "$$" ] || return 0
+  [ -r "/proc/$pid/stat" ] || return 0
+  # comm may hold spaces; what follows the LAST ')' starts at field 3.
+  now=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
+  [ -n "$start" ] && [ "$now" = "$start" ] || return 0
+  printf '%s: verify-changes.sh --run\n' "$pid"
+}
 
 # Tree id of the working tree as it is now: tracked changes, untracked files,
 # deletions -- what `git add -A` would stage, written through a throwaway index
@@ -308,10 +380,35 @@ TIMING_LOG="$GIT_DIR_PATH/rtc-verify-timing.log"
 # right after a commit) read as unchanged. Measured in this hook's own suite.
 OBJ_STORE=$(git rev-parse --path-format=absolute --git-path objects 2>/dev/null || true)
 OBJ_SCRATCH=$(mktemp -d 2>/dev/null || true)
-trap '[ -n "$OBJ_SCRATCH" ] && rm -rf "$OBJ_SCRATCH"' EXIT
+RUN_LOCK_HELD=""
+cleanup() {
+  [ -n "${OBJ_SCRATCH:-}" ] && rm -rf "$OBJ_SCRATCH"
+  [ -n "$RUN_LOCK_HELD" ] && rm -f "$RUN_LOCK"
+  return 0
+}
+trap cleanup EXIT
 git_scratch() {  # git, reading the scratch objects beside the repository's
   GIT_ALTERNATE_OBJECT_DIRECTORIES="$OBJ_SCRATCH" git "$@"
 }
+if [ -n "$RUN_MODE" ]; then
+  RUN_RIVAL=$(run_lock_holder)
+  if [ -z "$RUN_RIVAL" ]; then
+    # Whatever is there now is stale. noclobber makes the create atomic: of two
+    # --run started together, one finds the file already made.
+    rm -f "$RUN_LOCK"
+    if (set -o noclobber; printf '%s %s\n' "$$" \
+          "$(sed 's/^.*) //' "/proc/$$/stat" 2>/dev/null | cut -d' ' -f20)" >"$RUN_LOCK") 2>/dev/null; then
+      RUN_LOCK_HELD=1
+    else
+      RUN_RIVAL=$(run_lock_holder)
+      RUN_RIVAL="${RUN_RIVAL:-another process (it took ${RUN_LOCK} first)}"
+    fi
+  fi
+  if [ -z "$RUN_LOCK_HELD" ]; then
+    echo "verify-changes --run: NOT run — another --run is already running in this checkout (${RUN_RIVAL}). Two of them would build into the same build/ and install/ trees. Wait for it to finish (if it is your own background task, wait on that task); its verdict is the one the turn end reads." >&2
+    exit 2
+  fi
+fi
 work_tree_id() {
   local idx tree=""
   [ -d "$OBJ_STORE" ] && [ -d "$OBJ_SCRATCH" ] || return 0
@@ -329,8 +426,9 @@ work_tree_id() {
 # trimmed to the last 500 runs, and never allowed to fail the hook.
 log_timing() {
   {
-    printf '%s\t%s\t%ss\tbuilt=[%s]\treused=[%s]\n' \
-      "$(date -Is 2>/dev/null || date)" "$1" "$SECONDS" "${2# }" "${3# }" >> "$TIMING_LOG"
+    printf '%s\t%s\t%ss\tbuilt=[%s]\treused=[%s]\tmode=%s\n' \
+      "$(date -Is 2>/dev/null || date)" "$1" "$SECONDS" "${2# }" "${3# }" \
+      "$([ -n "$RUN_MODE" ] && echo run || echo stop)" >> "$TIMING_LOG"
     if [ "$(wc -l < "$TIMING_LOG")" -gt 600 ]; then
       tail -n 500 "$TIMING_LOG" > "$TIMING_LOG.tmp" && mv "$TIMING_LOG.tmp" "$TIMING_LOG"
     fi
@@ -369,8 +467,14 @@ CHANGED_SH=$(echo "$CHANGED" | grep -E '\.sh$' || true)
 CHANGED_DOCS=$(echo "$CHANGED" | grep -E '\.md$' || true)
 CHANGED_YAML=$(echo "$CHANGED" | grep -E '\.(yaml|yml)$' || true)
 CHANGED_META=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
+# colcon.pkg at a package root: arguments colcon adds to every build / test of
+# that package -- in this repo, the job count of its ctest. It changes how the
+# package's tests RUN (side by side instead of one at a time), so it routes the
+# package to build/test and to the test gates the way a CMakeLists edit does;
+# on its own it used to leave the hook at the exit below, ungraded.
+CHANGED_TESTCFG=$(echo "$CHANGED" | grep -E '^[^/]+/colcon\.pkg$' || true)
 if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
-   && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ]; then
+   && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ] && [ -z "$CHANGED_TESTCFG" ]; then
   advance_verify_base
   exit 0
 fi
@@ -427,7 +531,7 @@ fi
 # before this existed unless the repository changed too.
 WORK_TREE=$(work_tree_id)
 if [ -n "$WORK_TREE" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] \
-   && [ "$(cat "$PASS_TREE_FILE" 2>/dev/null || true)" = "$WORK_TREE" ]; then
+   && [ "$(cat "$PASS_TREE_FILE" 2>/dev/null || true)" = "${VERDICT_TAG}${WORK_TREE}" ]; then
   echo "verify-changes: the working tree is the one this gate last passed at (tree ${WORK_TREE:0:12}) -- nothing re-run." >&2
   advance_verify_base
   log_timing "pass-unchanged" "" ""
@@ -585,7 +689,7 @@ is_pure_format() {
   # unrelated CMake gate went down with it.
   [ -n "$CHANGED_SRC" ] || return 1
   if [ -n "$CHANGED_DOCS" ] || [ -n "$CHANGED_YAML" ] || [ -n "$CHANGED_META" ] \
-     || [ -n "$CHANGED_SH" ]; then
+     || [ -n "$CHANGED_SH" ] || [ -n "$CHANGED_TESTCFG" ]; then
     return 1
   fi
   # An untracked file has no HEAD blob to compare against.
@@ -658,8 +762,8 @@ while IFS= read -r pkg_dir; do
   [ -n "$pkg_dir" ] || continue
   [ -f "$pkg_dir/package.xml" ] || continue
   BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}"
-done <<< "$(printf '%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
-             | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
+done <<< "$(printf '%s\n%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
+             "$CHANGED_TESTCFG" | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
 
 # Emit `name<TAB>exempt<TAB>lineno` for every add_executable() in the CMake
 # source arriving on stdin. Used by ARCH-7 to diff target NAMES between HEAD and
@@ -1266,7 +1370,7 @@ fi
 # beside the hook would judge the hook's repo, not the checkout under test. The
 # routing tests rely on this: they copy the scripts into a fixture.
 TESTGATE_FAILURES=""
-CHANGED_TESTGATE=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|conftest\.py)$|(^|/)test(ing)?/' || true)
+CHANGED_TESTGATE=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|conftest\.py|colcon\.pkg)$|(^|/)test(ing)?/' || true)
 if [ -n "$CHANGED_TESTGATE" ]; then
   for gate in validate_test_domains validate_test_fixtures; do
     gate_py="$PROJECT_DIR/repo_scripts/scripts/${gate}.py"
@@ -1343,6 +1447,99 @@ repo_pkgs_built_without_tests() {
   for d in "$PROJECT_DIR"/*/; do
     [ -f "${d}package.xml" ] || continue
     pkgs_built_without_tests "$(basename "$d")"
+  done
+}
+
+# Run `colcon test` over "$@" (package names; none = every package of the
+# workspace). Sets TEST_RC, TEST_LOG (colcon's console output) and TEST_MARKER
+# (a file older than every result this run writes); callers rm both.
+#
+# --return-code-on-test-failure is the verdict. Without it `colcon test` exits 0
+# whether the tests passed or not, and the verdict has to be read back out of
+# result files -- which is where this hook was blind from its first version
+# until 2026-10-01: the per-package branch asked `colcon test-result
+# --packages-select <pkg>`, an option that verb does not have. colcon answered
+# with a usage error, the error text holds no "<n> failures", and so every
+# package whose tests RAN was recorded green, failing or not. The suite could
+# not see it: RTC_VERIFY_TEST_CMD stands in for both colcon calls at once, so
+# the real command line was never executed by a test (cases 66-68 now run it
+# against a `colcon` that refuses arguments the real one refuses). With the
+# flag the exit code is the tests' own: 0 = every selected package ran and
+# none failed, 1 = a test failed.
+run_colcon_test() {  # $1 = timeout seconds, rest = package names
+  local secs="$1" select=""
+  shift
+  [ $# -gt 0 ] && select="--packages-select $*"
+  TEST_MARKER=$(mktemp)
+  TEST_LOG=$(mktemp)
+  TEST_RC=0
+  timeout "$secs" bash -c "cd '$WORKSPACE' && colcon test $select --return-code-on-test-failure --event-handlers console_direct+ 2>&1" >"$TEST_LOG" || TEST_RC=$?
+}
+
+# What that run says, in one word, left in TEST_STATUS: green | red | timeout |
+# launch | short. TEST_FINISHED is the number of packages colcon counted.
+#
+# Exit 0 alone is not green. `colcon test --packages-select <a name it does not
+# know>` warns, tests nothing and exits 0 ("Summary: 0 packages finished"), and
+# a package that never started is not in the count either. So a pass needs the
+# positive half too: colcon's own summary line, counting as many packages as
+# were asked for ($1; empty = any number above zero, for the workspace-wide
+# run). No summary line -- a colcon configured without that event handler --
+# reads as "short", which blocks instead of guessing.
+classify_colcon_test() {  # $1 = number of packages asked for, or empty
+  TEST_FINISHED=$(sed -n 's/^Summary: \([0-9][0-9]*\) packages\{0,1\} finished.*/\1/p' "$TEST_LOG" | tail -n 1)
+  TEST_FINISHED="${TEST_FINISHED:-0}"
+  if [ "$TEST_RC" -eq 124 ]; then
+    TEST_STATUS=timeout
+  elif [ "$TEST_RC" -ge 125 ]; then
+    TEST_STATUS=launch
+  elif [ "$TEST_RC" -ne 0 ]; then
+    TEST_STATUS=red
+  elif [ -n "${1:-}" ] && [ "$TEST_FINISHED" -ne "$1" ]; then
+    TEST_STATUS=short
+  elif [ "$TEST_FINISHED" -eq 0 ]; then
+    TEST_STATUS=short
+  else
+    TEST_STATUS=green
+  fi
+}
+
+# fresh_test_failures, indented for the `echo -e` report and capped: a broken
+# fixture can fail hundreds of cases, and the report is read by an agent.
+failed_tests_report() {
+  fresh_test_failures "$@" | sed -n '1,40p' | sed -e 's/\\/\\\\/g' -e 's/^/      /'
+}
+
+# The result files under "$@" (bases relative to the workspace: build/<pkg>, or
+# build) that report an error or a failure AND were written by this run, with
+# the failing test names under each. For the report only -- the verdict is the
+# exit code above.
+#
+# "Written by this run" is not optional: ctest keeps one Testing/<stamp>/ per
+# run and nothing removes them (build/<pkg> holds dozens), so a failure fixed
+# weeks ago is still on disk and `colcon test-result` still lists it.
+fresh_test_failures() {
+  local base line keep=""
+  for base in "$@"; do
+    [ -d "$WORKSPACE/$base" ] || continue
+    # --verbose prints, per file: the file line, "- <test name>" per failing
+    # test, and each failure's message. The message bodies are left out.
+    while IFS= read -r line; do
+      case "$line" in
+        build/*": "*)
+          keep=""
+          # "not older than the marker", not "newer": two files written in
+          # the same clock tick carry the same timestamp.
+          if [ -f "$WORKSPACE/${line%%: *}" ] && ! [ "$TEST_MARKER" -nt "$WORKSPACE/${line%%: *}" ]; then
+            keep=1
+            printf '%s\n' "$line"
+          fi
+          ;;
+        "- "*)
+          if [ -n "$keep" ]; then printf '  %s\n' "$line"; fi
+          ;;
+      esac
+    done < <(cd "$WORKSPACE" && colcon test-result --test-result-base "$base" --verbose 2>/dev/null || true)
   done
 }
 
@@ -1424,9 +1621,12 @@ workspace_build_rivals() {
 # DEFER, not block, unlike a rival build: a build ends on its own, a sim does
 # not -- the user may hold one open for a visual check for as long as they
 # like, and a block would push the agent to stop a sim that is not its own.
-# Build/test is skipped, the other gates still run (and still block), and on
-# a pass the watermark is NOT advanced, so the first turn end with no sim
-# grades everything changed meanwhile -- the background-agent deferral's rule.
+# The missing verdict is not asked for, the other gates still run (and still
+# block), and on a pass the watermark is NOT advanced, so the first turn end
+# with no sim grades everything changed meanwhile -- the background-agent
+# deferral's rule. (The turn end no longer builds; what it defers since
+# 2026-10-01 is the block that asks for --run, which could only be answered by
+# building beside the sim. --run itself refuses outright.)
 #
 # Matched by the kernel's 15-character process name, then by path: the node's
 # executable (/proc/<pid>/exe, physical) under the physical workspace, or any
@@ -1512,20 +1712,24 @@ workspace_holds() {
 #
 # Only a green build AND a green test is remembered, per package, at the moment
 # it happens: a turn blocked by another gate keeps the verdicts it did earn.
+pkg_content_key() {  # $1 = a tree id from work_tree_id
+  git_scratch ls-tree -r --name-only "$1" 2>/dev/null \
+    | sed -n 's|^\([^/]*\)/package\.xml$|\1|p' \
+    | while IFS= read -r d; do git_scratch ls-tree "$1" -- "$d"; done 2>/dev/null \
+    | git hash-object --stdin 2>/dev/null || true
+}
 PKG_CONTENT_KEY=""
 if [ -n "${WORK_TREE:-}" ]; then
-  PKG_CONTENT_KEY=$(
-    git_scratch ls-tree -r --name-only "$WORK_TREE" 2>/dev/null \
-      | sed -n 's|^\([^/]*\)/package\.xml$|\1|p' \
-      | while IFS= read -r d; do git_scratch ls-tree "$WORK_TREE" -- "$d"; done 2>/dev/null \
-      | git hash-object --stdin 2>/dev/null || true
-  )
+  PKG_CONTENT_KEY=$(pkg_content_key "$WORK_TREE")
 fi
-change_set_key() {  # $1 = package the key is for
-  [ -n "${WORK_TREE:-}" ] || return 0
+# $1 = package the key is for; $2 / $3 = the tree and its package key, the ones
+# this call started with unless given (VERDICT_TAG: see the pass files above).
+change_set_key() {
+  local tree="${2-${WORK_TREE:-}}" pkgs="${3-$PKG_CONTENT_KEY}"
+  [ -n "$tree" ] || return 0
   case "$1" in
-    repo_scripts | PROC-3) printf '%s' "$WORK_TREE" ;;
-    *) printf '%s' "$PKG_CONTENT_KEY" ;;
+    repo_scripts | PROC-3) printf '%s%s' "$VERDICT_TAG" "$tree" ;;
+    *) [ -z "$pkgs" ] || printf '%s%s' "$VERDICT_TAG" "$pkgs" ;;
   esac
 }
 pkg_verdict_reusable() {  # $1 = package, $2 = key
@@ -1539,6 +1743,28 @@ remember_pkg_verdict() {  # $1 = package, $2 = key
     printf '%s %s\n' "$1" "$2" >> "$PASS_PKGS_FILE.tmp"
     mv "$PASS_PKGS_FILE.tmp" "$PASS_PKGS_FILE"
   } 2>/dev/null || true
+}
+# A green build and test, recorded -- if what the key names is still there.
+#
+# The key ($2) was taken when this call started; the build and the tests ran
+# minutes later, on whatever the files were by then. --run is made to be
+# backgrounded, so an edit inside a package while it runs is ordinary: the
+# compiler then built T1 and the verdict would be filed under T0's key, to be
+# honoured whenever the tree is T0 again (the edit reverted, a stash, a
+# checkout). So the key is taken again here and the verdict is recorded only
+# if it has not moved; otherwise the package stays owed and the report says
+# why. An edit made AND undone inside the run is not seen -- the two keys
+# agree -- which is the price of not hashing the tree around every compile.
+remember_tested_verdict() {  # $1 = package (or PROC-3), $2 = key at the start
+  local tree_now key_now
+  [ -n "$2" ] || return 0
+  tree_now=$(work_tree_id)
+  key_now=$(change_set_key "$1" "$tree_now" "$(pkg_content_key "$tree_now")")
+  if [ "$key_now" != "$2" ]; then
+    TEST_FAILURES="${TEST_FAILURES}  - ${1}: built and tested green, but its files changed while that ran — no verdict recorded: what was tested is not what is there now. Run '${RUN_CMD}' again and leave the packages alone until it finishes.\n"
+    return 0
+  fi
+  remember_pkg_verdict "$1" "$2"
 }
 BUILT_PKGS=""
 REUSED_PKGS=""
@@ -1586,11 +1812,44 @@ if [ -n "$REUSED_PKGS" ]; then
   echo "verify-changes: build/test not repeated for [${REUSED_PKGS# }] -- green with these same packages." >&2
 fi
 
+# ── Turn end: evidence, not execution ───────────────────────────────────────
+#
+# What is left in PROC3 / BUILD_PKGS here has no green verdict for its present
+# content. --run builds and tests it. The turn-end call does not: it names what
+# is owed and blocks, so the build and the tests run DURING the turn -- where
+# their output can be read, nothing is cut to fit a Stop budget, and a full
+# suite is run once instead of once by the agent and once more here.
+#
+# At the turn end, in this order: a build already running (most likely that
+# --run, backgrounded) -> wait for it; a simulator or a held host -> defer,
+# because nothing can be built beside it and it is not the agent's to stop;
+# otherwise -> block and name the command. --run meets the same two rivals and
+# builds beside neither.
+BUILD_BOUND_S="${RTC_VERIFY_BUILD_BOUND_S:-900}"
+TEST_BOUND_S="${RTC_VERIFY_TEST_BOUND_S:-600}"
+FULL_BUILD_BOUND_S="${RTC_VERIFY_FULL_BUILD_BOUND_S:-2400}"
+FULL_TEST_BOUND_S="${RTC_VERIFY_FULL_TEST_BOUND_S:-1200}"
+RUN_CMD=".claude/hooks/verify-changes.sh --run"
+if [ -n "$PROC3" ]; then
+  OWED="every package (PROC-3: rtc_base / rtc_msgs touched)"
+else
+  OWED="${BUILD_PKGS# }"
+fi
+
 RIVALS=""
 SIM_RIVALS=""
 SIM_DEFERRED=""
 if [ -n "$PROC3$BUILD_PKGS" ]; then
   RIVALS=$(workspace_build_rivals)
+  if [ -z "$RUN_MODE" ]; then
+    # A --run in flight is a build to wait for even while no colcon of its is
+    # alive (its gates, the gap between two packages, its last phases).
+    RUN_RIVAL=$(run_lock_holder)
+    if [ -n "$RUN_RIVAL" ]; then
+      RIVALS="${RUN_RIVAL}${RIVALS:+
+$RIVALS}"
+    fi
+  fi
   SIM_RIVALS=$(workspace_sim_rivals)
   HOLDS=$(workspace_holds)
   if [ -n "$HOLDS" ]; then
@@ -1598,20 +1857,51 @@ if [ -n "$PROC3$BUILD_PKGS" ]; then
 }$HOLDS"
   fi
 fi
-if [ -n "$SIM_RIVALS" ] && [ -z "$RIVALS" ]; then
+# The first three of a process list ($1), indented ($2, default six spaces) for
+# the `echo -e` report. Backslashes doubled, as build_log_tail does.
+report_procs() { sed -n '1,3p' <<<"$1" | sed -e 's/\\/\\\\/g' -e "s/^/${2-      }/"; }
+
+# A test run that produced no verdict, reported: every TEST_STATUS but red and
+# green, which the call sites word themselves. $1 = what was tested (a package,
+# or "PROC-3 broad test"), $2 = how many packages colcon was asked for (empty =
+# the whole workspace), $3 = the bound it ran under, $4 = that bound's variable.
+report_unverified_tests() {
+  case "$TEST_STATUS" in
+    timeout)
+      TEST_FAILURES="${TEST_FAILURES}  - ${1}: colcon test TIMED OUT after ${3}s — UNVERIFIED, treat as failure (a hung test, or raise ${4} if the suite is legitimately this long)\n"
+      ;;
+    launch)
+      TEST_FAILURES="${TEST_FAILURES}  - ${1}: colcon test could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
+      ;;
+    noresult)
+      TEST_FAILURES="${TEST_FAILURES}  - ${1}: colcon test exited ${TEST_RC} with no parseable result summary — UNVERIFIED (a test that crashed or was killed writes no result file; see build/<pkg>/Testing/Temporary/LastTest.log)\n"
+      ;;
+    short)
+      TEST_FAILURES="${TEST_FAILURES}  - ${1}: colcon test exited 0 but its summary counts ${TEST_FINISHED} finished packages, not ${2:-one or more} — UNVERIFIED (colcon did not test what it was asked to)\n"
+      ;;
+  esac
+}
+
+if [ -z "$PROC3$BUILD_PKGS" ]; then
+  : # nothing owed: no package changed, or every verdict stands
+elif [ -z "$RUN_MODE" ] && [ -n "$RIVALS" ]; then
+  TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — and a build is running in this colcon workspace (${WORKSPACE}):\n$(report_procs "$RIVALS")\n    If it is your '${RUN_CMD}', wait for it to finish (wait on that task), then end the turn again. If it is another build, run '${RUN_CMD}' once it is over.\n"
+elif [ -z "$RUN_MODE" ] && [ -n "$SIM_RIVALS" ]; then
   # Deferred, not failed: reported at the end (see workspace_sim_rivals).
   SIM_DEFERRED=1
+elif [ -z "$RUN_MODE" ]; then
+  TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — the turn end does not build or test. Run '${RUN_CMD}' (it builds with --tests, runs colcon test and records the verdict; if it will take long, background it and wait for it), then end the turn again. An edit inside any package after that run voids the verdict.\n"
 elif [ -n "$RIVALS" ]; then
-  # Backslashes doubled for the `echo -e` report, as build_log_tail does.
-  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(sed -n '1,3p' <<<"$RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/      /')\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then end the turn again.\n"
+  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(report_procs "$RIVALS")\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then run this again.\n"
+elif [ -n "$SIM_RIVALS" ]; then
+  TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a simulator from this colcon workspace (${WORKSPACE}) is running, or a measurement holds the host (${HOLD_FILE}):\n$(report_procs "$SIM_RIVALS")\n    Building beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). Run this again once it is over; do not stop a sim or a measurement that is not yours to get past this.\n"
 elif [ -n "$PROC3" ]; then
-  # PROC-3: broad rebuild + full test (120s * count would still time out, so use
-  # a generous bound on the build and a per-package test timeout).
+  # PROC-3: one broad rebuild, then every test of the workspace.
   # All colcon invocations run from $WORKSPACE so build/install/log land in the
   # colcon ws root (AGENTS.md §9.1), not in this repo's cwd.
-  run_build 300 full
+  run_build "$FULL_BUILD_BOUND_S" full
   if [ "$BUILD_RC" -eq 124 ]; then
-    TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) TIMED OUT after 300s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). This path is cold by construction (rtc_base / rtc_msgs touched); re-run './build.sh full --tests' on an idle box before debugging the change.\n"
+    TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) TIMED OUT after ${FULL_BUILD_BOUND_S}s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). Re-run './build.sh full --tests' on an idle box before debugging the change; if the build is legitimately this long, raise RTC_VERIFY_FULL_BUILD_BOUND_S.\n"
     rm -f "$BUILD_LOG"
   elif [ "$BUILD_RC" -ne 0 ]; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) FAILED (exit ${BUILD_RC}, rtc_base / rtc_msgs touched):\n$(build_log_tail)\n"
@@ -1621,41 +1911,34 @@ elif [ -n "$PROC3" ]; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test NOT RUN — built WITHOUT tests (BUILD_TESTING=OFF in the CMake cache): ${NO_TESTS_PKGS}— UNVERIFIED. 'colcon test' would report 0 tests or stale results for them. Rebuild with './build.sh full --tests'.\n"
   else
     rm -f "$BUILD_LOG"
-    # Preserve `colcon test`'s exit code: 124 = timed out, >=125 = could not
-    # launch (env/build), 0 or 1 = ran (pass/fail read from test-result). Never
-    # swallow it with `|| true`, or a killed run reads as "0 failures".
-    TEST_RC=0
-    timeout 180 bash -c "cd '$WORKSPACE' && colcon test --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
-    RESULT=$(cd "$WORKSPACE" && colcon test-result 2>&1 || true)
-    if [ "$TEST_RC" -eq 124 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test TIMED OUT after 180s — UNVERIFIED, treat as failure (raise the bound in verify-changes.sh or run 'colcon test' manually)\n"
-    elif [ "$TEST_RC" -ge 125 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
-    elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
-      FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" | head -20 || true)
-      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test failed:\n${FAILED_TESTS}\n"
-    elif [ "$TEST_RC" -ne 0 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' exited ${TEST_RC} with no parseable result summary — UNVERIFIED\n"
-    else
-      remember_pkg_verdict "PROC-3" "$PROC3_KEY"
+    # The exit code is the verdict (see run_colcon_test): 124 = timed out,
+    # >=125 = could not launch (env/build), 1 = a test failed, 0 = ran green.
+    # Never swallow it with `|| true`, or a killed run reads as "0 failures".
+    run_colcon_test "$FULL_TEST_BOUND_S"
+    classify_colcon_test ""
+    if [ "$TEST_STATUS" = red ]; then
+      FAILED_TESTS=$(failed_tests_report build)
+      if [ -n "$FAILED_TESTS" ]; then
+        TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test failed:\n${FAILED_TESTS}\n"
+      else
+        TEST_STATUS=noresult
+      fi
+    elif [ "$TEST_STATUS" = green ]; then
+      remember_tested_verdict "PROC-3" "$PROC3_KEY"
     fi
+    report_unverified_tests "PROC-3 broad test" "" "$FULL_TEST_BOUND_S" RTC_VERIFY_FULL_TEST_BOUND_S
+    rm -f "$TEST_LOG" "$TEST_MARKER"
   fi
   BUILT_PKGS=" PROC-3"
 else
   for pkg in $BUILD_PKGS; do
-    # 180s build bound mirrors the PROC-3 path's `timeout 300 ./build.sh full`.
-    # Without it a slow/hung single-package build is unbounded, so N changed
-    # packages can blow past the Stop hook's 540s budget (settings.json) and get
-    # SIGKILLed mid-build -> the turn ends with the gate silently skipped.
-    # A timeout-killed build (exit 124) is reported as UNVERIFIED, separately
-    # from a build that really broke -> both exit 2, different messages.
-    #
-    # Raising the bound is NOT the fix for a 124 here, because it is inside the
-    # loop: worst case (180 + 60) * N against that same 540s budget, already
-    # over at N=3. Growing it buys the SIGKILL this bound exists to prevent.
-    run_build 180 -p "$pkg"
+    # The bound ends a hung build; it is not a budget (see Limits in the
+    # header). A bound-killed build (exit 124) is reported as UNVERIFIED,
+    # separately from a build that really broke -> both exit 2, different
+    # messages.
+    run_build "$BUILD_BOUND_S" -p "$pkg"
     if [ "$BUILD_RC" -eq 124 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build TIMED OUT after 180s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). If the load is high this build lost a CPU race; re-run './build.sh -p ${pkg} --tests' before debugging the change.\n"
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build TIMED OUT after ${BUILD_BOUND_S}s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). If the load is high this build lost a CPU race; re-run './build.sh -p ${pkg} --tests' before debugging the change, and raise RTC_VERIFY_BUILD_BOUND_S if the build is legitimately this long.\n"
       rm -f "$BUILD_LOG"
       continue
     elif [ "$BUILD_RC" -ne 0 ]; then
@@ -1670,52 +1953,62 @@ else
       continue
     fi
 
-    # Preserve the exit code (see PROC-3 path above): distinguish timeout /
-    # launch failure / real test failure instead of inferring from test-result.
-    # Per-package test bound. rtc_tools' pytest suite is the one that outgrew
-    # the shared 120s (1111 tests, 2min57s measured 2026-09-27 on this box; 300s
-    # leaves room for host load);
-    # every other package stays at 120s so the loop's worst case against the
-    # 540s Stop budget does not grow for them. Add a case here, with the
-    # measurement, when another package legitimately exceeds its bound.
-    TEST_BOUND_S=120
-    case "$pkg" in rtc_tools) TEST_BOUND_S=300 ;; esac
-    # Never start a test whose bound would cross the deadline: the Stop budget
-    # (settings.json, 540s) kills the whole hook, report included. An explicit
-    # UNVERIFIED for this package is the honest outcome (2026-09-27 /code-review).
-    if [ $((SECONDS + TEST_BOUND_S)) -gt "${RTC_VERIFY_TEST_DEADLINE_S:-480}" ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test NOT RUN — ${SECONDS}s of the Stop budget already spent and its ${TEST_BOUND_S}s bound would cross the ${RTC_VERIFY_TEST_DEADLINE_S:-480}s deadline — UNVERIFIED, run 'colcon test --packages-select ${pkg}' manually\n"
-      continue
-    fi
+    # One package at a time, each with the box to itself.
+    #
+    # The packages that matter run their own tests side by side (colcon.pkg:
+    # ctest -j / pytest -n), and inside each a test that asserts a measured
+    # wall-clock budget is RUN_SERIAL. That isolation ends at the package: it
+    # says nothing about the tests of ANOTHER package colcon runs beside it.
+    # One `colcon test` over every changed package was tried (2026-10-01) and
+    # taken out again in review -- it put those budget tests under the load of
+    # a neighbour's suite, and one call has one exit code, so a single
+    # load-induced miss left every package of the batch without a verdict.
+    # Here each package gets its own call, its own verdict, and the cores.
+    #
+    # The exit code is the verdict (see run_colcon_test and the PROC-3 path
+    # above): timeout / launch failure / real test failure are told apart by
+    # it, not inferred from result files.
+    #
     # RTC_VERIFY_TEST_CMD is the test-side twin of RTC_VERIFY_BUILD_CMD: an
-    # executable taking the package name, whose exit code stands for `colcon
-    # test`'s and whose output for `colcon test-result`'s. It is what lets the
-    # suite reach a GREEN package without a colcon workspace. Never set in
-    # normal operation.
+    # executable taking the package name, whose exit code stands for the test
+    # run's and whose output for its result summary. It is what lets the suite
+    # reach a GREEN package without a colcon workspace, and it replaces the
+    # colcon command line -- which is why that line has cases of its own, run
+    # against a stand-in `colcon` on PATH. Never set in normal operation.
     BUILT_PKGS="${BUILT_PKGS} ${pkg}"
-    TEST_RC=0
     if [ -n "${RTC_VERIFY_TEST_CMD:-}" ]; then
+      TEST_RC=0
       RESULT=$(timeout "$TEST_BOUND_S" "$RTC_VERIFY_TEST_CMD" "$pkg" 2>&1) || TEST_RC=$?
-      # `colcon test` exits 0 on a failing test and leaves the verdict to
-      # test-result; the stand-in's red is carried by its summary alone.
-      [ "$TEST_RC" -eq 1 ] && TEST_RC=0
+      if [ "$TEST_RC" -eq 124 ]; then
+        TEST_STATUS=timeout
+      elif [ "$TEST_RC" -ge 125 ]; then
+        TEST_STATUS=launch
+      elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
+        TEST_STATUS=red
+        FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" || true)
+        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: ${FAILED_TESTS}\n"
+      elif [ "$TEST_RC" -gt 1 ]; then
+        TEST_STATUS=noresult
+      else
+        TEST_STATUS=green
+      fi
     else
-      timeout "$TEST_BOUND_S" bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
-      RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)
+      run_colcon_test "$TEST_BOUND_S" "$pkg"
+      classify_colcon_test 1
+      if [ "$TEST_STATUS" = red ]; then
+        FAILED_TESTS=$(failed_tests_report "build/${pkg}")
+        if [ -n "$FAILED_TESTS" ]; then
+          TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test FAILED:\n${FAILED_TESTS}\n"
+        else
+          TEST_STATUS=noresult
+        fi
+      fi
+      rm -f "$TEST_LOG" "$TEST_MARKER"
     fi
-
-    if [ "$TEST_RC" -eq 124 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test TIMED OUT after ${TEST_BOUND_S}s — UNVERIFIED, treat as failure (raise the bound in verify-changes.sh or run 'colcon test' manually)\n"
-    elif [ "$TEST_RC" -ge 125 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
-    elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
-      FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" || true)
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: ${FAILED_TESTS}\n"
-    elif [ "$TEST_RC" -ne 0 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test exited ${TEST_RC} with no parseable result summary — UNVERIFIED\n"
-    else
-      remember_pkg_verdict "$pkg" "$(change_set_key "$pkg")"
+    if [ "$TEST_STATUS" = green ]; then
+      remember_tested_verdict "$pkg" "$(change_set_key "$pkg")"
     fi
+    report_unverified_tests "$pkg" 1 "$TEST_BOUND_S" RTC_VERIFY_TEST_BOUND_S
   done
 fi
 
@@ -1805,13 +2098,19 @@ fi
 # missing final newline or trailing blank lines as clean, because command
 # substitution strips trailing newlines from both sides.
 #
-# Runs after the bounded build/test phases, so it gets whatever is left of the
-# Stop budget: once $SECONDS passes RTC_VERIFY_FORMAT_DEADLINE_S the remaining
-# files are listed as ungraded (non-blocking) rather than risking the SIGKILL
-# that would end the turn with no report at all.
+# At the turn end it gets whatever is left of the Stop budget: once $SECONDS
+# passes RTC_VERIFY_FORMAT_DEADLINE_S the remaining files are listed as
+# ungraded (non-blocking) rather than risking the SIGKILL that would end the
+# turn with no report at all. --run has no budget to protect, and its build
+# and tests alone can take longer than that deadline -- which would list every
+# file as ungraded -- so it grades them all unless the variable is set.
 FORMAT_FAILURES=""
 FORMAT_UNGRADED=""
-FORMAT_DEADLINE_S="${RTC_VERIFY_FORMAT_DEADLINE_S:-480}"
+if [ -n "$RUN_MODE" ]; then
+  FORMAT_DEADLINE_S="${RTC_VERIFY_FORMAT_DEADLINE_S:-2147483647}"
+else
+  FORMAT_DEADLINE_S="${RTC_VERIFY_FORMAT_DEADLINE_S:-480}"
+fi
 FMT_OUT=$(mktemp)
 FMT_BASE=$(mktemp)
 while IFS= read -r f; do
@@ -1901,7 +2200,7 @@ fi
 
 SIM_NOTE=""
 if [ -n "$SIM_DEFERRED" ]; then
-  SIM_NOTE="Build/test deferred -- a simulator from this colcon workspace (${WORKSPACE}) is running, or a measurement holds the host (${HOLD_FILE}):\n$(sed -n '1,3p' <<<"$SIM_RIVALS" | sed -e 's/\\/\\\\/g' -e 's/^/  /')\nBuilding beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). Everything changed since $(git rev-parse --short "$VERIFY_BASE" 2>/dev/null || echo "$VERIFY_BASE") is built and tested at the first turn end with no sim running. Do not stop a sim or a measurement that is not yours to get past this.\n"
+  SIM_NOTE="Build/test deferred -- a simulator from this colcon workspace (${WORKSPACE}) is running, or a measurement holds the host (${HOLD_FILE}):\n$(report_procs "$SIM_RIVALS" "  ")\nBuilding beside it would slow the sim below real time and corrupt what it measures (ball input goes stale, catches fail). The build/test verdict for ${OWED} stays owed: everything changed since $(git rev-parse --short "$VERIFY_BASE" 2>/dev/null || echo "$VERIFY_BASE") is still graded, and the first turn end with no sim running asks for '${RUN_CMD}'. Do not stop a sim or a measurement that is not yours to get past this.\n"
 fi
 
 if [ -n "$REPORT" ]; then
@@ -1944,9 +2243,28 @@ if [ -n "$BUILD_SWITCHED_OFF" ]; then
   log_timing "pass-unbuilt" "" ""
   exit 0
 fi
-if [ -n "${WORK_TREE:-}" ] && [ "$(work_tree_id)" = "$WORK_TREE" ]; then
-  printf '%s\n' "$WORK_TREE" > "$PASS_TREE_FILE" 2>/dev/null || true
+#
+# The watermark moves under the same condition. It is written from HEAD as HEAD
+# is NOW, and the change set was computed when this call started: a commit made
+# while a backgrounded --run was building would be stepped over, graded by no
+# gate, and the next turn end would diff against it and find nothing. With the
+# tree unchanged, HEAD can only hold content this call graded. With it changed
+# the pass stands for what was graded -- the package verdicts are recorded --
+# and everything since the old watermark is graded again at the next call,
+# reusing those verdicts.
+TREE_MOVED=""
+if [ -n "${WORK_TREE:-}" ] && [ "$(work_tree_id)" != "$WORK_TREE" ]; then
+  TREE_MOVED=1
+  echo "verify-changes: the working tree changed while the gates ran -- watermark kept: what was written or committed meanwhile is graded at the next call." >&2
+else
+  if [ -n "${WORK_TREE:-}" ]; then
+    printf '%s%s\n' "$VERDICT_TAG" "$WORK_TREE" > "$PASS_TREE_FILE" 2>/dev/null || true
+  fi
+  advance_verify_base
 fi
-advance_verify_base
-log_timing "pass" "$BUILT_PKGS" "$REUSED_PKGS"
+log_timing "$([ -n "$TREE_MOVED" ] && echo pass-tree-moved || echo pass)" "$BUILT_PKGS" "$REUSED_PKGS"
+# By hand there is no caller to read the exit code off a status line.
+if [ -n "$RUN_MODE" ]; then
+  echo "verify-changes --run: PASS (${SECONDS}s) -- built and tested [${BUILT_PKGS# }], verdict reused for [${REUSED_PKGS# }]." >&2
+fi
 exit 0

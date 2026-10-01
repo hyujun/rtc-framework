@@ -656,6 +656,17 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_gamma_rollout PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_gamma_rollout PRIVATE -Wno-mismatched-new-delete)
+
+  # ── Parallel ctest ─────────────────────────────────────────────────────────
+  # colcon.pkg runs this package's tests four at a time (48 s -> 23 s; the two
+  # decel-MPC suites are 34 s of it and now overlap). No test here opens a DDS
+  # participant or writes outside its own result file, so none needs a lock.
+  # The exception is a test that ASSERTS a measured wall-clock budget: it must
+  # not share the cores with its siblings, and RUN_SERIAL gives it the box it
+  # had while ctest ran one test at a time. Durations that are only RECORDED
+  # (RecordProperty "worst_*_ns") are not protected -- quote those from a run
+  # of that one test (`--ctest-args -R <name>`). testing-debug.md has the rule.
+  set_tests_properties(test_catching_decel_planner PROPERTIES RUN_SERIAL TRUE)
 endif()
 
 ament_package()

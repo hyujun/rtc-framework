@@ -53,7 +53,7 @@ repo_scripts/
     ├── cpu_shield.sh                     <- 동적 CPU 격리 (cset/cgroup)
     ├── check_rt_setup.sh                 <- 정적 RT 환경 검증 (9개 카테고리)
     ├── verify_rt_runtime.sh              <- 런타임 스레드 검증 (7개 카테고리)
-    ├── with_verify_hold.sh               <- 측정이 도는 동안 Stop hook 의 빌드·테스트를 미룬다
+    ├── with_verify_hold.sh               <- 측정이 도는 동안 Stop hook 의 빌드·테스트 요구를 미룬다
     │
     │   # ── LTTng 트레이싱 ──────────────────────────────────────────
     ├── timeline.sh                       <- LTTng CTF trace -> Chrome Trace JSON 변환 (스레드/CPU swimlane)
@@ -88,7 +88,7 @@ repo_scripts/
 | 스크립트 | 용도 | sudo |
 |---------|------|------|
 | `cpu_shield.sh` | 런타임 CPU 격리 (Tier 1/2, robot/sim 모드) | on/off 시 필수 |
-| `with_verify_hold.sh <명령> [인자…]` | 명령이 도는 동안 `<workspace>/.rtc-verify-hold` 에 자기 줄을 두어 Claude Code Stop hook 의 빌드·테스트를 미룬다. unit 마다 sim 을 새로 띄우는 평가는 unit 사이에 sim 이 없는 틈이 있고, 그 틈에서 끝난 턴이 `colcon test` 를 다음 unit 옆에서 돌리기 때문이다. 명령의 exit code 를 그대로 돌려주고, 끝나면 자기 줄만 지운다. 죽은 wrapper 의 줄은 hook 이 stale 로 읽는다 (install 대상 아님 — 소스 트리에서 실행) | 불필요 |
+| `with_verify_hold.sh <명령> [인자…]` | 명령이 도는 동안 `<workspace>/.rtc-verify-hold` 에 자기 줄을 두어 Claude Code Stop hook 의 빌드·테스트 verdict 요구를 미루고 `verify-changes.sh --run` 이 빌드하지 않게 한다. unit 마다 sim 을 새로 띄우는 평가는 unit 사이에 sim 이 없는 틈이 있고, 그 틈에서 끝난 턴이 verdict 를 요구받아 `colcon test` 를 다음 unit 옆에서 돌리게 되기 때문이다. 명령의 exit code 를 그대로 돌려주고, 끝나면 자기 줄만 지운다. 죽은 wrapper 의 줄은 hook 이 stale 로 읽는다 (install 대상 아님 — 소스 트리에서 실행) | 불필요 |
 
 ### 검증 스크립트 (Verification) -- 필요 시
 
@@ -619,7 +619,7 @@ colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수
 - **knob 은 빌드 전에 전부 검증한다**: `build.sh` 는 `-c` 가 트리를 지우고 CPU shield 를 풀기 **전에** 모든 knob (`RTC_BUILD_TESTS` · `RTC_CCACHE` · `RTC_BUILD_JOBS` · `RTC_BUILD_MEM_MAX`) 을 해석한다 — 쓸 수 없는 값이 설치본 없는 워크스페이스를 남기지 않게.
 - **`--no-warn-unused-cli`**: `build.sh` 는 한 인자 묶음을 모든 패키지에 넘기므로 C/C++ target 이 없는 패키지 (`repo_scripts` · `robot_descriptions`) 는 reconfigure 마다 `Manually-specified variables were not used` 를 냈다. 구조적으로 잡음이라 끈다.
 - **`-l` 을 넣지 않는 이유**: load 제한은 빌드와 무관한 시스템 부하까지 예산에서 깎는다 (1×`-j6 -l6` 은 20분 44초).
-- **패키지 하나 재빌드의 비용** (Stop hook 이 치르는 경로, `-p integrated_bringup --tests`): 변경 없음 3초, TU 하나 수정 24초 (`-j6` 과 `-j12` 가 같다 — 링크가 지배한다), 패키지 전체 재컴파일 279초 (`-j12` 는 245초). 마지막 경우는 hook 의 180초 상한을 이전에도 지금도 넘는다.
+- **패키지 하나 재빌드의 비용** (`.claude/hooks/verify-changes.sh --run` 이 치르는 경로, `-p integrated_bringup --tests`): 변경 없음 3초, TU 하나 수정 24초 (`-j6` 과 `-j12` 가 같다 — 링크가 지배한다), 패키지 전체 재컴파일 279초 (`-j12` 는 245초). 마지막 경우는 Stop hook 이 turn 끝에서 빌드하던 때의 180초 상한을 넘었다 — 그래서 빌드·테스트를 turn 끝에서 빼고 `--run` 으로 옮겼고, 그 상한은 900초다 (hook 헤더 Limits).
 
 **메모리 상한.** job 수는 평균을 맞추는 장치다 — job 당 4 GB 는 최악 TU 하나가 들어가는 값이지, 모든 job 이 동시에 최악인 경우의 합 (8 × 3.5 GB = 28 GB) 이 아니고, 빌드 밖에서 메모리를 쓰는 프로그램도 계산에 없다. 그 꼬리는 상한으로 막는다. `build.sh` 와 `build_deps.sh` 는 빌드를 `MemoryMax` 가 걸린 systemd user scope 안에서 돌린다 (`rt_common.sh` `build_mem_scope_prefix`):
 
@@ -653,7 +653,7 @@ colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수
 
 메모리 최대는 줄지 않는다 — 가장 무거운 TU 들은 제품 코드 쪽에 있다.
 
-**`colcon test` 전에는 `--tests` 로 빌드한다.** 테스트 없이 빌드한 패키지에 `colcon test` 를 돌리면 실패가 아니라 **테스트 0개**가 보고된다 — 통과처럼 읽힌다. `build.sh` 는 그 선택을 매 빌드 `Tests:` 줄로 알리고, `-DBUILD_TESTING` 을 **매번 `ON`/`OFF` 로 명시**한다 (`RTC_BUILD_TESTS` 는 `on`·`1`·`true` / `off`·`0`·`false` 를 대소문자 없이 받는다): CMake 가 이 값을 캐시하므로 한쪽을 생략하면 그 방향으로는 직전 빌드의 선택이 남는다. Stop hook 은 `--tests` 로 빌드하고 (`verify-changes.sh` `run_build`), 그와 별개로 빌드 뒤 CMake 캐시가 `BUILD_TESTING=OFF` 인 패키지는 테스트하지 않고 UNVERIFIED 로 막는다 (`pkgs_built_without_tests`) — 판정이 모든 빌드 경로가 플래그를 기억하는 데 기대지 않게. 켜고 끄는 것은 그 패키지의 reconfigure 만 일으킨다 — 이미 컴파일된 테스트 object 는 남아 있어, 소스가 그대로면 다시 켤 때 재컴파일하지 않는다.
+**`colcon test` 전에는 `--tests` 로 빌드한다.** 테스트 없이 빌드한 패키지에 `colcon test` 를 돌리면 실패가 아니라 **테스트 0개**가 보고된다 — 통과처럼 읽힌다. `build.sh` 는 그 선택을 매 빌드 `Tests:` 줄로 알리고, `-DBUILD_TESTING` 을 **매번 `ON`/`OFF` 로 명시**한다 (`RTC_BUILD_TESTS` 는 `on`·`1`·`true` / `off`·`0`·`false` 를 대소문자 없이 받는다): CMake 가 이 값을 캐시하므로 한쪽을 생략하면 그 방향으로는 직전 빌드의 선택이 남는다. Stop hook 의 `--run` 은 `--tests` 로 빌드하고 (`verify-changes.sh` `run_build` — turn 끝의 호출은 빌드하지 않는다), 그와 별개로 빌드 뒤 CMake 캐시가 `BUILD_TESTING=OFF` 인 패키지는 테스트하지 않고 UNVERIFIED 로 막는다 (`pkgs_built_without_tests`) — 판정이 모든 빌드 경로가 플래그를 기억하는 데 기대지 않게. 켜고 끄는 것은 그 패키지의 reconfigure 만 일으킨다 — 이미 컴파일된 테스트 object 는 남아 있어, 소스가 그대로면 다시 켤 때 재컴파일하지 않는다.
 
 **ccache.** `build.sh` 는 ccache 가 깔려 있으면 자동으로 쓴다 (`--no-ccache` / `RTC_CCACHE=off` 로 끈다; `install.sh` 가 설치한다). 얻는 것은 **같은 TU 를 다시 컴파일하는 빌드** — `build.sh -c`, 브랜치를 오가는 재빌드, 별도 build base — 이고, 평소의 증분 빌드는 make 가 이미 건너뛰므로 달라지지 않는다. 공개 헤더를 고쳐 하위 TU 의 전처리 결과가 바뀌는 재컴파일도 캐시로 못 막는다.
 
@@ -821,7 +821,7 @@ git clone <repo-url> src/rtc-framework
 
 ### 빌드가 기대는 시스템 패키지
 
-빌드 병렬도 · 메모리 상한 · ccache 가 fresh PC 에서도 같은 방식으로 걸리려면 아래가 있어야 한다. `install.sh` 가 직접 설치하는 것은 ccache 하나이고, 나머지는 Ubuntu 기본 설치에 들어 있다 (dpkg priority `required` / `important`) — 최소 컨테이너처럼 그것이 빠진 호스트에서는 해당 장치만 꺼지고 빌드는 된다.
+빌드 병렬도 · 메모리 상한 · ccache 가 fresh PC 에서도 같은 방식으로 걸리려면 아래가 있어야 한다. `install.sh` 가 직접 설치하는 것은 ccache 와 pytest-xdist 둘이고, 나머지는 Ubuntu 기본 설치에 들어 있다 (dpkg priority `required` / `important`) — 최소 컨테이너처럼 그것이 빠진 호스트에서는 해당 장치만 꺼지고 빌드는 된다.
 
 | 장치 | 쓰는 명령 | 패키지 | 없을 때 |
 |---|---|---|---|
@@ -829,6 +829,7 @@ git clone <repo-url> src/rtc-framework
 | 메모리 상한 | `systemd-run` · `systemctl` + **user session** (`systemd --user`) | `systemd` · `libpam-systemd` · `dbus-user-session` (important) | `Memory cap: unavailable — <이유>` 경고 후 상한 없이 빌드. cgroup v2 + memory controller 의 user 위임이 필요하다 (Ubuntu 24.04 기본값에서 확인) |
 | ccache | `ccache` | `ccache` (universe, optional) — **`install.sh` 의 `setup_workspace` 가 설치** | 캐시 없이 빌드. universe 가 꺼져 설치가 실패해도 `install.sh` 는 경고만 하고 계속한다 |
 | 테스트 빌드 (`--tests`) | — | `ros-<distro>-ament-cmake-gtest` 등 (`setup_workspace`) | — |
+| `rtc_tools` 테스트 병렬 실행 | `pytest -n` | `python3-pytest-xdist` (universe, optional) — **`setup_workspace` 가 설치** | 테스트가 하나씩 돈다 (판정은 같다). `rtc_tools/test/conftest.py` 가 `-n` 을 받아 무시한다 |
 
 이 호스트에서 세 장치가 실제로 걸리는지는 `./install.sh verify` (설치 끝에도 자동) 의 `Build host:` · `Memory cap:` · `ccache:` 세 줄이 알린다 (`rt_common.sh` `print_build_host_summary`). 메모리 상한 줄은 scope 를 실제로 만들어 그 cgroup 의 `memory.max` 를 읽어 본 결과다 — `systemd-run` 이 성공해도 한도가 걸리지 않는 호스트 (cgroup v1/hybrid, 위임 없음) 를 걸러낸다.
 
