@@ -362,6 +362,13 @@ class DecelPlanner {
 
   [[nodiscard]] const DecelPlannerConstants& Constants() const noexcept { return consts_; }
 
+  /// The slowest and the summed configure-time warm-up solve [ns] (MD-64):
+  /// each is a core's FIRST solve, the one a trial would otherwise pay for.
+  /// 0 without a pre-catch grid.
+  [[nodiscard]] std::int64_t WarmUpMaxNs() const noexcept { return warmup_max_ns_; }
+
+  [[nodiscard]] std::int64_t WarmUpTotalNs() const noexcept { return warmup_total_ns_; }
+
  private:
   void UpdateAccelEstimate(const PlannerRtState& rt) noexcept;
   [[nodiscard]] bool PredictX0(const PlannerRtState& rt, std::int64_t t_eff_ns,
@@ -444,6 +451,8 @@ class DecelPlanner {
   std::int64_t replan_ns_{0};
   std::int64_t h_ns_{0};       // control_dt
   double rest_tol_ref_{1e-4};  // the core's reference_rest_tol
+  std::int64_t warmup_max_ns_{0};
+  std::int64_t warmup_total_ns_{0};
 
   // Published segments of the plan in `ring_plan_id_` / `ring_t_c_ns_`, oldest
   // first. A segment the RT last reported pending or following is never the

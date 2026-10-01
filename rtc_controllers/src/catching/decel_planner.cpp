@@ -8,6 +8,7 @@
 #include <pinocchio/algorithm/kinematics.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -168,6 +169,8 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   cores_.clear();
   inputs_.clear();
   results_.clear();
+  warmup_max_ns_ = 0;
+  warmup_total_ns_ = 0;
   catch_cores_.clear();
   catch_inputs_.clear();
   catch_results_.clear();
@@ -394,6 +397,19 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
   // the ball already is — at the catch frame, along its +z — so every term
   // runs.
   const int n = nv_;
+  warmup_max_ns_ = 0;
+  warmup_total_ns_ = 0;
+  // Timed on the real steady clock (the injected one may be a test's).
+  const auto timed = [this](DecelMpc& core, const DecelMpcInput& in, DecelMpcResult& res) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = core.Solve(in, res);
+    const std::int64_t ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0)
+            .count();
+    warmup_max_ns_ = std::max(warmup_max_ns_, ns);
+    warmup_total_ns_ += ns;
+    return ok;
+  };
   Eigen::VectorXd q_mid(n);
   for (int m = 0; m < n; ++m) {
     q_mid[m] = 0.5 * (model.q_min[U(m)] + model.q_max[U(m)]);
@@ -405,7 +421,7 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
     in.qdd0.setZero();
     in.reference_valid = false;
     in.cold_start = true;
-    if (!cores_[k]->Solve(in, results_[k])) {
+    if (!timed(*cores_[k], in, results_[k])) {
       why = "warm-up solve of stop core k = " + std::to_string(k) + ": " +
             DecelMpcReasonName(results_[k].reason);
       return false;
@@ -435,7 +451,7 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
     in.v_b = -5.0 * z;
     in.w_p = params_.w_const * Eigen::Matrix3d::Identity();
     in.gamma_ref = params_.gamma_ref;
-    if (!catch_cores_[j]->Solve(in, catch_results_[j])) {
+    if (!timed(*catch_cores_[j], in, catch_results_[j])) {
       why = "warm-up solve of the catch core n_pre = " + std::to_string(j + 1) + ": " +
             DecelMpcReasonName(catch_results_[j].reason);
       return false;

@@ -33,9 +33,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -1052,6 +1054,66 @@ TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
   mallocs += c.c_malloc;
   RecordProperty("approach_qp_solver_mallocs", std::to_string(mallocs));
   std::printf("[alloc] approach first + stop: %zu C mallocs (ProxQP, #654)\n", mallocs);
+}
+
+// ── 7. Records (not judged): what the cores cost at configure, and what the
+// warm-up buys (MD-64). Quote these from a run of this suite alone.
+
+double RssMb() {
+  std::ifstream f("/proc/self/statm");
+  long total = 0;
+  long rss = 0;
+  f >> total >> rss;
+  return static_cast<double>(rss) * 4096.0 / (1024.0 * 1024.0);
+}
+
+TEST(ApproachPlannerRecord, ConfigureCostAndTheFirstSolveAfterTheWarmUp) {
+  for (const bool seven : {false, true}) {
+    const Arm arm = seven ? Arm7() : Arm6();
+    const DecelPlannerModel pm = PlannerModelOf(arm);
+    const double rss0 = RssMb();
+    const auto t0 = std::chrono::steady_clock::now();
+    DecelPlanner planner;
+    std::string err;
+    ASSERT_TRUE(planner.Configure(pm, Consts(), ApproachParams(), &FakeClock, &err)) << err;
+    const double configure_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const double rss_mb = RssMb() - rss0;
+    // The first trial solve of each catch core after the warm-up: n_pre 6 … 2
+    // by shrinking the lead (n_pre 1 reaches too little to be a fair solve).
+    const Catch c = CatchAt(arm, Offset(arm, 0.03));
+    DecelPlanSnapshot out{};
+    DecelRecord rec{};
+    double first_max_ms = 0.0;
+    for (int n_pre = 6; n_pre >= 2; --n_pre) {
+      const std::int64_t t_c = kT0 + kTArm + kFirst + 2 * kH + n_pre * kDtPre + 5 * kMs;
+      SetClock(kT0);
+      const auto s0 = std::chrono::steady_clock::now();
+      const bool ok = planner.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH),
+                                        PlanFor(arm, c, t_c), BallFor(c), out, rec);
+      const double ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
+      EXPECT_TRUE(ok) << n_pre << ": " << Why(rec);
+      EXPECT_EQ(rec.k, -n_pre);
+      first_max_ms = std::max(first_max_ms, ms);
+    }
+    const double warm_max_ms = static_cast<double>(planner.WarmUpMaxNs()) * 1e-6;
+    const double warm_total_ms = static_cast<double>(planner.WarmUpTotalNs()) * 1e-6;
+    EXPECT_GT(planner.WarmUpMaxNs(), 0);
+    const std::string tag = seven ? "7dof" : "6dof";
+    // Integer microseconds / kilobytes: RecordProperty's to_string squashes
+    // small doubles.
+    RecordProperty("configure_us_" + tag, std::to_string(std::llround(configure_ms * 1e3)));
+    RecordProperty("warmup_total_us_" + tag, std::to_string(std::llround(warm_total_ms * 1e3)));
+    RecordProperty("warmup_max_us_" + tag, std::to_string(std::llround(warm_max_ms * 1e3)));
+    RecordProperty("first_solve_after_warmup_max_us_" + tag,
+                   std::to_string(std::llround(first_max_ms * 1e3)));
+    RecordProperty("configure_rss_kb_" + tag, std::to_string(std::llround(rss_mb * 1024.0)));
+    std::printf(
+        "[ record ] %s: 9 cores, Configure %.1f ms (warm-up %.1f ms of it, slowest %.1f ms), RSS "
+        "+%.1f MB; first trial solve after it, max over n_pre 6..2: %.1f ms\n",
+        tag.c_str(), configure_ms, warm_total_ms, warm_max_ms, rss_mb, first_max_ms);
+  }
 }
 
 }  // namespace
