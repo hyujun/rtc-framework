@@ -9,3 +9,4 @@
 | 문서 | 내용 | 대응하는 규범 |
 |---|---|---|
 | [invariants-rationale.md](invariants-rationale.md) | RT / ARCH / PROC / NUM 규칙의 이유 · 알려진 위반의 실측 · 구현 위치 | [invariants.md](../../agent_docs/invariants.md) |
+| [anti-patterns.md](anti-patterns.md) | 재발한 실수의 사례 · 증상 · 원인 · 복구 (AP ID 의 정의) | [invariants.md](../../agent_docs/invariants.md) — 위반한 invariant 행 또는 §Anti-pattern 규범 |

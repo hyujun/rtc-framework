@@ -7,7 +7,7 @@
 - **탐지 sensor 의 blocking 여부와 escalation severity 는 다른 축이다** — non-blocking sensor 가 경고만 내는 규칙 (ARCH-6) 도 규칙 자체를 바꾸려면 E-1 컨펌이 필요하다.
 - **ID 는 재사용하지 않는다** — 은퇴한 번호 (RT-7, AP 결번) 는 비워 둔다.
 
-규칙의 이유·실측·이력·구현 위치는 헌법 밖 [invariants-rationale.md](../docs/reference/invariants-rationale.md) 가, 재발 사례는 [anti-patterns.md](anti-patterns.md) 가, ARCH 의 설계 근거는 [design-principles.md](design-principles.md) 가 갖는다.
+이유·실측·이력·구현 위치는 헌법 밖 [invariants-rationale.md](../docs/reference/invariants-rationale.md), 재발 사례는 헌법 밖 [anti-patterns.md](../docs/reference/anti-patterns.md), ARCH 의 설계 근거는 [design-principles.md](design-principles.md) 가 갖는다.
 
 ## RT Path Invariants
 
@@ -269,7 +269,7 @@ RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜�
 
 ## Anti-pattern 규범
 
-대응하는 invariant 행이 없는 재발 패턴의 규범이다. ID 는 [anti-patterns.md](anti-patterns.md) 의 것이고 증상·사례·복구 상세는 거기 있다.
+대응하는 invariant 행이 없는 재발 패턴의 규범이다. ID 정의·사례·복구는 [anti-patterns.md](../docs/reference/anti-patterns.md).
 
 | # | 규범 |
 |---|------|

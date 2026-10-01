@@ -37,7 +37,7 @@
 | 3. Edit | Invariant 위반 유혹 | [invariants.md](invariants.md) 확인 후 [AGENTS.md](../AGENTS.md) §6 Escalate. 우회로 찾지 말 것 |
 | 4. Build | 빌드 실패 | 에러 메시지를 **먼저** 기록. 원인 파악 전 재시도 금지 |
 | 5. Test | 테스트 실패 | **새 코드를 고친다.** assertion 쪽을 손대야 할 것 같으면 그 자체가 신호이므로 착수 전 [invariants.md](invariants.md) PROC-6 을 편다 — 회귀 은폐 vs 정당한 변경 판정, 별도 commit·E-6 절차, 탐지 패턴이 거기 있다 |
-| 6. Verify | Checklist 항목 실패 | 해당 항목까지 rollback, 재실행. 부분 완료 주장 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-1) |
+| 6. Verify | Checklist 항목 실패 | 해당 항목까지 rollback, 재실행. 부분 완료 주장 금지 ([invariants.md](invariants.md) AP-PROC-1) |
 
 ## Sprint Contract & Spec (착수 전 성공 기준)
 

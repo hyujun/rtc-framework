@@ -1,6 +1,6 @@
 # Harness Rationale (근거·출처)
 
-AGENTS.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orchestration / escalation / enforcement)이 따르는 **agent-driven engineering** 프레이밍과, 헌법의 구조·크기 규율의 근거 자료. 모델 행동에 직접 영향을 주지 않는 배경 문헌이므로 헌법 본문이 아닌 이곳에 둔다 ([anti-patterns.md](anti-patterns.md) AP-DOC-1, user-level `# CLAUDE.md hygiene`).
+AGENTS.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orchestration / escalation / enforcement)이 따르는 **agent-driven engineering** 프레이밍과, 헌법의 구조·크기 규율의 근거 자료. 모델 행동에 직접 영향을 주지 않는 배경 문헌이므로 헌법 본문이 아닌 이곳에 둔다 ([invariants.md](invariants.md) AP-DOC-1, user-level `# CLAUDE.md hygiene`).
 
 핵심 명제: **Agent = Model + Harness.** 모델 바깥의 guides·sensors·orchestration·escalation·enforcement 가 본 저장소의 1급 자산이며, 모델 교체와 무관하게 누적·개선된다.
 

@@ -146,7 +146,7 @@ RT tick 이 heap 을 안 만진다는 주장(RT-1)을 재는 sensor 는 **세 �
 
 ## Test 측정
 
-테스트 카운트·suite 목록은 박제하지 않는다 ([anti-patterns.md](anti-patterns.md) AP-DOC-1). 최신 카운트·suite 명은 직접 측정:
+테스트 카운트·suite 목록은 박제하지 않는다 ([invariants.md](invariants.md) AP-DOC-1). 최신 카운트·suite 명은 직접 측정:
 
 ```bash
 rm -rf build/<pkg>/test_results                 # ← 누적 XML 제거 (아래 함정)

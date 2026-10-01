@@ -1,6 +1,6 @@
 # AGENTS.md
 
-이 파일은 본 저장소의 **헌법 (constitution)** 이다 — tool-neutral 단일본이며, Claude Code 는 [CLAUDE.md](CLAUDE.md) 가 이 파일을 import 한 뒤 Claude 전용 절만 덧붙인다. 안정적인 원칙·게이트·지표만 둔다. **`agent_docs/` 와 `.claude/rules/` 도 헌법의 일부이며 같은 규율로 쓴다** — 규범 (무엇이 성립해야 하는가 · 구속 범위 · 판정 기준 · severity) 만 둔다. 자주 변하는 사실·현황 (패키지 수, robot 목록, 의존성 버전, 명령 detail) 은 README·YAML·헤더가 (AP-DOC-1), 절차·레시피는 skill·`docs/` 가, 규칙의 *근거·사고 이력* 은 issue·커밋·hook 헤더·코드 옆 주석이 갖는다 (AP-DOC-2). 문서별 크기 예산: `repo_scripts/config/docs_budget.yaml`.
+이 파일은 본 저장소의 **헌법 (constitution)** 이다 — tool-neutral 단일본이며, Claude Code 는 [CLAUDE.md](CLAUDE.md) 가 이 파일을 import 한 뒤 Claude 전용 절만 덧붙인다. 안정적인 원칙·게이트·지표만 둔다. **`agent_docs/` 와 `.claude/rules/` 도 헌법의 일부이며 같은 규율로 쓴다** — 규범 (무엇이 성립해야 하는가 · 구속 범위 · 판정 기준 · severity) 만 둔다. 자주 변하는 사실·현황 (패키지 수, robot 목록, 의존성 버전, 명령 detail) 은 README·YAML·헤더가 (AP-DOC-1), 절차·레시피는 skill·`docs/` 가, 규칙의 *근거·실측·사례* 는 `docs/reference/`·issue·커밋·hook 헤더·코드 주석이 갖는다 (AP-DOC-2). 문서별 크기 예산: `repo_scripts/config/docs_budget.yaml`.
 
 ## 1. Snapshot
 
@@ -107,7 +107,7 @@ grep 이 정당한 코드를 잘못 잡았다고 판단되면 **보고 없이 �
 
 ## 7. Anti-patterns
 
-재발한 실수의 사례·증상·복구는 [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) 가 갖는다 — invariant 과 **1:1 이 아니다** (각 AP 헤더가 위반한 invariant 를 명기; 사례가 없다고 그 룰이 약한 것은 아니다). 완료를 주장하기 전에 남은 항목을 전수 확인한다 (AP-PROC-1).
+재발한 실수에서 나온 **규범**은 [invariants.md](agent_docs/invariants.md) 가 갖는다 (대응 invariant 가 없는 것은 §Anti-pattern 규범 이 AP ID 로). 사례·증상·복구는 헌법 밖 [docs/reference/anti-patterns.md](docs/reference/anti-patterns.md) 다 — invariant 과 **1:1 이 아니고**, 사례가 없다고 그 룰이 약한 것은 아니다. 완료를 주장하기 전에 남은 항목을 전수 확인한다 (AP-PROC-1).
 
 ## 8. Where Things Live
 
@@ -169,6 +169,6 @@ Commit 완료 또는 사용자가 task 종료를 알린 후 (상세: [modificati
 - [design-principles.md](agent_docs/design-principles.md) — `rtc_*` 5 principles, boundary rules
 - [conventions.md](agent_docs/conventions.md) — domain / code / commit conventions, doc requirements
 - [testing-debug.md](agent_docs/testing-debug.md) — sensor matrix, test commands, debug topics, RT permissions
-- [invariants.md](agent_docs/invariants.md) — RT / ARCH / PROC / NUM invariants, escalation triggers
-- [anti-patterns.md](agent_docs/anti-patterns.md) — recurring mistakes, detection + recovery
+- [invariants.md](agent_docs/invariants.md) — RT / ARCH / PROC / NUM / AP 규범, escalation triggers
+- [docs/reference/](docs/reference/README.md) — **헌법 밖**: 규칙의 근거·실측, anti-pattern 사례집
 - [handoff.md](agent_docs/handoff.md) — tool-neutral context handoff 계약

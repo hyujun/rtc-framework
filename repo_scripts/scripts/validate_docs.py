@@ -35,8 +35,8 @@ D10 no bare "§N.M" section ref in the constitution corpus.  The same number
     means different things in AGENTS.md, in the compliance normative spec, and
     in a file's own numbered headings; a prefix is what tells them apart.
 D11 no rule-ID reference to an ID its owning file never defines (RT-/ARCH-/
-    PROC-/NUM-/E- own by invariants.md, AP- by anti-patterns.md, P1..P5 by
-    design-principles.md).
+    PROC-/NUM-/E- own by invariants.md, AP- by docs/reference/anti-patterns.md,
+    P1..P5 by design-principles.md).
 D12 the two constitutions (``CLAUDE.md`` / ``AGENTS.md``) stay inside a size
     budget: at most 200 lines, at most 18 KiB, and no prose line over 500
     characters (table rows and fenced blocks are exempt).  Anthropic's guidance
@@ -298,7 +298,9 @@ SECTION_REF_QUALIFIED_RE = re.compile(
 
 # D11: a rule-ID reference to an ID that no document defines.  Each namespace
 # has exactly one owner: invariants.md defines RT-/ARCH-/PROC-/NUM-/E-,
-# anti-patterns.md defines AP-, design-principles.md defines P1..P5.  A typo'd
+# docs/reference/anti-patterns.md defines AP- (the case book sits outside the
+# constitution; the norms its cases produced are rows in invariants.md, keyed by
+# the AP ID), design-principles.md defines P1..P5.  A typo'd
 # or invented ID ("P6", "RT-11") reads as authoritative and sends the reader
 # looking for a rule that was never written -- P1..P5 were referenced as IDs by
 # two documents while the owning file had never assigned those labels at all.
@@ -311,7 +313,7 @@ RULE_ID_OWNERS = {
     "PROC": "agent_docs/invariants.md",
     "NUM": "agent_docs/invariants.md",
     "E": "agent_docs/invariants.md",
-    "AP": "agent_docs/anti-patterns.md",
+    "AP": "docs/reference/anti-patterns.md",
     "P": "agent_docs/design-principles.md",
 }
 # IDs that are deliberately retired: referenced in prose as history, never as a
@@ -1859,6 +1861,22 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
         "D11 undefined rule ID",
         "agent_docs/f.md",
         "새 utility 는 P9 를 따른다.\n",
+        ["D11"],
+    ),
+    # One undefined ID per namespace whose owner is a different file.  A stale
+    # owner path makes rule_id_defined() answer True for everything (a missing
+    # owner is left to D1), so the "defined IDs are silent" fixture below cannot
+    # tell a working check from one whose owner file has moved away.
+    (
+        "D11 undefined AP ID (owner path is live)",
+        "agent_docs/f.md",
+        "AP-PROC-99 는 없는 패턴이다.\n",
+        ["D11"],
+    ),
+    (
+        "D11 undefined invariant ID (owner path is live)",
+        "agent_docs/f.md",
+        "RT-99 는 없는 규칙이다.\n",
         ["D11"],
     ),
     # ...and a defined one must stay silent, or every doc lights up.
