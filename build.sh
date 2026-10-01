@@ -23,6 +23,7 @@ _SCRIPT_DIR_BUILD="$_RT_SCRIPT_DIR"
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 NO_SYMLINK=0
+BUILD_TESTS=1
 EXPORT_COMPILE_COMMANDS=0
 SHOW_BANNER=1
 
@@ -62,6 +63,9 @@ show_help() {
   echo "  -e, --export-compile-commands  (Deprecated, kept for compatibility — compile_commands.json"
   echo "                             is now always exported and merged for clangd / VS Code)"
   echo "  --no-symlink               Do not use --symlink-install"
+  echo "  --no-tests                 Do not build tests (-DBUILD_TESTING=OFF) — about half the"
+  echo "                             clean-build time. For a host that only runs the software:"
+  echo "                             'colcon test' finds nothing until the next build without it"
   echo "  --no-banner                Suppress the build banner (used by install.sh)"
   echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.7.0)"
   echo "                             Auto-detected from $MJ_DEFAULT if not specified"
@@ -82,6 +86,7 @@ show_help() {
   echo "  ./build.sh sim --tracing                 # sim build with RT trace spans"
   echo "  ./build.sh full"
   echo "  ./build.sh full -j 8                     # 8 make jobs instead of the default"
+  echo "  ./build.sh robot --no-tests              # runtime host: skip the tests"
   echo ""
 }
 
@@ -104,6 +109,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-symlink)
       NO_SYMLINK=1
+      shift
+      ;;
+    --no-tests)
+      BUILD_TESTS=0
       shift
       ;;
     --no-banner)
@@ -216,6 +225,18 @@ if [[ "$CLEAN_BUILD" -eq 1 ]]; then
 fi
 
 CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
+
+# BUILD_TESTING is passed on EVERY build, not only with --no-tests. CMake caches
+# it: a tree built once with OFF stays OFF, and `colcon test` on it reports zero
+# tests — which reads as green. Passing ON explicitly is what brings the tests
+# back on the next ordinary build (the Stop hook builds through this script).
+if [[ "$BUILD_TESTS" -eq 1 ]]; then
+  CMAKE_ARGS+=("-DBUILD_TESTING=ON")
+else
+  CMAKE_ARGS+=("-DBUILD_TESTING=OFF")
+  warn "Tests are NOT built (--no-tests): 'colcon test' on these packages runs nothing"
+  warn "  until they are built again without the flag."
+fi
 if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
   CMAKE_ARGS+=("-Dmujoco_ROOT=${MJ_DIR}")
   info "MuJoCo root path: ${MJ_DIR}"

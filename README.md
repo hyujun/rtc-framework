@@ -197,6 +197,7 @@ chmod +x build.sh
 ./build.sh full           # 전체 패키지
 ./build.sh sim -c -j 4    # 클린 빌드 + make job 4개 (기본: min(물리 코어, RAM/4GB))
 ./build.sh -p rtc_base    # 특정 패키지만 빌드
+./build.sh robot --no-tests   # 실행 전용 호스트: 테스트 제외 (클린 빌드 시간 약 절반)
 
 # 수동 빌드 (워크스페이스에 외부 패키지가 섞여 있을 때 권장)
 source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh

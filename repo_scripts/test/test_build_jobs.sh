@@ -19,6 +19,8 @@
 # 없이 빌드한다. 여기서 systemd-run · systemctl 은 stub 이므로 **cgroup 이 실제로
 # 한도를 강제하는지는 이 파일이 보지 못한다** — 고정하는 것은 넘기는 인자와 분기다.
 #
+# --no-tests: build.sh 는 -DBUILD_TESTING 을 매 빌드마다 ON/OFF 로 명시한다.
+#
 # 격리 방식: setup_env.sh · build.sh 는 임시 가짜 워크스페이스 (<tmp>/ws/src/repo)
 # 에서 돌린다 — lib 은 실물을 symlink 하고, colcon · cmake · systemd-run · systemctl ·
 # ros2 · cset · sudo 와 CMake python 은 stub 이다. stub colcon 은 받은 인자와 MAKEFLAGS 를 파일에 남기고, 판정은
@@ -359,6 +361,22 @@ test_build_propagates_colcon_failure() {
   expect_eq "colcon rc 3 -> build.sh fails" 1 "$(run_build STUB_COLCON_RC=3 --)"
 }
 
+# ── --no-tests ─────────────────────────────────────────────────────────────
+# colcon 이 받은 --cmake-args 중 BUILD_TESTING 의 값 (없으면 빈 문자열).
+logged_build_testing() { sed -n 's/^ARG=-DBUILD_TESTING=//p' "$COLCON_LOG"; }
+
+test_build_testing_is_passed_on_every_build() {
+  # ON 을 명시하지 않으면 --no-tests 로 한 번 빌드한 트리는 CMake 캐시에 OFF 가
+  # 남고, 그 뒤 `colcon test` 는 테스트 0개를 green 으로 보고한다.
+  expect_eq "rc" 0 "$(run_build --)"
+  expect_eq "ordinary build says ON" ON "$(logged_build_testing)"
+  if grep -q "Tests are NOT built" "$TMP/build.out"; then fail "[default] warned about tests"; else pass; fi
+
+  expect_eq "rc" 0 "$(run_build -- --no-tests)"
+  expect_eq "--no-tests says OFF" OFF "$(logged_build_testing)"
+  if grep -q "Tests are NOT built" "$TMP/build.out"; then pass; else fail "[--no-tests] no warning"; fi
+}
+
 # ── build_deps.sh ──────────────────────────────────────────────────────────
 run_deps() {  # $@ = `VAR=value` 들. rc 를 출력.
   local rc=0
@@ -519,6 +537,7 @@ test_build_jobs_flag_sets_make_jobs_not_workers
 test_build_knob_precedence
 test_build_rejects_bad_jobs_before_colcon
 test_build_propagates_colcon_failure
+test_build_testing_is_passed_on_every_build
 
 test_build_deps_uses_the_same_knob
 test_build_deps_rejects_bad_jobs_before_cmake

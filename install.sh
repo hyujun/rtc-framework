@@ -68,6 +68,7 @@ ONNXRT_VERSION="1.30.0"   # ≥ 1.18 필요: ur5e_p1b demo_inference 정책이 I
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 SKIP_DEPS=0
 SKIP_BUILD=0
+NO_TESTS=0
 SKIP_MPC=0
 MODE_VERIFY=0
 DO_RT=0
@@ -109,6 +110,8 @@ show_help() {
   echo "  -p, --packages    Comma-separated list of specific packages to build"
   echo "  -j, --jobs N      make jobs for the deps build and the package build (packages build"
   echo "                    one at a time). Default: min(physical cores, RAM / 4 GB)"
+  echo "  --no-tests        Do not build tests (build.sh --no-tests) — about half the build time;"
+  echo "                    for a host that only runs the software"
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
   echo "  --skip-rt         Skip RT system setup (overrides --all)"
@@ -155,6 +158,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-build)
       SKIP_BUILD=1
+      shift
+      ;;
+    --no-tests)
+      NO_TESTS=1
       shift
       ;;
     --all)
@@ -257,6 +264,7 @@ build_package() {
   [[ "$CLEAN_BUILD" -eq 1 ]] && BUILD_ARGS+=("--clean")
   [[ -n "$PARALLEL_JOBS" ]] && BUILD_ARGS+=("--jobs" "$PARALLEL_JOBS")
   [[ -n "$MJ_DIR" ]] && BUILD_ARGS+=("--mujoco" "$MJ_DIR")
+  [[ "$NO_TESTS" -eq 1 ]] && BUILD_ARGS+=("--no-tests")
   [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]] && BUILD_ARGS+=("--packages" "$(IFS=','; echo "${CUSTOM_PACKAGES[*]}")")
 
   bash "${INSTALL_SCRIPT_DIR}/build.sh" "${BUILD_ARGS[@]}" || error "Build failed!"

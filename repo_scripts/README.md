@@ -627,6 +627,21 @@ colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수
 
 ---
 
+#### 빌드 시간 줄이기
+
+**테스트를 빼는 빌드 (`--no-tests`).** 컴파일 시간의 절반 이상이 테스트다 — 메시지 패키지를 뺀 597개 TU 중 362개가 테스트 코드이고 컴파일 시간의 58% 를 차지한다 (`integrated_bringup` 은 156개 중 115개). 소프트웨어를 돌리기만 하는 호스트는 `./build.sh --no-tests` (`./install.sh --no-tests`) 로 그 몫을 건너뛴다:
+
+| 클린 빌드 (6C/12T, 1 × `-j6`) | 시간 | 빌드 메모리 최대 |
+|---|---|---|
+| 기본 | 18분 49초 | 11.0 GB |
+| `--no-tests` | 9분 44초 | 10.7 GB |
+
+메모리 최대는 줄지 않는다 — 가장 무거운 TU 들은 제품 코드 쪽에 있다.
+
+`build.sh` 는 `-DBUILD_TESTING` 을 **매 빌드마다** `ON`/`OFF` 로 명시한다. CMake 가 이 값을 캐시하므로, 명시하지 않으면 `--no-tests` 로 한 번 빌드한 트리는 계속 `OFF` 로 남고 그 뒤 `colcon test` 는 테스트 0개를 실패 없이 보고한다. 플래그 없이 다시 빌드하면 테스트가 돌아온다 (Stop hook 은 `build.sh` 로 빌드하므로 항상 `ON` 이다). plain `colcon build` 는 캐시를 그대로 따르니, `--no-tests` 트리에서 테스트를 되살리려면 `build.sh` 를 쓰거나 `-DBUILD_TESTING=ON` 을 직접 넘긴다.
+
+---
+
 ### build_deps.sh
 
 `../deps.repos` 기반으로 fmt/mimalloc/aligator 를 소스 빌드하여 `<rtc_ws>/deps/install/` 에 설치합니다.
