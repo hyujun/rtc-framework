@@ -938,7 +938,7 @@ pin 이 소리 없이 풀리는 것은 세 겹이 막는다: `GraspParams::K_est
 4. 테스트 실행 — colcon 은 반드시 workspace root 에서 (AGENTS.md §9.1):
 
 ```bash
-./build.sh -p rtc_controllers
+./build.sh --tests -p rtc_controllers
 ( cd ~/ros2_ws/rtc_ws \
   && source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 \
   && colcon test --packages-select rtc_controllers \

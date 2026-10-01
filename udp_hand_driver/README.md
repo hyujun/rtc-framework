@@ -545,7 +545,7 @@ all-zero/duplicate 경고가 뜨는데, 이는 정상 동작(명령이 오면 �
 
 ```bash
 cd ~/ros2_ws/rtc_ws
-./build.sh -p rtc_base,rtc_communication,rtc_inference,rtc_msgs,udp_hand_driver
+./build.sh --tests -p rtc_base,rtc_communication,rtc_inference,rtc_msgs,udp_hand_driver
 colcon test --packages-select udp_hand_driver
 ```
 

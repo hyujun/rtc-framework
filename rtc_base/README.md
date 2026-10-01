@@ -613,7 +613,7 @@ target `rtc_base::rtc_tracing`) 로 컴파일한다. 소비 패키지는 이 tar
 ## 빌드
 
 ```bash
-./build.sh -p rtc_base
+./build.sh --tests -p rtc_base
 colcon test --packages-select rtc_base
 ```
 

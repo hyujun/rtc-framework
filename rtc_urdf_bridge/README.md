@@ -106,7 +106,7 @@ rtc_urdf_bridge/
 ## Build
 
 ```bash
-./build.sh -p rtc_urdf_bridge
+./build.sh --tests -p rtc_urdf_bridge
 colcon test --packages-select rtc_urdf_bridge
 ```
 

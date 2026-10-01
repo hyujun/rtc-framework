@@ -469,7 +469,7 @@ RS485 테스트는 PTY(pseudo-terminal) 페어를 실제 시리얼 링크 대용
 ## 빌드
 
 ```bash
-./build.sh -p rtc_communication
+./build.sh --tests -p rtc_communication
 ```
 
 설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조 (테스트는 위 §테스트). 헤더 전용 라이브러리이므로 컴파일되는 바이너리는 없습니다. 다른 패키지에서 `find_package(rtc_communication REQUIRED)`로 의존성을 추가하면 include 경로가 자동으로 설정됩니다.
