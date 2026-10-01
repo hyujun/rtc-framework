@@ -159,6 +159,13 @@ struct PlanSnapshot {
 /// t_eff — t_c for the pre-catch solve, a later grid point for a post-catch
 /// replan (MD-10, MD-31) — never "t_c" by assumption. All grid arithmetic is
 /// integer ns so that t0_ns lands exactly on t_c + k·dt_ns.
+///
+/// TWO SPACINGS (MD-54, MD-60). An APPROACH–stop segment (n_pre > 0) starts
+/// n_pre pre-catch intervals of dt_pre_ns before t_c and continues with the
+/// n_nodes − n_pre stop intervals of dt_ns after it: node n_pre is the catch
+/// node at t_c, and node 0 is t_c − n_pre·dt_pre_ns (k0 is 0). n_pre = 0 is
+/// the stop-only segment above. DecelNodeTimeNs() is the one place a node's
+/// instant is computed.
 struct DecelPlanSnapshot {
   // activation_generation and track generation of the followed plan, as the
   // RT reported them; snapshot_sequence / traj_recv_ns stay 0 (the planner
@@ -173,9 +180,11 @@ struct DecelPlanSnapshot {
   std::int64_t t_c_ns{0};      // catch instant of that plan (grid anchor)
   std::int64_t t0_ns{0};       // node 0 instant, t_eff = t_c + k0·dt_ns
   std::int64_t dt_ns{0};       // node spacing Δ_s
+  std::int64_t dt_pre_ns{0};   // pre-catch spacing Δ_pre; used only when n_pre > 0
   std::int32_t k0{0};          // grid index of node 0 (0 = pre-catch solve)
   std::int32_t n_nodes{0};     // N; the segment ends at t0 + N·dt = t_c + N_s·dt
   std::int32_t nv{0};
+  std::int32_t n_pre{0};  // pre-catch intervals before t_c (0 = stop-only)
 
   std::array<double, kMaxDecelNv*(kMaxDecelNodes + 1)> q{};    // [rad]
   std::array<double, kMaxDecelNv*(kMaxDecelNodes + 1)> qd{};   // [rad/s]
@@ -196,16 +205,39 @@ struct DecelPlanSnapshot {
 /// tolerance, far below this.
 inline constexpr double kDecelRestTol = 1e-3;
 
+/// Upper bound on the pre-catch spacing a payload may carry, so that
+/// n_pre·dt_pre_ns cannot overflow (a shape bound, not a tuning limit).
+inline constexpr std::int64_t kMaxDecelDtPreNs = 1'000'000'000;
+
+/// Instant of node k (0 ≤ k ≤ n_nodes) of a payload whose shape the caller
+/// has checked: pre-catch nodes at t0 + k·dt_pre, the catch node at t_c, stop
+/// nodes at t_c + (k − n_pre)·dt; with n_pre = 0, t0 + k·dt.
+[[nodiscard]] constexpr std::int64_t DecelNodeTimeNs(const DecelPlanSnapshot& p, int k) noexcept {
+  if (p.n_pre > 0) {
+    return k <= p.n_pre ? p.t0_ns + static_cast<std::int64_t>(k) * p.dt_pre_ns
+                        : p.t_c_ns + static_cast<std::int64_t>(k - p.n_pre) * p.dt_ns;
+  }
+  return p.t0_ns + static_cast<std::int64_t>(k) * p.dt_ns;
+}
+
 /// Whether a DecelPlanSnapshot's shape and node values can be sampled: sizes
 /// inside the capacities, a positive spacing, node 0 ON the grid t_c + k0·Δ
-/// (k0 ≥ 0), node N at rest (kDecelRestTol), and every used node entry
-/// finite. The RT runs this once per NEW payload (by
+/// (k0 ≥ 0) — or, with n_pre > 0, at t_c − n_pre·Δ_pre with k0 = 0 and at
+/// least one stop interval after t_c — node N at rest (kDecelRestTol), and
+/// every used node entry finite. The RT runs this once per NEW payload (by
 /// decel_seq), not per tick — the sampler itself does not check node values
 /// (jerk_segment.hpp), so an unvalidated NaN node would reach the CLIK target.
 [[nodiscard]] inline bool ValidateDecelNodes(const DecelPlanSnapshot& p) noexcept {
   if (!p.valid || p.nv < 1 || p.nv > kMaxDecelNv || p.n_nodes < 1 || p.n_nodes > kMaxDecelNodes ||
-      p.dt_ns <= 0 || p.k0 < 0 || p.k0 > kMaxDecelNodes ||
-      p.t0_ns != p.t_c_ns + static_cast<std::int64_t>(p.k0) * p.dt_ns) {
+      p.dt_ns <= 0 || p.k0 < 0 || p.k0 > kMaxDecelNodes || p.n_pre < 0 || p.n_pre >= p.n_nodes) {
+    return false;
+  }
+  if (p.n_pre > 0) {
+    if (p.dt_pre_ns <= 0 || p.dt_pre_ns > kMaxDecelDtPreNs || p.k0 != 0 ||
+        p.t0_ns != p.t_c_ns - static_cast<std::int64_t>(p.n_pre) * p.dt_pre_ns) {
+      return false;
+    }
+  } else if (p.t0_ns != p.t_c_ns + static_cast<std::int64_t>(p.k0) * p.dt_ns) {
     return false;
   }
   for (int k = 0; k <= p.n_nodes; ++k) {

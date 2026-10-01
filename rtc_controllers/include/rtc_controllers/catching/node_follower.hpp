@@ -87,7 +87,9 @@ class NodeTrajectoryFollower {
 
   /// @brief Joint-only evaluation, device order, no FK (RT-safe, stateless).
   /// Same shape checks and failure rule as Sample(); `held` reports t past
-  /// node N. Used by the planner to read a published segment back.
+  /// node N. Used by the planner to read a published segment back. A segment
+  /// with pre-catch nodes (n_pre > 0) is evaluated at dt_pre before its catch
+  /// node and at dt from it on (DecelNodeTimeNs, trajectory.hpp).
   [[nodiscard]] static bool SampleJoints(const DecelPlanSnapshot& plan, std::int64_t t_lead_ns,
                                          std::span<double> q, std::span<double> qd,
                                          std::span<double> qdd, bool* held = nullptr) noexcept;

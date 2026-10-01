@@ -16,10 +16,13 @@ namespace {
 using NodeMap = Eigen::Map<const Eigen::MatrixXd, 0, Eigen::OuterStride<>>;
 using OutMap = Eigen::Map<Eigen::VectorXd>;
 
-// Shape a sampler can index without going out of bounds.
+// Shape a sampler can index without going out of bounds. The sampler does not
+// run ValidateDecelNodes, so this is its only guard on n_pre: a broken one
+// would give the node maps a column count of zero or less.
 [[nodiscard]] bool ShapeOk(const DecelPlanSnapshot& p) noexcept {
   return p.nv >= 1 && p.nv <= kMaxDecelNv && p.n_nodes >= 1 && p.n_nodes <= kMaxDecelNodes &&
-         p.dt_ns > 0;
+         p.dt_ns > 0 && p.n_pre >= 0 && p.n_pre < p.n_nodes &&
+         (p.n_pre == 0 || (p.dt_pre_ns > 0 && p.dt_pre_ns <= kMaxDecelDtPreNs));
 }
 
 }  // namespace
@@ -68,22 +71,29 @@ bool NodeTrajectoryFollower::SampleJoints(const DecelPlanSnapshot& plan, std::in
   if (since_ns < 0) {
     return false;
   }
+  // Two spacings (MD-60): before the catch node the pre-catch columns
+  // 0..n_pre at dt_pre, from it on the stop columns n_pre..N at dt. The split
+  // is on integer ns; the catch node's instant belongs to the stop part (τ 0).
+  const std::int64_t pre_ns = static_cast<std::int64_t>(plan.n_pre) * plan.dt_pre_ns;
+  const bool in_pre = since_ns < pre_ns;
+  const int first_col = in_pre ? 0 : plan.n_pre;
   const Eigen::Index rows = plan.nv;
-  const Eigen::Index cols = plan.n_nodes + 1;
+  const Eigen::Index cols = in_pre ? plan.n_pre + 1 : plan.n_nodes - plan.n_pre + 1;
+  const auto offset = static_cast<std::size_t>(first_col) * kMaxDecelNv;
   const Eigen::OuterStride<> stride(kMaxDecelNv);
-  const NodeMap Q(plan.q.data(), rows, cols, stride);
-  const NodeMap Qd(plan.qd.data(), rows, cols, stride);
-  const NodeMap Qdd(plan.qdd.data(), rows, cols, stride);
+  const NodeMap Q(plan.q.data() + offset, rows, cols, stride);
+  const NodeMap Qd(plan.qd.data() + offset, rows, cols, stride);
+  const NodeMap Qdd(plan.qdd.data() + offset, rows, cols, stride);
   OutMap q_out(q.data(), rows);
   OutMap qd_out(qd.data(), rows);
   OutMap qdd_out(qdd.data(), rows);
-  const double dt = static_cast<double>(plan.dt_ns) * 1e-9;
-  const double t = static_cast<double>(since_ns) * 1e-9;
+  const double dt = static_cast<double>(in_pre ? plan.dt_pre_ns : plan.dt_ns) * 1e-9;
+  const double t = static_cast<double>(in_pre ? since_ns : since_ns - pre_ns) * 1e-9;
   if (!SampleJerkTrajectory(Q, Qd, Qdd, dt, t, q_out, qd_out, qdd_out)) {
     return false;
   }
   if (held != nullptr) {
-    *held = since_ns >= static_cast<std::int64_t>(plan.n_nodes) * plan.dt_ns;
+    *held = since_ns >= DecelNodeTimeNs(plan, plan.n_nodes) - plan.t0_ns;
   }
   return true;
 }

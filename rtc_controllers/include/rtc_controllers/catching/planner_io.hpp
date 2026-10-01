@@ -123,6 +123,14 @@ struct PlannerRtState {
   /// DECEL / HOLD (E1-F04).
   bool decel_active{false};
   std::uint32_t decel_seq{0};
+  /// The decel segment the RT has admitted and holds PENDING (its node 0 not
+  /// reached yet), if any, by decel_seq. With pre-catch nodes (MD-58) the
+  /// planner takes the next solve's initial state from the segment the RT
+  /// will be following at that instant, and only the RT knows whether it
+  /// admitted, deferred or dropped a segment. Not filled by the RT yet (#662):
+  /// false / 0 until then.
+  bool decel_pending{false};
+  std::uint32_t decel_pending_seq{0};
 
   /// The vision track epoch of the last trajectory the RT consumed (L1 §4.4),
   /// and whether it has consumed one at all in this trial.
@@ -262,7 +270,8 @@ enum class DecelRefusal : std::uint8_t {
   kRepeat,       ///< decel_seq not newer than the one the RT already took
   kAged,         ///< published outside [now − max_age, now]
   kBeforeReset,  ///< published before the RT's last trial reset
-  kMalformed,    ///< ValidateDecelNodes refused the shape or a node value
+  kMalformed,    ///< ValidateDecelNodes refused the shape or a node value, or
+                 ///< pre-catch nodes the context does not accept
 };
 
 /// What the RT knows when it judges a decel segment.
@@ -284,6 +293,10 @@ struct DecelAdmissionContext {
   /// stamped its publish after the RT's reset can still have read the RT
   /// state of the tick before it: the publish floor alone lets that through.
   std::int64_t state_floor_ns{0};
+  /// Whether the RT follows segments with pre-catch nodes (n_pre > 0, MD-60).
+  /// Off until the RT tick follows them from APPROACH (#662): a segment that
+  /// starts before t_c is refused as kMalformed.
+  bool accept_pre_catch{false};
 };
 
 /// The RT's memory of the last decel segment it admitted.
@@ -324,6 +337,9 @@ struct AdmittedDecel {
   }
   if (ctx.state_floor_ns > 0 && p.rt_state_ns < ctx.state_floor_ns) {
     return DecelRefusal::kBeforeReset;
+  }
+  if (p.n_pre > 0 && !ctx.accept_pre_catch) {
+    return DecelRefusal::kMalformed;
   }
   if (!ValidateDecelNodes(p)) {
     return DecelRefusal::kMalformed;
