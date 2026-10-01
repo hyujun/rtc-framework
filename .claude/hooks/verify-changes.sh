@@ -59,7 +59,9 @@
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>
 #        (--tests: build.sh skips tests by default, and a package built without
-#        them tests as "0 tests, 0 failures" -- see run_build)
+#        them tests as "0 tests, 0 failures" -- see run_build. Independently of
+#        that flag, a package whose CMake cache says BUILD_TESTING=OFF after the
+#        build is reported UNVERIFIED and not tested -- pkgs_built_without_tests)
 #        A test run that TIMES OUT or fails to launch is reported as UNVERIFIED
 #        and blocks (exit 2) -- the colcon test exit code is preserved and
 #        handled explicitly rather than inferred from test-result alone, so a
@@ -1313,6 +1315,37 @@ run_build() {  # $1 = timeout seconds, rest = args for the build command
   timeout "$secs" "$BUILD_CMD" "$@" --tests >"$BUILD_LOG" 2>&1 || BUILD_RC=$?
 }
 
+# Names (of "$@") whose build tree was configured WITHOUT tests.
+#
+# run_build asks for the tests, but the verdict must not rest on every build
+# path remembering to. A package configured with BUILD_TESTING=OFF has nothing
+# for `colcon test` to run, and `colcon test-result` then answers either
+# "0 tests, 0 failures" or from the result files an earlier build left behind
+# -- both of which the branches below read as a pass. So read what the tree
+# says, after the build and before the tests.
+# No CMakeCache.txt (ament_python, or a package this run did not build) says
+# nothing either way and is not reported.
+pkgs_built_without_tests() {
+  local p cache
+  for p in "$@"; do
+    cache="$WORKSPACE/build/$p/CMakeCache.txt"
+    [ -f "$cache" ] || continue
+    if grep -qE '^BUILD_TESTING:[A-Z]*=(OFF|0|FALSE|NO)$' "$cache"; then
+      printf '%s ' "$p"
+    fi
+  done
+}
+
+# The same question for every package of this repo (a top-level directory with
+# a package.xml; the directory name is the package name throughout this repo).
+repo_pkgs_built_without_tests() {
+  local d
+  for d in "$PROJECT_DIR"/*/; do
+    [ -f "${d}package.xml" ] || continue
+    pkgs_built_without_tests "$(basename "$d")"
+  done
+}
+
 # Last lines of a failed build, indented for the report. Backslashes are doubled
 # because the report is emitted with `echo -e`, which would otherwise eat the
 # "\n" inside a compiler-quoted string literal and mangle the very line the
@@ -1583,6 +1616,9 @@ elif [ -n "$PROC3" ]; then
   elif [ "$BUILD_RC" -ne 0 ]; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) FAILED (exit ${BUILD_RC}, rtc_base / rtc_msgs touched):\n$(build_log_tail)\n"
     rm -f "$BUILD_LOG"
+  elif NO_TESTS_PKGS=$(repo_pkgs_built_without_tests); [ -n "$NO_TESTS_PKGS" ]; then
+    rm -f "$BUILD_LOG"
+    TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test NOT RUN — built WITHOUT tests (BUILD_TESTING=OFF in the CMake cache): ${NO_TESTS_PKGS}— UNVERIFIED. 'colcon test' would report 0 tests or stale results for them. Rebuild with './build.sh full --tests'.\n"
   else
     rm -f "$BUILD_LOG"
     # Preserve `colcon test`'s exit code: 124 = timed out, >=125 = could not
@@ -1628,6 +1664,11 @@ else
       continue
     fi
     rm -f "$BUILD_LOG"
+
+    if [ -n "$(pkgs_built_without_tests "$pkg")" ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test NOT RUN — the package is built WITHOUT tests (BUILD_TESTING=OFF in build/${pkg}/CMakeCache.txt) — UNVERIFIED. 'colcon test' would report 0 tests or stale results. Rebuild with './build.sh -p ${pkg} --tests'.\n"
+      continue
+    fi
 
     # Preserve the exit code (see PROC-3 path above): distinguish timeout /
     # launch failure / real test failure instead of inferring from test-result.

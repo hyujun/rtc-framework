@@ -13,10 +13,12 @@
 # -j 는 패키지 수만 줄였다. 물리 16코어 / 32 GB 호스트가 빌드 중 메모리 고갈로
 # 섰다 (무거운 TU 하나가 컴파일러에서 3.5 GB 까지 쓴다).
 #
-# 메모리 상한: build.sh · build_deps.sh 는 빌드를 MemoryMax (기본 RAM 의 75%) +
-# MemorySwapMax=0 이 걸린 systemd user scope 에서 돌리고, scope 가 OOM 으로
-# 정리된 실패를 평범한 빌드 실패와 구별해 알린다. user session 이 없으면 상한
-# 없이 빌드한다. 여기서 systemd-run · systemctl 은 stub 이므로 **cgroup 이 실제로
+# 메모리 상한: build.sh · build_deps.sh 는 빌드를 MemoryMax (기본: RAM 의 75% 와
+# 비어 있는 메모리의 90% 중 작은 쪽) + MemorySwapMax (RAM 의 25%; 직접 준 상한이면
+# 0) 가 걸린 systemd user scope 에서 돌리고, OOM 으로 프로세스를 잃은 실패를 평범한
+# 빌드 실패와 구별해 알린다 — systemd 의 Result 와 cgroup memory.events 양쪽으로.
+# 상한을 걸 수 없으면 이유를 알리고 상한 없이 빌드한다. 모든 knob 은 `-c` 가 트리를
+# 지우기 전에 검증한다. 여기서 systemd-run · systemctl 은 stub 이므로 **cgroup 이 실제로
 # 한도를 강제하는지는 이 파일이 보지 못한다** — 고정하는 것은 넘기는 인자와 분기다.
 #
 # 테스트: 기본은 빌드하지 않는다 (--tests 로 켠다). build.sh 는 -DBUILD_TESTING 을
@@ -218,11 +220,16 @@ exit "\${STUB_COLCON_RC:-0}"
 EOF
   # systemd-run: 받은 줄을 남기고, 실물처럼 `--` 뒤의 명령을 같은 환경으로 exec
   # 한다. `--` 가 없는 호출은 build_mem_scope_prefix 의 probe (`… true`) 다.
-  # STUB_SYSTEMD_RUN_RC≠0 은 user session 이 없는 호스트 (probe 부터 실패).
+  # STUB_SYSTEMD_RUN_RC≠0 은 user session 이 없는 호스트 (첫 probe 부터 실패).
+  # STUB_SYSTEMD_RUN_LIMITS_RC≠0 은 scope 는 만들어지지만 한도가 안 걸리는 호스트
+  # (cgroup v1 · 위임 없음): 한도를 읽어 보는 둘째 probe 만 실패한다.
   cat >"$STUB_BIN/systemd-run" <<EOF
 #!/bin/bash
 echo "\$*" >>"$SDRUN_LOG"
 [[ "\${STUB_SYSTEMD_RUN_RC:-0}" -ne 0 ]] && exit "\${STUB_SYSTEMD_RUN_RC}"
+if [[ "\${STUB_SYSTEMD_RUN_LIMITS_RC:-0}" -ne 0 && "\$*" == *MemoryMax=* && " \$* " != *" -- "* ]]; then
+  exit "\${STUB_SYSTEMD_RUN_LIMITS_RC}"
+fi
 while [[ \$# -gt 0 ]]; do
   if [[ "\$1" == "--" ]]; then shift; exec "\$@"; fi
   shift
@@ -514,11 +521,26 @@ mem_max_with() {  # $1=RTC_BUILD_MEM_MAX ("" = 미설정) $2=meminfo 경로
   echo "rc=${rc} out=${out}"
 }
 
-test_mem_max_default_is_three_quarters_of_ram() {
+write_meminfo_avail() {  # $1=path $2=MemTotal kB $3=MemAvailable kB
+  printf 'MemTotal:       %s kB\nMemFree:         1234 kB\nMemAvailable:   %s kB\n' "$2" "$3" >"$1"
+}
+
+test_mem_max_default_is_bounded_by_ram_and_by_what_is_free() {
   local meminfo="$TMP/meminfo_cap"
+  # MemAvailable 을 못 읽으면 MemTotal 의 75% 만 본다.
   write_meminfo "$meminfo" 32770940  # 개발 PC 의 실제 MemTotal
-  expect_eq "32 GB host" "rc=0 out=24002M" "$(mem_max_with "" "$meminfo")"
-  # 메모리를 못 읽으면 상한을 지어내지 않는다 (0M 같은 값은 빌드를 즉시 죽인다).
+  expect_eq "32 GB host, no MemAvailable" "rc=0 out=24002M" "$(mem_max_with "" "$meminfo")"
+  # 거의 빈 호스트: 75% 쪽이 작다.
+  write_meminfo_avail "$meminfo" 32770940 31000000
+  expect_eq "idle host -> 75% of RAM" "rc=0 out=24002M" "$(mem_max_with "" "$meminfo")"
+  # sim · IDE 가 10 GB 를 쓰는 호스트: 비어 있는 22 GB 의 90% 가 작다. RAM 의 75% 를
+  # 약속하면 scope 한도에 닿기 전에 호스트가 먼저 swap 에 빠진다.
+  write_meminfo_avail "$meminfo" 32770940 22000000
+  expect_eq "busy host -> 90% of free" "rc=0 out=19335M" "$(mem_max_with "" "$meminfo")"
+  # 거의 다 찬 호스트에서도 0 이나 한 자리 수 상한을 만들지 않는다.
+  write_meminfo_avail "$meminfo" 32770940 100000
+  expect_eq "full host -> floor" "rc=0 out=256M" "$(mem_max_with "" "$meminfo")"
+  # 메모리를 못 읽으면 상한을 지어내지 않는다.
   expect_eq "unreadable meminfo" "rc=0 out=" "$(mem_max_with "" "$TMP/does_not_exist")"
   # … 그리고 `set -e` 인 caller (build.sh) 를 죽이지도 않는다. 위 mem_max_with 는
   # `||` 의 왼쪽이라 errexit 가 꺼져 있어 이 경로를 보지 못한다.
@@ -529,33 +551,76 @@ test_mem_max_default_is_three_quarters_of_ram() {
 test_mem_max_knob() {
   local meminfo="$TMP/meminfo_cap" v
   write_meminfo "$meminfo" 32770940
-  for v in 12G 20000M 60% 8589934592; do
+  for v in 12G 20000M 2T 60% 100% 64M; do
     expect_eq "accepts '$v'" "rc=0 out=$v" "$(mem_max_with "$v" "$meminfo")"
   done
   for v in 0 off none; do
     expect_eq "'$v' turns it off" "rc=0 out=" "$(mem_max_with "$v" "$meminfo")"
   done
+  # 형태가 틀린 것.
   for v in banana 12GB -4G 1.5G "12 G" "%"; do
     expect_eq "rejects '$v'" "rc=2 out=" "$(mem_max_with "$v" "$meminfo")"
   done
+  # 형태는 systemd 가 받지만 상한으로 쓸 수 없는 것. 이전에는 통과했고, probe 가
+  # OOM 으로 죽어 "user session 없음" 으로 오진된 채 상한 없이 빌드됐다:
+  #   24 / 8589934592 — 단위 없는 수는 바이트다 (`24` = 24 바이트)
+  #   64K · 1M · 63M  — colcon 은커녕 probe 도 못 버틴다
+  #   150% · 0%       — 물리 메모리를 넘거나 0
+  for v in 24 8589934592 64K 1M 63M 150% 101% 0%; do
+    expect_eq "rejects unusable '$v'" "rc=2 out=" "$(mem_max_with "$v" "$meminfo")"
+  done
 }
 
-# 가짜 워크스페이스의 기본 상한: MemTotal 8195670 kB (공칭 8 GB) 의 75%.
+test_swap_allowance() {
+  local meminfo="$TMP/meminfo_cap"
+  write_meminfo "$meminfo" 32770940
+  # 기본 상한에는 RAM 의 25% 만큼 swap 이 따른다 — RAM 이 작은 호스트의 기본 빌드가
+  # 성립하려면 필요하다 (4 GB: 상한 3 GB, 최악 TU 3.5 GB).
+  expect_eq "default cap -> 25% of RAM as swap" "8000M" \
+    "$(RTC_BUILD_MEM_MAX="" RTC_PROC_MEMINFO="$meminfo" get_build_swap_max)"
+  # 직접 준 상한은 그 값이 전부다.
+  expect_eq "explicit cap is strict" "0" \
+    "$(RTC_BUILD_MEM_MAX=12G RTC_PROC_MEMINFO="$meminfo" get_build_swap_max)"
+  expect_eq "unreadable meminfo" "0" \
+    "$(RTC_BUILD_MEM_MAX="" RTC_PROC_MEMINFO="$TMP/does_not_exist" get_build_swap_max)"
+  # 4 GB 호스트: RAM 상한 + swap 허용이 최악 TU (3.5 GB = 3584 MB) 를 담는다.
+  write_meminfo "$meminfo" "$(nominal_gb_kb 4)"
+  local cap swap
+  cap="$(RTC_BUILD_MEM_MAX="" RTC_PROC_MEMINFO="$meminfo" get_build_mem_max)"
+  swap="$(RTC_BUILD_MEM_MAX="" RTC_PROC_MEMINFO="$meminfo" get_build_swap_max)"
+  expect_eq "4 GB host cap" "3001M" "$cap"
+  expect_eq "4 GB host swap" "1000M" "$swap"
+  if (( ${cap%M} + ${swap%M} >= 3584 )); then pass; else fail "[4 GB host] ${cap} + ${swap} cannot hold the worst TU"; fi
+}
+
+test_normalize_on_off() {
+  local v
+  for v in on ON On 1 true TRUE yes; do expect_eq "'$v' is on" on "$(normalize_on_off "$v")"; done
+  for v in off OFF 0 false no No; do expect_eq "'$v' is off" off "$(normalize_on_off "$v")"; done
+  for v in maybe "" 2 onn; do
+    if normalize_on_off "$v" >/dev/null; then fail "[normalize] accepted '$v'"; else pass; fi
+  done
+}
+
+# 가짜 워크스페이스의 기본 상한: MemTotal 8195670 kB (공칭 8 GB) 의 75% — 그
+# meminfo 에는 MemAvailable 이 없다 — 와 25% 의 swap 허용.
 FAKE_WS_CAP="6002M"
+FAKE_WS_SWAP="2000M"
 
 run_build_capped() {  # run_build 와 같되 systemd 쪽 기록도 지운다.
   rm -f "$SDRUN_LOG" "$SYSTEMCTL_LOG"
   run_build "$@"
 }
 # colcon 을 감싼 systemd-run 호출 (probe 가 아닌 것) 한 줄.
-logged_scope_line() { grep -- ' -- colcon build' "$SDRUN_LOG" 2>/dev/null || true; }
+# 명령은 OOM 수를 남기는 얇은 sh 를 거치므로 `-- sh -c <wrapper> <파일> colcon build …`.
+logged_scope_line() { grep -- '--unit=rtc-build-.* colcon build' "$SDRUN_LOG" 2>/dev/null || true; }
 
 test_build_runs_colcon_inside_a_memory_scope() {
   local line
   expect_eq "rc" 0 "$(run_build_capped --)"
   line="$(logged_scope_line)"
   case "$line" in
-    "--user --scope --quiet --unit=rtc-build-"*" -p MemoryMax=${FAKE_WS_CAP} -p MemorySwapMax=0 -- colcon build "*) pass ;;
+    "--user --scope --quiet --unit=rtc-build-"*" -p MemoryMax=${FAKE_WS_CAP} -p MemorySwapMax=${FAKE_WS_SWAP} -- sh -c "*" colcon build "*) pass ;;
     *) fail "[scope line] got '$line'" ;;
   esac
   # scope 안에서도 colcon 은 같은 인자와 환경을 받는다.
@@ -566,7 +631,7 @@ test_build_runs_colcon_inside_a_memory_scope() {
 test_build_memory_cap_knob() {
   expect_eq "rc" 0 "$(run_build_capped RTC_BUILD_MEM_MAX=12G --)"
   case "$(logged_scope_line)" in
-    *" -p MemoryMax=12G -p MemorySwapMax=0 -- colcon build "*) pass ;;
+    *" -p MemoryMax=12G -p MemorySwapMax=0 -- sh -c "*" colcon build "*) pass ;;
     *) fail "[cap knob] got '$(logged_scope_line)'" ;;
   esac
 
@@ -583,13 +648,23 @@ test_build_without_user_session_builds_uncapped() {
   expect_eq "rc" 0 "$(run_build_capped STUB_SYSTEMD_RUN_RC=1 --)"
   expect_eq "colcon ran" pkg_a "$(logged_arg_after --packages-select)"
   expect_eq "only the probe reached systemd-run" "" "$(logged_scope_line)"
-  if grep -q "Memory cap unavailable" "$TMP/build.out"; then pass; else fail "[no session] no warning"; fi
+  if grep -q "Memory cap: unavailable — no systemd user session" "$TMP/build.out"; then pass; else fail "[no session] no warning"; fi
+
+  # scope 는 만들어지지만 한도가 안 걸리는 호스트: 같은 결과, 다른 진단.
+  expect_eq "rc" 0 "$(run_build_capped STUB_SYSTEMD_RUN_LIMITS_RC=1 --)"
+  expect_eq "colcon ran" pkg_a "$(logged_arg_after --packages-select)"
+  expect_eq "not wrapped either" "" "$(logged_scope_line)"
+  if grep -q "Memory cap: unavailable — this host does not enforce it" "$TMP/build.out"; then
+    pass
+  else
+    fail "[not enforced] wrong or missing diagnosis: $(grep 'Memory cap' "$TMP/build.out")"
+  fi
 }
 
 test_build_reports_oom_distinctly() {
   # scope 가 OOM 으로 정리된 실패 — 원인과 두 knob 을 말한다.
   expect_eq "oom rc" 1 "$(run_build_capped STUB_COLCON_RC=143 STUB_SCOPE_RESULT=oom-kill --)"
-  if grep -q "Build stopped: it needed more than the ${FAKE_WS_CAP} memory cap" "$TMP/build.out"; then
+  if grep -q "Build stopped: it needed more than the memory cap (${FAKE_WS_CAP} RAM + ${FAKE_WS_SWAP} swap)" "$TMP/build.out"; then
     pass
   else
     fail "[oom message] $(tail -2 "$TMP/build.out")"
@@ -601,10 +676,92 @@ test_build_reports_oom_distinctly() {
   if grep -q "Build failed" "$TMP/build.out"; then pass; else fail "[plain failure] no message"; fi
 }
 
+test_build_detects_oom_without_systemd_s_verdict() {
+  # systemd 253 미만 (Ubuntu 22.04 는 249) 은 scope 에 OOMPolicy 가 없다: OOM 이 나도
+  # scope 는 계속 돌고 Result 는 oom-kill 이 되지 않으며 make 가 실패로 끝난다. 그
+  # 호스트에서 OOM 을 아는 길은 scope cgroup 의 memory.events 뿐이다.
+  local events="$TMP/memory.events"
+  printf 'low 0\nhigh 0\nmax 41\noom 3\noom_kill 3\n' >"$events"
+  expect_eq "oom rc" 1 "$(run_build_capped STUB_COLCON_RC=2 STUB_SCOPE_RESULT=success \
+    "RTC_BUILD_CGROUP_EVENTS=$events" "TMPDIR=$TMP" --)"
+  if grep -q "Build stopped: it needed more than the memory cap" "$TMP/build.out"; then
+    pass
+  else
+    fail "[oom via memory.events] $(tail -1 "$TMP/build.out")"
+  fi
+  # 한도에 닿았지만 (max 41) 아무도 죽지 않은 빌드의 실패는 메모리 탓이 아니다.
+  printf 'low 0\nhigh 0\nmax 41\noom 0\noom_kill 0\n' >"$events"
+  expect_eq "plain rc" 1 "$(run_build_capped STUB_COLCON_RC=2 STUB_SCOPE_RESULT=success \
+    "RTC_BUILD_CGROUP_EVENTS=$events" "TMPDIR=$TMP" --)"
+  if grep -q "Build stopped" "$TMP/build.out"; then fail "[oom_kill 0] blamed memory"; else pass; fi
+  # 성공한 빌드도 실패한 빌드도 기록 파일을 남기지 않는다.
+  expect_eq "rc" 0 "$(run_build_capped "RTC_BUILD_CGROUP_EVENTS=$events" "TMPDIR=$TMP" --)"
+  expect_eq "no record file left behind" "" "$(find "$TMP" -maxdepth 1 -name 'rtc-build-*.oom')"
+}
+
+test_build_refuses_bad_knobs_before_touching_the_tree() {
+  # `-c` 는 build/ install/ log/ 를 지운다. 쓸 수 없는 knob 은 그 전에 거부해야
+  # 한다 — 이전에는 트리를 지운 뒤에 "must be on or off" 로 끝났다.
+  local marker="$FAKE_WS/build/marker" label
+  local -a bad
+  for label in "RTC_BUILD_TESTS=maybe" "RTC_CCACHE=maybe" "RTC_BUILD_MEM_MAX=24GB" \
+    "RTC_BUILD_MEM_MAX=24" "RTC_BUILD_JOBS=0"; do
+    mkdir -p "$FAKE_WS/build" "$FAKE_WS/install"
+    : >"$marker"
+    bad=("$label")
+    expect_eq "$label with -c: rc" 1 "$(run_build "${bad[@]}" -- -c)"
+    if [[ -e "$marker" ]]; then pass; else fail "[$label] -c deleted the build tree before refusing"; fi
+    if [[ -e "$COLCON_LOG" ]]; then fail "[$label] colcon was invoked"; else pass; fi
+  done
+  if ! PATH="$STUB_BIN:/usr/bin:/bin" command -v ccache >/dev/null; then
+    mkdir -p "$FAKE_WS/build"
+    : >"$marker"
+    expect_eq "--ccache without ccache, with -c: rc" 1 "$(run_build -- -c --ccache)"
+    if [[ -e "$marker" ]]; then pass; else fail "[--ccache] -c deleted the build tree before refusing"; fi
+  fi
+  # 양성 대조: knob 이 멀쩡하면 -c 는 실제로 지운다 (그래야 위 단언이 뜻을 갖는다).
+  mkdir -p "$FAKE_WS/build"
+  : >"$marker"
+  expect_eq "valid knobs with -c: rc" 0 "$(run_build RTC_BUILD_TESTS=ON -- -c)"
+  if [[ -e "$marker" ]]; then fail "[-c] did not clean the build tree"; else pass; fi
+  expect_eq "RTC_BUILD_TESTS=ON is accepted" ON "$(logged_build_testing)"
+}
+
+test_build_says_where_the_job_count_came_from() {
+  # 이전 defaults.yaml 주석을 따라 `export MAKEFLAGS=-j2` 를 넣어 둔 셸: 그 값은
+  # 존중하되, 이제 패키지가 하나씩 빌드되므로 조용히 느려지지 않게 알린다.
+  local want
+  want="$(expected_default_jobs)"
+  expect_eq "rc" 0 "$(run_build MAKEFLAGS=-j3 --)"
+  if grep -q "make -j3 (MAKEFLAGS) — from MAKEFLAGS in your environment; this host's default is -j${want}" "$TMP/build.out"; then
+    pass
+  else
+    fail "[jobs note] $(grep Parallelism "$TMP/build.out")"
+  fi
+  # setup_env.sh 가 넣은 기본값과 같으면 말하지 않는다.
+  expect_eq "rc" 0 "$(run_build --)"
+  if grep -q "from MAKEFLAGS in your environment" "$TMP/build.out"; then
+    fail "[jobs note] shown for the default: $(grep Parallelism "$TMP/build.out")"
+  else
+    pass
+  fi
+  expect_eq "rc" 0 "$(run_build -- -j 9)"
+  if grep -q "make -j9 (-j)" "$TMP/build.out"; then pass; else fail "[jobs source -j] $(grep Parallelism "$TMP/build.out")"; fi
+}
+
+test_build_silences_unused_variable_warnings() {
+  # 한 인자 묶음이 모든 패키지에 가므로, C/C++ target 이 없는 패키지는 reconfigure
+  # 마다 "Manually-specified variables were not used" 를 stderr 로 낸다. colcon 의
+  # --cmake-args 는 옵션처럼 생긴 값 앞에 공백을 요구한다.
+  expect_eq "rc" 0 "$(run_build --)"
+  if grep -qx 'ARG= --no-warn-unused-cli' "$COLCON_LOG"; then pass; else fail "[unused cli] flag not passed"; fi
+}
+
 test_build_deps_runs_each_dep_inside_a_memory_scope() {
   rm -f "$SDRUN_LOG"
   expect_eq "rc" 0 "$(run_deps)"
-  expect_eq "three capped builds" 3 "$(grep -c -- "-p MemoryMax=${FAKE_WS_CAP} -p MemorySwapMax=0 -- cmake --build" "$SDRUN_LOG")"
+  expect_eq "three capped builds" 3 \
+    "$(grep -c -- "-p MemoryMax=${FAKE_WS_CAP} -p MemorySwapMax=${FAKE_WS_SWAP} -- sh -c .* cmake --build" "$SDRUN_LOG")"
   expect_eq "builds still ran" 3 "$(grep -c '^cmake --build' "$CMAKE_LOG")"
   rm -f "$SDRUN_LOG"
   expect_eq "bad cap" 1 "$(run_deps RTC_BUILD_MEM_MAX=banana)"
@@ -624,16 +781,18 @@ test_host_summary_reports_what_is_missing() {
   local out
   out="$(host_summary)"
   case "$out" in *"make -j$(expected_default_jobs) by default"*) pass ;; *) fail "[summary jobs] $out" ;; esac
-  case "$out" in *"Memory cap: available, ${FAKE_WS_CAP}"*) pass ;; *) fail "[summary cap] $out" ;; esac
+  case "$out" in *"Memory cap: ${FAKE_WS_CAP} RAM + ${FAKE_WS_SWAP} swap"*) pass ;; *) fail "[summary cap] $out" ;; esac
   case "$out" in *"rc=0") pass ;; *) fail "[summary rc] $out" ;; esac
 
   # user session 이 없는 호스트 — 빌드는 되지만 상한이 없다는 것을 말한다.
   out="$(host_summary STUB_SYSTEMD_RUN_RC=1)"
-  case "$out" in *"Memory cap: NOT available"*"rc=0") pass ;; *) fail "[summary no session] $out" ;; esac
+  case "$out" in *"Memory cap: unavailable — no systemd user session"*"rc=0") pass ;; *) fail "[summary no session] $out" ;; esac
+  out="$(host_summary STUB_SYSTEMD_RUN_LIMITS_RC=1)"
+  case "$out" in *"Memory cap: unavailable — this host does not enforce it"*"rc=0") pass ;; *) fail "[summary not enforced] $out" ;; esac
 
   # 틀린 knob 도 보고만 하고 설치를 멈추지 않는다 (build.sh 가 거부한다).
   out="$(host_summary RTC_BUILD_MEM_MAX=banana)"
-  case "$out" in *"RTC_BUILD_MEM_MAX='banana' is not a size"*"rc=0") pass ;; *) fail "[summary bad cap] $out" ;; esac
+  case "$out" in *"RTC_BUILD_MEM_MAX='banana' is not a usable size"*"rc=0") pass ;; *) fail "[summary bad cap] $out" ;; esac
 
   mkdir -p "$CCACHE_DIR_STUB"
   printf '#!/bin/bash\nexit 0\n' >"$CCACHE_DIR_STUB/ccache"
@@ -721,12 +880,18 @@ test_build_ccache_can_be_turned_off
 test_build_deps_uses_the_same_knob
 test_build_deps_rejects_bad_jobs_before_cmake
 
-test_mem_max_default_is_three_quarters_of_ram
+test_mem_max_default_is_bounded_by_ram_and_by_what_is_free
 test_mem_max_knob
+test_swap_allowance
+test_normalize_on_off
 test_build_runs_colcon_inside_a_memory_scope
 test_build_memory_cap_knob
 test_build_without_user_session_builds_uncapped
 test_build_reports_oom_distinctly
+test_build_detects_oom_without_systemd_s_verdict
+test_build_refuses_bad_knobs_before_touching_the_tree
+test_build_says_where_the_job_count_came_from
+test_build_silences_unused_variable_warnings
 test_build_deps_runs_each_dep_inside_a_memory_scope
 
 test_host_summary_reports_what_is_missing

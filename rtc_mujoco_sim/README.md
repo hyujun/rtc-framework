@@ -1227,7 +1227,7 @@ colcon build --packages-select rtc_mujoco_sim --symlink-install \
 ### Coverage (gcov/lcov)
 
 ```bash
-colcon build --packages-select rtc_mujoco_sim --cmake-args -DENABLE_COVERAGE=ON
+colcon build --packages-select rtc_mujoco_sim --cmake-args -DENABLE_COVERAGE=ON -DBUILD_TESTING=ON
 ```
 
 `mujoco_simulator_lib` + 전체 테스트를 `--coverage -fprofile-arcs -ftest-coverage`로 계측 (기본 `OFF`).
@@ -1237,7 +1237,7 @@ colcon build --packages-select rtc_mujoco_sim --cmake-args -DENABLE_COVERAGE=ON
 ## Testing
 
 ```bash
-./build.sh -p rtc_mujoco_sim sim
+./build.sh --tests -p rtc_mujoco_sim sim
 colcon test --packages-select rtc_mujoco_sim --event-handlers console_direct+
 colcon test-result --verbose
 ```

@@ -1713,5 +1713,57 @@ else
 fi
 rm -rf "$dir" "$bstub" "$tstub"
 
+# 61. A package that was built WITHOUT tests is UNVERIFIED, whatever the test
+#     command answers. build.sh skips tests by default since 2026-10-01, and
+#     `colcon test` on such a tree reports "0 tests" or the result files of an
+#     earlier build -- a pass either way. run_build passes --tests, but the
+#     verdict reads the tree itself (BUILD_TESTING in the CMake cache), so a
+#     build path that forgets the flag cannot turn into a green.
+#     The fixture sits at <ws>/src/repo so the hook's workspace (two levels up)
+#     is a directory this test owns.
+ws=$(mktemp -d)
+mkdir -p "$ws/src" "$ws/build/rtc_demo"
+dir=$(make_fixture)
+mv "$dir" "$ws/src/repo"
+dir="$ws/src/repo"
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+echo 'BUILD_TESTING:BOOL=OFF' >"$ws/build/rtc_demo/CMakeCache.txt"
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a package built without tests blocks the turn" "$rc" 2
+expect_contains "built-without-tests is named as the reason" "$out" "rtc_demo: colcon test NOT RUN — the package is built WITHOUT tests"
+expect_contains "built-without-tests is UNVERIFIED, not a failure of the code" "$out" "UNVERIFIED"
+if [ "$(calls "$count")" = 0 ]; then pass "a package built without tests is not tested"; else fail "the test command ran $(calls "$count") times over a tree with no tests"; fi
+# 61b. The same tree with the tests built is graded normally.
+echo 'BUILD_TESTING:BOOL=ON' >"$ws/build/rtc_demo/CMakeCache.txt"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the same change passes once the tests are built" "$rc" 0
+if [ "$(calls "$count")" = 1 ]; then pass "a package built with tests is tested"; else fail "the test command ran $(calls "$count") times"; fi
+# 61c. An untyped cache entry (a project that never declares the option) and
+#      the other spellings of "off" count too.
+for entry in 'BUILD_TESTING:UNINITIALIZED=OFF' 'BUILD_TESTING:BOOL=0' 'BUILD_TESTING:STRING=FALSE'; do
+  echo "$entry" >"$ws/build/rtc_demo/CMakeCache.txt"
+  echo "int existing() { return ${#entry}; }" >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+  expect_exit "'$entry' blocks" "$rc" 2
+done
+# 61d. No cache at all (ament_python, or the build seam of this suite) says
+#      nothing and does not block -- every earlier green case relies on that.
+rm -f "$ws/build/rtc_demo/CMakeCache.txt"
+echo 'int existing() { return 7; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a package with no CMake cache is graded by its tests" "$rc" 0
+# 61e. The PROC-3 path asks the same question of every package of the repo
+#      before its workspace-wide `colcon test`.
+add_rtc_base "$dir"
+echo 'BUILD_TESTING:BOOL=OFF' >"$ws/build/rtc_demo/CMakeCache.txt"
+echo 'int base_fn() { return 1; }' >"$dir/rtc_base/src/base.cpp"
+out=$(run_hook_build "$dir" "$bstub"); rc=$?
+expect_exit "PROC-3 over a tree built without tests blocks" "$rc" 2
+expect_contains "PROC-3 names the packages built without tests" "$out" "PROC-3 broad test NOT RUN — built WITHOUT tests (BUILD_TESTING=OFF in the CMake cache): rtc_demo"
+rm -rf "$ws" "$bstub" "$tstub" "$count"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

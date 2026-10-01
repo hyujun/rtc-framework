@@ -401,7 +401,7 @@ clangd --check=integrated_bringup/src/controllers/wbc/compute.cpp
 | `colcon: Build All (Release)` | 전체 Release 빌드 |
 | `colcon: Build Selected Package` | `build.sh -p <pkg>`로 단일 패키지 빌드 (드롭다운 선택) |
 | `colcon: Build Sim` / `Build Robot` | `build.sh sim` / `robot` |
-| `colcon: Test All` / `Test Selected Package` | 전체 또는 단일 패키지 테스트 (`console_direct+`) |
+| `colcon: Test All` / `Test Selected Package` | 전체 또는 단일 패키지 테스트 (`console_direct+`). 테스트는 기본 빌드에 없다 — 먼저 `./build.sh -d --tests -p <pkg>` 로 빌드하지 않으면 실패가 아니라 테스트 0개가 보고된다 |
 | `rtc: Merge compile_commands.json` | 병합만 수동 실행 |
 | `rtc: Clean Build Artifacts` | `rm -rf build install log` |
 | `rtc: Check RT Setup` | `repo_scripts/scripts/check_rt_setup.sh --summary` |

@@ -83,8 +83,10 @@ show_help() {
   echo "  RTC_BUILD_TESTS=on|off     Same as --tests / --no-tests; default off. A development shell"
   echo "                             can export on to build tests on every ./build.sh"
   echo "  RTC_CCACHE=auto|on|off     Same as --ccache (on) / --no-ccache (off); default auto"
-  echo "  RTC_BUILD_MEM_MAX=<size>   Memory cap for the build: 24G, 20000M, 60%, or off."
-  echo "                             Default 75% of RAM. Past it the build is stopped, not the host"
+  echo "  RTC_BUILD_MEM_MAX=<size>   Memory cap for the build: 24G, 20000M, 60%, or off (strict:"
+  echo "                             no swap). Default: the smaller of 75% of RAM and 90% of what"
+  echo "                             is free now, plus swap worth 25% of RAM. Past it the build is"
+  echo "                             stopped, not the host"
   echo ""
   echo "Examples:"
   echo "  ./build.sh robot"
@@ -151,6 +153,47 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ── Preflight: every knob is resolved before anything is touched ──────────────
+# Further down -c deletes build/ install/ log/ and the CPU shield is released. A
+# knob that turned out to be unusable only after that (RTC_BUILD_TESTS=maybe,
+# --ccache without ccache, RTC_BUILD_MEM_MAX=24GB) left a workspace with no
+# install tree and no build. Everything that can be refused is refused here;
+# the sections below only use the results.
+BUILD_TESTS="$(normalize_on_off "$BUILD_TESTS")" \
+  || error "RTC_BUILD_TESTS must be on or off (got '${RTC_BUILD_TESTS:-}')"
+
+CCACHE_BIN=""
+USE_CCACHE="${USE_CCACHE,,}"
+case "$USE_CCACHE" in
+  on)
+    CCACHE_BIN="$(command -v ccache || true)"
+    [[ -n "$CCACHE_BIN" ]] || error "--ccache: ccache is not installed (sudo apt install ccache)"
+    ;;
+  auto) CCACHE_BIN="$(command -v ccache || true)" ;;
+  off) ;;
+  *) error "RTC_CCACHE must be auto, on or off (got '${RTC_CCACHE:-}')" ;;
+esac
+
+# Where the job count comes from, for the Parallelism line: a -j left in
+# MAKEFLAGS by the user's own shell rc is honoured, and should not be silent
+# when it differs from what this host would get.
+if [[ -n "$PARALLEL_JOBS" ]]; then
+  JOBS_SOURCE="-j"
+elif [[ -n "${RTC_BUILD_JOBS:-}" ]]; then
+  JOBS_SOURCE="RTC_BUILD_JOBS"
+elif makeflags_has_jobs "${MAKEFLAGS:-}"; then
+  JOBS_SOURCE="MAKEFLAGS"
+else
+  JOBS_SOURCE="default"
+fi
+MAKEFLAGS="$(resolve_build_makeflags "$PARALLEL_JOBS")" \
+  || error "RTC_BUILD_JOBS must be a positive integer (got '${RTC_BUILD_JOBS:-}')"
+export MAKEFLAGS
+BUILD_JOBS="$(makeflags_get_jobs "$MAKEFLAGS")"
+
+get_build_mem_max >/dev/null \
+  || error "RTC_BUILD_MEM_MAX must be a size like 24G / 20000M / 60% (at least 64M), or 'off' (got '${RTC_BUILD_MEM_MAX:-}')"
 
 # ── MuJoCo path resolution ─────────────────────────────────────────────────────
 # sim/full 모드에서 --mujoco 미지정 시 기본 경로 자동 탐색
@@ -243,7 +286,13 @@ if [[ "$CLEAN_BUILD" -eq 1 ]]; then
   success "Clean complete"
 fi
 
-CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
+# --no-warn-unused-cli: this script passes ONE argument set to packages that do
+# not all use every variable — a package with no C/C++ target never reads the
+# compiler launcher, a message-only package never reads mujoco_ROOT — and CMake
+# answers each with "Manually-specified variables were not used" on stderr at
+# every reconfigure. The leading space is colcon's rule for --cmake-args values
+# that look like options.
+CMAKE_ARGS=(" --no-warn-unused-cli" "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
 
 # ── Tests: not built unless asked ─────────────────────────────────────────────
 # More than half the compile time is test code, and a host that only runs the
@@ -252,17 +301,13 @@ CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
 # explicit build chose. With OFF, `colcon test` reports zero tests for these
 # packages — which reads as green — so whatever tests must build with --tests
 # first (the Stop hook does).
-case "$BUILD_TESTS" in
-  on)
-    CMAKE_ARGS+=("-DBUILD_TESTING=ON")
-    info "Tests: built (--tests)"
-    ;;
-  off)
-    CMAKE_ARGS+=("-DBUILD_TESTING=OFF")
-    info "Tests: NOT built (default) — build with --tests before 'colcon test'"
-    ;;
-  *) error "RTC_BUILD_TESTS must be on or off (got '${BUILD_TESTS}')" ;;
-esac
+if [[ "$BUILD_TESTS" == on ]]; then
+  CMAKE_ARGS+=("-DBUILD_TESTING=ON")
+  info "Tests: built (--tests)"
+else
+  CMAKE_ARGS+=("-DBUILD_TESTING=OFF")
+  info "Tests: NOT built (default) — build with --tests before 'colcon test'"
+fi
 if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
   CMAKE_ARGS+=("-Dmujoco_ROOT=${MJ_DIR}")
   info "MuJoCo root path: ${MJ_DIR}"
@@ -286,16 +331,7 @@ info "CMake Python: ${CMAKE_PYTHON}"
 # tree configured with ccache would keep calling it after --no-ccache, or after
 # ccache was uninstalled (and then fail with "ccache: not found"). The absolute
 # path is passed so later builds do not depend on PATH.
-CCACHE_BIN=""
-case "$USE_CCACHE" in
-  on)
-    CCACHE_BIN="$(command -v ccache || true)"
-    [[ -n "$CCACHE_BIN" ]] || error "--ccache: ccache is not installed (sudo apt install ccache)"
-    ;;
-  auto) CCACHE_BIN="$(command -v ccache || true)" ;;
-  off) ;;
-  *) error "RTC_CCACHE must be auto, on or off (got '${USE_CCACHE}')" ;;
-esac
+# (CCACHE_BIN was resolved in the preflight.)
 CMAKE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=${CCACHE_BIN}" "-DCMAKE_CXX_COMPILER_LAUNCHER=${CCACHE_BIN}")
 if [[ -n "$CCACHE_BIN" ]]; then
   info "ccache: ${CCACHE_BIN}"
@@ -328,24 +364,33 @@ fi
 # Splitting the same budget over two packages (2 × j/2) was not measurably
 # faster on a clean build and far slower for the single-package rebuilds this
 # script mostly does.
-MAKEFLAGS="$(resolve_build_makeflags "$PARALLEL_JOBS")" \
-  || error "RTC_BUILD_JOBS must be a positive integer (got '${RTC_BUILD_JOBS:-}')"
-export MAKEFLAGS
+# (MAKEFLAGS and BUILD_JOBS were resolved in the preflight.)
 COLCON_ARGS+=("--parallel-workers" "1")
-BUILD_JOBS="$(makeflags_get_jobs "$MAKEFLAGS")"
-info "Parallelism: 1 package at a time, make -j${BUILD_JOBS:-<unlimited>} (MAKEFLAGS='${MAKEFLAGS}')"
+JOBS_NOTE=""
+if [[ "$JOBS_SOURCE" == "MAKEFLAGS" ]]; then
+  # setup_env.sh exports the default into MAKEFLAGS, so "from MAKEFLAGS" is only
+  # worth saying when the value is not the one this host would get anyway.
+  DEFAULT_JOBS="$(get_default_build_jobs)"
+  if [[ "$BUILD_JOBS" == "$DEFAULT_JOBS" ]]; then
+    JOBS_SOURCE="default"
+  else
+    JOBS_NOTE=" — from MAKEFLAGS in your environment; this host's default is -j${DEFAULT_JOBS}"
+  fi
+fi
+info "Parallelism: 1 package at a time, make -j${BUILD_JOBS:-<unlimited>} (${JOBS_SOURCE})${JOBS_NOTE}"
 
 # ── Memory cap: the build may fail, the host may not ──────────────────────────
 # The job count sizes the build for the typical TU; this bounds the worst case.
-# colcon runs inside a systemd user scope with MemoryMax (default 75% of RAM,
-# RTC_BUILD_MEM_MAX to change or turn off) and no swap, so crossing the limit
+# colcon runs inside a systemd user scope with MemoryMax — by default the
+# smaller of 75% of RAM and 90% of what is free right now, plus swap worth 25%
+# of RAM; RTC_BUILD_MEM_MAX to set it or turn it off — so crossing the limit
 # ends this build instead of the session (rt_common.sh build_mem_scope_prefix).
 build_mem_scope_prefix \
-  || error "RTC_BUILD_MEM_MAX must be a size like 24G / 20000M / 60%, or 'off' (got '${RTC_BUILD_MEM_MAX:-}')"
+  || error "RTC_BUILD_MEM_MAX is not usable (got '${RTC_BUILD_MEM_MAX:-}')"
 if [[ -n "$BUILD_MEM_SCOPE_UNIT" ]]; then
-  info "Memory cap: ${BUILD_MEM_SCOPE_MAX} (RTC_BUILD_MEM_MAX; the build is stopped if it needs more)"
+  info "Memory cap: $(describe_build_mem_scope) (RTC_BUILD_MEM_MAX; the build is stopped if it needs more)"
 elif [[ -n "$BUILD_MEM_SCOPE_MAX" ]]; then
-  warn "Memory cap unavailable — no systemd user session here; building without one"
+  warn "Memory cap: $(describe_build_mem_scope); building without one"
 else
   info "Memory cap: off"
 fi
@@ -366,9 +411,10 @@ COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
 
 BUILD_RC=0
 "${BUILD_MEM_SCOPE_PREFIX[@]}" colcon build "${COLCON_ARGS[@]}" || BUILD_RC=$?
+build_mem_scope_end
 if [[ "$BUILD_RC" -ne 0 ]]; then
-  if build_mem_scope_oom_killed; then
-    error "Build stopped: it needed more than the ${BUILD_MEM_SCOPE_MAX} memory cap at make -j${BUILD_JOBS:-?}. Lower the job count (./build.sh -j N) or raise the cap (RTC_BUILD_MEM_MAX=<size>|off)."
+  if [[ "$BUILD_MEM_SCOPE_OOM" -eq 1 ]]; then
+    error "Build stopped: it needed more than the memory cap (${BUILD_MEM_SCOPE_MAX} RAM + ${BUILD_MEM_SCOPE_SWAP} swap) at make -j${BUILD_JOBS:-?}. Free memory on this host, lower the job count (./build.sh -j N), or set the cap yourself (RTC_BUILD_MEM_MAX=<size>|off)."
   fi
   error "Build failed!"
 fi

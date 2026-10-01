@@ -193,7 +193,7 @@ ros2 action send_goal /shape/explore shape_estimation_msgs/action/ExploreShape \
 
 ```bash
 cd ~/ros2_ws/rtc_ws
-./build.sh -p shape_estimation
+./build.sh --tests -p shape_estimation
 colcon test --packages-select shape_estimation
 ```
 

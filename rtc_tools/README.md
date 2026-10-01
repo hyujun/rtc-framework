@@ -1187,6 +1187,7 @@ def launch_setup(context):
 `rtc_tools/test/` 에 pytest 기반 유닛 테스트가 있습니다 (validation / conversion / launch / plotting / utils 서브모듈 커버). 개수는 여기 박제하지 않음 — 실측은 아래 명령으로 확인:
 
 ```bash
+./build.sh --tests -p rtc_tools   # 기본 빌드는 테스트를 빼고, 그 트리의 colcon test 는 0개를 보고한다
 colcon test --packages-select rtc_tools --event-handlers console_direct+
 colcon test-result --verbose
 ```

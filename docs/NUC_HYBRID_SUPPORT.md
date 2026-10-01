@@ -52,6 +52,7 @@
 
 ```bash
 cd ~/ros2_ws/rtc_ws
+src/rtc-framework/build.sh --tests -p rtc_base,repo_scripts                   # 기본 빌드는 테스트를 뺀다
 colcon test --packages-select rtc_base --event-handlers console_direct+      # test_cpu_topology
 colcon test --packages-select repo_scripts --event-handlers console_direct+   # test_rt_common
 src/rtc-framework/repo_scripts/scripts/check_rt_setup.sh                       # [2.5/9] Hybrid CPU Detection

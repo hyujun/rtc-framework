@@ -517,7 +517,7 @@ Read-only 파라미터 (`max_traj_velocity` / `max_traj_angular_velocity` / `han
 ## 빌드 · 테스트
 
 ```bash
-./build.sh -p ur5e_bt_coordinator
+./build.sh --tests -p ur5e_bt_coordinator
 colcon test --packages-select ur5e_bt_coordinator --event-handlers console_direct+
 ```
 

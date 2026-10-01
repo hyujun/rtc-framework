@@ -24,6 +24,7 @@
 #   get_default_build_jobs    — 이 호스트의 기본 make job 수 = min(물리 코어, RAM / 4 GB)
 #   resolve_build_makeflags   — export 할 MAKEFLAGS (CLI -j > RTC_BUILD_JOBS > 기존 -j > 기본값)
 #   build_mem_scope_prefix    — 메모리 상한이 걸린 systemd user scope 로 빌드를 감쌀 prefix
+#   build_mem_scope_end       — scope 가 끝난 뒤: OOM 으로 프로세스를 잃었는지 (BUILD_MEM_SCOPE_OOM)
 #   print_build_host_summary  — 이 호스트의 job 수 · 메모리 상한 · ccache 가용성 보고
 #   create_oneshot_service    — systemd oneshot 서비스 생성 헬퍼
 #   lttng_kernel_build_version      — 커널 헤더 Makefile 에서 V.P.S (uname 아님)
@@ -709,66 +710,180 @@ resolve_build_makeflags() {
 
 # ── 빌드 메모리 상한 (build.sh / build_deps.sh 공유) ─────────────────────────
 # job 수 산정은 평균을 맞추는 장치다 — job 당 4 GB 는 최악 TU 하나가 들어가는
-# 값이지 모든 job 이 동시에 최악인 경우의 합이 아니다. 그 꼬리는 상한으로 막는다:
-# 빌드를 MemoryMax 가 걸린 systemd user scope 에서 돌리면 한도를 넘는 순간 그
-# scope 만 OOM 으로 정리되고 (scope 의 기본 OOMPolicy=stop — 프로세스 하나가
-# 죽으면 systemd 가 scope 전체를 끝낸다) 호스트는 남는다. MemorySwapMax=0 은
-# 빌드가 한도 대신 swap 을 태우며 호스트를 붙잡는 것을 막는다 — 느려지지 않고
-# 실패한다.
+# 값이지 모든 job 이 동시에 최악인 경우의 합이 아니고, 빌드 밖에서 메모리를 쓰는
+# 프로그램도 계산에 없다. 그 꼬리는 상한으로 막는다: 빌드를 MemoryMax 가 걸린
+# systemd user scope 에서 돌리면 한도를 넘는 순간 그 scope 안의 프로세스가 OOM
+# 으로 죽고 호스트는 남는다.
+#
+# 기본 상한은 두 값 중 작은 쪽이다:
+#   - MemTotal 의 75%
+#   - 지금 비어 있는 메모리 (MemAvailable) 의 90% — sim · IDE · 브라우저가 이미
+#     10 GB 를 쓰는 호스트에서 "RAM 의 75%" 는 빌드에 없는 메모리를 약속한다.
+#     scope 한도에 닿기 전에 호스트가 먼저 swap 에 빠진다.
+# swap 은 MemTotal 의 25% 까지 허용한다. 0 으로 막으면 RAM 이 작은 호스트의 기본
+# 빌드가 성립하지 않는다: 4 GB 호스트는 상한이 3 GB 인데 최악 TU 가 3.5 GB 다.
+# RAM 상한 + swap 허용 = MemTotal 이 job 산정식이 가정한 예산 (job × 4 GB) 과
+# 맞는다. $RTC_BUILD_MEM_MAX 를 직접 주면 그 값이 전부다 — swap 허용 없이 엄격하다.
 
-# 상한 값을 systemd 크기 표기로 출력한다. $RTC_BUILD_MEM_MAX 로 덮어쓴다:
+# 상한으로 받는 최소값. 이보다 작으면 probe 나 colcon 자체가 OOM 으로 죽어
+# "상한을 걸 수 없는 호스트" 로 오진된다.
+_RTC_BUILD_MEM_MIN_MB=64
+
+# MemAvailable (kB). 못 읽으면 빈 문자열 (get_mem_total_kb 와 같은 계약).
+get_mem_available_kb() {
+  awk '/^MemAvailable:/ {print $2; exit}' "${RTC_PROC_MEMINFO:-/proc/meminfo}" 2>/dev/null || true
+}
+
+# systemd 크기 표기 ($1) 를 MB 로. 받는 형태는 <N>M · <N>G · <N>T · <1-100>% 뿐이다.
+#   - 단위 없는 수는 systemd 에서 **바이트**다 (`24` = 24 바이트) — 거부한다.
+#   - K 단위와 100% 초과도 쓸 수 있는 상한이 아니다.
+# 형태가 틀리거나 _RTC_BUILD_MEM_MIN_MB 보다 작으면 2. $2 = MemTotal kB (% 환산용).
+_build_mem_size_to_mb() {
+  local v="$1" total_kb="${2:-}" mb
+  if [[ "$v" =~ ^([1-9][0-9]*)([MGT])$ ]]; then
+    mb="${BASH_REMATCH[1]}"
+    case "${BASH_REMATCH[2]}" in
+      G) mb=$(( mb * 1024 )) ;;
+      T) mb=$(( mb * 1024 * 1024 )) ;;
+    esac
+  elif [[ "$v" =~ ^([1-9][0-9]?|100)%$ ]]; then
+    local pct="${BASH_REMATCH[1]}"  # is_positive_int 도 =~ 를 써서 BASH_REMATCH 를 덮는다
+    is_positive_int "$total_kb" || return 2
+    mb=$(( total_kb / 1024 * pct / 100 ))
+  else
+    return 2
+  fi
+  (( mb >= _RTC_BUILD_MEM_MIN_MB )) || return 2
+  echo "$mb"
+}
+
+# RAM 상한을 systemd 크기 표기로 출력한다. $RTC_BUILD_MEM_MAX 로 덮어쓴다:
 #   24G · 20000M · 60% (물리 메모리 대비) / 0 · off · none (끔).
-# 기본은 MemTotal 의 75%. 끄였거나 메모리를 못 읽으면 빈 문자열. 표기가 틀리면 2.
+# 꺼졌거나 메모리를 못 읽으면 빈 문자열. 표기가 틀리면 2 (위 _build_mem_size_to_mb).
 get_build_mem_max() {
-  local v="${RTC_BUILD_MEM_MAX:-}" mem_kb
+  local v="${RTC_BUILD_MEM_MAX:-}" total_kb avail_kb cap_mb avail_mb
+  total_kb="$(get_mem_total_kb)"
   case "$v" in
     0|off|none) return 0 ;;
     "")
-      mem_kb="$(get_mem_total_kb)"
-      is_positive_int "$mem_kb" || return 0
-      echo "$(( mem_kb * 3 / 4 / 1024 ))M" ;;
+      is_positive_int "$total_kb" || return 0
+      cap_mb=$(( total_kb * 3 / 4 / 1024 ))
+      avail_kb="$(get_mem_available_kb)"
+      if is_positive_int "$avail_kb"; then
+        avail_mb=$(( avail_kb * 9 / 10 / 1024 ))
+        (( avail_mb < cap_mb )) && cap_mb="$avail_mb"
+      fi
+      # 거의 다 찬 호스트에서도 빌드가 시작은 해서 "메모리 부족" 을 말하게 한다.
+      (( cap_mb < 256 )) && cap_mb=256
+      echo "${cap_mb}M" ;;
     *)
-      [[ "$v" =~ ^[1-9][0-9]*(%|[KMGT])?$ ]] || return 2
+      _build_mem_size_to_mb "$v" "$total_kb" >/dev/null || return 2
       echo "$v" ;;
   esac
 }
 
+# 그 상한과 함께 허용할 swap 을 systemd 크기 표기로 출력한다: 기본 상한이면
+# MemTotal 의 25%, $RTC_BUILD_MEM_MAX 를 직접 줬으면 0.
+get_build_swap_max() {
+  local total_kb
+  if [[ -n "${RTC_BUILD_MEM_MAX:-}" ]]; then
+    echo 0
+    return
+  fi
+  total_kb="$(get_mem_total_kb)"
+  if is_positive_int "$total_kb"; then
+    echo "$(( total_kb / 4 / 1024 ))M"
+  else
+    echo 0
+  fi
+}
+
 # 상한이 걸린 scope 로 명령을 감쌀 prefix 를 BUILD_MEM_SCOPE_PREFIX 배열에 채운다
-# (`"${BUILD_MEM_SCOPE_PREFIX[@]}" colcon build …`). 함께 채우는 전역:
-#   BUILD_MEM_SCOPE_MAX  — 적용하려던 상한 (끄였으면 빈 문자열)
+# (`"${BUILD_MEM_SCOPE_PREFIX[@]}" colcon build …`, 끝난 뒤 build_mem_scope_end).
+# 함께 채우는 전역:
+#   BUILD_MEM_SCOPE_MAX  — 적용하려던 RAM 상한 (꺼졌으면 빈 문자열)
+#   BUILD_MEM_SCOPE_SWAP — 허용하는 swap
 #   BUILD_MEM_SCOPE_UNIT — scope unit 이름 (실제로 걸렸을 때만)
-# systemd user session 이 없으면 (컨테이너 · CI · lingering 없는 ssh) prefix 는
-# 비고 0 을 반환한다 — 빌드는 상한 없이 돈다. 호출부는 MAX 는 있는데 UNIT 이
-# 비었는지로 그 경우를 알린다. RTC_BUILD_MEM_MAX 표기가 틀리면 2.
+#   BUILD_MEM_SCOPE_WHY  — 못 건 이유: no-session (systemd user session 없음 —
+#                          컨테이너 · CI · lingering 없는 ssh) / not-enforced (scope 는
+#                          만들어지지만 한도가 안 걸림 — cgroup v1/hybrid, memory
+#                          controller 미위임)
+# 못 걸면 prefix 는 비고 0 을 반환한다 — 빌드는 상한 없이 돈다. $RTC_BUILD_MEM_MAX
+# 표기가 틀리면 2.
 build_mem_scope_prefix() {
   BUILD_MEM_SCOPE_PREFIX=()
   BUILD_MEM_SCOPE_UNIT=""
+  BUILD_MEM_SCOPE_WHY=""
+  BUILD_MEM_SCOPE_SWAP=""
+  BUILD_MEM_SCOPE_EVENTS=""
   BUILD_MEM_SCOPE_MAX="$(get_build_mem_max)" || return 2
   [[ -n "$BUILD_MEM_SCOPE_MAX" ]] || return 0
+  BUILD_MEM_SCOPE_SWAP="$(get_build_swap_max)"
+  BUILD_MEM_SCOPE_WHY="no-session"
   command -v systemd-run >/dev/null 2>&1 || return 0
-  local -a limits=(-p "MemoryMax=${BUILD_MEM_SCOPE_MAX}" -p "MemorySwapMax=0")
-  # scope 를 만들 수 있는지, 그리고 한도가 **실제로 걸렸는지**는 만들어 봐야 안다.
-  # systemd-run 이 성공해도 한도가 안 걸리는 호스트가 있다 — cgroup v1/hybrid 는
-  # MemoryMax 를 무시하고, memory controller 가 user 에 위임되지 않았으면 scope 의
-  # cgroup 에 memory.max 가 없다. 그래서 probe 는 scope 안에서 자기 cgroup 의
-  # memory.max 를 읽어 숫자인지 본다 ("max" 나 파일 부재면 실패).
+  # --collect: 실패한 probe 가 failed unit 으로 남지 않게.
+  systemd-run --user --scope --quiet --collect true >/dev/null 2>&1 || return 0
+
+  # scope 를 만들 수 있어도 한도가 **실제로 걸렸는지**는 읽어 봐야 안다. cgroup
+  # v1/hybrid 는 MemoryMax 를 무시하고, memory controller 가 user 에 위임되지
+  # 않았으면 scope 의 cgroup 에 memory.max 가 없다. probe 는 scope 안에서 자기
+  # cgroup 의 memory.max 를 읽어 숫자인지 본다 ("max" 나 파일 부재면 실패).
+  BUILD_MEM_SCOPE_WHY="not-enforced"
+  local -a limits=(-p "MemoryMax=${BUILD_MEM_SCOPE_MAX}" -p "MemorySwapMax=${BUILD_MEM_SCOPE_SWAP}")
   # shellcheck disable=SC2016  # $(…) 는 scope 안의 sh 가 펼친다
-  systemd-run --user --scope --quiet "${limits[@]}" sh -c \
+  systemd-run --user --scope --quiet --collect "${limits[@]}" sh -c \
     '[ "$(cat "/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)/memory.max" 2>/dev/null)" -gt 0 ]' \
     >/dev/null 2>&1 || return 0
+
+  BUILD_MEM_SCOPE_WHY=""
   BUILD_MEM_SCOPE_UNIT="rtc-build-$$-${RANDOM}"
+  BUILD_MEM_SCOPE_EVENTS="${TMPDIR:-/tmp}/${BUILD_MEM_SCOPE_UNIT}.oom"
+  # 명령은 얇은 sh 를 거쳐 돈다: 끝난 뒤 scope cgroup 의 OOM kill 수를 $0 (파일) 에
+  # 남긴다. systemd 253 미만은 scope 에 OOMPolicy 가 없어 OOM 이 나도 scope 가
+  # 정지하지 않고 Result 도 oom-kill 이 되지 않는다 (Ubuntu 22.04 는 249) — 그
+  # 호스트에서 OOM 을 아는 길은 이 수뿐이다. $RTC_BUILD_CGROUP_EVENTS 는 테스트 seam.
+  local events_src='/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)/memory.events'
+  [[ -n "${RTC_BUILD_CGROUP_EVENTS:-}" ]] && events_src="${RTC_BUILD_CGROUP_EVENTS}"
+  local wrapper='"$@"; rc=$?; sed -n "s/^oom_kill //p" "'"${events_src}"'" >"$0" 2>/dev/null; exit "$rc"'
   BUILD_MEM_SCOPE_PREFIX=(systemd-run --user --scope --quiet
-    "--unit=${BUILD_MEM_SCOPE_UNIT}" "${limits[@]}" --)
+    "--unit=${BUILD_MEM_SCOPE_UNIT}" "${limits[@]}" --
+    sh -c "$wrapper" "$BUILD_MEM_SCOPE_EVENTS")
 }
 
-# 방금 끝난 scope ($BUILD_MEM_SCOPE_UNIT) 가 OOM 으로 정리됐으면 0. 그 경우 unit 이
-# failed 로 남으므로 여기서 지운다 — 빌드가 실패한 뒤에 부른다.
-build_mem_scope_oom_killed() {
-  [[ -n "${BUILD_MEM_SCOPE_UNIT:-}" ]] || return 1
-  local result
+# scope 안의 명령이 끝난 뒤 (성공이든 실패든) 부른다. scope 가 메모리 상한에 닿아
+# 프로세스를 잃었으면 BUILD_MEM_SCOPE_OOM=1, 아니면 0 — 컴파일 에러와 메모리 부족을
+# 가른다. 근거는 둘 중 하나다:
+#   - unit 의 Result=oom-kill (systemd ≥ 253: OOMPolicy=stop 이 scope 전체를 끝낸다)
+#   - wrapper 가 남긴 cgroup memory.events 의 oom_kill > 0 (그 이전 systemd: scope 는
+#     계속 돌고 make 가 "Killed signal" 로 실패한다)
+# failed 로 남은 unit 과 기록 파일도 여기서 지운다.
+build_mem_scope_end() {
+  BUILD_MEM_SCOPE_OOM=0
+  [[ -n "${BUILD_MEM_SCOPE_UNIT:-}" ]] || return 0
+  local result kills=""
   result="$(systemctl --user show "${BUILD_MEM_SCOPE_UNIT}.scope" -p Result --value 2>/dev/null)" || true
   systemctl --user reset-failed "${BUILD_MEM_SCOPE_UNIT}.scope" >/dev/null 2>&1 || true
-  [[ "$result" == "oom-kill" ]]
+  if [[ -f "${BUILD_MEM_SCOPE_EVENTS:-}" ]]; then
+    kills="$(cat "$BUILD_MEM_SCOPE_EVENTS" 2>/dev/null)" || true
+    rm -f "$BUILD_MEM_SCOPE_EVENTS"
+  fi
+  if [[ "$result" == "oom-kill" ]] || is_positive_int "$kills"; then
+    BUILD_MEM_SCOPE_OOM=1
+  fi
+  return 0
+}
+
+# 상한을 한 줄로 — build.sh 와 print_build_host_summary 가 같은 말을 쓰게.
+describe_build_mem_scope() {
+  if [[ -n "${BUILD_MEM_SCOPE_UNIT:-}" ]]; then
+    echo "${BUILD_MEM_SCOPE_MAX} RAM + ${BUILD_MEM_SCOPE_SWAP} swap"
+  elif [[ -z "${BUILD_MEM_SCOPE_MAX:-}" ]]; then
+    echo "off"
+  elif [[ "${BUILD_MEM_SCOPE_WHY:-}" == "not-enforced" ]]; then
+    echo "unavailable — this host does not enforce it (needs cgroup v2 with the memory controller delegated to the user)"
+  else
+    echo "unavailable — no systemd user session here (containers, CI, ssh without lingering)"
+  fi
 }
 
 # 이 호스트에서 빌드가 어떻게 돌지 — job 수 · 메모리 상한 · ccache — 를 한 줄씩
@@ -785,12 +900,12 @@ print_build_host_summary() {
   fi
 
   if ! build_mem_scope_prefix; then
-    warn "Memory cap: RTC_BUILD_MEM_MAX='${RTC_BUILD_MEM_MAX:-}' is not a size (24G / 20000M / 60%) or 'off' — build.sh will refuse to start"
+    warn "Memory cap: RTC_BUILD_MEM_MAX='${RTC_BUILD_MEM_MAX:-}' is not a usable size (24G / 20000M / 60%) or 'off' — build.sh will refuse to start"
   elif [[ -n "$BUILD_MEM_SCOPE_UNIT" ]]; then
-    success "Memory cap: available, ${BUILD_MEM_SCOPE_MAX} (a build that needs more is stopped; the host is not)"
+    success "Memory cap: $(describe_build_mem_scope) (a build that needs more is stopped; the host is not)"
   elif [[ -n "$BUILD_MEM_SCOPE_MAX" ]]; then
-    warn "Memory cap: NOT available here — needs a systemd user session on cgroup v2 with the memory controller delegated"
-    warn "  (packages systemd, libpam-systemd, dbus-user-session; not present in most containers). Builds are bounded by the job count only."
+    warn "Memory cap: $(describe_build_mem_scope)"
+    warn "  Builds are bounded by the job count only. Packages: systemd, libpam-systemd, dbus-user-session."
   else
     info "Memory cap: off (RTC_BUILD_MEM_MAX)"
   fi
@@ -801,6 +916,16 @@ print_build_host_summary() {
     warn "ccache: not installed — a clean rebuild recompiles everything (sudo apt install ccache)"
   fi
   return 0
+}
+
+# on/off 로 받는 knob ($1) 을 정규화해 "on" | "off" 를 출력한다. 대소문자 무시,
+# on · 1 · true · yes / off · 0 · false · no. 그 밖은 1 을 반환한다.
+normalize_on_off() {
+  case "${1,,}" in
+    on|1|true|yes) echo on ;;
+    off|0|false|no) echo off ;;
+    *) return 1 ;;
+  esac
 }
 
 # ── 공통 argument parsing (build.sh / install.sh 공유) ─────────────────────

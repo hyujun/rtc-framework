@@ -603,7 +603,7 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 ## 빌드
 
 ```bash
-./build.sh -p rtc_msgs
+./build.sh --tests -p rtc_msgs
 colcon test --packages-select rtc_msgs
 ```
 

@@ -183,7 +183,7 @@ ros2 run rtc_inference rtc_inference_check policy.onnx --input obs:1x34
 ### 빌드 명령
 
 ```bash
-./build.sh -p rtc_inference
+./build.sh --tests -p rtc_inference
 ```
 
 설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참조.

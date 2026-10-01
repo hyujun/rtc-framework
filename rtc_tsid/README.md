@@ -315,7 +315,7 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 `rtc_tsid`는 ProxSuite를 하드 의존성으로 요구합니다 (`sudo apt install ros-${ROS_DISTRO}-proxsuite`; 바이너리 미제공 distro는 robotpkg 폴백 — http://robotpkg.openrobots.org 참고). `./install.sh`를 사용하면 `install_proxsuite()`가 자동으로 처리합니다.
 
 ```bash
-./build.sh -p rtc_tsid
+./build.sh --tests -p rtc_tsid
 ```
 
 설치·환경·수동 colcon 흐름은 [루트 README](../README.md#빠른-시작) 참고.
