@@ -120,8 +120,20 @@ EOF
 }
 
 # Like run_hook but WITHOUT RTC_VERIFY_SKIP_BUILD, so Phase 2 actually runs and
-# routes its build through the stub.
+# routes its build through the stub. Called as `--run`: since 2026-10-01 that
+# is the only call that builds -- the turn-end call checks the verdict and
+# builds nothing (cases 62-65), so every case that is about what the build or
+# the tests answered goes through here.
 run_hook_build() {
+  local dir="$1" stub="$2"
+  ( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$stub/build.sh" \
+      bash "$HOOK" --run </dev/null 2>&1 >/dev/null )
+}
+
+# The turn-end twin: the Stop call with the same build seam in place. It never
+# builds, so "stub-build args" in its output would mean that it did. The cases
+# about what the TURN END does beside a simulator go through here.
+run_stop_build() {
   local dir="$1" stub="$2"
   ( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$stub/build.sh" \
       bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null )
@@ -799,7 +811,7 @@ dir=$(make_fixture)
 stub=$(make_build_stub 124)
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
 out=$(run_hook_build "$dir" "$stub"); rc=$?
-expect_contains "a bound-killed build is reported as a timeout" "$out" "build TIMED OUT after 180s"
+expect_contains "a bound-killed build is reported as a timeout" "$out" "build TIMED OUT after 900s"
 expect_not_contains "a bound-killed build is not reported as broken code" "$out" "build FAILED"
 expect_exit "a bound-killed build still blocks the turn" "$rc" 2
 # 36. ...and carries the evidence that separates contention from a slow build.
@@ -824,20 +836,18 @@ expect_contains "the tail shows how the build was invoked" "$out" "stub-build ar
 expect_exit "a real build failure blocks the turn" "$rc" 2
 rm -rf "$dir" "$stub"
 
-# 37b. A test is not STARTED when its bound would cross the deadline: the Stop
-#      budget kills the whole hook, report included, so the package must be
-#      named UNVERIFIED instead. The stub build succeeds; the deadline of 0
-#      stands for "the budget is already spent", and the fixture cannot serve a
-#      real `colcon test`, so reaching one would fail this case differently.
+# 37b. The bound is an environment override, and the message names the bound
+#      that was in force -- not a number written into the message. (This slot
+#      held the Stop-budget deadline, past which a test was not started; that
+#      mechanism went with the turn-end build on 2026-10-01.)
 dir=$(make_fixture)
-stub=$(make_build_stub 0)
+stub=$(make_build_stub 124)
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
 out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$stub/build.sh" \
-    RTC_VERIFY_TEST_DEADLINE_S=0 bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
-expect_contains "a test past the deadline is reported, not started" "$out" "rtc_demo: colcon test NOT RUN"
-expect_contains "the skipped test names its bound" "$out" "its 120s bound"
-expect_not_contains "a skipped test is not reported as a timeout" "$out" "TIMED OUT"
-expect_exit "a skipped test still blocks the turn" "$rc" 2
+    RTC_VERIFY_BUILD_BOUND_S=42 bash "$HOOK" --run </dev/null 2>&1 >/dev/null ); rc=$?
+expect_contains "the build bound follows RTC_VERIFY_BUILD_BOUND_S" "$out" "build TIMED OUT after 42s"
+expect_contains "...and the message names the variable to raise" "$out" "RTC_VERIFY_BUILD_BOUND_S"
+expect_exit "a bound-killed build under an overridden bound still blocks" "$rc" 2
 rm -rf "$dir" "$stub"
 
 # 38. The PROC-3 path (rtc_base / rtc_msgs -> ./build.sh full) had the same
@@ -849,7 +859,7 @@ stub=$(make_build_stub 124)
 echo 'int base_fn() { return 1; }' >"$dir/rtc_base/src/base.cpp"
 out=$(run_hook_build "$dir" "$stub"); rc=$?
 expect_contains "a bound-killed PROC-3 build is reported as a timeout" "$out" "PROC-3 broad build"
-expect_contains "the PROC-3 timeout names its own bound" "$out" "TIMED OUT after 300s"
+expect_contains "the PROC-3 timeout names its own bound" "$out" "TIMED OUT after 2400s"
 expect_contains "the PROC-3 timeout reports loadavg" "$out" "loadavg"
 expect_exit "a bound-killed PROC-3 build still blocks the turn" "$rc" 2
 rm -rf "$dir" "$stub"
@@ -995,7 +1005,7 @@ if wait_for_name "$spid" mujoco_simulato; then
   # HEAD anyway, so only a commit shows whether the watermark was kept.
   echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
   git -C "$dir" commit -qam "edit committed in-turn while the sim runs"
-  out=$(run_hook_build "$dir" "$stub"); rc=$?
+  out=$(run_stop_build "$dir" "$stub"); rc=$?
   expect_contains "a sim from the workspace defers build/test" "$out" "Build/test deferred"
   expect_contains "the deferral names the sim by pid" "$out" "$spid: /bin/bash $ws/install/rtc_mujoco_sim"
   expect_not_contains "nothing is built beside a running sim" "$out" "stub-build args"
@@ -1006,6 +1016,11 @@ if wait_for_name "$spid" mujoco_simulato; then
     fail "a sim deferral advanced the watermark"
   fi
   stop_standin "$spid"
+  # The deferral dropped nothing: the turn end now asks for the verdict, and
+  # --run builds the change (the stub build fails, so it must report that).
+  out=$(run_stop_build "$dir" "$stub"); rc=$?
+  expect_contains "the change deferred for a sim is owed once it ends" "$out" "build/test verdict missing for: rtc_demo"
+  expect_exit "the turn end blocks on it once the sim ends" "$rc" 2
   out=$(run_hook_build "$dir" "$stub"); rc=$?
   expect_contains "the change deferred for a sim is built once it ends" "$out" "build FAILED (exit 1)"
   expect_exit "that deferred build failure blocks once the sim ends" "$rc" 2
@@ -1024,7 +1039,7 @@ spid=$(start_sim_standin "$ws/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
 if wait_for_name "$spid" mujoco_simulato; then
   # add_missing_dep is defined further down; the same edit, inline.
   sed -i 's/^project(rtc_demo)/project(rtc_demo)\nfind_package(fmt REQUIRED)/' "$dir/rtc_demo/CMakeLists.txt"
-  out=$(run_hook_build "$dir" "$stub"); rc=$?
+  out=$(run_stop_build "$dir" "$stub"); rc=$?
   expect_contains "another gate still reports beside a running sim" "$out" "find_package(fmt)"
   expect_contains "the block says build/test was deferred" "$out" "Build/test deferred"
   expect_exit "another gate still blocks beside a running sim" "$rc" 2
@@ -1046,7 +1061,7 @@ stub=$(make_build_stub 1)
 spid=$(start_sim_standin "$link/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
 if wait_for_name "$spid" mujoco_simulato; then
   echo 'int existing() { return 1; }' >"$link/src/repo/rtc_demo/src/existing.cpp"
-  out=$(run_hook_build "$link/src/repo" "$stub"); rc=$?
+  out=$(run_stop_build "$link/src/repo" "$stub"); rc=$?
   expect_contains "a sim started through the workspace symlink defers" "$out" "Build/test deferred"
   expect_not_contains "nothing is built beside a sim on the symlinked path" "$out" "stub-build args"
 else
@@ -1063,8 +1078,11 @@ elsewhere=$(mktemp -d)
 spid=$(start_sim_standin "$elsewhere/install/rtc_mujoco_sim/lib/rtc_mujoco_sim")
 if wait_for_name "$spid" mujoco_simulato; then
   echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
-  out=$(run_hook_build "$dir" "$stub"); rc=$?
+  out=$(run_stop_build "$dir" "$stub"); rc=$?
   expect_not_contains "a sim from another workspace defers nothing" "$out" "Build/test deferred"
+  # ...and the absence is not the turn end having had nothing to ask for.
+  expect_contains "the turn end asks for the verdict beside a sim elsewhere" "$out" "build/test verdict missing for: rtc_demo"
+  out=$(run_hook_build "$dir" "$stub"); rc=$?
   expect_contains "the build still runs beside a sim elsewhere" "$out" "build FAILED (exit 1)"
 else
   fail "the other-workspace sim stand-in never showed up as mujoco_simulato"
@@ -1383,7 +1401,19 @@ calls() { wc -l <"$1" 2>/dev/null | tr -d ' ' || echo 0; }
 
 # Phase 2 with both seams: a build that succeeds and a test command that is
 # counted. Extra environment goes in front, e.g. RTC_VERIFY_NO_REUSE=1.
+# Called as `--run` (see run_hook_build): the cases below are about when a
+# build and a test run are repeated and when their verdict is reused, and
+# --run is the call that builds. stdin is closed -- nothing there to read.
 run_hook_green() {
+  local dir="$1" bstub="$2" tstub="$3"
+  shift 3
+  ( cd "$dir" && env "$@" CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$bstub/build.sh" \
+      RTC_VERIFY_TEST_CMD="$tstub/test.sh" \
+      bash "$HOOK" --run </dev/null 2>&1 >/dev/null )
+}
+# The turn-end call with BOTH seams in place: were it to build or to test, the
+# stubs would count it. Extra environment goes in front.
+run_stop() {
   local dir="$1" bstub="$2" tstub="$3"
   shift 3
   ( cd "$dir" && env "$@" CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$bstub/build.sh" \
@@ -1391,7 +1421,7 @@ run_hook_green() {
       bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null )
 }
 
-# 54. The same working tree is verified once. The second stop over it runs
+# 54. The same working tree is verified once. The second --run over it runs
 #     nothing; an edit, however small, runs everything again.
 dir=$(make_fixture)
 count=$(mktemp)
@@ -1400,11 +1430,11 @@ tstub=$(make_test_stub "$count" 0)
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
 out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "a green change passes" "$rc" 0
-expect_not_contains "the first stop over a change is not called unchanged" "$out" "nothing re-run"
-if [ "$(calls "$count")" = 1 ]; then pass "the first stop tests the package"; else fail "the first stop ran the tests $(calls "$count") times"; fi
+expect_not_contains "the first --run over a change is not called unchanged" "$out" "nothing re-run"
+if [ "$(calls "$count")" = 1 ]; then pass "the first --run tests the package"; else fail "the first --run ran the tests $(calls "$count") times"; fi
 out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
-expect_contains "the second stop over the same tree runs nothing" "$out" "nothing re-run"
-expect_exit "the second stop over the same tree passes" "$rc" 0
+expect_contains "the second --run over the same tree runs nothing" "$out" "nothing re-run"
+expect_exit "the second --run over the same tree passes" "$rc" 0
 if [ "$(calls "$count")" = 1 ]; then pass "the same tree is not tested twice"; else fail "the same tree was tested $(calls "$count") times"; fi
 # 54b. Committing what was verified does not make it new.
 git -C "$dir" commit -qam "the verified change"
@@ -1426,7 +1456,7 @@ if [ "$(calls "$count")" = $((before + 1)) ]; then pass "an edit after a pass is
 rm -rf "$dir" "$bstub" "$tstub" "$count"
 
 # 54e. A pass with Phase 2 switched off is not a verdict on the tree: the next
-#      stop over the same tree builds and tests it.
+#      --run over the same tree builds and tests it.
 dir=$(make_fixture)
 count=$(mktemp)
 bstub=$(make_build_stub 0)
@@ -1478,7 +1508,7 @@ expect_exit "a red test blocks" "$rc" 2
 out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "the same red tree blocks again" "$rc" 2
 expect_not_contains "a red package is not reused" "$out" "not repeated"
-if [ "$(calls "$count")" = 2 ]; then pass "a red package is tested again"; else fail "a red package was tested $(calls "$count") times over two stops"; fi
+if [ "$(calls "$count")" = 2 ]; then pass "a red package is tested again"; else fail "a red package was tested $(calls "$count") times over two runs"; fi
 rm -rf "$dir" "$bstub" "$tstub" "$count"
 
 # 56. A package keeps its verdict while the change set IN PACKAGES is the
@@ -1580,7 +1610,7 @@ hpid=$!
 echo "$hpid $(start_time_of "$hpid")" >"$ws/.rtc-verify-hold"
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
 git -C "$dir" commit -qam "edit committed in-turn while a measurement runs"
-out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
 expect_contains "a held host defers build/test" "$out" "Build/test deferred"
 expect_contains "the deferral names the holder by pid" "$out" "$hpid: sleep 60"
 expect_exit "a held host does not block the turn" "$rc" 0
@@ -1588,14 +1618,16 @@ if [ "$(calls "$count")" = 0 ]; then pass "nothing is tested on a held host"; el
 if [ "$(cat "$dir/.git/rtc-verify-base")" = "$base" ]; then pass "a hold keeps the watermark"; else fail "a hold advanced the watermark"; fi
 # 57b. The same pid with another start time is another process: it holds nothing.
 echo "$hpid 1" >"$ws/.rtc-verify-hold"
-out=$(run_hook_green "$dir" "$bstub" "$tstub")
+out=$(run_stop "$dir" "$bstub" "$tstub")
 expect_not_contains "a reused pid does not hold the host" "$out" "Build/test deferred"
+expect_contains "...so the turn end asks for the verdict" "$out" "build/test verdict missing for: rtc_demo"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
 if [ "$(calls "$count")" = 1 ]; then pass "the change is tested when the holder is not the one listed"; else fail "a reused pid kept the gate off"; fi
 # 57d. A hold line without a newline at its end is still a hold.
 printf '%s %s' "$hpid" "$(start_time_of "$hpid")" >"$ws/.rtc-verify-hold"
 echo 'int existing() { return 5; }' >"$dir/rtc_demo/src/existing.cpp"
 before=$(calls "$count")
-out=$(run_hook_green "$dir" "$bstub" "$tstub")
+out=$(run_stop "$dir" "$bstub" "$tstub")
 expect_contains "a hold line without a newline defers build/test" "$out" "Build/test deferred"
 if [ "$(calls "$count")" = "$before" ]; then pass "nothing is tested beside an unterminated hold line"; else fail "an unterminated hold line was ignored"; fi
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
@@ -1604,8 +1636,10 @@ wait "$hpid" 2>/dev/null
 # 57c. A dead holder holds nothing: a driver that died cannot switch the gate off.
 echo "$hpid" >"$ws/.rtc-verify-hold"
 echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
-out=$(run_hook_green "$dir" "$bstub" "$tstub")
+out=$(run_stop "$dir" "$bstub" "$tstub")
 expect_not_contains "a dead holder does not hold the host" "$out" "Build/test deferred"
+expect_contains "...so the turn end asks for the verdict" "$out" "build/test verdict missing for: rtc_demo"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
 if [ "$(calls "$count")" = 2 ]; then pass "the change is tested once the holder is gone"; else fail "a dead holder kept the gate off"; fi
 rm -rf "$ws" "$bstub" "$tstub" "$count"
 
@@ -1622,7 +1656,7 @@ RTC_VERIFY_WORKSPACE="$ws" "$HOLD_WRAPPER" sleep 60 &
 wpid=$!
 for _ in $(seq 50); do grep -q "^$wpid " "$ws/.rtc-verify-hold" 2>/dev/null && break; sleep 0.1; done
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
-out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
 expect_contains "a command under the wrapper holds the host" "$out" "Build/test deferred"
 expect_contains "the holder named is the wrapper" "$out" "$wpid: "
 if [ "$(calls "$count")" = 0 ]; then pass "nothing is tested beside a wrapped command"; else fail "a wrapped command was tested beside"; fi
@@ -1633,8 +1667,10 @@ if [ "$(cat "$ws/.rtc-verify-hold" 2>/dev/null)" = "1 1" ]; then
 else
   fail "after the wrapper the hold file reads [$(cat "$ws/.rtc-verify-hold" 2>&1)]"
 fi
-out=$(run_hook_green "$dir" "$bstub" "$tstub")
+out=$(run_stop "$dir" "$bstub" "$tstub")
 expect_not_contains "the host is free once the wrapped command is over" "$out" "Build/test deferred"
+expect_contains "...so the turn end asks for the verdict" "$out" "build/test verdict missing for: rtc_demo"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
 if [ "$(calls "$count")" = 1 ]; then pass "the change is tested after the wrapped command"; else fail "the change was not tested after the wrapped command"; fi
 # 57f. The wrapper returns the command's exit code and removes a file it emptied.
 rm -f "$ws/.rtc-verify-hold"
@@ -1787,23 +1823,8 @@ EOF
   chmod +x "$d/build.sh"
   echo "$d"
 }
-# The turn-end call with BOTH seams in place: were it to build or to test, the
-# stubs would count it. Extra environment goes in front.
-run_stop() {
-  local dir="$1" bstub="$2" tstub="$3"
-  shift 3
-  ( cd "$dir" && env "$@" CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$bstub/build.sh" \
-      RTC_VERIFY_TEST_CMD="$tstub/test.sh" \
-      bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null )
-}
-# --run with the same seams. stdin is closed: nothing there to read.
-run_run() {
-  local dir="$1" bstub="$2" tstub="$3"
-  shift 3
-  ( cd "$dir" && env "$@" CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_BUILD_CMD="$bstub/build.sh" \
-      RTC_VERIFY_TEST_CMD="$tstub/test.sh" \
-      bash "$HOOK" --run </dev/null 2>&1 >/dev/null )
-}
+# run_stop (the turn-end call) and run_hook_green (--run), both with the two
+# seams in place, are defined under "Verdict reuse".
 
 # 62. A changed package with no verdict blocks the turn end, and the turn end
 #     neither builds nor tests it.
@@ -1820,7 +1841,7 @@ expect_contains "the block names the command that pays it" "$out" ".claude/hooks
 if [ "$(calls "$bcount")" = 0 ]; then pass "the turn end does not build"; else fail "the turn end built $(calls "$bcount") times"; fi
 if [ "$(calls "$tcount")" = 0 ]; then pass "the turn end does not test"; else fail "the turn end tested $(calls "$tcount") times"; fi
 # 62b. --run builds with --tests, tests, and says it passed.
-out=$(run_run "$dir" "$bstub" "$tstub"); rc=$?
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "--run over a green change passes" "$rc" 0
 expect_contains "--run says what it built and tested" "$out" "verify-changes --run: PASS"
 if [ "$(cat "$bcount")" = "-p rtc_demo --tests" ]; then pass "--run builds the package with its tests"; else fail "--run built with [$(cat "$bcount")]"; fi
@@ -1872,7 +1893,7 @@ tcount=$(mktemp)
 bstub=$(make_counting_build_stub "$bcount")
 tstub=$(make_test_stub "$tcount" 1)
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
-out=$(run_run "$dir" "$bstub" "$tstub"); rc=$?
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "--run over a red test fails" "$rc" 2
 expect_not_contains "...and does not say it passed" "$out" "verify-changes --run: PASS"
 out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
@@ -1906,7 +1927,7 @@ sleep 60 &
 hpid=$!
 echo "$hpid $(start_time_of "$hpid")" >"$ws/.rtc-verify-hold"
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
-out=$(run_run "$dir" "$bstub" "$tstub"); rc=$?
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "--run on a held host does not pass" "$rc" 2
 expect_contains "--run on a held host says why nothing ran" "$out" "build/test NOT run — a simulator"
 expect_contains "...and names the holder" "$out" "$hpid: sleep 60"
