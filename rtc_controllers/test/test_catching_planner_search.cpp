@@ -18,6 +18,7 @@
 #include "rtc_controllers/catching/planner_search.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
+#include "rtc_controllers/testing/planner_search_fixture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -27,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <span>
 #include <vector>
 
 namespace {
@@ -124,51 +126,18 @@ struct Rig {
 
   /// 20 samples, 50 ms apart from now; sample 10 (t = 0.5 s) is the target.
   [[nodiscard]] TrajectorySnapshot Traj(std::uint64_t seq = 1, std::uint64_t gen = 7) const {
-    TrajectorySnapshot t{};
-    t.valid = true;
-    t.n = 20;
-    t.token.activation_generation = 3;
-    t.token.generation = gen;
-    t.token.snapshot_sequence = seq;
-    t.token.traj_recv_ns = kNow - 5 * kMs;
-    for (int k = 0; k < t.n; ++k) {
-      auto& s = t.s[static_cast<std::size_t>(k)];
-      s.t_ns = kNow + k * 50 * kMs;
-      const double dt = (k - 10) * 0.05;
-      const Eigen::Vector3d p = target.p_c + target.v_ball * dt;
-      s.p = {p.x(), p.y(), p.z()};
-      s.v = {target.v_ball.x(), target.v_ball.y(), target.v_ball.z()};
-    }
-    return t;
+    return rtc::testing::LineTrajectory(target.p_c, target.v_ball, kNow, 50 * kMs, 20, 10, seq, gen,
+                                        3, kNow - 5 * kMs);
   }
 
   /// A matched covariance, isotropic σ per sample.
   [[nodiscard]] static CovarianceSnapshot Cov(const TrajectorySnapshot& t, double sigma) {
-    CovarianceSnapshot c{};
-    c.valid = true;
-    c.n = t.n;
-    c.token = t.token;
-    for (int k = 0; k < t.n; ++k) {
-      auto& e = c.c[static_cast<std::size_t>(k)];
-      e.fill(0.0);
-      for (int d = 0; d < 6; ++d) {
-        e[static_cast<std::size_t>(d * 6 + d)] = sigma * sigma;
-      }
-    }
-    return c;
+    return rtc::testing::IsotropicCovariance(t, sigma);
   }
 
   [[nodiscard]] PlannerRtState Rt() const {
-    PlannerRtState rt{};
-    rt.valid = true;
-    rt.activation_generation = 3;
-    rt.mode = static_cast<std::uint8_t>(rtc::catching::Mode::kTracking);
-    rt.nv = arm.nv;
-    rt.cmd_seeded = true;
-    for (int j = 0; j < arm.nv; ++j) {
-      rt.q_cmd[static_cast<std::size_t>(j)] = params.wait_pose[static_cast<std::size_t>(j)];
-    }
-    return rt;
+    return rtc::testing::TrackingRtState(
+        3, std::span<const double>(params.wait_pose.data(), static_cast<std::size_t>(arm.nv)));
   }
 };
 
