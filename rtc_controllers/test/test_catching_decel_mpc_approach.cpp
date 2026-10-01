@@ -8,20 +8,29 @@
 // (CMakeLists note); malloc_gate.hpp is the one that sees pinocchio's and
 // ProxQP's own allocations.
 #include "rtc_controllers/catching/decel_mpc.hpp"
+#include "rtc_controllers/catching/decel_mpc_catch.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/decel_mpc_fixture.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
+#include "rtc_math/se3/axis_align.hpp"
 
 #include <Eigen/Core>
+#include <Eigen/Eigenvalues>
+#include <Eigen/Geometry>
+#include <Eigen/SVD>
 #include <gtest/gtest.h>
 #include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/algorithm/rnea.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -364,6 +373,1257 @@ TEST(DecelMpcGolden, ShippedHorizonWithABindingTorqueRow) {
   AddSolution(probe, res);
   ExpectGolden("torque_6r_shipped", probe, kGolden_torque_6r_shipped_tight,
                kGolden_torque_6r_shipped_loose);
+}
+
+// ── Approach-grid fixtures ───────────────────────────────────────────────────
+
+using Mat3X = Eigen::Matrix<double, 3, Eigen::Dynamic>;
+constexpr double kInf = std::numeric_limits<double>::infinity();
+constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+
+struct Grid {
+  int n_pre;
+  double dt_pre;
+  int n_stop;
+  double dt;
+  int pre_block;                 // nodes per pre-catch block
+  std::vector<int> stop_blocks;  // Σ = n_stop
+};
+
+// Two spacings, the catch node strictly inside: every "is the grid uniform?"
+// shortcut gives a different answer here.
+const Grid kSmallGrid{4, 0.05, 6, 0.025, 1, {1, 2, 3}};
+
+DecelMpcParams GridParams(const Grid& g) {
+  DecelMpcParams p;
+  p.n_pre = g.n_pre;
+  p.dt_pre = g.dt_pre;
+  p.n_nodes = g.n_stop;
+  p.dt = g.dt;
+  p.block_sizes.fill(0);
+  std::size_t b = 0;
+  for (int k = 0; k < g.n_pre; k += g.pre_block) {
+    p.block_sizes[b++] = std::min(g.pre_block, g.n_pre - k);
+  }
+  for (const int s : g.stop_blocks) {
+    p.block_sizes[b++] = s;
+  }
+  p.n_blocks = static_cast<int>(b);
+  return p;
+}
+
+// Node instants, computed here and not read from the core.
+std::vector<double> NodeTimes(const Grid& g) {
+  std::vector<double> t;
+  for (int k = 0; k <= g.n_pre + g.n_stop; ++k) {
+    t.push_back(k <= g.n_pre ? k * g.dt_pre : g.n_pre * g.dt_pre + (k - g.n_pre) * g.dt);
+  }
+  return t;
+}
+
+// The catch frame's position, +z axis and velocity from pinocchio's forward
+// kinematics — none of the core's Jacobian code.
+struct CatchPose {
+  Eigen::Vector3d p, z, v;
+};
+
+CatchPose CatchPoseAt(const ArmModel& arm, pinocchio::Data& data, const Eigen::VectorXd& q,
+                      const Eigen::VectorXd& qd) {
+  pinocchio::forwardKinematics(*arm.model, data, q, qd);
+  pinocchio::updateFramePlacements(*arm.model, data);
+  CatchPose c;
+  c.p = data.oMf[arm.frame].translation();
+  c.z = data.oMf[arm.frame].rotation().col(2);
+  c.v = pinocchio::getFrameVelocity(*arm.model, data, arm.frame, pinocchio::LOCAL_WORLD_ALIGNED)
+            .linear();
+  return c;
+}
+
+// z tilted by theta toward (the part of `hint` across z).
+Eigen::Vector3d TiltedAxis(const Eigen::Vector3d& z, double theta, const Eigen::Vector3d& hint) {
+  const Eigen::Vector3d u = (hint - hint.dot(z) * z).normalized();
+  return std::cos(theta) * z + std::sin(theta) * u;
+}
+
+// Symmetric positive definite with no axis aligned to the world's: a weight
+// that is silently treated as diagonal, or transposed against a non-symmetric
+// factor, changes the answer.
+Eigen::Matrix3d SkewWeight(double a, double b, double c) {
+  const Eigen::Matrix3d r =
+      Eigen::AngleAxisd(0.7, Eigen::Vector3d(1.0, 2.0, 3.0).normalized()).toRotationMatrix();
+  const Eigen::Matrix3d m = r * Eigen::Vector3d(a, b, c).asDiagonal() * r.transpose();
+  return 0.5 * (m + m.transpose());
+}
+
+int Rank(const Eigen::MatrixXd& a) {
+  const Eigen::JacobiSVD<Eigen::MatrixXd> svd(a);
+  const Eigen::VectorXd& s = svd.singularValues();
+  const double tol = 1e-10 * std::max(1.0, s.size() > 0 ? s[0] : 0.0);
+  return static_cast<int>((s.array() > tol).count());
+}
+
+// Rest-to-rest minimum-jerk reach from q0 to q1 arriving AT the catch node,
+// held after it; x_0 on it. What a planner would hand the first solve of a plan.
+void ReachReference(const DecelMpc& mpc, const Eigen::VectorXd& q0, const Eigen::VectorXd& q1,
+                    DecelMpcInput& in) {
+  const int N = mpc.NumNodes();
+  const double T = mpc.NodeTime(mpc.CatchNode());
+  const Eigen::Index n = q0.size();
+  const Eigen::VectorXd d = q1 - q0;
+  in.q_ref.resize(n, N + 1);
+  in.qd_ref.resize(n, N + 1);
+  in.qdd_ref.resize(n, N + 1);
+  for (int k = 0; k <= N; ++k) {
+    const double s = std::min(mpc.NodeTime(k) / T, 1.0);
+    const double s2 = s * s;
+    in.q_ref.col(k) = q0 + d * (10.0 * s2 * s - 15.0 * s2 * s2 + 6.0 * s2 * s2 * s);
+    in.qd_ref.col(k) = d * ((30.0 * s2 - 60.0 * s2 * s + 30.0 * s2 * s2) / T);
+    in.qdd_ref.col(k) = d * ((60.0 * s - 180.0 * s2 + 120.0 * s2 * s) / (T * T));
+  }
+  in.reference_valid = true;
+  in.q0 = q0;
+  in.qd0 = Eigen::VectorXd::Zero(n);
+  in.qdd0 = Eigen::VectorXd::Zero(n);
+}
+
+void UseAsReference(const DecelMpcResult& r, DecelMpcInput& in) {
+  in.q_ref = r.q;
+  in.qd_ref = r.qd;
+  in.qdd_ref = r.qdd;
+  in.reference_valid = true;
+}
+
+// ── 1. Grid ──────────────────────────────────────────────────────────────────
+
+// Response of the scalar triple integrator at instant t to unit jerk on
+// [t0, t1] — the integral form on ARBITRARY instants.
+double UnitJerkResponseAt(int m, double t, double t0, double t1) {
+  if (t0 >= t) {
+    return 0.0;
+  }
+  const double a = t - t0;
+  const double b = t - std::min(t1, t);
+  switch (m) {
+    case 0:
+      return (a * a * a - b * b * b) / 6.0;
+    case 1:
+      return (a * a - b * b) / 2.0;
+    default:
+      return std::min(t1, t) - t0;
+  }
+}
+
+TEST(DecelMpcApproach, StageGainsMatchTheIntegralOracleOnAMixedGrid) {
+  const ArmModel arm = Synthetic6R();
+  for (const Grid& g : {kSmallGrid, Grid{5, 0.04, 6, 0.025, 2, {2, 2, 2}}}) {
+    const DecelMpcParams p = GridParams(g);
+    DecelMpc mpc;
+    ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)),
+              DecelMpcReason::kNone);
+    const std::vector<double> t = NodeTimes(g);
+    const int N = g.n_pre + g.n_stop;
+    ASSERT_EQ(mpc.NumNodes(), N);
+    ASSERT_EQ(mpc.CatchNode(), g.n_pre);
+    for (int k = 0; k <= N; ++k) {
+      EXPECT_NEAR(mpc.NodeTime(k), t[static_cast<std::size_t>(k)], 1e-15);
+    }
+    for (int m = 0; m < 3; ++m) {
+      for (int k = 0; k <= N; ++k) {
+        int k0 = 0;
+        for (int b = 0; b < p.n_blocks; ++b) {
+          const int size = p.block_sizes[static_cast<std::size_t>(b)];
+          double oracle = 0.0;
+          for (int i = k0; i < k0 + size; ++i) {
+            oracle += UnitJerkResponseAt(m, t[static_cast<std::size_t>(k)],
+                                         t[static_cast<std::size_t>(i)],
+                                         t[static_cast<std::size_t>(i + 1)]);
+          }
+          k0 += size;
+          EXPECT_NEAR(mpc.StageGain(m, k, b), p.u_scale * oracle,
+                      1e-12 * p.u_scale + 1e-9 * std::abs(p.u_scale * oracle))
+              << "m=" << m << " k=" << k << " b=" << b;
+        }
+      }
+    }
+    EXPECT_EQ(mpc.TerminalRank(), 2 * arm.model->nv);
+  }
+}
+
+// The jerk cost is a time integral: a block's weight is Σ Δ_k/Δ_s, so two
+// 0.05 s nodes before the catch weigh four 0.025 s nodes after it.
+TEST(DecelMpcApproach, JerkCostIsWeightedByTheIntervalLength) {
+  const ArmModel arm = Synthetic6R();
+  const int n = arm.model->nv;
+  DecelMpcParams p = GridParams(Grid{4, 0.05, 6, 0.025, 2, {1, 2, 3}});  // blocks 2,2 | 1,2,3
+  p.w_delta = 0.0;
+  Eigen::VectorXd r(n);
+  r << 1.0, 2.0, 0.5, 3.0, 1.5, 0.7;
+  p.jerk_weight = r;
+  DecelMpc mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)), DecelMpcReason::kNone);
+  const Eigen::MatrixXd& h = mpc.MainQp().H;
+  const double expected[5] = {2.0 * (0.05 / 0.025), 2.0 * (0.05 / 0.025), 1.0, 2.0, 3.0};
+  for (int b = 0; b < 5; ++b) {
+    for (int j = 0; j < n; ++j) {
+      EXPECT_NEAR(h(b * n + j, b * n + j), r[j] * expected[b], 1e-12) << "b=" << b << " j=" << j;
+    }
+  }
+}
+
+TEST(DecelMpcApproach, InitValidatesTheGridAndTheCatchParameters) {
+  const ArmModel arm = Synthetic6R();
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model);
+  const auto init = [&](const DecelMpcParams& p) {
+    DecelMpc mpc;
+    return mpc.Init(*arm.model, arm.frame, p, lim);
+  };
+  ASSERT_EQ(init(GridParams(kSmallGrid)), DecelMpcReason::kNone);
+
+  // A block across the catch node (pre-catch nodes 0..3, a 2-node block on 3..4).
+  DecelMpcParams across = GridParams(kSmallGrid);
+  across.n_blocks = 5;
+  across.block_sizes = {1, 2, 2, 2, 3};
+  EXPECT_EQ(init(across), DecelMpcReason::kBlocksAcrossCatch);
+
+  // Six blocks in all, but only two after the catch node: the terminal
+  // equality would fix both. The Init rank self-check cannot see this.
+  DecelMpcParams two_after = GridParams(Grid{4, 0.05, 6, 0.025, 1, {3, 3}});
+  ASSERT_EQ(two_after.n_blocks, 6);
+  EXPECT_EQ(init(two_after), DecelMpcReason::kBlocksTooFew);
+
+  // Capacities: the stop segment keeps the payload's bound, the horizon has
+  // the core's own, and the block array has kMaxDecelNodes slots.
+  DecelMpcParams long_stop = GridParams(kSmallGrid);
+  long_stop.n_nodes = rtc::catching::kMaxDecelNodes + 1;
+  EXPECT_EQ(init(long_stop), DecelMpcReason::kParamsInvalid);
+  const int max_pre = rtc::catching::kMaxMpcNodes - 6;
+  EXPECT_EQ(init(GridParams(Grid{max_pre, 0.05, 6, 0.025, 2, {1, 2, 3}})), DecelMpcReason::kNone);
+  EXPECT_EQ(init(GridParams(Grid{max_pre + 1, 0.05, 6, 0.025, 3, {1, 2, 3}})),
+            DecelMpcReason::kParamsInvalid);
+  DecelMpcParams many_blocks = GridParams(Grid{12, 0.05, 14, 0.025, 1, {1, 1, 2, 2, 4, 4}});
+  ASSERT_EQ(init(many_blocks), DecelMpcReason::kNone);  // 18 blocks, 26 nodes
+  many_blocks = GridParams(Grid{12, 0.05, 14, 0.025, 1, {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2}});
+  many_blocks.n_blocks = rtc::catching::kMaxDecelNodes + 1;  // 25 > the array
+  EXPECT_EQ(init(many_blocks), DecelMpcReason::kParamsInvalid);
+
+  DecelMpcParams p = GridParams(kSmallGrid);
+  p.dt_pre = 0.0;
+  EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << "dt_pre";
+  p = GridParams(kSmallGrid);
+  p.dt_pre = kNan;
+  EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << "dt_pre NaN";
+  p = DecelMpcParams{};
+  p.catch_terms = true;  // no pre-catch node: the catch node would be x_0
+  EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << "catch_terms without n_pre";
+  for (double DecelMpcParams::*field :
+       {&DecelMpcParams::w_axis, &DecelMpcParams::w_v_par, &DecelMpcParams::w_v_perp,
+        &DecelMpcParams::rho_v, &DecelMpcParams::v_rel_allow}) {
+    for (const double bad : {-1.0, kNan, kInf}) {
+      p = GridParams(kSmallGrid);
+      p.catch_terms = true;
+      p.*field = bad;
+      EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << bad;
+    }
+  }
+  p = GridParams(kSmallGrid);
+  p.catch_terms = true;
+  p.rho_v = 1.0;  // slack on, no bound to be slack against
+  p.v_rel_allow = 0.0;
+  EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << "rho_v without v_rel_allow";
+  for (const double bad : {0.0, -0.1, 3.2, kNan}) {
+    p = GridParams(kSmallGrid);
+    p.axis_theta_max = bad;
+    EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << "axis_theta_max " << bad;
+  }
+}
+
+// ── 2. The linearisation seam ────────────────────────────────────────────────
+
+struct Seam {
+  Eigen::MatrixXd j6;
+  Mat3X j_v, j_w, l_a, h_v, dv;
+  rtc::catching::CatchLinearization lin;
+  DecelMpcReason why{DecelMpcReason::kNone};
+};
+
+Seam Linearize(const ArmModel& arm, pinocchio::Data& data, const Eigen::VectorXd& q,
+               const Eigen::VectorXd& v, const Eigen::Vector3d& a_d, double theta_max = 3.0) {
+  const Eigen::Index n = arm.model->nv;
+  Seam s;
+  s.j6.setZero(6, n);
+  for (Mat3X* m : {&s.j_v, &s.j_w, &s.l_a, &s.h_v, &s.dv}) {
+    m->setZero(3, n);
+  }
+  s.why = rtc::catching::LinearizeCatchAt(*arm.model, data, arm.frame, q, v, a_d, theta_max, true,
+                                          true, s.j6, s.j_v, s.j_w, s.l_a, s.h_v, s.dv, s.lin);
+  return s;
+}
+
+// Each Jacobian against a central difference of the NONLINEAR output. The
+// fixture is built to break the symmetries a wrong Jacobian hides behind: a
+// catch frame with a lever arm and a tilt, v ≠ 0 (H_v ≡ 0 otherwise), and a
+// target axis off every world axis and off z.
+TEST(CatchLinearization, JacobiansMatchCentralDifferences) {
+  for (const ArmModel& arm : {Synthetic6R(), RealArm7()}) {
+    const Eigen::Index n = arm.model->nv;
+    pinocchio::Data data(*arm.model);
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> uni(-1.0, 1.0);
+    for (int trial = 0; trial < 5; ++trial) {
+      Eigen::VectorXd q = arm.q_nominal;
+      Eigen::VectorXd v(n);
+      for (Eigen::Index j = 0; j < n; ++j) {
+        q[j] += 0.5 * uni(rng);
+        v[j] = uni(rng);
+      }
+      const CatchPose at = CatchPoseAt(arm, data, q, v);
+      const Eigen::Vector3d a_d =
+          TiltedAxis(at.z, 0.3 + 0.1 * trial, Eigen::Vector3d(0.3, -0.5, 0.8));
+      const Seam s = Linearize(arm, data, q, v, a_d);
+      ASSERT_EQ(s.why, DecelMpcReason::kNone) << arm.name;
+      EXPECT_LE((s.lin.p - at.p).norm(), 1e-12);
+      EXPECT_LE((s.lin.z - at.z).norm(), 1e-12);
+      EXPECT_NEAR(s.lin.e_a.norm(), 0.3 + 0.1 * trial, 1e-9);
+      // J_v is also the velocity map.
+      EXPECT_LE((s.j_v * v - at.v).norm(), 1e-10) << arm.name;
+      ASSERT_GT(s.h_v.norm(), 1e-2) << "H_v vanished: the fixture does not exercise it";
+
+      const double h = 1e-6;
+      for (Eigen::Index j = 0; j < n; ++j) {
+        Eigen::VectorXd qp = q;
+        Eigen::VectorXd qm = q;
+        qp[j] += h;
+        qm[j] -= h;
+        const CatchPose cp = CatchPoseAt(arm, data, qp, v);
+        const CatchPose cm = CatchPoseAt(arm, data, qm, v);
+        const Eigen::Vector3d dp = (cp.p - cm.p) / (2.0 * h);
+        const Eigen::Vector3d de = (rtc::math::se3::AxisAlignError(cp.z, a_d).error -
+                                    rtc::math::se3::AxisAlignError(cm.z, a_d).error) /
+                                   (2.0 * h);
+        const Eigen::Vector3d dv = (cp.v - cm.v) / (2.0 * h);
+        const auto tol = [](const Eigen::Vector3d& x) { return 1e-6 * std::max(1.0, x.norm()); };
+        EXPECT_LE((s.j_v.col(j) - dp).norm(), tol(dp)) << arm.name << " J_v col " << j;
+        EXPECT_LE((s.l_a.col(j) - de).norm(), tol(de)) << arm.name << " L_a col " << j;
+        EXPECT_LE((s.h_v.col(j) - dv).norm(), tol(dv))
+            << arm.name << " H_v col " << j << ": " << s.h_v.col(j).transpose() << " vs "
+            << dv.transpose();
+      }
+    }
+  }
+}
+
+// rtc_math returns J_a = 0 inside the aligned deadband; the seam substitutes
+// the limit so the axis term keeps its curvature when the reference is aligned.
+TEST(CatchLinearization, AxisJacobianIsContinuousThroughAlignment) {
+  const ArmModel arm = Synthetic6R();
+  pinocchio::Data data(*arm.model);
+  const Eigen::VectorXd v = Eigen::VectorXd::Zero(arm.model->nv);
+  const Eigen::Vector3d z = CatchPoseAt(arm, data, arm.q_nominal, v).z;
+  const Eigen::Vector3d hint(0.3, -0.5, 0.8);
+
+  const Seam aligned = Linearize(arm, data, arm.q_nominal, v, z);
+  ASSERT_EQ(aligned.why, DecelMpcReason::kNone);
+  EXPECT_LE(aligned.lin.e_a.norm(), 1e-12);
+  // The limit: [z]×[z]× J_ω = −(I − z zᵀ) J_ω — rank 2, not zero.
+  const Eigen::MatrixXd limit = (z * z.transpose() - Eigen::Matrix3d::Identity()) * aligned.j_w;
+  EXPECT_LE((aligned.l_a - limit).norm(), 1e-12);
+  EXPECT_EQ(Rank(aligned.l_a), 2);
+
+  // 1e-7 is INSIDE the deadband (sinθ < 1e-6), the others outside.
+  for (const double theta : {1e-2, 1e-4, 1e-7}) {
+    const Seam s = Linearize(arm, data, arm.q_nominal, v, TiltedAxis(z, theta, hint));
+    ASSERT_EQ(s.why, DecelMpcReason::kNone) << theta;
+    EXPECT_LE((s.l_a - aligned.l_a).norm(), 2.0 * theta * aligned.j_w.norm() + 1e-12)
+        << "theta " << theta;
+  }
+
+  EXPECT_EQ(Linearize(arm, data, arm.q_nominal, v, TiltedAxis(z, 1.0, hint), 0.5).why,
+            DecelMpcReason::kCatchAxisOutOfRange);
+  EXPECT_EQ(Linearize(arm, data, arm.q_nominal, v, TiltedAxis(z, 0.4, hint), 0.5).why,
+            DecelMpcReason::kNone);
+  EXPECT_EQ(Linearize(arm, data, arm.q_nominal, v, -z, 3.1).why,
+            DecelMpcReason::kCatchAxisOutOfRange)
+      << "antiparallel";
+  EXPECT_EQ(Linearize(arm, data, arm.q_nominal, v, 2.0 * z).why,
+            DecelMpcReason::kCatchAxisOutOfRange)
+      << "a_d not unit";
+  Seam bad = Linearize(arm, data, arm.q_nominal, v, z);
+  bad.j_v.resize(3, 2);
+  EXPECT_EQ(rtc::catching::LinearizeCatchAt(*arm.model, data, arm.frame, arm.q_nominal, v, z, 3.0,
+                                            true, true, bad.j6, bad.j_v, bad.j_w, bad.l_a, bad.h_v,
+                                            bad.dv, bad.lin),
+            DecelMpcReason::kDimMismatch);
+}
+
+// ── 3. The assembled catch cost against the nonlinear cost ───────────────────
+// What the Jacobian test cannot see: the residual's CONSTANT part (the offset
+// of the free response from the reference, the sign of p̂_b and of γ v̂_b), the
+// weight, and the condensing through the stage gains. The catch terms'
+// contribution to the QP is isolated as the difference between two cores that
+// differ only in catch_terms; it is a quadratic F_lin(z). The reference is
+// placed so that the trajectory of a chosen z* passes THROUGH it at the catch
+// node — there the linear model is exact and its gradient is the nonlinear
+// cost's gradient, so along z* + h·z_0 the two costs differ by O(h²) only. A
+// wrong constant, sign or weight leaves an O(h) error and the ratio test fails.
+struct TermCase {
+  const char* name;
+  bool pos, axis, vel;
+};
+
+class CatchCostOrder : public ::testing::TestWithParam<TermCase> {};
+
+TEST_P(CatchCostOrder, MatchesTheNonlinearCostToSecondOrder) {
+  const TermCase tc = GetParam();
+  const ArmModel arm = Synthetic6R();
+  const int n = arm.model->nv;
+  DecelMpcParams off = GridParams(kSmallGrid);
+  off.rho_tau = 0.0;
+  off.w_delta = 0.0;
+  off.delta_tr = kInf;
+  DecelMpcParams on = off;
+  on.catch_terms = true;
+  on.w_axis = tc.axis ? 40.0 : 0.0;
+  on.w_v_par = tc.vel ? 3.0 : 0.0;
+  on.w_v_perp = tc.vel ? 25.0 : 0.0;
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model);
+  DecelMpc with, without;
+  ASSERT_EQ(with.Init(*arm.model, arm.frame, on, lim), DecelMpcReason::kNone);
+  ASSERT_EQ(without.Init(*arm.model, arm.frame, off, lim), DecelMpcReason::kNone);
+  const int kc = with.CatchNode();
+  const int N = with.NumNodes();
+  const int nb = with.NumBlocks();
+  const int nu = n * nb;
+
+  DecelMpcInput in = RestInput(arm.q_nominal);
+  in.qd0 << 0.20, -0.10, 0.15, -0.20, 0.10, 0.05;
+  in.qdd0 << 0.5, -0.3, 0.4, 0.2, -0.5, 0.3;
+  const double t = with.NodeTime(kc);
+  const Eigen::VectorXd q_f = in.q0 + t * in.qd0 + 0.5 * t * t * in.qdd0;
+  const Eigen::VectorXd v_f = in.qd0 + t * in.qdd0;
+  const auto state_at_catch = [&](const Eigen::VectorXd& z, Eigen::VectorXd& q,
+                                  Eigen::VectorXd& v) {
+    q = q_f;
+    v = v_f;
+    for (int b = 0; b < nb; ++b) {
+      q += with.StageGain(0, kc, b) * z.segment(b * n, n);
+      v += with.StageGain(1, kc, b) * z.segment(b * n, n);
+    }
+  };
+  Eigen::VectorXd z_star(nu), z_dir(nu);
+  for (int b = 0; b < nb; ++b) {
+    for (int j = 0; j < n; ++j) {
+      z_star[b * n + j] = 0.02 * std::sin(0.9 * b + 0.5 * j + 0.3);
+      z_dir[b * n + j] = 0.02 * std::cos(1.7 * b + 0.8 * j + 0.1);
+    }
+  }
+  Eigen::VectorXd q_star(n), v_star(n);
+  state_at_catch(z_star, q_star, v_star);
+  ASSERT_GT((q_star - q_f).norm(), 5e-3) << "the reference must sit OFF the free response";
+  ASSERT_GT(v_star.norm(), 0.1) << "H_v needs a moving reference";
+
+  // The reference only has to pass through (q*, v*) at the catch node and end
+  // at rest; it is a linearisation point, not a trajectory.
+  in.q_ref = q_star.replicate(1, N + 1);
+  in.qd_ref.setZero(n, N + 1);
+  in.qd_ref.col(kc) = v_star;
+  in.qdd_ref.setZero(n, N + 1);
+  in.reference_valid = true;
+
+  pinocchio::Data data(*arm.model);
+  const CatchPose star = CatchPoseAt(arm, data, q_star, v_star);
+  in.p_b = star.p + Eigen::Vector3d(0.03, -0.02, 0.04);
+  in.a_d = TiltedAxis(star.z, 0.25, Eigen::Vector3d(0.3, -0.5, 0.8));
+  in.v_b = Eigen::Vector3d(0.8, -0.5, 0.6);
+  in.gamma_ref = 0.7;
+  in.w_p = tc.pos ? SkewWeight(900.0, 2500.0, 400.0) : Eigen::Matrix3d(Eigen::Matrix3d::Zero());
+
+  DecelMpcResult r_on, r_off;
+  with.ResizeResult(r_on);
+  without.ResizeResult(r_off);
+  // The QP itself is not the subject; both are assembled before it runs.
+  (void)with.Solve(in, r_on);
+  (void)without.Solve(in, r_off);
+  const Eigen::MatrixXd h_c =
+      with.MainQp().H.topLeftCorner(nu, nu) - without.MainQp().H.topLeftCorner(nu, nu);
+  const Eigen::VectorXd g_c = with.MainQp().g.head(nu) - without.MainQp().g.head(nu);
+  ASSERT_GT(h_c.norm(), 0.0) << "the catch terms added nothing";
+  EXPECT_EQ((with.MainQp().H - with.MainQp().H.transpose()).cwiseAbs().maxCoeff(), 0.0)
+      << "H must be exactly symmetric";
+
+  const Eigen::Vector3d d_hat = in.v_b.normalized();
+  const Eigen::Matrix3d w_v =
+      on.w_v_par * d_hat * d_hat.transpose() +
+      on.w_v_perp * (Eigen::Matrix3d::Identity() - d_hat * d_hat.transpose());
+  const auto f_nl = [&](const Eigen::VectorXd& z) {
+    Eigen::VectorXd q(n), v(n);
+    state_at_catch(z, q, v);
+    const CatchPose c = CatchPoseAt(arm, data, q, v);
+    double f = 0.0;
+    if (tc.pos) {
+      const Eigen::Vector3d r = c.p - in.p_b;
+      f += 0.5 * r.dot(in.w_p * r);
+    }
+    if (tc.axis) {
+      f += 0.5 * on.w_axis * rtc::math::se3::AxisAlignError(c.z, in.a_d).error.squaredNorm();
+    }
+    if (tc.vel) {
+      const Eigen::Vector3d r = c.v - in.gamma_ref * in.v_b;
+      f += 0.5 * r.dot(w_v * r);
+    }
+    return f;
+  };
+  const auto f_lin = [&](const Eigen::VectorXd& z) { return 0.5 * z.dot(h_c * z) + g_c.dot(z); };
+  double change = 0.0;
+  const auto error_at = [&](double h) {
+    const Eigen::VectorXd z = z_star + h * z_dir;
+    change = f_nl(z) - f_nl(z_star);
+    return std::abs((f_lin(z) - f_lin(z_star)) - change);
+  };
+  const double e1 = error_at(1.0);
+  const double change1 = std::abs(change);
+  const double e2 = error_at(0.5);
+  ASSERT_GT(change1, 1e-6) << tc.name << ": the cost did not move — nothing is being compared";
+  ASSERT_GT(e1, 1e-10) << tc.name << ": the error is below what can be measured";
+  EXPECT_LT(e1, 0.2 * change1) << tc.name << ": first-order mismatch";
+  const double ratio = e1 / e2;
+  EXPECT_GT(ratio, 3.0) << tc.name << " e(h)=" << e1 << " e(h/2)=" << e2;
+  EXPECT_LT(ratio, 5.5) << tc.name << " e(h)=" << e1 << " e(h/2)=" << e2;
+}
+
+INSTANTIATE_TEST_SUITE_P(Terms, CatchCostOrder,
+                         ::testing::Values(TermCase{"position", true, false, false},
+                                           TermCase{"axis", false, true, false},
+                                           TermCase{"velocity", false, false, true},
+                                           TermCase{"all", true, true, true}),
+                         [](const ::testing::TestParamInfo<TermCase>& i) {
+                           return std::string(i.param.name);
+                         });
+
+// ── 4. Structured assembly == dense assembly, catch terms included ───────────
+
+// A reach on the 7-dof arm with every term on. Shared by the oracle, the
+// allocation and the fail-closed tests.
+struct ReachFixture {
+  ArmModel arm;
+  DecelMpcParams params;
+  DecelMpcLimits limits;
+  Eigen::VectorXd q_target;
+  DecelMpcInput input;  // catch inputs set; the reference is added per core
+};
+
+ReachFixture MakeReach7() {
+  ReachFixture f{RealArm7(), GridParams(kSmallGrid), {}, {}, {}};
+  f.params.catch_terms = true;
+  f.params.w_axis = 50.0;
+  f.params.w_v_par = 2.0;
+  f.params.w_v_perp = 20.0;
+  f.params.rho_v = 2.0;
+  f.params.v_rel_allow = 0.3;
+  f.limits = LimitsFromModel(*f.arm.model, 0.2);
+  f.q_target = f.arm.q_nominal;
+  Eigen::VectorXd d(7);
+  d << 0.10, -0.08, 0.06, 0.09, -0.07, 0.10, 0.05;
+  f.q_target += d;
+  pinocchio::Data data(*f.arm.model);
+  const CatchPose target =
+      CatchPoseAt(f.arm, data, f.q_target, Eigen::VectorXd::Zero(f.arm.model->nv));
+  f.input = RestInput(f.arm.q_nominal);
+  f.input.p_b = target.p + Eigen::Vector3d(0.015, -0.010, 0.020);
+  f.input.a_d = TiltedAxis(target.z, 0.10, Eigen::Vector3d(0.3, -0.5, 0.8));
+  f.input.v_b = Eigen::Vector3d(0.9, -0.4, -0.6);
+  f.input.gamma_ref = 0.6;
+  f.input.w_p = SkewWeight(2000.0, 5000.0, 1000.0);
+  f.input.w_delta_scale = 0.0;
+  f.input.cold_start = true;
+  return f;
+}
+
+bool MatricesClose(const Eigen::MatrixXd& x, const Eigen::MatrixXd& y) {
+  if (x.rows() != y.rows() || x.cols() != y.cols()) {
+    return false;
+  }
+  double scale = 1.0;
+  double diff = 0.0;
+  for (Eigen::Index i = 0; i < x.size(); ++i) {
+    const double xi = x.data()[i];
+    const double yi = y.data()[i];
+    if (!std::isfinite(xi) || !std::isfinite(yi)) {
+      if (xi != yi) {
+        return false;
+      }
+      continue;
+    }
+    scale = std::max(scale, std::abs(xi));
+    diff = std::max(diff, std::abs(xi - yi));
+  }
+  return diff <= 1e-9 * scale;
+}
+
+TEST(DecelMpcApproach, StructuredCatchAssemblyMatchesDense) {
+  ReachFixture f = MakeReach7();
+  f.params.w_perp = 10.0;  // the stop-path term stays compatible
+  DecelMpcParams pd = f.params;
+  pd.reference_assembly = true;
+  DecelMpc fast, dense;
+  ASSERT_EQ(fast.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
+  ASSERT_EQ(dense.Init(*f.arm.model, f.arm.frame, pd, f.limits), DecelMpcReason::kNone);
+  // One slack variable and seven rows more than the E1-F01 layout.
+  const int n = f.arm.model->nv;
+  ASSERT_EQ(fast.MainQp().H.rows(), n * (fast.NumBlocks() + fast.NumNodes()) + 1);
+  ASSERT_EQ(fast.MainQp().C.rows(), 5 * n * fast.NumNodes() + 7);
+  DecelMpcResult rf, rd;
+  fast.ResizeResult(rf);
+  dense.ResizeResult(rd);
+  DecelMpcInput in = f.input;
+  in.p_c = in.p_b;
+  in.d_hat = Eigen::Vector3d(1.0, 2.0, -0.5).normalized();
+  ReachReference(fast, f.arm.q_nominal, f.q_target, in);
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    if (cycle == 1) {
+      UseAsReference(rf, in);
+      in.w_delta_scale = 0.6;  // the scaled-w_Δ Hessian on both paths
+      in.cold_start = false;
+    }
+    ASSERT_TRUE(fast.Solve(in, rf)) << DecelMpcReasonName(rf.reason);
+    ASSERT_TRUE(dense.Solve(in, rd)) << DecelMpcReasonName(rd.reason);
+    const rtc::tsid::QPData& a = fast.MainQp();
+    const rtc::tsid::QPData& b = dense.MainQp();
+    EXPECT_TRUE(MatricesClose(a.H, b.H)) << "H cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.g, b.g)) << "g cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.A, b.A)) << "A cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.b, b.b)) << "b cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.C, b.C)) << "C cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.l, b.l)) << "l cycle " << cycle;
+    EXPECT_TRUE(MatricesClose(a.u, b.u)) << "u cycle " << cycle;
+    EXPECT_EQ((a.H - a.H.transpose()).cwiseAbs().maxCoeff(), 0.0) << "H symmetric, cycle " << cycle;
+    EXPECT_LE((rf.u - rd.u).cwiseAbs().maxCoeff(), 1e-6 * (1.0 + rd.u.cwiseAbs().maxCoeff()));
+  }
+}
+
+// ── 5. Behaviour ─────────────────────────────────────────────────────────────
+
+// formulation §4 item 5: nothing to do ⇒ do nothing. A sanity check only — every
+// residual is zero, so this cannot see a sign or a transpose (sections 2–4 do).
+// It does run a_d == z exactly, i.e. the aligned-deadband branch, in a full solve.
+TEST(DecelMpcApproach, ZeroSolutionWhenAlreadyAtTheCatch) {
+  const ArmModel arm = Synthetic6R();
+  const int n = arm.model->nv;
+  DecelMpcParams p = GridParams(kSmallGrid);
+  p.catch_terms = true;
+  p.w_axis = 10.0;
+  p.w_v_par = 5.0;
+  p.w_v_perp = 5.0;
+  p.rho_v = 1.0;
+  p.v_rel_allow = 0.2;
+  DecelMpcLimits lim = LimitsFromModel(*arm.model);
+  pinocchio::Data data(*arm.model);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n);
+  const Eigen::VectorXd g = pinocchio::rnea(*arm.model, data, arm.q_nominal, zero, zero);
+  lim.tau_max = lim.tau_max.cwiseMax(3.0 * g.cwiseAbs() / p.eta_tau);
+  DecelMpc mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
+  DecelMpcResult res;
+  mpc.ResizeResult(res);
+  DecelMpcInput in = RestInput(arm.q_nominal);
+  in.q_ref = arm.q_nominal.replicate(1, mpc.NumNodes() + 1);
+  in.qd_ref.setZero(n, mpc.NumNodes() + 1);
+  in.qdd_ref.setZero(n, mpc.NumNodes() + 1);
+  in.reference_valid = true;
+  const CatchPose here = CatchPoseAt(arm, data, arm.q_nominal, zero);
+  in.p_b = here.p;
+  in.a_d = here.z;
+  in.v_b.setZero();
+  in.w_p = SkewWeight(1000.0, 3000.0, 500.0);
+  ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);
+  const double z_tol = 10.0 * p.solver.eps_abs;
+  EXPECT_LE(res.u.cwiseAbs().maxCoeff(), z_tol * p.u_scale);
+  EXPECT_TRUE(res.catch_evaluated);
+  EXPECT_LE(res.catch_pos_err.norm(), 1e-6);
+  EXPECT_LE(res.catch_axis_err, 1e-6);
+  EXPECT_LE(res.catch_v_rel.norm(), 1e-6);
+  EXPECT_EQ(res.catch_gamma, 0.0) << "a ball at rest has no direction: γ is reported as 0";
+  EXPECT_LE(std::abs(res.slack_v), z_tol);
+}
+
+// A reach on the synthetic arm: the reference is aimed at a posture whose hand
+// is a few cm and a few degrees off the catch pose, so the catch terms have
+// work to do within the trust region.
+struct Reach6 {
+  ArmModel arm;
+  DecelMpcParams params;
+  DecelMpcLimits limits;
+  Eigen::VectorXd q_target;
+  Eigen::VectorXd q_seed;
+  CatchPose target;
+};
+
+Reach6 MakeReach6() {
+  Reach6 f{Synthetic6R(), GridParams(Grid{6, 0.05, 6, 0.025, 1, {1, 2, 3}}), {}, {}, {}, {}};
+  f.params.catch_terms = true;
+  f.params.w_axis = 200.0;
+  f.limits = LimitsFromModel(*f.arm.model);
+  f.limits.tau_max *= 10.0;  // torque rows present, not binding
+  Eigen::VectorXd d(6), off(6);
+  d << 0.25, -0.20, 0.30, 0.20, -0.25, 0.20;
+  off << 0.06, -0.05, 0.07, -0.06, 0.08, -0.07;
+  f.q_target = f.arm.q_nominal + d;
+  f.q_seed = f.q_target + off;
+  pinocchio::Data data(*f.arm.model);
+  f.target = CatchPoseAt(f.arm, data, f.q_target, Eigen::VectorXd::Zero(6));
+  return f;
+}
+
+// ½ Σ_k (Δ_k/Δ_s) Σ_j (u_kj/u_scale)² + the catch terms on the NONLINEAR pose.
+double NonlinearObjective(const Reach6& f, const DecelMpc& mpc, const DecelMpcInput& in,
+                          const DecelMpcResult& r, pinocchio::Data& data) {
+  const int kc = mpc.CatchNode();
+  double j = 0.0;
+  for (int k = 0; k < mpc.NumNodes(); ++k) {
+    const double w = (mpc.NodeTime(k + 1) - mpc.NodeTime(k)) / f.params.dt;
+    j += 0.5 * w * (r.u.col(k) / f.params.u_scale).squaredNorm();
+  }
+  const CatchPose c = CatchPoseAt(f.arm, data, r.q.col(kc), r.qd.col(kc));
+  const Eigen::Vector3d rp = c.p - in.p_b;
+  j += 0.5 * rp.dot(in.w_p * rp);
+  j += 0.5 * f.params.w_axis * rtc::math::se3::AxisAlignError(c.z, in.a_d).error.squaredNorm();
+  return j;
+}
+
+// Real-time iteration: one QP per cycle, the next reference is this solution.
+// A fixed "< 1 mm after K cycles" would measure the weight ratio, not the
+// iteration; what is asserted is that K cycles reach the CONVERGED solution
+// (50 cycles) and that the nonlinear objective goes down on the way.
+TEST(DecelMpcApproach, RtiConvergesOnAReach) {
+  const Reach6 f = MakeReach6();
+  DecelMpc mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
+  DecelMpcResult res;
+  mpc.ResizeResult(res);
+  DecelMpcInput in;
+  ReachReference(mpc, f.arm.q_nominal, f.q_seed, in);
+  in.p_b = f.target.p;
+  in.a_d = f.target.z;
+  in.w_p = SkewWeight(2e4, 1e4, 3e4);
+  in.w_delta_scale = 0.0;  // the pull toward a moving reference is not part of the objective
+  in.cold_start = true;
+
+  pinocchio::Data data(*f.arm.model);
+  const int kc = mpc.CatchNode();
+  const CatchPose seed = CatchPoseAt(f.arm, data, f.q_seed, Eigen::VectorXd::Zero(6));
+  const double seed_pos = (seed.p - in.p_b).norm();
+  const double seed_axis = rtc::math::se3::AxisAlignError(seed.z, in.a_d).error.norm();
+  ASSERT_GT(seed_pos, 0.02) << "the reference already hits the target";
+  ASSERT_GT(seed_axis, 0.05);
+
+  double j_first = 0.0, j_eight = 0.0;
+  DecelMpcResult eighth;
+  for (int cycle = 1; cycle <= 50; ++cycle) {
+    ASSERT_TRUE(mpc.Solve(in, res)) << "cycle " << cycle << ": " << DecelMpcReasonName(res.reason);
+    if (cycle == 1) {
+      j_first = NonlinearObjective(f, mpc, in, res, data);
+    }
+    if (cycle == 8) {
+      j_eight = NonlinearObjective(f, mpc, in, res, data);
+      eighth = res;
+    }
+    UseAsReference(res, in);
+    in.cold_start = false;
+  }
+  const double j_final = NonlinearObjective(f, mpc, in, res, data);
+  RecordProperty("seed_pos_err_um", static_cast<int>(std::lround(1e6 * seed_pos)));
+  RecordProperty("final_pos_err_um", static_cast<int>(std::lround(1e6 * res.catch_pos_err.norm())));
+  RecordProperty("final_axis_err_urad", static_cast<int>(std::lround(1e6 * res.catch_axis_err)));
+  std::printf(
+      "[reach] seed %.1f mm / %.1f mrad -> converged %.3f mm / %.3f mrad; J %.4g -> %.4g "
+      "-> %.4g\n",
+      1e3 * seed_pos, 1e3 * seed_axis, 1e3 * res.catch_pos_err.norm(), 1e3 * res.catch_axis_err,
+      j_first, j_eight, j_final);
+
+  // Eight cycles are at the converged solution — in the objective and at the
+  // catch node. (Not in every joint angle: the roll about the approach axis is
+  // free and w_Δ is off here, so the iterates still drift along directions the
+  // objective does not see.)
+  EXPECT_NEAR(j_eight, j_final, 1e-3 * j_final);
+  EXPECT_LE((eighth.catch_pos_err - res.catch_pos_err).norm(), 1e-4);
+  EXPECT_NEAR(eighth.catch_axis_err, res.catch_axis_err, 1e-3);
+  // …which is far closer to the catch pose than the reference was. How close
+  // is the weights' trade against jerk, not a property of the iteration.
+  EXPECT_LT(res.catch_pos_err.norm(), 0.1 * seed_pos);
+  EXPECT_LT(res.catch_axis_err, 0.5 * seed_axis);
+  // The objective goes down (the tolerance is the solver's, not a slope).
+  EXPECT_LE(j_eight, j_first * (1.0 + 1e-6));
+  EXPECT_LE(j_final, j_eight * (1.0 + 1e-6));
+  // The reported catch residuals are the FK ones.
+  const CatchPose at = CatchPoseAt(f.arm, data, res.q.col(kc), res.qd.col(kc));
+  EXPECT_LE((res.catch_pos_err - (at.p - in.p_b)).norm(), 1e-12);
+  EXPECT_NEAR(res.catch_axis_err, rtc::math::se3::AxisAlignError(at.z, in.a_d).error.norm(), 1e-9);
+  // Limits at every node, rest at the end.
+  for (int k = 1; k <= mpc.NumNodes(); ++k) {
+    for (int j = 0; j < 6; ++j) {
+      EXPECT_GE(res.q(j, k), f.limits.q_min[j] + f.params.m_q - 1e-6);
+      EXPECT_LE(res.q(j, k), f.limits.q_max[j] - f.params.m_q + 1e-6);
+      EXPECT_LE(std::abs(res.qd(j, k)), f.params.eta_v * f.limits.qd_max[j] + 1e-6);
+    }
+  }
+  EXPECT_LE(res.qd.col(mpc.NumNodes()).cwiseAbs().maxCoeff(), 1e-5);
+  EXPECT_LE(res.qdd.col(mpc.NumNodes()).cwiseAbs().maxCoeff(), 1e-5);
+  EXPECT_LE(res.slack_max, 1e-5);
+}
+
+// The velocity target is γ_ref·v̂_b (plan MD-53): the solution's γ follows it.
+TEST(DecelMpcApproach, SolutionGammaFollowsGammaRef) {
+  Reach6 f = MakeReach6();
+  f.params.w_v_par = 2000.0;
+  f.params.w_v_perp = 2000.0;
+  pinocchio::Data data(*f.arm.model);
+  double gamma[2] = {0.0, 0.0};
+  int i = 0;
+  for (const double gamma_ref : {1.0, 0.5}) {
+    DecelMpc mpc;
+    ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
+    DecelMpcResult res;
+    mpc.ResizeResult(res);
+    DecelMpcInput in;
+    ReachReference(mpc, f.arm.q_nominal, f.q_target, in);
+    in.p_b = f.target.p;
+    in.a_d = f.target.z;
+    in.v_b = 0.5 * Eigen::Vector3d(0.6, 0.3, -0.74).normalized();
+    in.gamma_ref = gamma_ref;
+    in.w_p = 1e4 * Eigen::Matrix3d::Identity();
+    in.w_delta_scale = 0.0;
+    in.cold_start = true;
+    for (int cycle = 0; cycle < 15; ++cycle) {
+      ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);
+      UseAsReference(res, in);
+      in.cold_start = false;
+    }
+    const int kc = mpc.CatchNode();
+    const CatchPose at = CatchPoseAt(f.arm, data, res.q.col(kc), res.qd.col(kc));
+    // The reported γ and relative velocity are the FK ones.
+    EXPECT_NEAR(res.catch_gamma, in.v_b.dot(at.v) / in.v_b.squaredNorm(), 1e-9);
+    EXPECT_LE((res.catch_v_rel - (in.v_b - at.v)).norm(), 1e-9);
+    EXPECT_NEAR(res.catch_gamma, gamma_ref, 0.1) << "gamma_ref " << gamma_ref;
+    gamma[i++] = res.catch_gamma;
+    std::printf("[gamma] ref %.2f -> %.3f, pos err %.2f mm\n", gamma_ref, res.catch_gamma,
+                1e3 * res.catch_pos_err.norm());
+  }
+  EXPECT_GT(gamma[0] - gamma[1], 0.3) << "γ did not follow γ_ref";
+}
+
+// s_v is the worst axis' excess over v_rel_allow, as a fraction of it, and zero
+// when the hand can match the ball.
+TEST(DecelMpcApproach, VelocitySlackIsTheExcessOverTheAllowance) {
+  Reach6 f = MakeReach6();
+  f.params.w_v_par = 50.0;
+  f.params.w_v_perp = 50.0;
+  f.params.rho_v = 5.0;
+  f.params.v_rel_allow = 0.2;
+  const Eigen::Vector3d dir = Eigen::Vector3d(0.6, 0.3, -0.74).normalized();
+  for (const double speed : {0.1, 6.0}) {
+    DecelMpc mpc;
+    ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
+    DecelMpcResult res;
+    mpc.ResizeResult(res);
+    DecelMpcInput in;
+    ReachReference(mpc, f.arm.q_nominal, f.q_target, in);
+    in.p_b = f.target.p;
+    in.a_d = f.target.z;
+    in.v_b = speed * dir;
+    in.w_p = 1e4 * Eigen::Matrix3d::Identity();
+    in.w_delta_scale = 0.0;
+    in.cold_start = true;
+    for (int cycle = 0; cycle < 25; ++cycle) {
+      ASSERT_TRUE(mpc.Solve(in, res))
+          << "speed " << speed << ": " << DecelMpcReasonName(res.reason);
+      UseAsReference(res, in);
+      in.cold_start = false;
+    }
+    // At convergence the reference IS the solution, so the linear model the
+    // slack rows use and the FK value reported agree.
+    const double excess =
+        std::max(0.0, res.catch_v_rel.cwiseAbs().maxCoeff() / f.params.v_rel_allow - 1.0);
+    std::printf("[slack_v] ball %.1f m/s: s_v %.4f, excess %.4f, |v_rel|inf %.3f m/s\n", speed,
+                res.slack_v, excess, res.catch_v_rel.cwiseAbs().maxCoeff());
+    if (speed < 1.0) {
+      EXPECT_LE(res.slack_v, 1e-4) << "a matchable ball needs no slack";
+      EXPECT_LE(excess, 1e-4);
+    } else {
+      ASSERT_GT(excess, 1.0) << "the fixture's ball is not out of reach";
+      EXPECT_NEAR(res.slack_v, excess, 1e-2 * excess);
+    }
+  }
+}
+
+// w_delta_scale multiplies w_Δ; cold_start discards the warm start.
+TEST(DecelMpcApproach, DeltaScaleAndColdStart) {
+  const ReachFixture f = MakeReach7();
+  DecelMpcParams no_delta = f.params;
+  no_delta.w_delta = 0.0;
+  DecelMpc scaled, plain, full;
+  ASSERT_EQ(scaled.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
+  ASSERT_EQ(plain.Init(*f.arm.model, f.arm.frame, no_delta, f.limits), DecelMpcReason::kNone);
+  ASSERT_EQ(full.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
+  DecelMpcResult rs, rp, rf;
+  scaled.ResizeResult(rs);
+  plain.ResizeResult(rp);
+  full.ResizeResult(rf);
+  DecelMpcInput in = f.input;
+  // Aimed OFF the target, so the pull toward the reference and the catch terms disagree.
+  Eigen::VectorXd aim = f.q_target;
+  aim[1] += 0.06;
+  aim[3] -= 0.06;
+  ReachReference(scaled, f.arm.q_nominal, aim, in);
+
+  // Scale 0 is the w_Δ = 0 problem …
+  in.w_delta_scale = 0.0;
+  ASSERT_TRUE(scaled.Solve(in, rs)) << DecelMpcReasonName(rs.reason);
+  ASSERT_TRUE(plain.Solve(in, rp)) << DecelMpcReasonName(rp.reason);
+  EXPECT_TRUE(MatricesClose(scaled.MainQp().H, plain.MainQp().H));
+  EXPECT_TRUE(MatricesClose(scaled.MainQp().g, plain.MainQp().g));
+  EXPECT_LE((rs.q - rp.q).cwiseAbs().maxCoeff(), 1e-6);
+  // … and scale 1 is a different one, that stays nearer the reference.
+  in.w_delta_scale = 1.0;
+  ASSERT_TRUE(full.Solve(in, rf)) << DecelMpcReasonName(rf.reason);
+  ASSERT_GT((rf.q - rs.q).cwiseAbs().maxCoeff(), 1e-4) << "w_Δ did not change the answer";
+  EXPECT_LT((rf.q - in.q_ref).norm(), (rs.q - in.q_ref).norm());
+  // Back at scale 1 after a scaled solve, the Hessian is the scale-1 one again.
+  in.w_delta_scale = 0.3;
+  ASSERT_TRUE(scaled.Solve(in, rs));
+  in.w_delta_scale = 1.0;
+  ASSERT_TRUE(scaled.Solve(in, rs));
+  EXPECT_TRUE(MatricesClose(scaled.MainQp().H, full.MainQp().H));
+
+  // cold_start: after an unrelated problem, the solve is the one a fresh core gives.
+  DecelMpc fresh;
+  ASSERT_EQ(fresh.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
+  DecelMpcResult r_fresh, r_cold, r_warm;
+  fresh.ResizeResult(r_fresh);
+  full.ResizeResult(r_cold);
+  full.ResizeResult(r_warm);
+  DecelMpcInput other = f.input;
+  Eigen::VectorXd elsewhere = f.arm.q_nominal;
+  elsewhere[0] -= 0.25;
+  elsewhere[5] += 0.3;
+  ReachReference(full, f.arm.q_nominal, elsewhere, other);
+  other.p_b += Eigen::Vector3d(-0.2, 0.15, 0.1);
+  in.cold_start = true;
+  ASSERT_TRUE(fresh.Solve(in, r_fresh));
+  ASSERT_TRUE(full.Solve(other, r_warm));  // leaves the other problem's iterates
+  ASSERT_TRUE(full.Solve(in, r_cold));
+  EXPECT_EQ(r_cold.iterations, r_fresh.iterations);
+  EXPECT_EQ((r_cold.q - r_fresh.q).cwiseAbs().maxCoeff(), 0.0) << "cold_start is not a fresh start";
+  // The control: without it the solver starts from the other problem.
+  ASSERT_TRUE(full.Solve(other, r_warm));
+  in.cold_start = false;
+  ASSERT_TRUE(full.Solve(in, r_warm));
+  EXPECT_TRUE(r_warm.iterations != r_fresh.iterations ||
+              (r_warm.q - r_fresh.q).cwiseAbs().maxCoeff() > 0.0)
+      << "a warm start that is identical to a cold one: the fixture cannot tell them apart";
+}
+
+// ── 6. Allocation ────────────────────────────────────────────────────────────
+
+struct AllocCounts {
+  std::size_t op_new{0};
+  std::size_t c_malloc{0};
+};
+
+AllocCounts GatedSolve(DecelMpc& mpc, const DecelMpcInput& in, DecelMpcResult& res, bool& ok) {
+  AllocCounts c;
+  {
+    rtc::testing::ScopedAllocGate new_gate;
+    rtc::testing::ScopedMallocGate malloc_gate;
+    ok = mpc.Solve(in, res);
+    c.op_new = new_gate.count();
+    c.c_malloc = malloc_gate.count();
+  }
+  return c;
+}
+
+TEST(DecelMpcApproach, TheAllocationGatesAreArmed) {
+  {
+    rtc::testing::ScopedAllocGate gate;
+    std::vector<int> v(16);
+    v[3] = 1;
+    EXPECT_GT(gate.count(), 0U);
+  }
+  // Inside a shared library: pinocchio's explicitly instantiated Data constructor.
+  {
+    const ArmModel arm = RealArm7();
+    rtc::testing::ScopedMallocGate gate;
+    pinocchio::Data data(*arm.model);
+    EXPECT_GT(gate.count(), 0U);
+  }
+}
+
+// MD-22: the core's own path allocates nothing; ProxQP's allocations are
+// recorded. The trust-region rejection runs the catch linearisation
+// (pinocchio's kinematics derivatives, the frame Jacobian, rtc_math) and the
+// WHOLE condensing — catch terms and the slack rows included — and stops only
+// at the bounds, so its C-malloc count is the core's.
+TEST(DecelMpcApproach, CatchPathAllocatesNothingOutsideTheQpSolver) {
+  ReachFixture f = MakeReach7();
+  f.params.w_perp = 10.0;
+  DecelMpc mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
+  DecelMpcResult res;
+  mpc.ResizeResult(res);
+  DecelMpcInput in = f.input;
+  in.p_c = in.p_b;
+  in.d_hat = Eigen::Vector3d(0.3, -0.4, 0.2).normalized();
+  ReachReference(mpc, f.arm.q_nominal, f.q_target, in);
+  ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);
+  UseAsReference(res, in);
+  in.cold_start = false;
+  in.w_delta_scale = 0.5;
+  ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);  // warm-up
+  UseAsReference(res, in);
+  DecelMpcInput outside = in;  // the reference leaves the box by more than δ, AFTER the catch node
+  for (int k = mpc.CatchNode() + 1; k <= mpc.NumNodes(); ++k) {
+    outside.q_ref(2, k) = f.limits.q_max[2] + 3.0 * f.params.delta_tr;
+  }
+
+  bool ok = false;
+  const AllocCounts full = GatedSolve(mpc, in, res, ok);
+  EXPECT_TRUE(ok) << DecelMpcReasonName(res.reason);
+  EXPECT_EQ(full.op_new, 0U) << "operator new inside Solve";
+  RecordProperty("warm_solve_qp_solver_mallocs", static_cast<int>(full.c_malloc));
+  std::printf("[alloc] warm Solve with catch terms: %zu C mallocs (ProxQP, known limitation)\n",
+              full.c_malloc);
+
+  const AllocCounts core = GatedSolve(mpc, outside, res, ok);
+  EXPECT_FALSE(ok);
+  ASSERT_EQ(res.reason, DecelMpcReason::kTrustRegionConflict);
+  EXPECT_GT(res.linearize_us, 0.0) << "the rejection must come after linearisation";
+  EXPECT_GT(res.condense_us, 0.0) << "the rejection must come after condensing";
+  EXPECT_EQ(core.op_new, 0U);
+  EXPECT_EQ(core.c_malloc, 0U) << "C-level allocation in the catch linearisation / condensing";
+
+  // The weight helper is on the planner's path too.
+  Eigen::Matrix3d w;
+  bool built = false;
+  {
+    rtc::testing::ScopedAllocGate new_gate;
+    rtc::testing::ScopedMallocGate malloc_gate;
+    built = rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 9e-4), 1.0, 0.01, 1e4, w);
+    EXPECT_EQ(new_gate.count() + malloc_gate.count(), 0U) << "CatchPositionWeight";
+  }
+  EXPECT_TRUE(built);
+}
+
+// ── 7. Fail-closed ───────────────────────────────────────────────────────────
+
+struct Snapshot {
+  Eigen::MatrixXd q, qd, qdd, u, slack, tau_ratio;
+  Eigen::Vector3d pos, v_rel;
+  double axis, gamma, slack_v;
+  bool evaluated;
+
+  explicit Snapshot(const DecelMpcResult& r)
+      : q(r.q),
+        qd(r.qd),
+        qdd(r.qdd),
+        u(r.u),
+        slack(r.slack),
+        tau_ratio(r.tau_ratio),
+        pos(r.catch_pos_err),
+        v_rel(r.catch_v_rel),
+        axis(r.catch_axis_err),
+        gamma(r.catch_gamma),
+        slack_v(r.slack_v),
+        evaluated(r.catch_evaluated) {}
+
+  [[nodiscard]] bool Same(const DecelMpcResult& r) const {
+    return q == r.q && qd == r.qd && qdd == r.qdd && u == r.u && slack == r.slack &&
+           tau_ratio == r.tau_ratio && pos == r.catch_pos_err && v_rel == r.catch_v_rel &&
+           axis == r.catch_axis_err && gamma == r.catch_gamma && slack_v == r.slack_v &&
+           evaluated == r.catch_evaluated;
+  }
+};
+
+class DecelMpcApproachFailClosed : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    f_ = MakeReach7();
+    ASSERT_EQ(mpc_.Init(*f_.arm.model, f_.arm.frame, f_.params, f_.limits), DecelMpcReason::kNone);
+    mpc_.ResizeResult(res_);
+    good_ = f_.input;
+    ReachReference(mpc_, f_.arm.q_nominal, f_.q_target, good_);
+    ASSERT_TRUE(mpc_.Solve(good_, res_)) << DecelMpcReasonName(res_.reason);
+    ASSERT_TRUE(res_.catch_evaluated);
+  }
+
+  void ExpectRejected(const DecelMpcInput& in, DecelMpcReason why, const char* what) {
+    const Snapshot before(res_);
+    EXPECT_FALSE(mpc_.Solve(in, res_)) << what;
+    EXPECT_EQ(res_.reason, why) << what << ": got " << DecelMpcReasonName(res_.reason);
+    EXPECT_FALSE(res_.valid) << what;
+    EXPECT_TRUE(before.Same(res_)) << what << ": outputs changed on failure";
+  }
+
+  ReachFixture f_;
+  DecelMpc mpc_;
+  DecelMpcResult res_;
+  DecelMpcInput good_;
+};
+
+TEST_F(DecelMpcApproachFailClosed, RejectsNonFiniteCatchInputs) {
+  DecelMpcInput in = good_;
+  in.p_b[1] = kNan;
+  ExpectRejected(in, DecelMpcReason::kNonFinite, "p_b NaN");
+  in = good_;
+  in.w_p(0, 2) = kInf;
+  ExpectRejected(in, DecelMpcReason::kNonFinite, "w_p inf");
+  in = good_;
+  in.a_d[0] = kNan;
+  ExpectRejected(in, DecelMpcReason::kNonFinite, "a_d NaN");
+  in = good_;
+  in.v_b[2] = kNan;
+  ExpectRejected(in, DecelMpcReason::kNonFinite, "v_b NaN");
+  in = good_;
+  in.gamma_ref = kNan;
+  ExpectRejected(in, DecelMpcReason::kNonFinite, "gamma_ref NaN");
+  in = good_;
+  in.w_delta_scale = kNan;
+  ExpectRejected(in, DecelMpcReason::kNonFinite, "w_delta_scale NaN");
+}
+
+TEST_F(DecelMpcApproachFailClosed, RejectsOutOfRangeCatchInputs) {
+  DecelMpcInput in = good_;
+  in.a_d *= 1.5;
+  ExpectRejected(in, DecelMpcReason::kDirectionNotUnit, "a_d not unit");
+  for (const double g : {0.0, -0.2, 1.01}) {
+    in = good_;
+    in.gamma_ref = g;
+    ExpectRejected(in, DecelMpcReason::kInputOutOfRange, "gamma_ref");
+  }
+  for (const double s : {-0.1, 1.5}) {
+    in = good_;
+    in.w_delta_scale = s;
+    ExpectRejected(in, DecelMpcReason::kInputOutOfRange, "w_delta_scale");
+  }
+  in = good_;
+  in.w_p(0, 1) += 5.0;  // not symmetric
+  ExpectRejected(in, DecelMpcReason::kInputOutOfRange, "w_p asymmetric");
+  in = good_;
+  in.w_p = SkewWeight(2000.0, -50.0, 1000.0);  // symmetric, one negative eigenvalue
+  ExpectRejected(in, DecelMpcReason::kInputOutOfRange, "w_p indefinite");
+  // A rank-deficient PSD weight is a legitimate one (no pull along one axis).
+  in = good_;
+  in.w_p = SkewWeight(2000.0, 0.0, 1000.0);
+  EXPECT_TRUE(mpc_.Solve(in, res_)) << DecelMpcReasonName(res_.reason);
+}
+
+TEST_F(DecelMpcApproachFailClosed, RejectsAMissingReferenceAndAFarAxis) {
+  DecelMpcInput in = good_;
+  in.reference_valid = false;
+  ExpectRejected(in, DecelMpcReason::kReferenceRequired, "no reference");
+  // The reference's catch-node axis is more than axis_theta_max (π/2) from a_d.
+  pinocchio::Data data(*f_.arm.model);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(f_.arm.model->nv);
+  const Eigen::Vector3d z = CatchPoseAt(f_.arm, data, good_.q_ref.col(mpc_.CatchNode()), zero).z;
+  in = good_;
+  in.a_d = TiltedAxis(z, 2.0, Eigen::Vector3d(0.3, -0.5, 0.8));
+  ExpectRejected(in, DecelMpcReason::kCatchAxisOutOfRange, "axis 2 rad off");
+  in = good_;
+  in.a_d = -z;
+  ExpectRejected(in, DecelMpcReason::kCatchAxisOutOfRange, "axis antiparallel");
+}
+
+// A core WITHOUT catch terms never reads the catch inputs: the existing
+// consumer (DecelPlanner) leaves them default-constructed, and garbage in them
+// must not matter either.
+TEST(DecelMpcApproach, CatchInputsAreIgnoredWhenCatchTermsAreOff) {
+  const ArmModel arm = Synthetic6R();
+  for (const DecelMpcParams& p : {DecelMpcParams{}, GridParams(kSmallGrid)}) {
+    DecelMpc mpc;
+    ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)),
+              DecelMpcReason::kNone);
+    DecelMpcResult clean, dirty;
+    mpc.ResizeResult(clean);
+    mpc.ResizeResult(dirty);
+    DecelMpcInput in = RestInput(arm.q_nominal);
+    in.qd0 << 0.3, -0.2, 0.25, 0.1, -0.2, 0.3;
+    ASSERT_TRUE(mpc.Solve(in, clean)) << DecelMpcReasonName(clean.reason);
+    EXPECT_FALSE(clean.catch_evaluated);
+    DecelMpcInput junk = in;
+    junk.p_b.setConstant(kNan);
+    junk.w_p.setConstant(kNan);
+    junk.a_d.setZero();
+    junk.v_b.setConstant(kInf);
+    junk.gamma_ref = -3.0;
+    ASSERT_TRUE(mpc.Solve(junk, dirty)) << DecelMpcReasonName(dirty.reason);
+    EXPECT_EQ((clean.q - dirty.q).cwiseAbs().maxCoeff(), 0.0);
+    // No pre-catch reference needed either: the pre-solve path still serves.
+    EXPECT_TRUE(dirty.presolved);
+  }
+}
+
+// ── 8. The position weight from a covariance ─────────────────────────────────
+
+TEST(CatchPositionWeightTest, MatchesTheClosedFormAndClampsBothEnds) {
+  Eigen::Matrix3d w;
+  // Diagonal: w_i = κ / (σ_i² + σ_floor²).
+  const Eigen::Matrix3d diag = Eigen::Vector3d(1e-4, 4e-4, 2.5e-3).asDiagonal();
+  ASSERT_TRUE(rtc::catching::CatchPositionWeight(diag, 2.0, 0.01, 1e9, w));
+  EXPECT_NEAR(w(0, 0), 2.0 / (1e-4 + 1e-4), 1e-6);
+  EXPECT_NEAR(w(1, 1), 2.0 / (4e-4 + 1e-4), 1e-6);
+  EXPECT_NEAR(w(2, 2), 2.0 / (2.5e-3 + 1e-4), 1e-6);
+  EXPECT_LE(std::abs(w(0, 1)) + std::abs(w(0, 2)) + std::abs(w(1, 2)), 1e-9);
+
+  // Rotated: κ (Σ + σ² I)⁻¹, exactly symmetric, and accepted by the core's own check.
+  const Eigen::Matrix3d sigma = SkewWeight(1e-4, 4e-4, 2.5e-3);
+  ASSERT_TRUE(rtc::catching::CatchPositionWeight(sigma, 2.0, 0.01, 1e9, w));
+  const Eigen::Matrix3d expected = 2.0 * (sigma + 1e-4 * Eigen::Matrix3d::Identity()).inverse();
+  EXPECT_LE((w - expected).cwiseAbs().maxCoeff(), 1e-9 * expected.cwiseAbs().maxCoeff());
+  EXPECT_EQ((w - w.transpose()).cwiseAbs().maxCoeff(), 0.0);
+
+  // The cap: no eigenvalue above w_max.
+  ASSERT_TRUE(rtc::catching::CatchPositionWeight(sigma, 2.0, 0.01, 3000.0, w));
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(w);
+  EXPECT_LE(es.eigenvalues().maxCoeff(), 3000.0 * (1.0 + 1e-12));
+  EXPECT_NEAR(es.eigenvalues().minCoeff(), 2.0 / (2.5e-3 + 1e-4), 1e-6);
+
+  // A zero covariance: the floor alone bounds the weight.
+  ASSERT_TRUE(rtc::catching::CatchPositionWeight(Eigen::Matrix3d::Zero(), 1.0, 0.01, 1e9, w));
+  EXPECT_LE((w - 1e4 * Eigen::Matrix3d::Identity()).cwiseAbs().maxCoeff(), 1e-6);
+
+  // A covariance that is NOT positive semidefinite (an estimator's rounding, or
+  // worse): the negative eigenvalue counts as zero. Unclamped, λ = −σ_floor²
+  // would be a division by zero and λ below it a NEGATIVE weight.
+  for (const double lambda : {-1e-4, -5e-4}) {
+    const Eigen::Matrix3d bad = SkewWeight(1e-4, lambda, 2.5e-3);
+    ASSERT_TRUE(rtc::catching::CatchPositionWeight(bad, 1.0, 0.01, 1e9, w));
+    ASSERT_TRUE(w.allFinite());
+    es.compute(w);
+    EXPECT_GT(es.eigenvalues().minCoeff(), 0.0);
+    EXPECT_NEAR(es.eigenvalues().maxCoeff(), 1.0 / 1e-4, 1e-4) << "λ = " << lambda;
+  }
+
+  // An asymmetric input is symmetrised, deliberately (SelfAdjointEigenSolver
+  // would silently read one triangle).
+  Eigen::Matrix3d skewed = sigma;
+  skewed(0, 1) += 2e-5;
+  skewed(1, 0) -= 2e-5;
+  Eigen::Matrix3d w_skewed;
+  ASSERT_TRUE(rtc::catching::CatchPositionWeight(skewed, 2.0, 0.01, 1e9, w_skewed));
+  ASSERT_TRUE(rtc::catching::CatchPositionWeight(sigma, 2.0, 0.01, 1e9, w));
+  EXPECT_LE((w - w_skewed).cwiseAbs().maxCoeff(), 1e-9 * w.cwiseAbs().maxCoeff());
+}
+
+TEST(CatchPositionWeightTest, RejectsNonFiniteAndNonPositiveArguments) {
+  const Eigen::Matrix3d sigma = SkewWeight(1e-4, 4e-4, 2.5e-3);
+  const Eigen::Matrix3d sentinel = Eigen::Matrix3d::Constant(7.0);
+  Eigen::Matrix3d w = sentinel;
+  Eigen::Matrix3d nan_sigma = sigma;
+  nan_sigma(1, 1) = kNan;
+  EXPECT_FALSE(rtc::catching::CatchPositionWeight(nan_sigma, 1.0, 0.01, 1e4, w));
+  for (const double bad : {0.0, -1.0, kNan, kInf}) {
+    EXPECT_FALSE(rtc::catching::CatchPositionWeight(sigma, bad, 0.01, 1e4, w)) << "kappa " << bad;
+    EXPECT_FALSE(rtc::catching::CatchPositionWeight(sigma, 1.0, bad, 1e4, w)) << "floor " << bad;
+    EXPECT_FALSE(rtc::catching::CatchPositionWeight(sigma, 1.0, 0.01, bad, w)) << "w_max " << bad;
+  }
+  EXPECT_EQ(w, sentinel) << "the output is written only on success";
 }
 
 }  // namespace

@@ -1,16 +1,21 @@
 #include "rtc_controllers/catching/decel_mpc.hpp"
 
+#include "rtc_controllers/catching/decel_mpc_catch.hpp"
 #include "rtc_controllers/catching/decel_mpc_torque.hpp"
 #include "rtc_controllers/gain_floor.hpp"
+#include "rtc_math/se3/axis_align.hpp"
 
+#include <Eigen/Eigenvalues>
 #include <Eigen/QR>
 #include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics-derivatives.hpp>
 #include <pinocchio/algorithm/rnea-derivatives.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 namespace rtc::catching {
 
@@ -21,6 +26,12 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kUnitTolerance = 1e-6;
 // Entry-box comparison slack [rad] — rounding only, far below any margin.
 constexpr double kBoxRoundingSlack = 1e-12;
+// W_p symmetry and PSD tolerance, relative to its largest entry / its trace: a
+// weight built as V·diag·Vᵀ is symmetric and PSD only to rounding.
+constexpr double kWeightRelTolerance = 1e-9;
+// Ball speed [m/s] below which its direction of travel is undefined: the
+// velocity weight is then isotropic (w_⊥) and γ is reported as 0.
+constexpr double kMinBallSpeed = 1e-6;
 
 [[nodiscard]] bool FinitePositive(double x) noexcept {
   return std::isfinite(x) && x > 0.0;
@@ -72,6 +83,14 @@ const char* DecelMpcReasonName(DecelMpcReason reason) noexcept {
       return "qp_failed";
     case DecelMpcReason::kSolutionNonFinite:
       return "solution_non_finite";
+    case DecelMpcReason::kBlocksAcrossCatch:
+      return "blocks_across_catch";
+    case DecelMpcReason::kInputOutOfRange:
+      return "input_out_of_range";
+    case DecelMpcReason::kReferenceRequired:
+      return "reference_required";
+    case DecelMpcReason::kCatchAxisOutOfRange:
+      return "catch_axis_out_of_range";
   }
   return "unknown";
 }
@@ -118,15 +137,21 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
   const int n = arm.nv;
   const auto nn = static_cast<Eigen::Index>(n);
 
-  // Parameters.
-  const int n_nodes = params.n_nodes;
-  if (n_nodes < 1 || n_nodes > kMaxDecelNodes || !FinitePositive(params.dt)) {
+  // Parameters. n_nodes is the STOP segment; the horizon is n_pre + n_nodes.
+  const int n_stop = params.n_nodes;
+  if (n_stop < 1 || n_stop > kMaxDecelNodes || !FinitePositive(params.dt)) {
     return DecelMpcReason::kParamsInvalid;
   }
+  const int n_pre = params.n_pre;
+  if (n_pre < 0 || n_pre > kMaxMpcNodes - n_stop || (n_pre > 0 && !FinitePositive(params.dt_pre))) {
+    return DecelMpcReason::kParamsInvalid;
+  }
+  const int n_nodes = n_pre + n_stop;
   if (params.n_blocks < 3) {
     return DecelMpcReason::kBlocksTooFew;
   }
-  if (params.n_blocks > n_nodes) {
+  // block_sizes holds kMaxDecelNodes entries whatever N is.
+  if (params.n_blocks > n_nodes || params.n_blocks > kMaxDecelNodes) {
     return DecelMpcReason::kParamsInvalid;
   }
   int block_sum = 0;
@@ -139,6 +164,26 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
   }
   if (block_sum != n_nodes) {
     return DecelMpcReason::kParamsInvalid;
+  }
+  // The catch node splits the blocks: none may span it, and the terminal
+  // equality needs three after it. The rank self-check below cannot see the
+  // second rule — pre-catch blocks supply rank too.
+  {
+    int start = 0;
+    int after_catch = 0;
+    for (int b = 0; b < params.n_blocks; ++b) {
+      const int end = start + params.block_sizes[static_cast<std::size_t>(b)];
+      if (start < n_pre && end > n_pre) {
+        return DecelMpcReason::kBlocksAcrossCatch;
+      }
+      if (start >= n_pre) {
+        ++after_catch;
+      }
+      start = end;
+    }
+    if (after_catch < 3) {
+      return DecelMpcReason::kBlocksTooFew;
+    }
   }
   if (params.jerk_weight.size() != 0) {
     if (params.jerk_weight.size() != nn) {
@@ -164,6 +209,15 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
       params.solver.max_iter_in < 1) {
     return DecelMpcReason::kParamsInvalid;
   }
+  if (!rtc::IsFiniteNonNegative(params.w_axis) || !rtc::IsFiniteNonNegative(params.w_v_par) ||
+      !rtc::IsFiniteNonNegative(params.w_v_perp) || !rtc::IsFiniteNonNegative(params.rho_v) ||
+      !rtc::IsFiniteNonNegative(params.v_rel_allow) || !(params.axis_theta_max > 0.0) ||
+      !(params.axis_theta_max < std::numbers::pi)) {
+    return DecelMpcReason::kParamsInvalid;
+  }
+  if (params.catch_terms && (n_pre < 1 || (params.rho_v > 0.0 && !(params.v_rel_allow > 0.0)))) {
+    return DecelMpcReason::kParamsInvalid;
+  }
 
   // Limits (finite first — max/min below would launder a NaN, NUM-7).
   const auto sized = [nn](const Eigen::VectorXd& x) { return x.size() == nn && x.allFinite(); };
@@ -181,14 +235,21 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
   params_ = params;
   n_ = n;
   n_nodes_ = n_nodes;
+  n_pre_ = n_pre;
   n_blocks_ = params.n_blocks;
-  nu_ = n * n_blocks_;
-  nz_ = n * (n_blocks_ + n_nodes_);
-  n_eq_ = 2 * n;
-  n_in_ = 5 * n * n_nodes_;
   frame_ = catch_frame;
   w_perp_on_ = params.w_perp > 0.0;
   torque_on_ = params.rho_tau > 0.0;
+  catch_on_ = params.catch_terms;
+  vel_on_ = catch_on_ && (params.w_v_par > 0.0 || params.w_v_perp > 0.0);
+  slack_v_on_ = catch_on_ && params.rho_v > 0.0;
+  pos_on_ = false;
+  h_modified_ = false;
+  w_delta_scale_ = 1.0;
+  nu_ = n * n_blocks_;
+  nz_ = n * (n_blocks_ + n_nodes_) + (slack_v_on_ ? 1 : 0);
+  n_eq_ = 2 * n;
+  n_in_ = 5 * n * n_nodes_ + (slack_v_on_ ? 7 : 0);
 
   model_ = arm;
   // ADDED to whatever the model already carries (pinocchio's URDF parser
@@ -211,10 +272,27 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
     inv_tau_[j] = 1.0 / limits.tau_max[j];
   }
 
+  // Grid. Node instants are k·Δ within each part, never a running sum, so the
+  // uniform grid (n_pre = 0) keeps the exact values k·Δ_s it always had.
+  for (int k = 0; k <= n_nodes_; ++k) {
+    const auto i = static_cast<std::size_t>(k);
+    t_node_[i] = k <= n_pre_ ? static_cast<double>(k) * params.dt_pre
+                             : static_cast<double>(n_pre_) * params.dt_pre +
+                                   static_cast<double>(k - n_pre_) * params.dt;
+    if (k < n_nodes_) {
+      dt_node_[i] = k < n_pre_ ? params.dt_pre : params.dt;
+    }
+  }
   {
     int k = 0;
     for (int b = 0; b < n_blocks_; ++b) {
-      for (int i = 0; i < params.block_sizes[static_cast<std::size_t>(b)]; ++i) {
+      const int size = params.block_sizes[static_cast<std::size_t>(b)];
+      // Σ_{k∈b} Δ_k/Δ_s — a block lies on one side of the catch node, so this
+      // is its node count, times Δ_a/Δ_s before the catch.
+      block_weight_[static_cast<std::size_t>(b)] =
+          k < n_pre_ ? static_cast<double>(size) * (params.dt_pre / params.dt)
+                     : static_cast<double>(size);
+      for (int i = 0; i < size; ++i) {
         block_of_node_[static_cast<std::size_t>(k++)] = b;
       }
     }
@@ -227,12 +305,12 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
   gq_.setZero(N1, nb);
   gv_.setZero(N1, nb);
   ga_.setZero(N1, nb);
-  const double dt = params.dt;
   for (Eigen::Index b = 0; b < nb; ++b) {
     double q = 0.0;
     double v = 0.0;
     double a = 0.0;
     for (int k = 0; k < n_nodes_; ++k) {
+      const double dt = dt_node_[static_cast<std::size_t>(k)];
       const double u =
           block_of_node_[static_cast<std::size_t>(k)] == static_cast<int>(b) ? params.u_scale : 0.0;
       q += dt * v + 0.5 * dt * dt * a + dt * dt * dt * u / 6.0;
@@ -259,12 +337,13 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
   // Constant Hessians.
   h_kin_.setZero(nz_, nz_);
   for (Eigen::Index b = 0; b < nb; ++b) {
-    const double n_b = params.block_sizes[static_cast<std::size_t>(b)];
+    const double n_b = block_weight_[static_cast<std::size_t>(b)];
     for (Eigen::Index j = 0; j < nn; ++j) {
       h_kin_(b * nn + j, b * nn + j) = jerk_w_[j] * n_b;
     }
   }
   h_main_ = h_kin_;
+  h_delta_.setZero(nz_, nz_);
   if (params.w_delta > 0.0) {
     for (Eigen::Index k = 1; k < N1; ++k) {
       for (Eigen::Index b = 0; b < nb; ++b) {
@@ -272,6 +351,7 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
           const double w = params.w_delta * gq_(k, b) * gq_(k, c);
           for (Eigen::Index j = 0; j < nn; ++j) {
             h_main_(b * nn + j, c * nn + j) += w;
+            h_delta_(b * nn + j, c * nn + j) += w;
           }
         }
       }
@@ -314,7 +394,6 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
   d_scaled_.setZero(nn, 3 * nn * N1);
   c_tilde_.setZero(nn * n_nodes_);
   j6_.setZero(6, nn);
-  ltl_.setZero(nn, nn);
   p_perp_.setIdentity();
   l_perp_.setZero(3, nn * N1);
   r_perp_.setZero(3 * N1);
@@ -328,6 +407,22 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
   v_out_.setZero(nn, N1);
   a_out_.setZero(nn, N1);
   tau_lin_.setZero(nn * n_nodes_);
+  jv_c_.setZero(3, nn);
+  jw_c_.setZero(3, nn);
+  hv_c_.setZero(3, nn);
+  la_c_.setZero(3, nn);
+  dv_c_.setZero(3, nn);
+  wa_q_.setZero(3, nn);
+  wa_v_.setZero(3, nn);
+  m_qq_.setZero(nn, nn);
+  m_qv_.setZero(nn, nn);
+  m_vv_.setZero(nn, nn);
+  blk_.setZero(nn, nn);
+  c_q_.setZero(nn);
+  c_v_.setZero(nn);
+  l_dense_.setZero(3, nu_);
+  wl_dense_.setZero(3, nu_);
+  perp_l_.setZero(3, nn);
 
   initialized_ = true;
   return DecelMpcReason::kNone;
@@ -343,6 +438,13 @@ void DecelMpc::ResizeResult(DecelMpcResult& result) const {
   result.tau_ratio.setZero(nn, n_nodes_);
   result.valid = false;
   result.reason = initialized_ ? DecelMpcReason::kNone : DecelMpcReason::kNotInitialized;
+}
+
+double DecelMpc::NodeTime(int k) const noexcept {
+  if (!initialized_ || k < 0 || k > n_nodes_) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return t_node_[static_cast<std::size_t>(k)];
 }
 
 double DecelMpc::StageGain(int m, int k, int b) const noexcept {
@@ -368,6 +470,10 @@ double DecelMpc::StageGain(int m, int k, int b) const noexcept {
 //   [2nN,3nN)  torque upper  D̃_k G_k z − s ≤ η − c̃
 //   [3nN,4nN)  torque lower  D̃_k G_k z + s ≥ −η − c̃
 //   [4nN,5nN)  slack         s ≥ 0
+// and, with the velocity slack (the last variable s_v, rows scaled by 1/v_allow):
+//   [5nN,   +3)  −L̃ z − s_v ≤ 1 − d̃      L̃ = (ĝ_q⊗H_v + ĝ_v⊗J_v)/v_allow at k_c
+//   [5nN+3, +3)  −L̃ z + s_v ≥ −1 − d̃     d̃ = (v̂_b − v_C(z = 0))/v_allow
+//   [5nN+6]      s_v ≥ 0
 
 void DecelMpc::AssembleConstant(tsid::QPData& qp, bool main) noexcept {
   const Eigen::Index nn = n_;
@@ -399,6 +505,20 @@ void DecelMpc::AssembleConstant(tsid::QPData& qp, bool main) noexcept {
       qp.C(4 * nN + o + j, nu_ + o + j) = 1.0;
     }
   }
+  AssembleSlackVConstant(qp);
+}
+
+void DecelMpc::AssembleSlackVConstant(tsid::QPData& qp) const noexcept {
+  if (!slack_v_on_) {
+    return;
+  }
+  const Eigen::Index base = 5 * static_cast<Eigen::Index>(n_) * n_nodes_;
+  const Eigen::Index sv = nz_ - 1;
+  for (Eigen::Index i = 0; i < 3; ++i) {
+    qp.C(base + i, sv) = -1.0;
+    qp.C(base + 3 + i, sv) = 1.0;
+  }
+  qp.C(base + 6, sv) = 1.0;
 }
 
 void DecelMpc::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept {
@@ -410,13 +530,13 @@ void DecelMpc::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept {
 
   qp.H.setZero();
   for (Eigen::Index b = 0; b < nb; ++b) {
-    const double n_b = params_.block_sizes[static_cast<std::size_t>(b)];
+    const double n_b = block_weight_[static_cast<std::size_t>(b)];
     for (Eigen::Index j = 0; j < nn; ++j) {
       qp.H(b * nn + j, b * nn + j) = jerk_w_[j] * n_b;
     }
   }
   if (main && params_.w_delta > 0.0) {
-    const double sw = std::sqrt(params_.w_delta);
+    const double sw = std::sqrt(params_.w_delta * w_delta_scale_);
     for (Eigen::Index k = 1; k <= N; ++k) {
       work_dg_ = g_dense_.middleRows(3 * nn * k, nn);
       work_dg_ *= sw;
@@ -438,12 +558,13 @@ void DecelMpc::AssembleConstantDense(tsid::QPData& qp, bool main) noexcept {
       qp.C(4 * nN + o + j, nu_ + o + j) = 1.0;
     }
   }
+  AssembleSlackVConstant(qp);
 }
 
 void DecelMpc::FreeResponse() noexcept {
   const Eigen::Index nn = n_;
   for (Eigen::Index k = 0; k <= n_nodes_; ++k) {
-    const double t = static_cast<double>(k) * params_.dt;
+    const double t = t_node_[static_cast<std::size_t>(k)];
     for (Eigen::Index j = 0; j < nn; ++j) {
       qf_(j, k) = q0_[j] + t * v0_[j] + 0.5 * t * t * a0_[j];
       vf_(j, k) = v0_[j] + t * a0_[j];
@@ -523,26 +644,235 @@ void DecelMpc::AssembleTorqueRowsDense() noexcept {
 }
 
 void DecelMpc::AssemblePerp() noexcept {
-  // ½ w_⊥ Σ_k ‖r_k + L_k (ĝ_{q,k}ᵀ ⊗ I) z‖²
+  // ½ w_⊥ Σ_k ‖r_k + L_k (ĝ_{q,k}ᵀ ⊗ I) z‖² — a position-only node term at
+  // every node, through the same routine the catch terms use.
   const Eigen::Index nn = n_;
-  const double w = params_.w_perp;
+  const Eigen::Matrix3d w = params_.w_perp * Eigen::Matrix3d::Identity();
   for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
-    ltl_.noalias() = l_perp_.middleCols(nn * k, nn).transpose() * l_perp_.middleCols(nn * k, nn);
-    // Exactly symmetric (GEMM rounding differs across the two triangles).
-    for (Eigen::Index c = 0; c < nn; ++c) {
-      for (Eigen::Index r = c + 1; r < nn; ++r) {
-        ltl_(c, r) = ltl_(r, c);
-      }
-    }
-    work_n_.noalias() = l_perp_.middleCols(nn * k, nn).transpose() * r_perp_.segment(3 * k, 3);
-    const Eigen::Index last_block = block_of_node_[static_cast<std::size_t>(k - 1)];
-    for (Eigen::Index b = 0; b <= last_block; ++b) {
-      for (Eigen::Index c = 0; c <= last_block; ++c) {
-        qp_main_.H.block(b * nn, c * nn, nn, nn) += (w * gq_(k, b) * gq_(k, c)) * ltl_;
-      }
-      qp_main_.g.segment(b * nn, nn) += (w * gq_(k, b)) * work_n_;
+    perp_l_ = l_perp_.middleCols(nn * k, nn);
+    const Eigen::Vector3d r = r_perp_.segment<3>(3 * k);
+    if (params_.reference_assembly) {
+      AccumulateNodeTermDense(k, perp_l_, nullptr, w, r);
+    } else {
+      AccumulateNodeTerm(k, perp_l_, nullptr, w, r);
     }
   }
+}
+
+// ── Catch terms (E1-F07) ─────────────────────────────────────────────────────
+
+DecelMpcReason LinearizeCatchAt(
+    const pinocchio::Model& model, pinocchio::Data& data, pinocchio::FrameIndex frame,
+    const Eigen::Ref<const Eigen::VectorXd>& q, const Eigen::Ref<const Eigen::VectorXd>& v,
+    const Eigen::Vector3d& a_d, double axis_theta_max, bool with_axis, bool with_velocity,
+    Eigen::MatrixXd& j6_work, Eigen::Matrix<double, 3, Eigen::Dynamic>& j_v,
+    Eigen::Matrix<double, 3, Eigen::Dynamic>& j_w, Eigen::Matrix<double, 3, Eigen::Dynamic>& l_a,
+    Eigen::Matrix<double, 3, Eigen::Dynamic>& h_v,
+    Eigen::Matrix<double, 3, Eigen::Dynamic>& dv_work, CatchLinearization& out) noexcept {
+  const Eigen::Index n = model.nv;
+  if (model.nq != model.nv || frame >= model.frames.size() || q.size() != n || v.size() != n ||
+      j6_work.rows() != 6 || j6_work.cols() != n || j_v.cols() != n || j_w.cols() != n ||
+      l_a.cols() != n || h_v.cols() != n || dv_work.cols() != n) {
+    return DecelMpcReason::kDimMismatch;
+  }
+  // The velocity derivative runs its own forward pass, so it goes before the
+  // frame Jacobian (which leaves oMf for the pose below).
+  if (with_velocity) {
+    pinocchio::computeForwardKinematicsDerivatives(model, data, q, v);
+    const pinocchio::Frame& f = model.frames[frame];
+    h_v.setZero();
+    dv_work.setZero();
+    pinocchio::getPointVelocityDerivatives(model, data, f.parentJoint, f.placement,
+                                           pinocchio::LOCAL_WORLD_ALIGNED, h_v, dv_work);
+  }
+  j6_work.setZero();
+  pinocchio::computeFrameJacobian(model, data, q, frame, pinocchio::LOCAL_WORLD_ALIGNED, j6_work);
+  j_v = j6_work.topRows(3);
+  j_w = j6_work.bottomRows(3);
+  out.p = data.oMf[frame].translation();
+  out.z = data.oMf[frame].rotation().col(2);
+  if (with_axis) {
+    const rtc::math::se3::AxisAlignErrorResult e = rtc::math::se3::AxisAlignError(out.z, a_d);
+    rtc::math::se3::AxisAlignJacobianResult j = rtc::math::se3::AxisAlignJacobian(out.z, a_d);
+    if (!e.IsValid() || !j.IsValid() ||
+        e.region == rtc::math::se3::AxisAlignRegion::kAntiparallelDeadband ||
+        j.region == rtc::math::se3::AxisAlignRegion::kJacobianCapped ||
+        !(e.error.norm() <= axis_theta_max)) {
+      return DecelMpcReason::kCatchAxisOutOfRange;
+    }
+    if (j.region == rtc::math::se3::AxisAlignRegion::kAlignedDeadband) {
+      j.jacobian.noalias() = rtc::math::se3::hat(a_d) * rtc::math::se3::hat(out.z);
+    }
+    l_a.noalias() = j.jacobian * j_w;
+    out.e_a = e.error;
+  }
+  return DecelMpcReason::kNone;
+}
+
+DecelMpcReason DecelMpc::LinearizeCatch() noexcept {
+  const Eigen::Index kc = n_pre_;
+  const bool with_axis = params_.w_axis > 0.0;
+  const bool with_velocity = vel_on_ || slack_v_on_;
+  CatchLinearization lin;
+  const DecelMpcReason why = LinearizeCatchAt(model_, data_, frame_, qr_.col(kc), vr_.col(kc), a_d_,
+                                              params_.axis_theta_max, with_axis, with_velocity, j6_,
+                                              jv_c_, jw_c_, la_c_, hv_c_, dv_c_, lin);
+  if (why != DecelMpcReason::kNone) {
+    return why;
+  }
+  work_n_ = qf_.col(kc) - qr_.col(kc);  // free response − reference, position part
+
+  // Position: r = p(q̄) + J_v (q_f − q̄) − p̂_b.
+  r_pos_ = lin.p - p_b_;
+  r_pos_.noalias() += jv_c_ * work_n_;
+  // Approach axis: r = e_a(q̄) + L_a (q_f − q̄).
+  if (with_axis) {
+    r_axis_ = lin.e_a;
+    r_axis_.noalias() += la_c_ * work_n_;
+  }
+  // Velocity: v_C(z = 0) = J_v v_f + H_v (q_f − q̄); weight by the ball's travel.
+  if (with_velocity) {
+    v_c0_.noalias() = jv_c_ * vf_.col(kc);
+    v_c0_.noalias() += hv_c_ * work_n_;
+    const double speed = v_b_.norm();
+    if (speed > kMinBallSpeed) {
+      const Eigen::Vector3d d = v_b_ / speed;
+      const Eigen::Matrix3d dd = d * d.transpose();
+      w_v_ = params_.w_v_par * dd + params_.w_v_perp * (Eigen::Matrix3d::Identity() - dd);
+    } else {
+      w_v_ = params_.w_v_perp * Eigen::Matrix3d::Identity();
+    }
+  }
+  return DecelMpcReason::kNone;
+}
+
+void DecelMpc::AccumulateNodeTerm(Eigen::Index k,
+                                  const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
+                                  const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
+                                  const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept {
+  // ½ ‖r + (ĝ_{q,k}ᵀ ⊗ A_q + ĝ_{v,k}ᵀ ⊗ A_v) z‖²_W. With M_b = ĝ_q[b] A_q + ĝ_v[b] A_v:
+  //   H(b,c) += M_bᵀ W M_c,   g(b) += M_bᵀ W r.
+  // The cross product A_qᵀ W A_v is NOT symmetric, so an off-diagonal block is
+  // not either: H is kept exactly symmetric by writing H(c,b) = H(b,c)ᵀ, and
+  // only the diagonal blocks (symmetric by construction) are mirrored in place.
+  const Eigen::Index nn = n_;
+  const auto mirror = [nn](Eigen::MatrixXd& m) {
+    for (Eigen::Index c = 0; c < nn; ++c) {
+      for (Eigen::Index row = c + 1; row < nn; ++row) {
+        m(c, row) = m(row, c);
+      }
+    }
+  };
+  wa_q_.noalias() = w * a_q;
+  m_qq_.noalias() = a_q.transpose() * wa_q_;
+  mirror(m_qq_);
+  c_q_.noalias() = wa_q_.transpose() * r;  // W symmetric: (W A)ᵀ r = Aᵀ W r
+  const bool with_v = a_v != nullptr;
+  if (with_v) {
+    wa_v_.noalias() = w * (*a_v);
+    m_vv_.noalias() = a_v->transpose() * wa_v_;
+    mirror(m_vv_);
+    m_qv_.noalias() = a_q.transpose() * wa_v_;
+    c_v_.noalias() = wa_v_.transpose() * r;
+  }
+  const Eigen::Index last_block = block_of_node_[static_cast<std::size_t>(k - 1)];
+  for (Eigen::Index b = 0; b <= last_block; ++b) {
+    const double gqb = gq_(k, b);
+    const double gvb = gv_(k, b);
+    for (Eigen::Index c = b; c <= last_block; ++c) {
+      const double gqc = gq_(k, c);
+      const double gvc = gv_(k, c);
+      blk_ = (gqb * gqc) * m_qq_;
+      if (with_v) {
+        blk_ += (gqb * gvc) * m_qv_;
+        blk_ += (gvb * gqc) * m_qv_.transpose();
+        blk_ += (gvb * gvc) * m_vv_;
+      }
+      if (c == b) {
+        mirror(blk_);
+        qp_main_.H.block(b * nn, b * nn, nn, nn) += blk_;
+      } else {
+        qp_main_.H.block(b * nn, c * nn, nn, nn) += blk_;
+        qp_main_.H.block(c * nn, b * nn, nn, nn) += blk_.transpose();
+      }
+    }
+    qp_main_.g.segment(b * nn, nn) += gqb * c_q_;
+    if (with_v) {
+      qp_main_.g.segment(b * nn, nn) += gvb * c_v_;
+    }
+  }
+}
+
+void DecelMpc::AccumulateNodeTermDense(Eigen::Index k,
+                                       const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
+                                       const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
+                                       const Eigen::Matrix3d& w,
+                                       const Eigen::Vector3d& r) noexcept {
+  // The oracle: L from the dense stage matrices, then LᵀWL — no block structure.
+  const Eigen::Index nn = n_;
+  l_dense_.noalias() = a_q * g_dense_.middleRows(3 * nn * k, nn);
+  if (a_v != nullptr) {
+    l_dense_.noalias() += (*a_v) * g_dense_.middleRows(3 * nn * k + nn, nn);
+  }
+  wl_dense_.noalias() = w * l_dense_;
+  qp_main_.H.topLeftCorner(nu_, nu_).noalias() += l_dense_.transpose() * wl_dense_;
+  qp_main_.g.head(nu_).noalias() += wl_dense_.transpose() * r;
+}
+
+void DecelMpc::AssembleCatch() noexcept {
+  const Eigen::Index kc = n_pre_;
+  const bool dense = params_.reference_assembly;
+  const auto add = [this, kc, dense](const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
+                                     const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
+                                     const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept {
+    if (dense) {
+      AccumulateNodeTermDense(kc, a_q, a_v, w, r);
+    } else {
+      AccumulateNodeTerm(kc, a_q, a_v, w, r);
+    }
+  };
+  if (pos_on_) {
+    add(jv_c_, nullptr, w_p_, r_pos_);
+  }
+  if (params_.w_axis > 0.0) {
+    const Eigen::Matrix3d w = params_.w_axis * Eigen::Matrix3d::Identity();
+    add(la_c_, nullptr, w, r_axis_);
+  }
+  if (vel_on_) {
+    // v_C − γ_ref v̂_b, with v_C = v_c0 + (ĝ_q ⊗ H_v + ĝ_v ⊗ J_v) z.
+    const Eigen::Vector3d r = v_c0_ - gamma_ref_ * v_b_;
+    add(hv_c_, &jv_c_, w_v_, r);
+  }
+}
+
+void DecelMpc::AssembleSlackVRows() noexcept {
+  const Eigen::Index nn = n_;
+  const Eigen::Index kc = n_pre_;
+  const Eigen::Index base = 5 * nn * n_nodes_;
+  const double inv = 1.0 / params_.v_rel_allow;
+  const Eigen::Index last_block = block_of_node_[static_cast<std::size_t>(kc - 1)];
+  for (Eigen::Index b = 0; b <= last_block; ++b) {
+    qp_main_.C.block(base, b * nn, 3, nn) =
+        (-inv * gq_(kc, b)) * hv_c_ + (-inv * gv_(kc, b)) * jv_c_;
+    qp_main_.C.block(base + 3, b * nn, 3, nn) = qp_main_.C.block(base, b * nn, 3, nn);
+  }
+}
+
+void DecelMpc::EvaluateCatch(DecelMpcResult& out) noexcept {
+  const Eigen::Index kc = n_pre_;
+  j6_.setZero();
+  pinocchio::computeFrameJacobian(model_, data_, q_out_.col(kc), frame_,
+                                  pinocchio::LOCAL_WORLD_ALIGNED, j6_);
+  const Eigen::Vector3d z = data_.oMf[frame_].rotation().col(2);
+  Eigen::Vector3d v_c;
+  v_c.noalias() = j6_.topRows(3) * v_out_.col(kc);
+  out.catch_pos_err = data_.oMf[frame_].translation() - p_b_;
+  out.catch_axis_err = std::atan2(z.cross(a_d_).norm(), z.dot(a_d_));
+  out.catch_v_rel = v_b_ - v_c;
+  const double speed = v_b_.norm();
+  out.catch_gamma = speed > kMinBallSpeed ? v_b_.dot(v_c) / (speed * speed) : 0.0;
+  out.slack_v = slack_v_on_ ? z_[nz_ - 1] : 0.0;
+  out.catch_evaluated = true;
 }
 
 bool DecelMpc::AssembleBounds(tsid::QPData& qp, bool main) noexcept {
@@ -594,6 +924,29 @@ bool DecelMpc::AssembleBounds(tsid::QPData& qp, bool main) noexcept {
       }
     }
   }
+  if (slack_v_on_) {
+    const Eigen::Index base = 5 * nN;
+    if (main) {
+      const double inv = 1.0 / params_.v_rel_allow;
+      for (Eigen::Index i = 0; i < 3; ++i) {
+        const double d = (v_b_[i] - v_c0_[i]) * inv;
+        qp.l[base + i] = -kInf;
+        qp.u[base + i] = 1.0 - d;
+        qp.l[base + 3 + i] = -1.0 - d;
+        qp.u[base + 3 + i] = kInf;
+      }
+      qp.l[base + 6] = 0.0;
+      qp.u[base + 6] = kInf;
+    } else {
+      // The pre-solve has no catch node: rows off, slack pinned.
+      for (Eigen::Index i = 0; i < 6; ++i) {
+        qp.l[base + i] = -kInf;
+        qp.u[base + i] = kInf;
+      }
+      qp.l[base + 6] = 0.0;
+      qp.u[base + 6] = 0.0;
+    }
+  }
   return true;
 }
 
@@ -605,10 +958,11 @@ void DecelMpc::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
     return;
   }
   if (params_.w_delta > 0.0) {
+    const double w_delta = params_.w_delta * w_delta_scale_;
     for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
       const Eigen::Index last_block = block_of_node_[static_cast<std::size_t>(k - 1)];
       for (Eigen::Index b = 0; b <= last_block && b < nb; ++b) {
-        const double w = params_.w_delta * gq_(k, b);
+        const double w = w_delta * gq_(k, b);
         for (Eigen::Index j = 0; j < nn; ++j) {
           qp.g[b * nn + j] += w * (qf_(j, k) - qr_(j, k));
         }
@@ -617,6 +971,9 @@ void DecelMpc::AssembleGradient(tsid::QPData& qp, bool main) noexcept {
   }
   if (torque_on_) {
     qp.g.segment(nu_, nn * n_nodes_).setConstant(params_.rho_tau);
+  }
+  if (slack_v_on_) {
+    qp.g[nz_ - 1] = params_.rho_v;
   }
 }
 
@@ -715,6 +1072,45 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
     }
   }
 
+  if (!std::isfinite(in.w_delta_scale)) {
+    return fail(DecelMpcReason::kNonFinite);
+  }
+  if (!(in.w_delta_scale >= 0.0 && in.w_delta_scale <= 1.0)) {
+    return fail(DecelMpcReason::kInputOutOfRange);
+  }
+  Eigen::Matrix3d w_p_sym = Eigen::Matrix3d::Zero();
+  if (catch_on_) {
+    if (!in.p_b.allFinite() || !in.w_p.allFinite() || !in.a_d.allFinite() || !in.v_b.allFinite() ||
+        !std::isfinite(in.gamma_ref)) {
+      return fail(DecelMpcReason::kNonFinite);
+    }
+    if (!(std::abs(in.a_d.norm() - 1.0) <= kUnitTolerance)) {
+      return fail(DecelMpcReason::kDirectionNotUnit);
+    }
+    if (!(in.gamma_ref > 0.0 && in.gamma_ref <= 1.0)) {
+      return fail(DecelMpcReason::kInputOutOfRange);
+    }
+    // W_p: symmetric and PSD to rounding (a weight assembled as V·diag·Vᵀ is
+    // neither exactly). The symmetrised matrix is what the term uses.
+    const double w_scale = in.w_p.cwiseAbs().maxCoeff();
+    if ((in.w_p - in.w_p.transpose()).cwiseAbs().maxCoeff() > kWeightRelTolerance * w_scale) {
+      return fail(DecelMpcReason::kInputOutOfRange);
+    }
+    w_p_sym = 0.5 * (in.w_p + in.w_p.transpose());
+    if (w_scale > 0.0) {
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es;  // fixed size: no heap
+      es.compute(w_p_sym, Eigen::EigenvaluesOnly);
+      if (es.info() != Eigen::Success ||
+          !(es.eigenvalues().minCoeff() >= -kWeightRelTolerance * w_p_sym.trace())) {
+        return fail(DecelMpcReason::kInputOutOfRange);
+      }
+    }
+    // The pre-solve is a stop problem with no catch point (header note).
+    if (!in.reference_valid) {
+      return fail(DecelMpcReason::kReferenceRequired);
+    }
+  }
+
   // Entry state inside the core's own box (header note).
   for (Eigen::Index j = 0; j < nn; ++j) {
     // A rounding-level slack so a locked joint (q_lo == q_hi) accepts its
@@ -747,6 +1143,15 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
   if (w_perp_on_) {
     p_c_ = in.p_c;
     p_perp_ = Eigen::Matrix3d::Identity() - in.d_hat * in.d_hat.transpose();  // fixed size
+  }
+  w_delta_scale_ = in.w_delta_scale;
+  if (catch_on_) {
+    p_b_ = in.p_b;
+    a_d_ = in.a_d;
+    v_b_ = in.v_b;
+    w_p_ = w_p_sym;
+    gamma_ref_ = in.gamma_ref;
+    pos_on_ = w_p_sym.cwiseAbs().maxCoeff() > 0.0;
   }
   FreeResponse();
 
@@ -788,11 +1193,15 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
   {
     const auto t0 = Clock::now();
     const bool ok = (torque_on_ || w_perp_on_) ? Linearize() : true;
+    const DecelMpcReason catch_why = (ok && catch_on_) ? LinearizeCatch() : DecelMpcReason::kNone;
     out.linearize_us = MicrosSince(t0);
     if (!ok) {
       // Internal-invariant guard: Init sized every operand, so the seam's
       // size check cannot fail here. Kept rather than assumed.
       return fail(DecelMpcReason::kDimMismatch);
+    }
+    if (catch_why != DecelMpcReason::kNone) {
+      return fail(catch_why);
     }
   }
 
@@ -805,20 +1214,37 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
         AssembleTorqueRowsDense();
       }
     } else {
-      if (w_perp_on_) {
-        qp_main_.H = h_main_;
+      // H is h_main_ from Init until a term or a scale touches it; rebuild it
+      // only then. At scale 1 it is the SAME matrix as before E1-F07.
+      const bool scaled = w_delta_scale_ != 1.0;
+      if (h_modified_ || scaled) {
+        if (scaled) {
+          qp_main_.H = h_kin_;
+          qp_main_.H += w_delta_scale_ * h_delta_;
+        } else {
+          qp_main_.H = h_main_;
+        }
       }
+      h_modified_ = w_perp_on_ || catch_on_ || scaled;
       if (torque_on_) {
         AssembleTorqueRows();
       }
     }
-    if (!AssembleBounds(qp_main_, true)) {
-      out.condense_us = MicrosSince(t0);
-      return fail(DecelMpcReason::kTrustRegionConflict);
+    if (slack_v_on_) {
+      AssembleSlackVRows();
     }
     AssembleGradient(qp_main_, true);
     if (w_perp_on_) {
       AssemblePerp();
+    }
+    if (catch_on_) {
+      AssembleCatch();
+    }
+    // Last, so that a trust-region rejection has run the WHOLE condensing — the
+    // path the allocation gate measures up to the QP.
+    if (!AssembleBounds(qp_main_, true)) {
+      out.condense_us = MicrosSince(t0);
+      return fail(DecelMpcReason::kTrustRegionConflict);
     }
     out.condense_us = MicrosSince(t0);
   }
@@ -828,6 +1254,10 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
     const auto t0 = Clock::now();
     int status = -1;
     int iters = 0;
+    if (in.cold_start) {
+      // Only here: every rejection above leaves the solver as it was.
+      solver_.ResetWarmStart();
+    }
     const DecelMpcReason why = RunQp(qp_main_, status, iters);
     out.solve_us = MicrosSince(t0);
     out.qp_status = status;
@@ -865,8 +1295,41 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
   } else {
     out.tau_ratio_max = 0.0;
   }
+  out.catch_evaluated = false;
+  if (catch_on_) {
+    EvaluateCatch(out);
+  }
   out.reason = DecelMpcReason::kNone;
   out.valid = true;
+  return true;
+}
+
+// ── Position weight from a covariance ────────────────────────────────────────
+
+bool CatchPositionWeight(const Eigen::Matrix3d& sigma_p, double kappa, double sigma_floor,
+                         double w_max, Eigen::Matrix3d& w_p) noexcept {
+  // Finite and positive BEFORE any min/max: std::min/max launder a NaN (NUM-7).
+  if (!sigma_p.allFinite() || !FinitePositive(kappa) || !FinitePositive(sigma_floor) ||
+      !FinitePositive(w_max)) {
+    return false;
+  }
+  const Eigen::Matrix3d sym = 0.5 * (sigma_p + sigma_p.transpose());
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es;  // fixed size: no heap
+  es.compute(sym);
+  if (es.info() != Eigen::Success || !es.eigenvalues().allFinite() ||
+      !es.eigenvectors().allFinite()) {
+    return false;
+  }
+  const double floor_sq = sigma_floor * sigma_floor;
+  Eigen::Vector3d w;
+  for (Eigen::Index i = 0; i < 3; ++i) {
+    // A negative eigenvalue (a covariance that is not PSD) counts as zero, so
+    // the denominator is never below σ_floor².
+    const double mu = std::max(es.eigenvalues()[i], 0.0) + floor_sq;
+    w[i] = std::min(kappa / mu, w_max);
+  }
+  const Eigen::Matrix3d m = es.eigenvectors() * w.asDiagonal() * es.eigenvectors().transpose();
+  w_p = 0.5 * (m + m.transpose());
   return true;
 }
 
