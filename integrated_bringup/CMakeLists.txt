@@ -1526,15 +1526,24 @@ if(BUILD_TESTING)
     test_payload_estimate_topic
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
-  # (2) A test that ASSERTS a measured wall-clock budget (a planner p99, a
-  #     solve-time maximum, a join that must return within 200 ms). It must not
-  #     share the cores with its siblings; RUN_SERIAL gives it the box it had
-  #     while ctest ran one test at a time. Durations that are only recorded
-  #     are not protected -- quote those from a run of that one test.
+  # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
+  #     (planner_g3c), a QP solve-time p99 / maximum (clik_sweep, tracking), a
+  #     join that must return within 200 ms (planner_lane), a phase that must
+  #     end within 10-20 ms of its deadline on the real clock
+  #     (supervisor_scenarios, the *RealClock fixtures). It must not share the
+  #     cores with its siblings; RUN_SERIAL gives it the box it had while ctest
+  #     ran one test at a time. The lock above does not do that: it keeps the
+  #     other domain claimants away, not the tests that claim nothing.
+  #     No gate can find these -- a reviewer found two this list had missed --
+  #     so a new test that compares a MEASURED duration with a bound goes here.
+  #     Durations that are only recorded are not protected: quote those from a
+  #     run of that one test.
   set_tests_properties(
     test_catching_planner_g3c
     test_catching_clik_sweep
     test_catching_planner_lane
+    test_catching_tracking
+    test_catching_supervisor_scenarios
     PROPERTIES RUN_SERIAL TRUE)
 
   # Every gtest binary logs into its own throwaway session directory
