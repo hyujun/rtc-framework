@@ -343,6 +343,100 @@ TEST(DecelParams, BlocksForShrinksTheLargestTrailingBlock) {
   EXPECT_FALSE(DecelBlocksFor(d, 14, b, n));
 }
 
+// E1-F08 (#661): the APPROACH–stop keys. Off by default (MD-55), so every
+// test above runs the stop-segment planner unchanged.
+TEST(DecelParams, ApproachKeysDefaultOff) {
+  const DecelPlannerParams d = rtc::catching::PlannerParams{}.decel;
+  EXPECT_EQ(d.n_pre_max, 0);
+  EXPECT_DOUBLE_EQ(d.dt_pre_s, 0.1);
+  EXPECT_EQ(d.DtPreNs(), 100'000'000);
+  EXPECT_DOUBLE_EQ(d.rest_tol, 0.05);
+  EXPECT_DOUBLE_EQ(d.budget_first_s, 0.035);
+  EXPECT_DOUBLE_EQ(d.budget_replan_s, 0.025);
+  EXPECT_TRUE(d.replan_same_point);
+  EXPECT_FALSE(d.shadow);
+  EXPECT_DOUBLE_EQ(d.catch_pos_err_max, 0.02);
+  EXPECT_DOUBLE_EQ(d.w_axis, 100.0);
+  EXPECT_DOUBLE_EQ(d.w_v_par, 1.0);
+  EXPECT_DOUBLE_EQ(d.w_v_perp, 20.0);
+  EXPECT_DOUBLE_EQ(d.gamma_ref, 1.0);
+  EXPECT_DOUBLE_EQ(d.kappa, 1.0);
+  EXPECT_DOUBLE_EQ(d.sigma_floor, 0.01);
+  EXPECT_DOUBLE_EQ(d.w_max, 1e4);
+  EXPECT_DOUBLE_EQ(d.w_const, 2500.0);
+  EXPECT_DOUBLE_EQ(d.sigma_ref, 0.03);
+  EXPECT_FALSE(d.horizon_explicit);
+  EXPECT_FALSE(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {enabled: true}}"))
+                   .decel.horizon_explicit);
+}
+
+TEST(DecelParams, ParsesTheApproachKeys) {
+  const auto p = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
+                 "replan: {k_max: 2, same_point: false}, shadow: true, "
+                 "approach: {n_pre_max: 6, dt_pre_s: 0.08, rest_tol: 0.02}, "
+                 "budget: {first_s: 0.04, replan_s: 0.03}, publish: {catch_pos_err_max: 0.015}, "
+                 "catch: {w_axis: 50, w_v_par: 2, w_v_perp: 10, gamma_ref: 0.8, kappa: 2, "
+                 "sigma_floor: 0.02, w_max: 5000, w_const: 1000, sigma_ref: 0.05}}}"));
+  const DecelPlannerParams& d = p.decel;
+  EXPECT_TRUE(d.horizon_explicit);
+  EXPECT_EQ(d.n_pre_max, 6);
+  EXPECT_EQ(d.DtPreNs(), 80'000'000);
+  EXPECT_DOUBLE_EQ(d.rest_tol, 0.02);
+  EXPECT_DOUBLE_EQ(d.budget_first_s, 0.04);
+  EXPECT_DOUBLE_EQ(d.budget_replan_s, 0.03);
+  EXPECT_FALSE(d.replan_same_point);
+  EXPECT_TRUE(d.shadow);
+  EXPECT_DOUBLE_EQ(d.catch_pos_err_max, 0.015);
+  EXPECT_DOUBLE_EQ(d.w_axis, 50.0);
+  EXPECT_DOUBLE_EQ(d.w_v_par, 2.0);
+  EXPECT_DOUBLE_EQ(d.w_v_perp, 10.0);
+  EXPECT_DOUBLE_EQ(d.gamma_ref, 0.8);
+  EXPECT_DOUBLE_EQ(d.kappa, 2.0);
+  EXPECT_DOUBLE_EQ(d.sigma_floor, 0.02);
+  EXPECT_DOUBLE_EQ(d.w_max, 5000.0);
+  EXPECT_DOUBLE_EQ(d.w_const, 1000.0);
+  EXPECT_DOUBLE_EQ(d.sigma_ref, 0.05);
+  // The pre-catch nodes fit next to the stop's: 24 − 7 nodes, 24 − 4 blocks.
+  EXPECT_EQ(ParsePlannerParams(
+                YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, "
+                           "1, 2, 3]}, approach: {n_pre_max: 17}}}"))
+                .decel.n_pre_max,
+            17);
+}
+
+TEST(DecelParams, RejectsMalformedApproachKeys) {
+  for (const char* bad : {
+           "planner: {decel_mpc: {approach: 3}}",
+           "planner: {decel_mpc: {approach: {n_pre_max: -1}}}",
+           // 14 stop nodes (the code default) leave 10 for the pre-catch part
+           "planner: {decel_mpc: {approach: {n_pre_max: 11}}}",
+           "planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
+           "approach: {n_pre_max: 18}}}",
+           "planner: {decel_mpc: {approach: {dt_pre_s: 0.0}}}",
+           "planner: {decel_mpc: {approach: {dt_pre_s: 0.3}}}",
+           "planner: {decel_mpc: {approach: {dt_pre_s: 0.1000000004}}}",
+           "planner: {decel_mpc: {approach: {rest_tol: -0.01}}}",
+           "planner: {decel_mpc: {budget: {first_s: 0.0}}}",
+           "planner: {decel_mpc: {budget: {replan_s: 0.06}}}",
+           "planner: {decel_mpc: {replan: {same_point: maybe}}}",
+           "planner: {decel_mpc: {shadow: 1.5}}",
+           "planner: {decel_mpc: {publish: {catch_pos_err_max: 0.0}}}",
+           "planner: {decel_mpc: {publish: {catch_pos_err_max: .nan}}}",
+           "planner: {decel_mpc: {catch: {w_axis: -1}}}",
+           "planner: {decel_mpc: {catch: {gamma_ref: 0.0}}}",
+           "planner: {decel_mpc: {catch: {gamma_ref: 1.1}}}",
+           "planner: {decel_mpc: {catch: {kappa: 0.0}}}",
+           "planner: {decel_mpc: {catch: {sigma_floor: 0.0}}}",
+           "planner: {decel_mpc: {catch: {w_max: 0.0}}}",
+           "planner: {decel_mpc: {catch: {w_const: .inf}}}",
+           "planner: {decel_mpc: {catch: {sigma_ref: 0.0}}}",
+       }) {
+    EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
+        << bad;
+  }
+}
+
 // ── 2. RT-side admission and the switch rule ────────────────────────────────
 
 DecelPlanSnapshot AdmissibleSegment() {

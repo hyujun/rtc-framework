@@ -3,6 +3,7 @@
 
 #include "catching_yaml_read.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -288,6 +289,9 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   DecelPlannerParams& d = out.decel;
   d.enabled = ReadBool(decel, "enabled", "decel_mpc.enabled", d.enabled);
   const YAML::Node horizon = Section(decel, "horizon", "decel_mpc.horizon");
+  // From the section's kind, not the node: an absent section reads as an
+  // empty but DEFINED node (catching_yaml_read.hpp).
+  d.horizon_explicit = ReadSectionNode(decel, "horizon").kind == SectionKind::kMap;
   d.n_nodes =
       ReadInt(horizon, "n_nodes", "decel_mpc.horizon.n_nodes", d.n_nodes, 3, kMaxDecelNodes);
   d.dt_s = ReadBounded(horizon, "dt_s", "decel_mpc.horizon.dt_s", d.dt_s, 0.005, 0.1);
@@ -348,6 +352,45 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   d.slack_terminal_max =
       ReadBounded(publish, "slack_terminal_max", "decel_mpc.publish.slack_terminal_max",
                   d.slack_terminal_max, 0.0, 1.0);
+  d.catch_pos_err_max =
+      ReadBounded(publish, "catch_pos_err_max", "decel_mpc.publish.catch_pos_err_max",
+                  d.catch_pos_err_max, 1e-6, 1.0);
+
+  // APPROACH–stop (E1-F08). The pre-catch nodes and the stop's share the
+  // payload's node capacity and the core's block array.
+  const YAML::Node approach = Section(decel, "approach", "decel_mpc.approach");
+  const int n_pre_cap = std::min(kMaxDecelNodes - d.n_nodes, kMaxDecelNodes - d.n_blocks);
+  d.n_pre_max = ReadInt(approach, "n_pre_max", "decel_mpc.approach.n_pre_max", d.n_pre_max, 0,
+                        std::max(n_pre_cap, 0));
+  d.dt_pre_s =
+      ReadBounded(approach, "dt_pre_s", "decel_mpc.approach.dt_pre_s", d.dt_pre_s, 0.005, 0.2);
+  if (std::fabs(d.dt_pre_s * 1e9 - static_cast<double>(d.DtPreNs())) > 1e-3) {
+    Reject(Key("decel_mpc.approach.dt_pre_s") +
+           " must be a whole number of nanoseconds (the grid t_c − k·Δ_pre is integer ns)");
+  }
+  d.rest_tol =
+      ReadBounded(approach, "rest_tol", "decel_mpc.approach.rest_tol", d.rest_tol, 0.0, 1.0);
+  const YAML::Node dbudget = Section(decel, "budget", "decel_mpc.budget");
+  d.budget_first_s = ReadBounded(dbudget, "first_s", "decel_mpc.budget.first_s", d.budget_first_s,
+                                 kPlannerBudgetMinS, kPlannerBudgetMaxS);
+  d.budget_replan_s = ReadBounded(dbudget, "replan_s", "decel_mpc.budget.replan_s",
+                                  d.budget_replan_s, kPlannerBudgetMinS, kPlannerBudgetMaxS);
+  d.replan_same_point =
+      ReadBool(replan, "same_point", "decel_mpc.replan.same_point", d.replan_same_point);
+  d.shadow = ReadBool(decel, "shadow", "decel_mpc.shadow", d.shadow);
+  const YAML::Node dcatch = Section(decel, "catch", "decel_mpc.catch");
+  d.w_axis = ReadBounded(dcatch, "w_axis", "decel_mpc.catch.w_axis", d.w_axis, 0.0, 1e6);
+  d.w_v_par = ReadBounded(dcatch, "w_v_par", "decel_mpc.catch.w_v_par", d.w_v_par, 0.0, 1e6);
+  d.w_v_perp = ReadBounded(dcatch, "w_v_perp", "decel_mpc.catch.w_v_perp", d.w_v_perp, 0.0, 1e6);
+  d.gamma_ref =
+      ReadBounded(dcatch, "gamma_ref", "decel_mpc.catch.gamma_ref", d.gamma_ref, 1e-6, 1.0);
+  d.kappa = ReadBounded(dcatch, "kappa", "decel_mpc.catch.kappa", d.kappa, 1e-6, 1e6);
+  d.sigma_floor =
+      ReadBounded(dcatch, "sigma_floor", "decel_mpc.catch.sigma_floor", d.sigma_floor, 1e-6, 1.0);
+  d.w_max = ReadBounded(dcatch, "w_max", "decel_mpc.catch.w_max", d.w_max, 1e-6, 1e9);
+  d.w_const = ReadBounded(dcatch, "w_const", "decel_mpc.catch.w_const", d.w_const, 1e-6, 1e9);
+  d.sigma_ref =
+      ReadBounded(dcatch, "sigma_ref", "decel_mpc.catch.sigma_ref", d.sigma_ref, 1e-6, 1.0);
   return out;
 }
 

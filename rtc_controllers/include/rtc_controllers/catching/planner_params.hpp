@@ -10,7 +10,8 @@
 // Keys join in the commit that first reads them (a parsed key nothing reads is
 // a key nobody notices is wrong): S6-A the thread keys, S6-B the search,
 // ranking, switching and freeze keys below, MPC E1-F03 `planner.decel_mpc.*`
-// (the decel MPC's stop horizon, replan window and publish thresholds).
+// (the decel MPC's stop horizon, replan window and publish thresholds), MPC
+// E1-F08 its APPROACH–stop keys (`approach`, `budget`, `catch`, `shadow`).
 //
 // TWO KINDS OF "MISSING". A key with a documented default (L3 §6) takes it when
 // absent. A key whose value is a DECISION (`freeze.T_freeze`,
@@ -82,8 +83,60 @@ struct DecelPlannerParams {
   double slack_max{0.1};
   double slack_terminal_max{0.1};
 
+  // ── APPROACH–stop (E1-F08 #661, MD-55 – MD-64) ─────────────────────────────
+  // All PROVISIONAL (#663 tunes them). Read only when n_pre_max > 0: with 0
+  // the planner is the stop-segment planner above, unchanged.
+
+  /// `approach.n_pre_max` — the most pre-catch intervals a segment may start
+  /// with (MD-54: 6). 0 = no pre-catch grid (MD-55). One catch core per
+  /// count 1..n_pre_max is built at configure time (MD-64).
+  int n_pre_max{0};
+  /// `approach.dt_pre_s` [s] — the pre-catch spacing Δ_pre (MD-54), a whole
+  /// number of nanoseconds.
+  double dt_pre_s{0.1};
+  /// `approach.rest_tol` [rad/s] — the first solve assumes the arm rests at
+  /// its wait pose; above this max |q̇_cmd| it withholds (kNotAtRest).
+  double rest_tol{0.05};
+  /// `budget.first_s` / `budget.replan_s` [s] — a solve's ceiling and the
+  /// lead it is planned with: the first solve (with the search, one wake)
+  /// and every later one (MD-56).
+  double budget_first_s{0.035};
+  double budget_replan_s{0.025};
+  /// `replan.same_point` — re-solve a pre-catch grid point the followed
+  /// segment already starts at, with a newer prediction (MD-58).
+  bool replan_same_point{true};
+  /// `shadow` — measurement only (MD-59): solve and record every segment but
+  /// store none, so the RT never sees one. Removed with #662.
+  bool shadow{false};
+  /// `publish.catch_pos_err_max` [m] — the largest catch-node position error
+  /// (FK at the solution vs the predicted ball) a segment may carry (MD-62).
+  double catch_pos_err_max{0.02};
+  /// `catch.*` — the core's catch terms (E1-F07 measured values): approach
+  /// axis, relative velocity along / across the ball's travel, its target
+  /// fraction γ_ref; the position weight W_p = κ(Σ_p + σ_floor² I)⁻¹ capped
+  /// at w_max, or w_const·I without a usable Σ_p; w_Δ's schedule
+  /// clamp(tr Σ_p / σ_ref², 0, 1) (MD-63). σ_ref is compared with a TRACE,
+  /// so it is not a per-axis σ (tr ≈ 3σ²).
+  double w_axis{100.0};
+  double w_v_par{1.0};
+  double w_v_perp{20.0};
+  double gamma_ref{1.0};
+  double kappa{1.0};
+  double sigma_floor{0.01};
+  double w_max{1e4};
+  double w_const{2500.0};
+  double sigma_ref{0.03};
+  /// Whether the profile set `horizon` itself: the code default above is the
+  /// stop-only horizon, not MD-54's, and the configure warns when a pre-catch
+  /// grid runs on it.
+  bool horizon_explicit{false};
+
   [[nodiscard]] std::int64_t DtNs() const noexcept {
     return static_cast<std::int64_t>(std::llround(dt_s * 1e9));
+  }
+
+  [[nodiscard]] std::int64_t DtPreNs() const noexcept {
+    return static_cast<std::int64_t>(std::llround(dt_pre_s * 1e9));
   }
 };
 
@@ -211,8 +264,9 @@ struct PlannerParams {
 /// malformed key: a non-map section, a non-bool flag, a number outside its L3
 /// §6 range, a `wait_pose` that is empty / non-finite / longer than
 /// `kMaxPlanNv`, a `catch_box` whose min exceeds its max, a `decel_mpc`
-/// horizon whose blocks do not sum to n_nodes, a Δ_s that is not whole ns, or
-/// a k_max whose replan patterns would drop below three blocks.
+/// horizon whose blocks do not sum to n_nodes, a Δ_s or Δ_pre that is not
+/// whole ns, a k_max whose replan patterns would drop below three blocks, or an
+/// n_pre_max whose pre-catch nodes or blocks would not fit next to the stop's.
 [[nodiscard]] PlannerParams ParsePlannerParams(const YAML::Node& catching);
 
 }  // namespace rtc::catching
