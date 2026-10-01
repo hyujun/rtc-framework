@@ -25,6 +25,7 @@ repo_scripts/
 ├── CMakeLists.txt
 ├── package.xml
 ├── config/
+│   ├── docs_budget.yaml                 <- 헌법 corpus (AGENTS.md·CLAUDE.md·agent_docs·.claude/rules) 문서별 바이트 예산 — `validate_docs.py` D12 가 읽는다
 │   └── thread_layout.yaml               <- **CPU 레이아웃 SSoT** (선언형 manifest)
 └── scripts/
     ├── gen_thread_layout.py             <- manifest -> C++/shell/Python/README 생성 + --check 드리프트 게이트

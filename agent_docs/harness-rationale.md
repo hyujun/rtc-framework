@@ -30,7 +30,7 @@ AGENTS.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orc
 
 ## 헌법 크기 예산 (validate_docs D12)
 
-공식 권고는 줄 수(200)지만, 줄 수를 지킨 채 줄이 길어지는 방식으로 부피가 늘 수 있어 D12 는 줄 수·바이트·줄 길이를 함께 건다. `@import` 는 컨텍스트를 줄이지 않으므로 예산은 import 되는 AGENTS.md 에도 똑같이 걸린다. 한도 수치와 채택 당시 실측의 SSoT 는 `repo_scripts/scripts/validate_docs.py` 의 D12 docstring·상수다.
+공식 권고는 줄 수(200)지만, 줄 수를 지킨 채 줄이 길어지는 방식으로 부피가 늘 수 있어 D12 는 줄 수·바이트·줄 길이를 함께 건다. `@import` 는 컨텍스트를 줄이지 않으므로 예산은 import 되는 AGENTS.md 에도 걸린다. 한도와 문서별 예산의 SSoT 는 `validate_docs.py` 의 D12 docstring 과 `repo_scripts/config/docs_budget.yaml` 이다.
 
 ## Harness Overview — 5구성요소 (AGENTS.md §2 의 근거)
 

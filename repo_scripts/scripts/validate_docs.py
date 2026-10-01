@@ -43,6 +43,15 @@ D12 the two constitutions (``CLAUDE.md`` / ``AGENTS.md``) stay inside a size
     is "under 200 lines"; the line cap alone was being satisfied by making the
     lines longer (same line count, bytes up 70% in two months), so bytes and
     line length are gated as well.  Honours ``allow D12`` for a single line.
+    The same code carries a per-file byte budget for the whole constitutional
+    corpus -- the two constitutions, ``agent_docs/*.md`` and
+    ``.claude/rules/*.md`` -- read from ``repo_scripts/config/docs_budget.yaml``.
+    The caps above never covered ``agent_docs/``, which more than doubled in
+    ten weeks while the constitutions sat pinned at theirs: the content the cap
+    pushed out of the constitution landed one directory down, ungated.  A file
+    over its budget, a corpus file with no entry, and an entry whose file is
+    gone all fail.  The numbers live in a data file rather than here so that
+    lowering one as a document shrinks does not mark this package as changed.
 D13 every ``CLAUDE.md §N[.M]`` / ``AGENTS.md §N[.M]`` reference -- plain or in
     link form, in the docs and in the comments of every tracked source / config
     file (see :func:`is_section_ref_source`) -- names a numbered heading the
@@ -316,6 +325,13 @@ CONSTITUTION_DOCS = ("CLAUDE.md", "AGENTS.md")
 CONSTITUTION_MAX_LINES = 200
 CONSTITUTION_MAX_BYTES = 18 * 1024
 CONSTITUTION_MAX_LINE_CHARS = 500
+# D12, per-file budgets: every document an agent is told to treat as a rule
+# source has a byte budget in SIZE_BUDGET_FILE.  One "path: bytes" mapping per
+# line -- valid YAML, parsed here by regex so the validator keeps running on a
+# host without PyYAML (the CI job installs nothing for it).
+SIZE_BUDGET_FILE = "repo_scripts/config/docs_budget.yaml"
+SIZE_BUDGET_DIRS = ("agent_docs/", ".claude/rules/")
+SIZE_BUDGET_LINE_RE = re.compile(r"^([^\s#:][^:]*?)\s*:\s*(\d+)\s*(?:#.*)?$")
 
 # D13: a section ref that names its target constitution.  Accepts the plain
 # form ("AGENTS.md §6.5"), the link form ("[AGENTS.md](../AGENTS.md) §6.5") and the
@@ -702,6 +718,29 @@ class Repo:
         self.toplevel = {f.split("/")[0] for f in self.files}
         self.toplevel |= {p.name for p in self.root.iterdir()}
         self._anchor_cache: dict[str, set[str]] = {}
+        self._budgets: dict[str, tuple[int, int]] | None = None
+
+    def budgets(self) -> dict[str, tuple[int, int]]:
+        """D12 per-file byte budgets: ``path -> (bytes, line in the budget file)``."""
+        if self._budgets is None:
+            try:
+                text = (self.root / SIZE_BUDGET_FILE).read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            self._budgets = parse_budgets(text)
+        return self._budgets
+
+    def has_budget_file(self) -> bool:
+        """Does this repository declare budgets at all?
+
+        The hook's own test suite drives this validator inside throwaway
+        repositories that have an ``agent_docs/`` and no budget file; calling
+        every document there "unbudgeted" would fail fixtures about unrelated
+        gates.  The price is that deleting the file would switch the per-file
+        gate off -- which ``--self-test`` (run by CI on every PR) turns red, by
+        pinning the live entries to the tracked constitutional documents.
+        """
+        return (self.root / SIZE_BUDGET_FILE).is_file()
 
     def exists(self, rel: str) -> bool:
         if rel in self.fileset or (self.root / rel).exists():
@@ -879,6 +918,7 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
     findings.extend(check_section_resolution(repo, rel, text))
     findings.extend(check_rule_ids(repo, rel, text))
     findings.extend(check_constitution_size(rel, text))
+    findings.extend(check_size_budget(rel, text, repo.budgets()))
     if rel in COUNT_SCOPED_DOCS:
         findings.extend(check_package_count(rel, text, repo.package_count(), allowed))
     return findings
@@ -944,6 +984,84 @@ def check_constitution_size(rel: str, text: str) -> list[Finding]:
                     "bullets or move the detail to the document that owns it",
                 )
             )
+    return findings
+
+
+def is_budgeted(rel: str) -> bool:
+    """Is ``rel`` part of the constitutional corpus that D12 budgets per file?"""
+    return rel in CONSTITUTION_DOCS or (rel.endswith(".md") and rel.startswith(SIZE_BUDGET_DIRS))
+
+
+def parse_budgets(text: str) -> dict[str, tuple[int, int]]:
+    """``path: bytes`` lines of SIZE_BUDGET_FILE -> ``path -> (bytes, lineno)``."""
+    out: dict[str, tuple[int, int]] = {}
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        m = SIZE_BUDGET_LINE_RE.match(raw)
+        if m:
+            out[m.group(1)] = (int(m.group(2)), lineno)
+    return out
+
+
+def check_size_budget(rel: str, text: str, budgets: dict[str, tuple[int, int]]) -> list[Finding]:
+    """D12 -- a budgeted document stays inside its own byte budget.
+
+    The message keeps the ``<n> bytes > <cap>`` shape of the constitution cap on
+    purpose: the Stop hook narrows doc findings to the lines a change added and
+    lets exactly that shape through, since a whole-file budget is never blown
+    on the line it is reported at.
+    """
+    if rel not in budgets:
+        return []
+    nbytes = len(text.encode("utf-8"))
+    budget = budgets[rel][0]
+    if nbytes <= budget:
+        return []
+    return [
+        Finding(
+            rel,
+            1,
+            "D12",
+            f"{nbytes} bytes > {budget} -- over this file's budget in {SIZE_BUDGET_FILE}; "
+            "state the rule and point at the document that owns the detail "
+            "(a budget goes down as its file shrinks, not up to fit an edit)",
+        )
+    ]
+
+
+def check_budget_coverage(
+    sizes: dict[str, int],
+    budgets: dict[str, tuple[int, int]],
+    existing: set[str] | None,
+) -> list[Finding]:
+    """D12 -- every budgeted document has an entry, and every entry has a document.
+
+    ``sizes`` maps the budgeted documents under scan to their byte size.  Pass
+    ``existing`` (the tracked budgeted documents) only for a full-corpus scan:
+    a ``--files`` run sees a slice of the corpus and cannot call an entry stale.
+    """
+    findings = [
+        Finding(
+            rel,
+            1,
+            "D12",
+            f"{nbytes} bytes > 0 -- no entry in {SIZE_BUDGET_FILE}; a new constitutional "
+            "document declares its byte budget in the change that adds it",
+        )
+        for rel, nbytes in sorted(sizes.items())
+        if rel not in budgets
+    ]
+    if existing is not None:
+        findings.extend(
+            Finding(
+                SIZE_BUDGET_FILE,
+                lineno,
+                "D12",
+                f"budget entry for '{path}', which is not a tracked constitutional document "
+                "-- remove the entry or fix the path",
+            )
+            for path, (_, lineno) in sorted(budgets.items())
+            if path not in existing
+        )
     return findings
 
 
@@ -1780,11 +1898,61 @@ COUNT_CASES: list[tuple[str, str, int, list[str]]] = [
     ),  # legitimate sub-count, suppressed
 ]
 
+# D12 per-file budgets.  (name, rel, body, budget-file text, want codes) through
+# check_size_budget; the budget text is parsed by parse_budgets, so the cases
+# exercise the line format as well as the comparison.
+BUDGET_CASES: list[tuple[str, str, str, str, list[str]]] = [
+    ("at the budget", "agent_docs/f.md", "a" * 10, "agent_docs/f.md: 10\n", []),
+    ("one byte over", "agent_docs/f.md", "a" * 11, "agent_docs/f.md: 10\n", ["D12"]),
+    # Budgets are bytes, not characters: 4 Hangul syllables are 12 bytes.
+    ("bytes, not characters", "agent_docs/f.md", "가" * 4, "agent_docs/f.md: 10\n", ["D12"]),
+    ("another file's entry", "agent_docs/f.md", "a" * 99, "agent_docs/g.md: 10\n", []),
+    ("trailing comment", ".claude/rules/r.md", "a" * 11, ".claude/rules/r.md: 10  # x\n", ["D12"]),
+    # A commented-out entry is no entry: it must not gate, and coverage reports it.
+    ("commented-out entry", "agent_docs/f.md", "a" * 99, "# agent_docs/f.md: 10\n", []),
+]
+# (name, sizes under scan, budget-file text, tracked budgeted docs or None, want
+# "path:code" pairs) through check_budget_coverage.
+BUDGET_COVERAGE_CASES: list[
+    tuple[str, dict[str, int], str, set[str] | None, list[tuple[str, str]]]
+] = [
+    ("covered", {"agent_docs/f.md": 5}, "agent_docs/f.md: 10\n", {"agent_docs/f.md"}, []),
+    (
+        "new document without an entry",
+        {"agent_docs/new.md": 5},
+        "agent_docs/f.md: 10\n",
+        None,
+        [("agent_docs/new.md", "D12")],
+    ),
+    (
+        "entry whose document is gone",
+        {},
+        "agent_docs/gone.md: 10\n",
+        set(),
+        [(SIZE_BUDGET_FILE, "D12")],
+    ),
+    # A --files run sees a slice of the corpus: it cannot call an entry stale.
+    ("stale entry is a full-scan finding only", {}, "agent_docs/gone.md: 10\n", None, []),
+]
+BUDGET_SCOPE_CASES: list[tuple[str, bool]] = [
+    ("AGENTS.md", True),
+    ("CLAUDE.md", True),
+    ("agent_docs/invariants.md", True),
+    (".claude/rules/rt-path.md", True),
+    ("README.md", False),
+    ("docs/tracing.md", False),
+    (".claude/skills/verify/SKILL.md", False),
+    ("agent_docs/budget.yaml", False),
+]
+
 
 def self_test() -> int:
     failures: list[str] = []
 
     repo_for_docs = Repo(repo_root())
+    # The document fixtures state their own answers; the live budget file must
+    # not be able to add a finding to (or hide one from) any of them.
+    repo_for_docs._budgets = {}
     for name, rel, body, want_codes in DOC_FIXTURES:
         got_codes = sorted(f.code for f in check_markdown(repo_for_docs, rel, body))
         if got_codes != sorted(want_codes):
@@ -1813,6 +1981,41 @@ def self_test() -> int:
             failures.append(
                 f"count case {rel} {body!r} actual={actual}: codes={got_codes}, want {sorted(want)}"
             )
+
+    for name, rel, body, budget_text, want in BUDGET_CASES:
+        got_codes = sorted(
+            f.code for f in check_size_budget(rel, body, parse_budgets(budget_text))
+        )
+        if got_codes != sorted(want):
+            failures.append(f"budget case {name!r}: codes={got_codes}, want {sorted(want)}")
+    for name, sizes, budget_text, existing, want_pairs in BUDGET_COVERAGE_CASES:
+        got_pairs = sorted(
+            (f.path, f.code)
+            for f in check_budget_coverage(sizes, parse_budgets(budget_text), existing)
+        )
+        if got_pairs != sorted(want_pairs):
+            failures.append(f"budget coverage {name!r}: {got_pairs}, want {sorted(want_pairs)}")
+    for rel, want in BUDGET_SCOPE_CASES:
+        if is_budgeted(rel) != want:
+            failures.append(f"is_budgeted({rel!r}) = {not want}, want {want}")
+    # The wiring: with the budget reachable only through check_markdown, severing
+    # that one call leaves every case above green and the corpus ungated.
+    wired = Repo(repo_root())
+    wired._budgets = {"agent_docs/f.md": (10, 1)}
+    wired_codes = sorted(f.code for f in check_markdown(wired, "agent_docs/f.md", "a" * 11))
+    if wired_codes != ["D12"]:
+        failures.append(f"check_markdown does not apply the size budget: codes={wired_codes}")
+    # And the live budget file itself: unreadable or empty, every budgeted file
+    # would be reported at the corpus scan -- but a parse that silently drops
+    # lines would only shrink the gate, so the entry count is pinned to the scope.
+    live = Repo(repo_root())
+    tracked_budgeted = {f for f in live.files if is_budgeted(f)}
+    if set(live.budgets()) != tracked_budgeted:
+        failures.append(
+            f"{SIZE_BUDGET_FILE} does not list exactly the tracked constitutional documents: "
+            f"missing={sorted(tracked_budgeted - set(live.budgets()))}, "
+            f"stale={sorted(set(live.budgets()) - tracked_budgeted)}"
+        )
 
     for span, in_table, want in PARKED_PATTERN_CASES:
         got = is_parked_detection_pattern(span, in_table=in_table)
@@ -1887,6 +2090,10 @@ def self_test() -> int:
         + len(SOURCE_REF_FIXTURES)
         + len(SOURCE_REF_CORPUS_MEMBERS)
         + len(COUNT_CASES)
+        + len(BUDGET_CASES)
+        + len(BUDGET_COVERAGE_CASES)
+        + len(BUDGET_SCOPE_CASES)
+        + 2
         + len(GREP_CASES)
         + len(SLUG_CASES)
         + len(BRE_EXEC_CASES)
@@ -1959,6 +2166,19 @@ def main(argv: list[str] | None = None) -> int:
     for rel in targets:
         findings.extend(
             check_file_section_refs(repo, rel) if args.section_refs else check_file(repo, rel)
+        )
+    if not args.section_refs and repo.has_budget_file():
+        full_scan = args.files is None
+        findings.extend(
+            check_budget_coverage(
+                {
+                    rel: (repo.root / rel).stat().st_size
+                    for rel in targets
+                    if is_budgeted(rel) and (repo.root / rel).is_file()
+                },
+                repo.budgets(),
+                {f for f in repo.files if is_budgeted(f)} if full_scan else None,
+            )
         )
 
     findings.sort(key=lambda f: (f.path, f.line, f.code))

@@ -1,0 +1,31 @@
+# Byte budgets for the constitutional corpus -- validate_docs.py D12.
+#
+# One "path: bytes" entry per document an agent is told to treat as a rule
+# source: the two constitutions, agent_docs/*.md and .claude/rules/*.md. A
+# document over its budget, a corpus document with no entry, and an entry whose
+# document is gone all fail the docs gate (repo_scripts/scripts/validate_docs.py).
+#
+# A budget goes DOWN, in the change that shrinks its document. It does not go up
+# to make room for an edit: content that does not fit is not a rule, and belongs
+# in the document that owns it (package README, docs/, a hook header, an issue).
+#
+# Keep the "path: bytes" shape, one per line: the validator reads this file by
+# regex so that it runs on a host without PyYAML.
+
+AGENTS.md: 18427
+CLAUDE.md: 6029
+
+agent_docs/anti-patterns.md: 30800
+agent_docs/architecture.md: 30189
+agent_docs/controllers.md: 50517
+agent_docs/conventions.md: 17274
+agent_docs/design-principles.md: 33256
+agent_docs/handoff.md: 5342
+agent_docs/harness-rationale.md: 7163
+agent_docs/invariants.md: 59687
+agent_docs/modification-guide.md: 30011
+agent_docs/testing-debug.md: 70191
+
+.claude/rules/arch-build-meta.md: 4148
+.claude/rules/arch-source.md: 6567
+.claude/rules/rt-path.md: 4922
