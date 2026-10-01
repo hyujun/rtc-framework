@@ -21,6 +21,8 @@
 #   get_system_python         — venv base · CMake 가 쓰는 배포판 python (RTC_SYSTEM_PYTHON 로 덮어씀)
 #   venv_uses_system_python   — venv base 가 get_system_python (+system-site-packages) 인지
 #   append_cmake_python_args  — build.sh: CMake Python 고정 + ament 모듈 사전 확인
+#   get_default_build_jobs    — 이 호스트의 기본 make job 수 = min(물리 코어, RAM / 4 GB)
+#   resolve_build_makeflags   — export 할 MAKEFLAGS (CLI -j > RTC_BUILD_JOBS > 기존 -j > 기본값)
 #   create_oneshot_service    — systemd oneshot 서비스 생성 헬퍼
 #   lttng_kernel_build_version      — 커널 헤더 Makefile 에서 V.P.S (uname 아님)
 #   lttng_modules_min_version_for_kernel — 그 커널이 요구하는 lttng-modules 최소 버전
@@ -590,6 +592,118 @@ append_cmake_python_args() {
   CMAKE_ARGS+=("-DPython3_EXECUTABLE=${CMAKE_PYTHON}" "-DPython3_FIND_VIRTUALENV=STANDARD")
 }
 
+# ── 빌드 병렬도 (build.sh / setup_env.sh / build_deps.sh 공유) ───────────────
+# colcon 의 병렬도는 두 층이다: 동시에 빌드하는 패키지 수 (--parallel-workers) 와
+# 패키지 안의 make job 수. colcon-cmake 는 MAKEFLAGS 에 -j/-l 이 없으면
+# `-j<논리 코어> -l<논리 코어>` 를 직접 붙이고, -l 은 loadavg 만 볼 뿐 메모리는
+# 보지 않는다. 무거운 TU 하나가 컴파일러 메모리를 3.5 GB 까지 쓰므로 (실측,
+# rtc_urdf_bridge/src/rt_model_handle.cpp) 코어가 많고 RAM 이 그만큼 크지 않은
+# 호스트는 기본값만으로 OOM 에 닿는다. 그래서 패키지는 한 번에 하나씩 빌드하고
+# (.colcon/defaults.yaml) make job 수를 MAKEFLAGS 로 고정한다.
+
+# job 하나에 잡는 메모리. 실측 최악 3.5 GB 가 들어가는 값.
+_RTC_BUILD_MEM_PER_JOB_MB=4096
+
+is_positive_int() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+# MemTotal (kB). $RTC_PROC_MEMINFO 로 테스트에서 덮어쓴다. 못 읽으면 빈 문자열.
+get_mem_total_kb() {
+  awk '/^MemTotal:/ {print $2; exit}' "${RTC_PROC_MEMINFO:-/proc/meminfo}" 2>/dev/null
+}
+
+# make job 수 = min(물리 코어 $1, RAM $2 kB / 4 GB), 최소 1. 순수 함수.
+# SMT 형제는 세지 않는다 — 6C/12T 에서 -j8 은 -j6 보다 8% 빠르고 31% 더 쓴다 (실측).
+# MemTotal 은 공칭 용량보다 조금 작으므로 (32 GB → 약 31.3 GiB) 내림이 아니라
+# 반올림한다. 메모리를 못 읽으면 ($2 가 양의 정수가 아니면) 코어 수를 믿지 않고
+# 2 로 떨어진다 — 느린 빌드는 다시 돌리면 되지만 OOM 은 호스트를 세운다.
+build_jobs_for() {
+  local cores="${1:-}" mem_kb="${2:-}"
+  is_positive_int "$cores" || cores=1
+  if ! is_positive_int "$mem_kb"; then
+    echo $(( cores < 2 ? cores : 2 ))
+    return
+  fi
+  local by_mem=$(( (mem_kb / 1024 + _RTC_BUILD_MEM_PER_JOB_MB / 2) / _RTC_BUILD_MEM_PER_JOB_MB ))
+  (( by_mem < 1 )) && by_mem=1
+  echo $(( cores < by_mem ? cores : by_mem ))
+}
+
+# 이 호스트의 기본 make job 수.
+get_default_build_jobs() {
+  build_jobs_for "$(get_physical_cores)" "$(get_mem_total_kb)"
+}
+
+# MAKEFLAGS 문자열($1)에 -j / --jobs 가 있으면 0.
+makeflags_has_jobs() {
+  local w
+  local -a words=()
+  read -r -a words <<<"${1:-}"
+  for w in "${words[@]}"; do
+    case "$w" in
+      -j|-j[0-9]*|--jobs|--jobs=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# MAKEFLAGS 문자열($1)의 -j / --jobs 를 전부 지우고 -j$2 를 붙여 출력한다.
+# 다른 플래그 (-k, -l 등) 는 순서대로 보존한다.
+makeflags_set_jobs() {
+  local n="$2" w skip_count=0
+  local -a words=() kept=()
+  read -r -a words <<<"${1:-}"
+  for w in "${words[@]}"; do
+    if (( skip_count )); then
+      skip_count=0
+      [[ "$w" =~ ^[0-9]+$ ]] && continue
+    fi
+    case "$w" in
+      -j|--jobs) skip_count=1; continue ;;
+      -j[0-9]*|--jobs=*) continue ;;
+    esac
+    kept+=("$w")
+  done
+  kept+=("-j${n}")
+  echo "${kept[*]}"
+}
+
+# MAKEFLAGS 문자열($1)의 job 수를 출력한다 (마지막 것이 이긴다). 없거나 숫자 없는
+# `-j` (무제한) 면 빈 문자열.
+makeflags_get_jobs() {
+  local w prev="" jobs=""
+  local -a words=()
+  read -r -a words <<<"${1:-}"
+  for w in "${words[@]}"; do
+    case "$w" in
+      -j|--jobs) jobs="" ;;
+      -j[0-9]*) jobs="${w#-j}" ;;
+      --jobs=*) jobs="${w#--jobs=}" ;;
+      *) [[ "$prev" == "-j" || "$prev" == "--jobs" ]] && [[ "$w" =~ ^[0-9]+$ ]] && jobs="$w" ;;
+    esac
+    prev="$w"
+  done
+  echo "$jobs"
+}
+
+# export 할 MAKEFLAGS 를 출력한다. job 수의 우선순위:
+#   $1 (CLI -j) > $RTC_BUILD_JOBS > 기존 MAKEFLAGS 의 -j > get_default_build_jobs
+# 사용자가 MAKEFLAGS 에 직접 넣은 -j 는 명시적 knob 이 없는 한 건드리지 않는다.
+# knob 이 양의 정수가 아니면 아무것도 출력하지 않고 2 를 반환한다.
+resolve_build_makeflags() {
+  local jobs="${1:-${RTC_BUILD_JOBS:-}}"
+  if [[ -z "$jobs" ]]; then
+    if makeflags_has_jobs "${MAKEFLAGS:-}"; then
+      echo "${MAKEFLAGS}"
+      return 0
+    fi
+    jobs="$(get_default_build_jobs)"
+  fi
+  is_positive_int "$jobs" || return 2
+  makeflags_set_jobs "${MAKEFLAGS:-}" "$jobs"
+}
+
 # ── 공통 argument parsing (build.sh / install.sh 공유) ─────────────────────
 # 공통 옵션을 파싱하고 전역 변수에 설정한다.
 # 각 스크립트 고유 옵션은 REMAINING_ARGS 배열로 반환된다.
@@ -633,7 +747,7 @@ parse_common_args() {
         IFS=',' read -r -a _COMMON_CUSTOM_PACKAGES <<< "$2"
         shift 2 ;;
       -j|--jobs)
-        [[ -z "${2:-}" ]] && fatal "--jobs requires a number"
+        is_positive_int "${2:-}" || fatal "--jobs requires a positive integer (got '${2:-}')"
         _COMMON_PARALLEL_JOBS="$2"
         shift 2 ;;
       --mujoco)

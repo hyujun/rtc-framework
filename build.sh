@@ -56,7 +56,9 @@ show_help() {
   echo "  -c, --clean                Remove build/, install/, and log/ before building"
   echo "  -p, --packages             Comma-separated list of specific packages to build"
   echo "                             (Overrides default packages for the chosen mode)"
-  echo "  -j, --jobs N               Limit parallel workers (e.g. -j 4)"
+  echo "  -j, --jobs N               make jobs (compilers running at once). Packages always build"
+  echo "                             one at a time. Default: \$RTC_BUILD_JOBS, else a -j already"
+  echo "                             in \$MAKEFLAGS, else min(physical cores, RAM / 4 GB)"
   echo "  -e, --export-compile-commands  (Deprecated, kept for compatibility — compile_commands.json"
   echo "                             is now always exported and merged for clangd / VS Code)"
   echo "  --no-symlink               Do not use --symlink-install"
@@ -74,6 +76,7 @@ show_help() {
   echo "  ./build.sh sim --mujoco /opt/mujoco-3.7.0"
   echo "  ./build.sh sim --tracing                 # sim build with RT trace spans"
   echo "  ./build.sh full"
+  echo "  ./build.sh full -j 8                     # 8 make jobs instead of the default"
   echo ""
 }
 
@@ -243,10 +246,19 @@ if [[ "$NO_SYMLINK" -eq 0 ]]; then
   COLCON_ARGS+=("--symlink-install")
 fi
 
-if [[ -n "$PARALLEL_JOBS" ]]; then
-  COLCON_ARGS+=("--parallel-workers" "$PARALLEL_JOBS")
-  info "Limiting parallel workers to $PARALLEL_JOBS"
-fi
+# ── Parallelism: one package at a time, N make jobs inside it ─────────────────
+# The job count is the only knob (rt_common.sh resolve_build_makeflags). colcon
+# adds its own `-j<logical cores> -l<...>` per package unless MAKEFLAGS already
+# carries a -j, and N packages × that is what exhausts RAM on a many-core host.
+# Splitting the same budget over two packages (2 × j/2) was not measurably
+# faster on a clean build and far slower for the single-package rebuilds this
+# script mostly does.
+MAKEFLAGS="$(resolve_build_makeflags "$PARALLEL_JOBS")" \
+  || error "RTC_BUILD_JOBS must be a positive integer (got '${RTC_BUILD_JOBS:-}')"
+export MAKEFLAGS
+COLCON_ARGS+=("--parallel-workers" "1")
+BUILD_JOBS="$(makeflags_get_jobs "$MAKEFLAGS")"
+info "Parallelism: 1 package at a time, make -j${BUILD_JOBS:-<unlimited>} (MAKEFLAGS='${MAKEFLAGS}')"
 
 # ONNX Runtime: /opt/onnxruntime 수동 설치 경로 cmake 전파.
 # `-DCMAKE_PREFIX_PATH` 로 주면 onnxruntime 을 안 쓰는 패키지에서 "Manually-specified

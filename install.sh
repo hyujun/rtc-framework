@@ -107,7 +107,8 @@ show_help() {
   echo "  -r, --release     Build with CMAKE_BUILD_TYPE=Release (default)"
   echo "  -c, --clean       Remove build/, install/, and log/ before building"
   echo "  -p, --packages    Comma-separated list of specific packages to build"
-  echo "  -j, --jobs N      Limit parallel workers for colcon (e.g. -j 4)"
+  echo "  -j, --jobs N      make jobs for the deps build and the package build (packages build"
+  echo "                    one at a time). Default: min(physical cores, RAM / 4 GB)"
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
   echo "  --skip-rt         Skip RT system setup (overrides --all)"
@@ -127,7 +128,7 @@ show_help() {
   echo "  ./install.sh sim                # deps + build (simulation only)"
   echo "  ./install.sh robot --all        # deps + build + RT setup (real robot)"
   echo "  ./install.sh robot --rt         # RT setup only (already built)"
-  echo "  ./install.sh full -c -j 4       # clean build, 4 parallel jobs"
+  echo "  ./install.sh full -c -j 4       # clean build, 4 make jobs"
   echo ""
   exit 0
 }
@@ -138,6 +139,9 @@ MODE="$_COMMON_MODE"
 BUILD_TYPE="$_COMMON_BUILD_TYPE"
 CLEAN_BUILD="$_COMMON_CLEAN_BUILD"
 PARALLEL_JOBS="$_COMMON_PARALLEL_JOBS"
+# -j 는 build.sh 뿐 아니라 build_deps.sh (aligator) 에도 걸려야 한다 — 둘 다
+# RTC_BUILD_JOBS 를 읽는다 (rt_common.sh resolve_build_makeflags).
+[[ -n "$PARALLEL_JOBS" ]] && export RTC_BUILD_JOBS="$PARALLEL_JOBS"
 MJ_DIR="$_COMMON_MJ_DIR"
 CUSTOM_PACKAGES=("${_COMMON_CUSTOM_PACKAGES[@]}")
 set -- "${REMAINING_ARGS[@]}"

@@ -178,6 +178,8 @@ repo_scripts/
 | `get_system_python()` | venv base · CMake 가 쓰는 배포판 python. 기본 `readlink -f /usr/bin/python3` (venv 링크·PATH 를 따라가지 않는다), `RTC_SYSTEM_PYTHON` 으로 덮어씀 |
 | `venv_uses_system_python()` | venv 가 `get_system_python` 을 base 로 system-site-packages 를 켜고 만들어졌는지 (uv-managed base · 사라진 base 는 무효). `ensure_venv` 의 재생성 판정 |
 | `append_cmake_python_args()` | build.sh: `-DPython3_EXECUTABLE` 를 venv 유무와 무관하게 `CMAKE_ARGS` 에 붙이고 `catkin_pkg`·`ament_package` import 를 사전 확인 (실패 시 1), 활성 venv base 가 틀리면 경고 |
+| `get_default_build_jobs()` | 이 호스트의 기본 make job 수 = `min(물리 코어, RAM / 4 GB)` (최소 1; 메모리를 못 읽으면 2). 순수 산정식은 `build_jobs_for <cores> <mem_kB>` |
+| `resolve_build_makeflags [N]` | export 할 `MAKEFLAGS` 를 출력. job 수 우선순위: 인자 (CLI `-j`) > `RTC_BUILD_JOBS` > 기존 `MAKEFLAGS` 의 `-j` > 기본값. knob 이 양의 정수가 아니면 출력 없이 2 반환. `build.sh` · `setup_env.sh` · `build_deps.sh` 공유 |
 
 ### 패키지 리스트 함수
 
@@ -549,6 +551,7 @@ source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
 | `MUJOCO_DIR` | `/opt/mujoco-3.x.x` (자동 탐색) | `rtc_mujoco_sim` 의 fallback |
 | `mujoco_ROOT` | `$MUJOCO_DIR` | `find_package(mujoco)` cmake hint (build.sh 와 동등) |
 | `COLCON_DEFAULTS_FILE` | `<repo>/.colcon/defaults.yaml` | cwd 와 무관하게 colcon 기본 옵션 적용 |
+| `MAKEFLAGS` | `-j<N>` (이미 `-j` 가 있으면 그대로) | plain `colcon build` 의 make job 수 — 아래 "빌드 병렬도와 메모리" |
 | `VIRTUAL_ENV` | `<rtc_ws>/.venv` | Python venv 활성화 |
 
 **Source 순서**: ROS Jazzy → deps/install (+ ONNX Runtime) → .venv → workspace overlay (`install/setup.bash`, 있을 때만).
@@ -582,6 +585,37 @@ build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_co
 
 ---
 
+#### 빌드 병렬도와 메모리
+
+colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수** (`--parallel-workers`) 와 패키지 안의 **make job 수**. colcon-cmake 는 `MAKEFLAGS` 에 `-j`/`-l` 이 없으면 패키지마다 `-j<논리 코어> -l<논리 코어>` 를 붙이고, `-l` 은 loadavg 만 볼 뿐 메모리는 보지 않는다. 그래서 colcon 기본값의 동시 컴파일 수 상한은 *패키지 수 × 논리 코어* 이고, 코어가 많고 RAM 이 그만큼 크지 않은 호스트는 그것만으로 메모리가 바닥난다 (물리 16코어 / 32 GB 호스트가 빌드 중 섰다).
+
+이 repo 는 **패키지를 한 번에 하나씩** 빌드하고 (`.colcon/defaults.yaml` 의 `parallel-workers: 1`, `build.sh` 도 명시적으로 넘긴다) 병렬도를 **make job 수 하나**로 정한다:
+
+| knob | 적용 범위 |
+|------|-----------|
+| `./build.sh -j N` · `./install.sh -j N` | 그 실행 (install.sh 는 `build_deps.sh` 에도 건다) |
+| `RTC_BUILD_JOBS=N` | `build.sh` · `build_deps.sh` 는 실행 시점에, plain `colcon` 은 `setup_env.sh` 를 source 하는 시점에 읽는다 — 이미 source 한 셸에서 plain `colcon` 의 값을 바꾸려면 `MAKEFLAGS=-jN colcon build …` |
+| `MAKEFLAGS` 에 직접 넣은 `-j` | 위 둘이 없으면 그대로 존중한다 |
+| 기본값 | `min(물리 코어, RAM / 4 GB)` — 6C/32GB → 6, 16C/32GB → 8 |
+
+기본값의 근거는 실측이다 (6C/12T · 32 GB, Release, 이 repo 의 21개 패키지 클린 빌드; 컴파일러·링커 RSS 합의 최대):
+
+| 패키지 × make job | 시간 | 빌드 메모리 최대 |
+|---|---|---|
+| 1 × `-j6` | 18분 49초 | 11.0 GB |
+| 2 × `-j3` | 20분 51초 | 8.7 GB |
+| 1 × `-j8` | 17분 23초 | 14.4 GB |
+| 2 × `-j4` | 17분 11초 | 11.5 GB |
+
+- **패키지를 나누지 않는 이유**: 같은 예산을 두 패키지로 나눠도 클린 빌드는 빨라지지 않고 (무거운 패키지들이 의존성 사슬로 이어져 혼자 빌드되는 구간이 길다), 평소 하는 패키지 하나 재빌드는 job 이 절반이라 훨씬 느리다 (`integrated_bringup`: 1×`-j6` 5분 18초, 2×`-j3` 8분 30초).
+- **SMT 형제를 세지 않는 이유**: `-j8` 은 `-j6` 보다 8% 빠르고 31% 더 쓴다.
+- **job 당 4 GB 인 이유**: TU 하나의 컴파일러 메모리는 대부분 2 GB 아래지만 2 GB 를 넘는 TU 가 51개, 최악은 3.5 GB 다 (`rtc_urdf_bridge/src/rt_model_handle.cpp`). 비용은 최적화가 아니라 템플릿 인스턴스화에서 나온다 — `-fsyntax-only` 만으로도 메모리의 90% 이상이 든다 — 그래서 `-O` 수준을 낮춰도 줄지 않는다.
+- **`-l` 을 넣지 않는 이유**: load 제한은 빌드와 무관한 시스템 부하까지 예산에서 깎는다 (1×`-j6 -l6` 은 20분 44초).
+
+**감별.** 빌드 중 화면이 멈추거나 `c++: fatal error: Killed signal terminated program cc1plus` 로 죽으면 메모리다. 그 빌드가 실제로 쓴 job 수는 `build.sh` 의 `Parallelism:` 줄에 찍히고, plain `colcon` 이면 `echo $MAKEFLAGS` 로 본다 — 비어 있으면 `setup_env.sh` 를 source 하지 않은 셸이고 colcon 이 논리 코어 수를 그대로 쓴다.
+
+---
+
 ### build_deps.sh
 
 `../deps.repos` 기반으로 fmt/mimalloc/aligator 를 소스 빌드하여 `<rtc_ws>/deps/install/` 에 설치합니다.
@@ -593,7 +627,7 @@ source setup_env.sh
 
 **동작:**
 1. `deps/src/aligator/.git` 가 없으면 `vcs import deps/src < ../deps.repos` + `git submodule update` 자동 실행
-2. 위상 순서로 각각 cmake configure + build + install (CPU 병렬):
+2. 위상 순서로 각각 cmake configure + build + install (make job 수는 `build.sh` 와 같은 knob — `PARALLEL_JOBS` > `RTC_BUILD_JOBS` > `MAKEFLAGS` 의 `-j` > `min(물리 코어, RAM/4GB)`):
    - `fmt 11.1.4` (`-DFMT_TEST=OFF -DFMT_DOC=OFF`)
    - `mimalloc 2.1.7` (`-DMI_BUILD_TESTS=OFF -DMI_BUILD_OBJECT=OFF`)
    - `aligator 0.19.0` (`-DBUILD_TESTING=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF` + `-Dhpp-fcl_DIR=/opt/ros/.../hpp-fcl` + `-Dfmt_DIR=$DEPS_PREFIX/lib/cmake/fmt`)
