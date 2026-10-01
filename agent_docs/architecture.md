@@ -155,7 +155,7 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_communication, rtc_inference <-- rtc_base
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs, rtc_urdf_bridge
   +-- rtc_controllers <-- rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge, rtc_tsid
-  |     (sibling of rtc_controller_interface -- does NOT depend on it, #236 S7c)
+  |     (sibling of rtc_controller_interface -- does NOT depend on it)
   |     (rtc_tsid edge added 2026-09-20, dynamic_catching D-26: the catch-pose IK
   |      task step is a box-constrained QP via QPSolverWrapper. rtc_tsid does not
   |      depend on rtc_controllers, so no cycle -- but note every consumer of
@@ -168,7 +168,7 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_mujoco_sim <-- rtc_base, rtc_msgs, MuJoCo 3.x (optional)
 rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional, test-only rtc_base)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
-udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base
+udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base, rtc_msgs
 robot_descriptions (data-only, no code deps)
 integrated_bringup <-- rtc_controller_manager, rtc_controller_interface, rtc_controllers,
                  rtc_tsid, rtc_mpc, rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge

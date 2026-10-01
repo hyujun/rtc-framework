@@ -20,7 +20,7 @@
               auto/lerp/RT-forbidden 자체 grep
 4. Build    → ./build.sh --tests -p <pkg> (단일) 또는 ./build.sh --tests full (rtc_base/rtc_msgs 변경 시)
               --tests 없이 빌드한 패키지의 colcon test 는 테스트 0개를 통과로 보고한다
-5. Test     → AGENTS.md §5 Sensor matrix 참조. 버그 수정 시 회귀 테스트 추가
+5. Test     → testing-debug.md Sensor Matrix. 버그 수정 시 회귀 테스트 추가
 6. Verify   → 본 문서 Completion Checklist 통과
 ```
 
