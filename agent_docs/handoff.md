@@ -1,6 +1,6 @@
 # Context Handoff Contract (tool-neutral)
 
-이 문서는 RTC Framework 에서 **에이전트 간·세션 간 context handoff 의 tool-neutral 단일 출처(SSoT)** 다. Claude·Codex 등 어떤 에이전트든 이 계약을 따른다. 이 문서는 **무엇이 handoff 이고, artifact 가 무엇을 담아야 하며, 받는 쪽이 어떻게 재개하는가** 만 정의한다 — Claude 전용 메커니즘(`/compact`·`/clear`·`# Compact instructions`·`/btw`·fork)과 능동 제안 트리거는 각 도구의 문서가 소유한다 ([../AGENTS.md](../AGENTS.md) §6.6) — Claude Code 는 [../CLAUDE.md](../CLAUDE.md) §Claude Code 와 user-level 설정.
+에이전트 간·세션 간 context handoff 의 **tool-neutral SSoT** 다 — 어떤 에이전트든 이 계약을 따른다. **무엇이 handoff 이고, artifact 가 무엇을 담아야 하며, 받는 쪽이 어떻게 재개하는가** 만 정의한다. 도구별 세션 메커니즘 (compaction · clear · fork) 과 능동 제안 트리거는 각 도구의 문서가 소유한다 ([../AGENTS.md](../AGENTS.md) §6.6; Claude Code 는 [../CLAUDE.md](../CLAUDE.md) §Claude Code).
 
 **원칙: handoff 는 받는 에이전트가 이전 transcript 를 읽지 않고도 재개할 수 있을 때에만 완료된 것이다.**
 
@@ -16,7 +16,7 @@
 | 반복 실패 (3회 시도) | **재시도 중단** → evidence 기록 후 diagnose / escalate. 새 owner/session 이 필요할 때만 handoff |
 | 완료된 task 다음에 무관한 task | **새 task 시작**. artifact 불필요 |
 
-주: "반복 실패 3회 → 중단·진단" 은 tool-neutral 엔지니어링 규율이다. Claude 세션의 "동일 문제 2회 초과 교정 → `/clear`"(context 위생, [../CLAUDE.md](../CLAUDE.md) §Claude Code)와는 **다른 축**이며 공존한다 — 전자는 escalation, 후자는 Claude context 리셋 메커니즘.
+"반복 실패 3회 → 중단·진단" 은 tool-neutral escalation 규율이다. 도구의 context 위생 규칙 (Claude 의 "2회 초과 교정 → `/clear`") 과는 **다른 축** 이며 공존한다.
 
 ## 2. Artifact template (independently resumable)
 
@@ -55,7 +55,7 @@
 - [ ] `git status` · HEAD · 핵심 evidence(build/test)가 artifact 와 **일치하는지 검증**한다
 - [ ] 불일치 시 **구현 전에 artifact 를 먼저 갱신**한다 (현실을 SSoT 에 반영)
 - [ ] Acceptance criteria · Out of scope 확인 후 Next action 부터 진행한다
-- [ ] 참조하는 issue 는 **본문보다 코멘트가 최신**이다 — 종결 이슈일수록 그렇고 (#339 는 본문 자체가 틀렸다), 본문의 진단을 근거로 쓰기 전에 코멘트 전체를 읽는다
+- [ ] 참조하는 issue 는 **본문보다 코멘트가 최신**이다 (종결 이슈일수록 그렇다) — 본문의 진단을 근거로 쓰기 전에 코멘트 전체를 읽는다
 
 ## 5. Storage / retention (purpose 별)
 
