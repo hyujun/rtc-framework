@@ -17,10 +17,8 @@
 #include "rtc_controllers/catching/decel_mpc_torque.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
+#include "rtc_controllers/testing/decel_mpc_fixture.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
-#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
-#include "rtc_urdf_bridge/types.hpp"
-#include "test_urdf_path.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/SVD>
@@ -53,68 +51,16 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
-struct ArmModel {
-  std::shared_ptr<const pinocchio::Model> model;
-  pinocchio::FrameIndex frame{0};
-  Eigen::VectorXd q_nominal;
-  std::string name;
-};
-
-ArmModel LoadArm(const std::string& path, const std::string& frame, Eigen::VectorXd q_nominal,
-                 const std::string& name) {
-  rtc_urdf_bridge::ModelConfig config;
-  config.urdf_path = path;
-  config.root_joint_type = "fixed";
-  rtc_urdf_bridge::PinocchioModelBuilder builder(config);
-  ArmModel arm;
-  arm.model = builder.GetFullModel();
-  arm.frame = arm.model->getFrameId(frame);
-  arm.q_nominal = std::move(q_nominal);
-  arm.name = name;
-  return arm;
-}
-
-std::string DescriptionPath(const std::string& relative) {
-  return std::string(RTC_TEST_ROBOT_DESCRIPTIONS_DIR) + "/" + relative;
-}
-
-// Synthetic 6R with a wrist offset (rtc_urdf_bridge fixture).
-ArmModel Synthetic6R() {
-  Eigen::VectorXd q(6);
-  q << 0.2, -0.5, 0.9, -0.4, 0.6, 0.1;
-  return LoadArm(rtc::test::TestUrdfPath("serial_6r_wrist.urdf"), "catch_frame", q, "synthetic_6r");
-}
-
-// Real arm dimensions (#627 asks for the two target robots' n = 6 and n = 7).
-ArmModel RealArm6() {
-  Eigen::VectorXd q(6);
-  q << 0.0, -1.2, 1.3, -1.6, -1.57, 0.0;
-  return LoadArm(DescriptionPath("ur5e/urdf/ur5e.urdf"), "tool0", q, "real_6dof");
-}
-
-ArmModel RealArm7() {
-  Eigen::VectorXd q(7);
-  q << 0.0, 0.6, 0.0, -1.2, 0.0, 0.9, 0.0;
-  return LoadArm(DescriptionPath("iiwa7/urdf/iiwa7.urdf"), "ee_link", q, "real_7dof");
-}
-
-DecelMpcLimits LimitsFromModel(const pinocchio::Model& m, double armature = 0.0) {
-  DecelMpcLimits lim;
-  lim.q_min = m.lowerPositionLimit;
-  lim.q_max = m.upperPositionLimit;
-  lim.qd_max = m.velocityLimit;
-  lim.tau_max = m.effortLimit;
-  lim.armature = Eigen::VectorXd::Constant(m.nv, armature);
-  return lim;
-}
-
-DecelMpcInput RestInput(const Eigen::VectorXd& q0) {
-  DecelMpcInput in;
-  in.q0 = q0;
-  in.qd0 = Eigen::VectorXd::Zero(q0.size());
-  in.qdd0 = Eigen::VectorXd::Zero(q0.size());
-  return in;
-}
+// Arms, limits and the rest input live in decel_mpc_fixture.hpp, shared with
+// the E1-F07 approach suite.
+using rtc::testing::decel::ArmModel;
+using rtc::testing::decel::LimitsFromModel;
+using rtc::testing::decel::Percentile;
+using rtc::testing::decel::RealArm6;
+using rtc::testing::decel::RealArm7;
+using rtc::testing::decel::RecordMicros;
+using rtc::testing::decel::RestInput;
+using rtc::testing::decel::Synthetic6R;
 
 void UseAsReference(const DecelMpcResult& r, DecelMpcInput& in) {
   in.q_ref = r.q;
@@ -157,21 +103,6 @@ int Rank(const Eigen::MatrixXd& a) {
   const Eigen::VectorXd& s = svd.singularValues();
   const double tol = 1e-10 * std::max(1.0, s.size() > 0 ? s[0] : 0.0);
   return static_cast<int>((s.array() > tol).count());
-}
-
-double Percentile(std::vector<double> v, double p) {
-  if (v.empty()) {
-    return 0.0;
-  }
-  std::sort(v.begin(), v.end());
-  const auto idx = static_cast<std::size_t>(std::ceil(p * static_cast<double>(v.size())) - 1.0);
-  return v[std::min(idx, v.size() - 1)];
-}
-
-// Integer microseconds: RecordProperty(string, double) would go through
-// to_string and squash small values; ints stay exact.
-void RecordMicros(const std::string& key, double us) {
-  ::testing::Test::RecordProperty(key, static_cast<int>(std::lround(us)));
 }
 
 // ── 1. Zero solution at rest ─────────────────────────────────────────────────

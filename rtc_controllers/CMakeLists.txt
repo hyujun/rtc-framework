@@ -566,6 +566,21 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
+  # dynamic_catching MPC E1-F07 (#660): the pre-catch grid and the catch terms
+  # of the same core. A separate binary — the malloc gate is one TU per binary,
+  # and this suite's timing table (four grids) needs its own timeout. Same
+  # three allocation sensors and the same arm fixtures (decel_mpc_fixture.hpp)
+  # as the E1-F01 suite above.
+  ament_add_gtest(test_catching_decel_mpc_approach
+    test/test_catching_decel_mpc_approach.cpp TIMEOUT 600)
+  target_link_libraries(test_catching_decel_mpc_approach rtc_controllers)
+  target_include_directories(test_catching_decel_mpc_approach PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_decel_mpc_approach PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_decel_mpc_approach PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
+    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
   # dynamic_catching MPC E1-F02 (#628): the decel node payload and its RT
   # sampler. Sample() calls into pinocchio's shared object (FK), so its
   # allocation claim needs the C-level malloc gate as well as operator new;
