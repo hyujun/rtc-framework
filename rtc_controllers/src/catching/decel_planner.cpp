@@ -713,9 +713,9 @@ bool DecelPlanner::Plan(const PlannerRtState& rt, DecelPlanSnapshot& out,
 
 // ── APPROACH–stop (E1-F08) ────────────────────────────────────────────────────
 
-bool DecelPlanner::CheckState(const PlannerRtState& rt, std::int64_t start,
+bool DecelPlanner::CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
                               DecelRecord& rec) const noexcept {
-  if (!rt.valid || !rt.cmd_seeded || rt.nv != nv_) {
+  if (!rt.valid || (need_command && !rt.cmd_seeded) || rt.nv != nv_) {
     rec.outcome = DecelOutcome::kNoState;
     return false;
   }
@@ -989,7 +989,10 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   }
   rec.kind = DecelKind::kFirst;
   const std::int64_t start = clock_();
-  if (!CheckState(rt, start, rec)) {
+  // Before a plan the RT has no command yet (cmd_seeded false): it reports
+  // the MEASURED pose with zero velocity, which is where it seeds the command
+  // when it takes the plan — the same x₀ either way.
+  if (!CheckState(rt, start, /*need_command=*/false, rec)) {
     return false;
   }
   if (!plan.valid || plan.t_c_ns <= 0 || plan.nv != nv_) {
@@ -1119,7 +1122,7 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     return false;
   }
   const std::int64_t start = clock_();
-  if (!CheckState(rt, start, rec)) {
+  if (!CheckState(rt, start, /*need_command=*/true, rec)) {
     return false;
   }
   if (!rt.plan_active || rt.plan_t_c_ns <= 0) {

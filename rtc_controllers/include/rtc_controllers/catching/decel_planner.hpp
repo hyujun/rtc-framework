@@ -42,7 +42,9 @@
 // grid t_c − j·Δ_pre (pre-catch) and t_c + k·Δ_s (stop), and the cycle calls
 // PlanFirst / Replan instead of Plan (whose body above is untouched):
 //  • PlanFirst — the search's wake, for the plan it is about to publish. The
-//    arm rests at its wait pose (max |q̇_cmd| ≤ rest_tol, else kNotAtRest);
+//    arm rests at its wait pose (max |q̇_cmd| ≤ rest_tol, else kNotAtRest) —
+//    before a plan the RT reports the measured pose with no command behind it
+//    (cmd_seeded false), which is where it seeds the command on adoption;
 //    n_pre = min(n_pre_max, ⌊(t_c − now_lead − first − 2h)/Δ_pre⌋) ≥ 1
 //    (else kTooLate). x₀ = (q_cmd, 0, 0); the reference is a per-joint
 //    minimum-jerk reach to q_star (clamped to the core's box, slowed to
@@ -406,7 +408,7 @@ class DecelPlanner {
   // Where the solve's state comes from and how it is judged and packed.
   [[nodiscard]] bool ConfigureApproach(const DecelPlannerModel& model, std::string& why);
   [[nodiscard]] bool WarmUp(const DecelPlannerModel& model, std::string& why);
-  [[nodiscard]] bool CheckState(const PlannerRtState& rt, std::int64_t start,
+  [[nodiscard]] bool CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
                                 DecelRecord& rec) const noexcept;
   [[nodiscard]] bool SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::Vector3d& v_b,
                                     const Eigen::Vector3d& a_d, const DecelBallTarget& ball,

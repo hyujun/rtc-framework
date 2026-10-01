@@ -490,6 +490,29 @@ TEST(ApproachPlanner, TheFirstSolveNeedsTheArmAtRest) {
       << Why(r.rec);
 }
 
+TEST(ApproachPlanner, TheFirstSolveTakesTheMeasuredPoseOfAnUnseededCommand) {
+  // What the controller reports in TRACKING before any plan: cmd_seeded
+  // false, q_cmd the measured pose, q̇_cmd zero. The first solve must run from
+  // it — requiring a seeded command would withhold every pair. A replan does
+  // need the command (the RT follows a plan by then).
+  Rig r(Arm6());
+  const Catch c = CatchAt(r.arm, Offset(r.arm, 0.02));
+  const std::int64_t t_c = kT0 + 800 * kMs;
+  SetClock(kT0);
+  PlannerRtState rt = RestingRt(r.arm, r.arm.q_nominal, kT0 - kH);
+  rt.cmd_seeded = false;
+  ASSERT_TRUE(r.planner.PlanFirst(rt, PlanFor(r.arm, c, t_c), BallFor(c), r.out, r.rec))
+      << Why(r.rec);
+  for (int m = 0; m < r.arm.model->nv; ++m) {
+    EXPECT_NEAR(r.out.q[Dev(r.arm, m)], r.arm.q_nominal[m], 1e-12) << m;
+  }
+  const std::uint32_t seq = r.Publish(kT0);
+  PlannerRtState following = FollowingRt(r.arm, r.arm.q_nominal, kT0 - kH, t_c, seq, 0);
+  following.cmd_seeded = false;
+  EXPECT_FALSE(r.planner.Replan(following, BallFor(c), r.out, r.rec));
+  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoState);
+}
+
 TEST(ApproachPlanner, TheReferenceIsClampedToTheBoxAndSlowedToTheVelocityBox) {
   Rig r(Arm6());
   const std::int64_t t_c = kT0 + 800 * kMs;
