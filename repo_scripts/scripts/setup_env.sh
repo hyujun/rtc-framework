@@ -62,7 +62,9 @@ export PKG_CONFIG_PATH="${RTC_DEPS_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 # MuJoCo binary tarball (no cmake config — rtc_mujoco_sim falls back to find_library).
 # Pick the latest /opt/mujoco-*/ that exists. Use `sort -V` (version sort, matches
 # build.sh) — a lexical glob would rank mujoco-3.7.0 above mujoco-3.10.0.
-_mj=$(ls -d /opt/mujoco-* 2>/dev/null | sort -V | tail -1)
+# `|| true`: MuJoCo 가 없는 호스트에서 ls 가 2 로 끝나고, caller 가 `set -eo pipefail`
+# (build.sh · install.sh) 이면 이 대입이 그 스크립트를 출력 없이 종료시킨다.
+_mj=$(ls -d /opt/mujoco-* 2>/dev/null | sort -V | tail -1) || true
 [[ -n "${_mj:-}" && -d "$_mj" && -f "$_mj/lib/libmujoco.so" ]] && export MUJOCO_DIR="$_mj"
 unset _mj
 

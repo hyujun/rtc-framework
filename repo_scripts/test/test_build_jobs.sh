@@ -313,6 +313,37 @@ test_setup_env_is_safe_to_source() {
   expect_eq "no helper functions leak" none "$out"
 }
 
+# MuJoCo 가 없는 호스트 (fresh PC 의 robot 모드, CI): setup_env.sh 의 MuJoCo 탐색
+# `ls -d /opt/mujoco-* | sort | tail` 은 ls 가 2 로 끝나고, `set -eo pipefail` 인
+# build.sh · install.sh 가 그 대입에서 출력 없이 종료됐다 — 아무것도 설치하기 전에.
+# 이 경로는 호스트가 정한다: MuJoCo 가 깔린 개발 PC 에서는 bwrap 으로 /opt 를 가려
+# 만들고, 못 만들면 건너뛴 것을 숨기지 않는다 (CI 는 MuJoCo 가 없어 그대로 탄다).
+test_setup_env_survives_a_host_without_mujoco() {
+  local -a hide=()
+  local out rc=0
+  if compgen -G '/opt/mujoco-*' >/dev/null; then
+    if command -v bwrap >/dev/null && bwrap --dev-bind / / --tmpfs /opt true 2>/dev/null; then
+      hide=(bwrap --dev-bind / / --tmpfs /opt)
+    else
+      echo "  SKIP test_setup_env_survives_a_host_without_mujoco: /opt/mujoco-* exists and bwrap cannot hide it"
+      return 0
+    fi
+  fi
+  # shellcheck disable=SC2016
+  out="$("${hide[@]}" env -i PATH="$STUB_BIN:/usr/bin:/bin" HOME="$TMP" ROS_DISTRO=test \
+    RTC_PROC_MEMINFO="$TMP/meminfo_ws" \
+    bash -c 'set -eo pipefail; source "$1" >/dev/null 2>&1; echo "alive MUJOCO_DIR=${MUJOCO_DIR-<unset>}"' \
+    _ "$FAKE_REPO/repo_scripts/scripts/setup_env.sh")" || true
+  expect_eq "setup_env under set -eo pipefail, no MuJoCo" "alive MUJOCO_DIR=<unset>" "$out"
+
+  rm -f "$COLCON_LOG"
+  "${hide[@]}" env -i PATH="$STUB_BIN:/usr/bin:/bin" HOME="$TMP" ROS_DISTRO=test \
+    RTC_SYSTEM_PYTHON="$STUB_BIN/python-stub" RTC_PROC_MEMINFO="$TMP/meminfo_ws" \
+    bash "$FAKE_REPO/build.sh" robot -p pkg_a >"$TMP/build.out" 2>&1 || rc=$?
+  expect_eq "build.sh robot, no MuJoCo: rc" 0 "$rc"
+  expect_eq "build.sh robot, no MuJoCo: reaches colcon" pkg_a "$(logged_arg_after --packages-select)"
+}
+
 # ── build.sh ───────────────────────────────────────────────────────────────
 # stub colcon 이 남긴 기록에서 값을 꺼낸다.
 logged_makeflags() { sed -n 's/^MAKEFLAGS=//p' "$COLCON_LOG"; }
@@ -681,6 +712,7 @@ test_build_jobs_flag_sets_make_jobs_not_workers
 test_build_knob_precedence
 test_build_rejects_bad_jobs_before_colcon
 test_build_propagates_colcon_failure
+test_setup_env_survives_a_host_without_mujoco
 test_build_does_not_build_tests_by_default
 test_build_tests_flag_and_env
 test_build_ccache_auto
