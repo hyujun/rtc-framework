@@ -24,14 +24,17 @@ D2  in-repo anchor exists, using GitHub's heading-slug algorithm (see
 D3  no link escapes the repository, and no ``/home/<user>/`` absolute path
     appears anywhere in the corpus (including shell snippets, which get copied).
 D4  no ``file.cpp:123`` / ``#L123`` line-anchor citations into *code* in the
-    agent corpus.  Line numbers drift on every edit; cite a symbol instead.
+    agent corpus -- ``agent_docs/``, ``.claude/`` and the documents the
+    constitution's detail lives in (``CONSTITUTION_COMPANION_DOCS``).  Line
+    numbers drift on every edit; cite a symbol instead.
     Doc-to-doc references and URLs carrying a port are not that failure.
 D7  ``detect`` fenced blocks: the pattern is linted for the escaping mistakes
     that make a grep silently match nothing, then run against a required
     ``# probe:`` line it must match (and any ``# antiprobe:`` it must not), so
     a pattern that compiles but can no longer fire still fails.  An optional
     ``# exemplar:`` additionally asserts the state of the tree today.
-D10 no bare "§N.M" section ref in the constitution corpus.  The same number
+D10 no bare "§N.M" section ref in the constitution corpus or its companions
+    (same set as D4).  The same number
     means different things in AGENTS.md, in the compliance normative spec, and
     in a file's own numbered headings; a prefix is what tells them apart.
 D11 no rule-ID reference to an ID its owning file never defines (RT-/ARCH-/
@@ -261,8 +264,22 @@ BARE_PATH_RE = re.compile(r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]+)")
 # block without interrupting the prose.
 SUPPRESS_RE = re.compile(r"validate-docs:\s*allow\s+(D\d+(?:\s*,\s*D\d+)*)")
 
-# Corpus whose code citations must be symbol-based (D4).
-SYMBOL_CITATION_DIRS = ("agent_docs/", ".claude/")
+# Where the constitution's detail lives: the catalogues, procedures, rationale
+# and the anti-pattern case book that agent_docs/ points at.  Not rule sources,
+# so no byte budget -- but the constitution sends its reader here, the case book
+# still owns the AP IDs (D11) and still carries detection greps, and all of it
+# was inside the D4 / D8 / D10 scopes until it moved out of agent_docs/.  The
+# move must not be what takes those checks off it.
+CONSTITUTION_COMPANION_DOCS = (
+    "docs/reference/",
+    "docs/testing.md",
+    "docs/controllers.md",
+    "docs/modification-procedures.md",
+)
+
+# Corpus whose code citations must be symbol-based (D4), and where a detection
+# pattern may not be parked in a table cell (D8).
+SYMBOL_CITATION_DIRS = ("agent_docs/", ".claude/", *CONSTITUTION_COMPANION_DOCS)
 
 # D9 scope: the two constitutions (CLAUDE.md for Claude Code, AGENTS.md for
 # every other tool) and the root README are the documents whose stated package
@@ -289,13 +306,19 @@ PACKAGE_COUNT_RE = re.compile(r"(\d+)\s*개\s*(?:의\s*)?(?:ROS[\s-]*2\s*)?패�
 # apart.  A reference is disambiguated when it is preceded by a markdown link
 # (`...md) §3.5`), a document name (`AGENTS.md §6.5`), or the literal
 # `compliance ` prefix for the normative spec.
-# Scope: the constitution corpus only.  A per-package doc citing "§3.9" next to
-# the spec that owns §3.9 is unambiguous in context; the collision that D10
+# Scope: the constitution corpus and its companions.  A per-package doc citing
+# "§3.9" next to the spec that owns §3.9 is unambiguous in context; the collision that D10
 # exists for is the constitution corpus, where AGENTS.md's own section numbers
 # and the compliance spec's both appear -- inside one file, with nothing to tell
 # them apart.  Widening this to every README turned it into 159 findings that
 # were almost all legitimate self-references.
-SECTION_REF_SCOPED_DOCS = ("agent_docs/", "CLAUDE.md", "AGENTS.md", ".claude/")
+SECTION_REF_SCOPED_DOCS = (
+    "agent_docs/",
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".claude/",
+    *CONSTITUTION_COMPANION_DOCS,
+)
 SECTION_REF_RE = re.compile(r"§\d+\.\d[\d.]*")
 SELF_NUMBERED_HEADING_RE = re.compile(r"^#{2,3}\s+\d+\.\s", re.M)
 SECTION_REF_QUALIFIED_RE = re.compile(
@@ -1837,6 +1860,20 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
         [],
     ),
     ("D4 is scoped to the agent corpus", "docs/f.md", "see rt_controller_node.cpp:120\n", []),
+    # The companions left agent_docs/ with their content; the checks went along.
+    (
+        "D4 covers the constitution's companions",
+        "docs/reference/f.md",
+        "see rt_controller_node.cpp:120\n",
+        ["D4"],
+    ),
+    ("D4 covers a companion file", "docs/testing.md", "see rt_controller_node.cpp:120\n", ["D4"]),
+    (
+        "D8 covers the anti-pattern case book",
+        "docs/reference/anti-patterns.md",
+        "| RT-1 | `grep -rnE 'RCLCPP_(INFO|WARN)' src/` |\n",
+        ["D8"],
+    ),
     (
         "D8 pattern parked in a table cell",
         "agent_docs/f.md",
@@ -1937,6 +1974,13 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
         "특이점 처리는 §6.5 를 따른다.\n",
         [],
     ),
+    (
+        "D10 covers the constitution's companions",
+        "docs/modification-procedures.md",
+        "특이점 처리는 §6.5 를 따른다.\n",
+        ["D10"],
+    ),
+    ("D10 stops at the companions", "docs/tracing.md", "특이점 처리는 §6.5 를 따른다.\n", []),
     # D11 severance guard: P9 is never a real principle, so this stays red as
     # long as check_rule_ids is wired into check_markdown.
     (
