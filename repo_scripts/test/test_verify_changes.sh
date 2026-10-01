@@ -2003,7 +2003,8 @@ rm -rf "$dir"
 #   test-result  takes --test-result-base / --verbose / --all and nothing else
 #                -- anything else is a usage error, exit 2; lists every result
 #                file under the base that holds a failure, however old
-# FAKE_COLCON_MODE = green | red | crash | unknown; FAKE_COLCON_CALLS = call log.
+# FAKE_COLCON_MODE = green | red | crash | unknown; FAKE_COLCON_CALLS = call log;
+# FAKE_COLCON_RED = the packages that fail in mode red (default: all of them).
 # A "result file" here is one line: "<summary>|<failing test name>".
 make_fake_colcon() {
   local d
@@ -2048,7 +2049,7 @@ case "$verb" in
     esac
     for p in "${pkgs[@]}"; do
       mkdir -p "build/$p/Testing/20261001-0900"
-      if [ "$mode" = red ]; then
+      if [ "$mode" = red ] && case " ${FAKE_COLCON_RED:-${pkgs[*]}} " in *" $p "*) true ;; *) false ;; esac; then
         echo "2 tests, 0 errors, 1 failure, 0 skipped|demo.Fails" >"build/$p/Testing/20261001-0900/Test.xml"
       else
         echo "2 tests, 0 errors, 0 failures, 0 skipped|" >"build/$p/Testing/20261001-0900/Test.xml"
@@ -2195,6 +2196,98 @@ expect_exit "a green PROC-3 run passes --run" "$rc" 0
 out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
 expect_exit "...and the turn end after it" "$rc" 0
 rm -rf "$ws" "$bstub" "$fake" "$ccalls"
+
+# A second package beside rtc_demo, committed. $1 = repo dir.
+add_rtc_other() {
+  local dir="$1"
+  mkdir -p "$dir/rtc_other/src"
+  sed 's/rtc_demo/rtc_other/' "$dir/rtc_demo/package.xml" >"$dir/rtc_other/package.xml"
+  printf 'cmake_minimum_required(VERSION 3.16)\nproject(rtc_other)\nadd_library(rtc_other src/other.cpp)\n' \
+    >"$dir/rtc_other/CMakeLists.txt"
+  echo 'int other() { return 0; }' >"$dir/rtc_other/src/other.cpp"
+  echo '# other' >"$dir/rtc_other/README.md"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm "add rtc_other"
+}
+
+# 70. Two changed packages are tested by ONE colcon test (colcon runs packages
+#     side by side), each after its own build, and a green run records both.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+add_rtc_other "$dir"
+bcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+fake=$(make_fake_colcon)
+ccalls=$(mktemp)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+echo 'int other() { return 1; }' >"$dir/rtc_other/src/other.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=red FAKE_COLCON_RED=rtc_other FAKE_COLCON_CALLS="$ccalls"); rc=$?
+expect_exit "a failing package in a batch of two blocks --run" "$rc" 2
+if [ "$(calls "$bcount")" = 2 ]; then pass "each package is built by its own call"; else fail "two packages took $(calls "$bcount") build calls"; fi
+if [ "$(grep -c '^test ' "$ccalls")" = 1 ] \
+   && grep -qxF "test --packages-select rtc_demo rtc_other --return-code-on-test-failure --event-handlers console_direct+" "$ccalls"; then
+  pass "both packages are tested by one colcon test"
+else
+  fail "the two packages were tested as: $(grep '^test ' "$ccalls")"
+fi
+expect_contains "the report names the package whose results hold the failure" "$out" "rtc_other: colcon test FAILED"
+expect_not_contains "...and not the package whose tests passed" "$out" "rtc_demo: colcon test FAILED"
+expect_contains "...and says the batch has one verdict" "$out" "tested together: rtc_demo rtc_other"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_contains "a red batch records neither package" "$out" "build/test verdict missing for: rtc_demo rtc_other"
+# 70b. colcon finishing fewer packages than asked is not a pass for the rest.
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=unknown); rc=$?
+expect_exit "a batch colcon did not finish blocks --run" "$rc" 2
+expect_contains "...with the count asked for" "$out" "rtc_demo rtc_other: colcon test exited 0 but its summary counts 0 finished packages, not 2 — UNVERIFIED"
+# 70c. Green: both verdicts are recorded and the turn end owes nothing.
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green); rc=$?
+expect_exit "a green batch passes --run" "$rc" 0
+expect_contains "...and names both packages" "$out" "built and tested [rtc_demo rtc_other]"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_exit "the turn end over a green batch passes" "$rc" 0
+rm -rf "$ws" "$bstub" "$fake" "$ccalls" "$bcount"
+
+# 71. colcon.pkg at a package root turns the package's ctest parallel. A turn
+#     that adds nothing else is still graded: the package is owed a test run,
+#     and the domain gate reads the claimants that would now overlap.
+dir=$(make_testgate_fixture 60 61)
+git -C "$dir" add -A && git -C "$dir" commit -qm "two claimants, sequential"
+printf 'ctest-args: ["-j", "4"]\n' >"$dir/rtc_demo/colcon.pkg"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a colcon.pkg-only change routes its package to build/test" "$out" "BUILD_PKGS=[rtc_demo]"
+expect_contains "...and runs the test gates" "$out" "t_demo (rtc_demo/CMakeLists.txt:"
+expect_contains "...which refuse a claimant without its domain's lock" "$out" "claims ROS_DOMAIN_ID=60, and rtc_demo/colcon.pkg runs this package's ctest with -j 4"
+expect_exit "...and block the turn" "$rc" 2
+# 71b. With the lock the same change passes.
+printf 'set_tests_properties(t_demo PROPERTIES RESOURCE_LOCK ros_domain_60)\n' >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "a claimant holding its lock is not reported" "$out" "Test isolation gates"
+expect_exit "...and does not block" "$rc" 0
+rm -rf "$dir"
+
+# 69. A verdict recorded by the reading that could not see a failing test is
+#     not honoured: the key carries the reading's tag, and an entry without it
+#     (what every checkout holds from before the fix) matches nothing.
+dir=$(make_fixture)
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+printf '# docs\n\nWritten after the code passed.\n' >"$dir/agent_docs/notes.md"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a tagged verdict is honoured at the turn end" "$rc" 0
+if grep -q '^rtc_demo t2:' "$dir/.git/rtc-verify-pass-pkgs"; then
+  pass "the verdict is recorded under the reading's tag"
+else
+  fail "the verdict file holds: $(cat "$dir/.git/rtc-verify-pass-pkgs" 2>&1)"
+fi
+sed -i 's/^rtc_demo t2:/rtc_demo /' "$dir/.git/rtc-verify-pass-pkgs"
+printf '# docs\n\nWritten after the code passed. Edited once more.\n' >"$dir/agent_docs/notes.md"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a verdict without the tag is not honoured" "$rc" 2
+expect_contains "...the package is owed again" "$out" "build/test verdict missing for: rtc_demo"
+rm -rf "$dir" "$bstub" "$tstub" "$count"
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

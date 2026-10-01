@@ -65,17 +65,18 @@
 #        - changed *.yaml -> parse check (config/** had no gate at all). Verdict
 #          is the interpreter exit status, and a missing PyYAML fails OPEN.
 #   1c. changed .claude/rules/*.md -> validate_claude_rules.py (globs can fire)
-#   1d. changed CMakeLists.txt / conftest.py / test sources -> the CI test
-#        gates validate_test_domains.py + validate_test_fixtures.py, WHOLE repo
-#        (a domain collision spans two packages; CI keeps main clean)
+#   1d. changed CMakeLists.txt / conftest.py / colcon.pkg / test sources -> the
+#        CI test gates validate_test_domains.py + validate_test_fixtures.py,
+#        WHOLE repo (a domain collision spans two packages; CI keeps main clean)
 #   2. Build + test on changed packages -- EXECUTED under --run, only CHECKED
 #      at the turn end (see Modes and "Turn end: evidence, not execution")
 #        - a package is "changed" for this phase by its source (.cpp/.hpp/.h/
-#          .cc/.py), its CMakeLists.txt / package.xml, or a shell script in
-#          its source directories (see CHANGED_SH_BUILD)
+#          .cc/.py), its CMakeLists.txt / package.xml / colcon.pkg, or a shell
+#          script in its source directories (see CHANGED_SH_BUILD)
 #        - rtc_base / rtc_msgs change -> ./build.sh full --tests + colcon test all
 #          (PROC-3: broad downstream impact)
-#        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>
+#        - else                       -> ./build.sh -p <pkg> --tests per package,
+#          then ONE colcon test over the packages that built (side by side)
 #        (--tests: build.sh skips tests by default, and a package built without
 #        them tests as "0 tests, 0 failures" -- see run_build. Independently of
 #        that flag, a package whose CMake cache says BUILD_TESTING=OFF after the
@@ -143,8 +144,9 @@
 #          (documented: code.claude.com/docs/en/best-practices) -- that cap
 #          is an unverified stop, not an exit; do not lean on it.
 # Limits : --run bounds (seconds, each an environment override): one package
-#          build RTC_VERIFY_BUILD_BOUND_S (900), its tests
-#          RTC_VERIFY_TEST_BOUND_S (600); the PROC-3 workspace build
+#          build RTC_VERIFY_BUILD_BOUND_S (900), the one test run over the
+#          packages that built RTC_VERIFY_TEST_BOUND_S (600 -- they run side by
+#          side, so it bounds the longest suite); the PROC-3 workspace build
 #          RTC_VERIFY_FULL_BUILD_BOUND_S (2400) and its tests
 #          RTC_VERIFY_FULL_TEST_BOUND_S (1200). They are there to end a hang,
 #          not to fit a budget: --run is called by hand and nothing kills it
@@ -404,8 +406,14 @@ CHANGED_SH=$(echo "$CHANGED" | grep -E '\.sh$' || true)
 CHANGED_DOCS=$(echo "$CHANGED" | grep -E '\.md$' || true)
 CHANGED_YAML=$(echo "$CHANGED" | grep -E '\.(yaml|yml)$' || true)
 CHANGED_META=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
+# colcon.pkg at a package root: arguments colcon adds to every build / test of
+# that package -- in this repo, the job count of its ctest. It changes how the
+# package's tests RUN (side by side instead of one at a time), so it routes the
+# package to build/test and to the test gates the way a CMakeLists edit does;
+# on its own it used to leave the hook at the exit below, ungraded.
+CHANGED_TESTCFG=$(echo "$CHANGED" | grep -E '^[^/]+/colcon\.pkg$' || true)
 if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
-   && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ]; then
+   && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ] && [ -z "$CHANGED_TESTCFG" ]; then
   advance_verify_base
   exit 0
 fi
@@ -620,7 +628,7 @@ is_pure_format() {
   # unrelated CMake gate went down with it.
   [ -n "$CHANGED_SRC" ] || return 1
   if [ -n "$CHANGED_DOCS" ] || [ -n "$CHANGED_YAML" ] || [ -n "$CHANGED_META" ] \
-     || [ -n "$CHANGED_SH" ]; then
+     || [ -n "$CHANGED_SH" ] || [ -n "$CHANGED_TESTCFG" ]; then
     return 1
   fi
   # An untracked file has no HEAD blob to compare against.
@@ -693,8 +701,8 @@ while IFS= read -r pkg_dir; do
   [ -n "$pkg_dir" ] || continue
   [ -f "$pkg_dir/package.xml" ] || continue
   BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}"
-done <<< "$(printf '%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
-             | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
+done <<< "$(printf '%s\n%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
+             "$CHANGED_TESTCFG" | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
 
 # Emit `name<TAB>exempt<TAB>lineno` for every add_executable() in the CMake
 # source arriving on stdin. Used by ARCH-7 to diff target NAMES between HEAD and
@@ -1301,7 +1309,7 @@ fi
 # beside the hook would judge the hook's repo, not the checkout under test. The
 # routing tests rely on this: they copy the scripts into a fixture.
 TESTGATE_FAILURES=""
-CHANGED_TESTGATE=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|conftest\.py)$|(^|/)test(ing)?/' || true)
+CHANGED_TESTGATE=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|conftest\.py|colcon\.pkg)$|(^|/)test(ing)?/' || true)
 if [ -n "$CHANGED_TESTGATE" ]; then
   for gate in validate_test_domains validate_test_fixtures; do
     gate_py="$PROJECT_DIR/repo_scripts/scripts/${gate}.py"
@@ -1652,11 +1660,16 @@ if [ -n "${WORK_TREE:-}" ]; then
       | git hash-object --stdin 2>/dev/null || true
   )
 fi
+#
+# The "t2:" in front names the test reading the verdict came from. Verdicts
+# recorded without it are from before 2026-10-01, when a package whose tests
+# ran was green whether they passed or not (see run_colcon_test); none of them
+# is honoured, so each package is tested once more by a hook that can see red.
 change_set_key() {  # $1 = package the key is for
   [ -n "${WORK_TREE:-}" ] || return 0
   case "$1" in
-    repo_scripts | PROC-3) printf '%s' "$WORK_TREE" ;;
-    *) printf '%s' "$PKG_CONTENT_KEY" ;;
+    repo_scripts | PROC-3) printf 't2:%s' "$WORK_TREE" ;;
+    *) [ -z "$PKG_CONTENT_KEY" ] || printf 't2:%s' "$PKG_CONTENT_KEY" ;;
   esac
 }
 pkg_verdict_reusable() {  # $1 = package, $2 = key
@@ -1817,6 +1830,7 @@ elif [ -n "$PROC3" ]; then
   fi
   BUILT_PKGS=" PROC-3"
 else
+  TESTABLE=""
   for pkg in $BUILD_PKGS; do
     # The bound ends a hung build; it is not a budget (see Limits in the
     # header). A bound-killed build (exit 124) is reported as UNVERIFIED,
@@ -1839,19 +1853,55 @@ else
       continue
     fi
 
-    # The exit code is the verdict (see run_colcon_test and the PROC-3 path
-    # above): timeout / launch failure / real test failure are told apart by
-    # it, not inferred from result files.
-    #
-    # RTC_VERIFY_TEST_CMD is the test-side twin of RTC_VERIFY_BUILD_CMD: an
-    # executable taking the package name, whose exit code stands for the test
-    # run's and whose output for its result summary. It is what lets the suite
-    # reach a GREEN package without a colcon workspace, and it replaces the
-    # colcon command line -- which is why that line has cases of its own, run
-    # against a stand-in `colcon` on PATH. Never set in normal operation.
     BUILT_PKGS="${BUILT_PKGS} ${pkg}"
-    FAILED_TESTS=""
-    if [ -n "${RTC_VERIFY_TEST_CMD:-}" ]; then
+    TESTABLE="${TESTABLE} ${pkg}"
+  done
+
+  # The tests of every package that built, in ONE `colcon test`: colcon runs
+  # packages side by side (.colcon/defaults.yaml, test: parallel-workers), so
+  # two changed packages cost the longer of their suites instead of the sum.
+  # Half of the runs that reached this point had two packages or more
+  # (.git/rtc-verify-timing.log, September 2026).
+  #
+  # One call has one exit code, so the verdict is the batch's: green records
+  # every package, anything else records none -- the packages that did pass
+  # are tested again beside the fixed one, at no cost in wall time. The report
+  # still says which package's results hold the failures.
+  #
+  # The exit code is the verdict (see run_colcon_test and the PROC-3 path
+  # above): timeout / launch failure / real test failure are told apart by
+  # it, not inferred from result files.
+  #
+  # RTC_VERIFY_TEST_CMD is the test-side twin of RTC_VERIFY_BUILD_CMD: an
+  # executable taking ONE package name, whose exit code stands for the test
+  # run's and whose output for its result summary. It is what lets the suite
+  # reach a GREEN package without a colcon workspace, and it replaces the
+  # colcon command line -- which is why that line has cases of its own, run
+  # against a stand-in `colcon` on PATH. Never set in normal operation.
+  TESTABLE="${TESTABLE# }"
+  # $1 = what was tested (a package, or the batch), $2 = how many packages.
+  # Reports every TEST_STATUS but red and green, which differ per call site.
+  report_unverified_tests() {
+    case "$TEST_STATUS" in
+      timeout)
+        TEST_FAILURES="${TEST_FAILURES}  - ${1}: colcon test TIMED OUT after ${TEST_BOUND_S}s — UNVERIFIED, treat as failure (a hung test, or raise RTC_VERIFY_TEST_BOUND_S if the suite is legitimately this long)\n"
+        ;;
+      launch)
+        TEST_FAILURES="${TEST_FAILURES}  - ${1}: colcon test could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
+        ;;
+      noresult)
+        TEST_FAILURES="${TEST_FAILURES}  - ${1}: colcon test exited ${TEST_RC} with no parseable result summary — UNVERIFIED (a test that crashed or was killed writes no result file; see build/<pkg>/Testing/Temporary/LastTest.log)\n"
+        ;;
+      short)
+        TEST_FAILURES="${TEST_FAILURES}  - ${1}: colcon test exited 0 but its summary counts ${TEST_FINISHED} finished packages, not ${2} — UNVERIFIED (colcon did not test what it was asked to: is every name above a package name?)\n"
+        ;;
+    esac
+  }
+
+  if [ -z "$TESTABLE" ]; then
+    : # nothing built, or nothing built with tests
+  elif [ -n "${RTC_VERIFY_TEST_CMD:-}" ]; then
+    for pkg in $TESTABLE; do
       TEST_RC=0
       RESULT=$(timeout "$TEST_BOUND_S" "$RTC_VERIFY_TEST_CMD" "$pkg" 2>&1) || TEST_RC=$?
       if [ "$TEST_RC" -eq 124 ]; then
@@ -1861,46 +1911,43 @@ else
       elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
         TEST_STATUS=red
         FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" || true)
+        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: ${FAILED_TESTS}\n"
       elif [ "$TEST_RC" -gt 1 ]; then
         TEST_STATUS=noresult
       else
         TEST_STATUS=green
+        remember_pkg_verdict "$pkg" "$(change_set_key "$pkg")"
       fi
-    else
-      run_colcon_test "$TEST_BOUND_S" "$pkg"
-      classify_colcon_test 1
-      if [ "$TEST_STATUS" = red ]; then
+      report_unverified_tests "$pkg" 1
+    done
+  else
+    TESTABLE_N=$(wc -w <<<"$TESTABLE" | tr -d ' ')
+    # shellcheck disable=SC2086  # a word list: one argument per package
+    run_colcon_test "$TEST_BOUND_S" $TESTABLE
+    classify_colcon_test "$TESTABLE_N"
+    if [ "$TEST_STATUS" = red ]; then
+      RED_PKGS=""
+      for pkg in $TESTABLE; do
         FAILED_TESTS=$(failed_tests_report "build/${pkg}")
         if [ -n "$FAILED_TESTS" ]; then
-          FAILED_TESTS="colcon test FAILED:\n${FAILED_TESTS}"
-        else
-          TEST_STATUS=noresult
+          TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test FAILED:\n${FAILED_TESTS}\n"
+          RED_PKGS="${RED_PKGS} ${pkg}"
         fi
+      done
+      if [ -z "$RED_PKGS" ]; then
+        TEST_STATUS=noresult
+      elif [ "$TESTABLE_N" -gt 1 ]; then
+        TEST_FAILURES="${TEST_FAILURES}    (tested together: ${TESTABLE}. No verdict is recorded for any of them — the next run tests them together again.)\n"
       fi
-      rm -f "$TEST_LOG" "$TEST_MARKER"
     fi
-
-    case "$TEST_STATUS" in
-      timeout)
-        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test TIMED OUT after ${TEST_BOUND_S}s — UNVERIFIED, treat as failure (a hung test, or raise RTC_VERIFY_TEST_BOUND_S if the suite is legitimately this long)\n"
-        ;;
-      launch)
-        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
-        ;;
-      red)
-        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: ${FAILED_TESTS}\n"
-        ;;
-      noresult)
-        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test exited ${TEST_RC} with no parseable result summary — UNVERIFIED (a test that crashed or was killed writes no result file; see build/${pkg}/Testing/Temporary/LastTest.log)\n"
-        ;;
-      short)
-        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test exited 0 but its summary counts ${TEST_FINISHED} finished packages, not 1 — UNVERIFIED (colcon did not test this package: is '${pkg}' its package name?)\n"
-        ;;
-      green)
+    if [ "$TEST_STATUS" = green ]; then
+      for pkg in $TESTABLE; do
         remember_pkg_verdict "$pkg" "$(change_set_key "$pkg")"
-        ;;
-    esac
-  done
+      done
+    fi
+    report_unverified_tests "$TESTABLE" "$TESTABLE_N"
+    rm -f "$TEST_LOG" "$TEST_MARKER"
+  fi
 fi
 
 # --- Phase 3: Stale install/ detection (rename-aware) ---
