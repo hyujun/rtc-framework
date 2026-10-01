@@ -54,6 +54,15 @@ if(BUILD_TESTING)
     TIMEOUT 60
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
+  # Build parallelism and memory cap: one package at a time, make jobs =
+  # min(physical cores, RAM / 4 GB), the build inside a MemoryMax scope. Runs
+  # setup_env.sh, build.sh and build_deps.sh in a fake workspace with stub
+  # colcon / cmake / systemd-run and judges by what those actually received.
+  ament_add_test(test_build_jobs
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_build_jobs.sh
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
   # ensure_venv must base the workspace .venv on the distro Python — a uv-managed
   # base hides the apt catkin_pkg and fails the first ament configure (rtc_base).
   ament_add_test(test_install_python

@@ -18,7 +18,8 @@
               invariants.md 중 영향받는 항목 확인
 3. Edit     → minimal, single-concern. RT path 여부 재확인.
               auto/lerp/RT-forbidden 자체 grep
-4. Build    → ./build.sh -p <pkg> (단일) 또는 ./build.sh full (rtc_base/rtc_msgs 변경 시)
+4. Build    → ./build.sh --tests -p <pkg> (단일) 또는 ./build.sh --tests full (rtc_base/rtc_msgs 변경 시)
+              --tests 없이 빌드한 패키지의 colcon test 는 테스트 0개를 통과로 보고한다
 5. Test     → AGENTS.md §5 Sensor matrix 참조. 버그 수정 시 회귀 테스트 추가
 6. Verify   → 본 문서 Completion Checklist 통과
 ```
@@ -133,7 +134,7 @@ README 패키지 표·count, [architecture.md](architecture.md) dependency graph
 검증:
 
 ```bash
-./build.sh -p <package>
+./build.sh --tests -p <package>   # build.sh 는 기본으로 테스트를 빌드하지 않는다
 colcon test --packages-select <package> [<deps>...] --event-handlers console_direct+
 colcon test-result --verbose
 ```

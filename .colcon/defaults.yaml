@@ -1,13 +1,25 @@
 build:
   symlink-install: true
-  # Ryzen 5 5600X (6C/12T): up to 8 packages built concurrently. Caps peak
-  # memory from heavy-template TUs (pinocchio/proxsuite/aligator/Eigen) while
-  # leaving threads for intra-package make -j (set MAKEFLAGS=-j2 in env).
-  parallel-workers: 8
+  # One package at a time; the parallelism lives inside the package, as make
+  # jobs. setup_env.sh exports MAKEFLAGS=-j<N> with N = min(physical cores,
+  # RAM / 4 GB) (override: RTC_BUILD_JOBS, or a -j already in MAKEFLAGS).
+  # Without that -j colcon adds `-j<logical cores>` to EVERY package it builds
+  # in parallel, and the heaviest TUs here take up to 3.5 GB each in the
+  # compiler -- on a host with many cores and 32 GB that runs out of RAM.
+  # Measured on 6C/12T, clean build: 1 package x -j6 18m49s / 11.0 GB peak,
+  # 2 packages x -j3 20m51s / 8.7 GB.
+  parallel-workers: 1
   cmake-args:
     - -DCMAKE_BUILD_TYPE=Release
     - -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON
+    # Tests are not built by default (build.sh does the same): they are more
+    # than half the compile time. To build them: `./build.sh --tests`, or pass
+    # --cmake-args with -DBUILD_TESTING=ON (CLI --cmake-args REPLACES this
+    # whole list, so repeat the three entries above -- repo_scripts/README.md
+    # "Plain `colcon build` 호환성"). `colcon test` on a package built without
+    # them reports zero tests, not a failure.
+    - -DBUILD_TESTING=OFF
 test:
   # RT timing-sensitive tests flake under heavy parallel contention; keep test
   # concurrency well below build (6C physical).

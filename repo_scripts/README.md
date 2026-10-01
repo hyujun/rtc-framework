@@ -178,6 +178,12 @@ repo_scripts/
 | `get_system_python()` | venv base · CMake 가 쓰는 배포판 python. 기본 `readlink -f /usr/bin/python3` (venv 링크·PATH 를 따라가지 않는다), `RTC_SYSTEM_PYTHON` 으로 덮어씀 |
 | `venv_uses_system_python()` | venv 가 `get_system_python` 을 base 로 system-site-packages 를 켜고 만들어졌는지 (uv-managed base · 사라진 base 는 무효). `ensure_venv` 의 재생성 판정 |
 | `append_cmake_python_args()` | build.sh: `-DPython3_EXECUTABLE` 를 venv 유무와 무관하게 `CMAKE_ARGS` 에 붙이고 `catkin_pkg`·`ament_package` import 를 사전 확인 (실패 시 1), 활성 venv base 가 틀리면 경고 |
+| `get_default_build_jobs()` | 이 호스트의 기본 make job 수 = `min(물리 코어, RAM / 4 GB)` (최소 1; 메모리를 못 읽으면 2). 순수 산정식은 `build_jobs_for <cores> <mem_kB>` |
+| `resolve_build_makeflags [N]` | export 할 `MAKEFLAGS` 를 출력. job 수 우선순위: 인자 (CLI `-j`) > `RTC_BUILD_JOBS` > 기존 `MAKEFLAGS` 의 `-j` > 기본값. knob 이 양의 정수가 아니면 출력 없이 2 반환. `build.sh` · `setup_env.sh` · `build_deps.sh` 공유 |
+| `get_build_mem_max()` | 빌드 메모리 상한 (systemd 크기 표기). 기본 `MemTotal` 의 75%, `RTC_BUILD_MEM_MAX` (`24G` · `20000M` · `60%` / `off`) 로 덮어씀. 꺼졌거나 메모리를 못 읽으면 빈 문자열, 표기가 틀리면 2 |
+| `build_mem_scope_prefix()` | 그 상한이 걸린 systemd user scope 로 명령을 감쌀 prefix 를 `BUILD_MEM_SCOPE_PREFIX` 배열에 채운다 (`MemoryMax` + `MemorySwapMax=0`). probe 가 scope 안에서 `memory.max` 를 읽어 한도가 실제로 걸리는지 확인하고, 안 걸리면 (user session 없음 · cgroup v1 · 위임 없음) prefix 는 비고 빌드는 상한 없이 돈다 |
+| `print_build_host_summary()` | 이 호스트의 기본 job 수 · 메모리 상한 가용성 · ccache 유무를 한 줄씩 보고 (`install.sh` 의 설치 뒤 · `verify` 모드). 항상 0 반환 |
+| `build_mem_scope_oom_killed()` | 방금 끝난 scope 가 OOM 으로 정리됐으면 0 (`Result=oom-kill`) — 컴파일 에러와 메모리 부족을 가른다. failed 로 남은 unit 도 지운다 |
 
 ### 패키지 리스트 함수
 
@@ -549,17 +555,18 @@ source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
 | `MUJOCO_DIR` | `/opt/mujoco-3.x.x` (자동 탐색) | `rtc_mujoco_sim` 의 fallback |
 | `mujoco_ROOT` | `$MUJOCO_DIR` | `find_package(mujoco)` cmake hint (build.sh 와 동등) |
 | `COLCON_DEFAULTS_FILE` | `<repo>/.colcon/defaults.yaml` | cwd 와 무관하게 colcon 기본 옵션 적용 |
+| `MAKEFLAGS` | `-j<N>` (이미 `-j` 가 있으면 그대로) | plain `colcon build` 의 make job 수 — 아래 "빌드 병렬도와 메모리" |
 | `VIRTUAL_ENV` | `<rtc_ws>/.venv` | Python venv 활성화 |
 
 **Source 순서**: ROS Jazzy → deps/install (+ ONNX Runtime) → .venv → workspace overlay (`install/setup.bash`, 있을 때만).
 
-**Plain `colcon build` 호환성** (build.sh 우회 워크플로): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 로 단독 빌드가 가능하다. ONNX Runtime · MuJoCo · deps/install prefix 모두 환경변수로 주입되며, `.colcon/defaults.yaml` 이 `--symlink-install` / `Release` / `compile_commands` 를 자동 적용한다. 단 CMake 가 쓸 인터프리터는 venv 유무와 무관하게 고정한다 (build.sh 는 이를 자동 처리 — `append_cmake_python_args`). `.venv` 가 활성이면 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio configure 가 깨질 수 있고, venv 가 없어도 FindPython 은 PATH 디렉토리 순서로 찾으므로 PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 를 잡아 `catkin_pkg` 를 못 본다. `deactivate` 는 앞의 경우만 막는다.
+**Plain `colcon build` 호환성** (build.sh 우회 워크플로): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 로 단독 빌드가 가능하다. ONNX Runtime · MuJoCo · deps/install prefix 모두 환경변수로 주입되며, `.colcon/defaults.yaml` 이 `--symlink-install` / `Release` / `compile_commands` / 테스트 제외 (`-DBUILD_TESTING=OFF`) 를 자동 적용한다. 단 CMake 가 쓸 인터프리터는 venv 유무와 무관하게 고정한다 (build.sh 는 이를 자동 처리 — `append_cmake_python_args`). `.venv` 가 활성이면 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio configure 가 깨질 수 있고, venv 가 없어도 FindPython 은 PATH 디렉토리 순서로 찾으므로 PATH 앞의 다른 `python3.X` (예: `uv python install` 의 `~/.local/bin/python3.12`) 를 잡아 `catkin_pkg` 를 못 본다. `deactivate` 는 앞의 경우만 막는다.
 
 이때 **CLI 의 `--cmake-args` 는 defaults 의 `cmake-args` 목록에 덧붙지 않고 그 목록을 통째로 대체한다** (`symlink-install` · `parallel-workers` 는 유지). 그래서 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 만 넘기면 새 빌드 트리가 `CMAKE_BUILD_TYPE` 없이 — 최적화 없이 — configure 되고 `compile_commands.json` 도 안 나온다. 기존 트리는 CMakeCache 가 옛 값을 기억해 차이가 드러나지 않는다. defaults 목록을 함께 적는다 (목록은 `.colcon/defaults.yaml` 과 같게 유지):
 
 ```bash
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON -DPython3_EXECUTABLE=/usr/bin/python3
+  -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON -DBUILD_TESTING=OFF -DPython3_EXECUTABLE=/usr/bin/python3
 ```
 
 build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다.
@@ -582,6 +589,77 @@ build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_co
 
 ---
 
+#### 빌드 병렬도와 메모리
+
+colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수** (`--parallel-workers`) 와 패키지 안의 **make job 수**. colcon-cmake 는 `MAKEFLAGS` 에 `-j`/`-l` 이 없으면 패키지마다 `-j<논리 코어> -l<논리 코어>` 를 붙이고, `-l` 은 loadavg 만 볼 뿐 메모리는 보지 않는다. 그래서 colcon 기본값의 동시 컴파일 수 상한은 *패키지 수 × 논리 코어* 이고, 코어가 많고 RAM 이 그만큼 크지 않은 호스트는 그것만으로 메모리가 바닥난다 (물리 16코어 / 32 GB 호스트가 빌드 중 섰다).
+
+이 repo 는 **패키지를 한 번에 하나씩** 빌드하고 (`.colcon/defaults.yaml` 의 `parallel-workers: 1`, `build.sh` 도 명시적으로 넘긴다) 병렬도를 **make job 수 하나**로 정한다:
+
+| knob | 적용 범위 |
+|------|-----------|
+| `./build.sh -j N` · `./install.sh -j N` | 그 실행 (install.sh 는 `build_deps.sh` 에도 건다) |
+| `RTC_BUILD_JOBS=N` | `build.sh` · `build_deps.sh` 는 실행 시점에, plain `colcon` 은 `setup_env.sh` 를 source 하는 시점에 읽는다 — 이미 source 한 셸에서 plain `colcon` 의 값을 바꾸려면 `MAKEFLAGS=-jN colcon build …` |
+| `MAKEFLAGS` 에 직접 넣은 `-j` | 위 둘이 없으면 그대로 존중한다 |
+| 기본값 | `min(물리 코어, RAM / 4 GB)` — 6C/32GB → 6, 16C/32GB → 8 |
+
+기본값의 근거는 실측이다 (6C/12T · 32 GB, Release, 이 repo 의 21개 패키지 클린 빌드; 컴파일러·링커 RSS 합의 최대):
+
+| 패키지 × make job | 시간 | 빌드 메모리 최대 |
+|---|---|---|
+| 1 × `-j6` | 18분 49초 | 11.0 GB |
+| 2 × `-j3` | 20분 51초 | 8.7 GB |
+| 1 × `-j8` | 17분 23초 | 14.4 GB |
+| 2 × `-j4` | 17분 11초 | 11.5 GB |
+
+- **패키지를 나누지 않는 이유**: 같은 예산을 두 패키지로 나눠도 클린 빌드는 빨라지지 않고 (무거운 패키지들이 의존성 사슬로 이어져 혼자 빌드되는 구간이 길다), 평소 하는 패키지 하나 재빌드는 job 이 절반이라 훨씬 느리다 (`integrated_bringup`: 1×`-j6` 5분 18초, 2×`-j3` 8분 30초).
+- **SMT 형제를 세지 않는 이유**: `-j8` 은 `-j6` 보다 8% 빠르고 31% 더 쓴다.
+- **job 당 4 GB 인 이유**: TU 하나의 컴파일러 메모리는 대부분 2 GB 아래지만 2 GB 를 넘는 TU 가 51개, 최악은 3.5 GB 다 (`rtc_urdf_bridge/src/rt_model_handle.cpp`). 비용은 최적화가 아니라 템플릿 인스턴스화에서 나온다 — `-fsyntax-only` 만으로도 메모리의 90% 이상이 든다 — 그래서 `-O` 수준을 낮춰도 줄지 않는다.
+- **`-l` 을 넣지 않는 이유**: load 제한은 빌드와 무관한 시스템 부하까지 예산에서 깎는다 (1×`-j6 -l6` 은 20분 44초).
+- **패키지 하나 재빌드의 비용** (Stop hook 이 치르는 경로, `-p integrated_bringup --tests`): 변경 없음 3초, TU 하나 수정 24초 (`-j6` 과 `-j12` 가 같다 — 링크가 지배한다), 패키지 전체 재컴파일 279초 (`-j12` 는 245초). 마지막 경우는 hook 의 180초 상한을 이전에도 지금도 넘는다.
+
+**메모리 상한.** job 수는 평균을 맞추는 장치다 — job 당 4 GB 는 최악 TU 하나가 들어가는 값이지, 모든 job 이 동시에 최악인 경우의 합 (8 × 3.5 GB = 28 GB) 이 아니다. 그 꼬리는 상한으로 막는다. `build.sh` 와 `build_deps.sh` 는 빌드를 `MemoryMax` 가 걸린 systemd user scope 안에서 돌린다 (`rt_common.sh` `build_mem_scope_prefix`):
+
+- 상한은 `RTC_BUILD_MEM_MAX` (`24G` · `20000M` · `60%` / `off`), 기본은 RAM 의 75% 다
+- 한도를 넘으면 **그 빌드만** 끝난다 — scope 의 기본 `OOMPolicy=stop` 이라 프로세스 하나가 OOM 으로 죽으면 systemd 가 scope 전체 (colcon · make · 컴파일러) 를 정리하고, `build.sh` 는 `Build stopped: it needed more than the <상한> memory cap` 으로 원인과 두 knob 을 알린다 (scope 의 `Result=oom-kill` 로 판정하므로 컴파일 에러를 메모리 탓으로 돌리지 않는다)
+- `MemorySwapMax=0` 을 함께 건다 — 없으면 빌드가 한도에서 죽는 대신 swap 을 태우며 호스트를 붙잡는다
+- systemd user session 이 없는 곳 (컨테이너 · CI · lingering 없는 ssh) 에서는 scope 를 만들 수 없으므로 `Memory cap unavailable` 을 경고하고 상한 없이 빌드한다 — job 수 제한은 그대로 걸린다
+- plain `colcon` 에는 걸리지 않는다. 같은 보호를 원하면 직접 감싼다: `systemd-run --user --scope -p MemoryMax=75% -p MemorySwapMax=0 colcon build …`
+
+**감별.** 빌드가 `Build stopped: … memory cap` 으로 끝나면 상한에 닿은 것이다 — job 수를 낮추거나 (`-j N`) 다른 프로그램이 쓰는 메모리를 비운다. 상한 없이 돈 빌드 (plain `colcon`, user session 없는 호스트) 가 화면을 멈추거나 `c++: fatal error: Killed signal terminated program cc1plus` 로 죽어도 메모리다. 그 빌드가 실제로 쓴 job 수와 상한은 `build.sh` 의 `Parallelism:` · `Memory cap:` 줄에 찍히고, plain `colcon` 이면 `echo $MAKEFLAGS` 로 본다 — 비어 있으면 `setup_env.sh` 를 source 하지 않은 셸이고 colcon 이 논리 코어 수를 그대로 쓴다.
+
+---
+
+#### 빌드 시간 줄이기
+
+**테스트는 기본으로 빌드하지 않는다.** 컴파일 시간의 절반 이상이 테스트다 — 메시지 패키지를 뺀 597개 TU 중 362개가 테스트 코드이고 컴파일 시간의 58% 를 차지한다 (`integrated_bringup` 은 156개 중 115개). 그래서 `./build.sh` · `./install.sh` · plain `colcon build` (`.colcon/defaults.yaml`) 모두 `-DBUILD_TESTING=OFF` 가 기본이고, 테스트가 필요할 때 켠다:
+
+| | 켜는 법 |
+|---|---|
+| `build.sh` | `./build.sh --tests …` (한 번), 또는 개발 셸에서 `export RTC_BUILD_TESTS=on` |
+| `install.sh` | `./install.sh --tests …` |
+| plain `colcon` | `--cmake-args … -DBUILD_TESTING=ON` — CLI `--cmake-args` 는 defaults 목록을 통째로 대체하므로 위 "Plain `colcon build` 호환성" 의 목록을 함께 적는다 |
+
+| 클린 빌드 (6C/12T, 1 × `-j6`) | 시간 | 빌드 메모리 최대 |
+|---|---|---|
+| 테스트 포함 (`--tests`) | 18분 49초 | 11.0 GB |
+| 기본 | 9분 44초 | 10.7 GB |
+
+메모리 최대는 줄지 않는다 — 가장 무거운 TU 들은 제품 코드 쪽에 있다.
+
+**`colcon test` 전에는 `--tests` 로 빌드한다.** 테스트 없이 빌드한 패키지에 `colcon test` 를 돌리면 실패가 아니라 **테스트 0개**가 보고된다 — 통과처럼 읽힌다. `build.sh` 는 그 선택을 매 빌드 `Tests:` 줄로 알리고, `-DBUILD_TESTING` 을 **매번 `ON`/`OFF` 로 명시**한다: CMake 가 이 값을 캐시하므로 한쪽을 생략하면 그 방향으로는 직전 빌드의 선택이 남는다. Stop hook 은 `--tests` 로 빌드한다 (`verify-changes.sh` `run_build`). 켜고 끄는 것은 그 패키지의 reconfigure 만 일으킨다 — 이미 컴파일된 테스트 object 는 남아 있어, 소스가 그대로면 다시 켤 때 재컴파일하지 않는다.
+
+**ccache.** `build.sh` 는 ccache 가 깔려 있으면 자동으로 쓴다 (`--no-ccache` / `RTC_CCACHE=off` 로 끈다; `install.sh` 가 설치한다). 얻는 것은 **같은 TU 를 다시 컴파일하는 빌드** — `build.sh -c`, 브랜치를 오가는 재빌드, 별도 build base — 이고, 평소의 증분 빌드는 make 가 이미 건너뛰므로 달라지지 않는다. 공개 헤더를 고쳐 하위 TU 의 전처리 결과가 바뀌는 재컴파일도 캐시로 못 막는다.
+
+| 클린 빌드 (`rtc_tsid` 까지 5개 패키지, 128 TU, 1 × `-j6`) | 시간 | 캐시 적중 |
+|---|---|---|
+| ccache 없음 | 4분 36초 | — |
+| ccache, 빈 캐시 | 5분 2초 | 5% |
+| ccache, 채워진 캐시 | 18초 | 100% |
+
+빈 캐시의 첫 빌드는 9% 느리다 (해시 + 저장). launcher 도 `BUILD_TESTING` 처럼 매 빌드 명시한다 — 빈 값 포함: ccache 로 configure 한 트리는 `--no-ccache` 뒤에도, ccache 를 지운 뒤에도 (그때는 `ccache: not found` 로 실패하며) 계속 그것을 부른다. clangd 는 `compile_commands.json` 의 ccache prefix 를 스스로 걷어낸다 (clangd 18 `--check` 로 확인).
+
+---
+
 ### build_deps.sh
 
 `../deps.repos` 기반으로 fmt/mimalloc/aligator 를 소스 빌드하여 `<rtc_ws>/deps/install/` 에 설치합니다.
@@ -593,7 +671,7 @@ source setup_env.sh
 
 **동작:**
 1. `deps/src/aligator/.git` 가 없으면 `vcs import deps/src < ../deps.repos` + `git submodule update` 자동 실행
-2. 위상 순서로 각각 cmake configure + build + install (CPU 병렬):
+2. 위상 순서로 각각 cmake configure + build + install (make job 수는 `build.sh` 와 같은 knob — `PARALLEL_JOBS` > `RTC_BUILD_JOBS` > `MAKEFLAGS` 의 `-j` > `min(물리 코어, RAM/4GB)`):
    - `fmt 11.1.4` (`-DFMT_TEST=OFF -DFMT_DOC=OFF`)
    - `mimalloc 2.1.7` (`-DMI_BUILD_TESTS=OFF -DMI_BUILD_OBJECT=OFF`)
    - `aligator 0.19.0` (`-DBUILD_TESTING=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF` + `-Dhpp-fcl_DIR=/opt/ros/.../hpp-fcl` + `-Dfmt_DIR=$DEPS_PREFIX/lib/cmake/fmt`)
@@ -671,7 +749,7 @@ source setup_env.sh
 |--------|------|
 | `ament_cmake` | ROS2 빌드 시스템 |
 
-**시스템 요구사항:** bash 4.0+, `ethtool`, `lscpu`, `sysctl`, `cset` (cpuset), `cyclictest` (rt-tests, 벤치마크 시)
+**시스템 요구사항:** bash 4.0+, `ethtool`, `lscpu`, `sysctl`, `cset` (cpuset), `cyclictest` (rt-tests, 벤치마크 시). 빌드 보호 장치가 쓰는 것은 아래 "빌드가 기대는 시스템 패키지"
 
 ---
 
@@ -728,11 +806,26 @@ git clone <repo-url> src/rtc-framework
 #    README.md "Python 의존성 sync"
 ./src/rtc-framework/install.sh --skip-build
 
-# 3. workspace 빌드
+# 3. workspace 빌드 (테스트 제외가 기본 — 개발용이면 --tests)
 ./src/rtc-framework/build.sh sim        # 또는 robot / full
 ```
 
 `install.sh` 가 `repo_scripts/scripts/setup_env.sh` 를 자동 source 하고 `repo_scripts/scripts/build_deps.sh` 를 호출하며 `.venv` 까지 만들므로, `--skip-build` 를 빼면 단계 2-3 은 명령 하나로 가능합니다.
+
+### 빌드가 기대는 시스템 패키지
+
+빌드 병렬도 · 메모리 상한 · ccache 가 fresh PC 에서도 같은 방식으로 걸리려면 아래가 있어야 한다. `install.sh` 가 직접 설치하는 것은 ccache 하나이고, 나머지는 Ubuntu 기본 설치에 들어 있다 (dpkg priority `required` / `important`) — 최소 컨테이너처럼 그것이 빠진 호스트에서는 해당 장치만 꺼지고 빌드는 된다.
+
+| 장치 | 쓰는 명령 | 패키지 | 없을 때 |
+|---|---|---|---|
+| make job 수 산정 | `lscpu` · `awk` · `nproc` | `util-linux` · `mawk` · `coreutils` (required) | `lscpu` 가 없으면 sysfs → `nproc` 순으로 떨어진다. `/proc/meminfo` 를 못 읽으면 job 2개 |
+| 메모리 상한 | `systemd-run` · `systemctl` + **user session** (`systemd --user`) | `systemd` · `libpam-systemd` · `dbus-user-session` (important) | `Memory cap unavailable` 경고 후 상한 없이 빌드. cgroup v2 + memory controller 의 user 위임이 필요하다 (Ubuntu 24.04 기본값에서 확인) |
+| ccache | `ccache` | `ccache` (universe, optional) — **`install.sh` 의 `setup_workspace` 가 설치** | 캐시 없이 빌드. universe 가 꺼져 설치가 실패해도 `install.sh` 는 경고만 하고 계속한다 |
+| 테스트 빌드 (`--tests`) | — | `ros-<distro>-ament-cmake-gtest` 등 (`setup_workspace`) | — |
+
+이 호스트에서 세 장치가 실제로 걸리는지는 `./install.sh verify` (설치 끝에도 자동) 의 `Build host:` · `Memory cap:` · `ccache:` 세 줄이 알린다 (`rt_common.sh` `print_build_host_summary`). 메모리 상한 줄은 scope 를 실제로 만들어 그 cgroup 의 `memory.max` 를 읽어 본 결과다 — `systemd-run` 이 성공해도 한도가 걸리지 않는 호스트 (cgroup v1/hybrid, 위임 없음) 를 걸러낸다.
+
+Ubuntu 22.04 (Humble) 에서는 실행해 확인하지 못했다 — 쓰는 옵션 (`MemoryMax` · `MemorySwapMax` · `systemctl show --value`) 은 systemd 249 에 모두 있다.
 
 ### 실 RT 제어 PC 차이점
 

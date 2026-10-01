@@ -4,7 +4,7 @@
 # 제공 함수:
 #   install_ros2 UBUNTU_VER   — ROS2 humble/jazzy 자동 설치 (locale + apt repo)
 #   check_prerequisites       — Ubuntu / ROS2 / venv 확인, ROS_PKG_PREFIX 설정
-#   setup_workspace           — ament-cmake, eigen, colcon, vcstool, ethtool
+#   setup_workspace           — ament-cmake, eigen, colcon, vcstool, ethtool, ccache (선택)
 #
 # Caller scope 의존:
 #   ROS_PKG_PREFIX (check_prerequisites가 설정), UBUNTU_VERSION, ROS_DISTRO_DETECTED
@@ -161,6 +161,15 @@ setup_workspace() {
       ethtool \
       > /dev/null
   success "Build tools installed"
+
+  # ccache — build.sh 가 깔려 있으면 자동으로 쓴다 (클린 재빌드 · 브랜치 전환이
+  # 캐시에서 나온다). 없어도 빌드는 되므로 실패해도 설치를 멈추지 않는다 — universe
+  # 저장소가 꺼진 호스트에서는 패키지를 찾지 못한다.
+  if sudo apt-get install -y ccache > /dev/null 2>&1; then
+    success "ccache installed (build.sh uses it automatically)"
+  else
+    warn "ccache could not be installed (optional; needs the 'universe' repository) — builds work, clean rebuilds are not cached"
+  fi
 }
 
 # ── Resolve apt-available package.xml deps via rosdep ─────────────────────────

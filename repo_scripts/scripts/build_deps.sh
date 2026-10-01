@@ -35,7 +35,26 @@ if [[ -z "${ROS_DISTRO:-}" ]]; then
   exit 1
 fi
 
-PARALLEL_JOBS="${PARALLEL_JOBS:-$(nproc)}"
+# make job 수 — build.sh 와 같은 knob (lib/rt_common.sh resolve_build_makeflags):
+# PARALLEL_JOBS (이 스크립트의 기존 변수) > RTC_BUILD_JOBS > MAKEFLAGS 의 -j >
+# min(물리 코어, RAM/4GB). aligator 의 TU 는 워크스페이스에서 가장 무거운 축에
+# 들므로 nproc 을 그대로 쓰면 코어 많은 호스트의 RAM 이 여기서 먼저 바닥난다.
+# shellcheck source=lib/rt_common.sh
+source "${_SCRIPT_DIR}/lib/rt_common.sh"
+_mf="$(resolve_build_makeflags "${PARALLEL_JOBS:-}")" || {
+  echo "ERROR: PARALLEL_JOBS / RTC_BUILD_JOBS must be a positive integer" \
+    "(got '${PARALLEL_JOBS:-${RTC_BUILD_JOBS:-}}')" >&2
+  exit 1
+}
+PARALLEL_JOBS="$(makeflags_get_jobs "$_mf")"
+PARALLEL_JOBS="${PARALLEL_JOBS:-$(get_default_build_jobs)}"
+unset _mf
+# 메모리 상한 표기는 첫 dep 을 빌드하기 전에 확인한다 (rt_common.sh get_build_mem_max).
+get_build_mem_max >/dev/null || {
+  echo "ERROR: RTC_BUILD_MEM_MAX must be a size like 24G / 20000M / 60%, or 'off'" \
+    "(got '${RTC_BUILD_MEM_MAX:-}')" >&2
+  exit 1
+}
 
 log() { printf '\n\033[1;34m▶ %s\033[0m\n' "$*"; }
 
@@ -67,8 +86,19 @@ build_one() {
         -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
         -DBUILD_SHARED_LIBS=ON \
         "$@"
-  log "Building $name (-j${PARALLEL_JOBS})"
-  cmake --build "$bld" --parallel "$PARALLEL_JOBS"
+  # build.sh 와 같은 상한 안에서 빌드한다 — 한도를 넘으면 이 빌드만 끝난다.
+  build_mem_scope_prefix
+  local cap="none" rc=0
+  [[ -n "$BUILD_MEM_SCOPE_UNIT" ]] && cap="$BUILD_MEM_SCOPE_MAX"
+  log "Building $name (-j${PARALLEL_JOBS}, memory cap ${cap})"
+  "${BUILD_MEM_SCOPE_PREFIX[@]}" cmake --build "$bld" --parallel "$PARALLEL_JOBS" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    if build_mem_scope_oom_killed; then
+      echo "ERROR: $name build stopped: it needed more than the ${BUILD_MEM_SCOPE_MAX} memory cap" \
+        "at -j${PARALLEL_JOBS}. Lower RTC_BUILD_JOBS or raise RTC_BUILD_MEM_MAX (<size>|off)." >&2
+    fi
+    exit "$rc"
+  fi
   log "Installing $name → $DEPS_PREFIX"
   cmake --install "$bld"
 }

@@ -21,6 +21,10 @@
 #   get_system_python         — venv base · CMake 가 쓰는 배포판 python (RTC_SYSTEM_PYTHON 로 덮어씀)
 #   venv_uses_system_python   — venv base 가 get_system_python (+system-site-packages) 인지
 #   append_cmake_python_args  — build.sh: CMake Python 고정 + ament 모듈 사전 확인
+#   get_default_build_jobs    — 이 호스트의 기본 make job 수 = min(물리 코어, RAM / 4 GB)
+#   resolve_build_makeflags   — export 할 MAKEFLAGS (CLI -j > RTC_BUILD_JOBS > 기존 -j > 기본값)
+#   build_mem_scope_prefix    — 메모리 상한이 걸린 systemd user scope 로 빌드를 감쌀 prefix
+#   print_build_host_summary  — 이 호스트의 job 수 · 메모리 상한 · ccache 가용성 보고
 #   create_oneshot_service    — systemd oneshot 서비스 생성 헬퍼
 #   lttng_kernel_build_version      — 커널 헤더 Makefile 에서 V.P.S (uname 아님)
 #   lttng_modules_min_version_for_kernel — 그 커널이 요구하는 lttng-modules 최소 버전
@@ -590,6 +594,215 @@ append_cmake_python_args() {
   CMAKE_ARGS+=("-DPython3_EXECUTABLE=${CMAKE_PYTHON}" "-DPython3_FIND_VIRTUALENV=STANDARD")
 }
 
+# ── 빌드 병렬도 (build.sh / setup_env.sh / build_deps.sh 공유) ───────────────
+# colcon 의 병렬도는 두 층이다: 동시에 빌드하는 패키지 수 (--parallel-workers) 와
+# 패키지 안의 make job 수. colcon-cmake 는 MAKEFLAGS 에 -j/-l 이 없으면
+# `-j<논리 코어> -l<논리 코어>` 를 직접 붙이고, -l 은 loadavg 만 볼 뿐 메모리는
+# 보지 않는다. 무거운 TU 하나가 컴파일러 메모리를 3.5 GB 까지 쓰므로 (실측,
+# rtc_urdf_bridge/src/rt_model_handle.cpp) 코어가 많고 RAM 이 그만큼 크지 않은
+# 호스트는 기본값만으로 OOM 에 닿는다. 그래서 패키지는 한 번에 하나씩 빌드하고
+# (.colcon/defaults.yaml) make job 수를 MAKEFLAGS 로 고정한다.
+
+# job 하나에 잡는 메모리. 실측 최악 3.5 GB 가 들어가는 값.
+_RTC_BUILD_MEM_PER_JOB_MB=4096
+
+is_positive_int() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+# MemTotal (kB). $RTC_PROC_MEMINFO 로 테스트에서 덮어쓴다. 못 읽으면 빈 문자열 —
+# 실패 코드가 아니다: `x="$(get_mem_total_kb)"` 가 `set -e` 인 caller 를 죽이지 않게.
+get_mem_total_kb() {
+  awk '/^MemTotal:/ {print $2; exit}' "${RTC_PROC_MEMINFO:-/proc/meminfo}" 2>/dev/null || true
+}
+
+# make job 수 = min(물리 코어 $1, RAM $2 kB / 4 GB), 최소 1. 순수 함수.
+# SMT 형제는 세지 않는다 — 6C/12T 에서 -j8 은 -j6 보다 8% 빠르고 31% 더 쓴다 (실측).
+# MemTotal 은 공칭 용량보다 조금 작으므로 (32 GB → 약 31.3 GiB) 내림이 아니라
+# 반올림한다. 메모리를 못 읽으면 ($2 가 양의 정수가 아니면) 코어 수를 믿지 않고
+# 2 로 떨어진다 — 느린 빌드는 다시 돌리면 되지만 OOM 은 호스트를 세운다.
+build_jobs_for() {
+  local cores="${1:-}" mem_kb="${2:-}"
+  is_positive_int "$cores" || cores=1
+  if ! is_positive_int "$mem_kb"; then
+    echo $(( cores < 2 ? cores : 2 ))
+    return
+  fi
+  local by_mem=$(( (mem_kb / 1024 + _RTC_BUILD_MEM_PER_JOB_MB / 2) / _RTC_BUILD_MEM_PER_JOB_MB ))
+  (( by_mem < 1 )) && by_mem=1
+  echo $(( cores < by_mem ? cores : by_mem ))
+}
+
+# 이 호스트의 기본 make job 수.
+get_default_build_jobs() {
+  build_jobs_for "$(get_physical_cores)" "$(get_mem_total_kb)"
+}
+
+# MAKEFLAGS 문자열($1)에 -j / --jobs 가 있으면 0.
+makeflags_has_jobs() {
+  local w
+  local -a words=()
+  read -r -a words <<<"${1:-}"
+  for w in "${words[@]}"; do
+    case "$w" in
+      -j|-j[0-9]*|--jobs|--jobs=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# MAKEFLAGS 문자열($1)의 -j / --jobs 를 전부 지우고 -j$2 를 붙여 출력한다.
+# 다른 플래그 (-k, -l 등) 는 순서대로 보존한다.
+makeflags_set_jobs() {
+  local n="$2" w skip_count=0
+  local -a words=() kept=()
+  read -r -a words <<<"${1:-}"
+  for w in "${words[@]}"; do
+    if (( skip_count )); then
+      skip_count=0
+      [[ "$w" =~ ^[0-9]+$ ]] && continue
+    fi
+    case "$w" in
+      -j|--jobs) skip_count=1; continue ;;
+      -j[0-9]*|--jobs=*) continue ;;
+    esac
+    kept+=("$w")
+  done
+  kept+=("-j${n}")
+  echo "${kept[*]}"
+}
+
+# MAKEFLAGS 문자열($1)의 job 수를 출력한다 (마지막 것이 이긴다). 없거나 숫자 없는
+# `-j` (무제한) 면 빈 문자열.
+makeflags_get_jobs() {
+  local w prev="" jobs=""
+  local -a words=()
+  read -r -a words <<<"${1:-}"
+  for w in "${words[@]}"; do
+    case "$w" in
+      -j|--jobs) jobs="" ;;
+      -j[0-9]*) jobs="${w#-j}" ;;
+      --jobs=*) jobs="${w#--jobs=}" ;;
+      *) [[ "$prev" == "-j" || "$prev" == "--jobs" ]] && [[ "$w" =~ ^[0-9]+$ ]] && jobs="$w" ;;
+    esac
+    prev="$w"
+  done
+  echo "$jobs"
+}
+
+# export 할 MAKEFLAGS 를 출력한다. job 수의 우선순위:
+#   $1 (CLI -j) > $RTC_BUILD_JOBS > 기존 MAKEFLAGS 의 -j > get_default_build_jobs
+# 사용자가 MAKEFLAGS 에 직접 넣은 -j 는 명시적 knob 이 없는 한 건드리지 않는다.
+# knob 이 양의 정수가 아니면 아무것도 출력하지 않고 2 를 반환한다.
+resolve_build_makeflags() {
+  local jobs="${1:-${RTC_BUILD_JOBS:-}}"
+  if [[ -z "$jobs" ]]; then
+    if makeflags_has_jobs "${MAKEFLAGS:-}"; then
+      echo "${MAKEFLAGS}"
+      return 0
+    fi
+    jobs="$(get_default_build_jobs)"
+  fi
+  is_positive_int "$jobs" || return 2
+  makeflags_set_jobs "${MAKEFLAGS:-}" "$jobs"
+}
+
+# ── 빌드 메모리 상한 (build.sh / build_deps.sh 공유) ─────────────────────────
+# job 수 산정은 평균을 맞추는 장치다 — job 당 4 GB 는 최악 TU 하나가 들어가는
+# 값이지 모든 job 이 동시에 최악인 경우의 합이 아니다. 그 꼬리는 상한으로 막는다:
+# 빌드를 MemoryMax 가 걸린 systemd user scope 에서 돌리면 한도를 넘는 순간 그
+# scope 만 OOM 으로 정리되고 (scope 의 기본 OOMPolicy=stop — 프로세스 하나가
+# 죽으면 systemd 가 scope 전체를 끝낸다) 호스트는 남는다. MemorySwapMax=0 은
+# 빌드가 한도 대신 swap 을 태우며 호스트를 붙잡는 것을 막는다 — 느려지지 않고
+# 실패한다.
+
+# 상한 값을 systemd 크기 표기로 출력한다. $RTC_BUILD_MEM_MAX 로 덮어쓴다:
+#   24G · 20000M · 60% (물리 메모리 대비) / 0 · off · none (끔).
+# 기본은 MemTotal 의 75%. 끄였거나 메모리를 못 읽으면 빈 문자열. 표기가 틀리면 2.
+get_build_mem_max() {
+  local v="${RTC_BUILD_MEM_MAX:-}" mem_kb
+  case "$v" in
+    0|off|none) return 0 ;;
+    "")
+      mem_kb="$(get_mem_total_kb)"
+      is_positive_int "$mem_kb" || return 0
+      echo "$(( mem_kb * 3 / 4 / 1024 ))M" ;;
+    *)
+      [[ "$v" =~ ^[1-9][0-9]*(%|[KMGT])?$ ]] || return 2
+      echo "$v" ;;
+  esac
+}
+
+# 상한이 걸린 scope 로 명령을 감쌀 prefix 를 BUILD_MEM_SCOPE_PREFIX 배열에 채운다
+# (`"${BUILD_MEM_SCOPE_PREFIX[@]}" colcon build …`). 함께 채우는 전역:
+#   BUILD_MEM_SCOPE_MAX  — 적용하려던 상한 (끄였으면 빈 문자열)
+#   BUILD_MEM_SCOPE_UNIT — scope unit 이름 (실제로 걸렸을 때만)
+# systemd user session 이 없으면 (컨테이너 · CI · lingering 없는 ssh) prefix 는
+# 비고 0 을 반환한다 — 빌드는 상한 없이 돈다. 호출부는 MAX 는 있는데 UNIT 이
+# 비었는지로 그 경우를 알린다. RTC_BUILD_MEM_MAX 표기가 틀리면 2.
+build_mem_scope_prefix() {
+  BUILD_MEM_SCOPE_PREFIX=()
+  BUILD_MEM_SCOPE_UNIT=""
+  BUILD_MEM_SCOPE_MAX="$(get_build_mem_max)" || return 2
+  [[ -n "$BUILD_MEM_SCOPE_MAX" ]] || return 0
+  command -v systemd-run >/dev/null 2>&1 || return 0
+  local -a limits=(-p "MemoryMax=${BUILD_MEM_SCOPE_MAX}" -p "MemorySwapMax=0")
+  # scope 를 만들 수 있는지, 그리고 한도가 **실제로 걸렸는지**는 만들어 봐야 안다.
+  # systemd-run 이 성공해도 한도가 안 걸리는 호스트가 있다 — cgroup v1/hybrid 는
+  # MemoryMax 를 무시하고, memory controller 가 user 에 위임되지 않았으면 scope 의
+  # cgroup 에 memory.max 가 없다. 그래서 probe 는 scope 안에서 자기 cgroup 의
+  # memory.max 를 읽어 숫자인지 본다 ("max" 나 파일 부재면 실패).
+  # shellcheck disable=SC2016  # $(…) 는 scope 안의 sh 가 펼친다
+  systemd-run --user --scope --quiet "${limits[@]}" sh -c \
+    '[ "$(cat "/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)/memory.max" 2>/dev/null)" -gt 0 ]' \
+    >/dev/null 2>&1 || return 0
+  BUILD_MEM_SCOPE_UNIT="rtc-build-$$-${RANDOM}"
+  BUILD_MEM_SCOPE_PREFIX=(systemd-run --user --scope --quiet
+    "--unit=${BUILD_MEM_SCOPE_UNIT}" "${limits[@]}" --)
+}
+
+# 방금 끝난 scope ($BUILD_MEM_SCOPE_UNIT) 가 OOM 으로 정리됐으면 0. 그 경우 unit 이
+# failed 로 남으므로 여기서 지운다 — 빌드가 실패한 뒤에 부른다.
+build_mem_scope_oom_killed() {
+  [[ -n "${BUILD_MEM_SCOPE_UNIT:-}" ]] || return 1
+  local result
+  result="$(systemctl --user show "${BUILD_MEM_SCOPE_UNIT}.scope" -p Result --value 2>/dev/null)" || true
+  systemctl --user reset-failed "${BUILD_MEM_SCOPE_UNIT}.scope" >/dev/null 2>&1 || true
+  [[ "$result" == "oom-kill" ]]
+}
+
+# 이 호스트에서 빌드가 어떻게 돌지 — job 수 · 메모리 상한 · ccache — 를 한 줄씩
+# 알린다. install.sh 가 설치 뒤와 `verify` 모드에서 부른다: 세 가지 모두 없어도
+# 빌드는 되므로, 빠진 것은 여기서 말하지 않으면 아무도 모른다. 항상 0 을 반환한다.
+print_build_host_summary() {
+  local cores mem_kb
+  cores="$(get_physical_cores)"
+  mem_kb="$(get_mem_total_kb)"
+  if is_positive_int "$mem_kb"; then
+    info "Build host: ${cores} physical cores, $(( mem_kb / 1024 )) MB RAM → make -j$(get_default_build_jobs) by default (-j N / RTC_BUILD_JOBS)"
+  else
+    warn "Build host: ${cores} physical cores, RAM unreadable → make -j$(get_default_build_jobs) (conservative fallback)"
+  fi
+
+  if ! build_mem_scope_prefix; then
+    warn "Memory cap: RTC_BUILD_MEM_MAX='${RTC_BUILD_MEM_MAX:-}' is not a size (24G / 20000M / 60%) or 'off' — build.sh will refuse to start"
+  elif [[ -n "$BUILD_MEM_SCOPE_UNIT" ]]; then
+    success "Memory cap: available, ${BUILD_MEM_SCOPE_MAX} (a build that needs more is stopped; the host is not)"
+  elif [[ -n "$BUILD_MEM_SCOPE_MAX" ]]; then
+    warn "Memory cap: NOT available here — needs a systemd user session on cgroup v2 with the memory controller delegated"
+    warn "  (packages systemd, libpam-systemd, dbus-user-session; not present in most containers). Builds are bounded by the job count only."
+  else
+    info "Memory cap: off (RTC_BUILD_MEM_MAX)"
+  fi
+
+  if command -v ccache >/dev/null 2>&1; then
+    success "ccache: $(command -v ccache) (build.sh uses it automatically)"
+  else
+    warn "ccache: not installed — a clean rebuild recompiles everything (sudo apt install ccache)"
+  fi
+  return 0
+}
+
 # ── 공통 argument parsing (build.sh / install.sh 공유) ─────────────────────
 # 공통 옵션을 파싱하고 전역 변수에 설정한다.
 # 각 스크립트 고유 옵션은 REMAINING_ARGS 배열로 반환된다.
@@ -633,7 +846,7 @@ parse_common_args() {
         IFS=',' read -r -a _COMMON_CUSTOM_PACKAGES <<< "$2"
         shift 2 ;;
       -j|--jobs)
-        [[ -z "${2:-}" ]] && fatal "--jobs requires a number"
+        is_positive_int "${2:-}" || fatal "--jobs requires a positive integer (got '${2:-}')"
         _COMMON_PARALLEL_JOBS="$2"
         shift 2 ;;
       --mujoco)

@@ -68,6 +68,7 @@ ONNXRT_VERSION="1.30.0"   # ≥ 1.18 필요: ur5e_p1b demo_inference 정책이 I
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 SKIP_DEPS=0
 SKIP_BUILD=0
+WITH_TESTS=0
 SKIP_MPC=0
 MODE_VERIFY=0
 DO_RT=0
@@ -107,7 +108,10 @@ show_help() {
   echo "  -r, --release     Build with CMAKE_BUILD_TYPE=Release (default)"
   echo "  -c, --clean       Remove build/, install/, and log/ before building"
   echo "  -p, --packages    Comma-separated list of specific packages to build"
-  echo "  -j, --jobs N      Limit parallel workers for colcon (e.g. -j 4)"
+  echo "  -j, --jobs N      make jobs for the deps build and the package build (packages build"
+  echo "                    one at a time). Default: min(physical cores, RAM / 4 GB)"
+  echo "  --tests           Also build the tests (build.sh --tests). Default: not built —"
+  echo "                    they are more than half the build time"
   echo "  --skip-deps       Skip installing apt system dependencies"
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
   echo "  --skip-rt         Skip RT system setup (overrides --all)"
@@ -127,7 +131,7 @@ show_help() {
   echo "  ./install.sh sim                # deps + build (simulation only)"
   echo "  ./install.sh robot --all        # deps + build + RT setup (real robot)"
   echo "  ./install.sh robot --rt         # RT setup only (already built)"
-  echo "  ./install.sh full -c -j 4       # clean build, 4 parallel jobs"
+  echo "  ./install.sh full -c -j 4       # clean build, 4 make jobs"
   echo ""
   exit 0
 }
@@ -138,6 +142,9 @@ MODE="$_COMMON_MODE"
 BUILD_TYPE="$_COMMON_BUILD_TYPE"
 CLEAN_BUILD="$_COMMON_CLEAN_BUILD"
 PARALLEL_JOBS="$_COMMON_PARALLEL_JOBS"
+# -j 는 build.sh 뿐 아니라 build_deps.sh (aligator) 에도 걸려야 한다 — 둘 다
+# RTC_BUILD_JOBS 를 읽는다 (rt_common.sh resolve_build_makeflags).
+[[ -n "$PARALLEL_JOBS" ]] && export RTC_BUILD_JOBS="$PARALLEL_JOBS"
 MJ_DIR="$_COMMON_MJ_DIR"
 CUSTOM_PACKAGES=("${_COMMON_CUSTOM_PACKAGES[@]}")
 set -- "${REMAINING_ARGS[@]}"
@@ -151,6 +158,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-build)
       SKIP_BUILD=1
+      shift
+      ;;
+    --tests)
+      WITH_TESTS=1
       shift
       ;;
     --all)
@@ -253,6 +264,7 @@ build_package() {
   [[ "$CLEAN_BUILD" -eq 1 ]] && BUILD_ARGS+=("--clean")
   [[ -n "$PARALLEL_JOBS" ]] && BUILD_ARGS+=("--jobs" "$PARALLEL_JOBS")
   [[ -n "$MJ_DIR" ]] && BUILD_ARGS+=("--mujoco" "$MJ_DIR")
+  [[ "$WITH_TESTS" -eq 1 ]] && BUILD_ARGS+=("--tests")
   [[ ${#CUSTOM_PACKAGES[@]} -gt 0 ]] && BUILD_ARGS+=("--packages" "$(IFS=','; echo "${CUSTOM_PACKAGES[*]}")")
 
   bash "${INSTALL_SCRIPT_DIR}/build.sh" "${BUILD_ARGS[@]}" || error "Build failed!"
@@ -284,6 +296,14 @@ verify_installation() {
   ros2 pkg executables rtc_controller_manager 2>/dev/null || true
   info "Available executables (udp_hand_driver):"
   ros2 pkg executables udp_hand_driver 2>/dev/null || true
+
+  # 빌드 보호 장치 (job 수 · 메모리 상한 · ccache) 가 이 호스트에서 실제로 걸리는지.
+  # 셋 다 없어도 빌드는 되므로 여기서 알리지 않으면 드러나지 않는다.
+  print_build_host_summary
+
+  if [[ "$WITH_TESTS" -eq 0 && "$SKIP_BUILD" -eq 0 ]]; then
+    info "Tests were not built (default). For development: ./build.sh --tests, then colcon test"
+  fi
 
   mkdir -p "${WORKSPACE}/logging_data/stats" "${WORKSPACE}/logging_data/ur_plot"
   success "Log directories ready (${WORKSPACE}/logging_data, ${WORKSPACE}/logging_data/ur_plot)"

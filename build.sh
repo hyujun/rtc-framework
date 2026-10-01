@@ -23,6 +23,8 @@ _SCRIPT_DIR_BUILD="$_RT_SCRIPT_DIR"
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 NO_SYMLINK=0
+BUILD_TESTS="${RTC_BUILD_TESTS:-off}"  # on | off
+USE_CCACHE="${RTC_CCACHE:-auto}"  # auto | on | off
 EXPORT_COMPILE_COMMANDS=0
 SHOW_BANNER=1
 
@@ -56,11 +58,19 @@ show_help() {
   echo "  -c, --clean                Remove build/, install/, and log/ before building"
   echo "  -p, --packages             Comma-separated list of specific packages to build"
   echo "                             (Overrides default packages for the chosen mode)"
-  echo "  -j, --jobs N               Limit parallel workers (e.g. -j 4)"
+  echo "  -j, --jobs N               make jobs (compilers running at once). Packages always build"
+  echo "                             one at a time. Default: \$RTC_BUILD_JOBS, else a -j already"
+  echo "                             in \$MAKEFLAGS, else min(physical cores, RAM / 4 GB)"
   echo "  -e, --export-compile-commands  (Deprecated, kept for compatibility — compile_commands.json"
   echo "                             is now always exported and merged for clangd / VS Code)"
   echo "  --no-symlink               Do not use --symlink-install"
+  echo "  --tests / --no-tests       Build the tests, or not. Default: NOT built — they are more"
+  echo "                             than half the compile time. 'colcon test' finds nothing in a"
+  echo "                             package until it is built with --tests"
   echo "  --no-banner                Suppress the build banner (used by install.sh)"
+  echo "  --ccache / --no-ccache     Compile through ccache, or never. Default: use it when it is"
+  echo "                             installed (sudo apt install ccache). Pays off on clean"
+  echo "                             rebuilds and branch switches, not on ordinary incremental builds"
   echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.7.0)"
   echo "                             Auto-detected from $MJ_DEFAULT if not specified"
   echo "  --tracing                  Compile rtc:* LTTng UST tracepoints (RT trace spans)"
@@ -68,12 +78,22 @@ show_help() {
   echo "                             (install.sh --tracing). Default OFF = zero RT overhead."
   echo "  --help                     Show this help"
   echo ""
+  echo "Environment:"
+  echo "  RTC_BUILD_JOBS=N           Same as -j N (also read by build_deps.sh and setup_env.sh)"
+  echo "  RTC_BUILD_TESTS=on|off     Same as --tests / --no-tests; default off. A development shell"
+  echo "                             can export on to build tests on every ./build.sh"
+  echo "  RTC_CCACHE=auto|on|off     Same as --ccache (on) / --no-ccache (off); default auto"
+  echo "  RTC_BUILD_MEM_MAX=<size>   Memory cap for the build: 24G, 20000M, 60%, or off."
+  echo "                             Default 75% of RAM. Past it the build is stopped, not the host"
+  echo ""
   echo "Examples:"
   echo "  ./build.sh robot"
   echo "  ./build.sh sim"
   echo "  ./build.sh sim --mujoco /opt/mujoco-3.7.0"
   echo "  ./build.sh sim --tracing                 # sim build with RT trace spans"
   echo "  ./build.sh full"
+  echo "  ./build.sh full -j 8                     # 8 make jobs instead of the default"
+  echo "  ./build.sh --tests -p rtc_base           # build one package with its tests"
   echo ""
 }
 
@@ -96,6 +116,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-symlink)
       NO_SYMLINK=1
+      shift
+      ;;
+    --tests)
+      BUILD_TESTS=on
+      shift
+      ;;
+    --no-tests)
+      BUILD_TESTS=off
+      shift
+      ;;
+    --ccache)
+      USE_CCACHE=on
+      shift
+      ;;
+    --no-ccache)
+      USE_CCACHE=off
       shift
       ;;
     --no-banner)
@@ -208,6 +244,25 @@ if [[ "$CLEAN_BUILD" -eq 1 ]]; then
 fi
 
 CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
+
+# ── Tests: not built unless asked ─────────────────────────────────────────────
+# More than half the compile time is test code, and a host that only runs the
+# software never needs it. BUILD_TESTING is passed on EVERY build, in both
+# directions: CMake caches it, so a tree would otherwise keep whatever the last
+# explicit build chose. With OFF, `colcon test` reports zero tests for these
+# packages — which reads as green — so whatever tests must build with --tests
+# first (the Stop hook does).
+case "$BUILD_TESTS" in
+  on)
+    CMAKE_ARGS+=("-DBUILD_TESTING=ON")
+    info "Tests: built (--tests)"
+    ;;
+  off)
+    CMAKE_ARGS+=("-DBUILD_TESTING=OFF")
+    info "Tests: NOT built (default) — build with --tests before 'colcon test'"
+    ;;
+  *) error "RTC_BUILD_TESTS must be on or off (got '${BUILD_TESTS}')" ;;
+esac
 if [[ -n "$MJ_DIR" && -d "$MJ_DIR" ]]; then
   CMAKE_ARGS+=("-Dmujoco_ROOT=${MJ_DIR}")
   info "MuJoCo root path: ${MJ_DIR}"
@@ -224,6 +279,29 @@ fi
 append_cmake_python_args \
   || error "CMake Python ${CMAKE_PYTHON} is missing or cannot import catkin_pkg / ament_package (ament_cmake needs both to parse package.xml). Install ROS 2 from apt (python3-catkin-pkg-modules) and source /opt/ros/<distro>/setup.bash."
 info "CMake Python: ${CMAKE_PYTHON}"
+
+# ── ccache ────────────────────────────────────────────────────────────────────
+# Used when installed unless turned off. Like BUILD_TESTING, the launcher is
+# passed on every build — an empty value included — because CMake caches it: a
+# tree configured with ccache would keep calling it after --no-ccache, or after
+# ccache was uninstalled (and then fail with "ccache: not found"). The absolute
+# path is passed so later builds do not depend on PATH.
+CCACHE_BIN=""
+case "$USE_CCACHE" in
+  on)
+    CCACHE_BIN="$(command -v ccache || true)"
+    [[ -n "$CCACHE_BIN" ]] || error "--ccache: ccache is not installed (sudo apt install ccache)"
+    ;;
+  auto) CCACHE_BIN="$(command -v ccache || true)" ;;
+  off) ;;
+  *) error "RTC_CCACHE must be auto, on or off (got '${USE_CCACHE}')" ;;
+esac
+CMAKE_ARGS+=("-DCMAKE_C_COMPILER_LAUNCHER=${CCACHE_BIN}" "-DCMAKE_CXX_COMPILER_LAUNCHER=${CCACHE_BIN}")
+if [[ -n "$CCACHE_BIN" ]]; then
+  info "ccache: ${CCACHE_BIN}"
+else
+  info "ccache: not used (${USE_CCACHE})"
+fi
 
 # compile_commands.json — clangd / IDE 통합용. 항상 켠다 (오버헤드 무시 가능).
 # 빌드 후 merge_compile_commands.py 가 패키지별 산출물을 단일 파일로 머지한다
@@ -243,9 +321,33 @@ if [[ "$NO_SYMLINK" -eq 0 ]]; then
   COLCON_ARGS+=("--symlink-install")
 fi
 
-if [[ -n "$PARALLEL_JOBS" ]]; then
-  COLCON_ARGS+=("--parallel-workers" "$PARALLEL_JOBS")
-  info "Limiting parallel workers to $PARALLEL_JOBS"
+# ── Parallelism: one package at a time, N make jobs inside it ─────────────────
+# The job count is the only knob (rt_common.sh resolve_build_makeflags). colcon
+# adds its own `-j<logical cores> -l<...>` per package unless MAKEFLAGS already
+# carries a -j, and N packages × that is what exhausts RAM on a many-core host.
+# Splitting the same budget over two packages (2 × j/2) was not measurably
+# faster on a clean build and far slower for the single-package rebuilds this
+# script mostly does.
+MAKEFLAGS="$(resolve_build_makeflags "$PARALLEL_JOBS")" \
+  || error "RTC_BUILD_JOBS must be a positive integer (got '${RTC_BUILD_JOBS:-}')"
+export MAKEFLAGS
+COLCON_ARGS+=("--parallel-workers" "1")
+BUILD_JOBS="$(makeflags_get_jobs "$MAKEFLAGS")"
+info "Parallelism: 1 package at a time, make -j${BUILD_JOBS:-<unlimited>} (MAKEFLAGS='${MAKEFLAGS}')"
+
+# ── Memory cap: the build may fail, the host may not ──────────────────────────
+# The job count sizes the build for the typical TU; this bounds the worst case.
+# colcon runs inside a systemd user scope with MemoryMax (default 75% of RAM,
+# RTC_BUILD_MEM_MAX to change or turn off) and no swap, so crossing the limit
+# ends this build instead of the session (rt_common.sh build_mem_scope_prefix).
+build_mem_scope_prefix \
+  || error "RTC_BUILD_MEM_MAX must be a size like 24G / 20000M / 60%, or 'off' (got '${RTC_BUILD_MEM_MAX:-}')"
+if [[ -n "$BUILD_MEM_SCOPE_UNIT" ]]; then
+  info "Memory cap: ${BUILD_MEM_SCOPE_MAX} (RTC_BUILD_MEM_MAX; the build is stopped if it needs more)"
+elif [[ -n "$BUILD_MEM_SCOPE_MAX" ]]; then
+  warn "Memory cap unavailable — no systemd user session here; building without one"
+else
+  info "Memory cap: off"
 fi
 
 # ONNX Runtime: /opt/onnxruntime 수동 설치 경로 cmake 전파.
@@ -262,7 +364,14 @@ fi
 
 COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")
 
-colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
+BUILD_RC=0
+"${BUILD_MEM_SCOPE_PREFIX[@]}" colcon build "${COLCON_ARGS[@]}" || BUILD_RC=$?
+if [[ "$BUILD_RC" -ne 0 ]]; then
+  if build_mem_scope_oom_killed; then
+    error "Build stopped: it needed more than the ${BUILD_MEM_SCOPE_MAX} memory cap at make -j${BUILD_JOBS:-?}. Lower the job count (./build.sh -j N) or raise the cap (RTC_BUILD_MEM_MAX=<size>|off)."
+  fi
+  error "Build failed!"
+fi
 
 # 빌드 후 최신 overlay 소싱 (check_rt_setup.sh 등 후속 작업용)
 source "${WORKSPACE}/install/setup.bash" || true

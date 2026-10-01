@@ -33,6 +33,22 @@ _REPO_ROOT="$(cd "${_SCRIPT_DIR}/../.." && pwd)"
 # colcon defaults.yaml — cwd 와 무관하게 적용 (_REPO_ROOT/.colcon/defaults.yaml)
 export COLCON_DEFAULTS_FILE="${_REPO_ROOT}/.colcon/defaults.yaml"
 
+# make job 수 — plain `colcon build` 도 build.sh 와 같은 병렬도를 쓰게 한다.
+# colcon-cmake 는 MAKEFLAGS 에 -j 가 없으면 `-j<논리 코어>` 를 붙이고, 코어가 많은
+# 호스트는 그 값만으로 RAM 이 바닥난다. 산정식과 우선순위 (RTC_BUILD_JOBS > 기존
+# MAKEFLAGS 의 -j > min(물리 코어, RAM/4GB)) 는 lib/rt_common.sh 의
+# resolve_build_makeflags 가 SSoT 다 — 이 셸에 함수를 남기지 않도록 서브프로세스로
+# 부른다. `|| true`: `set -e` 인 caller (build.sh) 가 여기서 죽지 않게.
+_mf="$(MAKEFLAGS="${MAKEFLAGS:-}" RTC_BUILD_JOBS="${RTC_BUILD_JOBS:-}" \
+  bash -c 'source "$1" && resolve_build_makeflags' _ "${_SCRIPT_DIR}/lib/rt_common.sh" 2>/dev/null)" || true
+if [[ -z "${_mf}" && -n "${RTC_BUILD_JOBS:-}" ]]; then
+  echo "setup_env.sh: RTC_BUILD_JOBS='${RTC_BUILD_JOBS}' is not a positive integer — using the default job count" >&2
+  _mf="$(MAKEFLAGS="${MAKEFLAGS:-}" RTC_BUILD_JOBS="" \
+    bash -c 'source "$1" && resolve_build_makeflags' _ "${_SCRIPT_DIR}/lib/rt_common.sh" 2>/dev/null)" || true
+fi
+[[ -n "${_mf}" ]] && export MAKEFLAGS="${_mf}"
+unset _mf
+
 # deps/install prefix (fmt/mimalloc/aligator)
 export RTC_DEPS_PREFIX="${_WS_ROOT}/deps/install"
 export CMAKE_PREFIX_PATH="${RTC_DEPS_PREFIX}:${CMAKE_PREFIX_PATH:-}"
@@ -46,7 +62,9 @@ export PKG_CONFIG_PATH="${RTC_DEPS_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 # MuJoCo binary tarball (no cmake config — rtc_mujoco_sim falls back to find_library).
 # Pick the latest /opt/mujoco-*/ that exists. Use `sort -V` (version sort, matches
 # build.sh) — a lexical glob would rank mujoco-3.7.0 above mujoco-3.10.0.
-_mj=$(ls -d /opt/mujoco-* 2>/dev/null | sort -V | tail -1)
+# `|| true`: MuJoCo 가 없는 호스트에서 ls 가 2 로 끝나고, caller 가 `set -eo pipefail`
+# (build.sh · install.sh) 이면 이 대입이 그 스크립트를 출력 없이 종료시킨다.
+_mj=$(ls -d /opt/mujoco-* 2>/dev/null | sort -V | tail -1) || true
 [[ -n "${_mj:-}" && -d "$_mj" && -f "$_mj/lib/libmujoco.so" ]] && export MUJOCO_DIR="$_mj"
 unset _mj
 
