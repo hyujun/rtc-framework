@@ -80,10 +80,13 @@
 #        them tests as "0 tests, 0 failures" -- see run_build. Independently of
 #        that flag, a package whose CMake cache says BUILD_TESTING=OFF after the
 #        build is reported UNVERIFIED and not tested -- pkgs_built_without_tests)
-#        A test run that TIMES OUT or fails to launch is reported as UNVERIFIED
-#        and blocks (exit 2) -- the colcon test exit code is preserved and
-#        handled explicitly rather than inferred from test-result alone, so a
-#        killed/partial run can no longer masquerade as "0 failures".
+#        The tests' verdict is `colcon test --return-code-on-test-failure`'s
+#        exit code plus its summary line counting the packages asked for --
+#        not a reading of result files (run_colcon_test says what that reading
+#        missed). A test run that TIMES OUT, fails to launch, fails without
+#        leaving a failing result, or finishes fewer packages than asked is
+#        reported as UNVERIFIED and blocks (exit 2), so a killed/partial run
+#        cannot masquerade as "0 failures".
 #   3. Stale install/ detection (rename-aware)
 #        - any deleted launch/*.py or config/**/*.yaml whose basename still
 #          resolves under install/ — warns about stray artefacts that
@@ -1378,6 +1381,99 @@ repo_pkgs_built_without_tests() {
   done
 }
 
+# Run `colcon test` over "$@" (package names; none = every package of the
+# workspace). Sets TEST_RC, TEST_LOG (colcon's console output) and TEST_MARKER
+# (a file older than every result this run writes); callers rm both.
+#
+# --return-code-on-test-failure is the verdict. Without it `colcon test` exits 0
+# whether the tests passed or not, and the verdict has to be read back out of
+# result files -- which is where this hook was blind from its first version
+# until 2026-10-01: the per-package branch asked `colcon test-result
+# --packages-select <pkg>`, an option that verb does not have. colcon answered
+# with a usage error, the error text holds no "<n> failures", and so every
+# package whose tests RAN was recorded green, failing or not. The suite could
+# not see it: RTC_VERIFY_TEST_CMD stands in for both colcon calls at once, so
+# the real command line was never executed by a test (cases 66-68 now run it
+# against a `colcon` that refuses arguments the real one refuses). With the
+# flag the exit code is the tests' own: 0 = every selected package ran and
+# none failed, 1 = a test failed.
+run_colcon_test() {  # $1 = timeout seconds, rest = package names
+  local secs="$1" select=""
+  shift
+  [ $# -gt 0 ] && select="--packages-select $*"
+  TEST_MARKER=$(mktemp)
+  TEST_LOG=$(mktemp)
+  TEST_RC=0
+  timeout "$secs" bash -c "cd '$WORKSPACE' && colcon test $select --return-code-on-test-failure --event-handlers console_direct+ 2>&1" >"$TEST_LOG" || TEST_RC=$?
+}
+
+# What that run says, in one word, left in TEST_STATUS: green | red | timeout |
+# launch | short. TEST_FINISHED is the number of packages colcon counted.
+#
+# Exit 0 alone is not green. `colcon test --packages-select <a name it does not
+# know>` warns, tests nothing and exits 0 ("Summary: 0 packages finished"), and
+# a package that never started is not in the count either. So a pass needs the
+# positive half too: colcon's own summary line, counting as many packages as
+# were asked for ($1; empty = any number above zero, for the workspace-wide
+# run). No summary line -- a colcon configured without that event handler --
+# reads as "short", which blocks instead of guessing.
+classify_colcon_test() {  # $1 = number of packages asked for, or empty
+  TEST_FINISHED=$(sed -n 's/^Summary: \([0-9][0-9]*\) packages\{0,1\} finished.*/\1/p' "$TEST_LOG" | tail -n 1)
+  TEST_FINISHED="${TEST_FINISHED:-0}"
+  if [ "$TEST_RC" -eq 124 ]; then
+    TEST_STATUS=timeout
+  elif [ "$TEST_RC" -ge 125 ]; then
+    TEST_STATUS=launch
+  elif [ "$TEST_RC" -ne 0 ]; then
+    TEST_STATUS=red
+  elif [ -n "${1:-}" ] && [ "$TEST_FINISHED" -ne "$1" ]; then
+    TEST_STATUS=short
+  elif [ "$TEST_FINISHED" -eq 0 ]; then
+    TEST_STATUS=short
+  else
+    TEST_STATUS=green
+  fi
+}
+
+# fresh_test_failures, indented for the `echo -e` report and capped: a broken
+# fixture can fail hundreds of cases, and the report is read by an agent.
+failed_tests_report() {
+  fresh_test_failures "$@" | sed -n '1,40p' | sed -e 's/\\/\\\\/g' -e 's/^/      /'
+}
+
+# The result files under "$@" (bases relative to the workspace: build/<pkg>, or
+# build) that report an error or a failure AND were written by this run, with
+# the failing test names under each. For the report only -- the verdict is the
+# exit code above.
+#
+# "Written by this run" is not optional: ctest keeps one Testing/<stamp>/ per
+# run and nothing removes them (build/<pkg> holds dozens), so a failure fixed
+# weeks ago is still on disk and `colcon test-result` still lists it.
+fresh_test_failures() {
+  local base line keep=""
+  for base in "$@"; do
+    [ -d "$WORKSPACE/$base" ] || continue
+    # --verbose prints, per file: the file line, "- <test name>" per failing
+    # test, and each failure's message. The message bodies are left out.
+    while IFS= read -r line; do
+      case "$line" in
+        build/*": "*)
+          keep=""
+          # "not older than the marker", not "newer": two files written in
+          # the same clock tick carry the same timestamp.
+          if [ -f "$WORKSPACE/${line%%: *}" ] && ! [ "$TEST_MARKER" -nt "$WORKSPACE/${line%%: *}" ]; then
+            keep=1
+            printf '%s\n' "$line"
+          fi
+          ;;
+        "- "*)
+          if [ -n "$keep" ]; then printf '  %s\n' "$line"; fi
+          ;;
+      esac
+    done < <(cd "$WORKSPACE" && colcon test-result --test-result-base "$base" --verbose 2>/dev/null || true)
+  done
+}
+
 # Last lines of a failed build, indented for the report. Backslashes are doubled
 # because the report is emitted with `echo -e`, which would otherwise eat the
 # "\n" inside a compiler-quoted string literal and mangle the very line the
@@ -1690,24 +1786,34 @@ elif [ -n "$PROC3" ]; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test NOT RUN — built WITHOUT tests (BUILD_TESTING=OFF in the CMake cache): ${NO_TESTS_PKGS}— UNVERIFIED. 'colcon test' would report 0 tests or stale results for them. Rebuild with './build.sh full --tests'.\n"
   else
     rm -f "$BUILD_LOG"
-    # Preserve `colcon test`'s exit code: 124 = timed out, >=125 = could not
-    # launch (env/build), 0 or 1 = ran (pass/fail read from test-result). Never
-    # swallow it with `|| true`, or a killed run reads as "0 failures".
-    TEST_RC=0
-    timeout "$FULL_TEST_BOUND_S" bash -c "cd '$WORKSPACE' && colcon test --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
-    RESULT=$(cd "$WORKSPACE" && colcon test-result 2>&1 || true)
-    if [ "$TEST_RC" -eq 124 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test TIMED OUT after ${FULL_TEST_BOUND_S}s — UNVERIFIED, treat as failure (a hung test, or raise RTC_VERIFY_FULL_TEST_BOUND_S if the suites are legitimately this long)\n"
-    elif [ "$TEST_RC" -ge 125 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
-    elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
-      FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" | head -20 || true)
-      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test failed:\n${FAILED_TESTS}\n"
-    elif [ "$TEST_RC" -ne 0 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' exited ${TEST_RC} with no parseable result summary — UNVERIFIED\n"
-    else
-      remember_pkg_verdict "PROC-3" "$PROC3_KEY"
-    fi
+    # The exit code is the verdict (see run_colcon_test): 124 = timed out,
+    # >=125 = could not launch (env/build), 1 = a test failed, 0 = ran green.
+    # Never swallow it with `|| true`, or a killed run reads as "0 failures".
+    run_colcon_test "$FULL_TEST_BOUND_S"
+    classify_colcon_test ""
+    case "$TEST_STATUS" in
+      timeout)
+        TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test TIMED OUT after ${FULL_TEST_BOUND_S}s — UNVERIFIED, treat as failure (a hung test, or raise RTC_VERIFY_FULL_TEST_BOUND_S if the suites are legitimately this long)\n"
+        ;;
+      launch)
+        TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
+        ;;
+      red)
+        FAILED_TESTS=$(failed_tests_report build)
+        if [ -n "$FAILED_TESTS" ]; then
+          TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test failed:\n${FAILED_TESTS}\n"
+        else
+          TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' exited ${TEST_RC} and left no failing result file — UNVERIFIED (a test that crashed or was killed writes none; see build/<pkg>/Testing/Temporary/LastTest.log)\n"
+        fi
+        ;;
+      short)
+        TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' exited 0 but its summary counts ${TEST_FINISHED} finished packages — UNVERIFIED (nothing was tested)\n"
+        ;;
+      green)
+        remember_pkg_verdict "PROC-3" "$PROC3_KEY"
+        ;;
+    esac
+    rm -f "$TEST_LOG" "$TEST_MARKER"
   fi
   BUILT_PKGS=" PROC-3"
 else
@@ -1733,38 +1839,67 @@ else
       continue
     fi
 
-    # Preserve the exit code (see PROC-3 path above): distinguish timeout /
-    # launch failure / real test failure instead of inferring from test-result.
+    # The exit code is the verdict (see run_colcon_test and the PROC-3 path
+    # above): timeout / launch failure / real test failure are told apart by
+    # it, not inferred from result files.
     #
     # RTC_VERIFY_TEST_CMD is the test-side twin of RTC_VERIFY_BUILD_CMD: an
-    # executable taking the package name, whose exit code stands for `colcon
-    # test`'s and whose output for `colcon test-result`'s. It is what lets the
-    # suite reach a GREEN package without a colcon workspace. Never set in
-    # normal operation.
+    # executable taking the package name, whose exit code stands for the test
+    # run's and whose output for its result summary. It is what lets the suite
+    # reach a GREEN package without a colcon workspace, and it replaces the
+    # colcon command line -- which is why that line has cases of its own, run
+    # against a stand-in `colcon` on PATH. Never set in normal operation.
     BUILT_PKGS="${BUILT_PKGS} ${pkg}"
-    TEST_RC=0
+    FAILED_TESTS=""
     if [ -n "${RTC_VERIFY_TEST_CMD:-}" ]; then
+      TEST_RC=0
       RESULT=$(timeout "$TEST_BOUND_S" "$RTC_VERIFY_TEST_CMD" "$pkg" 2>&1) || TEST_RC=$?
-      # `colcon test` exits 0 on a failing test and leaves the verdict to
-      # test-result; the stand-in's red is carried by its summary alone.
-      [ "$TEST_RC" -eq 1 ] && TEST_RC=0
+      if [ "$TEST_RC" -eq 124 ]; then
+        TEST_STATUS=timeout
+      elif [ "$TEST_RC" -ge 125 ]; then
+        TEST_STATUS=launch
+      elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
+        TEST_STATUS=red
+        FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" || true)
+      elif [ "$TEST_RC" -gt 1 ]; then
+        TEST_STATUS=noresult
+      else
+        TEST_STATUS=green
+      fi
     else
-      timeout "$TEST_BOUND_S" bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
-      RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)
+      run_colcon_test "$TEST_BOUND_S" "$pkg"
+      classify_colcon_test 1
+      if [ "$TEST_STATUS" = red ]; then
+        FAILED_TESTS=$(failed_tests_report "build/${pkg}")
+        if [ -n "$FAILED_TESTS" ]; then
+          FAILED_TESTS="colcon test FAILED:\n${FAILED_TESTS}"
+        else
+          TEST_STATUS=noresult
+        fi
+      fi
+      rm -f "$TEST_LOG" "$TEST_MARKER"
     fi
 
-    if [ "$TEST_RC" -eq 124 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test TIMED OUT after ${TEST_BOUND_S}s — UNVERIFIED, treat as failure (a hung test, or raise RTC_VERIFY_TEST_BOUND_S if the suite is legitimately this long)\n"
-    elif [ "$TEST_RC" -ge 125 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
-    elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
-      FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" || true)
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: ${FAILED_TESTS}\n"
-    elif [ "$TEST_RC" -ne 0 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test exited ${TEST_RC} with no parseable result summary — UNVERIFIED\n"
-    else
-      remember_pkg_verdict "$pkg" "$(change_set_key "$pkg")"
-    fi
+    case "$TEST_STATUS" in
+      timeout)
+        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test TIMED OUT after ${TEST_BOUND_S}s — UNVERIFIED, treat as failure (a hung test, or raise RTC_VERIFY_TEST_BOUND_S if the suite is legitimately this long)\n"
+        ;;
+      launch)
+        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
+        ;;
+      red)
+        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: ${FAILED_TESTS}\n"
+        ;;
+      noresult)
+        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test exited ${TEST_RC} with no parseable result summary — UNVERIFIED (a test that crashed or was killed writes no result file; see build/${pkg}/Testing/Temporary/LastTest.log)\n"
+        ;;
+      short)
+        TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test exited 0 but its summary counts ${TEST_FINISHED} finished packages, not 1 — UNVERIFIED (colcon did not test this package: is '${pkg}' its package name?)\n"
+        ;;
+      green)
+        remember_pkg_verdict "$pkg" "$(change_set_key "$pkg")"
+        ;;
+    esac
   done
 fi
 

@@ -1982,5 +1982,219 @@ expect_exit "an unknown argument is a usage error" "$rc" 64
 expect_contains "...and prints the usage" "$out" "usage: verify-changes.sh [--run]"
 rm -rf "$dir"
 
+# --- The colcon command line itself ----------------------------------------------
+#
+# 2026-10-01: from its first version the per-package branch read the tests'
+# verdict with `colcon test-result --packages-select <pkg>`. That verb has no
+# such option: colcon printed a usage error, the error text holds no
+# "<n> failures", and `colcon test` itself exits 0 on a failing test -- so a
+# package whose tests ran was recorded green whether they passed or not. Every
+# case above replaces both colcon calls with RTC_VERIFY_TEST_CMD, which is why
+# none of them could see it. The cases below leave that seam alone and put a
+# stand-in `colcon` on PATH that refuses what the real one refuses.
+
+# The two verbs as the hook meets them (measured against colcon-core 0.21 in a
+# scratch workspace with one failing ctest):
+#   test         exits 0 on a failing test UNLESS --return-code-on-test-failure
+#                is given; a --packages-select name it does not know is a
+#                warning, nothing tested, exit 0; a package whose ctest could not
+#                run fails the call whatever the flags; the summary line counts
+#                the packages that finished
+#   test-result  takes --test-result-base / --verbose / --all and nothing else
+#                -- anything else is a usage error, exit 2; lists every result
+#                file under the base that holds a failure, however old
+# FAKE_COLCON_MODE = green | red | crash | unknown; FAKE_COLCON_CALLS = call log.
+# A "result file" here is one line: "<summary>|<failing test name>".
+make_fake_colcon() {
+  local d
+  d=$(mktemp -d)
+  cat >"$d/colcon" <<'EOF'
+#!/usr/bin/env bash
+verb="${1:-}"
+shift || true
+echo "$verb $*" >>"${FAKE_COLCON_CALLS:-/dev/null}"
+mode="${FAKE_COLCON_MODE:-green}"
+case "$verb" in
+  test)
+    pkgs=()
+    strict=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --packages-select)
+          shift
+          while [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; do pkgs+=("$1"); shift; done
+          ;;
+        --return-code-on-test-failure) strict=1; shift ;;
+        --event-handlers) shift 2 ;;
+        *) echo "colcon: error: unrecognized arguments: $1" >&2; exit 2 ;;
+      esac
+    done
+    if [ ${#pkgs[@]} -eq 0 ]; then
+      for manifest in src/*/*/package.xml; do
+        [ -f "$manifest" ] && pkgs+=("$(basename "$(dirname "$manifest")")")
+      done
+    fi
+    case "$mode" in
+      unknown)
+        echo "WARNING:colcon.colcon_core.package_selection:ignoring unknown package '${pkgs[0]}' in --packages-select" >&2
+        echo "Summary: 0 packages finished [0.11s]"
+        exit 0
+        ;;
+      crash)
+        echo "Summary: 0 packages finished [0.11s]"
+        echo "  1 package failed: ${pkgs[0]}"
+        exit 1
+        ;;
+    esac
+    for p in "${pkgs[@]}"; do
+      mkdir -p "build/$p/Testing/20261001-0900"
+      if [ "$mode" = red ]; then
+        echo "2 tests, 0 errors, 1 failure, 0 skipped|demo.Fails" >"build/$p/Testing/20261001-0900/Test.xml"
+      else
+        echo "2 tests, 0 errors, 0 failures, 0 skipped|" >"build/$p/Testing/20261001-0900/Test.xml"
+      fi
+    done
+    if [ ${#pkgs[@]} -eq 1 ]; then
+      echo "Summary: 1 package finished [0.52s]"
+    else
+      echo "Summary: ${#pkgs[@]} packages finished [0.52s]"
+    fi
+    if [ "$mode" = red ]; then
+      echo "  ${#pkgs[@]} package had test failures: ${pkgs[*]}"
+      [ -n "$strict" ] && exit 1
+    fi
+    exit 0
+    ;;
+  test-result)
+    base=build
+    verbose=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --test-result-base) base="$2"; shift 2 ;;
+        --verbose) verbose=1; shift ;;
+        --all) shift ;;
+        *)
+          echo "usage: colcon test-result [-h] [--test-result-base TEST_RESULT_BASE] [--all]" >&2
+          echo "colcon: error: unrecognized arguments: $*" >&2
+          exit 2
+          ;;
+      esac
+    done
+    red=0
+    while IFS= read -r file; do
+      content=$(cat "$file")
+      case "${content%%|*}" in *" 0 errors, 0 failures"*) continue ;; esac
+      echo "$file: ${content%%|*}"
+      [ -n "$verbose" ] && echo "- ${content#*|}"
+      red=1
+    done < <(find "$base" -name Test.xml 2>/dev/null | sort)
+    echo
+    echo "Summary: 2 tests, 0 errors, $red failures, 0 skipped"
+    exit "$red"
+    ;;
+  *) echo "colcon: error: argument verb_name: invalid choice: '$verb'" >&2; exit 2 ;;
+esac
+EOF
+  chmod +x "$d/colcon"
+  echo "$d"
+}
+
+# --run with the build stubbed green and the stand-in colcon first on PATH.
+# $1 = repo dir, $2 = build stub dir, $3 = fake colcon dir, rest = environment.
+run_hook_colcon() {
+  local dir="$1" bstub="$2" fake="$3"
+  shift 3
+  ( cd "$dir" && env "$@" PATH="$fake:$PATH" CLAUDE_PROJECT_DIR="$dir" \
+      RTC_VERIFY_BUILD_CMD="$bstub/build.sh" \
+      bash "$HOOK" --run </dev/null 2>&1 >/dev/null )
+}
+
+# 66. A package whose tests FAIL is red: --run blocks, names the failing result
+#     and the failing test, and remembers no verdict.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+bstub=$(make_build_stub 0)
+fake=$(make_fake_colcon)
+ccalls=$(mktemp)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+# A failure an earlier run left on disk: ctest keeps one Testing/<stamp>/ per
+# run, so `colcon test-result` goes on listing it after the test was fixed.
+mkdir -p "$ws/build/rtc_demo/Testing/20260901-0000"
+echo "2 tests, 0 errors, 1 failure, 0 skipped|demo.FixedLongAgo" >"$ws/build/rtc_demo/Testing/20260901-0000/Test.xml"
+touch -d '2026-09-01 00:00:00' "$ws/build/rtc_demo/Testing/20260901-0000/Test.xml"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=red FAKE_COLCON_CALLS="$ccalls"); rc=$?
+expect_exit "a package whose tests fail blocks --run" "$rc" 2
+expect_contains "...as a test failure" "$out" "rtc_demo: colcon test FAILED"
+expect_contains "...naming the result file this run wrote" "$out" "build/rtc_demo/Testing/20261001-0900/Test.xml: 2 tests, 0 errors, 1 failure"
+expect_contains "...and the failing test" "$out" "- demo.Fails"
+expect_not_contains "a failure left on disk by an earlier run is not reported" "$out" "20260901-0000"
+if grep -qxF "test --packages-select rtc_demo --return-code-on-test-failure --event-handlers console_direct+" "$ccalls"; then
+  pass "colcon test is asked for an exit code that follows the tests"
+else
+  fail "colcon test was called as: $(cat "$ccalls")"
+fi
+if grep -q '^test-result .*--packages-select' "$ccalls"; then
+  fail "colcon test-result was given --packages-select, which it does not have"
+else
+  pass "colcon test-result is not given an option it does not have"
+fi
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_exit "a red --run leaves the turn end owing the package" "$rc" 2
+expect_contains "...by name" "$out" "build/test verdict missing for: rtc_demo"
+
+# 66b. The same tree with the tests green passes -- the old failure still on
+#      disk does not make it red -- and the verdict is remembered.
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green FAKE_COLCON_CALLS="$ccalls"); rc=$?
+expect_exit "a package whose tests pass passes --run" "$rc" 0
+expect_contains "...and says what it tested" "$out" "built and tested [rtc_demo]"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_exit "the turn end over a green --run passes" "$rc" 0
+rm -rf "$ws" "$bstub" "$fake" "$ccalls"
+
+# 67. Exit 0 is not a pass by itself: colcon that tested NOTHING (a name it does
+#     not know is a warning, not an error) leaves the package unverified.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+bstub=$(make_build_stub 0)
+fake=$(make_fake_colcon)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=unknown); rc=$?
+expect_exit "a colcon test that tested nothing blocks --run" "$rc" 2
+expect_contains "...as unverified, with the count colcon gave" "$out" "rtc_demo: colcon test exited 0 but its summary counts 0 finished packages, not 1 — UNVERIFIED"
+# 67b. A test run that fails without leaving a failing result (a crashed or
+#      killed test binary writes none) is unverified, not green.
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=crash); rc=$?
+expect_exit "a colcon test that fails without a result blocks --run" "$rc" 2
+expect_contains "...as unverified" "$out" "rtc_demo: colcon test exited 1 with no parseable result summary — UNVERIFIED"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_exit "neither leaves a verdict" "$rc" 2
+rm -rf "$ws" "$bstub" "$fake"
+
+# 68. The PROC-3 path past its build -- the one branch no case reached, because
+#     a build stub that succeeds falls through to `colcon test`. Red, then green.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+add_rtc_base "$dir"
+bstub=$(make_build_stub 0)
+fake=$(make_fake_colcon)
+ccalls=$(mktemp)
+echo 'int base_fn() { return 1; }' >"$dir/rtc_base/src/base.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=red FAKE_COLCON_CALLS="$ccalls"); rc=$?
+expect_exit "a failing test in the PROC-3 run blocks --run" "$rc" 2
+expect_contains "...as a PROC-3 test failure" "$out" "PROC-3 broad test failed:"
+expect_contains "...naming the failing test" "$out" "- demo.Fails"
+if grep -qxF "test --return-code-on-test-failure --event-handlers console_direct+" "$ccalls"; then
+  pass "the PROC-3 colcon test covers the workspace and returns the tests' exit code"
+else
+  fail "the PROC-3 colcon test was called as: $(cat "$ccalls")"
+fi
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=unknown); rc=$?
+expect_contains "a PROC-3 run that tested nothing is unverified" "$out" "PROC-3 broad 'colcon test' exited 0 but its summary counts 0 finished packages — UNVERIFIED"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green); rc=$?
+expect_exit "a green PROC-3 run passes --run" "$rc" 0
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_exit "...and the turn end after it" "$rc" 0
+rm -rf "$ws" "$bstub" "$fake" "$ccalls"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
