@@ -489,6 +489,10 @@ test_mem_max_default_is_three_quarters_of_ram() {
   expect_eq "32 GB host" "rc=0 out=24002M" "$(mem_max_with "" "$meminfo")"
   # 메모리를 못 읽으면 상한을 지어내지 않는다 (0M 같은 값은 빌드를 즉시 죽인다).
   expect_eq "unreadable meminfo" "rc=0 out=" "$(mem_max_with "" "$TMP/does_not_exist")"
+  # … 그리고 `set -e` 인 caller (build.sh) 를 죽이지도 않는다. 위 mem_max_with 는
+  # `||` 의 왼쪽이라 errexit 가 꺼져 있어 이 경로를 보지 못한다.
+  expect_eq "unreadable meminfo under set -e" "alive" \
+    "$(set -e; RTC_PROC_MEMINFO="$TMP/does_not_exist"; get_build_mem_max; echo alive)"
 }
 
 test_mem_max_knob() {

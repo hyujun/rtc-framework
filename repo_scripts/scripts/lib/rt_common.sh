@@ -610,9 +610,10 @@ is_positive_int() {
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
 }
 
-# MemTotal (kB). $RTC_PROC_MEMINFO 로 테스트에서 덮어쓴다. 못 읽으면 빈 문자열.
+# MemTotal (kB). $RTC_PROC_MEMINFO 로 테스트에서 덮어쓴다. 못 읽으면 빈 문자열 —
+# 실패 코드가 아니다: `x="$(get_mem_total_kb)"` 가 `set -e` 인 caller 를 죽이지 않게.
 get_mem_total_kb() {
-  awk '/^MemTotal:/ {print $2; exit}' "${RTC_PROC_MEMINFO:-/proc/meminfo}" 2>/dev/null
+  awk '/^MemTotal:/ {print $2; exit}' "${RTC_PROC_MEMINFO:-/proc/meminfo}" 2>/dev/null || true
 }
 
 # make job 수 = min(물리 코어 $1, RAM $2 kB / 4 GB), 최소 1. 순수 함수.

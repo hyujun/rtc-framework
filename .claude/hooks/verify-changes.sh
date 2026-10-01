@@ -151,6 +151,14 @@
 #          keep as-is (user, 2026-08-14) -- UNVERIFIED is not a silent pass
 #          (#435), so it is accepted. Do not reopen without a new reason to
 #          accept that block.
+#          Those figures predate 2026-10-01, when builds went from 8 packages x
+#          `make -j<logical cores>` to 1 package x `make -j<min(physical cores,
+#          RAM/4GB)>` (a 16-core / 32 GB host was running out of memory;
+#          repo_scripts/README.md "빌드 병렬도와 메모리"). On this 6C/12T box,
+#          `-p integrated_bringup --tests`: no-op 3s, one-TU edit 24s, whole
+#          package recompiled 279s (245s at the old -j12) -- over the 180s bound
+#          both before and after, so that case was UNVERIFIED already. A clean
+#          `build.sh full --tests` is 18m49s. The decision above stands.
 #          A colcon / build.sh ALREADY running in this workspace (e.g. the
 #          agent's own background shell task) is looked for before building;
 #          if one is found the hook builds nothing and blocks with a message
