@@ -410,30 +410,73 @@ def check(
 
 
 # ── Parallel-ctest axis ────────────────────────────────────────────────────
-# `colcon.pkg` is read as text, like everything else here: the value after the
-# `ctest-args` key, up to the next key, searched for ctest's job option. Both
-# YAML spellings colcon accepts end up as the same tokens.
-CTEST_ARGS_RE = re.compile(r"^ctest-args\s*:(.*?)(?=^\S|\Z)", re.M | re.S)
-CTEST_JOBS_RE = re.compile(
-    r"(?<![\w-])(?:-j|--parallel)(?![\w-])[\s\"',\[\]-]*(\d+)?|(?<![\w-])-j(\d+)"
-)
+# `colcon.pkg` is the one file here that is NOT read as text. colcon loads it
+# with `yaml.safe_load`, so every spelling YAML has for the same list is live --
+# flow or block sequence, block sequence at column 0, a JSON object, a quoted
+# key, `-j4` in one token -- and a text pattern that knew some of them read the
+# rest as "sequential": the package ran its ctest in parallel while this gate
+# said nothing was to check (found in review, with the probes now in
+# --self-test). Reading it the way colcon does leaves no second parser to
+# disagree with the first.
 SET_PROPS_RE = re.compile(r"\bset_tests_properties\s*\(")
 TEST_NAME_RE = re.compile(r"\bTEST_NAME\s+(\S+)")
 TRUE_VALUES = {"TRUE", "ON", "1", "YES", "Y"}
+UNREADABLE = object()
+
+
+def colcon_pkg_args(colcon_pkg_text: str, key: str):
+    """The argument list `colcon.pkg` gives `key` ("ctest-args" / "pytest-args"),
+    as colcon reads it: [] when the key is absent, UNREADABLE when the file
+    cannot be read that way (no PyYAML, not YAML, or the value is not a list)."""
+    try:
+        import yaml
+    except ImportError:
+        return UNREADABLE
+    try:
+        data = yaml.safe_load(colcon_pkg_text)
+    except yaml.YAMLError:
+        return UNREADABLE
+    if data is None:
+        return []
+    if not isinstance(data, dict):
+        return UNREADABLE
+    value = data.get(key)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return value.split()
+    if not isinstance(value, list):
+        return UNREADABLE
+    return [str(v) for v in value]
+
+
+def _option_value(args: list[str], short: str, long: str) -> str | None:
+    """Value of the LAST `short`/`long` option in an argument list, the way an
+    option parser takes it: "-j 4", "-j4", "--parallel 4", "--parallel=4".
+    None when the option is absent, "" when it is given without a value."""
+    found: str | None = None
+    for i, arg in enumerate(args):
+        if arg in (short, long):
+            nxt = args[i + 1] if i + 1 < len(args) else ""
+            found = "" if nxt.startswith("-") else nxt
+        elif arg.startswith(long + "="):
+            found = arg[len(long) + 1 :]
+        elif arg.startswith(short) and len(arg) > len(short) and not arg.startswith("--"):
+            found = arg[len(short) :]
+    return found
 
 
 def parallel_ctest_jobs(colcon_pkg_text: str) -> int:
-    """Job count a `colcon.pkg` hands ctest. 1 = sequential; 0 = `-j` with no
-    number, which ctest reads as "as many as it likes"."""
-    text = "\n".join(strip_comment(line) for line in colcon_pkg_text.splitlines())
-    block = CTEST_ARGS_RE.search(text)
-    if not block:
+    """Job count a `colcon.pkg` hands ctest. 1 = sequential; 0 = more than one
+    and not a number this gate can name (`-j` alone, or a file it cannot read
+    -- which must not pass for "sequential")."""
+    args = colcon_pkg_args(colcon_pkg_text, "ctest-args")
+    if args is UNREADABLE:
+        return 0
+    value = _option_value(args, "-j", "--parallel")
+    if value is None:
         return 1
-    jobs = 1
-    for m in CTEST_JOBS_RE.finditer(block.group(1)):
-        digits = m.group(1) or m.group(2)
-        jobs = int(digits) if digits else 0  # the last one wins, as in ctest
-    return jobs
+    return int(value) if value.isdigit() else 0
 
 
 def parallel_packages(root: Path) -> dict[str, int]:
@@ -448,23 +491,17 @@ def parallel_packages(root: Path) -> dict[str, int]:
     return found
 
 
-PYTEST_ARGS_RE = re.compile(r"^pytest-args\s*:(.*?)(?=^\S|\Z)", re.M | re.S)
-PYTEST_WORKERS_RE = re.compile(
-    r"(?<![\w-])(?:-n|--numprocesses)(?![\w-])[\s\"',\[\]=-]*(\w+)?|(?<![\w-])-n(\d+)"
-)
-
-
 def parallel_pytest_workers(colcon_pkg_text: str) -> str:
     """Worker count a `colcon.pkg` hands pytest-xdist ("4", "auto", ...), or ""
-    when the tests run in the one pytest process."""
-    text = "\n".join(strip_comment(line) for line in colcon_pkg_text.splitlines())
-    block = PYTEST_ARGS_RE.search(text)
-    if not block:
+    when the tests run in the one pytest process. A file this gate cannot read
+    counts as asking for workers ("?")."""
+    args = colcon_pkg_args(colcon_pkg_text, "pytest-args")
+    if args is UNREADABLE:
+        return "?"
+    value = _option_value(args, "-n", "--numprocesses")
+    if value is None:
         return ""
-    workers = ""
-    for m in PYTEST_WORKERS_RE.finditer(block.group(1)):
-        workers = m.group(1) or m.group(2) or "auto"  # the last one wins
-    return "" if workers in ("0", "no") else workers
+    return "" if value in ("0", "no") else (value or "auto")
 
 
 def parallel_pytest_packages(root: Path) -> dict[str, str]:
@@ -750,6 +787,17 @@ def self_test() -> int:
         ("ctest-args:\n  - --parallel\n  - '6'\n", 6),
         ('ctest-args: ["-j8"]\n', 8),
         ('ctest-args: ["-j"]\n', 0),
+        # The spellings a line-anchored text pattern read as "sequential" while
+        # colcon ran the package in parallel (review, 2026-10-01).
+        ('ctest-args:\n- -j\n- "4"\n', 4),
+        ('{"ctest-args": ["-j", "4"]}', 4),
+        ('"ctest-args": ["-j", "4"]\n', 4),
+        ('ctest-args: ["--parallel=4"]\n', 4),
+        ("ctest-args: -j 4\n", 4),
+        ('ctest-args: ["-j", 4]\n', 4),
+        # Not YAML, or not a list: unreadable is "parallel", never "sequential".
+        ("ctest-args: [\n", 0),
+        ("ctest-args: {a: 1}\n", 0),
         ('ctest-args: ["-j", "4", "-j", "1"]\n', 1),
         ('ctest-args: ["-R", "test_j"]\n', 1),
         ('# ctest-args: ["-j", "4"]\n', 1),
@@ -806,6 +854,11 @@ def self_test() -> int:
         ('pytest-args: ["-n", "4"]\n', "4"),
         ('pytest-args: ["-n", "auto"]\n', "auto"),
         ('pytest-args: ["-n4"]\n', "4"),
+        ('pytest-args: ["-nauto"]\n', "auto"),
+        ('pytest-args:\n- -n\n- "4"\n', "4"),
+        ('{"pytest-args": ["-n", "4"]}', "4"),
+        ('pytest-args: ["--numprocesses=4"]\n', "4"),
+        ("pytest-args: [\n", "?"),
         ("pytest-args:\n  - --numprocesses\n  - '6'\n", "6"),
         ('pytest-args: ["-n", "0"]\n', ""),
         ('pytest-args: ["-k", "test_n"]\n', ""),
