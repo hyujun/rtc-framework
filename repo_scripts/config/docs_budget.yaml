@@ -12,7 +12,7 @@
 # Keep the "path: bytes" shape, one per line: the validator reads this file by
 # regex so that it runs on a host without PyYAML.
 
-AGENTS.md: 18427
+AGENTS.md: 17408
 CLAUDE.md: 4096
 
 agent_docs/anti-patterns.md: 30800
