@@ -13,6 +13,13 @@ build:
     - -DCMAKE_BUILD_TYPE=Release
     - -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON
+    # Tests are not built by default (build.sh does the same): they are more
+    # than half the compile time. To build them: `./build.sh --tests`, or pass
+    # --cmake-args with -DBUILD_TESTING=ON (CLI --cmake-args REPLACES this
+    # whole list, so repeat the three entries above -- repo_scripts/README.md
+    # "Plain `colcon build` 호환성"). `colcon test` on a package built without
+    # them reports zero tests, not a failure.
+    - -DBUILD_TESTING=OFF
 test:
   # RT timing-sensitive tests flake under heavy parallel contention; keep test
   # concurrency well below build (6C physical).

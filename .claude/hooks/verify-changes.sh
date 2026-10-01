@@ -55,9 +55,11 @@
 #        - a package is "changed" for this phase by its source (.cpp/.hpp/.h/
 #          .cc/.py), its CMakeLists.txt / package.xml, or a shell script in
 #          its source directories (see CHANGED_SH_BUILD)
-#        - rtc_base / rtc_msgs change -> ./build.sh full + colcon test all
+#        - rtc_base / rtc_msgs change -> ./build.sh full --tests + colcon test all
 #          (PROC-3: broad downstream impact)
-#        - else                       -> ./build.sh -p <pkg> + colcon test <pkg>
+#        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>
+#        (--tests: build.sh skips tests by default, and a package built without
+#        them tests as "0 tests, 0 failures" -- see run_build)
 #        A test run that TIMES OUT or fails to launch is reported as UNVERIFIED
 #        and blocks (exit 2) -- the colcon test exit code is preserved and
 #        handled explicitly rather than inferred from test-result alone, so a
@@ -1291,11 +1293,16 @@ BUILD_CMD="${RTC_VERIFY_BUILD_CMD:-./build.sh}"
 # for CPU, 2.5s idle. The verdict was set by machine load, not by the code, and
 # nothing in the report said so.
 # Sets BUILD_RC and BUILD_LOG; callers must rm the log.
+#
+# --tests is not optional here. build.sh does not build tests by default (they
+# are more than half the compile time), and `colcon test` on a package built
+# without them reports "0 tests, 0 failures" -- which every branch below reads
+# as a pass. A build that precedes a test run must ask for the tests.
 run_build() {  # $1 = timeout seconds, rest = args for the build command
   local secs="$1"; shift
   BUILD_LOG=$(mktemp)
   BUILD_RC=0
-  timeout "$secs" "$BUILD_CMD" "$@" >"$BUILD_LOG" 2>&1 || BUILD_RC=$?
+  timeout "$secs" "$BUILD_CMD" "$@" --tests >"$BUILD_LOG" 2>&1 || BUILD_RC=$?
 }
 
 # Last lines of a failed build, indented for the report. Backslashes are doubled
@@ -1563,7 +1570,7 @@ elif [ -n "$PROC3" ]; then
   # colcon ws root (AGENTS.md §9.1), not in this repo's cwd.
   run_build 300 full
   if [ "$BUILD_RC" -eq 124 ]; then
-    TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) TIMED OUT after 300s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). This path is cold by construction (rtc_base / rtc_msgs touched); re-run './build.sh full' on an idle box before debugging the change.\n"
+    TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) TIMED OUT after 300s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). This path is cold by construction (rtc_base / rtc_msgs touched); re-run './build.sh full --tests' on an idle box before debugging the change.\n"
     rm -f "$BUILD_LOG"
   elif [ "$BUILD_RC" -ne 0 ]; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (build.sh full) FAILED (exit ${BUILD_RC}, rtc_base / rtc_msgs touched):\n$(build_log_tail)\n"
@@ -1604,7 +1611,7 @@ else
     # over at N=3. Growing it buys the SIGKILL this bound exists to prevent.
     run_build 180 -p "$pkg"
     if [ "$BUILD_RC" -eq 124 ]; then
-      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build TIMED OUT after 180s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). If the load is high this build lost a CPU race; re-run './build.sh -p ${pkg}' before debugging the change.\n"
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build TIMED OUT after 180s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). If the load is high this build lost a CPU race; re-run './build.sh -p ${pkg} --tests' before debugging the change.\n"
       rm -f "$BUILD_LOG"
       continue
     elif [ "$BUILD_RC" -ne 0 ]; then

@@ -19,7 +19,9 @@
 # 없이 빌드한다. 여기서 systemd-run · systemctl 은 stub 이므로 **cgroup 이 실제로
 # 한도를 강제하는지는 이 파일이 보지 못한다** — 고정하는 것은 넘기는 인자와 분기다.
 #
-# --no-tests: build.sh 는 -DBUILD_TESTING 을 매 빌드마다 ON/OFF 로 명시한다.
+# 테스트: 기본은 빌드하지 않는다 (--tests 로 켠다). build.sh 는 -DBUILD_TESTING 을
+# 매 빌드마다 ON/OFF 로 명시한다.
+# ccache: 깔려 있으면 쓰고 (--no-ccache 로 끔) launcher 도 매 빌드 명시한다.
 #
 # 격리 방식: setup_env.sh · build.sh 는 임시 가짜 워크스페이스 (<tmp>/ws/src/repo)
 # 에서 돌린다 — lib 은 실물을 symlink 하고, colcon · cmake · systemd-run · systemctl ·
@@ -361,20 +363,85 @@ test_build_propagates_colcon_failure() {
   expect_eq "colcon rc 3 -> build.sh fails" 1 "$(run_build STUB_COLCON_RC=3 --)"
 }
 
-# ── --no-tests ─────────────────────────────────────────────────────────────
+# ── 테스트 빌드 여부 ───────────────────────────────────────────────────────
 # colcon 이 받은 --cmake-args 중 BUILD_TESTING 의 값 (없으면 빈 문자열).
 logged_build_testing() { sed -n 's/^ARG=-DBUILD_TESTING=//p' "$COLCON_LOG"; }
 
-test_build_testing_is_passed_on_every_build() {
-  # ON 을 명시하지 않으면 --no-tests 로 한 번 빌드한 트리는 CMake 캐시에 OFF 가
-  # 남고, 그 뒤 `colcon test` 는 테스트 0개를 green 으로 보고한다.
+test_build_does_not_build_tests_by_default() {
   expect_eq "rc" 0 "$(run_build --)"
-  expect_eq "ordinary build says ON" ON "$(logged_build_testing)"
-  if grep -q "Tests are NOT built" "$TMP/build.out"; then fail "[default] warned about tests"; else pass; fi
+  expect_eq "default says OFF" OFF "$(logged_build_testing)"
+  # 기본 경로가 테스트를 빼는 것은 조용하면 안 된다 — 그 트리의 `colcon test` 는
+  # 0개를 green 으로 보고한다.
+  if grep -q "Tests: NOT built" "$TMP/build.out"; then pass; else fail "[default] did not say tests are skipped"; fi
+}
 
-  expect_eq "rc" 0 "$(run_build -- --no-tests)"
-  expect_eq "--no-tests says OFF" OFF "$(logged_build_testing)"
-  if grep -q "Tests are NOT built" "$TMP/build.out"; then pass; else fail "[--no-tests] no warning"; fi
+test_build_tests_flag_and_env() {
+  # 값은 **양쪽 다** 매 빌드 명시한다: CMake 가 캐시하므로, 한쪽을 생략하면 그
+  # 방향으로는 직전 빌드의 선택이 남는다.
+  expect_eq "rc" 0 "$(run_build -- --tests)"
+  expect_eq "--tests says ON" ON "$(logged_build_testing)"
+  expect_eq "rc" 0 "$(run_build RTC_BUILD_TESTS=on --)"
+  expect_eq "RTC_BUILD_TESTS=on" ON "$(logged_build_testing)"
+  expect_eq "rc" 0 "$(run_build RTC_BUILD_TESTS=on -- --no-tests)"
+  expect_eq "--no-tests beats env" OFF "$(logged_build_testing)"
+  expect_eq "rc" 0 "$(run_build RTC_BUILD_TESTS=off -- --tests)"
+  expect_eq "--tests beats env" ON "$(logged_build_testing)"
+  expect_eq "bad RTC_BUILD_TESTS" 1 "$(run_build RTC_BUILD_TESTS=maybe --)"
+  if [[ -e "$COLCON_LOG" ]]; then fail "[bad RTC_BUILD_TESTS] colcon was invoked"; else pass; fi
+}
+
+# ── ccache ─────────────────────────────────────────────────────────────────
+# colcon 이 받은 C / CXX 컴파일러 launcher. `c=<값> cxx=<값>`; 인자가 없으면 <none>.
+logged_launchers() {
+  local c cxx
+  c="$(sed -n 's/^ARG=-DCMAKE_C_COMPILER_LAUNCHER=//p' "$COLCON_LOG")"
+  cxx="$(sed -n 's/^ARG=-DCMAKE_CXX_COMPILER_LAUNCHER=//p' "$COLCON_LOG")"
+  grep -q '^ARG=-DCMAKE_C_COMPILER_LAUNCHER=' "$COLCON_LOG" || c="<none>"
+  grep -q '^ARG=-DCMAKE_CXX_COMPILER_LAUNCHER=' "$COLCON_LOG" || cxx="<none>"
+  echo "c=${c} cxx=${cxx}"
+}
+
+# ccache 가 깔린 호스트를 흉내 낸다: PATH 앞에 stub ccache 를 둔 디렉토리를 더한다.
+CCACHE_DIR_STUB="$TMP/ccache-bin"
+run_build_with_ccache() {  # run_build 와 같되 ccache 가 PATH 에 있다.
+  mkdir -p "$CCACHE_DIR_STUB"
+  printf '#!/bin/bash\nexit 0\n' >"$CCACHE_DIR_STUB/ccache"
+  chmod +x "$CCACHE_DIR_STUB/ccache"
+  local -a envs=()
+  while [[ "$1" != "--" ]]; do envs+=("$1"); shift; done
+  shift
+  run_build "PATH=$CCACHE_DIR_STUB:$STUB_BIN:/usr/bin:/bin" "${envs[@]}" -- "$@"
+}
+
+test_build_ccache_auto() {
+  local host_ccache
+  host_ccache="$(PATH="$STUB_BIN:/usr/bin:/bin" command -v ccache || true)"
+  expect_eq "rc" 0 "$(run_build --)"
+  if [[ -n "$host_ccache" ]]; then
+    # 이 호스트에 ccache 가 깔려 있다 — auto 는 그 실물을 고른다.
+    expect_eq "auto picks the installed ccache" "c=$host_ccache cxx=$host_ccache" "$(logged_launchers)"
+  else
+    # 없으면 빈 launcher 를 **명시적으로** 넘긴다 — 캐시에 남은 옛 값을 지우려고.
+    expect_eq "absent -> explicit empty launcher" "c= cxx=" "$(logged_launchers)"
+    expect_eq "--ccache without ccache fails" 1 "$(run_build -- --ccache)"
+    if [[ -e "$COLCON_LOG" ]]; then fail "[--ccache absent] colcon was invoked"; else pass; fi
+  fi
+
+  expect_eq "rc" 0 "$(run_build_with_ccache --)"
+  expect_eq "installed -> absolute path" \
+    "c=$CCACHE_DIR_STUB/ccache cxx=$CCACHE_DIR_STUB/ccache" "$(logged_launchers)"
+}
+
+test_build_ccache_can_be_turned_off() {
+  expect_eq "rc" 0 "$(run_build_with_ccache -- --no-ccache)"
+  expect_eq "--no-ccache clears the launcher" "c= cxx=" "$(logged_launchers)"
+  expect_eq "rc" 0 "$(run_build_with_ccache RTC_CCACHE=off --)"
+  expect_eq "RTC_CCACHE=off" "c= cxx=" "$(logged_launchers)"
+  expect_eq "rc" 0 "$(run_build_with_ccache RTC_CCACHE=off -- --ccache)"
+  expect_eq "flag beats env" \
+    "c=$CCACHE_DIR_STUB/ccache cxx=$CCACHE_DIR_STUB/ccache" "$(logged_launchers)"
+  expect_eq "bad RTC_CCACHE" 1 "$(run_build_with_ccache RTC_CCACHE=maybe --)"
+  if [[ -e "$COLCON_LOG" ]]; then fail "[bad RTC_CCACHE] colcon was invoked"; else pass; fi
 }
 
 # ── build_deps.sh ──────────────────────────────────────────────────────────
@@ -509,6 +576,79 @@ test_build_deps_runs_each_dep_inside_a_memory_scope() {
   if [[ -e "$CMAKE_LOG" ]]; then fail "[deps bad cap] cmake was invoked"; else pass; fi
 }
 
+# ── fresh PC: 설치 경로 ────────────────────────────────────────────────────
+host_summary() {  # $@ = `VAR=value` 들. print_build_host_summary 의 출력 + rc.
+  local rc=0
+  # shellcheck disable=SC2016
+  run_clean "$@" -- bash -c 'source "$1" && print_build_host_summary' \
+    _ "$FAKE_REPO/repo_scripts/scripts/lib/rt_common.sh" 2>&1 || rc=$?
+  echo "rc=${rc}"
+}
+
+test_host_summary_reports_what_is_missing() {
+  local out
+  out="$(host_summary)"
+  case "$out" in *"make -j$(expected_default_jobs) by default"*) pass ;; *) fail "[summary jobs] $out" ;; esac
+  case "$out" in *"Memory cap: available, ${FAKE_WS_CAP}"*) pass ;; *) fail "[summary cap] $out" ;; esac
+  case "$out" in *"rc=0") pass ;; *) fail "[summary rc] $out" ;; esac
+
+  # user session 이 없는 호스트 — 빌드는 되지만 상한이 없다는 것을 말한다.
+  out="$(host_summary STUB_SYSTEMD_RUN_RC=1)"
+  case "$out" in *"Memory cap: NOT available"*"rc=0") pass ;; *) fail "[summary no session] $out" ;; esac
+
+  # 틀린 knob 도 보고만 하고 설치를 멈추지 않는다 (build.sh 가 거부한다).
+  out="$(host_summary RTC_BUILD_MEM_MAX=banana)"
+  case "$out" in *"RTC_BUILD_MEM_MAX='banana' is not a size"*"rc=0") pass ;; *) fail "[summary bad cap] $out" ;; esac
+
+  mkdir -p "$CCACHE_DIR_STUB"
+  printf '#!/bin/bash\nexit 0\n' >"$CCACHE_DIR_STUB/ccache"
+  chmod +x "$CCACHE_DIR_STUB/ccache"
+  out="$(host_summary "PATH=$CCACHE_DIR_STUB:$STUB_BIN:/usr/bin:/bin")"
+  case "$out" in *"ccache: $CCACHE_DIR_STUB/ccache"*) pass ;; *) fail "[summary ccache present] $out" ;; esac
+  if ! PATH="$STUB_BIN:/usr/bin:/bin" command -v ccache >/dev/null; then
+    out="$(host_summary)"
+    case "$out" in *"ccache: not installed"*) pass ;; *) fail "[summary ccache absent] $out" ;; esac
+  fi
+}
+
+# install.sh 의 setup_workspace: ccache 는 깔되, 못 깔아도 설치를 멈추지 않는다.
+run_setup_workspace() {  # $1 = `apt-get install -y ccache` 의 exit code. sudo 호출 기록 + 출력 + rc.
+  local rc=0 ccache_rc="$1" sudo_log="$TMP/sudo.log"
+  rm -f "$sudo_log"
+  (
+    ROS_PKG_PREFIX="ros-test"
+    apt_update_if_stale() { :; }
+    # 호출은 파일에 남긴다 — setup_workspace 가 apt 의 stdout 을 /dev/null 로 보낸다.
+    sudo() {
+      echo "sudo $*" >>"$sudo_log"
+      [[ "$*" == "apt-get install -y ccache" ]] && return "$ccache_rc"
+      return 0
+    }
+    # shellcheck disable=SC1091
+    source "${LIB_DIR}/install_ros2.sh"
+    setup_workspace
+  ) 2>&1 || rc=$?
+  cat "$sudo_log" 2>/dev/null || true
+  echo "rc=${rc}"
+}
+
+test_install_gets_ccache_but_does_not_require_it() {
+  local out
+  out="$(run_setup_workspace 0)"
+  case "$out" in *"sudo apt-get install -y ccache"*) pass ;; *) fail "[install ccache] not requested: $out" ;; esac
+  case "$out" in *"ccache installed"*"rc=0") pass ;; *) fail "[install ccache ok] $out" ;; esac
+  # 필수 목록과 한 호출에 묶지 않는다 — 묶으면 universe 가 꺼진 호스트에서 빌드
+  # 도구 전체가 설치되지 않는다.
+  if grep -q "python3-colcon-common-extensions.*ccache\|ccache.*python3-colcon" <<<"$out"; then
+    fail "[install ccache] bundled with the mandatory build tools"
+  else
+    pass
+  fi
+
+  out="$(run_setup_workspace 100)"
+  case "$out" in *"ccache could not be installed"*"rc=0") pass ;; *) fail "[install ccache unavailable] $out" ;; esac
+}
+
 # ── Run ────────────────────────────────────────────────────────────────────
 test_jobs_formula_is_min_of_cores_and_ram
 test_jobs_formula_never_returns_zero
@@ -537,7 +677,10 @@ test_build_jobs_flag_sets_make_jobs_not_workers
 test_build_knob_precedence
 test_build_rejects_bad_jobs_before_colcon
 test_build_propagates_colcon_failure
-test_build_testing_is_passed_on_every_build
+test_build_does_not_build_tests_by_default
+test_build_tests_flag_and_env
+test_build_ccache_auto
+test_build_ccache_can_be_turned_off
 
 test_build_deps_uses_the_same_knob
 test_build_deps_rejects_bad_jobs_before_cmake
@@ -549,5 +692,8 @@ test_build_memory_cap_knob
 test_build_without_user_session_builds_uncapped
 test_build_reports_oom_distinctly
 test_build_deps_runs_each_dep_inside_a_memory_scope
+
+test_host_summary_reports_what_is_missing
+test_install_gets_ccache_but_does_not_require_it
 
 summary_and_exit test_build_jobs.sh

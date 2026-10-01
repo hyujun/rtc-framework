@@ -818,7 +818,9 @@ out=$(run_hook_build "$dir" "$stub"); rc=$?
 expect_contains "a real build failure reports its exit code" "$out" "build FAILED (exit 1)"
 expect_not_contains "a real build failure is not reported as a timeout" "$out" "TIMED OUT"
 expect_contains "a real build failure carries the build output tail" "$out" "error: fixture_file.cpp:7:3"
-expect_contains "the tail shows how the build was invoked" "$out" "stub-build args: -p rtc_demo"
+# --tests: build.sh builds no tests by default, and a package built without them
+# tests as "0 tests, 0 failures" -- the hook would call that a pass.
+expect_contains "the tail shows how the build was invoked" "$out" "stub-build args: -p rtc_demo --tests"
 expect_exit "a real build failure blocks the turn" "$rc" 2
 rm -rf "$dir" "$stub"
 
@@ -861,7 +863,7 @@ out=$(run_hook_build "$dir" "$stub"); rc=$?
 expect_contains "a real PROC-3 build failure reports its exit code" "$out" "PROC-3 broad build (build.sh full) FAILED (exit 1,"
 expect_not_contains "a real PROC-3 build failure is not reported as a timeout" "$out" "TIMED OUT"
 expect_contains "a real PROC-3 build failure carries the build output tail" "$out" "error: fixture_file.cpp:7:3"
-expect_contains "the PROC-3 tail shows how the build was invoked" "$out" "stub-build args: full"
+expect_contains "the PROC-3 tail shows how the build was invoked" "$out" "stub-build args: full --tests"
 expect_exit "a real PROC-3 build failure blocks the turn" "$rc" 2
 rm -rf "$dir" "$stub"
 

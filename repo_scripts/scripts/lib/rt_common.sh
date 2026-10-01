@@ -23,6 +23,8 @@
 #   append_cmake_python_args  — build.sh: CMake Python 고정 + ament 모듈 사전 확인
 #   get_default_build_jobs    — 이 호스트의 기본 make job 수 = min(물리 코어, RAM / 4 GB)
 #   resolve_build_makeflags   — export 할 MAKEFLAGS (CLI -j > RTC_BUILD_JOBS > 기존 -j > 기본값)
+#   build_mem_scope_prefix    — 메모리 상한이 걸린 systemd user scope 로 빌드를 감쌀 prefix
+#   print_build_host_summary  — 이 호스트의 job 수 · 메모리 상한 · ccache 가용성 보고
 #   create_oneshot_service    — systemd oneshot 서비스 생성 헬퍼
 #   lttng_kernel_build_version      — 커널 헤더 Makefile 에서 V.P.S (uname 아님)
 #   lttng_modules_min_version_for_kernel — 그 커널이 요구하는 lttng-modules 최소 버전
@@ -744,8 +746,15 @@ build_mem_scope_prefix() {
   [[ -n "$BUILD_MEM_SCOPE_MAX" ]] || return 0
   command -v systemd-run >/dev/null 2>&1 || return 0
   local -a limits=(-p "MemoryMax=${BUILD_MEM_SCOPE_MAX}" -p "MemorySwapMax=0")
-  # 실제로 scope 를 만들 수 있는지는 만들어 봐야 안다 (user bus · cgroup 위임).
-  systemd-run --user --scope --quiet "${limits[@]}" true >/dev/null 2>&1 || return 0
+  # scope 를 만들 수 있는지, 그리고 한도가 **실제로 걸렸는지**는 만들어 봐야 안다.
+  # systemd-run 이 성공해도 한도가 안 걸리는 호스트가 있다 — cgroup v1/hybrid 는
+  # MemoryMax 를 무시하고, memory controller 가 user 에 위임되지 않았으면 scope 의
+  # cgroup 에 memory.max 가 없다. 그래서 probe 는 scope 안에서 자기 cgroup 의
+  # memory.max 를 읽어 숫자인지 본다 ("max" 나 파일 부재면 실패).
+  # shellcheck disable=SC2016  # $(…) 는 scope 안의 sh 가 펼친다
+  systemd-run --user --scope --quiet "${limits[@]}" sh -c \
+    '[ "$(cat "/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)/memory.max" 2>/dev/null)" -gt 0 ]' \
+    >/dev/null 2>&1 || return 0
   BUILD_MEM_SCOPE_UNIT="rtc-build-$$-${RANDOM}"
   BUILD_MEM_SCOPE_PREFIX=(systemd-run --user --scope --quiet
     "--unit=${BUILD_MEM_SCOPE_UNIT}" "${limits[@]}" --)
@@ -759,6 +768,38 @@ build_mem_scope_oom_killed() {
   result="$(systemctl --user show "${BUILD_MEM_SCOPE_UNIT}.scope" -p Result --value 2>/dev/null)" || true
   systemctl --user reset-failed "${BUILD_MEM_SCOPE_UNIT}.scope" >/dev/null 2>&1 || true
   [[ "$result" == "oom-kill" ]]
+}
+
+# 이 호스트에서 빌드가 어떻게 돌지 — job 수 · 메모리 상한 · ccache — 를 한 줄씩
+# 알린다. install.sh 가 설치 뒤와 `verify` 모드에서 부른다: 세 가지 모두 없어도
+# 빌드는 되므로, 빠진 것은 여기서 말하지 않으면 아무도 모른다. 항상 0 을 반환한다.
+print_build_host_summary() {
+  local cores mem_kb
+  cores="$(get_physical_cores)"
+  mem_kb="$(get_mem_total_kb)"
+  if is_positive_int "$mem_kb"; then
+    info "Build host: ${cores} physical cores, $(( mem_kb / 1024 )) MB RAM → make -j$(get_default_build_jobs) by default (-j N / RTC_BUILD_JOBS)"
+  else
+    warn "Build host: ${cores} physical cores, RAM unreadable → make -j$(get_default_build_jobs) (conservative fallback)"
+  fi
+
+  if ! build_mem_scope_prefix; then
+    warn "Memory cap: RTC_BUILD_MEM_MAX='${RTC_BUILD_MEM_MAX:-}' is not a size (24G / 20000M / 60%) or 'off' — build.sh will refuse to start"
+  elif [[ -n "$BUILD_MEM_SCOPE_UNIT" ]]; then
+    success "Memory cap: available, ${BUILD_MEM_SCOPE_MAX} (a build that needs more is stopped; the host is not)"
+  elif [[ -n "$BUILD_MEM_SCOPE_MAX" ]]; then
+    warn "Memory cap: NOT available here — needs a systemd user session on cgroup v2 with the memory controller delegated"
+    warn "  (packages systemd, libpam-systemd, dbus-user-session; not present in most containers). Builds are bounded by the job count only."
+  else
+    info "Memory cap: off (RTC_BUILD_MEM_MAX)"
+  fi
+
+  if command -v ccache >/dev/null 2>&1; then
+    success "ccache: $(command -v ccache) (build.sh uses it automatically)"
+  else
+    warn "ccache: not installed — a clean rebuild recompiles everything (sudo apt install ccache)"
+  fi
+  return 0
 }
 
 # ── 공통 argument parsing (build.sh / install.sh 공유) ─────────────────────
