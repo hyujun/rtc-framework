@@ -1661,6 +1661,9 @@ const TimingGrid kTimingGrids[] = {
     {"B1", {12, 0.05, 7, 0.05, 1, {1, 1, 2, 3}}},
     {"A2", {12, 0.05, 14, 0.025, 2, {1, 1, 2, 2, 4, 4}}},
     {"B2", {12, 0.05, 7, 0.05, 2, {1, 1, 2, 3}}},
+    // The grid the plan settled on (MD-54): the pre-catch spacing doubled, so
+    // B2's jerk hold (0.1 s) with half its pre-catch nodes.
+    {"C1", {6, 0.1, 7, 0.05, 1, {1, 1, 2, 3}}},
 };
 
 struct Series {
@@ -1954,12 +1957,11 @@ TEST(DecelMpcApproachTiming, CostDrivers7R) {
                        },
                        {}});
   // Fewer nodes: a typical throw (the E0-F02 median entry is 0.44 s before the
-  // catch, not the 0.6 s the table sizes for), and a coarser pre-catch spacing.
+  // catch, not the 0.6 s the table sizes for), and the chosen grid without its
+  // torque rows.
   const TimingGrid typical{"B2_pre9", {9, 0.05, 7, 0.05, 2, {1, 1, 2, 3}}};
   RunGridTiming(arm, lim, typical, "real_7dof.B2_pre9", n_samples, false);
-  const TimingGrid coarse{"C1", {6, 0.1, 7, 0.05, 1, {1, 1, 2, 3}}};
-  RunGridTiming(arm, lim, coarse, "real_7dof.C1_pre_0.1s", n_samples, false);
-  RunGridTiming(arm, lim, coarse, "real_7dof.C1_pre_0.1s.torque_off", n_samples, false,
+  RunGridTiming(arm, lim, kTimingGrids[4], "real_7dof.C1.torque_rows_off", n_samples, false,
                 {[](DecelMpcParams& p) { p.rho_tau = 0.0; }, {}});
 }
 
