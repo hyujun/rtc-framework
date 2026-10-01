@@ -13,7 +13,7 @@
 # regex so that it runs on a host without PyYAML.
 
 AGENTS.md: 18427
-CLAUDE.md: 6029
+CLAUDE.md: 4096
 
 agent_docs/anti-patterns.md: 30800
 agent_docs/architecture.md: 30189
