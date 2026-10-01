@@ -1,0 +1,180 @@
+# Modification Procedures — 단계별 절차와 그 이유
+
+> **이 문서는 헌법이 아니다.** 수정·추가 작업의 **규범** (어떤 게이트를 지나야 하고 무엇이 성립해야 하는가) 은 [agent_docs/modification-guide.md](../agent_docs/modification-guide.md) 가 갖는다. 여기는 그 규범을 실행하는 단계별 절차와 각 단계가 왜 그런지 — 원칙화하기 전의 전문을 그대로 보존했다. 둘이 어긋나면 agent_docs 쪽이 옳다. 파일 위치·이름은 기록 시점의 것이다.
+
+## Workflow Loop
+
+모든 수정 작업은 이 순서 ([AGENTS.md](../AGENTS.md) §4 요약판의 상세).
+
+```
+0. Type     → "수정"인가 "추가(새 기능/컨트롤러/메시지/디바이스/스레드)"인가?
+              추가라면 [design-principles.md](../agent_docs/design-principles.md) 5원칙 + 본 문서
+              "Adding a New ..." 절을 먼저 읽는다.
+              · rtc_*에 추가 → P1·P2 (zero source edit, robot 상수 금지) +
+                ARCH-3 (interface-first; 같은 종류 두 번째 구현이면 base부터)
+              · integration 패키지에 추가 → 재사용 가능한 부분이
+                rtc_*에 존재하는지 / 일반화해 끌어올릴 수 있는지 먼저 검토
+1. Locate   → grep / Glob (known symbol) OR Explore agent (broad search)
+              파일의 RT / aux / robot-specific 역할 판단
+2. Read     → package.xml + CMakeLists.txt + target file + 인접 테스트
+              invariants.md 중 영향받는 항목 확인
+3. Edit     → minimal, single-concern. RT path 여부 재확인.
+              auto/lerp/RT-forbidden 자체 grep
+4. Build    → ./build.sh --tests -p <pkg> (단일) 또는 ./build.sh --tests full (rtc_base/rtc_msgs 변경 시)
+              --tests 없이 빌드한 패키지의 colcon test 는 테스트 0개를 통과로 보고한다
+5. Test     → testing-debug.md Sensor Matrix. 버그 수정 시 회귀 테스트 추가
+6. Verify   → 본 문서 Completion Checklist 통과
+```
+
+**※ 4·5·6은 반드시 수행한다. Claude Code 로 작업할 때는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 그중 포맷·문서·메타데이터의 기계 판정 가능한 부분을 자동 실행/차단하고, **빌드·테스트는 실행하지 않고 그 verdict 가 있는지만 확인**한다 — verdict 는 turn 안에서 `.claude/hooks/verify-changes.sh --run` 이 남기므로 4·5 의 최종 실행은 그것으로 한다 (그 전의 `./build.sh`·`colcon test` 는 빠른 피드백용). 그 hook 은 Claude Code 전용이다 — 다른 도구(Codex · Copilot 등)에서는 돌지 않으므로 4·5·6 을 직접 실행해야 하며 무엇을 돌릴지는 [AGENTS.md](../AGENTS.md) §4 "커밋 전에 직접 돌려야 하는 것" 이 SSoT.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지(변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip)는 [verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더 주석이 SSoT 이고 [CLAUDE.md](../CLAUDE.md) §Claude Code 는 그 요약이다. hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **차단 탈출은 리포트 대응뿐이다**: 재진입은 `stop_hook_active` 로 가드되어 stop cycle 당 1회만 발화하므로 turn 이 무한히 물리지는 않지만, Claude Code 는 **8회 연속 차단 후 hook 을 override 하고 turn 을 끝낸다** ([공식 best-practices](https://code.claude.com/docs/en/best-practices), "Give Claude a way to verify its work") — 그 상한은 탈출구가 아니라 미검증 종료이므로, 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다.
+
+### Workflow Fail-Safe
+
+각 단계 실패 시 대응. "Try harder"는 실패 응답이 아니다 — 누락된 capability를 엔지니어링하거나 [AGENTS.md](../AGENTS.md) §6 Escalate.
+
+| 실패 단계 | 증상 | 대응 |
+|----------|------|------|
+| 1. Locate | 파일을 찾을 수 없음 | `Agent` subagent로 broad search. "찾았다고 추정" 금지 |
+| 2. Read | 컨텍스트 불충분 (호출자 / 테스트 미확인) | 인접 파일 + 테스트 추가 읽기. 추측하지 말 것 |
+| 3. Edit | Invariant 위반 유혹 | [invariants.md](../agent_docs/invariants.md) 확인 후 [AGENTS.md](../AGENTS.md) §6 Escalate. 우회로 찾지 말 것 |
+| 4. Build | 빌드 실패 | 에러 메시지를 **먼저** 기록. 원인 파악 전 재시도 금지 |
+| 5. Test | 테스트 실패 | **새 코드를 고친다.** assertion 쪽을 손대야 할 것 같으면 그 자체가 신호이므로 착수 전 [invariants.md](../agent_docs/invariants.md) PROC-6 을 편다 — 회귀 은폐 vs 정당한 변경 판정, 별도 commit·E-6 절차, 탐지 패턴이 거기 있다 |
+| 6. Verify | Checklist 항목 실패 | 해당 항목까지 rollback, 재실행. 부분 완료 주장 금지 ([invariants.md](../agent_docs/invariants.md) AP-PROC-1) |
+
+## Sprint Contract & Spec (착수 전 성공 기준)
+
+언제 Sprint Contract 를 협상하고 무엇이 면제인지는 헌법 [AGENTS.md](../AGENTS.md) §6.5 가 갖는다 (Claude Code 도 같은 파일을 import 한다). 여기엔 *포맷과 절차* 만 둔다 (가끔만 필요하므로 on-demand).
+
+코드 수정 시작 *전* 1~3줄로 성공 기준을 사용자에게 제시하고 컨펌받는다:
+
+```
+[SPRINT] <task 한 줄 요약>
+Done when:
+  - <검증 가능 기준 1>
+  - <검증 가능 기준 2>
+  - <...>
+Out of scope: <명시적으로 하지 않을 것 — drift 방지>
+```
+
+기준은 **객관 검증 가능** 해야 한다 (예: "test_X 통과", "rtc_* 에 ur5e grep 0건", "rtc_cm 빌드 0 warning"). "코드가 깔끔하다", "잘 작동한다" 같은 주관 기준은 금지. 이 컨트랙트는 task 종료 시 [AGENTS.md](../AGENTS.md) §11 보고에서 항목별 충족 여부를 체크한다.
+
+**Spec-driven (신규 abstract interface · controller · 메시지 · 디바이스 추가 시):** Sprint Contract = spec. 구현 전 `~/.claude/plans/<slug>.md` 에 *왜 필요한가 · API surface · 검토한 alternatives* 를 1-paragraph spec 으로 박는다 (Specify *before* Implement). 같은 파일이 이후 handoff artifact · 진행 progress 도 누적하므로 `## Spec` / `## Progress` / `## Handoff` 섹션으로 구분 ([CLAUDE.md](../CLAUDE.md) §Claude Code 의 plan 저장 규칙과 동일 파일).
+
+## Adding a New Controller
+
+**먼저 [design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 배치표를 읽는다** — 새 컨트롤러는 **코어(법칙) + 바인딩(프레임워크 계약)** 둘로 나눠 쓰며, 한 클래스로 쓰지 않는다. 경계 판정은 "이 코드가 `RTControllerInterface` 의 존재를 알아야 하는가?" 한 줄이다. 아래 1–2 가 코어, 4–7 이 바인딩이다.
+
+*(`rtc_controllers` 에 있던 상속 어댑터는 #236 S1–S7 에서 삭제됐다 — 옛 커밋에서 그 모양을 발견하더라도 템플릿으로 삼지 않는다. 복사할 출발점은 `integrated_bringup/src/controllers/` 의 바인딩이다.)*
+
+1. **코어 헤더** — `rtc_controllers/include/rtc_controllers/<family>/` 에 법칙만. 입출력은 Eigen / `std::span` 이고 `ControllerState`/`ControllerOutput`·lifecycle·mailbox 를 모른다. `Resize()`(off-RT, 할당 허용) / `Compute()`(`noexcept`, heap-free) 분리. 참조 구현은 `rtc_controllers/include/rtc_controllers/compliance/` 의 `task_dynamics.hpp`·`impedance_law.hpp`.
+2. **코어 파라미터** — 코어 옆에 `Params` POD + `ParseXxxParams(YAML::Node)` 자유 함수 (yaml-cpp 만 의존, 비-RT). 프레임워크 타입을 참조하지 않으므로 코어와 같은 층에 남는다.
+3. **바인딩 클래스** — integration 패키지(`integrated_bringup/`)에서 `RTControllerInterface` 를 상속하고 코어를 멤버로 소유한다. `Compute()`, `SetDeviceTarget()`, `Name()` (all `noexcept`) 구현 + `ControllerState` 해체 → 코어 호출 → `ControllerOutput` 조립. **`Name()` 은 전역 유일해야 한다** — CM 은 `Name()` 과 `config_key` 를 하나의 lookup 네임스페이스에 넣으므로, 컨트롤러 클래스를 복사하고 `Name()` 문자열을 안 고치면 bring-up 전체가 거부된다 (경고 아님; [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §식별자 충돌 가드). 같은 이유로 **한 클래스를 두 `config_key` 로 등록할 수 없다**. `DeviceStateCache` 에서 무엇을 읽고 무엇을 스스로 계산해야 하는지는 [design-principles.md](../agent_docs/design-principles.md) §Backend / Controller Layering.
+4. **Runtime gains** — 바인딩의 LifecycleNode (`/<config_key>`) ROS 2 parameter 로 노출: `on_configure` 에서 `DeclareGainParameters()` + `add_on_set_parameters_callback(OnGainParametersSet)`. Read-only 캡(`*_max_traj_velocity`)은 `ParameterDescriptor::read_only=true`. Force-PI 같은 one-shot 이벤트는 [rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv) 같은 srv 채널을 별도로 마련하고 **상대 이름** `"grasp_command"` 로 advertise 한다 — 노드 namespace 기준 `/<config_key>/grasp_command` 로 해석되며, `~/` 를 쓰면 이름이 한 번 더 중첩된다 (active controller만 server를 띄움). **코어는 파라미터 채널을 갖지 않는다** — 노드를 만들지 않기 때문이며, 스냅샷을 인자로 받는다.
+5. Gains struct must be trivially copyable (plain arrays/bools/doubles/floats/ints; no `std::string`/`std::vector`/virtuals — `rtc::SeqLock` 의 타입 요구, [rtc_base/README.md](../rtc_base/README.md)). Store as `rtc::SeqLock<Gains> gains_lock_` — RT path snapshots once with `const auto gains = gains_lock_.Load();` at method entry; aux-thread writers (parameter callback / srv handler) use Load/mutate/Store. `set_gains`/`get_gains` accessors delegate to the SeqLock and are used by tests.
+
+   **게인 하한은 로더와 tick 양쪽에 건다.** `set_gains()` 는 방금 그 SeqLock 에 POD 를 직접 쓰므로 configure 의 floor 를 통째로 우회한다 — 코어 파서(2번)가 거는 것과 **같은 심볼**을 바인딩 `Compute()` 에서 한 번 더 부른다: 영공간 자세 게인과 compliance §5.3 안전층 게인은 `rtc::FloorNonNegativeGain` (NUM-6; 자세 게인은 활성 게이트 **판정 앞**에), compliance §6.5 DLS 의 λ_max 와 σ₀ 는 `compliance::FloorMaxDamping` / `compliance::FloorSigma0` (둘 다 NUM-1 — NUM-2 는 `dt` guard 라 무관하다). 하한을 `std::max(0.0, ·)` 로 손수 쓰지 않는다 — `std::max` 는 `a < b ? b : a` 라 `max(x, NaN) == x` 이고, 그러면 비유한 게인이 *그럴듯한* 값으로 세탁돼 기존 `nan_inf` SAFE_STOP 을 지운다 (두 헬퍼는 비유한 값을 그대로 통과시켜 그 fault 로 보낸다). λ_max·σ₀ 쪽 첫 in-tree 준수 사례는 `demo_task_controller` 다 (#282) — 새 바인딩도 그 패키지 테스트에 "tick 에서 λ_max / σ₀ 가 floor 된다" 케이스를 함께 넣는다 (#301 의 강제 지점). σ₀ 쪽은 관측 지점을 고르는 데 주의가 필요하다: 잘 조건화된 자세에서는 floor 여부와 무관하게 λ²=0 이라 테스트가 공허해지므로, 랭크 결손 자세(σ_min=0)에서 λ_max 가 명령을 움직이는지로 판정한다. 근거는 [invariants.md](../agent_docs/invariants.md) NUM-1 / NUM-6 이 SSoT.
+6. **YAML** — production 은 `integrated_bringup/config/<robot>/controllers/` (바인딩과 같은 패키지가 소유한다; `rtc_controllers/examples/controllers/` 는 `<robot>` placeholder 를 쓰는 **참고용 example** 이라 그대로 로드되지 않으므로 — [rtc_controllers/README.md](../rtc_controllers/README.md) §사용 모델 — 새 컨트롤러가 여기 파일을 추가하지 않는다). `topics:` 섹션을 반드시 포함한다. 어떤 `role:` 문자열이 유효하고 어느 lane 이 controller YAML 밖에 사는지(device-wire → `devices.<group>.backend:`)는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §토픽 소유권 · §구독 역할 · §퍼블리시 역할 이 SSoT — **거기 없는 문자열은 오타와 동일하게 configure 를 실패시키므로 추측하지 말고 표를 본다.**
+7. **바인딩이 토픽을 소유한다면** — `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` / `PublishNonRtSnapshot` 을 override 하고 `owned_topics` 헬퍼에 위임한다 (또는 동등 코드를 인라인). 훅별 기본 동작 · 3-pass bring-up 계약 · `on_configure` override 규약은 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §Lifecycle 훅 이 SSoT. **그 문서가 다루지 않는 한 가지**: `on_activate` override 도 반드시 base 를 먼저 호출해야 한다 — base 가 activation generation 증분 + `ResetTargetInitialization()` 을 수행하므로 (#196 §3), 누락하면 비활성 구간에 쌓인 stale target 이 재활성화 첫 tick 에 적용된다. target-init latch reset 은 `on_activate` 안에 직접 쓰지 말고 `ResetTargetInitialization()` override 에 둔다.
+8. Register via `RTC_REGISTER_CONTROLLER()` macro — `config_key` 는 링크되는 모든 TU 에 걸쳐 유일해야 하고, 어떤 컨트롤러의 `Name()` 과도 겹치면 안 된다 (3번 항목의 `Name()` 유일성과 같은 네임스페이스). 등록 대상은 항상 바인딩이며 `integrated_bringup/src/controllers/controller_registration.cpp` 에 둔다 (`config_package` 는 자기 패키지 — `rtc_*` 패키지 이름을 넣으면 ARCH-1 위반)
+
+## Adding a New Message Type
+
+1. Create `rtc_msgs/msg/MyMessage.msg`, add to `CMakeLists.txt` `rosidl_generate_interfaces()`
+2. **`PublishRole` 을 늘리기 전에 소유 형태부터 정한다.** 기본 답은 **추가하지 않는 것** 이다 — controller-owned non-RT 토픽은 controller 에 `SeqLock<MyData>` 멤버를 두고 `integrated_bringup/include/integrated_bringup/support/owned_topics.hpp` 에 `SetupMyDataPublisher()` 헬퍼를 작성해 `on_configure`/`on_activate` 에서 호출한다 (RT loop 이 SeqLock writer 로 push, aux thread 가 읽어서 발행). 기존 Grasp/Wbc/ToF wiring 이 canonical pattern 이다. 왜 이 경로가 기본값이고 `PublishRole` 에 무엇이 남아 있는지는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §퍼블리시 역할, 소유권 규칙 자체는 [design-principles.md](../agent_docs/design-principles.md) §Controller-YAML Topics Are Controller-Owned.
+3. 그래도 새 `PublishRole` 이 필요하다면 **네 곳을 같은 변경 안에서** 고친다 — `rtc_base/types/types.hpp` 의 enum, `PublishRoleToString()`, `rtc_controller_interface/src/rt_controller_interface.cpp` 의 YAML 파서 매핑, 그리고 `integrated_bringup/src/support/owned_topics.cpp` 의 switch 에 **실제 publisher**. 앞의 셋만 하면 선언한 컨트롤러가 에러 없이 죽은 토픽을 얻는다 (#196 Phase 5 가 그 상태로 방치돼 있던 role 을 제거한 경위는 위 §퍼블리시 역할). per-device 면 `GroupCommandSlot` 필드를 추가한다. **E-11 이므로 착수 전 `[CONCERN]`** ([AGENTS.md](../AGENTS.md) §6).
+
+## Adding a New Device Group
+
+1. Add device entry in `integrated_bringup/config/<robot>/{sim,robot}.yaml` under `devices:`. **`devices.<group>.backend:` is the SSoT** — declare `backend.type:` (registered tags: step 3) + backend-specific config (topics, transport endpoints). CM 은 더 이상 controller YAML 에서 device-wire role 을 읽지 않으며 backend 구현체가 read/write lane 소유.
+2. Optionally add a timeout entry in `device_timeout_names`/`values`. 설정된 모든 device group 은 자동으로 준비 게이트 + 워치독 대상이 되며, 목록에 없으면 `device_timeout_default_ms` 가 적용된다 (#198) — 목록 누락이 감시 누락을 뜻하지는 않는다.
+3. 현재 등록된 backend type 은 3종이다 — `mujoco_native` (sim), `ur_driver_native` (UR RTDE), `udp_hand_native` (hand UDP). 전부 `integrated_bringup/src/backends/` 에 있고 `RTC_REGISTER_DEVICE_BACKEND` 로 등록되며, `devices.<group>.backend.type` (sim.yaml / robot.yaml) 이 이 tag 로 dispatch 한다. 기존 backend 에 새 설정 키만 필요하면 backend 를 추가하지 말고 그 키를 먼저 검토한다. **단일 backend 전용 신규 key 는 `rtc_base` 타입 확장이 아니라 그 backend 의 `Configure()` 에서 nested ROS 2 param 으로 읽는다** — `declare_parameter("devices." + group + ".backend." + <key>, default)`; YAML 의 `/**: ros__parameters:` 블록이 자동 주입하므로 CM·`rtc_base` 변경이 0 이다 (`DeviceBackendConfig` 는 고정 필드만 담고 미지의 YAML key 를 조용히 버리며, 자매 타입이 사는 `rtc_base/types/types.hpp` 변경은 PROC-3 전체 빌드를 부른다). 같은 key 가 두 번째 backend 에 필요해지는 순간이 `rtc_base` 승격 트리거다.
+4. If a new backend type is needed: implement the `DeviceBackend` interface (`rtc_controller_manager/include/rtc_controller_manager/device_backend.hpp`) + register via `RTC_REGISTER_DEVICE_BACKEND(my_backend)` macro. Override `ReadState()` / `WriteCommand()` (RT-safe) and the `OnConfigure*` / `OnActivate*` lifecycle hooks as needed (base provides default no-op impls). `DeviceStateCache` 에 무엇을 채우고 무엇을 채우지 않아야 하는지는 [design-principles.md](../agent_docs/design-principles.md) §Backend / Controller Layering — 위 §Adding a New Controller 3번이 가리키는 것과 **같은 규칙의 반대편**이다.
+5. If the controller needs to consume the new group: add subscribe topic routing in the controller's YAML `topics:` section (`role: target` typical), and handle the new device index in controller `Compute()` / `SetDeviceTarget()`.
+6. If kinematics needed: add `sub_models` or `tree_models` entry under `urdf:`.
+
+### Renaming a Device Group
+
+Group 이름은 config YAML 밖에도 박혀 있어서, `devices:` 블록만 고치면 **조용히 dead topic** 이 남는다 (실제 재발 2회). 다음을 전부 grep 한다:
+
+- **Python 스크립트 / GUI** — `integrated_bringup/scripts/`, demo GUI 등이 group 이름으로 토픽을 조립하는 경로
+- **C++ 기본값 (멤버 in-class initializer / struct default / `declare_parameter`)** — 노드가 `"hand"` 같은 group 명을 *기본값*으로 들고 있으면 YAML 을 고쳐도 미지정 실행 경로에서 old 이름이 되살아난다 (예: `ur5e_bt_coordinator` 의 `TopicNamer::hand_group`, `BTCoordinatorNode::hand_group_`)
+- **Group 파생 helper** — `GetSecondaryDeviceName()` 류 이름 조립 로직
+- **CSV / 로그 컬럼명**, **[architecture.md](../agent_docs/architecture.md) · [controllers.md](../agent_docs/controllers.md) 의 토픽 표**
+
+검증 신호: rename 후 `ros2 topic list` 에 old 이름 토픽이 남아 있거나, 구독자 0인 신규 토픽이 보이면 위 중 하나가 갱신 안 된 것이다.
+
+## Adding a New Thread
+
+스레드 배치는 **선언형 manifest 한 곳**이 소유한다 — tier 상수를 손으로 쓰지 않는다 (issue #153 M1).
+
+1. **[repo_scripts/config/thread_layout.yaml](../repo_scripts/config/thread_layout.yaml)** 에 role 을 추가하고 **모든 tier** 에 slot/policy/priority/nice 를 준다. 새 스레드가 컨트롤러 프로세스 안에서 돌면 `in_controller_process: true` + `verifier_order` 에도 넣는다 (그래야 `verify_rt_runtime.sh` 가 검사한다)
+2. `python3 repo_scripts/scripts/gen_thread_layout.py --write` — C++ 상수·shell 헬퍼·Python 미러·README 표가 함께 갱신된다. 생성 파일은 **직접 편집 금지**이며 `--check` 가 CI 에서 차단한다
+3. `SystemThreadConfigs` ([thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp)) 에 필드를 추가하고, generator 의 `field_order` 에 **구조체 선언 순서 그대로** 같은 키를 넣는다. 어긋남은 손이 아니라 게이트가 잡는다 — manifest role 과 `field_order` 가 불일치하면 생성기가 즉시 멈추고, 구조체 순서와 `field_order` 가 어긋나면 designated initializer 가 컴파일 에러를 낸다 (positional init 이던 시절엔 같은 타입이라 조용히 이웃 role 의 slot·priority 를 가져갔다). 관계 규칙이 필요하면 `ValidateSystemThreadConfigs()` ([thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp)) 에 넣되, 호스트보다 큰 tier 는 그 validator 로 검사할 수 없으므로 (`cpu_core` 를 호스트 코어 수와 대조한다) manifest 레벨 불변식은 `gen_thread_layout.py` 의 `run_self_test()` 에 함께 넣는다
+4. **각 언어의 리터럴 oracle 을 갱신**한다 — `rtc_base/test/test_thread_layout_tiers.cpp` · `repo_scripts/test/test_rt_common.sh` · `rtc_tools/test/test_thread_layout.py`. 이 셋은 생성물이 아니라 손으로 쓴 기대값이며, 잘못된 manifest 는 세 언어에서 사이좋게 일치하므로 **`--check` 로는 절대 잡히지 않는다**. 여기를 안 고치면 새 스레드는 검증 없이 배포된다
+5. 스레드 진입점에서 `ApplyThreadConfig()` 호출; RT 스레드는 SCHED_FIFO
+
+레이아웃 **값** 변경 (기존 role 의 코어 이동) 은 리팩터가 아니라 thread model 변경이므로 [AGENTS.md](../AGENTS.md) §6 **E-7** 대상이다.
+
+## Adding a New Package (new colcon directory)
+
+새 `<pkg>/package.xml` 디렉토리를 추가하면 build SSoT 를 갱신해야 한다 (C++ CI 와 그 패키지 목록은 2026-09-19 에 제거됐다):
+
+- **[repo_scripts/scripts/lib/rt_common.sh](../repo_scripts/scripts/lib/rt_common.sh) `get_base_packages()` (또는 `get_robot_packages()`)** — `build.sh` / `install.sh` 가 `--packages-select`(**비전이**)로 소비. 누락 시 그 패키지를 의존하는 downstream 의 클린 `./build.sh` 가 `find_package(<pkg>)` 에서 실패. rtc_* 빌드 의존이 없으면 `rtc_base` 직후처럼 앞쪽에 둔다.
+
+README 패키지 표·count, [architecture.md](../agent_docs/architecture.md) dependency graph 는 아래 §Updating an Existing Package 의 Doc 동기화 규칙(PROC-1)을 따른다.
+
+## Updating an Existing Package
+
+코드 변경은 *대응 문서·메타데이터 동기화*를 포함해야 완료 ([invariants.md](../agent_docs/invariants.md) PROC-1). 동기화 대상은:
+
+- **Tests** — `<package>/test/` 의 affected suite 갱신 + 신규 동작에 대한 test 추가 (기존 assertion 을 건드려야 한다면 [invariants.md](../agent_docs/invariants.md) PROC-6 을 먼저 편다)
+- **CMakeLists.txt** — source / install / `find_package` / `ament_add_gtest` / `rosidl_generate_interfaces` 일관성
+- **package.xml** — deps · version. `CMakeLists.txt` `find_package` 와 1:1 매칭. **예외: rosdep 이 해결할 수 없는 source-install 의존** (`rtc_mpc` 의 `aligator`·`fmt` 처럼 `deps/install` 에서 `CMAKE_PREFIX_PATH` 로 찾는 것) 은 `<depend>` 로 올리면 rosdep 이 실패하므로 CMake 에만 두고, **`package.xml` 에 그 사유를 주석으로 남긴다** (해당 파일의 기존 주석이 예시). 같은 이유의 다른 발현: `ament_python` 은 jazzy rosdep DB 에 없어 `<buildtool_depend>ament_python</buildtool_depend>` 을 선언하면 `rosdep resolve --ignore-src` 가 ERROR 를 낸다 — `<export><build_type>ament_python</build_type></export>` 만으로 충분하니 넣지 말고 발견 시 삭제한다. test 전용 결합(소스 트리 include 경로 등)에는 `<depend>` 가 아니라 `<test_depend>` — 없는 런타임 결합을 과장하지 않으면서 빌드 순서는 똑같이 얻는다
+- **YAML config** — 추가/제거/이름변경된 parameter, `topics:` 섹션, valid range·unit 주석. Robot-specific 값은 `integrated_bringup/config/<robot>/...`, 기본값은 agnostic 패키지에
+- **Doc** — Package README.md (API / parameter / usage), inline Doxygen, cross-package 변경이면 root README + `docs/*.md`
+
+검증:
+
+```bash
+./build.sh --tests -p <package>   # build.sh 는 기본으로 테스트를 빌드하지 않는다
+colcon test --packages-select <package> [<deps>...] --event-handlers console_direct+
+colcon test-result --verbose
+```
+
+`rtc_base` / `rtc_msgs` 변경은 전체 downstream 빌드·테스트 (PROC-3) — [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) `--run` 의 PROC-3 경로가 수행한다 (turn 끝은 그 verdict 만 확인). downstream ≥4 패키지 + 각 빌드 ≥5 분이면 `Agent` worktree fork-join 으로 병렬 build/test 가 직렬 `./build.sh full` 보다 빠름 (disk+RAM 비용 증가).
+
+## Completion Checklist
+
+이 절은 Claude Code 의 Stop hook 이 자동 수행하는 범위([verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더가 SSoT, [CLAUDE.md](../CLAUDE.md) §Claude Code 는 그 요약)의 **여집합** — 그 hook 이 있어도 검사되지 않으므로 항상 사람/에이전트가 직접 확인해야 하는 항목이다. **hook 이 없는 도구에서는 이것만으로 부족하다** — 먼저 [AGENTS.md](../AGENTS.md) §4 "커밋 전에 직접 돌려야 하는 것" 의 빌드·테스트·포맷·doc validation 을 수행하고, 그 위에 아래를 더한다.
+
+- [ ] `package.xml` 의 **deps 의미·version** — hook 은 `find_package` 추가 시 `package.xml` co-update 여부만 blocking 으로 보고, 선언된 dep 이 실제로 맞는지는 보지 않는다
+- [ ] YAML 의 **default 값·유효 범위·unit 주석** — hook 은 parse 성공 여부만 본다
+- [ ] **Doxygen** public header 갱신 — hook 이 명시적으로 다루지 않는 항목이다 (cross-package doc 일관성도 동일)
+- [ ] **Python lint** (`ruff check`) — hook 은 변경이 *새로 만든* 포맷 drift 만 차단한다. lint 는 보지 않고, base 에서부터 포맷이 틀린 파일도 통과시킨다 (CI 는 포매팅 자체를 보지 않는다)
+- [ ] RT path 변경 시 [invariants.md](../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect` 블록으로 자가검사 (RT-1~RT-10, RT-7 은 은퇴)
+
+## Inferential review 트리거 (LLM-as-judge, 수동 trigger)
+
+[AGENTS.md](../AGENTS.md) §5.5 가 요약한 트리거의 상세 — 트리거별 이유와 명령. computational sensor (build / test / grep) 는 **문법·빌드·기존 테스트 통과** 만 검증한다. 의미 회귀 — 설계 일관성, robot-agnostic 위반, abstract interface 누락, 재사용 가능성 — 은 잡지 못한다 (에이전트의 자기 평가는 그 대체가 아니다).
+
+다음 상황에서 사용자에게 inferential sensor 실행을 권한다 (`/code-review`·`/security-review`·`/simplify` 는 Claude Code slash command — 미지원 환경/툴에서는 동등한 수동 code review 로 대체):
+
+- `rtc_base` / `rtc_msgs` 변경 → `/code-review` (downstream 전 패키지 영향)
+- Abstract interface 신설 / 두 번째 구현 추가 (ARCH-3 후보) → `/code-review` (base 누락·#ifdef 유혹 검출)
+- `rtc_*` 에 robot-specific 코드 추가 의심 (ARCH-1 borderline) → `/code-review`
+- E-STOP 경로 / safety publisher / lifecycle 콜백 수정 → `/security-review` (E-8)
+- PR 준비 (다파일 / 다패키지 commit) → `/code-review ultra` (현재 branch) 또는 `/code-review ultra <PR#>` (GitHub PR). `/ultrareview` 는 deprecated alias
+- 100+ 줄 변경 또는 신규 패키지 디렉토리 → `/code-review`
+- 다파일 리팩터 / 유사 기능 중복 의심 ([design-principles.md](../agent_docs/design-principles.md) P5) / 변경 후 정리 → `/simplify` (재사용·단순화 전용 — 버그 탐지는 `/code-review`)
+
+수동 trigger 인 이유: inferential 은 GPU/cost/지연이 크고 non-deterministic 이므로 모든 변경에 자동 적용하면 ROI 음성. 위 trigger 는 "false-negative 비용 > inferential 비용" 인 경우만 추렸다.
+
+## Post-task housekeeping (상세)
+
+[AGENTS.md](../AGENTS.md) §11 각 항목의 실행 방법이다. 항목 목록·번호·요구 수준은 §11 이 SSoT 이고, 여기서 줄이거나 바꾸지 않는다. Commit 완료 또는 사용자가 task 종료를 알린 후:
+
+1. **완료 보고** — §11 의 1항이 나열한 항목을 빠짐없이 채운다. 실행한 검증은 명령과 결과(수치)로 적고, 돌리지 않은 검증은 "통과" 가 아니라 "생략 + 이유" 로 적는다
+2. **Issue 동기화** — 대응 GitHub issue 가 있으면 구현 완료 시 갱신한다: 무엇이 구현됐는지, acceptance criteria 중 미충족 항목, 후속 작업. issue 는 durable 결정 기록이자 cross-tool 인계면이므로 ([handoff.md](../agent_docs/handoff.md) §5) 갱신 없이 닫지 않는다. criteria 를 전부 충족했으면 close, 아니면 남은 범위를 코멘트로 남기고 open 유지
+3. **Stale artifact·캐시 정리** — 완료된 private plan (각 도구의 plan 저장소 — [handoff.md](../agent_docs/handoff.md) §5) 은 그 내용이 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (복원 불가한데 보존 가치가 있는 결정 기록이 남아 있으면 issue 코멘트로 옮긴 뒤 삭제 — [handoff.md](../agent_docs/handoff.md) §5). 작업 중 만든 임시 파일 (분석 스크립트, 중간 산출물, 로그 덤프) 은 scratchpad 에 만들고 task 종료 시 삭제하며, repo-root / `/tmp` scratch files 도 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`, issue) 에 보존됨을 확인 후 삭제. 캐시: repo (`src/rtc-framework`) 안에 잘못된 cwd 로 생긴 `build/` · `install/` · `log/` ([AGENTS.md](../AGENTS.md) §9.1) 및 python 캐시 (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`) 가 있으면 삭제 — 모두 재생성 가능하므로 확인 없이 제거 가능. **단 colcon 정규 트리 `<rtc_ws>/{build,install,log}` 는 incremental cache 이므로 절대 건드리지 않는다**
+4. **Branch prune (main merge 후에만)** — feature branch 가 `main` 에 merge 됐으면: 로컬 merged branch 삭제 (`git branch -d <branch>`), stale remote-tracking ref 정리 (`git fetch --prune`). 원격 branch 삭제는 merge 확인 후에만 (GitHub auto-delete 미설정 시). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다
+5. **도구별 memory·harness 정리** — 그 도구의 문서가 소유한다. Claude Code 는 [CLAUDE.md](../CLAUDE.md) §Claude Code 의 Housekeeping (memory save·prune, harness pruning 신호와 그 RTC 발현 카테고리)
