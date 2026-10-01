@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <random>
 #include <string>
@@ -1624,6 +1625,342 @@ TEST(CatchPositionWeightTest, RejectsNonFiniteAndNonPositiveArguments) {
     EXPECT_FALSE(rtc::catching::CatchPositionWeight(sigma, 1.0, 0.01, bad, w)) << "w_max " << bad;
   }
   EXPECT_EQ(w, sentinel) << "the output is written only on success";
+}
+
+// ── 9. Timing: the measurement the grid decision reads (plan MD-51) ──────────
+// Informational: nothing here asserts a time. The grid is chosen from this
+// table by the rule in the plan (warm p99 ≤ 10 ms, cold p99 ≤ 12 ms, no failed
+// solve; Release, 7 dof, 200 samples) and confirmed by the user, because the
+// choice has costs outside this core (payload, sampler).
+//
+// One sample is one throw: the arm at rest in its nominal posture, a random
+// target posture the velocity box can reach in the pre-catch time, a ball
+// arriving along the approach axis. Every catch term and the torque rows are
+// on. Four solves per sample:
+//   cold        the first solve of a plan — the caller's reach reference, no
+//               pull toward it (w_delta_scale 0), solver started from zero;
+//   warm_same   the next message at the SAME grid point: reference = the last
+//               solution, the ball target moved 1 cm, the solver warm;
+//   adv_cold    the grid advanced by one pre-catch node. The grid is anchored
+//               at t_c, so this is a DIFFERENT core (one node fewer): the
+//               reference is the old nodes 1..N, x_0 the old node 1, but the
+//               solver's iterates cannot follow — started from zero;
+//   adv_stale   the same, started from whatever that core solved last (the
+//               previous sample — another throw). Recorded to show which of
+//               the two a planner should do.
+// The full table needs RTC_DECEL_MPC_TIMING_FULL=1 (200 samples per grid); the
+// default run is a smoke of the same code.
+
+struct TimingGrid {
+  const char* name;
+  Grid grid;
+};
+
+const TimingGrid kTimingGrids[] = {
+    {"A1", {12, 0.05, 14, 0.025, 1, {1, 1, 2, 2, 4, 4}}},
+    {"B1", {12, 0.05, 7, 0.05, 1, {1, 1, 2, 3}}},
+    {"A2", {12, 0.05, 14, 0.025, 2, {1, 1, 2, 2, 4, 4}}},
+    {"B2", {12, 0.05, 7, 0.05, 2, {1, 1, 2, 3}}},
+};
+
+struct Series {
+  std::vector<double> total_us, solve_us, iters;
+  int failures{0};
+  std::string failure_log;
+
+  void Add(const DecelMpcResult& r) {
+    total_us.push_back(r.linearize_us + r.condense_us + r.solve_us);
+    solve_us.push_back(r.solve_us);
+    iters.push_back(r.iterations);
+  }
+
+  void Fail(const DecelMpcResult& r) {
+    ++failures;
+    if (failures <= 4) {
+      failure_log += std::string(" ") + DecelMpcReasonName(r.reason) + "/status" +
+                     std::to_string(r.qp_status) + "/it" + std::to_string(r.iterations);
+    }
+  }
+};
+
+void ReportSeries(const std::string& key, const Series& s) {
+  using rtc::testing::decel::Percentile;
+  using rtc::testing::decel::RecordMicros;
+  RecordMicros(key + ".total_us.p50", Percentile(s.total_us, 0.50));
+  RecordMicros(key + ".total_us.p99", Percentile(s.total_us, 0.99));
+  RecordMicros(key + ".total_us.max", Percentile(s.total_us, 1.0));
+  ::testing::Test::RecordProperty(key + ".iterations.p50",
+                                  static_cast<int>(Percentile(s.iters, 0.5)));
+  ::testing::Test::RecordProperty(key + ".iterations.p99",
+                                  static_cast<int>(Percentile(s.iters, 0.99)));
+  ::testing::Test::RecordProperty(key + ".failures", s.failures);
+  ::testing::Test::RecordProperty(key + ".samples", static_cast<int>(s.total_us.size()));
+  RecordMicros(key + ".solve_us.p50", Percentile(s.solve_us, 0.50));
+  std::printf(
+      "[timing] %-22s n=%3zu fail=%2d | total p50 %7.0f p99 %7.0f max %7.0f us (QP p50 "
+      "%7.0f) | iter p50 %3.0f p99 %3.0f%s%s\n",
+      key.c_str(), s.total_us.size(), s.failures, Percentile(s.total_us, 0.5),
+      Percentile(s.total_us, 0.99), Percentile(s.total_us, 1.0), Percentile(s.solve_us, 0.5),
+      Percentile(s.iters, 0.5), Percentile(s.iters, 0.99), s.failures > 0 ? " | failures:" : "",
+      s.failure_log.c_str());
+}
+
+[[nodiscard]] bool OptimisedBuild() {
+  const std::string bt = RTC_TEST_BUILD_TYPE;
+  return bt == "Release" || bt == "RelWithDebInfo" || bt == "MinSizeRel";
+}
+
+[[nodiscard]] int TimingSamples() {
+  const char* e = std::getenv("RTC_DECEL_MPC_TIMING_FULL");
+  const bool full = e != nullptr && e[0] != '\0' && e[0] != '0';
+  if (!OptimisedBuild()) {
+    return 4;
+  }
+  return full ? 200 : 8;
+}
+
+// The shipped-like catch weights of the measurement. Values are placeholders
+// for E1-F10's tuning; what matters here is that every term is assembled.
+void TimingCatchParams(DecelMpcParams& p, bool with_slack) {
+  p.catch_terms = true;
+  p.w_axis = 100.0;
+  p.w_v_par = 1.0;
+  p.w_v_perp = 20.0;
+  if (with_slack) {
+    p.rho_v = 1.0;
+    p.v_rel_allow = 0.5;
+  }
+}
+
+// A change to the measured problem: its parameters, its inputs, or both.
+struct TimingVariant {
+  std::function<void(DecelMpcParams&)> params;
+  std::function<void(DecelMpcInput&)> input;
+};
+
+void RunGridTiming(const ArmModel& arm, const DecelMpcLimits& lim, const TimingGrid& tg,
+                   const std::string& key, int n_samples, bool with_slack,
+                   const TimingVariant& variant = {}) {
+  const int n = arm.model->nv;
+  DecelMpcParams p = GridParams(tg.grid);
+  TimingCatchParams(p, with_slack);
+  Grid next_grid = tg.grid;
+  next_grid.n_pre -= 1;
+  DecelMpcParams p_next = GridParams(next_grid);
+  TimingCatchParams(p_next, with_slack);
+  if (variant.params) {
+    variant.params(p);
+    variant.params(p_next);
+  }
+  DecelMpc mpc, adv_cold, adv_stale;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone) << key;
+  ASSERT_EQ(adv_cold.Init(*arm.model, arm.frame, p_next, lim), DecelMpcReason::kNone) << key;
+  ASSERT_EQ(adv_stale.Init(*arm.model, arm.frame, p_next, lim), DecelMpcReason::kNone) << key;
+  DecelMpcResult res, res_same, res_adv;
+  mpc.ResizeResult(res);
+  mpc.ResizeResult(res_same);
+  adv_cold.ResizeResult(res_adv);
+  const int N = mpc.NumNodes();
+  const double t_catch = mpc.NodeTime(mpc.CatchNode());
+  ::testing::Test::RecordProperty(key + ".n_vars", static_cast<int>(mpc.MainQp().H.rows()));
+  ::testing::Test::RecordProperty(key + ".n_ineq", static_cast<int>(mpc.MainQp().C.rows()));
+
+  Eigen::Matrix3d w_p;
+  ASSERT_TRUE(
+      rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, w_p));
+  std::mt19937 rng(42);
+  std::uniform_real_distribution<double> uni(-1.0, 1.0);
+  std::uniform_real_distribution<double> frac(0.3, 1.0);
+  pinocchio::Data data(*arm.model);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n);
+  Series cold, warm_same, s_adv_cold, s_adv_stale;
+  std::vector<double> pos_err_mm, overshoot;
+  int slack_active = 0;
+  for (int i = 0; i < n_samples; ++i) {
+    // A target the velocity box reaches: the minimum-jerk peak 1.875·d/T stays
+    // under 0.9·η_v·q̇_max (a faster reference cannot be followed inside the
+    // trust region and is not a plan a planner should hand over).
+    Eigen::VectorXd q_t = arm.q_nominal;
+    for (int j = 0; j < n; ++j) {
+      const double cap = 0.9 * p.eta_v * lim.qd_max[j] * t_catch / 1.875;
+      const double d = (uni(rng) < 0.0 ? -1.0 : 1.0) * frac(rng) * cap;
+      q_t[j] = std::clamp(arm.q_nominal[j] + d, lim.q_min[j] + 0.15, lim.q_max[j] - 0.15);
+    }
+    const CatchPose target = CatchPoseAt(arm, data, q_t, zero);
+    DecelMpcInput in;
+    ReachReference(mpc, arm.q_nominal, q_t, in);
+    in.p_b = target.p + 0.01 * Eigen::Vector3d(uni(rng), uni(rng), uni(rng));
+    in.a_d = TiltedAxis(target.z, 0.05, Eigen::Vector3d(uni(rng), uni(rng), uni(rng) + 2.0));
+    in.v_b = -(4.5 + 1.5 * uni(rng)) * in.a_d;  // a_d = −v̂_b/‖v̂_b‖ (formulation §0.2)
+    in.w_p = w_p;
+    in.w_delta_scale = 0.0;
+    in.cold_start = true;
+    if (variant.input) {
+      variant.input(in);
+    }
+    if (!mpc.Solve(in, res)) {
+      cold.Fail(res);
+      continue;
+    }
+    cold.Add(res);
+    pos_err_mm.push_back(1e3 * res.catch_pos_err.norm());
+    slack_active += res.slack_max > 1e-6 ? 1 : 0;
+    // Velocity between nodes (the box is enforced AT the nodes): the worst
+    // |q̇|/(η_v q̇_max) on a 10-point sweep of every interval.
+    double over = 0.0;
+    for (int k = 0; k < N; ++k) {
+      const double dt = mpc.NodeTime(k + 1) - mpc.NodeTime(k);
+      for (int m = 1; m < 10; ++m) {
+        const double tau = dt * m / 10.0;
+        const Eigen::VectorXd qd =
+            res.qd.col(k) + tau * res.qdd.col(k) + 0.5 * tau * tau * res.u.col(k);
+        for (int j = 0; j < n; ++j) {
+          over = std::max(over, std::abs(qd[j]) / (p.eta_v * lim.qd_max[j]));
+        }
+      }
+    }
+    overshoot.push_back(over);
+
+    // The next message.
+    const Eigen::Vector3d moved =
+        in.p_b + 0.01 * Eigen::Vector3d(uni(rng), uni(rng), uni(rng)).normalized();
+    DecelMpcInput same = in;
+    UseAsReference(res, same);
+    same.p_b = moved;
+    same.w_delta_scale = 1.0;
+    same.cold_start = false;
+    if (mpc.Solve(same, res_same)) {
+      warm_same.Add(res_same);
+    } else {
+      warm_same.Fail(res_same);
+    }
+
+    DecelMpcInput adv = in;
+    adv.q_ref = res.q.rightCols(N);
+    adv.qd_ref = res.qd.rightCols(N);
+    adv.qdd_ref = res.qdd.rightCols(N);
+    adv.q0 = res.q.col(1);
+    adv.qd0 = res.qd.col(1);
+    adv.qdd0 = res.qdd.col(1);
+    adv.p_b = moved;
+    adv.w_delta_scale = 1.0;
+    adv.cold_start = true;
+    if (adv_cold.Solve(adv, res_adv)) {
+      s_adv_cold.Add(res_adv);
+    } else {
+      s_adv_cold.Fail(res_adv);
+    }
+    adv.cold_start = false;
+    if (adv_stale.Solve(adv, res_adv)) {
+      s_adv_stale.Add(res_adv);
+    } else {
+      s_adv_stale.Fail(res_adv);
+    }
+  }
+  ReportSeries(key + ".cold", cold);
+  ReportSeries(key + ".warm_same", warm_same);
+  ReportSeries(key + ".adv_cold", s_adv_cold);
+  ReportSeries(key + ".adv_stale", s_adv_stale);
+  using rtc::testing::decel::Percentile;
+  ::testing::Test::RecordProperty(key + ".cold.pos_err_um.p50",
+                                  static_cast<int>(std::lround(1e3 * Percentile(pos_err_mm, 0.5))));
+  ::testing::Test::RecordProperty(
+      key + ".cold.pos_err_um.p99",
+      static_cast<int>(std::lround(1e3 * Percentile(pos_err_mm, 0.99))));
+  ::testing::Test::RecordProperty(key + ".cold.torque_slack_active", slack_active);
+  ::testing::Test::RecordProperty(key + ".cold.between_node_speed_permille",
+                                  static_cast<int>(std::lround(1e3 * Percentile(overshoot, 1.0))));
+  std::printf(
+      "[timing] %-22s vars %ld rows %ld | first-solve pos err p50 %.1f p99 %.1f mm | "
+      "torque slack active %d/%zu | max between-node |qd|/box %.3f\n",
+      key.c_str(), static_cast<long>(mpc.MainQp().H.rows()),
+      static_cast<long>(mpc.MainQp().C.rows()), Percentile(pos_err_mm, 0.5),
+      Percentile(pos_err_mm, 0.99), slack_active, cold.total_us.size(), Percentile(overshoot, 1.0));
+}
+
+TEST(DecelMpcApproachTiming, GridTable7R) {
+  const ArmModel arm = RealArm7();
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
+  const int n_samples = TimingSamples();
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  for (const TimingGrid& tg : kTimingGrids) {
+    RunGridTiming(arm, lim, tg, std::string("real_7dof.") + tg.name, n_samples, false);
+  }
+}
+
+TEST(DecelMpcApproachTiming, GridTable6R) {
+  const ArmModel arm = RealArm6();
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.1);
+  const int n_samples = TimingSamples();
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  for (const TimingGrid& tg : kTimingGrids) {
+    RunGridTiming(arm, lim, tg, std::string("real_6dof.") + tg.name, n_samples, false);
+  }
+}
+
+// The velocity slack is off by default (plan MD-52); what turning it on costs,
+// and whether its penalty row provokes ProxQP's false-infeasible verdict, is
+// E1-F10's input.
+TEST(DecelMpcApproachTiming, VelocitySlackOn7R) {
+  const ArmModel arm = RealArm7();
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  RunGridTiming(arm, lim, kTimingGrids[3], "real_7dof.B2.slack_v", TimingSamples(), true);
+}
+
+// What the solve time depends on. Each variant changes ONE thing (two where
+// named) in the smallest decision grid; none is a recommendation — they locate
+// the cost for the decision recorded in the plan (§8, E1-F07). Findings of the
+// 2026-10-01 run are there; in short: the time is the QP's (linearisation and
+// condensing are ~0.1 ms), it halves without the torque rows and again with
+// half the pre-catch nodes, the solver tolerance and a pure variable rescaling
+// change nothing (ProxQP's own equilibration already does that), and a
+// heavier jerk weight halves the iterations by changing the problem.
+TEST(DecelMpcApproachTiming, CostDrivers7R) {
+  const ArmModel arm = RealArm7();
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
+  const int n_samples = TimingSamples();
+  RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+  const TimingGrid& grid = kTimingGrids[3];
+  const auto run = [&](const char* name, const TimingVariant& v) {
+    RunGridTiming(arm, lim, grid, std::string("real_7dof.B2.") + name, n_samples, false, v);
+  };
+  run("eps_1e-4", {[](DecelMpcParams& p) {
+                     p.solver.eps_abs = 1e-4;
+                     p.reference_rest_tol = 1e-3;
+                   },
+                   {}});
+  run("velocity_term_off", {[](DecelMpcParams& p) {
+                              p.w_v_par = 0.0;
+                              p.w_v_perp = 0.0;
+                            },
+                            {}});
+  run("gamma_ref_0.2", {{}, [](DecelMpcInput& in) { in.gamma_ref = 0.2; }});
+  run("no_trust_region", {[](DecelMpcParams& p) { p.delta_tr = kInf; }, {}});
+  run("torque_rows_off", {[](DecelMpcParams& p) { p.rho_tau = 0.0; }, {}});
+  // u_scale alone is NOT a preconditioner (decel_mpc.hpp): 1e2 weighs jerk
+  // a hundred times heavier against every other term.
+  run("jerk_weight_x100", {[](DecelMpcParams& p) { p.u_scale = 1e2; }, {}});
+  run("torque_off+jerk_x100", {[](DecelMpcParams& p) {
+                                 p.rho_tau = 0.0;
+                                 p.u_scale = 1e2;
+                               },
+                               {}});
+  // The SAME problem in another variable scale: (u/u_scale)²·R is unchanged
+  // when R goes with u_scale².
+  run("rescaled_1e2", {[](DecelMpcParams& p) {
+                         p.jerk_weight = Eigen::VectorXd::Constant(7, 1e-2);
+                         p.u_scale = 1e2;
+                       },
+                       {}});
+  // Fewer nodes: a typical throw (the E0-F02 median entry is 0.44 s before the
+  // catch, not the 0.6 s the table sizes for), and a coarser pre-catch spacing.
+  const TimingGrid typical{"B2_pre9", {9, 0.05, 7, 0.05, 2, {1, 1, 2, 3}}};
+  RunGridTiming(arm, lim, typical, "real_7dof.B2_pre9", n_samples, false);
+  const TimingGrid coarse{"C1", {6, 0.1, 7, 0.05, 1, {1, 1, 2, 3}}};
+  RunGridTiming(arm, lim, coarse, "real_7dof.C1_pre_0.1s", n_samples, false);
+  RunGridTiming(arm, lim, coarse, "real_7dof.C1_pre_0.1s.torque_off", n_samples, false,
+                {[](DecelMpcParams& p) { p.rho_tau = 0.0; }, {}});
 }
 
 }  // namespace

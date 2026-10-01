@@ -231,7 +231,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | 관절 노드 payload (`DecelPlanSnapshot`, MD-27) + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). RT tick 배선은 E1-F04 (MD-32) |
 | E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). 출하는 꺼짐 — §8 |
 | E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 (법칙은 configure 에서 하나, MD-44) | E1-F03 | 구현 완료 ([#658](https://github.com/hyujun/rtc-framework/pull/658)) — 결정 MD-34 – MD-44, 측정 §8. sim smoke 에서 `mode: mpc` 진입 20/20 abort 라 이슈는 열어 둔다 → MD-45, 마지막 항목은 E1-F09 에서 닫는다 |
-| E1-F07 | [#660](https://github.com/hyujun/rtc-framework/issues/660) | 단일 팔 MPC 코어 — APPROACH–정지 격자, 포구 항 (위치 · 접근축 · 상대속도), 항 단위 조립 (MD-46 · MD-49) | E1-F04 | 구현 중 — 결정 MD-51 – MD-53 |
+| E1-F07 | [#660](https://github.com/hyujun/rtc-framework/issues/660) | 단일 팔 MPC 코어 — APPROACH–정지 격자, 포구 항 (위치 · 접근축 · 상대속도), 항 단위 조립 (MD-46 · MD-49) | E1-F04 | 코어 구현 · 검증 완료, 계산 시간이 임계를 넘어 격자 결정 대기 — 결정 MD-51 – MD-53, 측정 §8 |
 | E1-F08 | [#661](https://github.com/hyujun/rtc-framework/issues/661) | 계획기 — TRACKING – DECEL 의 MPC 풀이, 첫 구간 · 예산, 재계획 ($x_0$ 경로 (i) 일반화), payload 용량 | E1-F07 | 대기 |
 | E1-F09 | [#662](https://github.com/hyujun/rtc-framework/issues/662) | L7 — RT 가 APPROACH – HOLD 를 MPC 구간으로 추종, DECEL 진입은 연속 (E-8) | E1-F08 | 대기 |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — 포구 항 열 · APPROACH 구간 포함 | E1-F09 | 대기 |
@@ -575,3 +575,49 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **sim smoke (2026-09-30, [#630 코멘트](https://github.com/hyujun/rtc-framework/issues/630#issuecomment-5912267455)).** ur5e_p1b, `catch_lead_on` + `mode: mpc` + `switch_margin` 2.0, s35b 20 발 (seed 604): **20/20 이 DECEL 진입에서 abort** (CLOSING → ABORT_SAFE). 순환은 모두 닫혔고 FAULT 는 없다. 임시 계측 5 발에서 구간은 매번 채택됐고 진입 게이트가 거부했다 — $\rho$ 4.1 – 10.1, 매번 관절 0, $\vert\Delta\dot q\vert$ 0.78 – 1.76 rad/s. k=0 구간의 $x_0$ 는 v1 명령을 74 – 96 ms 상수 q̈ 로 외삽한 값이고 (5 발 중 2 발은 한계에 clamp), 포구 직전의 v1 명령은 그 외삽을 벗어난다. 위 실시계 $\rho$ 1.13 – 1.18 은 팔을 고정한 fixture 의 값이었다.
 - **사용자 결정 (2026-09-30).** `mode: mpc` 는 APPROACH 부터 정지까지 MPC 로 간다 — 입력은 공의 미래 궤적, 출력은 CLIK task position + null space 자세. 코어 · 관절 노드 payload · RT 샘플러 · MD-36 · MD-44 는 유지하고, formulation §1.3 의 포구 항을 단일 팔 형태로 더한다 (E3-F01 을 단일 팔로 앞당김). 진입 순간의 외삽이 없어지므로 MD-41 의 $x_0$ 예측 측정은 그 기능의 설계로 대체된다. 기능 등록과 계획은 별도 — E1-F07 – F10, framing 은 MD-46 – MD-50.
 
+### E1-F07 — 단일 팔 MPC 코어: 정확성과 계산 시간 (2026-10-01, [#660](https://github.com/hyujun/rtc-framework/issues/660))
+
+`test_catching_decel_mpc_approach` 의 결과다. 판정은 테스트 단언이고 시간 표는 정보용이다 (MD-51).
+
+**정확성.**
+
+- 기본 파라미터의 코어는 E1-F07 전과 같은 QP 를 조립한다. `main` `edc0fa4e` 에서 뽑은 golden 과 조립 행렬이 상대 1e-12 로, 해가 1e-5 로 같다 (pre-solve 경로 · $w_\perp$ 를 켠 warm 주기 · 토크 행이 걸린 출하 지평).
+- 포구 위치 · 접근축 · 손 속도의 Jacobian 이 중심 차분과 상대 1e-6 으로 같다 (6 · 7 자유도, 무작위 자세). 조립된 포구 비용은 비선형 비용과 2 차 오차로 일치한다 (오차 비 3.0 – 5.5).
+- $H_v$ 는 Pinocchio 의 `getPointVelocityDerivatives` 다. `getFrameVelocityDerivatives` 로 바꾸면 유한 차분 테스트가 실패한다 (mutation 으로 확인) — formulation 의 `[확인 필요]` 를 닫는다.
+- 코어 경로의 C 할당은 0 이다 (포구 선형화와 조립 전체). ProxQP 는 warm 풀이 한 번에 10 회 할당한다 (MD-22, #654).
+- mutation 10 종 ($H_v$ 부호 · frame 변형, 접근축 극한, jerk 가중, 교차항 전치, 위치 상수항, slack 행 부호, $W_v$ 뒤바꿈, $\gamma_{ref}$ 무시, 균일 간격 gain) 이 모두 해당 테스트에서 잡혔다.
+- E1-F01 의 `AssemblePerp` 는 Hessian 을 약 1e-15 만큼 비대칭으로 만들고 있었다. 공통 조립 루틴으로 옮겨 정확히 대칭이 됐다.
+
+**계산 시간** (Release, 개발 PC, 표본 200, 고정 seed, 모든 포구 항과 토크 행 켬, 한 풀이의 p50 / p99 [ms]). 표본 하나는 대기 자세에 정지한 팔이 속도 box 로 닿는 무작위 목표 자세로 가는 한 투척이다.
+
+| 구성 (7 자유도) | 변수 · 행 | 첫 풀이 (cold) | 같은 격자점 재풀이 | 격자점 전진 |
+|---|---|---|---|---|
+| A1 — 포구 전 0.05 s × 12 + 정지 0.025 s × 14, 1 노드 블록 | 308 · 910 | 63.7 / 73.1 | 32.9 / 38.5 | 84.5 / 103.2 |
+| B1 — 포구 전 0.05 s × 12 + 정지 0.05 s × 7, 1 노드 블록 | 245 · 665 | 30.9 / 36.4 | 16.0 / 19.5 | 37.4 / 44.2 |
+| A2 — A1 에 포구 전 2 노드 블록 | 266 · 910 | 59.4 / 68.8 | 29.8 / 34.0 | 75.9 / 91.1 |
+| B2 — B1 에 포구 전 2 노드 블록 | 203 · 665 | 26.9 / 31.9 | 13.7 / 16.3 | 31.9 / 38.4 |
+| 임계 (MD-51) | | ≤ 12 | ≤ 10 | ≤ 10 |
+
+- **네 구성 모두 임계를 넘는다.** 풀이 실패는 0 / 200 이다. 6 자유도는 약 0.7 배다 (B2: 19.6 / 29.7, 9.2 / 11.3, 21.3 / 26.5).
+- **시간은 QP 풀이의 것이다.** 선형화와 조립은 합쳐 약 0.1 ms 다.
+- **격자점을 전진하는 재계획이 첫 풀이보다 느리다.** 격자가 $t_c$ 에 고정이라 격자점이 하나 전진하면 노드 수가 다른 코어를 쓰고, solver 의 warm start 가 이어지지 않는다 (기준만 이어진다). 그 코어가 직전에 푼 문제 (다른 투척) 의 warm start 를 그대로 쓰면 풀이의 24 – 30 % 가 거짓 "실행 불가능" 으로 실패한다 — 코어를 바꿀 때는 `cold_start` 가 필수다 (E1-F08).
+- 첫 풀이 (RTI 1 회) 의 포구 위치 오차는 p50 1.8 mm · p99 6.8 mm 다. 노드 사이의 속도는 box 를 최대 3 % 넘는다 (B2).
+
+**무엇이 시간을 정하는가** (B2 에서 하나씩 바꿈, p99 [ms]).
+
+| 바꾼 것 | 첫 풀이 | 같은 격자점 | 격자점 전진 | 비고 |
+|---|---|---|---|---|
+| B2 그대로 | 31.9 | 16.3 | 38.4 | |
+| 토크 행 끔 | 17.7 | 9.6 | 14.7 | 절반 |
+| 포구 전 간격 0.1 s × 6 (노드 13) | 15.2 | 8.4 | 17.3 | 절반 |
+| 포구 전 0.1 s + 토크 행 끔 | 8.9 | 5.0 | 8.2 | 임계 안 |
+| 포구 전 노드 9 개 (진입이 $t_c$ 의 0.44 s 앞 — E0-F02 의 중앙값) | 30.0 | 10.4 | 23.9 | |
+| jerk 가중 100 배 | 25.3 | 14.7 | 29.0 | 반복 41 → 23, 문제가 달라진다 (위치 오차 p50 3.6 mm) |
+| 상대속도 항 끔 | 31.4 | 13.9 | 30.8 | warm 반복 14 → 4 |
+| solver 허용오차 1e-4 | 31.0 | 15.7 | 38.3 | 차이 없음 |
+| 변수 scale 만 바꿈 (같은 문제) | 32.7 | 16.4 | 37.6 | 차이 없음 — ProxQP 의 equilibration 이 이미 한다 |
+| trust region 없음 | 32.6 | 11.9 | 31.5 | 위치 오차 p50 23.5 mm — 쓸 수 없다 |
+
+- 시간을 정하는 것은 노드 수와 토크 행이다. 가중 · 허용오차 · scale 은 영향이 작다.
+- $s_v$ 를 켜면 첫 풀이가 47.3 ms 로 는다 (B2). 거짓 "실행 불가능" 은 0 / 200 이다.
+- **격자는 정하지 못했다.** 임계를 넘으므로 MD-51 에 따라 수치와 후보를 사용자에게 보고하고 결정을 받는다 ([#660](https://github.com/hyujun/rtc-framework/issues/660)).
