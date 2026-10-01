@@ -2431,5 +2431,62 @@ else
 fi
 rm -rf "$dir" "$bstub" "$cstub" "$tstub" "$count"
 
+# --- Markdown inside a package ---------------------------------------------------
+#
+# The order PROC-1 asks for is code first, then the package README brought up
+# to date with it. With every file of the package in its verdict key, that
+# README edit voided the verdict the code had just earned: a full build and
+# test for a file neither reads.
+
+# 75. A package's Markdown is not in its key: the README, and a .md further
+#     down, edited after the code passed keep the verdict.
+dir=$(make_fixture)
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+printf '# demo\n\nBrought up to date after the code passed.\n' >"$dir/rtc_demo/README.md"
+mkdir -p "$dir/rtc_demo/docs"
+printf '# design\n\nA note beside the code.\n' >"$dir/rtc_demo/docs/design.md"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_contains "Markdown edited inside the package reuses its verdict" "$out" "build/test not repeated for [rtc_demo]"
+expect_exit "...and --run passes" "$rc" 0
+if [ "$(calls "$count")" = 1 ]; then pass "the package is not tested again for its Markdown"; else fail "a README edit re-tested the package (calls $(calls "$count"))"; fi
+printf '# demo\n\nBrought up to date after the code passed. And once more.\n' >"$dir/rtc_demo/README.md"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the turn end owes nothing for a README edit" "$rc" 0
+# 75b. Everything else in the package still ends the reuse -- a config file
+#      here -- and so does a file whose name only contains ".md".
+printf 'gain: 1.0\n' >"$dir/rtc_demo/config/demo.yaml"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a config file edited inside the package is owed at the turn end" "$rc" 2
+expect_contains "...by name" "$out" "build/test verdict missing for: rtc_demo"
+expect_contains "...and the message says what does not void a verdict" "$out" "voids the verdict (a *.md does not)"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_not_contains "a config file inside the package ends the reuse" "$out" "not repeated"
+if [ "$(calls "$count")" = 2 ]; then pass "a config file inside the package re-tests it"; else fail "a config file did not re-test the package (calls $(calls "$count"))"; fi
+printf 'not markdown\n' >"$dir/rtc_demo/config/notes.md.txt"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+if [ "$(calls "$count")" = 3 ]; then pass "a name that only contains .md is not Markdown"; else fail "notes.md.txt was left out of the key (calls $(calls "$count"))"; fi
+rm -rf "$dir" "$bstub" "$tstub" "$count"
+
+# 75c. The whole-tree keys are not touched: a PROC-3 verdict is of every file,
+#      Markdown included (repo_scripts, the other whole-tree key, tests the
+#      documents themselves).
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+add_rtc_base "$dir"
+bstub=$(make_build_stub 0)
+fake=$(make_fake_colcon)
+echo 'int base_fn() { return 1; }' >"$dir/rtc_base/src/base.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green); rc=$?
+expect_exit "75c setup: a green PROC-3 run passes" "$rc" 0
+printf '# base\n\nEdited after the PROC-3 run.\n' >"$dir/rtc_base/README.md"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_exit "a README edited after a PROC-3 run is owed" "$rc" 2
+expect_contains "...as the whole workspace" "$out" "build/test verdict missing for: every package (PROC-3"
+rm -rf "$ws" "$bstub" "$fake"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
