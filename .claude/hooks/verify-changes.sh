@@ -109,9 +109,10 @@
 #   - the WHOLE working tree is identical to the one this hook last passed at
 #     -> nothing is run (see "Nothing changed since the last pass");
 #   - the package directories are, in content, the ones a package last built
-#     and tested green with -> its build/test is not repeated (--run) or not
-#     owed (turn end); every other gate still runs (see "Package verdict
-#     reuse").
+#     and tested green with (their Markdown aside: a README brought up to date
+#     after the code passed keeps the verdict) -> its build/test is not
+#     repeated (--run) or not owed (turn end); every other gate still runs
+#     (see "Package verdict reuse").
 #   Both are keyed on content, never on time or on the watermark, and only a
 #   PASS that went through build/test is remembered -- so committing a tree
 #   --run passed costs the turn end nothing, and editing a package after it
@@ -1695,14 +1696,23 @@ workspace_holds() {
 #
 # A package that built and tested green is not built and tested again while
 # the packages are what they were graded as. The key is the content of EVERY
-# package directory of the working tree (the tree id of each) -- this package
-# or any other, source or not -- so an edit anywhere in any package re-grades
-# all of them, as before. What the key leaves out is the repository-level
-# files (docs/, agent_docs/, .github/, .claude/, the root): no package's build
-# reads them, and the turn that fixes a plan document after the code passed is
-# the common case this serves. repo_scripts is the exception -- its tests run
-# the validators and this hook against the repository itself -- so its key is
-# the whole tree.
+# package directory of the working tree (every file of each, by blob) -- this
+# package or any other, source or not -- so an edit anywhere in any package
+# re-grades all of them, as before. What the key leaves out:
+#   * the repository-level files (docs/, agent_docs/, .github/, .claude/, the
+#     root): no package's build reads them, and the turn that fixes a plan
+#     document after the code passed is the common case this serves;
+#   * Markdown inside a package (*.md, at any depth). The other common case:
+#     the code passes, then the package README is brought up to date with it
+#     (PROC-1 asks for exactly that order) -- and with the README in the key
+#     that edit voided the verdict the code had just earned, a full build and
+#     test for a file neither reads. Checked 2026-10-01: no CMakeLists installs
+#     or configures a .md, and no test outside repo_scripts opens one. A test
+#     that starts to read a package's Markdown has to take it out of this
+#     exemption; the docs gates (Phase 1b) grade the .md itself either way.
+# repo_scripts is the exception to both -- its tests run the validators and
+# this hook against the repository itself, Markdown included -- so its key is
+# the whole tree, as is PROC-3's.
 #
 # The key is NOT the diff against the watermark. That one (the blobs of the
 # changed files) named the same key for different packages once the watermark
@@ -1713,9 +1723,20 @@ workspace_holds() {
 # Only a green build AND a green test is remembered, per package, at the moment
 # it happens: a turn blocked by another gate keeps the verdicts it did earn.
 pkg_content_key() {  # $1 = a tree id from work_tree_id
-  git_scratch ls-tree -r --name-only "$1" 2>/dev/null \
-    | sed -n 's|^\([^/]*\)/package\.xml$|\1|p' \
-    | while IFS= read -r d; do git_scratch ls-tree "$1" -- "$d"; done 2>/dev/null \
+  local pkgs
+  pkgs=$(git_scratch ls-tree -r --name-only "$1" 2>/dev/null \
+           | sed -n 's|^\([^/]*\)/package\.xml$|\1|p' || true)
+  # One "<mode> <type> <blob>\t<path>" line per file of a package directory,
+  # Markdown left out. quotePath off: a quoted non-ASCII path ends in `"`, and
+  # its ".md" would not be seen.
+  git_scratch -c core.quotePath=false ls-tree -r "$1" 2>/dev/null \
+    | awk -v pkgs="$pkgs" '
+        BEGIN { n = split(pkgs, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") keep[a[i]] = 1 }
+        {
+          path = $0; sub(/^[^\t]*\t/, "", path)
+          top = path; sub(/\/.*/, "", top)
+          if ((top in keep) && path !~ /\.md$/) print
+        }' \
     | git hash-object --stdin 2>/dev/null || true
 }
 PKG_CONTENT_KEY=""
@@ -1890,7 +1911,7 @@ elif [ -z "$RUN_MODE" ] && [ -n "$SIM_RIVALS" ]; then
   # Deferred, not failed: reported at the end (see workspace_sim_rivals).
   SIM_DEFERRED=1
 elif [ -z "$RUN_MODE" ]; then
-  TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — the turn end does not build or test. Run '${RUN_CMD}' (it builds with --tests, runs colcon test and records the verdict; if it will take long, background it and wait for it), then end the turn again. An edit inside any package after that run voids the verdict.\n"
+  TEST_FAILURES="${TEST_FAILURES}  - build/test verdict missing for: ${OWED} — the turn end does not build or test. Run '${RUN_CMD}' (it builds with --tests, runs colcon test and records the verdict; if it will take long, background it and wait for it), then end the turn again. An edit inside any package after that run voids the verdict (a *.md does not).\n"
 elif [ -n "$RIVALS" ]; then
   TEST_FAILURES="${TEST_FAILURES}  - build/test NOT run — a build is already running in this colcon workspace (${WORKSPACE}):\n$(report_procs "$RIVALS")\n    Building beside it would race it for CPU and write the same build/ and install/ trees, so neither verdict could be trusted. Wait for it to finish (if it is your own background task, wait on that task), then run this again.\n"
 elif [ -n "$SIM_RIVALS" ]; then
