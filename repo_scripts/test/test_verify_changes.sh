@@ -1526,13 +1526,16 @@ expect_contains "a repository-level doc edit reuses the package verdict" "$out" 
 expect_not_contains "...and is not the whole-tree shortcut" "$out" "nothing re-run"
 expect_exit "a repository-level doc edit passes" "$rc" 0
 if [ "$(calls "$count")" = 1 ]; then pass "the package is not tested again for a repository-level doc"; else fail "a repository-level doc edit re-tested the package"; fi
-# 56b. A file inside the package -- its README included -- re-grades it.
-printf '# demo\n\nmore.\n' >"$dir/rtc_demo/README.md"
+# 56b. A file inside the package -- a file no build rule names included --
+#      re-grades it. (Until 2026-10-01 the file here was the package README:
+#      every file of a package was in its key. Markdown no longer is -- case
+#      75 -- so the claim is made with a config file, which still is.)
+printf 'gain: 1.0\n' >"$dir/rtc_demo/config/demo.yaml"
 out=$(run_hook_green "$dir" "$bstub" "$tstub")
 expect_not_contains "a file inside the package ends the reuse" "$out" "not repeated"
-if [ "$(calls "$count")" = 2 ]; then pass "a README inside the package re-tests it"; else fail "a README inside the package did not re-test it (calls $(calls "$count"))"; fi
+if [ "$(calls "$count")" = 2 ]; then pass "a config file inside the package re-tests it"; else fail "a config file inside the package did not re-test it (calls $(calls "$count"))"; fi
 # 56c. Reverting the package to what it passed at finds the verdict again.
-printf '# demo\n' >"$dir/rtc_demo/README.md"
+rm -f "$dir/rtc_demo/config/demo.yaml"
 echo 'int existing() { return 9; }' >"$dir/rtc_demo/src/existing.cpp"
 out=$(run_hook_green "$dir" "$bstub" "$tstub")
 if [ "$(calls "$count")" = 3 ]; then pass "a new package content is tested"; else fail "a new package content was not tested"; fi
@@ -1556,8 +1559,9 @@ if have_pyyaml; then
   if [ "$(calls "$count")" = 1 ]; then pass "56e setup: the package is graded beside the blocking gate"; else fail "56e setup: tested $(calls "$count") times"; fi
   rm -rf "$dir/docs"
   git -C "$dir" stash -q
-  echo '# demo, changed and never graded' >"$dir/rtc_demo/README.md"
-  git -C "$dir" commit -qam "another file of the package"
+  echo 'int never_graded() { return 0; }' >"$dir/rtc_demo/include/never_graded.hpp"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm "another file of the package"
   git -C "$dir" rev-parse HEAD >"$dir/.git/rtc-verify-base"
   git -C "$dir" stash pop -q
   out=$(run_hook_green "$dir" "$bstub" "$tstub")
