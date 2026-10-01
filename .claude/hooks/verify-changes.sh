@@ -126,6 +126,13 @@
 #   A simulator from this workspace, or a measurement that holds the host (see
 #   workspace_holds), DEFERS a missing verdict at the turn end and makes --run
 #   refuse to build.
+#   Names, for a document that points here instead of restating this (the
+#   comment at each definition owns the detail): RTC_VERIFY_NO_REUSE=1 turns
+#   both reuses off; the pass files and rtc-verify-timing.log (one line per
+#   run, with its mode) are kept in .git/ ("Kept in .git/ beside the
+#   watermark"); a measurement holds the host through
+#   <workspace>/.rtc-verify-hold, which repo_scripts/scripts/with_verify_hold.sh
+#   writes for the lifetime of the driver it wraps (workspace_holds).
 #
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
