@@ -2047,10 +2047,12 @@ case "$verb" in
         exit 1
         ;;
     esac
+    failed=()
     for p in "${pkgs[@]}"; do
       mkdir -p "build/$p/Testing/20261001-0900"
       if [ "$mode" = red ] && case " ${FAKE_COLCON_RED:-${pkgs[*]}} " in *" $p "*) true ;; *) false ;; esac; then
         echo "2 tests, 0 errors, 1 failure, 0 skipped|demo.Fails" >"build/$p/Testing/20261001-0900/Test.xml"
+        failed+=("$p")
       else
         echo "2 tests, 0 errors, 0 failures, 0 skipped|" >"build/$p/Testing/20261001-0900/Test.xml"
       fi
@@ -2060,8 +2062,8 @@ case "$verb" in
     else
       echo "Summary: ${#pkgs[@]} packages finished [0.52s]"
     fi
-    if [ "$mode" = red ]; then
-      echo "  ${#pkgs[@]} package had test failures: ${pkgs[*]}"
+    if [ ${#failed[@]} -gt 0 ]; then
+      echo "  ${#failed[@]} package had test failures: ${failed[*]}"
       [ -n "$strict" ] && exit 1
     fi
     exit 0
@@ -2190,7 +2192,7 @@ else
   fail "the PROC-3 colcon test was called as: $(cat "$ccalls")"
 fi
 out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=unknown); rc=$?
-expect_contains "a PROC-3 run that tested nothing is unverified" "$out" "PROC-3 broad 'colcon test' exited 0 but its summary counts 0 finished packages — UNVERIFIED"
+expect_contains "a PROC-3 run that tested nothing is unverified" "$out" "PROC-3 broad test: colcon test exited 0 but its summary counts 0 finished packages, not one or more — UNVERIFIED"
 out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green); rc=$?
 expect_exit "a green PROC-3 run passes --run" "$rc" 0
 out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
@@ -2210,8 +2212,12 @@ add_rtc_other() {
   git -C "$dir" commit -qm "add rtc_other"
 }
 
-# 70. Two changed packages are tested by ONE colcon test (colcon runs packages
-#     side by side), each after its own build, and a green run records both.
+# 70. Two changed packages are tested ONE AT A TIME, each by its own colcon
+#     test and with its own verdict: the green one is recorded although the
+#     other is red. (One colcon test over both was tried and taken out in
+#     review: colcon runs packages side by side, which puts a test that asserts
+#     a wall-clock budget under its neighbour's load, and one call has one exit
+#     code for every package in it.)
 dir=$(make_nested_fixture)
 ws=$(cd "$dir/../.." && pwd -P)
 add_rtc_other "$dir"
@@ -2222,29 +2228,31 @@ ccalls=$(mktemp)
 echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
 echo 'int other() { return 1; }' >"$dir/rtc_other/src/other.cpp"
 out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=red FAKE_COLCON_RED=rtc_other FAKE_COLCON_CALLS="$ccalls"); rc=$?
-expect_exit "a failing package in a batch of two blocks --run" "$rc" 2
+expect_exit "a failing package beside a passing one blocks --run" "$rc" 2
 if [ "$(calls "$bcount")" = 2 ]; then pass "each package is built by its own call"; else fail "two packages took $(calls "$bcount") build calls"; fi
-if [ "$(grep -c '^test ' "$ccalls")" = 1 ] \
-   && grep -qxF "test --packages-select rtc_demo rtc_other --return-code-on-test-failure --event-handlers console_direct+" "$ccalls"; then
-  pass "both packages are tested by one colcon test"
+if [ "$(grep -c '^test ' "$ccalls")" = 2 ] \
+   && grep -qxF "test --packages-select rtc_demo --return-code-on-test-failure --event-handlers console_direct+" "$ccalls" \
+   && grep -qxF "test --packages-select rtc_other --return-code-on-test-failure --event-handlers console_direct+" "$ccalls"; then
+  pass "each package is tested by its own colcon test"
 else
   fail "the two packages were tested as: $(grep '^test ' "$ccalls")"
 fi
-expect_contains "the report names the package whose results hold the failure" "$out" "rtc_other: colcon test FAILED"
+expect_contains "the report names the package that failed" "$out" "rtc_other: colcon test FAILED"
 expect_not_contains "...and not the package whose tests passed" "$out" "rtc_demo: colcon test FAILED"
-expect_contains "...and says the batch has one verdict" "$out" "tested together: rtc_demo rtc_other"
 out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
-expect_contains "a red batch records neither package" "$out" "build/test verdict missing for: rtc_demo rtc_other"
-# 70b. colcon finishing fewer packages than asked is not a pass for the rest.
+expect_contains "the red package stays owed" "$out" "build/test verdict missing for: rtc_other"
+expect_not_contains "...and the green one beside it keeps its verdict" "$out" "verdict missing for: rtc_demo"
+# 70b. colcon that tested nothing leaves the package it was asked for unverified.
 out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=unknown); rc=$?
-expect_exit "a batch colcon did not finish blocks --run" "$rc" 2
-expect_contains "...with the count asked for" "$out" "rtc_demo rtc_other: colcon test exited 0 but its summary counts 0 finished packages, not 2 — UNVERIFIED"
+expect_exit "a package colcon did not test blocks --run" "$rc" 2
+expect_contains "...under its own name" "$out" "rtc_other: colcon test exited 0 but its summary counts 0 finished packages, not 1 — UNVERIFIED"
 # 70c. Green: both verdicts are recorded and the turn end owes nothing.
+echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
 out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green); rc=$?
-expect_exit "a green batch passes --run" "$rc" 0
-expect_contains "...and names both packages" "$out" "built and tested [rtc_demo rtc_other]"
+expect_exit "two green packages pass --run" "$rc" 0
+expect_contains "...and both are named" "$out" "built and tested [rtc_demo rtc_other]"
 out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
-expect_exit "the turn end over a green batch passes" "$rc" 0
+expect_exit "the turn end over two green packages passes" "$rc" 0
 rm -rf "$ws" "$bstub" "$fake" "$ccalls" "$bcount"
 
 # 71. colcon.pkg at a package root turns the package's ctest parallel. A turn
@@ -2287,7 +2295,141 @@ printf '# docs\n\nWritten after the code passed. Edited once more.\n' >"$dir/age
 out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "a verdict without the tag is not honoured" "$rc" 2
 expect_contains "...the package is owed again" "$out" "build/test verdict missing for: rtc_demo"
+# 69b. The whole-tree pass is the same kind of record and carries the same tag.
+#      Without it a tree the old reading passed would leave the turn end at
+#      "nothing re-run" before any package key was looked at.
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the tree passes --run again" "$rc" 0
+if grep -q '^t2:' "$dir/.git/rtc-verify-pass-tree"; then
+  pass "the whole-tree pass is recorded under the reading's tag"
+else
+  fail "the pass-tree file holds: $(cat "$dir/.git/rtc-verify-pass-tree" 2>&1)"
+fi
+out=$(run_stop "$dir" "$bstub" "$tstub")
+expect_contains "a tagged whole-tree pass is honoured" "$out" "nothing re-run"
+sed -i 's/^t2://' "$dir/.git/rtc-verify-pass-tree"
+sed -i 's/^rtc_demo t2:/rtc_demo /' "$dir/.git/rtc-verify-pass-pkgs"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_not_contains "a whole-tree pass without the tag is not honoured" "$out" "nothing re-run"
+expect_exit "...and the tree is graded again" "$rc" 2
 rm -rf "$dir" "$bstub" "$tstub" "$count"
+
+# --- A --run in flight ----------------------------------------------------------
+#
+# --run is made to be backgrounded: it can take minutes, and the agent goes on
+# working -- ending a turn, editing, committing -- while it does.
+
+# "<pid> <start time>" of a live process, the line a running --run keeps in
+# its lock. $1 = pid.
+lock_line() { printf '%s %s\n' "$1" "$(sed 's/^.*) //' "/proc/$1/stat" | cut -d' ' -f20)"; }
+
+# 72. A --run that is running is something to wait for, whatever it is doing:
+#     the turn end says so instead of asking for a second one, and a second one
+#     refuses to start.
+dir=$(make_fixture)
+bcount=$(mktemp)
+tcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+tstub=$(make_test_stub "$tcount" 0)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+sleep 60 &
+holder=$!
+lock_line "$holder" >"$dir/.git/rtc-verify-run.lock"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a missing verdict beside a running --run blocks the turn end" "$rc" 2
+expect_contains "...naming the --run by pid" "$out" "$holder: verify-changes.sh --run"
+expect_contains "...and saying to wait for it" "$out" "wait for it to finish"
+expect_not_contains "...not to start another" "$out" "the turn end does not build or test"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "a second --run refuses to start" "$rc" 2
+expect_contains "...and says which one is running" "$out" "another --run is already running in this checkout ($holder: verify-changes.sh --run)"
+if [ "$(calls "$bcount")" = 0 ]; then pass "the second --run builds nothing"; else fail "the second --run built beside the first"; fi
+if [ "$(cat "$dir/.git/rtc-verify-run.lock")" = "$(lock_line "$holder")" ]; then
+  pass "the second --run leaves the first one's lock alone"
+else
+  fail "the lock of the running --run was overwritten or removed"
+fi
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+# 72b. A lock a killed --run left behind names a process that is gone: it holds
+#      nothing, --run takes its place and removes its own lock when it ends.
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_contains "a stale lock does not make the turn end wait" "$out" "the turn end does not build or test"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run starts over a stale lock" "$rc" 0
+if [ "$(calls "$bcount")" = 1 ]; then pass "...and builds"; else fail "--run over a stale lock built $(calls "$bcount") times"; fi
+if [ ! -e "$dir/.git/rtc-verify-run.lock" ]; then pass "--run removes its lock when it ends"; else fail "--run left its lock behind"; fi
+# 72c. A blocked --run removes its lock too.
+echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
+rstub=$(make_build_stub 1)
+out=$(run_hook_build "$dir" "$rstub"); rc=$?
+expect_exit "a --run whose build fails blocks" "$rc" 2
+if [ ! -e "$dir/.git/rtc-verify-run.lock" ]; then pass "a blocked --run removes its lock"; else fail "a blocked --run left its lock behind"; fi
+rm -rf "$dir" "$bstub" "$tstub" "$rstub" "$bcount" "$tcount"
+
+# 73. A package edited while --run was building it gets no verdict: the key the
+#     verdict would be filed under names content the compiler never saw.
+dir=$(make_fixture)
+count=$(mktemp)
+tstub=$(make_test_stub "$count" 0)
+estub=$(mktemp -d)
+printf '#!/usr/bin/env bash\necho "int existing() { return 99; }" >"%s/rtc_demo/src/existing.cpp"\nexit 0\n' "$dir" \
+  >"$estub/build.sh"
+chmod +x "$estub/build.sh"
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$estub" "$tstub"); rc=$?
+expect_exit "a package edited during its build blocks --run" "$rc" 2
+expect_contains "...and says the tested content is gone" "$out" "rtc_demo: built and tested green, but its files changed while that ran — no verdict recorded"
+out=$(run_stop "$dir" "$estub" "$tstub"); rc=$?
+expect_contains "...and the package stays owed" "$out" "build/test verdict missing for: rtc_demo"
+# 73b. The same tree, left alone while --run runs, is recorded.
+bstub=$(make_build_stub 0)
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the tree left alone passes --run" "$rc" 0
+rm -rf "$dir" "$bstub" "$estub" "$tstub" "$count"
+
+# 74. A commit made while --run was running is not stepped over: the watermark
+#     stays where the change set was taken from, and the next call grades what
+#     the commit brought -- reusing the package verdict --run did earn.
+dir=$(make_fixture)
+count=$(mktemp)
+tstub=$(make_test_stub "$count" 0)
+out=$(run_hook "$dir")
+base=$(git -C "$dir" rev-parse HEAD)
+if [ "$(cat "$dir/.git/rtc-verify-base" 2>/dev/null)" = "$base" ]; then
+  pass "precondition: the watermark is the commit the turn starts from"
+else
+  fail "precondition: no watermark at the starting commit"
+fi
+cstub=$(mktemp -d)
+printf '#!/usr/bin/env bash\ncd "%s" || exit 1\necho "# late" >agent_docs/late.md\ngit add agent_docs/late.md && git commit -qm "committed while --run was building"\nexit 0\n' "$dir" \
+  >"$cstub/build.sh"
+chmod +x "$cstub/build.sh"
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$cstub" "$tstub"); rc=$?
+expect_exit "a --run with a commit made beside it still passes what it graded" "$rc" 0
+expect_contains "...and says the watermark stayed" "$out" "the working tree changed while the gates ran -- watermark kept"
+if [ "$(cat "$dir/.git/rtc-verify-base")" = "$base" ]; then
+  pass "the watermark does not step over the commit"
+else
+  fail "the watermark moved to $(cat "$dir/.git/rtc-verify-base"), past a commit no gate read (started at $base)"
+fi
+if [ "$(tail -n 1 "$dir/.git/rtc-verify-timing.log" | cut -f2)" = "pass-tree-moved" ]; then
+  pass "the timing log says the tree moved"
+else
+  fail "the timing log says: $(tail -n 1 "$dir/.git/rtc-verify-timing.log")"
+fi
+bstub=$(make_build_stub 0)
+before=$(calls "$count")
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the next turn end grades the commit and passes" "$rc" 0
+expect_contains "...reusing the verdict --run earned" "$out" "build/test not repeated for [rtc_demo]"
+if [ "$(cat "$dir/.git/rtc-verify-base")" = "$(git -C "$dir" rev-parse HEAD)" ] && [ "$(calls "$count")" = "$before" ]; then
+  pass "...and only then moves the watermark, testing nothing again"
+else
+  fail "after the turn end the watermark is $(cat "$dir/.git/rtc-verify-base") and the tests ran $(calls "$count") times"
+fi
+rm -rf "$dir" "$bstub" "$cstub" "$tstub" "$count"
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
