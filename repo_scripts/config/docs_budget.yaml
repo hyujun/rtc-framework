@@ -22,7 +22,7 @@ agent_docs/conventions.md: 17173
 agent_docs/design-principles.md: 33256
 agent_docs/handoff.md: 5342
 agent_docs/harness-rationale.md: 7163
-agent_docs/invariants.md: 59687
+agent_docs/invariants.md: 36658
 agent_docs/modification-guide.md: 30007
 agent_docs/testing-debug.md: 70131
 
