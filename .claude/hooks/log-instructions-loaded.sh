@@ -50,6 +50,15 @@
 #      A hit means the glob matched and the rule is in context. No hit means
 #      the rule did not load, and the glob (not the channel) is the suspect.
 #
+#   A rule written or re-globbed in THIS session is checked from the NEXT one:
+#   the rule set is a snapshot taken at session start. A probe rule created
+#   mid-session did not fire even with a glob form already seen firing (#229),
+#   so "no hit" in the session that made the change says nothing about the glob.
+#   Two sessions independently logging a rule on a matching Read is what closed
+#   #229 (2026-08-04) for the forms the three rules carry today.
+#   The validator (repo_scripts/scripts/validate_claude_rules.py) answers only
+#   "could it fire"; this log is the ground truth for "did it".
+#
 # The log lives at <project>/.claude/instructions-loaded.log and is covered by
 # the repo-wide `*.log` gitignore entry, so it is never committed.
 

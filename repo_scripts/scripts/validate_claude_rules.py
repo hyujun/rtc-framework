@@ -23,6 +23,24 @@ Semantics implemented, per the documented `paths` contract:
   - a pattern that cannot be read as a glob matches nothing without taking the
     rule's other patterns down with it
 
+Why the rules carry the glob forms they do -- and why none is to be trimmed on
+the strength of this validator (the rule files point here instead of telling
+the story on every load):
+  - `**/*.ext` alone did not fire at runtime. Reading a depth-3 source file
+    loaded the rule globbed `rtc_*/**/*.cpp` and not the one globbed
+    `**/*.{cpp,hpp,h,cc,py}`; `**/CMakeLists.txt` behaved the same (#229). This
+    validator graded that dead form clean: a false green is possible here.
+  - So every rule lists an ANCHORED form beside the `**/` one (`*/**/*.ext`;
+    `*/X` for build metadata, which all sits directly under `<pkg>/`), with
+    brace expansion written out to take one variable out of the question.
+  - A form whose extension has no file yet (`*.h`, `*.cc`) is reported `[info]`
+    and kept on purpose: the rule must not go quiet the day such a file appears.
+  - The runtime log's `globs` field carries the whole frontmatter array, not
+    the pattern that matched, so it cannot justify removing a form either.
+    Dropping forms without a runtime observation is what regressed in #363; to
+    reduce them, leave one form in a probe rule and read the log -- from the
+    NEXT session (see log-instructions-loaded.sh, "How to use it").
+
 Exit status: 0 clean, 1 findings, 2 usage error.
 """
 

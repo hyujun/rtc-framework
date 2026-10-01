@@ -26,6 +26,6 @@ agent_docs/invariants.md: 59687
 agent_docs/modification-guide.md: 30007
 agent_docs/testing-debug.md: 70131
 
-.claude/rules/arch-build-meta.md: 4148
-.claude/rules/arch-source.md: 6567
-.claude/rules/rt-path.md: 4922
+.claude/rules/arch-build-meta.md: 3597
+.claude/rules/arch-source.md: 3987
+.claude/rules/rt-path.md: 3916
