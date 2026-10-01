@@ -119,15 +119,15 @@ CM RT loop · MPC thread · hand UDP receiver · rt_callback 이 **같은** gene
 
 ## RT vs non-RT Topic Ownership
 
-토픽 소유는 3개 lane 이다. controller YAML 에는 `ownership:` field 가 없다 — controller-YAML entry 는 전부 controller-owned 다.
+토픽 소유는 3개 lane 이다.
 
-- **Controller-owned** (controller YAML `topics:` entry 전부) — per-controller `LifecycleNode` (namespace `/<config_key>/`) 가 외부 facing snapshot 을 소유한다. Subscribe (role `target`, alias `goal`), publish (transforms 는 PublishRole; grasp_state / wbc_state / tof_snapshot 은 controller-owned SeqLock + `Setup*Publisher` 헬퍼 — PublishRole 없음, E-11). CM 은 controller-YAML target sub 을 만들지 않는다.
+- **Controller-owned** (controller YAML `topics:` entry 전부) — per-controller `LifecycleNode` 가 소유한다. 소유 규칙과 두 형태 (PublishRole / private SeqLock) 는 [design-principles.md](design-principles.md) §Controller-YAML Topics Are Controller-Owned. Subscribe role 은 `target` (alias `goal`) 이고 CM 은 controller-YAML target sub 을 만들지 않는다.
 - **DeviceBackend-owned** — device-wire state/motor/sensor sub + command pub. `devices.<group>.backend:` 에서 선언한다.
 - **CM fixed publishers** — `RtControllerNode` 가 YAML 과 무관하게 소유한다: per-group digital-twin `/rtc_cm/<group>/joint_states`, safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name`). 모두 lifecycle 과 무관한 standalone publisher 다.
 
 RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push 하고 non-RT `nrt_publish_thread` 가 read + ROS publish 한다. **actuator 송출 lane (inline) 과 nrt publish lane 은 분리를 유지한다** — 긴 non-RT publish 가 actuator latency 를 막지 못하게 하는 두 lane 이다.
 
-외부 도구 (BT, GUI, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 을 구독해 switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire 한다.
+외부 도구 (BT, GUI, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 을 구독해 switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire 한다 (pull-based — CM 은 현재 선택을 노출할 뿐 어느 namespace 가 권위인지 정하지 않는다).
 
 **TF `_actual` 프레임 — `/tf` publisher 없음.** 컨트롤러는 arm-tip / fingertip `_actual` 프레임을 `/tf` 로 발행하지 않고 controller-owned `/<config_key>/transforms` 로만 노출한다. bare `tf2_ros::TransformListener` 는 이 프레임을 받지 못한다. **새 tf 소비자는 둘 중 하나를 반드시 적용한다**: (a) self-feed — `/<config_key>/transforms` 를 직접 구독해 buffer 에 `setTransform` (active controller 전환 시 rewire), (b) `rtc_digital_twin` 의 `/tf` 재발행에 의존.
 

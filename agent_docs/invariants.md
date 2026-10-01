@@ -192,7 +192,7 @@ RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜�
 
 **탐지의 SSoT 는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) 다** — ARCH 계열 패턴·스코프·면제 규칙을 문서에 복제하지 않는다. RT 계열은 반대다: hook 은 RT 검사를 구현하지 않고 (파일 단위로는 RT 경로를 가릴 수 없다) §위반 탐지 패턴 의 detect 블록이 갖는다. 편집 시점의 판정 기준은 [.claude/rules/](../.claude/rules/) 의 `arch-source.md` · `arch-build-meta.md` 가 갖는다.
 
-**ARCH-7 예외**: `example_*` 타깃은 이름으로 면제되고, robot-agnostic standalone 노드는 `add_executable` 줄 또는 그 위에 붙은 주석 블록의 `ARCH-7-exempt` 주석으로 표시한다. 면제 대상의 SSoT 는 [design-principles.md](design-principles.md) §Boundary Rules.
+**ARCH-7 의 범위·예외·`ARCH-7-exempt` 마커** 는 [design-principles.md](design-principles.md) §Boundary Rules 가 갖는다.
 
 ### ARCH-6 세부 스펙
 

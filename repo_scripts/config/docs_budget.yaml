@@ -15,15 +15,15 @@
 AGENTS.md: 17408
 CLAUDE.md: 4096
 
-agent_docs/architecture.md: 17448
-agent_docs/controllers.md: 15926
+agent_docs/architecture.md: 17391
+agent_docs/controllers.md: 15615
 agent_docs/conventions.md: 9591
-agent_docs/design-principles.md: 15426
+agent_docs/design-principles.md: 15387
 agent_docs/handoff.md: 5045
-agent_docs/invariants.md: 36646
-agent_docs/modification-guide.md: 15411
+agent_docs/invariants.md: 36482
+agent_docs/modification-guide.md: 15254
 agent_docs/testing-debug.md: 14140
 
-.claude/rules/arch-build-meta.md: 3597
-.claude/rules/arch-source.md: 3987
+.claude/rules/arch-build-meta.md: 2799
+.claude/rules/arch-source.md: 3833
 .claude/rules/rt-path.md: 3916

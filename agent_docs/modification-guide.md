@@ -58,7 +58,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 - **`Name()` 은 전역 유일해야 한다** — `Name()` 과 `config_key` 는 하나의 lookup 네임스페이스라 겹치면 bring-up 전체가 거부된다. 한 클래스를 두 `config_key` 로 등록할 수 없다.
 - **Runtime gains** — 바인딩의 LifecycleNode parameter 로 노출한다 (`DeclareGainParameters()` + on-set callback). one-shot 이벤트는 srv 를 상대 이름으로 advertise 한다. 코어는 파라미터 채널을 갖지 않는다 ([controllers.md](controllers.md) §Gains).
 - **Gains struct 는 trivially copyable** 이어야 한다 (`rtc::SeqLock<Gains>`). RT path 는 method entry 에서 한 번 `Load()` 한다.
-- **게인 하한은 로더와 tick 양쪽에 건다** — `set_gains()` 경로는 configure 의 floor 를 우회하므로 코어 파서가 거는 것과 같은 심볼 (`rtc::FloorNonNegativeGain`, `compliance::FloorMaxDamping` / `FloorSigma0`) 을 바인딩 `Compute()` 에서 한 번 더 부른다. 손수 `std::max` 를 쓰지 않는다 (NUM-1 · NUM-6). 그 패키지 테스트에 "tick 에서 floor 된다" 케이스를 넣되, σ₀ 는 랭크 결손 자세에서 판정한다 (잘 조건화된 자세에서는 공허하다).
+- **게인 하한은 로더와 tick 양쪽에 건다** — 바인딩 `Compute()` 가 코어 파서와 같은 floor helper 를 한 번 더 부른다 ([invariants.md](invariants.md) §NUM floor 규약). 그 패키지 테스트에 "tick 에서 floor 된다" 케이스를 넣되, σ₀ 는 랭크 결손 자세에서 판정한다 (잘 조건화된 자세에서는 공허하다).
 - **YAML** — production 은 바인딩과 같은 패키지의 `config/<robot>/controllers/` 다 (`rtc_controllers/examples/` 에 추가하지 않는다). `topics:` 섹션을 반드시 포함한다. 유효한 `role:` 문자열은 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §구독 역할 · §퍼블리시 역할 이 SSoT 다 — 추측하지 말고 표를 본다 (없는 문자열은 configure 실패).
 - **토픽을 소유하는 바인딩** 은 lifecycle 훅과 `PublishNonRtSnapshot` 을 override 하고 `owned_topics` 헬퍼에 위임한다. **`on_activate` override 는 base 를 먼저 호출한다** (base 가 activation generation 증분과 target 초기화 reset 을 한다 — 누락하면 stale target 이 재활성화 첫 tick 에 적용된다). target-init latch reset 은 `ResetTargetInitialization()` override 에 둔다.
 - **등록** — `RTC_REGISTER_CONTROLLER()` 의 대상은 항상 바인딩이고 integration 패키지의 `controller_registration.cpp` 에 둔다. `config_key` 는 전역 유일, `config_package` 는 자기 패키지다 (`rtc_*` 이름을 넣으면 ARCH-1).
@@ -71,7 +71,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 
 ## Adding a New Device Group
 
-- **`devices.<group>.backend:` is the SSoT** (`{sim,robot}.yaml`). CM 은 controller YAML 에서 device-wire role 을 읽지 않는다.
+- **`devices.<group>.backend:` is the SSoT** (`{sim,robot}.yaml`) — device-wire 토픽을 controller YAML 에 선언하지 않는다.
 - 설정된 모든 device group 은 자동으로 준비 게이트 + 워치독 대상이다 — timeout 목록에 없으면 `device_timeout_default_ms` 가 적용된다.
 - 기존 backend 에 설정 키만 필요하면 backend 를 추가하지 않는다 (ARCH-3 의 "두 번째 구현" 이 아니다). **단일 backend 전용 신규 key 는 `rtc_base` 타입 확장이 아니라 그 backend 의 `Configure()` 에서 nested ROS 2 param 으로 읽는다** (`rtc_base` 타입 변경은 PROC-3 전체 빌드를 부른다). 같은 key 가 두 번째 backend 에 필요해지는 순간이 `rtc_base` 승격 트리거다.
 - 새 backend type 은 `DeviceBackend` interface 를 구현하고 `RTC_REGISTER_DEVICE_BACKEND` 로 등록한다. `ReadState()` / `WriteCommand()` 는 RT-safe 다. 무엇을 채우는지는 design-principles.md §Backend / Controller Layering.

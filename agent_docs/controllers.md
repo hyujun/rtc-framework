@@ -57,10 +57,9 @@
 ## ROS2 Topics
 
 - **Controller Manager**: `/rtc_cm/switch_controller` (srv, sync, single-active), `/rtc_cm/list_controllers` (srv), `/rtc_cm/reset_fault` (srv — controller-local fault latch 해제. active 한정 · 이름 명시 필수이며 global E-STOP 과 **분리된** latch 다), `/rtc_cm/active_controller_name` (latched, `RtControllerNode` 가 쓰는 절대 토픽명), `/system/estop_status`.
-- **DeviceBackend-owned** — `state_topic` / `motor_topic` / `sensor_topic` / `command_topic` 은 `devices.<group>.backend:` 에서 선언하고 `DeviceBackend` 구현이 소유한다. CM 은 controller YAML 에서 device-wire role 을 읽지 않는다.
-- **Controller-owned (YAML role)** — `kRobotTransforms` 하나다. publisher 가 없는 role 을 선언하지 않는다 (조용히 죽은 토픽이 된다).
-- **Controller-owned (no YAML role)** — `GraspState` / `WbcState` / `ToFSnapshot` / `PayloadEstimate` 는 각 컨트롤러가 `Setup*Publisher` 헬퍼로 직접 만들고 자체 `SeqLock<T>` 로 넘긴다. CM 은 그 의미를 모른다. `GraspState` 와 `WbcState` 는 상호 배타다.
-- **매 tick Store 계약 (PROC-7)** — Store 를 건너뛴 tick 은 "발행 안 함" 이 아니라 "직전 body 를 현재 stamp 로 재발행" 이다. 제어 법칙을 건너뛰는 tick 도 반드시 Store 하고, 계산하지 않은 필드는 `FillEstopPublishState()` 로 명시적으로 무효화한다. CSV 도 gap 이 아니라 `valid=0` 행을 남긴다.
+- 누가 어느 토픽을 소유하는가 (controller-owned / DeviceBackend-owned / CM fixed) 는 [architecture.md](architecture.md) §RT vs non-RT Topic Ownership 이 갖는다. device-wire 토픽 (`state_topic` / `command_topic` 등) 은 controller YAML 이 아니라 `devices.<group>.backend:` 에서 선언한다.
+- **YAML role** 은 `kRobotTransforms` 하나다. publisher 가 없는 role 을 선언하지 않는다 (조용히 죽은 토픽이 된다). `GraspState` / `WbcState` / `ToFSnapshot` / `PayloadEstimate` 는 role 없이 `Setup*Publisher` 헬퍼로 만들며, `GraspState` 와 `WbcState` 는 상호 배타다.
+- **매 tick Store 계약** 은 PROC-7 이 갖는다. CSV 도 같은 규약이다 — gap 이 아니라 `valid=0` 행을 남긴다.
 - **CM per-group JointState**: `/rtc_cm/{group}/joint_states` (RELIABLE, depth 1).
 
 **자기기술 계약** — 소비자가 다른 메시지나 시간 정렬 없이 해석할 수 있어야 한다:

@@ -32,7 +32,7 @@ paths:
 
 **ARCH-4 — 경계**: `rtc_*/src/` 아래 헤더는 private 이다. integration 패키지가 그것을 include 하고 있다면 필요한 것을 public 헤더 (`rtc_*/include/`) 로 승격하거나, 애초에 그 의존이 ARCH-2 위반이 아닌지 본다.
 
-**ARCH-6 — depth 만 움직인다**: `reliability` / `durability` 는 절대 함께 바꾸지 않는다 (`transient_local` latched, `best_effort` sensor lane, `reliable` 은 그대로). 인자 없는 `SensorDataQoS()` 는 기본 depth 5 라 `.keep_last(1)` 이 필요하다. 매 샘플 누적이 계약인 lane (ToF snapshot 등) 은 QoS 라인 끝에 `// ARCH-6-exempt` 주석 + 사유를 남기면 sensor 가 건너뛴다. 예외 근거는 invariants.md §ARCH-6 세부 스펙에도 남긴다.
+**ARCH-6 — depth 만 움직인다**: QoS 를 쓰거나 고칠 때 depth 만 1 로 맞추고 `reliability` / `durability` 는 건드리지 않는다. 대상 범위 (`SensorDataQoS()` 포함), 예외가 되는 조건, `ARCH-6-exempt` 마커와 예외 기록은 invariants.md §ARCH-6 세부 스펙이 갖는다 (여기 복제하지 않는다).
 
 ## 위반이 필요할 때
 

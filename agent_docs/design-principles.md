@@ -38,13 +38,12 @@
 - **Example 실행 파일** (`example_*`, `se3_error_compare`) — API 사용법 데모다.
 - **오프라인 검사 도구** (`rtc_inference_check`) — 일회성 프로세스이고 실행 중인 시스템의 일부가 되지 않는다.
 
-예외에 해당하지 않는 신규 `add_executable` 을 `rtc_*` 에 추가하려면 `[CONCERN]` (E-1) 이다. 신규 agnostic 노드는 `ARCH-7-exempt` 주석으로 표시한다. HEAD 에 이미 있는 타깃은 재발화하지 않지만 (grandfathered), 그것을 rename · 재추가할 때는 마커를 함께 붙인다.
+예외에 해당하지 않는 신규 `add_executable` 을 `rtc_*` 에 추가하려면 `[CONCERN]` (E-1) 이다. 신규 agnostic 노드는 `add_executable` 줄 또는 그 위에 붙은 주석 블록의 `ARCH-7-exempt` 주석으로 표시한다 (`example_*` 는 이름으로 면제). HEAD 에 이미 있는 타깃은 재발화하지 않지만 (grandfathered), 그것을 rename · 재추가할 때는 마커를 함께 붙인다.
 
 ## Controller-YAML Topics Are Controller-Owned
 
 - Every topic declared in a controller's YAML `topics:` section is **controller-owned**: created on a per-controller `LifecycleNode` whose namespace is `/<config_key>`, so relative YAML paths resolve to `/<config_key>/<topic>`. Two flavors: (a) PublishRole-mapped (`kRobotTransforms`), declared in the YAML; (b) controller-private SeqLock + `Setup*Publisher` helper, no PublishRole / YAML entry.
-- Device-wire traffic (`devices.<group>.backend:`) and CM's fixed publishers are **not** controller-YAML topics. There is no manager-owned controller-YAML tier and no `ownership:` field.
-- The CM never decides which namespace is authoritative — it exposes the current choice on `/rtc_cm/active_controller_name` and external consumers rewire on each transition (pull-based).
+- There is no manager-owned controller-YAML tier and no `ownership:` field. 나머지 두 lane (DeviceBackend-owned, CM fixed) 과 소비자의 rewire 는 [architecture.md](architecture.md) §RT vs non-RT Topic Ownership 이 갖는다.
 
 ## `rtc_controllers` Controllers Are Pure Control Algorithms
 
