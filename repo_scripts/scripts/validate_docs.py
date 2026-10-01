@@ -329,6 +329,9 @@ RULE_ID_RETIRED = frozenset({"RT-7", "AP-RTT-3", "AP-RTT-4", "AP-CTRL-2", "AP-CT
 # D12: size budget for the two constitutions.  Both files are loaded into
 # every session (CLAUDE.md directly, AGENTS.md through the `@AGENTS.md`
 # import), so their size is the one documentation cost paid on every request.
+# Each also has a smaller per-file budget below; these figures are the ceiling
+# under it -- a budget is a number in a data file, and this is what bounds how
+# far that number can be raised without editing the checker.
 CONSTITUTION_DOCS = ("CLAUDE.md", "AGENTS.md")
 CONSTITUTION_MAX_LINES = 200
 CONSTITUTION_MAX_BYTES = 18 * 1024
@@ -960,7 +963,7 @@ def target_sections(repo: Repo, target: str) -> set[str]:
 
 
 def check_constitution_size(rel: str, text: str) -> list[Finding]:
-    """D12 -- the constitutions stay inside the line / byte / line-length budget."""
+    """D12 -- the constitutions stay inside the line-count and byte ceilings."""
     findings: list[Finding] = []
     if rel not in CONSTITUTION_DOCS:
         return findings
@@ -986,39 +989,28 @@ def check_constitution_size(rel: str, text: str) -> list[Finding]:
                 "by longer lines; cut rationale/history, keep rules + pointers",
             )
         )
-    allowed = suppressions(text)
-    for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
-        if in_fence or raw.lstrip().startswith("|") or "D12" in allowed.get(lineno, frozenset()):
-            continue
-        if len(raw) > CONSTITUTION_MAX_LINE_CHARS:
-            findings.append(
-                Finding(
-                    rel,
-                    lineno,
-                    "D12",
-                    f"{len(raw)}-char line > {CONSTITUTION_MAX_LINE_CHARS} -- split into "
-                    "bullets or move the detail to the document that owns it",
-                )
-            )
     return findings
 
 
 def check_line_shape(rel: str, text: str) -> list[Finding]:
     """D12 -- a rule document's prose lines and table cells stay citeable.
 
-    Separate from :func:`check_constitution_size` because the two scopes differ
-    on tables: a constitution's table rows are exempt outright, while here the
-    row is free and each cell is capped -- the failure this exists for is one
-    cell swallowing a section.
+    One loop for both scopes, which differ only on tables: a constitution's
+    table rows are exempt outright, while under LINE_CAP_DIRS the row is free
+    and each cell is capped -- the failure that cap exists for is one cell
+    swallowing a section.
     """
     findings: list[Finding] = []
-    if not (rel.endswith(".md") and rel.startswith(LINE_CAP_DIRS)):
+    cap_cells = rel.endswith(".md") and rel.startswith(LINE_CAP_DIRS)
+    if not (cap_cells or rel in CONSTITUTION_DOCS):
         return findings
     allowed = suppressions(text)
     for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
         if in_fence or "D12" in allowed.get(lineno, frozenset()):
             continue
         if raw.lstrip().startswith("|"):
+            if not cap_cells:
+                continue
             longest = max(len(cell.strip()) for cell in TABLE_CELL_SPLIT_RE.split(raw))
             if longest > MAX_CELL_CHARS:
                 findings.append(
@@ -2057,9 +2049,14 @@ BUDGET_SCOPE_CASES: list[tuple[str, bool]] = [
 def self_test() -> int:
     failures: list[str] = []
 
+    # One Repo for the whole run.  The document fixtures state their own
+    # answers, so the live budget file must not be able to add a finding to (or
+    # hide one from) any of them: the budgets are pinned empty here and swapped
+    # for a known one where the wiring is tested.  Nothing below reads the live
+    # budget file -- whether it matches the tracked documents is a fact about
+    # the repository, which the corpus scan reports (check_budget_coverage),
+    # not about this checker.
     repo_for_docs = Repo(repo_root())
-    # The document fixtures state their own answers; the live budget file must
-    # not be able to add a finding to (or hide one from) any of them.
     repo_for_docs._budgets = {}
     for name, rel, body, want_codes in DOC_FIXTURES:
         got_codes = sorted(f.code for f in check_markdown(repo_for_docs, rel, body))
@@ -2108,22 +2105,13 @@ def self_test() -> int:
             failures.append(f"is_budgeted({rel!r}) = {not want}, want {want}")
     # The wiring: with the budget reachable only through check_markdown, severing
     # that one call leaves every case above green and the corpus ungated.
-    wired = Repo(repo_root())
-    wired._budgets = {"agent_docs/f.md": (10, 1)}
-    wired_codes = sorted(f.code for f in check_markdown(wired, "agent_docs/f.md", "a" * 11))
+    repo_for_docs._budgets = {"agent_docs/f.md": (10, 1)}
+    wired_codes = sorted(
+        f.code for f in check_markdown(repo_for_docs, "agent_docs/f.md", "a" * 11)
+    )
+    repo_for_docs._budgets = {}
     if wired_codes != ["D12"]:
         failures.append(f"check_markdown does not apply the size budget: codes={wired_codes}")
-    # And the live budget file itself: unreadable or empty, every budgeted file
-    # would be reported at the corpus scan -- but a parse that silently drops
-    # lines would only shrink the gate, so the entry count is pinned to the scope.
-    live = Repo(repo_root())
-    tracked_budgeted = {f for f in live.files if is_budgeted(f)}
-    if set(live.budgets()) != tracked_budgeted:
-        failures.append(
-            f"{SIZE_BUDGET_FILE} does not list exactly the tracked constitutional documents: "
-            f"missing={sorted(tracked_budgeted - set(live.budgets()))}, "
-            f"stale={sorted(set(live.budgets()) - tracked_budgeted)}"
-        )
 
     for span, in_table, want in PARKED_PATTERN_CASES:
         got = is_parked_detection_pattern(span, in_table=in_table)
@@ -2178,7 +2166,7 @@ def self_test() -> int:
             )
 
     # Path resolution: include shorthand must resolve, a wrong path must not.
-    repo = Repo(repo_root())
+    repo = repo_for_docs
     if not repo.exists("rtc_base/types/types.hpp"):
         failures.append("suffix match failed for include shorthand rtc_base/types/types.hpp")
     if repo.exists("integrated_bringup/support/owned_topics.cpp"):
@@ -2201,7 +2189,7 @@ def self_test() -> int:
         + len(BUDGET_CASES)
         + len(BUDGET_COVERAGE_CASES)
         + len(BUDGET_SCOPE_CASES)
-        + 2
+        + 1
         + len(GREP_CASES)
         + len(SLUG_CASES)
         + len(BRE_EXEC_CASES)
