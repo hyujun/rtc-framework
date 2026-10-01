@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r19 (2026-10-01) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r19 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료**, E1 진행 중. 완료: E1-F01 – F03 · E1-F07. E1-F04 는 구현이 머지됐고 sim 진입 항목이 남아 이슈가 열려 있다 (E1-F09 에서 닫는다). E1-F08 계획기 ([#661](https://github.com/hyujun/rtc-framework/issues/661)) 는 구현했고 머지 전이다 (결정 MD-55 – MD-64). 다음은 F09 L7 ([#662](https://github.com/hyujun/rtc-framework/issues/662)) → F05 → F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) → F06 (G-1). feature 별 상태는 §6
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5b) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -170,7 +170,7 @@ v1 과 G1 MPC 의 구조 차이:
 | MD-53 | 상대속도의 목표는 코어가 고르지 않는다. 코어는 $\hat v_b$ 와 스칼라 $\gamma_{ref}$ 를 받아 비용의 목표를 $\gamma_{ref}\hat v_b$ 로 두고, $s_v$ 의 행은 늘 $\hat v_b$ 기준으로 건다. E1-F08 의 기본은 $\gamma_{ref}=1$ 과 방향별 가중 (formulation §1.3 — $\gamma$ 는 해의 결과) 이고, plan 의 $\gamma_f$ 를 넣는 것은 E1-F10 의 선택지다. 코어는 해의 $\gamma$ 를 결과에 적는다 | 사용자 결정 (2026-10-01). $\gamma_{ref}=1$ 에서 손의 진행 방향 속도는 $w_\parallel$ 의 당김과 jerk · 한계가 맞서는 곳에서 정해진다. v1 탐색의 후보 게이트 (정지 거리 · 충격량 · 오차 예산) 는 $\gamma_f$ 로 평가한 것이라 해의 $\gamma$ 와 다를 수 있다 (MD-46 의 한계의 연장) — 그래서 기록한다 | §4 미결의 "상대속도의 목표" | 2026-10-01 |
 | MD-54 | E1-F07 의 격자는 포구 전 $\Delta_a$ 0.1 s (노드 최대 6, 노드마다 jerk 블록) + 정지 구간 $\Delta_s$ 0.05 s × 7 (블록 1 · 1 · 2 · 3) 이다 — 노드 최대 13. 측정 (7 자유도 p99, §8): 같은 격자점 재풀이 8.7 ms 는 MD-51 의 임계 (10) 안이고, 첫 풀이 16.0 ms (임계 12) 와 격자점 전진 17.9 ms (임계 10) 는 넘는다. **초과를 알고 정한 값이다.** 토크 행을 정지 구간에만 거는 것, solver 의 warm start 를 격자점 전진에 잇는 것, 임계를 다시 정하는 것은 하지 않는다. 격자는 코어의 파라미터이고 코어의 기본값은 그대로다 (포구 전 노드 0) — 값의 배선은 E1-F08 | 사용자 결정 (2026-10-01, [#660 측정 코멘트](https://github.com/hyujun/rtc-framework/issues/660#issuecomment-5924188945) 의 안 1). 측정한 네 후보 (A1 · B1 · A2 · B2) 가 모두 임계를 넘었고, 포구 전 간격을 넓히는 것은 formulation 과 코어를 바꾸지 않는다. 대가: (1) 효력 시각이 최대 0.1 s 늦다. (2) 노드 사이의 속도가 box 를 6 % 넘는다 ($\eta_v$ 0.95 에서 실제 한계의 약 1 %). (3) 간격이 둘이라 payload 의 간격 필드 (`dt_ns` 하나) 와 균일 간격 샘플러가 바뀐다 — 노드 수는 용량 24 안이다 (E1-F08 · F09). (4) MD-51 의 환산 (sim 은 개발 PC 의 1.5 배) 으로 전진 재계획은 sim 에서 약 27 ms 다. 주기 33.3 ms 안이지만 출하 `budget_s` 20 ms 를 넘는다. 첫 풀이는 약 24 ms 로, 탐색 (sim p99 8.6 ms) 과 같은 wake 에 두면 한 주기에 닿는다. 예산과 wake 배치는 E1-F08 이 정한다 | MD-51 의 "격자의 확정은 측정 뒤 사용자가 한다", §4 미결의 "격자의 값" | 2026-10-01 |
 | MD-55 | E1-F08 의 포구 전 격자는 **켜는 값**이다 — `planner.decel_mpc.approach.n_pre_max`, 코드 기본 0. 0 이면 계획기는 E1-F03 의 정지 구간 계획기 그대로다. 출하 YAML 두 벌에는 MD-54 의 값 (정지 7 × 0.05 s · 블록 1 · 1 · 2 · 3, 포구 전 최대 6 × 0.1 s, `k_max` 2) 을 적고 `enabled: false` · `mode: closed_form` 은 그대로 둔다. 코드 기본값 (14 × 0.025 s, `k_max` 4) 은 바꾸지 않는다 | 사용자 결정 (2026-10-01, [#661 결정 요청](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5925992882) · [확정](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5931729739)) 의 Q1. 정지 구간 계획기를 고정한 기존 테스트의 단언을 고치지 않는다 (PROC-6). 대가: 출하 YAML 로 `mpc` 를 켜면 E1-F09 전까지 모든 시행이 DECEL 진입에서 abort 한다 — RT 가 $t_c$ 앞에서 시작하는 구간을 받지 않는다 (MD-60). E1-F04 의 20/20 abort 와 결과는 같다 | MD-24 의 "출하 14 × 0.025 s" (코드 기본값으로 남는다) | 2026-10-01 |
-| MD-56 | 첫 구간은 **탐색과 같은 wake** 에서 풀고 plan 과 **쌍으로** 게시한다 — 구간을 먼저, 같은 `publish_ns` 로. 구간이 게시 조건 (MD-62) 을 못 넘으면 plan 도 게시하지 않는다. 예산 키는 둘이다: `budget.first_s` (첫 구간) · `budget.replan_s` (그 뒤). 각각 풀이 시간의 상한이자 효력 시각을 정하는 lead 다. 쌍의 재확인은 **같은 track 의 더 새 스냅샷을 허용**한다. $t_c$ 가 $T_{freeze}$ 안으로 들어온 쌍과, node 0 가 읽히기 전에 지나는 쌍은 버린다. 쌍을 게시한 뒤 RT 상태가 그 게시를 반영할 수 있을 때 (게시 + 3 tick) 까지 탐색을 쉰다 | 사용자 결정 (2026-10-01, [#661 결정 요청](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5925992882) · [확정](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5931729739)) 의 Q2. plan 만 먼저 가면 RT 는 따를 구간 없이 APPROACH 에 든다. 첫 풀이로 wake 가 궤적 주기 (33 ms) 를 넘으면 "같은 스냅샷" 재확인은 모든 쌍을 버린다 — RT 의 `JudgePlan` 도 track 만 본다. RT 가 plan N 을 채택한 사실이 보이기 전에 N+1 을 게시하면 box 의 구간이 덮인다. 대가: plan 의 도착이 첫 풀이만큼 늦는다. E0-F02 의 진입 lead 는 $T_{freeze}$ 바로 위부터라 버려지는 몫이 생긴다 — `planner.slice.t_lead_min` 의 조정은 E1-F10. 예산 값은 provisional 이고 sim 실시계로 재서 정한다 (§8) | MD-26 의 `t_pre` 대기 (포구 전 격자에서는 쓰지 않는다), MD-54 의 "예산과 wake 배치는 E1-F08 이 정한다" | 2026-10-01 |
+| MD-56 | 첫 구간은 **탐색과 같은 wake** 에서 풀고 plan 과 **쌍으로** 게시한다 — 구간을 먼저, 같은 `publish_ns` 로. 구간이 게시 조건 (MD-62) 을 못 넘으면 plan 도 게시하지 않는다. 예산 키는 둘이다: `budget.first_s` (첫 구간) · `budget.replan_s` (그 뒤). 각각 풀이 시간의 상한이자 효력 시각을 정하는 lead 다. 쌍의 재확인은 **같은 track 의 더 새 스냅샷을 허용**한다. $t_c$ 가 $T_{freeze}$ 안으로 들어온 쌍과, node 0 가 읽히기 전에 지나는 쌍은 버린다. 쌍을 게시한 뒤 RT 상태가 그 게시를 반영할 수 있을 때 (게시 + 3 tick) 까지 탐색을 쉰다 | 사용자 결정 (2026-10-01, [#661 결정 요청](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5925992882) · [확정](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5931729739)) 의 Q2. plan 만 먼저 가면 RT 는 따를 구간 없이 APPROACH 에 든다. 첫 풀이로 wake 가 궤적 주기 (33 ms) 를 넘으면 "같은 스냅샷" 재확인은 모든 쌍을 버린다 — RT 의 `JudgePlan` 도 track 만 본다. RT 가 plan N 을 채택한 사실이 보이기 전에 N+1 을 게시하면 box 의 구간이 덮인다. 대가: plan 의 도착이 첫 풀이만큼 늦는다. E0-F02 의 진입 lead 는 $T_{freeze}$ 바로 위부터라 버려지는 몫이 생긴다 — `planner.slice.t_lead_min` 의 조정은 E1-F10. 예산 값은 sim 실시계로 재서 0.035 · 0.025 s 로 확정했다 (사용자 결정 2026-10-02, §8) | MD-26 의 `t_pre` 대기 (포구 전 격자에서는 쓰지 않는다), MD-54 의 "예산과 wake 배치는 E1-F08 이 정한다" | 2026-10-01 |
 | MD-57 | RT 가 plan 을 따르는 동안 (APPROACH) 계획기는 **탐색을 돌리지 않고** 그 wake 에 구간을 다시 푼다 | 사용자 결정 (2026-10-01, [#661 결정 요청](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5925992882) · [확정](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5931729739)) 의 Q3. 탐색 (sim p99 8.6 ms) 과 MPC 를 한 wake 에 넣으면 주기를 넘는다. 예측이 움직이면 MPC 의 포구 노드가 따라간다. 대가: `mpc` 구성에서는 APPROACH 중의 v1 plan 전환 (L3 §4.7) 이 없다 — 후보는 첫 plan 의 것이다 (MD-46 의 한계의 연장) | — | 2026-10-01 |
 | MD-58 | 재계획의 $x_0$ 는 언제나 **RT 가 보고한 구간**에서 평가한다 (MD-28 경로 (i) 의 일반화). 경로 (ii) 는 포구 전 격자에서 쓰지 않는다. 출처는 추론하지 않는다 — RT 가 대기 슬롯에 둔 구간 (`PlannerRtState::decel_pending` · `decel_pending_seq`) 이 $t_{eff}$ 보다 늦지 않게 시작하면 그것, 아니면 따르는 구간, 둘 다 없으면 풀지 않는다 (`not_followed`). 계획기는 게시한 구간 8 개를 들고 있고, RT 가 보고한 구간은 밀어내지 않는다. **같은 포구 전 격자점은 새 예측으로 다시 푼다** (`replan.same_point`, warm). 격자점이나 코어가 바뀌면 `cold_start` 다. 정지 격자점은 한 번만 푼다. 재확인은 "RT 의 새 보고로 다시 정한 출처가 같은 구간인가" 다 | 사용자 결정 (2026-10-01, [#661 결정 요청](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5925992882) · [확정](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5931729739)) 의 Q4, 검토 뒤 구체화 ([#661](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5932025244)). 포구 전 간격 0.1 s 동안 예측은 세 번 갱신된다. RT 는 전환 게이트의 거부와 대기 구간의 폐기를 계획기에 알리지 않아, 시작 시각이 지났는지로 추론하면 틀린다. "`decel_seq` 가 그대로인가" 로 재확인하면 0.05 – 0.1 s 마다 전환하는 사슬에서 풀이의 10 – 70 % 를 버린다. RT 가 대기 필드를 채우는 것은 E1-F09 다 — 그 전에는 재계획이 돌지 않는다 (MD-59) | MD-28 의 경로 (ii) 와 MD-32 의 "격자점마다 한 번" (포구 전 격자에서) | 2026-10-01 |
 | MD-59 | 측정 전용 키 `planner.decel_mpc.shadow`: 풀고 기록하되 **구간을 box 에 쓰지 않는다**. 재계획의 출처는 가장 최근에 푼 구간이다. E1-F09 에서 지운다 | 사용자 결정 (2026-10-01, [#661 결정 요청](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5925992882) · [확정](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5931729739)) 의 Q5, 검토 뒤 구체화. E1-F09 전의 RT 는 구간을 보고하지 않아 재계획이 돌지 않는다 — 예산을 재려면 재계획이 돌아야 한다. 구간을 box 에 쓰는 측정 모드는 고치지 않은 RT 가 포구 뒤의 정지 구간을 받아 따를 수 있다. shadow 에서는 모든 시행이 DECEL 진입에서 abort 하므로 성공률은 읽지 않는다 | — | 2026-10-01 |
@@ -184,9 +184,9 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- E1-F08: 예산 `budget.first_s` · `budget.replan_s` 의 값 — sim 실시계로 재서 정한다 (MD-56)
 - E1-F09: RT 가 APPROACH 부터 구간을 따르는 동작 — 대기 구간의 보고 (MD-58), `accept_pre_catch` (MD-60), 같은 시작 시각의 더 새 구간으로 대기 슬롯 교체, 채택 나이 상한과 `budget_s + 3h` 검사를 새 예산에 맞추기, `shadow` 삭제 (MD-59)
 - E1-F10: 비열등 한계 · N · 튜닝 seed · 반복 상한 (튜닝 전에, MD-50)
+- E1-F10: iiwa7_leap 의 포구 전 시간 — plan 이 lead 0.21 s 근처에서 나와 첫 구간이 거의 게시되지 않는다. 간격을 줄이는 것만으로는 35 % 에서 멈춘다 (§8). 손잡이는 leap 의 `approach.dt_pre_s` 와 plan 을 더 일찍 내는 쪽 (`planner.slice.t_lead_min`, 순위 게이트) 이다
 - E1-F06: `mpc` 를 기본값으로 바꿀지
 - E3-F01: 포구 후보 선택을 MPC 로 옮길지 (MD-46 의 편차) 와 계획기 interface (ARCH-3)
 - E3-F05: G1 통합의 형태 — 단일 팔은 `DemoCatchingController` 의 `mode: mpc` 로 돈다 (MD-46)
@@ -664,7 +664,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - 사이클 테스트의 쌍 wake (6 자유도, 실시계): 탐색 1.0 ms + 첫 풀이 5.7 ms (포구 전 노드 5 개). 한 시행의 재계획은 29 번이었다 — 같은 격자점 22, 전진 4, 정지 코어 3 (15 ms 마다 wake).
 - 풀이를 지나는 경로의 C 할당은 첫 풀이와 정지 코어 풀이를 합쳐 20 회다 (ProxQP, #654).
 
-**sim 실시계** (2026-10-01, shadow — MD-59, 로봇당 200 발: `s35b` 50 발 × seed 4 개, `T_arm` 0.05, 개발 PC). 8 unit 모두 재시도 없이 끝났고 host 부하로 버린 시행은 없다. shadow 에서 시행은 DECEL 진입에 abort 하므로 성공률은 읽지 않는다. 예산은 `budget.first_s` 0.035 · `budget.replan_s` 0.025 였고 예산을 넘겨 보류된 풀이는 0 회다. 계획기 스레드에서 33.3 ms 를 넘긴 wake 는 0 회다.
+**sim 실시계** (2026-10-01, shadow — MD-59, 로봇당 200 발: `s35b` 50 발 × seed 4 개, `T_arm` 0.05, 개발 PC). 8 unit 모두 재시도 없이 끝났고 host 부하로 버린 시행은 없다. shadow 에서 시행은 DECEL 진입에 abort 하므로 성공률은 읽지 않는다. 예산은 `budget.first_s` 0.035 · `budget.replan_s` 0.025 였고 예산을 넘겨 보류된 풀이는 0 회다. 이 값으로 확정했다 (사용자 결정 2026-10-02) — 한 wake 의 최대 24.8 ms 와 재계획의 최대 10.2 ms 에 대해 1.4 배 · 2.4 배의 여유이고, 제어 PC 의 값이 없어 줄이지 않는다. 계획기 스레드에서 33.3 ms 를 넘긴 wake 는 0 회다.
 
 | [ms] | ur5e_p1b: 횟수 | p50 | p99 | 최대 | iiwa7_leap: 횟수 | p50 | p99 | 최대 |
 |---|---|---|---|---|---|---|---|---|
@@ -690,6 +690,16 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **leap 은 이 격자로 plan 을 거의 내지 못한다.** leap 의 plan 은 lead 0.21 s 근처에서 처음 나온다 (`T_freeze` 0.19). 첫 구간이 쓸 수 있는 시간은 lead − `T_arm` − `budget.first_s` − 2 tick = 약 0.12 s 라 0.1 s 격자 (MD-54) 로는 노드 1 개이고, 그 풀이는 게시 조건에서 보류된다. plan 은 첫 구간과 쌍으로만 게시되므로 (MD-62) 팔이 움직이지 않는다. 계산 시간의 문제가 아니다.
 - p1b 에서 plan 을 받지 못한 1 발은 첫 풀이 6 회가 모두 `catch_error` 로 보류된 시행이다. leap 에서 채택되지 않은 쌍 3 건은 lead 0.198 – 0.201 s 에서 게시됐다 (RT 의 거부 사유는 확인하지 않았다).
 - 게시된 구간 사이의 간격 (p1b, 한 시행 안) 은 p50 34 ms, p99 133 ms, 최대 292 ms 다 — 재계획이 연달아 보류되면 RT 는 앞 구간을 따른다.
+- **leap 의 포구 전 간격을 줄인 변형** (사용자 결정 2026-10-02 로 더 잼, 출하값은 바꾸지 않았다). 같은 투구에서 `approach.dt_pre_s` 만 바꿨다.
+
+  | 포구 전 간격 [s] (`n_pre_max`) | 발 | plan 이 채택된 시행 | 한 wake 최대 [ms] |
+  |---|---|---|---|
+  | 0.1 (6) — 출하 | 200 | 14 (7 %) | 24.8 |
+  | 0.05 (6) | 50 | 14 | 22.8 |
+  | 0.04 (8) | 200 | 70 (35 %) | 25.8 |
+  | 0.03 (10) | 50 | 18 | 30.1 |
+
+  0.04 s 의 200 발에서 첫 풀이의 게시는 포구 전 시간을 따른다: 0.08 s (노드 2 개) 는 7 / 400, 0.12 s (3 개) 는 51 / 301, 0.16 s (4 개) 는 13 / 15 다. 보류 사유는 전부 `catch_error` 다. leap 은 포구 전에 0.15 s 쯤, lead 로는 0.24 s 쯤이 있어야 첫 구간이 게시되는데 plan 은 lead 0.21 s (p50) 에서 나온다 — 간격만으로는 풀리지 않는다 (E1-F10). 0.04 s 에서도 예산은 맞는다 (첫 풀이 최대 17.2 ms, 재계획 최대 12.5 ms, 33.3 ms 를 넘긴 wake 0 회).
 - 말하지 못하는 것. 포구 오차의 크기와 $x_0$ 속도의 분포는 CSV 에 열이 없다 (#631) — `approach.rest_tol` 은 잠정값으로 남는다. 정지 코어 k = 2 의 행은 없다. shadow 의 재계획은 가장 새 게시 구간에서 출발하므로 RT 보고에서 출발하는 닫힌 루프 (E1-F09) 의 보류율은 다를 수 있다. 제어 PC 의 시간은 재지 않았다.
 
 
@@ -699,7 +709,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
-| r19 | E1-F08 구현: 결정 MD-55 – MD-64 (포구 전 격자는 켜는 값, 쌍 게시, RT 보고에서 출발하는 재계획, 간격이 둘인 payload, shadow), 측정 §8. MD-52 의 키 이름 정정 (`planner.budget.sigma_trk`) |
+| r19 | E1-F08 구현: 결정 MD-55 – MD-64 (포구 전 격자는 켜는 값, 쌍 게시, RT 보고에서 출발하는 재계획, 간격이 둘인 payload, shadow), 측정 §8 (sim 실시계: 예산 확정, leap 의 포구 전 시간 부족). MD-52 의 키 이름 정정 (`planner.budget.sigma_trk`) |
 | r18 | E1-F07 완료 반영 — 상태줄 · §6 의 표 · 브랜치 계획 갱신, 개정 이력을 이 절로 옮김 |
 | r17 | E1-F07 code review 반영: 실패한 warm 풀이의 cold 재시도, 정지 경로 항의 범위, §8 |
 | r16 | E1-F07 의 격자 확정 MD-54: 포구 전 0.1 s + 정지 0.05 s × 7, 측정 §8 |

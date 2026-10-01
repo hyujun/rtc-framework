@@ -382,6 +382,10 @@ demo_catching_controller:
         approach:
           # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
           # before t_c. 0 = the stop segment alone (E1-F03's planner).
+          # On THIS arm the plan first appears near a 0.21 s lead, which leaves
+          # one 0.1 s node: that first solve is withheld and 186 of 200 sim
+          # throws got no plan. 0.04 s spacing raised it to 70 of 200 — the
+          # pre-catch time, not the spacing, is short (MPC plan §8, #663).
           n_pre_max: 6
           dt_pre_s: 0.1
           # The first solve assumes the arm rests at its wait pose; above this
@@ -390,7 +394,8 @@ demo_catching_controller:
         budget:
           # A solve's ceiling, which is also the lead it is planned with [s]:
           # the first segment (same wake as the search) and every later one
-          # (MD-56). Provisional.
+          # (MD-56). Confirmed from the sim wall-clock run (2026-10-02, MPC plan
+          # §8).
           first_s: 0.035
           replan_s: 0.025
         replan:

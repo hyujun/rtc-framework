@@ -588,7 +588,8 @@ demo_catching_controller:
         budget:
           # A solve's ceiling, which is also the lead it is planned with [s]:
           # the first segment (same wake as the search) and every later one
-          # (MD-56). Provisional.
+          # (MD-56). Confirmed from the sim wall-clock run (2026-10-02, MPC plan
+          # §8).
           first_s: 0.035
           replan_s: 0.025
         replan:
