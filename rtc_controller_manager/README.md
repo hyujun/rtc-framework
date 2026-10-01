@@ -206,7 +206,7 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
 4. `active_controller_idx_.store(idx, release)` — RT loop dispatch atomic 전환
 5. RT tick 1회 대기 (`sleep_for(1.5 × dt)`) — race benign
 6. previous controller `on_deactivate(prev_state)` 호출
-7. `/{robot_ns}/active_controller_name` 퍼블리시 (TRANSIENT_LOCAL, rewire trigger 영구 유지)
+7. `/rtc_cm/active_controller_name` 퍼블리시 (TRANSIENT_LOCAL, rewire trigger 영구 유지)
 8. response `ok=true, message="ok"` (또는 "switched -> name")
 
 조회용 `/rtc_cm/list_controllers` (`ListControllers.srv`) — empty request, response =
@@ -508,7 +508,7 @@ compliance 계열은 critical fault (`nan_inf` · `pose_error_exceeded` · `sigm
 | 토픽 | 타입 | QoS | 설명 |
 |------|------|-----|------|
 | `/system/estop_status` | `Bool` | RELIABLE/1, transient_local | 글로벌 E-STOP 상태 (래치 ∨ 해제 검증 창) |
-| `/{robot_ns}/active_controller_name` | `String` | TRANSIENT_LOCAL/1 | 활성 컨트롤러의 `config_key` (snake_case). 외부 rewire 소비자가 이 페이로드를 그대로 prefix 로 사용해 `/<config_key>/...` 형태로 컨트롤러-owned 토픽 namespace 를 조립하므로, payload 는 컨트롤러 LifecycleNode 의 namespace (`/<config_key>`) 와 1:1 일치해야 한다. `RTControllerInterface::Name()` (클래스 라벨) 가 아님 |
+| `/rtc_cm/active_controller_name` | `String` | TRANSIENT_LOCAL/1 | 활성 컨트롤러의 `config_key` (snake_case). 외부 rewire 소비자가 이 페이로드를 그대로 prefix 로 사용해 `/<config_key>/...` 형태로 컨트롤러-owned 토픽 namespace 를 조립하므로, payload 는 컨트롤러 LifecycleNode 의 namespace (`/<config_key>`) 와 1:1 일치해야 한다. `RTControllerInterface::Name()` (클래스 라벨) 가 아님 |
 
 ### DeviceBackend 토픽 (`devices.<group>.backend:` SSoT)
 
