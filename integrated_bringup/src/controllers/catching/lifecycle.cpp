@@ -296,6 +296,40 @@ void DemoCatchingController::DeclareProfileParameters() {
           "decel MPC publish threshold on the torque slack, nodes 1..N (MD-33)");
   declare("planner.decel_mpc.publish.slack_terminal_max", decel.slack_terminal_max,
           "decel MPC publish threshold on the terminal (static) torque slack (MD-33)");
+  // The APPROACH–stop keys (MPC E1-F08): all provisional.
+  declare("planner.decel_mpc.approach.n_pre_max", static_cast<std::int64_t>(decel.n_pre_max),
+          "decel MPC pre-catch intervals before t_c, at most (MD-54); 0 = stop segment only");
+  declare("planner.decel_mpc.approach.dt_pre_s", decel.dt_pre_s,
+          "decel MPC pre-catch node spacing [s] (MD-54)");
+  declare("planner.decel_mpc.approach.rest_tol", decel.rest_tol,
+          "decel MPC first solve: largest |q_dot_cmd| read as at rest [rad/s]");
+  declare("planner.decel_mpc.budget.first_s", decel.budget_first_s,
+          "decel MPC first-segment solve budget and lead [s] (MD-56)");
+  declare("planner.decel_mpc.budget.replan_s", decel.budget_replan_s,
+          "decel MPC replan solve budget and lead [s] (MD-56)");
+  declare("planner.decel_mpc.replan.same_point", decel.replan_same_point,
+          "decel MPC re-solves a pre-catch grid point with the newer prediction (MD-58)");
+  declare("planner.decel_mpc.shadow", decel.shadow,
+          "decel MPC measurement mode: solve and record, store no segment (MD-59)");
+  declare("planner.decel_mpc.publish.catch_pos_err_max", decel.catch_pos_err_max,
+          "decel MPC publish threshold on the catch-node position error [m] (MD-62)");
+  declare("planner.decel_mpc.catch.w_axis", decel.w_axis, "decel MPC approach-axis weight");
+  declare("planner.decel_mpc.catch.w_v_par", decel.w_v_par,
+          "decel MPC relative-velocity weight along the ball's travel");
+  declare("planner.decel_mpc.catch.w_v_perp", decel.w_v_perp,
+          "decel MPC relative-velocity weight across the ball's travel");
+  declare("planner.decel_mpc.catch.gamma_ref", decel.gamma_ref,
+          "decel MPC velocity target fraction of the ball's velocity (MD-53)");
+  declare("planner.decel_mpc.catch.kappa", decel.kappa,
+          "decel MPC position weight gain: W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 (MD-63)");
+  declare("planner.decel_mpc.catch.sigma_floor", decel.sigma_floor,
+          "decel MPC position weight tracking-error floor [m]");
+  declare("planner.decel_mpc.catch.w_max", decel.w_max,
+          "decel MPC position weight eigenvalue cap [1/m^2]");
+  declare("planner.decel_mpc.catch.w_const", decel.w_const,
+          "decel MPC position weight without a usable covariance [1/m^2]");
+  declare("planner.decel_mpc.catch.sigma_ref", decel.sigma_ref,
+          "decel MPC w_delta schedule reference, compared with tr Sigma_p [m]");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,
@@ -1938,6 +1972,8 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
   // MD-40: the RT samples a followed segment at now_lead + h, so the command
   // it reports is the segment at now_lead + 2h.
   dc.report_lead_s = 2.0 * GetDefaultDt();
+  // The ball's direction of travel is undefined below the IK's own floor.
+  dc.v_eps = catch_pose_ik_config_.options.v_eps;
   std::string error;
   if (!planner_cycle_.ConfigureDecel(dm, dc, &error)) {
     RCLCPP_ERROR(logger_, "planner.decel_mpc: %s", error.c_str());
@@ -1951,6 +1987,26 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
               d.n_nodes, d.dt_s, d.n_nodes * d.dt_s, d.n_blocks, d.t_pre_s, d.k_max, d.eta_tau,
               d.slack_max, d.slack_terminal_max,
               dm.qddot_cap_valid ? "capped by the D-16 box" : "OFF");
+  if (d.n_pre_max > 0) {
+    RCLCPP_INFO(logger_,
+                "decel MPC approach grid: up to %d x %.3f s before t_c, budgets first %.3f s / "
+                "replan %.3f s, same-point re-solve %s, catch error <= %.3f m%s",
+                d.n_pre_max, d.dt_pre_s, d.budget_first_s, d.budget_replan_s,
+                d.replan_same_point ? "on" : "off", d.catch_pos_err_max,
+                d.shadow ? ", SHADOW (no segment is stored)" : "");
+    if (!d.horizon_explicit) {
+      RCLCPP_WARN(logger_,
+                  "planner.decel_mpc.approach.n_pre_max is %d but planner.decel_mpc.horizon is "
+                  "not set: the stop part runs the stop-only default %d x %.3f s, not the "
+                  "MD-54 grid",
+                  d.n_pre_max, d.n_nodes, d.dt_s);
+    }
+    // The RT admits no segment that starts before t_c until it follows one
+    // from APPROACH (#662): said once here, not once per trial.
+    RCLCPP_WARN(logger_,
+                "decel MPC approach grid: the RT does not follow pre-catch segments yet (#662) "
+                "— every trial aborts at DECEL entry (no_segment)");
+  }
   return true;
 }
 

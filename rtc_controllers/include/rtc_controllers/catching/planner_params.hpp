@@ -58,8 +58,10 @@ struct DecelPlannerParams {
   /// Needs `planner.enabled` (the binding parks the pair otherwise).
   bool enabled{false};
   /// `horizon.n_nodes` N_s and `horizon.dt_s` Δ_s: N_s·Δ_s IS the stopping
-  /// time (MD-21). Shipped 14 × 0.025 = 0.35 s (MD-24). Δ_s must be a whole
-  /// number of nanoseconds (the grid is integer ns).
+  /// time (MD-21). The default 14 × 0.025 = 0.35 s is the stop-only planner's
+  /// (MD-24); the shipped profiles set MD-54's 7 × 0.05 with the pre-catch
+  /// grid below. Δ_s must be a whole number of nanoseconds (the grid is
+  /// integer ns).
   int n_nodes{14};
   double dt_s{0.025};
   /// `horizon.blocks` — move blocking, Σ = n_nodes, B ≥ 3. Post-catch replan

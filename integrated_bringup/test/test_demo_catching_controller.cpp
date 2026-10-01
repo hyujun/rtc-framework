@@ -1495,6 +1495,41 @@ std::vector<double> ArmPositionsOf(const ControllerState& s) {
 
 }  // namespace
 
+TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOff) {
+  // MPC E1-F08 (#661, MD-54 · MD-55): the shipped profiles carry the
+  // APPROACH–stop grid — 7 x 0.05 s after the catch, up to 6 x 0.1 s before
+  // it — with the decel MPC itself off and DECEL on the closed form. The
+  // CODE defaults stay the stop-only planner's (14 x 0.025, n_pre_max 0), so
+  // only reading the file shows what a `mode: mpc` overlay will run.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  const auto& d = planner.decel;
+  EXPECT_FALSE(d.enabled) << profile;
+  EXPECT_FALSE(d.shadow) << profile;
+  EXPECT_TRUE(d.horizon_explicit) << profile;
+  EXPECT_EQ(d.n_nodes, 7) << profile;
+  EXPECT_EQ(d.DtNs(), 50'000'000) << profile;
+  ASSERT_EQ(d.n_blocks, 4) << profile;
+  EXPECT_EQ((std::array<int, 4>{d.blocks[0], d.blocks[1], d.blocks[2], d.blocks[3]}),
+            (std::array<int, 4>{1, 1, 2, 3}))
+      << profile;
+  EXPECT_EQ(d.k_max, 2) << profile;
+  EXPECT_EQ(d.n_pre_max, 6) << profile;
+  EXPECT_EQ(d.DtPreNs(), 100'000'000) << profile;
+  EXPECT_TRUE(d.replan_same_point) << profile;
+  // The budgets must leave the planner's wake inside the decel admission age
+  // bound the RT judges a segment by (50 ms) — #662 re-derives that bound.
+  EXPECT_GT(d.budget_first_s, 0.0) << profile;
+  EXPECT_GT(d.budget_replan_s, 0.0) << profile;
+  EXPECT_GT(d.catch_pos_err_max, 0.0) << profile;
+  ASSERT_TRUE(node["catching"]["supervisor"]["decel"]["mode"]) << profile;
+  EXPECT_EQ(node["catching"]["supervisor"]["decel"]["mode"].as<std::string>(), "closed_form")
+      << profile;
+}
+
 TEST(DemoCatchingWaitPose, WithoutAnArmBoxTheSwitchedInPoseIsRefusedAndTheYamlPoseStands) {
   // S8-I, the fail-closed half. This fixture has no arm model, so the arm has
   // no margined joint box to admit a pose against: `current` must refuse (and

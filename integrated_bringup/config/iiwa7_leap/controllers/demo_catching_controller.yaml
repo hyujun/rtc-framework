@@ -365,21 +365,44 @@ demo_catching_controller:
           min: [-0.96, -0.30, 0.00]
           max: [1.05, 0.30, 1.10]
       decel_mpc:
-        # MPC E1-F03 (#629): pre-compute the stop segment on the planner thread
-        # (decel MPC, MD-24 – MD-33). Built and run only under
-        # supervisor.decel.mode: mpc, which also needs it (MD-44); under
-        # closed_form, true only warns. Off with the closed-form default.
+        # MPC E1-F03 (#629) / E1-F08 (#661): the planner thread solves the
+        # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
+        # MD-55 – MD-64). Built and run only under supervisor.decel.mode: mpc,
+        # which also needs it (MD-44); under closed_form, true only warns. Off
+        # with the closed-form default. Until the RT follows segments that
+        # start before t_c (#662) it admits none of them, so mode: mpc with the
+        # approach grid below aborts every trial at DECEL entry.
         enabled: false
         horizon:
-          # N_s x dt_s IS the stopping time (MD-21): 0.35 s, v1's p50 (MD-24).
-          n_nodes: 14
-          dt_s: 0.025
-          blocks: [1, 1, 2, 2, 4, 4]
+          # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
+          # (MD-21), 0.35 s.
+          n_nodes: 7
+          dt_s: 0.05
+          blocks: [1, 1, 2, 3]
+        approach:
+          # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
+          # before t_c. 0 = the stop segment alone (E1-F03's planner).
+          n_pre_max: 6
+          dt_pre_s: 0.1
+          # The first solve assumes the arm rests at its wait pose; above this
+          # max |q_dot_cmd| [rad/s] it withholds. Provisional.
+          rest_tol: 0.05
+        budget:
+          # A solve's ceiling, which is also the lead it is planned with [s]:
+          # the first segment (same wake as the search) and every later one
+          # (MD-56). Provisional.
+          first_s: 0.035
+          replan_s: 0.025
         replan:
-          # First (cold) solve when t_c - now_lead <= t_pre_s (MD-26); post-catch
-          # replans up to k_max grid points past t_c, stop end fixed (MD-31).
+          # t_pre_s is read by the stop-only planner (n_pre_max 0) alone
+          # (MD-26). Post-catch replans up to k_max grid points past t_c, stop
+          # end fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid
+          # point with the newer prediction (MD-58).
           t_pre_s: 0.1
-          k_max: 4
+          k_max: 2
+          same_point: true
+        # Measurement only (MD-59): solve and record, store no segment.
+        shadow: false
         eta_tau: 0.7
         m_q: 0.05
         publish:
@@ -389,6 +412,24 @@ demo_catching_controller:
           # the terminal one from the recorded distribution.
           slack_max: 0.1
           slack_terminal_max: 0.1
+          # Largest catch-node position error [m] a segment may carry (MD-62).
+          catch_pos_err_max: 0.02
+        catch:
+          # The core's catch terms at the catch node (E1-F07's measured values;
+          # provisional, #663 tunes them).
+          w_axis: 100.0
+          w_v_par: 1.0
+          w_v_perp: 20.0
+          gamma_ref: 1.0
+          # W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 with eigenvalues capped
+          # at w_max [1/m^2]; w_const without a usable covariance (MD-63).
+          kappa: 1.0
+          sigma_floor: 0.01
+          w_max: 10000.0
+          w_const: 2500.0
+          # w_delta schedule: clamp(tr Sigma_p / sigma_ref^2, 0, 1). Compared
+          # with a TRACE, so this is not a per-axis sigma (tr ~ 3 sigma^2).
+          sigma_ref: 0.03
       # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
       # That flag is the only one `planner:` has — it covers `hand.d_eff` and
       # `hand.r_cap` below too, which carry no flag of their own (#537 pre-S10
