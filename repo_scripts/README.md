@@ -53,7 +53,7 @@ repo_scripts/
     ├── cpu_shield.sh                     <- 동적 CPU 격리 (cset/cgroup)
     ├── check_rt_setup.sh                 <- 정적 RT 환경 검증 (9개 카테고리)
     ├── verify_rt_runtime.sh              <- 런타임 스레드 검증 (7개 카테고리)
-    ├── with_verify_hold.sh               <- 측정이 도는 동안 Stop hook 의 빌드·테스트를 미룬다
+    ├── with_verify_hold.sh               <- 측정이 도는 동안 Stop hook 의 빌드·테스트 요구를 미룬다
     │
     │   # ── LTTng 트레이싱 ──────────────────────────────────────────
     ├── timeline.sh                       <- LTTng CTF trace -> Chrome Trace JSON 변환 (스레드/CPU swimlane)
@@ -88,7 +88,7 @@ repo_scripts/
 | 스크립트 | 용도 | sudo |
 |---------|------|------|
 | `cpu_shield.sh` | 런타임 CPU 격리 (Tier 1/2, robot/sim 모드) | on/off 시 필수 |
-| `with_verify_hold.sh <명령> [인자…]` | 명령이 도는 동안 `<workspace>/.rtc-verify-hold` 에 자기 줄을 두어 Claude Code Stop hook 의 빌드·테스트를 미룬다. unit 마다 sim 을 새로 띄우는 평가는 unit 사이에 sim 이 없는 틈이 있고, 그 틈에서 끝난 턴이 `colcon test` 를 다음 unit 옆에서 돌리기 때문이다. 명령의 exit code 를 그대로 돌려주고, 끝나면 자기 줄만 지운다. 죽은 wrapper 의 줄은 hook 이 stale 로 읽는다 (install 대상 아님 — 소스 트리에서 실행) | 불필요 |
+| `with_verify_hold.sh <명령> [인자…]` | 명령이 도는 동안 `<workspace>/.rtc-verify-hold` 에 자기 줄을 두어 Claude Code Stop hook 의 빌드·테스트 verdict 요구를 미루고 `verify-changes.sh --run` 이 빌드하지 않게 한다. unit 마다 sim 을 새로 띄우는 평가는 unit 사이에 sim 이 없는 틈이 있고, 그 틈에서 끝난 턴이 verdict 를 요구받아 `colcon test` 를 다음 unit 옆에서 돌리게 되기 때문이다. 명령의 exit code 를 그대로 돌려주고, 끝나면 자기 줄만 지운다. 죽은 wrapper 의 줄은 hook 이 stale 로 읽는다 (install 대상 아님 — 소스 트리에서 실행) | 불필요 |
 
 ### 검증 스크립트 (Verification) -- 필요 시
 
@@ -619,7 +619,7 @@ colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수
 - **knob 은 빌드 전에 전부 검증한다**: `build.sh` 는 `-c` 가 트리를 지우고 CPU shield 를 풀기 **전에** 모든 knob (`RTC_BUILD_TESTS` · `RTC_CCACHE` · `RTC_BUILD_JOBS` · `RTC_BUILD_MEM_MAX`) 을 해석한다 — 쓸 수 없는 값이 설치본 없는 워크스페이스를 남기지 않게.
 - **`--no-warn-unused-cli`**: `build.sh` 는 한 인자 묶음을 모든 패키지에 넘기므로 C/C++ target 이 없는 패키지 (`repo_scripts` · `robot_descriptions`) 는 reconfigure 마다 `Manually-specified variables were not used` 를 냈다. 구조적으로 잡음이라 끈다.
 - **`-l` 을 넣지 않는 이유**: load 제한은 빌드와 무관한 시스템 부하까지 예산에서 깎는다 (1×`-j6 -l6` 은 20분 44초).
-- **패키지 하나 재빌드의 비용** (Stop hook 이 치르는 경로, `-p integrated_bringup --tests`): 변경 없음 3초, TU 하나 수정 24초 (`-j6` 과 `-j12` 가 같다 — 링크가 지배한다), 패키지 전체 재컴파일 279초 (`-j12` 는 245초). 마지막 경우는 hook 의 180초 상한을 이전에도 지금도 넘는다.
+- **패키지 하나 재빌드의 비용** (`.claude/hooks/verify-changes.sh --run` 이 치르는 경로, `-p integrated_bringup --tests`): 변경 없음 3초, TU 하나 수정 24초 (`-j6` 과 `-j12` 가 같다 — 링크가 지배한다), 패키지 전체 재컴파일 279초 (`-j12` 는 245초). 마지막 경우는 Stop hook 이 turn 끝에서 빌드하던 때의 180초 상한을 넘었다 — 그래서 빌드·테스트를 turn 끝에서 빼고 `--run` 으로 옮겼고, 그 상한은 900초다 (hook 헤더 Limits).
 
 **메모리 상한.** job 수는 평균을 맞추는 장치다 — job 당 4 GB 는 최악 TU 하나가 들어가는 값이지, 모든 job 이 동시에 최악인 경우의 합 (8 × 3.5 GB = 28 GB) 이 아니고, 빌드 밖에서 메모리를 쓰는 프로그램도 계산에 없다. 그 꼬리는 상한으로 막는다. `build.sh` 와 `build_deps.sh` 는 빌드를 `MemoryMax` 가 걸린 systemd user scope 안에서 돌린다 (`rt_common.sh` `build_mem_scope_prefix`):
 

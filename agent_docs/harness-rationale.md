@@ -43,4 +43,4 @@ AGENTS.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orc
 | **Sensors** (feedback, inferential) | 의미 검증 (LLM-as-judge, on-demand) | AGENTS.md §5.5, [modification-guide.md](modification-guide.md) §Inferential review 트리거 |
 | **Orchestration** | Workflow | AGENTS.md §4, [modification-guide.md](modification-guide.md) |
 | **Escalation** | Human gate | AGENTS.md §6, AGENTS.md §6.5 Sprint Contract |
-| **Enforcement** (자동) | 무인 실행/차단 | `.claude/hooks/format-code.sh` (PostToolUse: clang-format / ruff), `.claude/hooks/verify-changes.sh` (Stop: doc·CMake·build·test gate, exit 2 차단), `.claude/hooks/log-instructions-loaded.sh` (InstructionsLoaded: 어떤 CLAUDE.md·rule 이 왜 로드됐는지 `.claude/instructions-loaded.log` 에 기록 — 차단 없음) |
+| **Enforcement** (자동) | 무인 실행/차단 | `.claude/hooks/format-code.sh` (PostToolUse: clang-format / ruff), `.claude/hooks/verify-changes.sh` (Stop: doc·CMake gate + build·test verdict 확인, exit 2 차단; 빌드·테스트 실행은 turn 안의 `--run`), `.claude/hooks/log-instructions-loaded.sh` (InstructionsLoaded: 어떤 CLAUDE.md·rule 이 왜 로드됐는지 `.claude/instructions-loaded.log` 에 기록 — 차단 없음) |

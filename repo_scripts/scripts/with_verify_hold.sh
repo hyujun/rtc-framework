@@ -4,9 +4,11 @@
 #   with_verify_hold.sh <command> [args...]
 #
 # An evaluation that launches one simulator per unit has none running between
-# two units, and a turn that ends in that gap lets .claude/hooks/verify-changes.sh
-# start `colcon test` beside the next unit. The hook defers build/test while a
-# process listed in <workspace>/.rtc-verify-hold is alive (its workspace_holds
+# two units, and a turn that ends in that gap has .claude/hooks/verify-changes.sh
+# ask for the build/test verdict -- which sends the agent to run its `--run`,
+# `colcon test` included, beside the next unit. While a process listed in
+# <workspace>/.rtc-verify-hold is alive the turn end defers that request and
+# `--run` refuses to build, as both do beside a running simulator (workspace_holds
 # owns the format: "<pid> <start time>", the start time being field 22 of
 # /proc/<pid>/stat). This wrapper is the one writer of that line, so a driver
 # does not have to get the format right by hand:
