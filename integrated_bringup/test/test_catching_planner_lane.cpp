@@ -1119,6 +1119,8 @@ TEST_F(CatchingPlanLaneTest, WithAPreCatchGridThePairIsPublishedAndTheRtAdmitsNo
   bool approached = false;
   bool pair_seen = false;
   bool held_or_followed = false;
+  int not_followed = 0;
+  bool replan_found_a_source = false;
   Mode last = Mode::kIdle;
   integrated_bringup::CatchingDiagLogPod entry_record{};
   auto next = std::chrono::steady_clock::now();
@@ -1129,6 +1131,16 @@ TEST_F(CatchingPlanLaneTest, WithAPreCatchGridThePairIsPublishedAndTheRtAdmitsNo
     const Mode before = ctrl_->GetMode();
     static_cast<void>(Tick());
     last = ctrl_->GetMode();
+    if (last == Mode::kApproach || last == Mode::kCommitted || last == Mode::kClosing) {
+      // The planner's newest wake WHILE the RT follows the plan (after the
+      // abort it idles, and its record says nothing about this).
+      const auto wake = ctrl_->GetPlannerThread()->LastRecord();
+      const bool replan = wake.decel.kind != rtc::catching::DecelKind::kFirst &&
+                          wake.decel.outcome != rtc::catching::DecelOutcome::kOff;
+      not_followed +=
+          replan && wake.decel.outcome == rtc::catching::DecelOutcome::kNotFollowed ? 1 : 0;
+      replan_found_a_source = replan_found_a_source || (replan && wake.decel.source_seq != 0);
+    }
     if (!approached && last == Mode::kApproach) {
       approached = true;
       // The plan the RT just took came with its first segment.
@@ -1164,11 +1176,10 @@ TEST_F(CatchingPlanLaneTest, WithAPreCatchGridThePairIsPublishedAndTheRtAdmitsNo
   EXPECT_EQ(last, Mode::kAbortSafe);
   EXPECT_EQ(entry_record.decel_event,
             integrated_bringup::CatchingDiagLogPod::DecelEvent::kNoSegment);
-  // While the RT followed the plan the planner found no source to replan from.
-  EXPECT_EQ(record.decel.outcome == rtc::catching::DecelOutcome::kNotFollowed ||
-                record.decel.outcome == rtc::catching::DecelOutcome::kOff,
-            true)
-      << rtc::catching::DecelOutcomeName(record.decel.outcome);
+  // While the RT followed the plan the planner found no source to replan
+  // from: the RT reports neither a pending nor a followed segment yet (#662).
+  EXPECT_GT(not_followed, 0) << "no replan wake was sampled while the plan was followed";
+  EXPECT_FALSE(replan_found_a_source);
 }
 
 // ── Vision world → model world (plan §11, S6-C sim finding) ─────────────────
