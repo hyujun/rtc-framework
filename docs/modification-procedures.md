@@ -1,64 +1,16 @@
 # Modification Procedures — 단계별 절차와 그 이유
 
-> **이 문서는 헌법이 아니다.** 수정·추가 작업의 **규범** (어떤 게이트를 지나야 하고 무엇이 성립해야 하는가) 은 [agent_docs/modification-guide.md](../agent_docs/modification-guide.md) 가 갖는다. 여기는 그 규범을 실행하는 단계별 절차와 각 단계가 왜 그런지 — 원칙화하기 전의 전문을 그대로 보존했다. 둘이 어긋나면 agent_docs 쪽이 옳다. 파일 위치·이름은 기록 시점의 것이다.
+> **이 문서는 헌법이 아니다.** 수정·추가 작업의 **규범** (어떤 게이트를 지나야 하고 무엇이 성립해야 하는가) 은 [agent_docs/modification-guide.md](../agent_docs/modification-guide.md) 가 갖고, 여기에 다시 적지 않는다. 여기는 그 규범을 실행하는 단계의 순서 · 파일 위치 · 각 단계가 왜 그런지다. guide 의 절이 여기에 없으면 덧붙일 절차가 없다는 뜻이다 (Workflow Fail-Safe · Sprint Contract · Completion Checklist). 둘이 어긋나면 agent_docs 쪽이 옳다. 파일 위치·이름은 기록 시점의 것이다.
 
 ## Workflow Loop
 
-모든 수정 작업은 이 순서 ([AGENTS.md](../AGENTS.md) §4 요약판의 상세).
+단계 목록과 "4·5·6 은 반드시 수행한다" 는 [modification-guide.md](../agent_docs/modification-guide.md) §Workflow Loop 가 갖는다. 단계별로 덧붙일 것:
 
-```
-0. Type     → "수정"인가 "추가(새 기능/컨트롤러/메시지/디바이스/스레드)"인가?
-              추가라면 [design-principles.md](../agent_docs/design-principles.md) 5원칙 + 본 문서
-              "Adding a New ..." 절을 먼저 읽는다.
-              · rtc_*에 추가 → P1·P2 (zero source edit, robot 상수 금지) +
-                ARCH-3 (interface-first; 같은 종류 두 번째 구현이면 base부터)
-              · integration 패키지에 추가 → 재사용 가능한 부분이
-                rtc_*에 존재하는지 / 일반화해 끌어올릴 수 있는지 먼저 검토
-1. Locate   → grep / Glob (known symbol) OR Explore agent (broad search)
-              파일의 RT / aux / robot-specific 역할 판단
-2. Read     → package.xml + CMakeLists.txt + target file + 인접 테스트
-              invariants.md 중 영향받는 항목 확인
-3. Edit     → minimal, single-concern. RT path 여부 재확인.
-              auto/lerp/RT-forbidden 자체 grep
-4. Build    → ./build.sh --tests -p <pkg> (단일) 또는 ./build.sh --tests full (rtc_base/rtc_msgs 변경 시)
-              --tests 없이 빌드한 패키지의 colcon test 는 테스트 0개를 통과로 보고한다
-5. Test     → testing-debug.md Sensor Matrix. 버그 수정 시 회귀 테스트 추가
-6. Verify   → 본 문서 Completion Checklist 통과
-```
-
-**※ 4·5·6은 반드시 수행한다. Claude Code 로 작업할 때는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 그중 포맷·문서·메타데이터의 기계 판정 가능한 부분을 자동 실행/차단하고, **빌드·테스트는 실행하지 않고 그 verdict 가 있는지만 확인**한다 — verdict 는 turn 안에서 `.claude/hooks/verify-changes.sh --run` 이 남기므로 4·5 의 최종 실행은 그것으로 한다 (그 전의 `./build.sh`·`colcon test` 는 빠른 피드백용). 그 hook 은 Claude Code 전용이다 — 다른 도구(Codex · Copilot 등)에서는 돌지 않으므로 4·5·6 을 직접 실행해야 하며 무엇을 돌릴지는 [AGENTS.md](../AGENTS.md) §4 "커밋 전에 직접 돌려야 하는 것" 이 SSoT.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지(변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip)는 [verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더 주석이 SSoT 이고 [CLAUDE.md](../CLAUDE.md) §Claude Code 는 그 요약이다. hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **차단 탈출은 리포트 대응뿐이다**: 재진입은 `stop_hook_active` 로 가드되어 stop cycle 당 1회만 발화하므로 turn 이 무한히 물리지는 않지만, Claude Code 는 **8회 연속 차단 후 hook 을 override 하고 turn 을 끝낸다** ([공식 best-practices](https://code.claude.com/docs/en/best-practices), "Give Claude a way to verify its work") — 그 상한은 탈출구가 아니라 미검증 종료이므로, 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다.
-
-### Workflow Fail-Safe
-
-각 단계 실패 시 대응. "Try harder"는 실패 응답이 아니다 — 누락된 capability를 엔지니어링하거나 [AGENTS.md](../AGENTS.md) §6 Escalate.
-
-| 실패 단계 | 증상 | 대응 |
-|----------|------|------|
-| 1. Locate | 파일을 찾을 수 없음 | `Agent` subagent로 broad search. "찾았다고 추정" 금지 |
-| 2. Read | 컨텍스트 불충분 (호출자 / 테스트 미확인) | 인접 파일 + 테스트 추가 읽기. 추측하지 말 것 |
-| 3. Edit | Invariant 위반 유혹 | [invariants.md](../agent_docs/invariants.md) 확인 후 [AGENTS.md](../AGENTS.md) §6 Escalate. 우회로 찾지 말 것 |
-| 4. Build | 빌드 실패 | 에러 메시지를 **먼저** 기록. 원인 파악 전 재시도 금지 |
-| 5. Test | 테스트 실패 | **새 코드를 고친다.** assertion 쪽을 손대야 할 것 같으면 그 자체가 신호이므로 착수 전 [invariants.md](../agent_docs/invariants.md) PROC-6 을 편다 — 회귀 은폐 vs 정당한 변경 판정, 별도 commit·E-6 절차, 탐지 패턴이 거기 있다 |
-| 6. Verify | Checklist 항목 실패 | 해당 항목까지 rollback, 재실행. 부분 완료 주장 금지 ([invariants.md](../agent_docs/invariants.md) AP-PROC-1) |
-
-## Sprint Contract & Spec (착수 전 성공 기준)
-
-언제 Sprint Contract 를 협상하고 무엇이 면제인지는 헌법 [AGENTS.md](../AGENTS.md) §6.5 가 갖는다 (Claude Code 도 같은 파일을 import 한다). 여기엔 *포맷과 절차* 만 둔다 (가끔만 필요하므로 on-demand).
-
-코드 수정 시작 *전* 1~3줄로 성공 기준을 사용자에게 제시하고 컨펌받는다:
-
-```
-[SPRINT] <task 한 줄 요약>
-Done when:
-  - <검증 가능 기준 1>
-  - <검증 가능 기준 2>
-  - <...>
-Out of scope: <명시적으로 하지 않을 것 — drift 방지>
-```
-
-기준은 **객관 검증 가능** 해야 한다 (예: "test_X 통과", "rtc_* 에 ur5e grep 0건", "rtc_cm 빌드 0 warning"). "코드가 깔끔하다", "잘 작동한다" 같은 주관 기준은 금지. 이 컨트랙트는 task 종료 시 [AGENTS.md](../AGENTS.md) §11 보고에서 항목별 충족 여부를 체크한다.
-
-**Spec-driven (신규 abstract interface · controller · 메시지 · 디바이스 추가 시):** Sprint Contract = spec. 구현 전 `~/.claude/plans/<slug>.md` 에 *왜 필요한가 · API surface · 검토한 alternatives* 를 1-paragraph spec 으로 박는다 (Specify *before* Implement). 같은 파일이 이후 handoff artifact · 진행 progress 도 누적하므로 `## Spec` / `## Progress` / `## Handoff` 섹션으로 구분 ([CLAUDE.md](../CLAUDE.md) §Claude Code 의 plan 저장 규칙과 동일 파일).
+- **Locate** — 심볼을 알면 grep / Glob, 범위가 넓으면 탐색용 subagent. "찾았다고 추정" 하지 않는다
+- **Edit** — 저장 전에 `auto` (Eigen expression) · quaternion `lerp` · RT 금지 호출을 스스로 grep 한다 ([invariants.md](../agent_docs/invariants.md) §위반 탐지 패턴)
+- **Build · Test** — `./build.sh`·`colcon test` 를 직접 돌리는 것은 빠른 피드백용이다. Claude Code 에서 turn 을 끝낼 수 있는 verdict 는 `.claude/hooks/verify-changes.sh --run` 만 남긴다
+- **차단이 반복될 때** — Stop hook 의 재진입은 `stop_hook_active` 로 가드되어 stop cycle 당 1회만 발화하므로 turn 이 무한히 물리지는 않는다. 8회 연속 차단 뒤의 override 는 Claude Code 의 동작이다 ([공식 best-practices](https://code.claude.com/docs/en/best-practices), "Give Claude a way to verify its work")
+- hook 이 *무엇을* 검사하고 무엇이 blocking 인지 (변경 집합 산정 · non-blocking checklist · pure-format skip) 는 [verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더 주석이 SSoT 다 — 여기에 옮겨 적지 않는다
 
 ## Adding a New Controller
 
@@ -125,13 +77,11 @@ README 패키지 표·count, [architecture.md](../agent_docs/architecture.md) de
 
 ## Updating an Existing Package
 
-코드 변경은 *대응 문서·메타데이터 동기화*를 포함해야 완료 ([invariants.md](../agent_docs/invariants.md) PROC-1). 동기화 대상은:
+동기화 대상 목록 (Tests · CMakeLists.txt · package.xml · YAML config · Doc) 은 [modification-guide.md](../agent_docs/modification-guide.md) §Updating an Existing Package 가 갖는다. 그 항목의 사례와 명령:
 
-- **Tests** — `<package>/test/` 의 affected suite 갱신 + 신규 동작에 대한 test 추가 (기존 assertion 을 건드려야 한다면 [invariants.md](../agent_docs/invariants.md) PROC-6 을 먼저 편다)
-- **CMakeLists.txt** — source / install / `find_package` / `ament_add_gtest` / `rosidl_generate_interfaces` 일관성
-- **package.xml** — deps · version. `CMakeLists.txt` `find_package` 와 1:1 매칭. **예외: rosdep 이 해결할 수 없는 source-install 의존** (`rtc_mpc` 의 `aligator`·`fmt` 처럼 `deps/install` 에서 `CMAKE_PREFIX_PATH` 로 찾는 것) 은 `<depend>` 로 올리면 rosdep 이 실패하므로 CMake 에만 두고, **`package.xml` 에 그 사유를 주석으로 남긴다** (해당 파일의 기존 주석이 예시). 같은 이유의 다른 발현: `ament_python` 은 jazzy rosdep DB 에 없어 `<buildtool_depend>ament_python</buildtool_depend>` 을 선언하면 `rosdep resolve --ignore-src` 가 ERROR 를 낸다 — `<export><build_type>ament_python</build_type></export>` 만으로 충분하니 넣지 말고 발견 시 삭제한다. test 전용 결합(소스 트리 include 경로 등)에는 `<depend>` 가 아니라 `<test_depend>` — 없는 런타임 결합을 과장하지 않으면서 빌드 순서는 똑같이 얻는다
-- **YAML config** — 추가/제거/이름변경된 parameter, `topics:` 섹션, valid range·unit 주석. Robot-specific 값은 `integrated_bringup/config/<robot>/...`, 기본값은 agnostic 패키지에
-- **Doc** — Package README.md (API / parameter / usage), inline Doxygen, cross-package 변경이면 root README + `docs/*.md`
+- **package.xml 의 예외가 실제로 나타나는 곳** — rosdep 이 해결할 수 없는 source-install 의존은 `rtc_mpc` 의 `aligator`·`fmt` 처럼 `deps/install` 에서 `CMAKE_PREFIX_PATH` 로 찾는 것이다. `<depend>` 로 올리면 rosdep 이 실패하므로 CMake 에만 두고 사유를 주석으로 남긴다 (그 파일의 기존 주석이 예시). 같은 이유의 다른 발현: `ament_python` 은 jazzy rosdep DB 에 없어 `<buildtool_depend>ament_python</buildtool_depend>` 을 선언하면 `rosdep resolve --ignore-src` 가 ERROR 를 낸다 — 발견하면 삭제한다. `<test_depend>` 는 없는 런타임 결합을 과장하지 않으면서 빌드 순서는 똑같이 얻는다
+- **CMakeLists.txt 에서 맞춰 볼 곳** — source / install / `find_package` / `ament_add_gtest` / `rosidl_generate_interfaces`
+- **YAML 의 robot-specific 값** 은 `integrated_bringup/config/<robot>/...` 에 둔다
 
 검증:
 
@@ -141,40 +91,24 @@ colcon test --packages-select <package> [<deps>...] --event-handlers console_dir
 colcon test-result --verbose
 ```
 
-`rtc_base` / `rtc_msgs` 변경은 전체 downstream 빌드·테스트 (PROC-3) — [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) `--run` 의 PROC-3 경로가 수행한다 (turn 끝은 그 verdict 만 확인). downstream ≥4 패키지 + 각 빌드 ≥5 분이면 `Agent` worktree fork-join 으로 병렬 build/test 가 직렬 `./build.sh full` 보다 빠름 (disk+RAM 비용 증가).
-
-## Completion Checklist
-
-이 절은 Claude Code 의 Stop hook 이 자동 수행하는 범위([verify-changes.sh](../.claude/hooks/verify-changes.sh) 헤더가 SSoT, [CLAUDE.md](../CLAUDE.md) §Claude Code 는 그 요약)의 **여집합** — 그 hook 이 있어도 검사되지 않으므로 항상 사람/에이전트가 직접 확인해야 하는 항목이다. **hook 이 없는 도구에서는 이것만으로 부족하다** — 먼저 [AGENTS.md](../AGENTS.md) §4 "커밋 전에 직접 돌려야 하는 것" 의 빌드·테스트·포맷·doc validation 을 수행하고, 그 위에 아래를 더한다.
-
-- [ ] `package.xml` 의 **deps 의미·version** — hook 은 `find_package` 추가 시 `package.xml` co-update 여부만 blocking 으로 보고, 선언된 dep 이 실제로 맞는지는 보지 않는다
-- [ ] YAML 의 **default 값·유효 범위·unit 주석** — hook 은 parse 성공 여부만 본다
-- [ ] **Doxygen** public header 갱신 — hook 이 명시적으로 다루지 않는 항목이다 (cross-package doc 일관성도 동일)
-- [ ] **Python lint** (`ruff check`) — hook 은 변경이 *새로 만든* 포맷 drift 만 차단한다. lint 는 보지 않고, base 에서부터 포맷이 틀린 파일도 통과시킨다 (CI 는 포매팅 자체를 보지 않는다)
-- [ ] RT path 변경 시 [invariants.md](../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect` 블록으로 자가검사 (RT-1~RT-10, RT-7 은 은퇴)
+`rtc_base` / `rtc_msgs` 변경의 전체 downstream 빌드·테스트 (PROC-3) 는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) `--run` 의 PROC-3 경로가 수행한다. downstream ≥4 패키지 + 각 빌드 ≥5 분이면 `Agent` worktree fork-join 으로 병렬 build/test 가 직렬 `./build.sh full` 보다 빠르다 (disk+RAM 비용 증가).
 
 ## Inferential review 트리거 (LLM-as-judge, 수동 trigger)
 
-[AGENTS.md](../AGENTS.md) §5.5 가 요약한 트리거의 상세 — 트리거별 이유와 명령. computational sensor (build / test / grep) 는 **문법·빌드·기존 테스트 통과** 만 검증한다. 의미 회귀 — 설계 일관성, robot-agnostic 위반, abstract interface 누락, 재사용 가능성 — 은 잡지 못한다 (에이전트의 자기 평가는 그 대체가 아니다).
+트리거 목록은 [modification-guide.md](../agent_docs/modification-guide.md) §Inferential review 트리거 가 갖는다. 각 트리거가 왜 거기 있는가:
 
-다음 상황에서 사용자에게 inferential sensor 실행을 권한다 (`/code-review`·`/security-review`·`/simplify` 는 Claude Code slash command — 미지원 환경/툴에서는 동등한 수동 code review 로 대체):
+- `rtc_base` / `rtc_msgs` 변경 — downstream 전 패키지에 영향이 간다
+- Abstract interface 신설 / 두 번째 구현 — base 누락과 `#ifdef` 분기 유혹은 빌드·테스트가 못 본다
+- PR 준비 — `/code-review ultra` 는 현재 branch 를, `/code-review ultra <PR#>` 는 GitHub PR 을 본다. `/ultrareview` 는 deprecated alias
+- `/simplify` 는 재사용·단순화 전용이다 — 버그 탐지는 `/code-review`
 
-- `rtc_base` / `rtc_msgs` 변경 → `/code-review` (downstream 전 패키지 영향)
-- Abstract interface 신설 / 두 번째 구현 추가 (ARCH-3 후보) → `/code-review` (base 누락·#ifdef 유혹 검출)
-- `rtc_*` 에 robot-specific 코드 추가 의심 (ARCH-1 borderline) → `/code-review`
-- E-STOP 경로 / safety publisher / lifecycle 콜백 수정 → `/security-review` (E-8)
-- PR 준비 (다파일 / 다패키지 commit) → `/code-review ultra` (현재 branch) 또는 `/code-review ultra <PR#>` (GitHub PR). `/ultrareview` 는 deprecated alias
-- 100+ 줄 변경 또는 신규 패키지 디렉토리 → `/code-review`
-- 다파일 리팩터 / 유사 기능 중복 의심 ([design-principles.md](../agent_docs/design-principles.md) P5) / 변경 후 정리 → `/simplify` (재사용·단순화 전용 — 버그 탐지는 `/code-review`)
-
-수동 trigger 인 이유: inferential 은 GPU/cost/지연이 크고 non-deterministic 이므로 모든 변경에 자동 적용하면 ROI 음성. 위 trigger 는 "false-negative 비용 > inferential 비용" 인 경우만 추렸다.
+수동 trigger 인 이유: inferential 은 비용·지연이 크고 non-deterministic 이므로 모든 변경에 자동 적용하면 ROI 가 음성이다. 목록은 "false-negative 비용 > inferential 비용" 인 경우만 추렸다.
 
 ## Post-task housekeeping (상세)
 
-[AGENTS.md](../AGENTS.md) §11 각 항목의 실행 방법이다. 항목 목록·번호·요구 수준은 §11 이 SSoT 이고, 여기서 줄이거나 바꾸지 않는다. Commit 완료 또는 사용자가 task 종료를 알린 후:
+항목 목록·요구 수준은 [AGENTS.md](../AGENTS.md) §11, 실행 기준은 [modification-guide.md](../agent_docs/modification-guide.md) §Post-task housekeeping 이 갖는다. 그 위에 덧붙일 것:
 
-1. **완료 보고** — §11 의 1항이 나열한 항목을 빠짐없이 채운다. 실행한 검증은 명령과 결과(수치)로 적고, 돌리지 않은 검증은 "통과" 가 아니라 "생략 + 이유" 로 적는다
-2. **Issue 동기화** — 대응 GitHub issue 가 있으면 구현 완료 시 갱신한다: 무엇이 구현됐는지, acceptance criteria 중 미충족 항목, 후속 작업. issue 는 durable 결정 기록이자 cross-tool 인계면이므로 ([handoff.md](../agent_docs/handoff.md) §5) 갱신 없이 닫지 않는다. criteria 를 전부 충족했으면 close, 아니면 남은 범위를 코멘트로 남기고 open 유지
-3. **Stale artifact·캐시 정리** — 완료된 private plan (각 도구의 plan 저장소 — [handoff.md](../agent_docs/handoff.md) §5) 은 그 내용이 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (복원 불가한데 보존 가치가 있는 결정 기록이 남아 있으면 issue 코멘트로 옮긴 뒤 삭제 — [handoff.md](../agent_docs/handoff.md) §5). 작업 중 만든 임시 파일 (분석 스크립트, 중간 산출물, 로그 덤프) 은 scratchpad 에 만들고 task 종료 시 삭제하며, repo-root / `/tmp` scratch files 도 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`, issue) 에 보존됨을 확인 후 삭제. 캐시: repo (`src/rtc-framework`) 안에 잘못된 cwd 로 생긴 `build/` · `install/` · `log/` ([AGENTS.md](../AGENTS.md) §9.1) 및 python 캐시 (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`) 가 있으면 삭제 — 모두 재생성 가능하므로 확인 없이 제거 가능. **단 colcon 정규 트리 `<rtc_ws>/{build,install,log}` 는 incremental cache 이므로 절대 건드리지 않는다**
-4. **Branch prune (main merge 후에만)** — feature branch 가 `main` 에 merge 됐으면: 로컬 merged branch 삭제 (`git branch -d <branch>`), stale remote-tracking ref 정리 (`git fetch --prune`). 원격 branch 삭제는 merge 확인 후에만 (GitHub auto-delete 미설정 시). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다
-5. **도구별 memory·harness 정리** — 그 도구의 문서가 소유한다. Claude Code 는 [CLAUDE.md](../CLAUDE.md) §Claude Code 의 Housekeeping (memory save·prune, harness pruning 신호와 그 RTC 발현 카테고리)
+- **Issue 동기화의 이유** — issue 는 durable 결정 기록이자 cross-tool 인계면이다 ([handoff.md](../agent_docs/handoff.md) §5). 갱신 없이 닫으면 다음 도구가 읽을 것이 없다
+- **Scratch 파일** — repo-root / `/tmp` 에 남은 분석 스크립트·중간 산출물·로그 덤프는 그 내용이 다른 곳 (git log, `docs/*.md`, issue) 에 보존됐는지 확인한 뒤 지운다
+- **Branch prune 명령** — 로컬 merged branch 는 `git branch -d <branch>`, stale remote-tracking ref 는 `git fetch --prune`. 원격 branch 삭제는 merge 확인 후에만 한다 (GitHub auto-delete 미설정 시)
+- **Claude Code 의 memory·harness 정리** 는 [CLAUDE.md](../CLAUDE.md) §Claude Code 의 Housekeeping 이 가리키는 곳이 갖는다
