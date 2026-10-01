@@ -56,18 +56,13 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 using rtc::testing::decel::ArmModel;
 using rtc::testing::decel::LimitsFromModel;
 using rtc::testing::decel::Percentile;
+using rtc::testing::decel::Rank;
 using rtc::testing::decel::RealArm6;
 using rtc::testing::decel::RealArm7;
 using rtc::testing::decel::RecordMicros;
 using rtc::testing::decel::RestInput;
 using rtc::testing::decel::Synthetic6R;
-
-void UseAsReference(const DecelMpcResult& r, DecelMpcInput& in) {
-  in.q_ref = r.q;
-  in.qd_ref = r.qd;
-  in.qdd_ref = r.qdd;
-  in.reference_valid = true;
-}
+using rtc::testing::decel::UseAsReference;
 
 // A solved trajectory shifted by `t_shift` onto the same grid (the E1-F03
 // warm start): node k of the new reference is the old trajectory at t_shift+kΔ.
@@ -96,13 +91,6 @@ void ShiftReference(const DecelMpcResult& r, double dt, double t_shift, DecelMpc
 Eigen::VectorXd Rnea(const pinocchio::Model& m, pinocchio::Data& d, const Eigen::VectorXd& q,
                      const Eigen::VectorXd& v, const Eigen::VectorXd& a) {
   return pinocchio::rnea(m, d, q, v, a);
-}
-
-int Rank(const Eigen::MatrixXd& a) {
-  const Eigen::JacobiSVD<Eigen::MatrixXd> svd(a);
-  const Eigen::VectorXd& s = svd.singularValues();
-  const double tol = 1e-10 * std::max(1.0, s.size() > 0 ? s[0] : 0.0);
-  return static_cast<int>((s.array() > tol).count());
 }
 
 // ── 1. Zero solution at rest ─────────────────────────────────────────────────

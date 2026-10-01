@@ -50,6 +50,8 @@
 //    grid the same value therefore regularises the coarse part less per second.
 //  • a block may not cross the catch node, and at least 3 blocks must lie after
 //    it (the terminal equality takes two; formulation §1.1).
+//  • the stop-path term w_⊥ covers the stop segment only, nodes k_c..N: the
+//    line through p_c is where the hand stops, not how it approaches.
 // With catch_terms the cost gains three terms AT the catch node, linearised at
 // the reference x̄ (the same ½-weighted least-squares convention as above —
 // the formulation prints them without the ½):
@@ -106,10 +108,17 @@
 //  • Init() is non-RT (copies the model, allocates everything). Solve() is
 //    noexcept and fail-closed — on ANY failure the result's trajectory,
 //    slack, torque ratios and catch-node fields keep their previous values;
-//    only reason, valid,
-//    qp_status, the iteration counts, presolved and the timings change.
-//  • Heap: this core allocates nothing in Solve() (linearisation, FK,
-//    condensing, extraction — pinned by a C-level malloc gate). ProxQP does:
+//    only reason, valid, qp_status, the iteration counts, presolved,
+//    cold_retried and the timings change.
+//  • A warm main QP that fails is solved once more from zero
+//    (result.cold_retried): iterates left by another problem make ProxQP call
+//    a feasible QP infeasible. cold_start on a new problem avoids paying for
+//    the failed run.
+//  • Heap: this core allocates nothing in Solve(). Everything up to the QP
+//    (linearisation, FK, condensing) is pinned by a C-level malloc gate; the
+//    extraction after the QP shares its Solve with ProxQP, whose C mallocs
+//    cannot be told apart from it, so it is pinned by the operator-new gate
+//    only. ProxQP does allocate:
 //    its public update() copies the vector arguments and solve() allocates a
 //    few times per call (~7–18 C mallocs per Solve at n = 7). That is a KNOWN
 //    RT-1 gap shared with every QPSolverWrapper user, accepted for E1-F01 and
@@ -244,7 +253,9 @@ struct DecelMpcInput {
   double w_delta_scale{1.0};
   /// Start the main QP from x = y = z = 0. A supplied reference does not reset
   /// the warm start by itself; set this when the problem is a NEW one (a new
-  /// plan), where the last problem's iterates mislead ProxQP.
+  /// plan, another core's grid point), where the last problem's iterates
+  /// mislead ProxQP. Left false there, the solve still succeeds — a failed
+  /// warm run is retried cold (result.cold_retried) — but pays for both runs.
   bool cold_start{false};
   // ── Catch inputs: read (and validated) only with params.catch_terms ────────
   Eigen::Vector3d p_b{
@@ -272,7 +283,10 @@ struct DecelMpcResult {
   bool valid{false};
   DecelMpcReason reason{DecelMpcReason::kNotInitialized};
   int qp_status{-1};  ///< proxsuite QPSolverOutput of the last QP (0 = solved)
-  int iterations{0};  ///< main QP (pre-solve iterations in presolve_iterations)
+  int iterations{0};  ///< main QP, its last run (pre-solve iterations in presolve_iterations)
+  /// The warm main QP failed and was solved again from zero (header note);
+  /// solve_us covers both runs.
+  bool cold_retried{false};
   int presolve_iterations{0};
   // ── Catch node, re-evaluated by FK at the SOLUTION (not the linear model) ──
   bool catch_evaluated{false};  ///< params.catch_terms; the fields below are then set
@@ -354,6 +368,7 @@ class DecelMpc {
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
   void AssembleGradient(tsid::QPData& qp, bool main) noexcept;
   [[nodiscard]] DecelMpcReason RunQp(tsid::QPData& qp, int& status, int& iterations) noexcept;
+  void ResetSolver() noexcept;
   void TrajectoryFromZ() noexcept;
 
   bool initialized_{false};
@@ -419,10 +434,11 @@ class DecelMpc {
 
   // Catch terms (E1-F07).
   bool catch_on_{false};
-  bool vel_on_{false};      // w_v_par or w_v_perp > 0
-  bool slack_v_on_{false};  // rho_v > 0: one more variable, seven more rows
-  bool pos_on_{false};      // this solve's W_p ≠ 0
-  bool h_modified_{false};  // qp_main_.H is not h_main_ (a term or a scale touched it)
+  bool vel_on_{false};       // w_v_par or w_v_perp > 0
+  bool slack_v_on_{false};   // rho_v > 0: one more variable, seven more rows
+  bool pos_on_{false};       // this solve's W_p ≠ 0
+  bool h_modified_{false};   // qp_main_.H is not h_main_ (a term or a scale touched it)
+  bool solver_warm_{false};  // the solver holds the iterates of a solved QP
   double w_delta_scale_{1.0};
   Eigen::Vector3d p_b_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d a_d_{Eigen::Vector3d::UnitZ()};

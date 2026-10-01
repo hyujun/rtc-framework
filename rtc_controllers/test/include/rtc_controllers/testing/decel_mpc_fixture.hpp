@@ -20,6 +20,7 @@
 #include "test_urdf_path.hpp"
 
 #include <Eigen/Core>
+#include <Eigen/SVD>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -94,6 +95,22 @@ inline rtc::catching::DecelMpcInput RestInput(const Eigen::VectorXd& q0) {
   in.qd0 = Eigen::VectorXd::Zero(q0.size());
   in.qdd0 = Eigen::VectorXd::Zero(q0.size());
   return in;
+}
+
+// The next cycle's reference: the solution just returned.
+inline void UseAsReference(const rtc::catching::DecelMpcResult& r,
+                           rtc::catching::DecelMpcInput& in) {
+  in.q_ref = r.q;
+  in.qd_ref = r.qd;
+  in.qdd_ref = r.qdd;
+  in.reference_valid = true;
+}
+
+inline int Rank(const Eigen::MatrixXd& a) {
+  const Eigen::JacobiSVD<Eigen::MatrixXd> svd(a);
+  const Eigen::VectorXd& s = svd.singularValues();
+  const double tol = 1e-10 * std::max(1.0, s.size() > 0 ? s[0] : 0.0);
+  return static_cast<int>((s.array() > tol).count());
 }
 
 inline double Percentile(std::vector<double> v, double p) {

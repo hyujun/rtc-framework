@@ -127,6 +127,7 @@ bool LinearizeTorqueAt(const pinocchio::Model& model, pinocchio::Data& data,
 DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex catch_frame,
                               const DecelMpcParams& params, const DecelMpcLimits& limits) {
   initialized_ = false;
+  solver_warm_ = false;
 
   if (arm.nv < 1 || arm.nv > kMaxPlanNv || arm.nq != arm.nv) {
     return DecelMpcReason::kModelUnsupported;
@@ -143,7 +144,10 @@ DecelMpcReason DecelMpc::Init(const pinocchio::Model& arm, pinocchio::FrameIndex
     return DecelMpcReason::kParamsInvalid;
   }
   const int n_pre = params.n_pre;
-  if (n_pre < 0 || n_pre > kMaxMpcNodes - n_stop || (n_pre > 0 && !FinitePositive(params.dt_pre))) {
+  // dt_pre enters the node times whatever n_pre is, so it is checked finite
+  // even when no pre-catch node uses it.
+  if (n_pre < 0 || n_pre > kMaxMpcNodes - n_stop || !rtc::IsFiniteNonNegative(params.dt_pre) ||
+      (n_pre > 0 && !FinitePositive(params.dt_pre))) {
     return DecelMpcReason::kParamsInvalid;
   }
   const int n_nodes = n_pre + n_stop;
@@ -595,7 +599,8 @@ bool DecelMpc::Linearize() noexcept {
       c_tilde_.segment(o, nn).noalias() += d_scaled_.block(0, col + nn, nn, nn) * work_n2_;
       c_tilde_.segment(o, nn).noalias() += d_scaled_.block(0, col + 2 * nn, nn, nn) * work_n3_;
     }
-    if (w_perp_on_) {
+    // The stop path starts at the catch node: w_⊥ skips the pre-catch nodes.
+    if (w_perp_on_ && k >= n_pre_) {
       j6_.setZero();
       pinocchio::computeFrameJacobian(model_, data_, qr_.col(k), frame_,
                                       pinocchio::LOCAL_WORLD_ALIGNED, j6_);
@@ -645,10 +650,13 @@ void DecelMpc::AssembleTorqueRowsDense() noexcept {
 
 void DecelMpc::AssemblePerp() noexcept {
   // ½ w_⊥ Σ_k ‖r_k + L_k (ĝ_{q,k}ᵀ ⊗ I) z‖² — a position-only node term at
-  // every node, through the same routine the catch terms use.
+  // every node of the STOP segment (k ≥ k_c; all of 1..N when n_pre = 0),
+  // through the same routine the catch terms use. The line through p_c is
+  // where the hand stops, not how it gets there: on the pre-catch nodes the
+  // term would pull the whole approach onto that line.
   const Eigen::Index nn = n_;
   const Eigen::Matrix3d w = params_.w_perp * Eigen::Matrix3d::Identity();
-  for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+  for (Eigen::Index k = std::max<Eigen::Index>(1, n_pre_); k <= n_nodes_; ++k) {
     perp_l_ = l_perp_.middleCols(nn * k, nn);
     const Eigen::Vector3d r = r_perp_.segment<3>(3 * k);
     if (params_.reference_assembly) {
@@ -985,11 +993,17 @@ DecelMpcReason DecelMpc::RunQp(tsid::QPData& qp, int& status, int& iterations) n
     // The wrapper reports non-finite iterates as not converged; kept as its
     // own reason because a pre-solve answer becomes x̄ and feeds the max/min
     // of the trust-region bounds, where a NaN would drop the row (NUM-7).
-    solver_.ResetWarmStart();
+    ResetSolver();
     return res.non_finite ? DecelMpcReason::kSolutionNonFinite : DecelMpcReason::kQpFailed;
   }
+  solver_warm_ = true;
   z_ = res.x_opt.head(nz_);
   return DecelMpcReason::kNone;
+}
+
+void DecelMpc::ResetSolver() noexcept {
+  solver_.ResetWarmStart();
+  solver_warm_ = false;
 }
 
 void DecelMpc::TrajectoryFromZ() noexcept {
@@ -1026,6 +1040,7 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
   out.iterations = 0;
   out.presolve_iterations = 0;
   out.qp_status = -1;
+  out.cold_retried = false;
   const auto fail = [&out](DecelMpcReason r) noexcept {
     out.reason = r;
     out.valid = false;
@@ -1168,7 +1183,7 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
     // ProxQP report PRIMAL_INFEASIBLE on feasible kinematic stops (~7 % of
     // random entry states in the timing fixture). Cold here; the full solve
     // that follows warm-starts from this one.
-    solver_.ResetWarmStart();
+    ResetSolver();
     int status = -1;
     int iters = 0;
     const DecelMpcReason why = RunQp(qp_pre_, status, iters);
@@ -1241,7 +1256,9 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
       AssembleCatch();
     }
     // Last, so that a trust-region rejection has run the WHOLE condensing — the
-    // path the allocation gate measures up to the QP.
+    // path the allocation gate measures up to the QP. The price is one
+    // condensing on that rejection; most conflicts are caught earlier, by the
+    // x_0 check before the free response.
     if (!AssembleBounds(qp_main_, true)) {
       out.condense_us = MicrosSince(t0);
       return fail(DecelMpcReason::kTrustRegionConflict);
@@ -1256,9 +1273,19 @@ bool DecelMpc::Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept {
     int iters = 0;
     if (in.cold_start) {
       // Only here: every rejection above leaves the solver as it was.
-      solver_.ResetWarmStart();
+      ResetSolver();
     }
-    const DecelMpcReason why = RunQp(qp_main_, status, iters);
+    const bool warm = solver_warm_;
+    DecelMpcReason why = RunQp(qp_main_, status, iters);
+    if (why != DecelMpcReason::kNone && warm) {
+      // Iterates left by ANOTHER problem (the caller did not set cold_start on
+      // a new plan) make ProxQP report a feasible QP infeasible — about a
+      // quarter of the solves in the timing fixture. The failed run reset the
+      // solver, so this second run starts from zero; a problem that is really
+      // infeasible fails again and that verdict is returned.
+      out.cold_retried = true;
+      why = RunQp(qp_main_, status, iters);
+    }
     out.solve_us = MicrosSince(t0);
     out.qp_status = status;
     out.iterations = iters;

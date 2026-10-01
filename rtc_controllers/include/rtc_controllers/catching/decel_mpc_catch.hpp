@@ -31,23 +31,39 @@
 
 namespace rtc::catching {
 
+/// @brief The catch frame's pose quantities at the linearisation point —
+///        the constant parts of the three first-order models above.
 struct CatchLinearization {
   Eigen::Vector3d p{Eigen::Vector3d::Zero()};    ///< p_C(q) [m]
   Eigen::Vector3d z{Eigen::Vector3d::UnitZ()};   ///< approach axis R_WC e_z
   Eigen::Vector3d e_a{Eigen::Vector3d::Zero()};  ///< axis error [rad]; zero unless with_axis
 };
 
+/// @brief Linearise the catch frame's position, approach-axis error and point
+///        velocity at (q, v), in LOCAL_WORLD_ALIGNED.
+/// @param model          the arm (nq == nv)
+/// @param data           pinocchio workspace of `model`; its kinematics are
+///                       overwritten (oMf holds the pose at q on return)
+/// @param frame          catch frame index in `model`
+/// @param q              joint positions of the linearisation point [rad], size n
+/// @param v              joint velocities of the linearisation point [rad/s],
+///                       size n; read when with_velocity
 /// @param a_d            desired approach axis (unit, world); read when with_axis
 /// @param axis_theta_max largest ‖e_a‖ the axis model is trusted at [rad]
 /// @param with_axis      compute e_a and l_a (else both are left untouched)
 /// @param with_velocity  compute h_v (else left untouched)
-/// @param[out] j_v, j_w  linear / angular rows of the frame Jacobian (3 × n)
+/// @param j6_work        6 × n scratch (the frame Jacobian)
+/// @param[out] j_v       linear rows of the frame Jacobian, ∂p_C/∂q (3 × n)
+/// @param[out] j_w       angular rows of the frame Jacobian (3 × n)
 /// @param[out] l_a       J_a J_ω (3 × n)
 /// @param[out] h_v       ∂_q[J_v(q) v] (3 × n)
 /// @param dv_work        3 × n scratch (pinocchio's ∂/∂v output)
+/// @param[out] out       p_C, the approach axis and e_a at q
 /// @return kNone; kDimMismatch on a size mismatch; kCatchAxisOutOfRange when
 ///         a_d is not unit, ‖e_a‖ > axis_theta_max, or the axes are
 ///         antiparallel (the rotation axis is undefined there).
+/// @note RT-safe: no heap, noexcept. Every matrix argument must already be
+///       sized; the outputs are unspecified when the return is not kNone.
 [[nodiscard]] DecelMpcReason LinearizeCatchAt(
     const pinocchio::Model& model, pinocchio::Data& data, pinocchio::FrameIndex frame,
     const Eigen::Ref<const Eigen::VectorXd>& q, const Eigen::Ref<const Eigen::VectorXd>& v,

@@ -46,10 +46,12 @@ using rtc::catching::DecelMpcReasonName;
 using rtc::catching::DecelMpcResult;
 using rtc::testing::decel::ArmModel;
 using rtc::testing::decel::LimitsFromModel;
+using rtc::testing::decel::Rank;
 using rtc::testing::decel::RealArm6;
 using rtc::testing::decel::RealArm7;
 using rtc::testing::decel::RestInput;
 using rtc::testing::decel::Synthetic6R;
+using rtc::testing::decel::UseAsReference;
 
 // ── Golden regression: the E1-F01 problem is untouched ───────────────────────
 // The values below were captured from the build of `main` at edc0fa4e, BEFORE
@@ -456,13 +458,6 @@ Eigen::Matrix3d SkewWeight(double a, double b, double c) {
   return 0.5 * (m + m.transpose());
 }
 
-int Rank(const Eigen::MatrixXd& a) {
-  const Eigen::JacobiSVD<Eigen::MatrixXd> svd(a);
-  const Eigen::VectorXd& s = svd.singularValues();
-  const double tol = 1e-10 * std::max(1.0, s.size() > 0 ? s[0] : 0.0);
-  return static_cast<int>((s.array() > tol).count());
-}
-
 // Rest-to-rest minimum-jerk reach from q0 to q1 arriving AT the catch node,
 // held after it; x_0 on it. What a planner would hand the first solve of a plan.
 void ReachReference(const DecelMpc& mpc, const Eigen::VectorXd& q0, const Eigen::VectorXd& q1,
@@ -485,13 +480,6 @@ void ReachReference(const DecelMpc& mpc, const Eigen::VectorXd& q0, const Eigen:
   in.q0 = q0;
   in.qd0 = Eigen::VectorXd::Zero(n);
   in.qdd0 = Eigen::VectorXd::Zero(n);
-}
-
-void UseAsReference(const DecelMpcResult& r, DecelMpcInput& in) {
-  in.q_ref = r.q;
-  in.qd_ref = r.qd;
-  in.qdd_ref = r.qdd;
-  in.reference_valid = true;
 }
 
 // ── 1. Grid ──────────────────────────────────────────────────────────────────
@@ -613,6 +601,14 @@ TEST(DecelMpcApproach, InitValidatesTheGridAndTheCatchParameters) {
   p = GridParams(kSmallGrid);
   p.dt_pre = kNan;
   EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << "dt_pre NaN";
+  // dt_pre enters the node times even when no pre-catch node uses it: a core
+  // that accepted a non-finite one would report a good Init and fail every Solve.
+  ASSERT_EQ(init(DecelMpcParams{}), DecelMpcReason::kNone);
+  for (const double bad : {kNan, kInf, -0.05}) {
+    p = DecelMpcParams{};
+    p.dt_pre = bad;
+    EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << "dt_pre " << bad << " with n_pre = 0";
+  }
   p = DecelMpcParams{};
   p.catch_terms = true;  // no pre-catch node: the catch node would be x_0
   EXPECT_EQ(init(p), DecelMpcReason::kParamsInvalid) << "catch_terms without n_pre";
@@ -899,6 +895,113 @@ INSTANTIATE_TEST_SUITE_P(Terms, CatchCostOrder,
                          [](const ::testing::TestParamInfo<TermCase>& i) {
                            return std::string(i.param.name);
                          });
+
+// The stop-path term w_⊥ on a grid with pre-catch nodes. The cost it models is
+// the off-line distance over the STOP segment only (nodes k_c..N): the line
+// through p_c is where the hand stops, not how it approaches. Same construction
+// as CatchCostOrder — the term is the difference of two cores, and the
+// reference is the trajectory of z* itself, so every node's linear model is
+// exact there and the two costs differ by O(h²). A term that also covered the
+// pre-catch nodes leaves an O(h) error. The grid has a LONG pre-catch part so
+// those nodes carry a measurable share of the cost change, and the step is
+// small so the O(h²) error sits far below that share.
+TEST(DecelMpcApproach, StopPathTermCoversTheStopSegmentOnly) {
+  const ArmModel arm = Synthetic6R();
+  const int n = arm.model->nv;
+  DecelMpcParams off = GridParams(Grid{6, 0.1, 4, 0.05, 1, {1, 1, 2}});
+  off.rho_tau = 0.0;
+  off.w_delta = 0.0;
+  off.delta_tr = kInf;
+  DecelMpcParams on = off;
+  on.w_perp = 300.0;
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model);
+  DecelMpc with, without;
+  ASSERT_EQ(with.Init(*arm.model, arm.frame, on, lim), DecelMpcReason::kNone);
+  ASSERT_EQ(without.Init(*arm.model, arm.frame, off, lim), DecelMpcReason::kNone);
+  const int kc = with.CatchNode();
+  const int N = with.NumNodes();
+  const int nb = with.NumBlocks();
+  const int nu = n * nb;
+  ASSERT_GT(kc, 1);
+
+  DecelMpcInput in = RestInput(arm.q_nominal);
+  in.qd0 << 0.20, -0.10, 0.15, -0.20, 0.10, 0.05;
+  in.qdd0 << 0.5, -0.3, 0.4, 0.2, -0.5, 0.3;
+  const auto node_q = [&](const Eigen::VectorXd& z, int k) {
+    const double t = with.NodeTime(k);
+    Eigen::VectorXd q = in.q0 + t * in.qd0 + 0.5 * t * t * in.qdd0;
+    for (int b = 0; b < nb; ++b) {
+      q += with.StageGain(0, k, b) * z.segment(b * n, n);
+    }
+    return q;
+  };
+  Eigen::VectorXd z_star(nu), z_dir(nu);
+  for (int b = 0; b < nb; ++b) {
+    for (int j = 0; j < n; ++j) {
+      z_star[b * n + j] = 0.004 * std::sin(0.9 * b + 0.5 * j + 0.3);
+      z_dir[b * n + j] = 4e-6 * std::cos(1.7 * b + 0.8 * j + 0.1);
+    }
+  }
+  in.q_ref.resize(n, N + 1);
+  for (int k = 0; k <= N; ++k) {
+    in.q_ref.col(k) = node_q(z_star, k);
+  }
+  in.qd_ref.setZero(n, N + 1);
+  in.qdd_ref.setZero(n, N + 1);
+  in.reference_valid = true;
+
+  pinocchio::Data data(*arm.model);
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n);
+  in.p_c = CatchPoseAt(arm, data, node_q(z_star, kc), zero).p + Eigen::Vector3d(0.03, -0.02, 0.04);
+  in.d_hat = Eigen::Vector3d(0.3, -0.5, 0.8).normalized();
+  const Eigen::Matrix3d p_perp = Eigen::Matrix3d::Identity() - in.d_hat * in.d_hat.transpose();
+
+  DecelMpcResult r_on, r_off;
+  with.ResizeResult(r_on);
+  without.ResizeResult(r_off);
+  // The QP itself is not the subject; both are assembled before it runs.
+  (void)with.Solve(in, r_on);
+  (void)without.Solve(in, r_off);
+  const Eigen::MatrixXd h_c =
+      with.MainQp().H.topLeftCorner(nu, nu) - without.MainQp().H.topLeftCorner(nu, nu);
+  const Eigen::VectorXd g_c = with.MainQp().g.head(nu) - without.MainQp().g.head(nu);
+  ASSERT_GT(h_c.norm(), 0.0) << "the stop-path term added nothing";
+
+  // The off-line cost summed over nodes k_first..N.
+  const auto f_nl = [&](const Eigen::VectorXd& z, int k_first) {
+    double f = 0.0;
+    for (int k = k_first; k <= N; ++k) {
+      const Eigen::Vector3d r = p_perp * (CatchPoseAt(arm, data, node_q(z, k), zero).p - in.p_c);
+      f += 0.5 * on.w_perp * r.squaredNorm();
+    }
+    return f;
+  };
+  const auto f_lin = [&](const Eigen::VectorXd& z) { return 0.5 * z.dot(h_c * z) + g_c.dot(z); };
+  double change = 0.0;
+  const auto error_at = [&](double h) {
+    const Eigen::VectorXd z = z_star + h * z_dir;
+    change = f_nl(z, kc) - f_nl(z_star, kc);
+    return std::abs((f_lin(z) - f_lin(z_star)) - change);
+  };
+  const double e1 = error_at(1.0);
+  const double change1 = std::abs(change);
+  const double e2 = error_at(0.5);
+  // The pre-catch nodes' share of the cost change: the scale of the O(h) error
+  // a term over ALL nodes leaves. It must be measurable, and the error must
+  // sit far below it.
+  const Eigen::VectorXd z1 = z_star + z_dir;
+  const double pre_change =
+      std::abs((f_nl(z1, 1) - f_nl(z_star, 1)) - (f_nl(z1, kc) - f_nl(z_star, kc)));
+  ASSERT_GT(change1, 1e-6) << "the cost did not move — nothing is being compared";
+  ASSERT_GT(e1, 1e-10) << "the error is below what can be measured";
+  ASSERT_GT(pre_change, 1e-2 * change1) << "the pre-catch nodes barely move the cost";
+  EXPECT_LT(e1, 0.1 * pre_change) << "the term reaches the pre-catch nodes (or is wrong at first "
+                                     "order): e(h)="
+                                  << e1 << " change=" << change1;
+  const double ratio = e1 / e2;
+  EXPECT_GT(ratio, 3.0) << "e(h)=" << e1 << " e(h/2)=" << e2;
+  EXPECT_LT(ratio, 5.5) << "e(h)=" << e1 << " e(h/2)=" << e2;
+}
 
 // ── 4. Structured assembly == dense assembly, catch terms included ───────────
 
@@ -1646,8 +1749,11 @@ TEST(CatchPositionWeightTest, RejectsNonFiniteAndNonPositiveArguments) {
 //               reference is the old nodes 1..N, x_0 the old node 1, but the
 //               solver's iterates cannot follow — started from zero;
 //   adv_stale   the same, started from whatever that core solved last (the
-//               previous sample — another throw). Recorded to show which of
-//               the two a planner should do.
+//               previous sample — another throw). About a quarter of these
+//               warm runs fail and the core retries them from zero
+//               (cold_retried), so the series shows what leaving cold_start
+//               off costs.
+// No solve may fail (MD-51) — that is asserted; the times are not.
 // The full table needs RTC_DECEL_MPC_TIMING_FULL=1 (200 samples per grid); the
 // default run is a smoke of the same code.
 
@@ -1669,12 +1775,14 @@ const TimingGrid kTimingGrids[] = {
 struct Series {
   std::vector<double> total_us, solve_us, iters;
   int failures{0};
+  int retried{0};
   std::string failure_log;
 
   void Add(const DecelMpcResult& r) {
     total_us.push_back(r.linearize_us + r.condense_us + r.solve_us);
     solve_us.push_back(r.solve_us);
     iters.push_back(r.iterations);
+    retried += r.cold_retried ? 1 : 0;
   }
 
   void Fail(const DecelMpcResult& r) {
@@ -1697,12 +1805,14 @@ void ReportSeries(const std::string& key, const Series& s) {
   ::testing::Test::RecordProperty(key + ".iterations.p99",
                                   static_cast<int>(Percentile(s.iters, 0.99)));
   ::testing::Test::RecordProperty(key + ".failures", s.failures);
+  ::testing::Test::RecordProperty(key + ".cold_retried", s.retried);
+  EXPECT_EQ(s.failures, 0) << key << ":" << s.failure_log;
   ::testing::Test::RecordProperty(key + ".samples", static_cast<int>(s.total_us.size()));
   RecordMicros(key + ".solve_us.p50", Percentile(s.solve_us, 0.50));
   std::printf(
-      "[timing] %-22s n=%3zu fail=%2d | total p50 %7.0f p99 %7.0f max %7.0f us (QP p50 "
-      "%7.0f) | iter p50 %3.0f p99 %3.0f%s%s\n",
-      key.c_str(), s.total_us.size(), s.failures, Percentile(s.total_us, 0.5),
+      "[timing] %-22s n=%3zu fail=%2d retried=%3d | total p50 %7.0f p99 %7.0f max %7.0f us (QP "
+      "p50 %7.0f) | iter p50 %3.0f p99 %3.0f%s%s\n",
+      key.c_str(), s.total_us.size(), s.failures, s.retried, Percentile(s.total_us, 0.5),
       Percentile(s.total_us, 0.99), Percentile(s.total_us, 1.0), Percentile(s.solve_us, 0.5),
       Percentile(s.iters, 0.5), Percentile(s.iters, 0.99), s.failures > 0 ? " | failures:" : "",
       s.failure_log.c_str());
@@ -1735,6 +1845,39 @@ void TimingCatchParams(DecelMpcParams& p, bool with_slack) {
   }
 }
 
+// The throws of the measurement, from a fixed seed: the first-solve input of
+// each (the reach reference to a random reachable posture, the ball there).
+struct ThrowSampler {
+  std::mt19937 rng{42};
+  std::uniform_real_distribution<double> uni{-1.0, 1.0};
+  std::uniform_real_distribution<double> frac{0.3, 1.0};
+
+  DecelMpcInput Next(const ArmModel& arm, const DecelMpcLimits& lim, const DecelMpcParams& p,
+                     const DecelMpc& mpc, pinocchio::Data& data, const Eigen::Matrix3d& w_p) {
+    const int n = arm.model->nv;
+    const double t_catch = mpc.NodeTime(mpc.CatchNode());
+    // A target the velocity box reaches: the minimum-jerk peak 1.875·d/T stays
+    // under 0.9·η_v·q̇_max (a faster reference cannot be followed inside the
+    // trust region and is not a plan a planner should hand over).
+    Eigen::VectorXd q_t = arm.q_nominal;
+    for (int j = 0; j < n; ++j) {
+      const double cap = 0.9 * p.eta_v * lim.qd_max[j] * t_catch / 1.875;
+      const double d = (uni(rng) < 0.0 ? -1.0 : 1.0) * frac(rng) * cap;
+      q_t[j] = std::clamp(arm.q_nominal[j] + d, lim.q_min[j] + 0.15, lim.q_max[j] - 0.15);
+    }
+    const CatchPose target = CatchPoseAt(arm, data, q_t, Eigen::VectorXd::Zero(n));
+    DecelMpcInput in;
+    ReachReference(mpc, arm.q_nominal, q_t, in);
+    in.p_b = target.p + 0.01 * Eigen::Vector3d(uni(rng), uni(rng), uni(rng));
+    in.a_d = TiltedAxis(target.z, 0.05, Eigen::Vector3d(uni(rng), uni(rng), uni(rng) + 2.0));
+    in.v_b = -(4.5 + 1.5 * uni(rng)) * in.a_d;  // a_d = −v̂_b/‖v̂_b‖ (formulation §0.2)
+    in.w_p = w_p;
+    in.w_delta_scale = 0.0;
+    in.cold_start = true;
+    return in;
+  }
+};
+
 // A change to the measured problem: its parameters, its inputs, or both.
 struct TimingVariant {
   std::function<void(DecelMpcParams&)> params;
@@ -1764,40 +1907,21 @@ void RunGridTiming(const ArmModel& arm, const DecelMpcLimits& lim, const TimingG
   mpc.ResizeResult(res_same);
   adv_cold.ResizeResult(res_adv);
   const int N = mpc.NumNodes();
-  const double t_catch = mpc.NodeTime(mpc.CatchNode());
   ::testing::Test::RecordProperty(key + ".n_vars", static_cast<int>(mpc.MainQp().H.rows()));
   ::testing::Test::RecordProperty(key + ".n_ineq", static_cast<int>(mpc.MainQp().C.rows()));
 
   Eigen::Matrix3d w_p;
   ASSERT_TRUE(
       rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, w_p));
-  std::mt19937 rng(42);
-  std::uniform_real_distribution<double> uni(-1.0, 1.0);
-  std::uniform_real_distribution<double> frac(0.3, 1.0);
+  ThrowSampler sampler;
+  std::mt19937& rng = sampler.rng;
+  std::uniform_real_distribution<double>& uni = sampler.uni;
   pinocchio::Data data(*arm.model);
-  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n);
   Series cold, warm_same, s_adv_cold, s_adv_stale;
   std::vector<double> pos_err_mm, overshoot;
   int slack_active = 0;
   for (int i = 0; i < n_samples; ++i) {
-    // A target the velocity box reaches: the minimum-jerk peak 1.875·d/T stays
-    // under 0.9·η_v·q̇_max (a faster reference cannot be followed inside the
-    // trust region and is not a plan a planner should hand over).
-    Eigen::VectorXd q_t = arm.q_nominal;
-    for (int j = 0; j < n; ++j) {
-      const double cap = 0.9 * p.eta_v * lim.qd_max[j] * t_catch / 1.875;
-      const double d = (uni(rng) < 0.0 ? -1.0 : 1.0) * frac(rng) * cap;
-      q_t[j] = std::clamp(arm.q_nominal[j] + d, lim.q_min[j] + 0.15, lim.q_max[j] - 0.15);
-    }
-    const CatchPose target = CatchPoseAt(arm, data, q_t, zero);
-    DecelMpcInput in;
-    ReachReference(mpc, arm.q_nominal, q_t, in);
-    in.p_b = target.p + 0.01 * Eigen::Vector3d(uni(rng), uni(rng), uni(rng));
-    in.a_d = TiltedAxis(target.z, 0.05, Eigen::Vector3d(uni(rng), uni(rng), uni(rng) + 2.0));
-    in.v_b = -(4.5 + 1.5 * uni(rng)) * in.a_d;  // a_d = −v̂_b/‖v̂_b‖ (formulation §0.2)
-    in.w_p = w_p;
-    in.w_delta_scale = 0.0;
-    in.cold_start = true;
+    DecelMpcInput in = sampler.Next(arm, lim, p, mpc, data, w_p);
     if (variant.input) {
       variant.input(in);
     }
@@ -1879,6 +2003,70 @@ void RunGridTiming(const ArmModel& arm, const DecelMpcLimits& lim, const TimingG
       key.c_str(), static_cast<long>(mpc.MainQp().H.rows()),
       static_cast<long>(mpc.MainQp().C.rows()), Percentile(pos_err_mm, 0.5),
       Percentile(pos_err_mm, 0.99), slack_active, cold.total_us.size(), Percentile(overshoot, 1.0));
+}
+
+// A warm solve from ANOTHER problem's iterates: ProxQP calls a feasible QP
+// infeasible on about a quarter of these (plan §8). The core retries from zero,
+// so a caller that left cold_start off on a new throw still gets the plan — the
+// one a cold solve gives. A QP that really is infeasible fails both runs.
+TEST(DecelMpcApproach, AStaleWarmStartIsRetriedCold) {
+  const ArmModel arm = RealArm7();
+  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
+  DecelMpcParams p = GridParams(kTimingGrids[4].grid);
+  TimingCatchParams(p, false);
+  DecelMpc stale, fresh;
+  ASSERT_EQ(stale.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
+  ASSERT_EQ(fresh.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
+  DecelMpcResult r_stale, r_fresh;
+  stale.ResizeResult(r_stale);
+  fresh.ResizeResult(r_fresh);
+  Eigen::Matrix3d w_p;
+  ASSERT_TRUE(
+      rtc::catching::CatchPositionWeight(SkewWeight(1e-4, 4e-4, 2.5e-5), 1.0, 0.01, 1e4, w_p));
+  ThrowSampler sampler;
+  pinocchio::Data data(*arm.model);
+  int retried = 0;
+  double worst = 0.0;
+  for (int i = 0; i < 24; ++i) {
+    DecelMpcInput in = sampler.Next(arm, lim, p, stale, data, w_p);
+    ASSERT_TRUE(fresh.Solve(in, r_fresh)) << i << " " << DecelMpcReasonName(r_fresh.reason);
+    EXPECT_FALSE(r_fresh.cold_retried) << i << ": a cold solve has nothing to retry";
+    in.cold_start = false;  // the solver still holds the previous throw's iterates
+    ASSERT_TRUE(stale.Solve(in, r_stale)) << i << " " << DecelMpcReasonName(r_stale.reason);
+    if (i == 0) {
+      EXPECT_FALSE(r_stale.cold_retried) << "no iterates to be misled by yet";
+    }
+    retried += r_stale.cold_retried ? 1 : 0;
+    worst = std::max(worst, (r_stale.q - r_fresh.q).cwiseAbs().maxCoeff());
+  }
+  ASSERT_GT(retried, 0) << "no stale warm start failed: the fixture does not reach the retry";
+  RecordProperty("cold_retried_of_24", retried);
+  EXPECT_LE(worst, 1e-4) << "the same QP has one solution, however the solver was started [rad]";
+
+  // Really infeasible: at the upper edge of the box, moving outward at the
+  // velocity limit — node 1 cannot stay inside whatever the jerk. The solver
+  // is warm (the loop's last solve), so both runs happen and both fail.
+  const DecelMpcResult before = r_stale;
+  DecelMpcInput edge = RestInput(arm.q_nominal);
+  edge.q0[3] = lim.q_max[3] - p.m_q - 1e-9;
+  edge.qd0[3] = p.eta_v * lim.qd_max[3];
+  edge.q_ref = edge.q0.replicate(1, stale.NumNodes() + 1);
+  edge.qd_ref.setZero(arm.model->nv, stale.NumNodes() + 1);
+  edge.qdd_ref.setZero(arm.model->nv, stale.NumNodes() + 1);
+  edge.reference_valid = true;
+  const CatchPose here = CatchPoseAt(arm, data, edge.q0, Eigen::VectorXd::Zero(arm.model->nv));
+  edge.p_b = here.p;
+  edge.a_d = here.z;
+  edge.v_b = -5.0 * here.z;
+  edge.w_p = w_p;
+  EXPECT_FALSE(stale.Solve(edge, r_stale));
+  EXPECT_EQ(r_stale.reason, DecelMpcReason::kQpFailed) << DecelMpcReasonName(r_stale.reason);
+  EXPECT_TRUE(r_stale.cold_retried);
+  EXPECT_EQ(r_stale.q, before.q) << "fail-closed: the trajectory is the last good one";
+  // The same input on a cold solver fails once, without a retry.
+  EXPECT_FALSE(stale.Solve(edge, r_stale));
+  EXPECT_EQ(r_stale.reason, DecelMpcReason::kQpFailed) << DecelMpcReasonName(r_stale.reason);
+  EXPECT_FALSE(r_stale.cold_retried) << "the failed run already reset the solver";
 }
 
 TEST(DecelMpcApproachTiming, GridTable7R) {
