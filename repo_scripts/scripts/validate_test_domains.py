@@ -6,12 +6,24 @@ PACKAGES in parallel, so two packages sharing a domain put their participants
 on the same discovery bus and the same Fast DDS shared-memory port objects
 (`/dev/shm/fastrtps_port<N>` + its named mutex). #401 is what that costs: a
 suite hung inside rmw endpoint create/destroy until ctest killed it at 60 s,
-leaving no result file. Within a package the risk does not arise -- ctest runs
-that package's tests sequentially -- so the invariant is per package, not per
-target:
+leaving no result file. Within a package the risk does not arise while ctest
+runs that package's tests sequentially -- so the invariant is per package, not
+per target:
 
-    (1) a ROS_DOMAIN_ID claim is owned by exactly one package, and
-    (2) a test that opens a participant makes such a claim at all.
+    (1) a ROS_DOMAIN_ID claim is owned by exactly one package,
+    (2) a test that opens a participant makes such a claim at all, and
+    (3) in a package that runs its ctest in parallel, every claimant holds the
+        lock of its domain.
+
+(3) is what "sequentially" turns into once it stops being true. A package opts
+into parallel ctest with a `colcon.pkg` at its root (`ctest-args: ["-j", "4"]`;
+colcon appends it to every `colcon test` of that package). From then on two
+tests of that package that share its one domain DO overlap, on one discovery
+bus and one SHM port -- #401 again, inside the package. ctest's RESOURCE_LOCK
+is the per-target half the per-package claim never needed: tests holding the
+same lock never run at once. The lock is named after the domain
+(`ros_domain_<n>`), so the claim and the lock cannot drift apart unnoticed, and
+RUN_SERIAL (the test runs with nothing beside it) satisfies the rule too.
 
 (2) is the mirror image of (1) and was the larger hole. Uniqueness only looks
 at packages that claimed something; the packages that claim NOTHING all run on
@@ -394,6 +406,133 @@ def check(
     return problems
 
 
+# ── Parallel-ctest axis ────────────────────────────────────────────────────
+# `colcon.pkg` is read as text, like everything else here: the value after the
+# `ctest-args` key, up to the next key, searched for ctest's job option. Both
+# YAML spellings colcon accepts end up as the same tokens.
+CTEST_ARGS_RE = re.compile(r"^ctest-args\s*:(.*?)(?=^\S|\Z)", re.M | re.S)
+CTEST_JOBS_RE = re.compile(
+    r"(?<![\w-])(?:-j|--parallel)(?![\w-])[\s\"',\[\]-]*(\d+)?|(?<![\w-])-j(\d+)"
+)
+SET_PROPS_RE = re.compile(r"\bset_tests_properties\s*\(")
+TEST_NAME_RE = re.compile(r"\bTEST_NAME\s+(\S+)")
+TRUE_VALUES = {"TRUE", "ON", "1", "YES", "Y"}
+
+
+def parallel_ctest_jobs(colcon_pkg_text: str) -> int:
+    """Job count a `colcon.pkg` hands ctest. 1 = sequential; 0 = `-j` with no
+    number, which ctest reads as "as many as it likes"."""
+    text = "\n".join(strip_comment(line) for line in colcon_pkg_text.splitlines())
+    block = CTEST_ARGS_RE.search(text)
+    if not block:
+        return 1
+    jobs = 1
+    for m in CTEST_JOBS_RE.finditer(block.group(1)):
+        digits = m.group(1) or m.group(2)
+        jobs = int(digits) if digits else 0  # the last one wins, as in ctest
+    return jobs
+
+
+def parallel_packages(root: Path) -> dict[str, int]:
+    """package -> ctest job count, for the packages that run ctest in parallel."""
+    found: dict[str, int] = {}
+    for path in sorted(root.rglob("colcon.pkg")):
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        jobs = parallel_ctest_jobs(_text(path))
+        if jobs != 1:
+            found[path.parent.relative_to(root).as_posix() or "<root>"] = jobs
+    return found
+
+
+def held_locks(cmake_text: str) -> dict[str, set[str]]:
+    """test name -> what keeps it from overlapping: its RESOURCE_LOCK names, and
+    "RUN_SERIAL" if it runs alone. From literal `set_tests_properties` calls --
+    a `${variable}` test name is not resolved, so it holds nothing here."""
+    held: dict[str, set[str]] = {}
+    text = _strip_comments(cmake_text)
+    for m in SET_PROPS_RE.finditer(text):
+        tokens = _call_body(text, m.end()).split()
+        if "PROPERTIES" not in tokens:
+            continue
+        split = tokens.index("PROPERTIES")
+        names, props = tokens[:split], tokens[split + 1 :]
+        locks: set[str] = set()
+        for key, value in zip(props[0::2], props[1::2], strict=False):
+            value = value.strip('"')
+            if key == "RESOURCE_LOCK":
+                locks.update(v for v in value.split(";") if v)
+            elif key == "RUN_SERIAL" and value.upper() in TRUE_VALUES:
+                locks.add("RUN_SERIAL")
+        for name in names:
+            held.setdefault(name, set()).update(locks)
+    return held
+
+
+def scan_claims(
+    root: Path,
+) -> tuple[list[tuple[str, str, str, int]], dict[tuple[str, str], set[str]]]:
+    """([(pkg, loc, test name, domain)], (pkg, test name) -> held locks).
+
+    The ctest NAME, not the CMake target: `ament_add_gtest_test(<target>
+    TEST_NAME <name> ...)` registers one binary under several names, and
+    `set_tests_properties` speaks of names.
+    """
+    claims: list[tuple[str, str, str, int]] = []
+    held: dict[tuple[str, str], set[str]] = {}
+    for path in sorted(root.rglob("CMakeLists.txt")):
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        pkg = owning_package(path, root)
+        rel = path.relative_to(root).as_posix()
+        raw = _text(path)
+        text = _strip_comments(raw)
+        for name, locks in held_locks(raw).items():
+            held.setdefault((pkg, name), set()).update(locks)
+        for m in REGISTER_RE.finditer(text):
+            body = _call_body(text, m.end())
+            tokens = body.split()
+            domain = DOMAIN_RE.search(body)
+            if not tokens or not domain:
+                continue
+            named = TEST_NAME_RE.search(body)
+            lineno = text.count("\n", 0, m.start()) + 1
+            claims.append(
+                (
+                    pkg,
+                    f"{rel}:{lineno}",
+                    named.group(1) if named else tokens[0],
+                    int(domain.group(1)),
+                )
+            )
+    return claims, held
+
+
+def lock_check(
+    claims: list[tuple[str, str, str, int]],
+    held: dict[tuple[str, str], set[str]],
+    parallel: dict[str, int],
+) -> list[str]:
+    """Rule (3): in a package that runs ctest in parallel, a test that claims a
+    domain holds that domain's lock (or runs alone)."""
+    problems: list[str] = []
+    for pkg, loc, name, domain in claims:
+        if pkg not in parallel:
+            continue
+        locks = held.get((pkg, name), set())
+        if "RUN_SERIAL" in locks or f"ros_domain_{domain}" in locks:
+            continue
+        jobs = parallel[pkg] or "<unbounded>"
+        problems.append(
+            f"{name} ({loc}) claims ROS_DOMAIN_ID={domain}, and {pkg}/colcon.pkg runs this "
+            f"package's ctest with -j {jobs}: without the lock two claimants of the domain "
+            f"run at once, on one discovery bus and one Fast DDS SHM port (#401, inside "
+            f"the package). Name it in set_tests_properties(... PROPERTIES RESOURCE_LOCK "
+            f"ros_domain_{domain}), with the test name spelled literally"
+        )
+    return problems
+
+
 def render_table(found: dict[int, list[tuple[str, str, int]]]) -> str:
     lines = ["  domain  package (targets)", "  ------  ------------------"]
     for domain in sorted(found):
@@ -553,6 +692,63 @@ def self_test() -> int:
     if PY_ENV_RE.search('os.environ["ROS_DOMAIN_ID"] = str(DOMAIN)'):
         failures.append("PY_ENV_RE accepted a non-literal python claim")
 
+    # ── Parallel-ctest axis: the lock a per-package claim never needed ──
+    for text, expect in (
+        ('ctest-args: ["-j", "4"]\n', 4),
+        ("ctest-args:\n  - --parallel\n  - '6'\n", 6),
+        ('ctest-args: ["-j8"]\n', 8),
+        ('ctest-args: ["-j"]\n', 0),
+        ('ctest-args: ["-j", "4", "-j", "1"]\n', 1),
+        ('ctest-args: ["-R", "test_j"]\n', 1),
+        ('# ctest-args: ["-j", "4"]\n', 1),
+        ('pytest-args: ["-n", "4"]\n', 1),
+        ('ctest-args: ["-R", "x"]\ncmake-args: ["-j", "4"]\n', 1),
+        ("", 1),
+    ):
+        got = parallel_ctest_jobs(text)
+        if got != expect:
+            failures.append(f"parallel_ctest_jobs({text!r}) = {got}, expected {expect}")
+
+    props = held_locks(
+        "set_tests_properties(t_a t_b PROPERTIES RESOURCE_LOCK ros_domain_52)\n"
+        "set_tests_properties(t_b PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)\n"
+        'set_tests_properties(t_c PROPERTIES RESOURCE_LOCK "ros_domain_52;gpu")\n'
+        "# set_tests_properties(t_d PROPERTIES RESOURCE_LOCK ros_domain_52)\n"
+        "set_tests_properties(${target} PROPERTIES RESOURCE_LOCK ros_domain_52)\n"
+        "set_tests_properties(t_e PROPERTIES RUN_SERIAL FALSE)\n"
+    )
+    if props.get("t_a") != {"ros_domain_52"}:
+        failures.append(f"held_locks misread a plain RESOURCE_LOCK: {props.get('t_a')}")
+    if props.get("t_b") != {"ros_domain_52", "RUN_SERIAL"}:
+        failures.append(f"held_locks did not merge two calls on one test: {props.get('t_b')}")
+    if props.get("t_c") != {"ros_domain_52", "gpu"}:
+        failures.append(f"held_locks did not split a quoted lock list: {props.get('t_c')}")
+    if "t_d" in props:
+        failures.append("held_locks counted a commented-out set_tests_properties")
+    if props.get("t_e"):
+        failures.append("held_locks read RUN_SERIAL FALSE as serial")
+
+    def lock(name: str, held: dict, parallel: dict, expect_hits: int) -> None:
+        problems = lock_check([("p", "a:1", "t", 52)], held, parallel)
+        if len(problems) != expect_hits:
+            failures.append(
+                f"{name}: expected {expect_hits} problem(s), got {len(problems)}: {problems}"
+            )
+
+    # The case this axis exists for: the package went parallel, the claimant
+    # holds nothing.
+    lock("claimant without a lock in a parallel package", {}, {"p": 4}, 1)
+    lock("claimant holding its domain's lock", {("p", "t"): {"ros_domain_52"}}, {"p": 4}, 0)
+    lock("claimant that runs alone", {("p", "t"): {"RUN_SERIAL"}}, {"p": 4}, 0)
+    # A lock that is not this domain's excludes the wrong tests.
+    lock("claimant holding another lock", {("p", "t"): {"ros_domain_53"}}, {"p": 4}, 1)
+    # A lock held by the same test name in ANOTHER package is not this one's.
+    lock("lock held in another package", {("q", "t"): {"ros_domain_52"}}, {"p": 4}, 1)
+    # Sequential ctest needs none of this: demanding the lock everywhere would
+    # make the rule noise in the packages it does not concern.
+    lock("claimant without a lock in a sequential package", {}, {}, 0)
+    lock("`-j` with no number is parallel", {}, {"p": 0}, 1)
+
     if failures:
         print("validate_test_domains --self-test FAILED", file=sys.stderr)
         for f in failures:
@@ -581,14 +777,23 @@ def main(argv: list[str] | None = None) -> int:
         found.setdefault(domain, []).append((pkg, loc, 0))
     registrations, with_participants = scan_registrations(root)
     covered = sum(1 for r in registrations if r[3] and r[4])
+    parallel = parallel_packages(root)
+    claims, held = scan_claims(root)
 
     if args.list:
         print(render_table(found))
         print(f"  participant-opening test targets under a claim: {covered}")
+        for pkg in sorted(parallel):
+            locked = sum(1 for c in claims if c[0] == pkg)
+            print(
+                f"  parallel ctest: {pkg} (-j {parallel[pkg] or '<unbounded>'}), "
+                f"{locked} domain claimant(s), each checked for its lock"
+            )
         return 0
 
     problems = check(found, non_literal) + py_problems
     problems += coverage_check(registrations, with_participants)
+    problems += lock_check(claims, held, parallel)
     if problems:
         print("Test DDS domain allocation (issue #401) -- violations:", file=sys.stderr)
         for p in problems:

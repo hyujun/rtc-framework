@@ -1490,6 +1490,53 @@ if(BUILD_TESTING)
   # controller has a row in its header's reset table.
   ament_add_pytest_test(test_catching_reset_table test/test_catching_reset_table.py)
 
+  # ── Parallel ctest ─────────────────────────────────────────────────────────
+  # colcon.pkg runs this package's tests four at a time. Two kinds of test
+  # cannot simply overlap:
+  #
+  # (1) A test that claims a ROS_DOMAIN_ID. The claim is per PACKAGE -- it keeps
+  #     this package's participants off the bus of the packages colcon tests
+  #     beside it, and says nothing about two tests of this package. That was
+  #     safe only because ctest ran them one at a time; overlapped, they share
+  #     the discovery bus and the Fast DDS shared-memory port, which is the hang
+  #     of #401. So every claimant holds the lock of its domain and ctest never
+  #     runs two of them at once. validate_test_domains.py refuses a claimant
+  #     of a parallel package that is missing here.
+  set_tests_properties(
+    test_registered_controllers_have_shipped_config
+    test_demo_inference_alloc
+    test_demo_inference_controller
+    test_demo_inference_urdf
+    test_demo_inference_real_model
+    test_compliance_admittance_coupling
+    test_demo_catching_controller
+    test_demo_catching_alloc_s7
+    test_catching_cm_services
+    test_demo_wbc_tsid_path
+    test_wbc_closed_chain_projection_sharing
+    test_momentum_observer_embedding
+    test_mujoco_native_backend
+    test_catching_traj_input
+    test_catching_tracking
+    test_catching_supervisor_scenarios
+    test_catching_planner_lane
+    test_catching_mpc_role_switch
+    test_udp_hand_native_backend
+    test_controller_target_cb_group_invariant
+    test_payload_estimate_topic
+    PROPERTIES RESOURCE_LOCK ros_domain_52)
+  set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
+  # (2) A test that ASSERTS a measured wall-clock budget (a planner p99, a
+  #     solve-time maximum, a join that must return within 200 ms). It must not
+  #     share the cores with its siblings; RUN_SERIAL gives it the box it had
+  #     while ctest ran one test at a time. Durations that are only recorded
+  #     are not protected -- quote those from a run of that one test.
+  set_tests_properties(
+    test_catching_planner_g3c
+    test_catching_clik_sweep
+    test_catching_planner_lane
+    PROPERTIES RUN_SERIAL TRUE)
+
   # Every gtest binary logs into its own throwaway session directory
   # (test/session_dir_test_env.cpp). A controller configured from a shipped YAML
   # opens CSV logs at on_configure, and without RTC_SESSION_DIR they land in the
