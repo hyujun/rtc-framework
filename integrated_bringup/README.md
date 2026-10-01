@@ -524,7 +524,7 @@ hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.cl
 
 ### DemoWbcController (Index 6)
 
-UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 6-단계 FSM (slots 2 & 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다. Kinematic WBC(CLIK-QP position backbone)/Dynamic WBC(hand τ_ff overlay) 구조와 TSID task/constraint 세부는 [agent_docs/controllers.md](../agent_docs/controllers.md)가 SSoT — 본 절은 bringup 관점(YAML 위치·launch 사용법·GUI 연동)만 다룬다.
+UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 6-단계 FSM (slots 2 & 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다. Kinematic WBC(CLIK-QP position backbone)/Dynamic WBC(hand τ_ff overlay) 구조와 TSID task/constraint 세부는 [docs/controllers.md](../docs/controllers.md) (계약은 [agent_docs/controllers.md](../agent_docs/controllers.md)) — 본 절은 bringup 관점(YAML 위치·launch 사용법·GUI 연동)만 다룬다.
 
 > Extended (closed-chain) 손에서는 제어 모델을 `PinocchioModelBuilder::GetActuatedModel()` 우선으로 선택하고 EOM은 `WbcReducedDynamicsProvider`가 loop-consistent 값으로 대체한다 (위 "Closed-chain hand FK" 절 참조). 비-extended 손은 기존 `GetTreeModel("wbc")` fallback 경로로 byte-for-byte 동일하게 동작한다.
 
@@ -566,11 +566,11 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 #### YAML 구조 (`config/ur5e_p1a/controllers/demo_wbc_controller.yaml`)
 
-주요 최상위 키: `tsid.tasks` (posture/se3_tcp/force/contact_consistency/object_wrench/internal_force/object_se3), `tsid.constraints` (eom/joint_limit/friction_cone/torque_limit), `tsid.contacts.*`/`tsid.force_pi`/`tsid.object_frame` (contact·force-PI·object 옵션), `tsid.phase_presets`, `tsid.wqp.solver`, `integration` (`force_rate_alpha` 등 필수 키), `fsm`, **`arm_dof`** (필수 — 런타임 arm DoF), **`estop.arm_safe_position`** (필수 — 길이가 `arm_dof`와 일치해야 하며 불일치 시 configure 에서 throw), **`mpc`** (`enabled`/`engine`/`max_stale_solutions`/`phase_config_path`+`contact_light_path`+`contact_rich_path`/`riccati.*`). `mpc.enabled: false`가 기본값이라 MPC는 inert이고 TSID가 self-hold한다. 각 키의 의미·기본값·제약은 YAML 자체의 인라인 주석 + [agent_docs/controllers.md](../agent_docs/controllers.md)를 SSoT로 참조.
+주요 최상위 키: `tsid.tasks` (posture/se3_tcp/force/contact_consistency/object_wrench/internal_force/object_se3), `tsid.constraints` (eom/joint_limit/friction_cone/torque_limit), `tsid.contacts.*`/`tsid.force_pi`/`tsid.object_frame` (contact·force-PI·object 옵션), `tsid.phase_presets`, `tsid.wqp.solver`, `integration` (`force_rate_alpha` 등 필수 키), `fsm`, **`arm_dof`** (필수 — 런타임 arm DoF), **`estop.arm_safe_position`** (필수 — 길이가 `arm_dof`와 일치해야 하며 불일치 시 configure 에서 throw), **`mpc`** (`enabled`/`engine`/`max_stale_solutions`/`phase_config_path`+`contact_light_path`+`contact_rich_path`/`riccati.*`). `mpc.enabled: false`가 기본값이라 MPC는 inert이고 TSID가 self-hold한다. 각 키의 의미·기본값·제약은 YAML 자체의 인라인 주석 + [docs/controllers.md](../docs/controllers.md) 참조.
 
 #### MPC 통합 동작
 
-`mpc.enabled: true`일 때 `on_activate`에서 aux 스레드로 MPC 스레드가 기동되며, `mpc.engine`이 `"mock"`(`MockMPCThread` placeholder — 선형 trajectory + identity Riccati gain, TSID self-hold와 bit-identical) 또는 `"handler"`(`HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` — 실제 Aligator ProxDDP solve, 초기화 실패 시 mock으로 자동 폴백)를 선택한다. `rtc::mpc::MPCThread`는 CM RT loop과 같은 `PeriodicRtThread` 기반 timing 인프라를 공유하며, per-MPC-tick 샘플이 `<session>/timing/mpc_timing_log.csv`에 쌓인다. 매 RT tick `ComputeTSIDPosition`이 최신 `(q, v)`를 MPC 스레드에 WriteState하고, MPC solution을 cubic-Hermite 보간한 `q_ref/v_ref/a_ff` + Riccati 피드백을 TSID reference로 주입한다 — solution 부재/stale 시 TSID self-hold로 자동 폴백. Shutdown 순서·dim-mismatch gate 등 구현 세부는 `src/controllers/wbc/` 소스와 [agent_docs/controllers.md](../agent_docs/controllers.md) 참조.
+`mpc.enabled: true`일 때 `on_activate`에서 aux 스레드로 MPC 스레드가 기동되며, `mpc.engine`이 `"mock"`(`MockMPCThread` placeholder — 선형 trajectory + identity Riccati gain, TSID self-hold와 bit-identical) 또는 `"handler"`(`HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` — 실제 Aligator ProxDDP solve, 초기화 실패 시 mock으로 자동 폴백)를 선택한다. `rtc::mpc::MPCThread`는 CM RT loop과 같은 `PeriodicRtThread` 기반 timing 인프라를 공유하며, per-MPC-tick 샘플이 `<session>/timing/mpc_timing_log.csv`에 쌓인다. 매 RT tick `ComputeTSIDPosition`이 최신 `(q, v)`를 MPC 스레드에 WriteState하고, MPC solution을 cubic-Hermite 보간한 `q_ref/v_ref/a_ff` + Riccati 피드백을 TSID reference로 주입한다 — solution 부재/stale 시 TSID self-hold로 자동 폴백. Shutdown 순서·dim-mismatch gate 등 구현 세부는 `src/controllers/wbc/` 소스와 [docs/controllers.md](../docs/controllers.md) 참조.
 
 ##### GraspPhaseManager 연동
 

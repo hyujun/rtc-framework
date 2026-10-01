@@ -164,7 +164,7 @@ Commit 완료 또는 사용자가 task 종료를 알린 후 (상세: [modificati
 ## 12. Reference Docs (read when relevant)
 
 - [architecture.md](agent_docs/architecture.md) — threading, data flow, core types, lifecycle, E-STOP, dep graph
-- [controllers.md](agent_docs/controllers.md) — controller table, gains, FSM, topics, config
+- [controllers.md](agent_docs/controllers.md) — 컨트롤러 계약: 게인 채널, FSM, 토픽 소유, config 로드
 - [modification-guide.md](agent_docs/modification-guide.md) — workflow, adding X 절차, completion checklist, inferential 트리거, housekeeping 상세
 - [design-principles.md](agent_docs/design-principles.md) — `rtc_*` 5 principles, boundary rules
 - [conventions.md](agent_docs/conventions.md) — domain / code / commit conventions, doc requirements

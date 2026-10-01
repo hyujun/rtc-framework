@@ -216,7 +216,7 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
 
 ### 게인 채널 (per-controller ROS 2 parameter)
 
-게인 채널은 **CM 소유가 아니다**. 각 컨트롤러 LifecycleNode (`/<config_key>`) 가 자체 `declare_parameter` + `add_on_set_parameters_callback`로 노출하며, parameter 콜백은 `nrt_callback_executor` 위에서 실행되어 SeqLock writer로 mutate→Store 한다 (RT path는 `Load()` 스냅샷만 사용). 배경·제거된 legacy 토픽·컨트롤러별 노출 항목은 [agent_docs/controllers.md](../agent_docs/controllers.md) §Gains.
+게인 채널은 **CM 소유가 아니다**. 각 컨트롤러 LifecycleNode (`/<config_key>`) 가 자체 `declare_parameter` + `add_on_set_parameters_callback`로 노출하며, parameter 콜백은 `nrt_callback_executor` 위에서 실행되어 SeqLock writer로 mutate→Store 한다 (RT path는 `Load()` 스냅샷만 사용). 계약은 [agent_docs/controllers.md](../agent_docs/controllers.md) §Gains, 배경·제거된 legacy 토픽·사용 예는 [docs/controllers.md](../docs/controllers.md) §Gains.
 
 Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트롤러가 `~/grasp_command` ([rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv)) srv server로 별도 advertise 한다 (active controller만).
 
