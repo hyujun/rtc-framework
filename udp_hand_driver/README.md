@@ -210,7 +210,7 @@ skip 사이클의 동작:
 
 1. **캘리브레이션**: 시작 시 N 샘플로 barometer baseline offset 자동 측정
 2. **전처리**: barometer 정규화 + delta 계산 + FIFO history shift (12 row)
-3. **추론**: per-fingertip ONNX 모델. ONNX 실행은 `rtc::OnnxEngine` (single-input / 3-output) 에 위임. 전·후처리는 할당 없음이지만 ORT `Run()` 은 매 호출 heap 을 할당한다 — RT-1 조건부 수용이며 이 경로의 수용 조건 중 미측정 항목은 [invariants.md](../agent_docs/invariants.md#rt-path-invariants) 가 SSoT
+3. **추론**: per-fingertip ONNX 모델. ONNX 실행은 `rtc::OnnxEngine` (single-input / 3-output) 에 위임. 전·후처리는 할당 없음이지만 ORT `Run()` 은 매 호출 heap 을 할당한다 — RT-1 조건부 수용이며 수용 조건은 [invariants.md](../agent_docs/invariants.md#rt-path-invariants) §알려진 위반 이, 이 경로에서 무엇이 미측정인지는 [invariants-rationale.md](../docs/reference/invariants-rationale.md) §알려진 RT-1 위반의 실측 이 갖는다
 4. **출력**: contact probability (sigmoid), force vector (3), direction vector (3)
 
 > ⚠️ **컨트롤러 capability 일치 의무** — 컨슈머 (integrated_bringup) 의 device YAML

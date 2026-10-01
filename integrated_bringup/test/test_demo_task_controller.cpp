@@ -463,7 +463,7 @@ TEST_P(TaskControllerDlsBinding, LambdaMaxMovesTheCommandInsideTheShell) {
 }
 
 // NUM-1's point-of-use half, which this controller is the first in-tree consumer
-// of (modification-guide §Adding a New Controller item 5). A λ_max below
+// of (modification-guide §Adding a New Controller, gain-floor rule). A λ_max below
 // kMinMaxDamping arriving through set_gains() never passes LoadConfig or the
 // parameter callback, so only the tick's own FloorMaxDamping can catch it: the
 // command must equal the FLOORED one, not the raw one. σ₀ is inflated so λ² is

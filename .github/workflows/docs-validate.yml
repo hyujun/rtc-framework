@@ -65,8 +65,22 @@ jobs:
       - name: Validator self-test
         run: python3 repo_scripts/scripts/validate_docs.py --self-test
 
+      # On a pull request the scan also ratchets the byte budgets against the
+      # base branch. Raising the number in docs_budget.yaml is the cheapest way
+      # to make a size finding go away, and the scan of one tree cannot tell a
+      # raised number from an original one; the base can. The checkout is
+      # shallow, so the base tip is fetched here -- and an unresolvable base is
+      # an error in the script (exit 2), never a skipped check.
       - name: Validate documentation corpus
-        run: python3 repo_scripts/scripts/validate_docs.py
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            python3 repo_scripts/scripts/validate_docs.py --budget-base FETCH_HEAD
+          else
+            python3 repo_scripts/scripts/validate_docs.py
+          fi
 
       # A path-scoped rule whose `paths:` globs match nothing never loads, and the
       # only symptom is guidance quietly not arriving. The Stop hook checks CHANGED

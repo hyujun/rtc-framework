@@ -1,4 +1,6 @@
-# Anti-Patterns
+# Anti-Patterns — 사례집
+
+> **이 문서는 헌법이 아니다.** 재발 패턴에서 나온 **규범**은 [agent_docs/invariants.md](../../agent_docs/invariants.md) 가 갖는다 — invariant 을 위반한 패턴은 그 invariant 행이, 대응 invariant 가 없는 패턴은 §Anti-pattern 규범 표가 AP ID 로 갖는다. 여기는 그 규범이 생긴 사례 · 증상 · 원인 · 복구 상세다. 둘이 어긋나면 invariants.md 가 옳다. **AP ID 의 정의는 이 문서의 헤더**이며 (validate_docs.py D11), ID 는 재사용하지 않는다.
 
 재발을 방지해야 할 실수 패턴. 각 항목은 동일 구조:
 - **증상**: 무엇이 일어나는가
@@ -10,31 +12,31 @@
 
 ## RT Safety
 
-### AP-RT-1: 정기 tick에서 `RCLCPP_*` 직접 호출 ([invariants.md](invariants.md) RT-3 위반)
+### AP-RT-1: 정기 tick에서 `RCLCPP_*` 직접 호출 ([invariants.md](../../agent_docs/invariants.md) RT-3 위반)
 
 - **증상**: 정기 tick (`control_rate`) 루프에서 지터 스파이크, rosout queue 포화 시 RT overrun → E-STOP. Rate 가 높을수록 폭주가 빠름 (rate-proportional)
 - **원인**: `RCLCPP_*` 매크로가 내부적으로 string format + rosout IPC publish → heap + blocking
-- **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-3` 블록 — 단 one-shot init / THROTTLE 변종은 제외
+- **탐지**: [invariants.md](../../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect id=RT-3` 블록 — 단 one-shot init / THROTTLE 변종은 제외
 - **복구**:
   - one-shot init: 현상 유지 (lifecycle 콜백 / 한 번만 실행되는 fatal 경로)
   - 정기 tick: SPSC → `DrainLog()` aux thread 패턴 (참조: `rtc_controller_manager/src/rt_controller_node_estop.cpp`)
   - throttle 필요: `RCLCPP_*_THROTTLE` + RT-safe msg (단순 format + 기본 타입만)
 
-### AP-RT-2: Quaternion `lerp` ([invariants.md](invariants.md) RT-6 위반)
+### AP-RT-2: Quaternion `lerp` ([invariants.md](../../agent_docs/invariants.md) RT-6 위반)
 
 - **증상**: Non-unit quaternion → 회전축 축소/왜곡, 누적 drift
 - **원인**: `Eigen::Quaterniond::slerp`가 아닌 선형 보간 오용
-- **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-6` 블록
+- **탐지**: [invariants.md](../../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect id=RT-6` 블록
 - **복구**: `q_a.slerp(t, q_b)` 명시
 
-### AP-RT-3: Eigen expression에 `auto` ([invariants.md](invariants.md) RT-5 위반)
+### AP-RT-3: Eigen expression에 `auto` ([invariants.md](../../agent_docs/invariants.md) RT-5 위반)
 
 - **증상**: Expression template lazy-eval + aliasing → 같은 메모리 읽고 쓰기 → 결과 쓰레기
 - **원인**: `auto M = A * B;` 는 `Eigen::Product` 를 담고 나중 평가 시 aliasing 가능
-- **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-5` 블록
+- **탐지**: [invariants.md](../../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect id=RT-5` 블록
 - **복구**: 명시 타입 `Eigen::MatrixXd M = A * B;` 또는 `A.noalias()` 명시
 
-### AP-RT-4: RT 경로 `std::lock_guard` ([invariants.md](invariants.md) RT-4 위반)
+### AP-RT-4: RT 경로 `std::lock_guard` ([invariants.md](../../agent_docs/invariants.md) RT-4 위반)
 
 - **증상**: Aux thread가 holding 중이면 RT blocks → 100 µs+ stall
 - **원인**: Priority inheritance 없는 일반 mutex는 RT 태스크가 non-RT를 기다림
@@ -43,7 +45,7 @@
 ### AP-RT-5: 정기 tick에서 unguarded log (AP-RT-1 과 같은 RT-3 축 — AP-RT-1 은 `RCLCPP_*` 호출 자체, 여기는 throttle 없이 반복되는 형태)
 
 - **증상**: 1 tick당 여러 줄 로그 × 정기 tick 주파수 = rate-proportional 폭증
-- **복구**: `RCLCPP_*_THROTTLE(logger, clock, period_ms, "fmt", args...)` — msg는 [invariants.md](invariants.md) RT-3 세부 스펙 준수
+- **복구**: `RCLCPP_*_THROTTLE(logger, clock, period_ms, "fmt", args...)` — msg는 [invariants.md](../../agent_docs/invariants.md) RT-3 세부 스펙 준수
 
 ### AP-RT-6: torn-read snapshot
 
@@ -51,18 +53,18 @@
 - **원인**: `memcpy(&out, &shared, sizeof)` 도중 writer 개입
 - **복구**: `SeqLock<T>` Load (reader-side retry loop), 또는 `std::atomic<T>` (POD만)
 
-### AP-RT-7: RT path 에서 `std::condition_variable` notify/wait ([invariants.md](invariants.md) RT-10 위반)
+### AP-RT-7: RT path 에서 `std::condition_variable` notify/wait ([invariants.md](../../agent_docs/invariants.md) RT-10 위반)
 
 - **증상**: RT producer 가 `cv.notify_one` 시 내부 mutex 보유 → 우선순위 역전 + 비결정 wake latency. wait side 는 명시 mutex lock 보유 (RT-4 결합)
 - **원인**: producer-consumer 통지를 cv 로 구현. 직관적이나 RT 우선순위 보장 안 됨
 - **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (eventfd 로 교체되기 전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
-- **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-10` 블록
+- **탐지**: [invariants.md](../../agent_docs/invariants.md) §위반 탐지 패턴 의 `detect id=RT-10` 블록
 - **복구**:
   - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (eventfd 전환 후 현행) 가 표준 패턴
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
   - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
 
-### AP-RT-8: RT tick 에서 `std::string` 을 값으로 반환하는 접근자 호출 ([invariants.md](invariants.md) RT-1 위반)
+### AP-RT-8: RT tick 에서 `std::string` 을 값으로 반환하는 접근자 호출 ([invariants.md](../../agent_docs/invariants.md) RT-1 위반)
 
 - **증상**: 없다. 이것이 이 항목의 요점이다 — 짧은 이름은 SSO(small-string optimization) 버퍼에 들어가 힙을 안 건드리므로 alloc 게이트도 green 이고 코드도 평범해 보인다. 이름이 SSO 임계(libstdc++ 15 자)를 넘는 순간 RT tick 이 `operator new` 를 부르기 시작하는데, 그때 바뀐 것은 **YAML 의 device group 이름 한 줄**뿐이라 원인이 코드에 없다
 - **원인**: `RTControllerInterface::GetPrimaryDeviceName()` / `GetSecondaryDeviceName()` 은 `std::string` 을 **값으로** 반환한다 (`topic_config_.groups[i].first` 의 복사). 이름으로만 보면 조회 같아 tick 안에서 부르기 쉽다. `GetDeviceNameConfig(name)` 도 그 문자열을 인자로 받으므로 둘은 대개 붙어 다닌다
@@ -74,9 +76,9 @@
 
 ### AP-RTT-1: `realtime_tools` primitive 도입 시 예방 규칙 (dedicated thread / ctor heap / drop 추적)
 
-> **도입 시 적용** — `realtime_tools` 를 쓰지 않는 동안은 아래 grep 이 0건이고, 채택하는 순간부터 이 블록이 구속한다. primitive 선택·금지 기준의 SSoT 는 [invariants.md](invariants.md) §RT pub/sub primitive catalog (`RealtimePublisher::try_publish` / `RealtimeBuffer` 행) 이며, 이 블록은 도입 시 검토할 세 함정만 요약한다.
+> **도입 시 적용** — `realtime_tools` 를 쓰지 않는 동안은 아래 grep 이 0건이고, 채택하는 순간부터 이 블록이 구속한다. primitive 선택·금지 기준의 SSoT 는 [invariants.md](../../agent_docs/invariants.md) §RT pub/sub primitive catalog (`RealtimePublisher::try_publish` / `RealtimeBuffer` 행) 이며, 이 블록은 도입 시 검토할 세 함정만 요약한다.
 
-- **`RealtimePublisher` dedicated thread → layout 파괴**: instance 당 `publishingLoop` 전용 thread 1개 생성 → `thread_config.hpp` `cpu_affinity` layout 초과, RT core 공유 시 cache pollution/선점. 탐지 `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 초과. 복구: (a) 토픽 N개를 SPSC + 단일 publish_thread 멀티플렉싱 (본 repo 기존 패턴), (b) 채택 시 `get_thread()` 로 priority/affinity 명시 ([AGENTS.md](../AGENTS.md) §6 E-7)
+- **`RealtimePublisher` dedicated thread → layout 파괴**: instance 당 `publishingLoop` 전용 thread 1개 생성 → `thread_config.hpp` `cpu_affinity` layout 초과, RT core 공유 시 cache pollution/선점. 탐지 `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 초과. 복구: (a) 토픽 N개를 SPSC + 단일 publish_thread 멀티플렉싱 (본 repo 기존 패턴), (b) 채택 시 `get_thread()` 로 priority/affinity 명시 ([AGENTS.md](../../AGENTS.md) §6 E-7)
 - **`RealtimeBuffer` ctor/reset 을 lifecycle 밖에서 호출**: ctor·`reset()` 가 double buffer 를 `new T()` 2회 → RT-1 위반. ctor/`reset` 은 `on_configure`/`on_cleanup` 에서만. RT path 재구성은 `SeqLock<T>` + writer `Store`
 - **`try_publish` drop 미추적**: `try_publish` 가 false (lock 실패) 반환 시 silent drop. 호출 site 마다 `std::atomic<uint64_t> drop_count_` 증가 + aux thread 주기 publish/log (본 repo SPSC drain 은 logger 가 이미 drop counter 추적)
 
@@ -91,33 +93,27 @@
 
 - **증상**: SMT-on hybrid (NUC13 / NUC14 / i9-13900K) 또는 AMD SMT 시스템에서 RT thread 가 의도와 달리 P-core 의 SMT sibling 에 핀됨. `rt_callback` (slot 2 = cpu 2 = P-core 1 physical) 와 `mpc_main` (slot 3 = cpu 3 = P-core 1 sibling) 이 동일 hardware execution unit 의 두 hyperthread 에 들어가 cache/port contention 발생 — RT 우선순위 우위가 무력화됨
 - **원인**: `ThreadConfig::cpu_core` 는 *slot index* (physical core 번호), `CPU_SET(n, ...)` 의 `n` 은 *logical CPU id*. SMT-off 환경에서만 두 값이 일치하므로 4-core CI mock 만으로는 회귀를 잡을 수 없음
-- **탐지**: `ApplyThreadConfig` / `ApplyThreadConfigWithFallback` / `CheckThreadHealth*` 가 `SlotToLogicalCpu()` 없이 `cfg.cpu_core` 를 `CPU_SET` / `CPU_ISSET` 에 직접 전달하는지:
-
-```detect id=AP-THREAD-slot-mapping
-grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threading/
-# probe:     CPU_SET(cfg.cpu_core, &cpuset);
-# antiprobe:     CPU_SET(SlotToLogicalCpu(cfg.cpu_core), &cpuset);
-```
+- **탐지**: `ApplyThreadConfig` / `ApplyThreadConfigWithFallback` / `CheckThreadHealth*` 가 `SlotToLogicalCpu()` 없이 `cfg.cpu_core` 를 `CPU_SET` / `CPU_ISSET` 에 직접 전달하는지 — 패턴은 [invariants.md](../../agent_docs/invariants.md) §Anti-pattern 규범 의 `detect id=AP-THREAD-slot-mapping` 블록 (사본을 여기 두지 않는다)
 - **복구**: 새 affinity 호출 site 가 추가되면 반드시 `SlotToLogicalCpu(slot)` 또는 `SlotToLogicalCpu(slot, topology)` 를 거쳐 변환. unit test 는 `CpuTopology` mock 으로 직접 주입 (overload 사용)
 - **비고**: 구 AP-RTT-5 (`realtime_tools` 미사용 예방 항목이 아니라 in-tree thread affinity 라이브 결함이라 재분류). detect id `AP-THREAD-slot-mapping` 는 CI (validate_docs.py D7) 가 검증하는 load-bearing 문자열이라 개명해도 유지. 같은 slot→logical 축의 GRUB 설정 통일은 #152
 
 ## Design / Architecture
 
-### AP-ARCH-1: `rtc_*` 패키지에 robot-specific 상수 하드코딩 ([invariants.md](invariants.md) ARCH-1 위반)
+### AP-ARCH-1: `rtc_*` 패키지에 robot-specific 상수 하드코딩 ([invariants.md](../../agent_docs/invariants.md) ARCH-1 위반)
 
 - **증상**: 다른 로봇에서 재사용 불가 → 패키지 fork 압력
-- **탐지**: [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-1 검사 (탐지 SSoT — `6.?dof`/`10.?dof` 가 SE(3) task-space 차원 오탐이라 제외된 이유도 거기 주석에 있다)
+- **탐지**: [.claude/hooks/verify-changes.sh](../../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-1 검사 (탐지 SSoT — `6.?dof`/`10.?dof` 가 SE(3) task-space 차원 오탐이라 제외된 이유도 거기 주석에 있다)
 - **복구**: YAML 주입 또는 template parameter
 
-### AP-ARCH-2: Interface 없이 두 번째 구현 추가 ([invariants.md](invariants.md) ARCH-3 위반)
+### AP-ARCH-2: Interface 없이 두 번째 구현 추가 ([invariants.md](../../agent_docs/invariants.md) ARCH-3 위반)
 
 - **증상**: 세 번째 구현 시 `#ifdef` / switch 지옥
 - **복구**: 첫 두 구현 리팩터 → abstract base + `RTC_REGISTER_*` factory 패턴
 
-### AP-ARCH-3: 역방향 include ([invariants.md](invariants.md) ARCH-4 위반)
+### AP-ARCH-3: 역방향 include ([invariants.md](../../agent_docs/invariants.md) ARCH-4 위반)
 
 - **증상**: `rtc_*` robot-agnostic 훼손
-- **탐지**: [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-4 검사 (대상 integration 패키지 집합을 `package.xml` 에서 자동 도출하므로 패키지 rename 에 따라가지 못하는 하드코딩 glob 이 없다)
+- **탐지**: [.claude/hooks/verify-changes.sh](../../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-4 검사 (대상 integration 패키지 집합을 `package.xml` 에서 자동 도출하므로 패키지 rename 에 따라가지 못하는 하드코딩 glob 이 없다)
 - **복구**: 공개 API만 사용, interface injection
 
 ### AP-ARCH-4: Device boundary 누설 (대응 invariant 없음 — device group 경계는 표로 규정되지 않았다)
@@ -127,11 +123,11 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **탐지**: device_group별 publisher 분리 여부, `SetDeviceTarget(device_idx)` 호출자에서 인덱스 정합
 - **복구**: device_group당 별도 publisher, state/target 모두 `device_idx` tagging
 
-### AP-ARCH-5: Topic QoS depth ≠ 1 ([invariants.md](invariants.md) ARCH-6 위반)
+### AP-ARCH-5: Topic QoS depth ≠ 1 ([invariants.md](../../agent_docs/invariants.md) ARCH-6 위반)
 
 - **증상**: `create_publisher`/`create_subscription` 에 depth 10 (rclcpp 기본값) 또는 `SensorDataQoS()` (기본 depth 5) 를 무심코 사용 → stale 샘플 큐잉
-- **탐지**: [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0b 의 ARCH-6 검사 (non-blocking). 인자 없는 `SensorDataQoS()` 도 대상
-- **복구**: depth 를 1 로. reliability/durability 는 유지하고 depth 필드만 이동 (`SensorDataQoS().keep_last(1)`). 다중 샘플 누적이 정당하면 [invariants.md](invariants.md) §Escalation Triggers 의 E-1 로 예외 기록
+- **탐지**: [.claude/hooks/verify-changes.sh](../../.claude/hooks/verify-changes.sh) Phase 0b 의 ARCH-6 검사 (non-blocking). 인자 없는 `SensorDataQoS()` 도 대상
+- **복구**: depth 를 1 로. reliability/durability 는 유지하고 depth 필드만 이동 (`SensorDataQoS().keep_last(1)`). 다중 샘플 누적이 정당하면 [invariants.md](../../agent_docs/invariants.md) §Escalation Triggers 의 E-1 로 예외 기록
 
 ## Process / Drift
 
@@ -142,17 +138,17 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **탐지**: `grep -c <new_pattern>` 예상치 vs 실측 — 대상 파일 목록 명시 후 전수 grep
 - **복구**: complete 체크 전 전수 grep, 대상 파일 목록 명시 후 체크
 
-### AP-PROC-2: Code-only without YAML/README/CMake 동기화 ([invariants.md](invariants.md) PROC-1 위반)
+### AP-PROC-2: Code-only without YAML/README/CMake 동기화 ([invariants.md](../../agent_docs/invariants.md) PROC-1 위반)
 
 - **증상**: 빌드 실패, 파라미터 ParameterUninitializedException, 런타임 NotFound
-- **복구**: [modification-guide.md](modification-guide.md) Completion Checklist 전항목
+- **복구**: [modification-guide.md](../../agent_docs/modification-guide.md) Completion Checklist 전항목
 
 ### AP-PROC-3: 숫자 하드코딩 후 drift
 
 - **증상**: 문서 A = N, 문서 B = N+1, 실측 = N+k (mesh count / 테스트 수 / 패키지 수 등 historical 사례 다수)
 - **복구**: 단일 출처 (코드/YAML/git) + 측정 명령 박제. 문서엔 수치 자체를 넣지 말 것
 
-### AP-PROC-4: 기존 test assertion을 통과시키려 수정 ([invariants.md](invariants.md) PROC-6 위반)
+### AP-PROC-4: 기존 test assertion을 통과시키려 수정 ([invariants.md](../../agent_docs/invariants.md) PROC-6 위반)
 
 - **증상**: 회귀 은폐
 - **탐지**: `git diff test/` 에서 `EXPECT_*` / `ASSERT_*` 상수 변경
@@ -186,7 +182,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **복구**: (a) 목록을 늘리거나, (b) 기존 형제와의 **등가성**으로 합성한다 — "기존 X 가 시나리오
   S 에서 옳다"(기존 스위트) ∧ "신규 Y 가 S 에서 같다"(신규 테스트) = 절대 명제. (b)는 Y 가 X 의
   사본인 동안만 성립하므로 갈라지는 시점을 테스트 안에 적어 둔다. 어느 쪽이든 **mutation 으로
-  확인**: 신규 쪽에만 건 작은 섭동이 red 를 내는지 (관련: [invariants.md](invariants.md) PROC-6)
+  확인**: 신규 쪽에만 건 작은 섭동이 red 를 내는지 (관련: [invariants.md](../../agent_docs/invariants.md) PROC-6)
 
 ### AP-PROC-8: 컨트롤러 픽스처가 `on_activate` 없이 target 을 넣는다
 
@@ -213,7 +209,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **원인**: 파서 옆이 검증을 쓰기 가장 자연스러운 자리인데, CM 3-pass bring-up 에서는 검사 대상이
   **언제 채워지는가**가 pass 마다 다르다. 축은 "몇 번째 pass 인가" 가 **아니라 그 값이 어디서
   오는가** 다 (3-pass 계약 SSoT:
-  [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공)):
+  [rtc_controller_interface/README.md](../../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공)):
   - **모델 파생** — `SetSystemModelConfig` / `SetSharedModelBuilder` 는 `PreConfigure` **전**에
     주입되므로 Pass 1 `LoadConfig` 에서 이미 유효하다. `DemoWbcController` 의
     `integration.position_margin` 역전 거부가 거기 사는 이유다 (#473). **Pass 1 검증이 일반적으로
@@ -238,11 +234,11 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 - **복구**: 검증을 `on_configure` 로 옮기고 **RT 경로가 쓰는 것과 같은 fallback 으로** 밴드를
   해석한다 (검사와 RT clamp 가 서로 다른 관절을 얘기하면 안 된다). Pass 2 는 파생·캐시만 하고
   거부하지 않는다. 옮긴 뒤 mutation 으로 확인 — 게이트를 무력화했을 때 red 가 나야 그 테스트가
-  게이트를 잡고 있는 것이다 ([invariants.md](invariants.md) PROC-6)
+  게이트를 잡고 있는 것이다 ([invariants.md](../../agent_docs/invariants.md) PROC-6)
 
 ### AP-PROC-10: *(은퇴 — 2026-09-19)*
 
-C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 job 의 `skipped`·`cancelled` 를 판독하던 이 항목은 대상이 없다. 사례·판독 절차는 이 줄을 추가한 커밋 이전의 git history 에 있다. 남은 CI 는 `docs-validate` 하나이며 빌드·테스트의 게이트는 로컬 검증뿐이다 ([AGENTS.md](../AGENTS.md) §4).
+C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 job 의 `skipped`·`cancelled` 를 판독하던 이 항목은 대상이 없다. 사례·판독 절차는 이 줄을 추가한 커밋 이전의 git history 에 있다. 남은 CI 는 `docs-validate` 하나이며 빌드·테스트의 게이트는 로컬 검증뿐이다 ([AGENTS.md](../../AGENTS.md) §4).
 
 ## Controller-Specific
 
@@ -253,7 +249,7 @@ C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 jo
 - **증상**: `Compute()` 중간에 aux thread 의 게인 writer (parameter callback) 실행 → bool flag 절반만 업데이트된 상태로 분기
 - **복구**: `Compute()` 진입 시 `const auto gains = gains_lock_.Load();` 단일 snapshot
 
-### AP-CTRL-3: `trajectory_speed = 0` → 1/v = INF ([invariants.md](invariants.md) NUM-4 근거)
+### AP-CTRL-3: `trajectory_speed = 0` → 1/v = INF ([invariants.md](../../agent_docs/invariants.md) NUM-4 근거)
 
 - **증상**: IEEE 754 `1/0 = INF` → trajectory hang (crash 아님)
 - **복구**: `std::max(1e-6, val)` 클램프
@@ -272,7 +268,7 @@ C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 jo
   - reorder map은 config 로드 시 1회 계산, identity fallback 금지
   - Position limit은 lower/upper bound, velocity limit은 별도 적용
 
-### AP-NUM-1: residual 로 폐쇄 체인 조립 분기를 판정 ([invariants.md](invariants.md) NUM-5 위반)
+### AP-NUM-1: residual 로 폐쇄 체인 조립 분기를 판정 ([invariants.md](../../agent_docs/invariants.md) NUM-5 위반)
 
 - **증상**: closed-chain FK 가 엉뚱한 형상으로 렌더링/제어된다. passive joint 가 ~180° 뒤집히거나 여러 바퀴 감긴 값이다. 그런데 `converged=true`, `‖φ‖≈1e-8` 로 **모든 건전성 검사가 통과**한다
 - **원인**: 점(`CONTACT_3D`) 구속 loop 은 조립 분기가 여럿이고 **모두 φ=0 을 만족**한다. 무감쇠 Gauss-Newton 사영에 큰 seed 점프를 한 번에 넘기면 반대편 분기로 착지하고, warm-start 구조상 영구 고정된다 (#248)
@@ -281,7 +277,7 @@ C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 jo
 - **복구**: 비-RT 는 `ProjectPassiveWithContinuation`, RT 는 tick 당 seed clamp (NUM-5 세부 스펙). λ 상향은 band-aid 다 — 실측상 λ=1e-2 는 막지만 λ=0.1 은 과감쇠로 오답을 내 마진이 좁다
 - **테스트 함정**: 고친 경로만 검증하면 vacuous 하다. 끈 경로가 **실제로 이탈하는지**를 같은 테스트가 확인해야 한다
 
-## CLAUDE.md / 문서 drift
+## 문서 drift
 
 ### AP-DOC-1: 패키지 수·테스트 수·상수값·commit SHA·시점 의존 status 박제
 
@@ -312,7 +308,7 @@ C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 jo
 - **복구**: 근거는 **그 판단이 코드로 나타나는 지점**이 소유한다 (fault 를 안 켜는 이유는 fault
   블록, 컬럼이 없는 이유는 POD 헤더). 두 번째 위치는 자기가 소유한 규칙만 적고 나머지는 파일명으로
   가리킨다 — "왜 안 켜는가" 와 "왜 컬럼이 없는가" 는 다른 질문이고 소유자도 다르다. 이 "축을
-  나눈다" 기법의 전개형은 [conventions.md](conventions.md#documentation-requirements) 의
+  나눈다" 기법의 전개형은 [conventions.md](../../agent_docs/conventions.md#documentation-requirements) 의
   **서비스·메시지 계약의 소유자** 항목이 이미 갖고 있다 (`.srv` / README / `.cpp` 헤더 4축).
   거기는 wire 계약, 여기는 **설계 판단** — 같은 처방, 다른 대상
 - **두 번째 실측 — 축을 나눈 결과가 어떻게 생겼는가**: compliance `joint_limit_margin` 게이트가

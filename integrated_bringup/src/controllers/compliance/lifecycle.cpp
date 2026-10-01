@@ -31,7 +31,7 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
     // sibling WBC binding's `integration.position_margin`.
     //
     // Why this pass and not next to the parser: AP-PROC-9 in
-    // agent_docs/anti-patterns.md, device-derived branch.
+    // agent_docs/invariants.md, device-derived values.
     //
     // Resolved with the SAME fallbacks the tail uses (the literals below), so
     // the check and the RT path cannot disagree about which joints they are

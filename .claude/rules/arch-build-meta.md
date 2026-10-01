@@ -10,9 +10,7 @@ paths:
 
 # Architecture invariants — build metadata 편집 시 (ARCH-2 · ARCH-5 · ARCH-7)
 
-이 rule 은 `CMakeLists.txt` · `package.xml` · `setup.py` 를 **읽거나 편집할 때** reminder 로 로드된다. glob 형태와 그 검증 수단은 [arch-source.md](arch-source.md) 와 같다 — 특히 `**/CMakeLists.txt` 만으로는 발화하지 않았다는 실측(#229, 세션 16)과 "정적 게이트 clean ≠ 로드됨" 을 그쪽에서 읽는다. 이 저장소의 build metadata 는 전부 `<pkg>/` 바로 아래(depth 2)이므로 앵커 형태는 `*/X` 로 충분하다. **현재 형태의 발화는 2026-08-04 에 확인됐다** (#229 종결; `rtc_base/CMakeLists.txt` · `rtc_msgs/CMakeLists.txt` 에서 두 세션 독립 관측) — 어느 패턴이 매칭됐는지는 로그가 남기지 않으므로 형태를 줄이지 않는다. 소스 축 (ARCH-1 · ARCH-3 · ARCH-4 · ARCH-6) 은 [arch-source.md](arch-source.md) 가 갖는다. 규칙 전문·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants 가 SSoT.
-
-**탐지 패턴을 여기 복제하지 않는다** — SSoT 는 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) (ARCH-5 · ARCH-7 은 Phase 0a). 이 파일이 갖는 것은 **판정**이다.
+`CMakeLists.txt` · `package.xml` · `setup.py` 를 읽거나 편집할 때 로드되는 reminder 이며, 이 파일이 갖는 것은 **판정**이다. 규칙 전문·복구는 [invariants.md](../../agent_docs/invariants.md) §Architecture Invariants, 탐지 패턴은 [.claude/hooks/verify-changes.sh](../hooks/verify-changes.sh) (ARCH-5 · ARCH-7 은 Phase 0a) 가 SSoT 이고, 소스 축 (ARCH-1 · ARCH-3 · ARCH-4 · ARCH-6) 은 [arch-source.md](arch-source.md) 가 갖는다. frontmatter 의 glob 형태는 줄이지 않는다 — 이유와 확인 절차는 `repo_scripts/scripts/validate_claude_rules.py` 헤더.
 
 | # | 규칙 | Severity |
 |---|---|---|
@@ -22,9 +20,9 @@ paths:
 
 ## 판정
 
-**ARCH-5 — 허용/금지**: 허용은 `<exec_depend>` · ament index 런타임 lookup (`get_package_share_directory`) · `package://robot_descriptions/...` URL 이다. `<test_depend>` 도 허용되지만 **테스트가 그 런타임 lookup 을 쓸 때 설치 순서를 보장하는 용도로만** 이다. 금지는 `find_package` · `<depend>` / `<build_depend>` · `ament_target_dependencies` · `ament_export_dependencies`. 근거는 link 할 artifact 가 0 개인데 build-dep 이 colcon 토폴로지 엣지를 만들어 "어디 두든 `install/robot_descriptions/share/` 만 있으면 동작" 모델을 깨기 때문이다 (사용자 정책). 복구는 보통 코드 0 줄 — build-dep 줄 제거 + `<exec_depend>` 강등.
+**ARCH-5 — build-time 인가 런타임인가**: 이 파일에 `robot_descriptions` 가 나타나면 그것이 build-time 의존인지 본다 — build-time 의존은 금지이고 런타임 lookup 만 허용이다. 허용 / 금지 목록, `<test_depend>` 의 조건, 복구는 invariants.md §ARCH-5 세부 스펙이 갖는다 (여기 복제하지 않는다).
 
-**ARCH-7 — 무엇이 걸리는가**: sensor 는 `rtc_*/CMakeLists.txt` 에서 **HEAD 에 없던 타깃 이름**을 본다 (줄 단위가 아니다 — CMake 줄은 제자리에서 고쳐 쓰이므로 재들여쓰기가 신규 exec 로 읽혔다). 즉 기존 타깃을 옮기거나 다시 들여쓰는 것은 걸리지 않는다. `example_*` 는 이름으로 면제된다. robot-agnostic standalone 노드는 `add_executable` 줄 또는 **그 위에 붙은 주석 블록 안 아무 줄**에 `ARCH-7-exempt` 주석으로 표시한다 (여러 줄짜리 사유를 쓰고 마커를 맨 위에 두어도 된다 — 블록은 주석이 아닌 첫 줄에서 끊기며, 정확한 범위는 hook 이 SSoT). 예외 목록의 SSoT 는 [design-principles.md](../../agent_docs/design-principles.md) §Boundary Rules 이며, 새 exec 를 면제로 선언하기 전에 그것이 정말 robot-agnostic 한지 그 절을 열어 확인한다.
+**ARCH-7 — 무엇이 걸리는가**: sensor 는 `rtc_*/CMakeLists.txt` 에서 **HEAD 에 없던 타깃 이름**을 본다 — 기존 타깃을 옮기거나 다시 들여쓰는 것은 걸리지 않는다. 예외의 범위와 `ARCH-7-exempt` 마커는 [design-principles.md](../../agent_docs/design-principles.md) §Boundary Rules 가 SSoT 다 (마커가 덮는 줄 범위는 hook). 새 exec 를 면제로 선언하기 전에 그 절을 열어 그것이 정말 robot-agnostic 한지 확인한다.
 
 **ARCH-2 — 방향**: 새 `<depend>` / `find_package` / `target_link_libraries` 를 추가하기 전에 [architecture.md](../../agent_docs/architecture.md) §Dependency Graph 에서 두 패키지의 층을 확인한다. 아래층이 위층을 참조하면 위반이다.
 

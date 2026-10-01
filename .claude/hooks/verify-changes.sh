@@ -126,6 +126,13 @@
 #   A simulator from this workspace, or a measurement that holds the host (see
 #   workspace_holds), DEFERS a missing verdict at the turn end and makes --run
 #   refuse to build.
+#   Names, for a document that points here instead of restating this (the
+#   comment at each definition owns the detail): RTC_VERIFY_NO_REUSE=1 turns
+#   both reuses off; the pass files and rtc-verify-timing.log (one line per
+#   run, with its mode) are kept in .git/ ("Kept in .git/ beside the
+#   watermark"); a measurement holds the host through
+#   <workspace>/.rtc-verify-hold, which repo_scripts/scripts/with_verify_hold.sh
+#   writes for the lifetime of the driver it wraps (workspace_holds).
 #
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
@@ -191,8 +198,8 @@
 #          workspace_sim_rivals): a sim does not end on its own the way a rival
 #          build does.
 #          Doxygen / cross-package doc consistency NOT checked
-#          (modification-guide.md "Updating an Existing Package" 6 steps cover
-#          these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
+#          (modification-guide.md "Updating an Existing Package" and its
+#          Completion Checklist cover these manually). Changed set = tracked-vs-$VERIFY_BASE UNION
 #          untracked, where VERIFY_BASE is the watermark commit this hook last
 #          passed at (see "Verification baseline" below) — NOT HEAD, so work
 #          the agent committed during the turn is still verified;

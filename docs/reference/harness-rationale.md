@@ -1,6 +1,6 @@
 # Harness Rationale (근거·출처)
 
-AGENTS.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orchestration / escalation / enforcement)이 따르는 **agent-driven engineering** 프레이밍과, 헌법의 구조·크기 규율의 근거 자료. 모델 행동에 직접 영향을 주지 않는 배경 문헌이므로 헌법 본문이 아닌 이곳에 둔다 ([anti-patterns.md](anti-patterns.md) AP-DOC-1, user-level `# CLAUDE.md hygiene`).
+AGENTS.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orchestration / escalation / enforcement)이 따르는 **agent-driven engineering** 프레이밍과, 헌법의 구조·크기 규율의 근거 자료. 모델 행동에 직접 영향을 주지 않는 배경 문헌이므로 헌법 (AGENTS.md · agent_docs · rules) 이 아닌 이곳에 둔다 ([invariants.md](../../agent_docs/invariants.md) AP-DOC-1, user-level `# CLAUDE.md hygiene`).
 
 핵심 명제: **Agent = Model + Harness.** 모델 바깥의 guides·sensors·orchestration·escalation·enforcement 가 본 저장소의 1급 자산이며, 모델 교체와 무관하게 누적·개선된다.
 
@@ -30,7 +30,7 @@ AGENTS.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orc
 
 ## 헌법 크기 예산 (validate_docs D12)
 
-공식 권고는 줄 수(200)지만, 줄 수를 지킨 채 줄이 길어지는 방식으로 부피가 늘 수 있어 D12 는 줄 수·바이트·줄 길이를 함께 건다. `@import` 는 컨텍스트를 줄이지 않으므로 예산은 import 되는 AGENTS.md 에도 똑같이 걸린다. 한도 수치와 채택 당시 실측의 SSoT 는 `repo_scripts/scripts/validate_docs.py` 의 D12 docstring·상수다.
+공식 권고는 줄 수(200)지만, 줄 수를 지킨 채 줄이 길어지는 방식으로 부피가 늘 수 있어 D12 는 줄 수·바이트·줄 길이를 함께 건다. `@import` 는 컨텍스트를 줄이지 않으므로 예산은 import 되는 AGENTS.md 에도 걸린다. 한도와 문서별 예산의 SSoT 는 `validate_docs.py` 의 D12 docstring 과 `repo_scripts/config/docs_budget.yaml` 이다.
 
 ## Harness Overview — 5구성요소 (AGENTS.md §2 의 근거)
 
@@ -38,9 +38,9 @@ AGENTS.md §2 "Harness Overview" 의 5구성요소 조직(guides / sensors / orc
 
 | 구성요소 | 목적 | 진입점 |
 |---|---|---|
-| **Guides** (feedforward) | 규칙·원칙·패턴 | AGENTS.md §3 Invariants, AGENTS.md §10 Style, [invariants.md](invariants.md), [design-principles.md](design-principles.md), [conventions.md](conventions.md) |
-| **Sensors** (feedback, computational) | 변경 검증 (결정적·빠른) | AGENTS.md §5, [testing-debug.md](testing-debug.md), `[CONCERN]` 포맷 (AGENTS.md §6) |
-| **Sensors** (feedback, inferential) | 의미 검증 (LLM-as-judge, on-demand) | AGENTS.md §5.5, [modification-guide.md](modification-guide.md) §Inferential review 트리거 |
-| **Orchestration** | Workflow | AGENTS.md §4, [modification-guide.md](modification-guide.md) |
+| **Guides** (feedforward) | 규칙·원칙·패턴 | AGENTS.md §3 Invariants, AGENTS.md §10 Style, [invariants.md](../../agent_docs/invariants.md), [design-principles.md](../../agent_docs/design-principles.md), [conventions.md](../../agent_docs/conventions.md) |
+| **Sensors** (feedback, computational) | 변경 검증 (결정적·빠른) | AGENTS.md §5, [testing-debug.md](../../agent_docs/testing-debug.md), `[CONCERN]` 포맷 (AGENTS.md §6) |
+| **Sensors** (feedback, inferential) | 의미 검증 (LLM-as-judge, on-demand) | AGENTS.md §5.5, [modification-guide.md](../../agent_docs/modification-guide.md) §Inferential review 트리거 |
+| **Orchestration** | Workflow | AGENTS.md §4, [modification-guide.md](../../agent_docs/modification-guide.md) |
 | **Escalation** | Human gate | AGENTS.md §6, AGENTS.md §6.5 Sprint Contract |
 | **Enforcement** (자동) | 무인 실행/차단 | `.claude/hooks/format-code.sh` (PostToolUse: clang-format / ruff), `.claude/hooks/verify-changes.sh` (Stop: doc·CMake gate + build·test verdict 확인, exit 2 차단; 빌드·테스트 실행은 turn 안의 `--run`), `.claude/hooks/log-instructions-loaded.sh` (InstructionsLoaded: 어떤 CLAUDE.md·rule 이 왜 로드됐는지 `.claude/instructions-loaded.log` 에 기록 — 차단 없음) |

@@ -1,0 +1,16 @@
+# docs/reference — 헌법 밖의 참고 자료
+
+여기 있는 문서는 **헌법이 아니다**. 에이전트가 지켜야 할 규범은 [AGENTS.md](../../AGENTS.md) · [agent_docs/](../../agent_docs/) · `.claude/rules/` 가 갖고, 이 디렉토리는 그 규범에서 덜어낸 것 — 규칙의 근거 · 실측 · 사고 이력 · 사례집 · 기록 시점의 구현 위치 — 을 보관한다.
+
+- 규범과 여기 내용이 어긋나면 **규범이 옳다**. 여기 문장을 근거로 규칙을 우회하지 않는다.
+- 수치·파일 위치·호출부는 기록 시점의 것이다. 인용하기 전에 다시 잰다.
+- 크기 예산 (`repo_scripts/config/docs_budget.yaml`) 의 대상이 아니다. 링크·경로 검사 (`validate_docs.py`) 는 받는다.
+
+| 문서 | 내용 | 대응하는 규범 |
+|---|---|---|
+| [invariants-rationale.md](invariants-rationale.md) | RT / ARCH / PROC / NUM 규칙의 이유 · 알려진 위반의 실측 · 구현 위치 | [invariants.md](../../agent_docs/invariants.md) |
+| [architecture-rationale.md](architecture-rationale.md) | thread layout 이력 · 결정 근거 · 기록 시점의 priority / core / POD 소유 현황 | [architecture.md](../../agent_docs/architecture.md) |
+| [design-principles-rationale.md](design-principles-rationale.md) | 설계 원칙별 근거 · 판정이 내려진 사례와 실측 · `[CONCERN]` 예시 | [design-principles.md](../../agent_docs/design-principles.md) |
+| [conventions-rationale.md](conventions-rationale.md) | 규약의 근거 · 위반 사례 · 예시 (uncrustify 충돌, Tier 0 예외의 배경, merge method 선례, commit 예시) | [conventions.md](../../agent_docs/conventions.md) |
+| [harness-rationale.md](harness-rationale.md) | 하네스 5구성요소 조직과 헌법 크기 규율의 출처·문헌 | [AGENTS.md](../../AGENTS.md) §2 |
+| [anti-patterns.md](anti-patterns.md) | 재발한 실수의 사례 · 증상 · 원인 · 복구 (AP ID 의 정의) | [invariants.md](../../agent_docs/invariants.md) — 위반한 invariant 행 또는 §Anti-pattern 규범 |

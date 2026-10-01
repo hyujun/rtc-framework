@@ -24,25 +24,46 @@ D2  in-repo anchor exists, using GitHub's heading-slug algorithm (see
 D3  no link escapes the repository, and no ``/home/<user>/`` absolute path
     appears anywhere in the corpus (including shell snippets, which get copied).
 D4  no ``file.cpp:123`` / ``#L123`` line-anchor citations into *code* in the
-    agent corpus.  Line numbers drift on every edit; cite a symbol instead.
+    agent corpus -- ``agent_docs/``, ``.claude/`` and the documents the
+    constitution's detail lives in (``CONSTITUTION_COMPANION_DOCS``).  Line
+    numbers drift on every edit; cite a symbol instead.
     Doc-to-doc references and URLs carrying a port are not that failure.
 D7  ``detect`` fenced blocks: the pattern is linted for the escaping mistakes
     that make a grep silently match nothing, then run against a required
     ``# probe:`` line it must match (and any ``# antiprobe:`` it must not), so
     a pattern that compiles but can no longer fire still fails.  An optional
     ``# exemplar:`` additionally asserts the state of the tree today.
-D10 no bare "§N.M" section ref in the constitution corpus.  The same number
+D10 no bare "§N.M" section ref in the constitution corpus or its companions
+    (same set as D4).  The same number
     means different things in AGENTS.md, in the compliance normative spec, and
     in a file's own numbered headings; a prefix is what tells them apart.
 D11 no rule-ID reference to an ID its owning file never defines (RT-/ARCH-/
-    PROC-/NUM-/E- own by invariants.md, AP- by anti-patterns.md, P1..P5 by
-    design-principles.md).
+    PROC-/NUM-/E- own by invariants.md, AP- by docs/reference/anti-patterns.md,
+    P1..P5 by design-principles.md).
 D12 the two constitutions (``CLAUDE.md`` / ``AGENTS.md``) stay inside a size
     budget: at most 200 lines, at most 18 KiB, and no prose line over 500
     characters (table rows and fenced blocks are exempt).  Anthropic's guidance
     is "under 200 lines"; the line cap alone was being satisfied by making the
     lines longer (same line count, bytes up 70% in two months), so bytes and
     line length are gated as well.  Honours ``allow D12`` for a single line.
+    The same code carries a per-file byte budget for the whole constitutional
+    corpus -- the two constitutions, ``agent_docs/*.md`` and
+    ``.claude/rules/*.md`` -- read from ``repo_scripts/config/docs_budget.yaml``.
+    The caps above never covered ``agent_docs/``, which more than doubled in
+    ten weeks while the constitutions sat pinned at theirs: the content the cap
+    pushed out of the constitution landed one directory down, ungated.  A file
+    over its budget, a corpus file with no entry, and an entry whose file is
+    gone all fail.  The numbers live in a data file rather than here so that
+    lowering one as a document shrinks does not mark this package as changed.
+    Given ``--budget-base REV``, a budget higher than it is at REV also fails
+    unless its line says ``# raised from <old>: <why>`` -- one tree cannot show
+    that a number was raised to make a finding go away; the base can.
+    ``agent_docs/*.md`` additionally carries the constitutions' 500-character
+    prose-line cap and a 500-character cap on a single table CELL (a row may be
+    longer than that; a cell may not).  A byte budget says how big a document
+    is, not what shape it has: one cell of controllers.md had grown past 4,000
+    characters, holding a dozen rules nobody could find or cite, while its row
+    count stayed flat.  Fenced blocks are exempt; ``allow D12`` covers a line.
 D13 every ``CLAUDE.md §N[.M]`` / ``AGENTS.md §N[.M]`` reference -- plain or in
     link form, in the docs and in the comments of every tracked source / config
     file (see :func:`is_section_ref_source`) -- names a numbered heading the
@@ -246,8 +267,22 @@ BARE_PATH_RE = re.compile(r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]+)")
 # block without interrupting the prose.
 SUPPRESS_RE = re.compile(r"validate-docs:\s*allow\s+(D\d+(?:\s*,\s*D\d+)*)")
 
-# Corpus whose code citations must be symbol-based (D4).
-SYMBOL_CITATION_DIRS = ("agent_docs/", ".claude/")
+# Where the constitution's detail lives: the catalogues, procedures, rationale
+# and the anti-pattern case book that agent_docs/ points at.  Not rule sources,
+# so no byte budget -- but the constitution sends its reader here, the case book
+# still owns the AP IDs (D11) and still carries detection greps, and all of it
+# was inside the D4 / D8 / D10 scopes until it moved out of agent_docs/.  The
+# move must not be what takes those checks off it.
+CONSTITUTION_COMPANION_DOCS = (
+    "docs/reference/",
+    "docs/testing.md",
+    "docs/controllers.md",
+    "docs/modification-procedures.md",
+)
+
+# Corpus whose code citations must be symbol-based (D4), and where a detection
+# pattern may not be parked in a table cell (D8).
+SYMBOL_CITATION_DIRS = ("agent_docs/", ".claude/", *CONSTITUTION_COMPANION_DOCS)
 
 # D9 scope: the two constitutions (CLAUDE.md for Claude Code, AGENTS.md for
 # every other tool) and the root README are the documents whose stated package
@@ -274,13 +309,19 @@ PACKAGE_COUNT_RE = re.compile(r"(\d+)\s*개\s*(?:의\s*)?(?:ROS[\s-]*2\s*)?패�
 # apart.  A reference is disambiguated when it is preceded by a markdown link
 # (`...md) §3.5`), a document name (`AGENTS.md §6.5`), or the literal
 # `compliance ` prefix for the normative spec.
-# Scope: the constitution corpus only.  A per-package doc citing "§3.9" next to
-# the spec that owns §3.9 is unambiguous in context; the collision that D10
+# Scope: the constitution corpus and its companions.  A per-package doc citing
+# "§3.9" next to the spec that owns §3.9 is unambiguous in context; the collision that D10
 # exists for is the constitution corpus, where AGENTS.md's own section numbers
 # and the compliance spec's both appear -- inside one file, with nothing to tell
 # them apart.  Widening this to every README turned it into 159 findings that
 # were almost all legitimate self-references.
-SECTION_REF_SCOPED_DOCS = ("agent_docs/", "CLAUDE.md", "AGENTS.md", ".claude/")
+SECTION_REF_SCOPED_DOCS = (
+    "agent_docs/",
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".claude/",
+    *CONSTITUTION_COMPANION_DOCS,
+)
 SECTION_REF_RE = re.compile(r"§\d+\.\d[\d.]*")
 SELF_NUMBERED_HEADING_RE = re.compile(r"^#{2,3}\s+\d+\.\s", re.M)
 SECTION_REF_QUALIFIED_RE = re.compile(
@@ -289,7 +330,9 @@ SECTION_REF_QUALIFIED_RE = re.compile(
 
 # D11: a rule-ID reference to an ID that no document defines.  Each namespace
 # has exactly one owner: invariants.md defines RT-/ARCH-/PROC-/NUM-/E-,
-# anti-patterns.md defines AP-, design-principles.md defines P1..P5.  A typo'd
+# docs/reference/anti-patterns.md defines AP- (the case book sits outside the
+# constitution; the norms its cases produced are rows in invariants.md, keyed by
+# the AP ID), design-principles.md defines P1..P5.  A typo'd
 # or invented ID ("P6", "RT-11") reads as authoritative and sends the reader
 # looking for a rule that was never written -- P1..P5 were referenced as IDs by
 # two documents while the owning file had never assigned those labels at all.
@@ -302,7 +345,7 @@ RULE_ID_OWNERS = {
     "PROC": "agent_docs/invariants.md",
     "NUM": "agent_docs/invariants.md",
     "E": "agent_docs/invariants.md",
-    "AP": "agent_docs/anti-patterns.md",
+    "AP": "docs/reference/anti-patterns.md",
     "P": "agent_docs/design-principles.md",
 }
 # IDs that are deliberately retired: referenced in prose as history, never as a
@@ -312,10 +355,33 @@ RULE_ID_RETIRED = frozenset({"RT-7", "AP-RTT-3", "AP-RTT-4", "AP-CTRL-2", "AP-CT
 # D12: size budget for the two constitutions.  Both files are loaded into
 # every session (CLAUDE.md directly, AGENTS.md through the `@AGENTS.md`
 # import), so their size is the one documentation cost paid on every request.
+# Each also has a smaller per-file budget below; these figures are the ceiling
+# under it -- a budget is a number in a data file, and this is what bounds how
+# far that number can be raised without editing the checker.
 CONSTITUTION_DOCS = ("CLAUDE.md", "AGENTS.md")
 CONSTITUTION_MAX_LINES = 200
 CONSTITUTION_MAX_BYTES = 18 * 1024
 CONSTITUTION_MAX_LINE_CHARS = 500
+# D12, per-file budgets: every document an agent is told to treat as a rule
+# source has a byte budget in SIZE_BUDGET_FILE.  One "path: bytes" mapping per
+# line -- valid YAML, parsed here by regex so the validator keeps running on a
+# host without PyYAML (the CI job installs nothing for it).
+SIZE_BUDGET_FILE = "repo_scripts/config/docs_budget.yaml"
+SIZE_BUDGET_DIRS = ("agent_docs/", ".claude/rules/")
+SIZE_BUDGET_LINE_RE = re.compile(r"^([^\s#:][^:]*?)\s*:\s*(\d+)\s*(?:#.*)?$")
+# D12, the ratchet: raising the number is the cheapest way to make a budget
+# finding go away, and a scan of one tree cannot tell a raised number from an
+# original one.  Against a base revision (--budget-base) a raise passes only
+# when its entry line says so, naming the value it was raised from -- a note
+# left over from an earlier raise names a different value and authorises nothing.
+BUDGET_RAISE_NOTE_RE = re.compile(r"#\s*raised from (\d+):\s*\S")
+# D12, line shape: the rule documents share the constitutions' prose-line cap
+# and add one for a table cell.  .claude/rules/ is left out on purpose -- a rule
+# is a handful of judgement paragraphs written to be read whole on load, and its
+# byte budget already bounds it.
+LINE_CAP_DIRS = ("agent_docs/",)
+MAX_CELL_CHARS = 500
+TABLE_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 # D13: a section ref that names its target constitution.  Accepts the plain
 # form ("AGENTS.md §6.5"), the link form ("[AGENTS.md](../AGENTS.md) §6.5") and the
@@ -702,6 +768,29 @@ class Repo:
         self.toplevel = {f.split("/")[0] for f in self.files}
         self.toplevel |= {p.name for p in self.root.iterdir()}
         self._anchor_cache: dict[str, set[str]] = {}
+        self._budgets: dict[str, tuple[int, int]] | None = None
+
+    def budgets(self) -> dict[str, tuple[int, int]]:
+        """D12 per-file byte budgets: ``path -> (bytes, line in the budget file)``."""
+        if self._budgets is None:
+            try:
+                text = (self.root / SIZE_BUDGET_FILE).read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            self._budgets = parse_budgets(text)
+        return self._budgets
+
+    def has_budget_file(self) -> bool:
+        """Does this repository declare budgets at all?
+
+        The hook's own test suite drives this validator inside throwaway
+        repositories that have an ``agent_docs/`` and no budget file; calling
+        every document there "unbudgeted" would fail fixtures about unrelated
+        gates.  The price is that deleting the file would switch the per-file
+        gate off -- which ``--self-test`` (run by CI on every PR) turns red, by
+        pinning the live entries to the tracked constitutional documents.
+        """
+        return (self.root / SIZE_BUDGET_FILE).is_file()
 
     def exists(self, rel: str) -> bool:
         if rel in self.fileset or (self.root / rel).exists():
@@ -879,6 +968,8 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
     findings.extend(check_section_resolution(repo, rel, text))
     findings.extend(check_rule_ids(repo, rel, text))
     findings.extend(check_constitution_size(rel, text))
+    findings.extend(check_line_shape(rel, text))
+    findings.extend(check_size_budget(rel, text, repo.budgets()))
     if rel in COUNT_SCOPED_DOCS:
         findings.extend(check_package_count(rel, text, repo.package_count(), allowed))
     return findings
@@ -904,7 +995,7 @@ def target_sections(repo: Repo, target: str) -> set[str]:
 
 
 def check_constitution_size(rel: str, text: str) -> list[Finding]:
-    """D12 -- the constitutions stay inside the line / byte / line-length budget."""
+    """D12 -- the constitutions stay inside the line-count and byte ceilings."""
     findings: list[Finding] = []
     if rel not in CONSTITUTION_DOCS:
         return findings
@@ -930,11 +1021,40 @@ def check_constitution_size(rel: str, text: str) -> list[Finding]:
                 "by longer lines; cut rationale/history, keep rules + pointers",
             )
         )
+    return findings
+
+
+def check_line_shape(rel: str, text: str) -> list[Finding]:
+    """D12 -- a rule document's prose lines and table cells stay citeable.
+
+    One loop for both scopes, which differ only on tables: a constitution's
+    table rows are exempt outright, while under LINE_CAP_DIRS the row is free
+    and each cell is capped -- the failure that cap exists for is one cell
+    swallowing a section.
+    """
+    findings: list[Finding] = []
+    cap_cells = rel.endswith(".md") and rel.startswith(LINE_CAP_DIRS)
+    if not (cap_cells or rel in CONSTITUTION_DOCS):
+        return findings
     allowed = suppressions(text)
     for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
-        if in_fence or raw.lstrip().startswith("|") or "D12" in allowed.get(lineno, frozenset()):
+        if in_fence or "D12" in allowed.get(lineno, frozenset()):
             continue
-        if len(raw) > CONSTITUTION_MAX_LINE_CHARS:
+        if raw.lstrip().startswith("|"):
+            if not cap_cells:
+                continue
+            longest = max(len(cell.strip()) for cell in TABLE_CELL_SPLIT_RE.split(raw))
+            if longest > MAX_CELL_CHARS:
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        "D12",
+                        f"{longest}-char table cell > {MAX_CELL_CHARS} -- a cell holds one "
+                        "rule; lift the rest into bullets under the table",
+                    )
+                )
+        elif len(raw) > CONSTITUTION_MAX_LINE_CHARS:
             findings.append(
                 Finding(
                     rel,
@@ -945,6 +1065,132 @@ def check_constitution_size(rel: str, text: str) -> list[Finding]:
                 )
             )
     return findings
+
+
+def is_budgeted(rel: str) -> bool:
+    """Is ``rel`` part of the constitutional corpus that D12 budgets per file?"""
+    return rel in CONSTITUTION_DOCS or (rel.endswith(".md") and rel.startswith(SIZE_BUDGET_DIRS))
+
+
+def parse_budgets(text: str) -> dict[str, tuple[int, int]]:
+    """``path: bytes`` lines of SIZE_BUDGET_FILE -> ``path -> (bytes, lineno)``."""
+    out: dict[str, tuple[int, int]] = {}
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        m = SIZE_BUDGET_LINE_RE.match(raw)
+        if m:
+            out[m.group(1)] = (int(m.group(2)), lineno)
+    return out
+
+
+def check_size_budget(rel: str, text: str, budgets: dict[str, tuple[int, int]]) -> list[Finding]:
+    """D12 -- a budgeted document stays inside its own byte budget.
+
+    The message keeps the ``<n> bytes > <cap>`` shape of the constitution cap on
+    purpose: the Stop hook narrows doc findings to the lines a change added and
+    lets exactly that shape through, since a whole-file budget is never blown
+    on the line it is reported at.
+    """
+    if rel not in budgets:
+        return []
+    nbytes = len(text.encode("utf-8"))
+    budget = budgets[rel][0]
+    if nbytes <= budget:
+        return []
+    return [
+        Finding(
+            rel,
+            1,
+            "D12",
+            f"{nbytes} bytes > {budget} -- over this file's budget in {SIZE_BUDGET_FILE}; "
+            "state the rule and point at the document that owns the detail "
+            "(a budget goes down as its file shrinks, not up to fit an edit)",
+        )
+    ]
+
+
+def check_budget_coverage(
+    sizes: dict[str, int],
+    budgets: dict[str, tuple[int, int]],
+    existing: set[str] | None,
+) -> list[Finding]:
+    """D12 -- every budgeted document has an entry, and every entry has a document.
+
+    ``sizes`` maps the budgeted documents under scan to their byte size.  Pass
+    ``existing`` (the tracked budgeted documents) only for a full-corpus scan:
+    a ``--files`` run sees a slice of the corpus and cannot call an entry stale.
+    """
+    findings = [
+        Finding(
+            rel,
+            1,
+            "D12",
+            f"{nbytes} bytes > 0 -- no entry in {SIZE_BUDGET_FILE}; a new constitutional "
+            "document declares its byte budget in the change that adds it",
+        )
+        for rel, nbytes in sorted(sizes.items())
+        if rel not in budgets
+    ]
+    if existing is not None:
+        findings.extend(
+            Finding(
+                SIZE_BUDGET_FILE,
+                lineno,
+                "D12",
+                f"budget entry for '{path}', which is not a tracked constitutional document "
+                "-- remove the entry or fix the path",
+            )
+            for path, (_, lineno) in sorted(budgets.items())
+            if path not in existing
+        )
+    return findings
+
+
+def check_budget_raises(text: str, base_text: str) -> list[Finding]:
+    """D12 -- a budget above its value in the base revision carries a raise note.
+
+    An entry the base does not have is a new document declaring its budget, not
+    a raise; so is every entry when the base has no budget file at all.
+    """
+    base = parse_budgets(base_text)
+    lines = text.splitlines()
+    findings: list[Finding] = []
+    for path, (value, lineno) in sorted(parse_budgets(text).items()):
+        was = base.get(path, (value, 0))[0]
+        if value <= was:
+            continue
+        note = BUDGET_RAISE_NOTE_RE.search(lines[lineno - 1])
+        if note and int(note.group(1)) == was:
+            continue
+        findings.append(
+            Finding(
+                SIZE_BUDGET_FILE,
+                lineno,
+                "D12",
+                f"budget for '{path}' raised {was} -> {value} -- a budget goes down, not up "
+                "to fit an edit; move the content to the document that owns it, or if a "
+                f"rule was added, say so on this line: '# raised from {was}: <why>'",
+            )
+        )
+    return findings
+
+
+def base_budget_text(repo: Repo, rev: str) -> str | None:
+    """The budget file as of ``rev``: "" when it has none, None when ``rev`` is not a commit.
+
+    The two must not collapse: a base that never had the file has nothing to
+    ratchet against, while a revision that does not resolve (a shallow clone
+    that never fetched it, a typo) would otherwise turn the gate off silently.
+    """
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(repo.root), *args], capture_output=True, text=True, check=False
+        )
+
+    if git("cat-file", "-e", f"{rev}^{{commit}}").returncode != 0:
+        return None
+    shown = git("show", f"{rev}:{SIZE_BUDGET_FILE}")
+    return shown.stdout if shown.returncode == 0 else ""
 
 
 def check_section_resolution(
@@ -1568,7 +1814,43 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
     ("D12 over-long prose line", "CLAUDE.md", "# x\n" + "a" * 501 + "\n", ["D12"]),
     ("D12 table row is exempt", "CLAUDE.md", "# x\n| " + "a" * 600 + " |\n", []),
     ("D12 fenced line is exempt", "CLAUDE.md", "# x\n```\n" + "a" * 600 + "\n```\n", []),
-    ("D12 is scoped to the constitutions", "agent_docs/f.md", "# x\n" + "a" * 501 + "\n", []),
+    # The prose-line cap covers agent_docs/ as well (this fixture asserted the
+    # opposite while the cap was constitution-only), and stops there.
+    (
+        "D12 prose-line cap covers agent_docs",
+        "agent_docs/f.md",
+        "# x\n" + "a" * 501 + "\n",
+        ["D12"],
+    ),
+    ("D12 line shape stops at agent_docs", "docs/f.md", "# x\n" + "a" * 501 + "\n", []),
+    ("D12 line shape leaves rules alone", ".claude/rules/f.md", "# x\n" + "a" * 501 + "\n", []),
+    ("D12 prose line at the cap", "agent_docs/f.md", "# x\n" + "a" * 500 + "\n", []),
+    ("D12 over-long table cell", "agent_docs/f.md", "| a | " + "b" * 501 + " |\n", ["D12"]),
+    ("D12 table cell at the cap", "agent_docs/f.md", "| a | " + "b" * 500 + " |\n", []),
+    (
+        "D12 a long row of short cells is fine",
+        "agent_docs/f.md",
+        "|" + (" " + "c" * 200 + " |") * 4 + "\n",
+        [],
+    ),
+    (
+        "D12 an escaped pipe does not split a cell",
+        "agent_docs/f.md",
+        "| " + "d" * 300 + " \\| " + "e" * 300 + " |\n",
+        ["D12"],
+    ),
+    (
+        "D12 fenced line in agent_docs is exempt",
+        "agent_docs/f.md",
+        "```\n" + "a" * 600 + "\n```\n",
+        [],
+    ),
+    (
+        "D12 allow marker covers an agent_docs line",
+        "agent_docs/f.md",
+        "<!-- validate-docs: allow D12 -->\n" + "a" * 501 + "\n",
+        [],
+    ),
     ("D13 dangling section ref", "agent_docs/f.md", "see CLAUDE.md \u00a799.9\n", ["D13"]),
     (
         "D13 dangling ref in link form",
@@ -1635,6 +1917,20 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
         [],
     ),
     ("D4 is scoped to the agent corpus", "docs/f.md", "see rt_controller_node.cpp:120\n", []),
+    # The companions left agent_docs/ with their content; the checks went along.
+    (
+        "D4 covers the constitution's companions",
+        "docs/reference/f.md",
+        "see rt_controller_node.cpp:120\n",
+        ["D4"],
+    ),
+    ("D4 covers a companion file", "docs/testing.md", "see rt_controller_node.cpp:120\n", ["D4"]),
+    (
+        "D8 covers the anti-pattern case book",
+        "docs/reference/anti-patterns.md",
+        "| RT-1 | `grep -rnE 'RCLCPP_(INFO|WARN)' src/` |\n",
+        ["D8"],
+    ),
     (
         "D8 pattern parked in a table cell",
         "agent_docs/f.md",
@@ -1735,12 +2031,35 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
         "특이점 처리는 §6.5 를 따른다.\n",
         [],
     ),
+    (
+        "D10 covers the constitution's companions",
+        "docs/modification-procedures.md",
+        "특이점 처리는 §6.5 를 따른다.\n",
+        ["D10"],
+    ),
+    ("D10 stops at the companions", "docs/tracing.md", "특이점 처리는 §6.5 를 따른다.\n", []),
     # D11 severance guard: P9 is never a real principle, so this stays red as
     # long as check_rule_ids is wired into check_markdown.
     (
         "D11 undefined rule ID",
         "agent_docs/f.md",
         "새 utility 는 P9 를 따른다.\n",
+        ["D11"],
+    ),
+    # One undefined ID per namespace whose owner is a different file.  A stale
+    # owner path makes rule_id_defined() answer True for everything (a missing
+    # owner is left to D1), so the "defined IDs are silent" fixture below cannot
+    # tell a working check from one whose owner file has moved away.
+    (
+        "D11 undefined AP ID (owner path is live)",
+        "agent_docs/f.md",
+        "AP-PROC-99 는 없는 패턴이다.\n",
+        ["D11"],
+    ),
+    (
+        "D11 undefined invariant ID (owner path is live)",
+        "agent_docs/f.md",
+        "RT-99 는 없는 규칙이다.\n",
         ["D11"],
     ),
     # ...and a defined one must stay silent, or every doc lights up.
@@ -1780,11 +2099,112 @@ COUNT_CASES: list[tuple[str, str, int, list[str]]] = [
     ),  # legitimate sub-count, suppressed
 ]
 
+# D12 per-file budgets.  (name, rel, body, budget-file text, want codes) through
+# check_size_budget; the budget text is parsed by parse_budgets, so the cases
+# exercise the line format as well as the comparison.
+BUDGET_CASES: list[tuple[str, str, str, str, list[str]]] = [
+    ("at the budget", "agent_docs/f.md", "a" * 10, "agent_docs/f.md: 10\n", []),
+    ("one byte over", "agent_docs/f.md", "a" * 11, "agent_docs/f.md: 10\n", ["D12"]),
+    # Budgets are bytes, not characters: 4 Hangul syllables are 12 bytes.
+    ("bytes, not characters", "agent_docs/f.md", "가" * 4, "agent_docs/f.md: 10\n", ["D12"]),
+    ("another file's entry", "agent_docs/f.md", "a" * 99, "agent_docs/g.md: 10\n", []),
+    ("trailing comment", ".claude/rules/r.md", "a" * 11, ".claude/rules/r.md: 10  # x\n", ["D12"]),
+    # A commented-out entry is no entry: it must not gate, and coverage reports it.
+    ("commented-out entry", "agent_docs/f.md", "a" * 99, "# agent_docs/f.md: 10\n", []),
+]
+# (name, sizes under scan, budget-file text, tracked budgeted docs or None, want
+# "path:code" pairs) through check_budget_coverage.
+BUDGET_COVERAGE_CASES: list[
+    tuple[str, dict[str, int], str, set[str] | None, list[tuple[str, str]]]
+] = [
+    ("covered", {"agent_docs/f.md": 5}, "agent_docs/f.md: 10\n", {"agent_docs/f.md"}, []),
+    (
+        "new document without an entry",
+        {"agent_docs/new.md": 5},
+        "agent_docs/f.md: 10\n",
+        None,
+        [("agent_docs/new.md", "D12")],
+    ),
+    (
+        "entry whose document is gone",
+        {},
+        "agent_docs/gone.md: 10\n",
+        set(),
+        [(SIZE_BUDGET_FILE, "D12")],
+    ),
+    # A --files run sees a slice of the corpus: it cannot call an entry stale.
+    ("stale entry is a full-scan finding only", {}, "agent_docs/gone.md: 10\n", None, []),
+]
+# (name, budget-file text, base budget-file text, want codes) through
+# check_budget_raises.
+BUDGET_RAISE_CASES: list[tuple[str, str, str, list[str]]] = [
+    ("unchanged", "agent_docs/f.md: 10\n", "agent_docs/f.md: 10\n", []),
+    ("lowered", "agent_docs/f.md: 9\n", "agent_docs/f.md: 10\n", []),
+    ("raised without a note", "agent_docs/f.md: 11\n", "agent_docs/f.md: 10\n", ["D12"]),
+    (
+        "raised with its note",
+        "agent_docs/f.md: 11  # raised from 10: RT-11 added\n",
+        "agent_docs/f.md: 10\n",
+        [],
+    ),
+    # A note from an earlier raise names the value before THAT raise.
+    (
+        "an earlier raise's note authorises nothing",
+        "agent_docs/f.md: 12  # raised from 10: RT-11 added\n",
+        "agent_docs/f.md: 11  # raised from 10: RT-11 added\n",
+        ["D12"],
+    ),
+    (
+        "a note without a reason",
+        "agent_docs/f.md: 11  # raised from 10:\n",
+        "agent_docs/f.md: 10\n",
+        ["D12"],
+    ),
+    (
+        "any other comment is not a note",
+        "agent_docs/f.md: 11  # ok\n",
+        "agent_docs/f.md: 10\n",
+        ["D12"],
+    ),
+    # A new document declares its budget; that is not a raise.
+    (
+        "entry the base lacks",
+        "agent_docs/f.md: 10\nagent_docs/g.md: 99\n",
+        "agent_docs/f.md: 10\n",
+        [],
+    ),
+    ("base without a budget file", "agent_docs/f.md: 10\n", "", []),
+    (
+        "only the raised entry is reported",
+        "agent_docs/f.md: 11\nagent_docs/g.md: 5\n",
+        "agent_docs/f.md: 10\nagent_docs/g.md: 5\n",
+        ["D12"],
+    ),
+]
+BUDGET_SCOPE_CASES: list[tuple[str, bool]] = [
+    ("AGENTS.md", True),
+    ("CLAUDE.md", True),
+    ("agent_docs/invariants.md", True),
+    (".claude/rules/rt-path.md", True),
+    ("README.md", False),
+    ("docs/tracing.md", False),
+    (".claude/skills/verify/SKILL.md", False),
+    ("agent_docs/budget.yaml", False),
+]
+
 
 def self_test() -> int:
     failures: list[str] = []
 
+    # One Repo for the whole run.  The document fixtures state their own
+    # answers, so the live budget file must not be able to add a finding to (or
+    # hide one from) any of them: the budgets are pinned empty here and swapped
+    # for a known one where the wiring is tested.  Nothing below reads the live
+    # budget file -- whether it matches the tracked documents is a fact about
+    # the repository, which the corpus scan reports (check_budget_coverage),
+    # not about this checker.
     repo_for_docs = Repo(repo_root())
+    repo_for_docs._budgets = {}
     for name, rel, body, want_codes in DOC_FIXTURES:
         got_codes = sorted(f.code for f in check_markdown(repo_for_docs, rel, body))
         if got_codes != sorted(want_codes):
@@ -1813,6 +2233,36 @@ def self_test() -> int:
             failures.append(
                 f"count case {rel} {body!r} actual={actual}: codes={got_codes}, want {sorted(want)}"
             )
+
+    for name, rel, body, budget_text, want in BUDGET_CASES:
+        got_codes = sorted(
+            f.code for f in check_size_budget(rel, body, parse_budgets(budget_text))
+        )
+        if got_codes != sorted(want):
+            failures.append(f"budget case {name!r}: codes={got_codes}, want {sorted(want)}")
+    for name, sizes, budget_text, existing, want_pairs in BUDGET_COVERAGE_CASES:
+        got_pairs = sorted(
+            (f.path, f.code)
+            for f in check_budget_coverage(sizes, parse_budgets(budget_text), existing)
+        )
+        if got_pairs != sorted(want_pairs):
+            failures.append(f"budget coverage {name!r}: {got_pairs}, want {sorted(want_pairs)}")
+    for rel, want in BUDGET_SCOPE_CASES:
+        if is_budgeted(rel) != want:
+            failures.append(f"is_budgeted({rel!r}) = {not want}, want {want}")
+    # The wiring: with the budget reachable only through check_markdown, severing
+    # that one call leaves every case above green and the corpus ungated.
+    repo_for_docs._budgets = {"agent_docs/f.md": (10, 1)}
+    wired_codes = sorted(
+        f.code for f in check_markdown(repo_for_docs, "agent_docs/f.md", "a" * 11)
+    )
+    repo_for_docs._budgets = {}
+    if wired_codes != ["D12"]:
+        failures.append(f"check_markdown does not apply the size budget: codes={wired_codes}")
+    for name, budget_text, base_text, want in BUDGET_RAISE_CASES:
+        got_codes = sorted(f.code for f in check_budget_raises(budget_text, base_text))
+        if got_codes != sorted(want):
+            failures.append(f"budget raise {name!r}: codes={got_codes}, want {sorted(want)}")
 
     for span, in_table, want in PARKED_PATTERN_CASES:
         got = is_parked_detection_pattern(span, in_table=in_table)
@@ -1867,7 +2317,7 @@ def self_test() -> int:
             )
 
     # Path resolution: include shorthand must resolve, a wrong path must not.
-    repo = Repo(repo_root())
+    repo = repo_for_docs
     if not repo.exists("rtc_base/types/types.hpp"):
         failures.append("suffix match failed for include shorthand rtc_base/types/types.hpp")
     if repo.exists("integrated_bringup/support/owned_topics.cpp"):
@@ -1887,6 +2337,11 @@ def self_test() -> int:
         + len(SOURCE_REF_FIXTURES)
         + len(SOURCE_REF_CORPUS_MEMBERS)
         + len(COUNT_CASES)
+        + len(BUDGET_CASES)
+        + len(BUDGET_COVERAGE_CASES)
+        + len(BUDGET_SCOPE_CASES)
+        + len(BUDGET_RAISE_CASES)
+        + 1
         + len(GREP_CASES)
         + len(SLUG_CASES)
         + len(BRE_EXEC_CASES)
@@ -1924,12 +2379,25 @@ def main(argv: list[str] | None = None) -> int:
         help="run only D13 (constitution section refs); the Stop hook uses this "
         "over the whole corpus when a constitution's numbered headings change",
     )
+    ap.add_argument(
+        "--budget-base",
+        metavar="REV",
+        help="also fail a byte budget that is higher than at REV without a "
+        "'# raised from <old>: <why>' note on its line (CI: the pull request's base)",
+    )
     args = ap.parse_args(argv)
 
     if args.self_test:
         return self_test()
 
     repo = Repo(repo_root())
+    base_text = ""
+    if args.budget_base is not None:
+        fetched = base_budget_text(repo, args.budget_base)
+        if fetched is None:
+            print(f"--budget-base: '{args.budget_base}' is not a commit here", file=sys.stderr)
+            return 2
+        base_text = fetched
     if args.files is not None:
         # `is not None`, not truthiness: `--files` with no operands means "no
         # files to check", and falling through to the full corpus scan there
@@ -1960,6 +2428,26 @@ def main(argv: list[str] | None = None) -> int:
         findings.extend(
             check_file_section_refs(repo, rel) if args.section_refs else check_file(repo, rel)
         )
+    if not args.section_refs and repo.has_budget_file():
+        full_scan = args.files is None
+        findings.extend(
+            check_budget_coverage(
+                {
+                    rel: (repo.root / rel).stat().st_size
+                    for rel in targets
+                    if is_budgeted(rel) and (repo.root / rel).is_file()
+                },
+                repo.budgets(),
+                {f for f in repo.files if is_budgeted(f)} if full_scan else None,
+            )
+        )
+
+    if base_text:
+        try:
+            current = (repo.root / SIZE_BUDGET_FILE).read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+        findings.extend(check_budget_raises(current, base_text))
 
     findings.sort(key=lambda f: (f.path, f.line, f.code))
     for f in findings:

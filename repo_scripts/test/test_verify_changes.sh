@@ -1247,6 +1247,28 @@ expect_contains "a constitution grown past the byte cap mid-file is reported" "$
 expect_exit "a constitution over the byte cap blocks the turn" "$rc" 2
 rm -rf "$dir"
 
+# 48b. The per-file budgets (repo_scripts/config/docs_budget.yaml) ride the same
+#      D12 pass-through: a rule document grown past its budget by an edit in the
+#      middle is reported at line 1, a line the edit did not add. A repository
+#      with no budget file -- every other fixture here -- is not gated at all.
+dir=$(make_fixture)
+mkdir -p "$dir/repo_scripts/config"
+for i in $(seq 1 40); do printf -- '- rule %03d\n' "$i"; done >"$dir/agent_docs/notes.md"
+printf 'agent_docs/notes.md: %s\n' "$(wc -c <"$dir/agent_docs/notes.md")" >"$dir/repo_scripts/config/docs_budget.yaml"
+git -C "$dir" add -A && git -C "$dir" commit -qm budgeted
+out=$(run_hook "$dir"); rc=$?
+expect_exit "a rule document at its budget does not block" "$rc" 0
+sed -i '20s/$/ and the story of how it was found/' "$dir/agent_docs/notes.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a rule document grown past its budget mid-file is reported" "$out" "agent_docs/notes.md:1: [D12]"
+expect_exit "a rule document over its budget blocks the turn" "$rc" 2
+git -C "$dir" checkout -q -- agent_docs/notes.md
+echo '# a new rule document' >"$dir/agent_docs/added.md"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "a new rule document without a budget entry is reported" "$out" "agent_docs/added.md:1: [D12]"
+expect_exit "a new rule document without a budget entry blocks the turn" "$rc" 2
+rm -rf "$dir"
+
 # 49. Renumbering a constitution heading breaks refs in files the change never
 #     touched, and bare refs on unchanged lines of the constitution itself; the
 #     per-file, added-line scope saw neither. The heading change now resolves

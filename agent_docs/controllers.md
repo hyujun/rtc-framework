@@ -1,216 +1,103 @@
 # Controllers
 
+컨트롤러가 지켜야 하는 **계약**이다. 제어 법칙별 코어 위치 · 배선된 컨트롤러별 상세 · 결정 근거와 실측 · 게인 / 토픽 / 설정 사용법은 헌법 밖 [docs/controllers.md](../docs/controllers.md) 가 갖는다 (같은 절 이름으로 찾는다).
+
 ## Controller Table
 
-이 표의 축은 **제어 법칙 (알고리즘 코어)** 이지 클래스가 아니다. `rtc_controllers` 는 순수 알고리즘
-라이브러리이고 `RTControllerInterface` 구체 구현 (= 바인딩) 은 integration 패키지가 소유한다.
-규칙 · 3계층 배치 · 경계 판정의 SSoT 는
-[design-principles.md](design-principles.md) §`rtc_controllers` Controllers Are Pure Control
-Algorithms 이며, 여기서는 반복하지 않는다 (AP-DOC-1).
-
-> **현황 (#236 S7c 완료)** — 한때 같은 패키지에 있던 어댑터 클래스들은 삭제됐다
-> (`grep -rn "public RTControllerInterface" rtc_controllers/include` 가 비어야 한다; 개수는
-> 박제하지 않는다). 그것들은 **어디에도 등록돼 있지 않아 런타임 노출이 0** 이었고 — 배포되는
-> 것은 아래 §배선된 컨트롤러 3종, 즉 integration 패키지의 바인딩뿐이다 — 코어 추출의
-> cross-check oracle 로만 살아 있었다.
->
-> 아래 표의 **"잔여 → S7 정리 완료"** 는 그 어댑터 안에 있던 글루가 어디로 갔는지를 뜻한다:
-> 모든 바인딩이 동일하게 필요로 하던 공통 글루(target mailbox 등)는 S7a 에서
-> `rtc_controller_interface` 로 올라갔고, 배치 고유 글루는 어댑터와 함께 삭제됐다 (바인딩은
-> 자기 것을 갖는다). 아직 코어로 수렴하지 않은 **바인딩 쪽 인라인 사본**은 별개이며
-> [design-principles.md](design-principles.md) §완료 상태의 검증 기준 이 SSoT 다 (#282).
-
-### 알고리즘 코어 (`rtc_controllers`)
-
-| 제어 법칙 | Type | Space | 코어 위치 | Key Feature |
-|---|---|---|---|---|
-| P (관절 증분) | Position | Joint | **코어 없음** — 어댑터와 함께 은퇴 (#236 D-Q1: 법칙이 `q + kp·e·dt` + 클램프라 파일 하나 값어치가 없다). 관절 PD 를 `kd = 0` 으로 쓰면 같은 법칙 | `q + kp*error*dt` incremental |
-| Joint PD | Torque | Joint | **추출됨** — `joint/joint_pd_law.hpp` (S1). 무상태 free function: 궤적 **샘플**을 받고 생성기를 소유하지 않으며 (배선은 integration 계층), 오차 이력은 in/out span (E-STOP hold 정책과 공유). 잔여(mailbox·모델 바운드·궤적 배선·텔레메트리·클램프) → S7 정리 완료 | PD + Pinocchio RNEA + quintic trajectory |
-| CLIK | Position | Cartesian 3/6-DOF | **부분 추출됨** — `task/task_vel_law.hpp` (S3a). 무상태 free function 2개 (6축 `ComputeTaskVelocity` · 병진전용 `ComputeTranslationVelocity` — 인라인 형태가 서로 다른 식이라 합치지 않는다): 태스크 속도 `task_vel = K_p ⊙ e + ν_ff` 만 담고, pose error 정의·궤적·**ν_ff 의 프레임 전송**(`R_traj` vs `R_current`)을 모른다 (게인은 속도형 `[1/s]`, 미분항 없음). DLS `J⁺`/영공간은 **`compliance/differential_ik` 로 흡수 완료** (S3b/#258, m=6·m=3 두 인스턴스 — `control_6dof` 가 런타임 가변 게인이라 둘 다 미리 sizing) + 영공간 자세는 `joint/posture_law.hpp` 의 `ComputePostureVelocity` (게인이 사영 **前** 로 이동 — 그래야 다른 소비자와 같은 법칙). **비-bit-identical 이관**이며 λ 규약이 compliance §6.5 로 바뀐 것이 그 목적이다 (D-S2b (b)안). 잔여(관절 tail·클램프·적분) → S7 정리 완료 | Damped Jacobian pseudoinverse + null-space |
-| OSC | Torque | Cartesian 6-DOF | **부분 추출됨** — `task/task_accel_law.hpp` (S2a). 무상태 free function: 태스크 가속도 `a_task = K_p·e + K_d·(ν_d−ν) + a_ff` 만 담고, pose error 정의·궤적·모델을 모른다 (게인은 가속도형 `[1/s²]`, `impedance_law` 의 힘형과 Λ 배 차이). `Λ`/`τ`/`Nᵀ` 는 **`compliance/task_dynamics` 로 흡수 완료** (S2b, D-Q2) + 영공간 자세는 `joint/posture_law.hpp` 의 `ComputePostureTorque` (`q_ref` 인자 = 설정된 `safe_position`). **비-bit-identical 이관**이며 λ 규약이 compliance §6.5 로 바뀐 것이 그 목적이다 (D-S2b (b)안). 잔여(τ 조립·클램프·텔레메트리) → S7 정리 완료 | Full pose PD + SE3 quintic trajectory; gravity-comp damped torque E-STOP (`ĝ(q)−D·q̇`, #184) |
-| Task impedance | Torque | Cartesian 3/6-DOF | **부분 추출됨** — `compliance/{impedance_law, inertia_shaping, task_dynamics, wrench_pipeline, safety_limiter, compliance_state_machine, torque_estop}`. compliance §6.3 관성 성형은 `inertia_shaping.hpp` 의 무상태 free function `ComputeShapedTaskForce` (S4): `f_cmd = B·f_task + (B−I)·f_ext`, `B = Λ_S Λ_d⁻¹` + compliance §5.2 편차 clamp 만 담고 **Λ_S 를 인자로** 받아 `TaskDynamics` 를 모른다 (수렴점 판정은 S2b). 영공간 자세 법칙은 `joint/posture_law.hpp` 의 `ComputePostureTorque` (S6) — cascade 의 인라인 루프와 **문자 그대로 동일**했던 것이 ARCH-3 발동 조건이었다. compliance §6.2 게인은 `Gains` 에 `compliance::ImpedanceParams` 로 **중첩**돼 있다 (S6b — 기본값이 코어와 같아 중복이 실제로 사라지고, 매 tick positional 재조립도 함께 사라진다; YAML 키는 불변). 잔여(Λ 게이트·selection matrix·τ 꼬리) → S7 정리 완료 | compliance §6.2 A=NONE Jacobian-transpose compliance `Jᵀ Sᵀ[Kp·Se+Kd·Sė]+τ_null+ĝ`; Λ 미사용(특이점 자유), σ_min-adaptive DLS nullspace (`nv>task_dim`), gravity-comp torque E-STOP, MuJoCo-only. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) |
-| Task admittance | Position | Cartesian 6-DOF | **부분 추출됨** — `compliance/{admittance_integrator, differential_ik, wrench_pipeline}` + compliance §7.3 속도항은 `task/task_vel_law.hpp` 재사용 (S5, 새 코어 없음) + 영공간 자세 법칙 `joint/posture_law.hpp` 의 `ComputePostureVelocity` (S6 — 속도형 **P**, PD 의 `Kd=0` 이 아니다). 잔여(관절 tail·클램프·적분) → S7 정리 완료 | compliance §7 Rule 3 — 힘 **입력** → 운동 출력. compliant frame `Λ_d ẍ̃+K_d ẋ̃+K_p x̃ = f_ext` 를 semi-implicit Euler + `exp3` retract 로 적분하고 compliance §7.3 DLS 미분 IK 로 `q_cmd` 생성. 외부 wrench **필수** (A≠NONE, `enabled: false` 는 configure 에러), `min_desired_inertia` 하한(compliance §7.4) · `max_compliant_displacement`/velocity(compliance §7.5, `≤0`=off) · `max_return_{linear,angular}_velocity`(경계 밖 복귀 속도 상한, **상시**), E-STOP 은 position-hold(latch, 재활성화·`ClearEstop`·`ResetFault` 경계에서 무효화). impedance 와 **반대 부호**(compliance §11.4.1 P2/P3). 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.5 |
-| Cascaded compliance | Torque | Cartesian 6-DOF | **부분 추출됨** — 위 두 행의 `compliance/*` 조합 + compliance §7.6 MUST-1 판정식 `compliance/bandwidth_separation.hpp` (S6, `Λ_S` 를 인자로 — 만드는 쪽은 `compliance/task_dynamics`, S2b 이후 다섯 컨트롤러 공통) + 영공간 자세 법칙 `joint/posture_law.hpp` (S6). 잔여(τ 조립·compliance §10.5 safety layer·FSM) → S7 정리 완료 | compliance §7.6 — outer admittance(느린 대역, 순응 정의) 가 만든 compliant frame `(X_c, ν_c)` 를 inner compliance §6.2 impedance(빠른 대역)가 추종. `τ = Jᵀ·α[K_p^i·e(X,X_c) + K_d^i·(ν_c−ν)] + α·Nᵀτ_posture + ĝ`. 외부 wrench **필수** (outer 의 입력). **wrench 는 정확히 한 번만 소비** — inner 에 `f_ext` 항이 없다(compliance §7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로, D19). 대역폭 분리 `ω_i/ω_a`(MUST-1) 는 seeding tick 에 `Λ_S(q₀)` 로 1회 평가해 **진단 플래그** `bandwidth_ratio_low` 로만 보고(fault 아님, D20). YAML 은 `outer:` / `inner:` 로 분리(양쪽 다 stiffness·damping 을 가진다). E-STOP 은 torque hold `ĝ−D·q̇`. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.6 |
-| Grasp (Force-PI) | Internal | Hand 3x3-DOF | **코어** — `grasp/grasp_controller.hpp`. `RTControllerInterface` 를 상속하지 않고 상위 컨트롤러가 멤버로 소유한다 (규칙이 명문화되기 전부터 이미 목표 형태) | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
-
-`compliance/*` 는 규칙의 예시가 아니라 **기준**이다 — Eigen/span in-out, `Resize()`/`Compute()` 분리,
-프레임워크 타입 무지. 새 법칙은 처음부터 그 형태로 쓴다.
-
-### 배선된 컨트롤러 (`integrated_bringup`)
-
-`RTControllerInterface` 구체 구현 + `RTC_REGISTER_CONTROLLER` 등록 + production YAML 을 갖는, 실제로
-도는 것들이다.
-
-| 컨트롤러 | Type | Space | Key Feature |
-|---|---|---|---|
-| DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
-| DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"`. arm 명령은 compliance §7.3 관절 tail (`compliance/joint_command_tail.hpp`) 로 바운드된다 — §7 스키마를 안 읽으므로 δ 는 0, 밴드는 device 한계 그대로 (#478) |
-| DemoComplianceController | Position | Cartesian + Hand | `DemoTaskController` 의 사본에서 출발했고 (**#469 S2**), **S3 에서 §7 task-space admittance 가 결합됐다**: 외부 렌치 → `WrenchPipeline` (프레임 전달·bias·deadband·compliance §10.6 노후화) → compliance §10.7 활성 램프 α → `AdmittanceIntegrator` → 편차 x̃ → 궤적 기준 X_d 에 합성한 X_c 를 CLIK 이 추종한다. 렌치 소스는 hand 레인의 pull 추정치이고 **한 tick 뒤에서 발행된다** (추정기가 같은 tick 의 grasp 판정을 필요로 하므로 — 필터 시상수 대비 무시할 lag 이고, 어떤 토픽 소스보다도 신선하다). SAFE_STOP 은 `dq=0` position hold + 편차 붕괴, E-STOP·device-invalid·cold-cache 는 **하강 에지에서** 리셋 (매 tick 리셋은 bias 평균을 영원히 못 끝낸다). **X_d 를 측정에서 재시드하는 경로도 x̃ 를 함께 붕괴시킨다** (D-A15: 새 task goal, #292 제어프레임 재시드 — 측정 자세가 이미 X_c 를 실현하므로 남기면 두 번 더해져 최대 0.15 m 계단이 된다; 프레임 *종류*가 바뀐 재시드는 wrench 샘플까지 disown 한다 — apply point 가 다른 프레임에서 측정된 것이라 fade 창 동안 vTCP offset 전체가 레버암이 되고 K_p^a_rot=0 이라 안 돌아온다) — 하강 에지는 F5 게이트뿐 아니라 **제어 프레임 대기·비유한 Jacobian** 홀드에서도 돈다 (그 둘은 ComputeControl 중간에서 반환하므로 파이프라인 `Update()` 를 건너뛴다: 안 돌리면 렌치 age 가 홀드 내내 정지해 재개 tick 이 초 단위로 묵은 힘을 `fade=1.0` 로 인가한다). 그 SAFE_STOP 은 **래치**이고 유일한 탈출구는 `/rtc_cm/reset_fault` 다 — `ResetFault()`/`HasLatchedFault()` 를 이 컨트롤러가 구현하며 (요청은 atomic flag, tick 머리에서 E-STOP 분기보다 **앞서** 소비, 래치 스냅샷은 tick 끝에서 store), **재활성화는 래치를 풀지 않고** 활성화 경계에서 미소비 요청을 버린다 (compliance §10.6 자동 복구 금지). 홀드 tick 의 진단 행은 FSM 의 실제 상태를 싣는다 — 강제로 HOLDING 을 쓰면 래치가 CSV 에서 사라진다. compliance §10.7 램프는 bias 평균이 밀려 있고 **아직 커밋될 수 있는 동안** 정지하고 (compliance §10.6 격자: 램프는 bias commit **뒤**에 돈다), 재무장은 **"쓸 수 있는 wrench 가 생긴 rising edge"** (`valid && !stale`) 에서 돈다 — BIAS_CALIBRATING 재진입이 아니다 (#497). 트리거를 옮긴 이유는 둘 다 실측 결함이었기 때문이다: 출하 프로필은 세 곳 다 `bias_calibration_samples: 0` 이라 (D-A5: pull baseline 이 이미 bias 를 빼므로 두 번 빼게 된다) 재진입 edge 자체가 안 떠서 **재무장이 출하 config 에서 도달 불가**였고, 반대로 평균 도중 죽은 소스는 그 edge 를 **매 tick** 재발화시켜 (stale 분기가 `bias_done_` 만 열고 `bias_pending_` 은 유지) 램프를 매 tick 0 으로 되돌리고 FSM 을 BIAS_CALIBRATING 에 묶었다 — 그 분기가 degrade 원인을 의도적으로 무시하므로 `wrench_timeout` 이 DEGRADED 로 승격될 HOLDING edge 에 도달하지 못했다. 그래서 증상이 fault 가 아니라 **침묵**이었다 (2026-09-04 p1b 실측: α=0 로 16.8 s, 재진입 8360 tick 연속). 재진입 edge 는 이제 fresh 샘플에서만 뜨고 (`!sample.stale`), 램프 정지도 `!stale` 로 게이트된다 — 부분합은 양쪽 다 보존되므로 compliance §3.2.1 N-샘플 평균은 불변이다. **같은 재시드가 hand 레인에도 걸린다 (#504)** — 활성화가 hand target 을 측정값에서 재시드하므로, `grasp_controller_type: "none"` 인 프로필(p1b·iiwa7_leap)에서는 파지력인 `cmd − actual` 간극이 0 이 되어 **파지한 채로 전환하면 물체를 놓는다**. 방향 (a) 로 계약은 안 고치고 **순서**가 답이다 — compliance 를 먼저 활성화하고 그 다음에 손을 닫는다 (절차는 `.claude/skills/verify/SKILL.md` p1b, 근거는 출하 `demo_compliance_controller.yaml` 의 `external_wrench` 주석, 회귀는 `test_compliance_activation_hand_gap.cpp`). 손이 위치 지령이라 **겉보기엔 닫힌 채**이고 서명은 downstream 이다 (pull invalid + `quality_low` with `reason != 0`). 사본인 이유·상속과 추출을 기각한 근거는 `demo_compliance_controller.hpp` 배너. 검증은 `test_compliance_admittance_coupling.cpp` (배선, 적분기 반쪽은 로컬 코어와 bit-identical) 와 `test_compliance_task_equivalence.cpp` (**렌치 withhold 중에만** demo_task 와 동일). S2 가 실제로 추가한 설정면은 **`external_wrench.source`** 하나 (**⚠️ 그 블록은 코어 파서와 *공유*한다** — 코어는 키를 하나씩 꺼내므로 모르는 키를 거부하지 않고 `wrench_enabled` 초기값이 `true` 라 `enabled` 키가 없어도 compliance §7.1 게이트를 통과한다. `source` 를 "코어가 안 읽는 잔재" 로 오해해 지우지 말 것) (기본값 없이 필수, 오늘 유일한 합법값 `pull_estimator` — 미구현 `momentum_observer` 는 오타와 같은 경로로 configure 거부) 이며 S5 가 여기에 **출하 법칙 3키**를 더했다 (`stiffness: 0` = D-A3 hand-guiding · `external_wrench.bias_calibration_samples: 0` · `payload_mass: 0` = D-A5, 셋 다 `test_compliance_task_equivalence` 가 세 프로필에 대해 고정), 이어서 팔의 응답을 정하는 §7 키를 **명시 등록**했다 (K_d `damping` · Λ_d · 관성 하한 · compliance §7.4 · compliance §7.5 envelope · compliance §10.7 램프 · `degraded_recovery_time` · `external_wrench.{deadband, filter_enabled, timeout, fadeout_time}` — 코어 default 가 조용히 실기를 재튜닝하지 못하게 하려는 것이고 하드웨어 튜닝이 아니다. 값은 default 이되 **필터만 off** (pull 추정기가 이미 저역통과한다), 세 프로필 동일, 근거는 ur5e_p1b YAML. 파싱되지만 이 바인딩이 안 읽는 §7 키는 **부재**를 같은 테스트가 고정한다). `damping` 은 이 컨트롤러에서 §7 K_d 6-벡터이고 **스칼라 `damping` (#282 에서 은퇴한 λ) 은 configure 거부**다, p1b 는 `pull_estimator.use_baseline_subtraction: true` 를 **이 컨트롤러에서만** override 한다 (D-A8: shared 블록은 측정용 설정이라 건드리지 않는다). S3 준비 단계에서 두 가지가 더 갈라졌다 — (a) task 게인의 **철자**가 §7 스키마를 따른다 (`ik_kp_pos` / `ik_kp_rot` / `nullspace_kp`, 형제는 `kp_translation` / `kp_rotation` / `null_kp`): `ParseTaskAdmittanceParams` 가 이 컨트롤러의 노드를 읽으므로 두 철자를 다 두면 파싱되고 아무도 안 읽는 키가 생긴다 (D-A13, 값은 여전히 형제와 같아야 하고 등가성 테스트가 쌍으로 고정). ROS 파라미터·GUI 행 이름도 같이 옮겨갔다. (b) 같은 파서가 configure 에서 돌므로 §7 스키마 위반 (`desired_inertia` ≤ 0, `external_wrench.enabled: false`, `command_type: torque`) 이 bring-up 을 거부한다 — 마지막 항목은 **좁힌 것**이다 (바인딩 자체 리더는 torque 를 받아들였다). arm 명령 레인은 compliance §7.3 관절 tail (`compliance/joint_command_tail.hpp`, 형제 `demo_task` 와 공유) 로 바운드된다 — clamp `[q_min+δ, q_max−δ]` **다음에** 적분 base 기준 rate 재바운드, 그리고 `target_velocities` round-trip. δ 는 `joint_limit_margin` 이고 밴드를 뒤집는 값은 `on_configure` 가 거부한다 (LoadConfig 은 Pass 1 이라 밴드를 아직 못 본다). 그 tail 의 clamp/rebound 리포트는 **#484 로 소비된다** — 발동 tick 의 throttled WARN 이 1차 채널이고 `on_deactivate` 요약이 보조다 (SIGINT 은 lifecycle 훅을 안 타므로 요약만으로는 Ctrl-C 종료에서 아무것도 안 남는다). CSV 컬럼이 아닌 이유·누적기는 `integrated_bringup/include/integrated_bringup/support/joint_tail_stats.hpp`. compliance §7.3 이 같은 자리에 적은 `command_divergence` 는 **관절 축 가드라 배선하지 않는다** — 이 바인딩의 피드백은 전부 측정 q 에 닫혀 있어 명령 이탈이 그 tick 에 `pose_error_exceeded` 로 나타난다 (#478) |
-| DemoInferenceController | Position | Joint (policy-driven) | ONNX 정책 바인딩. 입력 텐서의 **이름·순서·폭·정규화·모델 경로가 전부 YAML** 이라 모델 교체에 C++ 재컴파일이 없다 (스키마 SSoT `rtc_controllers/params/policy_io_params.hpp`, 마샬링 코어 `rtc_controllers/inference/policy_io.hpp`, reach gate 코어 `rtc_controllers/inference/reach_gate.hpp`). 스키마는 텐서 단위 (`inputs:`/`outputs:`) 이고 이름이 필수라 엔진이 이름으로 바인딩한다. export 가 정한 순서의 긴 상태 벡터는 `element_names` 로 **이름 배치**하고 덮지 않는 원소는 `fill:` 이 매 평가 채운다 (순서 fill → pack → affine); 고정값 텐서는 `source: constant`. feature: `<dev>.position|velocity` · `<hand>.fingertip_force_norm` (힘을 읽으면 손의 `sensor_layout.inference_values_per_group` 이 힘 3축을 담을 만큼 넓어야 하며 아니면 configure 거부 — 좁으면 전 그룹이 조용히 0 이 된다) · `<hand>.<sensor>.force_norm` · `link.<frame>.position|orientation_xyzw` · `object.*` · `reach.phase`. **모든 pose 는 `inference.policy_frame` (URDF 프레임 이름) 기준**이고 물체 레인은 `object_pose.source_frame_link` 로 메시지 프레임이 URDF 의 어느 프레임인지 선언해 변환을 모델에서 얻는다 (ur5e_p1b: 정책 root = `base`, 그리고 sim world 가 곧 그 프레임이다 — `base_link` 는 z 로 반바퀴 떨어져 있고, 그걸로 주면 pose 가 멀쩡해 보인 채 정책이 물체를 **반추종**한다). link pose 는 loop-passive 관절 하류면 closed-chain hand FK, 아니면 combined-model cache 에서 온다 (passive 를 0 에 고정한 모델에서 손끝을 읽으면 수 cm 틀린다). 관절 lane 은 `inference.joint_convention` (`q_policy = sign·q_device + offset`) 을 입·출력·seed 에서 거친다. 정책은 `decimation` tick 마다 1회 돌고 그 사이 action 을 hold — sim 이 lock-step 이라 이 방식이 `control_rate` 를 낮추는 대안보다 낫다 (후자는 `ControllerState::dt` 를 실제 진행 sim-time 과 어긋나게 만든다). 출력은 `output_features` 의 `{device, role}` 로 **선언 바인딩**된다 (#511 B-2); role 은 `joint_target` (이름 있는 head 는 이름으로 device 순서에 gather) 과 `posture_scalar` (손 전용 `hand_posture` 보간). **recurrent 는 선택** — `source: recurrent` 입력을 `feeds:` 출력이 먹이고, 리셋(activation · `reset_after_hold_sec` 초과 hold) 시 `seed: <feature>` 가 있으면 그 값(적분기 = 측정 관절각), 없으면 0 에서 시작한다. state 와 reach trigger 는 액션 전체가 수락됐을 때만 전진한다. **활성화 경계에서는 나이가 아니라 새 샘플이 기준**이다 — 물체 lane 의 나이는 tick `dt` 로만 누적돼 비활성 구간이 나이에 안 실리므로, 재활성 후에는 새 TF 가 도착할 때까지 `kObject` hold 이고 tactile hold 래치도 함께 리셋된다. 명령 tail 의 rate bound 는 **직전 명령** 기준 (측정 q 기준이면 서보 지연이 명령을 묶는다), activation·hold 직후엔 측정 q 에서 재시작. 실패(입력 unreadable · `Run()` false · 비유한 출력 · closed-chain held · 물체 stale)는 **전 device 를 래치된 자세로 hold** (부분 적용 없음); 사유는 tick 마다 `inference_diag.csv` 에 코드로 남고, 폐쇄 체인 사영이 `closed_chain_warn_ticks` 이상 held 면 (손끝 pose 가 조용히 stale 인 상태) 비-RT 타이머가 활성화당 1회 경고한다. 엔진은 생성자 주입 — stub `OnnxEngine::Init()` 이 조용한 no-op 이라 `is_initialized()` 게이트가 configure 를 막는다. `model_path` 는 `${VAR}`/`~` 확장; 변수가 없으면 `allow_missing_model` 에 따라 hold 모드 |
-| DemoWbcController | Position | TSID QP + Hand | `initial_controller` default — **`ur5e_p1a`·`iiwa7_leap` 만**. `ur5e_p1b` 는 sim·robot 둘 다 `demo_joint_controller` 다 (robot profile 별 `{sim,robot}.yaml` 이 SSoT). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), position backbone = **CLIK-QP** (`rtc::tsid::ClikReferenceGenerator`; TSID inverse-dynamics QP 는 접촉력·토크 해석과 선택적 hand τ_ff 에만 쓴다 — [WBC_CONTROLLER_IMPLEMENTATION.md](../docs/WBC_CONTROLLER_IMPLEMENTATION.md)), contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
-| DemoCatchingController | Position | Joint (arm) + Hand (step) | dynamic_catching S5·S6. vision 예측 → soft-catch 기준 → 확장 CLIK 으로 팔을 몰고, 손은 `diagnostic.hand_step: true` 일 때 무성형 계단 목표를 받는다. plan 은 계획기 스레드 (`planner.enabled`, `mpc` layout role 을 MPC 와 공유 — E-7 J) 또는 `diagnostic.oracle_plan` (테스트·sim) 이 한 plan box 에 쓰고 RT 가 `JudgePlan` 으로 받는다. 소비 키가 provisional (실기)·TBD (sim, A-S5-12) 이거나 계획기와 oracle 이 함께 켜지면 configure 는 성공하고 activate 만 거부한다 (park). `ur5e_p1b`·`iiwa7_leap` 만 YAML 을 출하하므로 `_REQUIRING_CONFIG` 등록이다 |
+- 분류의 축은 클래스가 아니라 **제어 법칙 (알고리즘 코어)** 이다. `rtc_controllers` 는 순수 알고리즘 라이브러리이고 `RTControllerInterface` 구체 구현 (= 바인딩) 은 integration 패키지가 소유한다. 규칙 · 3계층 배치 · 경계 판정의 SSoT 는 [design-principles.md](design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms.
+- **`compliance/*` 가 새 법칙의 기준 형태다** — Eigen/span in-out, `Resize()` / `Compute()` 분리, 프레임워크 타입 무지. 새 법칙은 처음부터 그 형태로 쓴다.
+- 어떤 법칙이 어디에 있고 어떤 컨트롤러가 배선돼 있는지는 문서가 아니라 코드가 SSoT 다 (`RTC_REGISTER_CONTROLLER` 호출, `rtc_controllers/include/`).
 
 ### Joint order & submodel selection
 
-device joint order 와 primary-device submodel 처리는 컨트롤러마다 복제된 법칙-무관 boilerplate 라
-#236 이 G1(프레임워크 공통 글루)로 분류한 뒤 S7c 에서 어댑터와 함께 삭제됐다. base 에 남은 것은
-그 **입력** (`RTControllerInterface` 의 `GetPrimaryDeviceName()` / `GetSystemModelConfig()`) 이고,
-모델을 실제로 고르고 재정렬하는 것은 바인딩 몫이다 (`integrated_bringup/src/controllers/*/controller.cpp`).
-삭제된 어댑터의 동작 기록은 #172 Phase 3 · #236 에 있다.
+모델을 고르고 재정렬하는 것은 바인딩 몫이다. **device 순서로 형성한 항 (null-space · Coriolis · 관절속도 `q̇`) 은 Pinocchio 순서 행렬과 곱하기 직전 `RtModelHandle::ReorderInput` 으로 1회 gather 한다** — `ν = J·q̇` 의 `q̇` 를 빠뜨리면 모든 수가 유한한 채 감쇠 토크만 틀리고 fault 도 뜨지 않는다 (AP-CTRL-5).
 
-남기는 것은 **재정렬 함정** 하나다 — 바인딩에서 그대로 재발하며, 발현하면 모든 수가 유한한 채
-토크만 틀린다: device 순서로 형성한 항 (null-space·Coriolis·관절속도 `q̇`) 을 Pinocchio 순서 행렬과
-곱하기 직전 `RtModelHandle::ReorderInput` (device→Pinocchio scatter, `ReorderOutput` 의 역방향) 으로
-1회 gather 한다. `ν = J·q̇` 의 `q̇` 를 빠뜨리면 감쇠 토크가 틀리면서 fault 도 안 뜬다 (#236 슬라이스 4
-리뷰에서 실제 발현).
+### Unified arm kin&dyn
 
-### Unified arm kin&dyn (joint / task / wbc)
-
-세 데모 컨트롤러(DemoJoint/DemoTask/DemoWbc)는 arm kinematics(FK·Jacobian)를 **결합(arm+hand) actuated
-모델 위의 `rtc_urdf_bridge::PinocchioCache`** 에서 획득한다 — non-E-STOP tick당 `Update(q,v)` 1회
-(`GetActuatedModel` → reduced tree `"wbc"` → full model 순으로 선택). arm-only `RtModelHandle`(`arm_handle_`)은
-E-STOP TF 경로(`ComputeEstop`)와 메타데이터(`nv()`/`GetFrameId`)로만 잔존. closed-chain 손에서는 접촉
-프레임 J·oMf·dJv가 loop-consistent로 격상된다(dJv는 `RtClosedChainHandle` drift API 로 L2-exact, issue #173 종결).
-
-이 cache 배선(모델 선택 + `PinocchioCache.Init`, ext(device joint-state)→Pinocchio q/v reorder map, 매 tick
-state scatter, arm-TCP FK)은 **공유 타입 `integrated_bringup::CombinedModelCache`(support/) 한 곳으로 통합**됐다
-(issue #174, 이전 삼중 복제 해소). 세 컨트롤러는 멤버 `combined_cache_` 를 소유·위임한다(`InitModel`/`BuildReorderMap`/
-`ExtractFullState`/`Update`/`ArmTcpPoseFromCache` + `cache()`/`model()`/`reorder_valid()`/`q()`/`v()` accessor).
-WBC 는 superset 소비자로, TSID contact 프레임과 reduced-dynamics provider 는 WBC-local 로 유지하고, 모델선택은
-`SelectModel`(contact frame id 파싱이 선택된 모델을 요구해 cache Init 을 뒤로 미룸) + 이후 `cache().Init` 로 분리
-호출한다.
-
-RT 진입점 `Compute(state)` 는 세 컨트롤러 공통으로 **`ReadState`(순수 raw read + `ExtractFullState`) → compute
-model(`combined_cache_.Update`) → compute control law → `WriteJointCommand`(순수 command write)** 순서를 지킨다
-(로그/발행용 oMf 소비는 `FillLogOutput`/`FillPublishOutput` 로 분리). cache.Update 텍스트 위치는 joint·wbc = `ComputeControl`
-Stage 1, task = Compute-scope Stage 1(DrainTargetSlot self-init 이 fresh cache 의존). WBC 상세 구현:
-[docs/WBC_CONTROLLER_IMPLEMENTATION.md](../docs/WBC_CONTROLLER_IMPLEMENTATION.md).
+- 데모 컨트롤러는 arm kinematics (FK · Jacobian) 를 **결합 (arm + hand) actuated 모델 위의 `PinocchioCache`** 에서 얻는다 — non-E-STOP tick 당 `Update(q, v)` 1회. arm-only handle 은 E-STOP TF 경로와 메타데이터로만 쓴다.
+- 그 cache 배선 (모델 선택, reorder map, tick 당 state scatter, arm-TCP FK) 은 공유 타입 **`CombinedModelCache` 한 곳** 이 갖는다. 컨트롤러마다 복제하지 않는다.
+- RT 진입점 `Compute(state)` 는 **`ReadState` (순수 raw read) → compute model (cache `Update`) → compute control law → `WriteJointCommand` (순수 command write)** 순서를 지킨다. 로그 / 발행용 소비는 `FillLogOutput` / `FillPublishOutput` 으로 분리한다.
 
 ## Gains (per-controller ROS 2 parameters)
 
-게인 채널은 ROS 2 parameter API로 노출된다 ([rtc_msgs/srv/GraspCommand.srv](../rtc_msgs/srv/GraspCommand.srv)). Legacy `~/controller_gains` / `~/request_gains` / `~/current_gains` 토픽 + `UpdateGainsFromMsg`/`GetCurrentGains` 가상 메서드는 모두 제거.
-
-각 데모 컨트롤러는 자기 LifecycleNode (`/<config_key>`) 에서 `declare_parameter`로 게인을 노출하고, `add_on_set_parameters_callback`이 SeqLock writer 측으로 mutate→Store. RT 경로는 `gains_lock_.Load()` 스냅샷만 본다.
-
-각 데모 컨트롤러가 노출하는 정확한 parameter list 는 코드/YAML 이 SSoT:
-
-컨트롤러 LifecycleNode 는 **이름과 namespace 를 둘 다 `config_key` 로** 만들어지므로 (`rt_controller_node_params.cpp`: name=`config_key`, ns=`/config_key`), FQN 은 `/<config_key>/<config_key>` 다:
-
-```bash
-# 활성화 후 actual parameter list
-ros2 param list /demo_wbc_controller/demo_wbc_controller
-ros2 param describe /demo_wbc_controller/demo_wbc_controller <param>
-```
-
-또는 컨트롤러 source 의 `DeclareGainParameters()` 멤버 + bringup config (`integrated_bringup/config/<robot>/controllers/<config_key>.yaml`).
-
-읽기 전용 cap parameter (`*_max_traj_velocity` 등) 는 `ParameterDescriptor::read_only=true` 로 선언. One-shot 이벤트 (Force-PI grasp) 는 `grasp_command` srv (`rtc_msgs/srv/GraspCommand`) — **상대 이름**으로 advertise 하므로 노드 namespace 기준 `/<config_key>/grasp_command` 로 해석된다 (`~/` 를 쓰면 이름이 한 번 더 중첩된다). Active controller 만 server 를 띄움.
-
-`mpc_enable`은 빌드타임 `mpc_enabled_` (YAML `mpc.enabled`) 와 AND 결합 — YAML이 false면 런타임 1은 무시된다. `riccati_gain_scale`은 `[0,1]`로 자동 clamp.
-
-`rtc_controllers` 는 게인 채널을 노출하지 **않는다 — 노출할 수 없는 것이 정상이다.** 파라미터 채널은 LifecycleNode 를 요구하는데 이 패키지는 노드를 만들지 않으며, 코어가 보는 것은 바인딩이 넘긴 `Params` 스냅샷뿐이다 ([design-principles.md](design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
-
-런타임 튜닝 예:
-
-```bash
-ros2 param set /demo_wbc_controller/demo_wbc_controller se3_weight 150.0
-ros2 param set /demo_task_controller/demo_task_controller kp_translation '[20.0, 20.0, 30.0]'
-
-# Force-PI grasp (one-shot event)
-ros2 service call /demo_task_controller/grasp_command \
-    rtc_msgs/srv/GraspCommand "{command: 1, target_force: 2.0}"
-```
+- 게인 채널은 **ROS 2 parameter API** 다. 각 컨트롤러가 자기 LifecycleNode 에서 `declare_parameter` 로 노출하고, `add_on_set_parameters_callback` 이 SeqLock writer 쪽으로 mutate → Store 한다. RT 경로는 `gains_lock_.Load()` 스냅샷만 본다 (AP-CTRL-1). 게인용 토픽이나 base interface 의 게인 virtual 을 다시 만들지 않는다.
+- 컨트롤러 LifecycleNode 는 이름과 namespace 가 둘 다 `config_key` 다 — FQN 은 `/<config_key>/<config_key>`.
+- 읽기 전용 cap parameter 는 `ParameterDescriptor::read_only=true` 로 선언한다.
+- one-shot 이벤트 (Force-PI grasp) 는 parameter 가 아니라 `grasp_command` srv 다. **상대 이름** 으로 advertise 한다 (`~/` 를 쓰면 이름이 한 번 더 중첩된다). Active controller 만 server 를 띄우고, Inactive 컨트롤러에서 거부한다.
+- `mpc_enable` (런타임) 은 YAML `mpc.enabled` 와 AND 다 — YAML 이 false 면 런타임 값은 무시된다.
+- `rtc_controllers` 는 게인 채널을 노출하지 않는다 — 노드를 만들지 않는 패키지이고, 코어가 보는 것은 바인딩이 넘긴 `Params` 스냅샷뿐이다.
+- 노출되는 parameter 목록은 코드 (`DeclareGainParameters()`) 와 YAML 이 SSoT 다.
 
 ## DemoWbcController — Kinematic WBC / Dynamic WBC
 
-DemoWbcController의 position-mode tick은 `ComputeTSIDPosition()`이 한 gains 스냅샷으로
-**`ComputeWbcCommon`**(공유 stage: state/cache/reference, no solve) → **`ComputeKinematicWbc`**
-(arm/hand position) → **`ComputeDynamicWbc`**(hand τ_ff)를 순차 orchestrate한다
-(`src/controllers/wbc/compute.cpp`). 두 QP는 같은 Common reference를 독립 소비한다 (decision 5).
-
-- **Kinematic WBC** = CLIK-QP 경로 (`rtc::tsid::ClikReferenceGenerator`). arm SE3 추종(L1) + arm
-  redundancy/nullspace posture(L2) + hand posture(L3)를 velocity-level box-QP로 풀어
-  `q_ref = q + v_ref·dt`를 낸다. **유일한 position backbone** — CLIK 실패는 critical
-  (hold-last → N회 연속 실패 시 `kFallback`). CLIK 계약은 `nq==nv` (reduced wbc 모델)이며,
-  비충족 시 `on_configure`가 lifecycle transition을 FAIL시킨다 (DEC-1: integrator fallback 없음).
-- **Dynamic WBC** = hand 전용 τ_ff 경로 (`hand_tauff_*` → `kPdFeedforward`). PD position
-  backbone 위에 model-based feedforward torque(gravity_comp | tsid_tau)를 overlay. closure/hold
-  에서만, `±hand_tauff_max` clamp, opt-in `hand_tauff_enable`.
-
-**Commanded SE3 target** — `RobotTarget{goal_type:"task"}`(arm, device 0)은 base interface의
-`SetDeviceTaskTarget`을 거쳐 commanded SE3 slot으로 들어가고, `kRelease`/`kFallback`을 제외한
-**모든 phase에서 live override**로 `tcp_goal_`을 그 pose로 갱신한다 (joint posture slot과 독립; CLIK가
-추종). 단 `kClosure`/`kHold`/`kRelease`/`kFallback` **진입 시점**에는 직전의 stale
-commanded SE3를 clear하므로 (idle 복귀 시 grasp 명령으로 jog되는 것 방지), 해당 phase에서는
-**진입 후 새로 도착한** SE3만 재적용된다. `kRelease`/`kFallback`은 자신의 SE3 goal을 소유하여 live
-override를 받지 않는다. `goal_type:"joint"`(arm)은 arm posture로 들어간다.
-(x,y,z,r,p,y)→SE3 변환은 ZYX(yaw·pitch·roll) 규약.
-
-**Hand joint target** — `RobotTarget{goal_type:"joint"}`(hand, device 1)은 `kRelease`(finger-open
-ramp가 hand 점유)/`kFallback`(safety hold)을 제외한 모든 phase에서 매 tick `BuildHandTargetPosture`로
-`q_des_target_full_` hand block에 fold되어 CLIK posture term(`clik_kh`)이 추종한다 — phase-entry
-edge를 기다리지 않는 live command. (FSM 의 hold/non-hold 판정은 hand τ_ff overlay만 게이트.)
+- **Kinematic WBC (CLIK-QP) 가 유일한 position backbone 이다.** CLIK 실패는 critical 이다 (hold-last → 연속 실패 시 fallback). CLIK 계약은 `nq==nv` 이며, 충족하지 않으면 `on_configure` 가 FAIL 한다 — integrator fallback 을 두지 않는다.
+- **Dynamic WBC** 는 hand 전용 τ_ff overlay 다 — closure / hold 에서만, clamp 아래, opt-in (`hand_tauff_enable`).
+- **Commanded SE3 target** 은 `kRelease` / `kFallback` 을 제외한 모든 phase 에서 live override 다. 단 `kClosure` / `kHold` / `kRelease` / `kFallback` **진입 시점** 에 직전의 commanded SE3 를 clear 한다 (idle 복귀 시 묵은 명령으로 jog 되지 않게) — 그 phase 에서는 진입 후 새로 도착한 SE3 만 적용된다. (x,y,z,r,p,y) → SE3 는 ZYX 규약.
+- **Hand joint target** 도 `kRelease` / `kFallback` 을 제외한 모든 phase 에서 매 tick 반영되는 live command 다.
 
 ## GraspController (Force-PI, internal only)
 
-Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`). Whitelist `{force_pi, contact_stop, none}` — `none` disables all hand intervention (trajectory passes through) while GraspState aggregation/publishing continues. 화이트리스트 밖 값의 처리는 **출처에 따라 다르다**: YAML 값이면 `LoadConfig` 가 throw 해 `on_configure` FAILURE, 파라미터로 들어오면 (`DeclareGainParameters` 는 noexcept·void 라 전이를 실패시킬 수 없다) ERROR 로그와 함께 **거부되고 YAML 값이 유지**된다. 파라미터 경로는 capability 게이트도 통과해야 한다 — 블록 없이 `force_pi` 를 요구하면 같은 방식으로 거부된다 (cleanup 상태에서 `ros2 param set` 이 콜백 없이 수락되는 창을 막는다).
+`grasp_controller_type` 의 whitelist 는 `{force_pi, contact_stop, none}` 이다. `none` 은 손 개입을 모두 끄되 GraspState 집계·발행은 계속한다.
 
-**두 축이 분리돼 있다** (B-3): `BuildGraspController` 는 `force_pi_grasp` 블록 유무만 보고 **모드는 안 본다** — 블록이 있으면 어떤 모드로 시작하든 PI 컨트롤러가 만들어진다 (블록 = *capability*, 모드 = 매 tick 어느 법칙이 손을 잡는가). 컨트롤러 스위칭이 re-configure 를 하지 않으므로, 빌드가 모드를 봤다면 모드가 one-way door 가 된다. 따라서 `grasp_controller_ != nullptr` 은 "force_pi 가 돌고 있다"의 대용이 **아니다** — 제어 법칙·diagnostics fill·`grasp_command` srv (`GraspCommandRejectReason`) 가 각자 모드를 직접 확인한다. `ur5e_p1b` 가 `type: "none"` + 블록 조합을 실제로 싣고 있어 이 구분이 가설이 아니다.
+- **whitelist 밖 값의 처리는 출처에 따라 다르다**: YAML 값이면 `LoadConfig` 가 throw 해 `on_configure` FAILURE, 파라미터로 들어오면 거부되고 YAML 값이 유지된다. 파라미터 경로는 capability 게이트도 통과해야 한다.
+- **capability 와 모드는 다른 축이다** — `force_pi_grasp` 블록 유무가 capability (PI 컨트롤러가 만들어지는가), 모드가 "지금 어느 법칙이 손을 잡는가" 다. 빌드는 모드를 보지 않는다. 따라서 `grasp_controller_ != nullptr` 은 "force_pi 가 돌고 있다" 의 대용이 **아니다** — 제어 법칙 · diagnostics · `grasp_command` 가 각자 모드를 직접 확인한다.
+- **런타임 모드 전환은 손이 quiet 할 때만 수락한다** (contact_stop latch 미engage **그리고** force_pi FSM 이 `kIdle`). 판정의 SSoT 는 `GraspModeChangeRejectReason` 이다. 이미 활성인 모드의 재요청은 항상 수락하고, 표시하는 모드는 요청한 값이 아니라 컨트롤러가 확인한 값이다.
+- **quiet gate 는 RT 스레드를 멈출 수 없다** (판정이 한 tick 뒤처진다). 그 창은 compute 쪽 race closure 가 닫는다: 모드가 contact_stop 을 떠난 tick 에 latch 가 걸려 있으면 latch 를 떨구기 **전에** hand goal 을 `hand_hold_position_` 으로 재-seed 한다. 그 경로가 발화하면 결함 신호다.
+- **PI 법칙을 돌리지 않는 동안 FSM 은 항상 kIdle 이다** — 모드가 force_pi 가 아닌 매 tick 과 `on_activate` 에서 `Reset()` 하고, phase 미러는 분기 밖에서 매 tick store 한다.
+- **힘 피드백은 컨트롤러가 만들어 넘긴다** (`GraspController` 는 필터를 갖지 않는다). 순서는 delta-spike 가드 → **축별** LPF → magnitude 다 — `LPF(‖F‖)` 로 뒤집으면 zero-mean 노이즈가 양의 DC 로 남는다. 가드는 소비자 간 공유하고 cutoff 는 소비자별로 독립이다. 발행하는 `force_magnitude` / `max_force` 는 raw 그대로이고 (BT 계약), 서보가 본 값은 `finger_filtered_force` 다.
 
-**런타임 전환 가능** (B-4b; 이전에는 read-only 였다). joint/task 컨트롤러는 활성 모드를 writable `grasp_controller_type` ROS 파라미터로 노출하고, `ros2 param set` 은 **손이 quiet 할 때만** 수락한다 — contact_stop latch 미engage **그리고** force_pi FSM 이 `kIdle`. 판정의 SSoT 는 `GraspModeChangeRejectReason` (`demo_shared_config.hpp`); 이미 활성인 모드의 재요청은 quiet 여부와 무관하게 항상 수락 (no-op). 거부 시 사유가 `SetParametersResult::reason` 으로 돌아가고 GUI 가 그대로 표시한다 (B-5: Grasp 탭의 `Grasp mode:` 콤보박스 + `Set Mode`; 사유는 별도 라벨, 시도 후에는 성공·거부 모두 파라미터를 재조회 — 표시되는 모드는 요청한 값이 아니라 컨트롤러가 확인한 값이다).
+**FSM**: Idle → Approaching → Contact → ForceControl → Holding → Releasing
 
-quiet 조건을 고른 이유 (2026-07-30 확정): 대안이던 "항상 허용 + 자동 safing" 은 RT tick 코드를 더 건드리고 재-seed 누락 자체가 hazard 가 된다. quiet 는 부수 이득도 준다 — force_pi 를 떠나는 것이 `kIdle` 에서만 가능하므로 발행된 GraspState 에 남는 PI diagnostics 는 idle-consistent setpoint 이지 stale mid-grasp state 가 아니다. 그래서 전환 시 그 필드들을 청소하지 않는다.
-
-**quiet gate 는 RT 스레드를 멈출 수 없다** — 파라미터 콜백은 RT tick 이 store 하는 atomic 미러(`contact_latched_pub_` / `grasp_phase_pub_`)를 읽으므로 판정이 한 tick 뒤처진다. check 와 store 사이에 접촉이 걸리는 창은 compute 쪽 race closure 가 닫는다: 모드가 contact_stop 을 떠난 tick 에 latch 가 걸려 있으면 latch 를 떨구기 **전에** hand goal 을 `hand_hold_position_` 으로 재-seed 하고 throttled WARN 을 찍는다 (gate 가 정상이면 절대 발화하지 않으므로 발화 자체가 결함 신호다). 없으면 명령이 전환 첫 tick 에 접촉 전 goal 로 튄다 — 실측 0.3 → 0.8 rad.
-
-**non-force_pi tick 은 FSM 을 리셋한다** (리뷰 후속 C2). `GraspController::Reset()` 을 모드가 force_pi 가 아닌 매 tick + `on_activate` 에서 호출하므로 **"이 컨트롤러가 PI 법칙을 돌리지 않는 동안 FSM 은 항상 kIdle"** 이 무조건 성립한다. 조건부였을 때 실제로 깨졌다: GRASP 수락 → RT tick 이 FSM 을 kApproaching 으로 step → 그 뒤 모드 전환 Store 가 착지하면, 아무도 FSM 을 step 하지 않으므로 phase 미러가 non-Idle 로 얼고 quiet gate 가 이후 **모든** 전환을 거부하며 `grasp_command` 는 모드가 force_pi 가 아니라 RELEASE 도 거부한다 (복구 불가). 미러도 분기 밖에서 **매 tick** store 한다. 같은 이유로 `grasp_command` 는 Inactive 컨트롤러에서 거부된다 — 서비스가 deactivate 를 넘어 살아 있어 요청만 arm 되고 다음 활성화 첫 tick 에 발화했다.
-
-**힘 피드백은 컨트롤러가 만들어 넘긴다** — `GraspController` 는 필터를 갖지 않는다. fingertip 원시 triplet은 delta-spike 가드(NaN/Inf 포함)를 지난 뒤 **축별** Bessel LPF 를 거치고, magnitude 는 그 다음에 취해진다. 순서가 뒤집히면 (`LPF(‖F‖)`) |F| 의 정류로 zero-mean 축 노이즈가 양의 DC — 3축 가우시안이면 ≈1.6σ — 로 남아 `f_contact_threshold` 밑에 영구히 깔린다. 필터가 상류에 있는 것은 취향이 아니라 강제다: `‖LPF(F)‖` 는 3축을 봐야 하는데 `Update()` 는 이미 magnitude 로 접힌 값만 받는다.
-
-**가드는 공유, cutoff 는 독립.** 같은 guarded triplet 을 뱅크 두 벌이 받아 contact_stop 은 `fsm.contact_stop_force_lpf_cutoff_hz`(기본 50 Hz), force_pi 는 `force_pi_grasp.lpf_cutoff_hz`(기본 25 Hz)로 각자 돈다. wire 아티팩트 거부는 신호원의 성질이라 소비자별로 다를 이유가 없지만, 대역은 요구가 반대다 — contact_stop 은 지연이 곧 손 이동 거리인 래치, force_pi 는 tick 당 미분(500 Hz 에서 0.01 N)으로 slip 을 보는 서보다. 가드가 없을 때 실측된 비용: 2-tick 배선 스파이크(6.406/6.058 N)가 서보 피드를 **1.740 N** 까지 밀어 올려 `f_contact_threshold` 0.8 N 을 2.2배 넘기고, 하강 df/dt ≈ -43 N/s 가 `df_slip_threshold` -5 N/s 를 넘겨 grip tightening 까지 부른다. 발행되는 `GraspState.force_magnitude` / `max_force` 는 그대로 raw 이며(BT 계약 불변), `finger_filtered_force` 가 서보가 실제로 본 값이다.
-
-**FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
-
-**Approaching 은 스스로 실패하지 않는다.** 판정 손가락 (thumb + 접촉한 아무 손가락 하나 — #432, thumb 슬롯은 `finger_names` 가 정한다) 이 `s=1.0` 까지 닫혔는데 접촉이 없어도 kIdle 로 낙하하지 않고 **완전히 닫힌 자세에서 접촉 판정을 계속 돌린다**. 접촉은 시간 제한이 아니라 사건이고 힘은 늦게 들어올 수 있기 때문 — 물체가 미끄러져 들어오거나, 팔이 아직 움직이는 중이거나, fingertip lane 이 뒤늦게 살아나는 경우다. 낙하하던 이전 spec 은 호출측의 `phase() != kIdle` 게이트를 통해 손 명령을 한 tick 만에 trajectory 로 되돌려 놓았다 (GRASP 후 실패까지 `1/approach_speed` 초). 늦은 접촉이 잡히면 `s_at_contact = 1.0` 이 되고, `s` 상한이 deformation guard 보다 먼저 막으므로 이어지는 force control 은 여는 방향으로만 권한을 갖는다.
-
-**따라서 kApproaching 도 RELEASE 를 소비한다** — kForceControl / kHolding 과 달리 phase 함수 *맨 앞*에서 (경쟁 전이 kContact 의 early return 이 플래그를 건너뛰지 않도록). 접촉 없는 grasp 를 빠져나오는 유일한 길이므로 위 변경과 한 세트다: 없으면 FSM 이 kApproaching 에 영구히 남아 quiet gate (`GraspModeChangeRejectReason`) 가 모드 전환을 영구 거부하고, BT `ForcePIRelease` (phase==idle 대기) 가 타임아웃까지 매달린다.
-
-**ForceControl -> Holding 승급은 램프 완료를 요구한다.** dwell (`settle_time`) 은 `f_desired` 가 `f_target` 에 닿은 뒤에만 돌기 시작하므로, 수렴 판정이 재는 것은 목표힘 대비 오차다. 그 조건이 없던 시절에는 `settle_time < 2·settle_epsilon/f_ramp_rate` 인 설정이 램프가 측정힘 근처를 *지나가는 도중*에 승급했고, Holding 에는 램프가 없어 기준값이 거기서 얼어붙었다 — 배포 `ur5e_p1a` 가 그 영역이었고 실측 진입 `f_desired` 는 강성과 무관하게 **0.60~0.68 N (목표 2.0 N)** 이었다. 대가는 정직해진 소요 시간이다: 실측 Holding 진입이 K=200 에서 2.2 s, K=20 에서 5.5 s, K=10 에서 9.3 s 이고, 예산 내 도달 가능한 최대 힘 (`≈ f_contact_threshold + K·delta_s_max`) 이 모자라는 무른 물체 (K≲7) 는 **거짓 Holding 대신 kForceControl 에 머문다** — BT `grasp_timeout_ms` 가 실패로 처리한다.
-
-**Holding 의 grip tightening 은 rate 다** (`grip_tightening_rate` [N/s], `grip_decay_rate` 와 같은 축의 짝). 슬립 판정 두 조건 중 `f_measured < f_target · f_slip_fraction` 은 사건이 아니라 **상태**라 조건이 참인 동안 매 tick 재발화하므로, per-tick 비율이던 시절 grip force 는 `control_rate` 의 함수였다 (0.15/tick → 500 Hz 에서 22 ms 만에 `f_max_multiplier` 상한). 이 분기는 **integrator 동결을 건드리지 않는다** — 동결은 `ApplyDeformationGuard` 가 걸고 푸는 닫힌 계약이고, 여기서 풀면 guard 와 매 tick 교착한다 (실측: 연체에서 기준값 4.0 N 고정 · `Δs` 는 `delta_s_max` 포화 · 힘 0.85 N 정지).
-
-PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/include/.../grasp_types.hpp` 가 SSoT — controller-specific YAML 로 override 가능. `grip_tightening_ratio` 는 **제거**됐고, YAML 에 남아 있으면 `LoadConfig` 가 throw 한다 (단위가 ratio → N/s 로 바뀌어 자동 변환이 불가능하고, 이 로더는 모르는 키를 조용히 무시하므로 침묵하면 값이 사라진다). 같은 정리에서 `grip_decay_rate` 도 로더에 추가됐다 — 그전에는 YAML 에 적어도 무시되고 default 가 돌았다.
-
-**Grasp detection thresholds (capability-aware).** `grasp_contact_threshold` · `grasp_force_threshold` · `grasp_min_fingertips` 는 데모 컨트롤러 (위 §Controller Table 의 `Demo*`) 전반에서 동일한 키로 노출되며, `devices.<hand>.sensor_layout.has_native_contact` (robot/sim yaml) 에 따라 분기한다 — sensor A (native 접촉 확률 보유) 는 두 threshold 의 AND, sensor B (force-only) 는 force_threshold 단독. 전체 표는 [integrated_bringup/README.md](../integrated_bringup/README.md) 의 "Grasp threshold capability matrix" 섹션.
+- **Approaching 은 스스로 실패하지 않는다** — 완전히 닫힌 자세에서도 접촉 판정을 계속 돌린다 (접촉은 시간 제한이 아니라 사건이다). 그래서 **kApproaching 도 RELEASE 를 소비한다**, phase 함수 맨 앞에서 — 접촉 없는 grasp 를 빠져나오는 유일한 길이다.
+- **ForceControl → Holding 승급은 램프 완료를 요구한다** — dwell 은 `f_desired` 가 `f_target` 에 닿은 뒤에만 돈다. 예산 안에 목표 힘에 못 닿는 물체는 거짓 Holding 대신 kForceControl 에 머물고 호출측 timeout 이 실패로 처리한다.
+- **Holding 의 grip tightening 은 rate 다** (`grip_tightening_rate` [N/s]) — per-tick 비율은 `control_rate` 의 함수가 된다. 이 분기는 integrator 동결을 건드리지 않는다 (동결은 `ApplyDeformationGuard` 가 걸고 푸는 닫힌 계약이다).
+- **제거된 키가 YAML 에 남아 있으면 `LoadConfig` 가 throw 한다** (`grip_tightening_ratio`) — 로더가 모르는 키를 조용히 무시하므로, 단위가 바뀐 키를 침묵으로 받으면 값이 사라진다.
+- **Grasp detection threshold 는 capability-aware 다** — `devices.<hand>.sensor_layout.has_native_contact` 에 따라 분기한다 (native 접촉 보유 = 두 threshold 의 AND, force-only = force threshold 단독).
 
 ## ROS2 Topics
 
-**Controller Manager**: switch via `/rtc_cm/switch_controller` (srv, sync, single-active), query via `/rtc_cm/list_controllers` (srv), latched controller-local fault 해제는 `/rtc_cm/reset_fault` (srv, #260 — active 한정·이름 명시 필수, global E-STOP 과 **분리**된 별개 latch); `/rtc_cm/active_controller_name` (Pub, latched — rewire trigger for downstream nodes; namespace 템플릿이 아니라 `RtControllerNode` 가 박아 쓰는 절대 토픽명이다), `/system/estop_status` (Pub). Gain 채널은 더 이상 manager가 소유하지 않으며 컨트롤러별 LifecycleNode parameter로 이관 (위 §Gains 참조).
+- **Controller Manager**: `/rtc_cm/switch_controller` (srv, sync, single-active), `/rtc_cm/list_controllers` (srv), `/rtc_cm/reset_fault` (srv — controller-local fault latch 해제. active 한정 · 이름 명시 필수이며 global E-STOP 과 **분리된** latch 다), `/rtc_cm/active_controller_name` (latched, `RtControllerNode` 가 쓰는 절대 토픽명), `/system/estop_status`.
+- 누가 어느 토픽을 소유하는가 (controller-owned / DeviceBackend-owned / CM fixed) 는 [architecture.md](architecture.md) §RT vs non-RT Topic Ownership 이 갖는다. device-wire 토픽 (`state_topic` / `command_topic` 등) 은 controller YAML 이 아니라 `devices.<group>.backend:` 에서 선언한다.
+- **YAML role** 은 `kRobotTransforms` 하나다. publisher 가 없는 role 을 선언하지 않는다 (조용히 죽은 토픽이 된다). `GraspState` / `WbcState` / `ToFSnapshot` / `PayloadEstimate` 는 role 없이 `Setup*Publisher` 헬퍼로 만들며, `GraspState` 와 `WbcState` 는 상호 배타다.
+- **매 tick Store 계약** 은 PROC-7 이 갖는다. CSV 도 같은 규약이다 — gap 이 아니라 `valid=0` 행을 남긴다.
+- **CM per-group JointState**: `/rtc_cm/{group}/joint_states` (RELIABLE, depth 1).
 
-**Dynamic** (per controller TopicConfig):
-- **DeviceBackend-owned (HW/sim ↔ controller boundary, Phase 4 SSoT)** — `state_topic` / `motor_topic` / `sensor_topic` (HW→controller) and `command_topic` (controller→HW/sim) are declared in `devices.<group>.backend:` (sim.yaml/robot.yaml) and owned by `DeviceBackend` impls (`mujoco_native` / `ur_driver_native` / `udp_hand_native`). CM no longer reads device-wire roles from controller YAML.
-- **Controller-owned (`<config_key>/` namespace, `PublishNonRtSnapshot`)** — YAML role-mapped: `kRobotTransforms` 하나 (issue #196 Phase 5: publisher 가 없던 `kRobotTarget` / `kDigitalTwinState` 제거 — 선언하면 조용히 죽은 토픽이 됐다). CM은 SPSC snapshot 운반만 담당하며 controller YAML 토픽 퍼블리셔를 만들지 않는다 (issue #138: controller YAML entry 는 전부 controller-owned, `ownership:` field 없음). Phase 4: `kGuiPosition` 폐기 — `/rtc_cm/<group>/joint_states` + `<config_key>/transforms` 로 대체.
-- **Controller-owned (no YAML role)** — `GraspState` / `WbcState` / `ToFSnapshot` / `PayloadEstimate` 은 각 컨트롤러가 `Setup{Grasp,Wbc,ToF,PayloadEstimate}*Publisher` 헬퍼로 직접 생성하고 자체 `SeqLock<T>` 로 RT compute → publish thread 전달. `PublishSnapshot` 에서 완전히 분리되어 CM 은 의미를 모름.
-- **매 tick Store 계약 (PROC-7, issue #234 P-1)** — CM 은 tick 마다 새 `stamp_ns` 로 snapshot 을 push 하고 publish thread 는 그때마다 SeqLock 을 다시 Load 한다. 따라서 **Store 를 건너뛴 tick 은 "발행 안 함" 이 아니라 "직전 body 를 현재 stamp 로 재발행"** 이다. E-STOP 처럼 제어 법칙을 건너뛰는 tick 도 반드시 Store 하되, 이번 tick 에 계산하지 않은 필드는 명시적으로 무효화한다 — 각 컨트롤러의 `FillEstopPublishState()` 가 그 경로다 (센서 유래 집계는 갱신, Force-PI per-finger 진단은 0, TSID health 는 not-solved, pull 추정은 `StageEstopPullTick` 으로 `valid=false`+감쇠). `pull_estimator.csv` 도 같은 이유로 gap 이 아니라 `valid=0` 행을 남긴다.
-- **`PullEstimate` 자기기술 계약 (issue #234 P-5/P-7/P-11)** — `force_inplane[2]` 는 매 tick *관측된* pinch 축에서 재구성되는 기저의 좌표이므로 그 자체로는 tick 간 비교도 역변환도 불가능하다. 따라서 wire 는 같은 tick 의 `plane_normal[3]` + `basis_x[3]` 을 함께 싣고 (e_y = n × e_x 이므로 B 가 완전히 결정됨), 어느 분기가 그 기저를 만들었는지 `basis_source` (`BASIS_REFERENCE` 일 때만 `force_inplane[0]` 이 설정된 reference 방향 성분) 로 밝힌다. 세 벡터의 기준 frame 은 parent message 의 `header.frame_id` — 각 컨트롤러가 `SetOwnedStateFrameId()` 로 system URDF YAML 의 arm root link 를 박아둔다 (robot-agnostic). `invalid_reason` 은 실패한 게이트를 지목해 degenerate normal / required role 이탈 / contact 부족을 구분하며, 이것이 WBC(TSID routing tick 추가 요구로 release·fallback tick 에서 전 contact 무효) 트레이스를 joint·task 와 비교 가능하게 만든다. `contact_mask` 는 힘 합에 실제로 들어간 집합, `touch_mask` 는 축 선택용 |f_obj| 집합 (thumb 포함) 으로 서로 다른 집합이다. `valid` 는 **pull 벡터 유효성 전용** — `friction_utilization` / `slip_risk` 는 per-contact 양이므로 그 게이트 밖에서 평가된다 (active contact 0 이면 false).
-- **`PayloadEstimate` 자기기술 계약 (#135 D12)** — `payload_estimate` 는 관절공간 잔차 `r` 과 그것을 역산한 payload wrench/질량을 **한 메시지**에 싣는다 (같은 tick 의 같은 입력에서 나오므로; 토픽을 나누면 시간 정렬이 소비자 몫이 된다). 두 가지가 자기기술이다: (a) `joint_names` — `residual` 은 **device order** 이고 모델 Jacobian 의 컬럼은 pinocchio order 라 둘을 짝지으면 유한하고 매끄럽고 **틀린** 답이 나오므로 메시지가 자기 순서를 싣는다, (b) 프레임 둘 — `header.frame_id` 는 wrench 축이 정렬된 프레임 (LOCAL_WORLD_ALIGNED, arm root), `payload_frame` 은 wrench 가 **작용하는** 점이다 (wrench 는 screw 라 작용점이 모멘트를 바꾼다). staleness 는 `header.stamp` 가 아니라 `tick` 으로 판정한다 — stamp 는 publish thread 의 wall clock 이라 RT 가 멈춰도 증가한다. 발행 조건은 **관측기** 활성이며 payload 추정기가 꺼져 있어도 (출하 기본) 잔차 절반은 계속 나가고 payload 블록은 `PAYLOAD_NOT_INITIALIZED` 로 표시된다. CSV lane 과 tick 당 한 번 만들어진 같은 행을 공유한다. **Layer 2B (#455)** 는 같은 메시지에 `inertial_mass`/`first_moment`/`com` + `inertial_sigma_min`/`inertial_rank` 를 더한다 — **4 파라미터이고 `I` 는 없다**: 준정적 게이트 아래서 회귀자의 관성 6열은 항등적으로 0 이라 (자세 60개를 쌓아도 rank 4) 영구히 0 인 필드를 싣지 않는다. 또 한 자세는 `m·c` 의 중력 방향 성분을 관측하지 못하므로 (외적이 지운다) `inertial_rank` 는 팔이 자세를 바꾸기 전까지 3 에 머물고 `inertial_valid` 는 false 다 — 기동 시 정상 상태다.
-- **상호 배타**: `GraspState` 와 `WbcState` — Force-PI 데모(DemoJoint/Task)만 grasp_state, TSID 데모(DemoWbc)만 wbc_state. DemoWbcController는 `<config_key>/<secondary>/wbc_state` (RELIABLE/1) 로 발행 (secondary = `p1a` for ur5e_p1a, `leap` for iiwa7_leap).
+**자기기술 계약** — 소비자가 다른 메시지나 시간 정렬 없이 해석할 수 있어야 한다:
 
-**CM per-group JointState**: `/rtc_cm/{group}/joint_states` (RELIABLE, depth 1) -> `rtc_digital_twin` merges -> RViz2
-
-**Hand Driver** (ur5e_p1a instance; generic driver default is `/hand/`, remapped per variant): `/p1a/joint_states`, `/p1a/motor_states`, `/p1a/sensor_states` (Pub); `/p1a/joint_command` (Sub)
-
-**MuJoCo**: `<group.state_topic>` (Pub), `<group.command_topic>` (Sub), `/sim/status` (1Hz)
+- **`PullEstimate`**: `force_inplane` 은 매 tick 재구성되는 기저의 좌표이므로 같은 tick 의 `plane_normal` + `basis_x` 를 함께 싣고, 어느 분기가 그 기저를 만들었는지 `basis_source` 로 밝힌다. 벡터의 기준 frame 은 `header.frame_id` — 각 컨트롤러가 `SetOwnedStateFrameId()` 로 system URDF 의 arm root link 를 넣는다 (robot-agnostic). 실패한 게이트는 `invalid_reason` 이 지목한다. `contact_mask` (힘 합에 들어간 집합) 와 `touch_mask` (축 선택용 집합) 는 다른 집합이다. `valid` 는 pull 벡터 유효성 전용이고 per-contact 양은 그 게이트 밖에서 평가한다.
+- **`PayloadEstimate`**: 잔차와 그것을 역산한 payload 를 한 메시지에 싣는다. `residual` 은 device order 이므로 `joint_names` 를 함께 싣는다. 프레임은 둘이다 — `header.frame_id` (wrench 축이 정렬된 프레임) 와 `payload_frame` (wrench 가 작용하는 점). **staleness 는 `header.stamp` 가 아니라 `tick` 으로 판정한다** (stamp 는 publish thread 의 wall clock 이다). 발행 조건은 관측기 활성이다. 관성 파라미터는 4개 (`inertial_mass` / `first_moment` / `com` + rank 진단) 이고 `I` 는 싣지 않는다 — `inertial_rank` 가 차기 전의 `inertial_valid=false` 는 정상 상태다.
 
 ## Configuration Files
 
-YAML config 트리:
+- **Robot-specific bringup** (`integrated_bringup/config/<robot>/`) — `{sim,robot}.yaml` (CM-level), per-robot overlay, `controllers/<config_key>.yaml`. production controller YAML 은 controller 당 한 파일의 **flat** 배치다.
+- **Agnostic defaults** 는 각 `rtc_*` 패키지의 `config/` 가 갖는다.
+- **컨트롤러 YAML 이 어디서 로드되는가는 `RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, ...)` 의 인자가 정한다.** `rtc_controllers/examples/controllers/` 는 파일만 있는 레퍼런스 레이아웃이고 production 이 아니다 — 새 컨트롤러를 추가할 때 등록 매크로의 인자를 먼저 확인한다.
+- 각 YAML 의 key list 는 파일 자체 + 그 노드의 `declare_parameter` 호출이 SSoT 다.
 
-- **Robot-specific bringup** (`integrated_bringup/config/<robot>/`) — `{sim,robot}.yaml` (CM-level: `control_rate`, `initial_controller`, `devices.<group>.backend`, `urdf`, `device_timeout_*`), `mujoco_simulator.yaml` (per-robot overlay), `digital_twin.yaml` (per-robot overlay), `controllers/<config_key>.yaml` (production controller params — controller 당 한 파일의 **flat** 배치. 유일한 하위 디렉토리는 `controllers/mpc/` (`phase_config`·`contact_light`·`contact_rich`) 이며 `demo_wbc_controller.yaml` 이 참조한다. `direct/`·`indirect/` 하위 디렉토리는 `rtc_controllers` 예제 레이아웃이지 여기가 아니며, 지금은 어느 등록 호출도 그 경로를 lookup 하지 않는다)
-- **Agnostic defaults** — `rtc_mujoco_sim/config/solver_param.yaml` (MuJoCo solver SSoT), `rtc_digital_twin/config/digital_twin.yaml` (robot-agnostic display defaults), `udp_hand_driver/config/udp_hand_node.yaml` (UDP transport)
+## 컨트롤러별 계약
 
-**컨트롤러 YAML 이 어디서 로드되는가**: `RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, ...)` 의 2번째 인자가 lookup 경로의 하위 디렉토리를 정한다. 저장소의 **모든** 등록 호출은 현재 `config_subdir` 로 빈 문자열을 넘기므로 (`integrated_bringup` 데모 3종 + CM 테스트) 경로는 `config/<robot>/controllers/<config_key>.yaml` 이 된다. `rtc_controllers/examples/controllers/{direct,indirect}/` 는 **파일만 있는 레퍼런스 레이아웃**이고 이를 lookup 하는 등록 호출은 없다 (#236 S7c 에서 어댑터가 삭제됨). 문서가 예제 레이아웃을 production 레이아웃으로 서술하는 오류가 반복됐으므로 (#213) 새 컨트롤러 추가 시 등록 매크로의 인자를 먼저 확인한다.
+배선된 컨트롤러 각각의 상세는 [docs/controllers.md](../docs/controllers.md) §배선된 컨트롤러. 아래는 그중 **깨면 조용히 틀리는** 것이다.
 
-- **Reference only** — `rtc_controllers/examples/controllers/{direct,indirect}/*.yaml` (`<robot>` placeholder, production 은 위 robot-specific path 가 owner)
+**DemoComplianceController** (task-space admittance):
 
-각 YAML 의 정확한 key list 는 파일 자체 + 해당 노드의 `declare_parameter` 호출이 SSoT — 코드에서 grep.
+- SAFE_STOP 은 **래치** 이고 유일한 탈출구는 `/rtc_cm/reset_fault` 다. 재활성화는 래치를 풀지 않으며 활성화 경계에서 미소비 요청을 버린다 (자동 복구 금지). 요청은 atomic flag 로 받아 tick 머리에서 E-STOP 분기보다 앞서 소비한다.
+- 홀드 tick 의 진단 행은 FSM 의 **실제 상태** 를 싣는다 — HOLDING 을 강제로 쓰면 래치가 로그에서 사라진다.
+- E-STOP · device-invalid · cold-cache 리셋은 **하강 에지** 에서 한다 (매 tick 리셋은 bias 평균을 끝내지 못한다). 하강 에지는 ComputeControl 중간에서 반환하는 홀드 (제어 프레임 대기 · 비유한 Jacobian) 에서도 돌아야 한다 — 그렇지 않으면 렌치 age 가 홀드 내내 멈춘다.
+- X_d 를 측정에서 재시드하는 경로는 편차 x̃ 도 함께 붕괴시킨다. 프레임 종류가 바뀐 재시드는 wrench 샘플까지 버린다.
+- 램프 재무장은 **쓸 수 있는 wrench 가 생긴 rising edge** (`valid && !stale`) 에서 한다 — bias 재진입 edge 가 아니다.
+- **파지한 채로 이 컨트롤러로 전환하지 않는다** — 활성화가 hand target 을 측정값에서 재시드하므로 위치 지령 손은 물체를 놓는다. compliance 를 먼저 활성화하고 그 다음에 손을 닫는다 (절차: verify skill).
+- `external_wrench.source` 는 기본값 없는 필수 키다. 그 블록은 코어 파서와 공유하므로 "코어가 안 읽는 잔재" 로 보고 지우지 않는다. 스칼라 `damping` 은 configure 거부다 (여기서 `damping` 은 K_d 6-벡터다).
+- 팔의 응답을 정하는 admittance 키는 출하 YAML 에 **명시 등록** 한다 — 코어 default 가 조용히 실기를 재튜닝하지 못하게 한다.
+- arm 명령은 관절 tail (`compliance/joint_command_tail.hpp`) 로 바운드한다: clamp 다음에 적분 base 기준 rate 재바운드. 밴드를 뒤집는 margin 은 `on_configure` 가 거부한다 (AP-PROC-9). `command_divergence` 는 이 바인딩에 배선하지 않는다 (근거는 fault 블록 옆 주석이 소유).
+
+**DemoInferenceController** (ONNX 정책 바인딩):
+
+- 입력 텐서의 이름 · 순서 · 폭 · 정규화 · 모델 경로는 전부 YAML 이다. 모든 pose 는 `inference.policy_frame` 기준이고, 물체 레인은 메시지 프레임이 URDF 의 어느 프레임인지 선언한다.
+- 힘 feature 를 읽으려면 손의 `sensor_layout.inference_values_per_group` 이 충분히 넓어야 하며, 아니면 configure 거부다 (좁으면 조용히 0 이 된다).
+- 정책은 `decimation` tick 마다 1회 돌고 그 사이 action 을 hold 한다 — `control_rate` 를 낮추지 않는다.
+- 실패 (입력 unreadable · `Run()` false · 비유한 출력 · closed-chain held · 물체 stale) 는 **전 device 를 래치된 자세로 hold** 한다 (부분 적용 없음). recurrent state 와 reach trigger 는 액션 전체가 수락됐을 때만 전진한다.
+- 활성화 경계에서는 나이가 아니라 **새 샘플** 이 기준이다 — 재활성 후 새 입력이 도착할 때까지 hold.
+- 명령 tail 의 rate bound 는 **직전 명령** 기준이다 (측정 q 기준이면 서보 지연이 명령을 묶는다). activation · hold 직후에는 측정 q 에서 재시작한다.
+- 엔진은 생성자 주입이고 `is_initialized()` 게이트가 configure 를 막는다.
+
+**DemoCatchingController**: 소비 키가 provisional / TBD 이거나 계획기와 oracle 이 함께 켜지면 configure 는 성공하고 activate 만 거부한다 (park).
