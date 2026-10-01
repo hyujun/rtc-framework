@@ -653,7 +653,7 @@ colcon 의 병렬도는 두 층이다 — 동시에 빌드하는 **패키지 수
 
 메모리 최대는 줄지 않는다 — 가장 무거운 TU 들은 제품 코드 쪽에 있다.
 
-**`colcon test` 전에는 `--tests` 로 빌드한다.** 테스트 없이 빌드한 패키지에 `colcon test` 를 돌리면 실패가 아니라 **테스트 0개**가 보고된다 — 통과처럼 읽힌다. `build.sh` 는 그 선택을 매 빌드 `Tests:` 줄로 알리고, `-DBUILD_TESTING` 을 **매번 `ON`/`OFF` 로 명시**한다 (`RTC_BUILD_TESTS` 는 `on`·`1`·`true` / `off`·`0`·`false` 를 대소문자 없이 받는다): CMake 가 이 값을 캐시하므로 한쪽을 생략하면 그 방향으로는 직전 빌드의 선택이 남는다. Stop hook 은 `--tests` 로 빌드하고 (`verify-changes.sh` `run_build`), 그와 별개로 빌드 뒤 CMake 캐시가 `BUILD_TESTING=OFF` 인 패키지는 테스트하지 않고 UNVERIFIED 로 막는다 (`pkgs_built_without_tests`) — 판정이 모든 빌드 경로가 플래그를 기억하는 데 기대지 않게. 켜고 끄는 것은 그 패키지의 reconfigure 만 일으킨다 — 이미 컴파일된 테스트 object 는 남아 있어, 소스가 그대로면 다시 켤 때 재컴파일하지 않는다.
+**`colcon test` 전에는 `--tests` 로 빌드한다.** 테스트 없이 빌드한 패키지에 `colcon test` 를 돌리면 실패가 아니라 **테스트 0개**가 보고된다 — 통과처럼 읽힌다. `build.sh` 는 그 선택을 매 빌드 `Tests:` 줄로 알리고, `-DBUILD_TESTING` 을 **매번 `ON`/`OFF` 로 명시**한다 (`RTC_BUILD_TESTS` 는 `on`·`1`·`true` / `off`·`0`·`false` 를 대소문자 없이 받는다): CMake 가 이 값을 캐시하므로 한쪽을 생략하면 그 방향으로는 직전 빌드의 선택이 남는다. Stop hook 의 `--run` 은 `--tests` 로 빌드하고 (`verify-changes.sh` `run_build` — turn 끝의 호출은 빌드하지 않는다), 그와 별개로 빌드 뒤 CMake 캐시가 `BUILD_TESTING=OFF` 인 패키지는 테스트하지 않고 UNVERIFIED 로 막는다 (`pkgs_built_without_tests`) — 판정이 모든 빌드 경로가 플래그를 기억하는 데 기대지 않게. 켜고 끄는 것은 그 패키지의 reconfigure 만 일으킨다 — 이미 컴파일된 테스트 object 는 남아 있어, 소스가 그대로면 다시 켤 때 재컴파일하지 않는다.
 
 **ccache.** `build.sh` 는 ccache 가 깔려 있으면 자동으로 쓴다 (`--no-ccache` / `RTC_CCACHE=off` 로 끈다; `install.sh` 가 설치한다). 얻는 것은 **같은 TU 를 다시 컴파일하는 빌드** — `build.sh -c`, 브랜치를 오가는 재빌드, 별도 build base — 이고, 평소의 증분 빌드는 make 가 이미 건너뛰므로 달라지지 않는다. 공개 헤더를 고쳐 하위 TU 의 전처리 결과가 바뀌는 재컴파일도 캐시로 못 막는다.
 
