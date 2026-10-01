@@ -1,9 +1,9 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 작성일: 2026-10-01 (r17 — E1-F07 code review 반영: 실패한 warm 풀이의 cold 재시도, 정지 경로 항의 범위, §8. r16 — E1-F07 의 격자 확정 MD-54: 포구 전 0.1 s + 정지 0.05 s × 7, 측정 §8. r15 — E1-F07 착수 전 결정 MD-51 – MD-53: 격자는 정확히 구현 · 검증한 뒤 측정으로 정한다 (임계는 추정기 게시 주기 30 Hz 기준, 60 Hz 는 대비), 포구 항의 형태, 상대속도의 목표. r14 — 단일 팔 MPC 의 framing, MD-46 – MD-50: 설계는 formulation §1.3 하나이고 단일 팔은 dual arm · waist 항만 뺀 구성, G1 은 같은 코어에 그 항을 더한다. closed_form 과 mpc 는 입출력이 같은 두 planner 다. G-1 은 E3 를 막지 않는다. E1-F07 을 코어 · 계획기 · L7 · 튜닝 (F07 – F10) 으로 나눈다. r13 — MD-45 의 기능을 E1-F07 ([#660](https://github.com/hyujun/rtc-framework/issues/660)) 로 등록. r12 — E1-F04 머지 ([#658](https://github.com/hyujun/rtc-framework/pull/658)), sim smoke 에서 `mode: mpc` 진입 20/20 abort, 결정 MD-45: `mode: mpc` 는 APPROACH 부터 정지까지 MPC. r11 — E1-F04 구현: MD-43 을 $p_c$ 기준 변위 검사로 개정, 측정 §8. r10 — E1-F04 결정 MD-44: DECEL 법칙을 섞지 않는다, 구현 착수. r9 — E1-F04 착수 전 결정 MD-34 – MD-43 ([#630](https://github.com/hyujun/rtc-framework/issues/630)). r8 — E1-F02 · E1-F03 spec 과 구현 ([#656](https://github.com/hyujun/rtc-framework/pull/656)): 결정 MD-23 – MD-33, 측정: §8. r7 — E0-F04 예측 격자 sweep 결과: §8, 결정 MD-20. r6 — E0-F02 baseline 결과: §8, 결정 MD-19. r5 — 빌드 경로 확정: 결정 MD-17 · MD-18. r4 — 브랜치 계획 추가. r3 — formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법)
-- 상태: **E0 완료**, E1 진행 중 — E1-F01 – E1-F04 · E1-F07 완료 (E1-F04 는 sim 에서 `mode: mpc` 진입이 실패해 이슈를 열어 둔다). 단일 팔 MPC (APPROACH–정지, MD-45 · MD-46) 는 E1-F07 코어 ([#660](https://github.com/hyujun/rtc-framework/issues/660)) 까지 끝났고, 다음은 F08 계획기 ([#661](https://github.com/hyujun/rtc-framework/issues/661)) → F09 L7 ([#662](https://github.com/hyujun/rtc-framework/issues/662)) → F05 → F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) → F06 (G-1)
+- 개정: r18 (2026-10-01) — 이력은 §9. 최초 작성 2026-09-29
+- 상태: **E0 완료**, E1 진행 중. 완료: E1-F01 – F03 · E1-F07. E1-F04 는 구현이 머지됐고 sim 진입 항목이 남아 이슈가 열려 있다 (E1-F09 에서 닫는다). 다음은 E1-F08 계획기 ([#661](https://github.com/hyujun/rtc-framework/issues/661)) → F09 L7 ([#662](https://github.com/hyujun/rtc-framework/issues/662)) → F05 → F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) → F06 (G-1). feature 별 상태는 §6
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
-- 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — v0.4, 사용자 확정 2026-09-29. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
+- 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5b) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
 
 이 문서는 이 작업 흐름의 계획 · 결정 · 상태의 SSoT 다. v1 계획의 결정 (`D-n` 등) 과 충돌하면 그 결정을 여기서 명시적으로 개정한 경우에만 이 문서가 우선한다 (§3 의 "개정" 열).
@@ -19,7 +19,7 @@
 | **E2** | **필수** | g1_p1b 의 `demo_joint_controller` · `demo_dualarm_controller` |
 | E3 | 필수 (E2 뒤) | 같은 MPC 에 dual arm · waist 항 추가 — g1_p1b (MD-47) |
 
-순서는 E0 → E1 → E2 → E3 이다. E2 는 E1 과 병행할 수 있다 (§6 순서 표). E3 는 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이 끝나면 착수한다 — G-1 은 E3 의 착수 조건이 아니다 (MD-47).
+순서는 E0 → E1 → E2 → E3 이다. E2 는 E1 과 병행할 수 있다 (§6 순서 표). E3 는 E2 (g1_p1b 준비) 와 E1-F07 (코어 — 완료) 이 끝나면 착수한다 — G-1 은 E3 의 착수 조건이 아니다 (MD-47).
 
 ### 게이트 G-1 — 단일 팔 mpc planner 가 closed_form planner 와 비슷한 성능을 내는가
 
@@ -174,7 +174,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- E1-F08 – F09: 첫 구간 · 재계획 · RT 동작 ([#660 결정 목록 8 – 11](https://github.com/hyujun/rtc-framework/issues/660#issuecomment-5913561760), E1-F07 분석에서 넘어온 것은 [#661 코멘트](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5922570076))
+- E1-F08 – F09: 첫 구간 · 재계획 · RT 동작 ([#660 결정 목록 8 – 11](https://github.com/hyujun/rtc-framework/issues/660#issuecomment-5913561760)), 간격이 둘인 payload 와 샘플러, 계획기의 예산과 wake 배치 (MD-54). 코어에서 넘어온 것은 [#661 통합 코멘트](https://github.com/hyujun/rtc-framework/issues/661#issuecomment-5925464681)
 - E1-F10: 비열등 한계 · N · 튜닝 seed · 반복 상한 (튜닝 전에, MD-50)
 - E1-F06: `mpc` 를 기본값으로 바꿀지
 - E3-F01: 포구 후보 선택을 MPC 로 옮길지 (MD-46 의 편차) 와 계획기 interface (ARCH-3)
@@ -232,9 +232,9 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). 출하는 꺼짐 — §8 |
 | E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 (법칙은 configure 에서 하나, MD-44) | E1-F03 | 구현 완료 ([#658](https://github.com/hyujun/rtc-framework/pull/658)) — 결정 MD-34 – MD-44, 측정 §8. sim smoke 에서 `mode: mpc` 진입 20/20 abort 라 이슈는 열어 둔다 → MD-45, 마지막 항목은 E1-F09 에서 닫는다 |
 | E1-F07 | [#660](https://github.com/hyujun/rtc-framework/issues/660) | 단일 팔 MPC 코어 — APPROACH–정지 격자, 포구 항 (위치 · 접근축 · 상대속도), 항 단위 조립 (MD-46 · MD-49) | E1-F04 | 완료 (2026-10-01, [#666](https://github.com/hyujun/rtc-framework/pull/666)) — 결정 MD-51 – MD-54, 측정 §8. 격자는 MD-54 이고 첫 풀이와 격자점 전진의 계산 시간은 임계를 넘은 채다 (E1-F08 의 예산이 받는다) |
-| E1-F08 | [#661](https://github.com/hyujun/rtc-framework/issues/661) | 계획기 — TRACKING – DECEL 의 MPC 풀이, 첫 구간 · 예산, 재계획 ($x_0$ 경로 (i) 일반화), payload 용량 | E1-F07 | 대기 |
-| E1-F09 | [#662](https://github.com/hyujun/rtc-framework/issues/662) | L7 — RT 가 APPROACH – HOLD 를 MPC 구간으로 추종, DECEL 진입은 연속 (E-8) | E1-F08 | 대기 |
-| E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — 포구 항 열 · APPROACH 구간 포함 | E1-F09 | 대기 |
+| E1-F08 | [#661](https://github.com/hyujun/rtc-framework/issues/661) | 계획기 — TRACKING – DECEL 의 MPC 풀이, 첫 구간 · 예산, 재계획 ($x_0$ 경로 (i) 일반화), 격자의 배선과 간격이 둘인 payload (MD-54) | E1-F07 | 착수 가능 |
+| E1-F09 | [#662](https://github.com/hyujun/rtc-framework/issues/662) | L7 — RT 가 APPROACH – HOLD 를 MPC 구간으로 추종, DECEL 진입은 연속 (E-8). 노드별 간격을 읽는 샘플러 (MD-54) | E1-F08 | 대기 |
+| E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — 포구 항 열 · APPROACH 구간 포함. `planner_events` 의 decel 열이 `rtc_tools` 의 목록에 없어 `main` 에서 테스트 하나가 실패한다 ([#631 코멘트](https://github.com/hyujun/rtc-framework/issues/631#issuecomment-5925477065)) | E1-F09 | 대기 |
 | E1-F10 | [#663](https://github.com/hyujun/rtc-framework/issues/663) | mpc planner 튜닝 — closed_form 대비 성공률 비열등 (MD-50) | E1-F05 | 대기 |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | 대기 |
 
@@ -254,7 +254,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ### E3. MPC dual arm · waist 확장 — [#623](https://github.com/hyujun/rtc-framework/issues/623) · 필수 (E2 뒤)
 
-같은 MPC 에 dual arm · waist 항을 더한다 (MD-46 · MD-47). 착수 조건: E2 (g1_p1b 준비) 와 E1-F07 (코어). G-1 과 무관하다. 첫 단계는 `Decel*` 이름의 rename refactor 다 (MD-48). sim 전용. 게이트: G1 sim 에서 포구 시행이 돌고 성공률 · solve time p99 가 보고된다. 기존 두 로봇 회귀 없음 — 단일 팔 구성 (더한 항의 가중 0) 의 해가 불변이다.
+같은 MPC 에 dual arm · waist 항을 더한다 (MD-46 · MD-47). 착수 조건: E2 (g1_p1b 준비) 와 E1-F07 (코어 — 완료). G-1 과 무관하다. 첫 단계는 `Decel*` 이름의 rename refactor 다 (MD-48). sim 전용. 게이트: G1 sim 에서 포구 시행이 돌고 성공률 · solve time p99 가 보고된다. 기존 두 로봇 회귀 없음 — 단일 팔 구성 (더한 항의 가중 0) 의 해가 불변이다.
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
@@ -296,9 +296,9 @@ feature 28개를 브랜치 21개로 묶는다. 브랜치 하나가 PR 하나다.
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `docs/mpc-dualarm-plan` | E0-F03 | 문서 4개 (계획, formulation, README, v1 계획 개정). 가장 먼저 올린다 — 이슈의 문서 링크가 이 merge 로 살아난다 |
-| `chore/ws-first-build-path` | E0-F01 | 빌드 절차 문서 (MD-17 — 빌드 스크립트와 `package.xml` 은 고치지 않는다). 다른 feature 의 선행이라 단독으로 빨리 닫는다 |
-| `feat/catching-baseline-grid-sweep` | E0-F02, E0-F04 | 둘 다 `catching_sim_trials` 로 시행을 모으고 `rtc_tools` 의 분석을 확장한다. 같은 시행 도구와 같은 host 조건을 쓴다. **나누는 조건**: sweep 의 조건별 설정이 출하 config 를 건드리게 되면 E0-F04 를 분리한다 |
+| `docs/mpc-dualarm-plan` (완료) | E0-F03 | 문서 4개 (계획, formulation, README, v1 계획 개정). 가장 먼저 올린다 — 이슈의 문서 링크가 이 merge 로 살아난다 |
+| `chore/ws-first-build-path` (완료) | E0-F01 | 빌드 절차 문서 (MD-17 — 빌드 스크립트와 `package.xml` 은 고치지 않는다). 다른 feature 의 선행이라 단독으로 빨리 닫는다 |
+| `feat/catching-baseline-grid-sweep` (완료) | E0-F02, E0-F04 | 둘 다 `catching_sim_trials` 로 시행을 모으고 `rtc_tools` 의 분석을 확장한다. 같은 시행 도구와 같은 host 조건을 쓴다. **나누는 조건**: sweep 의 조건별 설정이 출하 config 를 건드리게 되면 E0-F04 를 분리한다 |
 
 E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_perception) 의 브랜치와 PR 로 따로 한다.
 
@@ -306,11 +306,11 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/catching-decel-mpc-core` | E1-F01 | 신규 수치 코어. code review 단위 |
-| `feat/catching-decel-mpc-plan-path` | E1-F02, E1-F03 | payload · RT 샘플러와 계획기 스레드 통합. 계획기가 게시하고 RT 가 읽는 한 경로의 양 끝이라 함께 있어야 연속성을 시험할 수 있다. **나누는 조건**: 새 스레드가 필요해지면 (E-7) E1-F03 을 분리한다 |
+| `feat/catching-decel-mpc-core` (완료, [#655](https://github.com/hyujun/rtc-framework/pull/655)) | E1-F01 | 신규 수치 코어. code review 단위 |
+| `feat/catching-decel-mpc-plan-path` (완료, [#656](https://github.com/hyujun/rtc-framework/pull/656)) | E1-F02, E1-F03 | payload · RT 샘플러와 계획기 스레드 통합. 계획기가 게시하고 RT 가 읽는 한 경로의 양 끝이라 함께 있어야 연속성을 시험할 수 있다. **나누는 조건**: 새 스레드가 필요해지면 (E-7) E1-F03 을 분리한다 |
 | `feat/catching-decel-mpc-l7` (완료, [#658](https://github.com/hyujun/rtc-framework/pull/658)) | E1-F04 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정한다 |
-| `feat/catching-mpc-approach-core` | E1-F07 | 신규 수치 항 (포구 항 선형화). code review 단위 |
-| `feat/catching-mpc-approach-plan-path` | E1-F08 | 계획기 스레드. **나누는 조건**: 새 스레드가 필요해지면 (E-7) |
+| `feat/catching-mpc-approach-core` (완료, [#666](https://github.com/hyujun/rtc-framework/pull/666)) | E1-F07 | 신규 수치 항 (포구 항 선형화). code review 단위 |
+| `feat/catching-mpc-approach-plan-path` | E1-F08 | 계획기 스레드와 payload 의 간격 (MD-54). **나누는 조건**: 새 스레드가 필요해지면 (E-7) |
 | `feat/catching-mpc-approach-l7` | E1-F09 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정한다 |
 | `feat/catching-decel-mpc-tooling` | E1-F05 | 로그 · plot · GUI |
 | `exp/catching-mpc-tuning` | E1-F10 | 튜닝. 채택한 config 만 YAML 로 넣고 실험 overlay 와 원자료는 repo 밖에 둔다. **나누는 조건**: 결과 기록이 커지면 `docs/` 브랜치로 나눈다 |
@@ -341,10 +341,10 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 
 | 단계 | 브랜치 | 병행 가능 |
 |---|---|---|
-| 1 | `docs/mpc-dualarm-plan` | — |
-| 2 | `chore/ws-first-build-path` | — |
+| 1 | `docs/mpc-dualarm-plan` (완료) | — |
+| 2 | `chore/ws-first-build-path` (완료) | — |
 | 3 | `feat/catching-baseline-grid-sweep` (완료), `feat/catching-decel-mpc-core` (완료) | `feat/tsid-clik-multiframe` |
-| 4 | `feat/catching-decel-mpc-plan-path` (완료) → `-l7` (완료) → `feat/catching-mpc-approach-core` → `-plan-path` → `-l7` → `feat/catching-decel-mpc-tooling` → `exp/catching-mpc-tuning` → `docs/catching-decel-mpc-g1` | `feat/g1-p1b-bringup` |
+| 4 | `feat/catching-decel-mpc-plan-path` (완료) → `-l7` (완료) → `feat/catching-mpc-approach-core` (완료) → **`-plan-path` (다음)** → `-l7` → `feat/catching-decel-mpc-tooling` → `exp/catching-mpc-tuning` → `docs/catching-decel-mpc-g1` | `feat/g1-p1b-bringup` |
 | 5 | `feat/demo-dualarm-controller` → `feat/g1-dualarm-tooling` | — |
 | 6 | rename refactor (MD-48) → E3 의 다섯 브랜치 (E2 와 E1-F07 뒤, MD-47) | — |
 
@@ -624,3 +624,26 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - 시간을 정하는 것은 노드 수와 토크 행이다. 가중 · 허용오차 · scale 은 영향이 작다.
 - $s_v$ 를 켜면 첫 풀이가 47.3 ms 로 는다 (B2). 거짓 "실행 불가능" 은 0 / 200 이다.
 - **격자는 C1 이다 (MD-54, 사용자 결정 2026-10-01).** 네 후보가 임계를 넘어 MD-51 에 따라 수치와 줄이는 후보 넷을 보고했고 ([#660](https://github.com/hyujun/rtc-framework/issues/660#issuecomment-5924188945)), 포구 전 간격을 0.1 s 로 넓히는 안이 채택됐다. 첫 풀이와 격자점 전진의 초과는 남는다 — 계획기의 예산과 wake 배치가 받는다 (E1-F08, MD-54 의 근거 (4)).
+
+## 9. 개정 이력
+
+결정의 내용과 날짜는 §4 가, 측정은 §8 이 갖는다. 이 표는 판마다 무엇이 바뀌었는지만 적는다.
+
+| 판 | 바뀐 것 |
+|---|---|
+| r18 | E1-F07 완료 반영 — 상태줄 · §6 의 표 · 브랜치 계획 갱신, 개정 이력을 이 절로 옮김 |
+| r17 | E1-F07 code review 반영: 실패한 warm 풀이의 cold 재시도, 정지 경로 항의 범위, §8 |
+| r16 | E1-F07 의 격자 확정 MD-54: 포구 전 0.1 s + 정지 0.05 s × 7, 측정 §8 |
+| r15 | E1-F07 착수 전 결정 MD-51 – MD-53: 격자는 정확히 구현 · 검증한 뒤 측정으로 정한다 (임계는 추정기 게시 주기 30 Hz 기준, 60 Hz 는 대비), 포구 항의 형태, 상대속도의 목표 |
+| r14 | 단일 팔 MPC 의 framing, MD-46 – MD-50: 설계는 formulation §1.3 하나이고 단일 팔은 dual arm · waist 항만 뺀 구성, G1 은 같은 코어에 그 항을 더한다. closed_form 과 mpc 는 입출력이 같은 두 planner 다. G-1 은 E3 를 막지 않는다. E1-F07 을 코어 · 계획기 · L7 · 튜닝 (F07 – F10) 으로 나눈다 |
+| r13 | MD-45 의 기능을 E1-F07 ([#660](https://github.com/hyujun/rtc-framework/issues/660)) 로 등록 |
+| r12 | E1-F04 머지 ([#658](https://github.com/hyujun/rtc-framework/pull/658)), sim smoke 에서 `mode: mpc` 진입 20/20 abort, 결정 MD-45: `mode: mpc` 는 APPROACH 부터 정지까지 MPC |
+| r11 | E1-F04 구현: MD-43 을 $p_c$ 기준 변위 검사로 개정, 측정 §8 |
+| r10 | E1-F04 결정 MD-44: DECEL 법칙을 섞지 않는다, 구현 착수 |
+| r9 | E1-F04 착수 전 결정 MD-34 – MD-43 ([#630](https://github.com/hyujun/rtc-framework/issues/630)) |
+| r8 | E1-F02 · E1-F03 spec 과 구현 ([#656](https://github.com/hyujun/rtc-framework/pull/656)): 결정 MD-23 – MD-33, 측정: §8 |
+| r7 | E0-F04 예측 격자 sweep 결과: §8, 결정 MD-20 |
+| r6 | E0-F02 baseline 결과: §8, 결정 MD-19 |
+| r5 | 빌드 경로 확정: 결정 MD-17 · MD-18 |
+| r4 | 브랜치 계획 추가 |
+| r3 | formulation v0.4 확정 반영: 결정 MD-9 – MD-16, 예측 격자 sweep, 게이트 G-1 의 검정 방법 |
