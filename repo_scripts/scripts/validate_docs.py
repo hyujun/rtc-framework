@@ -55,6 +55,9 @@ D12 the two constitutions (``CLAUDE.md`` / ``AGENTS.md``) stay inside a size
     over its budget, a corpus file with no entry, and an entry whose file is
     gone all fail.  The numbers live in a data file rather than here so that
     lowering one as a document shrinks does not mark this package as changed.
+    Given ``--budget-base REV``, a budget higher than it is at REV also fails
+    unless its line says ``# raised from <old>: <why>`` -- one tree cannot show
+    that a number was raised to make a finding go away; the base can.
     ``agent_docs/*.md`` additionally carries the constitutions' 500-character
     prose-line cap and a 500-character cap on a single table CELL (a row may be
     longer than that; a cell may not).  A byte budget says how big a document
@@ -366,6 +369,12 @@ CONSTITUTION_MAX_LINE_CHARS = 500
 SIZE_BUDGET_FILE = "repo_scripts/config/docs_budget.yaml"
 SIZE_BUDGET_DIRS = ("agent_docs/", ".claude/rules/")
 SIZE_BUDGET_LINE_RE = re.compile(r"^([^\s#:][^:]*?)\s*:\s*(\d+)\s*(?:#.*)?$")
+# D12, the ratchet: raising the number is the cheapest way to make a budget
+# finding go away, and a scan of one tree cannot tell a raised number from an
+# original one.  Against a base revision (--budget-base) a raise passes only
+# when its entry line says so, naming the value it was raised from -- a note
+# left over from an earlier raise names a different value and authorises nothing.
+BUDGET_RAISE_NOTE_RE = re.compile(r"#\s*raised from (\d+):\s*\S")
 # D12, line shape: the rule documents share the constitutions' prose-line cap
 # and add one for a table cell.  .claude/rules/ is left out on purpose -- a rule
 # is a handful of judgement paragraphs written to be read whole on load, and its
@@ -1134,6 +1143,54 @@ def check_budget_coverage(
             if path not in existing
         )
     return findings
+
+
+def check_budget_raises(text: str, base_text: str) -> list[Finding]:
+    """D12 -- a budget above its value in the base revision carries a raise note.
+
+    An entry the base does not have is a new document declaring its budget, not
+    a raise; so is every entry when the base has no budget file at all.
+    """
+    base = parse_budgets(base_text)
+    lines = text.splitlines()
+    findings: list[Finding] = []
+    for path, (value, lineno) in sorted(parse_budgets(text).items()):
+        was = base.get(path, (value, 0))[0]
+        if value <= was:
+            continue
+        note = BUDGET_RAISE_NOTE_RE.search(lines[lineno - 1])
+        if note and int(note.group(1)) == was:
+            continue
+        findings.append(
+            Finding(
+                SIZE_BUDGET_FILE,
+                lineno,
+                "D12",
+                f"budget for '{path}' raised {was} -> {value} -- a budget goes down, not up "
+                "to fit an edit; move the content to the document that owns it, or if a "
+                f"rule was added, say so on this line: '# raised from {was}: <why>'",
+            )
+        )
+    return findings
+
+
+def base_budget_text(repo: Repo, rev: str) -> str | None:
+    """The budget file as of ``rev``: "" when it has none, None when ``rev`` is not a commit.
+
+    The two must not collapse: a base that never had the file has nothing to
+    ratchet against, while a revision that does not resolve (a shallow clone
+    that never fetched it, a typo) would otherwise turn the gate off silently.
+    """
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(repo.root), *args], capture_output=True, text=True, check=False
+        )
+
+    if git("cat-file", "-e", f"{rev}^{{commit}}").returncode != 0:
+        return None
+    shown = git("show", f"{rev}:{SIZE_BUDGET_FILE}")
+    return shown.stdout if shown.returncode == 0 else ""
 
 
 def check_section_resolution(
@@ -2078,6 +2135,52 @@ BUDGET_COVERAGE_CASES: list[
     # A --files run sees a slice of the corpus: it cannot call an entry stale.
     ("stale entry is a full-scan finding only", {}, "agent_docs/gone.md: 10\n", None, []),
 ]
+# (name, budget-file text, base budget-file text, want codes) through
+# check_budget_raises.
+BUDGET_RAISE_CASES: list[tuple[str, str, str, list[str]]] = [
+    ("unchanged", "agent_docs/f.md: 10\n", "agent_docs/f.md: 10\n", []),
+    ("lowered", "agent_docs/f.md: 9\n", "agent_docs/f.md: 10\n", []),
+    ("raised without a note", "agent_docs/f.md: 11\n", "agent_docs/f.md: 10\n", ["D12"]),
+    (
+        "raised with its note",
+        "agent_docs/f.md: 11  # raised from 10: RT-11 added\n",
+        "agent_docs/f.md: 10\n",
+        [],
+    ),
+    # A note from an earlier raise names the value before THAT raise.
+    (
+        "an earlier raise's note authorises nothing",
+        "agent_docs/f.md: 12  # raised from 10: RT-11 added\n",
+        "agent_docs/f.md: 11  # raised from 10: RT-11 added\n",
+        ["D12"],
+    ),
+    (
+        "a note without a reason",
+        "agent_docs/f.md: 11  # raised from 10:\n",
+        "agent_docs/f.md: 10\n",
+        ["D12"],
+    ),
+    (
+        "any other comment is not a note",
+        "agent_docs/f.md: 11  # ok\n",
+        "agent_docs/f.md: 10\n",
+        ["D12"],
+    ),
+    # A new document declares its budget; that is not a raise.
+    (
+        "entry the base lacks",
+        "agent_docs/f.md: 10\nagent_docs/g.md: 99\n",
+        "agent_docs/f.md: 10\n",
+        [],
+    ),
+    ("base without a budget file", "agent_docs/f.md: 10\n", "", []),
+    (
+        "only the raised entry is reported",
+        "agent_docs/f.md: 11\nagent_docs/g.md: 5\n",
+        "agent_docs/f.md: 10\nagent_docs/g.md: 5\n",
+        ["D12"],
+    ),
+]
 BUDGET_SCOPE_CASES: list[tuple[str, bool]] = [
     ("AGENTS.md", True),
     ("CLAUDE.md", True),
@@ -2156,6 +2259,10 @@ def self_test() -> int:
     repo_for_docs._budgets = {}
     if wired_codes != ["D12"]:
         failures.append(f"check_markdown does not apply the size budget: codes={wired_codes}")
+    for name, budget_text, base_text, want in BUDGET_RAISE_CASES:
+        got_codes = sorted(f.code for f in check_budget_raises(budget_text, base_text))
+        if got_codes != sorted(want):
+            failures.append(f"budget raise {name!r}: codes={got_codes}, want {sorted(want)}")
 
     for span, in_table, want in PARKED_PATTERN_CASES:
         got = is_parked_detection_pattern(span, in_table=in_table)
@@ -2233,6 +2340,7 @@ def self_test() -> int:
         + len(BUDGET_CASES)
         + len(BUDGET_COVERAGE_CASES)
         + len(BUDGET_SCOPE_CASES)
+        + len(BUDGET_RAISE_CASES)
         + 1
         + len(GREP_CASES)
         + len(SLUG_CASES)
@@ -2271,12 +2379,25 @@ def main(argv: list[str] | None = None) -> int:
         help="run only D13 (constitution section refs); the Stop hook uses this "
         "over the whole corpus when a constitution's numbered headings change",
     )
+    ap.add_argument(
+        "--budget-base",
+        metavar="REV",
+        help="also fail a byte budget that is higher than at REV without a "
+        "'# raised from <old>: <why>' note on its line (CI: the pull request's base)",
+    )
     args = ap.parse_args(argv)
 
     if args.self_test:
         return self_test()
 
     repo = Repo(repo_root())
+    base_text = ""
+    if args.budget_base is not None:
+        fetched = base_budget_text(repo, args.budget_base)
+        if fetched is None:
+            print(f"--budget-base: '{args.budget_base}' is not a commit here", file=sys.stderr)
+            return 2
+        base_text = fetched
     if args.files is not None:
         # `is not None`, not truthiness: `--files` with no operands means "no
         # files to check", and falling through to the full corpus scan there
@@ -2320,6 +2441,13 @@ def main(argv: list[str] | None = None) -> int:
                 {f for f in repo.files if is_budgeted(f)} if full_scan else None,
             )
         )
+
+    if base_text:
+        try:
+            current = (repo.root / SIZE_BUDGET_FILE).read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+        findings.extend(check_budget_raises(current, base_text))
 
     findings.sort(key=lambda f: (f.path, f.line, f.code))
     for f in findings:

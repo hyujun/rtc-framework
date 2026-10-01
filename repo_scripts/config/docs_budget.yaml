@@ -8,6 +8,14 @@
 # A budget goes DOWN, in the change that shrinks its document. It does not go up
 # to make room for an edit: content that does not fit is not a rule, and belongs
 # in the document that owns it (package README, docs/, a hook header, an issue).
+# When a rule really was added and nothing can come out, the raise is stated on
+# the entry's own line:
+#
+#     agent_docs/x.md: 9200  # raised from 9000: <why>
+#
+# The docs gate compares this file against the pull request's base and fails a
+# raise that lacks that note (validate_docs.py --budget-base <rev>; before
+# pushing: --budget-base origin/main).
 #
 # Keep the "path: bytes" shape, one per line: the validator reads this file by
 # regex so that it runs on a host without PyYAML.
