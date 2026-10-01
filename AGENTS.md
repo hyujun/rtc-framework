@@ -9,7 +9,7 @@
 - 패키지 구성·count·역할: [README.md](README.md#패키지-구성) · [architecture.md](agent_docs/architecture.md)
 - 로봇 데이터 (URDF/MJCF/mesh): [robot_descriptions/README.md](robot_descriptions/README.md)
 - 언어·OS·의존성 버전: [README.md](README.md#빠른-시작) · [repo_scripts/README.md](repo_scripts/README.md)
-- test 카운트·실측: [testing-debug.md](agent_docs/testing-debug.md)
+- test 카운트·실측: [docs/testing.md](docs/testing.md)
 
 ## 2. Harness Overview
 
@@ -57,9 +57,9 @@
 
 ## 5. Sensors
 
-**변경 위치별 sensor matrix·명령·Live Debug Topics**: [agent_docs/testing-debug.md](agent_docs/testing-debug.md) 가 단일 출처.
+**검증 규범** (무엇을 돌리고 무엇으로 판정하는가): [agent_docs/testing-debug.md](agent_docs/testing-debug.md). 변경 위치별 sensor matrix·명령·Live Debug Topics 는 헌법 밖 [docs/testing.md](docs/testing.md) 가 단일 출처.
 
-- 변경 패키지의 sensor 행을 testing-debug.md 에서 찾아 **필수 sensor + 추가 sensor** 모두 실행
+- 변경 패키지의 sensor 행을 docs/testing.md 에서 찾아 **필수 sensor + 추가 sensor** 모두 실행
 - 실패한 채로 커밋하지 않는다
 
 ## 5.5 Inferential Sensors (LLM-as-judge, 수동 trigger)
@@ -168,7 +168,7 @@ Commit 완료 또는 사용자가 task 종료를 알린 후 (상세: [modificati
 - [modification-guide.md](agent_docs/modification-guide.md) — workflow, adding X 절차, completion checklist, inferential 트리거, housekeeping 상세
 - [design-principles.md](agent_docs/design-principles.md) — `rtc_*` 5 principles, boundary rules
 - [conventions.md](agent_docs/conventions.md) — domain / code / commit conventions, doc requirements
-- [testing-debug.md](agent_docs/testing-debug.md) — sensor matrix, test commands, debug topics, RT permissions
+- [testing-debug.md](agent_docs/testing-debug.md) — 검증 규범: sensor 선택, 판정 기준, false-green 형태, 테스트 격리
 - [invariants.md](agent_docs/invariants.md) — RT / ARCH / PROC / NUM / AP 규범, escalation triggers
 - [docs/reference/](docs/reference/README.md) — **헌법 밖**: 규칙의 근거·실측, anti-pattern 사례집
 - [handoff.md](agent_docs/handoff.md) — tool-neutral context handoff 계약
