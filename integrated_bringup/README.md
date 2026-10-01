@@ -562,7 +562,7 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 | `mpc_enable` | bool | MPC output consumption 런타임 토글. 빌드타임 `mpc_enabled_` (YAML `mpc.enabled`) 와 AND 결합되므로 YAML이 false면 무시됨 |
 | `riccati_gain_scale` | double | `[0,1]` 자동 clamp. `RiccatiFeedback`이 `scale · K · Δx`에 적용 |
 
-Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv), Phase A) — `command=GRASP/RELEASE` + `target_force` (one-shot transition, parameter 부적합).
+Force-PI grasp는 별도 `/<config_key>/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv), Phase A) — `command=GRASP/RELEASE` + `target_force` (one-shot transition, parameter 부적합).
 
 #### YAML 구조 (`config/ur5e_p1a/controllers/demo_wbc_controller.yaml`)
 
