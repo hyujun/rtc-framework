@@ -53,13 +53,13 @@
 - **문서·메타데이터** — `.md` 를 고쳤으면 `python3 repo_scripts/scripts/validate_docs.py --files <파일들>`; 고친 YAML 의 parse·default·범위·단위; public header 의 Doxygen; public surface (header/launch/config/파일 add·del/dep) 변경 시 README; `CMakeLists.txt`·`package.xml` 동기화는 필수
 - CI 는 `docs-validate` (문서·생성물·셸 검사) 뿐이다 — **빌드·테스트·포매팅의 게이트는 위 로컬 검증뿐이다**
 
-게이트·Completion Checklist: [modification-guide.md](agent_docs/modification-guide.md). 단계별 절차: [docs/modification-procedures.md](docs/modification-procedures.md).
+게이트·Completion Checklist: [modification-guide.md](agent_docs/modification-guide.md) · 절차: [docs/modification-procedures.md](docs/modification-procedures.md).
 
 ## 5. Sensors
 
-**검증 규범** (무엇을 돌리고 무엇으로 판정하는가): [agent_docs/testing-debug.md](agent_docs/testing-debug.md). 변경 위치별 sensor matrix·명령·Live Debug Topics 는 헌법 밖 [docs/testing.md](docs/testing.md) 가 단일 출처.
+판정 기준은 [testing-debug.md](agent_docs/testing-debug.md), sensor matrix·명령·Live Debug Topics 는 헌법 밖 [docs/testing.md](docs/testing.md) 가 갖는다.
 
-- 변경 패키지의 sensor 행을 docs/testing.md 에서 찾아 **필수 sensor + 추가 sensor** 모두 실행
+- 변경 패키지의 sensor 행을 찾아 **필수 sensor + 추가 sensor** 모두 실행
 - 실패한 채로 커밋하지 않는다
 
 ## 5.5 Inferential Sensors (LLM-as-judge, 수동 trigger)
@@ -107,7 +107,7 @@ grep 이 정당한 코드를 잘못 잡았다고 판단되면 **보고 없이 �
 
 ## 7. Anti-patterns
 
-재발한 실수에서 나온 **규범**은 [invariants.md](agent_docs/invariants.md) 가 갖는다 (대응 invariant 가 없는 것은 §Anti-pattern 규범 이 AP ID 로). 사례·증상·복구는 헌법 밖 [docs/reference/anti-patterns.md](docs/reference/anti-patterns.md) 다 — invariant 과 **1:1 이 아니고**, 사례가 없다고 그 룰이 약한 것은 아니다. 완료를 주장하기 전에 남은 항목을 전수 확인한다 (AP-PROC-1).
+재발한 실수의 **규범**은 [invariants.md](agent_docs/invariants.md) 가 (대응 invariant 가 없으면 §Anti-pattern 규범 이 AP ID 로), 사례·복구는 헌법 밖 [anti-patterns.md](docs/reference/anti-patterns.md) 가 갖는다 — invariant 과 **1:1 이 아니고**, 사례가 없다고 그 룰이 약한 것은 아니다. 완료를 주장하기 전에 남은 항목을 전수 확인한다 (AP-PROC-1).
 
 ## 8. Where Things Live
 
@@ -164,11 +164,10 @@ Commit 완료 또는 사용자가 task 종료를 알린 후 (상세: [modificati
 ## 12. Reference Docs (read when relevant)
 
 - [architecture.md](agent_docs/architecture.md) — threading, data flow, core types, lifecycle, E-STOP, dep graph
-- [controllers.md](agent_docs/controllers.md) — 컨트롤러 계약: 게인 채널, FSM, 토픽 소유, config 로드
-- [modification-guide.md](agent_docs/modification-guide.md) — workflow, adding X 게이트, completion checklist, inferential 트리거, housekeeping 상세
+- [controllers.md](agent_docs/controllers.md) — 컨트롤러 계약: 게인, FSM, 토픽, config
+- [modification-guide.md](agent_docs/modification-guide.md) — workflow, adding X 게이트, completion checklist, inferential 트리거, housekeeping
 - [design-principles.md](agent_docs/design-principles.md) — `rtc_*` 5 principles, boundary rules
 - [conventions.md](agent_docs/conventions.md) — domain / code / commit conventions, doc requirements
-- [testing-debug.md](agent_docs/testing-debug.md) — 검증 규범: sensor 선택, 판정 기준, false-green 형태, 테스트 격리
+- [testing-debug.md](agent_docs/testing-debug.md) — 검증 규범: sensor 선택, 판정, false-green, 격리
 - [invariants.md](agent_docs/invariants.md) — RT / ARCH / PROC / NUM / AP 규범, escalation triggers
-- [docs/reference/](docs/reference/README.md) — **헌법 밖**: 규칙의 근거·실측, anti-pattern 사례집
 - [handoff.md](agent_docs/handoff.md) — tool-neutral context handoff 계약
