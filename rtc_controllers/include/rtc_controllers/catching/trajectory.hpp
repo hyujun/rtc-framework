@@ -38,9 +38,10 @@ inline constexpr int kCap = 40;
 /// Separate from kCap, which counts trajectory points, not joints.
 inline constexpr int kMaxPlanNv = 32;
 
-/// Node capacity of the decel MPC's stop segment: N ≤ kMaxDecelNodes, so a
-/// payload holds N + 1 node columns. Owned here, not by decel_mpc.hpp, because
-/// that header includes this one — the payload and the core share one number.
+/// Node capacity of a published segment: N ≤ kMaxDecelNodes, so a payload holds
+/// N + 1 node columns. The decel MPC core (decel_mpc.hpp, which includes this
+/// header) uses it for its stop segment and its block array; the core's own
+/// horizon, pre-catch nodes included, is bounded by its kMaxMpcNodes.
 inline constexpr int kMaxDecelNodes = 24;
 
 /// Joint capacity of DecelPlanSnapshot (E1 arms have 6 and 7). Deliberately
