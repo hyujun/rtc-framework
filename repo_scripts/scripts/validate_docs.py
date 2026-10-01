@@ -52,6 +52,12 @@ D12 the two constitutions (``CLAUDE.md`` / ``AGENTS.md``) stay inside a size
     over its budget, a corpus file with no entry, and an entry whose file is
     gone all fail.  The numbers live in a data file rather than here so that
     lowering one as a document shrinks does not mark this package as changed.
+    ``agent_docs/*.md`` additionally carries the constitutions' 500-character
+    prose-line cap and a 500-character cap on a single table CELL (a row may be
+    longer than that; a cell may not).  A byte budget says how big a document
+    is, not what shape it has: one cell of controllers.md had grown past 4,000
+    characters, holding a dozen rules nobody could find or cite, while its row
+    count stayed flat.  Fenced blocks are exempt; ``allow D12`` covers a line.
 D13 every ``CLAUDE.md §N[.M]`` / ``AGENTS.md §N[.M]`` reference -- plain or in
     link form, in the docs and in the comments of every tracked source / config
     file (see :func:`is_section_ref_source`) -- names a numbered heading the
@@ -334,6 +340,13 @@ CONSTITUTION_MAX_LINE_CHARS = 500
 SIZE_BUDGET_FILE = "repo_scripts/config/docs_budget.yaml"
 SIZE_BUDGET_DIRS = ("agent_docs/", ".claude/rules/")
 SIZE_BUDGET_LINE_RE = re.compile(r"^([^\s#:][^:]*?)\s*:\s*(\d+)\s*(?:#.*)?$")
+# D12, line shape: the rule documents share the constitutions' prose-line cap
+# and add one for a table cell.  .claude/rules/ is left out on purpose -- a rule
+# is a handful of judgement paragraphs written to be read whole on load, and its
+# byte budget already bounds it.
+LINE_CAP_DIRS = ("agent_docs/",)
+MAX_CELL_CHARS = 500
+TABLE_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 # D13: a section ref that names its target constitution.  Accepts the plain
 # form ("AGENTS.md §6.5"), the link form ("[AGENTS.md](../AGENTS.md) §6.5") and the
@@ -920,6 +933,7 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
     findings.extend(check_section_resolution(repo, rel, text))
     findings.extend(check_rule_ids(repo, rel, text))
     findings.extend(check_constitution_size(rel, text))
+    findings.extend(check_line_shape(rel, text))
     findings.extend(check_size_budget(rel, text, repo.budgets()))
     if rel in COUNT_SCOPED_DOCS:
         findings.extend(check_package_count(rel, text, repo.package_count(), allowed))
@@ -977,6 +991,46 @@ def check_constitution_size(rel: str, text: str) -> list[Finding]:
         if in_fence or raw.lstrip().startswith("|") or "D12" in allowed.get(lineno, frozenset()):
             continue
         if len(raw) > CONSTITUTION_MAX_LINE_CHARS:
+            findings.append(
+                Finding(
+                    rel,
+                    lineno,
+                    "D12",
+                    f"{len(raw)}-char line > {CONSTITUTION_MAX_LINE_CHARS} -- split into "
+                    "bullets or move the detail to the document that owns it",
+                )
+            )
+    return findings
+
+
+def check_line_shape(rel: str, text: str) -> list[Finding]:
+    """D12 -- a rule document's prose lines and table cells stay citeable.
+
+    Separate from :func:`check_constitution_size` because the two scopes differ
+    on tables: a constitution's table rows are exempt outright, while here the
+    row is free and each cell is capped -- the failure this exists for is one
+    cell swallowing a section.
+    """
+    findings: list[Finding] = []
+    if not (rel.endswith(".md") and rel.startswith(LINE_CAP_DIRS)):
+        return findings
+    allowed = suppressions(text)
+    for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
+        if in_fence or "D12" in allowed.get(lineno, frozenset()):
+            continue
+        if raw.lstrip().startswith("|"):
+            longest = max(len(cell.strip()) for cell in TABLE_CELL_SPLIT_RE.split(raw))
+            if longest > MAX_CELL_CHARS:
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        "D12",
+                        f"{longest}-char table cell > {MAX_CELL_CHARS} -- a cell holds one "
+                        "rule; lift the rest into bullets under the table",
+                    )
+                )
+        elif len(raw) > CONSTITUTION_MAX_LINE_CHARS:
             findings.append(
                 Finding(
                     rel,
@@ -1688,7 +1742,43 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
     ("D12 over-long prose line", "CLAUDE.md", "# x\n" + "a" * 501 + "\n", ["D12"]),
     ("D12 table row is exempt", "CLAUDE.md", "# x\n| " + "a" * 600 + " |\n", []),
     ("D12 fenced line is exempt", "CLAUDE.md", "# x\n```\n" + "a" * 600 + "\n```\n", []),
-    ("D12 is scoped to the constitutions", "agent_docs/f.md", "# x\n" + "a" * 501 + "\n", []),
+    # The prose-line cap covers agent_docs/ as well (this fixture asserted the
+    # opposite while the cap was constitution-only), and stops there.
+    (
+        "D12 prose-line cap covers agent_docs",
+        "agent_docs/f.md",
+        "# x\n" + "a" * 501 + "\n",
+        ["D12"],
+    ),
+    ("D12 line shape stops at agent_docs", "docs/f.md", "# x\n" + "a" * 501 + "\n", []),
+    ("D12 line shape leaves rules alone", ".claude/rules/f.md", "# x\n" + "a" * 501 + "\n", []),
+    ("D12 prose line at the cap", "agent_docs/f.md", "# x\n" + "a" * 500 + "\n", []),
+    ("D12 over-long table cell", "agent_docs/f.md", "| a | " + "b" * 501 + " |\n", ["D12"]),
+    ("D12 table cell at the cap", "agent_docs/f.md", "| a | " + "b" * 500 + " |\n", []),
+    (
+        "D12 a long row of short cells is fine",
+        "agent_docs/f.md",
+        "|" + (" " + "c" * 200 + " |") * 4 + "\n",
+        [],
+    ),
+    (
+        "D12 an escaped pipe does not split a cell",
+        "agent_docs/f.md",
+        "| " + "d" * 300 + " \\| " + "e" * 300 + " |\n",
+        ["D12"],
+    ),
+    (
+        "D12 fenced line in agent_docs is exempt",
+        "agent_docs/f.md",
+        "```\n" + "a" * 600 + "\n```\n",
+        [],
+    ),
+    (
+        "D12 allow marker covers an agent_docs line",
+        "agent_docs/f.md",
+        "<!-- validate-docs: allow D12 -->\n" + "a" * 501 + "\n",
+        [],
+    ),
     ("D13 dangling section ref", "agent_docs/f.md", "see CLAUDE.md \u00a799.9\n", ["D13"]),
     (
         "D13 dangling ref in link form",

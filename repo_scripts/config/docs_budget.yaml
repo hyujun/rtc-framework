@@ -20,7 +20,7 @@ agent_docs/controllers.md: 15926
 agent_docs/conventions.md: 9591
 agent_docs/design-principles.md: 15426
 agent_docs/handoff.md: 5045
-agent_docs/invariants.md: 36648
+agent_docs/invariants.md: 36646
 agent_docs/modification-guide.md: 15411
 agent_docs/testing-debug.md: 14140
 
