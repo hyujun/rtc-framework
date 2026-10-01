@@ -77,6 +77,7 @@ struct RtStandIn {
   bool adopt{true};               // false: never takes a plan
   bool report_decel{true};        // false: the RT before #662
   std::int64_t t_freeze_ns{200 * kMs};
+  std::uint64_t track{kTrack};  // the track it consumed last
   bool following{false};
   std::uint32_t plan_id{0};
   std::int64_t t_c{0};
@@ -115,7 +116,7 @@ struct RtStandIn {
     s.rt_state_ns = now;
     s.reset_epoch = 1;
     s.track_seen = true;
-    s.track_generation = kTrack;
+    s.track_generation = track;
     if (following) {
       const std::int64_t lead = t_c - now;
       s.mode = static_cast<std::uint8_t>(lead <= 0             ? Mode::kDecel
@@ -465,6 +466,34 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
   EXPECT_GT(stop, 0);
   std::printf("[ record ] replans %d: same %d, advance %d, stop %d\n", replans, same, advance,
               stop);
+}
+
+TEST(ApproachCycle, AnotherTracksBallIsNotTheFollowedPlansTarget) {
+  // The RT keeps a followed plan when vision starts another track, and from
+  // then on reports THAT track as the one it consumed last. The trajectory box
+  // holds the other ball too — it must not become this catch's target.
+  auto r = std::make_unique<Rig>();
+  r->StartTrajectory();
+  ASSERT_EQ(r->Wake().outcome, CycleOutcome::kPublished);
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  PlannerCycleRecord rec = r->Wake();
+  ASSERT_EQ(rec.decel.outcome, DecelOutcome::kPublished) << Why(rec);
+  EXPECT_EQ(r->boxes.decel.Load().token.generation, kTrack);
+  const std::uint32_t seq = r->cycle.LastDecelSeq();
+  r->rt.track = kTrack + 1;
+  r->StoreTrajectory(50, kTrack + 1);
+  for (int i = 0; i < 4; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    rec = r->Wake();
+    ASSERT_LT(rec.decel.k, 0) << "the wakes are meant to fall before the catch";
+    EXPECT_EQ(rec.decel.outcome, DecelOutcome::kNoBall) << Why(rec);
+  }
+  EXPECT_EQ(r->cycle.LastDecelSeq(), seq);
+  // The plan's own track again: the replans resume.
+  r->StoreTrajectory(51, kTrack);
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  rec = r->Wake();
+  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kPublished) << Why(rec);
 }
 
 TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {

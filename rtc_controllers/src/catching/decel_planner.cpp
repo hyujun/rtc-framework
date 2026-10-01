@@ -281,8 +281,11 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   h_ns_ = SecondsToNs(consts.control_dt);
   for (int m = 0; m < n; ++m) {
     qd_max_[U(m)] = model.qdot_max[U(m)];
-    q_lo_[U(m)] = model.q_min[U(m)] + params.m_q;
-    q_hi_[U(m)] = model.q_max[U(m)] - params.m_q;
+    // Every core is built from the same limits and m_q, so one box serves
+    // all. A locked joint's two bounds can cross by a rounding (the core
+    // allows for it); std::clamp needs them ordered.
+    q_lo_[U(m)] = cores_.front()->PositionLow()[m];
+    q_hi_[U(m)] = std::max(q_lo_[U(m)], cores_.front()->PositionHigh()[m]);
   }
   if (params.n_pre_max > 0) {
     std::string why;
@@ -589,32 +592,9 @@ void DecelPlanner::ShiftReference(int k, DecelMpcInput& in) noexcept {
 
 void DecelPlanner::Pack(const PlannerRtState& rt, int k, std::int64_t t_eff_ns,
                         const DecelMpcResult& r, DecelPlanSnapshot& out) const noexcept {
-  out = DecelPlanSnapshot{};
-  out.token.activation_generation = rt.activation_generation;
-  out.token.generation = rt.track_generation;
-  out.rt_iteration = rt.rt_iteration;
-  out.rt_state_ns = rt.rt_state_ns;
-  out.plan_id = rt.plan_id;
-  out.t_c_ns = rt.plan_t_c_ns;
-  out.t0_ns = t_eff_ns;
-  out.dt_ns = dt_ns_;
-  out.k0 = k;
-  out.n_nodes = params_.n_nodes - k;
-  out.nv = nv_;
-  for (int i = 0; i <= out.n_nodes; ++i) {
-    for (int m = 0; m < nv_; ++m) {
-      const auto e = static_cast<std::size_t>(i * kMaxDecelNv + device_of_model_[U(m)]);
-      out.q[e] = r.q(m, i);
-      out.qd[e] = r.qd(m, i);
-      out.qdd[e] = r.qdd(m, i);
-    }
-  }
-  out.slack_max = r.slack_max;
-  out.slack_terminal_max = r.slack_terminal_max;
-  // NaN = not evaluated (torque rows off): the core leaves its field stale then.
-  out.tau_ratio_max =
-      r.torque_evaluated ? r.tau_ratio_max : std::numeric_limits<double>::quiet_NaN();
-  out.valid = true;
+  // The stop-only payload is the two-spacing one with no pre-catch part.
+  PackSegment(rt, rt.track_generation, rt.plan_id, rt.plan_t_c_ns, t_eff_ns, /*n_pre=*/0, k,
+              params_.n_nodes - k, r, out);
 }
 
 bool DecelPlanner::Plan(const PlannerRtState& rt, DecelPlanSnapshot& out,
@@ -852,7 +832,7 @@ DecelOutcome DecelPlanner::Judge(const DecelMpcResult& r, bool ok, int n_pre, in
   if (!(rec.solve_ns <= budget_ns)) {
     return DecelOutcome::kBudget;
   }
-  if (!(end + t_arm_ns_ + 2 * h_ns_ < t_eff)) {
+  if (!StartsInTime(end, t_eff)) {
     return DecelOutcome::kLate;
   }
   const bool slack_ok = std::isfinite(r.slack_max) && r.slack_max <= params_.slack_max &&
@@ -915,6 +895,7 @@ void DecelPlanner::PackSegment(const PlannerRtState& rt, std::uint64_t track_gen
   }
   out.slack_max = r.slack_max;
   out.slack_terminal_max = r.slack_terminal_max;
+  // NaN = not evaluated (torque rows off): the core leaves its field stale then.
   out.tau_ratio_max =
       r.torque_evaluated ? r.tau_ratio_max : std::numeric_limits<double>::quiet_NaN();
   out.valid = true;
@@ -954,6 +935,17 @@ std::uint32_t DecelPlanner::SourceSeq(const PlannerRtState& rt,
   return 0;
 }
 
+bool DecelPlanner::FollowedTrack(const PlannerRtState& rt,
+                                 std::uint64_t& generation) const noexcept {
+  if (ring_n_ == 0 || !rt.plan_active || rt.plan_id != ring_plan_id_ ||
+      rt.plan_t_c_ns != ring_t_c_ns_) {
+    return false;
+  }
+  // Every segment of a plan carries the plan's track (PlanFirst, Replan).
+  generation = ring_[U(ring_n_ - 1)].token.generation;
+  return true;
+}
+
 void DecelPlanner::NoteApproachPublished(const DecelPlanSnapshot& p) noexcept {
   if (ring_n_ > 0 && (p.plan_id != ring_plan_id_ || p.t_c_ns != ring_t_c_ns_)) {
     ring_n_ = 0;
@@ -986,9 +978,9 @@ bool DecelPlanner::ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
            last_solve_t_eff_ == t_eff && last_solve_plan_id_ == plan_id && last_solve_t_c_ == t_c);
 }
 
-void DecelPlanner::NoteSolve(bool catch_core, int index, std::int64_t t_eff, std::uint32_t plan_id,
-                             std::int64_t t_c) noexcept {
-  last_solve_valid_ = true;
+void DecelPlanner::NoteSolve(bool ok, bool catch_core, int index, std::int64_t t_eff,
+                             std::uint32_t plan_id, std::int64_t t_c) noexcept {
+  last_solve_valid_ = ok;
   last_solve_catch_ = catch_core;
   last_solve_index_ = index;
   last_solve_t_eff_ = t_eff;
@@ -1057,12 +1049,17 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   double shortfall = 0.0;
   for (int m = 0; m < nv_; ++m) {
     const auto d = U(device_of_model_[U(m)]);
-    const double q0 = rt.q_cmd[d];
+    const double reported = rt.q_cmd[d];
     const double target = plan.q_star[d];
-    if (!std::isfinite(q0) || !std::isfinite(target)) {
+    if (!std::isfinite(reported) || !std::isfinite(target)) {
       finite = false;
       break;
     }
+    // Into the core's box, as Replan does: a wait pose inside the m_q margin
+    // of a limit would otherwise be refused on every wake, and with it the
+    // plan (MD-62).
+    const double q0 = std::clamp(reported, q_lo_[U(m)], q_hi_[U(m)]);
+    rec.x0_clamped = rec.x0_clamped || q0 != reported;
     in.q0[m] = q0;
     in.qd0[m] = 0.0;
     in.qdd0[m] = 0.0;
@@ -1113,13 +1110,14 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   // No retry: a catch core cannot be solved without its reference.
   const bool ok = core.Solve(in, res);
   const std::int64_t end = clock_();
-  NoteSolve(true, n_pre, t_eff, plan.plan_id, plan.t_c_ns);
+  NoteSolve(ok, true, n_pre, t_eff, plan.plan_id, plan.t_c_ns);
   rec.outcome = Judge(res, ok, n_pre, n_total, true, start, end, first_ns_, t_eff, rec);
   if (rec.outcome != DecelOutcome::kReady) {
     return false;
   }
   PackSegment(rt, plan.token.generation, plan.plan_id, plan.t_c_ns, t_eff, n_pre, 0, n_total, res,
               out);
+  out.x0_clamped = rec.x0_clamped;
   if (!ValidateDecelNodes(out)) {
     rec.outcome = DecelOutcome::kSolveFailed;
     rec.core_reason = DecelMpcReason::kNone;
@@ -1239,10 +1237,7 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
   // Reference: the source at the new grid's node instants — a column subset
   // of it, since both grids are anchored at t_c and share the end.
   for (int i = 0; i <= n_total; ++i) {
-    const std::int64_t t_i =
-        pre ? (i <= n_pre ? t_eff + static_cast<std::int64_t>(i) * dt_pre_ns_
-                          : t_c + static_cast<std::int64_t>(i - n_pre) * dt_ns_)
-            : t_eff + static_cast<std::int64_t>(i) * dt_ns_;
+    const std::int64_t t_i = DecelGridNodeTimeNs(t_eff, t_c, dt_pre_ns_, dt_ns_, n_pre, i);
     if (!NodeTrajectoryFollower::SampleJoints(*src, t_i, q, qd, qdd)) {
       rec.outcome = DecelOutcome::kInputNonFinite;
       return false;
@@ -1274,12 +1269,13 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     ok = core.Solve(in, res);
   }
   const std::int64_t end = clock_();
-  NoteSolve(pre, index, t_eff, rt.plan_id, t_c);
+  NoteSolve(ok, pre, index, t_eff, rt.plan_id, t_c);
   rec.outcome = Judge(res, ok, n_pre, n_total, pre, start, end, replan_ns_, t_eff, rec);
   if (rec.outcome != DecelOutcome::kReady) {
     return false;
   }
-  PackSegment(rt, rt.track_generation, rt.plan_id, t_c, t_eff, n_pre, pre ? 0 : k, n_total, res,
+  // The plan's track, not the RT's latest: after the freeze they can differ.
+  PackSegment(rt, src->token.generation, rt.plan_id, t_c, t_eff, n_pre, pre ? 0 : k, n_total, res,
               out);
   out.x0_clamped = rec.x0_clamped;
   if (!ValidateDecelNodes(out)) {

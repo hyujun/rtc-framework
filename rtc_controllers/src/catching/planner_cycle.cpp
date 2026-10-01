@@ -65,8 +65,12 @@ void PlannerCycle::RunDecel(const PlannerRtState& rt, PlannerCycleRecord& rec) n
 }
 
 DecelBallTarget PlannerCycle::FollowedBall(const PlannerRtState& rt) const noexcept {
+  // The PLAN's track: after the freeze the RT keeps the committed one while
+  // rt.track_generation follows whatever it consumed last — another ball's
+  // prediction must not become this catch's target.
+  std::uint64_t track = 0;
   if (!traj_.valid || traj_.token.activation_generation != rt.activation_generation ||
-      !rt.track_seen || traj_.token.generation != rt.track_generation) {
+      !decel_.FollowedTrack(rt, track) || traj_.token.generation != track) {
     return DecelBallTarget{};
   }
   const bool matched = cov_.valid && SameSnapshot(cov_.token, traj_.token);
@@ -91,13 +95,11 @@ void PlannerCycle::RunReplan(const PlannerRtState& rt, const DecelBallTarget& ba
   const auto m = static_cast<Mode>(rt_now.mode);
   const bool mode_ok = m == Mode::kTracking || m == Mode::kApproach || m == Mode::kCommitted ||
                        m == Mode::kClosing || m == Mode::kDecel;
-  const DecelPlannerConstants& c = decel_.Constants();
-  const std::int64_t lead = SecondsToNs(c.t_arm_s) + 2 * SecondsToNs(c.control_dt);
   if (!rt_now.valid || !mode_ok || rt_now.reset_epoch != rt.reset_epoch ||
       rt_now.activation_generation != rt.activation_generation || !rt_now.plan_active ||
       rt_now.plan_id != rt.plan_id || rt_now.plan_t_c_ns != rt.plan_t_c_ns ||
       decel_.SourceSeq(rt_now, decel_out_.t0_ns) != rec.decel.source_seq ||
-      !(publish_ns + lead < decel_out_.t0_ns)) {
+      !decel_.StartsInTime(publish_ns, decel_out_.t0_ns)) {
     rec.decel.outcome = DecelOutcome::kSuperseded;
     return;
   }
@@ -130,8 +132,6 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
   const std::int64_t publish_ns = clock_();
   io_.traj->LoadInto(traj_recheck_);
   const PlannerRtState rt_now = io_.rt->Load();
-  const DecelPlannerConstants& c = decel_.Constants();
-  const std::int64_t lead = SecondsToNs(c.t_arm_s) + 2 * SecondsToNs(c.control_dt);
   const std::int64_t t_freeze_ns =
       std::isfinite(params_.t_freeze) && params_.t_freeze > 0.0 ? SecondsToNs(params_.t_freeze) : 0;
   // Same track, not the same snapshot: the first solve can outlast a
@@ -142,7 +142,8 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
       traj_recheck_.token.generation != traj_.token.generation ||
       rt_now.reset_epoch != rt.reset_epoch ||
       rt_now.activation_generation != rt.activation_generation || rt_now.plan_active ||
-      !(plan.t_c_ns - publish_ns > t_freeze_ns) || !(publish_ns + lead < decel_out_.t0_ns)) {
+      !(plan.t_c_ns - publish_ns > t_freeze_ns) ||
+      !decel_.StartsInTime(publish_ns, decel_out_.t0_ns)) {
     rec.outcome = CycleOutcome::kSuperseded;
     rec.decel.outcome = DecelOutcome::kSuperseded;
     return;
@@ -269,8 +270,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
       return rec;
     }
     // Right after a pair, until the RT state could show it adopted it.
-    const std::int64_t h = SecondsToNs(decel_.Constants().control_dt);
-    if (pair_publish_ns_ > 0 && rt.rt_state_ns <= pair_publish_ns_ + 3 * h) {
+    if (pair_publish_ns_ > 0 && rt.rt_state_ns <= pair_publish_ns_ + 3 * decel_.ControlDtNs()) {
       return rec;
     }
   }

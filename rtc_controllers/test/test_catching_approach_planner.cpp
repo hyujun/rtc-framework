@@ -839,6 +839,122 @@ TEST(ApproachPlanner, AStartOnTheVelocityBoxIsProjectedIntoIt) {
   EXPECT_NE(r.rec.core_reason, DecelMpcReason::kInitialStateOutsideBox);
 }
 
+TEST(ApproachPlanner, AStartInsideThePositionMarginIsProjectedIntoTheBox) {
+  // A wait pose within m_q of a limit: the core refuses a start outside its
+  // box, and a refused first segment withholds the plan on every wake.
+  Rig r(Arm6());
+  const int j = 5;
+  const double q_hi = r.arm.model->upperPositionLimit[j] - r.planner.Params().m_q;
+  Eigen::VectorXd q_start = r.arm.q_nominal;
+  q_start[j] = q_hi + 0.04;
+  Eigen::VectorXd q_catch = Offset(r.arm, 0.03);
+  q_catch[j] = q_hi - 0.02;
+  const Catch c = CatchAt(r.arm, q_catch);
+  const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
+  SetClock(kT0);
+  ASSERT_TRUE(r.planner.PlanFirst(RestingRt(r.arm, q_start, kT0 - kH), PlanFor(r.arm, c, t_c),
+                                  BallFor(c), r.out, r.rec))
+      << Why(r.rec);
+  EXPECT_TRUE(r.rec.x0_clamped);
+  EXPECT_TRUE(r.out.x0_clamped);
+  EXPECT_NEAR(r.out.q[Dev(r.arm, j)], q_hi, 1e-9);
+  // The other joints start where the RT reported them.
+  EXPECT_NEAR(r.out.q[Dev(r.arm, 0)], q_start[0], 1e-9);
+  // A start inside the box is left alone.
+  const Started s = StartPlan(r, kT0, 800 * kMs);
+  ASSERT_NE(s.seq, 0U);
+  EXPECT_FALSE(r.rec.x0_clamped);
+  EXPECT_FALSE(r.out.x0_clamped);
+}
+
+TEST(ApproachPlanner, ANarrowJointUsesTheCoresBox) {
+  // A joint whose range is under 2·m_q: the core's margin is half the range
+  // (its box is the midpoint), and the planner must clamp into THAT box — the
+  // limits ± m_q would be an inverted interval.
+  Arm arm = Arm6();
+  const int j = 5;
+  DecelPlannerModel pm = PlannerModelOf(arm);
+  pm.q_min[static_cast<std::size_t>(j)] = arm.q_nominal[j] - 0.02;
+  pm.q_max[static_cast<std::size_t>(j)] = arm.q_nominal[j] + 0.02;
+  DecelPlanner planner;
+  std::string err;
+  ASSERT_TRUE(planner.Configure(pm, Consts(), ApproachParams(), &FakeClock, &err)) << err;
+  EXPECT_NEAR(planner.ApproachCore(1).PositionLow()[j], arm.q_nominal[j], 1e-12);
+  EXPECT_NEAR(planner.ApproachCore(1).PositionHigh()[j], arm.q_nominal[j], 1e-12);
+  // The catch asks that joint for −0.03 rad; the reference is held at the box.
+  const Catch c = CatchAt(arm, Offset(arm, 0.03));
+  const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
+  DecelPlanSnapshot out{};
+  DecelRecord rec{};
+  SetClock(kT0);
+  ASSERT_TRUE(planner.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH), PlanFor(arm, c, t_c),
+                                BallFor(c), out, rec))
+      << Why(rec);
+  EXPECT_TRUE(rec.ref_clamped);
+  EXPECT_FALSE(rec.x0_clamped);
+  for (int k = 0; k <= out.n_nodes; ++k) {
+    EXPECT_NEAR(out.q[static_cast<std::size_t>(k * kMaxDecelNv) + Dev(arm, j)], arm.q_nominal[j],
+                1e-6)
+        << k;
+  }
+}
+
+TEST(ApproachPlanner, ARefusedSolveMakesTheNextOneCold) {
+  // An advance the core refuses BEFORE its QP leaves that core's solver with
+  // another problem's iterates (the warm-up's, an earlier trial's). The next
+  // solve of the same point must not be taken for a warm re-solve.
+  Rig r(Arm6());
+  const Started s = StartPlan(r, kT0, 800 * kMs);
+  ASSERT_NE(s.seq, 0U);
+  const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 5 * kDtPre - 10 * kMs;
+  const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0);
+  DecelBallTarget bad = BallFor(s.c);
+  bad.a_d *= 2.0;  // not a unit axis: refused by the core's input check
+  SetClock(now);
+  ASSERT_FALSE(r.planner.Replan(rt, bad, r.out, r.rec));
+  EXPECT_EQ(r.rec.outcome, DecelOutcome::kSolveFailed);
+  EXPECT_EQ(r.rec.core_reason, DecelMpcReason::kDirectionNotUnit);
+  EXPECT_EQ(r.rec.k, -5);
+  SetClock(now);
+  ASSERT_TRUE(r.planner.Replan(rt, BallFor(s.c), r.out, r.rec)) << Why(r.rec);
+  EXPECT_EQ(r.rec.k, -5);
+  EXPECT_TRUE(r.rec.cold_start);
+  // That one did reach the QP: the same point again is a warm re-solve.
+  const std::uint32_t seq2 = r.Publish(now);
+  SetClock(now);
+  ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, seq2, 0),
+                               BallFor(s.c), r.out, r.rec))
+      << Why(r.rec);
+  EXPECT_EQ(r.rec.kind, DecelKind::kSame);
+  EXPECT_FALSE(r.rec.cold_start);
+}
+
+TEST(ApproachPlanner, ASegmentCarriesThePlansTrackNotTheRtsLatest) {
+  // After the freeze the RT keeps the committed track while it reports the
+  // one it consumed last. The plan's segments name the plan's track.
+  Rig r(Arm6());
+  const Started s = StartPlan(r, kT0, 800 * kMs);
+  ASSERT_NE(s.seq, 0U);
+  EXPECT_EQ(r.out.token.generation, 5U);  // the plan's token (PlanFor)
+  const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 1 * kMs;  // stop k = 0
+  PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq);
+  rt.track_generation = 6;
+  std::uint64_t track = 0;
+  ASSERT_TRUE(r.planner.FollowedTrack(rt, track));
+  EXPECT_EQ(track, 5U);
+  SetClock(now);
+  ASSERT_TRUE(r.planner.Replan(rt, DecelBallTarget{}, r.out, r.rec)) << Why(r.rec);
+  EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+  EXPECT_EQ(r.out.token.generation, 5U);
+  // Another plan, or none: no track to name.
+  PlannerRtState other = rt;
+  other.plan_id = 8;
+  EXPECT_FALSE(r.planner.FollowedTrack(other, track));
+  other = rt;
+  other.plan_active = false;
+  EXPECT_FALSE(r.planner.FollowedTrack(other, track));
+}
+
 // ── 5. The ball target ───────────────────────────────────────────────────────
 
 rtc::catching::TrajectorySnapshot Line(int n = 10) {

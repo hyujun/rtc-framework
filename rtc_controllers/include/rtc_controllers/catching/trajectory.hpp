@@ -167,9 +167,12 @@ struct PlanSnapshot {
 /// the stop-only segment above. DecelNodeTimeNs() is the one place a node's
 /// instant is computed.
 struct DecelPlanSnapshot {
-  // activation_generation and track generation of the followed plan, as the
-  // RT reported them; snapshot_sequence / traj_recv_ns stay 0 (the planner
-  // does not see the plan's own token after COMMITTED).
+  // activation_generation and track generation of the followed plan. The
+  // stop-only planner takes them as the RT reported them; an APPROACH–stop
+  // segment carries the PLAN's track (its first segment is packed from the
+  // plan's own token and every later one from its source), which the RT's
+  // latest consumed track need not be after the freeze. snapshot_sequence /
+  // traj_recv_ns stay 0.
   ProvenanceToken token{};
   std::uint64_t rt_iteration{0};  // RT state the stop was predicted from (D-22)
   std::int64_t rt_state_ns{0};
@@ -194,7 +197,7 @@ struct DecelPlanSnapshot {
   double slack_max{0.0};           // fraction of τ_max
   double slack_terminal_max{0.0};  // node N — static torque at the stop posture
   double tau_ratio_max{0.0};       // linearised max |τ/τ_max|, nodes 1..N
-  bool x0_clamped{false};          // the predicted q̇(t_eff) was projected into the box
+  bool x0_clamped{false};          // the start state was projected into the core's box
 
   bool valid{false};
 };
@@ -209,15 +212,24 @@ inline constexpr double kDecelRestTol = 1e-3;
 /// n_pre·dt_pre_ns cannot overflow (a shape bound, not a tuning limit).
 inline constexpr std::int64_t kMaxDecelDtPreNs = 1'000'000'000;
 
-/// Instant of node k (0 ≤ k ≤ n_nodes) of a payload whose shape the caller
-/// has checked: pre-catch nodes at t0 + k·dt_pre, the catch node at t_c, stop
-/// nodes at t_c + (k − n_pre)·dt; with n_pre = 0, t0 + k·dt.
-[[nodiscard]] constexpr std::int64_t DecelNodeTimeNs(const DecelPlanSnapshot& p, int k) noexcept {
-  if (p.n_pre > 0) {
-    return k <= p.n_pre ? p.t0_ns + static_cast<std::int64_t>(k) * p.dt_pre_ns
-                        : p.t_c_ns + static_cast<std::int64_t>(k - p.n_pre) * p.dt_ns;
+/// Instant of node k of a two-spacing grid (MD-54): pre-catch nodes at
+/// t0 + k·dt_pre, the catch node at t_c, stop nodes at t_c + (k − n_pre)·dt;
+/// with n_pre = 0, t0 + k·dt. The grid rule lives here — the payload's node
+/// instants and the planner's own grid both read it.
+[[nodiscard]] constexpr std::int64_t DecelGridNodeTimeNs(std::int64_t t0_ns, std::int64_t t_c_ns,
+                                                         std::int64_t dt_pre_ns, std::int64_t dt_ns,
+                                                         int n_pre, int k) noexcept {
+  if (n_pre > 0) {
+    return k <= n_pre ? t0_ns + static_cast<std::int64_t>(k) * dt_pre_ns
+                      : t_c_ns + static_cast<std::int64_t>(k - n_pre) * dt_ns;
   }
-  return p.t0_ns + static_cast<std::int64_t>(k) * p.dt_ns;
+  return t0_ns + static_cast<std::int64_t>(k) * dt_ns;
+}
+
+/// Instant of node k (0 ≤ k ≤ n_nodes) of a payload whose shape the caller
+/// has checked (DecelGridNodeTimeNs on its fields).
+[[nodiscard]] constexpr std::int64_t DecelNodeTimeNs(const DecelPlanSnapshot& p, int k) noexcept {
+  return DecelGridNodeTimeNs(p.t0_ns, p.t_c_ns, p.dt_pre_ns, p.dt_ns, p.n_pre, k);
 }
 
 /// Whether a DecelPlanSnapshot's shape and node values can be sampled: sizes

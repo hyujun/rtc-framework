@@ -239,7 +239,8 @@ class PlannerCycle {
   void RunReplan(const PlannerRtState& rt, const DecelBallTarget& ball,
                  PlannerCycleRecord& rec) noexcept;
   // The ball at the followed plan's t_c from the scratch trajectory and
-  // covariance (invalid when they are not that plan's track).
+  // covariance. Invalid when they are not that plan's track — the track of
+  // the segments published for it, not the one the RT consumed last.
   [[nodiscard]] DecelBallTarget FollowedBall(const PlannerRtState& rt) const noexcept;
   std::int64_t pair_publish_ns_{0};  // the last pair's stamp; 0 after a reset
   DecelPlanner decel_;

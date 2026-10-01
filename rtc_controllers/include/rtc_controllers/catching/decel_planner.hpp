@@ -156,7 +156,7 @@ struct DecelRecord {
   /// weak point (MD-28), recorded on every solve.
   double h_s{std::numeric_limits<double>::quiet_NaN()};
   bool qdd_trusted{false};   ///< the wake-to-wake q̈ estimate was used
-  bool x0_clamped{false};    ///< q̇(t_eff) was projected into the box
+  bool x0_clamped{false};    ///< the start state (q or q̇) was projected into the box
   bool from_segment{false};  ///< x₀ came from the planner's own segment (path (i))
   bool presolved{false};     ///< cold: kinematic pre-solve + solve
   bool cold_retry{false};    ///< the shifted reference was refused, re-solved cold
@@ -233,17 +233,6 @@ struct DecelBallTarget {
   bool sigma_valid{false};
 };
 
-/// @brief The ball at `t_c_ns` from one trajectory snapshot and its
-///        covariance (RT-safe, pure).
-///
-/// Position and velocity are SampleAt's: valid only inside the horizon (not
-/// extrapolated) and with ‖v‖ > v_eps. Σ_p is the position block of the
-/// covariance bracketing t_c by SampleAt's own integer rule
-/// (t_i ≤ t_c < t_{i+1}; the last sample is itself): at t_c == t_i exactly
-/// sample i's block alone — a zero weight times a NaN neighbour would still be
-/// NaN — otherwise the blocks of i and i + 1 interpolated linearly on integer
-/// ns. Both must be finite and the covariance must belong to the same snapshot
-/// (`cov_matched`); otherwise `sigma_valid` is false.
 /// @brief Whether a node trajectory's joint velocity stays within q̇_max
 ///        BETWEEN its nodes too (RT-safe, pure; MD-62).
 ///
@@ -263,6 +252,17 @@ struct DecelBallTarget {
                                            double dt_pre, double dt, std::span<const double> qd_max,
                                            double& ratio_max) noexcept;
 
+/// @brief The ball at `t_c_ns` from one trajectory snapshot and its
+///        covariance (RT-safe, pure).
+///
+/// Position and velocity are SampleAt's: valid only inside the horizon (not
+/// extrapolated) and with ‖v‖ > v_eps. Σ_p is the position block of the
+/// covariance bracketing t_c by SampleAt's own integer rule
+/// (t_i ≤ t_c < t_{i+1}; the last sample is itself): at t_c == t_i exactly
+/// sample i's block alone — a zero weight times a NaN neighbour would still be
+/// NaN — otherwise the blocks of i and i + 1 interpolated linearly on integer
+/// ns. Both must be finite and the covariance must belong to the same snapshot
+/// (`cov_matched`); otherwise `sigma_valid` is false.
 [[nodiscard]] DecelBallTarget MakeDecelBallTarget(const TrajectorySnapshot& traj,
                                                   const CovarianceSnapshot& cov, bool cov_matched,
                                                   std::int64_t t_c_ns, double v_eps) noexcept;
@@ -320,6 +320,10 @@ class DecelPlanner {
   /// @brief The first segment of a plan the search just produced (RT-safe;
   ///        MD-56). The arm rests at the reported command; the reference is a
   ///        minimum-jerk reach to the plan's q_star over the pre-catch part.
+  ///        A reported pose outside the core's position box (inside the m_q
+  ///        margin of a limit) is projected into it, as Replan does, and
+  ///        marked `x0_clamped` — the core refuses a start outside its box,
+  ///        and a plan is published only with its segment.
   /// @param plan the search's plan, its `plan_id` already the one the cycle
   ///        will publish it under
   /// @param ball the ball at plan.t_c_ns (Σ_p only — p, v, a_d are the plan's)
@@ -338,6 +342,25 @@ class DecelPlanner {
 
   /// The cycle published (or, under `shadow`, would have published) `p`.
   void NoteApproachPublished(const DecelPlanSnapshot& p) noexcept;
+
+  /// The track generation of the plan `rt` follows, from the segments
+  /// published for it (the first one carries the plan's own token). False when
+  /// nothing was published for that plan. After the freeze the RT keeps the
+  /// committed track while `rt.track_generation` moves on to whatever it last
+  /// consumed, so that field does not say whose ball the plan catches.
+  [[nodiscard]] bool FollowedTrack(const PlannerRtState& rt,
+                                   std::uint64_t& generation) const noexcept;
+
+  /// Whether a segment whose node 0 is at `t0_ns` can still be read by the RT
+  /// when it is published at `publish_ns`: publish + T_arm + 2 ticks < t0.
+  /// The one statement of that lead — the solve's own late check and the
+  /// cycle's re-checks at the publish stamp all use it.
+  [[nodiscard]] bool StartsInTime(std::int64_t publish_ns, std::int64_t t0_ns) const noexcept {
+    return publish_ns + t_arm_ns_ + 2 * h_ns_ < t0_ns;
+  }
+
+  /// The control period [ns].
+  [[nodiscard]] std::int64_t ControlDtNs() const noexcept { return h_ns_; }
 
   /// The decel_seq of the segment a replan at `t_eff_ns` starts from, 0 when
   /// there is none (kNotFollowed): under `shadow` the newest one published;
@@ -430,7 +453,10 @@ class DecelPlanner {
   [[nodiscard]] const DecelPlanSnapshot* FindInRing(std::uint32_t seq) const noexcept;
   [[nodiscard]] bool ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
                                   std::uint32_t plan_id, std::int64_t t_c) const noexcept;
-  void NoteSolve(bool catch_core, int index, std::int64_t t_eff, std::uint32_t plan_id,
+  // `ok` false forgets the last solve: a call the core refused before its QP
+  // left that core's solver holding ANOTHER problem's iterates, and a failed
+  // QP reset it — either way the next solve of that point is a cold one.
+  void NoteSolve(bool ok, bool catch_core, int index, std::int64_t t_eff, std::uint32_t plan_id,
                  std::int64_t t_c) noexcept;
 
   DecelPlannerConstants consts_{};
@@ -441,8 +467,8 @@ class DecelPlanner {
   std::vector<DecelMpcResult> catch_results_;
   std::vector<DecelMpcParams> catch_params_;
   std::vector<DecelMpcParams> stop_params_;
-  // Model order: the rating q̇_max, and the core's position box
-  // [q_min + m_q, q_max − m_q].
+  // Model order: the rating q̇_max, and the core's position box (read from
+  // the core: the margin is min(m_q, half the range)).
   std::array<double, kMaxPlanNv> qd_max_{};
   std::array<double, kMaxPlanNv> q_lo_{};
   std::array<double, kMaxPlanNv> q_hi_{};
