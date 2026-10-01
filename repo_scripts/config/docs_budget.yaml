@@ -15,7 +15,7 @@
 AGENTS.md: 17408
 CLAUDE.md: 4096
 
-agent_docs/architecture.md: 30189
+agent_docs/architecture.md: 17448
 agent_docs/controllers.md: 50517
 agent_docs/conventions.md: 17166
 agent_docs/design-principles.md: 33256

@@ -1,64 +1,53 @@
 # Architecture
 
+구조에 대한 **규범**이다 — 어떤 코드가 RT 인가, 누가 무엇을 소유하는가, 어느 방향으로 의존하는가. layout 이력 · 결정 근거 · 기록 시점의 priority / core 값은 헌법 밖 [architecture-rationale.md](../docs/reference/architecture-rationale.md) 가 갖는다.
+
 ## Core Data Types
 
-`rtc_base/types/types.hpp` 가 framework-wide POD 의 SSoT. Robot/hand 별 capacity 상수와 필드 list 는 *코드 자체가 진실* — 문서엔 owner 패키지·도메인 경계만 박제한다 (AP-DOC-1).
+- `rtc_base/types/types.hpp` 가 framework-wide RT POD (`DeviceState` / `ControllerState` / `ControllerOutput`) 의 SSoT 다. 필드 목록·capacity 값은 코드가 진실이며 문서에 적지 않는다 (AP-DOC-1).
+- **controller 고유 state 는 `ControllerOutput` 에 넣지 않는다** — 그 state 를 쓰는 컨트롤러가 자기 POD 와 controller-owned SeqLock 을 소유한다 (`GraspStateData`, `WbcStateData`, `ToFSnapshotData`).
+- **도메인 상수는 그 도메인 패키지가 소유한다** — hand 상수는 `udp_hand_driver/udp_hand_constants.hpp` 다. `rtc_base` 에 두면 ARCH-1 위반이다.
 
-**Domain ownership** (어느 패키지가 어느 POD 의 owner 인가):
+**`efforts` lane 계약**: `DeviceState::efforts` 는 **관절 토크 [N·m]** 다. 실기 backend 가 모터 전류를 받으면 backend 경계에서 변환해 넣고 raw 는 `motor_efforts` lane 에 남긴다. effort 의미가 backend 별로 갈려 보일 때의 처방은 둘이다:
 
-| POD | Owner header | 의미 |
-|---|---|---|
-| `DeviceState` / `ControllerState` / `ControllerOutput` | `rtc_base/types/types.hpp` | Framework-wide RT trivially-copyable POD. ControllerOutput 에 `grasp_state`/`wbc_state`/`tof_snapshot` 필드 없음 — controller-owned SeqLock 으로 이관 |
-| `rtc::grasp::GraspStateData` | `rtc_controllers/grasp/grasp_state.hpp` | Force-PI 데모 (DemoJoint/DemoTask) 전용. 각 controller 가 자체 `SeqLock<GraspStateData>` 소유 |
-| `integrated_bringup::WbcStateData` | `integrated_bringup/controllers/wbc/wbc_state.hpp` | TSID 데모 (DemoWbc) 전용. Controller 자체 `SeqLock<WbcStateData>` |
-| `integrated_bringup::ToFSnapshotData` | `integrated_bringup/controllers/tof_snapshot.hpp` | ToF 거리 + tip pose snapshot |
-| Hand 도메인 상수 (`kNumHandMotors`, `kMaxFingertips`) | `udp_hand_driver/udp_hand_constants.hpp` | rtc_base 에 두면 ARCH-1 위반이므로 hand 도메인 소유 |
-
-필드 list / capacity 값은 위 헤더 직접 참조 (`grep -n 'struct.*Data' <header>`).
-
-**`efforts` lane 계약** (#447 → PR #450): `DeviceState::efforts` 는 **관절 토크 [N·m]** 다 — 실기 backend 가 모터 전류를 받으면 backend 경계에서 변환해 넣고 raw 는 `motor_efforts` lane 에 남긴다 (`types.hpp` 필드 주석 참조). effort 의미가 backend 별로 갈려 보이는 경우는 **두 가지이고 처방이 다르다**. **같은 로봇이 mode 에 따라 갈리면 producer 결함**이다 — 소비자(예: momentum observer)를 command mode 로 게이팅하는 방향은 sim 결함을 실기 제약으로 굳히므로 반려됐고, sim 의 gravcomp 누락을 producer 에서 고쳤다. **로봇 자체가 토크 lane 을 안 주면 그건 capability 경계**이고, 그 프로필에서 소비자를 끄는 것이 맞다: UR 은 모터 전류를 보고하며(실측 2026-08-27) 전 관절을 덮는 변환 상수가 없어 **변환하지 않기로 결정**했다 (2026-09-12, `#502` close). 그래서 momentum observer 는 `iiwa7_leap` 만 `enabled: true` 다 — 근거는 각 프로필의 `demo_shared.yaml` 이 소유한다 (sim/실기 축이 아니라 **로봇 축**이다: sim 의 UR 도 꺼 둔다). 포함범위 위반(모든 일반화력을 담지 않음)은 lane 이 fresh·정단위인 채 일어나므로 `rtc::IsLaneReadable` 로는 탐지되지 않는다.
+- **같은 로봇이 mode 에 따라 갈리면 producer 결함이다** — producer 를 고친다. 소비자를 command mode 로 게이팅하지 않는다 (sim 결함을 실기 제약으로 굳힌다).
+- **로봇 자체가 토크 lane 을 주지 않으면 capability 경계다** — 그 프로필에서 소비자를 끈다. 축은 sim / 실기가 아니라 **로봇** 이고, 근거는 그 프로필의 config 가 소유한다.
+- lane 이 모든 일반화력을 담지 않는 포함범위 위반은 `rtc::IsLaneReadable` 로 탐지되지 않는다 (lane 은 fresh · 정단위인 채다).
 
 ## Threading Model
 
-Thread roster·core·priority 의 SSoT 는 **`repo_scripts/config/thread_layout.yaml`** (선언형 manifest) 다. C++ tier 상수 + `SelectThreadConfigsForCoreCount()` (`thread_config_generated.hpp`), shell 헬퍼 (`repo_scripts/scripts/lib/thread_layout_generated.sh`), Python launch 미러 (`rtc_tools/rtc_tools/launch/thread_layout_generated.py`) 가 전부 거기서 **생성**되며, `gen_thread_layout.py --check` 가 드리프트를 CI 에서 차단한다 (issue #153 M1 — 그 전에는 같은 표가 실행 코드 6곳에 손으로 인코딩돼 있었고 그중 5곳에 직접 테스트가 없었다). `SystemThreadConfigs` 구조체 정의와 런타임 wrapper `SelectThreadConfigs()` 는 각각 `thread_config.hpp` / `thread_utils.hpp` 에 남는다. 4/6/8/10/12/14/16-core 레이아웃을 자동 선택. 문서엔 *불변 원칙*만 박는다.
+- **Thread roster · core · priority 의 SSoT 는 `repo_scripts/config/thread_layout.yaml`** 이다. C++ tier 상수 · shell 헬퍼 · Python launch 미러는 거기서 **생성**되며 손으로 고치지 않는다 — `gen_thread_layout.py --check` 가 드리프트를 차단한다. core 번호 · priority 값을 문서에 적지 않는다.
+- **RT thread** = controller ↔ hardware / sim 경계의 결정적 tick 뿐이다: `rt_control` (정기 tick + inline actuator `WriteCommand`) 과 `rt_callback` (backend state sub 처리). `mpc_main` 은 별도 RT 그룹이다 (controller 가 producer / consumer 양쪽). 그 밖 (`nrt_callback`, `nrt_logging`, `nrt_publish`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`) 은 RT 가 아니다.
+- **priority 순서는 `rt_control` > `rt_callback` > `mpc_main`** 이다 — sensor callback 이 긴 MPC solve 를 항상 선점한다.
+- **Core 0 는 OS / DDS / IRQ 전용이다.** 구체 cpu 집합은 머신 · tier · profile 종속이므로 `get_cm_shield_cpus <profile>` 출력이 SSoT 다 ([repo_scripts/README.md](../repo_scripts/README.md) "RT/MPC 코어 레이아웃 함수").
+- **actuator command 는 `rt_control` 이 tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출해 내보낸다** (RT-safe contract). 별도 outbound thread 를 두지 않는다.
+- `rt_callback` 은 DDS receive thread (CFS) 와 같은 코어를 쓴다 — launch 가 controller process 의 비-RT thread 만 그 코어로 다시 핀한다.
 
-**RT thread 정의 (layout v4)**: "RT thread" = controller ↔ hardware/sim 경계의 결정적 tick 만. 즉 `rt_control` (정기 tick + inline actuator WriteCommand) 과 `rt_callback` (backend state sub 처리) — 둘이 SCHED_FIFO 로 묶이는 그룹이다. 다른 thread (`nrt_callback`, `nrt_logging`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`) 는 RT 가 아니다 (`mpc_main` 은 별도 RT 그룹 — controller 가 producer/consumer 양쪽. #380 이후 MPC solve 는 단일 스레드다).
+**MPC**:
 
-**RT priority hierarchy**:
+- **RT 루프에 해를 공급하는 solver 스레드는 `mpc` role 을 공유한다** — layout role 을 새로 만들지 않는다 (`MPCThread`, `CatchingPlannerThread`). 각 컨트롤러는 `on_deactivate` 에서 자기 solver 를 `Pause` 하므로 그 코어에서 도는 것은 하나다. 같은 이름의 스레드가 여럿일 수 있으므로 판정은 검증기의 name→TID 맵이 아니라 `/proc/<pid>/task/*` 로 한다.
+- **MPC solve 는 단일 스레드다.** solver 에 외부 `std::jthread` 를 넘기지 않는다 — 병렬화가 필요하면 경로는 solver 의 OpenMP (`setNumThreads(n)` + 그 풀의 affinity) 이고, 그때 manifest 에 슬롯을 넣는다 (E-7).
+- **MPC 강등 축은 launch profile 하나다.** solver 축의 강등 상태를 enum 으로 다시 선언하지 않는다 — 돌아온다면 solver 의 thread budget 옆에서 파생된다 (재선언이 아니라 재구현).
 
-```
-90 rt_control (Core 1)  >  70 rt_callback (Core 2 + DDS recv co-pin)  >  60 mpc_main (Core 3)
-```
+**Launch profile** — tier 가 "어느 role 이 어느 슬롯에" 를 정한다면 profile 은 "이번 실행에서 어느 role 이 도는가" 를 정한다:
 
-- **Core 0 reserved** for OS / DDS / IRQ only — ≥ 6-core 모든 tier 에서 nrt_logging / nrt_callback / nrt_publish 가 Core 0 와 분리 (v4.1). layout v5 (#349) 부터 그 세 CFS lane 은 전용 코어 대신 **Core 2 (aux slot, `rt_callback` 과 동거)** 에 얹힌다 — 실기 실측에서 두 lane 의 합산 duty 가 한 자릿수 % 라 동거가 정당화됐다 (수치는 #349). 반환된 슬롯은 system cpuset 으로 돌아가고 cset shield 가 RT cluster 로 좁혀진다 (이어서 #380 이 mpc_worker 슬롯을 회수). 구체 cpu 집합은 머신·tier·profile 종속이므로 여기 박제하지 않는다 — `get_cm_shield_cpus` 출력이 SSoT ([repo_scripts/README.md](../repo_scripts/README.md) "RT/MPC 코어 레이아웃 함수"). 4-core fallback 은 이미 nrt 가 OS slot 을 공유하므로 **불변**
-- **rt_callback + DDS co-pin on Core 2 (v4.1)**: v4 의 핵심 — `rt_callback` thread (FIFO 70) 이 DDS receive thread (CFS) 와 같은 코어를 공유. launch-time taskset 이 controller process 의 비-RT thread (DDS / aux) 만 `rt_callback` core 로 다시 핀해서 cache locality 확보. SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성은 영향 없음. core 번호는 tier-aware (`rtc_tools.launch.thread_layout.get_rt_callback_core()`; 현재 모든 tier 에서 Core 2)
-- **Actuator command publish inline**: `rt_control` thread (Core 1 FIFO 90, v4.1) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). v3 의 별도 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거
-- **MPC main < rt_callback**: sensor callback (rt_callback) 이 long MPC solve 를 항상 preempt
-- **`mpc` role 의 두 tenant (dynamic_catching S6, E-7 결정 J)**: 포구 계획기 스레드 (`CatchingPlannerThread`, `DemoCatchingController` 소유) 는 MPC 와 같은 역할 — RT 루프에 해를 공급하는 solver 스레드 — 이라 layout role 을 새로 만들지 않고 `SelectThreadConfigs().mpc.main` 을 그대로 받는다. 그래서 스레드 이름도 `mpc_main` 이다. 두 컨트롤러가 함께 configure 되면 `mpc_main` 이 둘 존재할 수 있지만 CM 은 active 컨트롤러를 하나만 두고 전환 시 이전 컨트롤러를 deactivate 하며, 각 컨트롤러는 deactivate 에서 자기 solver 를 `Pause` 하므로 **그 코어에서 도는 것은 하나**다 (R-1 switch 테스트 `test_catching_mpc_role_switch` + sim 실측). 같은 이름이 여럿이면 `verify_rt_runtime.sh` 는 그중 한 TID 만 본다 — Aligator 의 OpenMP 워커도 생성 스레드 이름 `mpc_main` 을 물려받으므로 검증기가 고른 TID 가 유휴 워커일 수 있다. 판정은 `/proc/<pid>/task/*` 를 직접 본다. `enable_mpc:=false` (profile `mpc_off`) 면 두 컨트롤러 모두 `on_activate` 첫 문장에서 거부한다
-- **MPC solve 는 단일 스레드** (#380): 10+ tier 가 예약하던 `mpc_worker_0/1` 슬롯은 회수됐다 — 그 jthread 들은 `ApplyThreadConfig` 호출 직후 반환해 실제로는 아무것도 실행하지 않았고, 어떤 solver 도 그것을 쓸 수 없었다. **Aligator 의 병렬화는 OpenMP** 이고 OpenMP 런타임이 자기 스레드를 소유·생성하므로 외부 `std::jthread` 핸들을 넘겨받는 API 자체가 없다. 병렬 MPC 를 도입한다면 경로는 `SolverProxDDP::setNumThreads(n)` + 그 OpenMP 풀의 affinity 설정이고, 그때 manifest 에 슬롯을 다시 넣는다. 지금은 tier 와 무관하게 RT 그룹이 `rt_control + rt_callback + mpc_main` 셋이라 cset shield 도 그만큼 좁다
-- **MPC 강등 축은 launch profile 하나다** (#379) — Stage A 가 `cpu_topology.hpp` 에 심었던 `DegradationMode { NONE, SERIAL_MPC }` 는 삭제됐다. 그 enum 은 *"P-core worker budget 이 모자라면 Aligator 를 직렬로 떨어뜨린다"* 는 solver 축이었는데, 바로 위 항목이 확정한 대로 solve 는 이미 영구 단일 스레드이고 `setNumThreads` 호출은 저장소에 0건이다 — 즉 "serial MPC" 는 강등 상태가 아니라 **모든 배포의 무조건적 현재 상태**여서 어떤 코드도 거기서 분기할 수 없었고, 선언 이후 소비자가 0인 채로 남아 spec 라운드를 두 번 태웠다 (#350 D10, #379). **강등 축이 돌아온다면 solver 의 OpenMP thread budget 에서 파생되며 그 budget 옆(`setNumThreads` 호출 지점)에 산다** — CPU topology 감지 계층이 아니다. enum 을 다시 선언하는 것은 그 경로가 아니며, 이는 #380 이 manifest `verifier_optional` 을 지우며 박은 규칙("재선언이 아니라 재구현")과 같다. 한편 **"MPC 를 돌리되 전용 코어 없이"** 는 solver 가 아니라 *layout* 질문이므로 아래 profile 축이 소유한다 (현 profile 은 role 을 drop 만 하므로, 그런 제3 상태는 role 을 *수정*하는 신규 manifest 기능 + E-7 이다 — 요구하는 호스트가 생기면 별도 이슈)
-- **Launch profile (issue #350)** — tier 가 "어느 role 이 어느 슬롯에" 를 정한다면, profile 은 **"이번 실행에서 어느 role 이 도는가"** 를 정하는 두 번째 축이다. `enable_mpc:=false` 로 띄우면 profile `mpc_off` 가 되고, MPC 슬롯이 RT 집합에서 빠져 cset shield 가 그만큼 좁아진다 (구체 집합은 `get_cm_shield_cpus <profile>` 출력). 세 가지가 이 축을 따라 움직인다: shield 계산(`get_cm_shield_cpus <profile>`), 검증기의 기대/금지 표(`rtc_expected_threads` / `rtc_forbidden_threads`), controller activation gate. **런타임 자동 감지는 불가능**하다 — `mpc.enabled` 는 controller YAML 이고 스레드는 `on_activate` 에서 뜨므로 세션 중 controller switch 로 켜질 수 있다. 그래서 launch 단계의 명시적 opt-out 이고, launch 가 결정한 profile 은 `rt_layout_profile` 파라미터로 controller 에, `--profile` 로 shield/검증기에 같은 값이 전달된다. profile 이 MPC 를 뺐는데 controller config 가 `mpc.enabled: true` 면 `DemoWbcController::on_activate` 가 **첫 side effect 전에 FAILURE** 를 낸다 (controller manager 는 실패한 target 에 `on_deactivate` 를 부르지 않으므로 그 앞에서 활성화된 것은 영구히 반쪽으로 남는다). tier 표 자체는 profile 과 무관하므로 C++ 상수·Python 미러는 불변이다. **GRUB `nohz_full`/`rcu_nocbs` 는 profile 을 타지 않는다** — boot-static 이라 반영하려면 재부팅이 필요하고, 그러면 재부팅 없는 profile 전환이 깨진다 (결정 D11(a))
-- **hand-private UDP receive thread** (`hand_udp_recv`, FIFO 65, hand_driver 프로세스 내부) 는 **프로세스 self-pin** 으로 affinity 상속 — `SystemThreadConfigs` 에 필드 없음 (package-local `kHandUdpRecvConfig`). 같은 프로세스는 blocking 파일 I/O 전용 `hand_aux_io` executor 스레드를 **aux slot(OS slot)** 에 따로 두며, 그 slot 은 ROS param `aux_cpu_slot`(기본 0, shell SSoT `get_os_cores()`)이다 — `rtc_base` 확장은 PROC-3 전면 rebuild 를 부르므로 의도적으로 package-local 이다 (issue #345). 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1) 기본값으로 caller 가 명시 핀
-- **arm_driver / hand_driver / sim_thread / viewer** 는 process-level pin (SCHED_OTHER, priority 0) — launch script 가 적용. sim_thread/viewer 의 cpu_core=-1 sentinel 은 모든 tier 에서 "no pin" (v4.1, cpu_shield --sim 모드에서 격리 해제된 코어 사용). 단 `arm_driver`·`hand_driver` 는 taskset 이 아니다. `hand_driver` 는 프로세스가 스스로 main 스레드를 핀하고(`use_cpu_affinity` param 이 그것까지 끈다) launch 는 `rclcpp::init()` 이 노드 생성 전에 만드는 DDS 스레드만 co-pin 한다 — 옛 `taskset -a` 전-스레드 스윕은 `hand_aux_io` 를 도로 끌어오므로 제거됐다 (issue #345). `arm_driver` 는 그 프로세스(`ros2_control_node`)의 제어 루프는 main thread 가 아닌 별도 스레드라 taskset 이 닿지 않으므로, upstream `controller_manager` 의 `cpu_affinity`/`thread_priority` 파라미터로 그 루프만 FIFO 50 + 코어에 핀한다 (issue #343). 이 값은 `SystemThreadConfigs.arm_driver` 가 아니라 launch 가 생성하는 CM 파라미터 파일이 나른다
+- profile 은 launch 단계의 **명시적 opt-out** 이다 (런타임 자동 감지 없음). launch 가 정한 값이 `rt_layout_profile` 파라미터로 controller 에, `--profile` 로 shield / 검증기에 **같은 값** 으로 전달된다. shield 계산 · 검증기의 기대 / 금지 표 · controller activation gate 셋이 이 축을 따른다.
+- profile 이 뺀 role 을 controller config 가 요구하면 `on_activate` 가 **첫 side effect 전에** FAILURE 를 낸다.
+- GRUB `nohz_full` / `rcu_nocbs` 는 profile 을 타지 않는다 (boot-static).
 
-세부 thread 종류·core 번호·priority 값은 위 header + `cpu_topology.hpp` 참조. Hybrid-CPU 감지 + BIOS 체크리스트는 [`docs/NUC_HYBRID_SUPPORT.md`](../docs/NUC_HYBRID_SUPPORT.md) (layout 분기는 v4.1 `physical_core_slots` 추상화가 처리 — 별도 hybrid config 없음).
+**프로세스 · 패키지 로컬 스레드**:
+
+- 한 패키지 안에서만 쓰는 thread config 는 package-local 로 둔다 — `SystemThreadConfigs` (`rtc_base`) 확장은 PROC-3 전면 rebuild 를 부른다. 일반 `rtc_communication::Transceiver` 는 기본이 no-pin 이고 caller 가 명시적으로 핀한다.
+- `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 는 process-level 배치다. `taskset -a` 전-스레드 스윕을 쓰지 않는다 — 프로세스가 의도적으로 다른 slot 에 둔 스레드를 도로 끌어온다. 제어 루프가 main thread 가 아닌 프로세스는 그 프로세스의 affinity 파라미터로 그 루프만 핀한다.
 
 ### Per-thread timing CSV infrastructure
 
-CM RT loop · MPC thread · hand UDP receiver 가 *동일* generic transport + *동일* `RtTickTimingPayload` 를 공유한다. Fixed-frequency loop·lifecycle·`clock_nanosleep(TIMER_ABSTIME)` cadence·overrun detection·per-tick t0~t3 capture 는 모두 `rtc::PeriodicRtThread` base 에 박혀 있고, channel 은 hook override 만 추가한다 (sim-CV wakeup, E-STOP escalation). 새 per-tick timing channel 추가 시 같은 base + payload alias 재사용 — `RTControllerInterface` virtual 추가 / 새 SPSC class / 새 logger class 금지.
-
-SSoT 파일:
-- `rtc_base/threading/periodic_rt_thread.hpp` — loop/lifecycle base
-- `rtc_base/timing/rt_tick_timing_sample.hpp` — unified `RtTickTimingPayload`
-- `rtc_base/logging/run_id.hpp` — `ResolveRunId()` (`$RTC_RUN_ID` → `getpid()`); 로거가 매 행에 찍어 한 세션 디렉토리 안의 두 기동을 가른다 (#376)
-- `rtc_base/timing/thread_timing_{sample,producer,csv_logger}.hpp` — generic transport
-
-CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_log.csv` / `rt_callback_timing_log.csv`), `<session>/timing/` 아래 저장. Aggregate stats 는 INFO summary 만, percentile 은 post-process. 네 CSV 모두 `t_wall_ns,tick_count,run_id` 접두 3열을 로거가 자동 emit 하며, 한 launch 의 모든 프로세스가 같은 `run_id` 를 받으므로 채널 간 join 이 성립한다.
+CM RT loop · MPC thread · hand UDP receiver · rt_callback 이 **같은** generic transport 와 **같은** `RtTickTimingPayload` 를 공유한다. loop · lifecycle · cadence · overrun detection · per-tick capture 는 `rtc::PeriodicRtThread` base 가 갖고 channel 은 hook override 만 더한다. **새 per-tick timing channel 은 같은 base + payload alias 를 재사용한다** — `RTControllerInterface` virtual 추가 / 새 SPSC class / 새 logger class 금지. percentile 은 post-process 다 (aggregate 는 INFO summary 만).
 
 ## Lock-Free Rules
 
 - **SeqLock<T>**: single-writer/multi-reader, requires `is_trivially_copyable_v<T>`
-- **SpscQueue<T,N> / SpscPublishBuffer<512>**: wait-free push (drops on full), power-of-2 (controller data CSVs use `ThreadCsvProducer<Pod, N>` which wraps `SpscQueue` — Phase C)
+- **SpscQueue<T,N> / SpscPublishBuffer<N>**: wait-free push (drops on full), power-of-2
 - **try_lock only** on RT path (never block); `lock_guard` 는 lifecycle 콜백 / nrt_callback thread / 파라미터 콜백 등 non-RT 경로에서만
 - **jthread + stop_token** for cooperative cancellation
 - **Separate mutexes**: `state_mutex_`, `target_mutex_`, `hand_mutex_` -- never hold more than one
@@ -72,21 +61,20 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 | `on_configure` | 1 | Callback groups, parameters, controllers, publishers/subscribers, timers, eventfd |
 | `on_activate` | 2 | `SelectThreadConfigs()` -> `StartRtLoop()` + `StartNrtPublishLoop()` |
 | `on_deactivate` | -- | Stop RT / nrt_publish threads, clear E-STOP, reset init state |
-| `on_cleanup` | -- | Reverse of `on_configure` (all `.reset()` / `.clear()`), with one deliberate exception: the eventfds are closed **after** the device backends, not before — the backends' state-lane subs survive `on_deactivate` and their state-ready callback writes those fds (issue #224) |
+| `on_cleanup` | -- | Reverse of `on_configure`, with one exception: the eventfds are closed **after** the device backends (their state-lane subs outlive `on_deactivate` and write those fds) |
 | `on_error` | -- | `TriggerGlobalEstop("lifecycle_error")`, stop threads, full cleanup -> SUCCESS |
 
 **Safety publishers** (`estop_pub_`, `active_ctrl_name_pub_`) use standalone `rclcpp::create_publisher` -- active regardless of lifecycle state.
 
-**RtControllerMain** uses a 3-phase executor: (1) lifecycle_executor spins for configure/activate, (2) polls until Active, (3) switches to dedicated rt_callback / nrt_logging / nrt_callback executors per the matrix below.
+**callback_group → executor binding**:
 
-**callback_group → executor binding** (see [rt_controller_main_impl.cpp](../rtc_controller_manager/src/rt_controller_main_impl.cpp)):
-
-| Executor | Thread config | Callback groups |
+| Executor | Scheduler | Callback groups |
 |---|---|---|
-| `rt_callback_executor` | `cfgs.rt_callback` (SCHED_FIFO 70, Core 2 in v4.1) | `cb_group_rt_callback_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호). DDS receive thread co-pinned to the same core via launch taskset. **state-ready 콜백은 mailbox 전용** (issue #198 Phase 2) — slot 별 dirty bit + eventfd write 만 하고, digital-twin republish 는 `nrt_publish_thread` 의 `DrainDigitalTwin()` 이 수행 |
-| `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, tier-aware core) | `cb_group_nrt_logging_` — `cm_timing_log.csv` + `rt_callback_timing_log.csv` drain + deferred E-STOP log **and `/system/estop_status` publish** (both raised as atomic flags by `TriggerGlobalEstop`/`ClearGlobalEstop`, which are reachable from the RT loop — #198 Phase 3) |
-| `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, tier-aware core — 4-core fallback 은 Core 0, 그 외 tier 는 layout v5 의 aux slot Core 2 로 `rt_callback` 과 동거) | `cb_group_nrt_callback_` (lifecycle services; E-STOP status 는 lifecycle 콜백의 `FlushEstopStatus()` 를 통해 간접적으로만 — 실제 publish 는 위 logging 행의 `DrainLog()`) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). CM 은 RobotTarget sub 을 만들지 않는다 (issue #138). `nrt_publish` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 — `cfgs.nrt_publish` 로 **이름을 분리**해 두 스레드가 verifier 기대표에서 각각의 행을 갖는다 (#349 D15; 이전에는 둘 다 `nrt_callback` 이라 `verify_rt_runtime.sh` 의 name→TID 맵이 하나만 보관했다) |
+| `rt_callback_executor` | SCHED_FIFO (`cfgs.rt_callback`) | `cb_group_rt_callback_` — DeviceBackend state subs. MutuallyExclusive (SeqLock single-writer 보호). **state-ready 콜백은 mailbox 전용** — slot 별 dirty bit + eventfd write 만 한다 |
+| `nrt_logging_executor` | SCHED_OTHER (`cfgs.nrt_logging`) | `cb_group_nrt_logging_` — timing CSV drain + deferred E-STOP log 와 `/system/estop_status` publish (RT loop 에서 도달 가능한 `TriggerGlobalEstop` / `ClearGlobalEstop` 은 atomic flag 만 세운다) |
+| `nrt_callback_executor` | SCHED_OTHER (`cfgs.nrt_callback`) | `cb_group_nrt_callback_` (lifecycle services) + 모든 controller LifecycleNode 의 default group (controller-owned RobotTarget subs, `grasp_command` services) |
 
+`nrt_publish` 는 executor 콜백이 아니라 별도 `std::jthread` + eventfd (`NrtPublishLoopEntry`) 이고, 검증기 기대표에서 자기 이름의 행을 갖는다.
 
 ### Execution Contexts (RT 판정 SSoT)
 
@@ -94,61 +82,60 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 | Execution context | Scheduler | RT? | 허용 연산 |
 |---|---|---|---|
-| `rt_control` loop (`ControlLoop`, `Compute`, mailbox drain, inline `WriteCommand`) | SCHED_FIFO 90, Core 1 | **RT** | RT-1~10 전면 구속. alloc/throw/log/lock 금지 |
-| MPC thread (`MPCThread::OnTick` → `HandlerMPCThread::Solve`), 포구 계획기 (`CatchingPlannerThread::OnTick` → `PlannerCycle::Run`, 같은 `mpc` role), `UdpHandController::RunCommCycle` | SCHED_FIFO, dedicated core | **RT** | 동일. 계획기의 대기는 eventfd `poll` (vision 수신 콜백이 신호, 상한 `planner.wake_timeout_s`) |
-| DeviceBackend state/motor/sensor 구독 콜백 (`cb_group_rt_callback_`) | SCHED_FIFO 70, Core 2 | **RT** | **mailbox-only** — SeqLock/atomic store, memcpy, steady_clock 캡처까지 |
-| `nrt_publish_thread` (`NrtPublishLoopEntry` → `PublishNonRtSnapshot`) | SCHED_OTHER 0 | 비-RT | ROS publish 포함 자유. executor 콜백이 **아님** (std::jthread + eventfd) |
-| Controller-owned RobotTarget 구독, `grasp_command` 서비스, **`SetDeviceTarget` marshal** (base `DeliverTargetMessage` 경유) (controller LifecycleNode default group) | SCHED_OTHER 0 | 비-RT | 자유. 단 RT loop 와 공유하는 상태는 SeqLock/SPSC 경유 — target 은 base mailbox (`PushPendingTarget`) 가 그 경유를 소유하고, RT tick 의 `DrainPendingTargets()` 가 유일한 소비자다 |
-| Lifecycle 콜백 (`on_configure`/`on_activate`/`on_deactivate`/`on_cleanup`), 파라미터 콜백 | SCHED_OTHER 0 | 비-RT | 자유 — 여기서의 `push_back`·`new`·로깅은 정상이며 RT-1 위반이 아니다 |
-| `DrainLog()` / CSV drain / 1 Hz aux 타이머 (`cb_group_nrt_logging_`) | SCHED_OTHER nice -5 | 비-RT | 자유. RT 가 SPSC 로 넘긴 것을 여기서 포맷·기록 |
+| `rt_control` loop (`ControlLoop`, `Compute`, mailbox drain, inline `WriteCommand`) | SCHED_FIFO | **RT** | RT-1~10 전면 구속. alloc/throw/log/lock 금지 |
+| MPC thread (`MPCThread::OnTick` → `HandlerMPCThread::Solve`), 포구 계획기 (`CatchingPlannerThread::OnTick` → `PlannerCycle::Run`, 같은 `mpc` role), `UdpHandController::RunCommCycle` | SCHED_FIFO, dedicated core | **RT** | 동일. 계획기의 대기는 eventfd `poll` |
+| DeviceBackend state/motor/sensor 구독 콜백 (`cb_group_rt_callback_`) | SCHED_FIFO | **RT** | **mailbox-only** — SeqLock/atomic store, memcpy, steady_clock 캡처까지 |
+| `nrt_publish_thread` (`NrtPublishLoopEntry` → `PublishNonRtSnapshot`) | SCHED_OTHER | 비-RT | ROS publish 포함 자유. executor 콜백이 **아님** (std::jthread + eventfd) |
+| Controller-owned RobotTarget 구독, `grasp_command` 서비스, **`SetDeviceTarget` marshal** (base `DeliverTargetMessage` 경유) (controller LifecycleNode default group) | SCHED_OTHER | 비-RT | 자유. 단 RT loop 와 공유하는 상태는 SeqLock/SPSC 경유 — target 은 base mailbox (`PushPendingTarget`) 가 그 경유를 소유하고, RT tick 의 `DrainPendingTargets()` 가 유일한 소비자다 |
+| Lifecycle 콜백 (`on_configure`/`on_activate`/`on_deactivate`/`on_cleanup`), 파라미터 콜백 | SCHED_OTHER | 비-RT | 자유 — 여기서의 `push_back`·`new`·로깅은 정상이며 RT-1 위반이 아니다 |
+| `DrainLog()` / CSV drain / 1 Hz aux 타이머 (`cb_group_nrt_logging_`) | SCHED_OTHER | 비-RT | 자유. RT 가 SPSC 로 넘긴 것을 여기서 포맷·기록 |
 
-controller-owned target sub 이 **default group** 에 붙는다는 점은 의도된 계약이고 `integrated_bringup/test/test_controller_target_cb_group_invariant.cpp` 가 잠근다 — `SubscriptionOptions.callback_group` 을 명시하면 이 lane 이 조용히 옮겨가므로 그 테스트가 회귀를 잡는다.
+- **controller-owned target sub 은 default group 에 붙는다** — 의도된 계약이고 테스트가 잠근다. `SubscriptionOptions.callback_group` 을 명시하면 이 lane 이 조용히 옮겨간다.
+- **DeviceBackend cb_group injection 의무**: 모든 backend 구현은 `Configure(node, cfg, state_cb_group)` 가 받은 `state_cb_group` 을 자신이 만드는 모든 state/motor/sensor subscription 에 적용한다 (default-group fallback 금지 — integration test 가 assert). Reentrant cb_group 금지 — SeqLock writer 가 단일 thread 여야 한다.
 
-**DeviceBackend cb_group injection 의무**: 모든 backend 구현은 `Configure(node, cfg, state_cb_group)` 가 받은 `state_cb_group` 을 자신이 만드는 모든 state/motor/sensor subscription 의 `SubscriptionOptions.callback_group` 에 적용해야 한다. ARCH-3 두 번째 구현 이후 silent default-group fallback 회귀를 막기 위해 backend integration test 가 `get_actual_callback_group() != nullptr` 을 assert 한다. Reentrant cb_group 금지 — SeqLock writer 가 단일 thread 임을 보장해야 함.
+**ControlLoop** (rate 는 `control_rate`): device-readiness gate → assemble `ControllerState` → `Compute()` → output validation → E-STOP substitution → inline `DeviceBackend.WriteCommand` + SPSC push (nrt-publish lane) + log.
 
-- **ControlLoop** (configurable rate, default 500 Hz): device-readiness gate -> assemble ControllerState -> `Compute()` -> output validation (#196 Phase 2b) -> E-STOP substitution (#198 Phase 3) -> inline `DeviceBackend.WriteCommand` (actuator publish) + SPSC push (nrt-publish lane) + log. **E-STOP latch 가 서면 controller output 은 `BuildHoldOutput()` 으로 치환돼 backend 에 도달하지 않는다** — actuator 안전이 controller 의 E-STOP hook 구현에 의존하지 않게 하는 manager 측 방어선 (치환은 validation 을 우회하지 않고 그 뒤에 합성된다; 두 가드는 카운터를 따로 둔다)
-- **CheckTimeouts** (50Hz): per-group device timeout -> `TriggerGlobalEstop("{group}_timeout")`
+- **E-STOP latch 가 서면 controller output 은 `BuildHoldOutput()` 으로 치환돼 backend 에 도달하지 않는다** — actuator 안전이 controller 의 E-STOP hook 구현에 의존하지 않게 하는 manager 측 방어선이다. 치환은 validation 을 우회하지 않고 그 뒤에 합성된다.
+- **CheckTimeouts** (50 Hz): per-group device timeout → `TriggerGlobalEstop("{group}_timeout")`
 - **E-STOP triggers**: group timeout, init timeout, >= 10 consecutive RT overruns, sim sync timeout
-- **TriggerGlobalEstop**: idempotent (`compare_exchange_strong`), propagates to all controllers
+- **TriggerGlobalEstop**: idempotent (`compare_exchange_strong`, PROC-4), propagates to all controllers
 
 ## Data Flow
 
 ```
-[Robot HW / MuJoCo Sim] --JointState--> [rt_callback (FIFO 70)] --SeqLock--> [rt_control: RT loop @ control_rate]
+[Robot HW / MuJoCo Sim] --JointState--> [rt_callback (FIFO)] --SeqLock--> [rt_control: RT loop @ control_rate]
     |                                          +--dirty bit + eventfd--> [nrt_publish_thread]
     +--inline--> backend.WriteCommand (actuator command, RT-safe)
-    +--SPSC (cap 16)--> [nrt_publish_thread (CFS)] --> controller.PublishNonRtSnapshot
-    |                                                  (Transforms / grasp_state / wbc_state / tof_snapshot)
-    |                                              +-> /rtc_cm/{group}/joint_states (digital twin)
-    +--SPSC--> [nrt_logging_executor (CFS -5)] --> CSV (timing + per-device state + sensor)
-    +--E-STOP latch--> [nrt_logging (CFS -5)] --> /system/estop_status + RCLCPP log (deferred, RT-10)
+    +--SPSC--> [nrt_publish_thread (CFS)] --> controller.PublishNonRtSnapshot
+    |                                          (Transforms / grasp_state / wbc_state / tof_snapshot)
+    |                                      +-> /rtc_cm/{group}/joint_states (digital twin)
+    +--SPSC--> [nrt_logging_executor (CFS)] --> CSV (timing + per-device state + sensor)
+    +--E-STOP latch--> [nrt_logging (CFS)] --> /system/estop_status + RCLCPP log (deferred, RT-10)
 
 [Hand HW] <--UDP--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
 [rtc_digital_twin]: merge /rtc_cm/{group}/joint_states --> RViz2
-[ur5e_bt_coordinator]: subscribes grasp_state + /rtc_cm/<group>/joint_states + tf2 buffer fed by a `<config_key>/transforms` sub (self-feed — see TF invariant below), publishes goals; tunes gains via per-controller ROS 2 parameters
+[BT coordinator]: subscribes grasp_state + /rtc_cm/<group>/joint_states + `<config_key>/transforms` (self-feed), publishes goals
 ```
 
 ## RT vs non-RT Topic Ownership
 
-토픽 소유는 3개 lane 으로 나뉜다 (issue #138: controller YAML 에는 `ownership:` field 가 없다 — controller-YAML entry 는 전부 controller-owned):
+토픽 소유는 3개 lane 이다. controller YAML 에는 `ownership:` field 가 없다 — controller-YAML entry 는 전부 controller-owned 다.
 
-- **Controller-owned** (controller YAML `topics:` entry 전부) — Per-controller `LifecycleNode` (namespace `/<config_key>/`, `nrt_callback_executor` 에 add_node) 가 외부 facing snapshot 소유. Subscribe (role `target`, alias `goal` — `joint_goal`/`ee_pose` 는 role 이 아니라 토픽 이름이다), publish (transforms via PublishRole; grasp_state/wbc_state/tof_snapshot 는 controller-owned SeqLock + Setup*Publisher 헬퍼 — PublishRole 없음)
-- **DeviceBackend-owned** — device-wire state/motor/sensor sub + joint/ros2 command pub, `devices.<group>.backend:` (sim.yaml/robot.yaml) 에서 선언
-- **CM fixed publishers** — `RtControllerNode` 가 hardcode 로 소유 (YAML 무관): per-group digital-twin `/rtc_cm/<group>/joint_states`, safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name` latched rewire trigger). 모두 lifecycle 무관 standalone publisher 로 active
+- **Controller-owned** (controller YAML `topics:` entry 전부) — per-controller `LifecycleNode` (namespace `/<config_key>/`) 가 외부 facing snapshot 을 소유한다. Subscribe (role `target`, alias `goal`), publish (transforms 는 PublishRole; grasp_state / wbc_state / tof_snapshot 은 controller-owned SeqLock + `Setup*Publisher` 헬퍼 — PublishRole 없음, E-11). CM 은 controller-YAML target sub 을 만들지 않는다.
+- **DeviceBackend-owned** — device-wire state/motor/sensor sub + command pub. `devices.<group>.backend:` 에서 선언한다.
+- **CM fixed publishers** — `RtControllerNode` 가 YAML 과 무관하게 소유한다: per-group digital-twin `/rtc_cm/<group>/joint_states`, safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name`). 모두 lifecycle 과 무관한 standalone publisher 다.
 
-RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT `nrt_publish_thread` 가 read + ROS publish.
+RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push 하고 non-RT `nrt_publish_thread` 가 read + ROS publish 한다. **actuator 송출 lane (inline) 과 nrt publish lane 은 분리를 유지한다** — 긴 non-RT publish 가 actuator latency 를 막지 못하게 하는 두 lane 이다.
 
-외부 도구 (BT, GUIs, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 구독 → switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire.
+외부 도구 (BT, GUI, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 을 구독해 switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire 한다.
 
-**TF `_actual` 프레임 — `/tf` publisher 없음 (framework invariant).** 컨트롤러는 arm-tip / fingertip `_actual` 프레임 (`base → tool0_actual`, `<link>_actual`) 을 `/tf` 로 발행하지 **않는다** — 오직 controller-owned `/<config_key>/transforms` (`tf2_msgs/TFMessage`, PublishRole) 로만 노출한다. 따라서 bare `tf2_ros::TransformListener` (`/tf`·`/tf_static` 만 청취) 는 이 프레임을 **절대 받지 못한다**. tf 소비자는 반드시 둘 중 하나: **(a) self-feed** — `/<config_key>/transforms` 를 직접 구독해 buffer 에 `setTransform` (ur5e_bt_coordinator `transforms_sub_`, demo_gui `_transforms_cb`; active controller 전환 시 rewire); **(b) `/tf` 재발행 의존** — `rtc_digital_twin` 의 `controller_tf` 재발행 (`<active>/transforms` → restamp → `/tf`, RViz TF 디스플레이·bare-listener 소비자용, default on). 이 함정은 digital_twin tcp_viz·bt_coordinator 두 곳에서 각각 silent-fail 버그로 발현했다 — **새 tf 소비자 추가 시 (a)/(b) 중 하나를 반드시 적용**하고, bare listener 만 두지 말 것.
+**TF `_actual` 프레임 — `/tf` publisher 없음.** 컨트롤러는 arm-tip / fingertip `_actual` 프레임을 `/tf` 로 발행하지 않고 controller-owned `/<config_key>/transforms` 로만 노출한다. bare `tf2_ros::TransformListener` 는 이 프레임을 받지 못한다. **새 tf 소비자는 둘 중 하나를 반드시 적용한다**: (a) self-feed — `/<config_key>/transforms` 를 직접 구독해 buffer 에 `setTransform` (active controller 전환 시 rewire), (b) `rtc_digital_twin` 의 `/tf` 재발행에 의존.
 
-구현: controller YAML `topics:` entry (`SubscribeTopicEntry` / `PublishTopicEntry`, `rtc_base/types/types.hpp`) 는 모두 controller-owned 이며 `integrated_bringup/src/support/owned_topics.cpp` 가 controller LifecycleNode 에 sub/pub 을 생성한다. CM 은 controller-YAML target sub 을 만들지 않는다 (manager-target 경로 폐기, issue #138); `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임하고, 같은 루프에서 CM 소유 digital-twin republish (`DrainDigitalTwin()`) 도 드레인한다 — 후자는 RT tick 이 아니라 device state 콜백이 신호하므로 매 pass 무조건 확인한다. RT path 의 actuator 송출은 `rt_control` thread 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 — long non-RT publish 가 actuator latency 를 막지 못하도록 두 lane 분리 유지.
-
-Session logs: `logging_data/YYMMDD_HHMM/{timing,monitor,device,sim,plots,motions,tracing}/`. Per-controller logs 는 `controllers/<config_key>/` (controller LifecycleNode 가 owner, 예: `demo_wbc_controller/mpc_solve_timing.csv`), per-tick 스레드 타이밍 CSV 는 `timing/` (`cm_timing_log` / `mpc_timing_log` / `hand_udp_timing_log` / `rt_callback_timing_log`). 레거시 singular `controller/` (CM RT-loop DataLogger) 는 Phase C 에서 제거됨 — 더 이상 생성하지 않는다. 새 logger 추가 시 producer thread 의 소유자 기준으로 위치 선택. Session subdir 목록은 `rtc_base/logging/session_dir.hpp` (`kSubdirs`) + `rtc_tools.utils.session_dir` (`_SESSION_SUBDIRS`) 가 mirror SSoT — 한쪽 변경 시 반드시 동기화.
+**Session logs**: 세션 디렉토리 아래 위치는 **producer thread 의 소유자** 기준으로 정한다 — per-controller log 는 `controllers/<config_key>/`, per-tick 스레드 타이밍은 `timing/`. Session subdir 목록은 `rtc_base/logging/session_dir.hpp` (`kSubdirs`) 와 `rtc_tools.utils.session_dir` (`_SESSION_SUBDIRS`) 가 mirror 다 — 한쪽을 바꾸면 반드시 함께 바꾼다 (PROC-5).
 
 ## Dependency Graph
 
-**이 그래프는 ARCH-2 (상향 의존 금지) 판정에 필요한 층위 요약이다 — 전체 엣지의 SSoT 는 각 패키지의 `package.xml`** 이며 여기 전수 박제하지 않는다 (AP-DOC-1). 아래는 층위를 가르는 `rtc_*` 엣지와 외부 의존만 담는다.
+**이 그래프는 ARCH-2 (상향 의존 금지) 판정에 필요한 층위 요약이다 — 전체 엣지의 SSoT 는 각 패키지의 `package.xml`** 이며 여기 전수 적지 않는다 (AP-DOC-1).
 
 ```
 rtc_msgs, rtc_base (independent)
@@ -156,15 +143,10 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs, rtc_urdf_bridge
   +-- rtc_controllers <-- rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge, rtc_tsid
   |     (sibling of rtc_controller_interface -- does NOT depend on it)
-  |     (rtc_tsid edge added 2026-09-20, dynamic_catching D-26: the catch-pose IK
-  |      task step is a box-constrained QP via QPSolverWrapper. rtc_tsid does not
-  |      depend on rtc_controllers, so no cycle -- but note every consumer of
-  |      rtc_controllers, including rtc_controller_manager, now pulls ProxSuite)
   +-- rtc_controller_manager <-- rtc_controller_interface, rtc_controllers,
   |         rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge
   +-- rtc_tsid <-- rtc_math, rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
-  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio
-  |         (+ CMake-only: fmt >= 10, aligator -- source-installed, package.xml 미선언)
+  +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio (+ CMake-only: fmt, aligator)
   +-- rtc_mujoco_sim <-- rtc_base, rtc_msgs, MuJoCo 3.x (optional)
 rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional, test-only rtc_base)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
@@ -174,9 +156,5 @@ integrated_bringup <-- rtc_controller_manager, rtc_controller_interface, rtc_con
                  rtc_tsid, rtc_mpc, rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
                  + <exec_depend> udp_hand_driver, robot_descriptions, rtc_tools, repo_scripts
 rtc_tools (analysis tools, top of stack) <-- <exec_depend> rtc_msgs, pinocchio, xacro,
-                 rtc_controllers  [2026-09-21: catchability_map 이 rtc_controllers 의
-                 catch_pose_ik_batch 를 subprocess 로 부른다 — 오프라인 지도(S3.5a)와
-                 런타임 계획기(S6.2)가 같은 판정 함수를 써야 하기 때문이다. exec 전용이고
-                 rtc_controllers 는 rtc_tools 를 의존하지 않으므로 순환은 없다.
-                 2026-09-22: catch_gate_map 도 같은 이유로 catch_gate_batch (S3.5b) 를 부른다]
+                 rtc_controllers (exec 전용 — rtc_controllers 는 rtc_tools 를 의존하지 않는다)
 ```
