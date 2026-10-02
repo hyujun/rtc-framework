@@ -354,7 +354,6 @@ TEST(DecelParams, ApproachKeysDefaultOff) {
   EXPECT_DOUBLE_EQ(d.budget_first_s, 0.035);
   EXPECT_DOUBLE_EQ(d.budget_replan_s, 0.025);
   EXPECT_TRUE(d.replan_same_point);
-  EXPECT_FALSE(d.shadow);
   EXPECT_DOUBLE_EQ(d.catch_pos_err_max, 0.02);
   EXPECT_DOUBLE_EQ(d.w_axis, 100.0);
   EXPECT_DOUBLE_EQ(d.w_v_par, 1.0);
@@ -373,7 +372,7 @@ TEST(DecelParams, ApproachKeysDefaultOff) {
 TEST(DecelParams, ParsesTheApproachKeys) {
   const auto p = ParsePlannerParams(
       YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
-                 "replan: {k_max: 2, same_point: false}, shadow: true, "
+                 "replan: {k_max: 2, same_point: false}, "
                  "approach: {n_pre_max: 6, dt_pre_s: 0.08, rest_tol: 0.02}, "
                  "budget: {first_s: 0.04, replan_s: 0.03}, publish: {catch_pos_err_max: 0.015}, "
                  "catch: {w_axis: 50, w_v_par: 2, w_v_perp: 10, gamma_ref: 0.8, kappa: 2, "
@@ -386,7 +385,6 @@ TEST(DecelParams, ParsesTheApproachKeys) {
   EXPECT_DOUBLE_EQ(d.budget_first_s, 0.04);
   EXPECT_DOUBLE_EQ(d.budget_replan_s, 0.03);
   EXPECT_FALSE(d.replan_same_point);
-  EXPECT_TRUE(d.shadow);
   EXPECT_DOUBLE_EQ(d.catch_pos_err_max, 0.015);
   EXPECT_DOUBLE_EQ(d.w_axis, 50.0);
   EXPECT_DOUBLE_EQ(d.w_v_par, 2.0);
@@ -420,7 +418,6 @@ TEST(DecelParams, RejectsMalformedApproachKeys) {
            "planner: {decel_mpc: {budget: {first_s: 0.0}}}",
            "planner: {decel_mpc: {budget: {replan_s: 0.06}}}",
            "planner: {decel_mpc: {replan: {same_point: maybe}}}",
-           "planner: {decel_mpc: {shadow: 1.5}}",
            "planner: {decel_mpc: {publish: {catch_pos_err_max: 0.0}}}",
            "planner: {decel_mpc: {publish: {catch_pos_err_max: .nan}}}",
            "planner: {decel_mpc: {catch: {w_axis: -1}}}",

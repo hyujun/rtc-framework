@@ -1508,7 +1508,6 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOff) {
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   const auto& d = planner.decel;
   EXPECT_FALSE(d.enabled) << profile;
-  EXPECT_FALSE(d.shadow) << profile;
   EXPECT_TRUE(d.horizon_explicit) << profile;
   EXPECT_EQ(d.n_nodes, 7) << profile;
   EXPECT_EQ(d.DtNs(), 50'000'000) << profile;

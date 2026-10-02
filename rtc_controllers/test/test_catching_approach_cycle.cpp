@@ -149,7 +149,7 @@ struct Rig {
   rtc::catching::PlannerParams params;
   std::int64_t traj_first_ns{0};
 
-  explicit Rig(bool shadow = false, double catch_err_max = 0.02) {
+  explicit Rig(double catch_err_max = 0.02) {
     rtc_urdf_bridge::ModelConfig config;
     config.urdf_path = std::string(RTC_TEST_ROBOT_DESCRIPTIONS_DIR) + "/ur5e/urdf/ur5e.urdf";
     config.root_joint_type = "fixed";
@@ -200,7 +200,6 @@ struct Rig {
     // Generous: a loaded host must not turn this suite into a budget test.
     d.budget_first_s = 0.1;
     d.budget_replan_s = 0.1;
-    d.shadow = shadow;
     d.catch_pos_err_max = catch_err_max;
     cycle.Configure(params);
 
@@ -342,7 +341,7 @@ TEST(ApproachCycle, APairIsPublishedTogetherSegmentFirst) {
 }
 
 TEST(ApproachCycle, AWithheldSegmentWithholdsThePlan) {
-  auto r = std::make_unique<Rig>(/*shadow=*/false, /*catch_err_max=*/1e-9);
+  auto r = std::make_unique<Rig>(/*catch_err_max=*/1e-9);
   r->rt.adopt = false;
   r->StartTrajectory();
   const PlannerCycleRecord rec = r->Wake();
@@ -497,8 +496,9 @@ TEST(ApproachCycle, AnotherTracksBallIsNotTheFollowedPlansTarget) {
 }
 
 TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
-  // The RT before #662 takes the plan but neither holds nor follows the
-  // segment (it refuses pre-catch nodes): the planner finds no source.
+  // An RT that took the plan but reports no segment — neither pending nor
+  // followed (it dropped the one it had): the planner finds no source, and
+  // does not infer one (MD-58).
   auto r = std::make_unique<Rig>();
   r->rt.report_decel = false;
   r->StartTrajectory();
@@ -510,27 +510,6 @@ TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
     EXPECT_EQ(rec.decel.outcome, DecelOutcome::kNotFollowed) << Why(rec);
   }
   EXPECT_EQ(r->cycle.LastDecelSeq(), seq);
-}
-
-TEST(ApproachCycle, ShadowStoresNoSegment) {
-  auto r = std::make_unique<Rig>(/*shadow=*/true);
-  r->StartTrajectory();
-  const PlannerCycleRecord first = r->Wake();
-  ASSERT_EQ(first.outcome, CycleOutcome::kPublished) << Why(first);
-  EXPECT_TRUE(r->boxes.plan.Load().valid);
-  EXPECT_FALSE(r->boxes.decel.Load().valid);
-  // The first wake saw the trial start (reset epoch) and withdrew the box —
-  // an invalid store, the cycle's existing duty. Nothing is stored after it.
-  const std::uint32_t written = r->boxes.decel.sequence();
-  int replans = 0;
-  for (int i = 0; i < 8; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
-    const PlannerCycleRecord rec = r->Wake();
-    replans += rec.decel.outcome == DecelOutcome::kPublished ? 1 : 0;
-  }
-  EXPECT_GT(replans, 0) << "shadow replans from the newest segment, unreported";
-  EXPECT_FALSE(r->boxes.decel.Load().valid);
-  EXPECT_EQ(r->boxes.decel.sequence(), written) << "shadow stored a segment";
 }
 
 }  // namespace

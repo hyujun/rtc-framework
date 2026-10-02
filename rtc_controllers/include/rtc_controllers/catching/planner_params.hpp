@@ -11,7 +11,7 @@
 // a key nobody notices is wrong): S6-A the thread keys, S6-B the search,
 // ranking, switching and freeze keys below, MPC E1-F03 `planner.decel_mpc.*`
 // (the decel MPC's stop horizon, replan window and publish thresholds), MPC
-// E1-F08 its APPROACH–stop keys (`approach`, `budget`, `catch`, `shadow`).
+// E1-F08 its APPROACH–stop keys (`approach`, `budget`, `catch`).
 //
 // TWO KINDS OF "MISSING". A key with a documented default (L3 §6) takes it when
 // absent. A key whose value is a DECISION (`freeze.T_freeze`,
@@ -107,9 +107,6 @@ struct DecelPlannerParams {
   /// `replan.same_point` — re-solve a pre-catch grid point the followed
   /// segment already starts at, with a newer prediction (MD-58).
   bool replan_same_point{true};
-  /// `shadow` — measurement only (MD-59): solve and record every segment but
-  /// store none, so the RT never sees one. Removed with #662.
-  bool shadow{false};
   /// `publish.catch_pos_err_max` [m] — the largest catch-node position error
   /// (FK at the solution vs the predicted ball) a segment may carry (MD-62).
   double catch_pos_err_max{0.02};

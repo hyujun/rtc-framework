@@ -33,7 +33,6 @@
 // overwrite the segment it may be adopting. Once the RT follows a plan the
 // search is skipped (MD-57) and every wake through DECEL is a Replan, whose
 // re-check is that the RT still reports the same source segment.
-// `planner.decel_mpc.shadow` stores no segment at all (MD-59).
 //
 // WHAT S6-A IMPLEMENTS. The cycle, the provenance handling and a STUB search:
 // `PlanOnce` never produces a candidate, so every search wake publishes a

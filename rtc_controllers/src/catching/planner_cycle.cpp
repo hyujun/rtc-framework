@@ -105,9 +105,7 @@ void PlannerCycle::RunReplan(const PlannerRtState& rt, const DecelBallTarget& ba
   }
   decel_out_.publish_ns = publish_ns;
   decel_out_.decel_seq = ++last_decel_seq_;
-  if (!decel_.Params().shadow) {
-    io_.decel->Store(decel_out_);
-  }
+  io_.decel->Store(decel_out_);
   decel_.NoteApproachPublished(decel_out_);
   rec.decel.outcome = DecelOutcome::kPublished;
   rec.decel.decel_seq = decel_out_.decel_seq;
@@ -152,10 +150,9 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
   plan.publish_ns = publish_ns;
   decel_out_.publish_ns = publish_ns;
   decel_out_.decel_seq = ++last_decel_seq_;
-  // Segment first: once the RT takes the plan, its first segment is there.
-  if (!decel_.Params().shadow) {
-    io_.decel->Store(decel_out_);
-  }
+  // Segment first: the RT takes the plan only together with its first segment
+  // (it judges the pair on one tick), so the segment must be there by then.
+  io_.decel->Store(decel_out_);
   if (pair_store_hook_ != nullptr) {
     pair_store_hook_(pair_store_context_);
   }

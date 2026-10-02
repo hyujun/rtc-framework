@@ -916,9 +916,6 @@ std::uint32_t DecelPlanner::SourceSeq(const PlannerRtState& rt,
       rt.plan_t_c_ns != ring_t_c_ns_) {
     return 0;
   }
-  if (params_.shadow) {
-    return ring_[U(ring_n_ - 1)].decel_seq;
-  }
   // The pending one is what the RT follows from its node 0 on.
   if (rt.decel_pending) {
     const DecelPlanSnapshot* p = FindInRing(rt.decel_pending_seq);

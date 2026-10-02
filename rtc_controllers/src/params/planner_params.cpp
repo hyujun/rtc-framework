@@ -377,7 +377,6 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
                                   d.budget_replan_s, kPlannerBudgetMinS, kPlannerBudgetMaxS);
   d.replan_same_point =
       ReadBool(replan, "same_point", "decel_mpc.replan.same_point", d.replan_same_point);
-  d.shadow = ReadBool(decel, "shadow", "decel_mpc.shadow", d.shadow);
   const YAML::Node dcatch = Section(decel, "catch", "decel_mpc.catch");
   d.w_axis = ReadBounded(dcatch, "w_axis", "decel_mpc.catch.w_axis", d.w_axis, 0.0, 1e6);
   d.w_v_par = ReadBounded(dcatch, "w_v_par", "decel_mpc.catch.w_v_par", d.w_v_par, 0.0, 1e6);

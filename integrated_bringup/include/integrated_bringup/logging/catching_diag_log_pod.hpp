@@ -231,14 +231,15 @@ struct CatchingDiagLogPod {
   enum class DecelEvent : std::uint8_t {
     kNone = 0,
     kAdmitted = 1,      ///< a segment entered the pending slot
-    kDeferred = 2,      ///< admissible, left in the box: the slot is full (MD-37)
+    kDeferred = 2,      ///< admissible, left in the box: the slot holds another grid point (MD-37)
     kWorkspace = 3,     ///< refused: the stop's path, placed at p_c, leaves catch_box (MD-43)
     kSwitched = 4,      ///< the pending segment became the followed one
     kGateRefused = 5,   ///< pending dropped: the continuity gate refused it (MD-39)
     kPlanMismatch = 6,  ///< a segment does not end the followed plan (MD-35)
     kSampleFailed = 7,  ///< a segment could not be sampled at now_lead + h
     kNotDue = 8,        ///< DECEL entry with a pending segment whose node 0 is later
-    kNoSegment = 9,     ///< DECEL entry with nothing pending (→ ABORT_SAFE, MD-44)
+    kNoSegment = 9,     ///< nothing followed and nothing pending (→ ABORT_SAFE, MD-44)
+    kReplaced = 10,     ///< a newer segment for the pending one's node 0 took the slot (MD-58)
   };
   /// The lane judged the box this tick (mode mpc, COMMITTED / CLOSING / DECEL);
   /// `decel_refusal` is meaningful only then (rtc::catching::DecelRefusal).

@@ -340,7 +340,7 @@ class DecelPlanner {
   [[nodiscard]] bool Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
                             DecelPlanSnapshot& out, DecelRecord& rec) noexcept;
 
-  /// The cycle published (or, under `shadow`, would have published) `p`.
+  /// The cycle published `p`.
   void NoteApproachPublished(const DecelPlanSnapshot& p) noexcept;
 
   /// The track generation of the plan `rt` follows, from the segments
@@ -363,9 +363,9 @@ class DecelPlanner {
   [[nodiscard]] std::int64_t ControlDtNs() const noexcept { return h_ns_; }
 
   /// The decel_seq of the segment a replan at `t_eff_ns` starts from, 0 when
-  /// there is none (kNotFollowed): under `shadow` the newest one published;
-  /// otherwise the one the RT reports pending (when it starts no later than
-  /// t_eff), else the one it reports following — never inferred.
+  /// there is none (kNotFollowed): the one the RT reports pending (when it
+  /// starts no later than t_eff), else the one it reports following — never
+  /// inferred.
   [[nodiscard]] std::uint32_t SourceSeq(const PlannerRtState& rt,
                                         std::int64_t t_eff_ns) const noexcept;
 

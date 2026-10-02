@@ -774,20 +774,6 @@ TEST(ApproachPlanner, TheFollowedSegmentSurvivesABurstOfResolves) {
   EXPECT_EQ(r.planner.SourceSeq(FollowingRt(r.arm, r.arm.q_nominal, kT0, s.t_c, 0, 3), s.t_c), 0U);
 }
 
-TEST(ApproachPlanner, ShadowTakesTheNewestSegmentWithoutAReport) {
-  DecelPlannerParams p = ApproachParams();
-  p.shadow = true;
-  Rig r(Arm6(), p);
-  const Started s = StartPlan(r, kT0, 800 * kMs);
-  ASSERT_NE(s.seq, 0U);
-  const std::int64_t now = kT0 + 20 * kMs;
-  SetClock(now);
-  ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, 0),
-                               BallFor(s.c), r.out, r.rec))
-      << Why(r.rec);
-  EXPECT_EQ(r.rec.source_seq, s.seq);
-}
-
 TEST(ApproachPlanner, APreCatchGridPointNeedsABall) {
   Rig r(Arm6());
   const Started s = StartPlan(r, kT0, 800 * kMs);

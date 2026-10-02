@@ -567,9 +567,10 @@ demo_catching_controller:
         # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
         # MD-55 – MD-64). Built and run only under supervisor.decel.mode: mpc,
         # which also needs it (MD-44); under closed_form, true only warns. Off
-        # with the closed-form default. Until the RT follows segments that
-        # start before t_c (#662) it admits none of them, so mode: mpc with the
-        # approach grid below aborts every trial at DECEL entry.
+        # with the closed-form default. Under mode: mpc the RT takes a plan only
+        # together with its first segment and follows the segments from APPROACH
+        # to the end of the stop (MPC E1-F09, MD-45) — the approach grid below
+        # (n_pre_max > 0) is then required.
         enabled: false
         horizon:
           # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
@@ -600,8 +601,6 @@ demo_catching_controller:
           t_pre_s: 0.1
           k_max: 2
           same_point: true
-        # Measurement only (MD-59): solve and record, store no segment.
-        shadow: false
         eta_tau: 0.7
         m_q: 0.05
         publish:
