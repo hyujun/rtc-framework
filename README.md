@@ -357,6 +357,7 @@ sudo update-grub && sudo reboot
 | [docs/modification-procedures.md](docs/modification-procedures.md) | 수정·추가 작업의 단계별 절차 — 컨트롤러 / 메시지 / device group / 스레드 / 패키지 추가 (규범은 `agent_docs/modification-guide.md`) |
 | [docs/testing.md](docs/testing.md) | 테스트·디버깅 가이드 — 패키지별 sensor 표, 명령, 측정 레시피와 함정, 런타임 디버그 토픽 (규범은 `agent_docs/testing-debug.md`) |
 | [docs/reference/](docs/reference/README.md) | 헌법 밖 참고 자료 — 규칙의 근거 · 실측 · 사고 이력 · 사례집 (규범이 아니다) |
+| [docs/wbc_humanoid/](docs/wbc_humanoid/ALGORITHM_ANALYSIS.md) | 외부 저장소 `wb_humanoid_mpc` (G1 centroidal · whole-body MPC) 의 알고리즘 분석과, 그것을 Aligator + ProxSuite 로 옮기는 구현 가이드. 이 저장소의 코드를 서술하지 않는다 |
 | [repo_scripts/README.md](repo_scripts/README.md) | RT 설정 / 빌드 / 환경 셋업 쉘 스크립트 가이드 (PREEMPT_RT, CPU shield, IRQ affinity, `setup_env.sh`) |
 
 각 패키지의 상세 API, 설정, 아키텍처는 해당 패키지의 `README.md`를 참조하세요.
