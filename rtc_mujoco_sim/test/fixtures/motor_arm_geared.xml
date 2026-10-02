@@ -1,0 +1,32 @@
+<mujoco model="motor_arm_geared_test">
+  <!-- motor_arm.xml with its two motors written the way a torque-controlled
+       robot's MJCF writes them — and each in a DIFFERENT one of the two ways
+       that matter to a position-servo lane:
+
+         m1  gear="50", no ctrlrange   the actuator length is 50 * q
+         m2  gear="1",  ctrlrange      ctrl is clamped to a torque limit
+
+       One actuator per condition, so a lane that looked at only one of the
+       two would count one actuator and not two. -->
+  <compiler angle="radian"/>
+  <option timestep="0.002" solver="Newton" iterations="20"/>
+
+  <worldbody>
+    <body name="link1" pos="0 0 0.5">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <inertial pos="0.1 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.03" rgba="0.8 0.2 0.2 1"/>
+
+      <body name="link2" pos="0.2 0 0">
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <inertial pos="0.1 0 0" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.025" rgba="0.2 0.8 0.2 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="m1" joint="j1" gear="50"/>
+    <motor name="m2" joint="j2" ctrllimited="true" ctrlrange="-0.5 0.5"/>
+  </actuator>
+</mujoco>

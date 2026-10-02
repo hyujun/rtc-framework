@@ -478,6 +478,9 @@ struct JointGroup {
   // One-shot latch for the "position mode on torque-motor actuators" warning
   // (PreparePhysicsStep). SimLoop-only.
   bool motor_passthrough_warned{false};
+  // One-shot latch for the "servo gains on a geared / ctrl-limited torque
+  // motor" warning (PreparePhysicsStep). SimLoop-only.
+  bool motor_servo_mismatch_warned{false};
 
   // ── State callback ──────────────────────────────────────────────
   using StateCallback = std::function<void(const std::vector<double>& positions,

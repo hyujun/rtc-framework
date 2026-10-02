@@ -565,6 +565,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
     // none — MuJoCo skips biasprm, so the same three writes would leave
     // force = kp * ctrl. The other two lanes restore what the XML compiled to.
     int motor_passthrough = 0;
+    int motor_servo_mismatch = 0;
     for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       const int act = g->actuator_indices[i];
       const auto& p = orig_actuator_params_[static_cast<std::size_t>(act)];
@@ -581,6 +582,17 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
         model_->actuator_biasprm[act * mjNBIAS + 1] = static_cast<mjtNum>(-kp);
         model_->actuator_biasprm[act * mjNBIAS + 2] = static_cast<mjtNum>(g->biasprm2_yaml[i]);
         model_->actuator_biastype[act] = mjBIAS_AFFINE;
+        // The servo this installs is in the ACTUATOR's units: its length is
+        // gear * q, and ctrl is clamped to the XML's ctrlrange. On an actuator
+        // the XML wrote as a servo both already mean position. On a motor they
+        // were written for torque — a gear other than 1 scales the target
+        // (the joint settles at ctrl / gear) and a ctrlrange clamps it.
+        // (actuator_gear is nu x 6; entry 0 is a joint transmission's gear.)
+        if (p.biastype == mjBIAS_NONE &&
+            (model_->actuator_gear[act * 6] != static_cast<mjtNum>(1.0) ||
+             model_->actuator_ctrllimited[act] != 0)) {
+          ++motor_servo_mismatch;
+        }
       } else {
         model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(p.gainprm0);
         model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(p.biasprm0);
@@ -605,6 +617,18 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
               "installed — the command is applied as a torque. Set use_yaml_servo_gains "
               "with servo_kp / servo_kd, or send runtime gains.\n",
               g->name.c_str(), motor_passthrough, g->num_command_joints);
+    }
+    // Servo gains on motors the XML scaled or limited as torque motors. Not
+    // refused (nothing here knows the scene's intent), but the symptom — a
+    // joint that stops short of its target — does not name its cause either.
+    if (motor_servo_mismatch > 0 && !g->motor_servo_mismatch_warned) {
+      g->motor_servo_mismatch_warned = true;
+      fprintf(stderr,
+              "[MuJoCoSimulator] WARN: group '%s': servo gains are installed on %d of its %d "
+              "actuator(s) that the model declares as torque motors with a gear other than 1 "
+              "or a ctrlrange. The position target is scaled by 1/gear and clamped to that "
+              "ctrlrange. Use gear=\"1\" and forcerange (not ctrlrange) on such a motor.\n",
+              g->name.c_str(), motor_servo_mismatch, g->num_command_joints);
     }
   }
   if (gravcomp_dirty) {

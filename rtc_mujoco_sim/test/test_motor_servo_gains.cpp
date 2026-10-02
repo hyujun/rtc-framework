@@ -13,6 +13,8 @@
 //   - torque mode                        → the motor is a motor again
 //   - position mode, no gains            → the XML's own actuator, untouched:
 //                                          ctrl is a torque (scenes rely on it)
+//   - gains on a geared / ctrl-limited   → installed all the same, and said so:
+//     motor                                the target is in the motor's units
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
 #include "sim_config_fixture.hpp"
@@ -22,10 +24,14 @@
 
 #include <cmath>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #ifndef MOTOR_ARM_MJCF_PATH
 #error "MOTOR_ARM_MJCF_PATH must be defined by CMake"
+#endif
+#ifndef MOTOR_ARM_GEARED_MJCF_PATH
+#error "MOTOR_ARM_GEARED_MJCF_PATH must be defined by CMake"
 #endif
 
 namespace rtc {
@@ -40,11 +46,22 @@ const std::vector<double> kTarget{0.4, -0.3};
 constexpr int kSettleSteps = 2000;  // 4 s of sim time at 2 ms
 constexpr double kHoldTolRad = 1e-3;
 
-MuJoCoSimulator::Config MakeMotorConfig() {
-  auto cfg = test::HeadlessConfig(MOTOR_ARM_MJCF_PATH, 10.0);
+MuJoCoSimulator::Config MakeMotorConfig(const char* mjcf = MOTOR_ARM_MJCF_PATH) {
+  auto cfg = test::HeadlessConfig(mjcf, 10.0);
   cfg.groups.push_back(test::RobotGroup("arm", {"j1", "j2"}));
   return cfg;
 }
+
+// What the simulator prints on stderr while one position command with runtime
+// gains is staged and stepped.
+std::string StderrOfOneServoStep(MuJoCoSimulator& sim) {
+  ::testing::internal::CaptureStderr();
+  sim.StageCommand(0, JointControlMode::kPosition, kTarget, {}, kKp, kKd);
+  sim.StepForTest();
+  return ::testing::internal::GetCapturedStderr();
+}
+
+const char* const kMismatchText = "torque motors with a gear other than 1 or a ctrlrange";
 
 int BiasType(const MuJoCoSimulator& sim, int actuator) {
   return sim.GetModel()->actuator_biastype[actuator];
@@ -147,6 +164,44 @@ TEST(MotorServoGains, WithoutGainsThePositionCommandIsATorque) {
   EXPECT_EQ(BiasType(sim, 1), mjBIAS_NONE);
   EXPECT_DOUBLE_EQ(sim.GetActuatorForceForTest(0, 0), cmd[0]);
   EXPECT_DOUBLE_EQ(sim.GetActuatorForceForTest(0, 1), cmd[1]);
+}
+
+// The servo the gain lane installs is in the actuator's own units. A motor the
+// XML geared or ctrl-limited for torque takes the gains all the same — nothing
+// here knows the scene's intent — but its target is then scaled by 1/gear and
+// clamped to a torque range, and a joint that stops short does not name its
+// cause. The fixture has one actuator per condition; both are counted.
+TEST(MotorServoGains, GainsOnAGearedOrCtrlLimitedMotorAreFlagged) {
+  MuJoCoSimulator sim(MakeMotorConfig(MOTOR_ARM_GEARED_MJCF_PATH));
+  ASSERT_TRUE(sim.Initialize());
+  ASSERT_EQ(BiasType(sim, 0), mjBIAS_NONE);
+  ASSERT_EQ(BiasType(sim, 1), mjBIAS_NONE);
+  ASSERT_NE(sim.GetModel()->actuator_gear[0], 1.0);
+  ASSERT_EQ(sim.GetModel()->actuator_gear[6], 1.0);
+  ASSERT_EQ(sim.GetModel()->actuator_ctrllimited[0], 0);
+  ASSERT_NE(sim.GetModel()->actuator_ctrllimited[1], 0);
+
+  const std::string first = StderrOfOneServoStep(sim);
+  EXPECT_NE(first.find(kMismatchText), std::string::npos) << first;
+  EXPECT_NE(first.find("on 2 of its 2 actuator(s)"), std::string::npos) << first;
+  EXPECT_EQ(BiasType(sim, 0), mjBIAS_AFFINE);
+  EXPECT_EQ(BiasType(sim, 1), mjBIAS_AFFINE);
+
+  // Said once per group, not once per mode switch.
+  sim.StageCommand(0, JointControlMode::kTorque, {0.0, 0.0}, {}, {}, {});
+  sim.StepForTest();
+  const std::string second = StderrOfOneServoStep(sim);
+  EXPECT_EQ(second.find(kMismatchText), std::string::npos) << second;
+}
+
+// ...and a plain motor (gear 1, no ctrlrange) is the case the lane is for.
+TEST(MotorServoGains, GainsOnAPlainMotorAreNotFlagged) {
+  MuJoCoSimulator sim(MakeMotorConfig());
+  ASSERT_TRUE(sim.Initialize());
+
+  const std::string err = StderrOfOneServoStep(sim);
+  EXPECT_EQ(err.find(kMismatchText), std::string::npos) << err;
+  EXPECT_EQ(BiasType(sim, 0), mjBIAS_AFFINE);
 }
 
 }  // namespace

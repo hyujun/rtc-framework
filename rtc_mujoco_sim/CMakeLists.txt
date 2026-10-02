@@ -274,7 +274,8 @@ if(mujoco_FOUND)
       ament_add_gtest(test_motor_servo_gains test/test_motor_servo_gains.cpp)
       target_link_libraries(test_motor_servo_gains mujoco_simulator_lib)
       target_compile_definitions(test_motor_servo_gains PRIVATE
-        MOTOR_ARM_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/motor_arm.xml")
+        MOTOR_ARM_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/motor_arm.xml"
+        MOTOR_ARM_GEARED_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/motor_arm_geared.xml")
     endif()
 
     # Object pool against a compiled model: needs a scene with a floor and a
