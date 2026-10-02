@@ -3553,8 +3553,6 @@ _PLANNER_EVENTS_COLUMNS = [
     "decel_n_nodes",
     "decel_seq",
     "decel_publish_ns",
-    "decel_h_s",
-    "decel_qdd_trusted",
     "decel_x0_clamped",
     "decel_from_segment",
     "decel_presolved",

@@ -45,8 +45,6 @@ const char* DecelOutcomeName(DecelOutcome o) noexcept {
       return "no_state";
     case DecelOutcome::kStaleState:
       return "stale_state";
-    case DecelOutcome::kNotDue:
-      return "not_due";
     case DecelOutcome::kUpToDate:
       return "up_to_date";
     case DecelOutcome::kPastReplanWindow:
