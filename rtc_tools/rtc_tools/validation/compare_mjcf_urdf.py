@@ -249,6 +249,10 @@ class _MjcfCompiler:
     angle_scale: float
     #: Whether a ``*limited`` flag left unset is inferred from its range.
     autolimits: bool
+    #: Axis order of an ``euler`` attribute.  Lowercase letters rotate about
+    #: the axes of the frame being rotated (intrinsic), uppercase about the
+    #: fixed parent axes (extrinsic).
+    eulerseq: str
 
 
 def _mjcf_compiler(root: ET.Element) -> _MjcfCompiler:
@@ -259,7 +263,12 @@ def _mjcf_compiler(root: ET.Element) -> _MjcfCompiler:
     return _MjcfCompiler(
         angle_scale=1.0 if attrs.get("angle", "degree") == "radian" else math.pi / 180.0,
         autolimits=attrs.get("autolimits", "true") == "true",
+        eulerseq=attrs.get("eulerseq", "xyz"),
     )
+
+
+# For a caller holding an element but no file: radians, MuJoCo's default sequence.
+_RADIAN_XYZ = _MjcfCompiler(angle_scale=1.0, autolimits=True, eulerseq="xyz")
 
 
 def _enforced_range(
@@ -412,11 +421,38 @@ def _mjcf_actuator_torque_ranges(
     return ranges
 
 
-def _mjcf_body_rotation(body: ET.Element) -> list[list[float]]:
+def _normalized_3(v: list[float]) -> list[float]:
+    n = math.sqrt(sum(x * x for x in v))
+    return [x / n for x in v] if n > 1e-15 else list(v)
+
+
+def _axis_angle_to_rot3(axis: list[float], angle: float) -> list[list[float]]:
+    """Rotation by ``angle`` radians about ``axis`` (any non-zero length)."""
+    n = math.sqrt(sum(v * v for v in axis))
+    if n < 1e-15:
+        return _identity_3x3()
+    ax, ay, az = (v / n for v in axis)
+    c, s = math.cos(angle), math.sin(angle)
+    t = 1.0 - c
+    return [
+        [t * ax * ax + c, t * ax * ay - s * az, t * ax * az + s * ay],
+        [t * ax * ay + s * az, t * ay * ay + c, t * ay * az - s * ax],
+        [t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c],
+    ]
+
+
+_UNIT_AXES = {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}
+
+
+def _mjcf_body_rotation(
+    body: ET.Element, compiler: _MjcfCompiler = _RADIAN_XYZ
+) -> list[list[float]]:
     """Extract body-frame rotation from any MuJoCo orientation attribute.
 
     MuJoCo supports ``quat``, ``axisangle``, ``euler``, ``xyaxes``, and
-    ``zaxis``.  Returns identity when none are present.
+    ``zaxis``; each is read the way MuJoCo compiles it.  ``compiler`` carries
+    the file's angle unit and Euler sequence.  Returns identity when none are
+    present.
     """
     quat_str = body.get("quat")
     if quat_str:
@@ -426,63 +462,42 @@ def _mjcf_body_rotation(body: ET.Element) -> list[list[float]]:
     axisangle_str = body.get("axisangle")
     if axisangle_str:
         vals = _parse_floats(axisangle_str)
-        ax, ay, az, angle = vals[0], vals[1], vals[2], vals[3]
-        n = math.sqrt(ax * ax + ay * ay + az * az)
-        if n < 1e-15:
-            return _identity_3x3()
-        ax, ay, az = ax / n, ay / n, az / n
-        c, s = math.cos(angle), math.sin(angle)
-        t = 1.0 - c
-        return [
-            [t * ax * ax + c, t * ax * ay - s * az, t * ax * az + s * ay],
-            [t * ax * ay + s * az, t * ay * ay + c, t * ay * az - s * ax],
-            [t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c],
-        ]
+        return _axis_angle_to_rot3(vals[0:3], vals[3] * compiler.angle_scale)
 
     euler_str = body.get("euler")
     if euler_str:
-        vals = _parse_floats(euler_str)
-        return _rpy_to_rot3(vals[0], vals[1], vals[2])
+        r = _identity_3x3()
+        for letter, angle in zip(compiler.eulerseq, _parse_floats(euler_str), strict=False):
+            step = _axis_angle_to_rot3(_UNIT_AXES[letter.lower()], angle * compiler.angle_scale)
+            # Lowercase turns about the frame as rotated so far, uppercase
+            # about the fixed parent axes.
+            r = _mat_mul_33(r, step) if letter.islower() else _mat_mul_33(step, r)
+        return r
 
     xyaxes_str = body.get("xyaxes")
     if xyaxes_str:
         vals = _parse_floats(xyaxes_str)
-        x = vals[0:3]
-        y = vals[3:6]
+        # x as given, y made orthogonal to it, z = x × y.  These are the body
+        # axes expressed in the parent frame — the COLUMNS of the rotation.
+        x = _normalized_3(vals[0:3])
+        along_x = sum(x[i] * vals[3 + i] for i in range(3))
+        y = _normalized_3([vals[3 + i] - along_x * x[i] for i in range(3)])
         z = [
             x[1] * y[2] - x[2] * y[1],
             x[2] * y[0] - x[0] * y[2],
             x[0] * y[1] - x[1] * y[0],
         ]
-        mag_z = math.sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2])
-        if mag_z > 1e-15:
-            z = [z[i] / mag_z for i in range(3)]
-        return [x, y, z]
+        return [[x[i], y[i], z[i]] for i in range(3)]
 
     zaxis_str = body.get("zaxis")
     if zaxis_str:
+        # The smallest rotation that takes the parent z axis onto the vector.
         z = _parse_floats(zaxis_str)
-        mag = math.sqrt(sum(v * v for v in z))
-        if mag > 1e-15:
-            z = [v / mag for v in z]
-        if abs(z[2]) < 0.99:
-            up = [0.0, 0.0, 1.0]
-        else:
-            up = [1.0, 0.0, 0.0]
-        x = [
-            up[1] * z[2] - up[2] * z[1],
-            up[2] * z[0] - up[0] * z[2],
-            up[0] * z[1] - up[1] * z[0],
-        ]
-        mag_x = math.sqrt(sum(v * v for v in x))
-        if mag_x > 1e-15:
-            x = [v / mag_x for v in x]
-        y = [
-            z[1] * x[2] - z[2] * x[1],
-            z[2] * x[0] - z[0] * x[2],
-            z[0] * x[1] - z[1] * x[0],
-        ]
-        return [x, y, z]
+        axis = [-z[1], z[0], 0.0]  # (0, 0, 1) × z
+        sin_angle = math.hypot(axis[0], axis[1])
+        if sin_angle < 1e-10:
+            axis = [1.0, 0.0, 0.0]  # (anti)parallel: MuJoCo turns about x
+        return _axis_angle_to_rot3(axis, math.atan2(sin_angle, z[2]))
 
     return _identity_3x3()
 
@@ -609,6 +624,7 @@ def _compute_mjcf_world_frames(
     inherited values are treated uniformly.
     """
     root = ET.parse(path).getroot()
+    compiler = _mjcf_compiler(root)
     joints = _mjcf_joints(root, _mjcf_default_classes(root))
 
     result: dict[str, tuple[list[float], list[float]]] = {}
@@ -620,7 +636,7 @@ def _compute_mjcf_world_frames(
     ) -> None:
         for body in elem.findall("body"):
             pos = _parse_floats(body.get("pos", "0 0 0"))
-            r_local = _mjcf_body_rotation(body)
+            r_local = _mjcf_body_rotation(body, compiler)
 
             r_world, p_world = _compose_transform(parent_r, parent_p, r_local, pos)
 
@@ -666,6 +682,7 @@ def _mjcf_world_frames_by_kind(
     can see it (#392).
     """
     root = ET.parse(path).getroot()
+    compiler = _mjcf_compiler(root)
     bodies: dict[str, tuple[list[list[float]], list[float]]] = {
         "world": (_identity_3x3(), [0.0, 0.0, 0.0])
     }
@@ -674,7 +691,7 @@ def _mjcf_world_frames_by_kind(
     def traverse(elem: ET.Element, parent_r: list[list[float]], parent_p: list[float]) -> None:
         for body in elem.findall("body"):
             pos = _parse_floats(body.get("pos", "0 0 0"))
-            r_local = _mjcf_body_rotation(body)
+            r_local = _mjcf_body_rotation(body, compiler)
             r_world, p_world = _compose_transform(parent_r, parent_p, r_local, pos)
             name = body.get("name")
             if name:
@@ -684,7 +701,7 @@ def _mjcf_world_frames_by_kind(
                 if not sname:
                     continue
                 s_pos = _parse_floats(site.get("pos", "0 0 0"))
-                s_rot = _mjcf_body_rotation(site)
+                s_rot = _mjcf_body_rotation(site, compiler)
                 sites[sname] = _compose_transform(r_world, p_world, s_rot, s_pos)
             traverse(body, r_world, p_world)
 

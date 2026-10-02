@@ -33,6 +33,8 @@ import pytest
 from rtc_tools.validation.compare_mjcf_urdf import (
     _compute_mjcf_world_frames,
     _detect_joint_types,
+    _mjcf_body_world_frames,
+    _mjcf_named_frames,
     compare,
     main,
     parse_mjcf,
@@ -621,6 +623,165 @@ def test_mujoco_applies_the_expected_torque(name):
     jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "j")
 
     assert _measured_torque_range(model, jid) == _approx_interval(case.torque)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Body orientation: euler / axisangle / xyaxes / zaxis
+#
+# Everything the tool compares in the world frame — joint axes and anchors,
+# link COMs, the tool frame — goes through these rotations.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class Orientation:
+    """An orientation attribute and the rotation matrix MuJoCo compiles it to."""
+
+    compiler: str
+    attribute: str
+    rotation: tuple[tuple[float, float, float], ...]
+
+
+# The three Euler angles differ and none is zero, so every axis order and
+# every intrinsic/extrinsic choice gives a different matrix.  The xyaxes pair
+# is neither unit length nor orthogonal, and its matrix is not symmetric — a
+# transposed reading is a different rotation.
+ORIENTATIONS: dict[str, Orientation] = {
+    "euler_default_sequence": Orientation(
+        RADIAN,
+        'euler="0.3 0.4 0.5"',
+        (
+            (0.8083070668, -0.4415801631, 0.3894183423),
+            (0.5590057800, 0.7832138785, -0.2721921353),
+            (-0.1848032027, 0.4377019307, 0.8799231763),
+        ),
+    ),
+    "euler_eulerseq_zyx": Orientation(
+        '<compiler angle="radian" eulerseq="zyx"/>',
+        'euler="0.3 0.4 0.5"',
+        (
+            (0.8799231763, -0.0809848294, 0.4681630712),
+            (0.2721921353, 0.8935594087, -0.3570196417),
+            (-0.3894183423, 0.4415801631, 0.8083070668),
+        ),
+    ),
+    "euler_extrinsic_sequence": Orientation(
+        '<compiler angle="radian" eulerseq="XYZ"/>',
+        'euler="0.3 0.4 0.5"',
+        (
+            (0.8083070668, -0.3570196417, 0.4681630712),
+            (0.4415801631, 0.8935594087, -0.0809848294),
+            (-0.3894183423, 0.2721921353, 0.8799231763),
+        ),
+    ),
+    "euler_mixed_sequence": Orientation(
+        '<compiler angle="radian" eulerseq="XYz"/>',
+        'euler="0.3 0.4 0.5"',
+        (
+            (0.8634798319, -0.3405870940, 0.3720255519),
+            (0.4580127108, 0.8383866436, -0.2955202067),
+            (-0.2112508854, 0.4255681699, 0.8799231763),
+        ),
+    ),
+    "euler_in_degrees": Orientation(
+        "",
+        'euler="30 40 50"',
+        (
+            (0.4924038765, -0.5868240888, 0.6427876097),
+            (0.8700019038, 0.3104684610, -0.3830222216),
+            (0.0252013863, 0.7478280708, 0.6634139482),
+        ),
+    ),
+    "axisangle_in_degrees": Orientation(
+        "",
+        'axisangle="1 2 3 40"',
+        (
+            (0.7827555543, -0.4819544221, 0.3937177633),
+            (0.5487988670, 0.8328888879, -0.0715255476),
+            (-0.2934510961, 0.2720588821, 0.9164444440),
+        ),
+    ),
+    "xyaxes": Orientation(
+        RADIAN,
+        'xyaxes="1 1 0 -1 2 0.5"',
+        (
+            (0.7071067812, -0.6882472016, 0.1622214211),
+            (0.7071067812, 0.6882472016, -0.1622214211),
+            (0.0, 0.2294157339, 0.9733285268),
+        ),
+    ),
+    "zaxis": Orientation(
+        RADIAN,
+        'zaxis="1 2 3"',
+        (
+            (0.9603567451, -0.0792865097, 0.2672612419),
+            (-0.0792865097, 0.8414269806, 0.5345224838),
+            (-0.2672612419, -0.5345224838, 0.8017837257),
+        ),
+    ),
+    "zaxis_pointing_down": Orientation(
+        RADIAN,
+        'zaxis="0 0 -1"',
+        ((1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 0.0, -1.0)),
+    ),
+}
+
+ORIENTATION_IDS = sorted(ORIENTATIONS)
+#: A site under ``b`` with the same attribute, and a joint axis off every
+#: coordinate axis: both must come out rotated the same way.
+SITE_AND_JOINT = 'axis="1 2 3"'
+
+
+def _oriented_mjcf(orientation: Orientation) -> str:
+    return _mjcf(
+        compiler=orientation.compiler,
+        body=orientation.attribute,
+        joint=SITE_AND_JOINT,
+        inertial=f'{INERTIAL}<site name="s" pos="0 0 0" {orientation.attribute}/>',
+    )
+
+
+def _flat(matrix) -> list[float]:
+    return [float(v) for row in matrix for v in row]
+
+
+def _matmul(a, b) -> list[list[float]]:
+    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+
+@pytest.mark.parametrize("name", ORIENTATION_IDS)
+def test_tool_orients_bodies_as_mujoco_compiles(name, tmp_path):
+    orientation = ORIENTATIONS[name]
+    expected = orientation.rotation
+    mjcf = _write(tmp_path, "m.xml", _oriented_mjcf(orientation))
+
+    body_r, _ = _mjcf_body_world_frames(mjcf)["b"]
+    assert _flat(body_r) == pytest.approx(_flat(expected), abs=1e-9)
+
+    # The site carries the same attribute inside the rotated body: R · R.
+    site_r, _ = _mjcf_named_frames(mjcf)["s"]
+    assert _flat(site_r) == pytest.approx(_flat(_matmul(expected, expected)), abs=1e-9)
+
+    _, axis = _compute_mjcf_world_frames(mjcf, {"j"})["j"]
+    assert axis == pytest.approx([sum(row[k] * (k + 1) for k in range(3)) for row in expected])
+
+
+@pytest.mark.parametrize("name", ORIENTATION_IDS)
+def test_mujoco_compiles_the_expected_orientation(name):
+    mujoco = pytest.importorskip("mujoco")
+    orientation = ORIENTATIONS[name]
+    model = mujoco.MjModel.from_xml_string(_oriented_mjcf(orientation))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "b")
+    assert _flat(data.xmat[bid].reshape(3, 3)) == pytest.approx(
+        _flat(orientation.rotation), abs=1e-9
+    )
+    sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "s")
+    assert _flat(data.site_xmat[sid].reshape(3, 3)) == pytest.approx(
+        _flat(_matmul(orientation.rotation, orientation.rotation)), abs=1e-9
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
