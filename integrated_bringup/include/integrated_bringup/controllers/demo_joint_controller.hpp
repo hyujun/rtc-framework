@@ -12,6 +12,7 @@
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "integrated_bringup/support/hand_fk_wiring.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
@@ -333,6 +334,13 @@ class DemoJointController final : public RTControllerInterface {
     return momentum_config_error_;
   }
 
+  /// Test-only: why the hand fingertip FK could not be wired to its device
+  /// group or to the arm tip, or empty when it was (or there is no hand model).
+  /// on_configure refuses on the same string — see OnDeviceConfigsSet.
+  [[nodiscard]] const std::string& HandFkWiringErrorForTesting() const noexcept {
+    return hand_fk_wiring_.Error();
+  }
+
   /// Test-only: fingertips carrying a raw sensor lane (gates the ToF snapshot),
   /// separate from the inference-group count reported in GraspState.
   [[nodiscard]] int GetNumSensorFingertipsForTesting() const noexcept {
@@ -397,8 +405,9 @@ class DemoJointController final : public RTControllerInterface {
 
   // ── Hand fingertip FK dispatch (serial hand_handle_ ↔ closed_hand_fk_) ────
   // #121: single branch point for closed-chain vs serial hand FK so every call
-  // site stays byte-for-byte when closure is absent/inactive. (See
-  // demo_task_controller.hpp for the contract.)
+  // site stays byte-for-byte when closure is absent/inactive. HandFingertipPose
+  // returns the pose in the ARM TIP link. (See demo_task_controller.hpp for the
+  // contract.)
   [[nodiscard]] bool ComputeHandForwardKinematics(const ControllerState& state) noexcept;
   [[nodiscard]] bool HandFingertipPose(std::size_t f, pinocchio::SE3& out) const noexcept;
   void ConfigureClosedChainHandFk();
@@ -568,6 +577,10 @@ class DemoJointController final : public RTControllerInterface {
   // (loop-closure) hands whose fingertips are downstream of a loop-passive joint;
   // otherwise inactive and the serial hand_handle_ path runs byte-for-byte.
   ClosedChainHandFk closed_hand_fk_;
+  // Device joint order on hand_handle_, and the constant arm tip → hand root
+  // transform the fingertip poses are composed through (support/hand_fk_wiring.hpp).
+  // Its Error() is what on_configure refuses on.
+  HandFkWiring hand_fk_wiring_;
 
   // ── Virtual TCP (fingertip-based control point) ───────────────────────
   pinocchio::SE3 vtcp_pose_{pinocchio::SE3::Identity()};  ///< World-frame virtual TCP pose (cached)

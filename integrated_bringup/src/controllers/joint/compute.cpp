@@ -377,20 +377,20 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // ── Hand fingertip FK (tree model) — base-to-fingertip ──────────────
   // #121: closed-chain projection when the hand has loop closure with downstream
   // fingertips, else the serial hand FK; HandFingertipPose returns the
-  // hand-root-relative fingertip pose either way (byte-for-byte when serial).
+  // fingertip pose in the arm tip link either way.
   // Default to invalid each tick so a tick where hand FK fails entirely (e.g.
   // the hand device drops out) withholds the fingertip TF rather than
   // republishing a prior tick's cached pose as valid — matches wbc, whose gate
   // sits inside `if (ComputeHandFingertipFk(...))` on a fresh output (#125 F1).
   fingertip_pose_valid_.fill(false);
   if (ComputeHandForwardKinematics(state)) {
-    // Chain: T_base_fingertip = T_base_tcp * T_hand_fingertip
+    // Chain: T_base_fingertip = T_base_tip * T_tip_fingertip
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
-      pinocchio::SE3 T_hand_ft;
-      const bool produced = HandFingertipPose(f, T_hand_ft);
+      pinocchio::SE3 T_tip_ft;
+      const bool produced = HandFingertipPose(f, T_tip_ft);
       fingertip_pose_valid_[f] = produced;
       if (produced) {
-        const pinocchio::SE3 T_base_ft = arm_tcp_pose_.act(T_hand_ft);
+        const pinocchio::SE3 T_base_ft = arm_tcp_pose_.act(T_tip_ft);
         fingertip_positions_[f] = T_base_ft.translation();
         fingertip_rotations_[f] = T_base_ft.rotation();
       }

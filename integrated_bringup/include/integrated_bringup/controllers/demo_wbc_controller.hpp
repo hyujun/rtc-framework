@@ -14,6 +14,7 @@
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
+#include "integrated_bringup/support/hand_fk_wiring.hpp"
 #include "integrated_bringup/support/layout_profile.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
@@ -278,6 +279,13 @@ class DemoWbcController final : public RTControllerInterface {
     return momentum_config_error_;
   }
 
+  /// Test-only: why the hand fingertip FK could not be wired to its device
+  /// group or to the arm tip, or empty when it was (or there is no hand model).
+  /// on_configure refuses on the same string — see OnDeviceConfigsSet.
+  [[nodiscard]] const std::string& HandFkWiringErrorForTesting() const noexcept {
+    return hand_fk_wiring_.Error();
+  }
+
   [[nodiscard]] bool IsTcpCmdValidForTesting() const noexcept {
     return current_target_slot_.tcp_cmd_valid;
   }
@@ -454,20 +462,22 @@ class DemoWbcController final : public RTControllerInterface {
   // ── Model initialization ────────────────────────────────────────────────
   void InitModels(const rtc_urdf_bridge::ModelConfig& config);
   // Build the serial hand tree-model handle + resolve fingertip / hand-root
-  // frame ids from the secondary device's tree_model. Called from InitModels
-  // (frame ids only; SetJointOrder + closed-chain wiring need device configs,
-  // so they run in OnDeviceConfigsSet). No-op when there is no secondary device
-  // or no matching tree_model. (#123 Phase 2)
+  // frame ids from the secondary device's tree_model. Called from InitModels.
+  // The closed-chain wiring and the hand FK wiring (device joint order, hand
+  // mount) need device configs, so they run in OnDeviceConfigsSet; a handle
+  // rebuilt after the device configs exist gets its joint order here. No-op
+  // when there is no secondary device or no matching tree_model. (#123 Phase 2)
   void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
 
   // ── Hand fingertip FK dispatch (#123 Phase 2 — mirrors task/joint) ────────
-  // ConfigureClosedChainHandFk: non-RT wiring of closed_hand_fk_ + serial
-  //   hand_handle_ joint order; called from OnDeviceConfigsSet. No-op (serial
-  //   path) when the model has no loop closure / no downstream fingertip.
+  // ConfigureClosedChainHandFk: non-RT wiring of closed_hand_fk_; called from
+  //   OnDeviceConfigsSet. No-op (serial path) when the model has no loop
+  //   closure / no downstream fingertip.
   // ComputeHandFingertipFk: per-tick RT dispatch — runs the closed or serial
-  //   hand FK, composes each fingertip to the base frame via the arm TCP FK,
-  //   caches into fingertip_positions_/rotations_. RT-safe; call after the arm
-  //   FK (tcp is the base→tool0 placement). Returns false if no hand FK ran.
+  //   hand FK, composes each fingertip to the base frame via the arm TCP FK
+  //   and the hand mount, caches into fingertip_positions_/rotations_. RT-safe;
+  //   call after the arm FK (tcp is the base→arm tip placement). Returns false
+  //   if no hand FK ran.
   void ConfigureClosedChainHandFk();
   bool ComputeHandFingertipFk(const ControllerState& state, const pinocchio::SE3& tcp) noexcept;
 
@@ -661,9 +671,9 @@ class DemoWbcController final : public RTControllerInterface {
   // for extended-URDF (loop-closure) hands whose fingertips are downstream of a
   // loop-passive joint (proto_1b thumb/index/middle DIP). Fingertip poses feed
   // ControllerOutput::task_link_poses (NOT the TSID contact dynamics — that
-  // stays on the actuated control model, Phase 3). hand_root frame ("base_adapter"
-  // ≡ tool0) makes HandFingertipPose hand-root-relative; ComputeHandFingertipFk
-  // composes with the arm TCP FK to base frame.
+  // stays on the actuated control model, Phase 3). The hand FK comes back in
+  // the hand tree's root link; ComputeHandFingertipFk composes it to the base
+  // frame through the arm TCP FK and the hand mount (hand_fk_wiring_).
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
   /// 이 손의 손끝 수. 예전엔 ClosedChainHandFk::kMaxFingertips 를 그대로 별칭했는데
   /// 그것은 **슬롯 용량**이지 손가락 수가 아니다 (추론 바인딩이 손가락당 2 프레임을
@@ -680,6 +690,10 @@ class DemoWbcController final : public RTControllerInterface {
   std::array<bool, kNumFingertips> fingertip_pose_valid_{};
   Eigen::VectorXd hand_q_;  // pre-allocated for serial hand FK
   ClosedChainHandFk closed_hand_fk_;
+  // Device joint order on hand_handle_, and the constant arm tip → hand root
+  // transform the fingertip poses are composed through (support/hand_fk_wiring.hpp).
+  // Its Error() is what on_configure refuses on.
+  HandFkWiring hand_fk_wiring_;
   /// #175: 직전 tick 에 본 provider 사영 카운터. borrowed 모드에서 "이번 tick 에 사영이 돌았는가"
   /// 를 이 값과의 차이로 판정한다 (입력 provenance 는 별개 축 — arm_readable_ && hand_readable_).
   std::uint32_t last_projection_seq_{0};

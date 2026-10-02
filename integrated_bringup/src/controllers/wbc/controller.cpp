@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
@@ -108,8 +109,9 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {
               combined_cache_.model()->nq, combined_cache_.model()->nv);
 
   // #123 Phase 2: serial hand tree-model + fingertip/hand-root frame ids for
-  // the loop-consistent fingertip FK publish surface (SetJointOrder + closed-
-  // chain wiring run in OnDeviceConfigsSet once device configs are available).
+  // the loop-consistent fingertip FK publish surface (the closed-chain wiring
+  // and the hand FK wiring run in OnDeviceConfigsSet once device configs are
+  // available).
   InitHandModel(config);
 }
 
@@ -137,8 +139,9 @@ void DemoWbcController::InitHandModel(const rtc_urdf_bridge::ModelConfig& config
   }
 
   // Resolve fingertip tip_links + hand-root from the secondary tree-model.
-  // The hand-only tree (root="base_adapter" ≡ tool0) yields nq == hand DoF, so
-  // the serial FK path fills hand_q_ from the hand device 1:1.
+  // The hand-only tree yields nq == hand DoF, so the serial FK path fills
+  // hand_q_ from the hand device slot for slot (the handle maps the device's
+  // joint order onto the model's — hand_fk_wiring_).
   for (const auto& tm : config.tree_models) {
     if (tm.name != secondary) {
       continue;
@@ -160,6 +163,12 @@ void DemoWbcController::InitHandModel(const rtc_urdf_bridge::ModelConfig& config
     }
     break;
   }
+
+  // The device's joint order — when the device configs already exist, i.e. a
+  // config loaded a second time, after them. On the controller manager's order
+  // they do not exist yet and OnDeviceConfigsSet installs it instead.
+  hand_fk_wiring_.joint_order_error = InstallHandJointOrder(
+      hand_handle_.get(), GetDeviceNameConfig(secondary), closed_hand_fk_.active());
 
   hand_q_ = Eigen::VectorXd::Zero(hand_handle_->nq());
   for (auto& p : fingertip_positions_) {
@@ -1419,20 +1428,30 @@ void DemoWbcController::OnDeviceConfigsSet() {
   // #123 Phase 2: wire the closed-chain-consistent hand FK (publish-surface only).
   ConfigureClosedChainHandFk();
 
-  // Serial hand joint reorder (device joint_state_names → Pinocchio order) is
-  // only consulted when the closed path is inactive — RunHandForwardKinematics
-  // routes an active closure straight to closed_hand_fk_ without touching
-  // hand_handle_'s serial FK. So skip (and its warning) when closure is active:
-  // for a loop-closed hand the reduced serial tree deliberately omits the
-  // loop-locked DoFs, so the device names wouldn't all map anyway.
-  if (hand_handle_ && !secondary_name.empty() && !closed_hand_fk_.active()) {
-    if (const auto* hand_cfg = GetDeviceNameConfig(secondary_name)) {
-      if (!hand_handle_->SetJointOrder(hand_cfg->joint_state_names)) {
-        RCLCPP_WARN(logger_,
-                    "[wbc] secondary device '%s' SetJointOrder failed — joint_state_names "
-                    "not all in hand tree model",
-                    secondary_name.c_str());
-      }
+  // Hand FK wiring: the device's joint order on the serial hand handle, and the
+  // constant transform from the arm tip to the hand tree's root. It follows the
+  // closed-chain wiring, which decides whether the serial handle is read at all
+  // (an active closure is routed straight to closed_hand_fk_, and for such a
+  // hand the serial tree omits the loop-locked DoFs, so the device names would
+  // not all map anyway). This hook cannot fail a configure, so on_configure
+  // consumes the verdict.
+  {
+    const auto* hand_sys_cfg = GetSystemModelConfig();
+    const auto* primary_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+    hand_fk_wiring_ = WireHandFk({
+        .hand_handle = hand_handle_.get(),
+        .hand_device = GetDeviceNameConfig(secondary_name),
+        .closed_chain_fk_active = closed_hand_fk_.active(),
+        .model = builder_ ? builder_->GetFullModel().get() : nullptr,
+        .arm_handle = arm_handle_.get(),
+        .arm_tip_link = (primary_cfg != nullptr && primary_cfg->urdf)
+                            ? std::string_view(primary_cfg->urdf->tip_link)
+                            : std::string_view{},
+        .hand_tree =
+            hand_sys_cfg != nullptr ? FindTreeModel(*hand_sys_cfg, secondary_name) : nullptr,
+    });
+    if (!hand_fk_wiring_.Error().empty()) {
+      RCLCPP_ERROR(logger_, "[wbc] hand FK wiring: %s", hand_fk_wiring_.Error().c_str());
     }
   }
 

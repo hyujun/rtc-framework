@@ -37,7 +37,8 @@ HandFkWiringResult ClosedChainHandFk::ResolveFrames(const rub::RtClosedChainHand
                                                     std::span<const std::string> fingertip_links,
                                                     std::string_view hand_root_link) {
   // (a) hand-root 프레임 해석 (full model 기준). closed 핸들은 arm-base world 이므로 fingertip 을
-  //     hand-root 상대로 표현해야 serial 합성(tcp_pose.act)과 정합한다. 해결 안 되면 비활성(#3).
+  //     hand-root 상대로 표현해야 serial 경로와 같은 합성 (팔 끝 · 장착 변환 · 손 root 상대
+  //     pose) 을 탄다. 해결 안 되면 비활성(#3).
   if (!hand_root_link.empty()) {
     hand_root_fid_ = src.GetFrameId(hand_root_link);
     use_hand_root_ = (hand_root_fid_ != 0);
@@ -88,7 +89,8 @@ HandFkWiringResult ClosedChainHandFk::Configure(
   }
 
   // ill-posed closure(비단일-DoF 독립관절 / dep>m 등)면 RtClosedChainHandle 생성자가 throw 한다.
-  // 컨트롤러 config abort 대신 graceful 하게 serial 로 떨어진다 (#2).
+  // 여기서 throw 하지 않고 serial 경로로 넘긴다 (#2) — 그 경로가 이 손을 읽을 수 없으면
+  // hand_fk_wiring 이 configure 를 거부한다.
   try {
     handle_ = std::make_unique<rub::RtClosedChainHandle>(
         std::move(model), std::move(constraints), std::move(actuated_joint_ids), std::move(q_seed));
@@ -308,11 +310,10 @@ bool RunHandForwardKinematics(ClosedChainHandFk& fk, rub::RtModelHandle* hand_ha
   return true;
 }
 
-bool HandFingertipPoseDispatch(
-    const ClosedChainHandFk& fk, const rub::RtModelHandle* hand_handle,
-    std::span<const pinocchio::FrameIndex> fingertip_ids,
-    bool use_hand_root, pinocchio::FrameIndex hand_root_id, std::size_t f,
-    pinocchio::SE3& out) noexcept {
+bool HandFingertipPoseDispatch(const ClosedChainHandFk& fk, const rub::RtModelHandle* hand_handle,
+                               std::span<const pinocchio::FrameIndex> fingertip_ids,
+                               bool use_hand_root, pinocchio::FrameIndex hand_root_id,
+                               std::size_t f, pinocchio::SE3& out) noexcept {
   if (fk.active()) {
     return fk.GetFingertipHandRootPose(f, out);
   }
@@ -333,21 +334,25 @@ void LogHandFkWiring(const rclcpp::Logger& logger, const char* tag, HandFkWiring
       RCLCPP_INFO(logger, "%s closed-chain hand FK active (loop-consistent fingertip FK).", tag);
       break;
     case HandFkWiringResult::kInactiveBridgeIncomplete:
-      RCLCPP_WARN(logger,
-                  "%s loop closure present but actuated joint '%s' is not in any device "
-                  "joint_state_names — closed-chain hand FK disabled (serial FK).",
-                  tag, missing_joint.c_str());
+      RCLCPP_WARN(
+          logger,
+          "%s loop closure present but actuated joint '%s' is not in any device "
+          "joint_state_names — closed-chain hand FK disabled: the serial hand FK takes over, and "
+          "configure is refused unless every device joint is on the serial hand tree.",
+          tag, missing_joint.c_str());
       break;
     case HandFkWiringResult::kInactiveConstructionFailed:
       RCLCPP_WARN(logger,
                   "%s loop closure present but RtClosedChainHandle construction failed (ill-posed "
-                  "closure) — closed-chain hand FK disabled (serial FK).",
+                  "closure) — closed-chain hand FK disabled: the serial hand FK takes over, and "
+                  "configure is refused unless every device joint is on the serial hand tree.",
                   tag);
       break;
     case HandFkWiringResult::kInactiveNoHandRoot:
       RCLCPP_WARN(logger,
                   "%s loop closure present but hand-root frame did not resolve on the full model — "
-                  "closed-chain hand FK disabled (serial FK).",
+                  "closed-chain hand FK disabled: the serial hand FK takes over, and configure is "
+                  "refused unless every device joint is on the serial hand tree.",
                   tag);
       break;
     case HandFkWiringResult::kInactiveNoDownstream:

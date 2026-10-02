@@ -51,6 +51,7 @@
 #include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/compliance_wrench_source.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "integrated_bringup/support/hand_fk_wiring.hpp"
 #include "integrated_bringup/support/joint_tail_stats.hpp"
 #include "integrated_bringup/support/momentum_observer_wiring.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
@@ -519,6 +520,13 @@ class DemoComplianceController final : public RTControllerInterface {
     return momentum_config_error_;
   }
 
+  /// Test-only: why the hand fingertip FK could not be wired to its device
+  /// group or to the arm tip, or empty when it was (or there is no hand model).
+  /// on_configure refuses on the same string — see OnDeviceConfigsSet.
+  [[nodiscard]] const std::string& HandFkWiringErrorForTesting() const noexcept {
+    return hand_fk_wiring_.Error();
+  }
+
   /// Test-only: lift the shipped K_est_max pin so the stiffness estimate can
   /// leave its seed. The deployed value equals the seed (#425), which makes
   /// the published mirror a constant and hides a fill that ignores its source.
@@ -695,8 +703,9 @@ class DemoComplianceController final : public RTControllerInterface {
   // site stays byte-for-byte when closure is absent/inactive.
   //   ComputeHandForwardKinematics: run the per-tick hand FK (closed Update or
   //     serial ComputeForwardKinematics); returns false if no valid hand device.
-  //   HandFingertipPose: hand-root-relative fingertip pose for finger f (closed
-  //     or serial); false if that fingertip is inactive.
+  //   HandFingertipPose: pose of fingertip f in the ARM TIP link — the
+  //     hand-root-relative FK result (closed or serial) carried through the
+  //     constant hand mount (hand_fk_wiring_). False if that fingertip is inactive.
   [[nodiscard]] bool ComputeHandForwardKinematics(const ControllerState& state) noexcept;
   [[nodiscard]] bool HandFingertipPose(std::size_t f, pinocchio::SE3& out) const noexcept;
   void ConfigureClosedChainHandFk();
@@ -817,6 +826,10 @@ class DemoComplianceController final : public RTControllerInterface {
   // (loop-closure) hands whose fingertips are downstream of a loop-passive joint;
   // otherwise inactive and the serial hand_handle_ path runs byte-for-byte.
   ClosedChainHandFk closed_hand_fk_;
+  // Device joint order on hand_handle_, and the constant arm tip → hand root
+  // transform the fingertip poses are composed through (support/hand_fk_wiring.hpp).
+  // Its Error() is what on_configure refuses on.
+  HandFkWiring hand_fk_wiring_;
 
   // Arm TCP pose (base-relative when a root frame is registered), cached once
   // per tick at the top of ComputeControl from the unified combined-model cache

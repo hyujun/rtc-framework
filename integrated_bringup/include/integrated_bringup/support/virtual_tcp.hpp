@@ -115,9 +115,10 @@ enum class FrameTransition : std::uint8_t {
 
 /// Per-fingertip input for virtual TCP computation.
 struct FingertipVtcpInput {
-  Eigen::Vector3d position_in_tcp{Eigen::Vector3d::Zero()};  ///< Position in TCP/hand frame
-  double force_magnitude{0.0};  ///< Force magnitude [N] (for weighted mode)
-  bool active{false};           ///< true if this fingertip has valid FK data
+  Eigen::Vector3d position_in_tcp{
+      Eigen::Vector3d::Zero()};  ///< Position in the arm tip (TCP) frame
+  double force_magnitude{0.0};   ///< Force magnitude [N] (for weighted mode)
+  bool active{false};            ///< true if this fingertip has valid FK data
 };
 
 /// Result of virtual TCP computation.

@@ -67,12 +67,10 @@ constexpr double kDt = 0.002;
 // the wrong joints, and only a name-based mapping gets this right.
 const std::vector<std::string> kBodyJoints = {"waist_yaw", "right_shoulder", "right_elbow",
                                               "left_shoulder", "left_elbow"};
-// The HAND's device order IS the model's (fingers a..d), and that is not an
-// oversight. A serial hand's FK is fed positionally: InitHandModel's
-// SetJointOrder runs at LoadConfig, before the device configs exist, and never
-// takes effect (#685). That defect is the secondary group's, it predates the
-// tree work, and it is not what this file pins — a permuted hand here would
-// fail these tests for a reason that has nothing to do with the primary group.
+// The HAND's device order is the model's (fingers a..d) in the rigs that pin the
+// primary group: what those tests can fail on is then the body's order alone.
+// The hand's own order is the secondary group's concern, and has a rig of its
+// own below (kShuffledHandJoints).
 const std::vector<std::string> kHandJoints = {"finger_a_1", "finger_a_2", "finger_b_1",
                                               "finger_c_1", "finger_d_1"};
 // Every joint off zero, and the two arms at different angles: at a symmetric
@@ -80,6 +78,12 @@ const std::vector<std::string> kHandJoints = {"finger_a_1", "finger_a_2", "finge
 // change nothing.
 const std::vector<double> kBodyQ = {0.35, -0.50, 0.70, 0.40, -0.60};
 const std::vector<double> kHandQ = {0.30, -0.40, 0.50, 0.20, -0.25};
+// The same hand as a device that lists its joints in another order, no joint in
+// its model slot. Each joint keeps the value it has above, so the fingertips
+// are where they were — unless the values are read off the wrong joints.
+const std::vector<std::string> kShuffledHandJoints = {"finger_c_1", "finger_a_1", "finger_d_1",
+                                                      "finger_b_1", "finger_a_2"};
+const std::vector<double> kShuffledHandQ = {0.20, 0.30, -0.25, 0.50, -0.40};
 
 // The same robot with its primary group declared as ONE CHAIN: pelvis →
 // hand_base, three joints (the left arm is on no device). The model orders
@@ -101,8 +105,10 @@ struct Rig {
   std::shared_ptr<rub::PinocchioModelBuilder> builder;
   std::map<std::string, rtc::DeviceNameConfig> devices;
   std::string yaml;
-  std::vector<std::string> body_joints;  // the primary device's order
-  std::vector<double> body_q;            // ... and the position of each
+  std::vector<std::string> body_joints;                // the primary device's order
+  std::vector<double> body_q;                          // ... and the position of each
+  std::vector<std::string> hand_joints = kHandJoints;  // the secondary device's order
+  std::vector<double> hand_q = kHandQ;                 // ... and the position of each
 };
 
 std::string Yaml(std::size_t arm_dof, bool with_hand) {
@@ -157,10 +163,10 @@ rtc::DeviceNameConfig BodyDevice(const std::vector<std::string>& joints, const c
   return body;
 }
 
-rtc::DeviceNameConfig HandDevice() {
+rtc::DeviceNameConfig HandDevice(const std::vector<std::string>& joints = kHandJoints) {
   rtc::DeviceNameConfig hand;
   hand.device_name = "hand";
-  hand.joint_state_names = kHandJoints;
+  hand.joint_state_names = joints;
   rtc::DeviceUrdfConfig urdf;
   urdf.root_link = kHandMount;
   hand.urdf = urdf;
@@ -205,6 +211,15 @@ Rig TreeRig(const std::vector<std::string>& body_joints = kBodyJoints) {
   return rig;
 }
 
+// The tree rig with the hand device in an order that is not the hand model's.
+Rig ShuffledHandTreeRig() {
+  Rig rig = TreeRig();
+  rig.devices["hand"] = HandDevice(kShuffledHandJoints);
+  rig.hand_joints = kShuffledHandJoints;
+  rig.hand_q = kShuffledHandQ;
+  return rig;
+}
+
 // The same tree with NO hand group at all — nothing says where the arm ends.
 // `tip_link` is the per-device override the controller manager passes through.
 Rig HandlessTreeRig(const char* tip_link) {
@@ -246,8 +261,8 @@ ControllerState MakeState(const Rig& rig) {
   dev1.num_channels = kHandDof;
   dev1.valid = true;
   dev1.hole_mask = 0;
-  for (std::size_t i = 0; i < kHandQ.size(); ++i) {
-    dev1.positions[i] = kHandQ[i];
+  for (std::size_t i = 0; i < rig.hand_q.size(); ++i) {
+    dev1.positions[i] = rig.hand_q[i];
   }
   return state;
 }
@@ -263,8 +278,8 @@ Eigen::VectorXd FullModelConfiguration(const pinocchio::Model& model, const Rig&
   for (std::size_t i = 0; i < rig.body_joints.size(); ++i) {
     set(rig.body_joints[i], rig.body_q[i]);
   }
-  for (std::size_t i = 0; i < kHandJoints.size(); ++i) {
-    set(kHandJoints[i], kHandQ[i]);
+  for (std::size_t i = 0; i < rig.hand_joints.size(); ++i) {
+    set(rig.hand_joints[i], rig.hand_q[i]);
   }
   return q;
 }
@@ -393,6 +408,29 @@ TEST(JointTreePrimaryGroup, FingertipsComposeThroughTheHandMount) {
   }
 }
 
+// The hand's FK runs on the hand's own tree model, fed the hand device's
+// positions as they arrive. A device order that is not that model's has to be
+// mapped onto it, or every value lands on another joint (#685).
+TEST(JointTreePrimaryGroup, FingertipsFollowAHandDeviceOrderThatIsNotTheModels) {
+  const Rig rig = ShuffledHandTreeRig();
+  const pinocchio::Model& hand = *rig.builder->GetTreeModel("hand");
+  std::vector<int> idx;
+  for (const auto& n : kShuffledHandJoints) {
+    ASSERT_TRUE(hand.existJointName(n)) << n;
+    idx.push_back(static_cast<int>(hand.joints[hand.getJointId(n)].idx_q()));
+  }
+  ASSERT_FALSE(std::is_sorted(idx.begin(), idx.end()));
+
+  auto ctrl = BringUp(rig);
+  ControllerState state = MakeState(rig);
+  const ControllerOutput out = RunNormalTicks(*ctrl, state);
+
+  for (std::size_t f = 0; f < kTips.size(); ++f) {
+    ASSERT_TRUE(out.task_link_pose_valid[f]) << kTips[f];
+    ExpectSamePose(ToSe3(out.task_link_poses[f]), RootRelative(rig, kTips[f]), 1e-9, kTips[f]);
+  }
+}
+
 // The E-STOP tick computes the arm tip on a different path (the arm handle, fed
 // the device's positions as they arrive) from the normal tick (the combined
 // model cache, mapped by name). On a tree group those agree only if the handle
@@ -477,6 +515,22 @@ TEST_F(JointTreePrimaryGroupLifecycle, TheConfiguredControllerStillMapsTheJointO
 
   ExpectSamePose(EstopArmTip(*ctrl, rig), RootRelative(rig, kHandMount), 1e-9,
                  "E-STOP arm tip after on_configure");
+}
+
+// The same for the hand handle's joint order, on the controller manager's
+// bring-up order — where the hand handle is built before the device configs
+// exist, and only OnDeviceConfigsSet can give it the device's order.
+TEST_F(JointTreePrimaryGroupLifecycle, TheConfiguredControllerMapsTheHandOrder) {
+  const Rig rig = ShuffledHandTreeRig();
+  auto ctrl = PreConfigure(rig, "tree_primary_configured_hand_order");
+  ASSERT_EQ(Configure(*ctrl, rig), DemoJointController::CallbackReturn::SUCCESS);
+
+  ControllerState state = MakeState(rig);
+  const ControllerOutput out = RunNormalTicks(*ctrl, state);
+  for (std::size_t f = 0; f < kTips.size(); ++f) {
+    ASSERT_TRUE(out.task_link_pose_valid[f]) << kTips[f];
+    ExpectSamePose(ToSe3(out.task_link_poses[f]), RootRelative(rig, kTips[f]), 1e-9, kTips[f]);
+  }
 }
 
 // A tree group whose joint names do not all resolve on its model has no joint

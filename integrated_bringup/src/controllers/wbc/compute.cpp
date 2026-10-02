@@ -869,7 +869,8 @@ pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noe
 // ── #123 Phase 2: per-tick hand fingertip FK (RT-safe, publish-surface data) ──
 // Runs the closed-chain projection (extended hands) or serial hand FK, then
 // composes each fingertip's hand-root-relative pose to the base frame via the
-// arm TCP placement (@p tcp = base→tool0; base_adapter ≡ tool0 identity mount).
+// arm TCP placement and the hand mount (@p tcp = base→arm tip; the mount is
+// the constant arm tip → hand root transform, hand_fk_wiring_).
 // Caches into fingertip_positions_/rotations_/pose_valid_; FillPublishOutput
 // only reads them. Called from ComputeControl (after the Stage-1 cache Update)
 // so the publish path never solves kinematics — mirrors DemoTaskController's
@@ -921,7 +922,7 @@ bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
                                   use_hand_root_frame_, hand_root_frame_id_, f, T_hand_ft);
     fingertip_pose_valid_[f] = produced;
     if (produced) {
-      const pinocchio::SE3 T_base_ft = tcp.act(T_hand_ft);
+      const pinocchio::SE3 T_base_ft = tcp.act(hand_fk_wiring_.T_tip_mount.act(T_hand_ft));
       fingertip_positions_[f] = T_base_ft.translation();
       fingertip_rotations_[f] = T_base_ft.rotation();
     }

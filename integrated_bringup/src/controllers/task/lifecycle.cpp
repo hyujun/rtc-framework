@@ -61,7 +61,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
       }
       // Parent = ARM root (sub_models[0].root_link, e.g. base), NOT the hand tree
       // root: ComputeHandFingertipFk composes each fingertip pose to the arm base
-      // frame via the TCP placement (tcp = base→tool0), so the published
+      // frame via the TCP placement and the hand mount, so the published
       // translation is base-relative. Labelling the parent as the hand root
       // (base_adapter / hand_base_link) double-counts the arm reach in RViz.
       if (sys_cfg && !sys_cfg->sub_models.empty()) {
@@ -92,6 +92,14 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     const auto primary_state_key = primary + "_state";
     const auto secondary_state_key = secondary.empty() ? std::string{} : secondary + "_state";
     const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
+
+    // The hand fingertip FK could not be tied to its device group or to the arm
+    // tip (OnDeviceConfigsSet resolved it): every fingertip pose — and whatever
+    // reads one — would be finite and wrong.
+    if (!hand_fk_wiring_.Error().empty()) {
+      RCLCPP_ERROR(logger_, "hand FK wiring failed: %s", hand_fk_wiring_.Error().c_str());
+      return CallbackReturn::FAILURE;
+    }
 
     // ── #135 Layer 1b: consume the observer's configure verdict ──────────
     // The wiring itself is built in OnDeviceConfigsSet (that is where the arm

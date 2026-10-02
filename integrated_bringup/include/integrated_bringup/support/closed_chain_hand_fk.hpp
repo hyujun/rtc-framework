@@ -31,7 +31,9 @@
 namespace integrated_bringup {
 
 /// @brief Configure 결과 — 왜 (비)활성인지. 컨트롤러가 로깅에 사용. 활성이 아닌 모든 경우
-///   컨트롤러는 serial `RtModelHandle` 경로를 그대로 쓴다 (byte-for-byte).
+///   컨트롤러는 serial `RtModelHandle` 경로를 쓴다. 그 경로가 이 손의 device 를 읽을 수 있는지는
+///   `hand_fk_wiring.hpp` 가 판정한다 — loop closure 가 있는 손은 device 관절이 serial tree 에 다
+///   있지 않은 것이 보통이고, 그때는 configure 가 거부된다 (틀린 pose 를 내는 대신).
 enum class HandFkWiringResult {
   kInactiveNoClosure,  ///< 구속 없음 (plain URDF) → serial FK 사용 (byte-for-byte)
   kInactiveNoDownstream,  ///< closure 有이나 어떤 fingertip 도 loop 하류 아님 → 보정 불필요
@@ -101,8 +103,8 @@ class ClosedChainHandFk {
   /// @param closure_error_threshold 이 값 이상의 ‖φ‖(미수렴/특이) tick 은 신뢰 불가로 보고 직전
   ///   유효 fingertip pose 를 hold 한다 (기본 1e-3 m).
   /// @note ill-posed closure 로 RtClosedChainHandle 생성이 throw 하면 catch 해서
-  ///   kInactiveConstructionFailed 로 graceful 하게 serial 로 떨어진다 (컨트롤러 config abort
-  ///   방지).
+  ///   kInactiveConstructionFailed 를 돌린다 — 이 함수는 throw 하지 않고 serial 경로로 넘긴다.
+  ///   그 손을 serial tree 로 읽을 수 없으면 configure 거부는 `hand_fk_wiring.hpp` 가 낸다.
   [[nodiscard]] HandFkWiringResult Configure(
       std::shared_ptr<const pinocchio::Model> model,
       std::vector<pinocchio::RigidConstraintModel> constraints,
@@ -252,7 +254,8 @@ class ClosedChainHandFk {
                                             const rtc::ControllerState& state) noexcept;
 
 /// @brief fingertip @p f 의 **hand-root 상대** pose 를 closed(활성) 또는 serial 에서 얻어 @p out
-///   에 기록. serial 경로는 기존 tree-model 계산과 byte-for-byte 동일. **RT-safe.**
+///   에 기록. **RT-safe.** 팔 끝에 합성하려면 `HandFkWiring::T_tip_mount` (팔 끝 → 손 root) 를
+///   먼저 거쳐야 한다 — 손 root 는 팔 끝 link 가 아니다.
 /// @return 유효 pose 를 얻었으면 true (비활성/미해결 fingertip 이면 false, out 미변경).
 ///
 /// @p fingertip_ids 가 span 인 이유: 호출자마다 슬롯 수가 다르다. 대부분의 컨트롤러는
@@ -260,11 +263,11 @@ class ClosedChainHandFk {
 /// 관측한다. 고정 크기 배열 참조였을 때는 @ref ClosedChainHandFk::kMaxFingertips 를 올리는
 /// 순간 **그것을 쓰지 않는 컨트롤러 3개가 컴파일 에러**로 끌려 들어왔다 — 용량은 이 클래스의
 /// 사정이지 호출자의 계약이 아니다. 범위 밖 @p f 는 false 를 돌린다.
-[[nodiscard]] bool HandFingertipPoseDispatch(
-    const ClosedChainHandFk& fk, const rtc_urdf_bridge::RtModelHandle* hand_handle,
-    std::span<const pinocchio::FrameIndex> fingertip_ids,
-    bool use_hand_root, pinocchio::FrameIndex hand_root_id, std::size_t f,
-    pinocchio::SE3& out) noexcept;
+[[nodiscard]] bool HandFingertipPoseDispatch(const ClosedChainHandFk& fk,
+                                             const rtc_urdf_bridge::RtModelHandle* hand_handle,
+                                             std::span<const pinocchio::FrameIndex> fingertip_ids,
+                                             bool use_hand_root, pinocchio::FrameIndex hand_root_id,
+                                             std::size_t f, pinocchio::SE3& out) noexcept;
 
 /// @brief Configure 결과를 컨트롤러 태그(@p tag, 예: "[task]")와 함께 로깅 (task/joint 공용).
 void LogHandFkWiring(const rclcpp::Logger& logger, const char* tag, HandFkWiringResult result,

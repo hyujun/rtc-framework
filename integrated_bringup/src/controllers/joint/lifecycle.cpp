@@ -112,6 +112,14 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     const auto secondary_state_key = secondary.empty() ? std::string{} : secondary + "_state";
     const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
 
+    // The hand fingertip FK could not be tied to its device group or to the arm
+    // tip (OnDeviceConfigsSet resolved it): every fingertip pose — and whatever
+    // reads one — would be finite and wrong.
+    if (!hand_fk_wiring_.Error().empty()) {
+      RCLCPP_ERROR(logger_, "hand FK wiring failed: %s", hand_fk_wiring_.Error().c_str());
+      return CallbackReturn::FAILURE;
+    }
+
     // ── #135 Layer 1b: consume the observer's configure verdict ──────────
     // The wiring itself is built in OnDeviceConfigsSet (that is where the arm
     // device's joint order first exists, and it has to precede the log
