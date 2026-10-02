@@ -267,6 +267,16 @@ if(mujoco_FOUND)
         SCENE_WITH_OBJECT_MJCF_PATH="${MJCF_SCENE_FIXTURE}")
     endif()
 
+    # Position-servo gains on torque-motor actuators: needs a scene whose
+    # actuators are `<motor>` (biastype none) — every other fixture here uses
+    # `<position>`, which is already affine and cannot show the difference.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_motor_servo_gains.cpp")
+      ament_add_gtest(test_motor_servo_gains test/test_motor_servo_gains.cpp)
+      target_link_libraries(test_motor_servo_gains mujoco_simulator_lib)
+      target_compile_definitions(test_motor_servo_gains PRIVATE
+        MOTOR_ARM_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/motor_arm.xml")
+    endif()
+
     # Object pool against a compiled model: needs a scene with a floor and a
     # keyframe, plus a directory of candidate objects.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_object_pool.cpp")

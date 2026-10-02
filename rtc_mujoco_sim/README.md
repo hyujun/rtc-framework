@@ -515,7 +515,7 @@ mujoco_simulator:
 | `control_rate` | double | `500.0` | 런치 파일에서 전달. lock-step 은 step 하나가 controller tick 하나이므로 `physics_timestep == 1/control_rate` 를 요구한다 (다르면 기동 FATAL — #566 이전에는 physics 가 더 빠른 쪽을 허용해 `dt` 적분이 sim 시간과 어긋났다) |
 | `physics_timestep` | double | `0.0` | 0.0이면 XML 값 사용. 양수면 XML과 불일치 시 경고. 제어 주기를 의미 |
 | `n_substeps` | int | `1` | 제어 주기당 물리 서브스텝 수. `substep_dt = physics_timestep / n_substeps`. 1이면 기존 동작 |
-| `use_yaml_servo_gains` | bool | `false` | `true`=YAML servo_kp/kd, `false`=XML gainprm/biasprm |
+| `use_yaml_servo_gains` | bool | `false` | `true`=YAML servo_kp/kd, `false`=XML gainprm/biasprm. `true` (또는 런타임 게인) 일 때는 actuator 의 bias 타입도 affine 으로 맞추므로 **XML 이 `<motor>` 여도 위치 서보가 된다** — torque 모드로 가거나 게인이 빠지면 XML 의 타입으로 되돌린다. `false` 이고 XML 이 `<motor>` 이면 position 모드의 명령이 그대로 토크로 들어가며, 기동 때 그룹당 한 번 stderr 에 경고한다 |
 | `servo_kp` | double[] | `[500, 500, 500, 150, 150, 150]` | Position servo P 게인 (글로벌) |
 | `servo_kd` | double[] | `[400, 400, 400, 100, 100, 100]` | Position servo D 게인 (글로벌) |
 | `robot_response.groups` | string[] | `[]` | MuJoCo 물리 그룹 이름 목록 |
@@ -1257,6 +1257,7 @@ GTest 스위트 (`test/` 디렉토리, 표는 파일 이름). 최신 케이스 �
 | `test_runtime_controls` | atomic setter/getter, 클램핑, world gravity 토글 |
 | `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (`scene_with_object.xml`) |
 | `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
+| `test_motor_servo_gains` | `<motor>` actuator 위의 위치 서보 — YAML · 런타임 게인이 0 이 아닌 목표를 유지, torque 모드에서 bias 타입 원복, 게인이 없으면 명령이 토크로 직결 (`motor_arm.xml`) |
 | `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
 | `test_contact_wrench_site_frame` | `ContactWrenchConfig::reference_frame` — `body` / `site` 모드가 site 회전만큼 다른 벡터를 내는지 고정 |
 | `test_contact_wrench_viz` | 뷰어 화살표 스냅샷이 **토픽과 같은 벡터**인지 — 발행된 link-frame force 를 reference frame 회전으로 world 로 되돌린 것과 componentwise 일치, 화살표 시작점 = reference site, `visualize:false` 시 스냅샷 자체가 빔 (negative control) |

@@ -559,26 +559,52 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
 
     // kPosition and kPdFeedforward share the same affine PD actuator params;
     // kPdFeedforward only differs by gravcomp (above) + qfrc_applied (ApplyCommand).
+    //
+    // biastype moves with the parameters. Only the gain lane needs the affine
+    // bias (force = kp * ctrl - kp * q - kd * qdot); on a `<motor>` — biastype
+    // none — MuJoCo skips biasprm, so the same three writes would leave
+    // force = kp * ctrl. The other two lanes restore what the XML compiled to.
+    int motor_passthrough = 0;
     for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       const int act = g->actuator_indices[i];
+      const auto& p = orig_actuator_params_[static_cast<std::size_t>(act)];
       if (torque) {
         model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(1.0);
         model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
         model_->actuator_biasprm[act * mjNBIAS + 1] = static_cast<mjtNum>(0.0);
         model_->actuator_biasprm[act * mjNBIAS + 2] = static_cast<mjtNum>(0.0);
+        model_->actuator_biastype[act] = p.biastype;
       } else if (g->gains_overridden || cfg_.use_yaml_servo_gains) {
         const double kp = g->gainprm_yaml[i];
         model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(kp);
         model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
         model_->actuator_biasprm[act * mjNBIAS + 1] = static_cast<mjtNum>(-kp);
         model_->actuator_biasprm[act * mjNBIAS + 2] = static_cast<mjtNum>(g->biasprm2_yaml[i]);
+        model_->actuator_biastype[act] = mjBIAS_AFFINE;
       } else {
-        const auto& p = orig_actuator_params_[static_cast<std::size_t>(act)];
         model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(p.gainprm0);
         model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(p.biasprm0);
         model_->actuator_biasprm[act * mjNBIAS + 1] = static_cast<mjtNum>(p.biasprm1);
         model_->actuator_biasprm[act * mjNBIAS + 2] = static_cast<mjtNum>(p.biasprm2);
+        model_->actuator_biastype[act] = p.biastype;
+        if (p.biastype == mjBIAS_NONE) {
+          ++motor_passthrough;
+        }
       }
+    }
+    // A position-mode group left on the XML's own actuators, where those are
+    // torque motors: the position command reaches the joint as a torque. That
+    // is a configuration some scenes rely on, so it is not refused — but it is
+    // never what a robot profile means, and the symptom (a joint that drifts or
+    // slams a limit) does not name its cause. Said once per group.
+    if (motor_passthrough > 0 && !g->motor_passthrough_warned) {
+      g->motor_passthrough_warned = true;
+      fprintf(stderr,
+              "[MuJoCoSimulator] WARN: group '%s' is in a position mode but %d of its %d "
+              "actuator(s) carry no position bias (e.g. <motor>) and no servo gains are "
+              "installed — the command is applied as a torque. Set use_yaml_servo_gains "
+              "with servo_kp / servo_kd, or send runtime gains.\n",
+              g->name.c_str(), motor_passthrough, g->num_command_joints);
     }
   }
   if (gravcomp_dirty) {
