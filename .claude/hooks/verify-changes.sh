@@ -117,6 +117,11 @@
 #   PASS that went through build/test is remembered -- so committing a tree
 #   --run passed costs the turn end nothing, and editing a package after it
 #   voids the verdict.
+#   A verdict is of the SOURCE. --run answers for the BINARIES as well: with a
+#   verdict it records the package's installed binaries, and it does not reuse
+#   a verdict whose binaries were rebuilt since -- it builds and tests that
+#   package again (see "The binaries a verdict was recorded with"). The turn
+#   end does not look at the install tree.
 #   --run is made to be backgrounded, so three things hold while it runs: it
 #   takes a lock, which a second --run refuses and the turn end reads as "a
 #   build to wait for" (run_lock_holder); a package edited during the build or
@@ -335,6 +340,112 @@ PASS_TREE_FILE="$GIT_DIR_PATH/rtc-verify-pass-tree"
 PASS_PKGS_FILE="$GIT_DIR_PATH/rtc-verify-pass-pkgs"
 TIMING_LOG="$GIT_DIR_PATH/rtc-verify-timing.log"
 RUN_LOCK="$GIT_DIR_PATH/rtc-verify-run.lock"
+
+# ── The binaries a verdict was recorded with ────────────────────────────────
+#
+# The two pass files say "this source built and tested green". They say
+# nothing about what is INSTALLED now, and the two come apart whenever a build
+# runs on other content after the verdict and the source then returns to what
+# passed:
+#   * a temporary patch applied, built for a measurement and reverted
+#     (2026-10-02: --run answered "nothing re-run" over binaries that still
+#     carried the patch, and built without tests);
+#   * a change that fails its tests under --run and is checked out again.
+# The tree is the one that passed, so both reuses honoured it, and the next
+# simulator run would have executed code that is in no commit.
+#
+# So a verdict is recorded together with a stamp of the package's installed
+# compiled products, and --run does not reuse a verdict whose stamp no longer
+# matches: it builds and tests that package again, which leaves the install
+# tree built from the tree being graded.
+#   rtc-verify-pass-artifacts   "<pkg> <stamp>" per package with a verdict
+# The stamp is the name and CONTENT (blob id) of every shared or static
+# library under <workspace>/install/<pkg>/lib and of every ELF file directly
+# in lib/<pkg>/. Content, not mtime: a checkout or a pull rewrites source
+# files, the next build recompiles and relinks them, and the binaries come out
+# byte for byte what they were with a new mtime (measured 2026-10-02 -- after a
+# fast-forward the two packages it touched were relinked by a build of
+# unchanged content; their blob ids did not move, and did not move either
+# across a build without tests and one with). Scripts and the Python tree are
+# left out: a build that changes nothing rewrites them. Hashing every
+# package's products takes about 0.4 s (21 packages, 50 MB), and only --run
+# and a recorded verdict pay it.
+#
+# The TURN END does not read the stamp. A debug, sanitizer or tracing build
+# kept on purpose across turns also has "other binaries than the verdict's",
+# and blocking on it would have every turn end ask for a --run that replaces
+# that build. What the turn end guarantees stays what it was: the source has a
+# green verdict. A package with no install directory has no stamp and is never
+# stale by it (ament_python, a fixture without a workspace).
+PASS_ARTIFACTS_FILE="$GIT_DIR_PATH/rtc-verify-pass-artifacts"
+artifact_stamp() {  # $1 = package
+  local lib="$WORKSPACE/install/$1/lib" f
+  [ -d "$lib" ] || return 0
+  {
+    find -L "$lib" -type f \( -name '*.so' -o -name '*.so.*' -o -name '*.a' \) \
+      -not -path '*/python3*' -print 2>/dev/null || true
+    if [ -d "$lib/$1" ]; then
+      for f in "$lib/$1"/*; do
+        [ -f "$f" ] || continue
+        # ELF magic, read as hex: the first four bytes are 7f 45 4c 46.
+        [ "$(head -c 4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] || continue
+        printf '%s\n' "$f"
+      done
+    fi
+  } | LC_ALL=C sort | while IFS= read -r f; do
+      printf '%s %s\n' "${f#"$lib"/}" "$(git hash-object "$f" 2>/dev/null || true)"
+    done | git hash-object --stdin 2>/dev/null || true
+}
+# The packages a verdict names: itself, or every package of the repo for the
+# one broad PROC-3 verdict.
+verdict_packages() {  # $1 = package or PROC-3
+  local d
+  if [ "$1" != "PROC-3" ]; then printf '%s\n' "$1"; return 0; fi
+  for d in "$PROJECT_DIR"/*/; do
+    [ -f "${d}package.xml" ] && basename "$d"
+  done
+  return 0
+}
+remember_artifact_stamps() {  # $1 = package or PROC-3
+  local p stamp
+  {
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      stamp=$(artifact_stamp "$p")
+      grep -v "^$p " "$PASS_ARTIFACTS_FILE" > "$PASS_ARTIFACTS_FILE.tmp" || true
+      [ -z "$stamp" ] || printf '%s %s\n' "$p" "$stamp" >> "$PASS_ARTIFACTS_FILE.tmp"
+      mv "$PASS_ARTIFACTS_FILE.tmp" "$PASS_ARTIFACTS_FILE"
+    done <<< "$(verdict_packages "$1")"
+  } 2>/dev/null || true
+}
+# A --run that passes also takes a stamp for every package that has none yet:
+# the binaries as they are when the tree passes. Without it only a package
+# --run itself built would ever be watched, and the temporary patch of the
+# first case above can sit in any package. It is a baseline, not a verdict --
+# binaries already stale when it is taken are not found -- and it is never
+# refreshed here: only a green build and test replaces a stamp.
+baseline_artifact_stamps() {
+  local p stamp
+  {
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      grep -q "^$p " "$PASS_ARTIFACTS_FILE" 2>/dev/null && continue
+      stamp=$(artifact_stamp "$p")
+      [ -z "$stamp" ] || printf '%s %s\n' "$p" "$stamp" >> "$PASS_ARTIFACTS_FILE"
+    done <<< "$(verdict_packages PROC-3)"
+  } 2>/dev/null || true
+}
+# Packages (still in the repo) whose installed binaries are not the ones
+# recorded with their verdict, space separated.
+stale_artifact_pkgs() {
+  local p stamp
+  [ -f "$PASS_ARTIFACTS_FILE" ] || return 0
+  while read -r p stamp; do
+    [ -n "$p" ] && [ -f "$PROJECT_DIR/$p/package.xml" ] || continue
+    [ "$(artifact_stamp "$p")" = "$stamp" ] || printf '%s ' "$p"
+  done < "$PASS_ARTIFACTS_FILE"
+  return 0
+}
 # Both pass files carry this tag in front of what they record. It names the
 # test reading the verdict came from: entries without it are from before
 # 2026-10-01, when a package whose tests ran was green whether they passed or
@@ -459,7 +570,19 @@ log_timing() {
 CHANGED_TRACKED=$(git -c core.quotePath=false diff --name-only "$VERIFY_BASE" 2>/dev/null || true)
 CHANGED_UNTRACKED=$(git -c core.quotePath=false ls-files -o --exclude-standard 2>/dev/null || true)
 CHANGED=$(printf '%s\n%s\n' "$CHANGED_TRACKED" "$CHANGED_UNTRACKED" | grep -v '^[[:space:]]*$' | sort -u || true)
-if [ -z "$CHANGED" ]; then
+# --run looks at the installed binaries before any "nothing to do" exit (see
+# "The binaries a verdict was recorded with"): a package whose binaries were
+# rebuilt since its verdict is built and tested again -- with nothing changed
+# against the watermark, and with the tree the one that last passed.
+STALE_ARTIFACT_PKGS=""
+if [ -n "$RUN_MODE" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ]; then
+  STALE_ARTIFACT_PKGS=$(stale_artifact_pkgs)
+  if [ -n "$STALE_ARTIFACT_PKGS" ]; then
+    echo "verify-changes: the installed binaries of [${STALE_ARTIFACT_PKGS% }] are not the ones their verdict was recorded with (built again since) -- building and testing them again." >&2
+  fi
+fi
+if [ -z "$CHANGED" ] && [ -z "$STALE_ARTIFACT_PKGS" ]; then
+  [ -z "$RUN_MODE" ] || baseline_artifact_stamps
   advance_verify_base
   exit 0
 fi
@@ -482,7 +605,9 @@ CHANGED_META=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' 
 # on its own it used to leave the hook at the exit below, ungraded.
 CHANGED_TESTCFG=$(echo "$CHANGED" | grep -E '^[^/]+/colcon\.pkg$' || true)
 if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
-   && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ] && [ -z "$CHANGED_TESTCFG" ]; then
+   && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ] && [ -z "$CHANGED_TESTCFG" ] \
+   && [ -z "$STALE_ARTIFACT_PKGS" ]; then
+  [ -z "$RUN_MODE" ] || baseline_artifact_stamps
   advance_verify_base
   exit 0
 fi
@@ -537,10 +662,15 @@ fi
 # install tree, system packages, another repository in the workspace. The
 # watermark never covered those either -- a change there was not re-verified
 # before this existed unless the repository changed too.
+#
+# The install tree is the one of those --run does look at (STALE_ARTIFACT_PKGS,
+# taken above): a package whose binaries were rebuilt since its verdict is
+# built and tested again, unchanged tree or not.
 WORK_TREE=$(work_tree_id)
-if [ -n "$WORK_TREE" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] \
+if [ -n "$WORK_TREE" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] && [ -z "$STALE_ARTIFACT_PKGS" ] \
    && [ "$(cat "$PASS_TREE_FILE" 2>/dev/null || true)" = "${VERDICT_TAG}${WORK_TREE}" ]; then
   echo "verify-changes: the working tree is the one this gate last passed at (tree ${WORK_TREE:0:12}) -- nothing re-run." >&2
+  [ -z "$RUN_MODE" ] || baseline_artifact_stamps
   advance_verify_base
   log_timing "pass-unchanged" "" ""
   exit 0
@@ -772,6 +902,14 @@ while IFS= read -r pkg_dir; do
   BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}"
 done <<< "$(printf '%s\n%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
              "$CHANGED_TESTCFG" | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
+# --run: a package whose installed binaries were rebuilt since its verdict is
+# owed a build and a test run whether or not its source changed.
+for pkg_dir in $STALE_ARTIFACT_PKGS; do
+  case " $BUILD_PKGS " in
+    *" $pkg_dir "*) ;;
+    *) BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}" ;;
+  esac
+done
 
 # Emit `name<TAB>exempt<TAB>lineno` for every add_executable() in the CMake
 # source arriving on stdin. Used by ARCH-7 to diff target NAMES between HEAD and
@@ -1761,6 +1899,11 @@ change_set_key() {
   esac
 }
 pkg_verdict_reusable() {  # $1 = package, $2 = key
+  # PROC-3's one verdict is of every package: any stale one ends it.
+  case "$1" in
+    PROC-3) [ -z "$STALE_ARTIFACT_PKGS" ] || return 1 ;;
+    *) case " $STALE_ARTIFACT_PKGS " in *" $1 "*) return 1 ;; esac ;;
+  esac
   [ -n "$2" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] \
     && grep -qxF "$1 $2" "$PASS_PKGS_FILE" 2>/dev/null
 }
@@ -1771,6 +1914,7 @@ remember_pkg_verdict() {  # $1 = package, $2 = key
     printf '%s %s\n' "$1" "$2" >> "$PASS_PKGS_FILE.tmp"
     mv "$PASS_PKGS_FILE.tmp" "$PASS_PKGS_FILE"
   } 2>/dev/null || true
+  remember_artifact_stamps "$1"
 }
 # A green build and test, recorded -- if what the key names is still there.
 #
@@ -2288,6 +2432,7 @@ else
   if [ -n "${WORK_TREE:-}" ]; then
     printf '%s%s\n' "$VERDICT_TAG" "$WORK_TREE" > "$PASS_TREE_FILE" 2>/dev/null || true
   fi
+  [ -z "$RUN_MODE" ] || baseline_artifact_stamps
   advance_verify_base
 fi
 log_timing "$([ -n "$TREE_MOVED" ] && echo pass-tree-moved || echo pass)" "$BUILT_PKGS" "$REUSED_PKGS"
