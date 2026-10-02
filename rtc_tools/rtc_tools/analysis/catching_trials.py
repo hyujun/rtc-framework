@@ -88,6 +88,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import yaml
@@ -109,6 +110,7 @@ from rtc_tools.analysis.catchability_map import (
     transform_point,
 )
 from rtc_tools.analysis.table_cells import is_true as _is_true, num as _num
+from rtc_tools.utils.smoothing import COMMAND_SMOOTH_ROWS, box_smooth
 
 # ── rtc_msgs/CatchingState ABI (framework message constants, not robot values) ─
 MODE_ARMED = 1
@@ -940,9 +942,9 @@ DECEL_REFUSAL_AGED = 5
 # TCP command speed [m/s] above which the command counts as moving
 # (:func:`command_kinematics_at_tc`). An arm holding its command is at 0.
 CMD_MOVING_SPEED_M_S = 0.02
-# Rows of the box filter the command's acceleration is smoothed over: a second
-# difference of FK(q_cmd) at 2 ms is dominated by tick noise.
-CMD_SMOOTH_ROWS = 5
+# The command's acceleration is smoothed over this many rows (the kernel the
+# catching_diag plot uses, :mod:`rtc_tools.utils.smoothing`).
+CMD_SMOOTH_ROWS = COMMAND_SMOOTH_ROWS
 
 
 def diag_columns(header: Sequence[str]) -> list[str]:
@@ -2157,20 +2159,6 @@ def decompose_at_tc(
     return rec
 
 
-def _box(x: np.ndarray, rows: int) -> np.ndarray:
-    """Moving average over ``rows`` rows along axis 0; the window shrinks at
-    the two ends (no zero padding)."""
-    x = np.asarray(x, dtype=float)
-    kernel = np.ones(rows)
-    norm = np.convolve(np.ones(len(x)), kernel, mode="same")
-    if x.ndim == 1:
-        return np.convolve(x, kernel, mode="same") / norm
-    return (
-        np.stack([np.convolve(x[:, i], kernel, mode="same") for i in range(x.shape[1])], 1)
-        / (norm[:, None])
-    )
-
-
 CMD_KINEMATICS_KEYS = (
     "cmd_speed_tc",
     "cmd_dvdt_tc",
@@ -2201,35 +2189,41 @@ def command_kinematics_at_tc(ctx: TrialContext, t_c: float, t_lead: float) -> di
 
     Derivatives are central differences on the recorded ``t`` (the diag's rows
     need not be evenly spaced); the acceleration and d|v|/dt are smoothed over
-    ``CMD_SMOOTH_ROWS`` rows. Everything is NaN without a commit, when ``kl`` is
-    too close to either end of the trial's window to difference, or when the
-    time axis repeats.
+    ``CMD_SMOOTH_ROWS`` rows. Only the rows that are read are evaluated — from
+    a few rows before APPROACH to a few past ``kl`` — so a tick earlier in the
+    trial's window that commanded nothing (``q_cmd`` is NaN before the arm is
+    latched) does not blank the trial. Everything is NaN without a commit, when
+    ``kl`` is too close to either end of the window to difference, or when the
+    time axis repeats or the command is not finite inside those rows.
     """
     rec = dict.fromkeys(CMD_KINEMATICS_KEYS, math.nan)
     if not math.isfinite(t_c):
         return rec
     kl, _ = lead_tick(ctx, t_c, t_lead)
-    pad = CMD_SMOOTH_ROWS  # rows past kl the differences and the filter read
+    pad = CMD_SMOOTH_ROWS  # rows beside a tick the differences and the filter read
     hi = min(len(ctx.t), kl + pad + 1)
     if kl < pad or hi - kl <= 2:
         return rec
-    t = ctx.t[:hi]
+    k_app = _first(ctx.mode[: kl + 1] == MODE_APPROACH)
+    lo = max(0, (kl if k_app is None else k_app) - 2 * pad)
+    t = ctx.t[lo:hi]
     if not np.all(np.diff(t) > 0.0):
         return rec
-    p = ctx.fk_cmd(np.arange(hi))
+    p = ctx.fk_cmd(np.arange(lo, hi))
     if not np.all(np.isfinite(p)):
         return rec
+    kl -= lo  # from here on, indices into the evaluated rows
     v = np.gradient(p, t, axis=0)
     speed = np.linalg.norm(v, axis=1)
-    accel = _box(np.gradient(v, t, axis=0), CMD_SMOOTH_ROWS)
-    dvdt = np.gradient(_box(speed, CMD_SMOOTH_ROWS), t)
+    accel = box_smooth(np.gradient(v, t, axis=0), CMD_SMOOTH_ROWS)
+    dvdt = np.gradient(box_smooth(speed, CMD_SMOOTH_ROWS), t)
     rec["cmd_speed_tc"] = float(speed[kl])
     rec["cmd_dvdt_tc"] = float(dvdt[kl])
     rec["cmd_accel_tc"] = float(np.linalg.norm(accel[kl]))
-    k_app = _first(ctx.mode[: kl + 1] == MODE_APPROACH)
     rec["cmd_move_s"] = 0.0
     if k_app is None:
         return rec
+    k_app -= lo
     k_move = _first(speed[k_app : kl + 1] > CMD_MOVING_SPEED_M_S)
     if k_move is None:
         return rec
@@ -2334,18 +2328,30 @@ def plan_validity_window(
     t_commit: float,
     t_end: float,
     search_valid: np.ndarray | None = None,
+    searched: np.ndarray | None = None,
+    pair_attempt: np.ndarray | None = None,
+    pair_published: np.ndarray | None = None,
 ) -> dict:
     """G3-D (i): per-trial plan validity rate (L3 gate G3-D, #537 S8-D).
 
-    ``plan_valid`` is "a valid plan was PUBLISHED on this wake". Under ``mode:
-    mpc`` a plan is published only together with its first segment (MPC plan
-    MD-62), so a wake whose search found a plan and whose segment was withheld
-    reads 0 — the ratio then measures the pair, not the search. With
-    ``search_valid`` (the ``planner_events`` column of that name, E1-F05) three
-    more keys say which: ``search_valid_cycles`` / ``search_valid_ratio`` (the
-    search, as ``plan_valid_ratio`` did before the pair existed) and
-    ``pair_published_ratio`` = ``plan_valid_cycles`` / ``search_valid_cycles``
-    (NaN with none). Without it the keys are absent.
+    ``plan_valid`` is "a valid plan was PUBLISHED on this wake", over EVERY
+    recorded wake of the window. Under ``mode: mpc`` that reads low twice over:
+    a plan is published only together with its first segment (MPC plan MD-62),
+    and once the RT follows a plan the wakes replan its segment without
+    searching — rows that can never be "valid". The optional arrays (one entry
+    per wake, from :func:`_planner_cycle_times` on a log that has the E1-F05
+    columns) separate the three questions; without them their keys are absent:
+
+    - ``search_valid`` + ``searched`` → ``search_cycles`` (wakes that ran a
+      search), ``search_valid_cycles`` and ``search_valid_ratio`` = found /
+      ran (NaN with no search in the window): the search's own validity, the
+      same quantity under either planner. ``plan_valid_at_commit`` is then
+      read at the last wake that SEARCHED, not at the last row;
+    - ``pair_attempt`` + ``pair_published`` → ``pair_attempt_cycles`` (first
+      solves tried: every valid search under ``mpc``) and
+      ``pair_published_ratio`` = published / tried. NaN with none — a
+      ``closed_form`` trial has no pair, and a plan its switching rule kept
+      back is not a withheld pair.
 
     ``wake_t_relative_s``/``plan_valid`` are every ``planner_events.csv`` row's
     wake instant (mapped onto the controller's ``t_relative_s`` axis — see
@@ -2374,10 +2380,18 @@ def plan_validity_window(
         "plan_valid_at_commit": at_commit,
     }
     if search_valid is not None:
-        found = int(search_valid[sel].sum()) if n else 0
+        ran = np.ones(n, bool) if searched is None else np.asarray(searched[sel], bool)
+        n_ran = int(ran.sum())
+        found = int(search_valid[sel][ran].sum()) if n_ran else 0
+        out["search_cycles"] = n_ran
         out["search_valid_cycles"] = found
-        out["search_valid_ratio"] = float(search_valid[sel].mean()) if n else math.nan
-        out["pair_published_ratio"] = out["plan_valid_cycles"] / found if found else math.nan
+        out["search_valid_ratio"] = found / n_ran if n_ran else math.nan
+        if searched is not None and has_commit:
+            out["plan_valid_at_commit"] = float(plan_valid[sel][ran][-1]) if n_ran else math.nan
+    if pair_attempt is not None and pair_published is not None:
+        tried = int(pair_attempt[sel].sum()) if n else 0
+        out["pair_attempt_cycles"] = tried
+        out["pair_published_ratio"] = int(pair_published[sel].sum()) / tried if tried else math.nan
     return out
 
 
@@ -2520,18 +2534,28 @@ def _decel_arrays(w) -> dict:
     """The TrialContext's decel fields from one trial's diag window — each
     ``None`` when its column is absent (DIAG_DECEL_COLUMNS)."""
 
-    def col(name, kind):
-        return w[name].to_numpy(kind) if name in w.columns else None
+    def number(name):
+        return w[name].to_numpy(float) if name in w.columns else None
 
-    judged, following = col("decel_judged", int), col("decel_following", int)
+    def flag(name):
+        v = number(name)
+        return None if v is None else v > 0.5  # NaN is not set
+
+    def code(name):
+        # Through float, NaN to 0: a row cut short (the controller killed
+        # mid-write) has NaN here, and `to_numpy(int)` turns that into
+        # INT64_MIN without raising — one more "segment" in the count.
+        v = number(name)
+        return None if v is None else np.nan_to_num(v, nan=0.0).astype(int)
+
     p_d = [f"decel_p_d_{a}" for a in "xyz"]
     return {
-        "decel_judged": None if judged is None else judged != 0,
-        "decel_refusal": col("decel_refusal", int),
-        "decel_event": col("decel_event", int),
-        "decel_following": None if following is None else following != 0,
-        "decel_seq": col("decel_seq", int),
-        "decel_rho": col("decel_rho", float),
+        "decel_judged": flag("decel_judged"),
+        "decel_refusal": code("decel_refusal"),
+        "decel_event": code("decel_event"),
+        "decel_following": flag("decel_following"),
+        "decel_seq": code("decel_seq"),
+        "decel_rho": number("decel_rho"),
         "decel_p_d": w[p_d].to_numpy(float) if all(c in w.columns for c in p_d) else None,
     }
 
@@ -2728,7 +2752,10 @@ def analyse_session(
                     trial.t_launch,
                     row.get("t_commit", math.nan),
                     trial.t_end,
-                    search_valid=planner_wakes[2],
+                    search_valid=planner_wakes.search_valid,
+                    searched=planner_wakes.searched,
+                    pair_attempt=planner_wakes.pair_attempt,
+                    pair_published=planner_wakes.pair_published,
                 )
             )
         row["ref_saturated_max_streak"] = max_streak(ctx.ref_valid & ctx.ref_saturated)
@@ -3700,14 +3727,30 @@ def _planner_events(ctl: Path) -> dict | None:
     return out
 
 
-def _planner_cycle_times(
-    ctl: Path, lane: ClockLane | None
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None] | None:
+class PlannerWakes(NamedTuple):
+    """One entry per ``planner_events.csv`` row (:func:`_planner_cycle_times`).
+
+    The last four are ``None`` on a log from before the E1-F05 columns.
+    ``searched``: the wake ran a search — its ``outcome`` is neither ``idle``
+    nor ``no_input`` (a replan-only wake stays ``idle``, MPC plan MD-29).
+    ``pair_attempt`` / ``pair_published``: the wake tried a plan's first
+    segment (``decel_kind`` ``first``) / and published it.
+    """
+
+    wake_s: np.ndarray
+    plan_valid: np.ndarray
+    search_valid: np.ndarray | None = None
+    searched: np.ndarray | None = None
+    pair_attempt: np.ndarray | None = None
+    pair_published: np.ndarray | None = None
+
+
+def _planner_cycle_times(ctl: Path, lane: ClockLane | None) -> PlannerWakes | None:
     """Every ``planner_events.csv`` wake as a STEADY-clock second, with its
     ``plan_valid`` — what G3-D (i) (#537 S8-D) windows by trial after shifting
-    it onto ``t_relative_s`` — and its ``search_valid`` (``None`` on a log
-    from before the column, E1-F05). ``None`` when either input is
-    unavailable: a diag predating the planner, or no ``--clock-lane`` (below).
+    it onto ``t_relative_s`` — and, where the log has the E1-F05 columns, what
+    :class:`PlannerWakes` adds. ``None`` when either input is unavailable: a
+    diag predating the planner, or no ``--clock-lane`` (below).
 
     **The mapping and its evidence.** ``wake_ns`` is a STEADY-clock instant —
     ``PlannerCycleRecord::wake_ns`` is documented "Steady instants"
@@ -3744,13 +3787,23 @@ def _planner_cycle_times(
     path = _exists(ctl / PLANNER_EVENTS_CSV)
     if path is None:
         return None
-    has_search = "search_valid" in _csv_header(path)
-    df = _read_csv(path, usecols=["wake_ns", "plan_valid"] + (["search_valid"] * has_search))
-    return (
-        df["wake_ns"].to_numpy(float) * 1e-9,
-        df["plan_valid"].to_numpy(float),
-        df["search_valid"].to_numpy(float) if has_search else None,
-    )
+    header = _csv_header(path)
+    optional = [
+        c for c in ("search_valid", "outcome", "decel_kind", "decel_outcome") if c in header
+    ]
+    df = _read_csv(path, usecols=["wake_ns", "plan_valid", *optional])
+    wakes = PlannerWakes(df["wake_ns"].to_numpy(float) * 1e-9, df["plan_valid"].to_numpy(float))
+    if "search_valid" in df.columns:
+        wakes = wakes._replace(search_valid=df["search_valid"].to_numpy(float))
+        if "outcome" in df.columns:
+            wakes = wakes._replace(
+                searched=~df["outcome"].astype(str).isin(("idle", "no_input")).to_numpy()
+            )
+    if "decel_kind" in df.columns and "decel_outcome" in df.columns:
+        first = (df["decel_kind"].astype(str) == "first").to_numpy()
+        published = (df["decel_outcome"].astype(str) == "published").to_numpy()
+        wakes = wakes._replace(pair_attempt=first, pair_published=first & published)
+    return wakes
 
 
 def _median(rows: Sequence[Mapping], key: str) -> float:
@@ -3867,8 +3920,9 @@ def _summarise(
         searched = [r for r in with_cycles if "search_valid_ratio" in r]
         summary["g3d"] = {
             "n_trials_with_cycles": len(with_cycles),
-            # The search's own validity and how often its plan went out as a
-            # pair (planner_events `search_valid`; None on a log without it).
+            # The search's own validity (over the wakes that searched) and how
+            # often a first segment that was tried went out with its plan
+            # (mode mpc); None on a log without the E1-F05 columns.
             "search_valid_ratio_p50_p05_p95": _p50_p05_p95(searched, "search_valid_ratio"),
             "pair_published_ratio_p50_p05_p95": _p50_p05_p95(searched, "pair_published_ratio"),
             "plan_valid_ratio_p50_p05_p95": [

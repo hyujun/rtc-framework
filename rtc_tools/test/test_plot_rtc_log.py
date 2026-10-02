@@ -10,6 +10,7 @@ import contextlib
 import csv
 import math
 import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -3933,6 +3934,63 @@ class TestDecelStringColumns:
         assert list(df["some_numeric"]) == [1, 2, 3]
 
 
+class TestDecelEnumTables:
+    """catching_diag.csv writes `decel_event` / `decel_refusal` as integers
+    and the plotter names them from two tables. An enumerator inserted or
+    removed in C++ moves every value after it; this compares the tables with
+    the enums themselves."""
+
+    _REPO = Path(__file__).resolve().parents[2]
+    _POD = (
+        _REPO / "integrated_bringup/include/integrated_bringup/logging/catching_diag_log_pod.hpp"
+    )
+    _IO = _REPO / "rtc_controllers/include/rtc_controllers/catching/planner_io.hpp"
+
+    @staticmethod
+    def _cpp_enum(header, name):
+        """Enumerators of `enum class <name>` by value, as snake_case names
+        (kGateRefused -> gate_refused). Explicit `= n` is honoured, the rest
+        count up."""
+        body = header.read_text().split(f"enum class {name}", 1)[1]
+        body = body.split("{", 1)[1].split("};", 1)[0]
+        names = {}
+        value = -1
+        for line in body.splitlines():
+            m = re.match(r"\s*k([A-Za-z0-9]+)\s*(?:=\s*(\d+))?\s*,?", line)
+            if not m:
+                continue
+            value = int(m.group(2)) if m.group(2) else value + 1
+            names[value] = re.sub(r"(?<!^)(?=[A-Z])", "_", m.group(1)).lower()
+        return tuple(names[i] for i in range(len(names)))
+
+    def test_event_names_match_the_cpp_enum(self):
+        from rtc_tools.plotting.plotters.catching import DECEL_EVENT_NAMES
+
+        if not self._POD.exists():
+            pytest.skip("C++ header is not beside this checkout")
+        assert self._cpp_enum(self._POD, "DecelEvent") == DECEL_EVENT_NAMES
+
+    def test_refusal_names_match_the_cpp_enum(self):
+        from rtc_tools.plotting.plotters.catching import DECEL_REFUSAL_NAMES
+
+        if not self._IO.exists():
+            pytest.skip("C++ header is not beside this checkout")
+        assert self._cpp_enum(self._IO, "DecelRefusal") == DECEL_REFUSAL_NAMES
+
+    def test_the_parser_reads_implicit_and_explicit_values(self, tmp_path):
+        # Positive control for the two tests above: a reordered enum is seen.
+        hpp = tmp_path / "x.hpp"
+        hpp.write_text(
+            "enum class Demo : std::uint8_t {\n"
+            "  kNone = 0,\n"
+            "  kFirstThing,  ///< k is not a name here\n"
+            "                ///< kNeither is this\n"
+            "  kSecond = 2,\n"
+            "};\n"
+        )
+        assert self._cpp_enum(hpp, "Demo") == ("none", "first_thing", "second")
+
+
 class _DecelPlotHelpers:
     @staticmethod
     def _render(plot, df, tmp_path, monkeypatch, module):
@@ -4208,6 +4266,54 @@ class TestPlannerEventsDecelPlots(_DecelPlotHelpers):
             assert len(lines["x0 speed (rad/s)"].get_ydata()) == 1
         finally:
             plt.close("all")
+
+    def test_iterations_are_markers_so_a_lone_solve_is_drawn(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        fig = self._fig(self._frame(), tmp_path, monkeypatch)
+        try:
+            (it,) = [ln for ax in fig.axes for ln in ax.lines if ln.get_label() == "iterations"]
+            # Solves on rows 2, 3, 4 and 8 of twelve: row 8 stands alone.
+            assert len(it.get_ydata()) == 4
+            assert it.get_linestyle() == "None" and it.get_marker() not in ("", "None", None)
+        finally:
+            plt.close("all")
+
+    def test_a_log_from_before_decel_kind_counts_solves_not_waits(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        from rtc_tools.plotting.plotters import planner_events as pe
+
+        # The schema before E1-F05: `decel_outcome` and no `decel_kind`, with
+        # the stop-only planner's `not_due` still in it (MD-70).
+        columns = [c for c in _planner_events_columns() if c not in ("decel_kind", "search_valid")]
+        waits = self._frame(columns)
+        waits["decel_outcome"] = ["not_due", "up_to_date", "off"] * 4
+        assert not pe._decel_rows(waits).any()
+        assert pe._decel_panels(waits) == []
+        solved = waits.copy()
+        solved.loc[3, "decel_outcome"] = "published"
+        solved.loc[3, "decel_solve_us"] = 900.0
+        assert list(np.nonzero(pe._decel_rows(solved).to_numpy())[0]) == [3]
+        # `not_due` is a name the plot knows, not "unknown".
+        codes = pe._categorical_codes(solved["decel_outcome"], pe.DECEL_OUTCOME_ORDER)
+        assert pe.DECEL_OUTCOME_ORDER[int(codes.iloc[0])] == "not_due"
+        fig = self._fig(solved, tmp_path, monkeypatch)
+        try:
+            assert self._panels(fig) == 6 + len(pe._decel_panels(solved)) > 6
+        finally:
+            plt.close("all")
+
+    def test_the_search_line_counts_the_wakes_that_searched(self, capsys):
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        df = self._frame()
+        # Rows 3 and 4 of the fixture replanned the segment: no search, idle.
+        df.loc[[3, 4], "outcome"] = "idle"
+        df.loc[[3, 4], ["plan_valid", "search_valid"]] = 0
+        print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        assert "Searches: 10 of 12 wakes" in out, out
 
     def test_a_session_whose_decel_planner_was_off_gets_no_decel_panel(
         self, tmp_path, monkeypatch

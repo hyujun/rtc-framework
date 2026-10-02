@@ -547,6 +547,22 @@ def test_decel_arrays_are_none_for_the_columns_a_diag_lacks():
         decel_p_d_x=[0.1, 0.2], decel_p_d_y=[0.0, 0.0], decel_p_d_z=[1.0, 1.0]
     )
     assert ct._decel_arrays(full)["decel_p_d"].shape == (2, 3)
+    # A row cut short reads NaN: not judged, not following, event 0, seq 0 —
+    # never INT64_MIN, which would count as one more followed segment.
+    cut = pd.DataFrame(
+        {
+            "decel_judged": [1.0, np.nan],
+            "decel_following": [1.0, np.nan],
+            "decel_event": [4.0, np.nan],
+            "decel_refusal": [0.0, np.nan],
+            "decel_seq": [7.0, np.nan],
+        }
+    )
+    arrays = ct._decel_arrays(cut)
+    assert list(arrays["decel_following"]) == [True, False]
+    assert list(arrays["decel_judged"]) == [True, False]
+    assert list(arrays["decel_event"]) == [4, 0]
+    assert list(arrays["decel_seq"]) == [7, 0]
     # Two of the three target columns are not a target.
     assert ct._decel_arrays(full.drop(columns="decel_p_d_z"))["decel_p_d"] is None
 
@@ -668,6 +684,46 @@ def test_a_single_switch_has_no_replan_rho():
     assert rec["decel_rho_first"] == pytest.approx(1e-6)
 
 
+def _cpp_enum(header: Path, name: str) -> list[str]:
+    """The enumerators of ``enum class <name>`` in a C++ header, by value, as
+    the snake_case names the CSV tools use (``kGateRefused`` → ``gate_refused``).
+    Explicit ``= n`` values are honoured, the rest count up."""
+    body = header.read_text().split(f"enum class {name}", 1)[1].split("{", 1)[1].split("};", 1)[0]
+    names: dict[int, str] = {}
+    value = -1
+    for line in body.splitlines():
+        m = re.match(r"\s*k([A-Za-z0-9]+)\s*(?:=\s*(\d+))?\s*,?", line)
+        if not m:
+            continue
+        value = int(m.group(2)) if m.group(2) else value + 1
+        names[value] = re.sub(r"(?<!^)(?=[A-Z])", "_", m.group(1)).lower()
+    return [names[i] for i in range(len(names))]
+
+
+_REPO = Path(__file__).resolve().parents[2]
+_DIAG_POD_HPP = (
+    _REPO / "integrated_bringup/include/integrated_bringup/logging/catching_diag_log_pod.hpp"
+)
+_PLANNER_IO_HPP = _REPO / "rtc_controllers/include/rtc_controllers/catching/planner_io.hpp"
+
+
+def test_the_decel_codes_this_tool_reads_are_the_cpp_enums_values():
+    """catching_diag.csv writes ``decel_event`` / ``decel_refusal`` as
+    integers. An enumerator inserted or removed in C++ moves every value after
+    it; this is what notices."""
+    if not (_DIAG_POD_HPP.exists() and _PLANNER_IO_HPP.exists()):
+        pytest.skip("C++ headers are not beside this checkout")
+    event = _cpp_enum(_DIAG_POD_HPP, "DecelEvent")
+    refusal = _cpp_enum(_PLANNER_IO_HPP, "DecelRefusal")
+    assert event[ct.DECEL_EVENT_ADMITTED] == "admitted"
+    assert event[ct.DECEL_EVENT_DEFERRED] == "deferred"
+    assert event[ct.DECEL_EVENT_WORKSPACE] == "workspace"
+    assert event[ct.DECEL_EVENT_SWITCHED] == "switched"
+    assert event[ct.DECEL_EVENT_GATE_REFUSED] == "gate_refused"
+    assert event[ct.DECEL_EVENT_REPLACED] == "replaced"
+    assert refusal[ct.DECEL_REFUSAL_AGED] == "aged"
+
+
 # ── The command at t_c (MPC E1-F05) ─────────────────────────────────────────
 
 
@@ -741,6 +797,34 @@ def test_the_command_columns_do_not_assume_evenly_spaced_rows():
     assert rec["cmd_speed_tc"] == pytest.approx(3.5, abs=0.01)
     assert rec["cmd_dvdt_tc"] == pytest.approx(10.0, abs=0.05)
     assert rec["cmd_move_s"] == pytest.approx(0.35, abs=0.01)
+
+
+def test_a_tick_that_commanded_nothing_before_approach_does_not_blank_the_trial():
+    # The diag writes q_cmd as NaN until the arm is latched. Such a tick early
+    # in the trial's window is not one the columns read.
+    ctx = _command_ctx(_speeding_up)
+    ctx.q_cmd[:20] = np.nan  # 0 .. 0.04 s; APPROACH is at 0.1 s
+    rec = ct.command_kinematics_at_tc(ctx, t_c=0.6, t_lead=0.05)
+    assert rec["cmd_speed_tc"] == pytest.approx(3.5, abs=0.01)
+    assert rec["cmd_hold_s"] == pytest.approx(0.1, abs=0.005)
+    assert rec["cmd_move_s"] == pytest.approx(0.35, abs=0.005)
+    # Inside the rows that ARE read it still blanks the trial.
+    ctx.q_cmd[100] = np.nan  # 0.2 s
+    assert all(math.isnan(v) for v in ct.command_kinematics_at_tc(ctx, 0.6, 0.05).values())
+
+
+def test_only_the_rows_that_are_read_go_through_fk():
+    calls = []
+
+    class _CountingFk(_IdentityFk):
+        def __call__(self, q):
+            calls.append(1)
+            return super().__call__(q)
+
+    ctx = _command_ctx(_speeding_up, approach_at=0.4)  # APPROACH at row 200, kl at 275
+    ctx.fk = _CountingFk()
+    ct.command_kinematics_at_tc(ctx, t_c=0.6, t_lead=0.05)
+    assert len(calls) < 100, len(calls)  # not the 280 rows from the window's start
 
 
 def test_a_command_that_never_moves_has_no_hold_time():
@@ -1263,24 +1347,78 @@ def test_plan_validity_window_ratio_is_nan_with_zero_cycles():
     assert math.isnan(out["plan_valid_at_commit"])
 
 
-def test_plan_validity_window_separates_the_search_from_the_published_pair():
-    # mode mpc: the search found a plan on wakes 1, 2, 3; only wake 1's pair
-    # went out (the other first segments were withheld, MD-62).
-    wake = np.array([0.0, 1.0, 2.0, 3.0, 5.0])
-    plan_valid = np.array([0.0, 1.0, 0.0, 0.0, 1.0])
-    search_valid = np.array([0.0, 1.0, 1.0, 1.0, 1.0])
+def test_search_validity_is_over_the_wakes_that_searched():
+    # mode mpc: three search wakes (the search found a plan on the third and
+    # its pair was published), then five wakes that replanned the segment
+    # without searching. Every one of the eight earned a row.
+    wake = np.arange(1.0, 9.0)
+    plan_valid = np.array([0, 0, 1, 0, 0, 0, 0, 0], float)
+    search_valid = np.array([0, 0, 1, 0, 0, 0, 0, 0], float)
+    searched = np.array([1, 1, 1, 0, 0, 0, 0, 0], bool)
     out = ct.plan_validity_window(
-        wake, plan_valid, t_launch=0.5, t_commit=3.5, t_end=10.0, search_valid=search_valid
+        wake, plan_valid, 0.5, 8.5, 10.0, search_valid=search_valid, searched=searched
     )
-    assert out["planner_cycles"] == 3
-    assert out["plan_valid_cycles"] == 1
-    assert out["plan_valid_ratio"] == pytest.approx(1 / 3)  # what it read before: "1 in 3 valid"
-    assert out["search_valid_cycles"] == 3
-    assert out["search_valid_ratio"] == pytest.approx(1.0)
+    assert out["planner_cycles"] == 8
+    assert out["plan_valid_ratio"] == pytest.approx(1 / 8)  # over every row, as before
+    assert out["search_cycles"] == 3
+    assert out["search_valid_cycles"] == 1
+    assert out["search_valid_ratio"] == pytest.approx(1 / 3)  # not 1/8
+    # The last wake before the commit replanned; the last one that SEARCHED
+    # published a valid plan.
+    assert out["plan_valid_at_commit"] == 1.0
+    # Without the mask every row counts as a search, and the last row is read.
+    plain = ct.plan_validity_window(wake, plan_valid, 0.5, 8.5, 10.0, search_valid=search_valid)
+    assert plain["search_valid_ratio"] == pytest.approx(1 / 8)
+    assert plain["plan_valid_at_commit"] == 0.0
+
+
+def test_search_validity_is_nan_when_no_wake_of_the_window_searched():
+    wake = np.array([1.0, 2.0])
+    out = ct.plan_validity_window(
+        wake, np.zeros(2), 0.5, 2.5, 10.0, search_valid=np.zeros(2), searched=np.zeros(2, bool)
+    )
+    assert out["search_cycles"] == 0
+    assert math.isnan(out["search_valid_ratio"])
+    assert math.isnan(out["plan_valid_at_commit"])
+
+
+def test_the_pair_ratio_is_of_the_first_segments_that_were_tried():
+    # Three first solves: catch_error, catch_error, published.
+    wake = np.arange(1.0, 6.0)
+    plan_valid = np.array([0, 0, 1, 0, 0], float)
+    tried = np.array([1, 1, 1, 0, 0], bool)
+    published = np.array([0, 0, 1, 0, 0], bool)
+    out = ct.plan_validity_window(
+        wake, plan_valid, 0.5, 5.5, 10.0, pair_attempt=tried, pair_published=published
+    )
+    assert out["pair_attempt_cycles"] == 3
     assert out["pair_published_ratio"] == pytest.approx(1 / 3)
 
 
-def test_plan_validity_window_without_search_valid_has_no_search_keys():
+def test_a_trial_with_no_first_solve_has_no_pair_ratio():
+    # closed_form: valid searches the switching rule kept back are not
+    # withheld pairs — there is no pair.
+    wake = np.arange(1.0, 6.0)
+    plan_valid = np.array([1, 0, 0, 0, 0], float)
+    search_valid = np.ones(5)
+    none = np.zeros(5, bool)
+    out = ct.plan_validity_window(
+        wake,
+        plan_valid,
+        0.5,
+        5.5,
+        10.0,
+        search_valid=search_valid,
+        searched=np.ones(5, bool),
+        pair_attempt=none,
+        pair_published=none,
+    )
+    assert out["search_valid_ratio"] == 1.0
+    assert out["pair_attempt_cycles"] == 0
+    assert math.isnan(out["pair_published_ratio"])
+
+
+def test_plan_validity_window_without_the_new_arrays_has_only_the_old_keys():
     wake = np.array([0.0, 1.0, 2.0])
     valid = np.array([0.0, 1.0, 1.0])
     out = ct.plan_validity_window(wake, valid, t_launch=0.5, t_commit=2.5, t_end=10.0)
@@ -1292,30 +1430,33 @@ def test_plan_validity_window_without_search_valid_has_no_search_keys():
     }
 
 
-def test_pair_published_ratio_is_nan_when_no_search_found_a_plan():
-    wake = np.array([1.0, 2.0])
-    out = ct.plan_validity_window(
-        wake, np.zeros(2), t_launch=0.5, t_commit=2.5, t_end=10.0, search_valid=np.zeros(2)
-    )
-    assert out["search_valid_cycles"] == 0 and out["search_valid_ratio"] == 0.0
-    assert math.isnan(out["pair_published_ratio"])
-
-
-def test_planner_cycle_times_reads_search_valid_only_where_the_log_has_it(tmp_path):
+def test_planner_cycle_times_reads_the_new_columns_only_where_the_log_has_them(tmp_path):
     new = tmp_path / "new"
     old = tmp_path / "old"
     for d in (new, old):
         d.mkdir()
     (new / ct.PLANNER_EVENTS_CSV).write_text(
-        "wake_ns,plan_valid,search_valid,decel_kind\n1000000000,0,1,first\n2000000000,1,1,same\n"
+        "wake_ns,outcome,plan_valid,search_valid,decel_outcome,decel_kind\n"
+        "1000000000,held,0,1,catch_error,first\n"
+        "2000000000,published,1,1,published,first\n"
+        "3000000000,idle,0,0,published,same\n"
+        "4000000000,no_input,0,0,off,none\n"
     )
     (old / ct.PLANNER_EVENTS_CSV).write_text("wake_ns,plan_valid\n1000000000,0\n2000000000,1\n")
     lane = object()  # only its presence is read
-    wake, plan_valid, search_valid = ct._planner_cycle_times(new, lane)
-    assert list(wake) == [1.0, 2.0] and list(plan_valid) == [0.0, 1.0]
-    assert list(search_valid) == [1.0, 1.0]
-    wake, plan_valid, search_valid = ct._planner_cycle_times(old, lane)
-    assert list(plan_valid) == [0.0, 1.0] and search_valid is None
+    wakes = ct._planner_cycle_times(new, lane)
+    assert list(wakes.wake_s) == [1.0, 2.0, 3.0, 4.0]
+    assert list(wakes.plan_valid) == [0.0, 1.0, 0.0, 0.0]
+    assert list(wakes.search_valid) == [1.0, 1.0, 0.0, 0.0]
+    # A replan-only wake keeps outcome idle: it ran no search.
+    assert list(wakes.searched) == [True, True, False, False]
+    assert list(wakes.pair_attempt) == [True, True, False, False]
+    assert list(wakes.pair_published) == [False, True, False, False]
+    before = ct._planner_cycle_times(old, lane)
+    assert list(before.plan_valid) == [0.0, 1.0]
+    assert before.search_valid is None and before.searched is None
+    assert before.pair_attempt is None and before.pair_published is None
+    assert before[0] is before.wake_s and before[1] is before.plan_valid
 
 
 def test_golden_g3d_has_no_search_validity_on_a_log_from_before_the_column(pilot):

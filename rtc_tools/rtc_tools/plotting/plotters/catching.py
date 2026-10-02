@@ -43,6 +43,7 @@ import numpy as np
 import pandas as pd
 
 from rtc_tools.plotting.columns.detect import detect_joint_columns
+from rtc_tools.utils.smoothing import COMMAND_SMOOTH_ROWS, box_smooth
 
 # rtc::catching::Mode wire values, in the enum's own order. Used for the mode
 # band's y ticks so the trace reads as states rather than as small integers.
@@ -95,11 +96,14 @@ DECEL_REFUSAL_NAMES = (
     "before_reset",
     "malformed",
 )
+# The codes this module reads are looked up in the two tables above, never
+# written as numbers: the tables are what the test pins against the C++ enums.
 # `repeat` is judged on almost every tick once a segment was taken — it is
 # bookkeeping, not an event, so neither the lane nor the statistics list it.
-_DECEL_REFUSAL_QUIET = (0, 4)
+_DECEL_REFUSAL_QUIET = (DECEL_REFUSAL_NAMES.index("none"), DECEL_REFUSAL_NAMES.index("repeat"))
+_DECEL_EVENT_SWITCHED = DECEL_EVENT_NAMES.index("switched")
 # Events on which the switch gate wrote its account (rho, dq_max, ...).
-_DECEL_GATE_EVENTS = (4, 5)
+_DECEL_GATE_EVENTS = (_DECEL_EVENT_SWITCHED, DECEL_EVENT_NAMES.index("gate_refused"))
 # Smallest command rate / acceleration / jerk the kinematics panel draws.
 _KINEMATICS_FLOOR = 1e-3
 
@@ -275,18 +279,6 @@ def _masked(df, column, flag):
     return series.where(df[flag].astype(float) > 0.5)
 
 
-def _box(x, rows):
-    """Centred moving average over `rows` rows, edge-padded (NaN propagates).
-
-    The command is differentiated three times; at a 2 ms tick the raw triple
-    difference is quantisation noise, so each derivative is smoothed before it
-    is differentiated again.
-    """
-    pad = rows // 2
-    padded = np.pad(np.asarray(x, dtype=float), pad, mode="edge")
-    return np.convolve(padded, np.full(rows, 1.0 / rows), mode="valid")
-
-
 def _command_kinematics(df, t):
     """(|q̇|max, |q̈|max, |jerk|max) of the arm command per row, or None.
 
@@ -301,9 +293,12 @@ def _command_kinematics(df, t):
         return None
     q = df[cols].astype(float).to_numpy()
     bad = np.isnan(q).any(axis=1)
+    # The command is differentiated three times; at a 2 ms tick the raw triple
+    # difference is quantisation noise, so each derivative is smoothed before
+    # it is differentiated again (the kernel catching_trials' cmd_* columns use).
     qd = np.gradient(q, t, axis=0)
-    qdd = np.apply_along_axis(
-        _box, 0, np.gradient(np.apply_along_axis(_box, 0, qd, 5), t, axis=0), 5
+    qdd = box_smooth(
+        np.gradient(box_smooth(qd, COMMAND_SMOOTH_ROWS), t, axis=0), COMMAND_SMOOTH_ROWS
     )
     jerk = np.gradient(qdd, t, axis=0)
     out = []
@@ -721,7 +716,7 @@ def _print_decel_statistics(df):
         if len(refused) > 0:
             print("  Refusals: " + _named_counts(refused, DECEL_REFUSAL_NAMES))
     if "decel_rho" in df.columns:
-        rho = df.loc[event == 4, "decel_rho"].astype(float).dropna()
+        rho = df.loc[event == _DECEL_EVENT_SWITCHED, "decel_rho"].astype(float).dropna()
         if len(rho) > 0:
             print(
                 f"  Switch ρ [{len(rho)} switch(es)]: p50 {rho.quantile(0.5):.3f}  "

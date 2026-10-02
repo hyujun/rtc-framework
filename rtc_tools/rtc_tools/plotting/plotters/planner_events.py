@@ -64,11 +64,14 @@ DECISION_ORDER = (
 # trailing slot `_categorical_codes` maps unrecognised names to.
 DECEL_KIND_ORDER = ("none", "first", "same", "advance", "stop", "unknown")
 
-# DecelOutcomeName order (rtc_controllers/src/catching/decel_planner.cpp).
+# DecelOutcomeName order (rtc_controllers/src/catching/decel_planner.cpp), plus
+# `not_due`: the stop-only planner's wait, in logs from before it was removed
+# (MPC plan MD-70).
 DECEL_OUTCOME_ORDER = (
     "off",
     "no_state",
     "stale_state",
+    "not_due",
     "up_to_date",
     "past_replan_window",
     "input_non_finite",
@@ -87,6 +90,10 @@ DECEL_OUTCOME_ORDER = (
     "speed",
     "unknown",
 )
+
+# Outcomes of a decel step that solved nothing (DecelStepWorthRecording in
+# planner_events_csv.hpp, with the removed `not_due`).
+_DECEL_WAITED = ("off", "not_due", "up_to_date", "past_replan_window")
 
 # One colour per solve kind, shared by the decel panels so a kind reads the same
 # on all of them. `unknown` is grey: it is a name this module has not caught up with.
@@ -156,12 +163,13 @@ def _decel_kind_series(df):
 def _decel_rows(df):
     """Rows on which the decel planner did something.
 
-    `decel_kind != "none"` is the writer's own statement of that; a log that has
-    only `decel_outcome` falls back to `!= "off"`.
+    `decel_kind != "none"` is the writer's own statement of that. A log from
+    before that column has only `decel_outcome`: there a step that only waited
+    (the writer's own "not worth a row" set) is not counted.
     """
     if "decel_kind" in df.columns:
         return df["decel_kind"].astype(str) != "none"
-    return df["decel_outcome"].astype(str) != "off"
+    return ~df["decel_outcome"].astype(str).isin(_DECEL_WAITED)
 
 
 def _decel_panels(df):
@@ -229,8 +237,18 @@ def _draw_decel_solve(ax, df, t):
     ax.grid(True, alpha=0.3)
     if "decel_iterations" in df.columns:
         ax_it = ax.twinx()
-        it = df["decel_iterations"].astype(float).where(has_solve)
-        ax_it.plot(t, it, linewidth=0.7, color="0.4", alpha=0.7, label="iterations")
+        # Markers, not a line: a solve between two wakes that solved nothing
+        # is one finite value between NaNs, which a line does not draw.
+        ax_it.plot(
+            t[has_solve],
+            df.loc[has_solve, "decel_iterations"].astype(float),
+            linestyle="none",
+            marker="+",
+            markersize=4,
+            color="0.4",
+            alpha=0.8,
+            label="iterations",
+        )
         ax_it.set_ylabel("QP iterations")
         h1, l1 = ax.get_legend_handles_labels()
         h2, l2 = ax_it.get_legend_handles_labels()
@@ -531,8 +549,13 @@ def _print_decel_statistics(df):
     if "search_valid" in df.columns and "plan_valid" in df.columns:
         sv = int((df["search_valid"].astype(float) > 0.5).sum())
         pv = int((df["plan_valid"].astype(float) > 0.5).sum())
+        # Of the wakes that SEARCHED: a replan-only wake (mode mpc, once the RT
+        # follows a plan) earns a row and runs no search — its outcome is idle.
+        ran = n
+        if "outcome" in df.columns:
+            ran = int((~df["outcome"].astype(str).isin(("idle", "no_input"))).sum())
         print(
-            f"Searches with a plan: search_valid {sv}/{n}, plan_valid {pv}/{n}. The difference "
+            f"Searches: {ran} of {n} wakes; search_valid {sv}, plan_valid {pv}. The difference "
             f"({sv - pv}) is plans the search found and the wake did not publish — under mode "
             f"mpc a plan goes out only with its first segment."
         )
