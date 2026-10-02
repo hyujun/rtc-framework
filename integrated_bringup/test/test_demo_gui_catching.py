@@ -13,18 +13,23 @@ sentence gets built. Visual confirmation is the `verify` skill's job.
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
 
 from integrated_bringup.demo_gui.ball_launch import FEED_STALE_AFTER_S
 from integrated_bringup.demo_gui.catching import (
+    CATCHING_DECEL_MODE_PARAM,
+    DECEL_LAW_QUERY_PERIOD_S,
+    DECEL_LAW_REPLY_TIMEOUT_S,
     HAND_PHASE_NAMES,
     MODE_NAMES,
     OUTCOME_NAMES,
     PLAN_REASON_NAMES,
     REASON_NAMES,
     CatchingStatus,
+    decel_law_query_due,
     mode_name,
     outcome_name,
     reason_name,
@@ -528,3 +533,219 @@ def test_a_panel_that_starts_inside_retreat_does_not_count_an_edge_it_did_not_se
     assert status.attempt_tally == {}
     assert status.tally_summary() == ""
     assert not any(line.startswith("this panel:") for line in status.lines(0.02))
+
+
+# ── Decel law line, its query throttle, and the Catching tab ────────────────
+# Added with the `supervisor.decel.mode` readout. Everything above predates it.
+
+
+def test_unknown_decel_law_is_said_and_follows_the_mode_line():
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=0.0)
+    lines = status.lines(0.0)
+    assert lines[0].startswith("mode:")
+    assert lines[1].startswith("decel law: unknown")
+
+
+@pytest.mark.parametrize("law", ["mpc", "closed_form"])
+def test_a_known_decel_law_is_shown_by_name(law):
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=0.0)
+    status.decel_law = law
+    assert status.lines(0.0)[1] == f"decel law: {law}"
+
+
+def test_the_never_received_state_has_no_decel_law_line():
+    assert "decel law" not in text(CatchingStatus())
+
+
+def test_only_plan_lines_start_with_plan():
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=0.0)
+    status.decel_law = "mpc"
+    plan_lines = [line for line in status.lines(0.0) if line.startswith("plan")]
+    assert len(plan_lines) == 1
+    assert plan_lines[0].startswith("plan #") or plan_lines[0].startswith("plan:")
+
+
+def test_a_backwards_tick_clears_the_cached_law_and_a_forward_one_keeps_it():
+    status = CatchingStatus()
+    status.update(make_msg(tick=500), now_s=0.0)
+    status.decel_law = "mpc"
+    status.update(make_msg(tick=501), now_s=0.1)
+    assert status.decel_law == "mpc"
+    status.update(make_msg(tick=3), now_s=0.2)
+    assert status.decel_law is None
+
+
+def test_the_first_message_does_not_clear_a_law():
+    status = CatchingStatus()
+    status.decel_law = "closed_form"
+    status.update(make_msg(tick=0), now_s=0.0)
+    assert status.decel_law == "closed_form"
+
+
+def test_decel_law_query_due_follows_feed_cache_flight_and_period():
+    status = CatchingStatus()
+    assert decel_law_query_due(status, 10.0, None, False) is False  # no feed yet
+    status.update(make_msg(), now_s=10.0)
+    assert decel_law_query_due(status, 10.0, None, False) is True
+    assert decel_law_query_due(status, 10.0, None, True) is False
+    assert decel_law_query_due(status, 11.0, 10.0, False) is False
+    assert decel_law_query_due(status, 10.0 + DECEL_LAW_QUERY_PERIOD_S, 10.0, False) is True
+    status.decel_law = "mpc"
+    assert decel_law_query_due(status, 99.0, None, False) is False
+
+
+def test_a_read_with_no_reply_is_asked_again_after_the_timeout():
+    # A service reply that never arrives leaves `in_flight` up for good; past
+    # the timeout the read is taken as lost.
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=10.0)
+    assert DECEL_LAW_REPLY_TIMEOUT_S > DECEL_LAW_QUERY_PERIOD_S
+    just_before = 10.0 + DECEL_LAW_REPLY_TIMEOUT_S - 0.01
+    assert decel_law_query_due(status, just_before, 10.0, True) is False
+    assert decel_law_query_due(status, 10.0 + DECEL_LAW_REPLY_TIMEOUT_S, 10.0, True) is True
+
+
+class _FakeParamClient:
+    def __init__(self, ready: bool):
+        self.ready = ready
+        self.calls: list[list[str]] = []
+
+    def services_are_ready(self):
+        return self.ready
+
+    def get_parameters(self, names):
+        self.calls.append(list(names))
+        return _FakeFuture()
+
+
+class _FakeFuture:
+    def __init__(self, result=None, error: Exception | None = None):
+        self._result = result
+        self._error = error
+        self.callbacks = []
+
+    def add_done_callback(self, cb):
+        self.callbacks.append(cb)
+
+    def result(self):
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+class _FakeLogger:
+    def debug(self, *_a, **_k):
+        pass
+
+    def info(self, *_a, **_k):
+        pass
+
+
+class _FakeRoot:
+    def __init__(self):
+        self.after_calls: list[tuple] = []
+
+    def after(self, *args):
+        self.after_calls.append(args)
+
+
+def _decel_state(ready: bool):
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=0.0)
+    state = SimpleNamespace()
+    state._catching = status
+    state._decel_law_last_query_s = None
+    state._decel_law_in_flight = False
+    state._client = _FakeParamClient(ready)
+    state._get_param_client = lambda _ctrl: state._client
+    state.root = _FakeRoot()
+    state.get_logger = lambda: _FakeLogger()
+    state.refreshes = 0
+
+    def _refresh():
+        state.refreshes += 1
+
+    state._refresh_catching_panel = _refresh
+    state._apply_catching_decel_law = lambda value: None
+    return state
+
+
+def test_services_not_ready_sends_nothing_but_stamps_the_query():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _decel_state(ready=False)
+    DemoControllerGUI._query_catching_decel_law(state)
+    assert state._client.calls == []
+    assert state._decel_law_last_query_s is not None
+    assert state._decel_law_in_flight is False
+
+
+def test_ready_services_send_one_request_and_none_while_in_flight():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _decel_state(ready=True)
+    DemoControllerGUI._query_catching_decel_law(state)
+    assert state._client.calls == [[CATCHING_DECEL_MODE_PARAM]]
+    assert state._decel_law_in_flight is True
+    state._decel_law_last_query_s = None  # the throttle alone must not be what blocks it
+    DemoControllerGUI._query_catching_decel_law(state)
+    assert len(state._client.calls) == 1
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_applying_an_empty_law_is_not_cached_and_frees_the_slot(value):
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _decel_state(ready=True)
+    state._decel_law_in_flight = True
+    DemoControllerGUI._apply_catching_decel_law(state, value)
+    assert state._catching.decel_law is None
+    assert state._decel_law_in_flight is False
+    assert state.refreshes == 0
+
+
+def test_applying_a_law_caches_it_and_refreshes_the_panel():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _decel_state(ready=True)
+    state._decel_law_in_flight = True
+    DemoControllerGUI._apply_catching_decel_law(state, "mpc")
+    assert state._catching.decel_law == "mpc"
+    assert state._decel_law_in_flight is False
+    assert state.refreshes == 1
+
+
+@pytest.mark.parametrize(
+    ("future", "expected"),
+    [
+        (_FakeFuture(SimpleNamespace(values=[SimpleNamespace(string_value="mpc")])), "mpc"),
+        (_FakeFuture(error=RuntimeError("boom")), None),
+        (_FakeFuture(SimpleNamespace(values=[])), None),
+        (_FakeFuture(SimpleNamespace(values=[SimpleNamespace(string_value="")])), None),
+    ],
+)
+def test_the_done_callback_only_hands_the_value_to_the_tk_thread(future, expected):
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _decel_state(ready=True)
+    state._client.get_parameters = lambda _names: future
+    DemoControllerGUI._query_catching_decel_law(state)
+    (callback,) = future.callbacks
+    callback(future)
+    assert state.root.after_calls == [(0, state._apply_catching_decel_law, expected)]
+    # Executor thread: nothing in the status or the throttle moved by itself.
+    assert state._catching.decel_law is None
+    assert state._decel_law_in_flight is True
+    assert state.refreshes == 0
+
+
+def test_the_catching_panels_are_built_on_the_catching_tab():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    source = inspect.getsource(DemoControllerGUI._run_gui)
+    for builder in ("_build_ball_panel", "_build_hand_step_panel", "_build_catching_panel"):
+        assert f"self.{builder}(catching_tab)" in source
+        assert f"self.{builder}(control_tab)" not in source

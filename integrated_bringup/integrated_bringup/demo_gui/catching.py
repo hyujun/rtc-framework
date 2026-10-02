@@ -29,6 +29,8 @@ absent reference are different facts and only one of them is a measurement.
 
 Public surface (imported by app.py):
 - CATCHING_CONFIG_KEY, CATCHING_ENABLE_PARAM, CATCHING_STATE_TOPIC
+- CATCHING_DECEL_MODE_PARAM, DECEL_LAW_QUERY_PERIOD_S, DECEL_LAW_REPLY_TIMEOUT_S,
+  decel_law_query_due
 - MODE_NAMES, REASON_NAMES, PLAN_REASON_NAMES
 - CatchingStatus
 """
@@ -46,6 +48,18 @@ CATCHING_CONFIG_KEY = "demo_catching_controller"
 # The read-write arming parameter (A-S5-3). Not a message or a service: a new
 # msg/srv for something a parameter already expresses would be an E-3 decision.
 CATCHING_ENABLE_PARAM = "catching.enable"
+
+# The read-only parameter naming the arm-reference planner (`closed_form` |
+# `mpc`). It is a parameter rather than a CatchingState field because the
+# message is frozen; it is declared only after a successful configure, so a
+# parked or unconfigured controller answers with an empty string.
+CATCHING_DECEL_MODE_PARAM = "supervisor.decel.mode"
+
+# Minimum spacing between reads of that parameter while it is still unknown.
+DECEL_LAW_QUERY_PERIOD_S = 2.0
+# A read with no reply after this long is taken as lost and asked again: a
+# service reply that never arrives leaves its future pending forever.
+DECEL_LAW_REPLY_TIMEOUT_S = 10.0
 
 # Relative to the controller's namespace — the controller publishes it under
 # its own node namespace rather than under a device group's, because it
@@ -143,6 +157,30 @@ _ALARM_MODES = frozenset({"ABORT_SAFE", "FAULT"})
 _NOT_A_REJECT = frozenset({"no_track"})
 
 
+def decel_law_query_due(
+    status: CatchingStatus,
+    now_s: float,
+    last_query_s: float | None,
+    in_flight: bool,
+) -> bool:
+    """Whether the GUI should ask the controller for its decel law now.
+
+    Throttled because a parked controller answers with an empty value forever:
+    an unthrottled retry from the 200 ms refresh would send 5 requests/s
+    indefinitely. Nothing is asked before the feed has been received once, and
+    nothing once the law is cached. A read still `in_flight` blocks the next
+    one only until `DECEL_LAW_REPLY_TIMEOUT_S`: past that its reply is lost.
+    """
+    if status.feed.last_seen_s is None or status.decel_law is not None:
+        return False
+    if last_query_s is None:
+        return not in_flight
+    waited_s = now_s - last_query_s
+    if in_flight:
+        return waited_s >= DECEL_LAW_REPLY_TIMEOUT_S
+    return waited_s >= DECEL_LAW_QUERY_PERIOD_S
+
+
 def mode_name(value: int) -> str:
     """Name for a wire mode, or the raw value when this build does not know it.
 
@@ -193,6 +231,9 @@ class CatchingStatus:
     armable: bool = False
     law_enabled: bool = False
     tick: int = 0
+    #: The controller's `supervisor.decel.mode`, once read; None = not read yet.
+    #: Cached because the value is fixed at the node's first configure.
+    decel_law: str | None = None
 
     input_valid: bool = False
     input_stale: bool = True
@@ -260,6 +301,7 @@ class CatchingStatus:
     #: the first edge it sees, and restarting the panel starts a new count.
     attempt_tally: dict[str, int] = field(default_factory=dict)
     _prev_mode: int | None = None
+    _prev_tick: int | None = None
 
     def update(self, msg, now_s: float) -> None:
         """Adopt one CatchingState. Duck-typed so tests need no ROS message."""
@@ -273,7 +315,14 @@ class CatchingStatus:
         self.fault_latched = bool(msg.fault_latched)
         self.armable = bool(msg.armable)
         self.law_enabled = bool(msg.law_enabled)
-        self.tick = int(msg.tick)
+        new_tick = int(msg.tick)
+        # The tick counter restarting means the controller process (or its
+        # activation) restarted, so a cached law may belong to the previous
+        # process and is read again. The first message has nothing to compare.
+        if self._prev_tick is not None and new_tick < self._prev_tick:
+            self.decel_law = None
+        self._prev_tick = new_tick
+        self.tick = new_tick
 
         self.input_valid = bool(msg.input_valid)
         self.input_stale = bool(msg.input_stale)
@@ -401,6 +450,7 @@ class CatchingStatus:
         out = [
             f"mode: {mode_name(self.mode)}  reason: {reason_name(self.reason)}"
             f"  last attempt: {outcome_name(self.outcome)}  tick {self.tick}{feed_note}",
+            self._decel_law_line(),
             self._arm_line(),
             self._input_line(),
             self._plan_line(),
@@ -424,6 +474,13 @@ class CatchingStatus:
         if self.requested_arm is None:
             return PLACEHOLDER
         return "ARMED" if self.requested_arm else "DISARMED"
+
+    def _decel_law_line(self) -> str:
+        if self.decel_law is None:
+            # Not read yet, or never declared: the controller mirrors the key
+            # only once it has configured (a parked one answers with nothing).
+            return f"decel law: unknown ({CATCHING_DECEL_MODE_PARAM} not read)"
+        return f"decel law: {self.decel_law}"
 
     def _arm_line(self) -> str:
         observed = "ARMED" if self.armed else "DISARMED"
