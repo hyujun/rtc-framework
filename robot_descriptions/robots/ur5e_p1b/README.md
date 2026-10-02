@@ -3,6 +3,12 @@
 이 디렉토리는 **테스트 전용 fixture** 다 (`panda/` 와 같은 성격). `robot_descriptions`
 안에서 **유일하게 진짜 폐쇄 체인**인 모델이며, 그 경로를 CI 에서 태우기 위해 존재한다.
 
+**이 사본은 rtc-framework 가 소유한 테스트 입력이다 — 모델 자체는 여기서 검증하지 않는다**
+(#682). 모델의 소유자는 `hand_description` 이고 두 저장소는 서로 다른 영역이다: 이 저장소는
+그 URDF · closure 를 load 해서 **자기 코드** (폐쇄 체인 경로 · 포구 supervisor · 계획기 ·
+inference) 를 검증하는 입력으로만 쓴다. 관성 유효성, catch frame 이 파생 모델에 선언대로
+실리는지, 모델 차원 (nv 26 · 구동 16) 같은 **모델에 대한 단언은 두지 않는다**.
+
 ## 왜 이것이 필요한가 — iiwa7_leap 이 대체하지 못한다
 
 폐쇄 체인 경로 (`GetActuatedModel()` non-null → reduced-dynamics provider, 다열
@@ -40,6 +46,7 @@ UR5e 팔은 복사하지 않았다 — 이 repo 의 `robots/ur5e/urdf/ur5e.urdf`
 
 ### upstream 이 바뀌면 (drift)
 
+참고용이다 — 사본을 upstream 에 맞춰 두는 것은 이 저장소의 테스트가 요구하지 않는다 (위).
 vendored 사본은 조용히 갈린다. 대조는 위 표의 sha256 을 upstream 파일에 다시 돌리는 것으로
 충분하다 — 바이트 동일을 유지한 이유가 그것이다. `.closure.yaml` 만 정규화 2건이 있으므로
 `diff` 가 그 2줄을 낸다.

@@ -8,7 +8,14 @@
 //     rests on, plan §10),
 //   - it is still provisional (D-17: the user confirms in sim, S2.3b sets the
 //     pocket offset),
-//   - the model dimensions the plan quotes (ur5e_p1b full nv 26 / actuated 16).
+//   - the model dimensions the plan quotes (iiwa7_leap full nv 23).
+//
+// Only robots whose model this repository owns are listed. ur5e_p1b ships a
+// catch frame too, but its model belongs to `hand_description`: this
+// repository loads it and does not verify it (#682).
+// That the declared frame reaches every derived model is this test's concern
+// only for iiwa7_leap; the mechanism itself is rtc_urdf_bridge's
+// test_extra_frames.
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -44,19 +51,6 @@ struct RobotCase {
   std::array<const char*, 4> tips;
   int arm_dof;
 };
-
-const RobotCase kUr5eP1b{
-    "ur5e_p1b",
-    "ur5e_p1b/_base.yaml",
-    "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro",
-    "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml",
-    "ur5e",
-    "base",
-    "tool0",
-    "p1b",
-    "base_adapter",
-    {"l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"},
-    6};
 
 const RobotCase kIiwa7Leap{"iiwa7_leap",
                            "iiwa7_leap/sim.yaml",
@@ -189,16 +183,6 @@ void CheckRobot(const RobotCase& rc) {
 }
 
 }  // namespace
-
-TEST(CatchFrameModels, Ur5eP1b) {
-  CheckRobot(kUr5eP1b);
-  // Plan §2 / L5 §5.1: full tree nv 26 (UR5e 6 + P1b 20 revolute), actuated 16.
-  const rub::PinocchioModelBuilder builder(MakeConfig(kUr5eP1b));
-  EXPECT_EQ(builder.GetFullModel()->nv, 26);
-  EXPECT_EQ(builder.GetFullModel()->nq, 26);
-  ASSERT_NE(builder.GetActuatedModel(), nullptr);
-  EXPECT_EQ(builder.GetActuatedModel()->nv, 16);
-}
 
 TEST(CatchFrameModels, Iiwa7Leap) {
   CheckRobot(kIiwa7Leap);
