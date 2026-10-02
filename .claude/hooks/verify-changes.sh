@@ -72,8 +72,10 @@
 #      at the turn end (see Modes and "Turn end: evidence, not execution")
 #        - a package is "changed" for this phase by its source (.cpp/.hpp/.h/
 #          .cc/.py), its CMakeLists.txt / package.xml / colcon.pkg, a shell
-#          script in its source directories (see CHANGED_SH_BUILD), or a YAML
-#          under its config/ (see CHANGED_CONFIG_BUILD)
+#          script in its source directories (see CHANGED_SH_BUILD), or any
+#          other tracked file of it that is not Markdown -- config, robot
+#          data, a .msg (see CHANGED_DATA_BUILD, and its limit: the owning
+#          package only)
 #        - rtc_base / rtc_msgs change -> ./build.sh full --tests + colcon test all
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>,
@@ -608,9 +610,17 @@ CHANGED_META=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' 
 # package to build/test and to the test gates the way a CMakeLists edit does;
 # on its own it used to leave the hook at the exit below, ungraded.
 CHANGED_TESTCFG=$(echo "$CHANGED" | grep -E '^[^/]+/colcon\.pkg$' || true)
+# Any other tracked file of a PACKAGE, its Markdown aside: robot data, a
+# behaviour tree, a .msg, a test's data file. No class above names them, so a
+# turn that changed nothing else left at the exit below -- and the package
+# whose tests read the file was never routed (see CHANGED_DATA_BUILD).
+CHANGED_PKG_FILES=$(echo "$CHANGED_TRACKED" | awk -F/ 'NF >= 2 && $NF !~ /\.md$/' \
+  | while IFS= read -r f; do
+      if [ -f "${f%%/*}/package.xml" ]; then printf '%s\n' "$f"; fi
+    done || true)
 if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
    && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ] && [ -z "$CHANGED_TESTCFG" ] \
-   && [ -z "$STALE_ARTIFACT_PKGS" ]; then
+   && [ -z "$CHANGED_PKG_FILES" ] && [ -z "$STALE_ARTIFACT_PKGS" ]; then
   [ -z "$RUN_MODE" ] || baseline_artifact_stamps
   advance_verify_base
   exit 0
@@ -728,7 +738,7 @@ CHANGED_META_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '(^|/)(CMakeLists\.txt|
 # absent: it holds no source, and admitting it would turn this into "any
 # directory under a package" -- the unbounded reading the scratch exclusion
 # exists to prevent. The YAML it does hold is routed by its own list
-# (CHANGED_CONFIG_BUILD below), not as source.
+# (CHANGED_DATA_BUILD below), not as source.
 # A backreference is not portable across grep flavours, so match with awk.
 CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ '
   NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ \
@@ -749,21 +759,31 @@ CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
     && ($2 == "src" || $2 == "include" || $2 == "test" \
         || $2 == "launch" || $2 == "scripts" || $2 == $1)' \
   || true)
-# A YAML under <pkg>/config/ routes its package to build/test as well, tracked
-# or not. It was parsed (Phase 1b) and nothing else, on the reading that the
-# parse gate covers config. That gate answers "is this YAML"; the package's
-# tests answer "does the shipped profile still load, and inside the ranges the
-# parser enforces" -- they read these files from the install tree (the
-# shipped-profile suites configure every controller from them), and with
-# --symlink-install an edit is live there without a build. Seen 2026-10-02: a
-# turn whose last change was one shipped value passed --run in two seconds
-# with "built and tested []". The verdict key already held the file (a config
-# edit voids a verdict the package has); what was missing is this route, for
-# the turn in which the YAML is the package's ONLY change. Other directories
-# stay out: a YAML elsewhere in a package is not installed configuration.
-CHANGED_CONFIG_BUILD=$(echo "$CHANGED" | awk -F/ '
-  NF >= 3 && $2 == "config" && $NF ~ /\.(yaml|yml)$/' \
-  || true)
+# Every other TRACKED file of a package routes it to build/test as well, its
+# Markdown aside -- the set the package's verdict is keyed on (pkg_content_key).
+# The key and the route were two lists: a config edit voided a verdict the
+# package already had, and yet a turn whose ONLY change was that file owed
+# nothing, because nothing put the package in BUILD_PKGS. Seen 2026-10-02: one
+# shipped value in <pkg>/config/ changed, --run passed in two seconds with
+# "built and tested []". The parse gate (Phase 1b) says the file is YAML; that
+# the shipped profile still loads, inside the ranges the parser enforces, is
+# what the package's tests say -- they read it from the install tree, where
+# --symlink-install makes the edit live without a build.
+# Not a list of directories or extensions: config/ was one case of it, and an
+# install(DIRECTORY) of robot data, a behaviour tree, a .msg or a test's data
+# file had the same hole. What a package tracks is what it ships or tests.
+# Untracked files keep their allowlists (scratch is not the package) -- the
+# source dirs above, plus a new YAML under config/, which is installed by
+# directory like a new launch file.
+#
+# LIMIT, not closed here: the route is the OWNING package. A test in another
+# package that reads this file by path (rtc_tools reads integrated_bringup's
+# config) is not run, as it is not run for a source change either -- only
+# rtc_base / rtc_msgs fan out (PROC-3).
+CHANGED_DATA_BUILD=$( {
+    echo "$CHANGED_PKG_FILES"
+    echo "$CHANGED_UNTRACKED" | awk -F/ 'NF >= 3 && $2 == "config" && $NF ~ /\.(yaml|yml)$/'
+  } || true)
 
 # --- Pure-format fast path detection ---
 # Returns 0 if every changed source file is identical to HEAD after
@@ -921,7 +941,7 @@ while IFS= read -r pkg_dir; do
   [ -f "$pkg_dir/package.xml" ] || continue
   BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}"
 done <<< "$(printf '%s\n%s\n%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
-             "$CHANGED_TESTCFG" "$CHANGED_CONFIG_BUILD" \
+             "$CHANGED_TESTCFG" "$CHANGED_DATA_BUILD" \
              | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
 # --run: a package whose installed binaries were rebuilt since its verdict is
 # owed a build and a test run whether or not its source changed.
