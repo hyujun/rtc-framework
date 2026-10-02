@@ -3,9 +3,11 @@
 
 Parses both model files and reports differences in:
   - Link mass
-  - Link inertia (principal moments via eigenvalue decomposition)
+  - Link inertia (principal moments via eigenvalue decomposition; MJCF
+    `diaginertia` or `fullinertia`)
   - Joint position limits (range; sign-swapped for anti-parallel axes)
-  - Joint effort / force limits
+  - Joint effort / force limits (what the joint's actuators can apply, clamped
+    by the joint's own `actuatorfrcrange`)
   - Joint axis vectors (world-frame FK, parallelism check)
   - Joint axis lines (world-frame FK; a revolute origin may slide along its
     own axis without changing the physics, so only the perpendicular offset
@@ -17,6 +19,24 @@ unless explicitly overridden via CLI flags.
 The MJCF is read the way MuJoCo compiles it (see "MJCF as MuJoCo compiles it"
 below): default classes, `<compiler angle>`, the `*limited` flags and the
 actuator `gear` all decide what a `range` in the text means.
+
+What the text reading does not cover:
+  - `<include>` is not followed.  Joints and bodies that only an included file
+    brings in are not compared per joint / per link (the structural section,
+    which compiles the model, still counts them).
+  - `<frame>` poses (a joint of a body under a `<frame>` gets no world frame
+    and falls back to the local comparison with a [WARN]); `jointinparent`,
+    tendon and site transmissions; ball / free joint ranges; the `ctrlrange`
+    of an actuator with internal dynamics.
+  - "No limit" and "a limit of 0" both read as effort 0.
+
+Interpreter: the structural section needs `mujoco`.  `ros2 run` starts the
+console script under /usr/bin/python3, which usually cannot import it — the
+run then ends with `UNVERIFIED: 1`, not a pass.  From the workspace env
+(.venv) call the module instead:
+
+  python3 -m rtc_tools.validation.compare_mjcf_urdf \\
+      --mjcf /path/to/robot.xml --urdf /path/to/robot.urdf --fail-on-unverified
 
 Usage:
   # Explicit paths (always works):
