@@ -76,7 +76,10 @@
 #        - rtc_base / rtc_msgs change -> ./build.sh full --tests + colcon test all
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>,
-#          one package at a time (each suite has the box to itself)
+#          one package at a time (each suite has the box to itself), in
+#          DEPENDENCY order: a package is built and tested after the changed
+#          packages it depends on, and not at all when one of those failed to
+#          build (see "Build order")
 #        (--tests: build.sh skips tests by default, and a package built without
 #        them tests as "0 tests, 0 failures" -- see run_build. Independently of
 #        that flag, a package whose CMake cache says BUILD_TESTING=OFF after the
@@ -1565,6 +1568,70 @@ run_build() {  # $1 = timeout seconds, rest = args for the build command
   timeout "$secs" "$BUILD_CMD" "$@" --tests >"$BUILD_LOG" 2>&1 || BUILD_RC=$?
 }
 
+# ── Build order ─────────────────────────────────────────────────────────────
+#
+# BUILD_PKGS comes out of `sort -u`: name order. The packages are built AND
+# tested one at a time, so in name order a package is tested before a package
+# it depends on has been rebuilt — against the library installed before, with
+# the headers of the tree being graded (a symlink install serves headers from
+# the source). 2026-10-02 (#631): an enumerator removed in rtc_controllers
+# shifted the values after it; integrated_bringup, first by name, was compiled
+# with the new values, loaded the old library, printed "ready" for kPublished
+# and went red. A second --run passed. The same order turns into a false GREEN
+# when the stale library happens to satisfy the dependent's tests: its verdict
+# is recorded, its own binaries are not rebuilt by the dependency's build, and
+# nothing asks for it again.
+#
+# So the order is colcon's own (`colcon list --topological-order`, over this
+# repository: package.xml build, run and test dependencies; 0.2 s, no ROS
+# environment needed). A package that list does not name keeps its place after
+# the ones it does. Without a usable list the order stays the name order and
+# the run SAYS so — a silent fallback would be the defect again, unannounced.
+# One package has no order and costs no call.
+order_build_pkgs() {  # reorders BUILD_PKGS in place
+  local topo p ordered=""
+  # shellcheck disable=SC2086  # BUILD_PKGS is a space-separated list of names
+  set -- $BUILD_PKGS
+  [ $# -ge 2 ] || return 0
+  topo=$(timeout 60 colcon list --topological-order --names-only --base-paths "$PROJECT_DIR" 2>/dev/null) || topo=""
+  if [ -z "$topo" ]; then
+    echo "verify-changes: could not order [${BUILD_PKGS# }] by dependency ('colcon list' gave nothing) -- built in name order. If one of them depends on another, its tests run against the dependency as it was installed BEFORE this run: run --run again once it passes." >&2
+    return 0
+  fi
+  for p in $topo; do
+    case " $BUILD_PKGS " in *" $p "*) ordered="${ordered} ${p}" ;; esac
+  done
+  for p in $BUILD_PKGS; do
+    case " $ordered " in *" $p "*) ;; *) ordered="${ordered} ${p}" ;; esac
+  done
+  BUILD_PKGS="$ordered"
+}
+
+# A package whose build did not finish leaves its OLD binaries installed. What
+# depends on it would be built against those and tested against them, and a
+# green from that would be recorded as this tree's verdict — the same hole as
+# the name order, reached through a failed build. So the packages above a
+# failed one are held back: not built, not tested, reported, no verdict.
+# BUILD_HELD is "<pkg>:<the package whose build failed>" entries. Without a
+# usable `colcon list` nothing is held (the order note above already said the
+# dependencies are unknown).
+BUILD_HELD=""
+hold_dependents_of() {  # $1 = package whose build did not finish
+  local above d
+  above=$(timeout 60 colcon list --names-only --base-paths "$PROJECT_DIR" --packages-above "$1" 2>/dev/null) || above=""
+  for d in $above; do
+    [ "$d" = "$1" ] && continue
+    case " $BUILD_HELD " in *" $d:"*) ;; *) BUILD_HELD="${BUILD_HELD} ${d}:$1" ;; esac
+  done
+}
+build_held_by() {  # $1 = package -> the failed dependency holding it, or nothing
+  local e
+  for e in $BUILD_HELD; do
+    [ "${e%%:*}" = "$1" ] && { printf '%s' "${e#*:}"; return 0; }
+  done
+  return 0
+}
+
 # Names (of "$@") whose build tree was configured WITHOUT tests.
 #
 # run_build asks for the tests, but the verdict must not rest on every build
@@ -2103,12 +2170,19 @@ elif [ -n "$PROC3" ]; then
   fi
   BUILT_PKGS=" PROC-3"
 else
+  order_build_pkgs
   for pkg in $BUILD_PKGS; do
+    HELD_BY=$(build_held_by "$pkg")
+    if [ -n "$HELD_BY" ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: NOT BUILT — it depends on ${HELD_BY}, whose build did not finish in this run. Built now, it would be tested against the ${HELD_BY} installed before — UNVERIFIED. Fix ${HELD_BY}, then run --run again.\n"
+      continue
+    fi
     # The bound ends a hung build; it is not a budget (see Limits in the
     # header). A bound-killed build (exit 124) is reported as UNVERIFIED,
     # separately from a build that really broke -> both exit 2, different
     # messages.
     run_build "$BUILD_BOUND_S" -p "$pkg"
+    [ "$BUILD_RC" -eq 0 ] || hold_dependents_of "$pkg"
     if [ "$BUILD_RC" -eq 124 ]; then
       TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build TIMED OUT after ${BUILD_BOUND_S}s — UNVERIFIED, not necessarily broken code ($(build_contention_evidence)). If the load is high this build lost a CPU race; re-run './build.sh -p ${pkg} --tests' before debugging the change, and raise RTC_VERIFY_BUILD_BOUND_S if the build is legitimately this long.\n"
       rm -f "$BUILD_LOG"

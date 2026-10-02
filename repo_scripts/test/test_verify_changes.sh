@@ -2029,8 +2029,15 @@ rm -rf "$dir"
 #   test-result  takes --test-result-base / --verbose / --all and nothing else
 #                -- anything else is a usage error, exit 2; lists every result
 #                file under the base that holds a failure, however old
+#   list         --topological-order --names-only --base-paths <dir> prints the
+#                package names, one a line, dependencies first; with
+#                --packages-above <pkg>, that package and everything that
+#                depends on it
 # FAKE_COLCON_MODE = green | red | crash | unknown; FAKE_COLCON_CALLS = call log;
 # FAKE_COLCON_RED = the packages that fail in mode red (default: all of them).
+# FAKE_COLCON_TOPO = what `list` prints (unset: this colcon has no `list`, as
+# the suite's older cases assume); FAKE_COLCON_ABOVE = what it prints for a
+# --packages-above query.
 # A "result file" here is one line: "<summary>|<failing test name>".
 make_fake_colcon() {
   local d
@@ -2120,6 +2127,24 @@ case "$verb" in
     echo
     echo "Summary: 2 tests, 0 errors, $red failures, 0 skipped"
     exit "$red"
+    ;;
+  list)
+    [ -n "${FAKE_COLCON_TOPO:-}" ] || { echo "colcon: error: argument verb_name: invalid choice: 'list'" >&2; exit 2; }
+    above=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --topological-order|--names-only) shift ;;
+        --base-paths) shift 2 ;;
+        --packages-above) above="$2"; shift 2 ;;
+        *) echo "colcon: error: unrecognized arguments: $1" >&2; exit 2 ;;
+      esac
+    done
+    if [ -n "$above" ]; then
+      printf '%s\n' ${FAKE_COLCON_ABOVE:-$above}
+    else
+      printf '%s\n' $FAKE_COLCON_TOPO
+    fi
+    exit 0
     ;;
   *) echo "colcon: error: argument verb_name: invalid choice: '$verb'" >&2; exit 2 ;;
 esac
@@ -2617,6 +2642,120 @@ rm -f "$dir/.git/rtc-verify-pass-artifacts"
 out=$(run_stop "$dir" "$bstub" "$tstub")
 if [ ! -e "$dir/.git/rtc-verify-pass-artifacts" ]; then pass "the turn end records no binaries"; else fail "the turn end wrote a stamp file"; fi
 rm -rf "$ws" "$bstub" "$tstub" "$count"
+
+# ── Build order ──────────────────────────────────────────────────────────────
+#
+# Packages are built and tested one at a time, so the order is part of the
+# verdict: a package tested before a package it depends on is rebuilt was
+# tested against the OLD library with the NEW headers (2026-10-02, #631: an
+# enumerator removed in rtc_controllers shifted the values after it;
+# integrated_bringup, first by name, printed "ready" for kPublished and went
+# red — and with a different change the same order is a false green).
+
+# A build stub that logs every call and fails the one for package $2.
+make_failing_build_stub() {
+  local d
+  d=$(mktemp -d)
+  cat >"$d/build.sh" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$1"
+case " \$* " in *" -p $2 "*) echo "error: $2/src/x.cpp:1:1: stub build failure"; exit 1 ;; esac
+exit 0
+EOF
+  chmod +x "$d/build.sh"
+  echo "$d"
+}
+
+# 77. Dependencies first: rtc_demo depends on rtc_other, and is first by name.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+add_rtc_other "$dir"
+bcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+fake=$(make_fake_colcon)
+ccalls=$(mktemp)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+echo 'int other() { return 1; }' >"$dir/rtc_other/src/other.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green FAKE_COLCON_CALLS="$ccalls" \
+        FAKE_COLCON_TOPO="rtc_other rtc_demo"); rc=$?
+expect_exit "two packages, one depending on the other, pass --run" "$rc" 0
+if [ "$(sed -n 1p "$bcount")" = "-p rtc_other --tests" ] && [ "$(sed -n 2p "$bcount")" = "-p rtc_demo --tests" ]; then
+  pass "the dependency is built before the package that uses it"
+else
+  fail "build order was: $(tr '\n' '|' <"$bcount")"
+fi
+if [ "$(grep '^test ' "$ccalls" | sed -n 's/^test --packages-select \([^ ]*\) .*/\1/p' | tr '\n' ' ')" = "rtc_other rtc_demo " ]; then
+  pass "...and tested before it"
+else
+  fail "test order was: $(grep '^test ' "$ccalls")"
+fi
+expect_contains "the report lists them in the order they ran" "$out" "built and tested [rtc_other rtc_demo]"
+if grep -q -- "^list --topological-order --names-only --base-paths $dir\$" "$ccalls"; then
+  pass "the order is asked of colcon, over this repository"
+else
+  fail "colcon list was called as: $(grep '^list' "$ccalls")"
+fi
+# 77b. A package colcon's list does not name is still built, after the rest.
+echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
+echo 'int other() { return 2; }' >"$dir/rtc_other/src/other.cpp"
+: >"$bcount"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green FAKE_COLCON_TOPO="rtc_other"); rc=$?
+expect_exit "a package missing from colcon's list does not fail --run" "$rc" 0
+expect_contains "...and is built after the ones that are listed" "$out" "built and tested [rtc_other rtc_demo]"
+# 77c. No usable `colcon list`: name order as before, and the run says so —
+#      a silent fallback would be the defect again, unannounced.
+echo 'int existing() { return 3; }' >"$dir/rtc_demo/src/existing.cpp"
+echo 'int other() { return 3; }' >"$dir/rtc_other/src/other.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green); rc=$?
+expect_exit "without colcon list --run still runs" "$rc" 0
+expect_contains "...in name order" "$out" "built and tested [rtc_demo rtc_other]"
+expect_contains "...and says the order is not the dependency order" "$out" "could not order [rtc_demo rtc_other] by dependency"
+rm -rf "$ws" "$bstub" "$fake" "$ccalls" "$bcount"
+
+# 77d. One changed package: there is no order to ask for, and no call is made.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+bcount=$(mktemp)
+bstub=$(make_counting_build_stub "$bcount")
+fake=$(make_fake_colcon)
+ccalls=$(mktemp)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green FAKE_COLCON_CALLS="$ccalls" \
+        FAKE_COLCON_TOPO="rtc_demo"); rc=$?
+expect_exit "one changed package passes --run" "$rc" 0
+if grep -q '^list' "$ccalls"; then fail "colcon list was called for a single package"; else pass "a single package is not sorted"; fi
+expect_not_contains "...and nothing is said about an order" "$out" "could not order"
+rm -rf "$ws" "$bstub" "$fake" "$ccalls" "$bcount"
+
+# 78. A package whose dependency failed to BUILD in this run is not built and
+#     not tested: its tests would run against the dependency installed before,
+#     and a green from that would be recorded as this tree's verdict.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+add_rtc_other "$dir"
+bcount=$(mktemp)
+bstub=$(make_failing_build_stub "$bcount" rtc_other)
+fake=$(make_fake_colcon)
+ccalls=$(mktemp)
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+echo 'int other() { return 1; }' >"$dir/rtc_other/src/other.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green FAKE_COLCON_CALLS="$ccalls" \
+        FAKE_COLCON_TOPO="rtc_other rtc_demo" FAKE_COLCON_ABOVE="rtc_other rtc_demo"); rc=$?
+expect_exit "a failed dependency blocks --run" "$rc" 2
+expect_contains "the failed build is reported" "$out" "rtc_other: build FAILED"
+expect_contains "...and the package above it as not built, by name" "$out" "rtc_demo: NOT BUILT — it depends on rtc_other"
+if [ "$(calls "$bcount")" = 1 ]; then pass "the dependent package is not built"; else fail "build calls: $(tr '\n' '|' <"$bcount")"; fi
+if grep -q '^test ' "$ccalls"; then fail "a package was tested: $(grep '^test ' "$ccalls")"; else pass "...and not tested"; fi
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+expect_contains "both stay owed at the turn end" "$out" "build/test verdict missing for: rtc_demo rtc_other"
+# 78b. A package that does NOT depend on the failed one is built and tested.
+: >"$bcount"; : >"$ccalls"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green FAKE_COLCON_CALLS="$ccalls" \
+        FAKE_COLCON_TOPO="rtc_other rtc_demo" FAKE_COLCON_ABOVE="rtc_other"); rc=$?
+expect_exit "an unrelated failed build still blocks --run" "$rc" 2
+expect_not_contains "an independent package is not held back" "$out" "rtc_demo: NOT BUILT"
+if grep -q '^test --packages-select rtc_demo ' "$ccalls"; then pass "...it is built and tested"; else fail "rtc_demo was not tested: $(cat "$ccalls")"; fi
+rm -rf "$ws" "$bstub" "$fake" "$ccalls" "$bcount"
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
