@@ -762,7 +762,17 @@ def parse_mjcf(
         params = InertialParams()
         params.mass = float(inertial.get("mass", "0"))
         params.origin_xyz = _parse_floats(inertial.get("pos", "0 0 0"))
-        params.diag_inertia = _parse_floats(inertial.get("diaginertia", "0 0 0"))
+        full_str = inertial.get("fullinertia")
+        if full_str:
+            # MJCF spells the full tensor in the URDF attribute order
+            # (ixx iyy izz ixy ixz iyz), so both sides reach their principal
+            # moments through the same function.
+            full = _parse_floats(full_str)
+            params.diag_inertia = _urdf_principal_moments(
+                InertialParams(diag_inertia=full[0:3], off_diag_inertia=full[3:6])
+            )
+        else:
+            params.diag_inertia = _parse_floats(inertial.get("diaginertia", "0 0 0"))
         quat = inertial.get("quat")
         if quat:
             params.origin_quat = _parse_floats(quat)
@@ -823,6 +833,20 @@ def parse_mjcf(
                 jp.effort = fr[1] if len(fr) == 2 else 0.0
             else:
                 jp.effort = 0.0
+
+            # The joint's own actuatorfrcrange clamps the total actuator force
+            # on it, so MuJoCo enforces both bounds and the smaller one is the
+            # limit.  It is enforced only when actuatorfrclimited is not
+            # "false" and the range is non-degenerate; otherwise the joint side
+            # sets no limit, which is not the same as a limit of 0.
+            afr_str = joint_elem.get("actuatorfrcrange", jdefaults.get("actuatorfrcrange"))
+            afr_limited = joint_elem.get(
+                "actuatorfrclimited", jdefaults.get("actuatorfrclimited", "auto")
+            )
+            if afr_str and afr_limited != "false":
+                afr = _parse_floats(afr_str)
+                if len(afr) == 2 and afr[0] < afr[1]:
+                    jp.effort = min(jp.effort, afr[1]) if jp.effort > 0 else afr[1]
 
             # Armature
             jp.armature = float(jdefaults.get("armature", "0"))
