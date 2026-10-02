@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r37 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r38 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료 · E1 · E2 진행 중** · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5e) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -200,6 +200,7 @@ v1 과 G1 MPC 의 구조 차이:
 | MD-81 | 이 저장소는 `hand_description` 의 모델을 **load 하지만 검증하지 않는다.** G1 모델을 읽는 gtest 를 두지 않고 모델을 vendor 하지 않는다. `DemoJointController` 의 tree 경로는 이 저장소가 소유한 합성 fixture 로 단위 테스트하고, 폐쇄 체인 손과 tree 의 결합은 sim 측정으로만 본다. `robot_descriptions/robots/ur5e_p1b/` 사본은 테스트 입력으로 남기고, 그 모델 자체를 검증하던 테스트는 지운다 ([#682](https://github.com/hyujun/rtc-framework/issues/682)). URDF ↔ MJCF 의 일치는 컴파일한 두 모델을 직접 비교해 기록한다 (§8) — `compare_mjcf_urdf` 는 이 쌍에서 거짓 불일치를 낸다 ([#686](https://github.com/hyujun/rtc-framework/issues/686)) | 사용자 결정 (2026-10-02): 두 저장소는 서로 다른 영역이다. fixture 는 in-repo 패키지만 resolve 한다 (testing-debug.md) | v1 의 #457 이 넣은 `ur5e_p1b` 모델 검증 (inertial gate 두 항목, `CatchFrameModels.Ur5eP1b`) | 2026-10-02 |
 | MD-82 | E2-F01 · F02 · F03 은 브랜치 하나 (`feat/g1-p1b-bringup`) 로 한다 — §6 "나누는 조건" (공용 코드 변경) 의 예외다 | 사용자 결정 (될 수 있으면 하나). 두 군에서는 군 수의 일반화가 없다. 공용 코드에 닿는 것은 `rtc_mujoco_sim` 의 서보 lane, 세 컨트롤러의 등록, 로그 용량, `DemoJointController` 의 이름 조회다. 기존 로봇의 회귀는 특성화 테스트 (TF slot 이름) · 기존 테스트의 assertion 불변 · 세 profile 의 sim 기동으로 판정했다 (§8) | §6 브랜치 계획의 그 행 | 2026-10-02 |
 | MD-83 | 손끝 FK 의 배선 ([#685](https://github.com/hyujun/rtc-framework/issues/685)). 손 tree 의 handle 에 device 관절 순서를 거는 helper 를 `OnDeviceConfigsSet` 과 `InitHandModel` 두 자리에서 부른다 (joint · task · compliance · wbc 공통, `support/hand_fk_wiring`). 손끝은 `T_root_armtip · T_tip_mount · T_handroot_fingertip` 로 합성하고, `T_tip_mount` (팔 끝 → 손 root) 는 configure 때 전체 모델에서 읽는 상수다 — 팔 끝 frame 과 `ComputeEstop` 은 그대로다. virtual TCP 의 centroid · weighted 모드도 같은 손끝을 쓴다. 직렬 손에서 device 이름이 손 모델의 관절을 빠짐없이 한 번씩 덮지 못하거나, 손 root 가 팔 끝과 같은 관절에 붙어 있지 않으면 configure 를 거부한다 (closed-chain FK 가 active 인 손은 이름 검사를 면제하고, 손 모델이 없는 구성은 통과한다) | 사용자 결정 (2026-10-02 — 순서는 device 순서를 따르게, 풀 수 없으면 거부, virtual TCP 포함). 결함이 둘 겹쳐 있었다: 순서 map 이 controller manager 의 기동 순서에서 걸리지 않았고, 손 FK 를 손 root 가 아닌 팔 끝에 그대로 합성했다. `iiwa7_leap` 은 `ee_link` → `base` 가 5 mm · 90° 다. 팔 끝 frame 을 손 root 로 바꿔 끼우는 안은 E-STOP tick 의 팔 끝이 바뀐다 (E-8) | MD-78 의 "손 FK" 에 device 순서와 장착 변환을 더함 | 2026-10-03 |
+| MD-84 | `compare_mjcf_urdf` 는 MJCF 의 관절 · actuator · body 자세를 **MuJoCo 가 컴파일하는 대로** 읽는다 ([#686](https://github.com/hyujun/rtc-framework/issues/686)): default class 는 tree (main · 부모 사슬 · `childclass` · actuator 의 class), 관절 토크 한계는 그 관절의 actuator 들이 낼 수 있는 범위 (`forcerange` × `gear`, 순수 gain 이면 `ctrlrange` — MuJoCo 처럼 clamp 한다) 를 더해 관절의 `actuatorfrcrange` 로 clamp 한 것, 걸리지 않는 range 는 한계가 아니다, 각도 단위의 기본값은 degree. actuator 가 없는 관절은 class 의 `forcerange` 를 물려받지 않는다 (effort 0). `--mjcf-class` 는 지웠다. 읽지 못하는 구성 (`<include>`, `joint` 전달이 아닌 actuator) 은 `[WARN]` 으로 알린다. fixed link 병합은 `--link-map` 의 `fuse:` 로 선언하고 코드는 고치지 않는다. G1 쌍은 `model_pairs.yaml` 에 넣지 않는다 (MD-81) | 사용자 결정 (2026-10-02 – 03). 처음 진단 (세 가설) 중 둘이 틀렸고 — default class resolver 는 G1 에서 맞게 읽었다 — 범위를 "남는 한계까지 이 이슈에서" 로 넓혔다. MJCF 96 개 · 관절 364 개에서 도구가 컴파일한 모델과 다르게 읽던 관절이 161 개였다. 순수 gain 의 `ctrlrange` 규칙은 `urdf_to_mjcf` 의 출력을 건드린다 ([#693](https://github.com/hyujun/rtc-framework/issues/693)). 작은 link 의 관성 허용오차는 [#692](https://github.com/hyujun/rtc-framework/issues/692) | — | 2026-10-03 |
 | MD-85 | 팔 모델이 있는데 팔 끝 frame 이 풀리지 않으면 joint · task · compliance · wbc 의 `on_configure` 가 거부한다 ([#688](https://github.com/hyujun/rtc-framework/issues/688)). 판정은 `support/arm_tip_resolution` 의 함수 하나가 `on_configure` 시점의 상태로 한다 (frame id 를 config 재로드에서 지우지 않는다). 팔 모델이 없는 구성은 통과한다. `ComputeEstop` 과 `arm_tip_pose_valid` 의 뜻은 그대로 둔다. device config 에 link 가 없는 구성 — 군 이름이 `sub_models` 와 맞지 않아 이름 `arm` 의 사슬로 대체된 경우 — 도 모델이 있으면 거부된다. 이름이 모델의 frame 이기만 하면 통과한다 (팔의 끝이 아닌 link 는 잡지 못한다) | 사용자 결정 (2026-10-02, 안 B). 원인을 막는다 — 팔 끝을 모르는 컨트롤러가 active 가 되지 않는다. 유효 flag 를 고치는 안은 E-STOP tick 의 출력을 바꾸고 (E-8) 팔 끝 없이 도는 상태를 남긴다. wbc 는 그 상태에서 팔 끝 pose 를 내지 않지만 (TSID 가 서 있으면 이미 거부) Cartesian hold 의 seed 를 universe frame 에서 읽으므로 같이 거부한다. tree 군은 MD-78 이 이미 거부한다 | MD-78 의 거부를 사슬 군과 나머지 세 컨트롤러로 넓힘 | 2026-10-03 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
@@ -218,7 +219,8 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 - E2-F05: G1 sim 의 유지 오차 — 오른팔에만 최대 9.6e-4 rad 가 남는다 (왼팔은 1e-9, §8 의 E2-F01 · F02 · F03 절). sim 이 중력 보상을 거는 body 목록에 손의 loop link 가 빠져 그 무게를 손목 서보가 받는 것으로 보인다 (**확인하지 않았다**). 추종을 수치로 판정하기 전에 확인한다
 - 미배정: `demo_task` · `demo_wbc` · `demo_compliance` 는 팔을 `urdf.sub_models` 의 첫 사슬로 전제한다 — G1 을 구동하지 못한다 (MD-80). G1 의 Cartesian 제어는 E2-F05 의 새 컨트롤러가 맡는다
 - 미배정: 세 군 (두 번째 손). 필요한 것: 손마다 자기 tree 의 root 로 붙는 자리를 정하는 것 (MD-78 의 형태), 손 FK · 통합 모델 cache · 손 궤적이 군 1 하나를 전제한 자리의 일반화, `kMaxOwnedGroups` 2 → 3, 세 번째 군의 E-STOP (MD-77). 왼손 자산이 없다
-- 미배정: `compare_mjcf_urdf` 가 G1 쌍에서 거짓 불일치를 낸다 ([#686](https://github.com/hyujun/rtc-framework/issues/686), MD-81) — 그때까지 URDF ↔ MJCF 의 일치는 직접 비교로 본다 (§8)
+- 미배정: `urdf_to_mjcf` 가 만드는 actuator 는 위치 범위로 묶인 토크 motor 로 컴파일된다 ([#693](https://github.com/hyujun/rtc-framework/issues/693)) — 새로 변환한 MJCF 의 `--validate` 가 EFFORT 불일치를 찍는다. 출하 MJCF 는 해당 없다
+- 미배정: `compare_mjcf_urdf` 의 관성 허용오차가 작은 link 에서 지나치게 엄격하다 ([#692](https://github.com/hyujun/rtc-framework/issues/692))
 - 미배정: sim launch 네 개의 공통화와 tree 모델 조회의 나머지 사본 ([#689](https://github.com/hyujun/rtc-framework/issues/689)) — 동작을 바꾸지 않는 정리다. E2-F05 가 새 컨트롤러와 launch 인자를 더하기 전에 하면 고칠 자리가 준다
 - E3-F01: 포구 후보 선택을 MPC 로 옮길지 (MD-46 의 편차) 와 계획기 interface (ARCH-3)
 - E3-F05: G1 통합의 형태 — 단일 팔은 `DemoCatchingController` 의 `mode: mpc` 로 돈다 (MD-46)
@@ -905,7 +907,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
   | 전체 질량 | 34.383 kg 로 같음 | — |
   | 토크 한계 | waist roll · pitch 만 다르다: URDF 35, MJCF 50 | — (MD-80) |
 
-  `compare_mjcf_urdf` 는 이 쌍에서 mismatch 24 건을 낸다 — 17 건은 joint 의 `actuatorfrcrange` 를 읽지 않아서이고, 나머지는 질량 · 관성의 텍스트 비교다 ([#686](https://github.com/hyujun/rtc-framework/issues/686)).
+  `compare_mjcf_urdf` 는 이 쌍에서 mismatch 24 건을 낸다 — 17 건은 joint 의 `actuatorfrcrange` 를 읽지 않아서이고, 나머지는 질량 · 관성의 텍스트 비교다 ([#686](https://github.com/hyujun/rtc-framework/issues/686)). 도구를 고친 뒤의 결과는 아래 "E2 후속 — `compare_mjcf_urdf` 의 MJCF 판독" 에 있다.
 - **sim 서보** (MD-79). `rtc_mujoco_sim` 의 새 테스트 `test_motor_servo_gains`: `<motor>` 위에서 YAML · 런타임 게인이 0 이 아닌 목표를 유지하고 (1e-3 rad), torque 모드에서 bias 타입이 원복된다. affine 한 줄을 빼면 셋이 red 다. 기존 테스트의 assertion 은 바꾸지 않았다 (패키지 255 건 통과).
 - **G1 sim** — 17 + 10 관절에 목표를 한 번 보냈다 (waist · 왼팔도 0 이 아닌 자세, 최대 이동 0.8 rad, 궤적 1.02 s).
 
@@ -968,12 +970,42 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **덮지 않는 것.** 팔의 끝이 아닌 link 를 `tip_link` 로 적은 구성 (모델의 frame 이면 풀린다 — 그 pose 가 sub_models 의 tip 이름으로 발행된다). 팔 끝이 풀렸어도 통합 모델 cache 의 순서 map 이 invalid 하거나 frame 등록이 실패한 경우의 항등 pose.
 - **재지 않은 것.** 깨진 config 로 sim 을 띄워 기동이 거부되는 것을 보지 않았다 — 컨트롤러 하나의 FAILURE 가 RT 노드의 configure 를 실패시키는 것은 기존 동작이다 (`rt_controller_node_params.cpp`).
 
+### E2 후속 — `compare_mjcf_urdf` 의 MJCF 판독 (2026-10-03, [#686](https://github.com/hyujun/rtc-framework/issues/686))
+
+기준은 이슈의 Sprint Contract (r3) 다. MuJoCo 3.7.0, workspace venv 의 python.
+
+- **컴파일한 모델과의 대조.** repo 와 `hand_description` 의 MJCF 96 개 (전부 컴파일된다), 텍스트에서 보이는 hinge · slide 관절 364 개. 도구가 읽은 값이 컴파일한 모델과 다른 건수:
+
+  | 도구 | range | 토크 한계 | armature | 관절 수 |
+  |---|---|---|---|---|
+  | 수정 전 | 10 | 100 | 117 | 161 |
+  | 수정 후 | 0 | 0 | 0 | 0 |
+
+  축 · 관절 위치 · 관절 종류 · body 자세도 0 이다 (수정 전에도 0). 대조에 쓴 토크 한계의 정의는 이슈의 계획 개정 3 에 있다.
+- **기존 8 쌍** (`robots/model_pairs.yaml`). 7 쌍은 도구 출력이 바이트 단위로 같고, `assm_v1_hand` 는 `armature: 0.1 (MJCF-only, …)` 10 줄이 사라진다 (컴파일 값은 0 이다). 불일치 0, 경고 수는 `expect_warnings` 그대로.
+- **G1 쌍** (`hand_description` 의 `g1_with_proto_1b_fixed_base.xml` ↔ 같은 xacro 를 편 URDF). 선언과 명령은 이슈의 완료 코멘트에 있고 repo 에 넣지 않았다 (MD-81).
+
+  | 실행 | 불일치 | 내용 |
+  |---|---|---|
+  | venv + `fuse:` | 5 | body 수 53 vs 52 · `pelvis_contour_link` 의 질량 0.001 kg · torso 질량 `MJCF=7.818 URDF=7.817` · waist roll · pitch 의 `MJCF=50 URDF=35` (MD-80) |
+  | venv | 10 | 위 + 병합을 선언하지 않은 link |
+  | system python + `fuse:` | 3 (+ UNVERIFIED 1) | 구조 비교 (컴파일한 모델) 가 돌지 않는다 |
+  | system python | 8 (+ UNVERIFIED 1) | |
+
+  수정 전에는 거짓 불일치가 섞여 있었다 (`actuatorfrcrange` · `fullinertia` 를 읽지 않음, 틀린 `armature` 17 줄).
+- **테스트.** `test_mjcf_compile_semantics.py` — 합성 MJCF 마다 MuJoCo 가 컴파일하는 값을 리터럴로 적어 두고 도구가 그 값을 읽는지 본다 (mujoco 없이 96 건). mujoco 가 있으면 리터럴 = 컴파일한 모델, 포화 control 에서의 토크 = 리터럴, 그리고 `robot_descriptions` 의 MJCF 9 개에서 관절마다 도구 = 컴파일한 모델까지 본다 (248 건). 마지막 것은 수정 전 코드에서 red 다 (`assm_v1` 의 armature 10 건).
+- **mutation 82 건이 전부 red** 다 (mujoco 없는 인터프리터에서도). 처음 51 건 — 부모 사슬 · `childclass` · class 없는 요소 · `gear` · `*limited` 넷 · `ctrlrange` 규칙 양쪽 · degree 변환 · slide · armature · `eulerseq` · `xyaxes` · `actuatorfrcrange` · 우선순위 양쪽 · `fullinertia` 둘 외. 리뷰 뒤 31 건 — clamp 둘, `gear="0"`, 경고 넷, 순수 gain 의 조건 셋, `<motor>` 의 reset 셋, vector 로 적은 `gear` · `gainprm`, 두 번 나오는 `<compiler>` · `<default>` · `<actuator>` · `<worldbody>`, `<frame>` 바로 아래의 관절, 뒤집힌 range. 남는 하나 (`autolimits="false"` 를 읽지 않음) 는 조용하다 — 그 속성이 값을 가르는 파일은 MuJoCo 가 컴파일하지 않는다.
+- **독립 리뷰 1 회** (merge 전). blocker 없음 — 합성 MJCF 190 개쯤을 MuJoCo 와 대조했다. 틀린 수를 내던 것 셋을 고쳤다: 범위가 겹치지 않을 때 MuJoCo 는 clamp 하는데 도구는 교집합을 냈다 (`forcerange="5 9"` + `ctrlrange="-2 3"` → 도구 (3, 5), MuJoCo (5, 5)), `gear="0"` 이 그 관절의 다른 한계를 지웠다 (0 × inf), ball 관절의 range 를 raw 값으로 담았다. 출하 MJCF 에는 어느 것도 해당하지 않는다 (8 쌍 · G1 쌍 · 96 개 대조의 결과가 그대로다). 읽지 못하는 구성 둘은 이제 `[WARN]` 을 낸다 — `<include>` (그 파일의 `<compiler>` · default · actuator 가 이 파일의 관절 값을 바꾼다) 와 `joint` 전달이 아닌 actuator. 테스트로 고정되지 않았던 판독 규칙도 고정했다.
+- **기존 테스트의 변경 (E-6, 사용자 컨펌).** fixture `MJCF_TEMPLATE` 에 4 줄 — `<compiler angle="radian"/>` 와 그 관절의 actuator. assertion 변경 0. 이 fixture 는 `<compiler>` 없이 radian 값을 써서 MuJoCo 에게는 ±0.11 rad 인 range 였다. 고친 fixture 는 수정 전 코드에서도 전부 통과해 첫 커밋으로 따로 냈다.
+- **재지 않은 것 · 남는 한계.** `<include>` 를 따라가지 않는다 (96 개 중 74 개가 쓴다 — 8 쌍과 G1 쌍은 쓰지 않는다). `<frame>` 의 pose · tendon / site / `jointinparent` 전달 · ball / free 관절의 range · inertial 을 다시 쓰는 `<compiler>` 옵션 · site 의 default 는 읽지 않는다 (README 의 목록). `gear` · `forcelimited` · 비대칭 범위 · 순수 gain 의 `ctrlrange` 는 출하 MJCF 에 없어 합성 fixture 로만 검증했다.
+
 ## 9. 개정 이력
 
 결정의 내용과 날짜는 §4 가, 측정은 §8 이 갖는다. 이 표는 판마다 무엇이 바뀌었는지만 적는다.
 
 | 판 | 바뀐 것 |
 |---|---|
+| r38 | [#686](https://github.com/hyujun/rtc-framework/issues/686) 반영: 결정 MD-84 (`compare_mjcf_urdf` 는 MJCF 를 MuJoCo 가 컴파일하는 대로 읽는다), §8 "E2 후속 — `compare_mjcf_urdf` 의 MJCF 판독", §4 미결의 그 줄을 후속 둘 ([#692](https://github.com/hyujun/rtc-framework/issues/692) · [#693](https://github.com/hyujun/rtc-framework/issues/693)) 로 바꿈. r36 은 쓰지 않았다 |
 | r37 | [#688](https://github.com/hyujun/rtc-framework/issues/688) 반영: 결정 MD-85 (팔 모델이 있는데 팔 끝 frame 이 풀리지 않으면 네 컨트롤러가 configure 를 거부한다), §8 "E2 후속 — 팔 끝 frame 의 configure 거부", §4 미결에서 그 줄을 뺌 |
 | r35 | [#685](https://github.com/hyujun/rtc-framework/issues/685) 반영: 결정 MD-83 (손끝 FK 의 배선 — device 관절 순서, 팔 끝 → 손 root 의 장착 변환, 풀 수 없으면 configure 거부), §8 "E2 후속 — 손끝 FK 의 배선", §4 미결에서 그 줄을 뺌 |
 | r34 | E2-F01 · F02 · F03 merge 뒤 정리: [#687](https://github.com/hyujun/rtc-framework/pull/687) 과 [#684](https://github.com/hyujun/rtc-framework/pull/684) (MD-81 의 테스트 삭제, [#682](https://github.com/hyujun/rtc-framework/issues/682)) 가 `main` 에 들어갔다. §4 미결에 후속 이슈 [#686](https://github.com/hyujun/rtc-framework/issues/686) · [#688](https://github.com/hyujun/rtc-framework/issues/688) · [#689](https://github.com/hyujun/rtc-framework/issues/689) 를 올렸다. E2-F04 는 선행이 끝나 착수할 수 있다 (§6). §8 의 원자료 (세션 `261002_2044`) 는 지웠다 — 다시 낼 스크립트는 [#633](https://github.com/hyujun/rtc-framework/issues/633) 의 코멘트에 있다 |
