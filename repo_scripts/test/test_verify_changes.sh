@@ -2032,7 +2032,9 @@ rm -rf "$dir"
 #   list         --topological-order --names-only --base-paths <dir> prints the
 #                package names, one a line, dependencies first; with
 #                --packages-above <pkg>, that package and everything that
-#                depends on it
+#                depends on it. Like every colcon verb it writes a log
+#                directory into the directory it is called from, unless
+#                COLCON_LOG_PATH is /dev/null
 # FAKE_COLCON_MODE = green | red | crash | unknown; FAKE_COLCON_CALLS = call log;
 # FAKE_COLCON_RED = the packages that fail in mode red (default: all of them).
 # FAKE_COLCON_TOPO = what `list` prints (unset: this colcon has no `list`, as
@@ -2130,6 +2132,8 @@ case "$verb" in
     ;;
   list)
     [ -n "${FAKE_COLCON_TOPO:-}" ] || { echo "colcon: error: argument verb_name: invalid choice: 'list'" >&2; exit 2; }
+    echo "list-cwd $PWD" >>"${FAKE_COLCON_CALLS:-/dev/null}"
+    [ "${COLCON_LOG_PATH:-}" = /dev/null ] || mkdir -p log/list_fake
     above=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -2690,11 +2694,20 @@ else
   fail "test order was: $(grep '^test ' "$ccalls")"
 fi
 expect_contains "the report lists them in the order they ran" "$out" "built and tested [rtc_other rtc_demo]"
-if grep -q -- "^list --topological-order --names-only --base-paths $dir\$" "$ccalls"; then
+if grep -q -- "^list --names-only --topological-order --base-paths $dir\$" "$ccalls"; then
   pass "the order is asked of colcon, over this repository"
 else
   fail "colcon list was called as: $(grep '^list' "$ccalls")"
 fi
+# The query leaves nothing behind: a colcon verb run from the repository
+# writes a log/ tree into it (AGENTS.md §9.1 — the hook's own colcon calls run
+# from the workspace), and a query has no log worth keeping anywhere.
+if [ "$(grep '^list-cwd ' "$ccalls" | sort -u)" = "list-cwd $ws" ]; then
+  pass "colcon list is called from the workspace root"
+else
+  fail "colcon list ran in: $(grep '^list-cwd ' "$ccalls" | sort -u)"
+fi
+if [ ! -e "$dir/log" ] && [ ! -e "$ws/log" ]; then pass "...and writes no log directory"; else fail "colcon list left a log directory: $(ls -d "$dir/log" "$ws/log" 2>/dev/null)"; fi
 # 77b. A package colcon's list does not name is still built, after the rest.
 echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
 echo 'int other() { return 2; }' >"$dir/rtc_other/src/other.cpp"
@@ -2746,6 +2759,7 @@ expect_contains "the failed build is reported" "$out" "rtc_other: build FAILED"
 expect_contains "...and the package above it as not built, by name" "$out" "rtc_demo: NOT BUILT — it depends on rtc_other"
 if [ "$(calls "$bcount")" = 1 ]; then pass "the dependent package is not built"; else fail "build calls: $(tr '\n' '|' <"$bcount")"; fi
 if grep -q '^test ' "$ccalls"; then fail "a package was tested: $(grep '^test ' "$ccalls")"; else pass "...and not tested"; fi
+if [ ! -e "$dir/log" ] && [ ! -e "$ws/log" ]; then pass "the dependents query writes no log directory either"; else fail "a log directory was left: $(ls -d "$dir/log" "$ws/log" 2>/dev/null)"; fi
 out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
 expect_contains "both stay owed at the turn end" "$out" "build/test verdict missing for: rtc_demo rtc_other"
 # 78b. A package that does NOT depend on the failed one is built and tested.

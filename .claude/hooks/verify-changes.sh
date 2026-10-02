@@ -1588,12 +1588,20 @@ run_build() {  # $1 = timeout seconds, rest = args for the build command
 # the ones it does. Without a usable list the order stays the name order and
 # the run SAYS so — a silent fallback would be the defect again, unannounced.
 # One package has no order and costs no call.
+#
+# The query runs from the workspace root with colcon's log switched off. Every
+# colcon verb writes a log/ tree into the directory it is called from, `list`
+# included, and this hook's directory is the repository: called from here it
+# left src/<repo>/log behind on every multi-package --run (AGENTS.md §9.1).
+colcon_list() {  # args for `colcon list`; prints names, fails when it cannot
+  ( cd "$WORKSPACE" 2>/dev/null && COLCON_LOG_PATH=/dev/null timeout 60 colcon list --names-only "$@" 2>/dev/null )
+}
 order_build_pkgs() {  # reorders BUILD_PKGS in place
   local topo p ordered=""
   # shellcheck disable=SC2086  # BUILD_PKGS is a space-separated list of names
   set -- $BUILD_PKGS
   [ $# -ge 2 ] || return 0
-  topo=$(timeout 60 colcon list --topological-order --names-only --base-paths "$PROJECT_DIR" 2>/dev/null) || topo=""
+  topo=$(colcon_list --topological-order --base-paths "$PROJECT_DIR") || topo=""
   if [ -z "$topo" ]; then
     echo "verify-changes: could not order [${BUILD_PKGS# }] by dependency ('colcon list' gave nothing) -- built in name order. If one of them depends on another, its tests run against the dependency as it was installed BEFORE this run: run --run again once it passes." >&2
     return 0
@@ -1618,7 +1626,7 @@ order_build_pkgs() {  # reorders BUILD_PKGS in place
 BUILD_HELD=""
 hold_dependents_of() {  # $1 = package whose build did not finish
   local above d
-  above=$(timeout 60 colcon list --names-only --base-paths "$PROJECT_DIR" --packages-above "$1" 2>/dev/null) || above=""
+  above=$(colcon_list --base-paths "$PROJECT_DIR" --packages-above "$1") || above=""
   for d in $above; do
     [ "$d" = "$1" ] && continue
     case " $BUILD_HELD " in *" $d:"*) ;; *) BUILD_HELD="${BUILD_HELD} ${d}:$1" ;; esac
