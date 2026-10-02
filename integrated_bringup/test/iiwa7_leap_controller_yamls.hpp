@@ -4,8 +4,8 @@
 // wbc), each with the keys its LoadConfig requires and nothing else, on the
 // device groups of iiwa7_leap_test_fixture.hpp. A test that has to put the
 // SAME question to all four — a configure-time rule every one of them owes —
-// brings them up through ControllerFixture<Ctrl> below instead of carrying four
-// YAMLs of its own.
+// brings them up through ControllerFixture<Ctrl> and ConfigureIiwa7Leap below
+// instead of carrying four YAMLs and a bring-up of its own.
 //
 // The wbc YAML has no `tsid:` block on purpose: with TSID initialised that
 // controller already refuses a configure for reasons of its own, and a test of
@@ -13,11 +13,19 @@
 // not the shared rule held.
 #pragma once
 
+#include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+
+#include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
+
+#include <map>
 #include <memory>
 #include <string>
 
@@ -211,5 +219,59 @@ struct ControllerFixture<DemoWbcController> {
     return std::make_unique<DemoWbcController>("");
   }
 };
+
+// ── Bring-up, through on_configure on a real node ───────────────────────────
+//
+// The two orders differ in where a controller builds its model handles
+// relative to the device configs: what OnDeviceConfigsSet wires has to survive
+// a config that is loaded again after it, and what LoadConfig wires has to be
+// there on an order that never loads it twice. A configure-time rule is asked
+// in both.
+enum class BringUp {
+  kControllerManager,  ///< PreConfigure → device configs → on_configure
+  kConfigLoadedTwice,  ///< LoadConfig → device configs → on_configure (reloads)
+};
+
+inline const char* Name(BringUp order) {
+  return order == BringUp::kControllerManager ? "cm" : "reload";
+}
+
+template <class Ctrl>
+struct Configured {
+  std::unique_ptr<Ctrl> ctrl;
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node;  // owns the publishers' lifetime
+  typename Ctrl::CallbackReturn rc{Ctrl::CallbackReturn::ERROR};
+};
+
+/// Bring `Ctrl` up on the iiwa7_leap rig with `devices` and run on_configure.
+/// `with_model` false leaves out the system model config and the builder — a
+/// controller with no URDF at all. The caller owns rclcpp::init.
+template <class Ctrl>
+Configured<Ctrl> ConfigureIiwa7Leap(BringUp order,
+                                    const std::map<std::string, rtc::DeviceNameConfig>& devices,
+                                    const std::string& tag, bool with_model = true) {
+  using Fx = ControllerFixture<Ctrl>;
+  Configured<Ctrl> out;
+  rclcpp::NodeOptions opts;
+  opts.use_global_arguments(false);
+  out.node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
+      std::string(Fx::kName) + "_" + Name(order) + "_" + tag, "", opts);
+
+  out.ctrl = Fx::Make();
+  if (with_model) {
+    out.ctrl->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+    out.ctrl->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+  }
+  out.ctrl->SetControlRate(1.0 / kDt);
+  const YAML::Node yaml = YAML::Load(Fx::Yaml());
+  if (order == BringUp::kControllerManager) {
+    EXPECT_EQ(out.ctrl->PreConfigure(out.node, yaml), Ctrl::CallbackReturn::SUCCESS) << Fx::kName;
+  } else {
+    out.ctrl->LoadConfig(yaml);
+  }
+  out.ctrl->SetDeviceNameConfigs(devices);
+  out.rc = out.ctrl->on_configure(rclcpp_lifecycle::State{}, out.node, yaml);
+  return out;
+}
 
 }  // namespace integrated_bringup::testfx

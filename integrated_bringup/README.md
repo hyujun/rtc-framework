@@ -42,6 +42,7 @@ integrated_bringup/
 │   │   ├── controller_log_registration.hpp
 │   │   ├── demo_shared_config.hpp
 │   │   ├── owned_topics.hpp
+│   │   ├── arm_tip_resolution.hpp      <- 팔 끝 frame 의 configure 판정 (joint/task/compliance/wbc 공용): 팔 모델이 있는데 팔 끝이 풀리지 않으면 거부 사유를 낸다
 │   │   ├── hand_fk_wiring.hpp          <- 손끝 FK 의 배선 (joint/task/compliance/wbc 공용): 손 handle 에 device 관절 순서를 걸고, 팔 끝 → 손 root 의 상수 변환을 구한다. 풀 수 없으면 configure 거부 사유를 낸다
 │   │   ├── layout_profile.hpp          <- launch layout profile (#350) 공용 정의: `LayoutProfileDropsMpc` · `ReadLayoutProfile`. `mpc` role 에 스레드를 올리는 두 컨트롤러 (DemoWbc MPC · 포구 계획기) 가 같은 규칙으로 읽는다
 │   │   └── virtual_tcp.hpp
@@ -348,6 +349,17 @@ demo_task_controller:
 관절 공간 Quintic 궤적 생성기 -- UR5e 6-DOF 로봇 암 + 10-DOF 핸드 통합 제어기입니다. Rest-to-rest quintic 다항식으로 부드러운 궤적을 생성하며, 출력을 직접 위치 명령으로 전달합니다 (비례 게인 없음).
 
 **첫 device group 의 모델.** 군 0 의 모델은 그 device 이름으로 `urdf.sub_models` (사슬, root → tip) → `urdf.tree_models` (가지가 여럿인 tree) → 이름 `arm` 의 사슬 순으로 찾습니다. 사슬이 있으면 사슬을 씁니다. tree 인 군 (`g1_p1b` 의 `g1`: waist + 양팔) 은 tip 이 없으므로 **팔 끝 = 손이 붙는 link = 군 1 tree 의 `root_link`** 로 정합니다. 손끝 pose 의 합성은 아래 "손끝 FK 의 배선" 이 갖습니다 — 이 경우 팔 끝이 손 root 자신이라 장착 변환이 항등입니다. TF slot 과 vector payload 의 frame 이름도 같은 root · tip 에서 나옵니다. 군은 둘 (팔 계열 하나 + 손 하나) 까지입니다. 다음 두 경우는 `on_configure` 가 **FAILURE** 입니다: 군 0 의 `joint_state_names` 중 그 모델에 없는 이름이 있을 때 (사슬 · tree 공통 — E-STOP tick 의 팔 끝 FK 가 device 순서를 이름으로 모델 순서에 맞추므로, 순서가 달라도 되지만 이름은 전부 풀려야 합니다), 그리고 tree 인 군의 팔 끝을 정할 수 없을 때 (손 군의 tree 모델이 없고 device 의 `urdf.tip_link` 도 비어 있음).
+
+**팔 끝 frame (joint · task · compliance · wbc 공통).** 팔 끝 frame 은 `OnDeviceConfigsSet` 에서 군 0 의 device config 가 준 `urdf.tip_link` 로 한 번 찾습니다. 팔 모델이 있는데 그 frame 이 풀리지 않으면 `on_configure` 가 **FAILURE** 입니다 ([support/arm_tip_resolution.hpp](include/integrated_bringup/support/arm_tip_resolution.hpp)). 풀리지 않은 채로 돌면 joint · task · compliance 는 정상 tick 에서 항등 pose 를, E-STOP tick 에서 universe frame 의 pose 를 팔 끝으로 유효 표시해 내고, wbc 는 팔 끝 pose 를 내지 않는 대신 Cartesian hold 의 seed 를 universe frame 에서 읽습니다. ERROR 가 원인과 고칠 자리를 찍습니다:
+
+| 원인 | 조건 |
+|---|---|
+| 이름이 모델의 frame 이 아니다 | device 의 `urdf.tip_link` (또는 `urdf.sub_models.<군>.tip_link` 에서 풀린 이름) 가 모델에 없다 |
+| link 가 주어지지 않았다 | device config 에 `tip_link` 가 없다 — 군 이름이 `urdf.sub_models` 의 어느 항목과도 맞지 않아 이름 `arm` 의 사슬로 대체된 구성이 그렇다 |
+
+팔 모델이 없는 구성 (URDF 없이 올린 컨트롤러) 은 풀 팔 끝이 없으므로 통과합니다. `demo_wbc_controller` 는 TSID 가 서 있으면 같은 구성을 CLIK 초기화 실패로 이미 거부했습니다 — 이제 사유가 먼저 찍힙니다.
+
+이 검사가 보지 않는 것: **이름이 모델의 frame 이기만 하면 통과합니다.** 팔 모델은 로봇의 link 를 전부 frame 으로 갖고 있어서, 팔의 끝이 아닌 link (중간 link, 손의 link) 를 `tip_link` 로 적어도 풀립니다 — 손 군이 있으면 손끝 FK 의 장착 검사가 그 일부를 잡습니다. 그리고 팔 끝이 풀렸어도 통합 모델 cache 의 관절 순서 map 이 invalid 하거나 frame 등록이 실패하면 정상 tick 은 여전히 항등 pose 를 냅니다 (ERROR 만 찍힙니다).
 
 **손끝 FK 의 배선 (joint · task · compliance · wbc 공통).** 손끝 pose 는 세 변환의 곱입니다:
 

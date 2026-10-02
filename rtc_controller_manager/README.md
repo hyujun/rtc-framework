@@ -150,6 +150,7 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
 
 - `sub_models`/`tree_models`의 map 키(모델명)는 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다
 - 디바이스별 `root_link`/`tip_link` 미지정 시 시스템 `sub_models`/`tree_models`에서 자동 해석
+- `tip_link` 가 URDF 의 frame 이 아니어도 이 노드는 WARN 만 찍고 그 이름을 그대로 컨트롤러에 넘깁니다. 받을지 말지는 컨트롤러가 정합니다 — `integrated_bringup` 의 joint · task · compliance · wbc 컨트롤러는 팔 모델이 있는데 팔 끝 frame 이 풀리지 않으면 `on_configure` 를 거부하고, 한 컨트롤러의 거부는 이 노드의 configure 전체를 실패시킵니다
 - 디바이스별 URDF 경로 미지정 시 시스템 URDF 경로를 폴백으로 사용
 - **Extended-URDF**: `urdf.extended: true` 면 URDF 옆 `<stem>.closure.yaml` sidecar(예: `foo.urdf.xacro` → `foo.closure.yaml`)를 로드해 공유 `PinocchioModelBuilder`가 loop closure constraint + `q_ref`를 build (`GetConstraintModels()` 등으로 노출) **하고, sidecar `actuated_joints` 외의 모든 movable 관절을 loop-passive 로 간주해 reduced/tree 서브모델에서 잠근다** — 따라서 `actuated_joints` 는 그 URDF 의 완전한 active 집합이어야 한다 (arm + closed-chain hand 병합 시 arm 관절 포함; 상세 계약·locked-count 로그는 [rtc_urdf_bridge/README.md](../rtc_urdf_bridge/README.md#extended-urdf-closed-chain-sidecar-nameclosureyaml)). closure 해석은 최상위 `urdf.path` 경로든 아래 devices-fallback 경로든 **동일하게** 실행되며, `extended: true` 인데 sidecar 미발견 시 loud `RCLCPP_ERROR` 후 loop constraint 없이 진행(plain URDF).
 - **하위 호환**: 최상위 `urdf:` 없으면 기존 `devices.{group}.urdf` 에서 읽고(fallback), 이 경로도 최상위 `urdf.extended`/`urdf.closure_path` 를 그대로 적용한다

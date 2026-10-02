@@ -322,8 +322,9 @@ void DemoJointController::OnDeviceConfigsSet() {
     RCLCPP_ERROR(logger_, "[joint] %s", arm_model_config_error_.c_str());
   }
   // Names for on_configure. A chain group whose device config carries no links
-  // (a fixture that bypasses the CM's resolution) keeps the labels it always
-  // had: the first declared chain.
+  // keeps the labels it always had: the first declared chain. With an arm model
+  // that state does not get past on_configure (the arm tip did not resolve); it
+  // is left for a fixture that stops at this hook.
   arm_root_link_name_ = root_link;
   arm_tip_link_name_ = tip_link;
   if (!arm_model_is_tree_ && sys_cfg != nullptr && !sys_cfg->sub_models.empty()) {
@@ -362,7 +363,8 @@ void DemoJointController::OnDeviceConfigsSet() {
       arm_base_frame_idx_ = -1;  // world/base frame — ArmTcpPoseFromCache returns world tip
     }
   } else {
-    RCLCPP_WARN(logger_, "[joint] arm TCP cache disabled: tip frame unresolved");
+    RCLCPP_WARN(logger_, "[joint] arm TCP cache disabled: %s",
+                arm_handle_ ? "tip frame unresolved (on_configure refuses this)" : "no arm model");
   }
   // Lift L1: per-device joint limits (position + velocity) loaded from
   // device_name_configs_ in topic_config_ group order; missing slots get

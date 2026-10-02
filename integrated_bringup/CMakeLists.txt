@@ -1259,6 +1259,32 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # An arm model whose tip frame did not resolve refuses the configure (#688):
+  # the verdict's wording (support/arm_tip_resolution.hpp) and the four
+  # controllers that report an arm tip pose, on iiwa7_leap, in both bring-up
+  # orders. on_configure runs on a real LifecycleNode, hence the domain.
+  ament_add_gtest(test_arm_tip_resolution
+    test/test_arm_tip_resolution.cpp
+    TIMEOUT 180
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_arm_tip_resolution
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_arm_tip_resolution
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    rtc_tsid
+    rtc_mpc
+    pinocchio
+    Eigen3
+  )
+
   # ── Device backend registration smoke test ─────────────────────────────────
   # Confirms the 3 backend TUs (mujoco_native / ur_driver_native /
   # udp_hand_native) static-init through --whole-archive and reach the
@@ -1601,6 +1627,7 @@ if(BUILD_TESTING)
     test_joint_tf_slot_frames
     test_joint_tree_primary_group
     test_hand_fk_wiring
+    test_arm_tip_resolution
     test_mujoco_native_backend
     test_catching_traj_input
     test_catching_tracking

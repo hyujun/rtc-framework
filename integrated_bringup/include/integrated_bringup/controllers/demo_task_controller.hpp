@@ -10,6 +10,7 @@
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
+#include "integrated_bringup/support/arm_tip_resolution.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
@@ -346,6 +347,15 @@ class DemoTaskController final : public RTControllerInterface {
   /// on_configure refuses on the same string — see OnDeviceConfigsSet.
   [[nodiscard]] const std::string& HandFkWiringErrorForTesting() const noexcept {
     return hand_fk_wiring_.Error();
+  }
+
+  /// Why the arm tip frame is not usable — an arm model whose tip link did not
+  /// resolve — or empty when it is (or there is no arm model). on_configure
+  /// refuses on it; tests read the reason.
+  [[nodiscard]] std::string ArmTipConfigError() const {
+    const auto primary = GetPrimaryDeviceName();
+    return ArmTipUnresolvedReason(arm_handle_ != nullptr, tip_frame_id_ != 0, primary,
+                                  GetDeviceNameConfig(primary));
   }
 
   /// Test-only: lift the shipped K_est_max pin so the stiffness estimate can
