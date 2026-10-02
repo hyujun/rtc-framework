@@ -277,6 +277,7 @@ class TestParseUrdf:
 
 MJCF_TEMPLATE = """\
 <mujoco model="test_robot">
+  <compiler angle="radian"/>
   <default>
     <default class="test_robot">
       <joint axis="0 1 0" armature="0.1"/>
@@ -299,6 +300,9 @@ MJCF_TEMPLATE = """\
       </body>
     </body>
   </worldbody>
+  <actuator>
+    <general class="test_robot" joint="shoulder_pan_joint"/>
+  </actuator>
 </mujoco>
 """
 
