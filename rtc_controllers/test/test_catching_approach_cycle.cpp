@@ -1,5 +1,5 @@
 // E1-F08 (#661): the APPROACH–stop pair and replans as PlannerCycle runs them
-// (planner_cycle.hpp "THE APPROACH–STOP PAIR") — the real search on a real
+// (planner_cycle.hpp "THE DECEL PLANNER'S PART") — the real search on a real
 // 6-joint arm, the decel planner behind it, on the REAL steady clock (the
 // budgets are measured), with the test as the RT stand-in. RUN_SERIAL: a
 // loaded host stretches the solves the budgets judge. The planner's own
@@ -8,11 +8,14 @@
 //   pair        APairIsPublishedTogetherSegmentFirst, AWithheldSegmentWithholdsThePlan,
 //               ANewerSnapshotOfTheSameTrackStillPublishes, RightAfterAPairTheSearchWaits
 //   replans     OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport,
-//               WithoutAReportNothingIsReplanned, ShadowStoresNoSegment
+//               AnotherTracksBallIsNotTheFollowedPlansTarget,
+//               WithoutAReportNothingIsReplanned
+//   lifetime    ATrialResetWithdrawsTheSegment,
+//               WithoutADecelBoxThePlanIsPublishedAlone
 //
-// The RT stand-in models the RT #662 will make (it reports the segment it
-// holds pending and then follows): the current RT reports neither, which
-// WithoutAReportNothingIsReplanned pins.
+// The RT stand-in reports the segment it holds pending and then follows, as
+// the RT does under `mode: mpc` (E1-F09); WithoutAReportNothingIsReplanned
+// pins an RT that reports neither.
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/types/types.hpp"
 #include "rtc_controllers/catching/decel_planner.hpp"
@@ -69,13 +72,13 @@ struct Boxes {
   rtc::SeqLock<DecelPlanSnapshot> decel;
 };
 
-// The RT side as #662 will make it: adopt the first plan in the box, hold
+// The RT side under `mode: mpc`: adopt the first plan in the box, hold
 // each newer segment of that plan pending until its node 0, then follow it.
 // Mode by time: APPROACH, COMMITTED from t_c − T_freeze, DECEL from t_c.
 struct RtStandIn {
   std::vector<double> wait_pose;  // device order
   bool adopt{true};               // false: never takes a plan
-  bool report_decel{true};        // false: the RT before #662
+  bool report_decel{true};        // false: an RT that reports no segment
   std::int64_t t_freeze_ns{200 * kMs};
   std::uint64_t track{kTrack};  // the track it consumed last
   bool following{false};
@@ -149,7 +152,7 @@ struct Rig {
   rtc::catching::PlannerParams params;
   std::int64_t traj_first_ns{0};
 
-  explicit Rig(bool shadow = false, double catch_err_max = 0.02) {
+  explicit Rig(double catch_err_max = 0.02, bool bind_decel = true) {
     rtc_urdf_bridge::ModelConfig config;
     config.urdf_path = std::string(RTC_TEST_ROBOT_DESCRIPTIONS_DIR) + "/ur5e/urdf/ur5e.urdf";
     config.root_joint_type = "fixed";
@@ -200,7 +203,6 @@ struct Rig {
     // Generous: a loaded host must not turn this suite into a budget test.
     d.budget_first_s = 0.1;
     d.budget_replan_s = 0.1;
-    d.shadow = shadow;
     d.catch_pos_err_max = catch_err_max;
     cycle.Configure(params);
 
@@ -224,10 +226,8 @@ struct Rig {
       dm.q_max[u] = model->upperPositionLimit[j];
       dm.qdot_max[u] = qd_max[u];
       dm.tau_max[u] = tau_max[u];
-      dm.qddot_cap[u] = 20.0;
     }
     pm.accel_box = true;
-    dm.qddot_cap_valid = true;
     rtc::catching::PlannerConstants pc;
     pc.eta_v = 0.9;
     pc.v_max = 3.0;
@@ -247,10 +247,9 @@ struct Rig {
     dc.eta_v = 0.9;
     dc.t_arm_s = pc.t_arm_s;
     dc.control_dt = 0.002;
-    dc.budget_s = 0.05;
-    dc.report_lead_s = 0.004;
     dc.v_eps = 1e-6;
-    rtc::catching::PlannerCycleIo io{&boxes.traj, &boxes.cov, &boxes.rt, &boxes.plan, &boxes.decel};
+    rtc::catching::PlannerCycleIo io{&boxes.traj, &boxes.cov, &boxes.rt, &boxes.plan,
+                                     bind_decel ? &boxes.decel : nullptr};
     EXPECT_TRUE(cycle.Bind(io));
     EXPECT_TRUE(cycle.ConfigureSearch(pm, pc, ik));
     std::string err;
@@ -342,7 +341,7 @@ TEST(ApproachCycle, APairIsPublishedTogetherSegmentFirst) {
 }
 
 TEST(ApproachCycle, AWithheldSegmentWithholdsThePlan) {
-  auto r = std::make_unique<Rig>(/*shadow=*/false, /*catch_err_max=*/1e-9);
+  auto r = std::make_unique<Rig>(/*catch_err_max=*/1e-9);
   r->rt.adopt = false;
   r->StartTrajectory();
   const PlannerCycleRecord rec = r->Wake();
@@ -497,8 +496,9 @@ TEST(ApproachCycle, AnotherTracksBallIsNotTheFollowedPlansTarget) {
 }
 
 TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
-  // The RT before #662 takes the plan but neither holds nor follows the
-  // segment (it refuses pre-catch nodes): the planner finds no source.
+  // An RT that took the plan but reports no segment — neither pending nor
+  // followed (it dropped the one it had): the planner finds no source, and
+  // does not infer one (MD-58).
   auto r = std::make_unique<Rig>();
   r->rt.report_decel = false;
   r->StartTrajectory();
@@ -512,25 +512,43 @@ TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
   EXPECT_EQ(r->cycle.LastDecelSeq(), seq);
 }
 
-TEST(ApproachCycle, ShadowStoresNoSegment) {
-  auto r = std::make_unique<Rig>(/*shadow=*/true);
+// ── Lifetime ─────────────────────────────────────────────────────────────────
+
+TEST(ApproachCycle, ATrialResetWithdrawsTheSegment) {
+  // The planner is the decel box's only writer: the ended trial's segment
+  // must not stay in it (the RT's plan match refuses it as well).
+  auto r = std::make_unique<Rig>();
   r->StartTrajectory();
-  const PlannerCycleRecord first = r->Wake();
-  ASSERT_EQ(first.outcome, CycleOutcome::kPublished) << Why(first);
+  ASSERT_EQ(r->Wake().outcome, CycleOutcome::kPublished);
+  ASSERT_TRUE(r->boxes.decel.Load().valid);
+  PlannerRtState s = r->boxes.rt.Load();
+  s.reset_epoch = 2;
+  s.mode = static_cast<std::uint8_t>(Mode::kIdle);
+  s.plan_active = false;
+  s.rt_state_ns = Now();
+  r->boxes.rt.Store(s);
+  const PlannerCycleRecord rec = r->cycle.Run(rtc::catching::NowReal{Now()});
+  EXPECT_TRUE(rec.reset_seen);
+  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kOff);
+  EXPECT_FALSE(r->boxes.decel.Load().valid) << "the ended trial's segment stays in the box";
+}
+
+TEST(ApproachCycle, WithoutADecelBoxThePlanIsPublishedAlone) {
+  // No fifth box (a binding without the decel lane): the decel planner is
+  // configured but solves nothing, and the search's plan goes out by itself.
+  auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_decel=*/false);
+  ASSERT_TRUE(r->cycle.DecelConfigured());
+  r->rt.adopt = false;
+  r->StartTrajectory();
+  const PlannerCycleRecord rec = r->Wake();
+  ASSERT_EQ(rec.outcome, CycleOutcome::kPublished) << Why(rec);
+  EXPECT_TRUE(rec.plan_valid);
+  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kOff);
   EXPECT_TRUE(r->boxes.plan.Load().valid);
-  EXPECT_FALSE(r->boxes.decel.Load().valid);
-  // The first wake saw the trial start (reset epoch) and withdrew the box —
-  // an invalid store, the cycle's existing duty. Nothing is stored after it.
-  const std::uint32_t written = r->boxes.decel.sequence();
-  int replans = 0;
-  for (int i = 0; i < 8; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
-    const PlannerCycleRecord rec = r->Wake();
-    replans += rec.decel.outcome == DecelOutcome::kPublished ? 1 : 0;
-  }
-  EXPECT_GT(replans, 0) << "shadow replans from the newest segment, unreported";
-  EXPECT_FALSE(r->boxes.decel.Load().valid);
-  EXPECT_EQ(r->boxes.decel.sequence(), written) << "shadow stored a segment";
+  EXPECT_EQ(r->boxes.decel.sequence(), 0U);
+  EXPECT_EQ(r->cycle.LastDecelSeq(), 0U);
+  r->cycle.ClearDecel();
+  EXPECT_FALSE(r->cycle.DecelConfigured());
 }
 
 }  // namespace

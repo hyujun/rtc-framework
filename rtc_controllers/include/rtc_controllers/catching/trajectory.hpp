@@ -164,11 +164,11 @@ struct PlanSnapshot {
 /// n_pre pre-catch intervals of dt_pre_ns before t_c and continues with the
 /// n_nodes − n_pre stop intervals of dt_ns after it: node n_pre is the catch
 /// node at t_c, and node 0 is t_c − n_pre·dt_pre_ns (k0 is 0). n_pre = 0 is
-/// the stop-only segment above. DecelNodeTimeNs() is the one place a node's
+/// a segment that starts at t_c or after it — the stop part alone, as above.
+/// DecelNodeTimeNs() is the one place a node's
 /// instant is computed.
 struct DecelPlanSnapshot {
-  // activation_generation and track generation of the followed plan. The
-  // stop-only planner takes them as the RT reported them; an APPROACH–stop
+  // activation_generation and track generation of the followed plan. A
   // segment carries the PLAN's track (its first segment is packed from the
   // plan's own token and every later one from its source), which the RT's
   // latest consumed track need not be after the freeze. snapshot_sequence /
@@ -187,7 +187,7 @@ struct DecelPlanSnapshot {
   std::int32_t k0{0};          // grid index of node 0 (0 = pre-catch solve)
   std::int32_t n_nodes{0};     // N; the segment ends at t0 + N·dt = t_c + N_s·dt
   std::int32_t nv{0};
-  std::int32_t n_pre{0};  // pre-catch intervals before t_c (0 = stop-only)
+  std::int32_t n_pre{0};  // pre-catch intervals before t_c (0 = the stop part alone)
 
   std::array<double, kMaxDecelNv*(kMaxDecelNodes + 1)> q{};    // [rad]
   std::array<double, kMaxDecelNv*(kMaxDecelNodes + 1)> qd{};   // [rad/s]

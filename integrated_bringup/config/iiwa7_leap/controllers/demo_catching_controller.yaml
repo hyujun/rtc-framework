@@ -369,9 +369,10 @@ demo_catching_controller:
         # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
         # MD-55 – MD-64). Built and run only under supervisor.decel.mode: mpc,
         # which also needs it (MD-44); under closed_form, true only warns. Off
-        # with the closed-form default. Until the RT follows segments that
-        # start before t_c (#662) it admits none of them, so mode: mpc with the
-        # approach grid below aborts every trial at DECEL entry.
+        # with the closed-form default. Under mode: mpc the RT takes a plan only
+        # together with its first segment and follows the segments from APPROACH
+        # to the end of the stop (MPC E1-F09, MD-45) — the approach grid below
+        # (n_pre_max > 0) is then required.
         enabled: false
         horizon:
           # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
@@ -381,7 +382,7 @@ demo_catching_controller:
           blocks: [1, 1, 2, 3]
         approach:
           # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
-          # before t_c. 0 = the stop segment alone (E1-F03's planner).
+          # before t_c. 0 = no decel planner — mode: mpc then parks (MD-70).
           # On THIS arm the plan first appears near a 0.21 s lead, which leaves
           # one 0.1 s node: that first solve is withheld and 186 of 200 sim
           # throws got no plan. 0.04 s spacing raised it to 70 of 200 — the
@@ -399,15 +400,11 @@ demo_catching_controller:
           first_s: 0.035
           replan_s: 0.025
         replan:
-          # t_pre_s is read by the stop-only planner (n_pre_max 0) alone
-          # (MD-26). Post-catch replans up to k_max grid points past t_c, stop
-          # end fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid
-          # point with the newer prediction (MD-58).
-          t_pre_s: 0.1
+          # Post-catch replans up to k_max grid points past t_c, stop end
+          # fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid point
+          # with the newer prediction (MD-58).
           k_max: 2
           same_point: true
-        # Measurement only (MD-59): solve and record, store no segment.
-        shadow: false
         eta_tau: 0.7
         m_q: 0.05
         publish:

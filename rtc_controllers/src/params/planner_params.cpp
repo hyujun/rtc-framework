@@ -333,7 +333,6 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
            " but n_nodes is " + std::to_string(d.n_nodes) + " (Σ blocks = N)");
   }
   const YAML::Node replan = Section(decel, "replan", "decel_mpc.replan");
-  d.t_pre_s = ReadBounded(replan, "t_pre_s", "decel_mpc.replan.t_pre_s", d.t_pre_s, 0.0, 0.5);
   d.k_max = ReadInt(replan, "k_max", "decel_mpc.replan.k_max", d.k_max, 0, kMaxDecelReplans);
   for (int k = 0; k <= d.k_max; ++k) {
     std::array<int, kMaxDecelNodes> blocks{};
@@ -356,7 +355,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
       ReadBounded(publish, "catch_pos_err_max", "decel_mpc.publish.catch_pos_err_max",
                   d.catch_pos_err_max, 1e-6, 1.0);
 
-  // APPROACH–stop (E1-F08). The pre-catch nodes and the stop's share the
+  // The pre-catch part (E1-F08). Its nodes and the stop's share the
   // payload's node capacity and the core's block array.
   const YAML::Node approach = Section(decel, "approach", "decel_mpc.approach");
   const int n_pre_cap = std::min(kMaxDecelNodes - d.n_nodes, kMaxDecelNodes - d.n_blocks);
@@ -377,7 +376,6 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
                                   d.budget_replan_s, kPlannerBudgetMinS, kPlannerBudgetMaxS);
   d.replan_same_point =
       ReadBool(replan, "same_point", "decel_mpc.replan.same_point", d.replan_same_point);
-  d.shadow = ReadBool(decel, "shadow", "decel_mpc.shadow", d.shadow);
   const YAML::Node dcatch = Section(decel, "catch", "decel_mpc.catch");
   d.w_axis = ReadBounded(dcatch, "w_axis", "decel_mpc.catch.w_axis", d.w_axis, 0.0, 1e6);
   d.w_v_par = ReadBounded(dcatch, "w_v_par", "decel_mpc.catch.w_v_par", d.w_v_par, 0.0, 1e6);

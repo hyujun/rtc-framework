@@ -279,16 +279,15 @@ void DemoCatchingController::DeclareProfileParameters() {
   // horizon, window and thresholds this controller used, not the file.
   const auto& decel = planner_params_.decel;
   declare("planner.decel_mpc.enabled", decel.enabled,
-          "MPC E1-F03: the planner pre-computes the stop segment (decel MPC)");
+          "MPC E1-F03 / E1-F08: the planner solves the segments the RT follows from APPROACH to "
+          "the end of the stop (decel MPC)");
   declare("planner.decel_mpc.horizon.n_nodes", static_cast<std::int64_t>(decel.n_nodes),
           "decel MPC nodes N_s; N_s * dt_s is the stopping time (MD-21)");
   declare("planner.decel_mpc.horizon.dt_s", decel.dt_s, "decel MPC node spacing dt_s [s]");
   declare("planner.decel_mpc.horizon.blocks",
           std::vector<std::int64_t>(decel.blocks.begin(), decel.blocks.begin() + decel.n_blocks),
-          "decel MPC move-blocking pattern of the pre-catch solve (sum = n_nodes)");
+          "decel MPC move-blocking pattern of the stop part (sum = n_nodes)");
   declare("planner.decel_mpc.m_q", decel.m_q, "decel MPC position margin inside the limits [rad]");
-  declare("planner.decel_mpc.replan.t_pre_s", decel.t_pre_s,
-          "decel MPC first solve waits until t_c - now_lead <= t_pre_s [s] (MD-26)");
   declare("planner.decel_mpc.replan.k_max", static_cast<std::int64_t>(decel.k_max),
           "decel MPC post-catch replans at grid points k <= k_max (MD-31)");
   declare("planner.decel_mpc.eta_tau", decel.eta_tau, "decel MPC torque row fraction of tau_max");
@@ -298,7 +297,8 @@ void DemoCatchingController::DeclareProfileParameters() {
           "decel MPC publish threshold on the terminal (static) torque slack (MD-33)");
   // The APPROACH–stop keys (MPC E1-F08): all provisional.
   declare("planner.decel_mpc.approach.n_pre_max", static_cast<std::int64_t>(decel.n_pre_max),
-          "decel MPC pre-catch intervals before t_c, at most (MD-54); 0 = stop segment only");
+          "decel MPC pre-catch intervals before t_c, at most (MD-54); 0 = no decel planner "
+          "(mode mpc parks, MD-70)");
   declare("planner.decel_mpc.approach.dt_pre_s", decel.dt_pre_s,
           "decel MPC pre-catch node spacing [s] (MD-54)");
   declare("planner.decel_mpc.approach.rest_tol", decel.rest_tol,
@@ -309,8 +309,6 @@ void DemoCatchingController::DeclareProfileParameters() {
           "decel MPC replan solve budget and lead [s] (MD-56)");
   declare("planner.decel_mpc.replan.same_point", decel.replan_same_point,
           "decel MPC re-solves a pre-catch grid point with the newer prediction (MD-58)");
-  declare("planner.decel_mpc.shadow", decel.shadow,
-          "decel MPC measurement mode: solve and record, store no segment (MD-59)");
   declare("planner.decel_mpc.publish.catch_pos_err_max", decel.catch_pos_err_max,
           "decel MPC publish threshold on the catch-node position error [m] (MD-62)");
   declare("planner.decel_mpc.catch.w_axis", decel.w_axis, "decel MPC approach-axis weight");
@@ -1296,9 +1294,10 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       TearDownConfiguredResources();
       return CallbackReturn::SUCCESS;
     }
-    // MPC MD-34 / MD-44: under mpc every DECEL follows a segment, so a missing
-    // prerequisite would abort every trial at t_c. Parked like any other
-    // profile mistake: the robot comes up, this controller does not activate.
+    // MPC MD-34 / MD-44 / MD-45: under mpc the arm follows a segment from
+    // APPROACH to the end of the stop, so a missing prerequisite would leave
+    // every trial without one. Parked like any other profile mistake: the
+    // robot comes up, this controller does not activate.
     if (decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
       if (const char* why = DecelModeUnmet(); why != nullptr) {
         sim_only_disabled_ = true;
@@ -1888,8 +1887,10 @@ bool DemoCatchingController::SetupPlannerSearch() {
     return false;
   }
   // MD-44: the decel cores exist only for a configuration that follows them.
+  // Without a pre-catch grid there is no decel planner to build (MD-70) — a
+  // profile mistake DecelModeUnmet parks on, not a configure failure.
   if (planner_params_.decel.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
-      !SetupDecelPlanner(model, pm)) {
+      planner_params_.decel.n_pre_max > 0 && !SetupDecelPlanner(model, pm)) {
     return false;
   }
   RCLCPP_INFO(logger_,
@@ -1961,17 +1962,11 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
     decel_planner_q_max_[d] = dm.q_max[u];
     dm.qdot_max[u] = pm.qdot_max[u];
     dm.tau_max[u] = (*torque)[static_cast<std::size_t>(pm.device_of_model[u])];
-    dm.qddot_cap[u] = pm.qddot_max[u];
   }
-  dm.qddot_cap_valid = pm.accel_box;
   rtc::catching::DecelPlannerConstants dc;
   dc.eta_v = ResolvedPlannerEtaV();
   dc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
   dc.control_dt = GetDefaultDt();
-  dc.budget_s = planner_params_.budget_s;
-  // MD-40: the RT samples a followed segment at now_lead + h, so the command
-  // it reports is the segment at now_lead + 2h.
-  dc.report_lead_s = 2.0 * GetDefaultDt();
   // The ball's direction of travel is undefined below the IK's own floor.
   dc.v_eps = catch_pose_ik_config_.options.v_eps;
   std::string error;
@@ -1981,31 +1976,20 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
   }
   const auto& d = planner_params_.decel;
   RCLCPP_INFO(logger_,
-              "decel MPC ready: %d x %.3f s (stop %.3f s), %d blocks, first solve %.3f s before "
-              "t_c, replans to k = %d, eta_tau %.2f, publish slack <= %.2f / terminal %.2f, "
-              "armature 0 (MD-25), q_ddot estimate %s",
-              d.n_nodes, d.dt_s, d.n_nodes * d.dt_s, d.n_blocks, d.t_pre_s, d.k_max, d.eta_tau,
-              d.slack_max, d.slack_terminal_max,
-              dm.qddot_cap_valid ? "capped by the D-16 box" : "OFF");
-  if (d.n_pre_max > 0) {
-    RCLCPP_INFO(logger_,
-                "decel MPC approach grid: up to %d x %.3f s before t_c, budgets first %.3f s / "
-                "replan %.3f s, same-point re-solve %s, catch error <= %.3f m%s",
-                d.n_pre_max, d.dt_pre_s, d.budget_first_s, d.budget_replan_s,
-                d.replan_same_point ? "on" : "off", d.catch_pos_err_max,
-                d.shadow ? ", SHADOW (no segment is stored)" : "");
-    if (!d.horizon_explicit) {
-      RCLCPP_WARN(logger_,
-                  "planner.decel_mpc.approach.n_pre_max is %d but planner.decel_mpc.horizon is "
-                  "not set: the stop part runs the stop-only default %d x %.3f s, not the "
-                  "MD-54 grid",
-                  d.n_pre_max, d.n_nodes, d.dt_s);
-    }
-    // The RT admits no segment that starts before t_c until it follows one
-    // from APPROACH (#662): said once here, not once per trial.
+              "decel MPC ready: stop part %d x %.3f s (%.3f s), %d blocks, post-catch replans to "
+              "k = %d, eta_tau %.2f, publish slack <= %.2f / terminal %.2f, armature 0 (MD-25)",
+              d.n_nodes, d.dt_s, d.n_nodes * d.dt_s, d.n_blocks, d.k_max, d.eta_tau, d.slack_max,
+              d.slack_terminal_max);
+  RCLCPP_INFO(logger_,
+              "decel MPC approach grid: up to %d x %.3f s before t_c, budgets first %.3f s / "
+              "replan %.3f s, same-point re-solve %s, catch error <= %.3f m",
+              d.n_pre_max, d.dt_pre_s, d.budget_first_s, d.budget_replan_s,
+              d.replan_same_point ? "on" : "off", d.catch_pos_err_max);
+  if (!d.horizon_explicit) {
     RCLCPP_WARN(logger_,
-                "decel MPC approach grid: the RT does not follow pre-catch segments yet (#662) "
-                "— every trial aborts at DECEL entry (no_segment)");
+                "planner.decel_mpc.horizon is not set: the stop part runs the code default "
+                "%d x %.3f s, not the MD-54 grid",
+                d.n_nodes, d.dt_s);
   }
   return true;
 }
@@ -2048,8 +2032,9 @@ void DemoCatchingController::SetupDecelFollower() {
     decel_qd_max_[u] = u < vmax.size() ? vmax[u] : 0.0;
   }
   RCLCPP_INFO(logger_,
-              "DECEL law: mpc — follows the decel MPC's stop segment on every DECEL (no "
-              "closed-form fallback, MD-44); switch margin %.2f, admission age <= %.3f s",
+              "DECEL law: mpc — takes a plan with its first segment and follows the MPC's "
+              "segments from APPROACH to the end of the stop (no soft-catch reference, no "
+              "closed-form fallback; MD-44, MD-45); switch margin %.2f, admission age <= %.3f s",
               decel_switch_margin_, static_cast<double>(kDecelAdmissionMaxAgeNs) * 1e-9);
 }
 
@@ -2084,17 +2069,29 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   if (!planner_params_.catch_box.set) {
     return "planner.workspace.catch_box is unset (the stop's workspace check, MD-43)";
   }
+  // MD-45, MD-70: the arm follows a segment from APPROACH, and a plan is
+  // published only together with one that starts before t_c. Without a
+  // pre-catch grid no decel planner is built — no trial would ever start. The
+  // oracle profile has no planner: its test writes the box.
+  if (!oracle_enabled_ && planner_params_.enabled && planner_params_.decel.enabled &&
+      !(planner_params_.decel.n_pre_max > 0)) {
+    return "planner.decel_mpc.approach.n_pre_max is 0 (the RT takes a plan only with a segment "
+           "that starts before t_c, MD-45)";
+  }
   if (!oracle_enabled_ && !(planner_params_.enabled && planner_params_.decel.enabled &&
                             planner_cycle_.DecelConfigured())) {
     return "no decel planner runs (planner.enabled and planner.decel_mpc.enabled, on a model "
            "the cores accept)";
   }
-  // MD-37: a segment is admitted at most a budget and a few ticks after its
-  // publish; an age bound below that would refuse every one of them.
-  const double min_age_s = planner_params_.budget_s + 3.0 * GetDefaultDt();
+  // MD-37: a segment for the next grid point waits in the box while the
+  // pending slot holds the one before it — at most the replan lead and three
+  // ticks (kDecelAdmissionMaxAgeNs). An age bound below that would refuse
+  // those segments.
+  const double min_age_s = planner_params_.decel.budget_replan_s + 3.0 * GetDefaultDt();
   if (planner_params_.enabled &&
       !(static_cast<double>(kDecelAdmissionMaxAgeNs) * 1e-9 > min_age_s)) {
-    return "planner.budget_s + 3 control periods is not below the decel admission age bound";
+    return "planner.decel_mpc.budget.replan_s + 3 control periods is not below the decel "
+           "admission age bound";
   }
   return nullptr;
 }
