@@ -15,7 +15,9 @@
 //     a torn read waiting to happen.
 //   - `DecelPlanSnapshot` planner → RT (trajectory.hpp, MPC E1-F02). Stored
 //     by the planner only; judged by `JudgeDecelPlan` below. The RT tick reads
-//     it under `supervisor.decel.mode: mpc` only (E1-F04, MD-44).
+//     it under `supervisor.decel.mode: mpc` only (E1-F04, MD-44) — from the
+//     tick that takes a plan together with its first segment to the end of the
+//     stop (E1-F09).
 //
 // WHY `plan_id` DECIDES NEWNESS (L3 §5.2, S6 implementation note). The
 // provenance token's `snapshot_sequence` belongs to the TRAJECTORY the plan
@@ -116,19 +118,19 @@ struct PlannerRtState {
   /// plan the RT FOLLOWS, not the one the planner last published — after
   /// COMMITTED the RT takes no new plan, so the two can differ.
   std::int64_t plan_t_c_ns{0};
-  /// Whether the RT is following a decel segment this tick, and which one
-  /// (its decel_seq). The planner predicts the next segment's initial state
-  /// from that segment when it is its own latest (MD-28 path (i)). Always
-  /// false / 0 under `supervisor.decel.mode: closed_form`, and outside
-  /// DECEL / HOLD (E1-F04).
+  /// Whether the RT is following a segment this tick, and which one (its
+  /// decel_seq) — the segment its command is sampled from, in every mode that
+  /// follows one: APPROACH through HOLD (E1-F09). The planner evaluates the
+  /// next solve's initial state on it (MD-28 path (i), MD-58). Always false /
+  /// 0 under `supervisor.decel.mode: closed_form`.
   bool decel_active{false};
   std::uint32_t decel_seq{0};
-  /// The decel segment the RT has admitted and holds PENDING (its node 0 not
-  /// reached yet), if any, by decel_seq. With pre-catch nodes (MD-58) the
-  /// planner takes the next solve's initial state from the segment the RT
-  /// will be following at that instant, and only the RT knows whether it
-  /// admitted, deferred or dropped a segment. Not filled by the RT yet (#662):
-  /// false / 0 until then.
+  /// The segment the RT has admitted and holds PENDING (its node 0 not reached
+  /// yet), if any, by decel_seq. The planner takes the next solve's initial
+  /// state from the segment the RT will be following at that instant (MD-58),
+  /// and only the RT knows whether it admitted, deferred or dropped one: a
+  /// segment the switch gate refused, or one dropped with its trial, is no
+  /// longer reported. Always false / 0 under `closed_form`.
   bool decel_pending{false};
   std::uint32_t decel_pending_seq{0};
 
@@ -266,7 +268,8 @@ enum class DecelRefusal : std::uint8_t {
   kNone = 0,
   kInvalid,      ///< `valid` false — the planner withdrew it (e.g. on a reset)
   kActivation,   ///< another activation generation (D-23)
-  kPlan,         ///< not a stop for the plan the RT follows (id or t_c differ)
+  kPlan,         ///< not a segment of the plan the RT follows (id, t_c or — when
+                 ///< the context names one — the plan's track differ)
   kRepeat,       ///< decel_seq not newer than the one the RT already took
   kAged,         ///< published outside [now − max_age, now]
   kBeforeReset,  ///< published before the RT's last trial reset
@@ -294,9 +297,17 @@ struct DecelAdmissionContext {
   /// state of the tick before it: the publish floor alone lets that through.
   std::int64_t state_floor_ns{0};
   /// Whether the RT follows segments with pre-catch nodes (n_pre > 0, MD-60).
-  /// Off until the RT tick follows them from APPROACH (#662): a segment that
-  /// starts before t_c is refused as kMalformed.
+  /// Off, a segment that starts before t_c is refused as kMalformed. The
+  /// catching controller turns it on: under `mode: mpc` it follows segments
+  /// from APPROACH (E1-F09).
   bool accept_pre_catch{false};
+  /// The track of the plan the RT follows (its token's generation), checked
+  /// against the segment's when `check_track` is set — refused as kPlan. An
+  /// APPROACH–stop segment carries the PLAN's track (trajectory.hpp), which
+  /// after the freeze need not be the track the RT consumed last: the caller
+  /// passes the plan's, never its latest.
+  bool check_track{false};
+  std::uint64_t plan_track_generation{0};
 };
 
 /// The RT's memory of the last decel segment it admitted.
@@ -321,6 +332,9 @@ struct AdmittedDecel {
     return DecelRefusal::kActivation;
   }
   if (!ctx.plan_active || p.plan_id != ctx.plan_id || p.t_c_ns != ctx.plan_t_c_ns) {
+    return DecelRefusal::kPlan;
+  }
+  if (ctx.check_track && p.token.generation != ctx.plan_track_generation) {
     return DecelRefusal::kPlan;
   }
   // `>` on the planner's own counter (it starts at 1 and never wraps within a

@@ -885,6 +885,83 @@ TEST_F(NodeFollowerTest, TwoSpacingSampleAllocatesNothing) {
   EXPECT_EQ(mallocs, 0U);
 }
 
+TEST_F(NodeFollowerTest, NodesInsideBoxCanStartAtTheCatchNode) {
+  // MD-43 on an APPROACH–stop segment: the stop starts at the catch node, so
+  // the check reads nodes n_pre..N and, anchored, places node n_pre — not node
+  // 0 — at the anchor. Against an independent FK of the device-order nodes.
+  const DecelPlanSnapshot p = MakeMixedPlan(arm_.q_nominal, 55, 3, 7).p;
+  pinocchio::Data data(*arm_.model);
+  std::vector<Eigen::Vector3d> pos;
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    Eigen::VectorXd q(p.nv);
+    for (int m = 0; m < p.nv; ++m) {
+      q[m] = p.q[Idx(k, kDeviceOfModel[static_cast<std::size_t>(m)])];
+    }
+    pinocchio::framesForwardKinematics(*arm_.model, data, q);
+    pos.push_back(data.oMf[arm_.frame].translation());
+  }
+  // The box of the stop part placed at `anchor`: anchor + (p_k − p_first).
+  const auto stop_box = [&](int first, const Eigen::Vector3d& anchor, std::array<double, 3>& lo,
+                            std::array<double, 3>& hi) {
+    for (int a = 0; a < 3; ++a) {
+      const auto u = static_cast<std::size_t>(a);
+      lo[u] = std::numeric_limits<double>::infinity();
+      hi[u] = -std::numeric_limits<double>::infinity();
+      for (int k = first; k <= p.n_nodes; ++k) {
+        const double x = anchor[a] + pos[static_cast<std::size_t>(k)][a] -
+                         pos[static_cast<std::size_t>(first)][a];
+        lo[u] = std::min(lo[u], x - 1e-9);
+        hi[u] = std::max(hi[u], x + 1e-9);
+      }
+    }
+  };
+  const Eigen::Vector3d anchor(0.4, -0.1, 0.6);
+  const std::array<double, 3> at{anchor.x(), anchor.y(), anchor.z()};
+  std::array<double, 3> lo{};
+  std::array<double, 3> hi{};
+  stop_box(p.n_pre, anchor, lo, hi);
+  int first = 99;
+  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, &at, &first, p.n_pre));
+  EXPECT_EQ(first, -1);
+  // Read from node 0 the same box refuses: the pre-catch nodes are placed
+  // relative to node 0, and the path is another one. (The fixture's approach
+  // must leave the stop's box for this to tell the two apart.)
+  int from_zero = -1;
+  ASSERT_FALSE(follower_.NodesInsideBox(p, lo, hi, &at, &from_zero, 0))
+      << "the fixture's pre-catch part stays inside the stop's box";
+  // Unanchored, from the catch node: the absolute stop nodes.
+  std::array<double, 3> abs_lo{};
+  std::array<double, 3> abs_hi{};
+  stop_box(p.n_pre, pos[static_cast<std::size_t>(p.n_pre)], abs_lo, abs_hi);
+  EXPECT_TRUE(follower_.NodesInsideBox(p, abs_lo, abs_hi, nullptr, &first, p.n_pre));
+  // Pulling a face in past the extreme stop node names the first node beyond
+  // it — an index of the SEGMENT, not of the stop part.
+  std::array<double, 3> tight = abs_hi;
+  tight[0] -= 2e-9 + 1e-6;
+  int expected = -1;
+  for (int k = p.n_pre; k <= p.n_nodes && expected < 0; ++k) {
+    if (pos[static_cast<std::size_t>(k)][0] > tight[0]) {
+      expected = k;
+    }
+  }
+  ASSERT_GE(expected, p.n_pre);
+  EXPECT_FALSE(follower_.NodesInsideBox(p, abs_lo, tight, nullptr, &first, p.n_pre));
+  EXPECT_EQ(first, expected);
+  // The last node alone, and a first node outside the segment.
+  const std::array<double, 3> huge_lo{-1e9, -1e9, -1e9};
+  const std::array<double, 3> huge_hi{1e9, 1e9, 1e9};
+  EXPECT_TRUE(follower_.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first, p.n_nodes));
+  EXPECT_FALSE(follower_.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first, p.n_nodes + 1));
+  EXPECT_FALSE(follower_.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first, -1));
+  // A NaN before the first node is not read; one after it is.
+  DecelPlanSnapshot bad = p;
+  bad.q[Idx(1, 0)] = kNan;
+  EXPECT_TRUE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, nullptr, &first, p.n_pre));
+  bad.q[Idx(p.n_pre + 1, 0)] = kNan;
+  EXPECT_FALSE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, nullptr, &first, p.n_pre));
+  EXPECT_EQ(first, p.n_pre + 1);
+}
+
 TEST(DecelAdmission, PreCatchSegmentNeedsTheContextToAcceptIt) {
   using rtc::catching::DecelRefusal;
   DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 70, 3, 7).p;
@@ -910,6 +987,36 @@ TEST(DecelAdmission, PreCatchSegmentNeedsTheContextToAcceptIt) {
   s.rt_state_ns = p.rt_state_ns;
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
   EXPECT_EQ(rtc::catching::JudgeDecelPlan(s, ctx, none), DecelRefusal::kNone);
+}
+
+TEST(DecelAdmission, ASegmentForAnotherTrackIsNotThisPlans) {
+  // The segment carries the PLAN's track. A context that names the followed
+  // plan's track refuses any other as kPlan — ahead of the age check, with
+  // the plan's id and t_c; one that names none does not look.
+  using rtc::catching::DecelRefusal;
+  DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 72, 3, 7).p;
+  p.token.generation = 11;
+  p.publish_ns = kTc - 500'000'000;
+  p.rt_state_ns = p.publish_ns - 1'000'000;
+  rtc::catching::DecelAdmissionContext ctx{};
+  ctx.plan_active = true;
+  ctx.plan_id = p.plan_id;
+  ctx.plan_t_c_ns = p.t_c_ns;
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
+  ctx.max_age_ns = 50'000'000;
+  ctx.accept_pre_catch = true;
+  const rtc::catching::AdmittedDecel none{};
+  ctx.plan_track_generation = 12;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone)
+      << "the track is compared only when the context asks";
+  ctx.check_track = true;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kPlan);
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 60'000'000};
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kPlan)
+      << "another plan's segment is kPlan whatever its age";
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
+  ctx.plan_track_generation = 11;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
 }
 
 }  // namespace

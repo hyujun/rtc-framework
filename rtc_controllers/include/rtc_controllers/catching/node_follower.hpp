@@ -20,9 +20,9 @@
 // guarantees; the RT caller feeds q̇_ref into the posture task by handing it
 // q_ref + q̇_ref / k_a as the goal (MD-36).
 //
-// WIRING. The catching controller's DECEL tick under `supervisor.decel.mode:
-// mpc` (E1-F04): Sample() every mpc tick, NodesInsideBox() once per admitted
-// segment (MD-43).
+// WIRING. The catching controller under `supervisor.decel.mode: mpc`:
+// Sample() on every tick that follows a segment — APPROACH through HOLD
+// (E1-F09) — and NodesInsideBox() once per admitted segment (MD-43).
 //
 // RT CONTRACT. Init() is non-RT (copies nothing heavy: shares the model, owns
 // its own pinocchio::Data, sizes every buffer). Sample() is noexcept,
@@ -94,18 +94,22 @@ class NodeTrajectoryFollower {
                                          std::span<double> q, std::span<double> qd,
                                          std::span<double> qdd, bool* held = nullptr) noexcept;
 
-  /// @brief Whether the catch frame at EVERY node lies in the axis-aligned box
-  /// [lo, hi] of the model world (MD-43; RT-safe, one FK per node). With an
-  /// `anchor`, the path is judged TRANSLATED so node 0 sits at the anchor —
-  /// anchor + (p_k − p_0) — i.e. the stop's displacement from where it starts,
-  /// placed at the catch point the planner checked its own stop from.
+  /// @brief Whether the catch frame at every node from `first_node` on lies in
+  /// the axis-aligned box [lo, hi] of the model world (MD-43; RT-safe, one FK
+  /// per node checked). With an `anchor`, the path is judged TRANSLATED so
+  /// node `first_node` sits at the anchor — anchor + (p_k − p_first) — i.e.
+  /// the stop's displacement from where it starts, placed at the catch point
+  /// the planner checked its own stop from. `first_node` is 0 for a stop-only
+  /// segment and the catch node (n_pre) for an APPROACH–stop one, whose
+  /// pre-catch nodes are the approach, not the stop.
   /// Between nodes is not checked. False when uninitialised, on a shape this
-  /// arm cannot sample, or on the first node outside (NaN counts as outside);
-  /// `first_outside` (if given) is that node, −1 when every node is inside.
+  /// arm cannot sample, on a `first_node` outside 0 .. n_nodes, or on the
+  /// first node outside (NaN counts as outside); `first_outside` (if given)
+  /// is that node, −1 when every checked node is inside.
   [[nodiscard]] bool NodesInsideBox(const DecelPlanSnapshot& plan, const std::array<double, 3>& lo,
                                     const std::array<double, 3>& hi,
                                     const std::array<double, 3>* anchor = nullptr,
-                                    int* first_outside = nullptr) noexcept;
+                                    int* first_outside = nullptr, int first_node = 0) noexcept;
 
   /// @brief The catch frame's position at node `k` in the model world (RT-safe,
   /// one FK). Same shape checks as NodesInsideBox(); false — `p` untouched —
