@@ -3394,6 +3394,12 @@ class TestCatchingLatchShading:
     def _spans(fig, column):
         return [p for ax in fig.axes for p in ax.patches if p.get_gid() == f"latch_{column}"]
 
+    @staticmethod
+    def _panels(fig):
+        """The stacked panels of the figure. A twin axis sits on its host's
+        rectangle, so the panels are the distinct rectangles."""
+        return len({tuple(round(b, 6) for b in ax.get_position().bounds) for ax in fig.axes})
+
     def test_an_estop_span_is_shaded_on_every_panel_and_labelled_once(self, tmp_path, monkeypatch):
         import matplotlib.pyplot as plt
 
@@ -3401,9 +3407,11 @@ class TestCatchingLatchShading:
         fig = self._render(df, tmp_path, monkeypatch)
         try:
             spans = self._spans(fig, "estop_active")
-            # One per stacked panel; the solve-time twin shares x and is not
-            # shaded again.
-            assert len(spans) == 4, len(spans)
+            # One per stacked panel; a twin axis shares x and is not shaded
+            # again. The figure has at least the four panels it started with
+            # (reference, acceleration, tracking, mode).
+            assert self._panels(fig) >= 4
+            assert len(spans) == self._panels(fig), (len(spans), self._panels(fig))
             assert not self._spans(fig, "fault_latched")
             # matplotlib's own legend rule: a None / "_"-prefixed label is not
             # an entry.
@@ -3421,8 +3429,8 @@ class TestCatchingLatchShading:
         df["fault_latched"] = [0, 0, 1, 1, 1, 0]
         fig = self._render(df, tmp_path, monkeypatch)
         try:
-            assert len(self._spans(fig, "estop_active")) == 4
-            assert len(self._spans(fig, "fault_latched")) == 4
+            assert len(self._spans(fig, "estop_active")) == self._panels(fig)
+            assert len(self._spans(fig, "fault_latched")) == self._panels(fig)
             colours = {
                 self._spans(fig, c)[0].get_facecolor()[:3]
                 for c in ("estop_active", "fault_latched")
