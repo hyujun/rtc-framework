@@ -38,6 +38,7 @@ covered in `print_planner_events_statistics` instead.
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 # rtc::catching::CycleOutcomeName order (integrated_bringup/logging/
 # planner_events_csv.hpp / rtc_controllers/catching/planner_cycle.hpp). This
@@ -58,6 +59,45 @@ DECISION_ORDER = (
     "refreshed",
     "unknown",
 )
+
+# rtc::catching DecelKindName order (planner_events_csv.hpp). `unknown` is the
+# trailing slot `_categorical_codes` maps unrecognised names to.
+DECEL_KIND_ORDER = ("none", "first", "same", "advance", "stop", "unknown")
+
+# DecelOutcomeName order (rtc_controllers/src/catching/decel_planner.cpp).
+DECEL_OUTCOME_ORDER = (
+    "off",
+    "no_state",
+    "stale_state",
+    "up_to_date",
+    "past_replan_window",
+    "input_non_finite",
+    "solve_failed",
+    "budget",
+    "late",
+    "slack",
+    "ready",
+    "published",
+    "superseded",
+    "not_at_rest",
+    "too_late",
+    "not_followed",
+    "no_ball",
+    "catch_error",
+    "speed",
+    "unknown",
+)
+
+# One colour per solve kind, shared by the decel panels so a kind reads the same
+# on all of them. `unknown` is grey: it is a name this module has not caught up with.
+_DECEL_KIND_COLOURS = {
+    "first": "C0",
+    "same": "C1",
+    "advance": "C2",
+    "stop": "C3",
+    "none": "0.6",
+    "unknown": "0.3",
+}
 
 # Candidate funnel, in the order candidates are narrowed (S6-B decision E).
 FUNNEL_COLUMNS = ("n_in_window", "n_ik", "n_pass")
@@ -108,6 +148,147 @@ def _categorical_codes(series, order):
     return series.astype(str).map(lambda v: lookup.get(v, fallback))
 
 
+def _decel_kind_series(df):
+    """The `decel_kind` names as strings, or None when the column is absent."""
+    return df["decel_kind"].astype(str) if "decel_kind" in df.columns else None
+
+
+def _decel_rows(df):
+    """Rows on which the decel planner did something.
+
+    `decel_kind != "none"` is the writer's own statement of that; a log that has
+    only `decel_outcome` falls back to `!= "off"`.
+    """
+    if "decel_kind" in df.columns:
+        return df["decel_kind"].astype(str) != "none"
+    return df["decel_outcome"].astype(str) != "off"
+
+
+def _decel_panels(df):
+    """The decel panels this log has something for. A log from before the
+    decel planner has no columns; a `closed_form` session has them and every
+    row says the planner was off — neither gets an empty panel."""
+    cols = df.columns
+    if not ("decel_kind" in cols or "decel_outcome" in cols) or not _decel_rows(df).any():
+        return []
+    panels = []
+    if "decel_outcome" in cols:
+        panels.append("outcome")
+    if "decel_solve_us" in cols:
+        panels.append("solve")
+    if "decel_catch_pos_err" in cols:
+        panels.append("catch")
+    return panels
+
+
+def _draw_decel_outcome(ax, df, t):
+    """Outcome of each decel solve at its category, coloured by solve kind."""
+    rows = _decel_rows(df)
+    kind = _decel_kind_series(df)
+    codes = _categorical_codes(df["decel_outcome"], DECEL_OUTCOME_ORDER)
+    if kind is None:
+        if rows.any():
+            ax.scatter(t[rows], codes[rows], s=14, color="C0", marker="o", label="solve")
+    else:
+        for name in DECEL_KIND_ORDER:
+            sel = rows & (kind.where(kind.isin(DECEL_KIND_ORDER), "unknown") == name)
+            if sel.any():
+                ax.scatter(
+                    t[sel],
+                    codes[sel],
+                    s=14,
+                    color=_DECEL_KIND_COLOURS[name],
+                    marker="o",
+                    label=f"kind: {name}",
+                )
+    ax.set_yticks(range(len(DECEL_OUTCOME_ORDER)))
+    ax.set_yticklabels(DECEL_OUTCOME_ORDER, fontsize=7)
+    ax.set_ylabel("decel outcome")
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=8, loc="upper right")
+    ax.grid(True, alpha=0.3)
+
+
+def _draw_decel_solve(ax, df, t):
+    """Decel solve time per solve kind (ms), with the iteration count on a twin."""
+    solve_ms = df["decel_solve_us"].astype(float) / 1e3
+    has_solve = df["decel_solve_us"].astype(float) > 0
+    kind = _decel_kind_series(df)
+    if kind is None:
+        groups = [("solve", has_solve, "C0")]
+    else:
+        kind = kind.where(kind.isin(DECEL_KIND_ORDER), "unknown")
+        groups = [
+            (name, has_solve & (kind == name), _DECEL_KIND_COLOURS[name])
+            for name in DECEL_KIND_ORDER
+        ]
+    for name, sel, colour in groups:
+        if sel.any():
+            ax.scatter(t[sel], solve_ms[sel], s=14, color=colour, marker="o", label=name)
+    ax.set_ylabel("decel solve (ms)")
+    ax.grid(True, alpha=0.3)
+    if "decel_iterations" in df.columns:
+        ax_it = ax.twinx()
+        it = df["decel_iterations"].astype(float).where(has_solve)
+        ax_it.plot(t, it, linewidth=0.7, color="0.4", alpha=0.7, label="iterations")
+        ax_it.set_ylabel("QP iterations")
+        h1, l1 = ax.get_legend_handles_labels()
+        h2, l2 = ax_it.get_legend_handles_labels()
+        ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper right")
+    elif ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=8, loc="upper right")
+
+
+def _draw_decel_catch(ax, df, t):
+    """The catch node as each solve left it, and the speed a first solve
+    started from.
+
+    Markers on the rows that have a value, joined by a thin line: only a solve
+    with the catch terms writes these, so most rows are NaN and a plain line
+    would draw nothing for a value between two NaN rows. The two errors
+    (position in mm, approach axis in degrees) share the left axis; the
+    velocity terms (‖v_rel‖ in m/s, γ) and `decel_x0_speed` (rad/s, first
+    solves only) the right one.
+    """
+
+    def draw(axis, name, scale, label, colour, marker):
+        if name not in df.columns:
+            return
+        values = df[name].astype(float) * scale
+        ok = values.notna()
+        if ok.any():
+            axis.plot(
+                t[ok],
+                values[ok],
+                linewidth=0.5,
+                marker=marker,
+                markersize=3.5,
+                color=colour,
+                label=label,
+            )
+
+    draw(ax, "decel_catch_pos_err", 1e3, "catch pos err (mm)", "C0", "o")
+    draw(ax, "decel_catch_axis_err", float(np.degrees(1.0)), "catch axis err (deg)", "C2", "s")
+    ax.set_ylabel("catch error (mm, deg)")
+    ax.grid(True, alpha=0.3)
+    ax_r = ax.twinx()
+    draw(ax_r, "decel_catch_v_rel", 1.0, "catch ‖v_rel‖ (m/s)", "C1", "o")
+    draw(ax_r, "decel_catch_gamma", 1.0, "catch γ", "C4", "x")
+    draw(ax_r, "decel_x0_speed", 1.0, "x0 speed (rad/s)", "C3", "^")
+    ax_r.set_ylabel("‖v_rel‖ (m/s), γ, x0 speed (rad/s)")
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax_r.get_legend_handles_labels()
+    if h1 or h2:
+        ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper right", ncol=2)
+
+
+_DECEL_DRAWERS = {
+    "outcome": _draw_decel_outcome,
+    "solve": _draw_decel_solve,
+    "catch": _draw_decel_catch,
+}
+
+
 def plot_planner_events(df, save_dir=None):
     """Search/IK/rollout timing, publish latency, candidate funnel, rejects,
     outcome/decision events, rank-gate failures — one row per non-idle wake.
@@ -121,7 +302,11 @@ def plot_planner_events(df, save_dir=None):
 
     t = _time_axis(df)
 
-    fig, axes = plt.subplots(6, 1, figsize=(14, 18), sharex=True)
+    # The decel panels come after the six search panels and only when their
+    # columns exist, so a log from before the decel planner still gets six.
+    decel_panels = _decel_panels(df)
+    n_panels = 6 + len(decel_panels)
+    fig, axes = plt.subplots(n_panels, 1, figsize=(14, 3 * n_panels), sharex=True)
     fig.suptitle(
         "Planner Events — search timing, funnel, rejects, decisions, rank gates",
         fontsize=16,
@@ -203,8 +388,13 @@ def plot_planner_events(df, save_dir=None):
     axes[5].set_yticklabels(RANK_COLUMNS, fontsize=7)
     axes[5].set_ylim(-0.5, len(RANK_COLUMNS) - 0.5)
     axes[5].set_ylabel("rank gate\n(failed)")
-    axes[5].set_xlabel("Time (s)")
     axes[5].grid(True, alpha=0.3)
+
+    # ── 7-9. Decel planner (only the panels whose columns exist) ────────────
+    for ax, name in zip(axes[6:], decel_panels, strict=True):
+        _DECEL_DRAWERS[name](ax, df, t)
+
+    axes[-1].set_xlabel("Time (s)")
 
     plt.tight_layout()
     if save_dir:
@@ -292,4 +482,56 @@ def print_planner_events_statistics(df):
         print(
             "Rank-gate failures (chosen candidate): "
             + ", ".join(f"{k}×{v}" for k, v in gate_fails.items())
+        )
+
+    _print_decel_statistics(df)
+
+
+def _print_decel_statistics(df):
+    """Per-kind solve record, outcome histogram, publish cadence, search vs plan."""
+    n = len(df)
+    if "decel_kind" in df.columns:
+        kind = df["decel_kind"].astype(str)
+        outcome = df["decel_outcome"].astype(str) if "decel_outcome" in df.columns else None
+        us = df["decel_solve_us"].astype(float) if "decel_solve_us" in df.columns else None
+        for name in DECEL_KIND_ORDER[:-1]:
+            if name == "none":
+                continue
+            sel = kind == name
+            if not sel.any():
+                continue
+            line = f"Decel kind {name}: {int(sel.sum())}"
+            if outcome is not None:
+                line += f", published {int((sel & (outcome == 'published')).sum())}"
+            if us is not None:
+                ms = us[sel & (us > 0)].dropna() / 1e3
+                if len(ms) > 0:
+                    line += (
+                        f" | solve [ms]: p50 {ms.quantile(0.5):.2f}  "
+                        f"p99 {ms.quantile(0.99):.2f}  max {ms.max():.2f}"
+                    )
+            print(line)
+        if outcome is not None:
+            active = outcome[kind != "none"]
+            if len(active) > 0:
+                counts = active.value_counts()
+                print(
+                    "Decel outcome (kind != none): "
+                    + ", ".join(f"{k}×{v}" for k, v in counts.items())
+                )
+    if "decel_publish_ns" in df.columns:
+        pub = df["decel_publish_ns"].astype(float)
+        pub = np.sort(pub[pub > 0].unique())
+        if len(pub) >= 2:
+            print(
+                f"Decel segment publish interval [ms]: p50 {np.median(np.diff(pub)) / 1e6:.1f} "
+                f"(n={len(pub)} segments)"
+            )
+    if "search_valid" in df.columns and "plan_valid" in df.columns:
+        sv = int((df["search_valid"].astype(float) > 0.5).sum())
+        pv = int((df["plan_valid"].astype(float) > 0.5).sum())
+        print(
+            f"Searches with a plan: search_valid {sv}/{n}, plan_valid {pv}/{n}. The difference "
+            f"({sv - pv}) is plans the search found and the wake did not publish — under mode "
+            f"mpc a plan goes out only with its first segment."
         )

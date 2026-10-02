@@ -42,6 +42,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from rtc_tools.plotting.columns.detect import detect_joint_columns
+
 # rtc::catching::Mode wire values, in the enum's own order. Used for the mode
 # band's y ticks so the trace reads as states rather than as small integers.
 MODE_NAMES = (
@@ -65,6 +67,41 @@ OUTCOME_NAMES = ("none", "captured", "missed", "undetermined", "aborted")
 # The CSV-only fault columns (#537 S9b), CatchingDiagLogPod's enums in order.
 FAULT_CAUSE_NAMES = ("none", "qp_failures", "stop_deadline", "return_deadline")
 FAULT_RESET_REFUSAL_NAMES = ("none", "command_moving", "arm_moving", "velocity_unreadable")
+
+
+# CatchingDiagLogPod's decel_event / decel_refusal wire values, in the enums'
+# own order (catching_diag_log_pod.hpp). `decel_refusal` is meaningful only on a
+# tick whose `decel_judged` is set.
+DECEL_EVENT_NAMES = (
+    "none",
+    "admitted",
+    "deferred",
+    "workspace",
+    "switched",
+    "gate_refused",
+    "plan_mismatch",
+    "sample_failed",
+    "not_due",
+    "no_segment",
+    "replaced",
+)
+DECEL_REFUSAL_NAMES = (
+    "none",
+    "invalid",
+    "activation",
+    "plan",
+    "repeat",
+    "aged",
+    "before_reset",
+    "malformed",
+)
+# `repeat` is judged on almost every tick once a segment was taken — it is
+# bookkeeping, not an event, so neither the lane nor the statistics list it.
+_DECEL_REFUSAL_QUIET = (0, 4)
+# Events on which the switch gate wrote its account (rho, dq_max, ...).
+_DECEL_GATE_EVENTS = (4, 5)
+# Smallest command rate / acceleration / jerk the kinematics panel draws.
+_KINEMATICS_FLOOR = 1e-3
 
 
 def _code_name(names, k):
@@ -198,9 +235,18 @@ def _live(df):
     APPROACH tick whose reference was refused is a tracking failure, not an
     absence of data.
     """
-    if "ref_valid" not in df.columns:
+    # Under `mode: mpc` the soft-catch reference never runs (`ref_valid` is 0 on
+    # every tick) and the arm follows the decel segment instead, so a log whose
+    # law ran only through `decel_following` must not read as "never ran".
+    flags = [
+        df[c].astype(float) > 0.5 for c in ("ref_valid", "decel_following") if c in df.columns
+    ]
+    if not flags:
         return df
-    return df[df["ref_valid"].astype(float) > 0.5]
+    live = flags[0]
+    for f in flags[1:]:
+        live = live | f
+    return df[live]
 
 
 def _solved(df):
@@ -229,23 +275,94 @@ def _masked(df, column, flag):
     return series.where(df[flag].astype(float) > 0.5)
 
 
+def _box(x, rows):
+    """Centred moving average over `rows` rows, edge-padded (NaN propagates).
+
+    The command is differentiated three times; at a 2 ms tick the raw triple
+    difference is quantisation noise, so each derivative is smoothed before it
+    is differentiated again.
+    """
+    pad = rows // 2
+    padded = np.pad(np.asarray(x, dtype=float), pad, mode="edge")
+    return np.convolve(padded, np.full(rows, 1.0 / rows), mode="valid")
+
+
+def _command_kinematics(df, t):
+    """(|q̇|max, |q̈|max, |jerk|max) of the arm command per row, or None.
+
+    None when there is no `q_cmd_*` block or the time axis is not strictly
+    increasing (a concatenated session): np.gradient would divide by a zero or
+    negative step and draw a number that never happened. Rows where any
+    command is NaN are masked.
+    """
+    cols, _ = detect_joint_columns(df, "q_cmd_")
+    t = np.asarray(t, dtype=float)
+    if not cols or len(t) < 3 or not np.all(np.diff(t) > 0.0):
+        return None
+    q = df[cols].astype(float).to_numpy()
+    bad = np.isnan(q).any(axis=1)
+    qd = np.gradient(q, t, axis=0)
+    qdd = np.apply_along_axis(
+        _box, 0, np.gradient(np.apply_along_axis(_box, 0, qd, 5), t, axis=0), 5
+    )
+    jerk = np.gradient(qdd, t, axis=0)
+    out = []
+    for d in (qd, qdd, jerk):
+        m = np.abs(d).max(axis=1)
+        m[bad] = np.nan
+        out.append(m)
+    return tuple(out)
+
+
 def plot_catching_diag(df, save_dir=None):
-    """Reference vs realised, tracking error, solver health, supervisor mode."""
+    """Reference vs realised, tracking error, solver health, supervisor mode.
+
+    The panel list follows what the log HAS, so an older schema still plots
+    the panels it can and a log is not padded with panels it has nothing for:
+
+    - acceleration (the soft-catch law's saturation) needs `ref_xdd_x` — a
+      pilot schema lacks it — and at least one `ref_valid` tick: under `mode:
+      mpc` that law never runs;
+    - the segment feedforward and the decel lane need the decel block and a
+      log in which the lane did something — a `closed_form` log has the
+      columns, all zero;
+    - command kinematics needs `q_cmd_*`.
+    """
     if "ref_x_x" not in df.columns:
         print("  Skipping catching diag plot (ref_x_x not found)")
         return
 
-    fig, axes = plt.subplots(4, 1, figsize=(14, 13), sharex=True)
+    has = df.columns.__contains__
+    t = df["timestamp"]
+    kin = _command_kinematics(df, t)
+    ref_ran = not has("ref_valid") or bool((df["ref_valid"].astype(float) > 0.5).any())
+    following = has("decel_following") and bool((df["decel_following"].astype(float) > 0.5).any())
+    panels = ["pos"]
+    if has("ref_xdd_x") and ref_ran:
+        panels.append("acc")
+    panels.append("track")
+    if following and all(has(f"decel_v_ff_{a}") for a in "xyz"):
+        panels.append("vff")
+    if has("decel_event") and (following or _decel_lane_active(df)):
+        panels.append("lane")
+    if kin is not None:
+        panels.append("kin")
+    panels.append("mode")
+
+    n = len(panels)
+    fig, axes = plt.subplots(n, 1, figsize=(14, 3.25 * n), sharex=True, squeeze=False)
+    axes = list(axes[:, 0])
+    ax_of = dict(zip(panels, axes, strict=True))
     fig.suptitle(
         "Dynamic Catching — reference, tracking, solver, supervisor",
         fontsize=16,
         fontweight="bold",
     )
-    t = df["timestamp"]
 
     # ── 1. The task reference, per axis, with the plan's catch point ────────
+    ax = ax_of["pos"]
     for axis, colour in zip("xyz", ("C0", "C1", "C2"), strict=True):
-        axes[0].plot(
+        ax.plot(
             t,
             _masked(df, f"ref_x_{axis}", "ref_valid"),
             linewidth=1.2,
@@ -256,7 +373,7 @@ def plot_catching_diag(df, save_dir=None):
         if pc in df.columns:
             # Dashed, because the catch point is where the reference is HEADED
             # rather than a signal the reference is tracking tick by tick.
-            axes[0].plot(
+            ax.plot(
                 t,
                 _masked(df, pc, "plan_valid"),
                 linewidth=0.9,
@@ -264,43 +381,59 @@ def plot_catching_diag(df, save_dir=None):
                 linestyle="--",
                 label=f"p_c_{axis}",
             )
-    axes[0].set_ylabel("task position (m)")
-    axes[0].legend(fontsize=7, ncol=3)
-    axes[0].grid(True, alpha=0.3)
+        seg = f"decel_p_d_{axis}"
+        if seg in df.columns:
+            # Under mode mpc `ref_valid` is 0 on every tick and THIS is the
+            # reference the arm follows; dash-dot keeps it apart from the
+            # soft-catch reference (solid) and the catch point (dashed).
+            ax.plot(
+                t,
+                _masked(df, seg, "decel_following"),
+                linewidth=1.2,
+                color=colour,
+                linestyle="-.",
+                label=f"seg_{axis}",
+            )
+    ax.set_ylabel("task position (m)")
+    ax.legend(fontsize=7, ncol=3)
+    ax.grid(True, alpha=0.3)
 
     # ── 2. Saturation: realised acceleration against the demand ────────────
-    for axis, colour in zip("xyz", ("C0", "C1", "C2"), strict=True):
-        axes[1].plot(
-            t,
-            _masked(df, f"ref_xdd_{axis}", "ref_valid"),
-            linewidth=1.0,
-            color=colour,
-            label=f"xdd_{axis}",
-        )
-        u = f"ref_u_des_{axis}"
-        if u in df.columns:
-            axes[1].plot(
+    if "acc" in ax_of:
+        ax = ax_of["acc"]
+        for axis, colour in zip("xyz", ("C0", "C1", "C2"), strict=True):
+            ax.plot(
                 t,
-                _masked(df, u, "ref_valid"),
-                linewidth=0.8,
+                _masked(df, f"ref_xdd_{axis}", "ref_valid"),
+                linewidth=1.0,
                 color=colour,
-                linestyle=":",
-                label=f"u_des_{axis}",
+                label=f"xdd_{axis}",
             )
-    axes[1].set_ylabel("accel (m/s²)")
-    axes[1].legend(fontsize=7, ncol=3)
-    axes[1].grid(True, alpha=0.3)
+            u = f"ref_u_des_{axis}"
+            if u in df.columns:
+                ax.plot(
+                    t,
+                    _masked(df, u, "ref_valid"),
+                    linewidth=0.8,
+                    color=colour,
+                    linestyle=":",
+                    label=f"u_des_{axis}",
+                )
+        ax.set_ylabel("accel (m/s²)")
+        ax.legend(fontsize=7, ncol=3)
+        ax.grid(True, alpha=0.3)
 
     # ── 3. Tracking error and the solve ────────────────────────────────────
+    ax = ax_of["track"]
     if "track_err_rad" in df.columns:
-        axes[2].plot(
+        ax.plot(
             t,
             _masked(df, "track_err_rad", "clik_ran"),
             linewidth=1.2,
             color="C3",
             label="‖q_meas − q_cmd‖ (rad)",
         )
-    ax_solve = axes[2].twinx()
+    ax_solve = ax.twinx()
     if "clik_solve_us" in df.columns:
         ax_solve.plot(
             t,
@@ -311,24 +444,71 @@ def plot_catching_diag(df, save_dir=None):
             label="solve (µs)",
         )
         ax_solve.set_ylabel("solve time (µs)")
-    axes[2].set_ylabel("track error (rad)")
-    axes[2].legend(fontsize=7, loc="upper left")
+    ax.set_ylabel("track error (rad)")
+    ax.legend(fontsize=7, loc="upper left")
     ax_solve.legend(fontsize=7, loc="upper right")
-    axes[2].grid(True, alpha=0.3)
+    ax.grid(True, alpha=0.3)
 
-    # ── 4. The supervisor ──────────────────────────────────────────────────
+    # ── 4. Segment velocity feedforward ────────────────────────────────────
+    if "vff" in ax_of:
+        ax = ax_of["vff"]
+        for axis, colour in zip("xyz", ("C0", "C1", "C2"), strict=True):
+            ax.plot(
+                t,
+                _masked(df, f"decel_v_ff_{axis}", "decel_following"),
+                linewidth=1.0,
+                color=colour,
+                label=f"v_ff_{axis}",
+            )
+        ax.set_ylabel("segment v_ff (m/s)")
+        ax.legend(fontsize=7, ncol=3)
+        ax.grid(True, alpha=0.3)
+
+    # ── 5. The decel lane: events, refusals, and the switch gate's ρ ───────
+    if "lane" in ax_of:
+        _draw_decel_lane(ax_of["lane"], df, t)
+
+    # ── 6. Command kinematics ──────────────────────────────────────────────
+    if "kin" in ax_of:
+        # One log axis for all three: the orders of magnitude between rad/s and
+        # rad/s³ would flatten a shared linear axis, and a twin axis can carry
+        # only two of the three honestly. Values under the floor are not drawn:
+        # a held command differentiates to rounding noise (1e-12 and below),
+        # which a log axis would stretch over most of the panel.
+        ax = ax_of["kin"]
+        for values, label, colour in zip(
+            kin,
+            ("max|q̇| (rad/s)", "max|q̈| (rad/s²)", "max|jerk| (rad/s³)"),
+            ("C0", "C1", "C3"),
+            strict=True,
+        ):
+            ax.plot(
+                t,
+                np.where(values >= _KINEMATICS_FLOOR, values, np.nan),
+                linewidth=0.9,
+                color=colour,
+                label=label,
+            )
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=_KINEMATICS_FLOOR)
+        ax.set_ylabel("command kinematics\n(max over joints)")
+        ax.legend(fontsize=7, ncol=3, loc="upper right")
+        ax.grid(True, alpha=0.3, which="both")
+
+    # ── 7. The supervisor ──────────────────────────────────────────────────
+    ax = ax_of["mode"]
     if "mode" in df.columns:
-        axes[3].step(t, df["mode"], where="post", linewidth=1.4, color="C5")
-        axes[3].set_yticks(range(len(MODE_NAMES)))
-        axes[3].set_yticklabels(MODE_NAMES, fontsize=7)
-    axes[3].set_ylabel("supervisor mode")
-    axes[3].set_xlabel("Time (s)")
-    axes[3].grid(True, alpha=0.3)
+        ax.step(t, df["mode"], where="post", linewidth=1.4, color="C5")
+        ax.set_yticks(range(len(MODE_NAMES)))
+        ax.set_yticklabels(MODE_NAMES, fontsize=7)
+    ax.set_ylabel("supervisor mode")
+    ax.set_xlabel("Time (s)")
+    ax.grid(True, alpha=0.3)
     _draw_transitions(axes, mode_transitions(df), label_axis=axes[0])
     # After the other panels' legend() calls, so the bands do not crowd those
     # legends; the supervisor panel has none of its own and carries the key.
-    if _shade_latches(axes, df, legend_axis=axes[3]):
-        axes[3].legend(fontsize=7, loc="upper right")
+    if _shade_latches(axes, df, legend_axis=ax):
+        ax.legend(fontsize=7, loc="upper right")
 
     plt.tight_layout()
     if save_dir:
@@ -338,6 +518,80 @@ def plot_catching_diag(df, save_dir=None):
     else:
         plt.show()
     plt.close()
+
+
+def _decel_shown_refusals(df):
+    """(mask, codes) of the lane's refusals worth showing: judged, and neither
+    `none` nor `repeat`."""
+    judged = (
+        df["decel_judged"].astype(float) > 0.5
+        if "decel_judged" in df.columns
+        else pd.Series(True, index=df.index)
+    )
+    refusal = df["decel_refusal"].astype(float).fillna(0).astype(int)
+    return judged & ~refusal.isin(_DECEL_REFUSAL_QUIET), refusal
+
+
+def _decel_lane_active(df):
+    """Whether the lane did anything in this log (an event or a refusal)."""
+    if (df["decel_event"].astype(float).fillna(0) != 0).any():
+        return True
+    return "decel_refusal" in df.columns and bool(_decel_shown_refusals(df)[0].any())
+
+
+def _draw_decel_lane(ax, df, t):
+    """Decel events on a categorical axis, refusals above them, ρ on a twin.
+
+    Refusals sit on one row of their own ABOVE the events (one series per
+    refusal reason) rather than on the event axis: they are a different enum,
+    judged on a different set of ticks. Above, because the twin's ρ = 0 — every
+    first switch — lands on the bottom row, which must not read as "refused".
+    `repeat` is dropped: it is judged on almost every tick once a segment was
+    taken and would paint the whole lane.
+    """
+    refused_y = len(DECEL_EVENT_NAMES)
+    t = pd.Series(np.asarray(t, dtype=float), index=df.index)
+    event = df["decel_event"].astype(float).fillna(0).astype(int)
+    fired = event != 0
+    if fired.any():
+        ax.scatter(t[fired], event[fired], s=14, color="C0", marker="o", label="event")
+    if "decel_refusal" in df.columns:
+        shown, refusal = _decel_shown_refusals(df)
+        for k in sorted(refusal[shown].unique()):
+            sel = shown & (refusal == k)
+            ax.scatter(
+                t[sel],
+                np.full(int(sel.sum()), float(refused_y)),
+                s=14,
+                marker="x",
+                color=f"C{(int(k) + 2) % 10}",
+                label=f"refused: {_code_name(DECEL_REFUSAL_NAMES, int(k))}",
+            )
+    ax.set_yticks(range(refused_y + 1))
+    ax.set_yticklabels([*DECEL_EVENT_NAMES, "refused"], fontsize=7)
+    ax.set_ylim(-0.8, refused_y + 0.8)
+    ax.set_ylabel("decel lane")
+    ax.grid(True, alpha=0.3)
+    handles, labels = ax.get_legend_handles_labels()
+    if "decel_rho" in df.columns:
+        # ρ only means something on the ticks the switch gate judged.
+        gate = event.isin(_DECEL_GATE_EVENTS)
+        ax_rho = ax.twinx()
+        if gate.any():
+            ax_rho.scatter(
+                t[gate],
+                df.loc[gate, "decel_rho"].astype(float),
+                s=26,
+                marker="D",
+                facecolors="none",
+                edgecolors="C3",
+                label="switch ρ",
+            )
+        ax_rho.set_ylabel("ρ")
+        h2, l2 = ax_rho.get_legend_handles_labels()
+        handles, labels = handles + h2, labels + l2
+    if handles:
+        ax.legend(handles, labels, fontsize=7, ncol=3, loc="upper left")
 
 
 def plot_catching_hand(df, save_dir=None):
@@ -440,6 +694,39 @@ def plot_catching_hand(df, save_dir=None):
     else:
         plt.show()
     plt.close()
+
+
+def _print_decel_statistics(df):
+    """The decel block: segments followed, events, refusals, switch-gate ρ."""
+    if "decel_event" not in df.columns:
+        return
+    event = df["decel_event"].astype(float).fillna(0).astype(int)
+    following = (
+        df["decel_following"].astype(float) > 0.5
+        if "decel_following" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+    if not (following.any() or (event != 0).any()):
+        return
+    print("\nDecel segment:")
+    print(f"  Ticks following a segment: {int(following.sum())}")
+    if "decel_seq" in df.columns:
+        print(f"  Distinct segments followed: {df.loc[following, 'decel_seq'].nunique()}")
+    fired = event[event != 0]
+    if len(fired) > 0:
+        print("  Events: " + _named_counts(fired, DECEL_EVENT_NAMES))
+    if "decel_refusal" in df.columns:
+        shown, refusal = _decel_shown_refusals(df)
+        refused = refusal[shown]
+        if len(refused) > 0:
+            print("  Refusals: " + _named_counts(refused, DECEL_REFUSAL_NAMES))
+    if "decel_rho" in df.columns:
+        rho = df.loc[event == 4, "decel_rho"].astype(float).dropna()
+        if len(rho) > 0:
+            print(
+                f"  Switch ρ [{len(rho)} switch(es)]: p50 {rho.quantile(0.5):.3f}  "
+                f"p95 {rho.quantile(0.95):.3f}  max {rho.max():.3f}"
+            )
 
 
 def print_catching_diag_statistics(df):
@@ -545,6 +832,8 @@ def print_catching_diag_statistics(df):
                 f"median {usable['input_horizon_s'].median():.3f}"
             )
 
+    _print_decel_statistics(df)
+
     # ── The law ────────────────────────────────────────────────────────────
     live = _live(df)
     print(f"\nTicks with a reference: {len(live)}")
@@ -552,7 +841,13 @@ def print_catching_diag_statistics(df):
         print("  Nothing below is measurable — the law never ran.")
         return
     if "ref_saturated" in live.columns:
-        print(f"Reference saturated: {_pct(live['ref_saturated']):.1f}% of those ticks")
+        # Saturation belongs to the soft-catch reference; segment-following
+        # ticks (mpc) have none, so counting them would dilute it toward 0.
+        ref_ticks = live
+        if "ref_valid" in live.columns:
+            ref_ticks = live[live["ref_valid"].astype(float) > 0.5]
+        if len(ref_ticks) > 0:
+            print(f"Reference saturated: {_pct(ref_ticks['ref_saturated']):.1f}% of those ticks")
 
     solved = _solved(df)
     if len(solved) > 0 and "clik_solve_us" in solved.columns:

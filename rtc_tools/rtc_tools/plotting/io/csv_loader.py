@@ -76,6 +76,12 @@ def _check_header_matches_data(filepath: str) -> None:
 # column, but that one is an integer enum code that pandas already reads as
 # numeric dtype, so listing the name here is a no-op for that file (only
 # object-dtype columns are coerced below).
+# `decel_outcome`/`decel_core_reason`/`decel_kind` are planner_events.csv's
+# DecelOutcomeName / DecelMpcReasonName / DecelKindName text. They are NOT
+# optional here: under pandas 2.x an object column outside this set goes through
+# to_numeric(errors="coerce"), so a column whose values are all "off"/"none"
+# (the decel planner disabled) turns into all-NaN and every `!= "off"` filter
+# downstream silently selects nothing.
 _STR_COLS = {
     "goal_type",
     "command_type",
@@ -84,6 +90,9 @@ _STR_COLS = {
     "reason_name",
     "outcome",
     "decision",
+    "decel_outcome",
+    "decel_core_reason",
+    "decel_kind",
     "timestamp",
 }
 

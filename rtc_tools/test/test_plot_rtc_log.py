@@ -3628,6 +3628,25 @@ def _planner_events_columns():
     return list(_PLANNER_EVENTS_COLUMNS)
 
 
+# DecelRecord fields whose default is NaN (decel_planner.hpp): a wake whose
+# decel step did not compute them writes "nan", not 0.
+_PLANNER_EVENTS_DECEL_NAN_DEFAULTS = (
+    "decel_slack_max",
+    "decel_slack_terminal_max",
+    "decel_tau_ratio_max",
+    "decel_ref_scale",
+    "decel_ref_shortfall",
+    "decel_x0_speed",
+    "decel_catch_pos_err",
+    "decel_catch_axis_err",
+    "decel_catch_gamma",
+    "decel_catch_v_rel",
+    "decel_slack_v",
+    "decel_speed_ratio_max",
+    "decel_w_delta_scale",
+)
+
+
 def _planner_events_row(
     i,
     *,
@@ -3675,6 +3694,10 @@ def _planner_events_row(
     row["decel_outcome"] = "off"
     row["decel_core_reason"] = "none"
     row["decel_kind"] = "none"
+    # ... and the ones it leaves NaN on a wake that did not compute them
+    # (DecelRecord's defaults).
+    for nan_col in _PLANNER_EVENTS_DECEL_NAN_DEFAULTS:
+        row[nan_col] = float("nan")
     for bit_col, val in rank_bits.items():
         row[bit_col] = val
     row["rank_mask"] = sum(
@@ -3881,6 +3904,341 @@ class TestPlannerEventsStatistics:
         print_planner_events_statistics(df)
         out = capsys.readouterr().out
         assert "Samples (non-idle wakes): 0" in out, out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# decel columns — loader string set, catching_diag / planner_events panels
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDecelStringColumns:
+    def test_decel_name_columns_are_not_coerced_to_numbers(self):
+        """An all-"none" name column must survive the loader. Under pandas 2.x an
+        object column outside _STR_COLS goes through to_numeric and becomes NaN,
+        so the control column proves the coercion itself is live."""
+        from rtc_tools.plotting.io.csv_loader import _coerce_numeric_columns
+
+        df = pd.DataFrame(
+            {
+                "decel_kind": pd.Series(["none", "first", "none"], dtype=object),
+                "decel_outcome": pd.Series(["off", "off", "published"], dtype=object),
+                "decel_core_reason": pd.Series(["none", "none", "none"], dtype=object),
+                "some_numeric": pd.Series(["1", "2", "3"], dtype=object),
+            }
+        )
+        _coerce_numeric_columns(df)
+        assert list(df["decel_kind"]) == ["none", "first", "none"]
+        assert list(df["decel_outcome"]) == ["off", "off", "published"]
+        assert list(df["decel_core_reason"]) == ["none", "none", "none"]
+        assert list(df["some_numeric"]) == [1, 2, 3]
+
+
+class _DecelPlotHelpers:
+    @staticmethod
+    def _render(plot, df, tmp_path, monkeypatch, module):
+        """Draw and return the figure, with the plotter's own close suppressed."""
+        import matplotlib.pyplot as plt
+
+        real_close = plt.close
+        monkeypatch.setattr(module.plt, "close", lambda *a, **k: None)
+        plot(df, save_dir=str(tmp_path))
+        fig = plt.gcf()
+        monkeypatch.setattr(module.plt, "close", real_close)
+        return fig
+
+    @staticmethod
+    def _panels(fig):
+        return len({tuple(round(b, 6) for b in ax.get_position().bounds) for ax in fig.axes})
+
+
+class TestCatchingDecelPlots(_DecelPlotHelpers):
+    @staticmethod
+    def _mpc_frame(columns=None, n=40):
+        df = _catching_diag_frame(n=n, columns=columns, ref_valid=0)
+        df["timestamp"] = df["t_relative_s"]
+        if "decel_following" in df.columns:
+            df["decel_following"] = 1
+            df["decel_event"] = 0
+            df.loc[5, "decel_event"] = 1
+            df.loc[10, "decel_event"] = 4
+            df.loc[15, "decel_event"] = 10
+            df.loc[20, "decel_event"] = 3
+            df["decel_judged"] = 1
+            df.loc[8, "decel_refusal"] = 5
+            df.loc[9, "decel_refusal"] = 4  # repeat: bookkeeping
+            df.loc[10, "decel_rho"] = 0.42
+        if "decel_p_d_x" in df.columns:
+            df["decel_p_d_x"] = np.linspace(0.3, 0.5, n)
+            df["decel_v_ff_x"] = 0.2
+        for j in _CATCHING_ARM_JOINTS:
+            df[f"q_cmd_{j}"] = np.sin(np.linspace(0.0, 3.0, n)) * 0.5
+        return df
+
+    def _fig(self, df, tmp_path, monkeypatch):
+        from rtc_tools.plotting.plotters import catching
+
+        return self._render(catching.plot_catching_diag, df, tmp_path, monkeypatch, catching)
+
+    def test_an_mpc_log_draws_the_segment_the_lane_and_the_command(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        fig = self._fig(self._mpc_frame(), tmp_path, monkeypatch)
+        try:
+            # position, tracking, segment v_ff, decel lane, command kinematics,
+            # mode — and no acceleration panel: the soft-catch law never ran.
+            assert self._panels(fig) == 6
+            ylabels = [ax.get_ylabel() for ax in fig.axes]
+            assert "accel (m/s²)" not in ylabels
+            assert "segment v_ff (m/s)" in ylabels and "decel lane" in ylabels
+            seg = [ln for ax in fig.axes for ln in ax.lines if ln.get_label() == "seg_x"]
+            assert seg, "the followed segment was not drawn"
+            assert np.isfinite(np.asarray(seg[0].get_ydata(), dtype=float)).any()
+            ticks = [
+                lab.get_text() for ax in fig.axes for lab in ax.get_yticklabels() if lab.get_text()
+            ]
+            assert "switched" in ticks
+            assert (tmp_path / "catching_diag.png").exists()
+        finally:
+            plt.close("all")
+
+    @staticmethod
+    def _closed_form_frame(columns=None, n=40):
+        df = _catching_diag_frame(n=n, columns=columns)  # ref_valid 1, decel block zero
+        df["timestamp"] = df["t_relative_s"]
+        for j in _CATCHING_ARM_JOINTS:
+            df[f"q_cmd_{j}"] = np.sin(np.linspace(0.0, 3.0, n)) * 0.5
+        return df
+
+    def test_every_panel_is_drawn_when_the_log_has_something_for_each(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        # Not a log a controller writes (one law runs per configuration); it
+        # pins the full panel list and its order.
+        df = self._mpc_frame()
+        df["ref_valid"] = 1
+        fig = self._fig(df, tmp_path, monkeypatch)
+        try:
+            assert self._panels(fig) == 7
+            stacked = [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel() not in ("ρ", "")]
+            assert [lab.split("\n")[0] for lab in stacked if "solve time" not in lab] == [
+                "task position (m)",
+                "accel (m/s²)",
+                "track error (rad)",
+                "segment v_ff (m/s)",
+                "decel lane",
+                "command kinematics",
+                "supervisor mode",
+            ]
+        finally:
+            plt.close("all")
+
+    def test_pre_decel_schema_keeps_only_the_panels_that_need_no_decel_column(
+        self, tmp_path, monkeypatch
+    ):
+        import matplotlib.pyplot as plt
+
+        columns = [c for c in _catching_diag_columns() if not c.startswith("decel_")]
+        assert len(columns) == len(_catching_diag_columns()) - 17
+        fig = self._fig(self._closed_form_frame(columns), tmp_path, monkeypatch)
+        try:
+            # position, acceleration, tracking, command kinematics, mode
+            assert self._panels(fig) == 5
+            assert (tmp_path / "catching_diag.png").exists()
+        finally:
+            plt.close("all")
+
+    def test_a_closed_form_log_with_the_decel_columns_gets_no_empty_decel_panel(
+        self, tmp_path, monkeypatch
+    ):
+        import matplotlib.pyplot as plt
+
+        # The columns are there and all zero: the lane never ran.
+        fig = self._fig(self._closed_form_frame(), tmp_path, monkeypatch)
+        try:
+            assert self._panels(fig) == 5
+            ylabels = [ax.get_ylabel() for ax in fig.axes]
+            assert "decel lane" not in ylabels and "segment v_ff (m/s)" not in ylabels
+            assert not any(
+                ln.get_label() == "seg_x" and np.isfinite(np.asarray(ln.get_ydata(), float)).any()
+                for ax in fig.axes
+                for ln in ax.lines
+            )
+        finally:
+            plt.close("all")
+
+    def test_a_held_command_is_not_drawn_as_rounding_noise(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        # A command at rest for the first half differentiates to ~0; the log
+        # axis must start at the floor, not twenty decades below it.
+        df = self._mpc_frame(n=80)
+        for j in _CATCHING_ARM_JOINTS:
+            df.loc[:39, f"q_cmd_{j}"] = 0.25
+        fig = self._fig(df, tmp_path, monkeypatch)
+        try:
+            (kin,) = [ax for ax in fig.axes if ax.get_ylabel().startswith("command kinematics")]
+            assert kin.get_ylim()[0] == pytest.approx(1e-3)
+            for ln in kin.lines:
+                y = np.asarray(ln.get_ydata(), float)
+                assert np.isnan(y[5:30]).all(), ln.get_label()
+                assert np.nanmin(y) >= 1e-3
+        finally:
+            plt.close("all")
+
+    def test_refusals_have_their_own_row_above_the_events(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        fig = self._fig(self._mpc_frame(), tmp_path, monkeypatch)
+        try:
+            (lane,) = [ax for ax in fig.axes if ax.get_ylabel() == "decel lane"]
+            labels = [lab.get_text() for lab in lane.get_yticklabels()]
+            assert labels[0] == "none" and labels[-1] == "refused"
+            _, legend = lane.get_legend_handles_labels()
+            # The aged refusal on tick 8 is drawn; the `repeat` on tick 9 is not.
+            assert "refused: aged" in legend and "refused: repeat" not in legend
+        finally:
+            plt.close("all")
+
+    def test_temporary_patch_schema_has_the_lane_but_no_segment_or_vff(
+        self, tmp_path, monkeypatch
+    ):
+        import matplotlib.pyplot as plt
+
+        dropped = {f"decel_{p}_{a}" for p in ("p_d", "v_ff") for a in "xyz"}
+        columns = [c for c in _catching_diag_columns() if c not in dropped]
+        fig = self._fig(self._mpc_frame(columns), tmp_path, monkeypatch)
+        try:
+            # position, tracking, decel lane, command kinematics, mode: no
+            # v_ff panel (no columns), no acceleration (mode mpc).
+            assert self._panels(fig) == 5
+            labels = [ln.get_label() for ax in fig.axes for ln in ax.lines]
+            assert not any(lab.startswith("seg_") for lab in labels)
+            ylabels = [ax.get_ylabel() for ax in fig.axes]
+            assert "decel lane" in ylabels
+            assert "segment v_ff (m/s)" not in ylabels
+            assert (tmp_path / "catching_diag.png").exists()
+        finally:
+            plt.close("all")
+
+    def test_a_frame_without_acceleration_columns_still_plots(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        columns = [
+            c for c in _catching_diag_columns() if not c.startswith(("ref_xdd_", "ref_u_des_"))
+        ]
+        fig = self._fig(self._mpc_frame(columns), tmp_path, monkeypatch)
+        try:
+            assert "accel (m/s²)" not in [ax.get_ylabel() for ax in fig.axes]
+            assert (tmp_path / "catching_diag.png").exists()
+        finally:
+            plt.close("all")
+
+    def test_statistics_on_an_mpc_log_are_not_the_law_never_ran(self, capsys):
+        from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+
+        df = self._mpc_frame()
+        print_catching_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "the law never ran" not in out, out
+        assert "CLIK solve" in out, out
+        for name in ("admitted", "switched", "replaced", "workspace"):
+            assert name in out, out
+        assert "aged×1" in out, out
+        assert "repeat" not in out, out
+        assert "Switch ρ" in out, out
+
+
+class TestPlannerEventsDecelPlots(_DecelPlotHelpers):
+    @staticmethod
+    def _frame(columns=None):
+        columns = _planner_events_columns() if columns is None else columns
+        rows = []
+        for i in range(12):
+            row = dict(zip(columns, _planner_events_row(i + 1, columns=columns), strict=True))
+            if "decel_kind" in row and i in (2, 3, 4, 8):
+                row["decel_kind"] = {2: "first", 3: "same", 4: "same", 8: "stop"}[i]
+                row["decel_outcome"] = "catch_error" if i == 4 else "published"
+                row["decel_solve_us"] = 900.0 + 10 * i
+                row["decel_iterations"] = 12
+                row["decel_catch_pos_err"] = 0.004
+                row["decel_catch_v_rel"] = 0.3
+                row["decel_x0_speed"] = 0.5 if i == 2 else float("nan")
+                row["decel_publish_ns"] = 2_000_000_000 + i * 50_000_000
+            rows.append([row[c] for c in columns])
+        return pd.DataFrame(rows, columns=columns)
+
+    def _fig(self, df, tmp_path, monkeypatch):
+        from rtc_tools.plotting.plotters import planner_events
+
+        return self._render(
+            planner_events.plot_planner_events, df, tmp_path, monkeypatch, planner_events
+        )
+
+    def test_new_schema_draws_nine_panels_and_the_stats_name_the_kinds(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import matplotlib.pyplot as plt
+
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        df = self._frame()
+        fig = self._fig(df, tmp_path, monkeypatch)
+        try:
+            assert self._panels(fig) == 9
+            assert (tmp_path / "planner_events.png").exists()
+        finally:
+            plt.close("all")
+        print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        for name in ("first", "same", "stop", "catch_error"):
+            assert name in out, out
+        assert "search_valid" in out and "plan_valid" in out, out
+
+    def test_isolated_catch_values_are_drawn(self, tmp_path, monkeypatch):
+        import matplotlib.pyplot as plt
+
+        # Four solves with a catch node among twelve rows, none adjacent to
+        # two others: a bare line would draw nothing for them.
+        fig = self._fig(self._frame(), tmp_path, monkeypatch)
+        try:
+            lines = {ln.get_label(): ln for ax in fig.axes for ln in ax.lines}
+            pos = np.asarray(lines["catch pos err (mm)"].get_ydata(), float)
+            assert len(pos) == 4 and pos == pytest.approx(4.0)
+            assert lines["catch pos err (mm)"].get_marker() not in ("", "None", None)
+            assert len(lines["x0 speed (rad/s)"].get_ydata()) == 1
+        finally:
+            plt.close("all")
+
+    def test_a_session_whose_decel_planner_was_off_gets_no_decel_panel(
+        self, tmp_path, monkeypatch
+    ):
+        import matplotlib.pyplot as plt
+
+        # The new schema, every row `decel_kind` none / `decel_outcome` off.
+        fig = self._fig(_planner_events_frame(n=12), tmp_path, monkeypatch)
+        try:
+            assert self._panels(fig) == 6
+        finally:
+            plt.close("all")
+
+    def test_old_schema_keeps_exactly_six_panels(self, tmp_path, monkeypatch, capsys):
+        import matplotlib.pyplot as plt
+
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        full = _planner_events_columns()
+        old = [c for c in full[: full.index("rollout_us_max") + 1] if c != "search_valid"]
+        assert len(old) == 40
+        df = self._frame(old)
+        fig = self._fig(df, tmp_path, monkeypatch)
+        try:
+            assert self._panels(fig) == 6
+            assert (tmp_path / "planner_events.png").exists()
+        finally:
+            plt.close("all")
+        print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        assert "Decel kind" not in out and "search_valid" not in out, out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
