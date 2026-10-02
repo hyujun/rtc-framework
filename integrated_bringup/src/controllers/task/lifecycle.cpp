@@ -93,9 +93,9 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     const auto secondary_state_key = secondary.empty() ? std::string{} : secondary + "_state";
     const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
 
-    // An arm model whose tip frame did not resolve: both tick lanes would read
-    // the arm tip through pinocchio's universe frame and publish that pose as
-    // the tip, flagged valid.
+    // An arm model whose tip frame did not resolve: the normal tick would
+    // publish the identity pose as the arm tip and the E-STOP tick the universe
+    // frame's, both flagged valid (support/arm_tip_resolution.hpp).
     if (const std::string arm_tip_error = ArmTipConfigError(); !arm_tip_error.empty()) {
       RCLCPP_ERROR(logger_, "arm tip unresolved: %s", arm_tip_error.c_str());
       return CallbackReturn::FAILURE;

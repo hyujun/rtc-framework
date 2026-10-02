@@ -316,7 +316,8 @@ void DemoComplianceController::OnDeviceConfigsSet() {
       task_base_frame_idx_ = -1;  // world/base frame — ArmTcpPoseFromCache returns world tip
     }
   } else {
-    RCLCPP_WARN(logger_, "[compliance] arm TCP cache disabled: tip frame unresolved");
+    RCLCPP_WARN(logger_, "[compliance] arm TCP cache disabled: %s",
+                arm_handle_ ? "tip frame unresolved (on_configure refuses this)" : "no arm model");
   }
   // Lift L1: per-device joint limits (position + velocity) loaded from
   // device_name_configs_ in topic_config_ group order; missing slots get

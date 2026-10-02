@@ -3,18 +3,29 @@
 
 // The configure-time verdict on a controller's arm tip frame.
 //
-// A demo controller with an arm model reports the arm tip's pose on every tick
-// — the TF source, the task-space log columns, the frame the hand FK is
-// composed onto. The frame is looked up once, in OnDeviceConfigsSet, from the
-// link name the controller manager resolved for the primary device group. When
-// that lookup finds nothing the frame id stays 0, which is pinocchio's universe
-// frame: a pose read through it is not the arm tip's, and it is published as
-// the arm tip, flagged valid, on the normal tick and on the E-STOP tick alike.
-// Nothing on the tick can tell.
+// A demo controller with an arm model works from the arm tip's pose — the TF
+// source, the task-space log columns, the frame the hand FK is composed onto,
+// the seed a Cartesian hold starts from. The frame is looked up once, in
+// OnDeviceConfigsSet, from the link name the controller manager resolved for
+// the primary device group. When that lookup finds nothing the frame id stays
+// 0, pinocchio's universe frame, and what follows depends on the lane:
 //
-// So a controller that has an arm model and no arm tip refuses the configure.
-// A controller with no arm model at all (a fixture that drives the hooks with
-// no URDF) has no tip to resolve and passes.
+//   - joint / task / compliance, normal tick: the arm tip is never registered
+//     on the combined-model cache, whose read then returns the identity pose —
+//     published as the arm tip, flagged valid;
+//   - joint / task / compliance, E-STOP tick: the arm handle is read at frame
+//     0, the universe placement (or its inverse-root), flagged valid the same;
+//   - wbc: no arm tip pose is published at all, and the Cartesian hold seed is
+//     read through frame 0.
+//
+// Nothing on the tick can tell. So a controller that has an arm model and no
+// arm tip refuses the configure. A controller with no arm model at all (a
+// fixture that drives the hooks with no URDF) has no tip to resolve and passes.
+//
+// What "resolved" means here is only that the name is a frame of the model. A
+// reduced model keeps every link of the robot as a frame, so a link that is on
+// the robot but not at the end of this arm resolves too; naming the wrong link
+// is not something this verdict sees.
 
 #include "rtc_base/types/types.hpp"
 
@@ -41,8 +52,9 @@ namespace integrated_bringup {
     return {};
   }
   const std::string device(primary_device);
-  const std::string how_to_fix = " (declare urdf.sub_models." + device +
-                                 " with its tip_link, or set devices." + device + ".urdf.tip_link)";
+  const std::string how_to_fix = " (a chain group takes it from urdf.sub_models." + device +
+                                 ".tip_link; any group can set devices." + device +
+                                 ".urdf.tip_link)";
   const std::string tip_link =
       (primary_config != nullptr && primary_config->urdf) ? primary_config->urdf->tip_link : "";
   if (tip_link.empty()) {
@@ -50,7 +62,7 @@ namespace integrated_bringup {
            "' has an arm model but no arm tip link: its device config carries none" + how_to_fix;
   }
   return "primary device '" + device + "': arm tip link '" + tip_link +
-         "' is not on the arm model" + how_to_fix;
+         "' is not a frame of the model" + how_to_fix;
 }
 
 }  // namespace integrated_bringup

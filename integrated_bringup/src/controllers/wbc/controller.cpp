@@ -565,6 +565,8 @@ void DemoWbcController::InitClik() noexcept {
   // dedups by frame_id, so this reuses the SE3Task's existing registration
   // (returning the same index). Must run before the first RT cache.Update()
   // locks registration — InitClik is called from on_configure.
+  // on_configure refuses an unresolved arm tip before it gets here; kept for a
+  // caller that reaches InitClik another way.
   if (tip_frame_id_ == 0) {
     RCLCPP_WARN(logger_, "[wbc] CLIK disabled: tip frame unresolved (OnDeviceConfigsSet).");
     return;

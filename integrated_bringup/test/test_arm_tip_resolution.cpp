@@ -2,10 +2,11 @@
 //
 // The arm tip frame is looked up once, in OnDeviceConfigsSet, from the tip link
 // the controller manager resolved for the primary device group. When the lookup
-// finds nothing the frame id stays 0 — pinocchio's universe frame — and every
-// later read goes through it: the normal tick and the E-STOP tick both publish
-// a pose that is not the arm tip's as the arm tip, flagged valid. Nothing on
-// the tick can tell, so the configure is where it is stopped.
+// finds nothing the frame id stays 0 — pinocchio's universe frame. joint, task
+// and compliance then publish a pose that is not the arm tip's as the arm tip,
+// flagged valid, on both tick lanes; wbc seeds its Cartesian hold through that
+// frame (support/arm_tip_resolution.hpp has the lane-by-lane account). Nothing
+// on the tick can tell, so the configure is where it is stopped.
 //
 // What this file pins, for the four controllers that report an arm tip pose
 // (joint, task, compliance, wbc), on a real arm + hand:
@@ -16,8 +17,10 @@
 //   - a controller with no arm model (no URDF)           → SUCCESS, and no crash
 //     when its device config names a tip link
 //
-// Each refusal is checked for its REASON as well as its outcome: an
-// on_configure that fails for something else passes a bare FAILURE assertion.
+// A bare FAILURE proves little: on_configure can fail for something else. Each
+// refusal is therefore pinned three ways — the same rig with the right tip
+// configures, the controller's own verdict names the expected cause, and the
+// other configure-time errors a test can read are empty.
 //
 // Both bring-up orders run (iiwa7_leap_controller_yamls.hpp). The verdict is
 // read off the controller's state at on_configure; a verdict latched earlier,
@@ -73,10 +76,10 @@ TEST(ArmTipUnresolvedReason, NothingToRefuseWithoutAnArmModelOrWithAResolvedTip)
 TEST(ArmTipUnresolvedReason, NamesTheLinkThatIsNotOnTheModel) {
   const auto device = DeviceWithTip("no_such_link");
   const std::string reason = ArmTipUnresolvedReason(true, false, "arm", &device);
-  EXPECT_NE(reason.find("'no_such_link' is not on the arm model"), std::string::npos) << reason;
+  EXPECT_NE(reason.find("'no_such_link' is not a frame of the model"), std::string::npos) << reason;
   EXPECT_NE(reason.find("primary device 'arm'"), std::string::npos) << reason;
   // ... and says where to fix it.
-  EXPECT_NE(reason.find("urdf.sub_models.arm"), std::string::npos) << reason;
+  EXPECT_NE(reason.find("urdf.sub_models.arm.tip_link"), std::string::npos) << reason;
   EXPECT_NE(reason.find("devices.arm.urdf.tip_link"), std::string::npos) << reason;
 }
 
@@ -90,7 +93,7 @@ TEST(ArmTipUnresolvedReason, SaysWhenNoTipLinkWasGiven) {
   for (const rtc::DeviceNameConfig* device : devices) {
     const std::string reason = ArmTipUnresolvedReason(true, false, "arm", device);
     EXPECT_NE(reason.find("no arm tip link"), std::string::npos) << reason;
-    EXPECT_EQ(reason.find("is not on the arm model"), std::string::npos) << reason;
+    EXPECT_EQ(reason.find("is not a frame of the model"), std::string::npos) << reason;
     EXPECT_NE(reason.find("urdf.sub_models.arm"), std::string::npos) << reason;
   }
 }
@@ -142,13 +145,16 @@ class ArmTipResolution : public ::testing::Test {
       // Nothing else is wrong with this config: the arm tip is the reason.
       EXPECT_EQ(bad.ctrl->HandFkWiringErrorForTesting(), "") << who;
       EXPECT_EQ(bad.ctrl->MomentumObserverConfigErrorForTesting(), "") << who;
+      if constexpr (requires { bad.ctrl->IsBaseFrameMismatchForTesting(); }) {
+        EXPECT_FALSE(bad.ctrl->IsBaseFrameMismatchForTesting()) << who;
+      }
     }
   }
 
   template <class Ctrl>
   static void ExpectBothRefusals() {
     ExpectRefused<Ctrl>(WithArmTip("no_such_link"), "tip_unknown",
-                        "'no_such_link' is not on the arm model");
+                        "'no_such_link' is not a frame of the model");
     ExpectRefused<Ctrl>(WithNoArmLinks(), "tip_missing", "no arm tip link");
   }
 
