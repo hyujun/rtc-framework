@@ -25,9 +25,18 @@ std::string InstallHandJointOrder(rub::RtModelHandle* hand_handle,
   std::vector<int> slots_per_q(static_cast<std::size_t>(model.nq), 0);
   for (const auto& name : hand_device->joint_state_names) {
     if (!model.existJointName(name)) {
-      return who + "joint '" + name + "' is not on the hand model";
+      return who + "joint '" + name +
+             "' is not on the hand model (the model carries the joints on a root -> fingertip "
+             "path only; for a hand with a loop closure this also means its closed-chain FK did "
+             "not come up — see the wiring message above)";
     }
     const auto jid = model.getJointId(name);
+    if (model.nqs[jid] != 1) {
+      // A device slot carries one position; the handle's map would run out of
+      // step with the device list from this joint on.
+      return who + "joint '" + name + "' takes " + std::to_string(model.nqs[jid]) +
+             " position values, and a device slot carries one";
+    }
     for (int k = 0; k < model.nqs[jid]; ++k) {
       ++slots_per_q[static_cast<std::size_t>(model.idx_qs[jid]) + static_cast<std::size_t>(k)];
     }
@@ -62,11 +71,13 @@ HandFkWiring WireHandFk(const HandFkWiringRequest& request) {
   wiring.joint_order_error = InstallHandJointOrder(request.hand_handle, request.hand_device,
                                                    request.closed_chain_fk_active);
 
-  if (request.arm_tip_link.empty()) {
+  // No arm tip to mount on: the controller's arm tip refusal owns that case.
+  if (request.arm_handle == nullptr || request.arm_tip_link.empty() ||
+      request.arm_handle->GetFrameId(request.arm_tip_link) == 0) {
     return wiring;
   }
   const std::string tip(request.arm_tip_link);
-  const std::string root(request.hand_root_link);
+  const std::string root = request.hand_tree != nullptr ? request.hand_tree->root_link : "";
   if (request.model == nullptr) {
     wiring.mount_error = "no full model to resolve the hand mount on";
     return wiring;

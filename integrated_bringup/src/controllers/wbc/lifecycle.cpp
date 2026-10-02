@@ -89,7 +89,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
       }
       // Parent = ARM root (sub_models[0].root_link, e.g. base), NOT the hand tree
       // root: ComputeHandFingertipFk composes each fingertip pose to the arm base
-      // frame via the TCP placement (tcp = base→tool0), so the published
+      // frame via the TCP placement and the hand mount, so the published
       // translation is base-relative. Labelling the parent as the hand root
       // (base_adapter / hand_base_link) double-counts the arm reach in RViz.
       if (sys_cfg && !sys_cfg->sub_models.empty()) {

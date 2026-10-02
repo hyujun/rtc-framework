@@ -109,8 +109,9 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {
               combined_cache_.model()->nq, combined_cache_.model()->nv);
 
   // #123 Phase 2: serial hand tree-model + fingertip/hand-root frame ids for
-  // the loop-consistent fingertip FK publish surface (SetJointOrder + closed-
-  // chain wiring run in OnDeviceConfigsSet once device configs are available).
+  // the loop-consistent fingertip FK publish surface (the closed-chain wiring
+  // and the hand FK wiring run in OnDeviceConfigsSet once device configs are
+  // available).
   InitHandModel(config);
 }
 
@@ -1436,21 +1437,18 @@ void DemoWbcController::OnDeviceConfigsSet() {
   // consumes the verdict.
   {
     const auto* hand_sys_cfg = GetSystemModelConfig();
-    const auto* hand_tree =
-        hand_sys_cfg != nullptr ? FindTreeModel(*hand_sys_cfg, secondary_name) : nullptr;
     const auto* primary_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
-    const std::string arm_tip =
-        (primary_cfg != nullptr && primary_cfg->urdf) ? primary_cfg->urdf->tip_link : std::string{};
-    const bool tip_resolved =
-        arm_handle_ != nullptr && !arm_tip.empty() && arm_handle_->GetFrameId(arm_tip) != 0;
     hand_fk_wiring_ = WireHandFk({
         .hand_handle = hand_handle_.get(),
         .hand_device = GetDeviceNameConfig(secondary_name),
         .closed_chain_fk_active = closed_hand_fk_.active(),
         .model = builder_ ? builder_->GetFullModel().get() : nullptr,
-        .arm_tip_link = tip_resolved ? std::string_view(arm_tip) : std::string_view{},
-        .hand_root_link =
-            hand_tree != nullptr ? std::string_view(hand_tree->root_link) : std::string_view{},
+        .arm_handle = arm_handle_.get(),
+        .arm_tip_link = (primary_cfg != nullptr && primary_cfg->urdf)
+                            ? std::string_view(primary_cfg->urdf->tip_link)
+                            : std::string_view{},
+        .hand_tree =
+            hand_sys_cfg != nullptr ? FindTreeModel(*hand_sys_cfg, secondary_name) : nullptr,
     });
     if (!hand_fk_wiring_.Error().empty()) {
       RCLCPP_ERROR(logger_, "[wbc] hand FK wiring: %s", hand_fk_wiring_.Error().c_str());

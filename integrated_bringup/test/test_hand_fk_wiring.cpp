@@ -209,6 +209,22 @@ TEST(HandFkWiringSupport, AJointListedTwiceIsRefused) {
   EXPECT_FALSE(handle.HasJointReorder());
 }
 
+// A device slot carries one position. A joint that takes another number of them
+// would leave the handle's map out of step with the device list from there on;
+// the model's own root joint (no position at all) is the one every model has.
+TEST(HandFkWiringSupport, AJointThatDoesNotTakeOnePositionIsRefused) {
+  auto names = kSynDeviceOrder;
+  names.push_back("universe");
+  const auto device = SynHandDevice(names);
+
+  rub::RtModelHandle handle(SynBuilder()->GetTreeModel("hand"));
+  ASSERT_TRUE(handle.GetModel().existJointName("universe"));
+  const std::string error = InstallHandJointOrder(&handle, &device, false);
+  EXPECT_NE(error.find("universe"), std::string::npos) << error;
+  EXPECT_NE(error.find("takes 0 position values"), std::string::npos) << error;
+  EXPECT_FALSE(handle.HasJointReorder());
+}
+
 // No hand, no device config, no names yet, or a closed-chain hand whose serial
 // handle is never read: nothing to install and nothing to refuse.
 TEST(HandFkWiringSupport, NothingToInstallIsNotAnError) {
@@ -229,15 +245,21 @@ TEST(HandFkWiringSupport, NothingToInstallIsNotAnError) {
   EXPECT_NE(InstallHandJointOrder(&handle, &bad, false), "");
 }
 
+/// `hand_root` empty stands for "no tree model declared for the hand".
 HandFkWiring WireSyn(rub::RtModelHandle* handle, const rtc::DeviceNameConfig* device,
                      const std::string& arm_tip, const std::string& hand_root) {
+  // The arm chain's model keeps every link of the robot as a frame, so any of
+  // the links used below resolves on it — as it does on a controller's.
+  const rub::RtModelHandle arm(SynBuilder()->GetReducedModel("body"));
+  const rub::TreeModelConfig hand_tree{"hand", hand_root, kSynTips};
   return WireHandFk({
       .hand_handle = handle,
       .hand_device = device,
       .closed_chain_fk_active = false,
       .model = SynBuilder()->GetFullModel().get(),
+      .arm_handle = &arm,
       .arm_tip_link = arm_tip,
-      .hand_root_link = hand_root,
+      .hand_tree = &hand_tree,
   });
 }
 
@@ -316,6 +338,23 @@ TEST(HandFkWiringSupport, NoHandModelOrNoArmTipLeavesTheMountAlone) {
   EXPECT_EQ(no_tip.Error(), "");
   ExpectSamePose(no_tip.T_tip_mount, pinocchio::SE3::Identity(), 0.0, "no arm tip");
   EXPECT_TRUE(handle.HasJointReorder()) << "the joint order does not depend on the arm tip";
+
+  // A tip link the arm model does not carry is the same case: nothing to mount on.
+  const HandFkWiring unknown_tip = WireSyn(&handle, &device, "no_such_tip", "no_such_link");
+  EXPECT_EQ(unknown_tip.Error(), "");
+
+  // ... and so is a controller with no arm model at all.
+  const rub::TreeModelConfig hand_tree{"hand", "no_such_link", kSynTips};
+  const HandFkWiring no_arm = WireHandFk({
+      .hand_handle = &handle,
+      .hand_device = &device,
+      .closed_chain_fk_active = false,
+      .model = SynBuilder()->GetFullModel().get(),
+      .arm_handle = nullptr,
+      .arm_tip_link = "right_wrist",
+      .hand_tree = &hand_tree,
+  });
+  EXPECT_EQ(no_arm.Error(), "");
 }
 
 // The joint-order verdict wins when both fail: it is the one a config author

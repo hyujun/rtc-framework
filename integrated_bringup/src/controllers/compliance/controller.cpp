@@ -362,22 +362,17 @@ void DemoComplianceController::OnDeviceConfigsSet() {
   // This hook cannot fail a configure, so on_configure consumes the verdict.
   {
     const auto* hand_sys_cfg = GetSystemModelConfig();
-    const auto* hand_tree =
-        hand_sys_cfg != nullptr ? FindTreeModel(*hand_sys_cfg, secondary) : nullptr;
-    const std::string arm_tip = [&]() -> std::string {
-      const auto* cfg = GetDeviceNameConfig(primary);
-      return (cfg != nullptr && cfg->urdf) ? cfg->urdf->tip_link : std::string{};
-    }();
-    const bool tip_resolved =
-        arm_handle_ != nullptr && !arm_tip.empty() && arm_handle_->GetFrameId(arm_tip) != 0;
+    const auto* primary_cfg = GetDeviceNameConfig(primary);
     hand_fk_wiring_ = WireHandFk({
         .hand_handle = hand_handle_.get(),
         .hand_device = GetDeviceNameConfig(secondary),
         .closed_chain_fk_active = closed_hand_fk_.active(),
         .model = builder_ ? builder_->GetFullModel().get() : nullptr,
-        .arm_tip_link = tip_resolved ? std::string_view(arm_tip) : std::string_view{},
-        .hand_root_link =
-            hand_tree != nullptr ? std::string_view(hand_tree->root_link) : std::string_view{},
+        .arm_handle = arm_handle_.get(),
+        .arm_tip_link = (primary_cfg != nullptr && primary_cfg->urdf)
+                            ? std::string_view(primary_cfg->urdf->tip_link)
+                            : std::string_view{},
+        .hand_tree = hand_sys_cfg != nullptr ? FindTreeModel(*hand_sys_cfg, secondary) : nullptr,
     });
     if (!hand_fk_wiring_.Error().empty()) {
       RCLCPP_ERROR(logger_, "[compliance] hand FK wiring: %s", hand_fk_wiring_.Error().c_str());

@@ -19,9 +19,8 @@ bool MomentumObserverInputsReadable(const rtc::DeviceState& dev, int dof) noexce
 }
 
 void ConfigureMomentumObserverWiring(std::shared_ptr<const pinocchio::Model> arm_model,
-                                     std::span<const std::string> arm_joint_names,
-                                     int device_index, std::span<const double> gains,
-                                     MomentumObserverWiring& w) {
+                                     std::span<const std::string> arm_joint_names, int device_index,
+                                     std::span<const double> gains, MomentumObserverWiring& w) {
   // Disable first: every throw below must leave a wiring that cannot be ticked,
   // including a re-configure that fails after a successful one.
   w.configured = false;
@@ -37,10 +36,10 @@ void ConfigureMomentumObserverWiring(std::shared_ptr<const pinocchio::Model> arm
 
   const auto dof = static_cast<int>(arm_joint_names.size());
   if (dof != arm_model->nv) {
-    throw std::invalid_argument(
-        "ConfigureMomentumObserverWiring: arm_joint_names size (" + std::to_string(dof) +
-        ") != arm model nv (" + std::to_string(arm_model->nv) +
-        ") — the observer works in the model's velocity space");
+    throw std::invalid_argument("ConfigureMomentumObserverWiring: arm_joint_names size (" +
+                                std::to_string(dof) + ") != arm model nv (" +
+                                std::to_string(arm_model->nv) +
+                                ") — the observer works in the model's velocity space");
   }
 
   auto handle = std::make_unique<rtc_urdf_bridge::RtModelHandle>(std::move(arm_model));
@@ -84,8 +83,7 @@ namespace {
 /// with one exception: a `frame` that the model does not carry throws, because
 /// that is a typo in a key the user explicitly set, and silently degrading to
 /// "residual only" would look identical to not having asked for it.
-void ConfigurePayloadEstimator(const PayloadEstimatorParams& pp,
-                               const pinocchio::Model& model,
+void ConfigurePayloadEstimator(const PayloadEstimatorParams& pp, const pinocchio::Model& model,
                                const std::vector<double>& gains, MomentumObserverWiring& w) {
   if (!w.configured || !pp.has_block || !pp.enabled || pp.frame.empty()) {
     return;
@@ -95,9 +93,8 @@ void ConfigurePayloadEstimator(const PayloadEstimatorParams& pp,
   // world frame's Jacobian (all zeros) for the life of the run.
   const pinocchio::FrameIndex fid = w.handle->GetFrameId(pp.frame);
   if (fid == 0) {
-    throw std::invalid_argument(
-        "demo_shared: momentum_observer.payload_estimator.frame '" + pp.frame +
-        "' is not a frame of the arm sub-model");
+    throw std::invalid_argument("demo_shared: momentum_observer.payload_estimator.frame '" +
+                                pp.frame + "' is not a frame of the arm sub-model");
   }
 
   rtc::estimation::PayloadEstimator::Config c;
@@ -279,9 +276,9 @@ void BuildMomentumObserverWiring(const MomentumObserverParams& params,
   } else if (g.size() == static_cast<std::size_t>(dof)) {
     gains = g;
   } else {
-    throw std::invalid_argument(
-        "demo_shared: momentum_observer.gains has " + std::to_string(g.size()) +
-        " entries — expected 1 (broadcast) or " + std::to_string(dof) + " (arm dof)");
+    throw std::invalid_argument("demo_shared: momentum_observer.gains has " +
+                                std::to_string(g.size()) + " entries — expected 1 (broadcast) or " +
+                                std::to_string(dof) + " (arm dof)");
   }
 
   // Keep a handle on the model: the payload step needs its gravity, and the
@@ -295,10 +292,9 @@ void BuildMomentumObserverWiring(const MomentumObserverParams& params,
 void LogMomentumObserverWiring(const rclcpp::Logger& logger, const MomentumObserverWiring& w,
                                const MomentumObserverParams& params) {
   if (!w.enabled()) {
-    const char* why = !params.has_block
-                          ? "no 'momentum_observer' block in demo_shared.yaml"
-                          : (!params.enabled ? "block present but enabled: false"
-                                             : "no arm sub-model to observe");
+    const char* why = !params.has_block ? "no 'momentum_observer' block in demo_shared.yaml"
+                                        : (!params.enabled ? "block present but enabled: false"
+                                                           : "no arm sub-model to observe");
     RCLCPP_INFO(logger,
                 "[momentum_observer] disabled — %s. No momentum_observer.csv will be written.",
                 why);
@@ -339,8 +335,7 @@ void HoldMomentumObserver(MomentumObserverWiring& w) noexcept {
   HoldPayloadLanes(w, rtc::estimation::PayloadInvalidReason::kObserverInvalid);
 }
 
-bool UpdateMomentumObserver(const rtc::ControllerState& state,
-                            MomentumObserverWiring& w) noexcept {
+bool UpdateMomentumObserver(const rtc::ControllerState& state, MomentumObserverWiring& w) noexcept {
   if (!w.configured || w.handle == nullptr)
     return false;
   if (w.device_index >= state.num_devices)

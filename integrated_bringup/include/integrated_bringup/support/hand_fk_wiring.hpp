@@ -22,11 +22,17 @@
 // Both are resolved once at configure time, here, for every demo controller
 // that publishes fingertip poses. Neither can be detected on the tick: a hand
 // read in the wrong joint order, or composed on the wrong link, yields a pose
-// that is finite, smooth and wrong by centimetres — so a wiring that cannot be
-// resolved refuses the configure instead.
+// that is finite, smooth and wrong by centimetres — so a device order or a
+// mount that cannot be resolved refuses the configure instead.
+//
+// What is left alone: a hand device that lists no joint names at all is read
+// positionally, as it always was (there is no order to install), and a
+// controller whose arm tip did not resolve has nothing to mount the hand on —
+// that refusal is the arm tip's own.
 
 #include "rtc_base/types/types.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/types.hpp"
 
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -75,9 +81,17 @@ struct HandFkWiring {
 /// serial handle; such a hand's device joints are not all on the serial tree).
 ///
 /// @return empty on success or no-op. Otherwise the reason, and the handle is
-///   left as it was: a name the hand model does not carry, or a list that does
-///   not cover every position of the hand model exactly once (a strict subset
-///   would map, and leave the other joints at whatever the buffer holds).
+///   left as it was: a name the hand model does not carry, a joint that does
+///   not take exactly one position value (a device slot carries one), or a list
+///   that does not cover every position of the hand model exactly once (a
+///   strict subset would map, and leave the other joints at whatever the buffer
+///   holds).
+///
+/// A hand with a loop closure whose closed-chain FK did NOT come up lands here
+/// too, and is usually refused on the first count: its serial tree carries only
+/// the joints on a root → fingertip path, and the device also lists the ones
+/// that drive the linkages. The same holds for any hand whose tree model
+/// declares fewer tips than it has fingers.
 [[nodiscard]] std::string InstallHandJointOrder(rtc_urdf_bridge::RtModelHandle* hand_handle,
                                                 const rtc::DeviceNameConfig* hand_device,
                                                 bool closed_chain_fk_active);
@@ -90,11 +104,15 @@ struct HandFkWiringRequest {
   /// The full model — the one model that carries both links below with every
   /// joint between them still a joint.
   const pinocchio::Model* model{nullptr};
-  /// The link the arm tip pose is reported at. Empty when it did not resolve:
-  /// there is then no arm tip to mount on, and the mount is left alone.
+  /// The arm model handle the arm tip pose is read from (null: no arm model).
+  const rtc_urdf_bridge::RtModelHandle* arm_handle{nullptr};
+  /// The link the arm tip pose is reported at, as the controller was given it.
+  /// When it is empty or not a frame of @ref arm_handle there is no arm tip to
+  /// mount on, and the mount is left alone.
   std::string_view arm_tip_link;
-  /// The secondary tree model's root link.
-  std::string_view hand_root_link;
+  /// The secondary group's tree model — its root_link is what the hand FK is
+  /// expressed in (null: none declared).
+  const rtc_urdf_bridge::TreeModelConfig* hand_tree{nullptr};
 };
 
 /// @brief Resolve the whole wiring at OnDeviceConfigsSet (non-RT): the joint
@@ -104,7 +122,8 @@ struct HandFkWiringRequest {
 /// only if both links hang off the same joint, which is checked on the full
 /// model — on a reduced arm model every hand joint is locked, and any hand link
 /// would pass. A hand whose root is not on the model, or is separated from the
-/// arm tip by a joint, has no constant mount and is refused.
+/// arm tip by a joint, has no constant mount and is refused. (That includes a
+/// joint no device drives: the check does not know it never moves.)
 ///
 /// A config with no hand model has nothing to wire and comes back clean.
 [[nodiscard]] HandFkWiring WireHandFk(const HandFkWiringRequest& request);
