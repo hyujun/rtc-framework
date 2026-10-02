@@ -60,6 +60,13 @@ device joint order 와 primary-device submodel 처리는 컨트롤러마다 복�
 모델을 실제로 고르고 재정렬하는 것은 바인딩 몫이다 (`integrated_bringup/src/controllers/*/controller.cpp`).
 삭제된 어댑터의 동작 기록은 #172 Phase 3 · #236 에 있다.
 
+**손 군의 fingertip FK** 는 그 바인딩 넷 (joint · task · compliance · wbc) 이 같은 helper 로 배선한다
+(`integrated_bringup/include/integrated_bringup/support/hand_fk_wiring.hpp`): 손 tree 모델의 handle 에 device 의 관절 순서를 이름으로
+걸고, 팔 끝 link → 손 root link 의 상수 변환을 구해 `T_root_fingertip = T_root_armtip · T_tip_mount ·
+T_handroot_fingertip` 로 합성한다. device 이름이 손 모델의 관절을 빠짐없이 덮지 못하거나 손 root 가 팔 끝과
+같은 관절에 붙어 있지 않으면 `on_configure` 가 FAILURE 다 (조건 표:
+[integrated_bringup/README.md](../integrated_bringup/README.md) "손끝 FK 의 배선").
+
 남기는 것은 **재정렬 함정** 하나다 — 바인딩에서 그대로 재발하며, 발현하면 모든 수가 유한한 채
 토크만 틀린다: device 순서로 형성한 항 (null-space·Coriolis·관절속도 `q̇`) 을 Pinocchio 순서 행렬과
 곱하기 직전 `RtModelHandle::ReorderInput` (device→Pinocchio scatter, `ReorderOutput` 의 역방향) 으로
