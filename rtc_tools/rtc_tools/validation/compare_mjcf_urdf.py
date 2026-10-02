@@ -701,8 +701,8 @@ def _compute_mjcf_world_frames(
 
             traverse(body, r_world, p_world)
 
-    worldbody = root.find("worldbody")
-    if worldbody is not None:
+    # Repeated <worldbody> elements are one world to MuJoCo.
+    for worldbody in root.findall("worldbody"):
         traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0])
 
     return result
@@ -746,8 +746,8 @@ def _mjcf_world_frames_by_kind(
                 sites[sname] = _compose_transform(r_world, p_world, s_rot, s_pos)
             traverse(body, r_world, p_world)
 
-    worldbody = root.find("worldbody")
-    if worldbody is not None:
+    # Repeated <worldbody> elements are one world to MuJoCo.
+    for worldbody in root.findall("worldbody"):
         traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0])
 
     return bodies, sites

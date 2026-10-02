@@ -87,6 +87,14 @@ def _classes(**classes: str) -> str:
     return f"<default>{inner}</default>"
 
 
+def _in_a_second_worldbody(xml: str) -> str:
+    """Put a <worldbody> of its own, holding another body, ahead of ``b``'s."""
+    first = (
+        f'<worldbody><body name="a" pos="1 0 0">{INERTIAL}<joint name="ja"/></body></worldbody>'
+    )
+    return xml.replace("<worldbody>", f"{first}\n  <worldbody>", 1)
+
+
 @dataclass(frozen=True)
 class Case:
     """An MJCF and what MuJoCo makes of its joint ``j``."""
@@ -481,6 +489,15 @@ CASES: dict[str, Case] = {
         ),
         torque=(-50.0, 50.0),
     ),
+    # ── elements MuJoCo accepts more than once: it merges them ──
+    # Everything of `j` is read from the second <worldbody> — its attributes
+    # and its place in the world alike.
+    "joint_in_a_second_worldbody": Case(
+        _in_a_second_worldbody(_mjcf(joint='range="-1 1" armature="0.2" axis="1 0 0"')),
+        range=(-1.0, 1.0),
+        armature=0.2,
+        axis=(1.0, 0.0, 0.0),
+    ),
 }
 
 CASE_IDS = sorted(CASES)
@@ -837,6 +854,15 @@ def test_mujoco_compiles_the_expected_orientation(name):
     assert _flat(data.site_xmat[sid].reshape(3, 3)) == pytest.approx(
         _flat(_matmul(orientation.rotation, orientation.rotation)), abs=1e-9
     )
+
+
+def test_tool_places_the_bodies_of_every_worldbody(tmp_path):
+    """Bodies and sites go through their own walk of the tree, so the joint
+    case above does not cover them."""
+    mjcf = _write(tmp_path, "m.xml", CASES["joint_in_a_second_worldbody"].xml)
+    frames = _mjcf_body_world_frames(mjcf)
+    assert frames["a"][1] == pytest.approx([1.0, 0.0, 0.0], abs=1e-12)
+    assert frames["b"][1] == pytest.approx([0.1, 0.2, 0.3], abs=1e-12)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
