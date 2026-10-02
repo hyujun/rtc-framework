@@ -1,0 +1,53 @@
+# Shared demo parameters — g1_p1b (Unitree G1 upper body + proto_1b right hand)
+#
+# Read by every demo controller of this profile; today that is
+# demo_joint_controller only. The file is deliberately small: the hand-only
+# facts of ur5e_p1b (finger map, release gate, virtual TCP) are carried over
+# because the hand is the same; its grasp postures, force-PI gains and pull
+# estimator were tuned for that arm's tasks and are NOT — keys left out here
+# take the compiled defaults. Add them when a task on this robot needs them.
+demo_shared:
+  # ── Virtual TCP ───────────────────────────────────────────────────────────
+  # A point fixed in the arm-end frame — here base_adapter, the hand mount.
+  # mode: "disabled" (default) | "constant" | "centroid" | "weighted"
+  #
+  # Same numbers as ur5e_p1b, and they mean the same thing: that profile's arm
+  # end (tool0) coincides with base_adapter, so relative to the HAND the
+  # virtual TCP sits where it does there.
+  virtual_tcp_mode: "constant"
+  virtual_tcp_offset: [0.0, 0.0, 0.1]   # m, [x, y, z] in the arm-end frame (constant mode)
+  virtual_tcp_orientation: [1.5708, 0.0, -1.5708]  # rad (RPY), in the arm-end frame
+
+  # ── Grasp detection ───────────────────────────────────────────────────────
+  grasp_contact_threshold: 0.1   # native contact probability threshold, 0..1 (unused in sim)
+  grasp_force_threshold: 0.4     # N, |F| above this counts the fingertip as in contact
+  grasp_min_fingertips: 3        # fingertips in contact for grasp_detected, 1..4
+
+  # No grasp controller on this profile yet: the hand follows joint targets.
+  grasp_controller_type: "none"
+
+  # ── Hand joint ↔ finger map ───────────────────────────────────────────────
+  # Rows = fingers (thumb, index, middle, ring); entries = indices into
+  # devices.p1b.joint_state_names. Same hand as ur5e_p1b, same map.
+  hand_finger_joint_map:
+    - [0, 1, 2, 3]  # thumb:  CMC_AA, CMC_FE, MCP, DIP_FE
+    - [4, 5, 6]     # index:  MCP_AA, MCP_FE, DIP_FE
+    - [7, 8]        # middle: MCP_FE, DIP_FE
+    - [9]           # ring:   MCP_FE
+
+  # ── Contact-stop release gate ─────────────────────────────────────────────
+  # One joint per finger decides whether a latched contact-stop may release.
+  # loosen_sign > 0: the finger opens when q increases; < 0: when q decreases.
+  hand_release_gate:
+    - { joint_index: 1, loosen_sign: -1 }   # thumb_cmc_fe_joint
+    - { joint_index: 5, loosen_sign: 1 }    # index_mcp_fe_joint
+    - { joint_index: 7, loosen_sign: 1 }    # middle_mcp_fe_joint
+    - { joint_index: 9, loosen_sign: 1 }    # ring_mcp_fe_joint
+
+  # ── Estimators: both off ──────────────────────────────────────────────────
+  # The pull estimator needs a tuned grasp to mean anything; the momentum
+  # observer needs gains identified for this arm.
+  pull_estimator:
+    enabled: false
+  momentum_observer:
+    enabled: false

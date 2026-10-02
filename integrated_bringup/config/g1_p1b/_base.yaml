@@ -1,0 +1,144 @@
+# g1_p1b/_base.yaml — mode-agnostic config: Unitree G1 upper body (fixed base)
+# + proto_1b closed-chain hand on the RIGHT wrist.
+#
+# Loaded first; sim.yaml overlays the simulation delta on top. There is no
+# robot.yaml — this profile is sim-only so far.
+#
+# Shape of this robot, and how it differs from the arm+hand profiles:
+#   - the pelvis is fixed to the world; legs are not driven (and are not joints
+#     in the fixed-base model)
+#   - waist (3) + left arm (7) + right arm (7) are ONE device group, `g1`.
+#     That group is a kinematic TREE (two branches off the torso), not a serial
+#     chain, so it is declared under `tree_models`, and there is no
+#     `sub_models` block at all
+#   - the hand, `p1b`, is the same proto_1b as ur5e_p1b's, mounted on the right
+#     wrist. A second hand would make a third group; nothing here assumes it
+/**:
+  ros__parameters:
+    config_variant: "g1_p1b"
+
+    # ── Control loop ─────────────────────────────────────────────────────────
+    control_rate: 500.0 # Hz — timer period = 1e6/rate us. Range: see agent_docs/invariants.md §RT Path
+
+    # ── Device timeout rosters (values are per-mode: see sim.yaml) ────────────
+    device_timeout_names: ["g1", "p1b"]
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    enable_logging: true
+    enable_timing_log: true
+    enable_device_log: true # auto-creates per-device log files
+    log_dir: "" # launch overrides with the session directory
+    max_log_sessions: 10 # session folders kept (YYMMDD_HHMM); the sim launch reads this too
+
+    # ── Robot model ──────────────────────────────────────────────────────────
+    # The model lives in hand_description (a separate repository). This
+    # workspace LOADS it; it does not own or verify it.
+    urdf:
+      package: "hand_description"
+      path: "robots/unitree_g1_p1b/urdf/g1_with_proto_1b_fixed_base.urdf.xacro"
+      root_joint_type: "fixed"
+      # Extended URDF: the hand's five loop closures come from the sidecar.
+      # Loaded model: 37 joints, 27 actuated (17 + 10), 10 loop-passive.
+      extended: true
+      closure_path: "robots/unitree_g1_p1b/urdf/g1_with_proto_1b_fixed_base.closure.yaml"
+      tree_models:
+        # Device group `g1`: pelvis → both arm ends, 17 DoF. Model joint order
+        # is waist, left arm, right arm — the URDF's, the MJCF's, and the
+        # (q_w, q_L, q_R) of the dual-arm formulation.
+        #
+        # The right branch ends at `base_adapter`, the link the hand is mounted
+        # on, NOT at right_wrist_yaw_link: the two differ by a fixed transform
+        # (p = [0.0415, -0.003, 0], rpy = [90°, 0, 90°]), and the hand tree
+        # below is rooted at base_adapter. DemoJointController reads the hand's
+        # mount off that root, so fingertip poses compose exactly.
+        g1:
+          root_link: "pelvis"
+          tip_links: ["left_rubber_hand", "base_adapter"]
+        # Device group `p1b`: tip order = controller-facing finger order
+        # (thumb, index, middle, ring) — paired positionally with the fingertip
+        # wrench lane in sim.yaml.
+        p1b:
+          root_link: "base_adapter"
+          tip_links: ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
+      extra_frames:
+        # Catch frame, carried over from ur5e_p1b (same hand, same palm link):
+        # origin at the measured catch point, +z the palm's outward normal.
+        # units: xyz [m], rpy [rad] (ZYX), both in the parent link's frame.
+        catch_frame:
+          parent: "l_palm_link"
+          xyz: [0.015, 0.145, 0.052]
+          rpy: [0.0, 0.0, 0.0]
+          # true (the default) until the frame has been looked at on THIS robot.
+          # Only the catching controller reads the flag, and only to refuse to
+          # arm real hardware; nothing in sim is blocked by it.
+          provisional: true
+
+    # ── Devices ──────────────────────────────────────────────────────────────
+    devices:
+      g1:
+        # Order = the tree model's joint order (see tree_models.g1).
+        joint_state_names:
+          - "waist_yaw_joint"
+          - "waist_roll_joint"
+          - "waist_pitch_joint"
+          - "left_shoulder_pitch_joint"
+          - "left_shoulder_roll_joint"
+          - "left_shoulder_yaw_joint"
+          - "left_elbow_joint"
+          - "left_wrist_roll_joint"
+          - "left_wrist_pitch_joint"
+          - "left_wrist_yaw_joint"
+          - "right_shoulder_pitch_joint"
+          - "right_shoulder_roll_joint"
+          - "right_shoulder_yaw_joint"
+          - "right_elbow_joint"
+          - "right_wrist_roll_joint"
+          - "right_wrist_pitch_joint"
+          - "right_wrist_yaw_joint"
+        # All four rows are the URDF's values, 17 entries each. The controller
+        # manager takes the tighter of these and the URDF, so a looser number
+        # here has no effect.
+        joint_limits:
+          # rad/s. The URDF's motor ratings (22–37 rad/s). Today the only
+          # consumer is the E-STOP ramp; no trajectory is planned against them.
+          max_velocity: [32.0, 30.0, 30.0, 37.0, 37.0, 37.0, 37.0, 37.0, 22.0, 22.0, 37.0, 37.0, 37.0, 37.0, 37.0, 22.0, 22.0]
+          # N·m. waist roll / pitch are 35 here (URDF). The MJCF plant allows
+          # 50 on those two joints — the two files disagree, and the URDF is
+          # the one the model-side limits are read from.
+          max_torque: [88.0, 35.0, 35.0, 25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0, 25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0]
+          # rad. Note the shoulder roll range mirrors between the two arms.
+          position_lower: [-2.618, -0.52, -0.52, -3.0892, -1.5882, -2.618, -1.0472, -1.9722221, -1.6144296, -1.6144296, -3.0892, -2.2515, -2.618, -1.0472, -1.9722221, -1.6144296, -1.6144296]
+          position_upper: [2.618, 0.52, 0.52, 2.6704, 2.2515, 2.618, 2.0944, 1.9722221, 1.6144296, 1.6144296, 2.6704, 1.5882, 2.618, 2.0944, 1.9722221, 1.6144296, 1.6144296]
+      p1b:
+        # Controller-facing order: thumb (4), index (3), middle (2), ring (1).
+        joint_state_names:
+          - "thumb_cmc_aa_joint"
+          - "thumb_cmc_fe_joint"
+          - "thumb_mcp_joint"
+          - "thumb_dip_fe_joint"
+          - "index_mcp_aa_joint"
+          - "index_mcp_fe_joint"
+          - "index_dip_fe_joint"
+          - "middle_mcp_fe_joint"
+          - "middle_dip_fe_joint"
+          - "ring_mcp_fe_joint"
+        sensor_names:
+          - "thumb"
+          - "index"
+          - "middle"
+          - "ring"
+        joint_limits:
+          max_velocity: [10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384] # rad/s
+          max_torque: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0] # N·m
+          # rad — this model's URDF values. index_mcp_aa is narrower here than
+          # in ur5e_p1b's YAML (which is looser than its own URDF).
+          position_lower: [0.0, -1.5707963, -1.5707963, -1.5707963, -0.122173, -1.5707963, -1.5707963, -1.5707963, -1.5707963, -1.5707963]
+          position_upper: [2.3561945, 1.5707963, 1.5707963, 0.0, 0.296706, 0.0, 0.0, 0.0, 0.0, 0.0]
+        # Sensor-lane geometry (values per fingertip group). No barometer / ToF
+        # lane on this hand; the inference lane is 7 wide (slot 0 contact flag,
+        # 1..3 force, 4..6 displacement) and sim fills 1..3 only.
+        sensor_layout:
+          primary_count_per_group: 0
+          secondary_count_per_group: 0
+          values_per_group: 0
+          inference_values_per_group: 7

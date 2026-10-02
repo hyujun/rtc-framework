@@ -60,6 +60,7 @@ SIM_LAUNCH_FILES = [
     "sim_ur5e_p1a.launch.py",
     "sim_ur5e_p1b.launch.py",
     "sim_iiwa7_leap.launch.py",
+    "sim_g1_p1b.launch.py",
 ]
 
 ROBOT_LAUNCH_FILES = [
@@ -108,8 +109,8 @@ ROBOT_COMBOS: list[tuple[str, dict[str, str]]] = [
 
 
 # Arguments not every launch can be driven with. `sim_overlay` and `sim_lanes`
-# are declared by the p1b and iiwa7_leap sims (not p1a); each drives an overlay
-# that profile ships (iiwa7_leap's since S8-D).
+# are declared by the p1b, iiwa7_leap and g1_p1b sims (not p1a); `sim_overlay`
+# drives an overlay that profile ships (iiwa7_leap's since S8-D).
 EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     "sim_ur5e_p1b.launch.py": [
         ("sim_overlay", {"sim_overlay": "inference_pole"}),
@@ -117,6 +118,11 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     ],
     "sim_iiwa7_leap.launch.py": [
         ("sim_overlay", {"sim_overlay": "catch_lead_on"}),
+        ("sim_lanes", {"sim_lanes": "true"}),
+    ],
+    # g1_p1b declares both arguments but ships no overlay to name, so only the
+    # lanes are driven here.
+    "sim_g1_p1b.launch.py": [
         ("sim_lanes", {"sim_lanes": "true"}),
     ],
 }
@@ -375,6 +381,7 @@ def test_invalid_mpc_engine_is_rejected(filename):
 # to it — both launch fine and run the wrong scene.
 P1B_SIM = "sim_ur5e_p1b.launch.py"
 LEAP_SIM = "sim_iiwa7_leap.launch.py"
+G1_SIM = "sim_g1_p1b.launch.py"
 
 
 def _node_parameter_sources(node, context) -> list:
@@ -479,8 +486,9 @@ def test_unknown_sim_overlay_is_rejected():
 # that `sim_lanes:=true` turns BOTH on and points them INTO this run's session
 # tree (so a run's lanes sit next to the controller CSVs they are joined with),
 # and that the default leaves the sim exactly as it was. Both sims that run
-# catching trials share integrated_bringup.sim_lanes, and both are driven here.
-LANED_SIMS = (P1B_SIM, LEAP_SIM)
+# catching trials share integrated_bringup.sim_lanes, and both are driven here —
+# as is g1_p1b, which declares the argument ahead of its catching controller.
+LANED_SIMS = (P1B_SIM, LEAP_SIM, G1_SIM)
 LANES = ("clock_lane", "ball_contact_lane")
 
 

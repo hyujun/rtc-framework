@@ -33,7 +33,7 @@ import pytest
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
-PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap"]
+PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap", "g1_p1b"]
 
 # Blocks whose keys are checked. Both are nested dictionaries in YAML but flat
 # dotted names in declare_parameter, which is exactly the seam a key falls

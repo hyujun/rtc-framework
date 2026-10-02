@@ -10,7 +10,7 @@
 
 **핵심 기능:**
 - 데모 컨트롤러: `DemoJointController`, `DemoTaskController`, `DemoComplianceController`, `DemoWbcController` (TSID QP whole-body + MPC 통합), `DemoInferenceController` (ONNX 정책) — 등록 목록은 `src/controllers/controller_registration.cpp`
-- launch 파일: `robot_ur5e_p1a.launch.py` / `robot_ur5e_p1b.launch.py` (실로봇), `sim_ur5e_p1a.launch.py` / `sim_ur5e_p1b.launch.py` / `sim_iiwa7_leap.launch.py` (MuJoCo)
+- launch 파일: `robot_ur5e_p1a.launch.py` / `robot_ur5e_p1b.launch.py` (실로봇), `sim_ur5e_p1a.launch.py` / `sim_ur5e_p1b.launch.py` / `sim_iiwa7_leap.launch.py` / `sim_g1_p1b.launch.py` (MuJoCo)
 - GUI 도구 (컨트롤러 튜닝, 모션 에디터)
 - 자동 CPU 격리 + DDS 스레드 핀닝
 - 세션 디렉토리 자동 생성 및 정리
@@ -91,7 +91,8 @@ integrated_bringup/
 │   ├── robot_ur5e_p1b.launch.py        <- 실제 UR5e + proto_1b(closed-chain hand) 로봇 launch
 │   ├── sim_ur5e_p1a.launch.py                   <- MuJoCo 시뮬레이션 launch (ur5e_p1a)
 │   ├── sim_ur5e_p1b.launch.py          <- MuJoCo 시뮬레이션 launch (ur5e_p1b, closed-chain)
-│   └── sim_iiwa7_leap.launch.py        <- MuJoCo 시뮬레이션 launch (iiwa7 + LEAP Hand)
+│   ├── sim_iiwa7_leap.launch.py        <- MuJoCo 시뮬레이션 launch (iiwa7 + LEAP Hand)
+│   └── sim_g1_p1b.launch.py            <- MuJoCo 시뮬레이션 launch (Unitree G1 상체 fixed-base + proto_1b 오른손, §g1_p1b)
 ├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈 · sim 도구)
 │   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 (투척마다 한 S7 순환 + host 부하 감시, §Catching sim trials)
 │   ├── sim_overlay.py                  <- `sim_overlay:=` 해석 (sim launch 공용)
@@ -344,6 +345,8 @@ demo_task_controller:
 ### DemoJointController (Index 4)
 
 관절 공간 Quintic 궤적 생성기 -- UR5e 6-DOF 로봇 암 + 10-DOF 핸드 통합 제어기입니다. Rest-to-rest quintic 다항식으로 부드러운 궤적을 생성하며, 출력을 직접 위치 명령으로 전달합니다 (비례 게인 없음).
+
+**첫 device group 의 모델.** 군 0 의 모델은 그 device 이름으로 `urdf.sub_models` (사슬, root → tip) → `urdf.tree_models` (가지가 여럿인 tree) → 이름 `arm` 의 사슬 순으로 찾습니다. 사슬이 있으면 사슬을 씁니다. tree 인 군 (`g1_p1b` 의 `g1`: waist + 양팔) 은 tip 이 없으므로 **팔 끝 = 손이 붙는 link = 군 1 tree 의 `root_link`** 로 정하고, 손끝 pose 는 `T_root_fingertip = T_root_tip · T_tip_fingertip` 로 합성합니다 — 손 FK 가 그 link 기준이라 장착 변환이 항등이 아니어도 그대로 맞습니다. TF slot 과 vector payload 의 frame 이름도 같은 root · tip 에서 나옵니다. 군은 둘 (팔 계열 하나 + 손 하나) 까지입니다.
 
 **타겟 메시지 레이아웃** (`/target_joint_positions`, `Float64MultiArray`):
 - `data[0..5]`: 로봇 암 관절 타겟 (rad)
@@ -881,6 +884,28 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 
 모든 원소에 **소수점을 찍으십시오** — 정수 리터럴이 하나라도 있으면 시퀀스 전체가 정수 배열로 추론되어 노드 생성 시점에 죽습니다. `test_shipped_sim_config` 가 이 타입을 rclcpp 로더로 고정합니다.
 
+### `g1_p1b` — Unitree G1 상체 (fixed base) + proto_1b 오른손
+
+```bash
+ros2 launch integrated_bringup sim_g1_p1b.launch.py                                        # viewer
+ros2 launch integrated_bringup sim_g1_p1b.launch.py enable_viewer:=false use_cpu_affinity:=false   # headless · sudo 없음
+```
+
+sim 전용 profile 입니다 (`robot.yaml` · 실기 launch 없음). 다른 profile 과 다른 점:
+
+| 항목 | 내용 |
+|---|---|
+| device group | **둘** — `g1` (waist 3 + 왼팔 7 + 오른팔 7 = 17 관절, 이 순서) 과 `p1b` (손 10 관절). 손이 둘이 되면 셋이 됩니다 (지금은 없음) |
+| 모델 선언 | `g1` 은 사슬이 아니라 가지가 둘인 **tree** 라 `urdf.tree_models.g1` (`pelvis` → [`left_rubber_hand`, `base_adapter`]) 로 선언합니다. `urdf.sub_models` 는 없습니다 |
+| 팔 끝 | 손이 붙는 link `base_adapter` — `tree_models.p1b` 의 `root_link` 에서 읽습니다. `right_wrist_yaw_link` 와는 고정 변환만큼 다릅니다 (p = [0.0415, −0.003, 0], rpy = [90°, 0, 90°]) |
+| 컨트롤러 | `demo_joint_controller` 하나. 팔을 사슬 하나로 전제하는 `demo_task` · `demo_wbc` · `demo_compliance` 는 YAML 을 싣지 않아 인스턴스화되지 않습니다 |
+| 모델 출처 | URDF · MJCF 는 `hand_description` 패키지 (`robots/unitree_g1_p1b/`). 이 저장소는 그 모델을 load 만 합니다 |
+| sim 서보 | MJCF 의 waist · 팔 actuator 가 `<motor>` (토크 모터) 라 `use_yaml_servo_gains: true` 가 **필수**입니다. 게인은 kd/kp = 0.05 s, kp 는 관절별 임계 감쇠 하한 이상 (`config/g1_p1b/mujoco_simulator.yaml` 주석) |
+| 토픽 | 목표 `/demo_joint_controller/{g1,p1b}/joint_goal` (`rtc_msgs/RobotTarget`), TF `/demo_joint_controller/transforms` (부모 `pelvis`, 자식 `base_adapter_actual` · `l_<finger>_tip_bracket_actual` · `virtual_tcp_actual`) |
+| 로그 | `<session>/controllers/demo_joint_controller/{g1_state,p1b_state,p1b_sensor}.csv` — `g1_state` 는 17 관절 전부 |
+
+`enable_mpc` · `mpc_engine` · `kp` · `kd` 인자는 다른 sim launch 와 인자 집합을 맞추려고 선언만 되어 있고, 이 profile 에는 받는 컨트롤러가 없습니다. demo GUI (`--robot`) 와 `plot_rtc_log` 의 `g1_p1b` 지원은 아직 없습니다.
+
 ### Catching sim trials — 한 투척 = 한 S7 순환
 
 S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장되면 팔을 `planner.wait_pose` 로 관절공간 homing 하고 손을 q_pre 에 둔 채 기다린다 (IDLE → ARMED). 러너는 미러 `planner.wait_pose` 로 조준·정렬하므로 **`planner.wait_pose_source: yaml` 전제**다 — `current` 로 띄우면 채택 자세와 미러가 달라 ARMED 정렬 gate 가 거부한다; 자세 실험은 overlay `planner.wait_pose` 로 한다 (S8-I). 시행이 끝나면 다시 그 자세로 돌아간다 (RETREAT → ARMED).
@@ -904,7 +929,7 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 | `hand_cliff` · `hand_lob` · `hand_lhs` (S8-F) | **손 근처 투척** — 도착으로 지정한다: 떠 있는 컨트롤러의 `wait_pose` 를 FK 해 얻은 포구점 p_c·접근축 (catch frame +z) 을 기준으로, 도착 속력 v · 비행 시간 T · 접근축에 수직한 평면의 오프셋 (r, ψ) · 접근축 기준 입사각 α 를 정하고 `rtc_tools.analysis.catchability_map.aim_at_hand` 가 출하 항력 법칙으로 **역적분**해 릴리스를 낸다. `hand_cliff` = r 0 · T 0.65 · 정면, v {3.5, 4, 4.5, 5, 5.5, 6, 7} × 8 (속력 교차 순서, `--n` 무시) · `hand_lob` = 수평 아래 85° 급강하, v {2.5, 3, 3.5, 4} × 14 · `hand_lhs` = v [3.5, 7] · T [0.65, 0.8] · r [0, 0.2] · ψ [0, 360) · α [−10°, +15°] 의 Latin hypercube `--n` 발 (`--seed` 재현; 릴리스 공 표면이 `--floor-z` (기본 0.05, 작업 테이블 상판) 아래면 다시 뽑는다 — 받아들인 발당 `HAND_LHS_MAX_DRAWS_PER_THROW` 회를 넘기면 상자 자체가 이 기하에 안 맞는 것이라 이유를 적고 멈춘다) | 탐색 (dynamic_catching plan §4.4 S8-F). 시행 기록에 인자·도출량 (Δz·d·v0·앙각·입사각)·목표점 `target_m` 과 **조준 검증** (`aim_error_m`: 첫 truth 표본에서 항력 법칙으로 적분한 비행이 목표점을 얼마나 비껴가는지 — truth 는 손에서 끊기므로 표본이 아니라 모델로 읽는다; `model_rms_m` 은 첫 접촉 전 truth 와 그 모델의 차) 이 남는다. 항력 상수는 C++ 프리셋이라 `--drag-coefficient`·`--air-density` (+ `-source` file:line) 로 주고 (기본 tennis; beanbag 은 0.5 · `projectile_ball.cpp:39`), `--arm` 은 unit 의 overlay 이름을 `run_meta.json` 에 남기는 라벨, `--limit` 은 계열의 앞 N 발만 (스모크). `run_meta.json` 의 `hand_geometry` 가 p_c·접근축·공 파라미터와 출처다. sim overlay `s8f_reach_first` (넓힌 `catch_box` + 도달 우선 점수) · `s8f_shipped_score` (상자만) · `s8f_reach_first_beanbag` 과 함께 쓴다 |
 | `s35b` (`ur5e_p1b`·`iiwa7_leap`) | 프로파일별 동결 상자에서 `--n` 번 균등 iid, `--seed` 로 재현. `ur5e_p1b` = S3.5b 90 % 상자 (거리 0.9–1.0 m · 릴리스 0.15–0.25 m · 방향 ±6° · 속력 4.65–4.85 m/s · 앙각 62–64°). `iiwa7_leap` = S8-D 지도 재실행 상자 (거리 0.95–1.05 m · 릴리스 0.10–0.20 m · 방향 ±6° · 속력 2.85–3.05 m/s · 앙각 78–80°; 지도 열림이면서 공이 상승 중 대기 자세 로봇에 닿지 않는 투척 164/180) | 동결 분포 (dynamic_catching plan §4.4 S8, D-S8-2·D-S8-15). 발사 상태는 `rtc_tools.analysis.catchability_map` 의 격자 기하 그대로다. 표본의 축 값·seed·순번이 시행 기록에 남는다 |
 
-**측정 lane (`sim_lanes:=true`).** sim 의 clock 위상 lane 과 공 접촉 truth lane 은 노드 파라미터라 기동 때만 읽힌다. `sim_lanes:=true` (`sim_ur5e_p1b`·`sim_iiwa7_leap`, 공용 `integrated_bringup.sim_lanes`) 는 둘을 켜고 `<session>/sim/{clock_lane,ball_contact_lane}.csv` 에 쓴다 — 시행의 lane 이 그 세션의 컨트롤러 CSV 옆에 남아 `catching_trials` (`rtc_tools`) 가 둘을 잇는다. 기본은 off (YAML 그대로).
+**측정 lane (`sim_lanes:=true`).** sim 의 clock 위상 lane 과 공 접촉 truth lane 은 노드 파라미터라 기동 때만 읽힌다. `sim_lanes:=true` (`sim_ur5e_p1b`·`sim_iiwa7_leap`·`sim_g1_p1b`, 공용 `integrated_bringup.sim_lanes`) 는 둘을 켜고 `<session>/sim/{clock_lane,ball_contact_lane}.csv` 에 쓴다 — 시행의 lane 이 그 세션의 컨트롤러 CSV 옆에 남아 `catching_trials` (`rtc_tools`) 가 둘을 잇는다. 기본은 off (YAML 그대로).
 
 ```bash
 # 1) sim (계획기는 enable_mpc:=true 가 필요하다 — mpc_off 면 활성화 거부)
@@ -1260,10 +1285,10 @@ rtc_controller_manager + rtc_controllers + repo_scripts + robot_descriptions
     |                                                         |
     |   rtc_urdf_bridge (URDF→Pinocchio 모델)           |
     |       |                                                 |
-integrated_bringup  <- 멀티 로봇 통합 패키지 (ur5e_p1a / ur5e_p1b / iiwa7_leap) ─┘
+integrated_bringup  <- 멀티 로봇 통합 패키지 (ur5e_p1a / ur5e_p1b / iiwa7_leap / g1_p1b) ─┘
     |
     ├── robot_ur5e_p1a.launch.py / robot_ur5e_p1b.launch.py           -> UR 드라이버 + RT 컨트롤러 + CPU 격리
-    ├── sim_ur5e_p1a.launch.py / sim_ur5e_p1b.launch.py / sim_iiwa7_leap.launch.py -> MuJoCo + RT 컨트롤러 + CPU 격리
+    ├── sim_ur5e_p1a.launch.py / sim_ur5e_p1b.launch.py / sim_iiwa7_leap.launch.py / sim_g1_p1b.launch.py -> MuJoCo + RT 컨트롤러 + CPU 격리
     ├── DemoJointController (index 4)  ─┐
     ├── DemoTaskController (index 5)   ─┤── RtModelHandle (arm sub-model) / TSID+MPC (WBC)
     ├── DemoWbcController (index 6)    ─┘
