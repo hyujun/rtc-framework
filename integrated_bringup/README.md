@@ -48,7 +48,7 @@ integrated_bringup/
 │   │   ├── mujoco_native_backend.hpp     <- sim 공용 (JointState in+out, fingertip WrenchStamped in) ◇
 │   │   ├── ur_driver_native_backend.hpp  <- UR5e robot (JointState in, Float64MultiArray out)
 │   │   └── udp_hand_native_backend.hpp   <- assm_v1 hand robot (joint+motor+sensor lane)
-│   └── logging/                        <- DeviceStateLog/DeviceSensorLog POD mirror (kMaxJoints=16, kMaxFingertips=8)
+│   └── logging/                        <- DeviceStateLog/DeviceSensorLog POD mirror (kMaxJoints=32, kMaxFingertips=8)
 │       ├── device_state_log_pod.hpp
 │       ├── device_sensor_log_pod.hpp
 │       ├── device_wbc_log_pod.hpp      <- WBC state superset: a_opt 가속도 + SE3 traj(arm)/fingertip force(hand), role-aware writer

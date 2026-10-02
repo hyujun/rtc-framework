@@ -23,6 +23,25 @@
 
 namespace integrated_bringup {
 
+namespace {
+
+/// The `urdf.tree_models` entry called `name`, or nullptr.
+const rtc_urdf_bridge::TreeModelConfig* FindTreeModel(const rtc_urdf_bridge::ModelConfig& config,
+                                                      const std::string& name) {
+  for (const auto& tm : config.tree_models) {
+    if (tm.name == name) {
+      return &tm;
+    }
+  }
+  return nullptr;
+}
+
+bool HasTreeModel(const rtc_urdf_bridge::ModelConfig& config, const std::string& name) {
+  return !name.empty() && FindTreeModel(config, name) != nullptr;
+}
+
+}  // namespace
+
 DemoJointController::DemoJointController(std::string_view urdf_path)
     : DemoJointController(urdf_path, Gains{}) {}
 
@@ -79,16 +98,25 @@ void DemoJointController::InitArmModel(const rtc_urdf_bridge::ModelConfig& confi
     builder_ = std::make_shared<rub::PinocchioModelBuilder>(config);
   }
 
-  // Resolve sub-model name: match primary device name, fallback to "arm"
+  // Resolve the primary group's model by the device name:
+  //   1. a serial chain  — `urdf.sub_models.<primary>` (one arm, root → tip)
+  //   2. a kinematic tree — `urdf.tree_models.<primary>` (a group with more
+  //      than one branch, e.g. waist + both arms; it has no single tip)
+  //   3. the legacy chain named "arm"
+  // A chain wins when both exist, so a robot that declares a chain for its
+  // primary group keeps the model it always had.
   const auto primary = GetPrimaryDeviceName();
-  std::string model_name = "arm";
-  for (const auto& sm : config.sub_models) {
-    if (sm.name == primary) {
-      model_name = primary;
-      break;
-    }
+  arm_model_is_tree_ = false;
+  const bool has_chain = std::any_of(config.sub_models.begin(), config.sub_models.end(),
+                                     [&](const auto& sm) { return sm.name == primary; });
+  if (has_chain) {
+    arm_model_ = builder_->GetReducedModel(primary);
+  } else if (HasTreeModel(config, primary)) {
+    arm_model_ = builder_->GetTreeModel(primary);
+    arm_model_is_tree_ = true;
+  } else {
+    arm_model_ = builder_->GetReducedModel("arm");
   }
-  arm_model_ = builder_->GetReducedModel(model_name);
   arm_handle_ = std::make_unique<rub::RtModelHandle>(arm_model_);
 }
 
@@ -243,19 +271,78 @@ void DemoJointController::OnDeviceConfigsSet() {
   // so the diagnostic must not send its operator to that key either.
   hand_dof_from_config_ = hand_dof_ > 0;
 
-  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
-    if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
-      auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
+  // ── Primary group root / tip: link names, then frame ids ───────────────
+  // The names come from the device config (the CM resolves them from
+  // `urdf.sub_models` / `urdf.tree_models` by device name, or takes a
+  // per-device override). The frame ids below and the TF slot labels in
+  // on_configure both read these two strings, so a pose and the frame it is
+  // published under cannot name different links.
+  std::string root_link;
+  std::string tip_link;
+  const auto* primary_cfg = GetDeviceNameConfig(primary);
+  if (primary_cfg != nullptr && primary_cfg->urdf) {
+    root_link = primary_cfg->urdf->root_link;
+    tip_link = primary_cfg->urdf->tip_link;
+  }
+  const auto* sys_cfg = GetSystemModelConfig();
+  arm_model_config_error_.clear();
+  if (arm_model_is_tree_) {
+    // A tree has no tip of its own (the CM leaves tip_link empty for it). The
+    // end this controller needs is the link the hand is mounted on, and the
+    // kinematic tree already says which that is: the root of the secondary
+    // group's tree. Reading it there — not off a link name baked in for one
+    // robot — is also what keeps `T_root_fingertip = T_root_tip · T_tip_fingertip`
+    // exact: the hand FK is expressed in that same link.
+    if (sys_cfg != nullptr) {
+      if (root_link.empty()) {
+        if (const auto* tm = FindTreeModel(*sys_cfg, primary)) {
+          root_link = tm->root_link;
+        }
+      }
+      if (tip_link.empty() && !secondary.empty()) {
+        if (const auto* tm = FindTreeModel(*sys_cfg, secondary)) {
+          tip_link = tm->root_link;
+        }
+      }
+    }
+    // The E-STOP tick feeds this handle the device's positions as they arrive.
+    // A chain model is read in that order already; a tree's joint order is the
+    // model's, so the device order has to be mapped onto it — and a name that
+    // does not resolve would leave the map off and the pose silently wrong.
+    if (primary_cfg != nullptr && arm_handle_ != nullptr &&
+        !arm_handle_->SetJointOrder(primary_cfg->joint_state_names)) {
+      arm_model_config_error_ = "primary device '" + primary +
+                                "': joint_state_names do not all resolve on tree model '" +
+                                primary + "'";
+      RCLCPP_ERROR(logger_, "[joint] %s", arm_model_config_error_.c_str());
+    }
+  }
+  if (arm_handle_ != nullptr) {
+    if (!tip_link.empty()) {
+      auto fid = arm_handle_->GetFrameId(tip_link);
       if (fid != 0) {  // 0 = universe (not found)
         tip_frame_id_ = fid;
       }
     }
-    if (cfg->urdf && !cfg->urdf->root_link.empty()) {
-      auto fid = arm_handle_->GetFrameId(cfg->urdf->root_link);
+    if (!root_link.empty()) {
+      auto fid = arm_handle_->GetFrameId(root_link);
       if (fid != 0) {
         root_frame_id_ = fid;
         use_root_frame_ = true;
       }
+    }
+  }
+  // Names for on_configure. A chain group whose device config carries no links
+  // (a fixture that bypasses the CM's resolution) keeps the labels it always
+  // had: the first declared chain.
+  arm_root_link_name_ = root_link;
+  arm_tip_link_name_ = tip_link;
+  if (!arm_model_is_tree_ && sys_cfg != nullptr && !sys_cfg->sub_models.empty()) {
+    if (arm_root_link_name_.empty()) {
+      arm_root_link_name_ = sys_cfg->sub_models.front().root_link;
+    }
+    if (arm_tip_link_name_.empty()) {
+      arm_tip_link_name_ = sys_cfg->sub_models.front().tip_link;
     }
   }
 
@@ -692,7 +779,13 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   // ── Build arm model from system model config or bridge YAML ──────────────
   namespace rub = rtc_urdf_bridge;
   const auto* sys_cfg = GetSystemModelConfig();
-  if (sys_cfg && !sys_cfg->urdf_path.empty() && !sys_cfg->sub_models.empty()) {
+  // The system config is the model source when it declares a model this
+  // controller can use for the primary group: any serial chain (as before), or
+  // a tree named after the primary device. Without the second clause a robot
+  // that declares only trees falls through to the arm-only fallback below and
+  // dies looking up a chain called "arm".
+  if (sys_cfg && !sys_cfg->urdf_path.empty() &&
+      (!sys_cfg->sub_models.empty() || HasTreeModel(*sys_cfg, GetPrimaryDeviceName()))) {
     // System-level ModelConfig (top-level "urdf:" YAML section)
     InitArmModel(*sys_cfg);
   } else if (cfg["model_config"]) {

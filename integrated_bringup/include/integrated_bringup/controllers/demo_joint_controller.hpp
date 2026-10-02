@@ -514,6 +514,22 @@ class DemoJointController final : public RTControllerInterface {
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
+  // Whether the primary group's model is a kinematic TREE (`urdf.tree_models`
+  // entry named after the device) rather than one serial chain
+  // (`urdf.sub_models`). A humanoid upper body driven as one device group is
+  // the case: waist + both arms have no single tip. Set in InitArmModel.
+  bool arm_model_is_tree_{false};
+  // The primary group's root and tip LINK NAMES — the same two links
+  // root_frame_id_ / tip_frame_id_ resolve, kept as names for on_configure
+  // (TF slot labels, vector-payload frame id). Resolved in OnDeviceConfigsSet.
+  // For a tree group the tip is where the hand attaches: the secondary tree's
+  // root link.
+  std::string arm_root_link_name_;
+  std::string arm_tip_link_name_;
+  // A tree group whose device joint names do not all resolve on its model.
+  // OnDeviceConfigsSet cannot fail a configure by itself, so the error is
+  // latched and on_configure refuses (same shape as momentum_config_error_).
+  std::string arm_model_config_error_;
 
   // ── Unified kin&dyn combined-model cache (#174) ──────────────────────────
   // Arm TCP FK comes from the shared combined (arm+hand) model cache, updated
