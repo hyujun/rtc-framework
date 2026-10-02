@@ -219,8 +219,10 @@
 #          (that comment is the SSoT -- this summary still said src|include only
 #          after four more dirs joined the list) or, for a file that is not
 #          source, under config/ (YAML) or test/ (see CHANGED_DATA_BUILD), so
-#          a new header is compiled while a scratch file under rtc_base/ still
-#          cannot trigger a full-workspace rebuild. Routing behaviour is asserted end-to-end by
+#          a new header is compiled while a scratch file under rtc_base/, in
+#          any other place, still cannot trigger a full-workspace rebuild (one
+#          under rtc_base/test/ does: PROC-3, as for that file once tracked).
+#          Routing behaviour is asserted end-to-end by
 #          repo_scripts/test/test_verify_changes.sh.
 #          A path containing a newline is C-quoted by git regardless of
 #          core.quotePath and is NOT handled; paths with spaces are.
@@ -789,7 +791,9 @@ CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
 # package once it was: --run passed with the package left out, and the turn
 # end after the commit owed its build (2026-10-02). Nothing is installed from
 # test/ and nothing but the tests reads it, so the widening can only cost a
-# build of a package with an untracked note there that is not Markdown.
+# build of a package with an untracked note there that is not Markdown -- for
+# rtc_base / rtc_msgs that build is the PROC-3 one (the whole workspace), the
+# same as it is for a new .cpp or .py under their test/.
 # A new file in any OTHER data directory (robots/, a behaviour tree) is still
 # routed only once it is tracked.
 #
