@@ -989,7 +989,8 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 - **default class 는 tree 다.** 최상위 `<default>` 가 `main` 이고, 중첩 class 는 부모의 값을 물려받는다 (부모 사슬 전체). 요소의 class 는 자신의 `class` → 가장 가까운 body/frame 의 `childclass` → `main` 순이다. actuator 는 body tree 밖이라 `childclass` 가 닿지 않고 자신의 `class` 만 본다. class 가 없는 관절은 `main` 만 받는다 — 옆에 있는 중첩 class 의 값을 받지 않는다. 관절의 `range` · `armature` · `axis` · `pos` · `type` · `actuatorfrcrange` 전부 이 한 경로로 읽는다.
 - **걸리지 않는 range 는 한계가 아니다.** `limited` · `forcelimited` · `ctrllimited` · `actuatorfrclimited` 가 `false` 면 그 range 를 읽지 않고, 비워 두면 `<compiler autolimits>` (기본 true) 에서 range 가 있을 때만 걸린 것으로 본다.
 - **각도 단위의 기본값은 degree 다** (`<compiler angle>`). hinge 의 `range` 와 body 의 `euler` · `axisangle` 을 변환한다. slide 의 `range` 는 길이라 변환하지 않고, 힘 · ctrl range 도 변환하지 않는다.
-- **관절 토크 한계** = 그 관절에 `joint` 전달로 붙은 actuator 마다, `forcelimited` 면 `gear` × `forcerange`, 순수 gain (고정 gain · bias 없음 · dynamics 없음 — `<motor>` 가 그렇다) 이고 `ctrllimited` 면 `gear` × gain × `ctrlrange` 와의 작은 쪽. actuator 가 여럿이면 더한다. 관절의 `actuatorfrcrange` 가 걸려 있으면 그 합을 다시 묶는다. 어느 쪽도 없으면 한계 없음이고 `0` 으로 읽는다.
+- **관절 토크 한계** = 그 관절에 `joint` 전달로 붙은 actuator 마다: 순수 gain (고정 gain · bias 없음 · dynamics 없음 — `<motor>` 가 그렇다) 이고 `ctrllimited` 면 gain × `ctrlrange`, `forcelimited` 면 그것을 `forcerange` 로 clamp, 거기에 `gear` 를 곱한다 (`gear="0"` 이면 정확히 0). actuator 가 여럿이면 더한다. 관절의 `actuatorfrcrange` 가 걸려 있으면 그 합을 다시 clamp 한다. 어느 쪽도 없으면 한계 없음이고 `0` 으로 읽는다.
+- **clamp 는 교집합이 아니다.** 두 범위가 겹치면 결과가 같지만, 겹치지 않으면 MuJoCo 는 뒤에 거는 범위의 가까운 끝 한 값을 남긴다 — `forcerange="5 9"` + `ctrlrange="-2 3"` 은 `[5, 5]`, `actuatorfrcrange="-4 -1"` + `forcerange="1 5"` 는 `[-1, -1]` 이다.
 - **actuator 가 없는 관절은 class 의 `<general forcerange>` 를 한계로 읽지 않는다.** MuJoCo 에서 그 값은 actuator 의 기본값이고, actuator 가 없으면 아무 데도 걸리지 않는다. URDF 에 effort 가 있으면 `MJCF=0` 으로 불일치가 난다 — sim 이 그 관절을 구동할 수 없다는 뜻이다.
 - **비대칭 힘 범위** (`-30 50`) 는 `EFFORT MISMATCH:  MJCF=[-30, 50] (asymmetric)  URDF=…` 로 보고한다. URDF 의 effort 는 양방향에 같은 한계라 어느 한쪽 값이 맞아도 같은 모델이 아니다.
 - **body 자세**: `quat` · `euler` (`<compiler eulerseq>`, 소문자 intrinsic · 대문자 extrinsic) · `axisangle` · `xyaxes` · `zaxis`.
@@ -1001,7 +1002,7 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 - **`<include>` 를 따라가지 않는다.** include 로만 들어오는 관절 · body 는 텍스트에 없으므로 관절 · link 별 비교 대상이 아니다 — 틀린 값을 내는 것이 아니라 비교하지 않는다. 구조 비교 (컴파일한 모델) 는 include 를 포함한 전체를 본다.
 - `<frame>` 의 pose (frame 의 `childclass` 는 읽는다 — frame 아래 body 의 관절은 world FK 없이 `[WARN] FK unavailable` 로 떨어진다) · `jointinparent` · tendon / site 전달 · ball / free 관절의 `range` · dynamics 가 있는 actuator 의 `ctrlrange`.
 - **"한계 없음" 과 "한계 0" 을 구별하지 못한다** — 둘 다 `0` 이다.
-- `<default>` 안의 `<position>` · `<velocity>` · `<damper>` 같은 shortcut 은 "순수 gain 이 아니다" 로만 기록한다. 그 default 를 `<general biastype="none">` 이 물려받으면 MuJoCo 는 gain = `kp` 인 순수 gain 으로 컴파일하는데 도구는 gain 1 로 읽는다. `gear="0"` 인 한계 없는 actuator 는 한계 없음으로 읽는다. 둘 다 `robot_descriptions` 에 없다.
+- `<default>` 안의 `<position>` · `<velocity>` · `<damper>` 같은 shortcut 은 "순수 gain 이 아니다" 로만 기록한다. 그 default 를 `<general biastype="none">` 이 물려받으면 MuJoCo 는 gain = `kp` 인 순수 gain 으로 컴파일하는데 도구는 gain 1 로 읽는다. `robot_descriptions` 에 없다.
 
 **`urdf_to_mjcf` 의 새 변환 결과는 `--validate` 에서 `EFFORT MISMATCH` 를 낸다** (#693). 변환기는 관절의 위치 범위를 gain 없는 `<general>` 의 `ctrlrange` 로 쓰는데, MuJoCo 는 그것을 위치 범위 크기의 토크 한계로 컴파일한다 (`MJCF=2.9671  URDF=200` 꼴). 도구가 맞게 읽은 것이다 — `robot_descriptions` 의 MJCF 는 actuator 에 affine bias 가 있어 (위치 서보) `ctrlrange` 가 토크 한계가 아니고, 해당하지 않는다.
 

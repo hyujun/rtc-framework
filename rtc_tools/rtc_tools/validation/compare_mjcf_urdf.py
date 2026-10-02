@@ -241,6 +241,9 @@ def _axes_parallel(a: list[float], b: list[float]) -> tuple[bool, bool]:
 #   * Every actuator shortcut (<motor>, <position>, ...) in a <default> writes
 #     into the same per-class actuator defaults as <general>.
 #   * A range is a limit only where MuJoCo enforces it (_enforced_range).
+#   * MuJoCo clamps — ctrl to ctrlrange, the actuator force to forcerange, the
+#     joint's total to actuatorfrcrange — and a clamp is not an intersection
+#     (_clamped_interval).
 #   * Angles are DEGREES unless <compiler angle="radian"/> says otherwise.
 
 # Actuator elements a <default> may hold.
@@ -390,16 +393,31 @@ def _mjcf_joints(
 
 
 def _scaled_interval(k: float, interval: tuple[float, float]) -> tuple[float, float]:
+    # A zero factor yields exactly 0 whatever the interval.  Left to the
+    # arithmetic, 0 * inf is NaN, and one NaN erases every other actuator on
+    # the joint and the joint's own bound.
+    if k == 0.0:
+        return (0.0, 0.0)
     lo, hi = k * interval[0], k * interval[1]
     return (lo, hi) if lo <= hi else (hi, lo)
+
+
+def _clamped_interval(
+    interval: tuple[float, float], bound: tuple[float, float]
+) -> tuple[float, float]:
+    """What is left of ``interval`` once MuJoCo clamps every value in it to ``bound``.
+
+    A clamp moves each end to the nearest point of ``bound``.  Where the two
+    overlap that is their intersection; where they do not, everything lands on
+    the nearer end of ``bound`` — one value, not an empty interval.
+    """
+    lo, hi = bound
+    return (min(max(interval[0], lo), hi), min(max(interval[1], lo), hi))
 
 
 def _actuator_torque_range(state: dict[str, str], autolimits: bool) -> tuple[float, float]:
     """Joint torque one actuator can apply; ``_UNBOUNDED`` when nothing clamps it."""
     force = _UNBOUNDED
-    forcerange = _enforced_range(state.get("forcerange"), state.get("forcelimited"), autolimits)
-    if forcerange is not None:
-        force = forcerange
     # A clamp on ctrl bounds the force only for a pure gain (force = gain *
     # ctrl).  With a bias term or internal dynamics the force also depends on
     # the joint state, and the ctrl clamp says nothing about its size.
@@ -411,8 +429,11 @@ def _actuator_torque_range(state: dict[str, str], autolimits: bool) -> tuple[flo
     if pure_gain:
         ctrlrange = _enforced_range(state.get("ctrlrange"), state.get("ctrllimited"), autolimits)
         if ctrlrange is not None:
-            lo, hi = _scaled_interval(float(state.get("gain", "1")), ctrlrange)
-            force = (max(force[0], lo), min(force[1], hi))
+            force = _scaled_interval(float(state.get("gain", "1")), ctrlrange)
+    # MuJoCo clamps ctrl first and the resulting force second.
+    forcerange = _enforced_range(state.get("forcerange"), state.get("forcelimited"), autolimits)
+    if forcerange is not None:
+        force = _clamped_interval(force, forcerange)
     # forcerange and ctrlrange are in actuator space; gear carries them to the joint.
     return _scaled_interval(float(state.get("gear", "1").split()[0]), force)
 
@@ -945,10 +966,13 @@ def parse_mjcf(
         jp.axis = _parse_floats(attrs.get("axis", "0 0 1"))
 
         # Position limits: only an enforced range is one.  A hinge range is an
-        # angle and follows <compiler angle>; a slide range is a length.
+        # angle and follows <compiler angle>; a slide range is a length.  A
+        # ball joint's range is a cone angle, not a (lower, upper) pair, and a
+        # free joint has none — neither is read.
+        jtype = attrs.get("type", "hinge")
         rng = _enforced_range(attrs.get("range"), attrs.get("limited"), compiler.autolimits)
-        if rng is not None:
-            scale = compiler.angle_scale if attrs.get("type", "hinge") == "hinge" else 1.0
+        if rng is not None and jtype in ("hinge", "slide"):
+            scale = compiler.angle_scale if jtype == "hinge" else 1.0
             jp.lower, jp.upper = rng[0] * scale, rng[1] * scale
 
         # Torque limit: what the joint's actuators can apply together, clamped
@@ -962,7 +986,7 @@ def parse_mjcf(
             attrs.get("actuatorfrcrange"), attrs.get("actuatorfrclimited"), compiler.autolimits
         )
         if joint_side is not None:
-            lo, hi = max(lo, joint_side[0]), min(hi, joint_side[1])
+            lo, hi = _clamped_interval((lo, hi), joint_side)
         if math.isfinite(lo) and math.isfinite(hi):
             jp.effort_lower, jp.effort = lo, hi
 

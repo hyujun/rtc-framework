@@ -329,6 +329,12 @@ CASES: dict[str, Case] = {
         _mjcf(actuators='<motor joint="j" forcerange="-30 50" gear="-2"/>'),
         torque=(-100.0, 60.0),
     ),
+    # A zero gear passes nothing on to the joint, an unbounded force included:
+    # the other actuator's bound is the joint's.
+    "zero_gear_actuator_adds_nothing": Case(
+        _mjcf(actuators='<motor joint="j" gear="0"/><motor joint="j" forcerange="-3 3"/>'),
+        torque=(-3.0, 3.0),
+    ),
     # ── *limited flags: a range that is not enforced is not a limit ──
     "limited_false": Case(_mjcf(joint='range="-1 1" limited="false"')),
     "limited_false_from_the_class_default": Case(
@@ -364,6 +370,21 @@ CASES: dict[str, Case] = {
     "motor_ctrlrange_above_forcerange": Case(
         _mjcf(actuators='<motor joint="j" ctrlrange="-4 4" forcerange="-3 3"/>'),
         torque=(-3.0, 3.0),
+    ),
+    # MuJoCo CLAMPS: ctrl to ctrlrange, the resulting force to forcerange, the
+    # joint's total to actuatorfrcrange.  Two ranges that do not overlap leave
+    # the nearer end of the later one — a single value, where an intersection
+    # would leave nothing (or an interval with its ends crossed).
+    "forcerange_clamps_a_ctrl_bound_that_misses_it": Case(
+        _mjcf(actuators='<motor joint="j" forcerange="5 9" ctrlrange="-2 3"/>'),
+        torque=(5.0, 5.0),
+    ),
+    "joint_bound_clamps_an_actuator_range_that_misses_it": Case(
+        _mjcf(
+            joint='actuatorfrcrange="-4 -1"',
+            actuators='<motor joint="j" forcerange="1 5"/>',
+        ),
+        torque=(-1.0, -1.0),
     ),
     # A position servo's force is kp * (ctrl - q): the clamp on ctrl says
     # nothing about its size.  Reading ctrlrange here would report 1.
@@ -497,14 +518,44 @@ def test_tool_reads_what_mujoco_compiles(name, tmp_path):
     assert kind == ("revolute" if case.hinge else "other")
 
 
+# A ball joint's `range` is "0 <cone angle>", not a (lower, upper) pair, and a
+# URDF has nothing to hold against it.  It is outside what the tool reads — so
+# the tool must leave it out, not hand the raw text on as if it were a limit.
+BALL_JOINT_MJCF = _mjcf(compiler="", joint='type="ball" range="0 60"')
+
+
+def test_tool_leaves_a_ball_joint_range_unread(tmp_path):
+    _, joints = parse_mjcf(_write(tmp_path, "m.xml", BALL_JOINT_MJCF), {"b"}, {"j"})
+    assert (joints["j"].lower, joints["j"].upper) == (0.0, 0.0)
+
+
+def test_mujoco_limits_that_ball_joint():
+    """What the tool leaves out is a real limit — unread, not absent."""
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string(BALL_JOINT_MJCF)
+    jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "j")
+    assert model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_BALL
+    assert _compiled_range(model, jid) == pytest.approx((0.0, math.pi / 3), abs=1e-9)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # What the compiled model says
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 def _interval_scaled(k: float, interval: tuple[float, float]) -> tuple[float, float]:
+    if k == 0.0:  # 0 * inf is NaN; a zero factor gives exactly 0
+        return (0.0, 0.0)
     lo, hi = k * interval[0], k * interval[1]
     return (lo, hi) if lo <= hi else (hi, lo)
+
+
+def _interval_clamped(
+    interval: tuple[float, float], bound: tuple[float, float]
+) -> tuple[float, float]:
+    """Each end of ``interval`` moved to the nearest point of ``bound``."""
+    lo, hi = bound
+    return (min(max(interval[0], lo), hi), min(max(interval[1], lo), hi))
 
 
 def _compiled_range(model, joint_id: int) -> tuple[float, float]:
@@ -516,11 +567,13 @@ def _compiled_range(model, joint_id: int) -> tuple[float, float]:
 def _compiled_torque_range(model, joint_id: int) -> tuple[float, float] | None:
     """Torque limit of a joint, from the compiled model's fields.
 
-    For each actuator attached to the joint: its ``forcerange`` if
-    ``forcelimited``; for a pure gain (fixed gain, no bias, no dynamics) also
-    ``gain * ctrlrange`` if ``ctrllimited``; both carried to the joint by
-    ``gear``.  The actuators add up.  The joint's ``actuatorfrcrange`` clamps
-    the sum if ``actuatorfrclimited``.  ``None`` when nothing limits it.
+    For each actuator attached to the joint: ``gain * ctrlrange`` for a pure
+    gain (fixed gain, no bias, no dynamics) if ``ctrllimited``, clamped to its
+    ``forcerange`` if ``forcelimited``, and carried to the joint by ``gear``.
+    The actuators add up.  The joint's ``actuatorfrcrange`` clamps the sum if
+    ``actuatorfrclimited``.  ``None`` when nothing limits it.
+
+    Every step is a clamp, as in MuJoCo's forward pass — not an intersection.
     """
     import mujoco
 
@@ -535,24 +588,26 @@ def _compiled_torque_range(model, joint_id: int) -> tuple[float, float] | None:
         lo = hi = 0.0
     for a in attached:
         a_lo, a_hi = -math.inf, math.inf
-        if model.actuator_forcelimited[a]:
-            a_lo, a_hi = (float(v) for v in model.actuator_forcerange[a])
         pure_gain = (
             model.actuator_gaintype[a] == mujoco.mjtGain.mjGAIN_FIXED
             and model.actuator_biastype[a] == mujoco.mjtBias.mjBIAS_NONE
             and model.actuator_dyntype[a] == mujoco.mjtDyn.mjDYN_NONE
         )
         if pure_gain and model.actuator_ctrllimited[a]:
-            c_lo, c_hi = _interval_scaled(
+            a_lo, a_hi = _interval_scaled(
                 float(model.actuator_gainprm[a, 0]),
                 tuple(float(v) for v in model.actuator_ctrlrange[a]),
             )
-            a_lo, a_hi = max(a_lo, c_lo), min(a_hi, c_hi)
+        if model.actuator_forcelimited[a]:
+            a_lo, a_hi = _interval_clamped(
+                (a_lo, a_hi), tuple(float(v) for v in model.actuator_forcerange[a])
+            )
         a_lo, a_hi = _interval_scaled(float(model.actuator_gear[a, 0]), (a_lo, a_hi))
         lo, hi = lo + a_lo, hi + a_hi
     if model.jnt_actfrclimited[joint_id]:
-        j_lo, j_hi = (float(v) for v in model.jnt_actfrcrange[joint_id])
-        lo, hi = max(lo, j_lo), min(hi, j_hi)
+        lo, hi = _interval_clamped(
+            (lo, hi), tuple(float(v) for v in model.jnt_actfrcrange[joint_id])
+        )
     return (lo, hi) if math.isfinite(lo) and math.isfinite(hi) else None
 
 
