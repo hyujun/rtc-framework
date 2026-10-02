@@ -258,6 +258,11 @@ struct TickRec {
   std::uint64_t iteration{0};                     // the state.iteration this tick was given
   double t_relative_s{0.0};                       // … and its t_relative_s
   integrated_bringup::CatchingDiagLogPod body{};  // the row this tick published (G8-H)
+  // What the tick told the planner about the segments it holds (PlannerRtState).
+  bool rt_decel_active{false};
+  std::uint32_t rt_decel_seq{0};
+  bool rt_decel_pending{false};
+  std::uint32_t rt_decel_pending_seq{0};
 };
 
 class SupervisorScenarioTest : public ::testing::Test {
@@ -494,6 +499,11 @@ class SupervisorScenarioTest : public ::testing::Test {
     rec.iteration = state_.iteration;
     rec.t_relative_s = state_.t_relative_s;
     rec.body = record;
+    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
+    rec.rt_decel_active = rt.decel_active;
+    rec.rt_decel_seq = rt.decel_seq;
+    rec.rt_decel_pending = rt.decel_pending;
+    rec.rt_decel_pending_seq = rt.decel_pending_seq;
 
     // ── The plant ───────────────────────────────────────────────────────────
     std::array<double, kUr5eArmDof> cmd{};
@@ -942,26 +952,35 @@ TEST_F(SupervisorScenarioTest, TheV1CommandsTimeOffsetFromItsReferenceIsMeasured
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// MPC E1-F04 — DECEL follows the decel MPC's stop segment (mode mpc, MD-44)
+// MPC E1-F09 — the arm follows the planner's segments from APPROACH to the end
+// of the stop (mode mpc, MD-44 · MD-45)
 // ════════════════════════════════════════════════════════════════════════════
 //
 // The oracle profile: no planner thread, so these cases are the decel box's
-// one writer. The segment is built on the DECEL entry tick from the command
-// that tick starts from (catching_decel_segment_fixture.hpp), which is what a
-// planner with a perfect initial-state prediction would have published.
+// one writer. In TRACKING they write the first segment of the plan the oracle
+// stores on the same tick — the PAIR a planner publishes (MD-56) — built from
+// the arm state the RT last reported, at rest (catching_decel_segment_
+// fixture.hpp). Replans are the same trajectory from a later node, or one
+// built from the command of the tick that takes it, which is what a planner
+// with a perfect initial-state prediction would have published.
 
 using DecelEvent = integrated_bringup::CatchingDiagLogPod::DecelEvent;
+using integrated_bringup::testfx::kApproachDtNs;
+using integrated_bringup::testfx::kApproachDtPreNs;
+using integrated_bringup::testfx::kApproachNPre;
+using integrated_bringup::testfx::kApproachNStop;
 using rtc::catching::CatchingDecelMode;
 using rtc::catching::DecelPlanSnapshot;
 using rtc::catching::DecelRefusal;
 
 class DecelMpcScenarioTest : public SupervisorScenarioTest {
  protected:
-  static constexpr double kBump = 0.3;  // rad/s — the follow's velocity bump
+  static constexpr double kBump = 0.3;       // rad/s — the approach's velocity step
+  static constexpr double kTcOffsetS = 0.6;  // the oracle's t_c − now
 
   /// mode mpc on the scenario profile: the catch sub-model the sampler binds
   /// to, a catch box that holds every node, and the shipped torque rows (the
-  /// fixture's derived box, 2.03 rad/s², would cap the follow's bump).
+  /// fixture's derived box, 2.03 rad/s², would cap the follow's step).
   static void MpcProfile(YAML::Node& y) {
     y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
@@ -972,7 +991,7 @@ class DecelMpcScenarioTest : public SupervisorScenarioTest {
   }
 
   void BringUpMpc(const std::function<void(YAML::Node&)>& extra = nullptr) {
-    ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, [extra](YAML::Node& y) {
+    ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, kTcOffsetS, [extra](YAML::Node& y) {
       MpcProfile(y);
       if (extra) {
         extra(y);
@@ -991,351 +1010,140 @@ class DecelMpcScenarioTest : public SupervisorScenarioTest {
     return w;
   }
 
-  /// A segment for the followed plan, stamped now, sampled at `s_ns` to the
-  /// command the next tick starts from.
-  DecelPlanSnapshot SegmentFromTheCommand(std::int64_t s_ns, std::uint32_t seq) const {
-    const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
-    std::array<double, kUr5eArmDof> q{};
-    std::array<double, kUr5eArmDof> qd{};
-    const auto& qc = ctrl_->GetArmCommandForTesting();
-    const auto& qdc = ctrl_->GetArmVelocityCommandForTesting();
-    for (int i = 0; i < kUr5eArmDof; ++i) {
-      q[static_cast<std::size_t>(i)] = qc[static_cast<std::size_t>(i)];
-      qd[static_cast<std::size_t>(i)] = qdc[static_cast<std::size_t>(i)];
-    }
-    DecelPlanSnapshot seg = integrated_bringup::testfx::MakeFollowSegment(
-        q, qd, kUr5eArmDof, plan.plan_id, plan.t_c_ns, 0, s_ns, kBump);
-    Stamp(seg, seq);
-    return seg;
-  }
-
+  /// The planner's stamps on a segment written now: this activation, the
+  /// plan's track, published this instant from the RT state of the tick
+  /// before.
   void Stamp(DecelPlanSnapshot& seg, std::uint32_t seq) const {
     seg.token.activation_generation = ctrl_->GetPlannerRtState().activation_generation;
-    seg.token.generation = ctrl_->GetFollowedPlanForTesting().token.generation;
+    seg.token.generation = generation_;
     seg.publish_ns = Now();
-    seg.rt_state_ns = Now() - kHNs;  // the tick before, as a planner would have read it
+    seg.rt_state_ns = Now() - kHNs;
     seg.decel_seq = seq;
   }
 
-  /// On the DECEL entry tick (the first CLOSING tick whose clock reads t_c —
-  /// T_arm is 0 here), write the segment built from the command it starts
-  /// from, after `mutate`; `write` false leaves the box empty.
-  void WriteAtEntry(const std::function<void(DecelPlanSnapshot&)>& mutate = nullptr,
-                    bool write = true) {
+  /// The first segment of plan (`plan_id`, `t_c`): from the arm the RT last
+  /// reported — the measured pose before a command exists, the carried one
+  /// after (PlannerRtState::q_cmd) — at rest.
+  DecelPlanSnapshot FirstSegment(std::uint32_t plan_id, std::int64_t t_c_ns) const {
+    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
+    std::array<double, kUr5eArmDof> q{};
+    const std::array<double, kUr5eArmDof> rest{};
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      q[static_cast<std::size_t>(i)] = rt.q_cmd[static_cast<std::size_t>(i)];
+    }
+    return integrated_bringup::testfx::MakeApproachSegment(
+        q, rest, kUr5eArmDof, plan_id, t_c_ns, kApproachNPre,
+        t_c_ns - kApproachNPre * kApproachDtPreNs, kBump);
+  }
+
+  /// Play the planner's pair: on every TRACKING tick, before it runs, store
+  /// the first segment of the plan the oracle is about to store on that tick
+  /// (its next id, t_c one offset from the tick's clock read). `mutate` spoils
+  /// it; `write` false leaves the box alone (a plan without its segment).
+  void WritePair(const std::function<void(DecelPlanSnapshot&)>& mutate = nullptr,
+                 bool write = true) {
     pre_tick_ = [this, mutate, write] {
-      const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
-      if (entry_tick_ >= 0 || !plan.valid || ctrl_->GetMode() != Mode::kClosing ||
-          Now() < plan.t_c_ns) {
+      if (ctrl_->GetMode() != Mode::kTracking) {
         return;
       }
-      entry_tick_ = static_cast<int>(log_.size());
-      entry_seg_ = SegmentFromTheCommand(Now() + kHNs, 1);
+      const std::uint32_t plan_id = ctrl_->GetPublishedPlan().plan_id + 1;
+      const std::int64_t t_c = Now() + static_cast<std::int64_t>(kTcOffsetS * 1e9);
+      first_seg_ = FirstSegment(plan_id, t_c);
+      Stamp(first_seg_, pair_seq_);
       if (mutate) {
-        mutate(entry_seg_);
+        mutate(first_seg_);
       }
       if (write) {
-        ctrl_->DecelBoxForTesting().Store(entry_seg_);
+        ctrl_->DecelBoxForTesting().Store(first_seg_);
       }
+      pair_tick_ = static_cast<int>(log_.size());
     };
   }
 
-  /// A case whose entry cannot take a segment: CLOSING → ABORT_SAFE on the
-  /// entry tick with kParamsTbd, `event` recorded there — never the closed
-  /// form (MD-44) — and the next trial armed as after any abort.
-  void ExpectEntryAbort(DecelEvent event) {
-    ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 1500)) << Transitions();
-    ASSERT_TRUE(TickUntilMode(Mode::kArmed, 2500)) << Transitions();
-    ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
-               Mode::kClosing, Mode::kAbortSafe, Mode::kRetreat, Mode::kArmed});
-    const int a = Entry(Mode::kAbortSafe);
-    ASSERT_EQ(a, entry_tick_) << "the abort is the DECEL entry tick's\n" << Window(a, 2);
-    const auto& r = log_[static_cast<std::size_t>(a)];
-    EXPECT_EQ(r.reason, Reason::kParamsTbd) << Window(a, 2);
+  /// A pair the RT took: APPROACH, with `first_seg_` the segment it holds.
+  void TakeThePair(const std::function<void(DecelPlanSnapshot&)>& mutate = nullptr) {
+    WritePair(mutate);
+    ASSERT_TRUE(TickUntilMode(Mode::kApproach, 1500)) << Transitions();
+    ASSERT_EQ(static_cast<int>(log_.size()) - 1, pair_tick_)
+        << "the pair was not taken on the tick it came";
+    ASSERT_TRUE(ctrl_->HasPendingDecelForTesting()) << Transitions();
+    pre_tick_ = nullptr;
+  }
+
+  /// … and followed: the first tick after the switch at node 0.
+  void FollowThePair() {
+    ASSERT_NO_FATAL_FAILURE(TakeThePair());
+    ASSERT_TRUE(TickUntil([this] { return ctrl_->IsFollowingDecelForTesting(); }, 400))
+        << Transitions();
+  }
+
+  /// Tick until the NEXT tick's sample instant (its now + h) reaches `t_ns` —
+  /// i.e. stop with that tick still to run.
+  bool TickToJustBefore(std::int64_t t_ns, int max_ticks = 1500) {
+    for (int i = 0; i < max_ticks; ++i) {
+      if (Now() + kHNs >= t_ns) {
+        return true;
+      }
+      Tick();
+    }
+    return false;
+  }
+
+  /// The tick whose record carries `event`, from `from` on; -1 when none.
+  int EventTick(DecelEvent event, std::size_t from = 0) const {
+    for (std::size_t i = from; i < log_.size(); ++i) {
+      if (log_[i].body.decel_event == event) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
+
+  int CountEvent(DecelEvent event, std::size_t from = 0) const {
+    return CountTicks([event](const TickRec& t) { return t.body.decel_event == event; }, from);
+  }
+
+  /// A pair the RT does not take: it stays in TRACKING with "no plan", the
+  /// plan itself admissible, and the lane's record says why the segment was
+  /// not.
+  void ExpectThePairRefused(DecelRefusal refusal, DecelEvent event = DecelEvent::kNone) {
+    ASSERT_TRUE(TickUntilMode(Mode::kTracking, 1500)) << Transitions();
+    Ticks(60);
+    EXPECT_EQ(ctrl_->GetMode(), Mode::kTracking) << Transitions();
+    EXPECT_EQ(ctrl_->GetPlanAdmittedCount(), 0U);
+    EXPECT_EQ(CountTicks([](const TickRec& t) { return t.mode == Mode::kApproach; }), 0);
+    const auto& r = log_.back();
+    EXPECT_EQ(r.reason, Reason::kNoCatchablePlan);
+    EXPECT_EQ(r.refusal, PlanRefusal::kNone) << "the plan was admissible; only its segment was not";
+    EXPECT_TRUE(r.body.decel_judged) << "the lane did not judge the pair";
+    EXPECT_EQ(static_cast<DecelRefusal>(r.body.decel_refusal), refusal)
+        << "refusal " << static_cast<int>(r.body.decel_refusal);
     EXPECT_EQ(r.body.decel_event, event) << "event " << static_cast<int>(r.body.decel_event);
-    EXPECT_FALSE(r.body.decel_following);
-    EXPECT_FALSE(r.body.ref_valid) << "the closed-form reference ran on an mpc entry";
-    EXPECT_EQ(CountTicks([](const TickRec& t) { return t.mode == Mode::kDecel; }), 0);
-    EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kAborted);
+    EXPECT_FALSE(ctrl_->HasPendingDecelForTesting());
+    EXPECT_FALSE(r.rt_decel_pending);
+    EXPECT_FALSE(r.body.ref_valid) << "the soft-catch reference ran under mpc";
   }
 
-  /// The lane's verdict on the entry tick.
-  DecelRefusal EntryRefusal() const {
-    EXPECT_GE(entry_tick_, 0);
-    if (entry_tick_ < 0) {
-      return DecelRefusal::kNone;
-    }
-    const auto& r = log_[static_cast<std::size_t>(entry_tick_)];
-    EXPECT_TRUE(r.body.decel_judged);
-    return static_cast<DecelRefusal>(r.body.decel_refusal);
-  }
-
-  int entry_tick_{-1};
-  DecelPlanSnapshot entry_seg_{};
-};
-
-TEST_F(DecelMpcScenarioTest, TheRtFollowsTheSegmentFromTheEntryTickToTheRearm) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry();
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  // PlannerRtState reports the FOLLOWED segment (MD-28 path (i)'s input).
-  const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
-  EXPECT_TRUE(rt.decel_active);
-  EXPECT_EQ(rt.decel_seq, 1U);
-  // HOLD takes no new segment (MD-38): one written on its entry is not followed.
-  pre_tick_ = nullptr;
-  ASSERT_TRUE(TickUntilMode(Mode::kHold, 400)) << Transitions();
-  DecelPlanSnapshot late = entry_seg_;
-  Stamp(late, 2);
-  ctrl_->DecelBoxForTesting().Store(late);
-  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 400)) << Transitions();
-  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
-
-  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
-             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
-  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured)
-      << Transitions();
-  const int d = Entry(Mode::kDecel);
-  ASSERT_EQ(d, entry_tick_);
-  ExpectDecelAtTc();
-  const auto& entry = log_[static_cast<std::size_t>(d)];
-  EXPECT_EQ(entry.body.decel_event, DecelEvent::kSwitched);
-  EXPECT_TRUE(entry.body.decel_following);
-  EXPECT_EQ(entry.body.decel_seq, 1U);
-  EXPECT_FALSE(entry.body.ref_valid) << "an mpc tick does not step the soft-catch reference";
-  for (std::size_t i = static_cast<std::size_t>(d) + 1; i < log_.size(); ++i) {
-    // The mode the tick STARTED in (a record carries the mode it ended in).
-    const Mode start = log_[i - 1].mode;
-    if (start == Mode::kHold && log_[i].body.decel_following) {
-      ASSERT_EQ(log_[i].body.decel_seq, 1U) << "HOLD switched segments\n"
-                                            << Window(static_cast<int>(i), 2);
-    }
-    if (start == Mode::kHold || start == Mode::kRetreat) {
-      ASSERT_FALSE(log_[i].body.decel_judged) << "the lane ran outside COMMITTED/CLOSING/DECEL\n"
-                                              << Window(static_cast<int>(i), 2);
-    }
-  }
-
-  // ── G7-B′ (MD-39 (1)): node 0 made from the entry command at the tick's own
-  // sample instant, so the switch is continuous to rounding ──
-  const auto& before = log_[static_cast<std::size_t>(d - 1)];
-  const auto q_c = Wide(before.q_cmd);
-  const auto qd_c = Wide(before.qd_cmd);
-  const Eigen::Vector3d p_c = oracle_->PoseAt(arm_names_, q_c, kUr5eArmDof).translation();
-  const Eigen::Vector3d v_c = oracle_->LinearVelocityAt(arm_names_, q_c, qd_c, kUr5eArmDof);
-  const Eigen::Vector3d p_d(entry.body.decel_p_d[0], entry.body.decel_p_d[1],
-                            entry.body.decel_p_d[2]);
-  const Eigen::Vector3d v_ff(entry.body.decel_v_ff[0], entry.body.decel_v_ff[1],
-                             entry.body.decel_v_ff[2]);
-  EXPECT_LT((p_d - p_c).norm(), 1e-9) << "‖p_d − FK(q_c)‖";
-  EXPECT_LT((v_ff - v_c).norm(), 1e-9) << "‖V_ff − J q̇_c‖";
-  EXPECT_LT(entry.body.decel_dq_max, 1e-9);
-  EXPECT_LT(entry.body.decel_dqd_max, 1e-9);
-  EXPECT_LT(entry.body.decel_rho, 1e-6);
-
-  // ── MD-40: following, the command leaving tick n is the segment at
-  // now_lead + 2h (sampled at now_lead + h). Judged on the catch frame, where
-  // the CLIK tracks with K_p and the twist feedforward; measured against the
-  // neighbours h and 3h so the offset is resolved, not just bounded. The
-  // joint-space gap is recorded only: the redundant direction is held by the
-  // posture row alone (w_arm, K_n = 1), which the smoothing term drags ──
-  double err_p[3] = {0.0, 0.0, 0.0};
-  double err_q[3] = {0.0, 0.0, 0.0};
-  double speed_peak = 0.0;
-  int n_follow = 0;
-  for (std::size_t i = static_cast<std::size_t>(d) + 1; i < log_.size(); ++i) {
-    const auto& r = log_[i];
-    if (!r.body.decel_following || r.body.decel_held) {
-      continue;
-    }
-    ++n_follow;
-    const Eigen::Vector3d p_out =
-        oracle_->PoseAt(arm_names_, Wide(r.q_out), kUr5eArmDof).translation();
-    for (int k = 0; k < 3; ++k) {
-      std::array<double, rtc::catching::kMaxDecelNv> q{};
-      std::array<double, rtc::catching::kMaxDecelNv> qd{};
-      std::array<double, rtc::catching::kMaxDecelNv> qdd{};
-      ASSERT_TRUE(rtc::catching::NodeTrajectoryFollower::SampleJoints(
-          entry_seg_, r.before_ns + (k + 1) * kHNs, q, qd, qdd));
-      std::array<double, 64> qw{};
-      std::array<double, 64> qdw{};
-      for (int j = 0; j < kUr5eArmDof; ++j) {
-        const auto u = static_cast<std::size_t>(j);
-        err_q[k] = std::max(err_q[k], std::abs(r.q_out[u] - q[u]));
-        qw[u] = q[u];
-        qdw[u] = qd[u];
-      }
-      err_p[k] = std::max(
-          err_p[k], (p_out - oracle_->PoseAt(arm_names_, qw, kUr5eArmDof).translation()).norm());
-      if (k == 1) {
-        speed_peak = std::max(speed_peak,
-                              oracle_->LinearVelocityAt(arm_names_, qw, qdw, kUr5eArmDof).norm());
-      }
-    }
-  }
-  std::ostringstream os;
-  os.precision(3);
-  os << "over " << n_follow << " ticks, max |FK(q_out) - FK(q_ref(t))| [m]: t = now+h " << err_p[0]
-     << ", now+2h " << err_p[1] << ", now+3h " << err_p[2] << " (h*|p_dot|max " << kDt * speed_peak
-     << "); joint max [rad]: " << err_q[0] << " / " << err_q[1] << " / " << err_q[2];
-  RecordProperty("decel_follow_time_label", os.str());
-  std::printf("[ MEASURED ] %s\n", os.str().c_str());
-  ASSERT_GT(n_follow, 100);
-  // 2h is the label: at least twice as close as either neighbour. What is left
-  // (≈ 0.3 h|ṗ| on the fixture, 2026-09-30) is the feedback loop's lag through
-  // the bump's 6 rad/s² phases, not a time offset — it is the same on both
-  // sides of 2h, which an offset would not be.
-  EXPECT_LT(err_p[1], 0.5 * std::min(err_p[0], err_p[2])) << os.str();
-  EXPECT_LT(err_p[1], 0.4 * kDt * speed_peak) << os.str();
-}
-
-TEST_F(DecelMpcScenarioTest, NoSegmentAtTheEntryIsAnAbortNotTheClosedForm) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry(nullptr, /*write=*/false);
-  ASSERT_NO_FATAL_FAILURE(ExpectEntryAbort(DecelEvent::kNoSegment));
-  EXPECT_EQ(EntryRefusal(), DecelRefusal::kInvalid) << "the box never held a segment";
-}
-
-TEST_F(DecelMpcScenarioTest, AnAgedSegmentIsRefusedAndTheEntryAborts) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry([this](DecelPlanSnapshot& s) { s.publish_ns = Now() - 60 * kMsNs; });
-  ASSERT_NO_FATAL_FAILURE(ExpectEntryAbort(DecelEvent::kNoSegment));
-  EXPECT_EQ(EntryRefusal(), DecelRefusal::kAged);
-}
-
-TEST_F(DecelMpcScenarioTest, ASegmentForAnotherPlanIsRefusedAndTheEntryAborts) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry([](DecelPlanSnapshot& s) { s.plan_id += 1; });
-  ASSERT_NO_FATAL_FAILURE(ExpectEntryAbort(DecelEvent::kNoSegment));
-  EXPECT_EQ(EntryRefusal(), DecelRefusal::kPlan);
-}
-
-TEST_F(DecelMpcScenarioTest, AMalformedSegmentIsRefusedAndTheEntryAborts) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry([](DecelPlanSnapshot& s) {
-    s.q[static_cast<std::size_t>(3 * rtc::catching::kMaxDecelNv + 2)] =
-        std::numeric_limits<double>::quiet_NaN();
-  });
-  ASSERT_NO_FATAL_FAILURE(ExpectEntryAbort(DecelEvent::kNoSegment));
-  EXPECT_EQ(EntryRefusal(), DecelRefusal::kMalformed);
-}
-
-TEST_F(DecelMpcScenarioTest, ASegmentPredictedBeforeTheResetIsRefusedAndTheEntryAborts) {
-  // MD-37: published after the floor, predicted from an RT state before it.
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry([](DecelPlanSnapshot& s) { s.rt_state_ns = 1; });
-  ASSERT_NO_FATAL_FAILURE(ExpectEntryAbort(DecelEvent::kNoSegment));
-  EXPECT_EQ(EntryRefusal(), DecelRefusal::kBeforeReset);
-}
-
-TEST_F(DecelMpcScenarioTest, ASegmentPastTheSwitchGateAbortsTheEntry) {
-  // MD-39 (2): 0.05 rad off on one joint — K_p·Δq = 1 rad/s against a
-  // headroom of (1 − 0.9)·2 = 0.2 rad/s.
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry([](DecelPlanSnapshot& s) {
-    for (int k = 0; k <= s.n_nodes; ++k) {
-      s.q[static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv)] += 0.05;
-    }
-  });
-  ASSERT_NO_FATAL_FAILURE(ExpectEntryAbort(DecelEvent::kGateRefused));
-  const auto& r = log_[static_cast<std::size_t>(entry_tick_)];
-  EXPECT_EQ(EntryRefusal(), DecelRefusal::kNone) << "admitted, then refused by the gate";
-  EXPECT_EQ(r.body.decel_gate_joint, 0);
-  EXPECT_NEAR(r.body.decel_rho, 5.0, 1e-6);
-}
-
-TEST_F(DecelMpcScenarioTest, ASegmentLeavingTheCatchBoxIsRefusedAndTheEntryAborts) {
-  // MD-43: a catch box whose ceiling is below the hand holds no node.
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc([this](YAML::Node& y) {
-    const double z = start_pose_.translation().z() - 0.2;
-    y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, z};
-  }));
-  WriteAtEntry();
-  ASSERT_NO_FATAL_FAILURE(ExpectEntryAbort(DecelEvent::kWorkspace));
-  EXPECT_EQ(EntryRefusal(), DecelRefusal::kNone) << "JudgeDecelPlan passed it; MD-43 did not";
-}
-
-TEST_F(DecelMpcScenarioTest, AReplanOnTheSameTrajectoryIsTakenAtItsNodeZero) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry();
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  DecelPlanSnapshot replan = integrated_bringup::testfx::ShiftSegment(entry_seg_, 1);
-  Stamp(replan, 2);
-  ctrl_->DecelBoxForTesting().Store(replan);
-  pre_tick_ = nullptr;
-  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
-  int sw = -1;
-  for (std::size_t i = static_cast<std::size_t>(entry_tick_) + 1; i < log_.size(); ++i) {
-    if (log_[i].body.decel_event == DecelEvent::kSwitched) {
-      sw = static_cast<int>(i);
-      break;
-    }
-  }
-  ASSERT_GT(sw, 0) << Transitions();
-  const auto& r = log_[static_cast<std::size_t>(sw)];
-  EXPECT_EQ(r.body.decel_seq, 2U);
-  EXPECT_EQ(r.body.decel_k0, 1);
-  EXPECT_GE(r.before_ns + kHNs, replan.t0_ns) << "switched before its node 0";
-  EXPECT_LT(log_[static_cast<std::size_t>(sw) - 1].before_ns + kHNs, replan.t0_ns)
-      << "switched later than the first due tick";
-  EXPECT_LT(r.body.decel_rho, 0.2) << "the same trajectory, followed: the gate is barely used";
-  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
-}
-
-TEST_F(DecelMpcScenarioTest, AReplanPastTheGateIsDroppedAndTheFollowedSegmentGoesOn) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry();
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  DecelPlanSnapshot replan = integrated_bringup::testfx::ShiftSegment(entry_seg_, 1);
-  for (int k = 0; k <= replan.n_nodes; ++k) {
-    replan.q[static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv)] += 0.05;
-  }
-  Stamp(replan, 2);
-  ctrl_->DecelBoxForTesting().Store(replan);
-  pre_tick_ = nullptr;
-  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
-  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
-  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
-             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
-  EXPECT_EQ(
-      CountTicks([](const TickRec& t) { return t.body.decel_event == DecelEvent::kGateRefused; }),
-      1)
-      << Transitions();
-  EXPECT_EQ(
-      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
-      0)
-      << "the refused replan was followed";
-  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
-}
-
-// MD-43 for a replan (/code-review 2026-09-30): it starts part-way through the
-// stop, so its path is judged from where THE STOP started — p_c + (p_k − o),
-// o the entry segment's node 0 — not from its own node 0, which would drop
-// the distance already covered. Each case sets the box from the entry
-// segment it only knows once the trial runs, and first checks that the two
-// readings disagree on it (otherwise the case would not tell them apart).
-class DecelMpcReplanBoxTest : public DecelMpcScenarioTest {
- protected:
-  static constexpr int kShift = 6;  // the replan starts 150 ms into the stop
-
-  /// p_c + (FK(node k of the entry segment) − FK(node `from`)), k ≥ kShift.
-  std::vector<Eigen::Vector3d> Judged(int from) const {
-    const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
-    const Eigen::Vector3d p_c(plan.p_c[0], plan.p_c[1], plan.p_c[2]);
-    const Eigen::Vector3d base = NodeFk(from);
-    std::vector<Eigen::Vector3d> out;
-    for (int k = kShift; k <= entry_seg_.n_nodes; ++k) {
-      out.push_back(p_c + (NodeFk(k) - base));
-    }
-    return out;
-  }
-
-  Eigen::Vector3d NodeFk(int k) const {
+  /// Catch-frame position of node `k` of `seg`, by the independent oracle.
+  Eigen::Vector3d NodeFk(const DecelPlanSnapshot& seg, int k) const {
     std::array<double, 64> q{};
     for (int j = 0; j < kUr5eArmDof; ++j) {
       q[static_cast<std::size_t>(j)] =
-          entry_seg_.q[static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv + j)];
+          seg.q[static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv + j)];
     }
     return oracle_->PoseAt(arm_names_, q, kUr5eArmDof).translation();
+  }
+
+  /// p_c + (FK(node k) − FK(node `origin`)) for k = `first` .. N of `seg`: the
+  /// path as MD-43 judges it when the stop is taken to start at `origin`.
+  std::vector<Eigen::Vector3d> Judged(const DecelPlanSnapshot& seg, int first, int origin) const {
+    const Eigen::Vector3d p_c = NearPc();
+    const Eigen::Vector3d base = NodeFk(seg, origin);
+    std::vector<Eigen::Vector3d> out;
+    for (int k = first; k <= seg.n_nodes; ++k) {
+      out.push_back(p_c + (NodeFk(seg, k) - base));
+    }
+    return out;
   }
 
   static void Bound(const std::vector<Eigen::Vector3d>& pts, std::array<double, 3>& lo,
@@ -1364,120 +1172,310 @@ class DecelMpcReplanBoxTest : public DecelMpcScenarioTest {
     return true;
   }
 
-  /// Follow the entry segment, move the box to `lo`/`hi`, publish the replan
-  /// on the same trajectory, and run the trial to its end.
-  void RunReplanUnder(const std::array<double, 3>& lo, const std::array<double, 3>& hi) {
-    ctrl_->SetDecelCatchBoxForTesting(lo, hi);
-    DecelPlanSnapshot replan = integrated_bringup::testfx::ShiftSegment(entry_seg_, kShift);
-    Stamp(replan, 2);
-    ctrl_->DecelBoxForTesting().Store(replan);
-    pre_tick_ = nullptr;
-    ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
-  }
+  /// The tick the pair was last written before (the adoption tick, when it
+  /// was taken), and the segment written.
+  int pair_tick_{-1};
+  std::uint32_t pair_seq_{1};
+  DecelPlanSnapshot first_seg_{};
 };
 
-TEST_F(DecelMpcReplanBoxTest, AReplanIsJudgedFromWhereTheStopStarted) {
+TEST_F(DecelMpcScenarioTest, TheRtTakesThePairAndFollowsItFromApproachToTheRearm) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry();
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  // The box holds the stop's tail measured from its start, and nothing more.
-  std::array<double, 3> lo{};
-  std::array<double, 3> hi{};
-  Bound(Judged(0), lo, hi);
-  ASSERT_FALSE(AllInside(Judged(kShift), lo, hi))
-      << "the stop covered too little by node " << kShift << " to tell the readings apart";
-  ASSERT_NO_FATAL_FAILURE(RunReplanUnder(lo, hi));
-  EXPECT_GT(
-      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq == 2U; }),
-      0)
-      << "the replan was not followed\n"
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  const DecelPlanSnapshot seg = first_seg_;
+  // HOLD takes no new segment (MD-38): one written on its entry is not followed.
+  ASSERT_TRUE(TickUntilMode(Mode::kHold, 1500)) << Transitions();
+  DecelPlanSnapshot late = integrated_bringup::testfx::ShiftSegment(seg, kApproachNPre + 2);
+  Stamp(late, 2);
+  ctrl_->DecelBoxForTesting().Store(late);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 400)) << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured)
       << Transitions();
-  EXPECT_EQ(
-      CountTicks([](const TickRec& t) { return t.body.decel_event == DecelEvent::kWorkspace; }), 0);
+  ExpectDecelAtTc();
+
+  // ── The adoption tick took the plan and its segment together ──
+  const int a = Entry(Mode::kApproach);
+  const auto& adopt = log_[static_cast<std::size_t>(a)];
+  EXPECT_EQ(adopt.body.decel_event, DecelEvent::kAdmitted);
+  EXPECT_EQ(static_cast<DecelRefusal>(adopt.body.decel_refusal), DecelRefusal::kNone);
+  EXPECT_EQ(adopt.plan_id, seg.plan_id);
+  EXPECT_EQ(adopt.plan_t_c_ns, seg.t_c_ns) << "the fixture mis-predicted the oracle's t_c";
+
+  // ── Until node 0 the command is held and the segment is reported pending ──
+  const int sw = EventTick(DecelEvent::kSwitched);
+  ASSERT_GT(sw, a) << Transitions();
+  ASSERT_GT(sw - a, 50) << "node 0 came too soon to see the wait";
+  EXPECT_GE(log_[static_cast<std::size_t>(sw)].before_ns + kHNs, seg.t0_ns)
+      << "switched before node 0";
+  EXPECT_LT(log_[static_cast<std::size_t>(sw) - 1].before_ns + kHNs, seg.t0_ns)
+      << "switched later than the first due tick";
+  for (int i = a; i < sw; ++i) {
+    const auto& r = log_[static_cast<std::size_t>(i)];
+    ASSERT_EQ(r.mode, Mode::kApproach) << Window(i, 2);
+    ASSERT_FALSE(r.body.decel_following) << Window(i, 2);
+    ASSERT_TRUE(r.rt_decel_pending) << "the waiting segment is not reported\n" << Window(i, 2);
+    ASSERT_EQ(r.rt_decel_pending_seq, 1U);
+    ASSERT_FALSE(r.rt_decel_active);
+    for (int j = 0; j < kUr5eArmDof; ++j) {
+      const auto u = static_cast<std::size_t>(j);
+      ASSERT_EQ(r.q_cmd[u], adopt.q_cmd[u]) << "the command moved before node 0, joint " << j;
+      ASSERT_EQ(r.qd_cmd[u], 0.0) << "joint " << j;
+    }
+  }
+
+  // ── G7-B′ (MD-39 (1)): node 0 is the command the arm holds, so the switch is
+  // continuous to rounding ──
+  const auto& entry = log_[static_cast<std::size_t>(sw)];
+  const auto& before = log_[static_cast<std::size_t>(sw - 1)];
+  EXPECT_TRUE(entry.body.decel_following);
+  EXPECT_EQ(entry.body.decel_seq, 1U);
+  EXPECT_LT(entry.body.decel_dq_max, 1e-9);
+  EXPECT_LT(entry.body.decel_dqd_max, 1e-9);
+  EXPECT_LT(entry.body.decel_rho, 1e-6);
+  {
+    const Eigen::Vector3d p_c =
+        oracle_->PoseAt(arm_names_, Wide(before.q_cmd), kUr5eArmDof).translation();
+    const Eigen::Vector3d p_d(entry.body.decel_p_d[0], entry.body.decel_p_d[1],
+                              entry.body.decel_p_d[2]);
+    EXPECT_LT((p_d - p_c).norm(), 1e-9) << "‖p_d − FK(q_c)‖";
+  }
+
+  // ── From the switch to the re-arm: one segment, reported as followed in
+  // every mode that follows it; the soft-catch reference never runs ──
+  const int d = Entry(Mode::kDecel);
+  const int h = Entry(Mode::kHold);
+  const int ret = Entry(Mode::kRetreat);
+  ASSERT_GT(d, sw);
+  ASSERT_GT(h, d);
+  ASSERT_GT(ret, h);
+  EXPECT_NE(log_[static_cast<std::size_t>(d)].body.decel_event, DecelEvent::kSwitched)
+      << "the DECEL entry is the same segment going on, not a switch";
+  for (int i = sw; i < ret; ++i) {
+    const auto& r = log_[static_cast<std::size_t>(i)];
+    ASSERT_TRUE(r.body.decel_following) << Window(i, 2);
+    ASSERT_EQ(r.body.decel_seq, 1U) << "another segment was followed\n" << Window(i, 2);
+    ASSERT_TRUE(r.rt_decel_active)
+        << "the followed segment is not reported in " << ModeName(r.mode) << '\n'
+        << Window(i, 2);
+    ASSERT_EQ(r.rt_decel_seq, 1U);
+    ASSERT_FALSE(r.rt_decel_pending) << Window(i, 2);
+  }
+  for (int i = static_cast<int>(Entry(Mode::kTracking)); i < ret; ++i) {
+    ASSERT_FALSE(log_[static_cast<std::size_t>(i)].body.ref_valid)
+        << "an mpc tick stepped the soft-catch reference\n"
+        << Window(i, 2);
+  }
+  // The modes it was followed in.
+  for (const Mode m :
+       {Mode::kApproach, Mode::kCommitted, Mode::kClosing, Mode::kDecel, Mode::kHold}) {
+    EXPECT_GT(CountTicks([m](const TickRec& t) { return t.mode == m && t.rt_decel_active; }), 0)
+        << "no tick followed the segment in " << ModeName(m);
+  }
+  // The DECEL entry carries the reference on: one tick of travel, no step.
+  {
+    const auto& e = log_[static_cast<std::size_t>(d)];
+    const auto& p = log_[static_cast<std::size_t>(d - 1)];
+    const Eigen::Vector3d step(e.body.decel_p_d[0] - p.body.decel_p_d[0],
+                               e.body.decel_p_d[1] - p.body.decel_p_d[1],
+                               e.body.decel_p_d[2] - p.body.decel_p_d[2]);
+    const Eigen::Vector3d v(p.body.decel_v_ff[0], p.body.decel_v_ff[1], p.body.decel_v_ff[2]);
+    ASSERT_GT(v.norm(), 0.01) << "the arm is at rest at t_c: the entry would be continuous anyway";
+    EXPECT_LT((step - kDt * v).norm(), 0.1 * kDt * v.norm())
+        << "|Δp_d − h·v_ff| at the DECEL entry";
+  }
+  // After the stop: nothing held, nothing reported, the lane silent.
+  for (std::size_t i = static_cast<std::size_t>(sw) + 1; i < log_.size(); ++i) {
+    const Mode start = log_[i - 1].mode;  // the mode the tick STARTED in
+    if (start == Mode::kHold || start == Mode::kRetreat) {
+      ASSERT_FALSE(log_[i].body.decel_judged) << "the lane ran in " << ModeName(start) << '\n'
+                                              << Window(static_cast<int>(i), 2);
+    }
+    if (log_[i].mode == Mode::kRetreat || log_[i].mode == Mode::kArmed) {
+      ASSERT_FALSE(log_[i].rt_decel_active) << Window(static_cast<int>(i), 2);
+      ASSERT_FALSE(log_[i].rt_decel_pending) << Window(static_cast<int>(i), 2);
+    }
+  }
+
+  // ── MD-40: following, the command leaving tick n is the segment at
+  // now_lead + 2h (sampled at now_lead + h). Judged on the catch frame, where
+  // the CLIK tracks with K_p and the twist feedforward; measured against the
+  // neighbours h and 3h so the offset is resolved, not just bounded. The
+  // joint-space gap is recorded only: the redundant direction is held by the
+  // posture row alone (w_arm, K_n = 1), which the smoothing term drags ──
+  double err_p[3] = {0.0, 0.0, 0.0};
+  double err_q[3] = {0.0, 0.0, 0.0};
+  double speed_peak = 0.0;
+  int n_follow = 0;
+  for (std::size_t i = static_cast<std::size_t>(sw) + 1; i < log_.size(); ++i) {
+    const auto& r = log_[i];
+    if (!r.body.decel_following || r.body.decel_held) {
+      continue;
+    }
+    ++n_follow;
+    const Eigen::Vector3d p_out =
+        oracle_->PoseAt(arm_names_, Wide(r.q_out), kUr5eArmDof).translation();
+    for (int k = 0; k < 3; ++k) {
+      std::array<double, rtc::catching::kMaxDecelNv> q{};
+      std::array<double, rtc::catching::kMaxDecelNv> qd{};
+      std::array<double, rtc::catching::kMaxDecelNv> qdd{};
+      ASSERT_TRUE(rtc::catching::NodeTrajectoryFollower::SampleJoints(
+          seg, r.before_ns + (k + 1) * kHNs, q, qd, qdd));
+      std::array<double, 64> qw{};
+      std::array<double, 64> qdw{};
+      for (int j = 0; j < kUr5eArmDof; ++j) {
+        const auto u = static_cast<std::size_t>(j);
+        err_q[k] = std::max(err_q[k], std::abs(r.q_out[u] - q[u]));
+        qw[u] = q[u];
+        qdw[u] = qd[u];
+      }
+      err_p[k] = std::max(
+          err_p[k], (p_out - oracle_->PoseAt(arm_names_, qw, kUr5eArmDof).translation()).norm());
+      if (k == 1) {
+        speed_peak = std::max(speed_peak,
+                              oracle_->LinearVelocityAt(arm_names_, qw, qdw, kUr5eArmDof).norm());
+      }
+    }
+  }
+  std::ostringstream os;
+  os.precision(3);
+  os << "over " << n_follow << " ticks, max |FK(q_out) - FK(q_ref(t))| [m]: t = now+h " << err_p[0]
+     << ", now+2h " << err_p[1] << ", now+3h " << err_p[2] << " (h*|p_dot|max " << kDt * speed_peak
+     << "); joint max [rad]: " << err_q[0] << " / " << err_q[1] << " / " << err_q[2];
+  RecordProperty("decel_follow_time_label", os.str());
+  std::printf("[ MEASURED ] %s\n", os.str().c_str());
+  ASSERT_GT(n_follow, 100);
+  // 2h is the label: at least twice as close as either neighbour. What is left
+  // is the feedback loop's lag through the step's acceleration phases, not a
+  // time offset — it is the same on both sides of 2h, which an offset would
+  // not be.
+  EXPECT_LT(err_p[1], 0.5 * std::min(err_p[0], err_p[2])) << os.str();
+  EXPECT_LT(err_p[1], 0.4 * kDt * speed_peak) << os.str();
 }
 
-TEST_F(DecelMpcReplanBoxTest, AReplanThatOnlyFitsFromItsOwnStartIsRefused) {
+// ── The pair: a plan is taken with its first segment, or not at all ─────────
+
+TEST_F(DecelMpcScenarioTest, APlanWithoutItsSegmentIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry();
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  // The box holds the replan measured from its own node 0 only.
-  std::array<double, 3> lo{};
-  std::array<double, 3> hi{};
-  Bound(Judged(kShift), lo, hi);
-  ASSERT_FALSE(AllInside(Judged(0), lo, hi))
-      << "the stop covered too little by node " << kShift << " to tell the readings apart";
-  ASSERT_NO_FATAL_FAILURE(RunReplanUnder(lo, hi));
-  EXPECT_EQ(
-      CountTicks([](const TickRec& t) { return t.body.decel_event == DecelEvent::kWorkspace; }), 1)
-      << Transitions();
-  EXPECT_EQ(
-      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
-      0)
-      << "the refused replan was followed";
+  WritePair(nullptr, /*write=*/false);
+  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kInvalid));
+}
+
+TEST_F(DecelMpcScenarioTest, APlanWithAnAgedSegmentIsNotTaken) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  WritePair([this](DecelPlanSnapshot& s) { s.publish_ns = Now() - 60 * kMsNs; });
+  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kAged));
+}
+
+TEST_F(DecelMpcScenarioTest, APlanWithAnotherPlansSegmentIsNotTaken) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  WritePair([](DecelPlanSnapshot& s) { s.plan_id += 1; });
+  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kPlan));
+}
+
+TEST_F(DecelMpcScenarioTest, APlanWithASegmentForAnotherTrackIsNotTaken) {
+  // The segment carries the PLAN's track; one solved for another ball is not
+  // this plan's, whatever its id says.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  WritePair([](DecelPlanSnapshot& s) { s.token.generation += 1; });
+  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kPlan));
+}
+
+TEST_F(DecelMpcScenarioTest, APlanWithAMalformedSegmentIsNotTaken) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  WritePair([](DecelPlanSnapshot& s) {
+    s.q[static_cast<std::size_t>(3 * rtc::catching::kMaxDecelNv + 2)] =
+        std::numeric_limits<double>::quiet_NaN();
+  });
+  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kMalformed));
+}
+
+TEST_F(DecelMpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken) {
+  // MD-37: published after the floor, predicted from an RT state before it.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  WritePair([](DecelPlanSnapshot& s) { s.rt_state_ns = 1; });
+  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kBeforeReset));
+}
+
+TEST_F(DecelMpcScenarioTest, APlanWhoseStopLeavesTheCatchBoxIsNotTaken) {
+  // MD-43: a catch box whose ceiling is below the hand holds no stop node.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc([this](YAML::Node& y) {
+    const double z = start_pose_.translation().z() - 0.2;
+    y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, z};
+  }));
+  WritePair();
+  // JudgeDecelPlan passed it; MD-43 did not.
+  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kNone, DecelEvent::kWorkspace));
+}
+
+TEST_F(DecelMpcScenarioTest, TheCatchBoxIsCheckedOnTheStopPartOnly) {
+  // MD-43 on an APPROACH–stop segment: the stop starts at the catch node, so
+  // it is the path from there on that is placed at p_c. The nodes before it
+  // are the approach from the wait pose — a box that holds exactly the stop's
+  // displacement does not hold them, and the pair is taken all the same.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  bool separable = false;
+  WritePair([this, &separable](DecelPlanSnapshot& s) {
+    std::array<double, 3> lo{};
+    std::array<double, 3> hi{};
+    Bound(Judged(s, s.n_pre, s.n_pre), lo, hi);
+    // The whole path read from node 0 — the stop-only reading — leaves it.
+    separable = !AllInside(Judged(s, 0, 0), lo, hi);
+    ctrl_->SetDecelCatchBoxForTesting(lo, hi);
+  });
+  ASSERT_TRUE(TickUntilMode(Mode::kApproach, 1500)) << Transitions();
+  ASSERT_TRUE(separable) << "the approach is too short to tell the two readings apart";
+  pre_tick_ = nullptr;
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 0) << Transitions();
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-TEST_F(DecelMpcScenarioTest, AnEstopInMpcDecelDropsTheSegmentAndTheNextTrialRefusesIt) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry();
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  Ticks(10);
-  ASSERT_EQ(ctrl_->GetMode(), Mode::kDecel);
-  ASSERT_TRUE(ctrl_->IsFollowingDecelForTesting());
-  pre_tick_ = nullptr;
-  const std::size_t trig = log_.size();
-  ctrl_->TriggerEstop();
-  Tick();
-  EXPECT_EQ(log_[trig].mode, Mode::kIdle) << Window(static_cast<int>(trig), 2);
-  EXPECT_FALSE(ctrl_->IsFollowingDecelForTesting()) << "E-8: the stop kept the segment";
-  EXPECT_FALSE(ctrl_->HasPendingDecelForTesting());
-  EXPECT_FALSE(ctrl_->GetPlannerRtState().decel_active);
-  Ticks(10);
-  ctrl_->ClearEstop();
-  Ticks(5);
-  // Re-armed, a new ball: the old segment is still in the box and must not be
-  // followed in the new trial (another plan, and past every floor).
-  ++generation_;
-  entry_tick_ = -1;
-  const std::size_t second = log_.size();
-  WriteAtEntry(nullptr, /*write=*/false);
-  SetArmed(true);
-  ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 2500)) << Transitions();
-  ASSERT_GE(entry_tick_, 0) << "the second trial did not reach the DECEL entry\n" << Transitions();
-  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.body.decel_following; }, second), 0)
-      << "the stopped trial's segment reached the next one";
-  EXPECT_EQ(log_[static_cast<std::size_t>(entry_tick_)].body.decel_event, DecelEvent::kNoSegment);
-  EXPECT_NE(EntryRefusal(), DecelRefusal::kNone);
-}
+// ── Nothing to follow is ABORT_SAFE, from APPROACH on (MD-44) ───────────────
 
-TEST_F(DecelMpcScenarioTest, AnEstopPairBetweenTwoTicksInMpcDecelDropsTheSegment) {
-  // Trigger and clear both land before the next tick: the epoch moved, so the
-  // tick resets the trial — the segment with it — though no tick saw the stop.
+TEST_F(DecelMpcScenarioTest, AFirstSegmentPastTheSwitchGateAbortsInApproach) {
+  // MD-39 (2): 0.05 rad off on one joint — K_p·Δq = 1 rad/s against a
+  // headroom of (1 − 0.9)·2 = 0.2 rad/s. The pair is admissible (admission
+  // does not compare node 0 with the command); the gate at node 0 refuses it,
+  // and with no segment behind it the trial aborts where it stands.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry();
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  Ticks(10);
-  ASSERT_TRUE(ctrl_->IsFollowingDecelForTesting());
-  pre_tick_ = nullptr;
-  ctrl_->TriggerEstop();
-  ctrl_->ClearEstop();
-  const std::size_t pair = log_.size();
-  Tick();
-  EXPECT_FALSE(ctrl_->IsFollowingDecelForTesting()) << Window(static_cast<int>(pair), 2);
-  EXPECT_FALSE(log_[pair].body.decel_following);
-  ASSERT_TRUE(TickUntil([this] { return ctrl_->GetMode() == Mode::kIdle; }, 1500)) << Transitions();
-  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.body.decel_following; }, pair), 0);
+  ASSERT_NO_FATAL_FAILURE(TakeThePair([](DecelPlanSnapshot& s) {
+    for (int k = 0; k <= s.n_nodes; ++k) {
+      s.q[static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv)] += 0.05;
+    }
+  }));
+  ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 2500)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kAbortSafe,
+             Mode::kRetreat, Mode::kArmed});
+  const int ab = Entry(Mode::kAbortSafe);
+  const auto& r = log_[static_cast<std::size_t>(ab)];
+  EXPECT_EQ(r.reason, Reason::kParamsTbd) << Window(ab, 2);
+  EXPECT_EQ(r.body.decel_event, DecelEvent::kGateRefused);
+  EXPECT_EQ(r.body.decel_gate_joint, 0);
+  EXPECT_NEAR(r.body.decel_rho, 5.0, 1e-6);
+  EXPECT_FALSE(r.body.decel_following);
+  EXPECT_FALSE(r.body.ref_valid) << "the soft-catch reference ran on an mpc abort";
+  EXPECT_FALSE(r.rt_decel_pending) << "the refused segment is still reported";
+  EXPECT_FALSE(r.rt_decel_active);
+  // The abort is the tick node 0 came due, not a later one.
+  EXPECT_GE(r.before_ns + kHNs, first_seg_.t0_ns);
+  EXPECT_LT(log_[static_cast<std::size_t>(ab) - 1].before_ns + kHNs, first_seg_.t0_ns);
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.body.decel_following; }), 0);
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kAborted);
 }
 
 TEST_F(DecelMpcScenarioTest, AClikFailureWhileFollowingIsAnAbort) {
   // A hand reading the solve cannot use (NaN) fails the CLIK on the next
-  // mpc tick: the same kQpFailed → ABORT_SAFE as the closed form's.
+  // mpc tick: the same kQpFailed → ABORT_SAFE as the soft-catch law's.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  WriteAtEntry();
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
   Ticks(5);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kApproach) << Transitions();
   ASSERT_TRUE(ctrl_->IsFollowingDecelForTesting());
-  pre_tick_ = nullptr;
   servo_hand_ = false;
   state_.devices[1].positions[0] = std::numeric_limits<double>::quiet_NaN();
   ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 20)) << Transitions();
@@ -1486,12 +1484,417 @@ TEST_F(DecelMpcScenarioTest, AClikFailureWhileFollowingIsAnAbort) {
               log_[static_cast<std::size_t>(a)].reason == Reason::kJointConflict)
       << Window(a, 2);
   EXPECT_FALSE(ctrl_->IsFollowingDecelForTesting()) << "ABORT_SAFE entry drops the segment";
+  EXPECT_FALSE(log_[static_cast<std::size_t>(a)].rt_decel_active);
+}
+
+TEST_F(DecelMpcScenarioTest, ABallThatGoesStaleEndsTheApproachAsBefore) {
+  // The ball lane's reasons are the supervisor's whichever law runs: a
+  // prediction that stops arriving ends the approach by BALL_STALE → RETREAT,
+  // and the segments go with the plan.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  publishing_ = false;
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 400)) << Transitions();
+  const int r = Entry(Mode::kRetreat);
+  EXPECT_EQ(log_[static_cast<std::size_t>(r)].reason, Reason::kBallStale) << Window(r, 2);
+  EXPECT_EQ(log_[static_cast<std::size_t>(r) - 1].mode, Mode::kApproach) << Window(r, 2);
+  EXPECT_FALSE(ctrl_->IsFollowingDecelForTesting());
+  EXPECT_FALSE(ctrl_->HasPendingDecelForTesting());
+  EXPECT_FALSE(log_[static_cast<std::size_t>(r)].rt_decel_active);
+  EXPECT_FALSE(log_[static_cast<std::size_t>(r)].rt_decel_pending);
+}
+
+TEST_F(DecelMpcScenarioTest, AnotherPlanInApproachIsNotTaken) {
+  // MD-57: under mpc the followed plan is not replaced — its segments belong
+  // to it. A plan that reaches the box all the same (admissible, outside the
+  // freeze window) is left there and the trial runs on the one it took.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  const PlanSnapshot followed = ctrl_->GetFollowedPlanForTesting();
+  PlanSnapshot other = followed;
+  other.plan_id = followed.plan_id + 1;
+  other.p_c[0] += 0.02;
+  other.publish_ns = Now();
+  ctrl_->PlanBoxForTesting().Store(other);
+  Ticks(5);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kApproach) << Transitions();
+  EXPECT_EQ(log_.back().refusal, PlanRefusal::kNone) << "the other plan was not even admissible";
+  EXPECT_EQ(ctrl_->GetFollowedPlanForTesting().plan_id, followed.plan_id);
+  EXPECT_EQ(ctrl_->GetPlanReplacedCount(), 0U);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat});
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+// ── The pending slot (MD-37, MD-58) ─────────────────────────────────────────
+
+TEST_F(DecelMpcScenarioTest, ANewerSegmentForTheSameNodeZeroReplacesTheWaitingOne) {
+  // The same grid point solved again on a newer prediction: here, the same
+  // start with a smaller velocity step.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  Ticks(10);
+  ASSERT_FALSE(ctrl_->IsFollowingDecelForTesting()) << "node 0 came before the replacement";
+  std::array<double, kUr5eArmDof> q0{};
+  const std::array<double, kUr5eArmDof> rest{};
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    q0[static_cast<std::size_t>(i)] = first_seg_.q[static_cast<std::size_t>(i)];
+  }
+  DecelPlanSnapshot again = integrated_bringup::testfx::MakeApproachSegment(
+      q0, rest, kUr5eArmDof, first_seg_.plan_id, first_seg_.t_c_ns, kApproachNPre, first_seg_.t0_ns,
+      0.5 * kBump);
+  ASSERT_EQ(again.t0_ns, first_seg_.t0_ns);
+  Stamp(again, 2);
+  ctrl_->DecelBoxForTesting().Store(again);
+  const std::size_t at = log_.size();
+  Tick();
+  EXPECT_EQ(log_[at].body.decel_event, DecelEvent::kReplaced) << Window(static_cast<int>(at), 2);
+  EXPECT_TRUE(log_[at].rt_decel_pending);
+  EXPECT_EQ(log_[at].rt_decel_pending_seq, 2U);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(
+      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 2U; }),
+      0)
+      << "the replaced segment was followed";
+  EXPECT_GT(CountTicks([](const TickRec& t) { return t.body.decel_following; }), 100);
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+TEST_F(DecelMpcScenarioTest, ASegmentForALaterNodeZeroWaitsInTheBoxUntilTheSlotIsFree) {
+  // MD-37: the next grid point's segment arrives while the slot still holds
+  // the one before it. It is left in the box — taking it would leave the
+  // instant in between nothing to follow — and admitted once the slot clears.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  ASSERT_TRUE(TickToJustBefore(first_seg_.t0_ns - 20 * kMsNs)) << Transitions();
+  DecelPlanSnapshot next = integrated_bringup::testfx::ShiftSegment(first_seg_, 1);
+  Stamp(next, 2);
+  ctrl_->DecelBoxForTesting().Store(next);
+  const std::size_t from = log_.size();
+  ASSERT_TRUE(TickUntil(
+      [this] {
+        return ctrl_->IsFollowingDecelForTesting() &&
+               ctrl_->GetFollowedDecelForTesting().decel_seq == 2U;
+      },
+      400))
+      << Transitions();
+  const int sw1 = EventTick(DecelEvent::kSwitched, from);
+  const int adm = EventTick(DecelEvent::kAdmitted, from);
+  ASSERT_GT(sw1, static_cast<int>(from)) << Transitions();
+  EXPECT_EQ(adm, sw1 + 1) << "admitted on the first tick the slot was free";
+  for (int i = static_cast<int>(from); i < sw1; ++i) {
+    const auto& r = log_[static_cast<std::size_t>(i)];
+    ASSERT_EQ(r.body.decel_event, DecelEvent::kDeferred) << Window(i, 2);
+    ASSERT_EQ(r.rt_decel_pending_seq, 1U) << "the waiting segment was overwritten";
+  }
+  EXPECT_EQ(log_[static_cast<std::size_t>(sw1)].body.decel_seq, 1U);
+  EXPECT_EQ(log_[static_cast<std::size_t>(adm)].rt_decel_pending_seq, 2U);
+  EXPECT_EQ(log_[static_cast<std::size_t>(adm)].rt_decel_seq, 1U);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+TEST_F(DecelMpcScenarioTest, ASegmentThatWaitsPastTheAgeBoundIsNeverTaken) {
+  // The age bound is read when the segment is admitted, and a deferred one is
+  // judged again every tick: left waiting for longer than the bound, it is
+  // refused as aged and the followed segment goes on.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  ASSERT_TRUE(TickToJustBefore(first_seg_.t0_ns - 80 * kMsNs)) << Transitions();
+  DecelPlanSnapshot next = integrated_bringup::testfx::ShiftSegment(first_seg_, 1);
+  Stamp(next, 2);
+  ctrl_->DecelBoxForTesting().Store(next);
+  const std::size_t from = log_.size();
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_GT(CountEvent(DecelEvent::kDeferred, from), 10);
+  EXPECT_GT(CountTicks(
+                [](const TickRec& t) {
+                  return t.body.decel_judged &&
+                         static_cast<DecelRefusal>(t.body.decel_refusal) == DecelRefusal::kAged;
+                },
+                from),
+            0);
+  EXPECT_EQ(
+      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
+      0)
+      << "the aged segment was followed";
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+// ── Replans (MD-38, MD-39) ──────────────────────────────────────────────────
+
+TEST_F(DecelMpcScenarioTest, AReplanBuiltFromTheMovingCommandSwitchesWithoutAStep) {
+  // G7-B′ on a moving arm (MD-39 (1)): one pre-catch interval before t_c the
+  // arm is cruising on the first segment. A replan whose node 0 is made from
+  // the command the switch tick starts from is continuous to rounding — in
+  // the joints and in the hand's pose and twist.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  const std::int64_t t0 = first_seg_.t_c_ns - kApproachDtPreNs;
+  ASSERT_TRUE(TickToJustBefore(t0)) << Transitions();
+  ASSERT_TRUE(ctrl_->IsFollowingDecelForTesting());
+  std::array<double, kUr5eArmDof> q{};
+  std::array<double, kUr5eArmDof> qd{};
+  const auto& qc = ctrl_->GetArmCommandForTesting();
+  const auto& qdc = ctrl_->GetArmVelocityCommandForTesting();
+  double speed = 0.0;
+  for (int i = 0; i < kUr5eArmDof; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    q[u] = qc[u];
+    qd[u] = qdc[u];
+    speed = std::max(speed, std::abs(qd[u]));
+  }
+  ASSERT_GT(speed, 0.5 * kBump) << "the arm is not moving: the switch would be continuous anyway";
+  DecelPlanSnapshot replan = integrated_bringup::testfx::MakeApproachSegment(
+      q, qd, kUr5eArmDof, first_seg_.plan_id, first_seg_.t_c_ns, 1, Now() + kHNs, kBump);
+  ASSERT_EQ(replan.t0_ns, t0);
+  Stamp(replan, 2);
+  ctrl_->DecelBoxForTesting().Store(replan);
+  const std::size_t at = log_.size();
+  Tick();
+  const auto& sw = log_[at];
+  const auto& before = log_[at - 1];
+  ASSERT_EQ(sw.body.decel_event, DecelEvent::kSwitched) << Window(static_cast<int>(at), 2);
+  EXPECT_EQ(sw.body.decel_seq, 2U);
+  EXPECT_EQ(sw.mode, Mode::kClosing) << "the switch was meant to fall before t_c";
+  const Eigen::Vector3d p_c =
+      oracle_->PoseAt(arm_names_, Wide(before.q_cmd), kUr5eArmDof).translation();
+  const Eigen::Vector3d v_c =
+      oracle_->LinearVelocityAt(arm_names_, Wide(before.q_cmd), Wide(before.qd_cmd), kUr5eArmDof);
+  const Eigen::Vector3d p_d(sw.body.decel_p_d[0], sw.body.decel_p_d[1], sw.body.decel_p_d[2]);
+  const Eigen::Vector3d v_ff(sw.body.decel_v_ff[0], sw.body.decel_v_ff[1], sw.body.decel_v_ff[2]);
+  EXPECT_LT((p_d - p_c).norm(), 1e-9) << "‖p_d − FK(q_c)‖";
+  EXPECT_LT((v_ff - v_c).norm(), 1e-9) << "‖V_ff − J q̇_c‖";
+  EXPECT_LT(sw.body.decel_dq_max, 1e-9);
+  EXPECT_LT(sw.body.decel_dqd_max, 1e-9);
+  EXPECT_LT(sw.body.decel_rho, 1e-6);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+TEST_F(DecelMpcScenarioTest, AReplanOnTheSameTrajectoryIsTakenAtItsNodeZero) {
+  // Before the catch (an APPROACH–stop segment from a later node) and after it
+  // (a stop-only segment at grid point 1): each waits for its node 0 and is
+  // taken on the first tick that is due, the gate barely used.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  DecelPlanSnapshot pre = integrated_bringup::testfx::ShiftSegment(first_seg_, kApproachNPre - 1);
+  ASSERT_EQ(pre.n_pre, 1);
+  Stamp(pre, 2);
+  ctrl_->DecelBoxForTesting().Store(pre);
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  DecelPlanSnapshot post = integrated_bringup::testfx::ShiftSegment(first_seg_, kApproachNPre + 1);
+  ASSERT_EQ(post.n_pre, 0);
+  ASSERT_EQ(post.k0, 1);
+  Stamp(post, 3);
+  ctrl_->DecelBoxForTesting().Store(post);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
+  for (const DecelPlanSnapshot* s : {&pre, &post}) {
+    int sw = -1;
+    for (std::size_t i = 0; i < log_.size(); ++i) {
+      if (log_[i].body.decel_event == DecelEvent::kSwitched &&
+          log_[i].body.decel_seq == s->decel_seq) {
+        sw = static_cast<int>(i);
+        break;
+      }
+    }
+    ASSERT_GT(sw, 0) << "segment " << s->decel_seq << " was not taken\n" << Transitions();
+    const auto& r = log_[static_cast<std::size_t>(sw)];
+    EXPECT_EQ(r.body.decel_k0, s->k0);
+    EXPECT_GE(r.before_ns + kHNs, s->t0_ns) << "switched before its node 0";
+    EXPECT_LT(log_[static_cast<std::size_t>(sw) - 1].before_ns + kHNs, s->t0_ns)
+        << "switched later than the first due tick";
+    EXPECT_LT(r.body.decel_rho, 0.2) << "the same trajectory, followed: the gate is barely used";
+    ASSERT_GT(r.body.decel_dqd_max + r.body.decel_dq_max, 0.0);
+  }
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+TEST_F(DecelMpcScenarioTest, AReplanPastTheGateIsDroppedAndTheFollowedSegmentGoesOn) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  DecelPlanSnapshot replan =
+      integrated_bringup::testfx::ShiftSegment(first_seg_, kApproachNPre - 1);
+  for (int k = 0; k <= replan.n_nodes; ++k) {
+    replan.q[static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv)] += 0.05;
+  }
+  Stamp(replan, 2);
+  ctrl_->DecelBoxForTesting().Store(replan);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
+  EXPECT_EQ(CountEvent(DecelEvent::kGateRefused), 1) << Transitions();
+  const int g = EventTick(DecelEvent::kGateRefused);
+  ASSERT_GT(g, 0);
+  EXPECT_FALSE(log_[static_cast<std::size_t>(g)].rt_decel_pending)
+      << "the refused replan is still reported";
+  EXPECT_TRUE(log_[static_cast<std::size_t>(g)].rt_decel_active);
+  EXPECT_EQ(
+      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
+      0)
+      << "the refused replan was followed";
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+// MD-43 for a post-catch replan: it starts part-way through the stop, so its
+// path is judged from where THE STOP started — p_c + (p_k − o), o the catch
+// node of the segment the arm was on at t_c — not from its own node 0, which
+// would drop the distance already covered. Each case sets the box from the
+// first segment and first checks that the two readings disagree on it
+// (otherwise the case would not tell them apart).
+class DecelMpcReplanBoxTest : public DecelMpcScenarioTest {
+ protected:
+  static constexpr int kShift = kApproachNPre + 1;  // the replan starts Δ_s into the stop
+
+  /// Follow the pair into DECEL, move the box to `lo`/`hi`, publish the replan
+  /// on the same trajectory, and run the trial to its end.
+  void RunReplanUnder(const std::array<double, 3>& lo, const std::array<double, 3>& hi) {
+    ctrl_->SetDecelCatchBoxForTesting(lo, hi);
+    DecelPlanSnapshot replan = integrated_bringup::testfx::ShiftSegment(first_seg_, kShift);
+    Stamp(replan, 2);
+    ctrl_->DecelBoxForTesting().Store(replan);
+    ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
+  }
+};
+
+TEST_F(DecelMpcReplanBoxTest, AReplanIsJudgedFromWhereTheStopStarted) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  // The box holds the stop's tail measured from its start, and nothing more.
+  std::array<double, 3> lo{};
+  std::array<double, 3> hi{};
+  Bound(Judged(first_seg_, kShift, kApproachNPre), lo, hi);
+  ASSERT_FALSE(AllInside(Judged(first_seg_, kShift, kShift), lo, hi))
+      << "the stop covered too little by node " << kShift << " to tell the readings apart";
+  ASSERT_NO_FATAL_FAILURE(RunReplanUnder(lo, hi));
+  EXPECT_GT(
+      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq == 2U; }),
+      0)
+      << "the replan was not followed\n"
+      << Transitions();
+  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 0);
+}
+
+TEST_F(DecelMpcReplanBoxTest, AReplanThatOnlyFitsFromItsOwnStartIsRefused) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  // The box holds the replan measured from its own node 0 only.
+  std::array<double, 3> lo{};
+  std::array<double, 3> hi{};
+  Bound(Judged(first_seg_, kShift, kShift), lo, hi);
+  ASSERT_FALSE(AllInside(Judged(first_seg_, kShift, kApproachNPre), lo, hi))
+      << "the stop covered too little by node " << kShift << " to tell the readings apart";
+  ASSERT_NO_FATAL_FAILURE(RunReplanUnder(lo, hi));
+  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 1) << Transitions();
+  EXPECT_EQ(
+      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
+      0)
+      << "the refused replan was followed";
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+// ── E-STOP and reset (MD-35, E-8) ───────────────────────────────────────────
+
+class DecelMpcEstopTest : public DecelMpcScenarioTest {
+ protected:
+  /// The E-STOP on the next tick, with whatever the RT holds: everything it
+  /// holds is gone, the report with it; then, re-armed on a new ball with the
+  /// stopped trial's segment still in the box, no trial takes it.
+  void StopAndExpectNothingCarriesOver() {
+    const std::size_t trig = log_.size();
+    ctrl_->TriggerEstop();
+    Tick();
+    EXPECT_EQ(log_[trig].mode, Mode::kIdle) << Window(static_cast<int>(trig), 2);
+    EXPECT_FALSE(ctrl_->IsFollowingDecelForTesting()) << "E-8: the stop kept the followed segment";
+    EXPECT_FALSE(ctrl_->HasPendingDecelForTesting()) << "E-8: the stop kept the waiting segment";
+    EXPECT_FALSE(log_[trig].rt_decel_active);
+    EXPECT_FALSE(log_[trig].rt_decel_pending);
+    EXPECT_FALSE(log_[trig].body.decel_following);
+    Ticks(10);
+    ctrl_->ClearEstop();
+    Ticks(5);
+    ++generation_;
+    const std::size_t second = log_.size();
+    SetArmed(true);
+    // The oracle offers a new plan every TRACKING tick; the box still holds
+    // the stopped trial's segment (another plan, and past every floor).
+    ASSERT_TRUE(TickUntilMode(Mode::kTracking, 2500)) << Transitions();
+    Ticks(60);
+    EXPECT_EQ(ctrl_->GetMode(), Mode::kTracking) << Transitions();
+    EXPECT_EQ(CountTicks([](const TickRec& t) { return t.mode == Mode::kApproach; }, second), 0)
+        << "the stopped trial's segment let the next plan in";
+    EXPECT_EQ(CountTicks([](const TickRec& t) { return t.body.decel_following; }, second), 0);
+    EXPECT_TRUE(log_.back().body.decel_judged);
+    EXPECT_NE(static_cast<DecelRefusal>(log_.back().body.decel_refusal), DecelRefusal::kNone);
+    // … and a pair of its own starts the next trial as usual.
+    pair_seq_ = 7;
+    ASSERT_NO_FATAL_FAILURE(TakeThePair());
+    ASSERT_TRUE(TickUntil([this] { return ctrl_->IsFollowingDecelForTesting(); }, 400))
+        << Transitions();
+    EXPECT_EQ(ctrl_->GetFollowedDecelForTesting().decel_seq, 7U);
+  }
+};
+
+TEST_F(DecelMpcEstopTest, AnEstopWhileTheFirstSegmentWaitsDropsIt) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  Ticks(10);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kApproach);
+  ASSERT_TRUE(ctrl_->HasPendingDecelForTesting());
+  ASSERT_FALSE(ctrl_->IsFollowingDecelForTesting());
+  ASSERT_NO_FATAL_FAILURE(StopAndExpectNothingCarriesOver());
+}
+
+TEST_F(DecelMpcEstopTest, AnEstopWhileFollowingInApproachDropsTheSegment) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  Ticks(10);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kApproach);
+  ASSERT_TRUE(ctrl_->IsFollowingDecelForTesting());
+  ASSERT_NO_FATAL_FAILURE(StopAndExpectNothingCarriesOver());
+}
+
+TEST_F(DecelMpcEstopTest, AnEstopInDecelDropsTheFollowedAndTheWaitingSegment) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  // A replan for a later grid point is waiting when the stop lands.
+  DecelPlanSnapshot post = integrated_bringup::testfx::ShiftSegment(first_seg_, kApproachNPre + 2);
+  Stamp(post, 2);
+  ctrl_->DecelBoxForTesting().Store(post);
+  Ticks(3);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kDecel);
+  ASSERT_TRUE(ctrl_->IsFollowingDecelForTesting());
+  ASSERT_TRUE(ctrl_->HasPendingDecelForTesting()) << Transitions();
+  ASSERT_NO_FATAL_FAILURE(StopAndExpectNothingCarriesOver());
+}
+
+TEST_F(DecelMpcEstopTest, AnEstopPairBetweenTwoTicksDropsTheSegment) {
+  // Trigger and clear both land before the next tick: the epoch moved, so the
+  // tick resets the trial — the segment with it — though no tick saw the stop.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  Ticks(10);
+  ASSERT_TRUE(ctrl_->IsFollowingDecelForTesting());
+  ctrl_->TriggerEstop();
+  ctrl_->ClearEstop();
+  const std::size_t pair = log_.size();
+  Tick();
+  EXPECT_FALSE(ctrl_->IsFollowingDecelForTesting()) << Window(static_cast<int>(pair), 2);
+  EXPECT_FALSE(log_[pair].body.decel_following);
+  EXPECT_FALSE(log_[pair].rt_decel_active);
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->GetMode() == Mode::kIdle; }, 1500)) << Transitions();
+  EXPECT_EQ(CountTicks([](const TickRec& t) { return t.body.decel_following; }, pair), 0);
 }
 
 TEST_F(DecelMpcScenarioTest, ClosedFormIsTheDefaultAndNeverReadsTheBox) {
   // "기본값 동등" (a): the key absent and closed_form written out drive the
-  // NormalTrial to the same command digest, with a followable segment in the
-  // box on the entry tick — which closed_form never loads.
+  // NormalTrial to the same command digest, with an admissible pair in the box
+  // on the tick the plan is taken — which closed_form never loads.
   ASSERT_NO_FATAL_FAILURE(NormalTrialCase());
   const std::uint64_t absent = CommandTraceDigest(log_);
   EXPECT_EQ(ctrl_->GetDecelMode(), CatchingDecelMode::kClosedForm);
@@ -1500,16 +1903,17 @@ TEST_F(DecelMpcScenarioTest, ClosedFormIsTheDefaultAndNeverReadsTheBox) {
   log_.clear();
   seq_ = 1;
   last_pub_ns_ = 0;
-  entry_tick_ = -1;
+  pair_tick_ = -1;
   SetUp();
-  WriteAtEntry();
+  WritePair();
   ASSERT_NO_FATAL_FAILURE(NormalTrialCase(
       [](YAML::Node& y) { y["catching"]["supervisor"]["decel"]["mode"] = "closed_form"; }));
-  ASSERT_GE(entry_tick_, 0) << "the box was never written";
+  ASSERT_GE(pair_tick_, 0) << "the box was never written";
   EXPECT_EQ(CommandTraceDigest(log_), absent) << "closed_form written out changed the trial";
   EXPECT_EQ(CountTicks([](const TickRec& t) {
               return t.body.decel_judged || t.body.decel_following ||
-                     t.body.decel_event != DecelEvent::kNone;
+                     t.body.decel_event != DecelEvent::kNone || t.rt_decel_active ||
+                     t.rt_decel_pending;
             }),
             0)
       << "closed_form touched the decel lane";

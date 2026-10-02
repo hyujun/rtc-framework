@@ -43,6 +43,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -468,7 +469,20 @@ class CatchingPlanLaneTest : public ::testing::Test {
     return v;
   }
 
-  /// ConfigureOnly's profile: mode mpc, the decel MPC as `planner` says.
+  /// The shipped APPROACH–stop grid (MPC MD-54): 7 x 0.05 s after the catch,
+  /// up to 6 x 0.1 s before it. `mode: mpc` needs the pre-catch part (MD-45):
+  /// the RT takes a plan only with a segment that starts before t_c.
+  static void ApproachGrid(YAML::Node& y) {
+    YAML::Node d = y["catching"]["planner"]["decel_mpc"];
+    d["horizon"]["n_nodes"] = 7;
+    d["horizon"]["dt_s"] = 0.05;
+    d["horizon"]["blocks"] = std::vector<int>{1, 1, 2, 3};
+    d["replan"]["k_max"] = 2;
+    d["approach"]["n_pre_max"] = 6;
+  }
+
+  /// ConfigureOnly's profile: mode mpc, the decel MPC (with its approach grid)
+  /// as `planner` says.
   YAML::Node ConfigureOnlyYaml(bool planner) const {
     YAML::Node yaml = YAML::Load(
         TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
@@ -483,6 +497,9 @@ class CatchingPlanLaneTest : public ::testing::Test {
     pl["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
     pl["provisional"] = false;
     pl["decel_mpc"]["enabled"] = planner;
+    if (planner) {
+      ApproachGrid(yaml);
+    }
     yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";
     return yaml;
   }
@@ -766,77 +783,11 @@ TEST_F(CatchingPlanLaneTest, TheDecelTorqueBoxAndSlackMustFitTheCliksTorqueBox) 
   EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kDecelMpcInvalid);
 }
 
-TEST_F(CatchingPlanLaneTest, WithTheDecelMpcThePlannerPublishesAStopBeforeTheCatch) {
-  // End to end on the real UR5e+P1b model: the reachable throw of the case
-  // above, the decel MPC enabled. Once the RT has committed to the plan, the
-  // planner thread must store a stop segment for THAT plan, at its t_c, with
-  // the fixed stop end — and the RT, which does not read the box before
-  // E1-F04, must be unaffected (the plan it follows is unchanged).
-  const pinocchio::SE3 pose = [&] {
-    CatchFrameOracle oracle(*builder_);
-    std::array<double, 64> home{};
-    for (int i = 0; i < kUr5eArmDof; ++i) {
-      home[static_cast<std::size_t>(i)] = kUr5eHome[static_cast<std::size_t>(i)];
-    }
-    return oracle.PoseAt(
-        integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names, home,
-        kUr5eArmDof);
-  }();
-  const Eigen::Vector3d z = pose.rotation().col(2);
-  const Eigen::Vector3d target = pose.translation() + 0.03 * z;
-  const Eigen::Vector3d vel = -1.5 * z;
-  const Eigen::Vector3d p0 = target - 0.5 * vel;
-  ball_set_ = true;
-  ball_p0_ = {p0.x(), p0.y(), p0.z()};
-  ball_vel_ = {vel.x(), vel.y(), vel.z()};
-  cloud_n_ = 20;
-  ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
-    y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
-    // MD-44: the decel cores are built only for the law that follows them.
-    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
-    // This fixture holds the arm still, so the trial aborts on tracking error
-    // ~0.2 s after the commit (T_freeze 0.36 s) — before the shipped 0.1 s
-    // t_pre. Open the first-solve window right after the commit instead.
-    y["catching"]["planner"]["decel_mpc"]["replan"]["t_pre_s"] = 0.3;
-  }));
-  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
-  bool stored = false;
-  Mode last = Mode::kIdle;
-  for (int t = 0; t < 1500 && !stored; ++t) {
-    if (t % 10 == 0) {
-      Publish(next_seq_++);
-    }
-    static_cast<void>(Tick());
-    std::this_thread::sleep_for(1ms);
-    last = ctrl_->GetMode();
-    stored = ctrl_->GetPublishedDecelPlan().valid;
-  }
-  const auto record = ctrl_->GetPlannerThread()->LastRecord();
-  ASSERT_TRUE(stored) << "no decel segment; mode " << static_cast<int>(last) << ", last decel step "
-                      << rtc::catching::DecelOutcomeName(record.decel.outcome) << " / "
-                      << rtc::catching::DecelMpcReasonName(record.decel.core_reason);
-  const rtc::catching::DecelPlanSnapshot s = ctrl_->GetPublishedDecelPlan();
-  const PlanSnapshot followed = ctrl_->GetFollowedPlanForTesting();
-  EXPECT_TRUE(rtc::catching::ValidateDecelNodes(s));
-  EXPECT_EQ(s.plan_id, followed.plan_id);
-  EXPECT_EQ(s.t_c_ns, followed.t_c_ns);
-  EXPECT_EQ(s.nv, kUr5eArmDof);
-  EXPECT_EQ(s.t0_ns + s.n_nodes * s.dt_ns, s.t_c_ns + 14 * 25'000'000LL) << "fixed stop end";
-  EXPECT_GE(s.decel_seq, 1U);
-  EXPECT_EQ(ctrl_->GetPlannerRtState().plan_t_c_ns, followed.t_c_ns)
-      << "the RT reports the followed plan's t_c";
-  EXPECT_FALSE(ctrl_->GetPlannerRtState().decel_active) << "E1-F04 wires the RT side";
-  // The solve ran on the planner thread: still exactly one mpc_main (no
-  // thread of its own — E-7).
-  EXPECT_EQ(
-      integrated_bringup::testfx::ThreadsNamed(rtc::SelectThreadConfigs().mpc.main.name).size(),
-      1U);
-}
-
 TEST_F(CatchingPlanLaneTest, AFittingDecelTorqueBoxConfiguresUnderTheDynamicClik) {
   // The passing side of MD-33's configure check: 0.7 + 0.1 ≤ 0.8.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
     y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+    ApproachGrid(y);                                       // MD-45
     y["catching"]["supervisor"]["decel"]["mode"] = "mpc";  // MD-44
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
     y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
@@ -873,6 +824,11 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
               [](YAML::Node& y) { y["catching"]["planner"]["gamma"]["eta_v"] = 1.0; });
   expect_park("no decel planner", true,
               [](YAML::Node& y) { y["catching"]["planner"]["decel_mpc"]["enabled"] = false; });
+  // MD-45: a stop-only planner publishes no plan with a segment the RT can
+  // start APPROACH on.
+  expect_park("a decel planner without the pre-catch grid", true, [](YAML::Node& y) {
+    y["catching"]["planner"]["decel_mpc"]["approach"]["n_pre_max"] = 0;
+  });
   expect_park("no planner and no oracle", false,
               [](YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; });
   expect_park("no catch sub-model", false,
@@ -979,108 +935,16 @@ TEST_F(CatchingPlanLaneTest, TheDecelPlannersBoxSitsInsideTheCliksMarginedBox) {
   EXPECT_DOUBLE_EQ(ctrl_->GetDecelQMinForTesting()[2], -3.14 + 0.05);
 }
 
-TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtFollowsTheSegmentThePlannerPublished) {
-  // Planner in the loop (MPC E1-F04): the reachable throw above, decel MPC on,
-  // mode mpc, the arm servoed so the trial reaches t_c. The planner thread
-  // solves the stop t_pre before t_c from what the RT reports, the RT admits
-  // it and follows it from the DECEL entry. A structural claim — that a tick
-  // followed the planner's own segment — because a loaded host moves every
-  // timing here.
-  const pinocchio::SE3 pose = [&] {
-    CatchFrameOracle oracle(*builder_);
-    std::array<double, 64> home{};
-    for (int i = 0; i < kUr5eArmDof; ++i) {
-      home[static_cast<std::size_t>(i)] = kUr5eHome[static_cast<std::size_t>(i)];
-    }
-    return oracle.PoseAt(
-        integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names, home,
-        kUr5eArmDof);
-  }();
-  const Eigen::Vector3d z = pose.rotation().col(2);
-  const Eigen::Vector3d target = pose.translation() + 0.03 * z;
-  const Eigen::Vector3d vel = -1.5 * z;
-  const Eigen::Vector3d p0 = target - 0.5 * vel;
-  ball_set_ = true;
-  ball_p0_ = {p0.x(), p0.y(), p0.z()};
-  ball_vel_ = {vel.x(), vel.y(), vel.z()};
-  cloud_n_ = 20;
-  servo_ = true;
-  ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
-    y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
-    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
-    // Head-room for a loaded host: the planner's budget, not the RT's.
-    y["catching"]["planner"]["budget_s"] = 0.03;
-    // The gate's value is not what this case is about: on this throw the
-    // pre-catch segment, predicted t_pre = 0.1 s ahead, met the entry at
-    // rho 1.13 (2026-09-30, joint 4) against the provisional 1.0, and under
-    // mode mpc a refused entry is an abort (MD-44). How often that happens
-    // is MD-41's measurement; the rho is recorded below.
-    y["catching"]["supervisor"]["decel"]["switch_margin"] = 2.0;
-  }));
-  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
-  bool followed = false;
-  std::uint32_t followed_seq = 0;
-  Mode last = Mode::kIdle;
-  integrated_bringup::CatchingDiagLogPod entry_record{};
-  std::array<int, 10> events{};  // tick records per DecelEvent, for the failure message
-  auto next = std::chrono::steady_clock::now();
-  for (int t = 0; t < 2500 && !followed; ++t) {
-    if (t % 10 == 0 && last != Mode::kDecel && last != Mode::kHold) {
-      Publish(next_seq_++);
-    }
-    const Mode before = ctrl_->GetMode();
-    static_cast<void>(Tick());
-    last = ctrl_->GetMode();
-    const auto ev = static_cast<std::size_t>(ctrl_->GetLastTickRecord().decel_event);
-    if (ev < events.size()) {
-      ++events[ev];
-    }
-    if (before == Mode::kClosing && last != Mode::kClosing) {
-      entry_record = ctrl_->GetLastTickRecord();
-    }
-    if (last == Mode::kAbortSafe || last == Mode::kRetreat) {
-      break;
-    }
-    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
-    if (ctrl_->IsFollowingDecelForTesting() && rt.decel_active) {
-      followed = true;
-      followed_seq = rt.decel_seq;
-    }
-    next += std::chrono::microseconds(2000);
-    std::this_thread::sleep_until(next);
-  }
-  const auto record = ctrl_->GetPlannerThread()->LastRecord();
-  std::ostringstream counts;
-  for (std::size_t e = 1; e < events.size(); ++e) {
-    counts << e << ":" << events[e] << " ";
-  }
-  ASSERT_TRUE(followed) << "events " << counts.str()
-                        << "; no DECEL tick followed a planner segment; mode "
-                        << static_cast<int>(last) << ", entry event "
-                        << static_cast<int>(entry_record.decel_event) << ", entry refusal "
-                        << static_cast<int>(entry_record.decel_refusal) << ", gate rho "
-                        << entry_record.decel_rho << " (joint " << entry_record.decel_gate_joint
-                        << "), last decel step "
-                        << rtc::catching::DecelOutcomeName(record.decel.outcome) << " / "
-                        << rtc::catching::DecelMpcReasonName(record.decel.core_reason);
-  EXPECT_GE(followed_seq, 1U);
-  EXPECT_EQ(ctrl_->GetFollowedDecelForTesting().decel_seq, followed_seq);
-  std::ostringstream os;
-  os << "entry gate rho " << entry_record.decel_rho << ", |dq| " << entry_record.decel_dq_max
-     << ", |dqd| " << entry_record.decel_dqd_max;
-  RecordProperty("real_clock_entry_gate", os.str());
-  std::printf("[ MEASURED ] %s\n", os.str().c_str());
-}
-
-TEST_F(CatchingPlanLaneTest, WithAPreCatchGridThePairIsPublishedAndTheRtAdmitsNoSegment) {
-  // MPC E1-F08 (#661): the same reachable throw with the APPROACH–stop grid
-  // on. The planner publishes the plan TOGETHER with its first segment — one
-  // publish_ns, the segment starting before t_c — and the RT takes the plan.
-  // It does not take the segment: until it follows segments from APPROACH
-  // (#662) it refuses pre-catch nodes, the planner is told of none it holds,
-  // and the trial aborts at the DECEL entry with nothing to follow (MD-44).
-  // Which refusal the RT names is not pinned: it reads the box from COMMITTED,
-  // by when the age check (ahead of the pre-catch one) usually answers.
+TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlannersSegments) {
+  // MPC E1-F09 (#662), planner in the loop: a reachable throw, the
+  // APPROACH–stop grid on, mode mpc, the arm servoed so the trial runs to its
+  // end. The planner publishes the plan TOGETHER with its first segment — one
+  // publish_ns, the segment starting before t_c — and the RT takes the two on
+  // one tick. From there it reports the segment it holds, the planner replans
+  // from that report alone (MD-58), and the arm follows the planner's
+  // segments from APPROACH through DECEL into HOLD. Structural claims — which
+  // segment was taken and followed, and that the planner always found its
+  // source — because a loaded host moves every timing here.
   const pinocchio::SE3 pose = [&] {
     CatchFrameOracle oracle(*builder_);
     std::array<double, 64> home{};
@@ -1103,26 +967,36 @@ TEST_F(CatchingPlanLaneTest, WithAPreCatchGridThePairIsPublishedAndTheRtAdmitsNo
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
     YAML::Node d = y["catching"]["planner"]["decel_mpc"];
     d["enabled"] = true;
-    d["horizon"]["n_nodes"] = 7;
-    d["horizon"]["dt_s"] = 0.05;
-    d["horizon"]["blocks"] = std::vector<int>{1, 1, 2, 3};
-    d["replan"]["k_max"] = 2;
-    d["approach"]["n_pre_max"] = 6;
-    // Head-room for a loaded host: this case is about what is published and
-    // admitted, not how fast.
+    ApproachGrid(y);
+    // Head-room for a loaded host: this case is about what is published,
+    // taken and followed, not how fast. The replan budget stays inside the
+    // admission age bound (replan_s + 3 ticks < 50 ms, or configure parks).
     d["budget"]["first_s"] = 0.05;
-    d["budget"]["replan_s"] = 0.05;
+    d["budget"]["replan_s"] = 0.04;
     y["catching"]["planner"]["budget_s"] = 0.03;
     y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    // The shipped CLIK form (MD-7): the MPC bounds acceleration by torque
+    // rows, so the CLIK that executes its segments must too — under the
+    // fixture's constant box the command falls behind the segment.
+    y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
+    y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
   }));
   ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
+  using Event = integrated_bringup::CatchingDiagLogPod::DecelEvent;
   bool approached = false;
-  bool pair_seen = false;
-  bool held_or_followed = false;
+  bool pair_taken = false;
   int not_followed = 0;
-  bool replan_found_a_source = false;
+  int replans_with_a_source = 0;
+  int switches = 0;
+  int gate_refused = 0;
+  double rho_max = 0.0;
+  double rho_refused_max = 0.0;
+  std::set<Mode> followed_in;
+  std::set<std::uint32_t> followed_seqs;
+  std::ostringstream workspace;  // the segments MD-43 refused
+  std::array<int, 11> events{};  // tick records per DecelEvent, for the failure message
   Mode last = Mode::kIdle;
-  integrated_bringup::CatchingDiagLogPod entry_record{};
+  integrated_bringup::CatchingDiagLogPod end_record{};
   auto next = std::chrono::steady_clock::now();
   for (int t = 0; t < 2500; ++t) {
     if (t % 10 == 0 && last != Mode::kDecel && last != Mode::kHold) {
@@ -1131,34 +1005,65 @@ TEST_F(CatchingPlanLaneTest, WithAPreCatchGridThePairIsPublishedAndTheRtAdmitsNo
     const Mode before = ctrl_->GetMode();
     static_cast<void>(Tick());
     last = ctrl_->GetMode();
-    if (last == Mode::kApproach || last == Mode::kCommitted || last == Mode::kClosing) {
-      // The planner's newest wake WHILE the RT follows the plan (after the
-      // abort it idles, and its record says nothing about this).
+    const auto record = ctrl_->GetLastTickRecord();
+    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
+    end_record = record;
+    if (const auto ev = static_cast<std::size_t>(record.decel_event); ev < events.size()) {
+      ++events[ev];
+    }
+    if (!approached && last == Mode::kApproach) {
+      approached = true;
+      // The tick that took the plan took its first segment with it.
+      const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
+      const rtc::catching::DecelPlanSnapshot seg = ctrl_->GetPendingDecelForTesting();
+      EXPECT_EQ(before, Mode::kTracking);
+      EXPECT_EQ(record.decel_event, Event::kAdmitted);
+      EXPECT_TRUE(ctrl_->HasPendingDecelForTesting());
+      EXPECT_TRUE(rt.decel_pending);
+      EXPECT_EQ(rt.decel_pending_seq, seg.decel_seq);
+      EXPECT_FALSE(rt.decel_active);
+      EXPECT_TRUE(seg.valid);
+      EXPECT_EQ(seg.plan_id, plan.plan_id);
+      EXPECT_EQ(seg.t_c_ns, plan.t_c_ns);
+      EXPECT_EQ(seg.publish_ns, plan.publish_ns) << "the pair carries one publish stamp";
+      EXPECT_EQ(seg.token.generation, plan.token.generation);
+      EXPECT_GT(seg.n_pre, 0);
+      EXPECT_LT(seg.t0_ns, plan.t_c_ns);
+      EXPECT_TRUE(rtc::catching::ValidateDecelNodes(seg));
+      pair_taken = seg.valid && seg.plan_id == plan.plan_id;
+    }
+    if (approached && (last == Mode::kApproach || last == Mode::kCommitted ||
+                       last == Mode::kClosing || last == Mode::kDecel)) {
+      // The planner's newest wake WHILE the RT holds a segment of its plan.
       const auto wake = ctrl_->GetPlannerThread()->LastRecord();
       const bool replan = wake.decel.kind != rtc::catching::DecelKind::kFirst &&
                           wake.decel.outcome != rtc::catching::DecelOutcome::kOff;
       not_followed +=
           replan && wake.decel.outcome == rtc::catching::DecelOutcome::kNotFollowed ? 1 : 0;
-      replan_found_a_source = replan_found_a_source || (replan && wake.decel.source_seq != 0);
+      replans_with_a_source += replan && wake.decel.source_seq != 0 ? 1 : 0;
+      EXPECT_TRUE(rt.decel_pending || rt.decel_active)
+          << "the RT follows a plan and reports no segment, mode " << static_cast<int>(last);
     }
-    if (!approached && last == Mode::kApproach) {
-      approached = true;
-      // The plan the RT just took came with its first segment.
-      const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
-      const rtc::catching::DecelPlanSnapshot seg = ctrl_->DecelBoxForTesting().Load();
-      EXPECT_TRUE(seg.valid);
-      EXPECT_EQ(seg.plan_id, plan.plan_id);
-      EXPECT_EQ(seg.t_c_ns, plan.t_c_ns);
-      EXPECT_EQ(seg.publish_ns, plan.publish_ns);
-      EXPECT_GT(seg.n_pre, 0);
-      EXPECT_LT(seg.t0_ns, plan.t_c_ns);
-      EXPECT_TRUE(rtc::catching::ValidateDecelNodes(seg));
-      pair_seen = seg.valid && seg.plan_id == plan.plan_id;
+    if (record.decel_event == Event::kSwitched) {
+      ++switches;
+      rho_max = std::max(rho_max, record.decel_rho);
     }
-    held_or_followed = held_or_followed || ctrl_->HasPendingDecelForTesting() ||
-                       ctrl_->IsFollowingDecelForTesting();
-    if (before == Mode::kClosing && last != Mode::kClosing) {
-      entry_record = ctrl_->GetLastTickRecord();
+    if (record.decel_event == Event::kWorkspace) {
+      // The segment the lane just judged is the one in the box (the planner
+      // may have replaced it since: recorded, not asserted).
+      const rtc::catching::DecelPlanSnapshot judged = ctrl_->GetPublishedDecelPlan();
+      workspace << "(n_pre " << judged.n_pre << ", k0 " << judged.k0 << ") ";
+    }
+    if (record.decel_event == Event::kGateRefused) {
+      ++gate_refused;
+      rho_refused_max = std::max(rho_refused_max, record.decel_rho);
+    }
+    if (record.decel_following) {
+      followed_in.insert(before);
+      followed_seqs.insert(record.decel_seq);
+      EXPECT_TRUE(rt.decel_active);
+      EXPECT_EQ(rt.decel_seq, record.decel_seq);
+      EXPECT_FALSE(record.ref_valid) << "the soft-catch reference ran while a segment was followed";
     }
     if (last == Mode::kAbortSafe || last == Mode::kRetreat || last == Mode::kHold) {
       break;
@@ -1166,20 +1071,55 @@ TEST_F(CatchingPlanLaneTest, WithAPreCatchGridThePairIsPublishedAndTheRtAdmitsNo
     next += std::chrono::microseconds(2000);
     std::this_thread::sleep_until(next);
   }
-  const auto record = ctrl_->GetPlannerThread()->LastRecord();
+  const auto planner = ctrl_->GetPlannerThread()->LastRecord();
+  std::ostringstream counts;
+  for (std::size_t e = 1; e < events.size(); ++e) {
+    counts << e << ":" << events[e] << " ";
+  }
   ASSERT_TRUE(approached) << "no plan was adopted; last planner record: outcome "
-                          << rtc::catching::CycleOutcomeName(record.outcome) << ", decel "
-                          << rtc::catching::DecelOutcomeName(record.decel.outcome) << " / "
-                          << rtc::catching::DecelMpcReasonName(record.decel.core_reason);
-  EXPECT_TRUE(pair_seen);
-  EXPECT_FALSE(held_or_followed) << "the RT took a segment with pre-catch nodes";
-  EXPECT_EQ(last, Mode::kAbortSafe);
-  EXPECT_EQ(entry_record.decel_event,
-            integrated_bringup::CatchingDiagLogPod::DecelEvent::kNoSegment);
-  // While the RT followed the plan the planner found no source to replan
-  // from: the RT reports neither a pending nor a followed segment yet (#662).
-  EXPECT_GT(not_followed, 0) << "no replan wake was sampled while the plan was followed";
-  EXPECT_FALSE(replan_found_a_source);
+                          << rtc::catching::CycleOutcomeName(planner.outcome) << ", decel "
+                          << rtc::catching::DecelOutcomeName(planner.decel.outcome) << " / "
+                          << rtc::catching::DecelMpcReasonName(planner.decel.core_reason)
+                          << "; RT decel refusal " << static_cast<int>(end_record.decel_refusal);
+  EXPECT_TRUE(pair_taken);
+  ASSERT_EQ(last, Mode::kHold) << "the trial did not reach HOLD: mode " << static_cast<int>(last)
+                               << ", reason " << static_cast<int>(ctrl_->GetLastReason())
+                               << ", decel events " << counts.str() << ", last event "
+                               << static_cast<int>(end_record.decel_event) << ", gate rho "
+                               << end_record.decel_rho << " (joint " << end_record.decel_gate_joint
+                               << "), last decel step "
+                               << rtc::catching::DecelOutcomeName(planner.decel.outcome) << " / "
+                               << rtc::catching::DecelMpcReasonName(planner.decel.core_reason);
+  // Followed from APPROACH to the stop — DECEL is the same chain going on.
+  // (Where node 0 falls — APPROACH or just past the freeze — is the throw's
+  // lead; before it the command is held with the segment reported pending.)
+  EXPECT_GE(followed_in.count(Mode::kApproach) + followed_in.count(Mode::kCommitted), 1U)
+      << "events " << counts.str();
+  EXPECT_EQ(followed_in.count(Mode::kClosing), 1U);
+  EXPECT_EQ(followed_in.count(Mode::kDecel), 1U);
+  EXPECT_GE(switches, 1);
+  EXPECT_GE(followed_seqs.size(), 1U);
+  // The planner replanned from what the RT reported, every time.
+  EXPECT_EQ(not_followed, 0) << "a replan wake found no source while the RT held a segment";
+  EXPECT_GT(replans_with_a_source, 0) << "no replan wake was sampled while the plan was followed";
+  // The stop's end is fixed (MD-21): t_c + N_s·Δ_s, whichever segment ends it.
+  const rtc::catching::DecelPlanSnapshot final_seg = ctrl_->GetFollowedDecelForTesting();
+  const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
+  ASSERT_TRUE(final_seg.valid);
+  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(final_seg, final_seg.n_nodes),
+            plan.t_c_ns + 7 * 50'000'000LL);
+  // The solves ran on the planner thread: still exactly one mpc_main (no
+  // thread of its own — E-7).
+  EXPECT_EQ(
+      integrated_bringup::testfx::ThreadsNamed(rtc::SelectThreadConfigs().mpc.main.name).size(),
+      1U);
+  std::ostringstream os;
+  os << "switches " << switches << ", segments followed " << followed_seqs.size()
+     << ", gate refusals " << gate_refused << " (max rho " << rho_refused_max
+     << "), max switch rho " << rho_max << ", replan wakes with a source " << replans_with_a_source
+     << "; events " << counts.str() << "; catch-box refusals " << workspace.str();
+  RecordProperty("real_clock_closed_loop", os.str());
+  std::printf("[ MEASURED ] %s\n", os.str().c_str());
 }
 
 // ── Vision world → model world (plan §11, S6-C sim finding) ─────────────────
