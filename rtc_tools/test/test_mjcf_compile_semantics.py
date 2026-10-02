@@ -382,6 +382,11 @@ CASES: dict[str, Case] = {
         ),
         range=(-1.0, 1.0),
     ),
+    # Left unset, a flag follows its range only if the range has lower < upper.
+    # A reversed one compiles, and limits nothing.
+    "reversed_ranges_are_not_enforced": Case(
+        _mjcf(joint='range="1 -1"', actuators='<motor joint="j" forcerange="3 -3"/>'),
+    ),
     "forcelimited_false": Case(
         _mjcf(actuators='<motor joint="j" forcerange="-40 40" forcelimited="false"/>'),
     ),
