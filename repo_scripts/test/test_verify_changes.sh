@@ -472,6 +472,32 @@ out=$(run_hook "$dir")
 expect_contains "untracked data outside config/ builds nothing" "$out" "BUILD_PKGS=[]"
 rm -rf "$dir"
 
+# 15e3. A new file the package's TESTS read is the package too. <pkg>/test/
+#       was on the untracked allowlist for source extensions only, so a new
+#       fixture -- a URDF, an MJCF, a golden table -- routed nothing, and the
+#       same file routed its package as soon as it was added: --run passed
+#       with the package left out, and the turn end after the commit owed a
+#       build (2026-10-02). Alone in the turn it did not even reach the
+#       routing: no class named it, so the hook left at the first exit.
+#       Markdown stays out, as it does for tracked files, and a test/ that
+#       belongs to no package is still scratch.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/test/urdf"
+printf '<robot name="fixture"/>\n' >"$dir/rtc_demo/test/urdf/fixture.urdf"
+out=$(run_hook "$dir")
+expect_contains "an untracked test data file routes its package" "$out" "BUILD_PKGS=[rtc_demo]"
+git -C "$dir" add rtc_demo/test/urdf/fixture.urdf
+out=$(run_hook "$dir")
+expect_contains "and the same file, once added, routes it the same way" "$out" "BUILD_PKGS=[rtc_demo]"
+git -C "$dir" rm -qf --cached rtc_demo/test/urdf/fixture.urdf
+rm -rf "$dir/rtc_demo/test"
+mkdir -p "$dir/rtc_demo/test" "$dir/tools/test"
+printf '# notes on the fixtures\n' >"$dir/rtc_demo/test/NOTES.md"
+printf '<robot name="probe"/>\n' >"$dir/tools/test/probe.urdf"
+out=$(run_hook "$dir")
+expect_contains "untracked Markdown under test/ and a test/ outside a package build nothing" "$out" "BUILD_PKGS=[]"
+rm -rf "$dir"
+
 # 15f. A .claude/rules/*.md whose globs match nothing must BLOCK. A rule that
 #      cannot fire is guidance that silently never arrives -- the same shape as
 #      the constitution copy that stopped at 7 of 9 RT rules (#213). The gate
