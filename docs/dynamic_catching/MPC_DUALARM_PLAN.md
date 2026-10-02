@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r24 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r25 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료**, E1 진행 중. 완료: E1-F01 – F04 · E1-F07 – F09. `mode: mpc` 는 계획기가 plan 과 첫 구간을 쌍으로 내고 RT 가 APPROACH 부터 HOLD 까지 그 구간을 따르는 닫힌 루프다 (sim p1b 50 발: abort 0, 성공률은 튜닝 전 0.34 vs `closed_form` 0.80). 출하 기본은 `closed_form` 그대로다. 다음은 F05 로그 · 도구 ([#631](https://github.com/hyujun/rtc-framework/issues/631)) → F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) → F06 (G-1). feature 별 상태는 §6
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5b) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -192,7 +192,8 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 미결 — 해당 feature 의 spec 에서 정한다:
 
 - E1-F10: 비열등 한계 · N · 튜닝 seed · 반복 상한 (튜닝 전에, MD-50)
-- E1-F10: ur5e_p1b 의 성공률 격차 (0.34 vs 0.80, §8) — 팔이 $t_c$ 에서 명령보다 16.7 mm 뒤에 있다. 원인의 분해가 먼저이고, 손잡이 후보는 포구 전 간격 (`approach.dt_pre_s`), plan 을 더 일찍 내는 쪽 (`planner.slice.t_lead_min`), 서보 지연을 비용 · 모델에 넣는 것 (formulation 변경), 정지 부분의 작업공간 검사를 계획기의 게시 조건으로 옮기는 것 (RT 의 `catch_box` 거부 74 건) 이다
+- E1-F10: ur5e_p1b 의 성공률 격차 (0.34 vs 0.80, §8) — 팔이 $t_c$ 에서 명령보다 16.7 mm 뒤에 있고, 원인은 $t_c$ 에서의 명령 가속도 × 서보 지연이다 (§8 "$t_c$ 간격의 분해"). **노드 사이 보간은 이미 있다** (`jerk_segment.hpp`, 매 tick 평가) — 더 만들 것이 아니다. 손잡이는 순서대로: (1) 속도 목표 `catch.gamma_ref` · `w_v_par` (planner 파라미터), (2) 움직일 시간 — `approach.dt_pre_s` (격자, 사용자 결정) · plan 을 더 일찍 내는 쪽 (`planner.slice.t_lead_min`, 공통부 여부 확인), (3) $t_c$ 근방 가속의 비용 (formulation 변경), (4) 지연 보상의 형태 — 시간 lead 대신 $q_{ref}+\tau\dot q_{ref}$ (공통부, 사용자 결정). 정지 부분의 작업공간 검사를 계획기의 게시 조건으로 옮기는 것 (RT 의 `catch_box` 거부 74 건) 도 남아 있다
+- E1-F10: 구간의 샘플 시각 — RT 는 구간을 steady clock 으로 샘플하고 sim 의 tick 은 그 clock 위에서 간격이 고르지 않아, `mpc` 명령에 한 tick 짜리 속도 계단이 들어간다 (§8). 실기의 tick jitter 로 크기를 먼저 보고, 샘플 시각을 tick 마다 $h$ 씩 가는 축으로 바꿀지 정한다 (RT 법칙 변경 — E-8, 사용자 결정)
 - E1-F05: `catching_diag.csv` 의 decel 블록 열 (sim 분석은 임시 패치로 읽었다), 더 쓰이지 않는 `planner_events.csv` 의 `decel_h_s` · `decel_qdd_trusted` 열과 그 코드 필드 (MD-70)
 - E1-F06: 격리 코어 · 제어 PC 의 RT tick (sim 의 최댓값은 두 planner 모두 120 µs 를 넘었다, §8)
 - E1-F10: iiwa7_leap 의 포구 전 시간 — plan 이 lead 0.21 s 근처에서 나와 첫 구간이 거의 게시되지 않는다. 간격을 줄이는 것만으로는 35 % 에서 멈춘다 (§8). 손잡이는 leap 의 `approach.dt_pre_s` 와 plan 을 더 일찍 내는 쪽 (`planner.slice.t_lead_min`, 순위 게이트) 이다
@@ -761,6 +762,11 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - 계획기 (p1b): 첫 풀이 54 회 중 50 게시 · 4 보류 (`catch_error`), 한 wake 최대 20.1 ms. 같은 격자점 252 (게시 235) · 격자 전진 113 (게시 100) · 정지 코어 게시 170 (k = 0 · 1 · 2 가 62 · 56 · 52 — shadow 에서는 없던 k = 2 가 돈다). 재계획 최대 10.8 ms, 33.3 ms 를 넘긴 wake 0 회. 게시된 구간 사이의 간격 p50 34 ms. shadow 의 보류율 (격자 전진 21 %) 은 닫힌 루프에서 11.5 % 였다.
 - **iiwa7_leap (정보용).** plan 이 채택된 시행은 2 / 50 (첫 풀이 268 회 중 게시 2 — `catch_error` 181 · `slack` 62 · `too_late` 20, E1-F08 과 같은 양상). 그 둘은 모두 첫 구간을 따라 HOLD 까지 갔고 abort 는 0 이다 (truth 1 성공 · 1 실패). 재계획 6 개는 모두 게이트에서 거부됐다 ($\rho$ 2.0 – 5.5) — leap 의 출하 CLIK 는 `box` 가속 제약이라 위 lane 테스트의 `box` 경우와 같다. 표본 2 개로는 더 말하지 못한다 (E1-F10).
 - 측정의 흠. leap unit 의 첫 시도는 46 번째 시행에서 끊겼다 (rc 127 — 돌고 있는 `run_unit.sh` 를 편집했다). 같은 seed 로 다시 돌린 것이 위 값이고, 끊긴 것은 `leap_701.fail1` 로 남겼다.
+- **$t_c$ 간격의 분해** (2026-10-02 추가 분석, 같은 unit 두 개의 `catching_diag.csv` · `cm_timing_log.csv` — [#663](https://github.com/hyujun/rtc-framework/issues/663#issuecomment-5944027621)). 검토한 가설은 "노드 간격이 RT 주기보다 넓어 오차가 난다" 였다.
+  - 노드 사이는 RT 가 매 tick 닫힌식으로 평가한다 (MD-9, `SampleJerkTrajectory` — MPC 의 모델에 대해 정확하고 노드에서 $C^2$). 노드 간격은 RT 쪽 오차의 원인이 아니다.
+  - `mpc` 의 명령은 $t_c$ 를 겨냥한 tick 에서 속도 2.58 m/s, $d\lvert v\rvert/dt$ **+22.6 m/s²** 다 (`closed_form` 2.19 m/s, −7.1 m/s²). sim 서보는 1 차 지연 ($\hat\tau$ 50.1 – 51.2 ms, $R^2\ge$ 0.98) 이고 `T_arm` 의 시간 lead 는 등속 성분만 보상한다. `q_cmd` 만 그 지연에 통과시킨 예측이 24.7 mm (실측 16.7), `closed_form` 3.8 mm (2.5) 다. `mpc` 안에서 간격과 명령 가속도의 상관은 0.85 이고, 두 planner 의 손–공 간격 차 (29.7 vs 17.2 mm) 는 이 항의 차와 같은 크기다.
+  - 가속 중인 이유: `mpc` 는 공 속도 (3.2 m/s) 전부를 목표로 하고 (`catch.gamma_ref` 1.0 — `closed_form` 은 $\gamma_f$ 0.69 배), 명령이 움직인 시간이 0.286 s 로 0.1 s 짧다 (`closed_form` 0.384 s). 비용에 포구 노드의 가속 항이 없다.
+  - 시간축. steady clock 위의 tick 간격 오차가 sim 에서 p01 −1.2 · p99 +2.2 ms 다 (0.5 ms 초과 7.8 %). `mpc` 명령의 한 tick 속도 계단 (> 0.06 rad/s) 279 개 중 99 % 가 간격이 0.3 ms 넘게 어긋난 tick 바로 다음이고 (전체 tick 의 9 %), 구간 전환에서 생긴 것은 31 개다. `closed_form` 은 같은 창에서 2 개다 — soft-catch 기준은 tick 마다 적분해 어긋남을 걸러낸다. 성공률에 주는 영향과 실기에서의 크기는 재지 않았다.
 - security review (E-8, 2026-10-02): 보고할 취약점 없음. 구간의 모양을 읽는 새 인덱싱 (`n_pre` 로 시작하는 작업공간 검사, 전환 때의 포구 노드 위치, 계획기의 코어 슬롯) 은 모두 `ValidateDecelNodes` 와 샘플러의 모양 검사 뒤에서만 돈다 ([#662](https://github.com/hyujun/rtc-framework/issues/662#issuecomment-5943640738)).
 - 말하지 못하는 것. 제어 PC 의 tick 시간. 격리된 코어에서의 꼬리. p1b 의 seed 하나 (50 발) 밖의 성공률. 원자료: `~/rtc_eval/e1-f09/`, 도구: 에이전트 private plan 의 `mpc-e1-f09-tools`.
 
@@ -770,6 +776,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r25 | §8 에 $t_c$ 간격의 분해 (명령 가속도 × 서보 지연, 구간의 샘플 시각과 sim 의 tick 간격), 미결의 E1-F10 항목을 그 결과로 다시 씀 — 노드 사이 보간은 이미 있음을 명시 |
 | r24 | E1-F09 머지 뒤 정리 — E1-F05 를 다음 차례로 표시하고 넘긴 범위를 표에 적음, G-1 회귀 기준이 가리키는 테스트를 명시, §2 에 구현 원칙 (2026-10-02 사용자 결정 — 그때 #662 에만 적혀 있었다) |
 | r23 | E1-F09 완료 반영 ([#674](https://github.com/hyujun/rtc-framework/pull/674)) — 상태줄 · §6 의 표 · 브랜치 계획 갱신, security review 결과 (§8), 미결에 E1-F05 · F06 · F10 으로 넘긴 것 추가 |
 | r22 | 결정 MD-70: 정지 구간만 푸는 계획기와 `replan.t_pre_s` 삭제 (사용자 결정 2026-10-02). 미결에서 그 항목 제거 |
