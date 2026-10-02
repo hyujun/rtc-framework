@@ -1200,6 +1200,34 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # DemoJointController on a primary group that is a kinematic tree (waist +
+  # two arms as one device, hand mounted on one branch). Runs on a synthetic
+  # fixture owned by this repository — rtc_urdf_bridge/test/urdf/
+  # dual_arm_tree_hand.urdf, reached through the never-installed
+  # test_urdf_path.hpp (same source-relative include as the suite above).
+  # Two cases run on_configure on a real LifecycleNode, hence the domain.
+  ament_add_gtest(test_joint_tree_primary_group
+    test/test_joint_tree_primary_group.cpp
+    TIMEOUT 120
+    ENV ROS_DOMAIN_ID=52)
+  target_include_directories(test_joint_tree_primary_group PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_link_libraries(test_joint_tree_primary_group
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_joint_tree_primary_group
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── Device backend registration smoke test ─────────────────────────────────
   # Confirms the 3 backend TUs (mujoco_native / ur_driver_native /
   # udp_hand_native) static-init through --whole-archive and reach the
@@ -1540,6 +1568,7 @@ if(BUILD_TESTING)
     test_wbc_closed_chain_projection_sharing
     test_momentum_observer_embedding
     test_joint_tf_slot_frames
+    test_joint_tree_primary_group
     test_mujoco_native_backend
     test_catching_traj_input
     test_catching_tracking
