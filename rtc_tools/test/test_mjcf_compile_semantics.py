@@ -55,19 +55,22 @@ def _mjcf(
     wrap: str = "{}",
     body: str = "",
     joint: str = "",
+    joint_wrap: str = "{}",
     inertial: str = INERTIAL,
     actuators: str = "",
     extra: str = "",
 ) -> str:
     """Every argument is an XML fragment; the defaults give a bare hinge.
 
-    ``wrap`` nests the body: ``'<body name="g" childclass="c1">{}</body>'``.
-    ``extra`` is further top-level sections.
+    ``wrap`` nests the body: ``'<body name="g" childclass="c1">{}</body>'``,
+    ``joint_wrap`` the joint inside it.  ``extra`` is further top-level
+    sections.
     """
+    joint_xml = joint_wrap.format(f'<joint name="j" {joint}/>')
     body_xml = f"""\
 <body name="b" pos="0.1 0.2 0.3" {body}>
       {inertial}
-      <joint name="j" {joint}/>
+      {joint_xml}
     </body>"""
     return f"""\
 <mujoco model="semantics">
@@ -114,11 +117,12 @@ class Case:
     axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
     anchor: tuple[float, float, float] = (0.1, 0.2, 0.3)
     hinge: bool = True
-    #: The body sits under a <frame>.  The tool does not follow frame poses,
-    #: so it must have NO world frame for the joint rather than a wrong one.
+    #: The body, or the joint itself, sits under a <frame>.  The tool does not
+    #: follow frame poses, so it must have NO world frame for the joint rather
+    #: than a wrong one.
     under_frame: bool = False
-    #: The actuator force depends on the joint state, so no control input
-    #: drives it to a fixed value.
+    #: The actuator force depends on a state — the joint's, or the actuator's
+    #: own activation — so no control input drives it to a fixed value.
     state_dependent_force: bool = False
 
 
@@ -254,6 +258,17 @@ CASES: dict[str, Case] = {
         armature=0.1,
         under_frame=True,
     ),
+    # A <frame> may hold the joint itself: it is still a joint of the body
+    # around the frame, and the frame's childclass is its class.
+    "joint_directly_inside_a_frame": Case(
+        _mjcf(
+            defaults=_classes(c1='<joint armature="0.1" range="-1 1"/>'),
+            joint_wrap='<frame childclass="c1">{}</frame>',
+        ),
+        range=(-1.0, 1.0),
+        armature=0.1,
+        under_frame=True,
+    ),
     "own_class_beats_childclass": Case(
         _mjcf(
             defaults=_classes(c1='<joint armature="0.1"/>', c2='<joint armature="0.2"/>'),
@@ -340,6 +355,11 @@ CASES: dict[str, Case] = {
         _mjcf(actuators='<motor joint="j" forcerange="-30 50" gear="-2"/>'),
         torque=(-100.0, 60.0),
     ),
+    # gear has six entries; a hinge or a slide takes the first.
+    "gear_given_as_a_six_vector": Case(
+        _mjcf(actuators='<motor joint="j" forcerange="-3 5" gear="2 7 7 7 7 7"/>'),
+        torque=(-6.0, 10.0),
+    ),
     # A zero gear passes nothing on to the joint, an unbounded force included:
     # the other actuator's bound is the joint's.
     "zero_gear_actuator_adds_nothing": Case(
@@ -351,8 +371,11 @@ CASES: dict[str, Case] = {
     "limited_false_from_the_class_default": Case(
         _mjcf(defaults='<default><joint limited="false"/></default>', joint='range="-1 1"'),
     ),
-    # With autolimits off the flag is the only thing that enforces the range.
-    "limited_true_without_autolimits": Case(
+    # An explicit "true" enforces the range with autolimits off — that is all
+    # this pins.  Whether the tool reads `autolimits` at all cannot be seen on
+    # a file MuJoCo accepts: with it off MuJoCo rejects every range whose
+    # `*limited` flag is unset, so each flag is explicit and decides alone.
+    "explicit_limited_true_with_autolimits_off": Case(
         _mjcf(
             compiler='<compiler angle="radian" autolimits="false"/>',
             joint='range="-1 1" limited="true"',
@@ -372,6 +395,11 @@ CASES: dict[str, Case] = {
     ),
     "pure_general_gain_times_ctrlrange": Case(
         _mjcf(actuators='<general joint="j" gainprm="5" ctrlrange="-4 4"/>'),
+        torque=(-20.0, 20.0),
+    ),
+    # gainprm is a vector too; a fixed gain is its first entry.
+    "pure_general_gainprm_given_as_a_vector": Case(
+        _mjcf(actuators='<general joint="j" gainprm="5 0 0" ctrlrange="-4 4"/>'),
         torque=(-20.0, 20.0),
     ),
     "motor_ctrlrange_times_gear": Case(
@@ -410,6 +438,17 @@ CASES: dict[str, Case] = {
         ),
         state_dependent_force=True,
     ),
+    # A gain that follows the joint position: force = (1 + q) * ctrl.
+    "affine_gain_ctrlrange_is_not_a_torque_bound": Case(
+        _mjcf(actuators='<general joint="j" gaintype="affine" gainprm="1 1 0" ctrlrange="-4 4"/>'),
+        state_dependent_force=True,
+    ),
+    # Internal dynamics: the force follows the activation, and an integrator
+    # accumulates ctrl without bound.
+    "integrator_ctrlrange_is_not_a_torque_bound": Case(
+        _mjcf(actuators='<general joint="j" dyntype="integrator" ctrlrange="-4 4"/>'),
+        state_dependent_force=True,
+    ),
     "position_servo_forcerange_still_bounds": Case(
         _mjcf(actuators='<position joint="j" kp="100" ctrlrange="-1 1" forcerange="-7 7"/>'),
         torque=(-7.0, 7.0),
@@ -426,6 +465,51 @@ CASES: dict[str, Case] = {
     "general_keeps_an_inherited_bias": Case(
         _mjcf(
             defaults=_classes(c1='<position kp="5"/>'),
+            actuators='<general joint="j" class="c1" ctrlrange="-4 4"/>',
+        ),
+        state_dependent_force=True,
+    ),
+    # The same goes for the rest of what makes a pure gain.  A <motor> has
+    # gain 1, a fixed gain type and no dynamics whatever its class says; a
+    # <general> has what its class says.
+    "motor_resets_an_inherited_gain": Case(
+        _mjcf(
+            defaults=_classes(c1='<general gainprm="5"/>'),
+            actuators='<motor joint="j" class="c1" ctrlrange="-4 4"/>',
+        ),
+        torque=(-4.0, 4.0),
+    ),
+    "general_keeps_an_inherited_gain": Case(
+        _mjcf(
+            defaults=_classes(c1='<general gainprm="5"/>'),
+            actuators='<general joint="j" class="c1" ctrlrange="-4 4"/>',
+        ),
+        torque=(-20.0, 20.0),
+    ),
+    "motor_resets_an_inherited_gain_type": Case(
+        _mjcf(
+            defaults=_classes(c1='<general gaintype="affine" gainprm="1 1 0"/>'),
+            actuators='<motor joint="j" class="c1" ctrlrange="-4 4"/>',
+        ),
+        torque=(-4.0, 4.0),
+    ),
+    "general_keeps_an_inherited_gain_type": Case(
+        _mjcf(
+            defaults=_classes(c1='<general gaintype="affine" gainprm="1 1 0"/>'),
+            actuators='<general joint="j" class="c1" ctrlrange="-4 4"/>',
+        ),
+        state_dependent_force=True,
+    ),
+    "motor_resets_inherited_dynamics": Case(
+        _mjcf(
+            defaults=_classes(c1='<general dyntype="integrator"/>'),
+            actuators='<motor joint="j" class="c1" ctrlrange="-4 4"/>',
+        ),
+        torque=(-4.0, 4.0),
+    ),
+    "general_keeps_inherited_dynamics": Case(
+        _mjcf(
+            defaults=_classes(c1='<general dyntype="integrator"/>'),
             actuators='<general joint="j" class="c1" ctrlrange="-4 4"/>',
         ),
         state_dependent_force=True,
@@ -468,6 +552,14 @@ CASES: dict[str, Case] = {
         ),
         range=(-1.0, 1.0),
     ),
+    # ...and where two of them set the same attribute, the later one wins.
+    "later_compiler_element_wins": Case(
+        _mjcf(
+            compiler='<compiler angle="degree"/><compiler angle="radian"/>',
+            joint='range="-1 1"',
+        ),
+        range=(-1.0, 1.0),
+    ),
     # ── asymmetric ranges ──
     "asymmetric_joint_force_range": Case(
         _mjcf(joint='actuatorfrcrange="-30 50"', actuators=MOTOR),
@@ -493,6 +585,22 @@ CASES: dict[str, Case] = {
         torque=(-50.0, 50.0),
     ),
     # ── elements MuJoCo accepts more than once: it merges them ──
+    # Each top-level <default> is "main"; neither replaces the other.
+    "two_top_level_defaults_are_both_main": Case(
+        _mjcf(
+            defaults='<default><joint armature="0.1"/></default>'
+            '<default><joint range="-1 1"/></default>',
+        ),
+        range=(-1.0, 1.0),
+        armature=0.1,
+    ),
+    "actuators_of_two_sections_add_up": Case(
+        _mjcf(
+            actuators='<motor joint="j" forcerange="-3 5"/>',
+            extra='<actuator><motor joint="j" forcerange="-1 1"/></actuator>',
+        ),
+        torque=(-4.0, 6.0),
+    ),
     # Everything of `j` is read from the second <worldbody> — its attributes
     # and its place in the world alike.
     "joint_in_a_second_worldbody": Case(
