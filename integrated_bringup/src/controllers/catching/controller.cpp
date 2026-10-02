@@ -1454,6 +1454,9 @@ void DemoCatchingController::RunDecelLane() noexcept {
   ctx.accept_pre_catch = true;
   ctx.check_track = true;
   ctx.plan_track_generation = plan.token.generation;
+  // The sampler is bound to the arm (DecelModeUnmet): a segment of another
+  // joint count could be admitted and never sampled.
+  ctx.expected_nv = arm_dof_;
   decel_refusal_ = rtc::catching::JudgeDecelPlan(decel_in_, ctx, admitted_decel_);
   tick_record_.decel_judged = true;
   tick_record_.decel_refusal = static_cast<std::uint8_t>(decel_refusal_);

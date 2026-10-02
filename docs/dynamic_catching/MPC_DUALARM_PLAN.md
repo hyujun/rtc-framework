@@ -1,7 +1,7 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r28 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
-- 상태: **E0 완료**, E1 진행 중. 완료: E1-F01 – F05 · E1-F07 – F09. `mode: mpc` 는 계획기가 plan 과 첫 구간을 쌍으로 내고 RT 가 APPROACH 부터 HOLD 까지 그 구간을 따르는 닫힌 루프다 (sim p1b 50 발: abort 0, 성공률은 튜닝 전 0.34 vs `closed_form` 0.80). 출하 기본은 `closed_form` 그대로다. F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) 은 투척을 마쳤다 (MD-71 – MD-75, §8 "E1-F10"): `ur5e_p1b` 는 `catch.gamma_ref` 0.6 을 채택했고 (확인 200 쌍의 차이 −0.05), `iiwa7_leap` 은 허용한 손잡이로는 plan 이 채택되지 않아 미달이다 (구조 문제 — 첫 풀이의 기준 궤적). 다음은 F06 (G-1) 이고 그 전에 G-1 의 N 과 leap 의 처리를 사용자가 정한다 — 튜닝은 F05 가 낸 열 ($t_c$ 의 계획 · CLIK · 서보 분해, lane 사건, 포구 노드) 을 읽는다 (§8 "E1-F05"). feature 별 상태는 §6
+- 개정: r29 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
+- 상태: **E0 완료**, E1 진행 중. 완료: E1-F01 – F05 · E1-F07 – F09. `mode: mpc` 는 계획기가 plan 과 첫 구간을 쌍으로 내고 RT 가 APPROACH 부터 HOLD 까지 그 구간을 따르는 닫힌 루프다 (sim p1b 50 발: abort 0, 성공률은 튜닝 전 0.34 vs `closed_form` 0.80). 출하 기본은 `closed_form` 그대로다. F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) 은 투척을 마쳤다 (MD-71 – MD-75, §8 "E1-F10"): `ur5e_p1b` 는 `catch.gamma_ref` 0.6 을 채택했고 (확인 200 쌍의 차이 −0.05), `iiwa7_leap` 은 허용한 손잡이로는 plan 이 채택되지 않아 미달이다 (구조 문제 — 첫 풀이의 기준 궤적). E1-F10 은 이것으로 마무리한다 (MD-76: G-1 의 N 은 300 쌍 그대로, leap 과 p1b 의 남은 간격은 더 다루지 않는다). 다음은 F06 (G-1) 이다 — 튜닝은 F05 가 낸 열 ($t_c$ 의 계획 · CLIK · 서보 분해, lane 사건, 포구 노드) 을 읽는다 (§8 "E1-F05"). feature 별 상태는 §6
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5b) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
@@ -191,17 +191,17 @@ v1 과 G1 MPC 의 구조 차이:
 | MD-73 | **RT 는 `catch_box` 를 검사하지 않는다.** `mode: mpc` 의 lane 은 구간을 `JudgeDecelPlan` 과 전환 게이트 (MD-39) 로만 판정한다 — 쌍 판정과 재계획 채택에서 정지 부분의 작업공간 검사를 뺀다. `mpc` 의 전제 (MD-34) 에서도 `planner.workspace.catch_box` 가 빠진다. `catch_box` 는 계획기 탐색의 것으로 남는다 ($p_c$ 와 closed-form 정지점의 판정, L3 §4.9 — 두 planner 공통). 검사를 계획기의 게시 조건으로 옮기지도 않는다. `DecelEvent` 의 값 3 (`workspace`) 은 번호를 남기고 더 내지 않는다 — 도구의 `decel_workspace_refused` 는 새 로그에서 0 이다 | 사용자 결정 (2026-10-02). 정지의 조건은 파지한 채 end-effector 의 속도 · 가속도가 0 이 되는 것이고, 정지 위치는 관절 한계를 넘지 않으면 된다 — `catch_box` 안일 필요가 없다. 검사는 seed 601 의 50 발에서 재계획 74 개 (14 발) 를 거부했고, 거부된 구간 대신 낡은 구간이 따라졌다. 바닥에 닿는 결과가 나오면 sim 에서 base link 를 1 m 올려서 본다 (지금 하지 않는다) | MD-43 (폐기), MD-67 의 작업공간 검사 부분 (폐기; plan 의 track 대조는 유지), MD-34 의 전제 목록 | 2026-10-02 |
 | MD-74 | **CLIK 의 가속 제약은 `dynamic` 만 쓴다.** `iiwa7_leap` 의 출하 YAML 도 `joint_cmd.accel_constraint: dynamic` ($\eta_\tau$ 0.8) 으로 한다 — 두 planner 공통. `box` · `kinematic` 형태와 코드 기본값 (`box`) 을 지우는 정리는 후속이다 (테스트 fixture 가 `box` 를 쓴다) | 사용자 결정 (2026-10-02): `box` 는 쓰지 않는 형태다. MD-7 의 MPC ⊂ CLIK 는 CLIK 이 토크 행을 쓸 때만 성립한다 — leap 의 `box` (9.2 rad/s²) 에서는 재계획이 모두 전환 게이트에서 거부됐다 ($\rho$ 2.0 – 5.5, §8 "E1-F09"). leap 의 `closed_form` 동작이 바뀌므로 E0-F02 의 leap 값 (204 / 400) 은 대조군이 아니게 된다 — 튜닝과 G-1 은 같은 날 같은 seed 의 `closed_form` unit 을 쓴다 | MD-19 의 leap 쪽, v1 결정 K 의 출하 형태 (L5 §4.3 — leap 은 `box`) | 2026-10-02 |
 | MD-75 | E1-F10 의 결과로 고정하는 G-1 구성. **`ur5e_p1b`**: 출하 YAML 의 `planner.decel_mpc.catch.gamma_ref` 를 **0.6** 으로 한다 (나머지 포구 항 · 게시 조건 · 격자는 그대로). G-1 의 `mpc` arm 은 출하값 + `catch_lead_on` 의 잎 + `decel_mpc.enabled: true` + `supervisor.decel.mode: mpc`, 대조 arm 은 출하값 + `catch_lead_on` 이다. **`iiwa7_leap`**: 채택한 값이 없다 — 출하값을 바꾸지 않는다. leap 의 G-1 은 구조 문제 (첫 풀이의 기준 궤적, §8 "E1-F10") 를 푼 뒤에 한다 | 확인 seed 623 – 626 (200 쌍) 의 paired 차이 점추정 −0.05 가 종료 기준 (≥ −0.10, MD-71) 을 넘는다. $\gamma_{ref}$ 0.6 은 v1 의 $\gamma$ 창 하한 (중앙값 0.69) 아래다 — 편차로 기록한다: `mpc` 는 포구 전 0.28 s 안에 정지에서 가속하므로 손이 $t_c$ 에 가속 중이고, 목표 속도를 낮춰야 서보 지연으로 인한 뒤처짐이 준다. leap 은 후보 3 개 (`gamma_ref` 0.6, + `t_lead_min` 0.30 · 0.40) 에서 plan 채택이 4 · 6 · 0 / 50 이다 | L3 §6 의 `catch.gamma_ref` 출하값 (p1b), MD-53 의 "E1-F08 의 기본" (p1b) | 2026-10-02 |
+| MD-76 | E1-F10 을 마무리한다. (1) **G-1 의 N 은 300 쌍 그대로** 둔다 — 늘리지 않는다. (2) **`iiwa7_leap` 은 미달로 닫는다** — 이 기능에서 더 다루지 않고 출하값도 그대로다. (3) **`ur5e_p1b` 의 남은 간격은 더 줄이지 않는다** — 범위 밖 손잡이 (가속 비용 · 지연 보상 · 격자) 를 열지 않는다 | 사용자 결정 (2026-10-02, E1-F10 결과 보고 뒤). 불일치율 0.43 에서 300 쌍의 검정력이 0.75 (참 차이 0) · 0.26 (−0.05) 라는 것을 알고 정한 값이다 (§8 "E1-F10") — G-1 의 결과는 그 검정력과 함께 읽는다. leap 의 `mpc` 를 G-1 에서 어떻게 다룰지 (plan 이 채택되지 않는다) 는 E1-F06 의 spec 에서 정한다 | MD-71 의 N (확정), §4 미결의 E1-F10 뒤 항목 세 개 | 2026-10-02 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- E1-F06 전 (사용자 결정): **G-1 의 N.** 확인 seed 의 불일치율이 0.43 으로, N 300 쌍을 정할 때 쓴 값 (0.265 – 0.30, v1 끼리의 값) 보다 크다. 300 쌍의 검정력은 참 차이 0 에서 0.75, 확인의 점추정 −0.05 에서 0.26 이다 (§8 "E1-F10"). N 을 늘리거나 (참 차이 0 기준 약 340 쌍, −0.05 기준 약 1,340 쌍), 남은 구조 손잡이로 차이를 더 줄인 뒤 판정한다
-- ur5e_p1b 에 남은 간격 (E1-F10 뒤): `mpc` 의 손은 $t_c$ 에 공 진행 방향으로 17 mm 뒤에 있다 (`closed_form` 6 mm) — 명령이 아직 가속 중이고 (+14.9 m/s²) 서보 지연이 그 몫을 낸다. planner 파라미터로는 더 줄지 않는다 ($\gamma_{ref}$ 를 더 낮추면 위치는 좋아지나 상대속도가 2 m/s 로 커져 성공이 준다). 남은 손잡이는 범위 밖이다: 격자 `approach.dt_pre_s`, $t_c$ 근방 가속의 비용 (formulation), 지연 보상의 형태 — 시간 lead 대신 $q_{ref}+\tau\dot q_{ref}$ (공통부), YAML 키가 없는 가중 ($w_\Delta$ · jerk · slack 벌점). **노드 사이 보간은 이미 있다** (`jerk_segment.hpp`, 매 tick 평가)
+- 기록 (MD-76 으로 닫음 — 다시 열려면 사용자 결정): ur5e_p1b 에 남은 간격. `mpc` 의 손은 $t_c$ 에 공 진행 방향으로 17 mm 뒤에 있다 (`closed_form` 6 mm) — 명령이 아직 가속 중이고 (+14.9 m/s²) 서보 지연이 그 몫을 낸다. planner 파라미터로는 더 줄지 않는다 ($\gamma_{ref}$ 를 더 낮추면 위치는 좋아지나 상대속도가 2 m/s 로 커져 성공이 준다). 남은 손잡이는 범위 밖이다: 격자 `approach.dt_pre_s`, $t_c$ 근방 가속의 비용 (formulation), 지연 보상의 형태 — 시간 lead 대신 $q_{ref}+\tau\dot q_{ref}$ (공통부), YAML 키가 없는 가중 ($w_\Delta$ · jerk · slack 벌점). **노드 사이 보간은 이미 있다** (`jerk_segment.hpp`, 매 tick 평가)
 - E1-F10: 구간의 샘플 시각 — RT 는 구간을 steady clock 으로 샘플하고 sim 의 tick 은 그 clock 위에서 간격이 고르지 않아, `mpc` 명령에 한 tick 짜리 속도 계단이 들어간다 (§8). 실기의 tick jitter 로 크기를 먼저 보고, 샘플 시각을 tick 마다 $h$ 씩 가는 축으로 바꿀지 정한다 (RT 법칙 변경 — E-8, 사용자 결정)
 - E1-F10: `catching_arm_budget` 의 `e_commit` · `e_last` 는 soft-catch 의 `ref_e` 를 읽어 `mpc` unit 에서 0 이다. 튜닝이 그 도구를 쓰면 먼저 고친다 (E1-F05 는 `catching_trials` 만 고쳤다)
 - E1-F06: 격리 코어 · 제어 PC 의 RT tick (sim 의 최댓값은 두 planner 모두 120 µs 를 넘었다, §8)
-- iiwa7_leap 의 `mpc` (E1-F10 미달, 사용자 결정): 첫 풀이가 포구 자세에 닿지 못한다. 기준 궤적은 정지에서 정지로 가는 최소 jerk 이고 최고 속도를 $0.9\,\eta_v\dot q_{\max}$ 로 묶으므로 관절이 갈 수 있는 거리가 $0.9\,\eta_v\dot q_{\max}\,T/1.875$ 다 — 포구 전 0.1 – 0.2 s 에서 0.07 – 0.15 rad. 필요한 거리는 그보다 0.3 – 0.6 rad 길고 (중앙값), trust region (0.1 rad) 이 해를 기준 근처에 묶는다. 더 늦은 포구점은 시간을 0.1 s 늘리지만 거리도 는다 (§8 "E1-F10"). 손잡이는 모두 범위 밖이다: 첫 풀이의 기준 궤적 (포구 노드에서 서지 않는 형태) · trust region 과 재선형화 반복 (formulation · YAML 키 없음), 대기 자세 `planner.wait_pose` (공통부), plan 을 더 일찍 내는 것 (추정기)
+- E1-F06: iiwa7_leap 의 `mpc` 를 G-1 에서 어떻게 다룰지 — E1-F10 은 미달로 닫았다 (MD-76). 원인: 첫 풀이가 포구 자세에 닿지 못한다. 기준 궤적은 정지에서 정지로 가는 최소 jerk 이고 최고 속도를 $0.9\,\eta_v\dot q_{\max}$ 로 묶으므로 관절이 갈 수 있는 거리가 $0.9\,\eta_v\dot q_{\max}\,T/1.875$ 다 — 포구 전 0.1 – 0.2 s 에서 0.07 – 0.15 rad. 필요한 거리는 그보다 0.3 – 0.6 rad 길고 (중앙값), trust region (0.1 rad) 이 해를 기준 근처에 묶는다. 더 늦은 포구점은 시간을 0.1 s 늘리지만 거리도 는다 (§8 "E1-F10"). 손잡이는 모두 범위 밖이다: 첫 풀이의 기준 궤적 (포구 노드에서 서지 않는 형태) · trust region 과 재선형화 반복 (formulation · YAML 키 없음), 대기 자세 `planner.wait_pose` (공통부), plan 을 더 일찍 내는 것 (추정기)
 - 후속 (미배정): CLIK 의 `box` · `kinematic` 형태와 코드 기본값 `box` 의 정리 (MD-74), sim 에서 정지 위치가 바닥에 닿을 때 base link 를 1 m 올리는 것 (MD-73)
 - E1-F06: `mpc` 를 기본값으로 바꿀지
 - E1-F06: `decel_*` 이름 (CSV 열 · `DecelRecord` · `DecelEvent` · decel 계획기) 을 `segment_*` 로 통일할지 — `mpc` 는 APPROACH 부터 그 구간을 따르므로 이름이 뜻과 어긋난다. E1-F05 는 그대로 두었다 (기존 측정 자료와 분석이 이 이름을 읽는다). `mpc` 가 기본값이 되면 정한다
@@ -265,7 +265,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F08 | [#661](https://github.com/hyujun/rtc-framework/issues/661) | 계획기 — TRACKING – DECEL 의 MPC 풀이, 첫 구간 · 예산, 재계획 ($x_0$ 경로 (i) 일반화), 격자의 배선과 간격이 둘인 payload (MD-54) | E1-F07 | 완료 (2026-10-02, [#673](https://github.com/hyujun/rtc-framework/pull/673)) — 결정 MD-55 – MD-64, 측정 §8. 예산 0.035 · 0.025 s 확정. RT 가 그 구간을 받는 것은 E1-F09 다. iiwa7_leap 은 이 격자로 plan 을 거의 내지 못한다 (E1-F10) |
 | E1-F09 | [#662](https://github.com/hyujun/rtc-framework/issues/662) | L7 — RT 가 APPROACH – HOLD 를 MPC 구간으로 추종, DECEL 진입은 연속 (E-8). 노드별 간격을 읽는 샘플러 (MD-54) | E1-F08 | 완료 (2026-10-02, [#674](https://github.com/hyujun/rtc-framework/pull/674)) — 결정 MD-65 – MD-70, 측정 §8. p1b sim 50 발에서 구간 추종으로 HOLD 까지 50/50, abort 0. security review 는 보고할 것이 없었다. 성공률은 `closed_form` 보다 낮다 (E1-F10) |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — tick record 의 decel 블록과 계획기 레코드를 CSV 로, `catching_trials` 의 `mpc` 분해 · lane · 명령 열, plotter 패널, GUI 의 Catching 탭 | E1-F09 | 완료 (2026-10-02, [#678](https://github.com/hyujun/rtc-framework/pull/678)) — 확인 §8. 제어 동작 불변. 항별 비용 분해 · GUI 의 lane 상태 · `decel_*` 이름 통일은 하지 않았다 (미결) |
-| E1-F10 | [#663](https://github.com/hyujun/rtc-framework/issues/663) | mpc planner 튜닝 — closed_form 대비 성공률 비열등 (MD-50) | E1-F05 | 투척 완료 (2026-10-02, 브랜치 `exp/catching-mpc-tuning` — PR 전): p1b 채택 (`gamma_ref` 0.6, 확인 −0.05), leap 미달 (구조). §8 "E1-F10" |
+| E1-F10 | [#663](https://github.com/hyujun/rtc-framework/issues/663) | mpc planner 튜닝 — closed_form 대비 성공률 비열등 (MD-50) | E1-F05 | 마무리 (2026-10-02, 브랜치 `exp/catching-mpc-tuning` — PR 전): p1b 채택 (`gamma_ref` 0.6, 확인 −0.05), leap 미달로 닫음 (MD-76). §8 "E1-F10" |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | 대기 |
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
@@ -813,7 +813,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 **투척 전의 변경.**
 
-- RT 의 `catch_box` 검사 제거 (MD-73): `closed_form` 의 NormalTrial 명령 digest 는 `58e18c86679c92d6` 그대로다 (기록값 대조). 그 거부를 고정하던 시나리오 · lane · 샘플러 테스트는 spec 변경으로 지우고 (PROC-6 별도 커밋), 새 규칙의 테스트를 넣었다 — 어떤 노드도 담지 않는 `catch_box` 아래에서 쌍이 채택되고 포구 뒤 재계획이 따라진다, oracle profile 은 `catch_box` 없이 `mode: mpc` 로 configure 된다. 선별 · 확인의 `mpc` unit 20 개에서 `workspace` 사건은 0 이다.
+- RT 의 `catch_box` 검사 제거 (MD-73): `closed_form` 의 NormalTrial 명령 digest 는 `58e18c86679c92d6` 그대로다 (기록값 대조). 그 거부를 고정하던 시나리오 · lane · 샘플러 테스트는 spec 변경으로 지우고 (PROC-6 별도 커밋), 새 규칙의 테스트를 넣었다 — 어떤 노드도 담지 않는 `catch_box` 아래에서 쌍이 채택되고 포구 뒤 재계획이 따라진다, oracle profile 은 `catch_box` 없이 `mode: mpc` 로 configure 된다. (그 사건 값은 이제 아무도 쓰지 않으므로 로그의 0 은 증거가 아니다 — 증거는 이 테스트와, 재계획이 따라진 수다: 확인 unit 의 재계획 전환 989 회, 시행당 따른 구간 중앙값 6.)
 - leap 의 CLIK `dynamic` (MD-74) 과 읽기 전용 mirror 두 개 (`planner.slice.t_lead_min` — 실행값, `joint_cmd.accel_constraint`). mirror 는 overlay 가 먹었는지 드라이버가 unit 마다 확인하는 데 쓴다.
 
 **ur5e_p1b 선별** (seed 621 · 622, 구성마다 100 발, 같은 날의 `closed_form` 과 쌍. 성공은 truth — HOLD 끝부터 release 까지 공이 손에 있음, 거리는 중앙값).
@@ -831,7 +831,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - ① 은 모든 구성에서 통과다: `ABORT_SAFE` 0, 채택 시행 48 – 50 / 50, 게이트 거부는 `mpc` 600 발에서 2 건, 재계획 전환 $\rho$ p95 0.18 – 0.44, `aged` 0, 예산 보류 0, 33.3 ms 를 넘긴 wake 0 (최대 23.9 ms), 관절 위치 · 속도 · 토크 한계 위반 0 (측정 속도는 최대 한계의 0.87, 토크는 0.95).
 - 고른 것은 0.6 / 1.0 이다 (MD-72 ③: ① ② 를 통과한 셋의 `total_mm` 이 2 mm 안이라 성공 수가 많은 쪽). 선택과 근거는 확인 값을 보기 전에 [이슈](https://github.com/hyujun/rtc-framework/issues/663#issuecomment-5947182456) 에 적었다. 후보는 5 개를 썼다 (상한 8).
 - `gamma_ref` 와 `w_v_par` 는 같은 축을 움직인다 — 측정 $\gamma$ 가 같은 두 구성 (0.7 / 1.0 과 0.6 / 3.0) 은 거리와 성공 수가 같다.
-- 손이 느릴수록 위치는 좋아지지만 (공 진행 방향 간격 26 → 13 mm) 성공은 측정 $\gamma$ 0.5 근처가 가장 높다. 그 아래 (0.40 · 0.35) 는 `total_mm` 이 더 작아도 성공이 낮다 — 상대속도가 1.9 – 2.0 m/s 다. 위치 기준 (②) 은 이 아래쪽을 가르지 못한다.
+- 손이 느릴수록 위치는 좋아지지만 (공 진행 방향 간격 26 → 13 mm) 성공은 측정 $\gamma$ 0.5 근처가 가장 높다. 그 아래 (0.40 · 0.35) 는 `total_mm` 이 같거나 더 작은데도 (19.1 · 17.2 대 18.8 mm) 성공이 낮다 — 상대속도가 1.9 – 2.0 m/s 다. 위치 기준 (②) 은 이 아래쪽을 가르지 못한다.
 - 대조군 57 / 100 은 E0-F02 (0.72) 보다 낮다. 같은 빌드로 seed 601 의 `closed_form` 을 다시 돌려 38 / 50 을 얻었다 (오전의 같은 seed 40 / 50) — 빌드가 아니라 seed 의 차이다.
 
 **ur5e_p1b 확인** (seed 623 – 626, `gamma_ref` 0.6 대 `closed_form`, 200 쌍).
@@ -850,7 +850,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 - **판정: 채택.** 점추정 −0.05 는 종료 기준 (≥ −0.10) 안이다 (MD-71 · MD-75). 튜닝 전의 −0.31 (선별 seed) · −0.46 (seed 601) 에서 줄었다.
 - **비열등을 보인 것은 아니다.** 200 쌍의 구간 하한 −0.14 는 한계 −0.10 아래다. 선별의 +0.15 는 고른 쪽으로 치우친 값이었다 (같은 구성이 확인에서 −0.05).
-- **G-1 의 검정력이 모자란다.** 불일치율 0.43 은 N 을 정할 때 쓴 0.265 – 0.30 (v1 끼리) 보다 크다 — 두 planner 는 서로 다른 투척에서 실패한다. 300 쌍의 검정력은 참 차이가 0 이면 0.75, −0.05 면 0.26 이다 (80 % 에 필요한 쌍은 각각 약 340 · 1,340). N 은 사용자 결정이다 (§4 미결).
+- **G-1 의 검정력은 낮다 (N 은 그대로 둔다, MD-76).** 불일치율 0.43 은 N 을 정할 때 쓴 0.265 – 0.30 (v1 끼리) 보다 크다 — 두 planner 는 서로 다른 투척에서 실패한다. 300 쌍의 검정력은 참 차이가 0 이면 0.75, −0.05 면 0.26 이다 (80 % 에 필요한 쌍은 각각 약 340 · 1,340). 사용자는 이 값을 보고 N 300 쌍을 유지했다.
 - **② 는 확인 seed 에서 넘지 못했다**: `total_mm` 20.8 대 한도 19.0 (`closed_form` 16.0 + 3). ② 는 선별의 기준이라 판정을 바꾸지 않지만, 위치의 간격이 남아 있다는 뜻이다 — 공 진행 방향 16.7 mm (`closed_form` 6.3) 이고 그중 서보 몫이 10 mm 다. 직교 방향과 계획 오차는 `mpc` 가 같거나 작다.
 - MD-41 의 측정 (MD-50 의 재정의): 재계획 전환 989 회의 게이트 거부 0, $\rho$ p50 0.106 · p95 0.197 · 최대 0.558. 임계 (5 % · 0.5) 안이므로 초기 상태 예측은 고치지 않는다.
 
@@ -859,7 +859,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 | 구성 | plan 채택 | 성공 | 첫 풀이 (게시 / 시도) | 보류 사유 | 포구 전 노드 | 기준 궤적의 모자람 [rad] (중앙값) |
 |---|---|---|---|---|---|---|
 | `closed_form` (대조) | 50 | 32 | — | — | — | — |
-| `mpc` 출하값 ($\gamma_{ref}$ 1.0) | 0 | 0 | 1 / 260 | `catch_error` 187 · `slack` 52 · `too_late` 19 | 1 | 0.36 |
+| `mpc` 출하값 ($\gamma_{ref}$ 1.0) | 0 | 0 | 1 / 260 | `catch_error` 187 · `slack` 52 · `too_late` 19 · `superseded` 1 (게시된 1 개는 RT 가 채택하지 못했다) | 1 | 0.36 |
 | $\gamma_{ref}$ 0.6 | 4 | 1 | 4 / 241 | `catch_error` 177 · `slack` 44 · `too_late` 16 | 1 | 0.30 |
 | $\gamma_{ref}$ 0.6 + `t_lead_min` 0.30 | 6 | 6 | 6 / 100 | `catch_error` 74 · `slack` 20 | 2 | 0.61 |
 | $\gamma_{ref}$ 0.6 + `t_lead_min` 0.40 | 0 | 0 | 0 / 1 | `catch_error` 1 | 3 | 0.64 |
@@ -869,6 +869,8 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **더 늦은 포구점은 풀지 못한다.** lead 하한 0.30 s 는 포구 전 노드를 2 개로 늘리지만 포구점이 멀어져 필요한 거리도 는다 (모자람 0.30 → 0.61 rad). 0.40 s 는 그 lead 의 후보가 탐색에 거의 없다 (첫 풀이 1 회). 채택된 6 발은 모두 잡았다 — 같은 6 발의 `closed_form` 은 4 발.
 - CLIK `dynamic` 은 `closed_form` 의 leap 을 바꿨다: 이 seed 의 supervisor 판정 `CAPTURED` 31 / 50 (truth 32), E0-F02 의 `box` 는 unit 당 20 – 26 (같은 판정, seed 701 – 703 — seed 가 달라 쌍 비교는 아니다). 재계획의 게이트 거부 ($\rho$ 2.0 – 5.5, E1-F09) 가 `dynamic` 에서 사라졌는지는 채택된 시행이 적어 말하지 못한다.
 
+**code review (2026-10-02, 브랜치 전체).** 9 건, 모두 반영했다. 동작에 닿는 것은 하나다: RT 의 `catch_box` 검사를 지우면서 "샘플러가 이 구간을 평가할 수 있는가" (관절 수가 팔과 같은가) 의 채택 시점 검사가 함께 사라졌다 — 그런 구간은 plan 과 함께 채택돼 node 0 에서 `ABORT_SAFE` 가 됐을 것이다. `JudgeDecelPlan` 의 context 에 기대 관절 수를 넣어 `malformed` 로 거부한다 (계획기와 RT 는 같은 sub-model 을 쓰므로 정상 경로에서는 나지 않는다). 나머지: 새 테스트의 `workspace` 사건 수 단언은 그 값을 아무도 쓰지 않아 실패할 수 없었다 — 지웠다 (위의 "0" 증거도 같은 이유로 뺐다). mirror 두 개의 설명에 "첫 configure 의 값" 을 적었다. `decel_event` 3 · leap 의 CLIK 형태를 옛 동작으로 적은 문서 네 곳, 이 절의 수치 두 곳을 고쳤다. 하네스: 출하 YAML 만 바꾼 턴이 `--run` 에서 아무것도 테스트하지 않던 것을 고쳤다 — 패키지의 추적 파일은 Markdown 을 빼고 모두 그 패키지를 빌드 · 테스트로 보낸다 (verdict 의 key 와 같은 집합). 다른 패키지의 테스트가 경로로 읽는 파일은 여전히 덮지 못한다 (hook 헤더에 한계로 적었다).
+
 **말하지 못하는 것.** 실기의 값 (서보 지연이 sim 과 다르면 $\gamma_{ref}$ 의 최적도 다르다). p1b 의 비열등 여부 — G-1 이 판정한다. 측정 $\gamma$ 0.5 근처의 봉우리가 실재하는지 (100 발의 잡음 안일 수 있다). leap 의 `mpc` 성공률. RT tick 의 꼬리 (재지 않았다 — G-1 의 항목). 원자료 · overlay · 요약: `~/rtc_eval/e1-f10/`, 도구: 에이전트 private plan 의 `mpc-e1-f10-tools`.
 
 ## 9. 개정 이력
@@ -877,6 +879,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r29 | E1-F10 마무리: 결정 MD-76 (G-1 의 N 300 쌍 유지, leap 미달로 닫음, p1b 의 남은 간격은 더 줄이지 않음), §8 "E1-F10" 에 code review 반영 (구간의 관절 수 검사, 기록 정정), 미결 정리 |
 | r28 | E1-F10 의 결과: 결정 MD-75 (p1b 의 `catch.gamma_ref` 0.6 채택, leap 은 채택값 없음), §8 "E1-F10" (선별 · 확인 · leap 의 구조 문제), 미결을 다시 씀 — G-1 의 N (불일치율 0.43), p1b 에 남은 간격, leap 의 첫 풀이 기준 궤적 |
 | r27 | E1-F10 착수: 결정 MD-71 – MD-74 (G-1 의 한계 0.10 · N 300 쌍 · seed · 반복 상한, 단계 기준은 위치로 · 손잡이 순서 · leap 의 더 늦은 포구점, RT 의 `catch_box` 검사 폐기 — MD-43 과 MD-67 의 그 부분, CLIK 은 `dynamic` 만 — leap 출하 YAML). §1 의 한계 · N · 대조군 문장, 미결의 E1-F10 항목을 다시 씀 (`t_lead_min` 은 plan 을 일찍 내는 키가 아니라 탐색의 lead 하한이다) |
 | r26 | E1-F05 완료 반영 ([#678](https://github.com/hyujun/rtc-framework/pull/678)) — 상태줄 · §6 의 표 · 브랜치 계획 (`main` 에서 실패한다던 테스트는 99c2188e 로 이미 통과했다 — 그 문장 삭제), §8 "E1-F05" (도구의 확인, code review, 하네스), §8 "E1-F09" 의 node 0 대기 시간을 제자리에서 정정, 미결에서 E1-F05 항목을 빼고 `decel_*` 이름 통일 · 항별 비용 분해 · GUI 의 lane 상태 · `catching_arm_budget` 의 `mpc` 기준을 넣음 |

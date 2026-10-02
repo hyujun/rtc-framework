@@ -1346,6 +1346,16 @@ TEST_F(DecelMpcScenarioTest, APlanWithAMalformedSegmentIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kMalformed));
 }
 
+TEST_F(DecelMpcScenarioTest, APlanWithASegmentOfAnotherJointCountIsNotTaken) {
+  // Well-formed in itself — every used node entry finite, the last at rest —
+  // and not this arm's: the sampler is bound to the arm's joints and could
+  // never evaluate it. Taken with its plan, the trial would enter APPROACH
+  // and abort at node 0; refused here, the pair is simply not there.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  WritePair([](DecelPlanSnapshot& s) { s.nv -= 1; });
+  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kMalformed));
+}
+
 TEST_F(DecelMpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken) {
   // MD-37: published after the floor, predicted from an RT state before it.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
@@ -1358,7 +1368,9 @@ TEST_F(DecelMpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken)
 // point of the plans it publishes. The RT takes a segment on JudgeDecelPlan
 // and the switch gate alone. Under a catch box whose ceiling is below the hand
 // no node of any segment is inside it — the pair is taken and a replan is
-// followed all the same.
+// followed all the same. (What these assert is the adoption itself: no event
+// code is left to count — a check brought back under any name fails them by
+// refusing the pair or the replan.)
 
 class DecelMpcNoCatchBoxCheckTest : public DecelMpcScenarioTest {
  protected:
@@ -1374,7 +1386,6 @@ TEST_F(DecelMpcNoCatchBoxCheckTest, APairWhoseStopLeavesTheCatchBoxIsTaken) {
   ASSERT_NO_FATAL_FAILURE(BringUpUnderABoxThatHoldsNoNode());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
-  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 0) << Transitions();
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
@@ -1393,7 +1404,6 @@ TEST_F(DecelMpcNoCatchBoxCheckTest, AReplanWhoseStopLeavesTheCatchBoxIsFollowed)
       0)
       << "the replan was not followed\n"
       << Transitions();
-  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 0) << Transitions();
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 

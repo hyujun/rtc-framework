@@ -2265,9 +2265,10 @@ def decel_lane_metrics(ctx: TrialContext) -> dict:
     Read off the tick record's ``decel_event`` (one value per tick), so every
     count is of EVENTS, not ticks: an admission, a replacement, a switch and a
     gate refusal each last one tick; a deferral (a segment for a later grid
-    point waiting in the box, MD-66), a ``catch_box`` refusal while TRACKING
-    judges the pair, and an ``aged`` refusal repeat on every tick the segment
-    sits there, and are counted as runs of consecutive ticks.
+    point waiting in the box, MD-66) and an ``aged`` refusal repeat on every
+    tick the segment sits there, and are counted as runs of consecutive ticks —
+    as is, in logs from before MD-73, a ``catch_box`` refusal while TRACKING
+    judges the pair.
 
     - ``decel_segments_followed`` — distinct ``decel_seq`` the RT followed;
     - ``decel_switches`` / ``_admitted`` / ``_replaced`` / ``_gate_refused``;

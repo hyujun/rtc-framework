@@ -827,6 +827,36 @@ TEST(DecelAdmission, PreCatchSegmentNeedsTheContextToAcceptIt) {
   EXPECT_EQ(rtc::catching::JudgeDecelPlan(s, ctx, none), DecelRefusal::kNone);
 }
 
+TEST(DecelAdmission, ASegmentOfAnotherJointCountIsMalformed) {
+  // ValidateDecelNodes bounds nv by the payload's capacity; whether the
+  // caller's sampler can evaluate the segment is the context's to say. A
+  // context that names its joint count refuses any other as kMalformed; one
+  // that names none (0) does not look.
+  using rtc::catching::DecelRefusal;
+  DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 73, 3, 7).p;
+  p.publish_ns = kTc - 500'000'000;
+  p.rt_state_ns = p.publish_ns - 1'000'000;
+  rtc::catching::DecelAdmissionContext ctx{};
+  ctx.plan_active = true;
+  ctx.plan_id = p.plan_id;
+  ctx.plan_t_c_ns = p.t_c_ns;
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
+  ctx.max_age_ns = 50'000'000;
+  ctx.accept_pre_catch = true;
+  const rtc::catching::AdmittedDecel none{};
+  ASSERT_EQ(p.nv, 6);
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  ctx.expected_nv = 6;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  ctx.expected_nv = 7;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kMalformed);
+  ctx.expected_nv = 5;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kMalformed);
+  // Still behind the age check, as the node scan is.
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 60'000'000};
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kAged);
+}
+
 TEST(DecelAdmission, ASegmentForAnotherTrackIsNotThisPlans) {
   // The segment carries the PLAN's track. A context that names the followed
   // plan's track refuses any other as kPlan — ahead of the age check, with
