@@ -1001,6 +1001,7 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 - **`<include>` 를 따라가지 않는다.** include 로만 들어오는 관절 · body 는 텍스트에 없으므로 관절 · link 별 비교 대상이 아니다 — 틀린 값을 내는 것이 아니라 비교하지 않는다. 구조 비교 (컴파일한 모델) 는 include 를 포함한 전체를 본다.
 - `<frame>` 의 pose (frame 의 `childclass` 는 읽는다 — frame 아래 body 의 관절은 world FK 없이 `[WARN] FK unavailable` 로 떨어진다) · `jointinparent` · tendon / site 전달 · ball / free 관절의 `range` · dynamics 가 있는 actuator 의 `ctrlrange`.
 - **"한계 없음" 과 "한계 0" 을 구별하지 못한다** — 둘 다 `0` 이다.
+- `<default>` 안의 `<position>` · `<velocity>` · `<damper>` 같은 shortcut 은 "순수 gain 이 아니다" 로만 기록한다. 그 default 를 `<general biastype="none">` 이 물려받으면 MuJoCo 는 gain = `kp` 인 순수 gain 으로 컴파일하는데 도구는 gain 1 로 읽는다. `gear="0"` 인 한계 없는 actuator 는 한계 없음으로 읽는다. 둘 다 `robot_descriptions` 에 없다.
 
 **`urdf_to_mjcf` 의 새 변환 결과는 `--validate` 에서 `EFFORT MISMATCH` 를 낸다** (#693). 변환기는 관절의 위치 범위를 gain 없는 `<general>` 의 `ctrlrange` 로 쓰는데, MuJoCo 는 그것을 위치 범위 크기의 토크 한계로 컴파일한다 (`MJCF=2.9671  URDF=200` 꼴). 도구가 맞게 읽은 것이다 — `robot_descriptions` 의 MJCF 는 actuator 에 affine bias 가 있어 (위치 서보) `ctrlrange` 가 토크 한계가 아니고, 해당하지 않는다.
 
