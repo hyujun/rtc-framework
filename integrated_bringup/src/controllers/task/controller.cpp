@@ -267,7 +267,9 @@ void DemoTaskController::OnDeviceConfigsSet() {
   // on `hand_dof_ == 0`. See joint/controller.cpp for the full rationale.
   hand_dof_from_config_ = hand_dof_ > 0;
 
-  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
+  // arm_handle_ is null when no model was built (a controller driven with no
+  // URDF): there is then no frame to resolve, whatever links the device names.
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg && arm_handle_) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {  // 0 = universe (not found)

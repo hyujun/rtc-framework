@@ -399,21 +399,9 @@ std::map<std::string, rtc::DeviceNameConfig> WithTheArmTipOneJointBeforeTheHand(
   return devices;
 }
 
-enum class BringUp {
-  kControllerManager,  ///< PreConfigure → device configs → on_configure
-  kConfigLoadedTwice,  ///< LoadConfig → device configs → on_configure (reloads)
-};
-
-const char* Name(BringUp order) {
-  return order == BringUp::kControllerManager ? "cm" : "reload";
-}
-
-template <class Ctrl>
-struct Configured {
-  std::unique_ptr<Ctrl> ctrl;
-  rclcpp_lifecycle::LifecycleNode::SharedPtr node;  // owns the publishers' lifetime
-  typename Ctrl::CallbackReturn rc{Ctrl::CallbackReturn::ERROR};
-};
+using fx::BringUp;
+using fx::Configured;
+using fx::Name;
 
 class HandFkWiringControllers : public ::testing::Test {
  protected:
@@ -433,26 +421,7 @@ class HandFkWiringControllers : public ::testing::Test {
   static Configured<Ctrl> Configure(BringUp order,
                                     const std::map<std::string, rtc::DeviceNameConfig>& devices,
                                     const std::string& tag) {
-    using Fx = fx::ControllerFixture<Ctrl>;
-    Configured<Ctrl> out;
-    rclcpp::NodeOptions opts;
-    opts.use_global_arguments(false);
-    out.node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
-        std::string("hand_fk_") + Fx::kName + "_" + Name(order) + "_" + tag, "", opts);
-
-    out.ctrl = Fx::Make();
-    out.ctrl->SetSystemModelConfig(fx::SharedIiwa7LeapModelConfig());
-    out.ctrl->SetSharedModelBuilder(fx::SharedIiwa7LeapBuilder());
-    out.ctrl->SetControlRate(1.0 / fx::kDt);
-    const YAML::Node yaml = YAML::Load(Fx::Yaml());
-    if (order == BringUp::kControllerManager) {
-      EXPECT_EQ(out.ctrl->PreConfigure(out.node, yaml), Ctrl::CallbackReturn::SUCCESS) << Fx::kName;
-    } else {
-      out.ctrl->LoadConfig(yaml);
-    }
-    out.ctrl->SetDeviceNameConfigs(devices);
-    out.rc = out.ctrl->on_configure(rclcpp_lifecycle::State{}, out.node, yaml);
-    return out;
+    return fx::ConfigureIiwa7Leap<Ctrl>(order, devices, "hand_fk_" + tag);
   }
 
   /// Self-init tick plus a few holds at the test state.

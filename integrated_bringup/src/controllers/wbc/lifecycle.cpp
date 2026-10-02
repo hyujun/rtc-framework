@@ -129,6 +129,14 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         std::min(static_cast<std::size_t>(std::max(contact_mgr_config_.max_contact_vars, 0)),
                  integrated_bringup::WbcDiagLogPod::kMaxContactVars);
 
+    // An arm model whose tip frame did not resolve: both tick lanes would read
+    // the arm tip through pinocchio's universe frame and publish that pose as
+    // the tip, flagged valid.
+    if (const std::string arm_tip_error = ArmTipConfigError(); !arm_tip_error.empty()) {
+      RCLCPP_ERROR(logger_, "arm tip unresolved: %s", arm_tip_error.c_str());
+      return CallbackReturn::FAILURE;
+    }
+
     // The hand fingertip FK could not be tied to its device group or to the arm
     // tip (OnDeviceConfigsSet resolved it): every fingertip pose — and whatever
     // reads one — would be finite and wrong.
