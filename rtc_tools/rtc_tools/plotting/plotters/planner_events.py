@@ -243,9 +243,10 @@ def _draw_decel_catch(ax, df, t):
     """The catch node as each solve left it, and the speed a first solve
     started from.
 
-    Markers on the rows that have a value, joined by a thin line: only a solve
-    with the catch terms writes these, so most rows are NaN and a plain line
-    would draw nothing for a value between two NaN rows. The two errors
+    Markers only, on the rows that have a value: only a solve with the catch
+    terms writes these, so most rows are NaN — a line would draw nothing for a
+    value between two NaN rows, and a line through the values would join one
+    trial's last solve to the next trial's first. The two errors
     (position in mm, approach axis in degrees) share the left axis; the
     velocity terms (‖v_rel‖ in m/s, γ) and `decel_x0_speed` (rad/s, first
     solves only) the right one.
@@ -260,7 +261,7 @@ def _draw_decel_catch(ax, df, t):
             axis.plot(
                 t[ok],
                 values[ok],
-                linewidth=0.5,
+                linestyle="none",
                 marker=marker,
                 markersize=3.5,
                 color=colour,
