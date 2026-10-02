@@ -420,13 +420,39 @@ expect_contains "untracked script is routed to a build" "$out" "BUILD_PKGS=[rtc_
 rm -rf "$dir"
 
 # 15e. ...and the widening stays an allowlist. A .py under <pkg>/config/ is not
-#      package source: config/ holds YAML that the parse gate already covers, and
-#      admitting it would make the filter "any directory under a package", which is
-#      the unbounded reading 15 exists to rule out.
+#      package source: config/ holds no source, and admitting it would make the
+#      filter "any directory under a package", which is the unbounded reading 15
+#      exists to rule out. (Its YAML has a route of its own -- 15f.)
 dir=$(make_fixture)
 printf 'x = 1\n' >"$dir/rtc_demo/config/fresh.py"
 out=$(run_hook "$dir")
 expect_contains "untracked .py under config/ is not routed to a build" "$out" "BUILD_PKGS=[]"
+rm -rf "$dir"
+
+# 15f. The YAML config/ does hold is another matter. It is not source, but it is
+#      what the package's tests load from the install tree, and a turn whose
+#      ONLY change is a shipped value used to pass --run with "built and tested
+#      []" (2026-10-02): the parse gate says the file is YAML, not that the
+#      profile still loads. Tracked or new, at any depth under config/; a YAML
+#      anywhere else in the package is not installed configuration.
+dir=$(make_fixture)
+printf 'gain: 1.0\n' >"$dir/rtc_demo/config/demo.yaml"
+git -C "$dir" add -A
+git -C "$dir" commit -qm "a shipped value"
+printf 'gain: 2.0\n' >"$dir/rtc_demo/config/demo.yaml"
+out=$(run_hook "$dir")
+expect_contains "an edited config YAML routes its package to build/test" "$out" "BUILD_PKGS=[rtc_demo]"
+git -C "$dir" checkout -q -- rtc_demo/config/demo.yaml
+mkdir -p "$dir/rtc_demo/config/robot"
+printf 'gain: 3.0\n' >"$dir/rtc_demo/config/robot/new.yml"
+out=$(run_hook "$dir")
+expect_contains "a new config YAML in a subdirectory does too" "$out" "BUILD_PKGS=[rtc_demo]"
+rm -rf "$dir/rtc_demo/config/robot"
+mkdir -p "$dir/rtc_demo/docs"
+printf 'note: 1\n' >"$dir/rtc_demo/docs/table.yaml"
+printf 'note: 1\n' >"$dir/rtc_demo/scratch.yaml"
+out=$(run_hook "$dir")
+expect_contains "a YAML outside config/ builds nothing" "$out" "BUILD_PKGS=[]"
 rm -rf "$dir"
 
 # --- path-scoped rule glob gate ----------------------------------------------

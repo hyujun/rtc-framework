@@ -71,8 +71,9 @@
 #   2. Build + test on changed packages -- EXECUTED under --run, only CHECKED
 #      at the turn end (see Modes and "Turn end: evidence, not execution")
 #        - a package is "changed" for this phase by its source (.cpp/.hpp/.h/
-#          .cc/.py), its CMakeLists.txt / package.xml / colcon.pkg, or a shell
-#          script in its source directories (see CHANGED_SH_BUILD)
+#          .cc/.py), its CMakeLists.txt / package.xml / colcon.pkg, a shell
+#          script in its source directories (see CHANGED_SH_BUILD), or a YAML
+#          under its config/ (see CHANGED_CONFIG_BUILD)
 #        - rtc_base / rtc_msgs change -> ./build.sh full --tests + colcon test all
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>,
@@ -724,9 +725,10 @@ CHANGED_META_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '(^|/)(CMakeLists\.txt|
 # matches the source tree and a rerun of the owning package's tests.
 #
 # The list stays an ALLOWLIST of installed-source dirs. config/ is deliberately
-# absent: it holds YAML, which the parse gate already covers, and admitting it
-# would turn this into "any directory under a package" -- the unbounded reading the
-# scratch exclusion exists to prevent.
+# absent: it holds no source, and admitting it would turn this into "any
+# directory under a package" -- the unbounded reading the scratch exclusion
+# exists to prevent. The YAML it does hold is routed by its own list
+# (CHANGED_CONFIG_BUILD below), not as source.
 # A backreference is not portable across grep flavours, so match with awk.
 CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ '
   NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ \
@@ -746,6 +748,21 @@ CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
   NF >= 3 && $NF ~ /\.sh$/ \
     && ($2 == "src" || $2 == "include" || $2 == "test" \
         || $2 == "launch" || $2 == "scripts" || $2 == $1)' \
+  || true)
+# A YAML under <pkg>/config/ routes its package to build/test as well, tracked
+# or not. It was parsed (Phase 1b) and nothing else, on the reading that the
+# parse gate covers config. That gate answers "is this YAML"; the package's
+# tests answer "does the shipped profile still load, and inside the ranges the
+# parser enforces" -- they read these files from the install tree (the
+# shipped-profile suites configure every controller from them), and with
+# --symlink-install an edit is live there without a build. Seen 2026-10-02: a
+# turn whose last change was one shipped value passed --run in two seconds
+# with "built and tested []". The verdict key already held the file (a config
+# edit voids a verdict the package has); what was missing is this route, for
+# the turn in which the YAML is the package's ONLY change. Other directories
+# stay out: a YAML elsewhere in a package is not installed configuration.
+CHANGED_CONFIG_BUILD=$(echo "$CHANGED" | awk -F/ '
+  NF >= 3 && $2 == "config" && $NF ~ /\.(yaml|yml)$/' \
   || true)
 
 # --- Pure-format fast path detection ---
@@ -903,8 +920,9 @@ while IFS= read -r pkg_dir; do
   [ -n "$pkg_dir" ] || continue
   [ -f "$pkg_dir/package.xml" ] || continue
   BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}"
-done <<< "$(printf '%s\n%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
-             "$CHANGED_TESTCFG" | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
+done <<< "$(printf '%s\n%s\n%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
+             "$CHANGED_TESTCFG" "$CHANGED_CONFIG_BUILD" \
+             | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
 # --run: a package whose installed binaries were rebuilt since its verdict is
 # owed a build and a test run whether or not its source changed.
 for pkg_dir in $STALE_ARTIFACT_PKGS; do
