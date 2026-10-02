@@ -285,15 +285,14 @@ TEST(PlannerEventsCsv, EveryRowHasTheHeadersWidthAndIdleWakesAreSkipped) {
 
 TEST(PlannerEventsCsv, ADecelStepEarnsARowOnlyWhenItDidSomething) {
   // MPC E1-F03: the decel columns are appended (readers select by name), and
-  // a wake whose decel step only waited does not earn a row on its own — in
-  // COMMITTED every wake has a decel outcome, most of them "not due".
+  // a wake whose decel step only waited does not earn a row on its own.
   using rtc::catching::DecelOutcome;
   std::ostringstream header;
   integrated_bringup::WritePlannerEventsHeader(header);
   EXPECT_NE(header.str().find(",max_catchable,decel_outcome,"), std::string::npos);
   rtc::catching::PlannerCycleRecord rec{};
-  for (const DecelOutcome waited : {DecelOutcome::kOff, DecelOutcome::kNotDue,
-                                    DecelOutcome::kUpToDate, DecelOutcome::kPastReplanWindow}) {
+  for (const DecelOutcome waited :
+       {DecelOutcome::kOff, DecelOutcome::kUpToDate, DecelOutcome::kPastReplanWindow}) {
     rec.decel.outcome = waited;
     EXPECT_FALSE(integrated_bringup::PlannerEventWorthRecording(rec))
         << rtc::catching::DecelOutcomeName(waited);
