@@ -1,7 +1,7 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r22 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
-- 상태: **E0 완료**, E1 진행 중. 완료: E1-F01 – F04 · E1-F07 · E1-F08. E1-F09 L7 ([#662](https://github.com/hyujun/rtc-framework/issues/662)) 은 구현과 sim 측정이 끝났고 security review 와 머지가 남았다 — `mode: mpc` 에서 RT 가 plan 과 첫 구간을 함께 채택해 APPROACH 부터 HOLD 까지 구간을 따른다 (sim p1b 50 발: abort 0, 성공률은 튜닝 전 0.34 vs `closed_form` 0.80). 다음은 F05 → F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) → F06 (G-1). feature 별 상태는 §6
+- 개정: r23 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
+- 상태: **E0 완료**, E1 진행 중. 완료: E1-F01 – F04 · E1-F07 – F09. `mode: mpc` 는 계획기가 plan 과 첫 구간을 쌍으로 내고 RT 가 APPROACH 부터 HOLD 까지 그 구간을 따르는 닫힌 루프다 (sim p1b 50 발: abort 0, 성공률은 튜닝 전 0.34 vs `closed_form` 0.80). 출하 기본은 `closed_form` 그대로다. 다음은 F05 로그 · 도구 ([#631](https://github.com/hyujun/rtc-framework/issues/631)) → F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) → F06 (G-1). feature 별 상태는 §6
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5b) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
@@ -191,6 +191,9 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 미결 — 해당 feature 의 spec 에서 정한다:
 
 - E1-F10: 비열등 한계 · N · 튜닝 seed · 반복 상한 (튜닝 전에, MD-50)
+- E1-F10: ur5e_p1b 의 성공률 격차 (0.34 vs 0.80, §8) — 팔이 $t_c$ 에서 명령보다 16.7 mm 뒤에 있다. 원인의 분해가 먼저이고, 손잡이 후보는 포구 전 간격 (`approach.dt_pre_s`), plan 을 더 일찍 내는 쪽 (`planner.slice.t_lead_min`), 서보 지연을 비용 · 모델에 넣는 것 (formulation 변경), 정지 부분의 작업공간 검사를 계획기의 게시 조건으로 옮기는 것 (RT 의 `catch_box` 거부 74 건) 이다
+- E1-F05: `catching_diag.csv` 의 decel 블록 열 (sim 분석은 임시 패치로 읽었다), 더 쓰이지 않는 `planner_events.csv` 의 `decel_h_s` · `decel_qdd_trusted` 열과 그 코드 필드 (MD-70)
+- E1-F06: 격리 코어 · 제어 PC 의 RT tick (sim 의 최댓값은 두 planner 모두 120 µs 를 넘었다, §8)
 - E1-F10: iiwa7_leap 의 포구 전 시간 — plan 이 lead 0.21 s 근처에서 나와 첫 구간이 거의 게시되지 않는다. 간격을 줄이는 것만으로는 35 % 에서 멈춘다 (§8). 손잡이는 leap 의 `approach.dt_pre_s` 와 plan 을 더 일찍 내는 쪽 (`planner.slice.t_lead_min`, 순위 게이트) 이다
 - E1-F06: `mpc` 를 기본값으로 바꿀지
 - E3-F01: 포구 후보 선택을 MPC 로 옮길지 (MD-46 의 편차) 와 계획기 interface (ARCH-3)
@@ -239,17 +242,17 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 
 ### E1. 단일 팔 MPC — [#621](https://github.com/hyujun/rtc-framework/issues/621) · 필수 · 최우선
 
-대상 로봇: ur5e_p1b · iiwa7_leap. `mode: mpc` 의 팔 기준을 APPROACH 부터 정지까지 MPC 가 만든다 — formulation §1.3 에서 dual arm · waist 항을 뺀 구성이다 (MD-45 · MD-46). E1-F01 – F04 는 정지 구간만 다룬 첫 단계다. 게이트: **G-1** (§1).
+대상 로봇: ur5e_p1b · iiwa7_leap. `mode: mpc` 의 팔 기준을 APPROACH 부터 정지까지 MPC 가 만든다 — formulation §1.3 에서 dual arm · waist 항을 뺀 구성이다 (MD-45 · MD-46). E1-F01 – F04 는 정지 구간만 다룬 첫 단계이고, 그때의 정지 구간 전용 계획기는 지웠다 (MD-70). 게이트: **G-1** (§1).
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
 | E1-F01 | [#627](https://github.com/hyujun/rtc-framework/issues/627) | jerk 입력 condensed QP 코어 (토크 제약 행 · slack) | E0-F03 | 완료 ([#655](https://github.com/hyujun/rtc-framework/pull/655)). 할당 0 은 코어 경로만 (MD-22) |
 | E1-F02 | [#628](https://github.com/hyujun/rtc-framework/issues/628) | 관절 노드 payload (`DecelPlanSnapshot`, MD-27) + RT 샘플러 (관절 기준에서 FK) | E1-F01 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). RT tick 배선은 E1-F04 (MD-32) |
 | E1-F03 | [#629](https://github.com/hyujun/rtc-framework/issues/629) | 계획기 스레드 통합 — 정지 구간 선계산 | E1-F02 | 완료 ([#656](https://github.com/hyujun/rtc-framework/pull/656)). 출하는 꺼짐 — §8 |
-| E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 (법칙은 configure 에서 하나, MD-44) | E1-F03 | 구현 완료 ([#658](https://github.com/hyujun/rtc-framework/pull/658)) — 결정 MD-34 – MD-44, 측정 §8. sim smoke 에서 `mode: mpc` 진입 20/20 abort 였고 (→ MD-45), 마지막 항목 (sim 의 진입 연속) 은 E1-F09 의 sim 에서 충족됐다 (§8) |
+| E1-F04 | [#630](https://github.com/hyujun/rtc-framework/issues/630) | L7 DECEL 전환 — MPC 궤적 추종 (법칙은 configure 에서 하나, MD-44) | E1-F03 | 완료 ([#658](https://github.com/hyujun/rtc-framework/pull/658)) — 결정 MD-34 – MD-44, 측정 §8. sim smoke 에서 `mode: mpc` 진입 20/20 abort 였고 (→ MD-45), 마지막 항목 (sim 의 진입 연속) 은 E1-F09 가 닫았다 ([#674](https://github.com/hyujun/rtc-framework/pull/674)) |
 | E1-F07 | [#660](https://github.com/hyujun/rtc-framework/issues/660) | 단일 팔 MPC 코어 — APPROACH–정지 격자, 포구 항 (위치 · 접근축 · 상대속도), 항 단위 조립 (MD-46 · MD-49) | E1-F04 | 완료 (2026-10-01, [#666](https://github.com/hyujun/rtc-framework/pull/666)) — 결정 MD-51 – MD-54, 측정 §8. 격자는 MD-54 이고 첫 풀이와 격자점 전진의 계산 시간은 임계를 넘은 채다 (E1-F08 의 예산이 받는다) |
 | E1-F08 | [#661](https://github.com/hyujun/rtc-framework/issues/661) | 계획기 — TRACKING – DECEL 의 MPC 풀이, 첫 구간 · 예산, 재계획 ($x_0$ 경로 (i) 일반화), 격자의 배선과 간격이 둘인 payload (MD-54) | E1-F07 | 완료 (2026-10-02, [#673](https://github.com/hyujun/rtc-framework/pull/673)) — 결정 MD-55 – MD-64, 측정 §8. 예산 0.035 · 0.025 s 확정. RT 가 그 구간을 받는 것은 E1-F09 다. iiwa7_leap 은 이 격자로 plan 을 거의 내지 못한다 (E1-F10) |
-| E1-F09 | [#662](https://github.com/hyujun/rtc-framework/issues/662) | L7 — RT 가 APPROACH – HOLD 를 MPC 구간으로 추종, DECEL 진입은 연속 (E-8). 노드별 간격을 읽는 샘플러 (MD-54) | E1-F08 | 구현 · sim 측정 완료 (2026-10-02, 브랜치 `feat/catching-mpc-approach-l7`) — 결정 MD-65 – MD-69, 측정 §8. p1b sim 50 발에서 구간 추종으로 HOLD 까지 50/50, abort 0. 성공률은 `closed_form` 보다 낮다 (E1-F10). security review 와 머지가 남았다 |
+| E1-F09 | [#662](https://github.com/hyujun/rtc-framework/issues/662) | L7 — RT 가 APPROACH – HOLD 를 MPC 구간으로 추종, DECEL 진입은 연속 (E-8). 노드별 간격을 읽는 샘플러 (MD-54) | E1-F08 | 완료 (2026-10-02, [#674](https://github.com/hyujun/rtc-framework/pull/674)) — 결정 MD-65 – MD-70, 측정 §8. p1b sim 50 발에서 구간 추종으로 HOLD 까지 50/50, abort 0. security review 는 보고할 것이 없었다. 성공률은 `closed_form` 보다 낮다 (E1-F10) |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — 포구 항 열 · APPROACH 구간 포함. `planner_events` 의 decel 열이 `rtc_tools` 의 목록에 없어 `main` 에서 테스트 하나가 실패한다 ([#631 코멘트](https://github.com/hyujun/rtc-framework/issues/631#issuecomment-5925477065)) | E1-F09 | 대기 |
 | E1-F10 | [#663](https://github.com/hyujun/rtc-framework/issues/663) | mpc planner 튜닝 — closed_form 대비 성공률 비열등 (MD-50) | E1-F05 | 대기 |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | 대기 |
@@ -327,7 +330,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 | `feat/catching-decel-mpc-l7` (완료, [#658](https://github.com/hyujun/rtc-framework/pull/658)) | E1-F04 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정한다 |
 | `feat/catching-mpc-approach-core` (완료, [#666](https://github.com/hyujun/rtc-framework/pull/666)) | E1-F07 | 신규 수치 항 (포구 항 선형화). code review 단위 |
 | `feat/catching-mpc-approach-plan-path` (완료, [#673](https://github.com/hyujun/rtc-framework/pull/673)) | E1-F08 | 계획기 스레드와 payload 의 간격 (MD-54). 새 스레드는 필요하지 않았다 |
-| `feat/catching-mpc-approach-l7` | E1-F09 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정한다 |
+| `feat/catching-mpc-approach-l7` (완료, [#674](https://github.com/hyujun/rtc-framework/pull/674)) | E1-F09 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정했다. 정지 구간 전용 계획기의 삭제 (MD-70) 도 여기서 했다 |
 | `feat/catching-decel-mpc-tooling` | E1-F05 | 로그 · plot · GUI |
 | `exp/catching-mpc-tuning` | E1-F10 | 튜닝. 채택한 config 만 YAML 로 넣고 실험 overlay 와 원자료는 repo 밖에 둔다. **나누는 조건**: 결과 기록이 커지면 `docs/` 브랜치로 나눈다 |
 | `docs/catching-decel-mpc-g1` | E1-F06 | 게이트 G-1 의 판정과 결과 기록. 기본값 변경이 결정되면 그 변경은 별도 브랜치다 |
@@ -360,7 +363,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 | 1 | `docs/mpc-dualarm-plan` (완료) | — |
 | 2 | `chore/ws-first-build-path` (완료) | — |
 | 3 | `feat/catching-baseline-grid-sweep` (완료), `feat/catching-decel-mpc-core` (완료) | `feat/tsid-clik-multiframe` |
-| 4 | `feat/catching-decel-mpc-plan-path` (완료) → `-l7` (완료) → `feat/catching-mpc-approach-core` (완료) → `-plan-path` (완료) → **`-l7` (다음)** → `feat/catching-decel-mpc-tooling` → `exp/catching-mpc-tuning` → `docs/catching-decel-mpc-g1` | `feat/g1-p1b-bringup` |
+| 4 | `feat/catching-decel-mpc-plan-path` (완료) → `-l7` (완료) → `feat/catching-mpc-approach-core` (완료) → `-plan-path` (완료) → `-l7` (완료) → **`feat/catching-decel-mpc-tooling` (다음)** → `exp/catching-mpc-tuning` → `docs/catching-decel-mpc-g1` | `feat/g1-p1b-bringup` |
 | 5 | `feat/demo-dualarm-controller` → `feat/g1-dualarm-tooling` | — |
 | 6 | rename refactor (MD-48) → E3 의 다섯 브랜치 (E2 와 E1-F07 뒤, MD-47) | — |
 
@@ -371,7 +374,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 | Feature | 사유 | 효력 |
 |---|---|---|
 | E1-F04 | L7 전이 동작 변경 (E-8) | Critical — 착수 전 `[CONCERN]` 과 컨펌, 완료 후 security review |
-| E1-F09 | L7 전이 동작 변경 — APPROACH – HOLD 추종 (E-8) | Critical — 착수 전 `[CONCERN]` 과 컨펌, 완료 후 security review |
+| E1-F09 | L7 전이 동작 변경 — APPROACH – HOLD 추종 (E-8) | Critical — 착수 전 `[CONCERN]` 과 컨펌, 완료 후 security review. 둘 다 거쳤다 ([#674](https://github.com/hyujun/rtc-framework/pull/674)) |
 | E3-F05 | E-STOP 경로를 건드리면 E-8 | Critical |
 | E1-F03 | 새 스레드가 필요해지면 E-7 | 발동 안 함 — decel 계획기는 기존 계획기 스레드 안에서 돈다 (#656) |
 | E2-F04 | `rtc_tsid` public API 변경, 기존 소비자 둘 | code review, 기능 동등성이 성공 기준 |
@@ -757,6 +760,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - 계획기 (p1b): 첫 풀이 54 회 중 50 게시 · 4 보류 (`catch_error`), 한 wake 최대 20.1 ms. 같은 격자점 252 (게시 235) · 격자 전진 113 (게시 100) · 정지 코어 게시 170 (k = 0 · 1 · 2 가 62 · 56 · 52 — shadow 에서는 없던 k = 2 가 돈다). 재계획 최대 10.8 ms, 33.3 ms 를 넘긴 wake 0 회. 게시된 구간 사이의 간격 p50 34 ms. shadow 의 보류율 (격자 전진 21 %) 은 닫힌 루프에서 11.5 % 였다.
 - **iiwa7_leap (정보용).** plan 이 채택된 시행은 2 / 50 (첫 풀이 268 회 중 게시 2 — `catch_error` 181 · `slack` 62 · `too_late` 20, E1-F08 과 같은 양상). 그 둘은 모두 첫 구간을 따라 HOLD 까지 갔고 abort 는 0 이다 (truth 1 성공 · 1 실패). 재계획 6 개는 모두 게이트에서 거부됐다 ($\rho$ 2.0 – 5.5) — leap 의 출하 CLIK 는 `box` 가속 제약이라 위 lane 테스트의 `box` 경우와 같다. 표본 2 개로는 더 말하지 못한다 (E1-F10).
 - 측정의 흠. leap unit 의 첫 시도는 46 번째 시행에서 끊겼다 (rc 127 — 돌고 있는 `run_unit.sh` 를 편집했다). 같은 seed 로 다시 돌린 것이 위 값이고, 끊긴 것은 `leap_701.fail1` 로 남겼다.
+- security review (E-8, 2026-10-02): 보고할 취약점 없음. 구간의 모양을 읽는 새 인덱싱 (`n_pre` 로 시작하는 작업공간 검사, 전환 때의 포구 노드 위치, 계획기의 코어 슬롯) 은 모두 `ValidateDecelNodes` 와 샘플러의 모양 검사 뒤에서만 돈다 ([#662](https://github.com/hyujun/rtc-framework/issues/662#issuecomment-5943640738)).
 - 말하지 못하는 것. 제어 PC 의 tick 시간. 격리된 코어에서의 꼬리. p1b 의 seed 하나 (50 발) 밖의 성공률. 원자료: `~/rtc_eval/e1-f09/`, 도구: 에이전트 private plan 의 `mpc-e1-f09-tools`.
 
 ## 9. 개정 이력
@@ -765,6 +769,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r23 | E1-F09 완료 반영 ([#674](https://github.com/hyujun/rtc-framework/pull/674)) — 상태줄 · §6 의 표 · 브랜치 계획 갱신, security review 결과 (§8), 미결에 E1-F05 · F06 · F10 으로 넘긴 것 추가 |
 | r22 | 결정 MD-70: 정지 구간만 푸는 계획기와 `replan.t_pre_s` 삭제 (사용자 결정 2026-10-02). 미결에서 그 항목 제거 |
 | r21 | E1-F09 구현: 결정 MD-65 – MD-69 (`mpc` 는 언제나 APPROACH – HOLD 추종 · 쌍 채택 · 대기 슬롯의 교체와 나이 · track 과 정지 부분의 작업공간 검사 · node 0 전 유지 · 보고 범위), `shadow` 삭제, 측정 §8 (sim: abort 0, tick 은 `closed_form` 과 같음, 성공률은 낮음). 미결에 정지 구간 전용 계획기의 삭제 여부 추가 |
 | r20 | E1-F08 완료 반영 ([#673](https://github.com/hyujun/rtc-framework/pull/673)) — 상태줄 · §6 의 표 · 브랜치 계획 갱신 |
