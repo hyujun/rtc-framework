@@ -60,6 +60,11 @@ device joint order 와 primary-device submodel 처리는 컨트롤러마다 복�
 모델을 실제로 고르고 재정렬하는 것은 바인딩 몫이다 (`integrated_bringup/src/controllers/*/controller.cpp`).
 삭제된 어댑터의 동작 기록은 #172 Phase 3 · #236 에 있다.
 
+**팔 끝 frame** 은 바인딩이 device config 의 `urdf.tip_link` 로 한 번 찾는다. 팔 모델이 있는데 그 frame 이 풀리지
+않으면 joint · task · compliance · wbc 는 `on_configure` 를 거부한다
+(`integrated_bringup/include/integrated_bringup/support/arm_tip_resolution.hpp`) — 그대로 돌면 두 tick lane 이
+universe frame 의 pose 를 팔 끝으로 유효 표시해 낸다.
+
 **손 군의 fingertip FK** 는 그 바인딩 넷 (joint · task · compliance · wbc) 이 같은 helper 로 배선한다
 (`integrated_bringup/include/integrated_bringup/support/hand_fk_wiring.hpp`): 손 tree 모델의 handle 에 device 의 관절 순서를 이름으로
 걸고, 팔 끝 link → 손 root link 의 상수 변환을 구해 `T_root_fingertip = T_root_armtip · T_tip_mount ·
