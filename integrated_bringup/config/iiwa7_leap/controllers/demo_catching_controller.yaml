@@ -386,7 +386,10 @@ demo_catching_controller:
           # On THIS arm the plan first appears near a 0.21 s lead, which leaves
           # one 0.1 s node: that first solve is withheld and 186 of 200 sim
           # throws got no plan. 0.04 s spacing raised it to 70 of 200 — the
-          # pre-catch time, not the spacing, is short (MPC plan §8, #663).
+          # pre-catch time, not the spacing, is short (MPC plan §8). A later
+          # catch point does not buy it back: the first solve's rest-to-rest
+          # reference then falls further short of the catch pose (E1-F10 closed
+          # this arm as unmet, MD-76).
           n_pre_max: 6
           dt_pre_s: 0.1
           # The first solve assumes the arm rests at its wait pose; above this
@@ -417,8 +420,9 @@ demo_catching_controller:
           # Largest catch-node position error [m] a segment may carry (MD-62).
           catch_pos_err_max: 0.02
         catch:
-          # The core's catch terms at the catch node (E1-F07's measured values;
-          # provisional, #663 tunes them).
+          # The core's catch terms at the catch node (E1-F07's measured values).
+          # E1-F10 adopted nothing on this arm (MD-75): too few plans were taken
+          # to compare candidates.
           w_axis: 100.0
           w_v_par: 1.0
           w_v_perp: 20.0
@@ -604,7 +608,8 @@ demo_catching_controller:
         mode: closed_form
         # rho_max of the mpc segment-switch gate (MD-39), per joint:
         # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max. Read under mpc only.
-        # Provisional — E1-F10's measurement sets it (MD-50).
+        # Not measured on this arm: E1-F10 had too few adopted trials here
+        # (MPC plan §8 "E1-F10").
         switch_margin: 1.0
 
   # Group order IS the device index order: iiwa7 = 0 (held), leap = 1
