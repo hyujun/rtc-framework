@@ -89,8 +89,6 @@ SIM_COMBOS: list[tuple[str, dict[str, str]]] = [
             "model_path": "/nonexistent/scene.xml",
             "sync_timeout_ms": "50.0",
             "max_rtf": "10.0",
-            "kp": "10.0",
-            "kd": "1.0",
             "use_yaml_servo_gains": "true",
             "initial_controller": "demo_wbc_controller",
             "mpc_engine": "handler",
@@ -128,8 +126,26 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
 }
 
 
+# Arguments a launch does not take, although its siblings do. `mpc_engine`
+# selects the MPC engine of demo_wbc_controller, and g1_p1b ships no config for
+# that controller — the argument has nothing to reach there.
+ARGUMENTS_NOT_TAKEN: dict[str, set[str]] = {
+    "sim_g1_p1b.launch.py": {"mpc_engine"},
+}
+
+# The sims whose RT node takes an `mpc_engine` override.
+MPC_ENGINE_SIMS = [
+    f for f in SIM_LAUNCH_FILES if "mpc_engine" not in ARGUMENTS_NOT_TAKEN.get(f, set())
+]
+
+
 def _combos(filename: str) -> list[tuple[str, dict[str, str]]]:
     base = SIM_COMBOS if filename in SIM_LAUNCH_FILES else ROBOT_COMBOS
+    skipped = ARGUMENTS_NOT_TAKEN.get(filename, set())
+    base = [
+        (combo_id, {k: v for k, v in overrides.items() if k not in skipped})
+        for combo_id, overrides in base
+    ]
     return base + EXTRA_COMBOS.get(filename, [])
 
 
@@ -355,7 +371,7 @@ def test_combo_keys_are_declared_arguments(filename, combo_id, overrides):
     )
 
 
-@pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
+@pytest.mark.parametrize("filename", MPC_ENGINE_SIMS)
 def test_invalid_mpc_engine_is_rejected(filename):
     """Positive control: prove the OpaqueFunction body really runs.
 
