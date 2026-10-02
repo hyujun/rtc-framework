@@ -912,6 +912,37 @@ HAND_WITNESS_COLUMNS = ("hand_stalled_n", "hand_effort_frac", "hand_blocked_s", 
 # The vision snapshot the tick read (L8 §5.2) — G8-C2's exact join key into
 # the probe dump. Optional: a diag recorded before the columns has none.
 DIAG_INPUT_COLUMNS = ("input_snapshot_sequence", "input_generation")
+# The tick record's decel block (MPC E1-F04; columns since E1-F05, #631): what
+# the RT did with the MPC's segments. Optional, and each name on its own — a
+# diag recorded before the columns has none, and the E1-F09 measurement build
+# wrote the block WITHOUT ``decel_p_d_*``. See :func:`reference_at_lead` and
+# :func:`decel_lane_metrics`.
+DIAG_DECEL_COLUMNS = (
+    "decel_judged",
+    "decel_refusal",
+    "decel_event",
+    "decel_following",
+    "decel_seq",
+    "decel_rho",
+    "decel_p_d_x",
+    "decel_p_d_y",
+    "decel_p_d_z",
+)
+# CatchingDiagLogPod::DecelEvent / rtc::catching::DecelRefusal — the values
+# the lane metrics read (the full tables are in plotters/catching.py).
+DECEL_EVENT_ADMITTED = 1
+DECEL_EVENT_DEFERRED = 2
+DECEL_EVENT_WORKSPACE = 3
+DECEL_EVENT_SWITCHED = 4
+DECEL_EVENT_GATE_REFUSED = 5
+DECEL_EVENT_REPLACED = 10
+DECEL_REFUSAL_AGED = 5
+# TCP command speed [m/s] above which the command counts as moving
+# (:func:`command_kinematics_at_tc`). An arm holding its command is at 0.
+CMD_MOVING_SPEED_M_S = 0.02
+# Rows of the box filter the command's acceleration is smoothed over: a second
+# difference of FK(q_cmd) at 2 ms is dominated by tick noise.
+CMD_SMOOTH_ROWS = 5
 
 
 def diag_columns(header: Sequence[str]) -> list[str]:
@@ -923,7 +954,8 @@ def diag_columns(header: Sequence[str]) -> list[str]:
     lead = [DIAG_LEAD_COLUMN] if DIAG_LEAD_COLUMN in header else []
     hand_witness = [c for c in HAND_WITNESS_COLUMNS if c in header]
     inputs = [c for c in DIAG_INPUT_COLUMNS if c in header]
-    return list(DIAG_COLUMNS) + lead + hand_witness + inputs + joints
+    decel = [c for c in DIAG_DECEL_COLUMNS if c in header]
+    return list(DIAG_COLUMNS) + lead + hand_witness + inputs + decel + joints
 
 
 def arm_joints_from_diag(columns: Sequence[str]) -> list[str]:
@@ -1962,6 +1994,15 @@ class TrialContext:
     # The vision snapshot key per tick (DIAG_INPUT_COLUMNS), None when absent.
     input_seq: np.ndarray | None = None
     input_gen: np.ndarray | None = None
+    # The decel block per tick (DIAG_DECEL_COLUMNS), each None when its column
+    # is absent. ``decel_p_d`` is the followed segment's CLIK target, (n, 3).
+    decel_judged: np.ndarray | None = None
+    decel_refusal: np.ndarray | None = None
+    decel_event: np.ndarray | None = None
+    decel_following: np.ndarray | None = None
+    decel_seq: np.ndarray | None = None
+    decel_rho: np.ndarray | None = None
+    decel_p_d: np.ndarray | None = None
     _cache: dict = field(default_factory=dict)
 
     def fk_meas(self, ticks) -> np.ndarray:
@@ -1982,6 +2023,39 @@ class TrialContext:
         return out
 
 
+def reference_at_lead(ctx: TrialContext, kl: int) -> tuple[np.ndarray | None, str]:
+    """The Cartesian reference the command written at tick ``kl`` was aimed at,
+    and which law it came from.
+
+    The RT hands the CLIK one of two references (MPC plan MD-65): the soft-catch
+    law's ``ref_x`` (``closed_form``), or the followed MPC segment's sample
+    ``decel_p_d`` (``mpc``, APPROACH to HOLD). Both are sampled one tick past
+    the lead instant (MD-40), so either is "what this tick's command tracks".
+
+    - ``"segment"`` — ``decel_following`` at ``kl`` and the ``decel_p_d_*``
+      columns exist;
+    - ``"soft_catch"`` — otherwise, ``ref_valid`` at ``kl``;
+    - ``"none"`` — neither. The reference is ``None`` and the columns read
+      against it are NaN: on such a tick ``ref_x`` is the fresh record's zero
+      vector, and a CLIK error taken against it is the catch frame's distance
+      from the origin (0.9 m on the E1-F09 ``mpc`` units, whose diag has
+      ``decel_following`` but no ``decel_p_d``).
+    """
+    if ctx.decel_p_d is not None and ctx.decel_following is not None and ctx.decel_following[kl]:
+        return ctx.decel_p_d[kl], "segment"
+    if ctx.ref_valid[kl]:
+        return ctx.ref[kl], "soft_catch"
+    return None, "none"
+
+
+def lead_tick(ctx: TrialContext, t_c: float, t_lead: float) -> tuple[int, int]:
+    """``(kl, kc)``: the tick whose command was aimed at ``t_c`` and the tick
+    at ``t_c`` (the same tick with the lead off)."""
+    kc = int(np.argmin(np.abs(ctx.t - t_c)))
+    kl = int(np.argmin(np.abs(ctx.t - (t_c - t_lead)))) if t_lead > 0.0 else kc
+    return kl, kc
+
+
 def decompose_at_tc(
     ctx: TrialContext, truth: Truth | None, window_s: float, t_impact: float = math.inf
 ) -> dict:
@@ -1996,6 +2070,13 @@ def decompose_at_tc(
         FK(q_meas(t_c)) − p_true(t_c) = [FK(q_meas(t_c)) − FK(q_cmd(kl))]   servo
                                       + [FK(q_cmd(kl)) − ref(kl)]         CLIK
                                       + [ref(kl) − p_true(t_c)]           ref_vs_true
+
+    ``ref`` is the reference THAT TRIAL's law gave the CLIK
+    (:func:`reference_at_lead`, recorded as ``ref_source``): the soft-catch
+    ``ref_x`` under ``closed_form``, the followed segment's ``decel_p_d`` under
+    ``mpc`` — so the three terms mean the same thing under either planner
+    (plan error · CLIK error · servo lag) and a paired comparison reads one
+    column. With no reference at ``kl`` the CLIK and ref_vs_true terms are NaN.
 
     ``cmd_meas_gap_mm`` is the same-tick ``‖FK(q_meas(t_c)) − FK(q_cmd(t_c))‖``,
     recorded but not a servo error under lead: it adds the intended lead to the
@@ -2016,6 +2097,7 @@ def decompose_at_tc(
             "t_c",
             "gamma_f_planned",
             "t_lead_s",
+            "ref_source",
             "clik_mm",
             "servo_mm",
             "cmd_meas_gap_mm",
@@ -2030,13 +2112,14 @@ def decompose_at_tc(
         ),
         nan,
     )
+    rec["ref_source"] = ""  # not evaluated: no commit, so no t_c
     k = _first(mode == MODE_COMMITTED)
     if k is None:
         return rec
     t_c = float(t[k] + ctx.plan_t_c[k])  # plan_t_c_s is t_c − now
-    kc = int(np.argmin(np.abs(t - t_c)))
     t_lead = 0.0 if ctx.t_lead is None else float(ctx.t_lead[k])
-    kl = int(np.argmin(np.abs(t - (t_c - t_lead)))) if t_lead > 0.0 else kc
+    kl, kc = lead_tick(ctx, t_c, t_lead)
+    ref, rec["ref_source"] = reference_at_lead(ctx, kl)
     rec.update(
         t_commit=float(t[k]),
         t_c=t_c,
@@ -2045,7 +2128,8 @@ def decompose_at_tc(
     )
     f_cmd = ctx.fk_cmd(kl)[0]
     f_meas = ctx.fk_meas(kc)[0]
-    rec["clik_mm"] = float(np.linalg.norm(f_cmd - ctx.ref[kl]) * 1e3)
+    if ref is not None:
+        rec["clik_mm"] = float(np.linalg.norm(f_cmd - ref) * 1e3)
     rec["servo_mm"] = float(np.linalg.norm(f_meas - f_cmd) * 1e3)
     rec["cmd_meas_gap_mm"] = float(np.linalg.norm(f_meas - ctx.fk_cmd(kc)[0]) * 1e3)
     if truth is None:
@@ -2056,7 +2140,8 @@ def decompose_at_tc(
     p_true = ctx.fk.to_model(p_w[0])
     rec["pred_mm"] = float(np.linalg.norm(ctx.plan_p_c[kc] - p_true) * 1e3)
     rec["total_mm"] = float(np.linalg.norm(f_meas - p_true) * 1e3)
-    rec["ref_vs_true_mm"] = float(np.linalg.norm(ctx.ref[kl] - p_true) * 1e3)
+    if ref is not None:
+        rec["ref_vs_true_mm"] = float(np.linalg.norm(ref - p_true) * 1e3)
     rec["ball_speed_tc"] = float(np.linalg.norm(v_w[0]))
     # Arrival: the instant of closest approach between ball and measured catch
     # frame within ±window of t_c, evaluated on every tick.
@@ -2069,6 +2154,165 @@ def decompose_at_tc(
         i = int(np.argmin(d))
         rec["arrival_ms"] = float((t[win[i]] - t_c) * 1e3)
         rec["d_min_mm"] = float(d[i] * 1e3)
+    return rec
+
+
+def _box(x: np.ndarray, rows: int) -> np.ndarray:
+    """Moving average over ``rows`` rows along axis 0; the window shrinks at
+    the two ends (no zero padding)."""
+    x = np.asarray(x, dtype=float)
+    kernel = np.ones(rows)
+    norm = np.convolve(np.ones(len(x)), kernel, mode="same")
+    if x.ndim == 1:
+        return np.convolve(x, kernel, mode="same") / norm
+    return (
+        np.stack([np.convolve(x[:, i], kernel, mode="same") for i in range(x.shape[1])], 1)
+        / (norm[:, None])
+    )
+
+
+CMD_KINEMATICS_KEYS = (
+    "cmd_speed_tc",
+    "cmd_dvdt_tc",
+    "cmd_accel_tc",
+    "cmd_move_s",
+    "cmd_hold_s",
+)
+
+
+def command_kinematics_at_tc(ctx: TrialContext, t_c: float, t_lead: float) -> dict:
+    """How the COMMAND was moving when it was aimed at ``t_c`` (catch frame,
+    from FK(q_cmd) — no measurement, no reference).
+
+    A position servo with a lag leaves ``½ τ² a`` of a command that is still
+    accelerating, which a time lead does not compensate (MPC plan §8, "$t_c$
+    간격의 분해"). These columns are that acceleration and where it comes from,
+    the same quantity under either planner:
+
+    - ``cmd_speed_tc`` [m/s] — the command's speed at the lead tick ``kl``;
+    - ``cmd_dvdt_tc`` [m/s²] — d|v|/dt there (> 0: still speeding up);
+    - ``cmd_accel_tc`` [m/s²] — ‖a‖ there;
+    - ``cmd_hold_s`` [s] — from the first APPROACH tick to the first tick after
+      it whose command speed exceeds ``CMD_MOVING_SPEED_M_S`` (under ``mpc``
+      the wait for the first segment's node 0, MD-68; ≈ 0 under
+      ``closed_form``). NaN when the command never moved before ``kl``;
+    - ``cmd_move_s`` [s] — from that tick to ``kl``: the time the command had
+      to reach the catch (0 when it never moved).
+
+    Derivatives are central differences on the recorded ``t`` (the diag's rows
+    need not be evenly spaced); the acceleration and d|v|/dt are smoothed over
+    ``CMD_SMOOTH_ROWS`` rows. Everything is NaN without a commit, when ``kl`` is
+    too close to either end of the trial's window to difference, or when the
+    time axis repeats.
+    """
+    rec = dict.fromkeys(CMD_KINEMATICS_KEYS, math.nan)
+    if not math.isfinite(t_c):
+        return rec
+    kl, _ = lead_tick(ctx, t_c, t_lead)
+    pad = CMD_SMOOTH_ROWS  # rows past kl the differences and the filter read
+    hi = min(len(ctx.t), kl + pad + 1)
+    if kl < pad or hi - kl <= 2:
+        return rec
+    t = ctx.t[:hi]
+    if not np.all(np.diff(t) > 0.0):
+        return rec
+    p = ctx.fk_cmd(np.arange(hi))
+    if not np.all(np.isfinite(p)):
+        return rec
+    v = np.gradient(p, t, axis=0)
+    speed = np.linalg.norm(v, axis=1)
+    accel = _box(np.gradient(v, t, axis=0), CMD_SMOOTH_ROWS)
+    dvdt = np.gradient(_box(speed, CMD_SMOOTH_ROWS), t)
+    rec["cmd_speed_tc"] = float(speed[kl])
+    rec["cmd_dvdt_tc"] = float(dvdt[kl])
+    rec["cmd_accel_tc"] = float(np.linalg.norm(accel[kl]))
+    k_app = _first(ctx.mode[: kl + 1] == MODE_APPROACH)
+    rec["cmd_move_s"] = 0.0
+    if k_app is None:
+        return rec
+    k_move = _first(speed[k_app : kl + 1] > CMD_MOVING_SPEED_M_S)
+    if k_move is None:
+        return rec
+    k_move += k_app
+    rec["cmd_hold_s"] = float(t[k_move] - t[k_app])
+    rec["cmd_move_s"] = float(t[kl] - t[k_move])
+    return rec
+
+
+def _runs(mask: np.ndarray) -> tuple[int, int]:
+    """``(count, longest)`` of the runs of consecutive true rows."""
+    m = np.asarray(mask, dtype=bool)
+    if not m.any():
+        return 0, 0
+    edges = np.diff(np.concatenate(([0], m.astype(np.int8), [0])))
+    starts, ends = np.nonzero(edges == 1)[0], np.nonzero(edges == -1)[0]
+    return int(starts.size), int((ends - starts).max())
+
+
+DECEL_LANE_KEYS = (
+    "decel_segments_followed",
+    "decel_switches",
+    "decel_admitted",
+    "decel_replaced",
+    "decel_deferred",
+    "decel_deferred_max_ticks",
+    "decel_workspace_refused",
+    "decel_gate_refused",
+    "decel_aged",
+    "decel_rho_first",
+    "decel_rho_replan_max",
+    "decel_wait_node0_ms",
+)
+
+
+def decel_lane_metrics(ctx: TrialContext) -> dict:
+    """What the RT did with the MPC's segments over one trial (``mode: mpc``).
+
+    Read off the tick record's ``decel_event`` (one value per tick), so every
+    count is of EVENTS, not ticks: an admission, a replacement, a switch and a
+    gate refusal each last one tick; a deferral (a segment for a later grid
+    point waiting in the box, MD-66), a ``catch_box`` refusal while TRACKING
+    judges the pair, and an ``aged`` refusal repeat on every tick the segment
+    sits there, and are counted as runs of consecutive ticks.
+
+    - ``decel_segments_followed`` — distinct ``decel_seq`` the RT followed;
+    - ``decel_switches`` / ``_admitted`` / ``_replaced`` / ``_gate_refused``;
+    - ``decel_deferred`` — waits in the box, ``decel_deferred_max_ticks`` the
+      longest of them [ticks];
+    - ``decel_workspace_refused`` — stop paths outside ``catch_box`` (MD-43);
+    - ``decel_aged`` — segments dropped by the admission age bound (MD-37);
+    - ``decel_rho_first`` — the switch gate's ρ at the first switch (the seeded
+      command against node 0), ``decel_rho_replan_max`` the largest over the
+      later ones (NaN with a single switch);
+    - ``decel_wait_node0_ms`` — first APPROACH tick → first switch: how long
+      the adopted pair held the seeded command before node 0 (MD-68). The wait
+      does not end with APPROACH: the mode can reach COMMITTED while the
+      command is still held, so counting only the APPROACH ticks reads short.
+
+    All NaN on a diag without the columns. A ``closed_form`` trial of a diag
+    that has them reads zeros (and NaN for the ρ and wait columns).
+    """
+    rec: dict = dict.fromkeys(DECEL_LANE_KEYS, math.nan)
+    ev, following, seq = ctx.decel_event, ctx.decel_following, ctx.decel_seq
+    if ev is None or following is None or seq is None:
+        return rec
+    switched = np.nonzero(ev == DECEL_EVENT_SWITCHED)[0]
+    rec["decel_segments_followed"] = len(np.unique(seq[following]))
+    rec["decel_switches"] = int(switched.size)
+    rec["decel_admitted"] = int(np.count_nonzero(ev == DECEL_EVENT_ADMITTED))
+    rec["decel_replaced"] = int(np.count_nonzero(ev == DECEL_EVENT_REPLACED))
+    rec["decel_deferred"], rec["decel_deferred_max_ticks"] = _runs(ev == DECEL_EVENT_DEFERRED)
+    rec["decel_workspace_refused"] = _runs(ev == DECEL_EVENT_WORKSPACE)[0]
+    rec["decel_gate_refused"] = int(np.count_nonzero(ev == DECEL_EVENT_GATE_REFUSED))
+    if ctx.decel_judged is not None and ctx.decel_refusal is not None:
+        rec["decel_aged"] = _runs(ctx.decel_judged & (ctx.decel_refusal == DECEL_REFUSAL_AGED))[0]
+    if switched.size and ctx.decel_rho is not None:
+        rec["decel_rho_first"] = float(ctx.decel_rho[switched[0]])
+        if switched.size > 1:
+            rec["decel_rho_replan_max"] = float(ctx.decel_rho[switched[1:]].max())
+    k_app = _first(ctx.mode == MODE_APPROACH)
+    if k_app is not None and switched.size and switched[0] >= k_app:
+        rec["decel_wait_node0_ms"] = float((ctx.t[switched[0]] - ctx.t[k_app]) * 1e3)
     return rec
 
 
@@ -2089,8 +2333,19 @@ def plan_validity_window(
     t_launch: float,
     t_commit: float,
     t_end: float,
+    search_valid: np.ndarray | None = None,
 ) -> dict:
     """G3-D (i): per-trial plan validity rate (L3 gate G3-D, #537 S8-D).
+
+    ``plan_valid`` is "a valid plan was PUBLISHED on this wake". Under ``mode:
+    mpc`` a plan is published only together with its first segment (MPC plan
+    MD-62), so a wake whose search found a plan and whose segment was withheld
+    reads 0 — the ratio then measures the pair, not the search. With
+    ``search_valid`` (the ``planner_events`` column of that name, E1-F05) three
+    more keys say which: ``search_valid_cycles`` / ``search_valid_ratio`` (the
+    search, as ``plan_valid_ratio`` did before the pair existed) and
+    ``pair_published_ratio`` = ``plan_valid_cycles`` / ``search_valid_cycles``
+    (NaN with none). Without it the keys are absent.
 
     ``wake_t_relative_s``/``plan_valid`` are every ``planner_events.csv`` row's
     wake instant (mapped onto the controller's ``t_relative_s`` axis — see
@@ -2112,12 +2367,18 @@ def plan_validity_window(
     at_commit = math.nan
     if has_commit and n:
         at_commit = float(plan_valid[sel[-1]])
-    return {
+    out = {
         "planner_cycles": n,
         "plan_valid_cycles": int(plan_valid[sel].sum()) if n else 0,
         "plan_valid_ratio": float(plan_valid[sel].mean()) if n else math.nan,
         "plan_valid_at_commit": at_commit,
     }
+    if search_valid is not None:
+        found = int(search_valid[sel].sum()) if n else 0
+        out["search_valid_cycles"] = found
+        out["search_valid_ratio"] = float(search_valid[sel].mean()) if n else math.nan
+        out["pair_published_ratio"] = out["plan_valid_cycles"] / found if found else math.nan
+    return out
 
 
 def first_hand_contact(
@@ -2223,6 +2484,10 @@ TC_COLUMN_KEYS = (
     "total_mm",
     "arrival_ms",
     "contact_t_minus_tc_ms",
+    "cmd_speed_tc",
+    "cmd_dvdt_tc",
+    "cmd_accel_tc",
+    "cmd_move_s",
 )
 
 
@@ -2249,6 +2514,26 @@ class SessionResult:
     lag: list[ServoLag]
     summary: dict
     hand_window_rows: list[dict] = field(default_factory=list)
+
+
+def _decel_arrays(w) -> dict:
+    """The TrialContext's decel fields from one trial's diag window — each
+    ``None`` when its column is absent (DIAG_DECEL_COLUMNS)."""
+
+    def col(name, kind):
+        return w[name].to_numpy(kind) if name in w.columns else None
+
+    judged, following = col("decel_judged", int), col("decel_following", int)
+    p_d = [f"decel_p_d_{a}" for a in "xyz"]
+    return {
+        "decel_judged": None if judged is None else judged != 0,
+        "decel_refusal": col("decel_refusal", int),
+        "decel_event": col("decel_event", int),
+        "decel_following": None if following is None else following != 0,
+        "decel_seq": col("decel_seq", int),
+        "decel_rho": col("decel_rho", float),
+        "decel_p_d": w[p_d].to_numpy(float) if all(c in w.columns for c in p_d) else None,
+    }
 
 
 def analyse_session(
@@ -2389,6 +2674,7 @@ def analyse_session(
             input_gen=w["input_generation"].to_numpy(float)
             if "input_generation" in w.columns
             else None,
+            **_decel_arrays(w),
         )
         lag_t.append(ctx.t)
         lag_cmd.append(ctx.q_cmd)
@@ -2423,6 +2709,12 @@ def analyse_session(
         row["t_first_impact"] = t_impact if np.isfinite(t_impact) else math.nan
         row.update(decompose_at_tc(ctx, truth, settings.arrival_window_s, t_impact))
         row.update(planner_timing(ctx, trial.t_launch))
+        row.update(
+            command_kinematics_at_tc(
+                ctx, row.get("t_c", math.nan), _num(row.get("t_lead_s", math.nan))
+            )
+        )
+        row.update(decel_lane_metrics(ctx))
         if planner_wakes is not None and trial.idx in lane.trial_offsets:
             wakes_t = (
                 wakes_t_rel
@@ -2436,6 +2728,7 @@ def analyse_session(
                     trial.t_launch,
                     row.get("t_commit", math.nan),
                     trial.t_end,
+                    search_valid=planner_wakes[2],
                 )
             )
         row["ref_saturated_max_streak"] = max_streak(ctx.ref_valid & ctx.ref_saturated)
@@ -3409,15 +3702,16 @@ def _planner_events(ctl: Path) -> dict | None:
 
 def _planner_cycle_times(
     ctl: Path, lane: ClockLane | None
-) -> tuple[np.ndarray, np.ndarray] | None:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None] | None:
     """Every ``planner_events.csv`` wake as a STEADY-clock second, with its
     ``plan_valid`` — what G3-D (i) (#537 S8-D) windows by trial after shifting
-    it onto ``t_relative_s``. ``None`` when either input is unavailable: a diag
-    predating the planner, or no ``--clock-lane`` (below).
+    it onto ``t_relative_s`` — and its ``search_valid`` (``None`` on a log
+    from before the column, E1-F05). ``None`` when either input is
+    unavailable: a diag predating the planner, or no ``--clock-lane`` (below).
 
     **The mapping and its evidence.** ``wake_ns`` is a STEADY-clock instant —
     ``PlannerCycleRecord::wake_ns`` is documented "Steady instants"
-    (rtc_controllers/include/rtc_controllers/catching/planner_cycle.hpp:75-79)
+    (rtc_controllers/include/rtc_controllers/catching/planner_cycle.hpp)
     and set from ``rtc::SteadyNowNs()``, i.e. ``std::chrono::steady_clock``
     (rtc_base/include/rtc_base/types/types.hpp:265-272). But a sim profile can
     run the RT loop in SIM-SYNC mode (``use_sim_time_sync``, declared at
@@ -3450,8 +3744,13 @@ def _planner_cycle_times(
     path = _exists(ctl / PLANNER_EVENTS_CSV)
     if path is None:
         return None
-    df = _read_csv(path, usecols=["wake_ns", "plan_valid"])
-    return df["wake_ns"].to_numpy(float) * 1e-9, df["plan_valid"].to_numpy(float)
+    has_search = "search_valid" in _csv_header(path)
+    df = _read_csv(path, usecols=["wake_ns", "plan_valid"] + (["search_valid"] * has_search))
+    return (
+        df["wake_ns"].to_numpy(float) * 1e-9,
+        df["plan_valid"].to_numpy(float),
+        df["search_valid"].to_numpy(float) if has_search else None,
+    )
 
 
 def _median(rows: Sequence[Mapping], key: str) -> float:
@@ -3501,8 +3800,14 @@ def _summarise(
                 "gamma_f_planned",
                 "first_plan_s",
                 "contact_t_minus_tc_ms",
+                *CMD_KINEMATICS_KEYS,
+                "decel_wait_node0_ms",
+                "decel_rho_replan_max",
             )
         },
+        # Which law's reference the t_c decomposition read, per valid trial
+        # (:func:`reference_at_lead`); "" is a trial that never committed.
+        "ref_source": _counts(valid, "ref_source"),
         "gamma_f_planned_range": _range(valid, "gamma_f_planned"),
         "approach_plan_switches_total": int(
             sum(r.get("approach_plan_switches", 0) for r in valid)
@@ -3559,8 +3864,13 @@ def _summarise(
         for r in valid:
             key = str(int(r.get("approach_plan_switches", 0)))
             switches[key] = switches.get(key, 0) + 1
+        searched = [r for r in with_cycles if "search_valid_ratio" in r]
         summary["g3d"] = {
             "n_trials_with_cycles": len(with_cycles),
+            # The search's own validity and how often its plan went out as a
+            # pair (planner_events `search_valid`; None on a log without it).
+            "search_valid_ratio_p50_p05_p95": _p50_p05_p95(searched, "search_valid_ratio"),
+            "pair_published_ratio_p50_p05_p95": _p50_p05_p95(searched, "pair_published_ratio"),
             "plan_valid_ratio_p50_p05_p95": [
                 float(np.median(ratios)),
                 float(clock_phase.quantile(ratios, 0.05)),
@@ -3570,6 +3880,35 @@ def _summarise(
             else None,
             "approach_plan_switches_distribution": switches,
         }
+    lane_rows = [r for r in valid if _num(r.get("decel_segments_followed")) > 0]
+    if lane_rows:
+        # `mode: mpc` only: a trial that followed at least one segment.
+        followed = [int(r["decel_segments_followed"]) for r in lane_rows]
+        summary["decel_lane"] = {
+            "n_trials": len(lane_rows),
+            "segments_followed_p50_min_max": [
+                float(np.median(followed)),
+                min(followed),
+                max(followed),
+            ],
+            "events_total": {
+                k[len("decel_") :]: int(sum(_num(r[k]) for r in lane_rows))
+                for k in (
+                    "decel_admitted",
+                    "decel_replaced",
+                    "decel_switches",
+                    "decel_deferred",
+                    "decel_workspace_refused",
+                    "decel_gate_refused",
+                    "decel_aged",
+                )
+                if all(np.isfinite(_num(r[k])) for r in lane_rows)
+            },
+            "deferred_max_ticks": int(max(_num(r["decel_deferred_max_ticks"]) for r in lane_rows)),
+            "rho_first_p50_p95_max": _p50_p95_max(lane_rows, "decel_rho_first"),
+            "rho_replan_max_p50_p95_max": _p50_p95_max(lane_rows, "decel_rho_replan_max"),
+            "wait_node0_ms_p50_p95_max": _p50_p95_max(lane_rows, "decel_wait_node0_ms"),
+        }
     if gate_map is not None:
         summary["gate_map"] = {
             "map_dir": str(gate_map.map_dir),
@@ -3577,6 +3916,26 @@ def _summarise(
             **gate_map_truth(valid, with_truth=hold_radius is not None),
         }
     return summary
+
+
+def _counts(rows: Sequence[Mapping], key: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for r in rows:
+        if key in r:
+            out[str(r[key])] = out.get(str(r[key]), 0) + 1
+    return out
+
+
+def _p50_p05_p95(rows: Sequence[Mapping], key: str):
+    values = [_num(r[key]) for r in rows if key in r]
+    values = [v for v in values if np.isfinite(v)]
+    if not values:
+        return None
+    return [
+        float(np.median(values)),
+        float(clock_phase.quantile(values, 0.05)),
+        float(clock_phase.quantile(values, 0.95)),
+    ]
 
 
 def _range(rows, key):
@@ -3806,6 +4165,21 @@ def report(result: SessionResult) -> str:
         f"{med['arrival_ms']:+.1f} ms; first hand contact − t_c "
         f"{med['contact_t_minus_tc_ms']:+.1f} ms"
     )
+    lines.append(
+        f"  reference at t_c {s['ref_source']}; command there: speed "
+        f"{med['cmd_speed_tc']:.2f} m/s, d|v|/dt {med['cmd_dvdt_tc']:+.1f} m/s², |a| "
+        f"{med['cmd_accel_tc']:.1f} m/s², moving for {med['cmd_move_s']:.3f} s after holding "
+        f"{med['cmd_hold_s']:.3f} s"
+    )
+    if "decel_lane" in s:
+        dl = s["decel_lane"]
+        lines.append(
+            f"decel lane ({dl['n_trials']} trials followed a segment): segments per trial "
+            f"p50/min/max {dl['segments_followed_p50_min_max']}, events {dl['events_total']}, "
+            f"longest deferral {dl['deferred_max_ticks']} ticks, switch ρ first "
+            f"{dl['rho_first_p50_p95_max']} · replan max {dl['rho_replan_max_p50_p95_max']} "
+            f"(p50/p95/max), node-0 wait {dl['wait_node0_ms_p50_p95_max']} ms"
+        )
     lines.append(tc_axis_line(s["tc_axis"]))
     lines.append(
         f"planned γ_f {s['gamma_f_planned_range']} · first plan {med['first_plan_s']:.3f} s · "
