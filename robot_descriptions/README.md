@@ -45,7 +45,7 @@
 | `robots/iiwa7_leap/` | iiwa7 arm + LEAP Hand 결합 — URDF xacro + MJCF (left/right 각 2종), scene 각 1종. `ee_link` 말단 부착. `meshes/{visual,collision}/`은 iiwa7 + leap_hand mesh hardlink |
 | `robots/schunk_hand/` | Schunk SVH 5-finger hand — URDF (left/right × obj/glb 4종) + meshes |
 | `robots/panda/` | Franka Emika Panda 7-DoF — **kinematics-only 테스트 fixture** (`urdf/panda.urdf`만, meshes 없음). rtc_tsid / rtc_mpc / integrated_bringup gtest 가 generic 7-DoF 모델로 `pinocchio::buildModel` 에 사용. 상세·출처: `robots/panda/README.md` |
-| `robots/ur5e_p1b/` | UR5e arm + proto_1b hand 결합 — **kinematics-only 폐쇄 체인 테스트 fixture** (URDF xacro + closure sidecar, meshes 없음). repo 안에서 유일한 실규모 폐쇄 체인 (5-loop, `n_a=16`) 이라 `GetActuatedModel()` 분기를 CI 에서 태우는 유일한 모델. 상세·출처·drift 대조: `robots/ur5e_p1b/README.md` |
+| `robots/ur5e_p1b/` | UR5e arm + proto_1b hand 결합 — **kinematics-only 폐쇄 체인 테스트 fixture** (URDF xacro + closure sidecar, meshes 없음). repo 안에서 유일한 실규모 폐쇄 체인 (5-loop, `n_a=16`) 이라 `GetActuatedModel()` 분기를 CI 에서 태우는 유일한 모델. rtc-framework 가 소유한 **테스트 입력**이며 모델 자체는 여기서 검증하지 않는다 (소유자는 `hand_description`, #682). 상세·출처·drift 대조: `robots/ur5e_p1b/README.md` |
 
 향후 robot 추가는 `robots/<new_name>/` 서브디렉토리 추가만으로 끝난다 — 본 패키지의 `CMakeLists.txt` / `package.xml`은 손대지 않는다.
 
