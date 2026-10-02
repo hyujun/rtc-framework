@@ -144,9 +144,7 @@ DecelPlannerModel PlannerModelOf(const Arm& a) {
     pm.q_max[u] = a.model->upperPositionLimit[m];
     pm.qdot_max[u] = a.qd_max[u];
     pm.tau_max[u] = a.tau_max[u];
-    pm.qddot_cap[u] = 20.0;
   }
-  pm.qddot_cap_valid = true;
   return pm;
 }
 
@@ -155,8 +153,6 @@ DecelPlannerConstants Consts() {
   c.eta_v = 0.9;
   c.t_arm_s = static_cast<double>(kTArm) * 1e-9;
   c.control_dt = static_cast<double>(kH) * 1e-9;
-  c.budget_s = 0.020;
-  c.report_lead_s = 2.0 * c.control_dt;
   c.v_eps = 1e-6;
   return c;
 }
@@ -298,7 +294,7 @@ struct Rig {
   std::uint32_t Publish(std::int64_t publish_ns) {
     out.decel_seq = ++seq;
     out.publish_ns = publish_ns;
-    planner.NoteApproachPublished(out);
+    planner.NotePublished(out);
     return out.decel_seq;
   }
 };
@@ -341,7 +337,13 @@ Started StartPlan(Rig& r, std::int64_t now, std::int64_t lead, double reach = 0.
 TEST(ApproachPlanner, ConfigureBuildsCatchCoresInTheStopCoresBox) {
   for (Arm arm : {Arm6(), Arm7()}) {
     Rig r(std::move(arm));
-    ASSERT_TRUE(r.planner.ApproachConfigured());
+    ASSERT_TRUE(r.planner.Configured());
+    // One stop core per stop grid point a segment may start at (MD-31): the
+    // stop ends at t_c + N_s·Δ_s wherever it starts.
+    for (int k = 0; k <= 2; ++k) {
+      EXPECT_EQ(r.planner.Core(k).NumNodes(), 7 - k) << k;
+      EXPECT_EQ(r.planner.Core(k).CatchNode(), 0) << k;
+    }
     // A successful Configure means every warm-up solve succeeded (MD-64): a
     // failed one fails the configure, so a measurement after it measures
     // warmed cores.
@@ -365,20 +367,45 @@ TEST(ApproachPlanner, ConfigureBuildsCatchCoresInTheStopCoresBox) {
   }
 }
 
-TEST(ApproachPlanner, WithoutAPreCatchGridItIsTheStopSegmentPlanner) {
+TEST(ApproachPlanner, WithoutAPreCatchGridItDoesNotConfigure) {
+  // MD-70: a plan is published only with a segment that starts before t_c,
+  // so there is no planner to build without a pre-catch grid — and an
+  // unconfigured one solves nothing.
+  const Arm arm = Arm6();
   DecelPlannerParams p = ApproachParams();
   p.n_pre_max = 0;
-  Rig r(Arm6(), p);
-  EXPECT_FALSE(r.planner.ApproachConfigured());
-  const Catch c = CatchAt(r.arm, Offset(r.arm, 0.03));
+  DecelPlanner planner;
+  std::string err;
+  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("n_pre_max"), std::string::npos) << err;
+  EXPECT_FALSE(planner.Configured());
+  const Catch c = CatchAt(arm, Offset(arm, 0.03));
   SetClock(kT0);
-  EXPECT_FALSE(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
-                                   PlanFor(r.arm, c, kT0 + 800 * kMs), BallFor(c), r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kOff);
-  EXPECT_FALSE(
-      r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, kT0 - kH, kT0 + 800 * kMs, 1, 0),
-                       BallFor(c), r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kOff);
+  DecelPlanSnapshot out{};
+  DecelRecord rec{};
+  EXPECT_FALSE(planner.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH),
+                                 PlanFor(arm, c, kT0 + 800 * kMs), BallFor(c), out, rec));
+  EXPECT_EQ(rec.outcome, DecelOutcome::kOff);
+  EXPECT_FALSE(planner.Replan(FollowingRt(arm, arm.q_nominal, kT0 - kH, kT0 + 800 * kMs, 1, 0),
+                              BallFor(c), out, rec));
+  EXPECT_EQ(rec.outcome, DecelOutcome::kOff);
+}
+
+TEST(ApproachPlanner, ConfigureRefusesWhatItCannotBuildOn) {
+  const DecelPlannerParams p = ApproachParams();
+  DecelPlanner bad;
+  DecelPlannerModel pm = PlannerModelOf(Arm6());
+  std::string err;
+  EXPECT_FALSE(bad.Configure(pm, Consts(), p, nullptr, &err));
+  EXPECT_NE(err.find("clock"), std::string::npos) << err;
+  pm.device_of_model[1] = pm.device_of_model[0];
+  EXPECT_FALSE(bad.Configure(pm, Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("permutation"), std::string::npos) << err;
+  pm = PlannerModelOf(Arm6());
+  pm.tau_max[3] = 0.0;
+  EXPECT_FALSE(bad.Configure(pm, Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("Init"), std::string::npos) << err;
+  EXPECT_FALSE(bad.Configured());
 }
 
 TEST(ApproachPlanner, ConfigureRefusesAPositionMarginTheTrustRegionCannotHold) {
@@ -813,7 +840,7 @@ TEST(ApproachPlanner, AStartOnTheVelocityBoxIsProjectedIntoIt) {
   const auto e = static_cast<std::size_t>(edge.n_pre * kMaxDecelNv) + Dev(r.arm, 2);
   edge.qd[e] = 0.9 * 3.0 * (1.0 + 1e-7);
   edge.decel_seq = 50;
-  r.planner.NoteApproachPublished(edge);
+  r.planner.NotePublished(edge);
   const std::int64_t lag = kTArm + kReplan + 2 * kH;
   const std::int64_t now = s.t_c - lag - 1 * kMs;  // the catch node (stop k = 0)
   SetClock(now);
@@ -1108,8 +1135,7 @@ TEST(ApproachPlanner, PathsBeforeTheSolveAllocateNothing) {
 
 TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
   // Through the solve the C mallocs are ProxQP's (#654) and cannot be told
-  // apart from ours, so operator new is the gate (MD-23, the same boundary
-  // as the stop-segment planner's AllocatesNothingOutsideProxQp).
+  // apart from ours, so operator new is the gate (MD-23).
   Rig r(Arm7());
   const Started s = StartPlan(r, kT0, 800 * kMs);  // warm-up outside the gates
   ASSERT_NE(s.seq, 0U);

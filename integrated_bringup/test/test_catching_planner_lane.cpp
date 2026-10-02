@@ -824,8 +824,8 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
               [](YAML::Node& y) { y["catching"]["planner"]["gamma"]["eta_v"] = 1.0; });
   expect_park("no decel planner", true,
               [](YAML::Node& y) { y["catching"]["planner"]["decel_mpc"]["enabled"] = false; });
-  // MD-45: a stop-only planner publishes no plan with a segment the RT can
-  // start APPROACH on.
+  // MD-45, MD-70: a plan goes out only with a segment that starts before
+  // t_c, so without a pre-catch grid there is no decel planner to build.
   expect_park("a decel planner without the pre-catch grid", true, [](YAML::Node& y) {
     y["catching"]["planner"]["decel_mpc"]["approach"]["n_pre_max"] = 0;
   });

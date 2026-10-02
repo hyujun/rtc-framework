@@ -594,19 +594,12 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_node_follower PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching MPC E1-F03 (#629): the decel planner, its planner.decel_mpc
-  # keys, the decel admission / switch rules and the cycle's decel step. The
-  # planner calls the core (pinocchio + ProxQP), so the "nothing outside ProxQP"
-  # claim needs the C-level malloc gate (MD-23); the shipped-horizon timing uses
-  # the real arm URDFs and is only asserted in an optimised build.
-  ament_add_gtest(test_catching_decel_planner test/test_catching_decel_planner.cpp TIMEOUT 300)
+  # dynamic_catching MPC E1-F03 (#629): the planner.decel_mpc keys and the RT's
+  # decel admission / switch rules. Pure functions — no model, no solver. The
+  # decel planner itself is test_catching_approach_planner / _cycle below.
+  ament_add_gtest(test_catching_decel_planner test/test_catching_decel_planner.cpp)
   target_link_libraries(test_catching_decel_planner rtc_controllers)
-  target_include_directories(test_catching_decel_planner PRIVATE
-    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_catching_decel_planner PRIVATE -Wno-mismatched-new-delete)
-  target_compile_definitions(test_catching_decel_planner PRIVATE
-    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
-    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+  target_include_directories(test_catching_decel_planner PRIVATE ${rtc_base_test_include})
 
   # dynamic_catching MPC E1-F08 (#661): the decel planner's APPROACH–stop
   # solves on a fake clock (PlanFirst, Replan, the ball target, the publish
@@ -691,7 +684,6 @@ if(BUILD_TESTING)
   # had while ctest ran one test at a time. Durations that are only RECORDED
   # (RecordProperty "worst_*_ns") are not protected -- quote those from a run
   # of that one test (`--ctest-args -R <name>`). testing-debug.md has the rule.
-  set_tests_properties(test_catching_decel_planner PROPERTIES RUN_SERIAL TRUE)
   set_tests_properties(test_catching_approach_cycle PROPERTIES RUN_SERIAL TRUE)
 endif()
 

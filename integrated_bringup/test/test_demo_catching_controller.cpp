@@ -1499,8 +1499,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOff) {
   // MPC E1-F08 (#661, MD-54 · MD-55): the shipped profiles carry the
   // APPROACH–stop grid — 7 x 0.05 s after the catch, up to 6 x 0.1 s before
   // it — with the decel MPC itself off and DECEL on the closed form. The
-  // CODE defaults stay the stop-only planner's (14 x 0.025, n_pre_max 0), so
-  // only reading the file shows what a `mode: mpc` overlay will run.
+  // CODE defaults are not that grid (14 x 0.025, n_pre_max 0), so only
+  // reading the file shows what a `mode: mpc` overlay will run.
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
   const YAML::Node node =
