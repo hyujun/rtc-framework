@@ -851,8 +851,6 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 | `sync_timeout_ms` | `""` (YAML 사용) | sync 커맨드 타임아웃 (ms) |
 | `max_rtf` | `""` (YAML 사용) | 최대 실시간 배율 (0.0 = 무제한) |
 | `use_yaml_servo_gains` | `""` (YAML 사용) | YAML vs XML 서보 게인 사용 |
-| `kp` | `""` (YAML 사용) | PD 게인 Kp 오버라이드 |
-| `kd` | `""` (YAML 사용) | PD 게인 Kd 오버라이드 |
 | `object_pool` † | `""` (YAML 사용) | `object_pool.enabled` 오버라이드. `false` 면 후보가 하나도 컴파일되지 않아 pool 블록이 없을 때와 `nq`/`nbody`/`ngeom` 이 같다 — 비용·회귀 비교의 대조군 |
 | `object` † | `""` (YAML 사용) | 지정한 object 하나만 스폰 (`object_pool.directory` 의 서브디렉토리 이름). `object_pool.selection` 도 `fixed` 로 함께 고정한다 — 이름만 주고 selection 이 `random` 이면 다음 `o` 에서 다시 뽑히기 때문 |
 | `object_seed` † | `""` (YAML 사용) | `object_pool.seed` 오버라이드. `0` = 매 실행 다름, 0 이 아니면 object/pose 순서가 재현 가능 |
@@ -860,11 +858,13 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 | `max_log_sessions` | `10` (= 그 변종의 노드 config YAML) | 세션 폴더 최대 보관 수. default 를 `_base.yaml` (iiwa7_leap 은 `sim.yaml`) 에서 읽고 값을 RT 노드 파라미터로도 넘긴다 — launch 와 노드가 같은 트리를 각자 정리하므로 |
 | `initial_controller` | `""` (YAML 사용) | 시작 컨트롤러 이름 (예: `demo_wbc_controller`) 오버라이드 |
 | `enable_mpc` | `""` (YAML 사용) | DemoWbcController의 `mpc.enabled` YAML 키를 launch 시점에 오버라이드. `true`/`false` 명시. `initial_controller:=demo_wbc_controller`와 함께 사용. 런타임 토글은 gains topic index 7로도 가능. |
-| `mpc_engine` | `""` (YAML 사용) | DemoWbcController의 `mpc.engine` 오버라이드: `"mock"` = `MockMPCThread` placeholder, `"handler"` = `HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` (실제 Aligator ProxDDP solve, `mpc/phase_config.yaml`+`mpc/contact_light.yaml`+`mpc/contact_rich.yaml` 필요). 빈 값 = YAML 기본값 (현재 `demo_wbc_controller.yaml`은 `"handler"`) |
+| `mpc_engine` | `""` (YAML 사용) | DemoWbcController의 `mpc.engine` 오버라이드: `"mock"` = `MockMPCThread` placeholder, `"handler"` = `HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` (실제 Aligator ProxDDP solve, `mpc/phase_config.yaml`+`mpc/contact_light.yaml`+`mpc/contact_rich.yaml` 필요). 빈 값 = YAML 기본값 (현재 `demo_wbc_controller.yaml`은 `"handler"`) `sim_g1_p1b` 는 이 인자를 받지 않는다 (그 컨트롤러의 config 가 없다) |
 | `enable_tracing` | `false` | LTTng trace 캡처 (ros2_tracing). robot_ur5e_p1a.launch.py와 동일 시맨틱 |
 | `trace_session_name` | `""` | LTTng 세션 이름. 빈 값 = `"trace"` |
 | `trace_events_ust` | `""` | 콤마 구분 UST 이벤트. 빈 값 = ros2_tracing 기본 이벤트 |
 | `trace_events_kernel` | `sched_switch,sched_waking,sched_wakeup,irq_handler_entry,irq_handler_exit` | 콤마 구분 커널 이벤트. 빈 값 = kernel tracing 비활성 |
+
+> **지운 인자를 주면 에러 없이 무시됩니다.** `ros2 launch` 는 launch 파일이 선언하지 않은 인자 (`kp:=…` · `kd:=…`, `sim_g1_p1b` 의 `mpc_engine:=…`) 를 받아도 그대로 돕니다. `kp` · `kd` 는 2026-10 에 지웠습니다 — RT 노드의 같은 이름 파라미터를 덮었는데 그 파라미터를 읽는 곳이 없어, 지우기 전에도 효과가 없었습니다.
 
 빈 문자열(`""`) 기본값은 YAML 설정 파일의 값을 그대로 사용한다는 의미입니다. 명시적으로 값을 지정하면 YAML 값을 오버라이드합니다.
 
@@ -938,7 +938,7 @@ sim 전용 profile 입니다 (`robot.yaml` · 실기 launch 없음). 다른 prof
 | 토픽 | 목표 `/demo_joint_controller/{g1,p1b}/joint_goal` (`rtc_msgs/RobotTarget`), TF `/demo_joint_controller/transforms` (부모 `pelvis`, 자식 `base_adapter_actual` · `l_<finger>_tip_bracket_actual` · `virtual_tcp_actual`) |
 | 로그 | `<session>/controllers/demo_joint_controller/{g1_state,p1b_state,p1b_sensor}.csv` — `g1_state` 는 17 관절 전부 |
 
-`enable_mpc` · `mpc_engine` · `kp` · `kd` 인자는 다른 sim launch 와 인자 집합을 맞추려고 선언만 되어 있고, 이 profile 에는 받는 컨트롤러가 없습니다. `enable_mpc` 만은 CPU layout profile 을 고르므로 이 launch 에서는 기본값이 `false` 입니다 (다른 sim launch 는 `""`) — MPC thread 를 띄울 컨트롤러가 없는데 그 코어를 shield 하지 않기 위해서입니다. demo GUI (`--robot`) 와 `plot_rtc_log` 의 `g1_p1b` 지원은 아직 없습니다.
+이 launch 는 `mpc_engine` 인자를 받지 않습니다 — 그 인자가 고르는 것은 `demo_wbc_controller` 의 MPC 엔진이고 이 profile 에는 그 컨트롤러의 config 가 없습니다. `enable_mpc` 는 받되 여기서는 **CPU layout profile 만** 고릅니다 (컨트롤러 파라미터로 가지 않습니다). 기본값이 `false` 입니다 (다른 sim launch 는 `""`) — MPC · 계획기 thread 를 띄울 컨트롤러가 없는데 그 코어를 shield 하지 않기 위해서이고, 그런 컨트롤러가 이 profile 에 생기면 그 feature 에서 기본값을 다시 정합니다. demo GUI (`--robot`) 와 `plot_rtc_log` 의 `g1_p1b` 지원은 아직 없습니다.
 
 ### Catching sim trials — 한 투척 = 한 S7 순환
 

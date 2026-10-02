@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r38 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r39 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료 · E1 · E2 진행 중** · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5e) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -202,6 +202,7 @@ v1 과 G1 MPC 의 구조 차이:
 | MD-83 | 손끝 FK 의 배선 ([#685](https://github.com/hyujun/rtc-framework/issues/685)). 손 tree 의 handle 에 device 관절 순서를 거는 helper 를 `OnDeviceConfigsSet` 과 `InitHandModel` 두 자리에서 부른다 (joint · task · compliance · wbc 공통, `support/hand_fk_wiring`). 손끝은 `T_root_armtip · T_tip_mount · T_handroot_fingertip` 로 합성하고, `T_tip_mount` (팔 끝 → 손 root) 는 configure 때 전체 모델에서 읽는 상수다 — 팔 끝 frame 과 `ComputeEstop` 은 그대로다. virtual TCP 의 centroid · weighted 모드도 같은 손끝을 쓴다. 직렬 손에서 device 이름이 손 모델의 관절을 빠짐없이 한 번씩 덮지 못하거나, 손 root 가 팔 끝과 같은 관절에 붙어 있지 않으면 configure 를 거부한다 (closed-chain FK 가 active 인 손은 이름 검사를 면제하고, 손 모델이 없는 구성은 통과한다) | 사용자 결정 (2026-10-02 — 순서는 device 순서를 따르게, 풀 수 없으면 거부, virtual TCP 포함). 결함이 둘 겹쳐 있었다: 순서 map 이 controller manager 의 기동 순서에서 걸리지 않았고, 손 FK 를 손 root 가 아닌 팔 끝에 그대로 합성했다. `iiwa7_leap` 은 `ee_link` → `base` 가 5 mm · 90° 다. 팔 끝 frame 을 손 root 로 바꿔 끼우는 안은 E-STOP tick 의 팔 끝이 바뀐다 (E-8) | MD-78 의 "손 FK" 에 device 순서와 장착 변환을 더함 | 2026-10-03 |
 | MD-84 | `compare_mjcf_urdf` 는 MJCF 의 관절 · actuator · body 자세를 **MuJoCo 가 컴파일하는 대로** 읽는다 ([#686](https://github.com/hyujun/rtc-framework/issues/686)): default class 는 tree (main · 부모 사슬 · `childclass` · actuator 의 class), 관절 토크 한계는 그 관절의 actuator 들이 낼 수 있는 범위 (`forcerange` × `gear`, 순수 gain 이면 `ctrlrange` — MuJoCo 처럼 clamp 한다) 를 더해 관절의 `actuatorfrcrange` 로 clamp 한 것, 걸리지 않는 range 는 한계가 아니다, 각도 단위의 기본값은 degree. actuator 가 없는 관절은 class 의 `forcerange` 를 물려받지 않는다 (effort 0). `--mjcf-class` 는 지웠다. 읽지 못하는 구성 (`<include>`, `joint` 전달이 아닌 actuator) 은 `[WARN]` 으로 알린다. fixed link 병합은 `--link-map` 의 `fuse:` 로 선언하고 코드는 고치지 않는다. G1 쌍은 `model_pairs.yaml` 에 넣지 않는다 (MD-81) | 사용자 결정 (2026-10-02 – 03). 처음 진단 (세 가설) 중 둘이 틀렸고 — default class resolver 는 G1 에서 맞게 읽었다 — 범위를 "남는 한계까지 이 이슈에서" 로 넓혔다. MJCF 96 개 · 관절 364 개에서 도구가 컴파일한 모델과 다르게 읽던 관절이 161 개였다. 순수 gain 의 `ctrlrange` 규칙은 `urdf_to_mjcf` 의 출력을 건드린다 ([#693](https://github.com/hyujun/rtc-framework/issues/693)). 작은 link 의 관성 허용오차는 [#692](https://github.com/hyujun/rtc-framework/issues/692) | — | 2026-10-03 |
 | MD-85 | 팔 모델이 있는데 팔 끝 frame 이 풀리지 않으면 joint · task · compliance · wbc 의 `on_configure` 가 거부한다 ([#688](https://github.com/hyujun/rtc-framework/issues/688)). 판정은 `support/arm_tip_resolution` 의 함수 하나가 `on_configure` 시점의 상태로 한다 (frame id 를 config 재로드에서 지우지 않는다). 팔 모델이 없는 구성은 통과한다. `ComputeEstop` 과 `arm_tip_pose_valid` 의 뜻은 그대로 둔다. device config 에 link 가 없는 구성 — 군 이름이 `sub_models` 와 맞지 않아 이름 `arm` 의 사슬로 대체된 경우 — 도 모델이 있으면 거부된다. 이름이 모델의 frame 이기만 하면 통과한다 (팔의 끝이 아닌 link 는 잡지 못한다) | 사용자 결정 (2026-10-02, 안 B). 원인을 막는다 — 팔 끝을 모르는 컨트롤러가 active 가 되지 않는다. 유효 flag 를 고치는 안은 E-STOP tick 의 출력을 바꾸고 (E-8) 팔 끝 없이 도는 상태를 남긴다. wbc 는 그 상태에서 팔 끝 pose 를 내지 않지만 (TSID 가 서 있으면 이미 거부) Cartesian hold 의 seed 를 universe frame 에서 읽으므로 같이 거부한다. tree 군은 MD-78 이 이미 거부한다 | MD-78 의 거부를 사슬 군과 나머지 세 컨트롤러로 넓힘 | 2026-10-03 |
+| MD-86 | sim launch 네 개는 **공통화하지 않는다.** 쓰이지 않는 인자만 지운다 ([#689](https://github.com/hyujun/rtc-framework/issues/689)): 넷 모두에서 `kp` · `kd`, `sim_g1_p1b` 에서 `mpc_engine`. `sim_g1_p1b` 의 `enable_mpc` 는 남긴다 — 인자 · 기본값 `false` · CPU layout 배선은 그대로이고, `demo_wbc_controller.mpc.enabled` 로 가던 덮어쓰기만 지웠다. tree 모델을 이름으로 찾는 loop 11 곳은 `FindTreeModel` 로 바꿨다 (동작 불변) | 사용자 결정 (2026-10-02). 공통화는 launch 테스트 넷의 대상을 옮겨야 하고 얻는 것이 적다. `kp` · `kd` 는 RT 노드가 선언만 하고 읽는 곳이 없는 파라미터를 덮었다. `enable_mpc` 는 G1 의 포구 컨트롤러 (E2-F05 · E3) 가 계획기 thread 의 코어를 받는 데 쓴다 — 그 컨트롤러가 오면 기본값을 그 feature 에서 다시 정한다 | — | 2026-10-03 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
@@ -221,7 +222,6 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 - 미배정: 세 군 (두 번째 손). 필요한 것: 손마다 자기 tree 의 root 로 붙는 자리를 정하는 것 (MD-78 의 형태), 손 FK · 통합 모델 cache · 손 궤적이 군 1 하나를 전제한 자리의 일반화, `kMaxOwnedGroups` 2 → 3, 세 번째 군의 E-STOP (MD-77). 왼손 자산이 없다
 - 미배정: `urdf_to_mjcf` 가 만드는 actuator 는 위치 범위로 묶인 토크 motor 로 컴파일된다 ([#693](https://github.com/hyujun/rtc-framework/issues/693)) — 새로 변환한 MJCF 의 `--validate` 가 EFFORT 불일치를 찍는다. 출하 MJCF 는 해당 없다
 - 미배정: `compare_mjcf_urdf` 의 관성 허용오차가 작은 link 에서 지나치게 엄격하다 ([#692](https://github.com/hyujun/rtc-framework/issues/692))
-- 미배정: sim launch 네 개의 공통화와 tree 모델 조회의 나머지 사본 ([#689](https://github.com/hyujun/rtc-framework/issues/689)) — 동작을 바꾸지 않는 정리다. E2-F05 가 새 컨트롤러와 launch 인자를 더하기 전에 하면 고칠 자리가 준다
 - E3-F01: 포구 후보 선택을 MPC 로 옮길지 (MD-46 의 편차) 와 계획기 interface (ARCH-3)
 - E3-F05: G1 통합의 형태 — 단일 팔은 `DemoCatchingController` 의 `mode: mpc` 로 돈다 (MD-46)
 - 닫음 (MD-76 — 다시 열려면 사용자 결정): ur5e_p1b 에 남은 간격. `mpc` 의 손은 $t_c$ 에 공 진행 방향으로 17 mm 뒤에 있다 (`closed_form` 6 mm) — 명령이 아직 가속 중이고 (+14.9 m/s²) 서보 지연이 그 몫을 낸다. planner 파라미터로는 더 줄지 않는다 ($\gamma_{ref}$ 를 더 낮추면 위치는 좋아지나 상대속도가 2 m/s 로 커져 성공이 준다). 남은 손잡이는 범위 밖이다: 격자 `approach.dt_pre_s`, $t_c$ 근방 가속의 비용 (formulation), 지연 보상의 형태 — 시간 lead 대신 $q_{ref}+\tau\dot q_{ref}$ (공통부), YAML 키가 없는 가중 ($w_\Delta$ · jerk · slack 벌점). **노드 사이 보간은 이미 있다** (`jerk_segment.hpp`, 매 tick 평가)
@@ -999,12 +999,20 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 - **기존 테스트의 변경 (E-6, 사용자 컨펌).** fixture `MJCF_TEMPLATE` 에 4 줄 — `<compiler angle="radian"/>` 와 그 관절의 actuator. assertion 변경 0. 이 fixture 는 `<compiler>` 없이 radian 값을 써서 MuJoCo 에게는 ±0.11 rad 인 range 였다. 고친 fixture 는 수정 전 코드에서도 전부 통과해 첫 커밋으로 따로 냈다.
 - **재지 않은 것 · 남는 한계.** `<include>` 를 따라가지 않는다 (96 개 중 74 개가 쓴다 — 8 쌍과 G1 쌍은 쓰지 않는다). `<frame>` 의 pose · tendon / site / `jointinparent` 전달 · ball / free 관절의 range · inertial 을 다시 쓰는 `<compiler>` 옵션 · site 의 default 는 읽지 않는다 (README 의 목록). `gear` · `forcelimited` · 비대칭 범위 · 순수 gain 의 `ctrlrange` 는 출하 MJCF 에 없어 합성 fixture 로만 검증했다.
 
+### E2 후속 — tree 모델 조회와 sim launch 인자 (2026-10-03, [#689](https://github.com/hyujun/rtc-framework/issues/689))
+
+- **tree 모델 조회.** `integrated_bringup` 의 `src` · `include` 에서 `tree_models` 를 도는 loop 는 `FindTreeModel` 의 정의 하나만 남았다 (task 3 · compliance 3 · wbc 3 · inference 1 · `pull_estimator_wiring` 1 을 바꿨다). loop 와 함수가 다른 것은 빈 이름뿐이고 (함수는 아무것도 찾지 않는다), 단위 테스트가 그 경계를 고정한다. 기존 assertion 변경 0, `integrated_bringup` 전체 통과.
+- **launch 인자.** `ros2 launch <file> --show-args` 를 수정 전과 비교하면 차이는 지운 인자 (`kp` · `kd` 넷 모두, `mpc_engine` 은 `sim_g1_p1b`) 와 `sim_g1_p1b` 의 `enable_mpc` 설명문뿐이다. `sim_g1_p1b` 의 layout profile 은 기본값 · `false` 에서 `mpc_off`, `true` 에서 `mpc_on` 이다 (종전과 같다).
+- **테스트.** 기존 `test_launch_description_evaluates` 의 인자 조합에서 지운 인자를 뺐다 — 별도 커밋 + 근거 (E-6, 사용자 컨펌). 새 테스트 12 건: sim 넷이 `kp` · `kd` 를 선언하지 않는다, `mpc_engine` 은 받는 launch 만 선언한다, `sim_g1_p1b` 의 RT 노드 덮어쓰기에 `demo_wbc_controller.*` 키가 없다 (+ 그 키가 실제로 보이는 대조군). mutation 6 건이 전부 red 다 (인자를 되살림 셋, 덮어쓰기를 되살림, g1 의 기본값을 바꿈, 대조군의 키를 뺌).
+- 네 profile 이 기본 인자로 종전 구성으로 기동한다. 지운 인자를 `ros2 launch` 에 주면 에러 없이 무시된다 (README).
+
 ## 9. 개정 이력
 
 결정의 내용과 날짜는 §4 가, 측정은 §8 이 갖는다. 이 표는 판마다 무엇이 바뀌었는지만 적는다.
 
 | 판 | 바뀐 것 |
 |---|---|
+| r39 | [#689](https://github.com/hyujun/rtc-framework/issues/689) 반영: 결정 MD-86 (sim launch 는 공통화하지 않고 쓰이지 않는 인자만 지운다, tree 조회는 `FindTreeModel` 하나로), §8 "E2 후속 — tree 모델 조회와 sim launch 인자", §4 미결에서 그 줄을 뺌 |
 | r38 | [#686](https://github.com/hyujun/rtc-framework/issues/686) 반영: 결정 MD-84 (`compare_mjcf_urdf` 는 MJCF 를 MuJoCo 가 컴파일하는 대로 읽는다), §8 "E2 후속 — `compare_mjcf_urdf` 의 MJCF 판독", §4 미결의 그 줄을 후속 둘 ([#692](https://github.com/hyujun/rtc-framework/issues/692) · [#693](https://github.com/hyujun/rtc-framework/issues/693)) 로 바꿈. r36 은 쓰지 않았다 |
 | r37 | [#688](https://github.com/hyujun/rtc-framework/issues/688) 반영: 결정 MD-85 (팔 모델이 있는데 팔 끝 frame 이 풀리지 않으면 네 컨트롤러가 configure 를 거부한다), §8 "E2 후속 — 팔 끝 frame 의 configure 거부", §4 미결에서 그 줄을 뺌 |
 | r35 | [#685](https://github.com/hyujun/rtc-framework/issues/685) 반영: 결정 MD-83 (손끝 FK 의 배선 — device 관절 순서, 팔 끝 → 손 root 의 장착 변환, 풀 수 없으면 configure 거부), §8 "E2 후속 — 손끝 FK 의 배선", §4 미결에서 그 줄을 뺌 |

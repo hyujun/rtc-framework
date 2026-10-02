@@ -1,5 +1,6 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 
 #include <algorithm>
@@ -93,19 +94,13 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
       // translation is base-relative. Labelling the parent as the hand root
       // (base_adapter / hand_base_link) double-counts the arm reach in RViz.
       if (sys_cfg && !sys_cfg->sub_models.empty()) {
-        const auto secondary = GetSecondaryDeviceName();
-        if (!secondary.empty()) {
-          for (const auto& tm : sys_cfg->tree_models) {
-            if (tm.name == secondary) {
-              // Register only as many hand-tip slots as ComputeHandFingertipFk
-              // fills (kNumFingertips): extra tip_links would register slots
-              // that never receive a pose and silently never broadcast (#125 F4).
-              AppendHandTipSlots(owned_topics_, sys_cfg->sub_models.front().root_link, tm.tip_links,
-                                 /*group_idx=*/0,
-                                 /*max_tips=*/kNumFingertips);
-              break;
-            }
-          }
+        if (const auto* tm = FindTreeModel(*sys_cfg, GetSecondaryDeviceName())) {
+          // Register only as many hand-tip slots as ComputeHandFingertipFk
+          // fills (kNumFingertips): extra tip_links would register slots
+          // that never receive a pose and silently never broadcast (#125 F4).
+          AppendHandTipSlots(owned_topics_, sys_cfg->sub_models.front().root_link, tm->tip_links,
+                             /*group_idx=*/0,
+                             /*max_tips=*/kNumFingertips);
         }
       }
       AppendCustomPlaceholderSlot(owned_topics_, "base", "wbc_alpha_actual");

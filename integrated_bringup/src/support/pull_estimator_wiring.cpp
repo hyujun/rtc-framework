@@ -1,5 +1,6 @@
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
 
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 
 #include <rclcpp/logging.hpp>
@@ -27,13 +28,10 @@ std::vector<std::string> ResolvePullTipLinks(const rtc_urdf_bridge::ModelConfig*
   if (sys_model == nullptr) {
     return links;
   }
-  for (const auto& tm : sys_model->tree_models) {
-    if (tm.name == secondary_device) {
-      const std::size_t n_links = std::min(tm.tip_links.size(), max_slots);
-      links.assign(tm.tip_links.begin(),
-                   tm.tip_links.begin() + static_cast<std::ptrdiff_t>(n_links));
-      break;
-    }
+  if (const auto* tm = FindTreeModel(*sys_model, secondary_device)) {
+    const std::size_t n_links = std::min(tm->tip_links.size(), max_slots);
+    links.assign(tm->tip_links.begin(),
+                 tm->tip_links.begin() + static_cast<std::ptrdiff_t>(n_links));
   }
   return links;
 }

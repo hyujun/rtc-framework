@@ -1285,6 +1285,16 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # FindTreeModel (support/model_config_lookup.hpp): the one lookup every demo
+  # controller makes for a group's tree model. Header-only, no node.
+  ament_add_gtest(test_model_config_lookup
+    test/test_model_config_lookup.cpp)
+  target_include_directories(test_model_config_lookup PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  ament_target_dependencies(test_model_config_lookup
+    rtc_urdf_bridge
+  )
+
   # ── Device backend registration smoke test ─────────────────────────────────
   # Confirms the 3 backend TUs (mujoco_native / ur_driver_native /
   # udp_hand_native) static-init through --whole-archive and reach the

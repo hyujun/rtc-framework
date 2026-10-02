@@ -6,6 +6,7 @@
 
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "rtc_inference/inference_types.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
 
@@ -479,11 +480,8 @@ bool DemoInferenceController::ConfigureKinematics() {
     // upstream of every loop, so its cache pose is exact.
     std::string hand_root;
     const auto secondary = GetSecondaryDeviceName();
-    for (const auto& tm : sys_cfg->tree_models) {
-      if (tm.name == secondary) {
-        hand_root = tm.root_link;
-        break;
-      }
+    if (const auto* tm = FindTreeModel(*sys_cfg, secondary)) {
+      hand_root = tm->root_link;
     }
     if (hand_root.empty() || !model->existFrame(hand_root)) {
       RCLCPP_ERROR(logger_,
