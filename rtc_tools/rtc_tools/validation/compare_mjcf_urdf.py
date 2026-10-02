@@ -23,11 +23,16 @@ actuator `gear` all decide what a `range` in the text means.
 What the text reading does not cover:
   - `<include>` is not followed.  Joints and bodies that only an included file
     brings in are not compared per joint / per link (the structural section,
-    which compiles the model, still counts them).
+    which compiles the model, still counts them).  The joints this file does
+    show can read WRONG: the `<compiler>` settings, default classes and
+    actuators of an included file are part of what they compile to, and are
+    not read.  A file with an `<include>` gets a [WARN].
+  - Actuators with any transmission other than `joint` (`jointinparent`,
+    tendon, site, slider-crank, body).  The torque limit of a joint they drive
+    is read without them.  A file with such an actuator gets a [WARN].
   - `<frame>` poses (a joint of a body under a `<frame>` gets no world frame
-    and falls back to the local comparison with a [WARN]); `jointinparent`,
-    tendon and site transmissions; ball / free joint ranges; the `ctrlrange`
-    of an actuator with internal dynamics.
+    and falls back to the local comparison with a [WARN]); ball / free joint
+    ranges; the `ctrlrange` of an actuator with internal dynamics.
   - "No limit" and "a limit of 0" both read as effort 0.
 
 Interpreter: the structural section needs `mujoco`.  `ros2 run` starts the
@@ -460,6 +465,53 @@ def _mjcf_actuator_torque_ranges(
             prev_lo, prev_hi = ranges.get(jname, (0.0, 0.0))
             ranges[jname] = (prev_lo + lo, prev_hi + hi)
     return ranges
+
+
+# Every way an actuator can reach a joint other than `joint`.
+_NON_JOINT_TRANSMISSIONS = ("jointinparent", "tendon", "site", "cranksite", "slidersite", "body")
+
+
+def _mjcf_unread_parts(root: ET.Element) -> list[str]:
+    """One message per construct that changes the compared joints and is not read.
+
+    Each of them makes a number in the report wrong for a joint the report
+    does print — and the number alone looks as certain as any other, so the
+    report has to say it.
+    """
+    notes = []
+
+    # An included file's <compiler>, <default> and <actuator> apply to the
+    # joints written in THIS file as much as to its own.
+    includes = [elem.get("file", "?") for elem in root.iter("include")]
+    if includes:
+        notes.append(
+            f"MJCF <include> is not followed ({len(includes)}: {', '.join(includes)}). "
+            "<compiler> settings, default classes and actuators that an included file "
+            "brings in are not read — joint limits, armature and world-frame poses below "
+            "can differ from what MuJoCo compiles"
+        )
+
+    # _mjcf_actuator_torque_ranges counts `joint` transmissions only.  Which
+    # joints a tendon or a site loads is a property of the compiled model, so
+    # the actuators are named and the joints are not.
+    unread = []
+    for section in root.findall("actuator"):
+        for act in section:
+            if act.get("joint"):
+                continue
+            shown = [
+                f'{key}="{act.get(key)}"'
+                for key in ("name", *_NON_JOINT_TRANSMISSIONS)
+                if act.get(key)
+            ]
+            unread.append(f"<{' '.join([act.tag, *shown])}>")
+    if unread:
+        notes.append(
+            f"MJCF actuators with no `joint` transmission are not read "
+            f"({len(unread)}: {', '.join(unread)}). The torque limit of a joint they "
+            "drive is reported without them"
+        )
+    return notes
 
 
 def _normalized_3(v: list[float]) -> list[float]:
@@ -1763,6 +1815,14 @@ def compare(
     if align is not None:
         print("  Base alignment: declared (MJCF world FK lifted into URDF world frame)")
     print("=" * 78)
+
+    # ── What the MJCF text reading leaves out of this file ──
+    #
+    # Said before any number is printed: these do not remove a joint from the
+    # comparison, they make its numbers unreliable.
+    for note in _mjcf_unread_parts(ET.parse(mjcf_path).getroot()):
+        print(f"  [WARN] {note}")
+        warnings += 1
 
     # ── Fused-link declarations ──
     #

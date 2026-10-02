@@ -999,8 +999,9 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 
 **읽지 않는 것** (`robot_descriptions` 의 MJCF 에 있는 것은 `<include>` 뿐이다):
 
-- **`<include>` 를 따라가지 않는다.** include 로만 들어오는 관절 · body 는 텍스트에 없으므로 관절 · link 별 비교 대상이 아니다 — 틀린 값을 내는 것이 아니라 비교하지 않는다. 구조 비교 (컴파일한 모델) 는 include 를 포함한 전체를 본다.
-- `<frame>` 의 pose (frame 의 `childclass` 는 읽는다 — frame 아래 body 의 관절은 world FK 없이 `[WARN] FK unavailable` 로 떨어진다) · `jointinparent` · tendon / site 전달 · ball / free 관절의 `range` · dynamics 가 있는 actuator 의 `ctrlrange`.
+- **`<include>` 를 따라가지 않는다.** include 로만 들어오는 관절 · body 는 텍스트에 없으므로 관절 · link 별 비교 대상이 아니다. **root 파일에 적힌 관절은 비교하되 틀린 값으로 읽을 수 있다** — include 된 파일의 `<compiler>` · `<default>` · `<actuator>` 도 그 관절이 컴파일되는 값을 정하는데 도구는 그것을 읽지 않는다. include 안의 `<compiler angle="radian"/>` 을 못 보면 range 를 degree 로 읽고, include 안의 actuator 를 못 보면 토크 한계가 0 이다 (거짓 불일치). 반대로 include 가 한계를 끄면 꺼진 한계를 읽어 거짓 OK 가 난다. root 파일에 `<include>` 가 있으면 `[WARN] MJCF <include> is not followed (…)` 를 찍는다 (warning 으로 센다). 구조 비교 (컴파일한 모델) 는 include 를 포함한 전체를 본다.
+- **`joint` 전달이 아닌 actuator 를 읽지 않는다** (`jointinparent` · tendon · site · slider-crank · body). 그런 actuator 가 구동하는 관절의 토크 한계는 그것을 뺀 값으로 읽힌다 — tendon motor 와 joint motor 가 같이 있으면 joint motor 만의 값이 `OK` 로 찍히고, `jointinparent` 만 있으면 `0` 으로 읽혀 거짓 `EFFORT MISMATCH` 가 난다. 파일에 있으면 ``[WARN] MJCF actuators with no `joint` transmission are not read (…)`` 가 그 actuator 를 나열한다 (warning 으로 센다). 어느 관절이 해당하는지는 가리지 않는다 — tendon · site 가 어느 관절에 힘을 싣는지는 컴파일한 모델의 성질이다.
+- `<frame>` 의 pose (frame 의 `childclass` 는 읽는다 — frame 아래 body 의 관절은 world FK 없이 `[WARN] FK unavailable` 로 떨어진다) · ball / free 관절의 `range` · dynamics 가 있는 actuator 의 `ctrlrange`.
 - **"한계 없음" 과 "한계 0" 을 구별하지 못한다** — 둘 다 `0` 이다.
 - `<default>` 안의 `<position>` · `<velocity>` · `<damper>` 같은 shortcut 은 "순수 gain 이 아니다" 로만 기록한다. 그 default 를 `<general biastype="none">` 이 물려받으면 MuJoCo 는 gain = `kp` 인 순수 gain 으로 컴파일하는데 도구는 gain 1 로 읽는다. `robot_descriptions` 에 없다.
 

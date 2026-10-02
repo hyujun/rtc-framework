@@ -57,10 +57,12 @@ def _mjcf(
     joint: str = "",
     inertial: str = INERTIAL,
     actuators: str = "",
+    extra: str = "",
 ) -> str:
     """Every argument is an XML fragment; the defaults give a bare hinge.
 
     ``wrap`` nests the body: ``'<body name="g" childclass="c1">{}</body>'``.
+    ``extra`` is further top-level sections.
     """
     body_xml = f"""\
 <body name="b" pos="0.1 0.2 0.3" {body}>
@@ -77,6 +79,7 @@ def _mjcf(
   <actuator>
     {actuators}
   </actuator>
+  {extra}
 </mujoco>
 """
 
@@ -944,6 +947,79 @@ class TestActuatorlessJointInTheReport:
         mjcf = CASES["actuatorless_joint_ignores_its_class_forcerange"].xml
         out = _report(tmp_path, capsys, mjcf, _urdf(effort=150))
         assert "EFFORT MISMATCH:  MJCF=0  URDF=150" in out
+
+
+def _warning_count(report: str) -> int:
+    return int(report.split("Warnings:")[-1].split("\n")[0].strip())
+
+
+class TestIncludeInTheReport:
+    """An included file's <compiler>, <default> and <actuator> are part of
+    what the joints of the ROOT file compile to, and no part of what the tool
+    reads.  The numbers it prints for them look as sure as any other, so the
+    report has to say that they are not."""
+
+    #: Adds nothing the root file does not already say, so the two reports
+    #: below differ by the warning alone.
+    INCLUDED = f"<mujoco>{RADIAN}</mujoco>"
+    WARNING = "[WARN] MJCF <include> is not followed (1: inc.xml)"
+
+    def test_an_include_is_warned_about_and_counted(self, tmp_path, capsys):
+        _write(tmp_path, "inc.xml", self.INCLUDED)
+        plain = _report(tmp_path, capsys, _mjcf(), _urdf())
+        including = _report(tmp_path, capsys, _mjcf(extra='<include file="inc.xml"/>'), _urdf())
+
+        assert self.WARNING in including
+        assert _warning_count(including) == _warning_count(plain) + 1
+
+    def test_no_include_no_warning(self, tmp_path, capsys):
+        assert "<include>" not in _report(tmp_path, capsys, _mjcf(), _urdf())
+
+
+class TestNonJointActuatorsInTheReport:
+    """Only `joint` transmissions are read.  An actuator that reaches the
+    joint another way still loads it in MuJoCo, so the torque limit printed
+    for that joint is short of the real one — and has to be marked."""
+
+    TENDON = '<tendon><fixed name="t"><joint joint="j" coef="2"/></fixed></tendon>'
+    #: A joint motor of 7, and a tendon motor the tool does not read.
+    MJCF_WITH_TENDON_MOTOR = _mjcf(
+        actuators='<motor name="pull" tendon="t" forcerange="-3 5"/>'
+        '<motor joint="j" forcerange="-7 7"/>',
+        extra=TENDON,
+    )
+    WARNING = "[WARN] MJCF actuators with no `joint` transmission are not read"
+
+    def test_a_tendon_actuator_is_warned_about(self, tmp_path, capsys):
+        """``effort: 7  OK`` is printed all the same — the warning is the only
+        thing that marks it."""
+        out = _report(tmp_path, capsys, self.MJCF_WITH_TENDON_MOTOR, _urdf(effort=7))
+        assert f'{self.WARNING} (1: <motor name="pull" tendon="t">)' in out
+        assert "effort: 7  OK" in out
+
+    def test_mujoco_loads_the_joint_through_the_tendon(self):
+        """Why the 7 above is not the limit: 2 x (-3, 5) arrives on top of it."""
+        mujoco = pytest.importorskip("mujoco")
+        model = mujoco.MjModel.from_xml_string(self.MJCF_WITH_TENDON_MOTOR)
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "j")
+        assert _measured_torque_range(model, jid) == _approx_interval((-13.0, 17.0))
+
+    def test_a_jointinparent_actuator_is_warned_about_and_counted(self, tmp_path, capsys):
+        """Same actuator, same joint, other transmission: the reports differ
+        by the warning (and by the effort the tool no longer sees)."""
+        by_joint = _report(
+            tmp_path, capsys, _mjcf(actuators='<motor joint="j" forcerange="-7 7"/>'), _urdf()
+        )
+        in_parent = _report(
+            tmp_path,
+            capsys,
+            _mjcf(actuators='<motor jointinparent="j" forcerange="-7 7"/>'),
+            _urdf(),
+        )
+
+        assert f'{self.WARNING} (1: <motor jointinparent="j">)' in in_parent
+        assert _warning_count(in_parent) == _warning_count(by_joint) + 1
+        assert self.WARNING not in by_joint
 
 
 def test_the_mjcf_class_option_is_gone(tmp_path, capsys, monkeypatch):
