@@ -1520,7 +1520,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOff) {
   EXPECT_EQ(d.DtPreNs(), 100'000'000) << profile;
   EXPECT_TRUE(d.replan_same_point) << profile;
   // The budgets must leave the planner's wake inside the decel admission age
-  // bound the RT judges a segment by (50 ms) — #662 re-derives that bound.
+  // bound the RT judges a segment by (50 ms): configure parks mode mpc unless
+  // budget.replan_s + 3 ticks is below it (DecelModeUnmet).
   EXPECT_GT(d.budget_first_s, 0.0) << profile;
   EXPECT_GT(d.budget_replan_s, 0.0) << profile;
   EXPECT_GT(d.catch_pos_err_max, 0.0) << profile;
