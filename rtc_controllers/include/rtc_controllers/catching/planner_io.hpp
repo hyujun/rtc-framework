@@ -309,6 +309,12 @@ struct DecelAdmissionContext {
   /// passes the plan's, never its latest.
   bool check_track{false};
   std::uint64_t plan_track_generation{0};
+  /// The joint count the caller's sampler is bound to; a segment of another
+  /// `nv` is refused as kMalformed. 0 disables. ValidateDecelNodes bounds
+  /// `nv` by the payload's capacity only, and a segment the sampler cannot
+  /// evaluate must not be admitted: taken with its plan, it would fail at
+  /// node 0 and end the trial in ABORT_SAFE instead of leaving the pair.
+  int expected_nv{0};
 };
 
 /// The RT's memory of the last decel segment it admitted.
@@ -354,6 +360,9 @@ struct AdmittedDecel {
     return DecelRefusal::kBeforeReset;
   }
   if (p.n_pre > 0 && !ctx.accept_pre_catch) {
+    return DecelRefusal::kMalformed;
+  }
+  if (ctx.expected_nv > 0 && p.nv != ctx.expected_nv) {
     return DecelRefusal::kMalformed;
   }
   if (!ValidateDecelNodes(p)) {

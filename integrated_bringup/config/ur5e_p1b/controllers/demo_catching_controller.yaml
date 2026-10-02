@@ -611,12 +611,20 @@ demo_catching_controller:
           # Largest catch-node position error [m] a segment may carry (MD-62).
           catch_pos_err_max: 0.02
         catch:
-          # The core's catch terms at the catch node (E1-F07's measured values;
-          # provisional, #663 tunes them).
+          # The core's catch terms at the catch node. w_axis / w_v_par /
+          # w_v_perp are E1-F07's measured values. gamma_ref is the E1-F10
+          # tuning's (#663, MPC plan MD-75): the hand aims at 0.6 of the
+          # ball's speed. At 1.0 the command was still accelerating at t_c and
+          # the arm sat 26 mm behind it along the ball's travel (26 / 100
+          # caught against closed_form's 57 on the same throws); 0.6 gave
+          # 72 / 100 on the screening seeds and 123 / 200 against 133 / 200 on
+          # the confirm seeds (paired difference -0.05). w_v_par moves the same
+          # axis: 0.3 and 3.0 at gamma_ref 0.6 were not better. Below v1's
+          # gamma window (lower bound ~0.69) — a recorded deviation.
           w_axis: 100.0
           w_v_par: 1.0
           w_v_perp: 20.0
-          gamma_ref: 1.0
+          gamma_ref: 0.6
           # W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 with eigenvalues capped
           # at w_max [1/m^2]; w_const without a usable covariance (MD-63).
           kappa: 1.0

@@ -841,11 +841,28 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
               [](YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; });
   expect_park("no catch sub-model", false,
               [](YAML::Node& y) { y["catching"]["planner"]["sub_model"] = "no_such_model"; });
-  expect_park("no catch box", false,
-              [](YAML::Node& y) { y["catching"]["planner"]["workspace"].remove("catch_box"); });
   auto slow = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
   slow.at("ur5e").joint_limits->max_velocity[3] = 0.0;
   expect_park("an arm joint without max_velocity", false, nullptr, slow);
+}
+
+TEST_F(CatchingPlanLaneTest, MpcItselfDoesNotNeedACatchBox) {
+  // MD-73: the RT does not judge where a stop ends, so catch_box is not one
+  // of mode mpc's prerequisites. The oracle profile runs no search and
+  // configures without it; with the planner on it is the SEARCH that asks.
+  using integrated_bringup::CatchingParkReason;
+  using Return = DemoCatchingController::CallbackReturn;
+  const auto no_box = [](YAML::Node& y) {
+    y["catching"]["planner"]["workspace"].remove("catch_box");
+  };
+  const ConfigureVerdict oracle = ConfigureOnly(false, no_box);
+  ASSERT_EQ(oracle.ret, Return::SUCCESS);
+  EXPECT_FALSE(oracle.parked) << "reason " << static_cast<int>(oracle.reason);
+  EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kMpc);
+  const ConfigureVerdict searching = ConfigureOnly(true, no_box);
+  ASSERT_EQ(searching.ret, Return::SUCCESS);
+  EXPECT_TRUE(searching.parked);
+  EXPECT_EQ(searching.reason, CatchingParkReason::kPlannerUnset);
 }
 
 TEST_F(CatchingPlanLaneTest, AMalformedDecelModeOrSwitchMarginFailsTheConfigure) {
@@ -1001,7 +1018,6 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   double rho_refused_max = 0.0;
   std::set<Mode> followed_in;
   std::set<std::uint32_t> followed_seqs;
-  std::ostringstream workspace;  // the segments MD-43 refused
   std::array<int, 11> events{};  // tick records per DecelEvent, for the failure message
   Mode last = Mode::kIdle;
   integrated_bringup::CatchingDiagLogPod end_record{};
@@ -1055,12 +1071,6 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
     if (record.decel_event == Event::kSwitched) {
       ++switches;
       rho_max = std::max(rho_max, record.decel_rho);
-    }
-    if (record.decel_event == Event::kWorkspace) {
-      // The segment the lane just judged is the one in the box (the planner
-      // may have replaced it since: recorded, not asserted).
-      const rtc::catching::DecelPlanSnapshot judged = ctrl_->GetPublishedDecelPlan();
-      workspace << "(n_pre " << judged.n_pre << ", k0 " << judged.k0 << ") ";
     }
     if (record.decel_event == Event::kGateRefused) {
       ++gate_refused;
@@ -1125,7 +1135,7 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   os << "switches " << switches << ", segments followed " << followed_seqs.size()
      << ", gate refusals " << gate_refused << " (max rho " << rho_refused_max
      << "), max switch rho " << rho_max << ", replan wakes with a source " << replans_with_a_source
-     << "; events " << counts.str() << "; catch-box refusals " << workspace.str();
+     << "; events " << counts.str();
   RecordProperty("real_clock_closed_loop", os.str());
   std::printf("[ MEASURED ] %s\n", os.str().c_str());
 }

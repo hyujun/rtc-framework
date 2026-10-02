@@ -420,16 +420,57 @@ expect_contains "untracked script is routed to a build" "$out" "BUILD_PKGS=[rtc_
 rm -rf "$dir"
 
 # 15e. ...and the widening stays an allowlist. A .py under <pkg>/config/ is not
-#      package source: config/ holds YAML that the parse gate already covers, and
-#      admitting it would make the filter "any directory under a package", which is
-#      the unbounded reading 15 exists to rule out.
+#      package source: config/ holds no source, and admitting it would make the
+#      filter "any directory under a package", which is the unbounded reading 15
+#      exists to rule out. (Its YAML has a route of its own -- 15e2.)
 dir=$(make_fixture)
 printf 'x = 1\n' >"$dir/rtc_demo/config/fresh.py"
 out=$(run_hook "$dir")
 expect_contains "untracked .py under config/ is not routed to a build" "$out" "BUILD_PKGS=[]"
 rm -rf "$dir"
 
-# --- path-scoped rule glob gate ----------------------------------------------
+# 15e2. What a package TRACKS is another matter: every tracked file of it but
+#       its Markdown routes it to build/test -- the set its verdict is keyed
+#       on. A turn whose ONLY change was a shipped value used to pass --run
+#       with "built and tested []" (2026-10-02): the parse gate says the file
+#       is YAML, not that the profile the package's tests load still loads.
+#       Not a list of directories: robot data installed by directory had the
+#       same hole. Untracked files keep their allowlists -- a new YAML under
+#       config/ is installed, a scratch YAML anywhere else is not the package.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/robots" "$dir/rtc_demo/docs"
+printf 'gain: 1.0\n' >"$dir/rtc_demo/config/demo.yaml"
+printf '<robot name="demo"/>\n' >"$dir/rtc_demo/robots/demo.urdf"
+printf '# design\n' >"$dir/rtc_demo/docs/design.md"
+git -C "$dir" add -A
+git -C "$dir" commit -qm "shipped data"
+printf 'gain: 2.0\n' >"$dir/rtc_demo/config/demo.yaml"
+out=$(run_hook "$dir")
+expect_contains "an edited config YAML routes its package to build/test" "$out" "BUILD_PKGS=[rtc_demo]"
+git -C "$dir" checkout -q -- rtc_demo/config/demo.yaml
+printf '<robot name="demo2"/>\n' >"$dir/rtc_demo/robots/demo.urdf"
+out=$(run_hook "$dir")
+expect_contains "an edited data file outside config/ does too" "$out" "BUILD_PKGS=[rtc_demo]"
+git -C "$dir" checkout -q -- rtc_demo/robots/demo.urdf
+git -C "$dir" rm -q rtc_demo/robots/demo.urdf
+out=$(run_hook "$dir")
+expect_contains "a deleted data file does too" "$out" "BUILD_PKGS=[rtc_demo]"
+git -C "$dir" reset -q --hard
+printf '# design\n\nA second line.\n' >"$dir/rtc_demo/docs/design.md"
+out=$(run_hook "$dir")
+expect_contains "the package's Markdown builds nothing" "$out" "BUILD_PKGS=[]"
+git -C "$dir" checkout -q -- rtc_demo/docs/design.md
+mkdir -p "$dir/rtc_demo/config/robot"
+printf 'gain: 3.0\n' >"$dir/rtc_demo/config/robot/new.yml"
+out=$(run_hook "$dir")
+expect_contains "a new config YAML in a subdirectory routes its package" "$out" "BUILD_PKGS=[rtc_demo]"
+rm -rf "$dir/rtc_demo/config/robot"
+printf 'note: 1\n' >"$dir/rtc_demo/docs/table.yaml"
+printf 'note: 1\n' >"$dir/rtc_demo/scratch.yaml"
+printf '<robot name="probe"/>\n' >"$dir/rtc_demo/robots/probe.urdf"
+out=$(run_hook "$dir")
+expect_contains "untracked data outside config/ builds nothing" "$out" "BUILD_PKGS=[]"
+rm -rf "$dir"
 
 # 15f. A .claude/rules/*.md whose globs match nothing must BLOCK. A rule that
 #      cannot fire is guidance that silently never arrives -- the same shape as

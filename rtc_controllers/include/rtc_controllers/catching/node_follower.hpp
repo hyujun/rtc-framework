@@ -22,7 +22,7 @@
 //
 // WIRING. The catching controller under `supervisor.decel.mode: mpc`:
 // Sample() on every tick that follows a segment — APPROACH through HOLD
-// (E1-F09) — and NodesInsideBox() once per admitted segment (MD-43).
+// (E1-F09).
 //
 // RT CONTRACT. Init() is non-RT (copies nothing heavy: shares the model, owns
 // its own pinocchio::Data, sizes every buffer). Sample() is noexcept,
@@ -93,30 +93,6 @@ class NodeTrajectoryFollower {
   [[nodiscard]] static bool SampleJoints(const DecelPlanSnapshot& plan, std::int64_t t_lead_ns,
                                          std::span<double> q, std::span<double> qd,
                                          std::span<double> qdd, bool* held = nullptr) noexcept;
-
-  /// @brief Whether the catch frame at every node from `first_node` on lies in
-  /// the axis-aligned box [lo, hi] of the model world (MD-43; RT-safe, one FK
-  /// per node checked). With an `anchor`, the path is judged TRANSLATED so
-  /// node `first_node` sits at the anchor — anchor + (p_k − p_first) — i.e.
-  /// the stop's displacement from where it starts, placed at the catch point
-  /// the planner checked its own stop from. `first_node` is 0 for a segment
-  /// that starts at t_c or after it (n_pre 0) and the catch node (n_pre) for
-  /// one that starts before, whose pre-catch nodes are the approach, not the
-  /// stop.
-  /// Between nodes is not checked. False when uninitialised, on a shape this
-  /// arm cannot sample, on a `first_node` outside 0 .. n_nodes, or on the
-  /// first node outside (NaN counts as outside); `first_outside` (if given)
-  /// is that node, −1 when every checked node is inside.
-  [[nodiscard]] bool NodesInsideBox(const DecelPlanSnapshot& plan, const std::array<double, 3>& lo,
-                                    const std::array<double, 3>& hi,
-                                    const std::array<double, 3>* anchor = nullptr,
-                                    int* first_outside = nullptr, int first_node = 0) noexcept;
-
-  /// @brief The catch frame's position at node `k` in the model world (RT-safe,
-  /// one FK). Same shape checks as NodesInsideBox(); false — `p` untouched —
-  /// on those or a `k` outside 0 .. n_nodes.
-  [[nodiscard]] bool NodePosition(const DecelPlanSnapshot& plan, int k,
-                                  std::array<double, 3>& p) noexcept;
 
  private:
   std::shared_ptr<const pinocchio::Model> model_;

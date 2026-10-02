@@ -367,91 +367,6 @@ TEST_F(NodeFollowerTest, FkConsistencyAlongTheSegment) {
   EXPECT_LT(worst_v, 1e-10);
 }
 
-TEST_F(NodeFollowerTest, NodesInsideBoxChecksEveryNodeInTheModelWorld) {
-  // MD-43: the catch frame at node 0..N, against an independent FK of the
-  // device-order nodes. A box around all of them passes; pulling one face in
-  // past the extreme node refuses and names the FIRST node beyond it.
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 33);
-  pinocchio::Data data(*arm_.model);
-  std::vector<Eigen::Vector3d> pos;
-  for (int k = 0; k <= p.n_nodes; ++k) {
-    Eigen::VectorXd q(p.nv);
-    for (int m = 0; m < p.nv; ++m) {
-      q[m] = p.q[Idx(k, kDeviceOfModel[static_cast<std::size_t>(m)])];
-    }
-    pinocchio::framesForwardKinematics(*arm_.model, data, q);
-    pos.push_back(data.oMf[arm_.frame].translation());
-  }
-  std::array<double, 3> lo{};
-  std::array<double, 3> hi{};
-  for (int a = 0; a < 3; ++a) {
-    lo[static_cast<std::size_t>(a)] = std::numeric_limits<double>::infinity();
-    hi[static_cast<std::size_t>(a)] = -std::numeric_limits<double>::infinity();
-    for (const auto& x : pos) {
-      lo[static_cast<std::size_t>(a)] = std::min(lo[static_cast<std::size_t>(a)], x[a]);
-      hi[static_cast<std::size_t>(a)] = std::max(hi[static_cast<std::size_t>(a)], x[a]);
-    }
-  }
-  int first = 99;
-  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, nullptr, &first));
-  EXPECT_EQ(first, -1);
-
-  std::array<double, 3> tight = hi;
-  tight[0] -= 1e-6;
-  int expected = -1;
-  for (int k = 0; k <= p.n_nodes && expected < 0; ++k) {
-    if (pos[static_cast<std::size_t>(k)][0] > tight[0]) {
-      expected = k;
-    }
-  }
-  ASSERT_GE(expected, 0);
-  EXPECT_FALSE(follower_.NodesInsideBox(p, lo, tight, nullptr, &first));
-  EXPECT_EQ(first, expected);
-
-  // Anchored: the same path moved so node 0 sits at `anchor`. Anchored at node
-  // 0 itself it is the plain check; moved by d, the box moved by d passes and
-  // the original box refuses the first node the shift pushes out.
-  const std::array<double, 3> at_node0{pos[0].x(), pos[0].y(), pos[0].z()};
-  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, &at_node0, &first));
-  const Eigen::Vector3d d(0.5, -0.25, 0.125);
-  const std::array<double, 3> shifted{pos[0].x() + d.x(), pos[0].y() + d.y(), pos[0].z() + d.z()};
-  std::array<double, 3> lo_d{};
-  std::array<double, 3> hi_d{};
-  for (int a = 0; a < 3; ++a) {
-    lo_d[static_cast<std::size_t>(a)] = lo[static_cast<std::size_t>(a)] + d[a];
-    hi_d[static_cast<std::size_t>(a)] = hi[static_cast<std::size_t>(a)] + d[a];
-  }
-  EXPECT_TRUE(follower_.NodesInsideBox(p, lo_d, hi_d, &shifted, &first));
-  EXPECT_EQ(first, -1);
-  EXPECT_FALSE(follower_.NodesInsideBox(p, lo, hi, &shifted, &first));
-  EXPECT_EQ(first, 0) << "node 0 itself is placed at the anchor, outside the unshifted box";
-
-  DecelPlanSnapshot bad = p;
-  bad.q[Idx(3, 0)] = kNan;  // node 3's FK is NaN: outside, whatever the box
-  std::array<double, 3> huge_lo{-1e9, -1e9, -1e9};
-  std::array<double, 3> huge_hi{1e9, 1e9, 1e9};
-  EXPECT_FALSE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, nullptr, &first));
-  EXPECT_EQ(first, 3);
-
-  NodeTrajectoryFollower unbound;
-  EXPECT_FALSE(unbound.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first));
-  EXPECT_EQ(first, -1);
-
-  // NodePosition: the same FK, one node; out of range or unbound leaves `x`.
-  for (int k : {0, 5, p.n_nodes}) {
-    std::array<double, 3> x{};
-    ASSERT_TRUE(follower_.NodePosition(p, k, x));
-    for (int a = 0; a < 3; ++a) {
-      EXPECT_NEAR(x[static_cast<std::size_t>(a)], pos[static_cast<std::size_t>(k)][a], 1e-12);
-    }
-  }
-  std::array<double, 3> untouched{7.0, 7.0, 7.0};
-  EXPECT_FALSE(follower_.NodePosition(p, p.n_nodes + 1, untouched));
-  EXPECT_FALSE(follower_.NodePosition(p, -1, untouched));
-  EXPECT_FALSE(unbound.NodePosition(p, 0, untouched));
-  EXPECT_EQ(untouched[0], 7.0);
-}
-
 TEST_F(NodeFollowerTest, DeviceOrderIsMappedBeforeFk) {
   // Negative control for the mapping: FK of the DEVICE-order vector read as if
   // it were model order must differ — otherwise the permutation fixture would
@@ -885,83 +800,6 @@ TEST_F(NodeFollowerTest, TwoSpacingSampleAllocatesNothing) {
   EXPECT_EQ(mallocs, 0U);
 }
 
-TEST_F(NodeFollowerTest, NodesInsideBoxCanStartAtTheCatchNode) {
-  // MD-43 on an APPROACH–stop segment: the stop starts at the catch node, so
-  // the check reads nodes n_pre..N and, anchored, places node n_pre — not node
-  // 0 — at the anchor. Against an independent FK of the device-order nodes.
-  const DecelPlanSnapshot p = MakeMixedPlan(arm_.q_nominal, 55, 3, 7).p;
-  pinocchio::Data data(*arm_.model);
-  std::vector<Eigen::Vector3d> pos;
-  for (int k = 0; k <= p.n_nodes; ++k) {
-    Eigen::VectorXd q(p.nv);
-    for (int m = 0; m < p.nv; ++m) {
-      q[m] = p.q[Idx(k, kDeviceOfModel[static_cast<std::size_t>(m)])];
-    }
-    pinocchio::framesForwardKinematics(*arm_.model, data, q);
-    pos.push_back(data.oMf[arm_.frame].translation());
-  }
-  // The box of the stop part placed at `anchor`: anchor + (p_k − p_first).
-  const auto stop_box = [&](int first, const Eigen::Vector3d& anchor, std::array<double, 3>& lo,
-                            std::array<double, 3>& hi) {
-    for (int a = 0; a < 3; ++a) {
-      const auto u = static_cast<std::size_t>(a);
-      lo[u] = std::numeric_limits<double>::infinity();
-      hi[u] = -std::numeric_limits<double>::infinity();
-      for (int k = first; k <= p.n_nodes; ++k) {
-        const double x = anchor[a] + pos[static_cast<std::size_t>(k)][a] -
-                         pos[static_cast<std::size_t>(first)][a];
-        lo[u] = std::min(lo[u], x - 1e-9);
-        hi[u] = std::max(hi[u], x + 1e-9);
-      }
-    }
-  };
-  const Eigen::Vector3d anchor(0.4, -0.1, 0.6);
-  const std::array<double, 3> at{anchor.x(), anchor.y(), anchor.z()};
-  std::array<double, 3> lo{};
-  std::array<double, 3> hi{};
-  stop_box(p.n_pre, anchor, lo, hi);
-  int first = 99;
-  EXPECT_TRUE(follower_.NodesInsideBox(p, lo, hi, &at, &first, p.n_pre));
-  EXPECT_EQ(first, -1);
-  // Read from node 0 the same box refuses: the pre-catch nodes are placed
-  // relative to node 0, and the path is another one. (The fixture's approach
-  // must leave the stop's box for this to tell the two apart.)
-  int from_zero = -1;
-  ASSERT_FALSE(follower_.NodesInsideBox(p, lo, hi, &at, &from_zero, 0))
-      << "the fixture's pre-catch part stays inside the stop's box";
-  // Unanchored, from the catch node: the absolute stop nodes.
-  std::array<double, 3> abs_lo{};
-  std::array<double, 3> abs_hi{};
-  stop_box(p.n_pre, pos[static_cast<std::size_t>(p.n_pre)], abs_lo, abs_hi);
-  EXPECT_TRUE(follower_.NodesInsideBox(p, abs_lo, abs_hi, nullptr, &first, p.n_pre));
-  // Pulling a face in past the extreme stop node names the first node beyond
-  // it — an index of the SEGMENT, not of the stop part.
-  std::array<double, 3> tight = abs_hi;
-  tight[0] -= 2e-9 + 1e-6;
-  int expected = -1;
-  for (int k = p.n_pre; k <= p.n_nodes && expected < 0; ++k) {
-    if (pos[static_cast<std::size_t>(k)][0] > tight[0]) {
-      expected = k;
-    }
-  }
-  ASSERT_GE(expected, p.n_pre);
-  EXPECT_FALSE(follower_.NodesInsideBox(p, abs_lo, tight, nullptr, &first, p.n_pre));
-  EXPECT_EQ(first, expected);
-  // The last node alone, and a first node outside the segment.
-  const std::array<double, 3> huge_lo{-1e9, -1e9, -1e9};
-  const std::array<double, 3> huge_hi{1e9, 1e9, 1e9};
-  EXPECT_TRUE(follower_.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first, p.n_nodes));
-  EXPECT_FALSE(follower_.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first, p.n_nodes + 1));
-  EXPECT_FALSE(follower_.NodesInsideBox(p, huge_lo, huge_hi, nullptr, &first, -1));
-  // A NaN before the first node is not read; one after it is.
-  DecelPlanSnapshot bad = p;
-  bad.q[Idx(1, 0)] = kNan;
-  EXPECT_TRUE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, nullptr, &first, p.n_pre));
-  bad.q[Idx(p.n_pre + 1, 0)] = kNan;
-  EXPECT_FALSE(follower_.NodesInsideBox(bad, huge_lo, huge_hi, nullptr, &first, p.n_pre));
-  EXPECT_EQ(first, p.n_pre + 1);
-}
-
 TEST(DecelAdmission, PreCatchSegmentNeedsTheContextToAcceptIt) {
   using rtc::catching::DecelRefusal;
   DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 70, 3, 7).p;
@@ -987,6 +825,36 @@ TEST(DecelAdmission, PreCatchSegmentNeedsTheContextToAcceptIt) {
   s.rt_state_ns = p.rt_state_ns;
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
   EXPECT_EQ(rtc::catching::JudgeDecelPlan(s, ctx, none), DecelRefusal::kNone);
+}
+
+TEST(DecelAdmission, ASegmentOfAnotherJointCountIsMalformed) {
+  // ValidateDecelNodes bounds nv by the payload's capacity; whether the
+  // caller's sampler can evaluate the segment is the context's to say. A
+  // context that names its joint count refuses any other as kMalformed; one
+  // that names none (0) does not look.
+  using rtc::catching::DecelRefusal;
+  DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 73, 3, 7).p;
+  p.publish_ns = kTc - 500'000'000;
+  p.rt_state_ns = p.publish_ns - 1'000'000;
+  rtc::catching::DecelAdmissionContext ctx{};
+  ctx.plan_active = true;
+  ctx.plan_id = p.plan_id;
+  ctx.plan_t_c_ns = p.t_c_ns;
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
+  ctx.max_age_ns = 50'000'000;
+  ctx.accept_pre_catch = true;
+  const rtc::catching::AdmittedDecel none{};
+  ASSERT_EQ(p.nv, 6);
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  ctx.expected_nv = 6;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  ctx.expected_nv = 7;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kMalformed);
+  ctx.expected_nv = 5;
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kMalformed);
+  // Still behind the age check, as the node scan is.
+  ctx.now = rtc::catching::NowReal{p.publish_ns + 60'000'000};
+  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kAged);
 }
 
 TEST(DecelAdmission, ASegmentForAnotherTrackIsNotThisPlans) {

@@ -1059,7 +1059,7 @@ D-3 은 **검증 결과로 다시 검토한다.** 기존 RTF 신호 (200 step �
 | G | `T_freeze` p1b 0.36 · leap 0.19 s (provisional) | S6-B |
 | H | `planner.wake_timeout_s` 0.05 s | S6-A |
 | I | `catch_box` = base 축정렬 상자; sim 은 S3.5b 열린 후보 외접 + 0.1 m, 실기 provisional | S6-B |
-| K | `joint_cmd.accel_constraint: box\|kinematic\|dynamic` — dynamic 은 $M(q)(v-v_{prev})/\Delta t + h \le \eta_\tau\tau_{\max}$ ($\eta_\tau$ 0.8), 행은 hard (실패 → QP 비의존 abort), box 는 비트 동일. 구현 `73b8ca49`·`64dc47e1`. 출하: p1b `dynamic` (추종 p95 68 대 624 mm), leap `box` | S6-C2 |
+| K | `joint_cmd.accel_constraint: box\|kinematic\|dynamic` — dynamic 은 $M(q)(v-v_{prev})/\Delta t + h \le \eta_\tau\tau_{\max}$ ($\eta_\tau$ 0.8), 행은 hard (실패 → QP 비의존 abort), box 는 비트 동일. 구현 `73b8ca49`·`64dc47e1`. 출하: p1b `dynamic` (추종 p95 68 대 624 mm), leap `box` — 2026-10-02 에 leap 도 `dynamic` 으로 바꿨다 (MPC 계획 MD-74) | S6-C2 |
 | L | `planner.wait_pose` (provisional) p1b `[0.212, −1.376, 1.107, −1.978, −3.296, 0.121]` · leap `[0, 1.0, 0, −1.2, 0, 1.2, 0]`, IK seed 전용 | S6-A·B |
 | 3-1 | `reference.a_max` 21 / 35 채택 (provisional) | — |
 | 3-2 | A-S5-12 채택 | S6-A |

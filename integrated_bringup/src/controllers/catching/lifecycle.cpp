@@ -275,6 +275,25 @@ void DemoCatchingController::DeclareProfileParameters() {
           "fewest prediction points a message may carry, as run (the decode's default when TBD)");
   declare("planner.slice.dt", planner_params_.slice_dt,
           "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
+  // The two the E1-F10 tuning moves per arm (MPC plan MD-72, MD-74): an
+  // overlay one level short would otherwise run the shipped value under the
+  // candidate's name. One launch configures once, which is what a unit driver
+  // reads; like every mirror here they keep the FIRST configure's value.
+  declare("planner.slice.t_lead_min", planner_params_.LeadMin(),
+          "L3 §4 smallest candidate lead t_c - t_plan [s] as run (planner.freeze.T_freeze when "
+          "the key is absent). As of the FIRST configure of this node — read_only mirrors "
+          "cannot follow a re-configure");
+  declare(
+      "joint_cmd.accel_constraint",
+      std::string(
+          params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic
+              ? "dynamic"
+          : params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kKinematic
+              ? "kinematic"
+              : "box"),
+      "L5 §4.3 CLIK acceleration constraint form the profile selects (decision K) — the parsed "
+      "key, also when the CLIK refused it and the arm is held. As of the FIRST configure of "
+      "this node — read_only mirrors cannot follow a re-configure");
   // The decel MPC as run (MPC E1-F03): an off-process analysis must read the
   // horizon, window and thresholds this controller used, not the file.
   const auto& decel = planner_params_.decel;
@@ -1999,8 +2018,6 @@ void DemoCatchingController::SetupDecelFollower() {
   // the previous sampler, and DecelModeUnmet reads Initialized().
   decel_follower_ = rtc::catching::NodeTrajectoryFollower{};
   decel_qd_max_.fill(0.0);
-  decel_box_lo_ = planner_params_.catch_box.min;
-  decel_box_hi_ = planner_params_.catch_box.max;
   decel_eta_v_ = ResolvedPlannerEtaV();
   decel_k_p_ = params_.joint_cmd_k_p.tbd ? 0.0 : params_.joint_cmd_k_p.value;
   decel_k_n_ = params_.joint_cmd_k_posture.tbd ? 0.0 : params_.joint_cmd_k_posture.value;
@@ -2066,9 +2083,9 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   if (static_cast<int>(arm_q_min_margined_.size()) != arm_dof_) {
     return "the CLIK's position box is off (device position limits incomplete)";
   }
-  if (!planner_params_.catch_box.set) {
-    return "planner.workspace.catch_box is unset (the stop's workspace check, MD-43)";
-  }
+  // planner.workspace.catch_box is not one of these (MD-73): the RT does not
+  // judge where a stop ends. The search needs it, and says so itself
+  // (kPlannerUnset).
   // MD-45, MD-70: the arm follows a segment from APPROACH, and a plan is
   // published only together with one that starts before t_c. Without a
   // pre-catch grid no decel planner is built — no trial would ever start. The
