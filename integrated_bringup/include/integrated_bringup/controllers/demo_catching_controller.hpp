@@ -214,7 +214,7 @@ enum class CatchingParkReason : std::uint8_t {
   /// `supervisor.decel.mode: mpc` without one of its prerequisites (MPC
   /// MD-34): the catch sub-model sampler, `joint_cmd.K_n` > 0, η_v < 1, the
   /// arm's per-joint velocity ratings and the CLIK's per-joint velocity and
-  /// position boxes, `planner.workspace.catch_box`, and a decel planner
+  /// position boxes, and a decel planner
   /// (`planner.decel_mpc.enabled` and `approach.n_pre_max` > 0 with the
   /// planner on — without a pre-catch grid none is built, MD-70; the oracle
   /// profile is exempt). Under mpc the arm follows a segment from APPROACH to the end of
@@ -372,14 +372,6 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   [[nodiscard]] bool IsFollowingDecelForTesting() const noexcept { return decel_current_valid_; }
-
-  /// Move the MD-43 catch box between ticks — a test that must size it from
-  /// a segment it only knows once the trial runs. Not for a running RT loop.
-  void SetDecelCatchBoxForTesting(const std::array<double, 3>& lo,
-                                  const std::array<double, 3>& hi) noexcept {
-    decel_box_lo_ = lo;
-    decel_box_hi_ = hi;
-  }
 
   /// The decel planner's joint position box as configured (MD-42), device
   /// order, and the CLIK's margined arm box it must sit inside.
@@ -809,8 +801,8 @@ class DemoCatchingController final : public RTControllerInterface {
       std::array<int, rtc::catching::kMaxPlanNv>& device_of_model);
 
   /// `supervisor.decel.mode: mpc` (MPC E1-F04): bind the RT's segment
-  /// sampler to the catch sub-model and cache what the switch gate and the
-  /// workspace check read. Non-RT; a failure is reported by DecelModeUnmet.
+  /// sampler to the catch sub-model and cache what the switch gate reads.
+  /// Non-RT; a failure is reported by DecelModeUnmet.
   void SetupDecelFollower();
 
   /// The first `mode: mpc` prerequisite that is missing, or nullptr (MD-34).
@@ -934,9 +926,6 @@ class DemoCatchingController final : public RTControllerInterface {
   /// empty, or when the newer segment starts at the pending one's node 0 (the
   /// same grid point solved again, MD-58).
   void RunDecelLane() noexcept;
-  /// MD-43 for the segment in `decel_in_`: its STOP part, placed at the catch
-  /// point `p_c`, stays inside the catch box. One FK per stop node.
-  [[nodiscard]] bool DecelStopInsideCatchBox(const std::array<double, 3>& p_c) noexcept;
   /// The TRACKING → APPROACH edge's second half under mpc: the segment the
   /// lane judged this tick becomes the pending one. Only after AdoptPlan, and
   /// only when `decel_pair_ok_`.
@@ -1358,9 +1347,6 @@ class DemoCatchingController final : public RTControllerInterface {
   rtc::catching::NodeTrajectoryFollower decel_follower_;
   /// The arm's max_velocity, device order — the gate's headroom input.
   std::array<double, rtc::catching::kMaxDecelNv> decel_qd_max_{};
-  /// `planner.workspace.catch_box` in the model world (MD-43).
-  std::array<double, 3> decel_box_lo_{};
-  std::array<double, 3> decel_box_hi_{};
   /// The CLIK's per-joint velocity box was built (every arm and hand joint
   /// rated) — MD-34 asks for it, since the hand is locked through it.
   bool clik_v_box_complete_{false};
@@ -1572,7 +1558,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   last_trial_generation_, last_trial_generation_valid_   R writes, T clears
   //   decel_entry_, decel_t_s_ns_, decel_stopped_, hold_entry_ns_     R, T
   //   admitted_decel_, decel_pending_, decel_pending_valid_, decel_current_, decel_current_valid_,
-  //   decel_stop_origin_, decel_stop_origin_valid_, decel_pair_ok_
+  //   decel_pair_ok_
   //                                              R, T (DropDecelSegments; also on ABORT_SAFE / RETREAT entry, and HOLD drops the pending one)
   //   decel_in_, decel_refusal_, decel_sample_   exempt: written on the tick that reads them (the tick record's decel_judged says whether the lane ran)
   //   sat_streak_, law_horizon_extrap_           R, T
@@ -1743,14 +1729,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The segment the RT follows.
   rtc::catching::DecelPlanSnapshot decel_current_{};
   bool decel_current_valid_{false};
-  /// Where this stop starts: the catch frame at the CATCH node (model world)
-  /// of the segment the RT last switched to among those that hold one (k0 =
-  /// 0) — at t_c, the trajectory the arm is on. A post-catch replan's MD-43
-  /// check measures from here, so the part of the stop already covered counts.
-  std::array<double, 3> decel_stop_origin_{};
-  bool decel_stop_origin_valid_{false};
   /// This tick's TRACKING verdict: the box holds an admissible first segment
-  /// of the plan this tick could adopt (JudgeDecelPlan and MD-43 both pass).
+  /// of the plan this tick could adopt (JudgeDecelPlan passes).
   /// Written by the lane every tick; the edge reads it on the same tick.
   bool decel_pair_ok_{false};
   /// This tick's sample of a segment (the switch's and the law's).

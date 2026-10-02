@@ -2273,7 +2273,8 @@ def decel_lane_metrics(ctx: TrialContext) -> dict:
     - ``decel_switches`` / ``_admitted`` / ``_replaced`` / ``_gate_refused``;
     - ``decel_deferred`` — waits in the box, ``decel_deferred_max_ticks`` the
       longest of them [ticks];
-    - ``decel_workspace_refused`` — stop paths outside ``catch_box`` (MD-43);
+    - ``decel_workspace_refused`` — stop paths outside ``catch_box`` (MD-43).
+      The RT dropped that check (MD-73): 0 in the logs written after it;
     - ``decel_aged`` — segments dropped by the admission age bound (MD-37);
     - ``decel_rho_first`` — the switch gate's ρ at the first switch (the seeded
       command against node 0), ``decel_rho_replan_max`` the largest over the

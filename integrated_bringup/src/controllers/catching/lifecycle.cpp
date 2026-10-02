@@ -1999,8 +1999,6 @@ void DemoCatchingController::SetupDecelFollower() {
   // the previous sampler, and DecelModeUnmet reads Initialized().
   decel_follower_ = rtc::catching::NodeTrajectoryFollower{};
   decel_qd_max_.fill(0.0);
-  decel_box_lo_ = planner_params_.catch_box.min;
-  decel_box_hi_ = planner_params_.catch_box.max;
   decel_eta_v_ = ResolvedPlannerEtaV();
   decel_k_p_ = params_.joint_cmd_k_p.tbd ? 0.0 : params_.joint_cmd_k_p.value;
   decel_k_n_ = params_.joint_cmd_k_posture.tbd ? 0.0 : params_.joint_cmd_k_posture.value;
@@ -2066,9 +2064,9 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   if (static_cast<int>(arm_q_min_margined_.size()) != arm_dof_) {
     return "the CLIK's position box is off (device position limits incomplete)";
   }
-  if (!planner_params_.catch_box.set) {
-    return "planner.workspace.catch_box is unset (the stop's workspace check, MD-43)";
-  }
+  // planner.workspace.catch_box is not one of these (MD-73): the RT does not
+  // judge where a stop ends. The search needs it, and says so itself
+  // (kPlannerUnset).
   // MD-45, MD-70: the arm follows a segment from APPROACH, and a plan is
   // published only together with one that starts before t_c. Without a
   // pre-catch grid no decel planner is built — no trial would ever start. The

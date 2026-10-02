@@ -979,8 +979,9 @@ class DecelMpcScenarioTest : public SupervisorScenarioTest {
   static constexpr double kTcOffsetS = 0.6;  // the oracle's t_c − now
 
   /// mode mpc on the scenario profile: the catch sub-model the sampler binds
-  /// to, a catch box that holds every node, and the shipped torque rows (the
-  /// fixture's derived box, 2.03 rad/s², would cap the follow's step).
+  /// to, a wide catch box (the search's key — the RT does not read it, MD-73),
+  /// and the shipped torque rows (the fixture's derived box, 2.03 rad/s²,
+  /// would cap the follow's step).
   static void MpcProfile(YAML::Node& y) {
     y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
@@ -1350,6 +1351,50 @@ TEST_F(DecelMpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken)
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair([](DecelPlanSnapshot& s) { s.rt_state_ns = 1; });
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kBeforeReset));
+}
+
+// ── The RT does not judge where the stop ends (MD-73) ───────────────────────
+// catch_box is the planner search's: it judges the catch point and the stop
+// point of the plans it publishes. The RT takes a segment on JudgeDecelPlan
+// and the switch gate alone. Under a catch box whose ceiling is below the hand
+// no node of any segment is inside it — the pair is taken and a replan is
+// followed all the same.
+
+class DecelMpcNoCatchBoxCheckTest : public DecelMpcScenarioTest {
+ protected:
+  void BringUpUnderABoxThatHoldsNoNode() {
+    ASSERT_NO_FATAL_FAILURE(BringUpMpc([this](YAML::Node& y) {
+      const double z = start_pose_.translation().z() - 0.2;
+      y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, z};
+    }));
+  }
+};
+
+TEST_F(DecelMpcNoCatchBoxCheckTest, APairWhoseStopLeavesTheCatchBoxIsTaken) {
+  ASSERT_NO_FATAL_FAILURE(BringUpUnderABoxThatHoldsNoNode());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 0) << Transitions();
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
+}
+
+TEST_F(DecelMpcNoCatchBoxCheckTest, AReplanWhoseStopLeavesTheCatchBoxIsFollowed) {
+  ASSERT_NO_FATAL_FAILURE(BringUpUnderABoxThatHoldsNoNode());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  // The same trajectory from one stop node on: a post-catch replan.
+  DecelPlanSnapshot replan =
+      integrated_bringup::testfx::ShiftSegment(first_seg_, kApproachNPre + 1);
+  Stamp(replan, 2);
+  ctrl_->DecelBoxForTesting().Store(replan);
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
+  EXPECT_GT(
+      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq == 2U; }),
+      0)
+      << "the replan was not followed\n"
+      << Transitions();
+  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 0) << Transitions();
+  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
 // ── Nothing to follow is ABORT_SAFE, from APPROACH on (MD-44) ───────────────

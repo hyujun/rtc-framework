@@ -1391,8 +1391,6 @@ void DemoCatchingController::DropDecelSegments() noexcept {
   decel_pending_valid_ = false;
   decel_current_ = rtc::catching::DecelPlanSnapshot{};
   decel_current_valid_ = false;
-  decel_stop_origin_ = {};
-  decel_stop_origin_valid_ = false;
   decel_pair_ok_ = false;
 }
 
@@ -1404,34 +1402,6 @@ bool DemoCatchingController::DecelSegmentMatchesPlan(
   // the freeze recorded (the hand's close and the DECEL edge run on that one).
   return plan_active_ && seg.plan_id == plan_.plan_id && seg.t_c_ns == plan_.t_c_ns &&
          (!trial_committed_ || seg.t_c_ns == committed_t_c_ns_);
-}
-
-bool DemoCatchingController::DecelStopInsideCatchBox(const std::array<double, 3>& p_c) noexcept {
-  // MD-43: the planner reserved catch_box room for the closed-form straight
-  // stop's DISPLACEMENT from p_c; the MPC's stop is longer at low speed and
-  // not straight. Its own displacement is judged the same way — from p_c, not
-  // from where the arm happens to be at t_c.
-  std::array<double, 3> anchor = p_c;
-  int first = 0;
-  if (decel_in_.n_pre > 0) {
-    // An APPROACH–stop segment: the stop starts at its catch node. The nodes
-    // before it are the approach from the wait pose, which no stop reserve
-    // describes.
-    first = decel_in_.n_pre;
-  } else if (decel_stop_origin_valid_) {
-    // A post-catch replan starts part-way through the stop, so its path is
-    // placed by where it starts relative to the stop's own start:
-    // p_c + (p_0 − origin) + (p_k − p_0).
-    std::array<double, 3> p0{};
-    if (!decel_follower_.NodePosition(decel_in_, 0, p0)) {
-      return false;
-    }
-    for (std::size_t a = 0; a < 3; ++a) {
-      anchor[a] += p0[a] - decel_stop_origin_[a];
-    }
-  }
-  return decel_follower_.NodesInsideBox(decel_in_, decel_box_lo_, decel_box_hi_, &anchor, nullptr,
-                                        first);
 }
 
 void DemoCatchingController::AdoptFirstDecelSegment() noexcept {
@@ -1453,7 +1423,10 @@ void DemoCatchingController::RunDecelLane() noexcept {
   }
   decel_pair_ok_ = false;
   // TRACKING judges the box against the plan this tick could adopt; the modes
-  // that follow a plan judge it against that plan.
+  // that follow a plan judge it against that plan. Where the segment's stop
+  // ends is not judged here (MD-73): catch_box is the planner search's, and
+  // the stop only has to respect the joint limits — the MPC's rows and the
+  // CLIK's boxes hold those.
   const bool pairing = mode_ == Mode::kTracking;
   if (pairing ? !PlanAdoptableThisTick()
               : !(mode_ == Mode::kApproach || mode_ == Mode::kCommitted ||
@@ -1491,10 +1464,6 @@ void DemoCatchingController::RunDecelLane() noexcept {
     // A verdict only: the edge takes the plan and this segment together
     // (AdoptFirstDecelSegment), or neither. Nothing is remembered here, so a
     // pair whose edge is not taken this tick is judged afresh on the next.
-    if (!DecelStopInsideCatchBox(plan.p_c)) {
-      tick_record_.decel_event = Event::kWorkspace;
-      return;
-    }
     decel_pair_ok_ = true;
     return;
   }
@@ -1508,13 +1477,8 @@ void DemoCatchingController::RunDecelLane() noexcept {
     tick_record_.decel_event = Event::kDeferred;
     return;
   }
-  // Judged once per decel_seq from here, whatever the workspace says.
+  // Judged once per decel_seq from here.
   admitted_decel_ = rtc::catching::AdmittedDecel{true, decel_in_.decel_seq};
-  if (!DecelStopInsideCatchBox(plan.p_c)) {
-    // A refused replacement leaves the segment it would have replaced.
-    tick_record_.decel_event = Event::kWorkspace;
-    return;
-  }
   decel_pending_ = decel_in_;
   decel_pending_valid_ = true;
   tick_record_.decel_event = replace ? Event::kReplaced : Event::kAdmitted;
@@ -1594,23 +1558,11 @@ rtc::catching::Reason DemoCatchingController::RunDecelMpcTick(
       tick_record_.decel_dq_max = gate.dq_max;
       tick_record_.decel_dqd_max = gate.dqd_max;
       tick_record_.decel_gate_joint = gate.joint;
-      bool take = gate.pass;
-      if (take && decel_pending_.k0 == 0) {
-        // A segment that holds the catch node fixes where the stop starts
-        // (MD-43): the last one taken before t_c is the trajectory the arm is
-        // on there. Cannot fail after the Sample above (same shape checks),
-        // and writes the origin only when it succeeds.
-        take =
-            decel_follower_.NodePosition(decel_pending_, decel_pending_.n_pre, decel_stop_origin_);
-        decel_stop_origin_valid_ = decel_stop_origin_valid_ || take;
-      }
-      if (take) {
+      if (gate.pass) {
         decel_current_ = decel_pending_;
         decel_current_valid_ = true;
         sampled = true;
         tick_record_.decel_event = Event::kSwitched;
-      } else if (gate.pass) {
-        tick_record_.decel_event = Event::kSampleFailed;
       } else {
         // A replan that would step the command is dropped and the followed
         // segment goes on; a first segment has none behind it, and the trial
@@ -1629,8 +1581,8 @@ rtc::catching::Reason DemoCatchingController::RunDecelMpcTick(
     }
     // MD-44: nothing to follow is ABORT_SAFE's joint-space stop, never the
     // closed form. The switch's event names why when it had a segment; the
-    // lane's own verdict on this tick (kWorkspace, kDeferred) names why the
-    // slot is empty better than kNoSegment does, so it stays.
+    // lane's own verdict on this tick (kDeferred) names why the slot is empty
+    // better than kNoSegment does, so it stays.
     return fail(tick_record_.decel_event == Event::kNone ? Event::kNoSegment
                                                          : tick_record_.decel_event);
   }
