@@ -635,7 +635,7 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 | 파일 **없음**, `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` | **인스턴스화하지 않고 건너뜀** — `/rtc_cm/list_controllers` 에도 없다. "이 로봇은 이 컨트롤러를 쓰지 않는다" 의 표현 |
 | 파일 **있음**, 파싱 실패 또는 최상위 키 불일치 | configure 전체 **거부** (D1). 오타가 컨트롤러를 조용히 없애지 못하게 한다 |
 
-두 번째 갈래는 기본값으로 돌 수 없는 컨트롤러(정책 컨트롤러 등)를 위한 것이다. 그런 컨트롤러를 일반 매크로로 등록하면 `LoadConfig` 거부 → `PreConfigure` 실패 → D1 이 **그 로봇의 모든 컨트롤러** 를 거부한다. 선택 기준과 게이트는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#rtc_register_controller_requiring_config--config-가-없으면-건너뛴다).
+두 번째 갈래는 기본값으로 돌 수 없는 컨트롤러 (정책 컨트롤러, 그 로봇의 기구 구성에서 모델을 만들 수 없는 컨트롤러 등) 를 위한 것이다. 그런 컨트롤러를 일반 매크로로 등록하면 `LoadConfig` 거부 → `PreConfigure` 실패 → D1 이 **그 로봇의 모든 컨트롤러** 를 거부한다. 선택 기준과 게이트는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#rtc_register_controller_requiring_config--config-가-없으면-건너뛴다).
 
 ⚠️ 첫째와 셋째를 `LoadConfig` 안에서 구별하려 하지 말 것. yaml-cpp 에서 **기본 생성 노드(파일 부재)는 truthy·Null** 이고 **없는 키(파일 있음·키 오타)는 falsy·Undefined** 라, 흔한 `if (!cfg) return;` 가드는 의도와 반대로 오타 쪽에서 발동한다. CM 이 파일 존재 여부로 상류에서 가르는 이유다.
 

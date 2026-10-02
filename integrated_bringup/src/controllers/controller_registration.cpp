@@ -18,20 +18,34 @@
 RTC_REGISTER_CONTROLLER(demo_joint_controller, "", "integrated_bringup",
                         std::make_unique<integrated_bringup::DemoJointController>(urdf))
 
-RTC_REGISTER_CONTROLLER(demo_task_controller, "", "integrated_bringup",
-                        std::make_unique<integrated_bringup::DemoTaskController>(
-                            urdf, integrated_bringup::DemoTaskController::Gains{}))
+// REQUIRING_CONFIG for the three arm-chain controllers below (task / wbc /
+// compliance). Each builds its arm model as ONE serial chain — a
+// `urdf.sub_models` entry, root → tip — and has no defaults that make sense
+// without one. A robot whose first device group is a kinematic tree (g1_p1b:
+// waist + both arms in one group, no sub_models at all) cannot give them that
+// chain, so their LoadConfig throws out of model construction — and one
+// controller failing PreConfigure refuses the WHOLE bring-up, taking
+// demo_joint_controller down with it. With the flag, "this profile ships no
+// YAML for it" means "this robot does not run it". Nothing changes for the
+// profiles that do ship the YAML: they are instantiated exactly as before.
+// (demo_joint_controller stays plain: every profile ships its YAML, and it is
+// the one controller a new robot is brought up on.)
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(demo_task_controller, "", "integrated_bringup",
+                                         std::make_unique<integrated_bringup::DemoTaskController>(
+                                             urdf, integrated_bringup::DemoTaskController::Gains{}))
 
-RTC_REGISTER_CONTROLLER(demo_wbc_controller, "", "integrated_bringup",
-                        std::make_unique<integrated_bringup::DemoWbcController>(urdf))
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
+    demo_wbc_controller, "", "integrated_bringup",
+    std::make_unique<integrated_bringup::DemoWbcController>(urdf))
 
 // #469 S2. The config_key here and DemoComplianceController::Name() land in the
 // SAME lookup namespace as every other entry above, and a collision refuses the
 // whole bring-up rather than warning — which is the guard that catches a copied
 // controller whose identifiers were not fully renamed.
-RTC_REGISTER_CONTROLLER(demo_compliance_controller, "", "integrated_bringup",
-                        std::make_unique<integrated_bringup::DemoComplianceController>(
-                            urdf, integrated_bringup::DemoComplianceController::Gains{}))
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
+    demo_compliance_controller, "", "integrated_bringup",
+    std::make_unique<integrated_bringup::DemoComplianceController>(
+        urdf, integrated_bringup::DemoComplianceController::Gains{}))
 
 // The engine is a constructor argument so tests can drive every success path
 // with a deterministic fake — there is no policy file yet, and even once there
@@ -40,8 +54,8 @@ RTC_REGISTER_CONTROLLER(demo_compliance_controller, "", "integrated_bringup",
 // the stub, whose Init() is a silent no-op, which is why the controller gates
 // on `is_initialized()` rather than trusting configure to have loaded anything.
 //
-// REQUIRING_CONFIG, unlike every other controller here: LoadConfig refuses an
-// absent config node (inference/parameters.cpp) because a policy controller has
+// REQUIRING_CONFIG for a different reason than the three above: LoadConfig
+// refuses an absent config node (inference/parameters.cpp) because a policy controller has
 // no defensible defaults — no model path, no IO schema, no policy frame. That
 // refusal is correct and stays, but as a plain registration it also meant any
 // robot shipping no demo_inference_controller.yaml failed the whole bring-up,

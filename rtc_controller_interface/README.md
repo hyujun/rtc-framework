@@ -339,7 +339,7 @@ RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, FactoryExpr)
 
 인자는 위와 같고 `ControllerEntry::config_required = true` 를 세운다. 하나의 바이너리가 모든 `config_variant` 를 섬기고 등록은 `main()` 이전 정적 초기화 시점이라, 컨트롤러가 "이 로봇에서는 등록하지 않겠다" 를 선언할 방법이 없다. 이 매크로가 그 선언이다 — 해당 variant 에 YAML 이 **없으면** CM 이 인스턴스화 자체를 건너뛴다.
 
-**기본값(`RTC_REGISTER_CONTROLLER`)이 옳은 경우가 대부분이다.** YAML 부재 시 내장 기본값으로 도는 것이 issue #196 결정 D2 이고, 이 매크로는 **기본값으로는 돌 수 없는** 컨트롤러 — 모델 경로도 IO 스키마도 없이는 의미가 없는 정책 컨트롤러 같은 — 에만 쓴다. 그런 컨트롤러를 일반 매크로로 등록하면 `LoadConfig` 가 거부 → `PreConfigure` 실패 → D1 체크포인트가 **그 로봇의 모든 컨트롤러** bring-up 을 거부한다.
+**기본값(`RTC_REGISTER_CONTROLLER`)이 옳은 경우가 대부분이다.** YAML 부재 시 내장 기본값으로 도는 것이 issue #196 결정 D2 이고, 이 매크로는 **기본값으로는 돌 수 없는** 컨트롤러에만 쓴다 — 모델 경로도 IO 스키마도 없이는 의미가 없는 정책 컨트롤러, 또는 그 로봇의 기구 구성에서는 모델을 만들 수 없는 컨트롤러 (팔을 사슬 하나로 전제하는 컨트롤러와, 첫 device group 이 tree 인 로봇) 가 그렇다. 그런 컨트롤러를 일반 매크로로 등록하면 `LoadConfig` 가 거부 → `PreConfigure` 실패 → D1 체크포인트가 **그 로봇의 모든 컨트롤러** bring-up 을 거부한다.
 
 완화되는 것은 **파일 부재** 뿐이다. 파일이 있는데 최상위 키가 틀렸거나 파싱이 안 되면 종전대로 configure 를 거부한다 — 오타 한 글자가 컨트롤러를 조용히 없애면 안 되기 때문이다. 두 경우는 `LoadConfig` 에 도달하면 구별할 수 없으므로 (yaml-cpp 에서 기본 생성 노드는 truthy·Null, 없는 키는 falsy·Undefined) CM 이 **파일이 있었는지**로 상류에서 가른다.
 
