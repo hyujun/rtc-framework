@@ -43,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace integrated_bringup {
@@ -336,6 +337,26 @@ class DemoJointController final : public RTControllerInterface {
   /// separate from the inference-group count reported in GraspState.
   [[nodiscard]] int GetNumSensorFingertipsForTesting() const noexcept {
     return num_sensor_fingertips_;
+  }
+
+  /// Test-only: the TF slots on_configure registered, as (parent, child) frame
+  /// names in slot order. The slot table is the only place the arm root and the
+  /// arm tip are spelled as NAMES — the poses that fill it are resolved by frame
+  /// id elsewhere — so a slot labelled after the wrong link publishes a correct
+  /// pose under the wrong frame and nothing downstream can tell.
+  [[nodiscard]] std::vector<std::pair<std::string, std::string>> TfSlotFramesForTesting() const {
+    std::vector<std::pair<std::string, std::string>> out;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(owned_topics_.num_tf_slots); ++i) {
+      const auto& slot = owned_topics_.tf_slots[i];
+      out.emplace_back(slot.parent_frame_id, slot.child_frame_id);
+    }
+    return out;
+  }
+
+  /// Test-only: the reference frame on_configure stamped on the vector payloads
+  /// (grasp / payload estimate headers) — the arm root.
+  [[nodiscard]] const std::string& OwnedStateFrameIdForTesting() const noexcept {
+    return owned_topics_.grasp_msg.header.frame_id;
   }
 
  private:
