@@ -32,7 +32,9 @@ Two device groups: `g1` (waist 3 + left arm 7 + right arm 7) and `p1b` (hand
 10). The only controller this profile ships a config for is
 demo_joint_controller; the arguments that address demo_wbc_controller
 (enable_mpc, mpc_engine) are declared for parity with the other sim launches
-and have nothing to act on here.
+and have nothing to act on here. `enable_mpc` therefore defaults to false,
+unlike those launches: its one effect on this profile is the CPU layout, and
+the MPC-on layout would shield cores for a thread nothing here starts.
 
 The robot model (URDF + MJCF) comes from the `hand_description` package, which
 must be built in the workspace.
@@ -88,11 +90,11 @@ def launch_setup(context, *args, **kwargs):
     # names, topics, model_path (integrated_bringup/config/g1_p1b/
     # mujoco_simulator.yaml — overlaid on top).
     sim_default = PathJoinSubstitution([pkg_sim, "config", "solver_param.yaml"])
-    sim_config = PathJoinSubstitution([pkg_bringup, "config", "g1_p1b", "mujoco_simulator.yaml"])
+    sim_config = PathJoinSubstitution([pkg_bringup, "config", PROFILE, "mujoco_simulator.yaml"])
     # Mode-agnostic base (URDF/model topology, rosters, limits, control_rate);
     # sim.yaml overlays only the sim-specific delta on top.
-    base_config = PathJoinSubstitution([pkg_bringup, "config", "g1_p1b", "_base.yaml"])
-    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "g1_p1b", "sim.yaml"])
+    base_config = PathJoinSubstitution([pkg_bringup, "config", PROFILE, "_base.yaml"])
+    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", PROFILE, "sim.yaml"])
 
     # ── Build simulator parameters (defaults → robot YAML → overlay → CLI) ──
     # The overlay sits between the shipped YAML and the per-argument overrides
@@ -142,7 +144,7 @@ def launch_setup(context, *args, **kwargs):
         # _base so the simulator's rate stays locked to the RT node's rate
         # instead of silently defaulting to 500.0.
         ctrl_yaml_path = os.path.join(
-            get_package_share_directory("integrated_bringup"), "config", "g1_p1b", "_base.yaml"
+            get_package_share_directory("integrated_bringup"), "config", PROFILE, "_base.yaml"
         )
         with open(ctrl_yaml_path) as f:
             ctrl_yaml = yaml.safe_load(f)
@@ -482,7 +484,7 @@ def generate_launch_description():
                 os.path.join(
                     get_package_share_directory("integrated_bringup"),
                     "config",
-                    "g1_p1b",
+                    PROFILE,
                     "_base.yaml",
                 )
             )
@@ -527,14 +529,13 @@ def generate_launch_description():
 
     enable_mpc_arg = DeclareLaunchArgument(
         "enable_mpc",
-        default_value="",
+        default_value="false",
         description=(
-            "Enable the MPC thread in DemoWbcController. "
-            "Takes effect only when initial_controller:=demo_wbc_controller "
-            "(not shipped for this profile; the argument still selects the CPU "
-            "layout profile). "
-            "Empty = use demo_wbc_controller.yaml default. "
-            "Runtime consumption toggle: the controller's mpc_enable parameter."
+            "Enable the MPC thread in DemoWbcController. This profile ships no "
+            "demo_wbc_controller config, so the argument's one effect here is "
+            "the CPU layout profile: false (the default) leaves the MPC cores "
+            "to the system instead of shielding them for a thread nothing "
+            "starts. Set it only together with a WBC config for this robot."
         ),
     )
 

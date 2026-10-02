@@ -904,7 +904,7 @@ sim 전용 profile 입니다 (`robot.yaml` · 실기 launch 없음). 다른 prof
 | 토픽 | 목표 `/demo_joint_controller/{g1,p1b}/joint_goal` (`rtc_msgs/RobotTarget`), TF `/demo_joint_controller/transforms` (부모 `pelvis`, 자식 `base_adapter_actual` · `l_<finger>_tip_bracket_actual` · `virtual_tcp_actual`) |
 | 로그 | `<session>/controllers/demo_joint_controller/{g1_state,p1b_state,p1b_sensor}.csv` — `g1_state` 는 17 관절 전부 |
 
-`enable_mpc` · `mpc_engine` · `kp` · `kd` 인자는 다른 sim launch 와 인자 집합을 맞추려고 선언만 되어 있고, 이 profile 에는 받는 컨트롤러가 없습니다. demo GUI (`--robot`) 와 `plot_rtc_log` 의 `g1_p1b` 지원은 아직 없습니다.
+`enable_mpc` · `mpc_engine` · `kp` · `kd` 인자는 다른 sim launch 와 인자 집합을 맞추려고 선언만 되어 있고, 이 profile 에는 받는 컨트롤러가 없습니다. `enable_mpc` 만은 CPU layout profile 을 고르므로 이 launch 에서는 기본값이 `false` 입니다 (다른 sim launch 는 `""`) — MPC thread 를 띄울 컨트롤러가 없는데 그 코어를 shield 하지 않기 위해서입니다. demo GUI (`--robot`) 와 `plot_rtc_log` 의 `g1_p1b` 지원은 아직 없습니다.
 
 ### Catching sim trials — 한 투척 = 한 S7 순환
 
