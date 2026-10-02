@@ -275,6 +275,21 @@ void DemoCatchingController::DeclareProfileParameters() {
           "fewest prediction points a message may carry, as run (the decode's default when TBD)");
   declare("planner.slice.dt", planner_params_.slice_dt,
           "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
+  // The two the E1-F10 tuning moves per arm (MPC plan MD-72, MD-74): an
+  // overlay one level short would otherwise run the shipped value under the
+  // candidate's name.
+  declare("planner.slice.t_lead_min", planner_params_.LeadMin(),
+          "L3 §4 smallest candidate lead t_c - t_plan [s] as run (planner.freeze.T_freeze when "
+          "the key is absent)");
+  declare(
+      "joint_cmd.accel_constraint",
+      std::string(
+          params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic
+              ? "dynamic"
+          : params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kKinematic
+              ? "kinematic"
+              : "box"),
+      "L5 §4.3 CLIK acceleration constraint form as run (decision K)");
   // The decel MPC as run (MPC E1-F03): an off-process analysis must read the
   // horizon, window and thresholds this controller used, not the file.
   const auto& decel = planner_params_.decel;

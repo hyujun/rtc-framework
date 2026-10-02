@@ -125,7 +125,7 @@ $$\ell_i=\upsilon_i=\mathrm{clamp}\Big(\mathrm{proj}_{[p_{lo,i},\,p_{hi,i}]}(\do
 
 결정 K 의 근거 (#537 코멘트 5785720197): D-16 상수 box 는 포구 자세에서 토크가 허락하는 가속보다 약 50 배 (p1b) 보수적이라 γ 창을 닫는다 (plan §9 S4.4 판정). `dynamic` 은 자세 의존 $M,h$ 로 그 보수성을 실행층에서 없애고, L3 도달시간 게이트의 **토크 층 런타임 대응물**을 겸한다 (결정 F) — 계획기의 도달시간 순위 항은 여전히 box 층이다.
 
-**출하 형태 (2026-09-23 사용자 결정, #537 코멘트 5789708503).** `ur5e_p1b` 는 `dynamic` ($\eta_\tau$ 0.8). 근거는 투척마다 팔을 `planner.wait_pose` 에 정렬한 뒤 잰 sim A/B (공 25회씩): APPROACH 중 $\Vert FK(q_c)-x_{ref}\Vert$ p50 / p95 가 `dynamic` 3.2 / 68 mm, `box` 163 / 624 mm 이다. `iiwa7_leap` 은 측정이 없어 파서 기본값 `box` 로 둔다.
+**출하 형태 (2026-09-23 사용자 결정, #537 코멘트 5789708503).** `ur5e_p1b` 는 `dynamic` ($\eta_\tau$ 0.8). 근거는 투척마다 팔을 `planner.wait_pose` 에 정렬한 뒤 잰 sim A/B (공 25회씩): APPROACH 중 $\Vert FK(q_c)-x_{ref}\Vert$ p50 / p95 가 `dynamic` 3.2 / 68 mm, `box` 163 / 624 mm 이다. `iiwa7_leap` 은 측정이 없어 파서 기본값 `box` 로 두었다가, 2026-10-02 사용자 결정 (MPC 계획 MD-74) 으로 `dynamic` ($\eta_\tau$ 0.8) 으로 바꿨다 — catching profile 은 `dynamic` 만 쓴다. `box` 에서는 `supervisor.decel.mode: mpc` 의 재계획이 모두 전환 게이트에서 거부됐다 (명령이 구간보다 늦는다). `box` · `kinematic` 형태와 코드 기본값의 정리는 후속이다.
 
 **반복 상한과 상태 노출 (S2.2b).** 차원만 고정하면 최악 실행시간이 묶이지 않는다. 기존 하드코딩 `max_iter` 20 을 설정 가능하게 하고, solver status·반복 수·solve time 을 노출한다. 초과·수렴 실패·비유한 결과는 `Compute` 가 false 를 돌려주는 기존 경로로 합쳐진다.
 

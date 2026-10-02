@@ -1246,6 +1246,52 @@ TEST_P(ShippedCatchingProfile, RunsThePlannerThroughTheWholeLifecycle) {
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
+TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
+  // MPC E1-F10 (MD-72, MD-74): the two values a tuning overlay moves per arm.
+  // The lead floor is the commit lead while `planner.slice.t_lead_min` is
+  // absent and the key's value once it is set; every shipped profile runs the
+  // dynamic CLIK form. Each case moves the loaded value off the shipped one,
+  // as above.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+
+  struct Case {
+    const char* name;
+    bool set_floor;
+    bool box;
+  };
+
+  for (const Case& c : {Case{"shipped", false, false}, Case{"moved", true, true}}) {
+    YAML::Node node = ShippedWithPlanner(profile, true, false);
+    YAML::Node planner = node["catching"]["planner"];
+    const double t_freeze = planner["freeze"]["T_freeze"].as<double>();
+    ASSERT_FALSE(planner["slice"]["t_lead_min"].IsDefined())
+        << profile << ": the shipped profile sets the floor — pick another baseline";
+    const double floor = c.set_floor ? t_freeze + 0.07 : t_freeze;
+    if (c.set_floor) {
+      planner["slice"]["t_lead_min"] = floor;
+    }
+    if (c.box) {
+      node["catching"]["joint_cmd"]["accel_constraint"] = "box";
+      node["catching"]["joint_cmd"].remove("eta_tau");  // the dynamic form's key
+    }
+    auto node_handle =
+        NodeWithProfile("catching_shipped_tuning_mirror_" + profile + "_" + c.name, "mpc_on");
+    DemoCatchingController ctrl{""};
+    ctrl.SetControlRate(kShippedControlRateHz);
+    ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+    const rclcpp_lifecycle::State prev;
+    ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << profile << " " << c.name;
+    EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.slice.t_lead_min").as_double(), floor)
+        << profile << " " << c.name;
+    EXPECT_EQ(node_handle->get_parameter("joint_cmd.accel_constraint").as_string(),
+              c.box ? "box" : "dynamic")
+        << profile << " " << c.name;
+  }
+}
+
 TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   // S8-A: the trial runner reads the wait pose, T_freeze and the lead axis
   // from these read-only parameters instead of the installed YAML, because a

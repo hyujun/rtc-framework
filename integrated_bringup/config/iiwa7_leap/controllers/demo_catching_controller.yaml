@@ -519,6 +519,15 @@ demo_catching_controller:
       damping_sq: 0.0001
       qp:
         max_iter: 20
+      # Decision K form (L5 §4.3). `dynamic` is the only form the catching
+      # profiles run (MPC plan MD-74, 2026-10-02): per-tick torque rows
+      # M·v̇ + h within ±eta_tau·tau_max, eta_tau 0.8 being D-16's. Until then
+      # this robot ran the parser default `box` (the constant D-16 box, 9.2
+      # rad/s²), under which `supervisor.decel.mode: mpc` had every replan
+      # refused at the switch gate — the command fell behind the segment.
+      # The E0-F02 success rates of this robot were measured under `box`.
+      accel_constraint: dynamic
+      eta_tau: 0.8
       lag:
         # 0 here because T_arm is the REAL arm's lag, which S10 identifies;
         # `lead_enable` turns the compensation on once it has. The sim arm is
