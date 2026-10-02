@@ -305,6 +305,13 @@ class CatchingStatus:
 
     def update(self, msg, now_s: float) -> None:
         """Adopt one CatchingState. Duck-typed so tests need no ROS message."""
+        # A feed that went silent and came back may be another controller
+        # process: the cached decel law is its predecessor's until read again.
+        # (The tick check below catches a restart the gap did not show; this
+        # one catches a restart whose first tick is ABOVE the last one seen —
+        # a controller relaunched in the other mode and switched in later.)
+        if self.feed.state(now_s) is FeedState.STALE:
+            self.decel_law = None
         self.feed.mark(now_s)
         prev_mode = self._prev_mode
         self.mode = int(msg.mode)

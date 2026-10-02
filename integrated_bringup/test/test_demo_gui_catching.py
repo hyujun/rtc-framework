@@ -578,6 +578,18 @@ def test_a_backwards_tick_clears_the_cached_law_and_a_forward_one_keeps_it():
     assert status.decel_law is None
 
 
+def test_a_feed_that_went_silent_and_came_back_forgets_the_cached_law():
+    # A controller relaunched in the other mode and switched in later starts
+    # with a tick ABOVE the last one seen, so the tick alone does not notice.
+    status = CatchingStatus()
+    status.update(make_msg(tick=500), now_s=0.0)
+    status.decel_law = "mpc"
+    status.update(make_msg(tick=501), now_s=FEED_STALE_AFTER_S)  # still live
+    assert status.decel_law == "mpc"
+    status.update(make_msg(tick=9000), now_s=FEED_STALE_AFTER_S * 2 + 0.2)
+    assert status.decel_law is None
+
+
 def test_the_first_message_does_not_clear_a_law():
     status = CatchingStatus()
     status.decel_law = "closed_form"
