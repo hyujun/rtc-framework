@@ -1,0 +1,1235 @@
+# Arm–Hand Ball Catching을 위한 Inverse-Dynamics MPC 수학적 구성 (개정판 v3)
+
+작성일: 2026-10-02 (v1) · 개정: 2026-10-02 (v2, v3)
+
+## 0. 개정 요약
+
+### 0.1 v3: 30 Hz 예측 갱신의 반영
+
+Vision이 공 예측을 30 Hz로 계속 갱신한다는 조건을 NLP와 실행 구조에 반영했다. 이 갱신은 NLP의 변수·제약 구조를 바꾸지 않고 parameter만 바꾸므로, 문제를 **parametric NLP의 연속 해법**으로 다룬다. 각 결론은 1차 출처로 검증했고(§16), 문헌에 직접 서술이 없는 식은 유도 결과로 표기했다.
+
+| # | 변경 | 위치 |
+|---|---|---|
+| 1 | 메시지 stamp $s_j$, 갱신 주기 $\Delta_m=1/30$ s, 메시지 내부 보간 규칙 | §2, §3.4 |
+| 2 | 정보 시각을 $\Delta_m$ 격자와 occlusion 시각 $t_{\mathrm{occ}}$ 로 제한한 anticipated covariance | §3.5 |
+| 3 | $\tau_{\mathrm{react}}$ 를 지연·수정 능력·지각 한계의 세 조건으로 결정 (bang-bang 수정 한계 유도) | §3.6 |
+| 4 | 연속 예측의 jump 공분산 유도와 NIS 동치성, gating 규칙 | §3.7 |
+| 5 | Hand commit을 arm commit과 분리. Timing 제약의 $\sigma_s$ 를 hand 정보 시각으로 계산 | §8.4 |
+| 6 | 첫 구간 길이 $h_0$ 를 갖는 비균일 격자 | §4.1, §10 |
+| 7 | 절대 시각 후보 격자, 후보별 국소 연속 포획 시각, shrinking horizon과 정확한 warm start | §11.1, §11.4, §11.5 |
+| 8 | 30 Hz 실행 루프: event-trigger, 동기식(P1)/pipeline(P2), reference 기반 초기 상태, RTI, 결정 변수의 고정 순서, $t_{\mathrm{cmd}}$ 갱신 | §12.7 |
+| 9 | Commit 이후 구간의 open-loop 강건성 (Schill & Buss 계열) | §14 |
+| 10 | 검증 항목과 참고문헌 추가 (RTI, acados, shrinking horizon, 추정 이론, catching 계열 서지 검증) | §15, §16 |
+
+### 0.2 v2: v1 검토 반영
+
+v1 검토에서 지적된 사항을 모두 반영했다. 가장 큰 구조 변경은 두 가지이다. 첫째, terminal을 **entrance plane 통과 사건**으로 재정의했다. 이에 따라 chance constraint를 통과 평면 위의 lateral 분포와 통과 시각 분포로 분리했다. 둘째, 손가락을 NLP에서 분리해 **preshape schedule과 closure trigger**로 다루도록 했다. 또한 실행 구조를 UR5e position 인터페이스(`servoj`)와 기존 CLIK 기준으로 다시 썼다.
+
+| # | 변경 | 위치 |
+|---|---|---|
+| 1 | Terminal을 entrance-plane crossing으로 정의. Signed-distance equality를 affine equality로 대체 | §6.1, §10 |
+| 2 | Chance constraint를 crossing-plane 공분산 $\Sigma_\rho$ 와 timing 분산 $\sigma_t^2$ 로 분리 (oblique projection 유도) | §8.2–8.4 |
+| 3 | Closing speed 하한 $c_{\min}$ 추가. Timing chance constraint로부터 closing speed 하한, impact bound로부터 상한을 유도 | §6.5, §8.4 |
+| 4 | Open-loop 공분산 대신 commit 시점 기준 anticipated covariance 사용. Mean drift 공분산 분리 | §3.3 |
+| 5 | Hand를 NLP 변수에서 제거. Preshape 시작 시각과 closure trigger를 스케줄 변수로 둠 | §1, §6.2, §11.3 |
+| 6 | UR5e `servoj`/CLIK 실행 구조. Torque는 nominal feasibility 판정과 reserve margin으로만 사용 | §4.2, §12 |
+| 7 | 계산 예산, 필요조건 screening, 병렬 solve, 절대 시각 기준 warm start | §11.2–11.4 |
+| 8 | Capture surface와 fingertip 센서 coverage 정합. Closure trigger 두 mode 정의 | §6.2, §8.3 |
+| 9 | Effective mass의 모델 계층과 에너지 상한의 단조성 정리 (armature, hand lock, closed chain) | §7.2 |
+| 10 | Corridor·closing envelope를 제곱형 smooth constraint로 변경 | §6.3–6.4 |
+| 11 | Pinocchio frame 규약(`LOCAL_WORLD_ALIGNED` vs `LOCAL`) 명시 | §5.2 |
+| 12 | 목적함수를 한 곳에서 정의. $\ell_k\ge0$ 의 hard 분류, $w_T$ 의 의미 명시 | §9, §13 |
+| 13 | 참고문헌 표기 정정, catching 계열 선행연구 추가, Post-capture reference spreading | §12.6, §16 |
+
+## 1. 목적과 모델의 범위
+
+이 문서는 공의 미래 궤적을 입력받아 **언제, 어디에서, 어떤 자세와 속도로 잡을 것인지**를 선택하고, 그 시점까지의 arm 궤적과 hand 스케줄을 함께 생성하는 model-predictive capture planner를 정의한다. 기본 구조는 후보 포획 시점을 선택하는 outer loop와, 각 후보에 대해 arm inverse-dynamics NMPC를 푸는 inner loop이다.
+
+Spacecraft rendezvous/docking에서 차용하는 것은 상대상태, 접근 corridor, terminal set, 시간 선택, 확률 제약의 **구조**이다. 아래 통합식은 **설계 제안**이며, 특정 논문의 MPC를 그대로 재현한 식이 아니다.
+
+대상 시스템은 `ur5e_p1b` 이다. UR5e(6-DoF)와 자체 개발 4-finger 핸드 P1b(cross 4-bar, 10 actuated DoF)로 구성된다. 가정은 다음과 같다.
+
+1. **(A1) Arm.** 고정 베이스, revolute 6자유도. $q\in\mathbb R^{6}$ 는 국소적으로 유클리드 좌표로 다룬다. NLP의 결정 변수는 arm 변수뿐이다.
+2. **(A2) Arm 실행.** Joint position 인터페이스를 쓴다. Planner reference는 기존 CLIK를 거쳐 `servoj` 로 전달된다. Joint torque는 직접 지령하지 않는다. Inverse dynamics는 **nominal torque feasibility** 판정에만 쓴다.
+3. **(A3) Hand.** P1b는 closed-chain이며 NLP 변수가 아니다. Preshape 궤적 $\eta_{\mathrm{pre}}(\cdot)$ 는 오프라인에서 설계·검증한다. 그 시작 시각 $t_{\mathrm{ps}}$ 와 closure 지령 시각 $t_{\mathrm{cmd}}$ 가 스케줄 변수이다. 따라서 계획 구간에서 hand configuration은 시간의 기지 함수 $\eta(t)$ 이다.
+4. **(A4) Estimator.** Vision PC가 horizon 시각별 공의 위치·속도·가속도와 6×6 공분산을 **30 Hz로** publish한다. 각 메시지는 카메라 측정 시각 stamp $s_j$ 를 가지며, 갱신 간격 jitter는 작다고 가정한다. 메시지의 공분산은 그 시점까지의 측정에 조건부인 필터 공분산 $\Sigma_b(\cdot\mid s_j)$ 이고 calibration되어 있다고 가정한다. 제어 측은 예측 **평균**을 그대로 사용하며 재전파하지 않는다(메시지 내부 보간만 한다, §3.4). 계획에 쓰는 공분산은 §3.5의 anticipated covariance이다. 이 계산을 vision 측에서 수행해 함께 publish하는 구성도 수학적으로 동등하다. Calibration 가정이 깨지면 §3.5와 §3.7은 근사 이상의 의미를 갖지 못한다.
+5. **(A5) 무접촉 terminal.** Inner-loop 모델은 포획 직전까지 무접촉 운동이다. Terminal event는 공 중심이 hand frame의 **entrance plane**을 통과하는 사건이다. Entrance plane은 첫 접촉이 시작되는 평면의 local approximation으로 선정한다(§6.1).
+6. **(A6) 오프라인 식별.** Capture 영역, velocity set, closure timing window $[\delta_{\mathrm{lo}},\delta_{\mathrm{hi}}]$, closure latency $\tau_{\mathrm{cl}}$ 는 hand 형상, 공 반지름, 접촉 후 controller를 고려해 오프라인에서 식별·검증한다. 이 조건들을 만족해도 grasp 성공이나 force closure가 보장되지는 않는다.
+7. **(A7) 충격 모델.** 단일 지배 접촉의 frictionless normal impulse 근사이다. Peak force, 다중 접촉, 실리콘 변형은 이 모델로 예측하지 않는다.
+
+핵심 최적화는 다음 bilevel 형태이다.
+
+$$
+\boxed{
+T^\star=\arg\min_{T\in\mathcal T_{\mathrm{valid}}}\;J^\star(T),\qquad
+J^\star(T)=\min_{\mathcal Z_T}\;
+\underbrace{J_{\mathrm{motion}}+J_{\mathrm{near}}+V_f+J_{\mathrm{slack}}
++J_{\mathrm{unc}}+J_{\mathrm{time}}+J_{\mathrm{switch}}}_{J(T,\mathcal Z_T)}
+}
+$$
+
+각 항은 §9에서 **한 번만** 정의한다. v1의 $J_{\mathrm{capture}}$ 는 $J_{\mathrm{near}}$ 와 $V_f$ 의 위치·속도 항에 흡수했다. $J_{\mathrm{impact}}$ 는 $V_f$ 의 한 항이다.
+
+## 2. 표기와 시간축
+
+| 기호 | 정의 | 차원 또는 단위 |
+|---|---|---|
+| $W,H$ | World frame, hand capture frame | — |
+| $q,v,a,\tau$ | Arm 관절각·속도·가속도·토크 | $\mathbb R^{6}$; rad, rad/s, rad/s², N·m |
+| $\eta(t)$ | Hand 관절 configuration (스케줄로 주어지는 기지 함수) | $\mathbb R^{n_f}$ |
+| $s_j,\ \Delta_m$ | $j$ 번째 vision 메시지의 측정 시각 stamp, 갱신 주기 ($1/30$) | s |
+| $\tau_{\mathrm{vis}}$ | 측정 시각부터 제어 측 수신까지의 지연 | s |
+| $t_{\mathrm{occ}}$ | 공이 손·팔에 가려져 유효 측정이 끊기기 시작하는 시각 | s |
+| $t_0$ | 새 계획의 적용 기준 시각 | s |
+| $h,h_0,N$ | 예측 간격, 첫 구간 길이 ($0<h_0\le h$), 후보의 구간 수 | s, s, 정수 |
+| $T=h_0+(N-1)h,\ t_c=t_0+T$ | 상대 포획 시간, nominal 절대 포획 시각 (v2의 균일 격자는 $h_0=h$ 인 특수형) | s |
+| $h_c$ | Arm 제어(`servoj`) 주기 | s |
+| $p_h(q),R(q)$ | Capture frame 원점, $H\to W$ 회전 | m, $SO(3)$ |
+| $\hat p_b,\hat v_b$ | 공 예측 평균 위치·속도 | m, m/s |
+| $\Sigma_b(t\mid s)$ | 시각 $s$ 까지의 정보로 본 $t$ 의 공 상태 공분산 | 상태 단위별 |
+| $r_b,m_b$ | 공 반지름, 질량 | m, kg |
+| $e_3$ | Hand frame의 바깥쪽 접근축 단위벡터 | — |
+| $E_\perp=[e_1\ e_2]$ | Entrance plane 접선 기저, $P_\perp=E_\perp E_\perp^\top$ | — |
+| $s_{\mathrm{ent}}$ | Entrance plane의 축 좌표 | m |
+| $c$ | Entrance-axis closing speed | m/s |
+| $\rho$ | Entrance plane 위 공 중심의 lateral 좌표 | m ($\mathbb R^2$) |
+| $\sigma_s,\ \sigma_t$ | 축방향 위치 표준편차, 통과 시각 표준편차 | m, s |
+| $[\delta_{\mathrm{lo}},\delta_{\mathrm{hi}}]$ | 통과 후 closure가 유효해야 하는 시간 창, $\Delta_{\mathrm{win}}=\delta_{\mathrm{hi}}-\delta_{\mathrm{lo}}$ | s |
+| $\tau_{\mathrm{cl}},\tau_{\mathrm{det}},\tau_{\mathrm{react}}$ | Closure latency, 접촉 검출 지연, arm 수정 유효 지연 | s |
+| $t_{\mathrm{ps}},T_{\mathrm{ps}}$ | Preshape 시작 시각, preshape 소요 시간 | s |
+| $\Delta\tau$ | Planning torque reserve | N·m |
+
+$\|z\|_Q^2=z^\top Qz$ 이며 모든 quadratic weight는 positive semidefinite이다. Bias force는 샘플링 간격 $h$ 와 혼동하지 않도록 $b(q,v)$ 로 쓴다. 상태는 $k=0,\ldots,N$ 에, 입력과 토크는 $k=0,\ldots,N-1$ 에 정의한다.
+
+$$
+\mathcal Z_T=\{q_k,v_k\}_{k=0}^{N}\cup\{a_k,\tau_k\}_{k=0}^{N-1}\cup\{s_k\}_{k=0}^{N-1}.
+$$
+
+$a_N,\tau_N$ 은 만들지 않는다. $x_N=(q_N,v_N)$ 은 entrance plane 통과 순간이자 접촉 직전 상태로 해석한다. Terminal slack $s_f$ 는 진단용 relaxation(§10)에서만 등장한다.
+
+## 3. 공의 예측과 uncertainty
+
+### 3.1 비행 모델
+
+$$
+\dot p_b=v_b,\qquad
+\dot v_b=g_W+\frac{1}{m_b}f_{\mathrm{aero}}(v_b,\omega_b,\vartheta).
+$$
+
+$f_{\mathrm{aero}}=0$ 인 baseline에서는
+
+$$
+\hat p_b(t_0+\Delta t)=\hat p_b(t_0)+\Delta t\,\hat v_b(t_0)+\tfrac12\Delta t^2g_W,\qquad
+\hat v_b(t_0+\Delta t)=\hat v_b(t_0)+\Delta t\,g_W .
+$$
+
+### 3.2 외생 입력으로서의 공 예측
+
+무접촉 구간에서 로봇은 공의 궤적을 바꿀 수 없다. 따라서 예측은 최적화 변수가 아니라 외생 입력이다.
+
+$$
+z_b=\begin{bmatrix}p_b\\v_b\end{bmatrix},\qquad
+z_{b,k}\sim\mathcal N\!\left(\hat z_{b,k},\Sigma_{b,k}\right),\qquad
+\Sigma_{b,k}=\begin{bmatrix}\Sigma_{p,k}&\Sigma_{pv,k}\\\Sigma_{vp,k}&\Sigma_{v,k}\end{bmatrix}.
+$$
+
+Gaussian 가정과 공분산 calibration이 실제 오차와 맞지 않으면 이후 chance constraint의 확률 해석도 성립하지 않는다.
+
+### 3.3 정보 집합과 anticipated covariance
+
+시각 $s$ 까지의 측정을 $\mathcal I_s$ 라 하고 $\Sigma_b(t\mid s):=\operatorname{Cov}[z_b(t)\mid\mathcal I_s]$ 로 정의한다. v1은 $\Sigma_b(t_c\mid t_0)$ 즉 **open-loop** 공분산을 썼다. 그러나 receding horizon에서 terminal 오차를 결정하는 것은, 마지막으로 반영 가능한 정보로 본 예측 오차이다.
+
+**Commit 시각.** $t_{\mathrm{commit}}=t_c-\tau_{\mathrm{react}}$ 로 둔다. $\tau_{\mathrm{react}}$ 는 새 측정이 arm terminal 상태의 수정으로 실현되기까지 필요한 최소 시간이다.
+
+$$
+\tau_{\mathrm{react}}\ \ge\ \tau_{\mathrm{est}}+\tau_{\mathrm{comm}}+\tau_{\mathrm{solve}}+\tau_{\mathrm{track}},
+$$
+
+여기서 $\tau_{\mathrm{track}}$ 는 CLIK–`servoj` 경로의 유효 추종 지연이다. 각 항은 실측으로 정한다. 이 식은 지연만의 하한이며, 수정 능력과 지각 한계를 더한 최종 결정 규칙은 §3.6에 있다.
+
+**Riccati recursion.** 측정 주기를 $\Delta_m$, 측정 모델을 $y_j=H_m z_{b,j}+\varepsilon_j$, $\varepsilon_j\sim\mathcal N(0,R_m)$ 라 하자. 공분산은 다음과 같이 진행한다.
+
+$$
+P_{j+1}^-=F_jP_jF_j^\top+Q_j,\qquad
+K_{j+1}=P_{j+1}^-H_m^\top\!\left(H_mP_{j+1}^-H_m^\top+R_m\right)^{-1},
+$$
+
+$$
+P_{j+1}=(I-K_{j+1}H_m)P_{j+1}^-(I-K_{j+1}H_m)^\top+K_{j+1}R_mK_{j+1}^\top .
+$$
+
+마지막 식은 Joseph form이며 수치적으로 대칭·양반정치를 유지한다. 선형 Gaussian 모델에서 이 수열은 **측정값에 의존하지 않는다** (a; Kalman filter 표준 결과. 확인한 자료는 강의노트와 기술보고서이며, Anderson & Moore 원문의 해당 절은 미확인). 따라서 미래 측정 전에 미리 계산할 수 있다. $f_{\mathrm{aero}}\neq0$ 인 EKF에서는 $F_j,H_m$ 을 nominal 예측 궤적에서 평가하므로 근사이다.
+
+$t_0$ 에서 $t_{\mathrm{commit}}$ 까지 위 recursion을 진행한 뒤 $t_c$ 까지 측정 없이 전파한다.
+
+$$
+\boxed{\Sigma_b^{\mathrm{ant}}(t_c):=\Sigma_b(t_c\mid t_{\mathrm{commit}})
+=\Phi(t_c,t_{\mathrm{commit}})\,P_{\mathrm{commit}}\,\Phi(t_c,t_{\mathrm{commit}})^\top+Q_{\mathrm{int}}(t_c,t_{\mathrm{commit}})}.
+$$
+
+**Mean drift.** 선형 Gaussian 모델에서 law of total covariance를 쓰면, 지금 시점에서 본 미래 추정 평균의 변동 공분산은 다음과 같다 (a).
+
+$$
+\Sigma_{\mathrm{drift}}(t_c):=\operatorname{Cov}\!\left[\,\mathbb E[z_b(t_c)\mid\mathcal I_{t_{\mathrm{commit}}}]\;\middle|\;\mathcal I_{t_0}\right]
+=\Sigma_b(t_c\mid t_0)-\Sigma_b^{\mathrm{ant}}(t_c)\succeq0 .
+$$
+
+$\Sigma_b^{\mathrm{ant}}$ 로 tightening하는 것은 "평균이 $\Sigma_{\mathrm{drift}}$ 만큼 움직여도 replanning으로 따라간다"는 가정을 포함한다. 이 가정은 자동으로 성립하지 않는다. 따라서 §11.1의 validity에 terminal reachability margin 조건을 둔다.
+
+$$
+m_{\mathrm{reach}}(T)\ \ge\ \kappa_m\sqrt{\lambda_{\max}\!\left(E_\perp^\top R_N^\top\Sigma_{\mathrm{drift},p}R_NE_\perp\right)} .
+$$
+
+여기서 $m_{\mathrm{reach}}$ 는 terminal lateral 위치를 그만큼 옮겨도 nominal 해가 feasible로 남는 여유이다. 예를 들어 terminal lateral 위치에 대한 sensitivity 분석이나, 오프셋된 목표로 다시 solve해서 구한다.
+
+**Sanity check.**
+
+- $\tau_{\mathrm{react}}\ge t_c-t_0$ 이면 측정이 반영되지 않아 $\Sigma_b^{\mathrm{ant}}=\Sigma_b(t_c\mid t_0)$, $\Sigma_{\mathrm{drift}}=0$ 이다.
+- $R_m\to\infty$ 이면 같은 결과로 돌아간다.
+
+### 3.4 30 Hz 메시지의 시간 정렬
+
+$j$ 번째 메시지는 horizon 시각 $t_i$ 마다 $(p_i,v_i,a_i,\Sigma_i)$ 를 준다. NLP 격자 시각 $t$ 의 값은 가장 가까운 점 $t_i$ 에서 국소 전파한다.
+
+$$
+\hat p_b(t\mid s_j)=p_i+(t-t_i)v_i+\tfrac12(t-t_i)^2a_i,\qquad
+\hat v_b(t\mid s_j)=v_i+(t-t_i)a_i,
+$$
+
+$$
+\Sigma_b(t\mid s_j)\approx F(t-t_i)\,\Sigma_i\,F(t-t_i)^\top,\qquad
+F(\Delta)=\begin{bmatrix}I&\Delta I\\0&I\end{bmatrix}.
+$$
+
+평균은 구간 내 가속도가 일정하면 정확하다. 공분산은 짧은 구간에서 process noise를 무시한 근사이다. 이는 예측의 재전파가 아니라 메시지 내부 보간이다.
+
+매 메시지의 parameter $\mathcal P_j=\{\hat z_b(\cdot\mid s_j),\Sigma_b(\cdot\mid s_j)\}$ 에 대해, 각 cycle은 구조가 같은 문제 $\mathrm{NLP}(\mathcal P_j,\hat x_0)$ 를 푼다. 실행 방식은 §12.7에서 정한다.
+
+### 3.5 정보 시각의 이산화와 occlusion
+
+§3.3의 commit 시각 이후의 정보는 arm에 반영되지 않는다. 또한 정보는 $\Delta_m$ 단위로만 들어오고, 공이 손이나 팔에 가려지는 시각 $t_{\mathrm{occ}}$ 이후에는 유효 측정이 없다. 따라서 arm에 실제로 반영되는 마지막 메시지 stamp는 다음과 같다.
+
+$$
+\boxed{s^{\star}_{\mathrm{arm}}(t_c)=\max\left\{s_j:\ s_j\le t_{\mathrm{occ}},\ \ s_j+\tau_{\mathrm{vis}}\le t_c-\tau_{\mathrm{react}}\right\}},\qquad
+\Sigma_b^{\mathrm{ant}}(t_c)=\Sigma_b\!\left(t_c\mid s^{\star}_{\mathrm{arm}}\right).
+$$
+
+연속 시간 정의보다 최대 $\Delta_m$ 만큼 보수적이다. $s^{\star}_{\mathrm{arm}}=s_{j_0}+n\Delta_m$ 으로 쓰면, 현재 메시지 $j_0$ 이후 반영될 갱신 수는 $n$ 이다.
+
+$t_{\mathrm{occ}}$ 는 카메라 배치와 포획 자세에 의존하는 설계 parameter이며, 오프라인 시뮬레이션이나 로그로 추정한다. 실제 포획 시스템에서도 이런 지각 한계가 보고되었다. 예를 들어 손 근처 occlusion 때문에 접촉 직전 일정 시간 이후 예측 갱신을 멈춘 사례(Kim et al., 2014)와, 포획 직전 일정 구간의 측정이 최종 포획 위치를 결정했다는 보고(Birbach et al., 2011)가 있다. 그 수치는 각 시스템 고유의 값이므로 본 설계에 그대로 옮기지 않는다.
+
+**계산 경로.** 제어 측이 예측 평균을 재전파하지 않는다는 결정(A4)과 충돌하지 않도록, 제어 측에 **공분산만의 KF replica**를 둔다. 필요한 것은 $Q$, $R_m$, $\Delta_m$ 과 nominal 예측 궤적(EKF의 선형화용)뿐이다. Riccati 수열은 측정값과 무관하므로 평균 없이 계산할 수 있다. Replica의 정확성은 매 cycle 검사한다. 시각 $s_j$ 에서 replica가 계산한 $\Sigma(t\mid s_j)$ 는 vision이 publish한 값과 일치해야 한다. 대안은 투척 로그에서 (관측 횟수, 예측 horizon) → 공분산의 lookup을 만드는 것이다.
+
+### 3.6 $\tau_{\mathrm{react}}$ 의 결정: 지연, 수정 능력, 지각
+
+**지연.** 새 측정이 reference에 반영되기까지의 지연은
+
+$$
+\tau_{\mathrm{lat}}=\tau_{\mathrm{vis}}+\tau_{\mathrm{solve}}+\tau_{\mathrm{track}}
+$$
+
+이다. §12.7의 pipeline 방식(P2)에서는 $\tau_{\mathrm{solve}}$ 가 메시지 주기보다 길 수 있으며, 그 값을 그대로 더한다.
+
+**수정 능력.** 남은 시간 $T_{\mathrm{rem}}$ 동안 hand frame lateral 가속도 여유 $a_{\mathrm{lat}}$ 로, 종단 속도를 바꾸지 않고 종단 위치를 $\delta$ 만큼 옮기는 문제를 보자. 1차원 이중적분기에서 $|a|\le a_{\mathrm{lat}}$, 시작·종단 속도 변화 0 조건 하의 최대 변위는 $T/2$ 가속 후 $T/2$ 감속하는 bang-bang 프로파일이 주며, 다음이 필요충분조건이다 (a).
+
+$$
+\delta\le\tfrac14a_{\mathrm{lat}}T_{\mathrm{rem}}^2 .
+$$
+
+한 번의 갱신이 만드는 평균 jump의 크기는 §3.7의 식으로 주어진다. 따라서 메시지 $s_j$ 의 정보를 arm이 따라갈 수 있으려면 다음이 필요하다 (c).
+
+$$
+\kappa_m\sqrt{\lambda_{\max}\!\Big(E_\perp^\top R_N^\top\big[\Sigma_b(t_c\mid s_j)-\Sigma_b(t_c\mid s_{j+1})\big]_pR_NE_\perp\Big)}
+\ \le\ \tfrac14a_{\mathrm{lat}}\big(t_c-s_j-\tau_{\mathrm{lat}}\big)^2 .
+$$
+
+좌변은 남은 시간이 줄수록 빠르게 작아지고, 우변은 $T_{\mathrm{rem}}^2$ 로 작아진다. 이 조건을 만족하는 마지막 $s_j$ 가 수정 능력이 정하는 정보 한계이다. $a_{\mathrm{lat}}$ 는 §4.2의 torque reserve와 가속도 bound로부터 정하는 설계 parameter이다.
+
+**결정.** $\tau_{\mathrm{react}}$ 는 세 조건을 모두 만족하도록 정한다.
+
+$$
+\tau_{\mathrm{react}}\ \ge\ \max\left\{\tau_{\mathrm{lat}},\ \ t_c-s_j^{\mathrm{corr}},\ \ t_c-t_{\mathrm{occ}}\right\},
+$$
+
+여기서 $s_j^{\mathrm{corr}}$ 는 위 수정 능력 조건을 만족하는 마지막 stamp이다.
+
+### 3.7 연속 예측의 일관성: jump 공분산과 NIS gating
+
+같은 미래 시각 $t_c$ 에 대한 연속 예측의 차이를
+
+$$
+d_j:=\hat z_b(t_c\mid s_{j+1})-\hat z_b(t_c\mid s_j)
+$$
+
+로 둔다. 두 메시지의 예측은 §3.4로 같은 $t_c$ 에 보간한다.
+
+**유도 (c, 표준 결과로부터).**
+
+1. $\hat z_b(t_c\mid s_j)=\mathbb E[z_b(t_c)\mid\mathcal I_{s_j}]$ 는 tower property에 의해 $j$ 에 대한 martingale이다 (a). 따라서 $\mathbb E[d_j\mid\mathcal I_{s_j}]=0$ 이고 증분들은 서로 무상관이다.
+2. Law of total covariance에 의해 다음이 성립한다 (a).
+
+   $$
+   \Sigma_b(t_c\mid s_j)=\mathbb E\big[\Sigma_b(t_c\mid s_{j+1})\,\big|\,\mathcal I_{s_j}\big]+\operatorname{Cov}\big[d_j\,\big|\,\mathcal I_{s_j}\big].
+   $$
+
+3. 선형 Gaussian 모델에서는 $\Sigma_b(t_c\mid s_{j+1})$ 가 측정값과 무관한 결정적 값이므로 기대값이 사라진다.
+
+   $$
+   \boxed{\operatorname{Cov}[d_j]=\Sigma_b(t_c\mid s_j)-\Sigma_b(t_c\mid s_{j+1})\succeq0}.
+   $$
+
+이 식은 필터가 모델과 일치하고 최적일 때만 성립한다. 공기저항이나 spin 모델이 틀린 EKF에서는 근사이다. 문헌에서 이 식을 직접 서술한 출처는 찾지 못했다. 1차원 탄도 KF(30 Hz 위치 측정)의 Monte Carlo로 수치 일치를 확인했다(§15).
+
+**NIS와의 동치 (a).** Kalman 갱신에서 미래 시각 예측의 jump는 innovation $\nu_{j+1}$ 의 선형 사상이다.
+
+$$
+d_j=A_j\nu_{j+1},\qquad A_j=\Phi(t_c,s_{j+1})K_{j+1},\qquad \operatorname{Cov}[d_j]=A_jS_{j+1}A_j^\top .
+$$
+
+Stereo처럼 3차원 위치를 측정하고 위치 블록 $A_{j,p}$ (3×3)가 가역이면
+
+$$
+d_{j,p}^\top\left(A_{j,p}S_{j+1}A_{j,p}^\top\right)^{-1}d_{j,p}=\nu_{j+1}^\top S_{j+1}^{-1}\nu_{j+1},
+$$
+
+즉 jump 기반 검사는 표준 NIS(normalized innovation squared)와 같은 값이다.
+
+**Gating 규칙.**
+
+1. Vision 노드가 NIS를 계산할 수 있으면 함께 publish하고, 제어 측은 그 값을 쓴다.
+2. 그렇지 않으면 제어 측에서 재구성한다.
+
+   $$
+   \chi_j^2=d_{j,p}^\top\Big(\big[\Sigma_b(t_c\mid s_j)-\Sigma_b(t_c\mid s_{j+1})\big]_p+\varepsilon I\Big)^{-1}d_{j,p},\qquad
+   \chi_j^2\le\chi^2_{3,1-\alpha}.
+   $$
+
+   $\varepsilon I$ 는 공분산 차이가 거의 singular할 때를 위한 regularization이다. 보간 오차와 $A_{j,p}$ 의 조건수 때문에 이 재구성은 근사이다.
+
+3. 임계값을 넘는 갱신은 NLP에 넣지 않고 hold한다. 연속으로 넘으면 catch를 취소한다(§12.5). 원인으로는 예측 모델 불일치(spin, drag), 측정의 잘못된 결합(occlusion 후 재연결, 반사), bounce 같은 사건이 있다.
+
+공분산 calibration이 틀리면 이 검사는 과민하거나 둔감해진다. 따라서 먼저 로그로 NEES/NIS 일관성을 확인한다(§15).
+
+## 4. Arm prediction과 inverse dynamics
+
+### 4.1 Acceleration-level 상태 전이
+
+입력 $a_k$ 를 구간 $[t_k,t_{k+1})$ 에서 상수로 둔다.
+
+$$
+\boxed{q_{k+1}=q_k+hv_k+\tfrac12h^2a_k},\qquad
+\boxed{v_{k+1}=v_k+ha_k},\qquad q_0=\hat q(t_0),\ v_0=\hat v(t_0).
+$$
+
+이는 관절 가속도가 정확히 실현된다는 prediction model이며, piecewise-constant acceleration에 대해서는 정확한 이산화이다.
+
+**비균일 첫 구간 (v3).** 후보를 절대 시각 격자에 고정하면(§11.1) $t_0$ 은 격자 위에 있지 않다. 따라서 첫 구간만 길이 $h_0=t_1-t_0\in(0,h]$ 를 갖는다.
+
+$$
+q_1=q_0+h_0v_0+\tfrac12h_0^2a_0,\qquad v_1=v_0+h_0a_0,\qquad
+h_k=\begin{cases}h_0,&k=0\\h,&k\ge1\end{cases}.
+$$
+
+이후 모든 식의 $h$ 는 구간별 $h_k$ 로 읽는다. Running cost의 적분 가중치, discrete jerk의 분모, 구간 내부 극값 검사가 여기에 해당한다. $h_0$ 는 cycle마다 바뀌는 parameter일 뿐 문제 구조를 바꾸지 않는다.
+
+### 4.2 Inverse dynamics와 nominal torque feasibility
+
+무접촉 EOM과 stage별 토크는 다음과 같다.
+
+$$
+M(q)a+b(q,v)=\tau,\qquad b(q,v)=C(q,v)v+g(q),\qquad
+\boxed{\tau_k=\operatorname{RNEA}(q_k,v_k,a_k)=M(q_k)a_k+b(q_k,v_k)}.
+$$
+
+UR5e는 position 인터페이스로 구동되며 토크는 내부 제어기가 생성한다. 따라서 $\tau_k$ 는 지령이 아니라 **nominal 모델에서 그 가속도를 내는 데 필요한 토크**이다. 내부 feedback, 모델 오차, 충격 직전의 보정분을 위해 reserve $\Delta\tau\ge0$ 를 둔다.
+
+$$
+\boxed{\tau_{\min}+\Delta\tau\ \le\ M(q_k)a_k+b(q_k,v_k)\ \le\ \tau_{\max}-\Delta\tau}.
+$$
+
+이는 EOM과 torque limit을 결합한 state-dependent acceleration feasibility이다. $M$ 이 관절을 결합하므로 관절별 독립 가속도 bound로 치환하지 않는다. 별도의 box constraint $a_{\min}\le a_k\le a_{\max}$ 는 기계·controller 가속도 제한으로 함께 둔다. 마찰을 포함하려면 $b$ 와 RNEA 구현에 일관되게 추가한다.
+
+Explicit formulation은 $\tau_k$ 를 변수로 두고 위 equality를 유지한다. Condensed formulation은 $\tau_k$ 를 RNEA로 소거한다. 두 방식은 동일한 모델과 제약에서 동등하다.
+
+### 4.3 Node 제약과 구간 내부 검증
+
+$$
+q_{\min}\le q_k\le q_{\max},\quad
+v_{\min}\le v_k\le v_{\max},\quad
+a_{\min}\le a_k\le a_{\max}.
+$$
+
+Node feasibility가 구간 전체 feasibility를 보장하지는 않는다. 관절 $j$ 에서 $q_j(t_k+s)=q_{j,k}+sv_{j,k}+\tfrac12s^2a_{j,k}$ 의 내부 극값은 $s^{\star}=-v_{j,k}/a_{j,k}\in(0,h)$ 일 때 존재한다. 그 값도 bound 검사에 포함한다. Collision과 torque는 구간 내부 sampling 또는 margin으로 확인한다.
+
+Discrete jerk(input slew rate)는
+
+$$
+j_0=\frac{a_0-a_{\mathrm{prev}}}{h},\qquad j_k=\frac{a_k-a_{k-1}}{h}\ (k=1,\ldots,N-1),\qquad
+-j_{\max}\le j_k\le j_{\max}.
+$$
+
+$a_{\mathrm{prev}}$ 는 실제 적용 중인 reference의 직전 가속도이다. 연속 jerk 보장이 필요하면 jerk를 입력으로 두고 가속도를 상태로 추가한다.
+
+### 4.4 연속 시간 reference
+
+계획 해는 구간별 2차 다항식으로 정확히 표현된다.
+
+$$
+q^\star(t)=q_k+sv_k+\tfrac12s^2a_k,\quad v^\star(t)=v_k+sa_k,\quad a^\star(t)=a_k,\qquad
+t=t_k+s,\ s\in[0,h).
+$$
+
+제어 주기 $h_c$ 로 샘플링해 §12의 실행 경로에 전달한다. 별도의 spline 재보간은 하지 않는다.
+
+## 5. 손 좌표계의 상대 위치와 속도
+
+### 5.1 상대 운동학
+
+World-aligned Jacobian $J_p,J_\omega$ 로 쓰면
+
+$$
+v_h=J_p(q)v,\qquad\omega_h=J_\omega(q)v,\qquad\dot R=[\omega_h]_\times R .
+$$
+
+상대량을 다음과 같이 정의한다.
+
+$$
+r^W=\hat p_b-p_h(q),\qquad w^W=\hat v_b-J_p(q)v,\qquad \boxed{r^H=R^\top r^W}.
+$$
+
+Transport theorem을 적용한다. $\dot R^\top=-R^\top[\omega_h]_\times$ 와 $R^\top(\omega\times r)=(R^\top\omega)\times(R^\top r)$ 를 쓰면
+
+$$
+\boxed{\nu^H:=\dot r^H=R^\top w^W-[\omega_h^H]_\times r^H},\qquad \omega_h^H=R^\top\omega_h .
+$$
+
+$\nu^H$ 는 회전하는 capture frame 안에서 공 중심이 실제로 움직이는 속도이다.
+
+### 5.2 Pinocchio frame 규약
+
+$R=$ `data.oMf[H].rotation` 이다. 위 식의 $J_p,J_\omega$ 는 `getFrameJacobian(model, data, H, LOCAL_WORLD_ALIGNED)` 의 앞 3행(linear)과 뒤 3행(angular)이다. `LOCAL` Jacobian을 쓰면 $J^{\mathrm{L}}=\operatorname{blkdiag}(R^\top,R^\top)\,J^{\mathrm{LWA}}$ 이므로 식이 다음과 같이 바뀐다.
+
+$$
+\nu^H=R^\top\hat v_b-J_p^{\mathrm L}v-[\omega_h^H]_\times r^H,\qquad \omega_h^H=J_\omega^{\mathrm L}v .
+$$
+
+두 규약을 섞으면 회전 중 상대속도가 체계적으로 틀린다. §15의 finite-difference 검사로 확인한다.
+
+### 5.3 접근축과 closing speed
+
+공은 $+e_3$ 측에서 $-e_3$ 방향으로 들어온다. 축 좌표, lateral 좌표, closing speed를 다음과 같이 정의한다.
+
+$$
+s=e_3^\top r^H,\qquad \rho=E_\perp^\top r^H\in\mathbb R^2,\qquad
+\boxed{c=-\dot s=-e_3^\top\nu^H}.
+$$
+
+$c>0$ 이면 접근, $c<0$ 이면 이탈이다. World 접근축은 $d=Re_3$ 이다.
+
+**Sanity check.** 손이 정지해 있고 $r^H=se_3$, $\hat v_b^H=-Ve_3$ 이면 $c=V>0$ 이다.
+
+## 6. Capture geometry, hand schedule, corridor, closing envelope
+
+### 6.1 Entrance plane과 terminal event
+
+Hand frame의 entrance plane을 $\{r^H:e_3^\top r^H=s_{\mathrm{ent}}\}$ 로 둔다. Terminal은 nominal 공 중심이 이 평면에 도달하는 사건으로 정의한다.
+
+$$
+\boxed{h_{\mathrm{ent}}(q_N):=e_3^\top R(q_N)^\top\!\left(\hat p_{b,N}-p_h(q_N)\right)-s_{\mathrm{ent}}=0}.
+$$
+
+이 식은 $q_N$ 에 대해 smooth하다. 따라서 v1의 signed-distance equality $g_{\mathrm{contact}}=0$ 을 대체한다.
+
+**Lateral capture set.** 통과 시 lateral 좌표의 허용 영역을 ball-center 좌표로 정의한다.
+
+$$
+\mathcal C_\perp=\{\rho\in\mathbb R^2:\ \tilde a_i^\top\rho\le\tilde b_i,\ i=1,\ldots,m_\perp\}.
+$$
+
+Hand 입구의 개구부(volume) 기준으로 측정했다면 ball-radius erosion을 적용한다. 공 전체가 들어가야 하므로 $\mathcal C_\perp=\mathcal C_{\perp,\mathrm{open}}\ominus\mathcal B(r_b)$, 즉 $\tilde b_i=\tilde b_i^{\mathrm{open}}-r_b\|\tilde a_i\|_2$ 이다. 이미 ball-center 기준으로 식별했다면 반지름을 다시 빼지 않는다.
+
+**무접촉 일관성 조건.** Entrance plane은 다음을 만족하도록 오프라인에서 선정·검증한다. Hand가 $\eta_{\mathrm{ready}}$ 에 있고 $\rho\in\mathcal C_\perp$, $\nu\in\mathcal V_{\mathrm{cap}}$ 인 모든 통과에 대해, $s>s_{\mathrm{ent}}$ 인 동안 공이 어떤 hand 표면과도 접촉하지 않아야 한다. 이 조건이 성립해야 terminal 이전 구간을 무접촉 동역학으로 다룰 수 있다.
+
+### 6.2 Hand schedule과 closure trigger
+
+Hand configuration은 시간의 기지 함수이다.
+
+$$
+\eta(t)=\begin{cases}
+\eta_{\mathrm{open}}, & t<t_{\mathrm{ps}},\\
+\eta_{\mathrm{pre}}(t-t_{\mathrm{ps}}), & t_{\mathrm{ps}}\le t<t_{\mathrm{ps}}+T_{\mathrm{ps}},\\
+\eta_{\mathrm{ready}}, & t_{\mathrm{ps}}+T_{\mathrm{ps}}\le t<t_{\mathrm{cmd}},
+\end{cases}\qquad
+\boxed{t_{\mathrm{ps}}+T_{\mathrm{ps}}\le t_c-\tau_{\mathrm{rdy}}}.
+$$
+
+$\tau_{\mathrm{rdy}}\ge0$ 는 preshape 완료 후 정착 여유이다. 이 조건은 NLP가 아니라 outer loop에서 검사한다(§11.3).
+
+통과 후 closure가 유효해지는 시각을 $t_{\mathrm{cl}}$, 실제 통과 시각을 $t_x$ 라 하자. Capture 조건은 다음과 같다.
+
+$$
+\delta_{\mathrm{lo}}\ \le\ t_{\mathrm{cl}}-t_x\ \le\ \delta_{\mathrm{hi}} .
+$$
+
+$\delta_{\mathrm{lo}}\ge0$ 은 공이 충분히 들어오기 전에 닫히지 않을 조건이고, $\delta_{\mathrm{hi}}$ 는 공이 튕겨 나가기 전에 닫힐 조건이다. 두 값은 (A6)에 따라 식별한다. Trigger는 두 mode 중 하나를 쓴다.
+
+- **(M1) Contact-triggered.** $t_{\mathrm{cl}}=t_x+\tau_{\mathrm{det}}+\tau_{\mathrm{cl}}$. 이 mode는 첫 접촉이 **감지 가능한 표면**에서 일어날 때만 성립한다. 실기 접촉 신호가 fingertip 센서뿐이므로, 센서 coverage를 entrance plane에 사영한 영역을 $\mathcal C_{\mathrm{sens}}\subseteq\mathcal C_\perp$ 라 할 때 다음 두 조건이 필요하다.
+
+  $$
+  \Pr\{\rho\in\mathcal C_{\mathrm{sens}}\}\ge1-\epsilon_s,\qquad
+  \delta_{\mathrm{lo}}\le\tau_{\mathrm{det}}+\tau_{\mathrm{cl}}\le\delta_{\mathrm{hi}} .
+  $$
+
+- **(M2) Time-triggered.** $t_{\mathrm{cl}}=t_{\mathrm{cmd}}+\tau_{\mathrm{cl}}$ 이며 $t_{\mathrm{cmd}}$ 는 예측으로 정한다(§8.4). 첫 접촉 표면이 센서 coverage 밖이면 이 mode가 **필수**이다. 이 경우 접촉 신호는 closure 성공 확인과 post-capture 전환에만 쓴다.
+
+Mode 선택은 capture surface와 센서 배치로 결정한다. Planner는 선택된 mode의 조건을 validity에 포함한다.
+
+### 6.3 유한 입구를 갖는 approach corridor (smooth form)
+
+Gap을 $\ell=s-s_{\mathrm{ent}}$ 로 둔다. Approach stage index set $\mathcal A_T\subseteq\{0,\ldots,N-1\}$ 에서
+
+$$
+\boxed{\|\rho_k\|_2^2\le\left(r_{\mathrm{ent}}+\ell_k\tan\theta+s_{c,k}\right)^2},\qquad
+\ell_k\ge0,\quad s_{c,k}\ge0 .
+$$
+
+$\ell_k\ge0$ 이면 우변 괄호가 음이 아니므로 v1의 norm 형식과 동치이다. 또한 $\rho_k=0$ 에서도 미분 가능하다. $r_{\mathrm{ent}}$ 는 공 반지름을 반영한 허용 center offset이다. $\ell_k\ge0$ 은 "terminal 이전에는 공이 입구를 통과하지 않는다"는 무접촉 가정의 일관성 조건이므로 **hard**로 둔다. Corridor는 ball–hand collision 검사를 대체하지 않는다.
+
+$\mathcal A_T$ 는 online phase machine이 정하고 inner solve 동안 고정한다. Decision-dependent 조건 $\ell<\ell_{\mathrm{activate}}$ 를 solver 안에 직접 넣으면 disjunctive 문제가 된다.
+
+### 6.4 Closing-speed envelope (smooth form)
+
+$$
+\boxed{c_k^2\le c_{\mathrm{ent,max}}^2+2a_{\mathrm{brake}}\ell_k+s_{v,k}},\qquad s_{v,k}\ge0,\quad k\in\mathcal A_T .
+$$
+
+Slack 단위는 m²/s²이다. v1의 $\sqrt{\cdot}$ 형식은 $c_{\mathrm{ent,max}}\to0$, $\ell\to0$ 에서 기울기가 발산하므로 사용하지 않는다. 이 envelope는 상대 운동의 유효 감속 능력을 상수 $a_{\mathrm{brake}}$ 로 근사한 soft 설계 조건이다. $\ddot s$ 는 공 가속도, 로봇 가속도, frame 회전에 모두 의존하므로 joint acceleration limit만으로 $a_{\mathrm{brake}}$ 를 정하지 않는다. 실제 도달 가능성은 dynamics optimization이 판단한다.
+
+### 6.5 Terminal velocity set
+
+$$
+\mathcal V_{\mathrm{cap}}=\left\{\nu:\ c_{\min}\le-e_3^\top\nu\le c_{\mathrm{cap,max}},\ \ \|E_\perp^\top\nu\|_2^2\le v_{\perp,\max}^2\right\},\qquad c_{\min}>0 .
+$$
+
+하한 $c_{\min}>0$ 은 §8.2의 crossing-plane 변환이 잘 정의되기 위한 조건이다($c\to0$ 이면 발산). §8.4의 timing chance constraint는 이보다 강한, 공분산에 의존하는 하한을 준다.
+
+## 7. Impact-aware terminal model
+
+### 7.1 접촉점과 approaching mode
+
+예상 첫 접촉점을 $p_c(q,\eta_{\mathrm{ready}})$, world translational contact Jacobian을 $J_c$ 라 한다. 이는 일반적으로 $J_p$ 와 다르다. World normal $n$ 은 손 표면에서 공 쪽을 향한다. 구의 frictionless radial contact에서 공의 각속도는 normal 상대속도에 기여하지 않는다.
+
+$$
+g_n=n^\top(\hat v_b-J_cv) .
+$$
+
+Terminal mode는 approaching contact로 고정한다. 즉 $g_{n,N}\le0$ 을 제약으로 두고 $c_{n}:=-g_{n}$ 으로 쓴다. 이렇게 하면 v1의 $\max(0,\cdot)$ 비평활성이 사라진다.
+
+### 7.2 Effective mass의 모델 계층
+
+**기본형.** Normal inverse inertia와 reduced mass는
+
+$$
+\beta_h=n^\top J_cM^{-1}J_c^\top n\ \ge0,\qquad
+\boxed{m_{\mathrm{red}}=\left(\frac1{m_b}+\beta_h\right)^{-1}}.
+$$
+
+$M^{-1}$ 을 직접 만들지 않고 $My=J_c^\top n$ 을 풀어 $\beta_h=n^\top J_cy$ 를 계산한다.
+
+**Closed-chain hand 포함.** Loop constraint Jacobian $J_\ell$ (full row rank)를 갖는 전체 모델에서 충격 동역학은 다음과 같다.
+
+$$
+M\Delta v=J_c^\top nP+J_\ell^\top\Lambda,\qquad J_\ell\Delta v=0 .
+$$
+
+$\Lambda$ 를 소거하면
+
+$$
+\Lambda=-\left(J_\ell M^{-1}J_\ell^\top\right)^{-1}J_\ell M^{-1}J_c^\top nP .
+$$
+
+따라서 normal 방향 속도 변화는 $n^\top J_c\Delta v=\beta_h^{\mathrm{cc}}P$ 이고,
+
+$$
+\beta_h^{\mathrm{cc}}=n^\top J_c\left[M^{-1}-M^{-1}J_\ell^\top\left(J_\ell M^{-1}J_\ell^\top\right)^{-1}J_\ell M^{-1}\right]J_c^\top n .
+$$
+
+**에너지 상한의 단조성 (a).** 다음 두 성질이 성립한다.
+
+- $M_1\succeq M_2\succ0$ 이면 $M_1^{-1}\preceq M_2^{-1}$ 이다. 따라서 관성을 더하면(예: rotor reflected inertia, Pinocchio `model.armature`) $\beta_h$ 는 감소한다.
+- 구속을 더하면 위 괄호 안에서 PSD 항을 빼게 되므로 $\beta_h$ 는 감소한다. 예를 들어 position 제어로 hand 관절이 사실상 고정되는 경우가 그렇다.
+
+$\beta_h$ 가 감소하면 $m_{\mathrm{red}}$ 와 충격 에너지가 증가한다. 따라서 동일한 $c_n$ 에 대해 다음 순서가 성립한다.
+
+$$
+E^{\mathrm{free\ links}}\ \le\ E^{\mathrm{+armature}}\ \le\ E^{\mathrm{+hand\ locked}}\ \le\ \tfrac12m_bc_n^2 .
+$$
+
+마지막 식은 $\beta_h\ge0\Rightarrow m_{\mathrm{red}}\le m_b$ 에서 나오며, **모델에 무관한 상한**이다.
+
+**모델 선택.** 실제 충격 시간 척도에서 감속기 탄성이 rotor를 분리하는지는 하드웨어에 따라 다르다. 이 효과는 로봇 충돌 안전 문헌에서 다뤄진 것으로 알고 있으나, 본 문서에서 해당 출처를 검증하지 않았다(**확인 필요**). 또한 `servoj` 의 고이득 position loop는 충격 순간 로봇이 자유 관성계라는 가정과 맞지 않는다. 따라서 식별 전에는 보수적 모델(armature 포함, hand locked)로 $E_{\max}$ 조건을 검사하고, 불확실성이 크면 $\tfrac12m_bc_n^2$ 를 쓴다.
+
+### 7.3 충격 에너지, impulse, closing speed 상한
+
+$$
+\boxed{E_n^-=\tfrac12m_{\mathrm{red}}c_n^2},\qquad
+\boxed{P_n=(1+e)m_{\mathrm{red}}c_n},\qquad e\in[0,1].
+$$
+
+손실 에너지는 $(1-e^2)E_n^-$ 이다. Peak force는 contact stiffness, damping, duration 없이 얻을 수 없다. $E_n^-\le E_{\max}$ 와 $P_n\le P_{\max}$ 는 각각 normal closing speed의 상한과 동치이다.
+
+$$
+c_n\ \le\ c_{n,\mathrm{hi}}:=\min\!\left\{\sqrt{\frac{2E_{\max}}{m_{\mathrm{red}}}},\ \frac{P_{\max}}{(1+e)m_{\mathrm{red}}}\right\}.
+$$
+
+**Sanity check.**
+
+- $c_n=0$ 이면 $E=P=0$ 이다.
+- $m_{h,\mathrm{eff}}\to\infty$ 이면 $m_{\mathrm{red}}\to m_b$, $m_{h,\mathrm{eff}}\to0$ 이면 $m_{\mathrm{red}}\to0$ 이다.
+- 단위는 $E$ 가 J, $P$ 가 N·s이다.
+
+이 bound는 충격 안전의 충분조건이 아니다. 다중 손가락 동시 접촉, servo의 impulsive response, 실리콘 compliance가 중요하면 다중 접촉/변형 모델로 확장한다.
+
+## 8. Probabilistic capture constraints
+
+### 8.1 Hand-frame covariance
+
+Robot 상태를 조건부로 고정하고 §3.3의 $\Sigma_b^{\mathrm{ant}}$ 를 쓴다. 이하 $\Sigma_{b,N}:=\Sigma_b^{\mathrm{ant}}(t_c)$ 로 표기한다.
+
+$$
+y_N=\begin{bmatrix}r_N^H\\\nu_N^H\end{bmatrix},\qquad
+L_N=\begin{bmatrix}R_N^\top&0\\-[\omega_{h,N}^H]_\times R_N^\top&R_N^\top\end{bmatrix},\qquad
+\Sigma_{y,N}=L_N\Sigma_{b,N}L_N^\top=\begin{bmatrix}\Sigma_{r,N}^H&\Sigma_{r\nu,N}^H\\\Sigma_{\nu r,N}^H&\Sigma_{\nu,N}^H\end{bmatrix}.
+$$
+
+$L_N$ 의 블록은 $\partial\nu^H/\partial p_b=-[\omega_h^H]_\times R^\top$, $\partial\nu^H/\partial v_b=R^\top$ 에서 나온다. Robot tracking 불확실성이 무시할 수 없으면 $y=f(z_b,x_r)$ 를 선형화한다.
+
+$$
+\Sigma_y\approx F_b\Sigma_bF_b^\top+F_r\Sigma_rF_r^\top+F_b\Sigma_{br}F_r^\top+F_r\Sigma_{rb}F_b^\top .
+$$
+
+독립성이 확인된 경우에만 cross covariance를 0으로 둔다.
+
+### 8.2 Crossing-plane 분포의 유도
+
+**문제.** v1은 고정 시각 $T$ 에서 $\Pr\{r_N^H\in\mathcal C\}$ 를 제약했다. 그러나 terminal은 사건이므로, 실제 공은 평면을 $t_x=t_c+\delta t$ 에 통과한다. 축방향 위치 오차는 사실상 통과 시각 오차이고, lateral 상대속도를 통해 통과 위치 오차로 바뀐다.
+
+**가정.** 통과 직전 짧은 구간에서 상대 가속도 영향을 무시한다.
+
+$$
+r^H(t_c+\delta)\approx r_N^H+\nu_N^H\,\delta .
+$$
+
+**유도.** 실제 상태를 $r_N^H=\hat r_N^H+\delta r$ 로 쓴다. Terminal equality(§6.1)에 의해 $e_3^\top\hat r_N^H=s_{\mathrm{ent}}$ 이다.
+
+1. 통과 조건 $e_3^\top(r_N^H+\nu\,\delta t)=s_{\mathrm{ent}}$ 와 $e_3^\top\nu=-c$ 로부터
+
+   $$
+   \delta t=\frac{e_3^\top r_N^H-s_{\mathrm{ent}}}{c}=\frac{e_3^\top\delta r}{c}.
+   $$
+
+2. 통과 위치는 $r_x=r_N^H+\nu\,\delta t$ 이다. $\nu=\hat\nu+\delta\nu$ 로 두면 $\delta\nu\,\delta t$ 는 2차 항이므로 1차까지
+
+   $$
+   \delta r_x=\Pi\,\delta r,\qquad \boxed{\Pi=I+\frac{\hat\nu\,e_3^\top}{\hat c}},\qquad \hat c=-e_3^\top\hat\nu .
+   $$
+
+   Nominal 통과가 정확히 $T$ 에서 일어나도록 정했기 때문에, 속도 불확실성은 1차에서 통과 위치에 들어오지 않는다.
+
+3. $e_3^\top\Pi=e_3^\top-e_3^\top=0$ 이므로 $\delta r_x$ 는 평면 위에 있다. $\Pi$ 는 $\hat\nu$ 방향을 따라 평면으로 내리는 **oblique projection**이다.
+
+**결과.** 다음 세 양이 crossing-plane 분포를 결정한다.
+
+$$
+\boxed{\Sigma_\rho=E_\perp^\top\Pi\,\Sigma_{r,N}^H\,\Pi^\top E_\perp},\qquad
+\boxed{\sigma_s^2=e_3^\top\Sigma_{r,N}^He_3=d_N^\top\Sigma_{p,N}d_N},\qquad
+\sigma_t=\frac{\sigma_s}{\hat c},
+$$
+
+$$
+\operatorname{Cov}(\delta\rho,\delta t)=\frac{1}{\hat c}E_\perp^\top\Pi\,\Sigma_{r,N}^He_3 ,
+$$
+
+여기서 $d_N=R_Ne_3$ 이다.
+
+**Sanity check.**
+
+- $\hat\nu\parallel e_3$ 이면 $E_\perp^\top\Pi=E_\perp^\top$ 이고, $\Sigma_\rho$ 는 고정 시각 lateral 공분산과 같다.
+- $\Sigma=0$ 이면 deterministic 조건으로 돌아간다.
+- $\hat c\to0$ 이면 $\Pi$ 와 $\sigma_t$ 가 발산한다. Grazing 접근에서는 통과 위치와 시각이 정의되지 않는다는 물리적 사실과 일치한다.
+
+**선형화 유효 조건.** 무시한 2차 항의 크기는 $\tfrac12\|E_\perp^\top a_{\mathrm{rel}}\|\,\delta t^2$ 이다. $\delta t$ 를 $\kappa\sigma_t$ 로 잡아 다음을 검사한다.
+
+$$
+\tfrac12\|E_\perp^\top a_{\mathrm{rel},N}\|(\kappa\sigma_t)^2\ \le\ \varepsilon_{\mathrm{lin}}\min_i\frac{\tilde b_i-\tilde a_i^\top\hat\rho_N}{\|\tilde a_i\|_2} .
+$$
+
+$a_{\mathrm{rel}}$ 는 공 가속도(중력 포함), hand 가속도, frame 회전 항을 포함한 hand-frame 상대 가속도이다. $\varepsilon_{\mathrm{lin}}<1$ 은 설계 상수이다. 위반 시 2차 보정이나 scenario 검증을 쓴다.
+
+### 8.3 Lateral capture, sensor coverage, velocity의 tightening
+
+**Lateral capture.** Face별 risk budget $\epsilon_i>0$, $\sum_i\epsilon_i\le\epsilon_c$ 를 배정한다. Gaussian affine marginal과 Boole 부등식에 의해 다음은 $\Pr\{\rho\in\mathcal C_\perp\}\ge1-\epsilon_c$ 의 충분조건이다 (a).
+
+$$
+\boxed{\tilde a_i^\top\hat\rho_N+\kappa_i\sqrt{\tilde a_i^\top\Sigma_\rho\tilde a_i}\le\tilde b_i},\qquad \kappa_i=\Phi^{-1}(1-\epsilon_i),\qquad \hat\rho_N=E_\perp^\top\hat r_N^H .
+$$
+
+각 face에서는 정확한 scalar 변환이고, 보수성은 risk allocation에서만 생긴다. Face 간 독립성은 필요 없다. $\Sigma_\rho$ 가 singular일 수 있는 방향에서는 $\sqrt{\cdot}$ 의 기울기를 위해 $\sqrt{\tilde a_i^\top\Sigma_\rho\tilde a_i+\varepsilon_\sigma^2}$ 로 regularize한다.
+
+**Sensor coverage (M1).** $\mathcal C_{\mathrm{sens}}=\{\rho:\bar a_i^\top\rho\le\bar b_i\}$ 에 같은 식을 risk budget $\epsilon_s$ 로 적용한다.
+
+**Terminal velocity.** 축방향 성분은 affine이다.
+
+$$
+-e_3^\top\hat\nu_N\pm\kappa_\nu\sqrt{e_3^\top\Sigma_{\nu,N}^He_3}\in[c_{\min},c_{\mathrm{cap,max}}],
+$$
+
+즉 하한은 $-$ 부호, 상한은 $+$ 부호로 tightening한다. Lateral speed norm은 정 $m$ 각형 inner approximation으로 바꾼다.
+
+$$
+u_j=\begin{bmatrix}\cos(2\pi j/m)\\\sin(2\pi j/m)\end{bmatrix},\qquad
+\bigcap_{j=0}^{m-1}\{x:u_j^\top x\le v_{\perp,\max}\cos(\pi/m)\}\subset\{\|x\|_2\le v_{\perp,\max}\}.
+$$
+
+각 face에 위 tightening을 적용한다. 여기서 $x=E_\perp^\top\nu_N$ 이고 공분산은 $E_\perp^\top\Sigma_{\nu,N}^HE_\perp$ 이다.
+
+Chance constraint에 slack을 허용하면 확률 보장을 주장할 수 없다. 실행 승인에는 모든 chance constraint의 slack이 0이어야 한다.
+
+### 8.4 Timing chance constraint와 closing speed 창
+
+통과 시각 편차는 $\delta t\sim\mathcal N(0,\sigma_t^2)$ 이다(1차 근사). Closure latency jitter를 $\sigma_\tau$ (독립 Gaussian)라 하면 $\sigma_{\mathrm{tot}}^2=\sigma_t^2+\sigma_\tau^2$ 이다.
+
+**(M2) Time-triggered.** $t_{\mathrm{cl}}-t_x=t_{\mathrm{cmd}}+\tau_{\mathrm{cl}}-t_c-\delta t$ 이다. 창의 중앙에 맞추는 지령 시각은
+
+$$
+\boxed{t_{\mathrm{cmd}}=t_c-\tau_{\mathrm{cl}}+\delta_{\mathrm{mid}}},\qquad \delta_{\mathrm{mid}}=\tfrac12(\delta_{\mathrm{lo}}+\delta_{\mathrm{hi}}).
+$$
+
+이때 성공 확률은 정확히
+
+$$
+\Pr\{\delta_{\mathrm{lo}}\le t_{\mathrm{cl}}-t_x\le\delta_{\mathrm{hi}}\}=2\Phi\!\left(\frac{\Delta_{\mathrm{win}}}{2\sigma_{\mathrm{tot}}}\right)-1 .
+$$
+
+따라서 $\ge1-\epsilon_t$ 조건은 $\kappa_t=\Phi^{-1}(1-\epsilon_t/2)$ 로 두었을 때 다음과 **동치**이다.
+
+$$
+\sigma_{\mathrm{tot}}\le\frac{\Delta_{\mathrm{win}}}{2\kappa_t}
+\quad\Longleftrightarrow\quad
+\boxed{\hat c\ \ge\ c_{t,\mathrm{lo}}:=\frac{\sigma_s}{\sqrt{\left(\Delta_{\mathrm{win}}/2\kappa_t\right)^2-\sigma_\tau^2}}},\qquad
+\frac{\Delta_{\mathrm{win}}}{2\kappa_t}>\sigma_\tau .
+$$
+
+$\sigma_\tau=0$ 이면 $c_{t,\mathrm{lo}}=2\kappa_t\sigma_s/\Delta_{\mathrm{win}}$ 이다. 오른쪽 조건이 깨지면 latency jitter만으로 요구 확률을 만족할 수 없으므로 M2가 불가능하다. 우변의 $\sigma_s=\sqrt{d_N^\top\Sigma_{p,N}d_N}$ 는 $q_N$ 에 의존하는 smooth 함수이므로 NLP의 terminal 제약으로 넣는다.
+
+**Hand 정보 시각 (v3).** Arm 궤적은 $t_c-\tau_{\mathrm{react}}$ 에서 고정되지만, M2의 closure 지령 시각 $t_{\mathrm{cmd}}$ 는 그 뒤의 메시지로도 계속 고칠 수 있다(§12.7). 손가락 지령 경로의 지연이 arm 수정 지연보다 짧기 때문이다. 따라서 timing 제약의 $\sigma_s$ 는 arm이 아니라 **hand 정보 시각**의 공분산으로 계산한다.
+
+$$
+\boxed{s^{\star}_{\mathrm{hand}}=\max\left\{s_j:\ s_j\le t_{\mathrm{occ}},\ \ s_j+\tau_{\mathrm{vis}}\le t_{\mathrm{cmd}}\right\}},\qquad
+\sigma_s^2=d_N^\top\,\Sigma_p\!\left(t_c\mid s^{\star}_{\mathrm{hand}}\right)d_N .
+$$
+
+$s^{\star}_{\mathrm{hand}}\ge s^{\star}_{\mathrm{arm}}$ 이므로 $\sigma_s$ 가 작아지고, 그만큼 $c_{t,\mathrm{lo}}$ 가 낮아져 아래의 closing speed 창이 넓어진다. 다만 $t_{\mathrm{occ}}$ 이후에는 정보가 없으므로, 이 이득은 $\min(t_{\mathrm{occ}},\,t_{\mathrm{cmd}}-\tau_{\mathrm{vis}})$ 까지로 제한된다. 계획 시점에는 $t_{\mathrm{cmd}}$ 를 nominal 값 $t_c-\tau_{\mathrm{cl}}+\delta_{\mathrm{mid}}$ 로 두고 계산한다.
+
+$$
+\hat c_N\sqrt{\left(\Delta_{\mathrm{win}}/2\kappa_t\right)^2-\sigma_\tau^2}\ \ge\ \sigma_s(q_N).
+$$
+
+**(M1) Contact-triggered.** $t_{\mathrm{cl}}-t_x=\tau_{\mathrm{det}}+\tau_{\mathrm{cl}}$ 로 통과 시각 오차와 무관하다. 대신 §8.3의 coverage 조건이 확률을 담당한다. 검출·closure jitter가 있으면 $\sigma_t$ 를 0으로 둔 위 식을 쓴다.
+
+**Closing speed 창.** 접촉 normal이 접근축과 정렬되고($n\approx d_N$), 접촉점과 capture 원점의 normal 방향 속도가 같다고 근사하면 $c_n\approx\hat c$ 이다. 그러면 M2에서 다음이 필요하다.
+
+$$
+\boxed{\max\{c_{\min},\,c_{t,\mathrm{lo}}\}\ \le\ \hat c\ \le\ \min\{c_{\mathrm{cap,max}},\,c_{n,\mathrm{hi}}\}}.
+$$
+
+Timing robustness는 빠른 접근을, impact 제한은 느린 접근을 요구한다. 이 창이 비면 arm 운동과 무관하게 후보가 불가능하다. 따라서 이 식은 outer-loop screening(§11.3)에 쓴다. NLP 안에서는 근사 대신 $c_n$ 과 $\hat c$ 에 대한 각 제약을 따로 둔다.
+
+### 8.5 Uncertainty cost (선택)
+
+$$
+J_{\mathrm{unc}}=w_\Sigma\,\frac{\sigma_\rho^2}{\sigma_{\mathrm{ref}}^2},\qquad \sigma_\rho^2=\operatorname{tr}\Sigma_\rho .
+$$
+
+$\Sigma_\rho$ 는 $\hat\nu_N$ 과 $R_N$ 을 통해 결정 변수에 의존한다. 따라서 이 항은 inner solve에서 lateral 상대속도를 줄이는 방향, 즉 접근축 정렬 쪽으로 작용한다. Chance constraint가 이미 불확실성을 반영하므로 $w_\Sigma$ 는 선택 사항이다.
+
+### 8.6 Ball clearance의 불확실성 margin
+
+Capture surface 이외의 link $i$ 와 공 사이의 nominal signed clearance $d_{\mathrm{ball},i}$ 에 대해, closest-point normal $n_{i,k}$ 방향 표준편차로 tightening한다.
+
+$$
+d_{\mathrm{ball},i}(q_k,\eta(t_k),\hat p_{b,k},r_b)\ \ge\ d_{\mathrm{clear},i}+\kappa_d\sqrt{n_{i,k}^\top\Sigma_{p}(t_k\mid\cdot)\,n_{i,k}} .
+$$
+
+$\Sigma_p(t_k\mid\cdot)$ 에는 §3.3과 같은 논리로 $t_k-\tau_{\mathrm{react}}$ 기준 anticipated covariance를 쓴다. Hand 형상은 스케줄 $\eta(t_k)$ 로 평가한다.
+
+## 9. Objective function
+
+### 9.1 단위 normalization과 horizon 비교
+
+서로 다른 단위의 항은 characteristic scale로 나누거나 그에 상응하는 단위의 weight를 쓴다. 후보마다 가중치와 scale을 바꾸지 않는다. Running cost에는 $h$ 를 곱해 시간 적분을 근사한다. 평균 비용이 필요하면 모든 후보에 동일하게 $1/T$ 를 적용하고 목적 변경을 명시한다.
+
+### 9.2 Motion cost
+
+$$
+\ell_{\mathrm{motion},k}=\|\tau_k\|_{R_\tau}^2+\|a_k\|_{R_a}^2+\|j_k\|_{R_j}^2+\|q_k-q_{\mathrm{nom}}\|_{Q_q}^2+w_m\psi_m(q_k),\qquad
+J_{\mathrm{motion}}=h\sum_{k=0}^{N-1}\ell_{\mathrm{motion},k}.
+$$
+
+Torque square는 effort proxy이며 에너지와 같지 않다. Manipulability regularizer는 다음과 같다.
+
+$$
+\bar J=D_x^{-1}J_{\mathrm{task}}D_q,\qquad \psi_m(q)=-\log\det(\bar J\bar J^\top+\delta I),\quad \delta>0 .
+$$
+
+6D Jacobian에서는 translation과 rotation의 scale $D_x$ 를 반드시 정한다.
+
+### 9.3 Catch vicinity relative-state cost
+
+$$
+\rho_T(t)=\exp\!\left[-\frac{(t-T)^2}{2\sigma_T^2}\right],\qquad
+J_{\mathrm{near}}=h\sum_{k=0}^{N-1}\rho_T(kh)\left(\|r_k^H-r_{\mathrm{ref},k}^H\|_{Q_p}^2+\|\nu_k^H-\nu_{\mathrm{ref}}^H\|_{Q_v}^2\right).
+$$
+
+$r_{\mathrm{ref},k}^H=r_{\mathrm{ref}}^H+(T-kh)\,(-\nu_{\mathrm{ref}}^H)$ 로 두면, terminal reference를 지나는 등속 접근선을 추종하게 된다. 이렇게 하면 terminal 이전 구간에서 위치와 속도 reference가 서로 모순되지 않는다. $\nu_{\mathrm{ref}}^H$ 는 $\mathcal V_{\mathrm{cap}}$ 안에서, §8.4의 closing speed 창 안의 축방향 성분으로 선택한다.
+
+### 9.4 Terminal cost
+
+$$
+V_f=\|\rho_N-\rho_{\mathrm{ref}}\|_{Q_{\rho,f}}^2+\|\nu_N^H-\nu_{\mathrm{ref}}^H\|_{Q_{\nu,f}}^2
++\underbrace{w_E\,\frac{E_{n,N}^-}{E_{\mathrm{ref}}}}_{J_{\mathrm{impact}}}
+\ \big[+\|e_R\|_{Q_R}^2\big],\qquad
+e_R=\operatorname{Log}\!\left(R_{\mathrm{des}}^\top R(q_N)\right)^\vee .
+$$
+
+축방향 위치는 §6.1의 equality로 고정되므로 terminal 위치 cost는 lateral 좌표 $\rho$ 에만 둔다. Hand 자세는 스케줄로 정해지므로 v1의 $\eta$ 항은 제거했다. Orientation 항은 선택 사항이다. 구형 공에는 grasp 목표 orientation이 없다. v1의 $\|v_h-\alpha v_b\|^2$ 는 Galilean invariant하지 않으므로 사용하지 않는다.
+
+### 9.5 Slack, time, switching
+
+$$
+J_{\mathrm{slack}}=h\sum_{k\in\mathcal A_T}\left(\lambda_1^\top s_k+\|s_k\|_{\Lambda_2}^2\right),\qquad s_k=\begin{bmatrix}s_{c,k}\\s_{v,k}\end{bmatrix}\ge0 .
+$$
+
+$s_c$ (m)와 $s_v$ (m²/s²)는 단위가 다르므로 성분별 scaling을 쓴다. Physical bound, EOM, collision, chance constraint에는 slack을 두지 않는다.
+
+$$
+J_{\mathrm{time}}=w_T\frac{T}{T_{\mathrm{ref}}},\qquad
+J_{\mathrm{switch}}=w_{\mathrm{sw}}\left(\frac{t_0+T-t_{c,\mathrm{prev}}}{T_{\mathrm{ref}}}\right)^2 .
+$$
+
+$w_T\ge0$ 은 이른 포획을 선호한다는 뜻이다. 늦은 포획일수록 측정이 많아져 $\Sigma_b^{\mathrm{ant}}$ 가 작아지는 이점은 chance constraint가 이미 반영한다. 따라서 $w_T$ 는 workspace 경계 근처의 불필요하게 늦은 포획을 억제하는 역할로 한정한다. Switching penalty는 **절대 포획 시각**의 변화에 적용하며, deadline이나 feasibility가 바뀌면 이전 후보를 고집하지 않도록 작게 둔다.
+
+## 10. Inner-loop NMPC의 완성된 형태
+
+후보 $T$ 와 그에 대응하는 hand 스케줄 $\eta(\cdot)$, closure mode, 그리고 메시지 parameter $\mathcal P_j$ 가 주어졌다고 하자. Stage 제약은 $0\le k<N$, state bound는 $0\le k\le N$, approach 제약은 $k\in\mathcal A_T$ 에 적용한다.
+
+$$
+\boxed{
+\begin{aligned}
+J^\star(T)=\min_{\mathcal Z_T}\quad&
+J_{\mathrm{motion}}+J_{\mathrm{near}}+V_f+J_{\mathrm{slack}}+J_{\mathrm{unc}}+J_{\mathrm{time}}+J_{\mathrm{switch}}\\
+\mathrm{s.t.}\quad
+&q_0=\hat q(t_0),\quad v_0=\hat v(t_0),\\
+&q_{k+1}=q_k+h_kv_k+\tfrac12h_k^2a_k,\quad v_{k+1}=v_k+h_ka_k,\quad h_0\in(0,h],\ h_k=h\ (k\ge1),\\
+&\tau_k=M(q_k)a_k+b(q_k,v_k),\quad \tau_{\min}+\Delta\tau\le\tau_k\le\tau_{\max}-\Delta\tau,\\
+&q_{\min}\le q_k\le q_{\max},\quad v_{\min}\le v_k\le v_{\max},\quad a_{\min}\le a_k\le a_{\max},\quad -j_{\max}\le j_k\le j_{\max},\\
+&d_i(q_k,\eta(t_k))\ge d_{\min,i}\quad\text{(self/environment)},\\
+&d_{\mathrm{ball},i}(q_k,\eta(t_k),\hat p_{b,k},r_b)\ge d_{\mathrm{clear},i}+\kappa_d\sigma_{i,k}\quad\text{(capture surface 이외)},\\
+&\ell_k\ge0,\quad \|\rho_k\|_2^2\le(r_{\mathrm{ent}}+\ell_k\tan\theta+s_{c,k})^2,\quad
+c_k^2\le c_{\mathrm{ent,max}}^2+2a_{\mathrm{brake}}\ell_k+s_{v,k}\quad(k\in\mathcal A_T),\\
+&h_{\mathrm{ent}}(q_N)=0,\\
+&\tilde a_i^\top\hat\rho_N+\kappa_i\sqrt{\tilde a_i^\top\Sigma_\rho\tilde a_i}\le\tilde b_i\quad(i=1,\ldots,m_\perp),\\
+&\text{(M1)}\ \ \bar a_i^\top\hat\rho_N+\kappa_{s,i}\sqrt{\bar a_i^\top\Sigma_\rho\bar a_i}\le\bar b_i,\qquad
+\text{(M2)}\ \ \hat c_N\sqrt{(\Delta_{\mathrm{win}}/2\kappa_t)^2-\sigma_\tau^2}\ge\sigma_s(q_N),\\
+&\nu_N^H\in\mathcal V_{\mathrm{cap}}\ \text{(§8.3의 tightened polytope)},\\
+&g_{n,N}\le0,\quad \tfrac12m_{\mathrm{red}}(q_N)\,g_{n,N}^2\le E_{\max},\quad (1+e)\,m_{\mathrm{red}}(q_N)\,(-g_{n,N})\le P_{\max},\\
+&s_k\ge0 .
+\end{aligned}}
+$$
+
+이 문제는 nonlinear EOM, FK, 자세, collision, effective mass를 포함하는 **nonconvex NLP**이다. SQP의 각 iteration에서 QP를 풀더라도 전체가 하나의 QP가 되지는 않는다. 결정 변수는 arm 변수뿐이다. Hand 형상은 스케줄로 주어지는 데이터로서 collision과 contact geometry에만 들어간다.
+
+Terminal chance constraint 때문에 infeasible인 후보는 실행 후보에서 제외한다. 진단 목적으로만 우변에 $+s_{f,i}$ 를 더한 relaxation을 풀 수 있으며, $s_f>0$ 인 해는 유효한 capture solution으로 선택하지 않는다.
+
+## 11. Outer loop: 언제, 어디에서 잡을 것인가
+
+### 11.1 후보 집합과 validity
+
+**절대 시각 후보 격자 (v3).** 후보를 상대 시간이 아니라 절대 시각 격자에 고정한다.
+
+$$
+\mathcal T_{\mathrm{abs}}=\left\{t_c^{(i)}=t_{\mathrm{ref}}+i\,h\right\}_{i}\cap\left[t_0+T_{\min},\ t_0+T_{\max}\right],\qquad h=\Delta_m/m,\quad m\in\mathbb N .
+$$
+
+$t_{\mathrm{ref}}$ 는 한 번의 catch 시도 동안 고정한다. 그러면 cycle마다 각 후보의 남은 구간 수가 정확히 $m$ 개 줄어들고(shrinking horizon), 같은 물리적 후보가 cycle 사이에 같은 index로 유지된다. 상대 포획 시간은 $T^{(i)}=t_c^{(i)}-t_0$ 이다.
+
+**후보별 국소 연속 포획 시각 (v3).** 문헌의 실시간 포획 시스템은 포획 시각을 NLP의 연속 결정 변수로 두고 예측 갱신마다 다시 풀었다(Bäuml et al., 2010; Abeyruwan et al., 2023). 이산 격자는 여러 local basin을 동시에 유지하는 장점이 있으므로, 두 방식을 결합한다 (c). 격자 후보는 초기값과 정체성으로만 쓰고, 각 후보 안에서 포획 시각을 국소적으로 연다.
+
+$$
+t_c\in\left[t_c^{(i)}-\tfrac h2,\ t_c^{(i)}+\tfrac h2\right],\qquad
+h_{T}=\frac{t_c-t_1}{N-1}\quad(\text{첫 구간 } h_0 \text{ 이후 균등 분할}).
+$$
+
+이 경우 공 예측 $\hat z_b(t_k)$ 와 그 시간 미분이 $t_c$ 의 함수가 되며, §3.4의 국소 다항식으로 미분을 얻는다. 포획 시각을 고정하는 형태는 Diehl et al.(2005, SIAM)의 shrinking-horizon contraction 정리가 직접 다루는 설정이다. 국소 연속화를 하면 그 정리는 그대로 적용되지 않는다. 수렴이 불안정하면 국소 연속화를 끄고 고정 격자로 돌아간다.
+
+$T_{\min}$ 은 반응·계산·통신·preshape에 필요한 시간으로 정한다. $T_{\max}$ 는 예측 신뢰 구간, workspace 체류 시간, environment collision deadline으로 정한다.
+
+$$
+\operatorname{valid}(T)=1\iff
+\begin{cases}
+\text{(V1) §11.3의 screening 통과},\\
+\text{(V2) 계산 기한 안에 NLP 해를 얻고 모든 hard 제약을 허용 오차 안에서 만족},\\
+\text{(V3) 모든 chance constraint의 slack이 0},\\
+\text{(V4) §3.3의 reachability margin } m_{\mathrm{reach}}(T)\ge\kappa_m\sqrt{\lambda_{\max}(\cdot)}\ \text{만족},\\
+\text{(V5) Hand 스케줄 조건 } t_{\mathrm{ps}}+T_{\mathrm{ps}}\le t_c-\tau_{\mathrm{rdy}}\ \text{만족}.
+\end{cases}
+$$
+
+$$
+\boxed{T^\star=\arg\min_{T\in\mathcal T_{\mathrm{valid}}}J^\star(T)},\qquad t_c^\star=t_0+T^\star .
+$$
+
+NLP가 nonconvex이므로 $J^\star$ 는 local solver가 반환한 best feasible cost이며, global optimum을 보장하지 않는다.
+
+선택된 nominal catch point와 hand pose는 다음과 같다.
+
+$$
+\boxed{p_{\mathrm{catch}}^\star=\hat p_b(t_c^\star)},\qquad
+\boxed{p_h(q_N^\star)=p_{\mathrm{catch}}^\star-R(q_N^\star)\,r_N^{H\star}},\qquad e_3^\top r_N^{H\star}=s_{\mathrm{ent}} .
+$$
+
+불확실성 하에서 실제 통과 위치는 평균 $\hat\rho_N$, 공분산 $\Sigma_\rho$ 의 분포를 갖는다.
+
+### 11.2 계산 예산
+
+MPC cycle 주기를 $\Delta_{\mathrm{mpc}}$ 라 하자. 30 Hz 메시지에 event-trigger하는 동기식 실행(§12.7의 P1)에서는 $\Delta_{\mathrm{mpc}}=\Delta_m$ 이다. NLP에 쓸 수 있는 시간은
+
+$$
+t_{\mathrm{sol,max}}=\Delta_{\mathrm{mpc}}-t_{\mathrm{pred}}-t_{\mathrm{screen}}-t_{\mathrm{pub}}-t_{\mathrm{margin}} .
+$$
+
+후보 NLP는 서로 독립이므로 $P$ 개 worker로 병렬 실행한다. 후보당 solve 시간의 95th percentile을 $t_{\mathrm{solve},95}$ (실측 profiling)라 하면, cycle당 NLP 개수는 다음으로 제한한다.
+
+$$
+L_{\mathrm{NLP}}\ \le\ P\left\lfloor\frac{t_{\mathrm{sol,max}}}{t_{\mathrm{solve},95}}\right\rfloor .
+$$
+
+기한을 넘긴 solve는 (V2)에 따라 invalid로 처리한다. 이 때 후보 순서는 §11.3의 순위를 따른다. $\Delta_{\mathrm{mpc}}$, $P$, $t_{\mathrm{solve},95}$ 의 수치는 구현 profiling으로 정하며 본 문서는 수치를 가정하지 않는다. 실시간 구현에서는 worker와 solver workspace를 미리 할당한다. 이 한계를 만족할 수 없으면 §12.7의 pipeline 실행(P2)을 쓰고, 그 지연을 $\tau_{\mathrm{react}}$ 에 반영한다.
+
+### 11.3 필요조건 screening과 순위
+
+아래 조건은 모두 **필요조건**이다. 통과가 feasibility를 보장하지 않으며, 탈락은 해당 후보의 infeasibility를 의미한다.
+
+1. **(S1) 시간 창.** $T\in[T_{\min},T_{\max}]$.
+2. **(S2) Hand 스케줄.** Preshape를 아직 시작하지 않았다면 $t_{\mathrm{ps}}\ge t_0$ 이므로 $T\ge T_{\mathrm{ps}}+\tau_{\mathrm{rdy}}$ 이다. 이미 시작했다면 고정된 $t_{\mathrm{ps}}$ 로 (V5)를 검사한다.
+3. **(S3) Closing speed 창.** §8.4의 창이 비어 있지 않다. 이때 $m_{\mathrm{red}}$ 는 S4의 IK 해에서 평가한다(근사 screening).
+4. **(S4) 운동학적 도달 가능성.** 목표 $p_h=\hat p_b(t_c)-R\,r_{\mathrm{ref}}^H$ 에 대해, 허용 orientation 집합에서 IK 해 $q^c$ 를 몇 개 구한다. 각 IK branch에서 관절별로 다음을 검사하고, 하나라도 통과하는 branch가 있어야 한다.
+
+   $$
+   |q_j^c-q_{0,j}|\le v_{\max,j}T,\qquad |q_j^c-q_{0,j}-v_{0,j}T|\le\tfrac12a_{\max,j}T^2 .
+   $$
+
+   첫 식은 $|v|\le v_{\max}$ 에서, 둘째 식은 $|a|\le a_{\max}$ 에서 각각 나오는 도달 집합의 필요조건이다.
+
+5. **순위.** 통과한 후보를 $J_{\mathrm{time}}+J_{\mathrm{switch}}$ 와 IK 기반 cost proxy(예: $\|q^c-q_{\mathrm{nom}}\|$, $\psi_m(q^c)$)로 정렬한다. 상위 $L_{\mathrm{NLP}}$ 개만 NLP를 푼다.
+
+### 11.4 Warm start: 정확한 shift와 신규 후보의 time-scaling
+
+**기존 후보 (v3).** 절대 시각 격자에서는 한 cycle이 지나면 각 후보의 앞쪽 node $m$ 개가 이미 지난 시각이 된다. Warm start는 이 node들을 버리는 **정확한 shift**이다. 새 첫 구간 $h_0$ 은 직전 해를 $t_0$ 에서 평가해 채운다.
+
+$$
+\tilde q_0=q^\star_{\mathrm{prev}}(t_0),\qquad \tilde q_k=q_{\mathrm{prev},\,k+m}\ (k\ge1),
+$$
+
+$\tilde v_k,\tilde a_k$ 도 같은 방식이다. 이는 RTI 원논문의 shrinking horizon 처리, 즉 완료된 stage를 버리는 방식과 일치한다(Diehl et al., 2005, SIAM).
+
+**신규 후보.** 격자 경계에서 새로 들어오는 후보만, 가장 가까운 기존 후보의 해를 affine time-scaling으로 옮긴다. 이전 cycle의 선택 해를 절대 시각의 함수 $q_{\mathrm{prev}}(t),v_{\mathrm{prev}}(t),a_{\mathrm{prev}}(t)$ ($t\in[t_{0,\mathrm{prev}},t_{c,\mathrm{prev}}]$)로 저장해 두고, 새 후보 $t_c$ 의 격자 $t_k$ 에 대해 다음을 쓴다.
+
+$$
+\sigma(t)=t_0+\alpha\,(t-t_0),\qquad \alpha=\frac{t_{c,\mathrm{prev}}-t_0}{t_c-t_0},
+$$
+
+$$
+\tilde q_k=q_{\mathrm{prev}}(\sigma(t_k)),\qquad \tilde v_k=\alpha\,v_{\mathrm{prev}}(\sigma(t_k)),\qquad \tilde a_k=\alpha^2a_{\mathrm{prev}}(\sigma(t_k)) .
+$$
+
+$\tilde q_0,\tilde v_0$ 는 §12.7의 초기 상태 규칙에 따라 교체한다. $\alpha=1$ 이면 단순 시간 shift와 같다. 초기 추정치가 dynamics를 정확히 만족할 필요는 없다.
+
+### 11.5 Continuous catch time (단일 NLP 형태)
+
+$N$ 을 고정하고 $T$ 를 결정 변수로 두어 $h_T=T/N$ 을 쓰는 단일 NLP도 가능하다. 이 형태는 실시간 포획 문헌에 선례가 있다(Bäuml et al., 2010; Abeyruwan et al., 2023).
+
+$$
+\min_{T,\mathcal Z}J,\qquad T_{\min}\le T\le T_{\max},\qquad
+q_{k+1}=q_k+h_Tv_k+\tfrac12h_T^2a_k,\quad v_{k+1}=v_k+h_Ta_k,\quad \hat z_{b,k}=\hat z_b(t_0+kT/N).
+$$
+
+Cost 적분, jerk, phase schedule, 공분산에도 $h_T$ 와 시간 의존성을 반영한다. Predictor의 시간 미분이 필요하다. 이 방식은 cycle당 NLP를 하나로 줄이지만 local minimum이 하나의 basin에 묶인다. v3의 기본 구현은 §11.1의 절대 시각 격자 후보와 후보별 국소 연속 포획 시각의 결합이다.
+
+## 12. 실행 구조와 receding-horizon execution
+
+### 12.1 Planner → CLIK → `servoj`
+
+Planner는 §4.4의 연속 reference $q^\star(t),v^\star(t)$ 와 hand frame reference를 출력한다.
+
+$$
+X_h^\star(t)=\left(p_h(q^\star(t)),\,R(q^\star(t))\right),\qquad
+V_h^\star(t)=J^{\mathrm{LWA}}(q^\star(t))\,v^\star(t).
+$$
+
+기존 CLIK가 이를 joint position 지령으로 바꾼다. 정확한 형태는 workspace 구현을 따른다. 인터페이스를 명확히 하기 위한 대표형은 다음과 같다.
+
+$$
+v_{\mathrm{cmd}}=J^{\#}(q)\left(V_h^\star+K_X\,e_X\right),\qquad
+e_X=\operatorname{Log}_6\!\left(X_h(q)^{-1}X_h^\star\right)\ (\text{frame 일관성 유지}),\qquad
+q_{\mathrm{cmd}}^{+}=q_{\mathrm{cmd}}+h_c\,v_{\mathrm{cmd}} .
+$$
+
+$q_{\mathrm{cmd}}^{+}$ 가 `servoj` 로 전달된다. Planner의 $h$ 와 제어 주기 $h_c$ 는 독립적으로 설계한다.
+
+### 12.2 Torque와 추종 감시
+
+토크는 지령하지 않으므로 v1의 $\tau_{\mathrm{cmd}}=Ma^\star+b+K_pe+K_d\dot e$ 경로는 존재하지 않는다. 대신 다음을 감시한다.
+
+- 추종 오차 $e_q(t)=q^\star(t)-q(t)$ 와 hand frame 오차 $e_X(t)$.
+- 가능하면 실제 관절 전류 또는 토크 추정치와 nominal $\tau^\star(t)$ 의 차이.
+
+$\|e_X\|$ 가 lateral capture margin에 비해 커지면, 즉 $\|E_\perp^\top e_{X,p}\|>\gamma\min_i(\tilde b_i-\tilde a_i^\top\hat\rho)/\|\tilde a_i\|$ 이면 catch를 취소한다. 여기서 $e_{X,p}$ 는 위치 오차를 hand frame에서 표현한 것이고, $\gamma\in(0,1)$ 은 설계 상수이다. Reserve $\Delta\tau$ 는 이 감시 결과로 보정한다.
+
+### 12.3 Hand 지령
+
+Preshape 지령을 $t_{\mathrm{ps}}$ 에 보낸다. Closure는 §6.2의 mode에 따라 처리한다.
+
+- **M1**: 접촉 검출 시 즉시 closure를 지령한다.
+- **M2**: $t_{\mathrm{cmd}}=t_c^\star-\tau_{\mathrm{cl}}+\delta_{\mathrm{mid}}$ 에 지령한다. Arm 고정 전에는 $t_c^\star$ 가 cycle마다 갱신되므로 $t_{\mathrm{cmd}}$ 도 매 cycle 다시 계산한다. Arm 고정 후에는 §12.7의 통과 시각 재예측으로 갱신한다. 지령 후에는 고정한다.
+
+### 12.4 Phase schedule
+
+| Phase | 주요 목적 | 주요 활성 조건 | 전환 조건 |
+|---|---|---|---|
+| Intercept | Feasible capture 위치로 이동 | Robot bound, collision, terminal 조건 전부 | Corridor 근접 및 approach feasibility 확인 |
+| Approach | 정해진 방향·속도로 진입 | Corridor, closing envelope, relative cost | Terminal까지 남은 시간이 preshape·closure 스케줄 기준 이하 |
+| Capture transition | 통과 직전 상태 실현 | Lateral·timing chance, velocity set, impact bound | 실제 통과 또는 접촉 검출 |
+| Post-capture | 충격 흡수, closure, 유지 | Contact dynamics, closure 성공 판정 | Stable hold 판정 |
+
+Terminal 조건은 Intercept phase의 후보 solve에서도 항상 적용한다. Phase에 따라 바뀌는 것은 $\mathcal A_T$ 와 중간 구간 weight뿐이다.
+
+### 12.5 Fallback
+
+다음 경우 catch를 취소하고 미리 검증한 braking/hold/retreat policy로 전환한다.
+
+- Valid 후보가 없을 때.
+- Solver가 timeout일 때.
+- 예측 갱신으로 계획이 성립하지 않을 때.
+- §12.2의 감시 조건을 위반할 때.
+- §3.7의 예측 일관성 gating이 연속으로 실패할 때.
+
+직전 해를 재사용할 때는 최신 상태와 예측에 대해 남은 궤적의 feasibility를 다시 확인한다.
+
+### 12.6 Post-capture 전환과 reference spreading
+
+충격 시각의 불일치는 tracking 오차 peak를 만든다. 이를 줄이기 위해 reference를 양쪽으로 연장한다.
+
+- **Ante-impact reference.** 마지막 구간의 등가속 다항식을 $t>t_c$ 로 연장한다. 즉 $q_{\mathrm{ante}}^{\mathrm{ext}}(t)=q_N+(t-t_c)v_N$ 이며, 가속도를 0으로 두는 연장도 가능하다.
+- **Post-impact reference.** $q_{\mathrm{post}}^{\mathrm{ext}}(t)$ 를 $t<t_c$ 까지 연장한다.
+
+전환 규칙은
+
+$$
+q_{\mathrm{ref}}(t)=\begin{cases}q_{\mathrm{ante}}^{\mathrm{ext}}(t),&\text{접촉 미검출 (M2에서는 } t<t_{\mathrm{cmd}})\\ q_{\mathrm{post}}^{\mathrm{ext}}(t),&\text{그 이후}\end{cases}
+$$
+
+이다. 이 아이디어는 reference spreading 계열(§16)에서 다룬 것이다. Position 제어 arm에서 post-impact reference를 어떻게 설계할지는 별도 검증이 필요하다. 예를 들어 $c_n$ 과 $m_{\mathrm{red}}$ 로 예측한 속도 jump를 반영하는 방법이 있다.
+
+필요하면 hybrid MPC로 확장할 수 있다. 이 경우 다음 식에 contact kinematics, friction cone, complementarity 또는 고정 contact mode, impact reset map, closure dynamics를 함께 추가해야 한다.
+
+$$
+M(q)a+b(q,v)=\tau+J_{\mathrm{con}}^\top\lambda,\qquad M_b\dot v_b=h_b+G_b\lambda .
+$$
+
+### 12.7 30 Hz 예측 갱신 루프 (v3)
+
+**Trigger.** MPC cycle은 vision 메시지 도착에 event-trigger한다. 이보다 자주 풀어도 공에 대한 새 정보는 없고 로봇 상태만 갱신되며, position 제어로 추종하는 arm에서는 그 정보 가치가 작다. 메시지마다 §3.7의 gating을 먼저 수행하고, 통과한 메시지만 NLP parameter로 쓴다.
+
+**실행 방식.** 둘 중 하나를 선택한다.
+
+- **(P1) 동기식.** $t_{\mathrm{solve}}<\Delta_m$ 일 때 쓴다. 메시지마다 모든 활성 후보를 풀고 §11.1로 선택한다. 계획 적용 시각은 다음과 같다.
+
+  $$
+  t_0=s_j+\tau_{\mathrm{vis}}+t_{\mathrm{sol,max}} .
+  $$
+
+- **(P2) Pipeline.** Solve 시간이 메시지 주기보다 길 때 쓴다. 메시지마다 놀고 있는 worker를 배정하고, 완료된 해 중 **가장 최신 stamp**의 해를 적용한다. Bäuml et al.(2010)은 예측마다 놀고 있는 core에 배정해 예측을 건너뛰지 않았으며, 최악 solve 시간이 예측 주기보다 길었다. P2에서는 적용 지연이 $\tau_{\mathrm{vis}}+t_{\mathrm{solve}}$ 이므로 그 값을 $\tau_{\mathrm{lat}}$ (§3.6)에 그대로 더한다.
+
+**초기 상태.** 초기 상태는 측정값이 아니라 직전 계획의 reference로 둔다.
+
+$$
+q_0=q^\star_{\mathrm{prev}}(t_0),\qquad v_0=v^\star_{\mathrm{prev}}(t_0),\qquad a_{\mathrm{prev}}=a^\star_{\mathrm{prev}}(t_0^-),
+$$
+
+단 추종 오차가 임계값을 넘으면 측정값 $\hat q(t_0),\hat v(t_0)$ 로 교체한다. 메시지마다 reference가 측정 잡음만큼 튀는 것을 막고, §4.3의 discrete jerk 제약과 일관된다. Bäuml et al.(2010)은 예측의 jump가 지령 속도의 꺾임으로 나타났다고 보고했으며, 이 규칙과 jerk 제약의 경험적 근거가 된다. 다만 이 규칙은 RTI 문헌의 표준, 즉 측정 상태를 initial value embedding으로 쓰는 방식과 다른 설계 선택이다 (c). Position 제어 arm의 추종이 좋다는 전제에서만 정당화된다.
+
+**Real-time iteration.** 예측 parameter는 매 cycle 조금씩만 바뀌므로, NLP를 매번 수렴까지 풀 필요가 없다. RTI는 sampling마다 Newton형 반복을 한 번만 수행하고, 연속된 cycle을 통해 해를 수렴시킨다(Diehl et al., 2005, SIAM). 각 반복은 두 단계로 나뉜다(Gros et al., 2020).
+
+- **Preparation**: 메시지가 오기 전에, shift된 이전 해와 예측 parameter 주변에서 선형화와 condensing을 해 둔다.
+- **Feedback**: 메시지가 오면 QP만 푼다.
+
+이렇게 하면 갱신부터 reference 반영까지의 지연이 QP 한 번으로 줄어든다. acados는 `SQP_RTI` 와 `rti_phase` 옵션(1: preparation, 2: feedback)으로 이 분리를 지원한다(소스 기준). 고정 종단 시각의 shrinking horizon에서 RTI의 contraction 정리가 성립하며(Diehl et al., 2005, SIAM), receding horizon의 nominal stability는 Diehl et al.(2005, IEE Proc.)이 다룬다. 이 정리는 **상태 교란**에 대한 것이며, 공 예측 parameter의 jump에 대한 contraction 영역은 별도로 검증해야 한다.
+
+초기 몇 cycle은 예측 jump가 크다(§15의 예시). 이 구간은 남은 시간이 길어 수정 여유도 크다. 따라서 계산 예산 안에서 초기에는 반복을 여러 번 하고, 이후 한 번으로 줄이는 방식이 합리적이다 (c).
+
+**결정 변수의 고정 순서.** 다음 순서로 하나씩 고정한다.
+
+1. Preshape를 시작하면 $t_{\mathrm{ps}}$ 를 고정한다.
+2. $t\ge t_c^\star-\tau_{\mathrm{react}}$ 이면 outer loop를 멈추고 $t_c^\star$ 와 arm 궤적을 고정한다. 이후 arm은 open-loop로 실행한다(§14).
+3. 그 뒤로는 closure 지령 시각 갱신과 gating만 계속한다.
+
+고정되기 전에는 후보가 절대 시각 격자 위에서 유지되므로, 메시지마다 screening(§11.3)을 다시 하고 기존 후보의 warm-start된 NLP를 이어서 푼다.
+
+**Closure 지령 시각 갱신 (M2).** Arm이 고정된 뒤에는 고정된 arm 궤적과 최신 공 평균으로 통과 시각을 다시 예측한다.
+
+$$
+\hat t_x(s_j):\ \ e_3^\top R(q^\star(t))^\top\big(\hat p_b(t\mid s_j)-p_h(q^\star(t))\big)=s_{\mathrm{ent}},\qquad
+t_{\mathrm{cmd}}=\hat t_x(s_j)-\tau_{\mathrm{cl}}+\delta_{\mathrm{mid}} .
+$$
+
+$\hat t_x$ 는 $t_c^\star$ 근방에서 1차원 root-finding(예: Newton, 초기값 $t_c^\star$)으로 구한다. 이 갱신은 §8.4의 $s^{\star}_{\mathrm{hand}}$ 까지 반복하고, 지령을 보낸 뒤에는 고정한다.
+
+## 13. Hard constraint / soft constraint / cost의 역할
+
+| 항목 | 기본 배치 | 해석 |
+|---|---|---|
+| Initial condition, state transition, EOM | Hard equality | Prediction 일관성 |
+| Joint·velocity·acceleration bound, torque bound(reserve 포함) | Hard inequality | Physical feasibility |
+| Self/environment collision, 비-capture link의 ball clearance | Hard inequality | 허용된 접촉 이외 충돌 회피 |
+| Gap 비음수 조건 (approach 구간) | Hard inequality | 무접촉 가정의 일관성 |
+| Entrance-plane equality | Hard equality | Terminal event 정의 |
+| Approach corridor, closing envelope | Soft path constraint | 접근 유연성, 위반 정도 표시 |
+| Lateral capture chance, sensor coverage chance(M1), timing chance(M2) | Hard terminal | Valid 후보의 확률 조건 |
+| Terminal velocity set (tightened) | Hard terminal | Capture transition feasibility |
+| Impact energy·impulse | Cost + hard nominal bound | 충격 감소와 상한 |
+| Hand schedule, closing speed 창, reachability margin | Outer-loop validity | 후보 선택 조건 |
+| Relative state, posture, manipulability | Cost | Feasible 해 사이 선호 |
+| Time, uncertainty, switching | Candidate cost | Catch time trade-off |
+
+Hard constraint의 수치 허용 오차는 solver tolerance와 구현 margin으로 명시한다. 큰 slack penalty만으로 안전성이나 확률 보장이 확보된다고 해석하지 않는다.
+
+## 14. 모델 확장과 한계
+
+**Hand를 NLP에 포함하는 확장.** Closed-chain hand를 전체 link 좌표로 넣으면 fully actuated equation을 그대로 쓸 수 없다.
+
+$$
+M(q)a+b(q,v)=B(q)\tau_{\mathrm{act}}+J_\ell^\top\lambda_\ell,\qquad \phi(q)=0,\qquad J_\ell v=0,\qquad J_\ell a+\dot J_\ell v=0 .
+$$
+
+Independent coordinate로 reduction할 수 있다면 대응하는 reduced dynamics와 actuator mapping을 쓴다. 이 확장은 NLP 차원을 크게 늘린다. 따라서 preshape 타이밍만으로 readiness를 만족할 수 없다는 증거가 있을 때만 고려한다.
+
+**이론적 한계.**
+
+- **Recursive feasibility.** Moving terminal set, hybrid switch, local NLP, 예측 갱신 때문에 recursive feasibility나 stability를 자동으로 주장할 수 없다. Anticipated covariance는 공분산이 줄어드는 동안 feasibility에 유리하지만, 평균 이동에 대해서는 (V4)의 margin이 성립할 때만 의미가 있다.
+- **Commit 이후의 open-loop 구간.** $t_c^\star-\tau_{\mathrm{react}}$ 이후 arm은 재계획 없이 실행된다. 이 구간의 강건성은 재계획이 아니라 계획 자체의 여유(chance tightening, reachability margin)에 의존한다. Schill & Buss(2018)는 재계획 없이 하나의 오프라인 가속도 프로파일이 초기 상태·가속도·충격의 유한한 불확실성에 대해 강건함을 보였다. 본 설계의 commit 이후 구간을 분석하는 데 그 접근을 참고할 수 있다.
+- **Invariance.** Terminal capture set은 control invariant set이 아니다. 유지까지 보장하려면 post-capture controller의 viability/invariant set을 구성하거나 접촉 후 horizon을 포함해야 한다.
+- **선형화.** Crossing-plane 분포는 1차 선형화와 Gaussian 가정에 의존한다. §8.2의 유효 조건과 실측 calibration으로 확인한다.
+- **Effective mass.** 충격 시간 척도, 감속기 탄성, position loop의 영향은 식별 전까지 §7.2의 보수적 상한으로 다룬다.
+
+## 15. 구현 및 수학적 검증 항목
+
+1. **Frame과 부호.** $R$ 은 $H\to W$, $r=p_b-p_h$, $c=-\dot s$ 로 통일한다. 정지한 손으로 공이 직선 접근할 때 $c>0$ 인지 확인한다.
+2. **Transport term과 Jacobian 규약.** 회전하는 손에 대해 $\nu^H$ 를 finite difference와 비교한다. `LOCAL_WORLD_ALIGNED` 와 `LOCAL` 두 경로가 같은 값을 내는지 확인한다. (v2 작성 시 임의 회전·속도에서 중심차분 대비 오차 약 $10^{-10}$ 수준을 확인했다.)
+3. **Dynamics.** RNEA residual을 확인한다. Acceleration rollout과 실제 `servoj` 추종 결과의 차이를 측정해 $\Delta\tau$ 와 $\tau_{\mathrm{track}}$ 을 정한다.
+4. **Entrance plane 일관성.** §6.1의 무접촉 일관성 조건을 hand mesh로 오프라인 검증한다. Erosion을 중복 적용하지 않는다. Contact normal과 $J_c$ 는 같은 geometry에서 계산한다.
+5. **Crossing-plane 분포.** 선형 상대운동 Monte Carlo로 $\Sigma_\rho=E_\perp^\top\Pi\Sigma\Pi^\top E_\perp$ 를 검증한다. v2 작성 시 사용한 예시는 $\hat\nu=[0.3,-0.1,-2.0]$ m/s, $\sigma=[4,4,20]$ mm, 2×10⁵ 표본이다. 이 예시에서 MC 공분산과 해석식이 일치했고, 고정 시각 식 대비 x 방향 분산이 약 56% 컸다. 이 수치는 해당 예시 설정의 결과일 뿐 일반적인 크기가 아니다. 실제 검증은 실측 $\hat\nu,\Sigma$ 로 반복한다.
+6. **Timing.** $\tau_{\mathrm{cl}}$, $\sigma_\tau$, $[\delta_{\mathrm{lo}},\delta_{\mathrm{hi}}]$ 를 식별하고 §8.4의 성공 확률식을 실험 성공률과 비교한다.
+7. **Anticipated covariance.** $\tau_{\mathrm{react}}\ge T$ 에서 open-loop 공분산과 일치하는지, $\Sigma_{\mathrm{drift}}\succeq0$ 인지, Joseph form이 대칭·양반정치를 유지하는지 확인한다.
+8. **Impact.** $m_{\mathrm{red}}$ 의 극한과 단위, 모델 계층별 에너지 순서(§7.2)를 수치로 확인한다. Energy proxy를 peak force와 혼동하지 않는다.
+9. **Time choice.** 같은 연속 궤적을 다른 mesh로 적분했을 때 cost가 유사한지 확인한다. Absolute catch-time switching penalty와 warm-start time-scaling을 검증한다.
+10. **계산 예산.** $t_{\mathrm{solve},95}$ 를 profiling하고 $L_{\mathrm{NLP}}$ 한계 안에서 deadline miss율을 측정한다.
+11. **Execution.** Fallback, M1/M2 전환, reference spreading 전환을 시뮬레이션(MuJoCo)에서 먼저 검증한다.
+12. **Covariance replica (v3).** 시각 $s_j$ 마다 replica의 $\Sigma(t\mid s_j)$ 와 vision이 publish한 공분산이 일치하는지 확인한다(§3.5).
+13. **예측 일관성 (v3).** 투척 로그로 NEES/NIS가 $\chi^2$ 범위에 드는지 확인한 뒤 gating 임계값을 정한다(§3.7). v3 작성 시 1차원 탄도 KF로 jump 공분산 식을 Monte Carlo 검증했다. 가정은 30 Hz 위치 측정, 측정 잡음 5 mm, 초기 불확실성 50 mm와 0.5 m/s, 첫 갱신 후 0.5 s(15회 갱신) 포획, 2×10⁴ 표본이다. Jump 분산의 MC 값과 $\Sigma(t_c\mid s_j)-\Sigma(t_c\mid s_{j+1})$ 가 모든 단계에서 수 % 이내로 일치했다. 이 설정에서 $\sigma(t_c\mid s_j)$ 는 남은 갱신 15회에서 약 250 mm, 11회에서 21 mm, 7회에서 7.3 mm, 3회에서 3.6 mm였다. 이 크기는 가정한 잡음 수준의 결과일 뿐이며, 초기에 급격히 줄고 이후 완만해진다는 형태만 일반적이다.
+14. **Commit 시각 (v3).** $t_{\mathrm{occ}}$ 를 카메라 배치와 포획 자세로 추정하고, §3.6의 수정 능력 조건과 함께 $\tau_{\mathrm{react}}$ 를 정한다. 시뮬레이션에서 commit 이후 들어온 예측 갱신의 크기 분포와 최종 lateral 오차를 비교한다.
+15. **실시간 루프 (v3).** P1이면 deadline miss율, P2이면 적용 지연 분포를 측정한다. RTI의 cycle당 반복 수와 예측 jump 크기에 따른 해의 수렴(KKT residual)을 기록한다.
+
+주요 미해결 사항은 다음과 같다.
+
+- Capture window·closure latency의 식별.
+- 다중·compliant contact에서 impact bound의 타당성.
+- Position 제어 arm의 post-impact reference 설계.
+- 예측 갱신 하의 recursive feasibility.
+
+## 16. 참고문헌과 본 설계에서의 활용 범위
+
+### 16.1 검증된 문헌
+
+아래 서지 정보와 내용 대응은 publisher, Crossref, 기관 repository, arXiv에서 확인했다(2026-10-02). 통합된 수학적 구성은 본 설계의 제안이며, 각 논문이 이 arm–hand MPC 전체를 검증했다는 의미는 아니다.
+
+| 문헌 | 확인된 내용 | 본 설계와의 대응 및 한계 |
+|---|---|---|
+| Hartley et al., 2012, *Control Engineering Practice* | Range 기반 phase별 MPC, finite-time 완료를 위한 variable prediction horizon, collision-avoidance 제약을 switched convex 제약으로 처리 | Phase 구성과 catch time 선택에 참고. LOS cone·corridor라는 표현은 초록에서 확인되지 않았으므로 corridor의 근거로 쓰지 않는다 |
+| Gavilan et al., 2012, *Control Engineering Practice* | Gaussian disturbance, chance constraint의 deterministic algebraic 변환, online disturbance estimation, line-of-sight 제약 | Affine face의 probabilistic tightening과 approach corridor 개념의 근거. Grasp 성공 확률은 별도 검증 필요 |
+| Ravikumar, Padhi, Philip, 2020, *IFAC-PapersOnLine* (ACODS 2020) | SQP로 푸는 receding-horizon NMPC, thrust 제한, line-of-sight 내 접근, debris 회피, soft docking을 위한 terminal velocity 제한 | Approach·terminal velocity 조건 설계에 참고. 논문 수식을 재현하지 않음 |
+| Tassi et al., 2026, *The International Journal of Robotics Research* | 접촉 전 velocity matching과 impact force 최소화, 사람 시연에서 학습한 접촉 후 energy dissipation, hierarchical QP 2차 층의 reflected mass 최소화. Nonprehensile catching | Relative velocity와 configuration-dependent inertia의 근거. Multi-finger grasp 성공을 보장하지 않음 |
+
+1. E. N. Hartley, P. A. Trodden, A. G. Richards, J. M. Maciejowski, "Model predictive control system design and implementation for spacecraft rendezvous," *Control Engineering Practice*, 20(7), 695–713, 2012. DOI: [10.1016/j.conengprac.2012.03.009](https://doi.org/10.1016/j.conengprac.2012.03.009). [White Rose eprint 90483](https://eprints.whiterose.ac.uk/90483/).
+2. F. Gavilan, R. Vazquez, E. F. Camacho, "Chance-constrained model predictive control for spacecraft rendezvous with disturbance estimation," *Control Engineering Practice*, 20(2), 111–122, 2012. DOI: [10.1016/j.conengprac.2011.09.006](https://doi.org/10.1016/j.conengprac.2011.09.006). (Crossref 표기는 악센트 없음.)
+3. L. Ravikumar, R. Padhi, N. K. Philip, "Trajectory optimization for Rendezvous and Docking using Nonlinear Model Predictive Control," *IFAC-PapersOnLine*, 53(1), 518–523, 2020 (ACODS 2020, IIT Madras). DOI: [10.1016/j.ifacol.2020.06.087](https://doi.org/10.1016/j.ifacol.2020.06.087). 저자 표기는 기관 페이지에서 "Ravi Kumar L", "Radhakant Padhi"로도 나온다.
+4. F. Tassi, J. Zhao, G. J. G. Lahr, L. Gava, M. Monforte, A. Glover, C. Bartolozzi, A. Ajoudani, "IMA-catcher: An IMpact-aware nonprehensile catching framework based on combined optimization and learning," *The International Journal of Robotics Research*, 45(1), 100–127, 2026 (online first 2025-06-20). DOI: [10.1177/02783649251345851](https://doi.org/10.1177/02783649251345851). arXiv: [2506.20801](https://arxiv.org/abs/2506.20801).
+
+### 16.2 v3에서 추가 검증한 문헌
+
+아래 서지는 Crossref DOI 기록, publisher 페이지, 저자·기관 PDF, arXiv, acados 소스로 확인했다(2026-10-02). 내용 대응은 열람한 본문 또는 초록 범위에서만 기술한다.
+
+| 문헌 | 확인된 내용 | 본 설계와의 대응 및 한계 |
+|---|---|---|
+| Diehl, Bock, Schlöder, 2005, *SIAM J. Control Optim.* | Sampling마다 Newton형 반복 1회, 새 상태가 오기 전 대부분의 계산을 끝내는 구조, initial value embedding, 고정 종단 시각 shrinking horizon에서의 contraction 정리 | §12.7의 RTI, §11.4의 완료 stage 제거. 정리는 상태 교란 기준이며 예측 parameter jump는 별도 검증 |
+| Diehl, Findeisen, Allgöwer, Bock, Schlöder, 2005, *IEE Proc. Control Theory Appl.* | RTI 결합 시스템의 nominal stability (receding horizon) | §12.7. IET 페이지는 열람하지 못했고 IMA preprint 초록으로 확인 |
+| Diehl et al., 2002, *J. Process Control* | Initial value embedding, Hessian·gradient·QP 사전 계산, 반복마다 feedback | RTI의 초기 형태 |
+| Gros, Zanon, Quirynen, Bemporad, Diehl, 2020, *Int. J. Control* | Preparation/feedback 분리를 명시한 알고리즘, 이전 해의 shift, 온라인 입력을 갖는 NLP와 tangential predictor | §12.7의 두 단계 구조 |
+| Verschueren et al., 2022, *Mathematical Programming Computation* (acados) | acados 프레임워크. `SQP_RTI` 와 `rti_phase` 는 논문이 아니라 소스 코드에서 확인 | §12.7의 구현 경로 |
+| Nagy & Braatz, 2003, *AIChE Journal* | 고정 종료 시각의 batch 공정에서 shrinking horizon NMPC 정식화 | §11.1의 shrinking horizon 용어와 정식화 |
+| Bäuml, Wimböck, Hirzinger, 2010, IEEE/RSJ IROS | Arm–hand 포획. 새 예측(20 ms 주기)마다 SQP를 다시 풀고, 예측마다 놀고 있는 core에 배정. 포획 시각을 결정 변수로 둠. 예측 jump가 지령 속도의 꺾임으로 나타남 | §11.1 국소 연속 포획 시각, §11.5, §12.7의 P2와 초기 상태 규칙 |
+| Birbach, Frese, Bäuml, 2011, IEEE ICRA | Stereo 기반 실시간 지각, UKF 예측을 planner로 전달, 포획 직전 구간의 측정이 최종 포획 위치를 결정 | §3.5의 지각 한계. 수치는 시스템 고유값 |
+| Kim, Shukla, Billard, 2014, *IEEE T-RO* | 예측 thread와 포획 configuration·시각 재최적화 thread 병렬. 손 근처 occlusion 때문에 접촉 직전 일정 시간 이후 갱신 중단 | §3.5의 $t_{\mathrm{occ}}$ |
+| Salehian, Khoramshahi, Billard, 2016, *IEEE T-RO* | LPV 동역학 기반 soft catching DS controller, GMM 학습, Lyapunov 수렴 (초록 기준) | §9.3의 soft catching. 포획점의 online 갱신 여부는 본문 미열람으로 미확인 |
+| Schill & Buss, 2018, *IEEE T-RO* | 재계획 없이 오프라인 가속도 프로파일 하나가 유한한 불확실성에 강건함을 증명. Visual feedback 불필요 | §14의 commit 이후 open-loop 구간 분석 |
+| Abeyruwan et al., 2023, L4DC (PMLR 211) | Whole-body MPC 포획. 공 예측 parameter를 비동기로 갱신하고 SQP를 연속으로 다시 풂. 포획 시각을 결정 변수로 둠 | §11.1, §12.7 |
+| Kailath, 1968, *IEEE TAC* | Innovations approach. Innovation의 백색성과 직교성 | §3.7 유도의 기반 |
+
+5. M. Diehl, H. G. Bock, J. P. Schlöder, "A real-time iteration scheme for nonlinear optimization in optimal feedback control," *SIAM J. Control Optim.*, 43(5), 1714–1736, 2005. DOI: [10.1137/S0363012902400713](https://doi.org/10.1137/S0363012902400713).
+6. M. Diehl, R. Findeisen, F. Allgöwer, H. G. Bock, J. P. Schlöder, "Nominal stability of real-time iteration scheme for nonlinear model predictive control," *IEE Proc. Control Theory Appl.*, 152(3), 296–308, 2005. DOI: [10.1049/ip-cta:20040008](https://doi.org/10.1049/ip-cta:20040008).
+7. M. Diehl, H. G. Bock, J. P. Schlöder, R. Findeisen, Z. Nagy, F. Allgöwer, "Real-time optimization and nonlinear model predictive control of processes governed by differential-algebraic equations," *J. Process Control*, 12(4), 577–585, 2002. DOI: [10.1016/S0959-1524(01)00023-3](https://doi.org/10.1016/S0959-1524(01)00023-3).
+8. S. Gros, M. Zanon, R. Quirynen, A. Bemporad, M. Diehl, "From linear to nonlinear MPC: bridging the gap via the real-time iteration," *Int. J. Control*, 93(1), 62–80, 2020 (online 2016). DOI: [10.1080/00207179.2016.1222553](https://doi.org/10.1080/00207179.2016.1222553).
+9. R. Verschueren et al., "acados—a modular open-source framework for fast embedded optimal control," *Mathematical Programming Computation*, 14(1), 147–183, 2022 (online 2021). DOI: [10.1007/s12532-021-00208-8](https://doi.org/10.1007/s12532-021-00208-8). arXiv: [1910.13753](https://arxiv.org/abs/1910.13753).
+10. Z. K. Nagy, R. D. Braatz, "Robust nonlinear model predictive control of batch processes," *AIChE Journal*, 49(7), 1776–1786, 2003. DOI: [10.1002/aic.690490715](https://doi.org/10.1002/aic.690490715).
+11. B. Bäuml, T. Wimböck, G. Hirzinger, "Kinematically optimal catching a flying ball with a hand-arm-system," IEEE/RSJ IROS 2010, 2592–2599. DOI: [10.1109/IROS.2010.5651175](https://doi.org/10.1109/IROS.2010.5651175).
+12. O. Birbach, U. Frese, B. Bäuml, "Realtime perception for catching a flying ball with a mobile humanoid," IEEE ICRA 2011, 5955–5962. DOI: [10.1109/ICRA.2011.5980138](https://doi.org/10.1109/ICRA.2011.5980138).
+13. S. Kim, A. Shukla, A. Billard, "Catching objects in flight," *IEEE Trans. Robotics*, 30(5), 1049–1065, 2014. DOI: [10.1109/TRO.2014.2316022](https://doi.org/10.1109/TRO.2014.2316022).
+14. S. S. M. Salehian, M. Khoramshahi, A. Billard, "A dynamical system approach for softly catching a flying object: Theory and experiment," *IEEE Trans. Robotics*, 32(2), 462–471, 2016. DOI: [10.1109/TRO.2016.2536749](https://doi.org/10.1109/TRO.2016.2536749).
+15. M. M. Schill, M. Buss, "Robust ballistic catching: A hybrid system stabilization problem," *IEEE Trans. Robotics*, 34(6), 1502–1517, 2018. DOI: [10.1109/TRO.2018.2868857](https://doi.org/10.1109/TRO.2018.2868857).
+16. S. Abeyruwan et al., "Agile catching with whole-body MPC and blackbox policy learning," L4DC 2023, PMLR 211, 851–863. arXiv: [2306.08205](https://arxiv.org/abs/2306.08205).
+17. T. Kailath, "An innovations approach to least-squares estimation—Part I: Linear filtering in additive white noise," *IEEE Trans. Automatic Control*, 13(6), 646–655, 1968. DOI: [10.1109/TAC.1968.1099025](https://doi.org/10.1109/TAC.1968.1099025).
+
+**추정 이론 교과서 (원문 미열람).** Kalman 공분산의 측정값 독립성과 NEES/NIS의 $\chi^2$ 일관성 검사는 다음 교과서의 표준 내용으로 알려져 있다. 이번 검증에서는 원문을 열람하지 못했고, 강의노트·기술보고서와 이를 인용한 논문으로만 확인했다. 출판 인용 전 해당 절을 직접 확인한다.
+
+- B. D. O. Anderson, J. B. Moore, *Optimal Filtering*, Prentice-Hall, 1979.
+- Y. Bar-Shalom, X. R. Li, T. Kirubarajan, *Estimation with Applications to Tracking and Navigation*, Wiley, 2001. DOI: [10.1002/0471221279](https://doi.org/10.1002/0471221279).
+
+### 16.3 관련 선행연구 (서지 세부 미검증)
+
+아래 문헌은 Dynamic catching 문헌 조사(`55_Dynamic_Catching` 폴더) 수집 목록에서 가져왔다. 제목·권호·DOI를 다시 검증하지 않았다. 인용 전 수집 원문으로 서지를 확인한다.
+
+| 계열 | 수집 목록의 식별 정보 | 본 설계와의 관련 |
+|---|---|---|
+| DLR Bäuml 계열 (시스템 개요) | Humanoids 2011 (Bäuml, Birbach, Wimböck, Frese, Dietrich, Hirzinger). 제목은 저자 업로드본으로만 확인 | 비행 중 예측이 크게 바뀌므로 카메라 주기 수준으로 재계산이 필요하다는 설계 근거 (§12.7) |
+| Reference spreading | Saccon CDC 2014, Rijnen CDC 2015, van Steen ACC 2022 및 T-RO 2024 | 충격 시각 불일치 하의 reference 전환 (§12.6) |
+| 충격 모델 | Jia IJRR 2013 | 다중 충격 모델로의 확장 (§7, §14) |
+| 로봇 충돌 안전의 effective mass 분석 | **확인 필요** (출처 미특정) | 감속기 탄성과 rotor 분리 (§7.2) |
+
+### 16.4 수치와 근거 등급
+
+이 문서는 검증되지 않은 논문의 정량 성능 수치를 사용하지 않는다. §15의 수치는 v2·v3 작성 시 수행한 수치 검증의 예시 결과이다. §3.5와 §16.2에서 언급한 문헌의 시간 수치(예측 주기, 갱신 중단 시점)는 각 시스템 고유의 값이므로 설계값으로 옮기지 않았다.
+
+- **표준 결과 (a)**: Frame 변환, transport theorem, constant-acceleration 적분, Gaussian affine chance constraint, Boole risk allocation, Riccati recursion의 측정값 독립성, effective mass와 구속·관성의 단조성, 조건부 기대값의 martingale 성질과 law of total covariance, bang-bang 최대 변위, innovation 사상을 통한 NIS 동치.
+- **확립된 방법 (b)**: RTI와 preparation/feedback 분리, shrinking-horizon NMPC, 예측 갱신마다의 포획 재계획.
+- **설계 제안 (c)**: Crossing-plane 분해, timing 기반 closing speed 하한, anticipated covariance와 drift margin, screening 조건 조합, jump 공분산 식(표준 결과로부터 유도), $\tau_{\mathrm{react}}$ 의 세 조건 결정, 절대 시각 격자와 국소 연속 포획 시각의 결합, reference 기반 초기 상태, arm/hand 정보 시각의 분리.
+- **대상 로봇에서 식별·검증할 설계 parameter**: Corridor 형상, weight, capture window, latency, $t_{\mathrm{occ}}$, $a_{\mathrm{lat}}$, $E_{\max}$, risk budget, gating 임계값.
