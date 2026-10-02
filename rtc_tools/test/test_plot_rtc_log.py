@@ -2968,6 +2968,24 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
     "hand_effort_frac",
     "hand_blocked_s",
     "outcome_source",
+    # The tick record's decel block (MPC E1-F04 fields, E1-F05 columns).
+    "decel_judged",
+    "decel_refusal",
+    "decel_event",
+    "decel_following",
+    "decel_seq",
+    "decel_k0",
+    "decel_held",
+    "decel_p_d_x",
+    "decel_p_d_y",
+    "decel_p_d_z",
+    "decel_v_ff_x",
+    "decel_v_ff_y",
+    "decel_v_ff_z",
+    "decel_rho",
+    "decel_dq_max",
+    "decel_dqd_max",
+    "decel_gate_joint",
 ]
 
 # 헤더 writer 가 마지막에 붙이는 가변 폭 블록의 접두. 순서까지 계약이다.
@@ -3023,6 +3041,8 @@ def _catching_diag_row(
     row["armed"] = 1
     row["armable"] = 1
     row["law_enabled"] = 1
+    if "decel_gate_joint" in row:
+        row["decel_gate_joint"] = -1  # the writer's "no gate judged"
     row["input_stale"] = stale
     row["input_valid"] = 0 if stale else 1
     row["input_n"] = 0 if stale else 8

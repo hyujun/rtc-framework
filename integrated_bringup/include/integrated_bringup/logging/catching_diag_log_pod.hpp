@@ -223,8 +223,11 @@ struct CatchingDiagLogPod {
   double wait_pose_refuse_value{0.0};
   std::array<double, kMaxArmJoints> wait_pose{};
 
-  // ── Decel MPC follower (MPC E1-F04; CSV columns and the state message are
-  // E1-F05's, MD-41) ─────────────────────────────────────────────────────────
+  // ── Decel MPC follower (MPC E1-F04) ──────────────────────────────────────
+  // Every field is a CSV column (E1-F05, #631). The state message carries
+  // none of them: its field set is frozen (D-20). `decel_event` and
+  // `decel_refusal` are written as their integer values — the tables are in
+  // the integrated_bringup README and in rtc_tools' catching plotter.
   /// What happened to a decel segment this tick. One value per tick: the
   /// law's (a switch, or the reason there was nothing to follow) wins over
   /// the lane's (an admission), which ran earlier in the tick.
@@ -426,6 +429,12 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   os << ",track_err_rad,abort_stopped,fault_cause,fault_reset_refused";
   os << ",hand_phase_valid,hand_phase,hand_rho,hand_timeout";
   os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source";
+  // One literal per statement: rtc_tools' test_cpp_header_matches_this_list
+  // reads the first literal of each `os <<` in this function.
+  os << ",decel_judged,decel_refusal,decel_event,decel_following,decel_seq,decel_k0,decel_held";
+  os << ",decel_p_d_x,decel_p_d_y,decel_p_d_z";
+  os << ",decel_v_ff_x,decel_v_ff_y,decel_v_ff_z";
+  os << ",decel_rho,decel_dq_max,decel_dqd_max,decel_gate_joint";
   // Per-joint and per-tip blocks come LAST, so everything above is a fixed
   // column list a reader can rely on without knowing the robot.
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
@@ -491,6 +500,15 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
      << p.hand_rho << ',' << (p.hand_timeout ? 1 : 0);
   os << ',' << static_cast<int>(p.hand_stalled_n) << ',' << p.hand_effort_frac << ','
      << p.hand_blocked_s << ',' << static_cast<int>(p.outcome_source);
+  // decel_refusal is a std::uint8_t and decel_event an enum over one: both go
+  // out through int, or the stream writes the raw byte.
+  os << ',' << (p.decel_judged ? 1 : 0) << ',' << static_cast<int>(p.decel_refusal) << ','
+     << static_cast<int>(p.decel_event) << ',' << (p.decel_following ? 1 : 0) << ',' << p.decel_seq
+     << ',' << p.decel_k0 << ',' << (p.decel_held ? 1 : 0);
+  detail::WriteXyzRow(os, p.decel_p_d);
+  detail::WriteXyzRow(os, p.decel_v_ff);
+  os << ',' << p.decel_rho << ',' << p.decel_dq_max << ',' << p.decel_dqd_max << ','
+     << p.decel_gate_joint;
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ',' << p.q_cmd[i];
   }

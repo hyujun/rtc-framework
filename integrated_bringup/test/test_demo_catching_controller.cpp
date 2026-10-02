@@ -2331,6 +2331,39 @@ TEST(CatchingDiagLog, TheHeaderNamesTheJointsAndTipsItsColumnsAreIn) {
   EXPECT_FALSE(csv.Has("q_cmd_a6")) << "a column exists for a joint the device does not have";
 }
 
+TEST(CatchingDiagLog, TheDecelBlockIsWrittenAsNumbersAndIsZeroWhenTheLaneDidNotRun) {
+  // E1-F05 (#631): the tick record's decel block reaches the file. This
+  // controller runs `closed_form`, so the lane never judges a segment and the
+  // block is the fresh POD's — which is what a reader sees on every tick of a
+  // closed_form log. `decel_refusal` is a std::uint8_t: streamed without a
+  // cast it would be a raw NUL byte, not "0", and the width check above would
+  // not notice.
+  integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
+  rtc::ControllerLogSet log_set{"catching_diag_decel"};
+  auto ch = BindCatchingDiagChannel(log_set, kArmJointNames, kTipNames);
+  ASSERT_TRUE(ch.handle);
+
+  DemoCatchingController ctrl{""};
+  BringUp(ctrl);
+  ctrl.SetCatchingDiagLogHandleForTesting(std::move(ch.handle));
+  (void)ctrl.Compute(MakeStateAt(1));
+  log_set.DrainAll();
+
+  const auto csv = integrated_bringup::testfx::ReadCsv(ch.path);
+  ASSERT_EQ(csv.rows.size(), 1U);
+  for (const char* col :
+       {"decel_judged", "decel_refusal", "decel_event", "decel_following", "decel_seq", "decel_k0",
+        "decel_held", "decel_p_d_x", "decel_p_d_y", "decel_p_d_z", "decel_v_ff_x", "decel_v_ff_y",
+        "decel_v_ff_z", "decel_rho", "decel_dq_max", "decel_dqd_max"}) {
+    ASSERT_TRUE(csv.Has(col)) << col;
+    EXPECT_DOUBLE_EQ(csv.At(0, col), 0.0) << col;
+  }
+  EXPECT_EQ(csv.Text(0, "decel_refusal"), "0");
+  EXPECT_EQ(csv.Text(0, "decel_event"), "0");
+  ASSERT_TRUE(csv.Has("decel_gate_joint"));
+  EXPECT_DOUBLE_EQ(csv.At(0, "decel_gate_joint"), -1.0) << "no gate was judged";
+}
+
 TEST(CatchingDiagLog, AStoppedTickIsARowLikeAnyOtherAndSaysSo) {
   integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};
   rtc::ControllerLogSet log_set{"catching_diag_estop"};
