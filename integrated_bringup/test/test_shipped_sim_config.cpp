@@ -42,7 +42,7 @@ namespace {
 
 // Enumerated rather than globbed: a profile that loses its mujoco_simulator.yaml
 // should fail this test, not silently drop out of the matrix.
-const std::vector<std::string> kProfiles{"ur5e_p1a", "ur5e_p1b", "iiwa7_leap"};
+const std::vector<std::string> kProfiles{"ur5e_p1a", "ur5e_p1b", "iiwa7_leap", "g1_p1b"};
 
 std::string SimConfigPath(const std::string& profile) {
   return std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile + "/mujoco_simulator.yaml";

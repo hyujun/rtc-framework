@@ -1,0 +1,51 @@
+# g1_p1b/digital_twin.yaml — Unitree G1 upper body + proto_1b hand digital-twin config
+#
+# Layered on top of `rtc_digital_twin/config/digital_twin.yaml`:
+#
+#   ros2 launch rtc_digital_twin digital_twin.launch.py \
+#       config_file:=$(ros2 pkg prefix --share integrated_bringup)/config/g1_p1b/digital_twin.yaml
+#
+# Robot identity (URDF, joint topics, sensor topics, fingertip names) lives
+# here per ARCH-1; rtc_digital_twin stays robot-agnostic.
+#
+# The hand is a genuine 5-loop closed chain (urdf.extended). `closure_path`
+# makes digital_twin.launch.py spawn a `closure_state_publisher`
+# (rtc_urdf_bridge) that reconstructs the loop-passive joints from the actuated
+# q, so RViz renders the closed chain.
+
+/**:
+  ros__parameters:
+    # ── Robot description (hand_description, fixed-base G1 + proto_1b) ───
+    robot_description_package: "hand_description"
+    robot_description_path: "robots/unitree_g1_p1b/urdf/g1_with_proto_1b_fixed_base.urdf.xacro"
+
+    # ── Loop-closure sidecar (enables closure_state_publisher) ─────────
+    # pkg-relative to robot_description_package.
+    closure_path: "robots/unitree_g1_p1b/urdf/g1_with_proto_1b_fixed_base.closure.yaml"
+
+    # ── Joint state sources ────────────────────────────────────────────
+    # The controller manager publishes per-device joint states on
+    # /rtc_cm/<group>/joint_states (device groups: g1, p1b).
+    num_sources: 2
+
+    source_0.topic: "/rtc_cm/g1/joint_states"
+    source_0.joint_names: [""]        # empty/"" = accept all joints from topic
+
+    source_1.topic: "/rtc_cm/p1b/joint_states"
+    source_1.joint_names: [""]
+
+    # ── Sensor visualization (proto_1b fingertip sensors) ─────────────
+    sensor_viz.sensor_topic: "/p1b/sensor_states/monitor"
+    # Used verbatim as the marker frame_id, so each must be a link of the URDF.
+    # Order = thumb, index, middle, ring (positional pairing with the data).
+    sensor_viz.fingertip_names:
+      ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
+    # N. No contact classifier on this hand, so the force arrow is gated on
+    # the force magnitude. Viz-only.
+    sensor_viz.force_display_threshold: 0.7
+
+    # ── TCP visualization ─────────────────────────────────────────────
+    # tf2 lookup `pelvis → base_adapter_actual`: the frame
+    # demo_joint_controller publishes for the right arm's end (the hand mount).
+    tcp_viz.source_topic: "base_adapter_actual"
+    tcp_viz.frame_id: "pelvis"   # parent TF frame — this robot's root link (default is "base")

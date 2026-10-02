@@ -117,6 +117,98 @@ TEST(DeviceStateLogPod, ZeroRuntimeChannelsStillEmitsEveryNamedColumn) {
       << "header: " << hdr_os.str() << "\nrow: " << row_os.str();
 }
 
+// ── A device group wider than 16 joints ──────────────────────────────────────
+//
+// The capacity was 16, sized for a hand. A humanoid upper body driven as ONE
+// group (waist 3 + two 7-DoF arms) is 17, and at 16 its last joint — the right
+// wrist yaw — simply did not appear: no column, no row value, and
+// FillDeviceStateLogPod clamped num_joints to 16 as if the device had reported
+// that. Nothing failed. These two cases put the boundary where it is visible.
+
+namespace {
+
+std::vector<std::string> NumberedJoints(std::size_t n) {
+  std::vector<std::string> names;
+  for (std::size_t i = 0; i < n; ++i) {
+    names.push_back("q" + std::to_string(i));
+  }
+  return names;
+}
+
+std::vector<std::string> SplitCsv(const std::string& line) {
+  std::vector<std::string> out;
+  std::stringstream ss(line);
+  std::string cell;
+  while (std::getline(ss, cell, ',')) {
+    out.push_back(cell);
+  }
+  return out;
+}
+
+/// A state whose device 0 reports `n` channels with position i+1 on channel i,
+/// so every channel's value says which channel it is.
+rtc::ControllerState StateWithChannels(int n) {
+  rtc::ControllerState state{};
+  state.num_devices = 1;
+  state.devices[0].num_channels = n;
+  for (int i = 0; i < n; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] = static_cast<double>(i + 1);
+  }
+  return state;
+}
+
+}  // namespace
+
+TEST(DeviceStateLogPod, ASeventeenJointGroupKeepsItsLastJoint) {
+  const auto names = NumberedJoints(17);
+  const auto cols = integrated_bringup::DeviceStateLogColumnsFor(names, {});
+  EXPECT_EQ(cols.joints, 17u);
+
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteDeviceStateLogHeader(hdr_os, names, {}, cols);
+  const auto header = SplitCsv(hdr_os.str());
+  const auto last_col = std::find(header.begin(), header.end(), "actual_pos_q16");
+  ASSERT_NE(last_col, header.end()) << "no column for the 17th joint: " << hdr_os.str();
+
+  integrated_bringup::DeviceStateLogPod pod{};
+  integrated_bringup::FillDeviceStateLogPod(StateWithChannels(17), rtc::ControllerOutput{}, 0, pod);
+  EXPECT_EQ(pod.num_joints, 17u);
+
+  std::ostringstream row_os;
+  integrated_bringup::WriteDeviceStateLogRow(row_os, pod, cols);
+  const auto row = SplitCsv(row_os.str());
+  ASSERT_EQ(row.size(), header.size());
+  // Channel 16 carries 17 (see StateWithChannels) — read by column NAME, so a
+  // row that kept its width but lost the value cannot pass.
+  EXPECT_EQ(row[static_cast<std::size_t>(last_col - header.begin())], "17");
+  EXPECT_EQ(row[row.size() - 2], "17") << "num_joints column";
+}
+
+// Past the capacity the channel still truncates — to 32 now — and it has to do
+// so on BOTH writers and in the fill, or the row and the header part ways.
+TEST(DeviceStateLogPod, AGroupWiderThanTheCapacityTruncatesToIt) {
+  ASSERT_EQ(integrated_bringup::DeviceStateLogPod::kMaxJoints, 32u);
+  const auto names = NumberedJoints(33);
+  const auto cols = integrated_bringup::DeviceStateLogColumnsFor(names, {});
+  EXPECT_EQ(cols.joints, 32u);
+
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteDeviceStateLogHeader(hdr_os, names, {}, cols);
+  const auto header = SplitCsv(hdr_os.str());
+  EXPECT_NE(std::find(header.begin(), header.end(), "actual_pos_q31"), header.end());
+  EXPECT_EQ(std::find(header.begin(), header.end(), "actual_pos_q32"), header.end());
+
+  integrated_bringup::DeviceStateLogPod pod{};
+  integrated_bringup::FillDeviceStateLogPod(StateWithChannels(33), rtc::ControllerOutput{}, 0, pod);
+  EXPECT_EQ(pod.num_joints, 32u);
+
+  std::ostringstream row_os;
+  integrated_bringup::WriteDeviceStateLogRow(row_os, pod, cols);
+  const auto row = SplitCsv(row_os.str());
+  ASSERT_EQ(row.size(), header.size());
+  EXPECT_EQ(row[row.size() - 2], "32") << "num_joints column";
+}
+
 TEST(DeviceSensorLogPod, IsTriviallyCopyable) {
   EXPECT_TRUE(std::is_trivially_copyable_v<integrated_bringup::DeviceSensorLogPod>);
 }

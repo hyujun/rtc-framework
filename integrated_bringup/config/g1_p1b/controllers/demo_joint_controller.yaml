@@ -1,0 +1,85 @@
+# DemoJointController — g1_p1b (Unitree G1 upper body + proto_1b right hand)
+#
+# Per-device joint-space quintic trajectories with hand fingertip FK. On this
+# robot the primary group `g1` is the whole upper body (waist 3 + left arm 7 +
+# right arm 7), so "arm" below means that 17-joint group.
+#
+# Shared demo parameters (virtual TCP, grasp, force-PI) live in demo_shared.yaml.
+demo_joint_controller:
+  # Primary group width. Must equal devices.g1.joint_state_names (17) and the
+  # length of estop.arm_safe_position. Capacity: 32.
+  arm_dof: 17
+
+  # ── Trajectory generation ─────────────────────────────────────────────────
+  # Quintic rest-to-rest. Duration = max joint distance / speed, then extended
+  # until the peak velocity (15/8 × Δq / T) is within the max below.
+  robot_trajectory_speed: 0.78      # rad/s, > 0
+  hand_trajectory_speed: 3.14       # rad/s, > 0
+  robot_max_traj_velocity: 3.14     # rad/s — well under the 22–37 rad/s joint ratings
+  hand_max_traj_velocity: 6.28      # rad/s
+
+  # ── Hand contact-stop (required block — LoadConfig throws on a missing key) ─
+  # Same hand as ur5e_p1b, same values.
+  fsm:
+    contact_stop_release_eps: 0.005 # rad, hand contact-stop release hysteresis
+    contact_stop_lpf_cutoff_hz: 15.0 # Hz, Bessel LPF cutoff for latched hold
+    contact_stop_force_lpf_cutoff_hz: 50.0 # Hz, Bessel LPF on the fingertip force
+    contact_stop_force_guard_delta_n: 4.0 # N, per-axis |Δ| reject threshold, (0, 1000]
+    contact_stop_force_guard_max_hold_ticks: 6 # ticks, [0, 1000]
+
+  # ── E-STOP ────────────────────────────────────────────────────────────────
+  estop:
+    # rad, 17 values in devices.g1.joint_state_names order (waist, left arm,
+    # right arm); the length must equal arm_dof. All zeros = the model's
+    # neutral pose, which has no self-contact on this model.
+    arm_safe_position:
+      - 0.0   # waist_yaw
+      - 0.0   # waist_roll
+      - 0.0   # waist_pitch
+      - 0.0   # left_shoulder_pitch
+      - 0.0   # left_shoulder_roll
+      - 0.0   # left_shoulder_yaw
+      - 0.0   # left_elbow
+      - 0.0   # left_wrist_roll
+      - 0.0   # left_wrist_pitch
+      - 0.0   # left_wrist_yaw
+      - 0.0   # right_shoulder_pitch
+      - 0.0   # right_shoulder_roll
+      - 0.0   # right_shoulder_yaw
+      - 0.0   # right_elbow
+      - 0.0   # right_wrist_roll
+      - 0.0   # right_wrist_pitch
+      - 0.0   # right_wrist_yaw
+
+  command_type: "position"
+
+  # ── Topics ────────────────────────────────────────────────────────────────
+  # Both groups are claimed (each has a target subscription): the sim waits
+  # for a command from every robot group each step.
+  topics:
+    g1:
+      subscribe:
+        - topic: "g1/joint_goal"
+          role: "target"
+      publish:
+        # One TF publisher per controller. Frames (parent `pelvis`):
+        #   base_adapter_actual           — the right arm's end / hand mount
+        #   l_<finger>_tip_bracket_actual — the four fingertips
+        #   virtual_tcp_actual
+        - topic: "transforms"
+          role: "robot_transforms"
+    p1b:
+      subscribe:
+        - topic: "p1b/joint_goal"
+          role: "target"
+
+  # ── Controller-owned CSV logs ─────────────────────────────────────────────
+  # Instance = <device group>_state / _sensor; the files land in the session
+  # directory. g1_state carries all 17 joints.
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: g1_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p1b_state
+    - msg_type: rtc_msgs/DeviceSensorLog
+      instance: p1b_sensor

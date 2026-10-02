@@ -475,6 +475,13 @@ struct JointGroup {
   // gainprm_yaml regardless of cfg_.use_yaml_servo_gains. SimLoop-only.
   bool gains_overridden{false};
 
+  // One-shot latch for the "position mode on torque-motor actuators" warning
+  // (PreparePhysicsStep). SimLoop-only.
+  bool motor_passthrough_warned{false};
+  // One-shot latch for the "servo gains on a geared / ctrl-limited torque
+  // motor" warning (PreparePhysicsStep). SimLoop-only.
+  bool motor_servo_mismatch_warned{false};
+
   // ── State callback ──────────────────────────────────────────────
   using StateCallback = std::function<void(const std::vector<double>& positions,
                                            const std::vector<double>& velocities,
@@ -590,7 +597,11 @@ class MuJoCoSimulator {
     int n_substeps{1};                 // substeps per control cycle (1 = legacy)
     double viewer_refresh_rate{60.0};  // viewer target refresh rate (Hz)
 
-    // 글로벌 servo gain (그룹별 미지정 시 상속)
+    // 글로벌 servo gain (그룹별 미지정 시 상속).
+    // true 면 position / pd_feedforward 모드에서 actuator 를 affine PD 서보로
+    // 만든다 (gainprm · biasprm 과 함께 biastype 도 affine — XML 이 `<motor>` 여도
+    // 서보가 된다). false 면 XML 이 컴파일한 actuator 를 그대로 쓴다: XML 이
+    // `<motor>` 이면 그 모드의 명령은 토크로 들어간다 (기동 때 경고 1 회).
     bool use_yaml_servo_gains{false};
     std::vector<double> servo_kp{500.0, 500.0, 500.0, 150.0, 150.0, 150.0};
     std::vector<double> servo_kd{400.0, 400.0, 400.0, 100.0, 100.0, 100.0};
@@ -1291,11 +1302,18 @@ class MuJoCoSimulator {
   // ── Original actuator params (전체 actuator, Initialize()에서 저장) ──────
   double xml_timestep_{0.002};
 
+  // biastype is saved with the parameters because the position-servo lane has
+  // to CHANGE it: a `<motor>` compiles to biastype none, which makes MuJoCo
+  // ignore biasprm altogether, so writing kp / -kp / -kd into gainprm / biasprm
+  // alone leaves force = kp * ctrl — a constant torque, not a servo. The lane
+  // that installs gains sets mjBIAS_AFFINE; the torque lane and the
+  // back-to-XML lane put this value back.
   struct ActuatorParams {
     double gainprm0{0.0};
     double biasprm0{0.0};
     double biasprm1{0.0};
     double biasprm2{0.0};
+    int biastype{0};
   };
 
   std::vector<ActuatorParams> orig_actuator_params_;

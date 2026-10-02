@@ -43,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace integrated_bringup {
@@ -338,6 +339,26 @@ class DemoJointController final : public RTControllerInterface {
     return num_sensor_fingertips_;
   }
 
+  /// Test-only: the TF slots on_configure registered, as (parent, child) frame
+  /// names in slot order. The slot table is the only place the arm root and the
+  /// arm tip are spelled as NAMES — the poses that fill it are resolved by frame
+  /// id elsewhere — so a slot labelled after the wrong link publishes a correct
+  /// pose under the wrong frame and nothing downstream can tell.
+  [[nodiscard]] std::vector<std::pair<std::string, std::string>> TfSlotFramesForTesting() const {
+    std::vector<std::pair<std::string, std::string>> out;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(owned_topics_.num_tf_slots); ++i) {
+      const auto& slot = owned_topics_.tf_slots[i];
+      out.emplace_back(slot.parent_frame_id, slot.child_frame_id);
+    }
+    return out;
+  }
+
+  /// Test-only: the reference frame on_configure stamped on the vector payloads
+  /// (grasp / payload estimate headers) — the arm root.
+  [[nodiscard]] const std::string& OwnedStateFrameIdForTesting() const noexcept {
+    return owned_topics_.grasp_msg.header.frame_id;
+  }
+
  private:
   // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
   // Backend = hardware raw, controller = behavior: force/in_contact for
@@ -493,6 +514,22 @@ class DemoJointController final : public RTControllerInterface {
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
+  // Whether the primary group's model is a kinematic TREE (`urdf.tree_models`
+  // entry named after the device) rather than one serial chain
+  // (`urdf.sub_models`). A humanoid upper body driven as one device group is
+  // the case: waist + both arms have no single tip. Set in InitArmModel.
+  bool arm_model_is_tree_{false};
+  // The primary group's root and tip LINK NAMES — the same two links
+  // root_frame_id_ / tip_frame_id_ resolve, kept as names for on_configure
+  // (TF slot labels, vector-payload frame id). Resolved in OnDeviceConfigsSet.
+  // For a tree group the tip is where the hand attaches: the secondary tree's
+  // root link.
+  std::string arm_root_link_name_;
+  std::string arm_tip_link_name_;
+  // A tree group whose device joint names do not all resolve on its model.
+  // OnDeviceConfigsSet cannot fail a configure by itself, so the error is
+  // latched and on_configure refuses (same shape as momentum_config_error_).
+  std::string arm_model_config_error_;
 
   // ── Unified kin&dyn combined-model cache (#174) ──────────────────────────
   // Arm TCP FK comes from the shared combined (arm+hand) model cache, updated

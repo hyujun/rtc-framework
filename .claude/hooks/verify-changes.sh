@@ -72,10 +72,10 @@
 #      at the turn end (see Modes and "Turn end: evidence, not execution")
 #        - a package is "changed" for this phase by its source (.cpp/.hpp/.h/
 #          .cc/.py), its CMakeLists.txt / package.xml / colcon.pkg, a shell
-#          script in its source directories (see CHANGED_SH_BUILD), or any
+#          script in its source directories (see CHANGED_SH_BUILD), any
 #          other tracked file of it that is not Markdown -- config, robot
-#          data, a .msg (see CHANGED_DATA_BUILD, and its limit: the owning
-#          package only)
+#          data, a .msg -- or a new file under its test/ (see
+#          CHANGED_DATA_BUILD, and its limit: the owning package only)
 #        - rtc_base / rtc_msgs change -> ./build.sh full --tests + colcon test all
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>,
@@ -217,9 +217,12 @@
 #          build/test additionally requires an untracked file to live in one of
 #          the installed-source dirs allowlisted at CHANGED_SRC_UNTRACKED below
 #          (that comment is the SSoT -- this summary still said src|include only
-#          after four more dirs joined the list), so a new header is compiled
-#          while a scratch file under rtc_base/ still cannot trigger a
-#          full-workspace rebuild. Routing behaviour is asserted end-to-end by
+#          after four more dirs joined the list) or, for a file that is not
+#          source, under config/ (YAML) or test/ (see CHANGED_DATA_BUILD), so
+#          a new header is compiled while a scratch file under rtc_base/, in
+#          any other place, still cannot trigger a full-workspace rebuild (one
+#          under rtc_base/test/ does: PROC-3, as for that file once tracked).
+#          Routing behaviour is asserted end-to-end by
 #          repo_scripts/test/test_verify_changes.sh.
 #          A path containing a newline is C-quoted by git regardless of
 #          core.quotePath and is NOT handled; paths with spaces are.
@@ -618,9 +621,17 @@ CHANGED_PKG_FILES=$(echo "$CHANGED_TRACKED" | awk -F/ 'NF >= 2 && $NF !~ /\.md$/
   | while IFS= read -r f; do
       if [ -f "${f%%/*}/package.xml" ]; then printf '%s\n' "$f"; fi
     done || true)
+# ...and an UNTRACKED file under a package's test/, its Markdown aside: a new
+# fixture the tests read. It is no class above either (a URDF, an MJCF, a
+# golden table), so alone in the turn it left at the same exit.
+CHANGED_TEST_DATA=$(echo "$CHANGED_UNTRACKED" | awk -F/ 'NF >= 3 && $2 == "test" && $NF !~ /\.md$/' \
+  | while IFS= read -r f; do
+      if [ -f "${f%%/*}/package.xml" ]; then printf '%s\n' "$f"; fi
+    done || true)
 if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
    && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ] && [ -z "$CHANGED_TESTCFG" ] \
-   && [ -z "$CHANGED_PKG_FILES" ] && [ -z "$STALE_ARTIFACT_PKGS" ]; then
+   && [ -z "$CHANGED_PKG_FILES" ] && [ -z "$CHANGED_TEST_DATA" ] \
+   && [ -z "$STALE_ARTIFACT_PKGS" ]; then
   [ -z "$RUN_MODE" ] || baseline_artifact_stamps
   advance_verify_base
   exit 0
@@ -774,7 +785,17 @@ CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
 # file had the same hole. What a package tracks is what it ships or tests.
 # Untracked files keep their allowlists (scratch is not the package) -- the
 # source dirs above, plus a new YAML under config/, which is installed by
-# directory like a new launch file.
+# directory like a new launch file, plus every file under test/ but Markdown
+# (CHANGED_TEST_DATA). test/ was on the source allowlist for its five
+# extensions only, so a new fixture routed nothing until it was added and its
+# package once it was: --run passed with the package left out, and the turn
+# end after the commit owed its build (2026-10-02). Nothing is installed from
+# test/ and nothing but the tests reads it, so the widening can only cost a
+# build of a package with an untracked note there that is not Markdown -- for
+# rtc_base / rtc_msgs that build is the PROC-3 one (the whole workspace), the
+# same as it is for a new .cpp or .py under their test/.
+# A new file in any OTHER data directory (robots/, a behaviour tree) is still
+# routed only once it is tracked.
 #
 # LIMIT, not closed here: the route is the OWNING package. A test in another
 # package that reads this file by path (rtc_tools reads integrated_bringup's
@@ -783,6 +804,7 @@ CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
 CHANGED_DATA_BUILD=$( {
     echo "$CHANGED_PKG_FILES"
     echo "$CHANGED_UNTRACKED" | awk -F/ 'NF >= 3 && $2 == "config" && $NF ~ /\.(yaml|yml)$/'
+    echo "$CHANGED_TEST_DATA"
   } || true)
 
 # --- Pure-format fast path detection ---

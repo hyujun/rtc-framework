@@ -57,7 +57,7 @@ from ament_index_python.packages import get_package_share_directory
 # Profile -> the MJCF that profile's mujoco_simulator.yaml loads. The path is
 # read out of the config itself rather than listed here, so this map only needs
 # to name the profiles.
-PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap"]
+PROFILES = ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap", "g1_p1b"]
 
 
 def _config_path(profile: str) -> str:

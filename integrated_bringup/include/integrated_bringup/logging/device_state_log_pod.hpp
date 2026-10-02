@@ -30,8 +30,15 @@
 namespace integrated_bringup {
 
 struct DeviceStateLogPod {
-  // ── Capacities (chosen for ur5e arm + 10-DoF hand) ────────────────────────
-  static constexpr std::size_t kMaxJoints = 16;  // 6 arm + 10 hand
+  // ── Capacities ───────────────────────────────────────────────────────────
+  // kMaxJoints is per DEVICE GROUP and has to hold the widest one. It was 16
+  // (a 10-DoF hand, a 16-DoF LEAP hand) until a humanoid upper body became one
+  // group: waist 3 + two 7-DoF arms = 17, and the 17th joint was dropped from
+  // the CSV without a word. 32 matches the controller-side per-group caps
+  // (kDemoJointMaxArmDof / kDemoJointMaxHandDof) and DeviceWbcLogPod. A group
+  // wider than this is truncated to it — the trailing num_joints column of
+  // each row then reads the cap, not the device's count.
+  static constexpr std::size_t kMaxJoints = 32;
   static constexpr std::size_t kMaxMotors = 16;
   static constexpr std::size_t kTaskDim = 6;  // x,y,z,roll,pitch,yaw
 

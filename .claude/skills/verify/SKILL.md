@@ -16,6 +16,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false
 
 - 백그라운드 실행 시 로그를 파일로 tee. 기동 완료 신호: `DemoWbcController timing:` 주기 로그 (기본 활성 = demo_wbc_controller).
 - 종료: `pkill -INT -f "sim_ur5e_p1a.launch"` (SIGINT — 세션 CSV flush 보장).
+- `g1_p1b` (G1 상체 + proto_1b 오른손): `ros2 launch integrated_bringup sim_g1_p1b.launch.py enable_viewer:=false use_cpu_affinity:=false`. 컨트롤러는 `demo_joint_controller` 하나, 군은 `g1` (17) · `p1b` (10). 기동 완료 신호는 `RtControllerNode reached Active state`. 목표는 `/demo_joint_controller/{g1,p1b}/joint_goal` (`rtc_msgs/RobotTarget`, **한 번만** 보낸다), TF 는 `/demo_joint_controller/transforms` (부모 `pelvis`). `/g1/joint_states` 는 BEST_EFFORT 다 — 구독은 sensor-data QoS 로.
 
 ## Controller switch
 
