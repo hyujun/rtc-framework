@@ -315,6 +315,7 @@ TEST(ApproachCycle, APairIsPublishedTogetherSegmentFirst) {
   r->cycle.SetPairStoreHookForTesting(nullptr, nullptr);
   ASSERT_EQ(rec.outcome, CycleOutcome::kPublished) << Why(rec);
   ASSERT_TRUE(rec.plan_valid);
+  EXPECT_TRUE(rec.search_valid);
   EXPECT_EQ(rec.decel.outcome, DecelOutcome::kPublished);
   EXPECT_EQ(rec.decel.kind, DecelKind::kFirst);
   EXPECT_TRUE(rec.decel.cold_start);
@@ -347,6 +348,10 @@ TEST(ApproachCycle, AWithheldSegmentWithholdsThePlan) {
   const PlannerCycleRecord rec = r->Wake();
   EXPECT_EQ(rec.outcome, CycleOutcome::kHeld) << Why(rec);
   EXPECT_EQ(rec.decel.outcome, DecelOutcome::kCatchError);
+  // The search found a plan; the pair was not published. The two flags are
+  // what tells this wake from one whose search found nothing.
+  EXPECT_TRUE(rec.search_valid);
+  EXPECT_FALSE(rec.plan_valid);
   EXPECT_FALSE(r->boxes.plan.Load().valid);
   EXPECT_FALSE(r->boxes.decel.Load().valid);
   EXPECT_EQ(r->cycle.LastPlanId(), 0U);

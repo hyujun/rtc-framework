@@ -89,6 +89,11 @@ struct PlannerCycleRecord {
   /// The published plan — meaningful only when `outcome == kPublished`.
   std::uint32_t plan_id{0};
   bool plan_valid{false};
+  /// This wake's SEARCH produced a valid plan, published or not. A plan the
+  /// switching rule kept back, or one withheld with its first segment (MD-62),
+  /// leaves `plan_valid` false and this true; a wake that ran no search
+  /// (idle, no input, monitor, replan) leaves it false.
+  bool search_valid{false};
   PlanReason reason{PlanReason::kNone};
   /// The trajectory this wake planned against.
   std::uint64_t snapshot_sequence{0};

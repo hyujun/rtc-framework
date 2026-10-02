@@ -305,6 +305,22 @@ std::string Why(const DecelRecord& r) {
 }
 
 // The catch node's frame position of a published segment (model order).
+// The catch frame's linear velocity at the catch node, world-aligned.
+Eigen::Vector3d CatchNodeVel(const Arm& a, const DecelPlanSnapshot& p) {
+  Eigen::VectorXd q(a.model->nv);
+  Eigen::VectorXd qd(a.model->nv);
+  for (int m = 0; m < q.size(); ++m) {
+    const auto e = static_cast<std::size_t>(p.n_pre * kMaxDecelNv) + Dev(a, m);
+    q[m] = p.q[e];
+    qd[m] = p.qd[e];
+  }
+  pinocchio::Data data(*a.model);
+  pinocchio::forwardKinematics(*a.model, data, q, qd);
+  pinocchio::updateFramePlacement(*a.model, data, a.frame);
+  return pinocchio::getFrameVelocity(*a.model, data, a.frame, pinocchio::LOCAL_WORLD_ALIGNED)
+      .linear();
+}
+
 Eigen::Vector3d CatchNodePos(const Arm& a, const DecelPlanSnapshot& p) {
   Eigen::VectorXd q(a.model->nv);
   for (int m = 0; m < q.size(); ++m) {
@@ -489,6 +505,9 @@ TEST(ApproachPlanner, FirstSegmentStartsAtTheCommandAndReachesTheBall) {
     // The catch node reaches the ball (the gate) and the record says by how much.
     EXPECT_LE((CatchNodePos(r.arm, r.out) - s.c.p).norm(), 0.02);
     EXPECT_NEAR((CatchNodePos(r.arm, r.out) - s.c.p).norm(), r.rec.catch_pos_err, 1e-9);
+    // ... and how far the hand's velocity there is from the ball's.
+    EXPECT_NEAR((s.c.v - CatchNodeVel(r.arm, r.out)).norm(), r.rec.catch_v_rel, 1e-9);
+    EXPECT_TRUE(std::isfinite(r.rec.slack_v));
     // Node N rests to the core's reference tolerance.
     for (int m = 0; m < r.out.nv; ++m) {
       const auto e = static_cast<std::size_t>(r.out.n_nodes * kMaxDecelNv + m);
@@ -732,6 +751,8 @@ TEST(ApproachPlanner, PreCatchHandsOverToTheStopCores) {
     EXPECT_EQ(r.out.t0_ns, s.t_c + k * kDt);
     EXPECT_EQ(DecelNodeTimeNs(r.out, r.out.n_nodes), s.t_c + 7 * kDt);
     EXPECT_TRUE(std::isnan(r.rec.catch_pos_err));  // no catch terms after t_c
+    EXPECT_TRUE(std::isnan(r.rec.catch_v_rel));
+    EXPECT_TRUE(std::isnan(r.rec.slack_v));
     followed = r.Publish(now);
     // At most one solve per stop grid point.
     ASSERT_FALSE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, followed),

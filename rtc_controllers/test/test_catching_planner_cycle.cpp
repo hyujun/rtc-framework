@@ -439,6 +439,7 @@ TEST(PlannerCycleRun, ASearchWakePublishesTheStubsNoPlanWithFullProvenance) {
   EXPECT_TRUE(rec.cov_matched);
   EXPECT_EQ(rec.plan_id, 1U);
   EXPECT_FALSE(rec.plan_valid) << "S6-A's search is a stub";
+  EXPECT_FALSE(rec.search_valid) << "a published \"no plan\" is not a valid search";
   EXPECT_EQ(rec.snapshot_sequence, 3U);
   EXPECT_EQ(rec.wake_ns, 1995 * kMs);
   EXPECT_EQ(rec.publish_ns, FixedClock());

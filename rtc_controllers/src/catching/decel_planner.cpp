@@ -572,6 +572,8 @@ DecelOutcome DecelPlanner::Judge(const DecelMpcResult& r, bool ok, int n_pre, in
     rec.catch_pos_err = r.catch_pos_err.norm();
     rec.catch_axis_err = r.catch_axis_err;
     rec.catch_gamma = r.catch_gamma;
+    rec.catch_v_rel = r.catch_v_rel.norm();
+    rec.slack_v = r.slack_v;
   }
   // Every check passes on a positive comparison, so a NaN fails it.
   if (!(rec.solve_ns <= budget_ns)) {

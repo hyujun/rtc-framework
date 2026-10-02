@@ -290,6 +290,11 @@ TEST(PlannerEventsCsv, ADecelStepEarnsARowOnlyWhenItDidSomething) {
   std::ostringstream header;
   integrated_bringup::WritePlannerEventsHeader(header);
   EXPECT_NE(header.str().find(",max_catchable,decel_outcome,"), std::string::npos);
+  // E1-F05: the search's own validity beside the published plan's, and the
+  // E1-F08 record after the E1-F03 columns.
+  EXPECT_NE(header.str().find(",plan_valid,search_valid,plan_reason,"), std::string::npos);
+  EXPECT_NE(header.str().find(",decel_tau_ratio_max,decel_kind,"), std::string::npos);
+  EXPECT_NE(header.str().find(",decel_catch_v_rel,decel_slack_v,"), std::string::npos);
   rtc::catching::PlannerCycleRecord rec{};
   for (const DecelOutcome waited :
        {DecelOutcome::kOff, DecelOutcome::kUpToDate, DecelOutcome::kPastReplanWindow}) {
@@ -310,6 +315,10 @@ TEST(PlannerEventsCsv, ADecelStepEarnsARowOnlyWhenItDidSomething) {
   const auto columns = [](const std::string& s) { return std::count(s.begin(), s.end(), ',') + 1; };
   EXPECT_EQ(columns(header.str()), columns(row.str()));
   EXPECT_NE(row.str().find(",published,"), std::string::npos) << row.str();
+  // A default record's kind is written by name, its uncomputed values as nan.
+  EXPECT_NE(row.str().find(",none,0,0,0,0,nan,nan,nan,nan,nan,nan,nan,nan,nan,0,nan,0\n"),
+            std::string::npos)
+      << row.str();
 }
 
 // ── The lane ────────────────────────────────────────────────────────────────

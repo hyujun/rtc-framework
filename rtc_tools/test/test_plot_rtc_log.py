@@ -3513,6 +3513,7 @@ _PLANNER_EVENTS_COLUMNS = [
     "cov_matched",
     "plan_id",
     "plan_valid",
+    "search_valid",
     "plan_reason",
     "snapshot_sequence",
     "track_generation",
@@ -3564,6 +3565,23 @@ _PLANNER_EVENTS_COLUMNS = [
     "decel_slack_max",
     "decel_slack_terminal_max",
     "decel_tau_ratio_max",
+    "decel_kind",
+    "decel_cold_start",
+    "decel_solver_retried",
+    "decel_ref_clamped",
+    "decel_ref_scaled",
+    "decel_ref_scale",
+    "decel_ref_shortfall",
+    "decel_x0_speed",
+    "decel_catch_pos_err",
+    "decel_catch_axis_err",
+    "decel_catch_gamma",
+    "decel_catch_v_rel",
+    "decel_slack_v",
+    "decel_speed_ratio_max",
+    "decel_w_p_fallback",
+    "decel_w_delta_scale",
+    "decel_source_seq",
 ]
 
 # RankGateBit order (rtc_controllers/catching/planner_search.hpp) — bit
@@ -3607,6 +3625,8 @@ def _planner_events_row(
     row["decision"] = decision
     row["mode"] = 3
     row["plan_valid"] = 1 if outcome == "published" else 0
+    # plan_valid ⊆ search_valid (the writer sets plan_valid only on a publish).
+    row["search_valid"] = row["plan_valid"]
     row["plan_reason"] = 0
     row["n_in_window"] = n_in_window
     row["n_ik"] = n_ik
@@ -3621,10 +3641,12 @@ def _planner_events_row(
     row["rollout_window_only"] = 0
     row["n_rollouts"] = n_rollouts
     row["rollout_us_max"] = rollout_us_max
-    # The two decel columns the writer fills with NAMES, as a wake with the
-    # decel planner off writes them (DecelOutcomeName / DecelMpcReasonName).
+    # The decel columns the writer fills with NAMES, as a wake with the decel
+    # planner off writes them (DecelOutcomeName / DecelMpcReasonName /
+    # DecelKindName).
     row["decel_outcome"] = "off"
     row["decel_core_reason"] = "none"
+    row["decel_kind"] = "none"
     for bit_col, val in rank_bits.items():
         row[bit_col] = val
     row["rank_mask"] = sum(

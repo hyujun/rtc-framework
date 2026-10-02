@@ -163,6 +163,10 @@ struct DecelRecord {
   double catch_pos_err{std::numeric_limits<double>::quiet_NaN()};   ///< [m]
   double catch_axis_err{std::numeric_limits<double>::quiet_NaN()};  ///< [rad]
   double catch_gamma{std::numeric_limits<double>::quiet_NaN()};
+  /// ‖v̂_b − J_v q̇‖ at the catch node [m/s], and the core's velocity slack s_v
+  /// (fraction of v_rel_allow, linear model; 0 when the slack row is off).
+  double catch_v_rel{std::numeric_limits<double>::quiet_NaN()};
+  double slack_v{std::numeric_limits<double>::quiet_NaN()};
   /// max over nodes and between-node extrema of |q̇|/q̇_max.
   double speed_ratio_max{std::numeric_limits<double>::quiet_NaN()};
   bool w_p_fallback{false};  ///< W_p was the constant w_const·I (no usable Σ_p)
