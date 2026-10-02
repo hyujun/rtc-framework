@@ -2514,5 +2514,109 @@ expect_exit "a README edited after a PROC-3 run is owed" "$rc" 2
 expect_contains "...as the whole workspace" "$out" "build/test verdict missing for: every package (PROC-3"
 rm -rf "$ws" "$bstub" "$fake"
 
+# 76. A verdict is of the SOURCE; --run also answers for the BINARIES. A build
+#     made after the verdict from other content -- a temporary patch applied,
+#     built for a measurement and reverted (2026-10-02), or a change that
+#     failed its tests and was checked out again -- leaves the tree the one
+#     that passed and the install tree built from something else. --run then
+#     builds and tests again instead of calling the tree unchanged.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+lib="$ws/install/rtc_demo/lib"
+mkdir -p "$lib/rtc_demo" "$lib/python3.12/site-packages/rtc_demo"
+printf '\177ELF built from T0' >"$lib/librtc_demo.so"
+printf '\177ELF node from T0' >"$lib/rtc_demo/demo_node"
+printf '#!/usr/bin/env python3\n' >"$lib/rtc_demo/demo_script"
+printf 'x = 1\n' >"$lib/python3.12/site-packages/rtc_demo/mod.py"
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "76 setup: a green change passes" "$rc" 0
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_contains "binaries left alone: the second --run runs nothing" "$out" "nothing re-run"
+if [ "$(calls "$count")" = 1 ]; then pass "...and tests nothing"; else fail "untouched binaries were tested again (calls $(calls "$count"))"; fi
+# 76a. What is not a compiled product does not count: an installed script and
+#      the Python tree are rewritten by builds that change nothing. Neither
+#      does a relink of the same content: the stamp is of bytes, not of mtime
+#      (a pull rewrites sources, and the next build relinks what it compiled).
+touch -d '2001-01-01 00:00:00' "$lib/librtc_demo.so" "$lib/rtc_demo/demo_node"
+printf '#!/usr/bin/env python3\n# regenerated\n' >"$lib/rtc_demo/demo_script"
+printf 'x = 2\n' >"$lib/python3.12/site-packages/rtc_demo/mod.py"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_contains "a rewritten script, a Python module or a relink of the same bytes is not a rebuilt binary" "$out" "nothing re-run"
+# 76b. The library was rebuilt since the verdict.
+printf '\177ELF built from a patched tree' >"$lib/librtc_demo.so"
+out=$(run_stop "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the turn end still grades the source alone" "$rc" 0
+if [ "$(calls "$count")" = 1 ]; then pass "...and neither builds nor tests"; else fail "the turn end tested (calls $(calls "$count"))"; fi
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run over rebuilt binaries passes once they are green again" "$rc" 0
+expect_not_contains "--run does not call a tree with rebuilt binaries unchanged" "$out" "nothing re-run"
+expect_contains "...and says why it builds" "$out" "installed binaries of [rtc_demo]"
+expect_contains "...and reports the package as built, not reused" "$out" "built and tested [rtc_demo]"
+if [ "$(calls "$count")" = 2 ]; then pass "rebuilt binaries are tested again"; else fail "rebuilt binaries were not tested again (calls $(calls "$count"))"; fi
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_contains "the binaries that passed are remembered" "$out" "nothing re-run"
+# 76c. An executable counts as well as a library.
+printf '\177ELF node from a patched tree' >"$lib/rtc_demo/demo_node"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_not_contains "a rebuilt executable ends the reuse" "$out" "nothing re-run"
+if [ "$(calls "$count")" = 3 ]; then pass "a rebuilt executable is tested again"; else fail "a rebuilt executable was not tested again (calls $(calls "$count"))"; fi
+# 76d. The install tree removed (a clean build that did not finish).
+rm -rf "$ws/install/rtc_demo"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+expect_not_contains "binaries that are gone end the reuse" "$out" "nothing re-run"
+if [ "$(calls "$count")" = 4 ]; then pass "a package whose binaries are gone is tested again"; else fail "missing binaries were not tested again (calls $(calls "$count"))"; fi
+# 76e. With a source edit in the same call: the package is built once.
+mkdir -p "$lib"
+printf '\177ELF rebuilt' >"$lib/librtc_demo.so"
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+printf '\177ELF rebuilt again, from other content' >"$lib/librtc_demo.so"
+echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
+before=$(calls "$count")
+out=$(run_hook_green "$dir" "$bstub" "$tstub")
+if [ "$(calls "$count")" = $((before + 1)) ]; then pass "a stale and edited package is tested once"; else fail "a stale and edited package was tested $(( $(calls "$count") - before )) times"; fi
+# 76f. A red test run records no binaries: the old verdict's stay the ones a
+#      later --run compares with.
+rstub=$(make_test_stub "$count" 1)
+printf '\177ELF built from a change that fails' >"$lib/librtc_demo.so"
+echo 'int existing() { return 3; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_green "$dir" "$bstub" "$rstub"); rc=$?
+expect_exit "76f setup: a red change blocks" "$rc" 2
+echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
+before=$(calls "$count")
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "the reverted tree passes" "$rc" 0
+if [ "$(calls "$count")" = $((before + 1)) ]; then pass "a tree reverted after a red build is built and tested again"; else fail "a reverted tree kept the binaries of the red build (calls $(calls "$count"), before $before)"; fi
+rm -rf "$ws" "$bstub" "$tstub" "$rstub" "$count"
+
+# 76g. A package --run never built is watched too: a passing --run records the
+#      binaries of every package as they are, and a later rebuild of one of
+#      them -- the temporary patch can sit in any package -- is found.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+lib="$ws/install/rtc_demo/lib"
+mkdir -p "$lib"
+printf '\177ELF built before any --run' >"$lib/librtc_demo.so"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "76g setup: --run over an unchanged tree passes" "$rc" 0
+if [ "$(calls "$count")" = 0 ]; then pass "...without building the package"; else fail "an unchanged package was tested (calls $(calls "$count"))"; fi
+out=$(run_stop "$dir" "$bstub" "$tstub")
+printf '\177ELF built from a patched tree' >"$lib/librtc_demo.so"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run over a never-built package with rebuilt binaries passes" "$rc" 0
+expect_contains "...after naming it" "$out" "installed binaries of [rtc_demo]"
+if [ "$(calls "$count")" = 1 ]; then pass "a package --run never built is tested once its binaries change"; else fail "rebuilt binaries of a never-built package were not tested (calls $(calls "$count"))"; fi
+# The turn end takes no baseline: it does not look at the install tree.
+rm -f "$dir/.git/rtc-verify-pass-artifacts"
+out=$(run_stop "$dir" "$bstub" "$tstub")
+if [ ! -e "$dir/.git/rtc-verify-pass-artifacts" ]; then pass "the turn end records no binaries"; else fail "the turn end wrote a stamp file"; fi
+rm -rf "$ws" "$bstub" "$tstub" "$count"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

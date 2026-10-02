@@ -7,7 +7,7 @@
 - **Enforcement (AGENTS.md §2 · AGENTS.md §4)** — `.claude/hooks/`
   - `format-code.sh` (PostToolUse) 는 Edit/Write 한 파일만 포맷한다 — Bash 로 쓴 파일은 직접 포맷한다
   - `verify-changes.sh` (Stop) 는 AGENTS.md §4 "커밋 전에 직접 돌려야 하는 것" 중 **기계 판정 가능한 부분만** 확인하고 실패하면 turn 을 차단한다 — 여집합은 modification-guide.md §Completion Checklist 로 직접 확인한다
-    - turn 끝은 빌드·테스트를 **실행하지 않고** 변경 패키지의 green verdict 만 확인한다. verdict 는 turn 안에서 `.claude/hooks/verify-changes.sh --run` 으로 만든다 — **최종 검증은 `colcon test` 를 따로 돌리지 말고 이것으로** 하고, 그 뒤에 패키지를 고쳤으면 다시 돌린다
+    - turn 끝은 빌드·테스트를 **실행하지 않고** 변경 패키지의 green verdict 만 확인한다. verdict 는 turn 안에서 `.claude/hooks/verify-changes.sh --run` 으로 만든다 — **최종 검증은 `colcon test` 를 따로 돌리지 말고 이것으로** 하고, 그 뒤에 패키지를 고쳤거나 **다른 내용으로 빌드했으면** (임시 패치 · 되돌린 변경 — 소스가 원래대로여도) 다시 돌린다: turn 끝은 설치 바이너리를 보지 않는다
     - `--run` 이 오래 걸리면 백그라운드로 띄우고 **끝난 뒤** turn 을 끝낸다. 다른 빌드나 이 workspace 의 sim 이 돌고 있으면 `--run` 은 빌드하지 않는다 — 그 메시지를 따른다
     - unit 마다 sim 을 새로 띄우는 평가의 드라이버는 `repo_scripts/scripts/with_verify_hold.sh <드라이버>` 로 띄운다 (unit 사이의 틈에서 빌드가 시작되지 않게)
 - **Rules (AGENTS.md §3)** — `.claude/rules/` 의 `rt-path.md` (RT) · `arch-source.md` (ARCH-1·2·3·4·6) · `arch-build-meta.md` (ARCH-2·5·7) 이 매칭 파일을 읽거나 편집할 때 로드된다 (로드 조건은 frontmatter glob 이 SSoT). rule 을 새로 쓰거나 glob 을 고쳤으면 `validate_claude_rules.py` 를 돌리고, **다음 세션에서** 매칭 파일을 열어 `.claude/instructions-loaded.log` 로 발화를 확인한다 (읽는 법: `log-instructions-loaded.sh` 헤더) — rule 이 안 뜨는 실패는 증상이 "규칙이 조용히 없는 것" 뿐이다
