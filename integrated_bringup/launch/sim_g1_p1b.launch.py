@@ -30,11 +30,9 @@ Nodes launched:
 
 Two device groups: `g1` (waist 3 + left arm 7 + right arm 7) and `p1b` (hand
 10). The only controller this profile ships a config for is
-demo_joint_controller; the arguments that address demo_wbc_controller
-(enable_mpc, mpc_engine) are declared for parity with the other sim launches
-and have nothing to act on here. `enable_mpc` therefore defaults to false,
-unlike those launches: its one effect on this profile is the CPU layout, and
-the MPC-on layout would shield cores for a thread nothing here starts.
+demo_joint_controller. `enable_mpc` selects the CPU layout and nothing else
+here, and defaults to false, unlike the other sim launches: the MPC-on layout
+would shield cores for a thread nothing on this profile starts.
 
 The robot model (URDF + MJCF) comes from the `hand_description` package, which
 must be built in the workspace.
@@ -164,24 +162,13 @@ def launch_setup(context, *args, **kwargs):
         ctrl_params.append(sim_overlay)
     ctrl_overrides = {}
 
-    kp = LaunchConfiguration("kp").perform(context)
-    if kp != "":
-        ctrl_overrides["kp"] = float(kp)
-
-    kd = LaunchConfiguration("kd").perform(context)
-    if kd != "":
-        ctrl_overrides["kd"] = float(kd)
-
     ctrl_overrides["log_dir"] = session_dir
     # Same number the launch pruned with: the RT node prunes this tree again in
     # on_configure, and two independent numbers made the effective retention
     # min(launch, node) (#402).
     ctrl_overrides["max_log_sessions"] = session.max_sessions
-    # `enable_mpc` drives the `demo_wbc_controller.mpc.enabled` ROS parameter,
-    # which integrated_rt_controller's `ApplyControllerParamOverrides` helper
-    # writes into the YAML::Node handed to `LoadConfig`. The runtime gains
-    # topic (index 7) can also toggle MPC on/off dynamically without
-    # restarting the launch.
+    # `enable_mpc` picks the CPU layout profile. It reaches no controller
+    # parameter on this profile: the one controller it ships has no MPC thread.
     enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
     # One mapping for both consumers: the cset shield and the controller's
     # activation gate must agree on which profile is in force (#350).
@@ -192,29 +179,10 @@ def launch_setup(context, *args, **kwargs):
     # cores back while a SCHED_FIFO thread still runs on one (#350).
     ctrl_overrides["rt_layout_profile"] = layout_profile
 
-    # Optional: override initial_controller (e.g. select demo_wbc_controller)
+    # Optional: override initial_controller
     initial_controller = LaunchConfiguration("initial_controller").perform(context)
     if initial_controller != "":
         ctrl_overrides["initial_controller"] = initial_controller
-
-    if enable_mpc.lower() in ("true", "1", "yes"):
-        ctrl_overrides["demo_wbc_controller.mpc.enabled"] = True
-    elif enable_mpc.lower() in ("false", "0", "no"):
-        ctrl_overrides["demo_wbc_controller.mpc.enabled"] = False
-
-    # `mpc_engine` selects between the MockMPCThread placeholder and the
-    # HandlerMPCThread (real Aligator ProxDDP via MPCFactory +
-    # GraspPhaseManager). Default "" leaves the YAML's `mpc.engine: "mock"`
-    # untouched.
-    mpc_engine = LaunchConfiguration("mpc_engine").perform(context)
-    if mpc_engine.strip() != "":
-        engine_str = mpc_engine.strip().lower()
-        if engine_str not in ("mock", "handler"):
-            raise RuntimeError(
-                f"Invalid mpc_engine='{mpc_engine}'. "
-                "Must be 'mock' or 'handler' (or empty to use YAML default)."
-            )
-        ctrl_overrides["demo_wbc_controller.mpc.engine"] = engine_str
 
     if ctrl_overrides:
         ctrl_params.append(ctrl_overrides)
@@ -446,22 +414,6 @@ def generate_launch_description():
         ),
     )
 
-    kp_arg = DeclareLaunchArgument(
-        "kp",
-        default_value="",
-        description=(
-            "Override kp from YAML. Empty -> use YAML value. PD controller proportional gain"
-        ),
-    )
-
-    kd_arg = DeclareLaunchArgument(
-        "kd",
-        default_value="",
-        description=(
-            "Override kd from YAML. Empty -> use YAML value. PD controller derivative gain"
-        ),
-    )
-
     use_yaml_servo_gains_arg = DeclareLaunchArgument(
         "use_yaml_servo_gains",
         default_value="",
@@ -531,24 +483,10 @@ def generate_launch_description():
         "enable_mpc",
         default_value="false",
         description=(
-            "Enable the MPC thread in DemoWbcController. This profile ships no "
-            "demo_wbc_controller config, so the argument's one effect here is "
-            "the CPU layout profile: false (the default) leaves the MPC cores "
-            "to the system instead of shielding them for a thread nothing "
-            "starts. Set it only together with a WBC config for this robot."
-        ),
-    )
-
-    mpc_engine_arg = DeclareLaunchArgument(
-        "mpc_engine",
-        default_value="",
-        description=(
-            "Select MPC engine in DemoWbcController: "
-            '"mock" = MockMPCThread placeholder (default); '
-            '"handler" = HandlerMPCThread + MPCFactory + GraspPhaseManager '
-            "(real Aligator ProxDDP solve, requires mpc/phase_config.yaml + "
-            "mpc/contact_light.yaml + mpc/contact_rich.yaml in the package "
-            "share). Empty = use demo_wbc_controller.yaml default."
+            "CPU layout profile: false (the default) leaves the MPC cores to "
+            "the system, true shields them for an MPC or planner thread. The "
+            "controller this profile ships starts neither, so set it only "
+            "together with a controller that does."
         ),
     )
 
@@ -601,8 +539,6 @@ def generate_launch_description():
             enable_viewer_arg,
             sync_timeout_ms_arg,
             max_rtf_arg,
-            kp_arg,
-            kd_arg,
             use_yaml_servo_gains_arg,
             sim_overlay_arg,
             sim_lanes_arg,
@@ -610,7 +546,6 @@ def generate_launch_description():
             use_cpu_affinity_arg,
             initial_controller_arg,
             enable_mpc_arg,
-            mpc_engine_arg,
             enable_tracing_arg,
             trace_session_name_arg,
             trace_events_ust_arg,

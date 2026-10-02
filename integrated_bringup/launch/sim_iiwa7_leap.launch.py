@@ -159,14 +159,6 @@ def launch_setup(context, *args, **kwargs):
         ctrl_params.append(sim_overlay)
     ctrl_overrides = {}
 
-    kp = LaunchConfiguration("kp").perform(context)
-    if kp != "":
-        ctrl_overrides["kp"] = float(kp)
-
-    kd = LaunchConfiguration("kd").perform(context)
-    if kd != "":
-        ctrl_overrides["kd"] = float(kd)
-
     ctrl_overrides["log_dir"] = session_dir
     # Same number the launch pruned with: the RT node prunes this tree again in
     # on_configure, and two independent numbers made the effective retention
@@ -441,22 +433,6 @@ def generate_launch_description():
         ),
     )
 
-    kp_arg = DeclareLaunchArgument(
-        "kp",
-        default_value="",
-        description=(
-            "Override kp from YAML. Empty -> use YAML value. PD controller proportional gain"
-        ),
-    )
-
-    kd_arg = DeclareLaunchArgument(
-        "kd",
-        default_value="",
-        description=(
-            "Override kd from YAML. Empty -> use YAML value. PD controller derivative gain"
-        ),
-    )
-
     use_yaml_servo_gains_arg = DeclareLaunchArgument(
         "use_yaml_servo_gains",
         default_value="",
@@ -594,8 +570,6 @@ def generate_launch_description():
             enable_viewer_arg,
             sync_timeout_ms_arg,
             max_rtf_arg,
-            kp_arg,
-            kd_arg,
             use_yaml_servo_gains_arg,
             sim_lanes_arg,
             max_log_sessions_arg,

@@ -70,6 +70,10 @@ ROBOT_LAUNCH_FILES = [
 
 LAUNCH_FILES = SIM_LAUNCH_FILES + ROBOT_LAUNCH_FILES
 
+P1B_SIM = "sim_ur5e_p1b.launch.py"
+LEAP_SIM = "sim_iiwa7_leap.launch.py"
+G1_SIM = "sim_g1_p1b.launch.py"
+
 # Argument combinations, not just defaults. Every override argument declares an
 # empty default and is applied only when non-empty, so a defaults-only run never
 # enters those branches: measured with coverage.py, defaults alone reach 88% of
@@ -389,15 +393,65 @@ def test_invalid_mpc_engine_is_rejected(filename):
         _evaluate(filename, {"mpc_engine": "definitely-not-an-engine"})
 
 
+# ── Arguments that were removed stay removed (#689) ─────────────────────────
+#
+# `ros2 launch` accepts an argument the file does not declare and ignores it,
+# so nothing at run time says an argument is back or gone. These read the
+# declaration list and the RT node's override dict instead.
+@pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
+def test_sim_launches_do_not_declare_pd_gain_arguments(filename):
+    """`kp` / `kd` overrode an RT node parameter that nothing reads."""
+    declared = _declared_arguments(_load_launch_module(filename).generate_launch_description())
+    assert not {"kp", "kd"} & set(declared), sorted(declared)
+    # Canary: the declaration list is really being read.
+    assert "max_rtf" in declared, sorted(declared)
+
+
+@pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
+def test_arguments_a_launch_does_not_take_are_not_declared(filename):
+    declared = set(
+        _declared_arguments(_load_launch_module(filename).generate_launch_description())
+    )
+    for argument, skipping in (("mpc_engine", ARGUMENTS_NOT_TAKEN),):
+        expected = argument not in skipping.get(filename, set())
+        assert (argument in declared) is expected, (filename, argument, sorted(declared))
+
+
+@pytest.mark.parametrize("enable_mpc", ["", "true", "false"])
+def test_g1_sim_sends_the_wbc_controller_nothing(enable_mpc):
+    """g1_p1b ships no demo_wbc_controller config, so nothing addresses it.
+
+    `enable_mpc` stays on this launch for the CPU layout alone: it must reach
+    `rt_layout_profile` and no controller parameter.
+    """
+    overrides = {"use_cpu_affinity": "false"}
+    if enable_mpc:
+        overrides["enable_mpc"] = enable_mpc
+    nodes, context = _nodes_by_name(overrides, G1_SIM)
+    values = _override_values(nodes["integrated_rt_controller"], context)
+    assert not [k for k in values if k.startswith("demo_wbc_controller")], sorted(values)
+    # The default is "false" on this launch: no MPC cores shielded.
+    expected = "mpc_on" if enable_mpc == "true" else "mpc_off"
+    assert values.get("rt_layout_profile") == expected, values.get("rt_layout_profile")
+
+
+def test_the_wbc_sims_still_send_the_mpc_overrides():
+    """Positive control for the test above: where the controller exists, the
+    same override dict does carry its keys — the reader can see them."""
+    nodes, context = _nodes_by_name(
+        {"use_cpu_affinity": "false", "enable_mpc": "true", "mpc_engine": "handler"}, P1B_SIM
+    )
+    values = _override_values(nodes["integrated_rt_controller"], context)
+    assert values.get("demo_wbc_controller.mpc.enabled") is True, sorted(values)
+    assert values.get("demo_wbc_controller.mpc.engine") == "handler", sorted(values)
+
+
 # ── sim_overlay (ur5e_p1b sim) ───────────────────────────────────────────────
 # "Evaluates without raising" says nothing about the one property an overlay
 # has: WHERE it lands in each node's parameter list. ROS 2 applies parameter
 # sources in order, so an overlay placed after the CLI dict would silently beat
 # `model_path:=`, and one placed before mujoco_simulator.yaml would silently lose
 # to it — both launch fine and run the wrong scene.
-P1B_SIM = "sim_ur5e_p1b.launch.py"
-LEAP_SIM = "sim_iiwa7_leap.launch.py"
-G1_SIM = "sim_g1_p1b.launch.py"
 
 
 def _node_parameter_sources(node, context) -> list:

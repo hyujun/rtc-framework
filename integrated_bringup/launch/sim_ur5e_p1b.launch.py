@@ -13,9 +13,6 @@ Usage:
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
       model_path:=/path/to/mujoco_menagerie/universal_robots_ur5e/scene.xml
 
-  # PD gain tuning
-  ros2 launch integrated_bringup sim_ur5e_p1b.launch.py kp:=10.0 kd:=1.0
-
   # max_rtf override
   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py max_rtf:=10.0
 
@@ -193,14 +190,6 @@ def launch_setup(context, *args, **kwargs):
     if sim_overlay is not None:
         ctrl_params.append(sim_overlay)
     ctrl_overrides = {}
-
-    kp = LaunchConfiguration("kp").perform(context)
-    if kp != "":
-        ctrl_overrides["kp"] = float(kp)
-
-    kd = LaunchConfiguration("kd").perform(context)
-    if kd != "":
-        ctrl_overrides["kd"] = float(kd)
 
     ctrl_overrides["log_dir"] = session_dir
     # Same number the launch pruned with: the RT node prunes this tree again in
@@ -476,22 +465,6 @@ def generate_launch_description():
         ),
     )
 
-    kp_arg = DeclareLaunchArgument(
-        "kp",
-        default_value="",
-        description=(
-            "Override kp from YAML. Empty -> use YAML value. PD controller proportional gain"
-        ),
-    )
-
-    kd_arg = DeclareLaunchArgument(
-        "kd",
-        default_value="",
-        description=(
-            "Override kd from YAML. Empty -> use YAML value. PD controller derivative gain"
-        ),
-    )
-
     use_yaml_servo_gains_arg = DeclareLaunchArgument(
         "use_yaml_servo_gains",
         default_value="",
@@ -660,8 +633,6 @@ def generate_launch_description():
             enable_viewer_arg,
             sync_timeout_ms_arg,
             max_rtf_arg,
-            kp_arg,
-            kd_arg,
             use_yaml_servo_gains_arg,
             object_pool_arg,
             object_arg,
