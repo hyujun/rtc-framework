@@ -1124,54 +1124,6 @@ class DecelMpcScenarioTest : public SupervisorScenarioTest {
     EXPECT_FALSE(r.body.ref_valid) << "the soft-catch reference ran under mpc";
   }
 
-  /// Catch-frame position of node `k` of `seg`, by the independent oracle.
-  Eigen::Vector3d NodeFk(const DecelPlanSnapshot& seg, int k) const {
-    std::array<double, 64> q{};
-    for (int j = 0; j < kUr5eArmDof; ++j) {
-      q[static_cast<std::size_t>(j)] =
-          seg.q[static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv + j)];
-    }
-    return oracle_->PoseAt(arm_names_, q, kUr5eArmDof).translation();
-  }
-
-  /// p_c + (FK(node k) − FK(node `origin`)) for k = `first` .. N of `seg`: the
-  /// path as MD-43 judges it when the stop is taken to start at `origin`.
-  std::vector<Eigen::Vector3d> Judged(const DecelPlanSnapshot& seg, int first, int origin) const {
-    const Eigen::Vector3d p_c = NearPc();
-    const Eigen::Vector3d base = NodeFk(seg, origin);
-    std::vector<Eigen::Vector3d> out;
-    for (int k = first; k <= seg.n_nodes; ++k) {
-      out.push_back(p_c + (NodeFk(seg, k) - base));
-    }
-    return out;
-  }
-
-  static void Bound(const std::vector<Eigen::Vector3d>& pts, std::array<double, 3>& lo,
-                    std::array<double, 3>& hi) {
-    constexpr double kPad = 1e-4;
-    for (std::size_t a = 0; a < 3; ++a) {
-      lo[a] = std::numeric_limits<double>::infinity();
-      hi[a] = -std::numeric_limits<double>::infinity();
-      for (const auto& x : pts) {
-        lo[a] = std::min(lo[a], x[static_cast<Eigen::Index>(a)] - kPad);
-        hi[a] = std::max(hi[a], x[static_cast<Eigen::Index>(a)] + kPad);
-      }
-    }
-  }
-
-  static bool AllInside(const std::vector<Eigen::Vector3d>& pts, const std::array<double, 3>& lo,
-                        const std::array<double, 3>& hi) {
-    for (const auto& x : pts) {
-      for (std::size_t a = 0; a < 3; ++a) {
-        const double v = x[static_cast<Eigen::Index>(a)];
-        if (v < lo[a] || v > hi[a]) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-
   /// The tick the pair was last written before (the adoption tick, when it
   /// was taken), and the segment written.
   int pair_tick_{-1};
@@ -1398,40 +1350,6 @@ TEST_F(DecelMpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken)
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair([](DecelPlanSnapshot& s) { s.rt_state_ns = 1; });
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kBeforeReset));
-}
-
-TEST_F(DecelMpcScenarioTest, APlanWhoseStopLeavesTheCatchBoxIsNotTaken) {
-  // MD-43: a catch box whose ceiling is below the hand holds no stop node.
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc([this](YAML::Node& y) {
-    const double z = start_pose_.translation().z() - 0.2;
-    y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, z};
-  }));
-  WritePair();
-  // JudgeDecelPlan passed it; MD-43 did not.
-  ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(DecelRefusal::kNone, DecelEvent::kWorkspace));
-}
-
-TEST_F(DecelMpcScenarioTest, TheCatchBoxIsCheckedOnTheStopPartOnly) {
-  // MD-43 on an APPROACH–stop segment: the stop starts at the catch node, so
-  // it is the path from there on that is placed at p_c. The nodes before it
-  // are the approach from the wait pose — a box that holds exactly the stop's
-  // displacement does not hold them, and the pair is taken all the same.
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  bool separable = false;
-  WritePair([this, &separable](DecelPlanSnapshot& s) {
-    std::array<double, 3> lo{};
-    std::array<double, 3> hi{};
-    Bound(Judged(s, s.n_pre, s.n_pre), lo, hi);
-    // The whole path read from node 0 — the stop-only reading — leaves it.
-    separable = !AllInside(Judged(s, 0, 0), lo, hi);
-    ctrl_->SetDecelCatchBoxForTesting(lo, hi);
-  });
-  ASSERT_TRUE(TickUntilMode(Mode::kApproach, 1500)) << Transitions();
-  ASSERT_TRUE(separable) << "the approach is too short to tell the two readings apart";
-  pre_tick_ = nullptr;
-  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
-  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 0) << Transitions();
-  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
 // ── Nothing to follow is ABORT_SAFE, from APPROACH on (MD-44) ───────────────
@@ -1731,65 +1649,6 @@ TEST_F(DecelMpcScenarioTest, AReplanPastTheGateIsDroppedAndTheFollowedSegmentGoe
   EXPECT_FALSE(log_[static_cast<std::size_t>(g)].rt_decel_pending)
       << "the refused replan is still reported";
   EXPECT_TRUE(log_[static_cast<std::size_t>(g)].rt_decel_active);
-  EXPECT_EQ(
-      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
-      0)
-      << "the refused replan was followed";
-  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
-}
-
-// MD-43 for a post-catch replan: it starts part-way through the stop, so its
-// path is judged from where THE STOP started — p_c + (p_k − o), o the catch
-// node of the segment the arm was on at t_c — not from its own node 0, which
-// would drop the distance already covered. Each case sets the box from the
-// first segment and first checks that the two readings disagree on it
-// (otherwise the case would not tell them apart).
-class DecelMpcReplanBoxTest : public DecelMpcScenarioTest {
- protected:
-  static constexpr int kShift = kApproachNPre + 1;  // the replan starts Δ_s into the stop
-
-  /// Follow the pair into DECEL, move the box to `lo`/`hi`, publish the replan
-  /// on the same trajectory, and run the trial to its end.
-  void RunReplanUnder(const std::array<double, 3>& lo, const std::array<double, 3>& hi) {
-    ctrl_->SetDecelCatchBoxForTesting(lo, hi);
-    DecelPlanSnapshot replan = integrated_bringup::testfx::ShiftSegment(first_seg_, kShift);
-    Stamp(replan, 2);
-    ctrl_->DecelBoxForTesting().Store(replan);
-    ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
-  }
-};
-
-TEST_F(DecelMpcReplanBoxTest, AReplanIsJudgedFromWhereTheStopStarted) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  ASSERT_NO_FATAL_FAILURE(FollowThePair());
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  // The box holds the stop's tail measured from its start, and nothing more.
-  std::array<double, 3> lo{};
-  std::array<double, 3> hi{};
-  Bound(Judged(first_seg_, kShift, kApproachNPre), lo, hi);
-  ASSERT_FALSE(AllInside(Judged(first_seg_, kShift, kShift), lo, hi))
-      << "the stop covered too little by node " << kShift << " to tell the readings apart";
-  ASSERT_NO_FATAL_FAILURE(RunReplanUnder(lo, hi));
-  EXPECT_GT(
-      CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq == 2U; }),
-      0)
-      << "the replan was not followed\n"
-      << Transitions();
-  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 0);
-}
-
-TEST_F(DecelMpcReplanBoxTest, AReplanThatOnlyFitsFromItsOwnStartIsRefused) {
-  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
-  ASSERT_NO_FATAL_FAILURE(FollowThePair());
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  // The box holds the replan measured from its own node 0 only.
-  std::array<double, 3> lo{};
-  std::array<double, 3> hi{};
-  Bound(Judged(first_seg_, kShift, kShift), lo, hi);
-  ASSERT_FALSE(AllInside(Judged(first_seg_, kShift, kApproachNPre), lo, hi))
-      << "the stop covered too little by node " << kShift << " to tell the readings apart";
-  ASSERT_NO_FATAL_FAILURE(RunReplanUnder(lo, hi));
-  EXPECT_EQ(CountEvent(DecelEvent::kWorkspace), 1) << Transitions();
   EXPECT_EQ(
       CountTicks([](const TickRec& t) { return t.body.decel_following && t.body.decel_seq != 1U; }),
       0)

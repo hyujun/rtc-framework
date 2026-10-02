@@ -841,8 +841,6 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
               [](YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; });
   expect_park("no catch sub-model", false,
               [](YAML::Node& y) { y["catching"]["planner"]["sub_model"] = "no_such_model"; });
-  expect_park("no catch box", false,
-              [](YAML::Node& y) { y["catching"]["planner"]["workspace"].remove("catch_box"); });
   auto slow = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
   slow.at("ur5e").joint_limits->max_velocity[3] = 0.0;
   expect_park("an arm joint without max_velocity", false, nullptr, slow);

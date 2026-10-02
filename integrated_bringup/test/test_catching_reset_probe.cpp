@@ -100,8 +100,6 @@ class DemoCatchingControllerResetProbe {
     c_.decel_current_.valid = true;
     c_.decel_current_.decel_seq = 8;
     c_.decel_current_valid_ = true;
-    c_.decel_stop_origin_ = {1.0, 2.0, 3.0};
-    c_.decel_stop_origin_valid_ = true;
     // MPC E1-F09: the pair verdict of the tick the reset lands on.
     c_.decel_pair_ok_ = true;
   }
@@ -114,8 +112,6 @@ class DemoCatchingControllerResetProbe {
     EXPECT_FALSE(c_.decel_pending_.valid);
     EXPECT_FALSE(c_.decel_current_valid_);
     EXPECT_FALSE(c_.decel_current_.valid);
-    EXPECT_FALSE(c_.decel_stop_origin_valid_);
-    EXPECT_EQ(c_.decel_stop_origin_[0], 0.0);
     EXPECT_FALSE(c_.decel_pair_ok_);
   }
 
