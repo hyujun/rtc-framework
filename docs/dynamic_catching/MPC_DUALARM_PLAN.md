@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r33 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r34 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료 · E1 · E2 진행 중** · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5e) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -217,6 +217,9 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 - 미배정: `demo_task` · `demo_wbc` · `demo_compliance` 는 팔을 `urdf.sub_models` 의 첫 사슬로 전제한다 — G1 을 구동하지 못한다 (MD-80). G1 의 Cartesian 제어는 E2-F05 의 새 컨트롤러가 맡는다
 - 미배정: 세 군 (두 번째 손). 필요한 것: 손마다 자기 tree 의 root 로 붙는 자리를 정하는 것 (MD-78 의 형태), 손 FK · 통합 모델 cache · 손 궤적이 군 1 하나를 전제한 자리의 일반화, `kMaxOwnedGroups` 2 → 3, 세 번째 군의 E-STOP (MD-77). 왼손 자산이 없다
 - 미배정: 직렬 손의 fingertip FK 가 device 관절 순서를 재배열하지 않는다 ([#685](https://github.com/hyujun/rtc-framework/issues/685)) — E2-F03 의 테스트를 쓰다 찾았다. 폐쇄 체인 손 (`ur5e_p1b` · `g1_p1b`) 은 해당 없고, `iiwa7_leap` 에서 발현하는지는 재지 않았다
+- 미배정: 사슬 군에서 팔 끝 frame 이 안 풀려도 `arm_tip_pose_valid` 가 참으로 나간다 ([#688](https://github.com/hyujun/rtc-framework/issues/688)) — tree 군은 configure 를 거부하게 했다 (MD-78). 직접 고치려면 `ComputeEstop` 의 출력을 바꾼다 (E-8)
+- 미배정: `compare_mjcf_urdf` 가 G1 쌍에서 거짓 불일치를 낸다 ([#686](https://github.com/hyujun/rtc-framework/issues/686), MD-81) — 그때까지 URDF ↔ MJCF 의 일치는 직접 비교로 본다 (§8)
+- 미배정: sim launch 네 개의 공통화와 tree 모델 조회의 나머지 사본 ([#689](https://github.com/hyujun/rtc-framework/issues/689)) — 동작을 바꾸지 않는 정리다. E2-F05 가 새 컨트롤러와 launch 인자를 더하기 전에 하면 고칠 자리가 준다
 - E3-F01: 포구 후보 선택을 MPC 로 옮길지 (MD-46 의 편차) 와 계획기 interface (ARCH-3)
 - E3-F05: G1 통합의 형태 — 단일 팔은 `DemoCatchingController` 의 `mode: mpc` 로 돈다 (MD-46)
 - 닫음 (MD-76 — 다시 열려면 사용자 결정): ur5e_p1b 에 남은 간격. `mpc` 의 손은 $t_c$ 에 공 진행 방향으로 17 mm 뒤에 있다 (`closed_form` 6 mm) — 명령이 아직 가속 중이고 (+14.9 m/s²) 서보 지연이 그 몫을 낸다. planner 파라미터로는 더 줄지 않는다 ($\gamma_{ref}$ 를 더 낮추면 위치는 좋아지나 상대속도가 2 m/s 로 커져 성공이 준다). 남은 손잡이는 범위 밖이다: 격자 `approach.dt_pre_s`, $t_c$ 근방 가속의 비용 (formulation), 지연 보상의 형태 — 시간 lead 대신 $q_{ref}+\tau\dot q_{ref}$ (공통부), YAML 키가 없는 가중 ($w_\Delta$ · jerk · slack 벌점). **노드 사이 보간은 이미 있다** (`jerk_segment.hpp`, 매 tick 평가)
@@ -289,7 +292,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | E2-F01 | [#633](https://github.com/hyujun/rtc-framework/issues/633) | G1 로봇 자산 — 모델 로드 · frame · sim 서보 | E0-F01 | 완료 (2026-10-02, [#687](https://github.com/hyujun/rtc-framework/pull/687)) — 결정 MD-79 – MD-81, 측정 §8. scene 은 `hand_description` 의 MJCF 를 그대로 쓴다 |
 | E2-F02 | [#634](https://github.com/hyujun/rtc-framework/issues/634) | config · launch — `config/g1_p1b/` · `sim_g1_p1b.launch.py` | E2-F01 | 완료 (같은 PR) — 결정 MD-77 · MD-80. 군은 `g1` · `p1b` 둘, `derive_accel_limits` 는 뺐다 |
 | E2-F03 | [#635](https://github.com/hyujun/rtc-framework/issues/635) | demo_joint_controller — G1 구동 (군 0 이 tree) | E2-F02 | 완료 (같은 PR) — 결정 MD-78, 측정 §8. 팔 끝 · 손끝 TF 와 MuJoCo 의 차 ≤ 0.71 mm |
-| E2-F04 | [#636](https://github.com/hyujun/rtc-framework/issues/636) | CLIK 다중 frame 일반화 (`rtc_tsid`) | E0-F03 | 대기 |
+| E2-F04 | [#636](https://github.com/hyujun/rtc-framework/issues/636) | CLIK 다중 frame 일반화 (`rtc_tsid`) | E0-F03 | 대기 — 선행은 끝났다. E1 과 병행할 수 있다 (브랜치 계획의 순서 표) |
 | E2-F05 | [#637](https://github.com/hyujun/rtc-framework/issues/637) | demo_dualarm_controller — QP 다중 frame CLIK 바인딩 | E2-F03, E2-F04 | 대기 |
 | E2-F06 | [#638](https://github.com/hyujun/rtc-framework/issues/638) | demo_controller_gui — G1 profile · 다중 frame 목표 | E2-F05 | 대기 |
 | E2-F07 | [#639](https://github.com/hyujun/rtc-framework/issues/639) | plot_rtc_log — 다중 device group · frame 별 task error | E2-F05 | 대기 |
@@ -362,7 +365,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/g1-p1b-bringup` | E2-F01, E2-F02, E2-F03 | 자산, config · launch, `demo_joint_controller` 의 G1 구동. 셋이 모여야 G1 sim 에서 관절 추종을 확인할 수 있다. **나누는 조건**: E2-F03 이 `DemoJointController` 의 일반화 (공용 코드 변경) 를 요구하면 분리한다 — 기존 로봇의 회귀를 그 PR 만으로 판정한다. 나누지 않았다 (MD-82) |
+| `feat/g1-p1b-bringup` | E2-F01, E2-F02, E2-F03 | 자산, config · launch, `demo_joint_controller` 의 G1 구동. 셋이 모여야 G1 sim 에서 관절 추종을 확인할 수 있다. **나누는 조건**: E2-F03 이 `DemoJointController` 의 일반화 (공용 코드 변경) 를 요구하면 분리한다 — 기존 로봇의 회귀를 그 PR 만으로 판정한다. 나누지 않았다 (MD-82). `verify-changes.sh` 의 `test/` 데이터 파일 라우팅과 code review 반영도 여기서 했다 |
 | `feat/tsid-clik-multiframe` | E2-F04 | `rtc_tsid` public API 변경. 기존 소비자 둘의 기능 동등성이 성공 기준이다 |
 | `feat/demo-dualarm-controller` | E2-F05 | 신규 controller. Sprint Contract = spec |
 | `feat/g1-dualarm-tooling` | E2-F06, E2-F07 | GUI 와 plot. 둘 다 `demo_dualarm_controller` 의 출력을 소비한다 |
@@ -926,7 +929,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
   - TF 의 oracle 은 같은 구동 관절 값을 준 offline MuJoCo 를 정착시킨 body · site 위치다. 약지의 0.7 mm 는 MuJoCo 의 soft equality 와 컨트롤러의 폐쇄 체인 사영의 차이로 보인다 (확인하지 않았다).
   - sim sync 가 한 주기를 넘겨 기다린 step 이 군마다 1 번 있었다 (RT 권한 없는 host). 명령 누락은 아니다.
 - **`DemoJointController` 의 tree 경로** (MD-78 · MD-81). 합성 fixture `rtc_urdf_bridge/test/urdf/dual_arm_tree_hand.urdf` 에서: 팔 끝 · 손끝 = 전체 모델 FK (1e-9), E-STOP tick 의 팔 끝 = 정상 tick (1e-12), TF slot 이름, 모델에 없는 관절 이름은 configure 거부. mutation 둘이 red 다 — tree handle 의 관절 순서를 걸지 않으면 E-STOP 팔 끝이 0.376 m 어긋나고, 팔 끝을 primary tree 의 자기 tip 으로 잡으면 팔 끝 4.3 cm · 손끝 15 cm · TF 이름이 어긋난다. 로그 용량을 16 으로 되돌리면 새 테스트 둘이 red 다. **r33 (code review 반영)**: 같은 URDF 를 사슬로 선언한 rig 로 E-STOP tick 의 순서 매핑과 이름 거부를 사슬 군에서도 보고, 팔 끝이 없는 tree 의 거부를 통과 대조군과 함께 본다. lifecycle 케이스는 `PreConfigure` → device config → `on_configure` 순서로 올린다 — `LoadConfig` 를 직접 부르고 `on_configure` 로 가면 config 를 두 번 읽어 관절 순서 map 이 사라진다 (그 순서로 되돌리면 `on_configure` 뒤의 E-STOP 케이스가 red). 사슬 군에서 팔 끝 frame 이 안 풀린 채 유효로 나가는 경우는 E-8 이라 [#688](https://github.com/hyujun/rtc-framework/issues/688) 로 남겼다.
-- **기존 로봇.** TF slot · payload frame 이름을 고정한 특성화 테스트 (`test_joint_tf_slot_frames`, 고치기 전 코드에서 작성) 가 그대로 통과한다. 기존 테스트의 assertion 변경 0 — `integrated_bringup` 1780 건 (skip 11), `rtc_mujoco_sim` 255 건 통과. `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` sim 은 종전 roster 로 기동한다 (`DemoJointController` active, 명령 누락 0 건) — 세 컨트롤러의 등록 변경이 그 roster 를 바꾸지 않는다.
+- **기존 로봇.** TF slot · payload frame 이름을 고정한 특성화 테스트 (`test_joint_tf_slot_frames`, 고치기 전 코드에서 작성) 가 그대로 통과한다. 기존 테스트의 assertion 변경 0 — `integrated_bringup` 1780 건 (skip 11), `rtc_mujoco_sim` 255 건 통과 (code review 반영 뒤 1785 · 257). `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` sim 은 종전 roster 로 기동한다 (`DemoJointController` active, 명령 누락 0 건) — 세 컨트롤러의 등록 변경이 그 roster 를 바꾸지 않는다. code review 반영 (사슬 군의 관절 순서 매핑) 뒤에 네 profile 을 다시 띄워 같은 결과를 확인했다.
 - **찾은 결함 (범위 밖).** 직렬 손의 fingertip FK 가 device 관절 순서를 재배열하지 않는다 — `InitHandModel` 의 `SetJointOrder` 가 device config 보다 먼저 돌아 걸리지 않는다 ([#685](https://github.com/hyujun/rtc-framework/issues/685)).
 
 ## 9. 개정 이력
@@ -935,6 +938,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r34 | E2-F01 · F02 · F03 merge 뒤 정리: [#687](https://github.com/hyujun/rtc-framework/pull/687) 과 [#684](https://github.com/hyujun/rtc-framework/pull/684) (MD-81 의 테스트 삭제, [#682](https://github.com/hyujun/rtc-framework/issues/682)) 가 `main` 에 들어갔다. §4 미결에 후속 이슈 [#686](https://github.com/hyujun/rtc-framework/issues/686) · [#688](https://github.com/hyujun/rtc-framework/issues/688) · [#689](https://github.com/hyujun/rtc-framework/issues/689) 를 올렸다. E2-F04 는 선행이 끝나 착수할 수 있다 (§6). §8 의 원자료 (세션 `261002_2044`) 는 지웠다 — 다시 낼 스크립트는 [#633](https://github.com/hyujun/rtc-framework/issues/633) 의 코멘트에 있다 |
 | r33 | #687 의 code review 반영: 군 0 의 관절 순서 매핑 · 이름 거부를 사슬 군에도 적용, 팔 끝이 없는 tree 군은 configure 거부 (MD-78), gear · ctrlrange 가 있는 `<motor>` 에 게인을 설치할 때의 경고 (MD-79), `sim_g1_p1b` 의 `enable_mpc` 기본값 `false`. 후속 [#688](https://github.com/hyujun/rtc-framework/issues/688) · [#689](https://github.com/hyujun/rtc-framework/issues/689) |
 | r32 | E2-F01 · F02 · F03 완료 ([#687](https://github.com/hyujun/rtc-framework/pull/687)): 결정 MD-77 – MD-82 (군은 `g1` · `p1b` 둘, 군 0 이 tree 일 때의 `DemoJointController`, sim 서보의 bias 타입과 G1 게인, G1 config 의 값과 세 컨트롤러의 등록, `hand_description` 모델은 load 만, 브랜치 하나), §5 정정 (armature 는 손 관절에만, G1 actuator, 로그 용량), §6 의 표, 측정 §8, 미결에 유지 오차 · 세 군 · #685 |
 | r31 | 상태를 한 곳으로 모음 (하네스 신호 — 진행 상태가 상태줄 · 순서 표 · epic 본문 · project readme 에 따로 적혀 있었고 순서 표가 뒤처졌다). §2 에 규칙 "상태는 한 곳에만 적는다", 상태줄은 epic 의 상태만, 브랜치 계획 · 순서 표에서 완료 · 다음 표시와 PR 링크를 뺌 (feature 표의 상태 열이 갖는다). epic 이슈 본문의 수기 체크리스트와 project readme 의 진행 문장도 같은 날 뺐다 |
