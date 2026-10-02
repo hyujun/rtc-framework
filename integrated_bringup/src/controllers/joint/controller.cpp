@@ -2,6 +2,7 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
 
@@ -22,25 +23,6 @@
 #pragma GCC diagnostic pop
 
 namespace integrated_bringup {
-
-namespace {
-
-/// The `urdf.tree_models` entry called `name`, or nullptr.
-const rtc_urdf_bridge::TreeModelConfig* FindTreeModel(const rtc_urdf_bridge::ModelConfig& config,
-                                                      const std::string& name) {
-  for (const auto& tm : config.tree_models) {
-    if (tm.name == name) {
-      return &tm;
-    }
-  }
-  return nullptr;
-}
-
-bool HasTreeModel(const rtc_urdf_bridge::ModelConfig& config, const std::string& name) {
-  return !name.empty() && FindTreeModel(config, name) != nullptr;
-}
-
-}  // namespace
 
 DemoJointController::DemoJointController(std::string_view urdf_path)
     : DemoJointController(urdf_path, Gains{}) {}
@@ -111,7 +93,7 @@ void DemoJointController::InitArmModel(const rtc_urdf_bridge::ModelConfig& confi
                                      [&](const auto& sm) { return sm.name == primary; });
   if (has_chain) {
     arm_model_ = builder_->GetReducedModel(primary);
-  } else if (HasTreeModel(config, primary)) {
+  } else if (FindTreeModel(config, primary) != nullptr) {
     arm_model_ = builder_->GetTreeModel(primary);
     arm_model_is_tree_ = true;
   } else {
@@ -155,20 +137,15 @@ void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*co
 
   // Resolve fingertip frame IDs from tree_model tip_links
   const auto* sys_cfg = GetSystemModelConfig();
-  if (sys_cfg) {
-    for (const auto& tm : sys_cfg->tree_models) {
-      if (tm.name == secondary) {
-        if (!tm.root_link.empty()) {
-          hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
-          if (hand_root_frame_id_ != 0) {
-            use_hand_root_frame_ = true;
-          }
-        }
-        for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
-          fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
-        }
-        break;
+  if (const auto* tm = sys_cfg ? FindTreeModel(*sys_cfg, secondary) : nullptr) {
+    if (!tm->root_link.empty()) {
+      hand_root_frame_id_ = hand_handle_->GetFrameId(tm->root_link);
+      if (hand_root_frame_id_ != 0) {
+        use_hand_root_frame_ = true;
       }
+    }
+    for (std::size_t i = 0; i < std::min(tm->tip_links.size(), kNumFingertips); ++i) {
+      fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm->tip_links[i]);
     }
   }
 
@@ -210,14 +187,10 @@ void DemoJointController::ConfigureClosedChainHandFk() {
   // fingertip links + hand-root frame from the secondary tree-model definition.
   std::vector<std::string> tips;
   std::string hand_root;
-  if (const auto* sys = GetSystemModelConfig()) {
-    for (const auto& tm : sys->tree_models) {
-      if (tm.name == secondary) {
-        tips = tm.tip_links;
-        hand_root = tm.root_link;
-        break;
-      }
-    }
+  const auto* sys = GetSystemModelConfig();
+  if (const auto* tm = sys ? FindTreeModel(*sys, secondary) : nullptr) {
+    tips = tm->tip_links;
+    hand_root = tm->root_link;
   }
 
   const auto res =
@@ -299,23 +272,24 @@ void DemoJointController::OnDeviceConfigsSet() {
           root_link = tm->root_link;
         }
       }
-      if (tip_link.empty() && !secondary.empty()) {
+      if (tip_link.empty()) {
         if (const auto* tm = FindTreeModel(*sys_cfg, secondary)) {
           tip_link = tm->root_link;
         }
       }
     }
-    // The E-STOP tick feeds this handle the device's positions as they arrive.
-    // A chain model is read in that order already; a tree's joint order is the
-    // model's, so the device order has to be mapped onto it — and a name that
-    // does not resolve would leave the map off and the pose silently wrong.
-    if (primary_cfg != nullptr && arm_handle_ != nullptr &&
-        !arm_handle_->SetJointOrder(primary_cfg->joint_state_names)) {
-      arm_model_config_error_ = "primary device '" + primary +
-                                "': joint_state_names do not all resolve on tree model '" +
-                                primary + "'";
-      RCLCPP_ERROR(logger_, "[joint] %s", arm_model_config_error_.c_str());
-    }
+  }
+  // The E-STOP tick feeds this handle the device's positions as they arrive,
+  // so the device order has to be mapped onto the model's — for a tree, whose
+  // joint order is the model's own, and for a chain whose device lists its
+  // joints in another order. A name that does not resolve would leave the map
+  // off and the pose silently wrong, so it refuses the configure instead. (A
+  // device order that already is the model's installs no map at all.)
+  if (primary_cfg != nullptr && arm_handle_ != nullptr &&
+      !arm_handle_->SetJointOrder(primary_cfg->joint_state_names)) {
+    arm_model_config_error_ =
+        "primary device '" + primary + "': joint_state_names do not all resolve on its model";
+    RCLCPP_ERROR(logger_, "[joint] %s", arm_model_config_error_.c_str());
   }
   if (arm_handle_ != nullptr) {
     if (!tip_link.empty()) {
@@ -331,6 +305,18 @@ void DemoJointController::OnDeviceConfigsSet() {
         use_root_frame_ = true;
       }
     }
+  }
+  // A tree group with no resolvable end has no arm tip to report: both tick
+  // lanes would hand out the tree root's own pose as the tip, flagged valid,
+  // and compose the fingertips onto it. A chain declares its tip, so this is
+  // the tree's case alone — refused here rather than published.
+  if (arm_model_is_tree_ && tip_frame_id_ == 0 && arm_model_config_error_.empty()) {
+    arm_model_config_error_ =
+        "primary device '" + primary + "' is a tree with no arm tip: " +
+        (tip_link.empty() ? std::string("no secondary group declares a tree model to mount on it")
+                          : "link '" + tip_link + "' is not on its model") +
+        " (declare the hand's tree model, or set the device's urdf.tip_link)";
+    RCLCPP_ERROR(logger_, "[joint] %s", arm_model_config_error_.c_str());
   }
   // Names for on_configure. A chain group whose device config carries no links
   // (a fixture that bypasses the CM's resolution) keeps the labels it always
@@ -785,7 +771,8 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   // that declares only trees falls through to the arm-only fallback below and
   // dies looking up a chain called "arm".
   if (sys_cfg && !sys_cfg->urdf_path.empty() &&
-      (!sys_cfg->sub_models.empty() || HasTreeModel(*sys_cfg, GetPrimaryDeviceName()))) {
+      (!sys_cfg->sub_models.empty() ||
+       FindTreeModel(*sys_cfg, GetPrimaryDeviceName()) != nullptr)) {
     // System-level ModelConfig (top-level "urdf:" YAML section)
     InitArmModel(*sys_cfg);
   } else if (cfg["model_config"]) {

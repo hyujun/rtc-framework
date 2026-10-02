@@ -106,7 +106,9 @@ class JointTfSlotFrames : public ::testing::Test {
   }
 
   /// The production bring-up order (rt_controller_node_params.cpp): model
-  /// config + shared builder, LoadConfig, device configs, then on_configure.
+  /// config + shared builder, PreConfigure (node + LoadConfig), device configs,
+  /// then on_configure — which, after a PreConfigure, does not load the config
+  /// a second time and so keeps what the device configs wired.
   std::unique_ptr<DemoJointController> Configure(
       const char* yaml, const char* node_name, const rtc_urdf_bridge::ModelConfig& model_cfg,
       std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder,
@@ -116,12 +118,13 @@ class JointTfSlotFrames : public ::testing::Test {
     ctrl->SetSharedModelBuilder(std::move(builder));
     ctrl->SetControlRate(500.0);
     const YAML::Node cfg = YAML::Load(yaml);
-    ctrl->LoadConfig(cfg);
-    ctrl->SetDeviceNameConfigs(devices);
-
     rclcpp::NodeOptions opts;
     opts.use_global_arguments(false);
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name, "", opts);
+    EXPECT_EQ(ctrl->PreConfigure(node_, cfg), DemoJointController::CallbackReturn::SUCCESS)
+        << node_name;
+    ctrl->SetDeviceNameConfigs(devices);
+
     const auto rc = ctrl->on_configure(rclcpp_lifecycle::State{}, node_, cfg);
     EXPECT_EQ(rc, DemoJointController::CallbackReturn::SUCCESS) << node_name;
     return ctrl;

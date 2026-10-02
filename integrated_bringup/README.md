@@ -346,7 +346,7 @@ demo_task_controller:
 
 관절 공간 Quintic 궤적 생성기 -- UR5e 6-DOF 로봇 암 + 10-DOF 핸드 통합 제어기입니다. Rest-to-rest quintic 다항식으로 부드러운 궤적을 생성하며, 출력을 직접 위치 명령으로 전달합니다 (비례 게인 없음).
 
-**첫 device group 의 모델.** 군 0 의 모델은 그 device 이름으로 `urdf.sub_models` (사슬, root → tip) → `urdf.tree_models` (가지가 여럿인 tree) → 이름 `arm` 의 사슬 순으로 찾습니다. 사슬이 있으면 사슬을 씁니다. tree 인 군 (`g1_p1b` 의 `g1`: waist + 양팔) 은 tip 이 없으므로 **팔 끝 = 손이 붙는 link = 군 1 tree 의 `root_link`** 로 정하고, 손끝 pose 는 `T_root_fingertip = T_root_tip · T_tip_fingertip` 로 합성합니다 — 손 FK 가 그 link 기준이라 장착 변환이 항등이 아니어도 그대로 맞습니다. TF slot 과 vector payload 의 frame 이름도 같은 root · tip 에서 나옵니다. 군은 둘 (팔 계열 하나 + 손 하나) 까지입니다.
+**첫 device group 의 모델.** 군 0 의 모델은 그 device 이름으로 `urdf.sub_models` (사슬, root → tip) → `urdf.tree_models` (가지가 여럿인 tree) → 이름 `arm` 의 사슬 순으로 찾습니다. 사슬이 있으면 사슬을 씁니다. tree 인 군 (`g1_p1b` 의 `g1`: waist + 양팔) 은 tip 이 없으므로 **팔 끝 = 손이 붙는 link = 군 1 tree 의 `root_link`** 로 정하고, 손끝 pose 는 `T_root_fingertip = T_root_tip · T_tip_fingertip` 로 합성합니다 — 손 FK 가 그 link 기준이라 장착 변환이 항등이 아니어도 그대로 맞습니다. TF slot 과 vector payload 의 frame 이름도 같은 root · tip 에서 나옵니다. 군은 둘 (팔 계열 하나 + 손 하나) 까지입니다. 다음 두 경우는 `on_configure` 가 **FAILURE** 입니다: 군 0 의 `joint_state_names` 중 그 모델에 없는 이름이 있을 때 (사슬 · tree 공통 — E-STOP tick 의 팔 끝 FK 가 device 순서를 이름으로 모델 순서에 맞추므로, 순서가 달라도 되지만 이름은 전부 풀려야 합니다), 그리고 tree 인 군의 팔 끝을 정할 수 없을 때 (손 군의 tree 모델이 없고 device 의 `urdf.tip_link` 도 비어 있음).
 
 **타겟 메시지 레이아웃** (`/target_joint_positions`, `Float64MultiArray`):
 - `data[0..5]`: 로봇 암 관절 타겟 (rad)

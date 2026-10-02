@@ -1,5 +1,6 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 
 #include <chrono>
@@ -45,9 +46,10 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
       }
     }
 
-    // A tree primary group whose joint names did not resolve on its model
-    // (OnDeviceConfigsSet latched it): the E-STOP tick's TCP would be read in
-    // the wrong joint order with no other symptom.
+    // The primary group's model could not be wired (OnDeviceConfigsSet latched
+    // it): joint names that do not resolve on the model — the E-STOP tick's
+    // TCP would be read in the wrong joint order with no other symptom — or a
+    // tree group with no arm tip.
     if (!arm_model_config_error_.empty()) {
       RCLCPP_ERROR(logger_, "primary group model configuration failed: %s",
                    arm_model_config_error_.c_str());
@@ -87,19 +89,11 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
       // frame via the TCP placement (tcp = root→tip), so the published
       // translation is root-relative. Labelling the parent as the hand root
       // (base_adapter / hand_base_link) double-counts the arm reach in RViz.
-      if (sys_cfg != nullptr) {
-        const auto secondary = GetSecondaryDeviceName();
-        if (!secondary.empty()) {
-          for (const auto& tm : sys_cfg->tree_models) {
-            if (tm.name == secondary) {
-              // Cap slots to the fingertip count the compute side fills (#125 F4).
-              AppendHandTipSlots(owned_topics_, arm_root_link_name_, tm.tip_links,
-                                 /*group_idx=*/1,
-                                 /*max_tips=*/kNumFingertips);
-              break;
-            }
-          }
-        }
+      if (const auto* tm = sys_cfg ? FindTreeModel(*sys_cfg, GetSecondaryDeviceName()) : nullptr) {
+        // Cap slots to the fingertip count the compute side fills (#125 F4).
+        AppendHandTipSlots(owned_topics_, arm_root_link_name_, tm->tip_links,
+                           /*group_idx=*/1,
+                           /*max_tips=*/kNumFingertips);
       }
       // Virtual TCP — broadcast under the primary group, parent = primary root
       AppendVirtualTcpSlot(owned_topics_, arm_root_link_name_, /*group_idx=*/0);
