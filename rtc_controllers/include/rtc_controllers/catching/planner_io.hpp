@@ -121,7 +121,7 @@ struct PlannerRtState {
   /// Whether the RT is following a segment this tick, and which one (its
   /// decel_seq) — the segment its command is sampled from, in every mode that
   /// follows one: APPROACH through HOLD (E1-F09). The planner evaluates the
-  /// next solve's initial state on it (MD-28 path (i), MD-58). Always false /
+  /// next solve's initial state on it (MD-58). Always false /
   /// 0 under `supervisor.decel.mode: closed_form`.
   bool decel_active{false};
   std::uint32_t decel_seq{0};
@@ -143,7 +143,8 @@ struct PlannerRtState {
 static_assert(std::is_trivially_copyable_v<PlannerRtState>);
 
 /// What the planner does in a given supervisor mode (L3 §5.3). The decel MPC
-/// (MPC E1-F03) runs alongside kMonitor and in kDecel when it is configured.
+/// (MPC E1-F08) replans a followed plan's segment in every one of them but
+/// kIdle, when it is configured.
 ///
 /// A PREDICATE over the mode, not an ordering test: `mode >= kCommitted` would
 /// silently change meaning the day a mode is inserted into the enum (L3 §5.3
@@ -286,9 +287,9 @@ struct DecelAdmissionContext {
   std::int64_t plan_t_c_ns{0};
   NowReal now{0};
   /// Upper bound on `now − publish_ns` [ns]. NOT the trajectory's staleness
-  /// bound: a segment solved t_pre before t_c is adopted around t_c and
-  /// followed for N_s·Δ_s after, so it is read once, at admission (MD-37 —
-  /// the binding's kDecelAdmissionMaxAgeNs). 0 disables.
+  /// bound: a segment is followed long after it was solved, so its age is
+  /// read once, at admission (MD-37 — the binding's kDecelAdmissionMaxAgeNs).
+  /// 0 disables.
   std::int64_t max_age_ns{0};
   std::int64_t reset_floor_ns{0};
   /// Floor on the RT state the segment was PREDICTED from (`rt_state_ns`),

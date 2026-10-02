@@ -23,47 +23,6 @@ bool PlannerCycle::Bind(const PlannerCycleIo& io) noexcept {
   return bound_;
 }
 
-void PlannerCycle::RunDecel(const PlannerRtState& rt, PlannerCycleRecord& rec) noexcept {
-  if (io_.decel == nullptr || !decel_.Configured()) {
-    return;
-  }
-  if (!decel_.Plan(rt, decel_out_, rec.decel)) {
-    return;
-  }
-  if (post_decel_hook_ != nullptr) {
-    post_decel_hook_(post_decel_context_);
-  }
-  // Stamped BEFORE the re-check, so a stamp never postdates what the re-check
-  // saw. It is NOT what protects the RT from a reset that lands after the
-  // re-check: the E-STOP path takes its reset floor at the START of the tick
-  // that resets, which can precede this stamp. That guard is the plan match
-  // (JudgeDecelPlan kPlan): the reset drops plan_active and plan ids are
-  // monotone, so the segment names a plan the RT no longer follows — and the
-  // next wake withdraws it (reset_seen in Run). The RT also refuses a segment
-  // PREDICTED from a state older than its floor (state_floor_ns, MD-37), so a
-  // stamp that postdates the reset cannot carry the stopped trial's state.
-  const std::int64_t publish_ns = clock_();
-  const PlannerRtState rt_now = io_.rt->Load();
-  const auto m = static_cast<Mode>(rt_now.mode);
-  const bool decel_mode = m == Mode::kCommitted || m == Mode::kClosing || m == Mode::kDecel;
-  if (!rt_now.valid || !decel_mode || rt_now.reset_epoch != rt.reset_epoch ||
-      rt_now.activation_generation != rt.activation_generation || !rt_now.plan_active ||
-      rt_now.plan_id != rt.plan_id || rt_now.plan_t_c_ns != rt.plan_t_c_ns ||
-      // x0 path (i) predicted from the segment the RT followed at the first
-      // load; a switch or a drop since then makes that x0 stale.
-      rt_now.decel_active != rt.decel_active || rt_now.decel_seq != rt.decel_seq) {
-    rec.decel.outcome = DecelOutcome::kSuperseded;
-    return;
-  }
-  decel_out_.publish_ns = publish_ns;
-  decel_out_.decel_seq = ++last_decel_seq_;
-  io_.decel->Store(decel_out_);
-  decel_.NotePublished(decel_out_);
-  rec.decel.outcome = DecelOutcome::kPublished;
-  rec.decel.decel_seq = decel_out_.decel_seq;
-  rec.decel.publish_ns = publish_ns;
-}
-
 DecelBallTarget PlannerCycle::FollowedBall(const PlannerRtState& rt) const noexcept {
   // The PLAN's track: after the freeze the RT keeps the committed one while
   // rt.track_generation follows whatever it consumed last — another ball's
@@ -85,11 +44,20 @@ void PlannerCycle::RunReplan(const PlannerRtState& rt, const DecelBallTarget& ba
   if (post_decel_hook_ != nullptr) {
     post_decel_hook_(post_decel_context_);
   }
-  // Stamped before the re-check (as RunDecel). The source is re-derived from
-  // the RT's newest report: a segment solved from what the RT no longer
-  // reports would start somewhere the arm is not. A mere decel_seq change is
-  // not a reason to drop it — in a chain that switches every 0.05 – 0.1 s that
-  // rule would discard most solves.
+  // Stamped BEFORE the re-check, so a stamp never postdates what the re-check
+  // saw. It is NOT what protects the RT from a reset that lands after the
+  // re-check: the E-STOP path takes its reset floor at the START of the tick
+  // that resets, which can precede this stamp. That guard is the plan match
+  // (JudgeDecelPlan kPlan): the reset drops plan_active and plan ids are
+  // monotone, so the segment names a plan the RT no longer follows — and the
+  // next wake withdraws it (reset_seen in Run). The RT also refuses a segment
+  // PREDICTED from a state older than its floor (state_floor_ns, MD-37), so a
+  // stamp that postdates the reset cannot carry the stopped trial's state.
+  //
+  // The source is re-derived from the RT's newest report: a segment solved
+  // from what the RT no longer reports would start somewhere the arm is not.
+  // A mere decel_seq change is not a reason to drop it — in a chain that
+  // switches every 0.05 – 0.1 s that rule would discard most solves.
   const std::int64_t publish_ns = clock_();
   const PlannerRtState rt_now = io_.rt->Load();
   const auto m = static_cast<Mode>(rt_now.mode);
@@ -106,7 +74,7 @@ void PlannerCycle::RunReplan(const PlannerRtState& rt, const DecelBallTarget& ba
   decel_out_.publish_ns = publish_ns;
   decel_out_.decel_seq = ++last_decel_seq_;
   io_.decel->Store(decel_out_);
-  decel_.NoteApproachPublished(decel_out_);
+  decel_.NotePublished(decel_out_);
   rec.decel.outcome = DecelOutcome::kPublished;
   rec.decel.decel_seq = decel_out_.decel_seq;
   rec.decel.publish_ns = publish_ns;
@@ -158,7 +126,7 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
   }
   io_.plan->Store(plan);
   search_.NotePublished(plan);
-  decel_.NoteApproachPublished(decel_out_);
+  decel_.NotePublished(decel_out_);
   pair_publish_ns_ = publish_ns;
   rec.outcome = CycleOutcome::kPublished;
   rec.plan_id = plan.plan_id;
@@ -236,28 +204,24 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     io_.cov->LoadInto(cov_);
     search_.Monitor(traj_, cov_, cov_.valid && SameSnapshot(cov_.token, traj_.token), rt,
                     rec.search);
-    // The stop segment, after σ_ℓ is recorded (MPC E1-F03); with a pre-catch
-    // grid the APPROACH–stop replan (E1-F08), still before t_c.
-    if (ApproachActive()) {
+    // The segment's replan, after σ_ℓ is recorded (MPC E1-F08) — still
+    // before t_c, so the ball is read.
+    if (DecelActive()) {
       RunReplan(rt, FollowedBall(rt), rec);
-    } else {
-      RunDecel(rt, rec);
     }
     return rec;
   }
   if (activity == PlannerActivity::kDecel) {
     // Post-catch replans only (MD-31). The outcome stays kIdle (MD-29).
-    if (ApproachActive()) {
+    if (DecelActive()) {
       RunReplan(rt, DecelBallTarget{}, rec);
-    } else {
-      RunDecel(rt, rec);
     }
     return rec;
   }
   if (activity != PlannerActivity::kSearch) {
     return rec;
   }
-  if (ApproachActive()) {
+  if (DecelActive()) {
     if (rt.plan_active) {
       // APPROACH: the RT follows a plan, the search is skipped (MD-57) and
       // the wake replans its segment. The outcome stays kIdle (MD-29).
@@ -321,7 +285,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   }
   // A plan and its first segment go together (MPC E1-F08, MD-56). "No plan"
   // is published as before.
-  if (ApproachActive() && plan.valid) {
+  if (DecelActive() && plan.valid) {
     PublishPair(rt, plan, rec);
     return rec;
   }

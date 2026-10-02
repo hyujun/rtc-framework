@@ -99,9 +99,10 @@ class NodeTrajectoryFollower {
   /// per node checked). With an `anchor`, the path is judged TRANSLATED so
   /// node `first_node` sits at the anchor — anchor + (p_k − p_first) — i.e.
   /// the stop's displacement from where it starts, placed at the catch point
-  /// the planner checked its own stop from. `first_node` is 0 for a stop-only
-  /// segment and the catch node (n_pre) for an APPROACH–stop one, whose
-  /// pre-catch nodes are the approach, not the stop.
+  /// the planner checked its own stop from. `first_node` is 0 for a segment
+  /// that starts at t_c or after it (n_pre 0) and the catch node (n_pre) for
+  /// one that starts before, whose pre-catch nodes are the approach, not the
+  /// stop.
   /// Between nodes is not checked. False when uninitialised, on a shape this
   /// arm cannot sample, on a `first_node` outside 0 .. n_nodes, or on the
   /// first node outside (NaN counts as outside); `first_outside` (if given)

@@ -12,18 +12,17 @@
 // throws nothing. Buffers are members sized at construction and filled with
 // SeqLock::LoadInto: the covariance snapshot alone is 11.5 KB.
 //
-// THE DECEL STEP (MPC E1-F03). When a decel planner is configured and the
-// optional fifth box is bound, the monitor modes (and DECEL, see ActivityFor)
-// also pre-compute the stop segment (decel_planner.hpp) and store it in its
-// own box. It never changes the wake's CycleOutcome (MD-29) — the PlanSnapshot
-// counters and the D-7a latency keep meaning what they meant; the decel
-// account is PlannerCycleRecord::decel.
+// THE DECEL PLANNER'S PART (MPC E1-F03 #629, E1-F08 #661). It runs when a
+// decel planner is configured (decel_planner.hpp) and the optional fifth box
+// is bound; without either, a wake is the search alone and the plan is
+// published by itself. A replan never changes the wake's CycleOutcome (MD-29)
+// — the PlanSnapshot counters and the D-7a latency keep meaning what they
+// meant; the decel account is PlannerCycleRecord::decel.
 //
-// THE APPROACH–STOP PAIR (MPC E1-F08 #661). With a pre-catch grid
-// (DecelPlanner::ApproachConfigured) a search wake that produces a plan also
-// solves its first segment (PlanFirst) and publishes the two as a PAIR
-// (MD-56): segment first, then the plan, under one publish_ns — or neither,
-// when the segment is withheld (kHeld). The pair's re-check accepts a newer
+// A search wake that produces a plan also solves its first segment
+// (PlanFirst) and publishes the two as a PAIR (MD-56): segment first, then
+// the plan, under one publish_ns — or neither, when the segment is withheld
+// (kHeld). The pair's re-check accepts a newer
 // snapshot of the same track (the first solve can outlast a trajectory
 // period; demanding the same snapshot would drop every pair), refuses a pair
 // whose t_c is no longer above T_freeze or whose segment would start before
@@ -103,15 +102,16 @@ struct PlannerCycleRecord {
   /// The search's own account (S6-B): candidate counts, judgement rejects,
   /// the chosen candidate's rank-gate bitmask, the switching decision, timing.
   SearchStats search{};
-  /// The decel step's account (MPC E1-F03). `outcome == kOff` when no decel
-  /// step ran this wake.
+  /// The decel planner's account (MPC E1-F03). `outcome == kOff` when it
+  /// solved nothing this wake.
   DecelRecord decel{};
 };
 
 static_assert(std::is_trivially_copyable_v<PlannerCycleRecord>);
 
 /// The boxes one cycle reads and writes. All owned by the controller. The
-/// first four are required; `decel` is optional (no decel step without it).
+/// first four are required; `decel` is optional (without it no segment is
+/// solved and the plan is published alone).
 struct PlannerCycleIo {
   const rtc::SeqLock<TrajectorySnapshot>* traj{nullptr};
   const rtc::SeqLock<CovarianceSnapshot>* cov{nullptr};
@@ -226,12 +226,13 @@ class PlannerCycle {
   void* post_decel_context_{nullptr};
   PostSearchHook pair_store_hook_{nullptr};
   void* pair_store_context_{nullptr};
-  // The decel step (MPC E1-F03).
-  void RunDecel(const PlannerRtState& rt, PlannerCycleRecord& rec) noexcept;
 
-  // The APPROACH–stop pair and replans (MPC E1-F08).
-  [[nodiscard]] bool ApproachActive() const noexcept {
-    return io_.decel != nullptr && decel_.ApproachConfigured();
+  // The decel planner's part of a wake (MPC E1-F08): a plan goes out with its
+  // first segment, and a followed plan's segment is replanned. Off without a
+  // decel box or a configured decel planner — the plan is then published
+  // alone.
+  [[nodiscard]] bool DecelActive() const noexcept {
+    return io_.decel != nullptr && decel_.Configured();
   }
 
   void PublishPair(const PlannerRtState& rt, PlanSnapshot& plan, PlannerCycleRecord& rec) noexcept;

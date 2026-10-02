@@ -580,7 +580,7 @@ demo_catching_controller:
           blocks: [1, 1, 2, 3]
         approach:
           # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
-          # before t_c. 0 = the stop segment alone (E1-F03's planner).
+          # before t_c. 0 = no decel planner — mode: mpc then parks (MD-70).
           n_pre_max: 6
           dt_pre_s: 0.1
           # The first solve assumes the arm rests at its wait pose; above this
@@ -594,11 +594,9 @@ demo_catching_controller:
           first_s: 0.035
           replan_s: 0.025
         replan:
-          # t_pre_s is read by the stop-only planner (n_pre_max 0) alone
-          # (MD-26). Post-catch replans up to k_max grid points past t_c, stop
-          # end fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid
-          # point with the newer prediction (MD-58).
-          t_pre_s: 0.1
+          # Post-catch replans up to k_max grid points past t_c, stop end
+          # fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid point
+          # with the newer prediction (MD-58).
           k_max: 2
           same_point: true
         eta_tau: 0.7

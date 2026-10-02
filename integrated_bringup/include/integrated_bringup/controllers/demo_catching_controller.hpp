@@ -214,10 +214,10 @@ enum class CatchingParkReason : std::uint8_t {
   /// `supervisor.decel.mode: mpc` without one of its prerequisites (MPC
   /// MD-34): the catch sub-model sampler, `joint_cmd.K_n` > 0, η_v < 1, the
   /// arm's per-joint velocity ratings and the CLIK's per-joint velocity and
-  /// position boxes, `planner.workspace.catch_box`, and a decel planner with
-  /// its pre-catch grid on (`planner.decel_mpc.enabled` and
-  /// `approach.n_pre_max` > 0 with the planner on; the oracle profile is
-  /// exempt). Under mpc the arm follows a segment from APPROACH to the end of
+  /// position boxes, `planner.workspace.catch_box`, and a decel planner
+  /// (`planner.decel_mpc.enabled` and `approach.n_pre_max` > 0 with the
+  /// planner on — without a pre-catch grid none is built, MD-70; the oracle
+  /// profile is exempt). Under mpc the arm follows a segment from APPROACH to the end of
   /// the stop (MD-44, MD-45), so a missing prerequisite would leave every
   /// trial without one.
   kDecelModeUnmet,

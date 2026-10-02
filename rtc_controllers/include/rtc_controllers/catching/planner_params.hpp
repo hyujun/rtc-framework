@@ -49,29 +49,25 @@ inline constexpr std::size_t kPlannerMaxWindowGrid = 8;
 /// DecelMpc each (MD-31). A capacity, not a default (the default k_max is 4).
 inline constexpr int kMaxDecelReplans = 8;
 
-/// `planner.decel_mpc.*` (MPC plan E1-F03, MD-24 · MD-26 · MD-31 · MD-33).
-/// The decel MPC's settings the planner owns; the core's own tuning (jerk
+/// `planner.decel_mpc.*` (MPC plan E1-F03 · E1-F08, MD-24 · MD-31 · MD-33 ·
+/// MD-54 – MD-64). The decel MPC's settings the planner owns; the core's own tuning (jerk
 /// weight, trust region, slack penalty, solver) stays at DecelMpcParams'
 /// defaults, and η_v is `planner.gamma.eta_v` (no second key for one margin).
 struct DecelPlannerParams {
-  /// `enabled` — pre-compute the stop segment in COMMITTED / CLOSING / DECEL.
-  /// Needs `planner.enabled` (the binding parks the pair otherwise).
+  /// `enabled` — solve the segments the RT follows from APPROACH to the end
+  /// of the stop. Needs `planner.enabled` (the binding parks the pair
+  /// otherwise) and a pre-catch grid (`approach.n_pre_max` ≥ 1).
   bool enabled{false};
   /// `horizon.n_nodes` N_s and `horizon.dt_s` Δ_s: N_s·Δ_s IS the stopping
-  /// time (MD-21). The default 14 × 0.025 = 0.35 s is the stop-only planner's
-  /// (MD-24); the shipped profiles set MD-54's 7 × 0.05 with the pre-catch
-  /// grid below. Δ_s must be a whole number of nanoseconds (the grid is
-  /// integer ns).
+  /// time (MD-21). The default 14 × 0.025 = 0.35 s is E1-F03's (MD-24); the
+  /// shipped profiles set MD-54's 7 × 0.05 with the pre-catch grid below.
+  /// Δ_s must be a whole number of nanoseconds (the grid is integer ns).
   int n_nodes{14};
   double dt_s{0.025};
   /// `horizon.blocks` — move blocking, Σ = n_nodes, B ≥ 3. Post-catch replan
   /// k uses DecelBlocksFor(k) (the largest trailing block shrinks first).
   std::array<int, kMaxDecelNodes> blocks{1, 1, 2, 2, 4, 4};
   int n_blocks{6};
-  /// `replan.t_pre_s` [s] — the first (cold) solve waits until t_c − now_lead
-  /// ≤ t_pre (MD-26): before that the initial state would be extrapolated over
-  /// a T_freeze-long span.
-  double t_pre_s{0.1};
   /// `replan.k_max` — post-catch replans only at grid points k ≤ k_max; the
   /// stop still ends at t_c + N_s·Δ_s (MD-31).
   int k_max{4};
@@ -85,13 +81,14 @@ struct DecelPlannerParams {
   double slack_max{0.1};
   double slack_terminal_max{0.1};
 
-  // ── APPROACH–stop (E1-F08 #661, MD-55 – MD-64) ─────────────────────────────
-  // All PROVISIONAL (#663 tunes them). Read only when n_pre_max > 0: with 0
-  // the planner is the stop-segment planner above, unchanged.
+  // ── The pre-catch part (E1-F08 #661, MD-55 – MD-64) ────────────────────────
+  // All PROVISIONAL (#663 tunes them).
 
   /// `approach.n_pre_max` — the most pre-catch intervals a segment may start
-  /// with (MD-54: 6). 0 = no pre-catch grid (MD-55). One catch core per
-  /// count 1..n_pre_max is built at configure time (MD-64).
+  /// with (MD-54: 6). One catch core per count 1..n_pre_max is built at
+  /// configure time (MD-64). 0 = no pre-catch grid: a plan is published only
+  /// with a segment that starts before t_c, so the decel planner refuses to
+  /// configure and `supervisor.decel.mode: mpc` parks (MD-70).
   int n_pre_max{0};
   /// `approach.dt_pre_s` [s] — the pre-catch spacing Δ_pre (MD-54), a whole
   /// number of nanoseconds.
@@ -125,9 +122,9 @@ struct DecelPlannerParams {
   double w_max{1e4};
   double w_const{2500.0};
   double sigma_ref{0.03};
-  /// Whether the profile set `horizon` itself: the code default above is the
-  /// stop-only horizon, not MD-54's, and the configure warns when a pre-catch
-  /// grid runs on it.
+  /// Whether the profile set `horizon` itself: the code default above is
+  /// MD-24's horizon, not MD-54's, and the configure warns when the decel
+  /// planner runs on it.
   bool horizon_explicit{false};
 
   [[nodiscard]] std::int64_t DtNs() const noexcept {

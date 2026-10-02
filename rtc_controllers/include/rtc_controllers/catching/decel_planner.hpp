@@ -1,46 +1,23 @@
-// ── Decel planner: the stop segment, pre-computed on the planner thread ──────
-// (dynamic_catching MPC plan E1-F03, #629; decisions MD-24 – MD-33)
+// ── Decel planner: the APPROACH–stop segments, on the planner thread ─────────
+// (dynamic_catching MPC plan E1-F03 #629 · E1-F08 #661; decisions MD-24 –
+// MD-33, MD-55 – MD-64, MD-70)
 //
-// What PlannerCycle runs in COMMITTED / CLOSING / DECEL once a decel MPC is
-// configured: predict the RT's reference state at the effective instant, solve
-// the stop problem (decel_mpc.hpp), and hand back a DecelPlanSnapshot for the
-// cycle to publish. ROS-free, so the whole decision is testable against plain
-// values; the cycle owns the SeqLock, the re-check and the counter.
+// What PlannerCycle runs once a decel MPC is configured: solve the joint-node
+// segment the RT follows from APPROACH to the end of the stop (decel_mpc.hpp)
+// and hand back a DecelPlanSnapshot for the cycle to publish. ROS-free, so
+// the whole decision is testable against plain values; the cycle owns the
+// SeqLock, the re-check and the counter.
 //
-// ── The grid and the stop end (MD-10, MD-31) ──────────────────────────────────
-// Nodes sit on t_c + k·Δ_s, t_c the catch instant of the plan the RT FOLLOWS
-// (PlannerRtState::plan_t_c_ns — not the planner's own last publish). The stop
-// ends at t_c + N_s·Δ_s whatever k is: replan instance k solves N_s − k nodes
-// with its own DecelMpc, built at configure time (the core's N is fixed at
-// Init, and re-solving N_s nodes from a later t_eff would push the end out on
-// every replan). Replans happen only for k ≤ k_max.
+// ── The grid and the stop end (MD-10, MD-31, MD-54) ───────────────────────────
+// Nodes sit on t_c − j·Δ_pre (pre-catch, j ≤ n_pre_max) and t_c + k·Δ_s
+// (stop), t_c the catch instant of the plan the segment belongs to. The stop
+// ends at t_c + N_s·Δ_s wherever a segment starts: a segment that starts at
+// the stop grid point k solves N_s − k nodes with its own DecelMpc, built at
+// configure time (the core's N is fixed at Init, and re-solving N_s nodes
+// from a later start would push the end out on every replan). Post-catch
+// replans happen only for k ≤ k_max.
 //
-// ── One wake ──────────────────────────────────────────────────────────────────
-//  1. No followed plan / unseeded command / wrong joint count → kNoState.
-//  2. Before anything was published for this plan, wait until
-//     t_c − now_lead ≤ t_pre (MD-26) → kNotDue.
-//  3. t_eff = the first grid point ≥ now_lead + budget + 2·control_dt, k ≥ 0.
-//     k > k_max → kPastReplanWindow; k ≤ the published k0 → kUpToDate (at
-//     most one solve per grid point).
-//  4. x₀ = the RT reference at t_eff (MD-28): (i) the planner's own latest
-//     segment evaluated at t_eff when the RT reports following it; else (ii)
-//     the RT's reported command (q, q̇) — reported at rt_state_ns + T_arm on
-//     the lead axis — extrapolated to t_eff with q̈ from the planner's own
-//     wake-to-wake difference of q̇ (capped by the acceleration box; 0 when it
-//     cannot be trusted). q̇ is projected into the core's box (x0_clamped).
-//  5. Solve instance k. The reference is the latest published segment
-//     shifted by whole grid points (a column copy — the end is fixed, so no
-//     padding) when one exists; a trust-region or rest refusal retries once
-//     cold. No reference → cold (pre-solve + solve).
-//  6. Publishable only if solved, within budget (measured from the start of
-//     THIS decel step, not from the wake), before t_eff on the lead axis, and
-//     slack_max / slack_terminal_max finite and within their thresholds
-//     (MD-33) — written as positive comparisons, so a NaN fails.
-//
-// ── APPROACH–stop (E1-F08 #661, MD-55 – MD-64) ────────────────────────────────
-// With `approach.n_pre_max` > 0 the segments start BEFORE t_c on the MD-54
-// grid t_c − j·Δ_pre (pre-catch) and t_c + k·Δ_s (stop), and the cycle calls
-// PlanFirst / Replan instead of Plan (whose body above is untouched):
+// ── The two solves (MD-55 – MD-64) ────────────────────────────────────────────
 //  • PlanFirst — the search's wake, for the plan it is about to publish. The
 //    arm rests at its wait pose (max |q̇_cmd| ≤ rest_tol, else kNotAtRest) —
 //    before a plan the RT reports the measured pose with no command behind it
@@ -53,27 +30,34 @@
 //    core cannot be solved without a reference.
 //  • Replan — the grid point earliest = now_lead + replan + 2h reaches: the
 //    largest pre-catch count that fits, else the catch node, else the first
-//    stop grid point ≥ earliest (k ≤ k_max). Its source is a segment the RT
-//    REPORTS (SourceSeq) — x₀ is that segment at t_eff projected into the
-//    core's box, the reference that segment at the new grid's node instants
-//    (a column subset: the grid is anchored at t_c and the end is shared).
-//    The same pre-catch grid point is re-solved with the newer prediction
-//    (`replan.same_point`); a stop grid point at most once.
+//    stop grid point ≥ earliest (k ≤ k_max, else kPastReplanWindow). Its
+//    source is a segment the RT REPORTS (SourceSeq) — x₀ is that segment at
+//    t_eff projected into the core's box, the reference that segment at the
+//    new grid's node instants (a column subset: the grid is anchored at t_c
+//    and the end is shared). The same pre-catch grid point is re-solved with
+//    the newer prediction (`replan.same_point`); a stop grid point at most
+//    once (kUpToDate). A stop core whose reference is refused (trust region,
+//    rest) is re-solved once without it.
 //  • Publishable only when every check holds, each written as a positive
-//    comparison so a NaN fails: solved, within its budget, before t_eff,
+//    comparison so a NaN fails: solved, within its budget (measured from the
+//    start of THIS solve, not from the wake), before t_eff on the lead axis,
 //    slack (MD-33), the catch-node position error (catch cores), the velocity
 //    extrema between nodes (≤ q̇_max), node N at rest to the core's reference
 //    tolerance (a published segment is the next solve's reference), and the
 //    packed payload passing ValidateDecelNodes.
 //
+// There is no stop-only planner (MD-70): a plan is published only with a
+// first segment that starts before t_c, so Configure refuses n_pre_max < 1.
+//
 // ── Contracts ─────────────────────────────────────────────────────────────────
-//  • Configure() is non-RT: it Inits k_max + 1 cores (armature ZERO — MD-25:
-//    armature is not used in control) and sizes every buffer. With a
-//    pre-catch grid it also builds the n_pre_max catch cores and solves each
-//    core once (a warm-up: ProxQP's first solve is the slowest); a warm-up
-//    that fails fails the configure.
-//  • Plan() is noexcept, logs nothing, throws nothing, and allocates nothing
-//    outside ProxQP (MD-22 / MD-23 — ProxQP's own mallocs are #654).
+//  • Configure() is non-RT: it Inits the k_max + 1 stop cores and the
+//    n_pre_max catch cores (armature ZERO — MD-25: armature is not used in
+//    control), sizes every buffer, and solves each core once (a warm-up:
+//    ProxQP's first solve is the slowest); a warm-up that fails fails the
+//    configure.
+//  • PlanFirst() / Replan() are noexcept, log nothing, throw nothing, and
+//    allocate nothing outside ProxQP (MD-22 / MD-23 — ProxQP's own mallocs
+//    are #654).
 //  • Joint order: the RT speaks DEVICE order (PlannerRtState, the payload);
 //    the cores speak the model's pinocchio velocity order. The mapping is
 //    `device_of_model`, as for the search.
@@ -98,8 +82,8 @@
 
 namespace rtc::catching {
 
-/// Largest age of the RT's report (steady now − rt_state_ns) the decel step
-/// extrapolates from. The RT stores every tick, so anything older means the
+/// Largest age of the RT's report (steady now − rt_state_ns) a solve starts
+/// from. The RT stores every tick, so anything older means the
 /// tick stalled; 50 ms is one default planner wake timeout, 25 ticks at 2 ms.
 inline constexpr std::int64_t kDecelMaxRtStateAgeNs = 50'000'000;
 
@@ -108,9 +92,11 @@ enum class DecelOutcome : std::uint8_t {
   kOff = 0,  ///< not attempted: not configured, or not a decel mode
   kNoState,  ///< no followed plan / t_c, unseeded command, or a size mismatch
   /// The RT's report is older than kDecelMaxRtStateAgeNs (or from the
-  /// future): extrapolating it to t_eff would be a guess (an RT stall).
+  /// future): what it reports may no longer be what the arm does (an RT stall).
   kStaleState,
-  kNotDue,            ///< first solve waits for t_c − now_lead ≤ t_pre (MD-26)
+  /// Not produced since the stop-only planner's removal (MD-70); kept so the
+  /// values after it do not move.
+  kNotDue,
   kUpToDate,          ///< the published segment already starts at this t_eff or later
   kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s (MD-31)
   kInputNonFinite,    ///< the predicted x₀ is not finite
@@ -121,7 +107,7 @@ enum class DecelOutcome : std::uint8_t {
   kReady,             ///< publishable; the cycle's re-check decides
   kPublished,         ///< stored (set by the cycle)
   kSuperseded,        ///< the trial or the followed plan moved during the solve (cycle)
-  // E1-F08 (APPROACH–stop, #661) — appended, the values above are stable. A
+  // E1-F08 (#661) — appended, the values above are stable. A
   // solved segment whose packed form fails the terminal-rest or node check is
   // kSolveFailed with core_reason kNone.
   kNotAtRest,    ///< first solve: max |q̇_cmd| above approach.rest_tol
@@ -134,14 +120,13 @@ enum class DecelOutcome : std::uint8_t {
 
 [[nodiscard]] const char* DecelOutcomeName(DecelOutcome o) noexcept;
 
-/// Which APPROACH–stop solve a record describes (E1-F08). kNone for the
-/// stop-segment planner (Plan()).
+/// Which solve a record describes (E1-F08).
 enum class DecelKind : std::uint8_t {
-  kNone = 0,
-  kFirst,    ///< the first segment of a plan, solved with the search (MD-56)
-  kSame,     ///< a pre-catch grid point the source already starts at (MD-58)
-  kAdvance,  ///< a later pre-catch grid point
-  kStop,     ///< a stop core: the catch node or a post-catch grid point
+  kNone = 0,  ///< no solve was chosen (the record's default)
+  kFirst,     ///< the first segment of a plan, solved with the search (MD-56)
+  kSame,      ///< a pre-catch grid point the source already starts at (MD-58)
+  kAdvance,   ///< a later pre-catch grid point
+  kStop,      ///< a stop core: the catch node or a post-catch grid point
 };
 
 [[nodiscard]] const char* DecelKindName(DecelKind k) noexcept;
@@ -149,27 +134,28 @@ enum class DecelKind : std::uint8_t {
 struct DecelRecord {
   DecelOutcome outcome{DecelOutcome::kOff};
   DecelMpcReason core_reason{DecelMpcReason::kNone};
-  std::int32_t k{-1};  ///< grid index of node 0 (t_eff = t_c + k·Δ_s)
+  /// Grid index of node 0: t_eff = t_c + k·Δ_s for a stop grid point, −n_pre
+  /// for a pre-catch one (the CSV's decel_k).
+  std::int32_t k{-1};
   std::int32_t n_nodes{0};
   std::uint32_t decel_seq{0};  ///< the published segment's seq (cycle)
-  /// Extrapolation span t_eff − (rt_state_ns + T_arm) [s] — the prediction's
-  /// weak point (MD-28), recorded on every solve.
+  /// The removed stop-only planner's x₀ extrapolation (MD-28): its span and
+  /// whether its q̈ estimate was used. Never written now (MD-70) — kept
+  /// because the planner events CSV has a column for each (#631).
   double h_s{std::numeric_limits<double>::quiet_NaN()};
-  bool qdd_trusted{false};   ///< the wake-to-wake q̈ estimate was used
+  bool qdd_trusted{false};
   bool x0_clamped{false};    ///< the start state (q or q̇) was projected into the box
-  bool from_segment{false};  ///< x₀ came from the planner's own segment (path (i))
-  bool presolved{false};     ///< cold: kinematic pre-solve + solve
-  bool cold_retry{false};    ///< the shifted reference was refused, re-solved cold
+  bool from_segment{false};  ///< replan: x₀ came from a segment the RT reports
+  bool presolved{false};     ///< no reference: kinematic pre-solve + solve
+  bool cold_retry{false};    ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};
   std::int32_t qp_status{-1};
-  std::int64_t solve_ns{0};    ///< decel step start → solve end (the budget's measure)
+  std::int64_t solve_ns{0};    ///< solve start → solve end (the budget's measure)
   std::int64_t publish_ns{0};  ///< the stored segment's stamp (cycle); 0 when not stored
   double slack_max{std::numeric_limits<double>::quiet_NaN()};
   double slack_terminal_max{std::numeric_limits<double>::quiet_NaN()};
   double tau_ratio_max{std::numeric_limits<double>::quiet_NaN()};
 
-  // ── APPROACH–stop (E1-F08). Default / NaN on the stop-segment planner. ─────
-  // `k` above is −n_pre for a pre-catch grid point (the CSV's decel_k).
   DecelKind kind{DecelKind::kNone};
   bool cold_start{false};      ///< the core's main QP started from zero
   bool solver_retried{false};  ///< the core's own warm → cold re-run (cold_retried)
@@ -198,30 +184,22 @@ struct DecelPlannerModel {
   pinocchio::FrameIndex catch_frame{0};
   int nv{0};
   std::array<int, kMaxPlanNv> device_of_model{};
-  std::array<double, kMaxPlanNv> q_min{};      ///< [rad]
-  std::array<double, kMaxPlanNv> q_max{};      ///< [rad]
-  std::array<double, kMaxPlanNv> qdot_max{};   ///< [rad/s], device ratings
-  std::array<double, kMaxPlanNv> tau_max{};    ///< [N·m], device ratings
-  std::array<double, kMaxPlanNv> qddot_cap{};  ///< [rad/s²], the q̈-estimate cap; 0 = no cap
-  bool qddot_cap_valid{false};                 ///< false: q̈ is never extrapolated
+  std::array<double, kMaxPlanNv> q_min{};     ///< [rad]
+  std::array<double, kMaxPlanNv> q_max{};     ///< [rad]
+  std::array<double, kMaxPlanNv> qdot_max{};  ///< [rad/s], device ratings
+  std::array<double, kMaxPlanNv> tau_max{};   ///< [N·m], device ratings
 };
 
 struct DecelPlannerConstants {
   double eta_v{0.9};         ///< `planner.gamma.eta_v` (the core's velocity row)
   double t_arm_s{0.0};       ///< `joint_cmd.lag.T_arm` — real → lead axis
   double control_dt{0.002};  ///< the RT period [s]
-  double budget_s{0.020};    ///< `planner.budget_s`
-  /// How far past its lead instant the reported command sits [s] (MD-40):
-  /// the RT samples the segment it follows at now_lead + h and the command
-  /// leaving that tick is the segment at now_lead + 2h, so the binding sets
-  /// 2·control_dt. 0 reads the report as the state AT the lead instant.
-  double report_lead_s{0.0};
   /// `planner.ik.v_eps` [m/s] — the ball speed below which its direction of
   /// travel (and so a_d) is undefined (MakeDecelBallTarget).
   double v_eps{1e-6};
 };
 
-/// The ball at a plan's catch instant as the APPROACH–stop solves take it
+/// The ball at a plan's catch instant as the solves take it
 /// (MD-63), MODEL world. `valid` covers p_b / v_b / a_d; `sigma_valid` the
 /// position covariance, which only weights the position term.
 struct DecelBallTarget {
@@ -273,8 +251,10 @@ class DecelPlanner {
 
   DecelPlanner() = default;
 
-  /// @brief Build the k_max + 1 cores (non-RT). On failure the planner is
-  ///        unconfigured and `error` (if given) names the cause.
+  /// @brief Build the k_max + 1 stop cores and the n_pre_max catch cores and
+  ///        warm each up (non-RT). On failure — `params.n_pre_max` < 1
+  ///        included (MD-70) — the planner is unconfigured and `error` (if
+  ///        given) names the cause.
   [[nodiscard]] bool Configure(const DecelPlannerModel& model, const DecelPlannerConstants& consts,
                                const DecelPlannerParams& params, ClockFn clock,
                                std::string* error = nullptr);
@@ -291,30 +271,14 @@ class DecelPlanner {
   /// Drop the per-trial state (a trial reset, a new followed plan).
   void ResetTrial() noexcept;
 
-  /// @brief One decel step (RT-safe). @return true when `out` holds a
-  ///        publishable segment (rec.outcome == kReady); `out`'s publish_ns
-  ///        and decel_seq are the caller's to fill.
-  [[nodiscard]] bool Plan(const PlannerRtState& rt, DecelPlanSnapshot& out,
-                          DecelRecord& rec) noexcept;
-
-  /// The cycle stored `p` (its decel_seq filled): the next replan shifts it.
-  void NotePublished(const DecelPlanSnapshot& p) noexcept;
-
   [[nodiscard]] const DecelPlannerParams& Params() const noexcept { return params_; }
 
   [[nodiscard]] int Nv() const noexcept { return nv_; }
 
-  /// The core behind replan instance k (tests and diagnostics).
+  /// The stop core that starts at the stop grid point k, 0..k_max (tests and
+  /// diagnostics).
   [[nodiscard]] const DecelMpc& Core(int k) const noexcept {
     return *cores_[static_cast<std::size_t>(k)];
-  }
-
-  // ── APPROACH–stop (E1-F08 #661) — only with params.n_pre_max > 0 ──────────
-
-  /// Whether the pre-catch grid is configured: the cycle then runs
-  /// PlanFirst / Replan instead of Plan.
-  [[nodiscard]] bool ApproachConfigured() const noexcept {
-    return configured_ && params_.n_pre_max > 0;
   }
 
   /// @brief The first segment of a plan the search just produced (RT-safe;
@@ -340,8 +304,9 @@ class DecelPlanner {
   [[nodiscard]] bool Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
                             DecelPlanSnapshot& out, DecelRecord& rec) noexcept;
 
-  /// The cycle published `p`.
-  void NoteApproachPublished(const DecelPlanSnapshot& p) noexcept;
+  /// The cycle published `p` (its decel_seq filled): a later replan may be
+  /// solved from it.
+  void NotePublished(const DecelPlanSnapshot& p) noexcept;
 
   /// The track generation of the plan `rt` follows, from the segments
   /// published for it (the first one carries the plan's own token). False when
@@ -387,54 +352,26 @@ class DecelPlanner {
 
   /// The slowest and the summed configure-time warm-up solve [ns] (MD-64):
   /// each is a core's FIRST solve, the one a trial would otherwise pay for.
-  /// 0 without a pre-catch grid.
   [[nodiscard]] std::int64_t WarmUpMaxNs() const noexcept { return warmup_max_ns_; }
 
   [[nodiscard]] std::int64_t WarmUpTotalNs() const noexcept { return warmup_total_ns_; }
 
  private:
-  void UpdateAccelEstimate(const PlannerRtState& rt) noexcept;
-  [[nodiscard]] bool PredictX0(const PlannerRtState& rt, std::int64_t t_eff_ns,
-                               DecelRecord& rec) noexcept;
-  void ShiftReference(int k, DecelMpcInput& in) noexcept;
-  void Pack(const PlannerRtState& rt, int k, std::int64_t t_eff_ns, const DecelMpcResult& r,
-            DecelPlanSnapshot& out) const noexcept;
-
   bool configured_{false};
   DecelPlannerParams params_{};
   ClockFn clock_{nullptr};
   int nv_{0};
   std::array<int, kMaxPlanNv> device_of_model_{};
   std::array<double, kMaxPlanNv> v_box_{};  // η_v · q̇_max, model order
-  std::array<double, kMaxPlanNv> qdd_cap_{};
-  bool qdd_cap_valid_{false};
   std::int64_t dt_ns_{0};
-  std::int64_t t_pre_ns_{0};
   std::int64_t t_arm_ns_{0};
-  std::int64_t report_lead_ns_{0};  // MD-40
-  std::int64_t lead_margin_ns_{0};  // budget + 2·control_dt
-  std::int64_t budget_ns_{0};
 
-  // k = 0..k_max. Behind pointers: a core owns a model copy and a solver and
-  // is not meant to move.
+  // The stop cores, k = 0..k_max. Behind pointers: a core owns a model copy
+  // and a solver and is not meant to move.
   std::vector<std::unique_ptr<DecelMpc>> cores_;
   std::vector<DecelMpcInput> inputs_;  // sized per instance
   std::vector<DecelMpcResult> results_;
 
-  // Per trial (ResetTrial / a new followed plan).
-  std::uint32_t trial_plan_id_{0};
-  std::int64_t trial_t_c_ns_{0};
-  bool trial_open_{false};
-  bool have_published_{false};
-  DecelPlanSnapshot last_{};
-  // q̈ estimate: the previous wake's reported q̇ (device order) and its instant.
-  bool prev_valid_{false};
-  std::int64_t prev_rt_ns_{0};
-  std::array<double, kMaxPlanNv> prev_qd_{};
-  std::array<double, kMaxPlanNv> qdd_est_{};  // device order
-  bool qdd_est_valid_{false};
-
-  // ── APPROACH–stop (E1-F08) ──────────────────────────────────────────────────
   // Where the solve's state comes from and how it is judged and packed.
   [[nodiscard]] bool ConfigureApproach(const DecelPlannerModel& model, std::string& why);
   [[nodiscard]] bool WarmUp(const DecelPlannerModel& model, std::string& why);

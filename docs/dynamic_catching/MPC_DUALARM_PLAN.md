@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r21 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r22 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료**, E1 진행 중. 완료: E1-F01 – F04 · E1-F07 · E1-F08. E1-F09 L7 ([#662](https://github.com/hyujun/rtc-framework/issues/662)) 은 구현과 sim 측정이 끝났고 security review 와 머지가 남았다 — `mode: mpc` 에서 RT 가 plan 과 첫 구간을 함께 채택해 APPROACH 부터 HOLD 까지 구간을 따른다 (sim p1b 50 발: abort 0, 성공률은 튜닝 전 0.34 vs `closed_form` 0.80). 다음은 F05 → F10 튜닝 ([#663](https://github.com/hyujun/rtc-framework/issues/663)) → F06 (G-1). feature 별 상태는 §6
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5b) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -184,12 +184,12 @@ v1 과 G1 MPC 의 구조 차이:
 | MD-67 | 구간의 판정에 **plan 의 track** 대조를 더한다 (`token.generation` — 어긋나면 `plan` 거부). 작업공간 검사 (MD-43) 는 **정지 부분**에 건다: 포구 전 노드가 있는 구간은 포구 노드부터의 경로를 포구 노드가 $p_c$ 에 오도록 옮겨 보고, 포구 뒤 재계획은 $p_c+(p_0-o)+(p_k-p_0)$ 로 본다. $o$ 는 포구 노드를 가진 구간 ($k_0=0$) 중 RT 가 마지막으로 넘겨받은 것의 포구 노드 위치 — $t_c$ 에 팔이 따르던 궤적의 포구점이다 | 사용자 결정 (2026-10-02) 의 Q3 · Q5. 계획기는 plan 의 track 으로 풀고 구간도 그 track 을 싣는다 (E1-F08 code review). RT 가 보고하는 `track_generation` 은 동결 뒤 마지막으로 소비한 track 이라 그것과 비교하면 거짓 거부가 난다 — plan 의 token 과 비교한다. 포구 전 노드는 대기 자세에서의 접근이라 L3 §4.9 의 정지 예약이 설명하지 않는다: node 0 를 $p_c$ 에 놓고 전체를 보면 접근 거리만큼 정지 부분이 밀려 모든 첫 구간이 거부된다 | MD-43 의 $o$ ("진입이 넘겨받은 첫 구간의 node 0" → 포구 노드), `JudgeDecelPlan` 의 판정 목록 | 2026-10-02 |
 | MD-68 | 첫 구간의 node 0 가 오기 전의 APPROACH 는 채택 tick 에 seed 한 명령을 든다 (법칙을 돌리지 않는다). 따르는 모드에서 따르는 구간도 대기 구간도 없으면 그 자리에서 `kParamsTbd` → `ABORT_SAFE` 다. 첫 구간이 node 0 에서 전환 게이트를 못 지나도 같다. 대기 구간이 아직 due 가 아닌 것은 `DECEL` 진입 전까지 기다린다 | 사용자 결정 (2026-10-02) 의 Q4. 계획기는 첫 구간을 정지한 보고 자세에서 풀었다 (MD-62 `rest_tol`) — node 0 전에 팔을 움직이면 그 전제가 깨진다. 쌍으로 채택된 시행은 언제나 둘 중 하나를 들고 있으므로 둘 다 없다는 것은 구간이 깨졌다는 뜻이고, $t_c$ 까지 기다릴 이유가 없다. 전이표의 `{APPROACH · COMMITTED · CLOSING · DECEL, kParamsTbd} → ABORT_SAFE` 행은 이미 있다 | MD-44 의 "진입 tick 에 따를 구간이 없으면" (APPROACH 부터의 모든 따르는 tick 으로) | 2026-10-02 |
 | MD-69 | RT 는 따르는 구간 (`decel_active` · `decel_seq`) 을 APPROACH 부터 HOLD 까지, 대기 구간 (`decel_pending` · `decel_pending_seq`) 을 슬롯에 있는 동안 보고한다. 게이트가 거부했거나 시행과 함께 버린 구간은 보고에서 빠진다. 공 · CLIK 감독 사유는 그대로다 — DECEL 전의 추종 tick 은 공 궤적을 lead 시각에서 한 번 샘플해 soft-catch 법칙의 tick 과 같은 사유를 낸다 (구간은 그 표본을 읽지 않는다). `planner.decel_mpc.shadow` 는 지웠다 | #660 결정 목록 항목 11 과 MD-58 · MD-59. 계획기는 재계획의 출처를 이 보고로만 정하므로 (MD-58) 보고가 없으면 재계획이 돌지 않는다. 감독 사유를 법칙에 묶어 두면 `mpc` 에서 `BALL_STALE` · `HORIZON_EXTRAP` 의 행이 조용히 사라진다. `REF_SATURATED` 는 soft-catch 기준의 사유라 `mpc` 에서는 나지 않는다 (§3.3) | MD-28 의 보고 범위 (DECEL · HOLD → APPROACH – HOLD), MD-59 (키 삭제) | 2026-10-02 |
+| MD-70 | 정지 구간만 푸는 계획기 (E1-F03 의 `DecelPlanner::Plan` 과 `PlannerCycle` 의 decel 단계) 를 지운다. decel 계획기는 plan 의 첫 구간 (`PlanFirst`) 과 그 뒤 구간 (`Replan`) 만 풀고, `approach.n_pre_max` < 1 이면 configure 를 거부한다 — 키의 범위와 기본값 (0) 은 그대로이고, 0 인 profile 은 `mode: mpc` 에서 종전처럼 park 한다 (`kDecelModeUnmet`). 함께 없어지는 것: `replan.t_pre_s` 키, RT 가 보고한 명령을 외삽하는 $x_0$ 경로와 그 $\ddot q$ 추정, `DecelPlannerConstants` 의 `budget_s` · `report_lead_s`, `DecelPlannerModel` 의 $\ddot q$ 상한. `planner_events.csv` 의 `decel_h_s` · `decel_qdd_trusted` 열과 결과 `not_due` 는 남기되 더 쓰이지 않는다 (열 정리는 #631) | MD-65 뒤로 컨트롤러에서 도달할 수 없는 코드였다: `mpc` 는 plan 을 $t_c$ 앞에서 시작하는 첫 구간과 함께만 채택하고 `closed_form` 은 decel 코어를 만들지 않는다. 단위 테스트만 그 경로를 돌았고, 남겨 두면 두 계획기가 같은 box 를 쓰는 것처럼 읽힌다. 포구 뒤 격자점의 재계획 (정지 코어, MD-31) 과 payload 의 `n_pre` 0 형태는 `Replan` 이 쓰므로 남는다 | MD-26 (첫 풀이 시점 — 폐기), MD-28 의 경로 (ii) (폐기; 경로 (i) 은 MD-58), MD-40 의 계획기 쪽 보고 lead (폐기; RT 의 샘플 시각 $+h$ 는 유지), MD-55 의 "0 이면 정지 구간 계획기 그대로" | 2026-10-02 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
 미결 — 해당 feature 의 spec 에서 정한다:
 
-- 정지 구간만 푸는 계획기 (`DecelPlanner::Plan` · `replan.t_pre_s`, E1-F03) 를 지울지 — `mode: mpc` 가 포구 전 격자를 요구하게 되어 (MD-65) 컨트롤러에서 도달할 수 없다. 단위 테스트만 그 경로를 돈다
 - E1-F10: 비열등 한계 · N · 튜닝 seed · 반복 상한 (튜닝 전에, MD-50)
 - E1-F10: iiwa7_leap 의 포구 전 시간 — plan 이 lead 0.21 s 근처에서 나와 첫 구간이 거의 게시되지 않는다. 간격을 줄이는 것만으로는 35 % 에서 멈춘다 (§8). 손잡이는 leap 의 `approach.dt_pre_s` 와 plan 을 더 일찍 내는 쪽 (`planner.slice.t_lead_min`, 순위 게이트) 이다
 - E1-F06: `mpc` 를 기본값으로 바꿀지
@@ -552,7 +552,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 ### E1-F02 · E1-F03 — payload · 샘플러 · decel 계획기 (2026-09-30, [#628](https://github.com/hyujun/rtc-framework/issues/628) · [#629](https://github.com/hyujun/rtc-framework/issues/629))
 
-`test_catching_node_follower` 와 `test_catching_decel_planner` 의 정보용 측정이다. Release, 개발 PC (RT 스케줄링 없음), 실제 6 · 7 자유도 팔 URDF. 계획기 측정은 무작위 진입 상태 200 개 (관절마다 $\pm 0.54\,\dot q_{\max}$) 이고 출하 지평 $N_s$ 14 · $\Delta_s$ 0.025 s 다 (MD-24). 계획기 시간은 decel 단계 시작부터 풀이 끝까지다 (MD-26).
+`test_catching_node_follower` 와 `test_catching_decel_planner` 의 정보용 측정이다 (계획기 쪽 측정은 정지 구간 계획기의 것이고, 그 계획기와 측정 테스트는 MD-70 으로 지웠다 — 수치는 기록으로 남긴다). Release, 개발 PC (RT 스케줄링 없음), 실제 6 · 7 자유도 팔 URDF. 계획기 측정은 무작위 진입 상태 200 개 (관절마다 $\pm 0.54\,\dot q_{\max}$) 이고 출하 지평 $N_s$ 14 · $\Delta_s$ 0.025 s 다 (MD-24). 계획기 시간은 decel 단계 시작부터 풀이 끝까지다 (MD-26).
 
 | 항목 | 6 자유도 | 7 자유도 |
 |---|---|---|
@@ -765,6 +765,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r22 | 결정 MD-70: 정지 구간만 푸는 계획기와 `replan.t_pre_s` 삭제 (사용자 결정 2026-10-02). 미결에서 그 항목 제거 |
 | r21 | E1-F09 구현: 결정 MD-65 – MD-69 (`mpc` 는 언제나 APPROACH – HOLD 추종 · 쌍 채택 · 대기 슬롯의 교체와 나이 · track 과 정지 부분의 작업공간 검사 · node 0 전 유지 · 보고 범위), `shadow` 삭제, 측정 §8 (sim: abort 0, tick 은 `closed_form` 과 같음, 성공률은 낮음). 미결에 정지 구간 전용 계획기의 삭제 여부 추가 |
 | r20 | E1-F08 완료 반영 ([#673](https://github.com/hyujun/rtc-framework/pull/673)) — 상태줄 · §6 의 표 · 브랜치 계획 갱신 |
 | r19 | E1-F08 구현: 결정 MD-55 – MD-64 (포구 전 격자는 켜는 값, 쌍 게시, RT 보고에서 출발하는 재계획, 간격이 둘인 payload, shadow), 측정 §8 (sim 실시계: 예산 확정, leap 의 포구 전 시간 부족), code review 반영. MD-52 의 키 이름 정정 (`planner.budget.sigma_trk`) |
