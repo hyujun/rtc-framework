@@ -984,7 +984,7 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 
 **관절 위치는 축 *직선* 으로 비교한다.** Revolute 관절의 원점은 자기 축 위 어디에 놓든 물리가 안 바뀌고, MJCF 는 visual-mesh 기준·URDF 는 DH 기준으로 원점을 다르게 놓는 것이 정상이다. 따라서 두 축 직선의 **수직 거리**만 mismatch 로 세고 축 방향 성분은 `[NOTE]` 로 알린다 (ur5e 실측: 축 방향 성분 최대 138 mm, 수직 성분 전부 0.8 mm 미만). Prismatic 관절은 원점이 곧 zero position 이므로 **점 비교를 유지**한다.
 
-**MJCF 는 MuJoCo 가 컴파일하는 대로 읽는다.** 도구는 MJCF 를 텍스트로 파싱하는데, 텍스트의 `range` 가 무엇을 뜻하는지는 그 위의 default class · `<compiler>` · `*limited` 속성 · 관절을 구동하는 actuator 가 정한다. 그것을 다르게 읽으면 시뮬레이터가 돌리지 않는 모델을 보고하게 된다 (거짓 불일치, 또는 진짜 불일치를 틀린 값으로). 읽는 규칙:
+**MJCF 의 관절 · actuator · body 자세는 MuJoCo 가 컴파일하는 대로 읽는다.** 도구는 MJCF 를 텍스트로 파싱하는데, 텍스트의 `range` 가 무엇을 뜻하는지는 그 위의 default class · `<compiler>` · `*limited` 속성 · 관절을 구동하는 actuator 가 정한다. 그것을 다르게 읽으면 시뮬레이터가 돌리지 않는 모델을 보고하게 된다 (거짓 불일치, 또는 진짜 불일치를 틀린 값으로). 관성 (`<inertial>`) 과 site 는 적힌 그대로 읽는다 — 컴파일이 그 값을 바꾸는 경우는 아래 "읽지 않는 것" 에 있다. 읽는 규칙:
 
 - **default class 는 tree 다.** 최상위 `<default>` 가 `main` 이고, 중첩 class 는 부모의 값을 물려받는다 (부모 사슬 전체). 요소의 class 는 자신의 `class` → 가장 가까운 body/frame 의 `childclass` → `main` 순이다. actuator 는 body tree 밖이라 `childclass` 가 닿지 않고 자신의 `class` 만 본다. class 가 없는 관절은 `main` 만 받는다 — 옆에 있는 중첩 class 의 값을 받지 않는다. 관절의 `range` · `armature` · `axis` · `pos` · `type` · `actuatorfrcrange` 전부 이 한 경로로 읽는다.
 - **걸리지 않는 range 는 한계가 아니다.** `limited` · `forcelimited` · `ctrllimited` · `actuatorfrclimited` 가 `false` 면 그 range 를 읽지 않고, 비워 두면 `<compiler autolimits>` (기본 true) 에서 range 가 있을 때만 걸린 것으로 본다.
@@ -997,13 +997,18 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 
 `--mjcf-class` 옵션은 없어졌다 — default tree 를 tree 로 읽으면 고를 "root class" 가 없다.
 
-**읽지 않는 것** (`robot_descriptions` 의 MJCF 에 있는 것은 `<include>` 뿐이다):
+**읽지 않는 것** (`model_pairs.yaml` 의 로봇 MJCF 에는 아래 어느 것도 없다. `robot_descriptions` 의 씬 · 물체 MJCF 에는 `<include>` · ball / free 관절 · geom 에서 얻는 관성이 있다):
 
 - **`<include>` 를 따라가지 않는다.** include 로만 들어오는 관절 · body 는 텍스트에 없으므로 관절 · link 별 비교 대상이 아니다. **root 파일에 적힌 관절은 비교하되 틀린 값으로 읽을 수 있다** — include 된 파일의 `<compiler>` · `<default>` · `<actuator>` 도 그 관절이 컴파일되는 값을 정하는데 도구는 그것을 읽지 않는다. include 안의 `<compiler angle="radian"/>` 을 못 보면 range 를 degree 로 읽고, include 안의 actuator 를 못 보면 토크 한계가 0 이다 (거짓 불일치). 반대로 include 가 한계를 끄면 꺼진 한계를 읽어 거짓 OK 가 난다. root 파일에 `<include>` 가 있으면 `[WARN] MJCF <include> is not followed (…)` 를 찍는다 (warning 으로 센다). 구조 비교 (컴파일한 모델) 는 include 를 포함한 전체를 본다.
 - **`joint` 전달이 아닌 actuator 를 읽지 않는다** (`jointinparent` · tendon · site · slider-crank · body). 그런 actuator 가 구동하는 관절의 토크 한계는 그것을 뺀 값으로 읽힌다 — tendon motor 와 joint motor 가 같이 있으면 joint motor 만의 값이 `OK` 로 찍히고, `jointinparent` 만 있으면 `0` 으로 읽혀 거짓 `EFFORT MISMATCH` 가 난다. 파일에 있으면 ``[WARN] MJCF actuators with no `joint` transmission are not read (…)`` 가 그 actuator 를 나열한다 (warning 으로 센다). 어느 관절이 해당하는지는 가리지 않는다 — tendon · site 가 어느 관절에 힘을 싣는지는 컴파일한 모델의 성질이다.
 - `<frame>` 의 pose (frame 의 `childclass` 는 읽는다 — frame 아래 body 의 관절은 world FK 없이 `[WARN] FK unavailable` 로 떨어진다) · ball / free 관절의 `range` · dynamics 가 있는 actuator 의 `ctrlrange`.
+- **관성은 `<inertial>` 에 적힌 값이다.** `<compiler>` 의 `inertiafromgeom` · `settotalmass` · `boundmass` / `boundinertia` · `balanceinertia` 는 컴파일할 때 관성을 다시 쓰는데 도구는 적용하지 않는다 — link 별 질량 · 주모멘트는 텍스트의 값으로 찍힌다 (전체 질량은 구조 비교가 컴파일한 모델에서 본다). `<inertial>` 없이 geom 에서 관성을 얻는 body 는 읽을 것이 없어 link 별 비교에서 빠진다.
+- **`<default><site>` 의 pose 를 site 에 적용하지 않는다.** `--tip-frames` 의 MJCF 쪽이 site 면 그 site 자신의 `pos` · 자세 속성만 읽는다.
+- **`<option><flag clampctrl="disable"/>` · `<flag actuation="disable"/>` 를 읽지 않는다.** 앞의 것은 `ctrlrange` 를 걸지 않게 하고 (한계 없음), 뒤의 것은 actuator 를 전부 끈다 (토크 0). 도구는 둘 다 한계를 그대로 읽는다.
+- **한쪽만 걸린 한계** (`forcerange="-3 inf"`) 는 한계 없음 (`0`) 으로 읽는다 — 양 끝이 유한해야 한계다.
 - **"한계 없음" 과 "한계 0" 을 구별하지 못한다** — 둘 다 `0` 이다.
-- `<default>` 안의 `<position>` · `<velocity>` · `<damper>` 같은 shortcut 은 "순수 gain 이 아니다" 로만 기록한다. 그 default 를 `<general biastype="none">` 이 물려받으면 MuJoCo 는 gain = `kp` 인 순수 gain 으로 컴파일하는데 도구는 gain 1 로 읽는다. `robot_descriptions` 에 없다.
+- `<default>` 안의 `<position>` · `<velocity>` · `<damper>` 같은 shortcut 은 "순수 gain 이 아니다" 로만 기록한다. 그 default 를 `<general biastype="none">` 이 물려받으면 MuJoCo 는 gain = `kp` 인 순수 gain 으로 컴파일하는데 도구는 gain 1 로 읽는다. 반대로 `<general biastype="affine">` 에 `biasprm` 이 전부 0 이면 MuJoCo 가 내는 힘은 순수 gain 과 같은데 도구는 "순수 gain 이 아니다" 로 읽어 `ctrlrange` 를 토크 한계로 치지 않는다.
+- **MuJoCo 가 거부하는 파일도 그대로 읽는다.** 정의되지 않은 class, `autolimits="false"` 에서 `limited` 없는 range, 자세 속성 둘 같은 파일은 컴파일되지 않는데 텍스트 판독은 값을 찍는다. 그 사실은 구조 비교의 `[MISMATCH] MJCF failed to compile under MuJoCo` 만 알리고, 구조 비교는 `mujoco` 가 있어야 돈다 — 없으면 (`UNVERIFIED`) 아무 말도 없다.
 
 **`urdf_to_mjcf` 의 새 변환 결과는 `--validate` 에서 `EFFORT MISMATCH` 를 낸다** (#693). 변환기는 관절의 위치 범위를 gain 없는 `<general>` 의 `ctrlrange` 로 쓰는데, MuJoCo 는 그것을 위치 범위 크기의 토크 한계로 컴파일한다 (`MJCF=2.9671  URDF=200` 꼴). 도구가 맞게 읽은 것이다 — `robot_descriptions` 의 MJCF 는 actuator 에 affine bias 가 있어 (위치 서보) `ctrlrange` 가 토크 한계가 아니고, 해당하지 않는다.
 

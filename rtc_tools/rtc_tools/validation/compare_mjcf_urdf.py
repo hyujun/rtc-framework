@@ -16,9 +16,10 @@ Parses both model files and reports differences in:
 Robot-agnostic — link/joint name sets are auto-detected from the two files
 unless explicitly overridden via CLI flags.
 
-The MJCF is read the way MuJoCo compiles it (see "MJCF as MuJoCo compiles it"
-below): default classes, `<compiler angle>`, the `*limited` flags and the
-actuator `gear` all decide what a `range` in the text means.
+The MJCF's joints, actuators and body orientations are read the way MuJoCo
+compiles them (see "MJCF as MuJoCo compiles it" below): default classes,
+`<compiler angle>`, the `*limited` flags and the actuator `gear` all decide
+what a `range` in the text means.  Inertials and sites are read as written.
 
 What the text reading does not cover:
   - `<include>` is not followed.  Joints and bodies that only an included file
@@ -33,7 +34,23 @@ What the text reading does not cover:
   - `<frame>` poses (a joint of a body under a `<frame>` gets no world frame
     and falls back to the local comparison with a [WARN]); ball / free joint
     ranges; the `ctrlrange` of an actuator with internal dynamics.
+  - Inertials are the `<inertial>` element as written.  `<compiler>` options
+    that rewrite them at compile time (`inertiafromgeom`, `settotalmass`,
+    `boundmass` / `boundinertia`, `balanceinertia`) are not applied, and a
+    body whose inertia comes from its geoms has no `<inertial>` to read — it
+    is left out of the per-link comparison.
+  - A `<default><site>` pose is not applied to sites (`--tip-frames`).
+  - `<option><flag clampctrl="disable"/>` (ctrl is no longer clamped) and
+    `<flag actuation="disable"/>` (no actuator force at all) are not read.
+  - A bound on one side only (`forcerange="-3 inf"`) reads as no limit.
   - "No limit" and "a limit of 0" both read as effort 0.
+  - A shortcut (`<position>`, `<velocity>`, `<damper>`, ...) in a `<default>`
+    is recorded only as "not a pure gain".  A `<general biastype="none">`
+    inheriting it compiles to a pure gain of `kp`, and reads as gain 1.
+  - `<general biastype="affine">` with an all-zero `biasprm` applies the force
+    of a pure gain, and reads as not one (its `ctrlrange` is no torque limit).
+  - A file MuJoCo rejects is read without complaint.  Only the structural
+    section says so, and it needs `mujoco`.
 
 Interpreter: the structural section needs `mujoco`.  `ros2 run` starts the
 console script under /usr/bin/python3, which usually cannot import it — the
