@@ -1,9 +1,9 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r31 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
-- 상태: **E0 완료 · E1 진행 중** · E2 · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
+- 개정: r32 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
+- 상태: **E0 완료 · E1 · E2 진행 중** · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
-- 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5d) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
+- 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5e) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
 
 이 문서는 이 작업 흐름의 계획 · 결정 · 상태의 SSoT 다. v1 계획의 결정 (`D-n` 등) 과 충돌하면 그 결정을 여기서 명시적으로 개정한 경우에만 이 문서가 우선한다 (§3 의 "개정" 열).
@@ -193,6 +193,12 @@ v1 과 G1 MPC 의 구조 차이:
 | MD-74 | **CLIK 의 가속 제약은 `dynamic` 만 쓴다.** `iiwa7_leap` 의 출하 YAML 도 `joint_cmd.accel_constraint: dynamic` ($\eta_\tau$ 0.8) 으로 한다 — 두 planner 공통. `box` · `kinematic` 형태와 코드 기본값 (`box`) 을 지우는 정리는 후속이다 (테스트 fixture 가 `box` 를 쓴다) | 사용자 결정 (2026-10-02): `box` 는 쓰지 않는 형태다. MD-7 의 MPC ⊂ CLIK 는 CLIK 이 토크 행을 쓸 때만 성립한다 — leap 의 `box` (9.2 rad/s²) 에서는 재계획이 모두 전환 게이트에서 거부됐다 ($\rho$ 2.0 – 5.5, §8 "E1-F09"). leap 의 `closed_form` 동작이 바뀌므로 E0-F02 의 leap 값 (204 / 400) 은 대조군이 아니게 된다 — 튜닝과 G-1 은 같은 날 같은 seed 의 `closed_form` unit 을 쓴다 | MD-19 의 leap 쪽, v1 결정 K 의 출하 형태 (L5 §4.3 — leap 은 `box`) | 2026-10-02 |
 | MD-75 | E1-F10 의 결과로 고정하는 G-1 구성. **`ur5e_p1b`**: 출하 YAML 의 `planner.decel_mpc.catch.gamma_ref` 를 **0.6** 으로 한다 (나머지 포구 항 · 게시 조건 · 격자는 그대로). G-1 의 `mpc` arm 은 출하값 + `catch_lead_on` 의 잎 + `decel_mpc.enabled: true` + `supervisor.decel.mode: mpc`, 대조 arm 은 출하값 + `catch_lead_on` 이다. **`iiwa7_leap`**: 채택한 값이 없다 — 출하값을 바꾸지 않는다. leap 의 G-1 은 구조 문제 (첫 풀이의 기준 궤적, §8 "E1-F10") 를 푼 뒤에 한다 | 확인 seed 623 – 626 (200 쌍) 의 paired 차이 점추정 −0.05 가 종료 기준 (≥ −0.10, MD-71) 을 넘는다. $\gamma_{ref}$ 0.6 은 v1 의 $\gamma$ 창 하한 (중앙값 0.69) 아래다 — 편차로 기록한다: `mpc` 는 포구 전 0.28 s 안에 정지에서 가속하므로 손이 $t_c$ 에 가속 중이고, 목표 속도를 낮춰야 서보 지연으로 인한 뒤처짐이 준다. leap 은 후보 3 개 (`gamma_ref` 0.6, + `t_lead_min` 0.30 · 0.40) 에서 plan 채택이 4 · 6 · 0 / 50 이다 | L3 §6 의 `catch.gamma_ref` 출하값 (p1b), MD-53 의 "E1-F08 의 기본" (p1b) | 2026-10-02 |
 | MD-76 | E1-F10 을 마무리한다. (1) **G-1 의 N 은 300 쌍 그대로** 둔다 — 늘리지 않는다. (2) **`iiwa7_leap` 은 미달로 닫는다** — 이 기능에서 더 다루지 않고 출하값도 그대로다. (3) **`ur5e_p1b` 의 남은 간격은 더 줄이지 않는다** — 범위 밖 손잡이 (가속 비용 · 지연 보상 · 격자) 를 열지 않는다 | 사용자 결정 (2026-10-02, E1-F10 결과 보고 뒤). 불일치율 0.43 에서 300 쌍의 검정력이 0.75 (참 차이 0) · 0.26 (−0.05) 라는 것을 알고 정한 값이다 (§8 "E1-F10") — G-1 의 결과는 그 검정력과 함께 읽는다. leap 의 `mpc` 를 G-1 에서 어떻게 다룰지 (plan 이 채택되지 않는다) 는 E1-F06 의 spec 에서 정한다 | MD-71 의 N (확정), §4 미결의 E1-F10 뒤 항목 세 개 | 2026-10-02 |
+| MD-77 | G1 의 device group 은 **`g1`** (waist 3 + 왼팔 7 + 오른팔 7 = 17 관절, 이 순서) **과 `p1b`** (손 10 관절) **둘**이다. 손이 둘이 되면 (`p1b_left` · `p1b_right`) 셋이 된다 — 지금은 만들지 않는다. 세 번째 군이 생기면 그 군의 E-STOP 은 측정값 유지로 한다 | 사용자 결정 (2026-10-02). 군의 관절 순서가 URDF · MJCF · formulation 의 $(q_w, q_L, q_R)$ 과 같다. 두 군이면 `DemoJointController` 의 구조 (팔 계열 하나 + 손 하나) 가 그대로 맞고, 남는 것은 군 0 이 사슬이 아니라 tree 라는 점뿐이다 (MD-78) | [#634](https://github.com/hyujun/rtc-framework/issues/634) 본문의 네 군 (waist · left_arm · right_arm · right_hand), E2-F03 의 "다중 device group" | 2026-10-02 |
+| MD-78 | `DemoJointController` 의 군 0 이 tree 일 때. 모델은 device 이름으로 `sub_models` → `tree_models` → `arm` 순으로 찾는다 (사슬이 있으면 사슬). tree 군의 팔 끝은 **손이 붙는 link — 군 1 tree 의 `root_link`** 다 (G1: `base_adapter`). 손 FK 는 기구 tree 를 따른다 (world → waist → 오른팔 → 손). TF slot · payload frame 이름은 군 0 의 root · tip 에서 읽는다. tree handle 에는 device 관절 순서를 걸고, 이름이 모델에 없으면 configure 를 거부한다. `ComputeEstop` 은 고치지 않는다. `DeviceStateLogPod::kMaxJoints` 는 16 → 32 | 사용자 결정 (2026-10-02). `right_wrist_yaw_link` → `base_adapter` 가 항등이 아니다 (p = [0.0415, −0.003, 0], rpy = [90°, 0, 90°]) — `ur5e_p1b` 는 `tool0` → `base_adapter` 가 항등이라 드러나지 않았다. 사슬 모델을 쓰고 군의 관절 순서를 바꾸는 안은 E-STOP tick 의 팔 끝이 순서에 기대게 된다. 17 관절 군의 마지막 관절은 CSV 에서 말없이 빠졌다 | — | 2026-10-02 |
+| MD-79 | `rtc_mujoco_sim` 은 위치 서보 게인 (YAML · 런타임) 을 쓸 때 actuator 의 biastype 을 affine 으로 맞추고, torque 모드와 XML 값으로 되돌릴 때는 원래 값을 복원한다. 게인 없이 `<motor>` 를 position 모드로 쓰면 명령이 토크로 들어간다 — 거부하지 않고 그룹당 한 번 경고한다. G1 sim 의 waist · 팔 서보는 **kd/kp = 0.05 s**, kp 는 관절별 임계 감쇠 하한 $4 I_{\max}/\tau^2$ 이상이다: waist 2500 · 3700 · 3400, 어깨 750 · 750 · 300, 팔꿈치 250, 손목 100 (손은 MJCF 의 6000 / 250) | 사용자 결정 (2026-10-02). G1 MJCF 의 waist · 팔 actuator 는 `<motor>` 다 — biastype none 이라 MuJoCo 가 biasprm 을 무시하고, 게인만 쓰면 force = kp · ctrl 이었다. 0.05 s 는 포구 설계가 전제하는 팔 지연이다 (`ur5e_p1b` 와 같은 선택). 하한 아래에서는 계단이 넘친다 (flat 500 의 waist pitch 6.8 %). 거부하지 않는 이유: 기존 테스트 둘이 그 동작에 기댄다 (E-6) | — | 2026-10-02 |
+| MD-80 | G1 config 의 값. waist roll · pitch 의 `max_torque` 는 **URDF 값 35 N·m** (MJCF 는 50). catch frame 은 **`ur5e_p1b` 의 값** (`l_palm_link`, xyz [0.015, 0.145, 0.052], rpy 0) 이고 `provisional` 로 둔다. `joint_limits.max_velocity` 는 URDF 값 (22 – 37 rad/s). **`derive_accel_limits` 는 쓰지 않는다** — RT 에 필요하지 않고 계획기에 필요해지면 그때 쓴다. `demo_task` · `demo_wbc` · `demo_compliance` 는 `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 로 등록한다 — G1 은 그 YAML 을 싣지 않는다 | 사용자 결정 (2026-10-02). 제어 모델의 한계는 URDF 다. 같은 손 · 같은 손바닥 link 다. 가속 box 는 MD-7 로 이미 쓰지 않는다. 세 컨트롤러는 팔을 사슬 하나로 만들어 tree 군에서 `LoadConfig` 가 던지고, 한 컨트롤러의 실패는 bring-up 전체를 거부한다 | #634 본문의 "파생 가속 한계" | 2026-10-02 |
+| MD-81 | 이 저장소는 `hand_description` 의 모델을 **load 하지만 검증하지 않는다.** G1 모델을 읽는 gtest 를 두지 않고 모델을 vendor 하지 않는다. `DemoJointController` 의 tree 경로는 이 저장소가 소유한 합성 fixture 로 단위 테스트하고, 폐쇄 체인 손과 tree 의 결합은 sim 측정으로만 본다. `robot_descriptions/robots/ur5e_p1b/` 사본은 테스트 입력으로 남기고, 그 모델 자체를 검증하던 테스트는 지운다 ([#682](https://github.com/hyujun/rtc-framework/issues/682)). URDF ↔ MJCF 의 일치는 컴파일한 두 모델을 직접 비교해 기록한다 (§8) — `compare_mjcf_urdf` 는 이 쌍에서 거짓 불일치를 낸다 ([#686](https://github.com/hyujun/rtc-framework/issues/686)) | 사용자 결정 (2026-10-02): 두 저장소는 서로 다른 영역이다. fixture 는 in-repo 패키지만 resolve 한다 (testing-debug.md) | v1 의 #457 이 넣은 `ur5e_p1b` 모델 검증 (inertial gate 두 항목, `CatchFrameModels.Ur5eP1b`) | 2026-10-02 |
+| MD-82 | E2-F01 · F02 · F03 은 브랜치 하나 (`feat/g1-p1b-bringup`) 로 한다 — §6 "나누는 조건" (공용 코드 변경) 의 예외다 | 사용자 결정 (될 수 있으면 하나). 두 군에서는 군 수의 일반화가 없다. 공용 코드에 닿는 것은 `rtc_mujoco_sim` 의 서보 lane, 세 컨트롤러의 등록, 로그 용량, `DemoJointController` 의 이름 조회다. 기존 로봇의 회귀는 특성화 테스트 (TF slot 이름) · 기존 테스트의 assertion 불변 · 세 profile 의 sim 기동으로 판정했다 (§8) | §6 브랜치 계획의 그 행 | 2026-10-02 |
 
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
@@ -207,6 +213,10 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 - 미배정: CLIK 의 `box` · `kinematic` 형태와 코드 기본값 `box` 의 정리 (MD-74), sim 에서 정지 위치가 바닥에 닿을 때 base link 를 1 m 올리는 것 (MD-73)
 - 미배정: 항별 비용 분해 (per-term cost split) — MPC 코어가 각 항의 값을 해에서 평가해 내야 한다. E1-F05 는 포구 노드의 값 (위치 · 축 오차, $\gamma$, 상대속도, slack) 까지만 냈다. 가중을 고를 근거가 그것으로 모자랄 때 정한다
 - 미배정: GUI 에 lane 상태 (따르는 구간 · 대기 구간 · 마지막 사건) 를 보일지 — `CatchingState.msg` 에 필드를 더해야 한다 (E-3, D-20 의 동결을 푸는 결정). E1-F05 는 planner 모드만 파라미터로 읽어 보인다
+- E2-F05: G1 sim 의 유지 오차 — 오른팔에만 최대 9.6e-4 rad 가 남는다 (왼팔은 1e-9, §8 의 E2-F01 · F02 · F03 절). sim 이 중력 보상을 거는 body 목록에 손의 loop link 가 빠져 그 무게를 손목 서보가 받는 것으로 보인다 (**확인하지 않았다**). 추종을 수치로 판정하기 전에 확인한다
+- 미배정: `demo_task` · `demo_wbc` · `demo_compliance` 는 팔을 `urdf.sub_models` 의 첫 사슬로 전제한다 — G1 을 구동하지 못한다 (MD-80). G1 의 Cartesian 제어는 E2-F05 의 새 컨트롤러가 맡는다
+- 미배정: 세 군 (두 번째 손). 필요한 것: 손마다 자기 tree 의 root 로 붙는 자리를 정하는 것 (MD-78 의 형태), 손 FK · 통합 모델 cache · 손 궤적이 군 1 하나를 전제한 자리의 일반화, `kMaxOwnedGroups` 2 → 3, 세 번째 군의 E-STOP (MD-77). 왼손 자산이 없다
+- 미배정: 직렬 손의 fingertip FK 가 device 관절 순서를 재배열하지 않는다 ([#685](https://github.com/hyujun/rtc-framework/issues/685)) — E2-F03 의 테스트를 쓰다 찾았다. 폐쇄 체인 손 (`ur5e_p1b` · `g1_p1b`) 은 해당 없고, `iiwa7_leap` 에서 발현하는지는 재지 않았다
 - E3-F01: 포구 후보 선택을 MPC 로 옮길지 (MD-46 의 편차) 와 계획기 interface (ARCH-3)
 - E3-F05: G1 통합의 형태 — 단일 팔은 `DemoCatchingController` 의 `mode: mpc` 로 돈다 (MD-46)
 - 닫음 (MD-76 — 다시 열려면 사용자 결정): ur5e_p1b 에 남은 간격. `mpc` 의 손은 $t_c$ 에 공 진행 방향으로 17 mm 뒤에 있다 (`closed_form` 6 mm) — 명령이 아직 가속 중이고 (+14.9 m/s²) 서보 지연이 그 몫을 낸다. planner 파라미터로는 더 줄지 않는다 ($\gamma_{ref}$ 를 더 낮추면 위치는 좋아지나 상대속도가 2 m/s 로 커져 성공이 준다). 남은 손잡이는 범위 밖이다: 격자 `approach.dt_pre_s`, $t_c$ 근방 가속의 비용 (formulation), 지연 보상의 형태 — 시간 lead 대신 $q_{ref}+\tau\dot q_{ref}$ (공통부), YAML 키가 없는 가중 ($w_\Delta$ · jerk · slack 벌점). **노드 사이 보간은 이미 있다** (`jerk_segment.hpp`, 매 tick 평가)
@@ -224,11 +234,12 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | 관절 한계 | `ClikReferenceGenerator` 는 1-step 위치 box 를 쓰고 충돌 시 `bound_conflict` 와 실패 (직전 값 유지) 로 처리한다. `rtc_tsid` 에 가속 수준의 viability 제약 `JointLimitConstraint` 가 있다 | 제동 거리 한계는 속도 수준으로 옮겨 쓴다 (MD-14, E2-F04) |
 | centroidal | `rtc_tsid` momentum task 에 있다. 설치된 Pinocchio 에 필요한 함수가 있고 고정 베이스 모델에서도 정의된다. RT 모델 핸들 노출은 미확인 | E3-F02 에서 확인한다 |
 | G1 모델 | waist 3 + 양팔 7×2 로 MPC 활성 관절 n=17, 오른손 proto_1b 구동 10, 다리는 fixed. 양팔 뿌리는 모두 `torso_link` | formulation v0.3 에 반영했다. §0.3 전제는 몸통에 고정된 물체끼리의 충돌 쌍에만 성립한다 |
-| G1 파일 | flat `.urdf` 는 없고 `.urdf.xacro` 만 있다. closure sidecar 와 fixed-base MJCF 는 있다 | `rtc_urdf_bridge` 가 xacro 를 직접 읽는다 (G1 파일로는 미검증 — E2-F01) |
+| G1 파일 | flat `.urdf` 는 없고 `.urdf.xacro` 만 있다. closure sidecar 와 fixed-base MJCF 는 있다 | `rtc_urdf_bridge` 가 xacro 를 직접 읽는다 — G1 파일로 확인했다 (E2-F01, §8) |
 | 오른손 | proto_1b 는 폐쇄 체인 (수동 관절 10, loop closure 5) 이고 왼손 형상 · `l_*` 이름으로 오른 손목에 장착돼 있다 | 장착 자세는 실기 미검증이다 |
-| 용량 | `kMaxPlanNv`, `kMaxDeviceChannels` 모두 G1 관절 수를 담는다 | 상수 변경 불필요 |
+| 용량 | `kMaxPlanNv`, `kMaxDeviceChannels` 모두 G1 관절 수를 담는다 | 상수 변경 불필요. **정정 (E2-F03)**: 상태 로그의 `DeviceStateLogPod::kMaxJoints` (16) 는 17 관절 군을 담지 못했다 — 32 로 올렸다 (MD-78) |
 | 예측 격자 | 예측 메시지는 sim 실측 30 Hz 로 온다. 제약 (`kCap`, `io.horizon_min`) 과 두 저장소의 현재 설정값은 formulation §1.7 의 표에 있다 | sweep 조건의 근거 (MD-15). profile 은 ball_perception 쪽으로 옮기고 (MD-18) 그쪽 JSON 을 지평 요구에 맞춰 갱신한다 (E0-F04) |
-| armature | G1 URDF 에는 없고 MJCF 에만 있다 | 제어에 쓰지 않는다 (MD-25). E1-F01 코어의 벡터 입력은 분석과 테스트용으로 남는다 |
+| armature | G1 URDF 에는 없다. MJCF 에는 **손 관절에만** 있다 (0.05, 20 자유도) — waist · 팔은 0 이고 joint damping 도 없다 (E2-F01 에서 정정: 전에는 MJCF 에만 있다고만 적었다) | 제어에 쓰지 않는다 (MD-25). E1-F01 코어의 벡터 입력은 분석과 테스트용으로 남는다 |
+| G1 actuator | MJCF 의 waist · 팔은 `<motor>` (토크 모터), 손은 `<position>` (kp 6000 · kv 250). 토크 한계는 joint 의 `actuatorfrcrange` 에 있고 waist roll · pitch 가 URDF (35) 와 다르다 (50) | sim 의 위치 서보는 `rtc_mujoco_sim` 이 YAML 게인으로 만든다 (MD-79). config 의 토크 한계는 URDF 값 (MD-80) |
 | GUI | 컨트롤러는 런타임 발견, 로봇은 `demo_gui/discovery.py` 의 `RobotProfile` 정적 정의 | G1 profile 을 추가한다 |
 | plot | 파일명 기반 log type → plotter registry | 컬럼 추가와 plotter 확장 |
 
@@ -275,9 +286,9 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E2-F01 | [#633](https://github.com/hyujun/rtc-framework/issues/633) | G1 로봇 자산 — 모델 로드 · frame · MJCF scene | E0-F01 | 대기 |
-| E2-F02 | [#634](https://github.com/hyujun/rtc-framework/issues/634) | config · launch — `config/g1_p1b/` · `sim_g1_p1b.launch.py` | E2-F01 | 대기 |
-| E2-F03 | [#635](https://github.com/hyujun/rtc-framework/issues/635) | demo_joint_controller — G1 다중 device group 지원 | E2-F02 | 대기 |
+| E2-F01 | [#633](https://github.com/hyujun/rtc-framework/issues/633) | G1 로봇 자산 — 모델 로드 · frame · sim 서보 | E0-F01 | 완료 (2026-10-02, [#687](https://github.com/hyujun/rtc-framework/pull/687)) — 결정 MD-79 – MD-81, 측정 §8. scene 은 `hand_description` 의 MJCF 를 그대로 쓴다 |
+| E2-F02 | [#634](https://github.com/hyujun/rtc-framework/issues/634) | config · launch — `config/g1_p1b/` · `sim_g1_p1b.launch.py` | E2-F01 | 완료 (같은 PR) — 결정 MD-77 · MD-80. 군은 `g1` · `p1b` 둘, `derive_accel_limits` 는 뺐다 |
+| E2-F03 | [#635](https://github.com/hyujun/rtc-framework/issues/635) | demo_joint_controller — G1 구동 (군 0 이 tree) | E2-F02 | 완료 (같은 PR) — 결정 MD-78, 측정 §8. 팔 끝 · 손끝 TF 와 MuJoCo 의 차 ≤ 0.71 mm |
 | E2-F04 | [#636](https://github.com/hyujun/rtc-framework/issues/636) | CLIK 다중 frame 일반화 (`rtc_tsid`) | E0-F03 | 대기 |
 | E2-F05 | [#637](https://github.com/hyujun/rtc-framework/issues/637) | demo_dualarm_controller — QP 다중 frame CLIK 바인딩 | E2-F03, E2-F04 | 대기 |
 | E2-F06 | [#638](https://github.com/hyujun/rtc-framework/issues/638) | demo_controller_gui — G1 profile · 다중 frame 목표 | E2-F05 | 대기 |
@@ -351,7 +362,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/g1-p1b-bringup` | E2-F01, E2-F02, E2-F03 | 자산, config · launch, `demo_joint_controller` 의 G1 구동. 셋이 모여야 G1 sim 에서 관절 추종을 확인할 수 있다. **나누는 조건**: E2-F03 이 `DemoJointController` 의 일반화 (공용 코드 변경) 를 요구하면 분리한다 — 기존 로봇의 회귀를 그 PR 만으로 판정한다 |
+| `feat/g1-p1b-bringup` | E2-F01, E2-F02, E2-F03 | 자산, config · launch, `demo_joint_controller` 의 G1 구동. 셋이 모여야 G1 sim 에서 관절 추종을 확인할 수 있다. **나누는 조건**: E2-F03 이 `DemoJointController` 의 일반화 (공용 코드 변경) 를 요구하면 분리한다 — 기존 로봇의 회귀를 그 PR 만으로 판정한다. 나누지 않았다 (MD-82) |
 | `feat/tsid-clik-multiframe` | E2-F04 | `rtc_tsid` public API 변경. 기존 소비자 둘의 기능 동등성이 성공 기준이다 |
 | `feat/demo-dualarm-controller` | E2-F05 | 신규 controller. Sprint Contract = spec |
 | `feat/g1-dualarm-tooling` | E2-F06, E2-F07 | GUI 와 plot. 둘 다 `demo_dualarm_controller` 의 출력을 소비한다 |
@@ -874,12 +885,57 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 **말하지 못하는 것.** 실기의 값 (서보 지연이 sim 과 다르면 $\gamma_{ref}$ 의 최적도 다르다). p1b 의 비열등 여부 — G-1 이 판정한다. 측정 $\gamma$ 0.5 근처의 봉우리가 실재하는지 (100 발의 잡음 안일 수 있다). leap 의 `mpc` 성공률. RT tick 의 꼬리 (재지 않았다 — G-1 의 항목). 원자료 · overlay · 요약: `~/rtc_eval/e1-f10/`, 도구: 에이전트 private plan 의 `mpc-e1-f10-tools`.
 
+### E2-F01 · F02 · F03 — G1 + proto_1b bring-up (2026-10-02, [#633](https://github.com/hyujun/rtc-framework/issues/633) · [#634](https://github.com/hyujun/rtc-framework/issues/634) · [#635](https://github.com/hyujun/rtc-framework/issues/635))
+
+기준은 Sprint Contract 의 값이고 시행 전에 고정했다. sim 은 headless (`enable_viewer:=false use_cpu_affinity:=false`, 개발 PC, RT 권한 없음), 세션 `261002_2044`, 임시 패치 없음. 컨트롤러는 `demo_joint_controller` 다.
+
+- **모델 로드** (controller manager 의 기동 로그). 전체 nq 37, 구동 27, loop-passive 10, closure 5 (`contact_3d`), tree `g1` nv 17 · `p1b` nv 7, extra frame `catch_frame` (부모 `l_palm_link`, provisional). `torso_link` · `left_rubber_hand` · `base_adapter` · `l_palm_link` 은 모델의 frame 이다. `rtc_urdf_bridge` 가 G1 의 `.urdf.xacro` 와 closure sidecar 를 직접 읽는다.
+- **URDF ↔ MJCF** — 컴파일한 두 모델 (pinocchio · MuJoCo) 을 직접 비교했다. 재현 스크립트는 [#633](https://github.com/hyujun/rtc-framework/issues/633) 의 완료 코멘트에 있다.
+
+  | 항목 | 결과 | 기준 |
+  |---|---|---|
+  | 관절 | 37 = 37, 이름 집합 동일 | 동일 |
+  | 위치 한계의 차 | ≤ 2.05e-6 rad | ≤ 1e-5 |
+  | FK (URDF frame 이 있는 body 전부, q = 0 과 무작위 waist · 팔 자세 20 개) | ≤ 7.2e-7 m | ≤ 1e-6 |
+  | 질량행렬의 차 (waist · 팔 17 자유도) | ≤ 2.7e-6 kg·m² | ≤ 1e-5 |
+  | 중력 토크의 차 | ≤ 2.2e-4 N·m | — |
+  | 전체 질량 | 34.383 kg 로 같음 | — |
+  | 토크 한계 | waist roll · pitch 만 다르다: URDF 35, MJCF 50 | — (MD-80) |
+
+  `compare_mjcf_urdf` 는 이 쌍에서 mismatch 24 건을 낸다 — 17 건은 joint 의 `actuatorfrcrange` 를 읽지 않아서이고, 나머지는 질량 · 관성의 텍스트 비교다 ([#686](https://github.com/hyujun/rtc-framework/issues/686)).
+- **sim 서보** (MD-79). `rtc_mujoco_sim` 의 새 테스트 `test_motor_servo_gains`: `<motor>` 위에서 YAML · 런타임 게인이 0 이 아닌 목표를 유지하고 (1e-3 rad), torque 모드에서 bias 타입이 원복된다. affine 한 줄을 빼면 셋이 red 다. 기존 테스트의 assertion 은 바꾸지 않았다 (패키지 255 건 통과).
+- **G1 sim** — 17 + 10 관절에 목표를 한 번 보냈다 (waist · 왼팔도 0 이 아닌 자세, 최대 이동 0.8 rad, 궤적 1.02 s).
+
+  | 항목 | 결과 | 기준 |
+  |---|---|---|
+  | 컨트롤러 | `DemoJointController` active, `g1` · `p1b` 를 claim. 나머지 다섯은 인스턴스화되지 않음 | active |
+  | `without a command from` | 0 건 | 0 |
+  | 궤적 종료 1 s 뒤 $\lvert q-q_{goal}\rvert$ | `g1` 9.5e-4 rad · `p1b` 1.3e-4 rad | ≤ 5e-3 · ≤ 2e-2 |
+  | 5 s 유지 $\lvert q-q_{cmd}\rvert$ (`g1` 17 관절) | 최대 **9.6e-4 rad** (`right_wrist_yaw`) | ≤ 1e-3 |
+  | 유지 중 effort | 전 관절이 URDF 토크 한계 안 (가장 큰 비율: waist pitch 10.9 / 35) | 한계 안 |
+  | 추종 지연 (17 관절, 궤적 구간의 최소제곱) | 47.6 – 54.1 ms (R² 0.86 – 0.97) | 50 ± 5 ms |
+  | 0.05 rad 계단의 overshoot | 최대 0.70 % (`right_elbow`) | ≤ 2 % |
+  | 팔 끝 · 손끝 TF (부모 `pelvis`) ↔ MuJoCo | `base_adapter` 0.000 · 엄지 0.012 · 검지 0.019 · 중지 0.021 · 약지 0.709 mm | ≤ 2 mm |
+  | `Compute` | p50 74 · p99 113 · 최대 257 µs (108,636 tick) | 보고만 |
+  | 상태 로그 | `g1_state.csv` 136 열 — 17 관절 전부 | 17 관절 |
+
+  읽을 때의 주의:
+  - **유지 오차는 기준에 여유가 거의 없다.** 오른팔 (손이 달린 쪽) 에만 3e-4 – 9.6e-4 rad 가 남고 왼팔은 1e-9 다. sim 이 중력 보상을 거는 body 는 `p1b` 군에서 10 개인데 손의 body 는 그보다 많다 — 빠진 loop link 의 무게를 손목 서보 (kp 100) 가 받는 것으로 보인다. **확인하지 않았다** (§4 미결). 다른 자세에서는 1e-3 을 넘을 수 있다.
+  - **계단 overshoot 는 offline 값이다.** 컨트롤러를 거쳐서는 raw step 을 보낼 수 없어, 출하 YAML 의 게인으로 서보 lane 을 재현한 python MuJoCo (affine PD, 3 substep, 전 body 중력 보상) 로 쟀다.
+  - 추종 지연의 R² 가 `ur5e_p1b` 의 측정 (≥ 0.99) 보다 낮다 — 그쪽은 램프였고 이쪽은 quintic 궤적이라 가속 구간의 오차가 속도에 비례하지 않는다.
+  - TF 의 oracle 은 같은 구동 관절 값을 준 offline MuJoCo 를 정착시킨 body · site 위치다. 약지의 0.7 mm 는 MuJoCo 의 soft equality 와 컨트롤러의 폐쇄 체인 사영의 차이로 보인다 (확인하지 않았다).
+  - sim sync 가 한 주기를 넘겨 기다린 step 이 군마다 1 번 있었다 (RT 권한 없는 host). 명령 누락은 아니다.
+- **`DemoJointController` 의 tree 경로** (MD-78 · MD-81). 합성 fixture `rtc_urdf_bridge/test/urdf/dual_arm_tree_hand.urdf` 에서: 팔 끝 · 손끝 = 전체 모델 FK (1e-9), E-STOP tick 의 팔 끝 = 정상 tick (1e-12), TF slot 이름, 모델에 없는 관절 이름은 configure 거부. mutation 둘이 red 다 — tree handle 의 관절 순서를 걸지 않으면 E-STOP 팔 끝이 0.376 m 어긋나고, 팔 끝을 primary tree 의 자기 tip 으로 잡으면 팔 끝 4.3 cm · 손끝 15 cm · TF 이름이 어긋난다. 로그 용량을 16 으로 되돌리면 새 테스트 둘이 red 다.
+- **기존 로봇.** TF slot · payload frame 이름을 고정한 특성화 테스트 (`test_joint_tf_slot_frames`, 고치기 전 코드에서 작성) 가 그대로 통과한다. 기존 테스트의 assertion 변경 0 — `integrated_bringup` 1780 건 (skip 11), `rtc_mujoco_sim` 255 건 통과. `ur5e_p1a` · `ur5e_p1b` · `iiwa7_leap` sim 은 종전 roster 로 기동한다 (`DemoJointController` active, 명령 누락 0 건) — 세 컨트롤러의 등록 변경이 그 roster 를 바꾸지 않는다.
+- **찾은 결함 (범위 밖).** 직렬 손의 fingertip FK 가 device 관절 순서를 재배열하지 않는다 — `InitHandModel` 의 `SetJointOrder` 가 device config 보다 먼저 돌아 걸리지 않는다 ([#685](https://github.com/hyujun/rtc-framework/issues/685)).
+
 ## 9. 개정 이력
 
 결정의 내용과 날짜는 §4 가, 측정은 §8 이 갖는다. 이 표는 판마다 무엇이 바뀌었는지만 적는다.
 
 | 판 | 바뀐 것 |
 |---|---|
+| r32 | E2-F01 · F02 · F03 완료 ([#687](https://github.com/hyujun/rtc-framework/pull/687)): 결정 MD-77 – MD-82 (군은 `g1` · `p1b` 둘, 군 0 이 tree 일 때의 `DemoJointController`, sim 서보의 bias 타입과 G1 게인, G1 config 의 값과 세 컨트롤러의 등록, `hand_description` 모델은 load 만, 브랜치 하나), §5 정정 (armature 는 손 관절에만, G1 actuator, 로그 용량), §6 의 표, 측정 §8, 미결에 유지 오차 · 세 군 · #685 |
 | r31 | 상태를 한 곳으로 모음 (하네스 신호 — 진행 상태가 상태줄 · 순서 표 · epic 본문 · project readme 에 따로 적혀 있었고 순서 표가 뒤처졌다). §2 에 규칙 "상태는 한 곳에만 적는다", 상태줄은 epic 의 상태만, 브랜치 계획 · 순서 표에서 완료 · 다음 표시와 PR 링크를 뺌 (feature 표의 상태 열이 갖는다). epic 이슈 본문의 수기 체크리스트와 project readme 의 진행 문장도 같은 날 뺐다 |
 | r30 | E1-F10 머지 뒤 정리 ([#679](https://github.com/hyujun/rtc-framework/pull/679)) — 상태줄을 현재 상태로 줄임, §1 에 G-1 의 두 arm (MD-75) 과 300 쌍의 검정력 (MD-76), §6 의 표 · 브랜치 계획 · 순서 (다음은 `docs/catching-decel-mpc-g1`), 미결을 담당별로 다시 묶음 (E1-F10 표지의 두 항목은 미배정으로). 출하 YAML 주석 · L7 §6 · formulation 의 "E1-F10 이 정한다" 문장을 결과로 고침 |
 | r29 | E1-F10 마무리: 결정 MD-76 (G-1 의 N 300 쌍 유지, leap 미달로 닫음, p1b 의 남은 간격은 더 줄이지 않음), §8 "E1-F10" 에 code review 반영 (구간의 관절 수 검사, 기록 정정), 미결 정리 |
