@@ -150,20 +150,15 @@ void DemoComplianceController::InitHandModel(const rtc_urdf_bridge::ModelConfig&
       hand_handle_.get(), GetDeviceNameConfig(secondary), closed_hand_fk_.active());
 
   const auto* sys_cfg = GetSystemModelConfig();
-  if (sys_cfg) {
-    for (const auto& tm : sys_cfg->tree_models) {
-      if (tm.name == secondary) {
-        if (!tm.root_link.empty()) {
-          hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
-          if (hand_root_frame_id_ != 0) {
-            use_hand_root_frame_ = true;
-          }
-        }
-        for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
-          fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
-        }
-        break;
+  if (const auto* tm = sys_cfg ? FindTreeModel(*sys_cfg, secondary) : nullptr) {
+    if (!tm->root_link.empty()) {
+      hand_root_frame_id_ = hand_handle_->GetFrameId(tm->root_link);
+      if (hand_root_frame_id_ != 0) {
+        use_hand_root_frame_ = true;
       }
+    }
+    for (std::size_t i = 0; i < std::min(tm->tip_links.size(), kNumFingertips); ++i) {
+      fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm->tip_links[i]);
     }
   }
 
@@ -202,14 +197,10 @@ void DemoComplianceController::ConfigureClosedChainHandFk() {
   // fingertip links + hand-root frame from the secondary tree-model definition.
   std::vector<std::string> tips;
   std::string hand_root;
-  if (const auto* sys = GetSystemModelConfig()) {
-    for (const auto& tm : sys->tree_models) {
-      if (tm.name == secondary) {
-        tips = tm.tip_links;
-        hand_root = tm.root_link;
-        break;
-      }
-    }
+  const auto* sys = GetSystemModelConfig();
+  if (const auto* tm = sys ? FindTreeModel(*sys, secondary) : nullptr) {
+    tips = tm->tip_links;
+    hand_root = tm->root_link;
   }
 
   const auto res =

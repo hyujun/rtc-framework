@@ -142,26 +142,22 @@ void DemoWbcController::InitHandModel(const rtc_urdf_bridge::ModelConfig& config
   // The hand-only tree yields nq == hand DoF, so the serial FK path fills
   // hand_q_ from the hand device slot for slot (the handle maps the device's
   // joint order onto the model's — hand_fk_wiring_).
-  for (const auto& tm : config.tree_models) {
-    if (tm.name != secondary) {
-      continue;
-    }
-    if (!tm.root_link.empty()) {
-      hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
+  if (const auto* tm = FindTreeModel(config, secondary)) {
+    if (!tm->root_link.empty()) {
+      hand_root_frame_id_ = hand_handle_->GetFrameId(tm->root_link);
       if (hand_root_frame_id_ != 0) {
         use_hand_root_frame_ = true;
       }
     }
-    for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
-      fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
+    for (std::size_t i = 0; i < std::min(tm->tip_links.size(), kNumFingertips); ++i) {
+      fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm->tip_links[i]);
       // Runtime check A: confirm the reduced tree retains the tip link frame
       // after loop-passive branches are locked (0 = universe = not found).
       if (fingertip_frame_ids_[i] == 0) {
         RCLCPP_WARN(logger_, "[wbc] fingertip tip_link '%s' unresolved in tree '%s' — skipped",
-                    tm.tip_links[i].c_str(), secondary.c_str());
+                    tm->tip_links[i].c_str(), secondary.c_str());
       }
     }
-    break;
   }
 
   // The device's joint order — when the device configs already exist, i.e. a
@@ -196,14 +192,10 @@ void DemoWbcController::ConfigureClosedChainHandFk() {
   // fingertip links + hand-root frame from the secondary tree-model definition.
   std::vector<std::string> tips;
   std::string hand_root;
-  if (const auto* sys = GetSystemModelConfig()) {
-    for (const auto& tm : sys->tree_models) {
-      if (tm.name == secondary) {
-        tips = tm.tip_links;
-        hand_root = tm.root_link;
-        break;
-      }
-    }
+  const auto* sys = GetSystemModelConfig();
+  if (const auto* tm = sys ? FindTreeModel(*sys, secondary) : nullptr) {
+    tips = tm->tip_links;
+    hand_root = tm->root_link;
   }
 
   // #175: provider 가 활성이면 그 사영을 **빌린다** — 이 컨트롤러는 tick 당 같은 closure 를 두 번
