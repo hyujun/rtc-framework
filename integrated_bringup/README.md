@@ -42,6 +42,7 @@ integrated_bringup/
 │   │   ├── controller_log_registration.hpp
 │   │   ├── demo_shared_config.hpp
 │   │   ├── owned_topics.hpp
+│   │   ├── hand_fk_wiring.hpp          <- 손끝 FK 의 배선 (joint/task/compliance/wbc 공용): 손 handle 에 device 관절 순서를 걸고, 팔 끝 → 손 root 의 상수 변환을 구한다. 풀 수 없으면 configure 거부 사유를 낸다
 │   │   ├── layout_profile.hpp          <- launch layout profile (#350) 공용 정의: `LayoutProfileDropsMpc` · `ReadLayoutProfile`. `mpc` role 에 스레드를 올리는 두 컨트롤러 (DemoWbc MPC · 포구 계획기) 가 같은 규칙으로 읽는다
 │   │   └── virtual_tcp.hpp
 │   ├── backends/                       <- DeviceBackend 구현 (sim/robot HW 어댑터, ARCH-3 부합)
@@ -161,7 +162,7 @@ ur5e_p1a/_base.yaml                            controller.yaml
 
 1. **SetSystemModelConfig() + SetSharedModelBuilder()**: `RtControllerNode`가 최상위 `urdf:` 섹션에서 파싱한 `ModelConfig` 와, 그 ModelConfig 로 한 번 빌드한 `std::shared_ptr<PinocchioModelBuilder>` 를 모든 컨트롤러에 전달합니다 (`LoadConfig()` 이전 호출).
 2. **LoadConfig() / InitArmModel()**: `GetSharedModelBuilder()` 가 non-null 이면 그 핸들을 그대로 받아 `builder_` 로 사용 (URDF 재파싱 + 모델 재빌드 회피); null 이면 `GetSystemModelConfig()` 로 받은 ModelConfig 로 직접 `PinocchioModelBuilder` 를 만드는 폴백 경로. 결과적으로 sim launch 기준 URDF 파싱 4회 → 1회.
-3. **OnDeviceConfigsSet()**: device YAML의 `root_link`/`tip_link`를 arm sub-model에서 프레임 인덱스로 조회하여 FK/Jacobian 연산 기준점으로 설정합니다.
+3. **OnDeviceConfigsSet()**: device YAML의 `root_link`/`tip_link`를 arm sub-model에서 프레임 인덱스로 조회하여 FK/Jacobian 연산 기준점으로 설정합니다. 손 군이 있으면 여기서 손끝 FK 도 배선합니다 (아래 "손끝 FK 의 배선").
 
 ### 시스템 URDF YAML 예시
 
@@ -346,7 +347,28 @@ demo_task_controller:
 
 관절 공간 Quintic 궤적 생성기 -- UR5e 6-DOF 로봇 암 + 10-DOF 핸드 통합 제어기입니다. Rest-to-rest quintic 다항식으로 부드러운 궤적을 생성하며, 출력을 직접 위치 명령으로 전달합니다 (비례 게인 없음).
 
-**첫 device group 의 모델.** 군 0 의 모델은 그 device 이름으로 `urdf.sub_models` (사슬, root → tip) → `urdf.tree_models` (가지가 여럿인 tree) → 이름 `arm` 의 사슬 순으로 찾습니다. 사슬이 있으면 사슬을 씁니다. tree 인 군 (`g1_p1b` 의 `g1`: waist + 양팔) 은 tip 이 없으므로 **팔 끝 = 손이 붙는 link = 군 1 tree 의 `root_link`** 로 정하고, 손끝 pose 는 `T_root_fingertip = T_root_tip · T_tip_fingertip` 로 합성합니다 — 손 FK 가 그 link 기준이라 장착 변환이 항등이 아니어도 그대로 맞습니다. TF slot 과 vector payload 의 frame 이름도 같은 root · tip 에서 나옵니다. 군은 둘 (팔 계열 하나 + 손 하나) 까지입니다. 다음 두 경우는 `on_configure` 가 **FAILURE** 입니다: 군 0 의 `joint_state_names` 중 그 모델에 없는 이름이 있을 때 (사슬 · tree 공통 — E-STOP tick 의 팔 끝 FK 가 device 순서를 이름으로 모델 순서에 맞추므로, 순서가 달라도 되지만 이름은 전부 풀려야 합니다), 그리고 tree 인 군의 팔 끝을 정할 수 없을 때 (손 군의 tree 모델이 없고 device 의 `urdf.tip_link` 도 비어 있음).
+**첫 device group 의 모델.** 군 0 의 모델은 그 device 이름으로 `urdf.sub_models` (사슬, root → tip) → `urdf.tree_models` (가지가 여럿인 tree) → 이름 `arm` 의 사슬 순으로 찾습니다. 사슬이 있으면 사슬을 씁니다. tree 인 군 (`g1_p1b` 의 `g1`: waist + 양팔) 은 tip 이 없으므로 **팔 끝 = 손이 붙는 link = 군 1 tree 의 `root_link`** 로 정합니다. 손끝 pose 의 합성은 아래 "손끝 FK 의 배선" 이 갖습니다 — 이 경우 팔 끝이 손 root 자신이라 장착 변환이 항등입니다. TF slot 과 vector payload 의 frame 이름도 같은 root · tip 에서 나옵니다. 군은 둘 (팔 계열 하나 + 손 하나) 까지입니다. 다음 두 경우는 `on_configure` 가 **FAILURE** 입니다: 군 0 의 `joint_state_names` 중 그 모델에 없는 이름이 있을 때 (사슬 · tree 공통 — E-STOP tick 의 팔 끝 FK 가 device 순서를 이름으로 모델 순서에 맞추므로, 순서가 달라도 되지만 이름은 전부 풀려야 합니다), 그리고 tree 인 군의 팔 끝을 정할 수 없을 때 (손 군의 tree 모델이 없고 device 의 `urdf.tip_link` 도 비어 있음).
+
+**손끝 FK 의 배선 (joint · task · compliance · wbc 공통).** 손끝 pose 는 세 변환의 곱입니다:
+
+```
+T_root_fingertip = T_root_armtip(q_arm) · T_tip_mount · T_handroot_fingertip(q_hand)
+```
+
+`T_handroot_fingertip` 은 군 1 의 tree 모델에서 계산한 손 FK (손 tree 의 `root_link` 기준) 이고, `T_tip_mount` 는 팔 끝 link 에서 손 root link 로 가는 **상수** 변환입니다. 둘을 `OnDeviceConfigsSet` 에서 한 번 정합니다 ([support/hand_fk_wiring.hpp](include/integrated_bringup/support/hand_fk_wiring.hpp)):
+
+- **관절 순서.** 손 모델의 관절 순서는 URDF 의 것이고 device 의 `joint_state_names` 는 다를 수 있습니다 (`iiwa7_leap` · `ur5e_p1a` 는 엄지가 먼저). 손 handle 에 device 순서를 이름으로 걸어 둡니다.
+- **장착 변환.** 팔 끝과 손 root 가 같은 link 가 아니어도 됩니다 (`iiwa7_leap`: `ee_link` → `base` 는 5 mm · 90°). 두 link 가 같은 관절에 붙어 있으면 그 사이의 변환은 모델 상수이므로 전체 모델에서 읽습니다. 팔 끝이 손 root 자신이면 항등입니다.
+
+fingertip 기반 virtual TCP (centroid · weighted) 도 같은 손끝 pose 를 씁니다. 손 모델이 있는 구성에서 다음은 `on_configure` 가 **FAILURE** 입니다 — 어느 것이든 손끝 pose 가 유한하고 매끄럽게, 수 cm 틀린 채로 나가기 때문입니다:
+
+| 거부 사유 | 조건 |
+|---|---|
+| 관절 이름 | 손 device 의 `joint_state_names` 에 손 모델에 없는 이름이 있다 |
+| 관절 폭 | 그 이름들이 손 모델의 관절을 빠짐없이 한 번씩 덮지 않는다 (일부만 적었거나 같은 이름이 두 번) |
+| 장착 | 손 tree 의 `root_link` 가 모델에 없거나, 팔 끝 link 와 같은 관절에 붙어 있지 않다 (둘 사이에 관절이 있다) |
+
+관절 이름 · 폭의 두 검사는 closed-chain hand FK 가 active 인 손에는 적용하지 않습니다 (그 손은 자기 이름 bridge 로 device 를 읽고, device 관절이 직렬 tree 에 전부 있지 않습니다). 손 모델이 없는 구성 (군 1 이 없거나 그 이름의 tree 모델이 없음) 은 배선할 것이 없어 통과합니다.
 
 **타겟 메시지 레이아웃** (`/target_joint_positions`, `Float64MultiArray`):
 - `data[0..5]`: 로봇 암 관절 타겟 (rad)
@@ -479,7 +501,7 @@ q_cmd  = q_des
 기본적으로 CLIK는 tool0 (TCP) 프레임을 제어점으로 사용합니다. Virtual TCP를 활성화하면 핑거팁 기구학으로부터 계산된 가상 TCP 프레임을 제어점으로 사용합니다.
 
 ```
-T_base_vtcp = T_base_tcp(q_arm) * T_tcp_vtcp(q_hand)
+T_base_vtcp = T_base_tcp(q_arm) * T_tcp_vtcp(q_hand)   # T_tcp_vtcp 의 손끝 위치는 팔 끝 frame 기준 (T_tip_mount 를 거친 값)
 
 J_vtcp_linear  = J_tcp_linear - skew(R_tcp * d) * J_tcp_angular
 J_vtcp_angular = J_tcp_angular
@@ -494,7 +516,7 @@ J_vtcp_angular = J_tcp_angular
 | Weighted | `"weighted"` | 접촉력(contact force) 기반 가중 평균 — 접촉 중인 핑거팁에 가중치 부여 |
 | Constant | `"constant"` | `virtual_tcp_offset`으로 지정한 고정 오프셋 (TCP 프레임 기준) |
 
-> **주의:** Centroid/Weighted 모드는 `tree_models`가 활성화되어 있어야 합니다 (hand FK 필요).
+> **주의:** Centroid/Weighted 모드는 `tree_models`가 활성화되어 있어야 합니다 (hand FK 필요). 손끝 위치는 손 root 기준의 FK 를 장착 변환으로 팔 끝 frame 에 옮긴 값입니다 (위 "손끝 FK 의 배선") — Constant 모드의 오프셋은 손끝을 읽지 않고 팔 끝 frame 기준 그대로입니다.
 
 모드와 무관하게, 계산된 제어점이나 그것이 딛는 arm TCP pose 에 비유한(non-finite) 값이 섞이면
 `ComputeVirtualTcp` 는 **invalid 을 반환**하고 그 tick 의 vtcp 갱신은 건너뛴다 (직전 제어점 유지).
@@ -519,9 +541,9 @@ Virtual TCP 는 **매 tick 유효한 것이 아니다** — hand FK 가 fingerti
 
 hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.closure.yaml` sidecar; 예: 4-bar 손가락 링키지), loop-passive 관절 **하류**의 fingertip 은 tree 모델(passive 를 reference 형상에 동결)로 FK 하면 운영점 이탈 시 큰 오차가 난다 (측정 ~5.6 mm/°). 이를 위해 task/joint 컨트롤러는 fingertip FK 를 **closed-chain-consistent** 로 계산하는 `ClosedChainHandFk` 헬퍼([support/closed_chain_hand_fk.hpp](include/integrated_bringup/support/closed_chain_hand_fk.hpp), `rtc_urdf_bridge::RtClosedChainHandle` 래핑)를 배선한다.
 
-- **자동·topology-driven·dormant**: `on_configure` 에서 (a) builder 에 closure 구속이 있고 (b) fingertip 이 loop-passive 관절 하류일 때만 활성. 그 외(대부분의 plain-URDF 로봇)는 비활성 → 기존 serial `RtModelHandle` 경로가 **byte-for-byte 동일**. 현재 `ur5e_p1a`/`iiwa7_leap` 는 `extended` 미설정이라 비활성이다.
+- **자동·topology-driven·dormant**: `on_configure` 에서 (a) builder 에 closure 구속이 있고 (b) fingertip 이 loop-passive 관절 하류일 때만 활성. 그 외(대부분의 plain-URDF 로봇)는 비활성 → serial `RtModelHandle` 경로 (device 관절 순서는 "손끝 FK 의 배선" 이 건다). 현재 `ur5e_p1a`/`iiwa7_leap` 는 `extended` 미설정이라 비활성이다.
 - **RT-safe**: 매 tick 측정 actuated q 로 passive DoF 를 warm-start + 고정 K=2 Newton DLS 사영(preallocated, no-alloc). 헬퍼가 status 를 내부 소비해 fingertip pose 캐시를 **per-tip** 갱신한다: 소스 유효·결과 유한(sources_ok && !held && finite closure)이면 **loop 하류** tip 은 loop-trustworthy(`!singular && closure_error<임계`)한 tick 에서만, **비하류** tip 은 유한 tick 이면 항상 갱신하고, 그 외에는 직전 유효 pose 를 hold 한다. 비하류(serial 등가) tip 의 pose 는 actuated q 만의 함수라 loop 미수렴/특이와 무관하므로, 하류 tip 이 hold 되는 tick 에도 vtcp 입력이 붕괴하지 않는다. 소스 device/channel 이 invalid 인 tick 은 사영 자체를 건너뛰어(0-fill 된 q 를 사영하면 handle 내부 warm-start seed 가 오염돼 복구 tick 재수렴 실패) 직전 loop-consistent seed 를 보존한다. 독립 관절 소스는 hand device 에 한정되지 않으므로(arm+hand 스팬 가능) 진입 게이트는 device 인덱스가 아니라 per-source validity 로 판정한다. 활성 시 loop 하류 fingertip 은 loop-consistent, 비하류 fingertip 은 full-model FK(serial 등가)로 **모두** 서비스된다. closure 가 있어도 hand-root 프레임이 full model 에서 안 풀리거나 closure 가 ill-posed 면 안전하게 serial 로 fallback.
-- **WBC**: DemoWbcController 도 동일 `ClosedChainHandFk` 를 배선하되 **관찰/publish 표면 전용**이다 — `InitHandModel`(secondary hand-only tree = `p1b`) + `ConfigureClosedChainHandFk`(OnDeviceConfigsSet) + per-tick `ComputeHandFingertipFk` 가 fingertip 을 arm TCP(`tcp.act`)로 base 합성해 `task_link_poses`(kHandTip) 로 publish 한다. **이 publish-surface FK 는 TSID EOM 축약과 같은 사영을 공유한다** — provider 가 활성이면 `ConfigureClosedChainHandFk` 가 그 사영을 빌려 배선하고(`ClosedChainHandFk` borrowed 모드), fingertip 은 자기 핸들을 만들지 않는다. tick 당 `RtClosedChainHandle::Update` 가 2회 → 1회 (ur5e_p1b 실측 median 28.0 µs 회수 = 500 Hz 예산의 1.4%). 채택 조건은 두 축의 AND 다: 이번 tick 에 사영이 실제로 돌았고(provider 실행 카운터 증가) 그 입력 q 가 전부 이번 tick 측정값일 것(`arm_readable_ && hand_readable_` — cache 가 블록을 hold 한 tick 은 last-good 유지). 운동학 status 는 `UpdateDynamics` 가 held 를 세우기 **전** 스냅샷을 쓰므로 비유한 속도 tick 에도 fingertip pose 는 살아 있다. provider 비활성(비-extended·좌표 미매칭)이면 기존 owning 경로로 fallback 한다 — 이 판정은 배선 시점(configure)에 한 번 내려지므로, 배선 **후** provider 가 사라진 tick 에는 빌릴 사영이 없다: 그 tick 은 직전 pose 를 유효한 것으로 계속 내보내지 않고 fingertip TF 를 **withhold** 한다 (RT tick 이라 로깅으로는 알릴 수 없다). **TSID EOM 동역학**: extended 로봇(control model==actuated)에서는 `PinocchioCache` 의 EOM 항 `M/h/g` 를 `WbcReducedDynamicsProvider`(→ RT-safe `RtClosedChainHandle::UpdateDynamics`) 가 **loop-consistent 축약값**으로 덮는다 (open-chain frozen-loop M/h/g → 축약 M_a/g_a/h_a). **contact frame 은 loop-하류에 한해 J·oMf·dJv 가 loop-consistent 로 override** 된다 (L2-exact dJv — drift 는 `GetFrameClassicalAccelerationDrift`; held/singular tick 은 J/oMf/dJv 3값 last-good hold). task(registered) frame 은 frozen-loop 유지, CLIK(kinematic)·MPC(handler mode)는 무변경. 비-extended 는 provider 미주입 → byte-for-byte. arm TCP FK(`tip_frame_id_`)는 종전대로. serial `hand_handle_` 은 closure 활성 시 non-null gate 겸 비-extended fallback 이며, `SetJointOrder` 는 `!closed_hand_fk_.active()` 일 때만 적용한다(loop-locked DoF 를 뺀 reduced serial tree 는 device 관절 전체와 매핑되지 않으므로).
+- **WBC**: DemoWbcController 도 동일 `ClosedChainHandFk` 를 배선하되 **관찰/publish 표면 전용**이다 — `InitHandModel`(secondary hand-only tree = `p1b`) + `ConfigureClosedChainHandFk`(OnDeviceConfigsSet) + per-tick `ComputeHandFingertipFk` 가 fingertip 을 arm TCP 와 장착 변환으로 base 합성해 `task_link_poses`(kHandTip) 로 publish 한다. **이 publish-surface FK 는 TSID EOM 축약과 같은 사영을 공유한다** — provider 가 활성이면 `ConfigureClosedChainHandFk` 가 그 사영을 빌려 배선하고(`ClosedChainHandFk` borrowed 모드), fingertip 은 자기 핸들을 만들지 않는다. tick 당 `RtClosedChainHandle::Update` 가 2회 → 1회 (ur5e_p1b 실측 median 28.0 µs 회수 = 500 Hz 예산의 1.4%). 채택 조건은 두 축의 AND 다: 이번 tick 에 사영이 실제로 돌았고(provider 실행 카운터 증가) 그 입력 q 가 전부 이번 tick 측정값일 것(`arm_readable_ && hand_readable_` — cache 가 블록을 hold 한 tick 은 last-good 유지). 운동학 status 는 `UpdateDynamics` 가 held 를 세우기 **전** 스냅샷을 쓰므로 비유한 속도 tick 에도 fingertip pose 는 살아 있다. provider 비활성(비-extended·좌표 미매칭)이면 기존 owning 경로로 fallback 한다 — 이 판정은 배선 시점(configure)에 한 번 내려지므로, 배선 **후** provider 가 사라진 tick 에는 빌릴 사영이 없다: 그 tick 은 직전 pose 를 유효한 것으로 계속 내보내지 않고 fingertip TF 를 **withhold** 한다 (RT tick 이라 로깅으로는 알릴 수 없다). **TSID EOM 동역학**: extended 로봇(control model==actuated)에서는 `PinocchioCache` 의 EOM 항 `M/h/g` 를 `WbcReducedDynamicsProvider`(→ RT-safe `RtClosedChainHandle::UpdateDynamics`) 가 **loop-consistent 축약값**으로 덮는다 (open-chain frozen-loop M/h/g → 축약 M_a/g_a/h_a). **contact frame 은 loop-하류에 한해 J·oMf·dJv 가 loop-consistent 로 override** 된다 (L2-exact dJv — drift 는 `GetFrameClassicalAccelerationDrift`; held/singular tick 은 J/oMf/dJv 3값 last-good hold). task(registered) frame 은 frozen-loop 유지, CLIK(kinematic)·MPC(handler mode)는 무변경. 비-extended 는 provider 미주입 → byte-for-byte. arm TCP FK(`tip_frame_id_`)는 종전대로. serial `hand_handle_` 은 closure 활성 시 non-null gate 겸 비-extended fallback 이며, `SetJointOrder` 는 `!closed_hand_fk_.active()` 일 때만 적용한다(loop-locked DoF 를 뺀 reduced serial tree 는 device 관절 전체와 매핑되지 않으므로).
 
 **E-STOP:** 안전 위치 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad로 이동, 핸드는 현재 위치 유지
 

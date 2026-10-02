@@ -27,6 +27,7 @@
 // which flags/shapes/valid-bits came out, whether the command stayed finite and
 // inside the joint box) rather than solved values.
 
+#include "iiwa7_leap_hand_fk_oracle.hpp"
 #include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 
@@ -843,6 +844,77 @@ TEST(WbcArmDofSourceTest, ArmDofAboveTheControllerCapThrows) {
       [](YAML::Node& cfg) { cfg["arm_dof"] = DemoWbcController::kMaxArmDof + 1; });
   EXPECT_NE(msg.find("arm_dof"), std::string::npos) << msg;
   EXPECT_NE(msg.find("out of range"), std::string::npos) << msg;
+}
+
+// ── Hand fingertip FK wiring (#685) ─────────────────────────────────────────
+//
+// The fingertip poses this controller publishes are the hand tree's FK — fed
+// the hand device's positions under the DEVICE's joint order — composed onto
+// the arm tip through the constant hand mount. On this robot the device order
+// is not the hand model's and the hand root is not the arm tip, so either one
+// missing moves every fingertip by centimetres with nothing else out of place.
+//
+// The other three controllers answer the same question in
+// test_hand_fk_wiring.cpp. This one is asked here because a wbc controller
+// publishes poses only with TSID up, and this file owns that rig.
+//
+// Both bring-up orders run: they differ in where the hand handle is built
+// relative to the device configs, and a joint order installed in one place only
+// survives one of them.
+
+enum class WbcBringUp {
+  kControllerManager,  ///< PreConfigure → device configs → on_configure
+  kConfigLoadedTwice,  ///< LoadConfig → device configs → on_configure (reloads)
+};
+
+void ExpectWbcFingertipsAreTheFullModels(WbcBringUp order, const char* node_name) {
+  namespace fx = integrated_bringup::testfx;
+  auto ctrl = std::make_unique<DemoWbcController>("");
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name);
+  ctrl->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+  ctrl->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
+  ctrl->SetControlRate(1.0 / kDt);
+  const YAML::Node cfg = YAML::Load(kWbcYaml);
+  if (order == WbcBringUp::kControllerManager) {
+    ASSERT_EQ(ctrl->PreConfigure(node, cfg), DemoWbcController::CallbackReturn::SUCCESS)
+        << node_name;
+  } else {
+    ctrl->LoadConfig(cfg);
+  }
+  ctrl->SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
+  ASSERT_EQ(ctrl->on_configure(rclcpp_lifecycle::State{}, node, cfg),
+            DemoWbcController::CallbackReturn::SUCCESS)
+      << node_name << ": " << ctrl->HandFkWiringErrorForTesting();
+
+  // The measured state is held (no plant feedback): the poses are FK of the
+  // measurement, whatever the controller commands.
+  ControllerState state = fx::MakeIiwa7LeapStateWithHandPose();
+  ControllerOutput out = ctrl->Compute(state);
+  for (int i = 0; i < 4; ++i) {
+    state.iteration += 1;
+    out = ctrl->Compute(state);
+  }
+
+  ASSERT_TRUE(out.arm_tip_pose_valid) << node_name;
+  fx::ExpectSamePose(fx::ToSe3(out.arm_tip_pose), fx::Iiwa7LeapOracle("ee_link"), 1e-9,
+                     std::string(node_name) + " arm tip");
+  for (std::size_t f = 0; f < fx::kLeapTips.size(); ++f) {
+    ASSERT_TRUE(out.task_link_pose_valid[f]) << node_name << " " << fx::kLeapTips[f];
+    fx::ExpectSamePose(fx::ToSe3(out.task_link_poses[f]), fx::Iiwa7LeapOracle(fx::kLeapTips[f]),
+                       1e-9, std::string(node_name) + " " + fx::kLeapTips[f]);
+  }
+}
+
+TEST(WbcHandFkWiring, FixtureCanTellTheCasesApart) {
+  integrated_bringup::testfx::ExpectIiwa7LeapRigTellsTheCasesApart();
+}
+
+TEST(WbcHandFkWiring, FingertipsAreTheFullModelsOnTheControllerManagersOrder) {
+  ExpectWbcFingertipsAreTheFullModels(WbcBringUp::kControllerManager, "wbc_hand_fk_cm");
+}
+
+TEST(WbcHandFkWiring, FingertipsAreTheFullModelsWhenTheConfigIsLoadedTwice) {
+  ExpectWbcFingertipsAreTheFullModels(WbcBringUp::kConfigLoadedTwice, "wbc_hand_fk_reload");
 }
 
 }  // namespace

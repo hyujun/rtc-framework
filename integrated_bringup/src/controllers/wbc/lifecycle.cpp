@@ -129,6 +129,14 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         std::min(static_cast<std::size_t>(std::max(contact_mgr_config_.max_contact_vars, 0)),
                  integrated_bringup::WbcDiagLogPod::kMaxContactVars);
 
+    // The hand fingertip FK could not be tied to its device group or to the arm
+    // tip (OnDeviceConfigsSet resolved it): every fingertip pose — and whatever
+    // reads one — would be finite and wrong.
+    if (!hand_fk_wiring_.Error().empty()) {
+      RCLCPP_ERROR(logger_, "hand FK wiring failed: %s", hand_fk_wiring_.Error().c_str());
+      return CallbackReturn::FAILURE;
+    }
+
     // ── #135 Layer 1b: consume the observer's configure verdict ──────────
     // The wiring itself is built in OnDeviceConfigsSet (that is where the arm
     // device's joint order first exists, and it has to precede the log

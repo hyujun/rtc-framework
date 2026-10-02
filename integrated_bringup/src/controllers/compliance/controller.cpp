@@ -4,6 +4,7 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "integrated_bringup/support/model_config_lookup.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
@@ -142,15 +143,11 @@ void DemoComplianceController::InitHandModel(const rtc_urdf_bridge::ModelConfig&
     return;
   }
 
-  // Set joint reorder mapping: YAML joint_state_names → Pinocchio model order
-  if (auto* hand_cfg = GetDeviceNameConfig(secondary); hand_cfg) {
-    if (!hand_handle_->SetJointOrder(hand_cfg->joint_state_names)) {
-      RCLCPP_WARN(logger_,
-                  "DemoComplianceController: secondary device '%s' SetJointOrder failed — "
-                  "joint_state_names not all in Pinocchio model",
-                  secondary.c_str());
-    }
-  }
+  // The device's joint order — when the device configs already exist, i.e. a
+  // config loaded a second time, after them. On the controller manager's order
+  // they do not exist yet and OnDeviceConfigsSet installs it instead.
+  hand_fk_wiring_.joint_order_error = InstallHandJointOrder(
+      hand_handle_.get(), GetDeviceNameConfig(secondary), closed_hand_fk_.active());
 
   const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg) {
@@ -228,8 +225,15 @@ bool DemoComplianceController::ComputeHandForwardKinematics(const ControllerStat
 
 bool DemoComplianceController::HandFingertipPose(std::size_t f,
                                                  pinocchio::SE3& out) const noexcept {
-  return HandFingertipPoseDispatch(closed_hand_fk_, hand_handle_.get(), fingertip_frame_ids_,
-                                   use_hand_root_frame_, hand_root_frame_id_, f, out);
+  // The FK result is expressed in the hand tree's root link; the callers
+  // compose it onto the arm tip, so carry it through the mount first.
+  pinocchio::SE3 T_handroot_ft;
+  if (!HandFingertipPoseDispatch(closed_hand_fk_, hand_handle_.get(), fingertip_frame_ids_,
+                                 use_hand_root_frame_, hand_root_frame_id_, f, T_handroot_ft)) {
+    return false;
+  }
+  out = hand_fk_wiring_.T_tip_mount.act(T_handroot_ft);
+  return true;
 }
 
 void DemoComplianceController::OnDeviceConfigsSet() {
@@ -351,6 +355,34 @@ void DemoComplianceController::OnDeviceConfigsSet() {
   // #121: wire closed-chain-consistent hand FK if the model has loop closure and a
   // fingertip is downstream of a loop-passive joint. No-op (serial FK) otherwise.
   ConfigureClosedChainHandFk();
+
+  // Hand FK wiring: the device's joint order on the serial hand handle, and the
+  // constant transform from the arm tip to the hand tree's root. It follows the
+  // closed-chain wiring, which decides whether the serial handle is read at all.
+  // This hook cannot fail a configure, so on_configure consumes the verdict.
+  {
+    const auto* hand_sys_cfg = GetSystemModelConfig();
+    const auto* hand_tree =
+        hand_sys_cfg != nullptr ? FindTreeModel(*hand_sys_cfg, secondary) : nullptr;
+    const std::string arm_tip = [&]() -> std::string {
+      const auto* cfg = GetDeviceNameConfig(primary);
+      return (cfg != nullptr && cfg->urdf) ? cfg->urdf->tip_link : std::string{};
+    }();
+    const bool tip_resolved =
+        arm_handle_ != nullptr && !arm_tip.empty() && arm_handle_->GetFrameId(arm_tip) != 0;
+    hand_fk_wiring_ = WireHandFk({
+        .hand_handle = hand_handle_.get(),
+        .hand_device = GetDeviceNameConfig(secondary),
+        .closed_chain_fk_active = closed_hand_fk_.active(),
+        .model = builder_ ? builder_->GetFullModel().get() : nullptr,
+        .arm_tip_link = tip_resolved ? std::string_view(arm_tip) : std::string_view{},
+        .hand_root_link =
+            hand_tree != nullptr ? std::string_view(hand_tree->root_link) : std::string_view{},
+    });
+    if (!hand_fk_wiring_.Error().empty()) {
+      RCLCPP_ERROR(logger_, "[compliance] hand FK wiring: %s", hand_fk_wiring_.Error().c_str());
+    }
+  }
 
   // ── #135 Layer 1b: momentum observer over the ARM device ──────────────────
   // Built here rather than in LoadConfig because the wiring pins the arm

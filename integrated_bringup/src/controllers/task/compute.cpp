@@ -286,18 +286,18 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt,
   // ── Hand FK + Virtual TCP (must run before CLIK) ──────────────────────
   // #121: ComputeHandForwardKinematics runs the closed-chain projection when the
   // hand has loop closure with downstream fingertips, else the serial hand FK;
-  // HandFingertipPose returns the hand-root-relative fingertip pose from whichever
-  // path is active (byte-for-byte in the serial case). The pose-validity flags
+  // HandFingertipPose returns the fingertip pose in the arm tip link from whichever
+  // path is active. The pose-validity flags
   // were already defaulted to invalid for this tick in Compute() — see the
   // #125 F1 note there for why the reset cannot live inside this gated block.
   if (ComputeHandForwardKinematics(state)) {
     // Fingertip world poses (monitoring — always computed)
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
-      pinocchio::SE3 T_hand_ft;
-      const bool produced = HandFingertipPose(f, T_hand_ft);
+      pinocchio::SE3 T_tip_ft;
+      const bool produced = HandFingertipPose(f, T_tip_ft);
       fingertip_pose_valid_[f] = produced;
       if (produced) {
-        const pinocchio::SE3 T_base_ft = tcp_pose.act(T_hand_ft);
+        const pinocchio::SE3 T_base_ft = tcp_pose.act(T_tip_ft);
         fingertip_positions_[f] = T_base_ft.translation();
         fingertip_rotations_[f] = T_base_ft.rotation();
       }

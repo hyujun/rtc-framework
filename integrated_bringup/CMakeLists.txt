@@ -95,6 +95,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   # per-lane readability gate the observer itself cannot ask.
   src/support/momentum_observer_wiring.cpp
   src/support/closed_chain_hand_fk.cpp
+  src/support/hand_fk_wiring.cpp
   src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
   src/backends/mujoco_native_backend.cpp
@@ -1228,6 +1229,36 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # Hand fingertip FK wiring (#685): the device's joint order on the serial
+  # hand handle and the constant arm tip → hand root mount, as
+  # support/hand_fk_wiring resolves them (synthetic fixture, reached through the
+  # never-installed test_urdf_path.hpp) and as the four controllers that publish
+  # fingertip poses use and refuse them (iiwa7_leap). The controller cases run
+  # on_configure on a real LifecycleNode, hence the domain.
+  ament_add_gtest(test_hand_fk_wiring
+    test/test_hand_fk_wiring.cpp
+    TIMEOUT 180
+    ENV ROS_DOMAIN_ID=52)
+  target_include_directories(test_hand_fk_wiring PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_link_libraries(test_hand_fk_wiring
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_hand_fk_wiring
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_base
+    rtc_tsid
+    rtc_mpc
+    pinocchio
+    Eigen3
+  )
+
   # ── Device backend registration smoke test ─────────────────────────────────
   # Confirms the 3 backend TUs (mujoco_native / ur_driver_native /
   # udp_hand_native) static-init through --whole-archive and reach the
@@ -1569,6 +1600,7 @@ if(BUILD_TESTING)
     test_momentum_observer_embedding
     test_joint_tf_slot_frames
     test_joint_tree_primary_group
+    test_hand_fk_wiring
     test_mujoco_native_backend
     test_catching_traj_input
     test_catching_tracking
