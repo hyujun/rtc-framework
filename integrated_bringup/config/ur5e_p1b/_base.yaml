@@ -110,8 +110,9 @@
           # NOT the evidence, despite the older wording here: between the
           # shipped q_pre and q_close the tip centroid moves toward −z
           # (cos −0.58) — fingers curl back toward the palm. The monotone +z
-          # rise asserted by test_catch_frame_models is a different motion
-          # (straight → far joint limit), not this posture pair.
+          # rise test_catch_frame_models asserts (iiwa7_leap only since #682;
+          # it held for this hand too) is a different motion (straight → far
+          # joint limit), not this posture pair.
           rpy: [0.0, 0.0, 0.0]
           # CONFIRMED by the user in sim, 2026-09-21 (D-17): the offset above was
           # rendered onto the preshape hand with a ball-radius sphere at the frame
