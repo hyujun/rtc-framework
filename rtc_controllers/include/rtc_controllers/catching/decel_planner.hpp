@@ -87,16 +87,15 @@ namespace rtc::catching {
 /// tick stalled; 50 ms is one default planner wake timeout, 25 ticks at 2 ms.
 inline constexpr std::int64_t kDecelMaxRtStateAgeNs = 50'000'000;
 
-/// What one decel step did (the planner events CSV's decel columns).
+/// What one decel step did (the planner events CSV's decel columns). The CSV
+/// writes the NAME (DecelOutcomeName), never the value: the values carry no
+/// meaning outside a build and move when an enumerator is added or removed.
 enum class DecelOutcome : std::uint8_t {
   kOff = 0,  ///< not attempted: not configured, or not a decel mode
   kNoState,  ///< no followed plan / t_c, unseeded command, or a size mismatch
   /// The RT's report is older than kDecelMaxRtStateAgeNs (or from the
   /// future): what it reports may no longer be what the arm does (an RT stall).
   kStaleState,
-  /// Not produced since the stop-only planner's removal (MD-70); kept so the
-  /// values after it do not move.
-  kNotDue,
   kUpToDate,          ///< the published segment already starts at this t_eff or later
   kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s (MD-31)
   kInputNonFinite,    ///< the predicted x₀ is not finite
@@ -107,9 +106,8 @@ enum class DecelOutcome : std::uint8_t {
   kReady,             ///< publishable; the cycle's re-check decides
   kPublished,         ///< stored (set by the cycle)
   kSuperseded,        ///< the trial or the followed plan moved during the solve (cycle)
-  // E1-F08 (#661) — appended, the values above are stable. A
-  // solved segment whose packed form fails the terminal-rest or node check is
-  // kSolveFailed with core_reason kNone.
+  // E1-F08 (#661). A solved segment whose packed form fails the terminal-rest
+  // or node check is kSolveFailed with core_reason kNone.
   kNotAtRest,    ///< first solve: max |q̇_cmd| above approach.rest_tol
   kTooLate,      ///< first solve: not even one pre-catch interval fits before t_c
   kNotFollowed,  ///< replan: no segment of ours the RT reports pending or following
@@ -139,15 +137,10 @@ struct DecelRecord {
   std::int32_t k{-1};
   std::int32_t n_nodes{0};
   std::uint32_t decel_seq{0};  ///< the published segment's seq (cycle)
-  /// The removed stop-only planner's x₀ extrapolation (MD-28): its span and
-  /// whether its q̈ estimate was used. Never written now (MD-70) — kept
-  /// because the planner events CSV has a column for each (#631).
-  double h_s{std::numeric_limits<double>::quiet_NaN()};
-  bool qdd_trusted{false};
-  bool x0_clamped{false};    ///< the start state (q or q̇) was projected into the box
-  bool from_segment{false};  ///< replan: x₀ came from a segment the RT reports
-  bool presolved{false};     ///< no reference: kinematic pre-solve + solve
-  bool cold_retry{false};    ///< a stop core's reference was refused, re-solved without it
+  bool x0_clamped{false};      ///< the start state (q or q̇) was projected into the box
+  bool from_segment{false};    ///< replan: x₀ came from a segment the RT reports
+  bool presolved{false};       ///< no reference: kinematic pre-solve + solve
+  bool cold_retry{false};      ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};
   std::int32_t qp_status{-1};
   std::int64_t solve_ns{0};    ///< solve start → solve end (the budget's measure)
@@ -170,6 +163,10 @@ struct DecelRecord {
   double catch_pos_err{std::numeric_limits<double>::quiet_NaN()};   ///< [m]
   double catch_axis_err{std::numeric_limits<double>::quiet_NaN()};  ///< [rad]
   double catch_gamma{std::numeric_limits<double>::quiet_NaN()};
+  /// ‖v̂_b − J_v q̇‖ at the catch node [m/s], and the core's velocity slack s_v
+  /// (fraction of v_rel_allow, linear model; 0 when the slack row is off).
+  double catch_v_rel{std::numeric_limits<double>::quiet_NaN()};
+  double slack_v{std::numeric_limits<double>::quiet_NaN()};
   /// max over nodes and between-node extrema of |q̇|/q̇_max.
   double speed_ratio_max{std::numeric_limits<double>::quiet_NaN()};
   bool w_p_fallback{false};  ///< W_p was the constant w_const·I (no usable Σ_p)

@@ -429,6 +429,441 @@ def test_lead_off_trial_is_unchanged():
     assert rec["ref_vs_true_mm"] == pytest.approx(10.0, abs=0.2)
 
 
+# ── The reference a trial's law gave the CLIK (MPC E1-F05, #631) ────────────
+
+
+def _reference_trial(*, ref_valid, following, p_d, committed=True, ref_is_zero=None):
+    """``_lead_trial``'s geometry (lead 0.2 s; reference 10 mm off the ball,
+    CLIK 2 mm, servo 3 mm) with the reference handed over as either law does:
+    the soft-catch ``ref_x``, or the followed segment's ``decel_p_d``. A tick
+    whose law did not run leaves its block ZERO, as the RT record does
+    (``ref_is_zero`` overrides that, for the positive control)."""
+    ref_is_zero = (not ref_valid) if ref_is_zero is None else ref_is_zero
+    lead = 0.2
+    t = np.arange(0.0, 1.2, 0.002)
+    n = len(t)
+    t_c = 0.8
+    mode = np.full(n, ct.MODE_APPROACH)
+    if committed:
+        mode[100:] = ct.MODE_COMMITTED
+    reference = _ball(t + lead) + _REF_OFF
+    ctx = ct.TrialContext(
+        t=t,
+        mode=mode,
+        hand_phase=np.zeros(n, int),
+        plan_id=np.ones(n, int),
+        plan_t_c=t_c - t,
+        plan_p_c=np.tile(_ball(t_c)[0], (n, 1)),
+        plan_gamma_f=np.full(n, 0.4),
+        ref=np.zeros((n, 3)) if ref_is_zero else reference,
+        ref_valid=np.full(n, ref_valid),
+        ref_saturated=np.zeros(n, bool),
+        q_cmd=reference + _CLIK_OFF,
+        q_meas=_ball(t) + _REF_OFF + _CLIK_OFF + _SERVO_OFF,
+        fk=_IdentityFk(),
+        t_lead=np.full(n, lead),
+        decel_following=None if following is None else np.full(n, following),
+        decel_p_d=reference if p_d else None,
+    )
+    tt = np.arange(0.0, 1.2, 0.01)
+    truth = ct.Truth(tt, _ball(tt), _V0 + np.outer(tt, _G))
+    return ct.decompose_at_tc(ctx, truth, window_s=0.12)
+
+
+def test_an_mpc_trial_is_decomposed_against_the_segment_it_followed():
+    rec = _reference_trial(ref_valid=False, following=True, p_d=True)
+    assert rec["ref_source"] == "segment"
+    # The same three injected parts `_lead_trial` recovers from ref_x.
+    assert rec["clik_mm"] == pytest.approx(2.0, abs=0.05)
+    assert rec["servo_mm"] == pytest.approx(3.0, abs=0.05)
+    assert rec["ref_vs_true_mm"] == pytest.approx(10.0, abs=0.2)
+
+
+def test_a_soft_catch_trial_reads_ref_x_as_before():
+    assert _lead_trial(0.2, 0.2)["ref_source"] == "soft_catch"  # no decel columns at all
+    rec = _reference_trial(ref_valid=True, following=False, p_d=True)
+    assert rec["ref_source"] == "soft_catch"
+    assert rec["clik_mm"] == pytest.approx(2.0, abs=0.05)
+    assert rec["ref_vs_true_mm"] == pytest.approx(10.0, abs=0.2)
+
+
+def test_a_tick_with_no_reference_is_not_measured_against_the_zero_vector():
+    """The E1-F09 measurement build: `decel_following` is recorded, the target
+    is not, and `ref_valid` is 0 under mpc. Read against ``ref_x`` — the fresh
+    record's zeros — the CLIK term is the catch frame's distance from the
+    origin; it must come out NaN instead, and say why."""
+    rec = _reference_trial(ref_valid=False, following=True, p_d=False)
+    assert rec["ref_source"] == "none"
+    assert math.isnan(rec["clik_mm"]) and math.isnan(rec["ref_vs_true_mm"])
+    # What does not read the reference is still there.
+    assert rec["servo_mm"] == pytest.approx(3.0, abs=0.05)
+    assert math.isfinite(rec["total_mm"]) and math.isfinite(rec["pred_mm"])
+    # Positive control: the same zero block read as if it were a reference —
+    # what the tool reported for these units before — is not millimetres.
+    unguarded = _reference_trial(ref_valid=True, following=False, p_d=False, ref_is_zero=True)
+    assert unguarded["clik_mm"] > 500.0 and unguarded["ref_vs_true_mm"] > 500.0
+
+
+def test_the_followed_segment_outranks_a_valid_soft_catch_reference():
+    # Both present on one tick does not happen in a run (the RT hands the CLIK
+    # one law's reference); the order is fixed so the result is not arbitrary.
+    rec = _reference_trial(ref_valid=True, following=True, p_d=True)
+    assert rec["ref_source"] == "segment"
+
+
+def test_a_trial_without_a_commit_has_no_reference_source():
+    rec = _reference_trial(ref_valid=True, following=False, p_d=False, committed=False)
+    assert rec["ref_source"] == ""
+    assert math.isnan(rec["clik_mm"])
+
+
+def test_diag_columns_takes_each_decel_column_that_exists():
+    base = [*ct.DIAG_COLUMNS, "q_cmd_a", "q_meas_a"]
+    assert not [c for c in ct.diag_columns(base) if c.startswith("decel_")]
+    patch_build = [*base, "decel_judged", "decel_event", "decel_following", "decel_seq"]
+    assert [c for c in ct.diag_columns(patch_build) if c.startswith("decel_")] == [
+        "decel_judged",
+        "decel_event",
+        "decel_following",
+        "decel_seq",
+    ]
+    full = [*base, *ct.DIAG_DECEL_COLUMNS, "decel_k0"]
+    got = ct.diag_columns(full)
+    assert set(ct.DIAG_DECEL_COLUMNS) <= set(got)
+    assert "decel_k0" not in got  # not read
+
+
+def test_decel_arrays_are_none_for_the_columns_a_diag_lacks():
+    pd = pytest.importorskip("pandas")
+    assert all(v is None for v in ct._decel_arrays(pd.DataFrame({"mode": [0, 0]})).values())
+    patch_build = pd.DataFrame(
+        {"decel_judged": [0, 1], "decel_following": [0, 1], "decel_event": [0, 4]}
+    )
+    arrays = ct._decel_arrays(patch_build)
+    assert arrays["decel_p_d"] is None and arrays["decel_seq"] is None
+    assert arrays["decel_following"].dtype == bool and list(arrays["decel_following"]) == [0, 1]
+    assert list(arrays["decel_event"]) == [0, 4]
+    full = patch_build.assign(
+        decel_p_d_x=[0.1, 0.2], decel_p_d_y=[0.0, 0.0], decel_p_d_z=[1.0, 1.0]
+    )
+    assert ct._decel_arrays(full)["decel_p_d"].shape == (2, 3)
+    # A row cut short reads NaN: not judged, not following, event 0, seq 0 —
+    # never INT64_MIN, which would count as one more followed segment.
+    cut = pd.DataFrame(
+        {
+            "decel_judged": [1.0, np.nan],
+            "decel_following": [1.0, np.nan],
+            "decel_event": [4.0, np.nan],
+            "decel_refusal": [0.0, np.nan],
+            "decel_seq": [7.0, np.nan],
+        }
+    )
+    arrays = ct._decel_arrays(cut)
+    assert list(arrays["decel_following"]) == [True, False]
+    assert list(arrays["decel_judged"]) == [True, False]
+    assert list(arrays["decel_event"]) == [4, 0]
+    assert list(arrays["decel_seq"]) == [7, 0]
+    # Two of the three target columns are not a target.
+    assert ct._decel_arrays(full.drop(columns="decel_p_d_z"))["decel_p_d"] is None
+
+
+# ── What the RT did with the segments (MPC E1-F05) ──────────────────────────
+
+
+def _lane_ctx(n=200, **decel):
+    t = np.arange(n) * 0.002
+    mode = np.full(n, ct.MODE_TRACKING)
+    mode[20:60] = ct.MODE_APPROACH
+    mode[60:] = ct.MODE_COMMITTED
+    zeros = np.zeros((n, 3))
+    return ct.TrialContext(
+        t=t,
+        mode=mode,
+        hand_phase=np.zeros(n, int),
+        plan_id=np.ones(n, int),
+        plan_t_c=np.zeros(n),
+        plan_p_c=zeros,
+        plan_gamma_f=np.zeros(n),
+        ref=zeros,
+        ref_valid=np.zeros(n, bool),
+        ref_saturated=np.zeros(n, bool),
+        q_cmd=zeros,
+        q_meas=zeros,
+        fk=_IdentityFk(),
+        **decel,
+    )
+
+
+def _planted_lane():
+    """A trial with a KNOWN event list: three admissions, one replacement,
+    three switches, two waits in the box (5 and 3 ticks), two catch_box
+    refusals (one judged over three TRACKING ticks, one single), one gate
+    refusal and two aged episodes (4 ticks and 1 tick)."""
+    n = 200
+    ev = np.zeros(n, int)
+    rho = np.zeros(n)
+    judged = np.zeros(n, bool)
+    refusal = np.zeros(n, int)
+    ev[10:13] = ct.DECEL_EVENT_WORKSPACE  # the pair, judged on three TRACKING ticks
+    ev[20] = ct.DECEL_EVENT_ADMITTED
+    ev[30] = ct.DECEL_EVENT_REPLACED
+    ev[45], rho[45] = ct.DECEL_EVENT_SWITCHED, 1e-6
+    ev[50:55] = ct.DECEL_EVENT_DEFERRED
+    ev[55] = ct.DECEL_EVENT_ADMITTED
+    ev[70], rho[70] = ct.DECEL_EVENT_SWITCHED, 0.3
+    ev[80:83] = ct.DECEL_EVENT_DEFERRED
+    ev[83] = ct.DECEL_EVENT_WORKSPACE
+    ev[90] = ct.DECEL_EVENT_ADMITTED
+    ev[100], rho[100] = ct.DECEL_EVENT_SWITCHED, 0.2
+    ev[110] = ct.DECEL_EVENT_GATE_REFUSED
+    judged[20:] = True
+    refusal[20:] = 4  # `repeat`: the lane's bookkeeping, not an event
+    refusal[120:124] = ct.DECEL_REFUSAL_AGED
+    refusal[130] = ct.DECEL_REFUSAL_AGED
+    following = np.arange(n) >= 45
+    seq = np.zeros(n, int)
+    seq[45:70], seq[70:100], seq[100:] = 7, 9, 12
+    return _lane_ctx(
+        n,
+        decel_event=ev,
+        decel_rho=rho,
+        decel_judged=judged,
+        decel_refusal=refusal,
+        decel_following=following,
+        decel_seq=seq,
+    )
+
+
+def test_lane_metrics_count_the_planted_events():
+    rec = ct.decel_lane_metrics(_planted_lane())
+    assert rec["decel_segments_followed"] == 3
+    assert rec["decel_switches"] == 3
+    assert rec["decel_admitted"] == 3
+    assert rec["decel_replaced"] == 1
+    # Episodes, not ticks: 8 deferred ticks are 2 waits, 4 catch_box ticks are
+    # 2 refusals, 5 aged ticks are 2 dropped segments.
+    assert rec["decel_deferred"] == 2
+    assert rec["decel_deferred_max_ticks"] == 5
+    assert rec["decel_workspace_refused"] == 2
+    assert rec["decel_gate_refused"] == 1
+    assert rec["decel_aged"] == 2
+    assert rec["decel_rho_first"] == pytest.approx(1e-6)
+    assert rec["decel_rho_replan_max"] == pytest.approx(0.3)
+    # First APPROACH tick 20 → first switch 45, at 2 ms.
+    assert rec["decel_wait_node0_ms"] == pytest.approx(50.0)
+    assert set(rec) == set(ct.DECEL_LANE_KEYS)
+
+
+def test_lane_metrics_are_nan_without_the_columns_and_zero_under_closed_form():
+    bare = ct.decel_lane_metrics(_lane_ctx())
+    assert set(bare) == set(ct.DECEL_LANE_KEYS)
+    assert all(math.isnan(v) for v in bare.values())
+    n = 200
+    closed_form = ct.decel_lane_metrics(
+        _lane_ctx(
+            n,
+            decel_event=np.zeros(n, int),
+            decel_rho=np.zeros(n),
+            decel_judged=np.zeros(n, bool),
+            decel_refusal=np.zeros(n, int),
+            decel_following=np.zeros(n, bool),
+            decel_seq=np.zeros(n, int),
+        )
+    )
+    for key in ("decel_rho_first", "decel_rho_replan_max", "decel_wait_node0_ms"):
+        assert math.isnan(closed_form.pop(key)), key
+    assert set(closed_form.values()) == {0}
+
+
+def test_a_single_switch_has_no_replan_rho():
+    ctx = _planted_lane()
+    ctx.decel_event[[70, 100]] = 0
+    rec = ct.decel_lane_metrics(ctx)
+    assert rec["decel_switches"] == 1
+    assert math.isnan(rec["decel_rho_replan_max"])
+    assert rec["decel_rho_first"] == pytest.approx(1e-6)
+
+
+def _cpp_enum(header: Path, name: str) -> list[str]:
+    """The enumerators of ``enum class <name>`` in a C++ header, by value, as
+    the snake_case names the CSV tools use (``kGateRefused`` → ``gate_refused``).
+    Explicit ``= n`` values are honoured, the rest count up."""
+    body = header.read_text().split(f"enum class {name}", 1)[1].split("{", 1)[1].split("};", 1)[0]
+    names: dict[int, str] = {}
+    value = -1
+    for line in body.splitlines():
+        m = re.match(r"\s*k([A-Za-z0-9]+)\s*(?:=\s*(\d+))?\s*,?", line)
+        if not m:
+            continue
+        value = int(m.group(2)) if m.group(2) else value + 1
+        names[value] = re.sub(r"(?<!^)(?=[A-Z])", "_", m.group(1)).lower()
+    return [names[i] for i in range(len(names))]
+
+
+_REPO = Path(__file__).resolve().parents[2]
+_DIAG_POD_HPP = (
+    _REPO / "integrated_bringup/include/integrated_bringup/logging/catching_diag_log_pod.hpp"
+)
+_PLANNER_IO_HPP = _REPO / "rtc_controllers/include/rtc_controllers/catching/planner_io.hpp"
+
+
+def test_the_decel_codes_this_tool_reads_are_the_cpp_enums_values():
+    """catching_diag.csv writes ``decel_event`` / ``decel_refusal`` as
+    integers. An enumerator inserted or removed in C++ moves every value after
+    it; this is what notices."""
+    if not (_DIAG_POD_HPP.exists() and _PLANNER_IO_HPP.exists()):
+        pytest.skip("C++ headers are not beside this checkout")
+    event = _cpp_enum(_DIAG_POD_HPP, "DecelEvent")
+    refusal = _cpp_enum(_PLANNER_IO_HPP, "DecelRefusal")
+    assert event[ct.DECEL_EVENT_ADMITTED] == "admitted"
+    assert event[ct.DECEL_EVENT_DEFERRED] == "deferred"
+    assert event[ct.DECEL_EVENT_WORKSPACE] == "workspace"
+    assert event[ct.DECEL_EVENT_SWITCHED] == "switched"
+    assert event[ct.DECEL_EVENT_GATE_REFUSED] == "gate_refused"
+    assert event[ct.DECEL_EVENT_REPLACED] == "replaced"
+    assert refusal[ct.DECEL_REFUSAL_AGED] == "aged"
+
+
+# ── The command at t_c (MPC E1-F05) ─────────────────────────────────────────
+
+
+def _command_ctx(position, *, t=None, approach_at=0.1):
+    """A trial whose COMMAND (catch frame = joints, _IdentityFk) is
+    ``position(t)`` along x. APPROACH from ``approach_at``, COMMITTED from
+    0.3 s; t_c = 0.6 s."""
+    t = np.arange(0.0, 1.0, 0.002) if t is None else t
+    n = len(t)
+    mode = np.full(n, ct.MODE_TRACKING)
+    mode[t >= approach_at] = ct.MODE_APPROACH
+    mode[t >= 0.3] = ct.MODE_COMMITTED
+    q = np.zeros((n, 3))
+    q[:, 0] = position(t)
+    return ct.TrialContext(
+        t=t,
+        mode=mode,
+        hand_phase=np.zeros(n, int),
+        plan_id=np.ones(n, int),
+        plan_t_c=0.6 - t,
+        plan_p_c=np.zeros((n, 3)),
+        plan_gamma_f=np.zeros(n),
+        ref=np.zeros((n, 3)),
+        ref_valid=np.zeros(n, bool),
+        ref_saturated=np.zeros(n, bool),
+        q_cmd=q,
+        q_meas=q,
+        fk=_IdentityFk(),
+    )
+
+
+def _speeding_up(t, start=0.2, accel=10.0):
+    return 0.5 * accel * np.clip(t - start, 0.0, None) ** 2
+
+
+def test_the_command_at_tc_is_read_at_the_lead_tick():
+    # At rest until 0.2 s, then 10 m/s² along x. With a 0.05 s lead the command
+    # aimed at t_c = 0.6 s is the one written at 0.55 s: 3.5 m/s, still
+    # speeding up at 10 m/s².
+    rec = ct.command_kinematics_at_tc(_command_ctx(_speeding_up), t_c=0.6, t_lead=0.05)
+    assert rec["cmd_speed_tc"] == pytest.approx(3.5, abs=0.01)
+    assert rec["cmd_dvdt_tc"] == pytest.approx(10.0, abs=0.05)
+    assert rec["cmd_accel_tc"] == pytest.approx(10.0, abs=0.05)
+    # It holds from APPROACH (0.1 s) until it moves (0.2 s, + the 2 ms it takes
+    # to pass 0.02 m/s), and has 0.35 s of motion behind it at 0.55 s.
+    assert rec["cmd_hold_s"] == pytest.approx(0.1, abs=0.005)
+    assert rec["cmd_move_s"] == pytest.approx(0.35, abs=0.005)
+    assert rec["cmd_hold_s"] + rec["cmd_move_s"] == pytest.approx(0.45, abs=1e-9)
+    # Without the lead it is read at t_c itself.
+    late = ct.command_kinematics_at_tc(_command_ctx(_speeding_up), t_c=0.6, t_lead=0.0)
+    assert late["cmd_speed_tc"] == pytest.approx(4.0, abs=0.01)
+
+
+def test_a_command_slowing_down_has_a_negative_dvdt():
+    def position(t):  # 3 m/s from the start, braking at 5 m/s² from 0.4 s
+        return 3.0 * t - 0.5 * 5.0 * np.clip(t - 0.4, 0.0, None) ** 2
+
+    rec = ct.command_kinematics_at_tc(_command_ctx(position), t_c=0.6, t_lead=0.05)
+    assert rec["cmd_speed_tc"] == pytest.approx(2.25, abs=0.01)
+    assert rec["cmd_dvdt_tc"] == pytest.approx(-5.0, abs=0.05)
+    assert rec["cmd_accel_tc"] == pytest.approx(5.0, abs=0.05)  # a magnitude
+    assert rec["cmd_hold_s"] == pytest.approx(0.0, abs=1e-9)  # already moving at APPROACH
+
+
+def test_the_command_columns_do_not_assume_evenly_spaced_rows():
+    # A diag thinned to every third row before 0.45 s: same command, same
+    # numbers (the differences are taken on the recorded time axis).
+    t = np.arange(0.0, 1.0, 0.002)
+    keep = (t >= 0.45) | (np.arange(len(t)) % 3 == 0)
+    rec = ct.command_kinematics_at_tc(_command_ctx(_speeding_up, t=t[keep]), t_c=0.6, t_lead=0.05)
+    assert rec["cmd_speed_tc"] == pytest.approx(3.5, abs=0.01)
+    assert rec["cmd_dvdt_tc"] == pytest.approx(10.0, abs=0.05)
+    assert rec["cmd_move_s"] == pytest.approx(0.35, abs=0.01)
+
+
+def test_a_tick_that_commanded_nothing_before_approach_does_not_blank_the_trial():
+    # The diag writes q_cmd as NaN until the arm is latched. Such a tick early
+    # in the trial's window is not one the columns read.
+    ctx = _command_ctx(_speeding_up)
+    ctx.q_cmd[:20] = np.nan  # 0 .. 0.04 s; APPROACH is at 0.1 s
+    rec = ct.command_kinematics_at_tc(ctx, t_c=0.6, t_lead=0.05)
+    assert rec["cmd_speed_tc"] == pytest.approx(3.5, abs=0.01)
+    assert rec["cmd_hold_s"] == pytest.approx(0.1, abs=0.005)
+    assert rec["cmd_move_s"] == pytest.approx(0.35, abs=0.005)
+    # Inside the rows that ARE read it still blanks the trial.
+    ctx.q_cmd[100] = np.nan  # 0.2 s
+    assert all(math.isnan(v) for v in ct.command_kinematics_at_tc(ctx, 0.6, 0.05).values())
+
+
+def test_only_the_rows_that_are_read_go_through_fk():
+    calls = []
+
+    class _CountingFk(_IdentityFk):
+        def __call__(self, q):
+            calls.append(1)
+            return super().__call__(q)
+
+    ctx = _command_ctx(_speeding_up, approach_at=0.4)  # APPROACH at row 200, kl at 275
+    ctx.fk = _CountingFk()
+    ct.command_kinematics_at_tc(ctx, t_c=0.6, t_lead=0.05)
+    assert len(calls) < 100, len(calls)  # not the 280 rows from the window's start
+
+
+def test_a_command_that_never_moves_has_no_hold_time():
+    rec = ct.command_kinematics_at_tc(
+        _command_ctx(lambda t: np.zeros_like(t)), t_c=0.6, t_lead=0.05
+    )
+    assert rec["cmd_speed_tc"] == 0.0 and rec["cmd_accel_tc"] == 0.0
+    assert rec["cmd_move_s"] == 0.0
+    assert math.isnan(rec["cmd_hold_s"])
+
+
+def test_the_command_columns_are_nan_without_a_tc_or_a_usable_window():
+    ctx = _command_ctx(_speeding_up)
+    assert all(math.isnan(v) for v in ct.command_kinematics_at_tc(ctx, math.nan, 0.05).values())
+    # t_c on the trial's first tick: nothing behind it to difference.
+    assert all(math.isnan(v) for v in ct.command_kinematics_at_tc(ctx, 0.0, 0.0).values())
+    # A repeated time stamp: no derivative.
+    t = np.arange(0.0, 1.0, 0.002)
+    t[100] = t[99]
+    stuck = _command_ctx(_speeding_up, t=t)
+    assert all(math.isnan(v) for v in ct.command_kinematics_at_tc(stuck, 0.6, 0.05).values())
+    assert set(ct.command_kinematics_at_tc(ctx, 0.6, 0.05)) == set(ct.CMD_KINEMATICS_KEYS)
+
+
+def test_golden_pilot_rows_carry_the_new_columns_without_moving_the_old(pilot):
+    # A soft-catch session from before the decel columns: every committed
+    # trial is decomposed against ref_x, the lane columns are NaN, the command
+    # columns are measured.
+    assert pilot.summary["ref_source"] == {"soft_catch": 25}
+    assert "decel_lane" not in pilot.summary
+    for row in pilot.rows:
+        assert all(math.isnan(row[k]) for k in ct.DECEL_LANE_KEYS)
+        assert all(math.isfinite(row[k]) for k in ct.CMD_KINEMATICS_KEYS), row["idx"]
+        assert 0.5 < row["cmd_speed_tc"] < 10.0
+    for key in ct.CMD_KINEMATICS_KEYS:
+        assert math.isfinite(pilot.summary["medians"][key])
+    assert math.isnan(pilot.summary["medians"]["decel_wait_node0_ms"])
+
+
 def test_lead_per_tick_sources():
     pd = pytest.importorskip("pandas")
     on = {"controller_mirror": {"joint_cmd.lag.lead_enable": True, "joint_cmd.lag.T_arm": 0.2}}
@@ -910,6 +1345,125 @@ def test_plan_validity_window_ratio_is_nan_with_zero_cycles():
     assert math.isnan(out["plan_valid_ratio"])
     # A commit happened, but no recorded cycle falls in the window.
     assert math.isnan(out["plan_valid_at_commit"])
+
+
+def test_search_validity_is_over_the_wakes_that_searched():
+    # mode mpc: three search wakes (the search found a plan on the third and
+    # its pair was published), then five wakes that replanned the segment
+    # without searching. Every one of the eight earned a row.
+    wake = np.arange(1.0, 9.0)
+    plan_valid = np.array([0, 0, 1, 0, 0, 0, 0, 0], float)
+    search_valid = np.array([0, 0, 1, 0, 0, 0, 0, 0], float)
+    searched = np.array([1, 1, 1, 0, 0, 0, 0, 0], bool)
+    out = ct.plan_validity_window(
+        wake, plan_valid, 0.5, 8.5, 10.0, search_valid=search_valid, searched=searched
+    )
+    assert out["planner_cycles"] == 8
+    assert out["plan_valid_ratio"] == pytest.approx(1 / 8)  # over every row, as before
+    assert out["search_cycles"] == 3
+    assert out["search_valid_cycles"] == 1
+    assert out["search_valid_ratio"] == pytest.approx(1 / 3)  # not 1/8
+    # The last wake before the commit replanned; the last one that SEARCHED
+    # published a valid plan.
+    assert out["plan_valid_at_commit"] == 1.0
+    # Without the mask every row counts as a search, and the last row is read.
+    plain = ct.plan_validity_window(wake, plan_valid, 0.5, 8.5, 10.0, search_valid=search_valid)
+    assert plain["search_valid_ratio"] == pytest.approx(1 / 8)
+    assert plain["plan_valid_at_commit"] == 0.0
+
+
+def test_search_validity_is_nan_when_no_wake_of_the_window_searched():
+    wake = np.array([1.0, 2.0])
+    out = ct.plan_validity_window(
+        wake, np.zeros(2), 0.5, 2.5, 10.0, search_valid=np.zeros(2), searched=np.zeros(2, bool)
+    )
+    assert out["search_cycles"] == 0
+    assert math.isnan(out["search_valid_ratio"])
+    assert math.isnan(out["plan_valid_at_commit"])
+
+
+def test_the_pair_ratio_is_of_the_first_segments_that_were_tried():
+    # Three first solves: catch_error, catch_error, published.
+    wake = np.arange(1.0, 6.0)
+    plan_valid = np.array([0, 0, 1, 0, 0], float)
+    tried = np.array([1, 1, 1, 0, 0], bool)
+    published = np.array([0, 0, 1, 0, 0], bool)
+    out = ct.plan_validity_window(
+        wake, plan_valid, 0.5, 5.5, 10.0, pair_attempt=tried, pair_published=published
+    )
+    assert out["pair_attempt_cycles"] == 3
+    assert out["pair_published_ratio"] == pytest.approx(1 / 3)
+
+
+def test_a_trial_with_no_first_solve_has_no_pair_ratio():
+    # closed_form: valid searches the switching rule kept back are not
+    # withheld pairs — there is no pair.
+    wake = np.arange(1.0, 6.0)
+    plan_valid = np.array([1, 0, 0, 0, 0], float)
+    search_valid = np.ones(5)
+    none = np.zeros(5, bool)
+    out = ct.plan_validity_window(
+        wake,
+        plan_valid,
+        0.5,
+        5.5,
+        10.0,
+        search_valid=search_valid,
+        searched=np.ones(5, bool),
+        pair_attempt=none,
+        pair_published=none,
+    )
+    assert out["search_valid_ratio"] == 1.0
+    assert out["pair_attempt_cycles"] == 0
+    assert math.isnan(out["pair_published_ratio"])
+
+
+def test_plan_validity_window_without_the_new_arrays_has_only_the_old_keys():
+    wake = np.array([0.0, 1.0, 2.0])
+    valid = np.array([0.0, 1.0, 1.0])
+    out = ct.plan_validity_window(wake, valid, t_launch=0.5, t_commit=2.5, t_end=10.0)
+    assert set(out) == {
+        "planner_cycles",
+        "plan_valid_cycles",
+        "plan_valid_ratio",
+        "plan_valid_at_commit",
+    }
+
+
+def test_planner_cycle_times_reads_the_new_columns_only_where_the_log_has_them(tmp_path):
+    new = tmp_path / "new"
+    old = tmp_path / "old"
+    for d in (new, old):
+        d.mkdir()
+    (new / ct.PLANNER_EVENTS_CSV).write_text(
+        "wake_ns,outcome,plan_valid,search_valid,decel_outcome,decel_kind\n"
+        "1000000000,held,0,1,catch_error,first\n"
+        "2000000000,published,1,1,published,first\n"
+        "3000000000,idle,0,0,published,same\n"
+        "4000000000,no_input,0,0,off,none\n"
+    )
+    (old / ct.PLANNER_EVENTS_CSV).write_text("wake_ns,plan_valid\n1000000000,0\n2000000000,1\n")
+    lane = object()  # only its presence is read
+    wakes = ct._planner_cycle_times(new, lane)
+    assert list(wakes.wake_s) == [1.0, 2.0, 3.0, 4.0]
+    assert list(wakes.plan_valid) == [0.0, 1.0, 0.0, 0.0]
+    assert list(wakes.search_valid) == [1.0, 1.0, 0.0, 0.0]
+    # A replan-only wake keeps outcome idle: it ran no search.
+    assert list(wakes.searched) == [True, True, False, False]
+    assert list(wakes.pair_attempt) == [True, True, False, False]
+    assert list(wakes.pair_published) == [False, True, False, False]
+    before = ct._planner_cycle_times(old, lane)
+    assert list(before.plan_valid) == [0.0, 1.0]
+    assert before.search_valid is None and before.searched is None
+    assert before.pair_attempt is None and before.pair_published is None
+    assert before[0] is before.wake_s and before[1] is before.plan_valid
+
+
+def test_golden_g3d_has_no_search_validity_on_a_log_from_before_the_column(pilot):
+    g3d = pilot.summary["g3d"]
+    assert g3d["search_valid_ratio_p50_p05_p95"] is None
+    assert g3d["pair_published_ratio_p50_p05_p95"] is None
+    assert all("search_valid_ratio" not in r for r in pilot.rows)
 
 
 def test_golden_g3d_plan_validity_ratio_in_range_with_positive_cycles(pilot):

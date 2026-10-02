@@ -260,6 +260,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
 
   // ── 3. Search (A-4 single entry) ─────────────────────────────────────────
   PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, wake, rec.search);
+  rec.search_valid = plan.valid;
   if (post_search_hook_ != nullptr) {
     post_search_hook_(post_search_context_);
   }

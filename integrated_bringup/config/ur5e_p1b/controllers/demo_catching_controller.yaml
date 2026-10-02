@@ -417,7 +417,7 @@ demo_catching_controller:
         mode: closed_form
         # rho_max of the mpc segment-switch gate (MD-39), per joint:
         # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max. Read under mpc only.
-        # Provisional — E1-F05's measurement sets it (MD-41).
+        # Provisional — E1-F10's measurement sets it (MD-50).
         switch_margin: 1.0
 
     # ── Hand allowance (L3 §6 `planner.hand.*`, TBD-HAND-04) ─────────────────

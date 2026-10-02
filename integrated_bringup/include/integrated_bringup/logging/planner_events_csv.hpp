@@ -16,10 +16,27 @@
 // plan for) are not recorded unless they saw a trial reset or produced a
 // monitorOnly σ_ℓ — at 20 Hz they would drown the rows that say something.
 //
-// The `decel_*` columns (MPC E1-F03) are the decel step's account; they are
-// appended, so readers that select columns by name are unaffected. A wake
-// whose decel step only waited (not due, up to date, past the replan window)
-// does not earn a row on its own.
+// `search_valid` says whether this wake's search produced a valid plan;
+// `plan_valid` says a valid plan was PUBLISHED. Under `mode: mpc` a plan whose
+// first segment is withheld is not published (MD-62): that wake reads
+// search_valid 1, plan_valid 0, outcome held.
+//
+// The `decel_*` columns are the decel planner's account of the wake (MPC
+// E1-F03 · E1-F08): which solve it was (`decel_kind`), how it ended
+// (`decel_outcome`, `decel_core_reason`), and the catch node as solved —
+// position [m] and axis [rad] error, γ, ‖v_rel‖ [m/s], the velocity slack. A
+// value the wake did not compute is NaN (0 for a flag or a count).
+// `decel_k` is the grid index of node 0: −n_pre for a pre-catch grid point,
+// k ≥ 0 for the stop grid point t_c + k·Δ_s — `decel_kind` says which.
+// A wake whose decel step only waited (off, up to date, past the replan
+// window) does not earn a row on its own.
+//
+// Readers select columns by NAME: the set has grown and shrunk, and a log
+// from before a change lacks the newer names.
+//
+// The header below is ONE statement of adjacent string literals:
+// rtc_tools' test_cpp_header_matches_this_list reads the column list back out
+// of this file by joining them.
 
 #include "rtc_controllers/catching/planner_cycle.hpp"
 
@@ -31,21 +48,25 @@ namespace integrated_bringup {
 
 inline void WritePlannerEventsHeader(std::ostream& os) {
   os << "wake_ns,publish_ns,recv_to_publish_ms,outcome,mode,reset_seen,cov_matched,"
-        "plan_id,plan_valid,plan_reason,snapshot_sequence,track_generation,settling,"
+        "plan_id,plan_valid,search_valid,plan_reason,snapshot_sequence,track_generation,settling,"
         "n_in_window,n_ik,n_pass,rej_input,rej_ik,rej_manipulability,rej_workspace,"
         "rej_not_evaluated,budget_hit,search_us,ik_us_max,rank_mask,rank_uncertainty,"
         "rank_reach,rank_gamma,rank_commit_lead,rank_error_budget,score,lead_s,gamma_f,"
         "decision,sigma_l,rank_rollout,t_w,rollout_window_only,n_rollouts,rollout_us_max,"
         "g_min,g_max,v_dir_max,max_catchable,decel_outcome,decel_k,decel_n_nodes,decel_seq,"
-        "decel_publish_ns,decel_h_s,decel_qdd_trusted,decel_x0_clamped,decel_from_segment,"
+        "decel_publish_ns,decel_x0_clamped,decel_from_segment,"
         "decel_presolved,decel_cold_retry,decel_iterations,decel_qp_status,decel_core_reason,"
-        "decel_solve_us,decel_slack_max,decel_slack_terminal_max,decel_tau_ratio_max\n";
+        "decel_solve_us,decel_slack_max,decel_slack_terminal_max,decel_tau_ratio_max,"
+        "decel_kind,decel_cold_start,decel_solver_retried,decel_ref_clamped,decel_ref_scaled,"
+        "decel_ref_scale,decel_ref_shortfall,decel_x0_speed,decel_catch_pos_err,"
+        "decel_catch_axis_err,decel_catch_gamma,decel_catch_v_rel,decel_slack_v,"
+        "decel_speed_ratio_max,decel_w_p_fallback,decel_w_delta_scale,decel_source_seq\n";
 }
 
 /// Whether the decel step did something worth a row on its own.
 [[nodiscard]] inline bool DecelStepWorthRecording(rtc::catching::DecelOutcome o) noexcept {
   using rtc::catching::DecelOutcome;
-  return o != DecelOutcome::kOff && o != DecelOutcome::kNotDue && o != DecelOutcome::kUpToDate &&
+  return o != DecelOutcome::kOff && o != DecelOutcome::kUpToDate &&
          o != DecelOutcome::kPastReplanWindow;
 }
 
@@ -69,10 +90,11 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   os << r.wake_ns << ',' << r.publish_ns << ',' << latency_ms << ','
      << rtc::catching::CycleOutcomeName(r.outcome) << ',' << static_cast<int>(r.mode) << ','
      << (r.reset_seen ? 1 : 0) << ',' << (r.cov_matched ? 1 : 0) << ',' << r.plan_id << ','
-     << (r.plan_valid ? 1 : 0) << ',' << static_cast<int>(r.reason) << ',' << r.snapshot_sequence
-     << ',' << r.track_generation << ',' << (s.settling ? 1 : 0) << ',' << s.n_in_window << ','
-     << s.n_ik << ',' << s.n_pass << ',' << rej(JudgeReject::kInput) << ',' << rej(JudgeReject::kIk)
-     << ',' << rej(JudgeReject::kManipulability) << ',' << rej(JudgeReject::kWorkspace) << ','
+     << (r.plan_valid ? 1 : 0) << ',' << (r.search_valid ? 1 : 0) << ','
+     << static_cast<int>(r.reason) << ',' << r.snapshot_sequence << ',' << r.track_generation << ','
+     << (s.settling ? 1 : 0) << ',' << s.n_in_window << ',' << s.n_ik << ',' << s.n_pass << ','
+     << rej(JudgeReject::kInput) << ',' << rej(JudgeReject::kIk) << ','
+     << rej(JudgeReject::kManipulability) << ',' << rej(JudgeReject::kWorkspace) << ','
      << rej(JudgeReject::kNotEvaluated) << ',' << (s.budget_hit ? 1 : 0) << ','
      << s.search_ns / 1000 << ',' << s.ik_ns_max / 1000 << ',' << s.chosen_rank_mask << ','
      << bit(rtc::catching::kRankUncertainty) << ',' << bit(rtc::catching::kRankReach) << ','
@@ -85,11 +107,17 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
      << s.chosen_v_dir_max << ',' << s.chosen_max_catchable << ',';
   const auto& d = r.decel;
   os << rtc::catching::DecelOutcomeName(d.outcome) << ',' << d.k << ',' << d.n_nodes << ','
-     << d.decel_seq << ',' << d.publish_ns << ',' << d.h_s << ',' << (d.qdd_trusted ? 1 : 0) << ','
-     << (d.x0_clamped ? 1 : 0) << ',' << (d.from_segment ? 1 : 0) << ',' << (d.presolved ? 1 : 0)
-     << ',' << (d.cold_retry ? 1 : 0) << ',' << d.iterations << ',' << d.qp_status << ','
+     << d.decel_seq << ',' << d.publish_ns << ',' << (d.x0_clamped ? 1 : 0) << ','
+     << (d.from_segment ? 1 : 0) << ',' << (d.presolved ? 1 : 0) << ',' << (d.cold_retry ? 1 : 0)
+     << ',' << d.iterations << ',' << d.qp_status << ','
      << rtc::catching::DecelMpcReasonName(d.core_reason) << ',' << d.solve_ns / 1000 << ','
-     << d.slack_max << ',' << d.slack_terminal_max << ',' << d.tau_ratio_max << '\n';
+     << d.slack_max << ',' << d.slack_terminal_max << ',' << d.tau_ratio_max << ',';
+  os << rtc::catching::DecelKindName(d.kind) << ',' << (d.cold_start ? 1 : 0) << ','
+     << (d.solver_retried ? 1 : 0) << ',' << (d.ref_clamped ? 1 : 0) << ','
+     << (d.ref_scaled ? 1 : 0) << ',' << d.ref_scale << ',' << d.ref_shortfall << ',' << d.x0_speed
+     << ',' << d.catch_pos_err << ',' << d.catch_axis_err << ',' << d.catch_gamma << ','
+     << d.catch_v_rel << ',' << d.slack_v << ',' << d.speed_ratio_max << ','
+     << (d.w_p_fallback ? 1 : 0) << ',' << d.w_delta_scale << ',' << d.source_seq << '\n';
 }
 
 }  // namespace integrated_bringup

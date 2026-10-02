@@ -339,7 +339,7 @@ enum class Outcome : std::uint8_t { kNone, kCaptured, kMissed, kUndetermined, kA
 | `supervisor.decel.a_dec` | double | m/s² | **10.0** (provisional — 2026-09-22 사용자 확정, S3.5b gate 지도가 돌린 값; `reference.a_max` 확정 시 ≤ 재검, plan §7.3) | >0, ≤ `reference.a_max` | **단일 원천.** L3 정지거리도 이 키를 읽는다 (§4.3). 두 로봇 `demo_catching_controller.yaml` 에 기록 — 소비자는 S6 계획기의 정지점 예약 (`planner_search.cpp`) 과 S7 DECEL 이다 |
 | `supervisor.decel.ramp_time` | double | s | 0.0 | 0–0.1 | §4.3 |
 | `supervisor.decel.mode` | string | – | `closed_form` (두 로봇 YAML 에 명시) | `closed_form` · `mpc` (다른 값은 configure 실패) | §4.3a, MPC MD-44. `mpc` 는 `APPROACH` 부터 정지까지 계획기의 구간을 따르고 (MPC MD-45), `planner.decel_mpc.enabled` 와 포구 전 격자 (`approach.n_pre_max` > 0 — 출하 YAML 의 값, MPC MD-55) 가 필요하다. 전제가 빠지면 park. `closed_form` 은 decel MPC 키를 보지 않는다 (`enabled: true` 면 경고만, 그 설정이 틀려도 park 하지 않는다) |
-| `supervisor.decel.switch_margin` | double | – | **1.0** (provisional — E1-F05 측정으로 정함, MD-41) | >0 (아니면 configure 실패) | §4.3a 전환 게이트의 $\rho_{\max}$ (MD-39). `mpc` 에서만 읽는다 |
+| `supervisor.decel.switch_margin` | double | – | **1.0** (provisional — E1-F10 측정으로 정함, MD-50) | >0 (아니면 configure 실패) | §4.3a 전환 게이트의 $\rho_{\max}$ (MD-39). `mpc` 에서만 읽는다 |
 | `supervisor.contact.f_min` | double | N | **0.2** (provisional, 사용자 값) | >0 | G7-3. sim fingertip lane 은 잡음이 없어(C-20) 이 값만 유효하고, `k_sigma` 는 실기 전용이다 |
 | `supervisor.contact.k_sigma` | double | – | 3.0 | 2–6 | §4.4. 실기 전용 (sim σ̂≈0) |
 | `supervisor.contact.n_debounce` | int | – | 3 | 1–20 | 센서 주기 의존 (실기 250 Hz) |

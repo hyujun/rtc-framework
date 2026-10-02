@@ -73,9 +73,11 @@ from .ball_launch import (
 )
 from .catalog import ControllerCatalog
 from .catching import (
+    CATCHING_DECEL_MODE_PARAM,
     CATCHING_ENABLE_PARAM,
     CATCHING_STATE_TOPIC,
     CatchingStatus,
+    decel_law_query_due,
 )
 from .config import (
     _CALIB_STATE_COLORS,
@@ -264,6 +266,9 @@ class DemoControllerGUI(Node):
         # from it lets the feed go stale rather than silently reusing whatever
         # the active controller happens to publish.
         self._catching = CatchingStatus()
+        # Throttle state of the decel-law parameter read (Tk thread only).
+        self._decel_law_last_query_s: float | None = None
+        self._decel_law_in_flight = False
         self.create_subscription(
             CatchingState,
             f"/{CATCHING_CONFIG_KEY}/{CATCHING_STATE_TOPIC}",
@@ -1118,6 +1123,7 @@ class DemoControllerGUI(Node):
         self._refresh_ball_panel()
         self._refresh_hand_step_panel()
         self._refresh_catching_panel()
+        self._query_catching_decel_law()
         self.root.after(200, self._schedule_refresh)
 
     def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
@@ -1512,6 +1518,9 @@ class DemoControllerGUI(Node):
 
         control_tab = tk.Frame(notebook, bg="#1e1e2e")
         notebook.add(control_tab, text="  Control  ")
+
+        catching_tab = tk.Frame(notebook, bg="#1e1e2e")
+        notebook.add(catching_tab, text="  Catching  ")
 
         grasp_tab = tk.Frame(notebook, bg="#1e1e2e")
         notebook.add(grasp_tab, text="  Grasp  ")
@@ -1921,9 +1930,11 @@ class DemoControllerGUI(Node):
             btn_frame, text="Send Command", style="Send.TButton", command=self._publish_target
         ).pack(side="left", padx=4)
 
-        self._build_ball_panel(control_tab)
-        self._build_hand_step_panel(control_tab)
-        self._build_catching_panel(control_tab)
+        # The catching controller's panels (ball launch, hand step, state)
+        # have their own tab.
+        self._build_ball_panel(catching_tab)
+        self._build_hand_step_panel(catching_tab)
+        self._build_catching_panel(catching_tab)
 
         # ══════════════════════════════════════════════════════════════════
         #  GRASP TAB
@@ -2229,6 +2240,53 @@ class DemoControllerGUI(Node):
         apart from a controller that repeated itself.
         """
         self._catching.update(msg, time.monotonic())
+
+    def _query_catching_decel_law(self) -> None:
+        """Read the controller's read-only `supervisor.decel.mode`. Tk thread.
+
+        Driven by the periodic refresh, not by `_refresh_catching_panel` (the
+        buttons call that too). Non-blocking for the same reason as the grasp
+        mode query: not-ready services must never freeze the window, so
+        readiness is polled at the throttled rate and a miss just retries. A
+        parked controller answers with an empty value, which is not cached.
+        """
+        now_s = time.monotonic()
+        if not decel_law_query_due(
+            self._catching, now_s, self._decel_law_last_query_s, self._decel_law_in_flight
+        ):
+            return
+        self._decel_law_last_query_s = now_s
+        client = self._get_param_client(CATCHING_CONFIG_KEY)
+        if not client.services_are_ready():
+            return
+        self._decel_law_in_flight = True
+        future = client.get_parameters([CATCHING_DECEL_MODE_PARAM])
+
+        def _on_done(fut):
+            # Executor thread: extract only, never touch GUI/status state here.
+            value = None
+            try:
+                resp = fut.result()
+                if resp.values:
+                    value = resp.values[0].string_value or None
+            except Exception as exc:  # noqa: BLE001 — any failure = not read
+                self.get_logger().debug(f"{CATCHING_DECEL_MODE_PARAM} query failed: {exc}")
+            self.root.after(0, self._apply_catching_decel_law, value)
+
+        future.add_done_callback(_on_done)
+
+    def _apply_catching_decel_law(self, value) -> None:
+        """Cache the decel law the controller reported. Tk thread only.
+
+        An empty or missing value (parameter undeclared: parked / unconfigured)
+        is not cached, so the throttle in `decel_law_query_due` retries.
+        """
+        self._decel_law_in_flight = False
+        if not isinstance(value, str) or not value:
+            return
+        self._catching.decel_law = value
+        self.get_logger().info(f"/{CATCHING_CONFIG_KEY} {CATCHING_DECEL_MODE_PARAM}={value}")
+        self._refresh_catching_panel()
 
     def _build_catching_panel(self, parent: tk.Frame) -> None:
         """Supervisor mode, input lane, tracking error, CLIK state, arm/disarm.
