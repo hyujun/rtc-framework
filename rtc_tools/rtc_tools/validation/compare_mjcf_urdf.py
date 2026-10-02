@@ -11,9 +11,12 @@ Parses both model files and reports differences in:
     own axis without changing the physics, so only the perpendicular offset
     counts as a mismatch — see _axis_line_offset)
 
-Robot-agnostic — link/joint name sets and the MJCF default class are auto-
-detected from the MJCF root (`<mujoco model="...">` / `<default class="...">`)
+Robot-agnostic — link/joint name sets are auto-detected from the two files
 unless explicitly overridden via CLI flags.
+
+The MJCF is read the way MuJoCo compiles it (see "MJCF as MuJoCo compiles it"
+below): default classes, `<compiler angle>`, the `*limited` flags and the
+actuator `gear` all decide what a `range` in the text means.
 
 Usage:
   # Explicit paths (always works):
@@ -24,9 +27,6 @@ Usage:
   # (<robot-pkg>/robots/<robot-name>/{mjcf,urdf}/<robot-name>.{xml,urdf}):
   ros2 run rtc_tools compare_mjcf_urdf \\
       --robot-pkg robot_descriptions --robot-name <robot_name>
-
-  # Override the MJCF default class root if it differs from the model name:
-  ros2 run rtc_tools compare_mjcf_urdf --mjcf-class my_robot ...
 
   # Declare the pairs whose MJCF body name differs from the URDF link name
   # (YAML/JSON, {<mjcf_body>: <urdf_link>, ...}).  It is an exception list —
@@ -72,7 +72,10 @@ class JointParams:
     axis: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
     lower: float = 0.0
     upper: float = 0.0
+    # Torque range [effort_lower, effort]; both 0 when nothing limits it.  A
+    # URDF states one symmetric bound, an MJCF range need not be symmetric.
     effort: float = 0.0
+    effort_lower: float = 0.0
     velocity: float = 0.0
     origin_xyz: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
     armature: float = 0.0
@@ -198,6 +201,215 @@ def _axes_parallel(a: list[float], b: list[float]) -> tuple[bool, bool]:
     is_parallel = abs(abs(cos_angle) - 1.0) < _AXIS_PARALLEL_COS_TOL
     same_sign = cos_angle > 0
     return is_parallel, same_sign
+
+
+# ── MJCF as MuJoCo compiles it ───────────────────────────────────────────────
+#
+# This module reads MJCF as text, and the text is not the model: what a `range`
+# means depends on the default classes above it, on <compiler>, on the
+# `*limited` flags and on the actuator that drives the joint.  The helpers
+# below resolve those the way MuJoCo's compiler does, so the numbers compared
+# against the URDF are the ones the simulator runs with.
+#
+#   * The top-level <default> is the class "main" (MuJoCo refuses any other
+#     name for it).  A nested <default class="X"> starts as a copy of its
+#     parent — taken after ALL of the parent's own elements, wherever the
+#     nested block sits among them — and then applies its own.
+#   * An element takes its defaults from its own `class`, else from the nearest
+#     enclosing body/frame `childclass`, else from "main".  Actuators live
+#     outside the body tree, so no `childclass` reaches them.
+#   * Every actuator shortcut (<motor>, <position>, ...) in a <default> writes
+#     into the same per-class actuator defaults as <general>.
+#   * A range is a limit only where MuJoCo enforces it (_enforced_range).
+#   * Angles are DEGREES unless <compiler angle="radian"/> says otherwise.
+
+# Actuator elements a <default> may hold.
+_ACTUATOR_DEFAULT_TAGS = frozenset(
+    {
+        "general",
+        "motor",
+        "position",
+        "velocity",
+        "intvelocity",
+        "damper",
+        "cylinder",
+        "muscle",
+        "adhesion",
+    }
+)
+
+_UNBOUNDED = (-math.inf, math.inf)
+
+
+@dataclass(frozen=True)
+class _MjcfCompiler:
+    """The ``<compiler>`` settings that change how the rest of the file reads."""
+
+    #: Multiply an MJCF angle by this to get radians.
+    angle_scale: float
+    #: Whether a ``*limited`` flag left unset is inferred from its range.
+    autolimits: bool
+
+
+def _mjcf_compiler(root: ET.Element) -> _MjcfCompiler:
+    attrs: dict[str, str] = {}
+    # Repeated <compiler> elements accumulate, a later one winning per attribute.
+    for elem in root.findall("compiler"):
+        attrs.update(elem.attrib)
+    return _MjcfCompiler(
+        angle_scale=1.0 if attrs.get("angle", "degree") == "radian" else math.pi / 180.0,
+        autolimits=attrs.get("autolimits", "true") == "true",
+    )
+
+
+def _enforced_range(
+    range_str: str | None, limited: str | None, autolimits: bool
+) -> tuple[float, float] | None:
+    """The range if MuJoCo enforces it, else ``None``.
+
+    Covers ``range``/``limited``, ``forcerange``/``forcelimited``,
+    ``ctrlrange``/``ctrllimited`` and ``actuatorfrcrange``/``actuatorfrclimited``
+    alike.  A range that is present but not enforced is not a limit, and
+    reading it as one invents a bound the simulator does not apply.
+    """
+    if not range_str or limited == "false":
+        return None
+    vals = _parse_floats(range_str)
+    if len(vals) != 2:
+        return None
+    if limited == "true":
+        return vals[0], vals[1]
+    # Unset ("auto"): enforced when autolimits is on and the range is not
+    # degenerate.  With autolimits off MuJoCo rejects the file outright.
+    return (vals[0], vals[1]) if autolimits and vals[0] < vals[1] else None
+
+
+def _apply_actuator_elem(state: dict[str, str], elem: ET.Element) -> None:
+    """Fold one actuator element (a class default or an instance) into ``state``."""
+    for key in ("forcerange", "forcelimited", "ctrlrange", "ctrllimited", "gear"):
+        value = elem.get(key)
+        if value is not None:
+            state[key] = value
+    if elem.tag == "general":
+        for key in ("gaintype", "biastype", "dyntype"):
+            value = elem.get(key)
+            if value is not None:
+                state[key] = value
+        gainprm = elem.get("gainprm")
+        if gainprm:
+            state["gain"] = gainprm.split()[0]
+    elif elem.tag == "motor":
+        state.update(gaintype="fixed", biastype="none", dyntype="none", gain="1")
+    else:
+        # <position>, <velocity>, <damper>, ...: the force also depends on the
+        # joint state.  Recorded only as "not a pure gain" — that is all
+        # _actuator_torque_range asks.
+        state["biastype"] = "affine"
+
+
+def _mjcf_default_classes(root: ET.Element) -> dict[str, dict[str, dict[str, str]]]:
+    """``{<class>: {"joint": attrs, "actuator": attrs}}`` with inheritance resolved."""
+    classes: dict[str, dict[str, dict[str, str]]] = {"main": {"joint": {}, "actuator": {}}}
+
+    def visit(elem: ET.Element, cur: dict[str, dict[str, str]]) -> None:
+        for child in elem:
+            if child.tag == "joint":
+                cur["joint"].update(child.attrib)
+            elif child.tag in _ACTUATOR_DEFAULT_TAGS:
+                _apply_actuator_elem(cur["actuator"], child)
+        for child in elem.findall("default"):
+            nested = {kind: dict(attrs) for kind, attrs in cur.items()}
+            classes[child.get("class", "")] = nested
+            visit(child, nested)
+
+    for top in root.findall("default"):
+        visit(top, classes["main"])
+    return classes
+
+
+def _mjcf_class(
+    classes: dict[str, dict[str, dict[str, str]]], name: str | None
+) -> dict[str, dict[str, str]]:
+    return classes.get(name or "main", classes["main"])
+
+
+def _mjcf_joints(
+    root: ET.Element,
+    classes: dict[str, dict[str, dict[str, str]]],
+) -> dict[str, tuple[ET.Element, dict[str, str]]]:
+    """``{<joint name>: (<owning body>, <attributes>)}`` for the named joints.
+
+    The attributes are the joint's own laid over its class defaults — what
+    MuJoCo compiles.  Every reader of a joint attribute in this module goes
+    through here; a second resolver is a second answer to "which class".
+    """
+    joints: dict[str, tuple[ET.Element, dict[str, str]]] = {}
+
+    def walk(elem: ET.Element, body: ET.Element | None, childclass: str) -> None:
+        for child in elem:
+            if child.tag == "body":
+                walk(child, child, child.get("childclass", childclass))
+            elif child.tag == "frame":
+                walk(child, body, child.get("childclass", childclass))
+            elif child.tag == "joint" and body is not None and child.get("name"):
+                defaults = _mjcf_class(classes, child.get("class", childclass))["joint"]
+                joints[child.get("name", "")] = (body, {**defaults, **child.attrib})
+
+    for worldbody in root.findall("worldbody"):
+        walk(worldbody, None, "main")
+    return joints
+
+
+def _scaled_interval(k: float, interval: tuple[float, float]) -> tuple[float, float]:
+    lo, hi = k * interval[0], k * interval[1]
+    return (lo, hi) if lo <= hi else (hi, lo)
+
+
+def _actuator_torque_range(state: dict[str, str], autolimits: bool) -> tuple[float, float]:
+    """Joint torque one actuator can apply; ``_UNBOUNDED`` when nothing clamps it."""
+    force = _UNBOUNDED
+    forcerange = _enforced_range(state.get("forcerange"), state.get("forcelimited"), autolimits)
+    if forcerange is not None:
+        force = forcerange
+    # A clamp on ctrl bounds the force only for a pure gain (force = gain *
+    # ctrl).  With a bias term or internal dynamics the force also depends on
+    # the joint state, and the ctrl clamp says nothing about its size.
+    pure_gain = (
+        state.get("gaintype", "fixed") == "fixed"
+        and state.get("biastype", "none") == "none"
+        and state.get("dyntype", "none") == "none"
+    )
+    if pure_gain:
+        ctrlrange = _enforced_range(state.get("ctrlrange"), state.get("ctrllimited"), autolimits)
+        if ctrlrange is not None:
+            lo, hi = _scaled_interval(float(state.get("gain", "1")), ctrlrange)
+            force = (max(force[0], lo), min(force[1], hi))
+    # forcerange and ctrlrange are in actuator space; gear carries them to the joint.
+    return _scaled_interval(float(state.get("gear", "1").split()[0]), force)
+
+
+def _mjcf_actuator_torque_ranges(
+    root: ET.Element,
+    classes: dict[str, dict[str, dict[str, str]]],
+    autolimits: bool,
+) -> dict[str, tuple[float, float]]:
+    """``{<joint name>: (lower, upper)}`` — what its actuators can apply together.
+
+    Only joints an actuator drives through a ``joint`` transmission appear.
+    Actuators on one joint add up, so one unbounded actuator unbounds the joint.
+    """
+    ranges: dict[str, tuple[float, float]] = {}
+    for section in root.findall("actuator"):
+        for act in section:
+            jname = act.get("joint")
+            if not jname:
+                continue
+            state = dict(_mjcf_class(classes, act.get("class"))["actuator"])
+            _apply_actuator_elem(state, act)
+            lo, hi = _actuator_torque_range(state, autolimits)
+            prev_lo, prev_hi = ranges.get(jname, (0.0, 0.0))
+            ranges[jname] = (prev_lo + lo, prev_hi + hi)
+    return ranges
 
 
 def _mjcf_body_rotation(body: ET.Element) -> list[list[float]]:
@@ -392,33 +604,12 @@ def _compute_mjcf_world_frames(
 
     Walks the ``<worldbody>`` hierarchy, accumulating body ``pos`` and
     orientation transforms (quat/euler/axisangle/xyaxes/zaxis), and
-    extracts joint axis in the body frame.  Default-class axis inheritance
-    (including ``childclass``) is resolved so explicit and inherited axes
-    are treated uniformly.
+    extracts joint axis in the body frame.  The joint's ``axis`` and ``pos``
+    are the ones MuJoCo compiles (see :func:`_mjcf_joints`), so explicit and
+    inherited values are treated uniformly.
     """
     root = ET.parse(path).getroot()
-
-    defaults: dict[str, dict] = {}
-    for default_elem in root.iter("default"):
-        cls = default_elem.get("class")
-        if cls is None:
-            continue
-        joint_elem = default_elem.find("joint")
-        if joint_elem is not None:
-            defaults[cls] = dict(joint_elem.attrib)
-
-    root_class = _detect_root_class(root)
-
-    def resolve_axis(cls_name: str, joint_elem: ET.Element) -> list[float]:
-        explicit = joint_elem.get("axis")
-        if explicit is not None:
-            return _parse_floats(explicit)
-        merged: dict[str, str] = {}
-        if root_class and root_class in defaults:
-            merged.update(defaults[root_class])
-        if cls_name in defaults:
-            merged.update(defaults[cls_name])
-        return _parse_floats(merged.get("axis", "0 1 0"))
+    joints = _mjcf_joints(root, _mjcf_default_classes(root))
 
     result: dict[str, tuple[list[float], list[float]]] = {}
 
@@ -426,7 +617,6 @@ def _compute_mjcf_world_frames(
         elem: ET.Element,
         parent_r: list[list[float]],
         parent_p: list[float],
-        active_childclass: str,
     ) -> None:
         for body in elem.findall("body"):
             pos = _parse_floats(body.get("pos", "0 0 0"))
@@ -434,17 +624,16 @@ def _compute_mjcf_world_frames(
 
             r_world, p_world = _compose_transform(parent_r, parent_p, r_local, pos)
 
-            body_childclass = body.get("childclass", active_childclass)
-
             for joint_elem in body.findall("joint"):
                 jname = joint_elem.get("name")
                 if jname not in joint_names:
                     continue
-                cls = joint_elem.get("class", body_childclass)
-                axis_local = resolve_axis(cls, joint_elem)
+                attrs = joints[jname][1]
+                # MuJoCo's own default joint axis is "0 0 1".
+                axis_local = _parse_floats(attrs.get("axis", "0 0 1"))
                 world_axis = _mat_vec_3(r_world, axis_local)
 
-                joint_pos_str = joint_elem.get("pos")
+                joint_pos_str = attrs.get("pos")
                 if joint_pos_str:
                     jp = _parse_floats(joint_pos_str)
                     j_world_pos = _vec_add_3(p_world, _mat_vec_3(r_world, jp))
@@ -453,36 +642,13 @@ def _compute_mjcf_world_frames(
 
                 result[jname] = (j_world_pos, world_axis)
 
-            traverse(body, r_world, p_world, body_childclass)
+            traverse(body, r_world, p_world)
 
     worldbody = root.find("worldbody")
     if worldbody is not None:
-        traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0], root_class or "")
+        traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0])
 
     return result
-
-
-def _detect_root_class(root: ET.Element) -> str | None:
-    """Return the MJCF top-level default class name, or None if not declared.
-
-    MJCF allows nesting; the root <default> may have no class (acts as a
-    catch-all) or a class such as "<robot_name>" used as the inheritance root
-    of every other <default class="..."> block. We walk the immediate children
-    of root/default looking for the first child <default class="...">.
-    """
-    top = root.find("default")
-    if top is None:
-        return None
-    # If top-level has class attr, it is the root class
-    cls = top.get("class")
-    if cls:
-        return cls
-    # Otherwise walk children for the first inner <default class="...">
-    for child in top.findall("default"):
-        cls = child.get("class")
-        if cls:
-            return cls
-    return None
 
 
 def _mjcf_world_frames_by_kind(
@@ -629,30 +795,13 @@ def _detect_joint_types(
     }
 
     mjcf_root = ET.parse(mjcf_path).getroot()
-    root_class = _detect_root_class(mjcf_root)
-    class_types: dict[str, str] = {}
-    for default_elem in mjcf_root.iter("default"):
-        cls = default_elem.get("class")
-        if cls is None:
-            continue
-        jelem = default_elem.find("joint")
-        if jelem is not None and jelem.get("type"):
-            class_types[cls] = jelem.get("type", "")
-
-    mjcf_types: dict[str, str] = {}
-    for body in mjcf_root.iter("body"):
-        childclass = body.get("childclass", root_class or "")
-        for jelem in body.findall("joint"):
-            name = jelem.get("name")
-            if not name:
-                continue
-            explicit = jelem.get("type")
-            if explicit:
-                mjcf_types[name] = explicit
-            else:
-                cls = jelem.get("class", childclass)
-                # MuJoCo's <joint> type defaults to "hinge".
-                mjcf_types[name] = class_types.get(cls, class_types.get(root_class or "", "hinge"))
+    # MuJoCo's <joint> type defaults to "hinge".
+    mjcf_types = {
+        name: attrs.get("type", "hinge")
+        for name, (_body, attrs) in _mjcf_joints(
+            mjcf_root, _mjcf_default_classes(mjcf_root)
+        ).items()
+    }
 
     return {
         jname: (
@@ -701,54 +850,22 @@ def parse_mjcf(
     path: Path,
     link_names: set[str],
     joint_names: set[str],
-    root_class_override: str | None = None,
 ) -> tuple[dict[str, InertialParams], dict[str, JointParams]]:
     """Parse MJCF and extract inertial + joint parameters.
+
+    Joint values are the ones MuJoCo compiles, not the ones spelled in the
+    text — see "MJCF as MuJoCo compiles it" above.
 
     Args:
         path: MJCF file path.
         link_names: Set of MJCF body names whose <inertial> we extract.
         joint_names: Set of joint names whose attributes we extract.
-        root_class_override: Optional MJCF default class to use as the
-            inheritance root. If None, autodetected from the file.
     """
     tree = ET.parse(path)
     root = tree.getroot()
 
-    root_class = root_class_override or _detect_root_class(root)
-
-    # ── Resolve default classes ──
-    defaults = {}
-    for default_elem in root.iter("default"):
-        cls = default_elem.get("class")
-        if cls is None:
-            continue
-        attrs = {}
-        joint_elem = default_elem.find("joint")
-        if joint_elem is not None:
-            attrs["joint"] = dict(joint_elem.attrib)
-        general_elem = default_elem.find("general")
-        if general_elem is not None:
-            attrs["general"] = dict(general_elem.attrib)
-        defaults[cls] = attrs
-
-    # Build effective joint defaults by resolving inheritance from root_class
-    def resolve_joint_defaults(cls_name: str) -> dict:
-        """Walk the default tree to merge inherited joint attributes."""
-        result = {}
-        if root_class and root_class in defaults and "joint" in defaults[root_class]:
-            result.update(defaults[root_class]["joint"])
-        if cls_name in defaults and "joint" in defaults[cls_name]:
-            result.update(defaults[cls_name]["joint"])
-        return result
-
-    def resolve_general_defaults(cls_name: str) -> dict:
-        result = {}
-        if root_class and root_class in defaults and "general" in defaults[root_class]:
-            result.update(defaults[root_class]["general"])
-        if cls_name in defaults and "general" in defaults[cls_name]:
-            result.update(defaults[cls_name]["general"])
-        return result
+    compiler = _mjcf_compiler(root)
+    classes = _mjcf_default_classes(root)
 
     # ── Parse bodies (links) ──
     links = {}
@@ -778,83 +895,46 @@ def parse_mjcf(
             params.origin_quat = _parse_floats(quat)
         links[name] = params
 
-    # ── Actuator → joint forcerange map ──
-    #
-    # urdf_to_mjcf writes ``<actuator><general joint="J" forcerange="...">``
-    # directly (without relying on default-class inheritance), so the
-    # authoritative effort value lives there rather than in <default>.
-    # Build a lookup once; fall back to the default-class value if a joint
-    # has no actuator entry.
-    actuator_forcerange: dict[str, float] = {}
-    for act_root in root.findall("actuator"):
-        for act in act_root:
-            jname_attr = act.get("joint")
-            if not jname_attr:
-                continue
-            fr_str = act.get("forcerange")
-            if fr_str is None:
-                cls = act.get("class", root_class or "")
-                fr_str = resolve_general_defaults(cls).get("forcerange")
-            if fr_str is None:
-                continue
-            fr = _parse_floats(fr_str)
-            if len(fr) == 2:
-                actuator_forcerange[jname_attr] = fr[1]
-
     # ── Parse joints ──
+    torque_ranges = _mjcf_actuator_torque_ranges(root, classes, compiler.autolimits)
     joints = {}
-    for body in root.iter("body"):
-        for joint_elem in body.findall("joint"):
-            jname = joint_elem.get("name")
-            if jname not in joint_names:
-                continue
-            cls = joint_elem.get("class", root_class or "")
-            jdefaults = resolve_joint_defaults(cls)
-            gdefaults = resolve_general_defaults(cls)
+    for jname, (body, attrs) in _mjcf_joints(root, classes).items():
+        if jname not in joint_names:
+            continue
 
-            jp = JointParams()
+        jp = JointParams()
 
-            # Axis: joint-level overrides default
-            axis_str = joint_elem.get("axis", jdefaults.get("axis", "0 1 0"))
-            jp.axis = _parse_floats(axis_str)
+        # MuJoCo's own default joint axis is "0 0 1".
+        jp.axis = _parse_floats(attrs.get("axis", "0 0 1"))
 
-            # Range: joint-level overrides default
-            range_str = joint_elem.get("range", jdefaults.get("range", "0 0"))
-            rng = _parse_floats(range_str)
-            jp.lower, jp.upper = rng[0], rng[1]
+        # Position limits: only an enforced range is one.  A hinge range is an
+        # angle and follows <compiler angle>; a slide range is a length.
+        rng = _enforced_range(attrs.get("range"), attrs.get("limited"), compiler.autolimits)
+        if rng is not None:
+            scale = compiler.angle_scale if attrs.get("type", "hinge") == "hinge" else 1.0
+            jp.lower, jp.upper = rng[0] * scale, rng[1] * scale
 
-            # Effort (forcerange): prefer actuator-level value, fall back to
-            # default-class.  If neither exists, leave at 0 to flag MJCF has
-            # no force limit declared rather than fabricate a default.
-            if jname in actuator_forcerange:
-                jp.effort = actuator_forcerange[jname]
-            elif "forcerange" in gdefaults:
-                fr = _parse_floats(gdefaults["forcerange"])
-                jp.effort = fr[1] if len(fr) == 2 else 0.0
-            else:
-                jp.effort = 0.0
+        # Torque limit: what the joint's actuators can apply together, clamped
+        # by the joint's own actuatorfrcrange — MuJoCo enforces both.  The
+        # class's actuator defaults are NOT a limit for a joint no actuator
+        # drives: MuJoCo applies them to actuators, and there is none.  With
+        # no limit on either side effort stays 0 — "none" and "zero" read
+        # alike.
+        lo, hi = torque_ranges.get(jname, _UNBOUNDED)
+        joint_side = _enforced_range(
+            attrs.get("actuatorfrcrange"), attrs.get("actuatorfrclimited"), compiler.autolimits
+        )
+        if joint_side is not None:
+            lo, hi = max(lo, joint_side[0]), min(hi, joint_side[1])
+        if math.isfinite(lo) and math.isfinite(hi):
+            jp.effort_lower, jp.effort = lo, hi
 
-            # The joint's own actuatorfrcrange clamps the total actuator force
-            # on it, so MuJoCo enforces both bounds and the smaller one is the
-            # limit.  It is enforced only when actuatorfrclimited is not
-            # "false" and the range is non-degenerate; otherwise the joint side
-            # sets no limit, which is not the same as a limit of 0.
-            afr_str = joint_elem.get("actuatorfrcrange", jdefaults.get("actuatorfrcrange"))
-            afr_limited = joint_elem.get(
-                "actuatorfrclimited", jdefaults.get("actuatorfrclimited", "auto")
-            )
-            if afr_str and afr_limited != "false":
-                afr = _parse_floats(afr_str)
-                if len(afr) == 2 and afr[0] < afr[1]:
-                    jp.effort = min(jp.effort, afr[1]) if jp.effort > 0 else afr[1]
+        jp.armature = float(attrs.get("armature", "0"))
 
-            # Armature
-            jp.armature = float(jdefaults.get("armature", "0"))
+        # Origin (from parent body's pos attribute)
+        jp.origin_xyz = _parse_floats(body.get("pos", "0 0 0"))
 
-            # Origin (from parent body's pos attribute)
-            jp.origin_xyz = _parse_floats(body.get("pos", "0 0 0"))
-
-            joints[jname] = jp
+        joints[jname] = jp
 
     return links, joints
 
@@ -925,6 +1005,7 @@ def parse_urdf(
             jp.lower = float(limit_elem.get("lower", "0"))
             jp.upper = float(limit_elem.get("upper", "0"))
             jp.effort = float(limit_elem.get("effort", "0"))
+            jp.effort_lower = -jp.effort
             jp.velocity = float(limit_elem.get("velocity", "0"))
 
         origin_elem = joint_elem.find("origin")
@@ -1563,7 +1644,6 @@ def compare(
     link_map: dict[str, str],
     joint_names: list[str],
     tolerance: float = 1e-4,
-    mjcf_class: str | None = None,
     robot_label: str = "",
     align: tuple[list[list[float]], list[float]] | None = None,
     fail_on_unverified: bool = False,
@@ -1581,7 +1661,6 @@ def compare(
             comparison (#411).
         joint_names: Joint names to compare (assumed identical in both files).
         tolerance: Numerical tolerance.
-        mjcf_class: Optional MJCF default class override; auto-detected if None.
         robot_label: Optional human label printed in the header.
         align: Optional ``(R, p)`` mapping MJCF world coordinates into the URDF
             world frame, from :func:`_resolve_alignment`.  ``None`` assumes the
@@ -1608,9 +1687,7 @@ def compare(
     urdf_link_names = set(link_map.values()) | fused_children
     joint_set = set(joint_names)
 
-    mjcf_links, mjcf_joints = parse_mjcf(
-        mjcf_path, mjcf_link_names, joint_set, root_class_override=mjcf_class
-    )
+    mjcf_links, mjcf_joints = parse_mjcf(mjcf_path, mjcf_link_names, joint_set)
     urdf_links, urdf_joints = parse_urdf(urdf_path, urdf_link_names, joint_set)
 
     mismatches = 0
@@ -2005,8 +2082,16 @@ def compare(
         else:
             print(f"    range: [{_fmt(m_lower)}, {_fmt(m_upper)}]  OK")
 
-        # Effort limits (frame-independent)
-        if not _close(mjcf_jp.effort, urdf_jp.effort, tolerance):
+        # Effort limits (frame-independent).  A URDF effort is one bound for
+        # both directions, so an MJCF range that is not symmetric cannot equal
+        # it whichever end happens to match — reported with both ends.
+        if not _close(-mjcf_jp.effort_lower, mjcf_jp.effort, tolerance):
+            print(
+                f"    EFFORT MISMATCH:  MJCF=[{_fmt(mjcf_jp.effort_lower)}, "
+                f"{_fmt(mjcf_jp.effort)}] (asymmetric)  URDF={_fmt(urdf_jp.effort)}"
+            )
+            mismatches += 1
+        elif not _close(mjcf_jp.effort, urdf_jp.effort, tolerance):
             print(
                 f"    EFFORT MISMATCH:  MJCF={_fmt(mjcf_jp.effort)}  URDF={_fmt(urdf_jp.effort)}"
             )
@@ -2372,13 +2457,6 @@ def main():
         help="Robot name used as both directory and file stem under --robot-pkg.",
     )
     parser.add_argument(
-        "--mjcf-class",
-        type=str,
-        default=None,
-        help="MJCF default class to use as inheritance root. Auto-detected "
-        'from <default class="..."> if omitted.',
-    )
-    parser.add_argument(
         "--link-map",
         type=Path,
         default=None,
@@ -2495,7 +2573,6 @@ def main():
         link_map=link_map,
         joint_names=joint_names,
         tolerance=args.tolerance,
-        mjcf_class=args.mjcf_class,
         robot_label=robot_label,
         align=align,
         fail_on_unverified=args.fail_on_unverified,
