@@ -1,7 +1,7 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r30 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
-- 상태: **E0 완료**, E1 진행 중 — 남은 것은 F06 (게이트 G-1, [#632](https://github.com/hyujun/rtc-framework/issues/632)) 하나다. 완료: E1-F01 – F05 · E1-F07 – F10. `mode: mpc` 는 계획기가 plan 과 첫 구간을 쌍으로 내고 RT 가 APPROACH 부터 HOLD 까지 그 구간을 따르는 닫힌 루프다. 출하 기본은 `closed_form` 그대로다. 튜닝 (F10, [#679](https://github.com/hyujun/rtc-framework/pull/679)) 의 결과: `ur5e_p1b` 는 `catch.gamma_ref` 0.6 을 채택했고 (확인 200 쌍의 paired 차이 −0.05 — 비열등을 보인 것은 아니다), `iiwa7_leap` 은 plan 이 채택되지 않아 미달로 닫았다 (첫 풀이의 기준 궤적 — MD-75 · MD-76, §8 "E1-F10"). feature 별 상태는 §6, G-1 이 넘겨받은 것은 §4 의 미결
+- 개정: r31 (2026-10-02) — 이력은 §9. 최초 작성 2026-09-29
+- 상태: **E0 완료 · E1 진행 중** · E2 · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5d) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
 - 단일 팔 포구의 기존 구현과 그 결정 로그: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (Epic [#537](https://github.com/hyujun/rtc-framework/issues/537)) — 이하 "v1 계획"
@@ -19,7 +19,7 @@
 | **E2** | **필수** | g1_p1b 의 `demo_joint_controller` · `demo_dualarm_controller` |
 | E3 | 필수 (E2 뒤) | 같은 MPC 에 dual arm · waist 항 추가 — g1_p1b (MD-47) |
 
-순서는 E0 → E1 → E2 → E3 이다. E2 는 E1 과 병행할 수 있다 (§6 순서 표). E3 는 E2 (g1_p1b 준비) 와 E1-F07 (코어 — 완료) 이 끝나면 착수한다 — G-1 은 E3 의 착수 조건이 아니다 (MD-47).
+순서는 E0 → E1 → E2 → E3 이다. E2 는 E1 과 병행할 수 있다 (§6 순서 표). E3 는 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이 끝나면 착수한다 — G-1 은 E3 의 착수 조건이 아니다 (MD-47).
 
 ### 게이트 G-1 — 단일 팔 mpc planner 가 closed_form planner 와 비슷한 성능을 내는가
 
@@ -47,11 +47,12 @@ E1-F06 의 A/B 시험으로 판정하고, 결과는 §8 에 기록한다. 두 ar
 |---|---|---|
 | 전체 계획 | 이 문서 | epic · feature 표, 결정 로그 (`MD-n`), 게이트 결과, 상태 |
 | epic · feature 세부 | 각 에이전트의 private plan (repo 에 커밋하지 않는다). **착수할 때 만든다** — 미리 만들지 않는다 | spec, Sprint Contract, 진행 기록, handoff |
-| 추적 · 인계 | GitHub project [rtc-framework — MPC · dual-arm catching](https://github.com/users/hyujun/projects/2) | epic · feature 이슈, 상태, 완료 · 결정 변경 코멘트 |
+| 추적 · 인계 | GitHub project [rtc-framework — MPC · dual-arm catching](https://github.com/users/hyujun/projects/2) | epic · feature 이슈, 보드의 Status (§6 을 따른다), 완료 · 결정 변경 코멘트 |
 
 - 이슈 제목은 `[EPIC] E<n> — …`, `[FEATURE] E<n>-F<nn> — …` 이고 feature 는 epic 의 sub-issue 다.
 - label: `type:epic` / `type:feature`, `area:mpc-dualarm`, 필수면 `priority:p0`, 조건부면 `conditional`, sim 전용이면 `sim-only`.
 - feature 를 끝내면 이슈의 Done when 을 항목별로 갱신하고, 결정이 바뀌면 이 문서 §4 를 먼저 고친다.
+- **상태는 한 곳에만 적는다.** feature 의 상태 (완료 · 다음 · 대기, PR, 결과 한 줄) 는 §6 feature 표의 상태 열이, epic 의 상태는 문서 머리의 상태줄이 갖는다. 브랜치 계획과 순서 표, epic 이슈의 본문, project 의 readme 에는 상태를 적지 않는다 — epic 의 feature 목록과 열림 · 닫힘은 sub-issue 가 보여 주고, 보드의 Done 은 이슈가 닫힐 때 자동으로 옮겨진다. feature 를 끝낼 때 손으로 고치는 곳은 셋이다: §6 의 그 행 (다음 feature 의 행에 "다음" 을 옮긴다), 그 feature 이슈의 Done when, epic 이슈의 머지 코멘트
 - feature 착수 전에 Sprint Contract 를 제시하고 컨펌받는다 (AGENTS.md §6.5).
 - 브랜치는 비슷한 feature 를 묶어 만든다. 묶음과 순서는 §6 "브랜치 계획" 에 있다.
 - 수치로 판정하는 게이트는 기준과 N 을 시행 전에 고정한다.
@@ -284,7 +285,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ### E3. MPC dual arm · waist 확장 — [#623](https://github.com/hyujun/rtc-framework/issues/623) · 필수 (E2 뒤)
 
-같은 MPC 에 dual arm · waist 항을 더한다 (MD-46 · MD-47). 착수 조건: E2 (g1_p1b 준비) 와 E1-F07 (코어 — 완료). G-1 과 무관하다. 첫 단계는 `Decel*` 이름의 rename refactor 다 (MD-48). sim 전용. 게이트: G1 sim 에서 포구 시행이 돌고 성공률 · solve time p99 가 보고된다. 기존 두 로봇 회귀 없음 — 단일 팔 구성 (더한 항의 가중 0) 의 해가 불변이다.
+같은 MPC 에 dual arm · waist 항을 더한다 (MD-46 · MD-47). 착수 조건: E2 (g1_p1b 준비) 와 E1-F07 (코어). G-1 과 무관하다. 첫 단계는 `Decel*` 이름의 rename refactor 다 (MD-48). sim 전용. 게이트: G1 sim 에서 포구 시행이 돌고 성공률 · solve time p99 가 보고된다. 기존 두 로봇 회귀 없음 — 단일 팔 구성 (더한 항의 가중 0) 의 해가 불변이다.
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
@@ -300,7 +301,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ### 브랜치 계획
 
-feature 28개를 브랜치 21개로 묶는다. 브랜치 하나가 PR 하나다.
+feature 28개를 브랜치 21개로 묶는다. 브랜치 하나가 PR 하나다. 이 절은 묶음과 순서만 적는다 — 어느 브랜치가 끝났는지와 그 PR 은 위 feature 표의 상태 열에 있다.
 
 **묶는 기준.**
 
@@ -326,9 +327,9 @@ feature 28개를 브랜치 21개로 묶는다. 브랜치 하나가 PR 하나다.
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `docs/mpc-dualarm-plan` (완료) | E0-F03 | 문서 4개 (계획, formulation, README, v1 계획 개정). 가장 먼저 올린다 — 이슈의 문서 링크가 이 merge 로 살아난다 |
-| `chore/ws-first-build-path` (완료) | E0-F01 | 빌드 절차 문서 (MD-17 — 빌드 스크립트와 `package.xml` 은 고치지 않는다). 다른 feature 의 선행이라 단독으로 빨리 닫는다 |
-| `feat/catching-baseline-grid-sweep` (완료) | E0-F02, E0-F04 | 둘 다 `catching_sim_trials` 로 시행을 모으고 `rtc_tools` 의 분석을 확장한다. 같은 시행 도구와 같은 host 조건을 쓴다. **나누는 조건**: sweep 의 조건별 설정이 출하 config 를 건드리게 되면 E0-F04 를 분리한다 |
+| `docs/mpc-dualarm-plan` | E0-F03 | 문서 4개 (계획, formulation, README, v1 계획 개정). 가장 먼저 올린다 — 이슈의 문서 링크가 이 merge 로 살아난다 |
+| `chore/ws-first-build-path` | E0-F01 | 빌드 절차 문서 (MD-17 — 빌드 스크립트와 `package.xml` 은 고치지 않는다). 다른 feature 의 선행이라 단독으로 빨리 닫는다 |
+| `feat/catching-baseline-grid-sweep` | E0-F02, E0-F04 | 둘 다 `catching_sim_trials` 로 시행을 모으고 `rtc_tools` 의 분석을 확장한다. 같은 시행 도구와 같은 host 조건을 쓴다. **나누는 조건**: sweep 의 조건별 설정이 출하 config 를 건드리게 되면 E0-F04 를 분리한다 |
 
 E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_perception) 의 브랜치와 PR 로 따로 한다.
 
@@ -336,14 +337,14 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/catching-decel-mpc-core` (완료, [#655](https://github.com/hyujun/rtc-framework/pull/655)) | E1-F01 | 신규 수치 코어. code review 단위 |
-| `feat/catching-decel-mpc-plan-path` (완료, [#656](https://github.com/hyujun/rtc-framework/pull/656)) | E1-F02, E1-F03 | payload · RT 샘플러와 계획기 스레드 통합. 계획기가 게시하고 RT 가 읽는 한 경로의 양 끝이라 함께 있어야 연속성을 시험할 수 있다. **나누는 조건**: 새 스레드가 필요해지면 (E-7) E1-F03 을 분리한다 |
-| `feat/catching-decel-mpc-l7` (완료, [#658](https://github.com/hyujun/rtc-framework/pull/658)) | E1-F04 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정한다 |
-| `feat/catching-mpc-approach-core` (완료, [#666](https://github.com/hyujun/rtc-framework/pull/666)) | E1-F07 | 신규 수치 항 (포구 항 선형화). code review 단위 |
-| `feat/catching-mpc-approach-plan-path` (완료, [#673](https://github.com/hyujun/rtc-framework/pull/673)) | E1-F08 | 계획기 스레드와 payload 의 간격 (MD-54). 새 스레드는 필요하지 않았다 |
-| `feat/catching-mpc-approach-l7` (완료, [#674](https://github.com/hyujun/rtc-framework/pull/674)) | E1-F09 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정했다. 정지 구간 전용 계획기의 삭제 (MD-70) 도 여기서 했다 |
-| `feat/catching-decel-mpc-tooling` (완료, [#678](https://github.com/hyujun/rtc-framework/pull/678)) | E1-F05 | 로그 · plot · GUI. `verify-changes.sh --run` 의 빌드 순서 (의존 순서) 도 여기서 고쳤다 — 이 브랜치의 검증에서 드러났다 |
-| `exp/catching-mpc-tuning` (완료, [#679](https://github.com/hyujun/rtc-framework/pull/679)) | E1-F10 | 튜닝. 채택한 config 만 YAML 로 넣고 실험 overlay 와 원자료는 repo 밖에 두었다. RT 의 `catch_box` 검사 폐기 (MD-73) · leap 의 CLIK `dynamic` (MD-74) 과 `verify-changes.sh` 의 패키지 data 파일 라우팅도 여기서 했다 |
+| `feat/catching-decel-mpc-core` | E1-F01 | 신규 수치 코어. code review 단위 |
+| `feat/catching-decel-mpc-plan-path` | E1-F02, E1-F03 | payload · RT 샘플러와 계획기 스레드 통합. 계획기가 게시하고 RT 가 읽는 한 경로의 양 끝이라 함께 있어야 연속성을 시험할 수 있다. **나누는 조건**: 새 스레드가 필요해지면 (E-7) E1-F03 을 분리한다 |
+| `feat/catching-decel-mpc-l7` | E1-F04 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정한다 |
+| `feat/catching-mpc-approach-core` | E1-F07 | 신규 수치 항 (포구 항 선형화). code review 단위 |
+| `feat/catching-mpc-approach-plan-path` | E1-F08 | 계획기 스레드와 payload 의 간격 (MD-54). 새 스레드는 필요하지 않았다 |
+| `feat/catching-mpc-approach-l7` | E1-F09 | E-8 (Critical). `[CONCERN]` 컨펌과 security review 의 범위를 이 PR 로 한정했다. 정지 구간 전용 계획기의 삭제 (MD-70) 도 여기서 했다 |
+| `feat/catching-decel-mpc-tooling` | E1-F05 | 로그 · plot · GUI. `verify-changes.sh --run` 의 빌드 순서 (의존 순서) 도 여기서 고쳤다 — 이 브랜치의 검증에서 드러났다 |
+| `exp/catching-mpc-tuning` | E1-F10 | 튜닝. 채택한 config 만 YAML 로 넣고 실험 overlay 와 원자료는 repo 밖에 두었다. RT 의 `catch_box` 검사 폐기 (MD-73) · leap 의 CLIK `dynamic` (MD-74) 과 `verify-changes.sh` 의 패키지 data 파일 라우팅도 여기서 했다 |
 | `docs/catching-decel-mpc-g1` | E1-F06 | 게이트 G-1 의 판정과 결과 기록. 기본값 변경이 결정되면 그 변경은 별도 브랜치다 |
 
 **E2**
@@ -371,10 +372,10 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 
 | 단계 | 브랜치 | 병행 가능 |
 |---|---|---|
-| 1 | `docs/mpc-dualarm-plan` (완료) | — |
-| 2 | `chore/ws-first-build-path` (완료) | — |
-| 3 | `feat/catching-baseline-grid-sweep` (완료), `feat/catching-decel-mpc-core` (완료) | `feat/tsid-clik-multiframe` |
-| 4 | `feat/catching-decel-mpc-plan-path` (완료) → `-l7` (완료) → `feat/catching-mpc-approach-core` (완료) → `-plan-path` (완료) → `-l7` (완료) → `feat/catching-decel-mpc-tooling` (완료) → `exp/catching-mpc-tuning` (완료) → **`docs/catching-decel-mpc-g1` (다음)** | `feat/g1-p1b-bringup` |
+| 1 | `docs/mpc-dualarm-plan` | — |
+| 2 | `chore/ws-first-build-path` | — |
+| 3 | `feat/catching-baseline-grid-sweep`, `feat/catching-decel-mpc-core` | `feat/tsid-clik-multiframe` |
+| 4 | `feat/catching-decel-mpc-plan-path` → `-l7` → `feat/catching-mpc-approach-core` → `-plan-path` → `-l7` → `feat/catching-decel-mpc-tooling` → `exp/catching-mpc-tuning` → `docs/catching-decel-mpc-g1` | `feat/g1-p1b-bringup` |
 | 5 | `feat/demo-dualarm-controller` → `feat/g1-dualarm-tooling` | — |
 | 6 | rename refactor (MD-48) → E3 의 다섯 브랜치 (E2 와 E1-F07 뒤, MD-47) | — |
 
@@ -879,6 +880,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r31 | 상태를 한 곳으로 모음 (하네스 신호 — 진행 상태가 상태줄 · 순서 표 · epic 본문 · project readme 에 따로 적혀 있었고 순서 표가 뒤처졌다). §2 에 규칙 "상태는 한 곳에만 적는다", 상태줄은 epic 의 상태만, 브랜치 계획 · 순서 표에서 완료 · 다음 표시와 PR 링크를 뺌 (feature 표의 상태 열이 갖는다). epic 이슈 본문의 수기 체크리스트와 project readme 의 진행 문장도 같은 날 뺐다 |
 | r30 | E1-F10 머지 뒤 정리 ([#679](https://github.com/hyujun/rtc-framework/pull/679)) — 상태줄을 현재 상태로 줄임, §1 에 G-1 의 두 arm (MD-75) 과 300 쌍의 검정력 (MD-76), §6 의 표 · 브랜치 계획 · 순서 (다음은 `docs/catching-decel-mpc-g1`), 미결을 담당별로 다시 묶음 (E1-F10 표지의 두 항목은 미배정으로). 출하 YAML 주석 · L7 §6 · formulation 의 "E1-F10 이 정한다" 문장을 결과로 고침 |
 | r29 | E1-F10 마무리: 결정 MD-76 (G-1 의 N 300 쌍 유지, leap 미달로 닫음, p1b 의 남은 간격은 더 줄이지 않음), §8 "E1-F10" 에 code review 반영 (구간의 관절 수 검사, 기록 정정), 미결 정리 |
 | r28 | E1-F10 의 결과: 결정 MD-75 (p1b 의 `catch.gamma_ref` 0.6 채택, leap 은 채택값 없음), §8 "E1-F10" (선별 · 확인 · leap 의 구조 문제), 미결을 다시 씀 — G-1 의 N (불일치율 0.43), p1b 에 남은 간격, leap 의 첫 풀이 기준 궤적 |

@@ -11,7 +11,7 @@ kinematics·dynamics·CLIK/QP·joint command backend를 재사용한다(마스�
 전체 구현 계획·결정 로그·단계 상태는 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) 가 SSoT 다. 아래 설계 문서와
 충돌하면 **IMPLEMENTATION_PLAN.md 의 결정이 우선한다**. 구현이 끝나면 prune 한다.
 
-현재 상태 (2026-09-29): S0–S9 와 pre-S10 (S10 착수 전 잔여 + 리뷰 후속) 완료, 다음은 S10 (실기). 상태의 SSoT 는 plan 의 상태줄과 §4.3 표이고,
+단계의 상태는 plan 의 상태줄과 §4.3 표가 갖는다 — 여기에 사본을 적지 않는다.
 진행 기록은 Epic [#537](https://github.com/hyujun/rtc-framework/issues/537), S10 의 잔여 작업은 [#613](https://github.com/hyujun/rtc-framework/issues/613) 이다.
 plan 은 2026-09-29 에 제자리 압축했다 (절 번호·식별자 불변) — 압축 전 전문은 `git show b0ea0996:docs/dynamic_catching/IMPLEMENTATION_PLAN.md`.
 
