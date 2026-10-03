@@ -32,8 +32,12 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "rtc_controllers/catching/catch_pose_ik.hpp"
+#include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
+#include "rtc_controllers/catching/decel_mpc.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/unit_speed.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "shipped_config_test_fixture.hpp"
 
@@ -1895,6 +1899,190 @@ TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
   // Read-only, like every other mirror of the profile.
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.catch.rho_v", 0.0))
                    .successful);
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
+  // MPC MD-92 / #698: every design value of the decel MPC core, of the catch
+  // pose IK, of the unit-speed solve and of the switch step bound is WRITTEN in
+  // the shipped fragments, and at what the code used before the key existed —
+  // so the shipped solves, rankings and tests did not move.
+  const auto& [profile, total_dof] = GetParam();
+  static_cast<void>(total_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const YAML::Node catching = node["catching"];
+  // The arm's joint count: `expected_dof` of the parameter counts the hand too.
+  const auto arm_dof = static_cast<int>(catching["robot"]["arm"]["qdd_max"].size());
+  const YAML::Node mpc = catching["planner"]["decel_mpc"];
+  const YAML::Node ik = catching["planner"]["ik"];
+
+  struct Key {
+    YAML::Node section;
+    const char* name;
+  };
+
+  for (const Key& k : {Key{mpc["cost"], "jerk_weight"},
+                       Key{mpc["cost"], "u_scale"},
+                       Key{mpc["cost"], "w_delta"},
+                       Key{mpc["cost"], "rho_tau"},
+                       Key{mpc["catch"], "axis_theta_max"},
+                       Key{mpc["linearization"], "delta_tr"},
+                       Key{mpc["linearization"], "reference_rest_tol"},
+                       Key{mpc["linearization"], "ref_speed_fraction"},
+                       Key{mpc["solver"], "max_iter"},
+                       Key{mpc["solver"], "max_iter_in"},
+                       Key{mpc["solver"], "eps_abs"},
+                       Key{mpc["solver"], "eps_rel"},
+                       Key{ik, "eps_pos"},
+                       Key{ik, "alpha_max"},
+                       Key{ik, "rho"},
+                       Key{ik, "sigma0"},
+                       Key{ik, "lambda_max"},
+                       Key{ik, "dq_step_max"},
+                       Key{ik, "mu"},
+                       Key{ik, "qp_eps_abs"},
+                       Key{ik, "qp_max_iter"},
+                       Key{ik, "k_null"},
+                       Key{ik, "manip_grad_tol"},
+                       Key{ik, "fd_step"},
+                       Key{ik, "v_eps"},
+                       Key{catching["planner"]["gamma"], "unit_speed_damping"},
+                       Key{catching["planner"]["switch"], "samples"}}) {
+    ASSERT_TRUE(k.section.IsMap()) << profile << ": the section of " << k.name << " is missing";
+    EXPECT_TRUE(k.section[k.name].IsDefined()) << profile << ": " << k.name << " is not written";
+  }
+
+  // The core: the planner's parse equals DecelMpcParams{} field by field (the
+  // fields the planner overwrites — grid, eta, m_q, catch terms — are not
+  // compared). jerk_weight is written, one 1.0 per arm joint, which is the
+  // core's empty = all-ones.
+  const auto planner = rtc::catching::ParsePlannerParams(catching);
+  const rtc::catching::DecelMpcParams core{};
+  const auto& d = planner.decel;
+  ASSERT_EQ(d.jerk_weight.size(), static_cast<std::size_t>(arm_dof)) << profile;
+  for (const double w : d.jerk_weight) {
+    EXPECT_EQ(w, 1.0) << profile;
+  }
+  EXPECT_EQ(d.u_scale, core.u_scale) << profile;
+  EXPECT_EQ(d.w_delta, core.w_delta) << profile;
+  EXPECT_EQ(d.rho_tau, core.rho_tau) << profile;
+  EXPECT_EQ(d.axis_theta_max, core.axis_theta_max) << profile;
+  EXPECT_EQ(d.delta_tr, core.delta_tr) << profile;
+  EXPECT_EQ(d.reference_rest_tol, core.reference_rest_tol) << profile;
+  EXPECT_EQ(d.solver_max_iter, core.solver.max_iter) << profile;
+  EXPECT_EQ(d.solver_max_iter_in, core.solver.max_iter_in) << profile;
+  EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs) << profile;
+  EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel) << profile;
+  EXPECT_EQ(d.ref_speed_fraction, 0.9) << profile;  // the planner's former constant
+  EXPECT_EQ(core.w_perp, 0.0);                      // the one design field still not a key
+
+  // The search: the IK options equal CatchPoseIkOptions{} field by field —
+  // except the two the profile has always set (k_manip, max_iter) and the
+  // gate's threshold; alpha_max is now a SET value, no longer a TBD default.
+  const auto ik_cfg = rtc::catching::ParseCatchPoseIkParams(catching);
+  const rtc::catching::CatchPoseIkOptions def{};
+  const auto& o = ik_cfg.options;
+  EXPECT_EQ(o.eps_pos, def.eps_pos) << profile;
+  EXPECT_EQ(o.alpha_max, def.alpha_max) << profile;
+  EXPECT_FALSE(ik_cfg.alpha_max.tbd) << profile << ": alpha_max must be a decided value";
+  EXPECT_EQ(o.rho, def.rho) << profile;
+  EXPECT_EQ(o.sigma0, def.sigma0) << profile;
+  EXPECT_EQ(o.lambda_max, def.lambda_max) << profile;
+  EXPECT_EQ(o.dq_step_max, def.dq_step_max) << profile;
+  EXPECT_EQ(o.mu, def.mu) << profile;
+  EXPECT_EQ(o.qp_eps_abs, def.qp_eps_abs) << profile;
+  EXPECT_EQ(o.qp_max_iter, def.qp_max_iter) << profile;
+  EXPECT_EQ(o.k_null, def.k_null) << profile;
+  EXPECT_EQ(o.manip_grad_tol, def.manip_grad_tol) << profile;
+  EXPECT_EQ(o.fd_step, def.fd_step) << profile;
+  EXPECT_EQ(o.v_eps, def.v_eps) << profile;
+  EXPECT_EQ(o.definition, def.definition) << profile;
+
+  // The unit-speed damping and the switch samples: the code's former constants.
+  EXPECT_EQ(planner.unit_speed_damping, rtc::catching::kUnitSpeedDamping) << profile;
+  EXPECT_EQ(planner.switch_samples, 9) << profile;
+}
+
+TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
+  // The twelve decel-MPC design keys moved in the composed tree — where a CM
+  // override writes — reach the controller: each read-only mirror carries the
+  // moved value, and the decel planner configures with the cores built on them.
+  // A mirror declared from a default would read the shipped value here.
+  const auto& [profile, total_dof] = GetParam();
+  static_cast<void>(total_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  YAML::Node mpc = node["catching"]["planner"]["decel_mpc"];
+  const auto arm_dof = static_cast<int>(node["catching"]["robot"]["arm"]["qdd_max"].size());
+  YAML::Node weights;
+  for (int i = 0; i < arm_dof; ++i) {
+    weights.push_back(1.0 + 0.25 * i);
+  }
+  mpc["cost"]["jerk_weight"] = weights;
+  mpc["cost"]["u_scale"] = 500.0;
+  mpc["cost"]["w_delta"] = 2.5;
+  mpc["cost"]["rho_tau"] = 7.0;
+  mpc["catch"]["axis_theta_max"] = 1.2;
+  mpc["linearization"]["delta_tr"] = 0.2;
+  mpc["linearization"]["reference_rest_tol"] = 2.0e-5;
+  mpc["linearization"]["ref_speed_fraction"] = 0.8;
+  mpc["solver"]["max_iter"] = 300;
+  mpc["solver"]["max_iter_in"] = 150;
+  mpc["solver"]["eps_abs"] = 2.0e-7;
+  mpc["solver"]["eps_rel"] = 1.0e-5;
+
+  auto node_handle = NodeWithProfile("catching_shipped_design_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  const auto dbl = [&](const char* name) { return node_handle->get_parameter(name).as_double(); };
+  const auto integer = [&](const char* name) { return node_handle->get_parameter(name).as_int(); };
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.u_scale"), 500.0) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.w_delta"), 2.5) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.rho_tau"), 7.0) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.catch.axis_theta_max"), 1.2) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.delta_tr"), 0.2) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.reference_rest_tol"), 2.0e-5) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.ref_speed_fraction"), 0.8) << profile;
+  EXPECT_EQ(integer("planner.decel_mpc.solver.max_iter"), 300) << profile;
+  EXPECT_EQ(integer("planner.decel_mpc.solver.max_iter_in"), 150) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.solver.eps_abs"), 2.0e-7) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.solver.eps_rel"), 1.0e-5) << profile;
+  const auto jw =
+      node_handle->get_parameter("planner.decel_mpc.cost.jerk_weight").as_double_array();
+  ASSERT_EQ(jw.size(), static_cast<std::size_t>(arm_dof)) << profile;
+  for (int i = 0; i < arm_dof; ++i) {
+    EXPECT_DOUBLE_EQ(jw[static_cast<std::size_t>(i)], 1.0 + 0.25 * i) << profile << " " << i;
+  }
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.ref_speed_fraction, 0.8) << profile;
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.u_scale", 1.0))
+                   .successful);
+}
+
+TEST_P(ShippedCatchingProfile, RefusesAJerkWeightListOfTheWrongLengthAtConfigure) {
+  // The parser has no joint count, so the length is checked where the arm is
+  // known: the configure fails, and the planner is not configured (the
+  // controller parks rather than running a core built on the wrong list).
+  const auto& [profile, total_dof] = GetParam();
+  static_cast<void>(total_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  const auto arm_dof = static_cast<int>(node["catching"]["robot"]["arm"]["qdd_max"].size());
+  YAML::Node weights;
+  for (int i = 0; i < arm_dof - 1; ++i) {
+    weights.push_back(1.0);
+  }
+  node["catching"]["planner"]["decel_mpc"]["cost"]["jerk_weight"] = weights;
+  auto node_handle = NodeWithProfile("catching_shipped_jw_len_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  const auto rc = ctrl.on_configure(prev, node_handle, node);
+  EXPECT_FALSE(rc == DemoCatchingController::CallbackReturn::SUCCESS &&
+               ctrl.IsDecelPlannerConfigured())
+      << profile << ": a list one short was accepted";
 }
 
 TEST(DemoCatchingWaitPose, WithoutAnArmBoxTheSwitchedInPoseIsRefusedAndTheYamlPoseStands) {

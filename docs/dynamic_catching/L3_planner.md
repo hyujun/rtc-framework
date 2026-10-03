@@ -481,6 +481,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.slice.t_max` | double | s | = 지평 − margin | 0.2–1.5 | vision 지평 − `prediction.t_horizon_margin` 이하 (S3.6 설정 profile 1.0 s 면 ≤ 0.95 s). 2026-09-23: 그 상한 그대로로 정함 |
 | `planner.n_settle` | int | – | 3 | 0–20 | §4.4 트랙 epoch 변경 후 대기 메시지 수 |
 | `planner.gamma.margin` | double | m/s | 0.1 | 0–1 | §4.5 `MaxCatchableSpeed` 경계 여유 (1 ulp 엇갈림 방지) |
+| `planner.gamma.unit_speed_damping` | double | – | 1e-3 | (0, 1] | §4.5 $v_{dir,\max}$ 의 DLS 단위속도 $\dot q^u=J_5^\top(J_5J_5^\top+\lambda^2I)^{-1}[\hat v;0;0]$ 의 $\lambda$ (MPC MD-92 — 코드 상수 `kUnitSpeedDamping`). 오프라인 지도 `catch_gate_map` 이 **같은 키** 를 profile 에서 읽는다 (`--dls-damping` 이 덮는다). `catch_speed_budget` 은 profile 입력이 없어 상수 `DEFAULT_DLS_DAMPING` 이 출하값과 같다는 테스트가 둘의 어긋남을 막는다 |
 | `planner.ik.max_iter` | int | – | 20 | 1–100 | 연산 예산 |
 | `planner.ik.lambda` | – | – | – | – | v0.5 에서 삭제 — 고정 λ 대신 `DifferentialIk` 의 σ_min 적응 λ (D-7d). 그 파라미터는 아래 `sigma0`·`lambda_max` 다 |
 | `planner.ik.sigma0` | double | – | 1e-3 (**provisional**) | >0 | §6.5 감쇠 shell 진입 σ_min — **영공간 투영 $N$ 만** 파라미터화한다 (과제 스텝은 QP, D-26). **S6.2 가 아니라 S1.9 에서 정한다** — S3.5a 지도가 S6.2 보다 먼저 같은 함수를 돌리고 지도와 런타임은 같은 키를 써야 한다 (plan §11) |
@@ -494,8 +495,9 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.ik.k_manip` | double | – | 0 (**provisional**) | ≥0 | §4.2 영공간 $\log w_5$ 상승 이득 $k_w$. 0 이면 D-18 번복 전 동작 |
 | `planner.ik.manip_grad_tol` | double | – | 1e-4 (**provisional**) | ≥0 | 상승 종료 판정 $\Vert N\nabla\log w_5\Vert$ |
 | `planner.ik.v_eps` | double | m/s | 1e-6 | >0 | §4.2 NUM-7 속력 하한 — 미만이면 clamp 가 아니라 탈락 |
+| `planner.ik.fd_step` | double | rad | 1e-5 | >0 | 영공간 상승의 $\nabla\log w_5$ 를 중심차분으로 구하는 간격 $h$ (MPC MD-92 — 키가 없던 `CatchPoseIkOptions::fd_step`). 0 이하는 파서가 거부한다 |
 | `planner.ik.eps_pos` | double | m | 0.002 | – | 수락 |
-| `planner.ik.alpha_max` | double | rad | **0.26 (provisional)** | 0–π/2 | 손 형상 허용 콘 ($\theta\le\alpha_{\max}$). 2026-09-21: `TBD` 로 적혀 있었으나 코드에는 provisional 기본값 0.26 rad (≈15°) 가 살아 있었다 — `ParseCatchPoseIkParams` 신설 때 드러난 불일치이고, 값은 코드 쪽으로 맞췄다. 닫는 근거는 S3.5a 지도의 `theta` 분포 (이 콘이 실제로 구속하는지) 다 |
+| `planner.ik.alpha_max` | double | rad | **0.26 (provisional, 출하 YAML 에 적혀 있다)** | 0–π/2 | 손 형상 허용 콘 ($\theta\le\alpha_{\max}$). 2026-09-21: `TBD` 로 적혀 있었으나 코드에는 provisional 기본값 0.26 rad (≈15°) 가 살아 있었다 — `ParseCatchPoseIkParams` 신설 때 드러난 불일치이고, 값은 코드 쪽으로 맞췄다. 닫는 근거는 S3.5a 지도의 `theta` 분포 (이 콘이 실제로 구속하는지) 다. MPC MD-92 부터 두 로봇의 `search_grid.yaml` 이 이 값을 적는다 — 파서가 TBD 로 표시하지 않고, 오프라인 지도의 `resolve_alpha_max` 출처가 `judge_default` 에서 `params` 로 바뀐다 (다른 `--alpha-max-rad` 는 에러) |
 | `planner.ik.manip_min` | – | – | – | – | v0.5 에서 삭제 — `planner.catchability.manipulability_min` 이 대체 (§4.5) |
 | `planner.catchability.manipulability_min.arm_5row` / `.arm_6row` | double | – | ur5e_p1b 0.1 · iiwa7_leap 0.174 (**provisional**) / TBD | ≥0 | §4.2 D-18 정의별 하한 (차원이 달라 따로 둔다, C-3). `arm_6row` 값은 S3.5a/b 지도 결과로 제안. 사용자가 sim 에서 자세 확인 후 갱신. provisional 이면 실기 구성 arm 차단 (L0 §5.3). S3.5a/b 지도 도구와 **같은 키** |
 | `planner.catchability.definition` | string | – | `"arm_5row"` | `arm_5row` \| `arm_6row` | §4.2 게이트에 쓸 정의. w₅·w₆ 는 정의와 무관하게 둘 다 기록 |
@@ -515,6 +517,7 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | ~~`planner.stop.check_ik`~~ | bool | – | — | – | 구현되지 않았다 — 코드·출하 YAML 에 이 키는 없다 (2026-09-29 코드 대조) |
 | `planner.switch.delta_J` | double | – | 0.1 | ≥0 | §4.7 |
 | `planner.switch.eta_jump` | double | – | 0.25 | (0, 1] | §4.7 규칙 2: 교체가 $u_{des}$ 에 넣는 계단 ≤ `eta_jump` × `reference.a_max` (결정 ⑥, 2026-09-23). provisional |
+| `planner.switch.samples` | int | – | 9 | ≥2 | §4.7 규칙 2 의 계단 상한을 RT 가 채택할 수 있는 시간 창 (`budget_s` + 2 tick) 위 이 개수의 순간에서 평가해 최악을 취한다 (MPC MD-92 — 코드 상수 `kSwitchSamples`). 코드가 `samples − 1` 로 나눈다 |
 | `planner.switch.e_jump_max`, `ed_jump_max` | – | – | – | – | 결정 ⑥ 으로 삭제 — `eta_jump` 가 대체. 파서가 **거부**한다 (옛 값으로 튜닝된 profile 을 기본값으로 조용히 돌리지 않는다) |
 | `planner.gamma.derate_step` | – | – | – | – | v1 범위 밖 (D-8) — γ derate 재도입 시 단일 키로 다시 정한다 |
 | `planner.freeze.T_freeze` | double | s | p1b **0.36** · leap **0.19** (provisional) | ≥ §4.11 하한 | §4.11 하한식 (결정 G, 2026-09-23) |
@@ -531,6 +534,10 @@ v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자
 | `planner.decel_mpc.catch.w_axis` · `.w_v_par` · `.w_v_perp` · `.gamma_ref` | double | 1/rad² · (m/s)⁻² · (m/s)⁻² · – | 100 · 1 · 20 · 1 (출하: `ur5e_p1b` 의 $\gamma_{ref}$ 는 **0.6**, `iiwa7_leap` 은 1) | ≥ 0 · ≥ 0 · ≥ 0 · (0, 1] | 포구 노드의 접근축 · 상대속도 (진행 방향 · 직교) 가중과 속도 목표의 비 $\gamma_{ref}$ (MD-52 · MD-53). 가중은 E1-F07 의 측정값이고, p1b 의 $\gamma_{ref}$ 0.6 은 E1-F10 의 튜닝값이다 (MPC 계획 MD-75 · §8 "E1-F10" — v1 의 $\gamma$ 창 하한 아래, 편차로 기록). leap 은 채택한 값이 없다 |
 | `planner.decel_mpc.catch.kappa` · `.sigma_floor` · `.w_max` · `.w_const` · `.sigma_ref` | double | – · m · 1/m² · 1/m² · m | 1 · 0.01 · 1e4 · 2500 · 0.03 | > 0 | 포구 위치 가중 $W_p=\kappa(\Sigma_p+\sigma_{floor}^2I)^{-1}$ (고유값 상한 `w_max`), $\Sigma_p$ 를 못 쓸 때의 상수 가중 `w_const`, $w_\Delta$ 배율 $\mathrm{clamp}(\mathrm{tr}\,\Sigma_p/\sigma_{ref}^2,0,1)$ (MD-63). `sigma_ref` 는 trace 와 비교하므로 축별 $\sigma$ 가 아니다. provisional |
 | `planner.decel_mpc.catch.rho_v` · `.v_rel_allow` | double | – · m/s | 0 · 0 (끔) | ≥ 0 · ≥ 0 (`rho_v` > 0 이면 `v_rel_allow` > 0) | 포구 노드의 상대속도 slack 행 — 축별 $\lvert\hat v_b-v_C\rvert\le v_{rel,\mathrm{allow}}(1+s_v)$, 벌점 $\rho_v s_v$ (MPC MD-52 · MD-91). `rho_v` 0 이면 slack 변수와 행을 만들지 않는다 (포구 코어의 QP 크기 불변). 켜면 포구 코어마다 변수 1 · 행 7 이 는다. `rho_v` > 0 에 `v_rel_allow` 가 0 이면 파서가 두 키 이름을 대며 거부한다. $s_v$ 는 **기록만** 한다 (`planner_events.csv` 의 `decel_slack_v`) — 게시 판정에 없다: 임계가 정의돼 있지 않고 $\gamma_{ref}\lt1$ 이면 $s_v\gt0$ 이 구조적이다 (formulation §1.6). `v_rel_allow` 는 손의 흡수 능력에서 정할 값이고 아직 정해지지 않아 출하값은 둘 다 0 이다 |
+| `planner.decel_mpc.cost.jerk_weight` · `.u_scale` · `.w_delta` · `.rho_tau` | double[] · double · double · double | – · rad/s³ · 1/rad² · – | 전부 1 (팔 관절마다) · 1000 · 1 · 10 | 각 > 0 (길이 = 팔 자유도) · > 0 · ≥ 0 · ≥ 0 | **MPC MD-92.** 코어 비용의 설계 값 — 출하값은 코어 코드의 기본값이다 (해 불변). `jerk_weight` 는 **팔 관절 순서 (device)** 로 적고 모델 순서는 계획기가 바꾼다. 길이는 파서가 모르므로 계획기의 configure 가 키 이름을 대며 거부한다. jerk 비용은 $(u/u_{scale})^2$ 이라 `u_scale` 이 jerk 를 `w_delta` · `rho_tau` 와 비교한 세기를 바꾼다. `rho_tau` 0 은 토크 행을 끈다 — 그때 게시 판정의 slack 조건 (`publish.slack_max`) 은 빈다 |
+| `planner.decel_mpc.catch.axis_theta_max` | double | rad | 1.5707963267948966 (π/2) | (0, π) | 접근축 선형화 기준의 축 오차 상한 — 넘으면 풀지 않는다 ($\Vert J_a\Vert\sim\theta/\sin\theta$). 포구 항 전용이라 `catch.*` 에 있다 |
+| `planner.decel_mpc.linearization.delta_tr` · `.reference_rest_tol` · `.ref_speed_fraction` | double | rad · – · – | 0.1 · 1e-4 · 0.9 | 유한 > 0 · > 0 (그리고 `solver.eps_abs` 초과) · (0, 1] | trust region 반폭 (코드는 +inf 도 받지만 profile 은 유한값만), 공급한 기준의 종단 $\vert\dot q_N\vert$ · $\vert\ddot q_N\vert$ 허용 — 계획기 자신의 게시 판정도 같은 값을 쓴다 — 과 첫 풀이 기준이 속도 box $\eta_v\dot q_{max}$ 의 이 비율로 목표에 닿게 하는 상한 (MD-62). `m_q` < `delta_tr` 를 이 값으로 검사한다 (이전엔 기본 생성한 코어의 0.1 과 비교했다) |
+| `planner.decel_mpc.solver.max_iter` · `.max_iter_in` · `.eps_abs` · `.eps_rel` | int · int · double · double | – · – · – · – | 200 · 100 · 1e-6 · 0 | ≥ 1 · ≥ 1 · > 0 · ≥ 0 | ProxQP 의 바깥 · 안쪽 반복 상한과 허용오차. preconditioner 갱신과 KKT backend 는 키가 아니다 (RT 무할당 · infeasible 판정의 전제). `w_perp` (정지 경로 가중) 만 키가 아니다 — 그 직선의 정의가 열려 있다 (#698) |
 
 ## 7. 단위 기술 구현 순서
 

@@ -46,3 +46,6 @@ demo_catching_controller:
         # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= omega 10, a_max 35: 88 mm.
         # Provisional until the sim remeasure.
         eta_jump: 0.25
+        # Instants of the followed ramp the switch step bound is taken the worst
+        # over (L3 §4.7), >= 2: the bound divides by samples - 1.
+        samples: 9

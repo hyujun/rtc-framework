@@ -46,6 +46,10 @@ demo_catching_controller:
       gamma:
         eta_v: 0.9
         margin: 0.1
+        # lambda of the damped least squares behind v_dir,max (L3 §4.5): the
+        # unit-speed joint velocity J5^T (J5 J5^T + lambda^2 I)^-1 [v; 0; 0].
+        # catch_gate_map reads this key, so the offline map damps the same way.
+        unit_speed_damping: 1.0e-3
         # The γ rollout (L3 §4.8, S6-C): γ_f and T_w candidates, the demanded-
         # acceleration margin η_a against reference.a_max, and the terminal
         # error the reference must reach by t_c. L3 §6 defaults.
@@ -156,6 +160,28 @@ demo_catching_controller:
         # 1366 candidates `not_converged`, which is confounded with
         # genuinely unreachable points and is a follow-up sweep, not a bound.
         max_iter: 40
+        # The remaining IK design values, written at their in-code defaults
+        # (CatchPoseIkOptions) so the profile shows every number the solve runs.
+        # Task residual tolerance [m] and axis error bound [rad].
+        eps_pos: 0.002
+        alpha_max: 0.26
+        # Task weight [m/rad], damping-shell entry and maximum, step bound [rad].
+        rho: 0.1
+        sigma0: 1.0e-3
+        lambda_max: 1.0e-2
+        dq_step_max: 0.15
+        # Task-QP regularisation (a cliff: 1e-8 leaves the Hessian near
+        # singular), its absolute tolerance and iteration cap.
+        mu: 1.0e-4
+        qp_eps_abs: 1.0e-10
+        qp_max_iter: 50
+        # Posture pull toward the seed, the manipulability-ascent stop on
+        # |N grad log w5|, the central-difference step [rad] of that gradient,
+        # and the floor on |v| [m/s] before it is normalised (NUM-7).
+        k_null: 0.0
+        manip_grad_tol: 1.0e-4
+        fd_step: 1.0e-5
+        v_eps: 1.0e-6
       catchability:
         # 5-row, per plan §11: the 6-row definition would need a threshold ~30x
         # smaller (w6 bottoms out at 0.0013 over the SAME accepted set) and it

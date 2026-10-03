@@ -842,6 +842,7 @@ ros2 run rtc_tools catch_speed_budget \
   `rtc_controllers` `UnitSpeedSolver` 이고, 두 식의 일치는 `PlannerUnitSpeed` 테스트가 고정한다 — G3-I) 와 그것이
   내는 속도 `J_p q̇ᵘ`. `reference.v_max` 는 `--v-max-m-s derived` 면 수락 후보의 LP v_dir,max 최대 / η_v
   (S4.4 결정: TCP 항은 관절 정격 안에서 구속하지 않는다)
+- **DLS 단위속도의 감쇠 λ 는 C++ 와 같은 키에서 온다** (MPC MD-92): `--dls-damping` 의 기본은 `--controller-config` 의 `catching.planner.gamma.unit_speed_damping` (런타임 탐색이 `kUnitSpeedDamping` 대신 읽는 키 — 출하 1e-3) 이고, 키가 없으면 C++ 기본과 같은 `catch_speed_budget.DEFAULT_DLS_DAMPING` 이다. 쓴 값은 `gate_map_summary.yaml` 의 `dls_damping` 에 남는다. 인자를 주면 profile 을 덮는다. (`catch_speed_budget` 은 profile 입력이 없어 상수를 그대로 쓰고, 그 상수가 출하 YAML 값과 같다는 테스트 `integrated_bringup/test/test_shipped_catching_config.py` 가 둘의 어긋남을 막는다.)
 - **python 이 거는 경계**: p_stop 이 도달 구·바닥 안인가 (`planner.workspace.catch_box` 가 TBD 라 지도와
   같은 경계를 쓴다)
 - **도달시간은 두 층**을 항상 같이 낸다. `box` = 컨트롤러 YAML 의 가속 box (`catching.robot.arm.qdd_max` — `--controller-config`, 기본은 `--robot-config` 옆 `controllers/<--controller>.yaml`, `include:` 조각 합성) 로 C++ 가

@@ -259,6 +259,24 @@ TEST(CatchPoseIkParams, FdStepHasNoYamlKey) {
   ExpectRejectMentioning(root, "unknown key 'planner.ik.fd_step'");
 }
 
+// MPC MD-92 / #698: `fd_step` has a key now (a design value like the rest).
+// Absent keeps the struct default; a number moves the field and nothing else;
+// a step the finite difference would divide by zero (or by a negative or
+// non-finite number) is refused naming the key.
+TEST(CatchPoseIkParams, FdStepKeyParsesAndIsRangeChecked) {
+  EXPECT_DOUBLE_EQ(ParseCatchPoseIkParams(IkRoot()).options.fd_step, kDefault.fd_step);
+  YAML::Node root = IkRoot();
+  root["planner"]["ik"]["fd_step"] = 2.5e-4;
+  const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
+  EXPECT_DOUBLE_EQ(cfg.options.fd_step, 2.5e-4);
+  EXPECT_DOUBLE_EQ(cfg.options.v_eps, kDefault.v_eps);  // its neighbour in the table
+  for (const char* bad : {"0.0", "-1.0e-5", ".nan", ".inf", "soft"}) {
+    YAML::Node r = IkRoot();
+    r["planner"]["ik"]["fd_step"] = bad;
+    ExpectRejectMentioning(r, "'planner.ik.fd_step'");
+  }
+}
+
 // ── alpha_max: the TBD convention ───────────────────────────────────────────
 
 TEST(CatchPoseIkParams, AlphaMaxAbsentIsTbdAndKeepsTheProvisionalDefault) {

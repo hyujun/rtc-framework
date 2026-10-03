@@ -139,3 +139,19 @@ def test_python_composes_the_tree_the_cm_composes(robot):
 
     assert len(cpp_lines) > 100, "the dump is suspiciously small"
     assert py_lines == cpp_lines
+
+
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_the_unit_speed_damping_is_one_number_for_cpp_and_python(robot):
+    # The C++ search damps its unit-speed solve with planner.gamma.unit_speed_damping
+    # (the shipped-profile C++ test pins it equal to kUnitSpeedDamping). The offline
+    # tools must run on the same number: catch_gate_map reads the key from the profile
+    # (below), and catch_speed_budget has no profile input at all, so its constant has
+    # to equal the shipped value on both robots — drift in either place fails here.
+    from rtc_tools.analysis import catch_gate_map, catch_speed_budget  # noqa: PLC0415
+
+    doc = load_controller_config(_main_path(robot), config_key=CONTROLLER, loader=yaml.BaseLoader)
+    shipped = float(doc[CONTROLLER]["catching"]["planner"]["gamma"]["unit_speed_damping"])
+    assert shipped == 1.0e-3
+    assert shipped == catch_speed_budget.DEFAULT_DLS_DAMPING
+    assert catch_gate_map.load_unit_speed_damping(_main_path(robot), CONTROLLER) == shipped

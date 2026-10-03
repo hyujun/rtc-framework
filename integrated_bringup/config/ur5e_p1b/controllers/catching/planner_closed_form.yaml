@@ -66,3 +66,6 @@ demo_catching_controller:
         # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= eta_jump*a_max/omega^2 = 0.25*30/100 = 75 mm (was 52 mm at a_max 21, S8-G).
         # Provisional until the sim remeasure.
         eta_jump: 0.25
+        # Instants of the followed ramp the switch step bound is taken the worst
+        # over (L3 §4.7), >= 2: the bound divides by samples - 1.
+        samples: 9

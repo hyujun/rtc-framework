@@ -309,7 +309,6 @@ class PlannerSearch {
   /// instants the RT may adopt this cycle's publish, on the ramp it runs.
   [[nodiscard]] double SwitchStep(const TrajectorySnapshot& traj, const PlannerRtState& rt,
                                   NowLead now_lead, double dp) const noexcept;
-  static constexpr int kSwitchSamples = 9;
   static constexpr std::size_t kPublishedRing = 8;
   std::array<Current, kPublishedRing> published_{};
   std::size_t published_next_{0};

@@ -98,3 +98,47 @@ demo_catching_controller:
           # above 0 by construction.
           rho_v: 0.0
           v_rel_allow: 0.0
+          # The core's approach-axis linearisation limit [rad], in (0, pi): the
+          # largest axis error of the reference the axis term is linearised at;
+          # beyond it the solve fails closed. pi/2 as a decimal.
+          axis_theta_max: 1.5707963267948966
+        # The core's design values (MPC plan MD-92). Each ships at the value the
+        # core had in code before they were keys, so no solve changes.
+        cost:
+          # Jerk weight R_j per arm joint (arm joint order, 7 entries), each
+          # > 0. All 1: the jerk is weighted evenly.
+          jerk_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+          # Jerk scale [rad/s^3]. NOT a pure preconditioner: the jerk cost is
+          # (u/u_scale)^2, so it re-weights jerk against w_delta and rho_tau.
+          u_scale: 1000.0
+          # Pull toward the linearisation reference [1/rad^2] (scaled by the
+          # catch.sigma_ref schedule).
+          w_delta: 1.0
+          # Penalty of the torque slack. 0 = the torque rows are off, and the
+          # publish judgement's slack condition (publish.slack_max) is then
+          # vacuous: no slack exists to bound. 10 was exact on every sampled
+          # stop (E1-F01 sweep, #627).
+          rho_tau: 10.0
+          # w_perp (the stop-path line weight) is not a key yet: the line's
+          # definition is open (#698), so the core keeps it at 0 = off.
+        linearization:
+          # Trust-region half-width around the reference [rad], finite > 0.
+          # m_q must stay below it.
+          delta_tr: 0.1
+          # Bound on |qd_N| and |qdd_N| of a supplied reference [rad/s, rad/s^2];
+          # must exceed solver.eps_abs (a shifted previous solution is at rest
+          # only to eps_abs). The third "rest tol" beside approach.rest_tol and
+          # the planner's own admission tolerance.
+          reference_rest_tol: 1.0e-4
+          # The first solve's reference reaches its target at this fraction of
+          # eta_v * qdot_max, in (0, 1] (MD-62): the minimum-jerk peak is held
+          # below the velocity box, so the QP can bend the reach.
+          ref_speed_fraction: 0.9
+        solver:
+          # ProxQP: outer and inner iteration caps (>= 1) and tolerances. The
+          # preconditioner update and the KKT backend are not keys (the RT
+          # no-allocation and infeasibility verdict rely on them).
+          max_iter: 200
+          max_iter_in: 100
+          eps_abs: 1.0e-6
+          eps_rel: 0.0

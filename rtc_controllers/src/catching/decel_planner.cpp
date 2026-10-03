@@ -30,10 +30,25 @@ namespace {
   return static_cast<std::size_t>(i);
 }
 
-// The first solve's reference reaches its target at this fraction of the
-// velocity box η_v·q̇_max (MD-62): the minimum-jerk peak 1.875·|d|/T is held
-// below it, so the QP has room to bend the reach toward the catch terms.
-constexpr double kRefSpeedFraction = 0.9;
+// The core's design values (MD-92) from `planner.decel_mpc.*`: the cost
+// scalars, the axis and trust-region limits, the rest tolerance and the
+// solver's tolerances. `jerk_weight` is already in model order (empty = the
+// core's all-ones); the preconditioner and the KKT backend are not design
+// values and keep the core's own setting.
+void ApplyCoreDesign(DecelMpcParams& mp, const DecelPlannerParams& p,
+                     const Eigen::VectorXd& jerk_weight_model) {
+  mp.jerk_weight = jerk_weight_model;
+  mp.u_scale = p.u_scale;
+  mp.w_delta = p.w_delta;
+  mp.rho_tau = p.rho_tau;
+  mp.axis_theta_max = p.axis_theta_max;
+  mp.delta_tr = p.delta_tr;
+  mp.reference_rest_tol = p.reference_rest_tol;
+  mp.solver.max_iter = p.solver_max_iter;
+  mp.solver.max_iter_in = p.solver_max_iter_in;
+  mp.solver.eps_abs = p.solver_eps_abs;
+  mp.solver.eps_rel = p.solver_eps_rel;
+}
 
 }  // namespace
 
@@ -207,6 +222,19 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
     seen[U(d)] = true;
   }
   const int n = model.nv;
+  // `cost.jerk_weight` is one entry per ARM joint in device order; the core
+  // wants model order. Empty keeps the core's all-ones.
+  jerk_weight_model_.resize(0);
+  if (!params.jerk_weight.empty()) {
+    if (params.jerk_weight.size() != static_cast<std::size_t>(n)) {
+      return fail("decel_mpc.cost.jerk_weight has " + std::to_string(params.jerk_weight.size()) +
+                  " entries, the arm has " + std::to_string(n) + " joints");
+    }
+    jerk_weight_model_.resize(n);
+    for (int m = 0; m < n; ++m) {
+      jerk_weight_model_[m] = params.jerk_weight[U(model.device_of_model[U(m)])];
+    }
+  }
   DecelMpcLimits limits;
   limits.q_min.resize(n);
   limits.q_max.resize(n);
@@ -227,6 +255,7 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   results_.resize(U(params.k_max + 1));
   for (int k = 0; k <= params.k_max; ++k) {
     DecelMpcParams mp;
+    ApplyCoreDesign(mp, params, jerk_weight_model_);
     mp.n_nodes = params.n_nodes - k;
     mp.dt = static_cast<double>(params.DtNs()) * 1e-9;
     if (!DecelBlocksFor(params, k, mp.block_sizes, mp.n_blocks)) {
@@ -285,7 +314,6 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
   replan_ns_ = SecondsToNs(params.budget_replan_s);
   std::array<int, kMaxDecelNodes> stop_blocks{};
   int stop_n_blocks = 0;
-  const DecelMpcParams core_defaults{};
   if (!std::isfinite(consts_.v_eps) || !(consts_.v_eps > 0.0) || dt_pre_ns_ <= 0 ||
       dt_pre_ns_ > kMaxDecelDtPreNs || first_ns_ <= 0 || replan_ns_ <= 0 ||
       params.n_pre_max > kMaxDecelNodes - params.n_nodes ||
@@ -295,21 +323,22 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
     return false;
   }
   // The trust region must hold the position margin: with m_q ≥ δ a target at
-  // a limit would put the trust row's lower bound above its upper one.
-  if (!(params.m_q < core_defaults.delta_tr)) {
-    why = "decel_mpc.m_q must be below the core's trust region (" +
-          std::to_string(core_defaults.delta_tr) + " rad) with a pre-catch grid";
+  // a limit would put the trust row's lower bound above its upper one. δ is
+  // the profile's `linearization.delta_tr`, the value the cores are built with.
+  if (!(params.m_q < params.delta_tr)) {
+    why = "decel_mpc.m_q must be below the trust region, decel_mpc.linearization.delta_tr (" +
+          std::to_string(params.delta_tr) + " rad) with a pre-catch grid";
     return false;
   }
   for (int m = 0; m < n; ++m) {
-    const double cap = kRefSpeedFraction * consts_.eta_v * qd_max_[U(m)];
+    const double cap = params.ref_speed_fraction * consts_.eta_v * qd_max_[U(m)];
     if (!std::isfinite(cap) || !(cap > 0.0)) {
-      why =
-          "0.9·eta_v·qdot_max is not a positive finite number for model joint " + std::to_string(m);
+      why = "ref_speed_fraction·eta_v·qdot_max is not a positive finite number for model joint " +
+            std::to_string(m);
       return false;
     }
   }
-  rest_tol_ref_ = core_defaults.reference_rest_tol;
+  rest_tol_ref_ = params.reference_rest_tol;
   DecelMpcLimits limits;
   limits.q_min.resize(n);
   limits.q_max.resize(n);
@@ -329,6 +358,7 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
   catch_params_.reserve(count);
   for (int j = 1; j <= params.n_pre_max; ++j) {
     DecelMpcParams mp;
+    ApplyCoreDesign(mp, params, jerk_weight_model_);
     mp.n_pre = j;
     mp.dt_pre = static_cast<double>(dt_pre_ns_) * 1e-9;
     mp.n_nodes = params.n_nodes;
@@ -814,7 +844,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
     const double clamped = std::clamp(target, q_lo_[U(m)], q_hi_[U(m)]);
     rec.ref_clamped = rec.ref_clamped || clamped != target;
     double step = clamped - q0;
-    const double allowed = kRefSpeedFraction * v_box_[U(m)] * t_span / 1.875;
+    const double allowed = params_.ref_speed_fraction * v_box_[U(m)] * t_span / 1.875;
     if (!(std::fabs(step) <= allowed)) {
       rec.ref_scaled = true;
       scale_min = std::min(scale_min, allowed / std::fabs(step));

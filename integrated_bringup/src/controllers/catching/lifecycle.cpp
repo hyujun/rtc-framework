@@ -348,6 +348,35 @@ void DemoCatchingController::DeclareProfileParameters() {
           "slack is recorded (planner_events decel_slack_v), never a publish gate");
   declare("planner.decel_mpc.catch.v_rel_allow", decel.v_rel_allow,
           "decel MPC per-axis relative velocity the hand absorbs [m/s]; read when rho_v > 0");
+  // The core's own design values (MD-92), as run. jerk_weight is the profile's
+  // list in arm joint order; empty = the core's all-ones.
+  declare("planner.decel_mpc.cost.jerk_weight", decel.jerk_weight,
+          "decel MPC jerk weight R_j per arm joint (arm order); empty = all 1");
+  declare("planner.decel_mpc.cost.u_scale", decel.u_scale,
+          "decel MPC jerk scale [rad/s^3]; the jerk cost is (u/u_scale)^2");
+  declare("planner.decel_mpc.cost.w_delta", decel.w_delta,
+          "decel MPC pull toward the reference [1/rad^2]");
+  declare("planner.decel_mpc.cost.rho_tau", decel.rho_tau,
+          "decel MPC torque slack penalty; 0 = torque rows off (the publish slack condition is "
+          "then vacuous)");
+  declare("planner.decel_mpc.catch.axis_theta_max", decel.axis_theta_max,
+          "decel MPC largest axis error of the reference the approach-axis term linearises at "
+          "[rad]");
+  declare("planner.decel_mpc.linearization.delta_tr", decel.delta_tr,
+          "decel MPC trust-region half-width around the reference [rad]");
+  declare("planner.decel_mpc.linearization.reference_rest_tol", decel.reference_rest_tol,
+          "decel MPC bound on the supplied reference's terminal speed and acceleration");
+  declare("planner.decel_mpc.linearization.ref_speed_fraction", decel.ref_speed_fraction,
+          "decel MPC first-solve reference speed as a fraction of eta_v * qdot_max");
+  declare("planner.decel_mpc.solver.max_iter", static_cast<std::int64_t>(decel.solver_max_iter),
+          "decel MPC ProxQP outer iteration cap");
+  declare("planner.decel_mpc.solver.max_iter_in",
+          static_cast<std::int64_t>(decel.solver_max_iter_in),
+          "decel MPC ProxQP inner iteration cap per outer step");
+  declare("planner.decel_mpc.solver.eps_abs", decel.solver_eps_abs,
+          "decel MPC ProxQP absolute tolerance");
+  declare("planner.decel_mpc.solver.eps_rel", decel.solver_eps_rel,
+          "decel MPC ProxQP relative tolerance");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,

@@ -55,6 +55,7 @@ import yaml
 
 from rtc_tools.analysis.catch_speed_budget import (
     DEFAULT_CATCH_FRAME,
+    DEFAULT_DLS_DAMPING,
     ArmKinematics,
     directional_speed_lp,
     dls_unit_velocity,
@@ -442,6 +443,29 @@ def load_accel_box(controller_config: Path, key: str, n: int) -> np.ndarray:
     return box
 
 
+def load_unit_speed_damping(controller_config: Path, key: str) -> float:
+    """``catching.planner.gamma.unit_speed_damping`` of a controller config, fragments composed.
+
+    The C++ search reads the same key (``PlannerParams::unit_speed_damping``), so the offline
+    map damps the unit-speed solve the way the runtime does. A profile that does not write it
+    runs the C++ default, which is ``DEFAULT_DLS_DAMPING`` — the same fallback here.
+    """
+    try:
+        tree = load_controller_config(controller_config, config_key=key)[key]
+        gamma = tree["catching"]["planner"]["gamma"]
+    except (KeyError, TypeError):
+        return DEFAULT_DLS_DAMPING
+    value = gamma.get("unit_speed_damping") if isinstance(gamma, Mapping) else None
+    if value is None:
+        return DEFAULT_DLS_DAMPING
+    damping = float(value)
+    if not (math.isfinite(damping) and damping > 0.0):
+        raise SystemExit(
+            f"{controller_config}: planner.gamma.unit_speed_damping = {value!r} must be > 0"
+        )
+    return damping
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--robot-config", type=Path, nargs="+", required=True)
@@ -499,7 +523,12 @@ def main(argv: list[str] | None = None) -> int:
         help="which wait pose to gate. Required when the map was judged from several: the "
         "robot waits in ONE posture, and a union over seeds overstates every count",
     )
-    ap.add_argument("--dls-damping", type=float, default=1e-3)
+    ap.add_argument(
+        "--dls-damping",
+        type=float,
+        help="λ of the DLS unit-speed solve (default: the profile's "
+        "planner.gamma.unit_speed_damping, the value the C++ search runs with)",
+    )
     ap.add_argument("--fk-tolerance-m", type=float, default=DEFAULT_FK_TOLERANCE_M)
     args = ap.parse_args(argv)
 
@@ -530,6 +559,11 @@ def main(argv: list[str] | None = None) -> int:
     if not controller_config.is_file():
         raise SystemExit(f"{controller_config}: no controller config — pass --controller-config")
     box = load_accel_box(controller_config, args.controller, arm.n)
+    dls_damping = (
+        args.dls_damping
+        if args.dls_damping is not None
+        else load_unit_speed_damping(controller_config, args.controller)
+    )
     reach_centre = frame_placement_in_model_world(urdf_text, args.arm_base_frame)[:3, 3]
 
     with (args.map_dir / "throw_summary.csv").open() as handle:
@@ -550,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
         if cells and cells[0].lstrip("-").isdigit():
             seeds[int(cells[0])] = np.array([float(c) for c in cells[1:]])
 
-    inputs = [gate_inputs(arm, row, qd_plan, args.dls_damping) for row in accepted]
+    inputs = [gate_inputs(arm, row, qd_plan, dls_damping) for row in accepted]
     worst_fk = max(item.fk_residual_m for item in inputs)
     if worst_fk > args.fk_tolerance_m:
         raise SystemExit(
@@ -676,6 +710,7 @@ def main(argv: list[str] | None = None) -> int:
         "commit_lead_s": commit_lead,
         "min_flight_time_s": settings.first_plan_s + commit_lead,
         "seed_id": seed_id,
+        "dls_damping": dls_damping,
         "wait_pose": [float(x) for x in seeds[seed_id]],
         "grid_throws": len(throws),
         "kinematic_throws": len({r["throw_index"] for r in rows}),

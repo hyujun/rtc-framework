@@ -405,6 +405,38 @@ def test_a_missing_box_key_is_refused_naming_the_key(tmp_path, arm):
         cgm.main(argv)
 
 
+def _controller_with_damping(path: Path, damping) -> None:
+    tree = yaml.safe_load(path.read_text())
+    tree[CONTROLLER]["catching"]["planner"] = {"gamma": {"unit_speed_damping": damping}}
+    path.write_text(yaml.safe_dump(tree))
+
+
+def test_the_dls_damping_comes_from_the_profile_key(tmp_path, arm):
+    """The C++ search damps its unit-speed solve with ``planner.gamma.unit_speed_damping``;
+    the offline map reads the same key from the profile, and the CLI flag still overrides it."""
+    argv = _write_run(tmp_path, arm)
+    controller = Path(argv[argv.index("--controller-config") + 1])
+    # no key: the C++ default, which is this tool's constant
+    assert cgm.main(argv) == 0
+    assert _summary(tmp_path)["dls_damping"] == csb.DEFAULT_DLS_DAMPING
+    # a moved key moves the number the solve is given
+    _controller_with_damping(controller, 0.05)
+    assert cgm.main(argv) == 0
+    assert _summary(tmp_path)["dls_damping"] == 0.05
+    # an explicit flag wins over the profile
+    assert cgm.main([*argv, "--dls-damping", "0.02"]) == 0
+    assert _summary(tmp_path)["dls_damping"] == 0.02
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0e-3, float("nan")])
+def test_a_bad_profile_damping_is_refused_naming_the_key(tmp_path, bad):
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump({CONTROLLER: {"catching": {}}}))
+    _controller_with_damping(path, bad)
+    with pytest.raises(SystemExit, match="planner.gamma.unit_speed_damping"):
+        cgm.load_unit_speed_damping(path, CONTROLLER)
+
+
 def test_summary_map_dir_is_absolute_from_a_relative_argument(tmp_path, arm, monkeypatch):
     """catching_trials --gate-map reads the grid back through ``map_dir`` from
     its own working directory, so a relative --map-dir must not be stored as

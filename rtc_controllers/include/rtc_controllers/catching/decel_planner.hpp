@@ -350,6 +350,10 @@ class DecelPlanner {
 
   [[nodiscard]] const DecelPlannerConstants& Constants() const noexcept { return consts_; }
 
+  /// The rest tolerance Judge holds a published segment's node N to — the
+  /// profile's `linearization.reference_rest_tol` (tests and diagnostics).
+  [[nodiscard]] double ReferenceRestTol() const noexcept { return rest_tol_ref_; }
+
   /// The slowest and the summed configure-time warm-up solve [ns] (MD-64):
   /// each is a core's FIRST solve, the one a trial would otherwise pay for.
   [[nodiscard]] std::int64_t WarmUpMaxNs() const noexcept { return warmup_max_ns_; }
@@ -412,8 +416,9 @@ class DecelPlanner {
   std::int64_t dt_pre_ns_{0};
   std::int64_t first_ns_{0};
   std::int64_t replan_ns_{0};
-  std::int64_t h_ns_{0};       // control_dt
-  double rest_tol_ref_{1e-4};  // the core's reference_rest_tol
+  std::int64_t h_ns_{0};               // control_dt
+  double rest_tol_ref_{1e-4};          // the profile's linearization.reference_rest_tol
+  Eigen::VectorXd jerk_weight_model_;  // cost.jerk_weight in model order; empty = all 1
   std::int64_t warmup_max_ns_{0};
   std::int64_t warmup_total_ns_{0};
 

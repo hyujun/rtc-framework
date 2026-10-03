@@ -47,6 +47,7 @@ namespace {
 
 using rtc::catching::DecelBallTarget;
 using rtc::catching::DecelKind;
+using rtc::catching::DecelMpcParams;
 using rtc::catching::DecelMpcReason;
 using rtc::catching::DecelNodeTimeNs;
 using rtc::catching::DecelOutcome;
@@ -694,6 +695,169 @@ TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
     // ... and the recorded slack is that excess: the row's linear model
     // against FK at the solution.
     EXPECT_NEAR(on.rec.slack_v, excess, 0.01 * excess);
+  }
+}
+
+// MPC MD-92: the core's design values, from the YAML to every core the planner
+// builds — the stop cores (k = 0..k_max) and the catch cores (n_pre = 1..6).
+// Twelve distinct values; a core left on DecelMpcParams{} reads its default.
+TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
+  const auto params_of = [](const std::string& body) {
+    return rtc::catching::ParsePlannerParams(
+               YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, "
+                          "dt_s: 0.05, blocks: [1, 1, 2, 3]}, replan: "
+                          "{k_max: 2}, approach: {n_pre_max: 6, "
+                          "dt_pre_s: 0.1}, " +
+                          body + "}}"))
+        .decel;
+  };
+  const DecelMpcParams defaults{};
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    const int n = static_cast<int>(arm.model->nv);
+    // One entry per arm joint, in DEVICE order: entry d belongs to the model
+    // joint whose device index is d (the arms' orders are permutations).
+    std::string list;
+    for (int d = 0; d < n; ++d) {
+      list += (d == 0 ? "" : ", ") + std::to_string(1.0 + 0.5 * d);
+    }
+    Rig on(arm, params_of("cost: {jerk_weight: [" + list +
+                          "], u_scale: 500.0, w_delta: 2.5, rho_tau: 7.0}, "
+                          "catch: {axis_theta_max: 1.2}, "
+                          "linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, "
+                          "ref_speed_fraction: 0.8}, "
+                          "solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, "
+                          "eps_rel: 1.0e-5}"));
+    Rig off(arm, params_of(""));
+    ASSERT_TRUE(on.planner.Configured());
+    ASSERT_TRUE(off.planner.Configured());
+    const auto check = [&](const DecelMpcParams& mp, const char* what, int i) {
+      SCOPED_TRACE(std::string(what) + " " + std::to_string(i));
+      ASSERT_EQ(mp.jerk_weight.size(), n);
+      for (int m = 0; m < n; ++m) {
+        EXPECT_EQ(mp.jerk_weight[m], 1.0 + 0.5 * static_cast<double>(Dev(arm, m))) << m;
+      }
+      EXPECT_EQ(mp.u_scale, 500.0);
+      EXPECT_EQ(mp.w_delta, 2.5);
+      EXPECT_EQ(mp.rho_tau, 7.0);
+      EXPECT_EQ(mp.axis_theta_max, 1.2);
+      EXPECT_EQ(mp.delta_tr, 0.2);
+      EXPECT_EQ(mp.reference_rest_tol, 2.0e-5);
+      EXPECT_EQ(mp.solver.max_iter, 300);
+      EXPECT_EQ(mp.solver.max_iter_in, 150);
+      EXPECT_EQ(mp.solver.eps_abs, 2.0e-7);
+      EXPECT_EQ(mp.solver.eps_rel, 1.0e-5);
+      // Not design values: the core's own setting stays.
+      EXPECT_EQ(mp.solver.update_preconditioner, defaults.solver.update_preconditioner);
+      EXPECT_EQ(mp.solver.dense_backend, defaults.solver.dense_backend);
+      EXPECT_EQ(mp.w_perp, defaults.w_perp);
+    };
+    for (int j = 1; j <= 6; ++j) {
+      check(on.planner.ApproachCoreParams(j), "catch core", j);
+    }
+    for (int k = 0; k <= 2; ++k) {
+      check(on.planner.StopCoreParams(k), "stop core", k);
+    }
+    // The shipped values are the defaults: a planner built with the keys at
+    // them has every new field equal to DecelMpcParams{} (what the planner
+    // overwrites — grid, eta, m_q, catch terms — is not compared).
+    const auto same = [&](const DecelMpcParams& mp, const char* what, int i) {
+      SCOPED_TRACE(std::string(what) + " " + std::to_string(i));
+      EXPECT_EQ(mp.u_scale, defaults.u_scale);
+      EXPECT_EQ(mp.w_delta, defaults.w_delta);
+      EXPECT_EQ(mp.rho_tau, defaults.rho_tau);
+      EXPECT_EQ(mp.axis_theta_max, defaults.axis_theta_max);
+      EXPECT_EQ(mp.delta_tr, defaults.delta_tr);
+      EXPECT_EQ(mp.reference_rest_tol, defaults.reference_rest_tol);
+      EXPECT_EQ(mp.solver.max_iter, defaults.solver.max_iter);
+      EXPECT_EQ(mp.solver.max_iter_in, defaults.solver.max_iter_in);
+      EXPECT_EQ(mp.solver.eps_abs, defaults.solver.eps_abs);
+      EXPECT_EQ(mp.solver.eps_rel, defaults.solver.eps_rel);
+      EXPECT_EQ(mp.jerk_weight.size(), 0);
+    };
+    for (int j = 1; j <= 6; ++j) {
+      same(off.planner.ApproachCoreParams(j), "catch core", j);
+    }
+    for (int k = 0; k <= 2; ++k) {
+      same(off.planner.StopCoreParams(k), "stop core", k);
+    }
+  }
+}
+
+// The list is one entry per ARM joint: the parser has no joint count, so the
+// planner's configure refuses a wrong length — by key.
+TEST(ApproachPlanner, TheJerkWeightListMustMatchTheArm) {
+  const Arm arm = Arm6();
+  DecelPlannerParams p = ApproachParams();
+  p.jerk_weight = {1.0, 1.0, 1.0, 1.0, 1.0};  // 5 for 6 joints
+  DecelPlanner planner;
+  std::string err;
+  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
+  p.jerk_weight = std::vector<double>(7, 1.0);
+  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
+  p.jerk_weight = std::vector<double>(6, 1.0);
+  EXPECT_TRUE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err)) << err;
+}
+
+// m_q against the trust region used to be compared with a default-constructed
+// core's: a profile's own delta_tr must decide.
+TEST(ApproachPlanner, TheMarginIsComparedWithTheProfilesTrustRegion) {
+  const Arm arm = Arm6();
+  DecelPlannerParams p = ApproachParams();
+  std::string err;
+  DecelPlanner planner;
+  // m_q 0.15 is above the default trust region (0.1) and below this one.
+  p.m_q = 0.15;
+  p.delta_tr = 0.3;
+  EXPECT_TRUE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err)) << err;
+  // m_q 0.05 is below the default 0.1 and not below this one.
+  p.m_q = 0.05;
+  p.delta_tr = 0.04;
+  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("decel_mpc.linearization.delta_tr"), std::string::npos) << err;
+  EXPECT_NE(err.find("decel_mpc.m_q"), std::string::npos) << err;
+  EXPECT_FALSE(planner.Configured());
+}
+
+// `linearization.ref_speed_fraction`: the planner's own number, read at the
+// first solve's reference. The shipped 0.9 gives the figure the existing
+// clamp test pins; another value moves it.
+TEST(ApproachPlanner, TheReferenceSpeedFractionIsTheProfilesOwn) {
+  for (const double fraction : {0.9, 0.5}) {
+    DecelPlannerParams p = ApproachParams();
+    p.ref_speed_fraction = fraction;
+    Rig r(Arm6(), p);
+    const Catch c = CatchAt(r.arm, Offset(r.arm, 0.02));
+    Catch far = c;
+    far.q_catch = r.arm.q_nominal;
+    far.q_catch[0] += 1.5;
+    SetClock(kT0);
+    static_cast<void>(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
+                                          PlanFor(r.arm, far, kT0 + 800 * kMs), BallFor(c), r.out,
+                                          r.rec));
+    ASSERT_TRUE(r.rec.ref_scaled) << fraction;
+    const double allowed = fraction * 0.9 * 2.0 * 0.6 / 1.875;
+    EXPECT_NEAR(r.rec.ref_scale, allowed / 1.5, 1e-12) << fraction;
+  }
+}
+
+// `linearization.reference_rest_tol` is also the planner's own judgement: a
+// published segment is the next solve's reference, so its node N must be at
+// rest to the core's tolerance (Judge reads `rest_tol_ref_`), not the
+// payload's looser one. The solve's terminal rest is ~1e-12 — below any
+// tolerance a profile could set while the solver still converges — so the
+// consumer's number is read through its accessor: the profile's value, the
+// same the cores were built with, not a default-constructed core's.
+TEST(ApproachPlanner, TheReferenceRestToleranceIsTheProfilesInJudge) {
+  for (const double tol : {1.0e-4, 3.0e-5, 5.0e-3}) {
+    DecelPlannerParams p = ApproachParams();
+    p.reference_rest_tol = tol;
+    Rig r(Arm6(), p);
+    ASSERT_TRUE(r.planner.Configured());
+    EXPECT_EQ(r.planner.ReferenceRestTol(), tol);
+    EXPECT_EQ(r.planner.StopCoreParams(0).reference_rest_tol, tol);
+    EXPECT_EQ(r.planner.ApproachCoreParams(1).reference_rest_tol, tol);
   }
 }
 

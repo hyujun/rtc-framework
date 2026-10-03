@@ -67,13 +67,14 @@ double PlannerSearch::SwitchStep(const TrajectorySnapshot& traj, const PlannerRt
   // the search budget of the cycle's start, plus two ticks of slack. Over
   // that window the followed ramp can start — γ̇ = γ̈ = 0 on the snapshot's
   // tick is not the adoption's (2026-09-23 /code-review) — so the bound is
-  // the worst over kSwitchSamples instants of the ramp the RT is running.
+  // the worst over `planner.switch.samples` instants of the ramp the RT is running.
   const GammaProfile ramp{rt.ramp_g0, rt.ramp_gf, 0.0,
                           static_cast<double>(rt.ramp_t1_ns - rt.ramp_t0_ns) * kNsToS};
   const std::int64_t span = SecondsToNs(params_.budget_s + 2.0 * constants_.control_dt);
   double worst = 0.0;
-  for (int i = 0; i < kSwitchSamples; ++i) {
-    const std::int64_t t_ns = now_lead.ns + span * i / (kSwitchSamples - 1);
+  const int samples = params_.switch_samples;  // ≥ 2 (the parser)
+  for (int i = 0; i < samples; ++i) {
+    const std::int64_t t_ns = now_lead.ns + span * i / (samples - 1);
     double g = 0.0;
     double gd = 0.0;
     double gdd = 0.0;
@@ -96,6 +97,12 @@ bool PlannerSearch::Configure(const PlannerModel& model, const PlannerConstants&
     return false;
   }
   if (params.wait_pose_n != model.nv) {
+    return false;
+  }
+  // The parser's ranges, for a caller that builds PlannerParams by hand: the
+  // switch bound divides by samples − 1, and a zero damping is no DLS.
+  if (params.switch_samples < 2 || !std::isfinite(params.unit_speed_damping) ||
+      !(params.unit_speed_damping > 0.0)) {
     return false;
   }
   model_ = model;
@@ -452,9 +459,9 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
     // q̇ᵘ at q* and the shared rank-gate core (G3-I: the map's function).
     const double speed = v.norm();
     const Eigen::Vector3d v_hat = v / speed;
-    const UnitSpeedResult us = unit_speed_.Compute(*model_.handle, model_.catch_frame,
-                                                   std::span<const double>(q_star_.data(), nvs),
-                                                   v_hat, std::span<double>(qdot_u_.data(), nvs));
+    const UnitSpeedResult us = unit_speed_.Compute(
+        *model_.handle, model_.catch_frame, std::span<const double>(q_star_.data(), nvs), v_hat,
+        std::span<double>(qdot_u_.data(), nvs), params_.unit_speed_damping);
     if (!us.valid) {
       std::fill(qdot_u_.begin(), qdot_u_.begin() + nv, 0.0);  // → `undetermined`, a rank fail
     }
