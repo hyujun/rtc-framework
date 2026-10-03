@@ -1866,6 +1866,21 @@ def _hold_end_tick(mode: np.ndarray) -> int | None:
     return k_ret
 
 
+def mode_path_verdict(mode: np.ndarray) -> dict:
+    """The trial's mode path over its window (MPC E1-F06, ``catching_decel --success hold``).
+
+    ``hold_verdict``: the HOLD → RETREAT step of :func:`_hold_end_tick` (the
+    tick the controller judged the attempt); ``abort_in_window``: an
+    ``ABORT_SAFE`` tick anywhere in the window. Read over the same window as
+    the truth and judge columns, so every verdict of one trial rests on one
+    window.
+    """
+    return {
+        "hold_verdict": _hold_end_tick(mode) is not None,
+        "abort_in_window": bool(np.any(mode == MODE_ABORT_SAFE)),
+    }
+
+
 def hand_witness_at_verdict(
     mode: np.ndarray,
     hand_stalled_n: np.ndarray | None,
@@ -2712,6 +2727,7 @@ def analyse_session(
         row["stamp_anchor"] = trial.stamp_anchor
         row["t_launch"] = trial.t_launch
         row["t_end"] = trial.t_end  # the last mode_log receipt, same clocks as t_launch
+        row.update(mode_path_verdict(ctx.mode))
         row["stamp_minus_t_rel_s"] = trial.stamp_offset  # ball stamp axis − t_relative_s
         row["truth_file"] = trial.truth_path is not None
         truth = None
