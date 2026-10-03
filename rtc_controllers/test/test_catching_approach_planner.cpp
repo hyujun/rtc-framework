@@ -632,6 +632,71 @@ TEST(ApproachPlanner, EachGateWithholdsOnItsOwn) {
   EXPECT_EQ(first(p, 0).outcome, DecelOutcome::kCatchError);
 }
 
+// MPC MD-91: `catch.rho_v` / `catch.v_rel_allow`, from the YAML to the cores.
+// The slack row sits at the catch node, so the catch cores get it — one more
+// variable and seven more rows each — and the stop cores stay as they were.
+TEST(ApproachPlanner, TheVelocitySlackKeysReachTheCatchCores) {
+  const char* grid =
+      "horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
+      "replan: {k_max: 2}, approach: {n_pre_max: 6, dt_pre_s: 0.1}";
+  const auto params_of = [&](const std::string& catch_keys) {
+    return rtc::catching::ParsePlannerParams(
+               YAML::Load("planner: {decel_mpc: {" + std::string(grid) + catch_keys + "}}"))
+        .decel;
+  };
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig off(arm, params_of(""));
+    Rig on(arm, params_of(", catch: {rho_v: 5.0, v_rel_allow: 0.25}"));
+    ASSERT_TRUE(off.planner.Configured());
+    ASSERT_TRUE(on.planner.Configured());  // every warm-up solved with the row on
+    for (int j = 1; j <= 6; ++j) {
+      EXPECT_EQ(off.planner.ApproachCoreParams(j).rho_v, 0.0) << j;
+      EXPECT_EQ(off.planner.ApproachCoreParams(j).v_rel_allow, 0.0) << j;
+      EXPECT_EQ(on.planner.ApproachCoreParams(j).rho_v, 5.0) << j;
+      EXPECT_EQ(on.planner.ApproachCoreParams(j).v_rel_allow, 0.25) << j;
+      const auto& qp_off = off.planner.ApproachCore(j).MainQp();
+      const auto& qp_on = on.planner.ApproachCore(j).MainQp();
+      EXPECT_EQ(qp_on.n_vars, qp_off.n_vars + 1) << j;
+      EXPECT_EQ(qp_on.n_ineq, qp_off.n_ineq + 7) << j;
+    }
+    for (int k = 0; k <= 2; ++k) {
+      EXPECT_EQ(on.planner.StopCoreParams(k).rho_v, 0.0) << k;
+      EXPECT_EQ(on.planner.Core(k).MainQp().n_vars, off.planner.Core(k).MainQp().n_vars) << k;
+      EXPECT_EQ(on.planner.Core(k).MainQp().n_ineq, off.planner.Core(k).MainQp().n_ineq) << k;
+    }
+  }
+}
+
+// s_v is recorded and never a publish gate (formulation §1.6): no threshold
+// is defined for it. The same catch is published with the row off (s_v 0)
+// and with it on against a bound a 5 m/s ball leaves far behind — the record
+// then carries the worst axis' excess over the bound, as a fraction of it.
+TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig off(arm);
+    const Started s0 = StartPlan(off, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s0.seq, 0U);
+    EXPECT_EQ(off.rec.slack_v, 0.0);
+
+    DecelPlannerParams p = ApproachParams();
+    p.rho_v = 0.05;
+    p.v_rel_allow = 0.1;
+    Rig on(arm, p);
+    const Started s1 = StartPlan(on, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s1.seq, 0U) << Why(on.rec);  // published: the slack withheld nothing
+    EXPECT_EQ(on.rec.outcome, DecelOutcome::kReady);
+    const double excess =
+        (s1.c.v - CatchNodeVel(on.arm, on.out)).cwiseAbs().maxCoeff() / p.v_rel_allow - 1.0;
+    std::printf("[ record ] n = %d: s_v %.3f, FK excess %.3f, |v_rel| %.3f m/s\n",
+                static_cast<int>(arm.model->nv), on.rec.slack_v, excess, on.rec.catch_v_rel);
+    // Far over the bound (the hand cannot move at the ball's 5 m/s) ...
+    ASSERT_GT(excess, 1.0);
+    // ... and the recorded slack is that excess: the row's linear model
+    // against FK at the solution.
+    EXPECT_NEAR(on.rec.slack_v, excess, 0.01 * excess);
+  }
+}
+
 TEST(ApproachPlanner, BetweenNodeSpeedFindsTheInteriorExtremum) {
   // One joint, two 0.1 s intervals. q̈ goes +4 → −4 on the first: q̇ peaks
   // mid-interval at q̇_0 + ½·4·0.05 = 1.0 + 0.1.

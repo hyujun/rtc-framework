@@ -44,7 +44,10 @@
 //    slack (MD-33), the catch-node position error (catch cores), the velocity
 //    extrema between nodes (≤ q̇_max), node N at rest to the core's reference
 //    tolerance (a published segment is the next solve's reference), and the
-//    packed payload passing ValidateDecelNodes.
+//    packed payload passing ValidateDecelNodes. The relative-velocity slack
+//    s_v (`catch.rho_v` > 0) is NOT among them: it is recorded
+//    (DecelRecord::slack_v) and never judged — no threshold is defined for
+//    it, and with γ_ref < 1 it is above 0 by construction.
 //
 // There is no stop-only planner (MD-70): a plan is published only with a
 // first segment that starts before t_c, so Configure refuses n_pre_max < 1.

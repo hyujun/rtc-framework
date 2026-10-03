@@ -345,6 +345,10 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
     mp.w_axis = params.w_axis;
     mp.w_v_par = params.w_v_par;
     mp.w_v_perp = params.w_v_perp;
+    // The relative-velocity slack row lives at the catch node, so only the
+    // catch cores carry it (0 = off: the QP keeps its dimensions).
+    mp.rho_v = params.rho_v;
+    mp.v_rel_allow = params.v_rel_allow;
     // The stop cores' box (MD-64): the stop core that takes over at t_c
     // refuses an initial state outside its own.
     mp.eta_v = consts_.eta_v;

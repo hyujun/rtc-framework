@@ -343,6 +343,11 @@ void DemoCatchingController::DeclareProfileParameters() {
           "decel MPC position weight without a usable covariance [1/m^2]");
   declare("planner.decel_mpc.catch.sigma_ref", decel.sigma_ref,
           "decel MPC w_delta schedule reference, compared with tr Sigma_p [m]");
+  declare("planner.decel_mpc.catch.rho_v", decel.rho_v,
+          "decel MPC relative-velocity slack penalty at the catch node; 0 = no slack row. The "
+          "slack is recorded (planner_events decel_slack_v), never a publish gate");
+  declare("planner.decel_mpc.catch.v_rel_allow", decel.v_rel_allow,
+          "decel MPC per-axis relative velocity the hand absorbs [m/s]; read when rho_v > 0");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,

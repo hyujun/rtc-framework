@@ -50,9 +50,14 @@ inline constexpr std::size_t kPlannerMaxWindowGrid = 8;
 inline constexpr int kMaxDecelReplans = 8;
 
 /// `planner.decel_mpc.*` (MPC plan E1-F03 · E1-F08, MD-24 · MD-31 · MD-33 ·
-/// MD-54 – MD-64). The decel MPC's settings the planner owns; the core's own tuning (jerk
-/// weight, trust region, slack penalty, solver) stays at DecelMpcParams'
-/// defaults, and η_v is `planner.gamma.eta_v` (no second key for one margin).
+/// MD-54 – MD-64, MD-91). The decel MPC's settings the planner owns. Of the
+/// core's own DecelMpcParams these come from YAML: the grid (`horizon.*`,
+/// `approach.n_pre_max` / `dt_pre_s`), `eta_tau`, `m_q`, the catch weights
+/// (`catch.w_axis` / `w_v_par` / `w_v_perp`) and the relative-velocity slack
+/// (`catch.rho_v` / `v_rel_allow`). The rest — jerk weight and scale, w_Δ, the
+/// stop-path weight w_⊥, the torque slack penalty, the trust region, the axis
+/// and rest tolerances, the solver — stays at DecelMpcParams' defaults, and η_v
+/// is `planner.gamma.eta_v` (no second key for one margin).
 struct DecelPlannerParams {
   // There is no `enabled`: the planner solves these segments exactly when
   // `supervisor.decel.mode` is mpc. That needs `planner.enabled` (the binding
@@ -121,6 +126,15 @@ struct DecelPlannerParams {
   double w_max{1e4};
   double w_const{2500.0};
   double sigma_ref{0.03};
+  /// `catch.rho_v` / `catch.v_rel_allow` [m/s] — the relative-velocity slack
+  /// row at the catch node: |v̂_b − v_C| ≤ v_rel_allow·(1 + s_v) per axis,
+  /// penalised by rho_v·s_v. rho_v 0 (the default) builds no slack variable
+  /// and no rows; rho_v > 0 needs v_rel_allow > 0 (the parser refuses the pair
+  /// otherwise). s_v is RECORDED (DecelRecord::slack_v), never a publish
+  /// gate: no threshold is defined for it, and with γ_ref < 1 the cost's own
+  /// optimum sits off the rows, so s_v > 0 is then structural.
+  double rho_v{0.0};
+  double v_rel_allow{0.0};
   /// Whether the profile set `horizon` itself: the code default above is
   /// MD-24's horizon, not MD-54's, and the configure warns when the decel
   /// planner runs on it.

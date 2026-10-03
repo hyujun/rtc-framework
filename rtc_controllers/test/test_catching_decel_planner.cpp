@@ -250,6 +250,97 @@ TEST(DecelParams, RejectsMalformedApproachKeys) {
   }
 }
 
+// MPC MD-91: the relative-velocity slack row's two keys, `catch.rho_v` and
+// `catch.v_rel_allow`. Off by default — the core then builds no slack variable
+// and no rows, so a profile without the keys solves what it solved before.
+TEST(DecelParams, VelocitySlackKeysDefaultOffAndParse) {
+  const DecelPlannerParams d = rtc::catching::PlannerParams{}.decel;
+  EXPECT_EQ(d.rho_v, 0.0);
+  EXPECT_EQ(d.v_rel_allow, 0.0);
+  const auto absent = ParsePlannerParams(YAML::Load("planner: {decel_mpc: {catch: {w_axis: 50}}}"));
+  EXPECT_EQ(absent.decel.rho_v, 0.0);
+  EXPECT_EQ(absent.decel.v_rel_allow, 0.0);
+
+  // Distinct values, so a swapped pair of reads would show.
+  const auto on = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 5.0, v_rel_allow: 0.25}}}"));
+  EXPECT_DOUBLE_EQ(on.decel.rho_v, 5.0);
+  EXPECT_DOUBLE_EQ(on.decel.v_rel_allow, 0.25);
+  // The written zeros (what the shipped profiles carry) are the off state.
+  const auto zeros = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 0.0, v_rel_allow: 0.0}}}"));
+  EXPECT_EQ(zeros.decel.rho_v, 0.0);
+  EXPECT_EQ(zeros.decel.v_rel_allow, 0.0);
+  // A bound without the slack is no contradiction: the bound is not read.
+  const auto bound_only =
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {catch: {v_rel_allow: 0.25}}}"));
+  EXPECT_EQ(bound_only.decel.rho_v, 0.0);
+  EXPECT_DOUBLE_EQ(bound_only.decel.v_rel_allow, 0.25);
+  // Bounded from below only (as the core's own check).
+  const auto large = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 1.0e+9, v_rel_allow: 50.0}}}"));
+  EXPECT_DOUBLE_EQ(large.decel.rho_v, 1e9);
+  EXPECT_DOUBLE_EQ(large.decel.v_rel_allow, 50.0);
+}
+
+// Each rejection names the key the profile has to fix, and for the reason
+// stated — a range row must not pass because the cross check threw (or the
+// reverse), so the other key and the other reason are asserted ABSENT.
+TEST(DecelParams, RejectsAVelocitySlackKeyByName) {
+  const std::string rho = "'planner.decel_mpc.catch.rho_v'";
+  const std::string allow = "'planner.decel_mpc.catch.v_rel_allow'";
+  const std::string range = "must be a finite number >= 0";
+  const std::string cross = "turns the slack on";
+  const auto message = [](const std::string& yaml) -> std::string {
+    try {
+      static_cast<void>(ParsePlannerParams(YAML::Load(yaml)));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const auto has = [](const std::string& text, const std::string& part) {
+    return text.find(part) != std::string::npos;
+  };
+
+  // rho_v out of range — with a valid bound beside it, so only the range can
+  // be what refuses it.
+  for (const char* bad : {"-0.1", ".nan", ".inf", "-.inf"}) {
+    const std::string why = message(std::string("planner: {decel_mpc: {catch: {rho_v: ") + bad +
+                                    ", v_rel_allow: 0.2}}}");
+    ASSERT_FALSE(why.empty()) << "rho_v: " << bad << " was accepted";
+    EXPECT_TRUE(has(why, rho)) << why;
+    EXPECT_TRUE(has(why, range)) << why;
+    EXPECT_FALSE(has(why, allow)) << why;
+  }
+  // v_rel_allow out of range — with the slack OFF, so the cross check cannot
+  // be what refuses it.
+  for (const char* bad : {"-0.01", ".nan", ".inf", "-.inf"}) {
+    const std::string why =
+        message(std::string("planner: {decel_mpc: {catch: {v_rel_allow: ") + bad + "}}}");
+    ASSERT_FALSE(why.empty()) << "v_rel_allow: " << bad << " was accepted";
+    EXPECT_TRUE(has(why, allow)) << why;
+    EXPECT_TRUE(has(why, range)) << why;
+    EXPECT_FALSE(has(why, rho)) << why;
+  }
+  // Not a number at all.
+  EXPECT_TRUE(
+      has(message("planner: {decel_mpc: {catch: {rho_v: soft}}}"), rho + " must be a number"));
+  EXPECT_TRUE(has(message("planner: {decel_mpc: {catch: {v_rel_allow: [0.2]}}}"),
+                  allow + " must be a number"));
+  // The cross constraint: the slack on with no bound to be slack against —
+  // the bound absent, and written as 0. Both keys are named.
+  for (const char* bad : {"planner: {decel_mpc: {catch: {rho_v: 1.0}}}",
+                          "planner: {decel_mpc: {catch: {rho_v: 1.0, v_rel_allow: 0.0}}}"}) {
+    const std::string why = message(bad);
+    ASSERT_FALSE(why.empty()) << bad << " was accepted";
+    EXPECT_TRUE(has(why, rho)) << why;
+    EXPECT_TRUE(has(why, allow)) << why;
+    EXPECT_TRUE(has(why, cross)) << why;
+    EXPECT_FALSE(has(why, range)) << why;
+  }
+}
+
 // ── 2. RT-side admission and the switch rule ────────────────────────────────
 
 DecelPlanSnapshot AdmissibleSegment() {

@@ -57,6 +57,27 @@ double ReadBounded(const YAML::Node& sec, const char* key, const std::string& pa
   return d;
 }
 
+/// A finite number ≥ 0 with no upper bound, or the fallback when absent — for
+/// the keys the consumer itself bounds only from below (a weight or a penalty
+/// whose 0 means "off").
+double ReadNonNegative(const YAML::Node& sec, const char* key, const std::string& path,
+                       double fallback) {
+  const YAML::Node v = sec[key];
+  if (!v) {
+    return fallback;
+  }
+  double d = 0.0;
+  try {
+    d = v.as<double>();
+  } catch (const YAML::Exception&) {
+    Reject(Key(path) + " must be a number, got " + Spelling(v));
+  }
+  if (!std::isfinite(d) || d < 0.0) {
+    Reject(Key(path) + " = " + Spelling(v) + " must be a finite number >= 0");
+  }
+  return d;
+}
+
 /// A DECISION value: absent or `TBD` → NaN (unset, the binding parks);
 /// otherwise a finite number inside [lo, hi].
 double ReadDecision(const YAML::Node& sec, const char* key, const std::string& path, double lo,
@@ -388,6 +409,17 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   d.w_const = ReadBounded(dcatch, "w_const", "decel_mpc.catch.w_const", d.w_const, 1e-6, 1e9);
   d.sigma_ref =
       ReadBounded(dcatch, "sigma_ref", "decel_mpc.catch.sigma_ref", d.sigma_ref, 1e-6, 1.0);
+  // The relative-velocity slack row (0 = off). The core refuses the slack
+  // without a bound to be slack against (Init → kParamsInvalid); here the
+  // profile is told which key to set.
+  d.rho_v = ReadNonNegative(dcatch, "rho_v", "decel_mpc.catch.rho_v", d.rho_v);
+  d.v_rel_allow =
+      ReadNonNegative(dcatch, "v_rel_allow", "decel_mpc.catch.v_rel_allow", d.v_rel_allow);
+  if (d.rho_v > 0.0 && !(d.v_rel_allow > 0.0)) {
+    Reject(Key("decel_mpc.catch.rho_v") + " = " + std::to_string(d.rho_v) +
+           " turns the slack on, which needs " + Key("decel_mpc.catch.v_rel_allow") + " > 0 (got " +
+           std::to_string(d.v_rel_allow) + ")");
+  }
   return out;
 }
 

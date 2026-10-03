@@ -1841,6 +1841,62 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   EXPECT_EQ(node["catching"]["supervisor"]["decel"]["mode"].as<std::string>(), "mpc") << profile;
 }
 
+TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
+  // MPC MD-91: the relative-velocity slack row's keys are WRITTEN in
+  // catching/planner_mpc.yaml — not left to the code default — and both 0:
+  // the row is off, so the shipped solve is the one before the keys existed.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const YAML::Node dcatch = node["catching"]["planner"]["decel_mpc"]["catch"];
+  ASSERT_TRUE(dcatch.IsMap()) << profile;
+  ASSERT_TRUE(dcatch["rho_v"].IsDefined()) << profile << ": catch.rho_v is not written";
+  ASSERT_TRUE(dcatch["v_rel_allow"].IsDefined()) << profile << ": catch.v_rel_allow is not written";
+  const std::string main_path = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                                "/controllers/demo_catching_controller.yaml";
+  const YAML::Node main_planner =
+      YAML::LoadFile(main_path)["demo_catching_controller"]["catching"]["planner"];
+  EXPECT_FALSE(main_planner["decel_mpc"].IsDefined())
+      << profile << ": the decel MPC keys belong to catching/planner_mpc.yaml";
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_EQ(planner.decel.rho_v, 0.0) << profile;
+  EXPECT_EQ(planner.decel.v_rel_allow, 0.0) << profile;
+}
+
+TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
+  // The two keys moved in the composed tree — where a CM override writes —
+  // reach the controller: its read-only mirrors carry the moved values and the
+  // decel planner configures with the slack row on (every catch core is built
+  // and warmed with it). A mirror declared from the field's default would read
+  // 0 here.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  YAML::Node dcatch = node["catching"]["planner"]["decel_mpc"]["catch"];
+  dcatch["rho_v"] = 2.0;
+  dcatch["v_rel_allow"] = 0.3;
+
+  auto node_handle = NodeWithProfile("catching_shipped_v_slack_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.rho_v").as_double(), 2.0)
+      << profile;
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.v_rel_allow").as_double(),
+                   0.3)
+      << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.rho_v, 2.0) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.v_rel_allow, 0.3) << profile;
+  // Read-only, like every other mirror of the profile.
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.catch.rho_v", 0.0))
+                   .successful);
+}
+
 TEST(DemoCatchingWaitPose, WithoutAnArmBoxTheSwitchedInPoseIsRefusedAndTheYamlPoseStands) {
   // S8-I, the fail-closed half. This fixture has no arm model, so the arm has
   // no margined joint box to admit a pose against: `current` must refuse (and
