@@ -482,6 +482,31 @@ TEST(DecelParams, RejectsADesignKeyByName) {
     EXPECT_NE(why.find("planner.decel_mpc.solver.eps_abs'"), std::string::npos) << why;
     EXPECT_NE(why.find("must exceed"), std::string::npos) << why;
   }
+  // Above kDecelRestTol Judge would take a node N the RT's validator refuses
+  // (ValidateDecelNodes), so the tolerance is bounded above, by key name.
+  for (const char* body : {"linearization: {reference_rest_tol: 2.0e-3}",
+                           "linearization: {reference_rest_tol: 1.0}"}) {
+    const std::string why = message(body);
+    ASSERT_FALSE(why.empty()) << body << " was accepted";
+    EXPECT_NE(why.find("planner.decel_mpc.linearization.reference_rest_tol'"), std::string::npos)
+        << why;
+    EXPECT_NE(why.find("kDecelRestTol"), std::string::npos) << why;
+  }
+  EXPECT_TRUE(message("linearization: {reference_rest_tol: 1.0e-3}").empty());
+  // The cross-check message echoes tiny tolerances as written, not as 0.000000.
+  {
+    const std::string why =
+        message("linearization: {reference_rest_tol: 5.0e-7}, solver: {eps_abs: 1.0e-6}");
+    EXPECT_NE(why.find("5.0e-7"), std::string::npos) << why;
+    EXPECT_NE(why.find("1.0e-6"), std::string::npos) << why;
+    EXPECT_EQ(why.find("0.000000"), std::string::npos) << why;
+  }
+  // A default (absent key) is printed in scientific notation, not rounded to 0.
+  {
+    const std::string why = message("solver: {eps_abs: 1.0e-4}");
+    EXPECT_NE(why.find("e-04"), std::string::npos) << why;
+    EXPECT_EQ(why.find("0.000100"), std::string::npos) << why;
+  }
   // A tolerance just above eps_abs is fine.
   EXPECT_TRUE(
       message("linearization: {reference_rest_tol: 1.0e-6}, solver: {eps_abs: 5.0e-7}").empty());

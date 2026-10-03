@@ -208,5 +208,8 @@ demo_catching_controller:
         # [rad/s², arm joint order] torque-derived (derive_accel_limits, eta_tau 0.8), 2026-09-20.
         qdd_max: [9.197629, 9.197629, 9.197629, 9.197629, 9.197629, 9.197629, 9.197629]
         # Whether the box is cleared for the real arm. true parks a real-arm
-        # configuration (sim only); absent or not a bool counts as true.
+        # configuration (sim only); absent or not a bool counts as true. This flag
+        # is a statement about THESE qdd_max values: whoever overrides qdd_max
+        # (sim.yaml, an overlay) must set qdd_provisional with it — a separate
+        # key does not follow the box, it inherits whatever this file says.
         qdd_provisional: true

@@ -47,5 +47,7 @@ demo_catching_controller:
         # Provisional until the sim remeasure.
         eta_jump: 0.25
         # Instants of the followed ramp the switch step bound is taken the worst
-        # over (L3 §4.7), >= 2: the bound divides by samples - 1.
+        # over (L3 §4.7), in [2, 64]: the bound divides by samples - 1, and every
+        # sample is a ramp evaluation on the planner thread per switch check
+        # (kSwitchSamplesMax = 64 caps the cost; a larger value is refused).
         samples: 9

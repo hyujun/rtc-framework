@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -24,6 +26,19 @@ using params_detail::Spelling;
 
 std::string Key(const std::string& path) {
   return "'planner." + path + "'";
+}
+
+/// A number for a message: the YAML text when the key is written (the way the
+/// other range errors echo it), else the default in scientific notation —
+/// `std::to_string` would print 5e-7 as 0.000000.
+std::string Shown(const YAML::Node& sec, const char* key, double value) {
+  const YAML::Node v = sec[key];
+  if (v) {
+    return Spelling(v);
+  }
+  std::ostringstream os;
+  os << std::scientific << std::setprecision(6) << value;
+  return os.str();
 }
 
 /// The section under `parent`, empty when absent; refuses a non-map.
@@ -312,8 +327,10 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   out.switch_eta_jump =
       ReadBounded(sw, "eta_jump", "switch.eta_jump", out.switch_eta_jump, 1e-6, 1.0);
   // The step bound divides by samples − 1: fewer than two instants is no ramp.
-  out.switch_samples = ReadInt(sw, "samples", "switch.samples", out.switch_samples, 2,
-                               std::numeric_limits<int>::max());
+  // And every sample is a ramp evaluation on the planner thread per switch
+  // check, so the count is capped (kSwitchSamplesMax).
+  out.switch_samples =
+      ReadInt(sw, "samples", "switch.samples", out.switch_samples, 2, kSwitchSamplesMax);
 
   const YAML::Node freeze = Section(planner, "freeze", "freeze");
   out.t_freeze = ReadDecision(freeze, "T_freeze", "freeze.T_freeze", 1e-3, 2.0);
@@ -490,9 +507,14 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
                    0.0, true, 3.14159265358979323846, true, "(0, pi)");
   const YAML::Node lin = Section(decel, "linearization", "decel_mpc.linearization");
   d.delta_tr = ReadPositive(lin, "delta_tr", "decel_mpc.linearization.delta_tr", d.delta_tr);
+  // Upper bound: DecelPlanner::Judge takes a solve as published only when node N
+  // rests to reference_rest_tol, and the RT admits a payload only when node N
+  // rests to kDecelRestTol (ValidateDecelNodes). A looser tolerance would let
+  // Judge accept nodes the validator then refuses.
   d.reference_rest_tol =
-      ReadPositive(lin, "reference_rest_tol", "decel_mpc.linearization.reference_rest_tol",
-                   d.reference_rest_tol);
+      ReadInterval(lin, "reference_rest_tol", "decel_mpc.linearization.reference_rest_tol",
+                   d.reference_rest_tol, 0.0, true, kDecelRestTol, false,
+                   "(0, 1e-3] (kDecelRestTol, the bound the RT admits a published node N by)");
   d.ref_speed_fraction =
       ReadInterval(lin, "ref_speed_fraction", "decel_mpc.linearization.ref_speed_fraction",
                    d.ref_speed_fraction, 0.0, true, 1.0, false, "(0, 1]");
@@ -509,8 +531,9 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   // would refuse every warm solve.
   if (!(d.reference_rest_tol > d.solver_eps_abs)) {
     Reject(Key("decel_mpc.linearization.reference_rest_tol") + " = " +
-           std::to_string(d.reference_rest_tol) + " must exceed " +
-           Key("decel_mpc.solver.eps_abs") + " (= " + std::to_string(d.solver_eps_abs) + ")");
+           Shown(lin, "reference_rest_tol", d.reference_rest_tol) + " must exceed " +
+           Key("decel_mpc.solver.eps_abs") + " (= " + Shown(solver, "eps_abs", d.solver_eps_abs) +
+           ")");
   }
   return out;
 }

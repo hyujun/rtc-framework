@@ -428,6 +428,67 @@ def test_the_dls_damping_comes_from_the_profile_key(tmp_path, arm):
     assert _summary(tmp_path)["dls_damping"] == 0.02
 
 
+def _overlay(path: Path, catching: dict, *, node: str = "/**") -> Path:
+    path.write_text(
+        yaml.safe_dump({node: {"ros__parameters": {CONTROLLER: {"catching": catching}}}})
+    )
+    return path
+
+
+def test_an_overlay_replaces_the_box_the_map_reads(tmp_path, arm):
+    """The runtime tree is the controller YAML plus ROS-parameter overrides: an overlay's
+    ``qdd_max`` is the box the map uses, and the applied files are recorded."""
+    argv = _write_run(tmp_path, arm)
+    box = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
+    overlay = _overlay(tmp_path / "ov.yaml", {"robot": {"arm": {"qdd_max": box}}})
+    assert cgm.main(argv) == 0
+    assert _summary(tmp_path)["qdd_box"] == pytest.approx(QDD_BOX)
+    assert _summary(tmp_path)["overlays"] == []
+    assert cgm.main([*argv, "--overlay", str(overlay)]) == 0
+    summary = _summary(tmp_path)
+    assert summary["qdd_box"] == pytest.approx(box)
+    assert summary["overlays"] == [str(overlay)]
+
+
+def test_overlays_apply_in_the_order_given_leaf_by_leaf(tmp_path, arm):
+    argv = _write_run(tmp_path, arm)
+    first = _overlay(
+        tmp_path / "a.yaml",
+        {
+            "robot": {"arm": {"qdd_max": [1.0] * 6}},
+            "planner": {"gamma": {"unit_speed_damping": 0.2}},
+        },
+        node="integrated_rt_controller",
+    )
+    second = _overlay(tmp_path / "b.yaml", {"robot": {"arm": {"qdd_max": [2.0] * 6}}})
+    assert cgm.main([*argv, "--overlay", str(first), "--overlay", str(second)]) == 0
+    summary = _summary(tmp_path)
+    assert summary["qdd_box"] == pytest.approx([2.0] * 6)  # the later file wins ...
+    assert summary["dls_damping"] == 0.2  # ... and the earlier file's other leaves stay
+    assert summary["overlays"] == [str(first), str(second)]
+    assert cgm.main([*argv, "--overlay", str(second), "--overlay", str(first)]) == 0
+    assert _summary(tmp_path)["qdd_box"] == pytest.approx([1.0] * 6)
+
+
+def test_the_shipped_sim_yaml_as_overlay_gives_the_envelope_not_the_shipped_box(tmp_path, arm):
+    sim_yaml = Path(__file__).resolve().parents[2] / "integrated_bringup/config/ur5e_p1b/sim.yaml"
+    doc = yaml.safe_load(sim_yaml.read_text())
+    envelope = doc["/**"]["ros__parameters"][CONTROLLER]["catching"]["robot"]["arm"]["qdd_max"]
+    assert len(envelope) == 6
+    argv = _write_run(tmp_path, arm)
+    assert cgm.main([*argv, "--overlay", str(sim_yaml)]) == 0
+    box = _summary(tmp_path)["qdd_box"]
+    assert box == pytest.approx(envelope)
+    assert box != pytest.approx(QDD_BOX)
+
+
+def test_an_overlay_moves_the_dls_damping(tmp_path, arm):
+    argv = _write_run(tmp_path, arm)
+    overlay = _overlay(tmp_path / "ov.yaml", {"planner": {"gamma": {"unit_speed_damping": 0.07}}})
+    assert cgm.main([*argv, "--overlay", str(overlay)]) == 0
+    assert _summary(tmp_path)["dls_damping"] == 0.07
+
+
 @pytest.mark.parametrize("bad", [0.0, -1.0e-3, float("nan")])
 def test_a_bad_profile_damping_is_refused_naming_the_key(tmp_path, bad):
     path = tmp_path / "c.yaml"

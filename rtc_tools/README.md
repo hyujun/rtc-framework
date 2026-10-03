@@ -842,11 +842,15 @@ ros2 run rtc_tools catch_speed_budget \
   `rtc_controllers` `UnitSpeedSolver` 이고, 두 식의 일치는 `PlannerUnitSpeed` 테스트가 고정한다 — G3-I) 와 그것이
   내는 속도 `J_p q̇ᵘ`. `reference.v_max` 는 `--v-max-m-s derived` 면 수락 후보의 LP v_dir,max 최대 / η_v
   (S4.4 결정: TCP 항은 관절 정격 안에서 구속하지 않는다)
-- **DLS 단위속도의 감쇠 λ 는 C++ 와 같은 키에서 온다** (MPC MD-92): `--dls-damping` 의 기본은 `--controller-config` 의 `catching.planner.gamma.unit_speed_damping` (런타임 탐색이 `kUnitSpeedDamping` 대신 읽는 키 — 출하 1e-3) 이고, 키가 없으면 C++ 기본과 같은 `catch_speed_budget.DEFAULT_DLS_DAMPING` 이다. 쓴 값은 `gate_map_summary.yaml` 의 `dls_damping` 에 남는다. 인자를 주면 profile 을 덮는다. (`catch_speed_budget` 은 profile 입력이 없어 상수를 그대로 쓰고, 그 상수가 출하 YAML 값과 같다는 테스트 `integrated_bringup/test/test_shipped_catching_config.py` 가 둘의 어긋남을 막는다.)
+- **DLS 단위속도의 감쇠 λ 는 C++ 와 같은 키에서 온다** (MPC MD-92): `--dls-damping` 의 기본은 `--controller-config` 의 `catching.planner.gamma.unit_speed_damping` (런타임 탐색이 `kUnitSpeedDamping` 대신 읽는 키 — 출하 1e-3) 이고, 키가 없으면 C++ 기본과 같은 `catch_speed_budget.DEFAULT_DLS_DAMPING` 이다. 쓴 값은 `gate_map_summary.yaml` 의 `dls_damping` 에 남는다. 인자를 주면 profile 을 덮는다. `--overlay` 가 있으면 그것을 얹은 트리에서 읽는다 (아래). (`catch_speed_budget` 은 profile 입력이 없어 상수를 그대로 쓰고, 그 상수가 출하 YAML 값과 같다는 테스트 `integrated_bringup/test/test_shipped_catching_config.py` 가 둘의 어긋남을 막는다.)
 - **python 이 거는 경계**: p_stop 이 도달 구·바닥 안인가 (`planner.workspace.catch_box` 가 TBD 라 지도와
   같은 경계를 쓴다)
 - **도달시간은 두 층**을 항상 같이 낸다. `box` = 컨트롤러 YAML 의 가속 box (`catching.robot.arm.qdd_max` — `--controller-config`, 기본은 `--robot-config` 옆 `controllers/<--controller>.yaml`, `include:` 조각 합성) 로 C++ 가
-  판정. `torque` = **그 이동**이 토크 한계 안에 드는가 — 전 관절이 하나의 bang-bang/사다리꼴 경로
+  판정. **런타임 트리는 controller YAML + ROS 파라미터 override** 라서 (예: `ur5e_p1b/sim.yaml` 은 `qdd_max` 를 sim envelope 로 덮고
+  `sim_overlays/*.yaml` 은 무엇이든 덮는다) 지도의 box·λ 는 **런타임과 같은 파일을 `--overlay <파일>` (반복 가능, 준 순서대로 leaf 단위로 얹음)
+  으로 줄 때에만** 같다 — 안 주면 출하 값의 지도다. 형태는 `sim.yaml` (`/**: ros__parameters: <controller>: catching: ...`) · `sim_overlays/*.yaml` ·
+  `catching_arm_budget --write-envelope-box` 조각 모두 받는다 (합성 helper 는 `rtc_tools.utils.controller_config.overlay_catching`/`deep_merge`,
+  `catching_arm_budget` 과 공용). 적용한 파일은 `gate_map_summary.yaml` 의 `overlays` 에 남는다. `torque` = **그 이동**이 토크 한계 안에 드는가 — 전 관절이 하나의 bang-bang/사다리꼴 경로
   프로파일을 따라 대기 자세 → q\* 로 가고, 경로 전체에서 |M q̈ + h| ≤ η_τ τ_max (회전자 관성 포함) 인
   최대 경로 가속을 이분 탐색한다. 충분조건이고 런타임 대응물이 아직 없어 **provisional** 이다 (D-16 개정)
 - **대기 자세는 하나다.** 지도가 여러 seed 로 판정됐으면 `--seed-id` 가 필수다 (합집합은 과대평가).
@@ -860,7 +864,8 @@ ros2 run rtc_tools catch_speed_budget \
 ros2 run rtc_tools catch_gate_map \
   --robot-config <config>/<robot>/_base.yaml --group <arm_group> \
   --map-dir <catchability_map out-dir> --out-dir <out> --velocity-source model \
-  --controller-config <config>/<robot>/controllers/demo_catching_controller.yaml --eta-v 0.9 --eta-tau 0.8 \
+  --controller-config <config>/<robot>/controllers/demo_catching_controller.yaml \
+  --overlay <config>/<robot>/sim.yaml --eta-v 0.9 --eta-tau 0.8 \
   --rotor-inertia '0.1 0.1 0.1 0.1 0.1 0.1' --rotor-inertia-source '<mjcf>:<line> armature' \
   --v-max-m-s derived --d-eff-m 0.095 --d-eff-source 'planner.hand.d_eff' \
   --close-total-s 0.2815 --gamma-margin-m-s 0.1 \
@@ -876,7 +881,7 @@ ros2 run rtc_tools catch_gate_map \
 (`open_candidates` — `catchability_map` 요약과 같은 n/min/p05/…/median/…/max/mean, S3.6 지평 요구의 입력;
 층이 아무것도 열지 않으면 `null`), 대기 자세 제안). FK(q\*) 가 `p_model` 과 어긋나면 보고하지 않고 종료한다 (`catch_speed_budget` 와 같은 검사).
 
-- 테스트 `test/test_catch_gate_map.py` (22 케이스): 경로 프로파일, 토크 도달시간의 단일 관절 닫힌해
+- 테스트 `test/test_catch_gate_map.py` (26 케이스): 경로 프로파일, 토크 도달시간의 단일 관절 닫힌해
   (삼각·사다리꼴), **움직이는 관절의 한계만** 결과를 바꾸는지, 회전자 관성, 찾은 이동의 RNEA 재검사와
   더 빠른 이동의 위반, 중력만으로 한계 초과 시 NaN, 층별 사유의 순서, 전체 격자 분모, 열린 후보 통계
   (열린 행만·투척별 창·비유한값 제외), 그리고 **실제

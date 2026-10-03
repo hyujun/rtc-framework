@@ -64,6 +64,10 @@ import numpy as np
 import yaml
 
 from rtc_tools.analysis import catching_trials as ct
+from rtc_tools.utils.controller_config import (
+    deep_merge as _deep_merge,
+    overlay_catching as _overlay_catching,
+)
 
 TOOL = "catching_arm_budget"
 ACTIVE_MODES = (ct.MODE_APPROACH, ct.MODE_COMMITTED, ct.MODE_CLOSING)
@@ -175,33 +179,6 @@ def _device_limits(config_dir: Path, device: str) -> tuple[dict, dict]:
             limits[key] = value
             source[key] = name
     return limits, source
-
-
-def _deep_merge(base: Mapping, over: Mapping) -> dict:
-    out = dict(base)
-    for k, v in over.items():
-        out[k] = (
-            _deep_merge(out[k], v)
-            if isinstance(v, Mapping) and isinstance(out.get(k), Mapping)
-            else v
-        )
-    return out
-
-
-def _overlay_catching(path: Path, controller: str) -> dict:
-    """The ``catching`` subtree a node-level YAML writes for ``controller`` ({} if none).
-
-    Serves both a ``sim_overlays/*.yaml`` and the robot config's ``sim.yaml``:
-    the launch feeds both to the RT node, which lays ``<controller>.catching``
-    over the controller YAML (``ApplyControllerParamOverrides``).
-    """
-    doc = ct._load_yaml(path)
-    for node in doc.values():
-        params = (node or {}).get("ros__parameters") or {}
-        tree = params.get(controller)
-        if isinstance(tree, Mapping) and "catching" in tree:
-            return dict(tree["catching"])
-    return {}
 
 
 def _box_from_keys(value: object) -> list[float]:
@@ -710,9 +687,7 @@ def analyse_unit(
 
 
 # ── Envelope box override ────────────────────────────────────────────────────
-def envelope_box_override(
-    units: Sequence[dict], controller: str, *, percentile: float = ENVELOPE_PERCENTILE
-) -> dict:
+def envelope_box_override(units: Sequence[dict], controller: str) -> dict:
     """A sim override tree whose box is the pooled executed envelope.
 
     Pooled = the per-joint MAX over units of the per-unit p95 (a unit that

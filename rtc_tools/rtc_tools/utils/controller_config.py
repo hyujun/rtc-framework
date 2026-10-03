@@ -252,3 +252,33 @@ def controller_config_leaf_lines(tree: Mapping) -> list[str]:
     for key, value in tree.items():
         _append_leaf_lines(value, str(key), lines)
     return lines
+
+
+def deep_merge(base: Mapping, over: Mapping) -> dict:
+    """``over`` laid onto ``base`` leaf by leaf (a map merges, anything else replaces)."""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = (
+            deep_merge(out[k], v)
+            if isinstance(v, Mapping) and isinstance(out.get(k), Mapping)
+            else v
+        )
+    return out
+
+
+def overlay_catching(path: Path, controller: str) -> dict:
+    """The ``catching`` subtree a node-level YAML writes for ``controller`` ({} if none).
+
+    Serves a ``sim_overlays/*.yaml``, the robot config's ``sim.yaml`` and the snippet
+    ``catching_arm_budget --write-envelope-box`` writes: the launch feeds them to the RT
+    node, which lays ``<controller>.catching`` over the controller YAML
+    (``ApplyControllerParamOverrides``). Offline tools that must see the tree the runtime
+    sees compose it with this and ``deep_merge``.
+    """
+    doc = yaml.safe_load(Path(path).read_text()) or {}
+    for node in doc.values():
+        params = (node or {}).get("ros__parameters") or {}
+        tree = params.get(controller)
+        if isinstance(tree, Mapping) and "catching" in tree:
+            return dict(tree["catching"])
+    return {}

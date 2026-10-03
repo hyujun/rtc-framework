@@ -46,6 +46,11 @@ inline constexpr int kPlannerMaxIkCapacity = 40;
 inline constexpr std::size_t kPlannerMaxGammaGrid = 16;
 inline constexpr std::size_t kPlannerMaxWindowGrid = 8;
 
+/// Upper bound of `planner.switch.samples`. `SwitchStep` evaluates the followed
+/// ramp once per sample on the planner thread for every switch check, so the
+/// count is a cost on the cycle budget, not only a resolution (default 9).
+inline constexpr int kSwitchSamplesMax = 64;
+
 /// Capacity of the decel planner's replan window: instances k = 0..k_max, one
 /// DecelMpc each (MD-31). A capacity, not a default (the default k_max is 4).
 inline constexpr int kMaxDecelReplans = 8;
@@ -293,7 +298,7 @@ struct PlannerParams {
   /// distance limits `e_jump_max` / `ed_jump_max`, which the parser refuses).
   double switch_delta_j{0.1};
   double switch_eta_jump{0.25};
-  /// `planner.switch.samples` ≥ 2 — instants of the followed ramp the §4.7
+  /// `planner.switch.samples` in [2, kSwitchSamplesMax] — instants of the followed ramp the §4.7
   /// step bound is taken the worst over (the code divides by samples − 1).
   int switch_samples{9};
   /// `planner.freeze.T_freeze` [s] (decision G). NaN = unset.

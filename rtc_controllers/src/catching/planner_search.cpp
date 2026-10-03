@@ -101,8 +101,8 @@ bool PlannerSearch::Configure(const PlannerModel& model, const PlannerConstants&
   }
   // The parser's ranges, for a caller that builds PlannerParams by hand: the
   // switch bound divides by samples − 1, and a zero damping is no DLS.
-  if (params.switch_samples < 2 || !std::isfinite(params.unit_speed_damping) ||
-      !(params.unit_speed_damping > 0.0)) {
+  if (params.switch_samples < 2 || params.switch_samples > kSwitchSamplesMax ||
+      !std::isfinite(params.unit_speed_damping) || !(params.unit_speed_damping > 0.0)) {
     return false;
   }
   model_ = model;
