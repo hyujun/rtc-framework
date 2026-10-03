@@ -889,7 +889,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_r
 >
 > ball_perception 의 `sim_estimator_node` 를 이 씬에 붙일 때의 profile 은 ball_perception 저장소가 소유하는
 > `ball_perception_sim/config/sim_profile.catching.json` 이다 (두 로봇 공용). 이 저장소는 사본을 두지 않는다 — 추정기는 vision PC,
-> 컨트롤러는 제어 PC 에서 돌아 서로의 파일을 읽지 못한다 ([MPC_DUALARM_PLAN.md](../docs/dynamic_catching/MPC_DUALARM_PLAN.md) MD-18).
+> 컨트롤러는 제어 PC 에서 돌아 서로의 파일을 읽지 못한다 (MD-18 — [ID_INDEX.md](../docs/dynamic_catching/ID_INDEX.md)).
 > 무엇을 고정하는지는 그 저장소의 `ball_perception_sim` README 가 갖는다:
 > `ros2 launch ball_perception_sim sim_estimator.launch.py profile_path:=$(ros2 pkg prefix ball_perception_sim)/share/ball_perception_sim/config/sim_profile.catching.json producer_revision:=<rtc-framework 커밋>`.
 > `ball_perception_sim` 은 이 workspace 가 아니라 ball_perception 의 별도 colcon workspace 에 있으므로 그 `install/setup.bash` 를 추가로 source 해야 하고, `producer_revision` 은 필수 인자다 (출력 provenance).
