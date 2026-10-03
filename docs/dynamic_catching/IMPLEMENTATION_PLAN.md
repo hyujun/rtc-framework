@@ -1245,7 +1245,7 @@ urdf:
     - `iiwa7_leap` 에는 이 항이 없다 (4.5e-16 m) — 두 로봇의 sim 포구 정확도 차이를 **로봇 차이로 읽지 않는다**
 - **재현 방법**: 두 엔진을 직접 링크한 프로그램으로 관절 축선(`mjData::xanchor`/`xaxis` vs `Data::oMi`)을 비교한다. pinocchio 4.x 는 `-DNDEBUG` 와 `BOOST_MPL_LIMIT_{LIST,VECTOR}_SIZE=30` 없이는 컴파일되지 않는다 (repo 안에서는 `pinocchio::pinocchio` 타깃이 넣어 준다)
 
-**YAML.** `planner.catchability` 는 출하 키다 (두 로봇의 `controllers/demo_catching_controller.yaml`). `sim.throw_region` 은 제안 스키마로 남았다 (아래 ⚠️).
+**YAML.** `planner.catchability` 는 출하 키다 (두 로봇의 `controllers/catching/search_grid.yaml`). `sim.throw_region` 은 제안 스키마로 남았다 (아래 ⚠️).
 
 ```yaml
 planner:

@@ -51,7 +51,9 @@ constexpr std::string_view kUsage =
                         Accepted shapes: a top-level `catching:` map; a shipped
                         controller config (`<controller>: {catching: ...}`); or
                         the tree itself (top-level `planner:`). Anything else
-                        is an error, never a silent default.
+                        is an error, never a silent default. A config split
+                        with `include:` is not composed here: pass the fragment
+                        that holds planner.ik / planner.catchability.
   --print-options       print the options --params resolves to (and where in
                         the file the tree was found) and exit; needs no model
   --candidates PATH     candidate CSV: id[,seed_id],p_c_x,p_c_y,p_c_z,v_x,v_y,v_z

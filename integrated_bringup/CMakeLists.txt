@@ -1584,6 +1584,15 @@ if(BUILD_TESTING)
   # S8-B catch_lead_* overlays: a controller key one level off is created,
   # never read, and the run is silently the shipped profile.
   ament_add_pytest_test(test_catch_lead_overlays test/test_catch_lead_overlays.py)
+  # The catching config in four files (MPC plan MD-90): which key lives where,
+  # and the Python loader against the CM's — the dump is the CM's loader as a
+  # command the pytest can run.
+  add_executable(controller_config_dump test/controller_config_dump.cpp)
+  ament_target_dependencies(controller_config_dump rtc_controller_manager)
+  target_link_libraries(controller_config_dump yaml-cpp)
+  ament_add_pytest_test(test_shipped_catching_config
+    test/test_shipped_catching_config.py
+    ENV RTC_CONTROLLER_CONFIG_DUMP=$<TARGET_FILE:controller_config_dump>)
   ament_add_pytest_test(test_catching_sim_trials test/test_catching_sim_trials.py)
   ament_add_pytest_test(test_catching_sim_trials_s8 test/test_catching_sim_trials_s8.py)
   ament_add_pytest_test(test_catching_sim_trials_s8f test/test_catching_sim_trials_s8f.py)

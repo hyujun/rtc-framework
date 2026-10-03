@@ -1,0 +1,68 @@
+# demo_catching_controller — the closed_form planner law (ur5e_p1b)
+#
+# A fragment of ../demo_catching_controller.yaml (its `include:` list). The CM
+# merges it into that file's tree; every key keeps its full path.
+#
+# v1's law: the L4 soft-catch reference the arm follows up to t_c, the constant
+# deceleration after it (L7 DECEL), and the rule for switching to a better
+# catch point mid-flight. Followed when `supervisor.decel.mode: closed_form`
+# (the main file).
+#
+# Not all of it is closed_form-only:
+#   reference.*, supervisor.decel.a_dec  read under mpc as well — the search
+#       ranks its candidates by this law's rollout (MPC plan MD-46)
+#   planner.switch.*                     closed_form only — under mpc the
+#       search is skipped while a plan is followed (MD-57)
+demo_catching_controller:
+  catching:
+    # ── The L4 soft-catch reference (L4 §6, S5.3 consumes all four) ──────────
+    # `provisional: true` covers the BLOCK, which is the honest state: `v_max`
+    # is decided and `a_max` is not, and one TBD in a consumed key refuses the
+    # configure in sim — which, because CM latches `bring_up_failed` on ANY
+    # controller's configure failure, takes every other controller on the robot
+    # down with it. That is what the shipped p1b sim did on 2026-09-22 before
+    # this block existed. The provisional rule says the right thing instead:
+    # warn in sim, block a real arm (L0 §5.3).
+    reference:
+      provisional: true
+      # rad/s. L5/L4 §6 default; omega*h = 0.02 << 0.828, so the discretisation
+      # gate is nowhere near its bound at 500 Hz.
+      omega: 10.0
+      # v1 requires exactly critically damped — the planner's closed-form
+      # terminal error assumes it (L4 §4.7).
+      zeta: 1.0
+      # m/s. NOT provisional in itself: L4 §6 records this as DERIVED and
+      # confirmed 2026-09-22 — the max LP v_dir,max over accepted catch
+      # candidates at the joint ratings, times eta_v = 0.9. S10 may only LOWER
+      # it once the real controller's TCP limit is identified.
+      v_max: 3.5
+      # m/s^2. Still provisional (the real arm's value is S10's). S4.4 measured
+      # torque-limited acceleration along v_hat at the catch pose as median 43,
+      # and 21-23 under a 10x rotor-inertia assumption; 21 shipped as the
+      # conservative end. dynamic_catching S8-G (2026-09-27, #537 5847236227,
+      # plan §4.4 S8-G) measured 21 against 30 on the sim plant at omega 10:
+      # 21 saturated the reference on 18-25 % of the active ticks and aborted
+      # 7-12 of 56 hand-near throws (REF_SATURATED), 30 saturated 1 % and
+      # aborted none, at the same catch rate (10 vs 11) and torque p99 0.70.
+      # Stays above `supervisor.decel.a_dec` = 10, which the validator requires.
+      # omega stays 10: 15 and 20 halve the reference's own residual but follow
+      # the live prediction's noise and lose 3/4 of the catches.
+      a_max: 30.0
+
+    # ── Deceleration (L7 §6 `supervisor.decel.a_dec`, single-source key) ──────
+    # The constant deceleration of the closed_form DECEL target (L7 §4.3) and
+    # of the stopping point the search reserves behind each candidate (L3 §4.9).
+    # 10 m/s^2 is the value the S3.5b gate map ran with, confirmed 2026-09-22
+    # (plan §7.3). The validator requires a_dec <= reference.a_max.
+    supervisor:
+      decel:
+        a_dec: 10.0
+
+    planner:
+      switch:
+        delta_J: 0.1
+        # A switch may step u_des by at most eta_jump * reference.a_max (L3 §4.7,
+        # decision 6 2026-09-23 — replaced e_jump_max/ed_jump_max, whose 10 mm
+        # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= eta_jump*a_max/omega^2 = 0.25*30/100 = 75 mm (was 52 mm at a_max 21, S8-G).
+        # Provisional until the sim remeasure.
+        eta_jump: 0.25

@@ -67,6 +67,7 @@ from rtc_tools.analysis.catching_trials import (
     load_trials,
     urdf_robot_links,
 )
+from rtc_tools.utils.controller_config import load_controller_config
 
 HERE = Path(__file__).resolve().parent
 MARGIN_S = 0.1  # > the analysis window margin (0.05 s)
@@ -139,7 +140,9 @@ def _config(config_dir: Path, controller: str, out: Path) -> None:
     (out / "_base.yaml").write_text(
         f"{header}_base.yaml\n" + yaml.safe_dump(base_min, sort_keys=False)
     )
-    ctl_doc = yaml.safe_load((config_dir / "controllers" / f"{controller}.yaml").read_text())
+    ctl_doc = load_controller_config(
+        config_dir / "controllers" / f"{controller}.yaml", config_key=controller
+    )
     node = ctl_doc[controller]
     io = node["catching"]["io"]
     ctl_min = {

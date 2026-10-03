@@ -19,14 +19,15 @@ from integrated_bringup.catching_sim_trials import (
     load_arm_profile,
     trial_throws,
 )
+from rtc_tools.utils.controller_config import load_controller_config
 
 CONFIG = os.path.join(os.path.dirname(__file__), "..", "config")
 
 
 def shipped_wait_pose(profile):
     path = os.path.join(CONFIG, profile, "controllers", "demo_catching_controller.yaml")
-    with open(path) as f:
-        return yaml.safe_load(f)["demo_catching_controller"]["catching"]["planner"]["wait_pose"]
+    doc = load_controller_config(path, config_key="demo_catching_controller")
+    return doc["demo_catching_controller"]["catching"]["planner"]["wait_pose"]
 
 
 @pytest.mark.parametrize(

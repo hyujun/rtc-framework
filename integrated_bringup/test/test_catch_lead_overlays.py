@@ -29,6 +29,8 @@ import os
 import pytest
 import yaml
 
+from rtc_tools.utils.controller_config import load_controller_config
+
 CONFIG_ROOT = os.path.join(os.path.dirname(__file__), "..", "config")
 CONFIG_DIR = os.path.join(CONFIG_ROOT, "ur5e_p1b")
 SHIPPED = os.path.join(CONFIG_DIR, "controllers", "demo_catching_controller.yaml")
@@ -66,6 +68,11 @@ RATE_FILE = {"ur5e_p1b": "_base.yaml", LEAP: "sim.yaml"}
 def _load(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _shipped_tree(path: str) -> dict:
+    """The shipped controller tree as the CM composes it (main file + ``include:`` fragments)."""
+    return load_controller_config(path, config_key=CONTROLLER)[CONTROLLER]
 
 
 def _controller_tree(overlay: dict) -> dict:
@@ -125,7 +132,7 @@ def _arm(name: str) -> dict:
 
 @pytest.fixture(scope="module")
 def shipped() -> dict:
-    return _load(SHIPPED)[CONTROLLER]
+    return _shipped_tree(SHIPPED)
 
 
 @pytest.fixture(scope="module")
@@ -135,9 +142,9 @@ def arms() -> dict[str, dict]:
 
 @pytest.fixture(scope="module")
 def leap_shipped() -> dict:
-    return _load(os.path.join(CONFIG_ROOT, LEAP, "controllers", "demo_catching_controller.yaml"))[
-        CONTROLLER
-    ]
+    return _shipped_tree(
+        os.path.join(CONFIG_ROOT, LEAP, "controllers", "demo_catching_controller.yaml")
+    )
 
 
 LEAP_SCENE = "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"

@@ -1,0 +1,170 @@
+# demo_catching_controller — the catch-point search (ur5e_p1b)
+#
+# A fragment of ../demo_catching_controller.yaml (its `include:` list). The CM
+# merges it into that file's tree; every key keeps its full path.
+#
+# The grid search the planner thread runs each cycle (L3 §4): which prediction
+# samples become candidates, the gates and the score that rank them, the
+# catch-pose IK with its catchability gate, and the hand allowance the gamma
+# window is built from. It runs under both planner laws.
+#
+# What the search reads from the other files:
+#   ../demo_catching_controller.yaml  planner.{enabled, wake_timeout_s,
+#       wait_pose, wait_pose_source, sub_model, provisional},
+#       planner.freeze.T_freeze, robot.arm.* (the acceleration box)
+#   planner_closed_form.yaml          reference.*, supervisor.decel.a_dec — it
+#       ranks candidates by that law's rollout, under mpc too (MPC plan MD-46)
+demo_catching_controller:
+  catching:
+    planner:
+      # ── Search (L3 §4, S6-B) ──────────────────────────────────────────────
+      # One cycle's compute budget (R-2, 2026-09-23): per-candidate IK measured
+      # p50 1.8 ms on this 6-axis arm (dev PC), so 20 ms with a pre-filter to at
+      # most 8 IK candidates per cycle.
+      budget_s: 0.020
+      # IK candidates per cycle after the pre-filter (R-2: one IK ≈ 2–3 ms on the
+      # development PC, so 8 fit budget_s with room; the cycle can overrun the
+      # budget by at most one IK — the budget is checked BEFORE each solve).
+      max_ik: 8
+      # Snapshots to skip after a track change (L3 §4.4).
+      n_settle: 3
+      slice:
+        # = the vision spacing (prediction.dt_expected): candidates are the
+        # vision samples themselves, so the covariance needs no interpolation.
+        dt: 0.05
+        # vision horizon 1.0 s − prediction.t_horizon_margin 0.05 s.
+        t_max: 0.95
+        # t_lead_min defaults to freeze.T_freeze (decided 2026-09-23).
+      time:
+        margin: 0.03
+      unc:
+        kappa_sigma: 0.3
+      gamma:
+        eta_v: 0.9
+        margin: 0.1
+        # The γ rollout (L3 §4.8, S6-C): γ_f and T_w candidates, the demanded-
+        # acceleration margin η_a against reference.a_max, and the terminal
+        # error the reference must reach by t_c. L3 §6 defaults.
+        grid: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        window_grid: [0.3, 0.45, 0.6]
+        eta_a: 0.8
+        eps_term: 0.002
+      rollout:
+        # Coarse-to-fine: every (γ_f, T_w) is screened at this step, only the
+        # winner re-run at the control period (invented key — §4.8 left the
+        # method to S6.3).
+        dt_coarse: 0.01
+      budget:
+        n_sigma: 2.0
+        # 0 until measured (S10) — they only RANK candidates (decision 2026-09-23).
+        sigma_trk: 0.0
+        clock_err: 0.0
+      score:
+        # L3 §6 defaults; `penalty` is per failed RANK gate (decision D) and must
+        # dominate the continuous terms. Tuning is S6-C/S8.
+        w_sigma: 1.0
+        w_t: 1.0
+        w_q: 0.1
+        w_late: 0.0
+        w_gamma: 5.0
+        penalty: 10.0
+      workspace:
+        # Decision I (2026-09-23), model world frame (= this robot's base): the box
+        # around the S3.5b fine grid's gate-open candidates — their p_c and their
+        # stopping points at both ends of the γ window, 967 candidates, recomputed
+        # 2026-09-23 with the shipped wait pose — plus 0.1 m. A JUDGEMENT gate:
+        # p_c and p_stop must both lie inside. Provisional.
+        catch_box:
+          min: [0.19, -0.30, 0.21]
+          max: [1.04, 0.31, 0.96]
+      # ── Hand allowance (L3 §6 `planner.hand.*`, TBD-HAND-04) ─────────────────
+      # STALE COMMENT FIXED (docs correction, S7 commit 1): as of S6,
+      # `ParsePlannerParams` DOES read both keys into `PlannerParams::d_eff` /
+      # `r_cap` (rtc_controllers/include/rtc_controllers/catching/
+      # planner_params.hpp) and `lifecycle.cpp` requires both finite before the
+      # controller can configure. `ParseCatchingParams` still keeps
+      # `planner.hand.*` out of the generic L0 §5.3 macro-list validation (see
+      # the header of catching_params.hpp) — that is a different, narrower
+      # scope check, not "nothing reads these". Consumers: the L3 planner's
+      # gamma window (`rank_gates.hpp`) and the §4.6 budget gate. Recorded here
+      # because G6-F asks for the derivation and the value to live together
+      # with the profile they were derived from.
+      #
+      # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, plan §7.3). The L3 §4.5
+      # gamma window only ever uses d_eff / T_close,tot — the relative speed the
+      # hand can absorb — so the key holds that speed times T_close,tot:
+      #   d_eff 0.2815 m = 1.0 m/s x (T_close_e2e 0.2805 + h/2 0.001) s.
+      #                    1.0 m/s is the time-triggered fly-in figure (L6 §4.5,
+      #                    S4.4): closure fired at t_c - T_close_e2e, ball centred
+      #                    on the catch point, 7/9 held at 1.0 m/s, 5/9 at 1.5.
+      # With the pocket depth below instead (0.34 m/s) the S3.5b gate map of this
+      # robot is empty for every wait pose; everything that opens stands on the
+      # fly-in figure. Valid only under that same time-triggered closure rule,
+      # and measured with the hand frame at constant velocity — provisional.
+      #
+      # MEASURED, S4.5 (2026-09-21), with the searched postures (`robot.hand`, the main file) and the
+      # shipped 67 mm ball: ball PLACED on the preshape palm on a 5 mm lateral
+      # grid, step to q_close, shake along +-g on each catch-frame axis.
+      # 445 placements, 214 held.
+      #   r_cap 0.024 m = lateral inscribed radius of that capture region (best
+      #                   catch point (+0.015, +0.145, 0.052) in the catch frame).
+      #   pocket depth 0.095 m = approach-axis span still caught at that point,
+      #                   from resting on the palm (z 0.052) upward. SCAN-LIMITED:
+      #                   the scan stopped at +0.095 with the ball still held, so
+      #                   this is a lower bound. A contact quantity (L6 §4.5,
+      #                   MASTER TBD-HAND-04) — it is NOT this file's d_eff.
+      # Both are ball-CENTRE quantities (the radius is already inside them) and
+      # both are derived FOR core.ball (the main file).
+      # Position-triggered closure (fired as the ball crosses the fingertip plane)
+      # held 9/130 at 0.25 m/s and none at 1 m/s — that was the trigger rule's
+      # bias for a slow-closing hand, not the hand's limit (L6 §4.5).
+      # With the two user-posed pairs this block was TBD: 0 held of 851.
+      hand:
+        d_eff: 0.2815
+        r_cap: 0.024
+
+      # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
+      # Read at configure by `ParseCatchPoseIkParams` (rtc_controllers) — the
+      # same parser the offline catchability map drives — and handed to the
+      # planner thread's search (S6-B, `ConfigureSearch`), so the map and the
+      # runtime solve alike. Recorded here because G6-F asks the derivation and
+      # the value to live together.
+      #
+      # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1418 throws
+      # accepted from the best single wait pose (reproduced by running the map
+      # tool with THIS file as --params),
+      # T_f >= 1.0 s. Details and the rejected alternatives: plan §11.
+      ik:
+        # k_manip > 0 is NOT optional. It enables the D-25 null-space log w5
+        # ascent, and without it (the in-code default 0) the 5-row task leaves
+        # the arm wherever the seed put it: w5 came out 0.06-0.09 at plausible
+        # wait poses, i.e. BELOW the gate, so every candidate in the map was
+        # rejected as below_manip_min. With the ascent on, w5 reaches
+        # 0.100-0.208 (median 0.147) and the gate is passable. A config that carries the
+        # threshold but leaves this at 0 rejects everything at runtime.
+        k_manip: 0.5
+        # 20 (the L3 default) was not enough to let the ascent settle; 40 left
+        # 758 candidates `not_converged`, which is confounded with
+        # genuinely unreachable points and is a follow-up sweep, not a bound.
+        max_iter: 40
+      catchability:
+        # 5-row, per plan §11: the 6-row definition would need a threshold ~30x
+        # smaller (w6 bottoms out at 0.0035 over the SAME accepted set) and it
+        # collapses at the wrist singularities of a 6-axis arm, which are fine
+        # poses for catching. w6 is recorded per candidate either way (C-3).
+        definition: "arm_5row"
+        manipulability_min:
+          # ROBOT-SPECIFIC ON PURPOSE (user decision 2026-09-21). w5 =
+          # sqrt(det(J5 J5^T)) scales with the arm's link lengths, so one number
+          # means different strictness on different arms: the shipped 0.1 sat at
+          # roughly the 40th percentile of the 6-axis arm's task-feasible w5 but
+          # only ~the 10th of the 7-axis arm's, i.e. the two arms were being held
+          # to different standards and the map's coverage comparison was not
+          # like-for-like. Each value is 0.1 scaled by that arm's task-feasible
+          # median w5 (gate off, same grid): 0.1249 here, so 0.1 is kept unchanged - this is the arm it was calibrated on.
+          arm_5row: 0.1
+          # No value: the 6-row gate is not the definition above, and 0.1 is not
+          # a conservative stand-in for a different-dimension quantity — the
+          # parser leaves a TBD threshold non-finite so Solve fails closed.
+          arm_6row: "TBD"
+          provisional: true

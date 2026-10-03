@@ -727,7 +727,9 @@ outc = cm.summarize_throws(judged, seed_id=best.seed_id, throw_count=len(throws)
   `planner.ik.alpha_max` 를 주면 그 값을 쓴다. 파일 형태는 judge 의 loader 와 같은 세 가지만 받는다 —
   root 의 `catching:` map / root 에 `planner:` 가 있는 catching tree 자체 / 출하 controller config 형태
   `<controller_name>: {catching: ...}` (유일한 top-level 항목일 때) — 그 밖은 기본값으로 떨어지지 않고
-  **에러**다. `"TBD"`·키 부재는 "미지정" 이다. `--alpha-max-rad` 는 **기본값이 없는** 선택 인자로, params 가
+  **에러**다. `include:` 로 나뉜 컨트롤러 config (출하 catching profile) 는 judge 가 합성하지 않으므로
+  주 파일이 아니라 `planner.ik` · `planner.catchability` 가 든 조각 `controllers/catching/search_grid.yaml`
+  을 넘긴다 — fingerprint 의 params sha256 도 그 파일의 것이다. `"TBD"`·키 부재는 "미지정" 이다. `--alpha-max-rad` 는 **기본값이 없는** 선택 인자로, params 가
   값을 주는데 다른 값을 넘기면 에러 (진실의 출처가 둘), 같으면 허용, params 가 미지정일 때만 단독으로 쓰인다
   (그때 judge 는 in-code 기본값으로 돌았으므로 이 인자는 그 기본값에 대한 호출자의 진술이다). 둘 다 없으면
   judge 의 in-code 기본값 0.26 의 **미러**를 쓰고 provenance 에 미러임과 출처를 적는다. judge 가

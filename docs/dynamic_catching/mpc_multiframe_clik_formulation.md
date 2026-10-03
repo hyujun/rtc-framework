@@ -699,7 +699,7 @@ rtc-framework 에는 사본이 없다. 이전 전의 사본 (`integrated_bringup
 | 쪽 | 파일 | 키 |
 |---|---|---|
 | ball_perception profile | `sim_profile.catching.json` 의 사본 — 조건마다 따로 두고 출하 파일은 고치지 않는다 | `prediction.horizon_s`, `prediction.step_s`, `prediction.max_points` |
-| rtc-framework | `demo_catching_controller.yaml` (로봇별) | `prediction.dt_expected`, `io.n_min`, `planner.slice.dt` |
+| rtc-framework | `demo_catching_controller.yaml` 과 그 조각 `catching/search_grid.yaml` (로봇별) | `prediction.dt_expected`, `io.n_min` (주 파일), `planner.slice.dt` (조각) |
 
 - profile 만 촘촘하게 바꾸면 메시지는 받아들여진다. 거부 하한은 `prediction.dt_expected` 의 10 % (`kTrajSpacingFloorFraction`) 라 조건의 간격은 모두 그 위다. 대신 `planner.slice.dt` 가 남은 값이면 계획기가 후보를 그 간격으로 솎아 (`planner_search.cpp`) 경고 없이 옛 격자로 돈다. 세 키는 떠 있는 컨트롤러의 read-only 미러 파라미터로 확인한다.
 - 두 쪽의 값을 맞춰 보는 자동 검사는 없다. profile 은 ball_perception 쪽이 소유하고 (계획 MD-18) rtc-framework 는 그 파일을 읽을 수 없다. 위 표의 키를 바꿀 때는 양쪽을 함께 확인한다.

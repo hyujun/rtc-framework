@@ -11,6 +11,28 @@
 # that is provisional or TBD PARKS a real-arm configuration (configure SUCCESS,
 # activation refused) and only warns in sim (L0 §5.3, A-S5-1). The `provisional`
 # flags below are why a real arm does not run this file yet.
+#
+# ── How this config is laid out (MPC plan MD-90) ─────────────────────────────
+# This file holds the QP CLIK step (`catching.joint_cmd`), the bring-up
+# sections (ball, hand, vision ingress, supervisor thresholds, topics, logs),
+# the planner thread's own keys, and the one key that SELECTS the planner law:
+# `catching.supervisor.decel.mode` (closed_form | mpc).
+#
+# What each function is tuned with lives in a fragment under catching/. The CM
+# merges the fragments into this tree before it applies any override
+# (rtc_controller_manager README, `include:`):
+#   catching/search_grid.yaml          the catch-point search
+#   catching/planner_closed_form.yaml  the closed_form law
+#   catching/planner_mpc.yaml          the mpc law
+# All three are always included: the law is chosen by that one key, not by
+# this list (a sim_overlay can then switch it, and the search reads the
+# closed_form values under mpc too). A fragment keeps the full key path, so an
+# override or a parameter mirror names a key exactly as it did in one file.
+# Each key lives in ONE file — the loader refuses a leaf that two files set.
+include:
+  - catching/search_grid.yaml
+  - catching/planner_closed_form.yaml
+  - catching/planner_mpc.yaml
 demo_catching_controller:
   command_type: "position"
 
@@ -97,7 +119,7 @@ demo_catching_controller:
     # (cmc_fe -60 -> +30) so its BASE backstops the ball at -y. The thumb tip
     # never reaches a ball on this palm (it rides 8-11 cm above it).
     # Validated on conditions the search never saw (5 mm grid, 445 placements):
-    # 214 held, see `planner.hand` below. It is a posture for THIS ball: it
+    # 214 held, see `planner.hand` (catching/search_grid.yaml). It is a posture for THIS ball: it
     # holds 50-67 mm and nothing at 40 mm or below (the fingers no longer reach)
     # — one q_close cannot serve both under a bare position step; that needs
     # the S7.1 hold rule (L6 §4.4). q_open is unchanged. Every value is inside
@@ -277,40 +299,6 @@ demo_catching_controller:
       io:
         future_tol: 0.1
 
-    # ── The L4 soft-catch reference (L4 §6, S5.3 consumes all four) ──────────
-    # `provisional: true` covers the BLOCK, which is the honest state: `v_max`
-    # is decided and `a_max` is not, and one TBD in a consumed key refuses the
-    # configure in sim — which, because CM latches `bring_up_failed` on ANY
-    # controller's configure failure, takes every other controller on the robot
-    # down with it. That is what the shipped p1b sim did on 2026-09-22 before
-    # this block existed. The provisional rule says the right thing instead:
-    # warn in sim, block a real arm (L0 §5.3).
-    reference:
-      provisional: true
-      # rad/s. L5/L4 §6 default; omega*h = 0.02 << 0.828, so the discretisation
-      # gate is nowhere near its bound at 500 Hz.
-      omega: 10.0
-      # v1 requires exactly critically damped — the planner's closed-form
-      # terminal error assumes it (L4 §4.7).
-      zeta: 1.0
-      # m/s. NOT provisional in itself: L4 §6 records this as DERIVED and
-      # confirmed 2026-09-22 — the max LP v_dir,max over accepted catch
-      # candidates at the joint ratings, times eta_v = 0.9. S10 may only LOWER
-      # it once the real controller's TCP limit is identified.
-      v_max: 3.5
-      # m/s^2. Still provisional (the real arm's value is S10's). S4.4 measured
-      # torque-limited acceleration along v_hat at the catch pose as median 43,
-      # and 21-23 under a 10x rotor-inertia assumption; 21 shipped as the
-      # conservative end. dynamic_catching S8-G (2026-09-27, #537 5847236227,
-      # plan §4.4 S8-G) measured 21 against 30 on the sim plant at omega 10:
-      # 21 saturated the reference on 18-25 % of the active ticks and aborted
-      # 7-12 of 56 hand-near throws (REF_SATURATED), 30 saturated 1 % and
-      # aborted none, at the same catch rate (10 vs 11) and torque p99 0.70.
-      # Stays above `supervisor.decel.a_dec` = 10, which the validator requires.
-      # omega stays 10: 15 and 20 halve the reference's own residual but follow
-      # the live prediction's noise and lose 3/4 of the catches.
-      a_max: 30.0
-
     # ── The CLIK step (L5 §6, S5.3) ─────────────────────────────────────────
     # Gains and weights, all provisional: they are the documented defaults
     # (L5 §6) and have not been tuned on this robot. The ORDERING is not a
@@ -351,12 +339,6 @@ demo_catching_controller:
         T_arm: 0.0
         lead_enable: false
 
-    # ── Deceleration (L7 §6 `supervisor.decel.a_dec`, single-source key) ──────
-    # `ParseCatchingParams` reads this (TbdDouble) but nothing consumes it yet:
-    # the L3 §4.9 stopping-point reservation lands in S6, the L7 DECEL target in
-    # S7. 10 m/s^2 is the value the S3.5b gate map ran with, confirmed
-    # 2026-09-22 (plan §7.3); provisional until reference.a_max exists
-    # (a_dec <= a_max, L7 §4.3).
     supervisor:
       # ── Thresholds the joint command layer reports to (L7 §6, S5.3) ───────
       # ‖q_meas − q_cmd‖. D-6 keeps the measured state out of CLIK, so this
@@ -407,7 +389,10 @@ demo_catching_controller:
         return_s: 14.76
         provisional: true
       decel:
-        a_dec: 10.0
+        # THE PLANNER SELECTOR. `a_dec` (catching/planner_closed_form.yaml) and
+        # `switch_margin` (catching/planner_mpc.yaml) are the two laws' own
+        # keys under this same `decel:` map.
+        #
         # The DECEL law (MPC MD-44), chosen once per configuration and never
         # mixed within it. closed_form: v1 L7's virtual target (the code
         # default, when the key is absent). mpc: every DECEL follows the decel
@@ -417,54 +402,12 @@ demo_catching_controller:
         # although gate G-1 failed here: catch success 0.58 against closed_form's 0.69 on the same 300 throws (plan §8 "E1-F06").
         # Set closed_form to run v1's law.
         mode: mpc
-        # rho_max of the mpc segment-switch gate (MD-39), per joint:
-        # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max. Read under mpc only.
-        # E1-F10 left it at 1.0: over 989 followed replans rho stayed under
-        # 0.56 (p95 0.20) and none was refused (MPC plan §8 "E1-F10").
-        switch_margin: 1.0
 
-    # ── Hand allowance (L3 §6 `planner.hand.*`, TBD-HAND-04) ─────────────────
-    # STALE COMMENT FIXED (docs correction, S7 commit 1): as of S6,
-    # `ParsePlannerParams` DOES read both keys into `PlannerParams::d_eff` /
-    # `r_cap` (rtc_controllers/include/rtc_controllers/catching/
-    # planner_params.hpp) and `lifecycle.cpp` requires both finite before the
-    # controller can configure. `ParseCatchingParams` still keeps
-    # `planner.hand.*` out of the generic L0 §5.3 macro-list validation (see
-    # the header of catching_params.hpp) — that is a different, narrower
-    # scope check, not "nothing reads these". Consumers: the L3 planner's
-    # gamma window (`rank_gates.hpp`) and the §4.6 budget gate. Recorded here
-    # because G6-F asks for the derivation and the value to live together
-    # with the profile they were derived from.
-    #
-    # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, plan §7.3). The L3 §4.5
-    # gamma window only ever uses d_eff / T_close,tot — the relative speed the
-    # hand can absorb — so the key holds that speed times T_close,tot:
-    #   d_eff 0.2815 m = 1.0 m/s x (T_close_e2e 0.2805 + h/2 0.001) s.
-    #                    1.0 m/s is the time-triggered fly-in figure (L6 §4.5,
-    #                    S4.4): closure fired at t_c - T_close_e2e, ball centred
-    #                    on the catch point, 7/9 held at 1.0 m/s, 5/9 at 1.5.
-    # With the pocket depth below instead (0.34 m/s) the S3.5b gate map of this
-    # robot is empty for every wait pose; everything that opens stands on the
-    # fly-in figure. Valid only under that same time-triggered closure rule,
-    # and measured with the hand frame at constant velocity — provisional.
-    #
-    # MEASURED, S4.5 (2026-09-21), with the searched postures above and the
-    # shipped 67 mm ball: ball PLACED on the preshape palm on a 5 mm lateral
-    # grid, step to q_close, shake along +-g on each catch-frame axis.
-    # 445 placements, 214 held.
-    #   r_cap 0.024 m = lateral inscribed radius of that capture region (best
-    #                   catch point (+0.015, +0.145, 0.052) in the catch frame).
-    #   pocket depth 0.095 m = approach-axis span still caught at that point,
-    #                   from resting on the palm (z 0.052) upward. SCAN-LIMITED:
-    #                   the scan stopped at +0.095 with the ball still held, so
-    #                   this is a lower bound. A contact quantity (L6 §4.5,
-    #                   MASTER TBD-HAND-04) — it is NOT this file's d_eff.
-    # Both are ball-CENTRE quantities (the radius is already inside them) and
-    # both are derived FOR core.ball above.
-    # Position-triggered closure (fired as the ball crosses the fingertip plane)
-    # held 9/130 at 0.25 m/s and none at 1 m/s — that was the trigger rule's
-    # bias for a slow-closing hand, not the hand's limit (L6 §4.5).
-    # With the two user-posed pairs this block was TBD: 0 held of 851.
+    # What stays here is the planner THREAD's own: whether it runs, how it
+    # wakes, the wait pose and the catch sub-model, the freeze lead and the
+    # block's provisional flag. The search's keys are in
+    # catching/search_grid.yaml, each law's in catching/planner_*.yaml —
+    # all under this same `planner:` map.
     planner:
       # ── Planner thread (L3 §6, S6-A) ──────────────────────────────────────
       # ON since S6-B (R-4): the planner is the plan box's only writer — the
@@ -473,10 +416,6 @@ demo_catching_controller:
       # The longest the planner sleeps without a new trajectory (decision H,
       # 2026-09-23). It also re-plans on this cadence while vision is quiet.
       wake_timeout_s: 0.05
-      # One cycle's compute budget (R-2, 2026-09-23): per-candidate IK measured
-      # p50 1.8 ms on this 6-axis arm (dev PC), so 20 ms with a pre-filter to at
-      # most 8 IK candidates per cycle.
-      budget_s: 0.020
       # IK seed and wait pose, ARM joint order [rad] (decision L, 2026-09-23):
       # the S3.5b gate map's wait pose for this arm. PROVISIONAL. Consumed from S6-B (the IK seed); homing to it
       # is S7.2.
@@ -493,204 +432,22 @@ demo_catching_controller:
       # The read-only mirror `planner.wait_pose` is the LIST, so with `current`
       # the trial runner (which aims at the mirror) refuses at its alignment
       # gate — run experiments with `yaml` and an overlay. `workspace.catch_box`
-      # below does not follow the pose: an arbitrary pose needs a box that
+      # (catching/search_grid.yaml) does not follow the pose: an arbitrary pose needs a box that
       # covers its surroundings (the S8-F overlays widen it).
       wait_pose_source: yaml
-      # ── Search (L3 §4, S6-B) ──────────────────────────────────────────────
       # The robot config's catch sub-model (R-3): arm root → catch frame parent.
       sub_model: "ur5e_catch"
-      # IK candidates per cycle after the pre-filter (R-2: one IK ≈ 2–3 ms on the
-      # development PC, so 8 fit budget_s with room; the cycle can overrun the
-      # budget by at most one IK — the budget is checked BEFORE each solve).
-      max_ik: 8
-      # Snapshots to skip after a track change (L3 §4.4).
-      n_settle: 3
-      slice:
-        # = the vision spacing (prediction.dt_expected): candidates are the
-        # vision samples themselves, so the covariance needs no interpolation.
-        dt: 0.05
-        # vision horizon 1.0 s − prediction.t_horizon_margin 0.05 s.
-        t_max: 0.95
-        # t_lead_min defaults to freeze.T_freeze (decided 2026-09-23).
-      time:
-        margin: 0.03
-      unc:
-        kappa_sigma: 0.3
-      gamma:
-        eta_v: 0.9
-        margin: 0.1
-        # The γ rollout (L3 §4.8, S6-C): γ_f and T_w candidates, the demanded-
-        # acceleration margin η_a against reference.a_max, and the terminal
-        # error the reference must reach by t_c. L3 §6 defaults.
-        grid: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-        window_grid: [0.3, 0.45, 0.6]
-        eta_a: 0.8
-        eps_term: 0.002
-      rollout:
-        # Coarse-to-fine: every (γ_f, T_w) is screened at this step, only the
-        # winner re-run at the control period (invented key — §4.8 left the
-        # method to S6.3).
-        dt_coarse: 0.01
-      budget:
-        n_sigma: 2.0
-        # 0 until measured (S10) — they only RANK candidates (decision 2026-09-23).
-        sigma_trk: 0.0
-        clock_err: 0.0
-      switch:
-        delta_J: 0.1
-        # A switch may step u_des by at most eta_jump * reference.a_max (L3 §4.7,
-        # decision 6 2026-09-23 — replaced e_jump_max/ed_jump_max, whose 10 mm
-        # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= eta_jump*a_max/omega^2 = 0.25*30/100 = 75 mm (was 52 mm at a_max 21, S8-G).
-        # Provisional until the sim remeasure.
-        eta_jump: 0.25
       freeze:
         # Decision G (2026-09-23): the L3 §4.11 lower bound T_close,tot 0.2815 +
         # T_arm (0, sim) + margin 0.03 = 0.31, rounded up with room. Provisional.
+        # Read by the search, by both laws and by the RT (the commit instant).
         T_freeze: 0.36
-      score:
-        # L3 §6 defaults; `penalty` is per failed RANK gate (decision D) and must
-        # dominate the continuous terms. Tuning is S6-C/S8.
-        w_sigma: 1.0
-        w_t: 1.0
-        w_q: 0.1
-        w_late: 0.0
-        w_gamma: 5.0
-        penalty: 10.0
-      workspace:
-        # Decision I (2026-09-23), model world frame (= this robot's base): the box
-        # around the S3.5b fine grid's gate-open candidates — their p_c and their
-        # stopping points at both ends of the γ window, 967 candidates, recomputed
-        # 2026-09-23 with the shipped wait pose — plus 0.1 m. A JUDGEMENT gate:
-        # p_c and p_stop must both lie inside. Provisional.
-        catch_box:
-          min: [0.19, -0.30, 0.21]
-          max: [1.04, 0.31, 0.96]
-      decel_mpc:
-        # MPC E1-F03 (#629) / E1-F08 (#661): the planner thread solves the
-        # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
-        # MD-55 – MD-64). Built and run only under supervisor.decel.mode: mpc,
-        # which also needs it (MD-44); under closed_form, true only warns. On
-        # with the shipped mpc law (supervisor.decel.mode, MD-89). Under mode: mpc
-        # the RT takes a plan only together with its first segment and follows
-        # the segments from APPROACH to the end of the stop (MPC E1-F09, MD-45)
-        # — the approach grid below (n_pre_max > 0) is then required.
-        enabled: true
-        horizon:
-          # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
-          # (MD-21), 0.35 s.
-          n_nodes: 7
-          dt_s: 0.05
-          blocks: [1, 1, 2, 3]
-        approach:
-          # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
-          # before t_c. 0 = no decel planner — mode: mpc then parks (MD-70).
-          n_pre_max: 6
-          dt_pre_s: 0.1
-          # The first solve assumes the arm rests at its wait pose; above this
-          # max |q_dot_cmd| [rad/s] it withholds. Provisional.
-          rest_tol: 0.05
-        budget:
-          # A solve's ceiling, which is also the lead it is planned with [s]:
-          # the first segment (same wake as the search) and every later one
-          # (MD-56). Confirmed from the sim wall-clock run (2026-10-02, MPC plan
-          # §8).
-          first_s: 0.035
-          replan_s: 0.025
-        replan:
-          # Post-catch replans up to k_max grid points past t_c, stop end
-          # fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid point
-          # with the newer prediction (MD-58).
-          k_max: 2
-          same_point: true
-        eta_tau: 0.7
-        m_q: 0.05
-        publish:
-          # Largest torque slack (fraction of tau_max) a published segment may
-          # carry (MD-33). eta_tau + slack_max must not exceed joint_cmd.eta_tau
-          # under the dynamic CLIK form (checked at configure). E1-F06 tightens
-          # the terminal one from the recorded distribution.
-          slack_max: 0.1
-          slack_terminal_max: 0.1
-          # Largest catch-node position error [m] a segment may carry (MD-62).
-          catch_pos_err_max: 0.02
-        catch:
-          # The core's catch terms at the catch node. w_axis / w_v_par /
-          # w_v_perp are E1-F07's measured values. gamma_ref is the E1-F10
-          # tuning's (#663, MPC plan MD-75): the hand aims at 0.6 of the
-          # ball's speed. At 1.0 the command was still accelerating at t_c and
-          # the arm sat 26 mm behind it along the ball's travel (26 / 100
-          # caught against closed_form's 57 on the same throws); 0.6 gave
-          # 72 / 100 on the screening seeds and 123 / 200 against 133 / 200 on
-          # the confirm seeds (paired difference -0.05). w_v_par moves the same
-          # axis: 0.3 and 3.0 at gamma_ref 0.6 were not better. Below v1's
-          # gamma window (lower bound ~0.69) — a recorded deviation.
-          w_axis: 100.0
-          w_v_par: 1.0
-          w_v_perp: 20.0
-          gamma_ref: 0.6
-          # W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 with eigenvalues capped
-          # at w_max [1/m^2]; w_const without a usable covariance (MD-63).
-          kappa: 1.0
-          sigma_floor: 0.01
-          w_max: 10000.0
-          w_const: 2500.0
-          # w_delta schedule: clamp(tr Sigma_p / sigma_ref^2, 0, 1). Compared
-          # with a TRACE, so this is not a per-axis sigma (tr ~ 3 sigma^2).
-          sigma_ref: 0.03
       # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
-      # That flag is the only one `planner:` has — it covers `hand.d_eff` and
-      # `hand.r_cap` below too, which carry no flag of their own (#537 pre-S10
-      # R3: the parser never read one there).
+      # That flag is the only one `planner:` has, across the fragments too — it
+      # covers `hand.d_eff` and `hand.r_cap` (catching/search_grid.yaml), which
+      # carry no flag of their own (#537 pre-S10 R3: the parser never read one
+      # there).
       provisional: true
-      hand:
-        d_eff: 0.2815
-        r_cap: 0.024
-
-      # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
-      # Read at configure by `ParseCatchPoseIkParams` (rtc_controllers) — the
-      # same parser the offline catchability map drives — and handed to the
-      # planner thread's search (S6-B, `ConfigureSearch`), so the map and the
-      # runtime solve alike. Recorded here because G6-F asks the derivation and
-      # the value to live together.
-      #
-      # MEASURED, S3.5a map (2026-09-21), 3402-throw grid at 4 m: 1418 throws
-      # accepted from the best single wait pose (reproduced by running the map
-      # tool with THIS file as --params),
-      # T_f >= 1.0 s. Details and the rejected alternatives: plan §11.
-      ik:
-        # k_manip > 0 is NOT optional. It enables the D-25 null-space log w5
-        # ascent, and without it (the in-code default 0) the 5-row task leaves
-        # the arm wherever the seed put it: w5 came out 0.06-0.09 at plausible
-        # wait poses, i.e. BELOW the gate, so every candidate in the map was
-        # rejected as below_manip_min. With the ascent on, w5 reaches
-        # 0.100-0.208 (median 0.147) and the gate is passable. A config that carries the
-        # threshold but leaves this at 0 rejects everything at runtime.
-        k_manip: 0.5
-        # 20 (the L3 default) was not enough to let the ascent settle; 40 left
-        # 758 candidates `not_converged`, which is confounded with
-        # genuinely unreachable points and is a follow-up sweep, not a bound.
-        max_iter: 40
-      catchability:
-        # 5-row, per plan §11: the 6-row definition would need a threshold ~30x
-        # smaller (w6 bottoms out at 0.0035 over the SAME accepted set) and it
-        # collapses at the wrist singularities of a 6-axis arm, which are fine
-        # poses for catching. w6 is recorded per candidate either way (C-3).
-        definition: "arm_5row"
-        manipulability_min:
-          # ROBOT-SPECIFIC ON PURPOSE (user decision 2026-09-21). w5 =
-          # sqrt(det(J5 J5^T)) scales with the arm's link lengths, so one number
-          # means different strictness on different arms: the shipped 0.1 sat at
-          # roughly the 40th percentile of the 6-axis arm's task-feasible w5 but
-          # only ~the 10th of the 7-axis arm's, i.e. the two arms were being held
-          # to different standards and the map's coverage comparison was not
-          # like-for-like. Each value is 0.1 scaled by that arm's task-feasible
-          # median w5 (gate off, same grid): 0.1249 here, so 0.1 is kept unchanged - this is the arm it was calibrated on.
-          arm_5row: 0.1
-          # No value: the 6-row gate is not the definition above, and 0.1 is not
-          # a conservative stand-in for a different-dimension quantity — the
-          # parser leaves a TBD threshold non-finite so Solve fails closed.
-          arm_6row: "TBD"
-          provisional: true
 
   # ── Topic configuration ────────────────────────────────────────────────────
   # Group order IS the controller's device index order: ur5e = 0 (held),

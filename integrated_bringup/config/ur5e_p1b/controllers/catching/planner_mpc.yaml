@@ -1,0 +1,91 @@
+# demo_catching_controller — the mpc planner law (ur5e_p1b)
+#
+# A fragment of ../demo_catching_controller.yaml (its `include:` list). The CM
+# merges it into that file's tree; every key keeps its full path.
+#
+# The APPROACH–stop MPC: the planner thread solves it and the RT follows its
+# joint segments from APPROACH to the end of the stop (MPC plan MD-45,
+# MD-54 – MD-64). Read only when `supervisor.decel.mode: mpc` (the main file).
+demo_catching_controller:
+  catching:
+    supervisor:
+      decel:
+        # rho_max of the mpc segment-switch gate (MD-39), per joint:
+        # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max. Read under mpc only.
+        # E1-F10 left it at 1.0: over 989 followed replans rho stayed under
+        # 0.56 (p95 0.20) and none was refused (MPC plan §8 "E1-F10").
+        switch_margin: 1.0
+
+    planner:
+      decel_mpc:
+        # MPC E1-F03 (#629) / E1-F08 (#661): the planner thread solves the
+        # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
+        # MD-55 – MD-64). Built and run only under supervisor.decel.mode: mpc,
+        # which also needs it (MD-44); under closed_form, true only warns. On
+        # with the shipped mpc law (supervisor.decel.mode, MD-89). Under mode: mpc
+        # the RT takes a plan only together with its first segment and follows
+        # the segments from APPROACH to the end of the stop (MPC E1-F09, MD-45)
+        # — the approach grid below (n_pre_max > 0) is then required.
+        enabled: true
+        horizon:
+          # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
+          # (MD-21), 0.35 s.
+          n_nodes: 7
+          dt_s: 0.05
+          blocks: [1, 1, 2, 3]
+        approach:
+          # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
+          # before t_c. 0 = no decel planner — mode: mpc then parks (MD-70).
+          n_pre_max: 6
+          dt_pre_s: 0.1
+          # The first solve assumes the arm rests at its wait pose; above this
+          # max |q_dot_cmd| [rad/s] it withholds. Provisional.
+          rest_tol: 0.05
+        budget:
+          # A solve's ceiling, which is also the lead it is planned with [s]:
+          # the first segment (same wake as the search) and every later one
+          # (MD-56). Confirmed from the sim wall-clock run (2026-10-02, MPC plan
+          # §8).
+          first_s: 0.035
+          replan_s: 0.025
+        replan:
+          # Post-catch replans up to k_max grid points past t_c, stop end
+          # fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid point
+          # with the newer prediction (MD-58).
+          k_max: 2
+          same_point: true
+        eta_tau: 0.7
+        m_q: 0.05
+        publish:
+          # Largest torque slack (fraction of tau_max) a published segment may
+          # carry (MD-33). eta_tau + slack_max must not exceed joint_cmd.eta_tau
+          # under the dynamic CLIK form (checked at configure). E1-F06 tightens
+          # the terminal one from the recorded distribution.
+          slack_max: 0.1
+          slack_terminal_max: 0.1
+          # Largest catch-node position error [m] a segment may carry (MD-62).
+          catch_pos_err_max: 0.02
+        catch:
+          # The core's catch terms at the catch node. w_axis / w_v_par /
+          # w_v_perp are E1-F07's measured values. gamma_ref is the E1-F10
+          # tuning's (#663, MPC plan MD-75): the hand aims at 0.6 of the
+          # ball's speed. At 1.0 the command was still accelerating at t_c and
+          # the arm sat 26 mm behind it along the ball's travel (26 / 100
+          # caught against closed_form's 57 on the same throws); 0.6 gave
+          # 72 / 100 on the screening seeds and 123 / 200 against 133 / 200 on
+          # the confirm seeds (paired difference -0.05). w_v_par moves the same
+          # axis: 0.3 and 3.0 at gamma_ref 0.6 were not better. Below v1's
+          # gamma window (lower bound ~0.69) — a recorded deviation.
+          w_axis: 100.0
+          w_v_par: 1.0
+          w_v_perp: 20.0
+          gamma_ref: 0.6
+          # W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 with eigenvalues capped
+          # at w_max [1/m^2]; w_const without a usable covariance (MD-63).
+          kappa: 1.0
+          sigma_floor: 0.01
+          w_max: 10000.0
+          w_const: 2500.0
+          # w_delta schedule: clamp(tr Sigma_p / sigma_ref^2, 0, 1). Compared
+          # with a TRACE, so this is not a per-axis sigma (tr ~ 3 sigma^2).
+          sigma_ref: 0.03
