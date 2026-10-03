@@ -11,9 +11,13 @@
 # What the search reads from the other files:
 #   ../demo_catching_controller.yaml  planner.{enabled, wake_timeout_s,
 #       wait_pose, wait_pose_source, sub_model, provisional},
-#       planner.freeze.T_freeze, robot.arm.* (the acceleration box)
+#       planner.freeze.T_freeze, robot.arm.limit_margin
 #   planner_closed_form.yaml          reference.*, supervisor.decel.a_dec — it
 #       ranks candidates by that law's rollout, under mpc too (MPC plan MD-46)
+#
+# What else reads a key kept here: `robot.arm.qdd_max` is the search's reach-time
+# limit, and also the QP-less stop ramp (ABORT), the homing ramp, and CLIK's
+# acceleration row when `joint_cmd.accel_constraint` is `box`.
 demo_catching_controller:
   catching:
     planner:
@@ -168,3 +172,10 @@ demo_catching_controller:
           # parser leaves a TBD threshold non-finite so Solve fails closed.
           arm_6row: "TBD"
           provisional: true
+    robot:
+      arm:
+        # [rad/s², arm joint order] torque-derived (derive_accel_limits, eta_tau 0.8), 2026-09-20.
+        qdd_max: [2.03052, 2.03052, 2.03052, 2.03052, 2.03052, 2.03052]
+        # Whether the box is cleared for the real arm. true parks a real-arm
+        # configuration (sim only); absent or not a bool counts as true.
+        qdd_provisional: true

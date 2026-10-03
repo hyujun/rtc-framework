@@ -66,8 +66,10 @@ from rtc_tools.analysis.derive_accel_limits import (
     load_robot_params,
     resolve_urdf_text,
 )
+from rtc_tools.utils.controller_config import load_controller_config
 
 GATE_EXECUTABLE = "catch_gate_batch"
+DEFAULT_CONTROLLER = "demo_catching_controller"
 DEFAULT_FK_TOLERANCE_M = 2.5e-3
 DEFAULT_PROFILE_SAMPLES = 16
 DEFAULT_ACCEL_TOLERANCE = 1e-3  # relative, on the path acceleration (~0.05 % on time)
@@ -421,22 +423,22 @@ def _floats(text: str) -> list[float]:
     return [float(x) for x in text.replace(",", " ").split()]
 
 
-def load_accel_box(path: Path, group: str, n: int, *, require_adopted: bool = False) -> np.ndarray:
-    """``derived_accel_limits.<group>.qdd_max`` from a plan §9 limits file.
+def load_accel_box(controller_config: Path, key: str, n: int) -> np.ndarray:
+    """``catching.robot.arm.qdd_max`` of a controller config, ``include:`` fragments composed.
 
-    ``require_adopted`` returns an empty array when the entry is not
-    ``adopted: true`` — the controller's rule (it loads no box then).
+    The path is the profile's controller YAML (``config/<robot>/controllers/
+    <key>.yaml``). It goes through ``load_controller_config``: the main file
+    alone lacks the keys of its fragments.
     """
-    doc = yaml.safe_load(path.read_text())
     try:
-        entry = doc["derived_accel_limits"][group]
-        box = np.asarray(entry["qdd_max"], dtype=float)
+        tree = load_controller_config(controller_config, config_key=key)[key]
+        box = np.asarray(tree["catching"]["robot"]["arm"]["qdd_max"], dtype=float)
     except (KeyError, TypeError) as exc:
-        raise SystemExit(f"{path} has no derived_accel_limits.{group}.qdd_max") from exc
-    if require_adopted and not entry.get("adopted", False):
-        return np.empty(0)
+        raise SystemExit(f"{controller_config} has no {key}.catching.robot.arm.qdd_max") from exc
     if box.shape != (n,):
-        raise SystemExit(f"{path}: qdd_max has {box.size} entries, the arm has {n} joints")
+        raise SystemExit(
+            f"{controller_config}: qdd_max has {box.size} entries, the arm has {n} joints"
+        )
     return box
 
 
@@ -457,7 +459,17 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="joint speed limits: the robot config's max_velocity or the URDF rating",
     )
-    ap.add_argument("--accel-limits", type=Path, required=True, help="plan §9 limits YAML")
+    ap.add_argument(
+        "--controller-config",
+        type=Path,
+        help="the profile's controller YAML — its catching.robot.arm.qdd_max is the acceleration "
+        "box (default: <first --robot-config's dir>/controllers/<--controller>.yaml)",
+    )
+    ap.add_argument(
+        "--controller",
+        default=DEFAULT_CONTROLLER,
+        help=f"the catching controller's config key (default {DEFAULT_CONTROLLER})",
+    )
     ap.add_argument("--eta-v", type=float, required=True, help="planner.gamma.eta_v")
     ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (plan §9)")
     ap.add_argument("--rotor-inertia", type=_floats, required=True, help="[kg m²], arm order")
@@ -512,7 +524,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     qd_plan = args.eta_v * qd_max
     tau_limit = args.eta_tau * np.asarray(spec.tau_max, dtype=float)
-    box = load_accel_box(args.accel_limits, args.group, arm.n)
+    controller_config = args.controller_config or (
+        Path(args.robot_config[0]).parent / "controllers" / f"{args.controller}.yaml"
+    )
+    if not controller_config.is_file():
+        raise SystemExit(f"{controller_config}: no controller config — pass --controller-config")
+    box = load_accel_box(controller_config, args.controller, arm.n)
     reach_centre = frame_placement_in_model_world(urdf_text, args.arm_base_frame)[:3, 3]
 
     with (args.map_dir / "throw_summary.csv").open() as handle:
@@ -640,7 +657,7 @@ def main(argv: list[str] | None = None) -> int:
         "velocity_source": args.velocity_source,
         "qd_max": [float(x) for x in qd_max],
         "qdd_box": [float(x) for x in box],
-        "accel_limits": str(args.accel_limits),
+        "controller_config": str(controller_config),
         "eta_v": args.eta_v,
         "eta_tau": args.eta_tau,
         "rotor_inertia": [float(x) for x in arm.rotor_inertia],

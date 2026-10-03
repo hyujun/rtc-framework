@@ -304,7 +304,7 @@ S1 ∥ S2 ∥ S3a ∥ S4a 는 서로 독립이다. S4.0 은 S5 의 컨트롤러 
 - **se3**: `axis_align.hpp`, 11 케이스. G4-D: exp 잔차 < 1e-12, 유한차분 < 1e-5 (1–170°), 데드밴드 주변 유한 (처리 방식 L4 §4.5)
 - **CLIK**: `test_clik_options.cpp` 25 케이스. G5-A 정지 목표 < 1 mm·< 0.5°, G5-B 1e4 tick 위반 0 (`bound_conflict` 706 tick, 위치 초과 최대 0.054 rad < margin 0.1). 리뷰로 실패 뒤 `v_prev` 0 초기화, 명령값 모드 상태 검사는 ResetAnchor 까지 유지. **G5-B2·G5-C3 의 L7 전이·abort 부분은 S5.3·S7**
 - **extra frame**: 네 모델 위치 1e-12 일치. `test_catch_frame_models`: 손가락 굽힘 시 끝점 중심이 catch frame +z 로 이동 (rpy 반전 시 red), ur5e_p1b full nq = nv = 26·actuated 16, iiwa7_leap full·wbc nv 23. 축: p1b `l_palm_link` rpy 0, iiwa7_leap `palm_lower` rpy [π,0,0]
-- **가속 도출**: `rtc_tools derive_accel_limits` + `integrated_bringup/config/<robot>/derived_accel_limits.yaml` (`derived_accel_limits.<group>.qdd_max`, provenance). **η_τ = 0.8 (사용자 확정 2026-09-20)**, 관절 box 전체·±max_velocity, 20000 표본 + Powell 정제. **ur5e_p1b 2.03 rad/s²** (binding shoulder_lift, 중력) · **iiwa7_leap 9.20 rad/s²** (binding A2), provisional. 교차 검증 RNEA 최악 0.78·0.85, iiwa MuJoCo `mj_inverse` 0.67. **UR5e 값은 S0.7 가정 ā = 10 rad/s² 보다 크게 낮다** — S3.5a 대기 자세 주변으로 재생성한 값이 S4.4 입력
+- **가속 도출**: `rtc_tools derive_accel_limits` (분석 도구 — 출력은 출하물도 컨트롤러 입력도 아니다) → 값은 `integrated_bringup/config/<robot>/controllers/catching/search_grid.yaml` 의 `robot.arm.qdd_max` · `qdd_provisional` (E1-F11; 이전에는 `derived_accel_limits.yaml` 파일과 provenance). **η_τ = 0.8 (사용자 확정 2026-09-20)**, 관절 box 전체·±max_velocity, 20000 표본 + Powell 정제. **ur5e_p1b 2.03 rad/s²** (binding shoulder_lift, 중력) · **iiwa7_leap 9.20 rad/s²** (binding A2), provisional. 교차 검증 RNEA 최악 0.78·0.85, iiwa MuJoCo `mj_inverse` 0.67. **UR5e 값은 S0.7 가정 ā = 10 rad/s² 보다 크게 낮다** — S3.5a 대기 자세 주변으로 재생성한 값이 S4.4 입력
 
 **단계 중 발견 (기존 상태·범위 밖).**
 
@@ -803,7 +803,7 @@ Q1–Q3 은 #537 5855489704 (2026-09-27 사용자) 이다.
 
 - 실기 단계: D (G8-A · G5-F · G6-D · G6-E · D-S9-G · 운동 기한 실기 값) → E (bag replay·가상 공 — G8-F · G7-F) → F (실투척 — G8-G)
 - 실기 도구 현황 (2026-09-28 코드 대조): launch·`hand_close` 분석은 있다, `servo_lag_ls` 는 일부, bag 재스탬프 replay · 가상 공 발행기 · speed scaling·PTP 감시는 없다. 게이트 도구는 G6-D 만 준비됐고 G5-F 일부, G6-E · G7-F · G8-F · G8-G 는 절차부터 없다
-- 실기 park 키: provisional 이면 실기 구성을 막는 키 9 개 (pre-S10 R3 에서 `derived_accel_limits.<group>.provisional`·`joint_cmd.lag.provisional` 추가). 각 키의 실기 값을 정해야 무장할 수 있다
+- 실기 park 키: provisional 이면 실기 구성을 막는 키 9 개 (pre-S10 R3 에서 `derived_accel_limits.<group>.provisional` — 지금은 `robot.arm.qdd_provisional` — ·`joint_cmd.lag.provisional` 추가). 각 키의 실기 값을 정해야 무장할 수 있다
 - #588 hold creep 의 실기 크기 (R2 가 sim 에서 닫았다 — 60 s drift 0.085 → 1.8e-9 rad; 실기 드라이브에서의 값은 여기서 잰다)
 - 결정: 실기 성공 기준 · G8-G 대체 지표 · D-12 손 토크 권위 출처 · 공 사양 · speed scaling·PTP (v1 은 운용 절차로 두는 것을 권장)
 
@@ -1142,7 +1142,7 @@ D-3 은 **검증 결과로 다시 검토한다.** 기존 RTF 신호 (200 step �
 
 - **S8-G 사전 분석 (2026-09-26, #537 5846659919 — S8-F-1 9 unit·1068 발, `rtc_tools catching_arm_budget`)**: 실행된 관절 가속은 활성 tick p95 14–37 rad/s² (관절별; max 76–250) 로 box 를 tick 의 99.8 % 에서 넘고, 같은 운동의 도달시간이 box 로는 0.60–0.89 s (가용 lead 0.29–0.52 s) 라 `rank_reach` 93–100 % 실패, envelope 로는 0.15–0.25 s 로 96 % 통과. 토크 사용률 max 0.61–0.83 (forcerange 도달 tick 0). box 는 실행을 묶지 않으면서 순위 gate 와 `w_t` 항만 무의미하게 한다
 - **S8-G 실험 (AC-3)**: sim overlay `s8g_w10_a21_envbox` 로 `robot.arm.accel_limits_path` 를 `derived_accel_limits_s8g_envelope.yaml` (`--write-envelope-box`: unit 별 p95 의 관절별 max = [20.3, 30.9, 37.0, 21.5, 14.2, 29.0] rad/s², `provisional`, sim 전용) 로 돌려 같은 56 발을 비교했다
-- **원칙 채택 (2026-09-27 D-S8-18)**: 계획기 도달시간 한계 = 실행이 실제로 내는 envelope. sim 은 `sim.yaml` 의 `robot.arm.accel_limits_path` override 로 envelope 파일을 쓰고 (`rank_reach` 95 → 14 %), `robot.yaml`·출하 `derived_accel_limits.yaml` 은 토크 도출 box 를 유지한다 (실기 envelope 은 S10 측정 뒤)
+- **원칙 채택 (2026-09-27 D-S8-18)**: 계획기 도달시간 한계 = 실행이 실제로 내는 envelope. sim 은 `sim.yaml` 의 `robot.arm.accel_limits_path` override 로 envelope 파일을 쓰고 (`rank_reach` 95 → 14 %), `robot.yaml`·출하 `derived_accel_limits.yaml` 은 토크 도출 box 를 유지한다 (실기 envelope 은 S10 측정 뒤) — *E1-F11 주석: 파일 · 경로 키는 없어졌고, sim 은 `sim.yaml` 이 `robot.arm.qdd_max` · `qdd_provisional` 을 덮는다.*
 
 ## 10. catch frame YAML (D-17)
 

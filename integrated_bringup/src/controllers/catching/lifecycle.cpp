@@ -7,7 +7,6 @@
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/parameter.hpp>
@@ -261,7 +260,7 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("planner.time.margin", planner_params_.time_margin,
           "L3 §4.3 reach-time margin T_margin [s] the planner's gate uses");
   declare("robot.arm.qdd_max", arm_qdd_max_,
-          "D-16 acceleration box the planner's reach time judges with [rad/s²], arm joint "
+          "acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
   // The prediction grid the controller expects (MPC plan E0-F04, #647). The
   // vision profile sets the grid and these three must follow it, but nothing
@@ -363,10 +362,6 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("supervisor.decel.switch_margin", decel_switch_margin_,
           "MPC MD-39: rho_max of the decel segment switch gate (mode mpc). As of the FIRST "
           "configure of this node — read_only mirrors cannot follow a re-configure");
-  declare("robot.arm.accel_limits_path", accel_limits_path_,
-          "the profile's D-16 box file (robot.arm.accel_limits_path): absolute, or relative to "
-          "the share directory of robot.arm.accel_limits_package. As of the FIRST configure "
-          "of this node — read_only mirrors cannot follow a re-configure");
 }
 
 void DemoCatchingController::DeclareArmParameter() {
@@ -419,88 +414,28 @@ void DemoCatchingController::DeclareArmParameter() {
       });
 }
 
-void DemoCatchingController::LoadDerivedAccelLimits() {
+void DemoCatchingController::ApplyArmAccelBox() {
   arm_qdd_max_.clear();
   arm_qdd_provisional_ = true;
-  arm_qdd_source_.clear();
-  if (accel_limits_path_.empty()) {
+  if (!arm_qdd_cfg_present_) {
     RCLCPP_WARN(logger_,
-                "no `robot.arm.accel_limits_path`: the CLIK acceleration box is OFF, so a command "
-                "may step by more than the joint can follow (D-16)");
+                "no `robot.arm.qdd_max`: the CLIK acceleration box is OFF, so a command may step "
+                "by more than the joint can follow (D-16)");
     return;
   }
-  // Package-relative, like every other file this repo's YAML points at
-  // (`DeviceUrdfConfig`): the controller has no way to learn which config
-  // variant it was loaded from, and a path relative to the process's cwd would
-  // depend on where the operator started the bring-up. An ABSOLUTE path is
-  // read as it stands (#537 pre-S10 R3) — a box kept outside the package, as
-  // an experiment's is, has no share directory to be relative to.
-  std::string path;
-  if (std::filesystem::path(accel_limits_path_).is_absolute()) {
-    path = accel_limits_path_;
-  } else {
-    try {
-      path = ament_index_cpp::get_package_share_directory(accel_limits_package_) + "/" +
-             accel_limits_path_;
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR(logger_, "package '%s' not found for the derived acceleration limits: %s",
-                   accel_limits_package_.c_str(), e.what());
+  if (arm_qdd_cfg_malformed_ || static_cast<int>(arm_qdd_cfg_.size()) != arm_dof_) {
+    RCLCPP_ERROR(logger_, "robot.arm.qdd_max must be a list of %d numbers (the arm's)", arm_dof_);
+    return;
+  }
+  for (std::size_t i = 0; i < arm_qdd_cfg_.size(); ++i) {
+    if (!std::isfinite(arm_qdd_cfg_[i]) || arm_qdd_cfg_[i] <= 0.0) {
+      RCLCPP_ERROR(logger_, "robot.arm.qdd_max[%zu] is not a positive number", i);
       return;
     }
   }
-  YAML::Node doc;
-  try {
-    doc = YAML::LoadFile(path);
-  } catch (const std::exception& e) {
-    RCLCPP_ERROR(logger_, "could not read the derived acceleration limits at '%s': %s",
-                 path.c_str(), e.what());
-    return;
-  }
-  const YAML::Node root = doc["derived_accel_limits"];
-  const YAML::Node group = root ? root[accel_limits_group_] : YAML::Node();
-  if (!group || !group.IsMap()) {
-    RCLCPP_ERROR(logger_, "'%s' has no derived_accel_limits.%s", path.c_str(),
-                 accel_limits_group_.c_str());
-    return;
-  }
-  // `adopted: false` marks a derivation the tool ran but nobody accepted (D-16
-  // records the review, not just the number). Falling back from it would put
-  // an unreviewed limit on the arm, which is the one thing a DERIVED box must
-  // not allow — so it is refused rather than defaulted.
-  if (!group["adopted"] || !group["adopted"].as<bool>()) {
-    RCLCPP_ERROR(logger_, "derived_accel_limits.%s is not `adopted` — refusing to use it",
-                 accel_limits_group_.c_str());
-    return;
-  }
-  const YAML::Node box = group["qdd_max"];
-  if (!box || !box.IsSequence() || static_cast<int>(box.size()) != arm_dof_) {
-    RCLCPP_ERROR(logger_, "derived_accel_limits.%s.qdd_max must have %d entries (the arm's)",
-                 accel_limits_group_.c_str(), arm_dof_);
-    return;
-  }
-  arm_qdd_max_.assign(box.size(), 0.0);
-  for (std::size_t i = 0; i < box.size(); ++i) {
-    arm_qdd_max_[i] = box[i].as<double>();
-    if (!std::isfinite(arm_qdd_max_[i]) || arm_qdd_max_[i] <= 0.0) {
-      RCLCPP_ERROR(logger_, "derived_accel_limits.%s.qdd_max[%zu] is not a positive number",
-                   accel_limits_group_.c_str(), i);
-      arm_qdd_max_.clear();
-      return;
-    }
-  }
-  // Fail-closed like every provisional flag: a file that does not say it was
-  // cleared was not. `adopted` above is the REVIEW of the derivation;
-  // `provisional` is whether its inputs (the torque limits, the model) are
-  // those of the arm this runs on (#537 pre-S10 R3, Q4).
-  const YAML::Node provisional = group["provisional"];
-  try {
-    arm_qdd_provisional_ = !provisional || provisional.as<bool>();
-  } catch (const std::exception&) {
-    arm_qdd_provisional_ = true;  // not a bool: not a clearance
-  }
-  arm_qdd_source_ = path;
-  RCLCPP_INFO(logger_, "derived acceleration box: %s (group '%s', %zu joints%s)", path.c_str(),
-              accel_limits_group_.c_str(), arm_qdd_max_.size(),
+  arm_qdd_max_ = arm_qdd_cfg_;
+  arm_qdd_provisional_ = arm_qdd_provisional_cfg_;
+  RCLCPP_INFO(logger_, "acceleration box: robot.arm.qdd_max (%zu joints%s)", arm_qdd_max_.size(),
               arm_qdd_provisional_ ? ", provisional" : "");
 }
 
@@ -732,11 +667,10 @@ void DemoCatchingController::SetupArmCommand() {
   catch_frame_idx_ = -1;
   base_frame_idx_ = -1;
   // Before the early returns below: a reconfigure that takes one of them never
-  // reaches LoadDerivedAccelLimits(), and the park check in on_configure must
+  // reaches ApplyArmAccelBox(), and the park check in on_configure must
   // not judge the box (or its flag) the PREVIOUS configure loaded.
   arm_qdd_max_.clear();
   arm_qdd_provisional_ = true;
-  arm_qdd_source_.clear();
 
   // The builder was acquired by SetupTrajInput (the vision frame needs the
   // model before the subscription exists); null means no model to drive.
@@ -805,7 +739,7 @@ void DemoCatchingController::SetupArmCommand() {
   cfg.anchor_drift_max = 0.0;
 
   const int nv = model.nv;
-  LoadDerivedAccelLimits();
+  ApplyArmAccelBox();
   BuildClikBoxes(nv, cfg);
   if (!ConfigureAccelConstraint(nv, cfg)) {
     return;  // logged; the arm is held
@@ -1338,24 +1272,22 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // #537 pre-S10 R3 (Q4): the box every ramp and the CLIK acceleration rows
     // run on is still provisional. Judged only on a box that LOADED — an
     // absent one is the supervisor's verdict above — and after it, so the
-    // more basic refusal is the one the operator reads. The file's flag has no
-    // key in `catching:`, hence not a validator failure; the park is the same
-    // one (L0 §5.3), and the log names the file's key.
+    // more basic refusal is the one the operator reads. The flag has no
+    // validator row in `catching:`, hence not a validator failure; the park is
+    // the same one (L0 §5.3), and the log names the key.
     if (!real_arm_config_ && !arm_qdd_max_.empty() && arm_qdd_provisional_) {
       RCLCPP_WARN(logger_,
-                  "catching config warning: derived_accel_limits.%s.provisional — the "
-                  "acceleration box at '%s' is provisional (sim only); a real-arm configuration "
-                  "is parked on it",
-                  accel_limits_group_.c_str(), arm_qdd_source_.c_str());
+                  "catching config warning: robot.arm.qdd_provisional — the acceleration box "
+                  "(robot.arm.qdd_max) is provisional (sim only); a real-arm configuration is "
+                  "parked on it");
     }
     if (real_arm_config_ && !arm_qdd_max_.empty() && arm_qdd_provisional_) {
       sim_only_disabled_ = true;
       park_reason_ = CatchingParkReason::kConsumedValues;
       RCLCPP_ERROR(logger_,
-                   "DISABLED: real-arm configuration with derived_accel_limits.%s.provisional "
-                   "true (or absent) in '%s' — the acceleration box is not cleared for this arm "
-                   "(L0 §5.3). It will refuse to activate; nothing was commanded.",
-                   accel_limits_group_.c_str(), arm_qdd_source_.c_str());
+                   "DISABLED: real-arm configuration with robot.arm.qdd_provisional true (or "
+                   "absent) — the acceleration box (robot.arm.qdd_max) is not cleared for this "
+                   "arm (L0 §5.3). It will refuse to activate; nothing was commanded.");
       TearDownConfiguredResources();
       return CallbackReturn::SUCCESS;
     }
@@ -1693,8 +1625,7 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
   }
   const auto n = static_cast<std::size_t>(arm_dof_);
   if (arm_qdd_max_.size() < n) {
-    return "robot.arm.accel_limits_path (the derived acceleration box the stop and homing ramp "
-           "with)";
+    return "robot.arm.qdd_max (the acceleration box the stop and homing ramp with)";
   }
   if (arm_q_min_margined_.size() < n || arm_q_max_margined_.size() < n) {
     return "the arm's joint_limits (the position box the stop and homing stay inside)";

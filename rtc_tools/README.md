@@ -78,7 +78,7 @@ rtc_tools/
 | `ros2 run rtc_tools hand_udp_sender_example` | `utils.hand_udp_sender_example` | 핸드 UDP 테스트 (대화형) |
 | `ros2 run rtc_tools compare_mjcf_urdf` | `validation.compare_mjcf_urdf` | MJCF/URDF 파라미터 비교 |
 | `ros2 run rtc_tools urdf_to_mjcf` | `conversion.urdf_to_mjcf` | URDF/XACRO → MJCF 변환 |
-| `ros2 run rtc_tools derive_accel_limits` | `analysis.derive_accel_limits` | 토크 한계에서 관절 가속 상수 box 도출 (provenance YAML) |
+| `ros2 run rtc_tools derive_accel_limits` | `analysis.derive_accel_limits` | 토크 한계에서 관절 가속 상수 box 도출 (분석 도구 — provenance YAML 은 repo 밖 산출물) |
 | `ros2 run rtc_tools catchability_map` | `analysis.catchability_map` | catchability 지도 (grid → 비행 → C++ judge → 집계·플롯) |
 | `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
 | `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
@@ -247,8 +247,11 @@ GUI 로 뜬 figure 의 **subplot 을 우클릭**하면 x/y 범위를 숫자로 �
 ros2 run rtc_tools derive_accel_limits \
   --robot-config integrated_bringup/config/ur5e_p1b/_base.yaml --group ur5e \
   --eta-tau 0.8 --samples 20000 --check rnea \
-  --out integrated_bringup/config/ur5e_p1b/derived_accel_limits.yaml
+  --out /tmp/ur5e_p1b_accel_limits.yaml   # 분석 산출물 — 컨트롤러 입력이 아니다
 ```
+
+출력 파일은 출하물도 컨트롤러 입력도 아니다 (E1-F11). 컨트롤러가 읽는 box 는 `catching/search_grid.yaml` 의
+`robot.arm.qdd_max` 이고, 이 도구는 그 값을 정할 때 쓰는 계산이다.
 
 - 입력: 로봇 config 의 `devices.<group>.joint_state_names`·`joint_limits.{max_torque,max_velocity,position_*}`, `urdf.package/path` (xacro 확장). `--eta-tau` 는 기본값이 없다 (결정 사항)
 - 표본 범위 기본값은 관절 한계 box 전체 (URDF ∩ config) 와 ±max_velocity. `--q-center/--q-halfwidth` 로 좁힌다
@@ -434,7 +437,7 @@ ros2 run rtc_tools catching_hand_near \
 
 ```bash
 ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir $CFG --out ab/ \
-    [--overlay <overlay.yaml>] [--write-envelope-box <derived_accel_limits.yaml>]
+    [--overlay <overlay.yaml>] [--write-envelope-box <sim_override.yaml>]
 # → ab/{arm_budget_summary.json, arm_budget_trials.csv}; 리포트는 stdout
 ```
 
@@ -452,12 +455,12 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
   러너가 `run_meta.json` 에 남긴 컨트롤러 **미러** (S8-G 부터; 미러는 TBD 잎도 컨트롤러가 *실행한* 기본값으로 낸다) → 없으면
   launch 와 같은 순서로 파일을 합성한다: 컨트롤러 YAML → `sim.yaml` 의 `<controller>.catching` override → `--overlay`. 출처를
   `budget.source` 로 보고한다. `--time-margin-s` 는 그 해소값을 덮는 명시 override 다
-- `--write-envelope-box`: unit 들의 envelope p95 를 관절별 max 로 모아 `derived_accel_limits` 형식 (`adopted: true`,
-  `provisional: true`, provenance 에 unit 목록·방법) 으로 쓴다 — sim overlay 의 `robot.arm.accel_limits_path` 가 가리킬 파일.
-  토크 도출이 아니라 실행값이므로 sim 전용
+- `--write-envelope-box`: unit 들의 envelope p95 를 관절별 max 로 모아 sim override 조각 (`<controller>.catching.robot.arm.qdd_max` —
+  원소 전부 float — 와 `qdd_provisional: true`; unit 이름은 주석) 으로 쓴다 — 로봇 config 의 `sim.yaml` 에 옮기거나 `--overlay` 로
+  넘긴다. 토크 도출이 아니라 실행값이므로 sim 전용
 - 합성 positive control (`test/test_catching_arm_budget.py`, 24 케이스): 알려진 τ·ω·포화 구간·램프 가속·토크 비율·rank 비트를
   심은 unit 에서 각각을 복원 (τ ±5 %, 잔여 = 이론값, envelope = 램프 가속), 닫힌해 도달시간 7 케이스, 미러 없는 경우의
-  profile → sim.yaml → overlay 합성 순서, `adopted: false` box 거부, 관절별 box 초과 판정, lane 행 누락·헤더만 있는 lane,
+  profile → sim.yaml → overlay 합성 순서, `robot.arm.qdd_max` 키 읽기 (없음·길이·양수), envelope override 조각, 관절별 box 초과 판정, lane 행 누락·헤더만 있는 lane,
   다른 팔 unit 의 envelope 합치기 거부, CLI end-to-end
 
 ### `catching_decel.py` — DECEL 정지 구간 지표 (MPC · dual-arm 계획 E0-F02)
@@ -841,7 +844,7 @@ ros2 run rtc_tools catch_speed_budget \
   (S4.4 결정: TCP 항은 관절 정격 안에서 구속하지 않는다)
 - **python 이 거는 경계**: p_stop 이 도달 구·바닥 안인가 (`planner.workspace.catch_box` 가 TBD 라 지도와
   같은 경계를 쓴다)
-- **도달시간은 두 층**을 항상 같이 낸다. `box` = 출하 가속 box (`--accel-limits`, plan §9) 로 C++ 가
+- **도달시간은 두 층**을 항상 같이 낸다. `box` = 컨트롤러 YAML 의 가속 box (`catching.robot.arm.qdd_max` — `--controller-config`, 기본은 `--robot-config` 옆 `controllers/<--controller>.yaml`, `include:` 조각 합성) 로 C++ 가
   판정. `torque` = **그 이동**이 토크 한계 안에 드는가 — 전 관절이 하나의 bang-bang/사다리꼴 경로
   프로파일을 따라 대기 자세 → q\* 로 가고, 경로 전체에서 |M q̈ + h| ≤ η_τ τ_max (회전자 관성 포함) 인
   최대 경로 가속을 이분 탐색한다. 충분조건이고 런타임 대응물이 아직 없어 **provisional** 이다 (D-16 개정)
@@ -856,7 +859,7 @@ ros2 run rtc_tools catch_speed_budget \
 ros2 run rtc_tools catch_gate_map \
   --robot-config <config>/<robot>/_base.yaml --group <arm_group> \
   --map-dir <catchability_map out-dir> --out-dir <out> --velocity-source model \
-  --accel-limits <config>/<robot>/derived_accel_limits.yaml --eta-v 0.9 --eta-tau 0.8 \
+  --controller-config <config>/<robot>/controllers/demo_catching_controller.yaml --eta-v 0.9 --eta-tau 0.8 \
   --rotor-inertia '0.1 0.1 0.1 0.1 0.1 0.1' --rotor-inertia-source '<mjcf>:<line> armature' \
   --v-max-m-s derived --d-eff-m 0.095 --d-eff-source 'planner.hand.d_eff' \
   --close-total-s 0.2815 --gamma-margin-m-s 0.1 \

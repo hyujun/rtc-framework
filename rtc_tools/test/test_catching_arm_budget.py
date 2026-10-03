@@ -84,19 +84,7 @@ def make_config(
         )
     arm_block = {}
     if box is not None:
-        _write_yaml(
-            cfg / "derived_accel_limits.yaml",
-            {
-                "derived_accel_limits": {
-                    ARM: {"qdd_max": list(box), "adopted": True, "provisional": True}
-                }
-            },
-        )
-        arm_block = {
-            "accel_limits_package": "some_pkg",
-            "accel_limits_path": "config/robot/derived_accel_limits.yaml",
-            "accel_limits_group": ARM,
-        }
+        arm_block = {"qdd_max": list(box), "qdd_provisional": True}
     _write_yaml(
         cfg / "controllers" / f"{CONTROLLER}.yaml",
         {
@@ -542,6 +530,98 @@ def test_a_box_that_is_not_adopted_or_absent_reads_as_no_box(tmp_path):
     box = tmp_path / "share" / "config" / "robot" / "derived_accel_limits.yaml"
     _write_yaml(box, {"derived_accel_limits": {ARM: {"qdd_max": [5.0, 5.0], "adopted": False}}})
     assert ab._box_from_file(cfg, "pkg", "config/robot/derived_accel_limits.yaml", ARM, 2) == []
+
+
+def test_the_box_is_read_from_the_composed_controller_keys_in_launch_order(tmp_path):
+    """Without a mirror the box is ``robot.arm.qdd_max`` of what the launch
+    composes: the controller YAML, then sim.yaml, then the overlay — the later
+    one wins."""
+    cfg = make_config(tmp_path / "share")
+    unit, session, _ = make_session(tmp_path, n_trials=1, mirror=False)
+    b = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]["budget"]
+    assert b["qdd_box"] == list(BOX)
+    assert b["source"]["qdd_box"] == "robot.arm.qdd_max (profile)"
+    sim = yaml.safe_load((cfg / "sim.yaml").read_text())
+    sim["/**"]["ros__parameters"][CONTROLLER] = {
+        "catching": {"robot": {"arm": {"qdd_max": [9.0, 9.5], "qdd_provisional": True}}}
+    }
+    _write_yaml(cfg / "sim.yaml", sim)
+    b = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]["budget"]
+    assert b["qdd_box"] == [9.0, 9.5]
+    assert b["source"]["qdd_box"] == "robot.arm.qdd_max (profile+sim.yaml)"
+    overlay = tmp_path / "ov.yaml"
+    _write_yaml(
+        overlay,
+        {
+            "integrated_rt_controller": {
+                "ros__parameters": {
+                    CONTROLLER: {"catching": {"robot": {"arm": {"qdd_max": [3.0, 4.0]}}}}
+                }
+            }
+        },
+    )
+    b = ab.analyse_unit(unit, session, cfg, overlays=[overlay], n_boot=5)["summary"]["budget"]
+    assert b["qdd_box"] == [3.0, 4.0]
+    assert b["source"]["qdd_box"] == "robot.arm.qdd_max (profile+sim.yaml+overlays)"
+
+
+def test_a_key_that_is_no_box_reads_as_no_box():
+    """What the controller does with it: no box is loaded (and it parks)."""
+    assert ab._box_from_keys([1.0, 2.5]) == [1.0, 2.5]
+    for bad in (None, 2.0, "fast", [], [1.0, 0.0], [1.0, -1.0], [1.0, math.nan], ["a", 1.0]):
+        assert ab._box_from_keys(bad) == [], bad
+
+
+def test_the_envelope_override_pools_the_per_joint_max_as_floats_and_stays_provisional():
+    units = [
+        {"summary": {"unit": "/x/u1", "budget": {"joints": list(JOINTS)},
+                     "clik": {"envelope_p95_rad_s2": [8.0, 1.0]}}},
+        {"summary": {"unit": "/x/u2", "budget": {"joints": list(JOINTS)},
+                     "clik": {"envelope_p95_rad_s2": [6.0, 3.0]}}},
+    ]  # fmt: skip
+    doc = ab.envelope_box_override(units, CONTROLLER)
+    arm = doc["/**"]["ros__parameters"][CONTROLLER]["catching"]["robot"]["arm"]
+    assert arm == {"qdd_max": [8.0, 3.0], "qdd_provisional": True}
+    assert all(isinstance(v, float) for v in arm["qdd_max"])  # one ROS array type
+    with pytest.raises(ValueError):
+        ab.envelope_box_override([], CONTROLLER)
+
+
+def test_the_envelope_override_refuses_units_of_different_arms():
+    def unit(name, joints):
+        return {
+            "summary": {
+                "unit": name,
+                "budget": {"joints": joints},
+                "clik": {"envelope_p95_rad_s2": [1.0] * len(joints)},
+            }
+        }
+
+    with pytest.raises(SystemExit, match="joint order"):
+        ab.envelope_box_override(
+            [unit("u1", ["j_a", "j_b"]), unit("u2", ["j_b", "j_a"])], CONTROLLER
+        )
+    with pytest.raises(SystemExit, match="differ"):
+        ab.envelope_box_override([unit("u1", ["j_a", "j_b"]), unit("u2", ["j_a"])], CONTROLLER)
+
+
+def test_main_writes_an_override_snippet_the_overlay_reader_takes_back(tmp_path):
+    """The snippet is a sim override: the reader of ``sim.yaml`` and ``--overlay``
+    files sees the same box and flag."""
+    cfg = make_config(tmp_path / "share")
+    unit, session, _ = make_session(tmp_path, n_trials=2)
+    snippet = tmp_path / "env_box.yaml"
+    rc = ab.main(
+        [str(unit), "--config-dir", str(cfg), "--n-boot", "5", "--out", str(tmp_path / "out"),
+         "--write-envelope-box", str(snippet)]
+    )  # fmt: skip
+    assert rc == 0
+    arm = yaml.safe_load(snippet.read_text())["/**"]["ros__parameters"][CONTROLLER]["catching"][
+        "robot"
+    ]["arm"]
+    assert arm["qdd_max"][0] == pytest.approx(RAMP_ACCEL, rel=0.05)
+    assert arm["qdd_provisional"] is True
+    assert ab._overlay_catching(snippet, CONTROLLER)["robot"]["arm"] == arm
 
 
 def test_the_envelope_box_document_pools_the_per_joint_max_and_carries_provenance():

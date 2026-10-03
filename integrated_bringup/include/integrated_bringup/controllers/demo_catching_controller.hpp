@@ -721,15 +721,16 @@ class DemoCatchingController final : public RTControllerInterface {
   /// configures and still holds the arm.
   void SetupArmCommand();
 
-  /// Read the D-16 acceleration box (A-S5-6) from the file the YAML names
-  /// (package-relative, or absolute). Logs and leaves `arm_qdd_max_` EMPTY
-  /// when the file is missing, not adopted, or does not cover the arm — the
-  /// box is a DERIVED artefact, so an absent one is a configuration error and
-  /// not something to substitute a default for; SupervisorValueMissing() is
-  /// what judges the absence. A box that loads also records the file's
-  /// `provisional` flag (absent = true), which on_configure parks a real-arm
-  /// configuration on (#537 pre-S10 R3, Q4).
-  void LoadDerivedAccelLimits();
+  /// Judge the acceleration box LoadConfig read (`robot.arm.qdd_max`,
+  /// `robot.arm.qdd_provisional`) against the arm's DOF. Logs and leaves
+  /// `arm_qdd_max_` EMPTY when the key is absent, malformed, the wrong length
+  /// or not positive — the box is a configured value with no defensible
+  /// default, so an absent one is a configuration error and not something to
+  /// substitute a default for; SupervisorValueMissing() is what judges the
+  /// absence. A box that passes also takes the `provisional` flag (absent =
+  /// true), which on_configure parks a real-arm configuration on (#537
+  /// pre-S10 R3, Q4).
+  void ApplyArmAccelBox();
 
   /// Assemble the position / velocity / acceleration boxes CLIK is given, in
   /// Pinocchio order. Non-RT.
@@ -1274,15 +1275,16 @@ class DemoCatchingController final : public RTControllerInterface {
   double limit_margin_{0.05};
 
   // ── Oracle plan (A-S5-8, the S5.3/S5.5 stand-in for the S6 planner) ──────
-  std::string accel_limits_package_{"integrated_bringup"};
-  std::string accel_limits_path_;
-  std::string accel_limits_group_;
-  std::vector<double> arm_qdd_max_;  // device order, from the derived file
-  /// The loaded box's own `provisional` flag and the file it came from (the
-  /// park's log line names both). Meaningful only while `arm_qdd_max_` is not
-  /// empty; rewritten by every LoadDerivedAccelLimits().
+  /// `robot.arm.qdd_max` / `qdd_provisional` as LoadConfig read them, before
+  /// they are judged against the arm's DOF (ApplyArmAccelBox).
+  std::vector<double> arm_qdd_cfg_;
+  bool arm_qdd_cfg_present_{false};
+  bool arm_qdd_cfg_malformed_{false};
+  bool arm_qdd_provisional_cfg_{true};
+  std::vector<double> arm_qdd_max_;  // device order, the judged `robot.arm.qdd_max`
+  /// The judged box's `provisional` flag. Meaningful only while `arm_qdd_max_`
+  /// is not empty; rewritten by every ApplyArmAccelBox().
   bool arm_qdd_provisional_{true};
-  std::string arm_qdd_source_;
   /// The ARM's position box after `limit_margin_`, device order — the same
   /// box handed to CLIK, cached here because the abort ramp needs it too.
   /// `JointSpaceDecelStep` documents its bounds as "the caller's box, already

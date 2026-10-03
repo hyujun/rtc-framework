@@ -1546,6 +1546,79 @@ TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
   }
 }
 
+// The acceleration box is two plain keys of the search fragment. The mirror is
+// what every reader of the loaded value (the search, the stop and homing ramp,
+// CLIK's `box` form, the tools) sees, so it is the place to pin the value.
+TEST_P(ShippedCatchingProfile, MirrorsTheShippedAccelerationBox) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const std::vector<double> expected =
+      profile == "ur5e_p1b" ? std::vector<double>(6, 2.03052) : std::vector<double>(7, 9.197629);
+
+  const std::string main_path = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                                "/controllers/demo_catching_controller.yaml";
+  const YAML::Node main_arm =
+      YAML::LoadFile(main_path)["demo_catching_controller"]["catching"]["robot"]["arm"];
+  EXPECT_FALSE(main_arm["qdd_max"].IsDefined()) << profile << ": the box belongs to the search";
+  EXPECT_FALSE(main_arm["qdd_provisional"].IsDefined()) << profile;
+
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  auto node_handle = NodeWithProfile("catching_shipped_box_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  const auto mirrored = node_handle->get_parameter("robot.arm.qdd_max").as_double_array();
+  ASSERT_EQ(mirrored.size(), expected.size()) << profile;
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_DOUBLE_EQ(mirrored[i], expected[i]) << profile << " joint " << i;
+  }
+  EXPECT_FALSE(node_handle->has_parameter("robot.arm.accel_limits_path"))
+      << profile << ": the box file is gone, so is its mirror";
+}
+
+// ur5e_p1b's sim.yaml replaces the box with the executed envelope. The CM
+// applies that block like a sim_overlay — it writes the block's leaves into
+// the composed tree — so the same write is made here and read back from the
+// mirror. The block's arrays must be float arrays (a ROS parameter array has one
+// type; `[20, ...]` would be an integer array).
+TEST_P(ShippedCatchingProfile, TheP1bSimOverrideSetsTheEnvelopeBox) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  if (profile != "ur5e_p1b") {
+    GTEST_SKIP() << "only ur5e_p1b's sim.yaml overrides the box";
+  }
+  const std::vector<double> envelope = {20.2531, 30.859, 36.9851, 21.5036, 14.2481, 29.0196};
+
+  const YAML::Node sim = YAML::LoadFile(std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                                        "/sim.yaml")["/**"]["ros__parameters"];
+  const YAML::Node arm = sim["demo_catching_controller"]["catching"]["robot"]["arm"];
+  ASSERT_TRUE(arm.IsDefined());
+  ASSERT_EQ(arm.size(), 2U) << "the override carries the box and its flag, nothing else";
+  ASSERT_TRUE(arm["qdd_max"].IsSequence());
+  for (const auto& v : arm["qdd_max"]) {
+    EXPECT_NE(v.Scalar().find('.'), std::string::npos) << v.Scalar() << ": not a float literal";
+  }
+  EXPECT_TRUE(arm["qdd_provisional"].as<bool>());
+
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  node["catching"]["robot"]["arm"]["qdd_max"] = arm["qdd_max"];
+  node["catching"]["robot"]["arm"]["qdd_provisional"] = arm["qdd_provisional"];
+  auto node_handle = NodeWithProfile("catching_shipped_envelope_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  const auto mirrored = node_handle->get_parameter("robot.arm.qdd_max").as_double_array();
+  ASSERT_EQ(mirrored.size(), envelope.size());
+  for (std::size_t i = 0; i < envelope.size(); ++i) {
+    EXPECT_DOUBLE_EQ(mirrored[i], envelope[i]) << "joint " << i;
+  }
+}
+
 TEST_P(ShippedCatchingProfile, RefusesToActivateThePlannerUnderTheMpcOffProfile) {
   // Same gate, same place as DemoWbc's (#350): on_activate's first statement,
   // before any side effect — above all, no planner thread on a core the

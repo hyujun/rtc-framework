@@ -69,7 +69,6 @@ namespace {
 
 using integrated_bringup::DemoCatchingController;
 using integrated_bringup::testfx::AccelBoxFlag;
-using integrated_bringup::testfx::AccelLimitsCopy;
 using integrated_bringup::testfx::CatchFrameOracle;
 using integrated_bringup::testfx::FakeSteadyClock;
 using integrated_bringup::testfx::kDt;
@@ -215,13 +214,10 @@ std::string SeqString(const std::vector<Mode>& seq) {
   return s;
 }
 
-/// The D-16 acceleration box, read from the file the controller reads — the
-/// bound every joint-space ramp must respect per tick.
+/// The acceleration box (`robot.arm.qdd_max`), read from the shipped profile the
+/// controller reads — the bound every joint-space ramp must respect per tick.
 std::vector<double> DerivedQddMax() {
-  const std::string path = ament_index_cpp::get_package_share_directory("integrated_bringup") +
-                           "/config/ur5e_p1b/derived_accel_limits.yaml";
-  const YAML::Node y = YAML::LoadFile(path);
-  return y["derived_accel_limits"]["ur5e"]["qdd_max"].as<std::vector<double>>();
+  return integrated_bringup::testfx::ShippedQddMax();
 }
 
 /// What one tick left behind.
@@ -4098,7 +4094,18 @@ class SafetyGateParkTest : public SupervisorScenarioTest {
 
   static std::function<void(YAML::Node&)> AccelBox(AccelBoxFlag flag) {
     return [flag](YAML::Node& y) {
-      y["catching"]["robot"]["arm"]["accel_limits_path"] = AccelLimitsCopy(flag);
+      YAML::Node arm = y["catching"]["robot"]["arm"];
+      switch (flag) {
+        case AccelBoxFlag::kCleared:
+          arm["qdd_provisional"] = false;
+          break;
+        case AccelBoxFlag::kProvisional:
+          arm["qdd_provisional"] = true;
+          break;
+        case AccelBoxFlag::kAbsent:
+          arm.remove("qdd_provisional");
+          break;
+      }
     };
   }
 
@@ -4108,6 +4115,12 @@ class SafetyGateParkTest : public SupervisorScenarioTest {
 
   const rclcpp_lifecycle::State prev_;
 };
+
+// The box used to be a file copy whose path the tests looked for in the log. The
+// old needles below still name it; they are replaced in the follow-up commit.
+std::string AccelLimitsCopy(AccelBoxFlag) {
+  return "derived_accel_limits.yaml";
+}
 
 TEST_F(SafetyGateParkTest, TheFixtureProfileWithEveryParkKeyClearedActivatesOnTheRealArm) {
   // Positive control for every park below: same fixture, nothing provisional.
@@ -4132,7 +4145,7 @@ TEST_F(SafetyGateParkTest, AReconfigureWithoutABoxDoesNotKeepTheLastOnes) {
   ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
 
   YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
-  yaml["catching"]["robot"]["arm"].remove("accel_limits_path");
+  yaml["catching"]["robot"]["arm"].remove("qdd_max");
   ASSERT_EQ(ctrl_->on_configure(prev_, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_TRUE(ctrl_->IsSimOnlyDisabled()) << "ran on the box of a profile it no longer has";
@@ -4166,6 +4179,101 @@ TEST_F(SafetyGateParkTest, APackageRelativeAccelerationBoxStillLoads) {
       },
       /*sim=*/true));
   ExpectActivates();
+}
+
+// ── the acceleration box's keys: `robot.arm.qdd_max` · `qdd_provisional` ─────
+
+TEST_F(SafetyGateParkTest, AProvisionalQddBoxParksTheRealArm) {
+  // Q4: the box is reviewed but still provisional — the real arm's is not
+  // identified. Every ramp and the CLIK box run on it. Same park, same reason
+  // code, and the log names the key.
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kProvisional), /*sim=*/false));
+  ExpectParked({"robot.arm.qdd_provisional"});
+}
+
+TEST_F(SafetyGateParkTest, AQddBoxWithoutTheFlagIsProvisional) {
+  // Fail-closed: a profile that does not say is not a profile that was cleared.
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kAbsent), /*sim=*/false));
+  ExpectParked({"robot.arm.qdd_provisional"});
+}
+
+TEST_F(SafetyGateParkTest, AQddProvisionalThatIsNotABoolIsProvisional) {
+  ASSERT_NO_FATAL_FAILURE(
+      Configure([](YAML::Node& y) { y["catching"]["robot"]["arm"]["qdd_provisional"] = "cleared"; },
+                /*sim=*/false));
+  ExpectParked({"robot.arm.qdd_provisional"});
+}
+
+TEST_F(SafetyGateParkTest, AProvisionalQddBoxOnlyWarnsInSim) {
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kProvisional), /*sim=*/true));
+  EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"robot.arm.qdd_provisional"}).empty());
+  ExpectActivates();
+}
+
+TEST_F(SafetyGateParkTest, AClearedQddBoxIsTheValueTheProfileNames) {
+  // The positive control of the three below: the box that loads is the one the
+  // fixture wrote, so a parked case is parked by ITS defect and not by a box
+  // that never loaded.
+  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kCleared), /*sim=*/false));
+  ExpectActivates();
+  EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"acceleration box"}).empty());
+}
+
+struct BadQddBox {
+  const char* name;
+  std::function<void(YAML::Node&)> tweak;
+};
+
+TEST_F(SafetyGateParkTest, AMissingShortOrNonPositiveQddBoxParksAsNoBox) {
+  // A bad box is not a configure failure but an empty box: the same
+  // supervisor park as a profile with no box at all (nothing to ramp within).
+  const std::vector<BadQddBox> cases = {
+      {"absent", [](YAML::Node& y) { y["catching"]["robot"]["arm"].remove("qdd_max"); }},
+      {"short",
+       [](YAML::Node& y) {
+         YAML::Node box(YAML::NodeType::Sequence);
+         for (int i = 0; i < kUr5eArmDof - 1; ++i) {
+           box.push_back(2.0);
+         }
+         y["catching"]["robot"]["arm"]["qdd_max"] = box;
+       }},
+      {"zero entry", [](YAML::Node& y) { y["catching"]["robot"]["arm"]["qdd_max"][2] = 0.0; }},
+      {"negative entry", [](YAML::Node& y) { y["catching"]["robot"]["arm"]["qdd_max"][0] = -1.0; }},
+      {"not a sequence", [](YAML::Node& y) { y["catching"]["robot"]["arm"]["qdd_max"] = 2.0; }},
+      {"non-numeric entry",
+       [](YAML::Node& y) { y["catching"]["robot"]["arm"]["qdd_max"][1] = "fast"; }},
+  };
+  for (const auto& c : cases) {
+    SCOPED_TRACE(c.name);
+    ASSERT_NO_FATAL_FAILURE(Configure(c.tweak, /*sim=*/false));
+    EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+    EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kSupervisorUnset);
+    EXPECT_NE(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+}
+
+TEST_F(SafetyGateParkTest, ARemovedAccelLimitsKeyRefusesTheConfigureNamingTheNewKey) {
+  // An old overlay that set the path would otherwise be ignored and the run
+  // would silently fall back to the shipped box. Refused, loudly — a
+  // configure FAILURE (like every malformed key of this controller), whose
+  // message names the key to use instead.
+  for (const char* key : {"accel_limits_path", "accel_limits_package", "accel_limits_group"}) {
+    SCOPED_TRACE(key);
+    YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
+    yaml["catching"]["robot"]["arm"][key] = "config/ur5e_p1b/derived_accel_limits.yaml";
+    ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
+    ctrl_->SetSharedModelBuilder(builder_);
+    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+    LogSink::Clear();
+    EXPECT_EQ(ctrl_->on_configure(prev_, node_, yaml),
+              DemoCatchingController::CallbackReturn::FAILURE);
+    EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                                   {std::string("catching.robot.arm.") + key, "qdd_max"})
+                     .empty())
+        << "the refusal must name both the removed key and the key to use";
+  }
 }
 
 TEST_F(SafetyGateParkTest, AProvisionalArmLagParksTheRealArm) {

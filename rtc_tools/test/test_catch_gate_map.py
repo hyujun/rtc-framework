@@ -31,6 +31,7 @@ from rtc_tools.analysis import (
     catch_speed_budget as csb,  # noqa: E402
 )
 
+CONTROLLER = "demo_catching_controller"
 QDD_BOX = np.array([60.0, 50.0, 70.0, 90.0, 80.0, 100.0])
 BIG_TAU = np.full(6, 1e6)
 BIG_QD = np.full(6, 1e3)
@@ -339,7 +340,11 @@ def _write_run(
     limits = tmp_path / "limits.yaml"
     limits.write_text(
         yaml.safe_dump(
-            {"derived_accel_limits": {"arm": {"qdd_max": (box_scale * QDD_BOX).tolist()}}}
+            {
+                CONTROLLER: {
+                    "catching": {"robot": {"arm": {"qdd_max": (box_scale * QDD_BOX).tolist()}}}
+                }
+            }
         )
     )
     keep = {"--robot-config", "--group", "--map-dir", "--out-dir", "--urdf", "--velocity-source",
@@ -350,7 +355,7 @@ def _write_run(
     pairs = {k: v for k, v in pairs.items() if k in keep}
     pairs.update(
         {
-            "--accel-limits": str(limits),
+            "--controller-config": str(limits),
             "--v-max-m-s": "derived",
             "--d-eff-m": "0.2",
             "--d-eff-source": "test",
@@ -366,6 +371,38 @@ def _write_run(
 
 def _summary(tmp_path: Path) -> dict:
     return yaml.safe_load((tmp_path / "out" / "gate_map_summary.yaml").read_text())
+
+
+def test_the_box_defaults_to_the_controller_yaml_next_to_the_robot_config(tmp_path, arm):
+    """No --controller-config: <robot-config dir>/controllers/<key>.yaml, composed
+    with its ``include:`` fragments (the main file alone lacks the box)."""
+    argv = _write_run(tmp_path, arm)
+    i = argv.index("--robot-config")
+    config_dir = Path(argv[i + 1]).parent
+    j = argv.index("--controller-config")
+    shipped = Path(argv[j + 1])
+    del argv[j : j + 2]
+    controllers = config_dir / "controllers"
+    (controllers / "catching").mkdir(parents=True)
+    box = yaml.safe_load(shipped.read_text())[CONTROLLER]["catching"]["robot"]["arm"]["qdd_max"]
+    (controllers / "catching" / "search.yaml").write_text(
+        yaml.safe_dump({CONTROLLER: {"catching": {"robot": {"arm": {"qdd_max": box}}}}})
+    )
+    (controllers / f"{CONTROLLER}.yaml").write_text(
+        yaml.safe_dump({"include": ["catching/search.yaml"], CONTROLLER: {"catching": {}}})
+    )
+    assert cgm.main(argv) == 0
+    summary = _summary(tmp_path)
+    assert summary["qdd_box"] == pytest.approx(box)
+    assert summary["controller_config"] == str(controllers / f"{CONTROLLER}.yaml")
+
+
+def test_a_missing_box_key_is_refused_naming_the_key(tmp_path, arm):
+    argv = _write_run(tmp_path, arm)
+    j = argv.index("--controller-config")
+    Path(argv[j + 1]).write_text(yaml.safe_dump({CONTROLLER: {"catching": {}}}))
+    with pytest.raises(SystemExit, match="catching.robot.arm.qdd_max"):
+        cgm.main(argv)
 
 
 def test_summary_map_dir_is_absolute_from_a_relative_argument(tmp_path, arm, monkeypatch):
@@ -459,7 +496,7 @@ def test_each_constant_reaches_its_own_gate(tmp_path, arm):
 def test_the_acceleration_box_binds_the_box_layer_only(tmp_path, arm):
     argv = _write_run(tmp_path, arm)
     (tmp_path / "limits.yaml").write_text(
-        yaml.safe_dump({"derived_accel_limits": {"arm": {"qdd_max": [1e-3] * 6}}})
+        yaml.safe_dump({CONTROLLER: {"catching": {"robot": {"arm": {"qdd_max": [1e-3] * 6}}}}})
     )
     assert cgm.main(argv) == 0
     assert _summary(tmp_path)["open_throws"] == {"box": 0, "torque": 2}

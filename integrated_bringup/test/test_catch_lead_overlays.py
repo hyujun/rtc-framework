@@ -334,6 +334,28 @@ def test_sim_yaml_points_the_planner_box_at_the_envelope_file_and_names_shipped_
     )
 
 
+def test_sim_yaml_overrides_the_planner_box_with_float_keys_of_the_shipped_type(shipped):
+    """The sim robot config overrides the box with ONE array and its flag — and
+    only those — at shipped keys of the same type. Every element is a float: a
+    ROS parameter array has one type, so an integer literal would turn the whole
+    override into an integer array. The real robot.yaml must not carry it."""
+    sim = _load(os.path.join(CONFIG_DIR, "sim.yaml"))["/**"]["ros__parameters"]
+    tree = sim[CONTROLLER]
+    arm = ("catching", "robot", "arm")
+    assert set(_leaves(tree)) == {arm + ("qdd_max",), arm + ("qdd_provisional",)}
+    assert _unread_leaves(tree, shipped) == []
+    box = tree["catching"]["robot"]["arm"]["qdd_max"]
+    assert box == [20.2531, 30.859, 36.9851, 21.5036, 14.2481, 29.0196]
+    assert all(isinstance(v, float) for v in box)
+    assert tree["catching"]["robot"]["arm"]["qdd_provisional"] is True
+    shipped_box = shipped["catching"]["robot"]["arm"]["qdd_max"]
+    assert len(box) == len(shipped_box)
+    # The point of the override: the envelope is well above the shipped derived box.
+    assert all(e > 2 * s for e, s in zip(box, shipped_box, strict=True))
+    robot = _load(os.path.join(CONFIG_DIR, "robot.yaml"))["/**"]["ros__parameters"]
+    assert CONTROLLER not in robot, "the real arm keeps the shipped box (S10 measures its own)"
+
+
 # ── iiwa7_leap (S8-D) ────────────────────────────────────────────────────────
 
 

@@ -54,6 +54,8 @@ FRAGMENT_KEYS = {
         "catching.planner.hand.",
         "catching.planner.ik.",
         "catching.planner.catchability.",
+        "catching.robot.arm.qdd_max",
+        "catching.robot.arm.qdd_provisional",
     ),
     CLOSED_FORM: (
         "catching.reference.",
