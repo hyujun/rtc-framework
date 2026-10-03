@@ -51,13 +51,17 @@
 
 상대시각은 수치 코어 경계에서만 만든다. 비교는 타입별 오버로드로만 한다 (`time_types.hpp`) — 원점이 다른 상대시각끼리 비교하지 않기 위해서다.
 
-게이트 적용 순서 (연산량이 싼 것부터, D-18 반영):
+후보 하나에 계산을 적용하는 순서 (런타임 `PlannerSearch::Plan`, 연산량이 싼 것부터):
 
-$$\text{§4.4 불확실성}\to\text{§4.2 IK}\to\text{§4.2 manipulability (D-18)}\to\text{§4.3 도달시간}\to\text{§4.5 γ 창}\to\text{§4.9 정지거리}\to\text{§4.8 rollout}\to\text{§4.6 오차 예산}\to\text{L7 §4.7 충격량}$$
+$$\text{입력 · §4.9 작업공간}(p_c)\ \cdot\ \text{§4.4 불확실성}\to\text{§4.2 IK · manipulability (D-18)}\to\text{§4.3 도달시간}\to\text{§4.5 γ 창}\to\text{§4.8 rollout}\ (\gamma_f)\to\text{§4.9 정지점}(\gamma_f)\to\text{§4.6 오차 예산}(\gamma_f)$$
 
-앞 단계에서 탈락하면 뒤 단계는 계산하지 않고 탈락 사유를 기록한다. 통과한 후보 중 §4.10 규칙으로 하나를 고르고, `closed_form` 에서는 **§4.7 히스테리시스**로 현재 plan과 비교한다. 후보가 하나도 남지 않으면 plan 없음(포기)이며, 사유 코드를 함께 기록한다. 충격량 $\Delta p=m(1-\gamma_f)\Vert v\Vert$ 은 `PlanSnapshot::dp_impact` 로 **기록만** 한다 — 임계가 정해지지 않아 (TBD-IMP-01, L7 §4.7) 탐색에 충격량 게이트는 없다.
+rollout 이 정지점과 오차 예산보다 **먼저** 다 — 둘 다 rollout 이 고른 $\gamma_f$ 로 계산한다 (rollout 을 돌릴 수 없으면 $\gamma_f=0$). 오프라인 지도 (`JudgeGates`) 는 포구 자세가 이미 있는 후보에 도달시간 · γ 창 · 정지점 (γ 창의 두 끝에서) 만 계산하고, rollout 과 `catch_box` 는 보지 않는다.
 
-**런타임 판정/순위 분리 (D-27).** 위 순서는 오프라인 지도의 **엄격한** 필터 순서다. 런타임 계획기 (`PlannerSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) · `planner.workspace.catch_box` 안의 $p_c$ 와 $p_{stop}$ — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가, 어디서 멈추는가의 문제). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `planner_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·작업공간·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창·정지점은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태).
+**구현하지 않은 항 — 충격량 게이트.** 설계의 순서는 끝에 충격량 게이트 (L7 §4.7) 를 둔다. 임계가 정해지지 않아 (TBD-IMP-01) 탐색에 이 게이트는 없고, `PlanReason::kImpulse` 는 쓰이지 않는다. 충격량 $\Delta p=m(1-\gamma_f)\Vert v\Vert$ 은 `PlanSnapshot::dp_impact` 로 **기록만** 한다.
+
+판정 게이트에서 탈락한 후보는 뒤 단계를 계산하지 않고 탈락 사유를 기록한다 (아래 "런타임 판정/순위 분리"). 통과한 후보 중 §4.10 규칙으로 하나를 고르고, `closed_form` 에서는 **§4.7 히스테리시스**로 현재 plan과 비교한다. 후보가 하나도 남지 않으면 plan 없음(포기)이며, 사유 코드를 함께 기록한다.
+
+**런타임 판정/순위 분리 (D-27).** 오프라인 지도는 자기가 계산하는 게이트를 **엄격한** 필터로 쓴다. 런타임 계획기 (`PlannerSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) · `planner.workspace.catch_box` 안의 $p_c$ 와 $p_{stop}$ — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가, 어디서 멈추는가의 문제). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `planner_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·작업공간·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창·정지점은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태).
 
 런타임의 한 사이클은 이 순서로 돈다: 창 안의 전 후보에 싼 항 → 사전 점수 상위 후보마다 IK (+ manipulability) → $\dot q^u$ 와 `JudgeRankGates` (도달시간 · γ 창) → rollout 이 $(\gamma_f,T_w)$ 를 고름 → 그 $\gamma_f$ 로 $p_{stop}$ 판정 → 오차 예산 → 점수.
 
@@ -199,15 +203,21 @@ vision 공분산의 신뢰성은 시뮬레이션에서 참값 대비 NEES로 확
 
 **하한 (손 폐쇄).** 상대속도 $(1-\gamma)\Vert v\Vert$로 포켓 유효 깊이 $d_{eff}$를 지나기 전에 손이 닫혀야 한다.
 
-$$\gamma\ge\gamma_{\min}=1-\frac{d_{eff}}{\Vert v(t_k)\Vert\,T_{close,tot}},\qquad T_{close,tot}=T_{close,e2e}+T_{tick}$$
+$$\gamma\ge\gamma_{\min}=\mathrm{clamp}\!\left(1-\frac{d_{eff}}{\Vert v(t_k)\Vert\,T_{close,tot}},\ 0,\ 1\right),\qquad T_{close,tot}=T_{close,e2e}+T_{tick}$$
 
 **`planner.hand.d_eff` 는 포켓 깊이가 아니다** — 시각 발동 fly-in 으로 잰 허용 상대속도 × $T_{close,tot}$ 다 (L6 §4.5). 이 절은 $d_{eff}$ 를 $d_{eff}/T_{close,tot}$ (손이 흡수할 수 있는 상대속도) 로만 쓰므로 식은 그대로고, 포켓 깊이는 접촉 물리량으로 L6 에 있다 (TBD-HAND-04). 유효 조건은 런타임 손 발동도 시각 발동이라는 것이다.
 
 **상한 (팔 속도).** 포구 자세 $q^\ast$에서 방향 $\hat v$로 낼 수 있는 최대 속력 $v_{dir,\max}$와 TCP 속도 한계 $v_{\max}$(= L4 `reference.v_max`)로 제한한다.
 
-$$\gamma\le\gamma_{\max}=\frac{\min(v_{dir,\max},\ \eta_vv_{\max})}{\Vert v\Vert}$$
+$$\gamma\le\gamma_{\max}=\mathrm{clamp}\!\left(\frac{\min(v_{dir,\max},\ \eta_vv_{\max})}{\Vert v\Vert},\ 0,\ 1\right)$$
 
-TCP 속도 한계를 빠뜨리면 계획이 통과시킨 γ가 L4에서 속도 포화를 일으킨다. `ComputeGammaWindow`는 두 값을 모두 인자로 받는다. 두 끝은 $[0,1]$ 로 clamp 한다.
+TCP 속도 한계를 빠뜨리면 계획이 통과시킨 γ가 L4에서 속도 포화를 일으킨다. `ComputeGammaWindow`는 두 값을 모두 인자로 받는다.
+
+**게이트.** 순위 게이트 `kRankGamma` 는 창이 비지 않고 공이 속력 여유 안에 있을 때 통과한다 (`JudgeRankGates`):
+
+$$\gamma_{\min}\le\gamma_{\max}\quad\text{and}\quad\Vert v\Vert+m_\gamma\ \le\ \Vert v\Vert_{\max}=\min(v_{dir,\max},\ \eta_vv_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
+
+$m_\gamma$ 는 `planner.gamma.margin` 이고 $\Vert v\Vert_{\max}$ 는 `MaxCatchableSpeed` 다. clamp 가 없는 두 식에서 $\gamma_{\min}\le\gamma_{\max}$ 는 $\Vert v\Vert\le\Vert v\Vert_{\max}$ 와 같은 조건이고, 둘째 조건은 거기에 여유 $m_\gamma$ 를 얹는다.
 
 - **$\eta_v$ 는 관절 속도 한계에도 적용한다** — $v_{dir,\max}$ 를 $\eta_v\dot q_{\max}$ 로 계산한다 (`RankGateInputs::qdot_plan`). 구속 항이 $v_{dir,\max}$ 일 때 TCP 항에만 여유를 두면 아래 D-9 의 완충이 사라진다
 - `reference.v_max` 는 실측값이 아니라 **도출값**이다 (L4 §6) — 그러면 위 $\min$ 의 TCP 항은 관절 정격이 허용하는 범위에서는 구속하지 않고 기준이 폭주할 때만 잡는다
@@ -363,9 +373,11 @@ $a_{dec}$ 는 L7 감속과 **같은 단일 키** `supervisor.decel.a_dec` 를 �
 
 단일 가중 점수 최소화를 쓴다. γ도 그 안의 한 항이다.
 
-$$J=w_\sigma\frac{\sigma_{\max}(t_k)}{r_{cap}}+w_t\frac{\max_it_{\min,i}}{t_k-now-T_{arm}}+w_q\Vert q^\ast-q_n\Vert^2+w_{late}\,(t_{k,\max}-t_k)-w_\gamma\,\gamma_f$$
+$$J=w_\sigma\frac{\sigma_{\max}(t_k)}{r_{cap}}+w_t\frac{\max_it_{\min,i}}{t_k-now-T_{arm}}+w_q\Vert q^\ast-q_n\Vert^2+w_{late}\,(t_{k,\max}-t_k)-w_\gamma\,\gamma_f+w_{pen}\,n_{fail}$$
 
-$w_{late}>0$이면 늦은 포구를 선호한다([R1]의 "latest" 목적과 같은 취지로, 예측이 정확해지는 시간을 번다). $w_\gamma>0$이면 soft catch를 선호한다(충격량 L7 §4.7, 오차 예산 §4.6 두 근거). 가중치는 튜닝 대상이다 (`planner.score.*`). 런타임 점수는 여기에 실패한 순위 게이트 하나당 `planner.score.penalty` 를 더한다 (§4.1). $\sigma$ 를 모르는 후보는 첫 항이, 도달시간을 쓸 수 없는 후보는 둘째 항이 빠진다 (둘 다 순위 벌점으로 반영된다).
+$n_{fail}$ 은 그 후보가 실패한 순위 게이트의 수 (§4.1 의 여섯 가운데, `RankGateBit` 의 켜진 비트 수), $w_{pen}$ 은 `planner.score.penalty` 다. $\sigma$ 를 모르는 후보는 첫 항이, 도달시간을 쓸 수 없는 후보는 둘째 항이 빠진다 — 그 후보는 해당 순위 게이트에 실패한 것이라 $n_{fail}$ 에 들어간다. $q_n$ 은 대기 자세 (IK 의 seed, §4.2) 다.
+
+$w_{late}>0$이면 늦은 포구를 선호한다([R1]의 "latest" 목적과 같은 취지로, 예측이 정확해지는 시간을 번다). $w_\gamma>0$이면 soft catch를 선호한다(충격량 L7 §4.7, 오차 예산 §4.6 두 근거). 가중치는 튜닝 대상이다 (`planner.score.*`).
 
 $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamma_f$ 가 연속 격자값이라 동률이 거의 나오지 않아 1순위에서 후보가 결정되고 나머지 가중이 전부 죽는다. $J$ 안의 항으로 두면 $w_\gamma$ 로 그 상충을 튜닝할 수 있고, $\gamma_f$ 를 사실상 절대 우선으로 두고 싶으면 $w_\gamma$ 를 크게 잡으면 된다 — 사전식은 $w_\gamma\to\infty$ 의 특수한 경우다.
 
@@ -373,7 +385,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 
 **적용: 공통** (commit 은 supervisor 의 것이고 두 planner 에서 같다).
 
-- commit 조건 (APPROACH→COMMITTED, plan §3): $t_c-now_{real}\le T_{freeze}$, $T_{freeze}\ge T_{close,tot}+T_{arm}+T_{margin}$. 비교 대상은 **실제 시각**이고, 팔 선행분은 $T_{freeze}$ 하한의 $T_{arm}$ 항이 흡수한다. **코드의 하한**: 검증기 `CheckFreezeCoversClose` 는 $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ 를 강제하고 (`lead_enable` 과 무관하게 $T_{arm}$ 을 읽는다), 계획기 후보 창 하한 (`planner.slice.t_lead_min`) 과 RT 채택 거부 (g) 도 $T_{freeze}$ 다. 순위 게이트 `kRankCommitLead` 는 후보의 선행 시간이 $T_{close,tot}+T_{arm}+$ `planner.time.margin` 이상인지를 본다. $T_{arm}$ 을 올리면 $T_{freeze}$ 하한도 함께 올라가고 그만큼 후보 창이 짧아진다
+- commit 조건 (APPROACH→COMMITTED, plan §3): $t_c-now_{real}\le T_{freeze}$. 비교 대상은 **실제 시각**이고, 팔 선행분은 $T_{freeze}$ 하한의 $T_{arm}$ 항이 흡수한다. **$T_{freeze}$ 의 하한**: 검증기 `CheckFreezeCoversClose` 가 $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ ($h$ = 제어 주기) 를 강제한다 (`lead_enable` 과 무관하게 $T_{arm}$ 을 읽는다). 계획기 후보 창 하한 (`planner.slice.t_lead_min` 이 없을 때) 과 RT 채택 거부 (g) 도 $T_{freeze}$ 다. 순위 게이트 `kRankCommitLead` 는 후보의 선행 시간이 $t_k-now\ge T_{close,tot}+T_{arm}+T_{margin}$ ($T_{margin}$ = `planner.time.margin`) 인지를 본다 — 이쪽은 $T_{freeze}$ 의 조건이 아니라 후보의 순위 조건이다. $T_{arm}$ 을 올리면 $T_{freeze}$ 하한도 함께 올라가고 그만큼 후보 창이 짧아진다
 - 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다. **단일 출처 (C-14).** 계획기(`planner_search.cpp`)와 oracle(`StoreOraclePlan`)은 `PlanSnapshot::t_cmd_ns` 를 각자 채운다 (oracle 은 $t_{cmd}=t_c$). 손 명령에 쓰는 값은 **손 시퀀서**가 COMMITTED 에서 동결된 $t_c$ 와 손 프로파일로 계산한 것 하나다 (`HandSequencer::Commit`, 접촉 판정 창도 같은 값) — `PlanSnapshot::t_cmd_ns` 는 계획기 기록·진단용일 뿐 손 명령에 쓰이지 않는다. 손 명령 발동은 L6 §4.3/§5.3 의 `HandCommandDueRounded`(R-CLOSE, L7 §4.1) 로 한다.
 - **$T_{tick}$은 여기에 넣지 않는다.** §4.5의 $T_{close,tot}=T_{close,e2e}+T_{tick}$ 에서 $T_{tick}=h/2$ 는 틱 양자화 오차의 **worst-case 예산**이다. L6 §4.3의 반올림 규칙(가장 가까운 틱)을 쓰면 오차는 $\pm h/2$ 로 영평균이라 명령 시각 자체를 당길 이유가 없다. γ 창(예산)에는 들어가고 $t_{cmd}$(명령)에는 들어가지 않는다 — 두 곳의 역할이 다르다.
 - **시간 규약 `[확정 D-2]`.** $t_c$ 와 $t_{cmd}$ 는 모두 공의 **물리 시각** `BallTime` (절대 steady ns) 단일 정의다. "선행축 시각" 이나 "실제시각축 시각" 이라는 별도의 $t_c$ 는 없다 — 축은 시각 값이 아니라 **판정마다 비교하는 '지금'** 에 붙는다 (plan §3): 손 명령은 $now\ge t_{cmd}$ (실제, 손은 선행 보상 없음), DECEL 진입은 $now_{lead}\ge t_c$, rollout·γ 프로파일은 $now_{lead}$.

@@ -130,6 +130,12 @@ $$\theta=\mathrm{atan2}(\Vert m\Vert,\,c),\qquad \hat u=\frac{m}{\Vert m\Vert},\
 
 $\exp([e_a]_\times)z=a_d$ 를 **정확히** 만족한다. 따라서 $\Vert e_a\Vert=\theta$ 이고 $\Vert\omega_{ref}\Vert=K_a\theta$ 는 정렬 오차에 대해 연속·단조다. 접근축 주위 회전(roll)에는 기준을 주지 않는다(5-DoF). $e_a\perp z$ 이므로 L5의 LOCAL 마스크 $S=\mathrm{diag}(1,1,0)$ 가 정보를 버리지 않는다.
 
+**CLIK 에 들어가는 회전 기준.** $\omega_{ref}$ 는 되먹임 항이고, 5 행 과제의 회전 2 행에 들어가는 것은 거기에 feedforward 를 더한 것이다.
+
+$$\boxed{\omega_{cmd}=K_a\,e_a+\omega_{ff}}$$
+
+$\omega_{ff}$ 는 축 목표 $a_d$ 가 움직이는 각속도다 — `mpc` 에서는 구간이 주는 catch frame 의 각속도, `closed_form` 에서는 0 ($a_d$ 가 plan 의 고정값). 아래 수렴성은 $\omega_{ff}=0$ 인 경우 (고정된 $a_d$) 의 것이다.
+
 수렴성: $\dot z=\omega\times z$ 이고 $\omega_{ref}=K_a\theta\hat u$ 이므로 $\frac{d}{dt}(z^\top a_d)=K_a\frac{\theta}{\sin\theta}\big(1-(z^\top a_d)^2\big)\ge0$. $z^\top a_d$ 가 단조 증가하므로 반평행 평형점을 제외하면 전역 수렴한다.
 
 $\Vert m\Vert<\epsilon_{\sin}$ 이고 $c\le0$ 이면(반평행) 축이 정의되지 않으므로 $z$에 수직인 고정 축을 골라 $e_a=\pi\hat u_\perp$ 를 쓴다. 크기는 $\pi$ 로 연속이다.

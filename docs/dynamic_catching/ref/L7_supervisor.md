@@ -117,23 +117,23 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 
 | 코드 | 조건 | 발생 가능 상태 | 처리 |
 |---|---|---|---|
-| `BALL_STALE` | L1 stale (나이 초과 또는 지평 소진) | `TRACKING`, `APPROACH` | `TRACKING` 이면 `ARMED`, `APPROACH` 면 `RETREAT` |
+| `BALL_STALE` | L1 stale (스냅샷의 수신 나이 초과), 또는 스냅샷을 lead 시각에서 샘플할 수 없음. 지평 소진은 이 사유가 아니라 `HORIZON_EXTRAP` 이다 | `TRACKING`, `APPROACH` | `TRACKING` 이면 `ARMED`, `APPROACH` 면 `RETREAT` |
 | `BALL_STALE_COMMITTED` | L1 stale | `COMMITTED`, `CLOSING` | 계속 진행 (동결 plan으로 포구 시도), 기록 `[확정 A-6]` |
 | `BALL_STALE_LONG` | stale 지속 > `supervisor.stale_committed_max_s` | `COMMITTED`, `CLOSING` | `ABORT_SAFE` `[확정 A-6]` |
 | `TRACK_CHANGED` | L1 트랙 변경 판정 (L1 §4.4 — 트랙 epoch. `generation` 을 어떻게 쓰는지는 L1 이 정한다, D-4) | `TRACKING`, `APPROACH` | `ARMED`/`RETREAT`. `PointCloud2`에 트랙 상태가 없어 `STATUS_LOST`를 이것으로 대체 |
-| `HORIZON_EXTRAP` | L2 `after_horizon=true` (지평 **뒤**로 외삽, $now_{lead}$ 기준) | 전 구간 | `APPROACH`면 `RETREAT`, 동결 후면 기록 후 계속 |
+| `HORIZON_EXTRAP` | 지평 소진 — L1 `expired` 또는 L2 `after_horizon=true` (둘 다 $now_{lead}$ 가 마지막 점 **뒤**) | `TRACKING`, `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH`면 `RETREAT`, 동결 후면 기록 후 계속. `TRACKING` 에는 전이 행이 없어 상태는 그대로이고 사유만 기록된다. `DECEL` 부터는 내지 않는다 (전이 행도 없다) |
 | `PRED_INCONSISTENT` | L1 예측 일관성 지표 $\bar\nu$ 가 임계 초과 (L1 §4.5) | `TRACKING`, `APPROACH` | `RETREAT` (`TRACKING` 이면 `ARMED`). 동결 후에는 기록만. **발화하지 않는다**: $\bar\nu$ 생산자가 없다 (L1 §6). 전이표 행 (`kPredInconsistent`) 은 남고 완전성 검사 대상이지만 어떤 tick 도 이 사유를 내지 않는다 |
 | `NO_CATCHABLE_PLAN` | 이 tick 에 채택할 plan 이 없다 — 계획기가 plan 없음을 게시했거나 (catchability manipulability 미달 D-18, IK 실패, 도달 불가 — 세부 사유는 L3 plan 사유 코드), RT 의 접수 판정 (`JudgePlan`) 이 box 의 plan 을 거부했거나, `mpc` 에서 그 plan 의 첫 구간이 판정을 통과하지 못했다 (§4.3a) | `TRACKING` | 비치명. `TRACKING` 유지, 기록 |
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
-| `QP_FAILED` | L5 QP 실패 status | 전 구간 | `ABORT_SAFE`. 이 실패로 끝난 **시행**이 연속 $N_{qp}$ 회면 `FAULT` (D-S9-D2 — solve 단위가 아니다, §4.1) |
+| `QP_FAILED` | L5 QP 실패 status | `TRACKING` – `RETREAT` | `ABORT_SAFE`. 이 실패로 끝난 **시행**이 연속 $N_{qp}$ 회면 `FAULT` (D-S9-D2 — solve 단위가 아니다, §4.1) |
 | `REF_SATURATED` | **`closed_form` 의 사유다.** L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick, 또는 기준 생성기가 그 tick 에 유효한 기준을 내지 못함. 세는 것은 공을 추종하는 tick (`APPROACH`·`COMMITTED`·`CLOSING`) 의 연속 포화이고, 포화가 아닌 tick 과 감속 대상을 추종하는 tick 이 0 으로 되돌린다. `mpc` 는 soft-catch 기준을 돌리지 않으므로 **발화하지 않는다** (§4.3a) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]` |
-| `JOINT_CONFLICT` | L5 `bound_conflict` | 전 구간 | `ABORT_SAFE` |
-| `TRACK_ERR` | $\Vert q_{meas}-q_c(now)\Vert_2>$ `supervisor.track_err_abort` — 측정과 **같은 tick 의 명령** 의 차 (팔 관절 전체). 명령을 움직이는 tick (추종 법칙, homing, `RETREAT` 정지·복귀) 에서만 계산한다. 지연 링으로 $q_c(now-T_{arm})$ 와 비교하는 형태는 구현하지 않았다 — 선행을 켜면 명령이 측정보다 $T_{arm}$ 앞서므로 그만큼의 오차가 이 값에 들어 있다 | 전 구간 | `ABORT_SAFE` |
+| `JOINT_CONFLICT` | L5 `bound_conflict` | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
+| `TRACK_ERR` | $\Vert q_{meas}-q_c(now)\Vert_2>$ `supervisor.track_err_abort` — 측정과 **같은 tick 의 명령** 의 차 (팔 관절 전체). 명령을 움직이는 tick (추종 법칙, homing, `RETREAT` 정지·복귀) 에서만 계산한다. 지연 링으로 $q_c(now-T_{arm})$ 와 비교하는 형태는 구현하지 않았다 — 선행을 켜면 명령이 측정보다 $T_{arm}$ 앞서므로 그만큼의 오차가 이 값에 들어 있다 | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `ABORT_ESCALATED` | fault latch (`n_qp` 시행 연속, D-S9-D2) 또는 운동 기한 초과 (D-S9-D1) — 원인은 CSV `fault_cause` | `ABORT_SAFE`, `RETREAT` | `FAULT` |
 | `ESTOP` | E-STOP 발동·해제 (§4.1 P-1) | 전 구간 | 발동: 상태 정리, 해제: `IDLE`. 단 `FAULT` 에서는 `FAULT` 유지 — 해제가 fault 래치를 풀지 않는다 (P-1 (d)) |
 | `FAULT_RESET` | `ResetFault` | `FAULT` | `IDLE` |
-| `SPEED_SCALING` | speed scaling ≠ 1 | 전 구간 | `ABORT_SAFE`. **전이 행은 있으나 발화하는 코드가 없다** — repo 에 신호 출처가 없다 (TBD-ARM-03). 실기 단계가 신호를 연결한다 (G7-F) |
-| `CLOCK_UNHEALTHY` | PTP 임계 초과 | 전 구간 | `IDLE`·`ARMED`에서는 진입 거부, 운행 중 `ABORT_SAFE`. **전이 행은 있으나 발화하는 코드가 없다** — 신호 출처가 없다 (TBD-NET-01, G7-F) |
+| `SPEED_SCALING` | speed scaling ≠ 1 | `TRACKING` – `RETREAT` | `ABORT_SAFE`. **전이 행은 있으나 발화하는 코드가 없다** — repo 에 신호 출처가 없다 (TBD-ARM-03). 실기 단계가 신호를 연결한다 (G7-F) |
+| `CLOCK_UNHEALTHY` | PTP 임계 초과 | `IDLE` – `RETREAT` | `IDLE`·`ARMED`에서는 진입 거부, 운행 중 `ABORT_SAFE`. **전이 행은 있으나 발화하는 코드가 없다** — 신호 출처가 없다 (TBD-NET-01, G7-F) |
 | `PARAMS_TBD` | L0 검증 실패 (활성 구성 TBD·provisional) | `IDLE` | 진입 거부. 같은 사유를 준비 조건 상실 (§4.5) 과 "법칙에 필요한 값이 없음" (`mpc` 에서 따를 구간이 없음, §4.3a) 이 재사용한다 — 그때의 처리는 그 절이 적는다 |
 | `HAND_TIMEOUT` | L6 폐쇄 타임아웃 (`CLOSING`·`DECEL`) · **`RETREAT` 의 release 뒤 손이 `robot.hand.T_release_timeout` 안에 `q_pre` 에 정착하지 못함** (D-S8-6 (a)) | `CLOSING`, `DECEL`, `RETREAT` | `CLOSING`·`DECEL`: 기록, 계속. `RETREAT`: **`IDLE` + 같은 tick disarm** — 정착 못 한 손이 스스로 재무장하지 않게 하고, 운전자가 다시 무장한다 (P-1 (c)). 시계는 복귀 도착 tick (`kReturn → kRelease`) 에 시작하고, 같은 tick 에 정착했으면 재무장이 이긴다. `IDLE` 에는 행이 없다 — 손을 기다리지 않는다 |
 | `TIP_STALE` | 지문 센서 stale | `COMMITTED` 이후 | 판정 불가로 기록 |
@@ -219,7 +219,7 @@ $N_{deb}$개 연속 샘플이 참이면 센서 $i$ 접촉으로 확정한다 (`C
 
 결과 판정(`HOLD` 종료 시):
 - **포획:** 판정 창 $[t_{cmd},\,t_c+T_{conf}]$ (실제 시각 $now$ 로 비교 — 공의 물리 시각과 같은 축, plan §3) 안에 접촉 센서 수가 $m_{\min}$ 이상이었고, `HOLD` 종료 시점에도 $m_{\min}$ 이상이 유지되는 경우.
-- **실패:** 판정 창 안에 접촉이 없는 경우.
+- **실패 (`Missed`):** 미확정이 아니면서 포획 조건이 성립하지 않는 나머지 전부 — 판정 창 안에 접촉이 없었던 경우, 그리고 창 안에서는 있었지만 `HOLD` 종료 시점에 유지되지 않은 경우 (손을 떠난 공).
 - **미확정:** 판정 창 안에서 센서가 stale 이었거나, 바이어스 표본 수가 `n_baseline_min` 미만이거나, 지문 lane 이 구성되지 않았거나 지문 수가 $m_{\min}$ 미만인 경우.
 
 오경보 확률은 센서 잡음 분포에 의존한다. $k_\sigma$는 실기 잡음 측정 후 정한다 (가우시안 가정이면 $k_\sigma=3$에서 단측 약 0.13%, 등급 a) — sim 의 fingertip lane 은 잡음이 없어 $\hat\sigma\approx0$ 이고 `f_min` 만 유효하다 (TBD-HAND-03).
