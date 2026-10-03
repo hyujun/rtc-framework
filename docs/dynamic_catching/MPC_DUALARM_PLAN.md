@@ -305,7 +305,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | E2-F01 | [#633](https://github.com/hyujun/rtc-framework/issues/633) | G1 로봇 자산 — 모델 로드 · frame · sim 서보 | E0-F01 | 완료 (2026-10-02, [#687](https://github.com/hyujun/rtc-framework/pull/687)) — 결정 MD-79 – MD-81, 측정 §8. scene 은 `hand_description` 의 MJCF 를 그대로 쓴다 |
 | E2-F02 | [#634](https://github.com/hyujun/rtc-framework/issues/634) | config · launch — `config/g1_p1b/` · `sim_g1_p1b.launch.py` | E2-F01 | 완료 (같은 PR) — 결정 MD-77 · MD-80. 군은 `g1` · `p1b` 둘, `derive_accel_limits` 는 뺐다 |
 | E2-F03 | [#635](https://github.com/hyujun/rtc-framework/issues/635) | demo_joint_controller — G1 구동 (군 0 이 tree) | E2-F02 | 완료 (같은 PR) — 결정 MD-78, 측정 §8. 팔 끝 · 손끝 TF 와 MuJoCo 의 차 ≤ 0.71 mm |
-| E2-F04 | [#636](https://github.com/hyujun/rtc-framework/issues/636) | CLIK 다중 frame 일반화 (`rtc_tsid`) | E0-F03 | 대기 — 선행은 끝났다. E1 과 병행할 수 있다 (브랜치 계획의 순서 표) |
+| E2-F04 | [#636](https://github.com/hyujun/rtc-framework/issues/636) | CLIK 다중 frame 일반화 (`rtc_tsid`) | E0-F03 | **다음** — 선행은 끝났다. E1 의 feature 가 모두 끝나 순서상 다음이다 (브랜치 계획의 순서 표) |
 | E2-F05 | [#637](https://github.com/hyujun/rtc-framework/issues/637) | demo_dualarm_controller — QP 다중 frame CLIK 바인딩 | E2-F03, E2-F04 | 대기 |
 | E2-F06 | [#638](https://github.com/hyujun/rtc-framework/issues/638) | demo_controller_gui — G1 profile · 다중 frame 목표 | E2-F05 | 대기 |
 | E2-F07 | [#639](https://github.com/hyujun/rtc-framework/issues/639) | plot_rtc_log — 다중 device group · frame 별 task error | E2-F05 | 대기 |
@@ -1127,7 +1127,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
-| r49 | [#702](https://github.com/hyujun/rtc-framework/pull/702) · [#703](https://github.com/hyujun/rtc-framework/pull/703) 머지 뒤 정리: §6 의 E1-F11 행 (완료) |
+| r49 | [#702](https://github.com/hyujun/rtc-framework/pull/702) · [#703](https://github.com/hyujun/rtc-framework/pull/703) 머지 뒤 정리: §6 의 E1-F11 행 (완료) · E2-F04 행 (다음) |
 | r48 | [#698](https://github.com/hyujun/rtc-framework/issues/698) 사용자 결정 반영: MD-93 의 (2) — 지운 경로 키는 configure 실패가 아니라 park (`kRemovedKey`), 남은 `enabled: false` 는 `mode: mpc` 에서 WARN |
 | r47 | [#698](https://github.com/hyujun/rtc-framework/issues/698) 리뷰 반영: MD-93 의 (5) — 포구 후 재계획의 직선은 plan 의 마지막 게시 구간이 아니라 RT 가 따르는 구간의 것, 값의 상한 1e4. §4 미결의 $w_\perp$ 줄에 로그 · 풀이 시간 |
 | r46 | [#698](https://github.com/hyujun/rtc-framework/issues/698) $w_\perp$ 결정: MD-93 의 (5) (키 `cost.w_perp`, 직선은 공의 것, 포구 후 재계획은 plan 별 기억, 보류 조건), §4 미결의 그 줄 (결정 대기 → 값은 미조정), §6 의 E1-F11 행 |
