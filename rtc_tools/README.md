@@ -505,7 +505,7 @@ ros2 run rtc_tools catching_decel --a units/*_a --b units/*_b --same-arm --confi
   어느 쪽의 것도 아니다
 - **`--a` / `--b`**: `(kind, seed, sample_idx)` 로 짝지은 truth 성공의 2×2 표, 불일치율 ψ 와 Wilson 구간, McNemar 정확 검정,
   그리고 paired 단측 비열등 검정이 요구하는 쌍 수 `(z_α + z_β)² (ψ − d²)/(δ + d)²` 를 `--margin` 마다 ψ̂ 와 ψ 상한에서.
-  같은 arm 을 두 번 돌린 ψ 가 게이트 G-1 의 시행 수 입력이다 (`docs/dynamic_catching/MPC_DUALARM_PLAN.md` §1).
+  같은 arm 을 두 번 돌린 ψ 가 게이트 G-1 의 시행 수 입력이다 (검정의 설계는 `docs/dynamic_catching/ref/mpc_multiframe_clik_formulation.md` §6.5, 수치와 결과는 [#632](https://github.com/hyujun/rtc-framework/issues/632)).
   두 집합에 공통 throw 가 없거나 (seed 가 다름) 불일치 쌍이 하나도 없으면 그 쌍 수는 `null` 이다 — 0 은 "쌍이 필요 없다" 로 읽힌다.
   truth 셀은 `catching_hand_near` 와 같은 규칙으로 읽는다 (`True`·`true`·`1`, 앞뒤 공백·대소문자 무시)
 - **성공 정의 `--success`** (E1-F06): `truth` (기본 — `truth_success`) 또는 `hold` = `truth_success` **이고**

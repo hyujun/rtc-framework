@@ -17,8 +17,8 @@ plan 은 2026-09-29 에 제자리 압축했다 (절 번호·식별자 불변) �
 
 ## 확장 — MPC · dual-arm
 
-MPC 는 waist + dual-arm (G1) 용으로 설계하고, ur5e_p1b · iiwa7_leap 에서 dual arm · waist 항을 뺀 같은 MPC 로 먼저 시험한 뒤 (APPROACH–정지), G1 + proto_1b bring-up 을 거쳐 같은 코어에 그 항을 더한다. closed_form 과 mpc 는 입력 (공의 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 다. 이 확장은 별도 계획으로 관리한다. 계획·결정(`MD-n`)·상태의
-SSoT 는 [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md), 정식화는 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md),
+MPC 는 waist + dual-arm (G1) 용으로 설계하고, ur5e_p1b · iiwa7_leap 에서 dual arm · waist 항을 뺀 같은 MPC 로 먼저 시험한 뒤 (APPROACH–정지), G1 + proto_1b bring-up 을 거쳐 같은 코어에 그 항을 더한다. closed_form 과 mpc 는 입력 (공의 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 다. 이 확장은 별도 계획으로 관리한다. 계획과 상태는
+[MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) (실기 단계도 여기에 있다), 결정 ID (`MD-n`) 의 뜻은 [ID_INDEX.md](ID_INDEX.md), 정식화는 [ref/mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md),
 추적은 GitHub project [rtc-framework — MPC · dual-arm catching](https://github.com/users/hyujun/projects/2) 다.
 
 ## 단계 W (완료) 와 문서 동기화 상태
@@ -36,7 +36,7 @@ D-4). 점 하나가 $(p, v, a)$ + 공분산 $\Sigma_{6\times6}$(NaN = 모름) + 
 궤적을 **재전파하지 않고 그대로 신뢰**하며, 샘플 사이만 보간한다(L2).
 
 vision 은 vision PC, 제어기는 제어 PC 에서 돈다. 두 쪽은 위 토픽으로만 만나고 서로의 파일을 읽지 않는다 — 추정기의
-profile 은 ball_perception 저장소가 소유한다 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) MD-17 · MD-18).
+profile 은 ball_perception 저장소가 소유한다 (MD-17 · MD-18 — [ID_INDEX.md](ID_INDEX.md)).
 
 ## `ref/` — 참고 자료의 원본
 
@@ -65,7 +65,7 @@ profile 은 ball_perception 저장소가 소유한다 ([MPC_DUALARM_PLAN.md](MPC
 | `L6_hand.md` | L6 | 손 시퀀서·손 프로파일·`T_close` 식별 |
 | `L7_supervisor.md` | L7 | 상태 머신·접촉 판정·감속·abort |
 | `L8_bringup.md` | L8 | 컨트롤러 통합·launch·YAML·sim 기반·로깅·시스템 검증 |
-| `MPC_DUALARM_PLAN.md` | — | MPC · dual-arm 확장의 epic·feature 계획, 결정 로그, 게이트 결과 (SSoT) |
+| `MPC_DUALARM_PLAN.md` | — | MPC · dual-arm 확장과 실기 단계의 계획 — 상태 · 남은 feature · 아직 정하지 않은 것 (구현이 끝나면 지운다) |
 | `mpc_multiframe_clik_formulation.md` | — | waist + dual-arm MPC 계획기와 다중 frame CLIK 의 수학적 정리 |
 
 ## 삭제된 참조 구현
