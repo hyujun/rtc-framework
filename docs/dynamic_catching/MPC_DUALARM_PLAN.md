@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r40 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r41 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료 · E1 · E2 진행 중** · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5e) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -285,8 +285,8 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F09 | [#662](https://github.com/hyujun/rtc-framework/issues/662) | L7 — RT 가 APPROACH – HOLD 를 MPC 구간으로 추종, DECEL 진입은 연속 (E-8). 노드별 간격을 읽는 샘플러 (MD-54) | E1-F08 | 완료 (2026-10-02, [#674](https://github.com/hyujun/rtc-framework/pull/674)) — 결정 MD-65 – MD-70, 측정 §8. p1b sim 50 발에서 구간 추종으로 HOLD 까지 50/50, abort 0. security review 는 보고할 것이 없었다. 성공률은 `closed_form` 보다 낮다 (E1-F10) |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — tick record 의 decel 블록과 계획기 레코드를 CSV 로, `catching_trials` 의 `mpc` 분해 · lane · 명령 열, plotter 패널, GUI 의 Catching 탭 | E1-F09 | 완료 (2026-10-02, [#678](https://github.com/hyujun/rtc-framework/pull/678)) — 확인 §8. 제어 동작 불변. 항별 비용 분해 · GUI 의 lane 상태 · `decel_*` 이름 통일은 하지 않았다 (미결) |
 | E1-F10 | [#663](https://github.com/hyujun/rtc-framework/issues/663) | mpc planner 튜닝 — closed_form 대비 성공률 비열등 (MD-50) | E1-F05 | 완료 (2026-10-02, [#679](https://github.com/hyujun/rtc-framework/pull/679)) — 결정 MD-71 – MD-76, 측정 §8. p1b 는 `catch.gamma_ref` 0.6 채택 (확인 200 쌍 −0.05 — 비열등 판정은 G-1), leap 은 미달로 닫음 (plan 이 채택되지 않는다 — 구조 문제). RT 의 `catch_box` 검사 폐기 (MD-73), CLIK 은 `dynamic` 만 (MD-74) |
-| E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | **다음** — spec 확정 (MD-87: leap 도 출하값으로 비교, 예산 · 성공 정의 · RT tick · Tango 도구). 착수 대기 |
-| E1-F11 | [#698](https://github.com/hyujun/rtc-framework/issues/698) | catching config 의 기능별 분리 — RT 의 QP CLIK · 탐색 ($p_c$ · $t_c$, 공통) · closed_form planner · mpc planner (MD-88). 기능 동등성 | E1-F06 | 대기 — 합치는 곳 · 키 경로 · closed_form 파일의 내용은 spec 에서 |
+| E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | 완료 (2026-10-03, PR 대기) — 측정 §8. **G-1 FAIL (두 로봇, 기준 1).** p1b $\hat d$ −0.10, 양측 95 % 구간 −0.17 – −0.04. leap −0.47. 한계 · solve time · 회귀는 두 로봇 모두 통과. `mpc` 기본값은 사용자가 정한다 (§4 미결) |
+| E1-F11 | [#698](https://github.com/hyujun/rtc-framework/issues/698) | catching config 의 기능별 분리 — RT 의 QP CLIK · 탐색 ($p_c$ · $t_c$, 공통) · closed_form planner · mpc planner (MD-88). 기능 동등성 | E1-F06 | **다음** — 합치는 곳 · 키 경로 · closed_form 파일의 내용은 spec 에서 |
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
 
@@ -894,6 +894,98 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 **말하지 못하는 것.** 실기의 값 (서보 지연이 sim 과 다르면 $\gamma_{ref}$ 의 최적도 다르다). p1b 의 비열등 여부 — G-1 이 판정한다. 측정 $\gamma$ 0.5 근처의 봉우리가 실재하는지 (100 발의 잡음 안일 수 있다). leap 의 `mpc` 성공률. RT tick 의 꼬리 (재지 않았다 — G-1 의 항목). 원자료 · overlay · 요약: `~/rtc_eval/e1-f10/`, 도구: 에이전트 private plan 의 `mpc-e1-f10-tools`.
 
+### E1-F06 — 게이트 G-1: closed_form 대 mpc (2026-10-03, [#632](https://github.com/hyujun/rtc-framework/issues/632))
+
+판정 규칙 · 통계 · 무효 처리 · 지표는 투척 전에 [이슈](https://github.com/hyujun/rtc-framework/issues/632#issuecomment-5963707428) 에 고정했다 (MD-87). 판정 스크립트는 이 규칙을 기계적으로 적용한다. 투척 전에 E1-F10 의 확인 unit 으로 기록값을 재현했다 (85 · 38 · 48 · 29, Tango Z 1.0826). 결과를 본 뒤 바꾼 정의는 없다.
+
+수집 조건:
+
+- sim 실시계, 개발 PC, `use_cpu_affinity:=false`, `s35b` 50 발 unit, `catch_lead_on` 의 잎. 빌드는 `bf1c253a` (dirty 0) 이다.
+- 같은 날 09:39 – 12:12 에 p1b 다음 leap 순서로 모았다. 먼저 도는 arm 은 seed 마다 바꿨다.
+- 24 unit 모두 첫 시도에 DONE 이다 (재시도 0). 모든 unit 에서 `lane_rules_evaluated` 가 참이다.
+- 무효 시행 0, 뺀 쌍 0 이다. 시행별 RTF 최솟값은 0.964 – 0.987 이다.
+
+**결론: 두 로봇 모두 FAIL — 기준 1 (성공률 비열등) 에서.** 나머지 세 기준은 두 로봇 모두 통과했다.
+
+| 기준 | `ur5e_p1b` | `iiwa7_leap` |
+|---|---|---|
+| 1 성공률 비열등 (한계 −0.10, 단측 0.025) | **FAIL** — p 0.54 | **FAIL** — p ≈ 1 |
+| 2 한계 위반 0 (`mpc`, APPROACH – DECEL 끝) | PASS — 295 시행, 위반 0 | PASS — 15 시행, 위반 0 |
+| 3 solve time p99 ≤ 예산 | PASS (아래 표) | PASS (아래 표) |
+| 4 회귀 | PASS — `closed_form` 시나리오 · lane · 컨트롤러 테스트 통과, digest `58e18c86679c92d6` 그대로, 09-29 이후 49 커밋의 단언 감사에서 약화 없음 | 같음 |
+| **G-1** | **FAIL** | **FAIL** |
+
+**성공률 (paired, 300 쌍).** 성공은 MD-87 (4) 의 정의다. 두 로봇 모두 `truth_success` 만으로 센 표와 같다 — 이번 자료에서 truth 성공은 모두 HOLD 를 거쳤고 `ABORT_SAFE` 가 없었다.
+
+| | `ur5e_p1b` | `iiwa7_leap` |
+|---|---|---|
+| 성공 `mpc` · `closed_form` | 175 (0.583) · 206 (0.687) | 7 (0.023) · 148 (0.493) |
+| 둘 다 · `mpc` 만 · `closed_form` 만 · 둘 다 실패 | 138 · 37 · 68 · 57 | 5 · 2 · 143 · 150 |
+| 차이 $\hat d$ (`mpc` − `closed_form`) · 불일치율 | **−0.103** · 0.35 | **−0.470** · 0.48 |
+| Tango Z · 단측 p | −0.099 · 0.54 | −9.84 · ≈ 1 |
+| Tango score 95 % 구간 | **−0.170 – −0.037** | −0.528 – −0.412 |
+| Wald 95 % 구간 · exact McNemar p | −0.169 – −0.037 · 0.0032 | −0.528 – −0.412 · 4.8e−40 |
+| 정확 검정력 — 설계 (ψ 0.43): d 0 · −0.05 | 0.754 · 0.264 | 0.754 · 0.264 |
+| 정확 검정력 — 관측 ψ̂: d 0 · −0.05 · $\hat d$ | 0.831 · 0.309 · 0.019 | 0.705 · 0.240 · 0.000 |
+| H0 경계의 정확 크기 (ψ̂) | 0.0246 | 0.0252 |
+| seed 별 $\hat d_s$ · 이질성 χ² (df 5) | −0.08 · −0.06 · −0.02 · −0.04 · −0.22 · −0.20 · 5.50 (p 0.36) | −0.64 · −0.46 · −0.46 · −0.40 · −0.52 · −0.34 · 10.96 (p 0.052) |
+
+- **`ur5e_p1b`: 비열등을 보이지 못했고, 양측 95 % 구간이 0 을 제외한다** (상한 −0.037).
+  - 낮은 검정력 때문에 생긴 결과가 아니다. 검정력이 낮다는 것은 "참 차이가 0 인데 비열등을 보이지 못할" 위험이다. 이번에는 구간 전체가 0 아래다. 자료는 `mpc` 의 성공률이 `closed_form` 보다 낮다는 쪽과 맞는다 (점추정 −0.10, 구간 −0.17 – −0.04).
+  - E1-F10 의 확인 (seed 623 – 626, −0.05, 구간 −0.14 – +0.04) 과 구간이 겹친다. 그 확인을 보고 채택한 구성 (MD-75) 이 예약 seed 에서는 더 낮게 나왔다.
+  - seed 사이의 차이는 우연의 범위다 (χ² p 0.36). 635 · 636 의 −0.22 · −0.20 이 점추정을 끌어내린다.
+- **`iiwa7_leap`: `mpc` 는 거의 잡지 못한다** (7 / 300). 미리 밝힌 예상과 한 가지가 달랐다.
+  - 예상은 APPROACH 진입 0 이었지만 15 / 300 시행이 APPROACH 에 들어갔다 (모두 commit). 그래서 기준 2 와 재계획 풀이는 평가 불가가 아니라 평가됐다. 판정은 같다.
+  - 실패 양식은 E1-F10 과 같다. 285 / 300 이 `no_catchable_plan` 으로 APPROACH 에 들어가지 못했다. 첫 풀이 1,432 회 가운데 게시는 16 회다. 나머지는 `catch_error` 1,001 · `slack` 285 · `too_late` 122 · `superseded` 8 이다.
+
+**solve time** (판정 unit 6 개의 모든 풀이, nearest-rank p99, µs. "풀이" 는 QP 를 돌린 outcome 의 행이다).
+
+| | 예산 | `ur5e_p1b` `closed_form` | `ur5e_p1b` `mpc` | `iiwa7_leap` `closed_form` | `iiwa7_leap` `mpc` |
+|---|---|---|---|---|---|
+| 탐색 (`n_in_window` > 0) | 20,000 | 7,195 (N 1,091) | 7,087 (N 1,050) | 8,634 (N 2,083) | 6,006 (N 25,455) |
+| MPC 첫 풀이 | 35,000 | — | 12,974 (N 332) | — | 8,709 (N 1,310) |
+| MPC 재계획 (`same` · `advance` · `stop`) | 25,000 | — | 7,341 (N 3,043) | — | 3,783 (N 56) |
+
+- 탐색의 `budget_hit` 은 모든 arm 에서 0 이다. 33.3 ms 를 넘긴 wake 도 0 이다 (최대: p1b `mpc` 26.6 ms, leap `mpc` 16.8 ms).
+- 예산으로 보류된 풀이는 p1b 0, leap `mpc` 122 다 (모두 `too_late` — 포구 전 구간이 하나도 들어가지 않는 첫 풀이).
+
+**한계 여유** (측정 상태, 한계 대비 최댓값. 위반은 모두 0).
+
+| 창 | 측정 | `ur5e_p1b` `mpc` | `ur5e_p1b` `closed_form` (보고) | `iiwa7_leap` `mpc` | `iiwa7_leap` `closed_form` (보고) |
+|---|---|---|---|---|---|
+| APPROACH – DECEL 끝 | 속도 · 토크 비 | 0.84 · 0.67 | 0.997 · 0.80 | 0.82 · 0.45 | 0.99 · 0.58 |
+| APPROACH – DECEL 끝 | 위치 여유 최소 [rad] | 1.12 | 1.43 | 0.19 | 0.17 |
+| HOLD | 속도 · 토크 비 | 0.10 · 0.49 | 0.66 · 0.78 | 0.10 · 0.35 | 0.43 · 0.56 |
+
+**보고만 하는 지표** (판정에 쓰지 않는다. 거리 · 속도는 commit 한 유효 시행의 중앙값).
+
+| | p1b `closed_form` | p1b `mpc` | leap `closed_form` | leap `mpc` (n 15) |
+|---|---|---|---|---|
+| `total_mm` · `d_min_mm` · `ref_vs_true_mm` | 17.4 · 4.3 · 14.9 | 22.2 · 6.0 · 11.4 | 32.6 · 28.8 · 30.5 | 21.7 · 38.0 · 24.0 |
+| 공 진행 방향 · 직교 간격 [mm] · `servo_mm` | 6.6 · 12.7 · 2.5 | 17.9 · 10.2 · 11.8 | 3.7 · 23.6 · 4.4 | 5.0 · 15.2 · 8.2 |
+| $t_c$ 의 측정 $\gamma$ · 상대속도 · 접촉 시 손 속도 [m/s] | 0.60 · 1.11 · 1.93 | 0.50 · 1.60 · 1.54 | 0.34 · 1.00 · 0.31 | 0.34 · 1.07 · 0.21 |
+| 접근축 오차 (측정 catch frame +z 대 동결 plan, model frame) | 0.58° | 1.58° | 1.68° | 6.45° |
+| 측정 $\ddot q$ 피크 p50 · p95 [rad/s²], APPROACH – DECEL 끝 | 22.0 · 26.2 | 18.1 · 25.8 | 19.6 · 24.5 | 14.4 · 16.5 |
+| 측정 jerk 피크 p50 · p95 [rad/s³] | 798 · 1,161 | 591 · 1,028 | 947 · 1,812 | 455 · 812 |
+| 명령 $\ddot q$ · jerk 피크 p50 | 52.6 · 5,572 | 24.4 · 1,073 | 65.4 · 8,591 | 20.8 · 552 |
+| 정지 거리 p50 [mm] · 정지 시간 p50 [s] (`catching_decel` 의 창) | 333 · 0.35 | 452 · 0.44 | 68 · 0.24 | 217 · 0.42 |
+| RT tick `t_compute_us` p50 · p99 · p99.9 · 최대 (APPROACH – HOLD) | 36 · 63 · 91 · 156 | 37 · 61 · 71 · 162 | 48 · 85 · 119 · 179 | 49 · 79 · 93 · 136 (N 7,588) |
+| 120 µs 초과 · 만 tick 당 | 0.30 | 0.39 | 6.9 | 1.3 |
+
+- **재계획 전환.** p1b 는 1,476 회, 게이트 거부 1 (0.07 %), $\rho$ p50 0.105 · p95 0.204 · 최대 0.541, `aged` 0 이다. leap 은 45 회, 거부 0, $\rho$ p95 0.305 이다.
+- **abort.** p1b 는 두 arm 모두 0 이다. leap `closed_form` 은 `ball_stale_long` 2 다 (두 arm 모두 실패로 셌다). `mpc` 의 `REF_SATURATED` abort 는 0 이고, `closed_form` 의 `ref_saturated` 연속 최대는 0 이다.
+- **RT tick.** 격리 코어가 아니라 sim 의 tick 이다 (MD-87 (2)). 두 planner 의 분포는 같은 크기이고, 최댓값은 두 planner 모두 120 µs 를 넘는다. `t_total_us` 의 p99 는 p1b 97 · 94 µs, leap 120 · 114 µs 다.
+- p1b 의 위치 간격은 E1-F10 확인과 같은 양상이다: 공 진행 방향 간격이 18 mm (`closed_form` 7) 이고, 그중 서보 몫이 크다.
+
+**말하지 못하는 것.**
+
+- p1b 에서 `mpc` 가 왜 낮은지. 공 진행 방향 간격과 서보 몫은 E1-F10 이 본 것과 같지만, 원인으로 시험하지 않았다.
+- 실기의 결과. 격리 코어 · 제어 PC 의 RT tick (미배정, §4).
+- 두 로봇을 합친 주장. 판정은 로봇별이다.
+- leap 의 실패 원인이 E1-F10 의 진단 (첫 풀이의 기준 궤적) 그대로인지. 첫 풀이의 outcome 분포는 같은 모양이지만 다시 진단하지 않았다.
+
+원자료 · overlay · 요약은 `~/rtc_eval/e1-f06/` 에 있다 (`analysis/summary_{p1b,leap}.json`). 도구는 에이전트 private plan 의 `mpc-e1-f06-tools` 이고, 그 sha256 은 규칙 코멘트에 적었다.
+
 ### E2-F01 · F02 · F03 — G1 + proto_1b bring-up (2026-10-02, [#633](https://github.com/hyujun/rtc-framework/issues/633) · [#634](https://github.com/hyujun/rtc-framework/issues/634) · [#635](https://github.com/hyujun/rtc-framework/issues/635))
 
 기준은 Sprint Contract 의 값이고 시행 전에 고정했다. sim 은 headless (`enable_viewer:=false use_cpu_affinity:=false`, 개발 PC, RT 권한 없음), 세션 `261002_2044`, 임시 패치 없음. 컨트롤러는 `demo_joint_controller` 다.
@@ -1016,6 +1108,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r41 | [#632](https://github.com/hyujun/rtc-framework/issues/632) G-1 결과: §8 "E1-F06" (두 로봇 FAIL — 기준 1), §6 의 E1-F06 행 (완료) · E1-F11 행 (다음) |
 | r40 | [#632](https://github.com/hyujun/rtc-framework/issues/632) spec · [#698](https://github.com/hyujun/rtc-framework/issues/698) 반영: 결정 MD-87 (G-1 의 spec — leap 도 출하값으로 비교, solve time 예산, 성공 정의, RT tick, Tango 도구) · MD-88 (config 의 기능별 분리, 새 기능 E1-F11), §1 G-1 의 leap · 성공 · 계산 · 검정 문장, §4 미결의 E1-F06 두 항목을 미배정으로, §6 의 E1-F11 행 · 브랜치 · 순서 |
 | r39 | [#689](https://github.com/hyujun/rtc-framework/issues/689) 반영: 결정 MD-86 (sim launch 는 공통화하지 않고 쓰이지 않는 인자만 지운다, tree 조회는 `FindTreeModel` 하나로), §8 "E2 후속 — tree 모델 조회와 sim launch 인자", §4 미결에서 그 줄을 뺌 |
 | r38 | [#686](https://github.com/hyujun/rtc-framework/issues/686) 반영: 결정 MD-84 (`compare_mjcf_urdf` 는 MJCF 를 MuJoCo 가 컴파일하는 대로 읽는다), §8 "E2 후속 — `compare_mjcf_urdf` 의 MJCF 판독", §4 미결의 그 줄을 후속 둘 ([#692](https://github.com/hyujun/rtc-framework/issues/692) · [#693](https://github.com/hyujun/rtc-framework/issues/693)) 로 바꿈. r36 은 쓰지 않았다 |
