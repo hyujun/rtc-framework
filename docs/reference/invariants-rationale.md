@@ -68,7 +68,7 @@
 
 ### Clock 예외의 승인 이력
 
-원격 예측 궤적의 물리 샘플 시각 예외는 dynamic_catching D-2 로 2026-09-19 에 E-1 승인됐고 구현은 S1.3·S5.2 다. 이 예외는 t_c·t_cmd 같은 deadline 판정을 stamp 에서 파생시키므로 wall clock 점프가 그 판정 오차로 그대로 들어간다 — 조건 ③ 의 실기 재확인은 S10. 계약 전문: [IMPLEMENTATION_PLAN.md](../dynamic_catching/IMPLEMENTATION_PLAN.md) §3.1. 일반 규칙 쪽은 기록 시점에 `last_state_ns_` 등 watchdog 을 steady_clock 으로 유지해 준수하고 있다.
+원격 예측 궤적의 물리 샘플 시각 예외는 dynamic_catching D-2 로 2026-09-19 에 E-1 승인됐고 구현은 S1.3·S5.2 다. 이 예외는 t_c·t_cmd 같은 deadline 판정을 stamp 에서 파생시키므로 wall clock 점프가 그 판정 오차로 그대로 들어간다 — 조건 ③ 의 실기 재확인은 S10. stamp 사용 계약: [L1_io.md](../dynamic_catching/ref/L1_io.md) §4.1. 일반 규칙 쪽은 기록 시점에 `last_state_ns_` 등 watchdog 을 steady_clock 으로 유지해 준수하고 있다.
 
 ### RT telemetry 임계값 가이드
 

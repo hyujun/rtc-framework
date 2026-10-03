@@ -33,7 +33,7 @@ RT path 에 포함되는 subscription / UDP receive / timer callback 은 **mailb
 
 **Topic 경계 (`header.stamp`)** 는 ROS wall clock (CLOCK_REALTIME), **내부 timing / watchdog / staleness** 는 monotonic (`std::chrono::steady_clock`) 이다. **`header.stamp` 를 staleness / E-STOP / deadline 판단에 쓰지 않는다** (wall clock 은 NTP 로 역행·점프한다).
 
-**기록된 예외 — 원격 예측 궤적의 물리 샘플 시각** (dynamic_catching D-2): 수신 콜백이 `t_ref_steady = recv_steady − (recv_wall − stamp)` 를 1회 계산해 원격 예측의 물리 시각축을 steady 로 옮기는 것은 다음을 **모두** 만족할 때만 허용하고, 하나라도 깨지면 E-1 이다. 이 예외는 다른 토픽의 근거가 아니다. 전문: [IMPLEMENTATION_PLAN.md](../docs/dynamic_catching/IMPLEMENTATION_PLAN.md) §3.1.
+**기록된 예외 — 원격 예측 궤적의 물리 샘플 시각** (dynamic_catching D-2): 수신 콜백이 `t_ref_steady = recv_steady − (recv_wall − stamp)` 를 1회 계산해 원격 예측의 물리 시각축을 steady 로 옮기는 것은 다음을 **모두** 만족할 때만 허용하고, 하나라도 깨지면 E-1 이다. 이 예외는 다른 토픽의 근거가 아니다. stamp 사용 계약: [L1_io.md](../docs/dynamic_catching/ref/L1_io.md) §4.1.
 
 - ① freshness·stale·watchdog 판정은 `now_steady − recv_steady` 로만 한다
 - ② 보정항이 음수로 `future_tol` 을 넘으면 메시지를 거부하고 센다

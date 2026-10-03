@@ -136,7 +136,7 @@ undefined), so it is capped rather than hidden. Defaults: `sin_eps` 1e-6,
 `jacobian_sin_floor` 1e-3 (the cap starts only above ≈179.94°). The small-angle
 series is used only for `c > 0`; `sinθ` also vanishes at θ = π, so a series
 keyed on `sinθ` alone would replace the divergent antiparallel value with ≈2.645.
-Derivation and background: `docs/dynamic_catching/L4_reference.md` §4.5.
+Derivation and background: `docs/dynamic_catching/ref/L4_reference.md` §4.5.
 
 ## Choosing a definition
 
