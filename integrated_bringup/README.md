@@ -1229,7 +1229,6 @@ ros2 run integrated_bringup motion_editor_gui
         # root_link/tip_link: urdf.sub_models에서 name="ur5e"로 자동 해석
         joint_limits:
           max_velocity: [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
-          max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
           max_torque: [150, 150, 150, 28, 28, 28]
           position_lower: [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
           position_upper: [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]

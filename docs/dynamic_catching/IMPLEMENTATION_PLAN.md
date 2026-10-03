@@ -28,7 +28,7 @@ ID 는 한 번만 정의한다. 사용자 결정은 D-·C-·P- 로, 착수 전 �
 | D-13 | E-STOP·fault 정책 (E-8) — 하위 결정 D-S9-A~L (§4.4 S9): E-STOP 은 어느 단계든 CM 의 측정 자세 hold (손 포함, 공을 놓는 것이 확정 동작) → 비무장 `IDLE`, 해제 뒤 자동 재개 없음; `FAULT` 는 컨트롤러 소유로 global E-STOP 에 승격하지 않고, 원인에 운동 기한 추가·`n_qp` 시행 단위·정지 전 reset 거부 | **확정** (2026-09-27 사용자, #537 5854178226 → 5854969250) — S9a (PR #589 → `f4bc14ed`) · S9b (PR #590 → `18507711`) 머지 | 컨트롤러는 E-STOP 중 출력에 관여할 수 없고 (CM 치환), "재차 치명" 경로·정지 미추종 감시가 코드에 없었다. 대상이 공이라 놓쳐도 위험이 없고, CM 정지 경로는 실기 직전에 바꾸지 않는다 |
 | D-14 | 공 발사 API: (p0, v0, ω) 명시 srv 를 `rtc_msgs` 에 추가 (Adding a New Message Type, PROC-3) | **확정** — E-3 승인 (2026-09-19, S0.8) | 파라미터 설정 + Trigger 는 경합·재현성 약함. E-3 판단은 §7.1 |
 | D-15 | vision 예측 사양(지평·간격·점 수·발행률)은 **포구 제어기가 요구 사양을 정하고**, sim 에서는 공 투척 설정과 ball_perception sim profile 을 그 요구에 맞춰 설정한다. 제어기는 수신 궤적의 지평이 요구보다 짧으면 계획 후보에서 제외·진단한다 | **확정** — sim profile **1.0 s / 0.05 s / 20 점 / ≤ 30 Hz** (S3.6, 2026-09-22, provisional), 설정됨 (2026-09-22 사용자): 로봇별 사본 `ball_perception_sim_profile.json` — 위치는 [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) MD-18 (2026-09-30) 로 개정: profile 은 ball_perception 저장소의 `ball_perception_sim/config/sim_profile.catching.json` 이 소유하고, 이 사본은 E0-F04 ([#647](https://github.com/hyujun/rtc-framework/issues/647)) 에서 제거했다 | 값은 S3.6 이 기구학 reachable 창 (D-27) 과 T_det 재실측으로 낸 H_req 0.99 s 에서 왔다 — 종전 0.8 s / 16 점을 버린 이유와 **t = 0 없는** 예측점 산식은 §4.4 S3.6 결과 |
-| D-16 | 관절 가속 한계는 **토크 한계에서 도출**한다 (§9). 시뮬레이션 추정은 교차 검증용. YAML 의 기존 `max_acceleration` 값은 쓰지 않는다 | **확정** — 퇴화 분기·가중·오라클은 §9 | 가속 데이터 없음, 토크 데이터 있음. 기존 `max_acceleration` (5.0 rad/s²) 은 CM 이 읽기만 하고 어떤 컨트롤러도 쓰지 않는 placeholder |
+| D-16 | 관절 가속 한계는 **토크 한계에서 도출**한다 (§9). 시뮬레이션 추정은 교차 검증용. YAML 의 기존 `max_acceleration` 값은 쓰지 않는다 | **확정** — 퇴화 분기·가중·오라클은 §9 | 가속 데이터 없음, 토크 데이터 있음. 기존 `max_acceleration` (5.0 rad/s²) 은 CM 이 읽기만 하고 어떤 컨트롤러도 쓰지 않는 placeholder 였다 — 로봇 YAML 의 그 키는 E1-F11 (#698) 에서 지웠다 |
 | D-17 | catch frame 의 부모 frame·위치 offset·자세는 **YAML 로 열어 둔다**. 초기값은 S2.3a(축)·S2.3b(위치)에서 제안하고, 사용자가 sim 에서 확인해 갱신한다 (§10). 값은 모델 빌드 시 읽히므로 바꾸면 컨트롤러를 다시 configure 해야 한다 | **확정** | 사용자 결정 |
 | D-18 | 투척 목표는 **arm manipulability 기반 포구 가능성(catchability)** 으로 정한다. 발사 영역 (arm base frame 기준 수평 거리 √(x²+y²) = 4 m 의 원호 — 좌우 투척 포함, world z 1.5–2.0 m, **비행시간 T_f ≥ 1.0 s** — 사용자 2026-09-19) 에서 출발한 궤적 위 포구 후보마다, 손바닥 +z 가 공 진행 방향을 마주보는 자세(a_d = −v̂)의 IK 해에서 manipulability 를 재고, threshold 이상인 후보가 있으면 잡을 수 있는 공, 없으면 포기. 이 판정으로 투척 속도·각도 범위를 정한다. threshold 초기값 0.1 (provisional; 출하값은 로봇별 — `ur5e_p1b` 0.1 · `iiwa7_leap` 0.174, §11) | **확정** — 정의 세부는 §11. sim 발사 영역의 개정 (릴리스 높이 0.2–0.5 m 등) 은 §7.3 "D-18 개정" | 사용자 결정 |
 | D-19 | 단계마다 **`demo_controller_gui` 갱신과 `plot_rtc_log` 로 CSV 플롯을 구현·확인**한다. 각 단계 게이트에 GUI 확인과 plot 회귀 테스트를 포함한다. S0 (코드 없음)·S1 (ROS·GUI 비의존 순수 코어) 은 면제한다 (§13) | **확정** | 사용자 결정. 면제 근거는 §13 |
@@ -1115,7 +1115,7 @@ D-3 은 **검증 결과로 다시 검토한다.** 기존 RTF 신호 (200 step �
 
 ## 9. 관절 가속 한계 도출 (D-16)
 
-가속 데이터는 없고 토크 한계는 있다: YAML `devices.<group>.joint_limits.max_torque`, URDF `effort`, MJCF `forcerange` 가 같은 값이다 (UR5e 150·150·150·28·28·28 N·m, iiwa7 200 N·m). 기존 YAML `max_acceleration` (5.0 rad/s²) 은 출처 없는 placeholder 라 쓰지 않는다.
+가속 데이터는 없고 토크 한계는 있다: YAML `devices.<group>.joint_limits.max_torque`, URDF `effort`, MJCF `forcerange` 가 같은 값이다 (UR5e 150·150·150·28·28·28 N·m, iiwa7 200 N·m).
 
 **방법 (오프라인 도구 `derive_accel_limits`, S2.5).**
 

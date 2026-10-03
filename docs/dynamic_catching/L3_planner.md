@@ -151,7 +151,7 @@ $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LW
 
 **전제 $|w|\le\bar\omega$ 는 검사한다.** 초기 속도가 이미 속도 한계를 넘으면 최소시간 문제 자체가 정의되지 않는다 — 사다리꼴 분기의 $(\bar\omega-w)/\bar a$ 가 음수가 되어 물리적 의미가 없는 값이 조용히 나온다(예: $w_0=6$, $\bar\omega=\pi$, $\bar a=10$, $D=2$ → 0.92374 s, 그중 첫 구간이 $-0.2858$ s). 계획용 $\dot q_{\max}$(운용 여유율 적용값)와 CLIK 내부 한계가 다르거나, L5의 경계 충돌 규칙이 발동한 직후에 일어날 수 있다. `tMinChecked`가 clamp하고 플래그를 세우며, 플래그가 서면 해당 후보를 탈락시킨다.
 
-**한계 값 $\bar a$ 의 출처 `[확정 D-16]`.** 관절 가속 한계는 토크 한계(`devices.<group>.joint_limits.max_torque` = URDF `effort` = MJCF `forcerange`)에서 오프라인 도구(S2.5, plan §9)로 도출한 **보수적 상수 box** 다. 이 box 는 CLIK 가속 box (L5, S2.2) 와 **같은 값**을 공유해야 계획이 실행과 일치한다. YAML 의 기존 `max_acceleration` (출처 없는 placeholder) 은 쓰지 않는다. 자세 의존 한계는 v1 범위 밖이다.
+**한계 값 $\bar a$ 의 출처 `[확정 D-16]`.** 관절 가속 한계는 토크 한계(`devices.<group>.joint_limits.max_torque` = URDF `effort` = MJCF `forcerange`)에서 오프라인 도구(S2.5, plan §9)로 도출한 **보수적 상수 box** 다. 이 box 는 CLIK 가속 box (L5, S2.2) 와 **같은 값**을 공유해야 계획이 실행과 일치한다. 자세 의존 한계는 v1 범위 밖이다.
 
 > **S3.5b (2026-09-22).** 이 box 로는 gate 지도가 열리지 않는다 (`ur5e_p1b` 기준 투척 주변 2835 투척 중 6; 그 이동이 토크 한계 안에 드는지를 직접 검사한 층은 590). D-16 개정 (plan §7.3 결정 B, §9) 으로 오프라인 지도는 두 층을 병기하고, 런타임의 자세 의존 한계는 S6 에서 설계한다 — 위 "v1 범위 밖" 은 그때 다시 본다.
 
