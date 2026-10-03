@@ -38,6 +38,15 @@ D-4). 점 하나가 $(p, v, a)$ + 공분산 $\Sigma_{6\times6}$(NaN = 모름) + 
 vision 은 vision PC, 제어기는 제어 PC 에서 돈다. 두 쪽은 위 토픽으로만 만나고 서로의 파일을 읽지 않는다 — 추정기의
 profile 은 ball_perception 저장소가 소유한다 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) MD-17 · MD-18).
 
+## `ref/` — 참고 자료의 원본
+
+계획에 참고하는 자료 (수학적 알고리즘 · 전체 구조) 의 원본을 [ref/](ref/) 에 보관한다.
+
+- **될 수 있으면 고치지 않는다.** 고치는 것은 사용자가 필요할 때 한다 — 구현이 바뀌어도 이 폴더의 문서를 거기에 맞춰 갱신하거나 줄이지 않는다
+- 그래서 구현과 다를 수 있다. 알려진 차이는 [#705](https://github.com/hyujun/rtc-framework/issues/705) 의 "코드와 어긋난 곳" 에 있다
+- 2026-10-04 에 이 폴더의 같은 이름 문서를 그대로 복사했다. 원문과 다른 것은 상대 링크의 경로뿐이다 (폴더가 한 단계 깊어져서). 이 폴더 바로 아래의 같은 이름 문서는 재정비 (#705) 의 대상이다
+- 들어 있는 것: `mpc_multiframe_clik_formulation.md` · `ball_catching_inverse_dynamics_mpc.md` · `CATCHING_MASTER.md` · `L0_core.md` … `L8_bringup.md`
+
 ## 파일
 
 | 파일 | Layer | 내용 |
