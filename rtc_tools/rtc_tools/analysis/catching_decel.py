@@ -61,6 +61,14 @@ comparison are not one population). ψ between two runs of the same arm is what 
 non-inferiority test of G-1 needs for its sample size
 (:func:`paired_noninferiority_n`).
 
+Between two arms (MPC E1-F06, #632) the pairs also carry the test itself, per
+``--margin``: Tango's score test of ``H0: p_b − p_a ≤ −margin``
+(:func:`tango_noninferiority`), its score interval (:func:`tango_score_ci`),
+the Wald interval (:func:`paired_difference`) and the exact power and size of
+the test (:func:`paired_noninferiority_power`). ``--success hold`` counts a
+throw as caught only when it is a truth success AND reached the HOLD verdict
+without an ``ABORT_SAFE`` inside ``[t_launch, t_end]`` (:func:`hold_no_abort`).
+
 Every limit comes from the run's profile, never from code (ARCH-1): joints from
 the diag's columns, ratings from the device roster, ``a_dec`` from the
 controller YAML with ``sim.yaml`` and the ``--overlay`` files laid over it.
@@ -336,6 +344,134 @@ def pair_table(a: Mapping[tuple, bool], b: Mapping[tuple, bool]) -> dict:
     }
 
 
+def paired_difference(pairs: Mapping, z: float = 1.96) -> dict:
+    """``p_b − p_a`` of a :func:`pair_table` with a Wald interval.
+
+    Paired proportions: with b = only_a, c = only_b over n pairs the difference
+    is ``(c − b) / n`` and its variance ``((b + c) − (c − b)² / n) / n²``.
+    """
+    n = pairs["n_pairs"]
+    if not n:
+        return {"diff": math.nan, "ci95": [math.nan, math.nan]}
+    b, c = pairs["only_a"], pairs["only_b"]
+    d = (c - b) / n
+    se = math.sqrt(max((b + c) - (c - b) ** 2 / n, 0.0)) / n
+    return {"diff": d, "ci95": [d - z * se, d + z * se]}
+
+
+def tango_restricted_q(only_a, only_b, n, delta):
+    """The MLE of the only-a cell probability under ``p_b − p_a = delta`` (Tango 1998).
+
+    With ``q_b = q_a + delta`` the constrained likelihood peaks at the larger
+    root of ``A q² + B q + C``: ``A = 2n``, ``B = −x_b − x_a + (2n − x_b + x_a) δ``,
+    ``C = −x_a δ (1 − δ)`` (x_a = only_a, x_b = only_b). Takes arrays too.
+    """
+    xa, xb = np.asarray(only_a, dtype=float), np.asarray(only_b, dtype=float)
+    a = 2.0 * n
+    b = -xb - xa + (2.0 * n - xb + xa) * delta
+    c = -xa * delta * (1.0 - delta)
+    return (-b + np.sqrt(np.maximum(b * b - 4.0 * a * c, 0.0))) / (2.0 * a)
+
+
+def tango_z(only_a, only_b, n, delta):
+    """Tango's score statistic for ``H0: p_b − p_a = delta`` (large = b better than delta).
+
+    ``Z = (x_b − x_a − n δ) / sqrt(n [2 q̃_a + δ (1 − δ)])``. Where the variance
+    vanishes (``x_a = x_b = 0`` at δ = 0, or δ = ±1) a zero numerator is 0 and
+    any other is ±inf. Takes arrays too.
+    """
+    xa, xb = np.asarray(only_a, dtype=float), np.asarray(only_b, dtype=float)
+    num = xb - xa - n * delta
+    var = n * (2.0 * tango_restricted_q(xa, xb, n, delta) + delta * (1.0 - delta))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = np.where(var > 0.0, num / np.sqrt(np.maximum(var, 0.0)), np.sign(num) * np.inf)
+    z = np.where((var <= 0.0) & (num == 0.0), 0.0, z)
+    return float(z) if z.ndim == 0 else z
+
+
+def tango_noninferiority(only_a: int, only_b: int, n: int, margin: float, *, alpha=0.025) -> dict:
+    """One-sided paired non-inferiority of b to a: ``H0: p_b − p_a ≤ −margin``.
+
+    Tango's score test (:func:`tango_z` at ``δ0 = −margin``); b is
+    non-inferior when ``p = 1 − Φ(Z) < alpha``.
+    """
+    if n <= 0 or only_a < 0 or only_b < 0 or only_a + only_b > n:
+        raise ValueError(f"only_a {only_a}, only_b {only_b}, n {n}: not a paired table")
+    delta = -float(margin)
+    z = tango_z(only_a, only_b, n, delta)
+    p = 1.0 - NormalDist().cdf(z) if math.isfinite(z) else (0.0 if z > 0 else 1.0)
+    return {
+        "margin": float(margin),
+        "alpha": alpha,
+        "z": z,
+        "p": p,
+        "reject": bool(p < alpha),
+        "q_a_restricted": float(tango_restricted_q(only_a, only_b, n, delta)),
+    }
+
+
+def tango_score_ci(only_a: int, only_b: int, n: int, level: float = 0.95) -> list[float]:
+    """Tango's score interval of ``p_b − p_a``: ``{δ : |Z(δ)| < z}``, by bisection on [−1, 1].
+
+    Z falls as δ rises, so each end is the root on its side of the point
+    estimate; an estimate of ±1 is its own end on that side.
+    """
+    if n <= 0 or only_a < 0 or only_b < 0 or only_a + only_b > n:
+        raise ValueError(f"only_a {only_a}, only_b {only_b}, n {n}: not a paired table")
+    zc = NormalDist().inv_cdf(0.5 + level / 2.0)
+    d = (only_b - only_a) / n
+
+    def root(lo: float, hi: float, target: float) -> float:
+        # Z(lo) ≥ target ≥ Z(hi) on a falling Z.
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            if tango_z(only_a, only_b, n, mid) >= target:
+                lo = mid
+            else:
+                hi = mid
+        return 0.5 * (lo + hi)
+
+    lower = -1.0 if d <= -1.0 or tango_z(only_a, only_b, n, -1.0) < zc else root(-1.0, d, zc)
+    upper = 1.0 if d >= 1.0 or tango_z(only_a, only_b, n, 1.0) > -zc else root(d, 1.0, -zc)
+    return [lower, upper]
+
+
+def paired_noninferiority_power(
+    n: int, psi: float, diff: float, margin: float, *, alpha: float = 0.025
+) -> float:
+    """Exact rejection probability of :func:`tango_noninferiority` over ``n`` pairs.
+
+    Sums the trinomial over every table (only_a, only_b, the rest) with cell
+    probabilities ``q_a = (ψ − d)/2``, ``q_b = (ψ + d)/2`` and ``1 − ψ``. At
+    ``diff = −margin`` it is the test's size.
+    """
+    q_a, q_b = (psi - diff) / 2.0, (psi + diff) / 2.0
+    if n <= 0 or not (0.0 <= psi <= 1.0) or q_a < 0.0 or q_b < 0.0:
+        raise ValueError(f"n {n}, psi {psi}, diff {diff}: no such paired table")
+    xa, xb = (g.ravel() for g in np.mgrid[0 : n + 1, 0 : n + 1])
+    keep = xa + xb <= n
+    xa, xb = xa[keep], xb[keep]
+    z_crit = NormalDist().inv_cdf(1.0 - alpha)
+    reject = tango_z(xa, xb, n, -float(margin)) > z_crit
+    rest = n - xa - xb
+    lg = np.vectorize(math.lgamma)
+
+    def xlogq(x: np.ndarray, q: float) -> np.ndarray:
+        # 0 · log 0 = 0: a cell of probability 0 holds 0 pairs with certainty.
+        return np.where(x > 0, x * math.log(q), 0.0) if q > 0.0 else np.where(x > 0, -np.inf, 0.0)
+
+    logp = (
+        math.lgamma(n + 1)
+        - lg(xa + 1)
+        - lg(xb + 1)
+        - lg(rest + 1)
+        + xlogq(xa, q_a)
+        + xlogq(xb, q_b)
+        + xlogq(rest, 1.0 - psi)
+    )
+    return float(np.exp(logp[reject]).sum())
+
+
 # ── One unit ─────────────────────────────────────────────────────────────────
 def parse_unit_arg(value: str) -> tuple[Path, Path]:
     """``<unit>[:<session>]`` — the session defaults to ``<unit>/session`` (or ``session_copy``)."""
@@ -434,6 +570,7 @@ def _trial_table(unit: Path, ct_dir: Path, extra: Sequence[str] = ()) -> list[di
                 "seed": rec.get("seed"),
                 "sample_idx": rec.get("sample_idx"),
                 "t_launch": num("t_launch"),
+                "t_end": num("t_end"),
                 "invalid_reason": r.get("invalid_reason", ""),
                 "truth_success": _truth_cell(r.get("truth_success")),
                 "supervisor": r.get("supervisor", ""),
@@ -510,6 +647,8 @@ def analyse_unit(
     fk = ct.CatchFrameFk(urdf_text, joints, profile).pose_world
 
     trials = _trial_table(unit, ct_dir or unit / "ct")
+    for r in trials:
+        r["hold_no_abort"] = hold_no_abort(t, mode, r["t_launch"], r["t_end"])
     launches = np.array([r["t_launch"] for r in trials], dtype=float)
     entries = decel_entries(mode)
     rows = []
@@ -589,6 +728,20 @@ def _stats(values: Sequence[float], qs: Sequence[float] = (50, 95)) -> dict:
     return out
 
 
+def hold_no_abort(t: np.ndarray, mode: np.ndarray, t_launch: float, t_end: float) -> bool | None:
+    """Did the trial reach the HOLD verdict and never abort, within ``[t_launch, t_end]``?
+
+    The verdict is the HOLD → RETREAT step of ``catching_trials._hold_end_tick``
+    (RETREAT entered from anywhere else is no verdict); an ``ABORT_SAFE`` tick
+    anywhere in the window fails it. ``None`` when the window is unknown
+    (``catching_trials.csv`` without ``t_end``, or a trial with no launch).
+    """
+    if not (math.isfinite(t_launch) and math.isfinite(t_end)):
+        return None
+    m = np.asarray(mode)[(t >= t_launch) & (t <= t_end)]
+    return ct._hold_end_tick(m) is not None and not bool(np.any(m == ct.MODE_ABORT_SAFE))
+
+
 def summarise(rows: Sequence[Mapping]) -> dict:
     """p50 / p95 / max of the per-trial values: all DECEL trials, and by truth success."""
 
@@ -639,8 +792,17 @@ def _count(values) -> dict:
     return out
 
 
-def outcome_map(units: Sequence[dict]) -> dict[tuple, bool]:
-    """``(kind, seed, sample_idx) → truth success`` over the valid trials of ``units``."""
+SUCCESS_DEFS = ("truth", "hold")
+
+
+def outcome_map(units: Sequence[dict], success: str = "truth") -> dict[tuple, bool]:
+    """``(kind, seed, sample_idx) → success`` over the valid trials of ``units``.
+
+    ``success``: ``truth`` is ``truth_success``; ``hold`` also asks the trial
+    to reach the HOLD verdict without an ``ABORT_SAFE`` (:func:`hold_no_abort`).
+    """
+    if success not in SUCCESS_DEFS:
+        raise ValueError(f"success {success!r}: one of {SUCCESS_DEFS}")
     out: dict[tuple, bool] = {}
     for u in units:
         for r in u["all_trials"]:
@@ -652,7 +814,15 @@ def outcome_map(units: Sequence[dict]) -> dict[tuple, bool]:
                     f"{u['summary']['unit']}: throw {key} appears twice in one set — a set is "
                     "one run of each throw"
                 )
-            out[key] = bool(r["truth_success"])
+            ok = bool(r["truth_success"])
+            if success == "hold":
+                if r["hold_no_abort"] is None:
+                    raise SystemExit(
+                        f"{u['summary']['unit']}: trial {r['idx']} has no window end — "
+                        "--success hold needs catching_trials.csv with t_end (re-run catching_trials)"
+                    )
+                ok = ok and r["hold_no_abort"]
+            out[key] = ok
     return out
 
 
@@ -732,6 +902,30 @@ def report(units: Sequence[dict], pooled: Mapping | None, pairs: Mapping | None)
         )
         if not pairs["n_pairs"]:
             lines.append("  no throw is in both sets (seed, sample_idx): nothing to pair")
+        lines.append(f"  success = {pairs.get('success', 'truth')}")
+        for b in pairs.get("noninferiority") or []:
+            if b is None:
+                continue
+            s, w = b["score_ci95"], b["wald_ci95"]
+            verdict = "non-inferior" if b["reject"] else "non-inferiority not shown"
+            lines.append(
+                f"  Tango non-inferiority margin {b['margin']:.2f} (one-sided α {b['alpha']}): "
+                f"d̂ {b['diff']:+.4f} · Z {b['z']:.4f} · p {b['p']:.4g} → {verdict} · score 95 % "
+                f"[{s[0]:+.5f}, {s[1]:+.5f}] · Wald [{w[0]:+.5f}, {w[1]:+.5f}]"
+            )
+            for key, label in (("power_design", "design"), ("power_observed", "observed")):
+                rows = b[key] or []
+                if rows:
+                    cells = " · ".join(
+                        f"d {r['diff']:+.3f} → "
+                        + ("N/A" if r["power"] is None else f"{r['power']:.3f}")
+                        for r in rows
+                    )
+                    lines.append(
+                        f"    power at ψ {rows[0]['psi']:.3f} ({label}, n {b['n']}): {cells}"
+                    )
+            size = "N/A" if b["size"] is None else f"{b['size']:.4f}"
+            lines.append(f"    exact size at the H0 boundary (ψ̂): {size}")
         for row in pairs.get("sample_size", []):
             at, upper = (
                 "— (no discordant pair seen)" if row[k] is None else row[k]
@@ -742,6 +936,53 @@ def report(units: Sequence[dict], pooled: Mapping | None, pairs: Mapping | None)
                 f"difference 0): margin {row['margin']:.2f} → ψ̂ {at} · ψ upper {upper}"
             )
     return "\n".join(lines)
+
+
+def noninferiority_block(
+    pairs: Mapping,
+    margin: float,
+    alpha: float,
+    design_psi: float | None,
+    power_diffs: Sequence[float],
+) -> dict | None:
+    """Tango's test of b against a at ``margin``, its score interval and power (MPC E1-F06).
+
+    Power rows are exact (:func:`paired_noninferiority_power`) over the valid
+    pairs: at the design ψ (when given) and at the observed ψ̂, each at
+    ``power_diffs``; the observed ones add the estimate d̂ (a function of the
+    same data as p, not new evidence). A difference larger than ψ in size has
+    no table and is ``None``. ``size`` is the test's exact rejection rate on
+    the H0 boundary at ψ̂. ``None`` without a pair.
+    """
+    n = pairs["n_pairs"]
+    if not n:
+        return None
+    only_a, only_b = pairs["only_a"], pairs["only_b"]
+    psi, d_hat = pairs["discordance"], (only_b - only_a) / n
+
+    def power(at_psi: float, diff: float) -> float | None:
+        if abs(diff) > at_psi:
+            return None
+        return paired_noninferiority_power(n, at_psi, diff, margin, alpha=alpha)
+
+    return {
+        **tango_noninferiority(only_a, only_b, n, margin, alpha=alpha),
+        "n": n,
+        "diff": d_hat,
+        "score_ci95": tango_score_ci(only_a, only_b, n),
+        "wald_ci95": paired_difference(pairs)["ci95"],
+        "power_design": (
+            None
+            if design_psi is None
+            else [
+                {"psi": design_psi, "diff": d, "power": power(design_psi, d)} for d in power_diffs
+            ]
+        ),
+        "power_observed": [
+            {"psi": psi, "diff": d, "power": power(psi, d)} for d in [*power_diffs, d_hat]
+        ],
+        "size": power(psi, -margin),
+    }
 
 
 def write_outputs(
@@ -815,6 +1056,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     ap.add_argument("--alpha", type=float, default=0.025, help="one-sided")
     ap.add_argument("--power", type=float, default=0.8)
+    ap.add_argument(
+        "--success",
+        choices=SUCCESS_DEFS,
+        default="truth",
+        help="what a paired trial's success is: truth_success, or (hold) truth_success "
+        "AND the HOLD verdict reached AND no ABORT_SAFE in [t_launch, t_end]",
+    )
+    ap.add_argument(
+        "--design-psi",
+        type=float,
+        help="discordance the comparison was planned at: adds the design power rows",
+    )
+    ap.add_argument(
+        "--power-diff",
+        type=float,
+        nargs="*",
+        default=[0.0, -0.05],
+        help="true differences p_b − p_a the power rows are computed at (the "
+        "estimate is added to the observed rows)",
+    )
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args(argv)
     if bool(args.a) != bool(args.b):
@@ -845,8 +1106,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     pooled = pool(pooled_over) if len(pooled_over) > 1 else None
     pairs = None
     if set_a:
-        pairs = pair_table(outcome_map(set_a), outcome_map(set_b))
+        pairs = pair_table(outcome_map(set_a, args.success), outcome_map(set_b, args.success))
+        pairs["success"] = args.success
         pairs["pooled_a"], pairs["pooled_b"] = pool(set_a), pool(set_b)
+        pairs["wald"] = paired_difference(pairs)
+        pairs["noninferiority"] = [
+            noninferiority_block(pairs, m, args.alpha, args.design_psi, args.power_diff)
+            for m in args.margin
+        ]
 
         def pairs_needed(psi: float, margin: float) -> int | None:
             # No pair, or no discordant one: ψ says nothing about a sample size,

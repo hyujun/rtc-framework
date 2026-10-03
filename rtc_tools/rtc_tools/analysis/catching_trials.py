@@ -2711,6 +2711,7 @@ def analyse_session(
         row["time_alignment"] = trial.alignment
         row["stamp_anchor"] = trial.stamp_anchor
         row["t_launch"] = trial.t_launch
+        row["t_end"] = trial.t_end  # the last mode_log receipt, same clocks as t_launch
         row["stamp_minus_t_rel_s"] = trial.stamp_offset  # ball stamp axis − t_relative_s
         row["truth_file"] = trial.truth_path is not None
         truth = None
