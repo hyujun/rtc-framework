@@ -103,7 +103,7 @@ $$\ell_i=\max\Big(-\dot q_{\max,i},\ \frac{q_{\min,i}+m_q-q_{c,i}}{\Delta t},\ \
 
 - 위치∩속도 항은 기존 box 그대로다 (기존은 스칼라 `v_limit`, $\beta$ 없음). 마진 $m_q$ 는 CLIK 에 넘기는 `q_min`/`q_max` 를 좁혀 구현하므로 새 옵션이 필요 없다 `[권장]`. v0.4 의 한계 접근 감속 $\beta$ 는 기존 box 에 없고 S2.2b 옵션 목록에도 없어 v1 에서 쓰지 않는다 ($\beta=1$ 과 동치).
 - 가속 항과 평활 항($w_s$)은 S2.2b 옵션이다. $\Delta t$ 는 `ControllerState::dt` (= 1/`control_rate`).
-- **가속 한계 $\ddot q_{\max}$ 의 출처 `[확정 D-16]`:** 토크 한계에서 오프라인으로 도출한 **상수 box** (plan §9, S2.5 도구 출력 YAML, provenance 포함). URDF 에는 가속 한계가 없다. 로봇 config 의 기존 `devices.<g>.joint_limits.max_acceleration` (5.0 rad/s²) 은 어떤 컨트롤러도 쓰지 않는 placeholder 라 **쓰지 않는다**. L3 도달시간 계산과 같은 값을 써야 계획이 실행과 일치한다.
+- **가속 한계 $\ddot q_{\max}$ 의 출처 `[확정 D-16]`:** 토크 한계에서 오프라인으로 도출한 **상수 box** (plan §9, S2.5 도구 출력 YAML, provenance 포함). URDF 와 로봇 config 의 `devices.<g>.joint_limits` 어느 쪽에도 가속 한계는 없다. L3 도달시간 계산과 같은 값을 써야 계획이 실행과 일치한다.
 
 $H$ 는 $\mu^2>0$ 이므로 양정치이고, 차원 $n_v$ 와 제약 수가 고정이다.
 
@@ -259,7 +259,7 @@ def equivalent_delay(tau, T, f):
 | `catch_frame` | string | – | `catch_frame` | – | 모델 빌더 추가 frame 이름 `[확정 D-17]` (plan §10) |
 | `robot.arm.q_min`, `q_max` | double[n] | rad | 로봇 config | – | YAML `joint_limits` ∩ URDF (backend 와 같은 원천, 사본 금지) |
 | `robot.arm.qd_max` | double[n] | rad/s | 로봇 config `max_velocity` | ≤ 데이터시트 | 기존 CLIK 은 스칼라 `v_limit` — 관절별 적용은 S2.2b 에서 확인 |
-| `robot.arm.qdd_max` | double[n] | rad/s² | S2.5 도출값 | >0 | `[확정 D-16]` 토크 한계에서 도출한 상수 box, provenance 포함. `max_acceleration` placeholder 사용 금지. 파일 (`robot.arm.accel_limits_path` — 패키지 share 상대경로, 또는 절대경로면 그대로) 의 `adopted: false` 는 로드 거부, **`provisional: true` (또는 키 부재) 는 sim 경고 · 실기 구성 park** — 로그가 `derived_accel_limits.<group>.provisional` 과 파일 경로를 댄다 (pre-S10 R3, #537 Q4). 출하 두 파일은 provisional 이다 (실기 토크 한계·모델 확인은 S10) |
+| `robot.arm.qdd_max` | double[n] | rad/s² | S2.5 도출값 | >0 | `[확정 D-16]` 토크 한계에서 도출한 상수 box, provenance 포함. 파일 (`robot.arm.accel_limits_path` — 패키지 share 상대경로, 또는 절대경로면 그대로) 의 `adopted: false` 는 로드 거부, **`provisional: true` (또는 키 부재) 는 sim 경고 · 실기 구성 park** — 로그가 `derived_accel_limits.<group>.provisional` 과 파일 경로를 댄다 (pre-S10 R3, #537 Q4). 출하 두 파일은 provisional 이다 (실기 토크 한계·모델 확인은 S10) |
 | `robot.arm.limit_margin` | double | rad | 0.05 | 0–0.3 | CLIK 에 넘기는 위치 box 를 좁힘 (§4.3) |
 | ~~`robot.arm.q_nominal`~~ | double[n] | rad | — | – | **쓰지 않는다** — posture 목표는 시행 시작 자세다 (§7 L5.6, 2026-09-22). 코드·출하 YAML 에 이 키는 없다 |
 | `joint_cmd.K_p` | double | 1/s | 20.0 | 1–100 | CLIK 대역 (L4 `k_axis`보다 크게) |

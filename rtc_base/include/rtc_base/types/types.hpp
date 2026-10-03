@@ -492,11 +492,10 @@ struct DeviceUrdfConfig {
 };
 
 struct DeviceJointLimits {
-  std::vector<double> max_velocity;      // per-joint (rad/s)
-  std::vector<double> max_acceleration;  // per-joint (rad/s²), optional
-  std::vector<double> max_torque;        // per-joint (Nm), optional
-  std::vector<double> position_lower;    // per-joint lower bound (rad)
-  std::vector<double> position_upper;    // per-joint upper bound (rad)
+  std::vector<double> max_velocity;    // per-joint (rad/s)
+  std::vector<double> max_torque;      // per-joint (Nm), optional
+  std::vector<double> position_lower;  // per-joint lower bound (rad)
+  std::vector<double> position_upper;  // per-joint upper bound (rad)
 };
 
 // Per-device sensor packing layout — describes how `DeviceState::sensor_data`

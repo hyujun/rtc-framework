@@ -151,7 +151,7 @@ rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 | 구조체 | 설명 |
 |--------|------|
 | `DeviceUrdfConfig` | URDF 파싱용 -- `package`, `path`, `root_link`, `tip_link` |
-| `DeviceJointLimits` | 관절 한계 -- `max_velocity`, `max_acceleration`, `max_torque`, `position_lower`, `position_upper` |
+| `DeviceJointLimits` | 관절 한계 -- `max_velocity`, `max_torque`, `position_lower`, `position_upper` |
 | `DeviceSensorLayout` | 센서 패킹 layout -- `primary_count_per_group`, `secondary_count_per_group`, `values_per_group`, `inference_values_per_group`, `has_native_contact`, `has_native_displacement`. 앞 4개는 stride/offset 계산용; 뒤 2개 bool 은 backend capability advertisement (consumer 가 native vs derived signal 경로 분기) — rtc_* 는 두 bool 의 의미를 모르고 전달만 |
 | `DeviceNameConfig` | 디바이스 이름, `joint_state_names`, `joint_command_names`, `motor_state_names`, `sensor_names`, URDF 설정(`DeviceUrdfConfig`), 관절 한계(`DeviceJointLimits`), 센서 layout(`DeviceSensorLayout`, optional), 안전 위치(`safe_position`) |
 | `TopicConfig` | 디바이스 그룹별 구독/퍼블리시 토픽 라우팅 (`std::vector<std::pair>` 기반, YAML 삽입 순서 보존) |

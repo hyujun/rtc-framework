@@ -1113,7 +1113,6 @@ std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std::string
       };
       rtc::DeviceJointLimits jl;
       jl.max_velocity = per_joint("max_velocity");
-      jl.max_acceleration = per_joint("max_acceleration");
       jl.max_torque = per_joint("max_torque");
       jl.position_lower = limits["position_lower"].as<std::vector<double>>();
       jl.position_upper = limits["position_upper"].as<std::vector<double>>();

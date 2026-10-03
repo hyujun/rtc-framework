@@ -54,6 +54,7 @@ rtc_tools/
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
 │       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (RTC_SESSION_DIR / RTC_RUN_ID 관리)
+│       ├── controller_config.py         ← 컨트롤러 YAML + `include:` 조각의 합성 (CM `LoadControllerConfig` 의 Python mirror)
 │       ├── smoothing.py                 ← box 평활 하나 (catching 의 plot 패널과 분석 열이 공유)
 │       └── hand_data_plot.py            ← 손 CSV 데이터 시각화
 ├── test/                                 ← pytest 유닛 테스트 (Testing 섹션 참조)
@@ -1152,6 +1153,25 @@ python3 rtc_tools/utils/hand_data_plot.py <csv_file> --timing-only
 | 타임아웃 | 사이클당 타임아웃 횟수 (존재 시) |
 
 ---
+
+### `controller_config.py` — 컨트롤러 YAML 의 `include:` 합성
+
+컨트롤러 YAML 은 `include:` 목록으로 여러 파일에 나뉠 수 있다 (규칙: [rtc_controller_manager/README.md](../rtc_controller_manager/README.md#컨트롤러-yaml-을-여러-파일로-나누기--include)). 컨트롤러 YAML 을 경로로 읽는 도구와 테스트는 `yaml.safe_load` 대신 이 모듈을 쓴다. 주 파일만 읽으면 조각의 키가 조용히 빠진 트리를 본다.
+
+```python
+from rtc_tools.utils.controller_config import load_controller_config
+
+doc = load_controller_config(config_dir / "controllers" / "demo_x_controller.yaml")
+tree = doc["demo_x_controller"]      # 주 파일 + 조각이 합쳐진 트리
+```
+
+| 함수 | 설명 |
+|------|------|
+| `load_controller_config(path, *, config_key=None, loader=yaml.SafeLoader)` | 문서를 조각과 합쳐 `{<config_key>: 트리}` 로 돌려준다. `include` 가 없는 파일은 읽은 그대로. key 를 아는 호출자는 `config_key` 를 넘긴다 — CM 처럼 파일의 key 가 다르면 거부한다 |
+| `controller_config_leaf_lines(tree)` | leaf 마다 한 줄 (`경로\t값`). C++ `ControllerConfigLeafLines` 와 같은 줄을 낸다 — scalar 의 글자까지 비교하려면 `loader=yaml.BaseLoader` 로 읽는다 |
+| `ControllerConfigIncludeError` | 없는 조각 · 중복 leaf · 형식 오류. 주 파일이 없으면 `OSError` 가 그대로 올라간다 |
+
+C++ 로더의 mirror 다. 규칙을 바꾸면 `rtc_controller_manager/src/controller_config_loader.cpp` 와 함께 바꾼다 (PROC-5).
 
 ### `session_dir.py` — 세션 디렉토리 유틸리티
 

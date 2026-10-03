@@ -102,7 +102,6 @@ inline std::map<std::string, rtc::DeviceNameConfig> MakeUr5eP1bDeviceConfigs() {
   arm.urdf = arm_urdf;
   rtc::DeviceJointLimits arm_limits;
   arm_limits.max_velocity = {2.0, 2.0, 3.0, 3.0, 3.0, 3.0};
-  arm_limits.max_acceleration = {5.0, 5.0, 5.0, 5.0, 5.0, 5.0};
   arm_limits.max_torque = {150.0, 150.0, 150.0, 28.0, 28.0, 28.0};
   arm_limits.position_lower = {-6.28, -6.28, -3.14, -6.28, -6.28, -6.28};
   arm_limits.position_upper = {6.28, 6.28, 3.14, 6.28, 6.28, 6.28};

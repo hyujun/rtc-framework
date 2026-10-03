@@ -1,0 +1,9 @@
+# Fragment of ../rtc_cm_cfg_test.yaml — adds leaves to a map the main file
+# already has (`gains`) and a new top-level section.
+rtc_cm_cfg_test:
+  gains:
+    enabled: true
+    count: 3
+    vals: [0.5, 1.0e-4]
+  tail_a:
+    z: 1

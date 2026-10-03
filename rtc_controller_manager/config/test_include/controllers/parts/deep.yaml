@@ -1,0 +1,9 @@
+# Fragment of ../rtc_cm_cfg_test.yaml — second in include order.
+rtc_cm_cfg_test:
+  deep:
+    a:
+      b: 2.5
+      note: ~
+  gains:
+    tags: ["x", "y"]
+  tail_b: {}

@@ -148,6 +148,70 @@ TEST_F(CmConfigPipelineTest, YamlDefaultsSurviveWithoutOverrides) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// ── `include:` fragments (controller_config_loader) ──────────────────────────
+//
+// config/test_include/ splits the controller's tree over a main file and two
+// fragments. The loader's own rules are pinned in test_controller_config_loader;
+// what is pinned here is the bring-up around it — the controller is configured
+// from the composed tree, an override reaches a key that lives in a fragment,
+// and a broken include refuses the configure.
+
+TEST_F(CmConfigPipelineTest, IncludeFragmentsReachTheControllerAsOneTree) {
+  auto node = MakeNode();
+  node->set_parameter(rclcpp::Parameter("config_variant", std::string("test_include")));
+  DeclareArmDevice(*node);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  // Main file.
+  EXPECT_DOUBLE_EQ(1.0, PipelineTestController::captured_kp);
+  EXPECT_EQ("from_main", PipelineTestController::captured_label);
+  // First fragment — leaves of a map the main file also sets.
+  EXPECT_TRUE(PipelineTestController::captured_enabled);
+  EXPECT_EQ(3, PipelineTestController::captured_count);
+  EXPECT_EQ((std::vector<double>{0.5, 1.0e-4}), PipelineTestController::captured_vals);
+  // Second fragment.
+  EXPECT_EQ((std::vector<std::string>{"x", "y"}), PipelineTestController::captured_tags);
+  EXPECT_DOUBLE_EQ(2.5, PipelineTestController::captured_deep_b);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(CmConfigPipelineTest, ParamOverridesReachAFragmentsKeys) {
+  // Overrides are applied to the composed node. Applied to the main file's
+  // node before the merge they would either be lost or collide with the
+  // fragment's leaf as a duplicate.
+  auto node = MakeNode();
+  node->set_parameter(rclcpp::Parameter("config_variant", std::string("test_include")));
+  DeclareArmDevice(*node);
+  node->declare_parameter("rtc_cm_cfg_test.gains.count", 9);  // parts/gains_extra.yaml
+  node->declare_parameter("rtc_cm_cfg_test.deep.a.b", 7.5);   // parts/deep.yaml
+  node->declare_parameter("rtc_cm_cfg_test.gains.kp", 4.0);   // main file
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  EXPECT_EQ(9, PipelineTestController::captured_count);
+  EXPECT_DOUBLE_EQ(7.5, PipelineTestController::captured_deep_b);
+  EXPECT_DOUBLE_EQ(4.0, PipelineTestController::captured_kp);
+  // Untouched leaves keep their file's value.
+  EXPECT_TRUE(PipelineTestController::captured_enabled);
+  EXPECT_EQ("from_main", PipelineTestController::captured_label);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(CmConfigPipelineTest, AMissingFragmentRefusesConfigure) {
+  // This controller tolerates a missing config FILE (defaults). A main file
+  // that is there but names a fragment that is not is a different thing: the
+  // operator configured the controller and part of that config is gone.
+  auto node = MakeNode();
+  node->set_parameter(
+      rclcpp::Parameter("config_variant", std::string("test_include_missing_fragment")));
+  DeclareArmDevice(*node);
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+}
+
 // The control rate must be visible to the controller's FIRST LoadConfig, i.e. the
 // one PreConfigure drives. Controllers validate rate-dependent YAML there — filter
 // cutoffs against Nyquist, for instance — and handing the rate over only in Pass 2

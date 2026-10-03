@@ -129,11 +129,10 @@ demo_catching_controller:
         # surface as a tracking error with no attributable cause (L5 §4.3).
         limit_margin: 0.05
         # The D-16 acceleration box, DERIVED from the torque limits by
-        # `rtc_tools.analysis.derive_accel_limits` — not the
-        # `max_acceleration` placeholder in the device roster, which no
-        # controller reads. Package-relative because a controller cannot learn
-        # which config variant it was loaded from. `adopted: false` in that
-        # file is refused rather than defaulted (A-S5-6).
+        # `rtc_tools.analysis.derive_accel_limits`. Package-relative because a
+        # controller cannot learn which config variant it was loaded from.
+        # `adopted: false` in that file is refused rather than defaulted
+        # (A-S5-6).
         accel_limits_package: "integrated_bringup"
         accel_limits_path: "config/iiwa7_leap/derived_accel_limits.yaml"
         accel_limits_group: "iiwa7"

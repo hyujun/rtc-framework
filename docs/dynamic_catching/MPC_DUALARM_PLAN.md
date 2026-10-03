@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r43 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r44 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료 · E1 · E2 진행 중** · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5e) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -207,6 +207,9 @@ v1 과 G1 MPC 의 구조 차이:
 | MD-88 | catching 컨트롤러의 config 를 기능별 파일로 나눈다 — RT 의 QP CLIK, $p_c$ · $t_c$ 를 고르는 탐색 (두 planner 공통), closed_form planner, mpc planner. 새 기능 E1-F11 ([#698](https://github.com/hyujun/rtc-framework/issues/698)) 이고 E1-F06 뒤에 한다. 기능 동등성이 성공 기준이다 (값 · 동작 불변). 합치는 곳 (CM 의 일반 기능 대 컨트롤러의 경로 키), 키 경로의 유지, closed_form 파일에 둘 것, 나머지 절의 자리는 그 기능의 spec 에서 정한다 | 사용자 결정 (2026-10-03). 참고 형태는 기존 `config/<robot>/controllers/mpc/` 다 (WBC 가 경로 키로 하위 파일을 읽는다). G-1 은 수집 동안 출하 config 를 바꾸지 않으므로 그 뒤에 한다. 확인된 제약 둘: CM 은 컨트롤러마다 한 파일만 읽고 overlay 와 override 를 그 노드에 꽂는다. closed_form 의 planner thread 에는 자기 키가 거의 없다 — closed-form 법칙의 키 (`reference.*` · `supervisor.decel.a_dec`) 는 RT 쪽에 있다 | — | 2026-10-03 |
 
 | MD-89 | **두 로봇의 출하 DECEL 법칙은 `mpc` 다** — `ur5e_p1b` · `iiwa7_leap` 의 `demo_catching_controller.yaml` 에 `supervisor.decel.mode: mpc` 와 `planner.decel_mpc.enabled: true`. 다른 출하값 (`catch.gamma_ref` · 예산 · 격자) 은 G-1 의 `mpc` arm 그대로다. 코드 기본값 (키가 없을 때) 은 `closed_form` 으로 남는다 — `mpc` 는 decel 계획기와 포구 전 격자를 전제하므로 그 키가 없는 config 에서 기본이 될 수 없다 (MD-34 · MD-70). v1 의 법칙은 `mode: closed_form` 으로 돌린다 | 사용자 결정 (2026-10-03, G-1 결과를 본 뒤). G-1 은 두 로봇 FAIL 이다 (§8 "E1-F06"): 같은 300 투척의 포구 성공 `ur5e_p1b` 0.58 대 `closed_form` 0.69 (차이 95 % 구간 −0.17 – −0.04), `iiwa7_leap` 0.02 대 0.49 — leap 의 `mpc` 는 285 발에서 포구 계획을 얻지 못한다 (§4 미결의 구조 문제). 사용자에게 로봇별 적용 (p1b 만) 을 권했고 사용자는 두 로봇을 골랐다. 출하 기본값으로 잰 sim 성공률은 G-1 의 `mpc` arm (`catch_lead_on` 을 얹은 값) 과 같다고 가정하지 않는다 — lead 를 끈 출하 sim 과 실기에서 `mpc` 를 잰 적은 없다 | MD-6 의 "v1 계획기 · DECEL 은 기본값으로 남는다" (출하 YAML 에 한해), §7 공통 규칙의 기본값 문장, §4 미결 "E1-F06: `mpc` 를 기본값으로 바꿀지" | 2026-10-03 |
+| MD-90 | E1-F11 의 spec — **합치는 곳은 CM 의 일반 `include:`** 다. 컨트롤러 YAML 의 top-level `include:` 목록이 조각을 대고, CM 이 하나의 노드로 합친 뒤에 override 를 적용한다 (규칙: [rtc_controller_manager/README.md](../../rtc_controller_manager/README.md)). 키 경로는 그대로다 — 각 파일은 `<config_key>:` 부터 전체 경로를 쓰고, 같은 leaf 가 두 파일에 있으면 에러다. 파일은 넷이다: 주 파일 (QP CLIK · bring-up 절 · planner thread 공통 키 · 선택), `catching/search_grid.yaml`, `catching/planner_closed_form.yaml`, `catching/planner_mpc.yaml`. **조각을 모두 include 하고 planner 는 `supervisor.decel.mode` 하나로 고른다.** search 를 고르는 키는 넣지 않는다 | 사용자 결정 (2026-10-03). 목적은 기능마다 설정의 자리가 분명한 것이고 축은 둘이다 — search (지금의 격자 탐색, 나중에 NLP) 와 planner (`closed_form` · `mpc`). 합친 뒤에 override 를 적용해야 sim overlay 가 조각의 키에 먹는다. 고른 조각만 include 하면 `mpc` 에서 `reference.*` · `supervisor.decel.a_dec` 가 빠진다 — `mpc` 도 후보 순위를 closed-form rollout 으로 매긴다 (MD-46). 두 기능이 읽는 값은 뜻의 주인 파일에 두고 헤더에 다른 독자를 적는다. search 선택 키는 값이 하나뿐인 새 public key 라 두 번째 탐색 구현 (E3-F01 의 interface) 과 함께 넣는다 | MD-88 의 "spec 에서 정한다" 넷 | 2026-10-03 |
+| MD-91 | **E1-F11 의 범위를 넓힌다.** 파일 분리 (값 · 동작 불변) 에 더해: (1) `planner.decel_mpc.enabled` 를 지운다 — planner 는 `supervisor.decel.mode` 로만 고른다. (2) 코드 기본값으로 돌던 설계 파라미터를 YAML 로 낸다 — MPC 코어 15 개 (비용 가중 · slack 벌점 · 선형화 · solver), 탐색 14 개 (`planner.ik` 등), closed_form 1 개. 출하값은 지금의 코드 기본값이다. `w_perp` · `rho_v` · `v_rel_allow` 는 계획기가 그 항의 입력을 채우는 배선도 만든다. (3) 가속도 box 의 장치 (`derived_accel_limits*.yaml` · 경로 키 · 전용 로더 · provenance) 를 지우고 값은 `search_grid.yaml` 의 `robot.arm.qdd_max` 로 둔다. (4) 로봇 YAML 의 `joint_limits.max_acceleration` placeholder 와 `DeviceJointLimits` 의 그 필드 · CM 파서를 지운다 | 사용자 결정 (2026-10-03). (1) 선택 키가 둘이면 어긋난 조합이 생긴다 (지금은 park 또는 WARN). (2) 파일을 나눠도 가중 같은 설계값이 코드에 있으면 "기능의 설정이 그 파일에 있다" 가 성립하지 않는다. (3) 유도 box 는 동역학을 못 쓰는 풀이의 대용품이다 — QP CLIK (`dynamic`) 과 MPC (토크 행) 가 동역학을 쓰는 구성에서는 뜻이 없고, 탐색의 도달 시간만 읽는다. (4) 읽는 production 코드가 없다. 구현의 가정 둘 (사용자에게 보고하고 착수 지시를 받았다): 실기 clearance (`provisional`) 는 provenance 가 아니므로 bool 키로 남긴다 — 실기 구성의 park 가 이 값에 걸려 있다 (E-8). RT 의 정지 ramp · homing ramp 와 CLIK 의 `box` 형태는 같은 값을 그대로 읽는다 — 없애는 것은 후속이다 | MD-88 의 "값 · 동작 불변" (분리 commit 에 한정), MD-34 · MD-89 의 `planner.decel_mpc.enabled`, v1 D-16 의 "provenance 와 함께 YAML 로 출하" · `max_acceleration` 문장 | 2026-10-03 |
+| MD-92 | E1-F11 은 **PR 둘** 로 한다 — `feat/cm-controller-config-include` (프레임워크: CM 의 include, `max_acceleration` 삭제) 와 `refactor/catching-config-split` (catching: 분리와 MD-91 의 나머지). §6 "public API 를 바꾸는 feature 는 따로 둔다" 의 예외다 | 사용자 결정 (브랜치 · PR 수를 최소로). 나누는 선은 프레임워크 공통 대 catching 이다 — §6 의 "CM 의 일반 기능이 되면 먼저 분리한다" 는 지킨다. 대가: 기능 동등성은 PR 전체가 아니라 `refactor/catching-config-split` 의 **첫 commit** 에서 판정한다 (합성 트리 = 분기점의 단일 파일). 키를 지우거나 더하는 commit 은 그 뒤에 오고, 기존 단언의 변경은 commit 을 따로 둔다 (PROC-6) | §6 브랜치 계획의 그 행 | 2026-10-03 |
 MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미분으로 선형화한다 (MD-13). 그래서 단일 팔 문제도 계획기 스레드에서 동역학 모델을 평가하고, 주기마다 선형화를 다시 한다.
 
 미결 — 해당 feature 의 spec 에서 정한다:
@@ -286,7 +289,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — tick record 의 decel 블록과 계획기 레코드를 CSV 로, `catching_trials` 의 `mpc` 분해 · lane · 명령 열, plotter 패널, GUI 의 Catching 탭 | E1-F09 | 완료 (2026-10-02, [#678](https://github.com/hyujun/rtc-framework/pull/678)) — 확인 §8. 제어 동작 불변. 항별 비용 분해 · GUI 의 lane 상태 · `decel_*` 이름 통일은 하지 않았다 (미결) |
 | E1-F10 | [#663](https://github.com/hyujun/rtc-framework/issues/663) | mpc planner 튜닝 — closed_form 대비 성공률 비열등 (MD-50) | E1-F05 | 완료 (2026-10-02, [#679](https://github.com/hyujun/rtc-framework/pull/679)) — 결정 MD-71 – MD-76, 측정 §8. p1b 는 `catch.gamma_ref` 0.6 채택 (확인 200 쌍 −0.05 — 비열등 판정은 G-1), leap 은 미달로 닫음 (plan 이 채택되지 않는다 — 구조 문제). RT 의 `catch_box` 검사 폐기 (MD-73), CLIK 은 `dynamic` 만 (MD-74) |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | 완료 (2026-10-03, [#699](https://github.com/hyujun/rtc-framework/pull/699)) — 측정 §8. **G-1 FAIL (두 로봇, 기준 1).** p1b $\hat d$ −0.10, 양측 95 % 구간 −0.17 – −0.04. leap −0.47. 한계 · solve time · 회귀는 두 로봇 모두 통과. 사용자는 두 로봇의 출하 기본값을 `mpc` 로 정했다 (MD-89, [#700](https://github.com/hyujun/rtc-framework/pull/700)) |
-| E1-F11 | [#698](https://github.com/hyujun/rtc-framework/issues/698) | catching config 의 기능별 분리 — RT 의 QP CLIK · 탐색 ($p_c$ · $t_c$, 공통) · closed_form planner · mpc planner (MD-88). 기능 동등성 | E1-F06 | **다음** — 합치는 곳 · 키 경로 · closed_form 파일의 내용은 spec 에서 |
+| E1-F11 | [#698](https://github.com/hyujun/rtc-framework/issues/698) | catching config 의 기능별 분리 — RT 의 QP CLIK · 탐색 ($p_c$ · $t_c$, 공통) · closed_form planner · mpc planner (MD-88 · MD-90). 분리는 기능 동등성이 기준이고, 그 뒤에 선택 키 정리 · 설계 파라미터의 YAML 노출 · 가속도 box 의 정리가 온다 (MD-91) | E1-F06 | **진행 중** — PR 둘 (MD-92). 첫째 `feat/cm-controller-config-include` (CM 의 `include:`, `max_acceleration` 삭제), 둘째 `refactor/catching-config-split` 은 그 머지 뒤 |
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
 
@@ -320,7 +323,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ### 브랜치 계획
 
-feature 29개를 브랜치 22개로 묶는다. 브랜치 하나가 PR 하나다. 이 절은 묶음과 순서만 적는다 — 어느 브랜치가 끝났는지와 그 PR 은 위 feature 표의 상태 열에 있다.
+feature 29개를 브랜치 23개로 묶는다. 브랜치 하나가 PR 하나다. 이 절은 묶음과 순서만 적는다 — 어느 브랜치가 끝났는지와 그 PR 은 위 feature 표의 상태 열에 있다.
 
 **묶는 기준.**
 
@@ -366,7 +369,8 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 | `exp/catching-mpc-tuning` | E1-F10 | 튜닝. 채택한 config 만 YAML 로 넣고 실험 overlay 와 원자료는 repo 밖에 두었다. RT 의 `catch_box` 검사 폐기 (MD-73) · leap 의 CLIK `dynamic` (MD-74) 과 `verify-changes.sh` 의 패키지 data 파일 라우팅도 여기서 했다 |
 | `docs/catching-decel-mpc-g1` | E1-F06 | 게이트 G-1 의 판정과 결과 기록. 판정 도구 (Tango 검정, MD-87) 는 `rtc_tools` 커밋으로 함께 넣는다. 기본값 변경이 결정되면 그 변경은 별도 브랜치다 |
 | `feat/catching-mpc-default` | E1-F06 | 출하 기본값을 `mpc` 로 (MD-89) — 두 로봇의 YAML, 출하값을 고정한 테스트 (spec 변경), 문서 |
-| `refactor/catching-config-split` | E1-F11 | config 파일 분리 (MD-88). 기능 동등성이 성공 기준이라 따로 둔다. **나누는 조건**: 합치는 곳이 CM 의 일반 기능이 되면 (`rtc_controller_manager`) 그 변경을 먼저 분리한다 |
+| `feat/cm-controller-config-include` | E1-F11 | CM 이 컨트롤러 YAML 의 `include:` 조각을 합친다 (MD-90) — 아래 행의 "나누는 조건" 으로 먼저 분리했다. 같은 프레임워크 변경인 `joint_limits.max_acceleration` 의 삭제 (로봇 YAML · `rtc_base` 의 필드 · CM 파서, MD-91) 도 여기에 넣는다 |
+| `refactor/catching-config-split` | E1-F11 | config 파일 분리 (MD-88 · MD-90) 와 MD-91 의 catching 쪽 — `planner.decel_mpc.enabled` 삭제, 설계 파라미터의 YAML 노출, 가속도 box 의 정리. 분리는 기능 동등성이 기준이고 **첫 commit 에서 판정한다** (MD-92 — "public API 를 바꾸는 feature 는 따로 둔다" 의 예외). **나누는 조건**: 합치는 곳이 CM 의 일반 기능이 되면 (`rtc_controller_manager`) 그 변경을 먼저 분리한다 — 위 행 |
 
 **E2**
 
@@ -396,7 +400,7 @@ E0-F04 의 ball_perception 쪽 JSON 갱신은 그 저장소 (hyujun/ball_percept
 | 1 | `docs/mpc-dualarm-plan` | — |
 | 2 | `chore/ws-first-build-path` | — |
 | 3 | `feat/catching-baseline-grid-sweep`, `feat/catching-decel-mpc-core` | `feat/tsid-clik-multiframe` |
-| 4 | `feat/catching-decel-mpc-plan-path` → `-l7` → `feat/catching-mpc-approach-core` → `-plan-path` → `-l7` → `feat/catching-decel-mpc-tooling` → `exp/catching-mpc-tuning` → `docs/catching-decel-mpc-g1` → `refactor/catching-config-split` | `feat/g1-p1b-bringup` |
+| 4 | `feat/catching-decel-mpc-plan-path` → `-l7` → `feat/catching-mpc-approach-core` → `-plan-path` → `-l7` → `feat/catching-decel-mpc-tooling` → `exp/catching-mpc-tuning` → `docs/catching-decel-mpc-g1` → `feat/cm-controller-config-include` → `refactor/catching-config-split` | `feat/g1-p1b-bringup` |
 | 5 | `feat/demo-dualarm-controller` → `feat/g1-dualarm-tooling` | — |
 | 6 | rename refactor (MD-48) → E3 의 다섯 브랜치 (E2 와 E1-F07 뒤, MD-47) | — |
 
@@ -1118,6 +1122,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r44 | [#698](https://github.com/hyujun/rtc-framework/issues/698) 착수: 결정 MD-90 (E1-F11 의 spec — CM 의 `include:`, 키 경로 유지, 파일 넷, 모두 include 하고 `supervisor.decel.mode` 로 고른다), MD-91 (범위 확장 — `decel_mpc.enabled` 삭제 · 설계 파라미터의 YAML 노출 · 가속도 box 의 정리 · `max_acceleration` 삭제), MD-92 (PR 둘, §6 묶는 기준의 예외), §6 의 E1-F11 행 · 브랜치 표 (22 → 23) · 순서 |
 | r43 | [#699](https://github.com/hyujun/rtc-framework/pull/699) · [#700](https://github.com/hyujun/rtc-framework/pull/700) 머지 뒤 정리: §8 "E1-F06" 에 리뷰 반영의 판정 동일성과 출하 config smoke, §6 의 E1-F06 행에 #700 |
 | r42 | [#632](https://github.com/hyujun/rtc-framework/issues/632) 의 기본값 결정: 결정 MD-89 (두 로봇의 출하 DECEL 법칙은 `mpc`, 코드 기본값은 `closed_form` 유지), §1 G-1 의 결정 문장, §4 미결 정리 (기본값 항목 제거 · `decel_*` 이름은 정할 차례), §6 의 E1-F06 행 (#699) · 브랜치, §7 공통 규칙 |
 | r41 | [#632](https://github.com/hyujun/rtc-framework/issues/632) G-1 결과: §8 "E1-F06" (두 로봇 FAIL — 기준 1), §6 의 E1-F06 행 (완료) · E1-F11 행 (다음) |
