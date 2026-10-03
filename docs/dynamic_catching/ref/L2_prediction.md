@@ -1,11 +1,10 @@
 # L2 — Prediction: 궤적 샘플러 (vision 예측의 시각 정렬·보간)
 
-- 문서 버전: v0.5 (2026-09-19) — 결정·단계의 SSoT 는 [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) (충돌 시 plan 우선)
-- 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
+이 문서는 현재 구현의 예측 샘플러 층 (공용 궤적 타입 · 5차 Hermite 샘플러 · 지평 감시) 을 표현한다.
+
 - 배치 `[확정 D-1]`: rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`, ROS 비의존 순수 코드)
-- 단계: **S1** — S1.2 공용 궤적 타입(POD) + Hermite 샘플러, S1.3 시간 타입 적용
-- 선행: 단계 W (완료, plan §2), L0 (시간 타입·POD 규칙)
-- 산출물: 공용 궤적 타입(스냅샷 POD), 샘플러 (참조: `traj_sampler.hpp`)
+- 구성: 공용 궤적 타입 (스냅샷 POD, `trajectory.hpp`), 샘플러 (`traj_sampler.hpp`)
+- 의존: L0 (시간 타입·POD 규칙)
 
 ---
 
@@ -14,28 +13,28 @@
 vision 노드가 이미 예측 궤적을 발행하고(마스터 §5, D-4), 제어 PC는 그것을 **재전파하지 않고 그대로 신뢰**한다(마스터 §5.2).
 
 범위:
-1. **공용 궤적 타입** — L1 파서가 채우고 RT·계획기가 읽는 스냅샷 POD (S1.2). L1 이 L2 타입에 의존하던 역전을 이 타입을 공용으로 두어 해소한다.
+1. **공용 궤적 타입** — L1 파서가 채우고 RT·계획기가 읽는 스냅샷 POD. L1 이 L2 타입에 의존하던 역전을 이 타입을 공용으로 두어 해소한다.
 2. vision이 준 $(p,v,a)$ 샘플 열을 임의의 제어 시각으로 **보간**한다 (RT 루프, `control_rate` 100–5000 Hz).
 3. 지평 밖 요청을 감지하고 외삽 플래그를 올린다.
 4. 샘플 열의 형식·일관성을 검사한다.
 
 비범위:
 - 공 상태 추정과 궤적 **예측** (vision 노드).
-- 제어 PC 자체 동역학 전파 — v0.2의 `RtBallPropagator`, `rollout()`, `propagateWithCov()`는 **전부 삭제**했다.
+- 제어 PC 자체 동역학 전파 (`RtBallPropagator`, `rollout()`, `propagateWithCov()` 같은 것은 없다).
 - 공분산 전파·보관. vision이 점마다 6×6을 주고, 공분산은 계획기 버퍼에만 둔다(A-3, §4.5).
 - 포구점 선택(L3).
 
 ## 2. 코드 확인 게이트
 
-단계 W에서 처리했다(plan §2). 본 layer에 직접 걸리는 항목:
+본 layer에 직접 걸리는 항목:
 
-| ID | 확인 항목 | 기록 |
+| ID | 확인 항목 | 확인된 사실 |
 |---|---|---|
-| G2-1 | 발행 주기, $N$ 범위, 지평 길이 → `kCap`(컴파일타임)·`n_max`(런타임)와 L3 슬라이스 범위 | 전환 `[확정 D-15]` — vision 사양은 **제어기가 요구를 정하고** sim profile 을 맞춘다. S0.7 채택 profile (S3.6 이 1.0 s / 20 점으로 갱신): 지평 0.8 s, 간격 0.05 s, **16 점** (지평 0.05…0.80 s — 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다, 2026-09-20 정정), ≤ 30 Hz (plan D-15). `kCap` 은 S0.7 손계산 제안값으로 S1.2 가 정해 provisional 로 두고, **점 수 요구는 S3.6 이 20 으로 산출했다** (구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다, §5.1) (2026-09-22, T_det 재실측 후; 설정 profile 1.0 s / 20 점 — §6, plan §4.4 S3.6 결과). 20 ≤ 40 이라 S1.2 backfill 은 PASS 다 (넘었다면 backfill 후 S1 게이트 재실행, plan §4.2) (W5-6, TBD-VIS-04). **S3.4 실측 (2026-09-20)**: 30.0 Hz · N 16 · 지평 0.05…0.80 s 로 프로파일과 일치, 드롭 30 % 주입 시 발행 p95 15 Hz 로 얇아진다 (예측은 입력 step 마다 나온다) |
-| G2-2 | 점 시각 필드 타입·기준 → 시각 정렬 식 | 닫힘 — `horizon_ns` UINT32 (`header.stamp` 기준 상대 ns). L1 이 수신 시 절대 `BallTime` 으로 변환한다(D-2, L1 §4.1). 샘플러는 절대 시각만 받는다 (W5-3, TBD-VIS-03) |
-| G2-3 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | 닫힘 — profile 이 정한다 — 출하 sim profile (`sim_profile` 0.2, PR #595) 은 이차 항력 모델이라 **그 점의 총 가속도 $g - k\lVert v\rVert v$**, 항력 절이 없는 profile (0.1) 은 상수 $g$ (W5-4, TBD-VIS-05) |
-| G2-4 | 공분산을 RT까지 넘길지 | 닫힘 `[확정 A-3]` — RT 스냅샷에서 분리, 계획기 버퍼에만 (TBD-COV-01) |
-| G2-5 | 바닥 높이·작업셀 경계의 `W` 좌표 | TBD-WS-01 유지 (W7-1). 닫는 단계는 plan 에 지정되지 않음 |
+| G2-1 | 발행 주기, $N$ 범위, 지평 길이 → `kCap`(컴파일타임)·런타임 점 수 상한과 L3 슬라이스 범위 | `[확정 D-15]` — vision 사양은 **제어기가 요구를 정하고** sim profile 을 맞춘다. 예측점은 `step, 2·step, …, horizon` 이라 t = 0 이 없다. `kCap` 은 궤적 타입이 단독 소유하는 컴파일 상수이고 (provisional) 구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다 (§5.1). 점 수 요구는 목표 분포의 지평 요구에서 산출하며 (D-15, `ceil(H_req/step)`), 요구가 `kCap` 을 넘으면 `kCap` 을 올리고 L0 · L1 게이트를 재실행한다. 발행은 입력 step 마다 나오므로 입력이 드롭되면 발행이 얇아진다 (TBD-VIS-04) |
+| G2-2 | 점 시각 필드 타입·기준 → 시각 정렬 식 | `horizon_ns` UINT32 (`header.stamp` 기준 상대 ns). L1 이 수신 시 절대 `BallTime` 으로 변환한다(D-2, L1 §4.1). 샘플러는 절대 시각만 받는다 |
+| G2-3 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | profile 이 정한다 — 출하 sim profile 은 이차 항력 모델이라 **그 점의 총 가속도 $g - k\lVert v\rVert v$**, 항력 절이 없는 profile 은 상수 $g$ |
+| G2-4 | 공분산을 RT까지 넘길지 | `[확정 A-3]` — RT 스냅샷에서 분리, 계획기 버퍼에만 |
+| G2-5 | 바닥 높이·작업셀 경계의 `W` 좌표 | 열림 (TBD-WS-01). 포구점의 작업공간 제한은 `planner.workspace.catch_box` 가 탐색에서 건다 (L3). 바닥 높이 · 작업셀 경계 키는 구현하지 않았다 |
 
 ## 3. 참고자료
 
@@ -49,16 +48,16 @@ vision의 예측기와 제어 PC가 각자 전파하면 두 모델이 어긋날 
 
 부수 효과로 다음이 실시간 경로에서 사라진다.
 
-- L0의 이차 항력 모델과 RK4 (→ test fixture 전용, S1.6)
+- L0의 이차 항력 모델과 RK4 (→ test fixture 전용)
 - $k$ 최소제곱 식별 (→ fixture 전용)
 - 변분방정식·상태전이행렬 (`Rk4WithStm`)
-- 공정잡음 $Q$ 설정과 vision과의 값 합의 (v0.2의 `TBD-PRED-01` 폐기)
+- 공정잡음 $Q$ 설정과 vision과의 값 합의
 
 남는 것은 **보간**뿐이다.
 
 ### 4.2 5차 Hermite 보간 `[논문 외 유도]`
 
-vision 샘플 간격(예시 profile 0.05 s)은 RT 틱 $h$ = `dt` (0.2–10 ms)보다 훨씬 길다 — 500 Hz 면 구간 하나에 25 틱이 들어가므로 보간 방식이 중요하다.
+vision 샘플 간격(`prediction.dt_expected`)은 RT 틱 $h$ = `dt` (0.2–10 ms)보다 훨씬 길다 — 500 Hz 면 구간 하나에 25 틱이 들어가므로 보간 방식이 중요하다.
 
 각 샘플이 $(p_j,v_j,a_j)$ 를 모두 주므로, 구간 $[t_j,t_{j+1}]$ ($h_j=t_{j+1}-t_j$, $s=(t-t_j)/h_j$)에서 **양 끝의 위치·속도·가속도를 모두 맞추는** 5차 Hermite를 쓴다.
 
@@ -71,54 +70,40 @@ H_3&=10s^3-15s^4+6s^5, & H_4&=-4s^3+7s^4-3s^5, & H_5&=\tfrac12s^3-s^4+\tfrac12s^
 \end{aligned}
 $$
 
-속도·가속도는 $s$로 미분해 $h_j$, $h_j^2$로 나눈다(참조 헤더 `interpolate`).
+속도·가속도는 $s$로 미분해 $h_j$, $h_j^2$로 나눈다(`traj_sampler.hpp` 의 `Hermite5`, `Interpolate`).
 
-**왜 $C^2$가 필요한가.** L4의 feedforward가 $\ddot\xi^O$ 를 직접 쓴다(L4 §4.1). 가속도가 샘플 경계에서 튀면 기준 가속도 $u$ 에 그대로 계단이 생기고, 그것이 CLIK을 거쳐 관절 명령의 jerk가 된다. 5차 Hermite는 양 끝 $a$ 를 맞추므로 경계에서 $C^2$ 다.
-
-**비교 (실측, `test_l2.cpp`).** 한 샘플만 쓰는 Taylor 전개 $p_j+v_j\Delta+\tfrac12a_j\Delta^2$ 를 쓰면 구간마다 $a$ 가 계단으로 바뀐다.
-
-| 방식 | 샘플 경계에서의 $\Vert\Delta a\Vert$ |
-|---|---|
-| 5차 Hermite | $4.8\times10^{-7}$ m/s² |
-| Taylor (1-sample) | $3.99\times10^{-2}$ m/s² |
-
-$10^{4}$배 이상 차이가 난다.
+**왜 $C^2$인가.** 샘플러는 양 끝 $a$ 를 맞추므로 경계에서 $C^2$ 다. 샘플 경계에서 $a$ 가 튀는 보간 (한 샘플만 쓰는 Taylor 전개 $p_j+v_j\Delta+\tfrac12a_j\Delta^2$ 는 구간마다 $a$ 가 계단으로 바뀐다) 은 가속도를 읽는 소비자에게 계단을 준다.
+- `closed_form`: L4 의 feedforward 가 $\ddot\xi^O$ 를 직접 쓴다(L4 §4.1). 가속도가 샘플 경계에서 튀면 기준 가속도 $u$ 에 그대로 계단이 생기고, 그것이 CLIK을 거쳐 관절 명령의 jerk가 된다. $C^2$ 는 이 경로의 요구다.
+- `mpc`: RT 는 샘플을 추종 대상으로 쓰지 않는다 (§5.2). 샘플이 쓰이는 곳은 포구 전의 감독 (지평 · stale 판정) 이고, 계획기가 읽는 것은 슬라이스의 샘플점 (보간하지 않은 vision 샘플) 이다. $C^2$ 는 `mpc` 에서는 소비자가 없는 성질이다.
 
 ### 4.3 정확도
 
-보간은 **vision의 예측을 재현하는 것**이 목표이지 참 궤적을 맞히는 것이 아니다. 두 모델이 얼마나 가까운지는 알아둘 필요가 있다(`test_l2.cpp`, 60 Hz 간격 기준 실측).
-
-| vision 모델 | 60 Hz 간격에서 보간 오차 (위치) |
-|---|---|
-| 순수 중력 ($a$ 상수) | $7.0\times10^{-13}$ m — 2차 궤적은 5차 기저에 정확히 포함된다 |
-| 이차 항력 ($k=0.0229$) | $4.2\times10^{-14}$ m (가속도 $2.4\times10^{-9}$ m/s²) |
-
-ball_perception 이 주는 $a$ 는 profile 에 달렸다 (G2-3). 항력 절이 없는 profile 은 상수 $g$ 라 점별 $(p,v,a)$ 가 한 포물선 위에 있고 보간은 간격과 무관하게 정확하다. 출하 sim profile (항력, PR #595) 은 $a = g - k\lVert v\rVert v$ 를 주므로 $(p,v,a)$ 가 서로 맞는 위 표의 둘째 행에 해당한다 — 다만 그 행은 60 Hz 간격의 값이고 **0.05 s 간격의 항력 궤적 보간 오차는 재지 않았다** (`test_catching_traj_sampler` 의 항력 사례는 60 Hz). L2 보간 게이트를 만족하는 간격이 S3.6 점 수 산출의 입력이다(D-15).
+보간은 **vision의 예측을 재현하는 것**이 목표이지 참 궤적을 맞히는 것이 아니다. 항력 절이 없는 profile 은 $a$ 가 상수 $g$ 라 점별 $(p,v,a)$ 가 한 포물선 위에 있고, 2차 궤적은 5차 기저에 정확히 포함되므로 보간은 간격과 무관하게 정확하다. 항력 profile 은 $a = g - k\lVert v\rVert v$ 를 주므로 $(p,v,a)$ 가 서로 맞고 보간 오차는 간격이 길수록 커진다. 보간 게이트(G2-C)를 만족하는 간격이 점 수 산출의 입력이다(D-15).
 
 ### 4.4 시각 정렬 `[확정 D-2]`
 
 시간 규약의 SSoT 는 plan §3 이다. 샘플러가 따르는 부분:
 
-- **샘플 시각은 절대 `BallTime`** (steady ns). L1 이 수신 시 `header.stamp`·`horizon_ns` 를 한 번 변환해 싣는다(L1 §4.1). 원점이 다른 상대시각(메시지 스탬프 기준, 세션 기준, 계획 시각 기준)을 섞지 않는다 — v0.4 의 "모든 상대시각의 단일 원점 = `header.stamp`" 규약은 절대 시각으로 대체했다.
+- **샘플 시각은 절대 `BallTime`** (steady ns). L1 이 수신 시 `header.stamp`·`horizon_ns` 를 한 번 변환해 싣는다(L1 §4.1). 원점이 다른 상대시각(메시지 스탬프 기준, 세션 기준, 계획 시각 기준)을 섞지 않는다.
 - **샘플링·지평 경고는 now_lead** 로 한다: `NowLead` = 매 tick steady 실측 now + $T_{arm}$. γ 프로파일, $t_c$ 판정, `CLOSING→DECEL` 진입도 같은 축이다.
 - **stale 판정은 steady 수신 나이**(now_steady − recv_steady)이며 샘플러가 아니라 L1 이 한다(L1 §5.3). 샘플러는 stale 을 판정하지 않는다.
 - 수치 코어 경계에서만 double 초 상대값을 만든다: 구간 안 $s=(t-t_j)/h_j$ 는 같은 스냅샷의 두 `BallTime` 차로 계산하므로 원점 혼합이 생기지 않는다.
-- `PlanSnapshot` 은 $t_c$ 등을 절대 `BallTime` 으로 싣는다(L3). v0.4 가 `PlanSnapshot::t_ref` 를 메시지 `t_ref` 와 맞추던 장치는 필요 없어졌다 — 계획 스레드의 소요 시간이 시각을 틀리게 만들지 않고 남은 시간만 줄인다(plan §7.2).
+- `PlanSnapshot` 은 $t_c$ 등을 절대 `BallTime` 으로 싣는다(L3). 계획 스레드의 소요 시간이 시각을 틀리게 만들지 않고 남은 시간만 줄인다(plan §7.2).
 
-`prediction.lead` = $T_{arm}$ 은 L5 의 선행 보상량이다(L5 §4.5). 도출 관계(§6)는 v0.4 와 같다. backend 에는 지연 보상이 없으므로(W4-2) 끌 이유가 backend 쪽에는 없고, $T_{arm}$ 값은 S10 식별로 정한다(L5 §6). 테스트는 $T_{arm}\ne0$ fixture 필수(plan §3).
+선행 보상량 $T_{arm}$ 은 L5 의 것이다(L5 §4.5). 샘플러의 선행축은 `NowLead` 의 $T_{arm}$ 이고, 선행 보상을 켜는 스위치는 `joint_cmd.lag.lead_enable` 이다 (꺼져 있으면 $T_{arm}$ 을 더하지 않는다). 값은 실기 식별로 정한다(L5 §6). 테스트는 $T_{arm}\ne0$ fixture 필수(plan §3).
 
 ### 4.5 공분산을 어디까지 넘기는가 `[확정 A-3]`
 
-닫힘 — **분리.** RT 스냅샷에는 $(t,p,v,a)$ 만 담고, 공분산은 계획기 버퍼에만 둔다. NaN(모름) 처리도 계획기 한 곳에서 한다. RT 경로(L4·L5·L7)에 공분산 소비자가 없다. v0.4 의 2안(일체)은 폐기했다.
+**분리.** RT 스냅샷에는 $(t,p,v,a)$ 만 담고, 공분산은 계획기 버퍼에만 둔다. NaN(모름) 처리도 계획기 한 곳에서 한다. RT 경로(L4·L5·L7)에 공분산 소비자가 없다.
 
 ### 4.6 종료 조건과 지평 감시
 
-- now_lead 가 마지막 샘플 시각을 넘으면 Taylor 외삽하고 `after_horizon=true` 를 올린다. **L7이 감시하는 것은 이 플래그뿐이다.**
+- now_lead 가 마지막 샘플 시각을 넘으면 Taylor 외삽하고 `after_horizon=true` 를 올린다. **L7이 감시하는 것은 이 플래그뿐이다.** 포구 전에는 이 플래그가 `HORIZON_EXTRAP` 사유이고, 동결 (COMMITTED · CLOSING) 이후에는 기록만 하고 따르지 않는다 (`SampleBallForLaw`).
 - 앞쪽(`before_horizon`, now_lead < 첫 샘플 시각)은 감시하지 않는다. vision 첫 점의 `horizon_ns` 가 0 이 아니거나 수신 지연이 있으면 정상 동작 중에도 발생할 수 있기 때문이다.
 - 지평 끝 정확히(= 마지막 샘플 시각)는 외삽이 아니다.
-- 지평 밖 외삽에 의존해 포구하는 것은 금지한다. L3는 마지막 샘플 시각에서 여유(`t_horizon_margin`)를 뺀 범위 안에서만 후보를 고른다.
+- 지평 밖 외삽에 의존해 포구하는 것은 금지한다. L3는 마지막 샘플 시각에서 여유를 뺀 범위 안에서만 후보를 고른다 — 그 범위가 `planner.slice.t_max` 이다 (vision 지평 − 여유).
 - 수신 궤적 지평이 요구(`io.horizon_min`, D-15)보다 짧으면 L1 이 진단하고 계획 후보에서 제외한다(L1 §4.1).
-- $p_z<z_{floor}$ 이거나 작업셀 밖인 샘플은 L3가 후보에서 제외한다(G2-5).
+- $p_z<z_{floor}$ 이거나 작업셀 밖인 샘플을 후보에서 제외하는 것은 구현하지 않았다 (G2-5). 포구점의 작업공간 제한은 `catch_box` 다 (L3).
 
 ### 4.7 Sanity check
 
@@ -132,56 +117,57 @@ ball_perception 이 주는 $a$ 는 profile 에 달렸다 (G2-3). 항력 절이 �
 
 ## 5. C++ 구현
 
-### 5.1 `traj_sampler.hpp` (S1.2 이식 완료)
+### 5.1 `traj_sampler.hpp`
 
-v0.5 에서 코드 복사본(v0.2 그대로였음)을 삭제했다. 참조 구현 `traj_sampler.hpp` (v0.4 — `before_horizon`/`after_horizon` 분리, `track_epoch` 필드) 는 S1.2 에서 `rtc_controllers/include/rtc_controllers/catching/traj_sampler.hpp` (+ 궤적 타입 `trajectory.hpp`) 로 이식됐고 (지금의 SSoT), 원본은 (삭제됨 — [README](../README.md#삭제된-참조-구현)). 이식 시 변경:
+SSoT 는 `rtc_controllers/include/rtc_controllers/catching/traj_sampler.hpp` (`Hermite5`, `Interpolate`, `Extrapolate`, `SampleAt`, `Check`) 와 궤적 타입 `trajectory.hpp` 다. 계약:
 
-- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `Check`·`SampleAt`·RT 읽기 모두에서 **먼저** 검사한다(참조 구현은 `n > kMaxSamples` 에서 범위 밖 읽기가 있었다, ASan 확인). S3.6 이 정한 점 수는 20 (≤ `kCap`) 이다. 구현 (S5.2) 은 `n_max` 키를 두지 않고 런타임 상한을 `kCap` 으로 둔다 — 20 점은 vision profile 의 속성이라, profile 이 바뀌면 거부가 아니라 진단의 점 수로 드러난다
-- **NaN 거부.** NaN 시각·값은 `Check` 에서 거부, `SampleAt(NaN)` 은 invalid 를 반환한다(참조 구현은 valid 반환)
-- **`dt_min` 거부.** 최소 샘플 간격 미만 구간은 경고가 아니라 거부한다 — `interpolate` 가 극소 $h$ 를 받아 $1/h^2$ 로 폭주하는 것을 막는다
-- **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — `Sample` 의 `Eigen::Vector3d` 멤버를 `std::array<double, 3>` 으로 바꾸고, 계산은 `Eigen::Map` 으로 한다(L0 §5.2, plan §6). `static_assert(std::is_trivially_copyable_v<…>)`
-- **시간 타입.** 샘플 시각은 `BallTime`(절대 steady ns), 샘플링 인자는 `NowLead` (L0 §4.5). 스냅샷 필드: `generation`·`snapshot_sequence` (uint64, `track_epoch`·`seq` 대체), `recv_steady_ns`, `n`, `valid`
-- **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kCap` 은 이 타입이 단독 소유하고(L0 의 중복 상수·`static_assert` 짝맞춤 삭제), 값은 40 (S0.7 제안, 2026-09-19 결정, provisional) 으로 S1.2 가 구현한다. 런타임 점 수 요구는 S3.6 이 **20** 으로 정했고 (≤ `kCap`, backfill PASS — plan §4.4 S3.6 결과)
-- **명명.** namespace `rtc::catching`, 함수 PascalCase (`hermite5`/`interpolate`/`extrapolate`/`sampleAt`/`check` → `Hermite5`/`Interpolate`/`Extrapolate`/`SampleAt`/`Check`)
+- **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `Check`·`SampleAt`·RT 읽기 모두에서 **먼저** 검사한다 (범위 밖 읽기 방지). 런타임 점 수 상한은 `kCap` 이고 `n_max` 키는 없다 — 점 수는 vision profile 의 속성이라, profile 이 바뀌면 거부가 아니라 진단의 점 수로 드러난다
+- **NaN 거부.** NaN 시각·값은 `Check` 에서 거부, `SampleAt(NaN)` 은 invalid 를 반환한다
+- **간격 하한 거부.** 최소 샘플 간격 (`TrajLimits` 의 `dt_min`, 구성에서는 `TrajInputConfig::dt_min_ns` 상수) 미만 구간은 경고가 아니라 거부한다 — `Interpolate` 가 극소 $h$ 를 받아 $1/h^2$ 로 폭주하는 것을 막는다
+- **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — 벡터는 `std::array<double, 3>`, 계산은 `Eigen::Map` 으로 한다(L0 §5.2, plan §6). `static_assert(std::is_trivially_copyable_v<…>)`
+- **시간 타입.** 샘플 시각은 `BallTime`(절대 steady ns), 샘플링 인자는 `NowLead` (L0 §4.5). 스냅샷 필드: provenance `token` (`generation`·`snapshot_sequence`·`traj_recv_ns`·`activation_generation`), `n`, `valid`
+- **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kCap` 은 이 타입이 단독 소유한다 (L0 §5.2)
 
 RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleAt()`은 hint 커서로 평균 $O(1)$ 이고, 커서가 어긋나면 이진 탐색으로 복구한다($O(\log N)$ 상한).
 
 ### 5.2 L1·L4와의 연결
 
 - L1이 `PointCloud2`를 파싱해 공용 궤적 스냅샷(`generation` 포함)을 채우고 `rtc::SeqLock` 에 쓴다(L1 §5.2).
-- RT 루프(`RTControllerInterface::Compute`)는 **매 tick 무조건 `Load`** 하고(D-21, 재시도 상한 없음), payload 의 `snapshot_sequence` 로 새 스냅샷 여부를 판정한다 → 매 tick `SampleAt(tr, now_lead, hint_)` → 결과를 L4 추종 대상 상태 $(p,v,a)$ 로 넘긴다(L8 §4.1 순서 2).
-- `hint_`는 컨트롤러 멤버로 유지하고, **`snapshot_sequence` 가 바뀌면 0으로 초기화**한다. 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다.
+- RT 루프(`RTControllerInterface::Compute`)는 **매 tick 무조건 `Load`** 하고(D-21, 재시도 상한 없음), payload 의 `snapshot_sequence` 로 새 스냅샷 여부를 판정한 뒤 `SampleAt(tr, now_lead, hint_)` 을 부른다 (`SampleBallForLaw`, `controller.cpp`).
+- **샘플이 무엇에 쓰이는가는 planner 가 정한다.**
+  - `closed_form`: 샘플 $(p,v,a)$ 를 L4 추종 대상 상태로 넘긴다 (`StepReferenceAndSolve` 의 `target`; L8 §4.1 순서 2).
+  - `mpc`: `RunDecelMpcTick` 이 포구 전에 `SampleBallForLaw` 를 부르되 **구간(segment)은 샘플을 읽지 않는다** — 구간은 계획기가 낸 MPC 노드열을 따른다. 샘플은 감독에만 쓰인다: 샘플할 수 없으면 `BALL_STALE`, 지평 밖이면 `HORIZON_EXTRAP` (동결 전에만) — 사유가 남는다.
+- `hint_`는 컨트롤러 멤버 (`traj_hint_`) 로 유지하고, **`snapshot_sequence` 가 바뀌면 0으로 초기화**한다. 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다.
 - `Interpolate()` 가 `valid=false` 를 돌려주면(비단조 샘플 쌍 등) 그 틱은 invalid 로 처리한다.
 
-**스냅샷 복사 비용.** 스냅샷은 `kCap` 고정이라 실제 $n$ 과 무관하게 전체를 **매 tick** 복사한다 — `SeqLock::sequence()` 로 새 메시지 도착 tick 에만 복사를 한정하는 최적화는 D-21 이 금지한다(payload 안 token 으로만 새 스냅샷을 판정). 점당 시각 + 9 double ≈ 80 B, 512 샘플이면 약 41 KB. `rtc::SeqLock::Load` 는 재시도 상한이 없으므로(L1 G1-8) 복사 시간이 곧 writer 와의 경합 창이며, 최악 재시도 시간은 G1-C 로 측정한다. 유일한 대응은 `kCap` 을 S3.6 요구 $N$ 상한 (20 점) 에 여유를 둔 값으로 줄이는 것이다 (S0.7 제안 `kCap` 40 이면 약 3.2 KB, 설정 profile 은 20 점).
+**스냅샷 복사 비용.** 스냅샷은 `kCap` 고정이라 실제 $n$ 과 무관하게 전체를 **매 tick** 복사한다 — `SeqLock::sequence()` 로 새 메시지 도착 tick 에만 복사를 한정하는 최적화는 D-21 이 금지한다(payload 안 token 으로만 새 스냅샷을 판정). 점당 시각 + 9 double ≈ 80 B 이므로 복사 크기는 `kCap` × 80 B 다. `rtc::SeqLock::Load` 는 재시도 상한이 없으므로(L1 G1-8) 복사 시간이 곧 writer 와의 경합 창이며, 최악 재시도 시간은 G1-C 로 측정한다. 유일한 대응은 `kCap` 을 요구 $N$ 상한에 여유를 둔 값으로 줄이는 것이다.
 
 ## 6. YAML 파라미터
 
-| 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
-|---|---|---|---|---|---|
-| `prediction.max_samples` | int | – | 40 (provisional, S0.7 제안) | 16–512 | **YAML 키로 구현되지 않았다** — 값은 컴파일 상수 `kCap` 이다 (2026-09-29 코드 대조). `kCap` (컴파일 상수와 일치 검사, S0.7 제안값 — plan §4.4 S0 결과). 점 수 요구는 S3.6 요구 사양으로 정한다 (D-15; 구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다, §5.1) — **20 점** (provisional, S3.6: 기구학 reachable 창 기준 (plan D-27) 과 T_det 재실측으로 H_req 0.99 s → ⌈0.988/0.05⌉ = 20, 설정 sim profile 1.0 s 의 20 점과 같게; plan §4.4 S3.6 결과·T_det 재실측). 20 ≤ 40 이라 S1.2 backfill 은 PASS |
-| `prediction.n_min` | – | – | – | – | v0.5 삭제 — 단일 키 `io.n_min` (L1 §6) 을 쓴다 (plan S0.3) |
-| `prediction.t_horizon_margin` | double | s | 0.05 | 0–0.3 | §4.6 지평 끝 여유 |
-| `prediction.dt_expected` | double | s | **0.05** (provisional, S3.6) | >0 | vision 점 간격. 검사용. S1.2 실측 0.05 s 간격 보간 오차 2.0e-11 m (G2-C 1e-10 m 안, plan §4.4 S1 결과) 이라 더 촘촘할 이유가 없고, ball_perception 은 `horizon % step == 0` 을 요구한다 (plan §4.4 S3.6 결과) |
-| ~~`prediction.dt_tol`~~ | double | – | — | – | 구현되지 않았다 — 코드·출하 YAML 에 이 키는 없다 (2026-09-29 코드 대조) |
-| `prediction.dt_min` | double | s | `TBD` | >0 | 이 미만 간격은 **거부** (S1.2) |
-| `prediction.z_floor` | double | m | `TBD` | – | G2-5 |
-| `prediction.workcell` | box | m | `TBD` | – | G2-5 |
-| `prediction.lead` | double | s | 0.0 | ≥0 | §4.4. **`joint_cmd.lag.T_arm`(L5 §6)에서 파생한다** — `lead = T_arm × lead_enable`(마스터 §6). backend 에 지연 보상 없음 (W4-2), $T_{arm}$ 은 S10 식별 |
+값은 `integrated_bringup/config/<robot>/controllers/demo_catching_controller.yaml` 와 `catching/search_grid.yaml`.
 
-v0.2의 `prediction.rt.*`, `prediction.rollout.*`, `q_acc`, `q_k`는 전부 삭제했다.
+| 키 | 타입 | 단위 | 뜻 |
+|---|---|---|---|
+| `prediction.dt_expected` | double | s | vision 점 간격. 검사용이며 `io.n_min` 이 이 값에서 유도된다 (L1 §6). ball_perception 은 `horizon % step == 0` 을 요구한다 |
+
+`prediction.*` 로는 이 키 하나만 있다. 나머지 역할은 다른 곳이 한다.
+
+| 역할 | 하는 것 |
+|---|---|
+| 점 수 상한 (`prediction.max_samples`) | 컴파일 상수 `kCap` (`trajectory.hpp`) |
+| 지평 끝 여유 (`prediction.t_horizon_margin`) | `planner.slice.t_max` (`search_grid.yaml`) = vision 지평 − 여유 |
+| 최소 간격 (`prediction.dt_min`) | `TrajInputConfig::dt_min_ns` 상수 (구조적 하한; 실제 간격 gate 는 `io.n_min`) |
+| 선행 보상 (`prediction.lead`) | `joint_cmd.lag.lead_enable` · `joint_cmd.lag.T_arm` (L5 §6) — 선행량은 $T_{arm}\times$ `lead_enable` |
+| 바닥 · 작업셀 (`prediction.z_floor`, `prediction.workcell`) | 구현하지 않았다 (G2-5). 포구점은 `planner.workspace.catch_box` |
 
 ## 7. 단위 기술 구현 순서
 
-- **S1.2a** 공용 궤적 타입(POD, `BallTime` 시각) + `Check` (개수 경계 선검사, NaN, 단조, `dt_min` 거부).
-- **S1.2b** Hermite 샘플러 이식 + §4.7 테스트 7종 (참조: `test_l2.cpp`, GTest), 0.05 s 간격 정확도 재측정(§4.3).
-- **S1.3** `NowLead` 샘플링 + $T_{arm}\ne0$ fixture 로 지평 플래그 축 검증.
-- **S5** 지평 감시·외삽 플래그를 L7 입력으로 연결, sim 재생 테스트: 샘플 간격 분포, $N$ 분포, 지평 길이, 외삽 발생률 기록.
+구현한 것: 공용 궤적 타입 (POD, `BallTime` 시각) 과 `Check` (개수 경계 선검사, NaN, 단조, 간격 하한 거부), Hermite 샘플러, `NowLead` 샘플링, 지평 감시 플래그의 L7 입력 연결. 테스트는 §4.7 의 7종이 `test_catching_traj_sampler.cpp` 에 있다.
 
 ## 8. 디버깅 방법
 
 - 보간 결과와 원 샘플을 같은 그래프(steady 절대 시각 축)에 그린다. 샘플점을 지나지 않으면 L1 의 시각 변환(L1 §4.1) 또는 `horizon_ns` 해석을 의심한다.
-- 기준 가속도 $u$ 에 주기적 계단이 보이면 보간이 Taylor로 떨어졌는지 확인한다(§4.2).
+- (`closed_form`) 기준 가속도 $u$ 에 주기적 계단이 보이면 보간이 Taylor로 떨어졌는지 확인한다(§4.2).
 - 외삽 플래그가 자주 서면 vision 지평이 요구(D-15)보다 짧거나 $T_{arm}$ 이 과대한 것이다.
 - 샘플 간격이 `dt_expected`와 다르면 vision 측 profile 설정 또는 리샘플링을 의심한다.
 - 궤적이 틱마다 크게 점프하면 vision 예측 갱신 품질 또는 시계 오차를 본다(L1 §4.4 점프 진단: 연속 두 스냅샷의 같은 절대시각 위치 차).
@@ -199,8 +185,8 @@ v0.2의 `prediction.rt.*`, `prediction.rollout.*`, `q_acc`, `q_k`는 전부 삭�
 | G2-H | (회귀) `n > kCap`·NaN 입력에서 ASan 무오류 + invalid, `dt_min` 미만 거부, 스냅샷 타입 trivially copyable | `[SIM-ANY]` |
 | G2-F | sim(ball_perception) 재생에서 외삽 발생률·샘플 간격 분포 기록, 실기는 S10 | `[SIM-ANY]` |
 
-`test_l2.cpp`가 G2-A~D를 돌린다(v0.4 기준 통과).
+G2-A~D 는 `test_catching_traj_sampler.cpp` 가 돌린다.
 
 ## 10. 미확정 항목
 
-TBD-WS-01 (닫는 단계 미지정), `kCap` 제안값 (S0.7 → S1.2), `prediction.dt_min` (S1.2), `prediction.lead` 의 $T_{arm}$ (S10). 점 수 요구 20 (구현의 런타임 상한은 `kCap` 이다 — `n_max` 키는 없다)·`prediction.dt_expected` 0.05 s·`io.n_min` 12 (S3.6 산식의 11 을 S5.2 가 정정) 는 S3.6 이 provisional 로 정했다 (§6, L1 §6, plan §4.4 S3.6 결과) — 점 수 20 은 T_det 재실측 (2026-09-22, 공 lane stamp 수정 후) 을 이미 반영했다. `io.n_min` 이 걸린 선행시간 L 은 0.14 s 를 유지하고 실기 확정은 S10 (#613) 이다 (사용자 2026-09-29, plan §7.3).
+TBD-WS-01 (바닥 높이·작업셀 경계 — G2-5), `kCap` (provisional), 선행 보상의 $T_{arm}$ (실기 식별). 점 수 요구 · `prediction.dt_expected` · `io.n_min` 은 provisional 이다 (L1 §6). `io.n_min` 이 걸린 선행시간 $L$ 의 실기 확정은 실기 단계 (#613) 에서 한다.
