@@ -512,6 +512,66 @@ TEST(DecelParams, RejectsADesignKeyByName) {
       message("linearization: {reference_rest_tol: 1.0e-6}, solver: {eps_abs: 5.0e-7}").empty());
 }
 
+// #698: `cost.w_perp`, the stop-path weight. Off by default — the core's own
+// default — so a profile without the key, and the shipped ones that write
+// 0.0, solve what they solved before the key existed.
+TEST(DecelParams, TheStopPathWeightDefaultsOffAndParses) {
+  const DecelMpcParams core{};
+  const DecelPlannerParams d = rtc::catching::PlannerParams{}.decel;
+  EXPECT_EQ(d.w_perp, 0.0);
+  EXPECT_EQ(d.w_perp, core.w_perp);
+  // Absent: the section, and the key inside a present section.
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {m_q: 0.05}}")).decel.w_perp, 0.0);
+  EXPECT_EQ(
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_delta: 2.5}}}")).decel.w_perp,
+      0.0);
+  // The written zero (what the shipped profiles carry) is the off state.
+  EXPECT_EQ(
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_perp: 0.0}}}")).decel.w_perp,
+      0.0);
+  // Beside its neighbours, each with a value of its own: a read wired to
+  // another field shows.
+  const auto on = ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {u_scale: 500.0, "
+                                                "w_delta: 2.5, rho_tau: 7.0, w_perp: 40.0}}}"))
+                      .decel;
+  EXPECT_EQ(on.w_perp, 40.0);
+  EXPECT_EQ(on.u_scale, 500.0);
+  EXPECT_EQ(on.w_delta, 2.5);
+  EXPECT_EQ(on.rho_tau, 7.0);
+  // Bounded from below only (as the core's own check).
+  EXPECT_EQ(
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_perp: 1.0e+9}}}")).decel.w_perp,
+      1e9);
+}
+
+TEST(DecelParams, RejectsTheStopPathWeightByName) {
+  const std::string key = "'planner.decel_mpc.cost.w_perp'";
+  const auto message = [](const std::string& body) -> std::string {
+    try {
+      static_cast<void>(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {" + body + "}}")));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const auto has = [](const std::string& text, const std::string& part) {
+    return text.find(part) != std::string::npos;
+  };
+  // Valid neighbours beside it, so only this key's range can be what refuses.
+  for (const char* bad : {"-0.1", "-1.0e-12", ".nan", ".inf", "-.inf"}) {
+    const std::string why =
+        message(std::string("cost: {w_delta: 1.0, rho_tau: 10.0, w_perp: ") + bad + "}");
+    ASSERT_FALSE(why.empty()) << "w_perp: " << bad << " was accepted";
+    EXPECT_TRUE(has(why, key)) << why;
+    EXPECT_TRUE(has(why, "must be a finite number >= 0")) << why;
+    EXPECT_FALSE(has(why, "w_delta")) << why;
+    EXPECT_FALSE(has(why, "rho_tau")) << why;
+  }
+  // Not a number at all.
+  EXPECT_TRUE(has(message("cost: {w_perp: strong}"), key + " must be a number"));
+  EXPECT_TRUE(has(message("cost: {w_perp: [1.0]}"), key + " must be a number"));
+}
+
 // ── 2. RT-side admission and the switch rule ────────────────────────────────
 
 DecelPlanSnapshot AdmissibleSegment() {

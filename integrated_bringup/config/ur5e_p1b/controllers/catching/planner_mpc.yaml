@@ -119,8 +119,18 @@ demo_catching_controller:
           # vacuous: no slack exists to bound. 10 was exact on every sampled
           # stop (E1-F01 sweep, #627).
           rho_tau: 10.0
-          # w_perp (the stop-path line weight) is not a key yet: the line's
-          # definition is open (#698), so the core keeps it at 0 = off.
+          # Stop-path weight [1/m^2]: on the nodes from the catch on, the
+          # squared distance of the catch frame from a line is penalised.
+          # 0 = off — the solve is the one before this key existed. The line is
+          # the BALL's (decided 2026-10-03, #698): through its predicted catch
+          # position along its direction of travel at t_c — the line the search
+          # reserves its stopping point on. A replan after the catch keeps the
+          # line of the plan it follows (its last published pre-catch solve's).
+          # A solve with no line to build — a ball slower than planner.ik.v_eps,
+          # or no line remembered for the plan — is withheld, not solved on a
+          # default. Large values raise the QP's condition number (the core was
+          # tested up to 1.0e4). Not tuned on any arm: ships off.
+          w_perp: 0.0
         linearization:
           # Trust-region half-width around the reference [rad], finite > 0.
           # m_q must stay below it.

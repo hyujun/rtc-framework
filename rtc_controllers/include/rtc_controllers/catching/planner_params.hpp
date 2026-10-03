@@ -63,8 +63,6 @@ inline constexpr int kMaxDecelReplans = 8;
 /// (`cost.*`), the trust region and the rest tolerance (`linearization.*`) and
 /// the solver tolerances (`solver.*`); the shipped values are the core's own
 /// defaults. η_v is `planner.gamma.eta_v` (no second key for one margin).
-/// `w_perp`, the stop-path weight, is the one design field still not in YAML:
-/// the line it penalises is not defined yet (#698), so it stays at 0 (off).
 /// What stays in code is not a design value: the solver's preconditioner and
 /// KKT backend (the RT no-allocation and infeasibility verdict rely on them),
 /// the test-only `reference_assembly`, and the capacities.
@@ -161,6 +159,16 @@ struct DecelPlannerParams {
   /// `cost.rho_tau` — torque slack penalty; 0 = the torque rows are off, which
   /// makes the publish judgement's slack condition vacuous.
   double rho_tau{10.0};
+  /// `cost.w_perp` [1/m²] — the stop-path term: on the nodes from the catch
+  /// on, the catch frame's distance from a line is penalised; 0 (the default)
+  /// = off, and no line is then built or required. The line is the BALL's
+  /// (user decision 2026-10-03, #698): through its predicted catch position
+  /// along its direction of travel at t_c, as the catch-core solve takes them.
+  /// A stop-core replan keeps the line of the plan it follows — the one its
+  /// last published catch-core segment was solved with. A solve whose line
+  /// cannot be built is withheld (DecelPlanner, decel_planner.hpp), never run
+  /// on a default line.
+  double w_perp{0.0};
   /// `catch.axis_theta_max` [rad], in (0, π) — the largest axis error of the
   /// reference the approach-axis term is linearised at.
   double axis_theta_max{1.5707963267948966};

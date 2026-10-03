@@ -359,6 +359,9 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("planner.decel_mpc.cost.rho_tau", decel.rho_tau,
           "decel MPC torque slack penalty; 0 = torque rows off (the publish slack condition is "
           "then vacuous)");
+  declare("planner.decel_mpc.cost.w_perp", decel.w_perp,
+          "decel MPC stop-path weight [1/m^2]: distance of the catch frame, from the catch on, "
+          "from the line through the ball's predicted catch position along its travel; 0 = off");
   declare("planner.decel_mpc.catch.axis_theta_max", decel.axis_theta_max,
           "decel MPC largest axis error of the reference the approach-axis term linearises at "
           "[rad]");

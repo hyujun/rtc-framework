@@ -1974,7 +1974,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
   EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs) << profile;
   EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel) << profile;
   EXPECT_EQ(d.ref_speed_fraction, 0.9) << profile;  // the planner's former constant
-  EXPECT_EQ(core.w_perp, 0.0);                      // the one design field still not a key
+  EXPECT_EQ(core.w_perp, 0.0);                      // the default; `cost.w_perp` is tested below
 
   // The search: the IK options equal CatchPoseIkOptions{} field by field —
   // except the two the profile has always set (k_manip, max_iter) and the
@@ -2059,6 +2059,56 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   }
   EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.ref_speed_fraction, 0.8) << profile;
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.u_scale", 1.0))
+                   .successful);
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
+  // #698: `cost.w_perp` is WRITTEN in catching/planner_mpc.yaml — not left to
+  // the code default — and 0: the stop-path term is off, so the shipped solve
+  // is the one before the key existed (the core's own default).
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const YAML::Node cost = node["catching"]["planner"]["decel_mpc"]["cost"];
+  ASSERT_TRUE(cost.IsMap()) << profile;
+  ASSERT_TRUE(cost["w_perp"].IsDefined()) << profile << ": cost.w_perp is not written";
+  EXPECT_EQ(cost["w_perp"].as<double>(), 0.0) << profile;
+  const std::string fragment = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                               "/controllers/catching/planner_mpc.yaml";
+  const YAML::Node in_fragment = YAML::LoadFile(
+      fragment)["demo_catching_controller"]["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"];
+  EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to planner_mpc.yaml";
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_EQ(planner.decel.w_perp, 0.0) << profile;
+  EXPECT_EQ(planner.decel.w_perp, rtc::catching::DecelMpcParams{}.w_perp) << profile;
+}
+
+TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
+  // The key moved in the composed tree — where a CM override writes — reaches
+  // the controller: the read-only mirror carries the moved value, and the
+  // decel planner configures with the term ON, which means every stop core and
+  // every catch core was built with it and warmed up on a line the planner
+  // built (a warm-up that fails fails the configure). A mirror declared from
+  // the field's default would read 0 here.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  node["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"] = 40.0;
+
+  auto node_handle = NodeWithProfile("catching_shipped_w_perp_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.cost.w_perp").as_double(), 40.0)
+      << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.w_perp, 40.0) << profile;
+  // Read-only, like every other mirror of the profile.
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.w_perp", 0.0))
                    .successful);
 }
 

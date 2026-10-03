@@ -152,7 +152,7 @@ struct Rig {
   rtc::catching::PlannerParams params;
   std::int64_t traj_first_ns{0};
 
-  explicit Rig(double catch_err_max = 0.02, bool bind_decel = true) {
+  explicit Rig(double catch_err_max = 0.02, bool bind_decel = true, double w_perp = 0.0) {
     rtc_urdf_bridge::ModelConfig config;
     config.urdf_path = std::string(RTC_TEST_ROBOT_DESCRIPTIONS_DIR) + "/ur5e/urdf/ur5e.urdf";
     config.root_joint_type = "fixed";
@@ -203,6 +203,7 @@ struct Rig {
     d.budget_first_s = 0.1;
     d.budget_replan_s = 0.1;
     d.catch_pos_err_max = catch_err_max;
+    d.w_perp = w_perp;
     cycle.Configure(params);
 
     rtc::catching::PlannerModel pm;
@@ -469,6 +470,40 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
   EXPECT_GT(stop, 0);
   std::printf("[ record ] replans %d: same %d, advance %d, stop %d\n", replans, same, advance,
               stop);
+}
+
+TEST(ApproachCycle, WithTheStopPathTermOnThePublishedLineReachesTheStopCores) {
+  // `cost.w_perp` > 0 (#698): a stop core solves on the line of the plan's
+  // last PUBLISHED catch-core segment, and is withheld (kNoBall) without one.
+  // "Published" is the cycle's decision, so the memory is only as good as the
+  // cycle's own NotePublished: through a whole catch — the pair, re-solves,
+  // grid advances, the hand-over to the stop cores — every stop grid point
+  // must find its line.
+  auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_decel=*/true, /*w_perp=*/2000.0);
+  ASSERT_TRUE(r->cycle.DecelConfigured());
+  r->StartTrajectory();
+  const PlannerCycleRecord first = r->Wake();
+  ASSERT_EQ(first.outcome, CycleOutcome::kPublished) << Why(first);
+  const std::int64_t t_c = r->boxes.plan.Load().t_c_ns;
+  int stop_published = 0;
+  int stop_without_line = 0;
+  std::uint64_t seq = 1;
+  while (Now() < t_c + 4 * 50 * kMs) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    if (seq % 2 == 0) {
+      r->StoreTrajectory(seq + 1);
+    }
+    ++seq;
+    const PlannerCycleRecord rec = r->Wake();
+    if (rec.decel.kind != DecelKind::kStop) {
+      continue;
+    }
+    stop_without_line += rec.decel.outcome == DecelOutcome::kNoBall ? 1 : 0;
+    stop_published += rec.decel.outcome == DecelOutcome::kPublished ? 1 : 0;
+  }
+  EXPECT_EQ(stop_without_line, 0) << "a stop grid point found no remembered line";
+  EXPECT_GT(stop_published, 0);
+  std::printf("[ record ] w_perp on: stop segments published %d\n", stop_published);
 }
 
 TEST(ApproachCycle, AnotherTracksBallIsNotTheFollowedPlansTarget) {
