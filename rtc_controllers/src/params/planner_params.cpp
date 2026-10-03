@@ -502,9 +502,13 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   d.u_scale = ReadPositive(cost, "u_scale", "decel_mpc.cost.u_scale", d.u_scale);
   d.w_delta = ReadNonNegative(cost, "w_delta", "decel_mpc.cost.w_delta", d.w_delta);
   d.rho_tau = ReadNonNegative(cost, "rho_tau", "decel_mpc.cost.rho_tau", d.rho_tau);
-  // The stop-path weight (0 = off). Bounded from below only, as the core's
-  // own check; the line it penalises is built by the planner per solve.
-  d.w_perp = ReadNonNegative(cost, "w_perp", "decel_mpc.cost.w_perp", d.w_perp);
+  // The stop-path weight (0 = off). The core takes any value >= 0; the upper
+  // bound is the largest one its solves are tested with — nothing downstream
+  // (not the configure warm-up either) would refuse a larger one.
+  d.w_perp = ReadInterval(cost, "w_perp", "decel_mpc.cost.w_perp", d.w_perp, 0.0, false,
+                          kDecelStopPathWeightMax, false,
+                          "[0, 1e4] (kDecelStopPathWeightMax, the largest weight the cores are "
+                          "tested with)");
   d.axis_theta_max =
       ReadInterval(dcatch, "axis_theta_max", "decel_mpc.catch.axis_theta_max", d.axis_theta_max,
                    0.0, true, 3.14159265358979323846, true, "(0, pi)");

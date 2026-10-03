@@ -502,8 +502,7 @@ void DecelPlanner::ResetTrial() noexcept {
   reported_pending_seq_ = 0;
   reported_active_seq_ = 0;
   last_solve_valid_ = false;
-  solved_line_.valid = false;
-  plan_line_.valid = false;
+  ready_line_.valid = false;
 }
 
 bool DecelPlanner::CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
@@ -781,18 +780,21 @@ void DecelPlanner::NotePublished(const DecelPlanSnapshot& p) noexcept {
     }
     for (int i = victim; i + 1 < ring_n_; ++i) {
       ring_[U(i)] = ring_[U(i + 1)];
+      if (perp_on_) {
+        ring_line_[U(i)] = ring_line_[U(i + 1)];
+      }
     }
     --ring_n_;
   }
   ring_[U(ring_n_)] = p;
-  ++ring_n_;
-  // The stop line of the plan is its last PUBLISHED catch-core segment's. A
-  // segment this planner did not just solve (another plan, another grid
-  // point) names no line: what is remembered stays as it was.
-  if (perp_on_ && p.n_pre > 0 && solved_line_.valid && solved_line_.plan_id == p.plan_id &&
-      solved_line_.t_c_ns == p.t_c_ns && solved_line_.t0_ns == p.t0_ns) {
-    plan_line_ = solved_line_;
+  if (perp_on_) {
+    // The segment's stop-path line: the one the solve that produced it ran
+    // on, handed over once. A segment published without such a solve right
+    // before it has none, and a stop core is not solved from it.
+    ring_line_[U(ring_n_)] = ready_line_;
+    ready_line_.valid = false;
   }
+  ++ring_n_;
 }
 
 bool DecelPlanner::ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
@@ -815,6 +817,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
                              const DecelBallTarget& ball, DecelPlanSnapshot& out,
                              DecelRecord& rec) noexcept {
   rec = DecelRecord{};
+  ready_line_.valid = false;  // a line belongs to the solve that built it
   if (!configured_) {
     return false;
   }
@@ -954,7 +957,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   reported_pending_seq_ = 0;
   reported_active_seq_ = 0;
   if (perp_on_) {
-    solved_line_ = StopLine{true, plan.plan_id, plan.t_c_ns, t_eff, in.p_c, in.d_hat};
+    ready_line_ = StopLine{true, in.p_c, in.d_hat};
   }
   return true;
 }
@@ -962,6 +965,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
 bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
                           DecelPlanSnapshot& out, DecelRecord& rec) noexcept {
   rec = DecelRecord{};
+  ready_line_.valid = false;  // a line belongs to the solve that built it
   if (!configured_) {
     return false;
   }
@@ -1028,12 +1032,13 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     rec.outcome = DecelOutcome::kNoBall;
     return false;
   }
-  // A stop core's stop-path line is the plan's remembered one, whatever
-  // `ball` holds on this wake: the line does not move after the catch. With
-  // none remembered for this plan the solve is withheld — never run on a
-  // default line.
-  if (perp_on_ && !pre &&
-      !(plan_line_.valid && plan_line_.plan_id == rt.plan_id && plan_line_.t_c_ns == t_c)) {
+  // A stop core's stop-path line is its SOURCE's — the line of the segment
+  // the RT follows, which x₀ and the reference come from too — whatever
+  // `ball` holds on this wake and whatever was published since: the hand
+  // stops on the line it is on. A source without a line is not solved from —
+  // never on a default line.
+  const auto src_slot = static_cast<std::size_t>(src - ring_.data());
+  if (perp_on_ && !pre && !ring_line_[src_slot].valid) {
     rec.outcome = DecelOutcome::kNoBall;
     return false;
   }
@@ -1103,8 +1108,8 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
         return false;
       }
     } else {
-      in.p_c = plan_line_.p_c;
-      in.d_hat = plan_line_.d_hat;
+      in.p_c = ring_line_[src_slot].p_c;
+      in.d_hat = ring_line_[src_slot].d_hat;
     }
   }
   bool ok = core.Solve(in, res);
@@ -1136,8 +1141,10 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     rec.core_reason = DecelMpcReason::kNone;
     return false;
   }
-  if (perp_on_ && pre) {
-    solved_line_ = StopLine{true, rt.plan_id, t_c, t_eff, in.p_c, in.d_hat};
+  if (perp_on_) {
+    // A catch-core segment carries the line it was solved on; a stop segment
+    // inherits its source's (the same one — `in` holds it either way).
+    ready_line_ = StopLine{true, in.p_c, in.d_hat};
   }
   return true;
 }

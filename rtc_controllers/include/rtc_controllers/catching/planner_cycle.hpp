@@ -170,6 +170,10 @@ class PlannerCycle {
 
   [[nodiscard]] bool DecelConfigured() const noexcept { return decel_.Configured(); }
 
+  /// The decel planner (tests and diagnostics: its cores' parameters and the
+  /// input each was last handed).
+  [[nodiscard]] const DecelPlanner& Decel() const noexcept { return decel_; }
+
   /// The seq the last stored decel segment carries (0 = none yet). Monotone
   /// over the cycle's lifetime — not reset by Configure — so the RT's `>`
   /// admission never sees a re-configure's counter restart below its memory.

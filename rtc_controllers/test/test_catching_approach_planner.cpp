@@ -1222,7 +1222,7 @@ TEST(ApproachPlanner, ASegmentCarriesThePlansTrackNotTheRtsLatest) {
 
 // ── 4b. The stop-path line (`cost.w_perp`, #698) ─────────────────────────────
 // With w_⊥ > 0 every solve runs on a line the planner built: the ball's on a
-// catch core, the plan's remembered one on a stop core, a synthetic one in the
+// catch core, the followed segment's on a stop core, a synthetic one in the
 // warm-ups — and a solve whose line cannot be built is withheld. With
 // w_⊥ = 0 none of that exists: each test's off rig solves what it solved.
 
@@ -1236,11 +1236,13 @@ DecelPlannerParams PerpParams(double w_perp) {
 
 // A ball the plan's own does not equal: 10 mm aside, its travel turned by
 // 0.05 rad — so a line built from the wrong ball shows in both members.
-DecelBallTarget MovedBall(const Catch& c) {
+// `step` scales both (a sequence of predictions, each with a line of its own).
+DecelBallTarget MovedBall(const Catch& c, double step = 1.0) {
   DecelBallTarget b = BallFor(c);
-  b.p_b += Eigen::Vector3d(0.006, -0.008, 0.0);
+  b.p_b += step * Eigen::Vector3d(0.006, -0.008, 0.0);
   const Eigen::Vector3d side = c.v.unitOrthogonal();
-  b.v_b = c.v.norm() * (std::cos(0.05) * c.v.normalized() + std::sin(0.05) * side);
+  const double a = 0.05 * step;
+  b.v_b = c.v.norm() * (std::cos(a) * c.v.normalized() + std::sin(a) * side);
   b.a_d = -b.v_b.normalized();
   return b;
 }
@@ -1413,76 +1415,192 @@ TEST(ApproachPlanner, TheStopPathWeightKeepsTheStopNearerTheLine) {
   }
 }
 
-// A stop core has no ball: it solves on the line of the plan's last PUBLISHED
-// catch-core segment, whatever ball the caller passes on that wake.
-TEST(ApproachPlanner, AStopCoreSolvesOnThePlansRememberedLine) {
+// A stop core has no ball: it solves on the line of its SOURCE — the segment
+// the RT follows, which its x₀ and reference come from — not on the line of
+// whatever catch-core segment was published last. The two differ when a late
+// prediction jump is published (S2, line L2) and the RT does not take it:
+// the hand is on S1 and must stop on L1. A published stop segment inherits
+// its source's line, so the later stop grid points find it too.
+TEST(ApproachPlanner, AStopCoreSolvesOnTheLineOfTheSegmentTheRtFollows) {
   const std::int64_t lag = kTArm + kReplan + 2 * kH;
+
+  // What the RT reports at the catch node: S1 only (it refused S2, or S2 aged
+  // out), S2 only, or S1 with S2 pending (S2 starts before t_c, so S2 it is).
+  struct Report {
+    const char* what;
+    bool pending_s2;
+    bool active_s2;
+    bool expect_l2;
+  };
+
   for (const Arm& arm : {Arm6(), Arm7()}) {
-    // (1) The first segment is the only published one. A re-solve with a
-    // moved ball that is NOT published does not move the remembered line.
-    Rig r(arm, PerpParams(kPerp));
-    const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
-    ASSERT_NE(s.seq, 0U);
-    const DecelBallTarget moved = MovedBall(s.c);
-    std::int64_t now = kT0 + 20 * kMs;
-    SetClock(now);
-    ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
-                                 moved, r.out, r.rec))
-        << Why(r.rec);
-    for (const int k : {0, 1}) {
-      now = s.t_c + k * kDt - lag - 1 * kMs;
+    for (const Report& report :
+         {Report{"follows S1", false, false, false}, Report{"follows S2", false, true, true},
+          Report{"follows S1, S2 pending", true, false, true}}) {
+      SCOPED_TRACE(std::to_string(arm.model->nv) + " joints, RT " + report.what);
+      Rig r(arm, PerpParams(kPerp));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);  // S1, on the plan's line L1
+      ASSERT_NE(s.seq, 0U);
+      const DecelBallTarget moved = MovedBall(s.c);
+      std::int64_t now = kT0 + 20 * kMs;
       SetClock(now);
-      // A valid ball is passed: the stop line is still the remembered one.
-      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, r.seq),
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
                                    moved, r.out, r.rec))
-          << k << ": " << Why(r.rec);
-      EXPECT_EQ(r.rec.kind, DecelKind::kStop);
-      EXPECT_EQ(r.planner.StopCoreInput(k).p_c, s.c.p) << k;
-      EXPECT_LT((r.planner.StopCoreInput(k).d_hat - s.c.v.normalized()).norm(), 1e-12) << k;
-      r.Publish(now);  // a stop segment: the line stays the catch-core one
+          << Why(r.rec);
+      const std::uint32_t s2 = r.Publish(now);  // S2, on the moved ball's line L2
+      const Eigen::Vector3d l1_d = s.c.v.normalized();
+      const Eigen::Vector3d l2_d = moved.v_b.normalized();
+      // The two lines are apart in both members, and the LAST published
+      // catch-core line is L2 in every case.
+      ASSERT_GT((moved.p_b - s.c.p).norm(), 0.005);
+      ASSERT_GT((l2_d - l1_d).norm(), 0.04);
+      ASSERT_EQ(r.planner.ApproachCoreInput(6).p_c, moved.p_b);
+
+      const Eigen::Vector3d& want_p = report.expect_l2 ? moved.p_b : s.c.p;
+      const Eigen::Vector3d& want_d = report.expect_l2 ? l2_d : l1_d;
+      std::uint32_t pending = report.pending_s2 ? s2 : 0;
+      std::uint32_t active = report.active_s2 ? s2 : s.seq;
+      const std::uint32_t source0 = report.expect_l2 ? s2 : s.seq;
+      for (const int k : {0, 1, 2}) {
+        now = s.t_c + k * kDt - lag - 1 * kMs;
+        SetClock(now);
+        // A valid ball is passed on every wake: a stop core does not read it.
+        ASSERT_TRUE(
+            r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, pending, active),
+                             moved, r.out, r.rec))
+            << k << ": " << Why(r.rec);
+        EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+        // k = 0 starts on the catch-core segment the RT reports; k = 1, 2 on
+        // the stop segment published just before — which carries no line of
+        // its own, only its source's.
+        EXPECT_EQ(r.rec.source_seq, k == 0 ? source0 : active) << k;
+        EXPECT_EQ(r.planner.StopCoreInput(k).p_c, want_p) << k;
+        EXPECT_LT((r.planner.StopCoreInput(k).d_hat - want_d).norm(), 1e-12) << k;
+        active = r.Publish(now);
+        pending = 0;
+      }
     }
 
-    // (2) The moved-ball re-solve IS published: the plan's line is now its.
-    Rig q(arm, PerpParams(kPerp));
-    const Started s2 = StartPlan(q, kT0, 800 * kMs, 0.04);
-    ASSERT_NE(s2.seq, 0U);
-    const DecelBallTarget moved2 = MovedBall(s2.c);
-    now = kT0 + 20 * kMs;
-    SetClock(now);
-    ASSERT_TRUE(q.planner.Replan(FollowingRt(q.arm, q.arm.q_nominal, now - kH, s2.t_c, s2.seq, 0),
-                                 moved2, q.out, q.rec))
-        << Why(q.rec);
-    const std::uint32_t seq2 = q.Publish(now);
-    // The source ends off rest (5e-4 > the core's 1e-4): the stop core refuses
-    // it as a reference and is re-solved without one — on the same line.
-    DecelPlanSnapshot unrested = q.out;
-    for (int j = 0; j < unrested.nv; ++j) {
-      unrested.qd[static_cast<std::size_t>(unrested.n_nodes * kMaxDecelNv + j)] = 5e-4;
+    // A re-solve that is NOT published gives no segment its line: the stop
+    // core still starts on S1, on L1.
+    {
+      Rig r(arm, PerpParams(kPerp));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      std::int64_t now = kT0 + 20 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   MovedBall(s.c), r.out, r.rec))
+          << Why(r.rec);
+      now = s.t_c - lag - 1 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                                   DecelBallTarget{}, r.out, r.rec))
+          << Why(r.rec);
+      EXPECT_EQ(r.planner.StopCoreInput(0).p_c, s.c.p);
+      EXPECT_LT((r.planner.StopCoreInput(0).d_hat - s.c.v.normalized()).norm(), 1e-12);
     }
-    unrested.decel_seq = seq2 + 10;
-    q.planner.NotePublished(unrested);
-    now = s2.t_c - lag - 1 * kMs;
-    SetClock(now);
-    ASSERT_TRUE(q.planner.Replan(
-        FollowingRt(q.arm, q.arm.q_nominal, now - kH, s2.t_c, 0, unrested.decel_seq),
-        DecelBallTarget{}, q.out, q.rec))
-        << Why(q.rec);
-    EXPECT_TRUE(q.rec.cold_retry);
-    EXPECT_EQ(q.planner.StopCoreInput(0).p_c, moved2.p_b);
-    EXPECT_LT((q.planner.StopCoreInput(0).d_hat - moved2.v_b.normalized()).norm(), 1e-12);
+
+    // The retry without a reference keeps the line. The published S2 is made
+    // to end off rest (5e-4 > the core's 1e-4), so the stop core refuses it as
+    // a reference and is re-solved from nothing — still on L2.
+    {
+      Rig r(arm, PerpParams(kPerp));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      const DecelBallTarget moved = MovedBall(s.c);
+      std::int64_t now = kT0 + 20 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   moved, r.out, r.rec))
+          << Why(r.rec);
+      for (int j = 0; j < r.out.nv; ++j) {
+        r.out.qd[static_cast<std::size_t>(r.out.n_nodes * kMaxDecelNv + j)] = 5e-4;
+      }
+      const std::uint32_t s2 = r.Publish(now);
+      now = s.t_c - lag - 1 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s2),
+                                   DecelBallTarget{}, r.out, r.rec))
+          << Why(r.rec);
+      EXPECT_TRUE(r.rec.cold_retry);
+      EXPECT_EQ(r.planner.StopCoreInput(0).p_c, moved.p_b);
+      EXPECT_LT((r.planner.StopCoreInput(0).d_hat - moved.v_b.normalized()).norm(), 1e-12);
+    }
   }
 }
 
-// No remembered line for the plan → the stop core is withheld, recorded, and
-// no QP runs; it is never solved on a default line. The same sequences with
-// the term off solve as they always did.
-TEST(ApproachPlanner, WithoutARememberedLineAStopCoreIsWithheld) {
+// The lines sit beside the ring and move with it: after more re-solves than
+// the ring holds — each on a ball of its own — every segment still in the
+// ring answers with ITS line, the never-evicted followed one included.
+TEST(ApproachPlanner, EvictionKeepsEachSegmentsLineWithIt) {
+  const std::int64_t lag = kTArm + kReplan + 2 * kH;
+  Rig r(Arm6(), PerpParams(kPerp));
+  const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+  ASSERT_NE(s.seq, 0U);
+
+  struct Line {
+    std::uint32_t seq;
+    Eigen::Vector3d p;
+    Eigen::Vector3d d;
+  };
+
+  std::vector<Line> lines{Line{s.seq, s.c.p, s.c.v.normalized()}};
+  // The RT keeps following S1 while twelve same-point re-solves are published.
+  for (int i = 1; i <= 12; ++i) {
+    const DecelBallTarget ball = MovedBall(s.c, 0.1 * i);
+    const std::int64_t now = kT0 + (10 + i) * kMs;
+    SetClock(now);
+    ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                                 ball, r.out, r.rec))
+        << i << ": " << Why(r.rec);
+    lines.push_back(Line{r.Publish(now), ball.p_b, ball.v_b.normalized()});
+  }
+  const std::int64_t now = s.t_c - lag - 1 * kMs;  // the catch node (stop k = 0)
+  int in_ring = 0;
+  for (const Line& line : lines) {
+    const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, line.seq);
+    if (r.planner.SourceSeq(rt, s.t_c) == 0) {
+      continue;  // evicted
+    }
+    ++in_ring;
+    SetClock(now);
+    ASSERT_TRUE(r.planner.Replan(rt, DecelBallTarget{}, r.out, r.rec))
+        << line.seq << ": " << Why(r.rec);
+    EXPECT_EQ(r.rec.source_seq, line.seq);
+    EXPECT_EQ(r.planner.StopCoreInput(0).p_c, line.p) << line.seq;
+    EXPECT_LT((r.planner.StopCoreInput(0).d_hat - line.d).norm(), 1e-12) << line.seq;
+  }
+  EXPECT_EQ(in_ring, 8);  // the ring is full: S1 and the seven newest
+  EXPECT_NE(
+      r.planner.SourceSeq(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq), s.t_c),
+      0U);
+}
+
+// A source segment that carries no line → the stop core is withheld,
+// recorded, and no QP runs; it is never solved on a default line. A line
+// goes to ONE segment: the one published right after the solve that built
+// it. The same sequences with the term off solve as they always did.
+TEST(ApproachPlanner, AStopCoreWhoseSourceHasNoLineIsWithheld) {
   const std::int64_t lag = kTArm + kReplan + 2 * kH;
   for (const double w : {kPerp, 0.0}) {
     const bool on = w > 0.0;
     SCOPED_TRACE(on ? "w_perp on" : "w_perp off");
-    // (a) Another plan id: a segment of plan 8 sits in the ring (so the replan
-    // has its source), but the only line remembered is plan 7's.
+    const auto expect = [on](bool ok, const DecelRecord& rec, std::uint32_t source) {
+      EXPECT_EQ(rec.kind, DecelKind::kStop);
+      EXPECT_EQ(rec.k, 0);
+      EXPECT_EQ(rec.source_seq, source);  // followed: only the line is missing
+      if (on) {
+        EXPECT_FALSE(ok);
+        EXPECT_EQ(rec.outcome, DecelOutcome::kNoBall);
+        ExpectNotSolved(rec);
+      } else {
+        EXPECT_TRUE(ok) << Why(rec);
+      }
+    };
+    // (a) A segment this planner never solved (another plan's, handed to the
+    // ring): the replan has its source, the source has no line. The line of
+    // the first segment went to the first segment — once.
     {
       Rig r(Arm6(), PerpParams(w));
       const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
@@ -1496,43 +1614,92 @@ TEST(ApproachPlanner, WithoutARememberedLineAStopCoreIsWithheld) {
       const bool ok = r.planner.Replan(
           FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, 50, /*plan_id=*/8), BallFor(s.c),
           r.out, r.rec);
-      EXPECT_EQ(r.rec.kind, DecelKind::kStop);
-      EXPECT_EQ(r.rec.k, 0);
-      EXPECT_EQ(r.rec.source_seq, 50U);  // followed: only the line is missing
-      if (on) {
-        EXPECT_FALSE(ok);
-        EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall);
-        ExpectNotSolved(r.rec);
-      } else {
-        EXPECT_TRUE(ok) << Why(r.rec);
-      }
+      expect(ok, r.rec, 50U);
     }
-    // (b) ResetTrial drops the memory with the ring. The same segment handed
-    // back to the ring is followed again, but its line is gone.
+    // (b) ResetTrial drops the lines with the ring — the published segment's
+    // and the one a publishable, not yet published re-solve is holding. The
+    // first segment handed back to the ring is followed again, without a line.
     {
       Rig r(Arm6(), PerpParams(w));
       const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
       ASSERT_NE(s.seq, 0U);
       const DecelPlanSnapshot first = r.out;
-      const std::int64_t now = s.t_c - lag - 1 * kMs;
+      std::int64_t now = kT0 + 20 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   BallFor(s.c), r.out, r.rec))
+          << Why(r.rec);
+      now = s.t_c - lag - 1 * kMs;
       const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq);
       r.planner.ResetTrial();
-      SetClock(now);
-      EXPECT_FALSE(r.planner.Replan(rt, BallFor(s.c), r.out, r.rec));
-      EXPECT_EQ(r.rec.outcome, DecelOutcome::kNotFollowed);
+      EXPECT_EQ(r.planner.SourceSeq(rt, s.t_c), 0U);  // the ring is gone
+      // Straight after the reset, with no solve call in between: the line the
+      // unpublished re-solve held must not land on this segment.
       r.planner.NotePublished(first);
       SetClock(now);
       const bool ok = r.planner.Replan(rt, BallFor(s.c), r.out, r.rec);
-      EXPECT_EQ(r.rec.source_seq, s.seq);
-      if (on) {
-        EXPECT_FALSE(ok);
-        EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall);
-        EXPECT_EQ(r.rec.kind, DecelKind::kStop);
-        ExpectNotSolved(r.rec);
-      } else {
-        EXPECT_TRUE(ok) << Why(r.rec);
-      }
+      expect(ok, r.rec, s.seq);
     }
+    // (c) A line belongs to the solve that built it: a publishable re-solve
+    // is NOT published, another Replan call comes (and withholds), and only
+    // then is the re-solve's segment handed to the ring — it carries no line.
+    {
+      Rig r(Arm6(), PerpParams(w));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      std::int64_t now = kT0 + 20 * kMs;
+      const PlannerRtState pre = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0);
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(pre, BallFor(s.c), r.out, r.rec)) << Why(r.rec);
+      DecelPlanSnapshot late = r.out;
+      DecelPlanSnapshot scratch{};
+      SetClock(now);
+      ASSERT_FALSE(r.planner.Replan(pre, DecelBallTarget{}, scratch, r.rec));
+      ASSERT_EQ(r.rec.outcome, DecelOutcome::kNoBall);  // the pre-catch meaning: no ball
+      late.decel_seq = 60;
+      r.planner.NotePublished(late);
+      now = s.t_c - lag - 1 * kMs;
+      SetClock(now);
+      const bool ok = r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, 60),
+                                       BallFor(s.c), r.out, r.rec);
+      expect(ok, r.rec, 60U);
+    }
+  }
+}
+
+// The parser's upper bound is a value the cores do solve with: at
+// kDecelStopPathWeightMax the planner configures (every warm-up), and the
+// first solve, a re-solve on a moved ball and the three stop cores all come
+// out publishable, on both arms.
+TEST(ApproachPlanner, TheStopPathWeightSolvesAtItsUpperBound) {
+  const std::int64_t lag = kTArm + kReplan + 2 * kH;
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig r(arm, PerpParams(rtc::catching::kDecelStopPathWeightMax));
+    ASSERT_TRUE(r.planner.Configured());
+    ASSERT_EQ(r.planner.StopCoreParams(0).w_perp, 1e4);
+    const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s.seq, 0U) << Why(r.rec);
+    int iterations = r.rec.iterations;
+    std::int64_t now = kT0 + 20 * kMs;
+    SetClock(now);
+    ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                 MovedBall(s.c), r.out, r.rec))
+        << Why(r.rec);
+    iterations = std::max(iterations, r.rec.iterations);
+    std::uint32_t followed = r.Publish(now);
+    for (const int k : {0, 1, 2}) {
+      now = s.t_c + k * kDt - lag - 1 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(
+          r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, followed),
+                           DecelBallTarget{}, r.out, r.rec))
+          << k << ": " << Why(r.rec);
+      iterations = std::max(iterations, r.rec.iterations);
+      followed = r.Publish(now);
+    }
+    std::printf("[ record ] n = %d: w_perp %.0f, most QP iterations in one solve %d\n",
+                static_cast<int>(arm.model->nv), rtc::catching::kDecelStopPathWeightMax,
+                iterations);
   }
 }
 
@@ -1825,8 +1992,8 @@ TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
 }
 
 TEST(ApproachPlanner, TheStopLineAllocatesNothing) {
-  // `cost.w_perp` > 0: building the line, remembering it at the publish and
-  // the two withholds are fixed-size work — nothing on the heap. Through a
+  // `cost.w_perp` > 0: building the line, keeping it beside the ring at the
+  // publish and the two withholds are fixed-size work — nothing on the heap. Through a
   // solve the C mallocs are ProxQP's (#654), so operator new is the gate.
   Rig r(Arm7(), PerpParams(kPerp));
   const Started s = StartPlan(r, kT0, 800 * kMs);  // warm-up outside the gates
@@ -1843,7 +2010,7 @@ TEST(ApproachPlanner, TheStopLineAllocatesNothing) {
   r.out.decel_seq = ++r.seq;
   r.out.publish_ns = kT0;
   c = Gated([&] { r.planner.NotePublished(r.out); });
-  EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "remembering the line";
+  EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "keeping the line with the segment";
   const std::int64_t same = kT0 + 20 * kMs;
   const PlannerRtState pre = FollowingRt(r.arm, r.arm.q_nominal, same - kH, s.t_c, r.seq, 0);
   SetClock(same);
@@ -1862,9 +2029,9 @@ TEST(ApproachPlanner, TheStopLineAllocatesNothing) {
   c = Gated([&] { ok = r.planner.Replan(post, DecelBallTarget{}, r.out, r.rec); });
   EXPECT_TRUE(ok) << Why(r.rec);
   EXPECT_EQ(r.rec.kind, DecelKind::kStop);
-  EXPECT_EQ(c.op_new, 0U) << "stop core on the remembered line";
-  // No line remembered (a segment handed back after a reset): the next stop
-  // grid point is withheld.
+  EXPECT_EQ(c.op_new, 0U) << "stop core on its source's line";
+  // A source without a line (a segment handed back after a reset): the next
+  // stop grid point is withheld.
   DecelPlanSnapshot again = r.out;
   r.planner.ResetTrial();
   again.decel_seq = 70;

@@ -13,6 +13,10 @@
 //   lifetime    ATrialResetWithdrawsTheSegment,
 //               WithoutADecelBoxThePlanIsPublishedAlone
 //
+//   stop line   TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch — the one
+//               test here on a SETTABLE clock (FakeTime): it asserts values,
+//               not budgets, so no solve duration may decide it
+//
 // The RT stand-in reports the segment it holds pending and then follows, as
 // the RT does under `mode: mpc` (E1-F09); WithoutAReportNothingIsReplanned
 // pins an RT that reports neither.
@@ -32,11 +36,15 @@
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
+#include <map>
 #include <memory>
+#include <set>
 #include <span>
 #include <string>
 #include <thread>
@@ -60,9 +68,31 @@ constexpr std::int64_t kH = 2 * kMs;
 constexpr std::uint64_t kActivation = 3;
 constexpr std::uint64_t kTrack = 7;
 
-std::int64_t Now() {
-  return rtc::SteadyNowNs();
+// The suite's clock: the real steady clock, unless a test pins it (FakeTime).
+// A rig built with `fake_clock` hands the same function to the cycle, the
+// search and the decel planner, so on a pinned clock every budget and lead is
+// measured against the test's own time — a solve takes zero of it.
+std::atomic<std::int64_t> g_fake_now{0};  // 0 = not pinned
+
+std::int64_t SuiteClock() noexcept {
+  const std::int64_t pinned = g_fake_now.load();
+  return pinned != 0 ? pinned : rtc::SteadyNowNs();
 }
+
+std::int64_t Now() {
+  return SuiteClock();
+}
+
+struct FakeTime {
+  explicit FakeTime(std::int64_t start) { g_fake_now.store(start); }
+
+  ~FakeTime() { g_fake_now.store(0); }
+
+  FakeTime(const FakeTime&) = delete;
+  FakeTime& operator=(const FakeTime&) = delete;
+
+  void Advance(std::int64_t ns) { g_fake_now.fetch_add(ns); }
+};
 
 struct Boxes {
   rtc::SeqLock<rtc::catching::TrajectorySnapshot> traj;
@@ -79,6 +109,9 @@ struct RtStandIn {
   std::vector<double> wait_pose;  // device order
   bool adopt{true};               // false: never takes a plan
   bool report_decel{true};        // false: an RT that reports no segment
+  // The newest segment it takes: a later one is published and never followed
+  // (the RT's switch gate refused it).
+  std::uint32_t take_up_to_seq{std::numeric_limits<std::uint32_t>::max()};
   std::int64_t t_freeze_ns{200 * kMs};
   std::uint64_t track{kTrack};  // the track it consumed last
   bool following{false};
@@ -102,7 +135,8 @@ struct RtStandIn {
     }
     if (following && report_decel) {
       const DecelPlanSnapshot d = b.decel.Load();
-      if (d.valid && d.plan_id == plan_id && d.decel_seq > last_seq) {
+      if (d.valid && d.plan_id == plan_id && d.decel_seq > last_seq &&
+          d.decel_seq <= take_up_to_seq) {
         last_seq = d.decel_seq;
         pending = true;
         pending_seq = d.decel_seq;
@@ -152,7 +186,8 @@ struct Rig {
   rtc::catching::PlannerParams params;
   std::int64_t traj_first_ns{0};
 
-  explicit Rig(double catch_err_max = 0.02, bool bind_decel = true, double w_perp = 0.0) {
+  explicit Rig(double catch_err_max = 0.02, bool bind_decel = true, double w_perp = 0.0,
+               bool fake_clock = false) {
     rtc_urdf_bridge::ModelConfig config;
     config.urdf_path = std::string(RTC_TEST_ROBOT_DESCRIPTIONS_DIR) + "/ur5e/urdf/ur5e.urdf";
     config.root_joint_type = "fixed";
@@ -205,6 +240,9 @@ struct Rig {
     d.catch_pos_err_max = catch_err_max;
     d.w_perp = w_perp;
     cycle.Configure(params);
+    if (fake_clock) {
+      cycle.SetClock(&SuiteClock);  // before the search and the decel planner take it
+    }
 
     rtc::catching::PlannerModel pm;
     pm.handle = handle.get();
@@ -472,38 +510,121 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
               stop);
 }
 
-TEST(ApproachCycle, WithTheStopPathTermOnThePublishedLineReachesTheStopCores) {
-  // `cost.w_perp` > 0 (#698): a stop core solves on the line of the plan's
-  // last PUBLISHED catch-core segment, and is withheld (kNoBall) without one.
-  // "Published" is the cycle's decision, so the memory is only as good as the
-  // cycle's own NotePublished: through a whole catch — the pair, re-solves,
-  // grid advances, the hand-over to the stop cores — every stop grid point
-  // must find its line.
-  auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_decel=*/true, /*w_perp=*/2000.0);
-  ASSERT_TRUE(r->cycle.DecelConfigured());
-  r->StartTrajectory();
-  const PlannerCycleRecord first = r->Wake();
-  ASSERT_EQ(first.outcome, CycleOutcome::kPublished) << Why(first);
-  const std::int64_t t_c = r->boxes.plan.Load().t_c_ns;
-  int stop_published = 0;
-  int stop_without_line = 0;
-  std::uint64_t seq = 1;
-  while (Now() < t_c + 4 * 50 * kMs) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
-    if (seq % 2 == 0) {
-      r->StoreTrajectory(seq + 1);
+TEST(ApproachCycle, TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch) {
+  // `cost.w_perp` > 0 (#698): a stop core solves on the line of the segment
+  // the RT follows. Which segment that is, and whether a segment has a line at
+  // all, hangs on the cycle's own publish (NotePublished) — so a whole catch
+  // is run through the cycle: the pair, re-solves and grid advances against a
+  // prediction that DRIFTS (every published catch-core segment has a line of
+  // its own), then the stop cores. Each stop core must have received exactly
+  // the line of the segment it started from.
+  //  • RT takes every segment: the stop cores inherit down the chain.
+  //  • RT takes only the first (its switch gate refuses the rest): later
+  //    lines are published and never followed, and every stop core stays on
+  //    the FIRST segment's line.
+  // On a pinned clock: the test steps time itself, a solve takes none of it,
+  // and no budget, lead or sleep depends on the host.
+  struct Line {
+    Eigen::Vector3d p;
+    Eigen::Vector3d d;
+  };
+
+  constexpr std::int64_t kStart = 1'727'000'000'000'000'000LL;
+  for (const bool rt_takes_replans : {true, false}) {
+    SCOPED_TRACE(rt_takes_replans ? "the RT takes every segment" : "the RT keeps the first");
+    FakeTime time(kStart);
+    auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_decel=*/true,
+                                   /*w_perp=*/2000.0, /*fake_clock=*/true);
+    ASSERT_TRUE(r->cycle.DecelConfigured());
+    const rtc::catching::DecelPlanner& decel = r->cycle.Decel();
+    const Eigen::Vector3d p0 = r->p_c;
+    const Eigen::Vector3d v0 = r->v_ball;
+    const Eigen::Vector3d side = v0.unitOrthogonal();
+    r->StartTrajectory();
+    const PlannerCycleRecord first = r->Wake();
+    ASSERT_EQ(first.outcome, CycleOutcome::kPublished) << Why(first);
+    ASSERT_EQ(first.decel.kind, DecelKind::kFirst);
+    const PlanSnapshot plan = r->boxes.plan.Load();
+    const std::int64_t t_c = plan.t_c_ns;
+    if (!rt_takes_replans) {
+      r->rt.take_up_to_seq = first.decel.decel_seq;
     }
-    ++seq;
-    const PlannerCycleRecord rec = r->Wake();
-    if (rec.decel.kind != DecelKind::kStop) {
-      continue;
+
+    std::map<std::uint32_t, Line> line_of;  // published segment → its line
+    // The first segment's line is the PLAN's catch point along its ball.
+    {
+      const auto& in = decel.ApproachCoreInput(-first.decel.k);
+      const Eigen::Vector3d p(plan.p_c[0], plan.p_c[1], plan.p_c[2]);
+      const Eigen::Vector3d v(plan.v_c[0], plan.v_c[1], plan.v_c[2]);
+      EXPECT_EQ(in.p_c, p);
+      EXPECT_LT((in.d_hat - v.normalized()).norm(), 1e-12);
+      line_of[first.decel.decel_seq] = Line{in.p_c, in.d_hat};
     }
-    stop_without_line += rec.decel.outcome == DecelOutcome::kNoBall ? 1 : 0;
-    stop_published += rec.decel.outcome == DecelOutcome::kPublished ? 1 : 0;
+    Line newest_catch = line_of[first.decel.decel_seq];
+    std::set<std::int32_t> stop_points;
+    int stops = 0;
+    int stops_off_the_newest_line = 0;
+    int catch_segments = 1;
+    int update = 0;
+    std::uint64_t seq = 1;
+    while (Now() < t_c + 4 * 50 * kMs) {
+      time.Advance(15 * kMs);
+      if (seq % 2 == 0) {
+        // The prediction drifts: 0.36 mm and 4 mrad per update.
+        ++update;
+        const double a = 0.004 * update;
+        r->p_c = p0 + update * Eigen::Vector3d(0.0003, -0.0002, 0.0);
+        r->v_ball = v0.norm() * (std::cos(a) * v0.normalized() + std::sin(a) * side);
+        r->StoreTrajectory(seq + 1);
+      }
+      ++seq;
+      const PlannerCycleRecord rec = r->Wake();
+      const bool stop = rec.decel.kind == DecelKind::kStop;
+      EXPECT_FALSE(stop && rec.decel.outcome == DecelOutcome::kNoBall)
+          << "a stop grid point whose source had no line";
+      if (rec.decel.outcome != DecelOutcome::kPublished) {
+        continue;
+      }
+      ASSERT_EQ(line_of.count(rec.decel.source_seq), 1U) << rec.decel.source_seq;
+      if (!stop) {
+        // A catch-core segment: the line of THIS wake's ball at t_c — the
+        // trajectory in the box, evaluated here from what the rig stored.
+        const auto& in = decel.ApproachCoreInput(-rec.decel.k);
+        const double dt = static_cast<double>(t_c - (r->traj_first_ns + 14 * 50 * kMs)) / 1e9;
+        EXPECT_LT((in.p_c - (r->p_c + r->v_ball * dt)).norm(), 1e-9);
+        EXPECT_LT((in.d_hat - r->v_ball.normalized()).norm(), 1e-9);
+        newest_catch = Line{in.p_c, in.d_hat};
+        line_of[rec.decel.decel_seq] = newest_catch;
+        ++catch_segments;
+        continue;
+      }
+      const Line& followed = line_of[rec.decel.source_seq];
+      const auto& in = decel.StopCoreInput(rec.decel.k);
+      EXPECT_EQ(in.p_c, followed.p) << "stop k " << rec.decel.k;
+      EXPECT_EQ(in.d_hat, followed.d) << "stop k " << rec.decel.k;
+      line_of[rec.decel.decel_seq] = followed;  // a stop segment inherits
+      stop_points.insert(rec.decel.k);
+      ++stops;
+      stops_off_the_newest_line += (in.p_c - newest_catch.p).norm() > 1e-4 ? 1 : 0;
+      if (!rt_takes_replans) {
+        EXPECT_EQ(rec.decel.source_seq, first.decel.decel_seq);
+      }
+    }
+    // Every stop grid point of the replan window was solved (k_max 2).
+    EXPECT_EQ(stop_points, (std::set<std::int32_t>{0, 1, 2}));
+    ASSERT_GT(catch_segments, 3);  // the drift did produce other lines
+    if (!rt_takes_replans) {
+      // The discriminating case: the newest PUBLISHED catch-core line is not
+      // the followed one, and no stop core took it.
+      EXPECT_GT((newest_catch.p - line_of[first.decel.decel_seq].p).norm(), 1e-3);
+      EXPECT_EQ(stops_off_the_newest_line, stops);
+    }
+    std::printf(
+        "[ record ] w_perp on, RT %s: %d catch-core segments, %d stop segments, %d of "
+        "them off the newest published line\n",
+        rt_takes_replans ? "takes all" : "keeps the first", catch_segments, stops,
+        stops_off_the_newest_line);
   }
-  EXPECT_EQ(stop_without_line, 0) << "a stop grid point found no remembered line";
-  EXPECT_GT(stop_published, 0);
-  std::printf("[ record ] w_perp on: stop segments published %d\n", stop_published);
 }
 
 TEST(ApproachCycle, AnotherTracksBallIsNotTheFollowedPlansTarget) {

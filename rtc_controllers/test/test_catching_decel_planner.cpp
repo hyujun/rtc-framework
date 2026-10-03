@@ -538,12 +538,17 @@ TEST(DecelParams, TheStopPathWeightDefaultsOffAndParses) {
   EXPECT_EQ(on.u_scale, 500.0);
   EXPECT_EQ(on.w_delta, 2.5);
   EXPECT_EQ(on.rho_tau, 7.0);
-  // Bounded from below only (as the core's own check).
+  // Both ends of [0, kDecelStopPathWeightMax] are values a profile may write.
+  EXPECT_EQ(rtc::catching::kDecelStopPathWeightMax, 1e4);
   EXPECT_EQ(
-      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_perp: 1.0e+9}}}")).decel.w_perp,
-      1e9);
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_perp: 1.0e+4}}}")).decel.w_perp,
+      rtc::catching::kDecelStopPathWeightMax);
 }
 
+// Below 0, not finite, and ABOVE the bound: the weight raises the QP's
+// condition number and nothing downstream refuses a value too large (the
+// configure warm-up's line runs through the catch frame, so its residual is
+// zero at any weight) — the parser is the only gate, and it names the key.
 TEST(DecelParams, RejectsTheStopPathWeightByName) {
   const std::string key = "'planner.decel_mpc.cost.w_perp'";
   const auto message = [](const std::string& body) -> std::string {
@@ -558,12 +563,14 @@ TEST(DecelParams, RejectsTheStopPathWeightByName) {
     return text.find(part) != std::string::npos;
   };
   // Valid neighbours beside it, so only this key's range can be what refuses.
-  for (const char* bad : {"-0.1", "-1.0e-12", ".nan", ".inf", "-.inf"}) {
+  for (const char* bad :
+       {"-0.1", "-1.0e-12", ".nan", ".inf", "-.inf", "10000.001", "1.0e+5", "1.0e+9"}) {
     const std::string why =
         message(std::string("cost: {w_delta: 1.0, rho_tau: 10.0, w_perp: ") + bad + "}");
     ASSERT_FALSE(why.empty()) << "w_perp: " << bad << " was accepted";
     EXPECT_TRUE(has(why, key)) << why;
-    EXPECT_TRUE(has(why, "must be a finite number >= 0")) << why;
+    EXPECT_TRUE(has(why, "must be a finite number in [0, 1e4]")) << why;
+    EXPECT_TRUE(has(why, "kDecelStopPathWeightMax")) << why;
     EXPECT_FALSE(has(why, "w_delta")) << why;
     EXPECT_FALSE(has(why, "rho_tau")) << why;
   }

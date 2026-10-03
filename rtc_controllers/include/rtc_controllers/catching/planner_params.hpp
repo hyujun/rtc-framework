@@ -51,6 +51,15 @@ inline constexpr std::size_t kPlannerMaxWindowGrid = 8;
 /// count is a cost on the cycle budget, not only a resolution (default 9).
 inline constexpr int kSwitchSamplesMax = 64;
 
+/// Upper bound of `planner.decel_mpc.cost.w_perp` [1/m²]: the largest
+/// stop-path weight the cores are tested to solve with (a stop core alone in
+/// test_catching_decel_mpc.cpp, the planner's catch and stop cores on both
+/// test arms in test_catching_approach_planner.cpp). The weight raises the
+/// QP's condition number with nothing else to bound it — the configure
+/// warm-up cannot notice a value too large, its line runs through the catch
+/// frame — so the parser refuses anything above.
+inline constexpr double kDecelStopPathWeightMax = 1e4;
+
 /// Capacity of the decel planner's replan window: instances k = 0..k_max, one
 /// DecelMpc each (MD-31). A capacity, not a default (the default k_max is 4).
 inline constexpr int kMaxDecelReplans = 8;
@@ -159,13 +168,13 @@ struct DecelPlannerParams {
   /// `cost.rho_tau` — torque slack penalty; 0 = the torque rows are off, which
   /// makes the publish judgement's slack condition vacuous.
   double rho_tau{10.0};
-  /// `cost.w_perp` [1/m²] — the stop-path term: on the nodes from the catch
-  /// on, the catch frame's distance from a line is penalised; 0 (the default)
-  /// = off, and no line is then built or required. The line is the BALL's
-  /// (user decision 2026-10-03, #698): through its predicted catch position
-  /// along its direction of travel at t_c, as the catch-core solve takes them.
-  /// A stop-core replan keeps the line of the plan it follows — the one its
-  /// last published catch-core segment was solved with. A solve whose line
+  /// `cost.w_perp` [1/m²], in [0, kDecelStopPathWeightMax] — the stop-path
+  /// term: on the nodes from the catch on, the catch frame's distance from a
+  /// line is penalised; 0 (the default) = off, and no line is then built or
+  /// required. The line is the BALL's (user decision 2026-10-03, #698):
+  /// through its predicted catch position along its direction of travel at
+  /// t_c, as the catch-core solve takes them. A stop-core replan keeps the
+  /// line of the segment the RT follows (its source). A solve whose line
   /// cannot be built is withheld (DecelPlanner, decel_planner.hpp), never run
   /// on a default line.
   double w_perp{0.0};
