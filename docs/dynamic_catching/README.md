@@ -53,6 +53,7 @@ profile 은 ball_perception 저장소가 소유한다 ([MPC_DUALARM_PLAN.md](MPC
 | 파일 | Layer | 내용 |
 |---|---|---|
 | `IMPLEMENTATION_PLAN.md` | — | 결정 로그·단계 상태·게이트 결과 (SSoT) |
+| `ID_INDEX.md` | — | 코드가 인용하는 결정 ID · 게이트 ID · 단계 이름의 색인 — 뜻과 지금의 자리 |
 | `CATCHING_MASTER.md` | 전체 | 문제 정의·계층 구조·교차 제약·이론 출처 표 |
 | `WORKSPACE_ANALYSIS.md` | W | `rtc-framework` 분석 항목과 코드 대조 기록 (단계 W 완료, 2026-09-19) |
 | `L0_core.md` | L0 | 시간 타입·용량 상수·파라미터 검증, 공 운동 모델 (fixture 전용) |
