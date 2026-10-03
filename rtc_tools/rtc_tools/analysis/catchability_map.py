@@ -3331,7 +3331,10 @@ def main(argv: list[str] | None = None) -> int:
         "--params",
         type=Path,
         help="YAML with the `catching:` tree for the judge. planner.ik.alpha_max, when it is "
-        "set there, is also the bound the theta report is computed against",
+        "set there, is also the bound the theta report is computed against. The judge does not "
+        "compose `include:` fragments: for a split controller config pass the fragment that "
+        "holds planner.ik and planner.catchability (a shipped profile's "
+        "controllers/catching/search_grid.yaml)",
     )
     ap.add_argument("--judge", type=Path, help=f"path to {JUDGE_EXECUTABLE} (default: ament)")
 

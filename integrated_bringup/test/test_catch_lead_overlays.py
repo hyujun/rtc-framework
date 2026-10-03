@@ -29,6 +29,8 @@ import os
 import pytest
 import yaml
 
+from rtc_tools.utils.controller_config import load_controller_config
+
 CONFIG_ROOT = os.path.join(os.path.dirname(__file__), "..", "config")
 CONFIG_DIR = os.path.join(CONFIG_ROOT, "ur5e_p1b")
 SHIPPED = os.path.join(CONFIG_DIR, "controllers", "demo_catching_controller.yaml")
@@ -55,8 +57,6 @@ S8F_SCORE = {
 # the arm's switched-in pose.
 WAIT_POSE_CURRENT = "catch_wait_pose_current"
 WAIT_POSE_SOURCE = ("catching", "planner", "wait_pose_source")
-S8G_ENVBOX_FILE = "config/ur5e_p1b/derived_accel_limits_s8g_envelope.yaml"
-S8G_SHIPPED_BOX_FILE = "config/ur5e_p1b/derived_accel_limits.yaml"
 SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
 LEAP = "iiwa7_leap"
 # Where each profile keeps control_rate (the launch files read the same file).
@@ -66,6 +66,11 @@ RATE_FILE = {"ur5e_p1b": "_base.yaml", LEAP: "sim.yaml"}
 def _load(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _shipped_tree(path: str) -> dict:
+    """The shipped controller tree as the CM composes it (main file + ``include:`` fragments)."""
+    return load_controller_config(path, config_key=CONTROLLER)[CONTROLLER]
 
 
 def _controller_tree(overlay: dict) -> dict:
@@ -125,7 +130,7 @@ def _arm(name: str) -> dict:
 
 @pytest.fixture(scope="module")
 def shipped() -> dict:
-    return _load(SHIPPED)[CONTROLLER]
+    return _shipped_tree(SHIPPED)
 
 
 @pytest.fixture(scope="module")
@@ -135,9 +140,9 @@ def arms() -> dict[str, dict]:
 
 @pytest.fixture(scope="module")
 def leap_shipped() -> dict:
-    return _load(os.path.join(CONFIG_ROOT, LEAP, "controllers", "demo_catching_controller.yaml"))[
-        CONTROLLER
-    ]
+    return _shipped_tree(
+        os.path.join(CONFIG_ROOT, LEAP, "controllers", "demo_catching_controller.yaml")
+    )
 
 
 LEAP_SCENE = "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"
@@ -293,38 +298,26 @@ def test_wait_pose_current_is_reach_first_plus_the_source_leaf(arms, shipped):
 # ── ur5e_p1b sim.yaml (S8-G R2: the planner's envelope box) ──────────────────
 
 
-def test_sim_yaml_points_the_planner_box_at_the_envelope_file_and_names_shipped_keys(shipped):
-    """R2 (S8-G): the sim robot config overrides ONE controller key — the
-    planner's D-16 box file — and only that, at a shipped key of the same type,
-    at a file that exists, is `adopted`, is marked provisional and carries the
-    tool's provenance (lifecycle.cpp refuses a box that is not adopted). The
-    real robot.yaml must not carry it."""
+def test_sim_yaml_overrides_the_planner_box_with_float_keys_of_the_shipped_type(shipped):
+    """The sim robot config overrides the box with ONE array and its flag — and
+    only those — at shipped keys of the same type. Every element is a float: a
+    ROS parameter array has one type, so an integer literal would turn the whole
+    override into an integer array. The real robot.yaml must not carry it."""
     sim = _load(os.path.join(CONFIG_DIR, "sim.yaml"))["/**"]["ros__parameters"]
     tree = sim[CONTROLLER]
-    assert _leaves(tree) == {("catching", "robot", "arm", "accel_limits_path"): S8G_ENVBOX_FILE}
+    arm = ("catching", "robot", "arm")
+    assert set(_leaves(tree)) == {arm + ("qdd_max",), arm + ("qdd_provisional",)}
     assert _unread_leaves(tree, shipped) == []
-    assert shipped["catching"]["robot"]["arm"]["accel_limits_path"] == S8G_SHIPPED_BOX_FILE
-    box = _load(os.path.join(CONFIG_ROOT, "..", S8G_ENVBOX_FILE))["derived_accel_limits"]
-    group = shipped["catching"]["robot"]["arm"]["accel_limits_group"]
-    entry = box[group]
-    n = len(
-        _load(os.path.join(CONFIG_DIR, "_base.yaml"))["/**"]["ros__parameters"]["devices"][group][
-            "joint_limits"
-        ]["max_torque"]
-    )
-    assert entry["adopted"] is True and entry["provisional"] is True
-    assert len(entry["qdd_max"]) == n and all(v > 0 for v in entry["qdd_max"])
-    assert entry["provenance"]["tool"] == "rtc_tools.analysis.catching_arm_budget"
-    assert entry["provenance"]["sim_only"] is True
+    box = tree["catching"]["robot"]["arm"]["qdd_max"]
+    assert box == [20.2531, 30.859, 36.9851, 21.5036, 14.2481, 29.0196]
+    assert all(isinstance(v, float) for v in box)
+    assert tree["catching"]["robot"]["arm"]["qdd_provisional"] is True
+    shipped_box = shipped["catching"]["robot"]["arm"]["qdd_max"]
+    assert len(box) == len(shipped_box)
     # The point of the override: the envelope is well above the shipped derived box.
-    shipped_box = _load(os.path.join(CONFIG_DIR, "derived_accel_limits.yaml"))[
-        "derived_accel_limits"
-    ][group]["qdd_max"]
-    assert all(e > 2 * s for e, s in zip(entry["qdd_max"], shipped_box, strict=True))
+    assert all(e > 2 * s for e, s in zip(box, shipped_box, strict=True))
     robot = _load(os.path.join(CONFIG_DIR, "robot.yaml"))["/**"]["ros__parameters"]
-    assert CONTROLLER not in robot, (
-        "the real arm keeps the torque-derived box (S10 measures its own)"
-    )
+    assert CONTROLLER not in robot, "the real arm keeps the shipped box (S10 measures its own)"
 
 
 # ── iiwa7_leap (S8-D) ────────────────────────────────────────────────────────

@@ -140,28 +140,73 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
     }
   }
 
-  // ── robot.arm / catch_frame / oracle: the binding-level keys ────────────
+  // ── robot.arm / catch_frame: the binding-level keys ─────────────────────
   // Reset like the io keys above (#609): a profile that names no box must not
-  // inherit the path the last configure named — that reads as "box present"
+  // inherit the values the last configure read — that reads as "box present"
   // where the profile says there is none.
-  accel_limits_package_ = "integrated_bringup";
-  accel_limits_path_.clear();
-  accel_limits_group_.clear();
   catch_frame_name_ = "catch_frame";
+  arm_qdd_cfg_.clear();
+  arm_qdd_cfg_present_ = false;
+  arm_qdd_cfg_malformed_ = false;
+  arm_qdd_provisional_cfg_ = true;
+  removed_arm_box_key_.clear();
+  stale_decel_mpc_disabled_key_ = false;
   if (catching_section_present_) {
+    // `planner.decel_mpc.enabled` no longer exists (the parser ignores it). Only
+    // a leftover `false` changes behaviour — it used to park under mode mpc and
+    // now the law runs — so only that is remembered, for on_configure to warn
+    // about once the mode is known. A value that is not a bool is not "false".
+    try {
+      const YAML::Node planner = catching["planner"];
+      const YAML::Node decel_mpc = planner ? planner["decel_mpc"] : YAML::Node();
+      const YAML::Node stale = decel_mpc ? decel_mpc["enabled"] : YAML::Node();
+      if (stale) {
+        stale_decel_mpc_disabled_key_ = !stale.as<bool>();
+      }
+    } catch (const std::exception&) {
+      stale_decel_mpc_disabled_key_ = false;  // not a map / not a bool: not a "false"
+    }
     if (const YAML::Node frame = catching["catch_frame"]; frame) {
       catch_frame_name_ = frame.as<std::string>();
     }
     if (const YAML::Node robot = catching["robot"]; robot && robot["arm"]) {
       const YAML::Node arm = robot["arm"];
-      if (const YAML::Node pkg = arm["accel_limits_package"]; pkg) {
-        accel_limits_package_ = pkg.as<std::string>();
+      // The acceleration box used to be a file these three keys named. An old
+      // overlay that still sets one would otherwise be ignored, and the run
+      // would silently fall back to the shipped box — a different arm limit
+      // under the overlay's name. on_configure parks on it (kRemovedKey), so
+      // the operator moves the value without taking the other controllers down.
+      for (const char* removed :
+           {"accel_limits_package", "accel_limits_path", "accel_limits_group"}) {
+        if (arm[removed]) {
+          removed_arm_box_key_ = std::string("robot.arm.") + removed;
+          break;
+        }
       }
-      if (const YAML::Node path = arm["accel_limits_path"]; path) {
-        accel_limits_path_ = path.as<std::string>();
+      // Read tolerantly: a bad box is not a configure failure but an empty box
+      // (ERROR in ApplyArmAccelBox, then the supervisor's park), as it was when
+      // the box came from a file. Validated against the arm's DOF there.
+      if (const YAML::Node box = arm["qdd_max"]; box) {
+        arm_qdd_cfg_present_ = true;
+        try {
+          if (!box.IsSequence()) {
+            throw std::runtime_error("not a sequence");
+          }
+          for (const auto& v : box) {
+            arm_qdd_cfg_.push_back(v.as<double>());
+          }
+        } catch (const std::exception&) {
+          arm_qdd_cfg_.clear();
+          arm_qdd_cfg_malformed_ = true;
+        }
       }
-      if (const YAML::Node group = arm["accel_limits_group"]; group) {
-        accel_limits_group_ = group.as<std::string>();
+      // Fail-closed: a flag that is absent or not a bool is not a clearance.
+      if (const YAML::Node prov = arm["qdd_provisional"]; prov) {
+        try {
+          arm_qdd_provisional_cfg_ = prov.as<bool>();
+        } catch (const std::exception&) {
+          arm_qdd_provisional_cfg_ = true;
+        }
       }
     }
   }

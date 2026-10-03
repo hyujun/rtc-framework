@@ -29,8 +29,6 @@
 #include "shipped_config_test_fixture.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
-
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
@@ -72,7 +70,7 @@ struct Shipped {
   YAML::Node controller;
   PlannerParams params;
   rtc::catching::CatchPoseIkConfig ik;
-  std::vector<double> qdd_max;  // D-16 box, device order
+  std::vector<double> qdd_max;  // robot.arm.qdd_max, device order
 };
 
 Shipped LoadShippedP1b() {
@@ -81,11 +79,7 @@ Shipped LoadShippedP1b() {
       integrated_bringup::testfx::ShippedControllerNode("ur5e_p1b", "demo_catching_controller");
   s.params = rtc::catching::ParsePlannerParams(s.controller["catching"]);
   s.ik = rtc::catching::ParseCatchPoseIkParams(s.controller["catching"]);
-  const std::string path =
-      ament_index_cpp::get_package_share_directory("integrated_bringup") + "/" +
-      s.controller["catching"]["robot"]["arm"]["accel_limits_path"].as<std::string>();
-  const YAML::Node doc = YAML::LoadFile(path);
-  s.qdd_max = doc["derived_accel_limits"]["ur5e"]["qdd_max"].as<std::vector<double>>();
+  s.qdd_max = s.controller["catching"]["robot"]["arm"]["qdd_max"].as<std::vector<double>>();
   return s;
 }
 

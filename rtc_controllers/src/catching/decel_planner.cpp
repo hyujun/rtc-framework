@@ -30,10 +30,27 @@ namespace {
   return static_cast<std::size_t>(i);
 }
 
-// The first solve's reference reaches its target at this fraction of the
-// velocity box η_v·q̇_max (MD-62): the minimum-jerk peak 1.875·|d|/T is held
-// below it, so the QP has room to bend the reach toward the catch terms.
-constexpr double kRefSpeedFraction = 0.9;
+// The core's design values (MD-92) from `planner.decel_mpc.*`: the cost
+// scalars (the stop-path weight among them — both core kinds carry that term,
+// on their nodes from the catch on), the axis and trust-region limits, the
+// rest tolerance and the solver's tolerances. `jerk_weight` is already in
+// model order (empty = the core's all-ones); the preconditioner and the KKT
+// backend are not design values and keep the core's own setting.
+void ApplyCoreDesign(DecelMpcParams& mp, const DecelPlannerParams& p,
+                     const Eigen::VectorXd& jerk_weight_model) {
+  mp.jerk_weight = jerk_weight_model;
+  mp.u_scale = p.u_scale;
+  mp.w_delta = p.w_delta;
+  mp.rho_tau = p.rho_tau;
+  mp.w_perp = p.w_perp;
+  mp.axis_theta_max = p.axis_theta_max;
+  mp.delta_tr = p.delta_tr;
+  mp.reference_rest_tol = p.reference_rest_tol;
+  mp.solver.max_iter = p.solver_max_iter;
+  mp.solver.max_iter_in = p.solver_max_iter_in;
+  mp.solver.eps_abs = p.solver_eps_abs;
+  mp.solver.eps_rel = p.solver_eps_rel;
+}
 
 }  // namespace
 
@@ -159,6 +176,7 @@ DecelBallTarget MakeDecelBallTarget(const TrajectorySnapshot& traj, const Covari
 bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerConstants& consts,
                              const DecelPlannerParams& params, ClockFn clock, std::string* error) {
   configured_ = false;
+  perp_on_ = false;
   cores_.clear();
   inputs_.clear();
   results_.clear();
@@ -207,6 +225,19 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
     seen[U(d)] = true;
   }
   const int n = model.nv;
+  // `cost.jerk_weight` is one entry per ARM joint in device order; the core
+  // wants model order. Empty keeps the core's all-ones.
+  jerk_weight_model_.resize(0);
+  if (!params.jerk_weight.empty()) {
+    if (params.jerk_weight.size() != static_cast<std::size_t>(n)) {
+      return fail("decel_mpc.cost.jerk_weight has " + std::to_string(params.jerk_weight.size()) +
+                  " entries, the arm has " + std::to_string(n) + " joints");
+    }
+    jerk_weight_model_.resize(n);
+    for (int m = 0; m < n; ++m) {
+      jerk_weight_model_[m] = params.jerk_weight[U(model.device_of_model[U(m)])];
+    }
+  }
   DecelMpcLimits limits;
   limits.q_min.resize(n);
   limits.q_max.resize(n);
@@ -227,6 +258,7 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   results_.resize(U(params.k_max + 1));
   for (int k = 0; k <= params.k_max; ++k) {
     DecelMpcParams mp;
+    ApplyCoreDesign(mp, params, jerk_weight_model_);
     mp.n_nodes = params.n_nodes - k;
     mp.dt = static_cast<double>(params.DtNs()) * 1e-9;
     if (!DecelBlocksFor(params, k, mp.block_sizes, mp.n_blocks)) {
@@ -254,6 +286,7 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
     stop_params_.push_back(mp);
   }
   params_ = params;
+  perp_on_ = params.w_perp > 0.0;
   clock_ = clock;
   nv_ = n;
   device_of_model_ = model.device_of_model;
@@ -285,7 +318,6 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
   replan_ns_ = SecondsToNs(params.budget_replan_s);
   std::array<int, kMaxDecelNodes> stop_blocks{};
   int stop_n_blocks = 0;
-  const DecelMpcParams core_defaults{};
   if (!std::isfinite(consts_.v_eps) || !(consts_.v_eps > 0.0) || dt_pre_ns_ <= 0 ||
       dt_pre_ns_ > kMaxDecelDtPreNs || first_ns_ <= 0 || replan_ns_ <= 0 ||
       params.n_pre_max > kMaxDecelNodes - params.n_nodes ||
@@ -295,21 +327,22 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
     return false;
   }
   // The trust region must hold the position margin: with m_q ≥ δ a target at
-  // a limit would put the trust row's lower bound above its upper one.
-  if (!(params.m_q < core_defaults.delta_tr)) {
-    why = "decel_mpc.m_q must be below the core's trust region (" +
-          std::to_string(core_defaults.delta_tr) + " rad) with a pre-catch grid";
+  // a limit would put the trust row's lower bound above its upper one. δ is
+  // the profile's `linearization.delta_tr`, the value the cores are built with.
+  if (!(params.m_q < params.delta_tr)) {
+    why = "decel_mpc.m_q must be below the trust region, decel_mpc.linearization.delta_tr (" +
+          std::to_string(params.delta_tr) + " rad) with a pre-catch grid";
     return false;
   }
   for (int m = 0; m < n; ++m) {
-    const double cap = kRefSpeedFraction * consts_.eta_v * qd_max_[U(m)];
+    const double cap = params.ref_speed_fraction * consts_.eta_v * qd_max_[U(m)];
     if (!std::isfinite(cap) || !(cap > 0.0)) {
-      why =
-          "0.9·eta_v·qdot_max is not a positive finite number for model joint " + std::to_string(m);
+      why = "ref_speed_fraction·eta_v·qdot_max is not a positive finite number for model joint " +
+            std::to_string(m);
       return false;
     }
   }
-  rest_tol_ref_ = core_defaults.reference_rest_tol;
+  rest_tol_ref_ = params.reference_rest_tol;
   DecelMpcLimits limits;
   limits.q_min.resize(n);
   limits.q_max.resize(n);
@@ -329,6 +362,7 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
   catch_params_.reserve(count);
   for (int j = 1; j <= params.n_pre_max; ++j) {
     DecelMpcParams mp;
+    ApplyCoreDesign(mp, params, jerk_weight_model_);
     mp.n_pre = j;
     mp.dt_pre = static_cast<double>(dt_pre_ns_) * 1e-9;
     mp.n_nodes = params.n_nodes;
@@ -345,6 +379,10 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
     mp.w_axis = params.w_axis;
     mp.w_v_par = params.w_v_par;
     mp.w_v_perp = params.w_v_perp;
+    // The relative-velocity slack row lives at the catch node, so only the
+    // catch cores carry it (0 = off: the QP keeps its dimensions).
+    mp.rho_v = params.rho_v;
+    mp.v_rel_allow = params.v_rel_allow;
     // The stop cores' box (MD-64): the stop core that takes over at t_c
     // refuses an initial state outside its own.
     mp.eta_v = consts_.eta_v;
@@ -378,7 +416,9 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
   // ProxQP solve of a core is its slowest. The stop cores solve a stop from
   // rest (no reference: pre-solve + solve); the catch cores a catch where
   // the ball already is — at the catch frame, along its +z — so every term
-  // runs.
+  // runs. With the stop-path term on (w_⊥ > 0) both kinds solve on that
+  // synthetic ball's line — through the catch frame, along its travel — so no
+  // warm-up runs on the input's default line.
   const int n = nv_;
   warmup_max_ns_ = 0;
   warmup_total_ns_ = 0;
@@ -397,6 +437,13 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
   for (int m = 0; m < n; ++m) {
     q_mid[m] = 0.5 * (model.q_min[U(m)] + model.q_max[U(m)]);
   }
+  pinocchio::Data data(*model.arm);
+  pinocchio::forwardKinematics(*model.arm, data, q_mid);
+  pinocchio::updateFramePlacement(*model.arm, data, model.catch_frame);
+  const Eigen::Vector3d p = data.oMf[model.catch_frame].translation();
+  const Eigen::Vector3d z = data.oMf[model.catch_frame].rotation().col(2);
+  const Eigen::Vector3d v_ball = -5.0 * z;
+  const Eigen::Vector3d d_ball = v_ball.normalized();
   for (std::size_t k = 0; k < cores_.size(); ++k) {
     DecelMpcInput& in = inputs_[k];
     in.q0 = q_mid;
@@ -404,6 +451,10 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
     in.qdd0.setZero();
     in.reference_valid = false;
     in.cold_start = true;
+    if (perp_on_) {
+      in.p_c = p;
+      in.d_hat = d_ball;
+    }
     if (!timed(*cores_[k], in, results_[k])) {
       why = "warm-up solve of stop core k = " + std::to_string(k) + ": " +
             DecelMpcReasonName(results_[k].reason);
@@ -411,11 +462,6 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
     }
     in.cold_start = false;
   }
-  pinocchio::Data data(*model.arm);
-  pinocchio::forwardKinematics(*model.arm, data, q_mid);
-  pinocchio::updateFramePlacement(*model.arm, data, model.catch_frame);
-  const Eigen::Vector3d p = data.oMf[model.catch_frame].translation();
-  const Eigen::Vector3d z = data.oMf[model.catch_frame].rotation().col(2);
   for (std::size_t j = 0; j < catch_cores_.size(); ++j) {
     DecelMpcInput& in = catch_inputs_[j];
     in.q0 = q_mid;
@@ -431,9 +477,13 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
     in.w_delta_scale = 0.0;
     in.p_b = p;
     in.a_d = z;
-    in.v_b = -5.0 * z;
+    in.v_b = v_ball;
     in.w_p = params_.w_const * Eigen::Matrix3d::Identity();
     in.gamma_ref = params_.gamma_ref;
+    if (perp_on_) {
+      in.p_c = in.p_b;
+      in.d_hat = d_ball;
+    }
     if (!timed(*catch_cores_[j], in, catch_results_[j])) {
       why = "warm-up solve of the catch core n_pre = " + std::to_string(j + 1) + ": " +
             DecelMpcReasonName(catch_results_[j].reason);
@@ -452,6 +502,7 @@ void DecelPlanner::ResetTrial() noexcept {
   reported_pending_seq_ = 0;
   reported_active_seq_ = 0;
   last_solve_valid_ = false;
+  ready_line_.valid = false;
 }
 
 bool DecelPlanner::CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
@@ -503,6 +554,26 @@ bool DecelPlanner::SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::Vecto
   in.w_delta_scale = first ? 0.0 : scale;
   rec.w_p_fallback = fallback;
   rec.w_delta_scale = in.w_delta_scale;
+  return true;
+}
+
+bool DecelPlanner::SetStopLine(DecelMpcInput& in, DecelRecord& rec) const noexcept {
+  // The ball as this solve takes it (SetCatchInputs wrote both, finite): the
+  // line through p̂_b along v̂_b. Finite components can still have a norm that
+  // overflows, and a ball at rest has no direction — neither is solved on a
+  // line that was not built.
+  const double speed = in.v_b.norm();
+  if (!in.p_b.allFinite() || !std::isfinite(speed)) {
+    rec.outcome = DecelOutcome::kInputNonFinite;
+    return false;
+  }
+  // Written as "usable", so a NaN v_eps is not.
+  if (!(speed > consts_.v_eps)) {
+    rec.outcome = DecelOutcome::kNoBall;
+    return false;
+  }
+  in.p_c = in.p_b;
+  in.d_hat = in.v_b / speed;
   return true;
 }
 
@@ -709,10 +780,20 @@ void DecelPlanner::NotePublished(const DecelPlanSnapshot& p) noexcept {
     }
     for (int i = victim; i + 1 < ring_n_; ++i) {
       ring_[U(i)] = ring_[U(i + 1)];
+      if (perp_on_) {
+        ring_line_[U(i)] = ring_line_[U(i + 1)];
+      }
     }
     --ring_n_;
   }
   ring_[U(ring_n_)] = p;
+  if (perp_on_) {
+    // The segment's stop-path line: the one the solve that produced it ran
+    // on, handed over once. A segment published without such a solve right
+    // before it has none, and a stop core is not solved from it.
+    ring_line_[U(ring_n_)] = ready_line_;
+    ready_line_.valid = false;
+  }
   ++ring_n_;
 }
 
@@ -736,6 +817,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
                              const DecelBallTarget& ball, DecelPlanSnapshot& out,
                              DecelRecord& rec) noexcept {
   rec = DecelRecord{};
+  ready_line_.valid = false;  // a line belongs to the solve that built it
   if (!configured_) {
     return false;
   }
@@ -810,7 +892,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
     const double clamped = std::clamp(target, q_lo_[U(m)], q_hi_[U(m)]);
     rec.ref_clamped = rec.ref_clamped || clamped != target;
     double step = clamped - q0;
-    const double allowed = kRefSpeedFraction * v_box_[U(m)] * t_span / 1.875;
+    const double allowed = params_.ref_speed_fraction * v_box_[U(m)] * t_span / 1.875;
     if (!(std::fabs(step) <= allowed)) {
       rec.ref_scaled = true;
       scale_min = std::min(scale_min, allowed / std::fabs(step));
@@ -851,6 +933,10 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
     rec.outcome = DecelOutcome::kInputNonFinite;
     return false;
   }
+  // The stop-path line: the plan's catch point along the ball's travel.
+  if (perp_on_ && !SetStopLine(in, rec)) {
+    return false;
+  }
   // No retry: a catch core cannot be solved without its reference.
   const bool ok = core.Solve(in, res);
   const std::int64_t end = clock_();
@@ -870,12 +956,16 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   // A new plan: the RT reports nothing of it yet.
   reported_pending_seq_ = 0;
   reported_active_seq_ = 0;
+  if (perp_on_) {
+    ready_line_ = StopLine{true, in.p_c, in.d_hat};
+  }
   return true;
 }
 
 bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
                           DecelPlanSnapshot& out, DecelRecord& rec) noexcept {
   rec = DecelRecord{};
+  ready_line_.valid = false;  // a line belongs to the solve that built it
   if (!configured_) {
     return false;
   }
@@ -942,6 +1032,16 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     rec.outcome = DecelOutcome::kNoBall;
     return false;
   }
+  // A stop core's stop-path line is its SOURCE's — the line of the segment
+  // the RT follows, which x₀ and the reference come from too — whatever
+  // `ball` holds on this wake and whatever was published since: the hand
+  // stops on the line it is on. A source without a line is not solved from —
+  // never on a default line.
+  const auto src_slot = static_cast<std::size_t>(src - ring_.data());
+  if (perp_on_ && !pre && !ring_line_[src_slot].valid) {
+    rec.outcome = DecelOutcome::kNoBall;
+    return false;
+  }
 
   const std::size_t slot = pre ? U(n_pre - 1) : U(k);
   DecelMpc& core = pre ? *catch_cores_[slot] : *cores_[slot];
@@ -1001,6 +1101,17 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     rec.outcome = DecelOutcome::kNoBall;
     return false;
   }
+  if (perp_on_) {
+    if (pre) {
+      // This replan's ball: the newer prediction moves the line with it.
+      if (!SetStopLine(in, rec)) {
+        return false;
+      }
+    } else {
+      in.p_c = ring_line_[src_slot].p_c;
+      in.d_hat = ring_line_[src_slot].d_hat;
+    }
+  }
   bool ok = core.Solve(in, res);
   if (!ok && !pre &&
       (res.reason == DecelMpcReason::kTrustRegionConflict ||
@@ -1009,6 +1120,7 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     // the source does not end at rest: its nodes cannot linearise this stop.
     // Re-solve from nothing. Not cold — the pre-solve's iterates are the
     // warm start the main QP wants.
+    // `in` keeps the stop-path line set above.
     in.reference_valid = false;
     in.cold_start = false;
     rec.cold_retry = true;
@@ -1028,6 +1140,11 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     rec.outcome = DecelOutcome::kSolveFailed;
     rec.core_reason = DecelMpcReason::kNone;
     return false;
+  }
+  if (perp_on_) {
+    // A catch-core segment carries the line it was solved on; a stop segment
+    // inherits its source's (the same one — `in` holds it either way).
+    ready_line_ = StopLine{true, in.p_c, in.d_hat};
   }
   return true;
 }

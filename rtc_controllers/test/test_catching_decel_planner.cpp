@@ -4,6 +4,7 @@
 // test_catching_approach_planner.cpp and test_catching_approach_cycle.cpp
 // (E1-F08); the stop-only planner E1-F03 shipped was removed with its tests
 // (MD-70).
+#include "rtc_controllers/catching/decel_mpc.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
@@ -24,6 +25,7 @@ using rtc::catching::AdmittedDecel;
 using rtc::catching::ChooseDecelSegment;
 using rtc::catching::DecelAdmissionContext;
 using rtc::catching::DecelBlocksFor;
+using rtc::catching::DecelMpcParams;
 using rtc::catching::DecelPlannerParams;
 using rtc::catching::DecelPlanSnapshot;
 using rtc::catching::DecelRefusal;
@@ -50,7 +52,6 @@ std::size_t Idx(int k, int j) {
 
 TEST(DecelParams, DefaultsAreTheShippedHorizon) {
   const DecelPlannerParams d = rtc::catching::PlannerParams{}.decel;
-  EXPECT_FALSE(d.enabled);
   EXPECT_EQ(d.n_nodes, 14);  // MD-24: 14 × 0.025 s = 0.35 s
   EXPECT_DOUBLE_EQ(d.dt_s, 0.025);
   EXPECT_EQ(d.DtNs(), 25'000'000);
@@ -67,14 +68,12 @@ TEST(DecelParams, DefaultsAreTheShippedHorizon) {
 
 TEST(DecelParams, ParsesTheSectionAndKeepsDefaultsWhenAbsent) {
   const auto absent = ParsePlannerParams(YAML::Load("planner: {enabled: true}"));
-  EXPECT_FALSE(absent.decel.enabled);
   EXPECT_EQ(absent.decel.n_nodes, 14);
-  const auto p = ParsePlannerParams(YAML::Load(
-      "planner: {decel_mpc: {enabled: true, horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, "
-      "2]}, replan: {k_max: 2}, eta_tau: 0.6, m_q: 0.04, publish: {slack_max: "
-      "0.2, slack_terminal_max: 0.05}}}"));
+  const auto p = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, "
+                 "2]}, replan: {k_max: 2}, eta_tau: 0.6, m_q: 0.04, publish: {slack_max: "
+                 "0.2, slack_terminal_max: 0.05}}}"));
   const DecelPlannerParams& d = p.decel;
-  EXPECT_TRUE(d.enabled);
   EXPECT_EQ(d.n_nodes, 7);
   EXPECT_EQ(d.DtNs(), 50'000'000);
   EXPECT_EQ(d.n_blocks, 4);
@@ -90,7 +89,6 @@ TEST(DecelParams, ParsesTheSectionAndKeepsDefaultsWhenAbsent) {
 TEST(DecelParams, RejectsAMalformedSection) {
   for (const char* bad : {
            "planner: {decel_mpc: 3}",
-           "planner: {decel_mpc: {enabled: maybe}}",
            "planner: {decel_mpc: {horizon: {n_nodes: 2, blocks: [1, 1]}}}",
            "planner: {decel_mpc: {horizon: {n_nodes: 25}}}",
            // Σ blocks ≠ n_nodes
@@ -171,8 +169,22 @@ TEST(DecelParams, ApproachKeysDefaultOff) {
   EXPECT_DOUBLE_EQ(d.w_const, 2500.0);
   EXPECT_DOUBLE_EQ(d.sigma_ref, 0.03);
   EXPECT_FALSE(d.horizon_explicit);
-  EXPECT_FALSE(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {enabled: true}}"))
-                   .decel.horizon_explicit);
+  EXPECT_FALSE(
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {m_q: 0.04}}")).decel.horizon_explicit);
+}
+
+TEST(DecelParams, ARemovedEnabledKeyIsIgnoredWhateverItsValue) {
+  // MPC MD-91 removed `planner.decel_mpc.enabled`; the parser rejects no
+  // unknown key (D18), so a config that still writes it reads as without it —
+  // a non-bool value included, which the key's own parser used to refuse.
+  for (const char* stale : {"true", "false", "maybe", "3"}) {
+    const std::string yaml = std::string("planner: {decel_mpc: {enabled: ") + stale +
+                             ", horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, 2]}}}";
+    rtc::catching::PlannerParams p;
+    ASSERT_NO_THROW(p = ParsePlannerParams(YAML::Load(yaml))) << stale;
+    EXPECT_EQ(p.decel.n_nodes, 7) << stale;
+    EXPECT_TRUE(p.decel.horizon_explicit) << stale;
+  }
 }
 
 TEST(DecelParams, ParsesTheApproachKeys) {
@@ -238,6 +250,333 @@ TEST(DecelParams, RejectsMalformedApproachKeys) {
     EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
         << bad;
   }
+}
+
+// MPC MD-91: the relative-velocity slack row's two keys, `catch.rho_v` and
+// `catch.v_rel_allow`. Off by default — the core then builds no slack variable
+// and no rows, so a profile without the keys solves what it solved before.
+TEST(DecelParams, VelocitySlackKeysDefaultOffAndParse) {
+  const DecelPlannerParams d = rtc::catching::PlannerParams{}.decel;
+  EXPECT_EQ(d.rho_v, 0.0);
+  EXPECT_EQ(d.v_rel_allow, 0.0);
+  const auto absent = ParsePlannerParams(YAML::Load("planner: {decel_mpc: {catch: {w_axis: 50}}}"));
+  EXPECT_EQ(absent.decel.rho_v, 0.0);
+  EXPECT_EQ(absent.decel.v_rel_allow, 0.0);
+
+  // Distinct values, so a swapped pair of reads would show.
+  const auto on = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 5.0, v_rel_allow: 0.25}}}"));
+  EXPECT_DOUBLE_EQ(on.decel.rho_v, 5.0);
+  EXPECT_DOUBLE_EQ(on.decel.v_rel_allow, 0.25);
+  // The written zeros (what the shipped profiles carry) are the off state.
+  const auto zeros = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 0.0, v_rel_allow: 0.0}}}"));
+  EXPECT_EQ(zeros.decel.rho_v, 0.0);
+  EXPECT_EQ(zeros.decel.v_rel_allow, 0.0);
+  // A bound without the slack is no contradiction: the bound is not read.
+  const auto bound_only =
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {catch: {v_rel_allow: 0.25}}}"));
+  EXPECT_EQ(bound_only.decel.rho_v, 0.0);
+  EXPECT_DOUBLE_EQ(bound_only.decel.v_rel_allow, 0.25);
+  // Bounded from below only (as the core's own check).
+  const auto large = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 1.0e+9, v_rel_allow: 50.0}}}"));
+  EXPECT_DOUBLE_EQ(large.decel.rho_v, 1e9);
+  EXPECT_DOUBLE_EQ(large.decel.v_rel_allow, 50.0);
+}
+
+// Each rejection names the key the profile has to fix, and for the reason
+// stated — a range row must not pass because the cross check threw (or the
+// reverse), so the other key and the other reason are asserted ABSENT.
+TEST(DecelParams, RejectsAVelocitySlackKeyByName) {
+  const std::string rho = "'planner.decel_mpc.catch.rho_v'";
+  const std::string allow = "'planner.decel_mpc.catch.v_rel_allow'";
+  const std::string range = "must be a finite number >= 0";
+  const std::string cross = "turns the slack on";
+  const auto message = [](const std::string& yaml) -> std::string {
+    try {
+      static_cast<void>(ParsePlannerParams(YAML::Load(yaml)));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const auto has = [](const std::string& text, const std::string& part) {
+    return text.find(part) != std::string::npos;
+  };
+
+  // rho_v out of range — with a valid bound beside it, so only the range can
+  // be what refuses it.
+  for (const char* bad : {"-0.1", ".nan", ".inf", "-.inf"}) {
+    const std::string why = message(std::string("planner: {decel_mpc: {catch: {rho_v: ") + bad +
+                                    ", v_rel_allow: 0.2}}}");
+    ASSERT_FALSE(why.empty()) << "rho_v: " << bad << " was accepted";
+    EXPECT_TRUE(has(why, rho)) << why;
+    EXPECT_TRUE(has(why, range)) << why;
+    EXPECT_FALSE(has(why, allow)) << why;
+  }
+  // v_rel_allow out of range — with the slack OFF, so the cross check cannot
+  // be what refuses it.
+  for (const char* bad : {"-0.01", ".nan", ".inf", "-.inf"}) {
+    const std::string why =
+        message(std::string("planner: {decel_mpc: {catch: {v_rel_allow: ") + bad + "}}}");
+    ASSERT_FALSE(why.empty()) << "v_rel_allow: " << bad << " was accepted";
+    EXPECT_TRUE(has(why, allow)) << why;
+    EXPECT_TRUE(has(why, range)) << why;
+    EXPECT_FALSE(has(why, rho)) << why;
+  }
+  // Not a number at all.
+  EXPECT_TRUE(
+      has(message("planner: {decel_mpc: {catch: {rho_v: soft}}}"), rho + " must be a number"));
+  EXPECT_TRUE(has(message("planner: {decel_mpc: {catch: {v_rel_allow: [0.2]}}}"),
+                  allow + " must be a number"));
+  // The cross constraint: the slack on with no bound to be slack against —
+  // the bound absent, and written as 0. Both keys are named.
+  for (const char* bad : {"planner: {decel_mpc: {catch: {rho_v: 1.0}}}",
+                          "planner: {decel_mpc: {catch: {rho_v: 1.0, v_rel_allow: 0.0}}}"}) {
+    const std::string why = message(bad);
+    ASSERT_FALSE(why.empty()) << bad << " was accepted";
+    EXPECT_TRUE(has(why, rho)) << why;
+    EXPECT_TRUE(has(why, allow)) << why;
+    EXPECT_TRUE(has(why, cross)) << why;
+    EXPECT_FALSE(has(why, range)) << why;
+  }
+}
+
+// MPC MD-92: the core's own design values as keys. The planner's defaults ARE
+// the core's (DecelMpcParams) — a profile without the keys, and the shipped
+// profiles that write them, solve what the code solved before.
+TEST(DecelParams, TheDesignKeysDefaultToTheCoresOwnValues) {
+  const DecelMpcParams core{};
+  const DecelPlannerParams d = rtc::catching::PlannerParams{}.decel;
+  EXPECT_TRUE(d.jerk_weight.empty());  // empty = the core's all-ones
+  EXPECT_EQ(core.jerk_weight.size(), 0);
+  EXPECT_EQ(d.u_scale, core.u_scale);
+  EXPECT_EQ(d.w_delta, core.w_delta);
+  EXPECT_EQ(d.rho_tau, core.rho_tau);
+  EXPECT_EQ(d.axis_theta_max, core.axis_theta_max);
+  EXPECT_EQ(d.delta_tr, core.delta_tr);
+  EXPECT_EQ(d.reference_rest_tol, core.reference_rest_tol);
+  EXPECT_EQ(d.solver_max_iter, core.solver.max_iter);
+  EXPECT_EQ(d.solver_max_iter_in, core.solver.max_iter_in);
+  EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs);
+  EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel);
+  EXPECT_EQ(d.ref_speed_fraction, 0.9);  // the planner's own former constant (MD-62)
+  // An absent section changes nothing either.
+  const auto absent = ParsePlannerParams(YAML::Load("planner: {decel_mpc: {m_q: 0.05}}")).decel;
+  EXPECT_TRUE(absent.jerk_weight.empty());
+  EXPECT_EQ(absent.delta_tr, core.delta_tr);
+  EXPECT_EQ(absent.solver_max_iter, core.solver.max_iter);
+}
+
+// Twelve keys, twelve distinct values: a read wired to the wrong field, or to
+// the default, shows as a mismatch on its own line.
+TEST(DecelParams, TheDesignKeysParse) {
+  const auto d = ParsePlannerParams(YAML::Load(R"(
+planner:
+  decel_mpc:
+    cost: {jerk_weight: [1.0, 2.0, 3.0], u_scale: 500.0, w_delta: 2.5, rho_tau: 7.0}
+    catch: {axis_theta_max: 1.2}
+    linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, ref_speed_fraction: 0.8}
+    solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, eps_rel: 1.0e-5}
+)"))
+                     .decel;
+  ASSERT_EQ(d.jerk_weight.size(), 3U);
+  EXPECT_EQ(d.jerk_weight[0], 1.0);
+  EXPECT_EQ(d.jerk_weight[1], 2.0);
+  EXPECT_EQ(d.jerk_weight[2], 3.0);
+  EXPECT_EQ(d.u_scale, 500.0);
+  EXPECT_EQ(d.w_delta, 2.5);
+  EXPECT_EQ(d.rho_tau, 7.0);
+  EXPECT_EQ(d.axis_theta_max, 1.2);
+  EXPECT_EQ(d.delta_tr, 0.2);
+  EXPECT_EQ(d.reference_rest_tol, 2.0e-5);
+  EXPECT_EQ(d.ref_speed_fraction, 0.8);
+  EXPECT_EQ(d.solver_max_iter, 300);
+  EXPECT_EQ(d.solver_max_iter_in, 150);
+  EXPECT_EQ(d.solver_eps_abs, 2.0e-7);
+  EXPECT_EQ(d.solver_eps_rel, 1.0e-5);
+  // Valid edges: rho_tau 0 (torque rows off), w_delta 0, ref_speed_fraction 1.
+  const auto edge =
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {rho_tau: 0.0, w_delta: "
+                                    "0.0}, linearization: {ref_speed_fraction: 1.0}}}"))
+          .decel;
+  EXPECT_EQ(edge.rho_tau, 0.0);
+  EXPECT_EQ(edge.w_delta, 0.0);
+  EXPECT_EQ(edge.ref_speed_fraction, 1.0);
+}
+
+// Each rejection names the key the profile has to fix. The message is looked
+// up for that key's full path, so a refusal by ANOTHER key's check (or the
+// cross constraint) cannot stand in for the range under test.
+TEST(DecelParams, RejectsADesignKeyByName) {
+  const auto message = [](const std::string& body) -> std::string {
+    try {
+      static_cast<void>(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {" + body + "}}")));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+
+  struct Case {
+    const char* body;
+    const char* key;
+  };
+
+  const Case cases[] = {
+      {"cost: {jerk_weight: []}", "planner.decel_mpc.cost.jerk_weight'"},
+      {"cost: {jerk_weight: 1.0}", "planner.decel_mpc.cost.jerk_weight'"},
+      {"cost: {jerk_weight: [1.0, 0.0]}", "planner.decel_mpc.cost.jerk_weight[1]'"},
+      {"cost: {jerk_weight: [-1.0, 1.0]}", "planner.decel_mpc.cost.jerk_weight[0]'"},
+      {"cost: {jerk_weight: [1.0, .nan]}", "planner.decel_mpc.cost.jerk_weight[1]'"},
+      {"cost: {jerk_weight: [1.0, x]}", "planner.decel_mpc.cost.jerk_weight[1]'"},
+      {"cost: {u_scale: 0.0}", "planner.decel_mpc.cost.u_scale'"},
+      {"cost: {u_scale: -1.0}", "planner.decel_mpc.cost.u_scale'"},
+      {"cost: {u_scale: .inf}", "planner.decel_mpc.cost.u_scale'"},
+      {"cost: {w_delta: -0.1}", "planner.decel_mpc.cost.w_delta'"},
+      {"cost: {w_delta: .nan}", "planner.decel_mpc.cost.w_delta'"},
+      {"cost: {rho_tau: -1.0}", "planner.decel_mpc.cost.rho_tau'"},
+      {"cost: {rho_tau: .inf}", "planner.decel_mpc.cost.rho_tau'"},
+      {"catch: {axis_theta_max: 0.0}", "planner.decel_mpc.catch.axis_theta_max'"},
+      {"catch: {axis_theta_max: 3.1415926535897932}", "planner.decel_mpc.catch.axis_theta_max'"},
+      {"catch: {axis_theta_max: 4.0}", "planner.decel_mpc.catch.axis_theta_max'"},
+      {"catch: {axis_theta_max: .nan}", "planner.decel_mpc.catch.axis_theta_max'"},
+      {"linearization: {delta_tr: 0.0}", "planner.decel_mpc.linearization.delta_tr'"},
+      {"linearization: {delta_tr: .inf}", "planner.decel_mpc.linearization.delta_tr'"},
+      {"linearization: {delta_tr: -0.1}", "planner.decel_mpc.linearization.delta_tr'"},
+      {"linearization: {reference_rest_tol: 0.0}",
+       "planner.decel_mpc.linearization.reference_rest_tol'"},
+      {"linearization: {reference_rest_tol: .nan}",
+       "planner.decel_mpc.linearization.reference_rest_tol'"},
+      {"linearization: {ref_speed_fraction: 0.0}",
+       "planner.decel_mpc.linearization.ref_speed_fraction'"},
+      {"linearization: {ref_speed_fraction: 1.01}",
+       "planner.decel_mpc.linearization.ref_speed_fraction'"},
+      {"linearization: {ref_speed_fraction: .nan}",
+       "planner.decel_mpc.linearization.ref_speed_fraction'"},
+      {"solver: {max_iter: 0}", "planner.decel_mpc.solver.max_iter'"},
+      {"solver: {max_iter: 1.5}", "planner.decel_mpc.solver.max_iter'"},
+      {"solver: {max_iter_in: 0}", "planner.decel_mpc.solver.max_iter_in'"},
+      {"solver: {max_iter_in: -3}", "planner.decel_mpc.solver.max_iter_in'"},
+      {"solver: {eps_abs: 0.0}", "planner.decel_mpc.solver.eps_abs'"},
+      {"solver: {eps_abs: -1.0e-6}", "planner.decel_mpc.solver.eps_abs'"},
+      {"solver: {eps_rel: -1.0e-6}", "planner.decel_mpc.solver.eps_rel'"},
+      {"solver: {eps_rel: .inf}", "planner.decel_mpc.solver.eps_rel'"},
+  };
+  for (const Case& c : cases) {
+    const std::string why = message(c.body);
+    ASSERT_FALSE(why.empty()) << c.body << " was accepted";
+    EXPECT_NE(why.find(c.key), std::string::npos) << c.body << " -> " << why;
+  }
+  // The cross constraint: the rest tolerance at or below eps_abs would refuse
+  // every warm solve. Both keys are named; neither range text is.
+  for (const char* body :
+       {"solver: {eps_abs: 1.0e-4}",  // against the default 1e-4 tolerance
+        "linearization: {reference_rest_tol: 1.0e-6}",
+        "linearization: {reference_rest_tol: 5.0e-7}, solver: {eps_abs: 5.0e-7}"}) {
+    const std::string why = message(body);
+    ASSERT_FALSE(why.empty()) << body << " was accepted";
+    EXPECT_NE(why.find("planner.decel_mpc.linearization.reference_rest_tol'"), std::string::npos)
+        << why;
+    EXPECT_NE(why.find("planner.decel_mpc.solver.eps_abs'"), std::string::npos) << why;
+    EXPECT_NE(why.find("must exceed"), std::string::npos) << why;
+  }
+  // Above kDecelRestTol Judge would take a node N the RT's validator refuses
+  // (ValidateDecelNodes), so the tolerance is bounded above, by key name.
+  for (const char* body : {"linearization: {reference_rest_tol: 2.0e-3}",
+                           "linearization: {reference_rest_tol: 1.0}"}) {
+    const std::string why = message(body);
+    ASSERT_FALSE(why.empty()) << body << " was accepted";
+    EXPECT_NE(why.find("planner.decel_mpc.linearization.reference_rest_tol'"), std::string::npos)
+        << why;
+    EXPECT_NE(why.find("kDecelRestTol"), std::string::npos) << why;
+  }
+  EXPECT_TRUE(message("linearization: {reference_rest_tol: 1.0e-3}").empty());
+  // The cross-check message echoes tiny tolerances as written, not as 0.000000.
+  {
+    const std::string why =
+        message("linearization: {reference_rest_tol: 5.0e-7}, solver: {eps_abs: 1.0e-6}");
+    EXPECT_NE(why.find("5.0e-7"), std::string::npos) << why;
+    EXPECT_NE(why.find("1.0e-6"), std::string::npos) << why;
+    EXPECT_EQ(why.find("0.000000"), std::string::npos) << why;
+  }
+  // A default (absent key) is printed in scientific notation, not rounded to 0.
+  {
+    const std::string why = message("solver: {eps_abs: 1.0e-4}");
+    EXPECT_NE(why.find("e-04"), std::string::npos) << why;
+    EXPECT_EQ(why.find("0.000100"), std::string::npos) << why;
+  }
+  // A tolerance just above eps_abs is fine.
+  EXPECT_TRUE(
+      message("linearization: {reference_rest_tol: 1.0e-6}, solver: {eps_abs: 5.0e-7}").empty());
+}
+
+// #698: `cost.w_perp`, the stop-path weight. Off by default — the core's own
+// default — so a profile without the key, and the shipped ones that write
+// 0.0, solve what they solved before the key existed.
+TEST(DecelParams, TheStopPathWeightDefaultsOffAndParses) {
+  const DecelMpcParams core{};
+  const DecelPlannerParams d = rtc::catching::PlannerParams{}.decel;
+  EXPECT_EQ(d.w_perp, 0.0);
+  EXPECT_EQ(d.w_perp, core.w_perp);
+  // Absent: the section, and the key inside a present section.
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {m_q: 0.05}}")).decel.w_perp, 0.0);
+  EXPECT_EQ(
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_delta: 2.5}}}")).decel.w_perp,
+      0.0);
+  // The written zero (what the shipped profiles carry) is the off state.
+  EXPECT_EQ(
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_perp: 0.0}}}")).decel.w_perp,
+      0.0);
+  // Beside its neighbours, each with a value of its own: a read wired to
+  // another field shows.
+  const auto on = ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {u_scale: 500.0, "
+                                                "w_delta: 2.5, rho_tau: 7.0, w_perp: 40.0}}}"))
+                      .decel;
+  EXPECT_EQ(on.w_perp, 40.0);
+  EXPECT_EQ(on.u_scale, 500.0);
+  EXPECT_EQ(on.w_delta, 2.5);
+  EXPECT_EQ(on.rho_tau, 7.0);
+  // Both ends of [0, kDecelStopPathWeightMax] are values a profile may write.
+  EXPECT_EQ(rtc::catching::kDecelStopPathWeightMax, 1e4);
+  EXPECT_EQ(
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_perp: 1.0e+4}}}")).decel.w_perp,
+      rtc::catching::kDecelStopPathWeightMax);
+}
+
+// Below 0, not finite, and ABOVE the bound: the weight raises the QP's
+// condition number and nothing downstream refuses a value too large (the
+// configure warm-up's line runs through the catch frame, so its residual is
+// zero at any weight) — the parser is the only gate, and it names the key.
+TEST(DecelParams, RejectsTheStopPathWeightByName) {
+  const std::string key = "'planner.decel_mpc.cost.w_perp'";
+  const auto message = [](const std::string& body) -> std::string {
+    try {
+      static_cast<void>(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {" + body + "}}")));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+  const auto has = [](const std::string& text, const std::string& part) {
+    return text.find(part) != std::string::npos;
+  };
+  // Valid neighbours beside it, so only this key's range can be what refuses.
+  for (const char* bad :
+       {"-0.1", "-1.0e-12", ".nan", ".inf", "-.inf", "10000.001", "1.0e+5", "1.0e+9"}) {
+    const std::string why =
+        message(std::string("cost: {w_delta: 1.0, rho_tau: 10.0, w_perp: ") + bad + "}");
+    ASSERT_FALSE(why.empty()) << "w_perp: " << bad << " was accepted";
+    EXPECT_TRUE(has(why, key)) << why;
+    EXPECT_TRUE(has(why, "must be a finite number in [0, 1e4]")) << why;
+    EXPECT_TRUE(has(why, "kDecelStopPathWeightMax")) << why;
+    EXPECT_FALSE(has(why, "w_delta")) << why;
+    EXPECT_FALSE(has(why, "rho_tau")) << why;
+  }
+  // Not a number at all.
+  EXPECT_TRUE(has(message("cost: {w_perp: strong}"), key + " must be a number"));
+  EXPECT_TRUE(has(message("cost: {w_perp: [1.0]}"), key + " must be a number"));
 }
 
 // ── 2. RT-side admission and the switch rule ────────────────────────────────

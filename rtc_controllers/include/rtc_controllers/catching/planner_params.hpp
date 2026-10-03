@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace rtc::catching {
 
@@ -45,19 +46,39 @@ inline constexpr int kPlannerMaxIkCapacity = 40;
 inline constexpr std::size_t kPlannerMaxGammaGrid = 16;
 inline constexpr std::size_t kPlannerMaxWindowGrid = 8;
 
+/// Upper bound of `planner.switch.samples`. `SwitchStep` evaluates the followed
+/// ramp once per sample on the planner thread for every switch check, so the
+/// count is a cost on the cycle budget, not only a resolution (default 9).
+inline constexpr int kSwitchSamplesMax = 64;
+
+/// Upper bound of `planner.decel_mpc.cost.w_perp` [1/m²]: the largest
+/// stop-path weight the cores are tested to solve with (a stop core alone in
+/// test_catching_decel_mpc.cpp, the planner's catch and stop cores on both
+/// test arms in test_catching_approach_planner.cpp). The weight raises the
+/// QP's condition number with nothing else to bound it — the configure
+/// warm-up cannot notice a value too large, its line runs through the catch
+/// frame — so the parser refuses anything above.
+inline constexpr double kDecelStopPathWeightMax = 1e4;
+
 /// Capacity of the decel planner's replan window: instances k = 0..k_max, one
 /// DecelMpc each (MD-31). A capacity, not a default (the default k_max is 4).
 inline constexpr int kMaxDecelReplans = 8;
 
 /// `planner.decel_mpc.*` (MPC plan E1-F03 · E1-F08, MD-24 · MD-31 · MD-33 ·
-/// MD-54 – MD-64). The decel MPC's settings the planner owns; the core's own tuning (jerk
-/// weight, trust region, slack penalty, solver) stays at DecelMpcParams'
-/// defaults, and η_v is `planner.gamma.eta_v` (no second key for one margin).
+/// MD-54 – MD-64, MD-91). The decel MPC's settings the planner owns. Every
+/// design field of the core's DecelMpcParams comes from YAML — the grid
+/// (`horizon.*`, `approach.n_pre_max` / `dt_pre_s`), `eta_tau`, `m_q`, the
+/// catch weights and the relative-velocity slack (`catch.*`), the cost scalars
+/// (`cost.*`), the trust region and the rest tolerance (`linearization.*`) and
+/// the solver tolerances (`solver.*`); the shipped values are the core's own
+/// defaults. η_v is `planner.gamma.eta_v` (no second key for one margin).
+/// What stays in code is not a design value: the solver's preconditioner and
+/// KKT backend (the RT no-allocation and infeasibility verdict rely on them),
+/// the test-only `reference_assembly`, and the capacities.
 struct DecelPlannerParams {
-  /// `enabled` — solve the segments the RT follows from APPROACH to the end
-  /// of the stop. Needs `planner.enabled` (the binding parks the pair
-  /// otherwise) and a pre-catch grid (`approach.n_pre_max` ≥ 1).
-  bool enabled{false};
+  // There is no `enabled`: the planner solves these segments exactly when
+  // `supervisor.decel.mode` is mpc. That needs `planner.enabled` (the binding
+  // parks the pair otherwise) and a pre-catch grid (`approach.n_pre_max` ≥ 1).
   /// `horizon.n_nodes` N_s and `horizon.dt_s` Δ_s: N_s·Δ_s IS the stopping
   /// time (MD-21). The default 14 × 0.025 = 0.35 s is E1-F03's (MD-24); the
   /// shipped profiles set MD-54's 7 × 0.05 with the pre-catch grid below.
@@ -122,6 +143,59 @@ struct DecelPlannerParams {
   double w_max{1e4};
   double w_const{2500.0};
   double sigma_ref{0.03};
+  /// `catch.rho_v` / `catch.v_rel_allow` [m/s] — the relative-velocity slack
+  /// row at the catch node: |v̂_b − v_C| ≤ v_rel_allow·(1 + s_v) per axis,
+  /// penalised by rho_v·s_v. rho_v 0 (the default) builds no slack variable
+  /// and no rows; rho_v > 0 needs v_rel_allow > 0 (the parser refuses the pair
+  /// otherwise). s_v is RECORDED (DecelRecord::slack_v), never a publish
+  /// gate: no threshold is defined for it, and with γ_ref < 1 the cost's own
+  /// optimum sits off the rows, so s_v > 0 is then structural.
+  double rho_v{0.0};
+  double v_rel_allow{0.0};
+
+  // ── The core's own design values (MD-92) ───────────────────────────────────
+  // Each default equals DecelMpcParams' (a test pins it), so a profile without
+  // the keys solves what it always did.
+  /// `cost.jerk_weight` — R_j per joint in ARM (device) order, each > 0; empty
+  /// = all 1 (the core's default). A non-empty list must have one entry per
+  /// arm joint — the planner's configure checks that (the parser has no DOF).
+  std::vector<double> jerk_weight{};
+  /// `cost.u_scale` [rad/s³]: the jerk cost is (u/u_scale)², so it re-weights
+  /// jerk against w_Δ and ρ_τ — not a pure preconditioner.
+  double u_scale{1e3};
+  /// `cost.w_delta` [1/rad²] — pull toward the reference.
+  double w_delta{1.0};
+  /// `cost.rho_tau` — torque slack penalty; 0 = the torque rows are off, which
+  /// makes the publish judgement's slack condition vacuous.
+  double rho_tau{10.0};
+  /// `cost.w_perp` [1/m²], in [0, kDecelStopPathWeightMax] — the stop-path
+  /// term: on the nodes from the catch on, the catch frame's distance from a
+  /// line is penalised; 0 (the default) = off, and no line is then built or
+  /// required. The line is the BALL's (user decision 2026-10-03, #698):
+  /// through its predicted catch position along its direction of travel at
+  /// t_c, as the catch-core solve takes them. A stop-core replan keeps the
+  /// line of the segment the RT follows (its source). A solve whose line
+  /// cannot be built is withheld (DecelPlanner, decel_planner.hpp), never run
+  /// on a default line.
+  double w_perp{0.0};
+  /// `catch.axis_theta_max` [rad], in (0, π) — the largest axis error of the
+  /// reference the approach-axis term is linearised at.
+  double axis_theta_max{1.5707963267948966};
+  /// `linearization.delta_tr` [rad] — trust-region half-width, finite > 0 (the
+  /// core also takes +inf; a profile does not). `m_q` must stay below it.
+  double delta_tr{0.1};
+  /// `linearization.reference_rest_tol` — |q̇̄_N|, |q̈̄_N| bound of a supplied
+  /// reference; above `solver.eps_abs`.
+  double reference_rest_tol{1e-4};
+  /// `linearization.ref_speed_fraction` ∈ (0, 1] — the first solve's reference
+  /// reaches its target at this fraction of the velocity box η_v·q̇_max (MD-62).
+  double ref_speed_fraction{0.9};
+  /// `solver.max_iter` · `max_iter_in` (≥ 1) · `eps_abs` (> 0) · `eps_rel`
+  /// (≥ 0): the QP's tolerances. Preconditioner and backend stay in code.
+  int solver_max_iter{200};
+  int solver_max_iter_in{100};
+  double solver_eps_abs{1e-6};
+  double solver_eps_rel{0.0};
   /// Whether the profile set `horizon` itself: the code default above is
   /// MD-24's horizon, not MD-54's, and the configure warns when the decel
   /// planner runs on it.
@@ -213,6 +287,10 @@ struct PlannerParams {
   double kappa_sigma{0.3};
   /// `planner.gamma.margin` [m/s] (§4.5).
   double gamma_margin{0.1};
+  /// `planner.gamma.unit_speed_damping` — λ of the DLS unit-speed solve behind
+  /// v_dir,max (§4.5), in (0, 1]. The offline map reads the same key
+  /// (catch_gate_map) so the two cannot differ.
+  double unit_speed_damping{1e-3};
   /// The rollout (§4.8, S6-C): `planner.gamma.grid` (γ_f candidates),
   /// `window_grid` [s] (T_w candidates), `eta_a`, `eps_term` [m], and the
   /// screening step `planner.rollout.dt_coarse` [s] (invented key: §4.8 left
@@ -237,6 +315,9 @@ struct PlannerParams {
   /// distance limits `e_jump_max` / `ed_jump_max`, which the parser refuses).
   double switch_delta_j{0.1};
   double switch_eta_jump{0.25};
+  /// `planner.switch.samples` in [2, kSwitchSamplesMax] — instants of the followed ramp the §4.7
+  /// step bound is taken the worst over (the code divides by samples − 1).
+  int switch_samples{9};
   /// `planner.freeze.T_freeze` [s] (decision G). NaN = unset.
   double t_freeze{std::numeric_limits<double>::quiet_NaN()};
   /// `planner.score.*` (§4.10 + decision D).
@@ -245,7 +326,7 @@ struct PlannerParams {
   CatchBox catch_box{};
 
   // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
-  /// `planner.decel_mpc.*`. Absent = the defaults with `enabled` false.
+  /// `planner.decel_mpc.*`. Absent = the defaults.
   DecelPlannerParams decel{};
 
   /// The candidate lead floor actually used: t_lead_min, or T_freeze.

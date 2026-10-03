@@ -44,10 +44,40 @@
 //    slack (MD-33), the catch-node position error (catch cores), the velocity
 //    extrema between nodes (≤ q̇_max), node N at rest to the core's reference
 //    tolerance (a published segment is the next solve's reference), and the
-//    packed payload passing ValidateDecelNodes.
+//    packed payload passing ValidateDecelNodes. The relative-velocity slack
+//    s_v (`catch.rho_v` > 0) is NOT among them: it is recorded
+//    (DecelRecord::slack_v) and never judged — no threshold is defined for
+//    it, and with γ_ref < 1 it is above 0 by construction.
 //
 // There is no stop-only planner (MD-70): a plan is published only with a
 // first segment that starts before t_c, so Configure refuses n_pre_max < 1.
+//
+// ── The stop-path line (`cost.w_perp` > 0; #698) ──────────────────────────────
+// With w_⊥ > 0 the cores penalise, on the nodes from the catch on, the catch
+// frame's distance from a line (DecelMpcInput::p_c, d_hat). The planner fills
+// that line on every solve; none runs on the input's default (origin, x).
+//  • The line is the BALL's: through its predicted position at t_c along its
+//    direction of travel there, d̂ = v̂_b/‖v̂_b‖ — the very vectors the solve
+//    hands the core as p_b and v_b (PlanFirst: the plan's p_c and v_c; a
+//    pre-catch Replan: the ball target's). It is the line the search reserves
+//    its stopping point on.
+//  • A stop core has no ball: it takes the line of its SOURCE — the segment
+//    the RT reports pending or following (SourceSeq), which x₀ and the
+//    reference come from too. Every published segment carries one beside the
+//    ring: a catch-core segment the line it was solved on, a stop segment its
+//    source's. So the hand stops on the line of what it follows — not on a
+//    newer prediction's that was published and the RT did not take, and not
+//    on a valid ball target the caller happens to pass. The retry without a
+//    reference solves on the same line.
+//  • The configure warm-ups solve on a synthetic line: through the catch
+//    frame at the mid pose along the synthetic ball's travel (that frame's
+//    −z), the same one for the stop cores and the catch cores.
+//  • Fail closed: a ball slower than `planner.ik.v_eps` has no direction
+//    (kNoBall), a speed that is not finite is kInputNonFinite, and a stop
+//    grid point whose source segment carries no line is kNoBall — each
+//    withheld BEFORE the solve.
+// With w_⊥ = 0 none of this runs: no line is built, kept or required, and no
+// solve is withheld for one.
 //
 // ── Contracts ─────────────────────────────────────────────────────────────────
 //  • Configure() is non-RT: it Inits the k_max + 1 stop cores and the
@@ -98,7 +128,7 @@ enum class DecelOutcome : std::uint8_t {
   kStaleState,
   kUpToDate,          ///< the published segment already starts at this t_eff or later
   kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s (MD-31)
-  kInputNonFinite,    ///< the predicted x₀ is not finite
+  kInputNonFinite,    ///< the predicted x₀ (w_⊥ > 0: or the ball's speed) is not finite
   kSolveFailed,       ///< the core refused or the QP failed (core_reason)
   kBudget,            ///< solved after budget_s
   kLate,              ///< t_eff passed while solving
@@ -111,9 +141,15 @@ enum class DecelOutcome : std::uint8_t {
   kNotAtRest,    ///< first solve: max |q̇_cmd| above approach.rest_tol
   kTooLate,      ///< first solve: not even one pre-catch interval fits before t_c
   kNotFollowed,  ///< replan: no segment of ours the RT reports pending or following
-  kNoBall,       ///< a pre-catch grid point without a usable ball prediction at t_c
+  kNoBall,       ///< no usable ball at t_c (pre-catch point); w_⊥ > 0: no stop-path line
   kCatchError,   ///< catch-node position error not finite or over catch_pos_err_max
   kSpeed,        ///< a between-node velocity extremum over q̇_max
+  // kNoBall is NOT pre-catch only. With `cost.w_perp` > 0 it is also what a
+  // solve reports when it has no stop-path line to run on (header note): the
+  // first solve or a pre-catch replan whose ball is slower than v_eps at t_c,
+  // and a STOP grid point — at or after the catch, where no ball is read at
+  // all — whose source segment carries no line. kInputNonFinite likewise
+  // covers a ball speed that is not finite.
 };
 
 [[nodiscard]] const char* DecelOutcomeName(DecelOutcome o) noexcept;
@@ -265,7 +301,8 @@ class DecelPlanner {
     }
   }
 
-  /// Drop the per-trial state (a trial reset, a new followed plan).
+  /// Drop the per-trial state (a trial reset, a new followed plan) — the
+  /// published segments and their stop-path lines with them.
   void ResetTrial() noexcept;
 
   [[nodiscard]] const DecelPlannerParams& Params() const noexcept { return params_; }
@@ -298,11 +335,15 @@ class DecelPlanner {
   ///        grid point the replan budget reaches, solved from the segment the
   ///        RT reports pending or following (SourceSeq).
   /// @param ball the ball at rt.plan_t_c_ns; read at pre-catch grid points
+  ///        only (a stop core's stop-path line is its source segment's)
   [[nodiscard]] bool Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
                             DecelPlanSnapshot& out, DecelRecord& rec) noexcept;
 
   /// The cycle published `p` (its decel_seq filled): a later replan may be
-  /// solved from it.
+  /// solved from it. With `cost.w_perp` > 0 the segment takes the stop-path
+  /// line of the solve that produced it — handed over once, by the PlanFirst
+  /// or Replan that returned true right before this call. A segment published
+  /// any other way carries no line, and no stop core is solved from it.
   void NotePublished(const DecelPlanSnapshot& p) noexcept;
 
   /// The track generation of the plan `rt` follows, from the segments
@@ -345,7 +386,22 @@ class DecelPlanner {
     return stop_params_[static_cast<std::size_t>(k)];
   }
 
+  /// The input the catch core for `n_pre` (1..n_pre_max) / the stop core k
+  /// (0..k_max) was last handed — after Configure, the warm-up's (tests and
+  /// diagnostics: what line a solve ran on).
+  [[nodiscard]] const DecelMpcInput& ApproachCoreInput(int n_pre) const noexcept {
+    return catch_inputs_[static_cast<std::size_t>(n_pre - 1)];
+  }
+
+  [[nodiscard]] const DecelMpcInput& StopCoreInput(int k) const noexcept {
+    return inputs_[static_cast<std::size_t>(k)];
+  }
+
   [[nodiscard]] const DecelPlannerConstants& Constants() const noexcept { return consts_; }
+
+  /// The rest tolerance Judge holds a published segment's node N to — the
+  /// profile's `linearization.reference_rest_tol` (tests and diagnostics).
+  [[nodiscard]] double ReferenceRestTol() const noexcept { return rest_tol_ref_; }
 
   /// The slowest and the summed configure-time warm-up solve [ns] (MD-64):
   /// each is a core's FIRST solve, the one a trial would otherwise pay for.
@@ -377,6 +433,10 @@ class DecelPlanner {
   [[nodiscard]] bool SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::Vector3d& v_b,
                                     const Eigen::Vector3d& a_d, const DecelBallTarget& ball,
                                     bool first, DecelMpcInput& in, DecelRecord& rec) const noexcept;
+  // The stop-path line of a catch-core solve (w_⊥ > 0 only), from the ball as
+  // `in` already carries it: p_c = in.p_b, d̂ = in.v_b/‖in.v_b‖. False — the
+  // outcome recorded, nothing written — when no direction can be built.
+  [[nodiscard]] bool SetStopLine(DecelMpcInput& in, DecelRecord& rec) const noexcept;
   [[nodiscard]] DecelOutcome Judge(const DecelMpcResult& r, bool ok, int n_pre, int n_total,
                                    bool catch_core, std::int64_t start, std::int64_t end,
                                    std::int64_t budget_ns, std::int64_t t_eff,
@@ -409,8 +469,9 @@ class DecelPlanner {
   std::int64_t dt_pre_ns_{0};
   std::int64_t first_ns_{0};
   std::int64_t replan_ns_{0};
-  std::int64_t h_ns_{0};       // control_dt
-  double rest_tol_ref_{1e-4};  // the core's reference_rest_tol
+  std::int64_t h_ns_{0};               // control_dt
+  double rest_tol_ref_{1e-4};          // the profile's linearization.reference_rest_tol
+  Eigen::VectorXd jerk_weight_model_;  // cost.jerk_weight in model order; empty = all 1
   std::int64_t warmup_max_ns_{0};
   std::int64_t warmup_total_ns_{0};
 
@@ -433,6 +494,24 @@ class DecelPlanner {
   std::int64_t last_solve_t_eff_{0};
   std::uint32_t last_solve_plan_id_{0};
   std::int64_t last_solve_t_c_{0};
+
+  // The stop-path line (`cost.w_perp` > 0; nothing below is read otherwise).
+  // Fixed-size, so remembering one allocates nothing.
+  struct StopLine {
+    bool valid{false};
+    Eigen::Vector3d p_c{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d d_hat{Eigen::Vector3d::UnitX()};
+  };
+
+  bool perp_on_{false};
+  // The line of each published segment, beside `ring_` (same index, moved
+  // with it on eviction): a catch-core segment's own, a stop segment's
+  // inherited from its source. A stop core solves on its source's entry.
+  std::array<StopLine, kRingSize> ring_line_{};
+  // The line of the solve that just came out publishable, for the
+  // NotePublished that follows it; dropped by the next solve and by
+  // NotePublished itself, so it can only ever go to that solve's segment.
+  StopLine ready_line_{};
 };
 
 }  // namespace rtc::catching

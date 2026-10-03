@@ -40,20 +40,20 @@ Every limit comes from the run, never from code (ARCH-1): joints from the
 diag's ``q_cmd_*`` columns, torque and velocity ratings from the profile's
 device roster (``_base.yaml``, with ``sim.yaml``'s overlay of the rating when it
 has one — the launch composes them the same way), ω / ``a_max`` / ``v_max`` /
-η_v / the D-16 box from the controller's read-only MIRROR in ``run_meta.json``
+η_v / the acceleration box from the controller's read-only MIRROR in ``run_meta.json``
 when the runner recorded them (S8-G), else from the profile plus the overlays
 named on the command line. The source is reported.
 
-``--write-envelope-box`` turns the pooled executed envelope into a
-``derived_accel_limits`` file (the format ``robot.arm.accel_limits_path``
-loads) with provenance, so a sim overlay can point the planner's reach time at
-what the arm actually did. It is marked ``provisional`` and sim-only.
+``--write-envelope-box`` turns the pooled executed envelope into a sim override
+snippet — ``robot.arm.qdd_max`` (the array) and ``robot.arm.qdd_provisional:
+true`` under ``<controller>.catching`` — that goes into a robot config's
+``sim.yaml`` (or is passed as ``--overlay``), so the planner's reach time is
+judged with what the arm actually did. It is provisional and sim-only.
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -64,7 +64,10 @@ import numpy as np
 import yaml
 
 from rtc_tools.analysis import catching_trials as ct
-from rtc_tools.analysis.catch_gate_map import load_accel_box
+from rtc_tools.utils.controller_config import (
+    deep_merge as _deep_merge,
+    overlay_catching as _overlay_catching,
+)
 
 TOOL = "catching_arm_budget"
 ACTIVE_MODES = (ct.MODE_APPROACH, ct.MODE_COMMITTED, ct.MODE_CLOSING)
@@ -146,7 +149,7 @@ class ArmBudget:
     a_max: float
     v_max: float
     eta_v: float
-    qdd_box: list[float]  # rad/s², the D-16 box the planner judged with ([] = none)
+    qdd_box: list[float]  # rad/s², the box the planner judged with ([] = none)
     t_arm_s: float
     dt: float
     time_margin_s: float = PLANNER_TIME_MARGIN_S  # planner.time.margin the reach gate used
@@ -178,53 +181,20 @@ def _device_limits(config_dir: Path, device: str) -> tuple[dict, dict]:
     return limits, source
 
 
-def _deep_merge(base: Mapping, over: Mapping) -> dict:
-    out = dict(base)
-    for k, v in over.items():
-        out[k] = (
-            _deep_merge(out[k], v)
-            if isinstance(v, Mapping) and isinstance(out.get(k), Mapping)
-            else v
-        )
-    return out
+def _box_from_keys(value: object) -> list[float]:
+    """``robot.arm.qdd_max`` of the composed controller tree, ``[]`` when it is no box.
 
-
-def _overlay_catching(path: Path, controller: str) -> dict:
-    """The ``catching`` subtree a node-level YAML writes for ``controller`` ({} if none).
-
-    Serves both a ``sim_overlays/*.yaml`` and the robot config's ``sim.yaml``:
-    the launch feeds both to the RT node, which lays ``<controller>.catching``
-    over the controller YAML (``ApplyControllerParamOverrides``).
+    What the controller does with a key that is absent, not a list of numbers or
+    not positive: it loads no box (the supervisor then parks). The length is
+    checked by the caller, which knows the arm.
     """
-    doc = ct._load_yaml(path)
-    for node in doc.values():
-        params = (node or {}).get("ros__parameters") or {}
-        tree = params.get(controller)
-        if isinstance(tree, Mapping) and "catching" in tree:
-            return dict(tree["catching"])
-    return {}
-
-
-def _box_from_file(
-    config_dir: Path, package: str, rel_path: str, group: str, n: int
-) -> list[float]:
-    """``derived_accel_limits.<group>.qdd_max`` from the profile's package-relative path.
-
-    [] when the file is absent or its box is not ``adopted`` — what the
-    controller does (``LoadDerivedAccelLimits`` refuses a non-adopted box).
-    """
-    share = Path(config_dir).parent.parent  # <share>/config/<robot> → <share>
-    candidates = [share / rel_path]
+    if not isinstance(value, Sequence) or isinstance(value, str):
+        return []
     try:
-        from ament_index_python.packages import get_package_share_directory  # noqa: PLC0415
-
-        candidates.append(Path(get_package_share_directory(package)) / rel_path)
-    except Exception:  # noqa: BLE001 — no ament on the analysis host
-        pass
-    for path in candidates:
-        if path.is_file():
-            return [float(v) for v in load_accel_box(path, group, n, require_adopted=True)]
-    return []
+        box = [float(v) for v in value]
+    except (TypeError, ValueError):
+        return []
+    return box if all(math.isfinite(v) and v > 0.0 for v in box) else []
 
 
 def resolve_budget(
@@ -293,16 +263,10 @@ def resolve_budget(
         qdd_box = [float(v) for v in mirror["robot.arm.qdd_max"]]
         source["qdd_box"] = "controller_mirror"
     else:
-        qdd_box = _box_from_file(
-            config_dir,
-            str(arm.get("accel_limits_package", "")),
-            str(arm.get("accel_limits_path", "")),
-            str(arm.get("accel_limits_group", "")),
-            n,
-        )
-        source["qdd_box"] = f"{arm.get('accel_limits_path')} ({files})"
+        qdd_box = _box_from_keys(arm.get("qdd_max"))
+        source["qdd_box"] = f"robot.arm.qdd_max ({files})"
     if qdd_box and len(qdd_box) != n:
-        raise SystemExit(f"the D-16 box has {len(qdd_box)} entries, the arm {n} joints")
+        raise SystemExit(f"robot.arm.qdd_max has {len(qdd_box)} entries, the arm {n} joints")
     return ArmBudget(
         list(joints),
         tau_max,
@@ -722,15 +686,16 @@ def analyse_unit(
     return {"summary": summary, "trials": rows}
 
 
-# ── Envelope box file ────────────────────────────────────────────────────────
-def envelope_box_document(
-    units: Sequence[dict], group: str, *, percentile: float = ENVELOPE_PERCENTILE
-) -> dict:
-    """A ``derived_accel_limits`` document whose box is the pooled executed envelope.
+# ── Envelope box override ────────────────────────────────────────────────────
+def envelope_box_override(units: Sequence[dict], controller: str) -> dict:
+    """A sim override tree whose box is the pooled executed envelope.
 
     Pooled = the per-joint MAX over units of the per-unit p95 (a unit that
-    moved harder sets the joint's line). ``provisional`` and meant for a sim
-    overlay's ``robot.arm.accel_limits_path``; the provenance names every unit.
+    moved harder sets the joint's line). The tree is what a robot config's
+    ``sim.yaml`` (or an ``--overlay`` file) carries: ``robot.arm.qdd_max`` — every
+    element a float, since a ROS parameter array has one type — and
+    ``robot.arm.qdd_provisional: true``, because an executed envelope is not
+    cleared for the real arm.
     """
     if not units:
         raise ValueError("no units")
@@ -745,36 +710,11 @@ def envelope_box_document(
     env = np.array([u["summary"]["clik"]["envelope_p95_rad_s2"] for u in units], dtype=float)
     box = [round(float(v), 4) for v in env.max(axis=0)]
     return {
-        "derived_accel_limits": {
-            group: {
-                "qdd_max": box,
-                "adopted": True,
-                "provisional": True,
-                "degenerate_reasons": [],
-                "provenance": {
-                    "tool": f"rtc_tools.analysis.{TOOL}",
-                    "date": _dt.date.today().isoformat(),
-                    "method": (
-                        f"executed joint-acceleration envelope: per unit the p{percentile:g} of the "
-                        f"{ACCEL_SMOOTH_TICKS}-tick box-averaged |q̈_cmd| over APPROACH/COMMITTED/CLOSING "
-                        "ticks; per joint the max over units. Not a torque derivation — what the CLIK's "
-                        "dynamic constraint actually commanded on this sim plant (S8-G, #537)."
-                    ),
-                    "joint_names": list(joints),
-                    "units": [
-                        {
-                            "arm": u["summary"]["arm"],
-                            "unit": Path(u["summary"]["unit"]).name,
-                            "trials": u["summary"]["trials_committed"],
-                            "envelope_p95": [
-                                round(float(v), 3)
-                                for v in u["summary"]["clik"]["envelope_p95_rad_s2"]
-                            ],
-                        }
-                        for u in units
-                    ],
-                    "sim_only": True,
-                },
+        "/**": {
+            "ros__parameters": {
+                controller: {
+                    "catching": {"robot": {"arm": {"qdd_max": box, "qdd_provisional": True}}}
+                }
             }
         }
     }
@@ -895,16 +835,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--write-envelope-box",
         type=Path,
-        help="write a derived_accel_limits YAML whose box is the pooled executed envelope",
-    )
-    ap.add_argument(
-        "--group",
-        help="device group name for --write-envelope-box (default: the profile's arm device)",
+        help="write a sim override YAML (robot.arm.qdd_max + qdd_provisional: true) whose box is "
+        "the pooled executed envelope",
     )
     args = ap.parse_args(argv)
 
     units = []
-    group = args.group
     for value in args.units:
         unit, session = parse_unit_arg(value)
         units.append(
@@ -919,22 +855,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed=args.seed,
             )
         )
-    if group is None:
-        group = ct.load_profile(args.config_dir, args.controller).arm_device
     write_outputs(units, args.out)
     print(report(units))
     if args.write_envelope_box:
-        doc = envelope_box_document(units, group)
+        controller = ct.load_profile(args.config_dir, args.controller).controller
+        doc = envelope_box_override(units, controller)
+        arm = doc["/**"]["ros__parameters"][controller]["catching"]["robot"]["arm"]
         args.write_envelope_box.parent.mkdir(parents=True, exist_ok=True)
         args.write_envelope_box.write_text(
             "# Generated by rtc_tools.analysis.catching_arm_budget — the EXECUTED joint-acceleration\n"
-            "# envelope of the units named in the provenance, not a torque derivation. Sim only,\n"
-            "# provisional: a sim overlay's robot.arm.accel_limits_path may point here (S8-G, #537).\n"
+            "# envelope of these units, not a torque derivation. Sim only (provisional): put it in a\n"
+            "# robot config's sim.yaml, or pass it as an overlay.\n"
+            + "".join(f"# unit: {Path(u['summary']['unit']).name}\n" for u in units)
             + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, width=100)
         )
-        print(
-            f"envelope box → {args.write_envelope_box}: {doc['derived_accel_limits'][group]['qdd_max']}"
-        )
+        print(f"envelope box → {args.write_envelope_box}: {arm['qdd_max']}")
     return 0
 
 

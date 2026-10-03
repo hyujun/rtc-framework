@@ -223,8 +223,12 @@ def load_arm_profile(config_dir: str) -> ArmProfile:
     that guessed would home the arm to the wrong pose and every trial would
     still look like a trial.
     """
-    with open(os.path.join(config_dir, "controllers", f"{CATCHING}.yaml")) as f:
-        ctrl = yaml.safe_load(f)[CATCHING]
+    # The file plus its `include:` fragments, as the CM hands it to the controller.
+    from rtc_tools.utils.controller_config import load_controller_config
+
+    ctrl = load_controller_config(
+        os.path.join(config_dir, "controllers", f"{CATCHING}.yaml"), config_key=CATCHING
+    )[CATCHING]
     topics = ctrl.get("topics") or {}
     if not topics:
         raise ValueError(f"{CATCHING}.yaml has no topics — cannot tell which device is the arm")

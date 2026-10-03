@@ -337,6 +337,28 @@ TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
   }
 }
 
+// `SwitchStep` evaluates a ramp per sample on the planner thread for every switch
+// check: the count is bounded above (kSwitchSamplesMax), refused by key name.
+TEST(PlannerParams, SwitchSamplesIsBoundedAboveByName) {
+  const auto message = [](int samples) -> std::string {
+    try {
+      static_cast<void>(ParsePlannerParams(
+          YAML::Load("planner: {switch: {samples: " + std::to_string(samples) + "}}")));
+    } catch (const std::invalid_argument& e) {
+      return e.what();
+    }
+    return {};
+  };
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {switch: {samples: " +
+                                          std::to_string(rtc::catching::kSwitchSamplesMax) + "}}"))
+                .switch_samples,
+            rtc::catching::kSwitchSamplesMax);
+  const std::string why = message(rtc::catching::kSwitchSamplesMax + 1);
+  ASSERT_FALSE(why.empty()) << "samples = kSwitchSamplesMax + 1 was accepted";
+  EXPECT_NE(why.find("'planner.switch.samples'"), std::string::npos) << why;
+  EXPECT_FALSE(message(1000000).empty());
+}
+
 // ── 4. The cycle ────────────────────────────────────────────────────────────
 
 std::int64_t FixedClock() noexcept {

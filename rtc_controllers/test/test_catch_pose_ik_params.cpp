@@ -89,7 +89,7 @@ void ExpectAllDefaults(const CatchPoseIkConfig& cfg, const char* what) {
   EXPECT_DOUBLE_EQ(o.k_null, kDefault.k_null);
   EXPECT_DOUBLE_EQ(o.k_manip, kDefault.k_manip);
   EXPECT_DOUBLE_EQ(o.manip_grad_tol, kDefault.manip_grad_tol);
-  EXPECT_DOUBLE_EQ(o.fd_step, kDefault.fd_step);  // no YAML key: struct default only
+  EXPECT_DOUBLE_EQ(o.fd_step, kDefault.fd_step);  // absent key: struct default
   EXPECT_DOUBLE_EQ(o.v_eps, kDefault.v_eps);
   EXPECT_EQ(o.definition, kDefault.definition);
   EXPECT_DOUBLE_EQ(o.manipulability_min, kDefault.manipulability_min);
@@ -247,16 +247,27 @@ TEST(CatchPoseIkParams, AllFieldsAtOnceAreNotCrossWired) {
   EXPECT_DOUBLE_EQ(cfg.options.manipulability_min, 0.77) << "the active definition's row";
   EXPECT_FALSE(cfg.manipulability_min_provisional);
 
-  // fd_step has no key in L3 §6 and must have stayed put.
+  // fd_step is not in the table above (it has its own test below): unset here, so it
+  // must have stayed put.
   EXPECT_DOUBLE_EQ(cfg.options.fd_step, kDefault.fd_step);
 }
 
-TEST(CatchPoseIkParams, FdStepHasNoYamlKey) {
-  // The one struct field this schema deliberately does not expose: naming it
-  // is a typo, not a tuning knob.
+// MPC MD-92 / #698: `fd_step` has a key now (a design value like the rest).
+// Absent keeps the struct default; a number moves the field and nothing else;
+// a step the finite difference would divide by zero (or by a negative or
+// non-finite number) is refused naming the key.
+TEST(CatchPoseIkParams, FdStepKeyParsesAndIsRangeChecked) {
+  EXPECT_DOUBLE_EQ(ParseCatchPoseIkParams(IkRoot()).options.fd_step, kDefault.fd_step);
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["fd_step"] = 1e-4;
-  ExpectRejectMentioning(root, "unknown key 'planner.ik.fd_step'");
+  root["planner"]["ik"]["fd_step"] = 2.5e-4;
+  const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
+  EXPECT_DOUBLE_EQ(cfg.options.fd_step, 2.5e-4);
+  EXPECT_DOUBLE_EQ(cfg.options.v_eps, kDefault.v_eps);  // its neighbour in the table
+  for (const char* bad : {"0.0", "-1.0e-5", ".nan", ".inf", "soft"}) {
+    YAML::Node r = IkRoot();
+    r["planner"]["ik"]["fd_step"] = bad;
+    ExpectRejectMentioning(r, "'planner.ik.fd_step'");
+  }
 }
 
 // ── alpha_max: the TBD convention ───────────────────────────────────────────

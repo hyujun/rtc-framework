@@ -32,8 +32,12 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "rtc_controllers/catching/catch_pose_ik.hpp"
+#include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
+#include "rtc_controllers/catching/decel_mpc.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/unit_speed.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "shipped_config_test_fixture.hpp"
 
@@ -1469,6 +1473,156 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   EXPECT_FALSE(result.successful);
 }
 
+TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
+  // MPC plan MD-90: the profile is a main file plus three `include:` fragments
+  // (catching/search_grid, planner_closed_form, planner_mpc). One mirrored key
+  // per fragment is moved in the composed tree — the place a CM override
+  // writes — and read back from the configured controller.
+  //
+  // The main file read on its own must NOT hold these keys: that is what makes
+  // each line below a statement about its fragment, and what turns the suite
+  // red when an entry is dropped from the include list.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+
+  struct Case {
+    const char* fragment;
+    std::vector<std::string> path;  // under `catching:`
+    const char* mirror;
+    double moved_by;
+  };
+
+  const std::vector<Case> cases = {
+      {"catching/search_grid.yaml", {"planner", "time", "margin"}, "planner.time.margin", 0.01},
+      {"catching/planner_closed_form.yaml", {"reference", "omega"}, "reference.omega", -1.0},
+      {"catching/planner_mpc.yaml",
+       {"planner", "decel_mpc", "catch", "gamma_ref"},
+       "planner.decel_mpc.catch.gamma_ref",
+       -0.1},
+      {"catching/planner_mpc.yaml",
+       {"supervisor", "decel", "switch_margin"},
+       "supervisor.decel.switch_margin",
+       -0.1},
+  };
+  const auto at = [](const YAML::Node& root, const std::vector<std::string>& path) {
+    YAML::Node cursor = YAML::Clone(root);  // a const walk: operator[] must not insert
+    for (const auto& key : path) {
+      const YAML::Node& view = cursor;
+      const YAML::Node next = view[key];
+      if (!next.IsDefined()) {
+        return YAML::Node(YAML::NodeType::Undefined);
+      }
+      cursor.reset(next);
+    }
+    return cursor;
+  };
+
+  const std::string main_path = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                                "/controllers/demo_catching_controller.yaml";
+  const YAML::Node main_only = YAML::LoadFile(main_path)["demo_catching_controller"]["catching"];
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+
+  std::vector<double> moved;
+  for (const Case& c : cases) {
+    ASSERT_FALSE(at(main_only, c.path).IsDefined())
+        << profile << ": " << c.mirror << " is in the main file, not in " << c.fragment;
+    const YAML::Node shipped = at(node["catching"], c.path);
+    ASSERT_TRUE(shipped.IsDefined()) << profile << ": " << c.mirror
+                                     << " is missing from the composed tree (" << c.fragment << ")";
+    moved.push_back(shipped.as<double>() + c.moved_by);
+    YAML::Node parent = node["catching"];
+    for (std::size_t i = 0; i + 1 < c.path.size(); ++i) {
+      parent.reset(parent[c.path[i]]);
+    }
+    parent[c.path.back()] = moved.back();
+  }
+
+  auto node_handle = NodeWithProfile("catching_shipped_fragments_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    EXPECT_DOUBLE_EQ(node_handle->get_parameter(cases[i].mirror).as_double(), moved[i])
+        << profile << ": " << cases[i].mirror << " (" << cases[i].fragment << ")";
+  }
+}
+
+// The acceleration box is two plain keys of the search fragment. The mirror is
+// what every reader of the loaded value (the search, the stop and homing ramp,
+// CLIK's `box` form, the tools) sees, so it is the place to pin the value.
+TEST_P(ShippedCatchingProfile, MirrorsTheShippedAccelerationBox) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const std::vector<double> expected =
+      profile == "ur5e_p1b" ? std::vector<double>(6, 2.03052) : std::vector<double>(7, 9.197629);
+
+  const std::string main_path = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                                "/controllers/demo_catching_controller.yaml";
+  const YAML::Node main_arm =
+      YAML::LoadFile(main_path)["demo_catching_controller"]["catching"]["robot"]["arm"];
+  EXPECT_FALSE(main_arm["qdd_max"].IsDefined()) << profile << ": the box belongs to the search";
+  EXPECT_FALSE(main_arm["qdd_provisional"].IsDefined()) << profile;
+
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  auto node_handle = NodeWithProfile("catching_shipped_box_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  const auto mirrored = node_handle->get_parameter("robot.arm.qdd_max").as_double_array();
+  ASSERT_EQ(mirrored.size(), expected.size()) << profile;
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_DOUBLE_EQ(mirrored[i], expected[i]) << profile << " joint " << i;
+  }
+  EXPECT_FALSE(node_handle->has_parameter("robot.arm.accel_limits_path"))
+      << profile << ": the box file is gone, so is its mirror";
+}
+
+// ur5e_p1b's sim.yaml replaces the box with the executed envelope. The CM
+// applies that block like a sim_overlay — it writes the block's leaves into
+// the composed tree — so the same write is made here and read back from the
+// mirror. The block's arrays must be float arrays (a ROS parameter array has one
+// type; `[20, ...]` would be an integer array).
+TEST_P(ShippedCatchingProfile, TheP1bSimOverrideSetsTheEnvelopeBox) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  if (profile != "ur5e_p1b") {
+    GTEST_SKIP() << "only ur5e_p1b's sim.yaml overrides the box";
+  }
+  const std::vector<double> envelope = {20.2531, 30.859, 36.9851, 21.5036, 14.2481, 29.0196};
+
+  const YAML::Node sim = YAML::LoadFile(std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                                        "/sim.yaml")["/**"]["ros__parameters"];
+  const YAML::Node arm = sim["demo_catching_controller"]["catching"]["robot"]["arm"];
+  ASSERT_TRUE(arm.IsDefined());
+  ASSERT_EQ(arm.size(), 2U) << "the override carries the box and its flag, nothing else";
+  ASSERT_TRUE(arm["qdd_max"].IsSequence());
+  for (const auto& v : arm["qdd_max"]) {
+    EXPECT_NE(v.Scalar().find('.'), std::string::npos) << v.Scalar() << ": not a float literal";
+  }
+  EXPECT_TRUE(arm["qdd_provisional"].as<bool>());
+
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  node["catching"]["robot"]["arm"]["qdd_max"] = arm["qdd_max"];
+  node["catching"]["robot"]["arm"]["qdd_provisional"] = arm["qdd_provisional"];
+  auto node_handle = NodeWithProfile("catching_shipped_envelope_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  const auto mirrored = node_handle->get_parameter("robot.arm.qdd_max").as_double_array();
+  ASSERT_EQ(mirrored.size(), envelope.size());
+  for (std::size_t i = 0; i < envelope.size(); ++i) {
+    EXPECT_DOUBLE_EQ(mirrored[i], envelope[i]) << "joint " << i;
+  }
+}
+
 TEST_P(ShippedCatchingProfile, RefusesToActivateThePlannerUnderTheMpcOffProfile) {
   // Same gate, same place as DemoWbc's (#350): on_activate's first statement,
   // before any side effect — above all, no planner thread on a core the
@@ -1670,7 +1824,6 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   const auto& d = planner.decel;
-  EXPECT_TRUE(d.enabled) << profile;
   EXPECT_TRUE(d.horizon_explicit) << profile;
   EXPECT_EQ(d.n_nodes, 7) << profile;
   EXPECT_EQ(d.DtNs(), 50'000'000) << profile;
@@ -1690,6 +1843,296 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   EXPECT_GT(d.catch_pos_err_max, 0.0) << profile;
   ASSERT_TRUE(node["catching"]["supervisor"]["decel"]["mode"]) << profile;
   EXPECT_EQ(node["catching"]["supervisor"]["decel"]["mode"].as<std::string>(), "mpc") << profile;
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
+  // MPC MD-91: the relative-velocity slack row's keys are WRITTEN in
+  // catching/planner_mpc.yaml — not left to the code default — and both 0:
+  // the row is off, so the shipped solve is the one before the keys existed.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const YAML::Node dcatch = node["catching"]["planner"]["decel_mpc"]["catch"];
+  ASSERT_TRUE(dcatch.IsMap()) << profile;
+  ASSERT_TRUE(dcatch["rho_v"].IsDefined()) << profile << ": catch.rho_v is not written";
+  ASSERT_TRUE(dcatch["v_rel_allow"].IsDefined()) << profile << ": catch.v_rel_allow is not written";
+  const std::string main_path = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                                "/controllers/demo_catching_controller.yaml";
+  const YAML::Node main_planner =
+      YAML::LoadFile(main_path)["demo_catching_controller"]["catching"]["planner"];
+  EXPECT_FALSE(main_planner["decel_mpc"].IsDefined())
+      << profile << ": the decel MPC keys belong to catching/planner_mpc.yaml";
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_EQ(planner.decel.rho_v, 0.0) << profile;
+  EXPECT_EQ(planner.decel.v_rel_allow, 0.0) << profile;
+}
+
+TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
+  // The two keys moved in the composed tree — where a CM override writes —
+  // reach the controller: its read-only mirrors carry the moved values and the
+  // decel planner configures with the slack row on (every catch core is built
+  // and warmed with it). A mirror declared from the field's default would read
+  // 0 here.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  YAML::Node dcatch = node["catching"]["planner"]["decel_mpc"]["catch"];
+  dcatch["rho_v"] = 2.0;
+  dcatch["v_rel_allow"] = 0.3;
+
+  auto node_handle = NodeWithProfile("catching_shipped_v_slack_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.rho_v").as_double(), 2.0)
+      << profile;
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.v_rel_allow").as_double(),
+                   0.3)
+      << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.rho_v, 2.0) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.v_rel_allow, 0.3) << profile;
+  // Read-only, like every other mirror of the profile.
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.catch.rho_v", 0.0))
+                   .successful);
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
+  // MPC MD-92 / #698: every design value of the decel MPC core, of the catch
+  // pose IK, of the unit-speed solve and of the switch step bound is WRITTEN in
+  // the shipped fragments, and at what the code used before the key existed —
+  // so the shipped solves, rankings and tests did not move.
+  const auto& [profile, total_dof] = GetParam();
+  static_cast<void>(total_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const YAML::Node catching = node["catching"];
+  // The arm's joint count: `expected_dof` of the parameter counts the hand too.
+  const auto arm_dof = static_cast<int>(catching["robot"]["arm"]["qdd_max"].size());
+  const YAML::Node mpc = catching["planner"]["decel_mpc"];
+  const YAML::Node ik = catching["planner"]["ik"];
+
+  struct Key {
+    YAML::Node section;
+    const char* name;
+  };
+
+  for (const Key& k : {Key{mpc["cost"], "jerk_weight"},
+                       Key{mpc["cost"], "u_scale"},
+                       Key{mpc["cost"], "w_delta"},
+                       Key{mpc["cost"], "rho_tau"},
+                       Key{mpc["catch"], "axis_theta_max"},
+                       Key{mpc["linearization"], "delta_tr"},
+                       Key{mpc["linearization"], "reference_rest_tol"},
+                       Key{mpc["linearization"], "ref_speed_fraction"},
+                       Key{mpc["solver"], "max_iter"},
+                       Key{mpc["solver"], "max_iter_in"},
+                       Key{mpc["solver"], "eps_abs"},
+                       Key{mpc["solver"], "eps_rel"},
+                       Key{ik, "eps_pos"},
+                       Key{ik, "alpha_max"},
+                       Key{ik, "rho"},
+                       Key{ik, "sigma0"},
+                       Key{ik, "lambda_max"},
+                       Key{ik, "dq_step_max"},
+                       Key{ik, "mu"},
+                       Key{ik, "qp_eps_abs"},
+                       Key{ik, "qp_max_iter"},
+                       Key{ik, "k_null"},
+                       Key{ik, "manip_grad_tol"},
+                       Key{ik, "fd_step"},
+                       Key{ik, "v_eps"},
+                       Key{catching["planner"]["gamma"], "unit_speed_damping"},
+                       Key{catching["planner"]["switch"], "samples"}}) {
+    ASSERT_TRUE(k.section.IsMap()) << profile << ": the section of " << k.name << " is missing";
+    EXPECT_TRUE(k.section[k.name].IsDefined()) << profile << ": " << k.name << " is not written";
+  }
+
+  // The core: the planner's parse equals DecelMpcParams{} field by field (the
+  // fields the planner overwrites — grid, eta, m_q, catch terms — are not
+  // compared). jerk_weight is written, one 1.0 per arm joint, which is the
+  // core's empty = all-ones.
+  const auto planner = rtc::catching::ParsePlannerParams(catching);
+  const rtc::catching::DecelMpcParams core{};
+  const auto& d = planner.decel;
+  ASSERT_EQ(d.jerk_weight.size(), static_cast<std::size_t>(arm_dof)) << profile;
+  for (const double w : d.jerk_weight) {
+    EXPECT_EQ(w, 1.0) << profile;
+  }
+  EXPECT_EQ(d.u_scale, core.u_scale) << profile;
+  EXPECT_EQ(d.w_delta, core.w_delta) << profile;
+  EXPECT_EQ(d.rho_tau, core.rho_tau) << profile;
+  EXPECT_EQ(d.axis_theta_max, core.axis_theta_max) << profile;
+  EXPECT_EQ(d.delta_tr, core.delta_tr) << profile;
+  EXPECT_EQ(d.reference_rest_tol, core.reference_rest_tol) << profile;
+  EXPECT_EQ(d.solver_max_iter, core.solver.max_iter) << profile;
+  EXPECT_EQ(d.solver_max_iter_in, core.solver.max_iter_in) << profile;
+  EXPECT_EQ(d.solver_eps_abs, core.solver.eps_abs) << profile;
+  EXPECT_EQ(d.solver_eps_rel, core.solver.eps_rel) << profile;
+  EXPECT_EQ(d.ref_speed_fraction, 0.9) << profile;  // the planner's former constant
+  EXPECT_EQ(core.w_perp, 0.0);                      // the default; `cost.w_perp` is tested below
+
+  // The search: the IK options equal CatchPoseIkOptions{} field by field —
+  // except the two the profile has always set (k_manip, max_iter) and the
+  // gate's threshold; alpha_max is now a SET value, no longer a TBD default.
+  const auto ik_cfg = rtc::catching::ParseCatchPoseIkParams(catching);
+  const rtc::catching::CatchPoseIkOptions def{};
+  const auto& o = ik_cfg.options;
+  EXPECT_EQ(o.eps_pos, def.eps_pos) << profile;
+  EXPECT_EQ(o.alpha_max, def.alpha_max) << profile;
+  EXPECT_FALSE(ik_cfg.alpha_max.tbd) << profile << ": alpha_max must be a decided value";
+  EXPECT_EQ(o.rho, def.rho) << profile;
+  EXPECT_EQ(o.sigma0, def.sigma0) << profile;
+  EXPECT_EQ(o.lambda_max, def.lambda_max) << profile;
+  EXPECT_EQ(o.dq_step_max, def.dq_step_max) << profile;
+  EXPECT_EQ(o.mu, def.mu) << profile;
+  EXPECT_EQ(o.qp_eps_abs, def.qp_eps_abs) << profile;
+  EXPECT_EQ(o.qp_max_iter, def.qp_max_iter) << profile;
+  EXPECT_EQ(o.k_null, def.k_null) << profile;
+  EXPECT_EQ(o.manip_grad_tol, def.manip_grad_tol) << profile;
+  EXPECT_EQ(o.fd_step, def.fd_step) << profile;
+  EXPECT_EQ(o.v_eps, def.v_eps) << profile;
+  EXPECT_EQ(o.definition, def.definition) << profile;
+
+  // The unit-speed damping and the switch samples: the code's former constants.
+  EXPECT_EQ(planner.unit_speed_damping, rtc::catching::kUnitSpeedDamping) << profile;
+  EXPECT_EQ(planner.switch_samples, 9) << profile;
+}
+
+TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
+  // The twelve decel-MPC design keys moved in the composed tree — where a CM
+  // override writes — reach the controller: each read-only mirror carries the
+  // moved value, and the decel planner configures with the cores built on them.
+  // A mirror declared from a default would read the shipped value here.
+  const auto& [profile, total_dof] = GetParam();
+  static_cast<void>(total_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  YAML::Node mpc = node["catching"]["planner"]["decel_mpc"];
+  const auto arm_dof = static_cast<int>(node["catching"]["robot"]["arm"]["qdd_max"].size());
+  YAML::Node weights;
+  for (int i = 0; i < arm_dof; ++i) {
+    weights.push_back(1.0 + 0.25 * i);
+  }
+  mpc["cost"]["jerk_weight"] = weights;
+  mpc["cost"]["u_scale"] = 500.0;
+  mpc["cost"]["w_delta"] = 2.5;
+  mpc["cost"]["rho_tau"] = 7.0;
+  mpc["catch"]["axis_theta_max"] = 1.2;
+  mpc["linearization"]["delta_tr"] = 0.2;
+  mpc["linearization"]["reference_rest_tol"] = 2.0e-5;
+  mpc["linearization"]["ref_speed_fraction"] = 0.8;
+  mpc["solver"]["max_iter"] = 300;
+  mpc["solver"]["max_iter_in"] = 150;
+  mpc["solver"]["eps_abs"] = 2.0e-7;
+  mpc["solver"]["eps_rel"] = 1.0e-5;
+
+  auto node_handle = NodeWithProfile("catching_shipped_design_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  const auto dbl = [&](const char* name) { return node_handle->get_parameter(name).as_double(); };
+  const auto integer = [&](const char* name) { return node_handle->get_parameter(name).as_int(); };
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.u_scale"), 500.0) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.w_delta"), 2.5) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.rho_tau"), 7.0) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.catch.axis_theta_max"), 1.2) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.delta_tr"), 0.2) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.reference_rest_tol"), 2.0e-5) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.ref_speed_fraction"), 0.8) << profile;
+  EXPECT_EQ(integer("planner.decel_mpc.solver.max_iter"), 300) << profile;
+  EXPECT_EQ(integer("planner.decel_mpc.solver.max_iter_in"), 150) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.solver.eps_abs"), 2.0e-7) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.solver.eps_rel"), 1.0e-5) << profile;
+  const auto jw =
+      node_handle->get_parameter("planner.decel_mpc.cost.jerk_weight").as_double_array();
+  ASSERT_EQ(jw.size(), static_cast<std::size_t>(arm_dof)) << profile;
+  for (int i = 0; i < arm_dof; ++i) {
+    EXPECT_DOUBLE_EQ(jw[static_cast<std::size_t>(i)], 1.0 + 0.25 * i) << profile << " " << i;
+  }
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.ref_speed_fraction, 0.8) << profile;
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.u_scale", 1.0))
+                   .successful);
+}
+
+TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
+  // #698: `cost.w_perp` is WRITTEN in catching/planner_mpc.yaml — not left to
+  // the code default — and 0: the stop-path term is off, so the shipped solve
+  // is the one before the key existed (the core's own default).
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const YAML::Node cost = node["catching"]["planner"]["decel_mpc"]["cost"];
+  ASSERT_TRUE(cost.IsMap()) << profile;
+  ASSERT_TRUE(cost["w_perp"].IsDefined()) << profile << ": cost.w_perp is not written";
+  EXPECT_EQ(cost["w_perp"].as<double>(), 0.0) << profile;
+  const std::string fragment = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                               "/controllers/catching/planner_mpc.yaml";
+  const YAML::Node in_fragment = YAML::LoadFile(
+      fragment)["demo_catching_controller"]["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"];
+  EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to planner_mpc.yaml";
+  const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
+  EXPECT_EQ(planner.decel.w_perp, 0.0) << profile;
+  EXPECT_EQ(planner.decel.w_perp, rtc::catching::DecelMpcParams{}.w_perp) << profile;
+}
+
+TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
+  // The key moved in the composed tree — where a CM override writes — reaches
+  // the controller: the read-only mirror carries the moved value, and the
+  // decel planner configures with the term ON, which means every stop core and
+  // every catch core was built with it and warmed up on a line the planner
+  // built (a warm-up that fails fails the configure). A mirror declared from
+  // the field's default would read 0 here.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  node["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"] = 40.0;
+
+  auto node_handle = NodeWithProfile("catching_shipped_w_perp_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile;
+  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.cost.w_perp").as_double(), 40.0)
+      << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.w_perp, 40.0) << profile;
+  // Read-only, like every other mirror of the profile.
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.w_perp", 0.0))
+                   .successful);
+}
+
+TEST_P(ShippedCatchingProfile, RefusesAJerkWeightListOfTheWrongLengthAtConfigure) {
+  // The parser has no joint count, so the length is checked where the arm is
+  // known: the configure fails, and the planner is not configured (the
+  // controller parks rather than running a core built on the wrong list).
+  const auto& [profile, total_dof] = GetParam();
+  static_cast<void>(total_dof);
+  YAML::Node node = ShippedWithPlanner(profile, true, false);
+  const auto arm_dof = static_cast<int>(node["catching"]["robot"]["arm"]["qdd_max"].size());
+  YAML::Node weights;
+  for (int i = 0; i < arm_dof - 1; ++i) {
+    weights.push_back(1.0);
+  }
+  node["catching"]["planner"]["decel_mpc"]["cost"]["jerk_weight"] = weights;
+  auto node_handle = NodeWithProfile("catching_shipped_jw_len_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  const auto rc = ctrl.on_configure(prev, node_handle, node);
+  EXPECT_FALSE(rc == DemoCatchingController::CallbackReturn::SUCCESS &&
+               ctrl.IsDecelPlannerConfigured())
+      << profile << ": a list one short was accepted";
 }
 
 TEST(DemoCatchingWaitPose, WithoutAnArmBoxTheSwitchedInPoseIsRefusedAndTheYamlPoseStands) {

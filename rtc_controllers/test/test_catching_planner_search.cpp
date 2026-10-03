@@ -16,6 +16,7 @@
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/catching/planner_search.hpp"
+#include "rtc_controllers/catching/time_feasibility.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
 #include "rtc_controllers/testing/planner_search_fixture.hpp"
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -169,6 +171,59 @@ TEST(PlannerUnitSpeed, MatchesAnIndependentDynamicSizeDls) {
   EXPECT_LT((r.jp_qdot_u - j5.topRows(3) * ref).norm(), 1e-10);
   // And it does what it is for: unit speed along v̂ (DLS, so nearly).
   EXPECT_NEAR(v_hat.dot(r.jp_qdot_u), 1.0, 1e-3);
+}
+
+// MPC MD-92: `planner.gamma.unit_speed_damping` reaches the search's unit-speed
+// solve. The chosen candidate's v_dir,max (L3 §4.5) is recomputed here, from
+// its own posture and ball direction, with the damping the profile gave — and
+// the two dampings give different numbers, so a search that kept the constant
+// would match only one of them.
+TEST(PlannerUnitSpeed, TheSearchUsesTheProfilesDamping) {
+  std::vector<double> v_dir;
+  for (const double damping : {rtc::catching::kUnitSpeedDamping, 0.3}) {
+    auto rig = std::make_unique<Rig>();
+    rig->params.unit_speed_damping = damping;
+    ASSERT_TRUE(rig->Configure());
+    const auto traj = rig->Traj();
+    SearchStats stats;
+    const PlanSnapshot plan =
+        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+    ASSERT_TRUE(plan.valid);
+    const Eigen::Vector3d v(plan.v_c[0], plan.v_c[1], plan.v_c[2]);
+    UnitSpeedSolver us;
+    us.Resize(rig->arm.nv);
+    std::vector<double> qdu(static_cast<std::size_t>(rig->arm.nv), 0.0);
+    const auto r = us.Compute(
+        *rig->arm.handle, rig->arm.frame,
+        std::span<const double>(plan.q_star.data(), static_cast<std::size_t>(rig->arm.nv)),
+        v.normalized(), qdu, damping);
+    ASSERT_TRUE(r.valid);
+    std::vector<double> qdot_plan(static_cast<std::size_t>(rig->arm.nv),
+                                  rig->constants.eta_v * 3.14);
+    const auto expected =
+        rtc::catching::DirectionalSpeedMax(v.normalized(), r.jp_qdot_u, qdu, qdot_plan);
+    EXPECT_NEAR(stats.chosen_v_dir_max, expected.v_dir_max, 1e-9) << damping;
+    v_dir.push_back(stats.chosen_v_dir_max);
+  }
+  ASSERT_EQ(v_dir.size(), 2U);
+  EXPECT_GT(std::fabs(v_dir[0] - v_dir[1]), 1e-6);
+}
+
+// The two keys the search divides or damps by cannot be unusable: a hand-built
+// PlannerParams (no parser in front) is refused at configure.
+TEST(PlannerSearchPlan, ConfigureRefusesAnUnusableSwitchSamplesOrDamping) {
+  {
+    auto rig = std::make_unique<Rig>();
+    rig->params.switch_samples = 1;  // the bound divides by samples - 1
+    EXPECT_FALSE(rig->Configure());
+    rig->params.switch_samples = 2;
+    EXPECT_TRUE(rig->Configure());
+  }
+  for (const double bad : {0.0, -1e-3, std::numeric_limits<double>::quiet_NaN()}) {
+    auto rig = std::make_unique<Rig>();
+    rig->params.unit_speed_damping = bad;
+    EXPECT_FALSE(rig->Configure()) << bad;
+  }
 }
 
 // ── 2. Judgement vs rank ─────────────────────────────────────────────────────

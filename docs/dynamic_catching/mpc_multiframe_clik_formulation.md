@@ -578,6 +578,9 @@ $\mathcal K_c$ 가 $\lbrace k_c\rbrace$ 로 줄어드는 이유: 손 폐쇄 명�
 - $w_\Delta$ 와 $\rho_\tau$ 는 노드마다 같은 가중이다 (구간 길이로 가중하지 않는다). 간격이 다른 격자 사이에서는 같은 값이 다른 세기다.
 - 한계는 노드에서만 건다. 노드 사이의 속도는 2 차식이라 box 를 조금 넘을 수 있다.
 - 정지 경로 항 $w_\perp$ 는 정지 구간의 노드 ($k\ge k_c$) 에만 건다. 그 직선은 손이 멈추는 경로이고 접근 경로가 아니다.
+- 정지 경로 항의 직선은 **공의 예측 포구 위치를 지나고 $t_c$ 의 공 진행 방향을 따르는 직선**이다 — 그 풀이가 포구 항에 쓰는 $\hat p_b(t_c)$ 와 $\hat v_b(t_c)$ 로 만든다 ($p_c=\hat p_b$, $\hat d=\hat v_b/\Vert\hat v_b\Vert$). 이 항을 넣은 판은 직선을 포구 순간의 손 속도 방향으로 정의했다. 공의 진행 방향으로 정한 것은 (사용자 결정 2026-10-03, [#698](https://github.com/hyujun/rtc-framework/issues/698)) 탐색이 정지점을 그 직선 위에 예약하기 때문이다 (L3 §4.9). 포구 뒤의 재계획 (정지 코어) 은 공 예측을 읽지 않고 **RT 가 따르는 구간의 직선** 을 유지한다 — 재계획의 $x_0$ 와 기준이 나오는 바로 그 구간이 풀린 직선이고, 정지 구간이 게시되면 출처 구간의 직선을 물려받는다. 더 새 예측으로 푼 구간이 게시됐어도 RT 가 그것을 채택하지 않았으면 그 직선을 쓰지 않는다 (손은 따르는 구간의 직선 위에서 멈춘다). 직선을 만들 수 없는 풀이 (공 속력이 `planner.ik.v_eps` 이하이거나 유한하지 않음, 따르는 구간에 직선이 없음) 는 기본 직선으로 풀지 않고 보류한다. configure 의 warm-up 은 합성 포구의 직선으로 푼다. 키는 `planner.decel_mpc.cost.w_perp` (범위 [0, 1e4] — 코어를 시험한 가장 큰 가중이 상한이다) 이고 출하값은 0 이다 (끔 — 이때 직선을 만들지도 요구하지도 않아 해가 그대로다).
+- 상대속도 slack $s_v$ 는 기록만 하고 게시 판정에 쓰지 않는다 — $s_v$ 의 임계가 정의돼 있지 않고, $\gamma_{ref}\lt1$ 이면 $s_v\gt0$ 이 구조적이기 때문이다 (키 `planner.decel_mpc.catch.rho_v` · `.v_rel_allow`, 출하값은 둘 다 0 — 행을 만들지 않는다).
+- 코어의 설계 값은 모두 `planner.decel_mpc.*` 의 키이고 출하값은 코어 코드의 기본값이다 (MD-92): `cost.{jerk_weight, u_scale, w_delta, rho_tau, w_perp}` (jerk 가중 $R_j$ 는 팔 관절마다, jerk 비용은 $(u/u_{scale})^2$ 이라 $u_{scale}$ 이 jerk 를 $w_\Delta$ · $\rho_\tau$ 와 비교한 세기를 바꾼다. `rho_tau` 0 은 토크 행을 끈다 — 그때 게시 판정의 slack 조건은 빈다), `catch.axis_theta_max` (위 90° 상한), `linearization.{delta_tr, reference_rest_tol, ref_speed_fraction}` (trust region 반폭, 기준의 종단 정지 허용, 첫 기준의 속도 비 — `reference_rest_tol` 은 `solver.eps_abs` 보다 커야 한다), `solver.{max_iter, max_iter_in, eps_abs, eps_rel}`. $w_\perp$ 도 키다 (`cost.w_perp`, 출하 0 — 직선의 정의는 위 정지 경로 항). solver 의 preconditioner 갱신과 KKT backend 는 설계 값이 아니라 코드에 둔다 (RT 무할당 · infeasible 판정이 그것을 전제한다).
 - warm 풀이가 실패하면 solver 를 비우고 한 번 다시 푼다. 다른 문제가 남긴 반복값에서 시작하면 solver 가 실행 가능한 QP 를 실행 불가능으로 판정하기 때문이다 (계획 §8).
 
 §1.3 에서 뺀 항을 지우면 다음이 남는다.
@@ -699,7 +702,7 @@ rtc-framework 에는 사본이 없다. 이전 전의 사본 (`integrated_bringup
 | 쪽 | 파일 | 키 |
 |---|---|---|
 | ball_perception profile | `sim_profile.catching.json` 의 사본 — 조건마다 따로 두고 출하 파일은 고치지 않는다 | `prediction.horizon_s`, `prediction.step_s`, `prediction.max_points` |
-| rtc-framework | `demo_catching_controller.yaml` (로봇별) | `prediction.dt_expected`, `io.n_min`, `planner.slice.dt` |
+| rtc-framework | `demo_catching_controller.yaml` 과 그 조각 `catching/search_grid.yaml` (로봇별) | `prediction.dt_expected`, `io.n_min` (주 파일), `planner.slice.dt` (조각) |
 
 - profile 만 촘촘하게 바꾸면 메시지는 받아들여진다. 거부 하한은 `prediction.dt_expected` 의 10 % (`kTrajSpacingFloorFraction`) 라 조건의 간격은 모두 그 위다. 대신 `planner.slice.dt` 가 남은 값이면 계획기가 후보를 그 간격으로 솎아 (`planner_search.cpp`) 경고 없이 옛 격자로 돈다. 세 키는 떠 있는 컨트롤러의 read-only 미러 파라미터로 확인한다.
 - 두 쪽의 값을 맞춰 보는 자동 검사는 없다. profile 은 ball_perception 쪽이 소유하고 (계획 MD-18) rtc-framework 는 그 파일을 읽을 수 없다. 위 표의 키를 바꿀 때는 양쪽을 함께 확인한다.

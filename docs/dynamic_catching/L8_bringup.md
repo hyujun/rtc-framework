@@ -192,7 +192,7 @@ struct TickRecord {                   // 고정 크기, POD
 
 ### 5.4 YAML 파일
 
-- 포구 컨트롤러 설정: 로봇별 `integrated_bringup/config/<robot>/controllers/` 아래 (기존 `demo_*_controller.yaml` 과 같은 자리). 파일명은 `demo_catching_controller.yaml` (config_key `demo_catching_controller`, S4.0 에서 확정 — plan §4.4 S4a)
+- 포구 컨트롤러 설정: 로봇별 `integrated_bringup/config/<robot>/controllers/` 아래 (기존 `demo_*_controller.yaml` 과 같은 자리). 파일명은 `demo_catching_controller.yaml` (config_key `demo_catching_controller`, S4.0 에서 확정 — plan §4.4 S4a). 탐색과 두 planner 법칙의 키는 그 파일이 `include:` 하는 `catching/{search_grid,planner_closed_form,planner_mpc}.yaml` 에 있다 (MPC 계획 MD-90 — 키 경로는 같다)
 - catch frame (`extra_frames`, D-10·D-17) 은 로봇 config 의 모델 절 (plan §10)
 - 투척·catchability (`planner.catchability.*`) 는 plan §11 스키마. `sim.throw_region` 은 만들어지지 않았고 투척 분포는 러너 인자 (`catching_sim_trials --dist`, S8-A) 가 갖는다 (§4.2)
 - sim 공 설정 (projectile, truth 주기)은 로봇별 `mujoco_simulator.yaml`

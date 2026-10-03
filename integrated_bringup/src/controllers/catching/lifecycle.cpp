@@ -7,7 +7,6 @@
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/parameter.hpp>
@@ -261,7 +260,7 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("planner.time.margin", planner_params_.time_margin,
           "L3 §4.3 reach-time margin T_margin [s] the planner's gate uses");
   declare("robot.arm.qdd_max", arm_qdd_max_,
-          "D-16 acceleration box the planner's reach time judges with [rad/s²], arm joint "
+          "acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
   // The prediction grid the controller expects (MPC plan E0-F04, #647). The
   // vision profile sets the grid and these three must follow it, but nothing
@@ -297,9 +296,6 @@ void DemoCatchingController::DeclareProfileParameters() {
   // The decel MPC as run (MPC E1-F03): an off-process analysis must read the
   // horizon, window and thresholds this controller used, not the file.
   const auto& decel = planner_params_.decel;
-  declare("planner.decel_mpc.enabled", decel.enabled,
-          "MPC E1-F03 / E1-F08: the planner solves the segments the RT follows from APPROACH to "
-          "the end of the stop (decel MPC)");
   declare("planner.decel_mpc.horizon.n_nodes", static_cast<std::int64_t>(decel.n_nodes),
           "decel MPC nodes N_s; N_s * dt_s is the stopping time (MD-21)");
   declare("planner.decel_mpc.horizon.dt_s", decel.dt_s, "decel MPC node spacing dt_s [s]");
@@ -347,6 +343,44 @@ void DemoCatchingController::DeclareProfileParameters() {
           "decel MPC position weight without a usable covariance [1/m^2]");
   declare("planner.decel_mpc.catch.sigma_ref", decel.sigma_ref,
           "decel MPC w_delta schedule reference, compared with tr Sigma_p [m]");
+  declare("planner.decel_mpc.catch.rho_v", decel.rho_v,
+          "decel MPC relative-velocity slack penalty at the catch node; 0 = no slack row. The "
+          "slack is recorded (planner_events decel_slack_v), never a publish gate");
+  declare("planner.decel_mpc.catch.v_rel_allow", decel.v_rel_allow,
+          "decel MPC per-axis relative velocity the hand absorbs [m/s]; read when rho_v > 0");
+  // The core's own design values (MD-92), as run. jerk_weight is the profile's
+  // list in arm joint order; empty = the core's all-ones.
+  declare("planner.decel_mpc.cost.jerk_weight", decel.jerk_weight,
+          "decel MPC jerk weight R_j per arm joint (arm order); empty = all 1");
+  declare("planner.decel_mpc.cost.u_scale", decel.u_scale,
+          "decel MPC jerk scale [rad/s^3]; the jerk cost is (u/u_scale)^2");
+  declare("planner.decel_mpc.cost.w_delta", decel.w_delta,
+          "decel MPC pull toward the reference [1/rad^2]");
+  declare("planner.decel_mpc.cost.rho_tau", decel.rho_tau,
+          "decel MPC torque slack penalty; 0 = torque rows off (the publish slack condition is "
+          "then vacuous)");
+  declare("planner.decel_mpc.cost.w_perp", decel.w_perp,
+          "decel MPC stop-path weight [1/m^2]: distance of the catch frame, from the catch on, "
+          "from the line through the ball's predicted catch position along its travel; 0 = off, at "
+          "most 1e4");
+  declare("planner.decel_mpc.catch.axis_theta_max", decel.axis_theta_max,
+          "decel MPC largest axis error of the reference the approach-axis term linearises at "
+          "[rad]");
+  declare("planner.decel_mpc.linearization.delta_tr", decel.delta_tr,
+          "decel MPC trust-region half-width around the reference [rad]");
+  declare("planner.decel_mpc.linearization.reference_rest_tol", decel.reference_rest_tol,
+          "decel MPC bound on the supplied reference's terminal speed and acceleration");
+  declare("planner.decel_mpc.linearization.ref_speed_fraction", decel.ref_speed_fraction,
+          "decel MPC first-solve reference speed as a fraction of eta_v * qdot_max");
+  declare("planner.decel_mpc.solver.max_iter", static_cast<std::int64_t>(decel.solver_max_iter),
+          "decel MPC ProxQP outer iteration cap");
+  declare("planner.decel_mpc.solver.max_iter_in",
+          static_cast<std::int64_t>(decel.solver_max_iter_in),
+          "decel MPC ProxQP inner iteration cap per outer step");
+  declare("planner.decel_mpc.solver.eps_abs", decel.solver_eps_abs,
+          "decel MPC ProxQP absolute tolerance");
+  declare("planner.decel_mpc.solver.eps_rel", decel.solver_eps_rel,
+          "decel MPC ProxQP relative tolerance");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,
@@ -363,10 +397,6 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("supervisor.decel.switch_margin", decel_switch_margin_,
           "MPC MD-39: rho_max of the decel segment switch gate (mode mpc). As of the FIRST "
           "configure of this node — read_only mirrors cannot follow a re-configure");
-  declare("robot.arm.accel_limits_path", accel_limits_path_,
-          "the profile's D-16 box file (robot.arm.accel_limits_path): absolute, or relative to "
-          "the share directory of robot.arm.accel_limits_package. As of the FIRST configure "
-          "of this node — read_only mirrors cannot follow a re-configure");
 }
 
 void DemoCatchingController::DeclareArmParameter() {
@@ -419,88 +449,28 @@ void DemoCatchingController::DeclareArmParameter() {
       });
 }
 
-void DemoCatchingController::LoadDerivedAccelLimits() {
+void DemoCatchingController::ApplyArmAccelBox() {
   arm_qdd_max_.clear();
   arm_qdd_provisional_ = true;
-  arm_qdd_source_.clear();
-  if (accel_limits_path_.empty()) {
+  if (!arm_qdd_cfg_present_) {
     RCLCPP_WARN(logger_,
-                "no `robot.arm.accel_limits_path`: the CLIK acceleration box is OFF, so a command "
-                "may step by more than the joint can follow (D-16)");
+                "no `robot.arm.qdd_max`: the CLIK acceleration box is OFF, so a command may step "
+                "by more than the joint can follow (D-16)");
     return;
   }
-  // Package-relative, like every other file this repo's YAML points at
-  // (`DeviceUrdfConfig`): the controller has no way to learn which config
-  // variant it was loaded from, and a path relative to the process's cwd would
-  // depend on where the operator started the bring-up. An ABSOLUTE path is
-  // read as it stands (#537 pre-S10 R3) — a box kept outside the package, as
-  // an experiment's is, has no share directory to be relative to.
-  std::string path;
-  if (std::filesystem::path(accel_limits_path_).is_absolute()) {
-    path = accel_limits_path_;
-  } else {
-    try {
-      path = ament_index_cpp::get_package_share_directory(accel_limits_package_) + "/" +
-             accel_limits_path_;
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR(logger_, "package '%s' not found for the derived acceleration limits: %s",
-                   accel_limits_package_.c_str(), e.what());
+  if (arm_qdd_cfg_malformed_ || static_cast<int>(arm_qdd_cfg_.size()) != arm_dof_) {
+    RCLCPP_ERROR(logger_, "robot.arm.qdd_max must be a list of %d numbers (the arm's)", arm_dof_);
+    return;
+  }
+  for (std::size_t i = 0; i < arm_qdd_cfg_.size(); ++i) {
+    if (!std::isfinite(arm_qdd_cfg_[i]) || arm_qdd_cfg_[i] <= 0.0) {
+      RCLCPP_ERROR(logger_, "robot.arm.qdd_max[%zu] is not a positive number", i);
       return;
     }
   }
-  YAML::Node doc;
-  try {
-    doc = YAML::LoadFile(path);
-  } catch (const std::exception& e) {
-    RCLCPP_ERROR(logger_, "could not read the derived acceleration limits at '%s': %s",
-                 path.c_str(), e.what());
-    return;
-  }
-  const YAML::Node root = doc["derived_accel_limits"];
-  const YAML::Node group = root ? root[accel_limits_group_] : YAML::Node();
-  if (!group || !group.IsMap()) {
-    RCLCPP_ERROR(logger_, "'%s' has no derived_accel_limits.%s", path.c_str(),
-                 accel_limits_group_.c_str());
-    return;
-  }
-  // `adopted: false` marks a derivation the tool ran but nobody accepted (D-16
-  // records the review, not just the number). Falling back from it would put
-  // an unreviewed limit on the arm, which is the one thing a DERIVED box must
-  // not allow — so it is refused rather than defaulted.
-  if (!group["adopted"] || !group["adopted"].as<bool>()) {
-    RCLCPP_ERROR(logger_, "derived_accel_limits.%s is not `adopted` — refusing to use it",
-                 accel_limits_group_.c_str());
-    return;
-  }
-  const YAML::Node box = group["qdd_max"];
-  if (!box || !box.IsSequence() || static_cast<int>(box.size()) != arm_dof_) {
-    RCLCPP_ERROR(logger_, "derived_accel_limits.%s.qdd_max must have %d entries (the arm's)",
-                 accel_limits_group_.c_str(), arm_dof_);
-    return;
-  }
-  arm_qdd_max_.assign(box.size(), 0.0);
-  for (std::size_t i = 0; i < box.size(); ++i) {
-    arm_qdd_max_[i] = box[i].as<double>();
-    if (!std::isfinite(arm_qdd_max_[i]) || arm_qdd_max_[i] <= 0.0) {
-      RCLCPP_ERROR(logger_, "derived_accel_limits.%s.qdd_max[%zu] is not a positive number",
-                   accel_limits_group_.c_str(), i);
-      arm_qdd_max_.clear();
-      return;
-    }
-  }
-  // Fail-closed like every provisional flag: a file that does not say it was
-  // cleared was not. `adopted` above is the REVIEW of the derivation;
-  // `provisional` is whether its inputs (the torque limits, the model) are
-  // those of the arm this runs on (#537 pre-S10 R3, Q4).
-  const YAML::Node provisional = group["provisional"];
-  try {
-    arm_qdd_provisional_ = !provisional || provisional.as<bool>();
-  } catch (const std::exception&) {
-    arm_qdd_provisional_ = true;  // not a bool: not a clearance
-  }
-  arm_qdd_source_ = path;
-  RCLCPP_INFO(logger_, "derived acceleration box: %s (group '%s', %zu joints%s)", path.c_str(),
-              accel_limits_group_.c_str(), arm_qdd_max_.size(),
+  arm_qdd_max_ = arm_qdd_cfg_;
+  arm_qdd_provisional_ = arm_qdd_provisional_cfg_;
+  RCLCPP_INFO(logger_, "acceleration box: robot.arm.qdd_max (%zu joints%s)", arm_qdd_max_.size(),
               arm_qdd_provisional_ ? ", provisional" : "");
 }
 
@@ -732,11 +702,10 @@ void DemoCatchingController::SetupArmCommand() {
   catch_frame_idx_ = -1;
   base_frame_idx_ = -1;
   // Before the early returns below: a reconfigure that takes one of them never
-  // reaches LoadDerivedAccelLimits(), and the park check in on_configure must
+  // reaches ApplyArmAccelBox(), and the park check in on_configure must
   // not judge the box (or its flag) the PREVIOUS configure loaded.
   arm_qdd_max_.clear();
   arm_qdd_provisional_ = true;
-  arm_qdd_source_.clear();
 
   // The builder was acquired by SetupTrajInput (the vision frame needs the
   // model before the subscription exists); null means no model to drive.
@@ -805,7 +774,7 @@ void DemoCatchingController::SetupArmCommand() {
   cfg.anchor_drift_max = 0.0;
 
   const int nv = model.nv;
-  LoadDerivedAccelLimits();
+  ApplyArmAccelBox();
   BuildClikBoxes(nv, cfg);
   if (!ConfigureAccelConstraint(nv, cfg)) {
     return;  // logged; the arm is held
@@ -1058,6 +1027,20 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "defensible default — see L6 §6 and plan §4.4 S4.1.");
       return CallbackReturn::FAILURE;
     }
+    // A key that no longer exists parks, sim and real arm alike: the old
+    // overlay must not silently run on the shipped box. A FAILURE here would
+    // make CM refuse every controller on the robot.
+    if (!removed_arm_box_key_.empty()) {
+      sim_only_disabled_ = true;
+      park_reason_ = CatchingParkReason::kRemovedKey;
+      RCLCPP_ERROR(logger_,
+                   "DISABLED: 'catching.%s' was removed — set the acceleration box as "
+                   "'catching.robot.arm.qdd_max' (rad/s², one per arm joint) and "
+                   "'catching.robot.arm.qdd_provisional'. This controller will refuse to "
+                   "activate; the robot still comes up.",
+                   removed_arm_box_key_.c_str());
+      return CallbackReturn::SUCCESS;
+    }
     report_ =
         rtc::catching::ValidateCatchingParams(params_, 1.0 / GetDefaultDt(), real_arm_config_);
     // The DECEL law (MPC MD-44) — decided here, once, for the whole
@@ -1065,6 +1048,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // for it, and the tick never changes it.
     decel_mode_ = params_.supervisor_decel_mode;
     decel_switch_margin_ = params_.supervisor_decel_switch_margin;
+    if (stale_decel_mpc_disabled_key_ && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
+      RCLCPP_WARN(logger_,
+                  "catching.planner.decel_mpc.enabled: false is ignored — the key was removed. "
+                  "The mpc law runs because supervisor.decel.mode is mpc; set "
+                  "supervisor.decel.mode: closed_form to turn it off.");
+    }
     // Written by SetupDecelPlanner only when this configure builds it.
     decel_planner_q_min_.fill(0.0);
     decel_planner_q_max_.fill(0.0);
@@ -1158,27 +1147,22 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "controller will refuse to activate; the robot still comes up.");
       return CallbackReturn::SUCCESS;
     }
-    // The decel MPC (MPC E1-F03) needs the planner, and its torque box plus
-    // publish slack must fit inside the CLIK's (MD-33). A profile mistake:
-    // park, name it, keep the robot up. Only under the law that runs it —
-    // closed_form builds no decel core and reads none of its keys (MD-44).
-    if (planner_params_.decel.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
+    // The decel MPC (MPC E1-F03) runs on the planner thread, and its torque
+    // box plus publish slack must fit inside the CLIK's (MD-33). A profile
+    // mistake: park, name it, keep the robot up. Only under the law that runs
+    // it and only with the planner on — closed_form builds no decel core and
+    // reads none of its keys (MD-44), and a planner-less mpc profile is
+    // DecelModeUnmet's to judge (the oracle profile is exempt there).
+    if (planner_params_.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
       if (const char* why = DecelMpcConfigInvalid(); why != nullptr) {
         sim_only_disabled_ = true;
         park_reason_ = CatchingParkReason::kDecelMpcInvalid;
         RCLCPP_ERROR(logger_,
-                     "DISABLED: planner.decel_mpc.enabled is true but %s. This controller will "
+                     "DISABLED: supervisor.decel.mode is mpc but %s. This controller will "
                      "refuse to activate; the robot still comes up.",
                      why);
         return CallbackReturn::SUCCESS;
       }
-    }
-    if (planner_params_.decel.enabled && decel_mode_ != rtc::catching::CatchingDecelMode::kMpc) {
-      // MD-44: under closed_form nothing follows a stop segment, so none is
-      // computed — the planner runs the closed form's part only.
-      RCLCPP_WARN(logger_,
-                  "planner.decel_mpc.enabled is true but supervisor.decel.mode is closed_form: "
-                  "the decel MPC is not built and publishes nothing (set mode: mpc to use it)");
     }
     // The planner's DECISION values (S6-B) — values nobody may guess. Same rule
     // as a consumed TBD: park, name the key, keep the robot up (A-S5-12).
@@ -1338,24 +1322,22 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // #537 pre-S10 R3 (Q4): the box every ramp and the CLIK acceleration rows
     // run on is still provisional. Judged only on a box that LOADED — an
     // absent one is the supervisor's verdict above — and after it, so the
-    // more basic refusal is the one the operator reads. The file's flag has no
-    // key in `catching:`, hence not a validator failure; the park is the same
-    // one (L0 §5.3), and the log names the file's key.
+    // more basic refusal is the one the operator reads. The flag has no
+    // validator row in `catching:`, hence not a validator failure; the park is
+    // the same one (L0 §5.3), and the log names the key.
     if (!real_arm_config_ && !arm_qdd_max_.empty() && arm_qdd_provisional_) {
       RCLCPP_WARN(logger_,
-                  "catching config warning: derived_accel_limits.%s.provisional — the "
-                  "acceleration box at '%s' is provisional (sim only); a real-arm configuration "
-                  "is parked on it",
-                  accel_limits_group_.c_str(), arm_qdd_source_.c_str());
+                  "catching config warning: robot.arm.qdd_provisional — the acceleration box "
+                  "(robot.arm.qdd_max) is provisional (sim only); a real-arm configuration is "
+                  "parked on it");
     }
     if (real_arm_config_ && !arm_qdd_max_.empty() && arm_qdd_provisional_) {
       sim_only_disabled_ = true;
       park_reason_ = CatchingParkReason::kConsumedValues;
       RCLCPP_ERROR(logger_,
-                   "DISABLED: real-arm configuration with derived_accel_limits.%s.provisional "
-                   "true (or absent) in '%s' — the acceleration box is not cleared for this arm "
-                   "(L0 §5.3). It will refuse to activate; nothing was commanded.",
-                   accel_limits_group_.c_str(), arm_qdd_source_.c_str());
+                   "DISABLED: real-arm configuration with robot.arm.qdd_provisional true (or "
+                   "absent) — the acceleration box (robot.arm.qdd_max) is not cleared for this "
+                   "arm (L0 §5.3). It will refuse to activate; nothing was commanded.");
       TearDownConfiguredResources();
       return CallbackReturn::SUCCESS;
     }
@@ -1400,6 +1382,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
                      ? "planner.decel_mpc cannot run in this profile"
                  : park_reason_ == CatchingParkReason::kDecelModeUnmet
                      ? "supervisor.decel.mode mpc lacks a prerequisite"
+                 : park_reason_ == CatchingParkReason::kRemovedKey
+                     ? "the profile sets a removed key"
                      : "a consumed value is provisional or TBD");
     return CallbackReturn::FAILURE;
   }
@@ -1693,8 +1677,7 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
   }
   const auto n = static_cast<std::size_t>(arm_dof_);
   if (arm_qdd_max_.size() < n) {
-    return "robot.arm.accel_limits_path (the derived acceleration box the stop and homing ramp "
-           "with)";
+    return "robot.arm.qdd_max (the acceleration box the stop and homing ramp with)";
   }
   if (arm_q_min_margined_.size() < n || arm_q_max_margined_.size() < n) {
     return "the arm's joint_limits (the position box the stop and homing stay inside)";
@@ -1786,7 +1769,9 @@ bool DemoCatchingController::SetupPlanner() {
     RCLCPP_WARN(logger_,
                 "planner: no system model — the thread runs, but its search is the stub "
                 "(it publishes \"no plan\")%s",
-                planner_params_.decel.enabled ? " and the decel MPC does not run" : "");
+                decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
+                    ? " and the decel MPC does not run"
+                    : "");
   } else if (!SetupPlannerSearch()) {
     return false;
   }
@@ -1908,7 +1893,7 @@ bool DemoCatchingController::SetupPlannerSearch() {
   // MD-44: the decel cores exist only for a configuration that follows them.
   // Without a pre-catch grid there is no decel planner to build (MD-70) — a
   // profile mistake DecelModeUnmet parks on, not a configure failure.
-  if (planner_params_.decel.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
+  if (decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
       planner_params_.decel.n_pre_max > 0 && !SetupDecelPlanner(model, pm)) {
     return false;
   }
@@ -1922,9 +1907,6 @@ bool DemoCatchingController::SetupPlannerSearch() {
 
 const char* DemoCatchingController::DecelMpcConfigInvalid() const noexcept {
   const auto& d = planner_params_.decel;
-  if (!planner_params_.enabled) {
-    return "planner.enabled is false (the decel MPC runs on the planner thread)";
-  }
   // The CLIK's torque box only exists in the dynamic form; the box and
   // kinematic forms have none to exceed, so the pair is not judged there.
   if (params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic &&
@@ -1941,7 +1923,7 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
   if (pm.nv > rtc::catching::kMaxDecelNv) {
     RCLCPP_ERROR(logger_,
                  "planner.decel_mpc: the arm has %d joints but a decel segment carries at most "
-                 "%d (kMaxDecelNv) — set planner.decel_mpc.enabled: false or raise the capacity",
+                 "%d (kMaxDecelNv) — set supervisor.decel.mode: closed_form or raise the capacity",
                  pm.nv, rtc::catching::kMaxDecelNv);
     return false;
   }
@@ -2090,15 +2072,12 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   // published only together with one that starts before t_c. Without a
   // pre-catch grid no decel planner is built — no trial would ever start. The
   // oracle profile has no planner: its test writes the box.
-  if (!oracle_enabled_ && planner_params_.enabled && planner_params_.decel.enabled &&
-      !(planner_params_.decel.n_pre_max > 0)) {
+  if (!oracle_enabled_ && planner_params_.enabled && !(planner_params_.decel.n_pre_max > 0)) {
     return "planner.decel_mpc.approach.n_pre_max is 0 (the RT takes a plan only with a segment "
            "that starts before t_c, MD-45)";
   }
-  if (!oracle_enabled_ && !(planner_params_.enabled && planner_params_.decel.enabled &&
-                            planner_cycle_.DecelConfigured())) {
-    return "no decel planner runs (planner.enabled and planner.decel_mpc.enabled, on a model "
-           "the cores accept)";
+  if (!oracle_enabled_ && !(planner_params_.enabled && planner_cycle_.DecelConfigured())) {
+    return "no decel planner runs (planner.enabled is false, or no model the cores accept)";
   }
   // MD-37: a segment for the next grid point waits in the box while the
   // pending slot holds the one before it — at most the replan lead and three

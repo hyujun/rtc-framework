@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -24,6 +26,19 @@ using params_detail::Spelling;
 
 std::string Key(const std::string& path) {
   return "'planner." + path + "'";
+}
+
+/// A number for a message: the YAML text when the key is written (the way the
+/// other range errors echo it), else the default in scientific notation —
+/// `std::to_string` would print 5e-7 as 0.000000.
+std::string Shown(const YAML::Node& sec, const char* key, double value) {
+  const YAML::Node v = sec[key];
+  if (v) {
+    return Spelling(v);
+  }
+  std::ostringstream os;
+  os << std::scientific << std::setprecision(6) << value;
+  return os.str();
 }
 
 /// The section under `parent`, empty when absent; refuses a non-map.
@@ -55,6 +70,59 @@ double ReadBounded(const YAML::Node& sec, const char* key, const std::string& pa
            std::to_string(hi) + "] (L3 §6)");
   }
   return d;
+}
+
+/// A finite number ≥ 0 with no upper bound, or the fallback when absent — for
+/// the keys the consumer itself bounds only from below (a weight or a penalty
+/// whose 0 means "off").
+double ReadNonNegative(const YAML::Node& sec, const char* key, const std::string& path,
+                       double fallback) {
+  const YAML::Node v = sec[key];
+  if (!v) {
+    return fallback;
+  }
+  double d = 0.0;
+  try {
+    d = v.as<double>();
+  } catch (const YAML::Exception&) {
+    Reject(Key(path) + " must be a number, got " + Spelling(v));
+  }
+  if (!std::isfinite(d) || d < 0.0) {
+    Reject(Key(path) + " = " + Spelling(v) + " must be a finite number >= 0");
+  }
+  return d;
+}
+
+/// A finite number in an interval whose ends may be open, or the fallback when
+/// absent — for the keys whose range is "> 0" or "(0, π)" and where a closed
+/// bound at a made-up epsilon would claim a floor the consumer does not have.
+/// `text` is the range as the message spells it.
+double ReadInterval(const YAML::Node& sec, const char* key, const std::string& path,
+                    double fallback, double lo, bool lo_open, double hi, bool hi_open,
+                    const char* text) {
+  const YAML::Node v = sec[key];
+  if (!v) {
+    return fallback;
+  }
+  double d = 0.0;
+  try {
+    d = v.as<double>();
+  } catch (const YAML::Exception&) {
+    Reject(Key(path) + " must be a number, got " + Spelling(v));
+  }
+  const bool lo_ok = lo_open ? d > lo : d >= lo;
+  const bool hi_ok = hi_open ? d < hi : d <= hi;
+  if (!std::isfinite(d) || !lo_ok || !hi_ok) {
+    Reject(Key(path) + " = " + Spelling(v) + " must be a finite number in " + text);
+  }
+  return d;
+}
+
+/// A finite number > 0, or the fallback when absent.
+double ReadPositive(const YAML::Node& sec, const char* key, const std::string& path,
+                    double fallback) {
+  return ReadInterval(sec, key, path, fallback, 0.0, true, std::numeric_limits<double>::infinity(),
+                      false, "(0, inf)");
 }
 
 /// A DECISION value: absent or `TBD` → NaN (unset, the binding parks);
@@ -200,6 +268,8 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
 
   const YAML::Node gamma = Section(planner, "gamma", "gamma");
   out.gamma_margin = ReadBounded(gamma, "margin", "gamma.margin", out.gamma_margin, 0.0, 1.0);
+  out.unit_speed_damping = ReadInterval(gamma, "unit_speed_damping", "gamma.unit_speed_damping",
+                                        out.unit_speed_damping, 0.0, true, 1.0, false, "(0, 1]");
   out.eta_a = ReadBounded(gamma, "eta_a", "gamma.eta_a", out.eta_a, 1e-3, 1.0);
   out.eps_term = ReadBounded(gamma, "eps_term", "gamma.eps_term", out.eps_term, 1e-6, 1.0);
   const auto read_grid = [](const YAML::Node& sec, const char* key, const std::string& path,
@@ -256,6 +326,11 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   }
   out.switch_eta_jump =
       ReadBounded(sw, "eta_jump", "switch.eta_jump", out.switch_eta_jump, 1e-6, 1.0);
+  // The step bound divides by samples − 1: fewer than two instants is no ramp.
+  // And every sample is a ramp evaluation on the planner thread per switch
+  // check, so the count is capped (kSwitchSamplesMax).
+  out.switch_samples =
+      ReadInt(sw, "samples", "switch.samples", out.switch_samples, 2, kSwitchSamplesMax);
 
   const YAML::Node freeze = Section(planner, "freeze", "freeze");
   out.t_freeze = ReadDecision(freeze, "T_freeze", "freeze.T_freeze", 1e-3, 2.0);
@@ -287,7 +362,6 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
   const YAML::Node decel = Section(planner, "decel_mpc", "decel_mpc");
   DecelPlannerParams& d = out.decel;
-  d.enabled = ReadBool(decel, "enabled", "decel_mpc.enabled", d.enabled);
   const YAML::Node horizon = Section(decel, "horizon", "decel_mpc.horizon");
   // From the section's kind, not the node: an absent section reads as an
   // empty but DEFINED node (catching_yaml_read.hpp).
@@ -389,6 +463,85 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   d.w_const = ReadBounded(dcatch, "w_const", "decel_mpc.catch.w_const", d.w_const, 1e-6, 1e9);
   d.sigma_ref =
       ReadBounded(dcatch, "sigma_ref", "decel_mpc.catch.sigma_ref", d.sigma_ref, 1e-6, 1.0);
+  // The relative-velocity slack row (0 = off). The core refuses the slack
+  // without a bound to be slack against (Init → kParamsInvalid); here the
+  // profile is told which key to set.
+  d.rho_v = ReadNonNegative(dcatch, "rho_v", "decel_mpc.catch.rho_v", d.rho_v);
+  d.v_rel_allow =
+      ReadNonNegative(dcatch, "v_rel_allow", "decel_mpc.catch.v_rel_allow", d.v_rel_allow);
+  if (d.rho_v > 0.0 && !(d.v_rel_allow > 0.0)) {
+    Reject(Key("decel_mpc.catch.rho_v") + " = " + std::to_string(d.rho_v) +
+           " turns the slack on, which needs " + Key("decel_mpc.catch.v_rel_allow") + " > 0 (got " +
+           std::to_string(d.v_rel_allow) + ")");
+  }
+  // The core's own design values (MD-92). Each range is the core's Init check
+  // (decel_mpc.cpp) with the key's name on it, so a profile is told which key
+  // to fix instead of reading "kParamsInvalid" at configure.
+  const YAML::Node cost = Section(decel, "cost", "decel_mpc.cost");
+  if (const YAML::Node jw = cost["jerk_weight"]; jw) {
+    if (!jw.IsSequence() || jw.size() == 0 || jw.size() > static_cast<std::size_t>(kMaxPlanNv)) {
+      Reject(Key("decel_mpc.cost.jerk_weight") +
+             " must be a non-empty sequence of one positive number per arm joint, got " +
+             Spelling(jw));
+    }
+    d.jerk_weight.clear();
+    for (std::size_t i = 0; i < jw.size(); ++i) {
+      const std::string path = "decel_mpc.cost.jerk_weight[" + std::to_string(i) + "]";
+      double w = 0.0;
+      try {
+        w = jw[i].as<double>();
+      } catch (const YAML::Exception&) {
+        Reject(Key(path) + " must be a number, got " + Spelling(jw[i]));
+      }
+      if (!std::isfinite(w) || !(w > 0.0)) {
+        Reject(Key(path) + " = " + Spelling(jw[i]) + " must be a finite number > 0");
+      }
+      d.jerk_weight.push_back(w);
+    }
+  }
+  d.u_scale = ReadPositive(cost, "u_scale", "decel_mpc.cost.u_scale", d.u_scale);
+  d.w_delta = ReadNonNegative(cost, "w_delta", "decel_mpc.cost.w_delta", d.w_delta);
+  d.rho_tau = ReadNonNegative(cost, "rho_tau", "decel_mpc.cost.rho_tau", d.rho_tau);
+  // The stop-path weight (0 = off). The core takes any value >= 0; the upper
+  // bound is the largest one its solves are tested with — nothing downstream
+  // (not the configure warm-up either) would refuse a larger one.
+  d.w_perp = ReadInterval(cost, "w_perp", "decel_mpc.cost.w_perp", d.w_perp, 0.0, false,
+                          kDecelStopPathWeightMax, false,
+                          "[0, 1e4] (kDecelStopPathWeightMax, the largest weight the cores are "
+                          "tested with)");
+  d.axis_theta_max =
+      ReadInterval(dcatch, "axis_theta_max", "decel_mpc.catch.axis_theta_max", d.axis_theta_max,
+                   0.0, true, 3.14159265358979323846, true, "(0, pi)");
+  const YAML::Node lin = Section(decel, "linearization", "decel_mpc.linearization");
+  d.delta_tr = ReadPositive(lin, "delta_tr", "decel_mpc.linearization.delta_tr", d.delta_tr);
+  // Upper bound: DecelPlanner::Judge takes a solve as published only when node N
+  // rests to reference_rest_tol, and the RT admits a payload only when node N
+  // rests to kDecelRestTol (ValidateDecelNodes). A looser tolerance would let
+  // Judge accept nodes the validator then refuses.
+  d.reference_rest_tol =
+      ReadInterval(lin, "reference_rest_tol", "decel_mpc.linearization.reference_rest_tol",
+                   d.reference_rest_tol, 0.0, true, kDecelRestTol, false,
+                   "(0, 1e-3] (kDecelRestTol, the bound the RT admits a published node N by)");
+  d.ref_speed_fraction =
+      ReadInterval(lin, "ref_speed_fraction", "decel_mpc.linearization.ref_speed_fraction",
+                   d.ref_speed_fraction, 0.0, true, 1.0, false, "(0, 1]");
+  const YAML::Node solver = Section(decel, "solver", "decel_mpc.solver");
+  d.solver_max_iter = ReadInt(solver, "max_iter", "decel_mpc.solver.max_iter", d.solver_max_iter, 1,
+                              std::numeric_limits<int>::max());
+  d.solver_max_iter_in = ReadInt(solver, "max_iter_in", "decel_mpc.solver.max_iter_in",
+                                 d.solver_max_iter_in, 1, std::numeric_limits<int>::max());
+  d.solver_eps_abs = ReadPositive(solver, "eps_abs", "decel_mpc.solver.eps_abs", d.solver_eps_abs);
+  d.solver_eps_rel =
+      ReadNonNegative(solver, "eps_rel", "decel_mpc.solver.eps_rel", d.solver_eps_rel);
+  // A shifted previous solution meets the terminal equality only to eps_abs
+  // (the core's check, decel_mpc.cpp Init): a rest tolerance at or below it
+  // would refuse every warm solve.
+  if (!(d.reference_rest_tol > d.solver_eps_abs)) {
+    Reject(Key("decel_mpc.linearization.reference_rest_tol") + " = " +
+           Shown(lin, "reference_rest_tol", d.reference_rest_tol) + " must exceed " +
+           Key("decel_mpc.solver.eps_abs") + " (= " + Shown(solver, "eps_abs", d.solver_eps_abs) +
+           ")");
+  }
   return out;
 }
 

@@ -35,6 +35,11 @@ python owns is everything those functions take as input and leave as output:
 Not judged: the γ rollout (L3 §4.8, no function before S6.3). An open cell is
 therefore PASS(provisional); an empty map is conclusive.
 
+The acceleration box and the DLS damping are read from the controller YAML with the
+``--overlay`` files laid on it (the runtime tree is that YAML plus the ROS-parameter overrides
+of ``sim.yaml`` / ``sim_overlays``): the map and the runtime read the same numbers when the
+same overlays are given, and the shipped ones when none is.
+
 Every robot value is an argument. Both layers are always reported, and every
 denominator is the full throw grid.
 """
@@ -55,6 +60,7 @@ import yaml
 
 from rtc_tools.analysis.catch_speed_budget import (
     DEFAULT_CATCH_FRAME,
+    DEFAULT_DLS_DAMPING,
     ArmKinematics,
     directional_speed_lp,
     dls_unit_velocity,
@@ -66,8 +72,14 @@ from rtc_tools.analysis.derive_accel_limits import (
     load_robot_params,
     resolve_urdf_text,
 )
+from rtc_tools.utils.controller_config import (
+    deep_merge,
+    load_controller_config,
+    overlay_catching,
+)
 
 GATE_EXECUTABLE = "catch_gate_batch"
+DEFAULT_CONTROLLER = "demo_catching_controller"
 DEFAULT_FK_TOLERANCE_M = 2.5e-3
 DEFAULT_PROFILE_SAMPLES = 16
 DEFAULT_ACCEL_TOLERANCE = 1e-3  # relative, on the path acceleration (~0.05 % on time)
@@ -421,23 +433,71 @@ def _floats(text: str) -> list[float]:
     return [float(x) for x in text.replace(",", " ").split()]
 
 
-def load_accel_box(path: Path, group: str, n: int, *, require_adopted: bool = False) -> np.ndarray:
-    """``derived_accel_limits.<group>.qdd_max`` from a plan §9 limits file.
+def composed_catching(
+    controller_config: Path, key: str, overlays: Sequence[Path] = ()
+) -> tuple[dict, dict]:
+    """The ``catching`` tree the controller runs with, and the controller tree it came from.
 
-    ``require_adopted`` returns an empty array when the entry is not
-    ``adopted: true`` — the controller's rule (it loads no box then).
+    The controller YAML (``include:`` fragments composed) with each overlay laid on in the
+    order given, leaf by leaf — the order the launch lays ``sim.yaml`` and the sim overlays
+    on the node (``ApplyControllerParamOverrides``). An overlay is a ROS-params-shaped YAML
+    (``<node>: ros__parameters: <controller>: catching: ...``).
     """
-    doc = yaml.safe_load(path.read_text())
+    tree = load_controller_config(controller_config, config_key=key)[key]
+    catching = tree.get("catching") if isinstance(tree, Mapping) else None
+    catching = dict(catching) if isinstance(catching, Mapping) else {}
+    for path in overlays:
+        catching = deep_merge(catching, overlay_catching(path, key))
+    return catching, tree
+
+
+def load_accel_box(
+    controller_config: Path, key: str, n: int, overlays: Sequence[Path] = ()
+) -> np.ndarray:
+    """``catching.robot.arm.qdd_max`` of a controller config, ``include:`` fragments composed.
+
+    The path is the profile's controller YAML (``config/<robot>/controllers/
+    <key>.yaml``). It goes through ``load_controller_config``: the main file
+    alone lacks the keys of its fragments. ``overlays`` are laid on top, so the box is
+    the one the runtime reads when it is given the files the run was launched with
+    (a robot config's ``sim.yaml`` replaces the shipped box with the sim envelope).
+    """
     try:
-        entry = doc["derived_accel_limits"][group]
-        box = np.asarray(entry["qdd_max"], dtype=float)
+        catching, _ = composed_catching(controller_config, key, overlays)
+        box = np.asarray(catching["robot"]["arm"]["qdd_max"], dtype=float)
     except (KeyError, TypeError) as exc:
-        raise SystemExit(f"{path} has no derived_accel_limits.{group}.qdd_max") from exc
-    if require_adopted and not entry.get("adopted", False):
-        return np.empty(0)
+        raise SystemExit(f"{controller_config} has no {key}.catching.robot.arm.qdd_max") from exc
     if box.shape != (n,):
-        raise SystemExit(f"{path}: qdd_max has {box.size} entries, the arm has {n} joints")
+        raise SystemExit(
+            f"{controller_config}: qdd_max has {box.size} entries, the arm has {n} joints"
+        )
     return box
+
+
+def load_unit_speed_damping(
+    controller_config: Path, key: str, overlays: Sequence[Path] = ()
+) -> float:
+    """``catching.planner.gamma.unit_speed_damping`` of a controller config, fragments composed.
+
+    The C++ search reads the same key (``PlannerParams::unit_speed_damping``), so the offline
+    map damps the unit-speed solve the way the runtime does — given the same ``overlays``.
+    A profile that does not write it runs the C++ default, which is ``DEFAULT_DLS_DAMPING`` —
+    the same fallback here.
+    """
+    try:
+        catching, _ = composed_catching(controller_config, key, overlays)
+        gamma = catching["planner"]["gamma"]
+    except (KeyError, TypeError):
+        return DEFAULT_DLS_DAMPING
+    value = gamma.get("unit_speed_damping") if isinstance(gamma, Mapping) else None
+    if value is None:
+        return DEFAULT_DLS_DAMPING
+    damping = float(value)
+    if not (math.isfinite(damping) and damping > 0.0):
+        raise SystemExit(
+            f"{controller_config}: planner.gamma.unit_speed_damping = {value!r} must be > 0"
+        )
+    return damping
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -457,7 +517,27 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="joint speed limits: the robot config's max_velocity or the URDF rating",
     )
-    ap.add_argument("--accel-limits", type=Path, required=True, help="plan §9 limits YAML")
+    ap.add_argument(
+        "--controller-config",
+        type=Path,
+        help="the profile's controller YAML — its catching.robot.arm.qdd_max is the acceleration "
+        "box (default: <first --robot-config's dir>/controllers/<--controller>.yaml)",
+    )
+    ap.add_argument(
+        "--overlay",
+        type=Path,
+        action="append",
+        default=[],
+        help="a ROS-params YAML laid onto the controller YAML in the order given (repeatable): "
+        "the robot config's sim.yaml, a sim_overlays/*.yaml, the snippet catching_arm_budget "
+        "--write-envelope-box writes. Pass the files the run launched with, or the map "
+        "describes the shipped box and not the one the sim ran",
+    )
+    ap.add_argument(
+        "--controller",
+        default=DEFAULT_CONTROLLER,
+        help=f"the catching controller's config key (default {DEFAULT_CONTROLLER})",
+    )
     ap.add_argument("--eta-v", type=float, required=True, help="planner.gamma.eta_v")
     ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (plan §9)")
     ap.add_argument("--rotor-inertia", type=_floats, required=True, help="[kg m²], arm order")
@@ -487,7 +567,12 @@ def main(argv: list[str] | None = None) -> int:
         help="which wait pose to gate. Required when the map was judged from several: the "
         "robot waits in ONE posture, and a union over seeds overstates every count",
     )
-    ap.add_argument("--dls-damping", type=float, default=1e-3)
+    ap.add_argument(
+        "--dls-damping",
+        type=float,
+        help="λ of the DLS unit-speed solve (default: the profile's "
+        "planner.gamma.unit_speed_damping, the value the C++ search runs with)",
+    )
     ap.add_argument("--fk-tolerance-m", type=float, default=DEFAULT_FK_TOLERANCE_M)
     args = ap.parse_args(argv)
 
@@ -512,7 +597,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     qd_plan = args.eta_v * qd_max
     tau_limit = args.eta_tau * np.asarray(spec.tau_max, dtype=float)
-    box = load_accel_box(args.accel_limits, args.group, arm.n)
+    controller_config = args.controller_config or (
+        Path(args.robot_config[0]).parent / "controllers" / f"{args.controller}.yaml"
+    )
+    if not controller_config.is_file():
+        raise SystemExit(f"{controller_config}: no controller config — pass --controller-config")
+    box = load_accel_box(controller_config, args.controller, arm.n, args.overlay)
+    dls_damping = (
+        args.dls_damping
+        if args.dls_damping is not None
+        else load_unit_speed_damping(controller_config, args.controller, args.overlay)
+    )
     reach_centre = frame_placement_in_model_world(urdf_text, args.arm_base_frame)[:3, 3]
 
     with (args.map_dir / "throw_summary.csv").open() as handle:
@@ -533,7 +628,7 @@ def main(argv: list[str] | None = None) -> int:
         if cells and cells[0].lstrip("-").isdigit():
             seeds[int(cells[0])] = np.array([float(c) for c in cells[1:]])
 
-    inputs = [gate_inputs(arm, row, qd_plan, args.dls_damping) for row in accepted]
+    inputs = [gate_inputs(arm, row, qd_plan, dls_damping) for row in accepted]
     worst_fk = max(item.fk_residual_m for item in inputs)
     if worst_fk > args.fk_tolerance_m:
         raise SystemExit(
@@ -640,7 +735,8 @@ def main(argv: list[str] | None = None) -> int:
         "velocity_source": args.velocity_source,
         "qd_max": [float(x) for x in qd_max],
         "qdd_box": [float(x) for x in box],
-        "accel_limits": str(args.accel_limits),
+        "controller_config": str(controller_config),
+        "overlays": [str(Path(p)) for p in args.overlay],
         "eta_v": args.eta_v,
         "eta_tau": args.eta_tau,
         "rotor_inertia": [float(x) for x in arm.rotor_inertia],
@@ -659,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         "commit_lead_s": commit_lead,
         "min_flight_time_s": settings.first_plan_s + commit_lead,
         "seed_id": seed_id,
+        "dls_damping": dls_damping,
         "wait_pose": [float(x) for x in seeds[seed_id]],
         "grid_throws": len(throws),
         "kinematic_throws": len({r["throw_index"] for r in rows}),

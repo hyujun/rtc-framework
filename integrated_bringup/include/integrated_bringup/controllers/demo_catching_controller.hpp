@@ -206,21 +206,27 @@ enum class CatchingParkReason : std::uint8_t {
   /// joint-space motions ramp with, `supervisor.decel.a_dec`, or a hand profile
   /// the sequencer can run.
   kSupervisorUnset,
-  /// `planner.decel_mpc.enabled` in a profile that cannot run it: the planner
-  /// is off, or the decel MPC's torque box plus its publish slack exceeds the
-  /// CLIK's torque box (`joint_cmd.eta_tau`), so a published stop could ask
-  /// for torque the CLIK refuses (MPC E1-F03, MD-33).
+  /// `supervisor.decel.mode: mpc` with the planner on, but the decel MPC's
+  /// torque box plus its publish slack exceeds the CLIK's torque box
+  /// (`joint_cmd.eta_tau`), so a published stop could ask for torque the CLIK
+  /// refuses (MPC E1-F03, MD-33). A planner that is off is kDecelModeUnmet's.
   kDecelMpcInvalid,
   /// `supervisor.decel.mode: mpc` without one of its prerequisites (MPC
   /// MD-34): the catch sub-model sampler, `joint_cmd.K_n` > 0, η_v < 1, the
   /// arm's per-joint velocity ratings and the CLIK's per-joint velocity and
   /// position boxes, and a decel planner
-  /// (`planner.decel_mpc.enabled` and `approach.n_pre_max` > 0 with the
+  /// (`approach.n_pre_max` > 0 with the
   /// planner on — without a pre-catch grid none is built, MD-70; the oracle
   /// profile is exempt). Under mpc the arm follows a segment from APPROACH to the end of
   /// the stop (MD-44, MD-45), so a missing prerequisite would leave every
   /// trial without one.
   kDecelModeUnmet,
+  /// The profile still sets a key that no longer exists
+  /// (`robot.arm.accel_limits_{package,path,group}`, replaced by
+  /// `robot.arm.qdd_max` / `qdd_provisional`). Ignoring it would run the
+  /// shipped box under the overlay's name; a configure FAILURE would take the
+  /// other controllers down, so it parks. The log names the key.
+  kRemovedKey,
 };
 
 /// Controller-local device indices. This controller claims exactly two groups
@@ -401,7 +407,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return decel_pending_;
   }
 
-  /// Whether the planner runs the decel MPC (`planner.decel_mpc.enabled` and a
+  /// Whether the planner runs the decel MPC (`supervisor.decel.mode: mpc` and a
   /// model to plan in). Lifecycle / test callers only: it reads planner state
   /// that a configure rewrites with the thread joined, not an atomic.
   [[nodiscard]] bool IsDecelPlannerConfigured() const noexcept {
@@ -721,15 +727,16 @@ class DemoCatchingController final : public RTControllerInterface {
   /// configures and still holds the arm.
   void SetupArmCommand();
 
-  /// Read the D-16 acceleration box (A-S5-6) from the file the YAML names
-  /// (package-relative, or absolute). Logs and leaves `arm_qdd_max_` EMPTY
-  /// when the file is missing, not adopted, or does not cover the arm — the
-  /// box is a DERIVED artefact, so an absent one is a configuration error and
-  /// not something to substitute a default for; SupervisorValueMissing() is
-  /// what judges the absence. A box that loads also records the file's
-  /// `provisional` flag (absent = true), which on_configure parks a real-arm
-  /// configuration on (#537 pre-S10 R3, Q4).
-  void LoadDerivedAccelLimits();
+  /// Judge the acceleration box LoadConfig read (`robot.arm.qdd_max`,
+  /// `robot.arm.qdd_provisional`) against the arm's DOF. Logs and leaves
+  /// `arm_qdd_max_` EMPTY when the key is absent, malformed, the wrong length
+  /// or not positive — the box is a configured value with no defensible
+  /// default, so an absent one is a configuration error and not something to
+  /// substitute a default for; SupervisorValueMissing() is what judges the
+  /// absence. A box that passes also takes the `provisional` flag (absent =
+  /// true), which on_configure parks a real-arm configuration on (#537
+  /// pre-S10 R3, Q4).
+  void ApplyArmAccelBox();
 
   /// Assemble the position / velocity / acceleration boxes CLIK is given, in
   /// Pinocchio order. Non-RT.
@@ -781,8 +788,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The first planner value that is a decision and is unset, or nullptr.
   [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
 
-  /// Why `planner.decel_mpc.enabled` cannot run in this profile, or nullptr
-  /// (planner off; decel torque box + publish slack over the CLIK's).
+  /// Why the decel MPC cannot run under `supervisor.decel.mode: mpc` with the
+  /// planner on, or nullptr (decel torque box + publish slack over the CLIK's).
   [[nodiscard]] const char* DecelMpcConfigInvalid() const noexcept;
 
   /// Build the decel planner on the search's model (MPC E1-F03): the same
@@ -1274,15 +1281,23 @@ class DemoCatchingController final : public RTControllerInterface {
   double limit_margin_{0.05};
 
   // ── Oracle plan (A-S5-8, the S5.3/S5.5 stand-in for the S6 planner) ──────
-  std::string accel_limits_package_{"integrated_bringup"};
-  std::string accel_limits_path_;
-  std::string accel_limits_group_;
-  std::vector<double> arm_qdd_max_;  // device order, from the derived file
-  /// The loaded box's own `provisional` flag and the file it came from (the
-  /// park's log line names both). Meaningful only while `arm_qdd_max_` is not
-  /// empty; rewritten by every LoadDerivedAccelLimits().
+  /// `robot.arm.qdd_max` / `qdd_provisional` as LoadConfig read them, before
+  /// they are judged against the arm's DOF (ApplyArmAccelBox).
+  std::vector<double> arm_qdd_cfg_;
+  bool arm_qdd_cfg_present_{false};
+  bool arm_qdd_cfg_malformed_{false};
+  bool arm_qdd_provisional_cfg_{true};
+  /// The first removed `robot.arm.accel_limits_*` key LoadConfig found, empty
+  /// when none; on_configure parks on it (kRemovedKey).
+  std::string removed_arm_box_key_;
+  /// LoadConfig saw `planner.decel_mpc.enabled` reading false. The key is
+  /// ignored; on_configure warns only under `supervisor.decel.mode: mpc`,
+  /// where the old key would have parked and the law now runs.
+  bool stale_decel_mpc_disabled_key_{false};
+  std::vector<double> arm_qdd_max_;  // device order, the judged `robot.arm.qdd_max`
+  /// The judged box's `provisional` flag. Meaningful only while `arm_qdd_max_`
+  /// is not empty; rewritten by every ApplyArmAccelBox().
   bool arm_qdd_provisional_{true};
-  std::string arm_qdd_source_;
   /// The ARM's position box after `limit_margin_`, device order — the same
   /// box handed to CLIK, cached here because the abort ramp needs it too.
   /// `JointSpaceDecelStep` documents its bounds as "the caller's box, already

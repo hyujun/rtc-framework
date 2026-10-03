@@ -110,6 +110,7 @@ from rtc_tools.analysis.catchability_map import (
     transform_point,
 )
 from rtc_tools.analysis.table_cells import is_true as _is_true, num as _num
+from rtc_tools.utils.controller_config import load_controller_config
 from rtc_tools.utils.smoothing import COMMAND_SMOOTH_ROWS, box_smooth
 
 # ── rtc_msgs/CatchingState ABI (framework message constants, not robot values) ─
@@ -546,8 +547,10 @@ class CatchingProfile:
 
 def _catching_controllers(config_dir: Path) -> dict[str, dict]:
     found = {}
+    # Not recursive: a controller's `include:` fragments live in a subdirectory
+    # and are merged in by the loader, the way the CM hands the tree over.
     for path in sorted((config_dir / "controllers").glob("*.yaml")):
-        doc = _load_yaml(path)
+        doc = load_controller_config(path, config_key=path.stem)
         for name, node in doc.items():
             if not isinstance(node, Mapping) or not isinstance(node.get("catching"), Mapping):
                 continue

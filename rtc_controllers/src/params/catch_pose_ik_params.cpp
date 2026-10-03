@@ -161,7 +161,7 @@ bool ReadBool(const YAML::Node& sec, const char* key, const std::string& path, b
 constexpr const char* kIkKeys[] = {
     "max_iter", "eps_pos",     "alpha_max",   "rho",    "sigma0",  "lambda_max",
     "mu",       "qp_eps_abs",  "qp_max_iter", "k_null", "k_manip", "manip_grad_tol",
-    "v_eps",    "dq_step_max",
+    "v_eps",    "dq_step_max", "fd_step",
 };
 
 /// Keys L3 §6 marks removed in v0.5. Present-but-retired is REPORTED, not
@@ -232,6 +232,9 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
   o.k_manip = ReadDouble(ik, "k_manip", o.k_manip, kNonNegative);
   o.manip_grad_tol = ReadDouble(ik, "manip_grad_tol", o.manip_grad_tol, kNonNegative);
   o.v_eps = ReadDouble(ik, "v_eps", o.v_eps, kPositive);
+  // The central-difference step of the log w5 gradient: a zero or negative
+  // step would divide by it.
+  o.fd_step = ReadDouble(ik, "fd_step", o.fd_step, kPositive);
 
   // alpha_max: L3 §6 records `0.26 (provisional)`, which is the struct's own
   // default (see the header's RESOLVED DISCREPANCY note). It is still read as a

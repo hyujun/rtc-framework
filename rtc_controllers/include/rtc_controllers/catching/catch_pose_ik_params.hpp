@@ -43,15 +43,14 @@
 // The SharedKey* cases in test/test_catch_pose_ik_params.cpp pin both halves,
 // so the documented difference cannot drift into an undocumented one.
 //
-// ── Fields of `CatchPoseIkOptions` NOT reachable from YAML ──────────────────
-// L3 §6 names no key for them, and this parser does not invent one; they keep
-// their in-code default and a caller that needs to move them sets the struct
-// field directly:
-//   - `fd_step` — the central-difference step h for ∇log w₅.
-// Every other field of the struct has a row in L3 §6 and is wired. The key
-// names, units, defaults and ranges are NOT restated here (AP-DOC-1): L3 §6 is
-// the authority, the range checks in params/catch_pose_ik_params.cpp are the
-// code's single copy of it, and each struct field already names its own key.
+// ── `planner.ik.fd_step` ────────────────────────────────────────────────────
+// The central-difference step h of ∇log w₅ is a design value like the others
+// and has a key (finite > 0; shipped at the struct's default). It was left out
+// while no profile needed to move it; #698 lists every design value in YAML.
+// Every field of the struct is therefore wired. The key names, units, defaults
+// and ranges are NOT restated here (AP-DOC-1): L3 §6 is the authority, the
+// range checks in params/catch_pose_ik_params.cpp are the code's single copy
+// of it, and each struct field already names its own key.
 //
 // RESOLVED DISCREPANCY (doc vs code default), the one this parser found:
 //   - `planner.ik.alpha_max` — L3 §6 gave the default as `TBD` while

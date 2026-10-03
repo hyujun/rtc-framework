@@ -12,6 +12,7 @@
 #pragma once
 
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_controller_manager/controller_config_loader.hpp"
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -25,12 +26,15 @@
 
 namespace integrated_bringup::testfx {
 
+// Through the CM's own loader, so a config split into `include:` fragments
+// arrives as the one tree the controller is handed — a plain YAML::LoadFile
+// would return the main file with the fragments' keys silently missing.
 inline YAML::Node ShippedControllerNode(const std::string& profile, const std::string& key) {
   const std::string path =
       std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile + "/controllers/" + key + ".yaml";
-  const YAML::Node root = YAML::LoadFile(path);
-  EXPECT_TRUE(root[key]) << path << ": missing top-level key '" << key << "'";
-  return root[key];
+  const YAML::Node node = rtc::LoadControllerConfig(path, key);
+  EXPECT_TRUE(node) << path << ": missing top-level key '" << key << "'";
+  return node;
 }
 
 // Give the controller the profile's shared block.

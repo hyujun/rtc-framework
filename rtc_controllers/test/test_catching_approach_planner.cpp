@@ -41,12 +41,14 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 
 using rtc::catching::DecelBallTarget;
 using rtc::catching::DecelKind;
+using rtc::catching::DecelMpcParams;
 using rtc::catching::DecelMpcReason;
 using rtc::catching::DecelNodeTimeNs;
 using rtc::catching::DecelOutcome;
@@ -161,7 +163,6 @@ DecelPlannerConstants Consts() {
 // catch, up to 6 × 0.1 s before it, k_max 2.
 DecelPlannerParams ApproachParams() {
   DecelPlannerParams p;
-  p.enabled = true;
   p.n_nodes = 7;
   p.dt_s = 0.05;
   p.blocks = {1, 1, 2, 3};
@@ -633,6 +634,236 @@ TEST(ApproachPlanner, EachGateWithholdsOnItsOwn) {
   EXPECT_EQ(first(p, 0).outcome, DecelOutcome::kCatchError);
 }
 
+// MPC MD-91: `catch.rho_v` / `catch.v_rel_allow`, from the YAML to the cores.
+// The slack row sits at the catch node, so the catch cores get it — one more
+// variable and seven more rows each — and the stop cores stay as they were.
+TEST(ApproachPlanner, TheVelocitySlackKeysReachTheCatchCores) {
+  const char* grid =
+      "horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
+      "replan: {k_max: 2}, approach: {n_pre_max: 6, dt_pre_s: 0.1}";
+  const auto params_of = [&](const std::string& catch_keys) {
+    return rtc::catching::ParsePlannerParams(
+               YAML::Load("planner: {decel_mpc: {" + std::string(grid) + catch_keys + "}}"))
+        .decel;
+  };
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig off(arm, params_of(""));
+    Rig on(arm, params_of(", catch: {rho_v: 5.0, v_rel_allow: 0.25}"));
+    ASSERT_TRUE(off.planner.Configured());
+    ASSERT_TRUE(on.planner.Configured());  // every warm-up solved with the row on
+    for (int j = 1; j <= 6; ++j) {
+      EXPECT_EQ(off.planner.ApproachCoreParams(j).rho_v, 0.0) << j;
+      EXPECT_EQ(off.planner.ApproachCoreParams(j).v_rel_allow, 0.0) << j;
+      EXPECT_EQ(on.planner.ApproachCoreParams(j).rho_v, 5.0) << j;
+      EXPECT_EQ(on.planner.ApproachCoreParams(j).v_rel_allow, 0.25) << j;
+      const auto& qp_off = off.planner.ApproachCore(j).MainQp();
+      const auto& qp_on = on.planner.ApproachCore(j).MainQp();
+      EXPECT_EQ(qp_on.n_vars, qp_off.n_vars + 1) << j;
+      EXPECT_EQ(qp_on.n_ineq, qp_off.n_ineq + 7) << j;
+    }
+    for (int k = 0; k <= 2; ++k) {
+      EXPECT_EQ(on.planner.StopCoreParams(k).rho_v, 0.0) << k;
+      EXPECT_EQ(on.planner.Core(k).MainQp().n_vars, off.planner.Core(k).MainQp().n_vars) << k;
+      EXPECT_EQ(on.planner.Core(k).MainQp().n_ineq, off.planner.Core(k).MainQp().n_ineq) << k;
+    }
+  }
+}
+
+// s_v is recorded and never a publish gate (formulation §1.6): no threshold
+// is defined for it. The same catch is published with the row off (s_v 0)
+// and with it on against a bound a 5 m/s ball leaves far behind — the record
+// then carries the worst axis' excess over the bound, as a fraction of it.
+TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig off(arm);
+    const Started s0 = StartPlan(off, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s0.seq, 0U);
+    EXPECT_EQ(off.rec.slack_v, 0.0);
+
+    DecelPlannerParams p = ApproachParams();
+    p.rho_v = 0.05;
+    p.v_rel_allow = 0.1;
+    Rig on(arm, p);
+    const Started s1 = StartPlan(on, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s1.seq, 0U) << Why(on.rec);  // published: the slack withheld nothing
+    EXPECT_EQ(on.rec.outcome, DecelOutcome::kReady);
+    const double excess =
+        (s1.c.v - CatchNodeVel(on.arm, on.out)).cwiseAbs().maxCoeff() / p.v_rel_allow - 1.0;
+    std::printf("[ record ] n = %d: s_v %.3f, FK excess %.3f, |v_rel| %.3f m/s\n",
+                static_cast<int>(arm.model->nv), on.rec.slack_v, excess, on.rec.catch_v_rel);
+    // Far over the bound (the hand cannot move at the ball's 5 m/s) ...
+    ASSERT_GT(excess, 1.0);
+    // ... and the recorded slack is that excess: the row's linear model
+    // against FK at the solution.
+    EXPECT_NEAR(on.rec.slack_v, excess, 0.01 * excess);
+  }
+}
+
+// MPC MD-92: the core's design values, from the YAML to every core the planner
+// builds — the stop cores (k = 0..k_max) and the catch cores (n_pre = 1..6).
+// Twelve distinct values; a core left on DecelMpcParams{} reads its default.
+TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
+  const auto params_of = [](const std::string& body) {
+    return rtc::catching::ParsePlannerParams(
+               YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, "
+                          "dt_s: 0.05, blocks: [1, 1, 2, 3]}, replan: "
+                          "{k_max: 2}, approach: {n_pre_max: 6, "
+                          "dt_pre_s: 0.1}, " +
+                          body + "}}"))
+        .decel;
+  };
+  const DecelMpcParams defaults{};
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    const int n = static_cast<int>(arm.model->nv);
+    // One entry per arm joint, in DEVICE order: entry d belongs to the model
+    // joint whose device index is d (the arms' orders are permutations).
+    std::string list;
+    for (int d = 0; d < n; ++d) {
+      list += (d == 0 ? "" : ", ") + std::to_string(1.0 + 0.5 * d);
+    }
+    Rig on(arm, params_of("cost: {jerk_weight: [" + list +
+                          "], u_scale: 500.0, w_delta: 2.5, rho_tau: 7.0}, "
+                          "catch: {axis_theta_max: 1.2}, "
+                          "linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, "
+                          "ref_speed_fraction: 0.8}, "
+                          "solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, "
+                          "eps_rel: 1.0e-5}"));
+    Rig off(arm, params_of(""));
+    ASSERT_TRUE(on.planner.Configured());
+    ASSERT_TRUE(off.planner.Configured());
+    const auto check = [&](const DecelMpcParams& mp, const char* what, int i) {
+      SCOPED_TRACE(std::string(what) + " " + std::to_string(i));
+      ASSERT_EQ(mp.jerk_weight.size(), n);
+      for (int m = 0; m < n; ++m) {
+        EXPECT_EQ(mp.jerk_weight[m], 1.0 + 0.5 * static_cast<double>(Dev(arm, m))) << m;
+      }
+      EXPECT_EQ(mp.u_scale, 500.0);
+      EXPECT_EQ(mp.w_delta, 2.5);
+      EXPECT_EQ(mp.rho_tau, 7.0);
+      EXPECT_EQ(mp.axis_theta_max, 1.2);
+      EXPECT_EQ(mp.delta_tr, 0.2);
+      EXPECT_EQ(mp.reference_rest_tol, 2.0e-5);
+      EXPECT_EQ(mp.solver.max_iter, 300);
+      EXPECT_EQ(mp.solver.max_iter_in, 150);
+      EXPECT_EQ(mp.solver.eps_abs, 2.0e-7);
+      EXPECT_EQ(mp.solver.eps_rel, 1.0e-5);
+      // Not design values: the core's own setting stays.
+      EXPECT_EQ(mp.solver.update_preconditioner, defaults.solver.update_preconditioner);
+      EXPECT_EQ(mp.solver.dense_backend, defaults.solver.dense_backend);
+      // `cost.w_perp` is a key of its own now (#698); this profile does not
+      // set it, so the cores keep the default (its tests: section 4b).
+      EXPECT_EQ(mp.w_perp, defaults.w_perp);
+    };
+    for (int j = 1; j <= 6; ++j) {
+      check(on.planner.ApproachCoreParams(j), "catch core", j);
+    }
+    for (int k = 0; k <= 2; ++k) {
+      check(on.planner.StopCoreParams(k), "stop core", k);
+    }
+    // The shipped values are the defaults: a planner built with the keys at
+    // them has every new field equal to DecelMpcParams{} (what the planner
+    // overwrites — grid, eta, m_q, catch terms — is not compared).
+    const auto same = [&](const DecelMpcParams& mp, const char* what, int i) {
+      SCOPED_TRACE(std::string(what) + " " + std::to_string(i));
+      EXPECT_EQ(mp.u_scale, defaults.u_scale);
+      EXPECT_EQ(mp.w_delta, defaults.w_delta);
+      EXPECT_EQ(mp.rho_tau, defaults.rho_tau);
+      EXPECT_EQ(mp.axis_theta_max, defaults.axis_theta_max);
+      EXPECT_EQ(mp.delta_tr, defaults.delta_tr);
+      EXPECT_EQ(mp.reference_rest_tol, defaults.reference_rest_tol);
+      EXPECT_EQ(mp.solver.max_iter, defaults.solver.max_iter);
+      EXPECT_EQ(mp.solver.max_iter_in, defaults.solver.max_iter_in);
+      EXPECT_EQ(mp.solver.eps_abs, defaults.solver.eps_abs);
+      EXPECT_EQ(mp.solver.eps_rel, defaults.solver.eps_rel);
+      EXPECT_EQ(mp.jerk_weight.size(), 0);
+    };
+    for (int j = 1; j <= 6; ++j) {
+      same(off.planner.ApproachCoreParams(j), "catch core", j);
+    }
+    for (int k = 0; k <= 2; ++k) {
+      same(off.planner.StopCoreParams(k), "stop core", k);
+    }
+  }
+}
+
+// The list is one entry per ARM joint: the parser has no joint count, so the
+// planner's configure refuses a wrong length — by key.
+TEST(ApproachPlanner, TheJerkWeightListMustMatchTheArm) {
+  const Arm arm = Arm6();
+  DecelPlannerParams p = ApproachParams();
+  p.jerk_weight = {1.0, 1.0, 1.0, 1.0, 1.0};  // 5 for 6 joints
+  DecelPlanner planner;
+  std::string err;
+  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
+  p.jerk_weight = std::vector<double>(7, 1.0);
+  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
+  p.jerk_weight = std::vector<double>(6, 1.0);
+  EXPECT_TRUE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err)) << err;
+}
+
+// m_q against the trust region used to be compared with a default-constructed
+// core's: a profile's own delta_tr must decide.
+TEST(ApproachPlanner, TheMarginIsComparedWithTheProfilesTrustRegion) {
+  const Arm arm = Arm6();
+  DecelPlannerParams p = ApproachParams();
+  std::string err;
+  DecelPlanner planner;
+  // m_q 0.15 is above the default trust region (0.1) and below this one.
+  p.m_q = 0.15;
+  p.delta_tr = 0.3;
+  EXPECT_TRUE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err)) << err;
+  // m_q 0.05 is below the default 0.1 and not below this one.
+  p.m_q = 0.05;
+  p.delta_tr = 0.04;
+  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_NE(err.find("decel_mpc.linearization.delta_tr"), std::string::npos) << err;
+  EXPECT_NE(err.find("decel_mpc.m_q"), std::string::npos) << err;
+  EXPECT_FALSE(planner.Configured());
+}
+
+// `linearization.ref_speed_fraction`: the planner's own number, read at the
+// first solve's reference. The shipped 0.9 gives the figure the existing
+// clamp test pins; another value moves it.
+TEST(ApproachPlanner, TheReferenceSpeedFractionIsTheProfilesOwn) {
+  for (const double fraction : {0.9, 0.5}) {
+    DecelPlannerParams p = ApproachParams();
+    p.ref_speed_fraction = fraction;
+    Rig r(Arm6(), p);
+    const Catch c = CatchAt(r.arm, Offset(r.arm, 0.02));
+    Catch far = c;
+    far.q_catch = r.arm.q_nominal;
+    far.q_catch[0] += 1.5;
+    SetClock(kT0);
+    static_cast<void>(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
+                                          PlanFor(r.arm, far, kT0 + 800 * kMs), BallFor(c), r.out,
+                                          r.rec));
+    ASSERT_TRUE(r.rec.ref_scaled) << fraction;
+    const double allowed = fraction * 0.9 * 2.0 * 0.6 / 1.875;
+    EXPECT_NEAR(r.rec.ref_scale, allowed / 1.5, 1e-12) << fraction;
+  }
+}
+
+// `linearization.reference_rest_tol` is also the planner's own judgement: a
+// published segment is the next solve's reference, so its node N must be at
+// rest to the core's tolerance (Judge reads `rest_tol_ref_`), not the
+// payload's looser one. The solve's terminal rest is ~1e-12 — below any
+// tolerance a profile could set while the solver still converges — so the
+// consumer's number is read through its accessor: the profile's value, the
+// same the cores were built with, not a default-constructed core's.
+TEST(ApproachPlanner, TheReferenceRestToleranceIsTheProfilesInJudge) {
+  for (const double tol : {1.0e-4, 3.0e-5, 5.0e-3}) {
+    DecelPlannerParams p = ApproachParams();
+    p.reference_rest_tol = tol;
+    Rig r(Arm6(), p);
+    ASSERT_TRUE(r.planner.Configured());
+    EXPECT_EQ(r.planner.ReferenceRestTol(), tol);
+    EXPECT_EQ(r.planner.StopCoreParams(0).reference_rest_tol, tol);
+    EXPECT_EQ(r.planner.ApproachCoreParams(1).reference_rest_tol, tol);
+  }
+}
+
 TEST(ApproachPlanner, BetweenNodeSpeedFindsTheInteriorExtremum) {
   // One joint, two 0.1 s intervals. q̈ goes +4 → −4 on the first: q̇ peaks
   // mid-interval at q̇_0 + ½·4·0.05 = 1.0 + 0.1.
@@ -989,6 +1220,561 @@ TEST(ApproachPlanner, ASegmentCarriesThePlansTrackNotTheRtsLatest) {
   EXPECT_FALSE(r.planner.FollowedTrack(other, track));
 }
 
+// ── 4b. The stop-path line (`cost.w_perp`, #698) ─────────────────────────────
+// With w_⊥ > 0 every solve runs on a line the planner built: the ball's on a
+// catch core, the followed segment's on a stop core, a synthetic one in the
+// warm-ups — and a solve whose line cannot be built is withheld. With
+// w_⊥ = 0 none of that exists: each test's off rig solves what it solved.
+
+constexpr double kPerp = 2000.0;  // [1/m²]
+
+DecelPlannerParams PerpParams(double w_perp) {
+  DecelPlannerParams p = ApproachParams();
+  p.w_perp = w_perp;
+  return p;
+}
+
+// A ball the plan's own does not equal: 10 mm aside, its travel turned by
+// 0.05 rad — so a line built from the wrong ball shows in both members.
+// `step` scales both (a sequence of predictions, each with a line of its own).
+DecelBallTarget MovedBall(const Catch& c, double step = 1.0) {
+  DecelBallTarget b = BallFor(c);
+  b.p_b += step * Eigen::Vector3d(0.006, -0.008, 0.0);
+  const Eigen::Vector3d side = c.v.unitOrthogonal();
+  const double a = 0.05 * step;
+  b.v_b = c.v.norm() * (std::cos(a) * c.v.normalized() + std::sin(a) * side);
+  b.a_d = -b.v_b.normalized();
+  return b;
+}
+
+// Σ over the stop nodes (the catch node to node N) of the catch frame's
+// squared distance from the line through `p` along the unit `d` [m²].
+double StopPathDeviation(const Arm& a, const DecelPlanSnapshot& s, const Eigen::Vector3d& p,
+                         const Eigen::Vector3d& d) {
+  const Eigen::Matrix3d perp = Eigen::Matrix3d::Identity() - d * d.transpose();
+  double sum = 0.0;
+  Eigen::VectorXd q(a.model->nv);
+  for (int k = s.n_pre; k <= s.n_nodes; ++k) {
+    for (int m = 0; m < q.size(); ++m) {
+      q[m] = s.q[static_cast<std::size_t>(k * kMaxDecelNv) + Dev(a, m)];
+    }
+    sum += (perp * (FkPos(a, q) - p)).squaredNorm();
+  }
+  return sum;
+}
+
+// A withheld record: no QP ran for it.
+void ExpectNotSolved(const DecelRecord& rec) {
+  EXPECT_EQ(rec.qp_status, -1);
+  EXPECT_EQ(rec.iterations, 0);
+  EXPECT_EQ(rec.solve_ns, 0);
+  EXPECT_EQ(rec.core_reason, DecelMpcReason::kNone);
+}
+
+// YAML → planner → BOTH core kinds, and the configure warm-ups: each core is
+// solved once on the synthetic catch's line (through the catch frame at the
+// mid pose, along the synthetic ball's travel), never on the input's default.
+TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLine) {
+  const auto params_of = [](const std::string& body) {
+    return rtc::catching::ParsePlannerParams(
+               YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: "
+                          "[1, 1, 2, 3]}, replan: {k_max: 2}, approach: {n_pre_max: 6, "
+                          "dt_pre_s: 0.1}" +
+                          body + "}}"))
+        .decel;
+  };
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig on(arm, params_of(", cost: {w_perp: 40.0}"));
+    Rig off(arm, params_of(""));
+    ASSERT_TRUE(on.planner.Configured());  // every warm-up solved with the term on
+    ASSERT_TRUE(off.planner.Configured());
+    Eigen::VectorXd q_mid(arm.model->nv);
+    for (int m = 0; m < q_mid.size(); ++m) {
+      q_mid[m] = 0.5 * (arm.model->lowerPositionLimit[m] + arm.model->upperPositionLimit[m]);
+    }
+    pinocchio::Data data(*arm.model);
+    pinocchio::forwardKinematics(*arm.model, data, q_mid);
+    pinocchio::updateFramePlacement(*arm.model, data, arm.frame);
+    const Eigen::Vector3d p = data.oMf[arm.frame].translation();
+    const Eigen::Vector3d d = -data.oMf[arm.frame].rotation().col(2);
+    // The fixture must tell the built line from the input's default (origin,
+    // x). p is far from the origin on both arms; the 7-joint arm's mid-pose
+    // axis happens to lie within 1e-5 of x — still far outside the 1e-12 the
+    // comparison below allows — and the 6-joint arm's is nowhere near it.
+    ASSERT_GT(p.norm(), 0.05);
+    ASSERT_GT((d - Eigen::Vector3d::UnitX()).norm(), arm.model->nv == 6 ? 0.05 : 1e-9);
+    const auto check = [&](const rtc::catching::DecelMpcInput& in_on,
+                           const rtc::catching::DecelMpcInput& in_off, const DecelMpcParams& mp_on,
+                           const DecelMpcParams& mp_off, const char* what, int i) {
+      SCOPED_TRACE(std::string(what) + " " + std::to_string(i));
+      EXPECT_EQ(mp_on.w_perp, 40.0);
+      EXPECT_EQ(mp_off.w_perp, 0.0);
+      EXPECT_LT((in_on.p_c - p).norm(), 1e-12);
+      EXPECT_LT((in_on.d_hat - d).norm(), 1e-12);
+      EXPECT_NEAR(in_on.d_hat.norm(), 1.0, 1e-12);
+      // Off, nothing is written: the input keeps its default.
+      EXPECT_EQ(in_off.p_c, Eigen::Vector3d::Zero());
+      EXPECT_EQ(in_off.d_hat, Eigen::Vector3d::UnitX());
+    };
+    for (int j = 1; j <= 6; ++j) {
+      check(on.planner.ApproachCoreInput(j), off.planner.ApproachCoreInput(j),
+            on.planner.ApproachCoreParams(j), off.planner.ApproachCoreParams(j), "catch core", j);
+      // The catch warm-up's line is its own synthetic ball's.
+      EXPECT_EQ(on.planner.ApproachCoreInput(j).p_c, on.planner.ApproachCoreInput(j).p_b) << j;
+    }
+    for (int k = 0; k <= 2; ++k) {
+      check(on.planner.StopCoreInput(k), off.planner.StopCoreInput(k), on.planner.StopCoreParams(k),
+            off.planner.StopCoreParams(k), "stop core", k);
+      // One line for both warm-ups.
+      EXPECT_EQ(on.planner.StopCoreInput(k).p_c, on.planner.ApproachCoreInput(1).p_c) << k;
+      EXPECT_EQ(on.planner.StopCoreInput(k).d_hat, on.planner.ApproachCoreInput(1).d_hat) << k;
+    }
+  }
+}
+
+// PlanFirst: the line is the PLAN's catch point along the plan's ball velocity
+// — the vectors the solve hands the core as p_b and v_b — not the ball
+// target's (which only carries Σ_p there), and not the warm-up's.
+TEST(ApproachPlanner, TheFirstSolveStopsOnTheBallsLine) {
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig r(arm, PerpParams(kPerp));
+    const Catch c = CatchAt(r.arm, Offset(r.arm, 0.04));
+    const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
+    SetClock(kT0);
+    ASSERT_TRUE(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
+                                    PlanFor(r.arm, c, t_c), MovedBall(c), r.out, r.rec))
+        << Why(r.rec);
+    ASSERT_EQ(r.out.n_pre, 6);
+    const auto& in = r.planner.ApproachCoreInput(6);
+    EXPECT_EQ(in.p_c, c.p);
+    EXPECT_LT((in.d_hat - c.v.normalized()).norm(), 1e-12);
+    EXPECT_NEAR(in.d_hat.norm(), 1.0, 1e-12);
+    // The line and the catch terms are built from the same two vectors.
+    EXPECT_EQ(in.p_c, in.p_b);
+    EXPECT_LT((in.d_hat - in.v_b.normalized()).norm(), 1e-12);
+    EXPECT_GT((in.p_c - MovedBall(c).p_b).norm(), 0.005);
+  }
+}
+
+// A pre-catch replan: the line is THIS replan's ball — the newer prediction
+// moves it — on the core that solves the grid point.
+TEST(ApproachPlanner, APreCatchReplanTakesTheLineOfItsOwnBall) {
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig r(arm, PerpParams(kPerp));
+    const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s.seq, 0U);
+    const DecelBallTarget moved = MovedBall(s.c);
+    // The same grid point (n_pre 6), then a later one (n_pre 4, another core).
+    const std::int64_t same = kT0 + 20 * kMs;
+    const std::int64_t adv = s.t_c - kTArm - kReplan - 2 * kH - 4 * kDtPre - 10 * kMs;
+    for (const auto& [now, n_pre] : {std::pair{same, 6}, std::pair{adv, 4}}) {
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   moved, r.out, r.rec))
+          << n_pre << ": " << Why(r.rec);
+      ASSERT_EQ(r.out.n_pre, n_pre);
+      const auto& in = r.planner.ApproachCoreInput(n_pre);
+      EXPECT_EQ(in.p_c, moved.p_b) << n_pre;
+      EXPECT_LT((in.d_hat - moved.v_b.normalized()).norm(), 1e-12) << n_pre;
+      EXPECT_GT((in.d_hat - s.c.v.normalized()).norm(), 0.04) << n_pre;  // not the plan's
+    }
+  }
+}
+
+// What the weight buys: on the same catch the hand leaves the ball's line
+// less over the stop nodes with the term on than with it off — on the first
+// segment (a catch core) and on the stop core that takes over at the catch.
+TEST(ApproachPlanner, TheStopPathWeightKeepsTheStopNearerTheLine) {
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    double first[2] = {0.0, 0.0};
+    double stop[2] = {0.0, 0.0};
+    int i = 0;
+    for (const double w : {0.0, kPerp}) {
+      Rig r(arm, PerpParams(w));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U) << w << ": " << Why(r.rec);
+      const Eigen::Vector3d d = s.c.v.normalized();
+      first[i] = StopPathDeviation(r.arm, r.out, s.c.p, d);
+      const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 1 * kMs;  // stop k = 0
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                                   DecelBallTarget{}, r.out, r.rec))
+          << w << ": " << Why(r.rec);
+      ASSERT_EQ(r.rec.kind, DecelKind::kStop);
+      stop[i] = StopPathDeviation(r.arm, r.out, s.c.p, d);
+      ++i;
+    }
+    std::printf(
+        "[ record ] n = %d: off-line distance over the stop nodes, rms mm — first segment "
+        "%.2f -> %.2f, stop core %.2f -> %.2f (w_perp 0 -> %.0f)\n",
+        static_cast<int>(arm.model->nv), 1e3 * std::sqrt(first[0] / 8.0),
+        1e3 * std::sqrt(first[1] / 8.0), 1e3 * std::sqrt(stop[0] / 8.0),
+        1e3 * std::sqrt(stop[1] / 8.0), kPerp);
+    EXPECT_LT(first[1], first[0]);
+    EXPECT_LT(stop[1], stop[0]);
+  }
+}
+
+// A stop core has no ball: it solves on the line of its SOURCE — the segment
+// the RT follows, which its x₀ and reference come from — not on the line of
+// whatever catch-core segment was published last. The two differ when a late
+// prediction jump is published (S2, line L2) and the RT does not take it:
+// the hand is on S1 and must stop on L1. A published stop segment inherits
+// its source's line, so the later stop grid points find it too.
+TEST(ApproachPlanner, AStopCoreSolvesOnTheLineOfTheSegmentTheRtFollows) {
+  const std::int64_t lag = kTArm + kReplan + 2 * kH;
+
+  // What the RT reports at the catch node: S1 only (it refused S2, or S2 aged
+  // out), S2 only, or S1 with S2 pending (S2 starts before t_c, so S2 it is).
+  struct Report {
+    const char* what;
+    bool pending_s2;
+    bool active_s2;
+    bool expect_l2;
+  };
+
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    for (const Report& report :
+         {Report{"follows S1", false, false, false}, Report{"follows S2", false, true, true},
+          Report{"follows S1, S2 pending", true, false, true}}) {
+      SCOPED_TRACE(std::to_string(arm.model->nv) + " joints, RT " + report.what);
+      Rig r(arm, PerpParams(kPerp));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);  // S1, on the plan's line L1
+      ASSERT_NE(s.seq, 0U);
+      const DecelBallTarget moved = MovedBall(s.c);
+      std::int64_t now = kT0 + 20 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   moved, r.out, r.rec))
+          << Why(r.rec);
+      const std::uint32_t s2 = r.Publish(now);  // S2, on the moved ball's line L2
+      const Eigen::Vector3d l1_d = s.c.v.normalized();
+      const Eigen::Vector3d l2_d = moved.v_b.normalized();
+      // The two lines are apart in both members, and the LAST published
+      // catch-core line is L2 in every case.
+      ASSERT_GT((moved.p_b - s.c.p).norm(), 0.005);
+      ASSERT_GT((l2_d - l1_d).norm(), 0.04);
+      ASSERT_EQ(r.planner.ApproachCoreInput(6).p_c, moved.p_b);
+
+      const Eigen::Vector3d& want_p = report.expect_l2 ? moved.p_b : s.c.p;
+      const Eigen::Vector3d& want_d = report.expect_l2 ? l2_d : l1_d;
+      std::uint32_t pending = report.pending_s2 ? s2 : 0;
+      std::uint32_t active = report.active_s2 ? s2 : s.seq;
+      const std::uint32_t source0 = report.expect_l2 ? s2 : s.seq;
+      for (const int k : {0, 1, 2}) {
+        now = s.t_c + k * kDt - lag - 1 * kMs;
+        SetClock(now);
+        // A valid ball is passed on every wake: a stop core does not read it.
+        ASSERT_TRUE(
+            r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, pending, active),
+                             moved, r.out, r.rec))
+            << k << ": " << Why(r.rec);
+        EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+        // k = 0 starts on the catch-core segment the RT reports; k = 1, 2 on
+        // the stop segment published just before — which carries no line of
+        // its own, only its source's.
+        EXPECT_EQ(r.rec.source_seq, k == 0 ? source0 : active) << k;
+        EXPECT_EQ(r.planner.StopCoreInput(k).p_c, want_p) << k;
+        EXPECT_LT((r.planner.StopCoreInput(k).d_hat - want_d).norm(), 1e-12) << k;
+        active = r.Publish(now);
+        pending = 0;
+      }
+    }
+
+    // A re-solve that is NOT published gives no segment its line: the stop
+    // core still starts on S1, on L1.
+    {
+      Rig r(arm, PerpParams(kPerp));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      std::int64_t now = kT0 + 20 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   MovedBall(s.c), r.out, r.rec))
+          << Why(r.rec);
+      now = s.t_c - lag - 1 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                                   DecelBallTarget{}, r.out, r.rec))
+          << Why(r.rec);
+      EXPECT_EQ(r.planner.StopCoreInput(0).p_c, s.c.p);
+      EXPECT_LT((r.planner.StopCoreInput(0).d_hat - s.c.v.normalized()).norm(), 1e-12);
+    }
+
+    // The retry without a reference keeps the line. The published S2 is made
+    // to end off rest (5e-4 > the core's 1e-4), so the stop core refuses it as
+    // a reference and is re-solved from nothing — still on L2.
+    {
+      Rig r(arm, PerpParams(kPerp));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      const DecelBallTarget moved = MovedBall(s.c);
+      std::int64_t now = kT0 + 20 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   moved, r.out, r.rec))
+          << Why(r.rec);
+      for (int j = 0; j < r.out.nv; ++j) {
+        r.out.qd[static_cast<std::size_t>(r.out.n_nodes * kMaxDecelNv + j)] = 5e-4;
+      }
+      const std::uint32_t s2 = r.Publish(now);
+      now = s.t_c - lag - 1 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s2),
+                                   DecelBallTarget{}, r.out, r.rec))
+          << Why(r.rec);
+      EXPECT_TRUE(r.rec.cold_retry);
+      EXPECT_EQ(r.planner.StopCoreInput(0).p_c, moved.p_b);
+      EXPECT_LT((r.planner.StopCoreInput(0).d_hat - moved.v_b.normalized()).norm(), 1e-12);
+    }
+  }
+}
+
+// The lines sit beside the ring and move with it: after more re-solves than
+// the ring holds — each on a ball of its own — every segment still in the
+// ring answers with ITS line, the never-evicted followed one included.
+TEST(ApproachPlanner, EvictionKeepsEachSegmentsLineWithIt) {
+  const std::int64_t lag = kTArm + kReplan + 2 * kH;
+  Rig r(Arm6(), PerpParams(kPerp));
+  const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+  ASSERT_NE(s.seq, 0U);
+
+  struct Line {
+    std::uint32_t seq;
+    Eigen::Vector3d p;
+    Eigen::Vector3d d;
+  };
+
+  std::vector<Line> lines{Line{s.seq, s.c.p, s.c.v.normalized()}};
+  // The RT keeps following S1 while twelve same-point re-solves are published.
+  for (int i = 1; i <= 12; ++i) {
+    const DecelBallTarget ball = MovedBall(s.c, 0.1 * i);
+    const std::int64_t now = kT0 + (10 + i) * kMs;
+    SetClock(now);
+    ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                                 ball, r.out, r.rec))
+        << i << ": " << Why(r.rec);
+    lines.push_back(Line{r.Publish(now), ball.p_b, ball.v_b.normalized()});
+  }
+  const std::int64_t now = s.t_c - lag - 1 * kMs;  // the catch node (stop k = 0)
+  int in_ring = 0;
+  for (const Line& line : lines) {
+    const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, line.seq);
+    if (r.planner.SourceSeq(rt, s.t_c) == 0) {
+      continue;  // evicted
+    }
+    ++in_ring;
+    SetClock(now);
+    ASSERT_TRUE(r.planner.Replan(rt, DecelBallTarget{}, r.out, r.rec))
+        << line.seq << ": " << Why(r.rec);
+    EXPECT_EQ(r.rec.source_seq, line.seq);
+    EXPECT_EQ(r.planner.StopCoreInput(0).p_c, line.p) << line.seq;
+    EXPECT_LT((r.planner.StopCoreInput(0).d_hat - line.d).norm(), 1e-12) << line.seq;
+  }
+  EXPECT_EQ(in_ring, 8);  // the ring is full: S1 and the seven newest
+  EXPECT_NE(
+      r.planner.SourceSeq(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq), s.t_c),
+      0U);
+}
+
+// A source segment that carries no line → the stop core is withheld,
+// recorded, and no QP runs; it is never solved on a default line. A line
+// goes to ONE segment: the one published right after the solve that built
+// it. The same sequences with the term off solve as they always did.
+TEST(ApproachPlanner, AStopCoreWhoseSourceHasNoLineIsWithheld) {
+  const std::int64_t lag = kTArm + kReplan + 2 * kH;
+  for (const double w : {kPerp, 0.0}) {
+    const bool on = w > 0.0;
+    SCOPED_TRACE(on ? "w_perp on" : "w_perp off");
+    const auto expect = [on](bool ok, const DecelRecord& rec, std::uint32_t source) {
+      EXPECT_EQ(rec.kind, DecelKind::kStop);
+      EXPECT_EQ(rec.k, 0);
+      EXPECT_EQ(rec.source_seq, source);  // followed: only the line is missing
+      if (on) {
+        EXPECT_FALSE(ok);
+        EXPECT_EQ(rec.outcome, DecelOutcome::kNoBall);
+        ExpectNotSolved(rec);
+      } else {
+        EXPECT_TRUE(ok) << Why(rec);
+      }
+    };
+    // (a) A segment this planner never solved (another plan's, handed to the
+    // ring): the replan has its source, the source has no line. The line of
+    // the first segment went to the first segment — once.
+    {
+      Rig r(Arm6(), PerpParams(w));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      DecelPlanSnapshot foreign = r.out;
+      foreign.plan_id = 8;
+      foreign.decel_seq = 50;
+      r.planner.NotePublished(foreign);
+      const std::int64_t now = s.t_c - lag - 1 * kMs;
+      SetClock(now);
+      const bool ok = r.planner.Replan(
+          FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, 50, /*plan_id=*/8), BallFor(s.c),
+          r.out, r.rec);
+      expect(ok, r.rec, 50U);
+    }
+    // (b) ResetTrial drops the lines with the ring — the published segment's
+    // and the one a publishable, not yet published re-solve is holding. The
+    // first segment handed back to the ring is followed again, without a line.
+    {
+      Rig r(Arm6(), PerpParams(w));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      const DecelPlanSnapshot first = r.out;
+      std::int64_t now = kT0 + 20 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                   BallFor(s.c), r.out, r.rec))
+          << Why(r.rec);
+      now = s.t_c - lag - 1 * kMs;
+      const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq);
+      r.planner.ResetTrial();
+      EXPECT_EQ(r.planner.SourceSeq(rt, s.t_c), 0U);  // the ring is gone
+      // Straight after the reset, with no solve call in between: the line the
+      // unpublished re-solve held must not land on this segment.
+      r.planner.NotePublished(first);
+      SetClock(now);
+      const bool ok = r.planner.Replan(rt, BallFor(s.c), r.out, r.rec);
+      expect(ok, r.rec, s.seq);
+    }
+    // (c) A line belongs to the solve that built it: a publishable re-solve
+    // is NOT published, another Replan call comes (and withholds), and only
+    // then is the re-solve's segment handed to the ring — it carries no line.
+    {
+      Rig r(Arm6(), PerpParams(w));
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      std::int64_t now = kT0 + 20 * kMs;
+      const PlannerRtState pre = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0);
+      SetClock(now);
+      ASSERT_TRUE(r.planner.Replan(pre, BallFor(s.c), r.out, r.rec)) << Why(r.rec);
+      DecelPlanSnapshot late = r.out;
+      DecelPlanSnapshot scratch{};
+      SetClock(now);
+      ASSERT_FALSE(r.planner.Replan(pre, DecelBallTarget{}, scratch, r.rec));
+      ASSERT_EQ(r.rec.outcome, DecelOutcome::kNoBall);  // the pre-catch meaning: no ball
+      late.decel_seq = 60;
+      r.planner.NotePublished(late);
+      now = s.t_c - lag - 1 * kMs;
+      SetClock(now);
+      const bool ok = r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, 60),
+                                       BallFor(s.c), r.out, r.rec);
+      expect(ok, r.rec, 60U);
+    }
+  }
+}
+
+// The parser's upper bound is a value the cores do solve with: at
+// kDecelStopPathWeightMax the planner configures (every warm-up), and the
+// first solve, a re-solve on a moved ball and the three stop cores all come
+// out publishable, on both arms.
+TEST(ApproachPlanner, TheStopPathWeightSolvesAtItsUpperBound) {
+  const std::int64_t lag = kTArm + kReplan + 2 * kH;
+  for (const Arm& arm : {Arm6(), Arm7()}) {
+    Rig r(arm, PerpParams(rtc::catching::kDecelStopPathWeightMax));
+    ASSERT_TRUE(r.planner.Configured());
+    ASSERT_EQ(r.planner.StopCoreParams(0).w_perp, 1e4);
+    const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+    ASSERT_NE(s.seq, 0U) << Why(r.rec);
+    int iterations = r.rec.iterations;
+    std::int64_t now = kT0 + 20 * kMs;
+    SetClock(now);
+    ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                                 MovedBall(s.c), r.out, r.rec))
+        << Why(r.rec);
+    iterations = std::max(iterations, r.rec.iterations);
+    std::uint32_t followed = r.Publish(now);
+    for (const int k : {0, 1, 2}) {
+      now = s.t_c + k * kDt - lag - 1 * kMs;
+      SetClock(now);
+      ASSERT_TRUE(
+          r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, followed),
+                           DecelBallTarget{}, r.out, r.rec))
+          << k << ": " << Why(r.rec);
+      iterations = std::max(iterations, r.rec.iterations);
+      followed = r.Publish(now);
+    }
+    std::printf("[ record ] n = %d: w_perp %.0f, most QP iterations in one solve %d\n",
+                static_cast<int>(arm.model->nv), rtc::catching::kDecelStopPathWeightMax,
+                iterations);
+  }
+}
+
+// A ball at or below v_eps has no direction of travel: with the term on the
+// solve is withheld and says so; with it off the same input solves as it
+// always did (the catch terms take a ball at rest).
+TEST(ApproachPlanner, ABallWithoutADirectionIsWithheldOnlyWithTheTermOn) {
+  const double v_eps = Consts().v_eps;
+  for (const double w : {kPerp, 0.0}) {
+    const bool on = w > 0.0;
+    SCOPED_TRACE(on ? "w_perp on" : "w_perp off");
+    for (const Arm& arm : {Arm6(), Arm7()}) {
+      Rig r(arm, PerpParams(w));
+      const Catch c = CatchAt(r.arm, Offset(r.arm, 0.04));
+      const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
+      const rtc::catching::DecelMpcInput warm = r.planner.ApproachCoreInput(6);
+
+      // The first solve: below v_eps, exactly at it (an axis vector, so the
+      // norm IS v_eps), and just above it.
+      struct Row {
+        Eigen::Vector3d v;
+        bool has_direction;
+      };
+
+      for (const Row& row : {Row{0.1 * v_eps * c.v.normalized(), false},
+                             Row{Eigen::Vector3d(0.0, v_eps, 0.0), false},
+                             Row{Eigen::Vector3d(0.0, 2.0 * v_eps, 0.0), true}}) {
+        Catch still = c;
+        still.v = row.v;  // a_d stays the plan's unit axis
+        SetClock(kT0);
+        const bool ok =
+            r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
+                                PlanFor(r.arm, still, t_c), BallFor(still), r.out, r.rec);
+        EXPECT_EQ(r.rec.kind, DecelKind::kFirst);
+        if (on && !row.has_direction) {
+          EXPECT_FALSE(ok);
+          EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall) << row.v.norm();
+          EXPECT_EQ(r.rec.k, -6);  // the grid point is recorded even when withheld
+          ExpectNotSolved(r.rec);
+          // No line was written: the core's input still holds the warm-up's.
+          EXPECT_EQ(r.planner.ApproachCoreInput(6).p_c, warm.p_c);
+          EXPECT_EQ(r.planner.ApproachCoreInput(6).d_hat, warm.d_hat);
+        } else {
+          EXPECT_TRUE(ok) << row.v.norm() << ": " << Why(r.rec);
+        }
+      }
+      // A pre-catch replan with such a ball (a hand-made target: the one
+      // MakeDecelBallTarget builds is already invalid below v_eps).
+      const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+      ASSERT_NE(s.seq, 0U);
+      DecelBallTarget ball = BallFor(s.c);
+      ball.v_b = 0.1 * v_eps * s.c.v.normalized();
+      const std::int64_t now = kT0 + 20 * kMs;
+      const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0);
+      SetClock(now);
+      const bool ok = r.planner.Replan(rt, ball, r.out, r.rec);
+      EXPECT_EQ(r.rec.kind, DecelKind::kSame);
+      if (on) {
+        EXPECT_FALSE(ok);
+        EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall);
+        ExpectNotSolved(r.rec);
+        // Finite components whose norm is not: no direction either, and a
+        // different reason.
+        ball.v_b = Eigen::Vector3d(1e200, 1e200, 0.0);
+        SetClock(now);
+        EXPECT_FALSE(r.planner.Replan(rt, ball, r.out, r.rec));
+        EXPECT_EQ(r.rec.outcome, DecelOutcome::kInputNonFinite);
+        ExpectNotSolved(r.rec);
+      } else {
+        EXPECT_TRUE(ok) << Why(r.rec);
+      }
+    }
+  }
+}
+
 // ── 5. The ball target ───────────────────────────────────────────────────────
 
 rtc::catching::TrajectorySnapshot Line(int n = 10) {
@@ -1203,6 +1989,61 @@ TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
   mallocs += c.c_malloc;
   RecordProperty("approach_qp_solver_mallocs", std::to_string(mallocs));
   std::printf("[alloc] approach first + stop: %zu C mallocs (ProxQP, #654)\n", mallocs);
+}
+
+TEST(ApproachPlanner, TheStopLineAllocatesNothing) {
+  // `cost.w_perp` > 0: building the line, keeping it beside the ring at the
+  // publish and the two withholds are fixed-size work — nothing on the heap. Through a
+  // solve the C mallocs are ProxQP's (#654), so operator new is the gate.
+  Rig r(Arm7(), PerpParams(kPerp));
+  const Started s = StartPlan(r, kT0, 800 * kMs);  // warm-up outside the gates
+  ASSERT_NE(s.seq, 0U);
+  const DecelBallTarget ball = BallFor(s.c);
+  bool ok = false;
+  SetClock(kT0);
+  Counts c = Gated([&] {
+    ok = r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
+                             PlanFor(r.arm, s.c, s.t_c), ball, r.out, r.rec);
+  });
+  EXPECT_TRUE(ok) << Why(r.rec);
+  EXPECT_EQ(c.op_new, 0U) << "first solve";
+  r.out.decel_seq = ++r.seq;
+  r.out.publish_ns = kT0;
+  c = Gated([&] { r.planner.NotePublished(r.out); });
+  EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "keeping the line with the segment";
+  const std::int64_t same = kT0 + 20 * kMs;
+  const PlannerRtState pre = FollowingRt(r.arm, r.arm.q_nominal, same - kH, s.t_c, r.seq, 0);
+  SetClock(same);
+  c = Gated([&] { ok = r.planner.Replan(pre, ball, r.out, r.rec); });
+  EXPECT_TRUE(ok) << Why(r.rec);
+  EXPECT_EQ(c.op_new, 0U) << "same-point re-solve";
+  DecelBallTarget still = ball;
+  still.v_b = 1e-8 * ball.v_b.normalized();
+  SetClock(same);
+  c = Gated([&] { ok = r.planner.Replan(pre, still, r.out, r.rec); });
+  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall);
+  EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "no-direction path";
+  const std::int64_t stop = s.t_c - kTArm - kReplan - 2 * kH - kMs;
+  const PlannerRtState post = FollowingRt(r.arm, r.arm.q_nominal, stop - kH, s.t_c, 0, r.seq);
+  SetClock(stop);
+  c = Gated([&] { ok = r.planner.Replan(post, DecelBallTarget{}, r.out, r.rec); });
+  EXPECT_TRUE(ok) << Why(r.rec);
+  EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+  EXPECT_EQ(c.op_new, 0U) << "stop core on its source's line";
+  // A source without a line (a segment handed back after a reset): the next
+  // stop grid point is withheld.
+  DecelPlanSnapshot again = r.out;
+  r.planner.ResetTrial();
+  again.decel_seq = 70;
+  r.planner.NotePublished(again);
+  PlannerRtState lost = post;
+  lost.decel_seq = 70;
+  SetClock(stop + kDt);
+  lost.rt_state_ns = stop + kDt - kH;
+  c = Gated([&] { ok = r.planner.Replan(lost, DecelBallTarget{}, r.out, r.rec); });
+  EXPECT_FALSE(ok);
+  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall) << Why(r.rec);
+  EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "no-line path";
 }
 
 // ── 7. Records (not judged): what the cores cost at configure, and what the

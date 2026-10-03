@@ -1,0 +1,157 @@
+# demo_catching_controller — the mpc planner law (ur5e_p1b)
+#
+# A fragment of ../demo_catching_controller.yaml (its `include:` list). The CM
+# merges it into that file's tree; every key keeps its full path.
+#
+# The APPROACH–stop MPC: the planner thread solves it and the RT follows its
+# joint segments from APPROACH to the end of the stop (MPC plan MD-45,
+# MD-54 – MD-64). Read only when `supervisor.decel.mode: mpc` (the main file).
+demo_catching_controller:
+  catching:
+    supervisor:
+      decel:
+        # rho_max of the mpc segment-switch gate (MD-39), per joint:
+        # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max. Read under mpc only.
+        # E1-F10 left it at 1.0: over 989 followed replans rho stayed under
+        # 0.56 (p95 0.20) and none was refused (MPC plan §8 "E1-F10").
+        switch_margin: 1.0
+
+    planner:
+      decel_mpc:
+        # MPC E1-F03 (#629) / E1-F08 (#661): the planner thread solves the
+        # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
+        # MD-55 – MD-64). There is no switch here: the planner builds and runs
+        # it exactly when supervisor.decel.mode is mpc (MD-44) — shipped mpc
+        # (MD-89); under closed_form none of these keys is read. Under mode: mpc
+        # the RT takes a plan only together with its first segment and follows
+        # the segments from APPROACH to the end of the stop (MPC E1-F09, MD-45)
+        # — the approach grid below (n_pre_max > 0) is then required.
+        horizon:
+          # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
+          # (MD-21), 0.35 s.
+          n_nodes: 7
+          dt_s: 0.05
+          blocks: [1, 1, 2, 3]
+        approach:
+          # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
+          # before t_c. 0 = no decel planner — mode: mpc then parks (MD-70).
+          n_pre_max: 6
+          dt_pre_s: 0.1
+          # The first solve assumes the arm rests at its wait pose; above this
+          # max |q_dot_cmd| [rad/s] it withholds. Provisional.
+          rest_tol: 0.05
+        budget:
+          # A solve's ceiling, which is also the lead it is planned with [s]:
+          # the first segment (same wake as the search) and every later one
+          # (MD-56). Confirmed from the sim wall-clock run (2026-10-02, MPC plan
+          # §8).
+          first_s: 0.035
+          replan_s: 0.025
+        replan:
+          # Post-catch replans up to k_max grid points past t_c, stop end
+          # fixed (MD-31, MD-61). same_point: re-solve a pre-catch grid point
+          # with the newer prediction (MD-58).
+          k_max: 2
+          same_point: true
+        eta_tau: 0.7
+        m_q: 0.05
+        publish:
+          # Largest torque slack (fraction of tau_max) a published segment may
+          # carry (MD-33). eta_tau + slack_max must not exceed joint_cmd.eta_tau
+          # under the dynamic CLIK form (checked at configure). E1-F06 tightens
+          # the terminal one from the recorded distribution.
+          slack_max: 0.1
+          slack_terminal_max: 0.1
+          # Largest catch-node position error [m] a segment may carry (MD-62).
+          catch_pos_err_max: 0.02
+        catch:
+          # The core's catch terms at the catch node. w_axis / w_v_par /
+          # w_v_perp are E1-F07's measured values. gamma_ref is the E1-F10
+          # tuning's (#663, MPC plan MD-75): the hand aims at 0.6 of the
+          # ball's speed. At 1.0 the command was still accelerating at t_c and
+          # the arm sat 26 mm behind it along the ball's travel (26 / 100
+          # caught against closed_form's 57 on the same throws); 0.6 gave
+          # 72 / 100 on the screening seeds and 123 / 200 against 133 / 200 on
+          # the confirm seeds (paired difference -0.05). w_v_par moves the same
+          # axis: 0.3 and 3.0 at gamma_ref 0.6 were not better. Below v1's
+          # gamma window (lower bound ~0.69) — a recorded deviation.
+          w_axis: 100.0
+          w_v_par: 1.0
+          w_v_perp: 20.0
+          gamma_ref: 0.6
+          # W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 with eigenvalues capped
+          # at w_max [1/m^2]; w_const without a usable covariance (MD-63).
+          kappa: 1.0
+          sigma_floor: 0.01
+          w_max: 10000.0
+          w_const: 2500.0
+          # w_delta schedule: clamp(tr Sigma_p / sigma_ref^2, 0, 1). Compared
+          # with a TRACE, so this is not a per-axis sigma (tr ~ 3 sigma^2).
+          sigma_ref: 0.03
+          # Relative-velocity slack row at the catch node:
+          # |v_ball - v_hand| <= v_rel_allow (1 + s_v) per axis, penalised by
+          # rho_v s_v. rho_v 0 = off (no slack variable, no rows); on, it needs
+          # v_rel_allow > 0 [m/s] — what the hand absorbs, not measured yet
+          # (MPC plan MD-52), so both ship 0.
+          # s_v is RECORDED (planner_events decel_slack_v), never a publish
+          # gate: no threshold is defined for it, and with gamma_ref < 1 it is
+          # above 0 by construction.
+          rho_v: 0.0
+          v_rel_allow: 0.0
+          # The core's approach-axis linearisation limit [rad], in (0, pi): the
+          # largest axis error of the reference the axis term is linearised at;
+          # beyond it the solve fails closed. pi/2 as a decimal.
+          axis_theta_max: 1.5707963267948966
+        # The core's design values (MPC plan MD-92). Each ships at the value the
+        # core had in code before they were keys, so no solve changes.
+        cost:
+          # Jerk weight R_j per arm joint (arm joint order, 6 entries), each
+          # > 0. All 1: the jerk is weighted evenly.
+          jerk_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+          # Jerk scale [rad/s^3]. NOT a pure preconditioner: the jerk cost is
+          # (u/u_scale)^2, so it re-weights jerk against w_delta and rho_tau.
+          u_scale: 1000.0
+          # Pull toward the linearisation reference [1/rad^2] (scaled by the
+          # catch.sigma_ref schedule).
+          w_delta: 1.0
+          # Penalty of the torque slack. 0 = the torque rows are off, and the
+          # publish judgement's slack condition (publish.slack_max) is then
+          # vacuous: no slack exists to bound. 10 was exact on every sampled
+          # stop (E1-F01 sweep, #627).
+          rho_tau: 10.0
+          # Stop-path weight [1/m^2], in [0, 1.0e4]: on the nodes from the
+          # catch on, the squared distance of the catch frame from a line is
+          # penalised. 0 = off — the solve is the one before this key existed.
+          # The line is the BALL's (decided 2026-10-03, #698): through its
+          # predicted catch position along its direction of travel at t_c — the
+          # line the search reserves its stopping point on. A replan at or
+          # after the catch keeps the line of the segment the RT follows (not
+          # of a newer one that was published and not taken). A solve with no
+          # line to build — a ball slower than planner.ik.v_eps, or a followed
+          # segment that carries no line — is withheld, not solved on a
+          # default. The weight raises the QP's condition number; above 1.0e4,
+          # the largest value the cores are tested with, the configure refuses
+          # the key. Not tuned on any arm: ships off.
+          w_perp: 0.0
+        linearization:
+          # Trust-region half-width around the reference [rad], finite > 0.
+          # m_q must stay below it.
+          delta_tr: 0.1
+          # Bound on |qd_N| and |qdd_N| of a supplied reference [rad/s, rad/s^2];
+          # must exceed solver.eps_abs (a shifted previous solution is at rest
+          # only to eps_abs) and stay <= 1e-3 (kDecelRestTol: the RT refuses a
+          # published node N that rests looser than that). The third "rest tol" beside approach.rest_tol and
+          # the planner's own admission tolerance.
+          reference_rest_tol: 1.0e-4
+          # The first solve's reference reaches its target at this fraction of
+          # eta_v * qdot_max, in (0, 1] (MD-62): the minimum-jerk peak is held
+          # below the velocity box, so the QP can bend the reach.
+          ref_speed_fraction: 0.9
+        solver:
+          # ProxQP: outer and inner iteration caps (>= 1) and tolerances. The
+          # preconditioner update and the KKT backend are not keys (the RT
+          # no-allocation and infeasibility verdict rely on them).
+          max_iter: 200
+          max_iter_in: 100
+          eps_abs: 1.0e-6
+          eps_rel: 0.0
