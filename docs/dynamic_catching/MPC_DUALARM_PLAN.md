@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r48 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r49 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료 · E1 · E2 진행 중** · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5e) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -294,7 +294,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — tick record 의 decel 블록과 계획기 레코드를 CSV 로, `catching_trials` 의 `mpc` 분해 · lane · 명령 열, plotter 패널, GUI 의 Catching 탭 | E1-F09 | 완료 (2026-10-02, [#678](https://github.com/hyujun/rtc-framework/pull/678)) — 확인 §8. 제어 동작 불변. 항별 비용 분해 · GUI 의 lane 상태 · `decel_*` 이름 통일은 하지 않았다 (미결) |
 | E1-F10 | [#663](https://github.com/hyujun/rtc-framework/issues/663) | mpc planner 튜닝 — closed_form 대비 성공률 비열등 (MD-50) | E1-F05 | 완료 (2026-10-02, [#679](https://github.com/hyujun/rtc-framework/pull/679)) — 결정 MD-71 – MD-76, 측정 §8. p1b 는 `catch.gamma_ref` 0.6 채택 (확인 200 쌍 −0.05 — 비열등 판정은 G-1), leap 은 미달로 닫음 (plan 이 채택되지 않는다 — 구조 문제). RT 의 `catch_box` 검사 폐기 (MD-73), CLIK 은 `dynamic` 만 (MD-74) |
 | E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | 완료 (2026-10-03, [#699](https://github.com/hyujun/rtc-framework/pull/699)) — 측정 §8. **G-1 FAIL (두 로봇, 기준 1).** p1b $\hat d$ −0.10, 양측 95 % 구간 −0.17 – −0.04. leap −0.47. 한계 · solve time · 회귀는 두 로봇 모두 통과. 사용자는 두 로봇의 출하 기본값을 `mpc` 로 정했다 (MD-89, [#700](https://github.com/hyujun/rtc-framework/pull/700)) |
-| E1-F11 | [#698](https://github.com/hyujun/rtc-framework/issues/698) | catching config 의 기능별 분리 — RT 의 QP CLIK · 탐색 ($p_c$ · $t_c$, 공통) · closed_form planner · mpc planner (MD-88 · MD-90). 분리는 기능 동등성이 기준이고, 그 뒤에 선택 키 정리 · 설계 파라미터의 YAML 노출 · 가속도 box 의 정리가 온다 (MD-91) | E1-F06 | **진행 중** — PR 둘 (MD-92). 첫째 `feat/cm-controller-config-include` 는 머지 ([#702](https://github.com/hyujun/rtc-framework/pull/702)). 둘째 `refactor/catching-config-split` 은 분리 · 가속도 box · `enabled` 삭제 · 설계 파라미터 노출까지 구현 (MD-93). PR 대기 |
+| E1-F11 | [#698](https://github.com/hyujun/rtc-framework/issues/698) | catching config 의 기능별 분리 — RT 의 QP CLIK · 탐색 ($p_c$ · $t_c$, 공통) · closed_form planner · mpc planner (MD-88 · MD-90). 분리는 기능 동등성이 기준이고, 그 뒤에 선택 키 정리 · 설계 파라미터의 YAML 노출 · 가속도 box 의 정리가 온다 (MD-91) | E1-F06 | **완료** — [#702](https://github.com/hyujun/rtc-framework/pull/702) (CM 의 `include:`, `max_acceleration` 삭제) · [#703](https://github.com/hyujun/rtc-framework/pull/703) (분리 · 가속도 box · `enabled` 삭제 · 설계 파라미터 노출 · $w_\perp$ 배선, MD-93). security review: 기준을 넘는 발견 없음. 넘긴 것은 §4 미결 |
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
 
@@ -305,7 +305,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | E2-F01 | [#633](https://github.com/hyujun/rtc-framework/issues/633) | G1 로봇 자산 — 모델 로드 · frame · sim 서보 | E0-F01 | 완료 (2026-10-02, [#687](https://github.com/hyujun/rtc-framework/pull/687)) — 결정 MD-79 – MD-81, 측정 §8. scene 은 `hand_description` 의 MJCF 를 그대로 쓴다 |
 | E2-F02 | [#634](https://github.com/hyujun/rtc-framework/issues/634) | config · launch — `config/g1_p1b/` · `sim_g1_p1b.launch.py` | E2-F01 | 완료 (같은 PR) — 결정 MD-77 · MD-80. 군은 `g1` · `p1b` 둘, `derive_accel_limits` 는 뺐다 |
 | E2-F03 | [#635](https://github.com/hyujun/rtc-framework/issues/635) | demo_joint_controller — G1 구동 (군 0 이 tree) | E2-F02 | 완료 (같은 PR) — 결정 MD-78, 측정 §8. 팔 끝 · 손끝 TF 와 MuJoCo 의 차 ≤ 0.71 mm |
-| E2-F04 | [#636](https://github.com/hyujun/rtc-framework/issues/636) | CLIK 다중 frame 일반화 (`rtc_tsid`) | E0-F03 | 대기 — 선행은 끝났다. E1 과 병행할 수 있다 (브랜치 계획의 순서 표) |
+| E2-F04 | [#636](https://github.com/hyujun/rtc-framework/issues/636) | CLIK 다중 frame 일반화 (`rtc_tsid`) | E0-F03 | **다음** — 선행은 끝났다. E1 의 feature 가 모두 끝나 순서상 다음이다 (브랜치 계획의 순서 표) |
 | E2-F05 | [#637](https://github.com/hyujun/rtc-framework/issues/637) | demo_dualarm_controller — QP 다중 frame CLIK 바인딩 | E2-F03, E2-F04 | 대기 |
 | E2-F06 | [#638](https://github.com/hyujun/rtc-framework/issues/638) | demo_controller_gui — G1 profile · 다중 frame 목표 | E2-F05 | 대기 |
 | E2-F07 | [#639](https://github.com/hyujun/rtc-framework/issues/639) | plot_rtc_log — 다중 device group · frame 별 task error | E2-F05 | 대기 |
@@ -1127,6 +1127,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r49 | [#702](https://github.com/hyujun/rtc-framework/pull/702) · [#703](https://github.com/hyujun/rtc-framework/pull/703) 머지 뒤 정리: §6 의 E1-F11 행 (완료) · E2-F04 행 (다음) |
 | r48 | [#698](https://github.com/hyujun/rtc-framework/issues/698) 사용자 결정 반영: MD-93 의 (2) — 지운 경로 키는 configure 실패가 아니라 park (`kRemovedKey`), 남은 `enabled: false` 는 `mode: mpc` 에서 WARN |
 | r47 | [#698](https://github.com/hyujun/rtc-framework/issues/698) 리뷰 반영: MD-93 의 (5) — 포구 후 재계획의 직선은 plan 의 마지막 게시 구간이 아니라 RT 가 따르는 구간의 것, 값의 상한 1e4. §4 미결의 $w_\perp$ 줄에 로그 · 풀이 시간 |
 | r46 | [#698](https://github.com/hyujun/rtc-framework/issues/698) $w_\perp$ 결정: MD-93 의 (5) (키 `cost.w_perp`, 직선은 공의 것, 포구 후 재계획은 plan 별 기억, 보류 조건), §4 미결의 그 줄 (결정 대기 → 값은 미조정), §6 의 E1-F11 행 |
