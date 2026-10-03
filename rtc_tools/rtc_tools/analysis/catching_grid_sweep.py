@@ -61,7 +61,7 @@ from rtc_tools.analysis import (
     catching_decel as cd,
     catching_trials as ct,
 )
-from rtc_tools.analysis.catching_decel import _stats
+from rtc_tools.analysis.catching_decel import _stats, paired_difference
 from rtc_tools.analysis.catching_hand_near import _num
 from rtc_tools.analysis.vision_lane import EXPECTED_POINT_STEP as POINT_STEP
 
@@ -83,21 +83,6 @@ PLANNER_EVENTS = "planner_events.csv"
 
 
 # ── Statistics ───────────────────────────────────────────────────────────────
-def paired_difference(pairs: Mapping, z: float = 1.96) -> dict:
-    """``p_b − p_a`` of a :func:`catching_decel.pair_table` with a Wald interval.
-
-    Paired proportions: with b = only_a, c = only_b over n pairs the difference
-    is ``(c − b) / n`` and its variance ``((b + c) − (c − b)² / n) / n²``.
-    """
-    n = pairs["n_pairs"]
-    if not n:
-        return {"diff": math.nan, "ci95": [math.nan, math.nan]}
-    b, c = pairs["only_a"], pairs["only_b"]
-    d = (c - b) / n
-    se = math.sqrt(max((b + c) - (c - b) ** 2 / n, 0.0)) / n
-    return {"diff": d, "ci95": [d - z * se, d + z * se]}
-
-
 def holm(pvalues: Sequence[float]) -> list[float]:
     """Holm step-down adjusted p-values, in the input order (capped at 1)."""
     m = len(pvalues)

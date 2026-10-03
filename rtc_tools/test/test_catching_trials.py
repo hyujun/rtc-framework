@@ -11,6 +11,7 @@ clean data" passes an implementation that always says pass.
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
 from pathlib import Path
@@ -54,6 +55,51 @@ def test_golden_servo_lag_is_200ms_on_every_joint(pilot):
         assert lag.tau_s == pytest.approx(0.200, abs=0.005), lag
         assert lag.ci_low_s <= lag.tau_s <= lag.ci_high_s
         assert lag.r2 > 0.99, "a first-order plant should explain the tracking error"
+
+
+def test_golden_trial_end_closes_each_trial_before_the_next_launch(pilot):
+    """``t_end`` (MPC E1-F06: the end of the window a mode-path verdict reads) is
+    on the lane clocks of ``t_launch``: after its own launch, before the next."""
+    rows = sorted((r for r in pilot.rows if not r["invalid_reason"]), key=lambda r: r["idx"])
+    assert len(rows) == 25
+    for r, nxt in itertools.pairwise(rows):
+        assert r["t_launch"] < r["t_end"] < nxt["t_launch"], r["idx"]
+    assert rows[-1]["t_end"] > rows[-1]["t_launch"]
+
+
+def test_golden_every_judged_trial_has_its_mode_path_verdict(pilot):
+    """``hold_verdict`` · ``abort_in_window`` (E1-F06) come from the window the truth
+    columns use, for every valid trial; the pilot is 25/25 Missed, so none aborted
+    and every one reached a judged HOLD end or no RETREAT at all."""
+    rows = [r for r in pilot.rows if not r["invalid_reason"]]
+    assert len(rows) == 25
+    for r in rows:
+        assert isinstance(r["hold_verdict"], bool) and isinstance(r["abort_in_window"], bool)
+    assert not any(r["abort_in_window"] for r in rows)
+
+
+A_, D_, H_, R_, AB_ = (
+    ct.MODE_APPROACH,
+    ct.MODE_DECEL,
+    ct.MODE_HOLD,
+    ct.MODE_RETREAT,
+    ct.MODE_ABORT_SAFE,
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "verdict"),
+    [
+        ([A_, D_, H_, R_], (True, False)),  # judged
+        ([A_, AB_, R_], (False, True)),  # RETREAT from ABORT_SAFE: no verdict, an abort
+        ([A_, AB_, A_, D_, H_, R_], (True, True)),  # aborted, then judged
+        ([A_, D_, H_], (False, False)),  # the window ends before RETREAT
+        ([A_, R_, H_, R_], (False, False)),  # the FIRST RETREAT is the verdict tick
+    ],
+)
+def test_mode_path_verdict(path, verdict):
+    out = ct.mode_path_verdict(np.repeat(np.array(path), 3))
+    assert (out["hold_verdict"], out["abort_in_window"]) == verdict
 
 
 def test_golden_tc_decomposition(pilot):
