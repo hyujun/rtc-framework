@@ -221,6 +221,12 @@ enum class CatchingParkReason : std::uint8_t {
   /// the stop (MD-44, MD-45), so a missing prerequisite would leave every
   /// trial without one.
   kDecelModeUnmet,
+  /// The profile still sets a key that no longer exists
+  /// (`robot.arm.accel_limits_{package,path,group}`, replaced by
+  /// `robot.arm.qdd_max` / `qdd_provisional`). Ignoring it would run the
+  /// shipped box under the overlay's name; a configure FAILURE would take the
+  /// other controllers down, so it parks. The log names the key.
+  kRemovedKey,
 };
 
 /// Controller-local device indices. This controller claims exactly two groups
@@ -1281,6 +1287,13 @@ class DemoCatchingController final : public RTControllerInterface {
   bool arm_qdd_cfg_present_{false};
   bool arm_qdd_cfg_malformed_{false};
   bool arm_qdd_provisional_cfg_{true};
+  /// The first removed `robot.arm.accel_limits_*` key LoadConfig found, empty
+  /// when none; on_configure parks on it (kRemovedKey).
+  std::string removed_arm_box_key_;
+  /// LoadConfig saw `planner.decel_mpc.enabled` reading false. The key is
+  /// ignored; on_configure warns only under `supervisor.decel.mode: mpc`,
+  /// where the old key would have parked and the law now runs.
+  bool stale_decel_mpc_disabled_key_{false};
   std::vector<double> arm_qdd_max_;  // device order, the judged `robot.arm.qdd_max`
   /// The judged box's `provisional` flag. Meaningful only while `arm_qdd_max_`
   /// is not empty; rewritten by every ApplyArmAccelBox().

@@ -149,7 +149,23 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   arm_qdd_cfg_present_ = false;
   arm_qdd_cfg_malformed_ = false;
   arm_qdd_provisional_cfg_ = true;
+  removed_arm_box_key_.clear();
+  stale_decel_mpc_disabled_key_ = false;
   if (catching_section_present_) {
+    // `planner.decel_mpc.enabled` no longer exists (the parser ignores it). Only
+    // a leftover `false` changes behaviour — it used to park under mode mpc and
+    // now the law runs — so only that is remembered, for on_configure to warn
+    // about once the mode is known. A value that is not a bool is not "false".
+    try {
+      const YAML::Node planner = catching["planner"];
+      const YAML::Node decel_mpc = planner ? planner["decel_mpc"] : YAML::Node();
+      const YAML::Node stale = decel_mpc ? decel_mpc["enabled"] : YAML::Node();
+      if (stale) {
+        stale_decel_mpc_disabled_key_ = !stale.as<bool>();
+      }
+    } catch (const std::exception&) {
+      stale_decel_mpc_disabled_key_ = false;  // not a map / not a bool: not a "false"
+    }
     if (const YAML::Node frame = catching["catch_frame"]; frame) {
       catch_frame_name_ = frame.as<std::string>();
     }
@@ -158,15 +174,13 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
       // The acceleration box used to be a file these three keys named. An old
       // overlay that still sets one would otherwise be ignored, and the run
       // would silently fall back to the shipped box — a different arm limit
-      // under the overlay's name. Refused, so the operator moves the value.
+      // under the overlay's name. on_configure parks on it (kRemovedKey), so
+      // the operator moves the value without taking the other controllers down.
       for (const char* removed :
            {"accel_limits_package", "accel_limits_path", "accel_limits_group"}) {
         if (arm[removed]) {
-          throw std::runtime_error(std::string("DemoCatchingController: 'catching.robot.arm.") +
-                                   removed +
-                                   "' was removed — set the acceleration box as 'catching.robot."
-                                   "arm.qdd_max' (rad/s², one per arm joint) and "
-                                   "'catching.robot.arm.qdd_provisional'");
+          removed_arm_box_key_ = std::string("robot.arm.") + removed;
+          break;
         }
       }
       // Read tolerantly: a bad box is not a configure failure but an empty box

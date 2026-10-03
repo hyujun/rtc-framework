@@ -4211,26 +4211,36 @@ TEST_F(SafetyGateParkTest, AMissingShortOrNonPositiveQddBoxParksAsNoBox) {
   }
 }
 
-TEST_F(SafetyGateParkTest, ARemovedAccelLimitsKeyRefusesTheConfigureNamingTheNewKey) {
-  // An old overlay that set the path would otherwise be ignored and the run
-  // would silently fall back to the shipped box. Refused, loudly — a
-  // configure FAILURE (like every malformed key of this controller), whose
-  // message names the key to use instead.
-  for (const char* key : {"accel_limits_path", "accel_limits_package", "accel_limits_group"}) {
-    SCOPED_TRACE(key);
-    YAML::Node yaml = YAML::Load(TrackingYaml(topic_, NearPc(), StartAxis(), 0.0, 0.6));
-    yaml["catching"]["robot"]["arm"][key] = "config/ur5e_p1b/derived_accel_limits.yaml";
-    ctrl_ = std::make_unique<DemoCatchingController>("");
-    ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
-    ctrl_->SetSharedModelBuilder(builder_);
-    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
-    LogSink::Clear();
-    EXPECT_EQ(ctrl_->on_configure(prev_, node_, yaml),
-              DemoCatchingController::CallbackReturn::FAILURE);
-    EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
-                                   {std::string("catching.robot.arm.") + key, "qdd_max"})
-                     .empty())
-        << "the refusal must name both the removed key and the key to use";
+TEST_F(SafetyGateParkTest, ARemovedAccelLimitsKeyParksNamingTheNewKeys) {
+  // An old overlay that set one of the three would otherwise be ignored and the
+  // run would silently fall back to the shipped box. Not a configure FAILURE
+  // (CM would then refuse every controller on the robot): the controller parks
+  // with its own reason, in sim and on a real arm alike, and the ERROR names
+  // the removed key and the keys that replace it.
+  for (const bool sim : {false, true}) {
+    for (const char* key : {"accel_limits_path", "accel_limits_package", "accel_limits_group"}) {
+      SCOPED_TRACE(std::string(key) + (sim ? " (sim)" : " (real arm)"));
+      ASSERT_NO_FATAL_FAILURE(Configure(
+          [key](YAML::Node& y) {
+            y["catching"]["robot"]["arm"][key] = "config/ur5e_p1b/derived_accel_limits.yaml";
+          },
+          sim));
+      EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+      EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
+      EXPECT_FALSE(
+          LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                            {std::string("catching.robot.arm.") + key, "catching.robot.arm.qdd_max",
+                             "catching.robot.arm.qdd_provisional"})
+              .empty())
+          << "the ERROR must name the removed key and both keys to use";
+      EXPECT_EQ(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::FAILURE);
+      ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+    }
+    // Positive control: the same profile without the key is not parked for it.
+    SCOPED_TRACE(sim ? "no key (sim)" : "no key (real arm)");
+    ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kCleared), sim));
+    EXPECT_NE(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
+    ExpectActivates();
   }
 }
 

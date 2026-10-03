@@ -1043,6 +1043,36 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
   }
 }
 
+TEST_F(CatchingPlanLaneTest, ALeftoverDisabledDecelMpcKeyWarnsOnlyWhereTheLawNowRuns) {
+  // Of the removed `planner.decel_mpc.enabled`, only `false` under mode mpc
+  // changes behaviour (it used to park; the mpc law now runs), so only that
+  // combination warns. Never a rejection, never a park.
+  using Return = DemoCatchingController::CallbackReturn;
+  const char* kNeedle = "decel_mpc.enabled";
+  for (const char* mode : {"mpc", "closed_form"}) {
+    for (const int stale : {-1, 0, 1}) {  // -1: key absent
+      const std::string tag = std::string(mode) + ", " +
+                              (stale < 0    ? "no key"
+                               : stale == 1 ? "enabled: true"
+                                            : "enabled: false");
+      const WarnCapture warns;
+      const ConfigureVerdict v = ConfigureOnly(true, [&](YAML::Node& y) {
+        y["catching"]["supervisor"]["decel"]["mode"] = mode;
+        if (stale >= 0) {
+          y["catching"]["planner"]["decel_mpc"]["enabled"] = stale == 1;
+        }
+      });
+      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
+      EXPECT_FALSE(v.parked) << tag;
+      const bool expect_warn = std::string(mode) == "mpc" && stale == 0;
+      EXPECT_EQ(WarnCapture::Contains(kNeedle), expect_warn) << tag;
+      if (expect_warn) {
+        EXPECT_TRUE(WarnCapture::Contains("supervisor.decel.mode: closed_form")) << tag;
+      }
+    }
+  }
+}
+
 TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheDecelPlannersBox) {
   // The box getters report THIS configuration (/code-review 2026-09-30): a
   // closed_form re-configure builds no decel planner, so the box is zero.

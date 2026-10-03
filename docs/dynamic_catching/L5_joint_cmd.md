@@ -259,7 +259,7 @@ def equivalent_delay(tau, T, f):
 | `catch_frame` | string | – | `catch_frame` | – | 모델 빌더 추가 frame 이름 `[확정 D-17]` (plan §10) |
 | `robot.arm.q_min`, `q_max` | double[n] | rad | 로봇 config | – | YAML `joint_limits` ∩ URDF (backend 와 같은 원천, 사본 금지) |
 | `robot.arm.qd_max` | double[n] | rad/s | 로봇 config `max_velocity` | ≤ 데이터시트 | 기존 CLIK 은 스칼라 `v_limit` — 관절별 적용은 S2.2b 에서 확인 |
-| `robot.arm.qdd_max` | double[n] | rad/s² | S2.5 도출값 | >0 | `[확정 D-16]` 팔의 상수 가속 box — 탐색의 도달 시간, QP 없는 정지 ramp, homing ramp, CLIK `accel_constraint: box` 가 읽는다. 값은 `catching/search_grid.yaml` 의 키이고 (옛 유도 파일 · `accel_limits_*` 경로 키 · provenance 는 없다 — 남아 있으면 configure 실패), 없거나 길이가 다르거나 양수가 아니면 box 없음 (ERROR, supervisor 미설정 park). 출하 값은 `derive_accel_limits` 로 토크 한계에서 유도한 수다 |
+| `robot.arm.qdd_max` | double[n] | rad/s² | S2.5 도출값 | >0 | `[확정 D-16]` 팔의 상수 가속 box — 탐색의 도달 시간, QP 없는 정지 ramp, homing ramp, CLIK `accel_constraint: box` 가 읽는다. 값은 `catching/search_grid.yaml` 의 키이고 (옛 유도 파일 · `accel_limits_*` 경로 키 · provenance 는 없다 — 키가 남아 있으면 park `kRemovedKey`: configure 는 SUCCESS, ERROR 가 새 키를 대고 activate 거부), 없거나 길이가 다르거나 양수가 아니면 box 없음 (ERROR, supervisor 미설정 park). 출하 값은 `derive_accel_limits` 로 토크 한계에서 유도한 수다 |
 | `robot.arm.qdd_provisional` | bool | – | true | – | 위 box 가 실기에서 써도 되는 값인가. **true (또는 키 부재 · bool 아님) 는 sim 경고 · 실기 구성 park** — 로그가 `robot.arm.qdd_provisional` 을 댄다 (pre-S10 R3, #537 Q4). 출하 두 값은 true 다 (실기 토크 한계·모델 확인은 S10) |
 | `robot.arm.limit_margin` | double | rad | 0.05 | 0–0.3 | CLIK 에 넘기는 위치 box 를 좁힘 (§4.3) |
 | ~~`robot.arm.q_nominal`~~ | double[n] | rad | — | – | **쓰지 않는다** — posture 목표는 시행 시작 자세다 (§7 L5.6, 2026-09-22). 코드·출하 YAML 에 이 키는 없다 |

@@ -1027,6 +1027,20 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "defensible default — see L6 §6 and plan §4.4 S4.1.");
       return CallbackReturn::FAILURE;
     }
+    // A key that no longer exists parks, sim and real arm alike: the old
+    // overlay must not silently run on the shipped box. A FAILURE here would
+    // make CM refuse every controller on the robot.
+    if (!removed_arm_box_key_.empty()) {
+      sim_only_disabled_ = true;
+      park_reason_ = CatchingParkReason::kRemovedKey;
+      RCLCPP_ERROR(logger_,
+                   "DISABLED: 'catching.%s' was removed — set the acceleration box as "
+                   "'catching.robot.arm.qdd_max' (rad/s², one per arm joint) and "
+                   "'catching.robot.arm.qdd_provisional'. This controller will refuse to "
+                   "activate; the robot still comes up.",
+                   removed_arm_box_key_.c_str());
+      return CallbackReturn::SUCCESS;
+    }
     report_ =
         rtc::catching::ValidateCatchingParams(params_, 1.0 / GetDefaultDt(), real_arm_config_);
     // The DECEL law (MPC MD-44) — decided here, once, for the whole
@@ -1034,6 +1048,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // for it, and the tick never changes it.
     decel_mode_ = params_.supervisor_decel_mode;
     decel_switch_margin_ = params_.supervisor_decel_switch_margin;
+    if (stale_decel_mpc_disabled_key_ && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
+      RCLCPP_WARN(logger_,
+                  "catching.planner.decel_mpc.enabled: false is ignored — the key was removed. "
+                  "The mpc law runs because supervisor.decel.mode is mpc; set "
+                  "supervisor.decel.mode: closed_form to turn it off.");
+    }
     // Written by SetupDecelPlanner only when this configure builds it.
     decel_planner_q_min_.fill(0.0);
     decel_planner_q_max_.fill(0.0);
@@ -1362,6 +1382,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
                      ? "planner.decel_mpc cannot run in this profile"
                  : park_reason_ == CatchingParkReason::kDecelModeUnmet
                      ? "supervisor.decel.mode mpc lacks a prerequisite"
+                 : park_reason_ == CatchingParkReason::kRemovedKey
+                     ? "the profile sets a removed key"
                      : "a consumed value is provisional or TBD");
     return CallbackReturn::FAILURE;
   }
