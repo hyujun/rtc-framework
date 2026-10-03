@@ -1,6 +1,7 @@
 // ── Parameter declaration and loading
 // ──────────────────────────────────────────
 #include "rtc_controller_interface/controller_registry.hpp"
+#include "rtc_controller_manager/controller_config_loader.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_base/logging/session_dir.hpp>
 #include <rtc_urdf_bridge/closure_yaml_loader.hpp>
@@ -631,14 +632,16 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       }
       yaml_path.append("controllers/").append(entry.config_subdir);
       yaml_path.append(entry.config_key).append(".yaml");
-      YAML::Node file_node = YAML::LoadFile(yaml_path);
-      ctrl_node = file_node[entry.config_key];
+      // The file plus its `include:` fragments, composed BEFORE the overrides
+      // so an override reaches a fragment's key like any other.
+      ctrl_node = rtc::LoadControllerConfig(yaml_path, entry.config_key);
       ApplyControllerParamOverrides(*this, ctrl_node, entry.config_key);
     } catch (const YAML::BadFile& e) {
       // No config file for this controller/variant — run on defaults.
       // BadFile must be caught before std::exception: YAML::Exception derives
       // from std::runtime_error, so the order below is what separates
-      // "absent" from "present but broken".
+      // "absent" from "present but broken". Only the main file can be absent:
+      // a missing fragment arrives as ControllerConfigIncludeError, below.
       config_file_absent = true;
       RCLCPP_INFO(get_logger(), "No config file for '%s' (pkg=%s) — using built-in defaults",
                   ctrl->Name().data(), entry.config_package.c_str());

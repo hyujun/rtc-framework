@@ -1,0 +1,14 @@
+# Test fixture — config_variant=test_include_missing_fragment. The main file is
+# present and valid; the fragment it names does not exist. That is a broken
+# config, not an absent one: the bring-up must refuse.
+include:
+  - parts/not_shipped.yaml
+rtc_cm_cfg_test:
+  gains:
+    kp: 1.0
+  topics:
+    arm:
+      subscribe:
+        - {topic: "target", role: "target"}
+      publish:
+        - {topic: "transforms", role: "robot_transforms"}

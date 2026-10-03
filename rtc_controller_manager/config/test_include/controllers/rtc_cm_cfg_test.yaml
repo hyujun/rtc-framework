@@ -1,0 +1,17 @@
+# Test fixture — loaded ONLY by unit tests (config_variant=test_include).
+# A controller config split across a main file and two `include:` fragments;
+# expected_leaves.txt (one directory up) is the composed tree both the C++
+# loader and its Python twin must produce.
+include:
+  - parts/gains_extra.yaml
+  - parts/deep.yaml
+rtc_cm_cfg_test:
+  gains:
+    kp: 1.0
+    label: "from_main"
+  topics:
+    arm:
+      subscribe:
+        - {topic: "target", role: "target"}
+      publish:
+        - {topic: "transforms", role: "robot_transforms"}

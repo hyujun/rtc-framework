@@ -45,6 +45,7 @@ find_package(rtc_msgs REQUIRED)
 # ── Static library ────────────────────────────────────────────────────────────
 add_library(rtc_controller_manager_lib STATIC
   src/rt_controller_node.cpp
+  src/controller_config_loader.cpp
   src/rt_controller_node_params.cpp
   src/rt_controller_node_publishers.cpp
   src/rt_controller_node_switch.cpp
@@ -293,6 +294,17 @@ if(BUILD_TESTING)
       rtc_msgs rtc_urdf_bridge)
     target_link_libraries(test_on_configure
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
+  # LoadControllerConfig — `include:` fragment composition. No node: the loader
+  # is a free function, and its failure cases are written to a scratch dir.
+  ament_add_gtest(test_controller_config_loader
+    test/test_controller_config_loader.cpp)
+  if(TARGET test_controller_config_loader)
+    target_include_directories(test_controller_config_loader PRIVATE include)
+    ament_target_dependencies(test_controller_config_loader ament_index_cpp)
+    target_link_libraries(test_controller_config_loader
+      rtc_controller_manager_lib yaml-cpp)
   endif()
 
   ament_add_gtest(test_cm_required_config

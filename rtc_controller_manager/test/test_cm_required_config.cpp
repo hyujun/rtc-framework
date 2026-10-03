@@ -163,5 +163,16 @@ TEST_F(RequiredConfigTest, APresentButMisspelledConfigStillRefuses) {
       << "the file was found, so LoadConfig must have been reached and thrown";
 }
 
+TEST_F(RequiredConfigTest, AMissingIncludeFragmentRefusesRatherThanSkips) {
+  // The skip is keyed on the MAIN file being absent. Here it is present and
+  // names a fragment that is not: the loader must not let that surface as
+  // "no config file", or this controller would be dropped as "not on this
+  // robot" and the configure would succeed with one controller.
+  auto node = MakeNode();
+  node->declare_parameter("config_variant", std::string("test_include_missing_fragment"));
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+}
+
 }  // namespace
 }  // namespace rtc

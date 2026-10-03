@@ -1,0 +1,12 @@
+gains.kp	1.0
+gains.label	from_main
+gains.enabled	true
+gains.count	3
+gains.vals	[0.5, 1.0e-4]
+gains.tags	[x, y]
+topics.arm.subscribe	[{topic: target, role: target}]
+topics.arm.publish	[{topic: transforms, role: robot_transforms}]
+tail_a.z	1
+deep.a.b	2.5
+deep.a.note	null
+tail_b	{}

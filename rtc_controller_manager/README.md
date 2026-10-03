@@ -29,12 +29,14 @@ rtc_controller_manager/
 │   ├── rt_controller_node.hpp             <- 메인 노드 클래스
 │   ├── rt_controller_main.hpp             <- 재사용 가능 진입점 함수
 │   ├── controller_timing_profiler.hpp     <- 락-프리 타이밍 프로파일러
+│   ├── controller_config_loader.hpp       <- 컨트롤러 YAML + `include:` 조각의 합성 (`LoadControllerConfig`)
 │   ├── device_state_cache.hpp             <- `DeviceStateCache` POD (SeqLock payload, backend-shared)
 │   ├── device_backend.hpp                 <- `DeviceBackend` 추상 인터페이스 + `DeviceBackendConfig`
 │   └── device_backend_registry.hpp        <- 백엔드 type_tag 레지스트리 + `RTC_REGISTER_DEVICE_BACKEND` 매크로
 ├── src/
 │   ├── rt_controller_node.cpp             <- 생성자/소멸자, 콜백 그룹, 타이머, Lifecycle 콜백
 │   ├── rt_controller_node_params.cpp      <- 파라미터 선언/로딩, 디바이스 설정
+│   ├── controller_config_loader.cpp       <- `LoadControllerConfig` · `ControllerConfigLeafLines` 구현
 │   ├── rt_controller_node_device_config.cpp <- URDF/모델 파싱, 디바이스 이름 설정
 │   ├── rt_controller_node_publishers.cpp    <- CM 고정 퍼블리셔 생성 (per-group JointState republish, E-STOP 상태)
 │   ├── rt_controller_node_services.cpp      <- 서비스 (LoadController, SwitchController 등)
@@ -46,7 +48,8 @@ rtc_controller_manager/
 │   └── device_backend_registry.cpp          <- 레지스트리 싱글톤 + duplicate-tag warn
 └── config/
     ├── cyclone_dds.xml                      <- CycloneDDS RT 성능 최적화 설정 (실제 control_rate / devices / urdf 는 `<robot>_bringup/config/<robot>/{sim,robot}.yaml` 의 `devices.<group>.backend:` 등으로 선언)
-    └── test_fixtures/controllers/           <- unit test 전용 controller YAML (config_variant=test_fixtures 로만 로드 — production bring-up 은 참조하지 않음)
+    ├── test_fixtures/controllers/           <- unit test 전용 controller YAML (config_variant=test_fixtures 로만 로드 — production bring-up 은 참조하지 않음)
+    └── test_include/                        <- unit test 전용. `include:` 로 나뉜 config 와 그 합성 결과 (`expected_leaves.txt` — C++ 로더와 `rtc_tools` 의 Python 로더가 같은 파일에 대조된다)
 ```
 
 ---
@@ -639,6 +642,43 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 두 번째 갈래는 기본값으로 돌 수 없는 컨트롤러 (정책 컨트롤러, 그 로봇의 기구 구성에서 모델을 만들 수 없는 컨트롤러 등) 를 위한 것이다. 그런 컨트롤러를 일반 매크로로 등록하면 `LoadConfig` 거부 → `PreConfigure` 실패 → D1 이 **그 로봇의 모든 컨트롤러** 를 거부한다. 선택 기준과 게이트는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md#rtc_register_controller_requiring_config--config-가-없으면-건너뛴다).
 
 ⚠️ 첫째와 셋째를 `LoadConfig` 안에서 구별하려 하지 말 것. yaml-cpp 에서 **기본 생성 노드(파일 부재)는 truthy·Null** 이고 **없는 키(파일 있음·키 오타)는 falsy·Undefined** 라, 흔한 `if (!cfg) return;` 가드는 의도와 반대로 오타 쪽에서 발동한다. CM 이 파일 존재 여부로 상류에서 가르는 이유다.
+
+### 컨트롤러 YAML 을 여러 파일로 나누기 — `include:`
+
+컨트롤러 YAML 은 top-level 에 `include:` 목록을 둘 수 있다. 각 조각은 같은 트리의 일부를 `<config_key>:` 아래에 갖고, CM 이 하나의 노드로 합친 뒤에 파라미터 override 를 적용한다. 그래서 launch 인자와 sim overlay 의 override 는 조각의 키에도 주 파일의 키와 똑같이 먹는다.
+
+```yaml
+# config/<variant>/controllers/demo_x_controller.yaml
+include:
+  - x/part_a.yaml          # 이 파일의 디렉토리 기준 상대경로
+demo_x_controller:
+  gains:
+    kp: 1.0
+```
+
+```yaml
+# config/<variant>/controllers/x/part_a.yaml
+demo_x_controller:
+  gains:
+    kd: 2.0                # gains 는 두 파일의 leaf 가 합쳐진다
+```
+
+| 규칙 | 내용 |
+|---|---|
+| 경로 | 주 파일의 디렉토리 기준 상대경로. 절대경로와 `..` 는 거부 |
+| 주 파일 | `include` 가 있으면 top-level 키는 `include` 와 `<config_key>` 둘뿐이고, `<config_key>` 는 map 이다 |
+| 조각 | top-level 키는 `<config_key>` (map) 하나. 조각은 다시 include 하지 못한다 |
+| 병합 | map 은 재귀로 합친다. scalar · sequence · null 은 leaf 다 — sequence 는 이어 붙이지 않는다 |
+| 충돌 | 같은 leaf 를 두 파일이 적거나, 한쪽이 map 이고 다른 쪽이 leaf 면 에러 (값이 같아도) |
+| 순서 | 주 파일의 키가 먼저, 그 뒤 include 순서로 각 조각의 새 키 |
+
+- **없는 조각은 "파일 없음" 이 아니다.** 위 표의 첫째 · 둘째 갈래는 주 파일이 없을 때만이다. 주 파일이 있고 조각이 없으면 `ControllerConfigIncludeError` 로 configure 전체를 거부한다 — `config_required` 컨트롤러도 건너뛰지 않는다. 모든 충돌과 형식 오류도 같은 예외이고, 문구에 파일 이름과 키 경로가 있다.
+- **`include` 가 없는 파일은 지금까지와 똑같이 읽힌다.**
+- **조각은 `controllers/` 의 하위 폴더에 둔다.** `controllers/*.yaml` 을 컨트롤러 목록으로 읽는 독자가 있어, 같은 폴더에 두면 조각이 컨트롤러로 세어진다.
+- **CM 밖에서 컨트롤러 YAML 을 경로로 읽는 코드는 같은 로더를 써야 한다.** 주 파일만 `YAML::LoadFile` 하면 조각의 키가 조용히 빠진 트리를 본다.
+  - C++: `rtc::LoadControllerConfig(yaml_path, config_key)` ([controller_config_loader.hpp](include/rtc_controller_manager/controller_config_loader.hpp))
+  - Python: `rtc_tools.utils.controller_config.load_controller_config(path)` — 같은 규칙의 mirror 다. 한쪽을 바꾸면 함께 바꾼다
+  - 두 로더가 같은 트리를 낸다는 것은 `config/test_include/expected_leaves.txt` 가 고정한다. `ControllerConfigLeafLines` (C++) 와 `controller_config_leaf_lines` (Python) 가 leaf 마다 한 줄을 내고, 두 쪽의 테스트가 그 파일과 대조한다
 
 UR5e bringup의 예시 YAML 구조 (`integrated_bringup/config/ur5e_p1a/sim.yaml`):
 

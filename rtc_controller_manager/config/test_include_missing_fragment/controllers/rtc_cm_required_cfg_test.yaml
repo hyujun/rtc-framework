@@ -1,0 +1,8 @@
+# Test fixture — config_variant=test_include_missing_fragment. A
+# config_required controller whose main file exists but whose fragment does
+# not: it must refuse the bring-up, not be skipped as "not on this robot".
+include:
+  - parts/not_shipped.yaml
+rtc_cm_required_cfg_test:
+  gains:
+    kp: 1.0
