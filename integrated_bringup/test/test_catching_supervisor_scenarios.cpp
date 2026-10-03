@@ -4116,24 +4116,10 @@ class SafetyGateParkTest : public SupervisorScenarioTest {
   const rclcpp_lifecycle::State prev_;
 };
 
-// The box used to be a file copy whose path the tests looked for in the log. The
-// old needles below still name it; they are replaced in the follow-up commit.
-std::string AccelLimitsCopy(AccelBoxFlag) {
-  return "derived_accel_limits.yaml";
-}
-
 TEST_F(SafetyGateParkTest, TheFixtureProfileWithEveryParkKeyClearedActivatesOnTheRealArm) {
   // Positive control for every park below: same fixture, nothing provisional.
   ASSERT_NO_FATAL_FAILURE(Configure(nullptr, /*sim=*/false));
   ExpectActivates();
-}
-
-TEST_F(SafetyGateParkTest, AProvisionalAccelerationBoxParksTheRealArm) {
-  // Q4: the derived box is adopted (reviewed) but still provisional — the real
-  // arm's is not identified. Every ramp and the CLIK box run on it.
-  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kProvisional), /*sim=*/false));
-  ExpectParked(
-      {"derived_accel_limits.ur5e.provisional", AccelLimitsCopy(AccelBoxFlag::kProvisional)});
 }
 
 TEST_F(SafetyGateParkTest, AReconfigureWithoutABoxDoesNotKeepTheLastOnes) {
@@ -4151,34 +4137,6 @@ TEST_F(SafetyGateParkTest, AReconfigureWithoutABoxDoesNotKeepTheLastOnes) {
   EXPECT_TRUE(ctrl_->IsSimOnlyDisabled()) << "ran on the box of a profile it no longer has";
   EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kSupervisorUnset);
   EXPECT_NE(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
-}
-
-TEST_F(SafetyGateParkTest, AnAccelerationBoxWithoutTheFlagIsProvisional) {
-  // Fail-closed: a file that does not say is not a file that was cleared.
-  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kAbsent), /*sim=*/false));
-  ExpectParked({"derived_accel_limits.ur5e.provisional", AccelLimitsCopy(AccelBoxFlag::kAbsent)});
-}
-
-TEST_F(SafetyGateParkTest, AProvisionalAccelerationBoxOnlyWarnsInSim) {
-  ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kProvisional), /*sim=*/true));
-  EXPECT_FALSE(
-      LogSink::Matching(RCUTILS_LOG_SEVERITY_WARN, {"derived_accel_limits.ur5e.provisional"})
-          .empty());
-  ExpectActivates();
-}
-
-TEST_F(SafetyGateParkTest, APackageRelativeAccelerationBoxStillLoads) {
-  // The absolute form is an addition: the shipped profiles name the box
-  // relative to a package share directory. Judged in sim, so that the flag the
-  // SHIPPED file carries does not decide this case.
-  ASSERT_NO_FATAL_FAILURE(Configure(
-      [](YAML::Node& y) {
-        YAML::Node arm = y["catching"]["robot"]["arm"];
-        arm["accel_limits_package"] = "integrated_bringup";
-        arm["accel_limits_path"] = "config/ur5e_p1b/derived_accel_limits.yaml";
-      },
-      /*sim=*/true));
-  ExpectActivates();
 }
 
 // ── the acceleration box's keys: `robot.arm.qdd_max` · `qdd_provisional` ─────

@@ -57,8 +57,6 @@ S8F_SCORE = {
 # the arm's switched-in pose.
 WAIT_POSE_CURRENT = "catch_wait_pose_current"
 WAIT_POSE_SOURCE = ("catching", "planner", "wait_pose_source")
-S8G_ENVBOX_FILE = "config/ur5e_p1b/derived_accel_limits_s8g_envelope.yaml"
-S8G_SHIPPED_BOX_FILE = "config/ur5e_p1b/derived_accel_limits.yaml"
 SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
 LEAP = "iiwa7_leap"
 # Where each profile keeps control_rate (the launch files read the same file).
@@ -298,40 +296,6 @@ def test_wait_pose_current_is_reach_first_plus_the_source_leaf(arms, shipped):
 
 
 # ── ur5e_p1b sim.yaml (S8-G R2: the planner's envelope box) ──────────────────
-
-
-def test_sim_yaml_points_the_planner_box_at_the_envelope_file_and_names_shipped_keys(shipped):
-    """R2 (S8-G): the sim robot config overrides ONE controller key — the
-    planner's D-16 box file — and only that, at a shipped key of the same type,
-    at a file that exists, is `adopted`, is marked provisional and carries the
-    tool's provenance (lifecycle.cpp refuses a box that is not adopted). The
-    real robot.yaml must not carry it."""
-    sim = _load(os.path.join(CONFIG_DIR, "sim.yaml"))["/**"]["ros__parameters"]
-    tree = sim[CONTROLLER]
-    assert _leaves(tree) == {("catching", "robot", "arm", "accel_limits_path"): S8G_ENVBOX_FILE}
-    assert _unread_leaves(tree, shipped) == []
-    assert shipped["catching"]["robot"]["arm"]["accel_limits_path"] == S8G_SHIPPED_BOX_FILE
-    box = _load(os.path.join(CONFIG_ROOT, "..", S8G_ENVBOX_FILE))["derived_accel_limits"]
-    group = shipped["catching"]["robot"]["arm"]["accel_limits_group"]
-    entry = box[group]
-    n = len(
-        _load(os.path.join(CONFIG_DIR, "_base.yaml"))["/**"]["ros__parameters"]["devices"][group][
-            "joint_limits"
-        ]["max_torque"]
-    )
-    assert entry["adopted"] is True and entry["provisional"] is True
-    assert len(entry["qdd_max"]) == n and all(v > 0 for v in entry["qdd_max"])
-    assert entry["provenance"]["tool"] == "rtc_tools.analysis.catching_arm_budget"
-    assert entry["provenance"]["sim_only"] is True
-    # The point of the override: the envelope is well above the shipped derived box.
-    shipped_box = _load(os.path.join(CONFIG_DIR, "derived_accel_limits.yaml"))[
-        "derived_accel_limits"
-    ][group]["qdd_max"]
-    assert all(e > 2 * s for e, s in zip(entry["qdd_max"], shipped_box, strict=True))
-    robot = _load(os.path.join(CONFIG_DIR, "robot.yaml"))["/**"]["ros__parameters"]
-    assert CONTROLLER not in robot, (
-        "the real arm keeps the torque-derived box (S10 measures its own)"
-    )
 
 
 def test_sim_yaml_overrides_the_planner_box_with_float_keys_of_the_shipped_type(shipped):
