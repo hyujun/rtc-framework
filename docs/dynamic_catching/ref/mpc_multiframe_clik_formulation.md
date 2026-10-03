@@ -199,7 +199,7 @@ $$
 
 - $t_s$ 는 $t_k+T_{pipe}$ 이후의 첫 격자점이다. 효력 시각이 최대 $\Delta$ 늦어진다.
 - $t_c$ 는 풀이 안에서 고정이다. $t_s$ 와 $k_c$ 는 풀기 전에 정하므로 $x_0$ 는 결정변수에 의존하지 않는다.
-- 단일 팔 구성처럼 포구 전과 뒤의 간격이 다르면 ($\Delta_a$, $\Delta_s$, §1.6) 위 식의 $\Delta$ 를 각 쪽의 간격으로 읽는다.
+- 단일 팔 구성처럼 포구 전과 뒤의 간격이 다르면 ($\Delta_a$, $\Delta_s$, §1.6) 위 식의 $\Delta$ 를 각 쪽의 간격으로 읽는다. 구현은 포구 전 노드 수에 상한 (`approach.n_pre_max`) 을 두고 계산 예산과 RT 선행을 뺀다 — 식은 §1.6 "포구 전 노드 수".
 - jerk 비용을 시간 적분으로 맞추려면 구간 길이로 가중한다 ($\sum_k(\Delta_k/\Delta)\Vert u_k\Vert^2_R$). 단일 팔 코어는 기준 간격을 $\Delta_s$ 로 둔다.
 
 **Shift.** 선형화 기준점 $\bar x$ 는 직전 해를 새 격자에서 다시 평가한 것이다. shift 를 빼면 RTI 의 폐루프 성능이 나빠진다 [Gros2020].
@@ -252,6 +252,7 @@ $$
 - 상대속도 slack $s_v$ 는 무차원이다 — $v_{rel,\mathrm{allow}}$ 의 비율이고 축마다의 행에 같은 $s_v$ 가 걸린다. 행의 기준은 $\hat v_b$ 다 (비용의 목표가 $\gamma_{ref}\hat v_b$ 여도 같다, §1.6).
 - 포구 시각 $t_c$ 는 이 문제의 결정변수가 아니다 (아래 "포구 시각").
 - 경로 이탈 항 $w_{path}$ 는 구현하지 않은 항이다 (§1.6).
+- 이 절의 식은 설계의 형태다. **구현된 단일 팔 문제의 식은 §1.6 의 boxed 식** 이고, 거기에 jerk 의 구간 가중과 $u_{scale}$, 일관성 항의 배율, 정지 경로 항, $W_p$ 의 고유값 상하한, 상대속도 목표의 $\gamma_{ref}$, 무차원 토크 slack, 포구 전 노드 수의 상하한이 있다.
 
 손 속도는 §1.2 의 선형화 값이고, 가중은 다음과 같다.
 
@@ -450,37 +451,71 @@ $\mathcal K_c$ 가 $\lbrace k_c\rbrace$ 로 줄어드는 이유: 손 폐쇄 명�
 - 경로 이탈 $w_{path}$ 는 구현하지 않은 항이다. $W_p$ 는 공분산에서 만든 가중뿐이고 (`CatchPositionWeight`) $w_{path}P_\perp$ 를 더하지 않는다.
 - $w_\Delta$ 와 $\rho_\tau$ 는 노드마다 같은 가중이다 (구간 길이로 가중하지 않는다). 간격이 다른 격자 사이에서는 같은 값이 다른 세기다.
 - 한계는 노드에서만 건다. 노드 사이의 속도는 2 차식이라 box 를 조금 넘을 수 있다.
-- 정지 경로 항 $w_\perp$ 는 정지 구간의 노드 ($k\ge k_c$) 에만 건다. 그 직선은 손이 멈추는 경로이고 접근 경로가 아니다.
+- 정지 경로 항 $w^{stop} _ \perp$ 는 정지 구간의 노드 ($k\ge k_c$) 에만 건다. 그 직선은 손이 멈추는 경로이고 접근 경로가 아니다.
 - 정지 경로 항의 직선은 **공의 예측 포구 위치를 지나고 $t_c$ 의 공 진행 방향을 따르는 직선**이다 — 그 풀이가 포구 항에 쓰는 $\hat p_b(t_c)$ 와 $\hat v_b(t_c)$ 로 만든다 ($p_c=\hat p_b$, $\hat d=\hat v_b/\Vert\hat v_b\Vert$). 탐색이 정지점을 예약하는 직선과 같다 (L3 §4.9). 포구 뒤의 재계획 (정지 코어) 은 공 예측을 읽지 않고 **RT 가 따르는 구간의 직선** 을 유지한다 — 재계획의 $x_0$ 와 기준이 나오는 바로 그 구간이 풀린 직선이고, 정지 구간이 게시되면 출처 구간의 직선을 물려받는다. 더 새 예측으로 푼 구간이 게시됐어도 RT 가 그것을 채택하지 않았으면 그 직선을 쓰지 않는다 (손은 따르는 구간의 직선 위에서 멈춘다). 직선을 만들 수 없는 풀이 (공 속력이 `planner.ik.v_eps` 이하이거나 유한하지 않음, 따르는 구간에 직선이 없음) 는 기본 직선으로 풀지 않고 보류한다. configure 의 warm-up 은 합성 포구의 직선으로 푼다. 키는 `planner.decel_mpc.cost.w_perp` 이고 0 이면 끈다 — 이때 직선을 만들지도 요구하지도 않는다. 상대속도 가중 $W_v$ 의 $w_\perp$ (`catch.w_v_perp`) 와는 다른 값이다.
 - 상대속도 slack $s_v$ 는 기록만 하고 게시 판정에 쓰지 않는다 — $s_v$ 의 임계가 정의돼 있지 않고, $\gamma_{ref}\lt1$ 이면 $s_v\gt0$ 이 구조적이기 때문이다 (키 `planner.decel_mpc.catch.rho_v` · `.v_rel_allow` — `rho_v` 가 0 이면 slack 변수와 행을 만들지 않는다).
 - 코어의 설계 값은 모두 `planner.decel_mpc.*` 의 키다 — 값은 로봇별 `planner_mpc.yaml` (`integrated_bringup/config/<robot>/controllers/catching/`) 에 있다. `cost.{jerk_weight, u_scale, w_delta, rho_tau, w_perp}` (jerk 가중 $R_j$ 는 팔 관절마다, jerk 비용은 $(u/u_{scale})^2$ 이라 $u_{scale}$ 이 jerk 를 $w_\Delta$ · $\rho_\tau$ 와 비교한 세기를 바꾼다. `rho_tau` 0 은 토크 행을 끈다 — 그때 게시 판정의 slack 조건은 빈다), `catch.{w_axis, w_v_par, w_v_perp, gamma_ref, kappa, sigma_floor, w_max, w_const, sigma_ref, rho_v, v_rel_allow, axis_theta_max}` (포구 항의 가중과 목표 배율, $W_p$ 의 $\kappa$ · 공분산 하한 · 가중 상한 · 공분산이 없을 때의 상수 가중, $w_\Delta$ 스케줄의 $\sigma_{ref}$, 상대속도 slack, 접근축 선형화의 상한), `linearization.{delta_tr, reference_rest_tol, ref_speed_fraction}` (trust region 반폭, 기준의 종단 정지 허용, 첫 기준의 속도 비 — `reference_rest_tol` 은 `solver.eps_abs` 보다 커야 한다), `solver.{max_iter, max_iter_in, eps_abs, eps_rel}`, 한계 여유 `eta_tau` · `m_q`. solver 의 preconditioner 갱신과 KKT backend 는 설계 값이 아니라 코드에 둔다 (RT 무할당 · infeasible 판정이 그것을 전제한다).
 - warm 풀이가 실패하면 solver 를 비우고 한 번 다시 푼다. 다른 문제가 남긴 반복값에서 시작하면 solver 가 실행 가능한 QP 를 실행 불가능으로 판정하기 때문이다 (계획 §8).
 
-§1.3 에서 뺀 항을 지우면 다음이 남는다.
+§1.3 에서 뺀 항을 지우고 구현의 형태로 적으면 다음이다. 코어 (`DecelMpc`) 가 푸는 문제 그대로다.
 
 $$
 \boxed{
 \begin{aligned}
-\min_{\tilde{\mathbf u},s}\quad
-&\tfrac12\Big[\sum_{k=0}^{N-1}\Vert u_k\Vert_{R}^2
-+w_\Delta\sum_{k}\Vert q_{k}-q^{prev} _ {k}\Vert^2\\
-&+\Vert p_{C_R}(q_{k_c})-\hat p_b(t_c)\Vert^2_{W_p}
-+w_a\Vert e_a(q_{k_c})\Vert^2\\
-&+\Vert\hat v_b(t_c)-v_{C_R,k_c}\Vert^2_{W_{v,k_c}}\Big]\\
-&+\rho_v s_v+\rho_\tau\sum_k\mathbf 1^\top s_{\tau,k}\\
+\min_{\tilde{\mathbf u},s_\tau,s_v}\quad
+&\tfrac12\Big[\sum_{k=0}^{N-1}\frac{\Delta_k}{\Delta_s}\sum_{j=1}^{n}R_j\Big(\frac{u_{k,j}}{u_{scale}}\Big)^2
++\lambda_\Delta w_{\Delta,0}\sum_{k=1}^{N}\Vert q_{k}-\bar q_{k}\Vert^2
++w^{stop} _ \perp\sum_{k=k_c}^{N}\Vert P_\perp\big(p_{C_R}(q_k)-\hat p_b(t_c)\big)\Vert^2\\
+&\quad+\Vert p_{C_R}(q_{k_c})-\hat p_b(t_c)\Vert^2_{W_p}
++w_a\Vert e_a(q_{k_c})\Vert^2
++\Vert v_{C_R,k_c}-\gamma_{ref}\hat v_b(t_c)\Vert^2_{W_{v,k_c}}\Big]\\
+&+\rho_v s_v+\rho_\tau\sum_{k=1}^{N}\mathbf 1^\top s_{\tau,k}\\
 \text{s.t.}\quad
 &x_0=\hat x(t_s)\quad(\text{따르는 구간을 }t_s\text{에서 평가}),\qquad \mathbf u=E\tilde{\mathbf u},\\
 &q_{\min}+m_q\le q_{k}\le q_{\max}-m_q,\quad
 |\dot q_{k}|\le\eta_v\dot q_{\max}\quad(k=1,\dots,N),\\
-&\big|\tau^{lin} _ k\big|\le\eta' _ \tau\tau_{\max}+s_{\tau,k},\quad s_{\tau,k}\ge0
-\quad(k=1,\dots,N),\\
+&\Big|\frac{\tau^{lin} _ {k,j}}{\tau_{\max,j}}\Big|\le\eta' _ \tau+s_{\tau,k,j},\quad s_{\tau,k,j}\ge0
+\quad(k=1,\dots,N,\enspace j=1,\dots,n),\\
 &\big\vert\big(\hat v_b(t_c)-v_{C_R,k_c}\big) _ i\big\vert\le v_{rel,\mathrm{allow}}(1+s_v)\quad(i=x,y,z),\quad s_v\ge0,\\
 &\dot q_{N}=0,\quad\ddot q_{N}=0,\qquad
 \Vert q_{k}-\bar q_{k}\Vert_\infty\le\delta_{tr}\quad(k=1,\dots,N).
 \end{aligned}}
 $$
 
-$v_{C_R,k_c}$, $W_{v,k_c}$, $w_\Delta$ 는 §1.3 의 식 그대로다. §1.3 의 경로 이탈 항 $w_{path}$ 는 구현하지 않은 항이라 이 식에 없다. 구현에는 이 식에 적지 않은 것이 둘 있다 — 상대속도 비용의 목표 배율 $\gamma_{ref}$ (아래 "상대속도 목표") 와 정지 경로 항 $w_\perp$ (위). $\gamma_{ref}=1$, $w_\perp=0$ 이면 구현의 문제가 이 식이다.
+$v_{C_R,k_c}$ 와 $W_{v,k_c}$ 는 §1.3 의 식 그대로다. 비선형 항 ($p_{C_R}$, $e_a$, $v_{C_R}$, $\tau^{lin}$) 은 기준 $\bar x$ 에서의 §1.2 선형화 값이다. §1.3 의 경로 이탈 항 $w_{path}$ 는 구현하지 않은 항이라 이 식에 없다. §1.3 의 식과 다른 곳은 다음과 같다.
+
+- **jerk 항.** 구간 길이 $\Delta_k$ 를 정지 구간 간격 $\Delta_s$ 로 나눈 값으로 가중하고 ($\Delta_k$ 는 포구 전 $\Delta_a$, 포구 뒤 $\Delta_s$), 입력을 $u_{scale}$ 로 나눈다. $R_j$ 는 관절마다의 가중이다 (`cost.jerk_weight` · `cost.u_scale`).
+- **일관성 항.** 기준은 $\bar q_k$ 다 — 직전 해를 새 격자에서 다시 평가한 것이고, 새 plan 의 첫 풀이에서는 계획기가 만든 곡선이다. 배율 $\lambda_\Delta\in[0,1]$ 은 풀이마다 정한다:
+
+$$
+\lambda_\Delta=
+\begin{cases}
+0&\text{새 plan 의 첫 풀이}\\
+\min\big(1,\enspace \mathrm{tr}\Sigma_p(t_c)/\sigma_{ref}^2\big)&\text{공분산이 있을 때}\\
+1&\text{공분산이 없거나 쓸 수 없을 때}
+\end{cases}
+$$
+
+  포구 뒤의 재계획 (정지 구간만 남은 문제) 은 $\lambda_\Delta=1$ 이다.
+
+- **정지 경로 항.** $w^{stop} _ \perp$ (`cost.w_perp`) 는 정지 구간의 노드 ($k\ge k_c$) 에 건다. $P_\perp=I-\hat d\hat d^\top$, $\hat d=\hat v_b(t_c)/\Vert\hat v_b(t_c)\Vert$ 이고 직선은 $\hat p_b(t_c)$ 를 지난다 (위 "구현의 규약"). 상대속도 가중 $W_v$ 의 $w_\perp$ (`catch.w_v_perp`) 와 다른 값이다. 0 이면 이 항이 없다.
+- **포구 위치 가중.** $\Sigma_p(t_c)$ 의 대칭 부분을 고유분해 ($\Sigma_p=V\mathrm{diag}(\mu_i)V^\top$) 해서 고유값마다 하한과 상한을 둔다 (`CatchPositionWeight`):
+
+$$
+W_p=V\mathrm{diag}\Big(\min\Big(\frac{\kappa}{\max(\mu_i,0)+\sigma_{floor}^2},\enspace w_{\max}\Big)\Big)V^\top,\qquad
+W_p=w_{const}I\enspace(\text{공분산이 없거나 쓸 수 없을 때}).
+$$
+
+  $\sigma_{floor}$ 가 §1.3 의 $\sigma_{trk}$ 자리다 (키 `catch.{kappa, sigma_floor, w_max, w_const}`).
+- **상대속도 비용의 목표.** $\gamma_{ref}\hat v_b$ 다 ($\gamma_{ref}\in(0,1]$, 아래 "상대속도 목표"). slack 행의 기준은 $\hat v_b$ 그대로다.
+- **토크 행.** 행과 slack 을 관절의 $\tau_{\max,j}$ 로 나눈다 — $s_\tau$ 는 무차원 ($\tau_{\max}$ 의 비율) 이고 벌점 $\rho_\tau$ 가 관절마다 같은 세기로 걸린다. $\rho_\tau=0$ 이면 토크 행과 slack 변수가 없다.
+- **포구 전 노드 수.** $k_c=n_{pre}$ 이고 풀기 전에 정한다. $T_{bud}$ 는 그 풀이의 예산 (첫 풀이 `budget.first_s`, 재계획 `budget.replan_s`), $h$ 는 제어 주기다:
+
+$$
+n_{pre}=\min\Big(n_{pre,\max},\enspace \Big\lfloor\frac{t_c-now_{lead}-T_{bud}-2h}{\Delta_a}\Big\rfloor\Big),\qquad t_s=t_c-n_{pre}\Delta_a .
+$$
+
+  $n_{pre}\ge1$ 일 때만 포구 항이 있는 문제를 푼다. 첫 풀이에서 $n_{pre}\lt1$ 이면 풀지 않는다 (너무 늦음). 재계획에서 $n_{pre}\lt1$ 이면 포구 노드가 지난 것이라 정지 구간만 남은 문제 (포구 항 없음, $k_c=0$) 를 푼다.
 
 | 기호 | 뜻 |
 |---|---|
@@ -738,7 +773,7 @@ $$
 6. **결합 부호** (G1 구성). 왼손 과제를 world에 두면 ${}^WJ_{C_L}=[ J_{L,w}\quad J_{L,L}\quad0 ]$로 waist 열이 생겨, waist yaw $\omega_w$가 왼손에 $\omega_w\times r_L$의 속도 오차를 만들고 $W_L$이 그것을 지우려 waist를 끌어당긴다. 몸통 frame 선택이 이 결합을 구조적으로 0으로 만든다.
 7. **각운동량 상쇄 확인** (G1 구성). 왼팔 고정($W_L^{rest}\to\infty$)에 $W_{\dot k}\to\infty$를 두면 오른팔 속도가 0 쪽으로 눌려 포구가 실패해야 한다. 왼팔을 풀면 counter-swing이 나타나고 $\max_k\Vert\dot k_G\Vert$가 줄면서 포구 항은 거의 그대로여야 한다. 그렇지 않으면 선형화나 $A_G$ frame이 틀린 것이다.
 8. **일치.** 제약이 비활성이고 $q_c=q_{ref}$ 이며 자세 과제가 $\dot q_{ref}$ 를 feedforward 로 받으면 CLIK 의 해는 $v^\ast=\dot q_{ref}$ 이고 두 손 과제와 자세 과제의 잔차가 모두 0 이어야 한다 (§1.5). 0 이 아니면 RT 의 FK frame 이나 몸통 기준 변환이 틀린 것이다. feedforward 가 없는 현 CLIK 에서는 FK 일관성 ($T(q_{ref})=T^d$, $J\dot q_{ref}=V^{ff}$) 만 단언한다 (계획 MD-30).
-9. **환원 — 정지 구간.** §1.6 의 문제에서 포구 항을 끄고 ($k_c=0$) $w_\perp=0$, $w_\Delta=0$, 토크 행과 한계 비활성, $x_0$ 의 가속 0 이면 해는 관절별로 독립인 최소 jerk 정지 궤적이다. 관절 하나의 닫힌식 해와 대조한다 (코어의 회귀).
+9. **환원 — 정지 구간.** §1.6 의 문제에서 포구 항을 끄고 ($k_c=0$) $w^{stop} _ \perp=0$, $w_\Delta=0$, 토크 행과 한계 비활성, $x_0$ 의 가속 0 이면 해는 관절별로 독립인 최소 jerk 정지 궤적이다. 관절 하나의 닫힌식 해와 대조한다 (코어의 회귀).
 10. **충돌 회귀** (G1 구성). 왼팔이 counter-swing할 때 팔–팔 거리와 공–왼팔 거리 제약이 활성화되는 노드가 진단에 찍혀야 한다. 활성 0이면 왼팔이 실제로 움직이지 않은 것이다.
 11. **단일 팔 = 제거 항 0.** §1.3 의 문제에서 waist · 왼팔을 잠그고 §1.6 이 제거한 항의 가중을 0 으로 두면 ($w_w=0$, $W_L^{rest}=0$, $W_{\dot k}=0$, 충돌 · 공–왼팔 행 없음) 해는 §1.6 의 해와 같아야 한다.
 12. **Additive 회귀.** 코어에 G1 항을 더해도 그 가중을 0 으로 둔 단일 팔 케이스의 해는 바뀌지 않아야 한다. 바뀌면 항의 조립이 기존 항을 건드린 것이다 (계획 MD-46 · MD-49).
