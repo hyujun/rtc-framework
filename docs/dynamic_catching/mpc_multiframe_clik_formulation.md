@@ -638,7 +638,7 @@ $v_{C_R,k_c}$, $W_{v,k_c}$, $w_\Delta$ 는 §1.3 의 식 그대로다.
 - 손은 기준 자세로 잠근 축소 모델이다 (§0.1). p1b 는 폐쇄 체인 손이라 이 처리가 필요하다.
 - v1 의 정지 시간은 포구 속도를 감속도 (`a_dec`) 로 나눈 값이라 vision 간격보다 짧을 수 있다. 그래서 $\Delta_s$ 는 $\Delta$ 와 따로 정한다 (사용자 승인 2026-09-29). 정지 구간의 비용에 시간 항이 없으므로 최적해는 정지 구간 전체를 쓴다 — $T_s$ 는 정지 시간의 상한이 아니라 **정지 시간 그 자체**다 (계획 MD-21).
 - 출력과 RT 평가는 §1.5 와 같다. `mpc` 에서 soft-catch DS 는 돌지 않는다 — APPROACH 부터 정지까지 $q_{ref}$ 에서 만든 pose · twist · 접근축과 관절 기준 (null space 자세 목표) 을 CLIK 에 넣는다 (계획 MD-3 을 MD-45 가 넓힘).
-- 안전망은 §1.3 의 표와 같다. 기본값은 `closed_form` 이고 MPC 는 YAML 로 켠다. `mpc` 에서 따를 구간이 없으면 `ABORT_SAFE` 다 (계획 MD-44).
+- 안전망은 §1.3 의 표와 같다. 코드 기본값은 `closed_form` 이고 MPC 는 YAML 로 켠다 — 출하 YAML 은 두 로봇 모두 켠다 (계획 MD-89). `mpc` 에서 따를 구간이 없으면 `ABORT_SAFE` 다 (계획 MD-44).
 - **이름.** `supervisor.decel.mode`, `planner.decel_mpc.*`, `DecelMpc`, `DecelPlanSnapshot` 의 Decel 은 역사적 이름이다. `mode: mpc` 에서 범위는 APPROACH 부터 정지까지이고, `supervisor.decel.mode` 는 실제로 planner 를 고른다 (계획 MD-48).
 - 비교 기준은 계획의 게이트 G-1 이다. MPC arm 은 APPROACH–정지 MPC 다 (§6.5).
 - 이전 판 (v0.4a) 의 정지 구간 환원형 — 포구 항을 끄고 $k_c=0$ — 은 코어의 회귀 케이스로 남는다 (E1-F01 의 동작, §4 항목 9).

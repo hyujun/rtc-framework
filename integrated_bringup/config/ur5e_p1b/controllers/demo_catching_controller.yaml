@@ -410,11 +410,14 @@ demo_catching_controller:
       decel:
         a_dec: 10.0
         # The DECEL law (MPC MD-44), chosen once per configuration and never
-        # mixed within it. closed_form: v1 L7's virtual target (the default,
-        # also when the key is absent). mpc: every DECEL follows the decel
+        # mixed within it. closed_form: v1 L7's virtual target (the code
+        # default, when the key is absent). mpc: every DECEL follows the decel
         # MPC's stop segment — needs planner.decel_mpc.enabled, and a DECEL
         # with no segment to follow aborts (ABORT_SAFE), never closed_form.
-        mode: closed_form
+        # Shipped mpc by the user's decision (MPC plan MD-89, 2026-10-03)
+        # although gate G-1 failed here: catch success 0.58 against closed_form's 0.69 on the same 300 throws (plan §8 "E1-F06").
+        # Set closed_form to run v1's law.
+        mode: mpc
         # rho_max of the mpc segment-switch gate (MD-39), per joint:
         # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max. Read under mpc only.
         # E1-F10 left it at 1.0: over 989 followed replans rho stayed under
@@ -567,12 +570,12 @@ demo_catching_controller:
         # MPC E1-F03 (#629) / E1-F08 (#661): the planner thread solves the
         # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
         # MD-55 – MD-64). Built and run only under supervisor.decel.mode: mpc,
-        # which also needs it (MD-44); under closed_form, true only warns. Off
-        # with the closed-form default. Under mode: mpc the RT takes a plan only
-        # together with its first segment and follows the segments from APPROACH
-        # to the end of the stop (MPC E1-F09, MD-45) — the approach grid below
-        # (n_pre_max > 0) is then required.
-        enabled: false
+        # which also needs it (MD-44); under closed_form, true only warns. On
+        # with the shipped mpc law (supervisor.decel.mode, MD-89). Under mode: mpc
+        # the RT takes a plan only together with its first segment and follows
+        # the segments from APPROACH to the end of the stop (MPC E1-F09, MD-45)
+        # — the approach grid below (n_pre_max > 0) is then required.
+        enabled: true
         horizon:
           # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
           # (MD-21), 0.35 s.

@@ -34,8 +34,10 @@
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "shipped_config_test_fixture.hpp"
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rclcpp/executors.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -1104,7 +1106,15 @@ std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std::string
       cfg.motor_state_names = dev["motor_state_names"].as<std::vector<std::string>>();
     }
     if (const YAML::Node limits = dev["joint_limits"]; limits) {
+      // Every field the CM carries: the shipped `mpc` law (MD-89) and the
+      // dynamic CLIK read the torque and velocity ratings, not only the box.
+      const auto per_joint = [&limits](const char* key) {
+        return limits[key] ? limits[key].as<std::vector<double>>() : std::vector<double>{};
+      };
       rtc::DeviceJointLimits jl;
+      jl.max_velocity = per_joint("max_velocity");
+      jl.max_acceleration = per_joint("max_acceleration");
+      jl.max_torque = per_joint("max_torque");
       jl.position_lower = limits["position_lower"].as<std::vector<double>>();
       jl.position_upper = limits["position_upper"].as<std::vector<double>>();
       cfg.joint_limits = jl;
@@ -1115,6 +1125,85 @@ std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std::string
     configs[group] = std::move(cfg);
   }
   return configs;
+}
+
+/// The profile's system model as the CM builds it: every entry of the shipped
+/// `urdf:` block, read from the file. Only the package is swapped, for the
+/// vendored `robot_descriptions` copy at the same relative path — the one
+/// model CI can acquire (ur5e_p1b_test_fixture.hpp has why). Since MD-89 the
+/// shipped DECEL law is `mpc`, which parks without a model, so a bring-up
+/// test of the shipped file that left the model out would configure a
+/// controller production never builds.
+rtc_urdf_bridge::ModelConfig ShippedModelConfig(const std::string& profile) {
+  const std::string base = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile + "/";
+  YAML::Node urdf;
+  for (const char* candidate : {"_base.yaml", "sim.yaml"}) {
+    if (!std::filesystem::exists(base + candidate)) {
+      continue;
+    }
+    const YAML::Node u = YAML::LoadFile(base + candidate)["/**"]["ros__parameters"]["urdf"];
+    if (u && u.IsMap()) {
+      urdf = u;
+      break;
+    }
+  }
+  // Throws rather than ASSERT_: the callers would go on with no model.
+  if (!urdf) {
+    throw std::runtime_error(profile + ": no shipped urdf block");
+  }
+  const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
+  rtc_urdf_bridge::ModelConfig cfg;
+  cfg.urdf_path = share + "/" + urdf["path"].as<std::string>();
+  cfg.root_joint_type = urdf["root_joint_type"].as<std::string>("fixed");
+  if (urdf["extended"].as<bool>(false)) {
+    cfg.closure_yaml_path = share + "/" + urdf["closure_path"].as<std::string>();
+  }
+  // Document order: controllers take the FIRST sub-model as the arm.
+  for (auto it = urdf["sub_models"].begin(); it != urdf["sub_models"].end(); ++it) {
+    cfg.sub_models.push_back({it->first.as<std::string>(),
+                              it->second["root_link"].as<std::string>(),
+                              it->second["tip_link"].as<std::string>()});
+  }
+  for (auto it = urdf["tree_models"].begin(); it != urdf["tree_models"].end(); ++it) {
+    cfg.tree_models.push_back({it->first.as<std::string>(),
+                               it->second["root_link"].as<std::string>(),
+                               it->second["tip_links"].as<std::vector<std::string>>()});
+  }
+  for (auto it = urdf["extra_frames"].begin(); it != urdf["extra_frames"].end(); ++it) {
+    rtc_urdf_bridge::ExtraFrameConfig frame;
+    frame.name = it->first.as<std::string>();
+    frame.parent = it->second["parent"].as<std::string>();
+    const auto xyz = it->second["xyz"].as<std::vector<double>>();
+    const auto rpy = it->second["rpy"].as<std::vector<double>>(std::vector<double>(3, 0.0));
+    frame.xyz = Eigen::Vector3d(xyz.at(0), xyz.at(1), xyz.at(2));
+    frame.rpy = Eigen::Vector3d(rpy.at(0), rpy.at(1), rpy.at(2));
+    frame.provisional = it->second["provisional"].as<bool>(true);
+    cfg.extra_frames.push_back(frame);
+  }
+  return cfg;
+}
+
+/// One builder per profile per process — the xacro → Pinocchio parse is the
+/// expensive part, and production shares one builder the same way.
+std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> ShippedModelBuilder(
+    const std::string& profile) {
+  static std::map<std::string, std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder>> builders;
+  auto& builder = builders[profile];
+  if (!builder) {
+    builder = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(ShippedModelConfig(profile));
+  }
+  return builder;
+}
+
+/// The CM's bring-up order for a controller of the shipped profile: model,
+/// builder, rate, devices (iiwa7_leap_test_fixture.hpp). on_configure is the
+/// caller's.
+void BringUpShipped(DemoCatchingController& ctrl, const std::string& profile,
+                    const std::map<std::string, rtc::DeviceNameConfig>& configs) {
+  ctrl.SetSystemModelConfig(ShippedModelConfig(profile));
+  ctrl.SetSharedModelBuilder(ShippedModelBuilder(profile));
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(configs);
 }
 
 // The sensor whose absence let a bring-up-killing profile ship.
@@ -1128,8 +1217,8 @@ std::map<std::string, rtc::DeviceNameConfig> ShippedSimConfigs(const std::string
 // symptom was not "no catching" but "no robot".
 //
 // This runs the same on_configure the CM runs, on the file that ships, with
-// the devices the file declares, on the SIM axis — which is the one that
-// refuses rather than parks.
+// the devices and the model the file declares, on the SIM axis — which is the
+// one that refuses rather than parks.
 TEST_P(ShippedCatchingProfile, ConfiguresAndIsArmableOnTheSimAxis) {
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
@@ -1143,8 +1232,7 @@ TEST_P(ShippedCatchingProfile, ConfiguresAndIsArmableOnTheSimAxis) {
   auto node_handle =
       std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_shipped_" + profile);
   DemoCatchingController ctrl{""};
-  ctrl.SetControlRate(kShippedControlRateHz);
-  ctrl.SetDeviceNameConfigs(configs);
+  BringUpShipped(ctrl, profile, configs);
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
@@ -1176,8 +1264,7 @@ TEST_P(ShippedCatchingProfile, IsStillParkedOnTheRealArmAxis) {
   auto node_handle =
       std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_shipped_real_" + profile);
   DemoCatchingController ctrl{""};
-  ctrl.SetControlRate(kShippedControlRateHz);
-  ctrl.SetDeviceNameConfigs(configs);
+  BringUpShipped(ctrl, profile, configs);
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
@@ -1185,6 +1272,35 @@ TEST_P(ShippedCatchingProfile, IsStillParkedOnTheRealArmAxis) {
   EXPECT_TRUE(ctrl.IsRealArmConfig());
   EXPECT_TRUE(ctrl.IsSimOnlyDisabled())
       << profile << ": the provisional values stopped blocking a real arm";
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// MD-89: the shipped law is `mpc`, which needs the arm model (its catch
+// sub-model and the CLIK). Without one the shipped profile still configures —
+// the robot comes up — but this controller parks and refuses to activate,
+// never falls back to the closed form. The positive control is
+// ConfiguresAndIsArmableOnTheSimAxis, the same file with the model.
+TEST_P(ShippedCatchingProfile, WithoutAModelTheShippedMpcLawParks) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  ASSERT_EQ(node["catching"]["supervisor"]["decel"]["mode"].as<std::string>(), "mpc")
+      << profile << ": precondition — the shipped law";
+  auto node_handle =
+      std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_shipped_no_model_" + profile);
+  DemoCatchingController ctrl{""};
+  ctrl.SetControlRate(kShippedControlRateHz);
+  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  const rclcpp_lifecycle::State prev;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS)
+      << profile << ": a missing model parks this controller, it must not fail the bring-up";
+  EXPECT_FALSE(ctrl.IsRealArmConfig()) << "precondition: judged on the sim axis";
+  EXPECT_TRUE(ctrl.IsSimOnlyDisabled()) << profile;
+  EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kDecelModeUnmet)
+      << profile;
   EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
 }
@@ -1202,6 +1318,11 @@ YAML::Node ShippedWithPlanner(const std::string& profile, bool planner, bool ora
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
   node["catching"]["planner"]["enabled"] = planner;
   node["diagnostic"]["oracle_plan"]["enabled"] = oracle;
+  if (!planner) {
+    // The shipped law (`mpc`, MD-89) follows the planner's segments, so a
+    // profile with the planner off runs v1's law — the only one it can.
+    node["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
+  }
   return node;
 }
 
@@ -1220,8 +1341,7 @@ TEST_P(ShippedCatchingProfile, RunsThePlannerThroughTheWholeLifecycle) {
   ASSERT_EQ(configs.size(), 2U);
   auto node_handle = NodeWithProfile("catching_shipped_planner_" + profile, "mpc_on");
   DemoCatchingController ctrl{""};
-  ctrl.SetControlRate(kShippedControlRateHz);
-  ctrl.SetDeviceNameConfigs(configs);
+  BringUpShipped(ctrl, profile, configs);
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS);
@@ -1278,8 +1398,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
     auto node_handle =
         NodeWithProfile("catching_shipped_tuning_mirror_" + profile + "_" + c.name, "mpc_on");
     DemoCatchingController ctrl{""};
-    ctrl.SetControlRate(kShippedControlRateHz);
-    ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+    BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
     const rclcpp_lifecycle::State prev;
     ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
               DemoCatchingController::CallbackReturn::SUCCESS)
@@ -1315,8 +1434,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
 
   auto node_handle = NodeWithProfile("catching_shipped_mirror_" + profile, "mpc_on");
   DemoCatchingController ctrl{""};
-  ctrl.SetControlRate(kShippedControlRateHz);
-  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS);
@@ -1361,8 +1479,7 @@ TEST_P(ShippedCatchingProfile, RefusesToActivateThePlannerUnderTheMpcOffProfile)
   YAML::Node node = ShippedWithPlanner(profile, true, false);
   auto node_handle = NodeWithProfile("catching_shipped_mpc_off_" + profile, "mpc_off");
   DemoCatchingController ctrl{""};
-  ctrl.SetControlRate(kShippedControlRateHz);
-  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
@@ -1375,8 +1492,7 @@ TEST_P(ShippedCatchingProfile, RefusesToActivateThePlannerUnderTheMpcOffProfile)
   YAML::Node off = ShippedWithPlanner(profile, false, false);
   auto node_off = NodeWithProfile("catching_shipped_mpc_off_noplan_" + profile, "mpc_off");
   DemoCatchingController ctrl_off{""};
-  ctrl_off.SetControlRate(kShippedControlRateHz);
-  ctrl_off.SetDeviceNameConfigs(ShippedSimConfigs(profile, off));
+  BringUpShipped(ctrl_off, profile, ShippedSimConfigs(profile, off));
   ASSERT_EQ(ctrl_off.on_configure(prev, node_off, off),
             DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_EQ(ctrl_off.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
@@ -1395,8 +1511,7 @@ TEST_P(ShippedCatchingProfile, AConsumedKeyLeftTbdParksTheSimProfileInsteadOfFai
   node["catching"]["io"].remove("t_stale");
   auto node_handle = NodeWithProfile("catching_shipped_tbd_" + profile, "mpc_on");
   DemoCatchingController ctrl{""};
-  ctrl.SetControlRate(kShippedControlRateHz);
-  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
@@ -1414,8 +1529,7 @@ TEST_P(ShippedCatchingProfile, ThePlannerAndTheOracleTogetherPark) {
   YAML::Node node = ShippedWithPlanner(profile, /*planner=*/true, /*oracle=*/true);
   auto node_handle = NodeWithProfile("catching_shipped_both_" + profile, "mpc_on");
   DemoCatchingController ctrl{""};
-  ctrl.SetControlRate(kShippedControlRateHz);
-  ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS);
@@ -1452,8 +1566,7 @@ TEST_P(ShippedCatchingProfile, AnUnsetPlannerDecisionParksInsteadOfGuessing) {
     auto node_handle =
         NodeWithProfile("catching_shipped_unset_" + profile + "_" + std::to_string(n++), "mpc_on");
     DemoCatchingController ctrl{""};
-    ctrl.SetControlRate(kShippedControlRateHz);
-    ctrl.SetDeviceNameConfigs(ShippedSimConfigs(profile, node));
+    BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
     const rclcpp_lifecycle::State prev;
     ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
               DemoCatchingController::CallbackReturn::SUCCESS)
@@ -1499,6 +1612,10 @@ constexpr int kP1bHandChannels = 10;
 struct WaitPoseRig {
   explicit WaitPoseRig(const char* source, const std::string& node_name) {
     node = ShippedWithPlanner("ur5e_p1b", /*planner=*/true, /*oracle=*/false);
+    // No arm model here (the S8-I refusal below needs none), so not the
+    // shipped `mpc` law, which parks without one (MD-89): v1's law, as the
+    // profile shipped until then.
+    node["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
     if (source != nullptr) {
       node["catching"]["planner"]["wait_pose_source"] = source;
     }
@@ -1541,19 +1658,20 @@ std::vector<double> ArmPositionsOf(const ControllerState& s) {
 
 }  // namespace
 
-TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOff) {
+TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   // MPC E1-F08 (#661, MD-54 · MD-55): the shipped profiles carry the
   // APPROACH–stop grid — 7 x 0.05 s after the catch, up to 6 x 0.1 s before
-  // it — with the decel MPC itself off and DECEL on the closed form. The
-  // CODE defaults are not that grid (14 x 0.025, n_pre_max 0), so only
-  // reading the file shows what a `mode: mpc` overlay will run.
+  // it. Since MD-89 (2026-10-03) they also ship the decel MPC on and DECEL
+  // on `mpc` — the law the grid serves; before it they shipped both off and
+  // the closed form. The CODE defaults are neither (14 x 0.025, n_pre_max 0,
+  // `closed_form`), so only reading the file shows what a robot runs.
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
   const YAML::Node node =
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   const auto& d = planner.decel;
-  EXPECT_FALSE(d.enabled) << profile;
+  EXPECT_TRUE(d.enabled) << profile;
   EXPECT_TRUE(d.horizon_explicit) << profile;
   EXPECT_EQ(d.n_nodes, 7) << profile;
   EXPECT_EQ(d.DtNs(), 50'000'000) << profile;
@@ -1572,8 +1690,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOff) {
   EXPECT_GT(d.budget_replan_s, 0.0) << profile;
   EXPECT_GT(d.catch_pos_err_max, 0.0) << profile;
   ASSERT_TRUE(node["catching"]["supervisor"]["decel"]["mode"]) << profile;
-  EXPECT_EQ(node["catching"]["supervisor"]["decel"]["mode"].as<std::string>(), "closed_form")
-      << profile;
+  EXPECT_EQ(node["catching"]["supervisor"]["decel"]["mode"].as<std::string>(), "mpc") << profile;
 }
 
 TEST(DemoCatchingWaitPose, WithoutAnArmBoxTheSwitchedInPoseIsRefusedAndTheYamlPoseStands) {
