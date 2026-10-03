@@ -826,14 +826,14 @@ TEST_F(CatchingPlanLaneTest, TheDecelMpcIsParkedWithoutThePlanner) {
   YAML::Node yaml = YAML::Load(
       TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
   yaml["catching"]["planner"]["enabled"] = false;
-  yaml["catching"]["planner"]["decel_mpc"]["enabled"] = true;
+  yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // no other writer of the decel box
   // MD-44: the decel keys are read only under the law that follows them.
   yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
-  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kDecelMpcInvalid);
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kDecelModeUnmet);
   EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
 }
 
@@ -900,8 +900,6 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
               [](YAML::Node& y) { y["catching"]["planner"]["gamma"]["eta_v"] = 1.0; });
   // MD-45, MD-70: a plan goes out only with a segment that starts before
   // t_c, so without a pre-catch grid there is no decel planner to build.
-  expect_park("no decel planner", true,
-              [](YAML::Node& y) { y["catching"]["planner"]["decel_mpc"]["enabled"] = false; });
   expect_park("a decel planner without the pre-catch grid", true, [](YAML::Node& y) {
     y["catching"]["planner"]["decel_mpc"]["approach"]["n_pre_max"] = 0;
   });

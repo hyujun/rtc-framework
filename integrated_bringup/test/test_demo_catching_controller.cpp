@@ -1820,7 +1820,6 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   const auto& d = planner.decel;
-  EXPECT_TRUE(d.enabled) << profile;
   EXPECT_TRUE(d.horizon_explicit) << profile;
   EXPECT_EQ(d.n_nodes, 7) << profile;
   EXPECT_EQ(d.DtNs(), 50'000'000) << profile;

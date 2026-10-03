@@ -50,7 +50,6 @@ std::size_t Idx(int k, int j) {
 
 TEST(DecelParams, DefaultsAreTheShippedHorizon) {
   const DecelPlannerParams d = rtc::catching::PlannerParams{}.decel;
-  EXPECT_FALSE(d.enabled);
   EXPECT_EQ(d.n_nodes, 14);  // MD-24: 14 × 0.025 s = 0.35 s
   EXPECT_DOUBLE_EQ(d.dt_s, 0.025);
   EXPECT_EQ(d.DtNs(), 25'000'000);
@@ -67,14 +66,12 @@ TEST(DecelParams, DefaultsAreTheShippedHorizon) {
 
 TEST(DecelParams, ParsesTheSectionAndKeepsDefaultsWhenAbsent) {
   const auto absent = ParsePlannerParams(YAML::Load("planner: {enabled: true}"));
-  EXPECT_FALSE(absent.decel.enabled);
   EXPECT_EQ(absent.decel.n_nodes, 14);
   const auto p = ParsePlannerParams(
       YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, "
                  "2]}, replan: {k_max: 2}, eta_tau: 0.6, m_q: 0.04, publish: {slack_max: "
                  "0.2, slack_terminal_max: 0.05}}}"));
   const DecelPlannerParams& d = p.decel;
-  EXPECT_TRUE(d.enabled);
   EXPECT_EQ(d.n_nodes, 7);
   EXPECT_EQ(d.DtNs(), 50'000'000);
   EXPECT_EQ(d.n_blocks, 4);
@@ -90,7 +87,6 @@ TEST(DecelParams, ParsesTheSectionAndKeepsDefaultsWhenAbsent) {
 TEST(DecelParams, RejectsAMalformedSection) {
   for (const char* bad : {
            "planner: {decel_mpc: 3}",
-           "planner: {decel_mpc: {enabled: maybe}}",
            "planner: {decel_mpc: {horizon: {n_nodes: 2, blocks: [1, 1]}}}",
            "planner: {decel_mpc: {horizon: {n_nodes: 25}}}",
            // Σ blocks ≠ n_nodes
