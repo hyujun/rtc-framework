@@ -1,88 +1,57 @@
-# dynamic_catching — 포구 알고리즘 설계 문서
+# dynamic_catching — 포구 알고리즘 문서
 
-구현 대상은 **기존 `rtc-framework` workspace** 다. 새 workspace를 만들지 않고, 이미 있는
-kinematics·dynamics·CLIK/QP·joint command backend를 재사용한다(마스터 §1.2).
+vision 이 예측한 공의 궤적을 받아 팔과 손으로 공을 잡는 컨트롤러의 문서다. 구현은 기존 `rtc-framework` 패키지에 있다 — `rtc_controllers` 의 `catching/` (수치 코어), `rtc_math` se3 (축 정렬), `rtc_tsid` (CLIK), `integrated_bringup` (컨트롤러 · YAML · launch).
 
-- 설계 문서: `CATCHING_MASTER.md` + `WORKSPACE_ANALYSIS.md` + `L0_core.md` … `L8_bringup.md` (헤더 버전 v0.5 — 이후 개정은 plan 의 결정을 따라 해당 절만 고친다)
-- 구현: rtc_controllers `catching/` (수치 코어) · `rtc_math` se3 (축 정렬) · `rtc_tsid` (CLIK 확장) · `integrated_bringup` (바인딩·YAML·launch). 배치 결정은 plan D-1
+## 무엇이 어디에 있나
 
-## 구현 계획 (living document)
+| 찾는 것 | 자리 |
+|---|---|
+| 수학과 구조 — 지금 구현이 무엇을 하는가 | [ref/](ref/) |
+| 코드 주석의 `MD-45` · `D-16` · `G3-I` · `S6-B` · `plan §9` 가 무슨 뜻인가 | [ID_INDEX.md](ID_INDEX.md) |
+| 지금 상태, 남은 feature, 아직 정하지 않은 것 | [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) — MPC · dual-arm 확장과 실기 단계의 계획. 구현이 끝나면 지운다 |
+| 값 (YAML 키의 값) | `integrated_bringup/config/<robot>/controllers/` 의 YAML |
+| 운용 방법 (launch · 도구 · 분석) | `integrated_bringup/README.md`, `rtc_tools/README.md` |
+| 측정 · 검증 기록, 결정의 경위 | 이슈 — Epic [#537](https://github.com/hyujun/rtc-framework/issues/537) (단일 팔 포구), project [MPC · dual-arm catching](https://github.com/users/hyujun/projects/2), 실기 [#613](https://github.com/hyujun/rtc-framework/issues/613) |
 
-전체 구현 계획·결정 로그·단계 상태는 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) 가 SSoT 다. 아래 설계 문서와
-충돌하면 **IMPLEMENTATION_PLAN.md 의 결정이 우선한다**. 구현이 끝나면 prune 한다.
+같은 사실은 한 곳에만 적는다. 계획 문서에는 영구히 보관할 정보를 넣지 않는다 — 구현이 끝나면 지우는 파일이다.
 
-단계의 상태는 plan 의 상태줄과 §4.3 표가 갖는다 — 여기에 사본을 적지 않는다.
-진행 기록은 Epic [#537](https://github.com/hyujun/rtc-framework/issues/537), S10 의 잔여 작업은 [#613](https://github.com/hyujun/rtc-framework/issues/613) 이다.
-plan 은 2026-09-29 에 제자리 압축했다 (절 번호·식별자 불변) — 압축 전 전문은 `git show b0ea0996:docs/dynamic_catching/IMPLEMENTATION_PLAN.md`.
+## `ref/` — 수학과 구조
 
-## 확장 — MPC · dual-arm
-
-MPC 는 waist + dual-arm (G1) 용으로 설계하고, ur5e_p1b · iiwa7_leap 에서 dual arm · waist 항을 뺀 같은 MPC 로 먼저 시험한 뒤 (APPROACH–정지), G1 + proto_1b bring-up 을 거쳐 같은 코어에 그 항을 더한다. closed_form 과 mpc 는 입력 (공의 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 다. 이 확장은 별도 계획으로 관리한다. 계획과 상태는
-[MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) (실기 단계도 여기에 있다), 결정 ID (`MD-n`) 의 뜻은 [ID_INDEX.md](ID_INDEX.md), 정식화는 [ref/mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md),
-추적은 GitHub project [rtc-framework — MPC · dual-arm catching](https://github.com/users/hyujun/projects/2) 다.
-
-## 단계 W (완료) 와 문서 동기화 상태
-
-단계 W 는 코드 대조로 끝났다(2026-09-19). 기록은 `WORKSPACE_ANALYSIS.md`, 요약은 plan §2 에 있다.
-설계 문서 전체(마스터·W·L0~L8)는 S0.3 에서 plan 결정에 맞춰 v0.5 로 동기화했다 — ros2_control·`update()`
-전제 제거, 시간 규약 D-2, 손 포트 추상화 삭제(D-11), derate v1 제외(D-8), L0·L2·L3·L4 §5 의 코드 복사본을
-헤더 포인터로 대체. 상태는 plan §4 의 S0 행이 SSoT 다.
-
-## 입력 계약
-
-vision(ball_perception `sim_estimator_node`)이 `sensor_msgs/PointCloud2` 로 **예측 궤적**을 발행한다(마스터 §5,
-D-4). 점 하나가 $(p, v, a)$ + 공분산 $\Sigma_{6\times6}$(NaN = 모름) + `horizon_ns` + `generation`·`validity`·
-`snapshot_sequence` 이고, `header.stamp` 가 예측 원점 시각이다. debug 토픽이라 stable ABI 가 아니다. 제어 PC는 이
-궤적을 **재전파하지 않고 그대로 신뢰**하며, 샘플 사이만 보간한다(L2).
-
-vision 은 vision PC, 제어기는 제어 PC 에서 돈다. 두 쪽은 위 토픽으로만 만나고 서로의 파일을 읽지 않는다 — 추정기의
-profile 은 ball_perception 저장소가 소유한다 (MD-17 · MD-18 — [ID_INDEX.md](ID_INDEX.md)).
-
-## `ref/` — 참고 자료의 원본
-
-계획에 참고하는 자료 (수학적 알고리즘 · 전체 구조) 의 원본을 [ref/](ref/) 에 보관한다.
+| 문서 | 내용 |
+|---|---|
+| [CATCHING_MASTER.md](ref/CATCHING_MASTER.md) | 문제 정의, 계층 구조, 층 사이의 제약, 이론의 출처, 위험 |
+| [L0_core.md](ref/L0_core.md) | 시간 타입과 판정별 비교 축, 용량 상수, 파라미터 검증, 공 운동 모델 (fixture 전용) |
+| [L1_io.md](ref/L1_io.md) | `PointCloud2` 예측 궤적의 수신 · 검증, `header.stamp` 사용 계약, 스냅샷 전달 |
+| [L2_prediction.md](ref/L2_prediction.md) | 궤적 타입, 5 차 Hermite 샘플러 |
+| [L3_planner.md](ref/L3_planner.md) | 포구 시각 · 포구점 · 접근축의 탐색 (IK, 도달시간, γ 창, 순위), 계획기 스레드 |
+| [L4_reference.md](ref/L4_reference.md) | soft-catch 기준 (`closed_form`), 접근축 정렬 |
+| [L5_joint_cmd.md](ref/L5_joint_cmd.md) | CLIK 과제와 제약, 팔 지연의 선행 보상, catch frame |
+| [L6_hand.md](ref/L6_hand.md) | 손 시퀀서, 손 프로파일, 폐쇄 시간의 식별 |
+| [L7_supervisor.md](ref/L7_supervisor.md) | 상태 머신, abort 사유, 감속, `mpc` 의 구간 추종, 결과 판정, E-STOP · fault |
+| [L8_bringup.md](ref/L8_bringup.md) | 컨트롤러 통합, sim 기반, 평가, GUI · plot |
+| [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) | MPC planner 의 문제 (구현된 단일 팔 구성은 §1.6), 아직 구현하지 않은 dual-arm · waist 항과 다중 frame CLIK 의 설계 |
+| [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) | 채택하지 않은 대안 (inverse dynamics MPC) 의 자료 — 구현을 서술하지 않는다 |
 
 - 목적은 **지금 구현의 수학과 구조를 표현하는 것** 이다 — 경위의 기록이 아니다
 - 구현과 다르게 적힌 곳은 지금 구현으로 고쳐 쓴다. **수학이 달라지는 수정은 사용자의 승인을 받고 한다.** 그 밖에는 될 수 있으면 고치지 않는다
-- `ball_catching_inverse_dynamics_mpc.md` 는 채택하지 않은 대안의 자료라 구현을 서술하지 않는다. 나머지 열한 문서는 지금 구현에 맞춰 쓴 것이다
-- 절 번호는 이 폴더 바로 아래의 같은 이름 문서와 같다 (코드 주석이 `L3 §6` 식으로 인용한다). 이 폴더 바로 아래의 같은 이름 문서는 재정비 ([#705](https://github.com/hyujun/rtc-framework/issues/705)) 의 대상이다
-- 들어 있는 것: `mpc_multiframe_clik_formulation.md` · `ball_catching_inverse_dynamics_mpc.md` · `CATCHING_MASTER.md` · `L0_core.md` … `L8_bringup.md`
+- 절 번호는 바꾸지 않는다. 코드 주석이 `L3 §6`, `formulation §1.3` 식으로 인용한다. 새 절은 문서 끝에 더한다
+- planner 는 둘이다: `closed_form` 과 `mpc` (출하 기본값). 포구 후보의 탐색은 두 planner 가 공유하고, `mpc` 에서는 APPROACH 부터 정지까지 팔 기준을 MPC 구간이 만든다
 
-## 파일
+이 폴더 바로 아래의 `CATCHING_MASTER.md` · `L0_core.md` … `L8_bringup.md` · `mpc_multiframe_clik_formulation.md` 는 `ref/` 의 같은 이름 문서를 가리키는 안내뿐이다 — 코드 주석이 그 경로를 인용해서 남겨 둔다.
 
-| 파일 | Layer | 내용 |
-|---|---|---|
-| `IMPLEMENTATION_PLAN.md` | — | 결정 로그·단계 상태·게이트 결과 (SSoT) |
-| `ID_INDEX.md` | — | 코드가 인용하는 결정 ID · 게이트 ID · 단계 이름의 색인 — 뜻과 지금의 자리 |
-| `CATCHING_MASTER.md` | 전체 | 문제 정의·계층 구조·교차 제약·이론 출처 표 |
-| `WORKSPACE_ANALYSIS.md` | W | `rtc-framework` 분석 항목과 코드 대조 기록 (단계 W 완료, 2026-09-19) |
-| `L0_core.md` | L0 | 시간 타입·용량 상수·파라미터 검증, 공 운동 모델 (fixture 전용) |
-| `L1_io.md` | L1 | `PointCloud2` 예측 궤적 수신·파싱·검증, 스냅샷 브리지, 로봇·센서 상태 |
-| `L2_prediction.md` | L2 | 궤적 타입, 5차 Hermite 샘플러 |
-| `L3_planner.md` | L3 | 포구 시각·포구점·접근축·γ 결정 (IK·도달시간·γ 창·계획기 스레드) |
-| `L4_reference.md` | L4 | soft-catch DS, 접근축 정렬, 복귀 |
-| `L5_joint_cmd.md` | L5 | `ClikReferenceGenerator` 확장 옵션과 팔 명령 바인딩 |
-| `L6_hand.md` | L6 | 손 시퀀서·손 프로파일·`T_close` 식별 |
-| `L7_supervisor.md` | L7 | 상태 머신·접촉 판정·감속·abort |
-| `L8_bringup.md` | L8 | 컨트롤러 통합·launch·YAML·sim 기반·로깅·시스템 검증 |
-| `MPC_DUALARM_PLAN.md` | — | MPC · dual-arm 확장과 실기 단계의 계획 — 상태 · 남은 feature · 아직 정하지 않은 것 (구현이 끝나면 지운다) |
-| `mpc_multiframe_clik_formulation.md` | — | waist + dual-arm MPC 계획기와 다중 frame CLIK 의 수학적 정리 |
+## 입력 계약
 
-## 삭제된 참조 구현
+vision (ball_perception 의 `sim_estimator_node`) 이 `sensor_msgs/PointCloud2` 로 **예측 궤적** 을 발행한다. 점 하나가 $(p, v, a)$ + 공분산 $\Sigma_{6\times6}$ (NaN = 모름) + `horizon_ns` + `generation` · `validity` · `snapshot_sequence` 이고, `header.stamp` 가 예측 원점 시각이다. 제어 PC 는 이 궤적을 **재전파하지 않고 그대로 신뢰** 하며 샘플 사이만 보간한다 (형식과 검증은 [ref/L1_io.md](ref/L1_io.md), 보간은 [ref/L2_prediction.md](ref/L2_prediction.md)).
 
-v0.4 검증 산출물이던 참조 헤더 4개 (`traj_sampler.hpp`·`soft_catch_reference.hpp`·`time_feasibility.hpp`·
-`ball_dynamics.hpp`) 와 단독 테스트 (`test_l0.cpp`·`test_l2.cpp`·`test_l3.cpp`·`test_l4.cpp`·`verify_l3.py`) 는
-S1 에서 rtc_controllers `catching` 으로 이식된 뒤 pre-S10 R1 (2026-09-28) 에서 삭제됐다. 빌드가 참조하지 않았고,
-알려진 결함은 이식 때 모두 고쳤다 (plan §4.4 S1 결과). 설계 문서의 수치 중 이 테스트들이 낸 것은 기록으로 남기며,
-원본은 삭제 직전 커밋에서 읽는다:
+vision 은 vision PC, 제어기는 제어 PC 에서 돈다. 두 쪽은 위 토픽으로만 만나고 서로의 파일을 읽지 않는다 — 추정기의 profile 은 ball_perception 저장소가 소유한다 (MD-17 · MD-18).
+
+## 지워진 문서
+
+v1 계획 (`IMPLEMENTATION_PLAN.md`) 과 workspace 분석 기록 (`WORKSPACE_ANALYSIS.md`) 은 지웠다. 내용의 새 자리는 [ID_INDEX.md](ID_INDEX.md) §1 이고, 원문은 git 이력에 있다.
 
 ```bash
-git show 482d18b3:docs/dynamic_catching/<파일>
+git show 5278ca25:docs/dynamic_catching/IMPLEMENTATION_PLAN.md   # 지우기 직전
+git show b0ea0996:docs/dynamic_catching/IMPLEMENTATION_PLAN.md   # 2026-09-29 압축 전의 전문
 ```
 
-| 삭제된 파일 | 이식 위치 |
-|---|---|
-| `traj_sampler.hpp` · `test_l2.cpp` | `rtc_controllers/include/rtc_controllers/catching/traj_sampler.hpp` · `test/test_catching_traj_sampler.cpp` |
-| `soft_catch_reference.hpp` · `test_l4.cpp` | `catching/soft_catch.hpp` · `test/test_catching_soft_catch.cpp` (축 정렬은 `rtc_math` se3 `axis_align.hpp`) |
-| `time_feasibility.hpp` · `test_l3.cpp` · `verify_l3.py` | `catching/time_feasibility.hpp` · `test/test_catching_time_feasibility.cpp` (`verify_l3.py` 의 닫힌식 결과는 고정 테이블로) |
-| `ball_dynamics.hpp` · `test_l0.cpp` | `rtc_controllers/test/include/rtc_controllers/testing/catching_ball_fixture.hpp` · `test/test_catching_ball_fixture.cpp` |
+v0.4 의 참조 구현 (헤더 4 개와 단독 테스트) 은 `rtc_controllers` 의 `catching/` 으로 이식한 뒤 지웠다 — 이식한 헤더의 머리 주석이 원본의 커밋을 적는다.

@@ -15,19 +15,25 @@
 
 | 코드가 적은 것 | 지금의 자리 |
 |---|---|
+| `plan §1` (결정 로그) | 이 문서의 §5.1 (`D-n`). 근거와 경위의 원문은 [#537 의 기록 코멘트](https://github.com/hyujun/rtc-framework/issues/537#issuecomment-5974542176) |
+| `plan §1a` (Epic 의 성공 기준) | L8 §9 의 G8-D · G8-D2, 결과는 [#537](https://github.com/hyujun/rtc-framework/issues/537) |
+| `plan §2` (workspace 분석의 결론) | 각 `ref/L<n>` §2 (코드 확인 항목) |
 | `plan §3` (시간 규약) | L0 §4.5 |
 | `plan §3.1` (`header.stamp` 계약) | L1 §4.1, [invariants.md](../../agent_docs/invariants.md) §Clock 시간축 규칙 |
-| `plan §5` (sim 시계 위상 오차, D-3) | L8 §4.5 |
+| `plan §4` · `§4.2` · `§4.3` (단계 계획 · 상태) | 아래 §3 의 단계 표, 기록은 [#537](https://github.com/hyujun/rtc-framework/issues/537) |
+| `plan §5` · `§5.1` (sim 시계 위상 오차, D-3) | L8 §4.5 |
 | `plan §6` · `plan §7.2` (계획기 스레드 · 스케줄러) | L3 §5.3 |
-| `plan §7.1` · `§7.3` · `§7.4` (확정 기록) | 이 문서의 해당 ID |
+| `plan §7.1` · `§7.3` · `§7.4` (확정 기록) | 이 문서의 해당 ID. 원문은 [#537 의 기록 코멘트](https://github.com/hyujun/rtc-framework/issues/537#issuecomment-5974542377) |
+| `plan §8` (v1 계획 — 계획기의 NLP 전환 대비) | 아래 `A-4`, L3 §4.1. **config · 테스트 주석의 `plan §8 "E1-F06"` 과 `MPC plan §8` 은 MPC 계획의 측정 절이다** — 아래 줄 |
 | `plan §9` (가속 box 의 도출, D-16) | L3 §4.3 |
 | `plan §10` (catch frame, D-17) | L5 §11 |
 | `plan §11` (catchability, D-18) | L3 §4.2 |
 | `plan §12` (알려진 위험) | MASTER §10 |
 | `plan §13` (GUI · plot, D-19) | L8 §11 |
-| `plan §4.4 S<n>` (단계의 작업과 게이트) | 아래 §3 의 단계 표와 그 층의 `ref/L<n>` §9 |
+| `plan §4.4 S<n>` (단계의 작업과 게이트) | 아래 §3 의 단계 표와 그 층의 `ref/L<n>` §9. 단계별 결과의 원문은 [#537 의 기록 코멘트](https://github.com/hyujun/rtc-framework/issues/537#issuecomment-5974567014) |
 | `MPC plan §4` (`MD-n`) | 아래 §4 |
-| `MPC plan §8 "E1-F10"` 같은 측정 절 | 아래 §3 의 feature 표가 가리키는 이슈 |
+| `MPC plan §8 "E1-F10"`, `plan §8 "E1-F06"` 같은 측정 절 | 아래 §3 의 feature 표가 가리키는 이슈의 "측정 · 검증 기록" 코멘트 |
+| `S8 sub-plan §6.4` · `§6.5` (`catching_trials.py`) | 지워진 private 계획의 절이다 — 그 함수의 docstring 이 내용을 적는다 |
 | `formulation §N`, `L<n> §N` | `ref/` 의 같은 이름 문서, 같은 절 번호 |
 | `IMPLEMENTATION_PLAN.md` · `WORKSPACE_ANALYSIS.md` (경로) | 지워졌다 — 이 문서와 `ref/` |
 
