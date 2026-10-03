@@ -11,6 +11,7 @@ clean data" passes an implementation that always says pass.
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
 from pathlib import Path
@@ -54,6 +55,16 @@ def test_golden_servo_lag_is_200ms_on_every_joint(pilot):
         assert lag.tau_s == pytest.approx(0.200, abs=0.005), lag
         assert lag.ci_low_s <= lag.tau_s <= lag.ci_high_s
         assert lag.r2 > 0.99, "a first-order plant should explain the tracking error"
+
+
+def test_golden_trial_end_closes_each_trial_before_the_next_launch(pilot):
+    """``t_end`` (MPC E1-F06: the end of the window a mode-path verdict reads) is
+    on the lane clocks of ``t_launch``: after its own launch, before the next."""
+    rows = sorted((r for r in pilot.rows if not r["invalid_reason"]), key=lambda r: r["idx"])
+    assert len(rows) == 25
+    for r, nxt in itertools.pairwise(rows):
+        assert r["t_launch"] < r["t_end"] < nxt["t_launch"], r["idx"]
+    assert rows[-1]["t_end"] > rows[-1]["t_launch"]
 
 
 def test_golden_tc_decomposition(pilot):

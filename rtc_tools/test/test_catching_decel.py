@@ -434,13 +434,28 @@ def make_config(share: Path, *, sim_a_dec: float | None = None) -> Path:
     return cfg
 
 
+TAIL_TICKS = 5  # each trial's last ticks lie after its t_end
+
+
 def make_unit(
-    root: Path, name: str, outcomes: list[bool], *, seed: int = 601, second_stretch: bool = False
+    root: Path,
+    name: str,
+    outcomes: list[bool],
+    *,
+    seed: int = 601,
+    second_stretch: bool = False,
+    paths: dict[int, str] | None = None,
+    with_t_end: bool = True,
 ) -> Path:
     """A unit of ``len(outcomes)`` trials; trial 1 aborts before DECEL when there are ≥ 3.
 
     ``second_stretch`` puts a short second DECEL stretch into every trial's HOLD.
+    ``paths`` gives trials another mode path: ``abort_retreat`` (ABORT_SAFE from
+    the DECEL entry to RETREAT — no HOLD before it), ``abort_then_hold`` (a short
+    ABORT_SAFE in APPROACH, then the normal path), ``abort_after_end`` (ABORT_SAFE
+    on the ticks after the trial's ``t_end``).
     """
+    paths = paths or {}
     unit = root / name
     ctl = unit / "session" / "controllers" / CONTROLLER
     q, k0, _ = stop_profile()
@@ -459,6 +474,13 @@ def make_unit(
         for k in range(n):
             t = round((offset + k) * DT, 6)
             m = ct.MODE_ABORT_SAFE if aborts and k >= k0 else mode[k]
+            path = paths.get(i)
+            if (
+                (path == "abort_retreat" and k0 <= k < n - N_RETREAT)
+                or (path == "abort_then_hold" and 20 <= k < 25)
+                or (path == "abort_after_end" and k >= n - TAIL_TICKS + 1)
+            ):
+                m = ct.MODE_ABORT_SAFE
             rows.append(
                 {
                     "t_relative_s": t,
@@ -486,6 +508,7 @@ def make_unit(
                 "idx": i,
                 "kind": "s35b",
                 "t_launch": launches[i],
+                **({"t_end": round((i * n + n - TAIL_TICKS) * DT, 6)} if with_t_end else {}),
                 "invalid_reason": "",
                 "truth_success": str(ok),
                 "supervisor": "CAPTURED" if ok else "MISSED",
@@ -708,6 +731,161 @@ def test_the_pilot_session_runs_through_the_real_fk(tmp_path):
         assert 0.0 < r["stop_distance_mm"] < 1000.0
         assert 0.0 < r["qdd_meas_peak"] < 200.0
         assert r["k1"] > r["k0"]
+    # catching_trials writes t_end, so every valid trial has a mode-path verdict.
+    valid = [r for r in out["all_trials"] if not r["invalid_reason"]]
+    assert valid and all(isinstance(r["hold_no_abort"], bool) for r in valid)
+
+
+# ── Non-inferiority (MPC E1-F06, #632) ───────────────────────────────────────
+def _tables(seed: int, count: int, n_max: int = 300):
+    rng = np.random.default_rng(seed)
+    for _ in range(count):
+        n = int(rng.integers(5, n_max))
+        xa = int(rng.integers(0, n + 1))
+        xb = int(rng.integers(0, n - xa + 1))
+        yield xa, xb, n
+
+
+def _constrained_loglik(qa: float, xa: int, xb: int, n: int, delta: float) -> float:
+    cells = ((xa, qa), (xb, qa + delta), (n - xa - xb, 1.0 - 2.0 * qa - delta))
+    if any(q < 0.0 for _, q in cells):
+        return -math.inf
+    if any(x and q == 0.0 for x, q in cells):
+        return -math.inf
+    return sum(x * math.log(q) for x, q in cells if x)
+
+
+def _numeric_mle(xa: int, xb: int, n: int, delta: float) -> float:
+    """The constrained MLE of q_a by a dense grid, then golden-section on its bracket."""
+    lo, hi = max(0.0, -delta), (1.0 - delta) / 2.0
+    grid = np.linspace(lo, hi, 2001)
+    ll = np.array([_constrained_loglik(q, xa, xb, n, delta) for q in grid])
+    k = int(np.argmax(ll))
+    a, b = grid[max(k - 1, 0)], grid[min(k + 1, len(grid) - 1)]
+    g = (math.sqrt(5.0) - 1.0) / 2.0
+    for _ in range(200):
+        c, d = b - g * (b - a), a + g * (b - a)
+        if _constrained_loglik(c, xa, xb, n, delta) >= _constrained_loglik(d, xa, xb, n, delta):
+            b = d
+        else:
+            a = c
+    return 0.5 * (a + b)
+
+
+def test_tango_at_zero_margin_is_mcnemars_z():
+    for xa, xb, n in _tables(1, 200):
+        z = cd.tango_noninferiority(xa, xb, n, 0.0)["z"]
+        expect = 0.0 if xa + xb == 0 else (xb - xa) / math.sqrt(xa + xb)
+        assert z == pytest.approx(expect, abs=1e-12), (xa, xb, n)
+    assert cd.tango_noninferiority(0, 0, 50, 0.0)["z"] == 0.0
+
+
+def test_the_closed_form_restricted_mle_is_the_likelihoods_maximum():
+    rng = np.random.default_rng(2)
+    for xa, xb, n in _tables(3, 300):
+        delta = float(rng.uniform(-0.95, 0.95))
+        q = float(cd.tango_restricted_q(xa, xb, n, delta))
+        assert q == pytest.approx(_numeric_mle(xa, xb, n, delta), abs=1e-6), (xa, xb, n, delta)
+
+
+def test_the_e1_f10_confirmation_table():
+    """Both 85 · mpc only 38 · closed_form only 48 · neither 29 (n 200), margin 0.10:
+    the values two independent computations agreed on (plan E1-F06)."""
+    t = cd.tango_noninferiority(48, 38, 200, 0.10)
+    assert t["z"] == pytest.approx(1.0826, abs=1e-4)
+    assert t["p"] == pytest.approx(0.1395, abs=1e-4)
+    assert not t["reject"]
+    assert cd.tango_score_ci(48, 38, 200) == pytest.approx([-0.14054, 0.04122], abs=1e-5)
+    wald = cd.paired_difference({"n_pairs": 200, "only_a": 48, "only_b": 38})
+    assert wald["diff"] == pytest.approx(-0.05)
+    assert wald["ci95"] == pytest.approx([-0.14062, 0.04062], abs=1e-5)
+
+
+def test_the_score_interval_ends_where_the_statistic_crosses_the_critical_value():
+    zc = 1.959963984540054
+    for xa, xb, n in _tables(4, 100):
+        lo, hi = cd.tango_score_ci(xa, xb, n)
+        d = (xb - xa) / n
+        assert lo <= d <= hi
+        if lo > -1.0:
+            assert cd.tango_z(xa, xb, n, lo) == pytest.approx(zc, abs=1e-6)
+        if hi < 1.0:
+            assert cd.tango_z(xa, xb, n, hi) == pytest.approx(-zc, abs=1e-6)
+        # a ↔ b mirrors the interval.
+        assert cd.tango_score_ci(xb, xa, n) == pytest.approx([-hi, -lo], abs=1e-9)
+    assert cd.tango_score_ci(20, 0, 20)[0] == -1.0
+    assert cd.tango_score_ci(0, 20, 20)[1] == 1.0
+
+
+def test_rejection_is_the_score_interval_clearing_the_margin():
+    margin, seen = 0.10, {True: 0, False: 0}
+    for xa, xb, n in _tables(5, 400):
+        lo, _ = cd.tango_score_ci(xa, xb, n)
+        if abs(lo + margin) < 1e-6:  # on the boundary the test's p decides
+            continue
+        reject = cd.tango_noninferiority(xa, xb, n, margin)["reject"]
+        assert reject == (lo > -margin), (xa, xb, n)
+        seen[reject] += 1
+    assert min(seen.values()) > 10  # both outcomes were exercised
+
+
+def test_exact_power_and_size_of_the_planned_comparison():
+    assert cd.paired_noninferiority_power(300, 0.43, 0.0, 0.10) == pytest.approx(0.754, abs=2e-3)
+    assert cd.paired_noninferiority_power(300, 0.43, -0.05, 0.10) == pytest.approx(0.264, abs=2e-3)
+    for psi in (0.2, 0.43, 0.6):
+        size = cd.paired_noninferiority_power(300, psi, -0.10, 0.10)
+        assert 0.015 < size <= 0.026, psi
+    powers = [cd.paired_noninferiority_power(120, 0.4, d, 0.10) for d in (-0.1, -0.05, 0.0, 0.05)]
+    assert powers == sorted(powers)
+    with pytest.raises(ValueError, match="no such paired table"):
+        cd.paired_noninferiority_power(100, 0.1, -0.2, 0.10)
+
+
+def test_hold_success_fails_an_abort_or_a_retreat_without_hold(tmp_path, lever):
+    cfg = make_config(tmp_path / "share")
+    paths = {2: "abort_retreat", 3: "abort_then_hold", 4: "abort_after_end"}
+    a = make_unit(tmp_path, "a", [True] * 5, paths=paths)
+    b = make_unit(tmp_path, "b", [True] * 5)
+    out = cd.analyse_unit(*cd.parse_unit_arg(str(a)), cfg)
+    # 1 aborts for good (no RETREAT), 2 retreats from ABORT_SAFE, 3 aborted on the way
+    # to a HOLD; 4's abort lies after its t_end and is the next trial's business.
+    assert [r["hold_no_abort"] for r in out["all_trials"]] == [True, False, False, False, True]
+    hold = _cli(tmp_path, cfg, a, b, "--success", "hold")["pairs"]
+    assert hold["success"] == "hold"
+    assert (hold["both"], hold["only_a"], hold["only_b"], hold["neither"]) == (2, 0, 2, 1)
+    truth = _cli(tmp_path, cfg, a, b)["pairs"]
+    assert (truth["both"], truth["only_a"], truth["only_b"]) == (5, 0, 0)
+
+
+def test_the_default_success_is_truth_and_ignores_the_window(tmp_path, lever):
+    cfg = make_config(tmp_path / "share")
+    a = make_unit(tmp_path, "a", [True, True, False, False], with_t_end=False)
+    b = make_unit(tmp_path, "b", [True, False, True, True], with_t_end=False)
+    default = _cli(tmp_path, cfg, a, b)["pairs"]
+    explicit = _cli(tmp_path, cfg, a, b, "--success", "truth")["pairs"]
+    keys = ("n_pairs", "both", "only_a", "only_b", "neither", "discordance", "mcnemar_p")
+    assert [default[k] for k in keys] == [explicit[k] for k in keys]
+    assert (default["only_a"], default["only_b"]) == (1, 2)
+    with pytest.raises(SystemExit, match="needs catching_trials.csv with t_end"):
+        _cli(tmp_path, cfg, a, b, "--success", "hold")
+
+
+def test_the_cli_reports_tango_beside_wald(tmp_path, lever, capsys):
+    cfg = make_config(tmp_path / "share")
+    a = make_unit(tmp_path, "a", [True, True, False, False])
+    b = make_unit(tmp_path, "b", [True, False, True, True])
+    pairs = _cli(tmp_path, cfg, a, b, "--margin", "0.10", "--design-psi", "0.43")["pairs"]
+    (ni,) = pairs["noninferiority"]
+    expect = cd.tango_noninferiority(1, 2, 4, 0.10)
+    assert (ni["z"], ni["p"], ni["reject"]) == (expect["z"], expect["p"], expect["reject"])
+    assert ni["score_ci95"] == pytest.approx(cd.tango_score_ci(1, 2, 4))
+    assert ni["wald_ci95"] == pytest.approx(pairs["wald"]["ci95"])
+    assert [r["diff"] for r in ni["power_design"]] == [0.0, -0.05]
+    # ψ̂ 0.75, d̂ +0.25: every observed row has a table.
+    assert [r["diff"] for r in ni["power_observed"]] == [0.0, -0.05, 0.25]
+    assert all(r["power"] is not None for r in ni["power_observed"])
+    assert ni["size"] == pytest.approx(cd.paired_noninferiority_power(4, 0.75, -0.10, 0.10))
+    assert "Tango non-inferiority margin 0.10" in capsys.readouterr().out
 
 
 def test_arch1_module_has_no_robot_constants():
