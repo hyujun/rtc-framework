@@ -89,7 +89,7 @@ void ExpectAllDefaults(const CatchPoseIkConfig& cfg, const char* what) {
   EXPECT_DOUBLE_EQ(o.k_null, kDefault.k_null);
   EXPECT_DOUBLE_EQ(o.k_manip, kDefault.k_manip);
   EXPECT_DOUBLE_EQ(o.manip_grad_tol, kDefault.manip_grad_tol);
-  EXPECT_DOUBLE_EQ(o.fd_step, kDefault.fd_step);  // no YAML key: struct default only
+  EXPECT_DOUBLE_EQ(o.fd_step, kDefault.fd_step);  // absent key: struct default
   EXPECT_DOUBLE_EQ(o.v_eps, kDefault.v_eps);
   EXPECT_EQ(o.definition, kDefault.definition);
   EXPECT_DOUBLE_EQ(o.manipulability_min, kDefault.manipulability_min);
@@ -247,16 +247,9 @@ TEST(CatchPoseIkParams, AllFieldsAtOnceAreNotCrossWired) {
   EXPECT_DOUBLE_EQ(cfg.options.manipulability_min, 0.77) << "the active definition's row";
   EXPECT_FALSE(cfg.manipulability_min_provisional);
 
-  // fd_step has no key in L3 §6 and must have stayed put.
+  // fd_step is not in the table above (it has its own test below): unset here, so it
+  // must have stayed put.
   EXPECT_DOUBLE_EQ(cfg.options.fd_step, kDefault.fd_step);
-}
-
-TEST(CatchPoseIkParams, FdStepHasNoYamlKey) {
-  // The one struct field this schema deliberately does not expose: naming it
-  // is a typo, not a tuning knob.
-  YAML::Node root = IkRoot();
-  root["planner"]["ik"]["fd_step"] = 1e-4;
-  ExpectRejectMentioning(root, "unknown key 'planner.ik.fd_step'");
 }
 
 // MPC MD-92 / #698: `fd_step` has a key now (a design value like the rest).
