@@ -14,7 +14,7 @@
 
 비범위:
 - 좌표 변환 조회를 RT에서 수행하는 것(금지 — RT 경로에 tf2 없음). `frame_id`→`world` 가 다르면 configure 에서 한 번 읽어 캐시한 정적 변환을 nrt 콜백에서 적용한다. sim 에서는 불필요 — `frame_id` = `world`; 실기 카메라 프로파일이 다른 frame 을 내면 그때 켠다.
-  - **`world` → 모델 world 는 별개이고 항상 필요하다 (plan §11).** 계획기·catch_box·CLIK 은 pinocchio universe (URDF 모델 root) 좌표를 쓰는데, ur5e_p1b 의 root 는 `base_link` 라 `world` (= `base`) 와 z 둘레 180° 다르다. 이 변환이 없으면 후보가 팔 뒤로 간다. nrt 수신 시 한 번 $p,v,a$ 와 6×6 공분산 ($R_6\Sigma R_6^\top$, 정확히 0 인 회전 계수는 건너뛰어 NaN(모름) 이 섞이지 않게) 에 적용하고, 그 뒤의 모든 소비자는 모델 world 를 본다. 변환은 `model_world_T_world` = (모델에서 읽은 `io.arm_base_frame` 배치) · `io.base_T_world` — 지도 도구의 `--arm-base-frame`·`--world-yaw-deg`·`--world-translation-m` 과 같은 분해. 항등이면 적용하지 않는다 (iiwa7_leap)
+  - **`world` → 모델 world 는 별개이고 항상 필요하다 (L3 §4.2 의 frame 규약).** 계획기·catch_box·CLIK 은 pinocchio universe (URDF 모델 root) 좌표를 쓰는데, ur5e_p1b 의 root 는 `base_link` 라 `world` (= `base`) 와 z 둘레 180° 다르다. 이 변환이 없으면 후보가 팔 뒤로 간다. nrt 수신 시 한 번 $p,v,a$ 와 6×6 공분산 ($R_6\Sigma R_6^\top$, 정확히 0 인 회전 계수는 건너뛰어 NaN(모름) 이 섞이지 않게) 에 적용하고, 그 뒤의 모든 소비자는 모델 world 를 본다. 변환은 `model_world_T_world` = (모델에서 읽은 `io.arm_base_frame` 배치) · `io.base_T_world` — 지도 도구의 `--arm-base-frame`·`--world-yaw-deg`·`--world-translation-m` 과 같은 분해. 항등이면 적용하지 않는다 (iiwa7_leap)
 - 궤적 예측·전파(vision 노드, 마스터 §5.2).
 - RT 원시형 구현 — `rtc::SeqLock`·`rtc::SpscQueue` 를 쓴다(G1-8).
 
@@ -44,16 +44,27 @@
 
 ### 4.1 시각 변환과 스냅샷 나이 `[확정 D-2]`
 
-시간 규약의 SSoT 는 plan §3 이다. 수신 콜백(nrt)은 **도착 즉시** steady·wall 시각을 한 쌍으로 찍고, 원격 스탬프를 한 번만 절대 steady 시각으로 바꾼다.
+시간 규약 (판정별 비교 축) 은 L0 §4.5 가 갖는다. 이 절은 수신 쪽 변환과 `header.stamp` 사용 계약이다. 수신 콜백(nrt)은 **도착 즉시** steady·wall 시각을 한 쌍으로 찍고, 원격 스탬프를 한 번만 절대 steady 시각으로 바꾼다.
 
 $$t_{ref}^{steady}=t_{recv}^{steady}-\big(t_{recv}^{wall}-t_{stamp}\big),\qquad \mathrm{BallTime}_j=t_{ref}^{steady}+\texttt{horizon\_ns}_j$$
 
 - 이후 RT·계획기는 `BallTime`(절대 steady ns)만 본다. 원점이 다른 상대시각을 섞지 않는다. 원격 stamp 를 시간 원점으로 쓰는 것은 D-2 가 명문화하는 E-1 예외다.
-- **stale·나이는 steady 수신 나이** $t_{now}^{steady}-t_{recv}^{steady}$ 로만 판정한다(plan §3). `header.stamp` 로 staleness 를 판정하지 않는다([invariants.md](../../../agent_docs/invariants.md)).
+- **stale·나이는 steady 수신 나이** $t_{now}^{steady}-t_{recv}^{steady}$ 로만 판정한다(L0 §4.5). `header.stamp` 로 staleness 를 판정하지 않는다([invariants.md](../../../agent_docs/invariants.md)).
 - 원점 지연 $t_{recv}^{wall}-t_{stamp}$ 는 **진단**(분포 기록)이다. 음수가 $T_{future}$ 보다 크면(미래 스탬프) 변환 결과가 틀리므로 시계 이상으로 거부한다.
 - stale 임계 $T_{stale}$: 발행 주기 + 여유 (YAML `io.t_stale`).
-- 지평 끝 소진: 마지막 점 `BallTime` 을 **now_lead** 와 비교한다(plan §3 "궤적 지평 끝 경고 = now_lead"). 샘플링이 선행축으로 읽으므로 소진 판정도 같은 축이어야 한다 — 실제 나이를 지평 상대시각과 비교하면 두 축이 섞인다.
-- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 $R_1$ (commit 조건) 기준으로 정한다: $T_{freeze}+L=(T_{close,tot}+T_{arm}+T_{margin})+L$ 을 10 ms 로 올림한다 (내림하면 $R_1$ 을 미달하는 궤적을 통과시킨다). sim profile 의 지평 · 간격 · 점 수는 목표 분포 요구 $H_{req}$ (기구학 reachable 창 + $T_{det}$) 가 정하며, 값은 vision profile 파일과 `io.horizon_min` 에 있다 (plan D-15 · D-27). ball_perception 의 예시 profile (0.5 s / 최대 10 점) 은 그대로는 부족하다.
+- **`header.stamp` 사용 계약.** stamp 는 아래 한 곳에서만, 한 번만 쓴다.
+
+| 용도 | 쓰는 값 | 비고 |
+|---|---|---|
+| 물리 샘플 시각 복원 | $t_{ref}^{steady}=t_{recv}^{steady}-(t_{recv}^{wall}-t_{stamp})$, 수신 콜백에서 1회 | E-1 기록된 예외의 유일한 대상 |
+| freshness · stale · watchdog | $now_{steady}-recv_{steady}$ | stamp 를 쓰지 않는다 |
+| 원점 지연 $t_{recv}^{wall}-t_{stamp}$ | 진단 발행 (분포 · 점프) | 양수 쪽 (오래된 stamp) 의 나이 거부는 두지 않는다 — 오래된 원점은 지평 검사가 거른다 |
+| 미래 stamp ($t_{recv}^{wall}-t_{stamp}<-$`io.future_tol`) | 메시지 거부 + 카운터 | 변환 신뢰 불가 판정 (fail-closed) |
+| 절대 시각 지평 검사 | 마지막 점 `BallTime` 대 `now_lead` | feasibility 판정이며 deadline 이 아니다 |
+
+- **E-1 예외의 조건** (전문: [invariants.md](../../../agent_docs/invariants.md) §Clock 시간축 규칙). 다음을 모두 만족할 때만 허용하고 하나라도 깨지면 E-1 이다: ① freshness · stale · watchdog 은 수신 나이로만 판정, ② 미래 방향 보정항이 `future_tol` 을 넘으면 거부하고 센다, ③ 송 · 수신이 같은 호스트의 `CLOCK_REALTIME` 을 공유하거나 PTP 동기가 검증된 경우로 한정 (실기는 단계 진입 전에 재확인), ④ 보정항 분포를 진단으로 발행한다. 이 예외는 다른 토픽의 근거가 아니다. 변환이 $t_c$ · $t_{cmd}$ 같은 deadline 판정을 stamp 에서 파생시키므로 wall clock 점프는 그 판정 오차로 그대로 들어간다 — `header.stamp` 로 staleness · E-STOP 을 판단하는 것은 여전히 금지다.
+- 지평 끝 소진: 마지막 점 `BallTime` 을 **now_lead** 와 비교한다(L0 §4.5 표의 "궤적 지평 끝 경고"). 이는 feasibility 판정이지 deadline 이 아니다 — 원점 오차는 지평을 짧게 보이게 하는 fail-closed 방향이다. 샘플링이 선행축으로 읽으므로 소진 판정도 같은 축이어야 한다 — 실제 나이를 지평 상대시각과 비교하면 두 축이 섞인다.
+- **지평 요구 (D-15).** 수신 궤적의 지평(마지막 점 `horizon_ns`)이 제어기 요구 `io.horizon_min` 보다 짧으면 계획 후보에서 제외하고 진단한다. 요구값은 $R_1$ (commit 조건) 기준으로 정한다: $T_{freeze}+L=(T_{close,tot}+T_{arm}+T_{margin})+L$ 을 10 ms 로 올림한다 (내림하면 $R_1$ 을 미달하는 궤적을 통과시킨다). sim profile 의 지평 · 간격 · 점 수는 목표 분포 요구 $H_{req}$ (기구학 reachable 창 + $T_{det}$) 가 정하며, 값은 vision profile 파일과 `io.horizon_min` 에 있다 (D-15 · D-27). ball_perception 의 예시 profile (0.5 s / 최대 10 점) 은 그대로는 부족하다.
 
 ### 4.2 시계 오차의 영향
 
@@ -160,15 +171,15 @@ $\bar\nu$ 가 쓰였다면 세 곳이다: L3의 $\kappa_\sigma$ 보정 근거(L3
 - **expired** = `now_lead` > 마지막 점의 `BallTime` (선행축, §4.1). stale 과 별개로 계산한다 — 신선한 스냅샷도 소진될 수 있고 감독자가 두 사유 (BALL_STALE, HORIZON_EXTRAP) 를 구분해 쓴다.
 - **`age_ns` = −1 은 "수신 없음" 센티넬이다.** `traj_recv_ns` 가 첫 메시지 전에는 0 이라 `now − recv` 를 그대로 쓰면 steady 시계 uptime 이 나이로 읽힌다.
 - **D-23.** 활성 세대가 현재와 다르면 비활성 중 받은 궤적이 재활성 첫 tick 에 그대로 쓰이는 것을 막기 위해 무효(stale)로 본다.
-- `now` 는 매 tick steady 실측이다(tick × `dt` 아님, plan §3).
+- `now` 는 매 tick steady 실측이다(tick × `dt` 아님, L0 §4.5).
 
 ### 5.4 RT 상태 POD (RT → 계획기)
 
-계획기 입력용 RT 상태는 `rtc::SeqLock<rtc::catching::PlannerRtState>` (`demo_catching_controller.hpp` 의 `planner_rt_box_`, 정의는 `rtc_controllers/include/rtc_controllers/catching/planner_io.hpp`) 로 넘긴다(plan §6). Eigen 멤버는 SeqLock 에 실을 수 없어 모두 `std::array<double, kMax…>` + 사용 차원이다.
+계획기 입력용 RT 상태는 `rtc::SeqLock<rtc::catching::PlannerRtState>` (`demo_catching_controller.hpp` 의 `planner_rt_box_`, 정의는 `rtc_controllers/include/rtc_controllers/catching/planner_io.hpp`) 로 넘긴다. Eigen 멤버는 SeqLock 에 실을 수 없어 모두 `std::array<double, kMax…>` + 사용 차원이다.
 
 - 필드: tick 의 활성 세대 · `rt_iteration` · `rt_state_ns` (D-22), 시험 리셋 epoch, 감독 모드 · arm 래치, 팔 명령 상태 `q_cmd`·`qd_cmd` (DEVICE 순서, `nv`), 대기 자세, L4 기준 상태 (closed_form 의 soft-catch 추종법이 만든 $x,\dot x,\gamma,\dot\gamma,\ddot\gamma$ 와 γ ramp), 추종 중인 계획 · 감속 구간의 id · 상태, 트랙 (`track_seen`, `track_generation`). 매 tick 새로 채운다 — 이번 tick 이 계산하지 않은 필드는 이전 값이 아니라 0/false 다 (PROC-7)
 - 채우는 곳: `Compute` 안에서 `ControllerState` 로부터.
-- **지문 센서 freshness (D-24 (a)).** 지문 wrench 의 수신 시각 · sequence · valid 는 `rtc_base` `DeviceState` 센서 lane 에 backend 3종이 채우는 값이며 (PROC-3, plan §7.3), RT 감독이 `rtc::IsSensorGroupFresh` 로 읽는다 (`controller.cpp`, L7 §4.4). 지문 wrench 부호는 sim·실기 모두 finger-on-object 이고 S7.3 판정은 바이어스를 뺀 크기 ‖F − b‖ 만 써 부호에 의존하지 않는다 (G1-9)
+- **지문 센서 freshness (D-24 (a)).** 지문 wrench 의 수신 시각 · sequence · valid 는 `rtc_base` `DeviceState` 센서 lane 에 backend 3종이 채우는 값이며 (PROC-3), RT 감독이 `rtc::IsSensorGroupFresh` 로 읽는다 (`controller.cpp`, L7 §4.4). 지문 wrench 부호는 sim·실기 모두 finger-on-object 이고 S7.3 판정은 바이어스를 뺀 크기 ‖F − b‖ 만 써 부호에 의존하지 않는다 (G1-9)
 
 ## 6. YAML 파라미터
 

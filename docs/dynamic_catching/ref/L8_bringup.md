@@ -35,7 +35,7 @@
 1. **기록 초기화 · 입력 판독.** tick 기록을 새로 생성한다 (이 tick 이 계산하지 않은 블록은 0 — PROC-7 이 구조적으로 성립한다). E-STOP latch 를 tick 당 **한 번** 읽는다. 팔 · 손 device 의 판독 가능 여부를 정한다
 2. **reset 서비스.** 활성화 · 재무장 · fault reset 요청을 처리한다 (`ServiceResetRequests`). 목표 drain · 명령 쓰기보다 **앞**이다 — reset 은 대기 중인 목표를 버리고 hold latch 를 내리므로 먼저 소비한 것은 버려질 상태가 된다. reset 직후 · 대기 자세를 읽기 전에 switch 된 자세 채택 (`planner.wait_pose_source`) 을 한다
 3. **목표 drain.** E-STOP 중에는 drain 하되 **버린다** (큐에 남기면 해제 뒤에 오래된 목표가 손에 간다)
-4. **공 입력 lane.** 궤적 스냅샷 SeqLock 을 tick 당 한 번 `Load` 한다 (D-21). 그 뒤 tick 의 **유일한 시계 읽기** 를 한다: $now$ = steady 실측, $now_{lead}=now+T_{arm}$ (plan §3 — tick 수 × `dt` 로 계산하지 않는다). 스냅샷의 새로움 · stale · track 변경을 판정하고, 따르는 트랙의 스냅샷을 보관한다
+4. **공 입력 lane.** 궤적 스냅샷 SeqLock 을 tick 당 한 번 `Load` 한다 (D-21). 그 뒤 tick 의 **유일한 시계 읽기** 를 한다: $now$ = steady 실측, $now_{lead}=now+T_{arm}$ (L0 §4.5 — tick 수 × `dt` 로 계산하지 않는다). 스냅샷의 새로움 · stale · track 변경을 판정하고, 따르는 트랙의 스냅샷을 보관한다
 5. **접촉 lane.** 손 지문 센서 (`RunContactLane`): 손이 `q_pre` 에 정지한 ARMED · TRACKING 에서는 바이어스를 학습하고, COMMITTED · CLOSING · DECEL · HOLD 에서는 접촉을 판정한다 (L7 §4.4)
 6. **plan lane.** plan 상자를 tick 당 한 번 `Load` 하고 `JudgePlan` 으로 채택 가능 여부를 판정한다 (L3 §5.2: 유효 · 현재 activation · 같은 트랙 · 새 `plan_id` · 나이 ≤ `io.t_stale` · 마지막 reset 이후 · freeze 창 밖). 계획기가 없는 profile 이면 oracle 이 같은 상자에 먼저 쓴다
 7. **decel lane (`mpc` 만).** 계획기가 게시한 정지 구간 상자 (`DecelPlanSnapshot`) 를 판정한다 — TRACKING 에서는 채택 가능한 plan 에 대한 첫 구간을, APPROACH 부터 DECEL 까지는 다음 구간의 대기 슬롯 채택을 (L7 §4.3a). plan lane 이 방금 판정한 plan 에 대해 판정하므로 그 뒤다
@@ -56,7 +56,7 @@
 
 **발사 API.** 발사는 (p0, v0, ω) 를 명시하는 srv `rtc_msgs/srv/LaunchBall` (`/sim/launch_ball_at`) 로 부른다. 기존 `/sim/launch_ball` (Trigger, YAML 분포 샘플) 은 파라미터 설정 + Trigger 조합이 경합 · 재현성에 약해 평가 경로에 쓰지 않는다.
 
-**발사 조건.** 발사 조건은 plan §11 의 발사 영역에서 직접 표본 추출한다: arm base frame (CLIK `base_frame`) 기준 수평 거리 4 m 원호 위의 방위 φ, world z 1.5–2.0 m, 속도 크기 · 앙각, 수평 방향 = (발사점 → 겨냥점) + 편차. 표본 범위는 catchability 지도 (§4.6) 가 정한 분포다. `sim.throw_region` 이라는 YAML 키는 없다 — 투척 분포는 시행 러너 `catching_sim_trials` 의 `--dist` 가 갖는다 (`integrated_bringup/README.md` §Catching sim trials).
+**발사 조건.** 발사 조건은 §4.6 의 발사 영역에서 직접 표본 추출한다: arm base frame (CLIK `base_frame`) 기준 수평 거리 4 m 원호 위의 방위 φ, world z 1.5–2.0 m, 속도 크기 · 앙각, 수평 방향 = (발사점 → 겨냥점) + 편차. 표본 범위는 catchability 지도 (§4.6) 가 정한 분포다. `sim.throw_region` 이라는 YAML 키는 없다 — 투척 분포는 시행 러너 `catching_sim_trials` 의 `--dist` 가 갖는다 (`integrated_bringup/README.md` §Catching sim trials).
 
 - 항력 · Magnus 는 `rtc_mujoco_sim` 이 자체 구현한다 (tennis preset). 계획기의 공 모델과 다르므로 도달점 차이는 의도된 모델 불일치로 기록한다
 - 재현성: srv 인자 자체를 시행 기록에 남기고, 난수는 평가 스크립트 쪽 seed 로 뽑는다
@@ -112,7 +112,7 @@ host 부하로 sim 이 실시간보다 느리면 발사 기준 sim 시간축의 
 
 ### 4.6 catchability 지도 도구
 
-plan §11 이 정의 · YAML 의 SSoT 다. 요점:
+지도의 정의는 이 절이고 게이트 정의는 L3 §4.2 (D-18), 키는 L3 §6 의 `planner.catchability.*` 다. 요점:
 
 - 발사 영역: arm base frame 수평 거리 √(x²+y²) = 4 m 원호 (방위 φ), world z 1.5–2.0 m, 비행시간 T_f ≥ 1.0 s, 수평 방향 = (발사점 → 겨냥점) + 편차, 속도 · 앙각 격자
 - 판정: 궤적 위 포구 후보마다 catch frame +z = −v̂ 자세의 IK (대기 자세에서 시작) → 게이트 정의 (기본 `arm_5row`) 의 manipulability ≥ 정의별 threshold ($w_5$; `search_grid.yaml` 의 `planner.catchability`). $w_5$ · $w_6$ 를 모두 기록해 두 분포를 비교한다. 런타임 계획기와 **같은 함수 · 같은 YAML 키**
@@ -130,7 +130,7 @@ plan §11 이 정의 · YAML 의 SSoT 다. 요점:
 - 수치 코어는 `rtc::catching` (`rtc_controllers`), 바인딩은 `integrated_bringup`. lifecycle: `on_configure` (non-RT) 에서 `LoadConfig` + `ParseXxxParams` + 검증, `PinocchioCache` · 모델 핸들, `PointCloud2` 필드 맵, 전 버퍼 할당, 구독 · publisher 생성; `on_activate` 에서 $q_c$ · CLIK 앵커 = $q_{meas}$, 계획기 스레드 layout 게이트 → spawn → Resume (`Mode::kIdle`); `on_deactivate` 에서 계획기 Pause (join 은 `on_cleanup`)
 - E-STOP · fault 훅 (`TriggerEstop`/`ClearEstop`, `ResetFault`/`HasLatchedFault`) 은 atomic 요청 · epoch 만 갱신하고, 되돌리는 동작의 **유일 writer 는 `Compute()`** 다. 운용자 무장 채널은 파라미터 `catching.enable` — 콜백은 atomic 만 쓰고 tick 이 소비하며, tick 이 E-STOP · fault 에서 그 latch 를 내린다. 정책은 L7 §4.1
 - 궤적 구독은 controller 소유 구독이라 `nrt_callback_executor` (단일 스레드) 에서 돈다 — 파싱 · D-2 변환 · SeqLock write · 계획기 eventfd 신호만 하고 계산은 계획기 스레드로 넘긴다
-- 계획기 스레드: `rtc::PeriodicRtThread` 의 형제 subclass (`CatchingPlannerThread`), event 구동, slot · 스케줄러는 plan §6·§7. 배치 변경은 E-7 이며 Adding a New Thread 절차를 따른다
+- 계획기 스레드: `rtc::PeriodicRtThread` 의 형제 subclass (`CatchingPlannerThread`), event 구동, slot · 스케줄러는 L3 §5.3. 배치 변경은 E-7 이며 Adding a New Thread 절차를 따른다
 - SeqLock payload 는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지): 궤적 스냅샷 (`TrajectorySnapshot`), plan 상자 (`PlanSnapshot`), 정지 구간 상자 (`DecelPlanSnapshot`, `mpc`), RT 상태 (`PlannerRtState`), tick 기록 (`CatchingDiagLogPod`). 정의는 `rtc_controllers/include/rtc_controllers/catching/{trajectory,planner_io}.hpp` 와 `integrated_bringup/include/integrated_bringup/logging/catching_diag_log_pod.hpp`
 - 상태 publisher: `rtc_msgs/CatchingState` + `SetupCatchingStatePublisher`, controller 소유 `rtc::SeqLock<T>` 패턴 (`WbcState` · `GraspState` 선례). `PublishRole` 에 추가하지 않는다 (E-11). **필드는 한 번에 동결** 되어 있고 이후는 값만 채운다. `Compute()` 의 **모든 tick 에서 Store** 한다 — E-STOP · stale · generation 불일치 · 지평 부족 · plan 없음 · abort 를 포함한 모든 early-return 분기에서도, 계산하지 않은 필드는 무효화한다 (PROC-7, agent_docs/invariants.md). 단일 exit 와 tick 머리의 기록 재생성이 이것을 열거가 아니라 **구조적 성질** 로 만든다. DemoWbc 의 `!target_initialized_` early-return 이 Store 를 빠뜨리는 것은 알려진 gap 이지 선례가 아니다. ingress 카운터는 **메시지 도착** 에 움직이는 값이라 이 기록에 없고 별도 SeqLock (`CatchingIngressSnapshot`) 으로 발행 스레드가 읽는다
 - 손은 device slot 에 직접 쓴다 (손 명령 포트 추상화 없음)
@@ -149,8 +149,8 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 
 - 포구 컨트롤러 설정: 로봇별 `integrated_bringup/config/<robot>/controllers/demo_catching_controller.yaml` (config_key `demo_catching_controller`). 이 파일이 CM 의 `include:` 로 기능별 파일을 합친다 — `catching/search_grid.yaml` (탐색), `catching/planner_closed_form.yaml` (closed_form 법칙), `catching/planner_mpc.yaml` (mpc 법칙). 세 조각은 **항상 모두** include 하고 planner 는 주 파일의 `supervisor.decel.mode` (`closed_form` \| `mpc`, 출하 `mpc`, 코드 기본 `closed_form`) 가 고른다. 조각은 키의 전체 경로를 그대로 적고 한 키는 한 파일에만 있다. 키가 어느 파일의 것인지와 구조는 `integrated_bringup/README.md` ("config 는 네 파일이다"), `rtc_controller_manager` README 의 `include:` 절, 각 YAML 의 머리 주석이 갖는다
 - `ur5e_p1b` 와 `iiwa7_leap` 만 이 파일 묶음이 있다. `g1_p1b` 는 없다
-- catch frame (`extra_frames`) 은 로봇 config 의 모델 절 (`_base.yaml`, plan §10)
-- 투척 · catchability (`planner.catchability.*`) 는 plan §11 스키마, 투척 분포는 러너 인자 (`catching_sim_trials --dist`, §4.2)
+- catch frame (`extra_frames`) 은 로봇 config 의 모델 절 (`_base.yaml`, L5 §11)
+- 투척 · catchability (`planner.catchability.*`) 키는 L3 §6, 투척 분포는 러너 인자 (`catching_sim_trials --dist`, §4.2)
 - sim 공 설정 (projectile, truth 주기) 은 로봇별 `mujoco_simulator.yaml`
 - 로드 후 L0 검증기를 실행한다. provisional 값 (D-12 · D-17) 은 실기 arm 을 막는다
 
@@ -158,13 +158,13 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 
 키 · 값 · 기본값은 YAML 과 파서 (`rtc_controllers/src/params/catching_params.cpp`) 가 갖는다. 이 절에 키 표는 두지 않는다. 구현되지 않은 키 (`logging.decimation`, `logging.ring_capacity`, `sim.clock.min_launches`, `sim.clock.max_invalid_rate`, `sim.throw_region`) 는 존재하지 않는다 — 기록은 기존 CSV 인프라의 세션 디렉토리를 쓰고, 시행 수 · 무효율은 러너 인자와 분석기의 일이다. sim 측 키는 `rtc_mujoco_sim` 의 `publish.sample_rate_hz` · `publish.position_noise_stddev_m`, 예측 발행률은 ball_perception profile 이다.
 
-**실기에서 검증 불가능한 것 `[권장]`.** 실기에는 $p_{true}(t_c)$ 가 없으므로 "예측 간극 분포" 를 직접 잴 수 없다. 관측 가능한 것은 포획/실패 이진 결과와 지문 접촉 시각뿐이다. 따라서 실기 게이트 (G8-G) 는 다음 중 하나로 대체한다 — **선택은 실기 단계** (plan §7.3).
+**실기에서 검증 불가능한 것 `[권장]`.** 실기에는 $p_{true}(t_c)$ 가 없으므로 "예측 간극 분포" 를 직접 잴 수 없다. 관측 가능한 것은 포획/실패 이진 결과와 지문 접촉 시각뿐이다. 따라서 실기 게이트 (G8-G) 는 다음 중 하나로 대체한다 — **선택은 실기 단계** 가 한다.
 
 1. 포획률 대 $\sigma_c$ 의 로지스틱 회귀로 유효 $r_{cap}/\kappa_\sigma$ 를 역추정.
 2. 접촉 센서 조합 · 접촉 시각 편차를 간극의 대용 지표로 사용.
 3. 저속 구간 1 회 한정 외부 계측 (마커 또는 고속 카메라) 캠페인.
 
-셋 다 하지 않으면 **"실기 vision 공분산은 미검증 가정"** 임을 plan §12 위험 목록에 올린 채로 진행한다.
+셋 다 하지 않으면 **"실기 vision 공분산은 미검증 가정"** 임을 위험으로 기록한 채로 진행한다.
 
 ## 7. 단위 기술 구현 순서
 
@@ -197,8 +197,8 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 | G8-C | `ur5e_p1b` 에서 $\gamma=0$ 고정 (`planner.gamma.grid: [0.0]` + `planner.hand.d_eff: 10.0` overlay — grid 만으로는 γ 창 하한 γ_min 이 대신 쓰인다) 대 계획 γ ablation: 간극 · 상대속도 · **충격량** · 접촉력 분포 비교. G8-E 와 함께 **2×2 factorial** (lead {off, on} × γ {0, 계획}, 4 arm × 4 블록 × 25 seed — overlay 는 기동 때만 읽혀 arm 마다 재기동, 블록 안 arm 순서 무작위) 의 lead on 에서의 γ 주효과로 판정하고 상호작용을 보고한다 | `[SIM-ANY]` |
 | G8-C2 | 오차 예산 모델 검증: L3 §4.6 직교 분해식의 예측 간극 분포와 실제 분포 비교. truth 가 있으므로 $A=p_{true}-\hat p_{live}$, $B=\hat p_{live}-p_c$ 의 직교성도 직접 확인한다. **$\hat p_{live}$**: commit tick 의 diag `input_snapshot_sequence` 를 `vision_lane_probe --dump` 의 `snapshot_sequence` 와 정확히 결합하고, dump 에 없는 시행만 commit 직전 마지막 prediction 으로 근사해 근사 수를 보고한다; 시행 클러스터 부트스트랩, n ≥ 100 | `[SIM-ANY]` |
 | G8-C3 | 삭제 — γ 하향은 v1 범위 밖 (D-8). 대신 `REF_SATURATED` 빈도를 기록해 D-8 재검토 입력으로 쓴다 | `[SIM-ANY]` |
-| G8-D | `ur5e_p1b` 에서 **truth 기반 성공** (HOLD 끝부터 대기 자세 release 까지 공이 손에 있음) 의 Wilson 95 % 하한 (97.5 % 단측, z 1.96) ≥ floor (D-12 — **0.35**, 동결; n_valid 200), 결과별 사유 분포, 슈퍼바이저 판정의 truth 대비 혼동행렬. 무효 = rig 실패만 (srv 거부 · lane drop · sim stall · 미발사 — 기계 판정 5 종 · 우선순위는 plan D-S8-16 ①) — "plan 없음 · abort" 는 실패. host 부하 unit 은 같은 seed 로 재실행하되 재실행 규칙은 결과를 보기 전에 선언한다 (D-S8-17). beanbag arm 은 같은 seed · 같은 floor 로 병기하고 tennis 대 McNemar 쌍 비교. 전체 발사 수 · 무효 시행 수 · 무효 사유 · ITT 하한 (무효 = 실패) · δ 공변량을 함께 보고한다 | `[SIM-P1B]` |
-| G8-D2 | `iiwa7_leap` 에서 G8-D 와 같은 정의 (truth 기반 성공 · Wilson 97.5 % 단측 하한 ≥ floor · 무효 = rig 실패만 · ITT 하한 · δ 공변량). 평가 대상 여부는 plan §1a 의 조건부 규칙이 정한다. 새 seed 로 n_valid 200, floor 0.35 | `[SIM-ANY]` |
+| G8-D | `ur5e_p1b` 에서 **truth 기반 성공** (HOLD 끝부터 대기 자세 release 까지 공이 손에 있음) 의 Wilson 95 % 하한 (97.5 % 단측, z 1.96) ≥ floor (D-12 — **0.35**, 동결; n_valid 200), 결과별 사유 분포, 슈퍼바이저 판정의 truth 대비 혼동행렬. 무효 = rig 실패만 (srv 거부 · lane drop · sim stall · 미발사 · 컨트롤러 무응답 — 기계 판정 5 종, 시행마다 `invalid_reason` 하나, 우선순위 `srv_refused` (`accepted == false`) > `not_launched` (accepted 인데 truth 행 0) > `controller_silent` (러너가 컨트롤러 상태를 못 봤거나 시행 창에 diag 행 0) > `lane_drop` (clock lane 에 그 `launch_seq` 가 없거나 `dropped_total` 증가) > `sim_stall` (`sim_time_sec` 간격 > 5 × 공칭 step). 판정은 `rtc_tools` `catching_trials` 의 `record_invalid_reason` · `lane_invalid_reason`) — 그 밖의 것 (plan 없음 · abort · `HAND_TIMEOUT` · 미종결) 은 실패. host 부하 unit 은 같은 seed 로 재실행하되 재실행 규칙은 결과를 보기 전에 선언한다 (D-S8-17). beanbag arm 은 같은 seed · 같은 floor 로 병기하고 tennis 대 McNemar 쌍 비교. 전체 발사 수 · 무효 시행 수 · 무효 사유 · ITT 하한 (무효 = 실패) · δ 공변량을 함께 보고한다 | `[SIM-P1B]` |
+| G8-D2 | `iiwa7_leap` 에서 G8-D 와 같은 정의 (truth 기반 성공 · Wilson 97.5 % 단측 하한 ≥ floor · 무효 = rig 실패만 · ITT 하한 · δ 공변량). 평가 대상 여부는 조건부다: 실측 선행시간에서 `iiwa7_leap` 의 gate-catchable 지도 (§4.6) 가 비어 있지 않으면 평가하고, 비어 있으면 `NOT_EVALUATED(선행시간)` 로 그 실측 선행시간과 함께 보고한다 (막는 것은 손이 아니라 선행시간이다). 새 seed 로 n_valid 200, floor 0.35 | `[SIM-ANY]` |
 | G8-E | `ur5e_p1b` 에서 선행 보상 유무 비교. sim 팔 actuator 가 1차 지연이므로 (L5 §4.4) fixture 없이 **sim 런타임 lead on/off** 로 비교한다 — overlay `catch_lead_*` (`joint_cmd.lag.{T_arm, lead_enable}` + `T_freeze`, 두 arm 동일 `T_freeze`). 2×2 factorial (G8-C 행) 의 계획 γ 에서의 lead 주효과. **판정 = lead 반영 $t_c$ 서보 잔여 ‖FK(q_meas($t_c$)) − FK(q_cmd($t_c − T_{lead}$))‖ ($T_{lead}$ = diag `t_arm_s`) 중앙값이 lead on 에서 감소 (부호 일치 + 쌍 Wilcoxon)**, 1차 지연의 비-순수지연분인 잔여를 보고, 성공률 차는 기록. 같은 tick 의 ‖FK(q_meas) − FK(q_cmd)‖ 는 lead on 에서 의도된 선행을 더해 거짓 FAIL 하므로 `cmd_meas_gap_mm` 로 기록만 한다. sim G8-E 는 **sim 서보 게인의 1차 플랜트** 위 검증이며 UR5e 이득을 예측하지 않는다. $T_{arm}\neq0$ 순수 지연 fixture 판정은 L5 §9 G5-E 다 | `[SIM-P1B]` |
 
 모든 sim 게이트는 δ (§4.5) 를 공변량으로 병기하고, 무효는 rig 실패만이다. 처리량은 §4.5 (200 시행 ≈ 12 분 이상).
@@ -219,4 +219,23 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 
 ## 10. 미확정 항목
 
-- TBD-HAND-03 (L6), D-3 재검토 (host 부하 시 `BALL_STALE` 는 plan D-S8-17 · §12, 감시는 러너 `--host-watch`), `ε_clk,alloc` (목표 속력 확정 뒤), D-12 값 (투척 속도 · 성공률 하한 — 시행 수 n_valid 200, floor 0.35 동결), 실기 공분산 검증 수단 (§6 세 수단 중 선택), 재스탬프 도구 (실기 단계), `g1_p1b` 의 포구 컨트롤러 config
+- TBD-HAND-03 (L6), D-3 재검토 (host 부하 시 `BALL_STALE` 는 D-S8-17, 감시는 러너 `--host-watch`), `ε_clk,alloc` (목표 속력 확정 뒤), D-12 값 (투척 속도 · 성공률 하한 — 시행 수 n_valid 200, floor 0.35 동결), 실기 공분산 검증 수단 (§6 세 수단 중 선택), 재스탬프 도구 (실기 단계), `g1_p1b` 의 포구 컨트롤러 config
+
+## 11. GUI · plot 이 보여 주는 것
+
+컨트롤러가 내는 상태 (`rtc_msgs/CatchingState`) 와 기록 (`catching_diag.csv`, `planner_events.csv`) 은 `demo_controller_gui` 에서 보이고 `plot_rtc_log` 로 그려져야 한다 — 새 상태 · CSV 는 둘을 함께 갖는다. GUI 패널의 상태 로직은 Tk · rclpy 에 의존하지 않는 순수 python 모듈이라 화면 없이 테스트된다 (`integrated_bringup/integrated_bringup/demo_gui/{ball_launch,hand_step,catching}.py`). 이 절은 무엇을 어떻게 보여 주는가의 계약이다.
+
+**GUI.**
+
+- **공 패널** (`ball_launch.py`). 발사 조건 `(p0, v0, ω)` 의 파싱은 srv `/sim/launch_ball_at` 이 거부하는 것과 **같은 집합** 을 wire 앞에서 거부하고 틀린 필드를 이름으로 가리킨다 — 패널이 srv 가 거부하는 것을 받아들이면 일어나지 않은 발사를 보고하게 된다. truth 와 예측 피드는 **never / live / stale 세 상태** 로 구분한다 (never 와 stale 은 화면에서 같아 보이지만 뜻이 반대다 — 아무것도 돌지 않는다 대 멈췄다). ball_perception 이 없어도 "never received" 로 동작한다.
+- **손 step 패널** (`hand_step.py`). 손 자세는 컨트롤러가 미러한 읽기 전용 파라미터 (`hand.q_pre` · `q_close` · `caging_mask` · `eta_close`) 에서 읽고 파일에 박지 않는다 (화면의 자세와 실행의 자세가 갈리지 않게). ρ 는 `rtc_tools.analysis.hand_close.rho` 를 import 해서 쓴다 — 화면 값과 오프라인 보고서 값이 갈리지 않게 사본을 두지 않는다.
+- **포구 패널** (`catching.py`). 모드 · 사유, 입력 lane, plan, 추종 오차 · CLIK 상태, 슈퍼바이저 결과, 손 위상, 접촉 센서와 freshness 를 보인다. 세 가지를 합치지 않는다. ① **관측된 무장** 을 머리에 두고 요청된 무장 (`catching.enable` 파라미터) 을 옆에 둔다 — tick 이 E-STOP · fault 에서 latch 를 스스로 내리므로 파라미터 set 의 성공은 무장의 증거가 아니다. ② **거부된 입력 lane 과 조용한 lane** 은 거부 카운터로만 구별되므로 0 이 아닌 카운터는 항상 보인다. ③ 컨트롤러가 그 tick 에 계산하지 않은 블록 (`*_valid` false, PROC-7 이 0 으로 지운다) 은 0 이 아니라 `--` 로 보인다. 팔 기준을 만드는 planner (`closed_form` | `mpc`) 는 `CatchingState` 가 동결이라 읽기 전용 파라미터 `supervisor.decel.mode` 로 읽는다 (configure 가 끝나기 전이거나 park 된 컨트롤러는 빈 문자열을 답한다). 연속 투척의 진행 카운트는 결과의 엣지를 GUI 가 센다 (새 필드 없음).
+- **헤더 공용 행.** "Clear E-STOP" (사유 조회 → 확인 뒤 해제의 2 단계) 과 "Reset fault" 는 포구 패널이 아니라 공용 위치에 있다 (절차는 L7 §4.1). 해제 요청이 latch 를 내렸으나 검증되지 않았다는 응답은 거부와 구별해 보인다.
+
+**plot.** `plot_rtc_log` 는 CSV 의 종류를 파일명과 컬럼으로 판별한다 (`catching_diag` · `planner_events`); 스레드 timing CSV 는 공통 스키마라 기존 timing plotter 를 쓴다.
+
+- `catching_diag` figure 는 한 시간축 위에 기준 · 실현 위치 · 추종 오차 · CLIK solve · 모드를 쌓는다 — "손이 어디로 가라고 지시받았고, 어디로 갔고, 슈퍼바이저가 왜 그렇게 판단했나" 가 같은 축에서 비교돼야 한다. 모든 패널에 모드 전이선 (tick 별 `mode` 열에서 유도) 을, 모든 패널에 `estop_active` (CM 의 global latch) 와 `fault_latched` (컨트롤러 latch) 구간을 서로 다른 색의 음영으로 얹는다. 두 latch 는 해제 수단이 다르므로 한쪽만 끝나는 구간이 읽혀야 한다.
+- **무효 tick 은 NaN 으로 끊는다.** PROC-7 이 계산하지 않은 tick 을 0 으로 기록하므로 그대로 그리면 손이 매 tick 원점으로 간 것처럼 읽힌다. 평균 · 통계도 `*_valid` 로 거른 행만 쓴다.
+- `catching_hand` figure 는 손 시퀀서 (위상 · ρ · 타임아웃) 와 지문 lane (‖F − b‖ · debounce 된 접촉 · freshness) 을 그 시행의 판정과 함께 쌓는다.
+- `planner_events` 는 계획기가 깨어난 회마다의 탐색 기록 (후보 funnel · 거부 사유 · rank-gate 비트마스크 · 교체 결정) 을 그린다.
+- 파일에 공 truth 열은 없다 (컨트롤러가 갖지 않는다) — 판정이 맞았는가는 이 plot 이 답하지 않고 시행 분석기 (§4.4) 의 일이다.

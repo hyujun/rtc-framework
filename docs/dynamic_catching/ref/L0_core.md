@@ -85,13 +85,27 @@ $$\dot\Phi=A(x(t))\,\Phi,\qquad \Phi(t_0)=I$$
 
 ### 4.5 시간 표현 `[확정 D-2]`
 
-시간 규약의 SSoT 는 plan §3 이다. L0 은 그 타입만 제공한다 (정의 · 판정 함수는 `time_types.hpp`).
+시간 규약의 SSoT 는 이 절이다. L0 은 그 타입과 판정 함수를 제공한다 (정의는 `time_types.hpp`). `header.stamp` 의 사용 계약은 L1 §4.1 이 갖는다.
 
 - **내부 표현은 절대 steady `int64` ns.** 상대시각(double 초)은 수치 코어(샘플러·γ·rollout) 경계에서만 만들고, 원점이 다른 상대시각끼리 비교하지 않는다.
-- **세 타입.** `BallTime`(공의 물리 시각 — $t_c$, $t_{cmd}$, 궤적 점 시각), `NowReal`(매 tick steady 실측 now), `NowLead`(= now + $T_{arm}$). 셋은 서로 암묵 변환되지 않는 강한 타입이고, 비교는 **타입별 오버로드로만** 제공한다 — 어떤 판정이 어떤 now 와 비교하는지(plan §3 표)가 타입으로 고정된다. 예: 샘플링·γ·DECEL 진입은 `NowLead` 대 `BallTime`, commit·손 명령·접촉 창은 `NowReal` 대 `BallTime`.
-- **메시지 나이·stale** 은 `BallTime` 과 무관하게 steady 수신 시각 차(now_steady − recv_steady)로만 잰다. `header.stamp` 를 수신 시 1회 `BallTime` 원점으로 변환하는 것은 D-2 (3) 이며 E-1 기록된 예외다(L1 §4.1, plan §3.1).
+- **세 타입.** `BallTime`(공의 물리 시각 — $t_c$, $t_{cmd}$, 궤적 점 시각), `NowReal`(매 tick steady 실측 now), `NowLead`(= now + $T_{arm}$). 셋은 서로 암묵 변환되지 않는 강한 타입이고, 비교는 **타입별 오버로드로만** 제공한다 — 어떤 판정이 어떤 now 와 비교하는지 (아래 표) 가 타입으로 고정된다. 혼합 타입 비교 연산자는 없고, 표의 행마다 그 판정이 정의된 now 타입 하나만 받는 이름 있는 함수가 있다. 시각 값에 축이 붙는 것이 아니라 **판정마다 비교하는 '지금'** 에 축이 붙는다 — $t_c$ · $t_{cmd}$ 는 어느 축에서든 같은 `BallTime` 이다.
+- **메시지 나이·stale** 은 `BallTime` 과 무관하게 steady 수신 시각 차(now_steady − recv_steady)로만 잰다. `header.stamp` 를 수신 시 1회 `BallTime` 원점으로 변환하는 것은 D-2 (3) 이며 E-1 기록된 예외다(L1 §4.1).
 - 매 tick 의 now 는 steady 실측이며 tick 수 × `dt` 로 계산하지 않는다.
 - 테스트는 **$T_{arm}\ne0$ fixture 필수** ($T_{arm}=0$ 이면 두 축이 같아져 버그가 숨는다).
+
+**판정별 비교 축.**
+
+| 판정 | 비교 대상 | 함수 (`time_types.hpp`) | 비고 |
+|---|---|---|---|
+| 궤적 샘플링 · γ 프로파일 · 기준 생성 | `NowLead` ($now+T_{arm}$) | `LeadSecondsUntil` | 팔 명령은 $T_{arm}$ 뒤 실현 |
+| `CLOSING→DECEL` (= DECEL 진입) | `NowLead` $\ge t_c$ | `DecelDue` | 감속 대상 전환도 팔 명령 |
+| 궤적 지평 끝 (외삽) 경고 | `NowLead` | `HorizonExceeded` | 샘플링 시각 기준. 마지막 점 자체는 외삽이 아니다 |
+| `APPROACH→COMMITTED` | $t_c - now \le T_{freeze}$, `NowReal` | `CommitDue` | $T_{freeze}$ 하한에 $T_{arm}$ 이 들어 있다 (L3 §4.11) |
+| `COMMITTED→CLOSING`, 손 Close | `NowReal` $\ge t_{cmd}$ | `HandCommandDue` · `HandCommandDueRounded` | 손은 선행 보상이 없다. 라운딩 형은 $t_{cmd}-h/2$ 에서 발동 (가장 가까운 tick) |
+| 접촉 판정 창 $[t_{cmd},\,t_c+T_{conf}]$ | `NowReal`, 양끝 포함 | `InContactWindow` | |
+| 메시지 stale · 나이 | $now_{steady}-recv_{steady}$ | `AgeNs` | `BallTime` · stamp 는 받을 수 없다 |
+
+손 Preshape 는 시각 조건이 아니다 — 팔의 `wait_pose` 도착이 지시한다 (`PreshapeDue` 는 정의만 있고 호출부가 없다, L6). 정수 ns 산술은 포화 연산이다 — 다른 스레드가 SeqLock 으로 넘긴 $t_c$ 가 int64 한계 근처로 깨져도 부호 있는 오버플로 UB 가 아니라 "영원히 도래하지 않음" 으로 읽힌다.
 ## 5. C++ 구현
 
 ### 5.1 `ball_dynamics`
@@ -119,7 +133,7 @@ $$\dot\Phi=A(x(t))\,\Phi,\qquad \Phi(t_0)=I$$
 - **범위 검사.** 각 필드 `(name, value, lo, hi, unit)` 표(층별 §6).
 - **교차제약.** 마스터 §6 표를 구현한다. `v_tcp_max = η_v · reference.v_max` ($0<\eta_v\le1$, `planner.gamma.eta_v`) `[확정 D-9]` 가 "같은 값" 행을 대체하고, 이름이 둘이던 값 5쌍(`n_min`, `derate_step`, `ed_jump_max`, `a_dec`, ramp)은 단일 키가 되어 일치 검사 대상에서 빠진다. γ derate 키는 v1 범위 밖이다(D-8).
 - **ζ·ω·h 검사 (`dt` 기준).** $h$ = configure 시 `control_rate`(범위는 `rtc::kMinControlRateHz`–`kMaxControlRateHz`)로 정해지는 `ControllerState::dt`. $s=\omega h$ 가 이산 안정 경계 $2\sqrt2-2\approx0.828$ 이상이면 `armable=false`, 정확도 권장 $s\le0.05$ 초과면 경고(L4 §4.7). 고정 주기 가정은 쓰지 않는다. `reference.omega` 범위 [1, 25] rad/s 안에서는 100 Hz 에서도 $s\le0.25$ 라 안정 경계에 닿지 않는다 — 범위 검사가 안정을 함의하고, 경계 검사는 범위가 바뀔 때를 대비한 심층 방어다. 실제 구성에서 발동하는 것은 경고다 (100 Hz 에서 $\omega>5$). `reference.zeta` ≠ 1 이면 `armable=false` — 계획기의 종단 오차 닫힌해가 $\zeta=1$ 에서만 유효하다(L4 §4.4 임계감쇠 닫힌해). `reference.*` 는 `closed_form` 의 soft-catch 기준 블록이지만 (`planner_closed_form.yaml`) 검증은 모든 구성에서 한다.
-- **provisional 처리.** YAML 에 provisional 표시가 있는 값은 — 키 목록의 SSoT 는 `catching_params.cpp` 의 "Invented YAML keys" 주석이다: `reference.provisional`, `core.ball.provisional` (D-12 공 사양), `planner.catchability.manipulability_min.provisional` (D-18), `robot.hand.provisional` · `robot.hand.capture.provisional`, `supervisor.deadline.provisional`, `joint_cmd.lag.provisional` — 그리고 D-17 catch frame (`provisional: true`, robot 의 `urdf:` 트리) 이다. 가속 box 의 `robot.arm.qdd_provisional` (L5 §6 `robot.arm.qdd_max`) 도 같은 규칙을 따른다. sim 구성에서는 경고와 함께 허용하고, **실기 구성에서는 `armable=false`** 로 arm 을 막는다(plan §7.1 D-12, §10). 모든 provisional 키의 기본값은 `true` (fail-closed) 다.
+- **provisional 처리.** YAML 에 provisional 표시가 있는 값은 — 키 목록의 SSoT 는 `catching_params.cpp` 의 "Invented YAML keys" 주석이다: `reference.provisional`, `core.ball.provisional` (D-12 공 사양), `planner.catchability.manipulability_min.provisional` (D-18), `robot.hand.provisional` · `robot.hand.capture.provisional`, `supervisor.deadline.provisional`, `joint_cmd.lag.provisional` — 그리고 D-17 catch frame (`provisional: true`, robot 의 `urdf:` 트리) 이다. 가속 box 의 `robot.arm.qdd_provisional` (L5 §6 `robot.arm.qdd_max`) 도 같은 규칙을 따른다. sim 구성에서는 경고와 함께 허용하고, **실기 구성에서는 `armable=false`** 로 arm 을 막는다(D-12). 모든 provisional 키의 기본값은 `true` (fail-closed) 다.
 - **결과.** `CatchingValidationReport{bool armable; 고정 용량 실패 키 목록; 경고 목록}` (실패 · 경고 용량은 `kMaxFailures` · `kMaxWarnings`, 용량 초과는 버린다). `armable=false`면 L7이 `ARMED` 진입을 거부한다.
 
 ### 5.4 메시지 — 없음
@@ -159,7 +173,7 @@ $$\dot\Phi=A(x(t))\,\Phi,\qquad \Phi(t_0)=I$$
 | G0-B | 모든 함수 `noexcept`, 시간 타입·검증기 외 RT 사용 경로 할당 0 (`ScopedNoMalloc`·`ScopedAllocGate`), SeqLock payload 타입 `static_assert` trivially copyable | `[SIM-ANY]` |
 | G0-C | 활성 구성의 TBD 필드가 있는 YAML에서 `armable=false`, 비활성 구성 키의 TBD 는 통과. `robot.hand.q_close != q_pre`(L6 §4.2) 검사 포함. D-9 교차제약, $\omega h\ge0.828$ 공식(100·500·5000 Hz 각각 — `reference.omega` 범위가 이 경계를 배제하므로 범위 밖 $\omega$ 로 공식만 검증한다), $\omega h>0.05$ 경고, $\zeta\ne1$, 실기 구성의 provisional 값 → `armable=false` | `[SIM-ANY]` |
 | G0-D | 시뮬레이션 $k$ 식별 후 1 s 궤적 위치 RMS 잔차 기록 (합격 임계는 사용자 결정). §7 의 식별 도구를 구현하지 않았으므로 평가하지 않는다 | `[SIM-P1B]` |
-| G0-E | 시간 타입: 다른 타입끼리 비교가 컴파일되지 않음, $T_{arm}\ne0$ fixture 에서 plan §3 표의 판정별 비교 대상 고정 | `[SIM-ANY]` |
+| G0-E | 시간 타입: 다른 타입끼리 비교가 컴파일되지 않음, $T_{arm}\ne0$ fixture 에서 §4.5 표의 판정별 비교 대상 고정 | `[SIM-ANY]` |
 
 ## 10. 미확정 항목
 

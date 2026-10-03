@@ -59,7 +59,7 @@ $$\rho(t)=\min_{i\in\mathcal C}\frac{(q_i(t)-q_i^{pre})\,s_i}{|q_i^{cls}-q_i^{pr
   $\mathcal C$ 는 caging 에 필요한 관절 집합 (YAML `caging_mask`) 이다. **$\mathcal C$ 의 모든 관절은 $|q_i^{cls}-q_i^{pre}|>\epsilon_\rho$ 를 만족해야 한다** (`rho_eps`) — 그렇지 않으면 0 으로 나누고 $s_i$ 도 정의되지 않는다. 파라미터 검증기가 강제한다 (`armable=false`).
 - $T_{close,e2e}(\eta)=\inf\{t-t_{cmd}:\rho(t)\ge\eta\}$. $\eta$ 는 공이 빠져나갈 수 없는 진행률이며, **판단이 아니라 실측이다**: 손이 공을 실제로 쥔 시행의 정지 $\rho$ 의 중앙값 바로 아래로 정한다. 빈 허공에서만 완주하는 값 (예: 0.9) 은 도달 불가능한 임계라서, 그 값으로 잰 $T_{close,e2e}$ 는 공을 쥐는 동작의 시간이 아니다.
 
-명령 기록 시각과 인코더 수신 시각은 모두 RT 의 steady 시계로 잰다. 인코더 샘플의 원격 stamp 를 비교에 쓰지 않는다 (plan §3 "메시지 stale · 나이" 행, `header.stamp` 판단 금지). 분포는 계단 응답 반복으로 구한다 (손당 200 회 — 99 % 는 20 회로 말할 수 없다), 출하값은 그 p99 다.
+명령 기록 시각과 인코더 수신 시각은 모두 RT 의 steady 시계로 잰다. 인코더 샘플의 원격 stamp 를 비교에 쓰지 않는다 (L0 §4.5 "메시지 stale · 나이" 행, `header.stamp` 판단 금지). 분포는 계단 응답 반복으로 구한다 (손당 200 회 — 99 % 는 20 회로 말할 수 없다), 출하값은 그 p99 다.
 
 $T_{close,e2e}$ 는 **자세 쌍의 성질**이다 (이동하는 관절 집합과 이동량이 바뀐다). 자세를 바꾸면 이월하지 않고 다시 잰다. 병목은 가장 먼 거리를 가야 하는 관절의 이동량과 토크 포화이므로, 자세를 정할 때 $T_{close}$ 를 목적함수에 넣는다. 토크 포화가 지배하는 손 (p1b) 과 관성 · 강성이 지배하는 손 (leap) 은 운용 토크 한계에 대한 민감도가 다르다.
 
@@ -71,7 +71,7 @@ $T_{close,e2e}$ 는 **자세 쌍의 성질**이다 (이동하는 관절 집합�
 
 ### 4.3 명령 시각의 양자화
 
-시간 비교는 plan §3 규약을 따른다. 손 명령에는 팔 지연 선행 ($T_{arm}$) 을 적용하지 않는다 — 비교 대상은 **now_real** (매 tick steady 실측) 이다.
+시간 비교는 L0 §4.5 규약을 따른다. 손 명령에는 팔 지연 선행 ($T_{arm}$) 을 적용하지 않는다 — 비교 대상은 **now_real** (매 tick steady 실측) 이다.
 
 - Preshape: **시각 조건이 아니다.** 팔이 `wait_pose` 에 도착하면 (또는 재무장으로 `Ready` 에 놓이면) 손은 즉시 `q_pre` 를 지시받는다 — ARMED~COMMITTED 내내 그 상태가 유지된다 (L7 §4.1). `q_open` 은 팔이 homing 중일 때만 쓴다.
 - Close: $t_{cmd}=t_c-T_{close,e2e}$. 시퀀서가 **동결된** $t_c$ 와 프로파일에서 계산하는 단일 출처다 (계획기의 $t_{cmd}$ 는 기록일 뿐 입력이 아니다).
@@ -88,7 +88,7 @@ $T_{close}$ 를 최소화하려면 폐쇄 자세로의 계단 position 명령 + 
 
 폐쇄 체인 p1b 는 구동 좌표에서 명령한다. 수동 관절은 폐쇄 제약으로 결정된다 (기존 `rtc_urdf_bridge`, Pinocchio `RigidConstraintModel`). leap 은 폐쇄 체인이 없다.
 
-**catch frame 과 폐쇄 체인.** catch frame 은 손바닥 (`l_palm_link` / `palm_lower`) 에 붙는 모델 빌더 추가 frame 이고 부모 · offset · 자세는 로봇 config YAML (`_base.yaml`) 로 연다 (plan §10). 손바닥은 폐쇄 체인 루프의 **상류**이므로 catch frame FK · Jacobian 은 팔 관절만으로 정해지며, 폐쇄 체인 사영이 `held` (NUM-5) 여도 영향을 받지 않는다. catch frame 위치는 §4.5 의 포구점을 부모 frame 으로 옮긴 값이다 — 그 값은 catch frame 좌표이고 YAML `xyz` 는 부모 frame 좌표이므로, `palm_lower` 처럼 rpy 가 π 회전인 손에서는 **부호가 뒤집힌다**.
+**catch frame 과 폐쇄 체인.** catch frame 은 손바닥 (`l_palm_link` / `palm_lower`) 에 붙는 모델 빌더 추가 frame 이고 부모 · offset · 자세는 로봇 config YAML (`_base.yaml`) 로 연다 (L5 §11). 손바닥은 폐쇄 체인 루프의 **상류**이므로 catch frame FK · Jacobian 은 팔 관절만으로 정해지며, 폐쇄 체인 사영이 `held` (NUM-5) 여도 영향을 받지 않는다. catch frame 위치는 §4.5 의 포구점을 부모 frame 으로 옮긴 값이다 — 그 값은 catch frame 좌표이고 YAML `xyz` 는 부모 frame 좌표이므로, `palm_lower` 처럼 rpy 가 π 회전인 손에서는 **부호가 뒤집힌다**.
 
 ### 4.5 포켓 유효 깊이 $d_{eff}$ 와 포획 반경 $r_{cap}$ `[권장]` (TBD-HAND-04)
 
@@ -181,8 +181,8 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 | 게이트 | 기준 | 태그 |
 |---|---|---|
 | G6-A | 시퀀서 명령 시각 오차 ≤ $h/2$ (1000 회, 실측 tick 간격 기준), 비교 축이 now_real 임을 $T_{arm}\neq0$ fixture 로 확인 | `[SIM-ANY]` |
-| G6-B | RT 경로 할당 0, 손 device slot 에 쓴 목표와 backend 가 쓴 명령이 전 틱 일치 | `[SIM-ANY]` |
-| G6-C | 시뮬레이션 두 손의 $T_{close,e2e}(\eta)$ 분포 산출, §4.1 go/no-go 판정 기록 | `[SIM-P1B]` |
+| G6-B | RT 경로 할당 0, 손 device slot 에 쓴 목표와 backend 가 쓴 명령이 전 틱 일치. 컨트롤러 쪽 반쪽은 목표를 수락한 tick 부터 손 slot 명령이 clamp(목표) 와 bit-equal 인 것 (CM 쪽 반쪽은 RT 루프 테스트) | `[SIM-ANY]` |
+| G6-C | 시뮬레이션 두 손의 $T_{close,e2e}(\eta)$ 분포 산출 (평균 · 최대 · 99 %, steady 시계와 tick × `dt` 두 축으로 재고 log drop 0), §4.1 go/no-go 판정 기록 — go/no-go 는 목표 속도에서 γ 창이 비지 않는 것이고, 입력 ($T_{close}$, $d_{eff}$, 가속 box, $\eta_v$, 목표 속도) 중 하나라도 provisional 이면 PASS(provisional) 로 기록한다 | `[SIM-P1B]` |
 | G6-D | 실기 p1b $T_{close,tot}$ 종단 간 분포 산출, 99 % 값을 YAML 에 반영 | `[HW-P1B]` |
 | G6-E | 고정 공 fixture 에서 폐쇄 후 유지 성공 (position 목표 유지 규칙, 반복 횟수는 사용자 결정) | `[HW-P1B]` |
 | G6-F | $d_{eff}$ **와 $r_{cap}$** 의 산정식 · 실측값 · provisional 표시가 YAML (`planner.hand.*`) 과 이 문서에 기록됨. YAML 의 표시는 값 옆 키가 아니라 블록 전체의 `planner.provisional` 이다 | `[SIM-ANY]` |

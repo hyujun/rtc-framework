@@ -4,7 +4,7 @@
 
 - 대상 독자: 구현자(Claude Code 포함), 이론 검토자(Junho)
 - 구현 대상: **기존 `rtc-framework` workspace** (신규 workspace·신규 패키지 아님, D-1)
-- 문서 세트: [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md)(결정·단계) + 본 문서 + `L0_core.md` … `L8_bringup.md`. 수식 정식화는 `mpc_multiframe_clik_formulation.md`
+- 문서 세트: 본 문서 + `L0_core.md` … `L8_bringup.md`. 수식 정식화는 `mpc_multiframe_clik_formulation.md`
 - 상태 표기: `[확정]` 사용자 결정, `[확정 D-x]` plan 결정 로그의 결정, `[권장]` 설계 권장안, `[TBD-xx]` 미확정(추측 금지, §9 참조), `[논문 외 유도]` 원문에 없는 본 문서의 유도
 
 ### 0.1 개정 이력
@@ -66,7 +66,7 @@
 - 코드 기반: **기존 `rtc-framework` workspace + `rtc_tsid` CLIK 확장** `[확정 D-1, D-5]`
 - 입력: vision 노드의 **`sensor_msgs/PointCloud2` 예측 궤적** `[확정 D-4]` (§5). 제어 PC는 궤적을 재전파하지 않는다
 - Pinocchio: **4.0** `[확정]`
-- P1b 사양: thumb 4, index 3, middle 2, ring 1 = 10 actuated DoF. 관절 모터 토크 한계는 설정·모델값 (YAML `max_torque` = URDF effort = MJCF forcerange) 이 일치하며, 이를 운용 한계로 쓸 수 있는지 (nominal·continuous·peak·설정값 중 어느 것인가) 는 **D-12 미결정** (plan §7.3, L6 G6-3)
+- P1b 사양: thumb 4, index 3, middle 2, ring 1 = 10 actuated DoF. 관절 모터 토크 한계는 설정·모델값 (YAML `max_torque` = URDF effort = MJCF forcerange) 이 일치하며, 이를 운용 한계로 쓸 수 있는지 (nominal·continuous·peak·설정값 중 어느 것인가) 는 **D-12 미결정** (L6 G6-3)
 
 ### 1.4 시뮬레이션 검증의 한계 `[권장]`
 
@@ -145,10 +145,10 @@ flowchart TB
 ### 2.1 실행 영역 원칙 `[권장]`
 
 1. 토픽 도착은 제어 명령을 트리거하지 않는다. RT 루프는 시간 구동이며 최신 스냅샷만 읽는다. 토픽 도착이 깨우는 것은 계획기 스레드뿐이다(eventfd, D-7c).
-2. non-RT → RT 공유 상태는 단일 writer `rtc::SeqLock` 으로만 전달한다. payload 는 trivially copyable 이어야 하므로 `Eigen::Vector3d` 대신 `std::array` 기반 POD 를 쓴다(plan §6).
+2. non-RT → RT 공유 상태는 단일 writer `rtc::SeqLock` 으로만 전달한다. payload 는 trivially copyable 이어야 하므로 `Eigen::Vector3d` 대신 `std::array` 기반 POD 를 쓴다(L0 §5.2).
 3. RT → non-RT 기록은 고정 크기 레코드의 `rtc::SpscQueue` 로만 전달하고 aux 타이머가 drain 한다.
-4. RT 경로 금지 패턴은 RTC 프레임워크 규칙 RT-1~10(RT-7 은퇴)을 그대로 따른다: 동적 할당, 예외(`throw`/`catch` 모두), blocking I/O, mutex, tf2 조회 금지. 계획기 스레드도 스케줄링 클래스와 무관하게 이 규칙으로 작성한다(D-7a, plan §7.2).
-5. 시간 기준 `[확정 D-2]`: 내부 시각은 **절대 steady ns** 로 통일한다. nrt 수신 시 한 번 `t_ref_steady = recv_steady − (recv_wall − stamp)` 로 변환하고, 이후 `header.stamp` 는 쓰지 않는다. `use_sim_time` 은 쓰지 않는다 — sim 도 wall clock 이며 시행별 clock 위상 오차 게이트(δ_max·pause, plan §5)로 무효 시행을 거른다(D-3). stale 판정은 `now_steady − recv_steady` 로만 한다(repo 시계 규칙).
+4. RT 경로 금지 패턴은 RTC 프레임워크 규칙 RT-1~10(RT-7 은퇴)을 그대로 따른다: 동적 할당, 예외(`throw`/`catch` 모두), blocking I/O, mutex, tf2 조회 금지. 계획기 스레드도 스케줄링 클래스와 무관하게 이 규칙으로 작성한다(D-7a, L3 §5.3).
+5. 시간 기준 `[확정 D-2]`: 내부 시각은 **절대 steady ns** 로 통일한다. nrt 수신 시 한 번 `t_ref_steady = recv_steady − (recv_wall − stamp)` 로 변환하고, 이후 `header.stamp` 는 쓰지 않는다. `use_sim_time` 은 쓰지 않는다 — sim 도 wall clock 이며 시행별 clock 위상 오차 (δ_max·pause) 를 공변량으로 기록한다 (L8 의 sim 시간축 절, D-3). stale 판정은 `now_steady − recv_steady` 로만 한다(repo 시계 규칙).
 
 ---
 
@@ -160,14 +160,14 @@ flowchart TB
 | 좌표계 | `W` world(공 추정·계획·기준 생성 전부), `B` robot base(CLIK `base_frame`), `C` catch frame(손), `S_i` 지문 센서 i |
 | 공 상태 | vision이 준 샘플 $(p,v,a)$ + 점별 지평 `horizon_ns`, 공분산 $\Sigma_{6\times6}$(NaN = 모름). 제어 PC는 이 사이를 보간만 한다 (§5, L2). 공분산은 계획기 버퍼에만 둔다 `[확정 A-3]` |
 | 공 모델 | $\dot p=v,\ \dot v=g-k\Vert v\Vert v$ — **시뮬레이션 fixture 전용**(L0 §1). 실시간 경로에서는 쓰지 않는다 |
-| 접근축 | $\hat z_C$ = catch frame 의 **+z** = 손바닥 바깥 방향 법선 (규약). 목표 $a_d=-\hat v(t_c)$ `[확정 D-17]` — catch frame 의 부모·offset·자세는 YAML, 값은 확정 (`provisional: false`, plan §10) |
+| 접근축 | $\hat z_C$ = catch frame 의 **+z** = 손바닥 바깥 방향 법선 (규약). 목표 $a_d=-\hat v(t_c)$ `[확정 D-17]` — catch frame 의 부모·offset·자세는 YAML, 값은 확정 (`provisional: false`) |
 | 접근축 오차 | 회전벡터 $e_a=\theta\,\hat u$, $\hat u=\dfrac{z\times a_d}{\Vert z\times a_d\Vert}$, $\theta=\mathrm{atan2}(\Vert z\times a_d\Vert,\ z^\top a_d)$. $\exp([e_a]_\times)z=a_d$ (L4 §4.5). 구현 위치는 `rtc_math` se3 (D-1) |
 | 회전 | Hamilton quaternion, 회전행렬 $R_{WC}$ (C → W). $\mathrm{Log}:SO(3)\to\mathbb R^3$ |
 | 각속도 | 기본 표현은 world $\omega^W$, $\dot R_{WC}=[\omega^W]_\times R_{WC}$. LOCAL은 $\omega^L=R_{WC}^\top\omega^W$ |
 | Jacobian | **과제별로 다르므로 항상 명시한다.** 병진: `LOCAL_WORLD_ALIGNED` ($J_p$). 각속도: L3 §4.2·L5 §4.2 접근축 2행은 `LOCAL` ($J_\omega^L$), L4 §4.5의 $J_a$ 유도는 `WORLD` ($J_\omega^W$). `PinocchioCache` 는 LWA 고정이므로 LOCAL 각속도 행은 LWA 각속도 행을 $R_{WC}^\top$ 로 회전해 얻는다(계획기 스레드의 `RtModelHandle` 은 LOCAL 을 직접 줄 수 있다). 코드에서는 `LOCAL`/`WORLD` 각속도를 서로 다른 타입으로 구분할 것 `[권장]` |
 | softness | $\gamma\in[0,1]$, 0 = 정지 포구, 1 = 완전 추종 |
 | 시간 표현 | `[확정 D-2]` 내부 시각은 **절대 steady ns**. 궤적 원점은 수신 시 1회 변환한 $t_{ref}$ (§2.1 원칙 5). 상대시각은 수치 코어 경계에서만 만든다. `PlanSnapshot` 의 시각도 절대 steady 다 |
-| 시간 타입 | `[확정 D-2]` `BallTime`(공의 물리 시각), `NowReal`(매 tick steady 실측 now — tick 수 × dt 로 계산하지 않는다), `NowLead` $=$ now $+T_{arm}$. 비교는 타입별 오버로드로만 한다. 판정별 비교 대상은 plan §3 표가 SSoT: 궤적 샘플링·γ 프로파일·기준 생성·`CLOSING→DECEL`·지평 끝 경고는 `NowLead`, `APPROACH→COMMITTED`·손 Preshape/Close·접촉 판정 창은 `NowReal`, 메시지 나이는 `now_steady − recv_steady`. **$T_{arm}\ne0$ fixture 필수** |
+| 시간 타입 | `[확정 D-2]` `BallTime`(공의 물리 시각), `NowReal`(매 tick steady 실측 now — tick 수 × dt 로 계산하지 않는다), `NowLead` $=$ now $+T_{arm}$. 비교는 타입별 오버로드로만 한다. 판정별 비교 대상은 L0 §4.5 표가 SSoT: 궤적 샘플링·γ 프로파일·기준 생성·`CLOSING→DECEL`·지평 끝 경고는 `NowLead`, `APPROACH→COMMITTED`·손 Preshape/Close·접촉 판정 창은 `NowReal`, 메시지 나이는 `now_steady − recv_steady`. **$T_{arm}\ne0$ fixture 필수** |
 | 시간 | $t_c$ 포구 시각, $t_{cmd}$ 손 폐쇄 명령 시각 — 둘 다 공의 물리 시각(`BallTime`) 단일 정의이고, 비교하는 '지금' 만 판정별로 다르다 |
 | 지연 | $T_{arm}$ 팔 추종 지연(= 선행 보상량), $T_{close,tot}$ 손 명령 → 폐쇄 종단 간 시간(D-11: $T_{link}$ 를 따로 재지 않는다), $T_{tick}=h/2$ 틱 양자화 예산 ($h$ = `ControllerState::dt`) |
 | 가속도 기호 | $a$ 공 가속도(vision), $a_{\max}$ TCP 가속 한계(L4), $\bar a$ 관절 가속 한계(L3 §4.3) $=\ddot q_{\max}$(L5) — 토크 한계에서 도출(D-16), $a_{dec}$ 감속(L7). **$a_{dec}\le a_{\max}$** 여야 한다(L7 §4.3) |
@@ -264,7 +264,7 @@ vision의 예측을 그대로 신뢰한다. 제어 PC는 $(p,v,a)$ 샘플 열 �
 
 ### 5.3 시계
 
-실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../../agent_docs/invariants.md) 에 E-1 기록된 예외로 명문화됐다 (plan §3.1). 실기 적용 조건(PTP 동기)은 실기 단계에서 재확인한다. sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall epoch 의 stamp 를 쓴다(D-3) — 공 lane stamp 는 발사 기준 sim 시간축을 wall 에 얹은 값이다 (`rtc_mujoco_sim` README §Projectile Ball stamp).
+실기에서 두 PC는 PTP로 동기한다(인프라 문서). 제어 PC는 시작 시 동기 상태를 확인하고, 임계 초과 시 `ARMED` 진입을 막는다(L7, `[TBD-NET-01]`). stamp 를 시간 원점으로 쓰는 D-2 변환은 이 동기를 전제하며, [invariants.md](../../../agent_docs/invariants.md) 에 E-1 기록된 예외로 명문화됐다 (stamp 사용 계약은 L1 §4.1). 실기 적용 조건(PTP 동기)은 실기 단계에서 재확인한다. sim 은 `sim_estimator_node` 를 `use_sim_time=false` 로 띄워 wall epoch 의 stamp 를 쓴다(D-3) — 공 lane stamp 는 발사 기준 sim 시간축을 wall 에 얹은 값이다 (`rtc_mujoco_sim` README §Projectile Ball stamp).
 
 ---
 
@@ -290,11 +290,11 @@ catching:
 
 **한 물리량 = 한 키 `[확정]`.** 이름이 둘이던 같은 값은 단일 키다: `io.n_min`, `supervisor.decel.a_dec` (L7 §6, L3 가 읽음). `derate_step`·ramp 는 D-8 로 v1 에서 쓰이지 않으며 재도입 시 단일 키로 다시 정한다.
 
-**새 키 (plan 이 SSoT).**
+**새 키.**
 
-- catch frame `[확정 D-17]`: 로봇 config 의 `extra_frames`(이름·부모·`xyz`·`rpy`·`provisional`)를 `rtc_urdf_bridge` 모델 빌더가 Pinocchio 모델에 추가하고, 포구 YAML 은 frame 이름만 참조한다(`catch_frame`). 스키마·초기값 산출: plan §10
-- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(provisional), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3). 정의·스키마: plan §11. 지도 도구와 계획기가 **같은 키**를 쓴다. 발사 영역 `sim.throw_region.*` 는 YAML 키로 만들어지지 않았다 (동결 분포는 러너 인자, plan §11 · D-S8-2)
-- 관절 가속 한계 `[확정 D-16]`: 토크 한계에서 도출한 보수적 상수 box 를 provenance 와 함께 YAML (`robot.arm.qdd_max`) 로 출력한다 (plan §9). 이 box 는 **탐색의 도달시간 한계**에 쓰이고, 런타임 CLIK 의 가속 행은 `joint_cmd.accel_constraint` 가 정한다 (출하 `dynamic` = 토크 행)
+- catch frame `[확정 D-17]`: 로봇 config 의 `extra_frames`(이름·부모·`xyz`·`rpy`·`provisional`)를 `rtc_urdf_bridge` 모델 빌더가 Pinocchio 모델에 추가하고, 포구 YAML 은 frame 이름만 참조한다(`catch_frame`). 스키마·초기값 산출은 L5 의 catch frame 절
+- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(provisional), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3). 정의·스키마: L3 §4.2. 지도 도구와 계획기가 **같은 키**를 쓴다. 발사 영역 `sim.throw_region.*` 는 YAML 키로 만들어지지 않았다 (동결 분포는 러너 인자, D-S8-2)
+- 관절 가속 한계 `[확정 D-16]`: 토크 한계에서 도출한 보수적 상수 box 를 provenance 와 함께 YAML (`robot.arm.qdd_max`) 로 출력한다 (도출은 L3 §4.3). 이 box 는 **탐색의 도달시간 한계**에 쓰이고, 런타임 CLIK 의 가속 행은 `joint_cmd.accel_constraint` 가 정한다 (출하 `dynamic` = 토크 행)
 
 **TBD 검사는 "현재 활성 구성이 참조하는 키"에만 적용한다 `[권장]`.** 전체 키에 걸면 절대 `ARMED` 가 되지 않는다 — 실기에서 `sim.*` 가 영구히 TBD로 남기 때문이다. L0 검증기는 launch 구성(실기/시뮬, `lead_enable`)에 따라 검사 대상 집합을 정한다. `provisional: true` 인 값(D-12 사용자 값, catch frame)은 실기 arm 을 막는다(D-12, D-17).
 
@@ -325,10 +325,10 @@ catching:
 | 순서·트랙·stale 판정 | 논문 외 설계 | L1 §4.4, §5.3 | `catching/traj_ingress.hpp` |
 | 관절 최소 도달시간 (P1 램프 제약) | [R1] + 논문 외 유도 | L3 §4.3 | `catching/time_feasibility.hpp` (`TMinChecked`) |
 | 5-DoF 포구 자세, 접근축 제약 | [R1] 식(3)의 변형 | L3 §4.2 | `catching/catch_pose_ik.hpp` (`rtc::compliance::DifferentialIk` m=5), 계획기 코어 `catching/planner_search.hpp` |
-| catchability (arm 5행 manipulability) | 논문 외 설계 | L3, plan §11 | `catching/` 단일 함수 — 지도 도구와 계획기 공용 (D-18) |
+| catchability (arm 5행 manipulability) | 논문 외 설계 | L3 §4.2 | `catching/` 단일 함수 — 지도 도구와 계획기 공용 (D-18) |
 | γ 창 부등식, 방향 속력 | 논문 외 유도 | L3 §4.5 | `catching/time_feasibility.hpp` (`ComputeGammaWindow`, `MaxCatchableSpeed`) |
 | 포구 오차 예산 (직교 분해) | 논문 외 유도 | L3 §4.6 | `catching/planner_search.hpp` |
-| 계획기 스레드 | 논문 외 설계 | L3, plan §6 | `rtc::PeriodicRtThread` subclass, `integrated_bringup` 소유 (D-7); 한 주기는 `catching/planner_cycle.hpp` |
+| 계획기 스레드 | 논문 외 설계 | L3 §5.3 | `rtc::PeriodicRtThread` subclass, `integrated_bringup` 소유 (D-7); 한 주기는 `catching/planner_cycle.hpp` |
 | 오차 좌표 soft-catch DS (closed_form 의 RT 기준, mpc 의 rollout) | [R3] 식(4)(5) | L4 §4.1 | `catching/soft_catch.hpp` |
 | Corollary(원점 = 포구점) · 예측 오차·재예측 점프 · 수렴 한계 (임계감쇠 닫힌해) | [R3] Corollary 1 + 논문 외 유도 | L4 §4.2–4.4 | `catching/soft_catch.hpp` (`CriticallyDampedError` 등) |
 | 접근축 회전벡터 오차와 Jacobian | 논문 외 유도 | L4 §4.5, L3 §4.2, L5 §4.2 | `rtc_math/include/rtc_math/se3/axis_align.hpp` + CLIK LOCAL 접근축 2행 |
@@ -338,7 +338,7 @@ catching:
 | 충격량 예산 | [R16][R17][R18] + 논문 외 유도 | L7 §4.7 | 계획기 코어, L8 지표 (손–공 첫 접촉 episode 만) |
 | 팔 추종 지연 식별·선행 보상 | 논문 외 설계 | L5 §4.4–4.5 | 식별 도구 (실기 단계). backend 에 지연 보상 없음 |
 | 투척 생성·발사 | 논문 외 설계 | L8 §4.2 | `rtc_mujoco_sim` 발사 srv (D-14) + catchability 지도 |
-| catch frame | 논문 외 설계 | plan §10 | `rtc_urdf_bridge` 모델 빌더 추가 frame (D-10·D-17) |
+| catch frame | 논문 외 설계 | L5 (catch frame 절) | `rtc_urdf_bridge` 모델 빌더 추가 frame (D-10·D-17) |
 | velocity CLIK / QP | [R9][R10] | L5 §4 | `rtc::tsid::ClikReferenceGenerator` **확장** (`rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp`, D-5·D-6) |
 | FK / Jacobian / 폐쇄 체인 | [R9] | L3 §4.2, L5 §4.2 | 기존 `PinocchioCache`·`RtModelHandle` 재사용 |
 | position 명령 전달 | — | L5 §4.3 | `ControllerOutput` → `DeviceBackend::WriteCommand` 재사용 |
@@ -408,11 +408,14 @@ catching:
 | 위험 | 영향 | 완화 |
 |---|---|---|
 | **$T_{close,tot}$ 실측값이 예산 초과** | 목표 속도 전 구간에서 γ 창이 비어 포구 자체가 불가 | §4.1. 초과 시 목표 속도를 낮추고 `planner.*`·`reference.*` 재산정. sim $T_{close}$ 는 MJCF 게인에 의존하므로 실기 측정 전까지 잠정 |
-| **토크 도출 가속 box 가 보수적** (D-16) | 탐색의 도달시간 한계가 받을 수 있는 공 속력을 낮춤 | 런타임 CLIK 은 토크 행 (`accel_constraint: dynamic`) 이라 box 에 묶이지 않고, box 는 탐색의 도달시간에만 쓴다 (plan §7.3·§9). 실기 값은 실기 식별 |
+| **토크 도출 가속 box 가 보수적** (D-16) | 탐색의 도달시간 한계가 받을 수 있는 공 속력을 낮춤 | 런타임 CLIK 은 토크 행 (`accel_constraint: dynamic`) 이라 box 에 묶이지 않고, box 는 탐색의 도달시간에만 쓴다 (L3 §4.3). 실기 값은 실기 식별 |
 | **접촉 충격량** | 손가락 관절·감속기 손상, UR5e 보호 정지, 공 튕겨나감 | L7 §4.7 충격량 예산, γ 최대화 (closed_form), `effort_limit_hold`, 저속 단계적 도입(L8 §9.2) |
-| 시계 오차 | 위치 오차 ≈ $\Vert v\Vert\,\delta$ | PTP, 시작 시 점검, D-2 수신 시 1회 변환, stale 판정 |
-| **sim 시간축 (D-3)** | clock 이 벌어지는 구간에서 wall 기준 예측과 sim 공이 어긋남 | 시행별 clock 위상 오차 게이트(δ_max·pause, plan §5) |
+| 시계 오차 | 위치 오차 ≈ $\Vert v\Vert\,\delta$. 실기 시계 오프셋이 **미래 방향** 이면 지평 검사는 통과하고 $t_c$ 만 늦어진다 (6 m/s · 10 ms = 6 cm) — L3 §4.6 의 $\varepsilon_{clk}$ 는 분산 항이라 bias 를 모델링하지 않고, sim 은 같은 호스트라 드러나지 않는다 | PTP, 시작 시 점검, D-2 수신 시 1회 변환, stale 판정. bias 는 실기 단계의 D-2 예외 ③ 조건 (`TBD-NET-01`) 재확인 |
+| **sim 시간축 (D-3)** | clock 이 벌어지는 구간에서 wall 기준 예측과 sim 공이 어긋남 | 시행별 clock 위상 오차 (δ_max·pause) 를 공변량으로 기록하고 부하 A/B 로 상계 (L8 의 sim 시간축 절) |
 | 팔 추종 지연 미보상 | 포구 시각 편향 | backend 보상 없음. `NowLead` 선행(§3), 실기 $T_{arm}$ 식별은 실기 단계 |
+| sim 팔 actuator 는 1차 지연이다 (MJCF 게인) | 선행 보상 (순수 지연) 이 비-순수지연분을 남기고, sim 에서 잰 lead 이득은 UR5e 이득을 예측하지 않는다 | L5 §4.4, 실기 식별 |
+| sim 이 실시간보다 느려짐 (host 부하, RTF < 1) | 공 stamp 가 벽시계보다 뒤처져 steady 나이 검사가 입력을 `BALL_STALE` 로 끊는다 — 성공률이 host 부하에 좌우된다. `sim_stall` 규칙은 sim 스텝 간격만 봐서 못 잡는다 | 시행 도중 부하를 감시하고 부하 시행은 재실행한다 (L8 의 sim 시간축 절). 성공률을 읽을 때 부하 구간을 분리 |
+| UR 벤더 position 컨트롤러 자체의 가감속·보호 정지 | repo 밖이라 도출 가속 box 와 실제 한계가 다를 수 있다 | 실기 식별 (L3 §4.3) |
 | soft catch 중 포화 (closed_form) | 간극 급증 (hard catch보다 나빠짐) | L3 γ rollout, η_v 여유(D-9). γ 하향은 v1 에서 제외(D-8) → COMMITTED 전 RETREAT, 이후 ABORT_SAFE. 시행별 `ref_saturated` 와 `supervisor.sat_ticks` 로 감시. mpc 에서는 soft-catch DS 가 RT 에서 돌지 않아 발생하지 않는다 |
 | 지문 센서만으로 접촉 판정 | 손바닥 선접촉 시 검출 지연 | 감속은 시각 기준, 센서는 판정·abort 전용(A-5). 손바닥·손가락 링크 접촉의 false-Missed 는 손 관절 q·토크를 두 번째 증거로 더해 완화 (L7 §4.4) |
 | 시뮬레이션과 실기 손 차이 | 성공률 과대평가 | `[SIM-P1B]`/`[HW-P1B]` 태그 분리, `T_close` 실측 반영 |
