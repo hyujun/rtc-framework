@@ -139,12 +139,12 @@ sim 은 지연이 없는 것이 아니다 — sim 팔의 actuator 는 position-P
 
 ### 4.5 지연 보상: 예측 선행 `[논문 외 설계]`
 
-순수 지연이 지배적이면 명령 궤적을 $T_{arm}$ 만큼 앞당긴다. 시간 비교는 plan §3 규약을 따른다.
+순수 지연이 지배적이면 명령 궤적을 $T_{arm}$ 만큼 앞당긴다. 시간 비교는 L0 §4.5 규약을 따른다.
 
 1. 궤적 샘플링 · γ 프로파일 · 기준 생성은 $\text{now\_lead}=\text{now}+T_{arm}$ 에서 한다 (L2 §4.4 의 $T_{lead}=T_{arm}$). vision 예측을 앞당겨 읽는 것이지 제어 PC 가 전파하는 것이 아니다. now 는 매 tick steady 실측이며 tick 수 × dt 로 계산하지 않는다.
 2. CLOSING→DECEL 전환도 now_lead ≥ $t_c$ 로 판정한다 (L7). 즉 명령 경로가 $t_c-T_{arm}$ 에 포구점에 도달한다.
 
-손 명령 시각 $t_{cmd}$ 와 Preshape 는 **실제 시각 (now)** 축이므로 이 선행을 적용하지 않는다 (plan §3, L6).
+손 명령 시각 $t_{cmd}$ 와 Preshape 는 **실제 시각 (now)** 축이므로 이 선행을 적용하지 않는다 (L0 §4.5, L6).
 
 1차 필터 성분이 크면 선행만으로는 위상이 완전히 맞지 않는다. 잔여 (비-순수지연분) 는 선행을 켠 것과 끈 것의 비교로 잰다 — sim 의 1차 플랜트에서는 런타임에 (L8 §9.1 G8-E), 실기 값은 S10 이 잰다.
 
@@ -262,3 +262,37 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 
 - `joint_cmd.task_accel_max_linear` · `task_accel_max_angular` (`kinematic` 을 쓸 때만), `supervisor.track_err_abort` (L7), 실기 `joint_cmd.lag.T_arm` (G5-F)
 - E-STOP · fault 전체 정책 (L7)
+
+## 11. catch frame (`urdf.extra_frames`)
+
+catch frame 은 포구 컨트롤러가 정렬하는 대상이며, URDF 에 없고 **모델 빌더가 YAML 선언으로 추가하는 frame** (D-10) 이다. 사용자가 sim 에서 확인하며 바꿀 수 있게 로봇 config 의 `urdf` 절에 연다. rclcpp 파라미터는 list-of-dict 를 담지 못하므로 `urdf.sub_models.<name>.*` 와 같은 **map key** 형태다 (D-17).
+
+```yaml
+urdf:
+  extra_frames:
+    catch_frame:             # map key = frame 이름
+      parent: l_palm_link    # 부모 frame (모델에 이미 있는 link · joint · frame)
+      xyz: [0.0, 0.0, 0.0]   # m, 부모 frame 좌표
+      rpy: [0.0, 0.0, 0.0]   # rad, 부모 frame 기준, URDF 관례 R = Rz·Ry·Rx
+      provisional: true      # 사용자가 확인하기 전 (키가 없으면 true)
+```
+
+값은 `integrated_bringup/config/{ur5e_p1b,iiwa7_leap,g1_p1b}/` 의 로봇 config (`_base.yaml` 또는 `sim.yaml` 의 `urdf` 절) 가 갖는다. 포구 컨트롤러는 frame 이름만 참조한다 (`catching.catch_frame`, 기본 `catch_frame`).
+
+**규약.**
+
+- **접근축은 이 frame 의 LOCAL $+z$** 다 — 손바닥 바깥 법선이 $+z$ 가 되도록 `rpy` 를 둔다 (§4.2, L4 §4.5). 손바닥 frame 의 $+z$ 가 안쪽이면 $\pi$ 회전을 준다 (`palm_lower` 가 그렇다).
+- **원점은 포구점이다** — 손이 닫혀 공을 쥐는 자리 (공 중심, L6 §4.5). 손끝 중심이나 포켓 입구가 아니다. 이유: $r_{cap}$ (L3 §4.6 게이트의 우변) 은 포구점 **둘레의 측면** 허용량이고, $t_c$ 는 손이 $\eta$ 까지 닫힌 시각이라 그때 공이 있는 자리가 원점이어야 한다. 입구를 원점으로 두면 접근축 방향으로 입구까지의 거리가 γ 창에 두 번 들어간다. "손끝" body 는 여럿이라 그 정의로는 값이 정해지지도 않는다. 손끝 중심은 포구점과 같은 $+z$ 쪽에 있고 그 차이가 $d_{eff}$ 자릿수인지 보는 교차 확인에만 쓴다.
+- YAML 의 `xyz` · `rpy` 는 **부모 frame** 좌표다. L6 §4.5 의 포구점은 catch frame 좌표이므로 `rpy` 가 회전인 손에서는 값을 옮겨 쓸 때 부호가 바뀐다.
+
+**로더가 하는 일.**
+
+1. CM 파서 (`RtControllerNode::ParseExtraFrames`) 가 `urdf.extra_frames` 아래 map key 를 열거해 `rtc_urdf_bridge::ModelConfig::extra_frames` 를 채운다. 항목마다 `parent` · `xyz[3]` · `rpy[3]` 가 필수이고 하나라도 빠지거나 숫자 목록이 아니면 **configure 를 거부한다** (fail-closed — catch frame 이 조용히 빠지면 소비자는 자기 configure 에서야 안다). yaml-cpp `LoadModelConfig` 도 같은 키를 읽고 불완전한 항목은 예외로 거부한다. 이 키를 선언한 채 공유 모델 빌드가 실패해도 configure 를 거부한다.
+2. `PinocchioModelBuilder::AddExtraFrames` 가 `BuildFullModel()` 직후 **full 모델에만** frame 을 추가한다: 부모 frame 의 관절 상대 placement 에 $\mathrm{SE3}(R(rpy),\,xyz)$ 를 합성한다. 이름이 비었거나 이미 있거나, 부모가 없거나, `xyz`·`rpy` 가 비유한이면 예외다. 새 frame 은 끝에 붙어 기존 frame id 를 바꾸지 않는다.
+3. sub · tree · actuated 모델은 full 모델의 `buildReducedModel` 이라 frame 을 상속한다. 부모 관절이 잠기면 같은 world placement 로 가장 가까운 유지 조상 관절에 다시 붙는다. 네 모델 모두에서 frame 이 있고 위치가 같아야 한다.
+4. 모델 빌드 때 읽으므로 값을 바꾸면 컨트롤러를 다시 configure 해야 한다.
+5. 포구 컨트롤러는 `ResolveCatchFrame(model, name)` 으로 이름을 해석한다 (frame 이 없거나 `universe` 이면 `std::invalid_argument`) — 철자 오류나 frame 을 갖지 않는 sub-model 이 "아무것도 잡을 수 없다" 는 정상 모양의 지도로 나오는 것을 막는 검사다. 실패하면 팔은 hold 된다 (§5.3).
+
+**`provisional`.** 사용자가 렌더로 frame 을 확인하기 전에는 true 다. 빌더는 이 flag 를 운반만 한다 (`ExtraFrameConfig::provisional`). 소비 규칙은 L0 §5.3 의 provisional 규칙 (sim 경고 · 실기 차단) 이고 그 판정 함수는 `CheckCatchFrameProvisional` (`catching_params.hpp`) 이다. 현재 포구 컨트롤러는 이 flag 를 읽어 그 함수를 부르지 않는다 — flag 만으로 실기가 막히지 않는다.
+
+**앵커 확인.** catch frame 의 앵커는 두 엔진 (Pinocchio · MuJoCo) 에서 **같은 frame** 이어야 한다. 포구점은 MuJoCo palm **body** frame 에서 재고 YAML 은 URDF 부모 **link** frame 이며 두 관례는 갈릴 수 있다 (이름이 같아도 `wrist_3_link` 의 body 원점은 올바른 변환에서도 어긋난다). 같은 $q$ 의 무작위 팔 자세에서 두 FK 를 대조하고, 잔차를 $L=T_{mj}T_{pin}^{-1}$ (palm 이 일치할 때만 상수) 와 $R=T_{pin}^{-1}T_{mj}$ (base 가 일치할 때만 상수) 로 분해해 판정한다. `l_palm_link` · `tool0` 는 두 모델에서 일치해 앵커로 유효하다. `ur5e_p1b` 에 남는 잔차는 MJCF 와 URDF 의 치수 차이이고 frame 불일치가 아니다 — sim 으로 줄일 수 없으므로 다른 오차 항과 합치지 않는다.

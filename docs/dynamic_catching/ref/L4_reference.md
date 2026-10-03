@@ -23,7 +23,7 @@
 |---|---|---|
 | G4-1 | `rtc_tsid` / CLIK가 받는 과제 기준의 형식 | `rtc::tsid::ClikReferenceGenerator` 는 pose(SE3) 목표 외에 **위치 3 행 + LOCAL 접근축 2 행** 과제 (`PositionAxisTarget`: 위치 · 축 · 선속도 / 각속도 feedforward) 를 받는다 `[확정 D-5]`. catching 은 이 과제를 쓴다 (L5 §4.2) |
 | G4-2 | 기존 SE(3)/SO(3) 오차 헬퍼(U1 공유 헬퍼)의 규약과 본 문서 §4.5 축 정렬 오차의 공존 방식 | U1 헬퍼는 `rtc_tsid` se3_error (`ComputeTaskPoseError`, LWA BodyLog6). §4.5 축 정렬 오차는 그것과 **별도 함수**로 `rtc_math` se3 에 있다 (D-1) |
-| G4-3 | 두 로봇의 catch frame과 손바닥 바깥 법선 축 | D-17: 모델 빌더가 YAML 선언 frame 으로 추가 (D-10), 부모·offset·자세는 로봇 config, 접근축 = 그 frame 의 +z (plan §10) |
+| G4-3 | 두 로봇의 catch frame과 손바닥 바깥 법선 축 | D-17: 모델 빌더가 YAML 선언 frame 으로 추가 (D-10), 부모·offset·자세는 로봇 config, 접근축 = 그 frame 의 +z (L5 §11) |
 
 ## 3. 참고자료
 
@@ -119,7 +119,7 @@ $$\exists P\succ0,\ \alpha>0:\ P\mathcal A_k+\mathcal A_k^\top P\preceq-2\alpha 
 | 쓰는 곳 | planner | 무엇 |
 |---|---|---|
 | 탐색의 포구 자세 IK (`CatchPoseIk`, L3 §4.2) | 공통 | catch frame LOCAL 표현의 $e_a^C$ — 5 행 과제의 회전 2 행 |
-| RT 의 CLIK 5 행 과제 (`ClikReferenceGenerator::Compute(…, PositionAxisTarget, …)`, L5 §4.2) | 공통 | 회전 2 행의 기준 $S R_{WC}^\top(K_ae_a+\omega_{ff})$. 축 목표는 `closed_form` 에서 plan 의 $a_d$ ($\omega_{ff}=0$), `mpc` 에서 구간의 관절 노드를 FK 한 catch frame 의 $z$ 축 (각속도 feedforward 포함) |
+| RT 의 CLIK 5 행 과제 (`ClikReferenceGenerator::Compute(…, PositionAxisTarget, …)`, L5 §4.2) | 공통 | 회전 2 행의 기준 $S R_{WC}^\top(K_ae_a+\omega_{ff})$. 축 목표는 `closed_form` 에서 `PlanSnapshot` 의 $a_d$ ($\omega_{ff}=0$), `mpc` 에서 구간의 관절 노드를 FK 한 catch frame 의 $z$ 축 (각속도 feedforward 포함) |
 | MPC 코어의 포구 노드 접근축 항 (`decel_mpc.cpp`) | `mpc` | $e_a$ 와 $J_a$ (`AxisAlignJacobian`) 로 선형화한 비용 — 식은 formulation |
 
 손바닥 바깥 법선 $z=R_{WC}\hat e_z$ (W), 목표 $a_d=-\hat v_O(t_c)$. 둘 다 단위벡터다.
@@ -134,7 +134,7 @@ $\exp([e_a]_\times)z=a_d$ 를 **정확히** 만족한다. 따라서 $\Vert e_a\V
 
 $$\boxed{\omega_{cmd}=K_a\,e_a+\omega_{ff}}$$
 
-$\omega_{ff}$ 는 축 목표 $a_d$ 가 움직이는 각속도다 — `mpc` 에서는 구간이 주는 catch frame 의 각속도, `closed_form` 에서는 0 ($a_d$ 가 plan 의 고정값). 아래 수렴성은 $\omega_{ff}=0$ 인 경우 (고정된 $a_d$) 의 것이다.
+$\omega_{ff}$ 는 축 목표 $a_d$ 가 움직이는 각속도다 — `mpc` 에서는 구간이 주는 catch frame 의 각속도, `closed_form` 에서는 0 ($a_d$ 가 `PlanSnapshot` 의 고정값). 아래 수렴성은 $\omega_{ff}=0$ 인 경우 (고정된 $a_d$) 의 것이다.
 
 수렴성: $\dot z=\omega\times z$ 이고 $\omega_{ref}=K_a\theta\hat u$ 이므로 $\frac{d}{dt}(z^\top a_d)=K_a\frac{\theta}{\sin\theta}\big(1-(z^\top a_d)^2\big)\ge0$. $z^\top a_d$ 가 단조 증가하므로 반평행 평형점을 제외하면 전역 수렴한다.
 
@@ -245,11 +245,11 @@ $\delta=0$ 행의 1.1 mm는 오차가 아니라 **DS 자체의 잔여 수렴 오
 
 **적용: `closed_form` 의 RT 와 탐색의 rollout.** `mpc` 의 RT 는 `SoftCatchTranslation` 을 돌리지 않는다.
 
-- **시간축 (plan §3, D-2).** γ 프로파일 평가와 대상 샘플링은 **선행 시각 $now_{lead}=now+T_{arm}$** 축이다 (팔 명령은 $T_{arm}$ 뒤 실현). `PlanSnapshot` 의 시각(γ 프로파일 `t0`·`t1`, $t_c$)은 절대 steady ns 이고, `Step(o, t, dt)` 의 `t` 와 `GammaProfile` 의 `t0`·`t1` 은 **수치 코어 경계에서** 같은 원점의 상대 초로 바꾼 값이다 (`ProfileSeconds`·`MakeGammaProfile` — 원점은 plan 의 γ 램프 시작). 대상 `o` 는 L2 샘플러로 같은 $now_{lead}$ 에서 샘플링한다. 매 tick 의 $now$ 는 steady 실측이며 tick 수 × dt 로 계산하지 않는다. T_arm ≠ 0 fixture 로 두 축을 구분해 테스트한다
+- **시간축 (L0 §4.5, D-2).** γ 프로파일 평가와 대상 샘플링은 **선행 시각 $now_{lead}=now+T_{arm}$** 축이다 (팔 명령은 $T_{arm}$ 뒤 실현). `PlanSnapshot` 의 시각(γ 프로파일 `t0`·`t1`, $t_c$)은 절대 steady ns 이고, `Step(o, t, dt)` 의 `t` 와 `GammaProfile` 의 `t0`·`t1` 은 **수치 코어 경계에서** 같은 원점의 상대 초로 바꾼 값이다 (`ProfileSeconds`·`MakeGammaProfile` — 원점은 `PlanSnapshot` 의 γ 램프 시작). 대상 `o` 는 L2 샘플러로 같은 $now_{lead}$ 에서 샘플링한다. 매 tick 의 $now$ 는 steady 실측이며 tick 수 × dt 로 계산하지 않는다. T_arm ≠ 0 fixture 로 두 축을 구분해 테스트한다
 - plan 에 의한 `SetIntercept()` (첫 채택과 교체) 는 `COMMITTED` 이전에만 일어난다. `COMMITTED` 이후 허용되는 계획 변경은 없고, 그 뒤의 호출은 DECEL 진입의 γ≡1 전환 하나뿐이다 (아래).
 - **반환값의 시간축이 섞여 있다.** `x`, `xd`는 $t+\Delta t$ 기준(다음 틱 명령), `xdd`는 $[t,t+\Delta t]$ 구간의 실현 가속도, `e`, `ed`는 $t$ 기준 진단값이다. L8 `TickRecord`에 함께 기록할 때 1틱 오정렬을 감안한다.
 - **`xdd` vs `u_des`.** 속도 포화가 걸리면 DS가 요구한 가속도 `u_des`는 실현되지 않는다. 실현값이 필요한 곳(기록)에는 `xdd`를, L3 rollout 판정과 포화 진단에는 `u_des`를 쓴다.
-- **CLIK 공급.** 기준 `x` 를 위치 목표로, `xd` 를 선속도 feedforward 로, plan 의 $a_d$ 를 축 목표로 넘긴다 (`ClikReferenceGenerator::PositionAxisTarget`). 각속도 feedforward 는 주지 않는다 — 고정된 포구점의 접근축은 돌지 않는다. 어느 성분이 어느 행에 실리는지는 L5 §4.2.
+- **CLIK 공급.** 기준 `x` 를 위치 목표로, `xd` 를 선속도 feedforward 로, `PlanSnapshot` 의 $a_d$ 를 축 목표로 넘긴다 (`ClikReferenceGenerator::PositionAxisTarget`). 각속도 feedforward 는 주지 않는다 — 고정된 포구점의 접근축은 돌지 않는다. 어느 성분이 어느 행에 실리는지는 L5 §4.2.
 - 감속 모드(L7 §4.3, `closed_form`): 대상을 가상 감속 목표로 바꾸고 γ 를 상수 1 (`GammaProfile{1,1,…}`) 로 둔다. 전환은 $now_{lead}\ge t_c$ 에서 한다 (A-5). 가상 목표는 **진입 tick 의 기준 상태** $(x_s,\dot x_s)$ 에서 시작하므로 진입 시 $e=0$, $\dot e=0$ 이 정확히 성립한다 — 기준 생성기는 리셋하지 않고 대상만 바꾼다. `mpc` 에서는 감속도 구간이 만든다.
 - 회전: CLIK 의 오차·Jacobian 은 현재 **명령 자세** $q_c$ 에서 평가한다 (D-6) — 축 오차의 $z$ 도 $q_c$ 의 FK 다. 실추종 오차는 `TRACK_ERR` 로 별도 감시한다.
 

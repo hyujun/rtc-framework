@@ -82,15 +82,15 @@ $$
 
 ### 4.4 시각 정렬 `[확정 D-2]`
 
-시간 규약의 SSoT 는 plan §3 이다. 샘플러가 따르는 부분:
+시간 규약의 SSoT 는 L0 §4.5 이다. 샘플러가 따르는 부분:
 
 - **샘플 시각은 절대 `BallTime`** (steady ns). L1 이 수신 시 `header.stamp`·`horizon_ns` 를 한 번 변환해 싣는다(L1 §4.1). 원점이 다른 상대시각(메시지 스탬프 기준, 세션 기준, 계획 시각 기준)을 섞지 않는다.
 - **샘플링·지평 경고는 now_lead** 로 한다: `NowLead` = 매 tick steady 실측 now + $T_{arm}$. γ 프로파일, $t_c$ 판정, `CLOSING→DECEL` 진입도 같은 축이다.
 - **stale 판정은 steady 수신 나이**(now_steady − recv_steady)이며 샘플러가 아니라 L1 이 한다(L1 §5.3). 샘플러는 stale 을 판정하지 않는다.
 - 수치 코어 경계에서만 double 초 상대값을 만든다: 구간 안 $s=(t-t_j)/h_j$ 는 같은 스냅샷의 두 `BallTime` 차로 계산하므로 원점 혼합이 생기지 않는다.
-- `PlanSnapshot` 은 $t_c$ 등을 절대 `BallTime` 으로 싣는다(L3). 계획 스레드의 소요 시간이 시각을 틀리게 만들지 않고 남은 시간만 줄인다(plan §7.2).
+- `PlanSnapshot` 은 $t_c$ 등을 절대 `BallTime` 으로 싣는다(L3). 계획 스레드의 소요 시간이 시각을 틀리게 만들지 않고 남은 시간만 줄인다.
 
-선행 보상량 $T_{arm}$ 은 L5 의 것이다(L5 §4.5). 샘플러의 선행축은 `NowLead` 의 $T_{arm}$ 이고, 선행 보상을 켜는 스위치는 `joint_cmd.lag.lead_enable` 이다 (꺼져 있으면 $T_{arm}$ 을 더하지 않는다). 값은 실기 식별로 정한다(L5 §6). 테스트는 $T_{arm}\ne0$ fixture 필수(plan §3).
+선행 보상량 $T_{arm}$ 은 L5 의 것이다(L5 §4.5). 샘플러의 선행축은 `NowLead` 의 $T_{arm}$ 이고, 선행 보상을 켜는 스위치는 `joint_cmd.lag.lead_enable` 이다 (꺼져 있으면 $T_{arm}$ 을 더하지 않는다). 값은 실기 식별로 정한다(L5 §6). 테스트는 $T_{arm}\ne0$ fixture 필수(L0 §4.5).
 
 ### 4.5 공분산을 어디까지 넘기는가 `[확정 A-3]`
 
@@ -124,7 +124,7 @@ SSoT 는 `rtc_controllers/include/rtc_controllers/catching/traj_sampler.hpp` (`H
 - **점 개수 경계.** `n` 을 `[n_min, kCap]` 로 `Check`·`SampleAt`·RT 읽기 모두에서 **먼저** 검사한다 (범위 밖 읽기 방지). 런타임 점 수 상한은 `kCap` 이고 `n_max` 키는 없다 — 점 수는 vision profile 의 속성이라, profile 이 바뀌면 거부가 아니라 진단의 점 수로 드러난다
 - **NaN 거부.** NaN 시각·값은 `Check` 에서 거부, `SampleAt(NaN)` 은 invalid 를 반환한다
 - **간격 하한 거부.** 최소 샘플 간격 (`TrajLimits` 의 `dt_min`, 구성에서는 `TrajInputConfig::dt_min_ns` 상수) 미만 구간은 경고가 아니라 거부한다 — `Interpolate` 가 극소 $h$ 를 받아 $1/h^2$ 로 폭주하는 것을 막는다
-- **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — 벡터는 `std::array<double, 3>`, 계산은 `Eigen::Map` 으로 한다(L0 §5.2, plan §6). `static_assert(std::is_trivially_copyable_v<…>)`
+- **POD 스냅샷.** 궤적 스냅샷은 `rtc::SeqLock` payload 이므로 trivially copyable 이어야 한다 — 벡터는 `std::array<double, 3>`, 계산은 `Eigen::Map` 으로 한다(L0 §5.2). `static_assert(std::is_trivially_copyable_v<…>)`
 - **시간 타입.** 샘플 시각은 `BallTime`(절대 steady ns), 샘플링 인자는 `NowLead` (L0 §4.5). 스냅샷 필드: provenance `token` (`generation`·`snapshot_sequence`·`traj_recv_ns`·`activation_generation`), `n`, `valid`
 - **공용 타입.** 궤적 타입은 L1·L2·L3 공용 헤더로 둔다(L1 → L2 의존 역전 해소). `kCap` 은 이 타입이 단독 소유한다 (L0 §5.2)
 
