@@ -1,37 +1,38 @@
 # L3 — Planner: 포구 시각·포구점·접근축·γ 결정
 
-- 문서 버전: v0.5 (2026-09-19) — 결정·단계의 SSoT 는 [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) (충돌 시 plan 우선)
-- 브랜치: 단계별 `type/kebab-slug` (main 기준, 마스터 §4.2)
-- 배치 `[확정 D-1]`: 탐색 코어(순수 수치)는 rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`), 계획기 스레드 소유·YAML 은 `integrated_bringup` 바인딩
-- 단계: **S1.5** 순수 조각 (도달시간 `time_feasibility`, 방향 속력, 정지거리·오차 예산), **S6** 계획기 스레드·포구 자세 IK·catchability 게이트·rollout·선택/commit·D-7a 측정
-- 선행: 단계 W, L1, L2, L4 (γ rollout에 L4 코드 재사용), L5 (한계·`T_arm` 값)
-- 산출물: 계획기 코어(단일 진입 함수, §4.1), 도달시간·γ 창 (참조: `time_feasibility.hpp`), 방향 속력, 계획기 스레드 (D-7), `PlanSnapshot` POD
+이 문서는 현재 구현의 **계획기 층** 을 표현한다 — 포구 후보의 탐색 (포구 시각 $t_c$ · 포구점 $p_c$ · 접근축 $a_d$ · 포구 자세 $q^\ast$ · γ 프로파일) 과 그 결과의 게시다.
+
+- **planner 는 둘이다**: `closed_form` 과 `mpc` (`supervisor.decel.mode` 가 고른다. 출하 값은 두 로봇 모두 `mpc`). **탐색 (`PlannerSearch`) 은 두 planner 공통**이고, 둘은 탐색 뒤에 decel 층 (`DecelPlanner`) 이 붙느냐로 갈린다 (§4.1). 각 절의 머리에 적용 범위 — **공통 / closed_form 전용 / mpc 전용** — 를 적는다
+- `mpc` 의 구간 계획 (APPROACH–정지 MPC) 의 수학은 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) 가 갖는다. 이 문서는 탐색이 낸 후보가 거기서 어떻게 쓰이는지만 가리킨다 (§4.1)
+- 코드: 탐색 코어 (순수 수치, ROS 의존 없음) 는 `rtc_controllers/{include,src}/…/catching/` (namespace `rtc::catching`), 계획기 스레드의 소유와 YAML 은 `integrated_bringup` 의 `controllers/catching/`
 
 ---
 
 ## 1. 범위 / 비범위
 
-범위: 새 예측 궤적 메시지마다(계획기 스레드, D-7 — §5.3) 다음을 결정해 `PlanSnapshot`으로 발행한다. 후보 시각은 **vision이 준 샘플 격자**에서 고른다 — 제어 PC가 궤적을 만들지 않는다(마스터 §5.2).
+범위: 새 예측 궤적 메시지마다 (계획기 스레드 — §5.3) 다음을 결정해 `PlanSnapshot` 으로 게시한다. 후보 시각은 **vision이 준 샘플 격자**에서 고른다 — 제어 PC가 궤적을 만들지 않는다(마스터 §5.2).
 - 포구 시각 $t_c$, 포구점 $p_c$, 목표 접근축 $a_d$
-- IK 해 $q^\ast$ (L5의 posture 참고용)과 그 자세의 manipulability $w_5$·$w_6$ (catchability, D-18·C-3 — §4.2)
+- IK 해 $q^\ast$ 와 그 자세의 manipulability $w_5$·$w_6$ (catchability, D-18·C-3 — §4.2). $q^\ast$ 는 탐색의 도달시간 · 방향 속력 · 점수와, `mpc` 첫 풀이의 선형화 기준이 쓴다 — RT 의 CLIK posture 는 이 값을 읽지 않는다
 - γ 프로파일 $(\gamma_f,T_w)$, 손 폐쇄 명령 시각 $t_{cmd}$
-- 유효성, commit 가능 여부
+- 유효성과, plan 이 없을 때의 사유
 
-비범위: 실행(L4/L5), 모드 전환(L7).
+`mpc` 에서는 유효한 plan 을 그 plan 의 첫 MPC 구간 (`DecelPlanSnapshot`) 과 **한 쌍으로** 게시한다 (§5.3).
+
+비범위: 실행 (`closed_form`: L4/L5, `mpc`: MPC 구간의 추종 — formulation · L7), 모드 전환 (L7), MPC 구간 계획기의 수학 (formulation).
 
 ## 2. 코드 확인 게이트
 
-단계 W에서 처리했다 (2026-09-19, plan §2). **기존 kinematics 구현을 재사용한다**(마스터 §1.2) — IK도 FK·Jacobian도 새로 만들지 않는다.
+**기존 kinematics 구현을 재사용한다**(마스터 §1.2) — FK·Jacobian 을 새로 만들지 않는다. 계획기가 기대는 기존 구조는 다음과 같다.
 
-| ID | 확인 항목 | 기록 |
+| ID | 확인 항목 | 지금의 구조 |
 |---|---|---|
-| G3-1 | 모델 로드 경로와 FK/Jacobian API (폐쇄 체인 손 포함 시 팔 부분만 쓰는 방법) | 닫힘 — CM 이 공유하는 `PinocchioModelBuilder` 1개 + 계획기 스레드 전용 `RtModelHandle` 1개 (스레드별 1개, heap-free, LOCAL/LWA/WORLD). P1b 손바닥 frame 은 폐쇄 루프 상류라 팔 관절 열만 쓴다 (W, D-18) |
-| G3-2 | RT → 계획기 상태 전달 경로(현재 $q_c,\dot q_c$, L4 기준 상태) | 닫힘 — `rtc::SeqLock` 사용. payload 는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지) (W, plan §6) |
-| G3-3 | 계획기 스레드 생성·우선순위 규약 | 닫힘 — D-7: MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), ~~새 thread layout role~~ → 기존 `mpc` role 재사용 (E-7 결정 J, 2026-09-23), 초기 FIFO. D-7a 측정은 사용자 결정으로 생략 — 초기값 유지 (plan §6, §7.2) |
-| G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | 닫힘(provisional) — LEAP 80 mm / 31.0 mm, P1b ≥ 95 mm / 24 mm (S4.5, L6 §4.5). P1b 는 사용자 제공 자세가 파지 불가여서 2026-09-21 에 탐색한 자세 기준. 투척 보정은 미수행 — sim 보정은 하지 않고 실기 S10 (#613) 에서만 한다 (사용자 2026-09-29, plan §7.3) (TBD-HAND-04) |
-| G3-5 | 포구 허용 작업공간, 감속 여유 공간 | TBD-BALL-02 (W7-3) |
-| G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | sim 실측 간격 0.05 s · 지평 0.80 s · N 16 (S3.4 2026-09-20, TBD-VIS-04). **요구 사양 (S3.6, 2026-09-22)**: 간격 0.05 s · 지평 1.0 s (설정) · 점 수 20 (plan §4.4 S3.6 결과) |
-| G3-7 | **독립 IK/포즈 해석기가 있는지**와 그 API | 닫힘 — 독립 IK 없음. `rtc::compliance::DifferentialIk` (σ_min 적응 λ, heap-free) 를 m=5 로 재사용 (D-7d). 수렴은 G3-G 로 검증 |
+| G3-1 | 모델 로드 경로와 FK/Jacobian API (폐쇄 체인 손 포함 시 팔 부분만 쓰는 방법) | CM 이 공유하는 `PinocchioModelBuilder` 1개 + 계획기 스레드 전용 `RtModelHandle` 1개 (스레드별 1개, heap-free, LOCAL/LWA/WORLD). 계획기 모델은 `planner.sub_model` 이 이름으로 고르는 팔 sub-model 이다 — P1b 손바닥 frame 은 폐쇄 루프 상류라 팔 관절 열만 쓴다 (D-18) |
+| G3-2 | RT → 계획기 상태 전달 경로(현재 $q_c,\dot q_c$, L4 기준 상태) | `rtc::SeqLock`. payload 는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지) — `PlannerRtState` (`planner_io.hpp`) |
+| G3-3 | 계획기 스레드 생성·우선순위 규약 | MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), thread layout 의 `mpc` role 을 쓴다 (§5.3) |
+| G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | `planner.hand.d_eff` · `r_cap` (provisional, L6 §4.5). 투척 보정은 실기에서만 한다 (TBD-HAND-04) |
+| G3-5 | 포구 허용 작업공간, 감속 여유 공간 | `planner.workspace.catch_box` (provisional, TBD-BALL-02) |
+| G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | 후보는 vision 격자 그대로다 — 간격 `prediction.dt_expected`, 지평은 `planner.slice.t_max` 가 상한 (TBD-VIS-04) |
+| G3-7 | **독립 IK/포즈 해석기가 있는지**와 그 API | 독립 IK 는 없다. 포구 자세 IK 는 `CatchPoseIk` (§4.2) 가 하고, `rtc::compliance::DifferentialIk` (σ_min 적응 λ, heap-free) 는 그 안에서 영공간 투영 $N$ 을 만드는 데만 쓴다 |
 
 ## 3. 참고자료
 
@@ -41,43 +42,51 @@
 
 ### 4.1 결정 구조
 
+**적용: 공통** (탐색). 두 planner 가 갈리는 곳은 이 절 끝의 "두 planner" 다.
+
 후보 시각은 vision 샘플 격자에서 고른다. **시간 규약은 plan §3 (D-2) 이 SSoT 다.** 각 샘플의 시각 $t_k$ 는 공의 **물리 시각** `BallTime` (절대 steady ns) 이다 — nrt 수신 시 $t_{ref,steady}=\text{recv}_{steady}-(\text{recv}_{wall}-\text{stamp})$ 로 한 번 변환해 두므로, 계획기는 메시지 나이를 따로 빼지 않고 매 판정에서 정해진 '지금'과 직접 비교한다.
 
 - 도달시간(§4.3)·commit(§4.11): 실제 시각 $now$ (`NowReal`, steady 실측)
 - rollout(§4.8)·γ 프로파일·궤적 샘플링: 선행 시각 $now_{lead}=now+T_{arm}$ (`NowLead`)
 
-상대시각은 수치 코어 경계에서만 만든다. 비교는 타입별 오버로드로만 한다 (S1.3). v0.4의 "샘플 $t$ 는 `header.stamp` 기준 상대시간, 나이를 빼서 쓴다" 서술은 원점이 다른 상대시각끼리 비교하는 버그 원천이라 폐기한다.
+상대시각은 수치 코어 경계에서만 만든다. 비교는 타입별 오버로드로만 한다 (`time_types.hpp`) — 원점이 다른 상대시각끼리 비교하지 않기 위해서다.
 
 게이트 적용 순서 (연산량이 싼 것부터, D-18 반영):
 
 $$\text{§4.4 불확실성}\to\text{§4.2 IK}\to\text{§4.2 manipulability (D-18)}\to\text{§4.3 도달시간}\to\text{§4.5 γ 창}\to\text{§4.9 정지거리}\to\text{§4.8 rollout}\to\text{§4.6 오차 예산}\to\text{L7 §4.7 충격량}$$
 
-앞 단계에서 탈락하면 뒤 단계는 계산하지 않고 탈락 사유를 기록한다. 통과한 후보 중 §4.10 규칙으로 하나를 고르고, **§4.7 히스테리시스**로 현재 plan과 비교한다. 후보가 하나도 남지 않으면 plan 없음(포기)이며, 사유 코드를 함께 기록한다 (S6.2).
+앞 단계에서 탈락하면 뒤 단계는 계산하지 않고 탈락 사유를 기록한다. 통과한 후보 중 §4.10 규칙으로 하나를 고르고, `closed_form` 에서는 **§4.7 히스테리시스**로 현재 plan과 비교한다. 후보가 하나도 남지 않으면 plan 없음(포기)이며, 사유 코드를 함께 기록한다. 충격량 $\Delta p=m(1-\gamma_f)\Vert v\Vert$ 은 `PlanSnapshot::dp_impact` 로 **기록만** 한다 — 임계가 정해지지 않아 (TBD-IMP-01, L7 §4.7) 탐색에 충격량 게이트는 없다.
 
-**런타임 판정/순위 분리 `[확정 2026-09-23, 결정 C·D — D-27]`.** 위 순서는 오프라인 지도의 **엄격한** 필터 순서다. 런타임 계획기 (`PlannerSearch`, S6-B) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) · `planner.workspace.catch_box` 안의 $p_c$ 와 $p_{stop}$ — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가, 어디서 멈추는가의 문제). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) (+ rollout, S6-C) — 는 제거하지 않고 실패마다 `planner.score.penalty` 를 점수에 더한다. 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트 (결정 E), 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·작업공간·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (예산은 IK 전에 확인하므로 초과 폭은 IK 한 번 이하). 도달시간·γ 창·정지점은 지도와 **같은 함수** (`JudgeRankGates`, rank_gates.hpp) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태).
+**런타임 판정/순위 분리 (D-27).** 위 순서는 오프라인 지도의 **엄격한** 필터 순서다. 런타임 계획기 (`PlannerSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) · `planner.workspace.catch_box` 안의 $p_c$ 와 $p_{stop}$ — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가, 어디서 멈추는가의 문제). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `planner_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·작업공간·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창·정지점은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태).
 
-**탐색 방식 `[확정 A-4]`.** [R1]은 $(q_c,t_c)$를 동시에 푸는 NLP를 썼다. 본 구현은 1차원 시간 탐색 + IK로 시작하되, NLP 전환을 염두에 둔 경계를 유지한다 (plan §8, S6.6).
+런타임의 한 사이클은 이 순서로 돈다: 창 안의 전 후보에 싼 항 → 사전 점수 상위 후보마다 IK (+ manipulability) → $\dot q^u$ 와 `JudgeRankGates` (도달시간 · γ 창) → rollout 이 $(\gamma_f,T_w)$ 를 고름 → 그 $\gamma_f$ 로 $p_{stop}$ 판정 → 오차 예산 → 점수.
 
-- 계획기 코어는 "입력 스냅샷(궤적 + 공분산 + 로봇 상태) → `PlanSnapshot`" **단일 진입 함수**다. 스레드(§5.3), 입출력 SeqLock, RT 쪽 소비(L4·L7), 게이트 앞단(불확실성·도달시간 사전 필터)은 탐색 전략과 독립이다
-- **추상 interface 는 지금 만들지 않는다** — 구현이 하나뿐인 abstract interface 는 ARCH-3 위반이다. NLP 구현이 실제로 생길 때 두 구현을 두고 도입한다
-- NLP solver 가 할당·예외를 쓰면 RT-1~10 을 지킬 수 없으므로, 그때 D-7a 는 thread layout 값만 바꿔 SCHED_OTHER 로 간다 (코드 변경 없음)
-- 전환 판단 신호: IK 수렴률(G3-G), 계획 성공률, 예산 초과율, 1차원 분해가 놓치는 후보(시각·자세 결합) 사례 — S6·S8 에서 기록
+**탐색 방식 `[확정 A-4]`.** [R1]은 $(q_c,t_c)$를 동시에 푸는 NLP를 썼다. 본 구현은 1차원 시간 탐색 + IK 다.
 
-NLP 정식화는 부록 A에 미래 선택지로 남긴다.
+- 계획기 코어는 "입력 스냅샷(궤적 + 공분산 + 로봇 상태) → `PlanSnapshot`" **단일 진입 함수**다 (`PlannerSearch::Plan`, `PlannerCycle::PlanOnce` 가 부른다). 스레드(§5.3), 입출력 SeqLock, RT 쪽 소비(L4·L7)는 탐색 전략과 독립이다
+- 탐색 구현은 하나 (`PlannerSearch`) 이고 추상 interface 는 없다 — `PlannerCycle` 이 구체 멤버로 갖는다
+
+**두 planner (`closed_form` / `mpc`).** 탐색은 공통이다. planner 는 `supervisor.decel.mode` 가 고르는데, 코드에서는 planner 클래스가 따로 있는 것이 아니라 `PlannerCycle` 에 **decel 층이 붙었는가** (`DecelActive()` — decel box 가 묶여 있고 `DecelPlanner` 가 configure 됐다) 로 갈린다.
+
+- **`closed_form`**: 탐색이 낸 plan 을 그대로 게시한다. RT 는 그 plan 의 $p_c$ 와 γ 프로파일로 soft-catch DS (L4) 를 돌려 접근하고, $t_c$ 뒤에는 상수 감속의 가상 목표를 따른다 (L7 §4.3). APPROACH 동안에도 탐색이 계속 돌며 §4.7 의 교체 규칙으로 plan 을 바꾼다
+- **`mpc`**: 탐색이 유효한 plan 을 내면 같은 wake 에서 그 plan 의 첫 구간을 풀어 (`DecelPlanner::PlanFirst`) 둘을 한 쌍으로 게시한다. 구간이 보류되면 plan 도 게시하지 않는다. RT 는 plan 을 첫 구간과 함께만 채택하고, APPROACH 부터 정지 끝까지 관절 노드 구간을 따른다 — **RT 는 soft-catch DS 를 돌리지 않는다**. RT 가 plan 을 따르는 동안 탐색은 건너뛰고 구간의 재계획 (`DecelPlanner::Replan`) 만 한다. 따라서 plan 의 교체 (§4.7) 가 없다
+- **탐색이 낸 후보가 `mpc` 에서 쓰이는 방식.** plan 의 $t_c$ 는 구간 격자의 닻이다 (포구 전 $t_c-j\Delta_{pre}$, 정지 $t_c+k\Delta_s$). 첫 풀이는 plan 의 $p_c$ · $v_c$ · $a_d$ 를 포구 노드의 목표 (공 위치 · 속도 · 접근축) 로, $q^\ast$ 를 선형화 기준 (대기 자세에서 $q^\ast$ 로 가는 관절별 최소 jerk 도달) 의 목표로 쓴다. 포구 전의 재계획은 plan 이 아니라 그 wake 의 최신 예측에서 $t_c$ 의 공을 다시 읽고, 포구 뒤의 재계획은 공을 읽지 않는다. plan 의 γ 프로파일 $(\gamma_f,T_w)$ 은 `mpc` 의 실행에 쓰이지 않는다 — 탐색의 순위와 게이트에만 쓰이고, MPC 의 속도 목표 비는 `planner.decel_mpc.catch.gamma_ref` 다. 식은 formulation 이 갖는다
 
 ### 4.2 5-DoF 포구 자세와 IK
+
+**적용: 공통** (탐색의 IK — `CatchPoseIk`. 오프라인 catchability 지도도 같은 함수를 돈다).
 
 목표: $p_c=\hat p(t_k)$, $a_d=-\hat v(t_k)/\Vert\hat v(t_k)\Vert$.
 
 **입력 방어 (NUM-7, plan §11).** $a_d$ 계산은 $\Vert\hat v(t_k)\Vert\ge v_{eps}$ 와 `std::isfinite`($\Vert\hat v(t_k)\Vert$) 를 **둘 다** 검사한다. 하나라도 실패하면 후보를 사유 코드와 함께 탈락시킨다 — `std::max` 류 clamp 로 값을 덮어 진행하지 않는다.
 
-catch frame LOCAL $+z$가 손바닥 바깥 법선이다 `[확정 D-17]` — catch frame 은 모델 빌더가 YAML 선언으로 추가하는 frame 이고 (D-10, S2.3a), 부모 frame·offset·자세는 로봇 config 에서 연다 (plan §10). $a^C=R_{WC}^\top a_d$ 로 두면 접근축 오차의 LOCAL 표현은 L4 §4.5의 회전벡터다.
+catch frame LOCAL $+z$가 손바닥 바깥 법선이다 `[확정 D-17]` — catch frame 은 모델 빌더가 YAML 선언으로 추가하는 frame 이고 (D-10), 부모 frame·offset·자세는 로봇 config 에서 연다 (plan §10). $a^C=R_{WC}^\top a_d$ 로 두면 접근축 오차의 LOCAL 표현은 L4 §4.5의 회전벡터다.
 
 $$e_a^C=R_{WC}^\top e_a=\theta\,\frac{\hat e_z\times a^C}{\Vert\hat e_z\times a^C\Vert},\qquad \theta=\mathrm{atan2}(\Vert\hat e_z\times a^C\Vert,\ a^C_z)$$
 
 $e_a^C\perp\hat e_z$ 이므로 $z$ 성분이 0이고, $S=\begin{bmatrix}1&0&0\\0&1&0\end{bmatrix}$ 가 정보를 버리지 않는다.
 
-**갱신식은 Gauss-Newton이 아니다** — 이 점을 v0.1은 잘못 적었다. 아래 $J$ 는 잔차 $r$ 의 야코비안 $\partial r/\partial q$ 가 **아니고**, 관절속도와 과제속도를 잇는 관계일 뿐이다.
+**갱신식은 Gauss-Newton이 아니다.** 아래 $J$ 는 잔차 $r$ 의 야코비안 $\partial r/\partial q$ 가 **아니고**, 관절속도와 과제속도를 잇는 관계일 뿐이다.
 
 $$J(q)=\begin{bmatrix}J_p\\S\,J^L_\omega\end{bmatrix},\qquad W=\mathrm{diag}(1,1,1,\rho,\rho),\qquad e=\begin{bmatrix}p_c-p_C\\ S\,e_a^C\end{bmatrix}$$
 
@@ -85,43 +94,43 @@ $$\dot q_{clik}=\arg\min_{\dot q}\ \tfrac12\Vert W(J\dot q-e)\Vert^2+\tfrac12\mu
 
 $$\dot q_n=\big(I-J^\dagger J\big)\dot q_{sec},\qquad \boxed{\ \dot q_d=\dot q_{clik}+\dot q_n\ }$$
 
-**갱신량은 관절 속도의 합이지 하나의 $\Delta q$ 가 아니다 `[2026-09-20 사용자 지시]`.** CLIK 이 내는 것은 $\dot q_{clik}$ 이고, 2차 과제가 보태는 것은 **영공간 관절 속도** $\dot q_n$ 이다. 둘을 하나의 스텝으로 합쳐 적으면 $N$ 이 강제하는 우선순위가 표기에서 사라진다. 반복 1회는 $\dot q_d$ 를 $\Delta t=1$ 로 적분한다 — 오프라인 root-finding 반복이지 servo tick 이 아니라서 샘플 주기가 없고, `planner.ik.dq_step_max` 는 반복당 $\Vert\dot q_d\Vert_\infty$ 상한이다.
+**갱신량은 관절 속도의 합이지 하나의 $\Delta q$ 가 아니다.** CLIK 이 내는 것은 $\dot q_{clik}$ 이고, 2차 과제가 보태는 것은 **영공간 관절 속도** $\dot q_n$ 이다. 둘을 하나의 스텝으로 합쳐 적으면 $N$ 이 강제하는 우선순위가 표기에서 사라진다. 반복 1회는 $\dot q_d$ 를 $\Delta t=1$ 로 적분한다 — 오프라인 root-finding 반복이지 servo tick 이 아니라서 샘플 주기가 없고, `planner.ik.dq_step_max` 는 반복당 $\Vert\dot q_d\Vert_\infty$ 상한이다.
 
 - 위치 행: $J_p\dot q=v_p$ 에 대한 Newton 스텝. 잔차의 부호를 뒤집어 넣는다.
 - 회전 행: $SJ^L_\omega\dot q=S\omega^L$ 이므로, $\omega^L=e_a^C$ 를 단위 시간 적용하면 $\exp([e_a]_\times)z=a_d$ 에 의해 **한 번에 정확히 정렬된다**(L4 §4.5). 즉 이 행은 1차 근사가 아니라 정확한 회전 갱신이고, 부호도 그래서 양수다.
 
-두 블록은 단위가 다르다(m vs rad). $\rho$ [m/rad]는 그 스케일을 맞추는 특성길이로, 단일 $\lambda$ 아래 두 과제의 상대 가중을 결정한다. `planner.ik.rho`로 둔다. v0.1은 이 항이 없어 상대 스케일이 임의였다.
+두 블록은 단위가 다르다(m vs rad). $\rho$ [m/rad]는 그 스케일을 맞추는 특성길이로, 단일 $\lambda$ 아래 두 과제의 상대 가중을 결정한다. `planner.ik.rho`로 둔다.
 
-**$\rho$ 는 과제 가중이지 잔차 이득이 아니다 (S1.9 정정).** v0.5 까지 이 식은 $\rho$ 를 잔차에만 곱해 $\Delta q=J^\top(JJ^\top+\lambda^2I)^{-1}[-(p_C-p_c);\ \rho Se_a^C]$ 로 적었다. 그 형태는 차원이 맞지 않는다 — $J\Delta q$ 의 회전 행은 rad 인데 잔차의 회전 행은 m 이 되고, $\rho$ 는 단위 변환이 아니라 값 0.1 짜리 **스텝 이득**으로 작동해 회전 오차가 반복마다 $(1-\rho)$ 로만 줄어든다. 그러면 바로 위의 "한 번에 정확히 정렬된다" 도 성립하지 않는다. $J$ 와 $e$ 양쪽에 $W$ 를 곱해야 $\rho$ 가 [m/rad] 특성길이로 쓰이고, $\lambda^2=0$ 인 곳에서 $W$ 가 상쇄되어 1-스텝 정렬이 복원되며, 특이점 근처에서는 단일 $\lambda$ 가 m 블록과 rad 블록에 감쇠를 어떻게 나눌지를 $\rho$ 가 결정한다 — 이 절이 $\rho$ 에 부여한 역할 그대로다. 구현은 가중형이다 (`catch_pose_ik.hpp`).
+**$\rho$ 는 과제 가중이지 잔차 이득이 아니다.** $\rho$ 를 잔차에만 곱한 형태 $\Delta q=J^\top(JJ^\top+\lambda^2I)^{-1}[-(p_C-p_c);\ \rho Se_a^C]$ 는 차원이 맞지 않는다 — $J\Delta q$ 의 회전 행은 rad 인데 잔차의 회전 행은 m 이 되고, $\rho$ 는 단위 변환이 아니라 **스텝 이득**으로 작동해 회전 오차가 반복마다 $(1-\rho)$ 로만 줄어든다. 그러면 바로 위의 "한 번에 정확히 정렬된다" 도 성립하지 않는다. $J$ 와 $e$ 양쪽에 $W$ 를 곱해야 $\rho$ 가 [m/rad] 특성길이로 쓰이고, $\lambda^2=0$ 인 곳에서 $W$ 가 상쇄되어 1-스텝 정렬이 복원되며, 특이점 근처에서는 단일 $\lambda$ 가 m 블록과 rad 블록에 감쇠를 어떻게 나눌지를 $\rho$ 가 결정한다. 구현은 가중형이다 (`catch_pose_ik.hpp`).
 
-**영공간 2차 과제 $\dot q_{sec}$ (S1.9).**
+**영공간 2차 과제 $\dot q_{sec}$.**
 
 $$\dot q_{sec}=k_w\,\nabla\log w_5(q)+K_n\,(q_n-q),\qquad \dot q_n=(I-J^\dagger J)\,\dot q_{sec}$$
 
-- $q_n$ 은 **seed 를 관절 한계로 clamp 한 것** (= wait_pose) 이다. v0.5 까지 $q_n$ 의 정의가 이 문서 어디에도 없었다. clamp 가 정의의 일부인 이유는 첫 반복부터 $q$ 가 clamp 된 값이기 때문이다 — 한계 밖 seed 를 그대로 $q_n$ 으로 두면 어떤 반복도 도달할 수 없는 자세를 목표로 잡아 $K_n(q_n-q)$ 가 **영원히 감쇠하지 않고**, 매 반복 한계 쪽으로 밀면 clamp 가 되돌리는 정상 편향이 남는다 (수렴한 해가 한계에 앉아 있는 것처럼 보인다). `planner.ik.k_null` 기본값은 0 이라 이 항은 요청하지 않으면 비활성이다.
-- $K_n$ 은 `planner.ik.eps_pos` 와 **함께** 골라야 한다. $N$ 이 $\dot q_n$ 을 과제에서 안 보이게 하는 것은 **1차까지**라, 크기 $K_n\Vert q_n-q\Vert$ 의 자세 스텝은 다음 과제 스텝이 되갚아야 할 2차 잔차를 남긴다. $K_n$ 을 키우면 반복이 수렴하지 않고 정상 오차에 눌러앉는다 (S1.9 실측: 6R fixture 에서 $K_n=0.5$ 는 `eps_pos` 2e-3 에서도 $N_{IK}=200$ 을 소진했고 $K_n=0.1$ 은 수렴했다).
-- $\nabla\log w_5$ 는 중심차분으로 구한다 (반복당 $2n_{arm}$ 회 Jacobian, 할당 0). $w_5$ 가 아니라 $\log w_5$ 를 올리는 이유는 특이점에 가까울수록 기울기가 커져 밀어내는 방향이 강해지고, 이득 $k_w$ 가 $w_5$ 의 혼합단위 스케일에 덜 의존하기 때문이다.
+- $q_n$ 은 **seed 를 관절 한계로 clamp 한 것** (= wait_pose) 이다. clamp 가 정의의 일부인 이유는 첫 반복부터 $q$ 가 clamp 된 값이기 때문이다 — 한계 밖 seed 를 그대로 $q_n$ 으로 두면 어떤 반복도 도달할 수 없는 자세를 목표로 잡아 $K_n(q_n-q)$ 가 **영원히 감쇠하지 않고**, 매 반복 한계 쪽으로 밀면 clamp 가 되돌리는 정상 편향이 남는다 (수렴한 해가 한계에 앉아 있는 것처럼 보인다). `planner.ik.k_null` 이 0 이면 이 항은 비활성이다.
+- $K_n$ 은 `planner.ik.eps_pos` 와 **함께** 골라야 한다. $N$ 이 $\dot q_n$ 을 과제에서 안 보이게 하는 것은 **1차까지**라, 크기 $K_n\Vert q_n-q\Vert$ 의 자세 스텝은 다음 과제 스텝이 되갚아야 할 2차 잔차를 남긴다. $K_n$ 을 키우면 반복이 수렴하지 않고 정상 오차에 눌러앉는다.
+- $\nabla\log w_5$ 는 중심차분으로 구한다 (반복당 $2n_{arm}$ 회 Jacobian, 할당 0, 간격 `planner.ik.fd_step`). $w_5$ 가 아니라 $\log w_5$ 를 올리는 이유는 특이점에 가까울수록 기울기가 커져 밀어내는 방향이 강해지고, 이득 $k_w$ 가 $w_5$ 의 혼합단위 스케일에 덜 의존하기 때문이다.
 - 종료는 수락 조건 **∧** ($\Vert N\nabla\log w_5\Vert<$ `planner.ik.manip_grad_tol` ∨ $N_{IK}$) 다. 투영된 기울기로 판정한다 — 과제가 상쇄하는 성분은 쓸 수 없으므로 $\Vert\nabla\log w_5\Vert$ 로는 영원히 수렴하지 않는다. 상승이 안 끝난 채 반복 상한에 걸려도 **수락은 유지**하고 `manip_converged=false` 로 기록한다 (G3-G 신호). **중심차분 탐침이 못 쓰게 나온 반복은 수렴이 아니다** — 그 반복의 $\Vert N\nabla\log w_5\Vert$ 가 0 인 것은 도달해서가 아니라 잰 것이 없어서이고, 이를 허용오차와 비교하면 특이점 근처(탐침이 깨지기 가장 쉬운 곳)에서 상승이 한 번도 안 돈 자세를 "수렴" 으로 보고해 G3-G 신호의 부호가 뒤집힌다. 그런 반복은 `manip_converged=false` 로 두고 `manip_grad_failures` 로 따로 센다.
 - 매 반복 $\Vert\dot q_d\Vert_\infty\le$ `planner.ik.dq_step_max` 로 **방향을 유지한 채 축소**한다 (성분별 clip 은 과제 방향과 영공간 방향을 함께 왜곡한다).
 
 참 야코비안이 필요하면 L4 §4.5의 $J_a$ 를 쓴다($S[\hat e_z]_\times[a^C]_\times J_\omega^L$ 형태). 본 갱신식은 그것을 쓰지 않으므로 수렴률에 대한 Gauss-Newton 보장은 없다 — 수렴은 게이트 G3-G로 실측한다.
 
-**과제 스텝은 제약 QP 다 `[D-7d 번복, 2026-09-20 사용자 결정 → D-26]`.** v0.5 까지는 갱신식 전체를 `DifferentialIk` (감쇠 pseudo-inverse) 로 푼다고 적었다. 관절 한계·스텝 제한을 **사후 clamp 가 아니라 부등식 제약**으로 두기 위해 $\dot q_{clik}$ 은 위 QP 로 바꾼다 (ProxQP, `rtc_tsid::QPSolverWrapper`). $\mu$ 는 `planner.ik.mu` 다 — $J^\top J$ 는 rank ≤ 5 라 어떤 팔에서도 특이하므로 $\mu>0$ 이 없으면 해가 유일하지 않다.
+**과제 스텝은 제약 QP 다 (D-26).** 관절 한계·스텝 제한을 **사후 clamp 가 아니라 부등식 제약**으로 두기 위해 $\dot q_{clik}$ 은 위 QP 로 푼다 (ProxQP, `rtc_tsid::QPSolverWrapper`). $\mu$ 는 `planner.ik.mu` 다 — $J^\top J$ 는 rank ≤ 5 라 어떤 팔에서도 특이하므로 $\mu>0$ 이 없으면 해가 유일하지 않다.
 
-- **측정 근거** (2 fixture × 500 후보, plan §4.4 표): $\mu=10^{-4}$ 에서 QP 가 DLS 보다 수락률(99.2% vs 98.8%, 98.8% vs 98.2%)·잔차·한계 활성 비율에서 근소하게 앞서고 호출당 시간은 약 22% 더 든다. $\mu=10^{-8}$ 에서는 Hessian 이 거의 특이해져 대부분의 반복에서 QP 가 수렴하지 않는다 — **$\mu$ 는 절벽이 있는 손잡이**라 기본값을 provisional 로 두고 검증한다
-- **제약은 $\dot q_{clik}$ 만 묶는다.** 실제로 움직이는 것은 $\dot q_d=\dot q_{clik}+\dot q_n$ 이고 $\dot q_n$ 은 QP 밖에서 계산되므로, $\Vert\dot q_d\Vert_\infty$ 축소와 관절 한계 clamp 는 **여전히 필요**하다. "한계를 제약으로" 는 과제 스텝을 고르는 방식의 개선이지 최종 적용값의 경계를 대체하지 않는다
-- **후보마다 cold start 한다.** `QPSolverWrapper` 는 호출 간 warm start 를 유지하는데, 연속 호출이 **서로 다른 후보**이므로 그대로 두면 답이 탐색 순서에 의존해 지도와 런타임이 어긋난다 (§11). 이를 위해 `ResetWarmStart()` 를 rtc_tsid 에 추가했다 (enum 하나만 바꾸므로 할당 없음). 한 후보 **안의** 반복 사이 warm start 는 결정적이라 유지한다
-- **QP 가 안 풀리면 fail closed 인데, 닫을 것이 있을 때만 거부다.** 비수렴 QP 는 과제 스텝을 모른다는 뜻이라 감쇠 pseudo-inverse 로 대체하지 않는다 (지도가 기록한 법칙과 다른 법칙으로 자세를 만들게 된다). 다만 **이미 허용오차를 만족한 반복이 있었다면** 그 $q^\ast$ 는 같은 법칙으로 얻은 유효한 자세이므로 그것을 반환하고 `qp_failures=1` 로 조기 종료만 기록한다 — 버리면 유효한 포구 자세가 거부로 바뀐다. 아직 수락된 반복이 없을 때만 후보를 거부한다 (`kQpFailed`). 이 구분은 D-25 상승이 생기면서 **비로소 도달 가능**해졌다: `k_manip`=0 이면 루프가 수락 즉시 끝나 두 번째 QP 가 돌지 않는다
-- **의존.** rtc_controllers → rtc_tsid 엣지가 새로 생긴다 (순환 없음 — rtc_tsid 는 rtc_controllers 를 모른다). `architecture.md` §Dependency Graph 에 기록했다
-- **`RtModelHandle` 은 device 관절 순서가 걸려 있으면 안 된다.** `SetJointOrder` 는 **입력만** 재배열한다 — `ComputeJacobians` 에 넘긴 $q$ 를 device 순서로 읽는 반면 `GetFrameJacobian` 의 **열**, `lowerPositionLimit(i)`, 따라서 $\dot q$ 와 box 행·clamp 는 전부 Pinocchio 순서다. 이 함수는 그 경계의 양쪽을 동시에 쓰므로 순열이 걸린 핸들에서는 모든 후보가 **유한하고 수렴하며 틀린다** (다른 팔의 자세로 간다). 그래서 `HasJointReorder()` 는 우회가 아니라 거부다 (`kJointOrderMismatch`). 실기 배선은 팔 sub-model 핸들에 `SetJointOrder` 를 건다 (`momentum_observer_wiring`) 므로 호출자가 실제로 여기 걸릴 수 있다 — 그 경우 같은 모델로 재배열 없는 핸들을 하나 더 만든다. identity 순서는 매핑을 설치하지 않으므로 모델 순서로 이름을 넘기는 보통의 호출자는 영향이 없다
+- **$\mu$ 는 절벽이 있는 손잡이다.** 너무 작으면 Hessian 이 거의 특이해져 대부분의 반복에서 QP 가 수렴하지 않고, 너무 크면 수락률이 떨어진다 — 값을 바꾸면 다시 잰다
+- **제약은 $\dot q_{clik}$ 만 묶는다.** 실제로 움직이는 것은 $\dot q_d=\dot q_{clik}+\dot q_n$ 이고 $\dot q_n$ 은 QP 밖에서 계산되므로, $\Vert\dot q_d\Vert_\infty$ 축소와 관절 한계 clamp 는 **여전히 필요**하다. "한계를 제약으로" 는 과제 스텝을 고르는 방식이지 최종 적용값의 경계를 대체하지 않는다
+- **후보마다 cold start 한다.** `QPSolverWrapper` 는 호출 간 warm start 를 유지하는데, 연속 호출이 **서로 다른 후보**이므로 그대로 두면 답이 탐색 순서에 의존해 지도와 런타임이 어긋난다 (plan §11). `Solve()` 마다 `ResetWarmStart()` 를 한 번 부른다 (enum 하나만 바꾸므로 할당 없음). 한 후보 **안의** 반복 사이 warm start 는 결정적이라 유지한다
+- **QP 가 안 풀리면 fail closed 인데, 닫을 것이 있을 때만 거부다.** 비수렴 QP 는 과제 스텝을 모른다는 뜻이라 감쇠 pseudo-inverse 로 대체하지 않는다 (지도가 기록한 법칙과 다른 법칙으로 자세를 만들게 된다). 다만 **이미 허용오차를 만족한 반복이 있었다면** 그 $q^\ast$ 는 같은 법칙으로 얻은 유효한 자세이므로 그것을 반환하고 `qp_failures=1` 로 조기 종료만 기록한다 — 버리면 유효한 포구 자세가 거부로 바뀐다. 아직 수락된 반복이 없을 때만 후보를 거부한다 (`kQpFailed`). 이 구분은 영공간 상승이 있을 때만 도달 가능하다: `k_manip`=0 이면 루프가 수락 즉시 끝나 두 번째 QP 가 돌지 않는다
+- **의존.** rtc_controllers → rtc_tsid 엣지가 있다 (순환 없음 — rtc_tsid 는 rtc_controllers 를 모른다)
+- **`RtModelHandle` 은 device 관절 순서가 걸려 있으면 안 된다.** `SetJointOrder` 는 **입력만** 재배열하고 Jacobian 의 열 · 관절 한계 · $\dot q$ 는 Pinocchio 순서라서, 순열이 걸린 핸들에서는 모든 후보가 **유한하고 수렴하며 틀린다**. 그래서 `HasJointReorder()` 는 우회가 아니라 거부다 (`kJointOrderMismatch`) — 그런 핸들을 가진 호출자는 같은 모델로 재배열 없는 핸들을 하나 더 만든다 (근거: `catch_pose_ik.hpp` 머리 주석 7)
 
-$N=I-J^\dagger J$ 는 **`DifferentialIk` 가 계속 만든다** — 영공간 투영은 갱신식의 일부이지 과제 solver 의 일부가 아니다. 따라서 `planner.ik.sigma0`·`lambda_max` 는 이제 $N$ 만 파라미터화한다. $J$ 는 $m=5$ (위치 3행 LOCAL_WORLD_ALIGNED + 접근축 2행 LOCAL $x,y$) 다. $J$ 는 계획기 스레드 전용 `RtModelHandle` 에서 catch frame 의 **팔 관절 열**만 꺼낸다 (G3-1).
+$N=I-J^\dagger J$ 는 **`DifferentialIk` 가 만든다** — 영공간 투영은 갱신식의 일부이지 과제 solver 의 일부가 아니다. 따라서 `planner.ik.sigma0`·`lambda_max` 는 $N$ 만 파라미터화한다. $J$ 는 $m=5$ (위치 3행 LOCAL_WORLD_ALIGNED + 접근축 2행 LOCAL $x,y$) 다. $J$ 는 계획기 스레드 전용 `RtModelHandle` 에서 catch frame 의 **팔 관절 열**만 꺼낸다 (G3-1).
 
-함수는 `rtc_controllers/include/rtc_controllers/catching/catch_pose_ik.hpp` 의 `rtc::catching::CatchPoseIk` 다 (S1.9). ROS 의존 없음, `Resize()` 뒤 할당 0·`noexcept`·무로깅 (G3-K 함수 부분), 호출 간 상태 없음. 입력 $p_c$·$\hat v$ 는 **모델 world 좌표**로 받는다 — base→world 변환은 호출자(S3.5a 지도 / S6.2 계획기) 몫이다. `DifferentialIk::Compute` 의 `ok=false` 는 **비유한 J 만** 뜻하므로 (특이 자세는 `ok=true`, σ_min≈0 — #310), 랭크 결손 판정은 $w$ 계산의 LDLT 피벗에서 하고 사유 코드를 따로 둔다.
+함수는 `rtc_controllers/include/rtc_controllers/catching/catch_pose_ik.hpp` 의 `rtc::catching::CatchPoseIk` 다. ROS 의존 없음, `Resize()` 뒤 할당 0·`noexcept`·무로깅 (G3-K 함수 부분), 호출 간 상태 없음. 입력 $p_c$·$\hat v$ 는 **모델 world 좌표**로 받는다 — base→world 변환은 호출자(오프라인 지도 / 런타임 계획기) 몫이다. `DifferentialIk::Compute` 의 `ok=false` 는 **비유한 J 만** 뜻하므로 (특이 자세는 `ok=true`, σ_min≈0 — #310), 랭크 결손 판정은 $w$ 계산의 LDLT 피벗에서 하고 사유 코드를 따로 둔다.
 
-반복마다 관절 한계로 clamp하고, 반복 상한 $N_{IK}$와 허용오차로 종료한다. **seed 는 매 후보 대기 자세(wait_pose)다** `[확정 D-18]` — 6축 5행 과제는 roll 1 자유도와 IK 해 가지가 남아 해(따라서 manipulability)가 seed 에 따라 달라지므로, 오프라인 catchability 지도(S3.5a/b)와 런타임이 **같은 함수·같은 seed·같은 YAML 키**를 써야 지도와 실제 판정이 어긋나지 않는다 (plan §11). v0.4의 "이웃 슬라이스 해 warm start" 는 해를 탐색 순서에 의존하게 만들어 폐기한다.
+반복마다 관절 한계로 clamp하고, 반복 상한 $N_{IK}$와 허용오차로 종료한다. **seed 는 매 후보 대기 자세(wait_pose)다** `[확정 D-18]` — 6축 5행 과제는 roll 1 자유도와 IK 해 가지가 남아 해(따라서 manipulability)가 seed 에 따라 달라지므로, 오프라인 catchability 지도와 런타임이 **같은 함수·같은 seed·같은 YAML 키**를 써야 지도와 실제 판정이 어긋나지 않는다 (plan §11). 이웃 슬라이스의 해로 warm start 하지 않는다 — 해가 탐색 순서에 의존하게 된다. seed 는 `planner.wait_pose` 이고, `planner.wait_pose_source: current` 에서는 RT 가 채택한 자세가 그것을 덮는다 (§6).
 
-**roll 은 manipulability 최대화로 고른다 `[D-18 일부 번복, 2026-09-20 사용자 결정]`.** v0.5 까지 이 문단은 "roll 을 manipulability 최대화로 고르는 방식은 v1 범위 밖" 이라고 적었다. S1.9 에서 위 영공간 항 $k_w\nabla\log w_5$ 로 구현했으므로 그 문장은 폐기한다. **seed 규정은 그대로다** — 상승은 seed 가 놓인 해 가지 안의 **국소 최대**일 뿐 전역 roll 탐색이 아니라서, 지도와 런타임의 동치는 여전히 같은 seed·같은 키에 의존한다. 최대화 대상은 게이트 정의(`planner.catchability.definition`)와 무관하게 **항상 $w_5$** 다 `[확정 Q3a]` — 그래야 $q^\ast$ 가 정의에 의존하지 않아 같은 자세에서 잰 $w_5$ 와 $w_6$ 를 비교할 수 있다 (C-3). `arm_6row` 로 판정할 때는 **직접 최대화하지 않은 값으로 게이트한다**는 뜻이므로 지도 해석 시 유의한다. `planner.ik.k_manip` = 0 이면 번복 전 동작(seed 가 roll 을 결정)으로 정확히 되돌아간다.
+**roll 은 manipulability 최대화로 고른다.** 위 영공간 항 $k_w\nabla\log w_5$ 가 그것이다. **seed 규정은 그대로다** — 상승은 seed 가 놓인 해 가지 안의 **국소 최대**일 뿐 전역 roll 탐색이 아니라서, 지도와 런타임의 동치는 여전히 같은 seed·같은 키에 의존한다. 최대화 대상은 게이트 정의(`planner.catchability.definition`)와 무관하게 **항상 $w_5$** 다 `[확정 Q3a]` — 그래야 $q^\ast$ 가 정의에 의존하지 않아 같은 자세에서 잰 $w_5$ 와 $w_6$ 를 비교할 수 있다 (C-3). `arm_6row` 로 판정할 때는 **직접 최대화하지 않은 값으로 게이트한다**는 뜻이므로 지도 해석 시 유의한다. `planner.ik.k_manip` = 0 이면 seed 가 roll 을 결정한다.
 
 수락 조건: 위치 오차 < $\epsilon_p$, $\theta\le\alpha_{\max}$ ([R2]의 허용 콘과 같은 취지. $\theta$ 는 위 회전벡터의 크기라 $z^\top a_d\ge\cos\alpha_{\max}$ 와 동치이면서 큰 오차에서도 수치적으로 안정하다).
 
@@ -129,17 +138,19 @@ $N=I-J^\dagger J$ 는 **`DifferentialIk` 가 계속 만든다** — 영공간 �
 
 $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LWA}\\ S\,J^{L}_\omega\end{bmatrix}_{\text{팔 관절 열}}\in\mathbb R^{5\times n_{arm}}$$
 
-를 재고, 게이트 정의(`planner.catchability.definition`, 기본 `arm_5row`)의 값이 그 정의의 threshold (`planner.catchability.manipulability_min.arm_5row` — 출하값은 로봇별: ur5e_p1b 0.1 · iiwa7_leap 0.174, 둘 다 provisional) 미만이면 후보를 사유 코드와 함께 탈락시킨다. 검증용으로 $w_6=\sqrt{\det(J_6J_6^\top)}$ (팔 열 6×6, roll 포함) 도 함께 계산·기록한다 (C-3, plan §11). 모든 후보가 탈락하면 plan 없음(포기)이다. 정의 세부 (plan §11):
+를 재고, 게이트 정의(`planner.catchability.definition`, 기본 `arm_5row`)의 값이 그 정의의 threshold (`planner.catchability.manipulability_min.arm_5row` — 로봇별 값) 미만이면 후보를 사유 코드와 함께 탈락시킨다. $w_5$ 는 **가중하지 않은** $J_5$ 에서 잰다 ($W$ 는 스텝의 것이고 게이트의 것이 아니다). 검증용으로 $w_6=\sqrt{\det(J_6J_6^\top)}$ (팔 열 6×6, roll 포함) 도 함께 계산·기록한다 (C-3, plan §11). 모든 후보가 탈락하면 plan 없음(포기)이다. 정의 세부 (plan §11):
 
 - 손바닥 법선 둘레 roll 은 포구에 무관해 행에서 뺀다. 손 관절은 손바닥 frame 에 영향이 없다 (P1b 손바닥은 폐쇄 루프 상류)
 - m 와 rad 가 섞인 값이라 threshold 는 **이 정의에 대한 값**이다. 정의를 바꾸면 다시 맞춘다
 - 이 게이트는 도달시간·γ 창·정지거리 게이트에 **추가되는 AND 조건**이다. manipulability 만으로 시간 안 도달은 보장되지 않는다
 
-**fail-closed 수치 규칙 (NUM-7, NUM-1, plan §11).** $w_5$·$w_6$ 는 고정 크기 분해(사전 할당 LDLT 의 대각 곱, 또는 고정 크기 `JacobiSVD` 의 특이값 곱·log 곱)로 계산한다 — 계획기 스레드가 FIFO 라 RT-1 이 걸리므로 동적 크기 `JacobiSVD<MatrixXd>` (할당 발생) 는 쓸 수 없다. 판정은 `det > 0` 이 아니라 분해 도중의 모든 중간값이 `isfinite` 이고 `w ≥ threshold` 인지로 한다 — 특이 근처에서 반올림으로 det 가 음수가 되거나 NaN 이 나오면 탈락이다. **기존 `ClikReferenceGenerator::Manipulability` (팔 6×6 damped) 는 게이트로 재사용하지 않는다** — roll 을 포함해 같은 값이 아닐 뿐 아니라, damped(μ² > 0) 라 특이 자세에서도 $w>0$ 을 내고 `det > 0.0` 검사가 NaN 을 0 으로 세탁한다. 진단 로그에는 둘 다 남긴다.
+**fail-closed 수치 규칙 (NUM-7, NUM-1, plan §11).** $w_5$·$w_6$ 는 고정 크기 분해(사전 할당 LDLT 의 대각 곱 — 구현은 피벗의 log 합)로 계산한다 — 계획기 스레드가 FIFO 라 RT-1 이 걸리므로 동적 크기 `JacobiSVD<MatrixXd>` (할당 발생) 는 쓸 수 없다. 판정은 `det > 0` 이 아니라 분해 도중의 모든 중간값이 `isfinite` 이고 `w ≥ threshold` 인지로 한다 — 특이 근처에서 반올림으로 det 가 음수가 되거나 NaN 이 나오면 탈락이다. **기존 `ClikReferenceGenerator::Manipulability` (팔 6×6 damped) 는 게이트로 재사용하지 않는다** — roll 을 포함해 같은 값이 아닐 뿐 아니라, damped(μ² > 0) 라 특이 자세에서도 $w>0$ 을 내고 `det > 0.0` 검사가 NaN 을 0 으로 세탁한다. 진단 로그에는 둘 다 남긴다.
 
 ### 4.3 관절 도달시간 제약 ([R1] 출처, 닫힌해는 `[논문 외 유도]`)
 
-[R1]은 관절 램프의 실현 가능성 $t\ge t_{\min,i}(q_i)$를 제약으로 썼다. 본 구현은 현재 명령 상태 $(q_{c,i},\dot q_{c,i})$에서 $(q^\ast_i,0)$까지의 최소시간을 닫힌해로 계산한다. 속도 한계 $\bar\omega$, 가속 한계 $\bar a$, 목표 방향 속도 성분 $w=s\,\dot q_{c,i}$, $D=|q^\ast_i-q_{c,i}|$:
+**적용: 공통** (순위 게이트 `kRankReach`).
+
+[R1]은 관절 램프의 실현 가능성 $t\ge t_{\min,i}(q_i)$를 제약으로 썼다. 본 구현은 현재 명령 상태 $(q_{c,i},\dot q_{c,i})$에서 $(q^\ast_i,0)$까지의 최소시간을 닫힌해로 계산한다 (`TMinChecked`, `time_feasibility.hpp`). 속도 한계 $\bar\omega$ (계획 한계 $\eta_v\dot q_{\max}$ — §4.5), 가속 한계 $\bar a$, 목표 방향 속도 성분 $w=s\,\dot q_{c,i}$, $D=|q^\ast_i-q_{c,i}|$:
 
 - $w<0$ (반대 방향 이동 중): 정지 후 $D+w^2/2\bar a$를 정지 상태에서 이동.
 - $w^2/2\bar a>D$ (지나침): $w/\bar a$ 후 $w^2/2\bar a-D$ 복귀.
@@ -149,31 +160,31 @@ $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LW
 
 유도 요지: 가속 구간 이동거리 $(\omega_p^2-w^2)/2\bar a$와 감속 구간 $\omega_p^2/2\bar a$의 합이 $D$.
 
-**전제 $|w|\le\bar\omega$ 는 검사한다.** 초기 속도가 이미 속도 한계를 넘으면 최소시간 문제 자체가 정의되지 않는다 — 사다리꼴 분기의 $(\bar\omega-w)/\bar a$ 가 음수가 되어 물리적 의미가 없는 값이 조용히 나온다(예: $w_0=6$, $\bar\omega=\pi$, $\bar a=10$, $D=2$ → 0.92374 s, 그중 첫 구간이 $-0.2858$ s). 계획용 $\dot q_{\max}$(운용 여유율 적용값)와 CLIK 내부 한계가 다르거나, L5의 경계 충돌 규칙이 발동한 직후에 일어날 수 있다. `tMinChecked`가 clamp하고 플래그를 세우며, 플래그가 서면 해당 후보를 탈락시킨다.
+**전제 $|w|\le\bar\omega$ 는 검사한다.** 초기 속도가 이미 속도 한계를 넘으면 최소시간 문제 자체가 정의되지 않는다 — 사다리꼴 분기의 $(\bar\omega-w)/\bar a$ 가 음수가 되어 물리적 의미가 없는 값이 조용히 나온다(예: $w_0=6$, $\bar\omega=\pi$, $\bar a=10$, $D=2$ → 0.92374 s, 그중 첫 구간이 $-0.2858$ s). 계획용 $\dot q_{\max}$(운용 여유율 적용값)와 CLIK 내부 한계가 다르거나, L5의 경계 충돌 규칙이 발동한 직후에 일어날 수 있다. `TMinChecked`가 clamp하고 `w0_clamped` 플래그를 세우며, 플래그가 서면 그 결과는 쓸 수 없다 (`Usable()` 거짓) — 도달시간 게이트 실패다 (지도: 탈락 / 런타임: 순위 실패).
 
-**한계 값 $\bar a$ 의 출처 `[확정 D-16]`.** 관절 가속 한계는 토크 한계(`devices.<group>.joint_limits.max_torque` = URDF `effort` = MJCF `forcerange`)에서 오프라인 도구(S2.5, plan §9)로 도출한 **보수적 상수 box** 다. 이 box 는 CLIK 가속 box (L5, S2.2) 와 **같은 값**을 공유해야 계획이 실행과 일치한다. 자세 의존 한계는 v1 범위 밖이다.
+**한계 값 $\bar a$ 의 출처 `[확정 D-16]`.** 관절 가속 한계는 토크 한계(`devices.<group>.joint_limits.max_torque` = URDF `effort` = MJCF `forcerange`)에서 오프라인 도구로 도출한 **보수적 상수 box** 이고, 키는 `robot.arm.qdd_max` (`catching/search_grid.yaml`) 다. 자세 의존 한계는 쓰지 않는다.
 
-> **S3.5b (2026-09-22).** 이 box 로는 gate 지도가 열리지 않는다 (`ur5e_p1b` 기준 투척 주변 2835 투척 중 6; 그 이동이 토크 한계 안에 드는지를 직접 검사한 층은 590). D-16 개정 (plan §7.3 결정 B, §9) 으로 오프라인 지도는 두 층을 병기하고, 런타임의 자세 의존 한계는 S6 에서 설계한다 — 위 "v1 범위 밖" 은 그때 다시 본다.
+**이 box 는 탐색의 도달시간에 쓰는 값이고, 실행의 가속 제약과 같은 값이 아니다.** 출하 CLIK 의 가속 제약은 `joint_cmd.accel_constraint: dynamic` — 토크 행 ($M\dot v+h$ 를 $\pm\eta_\tau\tau_{\max}$ 안에) — 이고, box 는 `accel_constraint: box` 일 때만 CLIK 의 가속 행이 된다. 같은 키를 QP 비의존 정지 램프 (ABORT) 와 homing 램프도 읽는다. 따라서 이 절의 도달시간은 실행이 실제로 내는 가속과 다른 한계로 잰 값이다 — 순위 게이트라 후보를 제거하지는 않는다. `ur5e_p1b` 의 sim profile 은 이 키를 실행 envelope 값으로 덮는다 (`config/ur5e_p1b/sim.yaml`).
 
-> **S8-G (2026-09-26, plan §9·§4.4 S8-G).** 런타임은 이 box 를 도달시간에만 쓰고 있다 — CLIK 은 결정 K (S6-C2) 로 `joint_cmd.accel_constraint: dynamic` (토크) 을 실행하므로 "CLIK 가속 box 와 같은 값" 은 더 이상 성립하지 않는다. S8-F-1 데이터에서 실행된 관절 가속 p95 는 14–37 rad/s² 인데 box 는 2.03 이라, 같은 운동의 도달시간이 box 로는 0.6–0.9 s (가용 lead 0.3–0.5 s) 로 나와 `rank_reach` 가 유효 plan 의 93–100 % 에서 실패했다 — 순위 gate 라 시도는 막지 않지만 penalty 가 균일해져 정보가 없고 §4.10 의 $w_t\,t_{reach}/avail$ 항도 무의미해진다. S8-G 는 sim overlay 로 box 를 **실행 envelope** (`rtc_tools catching_arm_budget --write-envelope-box`) 로 바꿔 같은 투척에서 gate 를 다시 판정한다; **채택 (2026-09-27, plan D-S8-18)**: 원칙은 "계획기 한계 = 실행이 실제로 내는 envelope" — sim 은 `sim.yaml` 이 `robot.arm.qdd_max` 를 envelope 값 (6 개) 으로 덮고 (`rank_reach` 실패 95 → 14 %, 포획 무변화), 실기는 실기 envelope 이 S10 에서 측정될 때까지 출하 토크 도출 box 를 유지한다. (E1-F11: box 는 유도 파일이 아니라 `search_grid.yaml` 의 키 `robot.arm.qdd_max` · `qdd_provisional` 이고, 이 문단이 부르던 `accel_limits_path` · envelope 파일은 없어졌다.)
+**잘못된 한계 입력은 flag 로 보고한다.** `TMinChecked` 는 $\bar a\le0$ 또는 $\bar\omega\le0$ (또는 NaN) 이면 `limits_invalid` 를 세우고 $t=+\infty$ 를 돌려준다 (비유한 $q$·$w$ 는 `input_invalid`) — 플래그를 보지 않는 호출자도 후보를 통과시키지 못한다. 가속 box 가 없는 구성에서는 도달시간을 판정할 수 없다 (게이트 실패). 한계 값 자체의 범위 검사는 파라미터 검증기가 한다.
 
-**잘못된 한계 입력은 flag 로 보고한다.** 참조 구현 `tMinChecked` 는 $\bar a\le0$ 또는 $\bar\omega\le0$ (또는 NaN) 이면 $t=0$ 을 **아무 표시 없이** 돌려준다 — 도달시간 게이트가 무조건 통과하는 결함이다. S1.5 이식 시 한계 무효 플래그를 추가하고, 플래그가 서면 후보를 탈락시킨다 (clamp 플래그와 같은 처리). 한계 값 자체의 범위 검사는 파라미터 검증(S1.7)이 한다.
-
-검증: 무작위 40개 조건에서 속도·가속 제약 선형계획(시간 이분 탐색) 해와 최대 차이 — python 거울 $8.3\times10^{-6}$ s, C++ `TMin` $9.5\times10^{-6}$ s (LP 격자 이산화 수준). `test_l3.cpp`가 `cases.txt`를 만들고 `verify_l3.py`가 대조했다 — 두 파일 모두 (삭제됨 — [README](../README.md#삭제된-참조-구현)), 결과는 `test_catching_time_feasibility` 고정 테이블.
+검증: 닫힌해는 속도·가속 제약 선형계획(시간 이분 탐색) 해와의 대조로 고정돼 있다 (`test_catching_time_feasibility` 의 고정 테이블, G3-A).
 
 제약:
 
 $$t_k-now-T_{arm}-T_{margin}\ \ge\ \max_i t_{\min,i}$$
 
-$t_k$ 는 `BallTime`, $now$ 는 `NowReal` (plan §3). 팔 명령이 $T_{arm}$ 뒤에 실현되므로 $T_{arm}$ 을 뺀다 — 이는 $now_{lead}$ 와 비교하는 것과 같다.
+$t_k$ 는 `BallTime`, $now$ 는 `NowReal` (plan §3). 팔 명령이 $T_{arm}$ 뒤에 실현되므로 $T_{arm}$ 을 뺀다 — 이는 $now_{lead}$ 와 비교하는 것과 같다 (`ReachTimeFeasible`).
 
-**한계.** 이 조건은 **필요조건**이다. 실제 운동은 과제 공간 DS가 만들므로 관절별 시간최적 프로파일과 다르다. 충분성은 §4.8 rollout에서 확인한다.
+**한계.** 이 조건은 **필요조건**이다. 실제 운동은 관절별 시간최적 프로파일이 아니다 — `closed_form` 에서는 과제 공간 DS 가, `mpc` 에서는 MPC 구간이 만든다. DS 에 대한 충분성은 §4.8 rollout에서 확인한다.
 
 ### 4.4 불확실성 게이트
 
+**적용: 공통** (순위 게이트 `kRankUncertainty`).
+
 $$\sigma_{\max}(t_k)=\sqrt{\lambda_{\max}\big(\Sigma_{pp}(t_k)\big)}\ \le\ \kappa_\sigma\,r_{cap}$$
 
-**$\Sigma_{pp}$는 vision이 준 값이다.** 각 샘플의 6×6 공분산에서 위치 3×3 블록을 꺼내 대칭화한 뒤 최대 고윳값을 쓴다(`Eigen::SelfAdjointEigenSolver::computeDirect`, 고정 크기·무할당). v0.2처럼 제어 PC가 $\Phi P\Phi^\top+Q$ 로 전파하지 않는다.
+**$\Sigma_{pp}$는 vision이 준 값이다.** 각 샘플의 6×6 공분산에서 위치 3×3 블록을 꺼내 대칭화한 뒤 최대 고윳값을 쓴다(`Eigen::SelfAdjointEigenSolver::computeDirect`, 고정 크기·무할당 — `PlannerSearch::SigmaMax`). 제어 PC가 공분산을 전파하지 않는다. 공분산을 모르는 후보 (비유한 값, 또는 궤적과 token 이 다른 공분산) 는 이 게이트의 실패다.
 
 `PointCloud2`에는 트랙 상태(`STATUS_INITIALIZING` 등)가 없으므로(마스터 §5.1), "초기화 직후 트랙 탈락"은 다음으로 대체한다.
 
@@ -184,51 +195,53 @@ vision 공분산의 신뢰성은 시뮬레이션에서 참값 대비 NEES로 확
 
 ### 4.5 γ 창 `[논문 외 유도]`
 
+**적용: 공통** (순위 게이트 `kRankGamma`). `closed_form` 에서는 여기서 정한 창 안의 $\gamma_f$ 가 실행되고, `mpc` 에서는 창이 **순위와 게이트에만** 쓰인다 — MPC 가 실행하는 속도 목표 비는 `planner.decel_mpc.catch.gamma_ref` 이고 이 창과 다른 양이다 (창 밖의 값일 수 있다).
+
 **하한 (손 폐쇄).** 상대속도 $(1-\gamma)\Vert v\Vert$로 포켓 유효 깊이 $d_{eff}$를 지나기 전에 손이 닫혀야 한다.
 
 $$\gamma\ge\gamma_{\min}=1-\frac{d_{eff}}{\Vert v(t_k)\Vert\,T_{close,tot}},\qquad T_{close,tot}=T_{close,e2e}+T_{tick}$$
 
-$d_{eff}$는 손바닥 접촉 전 폐쇄를 요구하면 포켓 깊이 $d$, 반발계수 $e$로 튕겨 나오기 전까지 허용하면 $d(1+1/e)$다(TBD-HAND-04). **S4.5 는 전자를 쓴다** — 접촉 시뮬레이션이 공을 손바닥에 앉힌 상태에서 재므로 반발 여유를 세지 않는다 (보수적, L6 §4.5). **S3.5b (2026-09-22): 그 값으로는 `ur5e_p1b` 의 gate 지도가 비어 있다** — 열린 투척은 전부 시각 발동 fly-in 으로 잰 상대속도 1.0 m/s (등가 $d_{eff}=v_{rel}T_{close,tot}$) 위에 있다. **`[확정 2026-09-22 사용자]` `planner.hand.d_eff` 는 둘 중 어느 것도 아닌 시각 발동 fly-in 으로 잰 허용 상대속도 × $T_{close,tot}$ 다** — P1b 0.2815 · LEAP 0.1047 m (L6 §4.5). 이 절은 $d_{eff}$ 를 $d_{eff}/T_{close,tot}$ 로만 쓰므로 식·코드는 그대로고, 포켓 깊이는 접촉 물리량으로 L6 에 남는다. 유효 조건 (런타임 손 발동도 시각 발동) 과 남긴 대안 (`planner.hand.v_rel_max` [m/s], S6 배선 시 재검토) 은 plan §7.3.
+**`planner.hand.d_eff` 는 포켓 깊이가 아니다** — 시각 발동 fly-in 으로 잰 허용 상대속도 × $T_{close,tot}$ 다 (L6 §4.5). 이 절은 $d_{eff}$ 를 $d_{eff}/T_{close,tot}$ (손이 흡수할 수 있는 상대속도) 로만 쓰므로 식은 그대로고, 포켓 깊이는 접촉 물리량으로 L6 에 있다 (TBD-HAND-04). 유효 조건은 런타임 손 발동도 시각 발동이라는 것이다.
 
 **상한 (팔 속도).** 포구 자세 $q^\ast$에서 방향 $\hat v$로 낼 수 있는 최대 속력 $v_{dir,\max}$와 TCP 속도 한계 $v_{\max}$(= L4 `reference.v_max`)로 제한한다.
 
-> **이 상한이 v1 의 구속이다 (S3.5a 지도 2026-09-21, S4.4 2026-09-22).** 사용자 결정으로 속력 격차는 투척을 좁히는 대신 **팔 궤적으로 상대속도를 줄여** 닫는다 — 즉 위 하한 식이 쓰는 그 γ 다. 4 m·$T_f\ge1.0$ s 격자에서 $\gamma_{\min}$ 은 0.88–0.96 (팔이 5.7–8.0 m/s 로 후퇴) 인데, S4.4 가 수락 후보마다 푼 $v_{dir,\max}$ (LP, 관절 정격 × $\eta_v$) 의 중앙값은 1.1–1.4 m/s 라 $\gamma_{\max}$ 는 **0.13–0.22** 다. 구속하는 것은 TCP 한계가 아니라 **포구 자세에서의 방향 속력**이고, 그것은 자세마다 다르다 — w₅ 를 올린 자세는 $\hat v$ 로 빠른 자세가 아니다. 창이 열리는 것은 낙차가 없는 투척 (포구점이 릴리스 높이 −0.25 m 이상) 뿐이다. 수치·조건부 go 의 세 조건은 plan §4.4 S4.4 결과·§11.
->
-> **`[확정 2026-09-22]` (S4.4 제안 → S3.5b 결정 D).** (1) `reference.v_max` 는 실측할 양이 아니라 **도출값**으로 둔다 — 수락 후보의 LP $v_{dir,\max}$ 최대값. URDF·제조사 자료에는 관절 정격만 있고 TCP 정격은 없다. 그러면 아래 $\min$ 의 TCP 항은 관절 정격이 허용하는 범위에서는 구속하지 않고 기준이 폭주할 때만 잡는다 (D-8 의 포화 의미 유지). (2) **$\eta_v$ 를 관절 속도 한계에도 적용한다** — $v_{dir,\max}$ 를 $\eta_v\dot q_{\max}$ 로 계산. 지금 식은 $\eta_v$ 가 TCP 항에만 붙어 있어, 구속 항이 $v_{dir,\max}$ 인 v1 에서는 아래 D-9 의 "유일한 완충" 이 사라진다. (3) 최소노름 추정 (아래 식) 은 LP 최적값의 0.90 (6축) · 0.82 (7축) 배다 (중앙값) — "차이가 작다" 는 아래 문장은 6축에만 맞는다 (S6.3 입력).
-
 $$\gamma\le\gamma_{\max}=\frac{\min(v_{dir,\max},\ \eta_vv_{\max})}{\Vert v\Vert}$$
 
-TCP 속도 한계를 빠뜨리면 계획이 통과시킨 γ가 L4에서 속도 포화를 일으킨다. `ComputeGammaWindow`는 두 값을 모두 인자로 받는다(v0.1 코드는 $v_{dir,\max}$만 썼다).
+TCP 속도 한계를 빠뜨리면 계획이 통과시킨 γ가 L4에서 속도 포화를 일으킨다. `ComputeGammaWindow`는 두 값을 모두 인자로 받는다. 두 끝은 $[0,1]$ 로 clamp 한다.
 
-> **S8-H 실측 (2026-09-27, plan §4.4 S8-H · D-S8-19).** p1b sim 의 손 근처 투척 391 committed 시행에서 이 상한을 정한 것은 **99 % 가 $v_{dir,\max}$** (포구 자세, p50 2.07 m/s) 이고 $\eta_vv_{\max}$ (3.15) 는 **0 %** 였다. 창은 96 % 가 비었고 ($\gamma_{\min}$ 0.81 > $\gamma_{\max}$ 0.39), 그때 `ChooseGamma` 의 window-rule 은 $\gamma_f=\gamma_{\max}$ (팔 한계) 를 채택해 나머지 상대속도를 손에 넘긴다 — 창이 비어도 계획은 이미 팔 한계에 있으므로 창의 *정의* 를 바꿔 풀 γ 가 없다. 포획 가능 속력은 아래 $\Vert v\Vert_{\max}$ ≈ 2.07 + 1.0 = 3.1 m/s (S8-F-1 v50 3.6 과 같은 급). 지렛대는 포구 자세 ($v_{dir,\max}$ ≤ 1.5 m/s 성공 0 %, 2.5–3.0 20 %) 와 손 흡수 ($d_{eff}/T_{close,tot}$ 1.0 대 sim 손 50 % ≈ 1.5 m/s) 다. 계획기는 $\gamma_{\min}$·$\gamma_{\max}$·$v_{dir,\max}$ 를 기록하지 않아 이 분해는 오프라인 FK 로 했다 — S8-I 부터 `planner_events` 가 채택 후보의 네 값을 기록한다. **④ 결과 (S8-I/S8-I-2, D-S8-20)**: 대기 자세는 이 $v_{dir,\max}$ 를 **+25 % 까지** 올릴 수 있는 지렛대다 — 단 한 점의 정적 DLS 최대값이 아니라 이웃 (|Δq|∞ ≤ 0.1 rad) 의 p10 을 최대화한 자세여야 한다 (점 최적은 `jw` 특이점 옆 바늘 봉우리라 IK 포구 자세에서 1/4 로 무너진다). 그렇게 얻은 자세로 런타임 $v_{dir,\max}$ p50 2.2 → 2.6 m/s, $\gamma_{\max}$ 0.42 → 0.50 이 됐지만 포획은 18 → 20/112 (p 0.86) — 접촉 상대속도 감소 (3.5 m/s 공에서 0.25 m/s) 가 손 흡수 곡선의 경사 구간 (3.5 m/s) 에서만 드러난다. 출하 `wait_pose` 는 유지.
+- **$\eta_v$ 는 관절 속도 한계에도 적용한다** — $v_{dir,\max}$ 를 $\eta_v\dot q_{\max}$ 로 계산한다 (`RankGateInputs::qdot_plan`). 구속 항이 $v_{dir,\max}$ 일 때 TCP 항에만 여유를 두면 아래 D-9 의 완충이 사라진다
+- `reference.v_max` 는 실측값이 아니라 **도출값**이다 (L4 §6) — 그러면 위 $\min$ 의 TCP 항은 관절 정격이 허용하는 범위에서는 구속하지 않고 기준이 폭주할 때만 잡는다
+- 구속하는 것은 대개 **포구 자세에서의 방향 속력**이고 그것은 자세마다 다르다 — $w_5$ 를 올린 자세가 $\hat v$ 로 빠른 자세는 아니다
 
-**여유율 `[확정 D-9]`.** `ComputeGammaWindow` 의 TCP 속도 인자는 $v_{tcp}=\eta_v\cdot$`reference.v_max` ($0<\eta_v\le1$) 이다. γ 창이 $v_{\max}$ 전체를, rollout 수락(§4.8)이 $\eta_vv_{\max}$ 를 쓰면 창은 통과했는데 rollout 에서만 탈락하는 후보가 구조적으로 생기고, 계획이 한계 끝을 쓰면 실행 중 예측 변화로 L4 가 포화한다. γ derate 가 v1 에서 빠졌으므로(D-8) 이 여유가 실행 중 유일한 완충이다. 마스터 §6 교차제약도 이 식으로 고친다 (검증은 S1.7 교차제약 표).
+**여유율 `[확정 D-9]`.** `ComputeGammaWindow` 의 TCP 속도 인자는 $v_{tcp}=\eta_v\cdot$`reference.v_max` ($0<\eta_v\le1$, `PlanningTcpSpeed`) 이다. γ 창이 $v_{\max}$ 전체를, rollout 수락(§4.8)이 $\eta_vv_{\max}$ 를 쓰면 창은 통과했는데 rollout 에서만 탈락하는 후보가 구조적으로 생기고, 계획이 한계 끝을 쓰면 실행 중 예측 변화로 L4 가 포화한다. 실행 중 γ 를 낮추는 경로가 없으므로 (D-8) 이 여유가 실행 중 유일한 완충이다.
 
-**입력 방어.** $v_{dir,\max}$ 는 아래 DLS 정규화식의 결과라 수치 문제로 음수가 나올 수 있다. 음수면 clamp 가 $\gamma_{\max}$ 를 0으로 **올려** 판정을 뒤집으므로, `ComputeGammaWindow` 가 비물리적 입력을 검사해 플래그를 세운다(`tMinChecked` 가 $|w_0|>\bar\omega$ 를 검사하는 것과 같은 수준).
+**입력 방어.** $v_{dir,\max}$ 는 아래 DLS 정규화식의 결과라 수치 문제로 음수가 나올 수 있다. 음수면 clamp 가 $\gamma_{\max}$ 를 0으로 **올려** 판정을 뒤집으므로, `ComputeGammaWindow` 가 비물리적 입력을 검사해 플래그를 세운다(`TMinChecked` 가 $|w_0|>\bar\omega$ 를 검사하는 것과 같은 수준). 공 속력이 0 이하이면 창이 정의되지 않는다 (`input_invalid`).
 
-**방향 속력 계산.** 접근축 각속도 0을 유지하며 $\hat v$ 방향 단위 속도를 내는 관절속도 $\dot q^u$를 damped least-squares로 구하고
+**방향 속력 계산.** 접근축 각속도 0을 유지하며 $\hat v$ 방향 단위 속도를 내는 관절속도 $\dot q^u=J_5^\top(J_5J_5^\top+\lambda^2I)^{-1}[\hat v;0;0]$ 를 damped least-squares로 구하고 (`UnitSpeedSolver`, $\lambda$ = `planner.gamma.unit_speed_damping`)
 
 $$v_{dir,\max}\approx\frac{\max\big(0,\ \hat v^\top J_p\dot q^u\big)}{\displaystyle\max_i\frac{|\dot q^u_i|}{\dot q_{\max,i}}}$$
 
-로 근사한다. **분자가 필요한 이유:** DLS($\lambda>0$)는 $J\dot q^u=[\hat v;0]$ 을 정확히 만족하지 않는다. 특이 자세 근처에서 달성 속력이 1보다 작은데 v0.1은 분자를 1로 두고 $(\max_i|\dot q^u_i|/\dot q_{\max,i})^{-1}$ 만 썼다. 그러면 **실제로 낼 수 없는 속력을 보고한다** — 문서가 주장한 "보수적"의 반대다.
+로 근사한다 (`DirectionalSpeedMax`). **분자가 필요한 이유:** DLS($\lambda>0$)는 $J\dot q^u=[\hat v;0]$ 을 정확히 만족하지 않는다. 특이 자세 근처에서 달성 속력이 1보다 작은데 분자를 1로 두면 **실제로 낼 수 없는 속력을 보고한다** — "보수적"의 반대다.
 
-**분자는 노름이 아니라 $\hat v$ 방향 투영이다 (v0.5).** v0.4 의 $\Vert J_p\dot q^u\Vert$ 는 $\hat v$ 와 다른 방향으로 새는 속도 성분까지 "달성 속력"으로 세어 과대평가한다. γ 상한에 필요한 것은 공 진행 방향 성분 $\hat v^\top J_p\dot q^u$ 뿐이다. 음수(역방향)는 0 으로 둔다.
+**분자는 노름이 아니라 $\hat v$ 방향 투영이다.** $\Vert J_p\dot q^u\Vert$ 는 $\hat v$ 와 다른 방향으로 새는 속도 성분까지 "달성 속력"으로 세어 과대평가한다. γ 상한에 필요한 것은 공 진행 방향 성분 $\hat v^\top J_p\dot q^u$ 뿐이다. 음수(역방향)는 0 으로 둔다.
 
-**0 가드.** $\dot q_{\max,i}\le0$ (또는 NaN) 이면 분모가 0·무한이 되어 값이 조용히 무의미해진다. 한계 무효는 플래그로 보고하고 $v_{dir,\max}=0$ (보수적)으로 둔다. 분모 자체가 0 (관절 운동 불필요)도 판정 불가로 보고 0 을 돌려준다. 두 수정은 S1.5 이식 범위다.
+**0 가드.** $\dot q_{\max,i}\le0$ (또는 NaN) 이면 분모가 0·무한이 되어 값이 조용히 무의미해진다. 한계 무효는 플래그로 보고하고 $v_{dir,\max}=0$ (보수적)으로 둔다. 분모 자체가 0 (관절 운동 불필요)은 판정 불가 (`undetermined`) 로 보고 0 을 돌려준다 — 이 값은 창에 물리량으로 들어가지 않고 γ 창을 판정 불가로 만든다.
 
-남는 보수성: 최소노름 해만 보므로 여유 자유도를 최대한 쓴 LP 최적값보다 작거나 같다. 6축 5-DoF 과제에서는 여유가 1자유도라 차이가 작다.
+남는 보수성: 최소노름 해만 보므로 여유 자유도를 최대한 쓴 LP 최적값보다 작거나 같다. 6축 5-DoF 과제에서는 여유가 1자유도라 차이가 작고, 7축에서는 더 벌어진다.
 
-특이 자세 자체는 §4.2 의 manipulability 게이트 $w_5$ (D-18) 가 거른다. $J_p$ 가 랭크를 잃으면 $J_5$ 도 랭크를 잃어 $w_5=0$ 이므로, v0.4 의 별도 $\sqrt{\det J_pJ_p^\top}$ 게이트(`planner.ik.manip_min`)는 두지 않는다.
+특이 자세 자체는 §4.2 의 manipulability 게이트 $w_5$ (D-18) 가 거른다. $J_p$ 가 랭크를 잃으면 $J_5$ 도 랭크를 잃어 $w_5=0$ 이므로, 별도의 $\sqrt{\det J_pJ_p^\top}$ 게이트는 두지 않는다.
 
-**Sanity check.** $v_{dir,\max}=0$(정지 포구)이면 $\Vert v\Vert\le d/T_{close,tot}$다. [R1]의 포켓 3 cm, 6 m/s를 넣으면 $T_{close}\le5$ ms다. [R1] 각주 2 원문으로 확인했다("Assuming that the ball flies within the hand about 0.03 m with a velocity of 6 m/s the time duration of 5 ms is obtained"). `test_l3.cpp`가 5 ms는 통과, 6 ms는 창이 빔을 검사한다.
+**Sanity check.** $v_{dir,\max}=0$(정지 포구)이면 $\Vert v\Vert\le d/T_{close,tot}$다. [R1]의 포켓 3 cm, 6 m/s를 넣으면 $T_{close}\le5$ ms다. [R1] 각주 2 원문으로 확인했다("Assuming that the ball flies within the hand about 0.03 m with a velocity of 6 m/s the time duration of 5 ms is obtained"). `test_catching_time_feasibility` 가 5 ms는 통과, 5.1 ms는 창이 빔을 검사한다.
 
 **창이 비는 조건.** 받을 수 있는 최대 공 속력은
 
 $$\Vert v\Vert_{\max}=\min(v_{dir,\max},\eta_vv_{\max})+\frac{d_{eff}}{T_{close,tot}}$$
 
-이고 이를 넘는 후보는 탈락이다(`MaxCatchableSpeed`). **이 식이 시스템 전체의 실현 가능성을 결정한다** — 마스터 §4.1을 볼 것. $v_{dir,\max}=1.5$ m/s, $d_{eff}=4$ cm, $T_{close,tot}=60$ ms이면 상한이 2.17 m/s에 불과하다.
+이고 이를 넘는 후보는 게이트 실패다(`MaxCatchableSpeed`. 경계에서 1 ulp 엇갈리지 않게 `planner.gamma.margin` 만큼의 여유를 두고 $\Vert v\Vert+$ margin $\le\Vert v\Vert_{\max}$ 로 비교한다). **이 식이 시스템 전체의 실현 가능성을 결정한다** — 마스터 §4.1을 볼 것. $v_{dir,\max}=1.5$ m/s, $d_{eff}=4$ cm, $T_{close,tot}=60$ ms이면 상한이 2.17 m/s에 불과하다. 창이 비어도 ($\gamma_{\min}>\gamma_{\max}$) 후보는 남는다 — rollout 은 그때 팔의 한계 $\gamma_{\max}$ 에서 $\gamma_f$ 를 찾고 (§4.8), 나머지 상대속도는 손이 받는다.
 
 ### 4.6 포구 오차 예산 `[논문 외 유도]`
+
+**적용: 공통** (순위 게이트 `kRankErrorBudget`).
 
 commit 시 포구점 $p_c$가 고정되고, 포구 순간 기준은 $p_c+\gamma(\hat p_{live}(t_c)-p_c)$에 있다. 실제 공 위치를 $p_{true}$라 하면
 
@@ -247,46 +260,34 @@ $$\text{gap}=(1-\gamma)(A+B)+\gamma A=A+(1-\gamma)B$$
 
 $$\boxed{\sigma_{gap}^2=\sigma_\ell^2+(1-\gamma)^2(\sigma_c^2-\sigma_\ell^2)=(1-\gamma)^2\sigma_c^2+\big(1-(1-\gamma)^2\big)\sigma_\ell^2}$$
 
-게이트는 다음과 같다.
+게이트는 다음과 같다 (`CatchErrorSigma`, `ErrorBudgetOk`).
 
 $$n_\sigma\sqrt{(1-\gamma)^2\sigma_c^2+(2\gamma-\gamma^2)\,\sigma_\ell^2+\sigma_{trk}^2+(\Vert v\Vert\delta)^2}\le r_{cap}$$
 
 $\sigma_c$는 **commit 시점 메시지**의 $t_c$ 샘플 공분산에서, $\sigma_\ell$은 **포구 직전 최신 메시지**의 같은 시각 샘플 공분산에서 뽑는다. 둘 다 vision이 준 값이다(§4.4). $\sigma_{trk}$와 $\delta$는 실측값(L5, 인프라)이며 나머지와 독립으로 두는 것은 타당하다.
 
-commit 시점에는 $\sigma_\ell$ 을 아직 모른다. v0.5 설계는 두 경로를 뒀고, **v1 은 경로 1 만 쓴다**.
+commit 시점에는 $\sigma_\ell$ 을 아직 모른다. 경로는 둘이고, **판정에 쓰는 것은 경로 1 뿐이다**.
 
-1. **계획 단계**: 보수적으로 $\sigma_\ell=\sigma_c$ 로 둔다. 그러면 식이 $\sigma_c^2$ 로 환원되는데, 이것은 **직교성 가정 없이도 상한**이다 — $\mathrm{Var}(A+\lambda B)$ 는 $\lambda=1-\gamma$ 의 볼록 2차식이라 $\lambda\in[0,1]$ 에서 최대가 끝점이고, $\sigma_\ell\le\sigma_c$ 인 한 그 값이 $\sigma_c^2$ 다.
-2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신한다. **이 값으로 abort 를 판단하는 것은 v1 설계에서 제외했다** `[확정 2026-09-29 사용자 — plan D-S8-7 (a), §7.3 "σ_ℓ abort"]` — $\sigma_\ell$ 은 `planner_events.csv` 에 기록만 하고, 동결 뒤의 낡은 입력은 steady 수신 나이로 판정한다 (L7). 따라서 직교 분해의 $\gamma$ 의존 이득은 v1 에서 쓰이지 않는다. 재검토는 실기 공분산 검증 수단 결정 (S10, #613) 과 함께 한다.
+1. **계획 단계**: 보수적으로 $\sigma_\ell=\sigma_c$ 로 둔다 (`PlannerSearch` 의 `CatchErrorSigma(γ_f, σ, σ, …)`). 그러면 식이 $\sigma_c^2$ 로 환원되는데, 이것은 **직교성 가정 없이도 상한**이다 — $\mathrm{Var}(A+\lambda B)$ 는 $\lambda=1-\gamma$ 의 볼록 2차식이라 $\lambda\in[0,1]$ 에서 최대가 끝점이고, $\sigma_\ell\le\sigma_c$ 인 한 그 값이 $\sigma_c^2$ 다.
+2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신한다 (`PlannerSearch::Monitor`). **이 값으로 abort 를 판단하지 않는다** — $\sigma_\ell$ 은 `planner_events.csv` 의 `sigma_l` 열로 기록만 하고, 동결 뒤의 낡은 입력은 steady 수신 나이로 판정한다 (L7). 따라서 직교 분해의 $\gamma$ 의존 이득은 어느 판정에도 쓰이지 않는다. 다시 보는 것은 실기 공분산 검증 수단을 정할 때다 (#613).
 
-**직교성이 깨질 때의 방향.** 정확한 오차항은 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 이고 $\gamma=0,1$ 에서 사라져 $\gamma=0.5$ 에서 최대다. **새 측정을 과소 반영하는(sluggish) 예측기** — 측정잡음 과대설정, 공정잡음 과소설정 같은 흔한 튜닝 실패 — 는 $\mathrm{Cov}(A,B)>0$ 을 만들어 위 식이 $\sigma_{gap}$ 을 **과소평가**하게 한다(모의 실험에서 7–8%). v0.1의 $\gamma^2$ 오류와 같은 방향이다. 반대로 $\mathrm{Cov}(A,B)<0$ 이면 위 식은 $\sigma_{gap}$ 을 **과대평가**한다 (보수적). **sim 에서 잰 것은 이쪽이다** — 아래 "측정과 결정".
+**직교성이 깨질 때의 방향.** 정확한 오차항은 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 이고 $\gamma=0,1$ 에서 사라져 $\gamma=0.5$ 에서 최대다. **새 측정을 과소 반영하는(sluggish) 예측기** — 측정잡음 과대설정, 공정잡음 과소설정 같은 흔한 튜닝 실패 — 는 $\mathrm{Cov}(A,B)>0$ 을 만들어 위 식이 $\sigma_{gap}$ 을 **과소평가**하게 한다. 반대로 $\mathrm{Cov}(A,B)<0$ 이면 위 식은 $\sigma_{gap}$ 을 **과대평가**한다 (보수적).
 
 NEES가 정상이어도 $\mathrm{Cov}(A,B)=0$ 은 보장되지 않으므로, **혁신 백색성(innovation whiteness) 검정**을 게이트에 넣는다(G3-H). L1 §4.5의 $\bar\nu$ 추세가 그 대용이다.
 
-**측정과 결정 `[확정 2026-09-29, #600]`.** G8-C2 (= G3-H) 는 sim truth 로 $A$·$B$ 를 직접 재어 직교성을 **기각**했다. 상관은 음이고, vision sim profile 수정 (PR #595) 뒤에도 부호가 남는다 — 크기만 줄었다.
+**직교 가정은 sim 에서 성립하지 않는다 — 식은 유지한다.** sim truth 로 $A$·$B$ 를 직접 잰 상관은 음이다 (G3-H = L8 의 G8-C2). 그래도 식을 유지하는 근거는 셋이다.
 
-| arm (profile 수정 뒤, 2026-09-28) | 표본 (정확 결합) | $E\Vert A+B\Vert^2$ [mm²] | $E\Vert A\Vert^2+E\Vert B\Vert^2$ [mm²] | 비 | 백색화 교차공분산 대각 |
-|---|---|---|---|---|---|
-| `ur5e_p1b` tennis | 200 | 625 | 1051 | 1.68 | −0.48 · −0.46 · −0.54 |
-| `ur5e_p1b` beanbag | 200 | 657 | 1092 | 1.66 | −0.44 · −0.40 · −0.60 |
-| `iiwa7_leap` | 178 | 771 | 850 | 1.10 | −0.31 · −0.06 · −0.17 |
-
-- profile 수정 전 (S8-E) 의 비는 2.1–2.7 이었다 (tennis 7136 대 16660 mm²). p1b 두 arm 은 대각 세 축 모두 부트스트랩 CI 가 0 을 포함하지 않는다
-- **이 비는 항등식 $\sigma_c^2=\sigma_\ell^2+\sigma_B^2$ 가 깨진 정도이지 $\sigma_{gap}^2$ 의 과대추정 배수가 아니다.** 예산식의 오차는 위의 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 로, $\gamma$ 에 따라 0 에서 $\tfrac12\vert\mathrm{Cov}\vert$ 사이다
-- `iiwa7_leap` 은 표본 178 로 목표 (arm 당 ≥ 190) 에 못 미친다. 그대로 받아들인다 — 이 arm 의 투척 상자는 공이 상승 중 대기 손에 닿는 투척을 포함하고 (plan §12), 같은 상자로 다시 던지면 같은 접촉이 난다. leap 의 값은 그 상자 위의 값이다
-
-**결정: 식을 유지한다.** 근거는 셋이다.
-
-1. **런타임 검사는 직교 가정을 쓰지 않는다.** 계획기는 위 경로 1 대로 $\sigma_\ell=\sigma_c$ 를 넣으므로 (`PlannerSearch` 의 `CatchErrorSigma(γ_f, σ, σ, …)`) 검사는 $\gamma$ 와 무관하게 $n_\sigma\sqrt{\sigma_c^2+\sigma_{trk}^2+(\Vert v\Vert\delta)^2}\le r_{cap}$ 이다. 직교 분해의 $\gamma$ 의존 항은 어느 판정에도 들어가지 않는다
+1. **런타임 검사는 직교 가정을 쓰지 않는다.** 계획기는 위 경로 1 대로 $\sigma_\ell=\sigma_c$ 를 넣으므로 검사는 $\gamma$ 와 무관하게 $n_\sigma\sqrt{\sigma_c^2+\sigma_{trk}^2+(\Vert v\Vert\delta)^2}\le r_{cap}$ 이다. 직교 분해의 $\gamma$ 의존 항은 어느 판정에도 들어가지 않는다
 2. **어긋남의 방향이 보수적이다.** 음의 상관은 식이 간극을 크게 잡게 할 뿐이고, 이 검사는 순위 게이트라 (§4.1, D-27) 초과해도 후보가 탈락하지 않는다
 3. **식을 바꿔 얻을 것이 지금은 없다.** $\gamma$ 의존 예산을 판정에 쓰려면 $\sigma_\ell$ 의 commit 시점 예측이 필요한데 그 경로가 없다
 
-식을 다시 볼 조건: v1 에서 제외한 경로 2 를 되살려 $\gamma$ 의존 예산을 판정이나 $\gamma$ 선택에 쓰기로 할 때. 그때는 교차항을 경험적으로 보정하거나 직교 가정 없는 상한으로 바꾼다. **경로 1 의 상한은 $\sigma_\ell\le\sigma_c$ 를 전제한다** — 음의 상관이 커서 $2\vert\mathrm{Cov}(A,B)\vert>\sigma_B^2$ 이면 이 전제가 깨지므로, 그 재검토는 $E\Vert A\Vert^2$ 대 $E\Vert A+B\Vert^2$ 를 먼저 본다.
+상관의 크기는 항등식 $\sigma_c^2=\sigma_\ell^2+\sigma_B^2$ 가 깨진 정도이지 $\sigma_{gap}^2$ 의 과대추정 배수가 아니다 — 예산식의 오차는 위의 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 로, $\gamma$ 에 따라 0 에서 $\tfrac12\vert\mathrm{Cov}\vert$ 사이다.
 
-**구현 현황 (2026-09-29 코드 대조).** 경로 2 의 $\sigma_\ell$ 은 `PlannerSearch::Monitor` 가 계산해 `planner_events.csv` 의 `sigma_l` 열로 **기록만** 한다. 이 값을 읽는 소비자는 없고 (위 경로 2 — v1 제외), 게시되는 `PlanSnapshot::sigma_l` 은 $\sigma_c$ 와 같은 값이다. 출하 profile 은 $\sigma_{trk}=0$, $\delta=0$ 이고 $\kappa_\sigma<1/n_\sigma$ 라서 (§6 기본값) 이 검사가 실패하는 후보는 §4.4 불확실성 게이트도 이미 실패한다 — 이 검사는 독립된 정보가 아니라 같은 $\sigma_c$ 에 대한 두 번째 임계로 동작한다.
+식을 다시 볼 조건: 경로 2 를 판정에 써서 $\gamma$ 의존 예산을 판정이나 $\gamma$ 선택에 쓰기로 할 때. 그때는 교차항을 경험적으로 보정하거나 직교 가정 없는 상한으로 바꾼다. **경로 1 의 상한은 $\sigma_\ell\le\sigma_c$ 를 전제한다** — 음의 상관이 커서 $2\vert\mathrm{Cov}(A,B)\vert>\sigma_B^2$ 이면 이 전제가 깨지므로, 그 재검토는 $E\Vert A\Vert^2$ 대 $E\Vert A+B\Vert^2$ 를 먼저 본다.
+
+**지금의 구현.** 게시되는 `PlanSnapshot::sigma_l` 은 $\sigma_c$ 와 같은 값이다 (경로 2 의 $\sigma_\ell$ 은 CSV 에만 있고 읽는 소비자가 없다). 출하 profile 은 $\sigma_{trk}=0$, $\delta=0$ 이고 $\kappa_\sigma<1/n_\sigma$ 라서 이 검사가 실패하는 후보는 §4.4 불확실성 게이트도 이미 실패한다 — 이 검사는 독립된 정보가 아니라 같은 $\sigma_c$ 에 대한 두 번째 임계로 동작한다.
 
 $\sigma$ 는 스칼라로 썼지만 실제는 3×3이다. §4.4의 $\lambda_{\max}$ 규약으로 읽으며, $\lambda_{\max}(\Sigma_A+\lambda^2\Sigma_B)\le\lambda_{\max}(\Sigma_A)+\lambda^2\lambda_{\max}(\Sigma_B)$ 이므로 그 경우에도 보수적 상한이다.
-
-**v0.1과의 차이.** v0.1은 둘째 계수를 $\gamma^2$ 로 두었다(완전 독립 가정). $\gamma=0,1$ 에서만 일치하고 중간에서 **과소평가**한다. $\sigma_\ell/\sigma_c=0.5$, $\gamma=0.5$ 에서 15.5%, $\sigma_\ell/\sigma_c=0.7$, $\gamma=0.5$ 에서 22.3% 과소평가다. 통과시켜서는 안 될 후보를 통과시킨다.
 
 **부수 함의.** $\gamma\to1$ 이면 $\sigma_{gap}\to\sigma_\ell$ 로 줄어든다. 즉 γ를 키우는 것은 충격량(L7 §4.7)뿐 아니라 **예측 오차 측면에서도 유리하다** — commit 시점의 낡은 예측 대신 실시간 추정에 가중이 실리기 때문이다. §4.10의 γ 선호는 이 근거를 함께 쓴다.
 
@@ -294,17 +295,19 @@ $\sigma$ 는 스칼라로 썼지만 실제는 3×3이다. §4.4의 $\lambda_{\ma
 
 ### 4.7 교체 히스테리시스
 
+**적용: closed_form 전용.** `mpc` 에서는 RT 가 plan 을 따르는 동안 탐색 자체를 건너뛰므로 (§5.3) plan 의 교체가 없고, 이 절의 규칙과 `planner.switch.*` (`catching/planner_closed_form.yaml`) 는 쓰이지 않는다. `mpc` 에서 예측의 변화는 구간의 재계획이 받는다 (formulation).
+
 현재 plan이 유효하면 새 후보는 다음을 모두 만족할 때만 채택한다.
 
 1. 점수 개선 $J_{cur}-J_{new}>\Delta_J$, 또는 현재 plan이 이번 검사에서 불가능 판정.
-2. 가속 예산 (L4 §4.3, 결정 ⑥ 2026-09-23): 교체가 $u_{des}$ 에 넣는 계단의 상계가 $\eta_{jump}\,a_{\max}$ 이하.
+2. 가속 예산 (L4 §4.3): 교체가 $u_{des}$ 에 넣는 계단의 상계가 $\eta_{jump}\,a_{\max}$ 이하.
 
 $$\omega^2(1-\gamma)\Vert\Delta p_c\Vert+\bigl(2\zeta\omega|\dot\gamma|+|\ddot\gamma|\bigr)\Vert o-p_c\Vert+2|\dot\gamma|\,\Vert v_o\Vert\;\le\;\eta_{jump}\,a_{\max}$$
 
-   $p_c$ 는 **옛** 포구점, $\omega,\zeta,a_{\max}$ 는 L4 기준의 값이다. 좌변은 **RT 가 이 사이클의 게시를 채택할 수 있는 구간** $[now_{lead},\,now_{lead}+$`budget_s`$+2h]$ 의 최악값으로 판정한다: $\gamma,\dot\gamma,\ddot\gamma$ 는 RT 가 실제로 돌리는 램프 (`PlannerRtState.ramp_*` — RT 가 채택하며 바꾼 g0·t0 포함) 를 그 구간에서 평가한 값, $(o,v_o)$ 는 같은 시각의 공 대상 (rollout 과 같은 샘플러) 이다. 스냅샷 tick 의 $\dot\gamma=\ddot\gamma=0$ 은 램프 시작 직전일 수 있어 채택 시점의 값이 아니다 (2026-09-23 `/code-review`). 따라가는 plan 이 없으면 스냅샷 값을 쓴다. RT 는 교체 plan 을 γ 는 이어서, 5차 램프는 **다시 시작해서** ($\dot\gamma=\ddot\gamma=0$) 채택하므로 실제 계단은 $\Delta u=\omega^2(1-\gamma)\Delta p_c-(2\zeta\omega\dot\gamma+\ddot\gamma)(o-p_c)-2\dot\gamma v_o$ 이고, 위 식은 그 삼각 상계다. 램프 항은 $\Vert\Delta p_c\Vert$ 가 아니라 $\Vert o-p_c\Vert$ 에 비례하므로 **램프가 도는 동안의 교체는 거의 다 거부된다** — 램프를 이어 붙이는 채택 ($\dot\gamma,\ddot\gamma$ 연속) 은 S8 후속이다. 램프가 멈춘 구간 ($\dot\gamma=\ddot\gamma=0$) 에서는 $\Vert\Delta p_c\Vert\le\eta_{jump}a_{\max}/(\omega^2(1-\gamma))$ — 출하 p1b 52 mm, leap 88 mm (γ=0). 이전 규칙 (거리 한계 `e_jump_max` 0.01 m · `ed_jump_max`) 은 γ≈0 에서 "예측이 10 mm 넘게 움직이면 갱신 안 함" 이 되어 sim 에서 `refreshed` 가 0 이었다 (스냅샷당 $p(t_c)$ 이동 중앙 98 mm, #537).
-3. `COMMITTED` 이후에는 포구점을 교체하지 않는다(L7).
+   $p_c$ 는 **옛** 포구점, $\omega,\zeta,a_{\max}$ 는 L4 기준의 값이다 (`SwitchAccelStepBound`). 좌변은 **RT 가 이 사이클의 게시를 채택할 수 있는 구간** $[now_{lead},\,now_{lead}+$`budget_s`$+2h]$ 의 최악값으로 판정한다 (`planner.switch.samples` 개의 순간에서 평가 — `PlannerSearch::SwitchStep`): $\gamma,\dot\gamma,\ddot\gamma$ 는 RT 가 실제로 돌리는 램프 (`PlannerRtState.ramp_*` — RT 가 채택하며 바꾼 g0·t0 포함) 를 그 구간에서 평가한 값, $(o,v_o)$ 는 같은 시각의 공 대상 (rollout 과 같은 샘플러) 이다. 스냅샷 tick 의 $\dot\gamma=\ddot\gamma=0$ 은 램프 시작 직전일 수 있어 채택 시점의 값이 아니다. 램프 정보가 없으면 스냅샷 값을 쓴다. RT 는 교체 plan 을 γ 는 이어서, 5차 램프는 **다시 시작해서** ($\dot\gamma=\ddot\gamma=0$) 채택하므로 실제 계단은 $\Delta u=\omega^2(1-\gamma)\Delta p_c-(2\zeta\omega\dot\gamma+\ddot\gamma)(o-p_c)-2\dot\gamma v_o$ 이고, 위 식은 그 삼각 상계다. 램프 항은 $\Vert\Delta p_c\Vert$ 가 아니라 $\Vert o-p_c\Vert$ 에 비례하므로 **램프가 도는 동안의 교체는 거의 다 거부된다** — 램프를 이어 붙이는 채택 ($\dot\gamma,\ddot\gamma$ 연속) 은 구현에 없다. 램프가 멈춘 구간 ($\dot\gamma=\ddot\gamma=0$) 에서는 $\Vert\Delta p_c\Vert\le\eta_{jump}a_{\max}/(\omega^2(1-\gamma))$ 다. 공 대상을 샘플할 수 없는 순간이 있으면 판정 불가 (거부) 다.
+3. `COMMITTED` 이후에는 포구점을 교체하지 않는다(L7). 그 앞에서도 따르는 plan 의 $t_c$ 까지 `planner.freeze.T_freeze` 이내면 교체하지 않는다 (`held_freeze`).
 
-**S6 런타임 (2026-09-23, `/code-review` 반영).**
+**런타임.**
 
 - **현재 plan 은 RT 가 따르는 plan 이다.** 계획기는 최근 게시 몇 개를 기억하고, RT 가 `PlannerRtState` 로 보고한 `plan_id` 로 "현재" 를 찾는다. RT 가 거부한 게시 (freeze·나이·더 새 게시) 는 현재가 되지 않는다.
 - **현재 plan 의 후보를 먼저 평가한다.** 1 의 "불가능 판정" 이 `max_ik`·예산에 밀려 평가 안 된 것을 뜻하지 않도록, 따라가는 plan 의 $t_c$ (반 slice 안) 후보를 IK 순서 맨 앞에 둔다.
@@ -312,32 +315,28 @@ $$\omega^2(1-\gamma)\Vert\Delta p_c\Vert+\bigl(2\zeta\omega|\dot\gamma|+|\ddot\g
 - **후보가 없는 사이클은 게시하지 않는다.** 따라가는 중 settle·후보 0·입력 무효로 끝난 사이클은 "plan 없음" 을 게시하지 않는다 (`held_no_candidate`) — 게시하면 RT 가 아직 안 읽은 교체를 덮는다.
 - **교체의 γ 는 연속이다.** RT 는 교체 plan 의 γ 램프를 **채택 tick 의 기준 γ** 에서, **그 tick 이후에** 시작한다. 계획 시점의 γ 나 이미 지난 램프 시작을 쓰면 γ 계단이 $\gamma\,(o-p_c)$·$\ddot\gamma\,(o-p_c)$ 를 통해 $e$·$u_{des}$ 의 계단이 된다.
 
-`COMMITTED` 진입(commit 조건은 §4.11)부터 $p_c$, $t_c$, $\gamma$ 프로파일은 동결된다. 실행 중 포화가 예상·발생하면 `COMMITTED` 이전은 RETREAT, 이후는 ABORT_SAFE 다 `[확정 D-8]`.
-
-**`COMMITTED` 이후 γ 하향 — v0.5 에서 v1 범위 밖 (D-8) — S8 포화 빈도 측정 후 재검토.** 아래는 v0.4 의 설계 근거로, 재도입 검토 시의 입력으로만 남긴다. 참조 구현 `derateGamma` 의 결함(Frozen 분기 γ_min 미보장, 완화 분기 무효, 기본 램프가 가속 피크를 키움, 램프가 $t_c$ 초과 가능)과 재설계 요구사항은 L4 §5.2.1 에 있다. v0.4 원문: $p_c$, $t_c$ 는 동결한 채 $\gamma_f$ 만 낮추는 것은 허용한다(L4 §5.2.1, L7 §4.6). 근거는 셋이다.
-
-- [R3]은 γ를 매 스텝 $J(q)\dot q_{\max}$ 제약 아래 재최적화한다. 즉 로봇이 못 따라가면 그 자리에서 γ를 깎는다. 본 설계는 계획 시점 rollout(§4.8)으로 γ를 고정하므로, 예측이 빗나가거나 관절 한계가 예상보다 일찍 활성화되면 대응 수단이 abort뿐이었다.
-- 포화는 $t_c$ 직전에 몰린다(L4 §4.8). abort하기에 가장 나쁜 시점이다.
-- $p_c$ 고정 하에 γ만 낮출 때의 $\dot e$ 점프는 $|\dot\gamma(t)|\Vert\xi^O(t)\Vert$ 이고 $t\to t_c$ 에서 $\xi^O\to0$ 이므로 **늦게 할수록 안전하다.** $e$ 는 연속이다.
-
-필요 가속도는 $\gamma_f$ 에 거의 선형이다(§4.8 표). 하한은 $\gamma_{\min}$(손 폐쇄 제약)이며, 그 아래로는 내릴 수 없다 — 내려야 한다면 그때는 abort다. (v0.4 근거 끝. 이 가운데 "늦게 할수록 안전하다" 는 틀렸다 — 점프는 램프 중앙에서 봉우리를 이룬다, L4 §5.2.1.)
+`COMMITTED` 진입(commit 조건은 §4.11)부터 $p_c$, $t_c$, $\gamma$ 프로파일은 동결된다. 실행 중 기준이 포화한 채로 남으면 (`REF_SATURATED`) `COMMITTED` 이전은 RETREAT, 이후는 ABORT_SAFE 다 `[확정 D-8]`. `COMMITTED` 뒤에 γ 를 낮추는 경로는 없다 (v1 범위 밖).
 
 ### 4.8 γ rollout (포화 검사)
 
-후보마다 격자 $(\gamma_f,T_w)\in\Gamma\times\mathcal T$, $\gamma_f\in[\gamma_{\min},\gamma_{\max}]$에 대해 L4 `SoftCatchTranslation`을 **포화 없이** 실행한다. 초기 상태는 현재 기준 상태, 대상은 **L2 샘플러가 vision 궤적에서 보간한 $(p,v,a)$** 다 — RT 루프가 실제로 볼 것과 같은 함수를 쓴다(`traj::sampleAt`). **rollout 시간축은 $now_{lead}=now+T_{arm}$ 이다** (plan §3 — 궤적 샘플링·γ 프로파일·기준 생성은 모두 선행 시각). 다음을 기록한다.
+**적용: 공통** (순위 게이트 `kRankRollout`, 그리고 $\gamma_f$ · $T_w$ 의 선택). rollout 이 굴리는 것은 `closed_form` 의 RT 법칙 (L4 soft-catch DS) 이다. `mpc` 에서도 탐색은 이 rollout 으로 후보의 순위와 $\gamma_f$ 를 매긴다 — 다만 그 법칙이 RT 에서 실행되지는 않으므로, `mpc` 에서 이 판정은 실행의 예측이 아니라 후보 순위의 기준이다.
 
-- 구간 $[now_{lead},t_k]$의 $\max\Vert u\Vert$, $\max\Vert\dot x\Vert$
+후보마다 격자 $(\gamma_f,T_w)\in\Gamma\times\mathcal T$, $\gamma_f\in[\gamma_{\min},\gamma_{\max}]$에 대해 L4 `SoftCatchTranslation`을 **포화 없이** 실행한다 (`gamma_rollout.hpp`). 초기 상태는 현재 기준 상태 (기준이 돌고 있지 않으면 현재 명령 자세의 catch frame 위치, 정지), 대상은 **L2 샘플러가 vision 궤적에서 보간한 $(p,v,a)$** 다 — RT 루프가 실제로 볼 것과 같은 함수를 쓴다(`SampleAt`). **rollout 시간축은 $now_{lead}=now+T_{arm}$ 이다** (plan §3 — 궤적 샘플링·γ 프로파일·기준 생성은 모두 선행 시각). γ 램프는 $[t_k-T_w,\,t_k]$ (시작은 $now_{lead}$ 로 자름) 에서 돈다. 다음을 기록한다.
+
+- 구간 $[now_{lead},t_k]$의 $\max\Vert u\Vert$, $\max\Vert\dot x\Vert$ (그리고 γ 창 $[t_k-T_w,t_k]$ 안에서의 같은 두 값)
 - $t_k$의 잔여 오차 $\Vert e\Vert$
 
 판정에는 `TranslationOutput::u_des`(포화 전 요구 가속도)를 쓴다. `xdd`(실현값)는 포화가 없으면 같지만 의미가 다르다(L4 §5.2).
 
 수락 조건: $\max\Vert u_{des}\Vert\le\eta_aa_{\max}$, $\max\Vert\dot x\Vert\le\eta_vv_{\max}$, $\Vert e(t_k)\Vert\le\epsilon_{term}$ ($\eta<1$ 여유율).
 
-수락 조합 중 $\gamma_f$ 최대를 고르고, 동률이면 최대 가속이 작은 것을 고른다. 수락 조합이 없으면 $\gamma_{\min}$을 한 번 더 검사한다. 그것도 실패하면 후보를 탈락시킨다.
+수락 조합 중 $\gamma_f$ 최대를 고르고, 동률이면 최대 가속이 작은 것을 고른다. 수락 조합이 없으면 $\gamma_{\min}$을 한 번 더 검사한다. 그것도 실패하면 rollout 게이트 실패다 (런타임에서는 순위 실패 — §4.1).
 
-**연산 예산 (S6.3).** 참조 구현 기준 추정으로 전 격자 rollout 이 약 26 ms 로 `planner.budget_s` (당시 10 ms — 현 0.020, §6) 를 넘는다. 전 격자 × 전 후보 × 매 tick 적분을 그대로 돌릴 수 없으므로 **coarse-to-fine 이 필수**다 — 거친 단계로 먼저 거르고 통과한 조합만 세밀하게 재검사한다. **S6.3 구현** (`gamma_rollout.hpp`): 격자 전체를 `planner.rollout.dt_coarse` (10 ms) 로 거르고, 고른 조합 하나만 제어 주기로 확인한다. **거친 단계는 최대치 ($u$, $\dot x$) 만 판정하고 $\Vert e(t_k)\Vert$ 는 확인 단계만 판정한다** — semi-implicit Euler 가 거친 간격에서 움직이는 대상을 약 $\gamma\Vert v\Vert\,dt$ 만큼 뒤따르므로, 2026-09-23 G3-C 투구에서 10 ms 의 잔여 오차가 3–11 mm (제어 주기에서는 0.2–1.5 mm, 최대치 차이는 3 % 이내) 였고 거친 단계에서 $\epsilon_{term}$ 을 판정하면 모든 soft catch 가 자기 이산화 오차로 탈락했다. 전 구간 수락이 없을 때 γ 는 창 안의 최대치로 고르고 판정은 "실패" 로 둔다 (접근 구간이 포화한다는 뜻 — §4.1 의 순위 벌점). 실측 사이클 시간은 G3-C (`test_catching_planner_g3c`) 가 기록한다.
+**전 구간과 창.** 판정은 전 구간 $[now_{lead},t_k]$ 의 것이다. 그런데 접근 구간 — 기준이 팔이 있는 곳에서 $p_c$ 로 γ = 0 으로 끌려가는 구간 — 은 $\gamma_f$ 와 무관하게 $\omega^2\Vert x_0-p_c\Vert$ 를 요구하므로, 실제 이동에서는 모든 조합이 전 구간 판정에 실패하고 $\gamma_f$ 의 선택이 정보를 잃는다. 그래서 전 구간 수락이 없을 때 $\gamma_f$ 는 같은 규칙을 **창 안의 최대치**에 적용해 고르고, 판정은 "실패" 로 둔다 (접근 구간이 포화한다는 뜻 — 순위 벌점). 그 선택도 없으면 $\gamma_{\min}$ 과 가장 긴 창이다.
 
-참고 수치(`test_l3.cpp`, 한 시나리오, 포화 없는 rollout의 창 내 최대 $\Vert u_{des}\Vert$ [m/s²]):
+**연산 예산.** 전 격자 × 전 후보를 제어 주기로 적분하면 `planner.budget_s` 를 넘으므로 **coarse-to-fine** 이다 — 격자 전체를 `planner.rollout.dt_coarse` 로 거르고, 고른 조합 하나만 제어 주기로 확인한다. **거친 단계는 최대치 ($u$, $\dot x$) 만 판정하고 $\Vert e(t_k)\Vert$ 는 확인 단계만 판정한다** — semi-implicit Euler 가 거친 간격에서 움직이는 대상을 약 $\gamma\Vert v\Vert\,dt$ 만큼 뒤따르므로, 거친 단계에서 $\epsilon_{term}$ 을 판정하면 soft catch 가 자기 이산화 오차로 탈락한다. 확인 단계에서 반증되면 판정은 "실패" 이고 $\gamma_f$ 는 창 규칙으로 떨어진다. 사이클 시간은 G3-C (`test_catching_planner_g3c`) 가 본다.
+
+기준 수치 — G3-B 가 런타임 경로로 ±5 % 안에서 재현한다 (`test_catching_gamma_rollout`; 한 시나리오, $\omega=10$, 포화 없는 rollout 의 **창 내** 최대 $\Vert u_{des}\Vert$ [m/s²]):
 
 | $T_w$ \ $\gamma_f$ | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 |
 |---|---|---|---|---|---|
@@ -346,222 +345,225 @@ $$\omega^2(1-\gamma)\Vert\Delta p_c\Vert+\bigl(2\zeta\omega|\dot\gamma|+|\ddot\g
 | 0.60 s | 6.3 | 8.9 | 11.6 | 15.3 | 19.2 |
 | 0.75 s | 8.9 | 8.8 | 10.4 | 12.4 | 14.8 |
 
-$\gamma_f$ 에 대해 거의 선형이라는 점이 v0.4 §4.7 γ 하향의 근거였다 (v1 범위 밖, D-8). 짧은 창($T_w=0.30$ s)에서 $\gamma_f=0.4$ 에 33 m/s²가 필요한데, L4 기본 `a_max`가 15 m/s²임을 생각하면 창 길이 선택이 포화 여부를 지배한다.
+필요 가속도는 $\gamma_f$ 에 대해 거의 선형이고, 창 길이의 선택이 포화 여부를 지배한다 (짧은 창 $T_w=0.30$ s 에서 $\gamma_f=0.4$ 에 33 m/s²).
 
 ### 4.9 정지거리 예약
+
+**적용: 공통** (판정 게이트 — `catch_box`). `mpc` 에서 실제 정지는 MPC 구간이 만들지만, 탐색은 같은 닫힌 형태의 정지점으로 후보를 거른다. RT 는 `catch_box` 를 검사하지 않는다 — 상자는 탐색의 것이다.
 
 포구 후 감속(L7 §4.3)에 필요한 공간을 확보한다.
 
 $$p_{stop}=p_c+\frac{(\gamma_f\Vert v\Vert)^2}{2a_{dec}}\hat v\ \in\ \mathcal W_{catch}$$
 
-$a_{dec}$ 는 L7 감속과 **같은 단일 키**를 읽는다 (§6, S0.3 단일 키 정리).
-
-선택적으로 $p_{stop}$에서도 IK 수락 여부를 검사한다(YAML).
+$a_{dec}$ 는 L7 감속과 **같은 단일 키** `supervisor.decel.a_dec` 를 읽는다 (§6). 함수는 `StoppingPoint` 다. 런타임은 rollout 이 고른 $\gamma_f$ 에서, 오프라인 지도는 γ 창의 양 끝에서 평가한다. $p_{stop}$ 의 IK 는 검사하지 않는다.
 
 ### 4.10 선택 규칙 `[권장]`
+
+**적용: 공통.**
 
 단일 가중 점수 최소화를 쓴다. γ도 그 안의 한 항이다.
 
 $$J=w_\sigma\frac{\sigma_{\max}(t_k)}{r_{cap}}+w_t\frac{\max_it_{\min,i}}{t_k-now-T_{arm}}+w_q\Vert q^\ast-q_n\Vert^2+w_{late}\,(t_{k,\max}-t_k)-w_\gamma\,\gamma_f$$
 
-$w_{late}>0$이면 늦은 포구를 선호한다([R1]의 "latest" 목적과 같은 취지로, 예측이 정확해지는 시간을 번다). $w_\gamma>0$이면 soft catch를 선호한다(충격량 L7 §4.7, 오차 예산 §4.6 두 근거). 가중치는 튜닝 대상이다.
+$w_{late}>0$이면 늦은 포구를 선호한다([R1]의 "latest" 목적과 같은 취지로, 예측이 정확해지는 시간을 번다). $w_\gamma>0$이면 soft catch를 선호한다(충격량 L7 §4.7, 오차 예산 §4.6 두 근거). 가중치는 튜닝 대상이다 (`planner.score.*`). 런타임 점수는 여기에 실패한 순위 게이트 하나당 `planner.score.penalty` 를 더한다 (§4.1). $\sigma$ 를 모르는 후보는 첫 항이, 도달시간을 쓸 수 없는 후보는 둘째 항이 빠진다 (둘 다 순위 벌점으로 반영된다).
 
-**v0.1의 사전식(lexicographic) 선택을 버린 이유.** v0.1은 1순위가 "$\gamma_f$ 최대"였는데, $\gamma_f$ 가 연속 격자값이라 동률이 거의 나오지 않는다. 결과적으로 1순위에서 후보가 하나로 결정되고 $w_\sigma,w_t,w_q,w_{late}$ 네 파라미터가 전부 죽는다. "늦은 포구 선호" 같은 의도가 반영되지 않는다. $\gamma_f$ 를 $J$ 안의 항으로 넣으면 $w_\gamma$ 로 그 상충을 튜닝할 수 있다.
-
-$\gamma_f$ 를 사실상 절대 우선으로 두고 싶으면 $w_\gamma$ 를 크게 잡으면 된다 — 사전식은 $w_\gamma\to\infty$ 의 특수한 경우다.
-
-**대안 정식화 `[미채택]`.** [R17]은 포구를 하이브리드 시스템 안정화 문제로 보고, 포구 성공을 "충돌 후 상태가 포획 집합(capture set) 안에 드는가"로 정량화한다. 그러면 후보 $t_k$ 의 점수가 위처럼 손으로 정한 가중합이 아니라 **포획 집합까지의 여유**라는 하나의 물리량이 된다. 장점은 $w_\sigma,w_t,w_q,w_{late},w_\gamma$ 다섯 개 튜닝 파라미터가 사라진다는 것이고, 대가는 손–공 충돌 모델(반발계수, 접촉 기하, 마찰)과 그 집합의 사전 계산이다. P1b 손의 접촉 모델이 아직 없고(TBD-HAND-05, L6 §4.1), RT 경로에서 집합 소속 판정을 고정 시간에 끝낼 수 있는지도 미확인이라 v0.4에서는 채택하지 않는다. L8 이후 $w$ 튜닝이 실제로 문제가 되면 재검토 대상이다. (Schill & Buss, 2018, IEEE T-RO — 서지는 마스터 §8 [R17].)
+$\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamma_f$ 가 연속 격자값이라 동률이 거의 나오지 않아 1순위에서 후보가 결정되고 나머지 가중이 전부 죽는다. $J$ 안의 항으로 두면 $w_\gamma$ 로 그 상충을 튜닝할 수 있고, $\gamma_f$ 를 사실상 절대 우선으로 두고 싶으면 $w_\gamma$ 를 크게 잡으면 된다 — 사전식은 $w_\gamma\to\infty$ 의 특수한 경우다.
 
 ### 4.11 commit과 손 명령 시각
 
-- commit 조건 (APPROACH→COMMITTED, plan §3): $t_c-now_{real}\le T_{freeze}$, $T_{freeze}\ge T_{close,tot}+T_{arm}+T_{margin}$. 비교 대상은 **실제 시각**이고, 팔 선행분은 $T_{freeze}$ 하한의 $T_{arm}$ 항이 흡수한다. **코드의 하한 (2026-09-24 확인)**: 검증기 `CheckFreezeCoversClose` 는 $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ 를 강제하고 (`lead_enable` 과 무관하게 $T_{arm}$ 을 읽는다), 계획기 후보 창 하한 (`planner.slice.t_lead_min`) 과 RT 채택 거부 (g) 도 $T_{freeze}$ 다. 출하 p1b 0.36 s 는 $T_{arm}$ 0 기준이므로 sim 1차 지연을 보상하려 $T_{arm}$ 을 0.2 로 올리면 하한이 0.4825 s 가 되어 **활성이 거부된다** — S8-B overlay 는 $T_{freeze}$ 0.52 를 함께 넣는다 (C-25, plan §4.4 S8). 그만큼 후보 창이 짧아져 목표 분포가 줄 수 있으므로 지도를 재실행한다.
-- 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다. **단일 출처 (C-14, S7.1 설계 확정 2026-09-23).** 계획기(`planner_search.cpp`)와 oracle(`StoreOraclePlan`)은 `PlanSnapshot::t_cmd_ns` 를 각자 채운다 (oracle 은 지금도 $t_{cmd}=t_c$). S7 에서 손 명령에 쓰는 값은 **손 시퀀서**가 COMMITTED 에서 동결된 $t_c$ 와 손 프로파일로 계산한 것 하나다 (`HandSequencer::Commit`, 접촉 판정 창도 같은 값) — `PlanSnapshot::t_cmd_ns` 는 계획기 기록·진단용일 뿐 손 명령에 쓰이지 않으므로 oracle 값은 맞추지 않았다. 손 명령 발동은 L6 §4.3/§5.3 의 `HandCommandDueRounded`(R-CLOSE, L7 §4.1) 로 한다.
+**적용: 공통** (commit 은 supervisor 의 것이고 두 planner 에서 같다).
+
+- commit 조건 (APPROACH→COMMITTED, plan §3): $t_c-now_{real}\le T_{freeze}$, $T_{freeze}\ge T_{close,tot}+T_{arm}+T_{margin}$. 비교 대상은 **실제 시각**이고, 팔 선행분은 $T_{freeze}$ 하한의 $T_{arm}$ 항이 흡수한다. **코드의 하한**: 검증기 `CheckFreezeCoversClose` 는 $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ 를 강제하고 (`lead_enable` 과 무관하게 $T_{arm}$ 을 읽는다), 계획기 후보 창 하한 (`planner.slice.t_lead_min`) 과 RT 채택 거부 (g) 도 $T_{freeze}$ 다. 순위 게이트 `kRankCommitLead` 는 후보의 선행 시간이 $T_{close,tot}+T_{arm}+$ `planner.time.margin` 이상인지를 본다. $T_{arm}$ 을 올리면 $T_{freeze}$ 하한도 함께 올라가고 그만큼 후보 창이 짧아진다
+- 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다. **단일 출처 (C-14).** 계획기(`planner_search.cpp`)와 oracle(`StoreOraclePlan`)은 `PlanSnapshot::t_cmd_ns` 를 각자 채운다 (oracle 은 $t_{cmd}=t_c$). 손 명령에 쓰는 값은 **손 시퀀서**가 COMMITTED 에서 동결된 $t_c$ 와 손 프로파일로 계산한 것 하나다 (`HandSequencer::Commit`, 접촉 판정 창도 같은 값) — `PlanSnapshot::t_cmd_ns` 는 계획기 기록·진단용일 뿐 손 명령에 쓰이지 않는다. 손 명령 발동은 L6 §4.3/§5.3 의 `HandCommandDueRounded`(R-CLOSE, L7 §4.1) 로 한다.
 - **$T_{tick}$은 여기에 넣지 않는다.** §4.5의 $T_{close,tot}=T_{close,e2e}+T_{tick}$ 에서 $T_{tick}=h/2$ 는 틱 양자화 오차의 **worst-case 예산**이다. L6 §4.3의 반올림 규칙(가장 가까운 틱)을 쓰면 오차는 $\pm h/2$ 로 영평균이라 명령 시각 자체를 당길 이유가 없다. γ 창(예산)에는 들어가고 $t_{cmd}$(명령)에는 들어가지 않는다 — 두 곳의 역할이 다르다.
-- **시간 규약 `[확정 D-2]`.** $t_c$ 와 $t_{cmd}$ 는 모두 공의 **물리 시각** `BallTime` (절대 steady ns) 단일 정의다. "선행축 시각" 이나 "실제시각축 시각" 이라는 별도의 $t_c$ 는 없다 — 축은 시각 값이 아니라 **판정마다 비교하는 '지금'** 에 붙는다 (plan §3): 손 명령은 $now\ge t_{cmd}$ (실제, 손은 선행 보상 없음), DECEL 진입은 $now_{lead}\ge t_c$, rollout·γ 프로파일은 $now_{lead}$. v0.4 의 §4.11 ("실제 시각 축") 과 §5.2 주석 ("$t_c$ 는 선행축, $t_{cmd}$ 는 실제시각축") 의 모순은 이 규약으로 해소한다.
+- **시간 규약 `[확정 D-2]`.** $t_c$ 와 $t_{cmd}$ 는 모두 공의 **물리 시각** `BallTime` (절대 steady ns) 단일 정의다. "선행축 시각" 이나 "실제시각축 시각" 이라는 별도의 $t_c$ 는 없다 — 축은 시각 값이 아니라 **판정마다 비교하는 '지금'** 에 붙는다 (plan §3): 손 명령은 $now\ge t_{cmd}$ (실제, 손은 선행 보상 없음), DECEL 진입은 $now_{lead}\ge t_c$, rollout·γ 프로파일은 $now_{lead}$.
 - [R2]는 접촉 직전 일정 시간부터 예측 갱신을 멈췄다. 본 구현의 동결은 포구점·γ에만 적용하고, L2의 실시간 추정은 계속 사용한다(§4.6 둘째 항).
 
 ## 5. C++ 구현
 
 ### 5.1 `time_feasibility.hpp` (S1.5 이식 완료)
 
-SSoT 는 `rtc_controllers/include/rtc_controllers/catching/time_feasibility.hpp` 다 — 문서에 코드를 복제하지 않는다. 참조 구현 (v0.4, 같은 이름) 원본은 (삭제됨 — [README](../README.md#삭제된-참조-구현)). 참조의 내용: `tRest` (정지→정지 최소시간), `tMinChecked`/`TMinResult` (§4.3, `w0_clamped` 플래그), 편의 래퍼 `tMin`, `GammaWindow`/`gammaWindow` (§4.5, `input_invalid` 플래그), `maxCatchableSpeed`.
+**적용: 공통.** 정의는 `rtc_controllers/include/rtc_controllers/catching/time_feasibility.hpp` 다 — 문서에 코드를 복제하지 않는다. 함수와 이 문서의 절:
 
-S1.5 이식 시 변경:
+| 함수 | 절 |
+|---|---|
+| `TRest` · `TMinChecked` (`TMinResult`) · `TMin` · `MaxJointTMin` · `ReachTimeFeasible` | §4.3 |
+| `PlanningTcpSpeed` · `ComputeGammaWindow` (`GammaWindow`) · `DirectionalSpeedMax` · `MaxCatchableSpeed` | §4.5 |
+| `StoppingPoint` | §4.9 |
+| `CatchErrorSigma` · `ErrorBudgetOk` | §4.6 |
 
-- 배치·명명: rtc_controllers `catching` (namespace `rtc::catching`), 함수 PascalCase (D-1, S0.3). 구조체 `GammaWindow` 와 함수 이름이 겹치지 않게 정리한다
-- `tMinChecked`: 한계 $\le0$·NaN 이면 $t=0$ 을 무표시로 돌려주는 결함 → 한계 무효 플래그 추가, 호출자는 후보 탈락 (§4.3)
-- 가속 한계 인자는 D-16 도출 상수 box (CLIK 가속 box 와 같은 값) (§4.3)
-- `ComputeGammaWindow` 의 `v_tcp_max` 인자는 호출부에서 $\eta_v\cdot$`reference.v_max` 로 넘긴다 (D-9, §4.5)
-- 테스트: `test_l3.cpp` → `cases.txt` → `verify_l3.py` (삭제됨) 대조 결과를 GTest 고정 테이블로 이식 (S1.1), 한계 무효 경로 회귀 테스트 추가
+한 후보의 도달시간 · γ 창 · 정지점을 묶어 판정하는 것은 `rank_gates.hpp` 의 `JudgeRankGates` 이고 (오프라인 지도와 런타임이 같이 부른다 — G3-I), 방향 속력의 $\dot q^u$ 는 `unit_speed.hpp`, rollout 은 `gamma_rollout.hpp` 다. 전부 할당 0 · `noexcept` 다 (계획기 스레드가 SCHED_FIFO 일 수 있다). 무효 입력은 통과하는 값이 아니라 플래그와 $+\infty$ · 0 · NaN 으로 닫힌다 (fail-closed, NUM-2/NUM-4).
 
 ### 5.2 `PlanSnapshot`
 
-계획기 → RT 전달은 `rtc::SeqLock<PlanSnapshot>` 이다 (plan §6). **SeqLock payload 는 trivially copyable 이어야 하므로 `PlanSnapshot` 은 POD 다** — Eigen 멤버 금지, 벡터는 `std::array<double, N>`, 시각은 절대 정수 ns. v0.4 의 `Eigen::Vector3d`·`t_ref` + 상대시간 설계는 폐기한다 (S1.2). 필드 (타입 정의는 S1.2 에서 확정):
+**적용: 공통.** `mpc` 는 여기에 `DecelPlanSnapshot` (별도 SeqLock) 이 더해진다.
 
-| 필드 | 타입 | 의미 |
-|---|---|---|
-| `activation_generation` | `uint64` | base `ActivationGeneration()` 값 — vision ingress·계획기가 매 스냅샷에 싣는 activation 경계 (D-23). RT 는 `IsCurrentGeneration()` 이 아니면 무효로 본다 |
-| `generation` | `uint64` | 계획에 쓴 궤적의 vision 트랙 epoch (L1 §4.4, D-4) |
-| `snapshot_sequence` | `uint64` | provenance token 의 단조 시퀀스 (D-21, D-22). RT 는 `SeqLock::sequence()` 를 따로 읽지 않고 이 payload 내부 값만으로 새 스냅샷 여부를 판정한다 |
-| `traj_recv_ns` | `int64` (절대 steady ns) | 이 plan 이 쓴 궤적 스냅샷의 수신 시각 (D-22) — source 나이 판정 입력 |
-| `rt_iteration` | `uint64` | 계산 시작 시 읽은 RT 상태 스냅샷의 tick 카운터 (D-22) |
-| `rt_state_ns` | `int64` (절대 steady ns) | 계산 시작 시 읽은 RT 상태 스냅샷의 시각 (D-22) — state 나이 판정 입력 |
-| `publish_ns` | `int64` (절대 steady ns) | 계획기가 이 `PlanSnapshot` 을 게시한 시각 (D-22). G3-J 의 `{snapshot_sequence, recv_steady_ns, wake_ns, publish_ns}` 이벤트 레코드와 짝을 이룬다 (plan §7.2) |
-| `plan_id` | `uint32` | plan 식별 |
-| `t_c_ns`, `t_cmd_ns` | `int64` (절대 steady ns) | 포구 시각·손 폐쇄 명령 시각. 둘 다 `BallTime` (§4.11, D-2) — 상대시간·축 구분 없음 |
-| `p_c`, `a_d`, `v_c` | `std::array<double,3>` (W) | 포구점, 목표 접근축, 예측 포구 순간 공 속도 (감속 계획용) |
-| `gamma_g0`, `gamma_gf`, `gamma_t0_ns`, `gamma_t1_ns` | `double` ×2, `int64` ×2 | L4 `GammaProfile` 파라미터. 시각은 절대 ns 이고 $now_{lead}$ 와 비교해 평가한다. 상대시간 변환은 L4 수치 코어 경계에서 |
-| `gamma_min` | `double` | §4.5 γ 창 하한 (진단. v0.4 의 derate 하한 용도는 v1 범위 밖, D-8) |
-| `q_star`, `nv` | `std::array<double, kMaxPlanNv>`, `int` | IK 해 (L5 posture 참고). 용량 `kMaxPlanNv` 는 **계획기 control 모델 nv** 를 담는 컴파일 타임 상수이고 (S1.2: 32), configure 에서 nv ≤ `kMaxPlanNv` 를 검사한다. 궤적 점 용량 `kCap` 과는 다른 상수다 (v0.5 문서가 둘을 같은 이름으로 불렀다) |
-| `w5`, `w6` | `double` | §4.2 catchability manipulability — IK·게이트 판정용 $w_5$ 와 검증용 $w_6$ 를 정의(`planner.catchability.definition`)와 무관하게 매 후보 **항상 함께** 기록한다 (D-18, C-3, plan §11) |
-| `score`, `sigma_c`, `sigma_l` | `double` | §4.10 점수, §4.6 오차 예산 두 항 (v1 에서 게시되는 `sigma_l` 은 `sigma_c` 와 같은 값 — §4.6 경로 2 는 v1 제외) |
-| `dp_impact` | `double` | L7 §4.7 예상 충격량 [kg m/s] |
-| `reason` | `uint8` enum | plan 없음·탈락 사유 (게이트별: 불확실성, IK 실패, manipulability 미달, 도달시간, 한계 무효, γ 창, 정지거리, rollout, 오차 예산, 충격량, 지평 부족(D-15), 예산 초과) |
-| `valid` | `bool` | |
+계획기 → RT 전달은 `rtc::SeqLock<PlanSnapshot>` 이다 (plan §6). 정의는 `rtc_controllers/include/rtc_controllers/catching/trajectory.hpp` (`PlanSnapshot` · `ProvenanceToken` · `PlanReason` · `DecelPlanSnapshot`), RT 쪽 수락 규칙은 `planner_io.hpp` (`JudgePlan` · `JudgeDecelPlan`) 다. **SeqLock payload 는 trivially copyable 이어야 하므로 `PlanSnapshot` 은 POD 다** — Eigen 멤버 금지, 벡터는 `std::array<double, N>`, 시각은 절대 정수 ns. 필드의 뜻 가운데 헤더에 없는 규범:
 
-**RT 소비자의 fail-closed 판정 (D-21, D-22, D-23).** 매 tick `Load()` 를 무조건 한 번 하고(D-21), payload 안에서 다음을 모두 검사한다: `activation_generation` 이 `IsCurrentGeneration()` 과 일치하는가, `generation` 이 RT 가 아는 vision epoch 과 일치하는가, `snapshot_sequence` 가 이전에 소비한 값보다 단조 증가했는가, `traj_recv_ns`·`rt_state_ns` 로 계산한 source 나이·state 나이가 각각의 상한 이내인가. 하나라도 실패하면 그 tick 은 새 payload 를 쓰지 않고 이전 유효 plan(또는 무효 상태)을 유지한다.
+- provenance (`activation_generation` · `generation` · `snapshot_sequence` · `traj_recv_ns`) 는 중첩 `ProvenanceToken token` 안에 있다. 궤적 스냅샷 · 공분산 버퍼 · plan 이 같은 네 값을 싣는다 (D-22, D-23)
+- `t_c_ns` · `t_cmd_ns` 는 둘 다 `BallTime` 이다 (§4.11, D-2) — 상대시간·축 구분이 없다. `t_cmd_ns` 는 기록·진단용이고 손 명령에 쓰이지 않는다 (§4.11)
+- `gamma_g0` · `gamma_gf` · `gamma_t0_ns` · `gamma_t1_ns` 는 L4 `GammaProfile` 의 파라미터다. 시각은 절대 ns 이고 $now_{lead}$ 와 비교해 평가한다. 상대시간 변환은 L4 수치 코어 경계에서 한다. `gamma_min` 은 §4.5 γ 창 하한 (진단)
+- `q_star` 는 팔 **device 순서**다. 용량 `kMaxPlanNv` 는 **계획기 control 모델 nv** 를 담는 컴파일 타임 상수이고 configure 에서 nv ≤ `kMaxPlanNv` 를 검사한다. 궤적 점 용량 `kCap` 과는 다른 상수다
+- `w5` · `w6` 는 정의 (`planner.catchability.definition`) 와 무관하게 **항상 함께** 기록한다 (D-18, C-3, plan §11)
+- `sigma_l` 은 `sigma_c` 와 같은 값이다 (§4.6). `dp_impact` 는 예상 충격량 [kg m/s] 의 기록이다 (§4.1)
+- `reason` 은 plan 이 없을 때 가장 많이 걸린 판정 게이트다. 작업공간 탈락 ($p_c$ 든 $p_{stop}$ 이든) 은 `kStoppingDistance` 로, 예산에 밀려 평가 못 한 것은 `kBudgetExceeded` 로, settle 중은 `kUncertainty` 로, 창 안에 후보가 없으면 `kHorizonShort` 로 읽힌다 — 어느 쪽이 상자를 벗어났는지는 `planner_events.csv` 가 갖는다
 
-**S6 구현 (2026-09-23).** 새 plan 판정은 `snapshot_sequence` 가 아니라 **`plan_id`** 로 한다 — `snapshot_sequence` 는 궤적의 것이라 같은 궤적에서 계산한 두 plan 을 가르지 못한다. `plan_id` 는 writer (계획기, 또는 테스트·sim 용 oracle) 의 단조 카운터이고, RT 는 (a) `valid` · (b) `activation_generation` 일치 · (c) `generation` 이 RT 가 마지막으로 받은 궤적의 트랙 epoch 과 일치 · (d) `plan_id` 가 이미 받은 값과 다름 · (e) 게시 나이 (`now − publish_ns`) ≤ `io.t_stale` · (f) `publish_ns` 가 RT 의 마지막 리셋 시각 이후 — 를 모두 만족할 때만 받는다. (f) 는 E-STOP 처럼 activation generation 을 올리지 않는 리셋을 덮는다. **token 불일치·나이 초과를 위한 새 `Reason` 은 만들지 않는다** (값 하나가 enum·`kAllReasons`·문자열·`CatchingState.msg` 네 곳에 걸리고 msg 는 D-20 동결): TRACKING 에서는 `kNoCatchablePlan` 으로 읽는다. RT 는 `plan_box_` 에 쓰지 않는다 — writer 는 하나뿐이다 (계획기와 oracle 이 함께 켜진 설정은 park).
+**RT 소비자의 fail-closed 판정 (D-21, D-22, D-23).** 매 tick `Load()` 를 무조건 한 번 하고(D-21), payload 안의 값만으로 판정한다 (`SeqLock::sequence()` 를 따로 읽지 않는다). 새 plan 판정은 `snapshot_sequence` 가 아니라 **`plan_id`** 로 한다 — `snapshot_sequence` 는 궤적의 것이라 같은 궤적에서 계산한 두 plan 을 가르지 못한다. `plan_id` 는 writer (계획기, 또는 테스트·sim 용 oracle) 의 단조 카운터이고, RT 는 (a) `valid` · (b) `activation_generation` 일치 · (c) `generation` 이 RT 가 마지막으로 받은 궤적의 트랙 epoch 과 일치 · (d) `plan_id` 가 이미 받은 값과 다름 · (e) 게시 나이 (`now − publish_ns`) 가 0 이상이고 `io.t_stale` 이하 · (f) `publish_ns` 가 RT 의 마지막 리셋 시각 이후 · (g) 아래 R-ADMIT — 를 모두 만족할 때만 받는다. (f) 는 E-STOP 처럼 activation generation 을 올리지 않는 리셋을 덮는다. 하나라도 실패하면 그 tick 은 새 payload 를 쓰지 않고 이전 유효 plan(또는 무효 상태)을 유지한다. **token 불일치·나이 초과를 위한 새 `Reason` 은 만들지 않는다** (값 하나가 enum·`kAllReasons`·문자열·`CatchingState.msg` 네 곳에 걸리고 msg 는 D-20 동결): TRACKING 에서는 `kNoCatchablePlan` 으로 읽는다 (거부 사유 자체는 `PlanRefusal` 로 관측된다). RT 는 plan box 에 쓰지 않는다 — writer 는 하나뿐이다 (계획기와 oracle 이 함께 켜진 설정은 park).
 
-**S7.2 추가 — R-ADMIT (C-31, 설계 확정 2026-09-23).** 위 (a)~(f) 에는 $t_c$ 가 이미 지나쳤거나 너무 임박했는지를 보는 조건이 없다. **(g)** `t_c-now\le T_{freeze}` 이면 거부한다(`kTooLate`) — 이 조건이 없으면 $T_{freeze}$ 안의 $t_c$ 를 가진 plan 도 채택 다음 tick 에 곧바로 commit 하고, $t_c\le now$ 인 plan 은 몇 tick 만에 `DECEL` 까지 통과해 버린다. 파라미터 검증기는 `T_freeze ≥ T_close_e2e + T_arm + margin` 을 강제한다(§4.11 하한과 같은 식). fixture 는 `planner.freeze`(`T_freeze`)를 명시해야 한다 — 미지정이면 $T_{freeze}=0$ 이 되어 이 조건이 사실상 무력화된다.
+**R-ADMIT (C-31).** **(g)** `t_c-now\le T_{freeze}` 이면 거부한다(`kTooLate`) — 이 조건이 없으면 $T_{freeze}$ 안의 $t_c$ 를 가진 plan 도 채택 다음 tick 에 곧바로 commit 하고, $t_c\le now$ 인 plan 은 몇 tick 만에 `DECEL` 까지 통과해 버린다. 파라미터 검증기는 `T_freeze ≥ T_close_e2e + T_arm + h` 를 강제한다(§4.11 의 코드 하한). fixture 는 `planner.freeze`(`T_freeze`)를 명시해야 한다 — 미지정이면 이 조건이 꺼진다.
+
+**`mpc` 의 쌍.** RT 는 TRACKING 에서 plan 을 그 첫 구간 (`DecelPlanSnapshot`) 과 **같은 tick 에 함께** 채택한다 — 구간이 수락 (`JudgeDecelPlan`) 되지 않으면 plan 도 받지 않는다 ("plan 없음" 과 같다). 그리고 `mpc` 에서는 APPROACH 중에 온 다른 plan 을 받지 않는다 (§4.7).
 
 계획기 쪽도 대칭으로 검사한다: 계산 시작 시 최신 token 을 한 번 읽고, 게시 직전에 다시 읽어 그 사이 대체됐으면 게시를 버린다. 궤적 스냅샷의 token 과 공분산 버퍼의 token 이 다르면(궤적 N ↔ 공분산 N−1 혼합 포함) 그 조합은 쓰지 않는다.
 
 ### 5.3 계획 루프 (계획기 스레드, D-7)
 
-**스레드 `[확정 D-7]`.** 기존 MPC 스레드와 같은 생성 방식이다 (plan §6).
+**적용: 공통** (스레드 · 데이터). "한 번 깨어났을 때의 순서" 는 planner 마다 다르다 — 아래에 둘 다 적는다.
+
+**스레드 `[확정 D-7]`.** 기존 MPC 스레드와 같은 생성 방식이다 (plan §6). 정의는 `integrated_bringup/include/integrated_bringup/controllers/catching/planner_thread.hpp` (`CatchingPlannerThread`), 한 번의 wake 의 본문은 `rtc_controllers` 의 `PlannerCycle::Run` (`planner_cycle.hpp`) 이다.
 
 - 클래스: `rtc::PeriodicRtThread` 의 **형제 subclass** (`rtc::mpc::MPCThread` 를 상속하지 않는다 — PlanSnapshot 을 `MPCSolution` 에 억지로 넣게 된다). 탐색 코어는 rtc_controllers `catching`, 스레드 소유는 `integrated_bringup` 바인딩 (D-1)
-- 기동 `[확정 D-7c]`: event 구동 — nrt 파서가 새 궤적을 게시하면 eventfd 로 깨운다. `WaitForNextTick` 을 eventfd 대기 + 제한 시간으로 override, `JitterMeaningful()` 은 false. eventfd 는 여러 신호를 한 번으로 합치므로(coalescing), 깨어난 신호 횟수와 무관하게 **항상 최신 스냅샷을 읽는다**
-- 수명: DemoWbc 관용구 — configure 에서 전 버퍼(궤적·공분산 버퍼, IK 작업 공간, rollout 상태, 진단 큐) 할당, activate 에서 layout profile 게이트 → lazy spawn → `Resume`, deactivate 에서 `Pause`, ~~join 은 소멸자에서만~~ → **join 은 `on_cleanup` 에서** (S6-A `/code-review`: 스레드가 설정보다 오래 살면 다음 설정에서 resume 된다 — 아래 "데이터" 절). `Pause()` 는 요청 플래그만 세우고 진행 중인 iteration 을 멈추지 않으므로, `on_deactivate` 이후에도 plan 이 한 번 더 게시될 수 있다 — RT 쪽은 그 payload 의 `activation_generation` 이 `IsCurrentGeneration()` 과 다르면 소비하지 않는다 (D-23, §5.2)
-- 데이터: RT → 계획기 `rtc::SeqLock` (POD: $q_c,\dot q_c$, L4 기준 상태, 모드), 궤적 스냅샷은 nrt 파서가 게시한 SeqLock, **공분산은 계획기 쪽 버퍼에만** (A-3 — NaN(모름) 처리도 계획기 한 곳에서), 출력은 `rtc::SeqLock<PlanSnapshot>` — **S6 구현**: RT → 계획기는 `PlannerRtState` (activation generation · tick · 시각 · mode · 팔 명령 $q_c,\dot q_c$ · L4 기준 상태 $x,\dot x,\gamma,\dot\gamma$ · 현재 `plan_id` · 리셋 epoch) 를 RT tick 이 **매 tick** Store 한다. 깨우는 쪽은 nrt 파서 (새 궤적 수락 시 eventfd write) 이고 RT tick 은 eventfd 에 손대지 않는다. 재무장 리셋 (L7 §4.8) 은 RT 가 리셋 epoch 을 올리고 reset floor 를 적는 것뿐이다 (box 의 writer 는 하나). 끝난 시행을 위해 올라온 wake 신호는 따로 비우지 않는다 — 깨어날 때의 read 가 이미 소비하고, 그 시행용으로 계산된 plan 은 RT 가 reset floor 로 거른다. 리셋을 본 wake 도중에 올라온 신호는 **새 시행**의 궤적이므로 남겨 둔다 (비우면 새 시행의 첫 plan 이 wake timeout 만큼 늦는다 — 2026-09-23 `/code-review`). 수명: 계획기 스레드는 **한 configuration 의 것**이다 — `on_cleanup` 에서 join 하고 다음 activation 이 새 설정으로 다시 띄운다 (DemoWbc MPC 처럼 소멸자까지 두면 oracle 로 재구성한 뒤에도 resume 돼 box writer 가 둘이 된다)
-- **RT-1~10 준수 코드** (plan §7.2 결정 방식 1): 할당 0, `noexcept`, 락·블로킹 I/O 없음, 로깅 금지. 진단(후보 수, 게이트별 탈락, 실행시간, 선택 결과)은 `rtc::SpscQueue` 로 넘기고 aux 타이머가 drain 해 CSV 로 쓴다. 그러면 FIFO/OTHER 는 thread layout 값 하나로 바뀌고 코드가 바뀌지 않는다 — 단, RT 쪽 `PlanSnapshot` 읽기는 writer 가 SCHED_OTHER 여도 D-21 의 측정(최악 재시도 시간)을 통과해야 한다 (plan §7.2 결정 방식 1)
-- 배치 `[확정 D-7b → E-7 결정 J 로 대체, 2026-09-23]`: ~~빈 slot 에 새 thread layout role~~ → **기존 `mpc` role 재사용** (`SelectThreadConfigs().mpc.main`, 스레드 이름 `mpc_main`, tier ≥ 6 slot 3 FIFO 60 · tier 4 OTHER). 계획기는 MPC 와 같은 역할이고 CM 이 active 컨트롤러를 하나만 두므로 같은 코어에 동시에 도는 FIFO 는 하나다 (plan §6). activate 게이트: `planner.enabled` && profile `mpc_off` 면 `on_activate` 첫 문장 FAILURE
-- 스케줄러 D-7a (**측정은 생략, 초기값 FIFO 유지** — 2026-09-23 사용자 결정, plan §7.2; 아래는 측정 절차의 기록): S6.5 에서 제어 PC 부하 상태로 FIFO·OTHER 각각 측정 (수신 → plan 게시 지연 p50·p99·최대, 예산 초과율, ≥ 1000 시행). FIFO 가 p99 를 `budget_s` 의 10% 이상 줄이거나 예산 초과율을 줄이면 FIFO 유지, 아니면 SCHED_OTHER (A-2)
-- 복사하지 않을 것: 현 MPC 경로의 `MPCSolutionManager::PublishSolution` mutex·try/catch, `HandlerMPCThread` 의 `fprintf` (plan §6)
+- 기동 `[확정 D-7c]`: event 구동 — nrt 파서가 새 궤적을 수락하면 eventfd 로 깨운다. `WaitForNextTick` 은 eventfd 대기 + 제한 시간 (`planner.wake_timeout_s`) 이라, vision 이 조용해도 움직이는 RT 상태에 대해 다시 계획한다. eventfd 는 여러 신호를 한 번으로 합치므로(coalescing), 깨어난 신호 횟수와 무관하게 **항상 최신 스냅샷을 읽는다**. RT tick 은 eventfd 에 손대지 않는다
+- 수명: configure 에서 전 버퍼(궤적·공분산 버퍼, IK 작업 공간, rollout 상태, 진단 큐)를 할당하고, activate 에서 layout profile 게이트 → lazy spawn → `Resume`, deactivate 에서 `Pause`, **join 은 `on_cleanup` 에서** 한다. 계획기 스레드는 **한 configuration 의 것**이다 — 스레드가 설정보다 오래 살면 다음 설정 (예: oracle 로 재구성) 에서 resume 돼 box writer 가 둘이 된다. `Pause()` 는 요청 플래그만 세우고 진행 중인 iteration 을 멈추지 않으므로, `on_deactivate` 이후에도 plan 이 한 번 더 게시될 수 있다 — RT 쪽은 그 payload 의 `activation_generation` 이 지금 것과 다르면 소비하지 않는다 (D-23, §5.2 (b))
+- 데이터: RT → 계획기는 `rtc::SeqLock<PlannerRtState>` (activation generation · tick · 시각 · mode · 팔 명령 $q_c,\dot q_c$ · 대기 자세 · L4 기준 상태 $x,\dot x,\gamma,\dot\gamma,\ddot\gamma$ 와 돌고 있는 γ 램프 · 따르는 `plan_id` 와 $t_c$ · 따르는 / 대기 중인 구간 · 리셋 epoch) 이고 RT tick 이 **매 tick** Store 한다. 궤적 스냅샷은 nrt 파서가 게시한 SeqLock, **공분산은 계획기 쪽 버퍼에만** (A-3 — NaN(모름) 처리도 계획기 한 곳에서), 출력은 `rtc::SeqLock<PlanSnapshot>` 와 (`mpc`) `rtc::SeqLock<DecelPlanSnapshot>` 이다. box 마다 writer 는 하나다. 재무장 리셋 (L7 §4.8) 은 RT 가 리셋 epoch 을 올리고 reset floor 를 적는 것뿐이다. 끝난 시행을 위해 올라온 wake 신호는 따로 비우지 않는다 — 깨어날 때의 read 가 이미 소비하고, 그 시행용으로 계산된 plan 은 RT 가 reset floor 로 거른다. 리셋을 본 wake 도중에 올라온 신호는 **새 시행**의 궤적이므로 남겨 둔다 (비우면 새 시행의 첫 plan 이 wake timeout 만큼 늦는다)
+- **RT-1~10 준수 코드** (plan §7.2): 할당 0, `noexcept`, 락·블로킹 I/O 없음, 로깅 금지. 진단(후보 수, 게이트별 탈락, 실행시간, 선택 결과)은 `rtc::SpscQueue` 로 넘기고 aux 타이머가 drain 해 CSV (`planner_events.csv`) 로 쓴다. 그러면 FIFO/OTHER 는 thread layout 값 하나로 바뀌고 코드가 바뀌지 않는다
+- 배치: thread layout 의 **`mpc` role** 을 쓴다 (`SelectThreadConfigs().mpc.main`, 스레드 이름 `mpc_main`). 계획기는 MPC 와 같은 역할이고 CM 이 active 컨트롤러를 하나만 두므로 같은 코어에 동시에 도는 FIFO 는 하나다 (plan §6). activate 게이트: `planner.enabled` 이고 layout profile 이 `mpc` role 의 코어를 돌려준 것 (`mpc_off`) 이면 `on_activate` 가 FAILURE 다
+- 스케줄러: `mpc` role 의 설정을 따른다 (D-7a). 제어 PC 에서의 FIFO · OTHER 비교 측정 (G3-J) 은 하지 않았다
 
-**한 번 깨어났을 때의 순서** (§4.1 단일 진입 함수의 본문):
+**한 번 깨어났을 때의 순서** (`PlannerCycle::Run`):
 
-1. 궤적 스냅샷·공분산 읽기. 트랙 epoch 가 막 바뀌었으면 `n_settle` 동안 invalid 게시 (§4.4)
-2. RT 상태 읽기. 동결 모드면 `monitorOnly()` 만 수행 (아래)
-3. vision 샘플 격자의 각 $k$ 에 대해: 작업공간·지평 검사 (L2 §4.6) → §4.1 게이트 순서 → 점수 (§4.10). 탈락 사유는 진단 큐로
-4. 예산 `budget_s` 초과 시 남은 슬라이스를 건너뛰고 지금까지의 최선을 쓴다
-5. 후보가 없으면 invalid + 사유 게시, 있으면 §4.7 히스테리시스를 거쳐 게시
+1. RT 상태 (`PlannerRtState`) 읽기 — 이것이 계획할지를 정한다. 리셋 epoch 이 바뀌었으면 시행 상태를 버린다 (탐색의 현재 plan · settle 카운트, `mpc` 는 decel 상태와 decel box 의 구간까지)
+2. 모드가 정하는 일 (`ActivityFor` — 모드의 술어이지 enum 순서 비교가 아니다. `mode >= Committed` 같은 나열 순서 의존은 상태를 추가하면 조용히 깨진다):
 
-- `isFrozen(mode)` 는 술어 함수로 둔다. `mode >= Mode::Committed` 같은 enum 나열 순서 의존은 상태를 추가하면 조용히 깨진다.
-- **동결 중에도 `monitorOnly()` 는 돈다**(§4.6): $\sigma_\ell$ 을 계산해 `planner_events.csv` 에 **기록만** 한다. 이 값이나 σ 성장률·L1 $\bar\nu$ 로 abort 를 판단하는 것은 v1 설계에서 제외했다 (§4.6 경로 2, plan D-S8-7 (a)).
+| RT 모드 | `closed_form` | `mpc` |
+|---|---|---|
+| TRACKING · APPROACH (탐색) | 아래 "탐색 wake" — APPROACH 에서도 매 wake 탐색하고 §4.7 로 교체를 판정 | RT 가 plan 을 **따르는 중**이면 탐색을 건너뛰고 구간만 재계획. 아니면 "탐색 wake" (쌍 게시 직후에는 RT 상태가 그 게시를 반영할 때까지 — 게시 뒤 3 tick — 기다린다) |
+| COMMITTED · CLOSING (동결) | `monitorOnly()` — $\sigma_\ell$ 기록 (§4.6) | `monitorOnly()` 뒤 구간 재계획 (아직 $t_c$ 앞이라 공을 읽는다) |
+| DECEL | 없음 | 포구 뒤 재계획만 |
+| 그 밖 (IDLE · ARMED · HOLD · RETREAT · ABORT_SAFE · FAULT) | 없음 | 없음 |
+
+**탐색 wake** (두 planner 공통, 마지막 단계만 다르다):
+
+1. 궤적 스냅샷 읽기 — 지금 activation 의 것이 아니면 끝 (`no_input`). 이어서 공분산 읽기: token 이 궤적과 다르면 한 번 더 읽고, 그래도 다르면 그 조합은 쓰지 않는다 (공분산 모름으로 계획)
+2. 탐색 (`PlannerSearch::Plan`, §4.1 단일 진입 함수): 트랙 epoch 가 막 바뀌었으면 `n_settle` 동안 plan 없음 (§4.4) → vision 샘플 격자의 후보마다 창·작업공간 검사와 사전 점수 → IK 예산 안에서 §4.1 의 순서 → 점수 (§4.10). 예산 `budget_s` 가 다하면 남은 후보를 건너뛰고 지금까지의 최선을 쓴다. `closed_form` 에서 RT 가 plan 을 따르는 중이면 §4.7 이 게시 여부를 정한다
+3. 게시 직전 재확인: 궤적 token 이 그대로이고 리셋 epoch · activation 이 그대로여야 한다 — 아니면 버린다 (`superseded`). 교체 규칙이 보류를 정했으면 게시하지 않는다 (`held`)
+4. 게시:
+   - **`closed_form`**: `PlanSnapshot` 을 저장한다 — 유효한 plan 이든 "plan 없음" + 사유든
+   - **`mpc`**: plan 이 유효하면 첫 구간을 푼다 (`DecelPlanner::PlanFirst`). 보류되면 plan 도 게시하지 않는다 (`held`). 풀리면 쌍을 다시 확인한다 — 같은 트랙 (같은 스냅샷이 아니다: 첫 풀이가 궤적 주기보다 길 수 있다), 리셋 epoch · activation 그대로, RT 가 그 사이 다른 plan 을 따르지 않음, $t_c-$ 게시 시각 $>T_{freeze}$, 구간이 읽히기 전에 시작하지 않음 — 그리고 **구간을 먼저, plan 을 다음에** 저장한다 (RT 가 한 tick 에 쌍을 판정하므로 그때 구간이 있어야 한다). "plan 없음" 은 `mpc` 에서도 plan 만 게시한다
+
+- **동결 중에도 `monitorOnly()` 는 돈다**(§4.6): $\sigma_\ell$ 을 계산해 `planner_events.csv` 에 **기록만** 한다. 이 값이나 σ 성장률·L1 $\bar\nu$ 로 abort 를 판단하지 않는다 (§4.6 경로 2).
 - 시행 종료 시 plan 무효화는 L7이 한다(L7 §4.8).
-- 후보 시각은 vision 샘플 격자를 그대로 쓴다. `planner.slice.dt`가 카메라 주기보다 크면 격자를 솎아 쓰고, 작으면 보간해 쓴다(L2 `SampleAt`). 어느 쪽이든 격자 간격은 `TBD-VIS-04` 확정 후 정한다.
+- 후보 시각은 vision 샘플 격자를 그대로 쓴다. `planner.slice.dt` 가 vision 간격보다 크면 격자를 솎아 쓴다. 보간해서 후보를 만들지 않는다 (공분산을 시각 보간할 필요가 없다).
+- 구간 재계획의 판정 (어느 격자점에서 다시 푸는가, 게시 조건, RT 의 구간 전환) 은 formulation 과 L7, 코드는 `decel_planner.hpp` 의 머리 주석이 갖는다.
 
 ### 5.4 방향 속력 (§4.5)
 
-v0.4 문서의 코드 스케치는 삭제한다 (참조 헤더에 없고, 분자가 노름이며 0 가드가 없었다). S1.5 에서 확정할 요구사항:
+**적용: 공통.** 구현은 `unit_speed.hpp` 의 `UnitSpeedSolver` ($\dot q^u$) 와 `time_feasibility.hpp` 의 `DirectionalSpeedMax` 다. 규범:
 
-- 입력: §4.2 의 $J_5$ (팔 관절 열, 고정 최대 크기), $\hat v$, $\dot q_{\max}$. 출력: $v_{dir,\max}$ 와 무효 플래그
+- 입력: §4.2 의 $J_5$ (팔 관절 열, 고정 최대 크기), $\hat v$, $\dot q_{\max}$ (계획 한계 $\eta_v\dot q_{\max}$). 출력: $v_{dir,\max}$ 와 무효 플래그
 - 분자는 투영 $\max(0,\hat v^\top J_p\dot q^u)$, 분모 $\max_i|\dot q^u_i|/\dot q_{\max,i}$ (§4.5)
 - $\dot q_{\max,i}\le0$·NaN 은 플래그 + 0, 분모 0 은 0 (보수적)
 - 할당 0, `noexcept` (계획기 스레드가 RT-1~10 준수)
+- 감쇠 $\lambda$ 는 오프라인 지도와 **같은 키** (`planner.gamma.unit_speed_damping`) 에서 읽는다
 
 ## 6. YAML 파라미터
 
-로딩은 컨트롤러 `LoadConfig(YAML)` → `ParseXxxParams` (on_configure, non-RT), runtime 변경 gain 만 `declare_parameter` (L0 §5.3). 여러 층이 쓰는 같은 물리량은 **단일 키 하나**만 두고 다른 층은 그 키를 읽는다 (S0.3) — "같은 값" 일치 검사는 두지 않는다.
+로딩은 컨트롤러 `LoadConfig(YAML)` → `ParsePlannerParams` · `ParseCatchPoseIkParams` · `ParseCatchingParams` (on_configure, non-RT), runtime 변경 gain 만 `declare_parameter` (L0 §5.3). 여러 층이 쓰는 같은 물리량은 **단일 키 하나**만 두고 다른 층은 그 키를 읽는다 — "같은 값" 일치 검사는 두지 않는다.
 
-| 키 | 타입 | 단위 | 기본값 | 범위 | 근거 |
-|---|---|---|---|---|---|
-| `planner.enabled` | bool | – | false | – | 계획기 스레드를 띄운다 (S6-A). `diagnostic.oracle_plan.enabled` 와 동시 true 면 park — `plan_box_` 의 writer 는 하나다 |
-| `planner.wake_timeout_s` | double | s | 0.05 | 0.005–0.5 | 새 궤적이 없어도 깨어나는 상한 (결정 H). `PeriodicRtThread` 가 양수 주기를 요구하므로 이 값이 그 주기다 |
-| `planner.budget_s` | double | s | **0.020** | 0.001–0.05 | 한 사이클 계산 예산. 2026-09-23 **R-2**: 후보당 IK 가 개발 PC 6R p50 1.8 ms · 7R 2.2 ms 라 0.010 으로는 후보 5 개도 못 본다 → 0.020 + 사전 필터 (IK 후보 ≤ 8). vision 주기 0.05 s 안 |
-| `planner.sub_model` | string | – | (결정값) | 로봇 config `urdf.sub_models` 의 이름 | 계획기 모델 (R-3): arm root → catch frame 부모. 출하 `ur5e_catch`·`iiwa7_catch`. 오프라인 지도도 같은 항목을 이름으로 쓴다 (G3-I). 비었으면 park |
-| `planner.max_ik` | int | – | 8 | 1–40 | 한 cycle 의 IK 후보 수 (사전 점수 상위, R-2). IK 한 번이 dev PC 에서 2–3 ms (6R) |
-| `planner.provisional` | bool | – | true | – | 발명 키 (`reference.provisional` 과 같은 모양): 블록 전체가 provisional — sim 경고, 실기 park |
-| `planner.wait_pose` | double[] | rad | provisional | 관절 한계 안, 길이 = arm dof | IK seed 이자 대기 자세 (결정 L, arm 관절 순서). p1b `[0.212, −1.376, 1.107, −1.978, −3.296, 0.121]` · leap `[0, 1.0, 0, −1.2, 0, 1.2, 0]` (S3.5a/b 지도의 대기 자세). homing 은 S7.2 |
-| `planner.wait_pose_source` | string | – | `yaml` | `yaml` \| `current` | **S8-I (2026-09-27, #537 5850509543).** 대기 자세의 출처. `yaml` = 위 목록. `current` = 이 컨트롤러가 활성화된 뒤 **첫 팔 판독 가능 tick** 의 q_meas — "demo_joint/task 로 둔 자세에서 switch 한 그 자세" (S8-F-2 의도 A). 채택 자세는 homing 목표 (no-op) · `ARMED` 도착 판정 · 계획기 IK seed (`PlannerRtState.wait_pose`) 에 같이 쓰이고, 채택은 팔이 정지 (|q̇| ≤ homing 도착 허용치) 한 tick 에 하며 (움직이면 미룸), 팔 속도 lane 을 읽을 수 없는 tick 도 움직이는 팔과 같이 미룬다 (pre-S10 R3, #537 Q9). 무장 요청이 정지 (또는 속도 판독) 보다 먼저 오거나 · E-STOP 아래이거나 · margined 관절 상자 밖이면 거부돼 `yaml` 값이 유지되고 사유가 WARN 으로 남는다 (L7 §4.1). 계획기는 매 cycle YAML seed 에서 시작해 채택 자세를 덮으므로, 거부된 activation 이 앞선 activation 의 채택 자세를 이어받지 않는다. activation 마다 다시 채택하고 E-STOP·fault reset 은 재채택하지 않는다 (멈춘 자리는 대기 자세가 아니다). 관측: diag `wait_pose_adopted`·`q_wait_<joint>` 열과 채택 시 nrt 로그 1 회; read-only 미러 `planner.wait_pose` 는 **YAML 값** (미러로 조준·정렬하는 러너는 `yaml` 전제). `workspace.catch_box` 는 자세를 따라가지 않는다 — 임의 자세는 그 주변을 덮는 상자가 필요하다 |
-| `planner.slice.dt` | double | s | **0.05** | 0.005–0.05 | vision 샘플 간격의 정수배. **S3.6 이 `prediction.dt_expected` 를 0.05 s 로 정했다** (2026-09-22, provisional — L2 §6). S6 착수 시 (2026-09-23) vision 간격 그대로로 정함 — 후보는 vision 격자 그대로라 공분산 시각 보간이 필요 없다 |
-| `planner.slice.t_lead_min` | double | s | = `planner.freeze.T_freeze` | >0 | $T_{freeze}$ 이상 (2026-09-23: 같은 값으로 정함) |
-| `planner.slice.t_max` | double | s | = 지평 − margin | 0.2–1.5 | vision 지평 − `prediction.t_horizon_margin` 이하 (S3.6 설정 profile 1.0 s 면 ≤ 0.95 s). 2026-09-23: 그 상한 그대로로 정함 |
-| `planner.n_settle` | int | – | 3 | 0–20 | §4.4 트랙 epoch 변경 후 대기 메시지 수 |
-| `planner.gamma.margin` | double | m/s | 0.1 | 0–1 | §4.5 `MaxCatchableSpeed` 경계 여유 (1 ulp 엇갈림 방지) |
-| `planner.gamma.unit_speed_damping` | double | – | 1e-3 | (0, 1] | §4.5 $v_{dir,\max}$ 의 DLS 단위속도 $\dot q^u=J_5^\top(J_5J_5^\top+\lambda^2I)^{-1}[\hat v;0;0]$ 의 $\lambda$ (MPC MD-92 — 코드 상수 `kUnitSpeedDamping`). 오프라인 지도 `catch_gate_map` 이 **같은 키** 를 profile 에서 읽는다 (`--dls-damping` 이 덮는다). `catch_speed_budget` 은 profile 입력이 없어 상수 `DEFAULT_DLS_DAMPING` 이 출하값과 같다는 테스트가 둘의 어긋남을 막는다 |
-| `planner.ik.max_iter` | int | – | 20 | 1–100 | 연산 예산 |
-| `planner.ik.lambda` | – | – | – | – | v0.5 에서 삭제 — 고정 λ 대신 `DifferentialIk` 의 σ_min 적응 λ (D-7d). 그 파라미터는 아래 `sigma0`·`lambda_max` 다 |
-| `planner.ik.sigma0` | double | – | 1e-3 (**provisional**) | >0 | §6.5 감쇠 shell 진입 σ_min — **영공간 투영 $N$ 만** 파라미터화한다 (과제 스텝은 QP, D-26). **S6.2 가 아니라 S1.9 에서 정한다** — S3.5a 지도가 S6.2 보다 먼저 같은 함수를 돌리고 지도와 런타임은 같은 키를 써야 한다 (plan §11) |
-| `planner.ik.lambda_max` | double | – | 1e-2 (**provisional**) | ≥0 | §6.5 최대 감쇠. $N$ 전용, 위와 같은 이유로 S1.9 |
-| `planner.ik.mu` | double | – | 1e-4 (**provisional**) | >0 | §4.2 과제 QP 정칙화. $J^\top J$ 가 rank ≤ 5 라 필수다. 1e-8 은 QP 비수렴, 1e-2 는 수락률 하락 — 절벽이 있으니 값을 바꾸면 재측정한다 (plan §4.4) |
-| `planner.ik.qp_eps_abs` | double | – | 1e-10 (**provisional**) | >0 | 과제 QP 절대 허용오차. TSID tick 기본값 1e-6 을 그대로 쓰면 IK 잔차에 solver 바닥이 생긴다 |
-| `planner.ik.qp_max_iter` | int | – | 50 | ≥1 | 과제 QP 반복 상한 |
-| `planner.ik.rho` | double | m/rad | 0.1 | 0.01–1 | §4.2 위치/회전 스케일 정합 (특성길이). **$J$ 와 잔차 양쪽에 가중** (S1.9 정정) |
-| `planner.ik.dq_step_max` | double | rad | 0.15 (**provisional**) | >0 | 반복당 $\Vert\dot q_d\Vert_\infty$ 상한 (방향 유지 축소, $\Delta t=1$) |
-| `planner.ik.k_null` | double | 1/step | 0 | ≥0 | §4.2 영공간 자세 과제 $K_n$. $q_n$ = **한계로 clamp 한** seed. `eps_pos` 와 함께 고른다 (2차 잔차) |
-| `planner.ik.k_manip` | double | – | 0 (**provisional**) | ≥0 | §4.2 영공간 $\log w_5$ 상승 이득 $k_w$. 0 이면 D-18 번복 전 동작 |
-| `planner.ik.manip_grad_tol` | double | – | 1e-4 (**provisional**) | ≥0 | 상승 종료 판정 $\Vert N\nabla\log w_5\Vert$ |
-| `planner.ik.v_eps` | double | m/s | 1e-6 | >0 | §4.2 NUM-7 속력 하한 — 미만이면 clamp 가 아니라 탈락 |
-| `planner.ik.fd_step` | double | rad | 1e-5 | >0 | 영공간 상승의 $\nabla\log w_5$ 를 중심차분으로 구하는 간격 $h$ (MPC MD-92 — 키가 없던 `CatchPoseIkOptions::fd_step`). 0 이하는 파서가 거부한다 |
-| `planner.ik.eps_pos` | double | m | 0.002 | – | 수락 |
-| `planner.ik.alpha_max` | double | rad | **0.26 (provisional, 출하 YAML 에 적혀 있다)** | 0–π/2 | 손 형상 허용 콘 ($\theta\le\alpha_{\max}$). 2026-09-21: `TBD` 로 적혀 있었으나 코드에는 provisional 기본값 0.26 rad (≈15°) 가 살아 있었다 — `ParseCatchPoseIkParams` 신설 때 드러난 불일치이고, 값은 코드 쪽으로 맞췄다. 닫는 근거는 S3.5a 지도의 `theta` 분포 (이 콘이 실제로 구속하는지) 다. MPC MD-92 부터 두 로봇의 `search_grid.yaml` 이 이 값을 적는다 — 파서가 TBD 로 표시하지 않고, 오프라인 지도의 `resolve_alpha_max` 출처가 `judge_default` 에서 `params` 로 바뀐다 (다른 `--alpha-max-rad` 는 에러) |
-| `planner.ik.manip_min` | – | – | – | – | v0.5 에서 삭제 — `planner.catchability.manipulability_min` 이 대체 (§4.5) |
-| `planner.catchability.manipulability_min.arm_5row` / `.arm_6row` | double | – | ur5e_p1b 0.1 · iiwa7_leap 0.174 (**provisional**) / TBD | ≥0 | §4.2 D-18 정의별 하한 (차원이 달라 따로 둔다, C-3). `arm_6row` 값은 S3.5a/b 지도 결과로 제안. 사용자가 sim 에서 자세 확인 후 갱신. provisional 이면 실기 구성 arm 차단 (L0 §5.3). S3.5a/b 지도 도구와 **같은 키** |
-| `planner.catchability.definition` | string | – | `"arm_5row"` | `arm_5row` \| `arm_6row` | §4.2 게이트에 쓸 정의. w₅·w₆ 는 정의와 무관하게 둘 다 기록 |
-| `planner.time.margin` | double | s | 0.03 | 0–0.2 | §4.3 |
-| `planner.unc.kappa_sigma` | double | – | 0.3 | 0.05–1 | §4.4 |
-| `planner.hand.d_eff` | double | m | LEAP **0.1047** / P1b **0.2815** | >0 | **시각 발동 fly-in 허용 상대속도 1.0 m/s × $T_{close,tot}$** (2026-09-22 확정 — §4.5, L6 §4.5, plan §7.3). 포켓 깊이 (0.080 / 0.095 m, S4.5) 가 아니다. provisional — **`planner.hand.provisional` 이라는 키는 없다**: 파서가 읽은 적이 없고 (pre-S10 R3 에서 출하 YAML 의 그 줄을 지웠다, #537 Q6), `d_eff`·`r_cap` 의 실기 park 은 블록 전체의 `planner.provisional` 이 한다. **S6-B 가 첫 소비자** (`ParsePlannerParams`, γ 창) — 결정값이라 비었거나 TBD 면 park |
-| `planner.hand.r_cap` | double | m | LEAP **0.031** / P1b **0.024** | >0 | S4.5 실측 (L6 §4.5), provisional (자체 키는 없다 — 아래 주). 측면 허용량이며 공 중심 좌표계라 공 반지름이 이미 포함돼 있다. S6-B 소비 (불확실성·오차 예산), 결정값 |
-| `planner.gamma.grid` | double[] | – | [0.0, 0.1, …, 0.6] | 0–1 | §4.8 |
-| `planner.gamma.window_grid` | double[] | s | [0.3, 0.45, 0.6] | >0 | §4.8 |
-| `planner.gamma.eta_a`, `eta_v` | double | – | 0.8, 0.9 | (0, 1] | 여유율. `eta_v` 는 D-9 의 $\eta_v$ — `ComputeGammaWindow` 와 rollout 수락이 같은 값을 쓴다 (§4.5, §4.8) |
-| `planner.gamma.eps_term` | double | m | 0.002 | – | §4.8 |
-| `planner.rollout.dt_coarse` | double | s | 0.01 | 1e-4–0.05 | 발명 키 (S6.3): rollout 거친 단계 간격. 확인 단계는 제어 주기 (§4.8) |
-| `planner.budget.n_sigma` | double | – | 2.0 | 1–3 | §4.6 |
-| `planner.budget.sigma_trk` | double | m | `TBD` | ≥0 | L5 실측. ⚠️ **sim 초기값 출처가 없다** — S3.7 이 2026-09-20 결정으로 빠져 (L5 §7 L5.7) **S10 실기 식별까지 TBD 로 남는다** |
-| `planner.budget.clock_err` | double | s | `TBD` | ≥0 | 인프라 실측 |
-| `planner.stop.a_dec` | – | – | – | – | v0.5 에서 삭제 — 단일 키 `supervisor.decel.a_dec` (L7 §6) 를 읽는다 (§4.9) |
-| ~~`planner.stop.check_ik`~~ | bool | – | — | – | 구현되지 않았다 — 코드·출하 YAML 에 이 키는 없다 (2026-09-29 코드 대조) |
-| `planner.switch.delta_J` | double | – | 0.1 | ≥0 | §4.7 |
-| `planner.switch.eta_jump` | double | – | 0.25 | (0, 1] | §4.7 규칙 2: 교체가 $u_{des}$ 에 넣는 계단 ≤ `eta_jump` × `reference.a_max` (결정 ⑥, 2026-09-23). provisional |
-| `planner.switch.samples` | int | – | 9 | 2 ~ 64 (`kSwitchSamplesMax`) | §4.7 규칙 2 의 계단 상한을 RT 가 채택할 수 있는 시간 창 (`budget_s` + 2 tick) 위 이 개수의 순간에서 평가해 최악을 취한다 (MPC MD-92 — 코드 상수 `kSwitchSamples`). 코드가 `samples − 1` 로 나누고, 샘플마다 계획 스레드에서 ramp 를 평가하므로 (switch 검사마다) 상한이 있다 |
-| `planner.switch.e_jump_max`, `ed_jump_max` | – | – | – | – | 결정 ⑥ 으로 삭제 — `eta_jump` 가 대체. 파서가 **거부**한다 (옛 값으로 튜닝된 profile 을 기본값으로 조용히 돌리지 않는다) |
-| `planner.gamma.derate_step` | – | – | – | – | v1 범위 밖 (D-8) — γ derate 재도입 시 단일 키로 다시 정한다 |
-| `planner.freeze.T_freeze` | double | s | p1b **0.36** · leap **0.19** (provisional) | ≥ §4.11 하한 | §4.11 하한식 (결정 G, 2026-09-23) |
-| `planner.score.w_sigma`, `w_t`, `w_q`, `w_late`, `w_gamma` | double | – | 1, 1, 0.1, 0, 5 | ≥0 | §4.10 튜닝. `w_gamma`를 크게 잡으면 사전식 선택과 같아진다 |
-| `planner.score.penalty` | double | – | 10 | ≥0 | 발명 키 (결정 D, 2026-09-23): 실패한 **순위** 게이트 하나당 점수에 더한다. 연속 항을 압도해야 한다 (§4.1 런타임 판정/순위 분리) |
-| `planner.workspace.catch_box` | box | m | p1b `[0.19, −0.30, 0.21]`–`[1.04, 0.31, 0.96]` · leap `[−0.96, −0.30, 0.00]`–`[1.05, 0.30, 1.10]` (둘 다 provisional) | min ≤ max | TBD-BALL-02. 모양 (결정 I, 2026-09-23): 모델 world 축정렬 상자 `{min: [x,y,z], max: [x,y,z]}`. 판정 게이트 — $p_c$ 와 $p_{stop}$ 이 모두 안에 있어야 한다. p1b 값은 S3.5b 세밀 격자 gate-open 967 후보의 $p_c$·$p_{stop}$(γ 창 양 끝) 외접 + 0.1 m (2026-09-23 재계산). leap 은 gate 지도가 비어 kinematic 후보 $p_c$ 외접 + 0.1 m (x, z), 측방은 p1b 의 ±0.30 m (그 지도가 방위 하나만 표본) |
-| `planner.decel_mpc.*` (켜는 키 없음) | – | – | `supervisor.decel.mode` 가 고른다 (코드 기본 `closed_form`, 출하 YAML 은 두 로봇 `mpc` — MPC MD-89) | – | **MPC E1-F03 · E1-F08** ([#629](https://github.com/hyujun/rtc-framework/issues/629) · [#661](https://github.com/hyujun/rtc-framework/issues/661), MPC 계획 MD-24 – MD-33 · MD-55 – MD-64). 계획기 스레드가 TRACKING 부터 DECEL 까지 APPROACH–정지 구간을 풀어 `DecelPlanSnapshot` box 에 게시한다 (정지 구간만 푸는 계획기는 없다 — MD-70). 코어는 `supervisor.decel.mode: mpc` 에서만 만들고 돌린다 (L7 §4.3a, MPC MD-44) — 별도의 `enabled` 키는 없다 (MPC MD-91 이 지웠다. config 에 남은 `enabled` 는 무시된다 — `mode: mpc` 에서 `enabled: false` 만 configure 에서 WARN 한다: 옛 키는 park 였고 지금은 mpc 법칙이 돈다). `closed_form` 이면 WARN 도 없이 코어를 만들지 않고 나머지 decel 설정도 보지 않는다. `mpc` 에서 `planner.enabled` 가 false 면 oracle plan profile 은 돌고 (테스트가 box 를 쓴다) 아니면 park 한다. `mpc` 는 포구 전 격자가 있어야 한다 (`approach.n_pre_max` > 0 — RT 는 plan 을 $t_c$ 앞에서 시작하는 첫 구간과 함께만 채택한다, MPC E1-F09 · MD-65). 기록은 `planner_events.csv` 의 `decel_*` 열 (포구 전 격자점의 `decel_k` 는 포구 전 구간 수의 음수) |
-| `planner.decel_mpc.horizon.n_nodes` · `.dt_s` · `.blocks` | int · double · int[] | – · s · – | 14 · 0.025 · [1,1,2,2,4,4] (출하 YAML: 7 · 0.05 · [1,1,2,3]) | 3–24 · 0.005–0.1 (정수 ns) · Σ = n_nodes, 3 개 이상 | 정지 부분 ($t_c$ 뒤). $N_s\Delta_s$ 가 곧 정지 시간 (MD-21) — 0.35 s 는 v1 정지 시간 p50 (MD-24). 코드 기본값은 E1-F03 의 것 (MD-24) 이고, 출하 YAML 은 MD-54 의 격자다 (MD-55) — 기본 지평으로 계획기를 켜면 configure 가 경고한다. 포구 뒤 재계획 k 는 가장 큰 뒤쪽 블록부터 한 노드씩 줄인 패턴을 쓴다 |
-| `planner.decel_mpc.replan.k_max` · `.same_point` | int · bool | – | 4 (출하 YAML: 2) · true | 0–8 (k 마다 블록 3 개 이상) · – | 포구 뒤 재계획은 격자점 $k\le$ `k_max` 에서만이고 정지 끝 $t_c+N_s\Delta_s$ 는 고정 (MD-31 · MD-61). `same_point`: 같은 포구 전 격자점을 새 예측으로 다시 푼다 (MD-58) |
-| `planner.decel_mpc.eta_tau` · `.m_q` | double | – · rad | 0.7 · 0.05 | 0.001–1 · 0–0.5 | 코어의 토크 행 비율 $\eta'_\tau$ 와 위치 여유. 속도 행은 `planner.gamma.eta_v` 를 쓴다 (새 키 없음). armature 는 제어에 쓰지 않는다 (MD-25) |
-| `planner.decel_mpc.publish.slack_max` · `.slack_terminal_max` · `.catch_pos_err_max` | double | τ_max 비율 · τ_max 비율 · m | 0.1 · 0.1 · 0.02 | 0–1 · 0–1 · (0, 1] | 게시 임계 (MD-33 · MD-62). slack 은 둘 다 유한하고 임계 이하일 때만 게시한다. CLIK 이 dynamic 형태면 `eta_tau` + `slack_max` $\le$ `joint_cmd.eta_tau` 를 configure 에서 검사하고 넘으면 park. 종단 임계는 E1-F06 이 분포로 조인다. `catch_pos_err_max`: 포구 노드의 위치 오차 (해에서 FK) 의 상한 — 포구 전 격자의 구간에만 건다. 못 넘은 첫 구간은 plan 과 함께 보류한다 (MD-56) |
-| `planner.decel_mpc.approach.n_pre_max` · `.dt_pre_s` · `.rest_tol` | int · double · double | – · s · rad/s | 0 (출하 YAML: 6) · 0.1 · 0.05 | 0–(24 − n_nodes, 24 − 블록 수) · 0.005–0.2 (정수 ns) · 0–1 | **MPC E1-F08** (MD-54 · MD-55). 구간이 $t_c$ 앞에서 시작할 수 있는 포구 전 구간의 최대 수와 그 간격. 0 이면 포구 전 격자가 없어 decel 계획기를 만들지 않고 (MD-70), `supervisor.decel.mode: mpc` 는 전제를 채우지 못해 park 한다 (L7 §4.3a). `rest_tol`: 첫 풀이는 팔이 대기 자세에 정지해 있다고 본다 — $\max\lvert\dot q_{cmd}\rvert$ 가 이 값을 넘으면 보류 (`not_at_rest`). provisional |
-| `planner.decel_mpc.budget.first_s` · `.replan_s` | double | s | 0.035 · 0.025 | 0.001–0.05 | 첫 구간과 그 뒤 구간의 풀이 시간 상한이자, 효력 시각을 정하는 lead (MD-56). sim 실시계 측정으로 확정 (2026-10-02, MPC 계획 §8) |
-| `planner.decel_mpc.catch.w_axis` · `.w_v_par` · `.w_v_perp` · `.gamma_ref` | double | 1/rad² · (m/s)⁻² · (m/s)⁻² · – | 100 · 1 · 20 · 1 (출하: `ur5e_p1b` 의 $\gamma_{ref}$ 는 **0.6**, `iiwa7_leap` 은 1) | ≥ 0 · ≥ 0 · ≥ 0 · (0, 1] | 포구 노드의 접근축 · 상대속도 (진행 방향 · 직교) 가중과 속도 목표의 비 $\gamma_{ref}$ (MD-52 · MD-53). 가중은 E1-F07 의 측정값이고, p1b 의 $\gamma_{ref}$ 0.6 은 E1-F10 의 튜닝값이다 (MPC 계획 MD-75 · §8 "E1-F10" — v1 의 $\gamma$ 창 하한 아래, 편차로 기록). leap 은 채택한 값이 없다 |
-| `planner.decel_mpc.catch.kappa` · `.sigma_floor` · `.w_max` · `.w_const` · `.sigma_ref` | double | – · m · 1/m² · 1/m² · m | 1 · 0.01 · 1e4 · 2500 · 0.03 | > 0 | 포구 위치 가중 $W_p=\kappa(\Sigma_p+\sigma_{floor}^2I)^{-1}$ (고유값 상한 `w_max`), $\Sigma_p$ 를 못 쓸 때의 상수 가중 `w_const`, $w_\Delta$ 배율 $\mathrm{clamp}(\mathrm{tr}\,\Sigma_p/\sigma_{ref}^2,0,1)$ (MD-63). `sigma_ref` 는 trace 와 비교하므로 축별 $\sigma$ 가 아니다. provisional |
-| `planner.decel_mpc.catch.rho_v` · `.v_rel_allow` | double | – · m/s | 0 · 0 (끔) | ≥ 0 · ≥ 0 (`rho_v` > 0 이면 `v_rel_allow` > 0) | 포구 노드의 상대속도 slack 행 — 축별 $\lvert\hat v_b-v_C\rvert\le v_{rel,\mathrm{allow}}(1+s_v)$, 벌점 $\rho_v s_v$ (MPC MD-52 · MD-91). `rho_v` 0 이면 slack 변수와 행을 만들지 않는다 (포구 코어의 QP 크기 불변). 켜면 포구 코어마다 변수 1 · 행 7 이 는다. `rho_v` > 0 에 `v_rel_allow` 가 0 이면 파서가 두 키 이름을 대며 거부한다. $s_v$ 는 **기록만** 한다 (`planner_events.csv` 의 `decel_slack_v`) — 게시 판정에 없다: 임계가 정의돼 있지 않고 $\gamma_{ref}\lt1$ 이면 $s_v\gt0$ 이 구조적이다 (formulation §1.6). `v_rel_allow` 는 손의 흡수 능력에서 정할 값이고 아직 정해지지 않아 출하값은 둘 다 0 이다 |
-| `planner.decel_mpc.cost.jerk_weight` · `.u_scale` · `.w_delta` · `.rho_tau` | double[] · double · double · double | – · rad/s³ · 1/rad² · – | 전부 1 (팔 관절마다) · 1000 · 1 · 10 | 각 > 0 (길이 = 팔 자유도) · > 0 · ≥ 0 · ≥ 0 | **MPC MD-92.** 코어 비용의 설계 값 — 출하값은 코어 코드의 기본값이다 (해 불변). `jerk_weight` 는 **팔 관절 순서 (device)** 로 적고 모델 순서는 계획기가 바꾼다. 길이는 파서가 모르므로 계획기의 configure 가 키 이름을 대며 거부한다. jerk 비용은 $(u/u_{scale})^2$ 이라 `u_scale` 이 jerk 를 `w_delta` · `rho_tau` 와 비교한 세기를 바꾼다. `rho_tau` 0 은 토크 행을 끈다 — 그때 게시 판정의 slack 조건 (`publish.slack_max`) 은 빈다 |
-| `planner.decel_mpc.cost.w_perp` | double | 1/m² | 0 (끔) | [0, 1e4] (상한 = 코드 상수 `kDecelStopPathWeightMax`) | **정지 경로 항** ([#698](https://github.com/hyujun/rtc-framework/issues/698), 사용자 결정 2026-10-03). 포구 노드부터의 노드에서 catch frame 이 직선에서 벗어난 거리의 제곱에 거는 가중 — 정지 코어와 포구 코어 둘 다에 실린다. 0 이면 항이 없고 아래의 어느 것도 돌지 않는다 (해 불변). 직선은 **공의 것**이다: 그 풀이가 쓰는 공의 예측 포구 위치를 지나고 $t_c$ 의 공 진행 방향 $\hat v_b/\Vert\hat v_b\Vert$ 을 따른다 (첫 풀이는 plan 의 $p_c$ · $v_c$, 포구 전 재계획은 그 wake 의 공) — 탐색이 정지점을 예약하는 직선이다 (§4.9). 포구 뒤 재계획 (정지 코어) 은 그 wake 의 공을 읽지 않고 **RT 가 따르는 구간의 직선**을 쓴다 — 재계획의 출처 (RT 가 대기 · 따름으로 보고한 구간, $x_0$ 와 기준이 나오는 곳) 가 풀린 직선이다. 게시된 구간마다 직선을 함께 둔다 (포구 코어 구간은 자기가 풀린 직선, 정지 구간은 출처의 직선을 물려받는다). 그래서 더 새 예측으로 푼 구간이 게시됐어도 RT 가 채택하지 않았으면 (전환 게이트의 거부 등) 그 직선으로 멈추지 않는다. 직선을 만들 수 없으면 기본 직선으로 풀지 않고 보류한다: 공 속력 ≤ `planner.ik.v_eps` → `decel_outcome` `no_ball`, 속력이 유한하지 않음 → `input_non_finite`, 정지 격자점인데 출처 구간에 직선이 없음 → `no_ball` (즉 `no_ball` 은 포구 전 격자점만의 사유가 아니다 — `decel_kind` 가 `stop` 인 `no_ball` 은 "공이 없다" 가 아니라 "따르는 구간에 직선이 없다" 다). configure 의 warm-up 은 합성 포구의 직선 (중간 자세의 catch frame 을 지나는 합성 공의 진행 방향) 으로 정지 코어와 포구 코어를 푼다. 큰 값은 QP 의 조건수를 키우고 그것을 막는 장치가 뒤에 없다 (configure 의 warm-up 직선은 catch frame 을 지나므로 잔차가 0 이다) — 그래서 파서가 1e4 초과를 키 이름을 대며 거부한다. 1e4 는 코어를 시험한 가장 큰 값이다 (정지 코어 단독, 그리고 계획기의 포구 · 정지 코어를 두 시험 팔에서 — 그 값에서 한 풀이의 QP 반복은 최대 121 회, 상한 200). 어느 팔에서도 조정하지 않아 출하값은 0 이다 |
-| `planner.decel_mpc.catch.axis_theta_max` | double | rad | 1.5707963267948966 (π/2) | (0, π) | 접근축 선형화 기준의 축 오차 상한 — 넘으면 풀지 않는다 ($\Vert J_a\Vert\sim\theta/\sin\theta$). 포구 항 전용이라 `catch.*` 에 있다 |
-| `planner.decel_mpc.linearization.delta_tr` · `.reference_rest_tol` · `.ref_speed_fraction` | double | rad · – · – | 0.1 · 1e-4 · 0.9 | 유한 > 0 · (`solver.eps_abs`, 1e-3] (상한 = 코드 상수 `kDecelRestTol`) · (0, 1] | trust region 반폭 (코드는 +inf 도 받지만 profile 은 유한값만), 공급한 기준의 종단 $\vert\dot q_N\vert$ · $\vert\ddot q_N\vert$ 허용 — 계획기 자신의 게시 판정도 같은 값을 쓰므로, RT 의 payload 검증 (`ValidateDecelNodes`, 종단 정지 `kDecelRestTol`) 보다 느슨하면 판정이 받은 노드를 검증이 거부한다 — 그래서 상한이 있다 — 과 첫 풀이 기준이 속도 box $\eta_v\dot q_{max}$ 의 이 비율로 목표에 닿게 하는 상한 (MD-62). `m_q` < `delta_tr` 를 이 값으로 검사한다 (이전엔 기본 생성한 코어의 0.1 과 비교했다) |
-| `planner.decel_mpc.solver.max_iter` · `.max_iter_in` · `.eps_abs` · `.eps_rel` | int · int · double · double | – · – · – · – | 200 · 100 · 1e-6 · 0 | ≥ 1 · ≥ 1 · > 0 · ≥ 0 | ProxQP 의 바깥 · 안쪽 반복 상한과 허용오차. preconditioner 갱신과 KKT backend 는 키가 아니다 (RT 무할당 · infeasible 판정의 전제). 코어의 설계 값은 이제 전부 키다 (`cost.w_perp` 포함) |
+**값 · 범위 · 근거는 YAML 과 파서가 갖는다.** 키는 로봇 config (`integrated_bringup/config/<robot>/controllers/`) 의 네 파일에 나뉘어 있고 전부 `demo_catching_controller.catching` 아래의 전체 경로를 갖는다. 어느 키가 어느 planner 의 것인지는 각 파일의 머리 주석이 정확하다.
+
+| 자리 (표의 약어) | 파일 | 무엇 |
+|---|---|---|
+| 주 | `demo_catching_controller.yaml` | 스레드 · 대기 자세 · 동결 · planner 의 선택 (`supervisor.decel.mode`) |
+| 탐색 | `catching/search_grid.yaml` | 탐색 — **두 planner 공통** |
+| CF | `catching/planner_closed_form.yaml` | `closed_form` 의 법칙. 단 `reference.*` 와 `supervisor.decel.a_dec` 는 `mpc` 에서도 탐색이 읽는다 (rollout · 정지점) |
+| MPC | `catching/planner_mpc.yaml` | `mpc` 의 법칙 — `supervisor.decel.mode: mpc` 일 때만 읽는다 |
+
+**mpc planner 의 키 (`planner.decel_mpc.*`, `supervisor.decel.switch_margin`) 는 `catching/planner_mpc.yaml` 과 formulation 이 갖는다** — 이 표의 범위가 아니다. 정의는 `planner_params.hpp` 의 `DecelPlannerParams` 다.
+
+| 키 | 뜻 | 단위 | 자리 |
+|---|---|---|---|
+| `planner.enabled` | 계획기 스레드를 띄운다. `diagnostic.oracle_plan.enabled` 와 동시 true 면 park — plan box 의 writer 는 하나다 | – | 주 |
+| `planner.wake_timeout_s` | 새 궤적이 없어도 깨어나는 상한. 스레드의 주기이기도 하다 | s | 주 |
+| `planner.budget_s` | 한 사이클의 탐색 계산 예산 (§4.1 R-2) | s | 탐색 |
+| `planner.sub_model` | 계획기 모델 (R-3): 로봇 config `urdf.sub_models` 의 이름 — arm root → catch frame 부모. 오프라인 지도도 같은 항목을 이름으로 쓴다 (G3-I). 결정값이라 비었으면 park | – | 주 |
+| `planner.max_ik` | 한 cycle 의 IK 후보 수 (사전 점수 상위, R-2) | – | 탐색 |
+| `planner.provisional` | `planner` 블록 전체가 provisional — sim 경고, 실기 park. `planner` 의 provisional 플래그는 이것 하나다 (`planner.hand.provisional` 같은 키는 없다) | – | 주 |
+| `planner.wait_pose` | IK seed 이자 대기 자세 (arm 관절 순서, 길이 = arm dof, 관절 한계 안) | rad | 주 |
+| `planner.wait_pose_source` | 대기 자세의 출처: `yaml` = 위 목록, `current` = 이 컨트롤러가 활성화된 뒤 **첫 팔 판독 가능 tick** 의 $q_{meas}$ (팔이 정지한 tick 에 채택). 채택 자세는 homing 목표 · `ARMED` 도착 판정 · 계획기 IK seed (`PlannerRtState.wait_pose`) 에 같이 쓰인다. 채택이 거부되면 `yaml` 값이 유지된다 — 계획기는 매 cycle YAML seed 에서 시작해 채택 자세를 덮으므로 앞선 activation 의 채택 자세를 이어받지 않는다. 채택 · 거부의 조건은 L7 §4.1. read-only 미러 `planner.wait_pose` 는 **YAML 값**이고, `workspace.catch_box` 는 자세를 따라가지 않는다 | – | 주 |
+| `planner.slice.dt` | 후보 간격 — vision 샘플 간격 (`prediction.dt_expected`) 의 정수배. 격자를 솎을 뿐 보간하지 않는다 | s | 탐색 |
+| `planner.slice.t_lead_min` | 후보 창의 하한. 없으면 `planner.freeze.T_freeze` 다 (출하 YAML 은 적지 않는다) | s | 탐색 |
+| `planner.slice.t_max` | 후보 창의 상한 — vision 지평에서 여유를 뺀 값 이하 | s | 탐색 |
+| `planner.n_settle` | §4.4 트랙 epoch 변경 후 건너뛰는 메시지 수 | – | 탐색 |
+| `planner.time.margin` | §4.3 $T_{margin}$. §4.11 의 commit 선행 순위 게이트도 같은 값을 쓴다 | s | 탐색 |
+| `planner.unc.kappa_sigma` | §4.4 $\kappa_\sigma$ | – | 탐색 |
+| `planner.gamma.eta_v` | D-9 의 $\eta_v$ — `ComputeGammaWindow` · 관절 속도 계획 한계 · rollout 수락이 같은 값을 쓴다 (§4.5, §4.8). `mpc` 의 속도 행도 이 값을 쓴다 | – | 탐색 |
+| `planner.gamma.margin` | §4.5 `MaxCatchableSpeed` 경계 여유 | m/s | 탐색 |
+| `planner.gamma.unit_speed_damping` | §4.5 $v_{dir,\max}$ 의 DLS 단위속도의 $\lambda$. 오프라인 지도 `catch_gate_map` 이 **같은 키** 를 profile 에서 읽는다 | – | 탐색 |
+| `planner.gamma.grid` | §4.8 $\gamma_f$ 후보 | – | 탐색 |
+| `planner.gamma.window_grid` | §4.8 $T_w$ 후보 | s | 탐색 |
+| `planner.gamma.eta_a` | §4.8 요구 가속도의 여유율 (`reference.a_max` 대비) | – | 탐색 |
+| `planner.gamma.eps_term` | §4.8 $t_c$ 의 잔여 오차 한계. §4.7 의 갱신 (`refreshed`) 임계이기도 하다 | m | 탐색 |
+| `planner.rollout.dt_coarse` | §4.8 rollout 의 거친 단계 간격. 확인 단계는 제어 주기 | s | 탐색 |
+| `planner.budget.n_sigma` | §4.6 $n_\sigma$ | – | 탐색 |
+| `planner.budget.sigma_trk` | §4.6 $\sigma_{trk}$ — L5 실측 (실기 식별 전에는 0) | m | 탐색 |
+| `planner.budget.clock_err` | §4.6 $\delta$ — 인프라 실측 (실기 식별 전에는 0) | s | 탐색 |
+| `planner.score.w_sigma`, `w_t`, `w_q`, `w_late`, `w_gamma` | §4.10 의 가중. `w_gamma`를 크게 잡으면 사전식 선택과 같아진다 | – | 탐색 |
+| `planner.score.penalty` | 실패한 **순위** 게이트 하나당 점수에 더한다. 연속 항을 압도해야 한다 (§4.1) | – | 탐색 |
+| `planner.workspace.catch_box` | 모델 world 축정렬 상자 `{min: [x,y,z], max: [x,y,z]}`. 판정 게이트 — $p_c$ 와 $p_{stop}$ 이 모두 안에 있어야 한다 (TBD-BALL-02). 결정값이라 없으면 park | m | 탐색 |
+| `planner.hand.d_eff` | **시각 발동 fly-in 허용 상대속도 × $T_{close,tot}$** (§4.5, L6 §4.5). 포켓 깊이가 아니다. 결정값이라 비었거나 TBD 면 park | m | 탐색 |
+| `planner.hand.r_cap` | 측면 허용량 (L6 §4.5). 공 중심 좌표계라 공 반지름이 이미 포함돼 있다. 불확실성 · 오차 예산이 쓴다 | m | 탐색 |
+| `planner.ik.max_iter` | IK 반복 상한 $N_{IK}$ | – | 탐색 |
+| `planner.ik.eps_pos` | 수락: 위치 오차 $\epsilon_p$ | m | 탐색 |
+| `planner.ik.alpha_max` | 수락: 손 형상 허용 콘 ($\theta\le\alpha_{\max}$) | rad | 탐색 |
+| `planner.ik.rho` | §4.2 위치/회전 스케일 정합 (특성길이). **$J$ 와 잔차 양쪽에 가중** | m/rad | 탐색 |
+| `planner.ik.sigma0` | 감쇠 shell 진입 σ_min — **영공간 투영 $N$ 만** 파라미터화한다 (과제 스텝은 QP) | – | 탐색 |
+| `planner.ik.lambda_max` | 최대 감쇠. $N$ 전용 | – | 탐색 |
+| `planner.ik.dq_step_max` | 반복당 $\Vert\dot q_d\Vert_\infty$ 상한 (방향 유지 축소, $\Delta t=1$) | rad | 탐색 |
+| `planner.ik.mu` | §4.2 과제 QP 정칙화. $J^\top J$ 가 rank ≤ 5 라 필수다. 절벽이 있으니 값을 바꾸면 재측정한다 | – | 탐색 |
+| `planner.ik.qp_eps_abs` | 과제 QP 절대 허용오차. TSID tick 의 값을 그대로 쓰면 IK 잔차에 solver 바닥이 생긴다 | – | 탐색 |
+| `planner.ik.qp_max_iter` | 과제 QP 반복 상한 | – | 탐색 |
+| `planner.ik.k_null` | §4.2 영공간 자세 과제 $K_n$. $q_n$ = **한계로 clamp 한** seed. `eps_pos` 와 함께 고른다 (2차 잔차) | 1/step | 탐색 |
+| `planner.ik.k_manip` | §4.2 영공간 $\log w_5$ 상승 이득 $k_w$. 0 이면 seed 가 roll 을 정한다 | – | 탐색 |
+| `planner.ik.manip_grad_tol` | 상승 종료 판정 $\Vert N\nabla\log w_5\Vert$ | – | 탐색 |
+| `planner.ik.fd_step` | $\nabla\log w_5$ 중심차분의 간격 $h$ | rad | 탐색 |
+| `planner.ik.v_eps` | §4.2 NUM-7 속력 하한 — 미만이면 clamp 가 아니라 탈락 | m/s | 탐색 |
+| `planner.catchability.definition` | §4.2 게이트에 쓸 정의 (`arm_5row` \| `arm_6row`). $w_5$·$w_6$ 는 정의와 무관하게 둘 다 기록 | – | 탐색 |
+| `planner.catchability.manipulability_min.arm_5row` / `.arm_6row` | §4.2 D-18 정의별 하한 (차원이 달라 따로 둔다, C-3). 로봇별 값이다. TBD 인 정의로 판정하면 fail closed. 오프라인 지도 도구와 **같은 키** | – | 탐색 |
+| `planner.catchability.manipulability_min.provisional` | 위 하한이 provisional — 실기 구성 차단 (L0 §5.3) | – | 탐색 |
+| `planner.freeze.T_freeze` | §4.11 의 동결 창. 하한은 §4.11 의 코드 하한. 결정값이라 없으면 park | s | 주 |
+| `robot.arm.qdd_max` | §4.3 의 관절 가속 box (arm 관절 순서). 탐색의 도달시간, QP 비의존 정지 램프, homing 램프가 읽고, CLIK 은 `joint_cmd.accel_constraint: box` 일 때만 읽는다 | rad/s² | 탐색 |
+| `robot.arm.qdd_provisional` | 위 box 가 실기에 승인됐는가 — true 면 실기 구성 park. `qdd_max` 를 덮는 쪽이 함께 적는다 | – | 탐색 |
+| `reference.omega` · `zeta` · `v_max` · `a_max` | L4 §6. 탐색은 rollout (§4.8) 과 γ 창 (§4.5) 에서 읽는다 — 두 planner 모두 | – | CF |
+| `supervisor.decel.a_dec` | §4.9 정지점의 감속 (L7 §6 의 단일 키). 탐색은 두 planner 모두 읽는다 | m/s² | CF |
+| `planner.switch.delta_J` | §4.7 규칙 1 의 $\Delta_J$ — **closed_form 전용** | – | CF |
+| `planner.switch.eta_jump` | §4.7 규칙 2: 교체가 $u_{des}$ 에 넣는 계단 ≤ `eta_jump` × `reference.a_max` — **closed_form 전용** | – | CF |
+| `planner.switch.samples` | §4.7 규칙 2 의 계단 상한을 평가하는 순간의 수 (2 ~ `kSwitchSamplesMax`) — **closed_form 전용** | – | CF |
+
+읽지 않는 키: `planner.ik.lambda` · `planner.ik.manip_min` 은 파서가 읽지 않고 보고만 한다 (`CatchPoseIkRetiredKeys` — 감쇠는 `sigma0` · `lambda_max`, 하한은 `planner.catchability.manipulability_min`). `planner.switch.e_jump_max` · `ed_jump_max` 는 파서가 **거부**한다 (`eta_jump` 가 그 자리다). 그 밖의 모르는 `planner.ik.*` 키도 거부한다.
 
 ## 7. 단위 기술 구현 순서
 
-단계 매핑 (plan §4, §14.2): L3.1·L3.3·L3.5 = **S1.5**, L3.2 = **S1.9** (IK+catchability 함수 — S3.5a/b 지도 도구와 S6.2 런타임이 공유) → **S6.2** (스레드로 배선), L3.4·L3.6·L3.7 = **S6** (S6.3 γ 창·rollout, S6.4 선택·commit, S6.1 스레드, S6.5 D-7a 측정).
+구현 순서는 이 문서가 갖지 않는다 — 구현은 끝났다. 단위와 코드의 대응만 남긴다.
 
-- **L3.1** `time_feasibility.hpp` + LP 대조 테스트(`test_l3.cpp` → `cases.txt` → `verify_l3.py` (삭제됨), 결과를 고정 테이블로 GTest화) + `w0_clamped` 경로 테스트.
-- **L3.2** 포구 자세 IK (`DifferentialIk` m=5 + 전용 `RtModelHandle`, seed = wait_pose) + manipulability 게이트 (D-18, S3.5a/b 도구와 같은 함수) + 수렴률·콘·스케일($\rho$) 테스트.
-- **L3.3** 방향 속력 (§5.4, 투영·0 가드) + γ 창 테스트([R1] 수치 sanity, `v_tcp_max` 구속, `MaxCatchableSpeed` 포함).
-- **L3.4** γ rollout (L4 코드 호출, $now_{lead}$ 축) + §4.8 표 재현 테스트 + coarse-to-fine (예산 초과 시, S6.3).
-- **L3.5** 오차 예산(§4.6 직교 분해)·정지거리 게이트.
-- **L3.6** 선택·히스테리시스·commit (γ 하향 경로는 v1 범위 밖, D-8).
-- **L3.7** 계획기 스레드 (D-7, §5.3), 예산 관리, SPSC 진단, D-7a 측정 (S6.5).
-- **L3.8** (미래 선택지) 부록 A NLP — 전환 신호(§4.1)가 필요를 보일 때만 (A-4).
-
-L3.1·L3.3·L3.4는 `test_l3.cpp`가 참조 구현을 이미 돌리고 있다. **L3.1·L3.3·L3.5 (S1.5) 는 한계·γ창 값을 인자로 받는 값-매개변수 공식이라 실측값 없이도 이식·테스트할 수 있다** — `planner.gamma.*`, `planner.hand.*`, `reference.a_max` 가 provisional 이어도 S1.5 착수를 막지 않는다. 반대로 **S6 착수 전에는 마스터 §4.1의 $T_{close,tot}$ 선행 측정(S4 손 타이밍 go/no-go)을 끝낼 것** — 이 값이 실제로 필요한 것은 L3.2 의 런타임 배선(S6.2)·L3.4·L3.6·L3.7 (S6) 이다. 값이 좌우하는 파라미터는 위와 같다.
+| 단위 | 코드 |
+|---|---|
+| 도달시간 · γ 창 · 정지점 · 오차 예산 | `time_feasibility.hpp`, `rank_gates.hpp` |
+| 포구 자세 IK + manipulability 게이트 | `catch_pose_ik.hpp` (+ `catch_pose_ik_params.hpp`) |
+| 방향 속력 | `unit_speed.hpp` |
+| γ rollout | `gamma_rollout.hpp` |
+| 탐색 · 선택 · 히스테리시스 | `planner_search.hpp` |
+| 한 번의 wake · 게시 | `planner_cycle.hpp` |
+| 계획기 스레드 | `integrated_bringup` 의 `planner_thread.hpp` |
 
 ## 8. 디버깅 방법
 
-- 계획마다 기록: 후보 수, 게이트별 탈락 수(히스토그램), 선택 후보의 $(t_c,p_c,\gamma_f,T_w,\sigma_{\max},\max t_{\min})$, 실행시간, 교체 여부와 사유.
+- 계획마다 기록 (`planner_events.csv`): 후보 수, 게이트별 탈락 수(히스토그램), 선택 후보의 $(t_c,\gamma_f,T_w)$ 와 γ 창 ($\gamma_{\min}$ · $\gamma_{\max}$ · $v_{dir,\max}$ · $\Vert v\Vert_{\max}$), 순위 게이트 비트마스크, 실행시간, 교체 여부와 사유. `mpc` 는 구간 풀이의 결과가 `decel_*` 열에 더해진다.
 - "항상 탈락": 게이트별 탈락 히스토그램에서 첫 번째 병목을 찾는다. γ 창이 원인이면 $d_{eff}$, $T_{close}$, $v_{dir,\max}$ 값을 먼저 의심한다.
-- 포구점이 자주 바뀐다: `delta_J`, 점프 한계, 예측 품질(L2 `lastJump`)을 확인한다.
+- 포구점이 자주 바뀐다 (`closed_form`): `delta_J`, 점프 한계, 예측 품질(L2 `lastJump`)을 확인한다.
 - IK 수렴 실패: catch frame 축 정의 (D-17 YAML), `alpha_max`, seed(wait_pose)와 후보 자세의 거리를 확인한다.
-- manipulability 탈락이 지배적: $w_5$ 분포와 S3.5a/b 지도 결과를 대조한다. 지도와 런타임이 다른 함수·키·seed 를 쓰고 있지 않은지 먼저 본다. arm base frame 이 로봇 config 의 CLIK `base_frame` 인지 확인한다 (ur5e_p1b `base` vs `base_link` 180° — plan §11).
+- manipulability 탈락이 지배적: $w_5$ 분포와 오프라인 지도 결과를 대조한다. 지도와 런타임이 다른 함수·키·seed 를 쓰고 있지 않은지 먼저 본다. arm base frame 이 로봇 config 의 CLIK `base_frame` 인지 확인한다 (ur5e_p1b `base` vs `base_link` 180° — plan §11).
+- `mpc` 에서 plan 이 유효한데 게시되지 않는다 (`held`): 첫 구간이 보류된 것이다 — `decel_outcome` 을 본다.
 - 시뮬레이션 시각화(RViz): vision 예측 궤적(시각화용 `nav_msgs/Path` 로 재발행), 후보 점(색 = 탈락 사유), 선택된 $p_c$와 $a_d$, $p_{stop}$.
 
 ## 9. 검증 방법과 합격 게이트
@@ -571,42 +573,27 @@ L3.1·L3.3·L3.4는 `test_l3.cpp`가 참조 구현을 이미 돌리고 있다. *
 | G3-A | `TMin` 고정 테이블 일치 (< 1e-9, 스크립트 기준값 대비) + `w0_clamped`·한계 무효 플래그 시 후보 탈락 | `[SIM-ANY]` |
 | G3-B | γ 창 sanity ([R1] 3 cm / 6 m/s → 5 ms 통과, 6 ms 탈락), `v_tcp_max` = $\eta_v$`reference.v_max` 구속 (D-9), §4.8 표 재현(±5%), 방향 속력 투영·0 가드 | `[SIM-ANY]` |
 | G3-C | 합성 투척 1000회: 계획 실행시간 99% < `budget_s`, 탈락 사유 분포 기록 | `[SIM-ANY]` |
-| G3-D | `iiwa7_leap` 시뮬레이션에서 plan 유효율, 교체 빈도 기록. **S8-E (2026-09-26): PASS (기록)** — plan 유효율 p50 p1b tennis 0.14 · beanbag 0.13 · leap 0.17, APPROACH 중 교체 0/600, 첫 plan 0.20 s (plan §4.4 S8-E 결과) | `[SIM-ANY]` |
-| G3-E | `ur5e_p1b` 시뮬레이션에서 선택된 plan의 L4/L5 실행 시 포화 0, 한계 활성 비율, **포화 발생 빈도** 기록 (D-8 재검토 입력). **S8-E (2026-09-26): 기록만** (= L8 G8-C3 삭제) — `ref_saturated` 연속 > 0 시행 tennis 165/200 (재실행; 원 158/200) · beanbag 161/200 · leap 5/200 (plan §4.4 S8-E 결과) | `[SIM-P1B]` |
+| G3-D | `iiwa7_leap` 시뮬레이션에서 plan 유효율, 교체 빈도 기록 | `[SIM-ANY]` |
+| G3-E | `ur5e_p1b` 시뮬레이션에서 선택된 plan의 L4/L5 실행 시 포화 0, 한계 활성 비율, **포화 발생 빈도** 기록 | `[SIM-P1B]` |
 | G3-F | 실측 $T_{close}$, $T_{arm}$, $\sigma_{trk}$ 반영 후 γ 창·오차 예산 재산정. $\Vert v\Vert_{\max}$(§4.5)가 목표 투척 속도를 덮는지 확인 | `[HW-P1B]` |
 | G3-G | IK 수렴률: 합성 후보 1000개에서 `max_iter` 내 수락 비율과 실패 시 잔차 분포 기록 (§4.2는 Gauss-Newton이 아니므로 수렴 보장이 없다) | `[SIM-ANY]` |
-| G3-H | 오차 예산 모델 검증: L8에서 §4.6 예측 간극 분포와 실제 간극 분포 비교 (직교 분해 식이 맞는지) — 판정은 S8-E 의 G8-C2 (L8 §9.1; p̂_live 결합 규칙은 plan D-S8-16 ②b). **S8-E (2026-09-26): FAIL (직교성 기각)** — A·B 음의 상관, $E\Vert A\Vert^2+E\Vert B\Vert^2$ 가 $E\Vert A+B\Vert^2$ 의 ≈ 2.1–2.7 배 (profile 수정 뒤 1.1–1.7 배). 판정은 FAIL 그대로이고 **예산식은 유지** (§4.6 "측정과 결정", #600) | `[SIM-P1B]` |
-| G3-I | catchability 게이트 (D-18): $w_5$ 가 유한차분·해석 대조와 일치, threshold 미만 후보 탈락 + 사유 코드, 전부 탈락 시 plan 없음 (함수 자체의 판정은 **S1.9**). S3.5a/b 지도 도구와 S6 런타임이 같은 입력에서 같은 판정을 내는 동치성은 **S3.5a/b·S6** 에서 판정 | `[SIM-ANY]` |
-| G3-J | D-7a 측정 (S6.5): 제어 PC 부하 상태에서 FIFO·OTHER 각각 수신 → plan 게시 지연 p50·p99·최대, 예산 초과율 (≥ 1000 시행) → plan §7.2 기준으로 정책 확정. 판정은 제어 PC 에서만 — dev PC 결과는 `NOT_EVALUATED(제어 PC)` (PREEMPT_RT 아님). 각 run 은 planner 스레드 이름에 맞는 모든 TID 의 실제 policy·priority·논리 CPU·cpuset mask 를 `verify_rt_runtime.sh` 로 기록하고, `{snapshot_sequence, recv_steady_ns, wake_ns, publish_ns}` 이벤트 레코드를 SPSC 로 남긴다 (plan §7.2) | `[SIM-ANY]` **생략 (사용자, 2026-09-23)** — 초기값 FIFO 유지, 재판정 CLI 는 #537 코멘트 5793878042 |
+| G3-H | 오차 예산 모델 검증: L8에서 §4.6 예측 간극 분포와 실제 간극 분포 비교 (직교 분해 식이 맞는지) — 판정은 L8 의 G8-C2 (L8 §9.1) | `[SIM-P1B]` |
+| G3-I | catchability 게이트 (D-18): $w_5$ 가 유한차분·해석 대조와 일치, threshold 미만 후보 탈락 + 사유 코드, 전부 탈락 시 plan 없음. 오프라인 지도 도구와 런타임이 같은 입력에서 같은 판정을 내는 동치성 | `[SIM-ANY]` |
+| G3-J | D-7a 측정: 제어 PC 부하 상태에서 FIFO·OTHER 각각 수신 → plan 게시 지연 p50·p99·최대, 예산 초과율 (≥ 1000 시행) → plan §7.2 기준으로 정책 확정. 판정은 제어 PC 에서만 — dev PC 결과는 `NOT_EVALUATED(제어 PC)` (PREEMPT_RT 아님). 각 run 은 planner 스레드 이름에 맞는 모든 TID 의 실제 policy·priority·논리 CPU·cpuset mask 를 `verify_rt_runtime.sh` 로 기록하고, `{snapshot_sequence, recv_steady_ns, wake_ns, publish_ns}` 이벤트 레코드를 SPSC 로 남긴다 (plan §7.2) | `[SIM-ANY]` |
 | G3-K | RT 할당 게이트: 계획기 스레드 한 사이클(탐색·IK·rollout·게시)이 `ScopedAllocGate`·`ScopedNoMalloc` 아래 할당 0, `noexcept`, 로깅 없음 (진단은 SPSC) | `[SIM-ANY]` |
 | G3-L | token·race: eventfd coalescing, 계산 중 새 스냅샷 도착, 같은 generation 의 옛 plan 게시, deactivate·Pause race 에서 대체된 plan 소비 0 (D-22, D-23) | `[SIM-ANY]` |
 
+G3-D 의 "교체 빈도" 와 G3-E 의 "L4/L5 실행 시 포화" 는 `closed_form` 의 양이다 (`mpc` 에서는 교체가 없고 RT 가 L4 기준을 돌리지 않는다).
+
 ## 10. 미확정 항목
 
-TBD-HAND-01, TBD-HAND-04 (투척 보정만 — 기하값은 두 손 모두 S4.5 로 provisional 닫힘), TBD-BALL-02, TBD-VIS-04, `planner.ik.alpha_max` (provisional 0.26 — 값은 위 §6 에서 코드와 일치시켰고 닫는 근거만 남았다), `planner.freeze.T_freeze`, `planner.catchability.manipulability_min` (provisional, D-18), `planner.ik` 의 S1.9 provisional 기본값 (`sigma0`, `lambda_max`, `dq_step_max`, `k_manip`, `manip_grad_tol` — 값은 S3.5a 지도 실측으로 제안하고 사용자가 확정), 점수 가중치 (S6~S8), D-7a 정책 (S6.5). NLP 전환은 v1 에서 하지 않는다 (사용자 2026-09-29, plan §7.3·§8). TBD-RTC-14~16 은 닫힘 (§2).
+- TBD-HAND-01, TBD-HAND-04 (투척 보정 — 실기), TBD-BALL-02 (`planner.workspace.catch_box`), TBD-VIS-04
+- provisional 로 남은 값: `planner.ik.alpha_max`, `planner.freeze.T_freeze`, `planner.catchability.manipulability_min`, `planner.ik` 의 `sigma0` · `lambda_max` · `dq_step_max` · `k_manip` · `manip_grad_tol` · `mu` · `qp_eps_abs`, 점수 가중치, `robot.arm.qdd_max` (실기 envelope)
+- `planner.budget.sigma_trk` · `clock_err` (실기 식별), 충격량 임계 (TBD-IMP-01, L7 §4.7)
+- 계획기 스레드의 스케줄러 정책 판정 (G3-J — 제어 PC)
 
 ---
 
 ## 부록 A. [R1]식 SQP (`iiwa7_leap` 확장용, 선택)
 
-**v0.5 위치 `[확정 A-4]`.** v1 은 1차원 시간 탐색 + IK (§4.1) 이고, 이 부록은 NLP 전환 시의 미래 선택지로 보존한다 (plan §8). 전환 시: §4.1 단일 진입 함수의 본문만 바꾸고, 두 구현이 생기는 그때 interface 를 도입하며 (ARCH-3), solver 가 할당·예외를 쓰면 D-7a 를 SCHED_OTHER 로 옮긴다. 재사용 후보는 `rtc_mpc` 의 solver 기반·스레드 관용구 (그 시점에 조사).
-
-결정변수 $y=(q,t)\in\mathbb R^{n+1}$.
-
-**등식 제약.** 위치 3개와 접근축 2개.
-
-$$h_p=p_C(q)-\hat p(t),\qquad \frac{\partial h_p}{\partial(q,t)}=\big[J_p(q)\ \ -\hat v(t)\big]$$
-
-$$h_o=\begin{bmatrix}\hat x_C(q)^\top\hat v(t)\\\hat y_C(q)^\top\hat v(t)\end{bmatrix},\qquad \hat z_C(q)^\top\hat v(t)\le0$$
-
-$\hat z_C^\top\hat v=-1$을 등식으로 쓰면 해에서 기울기가 0이 되어 LICQ가 깨진다. 위 형태는 해에서 $\hat x_C\perp\hat v$이므로 기울기가 살아 있다.
-
-**기울기.** $d\hat x_C=\omega\times\hat x_C$이므로
-
-$$\frac{\partial(\hat x_C^\top\hat v)}{\partial q}=(\hat x_C\times\hat v)^\top J^W_\omega,\qquad \frac{\partial(\hat x_C^\top\hat v)}{\partial t}=\hat x_C^\top\frac{(I-\hat v\hat v^\top)\hat a}{\Vert\hat v\Vert}$$
-
-**부등식.** 관절 한계, $0<t-t_{now}\le t_{\max}$, 각 관절 $t-t_{now}-T_{arm}\ge t_{\min,i}(q_i)$ (§4.3), 작업공간.
-
-**목적.** [R1]의 세 목적(soft/latest/cool) 중 선택. cool의 $L_4$ 노름은 $\max_it_{\min,i}$의 매끄러운 근사다.
-
-**풀이.** ProxQP 부분문제의 SQP([R15]), 직전 해 warm start, 초기해 multi-start.
+채택하지 않았다 — 탐색은 1차원 시간 탐색 + IK (§4.1) 이고, $(q,t)$ 를 함께 푸는 SQP 는 구현에 없다.
