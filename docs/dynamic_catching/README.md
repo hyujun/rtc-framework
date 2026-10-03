@@ -42,8 +42,9 @@ profile 은 ball_perception 저장소가 소유한다 ([MPC_DUALARM_PLAN.md](MPC
 
 계획에 참고하는 자료 (수학적 알고리즘 · 전체 구조) 의 원본을 [ref/](ref/) 에 보관한다.
 
-- **될 수 있으면 고치지 않는다.** 고치는 것은 사용자가 필요할 때 한다 — 구현이 바뀌어도 이 폴더의 문서를 거기에 맞춰 갱신하거나 줄이지 않는다
-- 그래서 구현과 다를 수 있다. 알려진 차이는 [#705](https://github.com/hyujun/rtc-framework/issues/705) 의 "코드와 어긋난 곳" 에 있다
+- 목적은 **지금 구현의 수학과 구조를 표현하는 것** 이다 — 경위의 기록이 아니다
+- 구현과 다르게 적힌 곳은 지금 구현으로 고쳐 쓴다. **수학이 달라지는 수정은 사용자의 승인을 받고 한다.** 그 밖에는 될 수 있으면 고치지 않는다
+- 아직 구현과 맞추지 않았다. 알려진 차이는 [#705](https://github.com/hyujun/rtc-framework/issues/705) 의 "코드와 어긋난 곳" 에 있다
 - 2026-10-04 에 이 폴더의 같은 이름 문서를 그대로 복사했다. 원문과 다른 것은 상대 링크의 경로뿐이다 (폴더가 한 단계 깊어져서). 이 폴더 바로 아래의 같은 이름 문서는 재정비 (#705) 의 대상이다
 - 들어 있는 것: `mpc_multiframe_clik_formulation.md` · `ball_catching_inverse_dynamics_mpc.md` · `CATCHING_MASTER.md` · `L0_core.md` … `L8_bringup.md`
 
