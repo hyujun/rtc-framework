@@ -606,7 +606,6 @@ Publish 역할은 모두 **controller-owned** 입니다. 컨트롤러 LifecycleN
 | `urdf.root_link` | string | 선택 | URDF 루트 링크 |
 | `urdf.tip_link` | string | 선택 | URDF 엔드이펙터 링크 |
 | `joint_limits.max_velocity` | double[] | 선택 | 최대 관절 속도 (URDF와 병합: 더 작은 값 적용) |
-| `joint_limits.max_acceleration` | double[] | 선택 | 최대 관절 가속도 |
 | `joint_limits.max_torque` | double[] | 선택 | 최대 관절 토크 (URDF와 병합) |
 | `joint_limits.position_lower` | double[] | 선택 | 관절 위치 하한 (URDF와 병합: 더 큰 값 적용) |
 | `joint_limits.position_upper` | double[] | 선택 | 관절 위치 상한 (URDF와 병합: 더 작은 값 적용) |

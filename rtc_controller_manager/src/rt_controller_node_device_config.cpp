@@ -216,13 +216,12 @@ bool RtControllerNode::LoadDeviceNameConfigs() {
       };
 
       auto vel = read_double_array(lp + ".max_velocity");
-      auto acc = read_double_array(lp + ".max_acceleration");
       auto trq = read_double_array(lp + ".max_torque");
       auto plo = read_double_array(lp + ".position_lower");
       auto pup = read_double_array(lp + ".position_upper");
 
       // Only create limits if at least one array was provided
-      if (!vel.empty() || !acc.empty() || !trq.empty() || !plo.empty() || !pup.empty()) {
+      if (!vel.empty() || !trq.empty() || !plo.empty() || !pup.empty()) {
         rtc::DeviceJointLimits lim;
         auto validate_size = [&](const std::string& name, std::vector<double>& v) {
           if (!v.empty() && v.size() != nj) {
@@ -234,13 +233,11 @@ bool RtControllerNode::LoadDeviceNameConfigs() {
           }
         };
         validate_size("max_velocity", vel);
-        validate_size("max_acceleration", acc);
         validate_size("max_torque", trq);
         validate_size("position_lower", plo);
         validate_size("position_upper", pup);
 
         lim.max_velocity = std::move(vel);
-        lim.max_acceleration = std::move(acc);
         lim.max_torque = std::move(trq);
         lim.position_lower = std::move(plo);
         lim.position_upper = std::move(pup);
