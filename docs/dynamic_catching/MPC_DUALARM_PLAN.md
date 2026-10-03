@@ -1,6 +1,6 @@
 # MPC · dual-arm catching — 구현 계획
 
-- 개정: r42 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
+- 개정: r43 (2026-10-03) — 이력은 §9. 최초 작성 2026-09-29
 - 상태: **E0 완료 · E1 · E2 진행 중** · E3 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태 · 다음 차례 · PR 은 §6 의 feature 표가, 측정은 §8 이, 넘겨받은 미결은 §4 가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지) → G1 + proto_1b bring-up 과 QP 다중 frame CLIK → 같은 MPC 에 dual arm · waist 항 추가 (g1_p1b)
 - 수학적 정식화: [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) — 구현 기준은 v0.5 (단일 팔 구성, 구현 반영 v0.5e) 이고 v0.6 ($t_c$ 를 결정변수로) 은 검토 중이다. 판의 상태는 그 문서의 개정 표가 갖는다. 문헌 대조는 그 문서 §6, 참고 문헌과 공개 코드는 §7 · §8
@@ -285,7 +285,7 @@ MD-7 의 귀결: 토크 행은 직전 해에서의 역동역학 값과 그 미�
 | E1-F09 | [#662](https://github.com/hyujun/rtc-framework/issues/662) | L7 — RT 가 APPROACH – HOLD 를 MPC 구간으로 추종, DECEL 진입은 연속 (E-8). 노드별 간격을 읽는 샘플러 (MD-54) | E1-F08 | 완료 (2026-10-02, [#674](https://github.com/hyujun/rtc-framework/pull/674)) — 결정 MD-65 – MD-70, 측정 §8. p1b sim 50 발에서 구간 추종으로 HOLD 까지 50/50, abort 0. security review 는 보고할 것이 없었다. 성공률은 `closed_form` 보다 낮다 (E1-F10) |
 | E1-F05 | [#631](https://github.com/hyujun/rtc-framework/issues/631) | 로그 · plot_rtc_log · demo_controller_gui — tick record 의 decel 블록과 계획기 레코드를 CSV 로, `catching_trials` 의 `mpc` 분해 · lane · 명령 열, plotter 패널, GUI 의 Catching 탭 | E1-F09 | 완료 (2026-10-02, [#678](https://github.com/hyujun/rtc-framework/pull/678)) — 확인 §8. 제어 동작 불변. 항별 비용 분해 · GUI 의 lane 상태 · `decel_*` 이름 통일은 하지 않았다 (미결) |
 | E1-F10 | [#663](https://github.com/hyujun/rtc-framework/issues/663) | mpc planner 튜닝 — closed_form 대비 성공률 비열등 (MD-50) | E1-F05 | 완료 (2026-10-02, [#679](https://github.com/hyujun/rtc-framework/pull/679)) — 결정 MD-71 – MD-76, 측정 §8. p1b 는 `catch.gamma_ref` 0.6 채택 (확인 200 쌍 −0.05 — 비열등 판정은 G-1), leap 은 미달로 닫음 (plan 이 채택되지 않는다 — 구조 문제). RT 의 `catch_box` 검사 폐기 (MD-73), CLIK 은 `dynamic` 만 (MD-74) |
-| E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | 완료 (2026-10-03, [#699](https://github.com/hyujun/rtc-framework/pull/699)) — 측정 §8. **G-1 FAIL (두 로봇, 기준 1).** p1b $\hat d$ −0.10, 양측 95 % 구간 −0.17 – −0.04. leap −0.47. 한계 · solve time · 회귀는 두 로봇 모두 통과. 사용자는 두 로봇의 출하 기본값을 `mpc` 로 정했다 (MD-89, 브랜치 `feat/catching-mpc-default`) |
+| E1-F06 | [#632](https://github.com/hyujun/rtc-framework/issues/632) | A/B 성능 시험 — 게이트 G-1 판정 (closed_form 대 mpc planner) | E0-F02, E1-F10 | 완료 (2026-10-03, [#699](https://github.com/hyujun/rtc-framework/pull/699)) — 측정 §8. **G-1 FAIL (두 로봇, 기준 1).** p1b $\hat d$ −0.10, 양측 95 % 구간 −0.17 – −0.04. leap −0.47. 한계 · solve time · 회귀는 두 로봇 모두 통과. 사용자는 두 로봇의 출하 기본값을 `mpc` 로 정했다 (MD-89, [#700](https://github.com/hyujun/rtc-framework/pull/700)) |
 | E1-F11 | [#698](https://github.com/hyujun/rtc-framework/issues/698) | catching config 의 기능별 분리 — RT 의 QP CLIK · 탐색 ($p_c$ · $t_c$, 공통) · closed_form planner · mpc planner (MD-88). 기능 동등성 | E1-F06 | **다음** — 합치는 곳 · 키 경로 · closed_form 파일의 내용은 spec 에서 |
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
@@ -987,6 +987,15 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 원자료 · overlay · 요약은 `~/rtc_eval/e1-f06/` 에 있다 (`analysis/summary_{p1b,leap}.json`). 도구는 에이전트 private plan 의 `mpc-e1-f06-tools` 이고, 그 sha256 은 규칙 코멘트에 적었다.
 
+**뒤따른 것** (2026-10-03).
+
+- **판정 도구의 리뷰 반영** ([#699](https://github.com/hyujun/rtc-framework/pull/699)). HOLD 판정 (성공 정의의 모드 경로 부분) 은 이제 `catching_trials` 가 `hold_verdict` · `abort_in_window` 열로 낸다. 창은 truth 열과 같은 ±`window_margin_s` 이고, 규칙 코멘트의 "margin 없는 `[t_launch, t_end]`" 와 다르다. 24 unit 을 다시 돌려 유효 시행 1200 개의 판정이 모두 같고 두 로봇 요약이 1e-12 안에서 같음을 확인했다. 그래서 위 표와 판정은 그대로다. unit 의 `ct/catching_trials.csv` 는 새 열이 든 것으로 바꿨다.
+- **기본값 결정** (MD-89, [#700](https://github.com/hyujun/rtc-framework/pull/700)). 출하 config 그대로 sim smoke 를 돌렸다 — overlay 없음, 곧 `catch_lead_on` 없음, 로봇마다 `s35b` 10 발, seed 901.
+  - 두 로봇 모두 `mpc` 와 decel MPC 를 켠 채 활성화됐고, `ABORT_SAFE` 는 0 이다.
+  - p1b: 10 발 모두 APPROACH → DECEL → HOLD → RETREAT 를 돌았고, supervisor CAPTURED 는 1 이다.
+  - leap: 8 발이 포구 계획을 얻지 못해 APPROACH 에 들어가지 못했다 (G-1 과 같은 양상). CAPTURED 는 2 다.
+  - lead 를 끈 sim 의 성공률은 법칙의 비교가 아니다 — lead 를 끈 파일럿은 `closed_form` 으로 25/25 MISSED 였다. 출하 config 의 성공률은 재지 않았다.
+
 ### E2-F01 · F02 · F03 — G1 + proto_1b bring-up (2026-10-02, [#633](https://github.com/hyujun/rtc-framework/issues/633) · [#634](https://github.com/hyujun/rtc-framework/issues/634) · [#635](https://github.com/hyujun/rtc-framework/issues/635))
 
 기준은 Sprint Contract 의 값이고 시행 전에 고정했다. sim 은 headless (`enable_viewer:=false use_cpu_affinity:=false`, 개발 PC, RT 권한 없음), 세션 `261002_2044`, 임시 패치 없음. 컨트롤러는 `demo_joint_controller` 다.
@@ -1109,6 +1118,7 @@ formulation §1.7 의 여덟 조건을 v1 계획기로 잰 값이다. E3-F07 의
 
 | 판 | 바뀐 것 |
 |---|---|
+| r43 | [#699](https://github.com/hyujun/rtc-framework/pull/699) · [#700](https://github.com/hyujun/rtc-framework/pull/700) 머지 뒤 정리: §8 "E1-F06" 에 리뷰 반영의 판정 동일성과 출하 config smoke, §6 의 E1-F06 행에 #700 |
 | r42 | [#632](https://github.com/hyujun/rtc-framework/issues/632) 의 기본값 결정: 결정 MD-89 (두 로봇의 출하 DECEL 법칙은 `mpc`, 코드 기본값은 `closed_form` 유지), §1 G-1 의 결정 문장, §4 미결 정리 (기본값 항목 제거 · `decel_*` 이름은 정할 차례), §6 의 E1-F06 행 (#699) · 브랜치, §7 공통 규칙 |
 | r41 | [#632](https://github.com/hyujun/rtc-framework/issues/632) G-1 결과: §8 "E1-F06" (두 로봇 FAIL — 기준 1), §6 의 E1-F06 행 (완료) · E1-F11 행 (다음) |
 | r40 | [#632](https://github.com/hyujun/rtc-framework/issues/632) spec · [#698](https://github.com/hyujun/rtc-framework/issues/698) 반영: 결정 MD-87 (G-1 의 spec — leap 도 출하값으로 비교, solve time 예산, 성공 정의, RT tick, Tango 도구) · MD-88 (config 의 기능별 분리, 새 기능 E1-F11), §1 G-1 의 leap · 성공 · 계산 · 검정 문장, §4 미결의 E1-F06 두 항목을 미배정으로, §6 의 E1-F11 행 · 브랜치 · 순서 |
