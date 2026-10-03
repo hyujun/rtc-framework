@@ -15,6 +15,7 @@ import math
 import shutil
 import types
 from pathlib import Path
+from statistics import NormalDist
 
 import numpy as np
 import pytest
@@ -434,9 +435,6 @@ def make_config(share: Path, *, sim_a_dec: float | None = None) -> Path:
     return cfg
 
 
-TAIL_TICKS = 5  # each trial's last ticks lie after its t_end
-
-
 def make_unit(
     root: Path,
     name: str,
@@ -444,18 +442,18 @@ def make_unit(
     *,
     seed: int = 601,
     second_stretch: bool = False,
-    paths: dict[int, str] | None = None,
-    with_t_end: bool = True,
+    verdicts: dict[int, tuple[bool, bool]] | None = None,
+    with_verdict: bool = True,
 ) -> Path:
     """A unit of ``len(outcomes)`` trials; trial 1 aborts before DECEL when there are ≥ 3.
 
     ``second_stretch`` puts a short second DECEL stretch into every trial's HOLD.
-    ``paths`` gives trials another mode path: ``abort_retreat`` (ABORT_SAFE from
-    the DECEL entry to RETREAT — no HOLD before it), ``abort_then_hold`` (a short
-    ABORT_SAFE in APPROACH, then the normal path), ``abort_after_end`` (ABORT_SAFE
-    on the ticks after the trial's ``t_end``).
+    The ``catching_trials.csv`` mode-path columns (``hold_verdict``,
+    ``abort_in_window``) follow the planted path — the aborting trial
+    ``(False, True)``, every other ``(True, False)`` — unless ``verdicts``
+    plants other pairs; ``with_verdict=False`` leaves the columns out (an
+    evaluation older than them).
     """
-    paths = paths or {}
     unit = root / name
     ctl = unit / "session" / "controllers" / CONTROLLER
     q, k0, _ = stop_profile()
@@ -474,13 +472,6 @@ def make_unit(
         for k in range(n):
             t = round((offset + k) * DT, 6)
             m = ct.MODE_ABORT_SAFE if aborts and k >= k0 else mode[k]
-            path = paths.get(i)
-            if (
-                (path == "abort_retreat" and k0 <= k < n - N_RETREAT)
-                or (path == "abort_then_hold" and 20 <= k < 25)
-                or (path == "abort_after_end" and k >= n - TAIL_TICKS + 1)
-            ):
-                m = ct.MODE_ABORT_SAFE
             rows.append(
                 {
                     "t_relative_s": t,
@@ -501,6 +492,10 @@ def make_unit(
             )
     _write_csv(ctl / "catching_diag.csv", rows)
     _write_csv(ctl / f"{ARM}_state.csv", effort)
+    aborting = {1} if len(outcomes) >= 3 else set()
+    verdicts = {i: (i not in aborting, i in aborting) for i in range(len(outcomes))} | (
+        verdicts or {}
+    )
     _write_csv(
         unit / "ct" / "catching_trials.csv",
         [
@@ -508,7 +503,12 @@ def make_unit(
                 "idx": i,
                 "kind": "s35b",
                 "t_launch": launches[i],
-                **({"t_end": round((i * n + n - TAIL_TICKS) * DT, 6)} if with_t_end else {}),
+                "t_end": round((i * n + n - 1) * DT, 6),
+                **(
+                    {"hold_verdict": str(verdicts[i][0]), "abort_in_window": str(verdicts[i][1])}
+                    if with_verdict
+                    else {}
+                ),
                 "invalid_reason": "",
                 "truth_success": str(ok),
                 "supervisor": "CAPTURED" if ok else "MISSED",
@@ -731,7 +731,7 @@ def test_the_pilot_session_runs_through_the_real_fk(tmp_path):
         assert 0.0 < r["stop_distance_mm"] < 1000.0
         assert 0.0 < r["qdd_meas_peak"] < 200.0
         assert r["k1"] > r["k0"]
-    # catching_trials writes t_end, so every valid trial has a mode-path verdict.
+    # catching_trials writes the mode-path columns, so every valid trial has a verdict.
     valid = [r for r in out["all_trials"] if not r["invalid_reason"]]
     assert valid and all(isinstance(r["hold_no_abort"], bool) for r in valid)
 
@@ -817,13 +817,16 @@ def test_the_score_interval_ends_where_the_statistic_crosses_the_critical_value(
     assert cd.tango_score_ci(0, 20, 20)[1] == 1.0
 
 
-def test_rejection_is_the_score_interval_clearing_the_margin():
+@pytest.mark.parametrize("alpha", [0.025, 0.05])
+def test_rejection_is_the_score_interval_clearing_the_margin(alpha):
+    """At the level 1 − 2α the CLI reports (review: a 95 % interval beside an α 0.05 test
+    would break this)."""
     margin, seen = 0.10, {True: 0, False: 0}
     for xa, xb, n in _tables(5, 400):
-        lo, _ = cd.tango_score_ci(xa, xb, n)
+        lo, _ = cd.tango_score_ci(xa, xb, n, 1.0 - 2.0 * alpha)
         if abs(lo + margin) < 1e-6:  # on the boundary the test's p decides
             continue
-        reject = cd.tango_noninferiority(xa, xb, n, margin)["reject"]
+        reject = cd.tango_noninferiority(xa, xb, n, margin, alpha=alpha)["reject"]
         assert reject == (lo > -margin), (xa, xb, n)
         seen[reject] += 1
     assert min(seen.values()) > 10  # both outcomes were exercised
@@ -841,32 +844,79 @@ def test_exact_power_and_size_of_the_planned_comparison():
         cd.paired_noninferiority_power(100, 0.1, -0.2, 0.10)
 
 
-def test_hold_success_fails_an_abort_or_a_retreat_without_hold(tmp_path, lever):
+def test_exact_power_is_the_direct_trinomial_sum():
+    """The cached region and log-factorial table against a sum written out with lgamma."""
+    for n, psi, diff, margin, alpha in (
+        (40, 0.5, 0.0, 0.10, 0.025),
+        (40, 0.5, -0.1, 0.10, 0.025),
+        (57, 0.3, 0.05, 0.05, 0.05),
+        (20, 0.0, 0.0, 0.10, 0.025),
+        (20, 1.0, 0.2, 0.10, 0.025),
+    ):
+        q_a, q_b = (psi - diff) / 2.0, (psi + diff) / 2.0
+        zc = NormalDist().inv_cdf(1.0 - alpha)
+        expect = 0.0
+        for xa in range(n + 1):
+            for xb in range(n + 1 - xa):
+                if cd.tango_z(xa, xb, n, -margin) <= zc:
+                    continue
+                cells = ((xa, q_a), (xb, q_b), (n - xa - xb, 1.0 - psi))
+                if any(x and q == 0.0 for x, q in cells):
+                    continue
+                expect += math.exp(
+                    math.lgamma(n + 1)
+                    - sum(math.lgamma(x + 1) for x, _ in cells)
+                    + sum(x * math.log(q) for x, q in cells if x)
+                )
+        got = cd.paired_noninferiority_power(n, psi, diff, margin, alpha=alpha)
+        assert got == pytest.approx(expect, rel=1e-10, abs=1e-15), (n, psi, diff)
+    # The cache hands out read-only arrays: one call cannot corrupt the next.
+    xa = cd._rejection_region(40, 0.10, 0.025)[0]
+    with pytest.raises(ValueError, match="read-only"):
+        xa[0] = 1
+
+
+def test_hold_success_fails_an_abort_or_a_retreat_without_hold(tmp_path, lever, capsys):
     cfg = make_config(tmp_path / "share")
-    paths = {2: "abort_retreat", 3: "abort_then_hold", 4: "abort_after_end"}
-    a = make_unit(tmp_path, "a", [True] * 5, paths=paths)
-    b = make_unit(tmp_path, "b", [True] * 5)
+    # 1 aborts for good (the planted path), 2 retreats from ABORT_SAFE (no verdict, an
+    # abort), 3 aborted on the way to a HOLD, 4 never judged.
+    verdicts = {2: (False, True), 3: (True, True), 4: (False, False)}
+    a = make_unit(tmp_path, "a", [True] * 6, verdicts=verdicts)
+    b = make_unit(tmp_path, "b", [True] * 6)
     out = cd.analyse_unit(*cd.parse_unit_arg(str(a)), cfg)
-    # 1 aborts for good (no RETREAT), 2 retreats from ABORT_SAFE, 3 aborted on the way
-    # to a HOLD; 4's abort lies after its t_end and is the next trial's business.
-    assert [r["hold_no_abort"] for r in out["all_trials"]] == [True, False, False, False, True]
-    hold = _cli(tmp_path, cfg, a, b, "--success", "hold")["pairs"]
+    assert [r["hold_no_abort"] for r in out["all_trials"]] == [
+        True,
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert out["summary"]["hold_success"] == 2
+    doc = _cli(tmp_path, cfg, a, b, "--success", "hold")
+    hold = doc["pairs"]
     assert hold["success"] == "hold"
-    assert (hold["both"], hold["only_a"], hold["only_b"], hold["neither"]) == (2, 0, 2, 1)
+    assert (hold["both"], hold["only_a"], hold["only_b"], hold["neither"]) == (2, 0, 3, 1)
+    # The pooled blocks carry the count the table used beside truth_success (review).
+    assert (hold["pooled_a"]["truth_success"], hold["pooled_a"]["hold_success"]) == (6, 2)
+    assert (hold["pooled_b"]["truth_success"], hold["pooled_b"]["hold_success"]) == (6, 5)
+    text = capsys.readouterr().out
+    assert "hold success a 2 b 5" in text and "hold success 2/6" in text
     truth = _cli(tmp_path, cfg, a, b)["pairs"]
-    assert (truth["both"], truth["only_a"], truth["only_b"]) == (5, 0, 0)
+    assert (truth["both"], truth["only_a"], truth["only_b"]) == (6, 0, 0)
 
 
 def test_the_default_success_is_truth_and_ignores_the_window(tmp_path, lever):
     cfg = make_config(tmp_path / "share")
-    a = make_unit(tmp_path, "a", [True, True, False, False], with_t_end=False)
-    b = make_unit(tmp_path, "b", [True, False, True, True], with_t_end=False)
+    a = make_unit(tmp_path, "a", [True, True, False, False], with_verdict=False)
+    b = make_unit(tmp_path, "b", [True, False, True, True], with_verdict=False)
     default = _cli(tmp_path, cfg, a, b)["pairs"]
     explicit = _cli(tmp_path, cfg, a, b, "--success", "truth")["pairs"]
     keys = ("n_pairs", "both", "only_a", "only_b", "neither", "discordance", "mcnemar_p")
     assert [default[k] for k in keys] == [explicit[k] for k in keys]
     assert (default["only_a"], default["only_b"]) == (1, 2)
-    with pytest.raises(SystemExit, match="needs catching_trials.csv with t_end"):
+    assert default["pooled_a"]["hold_success"] is None
+    with pytest.raises(SystemExit, match="needs catching_trials.csv with hold_verdict"):
         _cli(tmp_path, cfg, a, b, "--success", "hold")
 
 
@@ -878,14 +928,57 @@ def test_the_cli_reports_tango_beside_wald(tmp_path, lever, capsys):
     (ni,) = pairs["noninferiority"]
     expect = cd.tango_noninferiority(1, 2, 4, 0.10)
     assert (ni["z"], ni["p"], ni["reject"]) == (expect["z"], expect["p"], expect["reject"])
-    assert ni["score_ci95"] == pytest.approx(cd.tango_score_ci(1, 2, 4))
-    assert ni["wald_ci95"] == pytest.approx(pairs["wald"]["ci95"])
+    assert ni["ci_level"] == pytest.approx(0.95)
+    assert ni["score_ci"] == pytest.approx(cd.tango_score_ci(1, 2, 4))
+    # d̂ and the Wald interval live once, on the pair table.
+    assert "wald_ci95" not in ni and "diff" not in ni
+    assert pairs["wald"]["level"] == pytest.approx(0.95)
+    assert pairs["wald"]["diff"] == pytest.approx(0.25)
+    wald = cd.paired_difference(pairs, z=NormalDist().inv_cdf(0.975))
+    assert pairs["wald"]["ci"] == pytest.approx(wald["ci95"])
     assert [r["diff"] for r in ni["power_design"]] == [0.0, -0.05]
+    assert [r["n"] for r in ni["power_design"]] == [4, 4]  # no --design-n: the valid pairs
     # ψ̂ 0.75, d̂ +0.25: every observed row has a table.
     assert [r["diff"] for r in ni["power_observed"]] == [0.0, -0.05, 0.25]
     assert all(r["power"] is not None for r in ni["power_observed"])
     assert ni["size"] == pytest.approx(cd.paired_noninferiority_power(4, 0.75, -0.10, 0.10))
     assert "Tango non-inferiority margin 0.10" in capsys.readouterr().out
+
+
+def test_the_cli_matches_its_intervals_to_alpha_and_its_design_rows_to_the_plan(
+    tmp_path, lever, capsys
+):
+    cfg = make_config(tmp_path / "share")
+    a = make_unit(tmp_path, "a", [True, True, False, False])
+    b = make_unit(tmp_path, "b", [True, False, True, True])
+    argv = ("--margin", "0.10", "--alpha", "0.05", "--design-psi", "0.43", "--design-n", "300")
+    pairs = _cli(tmp_path, cfg, a, b, *argv)["pairs"]
+    (ni,) = pairs["noninferiority"]
+    assert ni["ci_level"] == pytest.approx(0.90)
+    assert ni["score_ci"] == pytest.approx(cd.tango_score_ci(1, 2, 4, 0.90))
+    assert pairs["wald"]["level"] == pytest.approx(0.90)
+    wald = cd.paired_difference(pairs, z=NormalDist().inv_cdf(0.95))
+    assert pairs["wald"]["ci"] == pytest.approx(wald["ci95"])
+    design = ni["power_design"]
+    assert [r["n"] for r in design] == [300, 300]
+    assert design[0]["power"] == pytest.approx(
+        cd.paired_noninferiority_power(300, 0.43, 0.0, 0.10, alpha=0.05)
+    )
+    assert all(r["n"] == 4 for r in ni["power_observed"])
+    text = capsys.readouterr().out
+    assert "score 90 %" in text and "Wald 90 %" in text and "(design, n 300)" in text
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [("--design-psi", "43"), ("--design-psi", "-0.1"), ("--alpha", "0.5"), ("--design-n", "0")],
+)
+def test_the_cli_refuses_an_out_of_range_design_before_any_unit_is_read(tmp_path, bad):
+    # No `lever` fixture and no config: the refusal must come before analysis.
+    argv = ["--a", "x", "--b", "y", "--config-dir", str(tmp_path), "--out", str(tmp_path / "o")]
+    with pytest.raises(SystemExit) as e:
+        cd.main([*argv, *bad])
+    assert e.value.code == 2
 
 
 def test_arch1_module_has_no_robot_constants():

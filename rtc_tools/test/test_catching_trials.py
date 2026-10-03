@@ -67,6 +67,41 @@ def test_golden_trial_end_closes_each_trial_before_the_next_launch(pilot):
     assert rows[-1]["t_end"] > rows[-1]["t_launch"]
 
 
+def test_golden_every_judged_trial_has_its_mode_path_verdict(pilot):
+    """``hold_verdict`` · ``abort_in_window`` (E1-F06) come from the window the truth
+    columns use, for every valid trial; the pilot is 25/25 Missed, so none aborted
+    and every one reached a judged HOLD end or no RETREAT at all."""
+    rows = [r for r in pilot.rows if not r["invalid_reason"]]
+    assert len(rows) == 25
+    for r in rows:
+        assert isinstance(r["hold_verdict"], bool) and isinstance(r["abort_in_window"], bool)
+    assert not any(r["abort_in_window"] for r in rows)
+
+
+A_, D_, H_, R_, AB_ = (
+    ct.MODE_APPROACH,
+    ct.MODE_DECEL,
+    ct.MODE_HOLD,
+    ct.MODE_RETREAT,
+    ct.MODE_ABORT_SAFE,
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "verdict"),
+    [
+        ([A_, D_, H_, R_], (True, False)),  # judged
+        ([A_, AB_, R_], (False, True)),  # RETREAT from ABORT_SAFE: no verdict, an abort
+        ([A_, AB_, A_, D_, H_, R_], (True, True)),  # aborted, then judged
+        ([A_, D_, H_], (False, False)),  # the window ends before RETREAT
+        ([A_, R_, H_, R_], (False, False)),  # the FIRST RETREAT is the verdict tick
+    ],
+)
+def test_mode_path_verdict(path, verdict):
+    out = ct.mode_path_verdict(np.repeat(np.array(path), 3))
+    assert (out["hold_verdict"], out["abort_in_window"]) == verdict
+
+
 def test_golden_tc_decomposition(pilot):
     med = pilot.summary["medians"]
     assert med["servo_mm"] == pytest.approx(122.0, abs=5.0)
