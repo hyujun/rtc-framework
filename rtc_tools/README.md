@@ -1167,7 +1167,7 @@ tree = doc["demo_x_controller"]      # 주 파일 + 조각이 합쳐진 트리
 
 | 함수 | 설명 |
 |------|------|
-| `load_controller_config(path, *, loader=yaml.SafeLoader)` | 문서를 조각과 합쳐 `{<config_key>: 트리}` 로 돌려준다. `include` 가 없는 파일은 읽은 그대로 |
+| `load_controller_config(path, *, config_key=None, loader=yaml.SafeLoader)` | 문서를 조각과 합쳐 `{<config_key>: 트리}` 로 돌려준다. `include` 가 없는 파일은 읽은 그대로. key 를 아는 호출자는 `config_key` 를 넘긴다 — CM 처럼 파일의 key 가 다르면 거부한다 |
 | `controller_config_leaf_lines(tree)` | leaf 마다 한 줄 (`경로\t값`). C++ `ControllerConfigLeafLines` 와 같은 줄을 낸다 — scalar 의 글자까지 비교하려면 `loader=yaml.BaseLoader` 로 읽는다 |
 | `ControllerConfigIncludeError` | 없는 조각 · 중복 leaf · 형식 오류. 주 파일이 없으면 `OSError` 가 그대로 올라간다 |
 

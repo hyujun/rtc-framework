@@ -3,6 +3,7 @@
 #include <array>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +39,37 @@ void RecordOrigins(const YAML::Node& node, const std::string& path, const std::s
   }
   for (const auto& kv : node) {
     RecordOrigins(kv.second, JoinKeyPath(path, kv.first.Scalar()), file, origins);
+  }
+}
+
+// yaml-cpp keeps both entries of a key written twice in one map and a lookup
+// finds the first; PyYAML keeps the last. A composed config must read the same
+// in both loaders, so a repeated key is refused instead of resolved.
+void RejectDuplicateKeys(const YAML::Node& node, const std::string& path, const std::string& file) {
+  if (node.IsSequence()) {
+    for (const auto& item : node) {
+      RejectDuplicateKeys(item, path, file);
+    }
+    return;
+  }
+  if (!node.IsMap()) {
+    return;
+  }
+  std::set<std::string> seen;
+  for (const auto& kv : node) {
+    const std::string child_path = JoinKeyPath(path, kv.first.Scalar());
+    if (!seen.insert(kv.first.Scalar()).second) {
+      Fail("key '", child_path, "' appears twice in '", file, "'");
+    }
+    RejectDuplicateKeys(kv.second, child_path, file);
+  }
+}
+
+// YAML::LoadFile returns the first document and drops the rest without a word.
+void RequireSingleDocument(const std::vector<YAML::Node>& documents, const std::string& file) {
+  if (documents.size() != 1) {
+    Fail("'", file, "' holds ", std::to_string(documents.size()),
+         " YAML documents — exactly one is expected");
   }
 }
 
@@ -85,12 +117,25 @@ std::string ResolveFragmentPath(const std::string& main_path, const std::string&
       Fail("'", main_path, "' includes '", entry, "' — an include path cannot contain '..'");
     }
   }
+  // Readers list a controllers/ directory's *.yaml as the controllers it
+  // holds; a fragment beside the main file would be counted as one.
+  if (!relative.has_parent_path()) {
+    Fail("'", main_path, "' includes '", entry,
+         "' — a fragment lives in a subdirectory of the including file's directory");
+  }
   return (std::filesystem::path(main_path).parent_path() / relative).string();
 }
 
 YAML::Node LoadFragmentDocument(const std::string& fragment_path, const std::string& main_path) {
+  // Checked up front: a directory opens as a stream and only fails on the
+  // first read, with an error that names neither file.
+  if (!std::filesystem::is_regular_file(fragment_path)) {
+    Fail("'", main_path, "' includes '", fragment_path, "', which cannot be opened");
+  }
   try {
-    return YAML::LoadFile(fragment_path);
+    const std::vector<YAML::Node> documents = YAML::LoadAllFromFile(fragment_path);
+    RequireSingleDocument(documents, fragment_path);
+    return documents.front();
   } catch (const YAML::BadFile&) {
     Fail("'", main_path, "' includes '", fragment_path, "', which cannot be opened");
   } catch (const YAML::Exception& e) {
@@ -108,6 +153,7 @@ YAML::Node LoadFragment(const std::string& fragment_path, const std::string& mai
     Fail("fragment '", fragment_path, "' must be a map whose only top-level key is '", config_key,
          "'");
   }
+  RejectDuplicateKeys(doc, "", fragment_path);
   for (const auto& kv : doc) {
     const std::string key = kv.first.Scalar();
     if (key == kIncludeKey) {
@@ -187,6 +233,8 @@ YAML::Node LoadControllerConfig(const std::string& yaml_path, const std::string&
     return file_node[config_key];
   }
 
+  RequireSingleDocument(YAML::LoadAllFromFile(yaml_path), yaml_path);
+  RejectDuplicateKeys(file_view, "", yaml_path);
   const YAML::Node includes = file_view[std::string(kIncludeKey)];
   if (!includes.IsSequence()) {
     Fail("'", yaml_path, "': the top-level 'include' must be a list of fragment paths");

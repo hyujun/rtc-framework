@@ -664,16 +664,18 @@ demo_x_controller:
 
 | 규칙 | 내용 |
 |---|---|
-| 경로 | 주 파일의 디렉토리 기준 상대경로. 절대경로와 `..` 는 거부 |
+| 경로 | 주 파일의 디렉토리 기준 상대경로이고 **하위 폴더** 에 있어야 한다 (`x/part_a.yaml` — `part_a.yaml` 은 거부). 절대경로와 `..` 도 거부 |
 | 주 파일 | `include` 가 있으면 top-level 키는 `include` 와 `<config_key>` 둘뿐이고, `<config_key>` 는 map 이다 |
 | 조각 | top-level 키는 `<config_key>` (map) 하나. 조각은 다시 include 하지 못한다 |
 | 병합 | map 은 재귀로 합친다. scalar · sequence · null 은 leaf 다 — sequence 는 이어 붙이지 않는다 |
 | 충돌 | 같은 leaf 를 두 파일이 적거나, 한쪽이 map 이고 다른 쪽이 leaf 면 에러 (값이 같아도) |
 | 순서 | 주 파일의 키가 먼저, 그 뒤 include 순서로 각 조각의 새 키 |
+| 파일 하나 | YAML 문서 하나여야 한다 (`---` 뒤의 둘째 문서는 거부). 한 map 에 같은 키를 두 번 적으면 거부 — yaml-cpp 는 첫 값을, PyYAML 은 마지막 값을 읽는다 |
 
 - **없는 조각은 "파일 없음" 이 아니다.** 위 표의 첫째 · 둘째 갈래는 주 파일이 없을 때만이다. 주 파일이 있고 조각이 없으면 `ControllerConfigIncludeError` 로 configure 전체를 거부한다 — `config_required` 컨트롤러도 건너뛰지 않는다. 모든 충돌과 형식 오류도 같은 예외이고, 문구에 파일 이름과 키 경로가 있다.
 - **`include` 가 없는 파일은 지금까지와 똑같이 읽힌다.**
-- **조각은 `controllers/` 의 하위 폴더에 둔다.** `controllers/*.yaml` 을 컨트롤러 목록으로 읽는 독자가 있어, 같은 폴더에 두면 조각이 컨트롤러로 세어진다.
+- **조각을 하위 폴더에 두게 하는 이유.** `controllers/*.yaml` 을 컨트롤러 목록으로 읽는 독자가 있어, 같은 폴더에 두면 조각이 컨트롤러로 세어진다. 그래서 로더가 거부한다.
+- **아직 다루지 않는 것.** YAML anchor · alias 가 걸린 map 에 조각을 합치면 alias 쪽도 함께 바뀐다. merge key (`<<`) 는 yaml-cpp 가 펼치지 않는다 (include 와 무관한 기존 제약). 나뉜 config 에는 둘 다 쓰지 않는다.
 - **CM 밖에서 컨트롤러 YAML 을 경로로 읽는 코드는 같은 로더를 써야 한다.** 주 파일만 `YAML::LoadFile` 하면 조각의 키가 조용히 빠진 트리를 본다.
   - C++: `rtc::LoadControllerConfig(yaml_path, config_key)` ([controller_config_loader.hpp](include/rtc_controller_manager/controller_config_loader.hpp))
   - Python: `rtc_tools.utils.controller_config.load_controller_config(path)` — 같은 규칙의 mirror 다. 한쪽을 바꾸면 함께 바꾼다

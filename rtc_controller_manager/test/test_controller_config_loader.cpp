@@ -15,11 +15,10 @@
 
 #include "rtc_controller_manager/controller_config_loader.hpp"
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
-
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -32,9 +31,11 @@ namespace fs = std::filesystem;
 
 constexpr const char* kKey = "ctrl";
 
+// The SOURCE tree's config/, not the installed copy: rtc_tools' Python test
+// reads expected_leaves.txt from the source tree too, so both loaders are held
+// to one file even when the install is stale.
 fs::path FixtureDir(const std::string& variant) {
-  return fs::path(ament_index_cpp::get_package_share_directory("rtc_controller_manager")) /
-         "config" / variant;
+  return fs::path(RTC_CM_SOURCE_CONFIG_DIR) / variant;
 }
 
 std::vector<std::string> ReadLines(const fs::path& path) {
@@ -52,10 +53,10 @@ std::vector<std::string> ReadLines(const fs::path& path) {
 class ControllerConfigLoaderTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-    dir_ = fs::temp_directory_path() / "rtc_cm_config_loader_test" / info->name();
-    fs::remove_all(dir_);
-    fs::create_directories(dir_);
+    // mkdtemp: a fixed path would be shared by two runs of this binary.
+    std::string pattern = (fs::temp_directory_path() / "rtc_cm_config_loader_XXXXXX").string();
+    ASSERT_NE(nullptr, ::mkdtemp(pattern.data())) << pattern;
+    dir_ = pattern;
   }
 
   void TearDown() override { fs::remove_all(dir_); }
@@ -129,8 +130,8 @@ TEST_F(ControllerConfigLoaderTest, TheComposedTreeMatchesTheExpectedLeaves) {
 }
 
 TEST_F(ControllerConfigLoaderTest, ALeafMapSplitAcrossFilesMergesAtLeafLevel) {
-  Write("main.yaml", "include: [a.yaml, sub/b.yaml]\nctrl:\n  g:\n    x: 1\n");
-  Write("a.yaml", "ctrl:\n  g:\n    y: 2\n");
+  Write("main.yaml", "include: [p/a.yaml, sub/b.yaml]\nctrl:\n  g:\n    x: 1\n");
+  Write("p/a.yaml", "ctrl:\n  g:\n    y: 2\n");
   Write("sub/b.yaml", "ctrl:\n  g:\n    z: 3\n  h: 4\n");
 
   const YAML::Node node = LoadControllerConfig(Main(), kKey);
@@ -147,66 +148,68 @@ TEST_F(ControllerConfigLoaderTest, AnEmptyIncludeListComposesTheMainFileAlone) {
 // ── Every broken composition is an include error naming the files ────────────
 
 TEST_F(ControllerConfigLoaderTest, AMissingFragmentIsAnIncludeErrorNotBadFile) {
-  Write("main.yaml", "include: [gone.yaml]\nctrl:\n  x: 1\n");
-  ExpectIncludeError({"main.yaml", "gone.yaml", "cannot be opened"});
+  Write("main.yaml", "include: [p/gone.yaml]\nctrl:\n  x: 1\n");
+  ExpectIncludeError({"main.yaml", "p/gone.yaml", "cannot be opened"});
 }
 
 TEST_F(ControllerConfigLoaderTest, ALeafSetByTwoFilesIsRejected) {
-  Write("main.yaml", "include: [a.yaml, b.yaml]\nctrl:\n  x: 1\n");
-  Write("a.yaml", "ctrl:\n  g:\n    y: 2\n");
-  Write("b.yaml", "ctrl:\n  g:\n    y: 2\n");
+  Write("main.yaml", "include: [p/a.yaml, p/b.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "ctrl:\n  g:\n    y: 2\n");
+  Write("p/b.yaml", "ctrl:\n  g:\n    y: 2\n");
   // Same value on both sides — still an error: which file owns the key is the
   // thing the split exists to make unambiguous.
-  ExpectIncludeError({"'g.y'", "a.yaml", "b.yaml", "set in both"});
+  ExpectIncludeError({"'g.y'", "p/a.yaml", "p/b.yaml", "set in both"});
 }
 
 TEST_F(ControllerConfigLoaderTest, ALeafSetByMainAndFragmentIsRejected) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  x: 1\n");
-  Write("a.yaml", "ctrl:\n  x: 1\n");
-  ExpectIncludeError({"'x'", "main.yaml", "a.yaml", "set in both"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "ctrl:\n  x: 1\n");
+  ExpectIncludeError({"'x'", "main.yaml", "p/a.yaml", "set in both"});
 }
 
 TEST_F(ControllerConfigLoaderTest, ASequenceIsOneLeafAndIsNotConcatenated) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  logs: [one]\n");
-  Write("a.yaml", "ctrl:\n  logs: [two]\n");
-  ExpectIncludeError({"'logs'", "main.yaml", "a.yaml", "set in both"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  logs: [one]\n");
+  Write("p/a.yaml", "ctrl:\n  logs: [two]\n");
+  ExpectIncludeError({"'logs'", "main.yaml", "p/a.yaml", "set in both"});
 }
 
 TEST_F(ControllerConfigLoaderTest, AMapInOneFileAndALeafInAnotherIsRejected) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  g:\n    y: 2\n");
-  Write("a.yaml", "ctrl:\n  g: 5\n");
-  ExpectIncludeError({"'g'", "main.yaml", "a.yaml", "a map in one file and a value in the other"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  g:\n    y: 2\n");
+  Write("p/a.yaml", "ctrl:\n  g: 5\n");
+  ExpectIncludeError(
+      {"'g'", "main.yaml", "p/a.yaml", "a map in one file and a value in the other"});
 }
 
 TEST_F(ControllerConfigLoaderTest, ALeafInOneFileAndAMapInAnotherIsRejected) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  g: ~\n");
-  Write("a.yaml", "ctrl:\n  g:\n    y: 2\n");
-  ExpectIncludeError({"'g'", "main.yaml", "a.yaml", "a map in one file and a value in the other"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  g: ~\n");
+  Write("p/a.yaml", "ctrl:\n  g:\n    y: 2\n");
+  ExpectIncludeError(
+      {"'g'", "main.yaml", "p/a.yaml", "a map in one file and a value in the other"});
 }
 
 TEST_F(ControllerConfigLoaderTest, AFragmentWithoutTheConfigKeyIsRejected) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  x: 1\n");
-  Write("a.yaml", "other_ctrl:\n  y: 2\n");
-  ExpectIncludeError({"a.yaml", "'other_ctrl'", "only top-level key is 'ctrl'"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "other_ctrl:\n  y: 2\n");
+  ExpectIncludeError({"p/a.yaml", "'other_ctrl'", "only top-level key is 'ctrl'"});
 }
 
 TEST_F(ControllerConfigLoaderTest, AFragmentThatIsNotAMapIsRejected) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  x: 1\n");
-  Write("a.yaml", "- just\n- a list\n");
-  ExpectIncludeError({"a.yaml", "must be a map"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "- just\n- a list\n");
+  ExpectIncludeError({"p/a.yaml", "must be a map"});
 }
 
 TEST_F(ControllerConfigLoaderTest, AFragmentWhoseConfigKeyIsNotAMapIsRejected) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  x: 1\n");
-  Write("a.yaml", "ctrl: 3\n");
-  ExpectIncludeError({"a.yaml", "no map under 'ctrl'"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "ctrl: 3\n");
+  ExpectIncludeError({"p/a.yaml", "no map under 'ctrl'"});
 }
 
 TEST_F(ControllerConfigLoaderTest, ANestedIncludeIsRejected) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  x: 1\n");
-  Write("a.yaml", "include: [b.yaml]\nctrl:\n  y: 2\n");
-  Write("b.yaml", "ctrl:\n  z: 3\n");
-  ExpectIncludeError({"a.yaml", "do not nest"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "include: [p/b.yaml]\nctrl:\n  y: 2\n");
+  Write("p/b.yaml", "ctrl:\n  z: 3\n");
+  ExpectIncludeError({"p/a.yaml", "do not nest"});
 }
 
 TEST_F(ControllerConfigLoaderTest, AnAbsoluteIncludePathIsRejected) {
@@ -228,13 +231,13 @@ TEST_F(ControllerConfigLoaderTest, AParentDirectoryIncludePathIsRejected) {
 }
 
 TEST_F(ControllerConfigLoaderTest, AnIncludeThatIsNotAListIsRejected) {
-  Write("main.yaml", "include: a.yaml\nctrl:\n  x: 1\n");
-  Write("a.yaml", "ctrl:\n  y: 2\n");
+  Write("main.yaml", "include: p/a.yaml\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "ctrl:\n  y: 2\n");
   ExpectIncludeError({"main.yaml", "must be a list"});
 }
 
 TEST_F(ControllerConfigLoaderTest, AnIncludeEntryThatIsNotAStringIsRejected) {
-  Write("main.yaml", "include: [{path: a.yaml}]\nctrl:\n  x: 1\n");
+  Write("main.yaml", "include: [{path: p/a.yaml}]\nctrl:\n  x: 1\n");
   ExpectIncludeError({"main.yaml", "must be a path string"});
 }
 
@@ -247,15 +250,64 @@ TEST_F(ControllerConfigLoaderTest, AnIncludingMainFileWithoutItsConfigKeyIsRejec
   // Without `include:` a misspelled key is an undefined node (above). With one
   // it cannot be: the fragments would compose into a tree missing every key
   // the main file meant to set.
-  Write("main.yaml", "include: [a.yaml]\n");
-  Write("a.yaml", "ctrl:\n  y: 2\n");
+  Write("main.yaml", "include: [p/a.yaml]\n");
+  Write("p/a.yaml", "ctrl:\n  y: 2\n");
   ExpectIncludeError({"main.yaml", "no map under 'ctrl'"});
 }
 
 TEST_F(ControllerConfigLoaderTest, AFragmentThatDoesNotParseNamesTheFragment) {
-  Write("main.yaml", "include: [a.yaml]\nctrl:\n  x: 1\n");
-  Write("a.yaml", "ctrl:\n  y: [1, 2\n");
-  ExpectIncludeError({"a.yaml", "main.yaml", "does not parse"});
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "ctrl:\n  y: [1, 2\n");
+  ExpectIncludeError({"p/a.yaml", "main.yaml", "does not parse"});
+}
+
+TEST_F(ControllerConfigLoaderTest, AFragmentBesideTheMainFileIsRejected) {
+  // Readers list a controllers/ directory's *.yaml as its controllers; a
+  // fragment there would be counted as one. The file exists and is valid.
+  Write("main.yaml", "include: [beside.yaml]\nctrl:\n  x: 1\n");
+  Write("beside.yaml", "ctrl:\n  y: 2\n");
+  ExpectIncludeError({"main.yaml", "beside.yaml", "subdirectory"});
+}
+
+TEST_F(ControllerConfigLoaderTest, AFragmentPathThatIsADirectoryIsAnIncludeError) {
+  // A directory opens as a stream and fails on the first read with an error
+  // that names no file — it must not reach the caller as that.
+  Write("main.yaml", "include: [p/dir.yaml]\nctrl:\n  x: 1\n");
+  fs::create_directories(dir_ / "p" / "dir.yaml");
+  ExpectIncludeError({"main.yaml", "dir.yaml", "cannot be opened"});
+}
+
+TEST_F(ControllerConfigLoaderTest, AKeyWrittenTwiceInAFragmentIsRejected) {
+  // yaml-cpp would read the first, PyYAML the last.
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "ctrl:\n  g:\n    y: 1\n    y: 2\n");
+  ExpectIncludeError({"'ctrl.g.y'", "p/a.yaml", "appears twice"});
+}
+
+TEST_F(ControllerConfigLoaderTest, AKeyWrittenTwiceInAnIncludingMainFileIsRejected) {
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n  x: 2\n");
+  Write("p/a.yaml", "ctrl:\n  y: 2\n");
+  ExpectIncludeError({"'ctrl.x'", "main.yaml", "appears twice"});
+}
+
+TEST_F(ControllerConfigLoaderTest, ASecondIncludeListIsRejected) {
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\ninclude: [p/b.yaml]\n");
+  Write("p/a.yaml", "ctrl:\n  y: 2\n");
+  Write("p/b.yaml", "ctrl:\n  z: 3\n");
+  ExpectIncludeError({"'include'", "main.yaml", "appears twice"});
+}
+
+TEST_F(ControllerConfigLoaderTest, AFragmentWithASecondDocumentIsRejected) {
+  // LoadFile would return the first document and drop the second.
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n");
+  Write("p/a.yaml", "ctrl:\n  y: 2\n---\nctrl:\n  z: 3\n");
+  ExpectIncludeError({"p/a.yaml", "2 YAML documents"});
+}
+
+TEST_F(ControllerConfigLoaderTest, AnIncludingMainFileWithASecondDocumentIsRejected) {
+  Write("main.yaml", "include: [p/a.yaml]\nctrl:\n  x: 1\n---\nctrl:\n  z: 3\n");
+  Write("p/a.yaml", "ctrl:\n  y: 2\n");
+  ExpectIncludeError({"main.yaml", "2 YAML documents"});
 }
 
 // ── Leaf lines ───────────────────────────────────────────────────────────────

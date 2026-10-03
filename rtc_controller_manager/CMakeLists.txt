@@ -302,7 +302,10 @@ if(BUILD_TESTING)
     test/test_controller_config_loader.cpp)
   if(TARGET test_controller_config_loader)
     target_include_directories(test_controller_config_loader PRIVATE include)
-    ament_target_dependencies(test_controller_config_loader ament_index_cpp)
+    # The source tree's config/ — the same expected_leaves.txt rtc_tools'
+    # Python test reads.
+    target_compile_definitions(test_controller_config_loader PRIVATE
+      RTC_CM_SOURCE_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
     target_link_libraries(test_controller_config_loader
       rtc_controller_manager_lib yaml-cpp)
   endif()

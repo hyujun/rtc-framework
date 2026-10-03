@@ -106,66 +106,72 @@ def test_fragments_resolve_against_the_including_files_directory(tmp_path):
 
 # ── Every broken composition is an include error naming the files ────────────
 
-_MAIN_X = "include: [a.yaml]\nctrl:\n  x: 1\n"
+_MAIN_X = "include: [p/a.yaml]\nctrl:\n  x: 1\n"
 
 _BROKEN = {
     "missing_fragment": (
-        {"main.yaml": "include: [gone.yaml]\nctrl:\n  x: 1\n"},
-        ["main.yaml", "gone.yaml", "cannot be opened"],
+        {"main.yaml": "include: [p/gone.yaml]\nctrl:\n  x: 1\n"},
+        ["main.yaml", "p/gone.yaml", "cannot be opened"],
     ),
     "leaf_in_two_fragments": (
         {
-            "main.yaml": "include: [a.yaml, b.yaml]\nctrl:\n  x: 1\n",
-            "a.yaml": "ctrl:\n  g:\n    y: 2\n",
-            "b.yaml": "ctrl:\n  g:\n    y: 2\n",
+            "main.yaml": "include: [p/a.yaml, p/b.yaml]\nctrl:\n  x: 1\n",
+            "p/a.yaml": "ctrl:\n  g:\n    y: 2\n",
+            "p/b.yaml": "ctrl:\n  g:\n    y: 2\n",
         },
-        ["'g.y'", "a.yaml", "b.yaml", "set in both"],
+        ["'g.y'", "p/a.yaml", "p/b.yaml", "set in both"],
     ),
     "leaf_in_main_and_fragment": (
-        {"main.yaml": _MAIN_X, "a.yaml": "ctrl:\n  x: 1\n"},
-        ["'x'", "main.yaml", "a.yaml", "set in both"],
+        {"main.yaml": _MAIN_X, "p/a.yaml": "ctrl:\n  x: 1\n"},
+        ["'x'", "main.yaml", "p/a.yaml", "set in both"],
     ),
     "sequence_is_one_leaf": (
         {
-            "main.yaml": "include: [a.yaml]\nctrl:\n  logs: [one]\n",
-            "a.yaml": "ctrl:\n  logs: [two]\n",
+            "main.yaml": "include: [p/a.yaml]\nctrl:\n  logs: [one]\n",
+            "p/a.yaml": "ctrl:\n  logs: [two]\n",
         },
-        ["'logs'", "main.yaml", "a.yaml", "set in both"],
+        ["'logs'", "main.yaml", "p/a.yaml", "set in both"],
     ),
     "map_then_leaf": (
-        {"main.yaml": "include: [a.yaml]\nctrl:\n  g:\n    y: 2\n", "a.yaml": "ctrl:\n  g: 5\n"},
-        ["'g'", "main.yaml", "a.yaml", "a map in one file and a value in the other"],
+        {
+            "main.yaml": "include: [p/a.yaml]\nctrl:\n  g:\n    y: 2\n",
+            "p/a.yaml": "ctrl:\n  g: 5\n",
+        },
+        ["'g'", "main.yaml", "p/a.yaml", "a map in one file and a value in the other"],
     ),
     "leaf_then_map": (
-        {"main.yaml": "include: [a.yaml]\nctrl:\n  g: ~\n", "a.yaml": "ctrl:\n  g:\n    y: 2\n"},
-        ["'g'", "main.yaml", "a.yaml", "a map in one file and a value in the other"],
+        {
+            "main.yaml": "include: [p/a.yaml]\nctrl:\n  g: ~\n",
+            "p/a.yaml": "ctrl:\n  g:\n    y: 2\n",
+        },
+        ["'g'", "main.yaml", "p/a.yaml", "a map in one file and a value in the other"],
     ),
     "fragment_without_config_key": (
-        {"main.yaml": _MAIN_X, "a.yaml": "other_ctrl:\n  y: 2\n"},
-        ["a.yaml", "'other_ctrl'", "only top-level key is 'ctrl'"],
+        {"main.yaml": _MAIN_X, "p/a.yaml": "other_ctrl:\n  y: 2\n"},
+        ["p/a.yaml", "'other_ctrl'", "only top-level key is 'ctrl'"],
     ),
     "fragment_not_a_map": (
-        {"main.yaml": _MAIN_X, "a.yaml": "- just\n- a list\n"},
-        ["a.yaml", "must be a map"],
+        {"main.yaml": _MAIN_X, "p/a.yaml": "- just\n- a list\n"},
+        ["p/a.yaml", "must be a map"],
     ),
     "fragment_config_key_not_a_map": (
-        {"main.yaml": _MAIN_X, "a.yaml": "ctrl: 3\n"},
-        ["a.yaml", "no map under 'ctrl'"],
+        {"main.yaml": _MAIN_X, "p/a.yaml": "ctrl: 3\n"},
+        ["p/a.yaml", "no map under 'ctrl'"],
     ),
     "nested_include": (
         {
             "main.yaml": _MAIN_X,
-            "a.yaml": "include: [b.yaml]\nctrl:\n  y: 2\n",
-            "b.yaml": "ctrl:\n  z: 3\n",
+            "p/a.yaml": "include: [p/b.yaml]\nctrl:\n  y: 2\n",
+            "p/b.yaml": "ctrl:\n  z: 3\n",
         },
-        ["a.yaml", "do not nest"],
+        ["p/a.yaml", "do not nest"],
     ),
     "include_not_a_list": (
-        {"main.yaml": "include: a.yaml\nctrl:\n  x: 1\n", "a.yaml": "ctrl:\n  y: 2\n"},
+        {"main.yaml": "include: p/a.yaml\nctrl:\n  x: 1\n", "p/a.yaml": "ctrl:\n  y: 2\n"},
         ["main.yaml", "must be a list"],
     ),
     "include_entry_not_a_string": (
-        {"main.yaml": "include: [{path: a.yaml}]\nctrl:\n  x: 1\n"},
+        {"main.yaml": "include: [{path: p/a.yaml}]\nctrl:\n  x: 1\n"},
         ["main.yaml", "must be a path string"],
     ),
     "main_with_another_top_level_key": (
@@ -173,12 +179,44 @@ _BROKEN = {
         ["main.yaml", "stray"],
     ),
     "main_without_its_config_key_map": (
-        {"main.yaml": "include: [a.yaml]\nctrl: 3\n", "a.yaml": "ctrl:\n  y: 2\n"},
+        {"main.yaml": "include: [p/a.yaml]\nctrl: 3\n", "p/a.yaml": "ctrl:\n  y: 2\n"},
         ["main.yaml", "no map under 'ctrl'"],
     ),
+    "fragment_beside_the_main_file": (
+        {"main.yaml": "include: [beside.yaml]\nctrl:\n  x: 1\n", "beside.yaml": "ctrl:\n  y: 2\n"},
+        ["main.yaml", "beside.yaml", "subdirectory"],
+    ),
+    "key_twice_in_a_fragment": (
+        {"main.yaml": _MAIN_X, "p/a.yaml": "ctrl:\n  g:\n    y: 1\n    y: 2\n"},
+        ["'y'", "p/a.yaml", "appears twice"],
+    ),
+    "key_twice_in_an_including_main_file": (
+        {
+            "main.yaml": "include: [p/a.yaml]\nctrl:\n  x: 1\n  x: 2\n",
+            "p/a.yaml": "ctrl:\n  y: 2\n",
+        },
+        ["'x'", "main.yaml", "appears twice"],
+    ),
+    "second_include_list": (
+        {
+            "main.yaml": "include: [p/a.yaml]\nctrl:\n  x: 1\ninclude: [p/b.yaml]\n",
+            "p/a.yaml": "ctrl:\n  y: 2\n",
+            "p/b.yaml": "ctrl:\n  z: 3\n",
+        },
+        ["'include'", "main.yaml", "appears twice"],
+    ),
+    "fragment_with_a_second_document": (
+        {"main.yaml": _MAIN_X, "p/a.yaml": "ctrl:\n  y: 2\n---\nctrl:\n  z: 3\n"},
+        ["p/a.yaml", "does not parse"],
+    ),
+    "same_key_as_number_and_as_text": (
+        # yaml-cpp compares keys as text: `1` and `"1"` are one key.
+        {"main.yaml": "include: [p/a.yaml]\nctrl:\n  1: a\n", "p/a.yaml": 'ctrl:\n  "1": b\n'},
+        ["'1'", "main.yaml", "p/a.yaml", "set in both"],
+    ),
     "fragment_does_not_parse": (
-        {"main.yaml": _MAIN_X, "a.yaml": "ctrl:\n  y: [1, 2\n"},
-        ["a.yaml", "main.yaml", "does not parse"],
+        {"main.yaml": _MAIN_X, "p/a.yaml": "ctrl:\n  y: [1, 2\n"},
+        ["p/a.yaml", "main.yaml", "does not parse"],
     ),
 }
 
@@ -214,6 +252,38 @@ def test_a_parent_directory_include_path_is_rejected(tmp_path):
 
     with pytest.raises(ControllerConfigIncludeError, match=r"cannot contain '\.\.'"):
         load_controller_config(main)
+
+
+def test_a_fragment_path_that_is_a_directory_is_an_include_error(tmp_path):
+    main = _write(tmp_path, {"main.yaml": "include: [p/dir.yaml]\nctrl:\n  x: 1\n"})
+    (tmp_path / "p" / "dir.yaml").mkdir(parents=True)
+
+    with pytest.raises(ControllerConfigIncludeError, match="cannot be opened"):
+        load_controller_config(main)
+
+
+def test_the_callers_config_key_is_checked_like_the_cm_checks_it(tmp_path):
+    # The same misspelling in every file composes cleanly when the key is
+    # inferred. The CM knows the registered key and refuses; so does a caller
+    # that passes it.
+    main = _write(
+        tmp_path,
+        {
+            "main.yaml": "include: [p/a.yaml]\nctrll:\n  x: 1\n",
+            "p/a.yaml": "ctrll:\n  y: 2\n",
+        },
+    )
+    assert list(load_controller_config(main)) == ["ctrll"]
+
+    with pytest.raises(ControllerConfigIncludeError, match="only other top-level key is 'ctrl'"):
+        load_controller_config(main, config_key=_KEY)
+
+
+def test_a_key_written_twice_without_include_is_left_as_pyyaml_reads_it(tmp_path):
+    # Files without `include:` are returned as read — including what PyYAML
+    # does with a repeated key. Only a composed config is held to the stricter rule.
+    main = _write(tmp_path, {"main.yaml": "ctrl:\n  x: 1\n  x: 2\n"})
+    assert load_controller_config(main) == {"ctrl": {"x": 2}}
 
 
 # ── Leaf lines ───────────────────────────────────────────────────────────────

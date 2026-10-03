@@ -52,8 +52,11 @@ class ControllerConfigIncludeError : public std::runtime_error {
 /// With one:
 ///  - the main file's top-level keys must be exactly `include` and
 ///    @p config_key, and @p config_key must hold a map;
-///  - `include` is a list of paths relative to the main file's directory.
+///  - `include` is a list of paths relative to the main file's directory,
+///    each with a directory component (`parts/a.yaml`, not `a.yaml`).
 ///    Absolute paths and `..` components are rejected;
+///  - every file is a single YAML document, and no map in it writes a key
+///    twice;
 ///  - a fragment's only top-level key is @p config_key (a map). A fragment
 ///    cannot itself `include`;
 ///  - maps merge recursively. Scalars, sequences and nulls are leaves: a leaf

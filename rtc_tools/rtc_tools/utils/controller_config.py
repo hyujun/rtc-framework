@@ -9,7 +9,8 @@ C++ ``rtc_controller_manager/controller_config_loader.hpp`` 의
 규칙 (C++ 쪽 헤더가 SSoT, 한쪽을 바꾸면 함께 바꿉니다)::
 
     include:                  # 주 파일의 top-level, <config_key>: 의 형제
-      - catching/part.yaml    # 주 파일의 디렉토리 기준 상대경로 (절대경로 · `..` 거부)
+      - catching/part.yaml    # 주 파일의 디렉토리 기준 상대경로 (절대경로 · `..` 거부),
+                              #   하위 폴더에 둔다 (`part.yaml` 처럼 같은 폴더는 거부)
     <config_key>:
       ...
 
@@ -18,11 +19,14 @@ C++ ``rtc_controller_manager/controller_config_loader.hpp`` 의
 - map 은 재귀로 합칩니다. scalar · sequence · null 은 leaf 이고, 같은 leaf 를 두 파일이
   적거나 한쪽이 map 이고 다른 쪽이 leaf 면 에러입니다.
 - 키 순서는 주 파일 먼저, 그 뒤 include 순서입니다.
+- 각 파일은 YAML 문서 하나이고, 한 map 에 같은 키를 두 번 적으면 에러입니다
+  (yaml-cpp 는 첫 값을, PyYAML 은 마지막 값을 읽어 두 로더가 갈립니다).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import NoReturn
 
@@ -42,6 +46,43 @@ def _fail(message: str) -> NoReturn:
     raise ControllerConfigIncludeError(f"controller config include: {message}")
 
 
+@cache
+def _recording(loader):
+    """``loader`` 의 하위 클래스 — 한 map 에 두 번 적힌 키를 ``duplicate_keys`` 에 모읍니다."""
+
+    class _DuplicateKeyRecorder(loader):
+        def __init__(self, stream):
+            super().__init__(stream)
+            self.duplicate_keys: list[str] = []
+
+        def construct_mapping(self, node, deep=False):
+            seen: set[str] = set()
+            for key_node, _ in node.value:
+                if not isinstance(key_node, yaml.ScalarNode):
+                    continue
+                if key_node.value in seen:
+                    line = key_node.start_mark.line + 1
+                    self.duplicate_keys.append(f"'{key_node.value}' (line {line})")
+                seen.add(key_node.value)
+            return super().construct_mapping(node, deep=deep)
+
+    return _DuplicateKeyRecorder
+
+
+def _load_document(text: str, loader) -> tuple[object, list[str]]:
+    """문서 하나와, 그 안에서 두 번 적힌 키의 목록."""
+    recorder = _recording(loader)(text)
+    try:
+        return recorder.get_single_data(), recorder.duplicate_keys
+    finally:
+        recorder.dispose()
+
+
+def _reject_duplicates(duplicates: list[str], file: object) -> None:
+    if duplicates:
+        _fail(f"key {duplicates[0]} appears twice in '{file}'")
+
+
 def _join(parent: str, key: object) -> str:
     return f"{parent}.{key}" if parent else str(key)
 
@@ -55,13 +96,16 @@ def _record_origins(node: object, path: str, file: str, origins: dict[str, str])
 
 
 def _merge_map(dst: dict, src: Mapping, path: str, src_file: str, origins: dict[str, str]) -> None:
+    # yaml-cpp 는 키를 글자로 비교합니다: `1` 과 `"1"` 은 같은 키입니다.
+    by_text = {str(key): key for key in dst}
     for key, value in src.items():
         child_path = _join(path, key)
-        if key not in dst:
+        if str(key) not in by_text:
             dst[key] = value
+            by_text[str(key)] = key
             _record_origins(value, child_path, src_file, origins)
             continue
-        existing = dst[key]
+        existing = dst[by_text[str(key)]]
         if isinstance(existing, Mapping) and isinstance(value, Mapping):
             _merge_map(existing, value, child_path, src_file, origins)
             continue
@@ -87,6 +131,11 @@ def _resolve_fragment(main_path: Path, entry: object) -> Path:
         )
     if ".." in relative.parts:
         _fail(f"'{main_path}' includes '{entry}' — an include path cannot contain '..'")
+    if len(relative.parts) < 2:
+        _fail(
+            f"'{main_path}' includes '{entry}' — a fragment lives in a subdirectory of the "
+            "including file's directory"
+        )
     return main_path.parent / relative
 
 
@@ -96,13 +145,14 @@ def _load_fragment(fragment_path: Path, main_path: Path, config_key: str, loader
     except OSError:
         _fail(f"'{main_path}' includes '{fragment_path}', which cannot be opened")
     try:
-        doc = yaml.load(text, Loader=loader)
+        doc, duplicates = _load_document(text, loader)
     except yaml.YAMLError as exc:
         _fail(f"fragment '{fragment_path}' (included by '{main_path}') does not parse: {exc}")
     if not isinstance(doc, Mapping):
         _fail(
             f"fragment '{fragment_path}' must be a map whose only top-level key is '{config_key}'"
         )
+    _reject_duplicates(duplicates, fragment_path)
     for key in doc:
         if key == INCLUDE_KEY:
             _fail(f"fragment '{fragment_path}' has its own 'include' — includes do not nest")
@@ -117,10 +167,17 @@ def _load_fragment(fragment_path: Path, main_path: Path, config_key: str, loader
     return body
 
 
-def load_controller_config(path: Path | str, *, loader=yaml.SafeLoader) -> dict:
+def load_controller_config(
+    path: Path | str, *, config_key: str | None = None, loader=yaml.SafeLoader
+) -> dict:
     """``path`` 의 문서를 ``include:`` 조각과 합쳐 ``{<config_key>: 트리}`` 로 돌려줍니다.
 
     ``include`` 가 없는 파일은 읽은 문서를 그대로 돌려줍니다 (빈 파일은 ``{}``).
+
+    ``config_key`` 를 아는 호출자는 넘깁니다 — CM 은 등록된 key 와 파일의 key 가
+    다르면 거부하므로, 넘기지 않으면 CM 이 거부할 config 를 받아들일 수 있습니다.
+    넘기지 않으면 ``include`` 옆의 유일한 top-level 키를 key 로 봅니다.
+
     ``loader`` 는 scalar 를 문자열 그대로 비교할 때 ``yaml.BaseLoader`` 로 바꿉니다
     (:func:`controller_config_leaf_lines`).
 
@@ -128,21 +185,30 @@ def load_controller_config(path: Path | str, *, loader=yaml.SafeLoader) -> dict:
     :class:`ControllerConfigIncludeError` 입니다.
     """
     main_path = Path(path)
-    doc = yaml.load(main_path.read_text(), Loader=loader) or {}
+    doc, duplicates = _load_document(main_path.read_text(), loader)
+    doc = doc or {}
     if not isinstance(doc, Mapping) or INCLUDE_KEY not in doc:
         return doc
 
+    _reject_duplicates(duplicates, main_path)
     includes = doc[INCLUDE_KEY]
     if not isinstance(includes, list):
         _fail(f"'{main_path}': the top-level 'include' must be a list of fragment paths")
     keys = [key for key in doc if key != INCLUDE_KEY]
-    if len(keys) != 1:
-        _fail(
-            f"'{main_path}' has an 'include' list, so it has exactly one other top-level key "
-            f"(the controller's config key) — found {keys}"
-        )
-    config_key = keys[0]
-    composed = doc[config_key]
+    if config_key is None:
+        if len(keys) != 1:
+            _fail(
+                f"'{main_path}' has an 'include' list, so it has exactly one other top-level "
+                f"key (the controller's config key) — found {keys}"
+            )
+        config_key = keys[0]
+    for key in keys:
+        if key != config_key:
+            _fail(
+                f"'{main_path}' has an 'include' list, so its only other top-level key is "
+                f"'{config_key}' — found '{key}'"
+            )
+    composed = doc.get(config_key)
     if not isinstance(composed, Mapping):
         _fail(f"'{main_path}' has an 'include' list but no map under '{config_key}'")
 
