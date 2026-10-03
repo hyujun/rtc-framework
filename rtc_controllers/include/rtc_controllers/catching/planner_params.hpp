@@ -54,10 +54,9 @@ inline constexpr int kMaxDecelReplans = 8;
 /// weight, trust region, slack penalty, solver) stays at DecelMpcParams'
 /// defaults, and η_v is `planner.gamma.eta_v` (no second key for one margin).
 struct DecelPlannerParams {
-  /// `enabled` — solve the segments the RT follows from APPROACH to the end
-  /// of the stop. Needs `planner.enabled` (the binding parks the pair
-  /// otherwise) and a pre-catch grid (`approach.n_pre_max` ≥ 1).
-  bool enabled{false};
+  // There is no `enabled`: the planner solves these segments exactly when
+  // `supervisor.decel.mode` is mpc. That needs `planner.enabled` (the binding
+  // parks the pair otherwise) and a pre-catch grid (`approach.n_pre_max` ≥ 1).
   /// `horizon.n_nodes` N_s and `horizon.dt_s` Δ_s: N_s·Δ_s IS the stopping
   /// time (MD-21). The default 14 × 0.025 = 0.35 s is E1-F03's (MD-24); the
   /// shipped profiles set MD-54's 7 × 0.05 with the pre-catch grid below.
@@ -245,7 +244,7 @@ struct PlannerParams {
   CatchBox catch_box{};
 
   // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
-  /// `planner.decel_mpc.*`. Absent = the defaults with `enabled` false.
+  /// `planner.decel_mpc.*`. Absent = the defaults.
   DecelPlannerParams decel{};
 
   /// The candidate lead floor actually used: t_lead_min, or T_freeze.

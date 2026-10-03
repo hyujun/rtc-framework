@@ -389,7 +389,8 @@ demo_catching_controller:
         # The DECEL law (MPC MD-44), chosen once per configuration and never
         # mixed within it. closed_form: v1 L7's virtual target (the code
         # default, when the key is absent). mpc: every DECEL follows the decel
-        # MPC's stop segment — needs planner.decel_mpc.enabled, and a DECEL
+        # MPC's stop segment — needs planner.enabled and the approach grid
+        # (planner.decel_mpc.approach.n_pre_max > 0), else it parks; a DECEL
         # with no segment to follow aborts (ABORT_SAFE), never closed_form.
         # Shipped mpc by the user's decision (MPC plan MD-89, 2026-10-03)
         # although gate G-1 failed here: catch success 0.58 against closed_form's 0.69 on the same 300 throws (plan §8 "E1-F06").

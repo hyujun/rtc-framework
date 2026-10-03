@@ -296,9 +296,6 @@ void DemoCatchingController::DeclareProfileParameters() {
   // The decel MPC as run (MPC E1-F03): an off-process analysis must read the
   // horizon, window and thresholds this controller used, not the file.
   const auto& decel = planner_params_.decel;
-  declare("planner.decel_mpc.enabled", decel.enabled,
-          "MPC E1-F03 / E1-F08: the planner solves the segments the RT follows from APPROACH to "
-          "the end of the stop (decel MPC)");
   declare("planner.decel_mpc.horizon.n_nodes", static_cast<std::int64_t>(decel.n_nodes),
           "decel MPC nodes N_s; N_s * dt_s is the stopping time (MD-21)");
   declare("planner.decel_mpc.horizon.dt_s", decel.dt_s, "decel MPC node spacing dt_s [s]");
@@ -1092,27 +1089,22 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "controller will refuse to activate; the robot still comes up.");
       return CallbackReturn::SUCCESS;
     }
-    // The decel MPC (MPC E1-F03) needs the planner, and its torque box plus
-    // publish slack must fit inside the CLIK's (MD-33). A profile mistake:
-    // park, name it, keep the robot up. Only under the law that runs it —
-    // closed_form builds no decel core and reads none of its keys (MD-44).
-    if (planner_params_.decel.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
+    // The decel MPC (MPC E1-F03) runs on the planner thread, and its torque
+    // box plus publish slack must fit inside the CLIK's (MD-33). A profile
+    // mistake: park, name it, keep the robot up. Only under the law that runs
+    // it and only with the planner on — closed_form builds no decel core and
+    // reads none of its keys (MD-44), and a planner-less mpc profile is
+    // DecelModeUnmet's to judge (the oracle profile is exempt there).
+    if (planner_params_.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
       if (const char* why = DecelMpcConfigInvalid(); why != nullptr) {
         sim_only_disabled_ = true;
         park_reason_ = CatchingParkReason::kDecelMpcInvalid;
         RCLCPP_ERROR(logger_,
-                     "DISABLED: planner.decel_mpc.enabled is true but %s. This controller will "
+                     "DISABLED: supervisor.decel.mode is mpc but %s. This controller will "
                      "refuse to activate; the robot still comes up.",
                      why);
         return CallbackReturn::SUCCESS;
       }
-    }
-    if (planner_params_.decel.enabled && decel_mode_ != rtc::catching::CatchingDecelMode::kMpc) {
-      // MD-44: under closed_form nothing follows a stop segment, so none is
-      // computed — the planner runs the closed form's part only.
-      RCLCPP_WARN(logger_,
-                  "planner.decel_mpc.enabled is true but supervisor.decel.mode is closed_form: "
-                  "the decel MPC is not built and publishes nothing (set mode: mpc to use it)");
     }
     // The planner's DECISION values (S6-B) — values nobody may guess. Same rule
     // as a consumed TBD: park, name the key, keep the robot up (A-S5-12).
@@ -1717,7 +1709,9 @@ bool DemoCatchingController::SetupPlanner() {
     RCLCPP_WARN(logger_,
                 "planner: no system model — the thread runs, but its search is the stub "
                 "(it publishes \"no plan\")%s",
-                planner_params_.decel.enabled ? " and the decel MPC does not run" : "");
+                decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
+                    ? " and the decel MPC does not run"
+                    : "");
   } else if (!SetupPlannerSearch()) {
     return false;
   }
@@ -1839,7 +1833,7 @@ bool DemoCatchingController::SetupPlannerSearch() {
   // MD-44: the decel cores exist only for a configuration that follows them.
   // Without a pre-catch grid there is no decel planner to build (MD-70) — a
   // profile mistake DecelModeUnmet parks on, not a configure failure.
-  if (planner_params_.decel.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
+  if (decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
       planner_params_.decel.n_pre_max > 0 && !SetupDecelPlanner(model, pm)) {
     return false;
   }
@@ -1853,9 +1847,6 @@ bool DemoCatchingController::SetupPlannerSearch() {
 
 const char* DemoCatchingController::DecelMpcConfigInvalid() const noexcept {
   const auto& d = planner_params_.decel;
-  if (!planner_params_.enabled) {
-    return "planner.enabled is false (the decel MPC runs on the planner thread)";
-  }
   // The CLIK's torque box only exists in the dynamic form; the box and
   // kinematic forms have none to exceed, so the pair is not judged there.
   if (params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic &&
@@ -1872,7 +1863,7 @@ bool DemoCatchingController::SetupDecelPlanner(const std::shared_ptr<const pinoc
   if (pm.nv > rtc::catching::kMaxDecelNv) {
     RCLCPP_ERROR(logger_,
                  "planner.decel_mpc: the arm has %d joints but a decel segment carries at most "
-                 "%d (kMaxDecelNv) — set planner.decel_mpc.enabled: false or raise the capacity",
+                 "%d (kMaxDecelNv) — set supervisor.decel.mode: closed_form or raise the capacity",
                  pm.nv, rtc::catching::kMaxDecelNv);
     return false;
   }
@@ -2021,15 +2012,12 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   // published only together with one that starts before t_c. Without a
   // pre-catch grid no decel planner is built — no trial would ever start. The
   // oracle profile has no planner: its test writes the box.
-  if (!oracle_enabled_ && planner_params_.enabled && planner_params_.decel.enabled &&
-      !(planner_params_.decel.n_pre_max > 0)) {
+  if (!oracle_enabled_ && planner_params_.enabled && !(planner_params_.decel.n_pre_max > 0)) {
     return "planner.decel_mpc.approach.n_pre_max is 0 (the RT takes a plan only with a segment "
            "that starts before t_c, MD-45)";
   }
-  if (!oracle_enabled_ && !(planner_params_.enabled && planner_params_.decel.enabled &&
-                            planner_cycle_.DecelConfigured())) {
-    return "no decel planner runs (planner.enabled and planner.decel_mpc.enabled, on a model "
-           "the cores accept)";
+  if (!oracle_enabled_ && !(planner_params_.enabled && planner_cycle_.DecelConfigured())) {
+    return "no decel planner runs (planner.enabled is false, or no model the cores accept)";
   }
   // MD-37: a segment for the next grid point waits in the box while the
   // pending slot holds the one before it — at most the replan lead and three

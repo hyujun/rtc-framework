@@ -82,7 +82,7 @@ struct Catching {
   std::unique_ptr<DemoCatchingController> ctrl;
 };
 
-Catching MakeCatching(const std::string& node_name, std::string_view profile, bool decel = false) {
+Catching MakeCatching(const std::string& node_name, std::string_view profile) {
   Catching c;
   rclcpp::NodeOptions options;
   options.parameter_overrides({rclcpp::Parameter("rt_layout_profile", std::string(profile))});
@@ -90,7 +90,7 @@ Catching MakeCatching(const std::string& node_name, std::string_view profile, bo
   c.ctrl = std::make_unique<DemoCatchingController>("");
   c.ctrl->SetDeviceNameConfigs(PlannerSimDevices());
   const rclcpp_lifecycle::State prev;
-  EXPECT_EQ(c.ctrl->on_configure(prev, c.node, YAML::Load(PlannerMinimalYaml(true, false, decel))),
+  EXPECT_EQ(c.ctrl->on_configure(prev, c.node, YAML::Load(PlannerMinimalYaml(true, false))),
             RTControllerInterface::CallbackReturn::SUCCESS);
   EXPECT_FALSE(c.ctrl->IsSimOnlyDisabled());
   return c;
@@ -203,7 +203,7 @@ TEST(CatchingMpcRoleSwitch, AnEnabledDecelMpcKeepsOnePlannerThreadPerController)
   // the lane suite (WithTheDecelMpcThePlannerPublishesAStopBeforeTheCatch).
   const std::string name = rtc::SelectThreadConfigs().mpc.main.name;
   const auto before = ThreadsNamed(name).size();
-  auto catching = MakeCatching("r1_decel_catching", DemoWbcController::kDefaultLayoutProfile, true);
+  auto catching = MakeCatching("r1_decel_catching", DemoWbcController::kDefaultLayoutProfile);
   EXPECT_FALSE(catching.ctrl->IsDecelPlannerConfigured()) << "no system model to plan in";
   ASSERT_EQ(catching.ctrl->on_activate(Inactive()), RTControllerInterface::CallbackReturn::SUCCESS);
   EXPECT_EQ(WaitForThreadsNamed(name, before + 1).size(), before + 1);

@@ -287,7 +287,6 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
   const YAML::Node decel = Section(planner, "decel_mpc", "decel_mpc");
   DecelPlannerParams& d = out.decel;
-  d.enabled = ReadBool(decel, "enabled", "decel_mpc.enabled", d.enabled);
   const YAML::Node horizon = Section(decel, "horizon", "decel_mpc.horizon");
   // From the section's kind, not the node: an absent section reads as an
   // empty but DEFINED node (catching_yaml_read.hpp).

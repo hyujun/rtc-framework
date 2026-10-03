@@ -191,7 +191,6 @@ struct Rig {
     params.catch_box.min = {-5.0, -5.0, -5.0};
     params.catch_box.max = {5.0, 5.0, 5.0};
     auto& d = params.decel;
-    d.enabled = true;
     d.n_nodes = 7;
     d.dt_s = 0.05;
     d.blocks = {1, 1, 2, 3};

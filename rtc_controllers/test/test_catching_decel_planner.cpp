@@ -69,10 +69,10 @@ TEST(DecelParams, ParsesTheSectionAndKeepsDefaultsWhenAbsent) {
   const auto absent = ParsePlannerParams(YAML::Load("planner: {enabled: true}"));
   EXPECT_FALSE(absent.decel.enabled);
   EXPECT_EQ(absent.decel.n_nodes, 14);
-  const auto p = ParsePlannerParams(YAML::Load(
-      "planner: {decel_mpc: {enabled: true, horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, "
-      "2]}, replan: {k_max: 2}, eta_tau: 0.6, m_q: 0.04, publish: {slack_max: "
-      "0.2, slack_terminal_max: 0.05}}}"));
+  const auto p = ParsePlannerParams(
+      YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, "
+                 "2]}, replan: {k_max: 2}, eta_tau: 0.6, m_q: 0.04, publish: {slack_max: "
+                 "0.2, slack_terminal_max: 0.05}}}"));
   const DecelPlannerParams& d = p.decel;
   EXPECT_TRUE(d.enabled);
   EXPECT_EQ(d.n_nodes, 7);
@@ -171,8 +171,22 @@ TEST(DecelParams, ApproachKeysDefaultOff) {
   EXPECT_DOUBLE_EQ(d.w_const, 2500.0);
   EXPECT_DOUBLE_EQ(d.sigma_ref, 0.03);
   EXPECT_FALSE(d.horizon_explicit);
-  EXPECT_FALSE(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {enabled: true}}"))
-                   .decel.horizon_explicit);
+  EXPECT_FALSE(
+      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {m_q: 0.04}}")).decel.horizon_explicit);
+}
+
+TEST(DecelParams, ARemovedEnabledKeyIsIgnoredWhateverItsValue) {
+  // MPC MD-91 removed `planner.decel_mpc.enabled`; the parser rejects no
+  // unknown key (D18), so a config that still writes it reads as without it —
+  // a non-bool value included, which the key's own parser used to refuse.
+  for (const char* stale : {"true", "false", "maybe", "3"}) {
+    const std::string yaml = std::string("planner: {decel_mpc: {enabled: ") + stale +
+                             ", horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, 2]}}}";
+    rtc::catching::PlannerParams p;
+    ASSERT_NO_THROW(p = ParsePlannerParams(YAML::Load(yaml))) << stale;
+    EXPECT_EQ(p.decel.n_nodes, 7) << stale;
+    EXPECT_TRUE(p.decel.horizon_explicit) << stale;
+  }
 }
 
 TEST(DecelParams, ParsesTheApproachKeys) {

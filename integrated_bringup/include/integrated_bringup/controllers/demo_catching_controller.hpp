@@ -206,16 +206,16 @@ enum class CatchingParkReason : std::uint8_t {
   /// joint-space motions ramp with, `supervisor.decel.a_dec`, or a hand profile
   /// the sequencer can run.
   kSupervisorUnset,
-  /// `planner.decel_mpc.enabled` in a profile that cannot run it: the planner
-  /// is off, or the decel MPC's torque box plus its publish slack exceeds the
-  /// CLIK's torque box (`joint_cmd.eta_tau`), so a published stop could ask
-  /// for torque the CLIK refuses (MPC E1-F03, MD-33).
+  /// `supervisor.decel.mode: mpc` with the planner on, but the decel MPC's
+  /// torque box plus its publish slack exceeds the CLIK's torque box
+  /// (`joint_cmd.eta_tau`), so a published stop could ask for torque the CLIK
+  /// refuses (MPC E1-F03, MD-33). A planner that is off is kDecelModeUnmet's.
   kDecelMpcInvalid,
   /// `supervisor.decel.mode: mpc` without one of its prerequisites (MPC
   /// MD-34): the catch sub-model sampler, `joint_cmd.K_n` > 0, η_v < 1, the
   /// arm's per-joint velocity ratings and the CLIK's per-joint velocity and
   /// position boxes, and a decel planner
-  /// (`planner.decel_mpc.enabled` and `approach.n_pre_max` > 0 with the
+  /// (`approach.n_pre_max` > 0 with the
   /// planner on — without a pre-catch grid none is built, MD-70; the oracle
   /// profile is exempt). Under mpc the arm follows a segment from APPROACH to the end of
   /// the stop (MD-44, MD-45), so a missing prerequisite would leave every
@@ -401,7 +401,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return decel_pending_;
   }
 
-  /// Whether the planner runs the decel MPC (`planner.decel_mpc.enabled` and a
+  /// Whether the planner runs the decel MPC (`supervisor.decel.mode: mpc` and a
   /// model to plan in). Lifecycle / test callers only: it reads planner state
   /// that a configure rewrites with the thread joined, not an atomic.
   [[nodiscard]] bool IsDecelPlannerConfigured() const noexcept {
@@ -782,8 +782,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The first planner value that is a decision and is unset, or nullptr.
   [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
 
-  /// Why `planner.decel_mpc.enabled` cannot run in this profile, or nullptr
-  /// (planner off; decel torque box + publish slack over the CLIK's).
+  /// Why the decel MPC cannot run under `supervisor.decel.mode: mpc` with the
+  /// planner on, or nullptr (decel torque box + publish slack over the CLIK's).
   [[nodiscard]] const char* DecelMpcConfigInvalid() const noexcept;
 
   /// Build the decel planner on the search's model (MPC E1-F03): the same

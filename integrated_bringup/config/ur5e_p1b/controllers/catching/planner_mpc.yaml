@@ -20,13 +20,12 @@ demo_catching_controller:
       decel_mpc:
         # MPC E1-F03 (#629) / E1-F08 (#661): the planner thread solves the
         # APPROACH–stop MPC and publishes its segments as joint nodes (MD-45,
-        # MD-55 – MD-64). Built and run only under supervisor.decel.mode: mpc,
-        # which also needs it (MD-44); under closed_form, true only warns. On
-        # with the shipped mpc law (supervisor.decel.mode, MD-89). Under mode: mpc
+        # MD-55 – MD-64). There is no switch here: the planner builds and runs
+        # it exactly when supervisor.decel.mode is mpc (MD-44) — shipped mpc
+        # (MD-89); under closed_form none of these keys is read. Under mode: mpc
         # the RT takes a plan only together with its first segment and follows
         # the segments from APPROACH to the end of the stop (MPC E1-F09, MD-45)
         # — the approach grid below (n_pre_max > 0) is then required.
-        enabled: true
         horizon:
           # The stop part, after t_c (MD-54): N_s x dt_s IS the stopping time
           # (MD-21), 0.35 s.

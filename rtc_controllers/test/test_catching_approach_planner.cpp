@@ -161,7 +161,6 @@ DecelPlannerConstants Consts() {
 // catch, up to 6 × 0.1 s before it, k_max 2.
 DecelPlannerParams ApproachParams() {
   DecelPlannerParams p;
-  p.enabled = true;
   p.n_nodes = 7;
   p.dt_s = 0.05;
   p.blocks = {1, 1, 2, 3};

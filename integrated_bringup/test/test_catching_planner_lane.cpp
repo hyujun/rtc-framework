@@ -31,6 +31,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
@@ -39,10 +40,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -72,6 +76,73 @@ using rtc::catching::PlanSnapshot;
 using rtc::catching::TrajectorySnapshot;
 
 using namespace std::chrono_literals;
+
+/// Collects the text of every WARN-or-worse log line while alive, chained to the
+/// previous handler so a local run still shows the controller's log. The
+/// observable of "configure does not warn about X" — the WARN is only a log.
+class WarnCapture {
+ public:
+  WarnCapture() {
+    Lines().clear();
+    Previous() = rcutils_logging_get_output_handler();
+    rcutils_logging_set_output_handler(&WarnCapture::Handler);
+  }
+
+  ~WarnCapture() { rcutils_logging_set_output_handler(Previous()); }
+
+  WarnCapture(const WarnCapture&) = delete;
+  WarnCapture& operator=(const WarnCapture&) = delete;
+
+  /// Whether a captured line contains `needle`.
+  [[nodiscard]] static bool Contains(const std::string& needle) {
+    const std::lock_guard<std::mutex> lock(Mutex());
+    return std::any_of(Lines().begin(), Lines().end(), [&](const std::string& line) {
+      return line.find(needle) != std::string::npos;
+    });
+  }
+
+ private:
+  static void Handler(const rcutils_log_location_t* location, int severity, const char* name,
+                      rcutils_time_point_value_t timestamp, const char* format, va_list* args) {
+    if (severity >= RCUTILS_LOG_SEVERITY_WARN) {
+      va_list sizing;
+      va_copy(sizing, *args);
+      const int n = std::vsnprintf(nullptr, 0, format, sizing);
+      va_end(sizing);
+      if (n > 0) {
+        std::string text(static_cast<std::size_t>(n) + 1, '\0');
+        va_list copy;
+        va_copy(copy, *args);
+        std::vsnprintf(text.data(), text.size(), format, copy);
+        va_end(copy);
+        text.resize(static_cast<std::size_t>(n));
+        const std::lock_guard<std::mutex> lock(Mutex());
+        Lines().push_back(std::move(text));
+      }
+    }
+    if (Previous() != nullptr) {
+      va_list forward;
+      va_copy(forward, *args);
+      Previous()(location, severity, name, timestamp, format, &forward);
+      va_end(forward);
+    }
+  }
+
+  static std::vector<std::string>& Lines() {
+    static std::vector<std::string> lines;
+    return lines;
+  }
+
+  static std::mutex& Mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  static rcutils_logging_output_handler_t& Previous() {
+    static rcutils_logging_output_handler_t prev = nullptr;
+    return prev;
+  }
+};
 
 class RclcppScope : public ::testing::Environment {
  public:
@@ -504,7 +575,6 @@ class CatchingPlanLaneTest : public ::testing::Test {
     pl["workspace"]["catch_box"]["min"] = std::vector<double>{0.19, -0.30, 0.21};
     pl["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
     pl["provisional"] = false;
-    pl["decel_mpc"]["enabled"] = planner;
     if (planner) {
       ApproachGrid(yaml);
     }
@@ -778,7 +848,6 @@ TEST_F(CatchingPlanLaneTest, TheDecelTorqueBoxAndSlackMustFitTheCliksTorqueBox) 
   yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // one writer for the plan box
   YAML::Node pl = yaml["catching"]["planner"];
   pl["enabled"] = true;
-  pl["decel_mpc"]["enabled"] = true;
   pl["decel_mpc"]["eta_tau"] = 0.75;
   pl["decel_mpc"]["publish"]["slack_max"] = 0.1;
   yaml["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
@@ -794,7 +863,6 @@ TEST_F(CatchingPlanLaneTest, TheDecelTorqueBoxAndSlackMustFitTheCliksTorqueBox) 
 TEST_F(CatchingPlanLaneTest, AFittingDecelTorqueBoxConfiguresUnderTheDynamicClik) {
   // The passing side of MD-33's configure check: 0.7 + 0.1 ≤ 0.8.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
-    y["catching"]["planner"]["decel_mpc"]["enabled"] = true;
     ApproachGrid(y);                                       // MD-45
     y["catching"]["supervisor"]["decel"]["mode"] = "mpc";  // MD-44
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
@@ -830,10 +898,10 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
   expect_park("K_n = 0", true, [](YAML::Node& y) { y["catching"]["joint_cmd"]["K_n"] = 0.0; });
   expect_park("eta_v = 1", true,
               [](YAML::Node& y) { y["catching"]["planner"]["gamma"]["eta_v"] = 1.0; });
-  expect_park("no decel planner", true,
-              [](YAML::Node& y) { y["catching"]["planner"]["decel_mpc"]["enabled"] = false; });
   // MD-45, MD-70: a plan goes out only with a segment that starts before
   // t_c, so without a pre-catch grid there is no decel planner to build.
+  expect_park("no decel planner", true,
+              [](YAML::Node& y) { y["catching"]["planner"]["decel_mpc"]["enabled"] = false; });
   expect_park("a decel planner without the pre-catch grid", true, [](YAML::Node& y) {
     y["catching"]["planner"]["decel_mpc"]["approach"]["n_pre_max"] = 0;
   });
@@ -920,6 +988,63 @@ TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnADecelSettingItNeverReads) {
   EXPECT_EQ(mpc.reason, integrated_bringup::CatchingParkReason::kDecelMpcInvalid);
 }
 
+TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
+  // MPC MD-91: `planner.decel_mpc.enabled` is gone — the planner solves the
+  // decel MPC exactly when `supervisor.decel.mode` is mpc. A config that still
+  // writes the key is read as if it were absent (no rejection): every row
+  // below holds for the key absent, true and false alike.
+  using integrated_bringup::CatchingParkReason;
+  using Return = DemoCatchingController::CallbackReturn;
+  for (const int stale : {-1, 0, 1}) {  // -1: key absent
+    const auto with_key = [stale](YAML::Node& y) {
+      if (stale >= 0) {
+        y["catching"]["planner"]["decel_mpc"]["enabled"] = stale == 1;
+      }
+    };
+    const std::string tag = stale < 0 ? "no key" : stale == 1 ? "enabled: true" : "enabled: false";
+
+    // closed_form: no decel core, and no WARN about the decel MPC either.
+    {
+      const WarnCapture warns;
+      const ConfigureVerdict v = ConfigureOnly(true, [&](YAML::Node& y) {
+        with_key(y);
+        y["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
+      });
+      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
+      EXPECT_FALSE(v.parked) << tag;
+      EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured()) << tag;
+      EXPECT_FALSE(WarnCapture::Contains("decel_mpc")) << tag << ": closed_form must not warn";
+      EXPECT_FALSE(WarnCapture::Contains("not built")) << tag << ": closed_form must not warn";
+    }
+    // mpc + planner on: the decel planner runs.
+    {
+      const ConfigureVerdict v = ConfigureOnly(true, with_key);
+      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
+      EXPECT_FALSE(v.parked) << tag << ": reason " << static_cast<int>(v.reason);
+      EXPECT_TRUE(ctrl_->IsDecelPlannerConfigured()) << tag;
+    }
+    // mpc + planner off + the oracle plan profile: configures (a test writes
+    // the box), with no decel planner of its own.
+    {
+      const ConfigureVerdict v = ConfigureOnly(false, with_key);
+      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
+      EXPECT_FALSE(v.parked) << tag << ": reason " << static_cast<int>(v.reason);
+      EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured()) << tag;
+    }
+    // mpc + planner off + no oracle: nothing writes a segment, so it parks
+    // with the prerequisite reason — never the decel-config one.
+    {
+      const ConfigureVerdict v = ConfigureOnly(false, [&](YAML::Node& y) {
+        with_key(y);
+        y["diagnostic"]["oracle_plan"]["enabled"] = false;
+      });
+      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
+      EXPECT_TRUE(v.parked) << tag;
+      EXPECT_EQ(v.reason, CatchingParkReason::kDecelModeUnmet) << tag;
+    }
+  }
+}
+
 TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheDecelPlannersBox) {
   // The box getters report THIS configuration (/code-review 2026-09-30): a
   // closed_form re-configure builds no decel planner, so the box is zero.
@@ -991,7 +1116,6 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   servo_ = true;
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
     YAML::Node d = y["catching"]["planner"]["decel_mpc"];
-    d["enabled"] = true;
     ApproachGrid(y);
     // Head-room for a loaded host: this case is about what is published,
     // taken and followed, not how fast. The replan budget stays inside the
