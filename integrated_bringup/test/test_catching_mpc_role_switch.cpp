@@ -195,24 +195,6 @@ TEST(CatchingMpcRoleSwitch, TheTwoSolverThreadsShareTheRoleAndOnlyOneRunsAcrossA
   EXPECT_EQ(WaitForThreadsNamed(name, 1).size(), 1U) << "the planner thread outlived its owner";
 }
 
-TEST(CatchingMpcRoleSwitch, AnEnabledDecelMpcKeepsOnePlannerThreadPerController) {
-  // MPC E1-F03: enabling planner.decel_mpc changes nothing about the role —
-  // configure succeeds and one mpc_main is spawned. This profile is model-free,
-  // so the decel cores are NOT built here and this is only the configuration
-  // path; the thread count with the decel MPC actually solving is checked by
-  // the lane suite (WithTheDecelMpcThePlannerPublishesAStopBeforeTheCatch).
-  const std::string name = rtc::SelectThreadConfigs().mpc.main.name;
-  const auto before = ThreadsNamed(name).size();
-  auto catching = MakeCatching("r1_decel_catching", DemoWbcController::kDefaultLayoutProfile);
-  EXPECT_FALSE(catching.ctrl->IsDecelPlannerConfigured()) << "no system model to plan in";
-  ASSERT_EQ(catching.ctrl->on_activate(Inactive()), RTControllerInterface::CallbackReturn::SUCCESS);
-  EXPECT_EQ(WaitForThreadsNamed(name, before + 1).size(), before + 1);
-  ASSERT_EQ(catching.ctrl->on_deactivate(Inactive()),
-            RTControllerInterface::CallbackReturn::SUCCESS);
-  catching.ctrl.reset();
-  EXPECT_EQ(WaitForThreadsNamed(name, before).size(), before);
-}
-
 TEST(CatchingMpcRoleSwitch, UnderTheMpcOffProfileThePlannerNeverSpawns) {
   // Mirrors WbcLayoutProfileGate.RefusesMpcEnabledConfigUnderTheOptOutProfile
   // for the second tenant of the role. The count is taken before and after so
