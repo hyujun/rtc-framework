@@ -37,8 +37,6 @@ vision 이 예측한 공의 궤적을 받아 팔과 손으로 공을 잡는 컨�
 - 절 번호는 바꾸지 않는다. 코드 주석이 `L3 §6`, `formulation §1.3` 식으로 인용한다. 새 절은 문서 끝에 더한다
 - planner 는 둘이다: `closed_form` 과 `mpc` (출하 기본값). 포구 후보의 탐색은 두 planner 가 공유하고, `mpc` 에서는 APPROACH 부터 정지까지 팔 기준을 MPC 구간이 만든다
 
-이 폴더 바로 아래의 `CATCHING_MASTER.md` · `L0_core.md` … `L8_bringup.md` · `mpc_multiframe_clik_formulation.md` 는 `ref/` 의 같은 이름 문서를 가리키는 안내뿐이다 — 코드 주석이 그 경로를 인용해서 남겨 둔다.
-
 ## 입력 계약
 
 vision (ball_perception 의 `sim_estimator_node`) 이 `sensor_msgs/PointCloud2` 로 **예측 궤적** 을 발행한다. 점 하나가 $(p, v, a)$ + 공분산 $\Sigma_{6\times6}$ (NaN = 모름) + `horizon_ns` + `generation` · `validity` · `snapshot_sequence` 이고, `header.stamp` 가 예측 원점 시각이다. 제어 PC 는 이 궤적을 **재전파하지 않고 그대로 신뢰** 하며 샘플 사이만 보간한다 (형식과 검증은 [ref/L1_io.md](ref/L1_io.md), 보간은 [ref/L2_prediction.md](ref/L2_prediction.md)).

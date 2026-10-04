@@ -11,7 +11,7 @@
 
 ## 1. 옛 인용 → 지금의 자리
 
-코드 주석에는 지워진 계획 문서의 절 번호가 남아 있다 (주석을 고치는 일은 [#709](https://github.com/hyujun/rtc-framework/issues/709)).
+지워진 계획 문서의 절 번호를 지금의 자리로 푸는 표다. 코드 주석의 포구 인용은 이 표대로 옮겼다 ([#709](https://github.com/hyujun/rtc-framework/issues/709)) — 표는 옛 커밋 · 이슈 · repo 밖의 산출물에 남은 인용을 읽기 위해 둔다.
 
 | 코드가 적은 것 | 지금의 자리 |
 |---|---|
@@ -34,7 +34,7 @@
 | `MPC plan §4` (`MD-n`) | 아래 §4 |
 | `MPC plan §8 "E1-F10"`, `plan §8 "E1-F06"` 같은 측정 절 | 아래 §3 의 feature 표가 가리키는 이슈의 "측정 · 검증 기록" 코멘트 |
 | `S8 sub-plan §6.4` · `§6.5` (`catching_trials.py`) | 지워진 private 계획의 절이다 — 그 함수의 docstring 이 내용을 적는다 |
-| `formulation §N`, `L<n> §N` | `ref/` 의 같은 이름 문서, 같은 절 번호 |
+| `formulation §N`, `L<n> §N`, 옛 경로 `docs/dynamic_catching/L<n>_*.md` · `CATCHING_MASTER.md` · `mpc_multiframe_clik_formulation.md` | `ref/` 의 같은 이름 문서, 같은 절 번호 |
 | `IMPLEMENTATION_PLAN.md` · `WORKSPACE_ANALYSIS.md` (경로) | 지워졌다 — 이 문서와 `ref/` |
 
 ## 2. 게이트 · TBD
@@ -165,7 +165,6 @@
 | MD-89 | 두 로봇의 출하 DECEL 법칙은 `mpc` 이고 코드 기본값 (키 없음) 은 `closed_form` 이다. | `IB/config/<robot>/controllers/demo_catching_controller.yaml` (`supervisor.decel.mode`), `cfg` / L3 §0 · §6, L7 §6 |
 | MD-90 | CM 의 일반 `include:` 가 조각을 하나의 노드로 합친 뒤 override 를 적용하고 키 경로는 그대로이며 같은 leaf 가 두 파일에 있으면 에러다. planner 는 `supervisor.decel.mode` 하나로 고른다. | `rtc_controller_manager/src/controller_config_loader.cpp` (`kIncludeKey`), `IB/test/test_shipped_catching_config.py` / L3 §6 |
 | MD-91 | `planner.decel_mpc.enabled` 는 없고 planner 는 `supervisor.decel.mode` 로만 고른다. 코어 설계 파라미터 (비용 가중 · slack 벌점 · 선형화 · solver) 와 탐색 파라미터는 YAML 키이며 가속도 box 는 `robot.arm.qdd_max` 다. `joint_limits.max_acceleration` 은 지웠다. | `cfg` `cost.*` · `linearization.*` · `solver.*`, `RCI/planner_params.hpp` / L3 §6 |
-| MD-92 | **코드는 이 번호를 "코어의 설계 값 (비용 가중 · slack 벌점 · 선형화 · solver) 을 YAML 키로 둔다" 의 뜻으로 쓴다** — 그 결정은 MD-91 이다 (원래의 MD-92 는 PR 을 둘로 나눈다는 결정). | `RCI/planner_params.hpp`, `RCS/params/planner_params.cpp`, `RCS/catching/decel_planner.cpp`, `cfg` / f §1.6 |
 | MD-93 | 키의 자리 — 탐색 파일 `planner.{slice,time,unc,gamma,rollout,budget,score,workspace,hand,ik,catchability}` · `robot.arm.{qdd_max,qdd_provisional}`, closed_form 파일 `reference.*` · `supervisor.decel.a_dec` · `planner.switch.*`, mpc 파일 `planner.decel_mpc.*` · `supervisor.decel.switch_margin`. 지운 경로 키 (`accel_limits_*`) 가 있으면 `kRemovedKey` 로 park 한다. | `IB/config/<robot>/controllers/catching/*.yaml`, `IB/src/controllers/catching/controller.cpp` (`kRemovedKey`) / L3 §6 |
 
 ## 5. v1 의 결정
