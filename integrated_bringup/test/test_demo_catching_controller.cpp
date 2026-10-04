@@ -1474,7 +1474,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
 }
 
 TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
-  // MPC plan MD-90: the profile is a main file plus three `include:` fragments
+  // MD-90: the profile is a main file plus three `include:` fragments
   // (catching/search_grid, planner_closed_form, planner_mpc). One mirrored key
   // per fragment is moved in the composed tree — the place a CM override
   // writes — and read back from the configured controller.

@@ -8,7 +8,7 @@
 // publish thread reads to build `rtc_msgs/CatchingState`. Two structs would
 // be two chances for the number on the operator's screen and the number in
 // the report to disagree about the same tick — the reason the GUI's ρ imports
-// `rtc_tools.analysis.hand_close` instead of recomputing it (plan §13 S4).
+// `rtc_tools.analysis.hand_close` instead of recomputing it (L8 §11).
 //
 // The state message carries ONE block this POD does not: the ingress
 // counters, which are updated by the subscription callback and would be a

@@ -487,7 +487,7 @@ def test_the_tips_line_marks_contact_staleness_and_never_received():
     assert "middle: never" in line
 
 
-# ── S8 progress tally (plan §13 S8) ──────────────────────────────────────────
+# ── S8 progress tally (L8 §11) ───────────────────────────────────────────────
 RETREAT = MODE_NAMES.index("RETREAT")
 ARMED = MODE_NAMES.index("ARMED")
 HOLD = MODE_NAMES.index("HOLD")

@@ -17,7 +17,7 @@
 // converges" rather than "the plant is slow".
 //
 // TIME IS STEPPED WITH THE TICKS. The controller reads its clock per tick
-// (plan §3 forbids tick×dt), and this file hands it a fake one
+// (L0 §4.5 forbids tick×dt), and this file hands it a fake one
 // (SetClockForTesting) that advances exactly one control period per tick. That
 // is what keeps the reference's own time axis and the integration step
 // consistent; a loop that spun with the REAL clock would advance `dt` per tick
@@ -470,7 +470,7 @@ TEST_F(CatchingTrackingTest, TheFirstCommandedTickDoesNotJump) {
 // ── G5-C: the QP's share of the tick ────────────────────────────────────────
 
 TEST_F(CatchingTrackingTest, QpSolveTimeStaysInsideItsBudget) {
-  // The budget (plan §7.3, 2026-09-22, provisional): p99 <= 400 us and max
+  // The budget (L5 §9 G5-C, 2026-09-22, provisional): p99 <= 400 us and max
   // <= 1500 us against a 2000 us tick. Quantiles rather than a mean, because
   // what threatens a control loop is the tail — a mean of 200 us with a 3 ms
   // outlier is a missed tick, and the mean cannot see it.
@@ -577,7 +577,7 @@ TEST_F(CatchingTrackingTest, LeadCompensationReducesTheErrorUnderAnActuationDela
   // 2026-09-20 premise about the sim, corrected 2026-09-24), leading and not
   // leading produce identical commands and the "before/after" comparison
   // measures nothing. The delay comes from a FIXTURE that only this test can
-  // reach (plan §7.3, option ㄱ); the shipped `T_arm` stays 0. The sim-runtime
+  // reach (option ㄱ, #537); the shipped `T_arm` stays 0. The sim-runtime
   // comparison is G8-E (S8-B).
   //
   // The comparison is run TWICE against the same plant and the same ball, with

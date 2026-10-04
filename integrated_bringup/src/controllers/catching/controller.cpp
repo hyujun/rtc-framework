@@ -109,7 +109,7 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
       if (const YAML::Node frame = io["expected_frame"]; frame) {
         expected_frame_ = frame.as<std::string>();
       }
-      // Vision world → model world (plan §11). Two keys, the map tool's split:
+      // Vision world → model world (L3 §4.2). Two keys, the map tool's split:
       // the frame is a property of the URDF, the transform a measurement.
       if (const YAML::Node base = io["arm_base_frame"]; base) {
         vision_base_frame_ = base.as<std::string>();
@@ -641,7 +641,7 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
 
   // The γ profile and the sample share ONE origin so the two never drift: the
   // profile's own t0, expressed in the relative seconds the numeric core
-  // takes. Mixing origins here is the bug plan §3 exists to prevent, and it
+  // takes. Mixing origins here is the bug L0 §4.5 exists to prevent, and it
   // would look like a reference that is subtly early or late rather than wrong.
   const rtc::catching::BallTime origin{plan_.gamma_t0_ns};
   const double t_rel = rtc::catching::ProfileSeconds(tick_now_lead_, origin);
@@ -1384,7 +1384,7 @@ rtc::catching::Reason DemoCatchingController::RunDecelLawTick(
   if (!PrepareLawTick(state)) {
     return Reason::kNone;
   }
-  // τ on the lead axis from the entry instant (plan §3). Floored at 0: the
+  // τ on the lead axis from the entry instant (L0 §4.5). Floored at 0: the
   // entry tick evaluates τ = 0 exactly, and a later tick whose clock read
   // jittered below the entry's must not ask the target for a negative τ.
   const double tau =

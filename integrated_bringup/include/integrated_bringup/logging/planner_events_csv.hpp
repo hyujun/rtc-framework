@@ -9,7 +9,7 @@
 // candidate counts, the judgement-reject histogram, the chosen candidate's
 // rank-gate bitmask (one column per bit as well, for plotting), the switching
 // decision, the search time and the receive → publish latency D-7a is judged on
-// (plan §7.2, G3-J's event record).
+// (L3 §5.3, G3-J's event record).
 //
 // Written to `<session>/controllers/<config_key>/planner_events.csv`, next to
 // the controller's tick record. Idle wakes (no RT state, a mode with nothing to

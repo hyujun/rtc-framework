@@ -291,7 +291,7 @@ class CatchingStatus:
     request_tick: int = 0
     last_error: str = ""
 
-    #: S8 progress (plan §13 S8): attempts seen by THIS panel, by verdict. An
+    #: S8 progress (L8 §11): attempts seen by THIS panel, by verdict. An
     #: attempt is counted on the tick-published edge into RETREAT, where the
     #: supervisor publishes the attempt's verdict (L7 §4.7) — the same edge the
     #: trial runner reads, so the panel and trial_results.json count alike. The

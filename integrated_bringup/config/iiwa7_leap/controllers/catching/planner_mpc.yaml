@@ -4,7 +4,7 @@
 # merges it into that file's tree; every key keeps its full path.
 #
 # The APPROACH–stop MPC: the planner thread solves it and the RT follows its
-# joint segments from APPROACH to the end of the stop (MPC plan MD-45,
+# joint segments from APPROACH to the end of the stop (MD-45,
 # MD-54 – MD-64). Read only when `supervisor.decel.mode: mpc` (the main file).
 demo_catching_controller:
   catching:
@@ -13,7 +13,7 @@ demo_catching_controller:
         # rho_max of the mpc segment-switch gate (MD-39), per joint:
         # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max. Read under mpc only.
         # Not measured on this arm: E1-F10 had too few adopted trials here
-        # (MPC plan §8 "E1-F10").
+        # (E1-F10, #663).
         switch_margin: 1.0
 
     planner:
@@ -38,7 +38,7 @@ demo_catching_controller:
           # On THIS arm the plan first appears near a 0.21 s lead, which leaves
           # one 0.1 s node: that first solve is withheld and 186 of 200 sim
           # throws got no plan. 0.04 s spacing raised it to 70 of 200 — the
-          # pre-catch time, not the spacing, is short (MPC plan §8). A later
+          # pre-catch time, not the spacing, is short (E1-F10, #663). A later
           # catch point does not buy it back: the first solve's rest-to-rest
           # reference then falls further short of the catch pose (E1-F10 closed
           # this arm as unmet, MD-76).
@@ -50,8 +50,7 @@ demo_catching_controller:
         budget:
           # A solve's ceiling, which is also the lead it is planned with [s]:
           # the first segment (same wake as the search) and every later one
-          # (MD-56). Confirmed from the sim wall-clock run (2026-10-02, MPC plan
-          # §8).
+          # (MD-56). Confirmed from the sim wall-clock run (2026-10-02).
           first_s: 0.035
           replan_s: 0.025
         replan:
@@ -92,7 +91,7 @@ demo_catching_controller:
           # |v_ball - v_hand| <= v_rel_allow (1 + s_v) per axis, penalised by
           # rho_v s_v. rho_v 0 = off (no slack variable, no rows); on, it needs
           # v_rel_allow > 0 [m/s] — what the hand absorbs, not measured yet
-          # (MPC plan MD-52), so both ship 0.
+          # (MD-52), so both ship 0.
           # s_v is RECORDED (planner_events decel_slack_v), never a publish
           # gate: no threshold is defined for it, and with gamma_ref < 1 it is
           # above 0 by construction.

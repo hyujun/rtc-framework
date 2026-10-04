@@ -999,7 +999,7 @@ ros2 launch ball_perception_sim sim_estimator.launch.py \
 ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dist s35b --n 50 --seed 503
 ```
 
-**host 부하 감시 (`--host-watch`, #601).** sim 이 벽시계보다 느리게 돌면 (RTF < 1 — 같은 host 의 다른 세션 빌드·테스트 등) 공 stamp 가 컨트롤러의 steady 시계보다 뒤처져 정상 입력이 `BALL_STALE` 로 끊기고, 성공률이 포구가 아니라 host 를 잰다 (dynamic_catching plan D-S8-17). 러너는 투척마다 자기가 기록하는 truth 행에서 sim 속도를 읽는다 — stamp 구간 / 수신 구간, sim 시간 `--host-window` (기본 0.25 s) 창 중 가장 느린 값. `sim_lanes:=true` 는 필요 없다. 그 값이 `--host-rtf-min` (기본 0.95) 아래면 부하다 (`rtc_tools` `catching_trials` 의 `rtf_trial_min` 과 같은 창·임계).
+**host 부하 감시 (`--host-watch`, #601).** sim 이 벽시계보다 느리게 돌면 (RTF < 1 — 같은 host 의 다른 세션 빌드·테스트 등) 공 stamp 가 컨트롤러의 steady 시계보다 뒤처져 정상 입력이 `BALL_STALE` 로 끊기고, 성공률이 포구가 아니라 host 를 잰다 (dynamic_catching D-S8-17). 러너는 투척마다 자기가 기록하는 truth 행에서 sim 속도를 읽는다 — stamp 구간 / 수신 구간, sim 시간 `--host-window` (기본 0.25 s) 창 중 가장 느린 값. `sim_lanes:=true` 는 필요 없다. 그 값이 `--host-rtf-min` (기본 0.95) 아래면 부하다 (`rtc_tools` `catching_trials` 의 `rtf_trial_min` 과 같은 창·임계).
 
 | `--host-watch` | 부하를 본 투척에서 | 출력 |
 |---|---|---|

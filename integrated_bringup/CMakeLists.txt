@@ -1369,7 +1369,7 @@ if(BUILD_TESTING)
   # G4-H / G5-A / G5-B. Drives the shipped ur5e_p1b model with a perfect servo
   # and judges the result with a SECOND pinocchio model, so no assertion here
   # is the controller agreeing with itself. Sleeps one control period per tick
-  # (the controller reads the steady clock, plan §3), so it runs in about a
+  # (the controller reads the steady clock, L0 §4.5), so it runs in about a
   # second rather than instantly.
   ament_add_gtest(test_catching_tracking test/test_catching_tracking.cpp
     ENV ROS_DOMAIN_ID=52)
@@ -1584,7 +1584,7 @@ if(BUILD_TESTING)
   # S8-B catch_lead_* overlays: a controller key one level off is created,
   # never read, and the run is silently the shipped profile.
   ament_add_pytest_test(test_catch_lead_overlays test/test_catch_lead_overlays.py)
-  # The catching config in four files (MPC plan MD-90): which key lives where,
+  # The catching config in four files (MD-90): which key lives where,
   # and the Python loader against the CM's — the dump is the CM's loader as a
   # command the pytest can run.
   add_executable(controller_config_dump test/controller_config_dump.cpp)

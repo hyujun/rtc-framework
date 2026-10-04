@@ -12,7 +12,7 @@
 # activation refused) and only warns in sim (L0 §5.3, A-S5-1). The `provisional`
 # flags below are why a real arm does not run this file yet.
 #
-# ── How this config is laid out (MPC plan MD-90) ─────────────────────────────
+# ── How this config is laid out (MD-90) ──────────────────────────────────────
 # This file holds the QP CLIK step (`catching.joint_cmd`), the bring-up
 # sections (ball, hand, vision ingress, supervisor thresholds, topics, logs),
 # the planner thread's own keys, and the one key that SELECTS the planner law:
@@ -86,7 +86,7 @@ demo_catching_controller:
     # derived FOR this diameter, so changing it invalidates them.
     # provisional: the real D-12 spec is still open (this is the sim ball, not
     # a decision about the hardware one), and S4.5 re-derives d_eff / r_cap
-    # when it closes (plan §4.4 S4a Q10).
+    # when it closes (Q10, ID_INDEX.md §5.5).
     core:
       ball:
         diameter: 0.067
@@ -218,7 +218,7 @@ demo_catching_controller:
 
     # ── Vision ingress (L1 §6, S5.2) ────────────────────────────────────────
     # The prediction lane this controller subscribes to, and the numbers it
-    # judges each message against. Values are S3.6's (plan §4.4 "S3.6 결과"),
+    # judges each message against. Values are S3.6's (ID_INDEX.md §3),
     # all PROVISIONAL in the sense that they are derived from the sim profile
     # and one measured detection latency — they are re-derived, not re-guessed,
     # when either changes.
@@ -231,7 +231,7 @@ demo_catching_controller:
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
-      # Vision world → MODEL world (plan §11). The planner, its catch_box and
+      # Vision world → MODEL world (L3 §4.2). The planner, its catch_box and
       # CLIK all work in the Pinocchio universe, whose root on this URDF is
       # `base_link` — 180° about z from `base`. Vision is measured against
       # `base`, and base_T_world is the identity the sim measured (§11: same-q
@@ -277,7 +277,7 @@ demo_catching_controller:
     # spacing floor the decoder refuses below is derived from it, and `n_min`
     # above is derived from it too. The sim profile is ball_perception's
     # `ball_perception_sim/config/sim_profile.catching.json` — that repository
-    # owns it (MPC plan MD-18), so nothing here checks the pair; change both.
+    # owns it (MD-18), so nothing here checks the pair; change both.
     prediction:
       dt_expected: 0.05
 
@@ -336,7 +336,7 @@ demo_catching_controller:
       # ── Thresholds the joint command layer reports to (L7 §6, S5.3) ───────
       # ‖q_meas − q_cmd‖. D-6 keeps the measured state out of CLIK, so this
       # watchdog is the ONLY thing that notices the arm is not where it was
-      # told to be. PROVISIONAL (plan §7.3 3-3: twice the observed peak): the
+      # told to be. PROVISIONAL (twice the observed peak): the
       # S8-B sim runs (2026-09-24, #537 5810866922; 0.05 s sim servo, D-S8-13)
       # peaked at 0.21 rad before t_c in every 2x2 arm, lead on or off, and in
       # the 200-throw tuning set; RETREAT peaked at 0.058. The earlier 1.54
@@ -392,8 +392,8 @@ demo_catching_controller:
         # MPC's stop segment — needs planner.enabled and the approach grid
         # (planner.decel_mpc.approach.n_pre_max > 0), else it parks; a DECEL
         # with no segment to follow aborts (ABORT_SAFE), never closed_form.
-        # Shipped mpc by the user's decision (MPC plan MD-89, 2026-10-03)
-        # although gate G-1 failed here: catch success 0.58 against closed_form's 0.69 on the same 300 throws (plan §8 "E1-F06").
+        # Shipped mpc by the user's decision (MD-89, 2026-10-03)
+        # although gate G-1 failed here: catch success 0.58 against closed_form's 0.69 on the same 300 throws (E1-F06, #632).
         # Set closed_form to run v1's law.
         mode: mpc
 

@@ -242,7 +242,7 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("control.dt", GetDefaultDt(), "RT tick period [s] = 1/control_rate");
   declare("diagnostic.hand_step", hand_step_enabled_, "accept unshaped hand step targets (S4a)");
 
-  // The S8 trial runner's inputs (plan §4.4 S8-A). A sim overlay can move the
+  // The S8 trial runner's inputs (S8-A). A sim overlay can move the
   // wait pose and switch the lead axis on, and the installed YAML cannot tell
   // the runner which overlay the controller loaded: a runner that homed to the
   // file's pose would refuse every trial of an overlay run, and a summary that
@@ -291,7 +291,7 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("robot.arm.qdd_max", arm_qdd_max_,
           "acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
-  // The prediction grid the controller expects (MPC plan E0-F04, #647). The
+  // The prediction grid the controller expects (E0-F04, #647). The
   // vision profile sets the grid and these three must follow it, but nothing
   // checks the pair: a `planner.slice.dt` left at 0.05 on a 25 ms grid thins
   // the candidates to every other point without a warning, and the run
@@ -303,7 +303,7 @@ void DemoCatchingController::DeclareProfileParameters() {
           "fewest prediction points a message may carry, as run (the decode's default when TBD)");
   declare("planner.slice.dt", planner_params_.slice_dt,
           "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
-  // The two the E1-F10 tuning moves per arm (MPC plan MD-72, MD-74): an
+  // The two the E1-F10 tuning moves per arm (MD-72, MD-74): an
   // overlay one level short would otherwise run the shipped value under the
   // candidate's name. One launch configures once, which is what a unit driver
   // reads; like every mirror here they keep the FIRST configure's value.
@@ -1149,7 +1149,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       // holds in sim word for word, and it was observed there: on 2026-09-22 a
       // shipped sim profile whose consumed key was still TBD took the whole
       // robot down, and the symptom was "the robot does not start", not "the
-      // catching controller does not start" (plan §7.3 A-S5-11). A TBD is the
+      // catching controller does not start" (A-S5-11). A TBD is the
       // normal state of a key whose owning step has not landed yet, and every
       // step that widens the consumed set can produce one.
       //

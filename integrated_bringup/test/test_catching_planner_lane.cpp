@@ -1292,7 +1292,7 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   std::printf("[ MEASURED ] %s\n", os.str().c_str());
 }
 
-// ── Vision world → model world (plan §11, S6-C sim finding) ─────────────────
+// ── Vision world → model world (L3 §4.2, S6-C sim finding) ──────────────────
 
 class CatchingVisionFrameTest : public CatchingPlanLaneTest {
  protected:

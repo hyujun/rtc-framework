@@ -4,7 +4,7 @@
 # `planner.wait_pose`, plan → freeze → close → decel → hold → return. The
 # provisional flags park a real-arm configuration (L0 §5.3, A-S5-1).
 #
-# ── How this config is laid out (MPC plan MD-90) ─────────────────────────────
+# ── How this config is laid out (MD-90) ──────────────────────────────────────
 # This file holds the QP CLIK step (`catching.joint_cmd`), the bring-up
 # sections (ball, hand, vision ingress, supervisor thresholds, topics, logs),
 # the planner thread's own keys, and the one key that SELECTS the planner law:
@@ -50,7 +50,7 @@ demo_catching_controller:
 
     # ── Vision ingress (L1 §6, S5.2) ────────────────────────────────────────
     # The prediction lane this controller subscribes to, and the numbers it
-    # judges each message against. Values are S3.6's (plan §4.4 "S3.6 결과"),
+    # judges each message against. Values are S3.6's (ID_INDEX.md §3),
     # all PROVISIONAL in the sense that they are derived from the sim profile
     # and one measured detection latency — they are re-derived, not re-guessed,
     # when either changes.
@@ -63,7 +63,7 @@ demo_catching_controller:
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
-      # Vision world → MODEL world (plan §11). `link_0` is this URDF's model
+      # Vision world → MODEL world (L3 §4.2). `link_0` is this URDF's model
       # root and base_T_world is the identity the sim measured (§11), so the
       # composed transform is the identity and the ingress leaves the
       # prediction as is. Stated anyway: the frame is a per-robot fact, and a
@@ -110,7 +110,7 @@ demo_catching_controller:
     # spacing floor the decoder refuses below is derived from it, and `n_min`
     # above is derived from it too. The sim profile is ball_perception's
     # `ball_perception_sim/config/sim_profile.catching.json` — that repository
-    # owns it (MPC plan MD-18), so nothing here checks the pair; change both.
+    # owns it (MD-18), so nothing here checks the pair; change both.
     prediction:
       dt_expected: 0.05
 
@@ -298,7 +298,7 @@ demo_catching_controller:
       qp:
         max_iter: 20
       # Decision K form (L5 §4.3). `dynamic` is the only form the catching
-      # profiles run (MPC plan MD-74, 2026-10-02): per-tick torque rows
+      # profiles run (MD-74, 2026-10-02): per-tick torque rows
       # M·v̇ + h within ±eta_tau·tau_max, eta_tau 0.8 being D-16's. Until then
       # this robot ran the parser default `box` (the constant D-16 box, 9.2
       # rad/s²), under which `supervisor.decel.mode: mpc` had every replan
@@ -329,10 +329,10 @@ demo_catching_controller:
       # check off): peak 0.096 rad before t_c, 0.142 in DECEL/HOLD, 0.060 in
       # RETREAT — and 0.238 on the first homing from the sim's start pose to
       # the wait pose, which is checked too (IDLE, armed) and is the largest
-      # motion this arm makes. Twice that peak, as for ur5e_p1b (plan §7.3
-      # 3-3). The former 0.3 was a placeholder, and it did fire once — on a
-      # homing move blocked by the shipped scene's table objects, which is
-      # the fault it exists for. S10 sets the real-arm value.
+      # motion this arm makes. Twice that peak, as for ur5e_p1b. The former 0.3
+      # was a placeholder, and it did fire once — on a homing move blocked by
+      # the shipped scene's table objects, which is the fault it exists for.
+      # S10 sets the real-arm value.
       track_err_abort: 0.48
       # How long COMMITTED/CLOSING may run on a stale prediction past io.t_stale
       # before BALL_STALE_LONG (A-6). S8-D: the committed-snapshot age peaked at
@@ -377,9 +377,9 @@ demo_catching_controller:
         # MPC's stop segment — needs planner.enabled and the approach grid
         # (planner.decel_mpc.approach.n_pre_max > 0), else it parks; a DECEL
         # with no segment to follow aborts (ABORT_SAFE), never closed_form.
-        # Shipped mpc by the user's decision (MPC plan MD-89, 2026-10-03)
+        # Shipped mpc by the user's decision (MD-89, 2026-10-03)
         # although gate G-1 failed here: catch success 0.02 against closed_form's 0.49 on the same 300 throws — 285
-        # of them got no catchable plan (plan §8 "E1-F06").
+        # of them got no catchable plan (E1-F06, #632).
         # Set closed_form to run v1's law.
         mode: mpc
 

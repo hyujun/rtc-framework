@@ -10,7 +10,7 @@
 // vacuous — which is exactly what G5-E was stuck on after S3.7 was dropped
 // (2026-09-20) and the sim was decided to have no lag.
 //
-// The decision (2026-09-22, plan §7.3: option ㄱ) was to supply the delay in a
+// The decision (2026-09-22, option ㄱ, #537) was to supply the delay in a
 // FIXTURE rather than in the runtime. This file is that fixture. It lives
 // under test/ and is never installed, so no production target can reach it —
 // the same isolation `catching_ball_fixture.hpp` uses for the ball model. The

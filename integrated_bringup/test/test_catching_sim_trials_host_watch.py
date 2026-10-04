@@ -1,7 +1,7 @@
 """The sim-trial runner's host load watch (#601).
 
 A sim that runs slower than the wall makes the controller drop a healthy ball
-as ``BALL_STALE`` (plan D-S8-17), so a loaded run measures the host. What is
+as ``BALL_STALE`` (D-S8-17), so a loaded run measures the host. What is
 pinned here:
 
 * the verdict is read off the truth rows the runner already records — a slow

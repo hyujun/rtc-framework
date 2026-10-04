@@ -83,14 +83,14 @@
             - "middle_tip_head"
             - "ring_tip_head"
       # Frames the model builder adds to the full model (inherited by every
-      # derived model) — dynamic_catching D-10/D-17, plan §10. Changing a value
+      # derived model) — dynamic_catching D-10/D-17, L5 §11. Changing a value
       # needs a controller re-configure (read at model build).
       extra_frames:
         catch_frame:
           parent: "palm_lower"
           # Pocket-centre offset (S2.3b, 2026-09-21) = the S4.5 MEASURED catch
-          # point, not the preshape fingertip centroid plan §10 first proposed
-          # (rationale and the rejected alternative: plan §10).
+          # point, not the preshape fingertip centroid L5 §11 first proposed
+          # (rationale and the rejected alternative: L5 §11).
           # ⚠️ SIGN: L6 §4.5 gives the point in CATCH-frame coordinates
           # (−0.035, +0.015, 0.069), and this key is in the PARENT frame. The
           # rpy below is a π turn about x, so y and z flip on the way in:
@@ -100,7 +100,7 @@
           # Verified end to end against the source of the measurement: the
           # Pinocchio catch-frame origin and the MuJoCo pocket point agree to
           # 1e-7 m over 16 random arm poses (this robot has no ε_model term —
-          # plan §11 records it as identity, 4.5e-16 m).
+          # L3 §4.2 records it as identity, 4.5e-16 m).
           xyz: [-0.035, -0.015, -0.069]
           # palm_lower −z is the palm outward normal, and a π turn about x makes
           # the catch frame's +z the approach axis. Evidence (2026-09-21,

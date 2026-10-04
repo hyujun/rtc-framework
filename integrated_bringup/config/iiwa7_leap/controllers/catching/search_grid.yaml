@@ -13,7 +13,7 @@
 #       wait_pose, wait_pose_source, sub_model, provisional},
 #       planner.freeze.T_freeze, robot.arm.limit_margin
 #   planner_closed_form.yaml          reference.*, supervisor.decel.a_dec — it
-#       ranks candidates by that law's rollout, under mpc too (MPC plan MD-46)
+#       ranks candidates by that law's rollout, under mpc too (MD-46)
 #
 # What else reads a key kept here: `robot.arm.qdd_max` is the search's reach-time
 # limit, and also the QP-less stop ramp (ABORT), the homing ramp, and CLIK's
@@ -121,7 +121,7 @@ demo_catching_controller:
       # L6 §4.5 step 2 (low-speed throw correction) needed the sequencer (S7.1,
       # done). It has not run yet: sim in S8, hardware in S10.
       #
-      # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, plan §7.3). The L3 §4.5
+      # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, #537). The L3 §4.5
       # gamma window only ever uses d_eff / T_close,tot — the relative speed the
       # hand can absorb — so the key holds that speed times T_close,tot:
       #   d_eff 0.1047 m = 1.0 m/s x (T_close_e2e 0.1037 + h/2 0.001) s.
@@ -146,7 +146,7 @@ demo_catching_controller:
       # accepted from the best single wait pose at the old shared threshold 0.1,
       # 1158 at the robot-specific 0.174 below (reproduced by running the map
       # tool with THIS file as --params),
-      # T_f >= 1.0 s. Details and the rejected alternatives: plan §11.
+      # T_f >= 1.0 s. Details and the rejected alternatives: D-18, L3 §4.2.
       ik:
         # k_manip > 0 is NOT optional. It enables the D-25 null-space log w5
         # ascent, and without it (the in-code default 0) the 5-row task leaves
@@ -183,7 +183,7 @@ demo_catching_controller:
         fd_step: 1.0e-5
         v_eps: 1.0e-6
       catchability:
-        # 5-row, per plan §11: the 6-row definition would need a threshold ~30x
+        # 5-row, per D-18 (L3 §4.2): the 6-row definition would need a threshold ~30x
         # smaller (w6 bottoms out at 0.0013 over the SAME accepted set) and it
         # collapses at the wrist singularities of a 6-axis arm, which are fine
         # poses for catching. w6 is recorded per candidate either way (C-3).

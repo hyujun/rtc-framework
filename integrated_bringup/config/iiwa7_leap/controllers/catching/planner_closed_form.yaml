@@ -10,7 +10,7 @@
 #
 # Not all of it is closed_form-only:
 #   reference.*, supervisor.decel.a_dec  read under mpc as well — the search
-#       ranks its candidates by this law's rollout (MPC plan MD-46)
+#       ranks its candidates by this law's rollout (MD-46)
 #   planner.switch.*                     closed_form only — under mpc the
 #       search is skipped while a plan is followed (MD-57)
 demo_catching_controller:
@@ -33,7 +33,7 @@ demo_catching_controller:
     # The constant deceleration of the closed_form DECEL target (L7 §4.3) and
     # of the stopping point the search reserves behind each candidate (L3 §4.9).
     # 10 m/s^2 is the value the S3.5b gate map ran with, confirmed 2026-09-22
-    # (plan §7.3). The validator requires a_dec <= reference.a_max.
+    # (#537). The validator requires a_dec <= reference.a_max.
     supervisor:
       decel:
         a_dec: 10.0
