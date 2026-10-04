@@ -1058,7 +1058,7 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.slice.dt
   integrated_bringup/tools/catching_eval/run_unit.sh <out> <robot 열> <overlay 열> <n> <seed>
 ```
 
-조건의 overlay 는 mode 를 적지 않으므로 출하 법칙 (`supervisor.decel.mode`) 으로 돈다. `EXPECT_MODE` (기본 `mpc`) 가 그것과 다르면 맞춰 준다. `L-50` 행의 overlay 는 경로가 아니라 이름 (`catch_lead_on`) 이다. `run_unit.sh` 는 파일을 받으므로 `integrated_bringup/config/<robot>/sim_overlays/catch_lead_on.yaml` 을 넘긴다. `make_conditions.py` 는 overlay 의 leaf 규칙을 `test/test_catch_lead_overlays.py` 의 `_unread_leaves` 에서 경로로 불러 쓴다 — 그 테스트의 이름을 바꾸면 이 스크립트를 같이 고친다.
+조건의 overlay 는 mode 를 적지 않으므로 출하 법칙 (`supervisor.decel.mode`) 으로 돈다. `EXPECT_MODE` (기본 `mpc`) 가 그것과 다르면 맞춰 준다. `L-50` 행의 overlay 는 경로가 아니라 이름 (`catch_lead_on`) 이다. `run_unit.sh` 는 파일을 받으므로 `integrated_bringup/config/<robot>/sim_overlays/catch_lead_on.yaml` 을 넘긴다 (`<out>` · overlay · `DATA` · `PROFILE` 은 부른 자리 기준의 상대 경로여도 된다). `make_conditions.py` 는 overlay 의 leaf 규칙을 `test/test_catch_lead_overlays.py` 의 `_unread_leaves` 에서 경로로 불러 쓴다 — 그 테스트의 이름을 바꾸면 이 스크립트를 같이 고친다.
 
 `.last_minute` 는 세션 디렉토리의 이름이 분 단위라서 둔다: 같은 `DATA` 의 앞 unit 과 같은 분에는 다음 unit 을 띄우지 않는다. `DATA` 가 다른 두 평가를 같은 workspace 에서 같이 돌리면 이 보호가 닿지 않는다.
 
@@ -1066,7 +1066,7 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.slice.dt
 
 | 스크립트 | 하는 일 |
 |---|---|
-| `verify_catch_frame.py <ur5e_p1b\|iiwa7_leap>` | MJCF 의 palm body frame 과 URDF 의 palm link frame 이 같은 frame 인지 관절 표본 위에서 대조하고, MuJoCo 에서 잰 pocket 점을 YAML 의 `urdf.extra_frames.catch_frame` offset 으로 옮긴 왕복을 확인한다. 결과는 JSON |
+| `verify_catch_frame.py <ur5e_p1b\|iiwa7_leap>` | MJCF 의 palm body frame 과 URDF 의 palm link frame 이 같은 frame 인지 관절 표본 위에서 대조한다. 이어서 **스크립트에 적힌** pocket 점 (S4.5 의 MuJoCo 실측값) 을 부모 link 의 offset 으로 옮긴 값 (`proposed_xyz_parent_frame_m`) 을 낸다. 결과는 JSON. **출하 YAML 의 `urdf.extra_frames.catch_frame` 과 `robot.hand.q_pre` 는 읽지 않는다** — 출하 값이 이 값과 같은지는 JSON 과 YAML 을 직접 대조한다 |
 | `show_catch_frame.py <ur5e_p1b\|iiwa7_leap> --out <png>` | 출하 catch frame 을 preshape 손 위에 그린다 (원점의 공 반지름 구, 접근축의 marker). `--viewer` 는 MuJoCo viewer 를 연다 — 육안 확인용 |
 
 ---

@@ -8,6 +8,8 @@
 # refused — the revision written into the unit must be the tree that was built.
 # Nothing is written into the repository: the unit goes to <out_dir>, the
 # launch-minute stamp to $DATA/.last_minute.
+# <out_dir>, the overlay, DATA and PROFILE may be relative to the caller's
+# directory: they are made absolute before the script moves to the workspace.
 # E1-F06 addition: the planner's search budget (not a ROS parameter — only the
 # startup line "planner enabled: … budget X s" says it) goes into conditions.txt
 # as planner_budget_s; a unit without that line is refused (criterion 3 needs it).
@@ -26,6 +28,7 @@
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
+OUT=$(realpath -ms "$OUT")
 mkdir -p "$OUT"; rm -f "$OUT/status"
 [ -n "$DATA" ] || { echo "FAIL:DATA is not set (the data directory of this evaluation)" | tee "$OUT/status" >&2; exit 1; }
 [ -n "$BALL_SIM_WS" ] || { echo "FAIL:BALL_SIM_WS is not set (the estimator's colcon workspace)" | tee "$OUT/status" >&2; exit 1; }
@@ -33,6 +36,10 @@ BWS=$(cd "$BALL_SIM_WS" 2>/dev/null && pwd)
 [ -n "$BWS" ] || { echo "FAIL:no estimator workspace $BALL_SIM_WS" | tee "$OUT/status" >&2; exit 1; }
 PROFILE=${PROFILE:-$BWS/install/ball_perception_sim/share/ball_perception_sim/config/sim_profile.catching.json}
 [ -f "$OV" ] || { echo "FAIL:no overlay $OV" > "$OUT/status"; exit 1; }
+# Everything below runs from the workspace root (the launch resolves the
+# overlay against its own directory): a relative path checked here would name
+# another file there.
+OV=$(realpath -ms "$OV"); DATA=$(realpath -ms "$DATA"); PROFILE=$(realpath -ms "$PROFILE")
 case $SHORT in p1b) ROBOT=ur5e_p1b ;; leap) ROBOT=iiwa7_leap ;; esac
 case $ROBOT in
   ur5e_p1b)   LAUNCH=sim_ur5e_p1b.launch.py;   EXPECT_COMMIT=${EXPECT_COMMIT:-0.370}; STATE_RE='ur5e_state\|p1b_state' ;;
@@ -52,7 +59,6 @@ esac
 cd "$WS" || { echo "FAIL:no workspace $WS" > "$OUT/status"; exit 1; }
 source "$REPO/repo_scripts/scripts/setup_env.sh" >/dev/null 2>&1
 export ROS_DOMAIN_ID=${EVAL_DOMAIN:-88}
-CFG=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/$ROBOT
 [ -f "$PROFILE" ] || { echo "FAIL:no profile $PROFILE" > "$OUT/status"; exit 1; }
 
 # Session dirs are minute-named: never start in the minute of the previous launch.
@@ -160,7 +166,7 @@ if [ "${EXPECT_MODE:-mpc}" == "closed_form" ]; then
 else
 grep -q "planner.decel_mpc.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-6}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
 grep -q 'planner.decel_mpc.horizon.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
-# The mode has no mirror: the startup lines say it (mpc prints both).
+# The startup lines say the mode too (mpc prints both).
 grep -q 'DECEL law: mpc' "$OUT/launch.log" || why="$why mode_mpc"
 grep -q "decel MPC approach grid: up to ${EXPECT_NPRE:-6} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
 grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not_e1f09_binary"
@@ -193,7 +199,11 @@ echo "date_end: $(date -Is)" >> "$OUT/conditions.txt"
 cleanup
 if [ $rc -eq 3 ]; then echo "FAIL:host_busy" > "$OUT/status"; exit 1; fi
 if [ $rc -ne 0 ]; then echo "FAIL:trials rc=$rc" > "$OUT/status"; exit 1; fi
-SES=$WS/$(cat "$OUT/session.txt")
+# An empty session.txt (no `logging_data/<digits>` in the launch log) would make
+# the session the workspace root: the copy below would take the whole workspace.
+SREL=$(cat "$OUT/session.txt" 2>/dev/null)
+if [ -z "$SREL" ] || [ ! -d "$WS/$SREL" ]; then echo "FAIL:no session directory in the launch log" > "$OUT/status"; exit 1; fi
+SES=$WS/$SREL
 du -sh "$SES" > "$OUT/session_size.txt"
 # A hook `colcon test` that starts in the launch's minute can write fixture CSVs
 # into the same time-named session dir: refuse header/row disagreement or foreign files.

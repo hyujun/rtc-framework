@@ -4,13 +4,16 @@
 # Writes <unit>/ct/{catching_trials.csv,catching_trials_summary.json,vec.csv}.
 # Never while a unit is being collected (host load).
 ROBOT=$1; shift
+# The units may be relative to the caller's directory; the loop runs from the workspace.
+UNITS=()
+for U in "$@"; do UNITS+=("$(realpath -ms "$U")"); done
 D=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$D/../../.." && pwd)
 WS=$(cd "${RTC_WS:-$REPO/../..}" 2>/dev/null && pwd)
 [ -d "$WS/install" ] || { echo "analyse_unit.sh: no colcon workspace at ${WS:-${RTC_WS:-$REPO/../..}} (RTC_WS names another)" >&2; exit 2; }
 ( cd "$WS" && source "$REPO/repo_scripts/scripts/setup_env.sh" >/dev/null 2>&1
   CFG=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/$ROBOT
-  for U in "$@"; do
+  for U in "${UNITS[@]}"; do
     [ "$(cat "$U/status" 2>/dev/null)" == "DONE" ] || { echo "skip $U (not DONE)"; continue; }
     [ -f "$U/ct/vec.csv" ] && continue
     mkdir -p "$U/ct"

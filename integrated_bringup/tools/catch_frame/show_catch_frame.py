@@ -31,6 +31,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from rtc_tools.utils.controller_config import load_controller_config
+
 REPO = Path(__file__).resolve().parents[3]
 CFG = REPO / "integrated_bringup/config"
 
@@ -88,8 +90,10 @@ def ros_params(path: Path) -> dict:
 
 def catching_tree(path: Path) -> dict:
     """The `catching:` tree of a controller config, which is keyed by the
-    controller name at the top level rather than by `ros__parameters`."""
-    doc = yaml.safe_load(Path(path).read_text()) or {}
+    controller name at the top level rather than by `ros__parameters`. Read
+    composed with its `include:` fragments, as CM reads it: the shipped config
+    is four files, and the pocket (`planner.hand`) is in one of the fragments."""
+    doc = load_controller_config(path) or {}
     for node in doc.values():
         if isinstance(node, dict) and "catching" in node:
             return node["catching"]
