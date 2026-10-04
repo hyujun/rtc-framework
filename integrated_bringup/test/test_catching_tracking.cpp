@@ -276,7 +276,7 @@ TEST_F(CatchingTrackingTest, ConvergesToAStaticCatchPointAndAxis) {
 
 // ── G5-B: the boxes hold ────────────────────────────────────────────────────
 
-/// Under each form of the CLIK's acceleration bound (box, kinematic, dynamic).
+/// Under each form of the CLIK's acceleration bound (kinematic, dynamic).
 /// The run includes the tick
 /// the reference's saturation streak ends the approach on: under `dynamic` the
 /// command is at the velocity limit there, and a stop that stepped it a second
@@ -357,8 +357,7 @@ TEST_P(CatchingLimitsTest, RespectsTheJointAndStepLimitsThroughout) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Forms, CatchingLimitsTest,
-                         ::testing::Values("box", "kinematic", "dynamic"));
+INSTANTIATE_TEST_SUITE_P(Forms, CatchingLimitsTest, ::testing::Values("kinematic", "dynamic"));
 
 // ── Decision K (S6-C2): the dynamic form bounds the arm torque ──────────────
 

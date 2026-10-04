@@ -382,19 +382,28 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.joint_cmd_w_smooth = ReadTbdDouble(joint_cmd, "w_smooth", out.joint_cmd_w_smooth);
   out.joint_cmd_damping_sq = ReadTbdDouble(joint_cmd, "damping_sq", out.joint_cmd_damping_sq);
   {
-    const std::string form = ReadOptional<std::string>(joint_cmd, "accel_constraint", "box");
-    if (form == "box") {
-      out.joint_cmd_accel_constraint = CatchingAccelConstraint::kBox;
+    // No default: an absent key leaves the form unset, for the validator to
+    // report. `box` — the form this key used to offer — is left unset as well
+    // rather than refused: a throw here fails the configure, and the caller
+    // can only park (keep the other controllers up) on a profile that parsed.
+    const bool selected = static_cast<bool>(joint_cmd["accel_constraint"]);
+    const std::string form = ReadOptional<std::string>(joint_cmd, "accel_constraint", "");
+    if (!selected || form == "box") {
+      out.joint_cmd_accel_constraint = CatchingAccelConstraint::kUnset;
     } else if (form == "kinematic") {
       out.joint_cmd_accel_constraint = CatchingAccelConstraint::kKinematic;
     } else if (form == "dynamic") {
       out.joint_cmd_accel_constraint = CatchingAccelConstraint::kDynamic;
     } else {
-      Reject("'joint_cmd.accel_constraint' must be box, kinematic or dynamic, got '", form, "'");
+      Reject("'joint_cmd.accel_constraint' must be kinematic or dynamic, got '", form, "'");
     }
     // A form's keys under another form would read as if they were in force.
+    // With no form selected nothing is in force, and the profile is reported
+    // for that instead — a shipped profile that lost its form line still
+    // carries the form's keys, and must reach that report.
+    const bool unset = out.joint_cmd_accel_constraint == CatchingAccelConstraint::kUnset;
     const auto form_key = [&](const char* key, CatchingAccelConstraint owner, const char* name) {
-      if (joint_cmd[key] && out.joint_cmd_accel_constraint != owner) {
+      if (!unset && joint_cmd[key] && out.joint_cmd_accel_constraint != owner) {
         Reject("'joint_cmd.", key, "' belongs to accel_constraint ", name,
                " but the selected form is ", form);
       }
@@ -733,8 +742,13 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   if (params.joint_cmd_max_iter < 1) {
     AddFailure(report, CatchingValidationReason::kRangeViolation, "joint_cmd.qp.max_iter");
   }
-  // decision K: each acceleration form's keys are active only when it is the
-  // selected form (an unselected form's TBD is not a reason to refuse).
+  // decision K: the form has no default. A profile that selects none is not
+  // decided yet, like any other active key left open.
+  if (params.joint_cmd_accel_constraint == CatchingAccelConstraint::kUnset) {
+    AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "joint_cmd.accel_constraint");
+  }
+  // Each acceleration form's keys are active only when it is the selected
+  // form (an unselected form's TBD is not a reason to refuse).
   const bool kinematic = params.joint_cmd_accel_constraint == CatchingAccelConstraint::kKinematic;
   const bool dynamic = params.joint_cmd_accel_constraint == CatchingAccelConstraint::kDynamic;
   if (CheckActiveTbd(report, params.joint_cmd_task_accel_max_linear,

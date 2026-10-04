@@ -56,11 +56,14 @@
 namespace rtc::catching {
 
 // ── TBD-capable scalar ────────────────────────────────────────────────────
-/// `joint_cmd.accel_constraint` (decision K). Mirrors
-/// rtc::tsid::ClikReferenceGenerator::AccelConstraint so this parameter header
-/// does not pull in the CLIK header (pinocchio + proxsuite); the binding maps
-/// one onto the other in a switch.
-enum class CatchingAccelConstraint : std::uint8_t { kBox, kKinematic, kDynamic };
+/// `joint_cmd.accel_constraint` (decision K). Names the forms of
+/// rtc::tsid::ClikReferenceGenerator::AccelConstraint a catching profile can
+/// select, so this parameter header does not pull in the CLIK header
+/// (pinocchio + proxsuite); the binding maps one onto the other in a switch.
+/// The CLIK's `box` form (a per-joint acceleration window) is not among them.
+/// `kUnset` is a profile that selects no form: the key has no default, so the
+/// validator reports it instead of a form being assumed.
+enum class CatchingAccelConstraint : std::uint8_t { kUnset, kKinematic, kDynamic };
 
 /// `supervisor.decel.mode` — the DECEL law, chosen once per configure and
 /// never mixed within an activation (MPC MD-44). kClosedForm is the v1 L7
@@ -285,12 +288,15 @@ struct CatchingParams {
   TbdDouble joint_cmd_damping_sq{TbdDouble::Resolved(1e-4)};  // –, > 0
   int joint_cmd_max_iter{20};                                 // –, >= 1
   /// `joint_cmd.accel_constraint` (decision K, S6-C2): which acceleration
-  /// constraint the CLIK QP carries — `box` (the D-16 per-joint window, the
-  /// default and the S5 behaviour), `kinematic` (task acceleration J·v̇ + J̇·v
-  /// of the tracked rows), `dynamic` (arm torque M·v̇ + h ≤ η_τ·τ_max, τ_max =
-  /// the arm device's `joint_limits.max_torque`). Each form reads only its own
-  /// keys below; a key of another form is refused at parse.
-  CatchingAccelConstraint joint_cmd_accel_constraint{CatchingAccelConstraint::kBox};
+  /// constraint the CLIK QP carries — `kinematic` (task acceleration
+  /// J·v̇ + J̇·v of the tracked rows) or `dynamic` (arm torque
+  /// M·v̇ + h ≤ η_τ·τ_max, τ_max = the arm device's `joint_limits.max_torque`).
+  /// Each form reads only its own keys below; a key of another form is refused
+  /// at parse. No default: an absent key stays kUnset and the validator
+  /// reports `joint_cmd.accel_constraint` as kActiveConfigTbd. `box`, the form
+  /// this key used to offer (and default to), reads as kUnset too — refusing
+  /// it at parse would fail the configure, and the binding parks on it instead.
+  CatchingAccelConstraint joint_cmd_accel_constraint{CatchingAccelConstraint::kUnset};
   TbdDouble joint_cmd_task_accel_max_linear{};   // m/s², > 0 — kinematic
   TbdDouble joint_cmd_task_accel_max_angular{};  // rad/s², > 0 — kinematic
   /// η_τ of the torque rows. The D-16 derivation's margin (0.8, user decision

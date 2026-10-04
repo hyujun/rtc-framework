@@ -221,11 +221,12 @@ enum class CatchingParkReason : std::uint8_t {
   /// the stop (MD-44, MD-45), so a missing prerequisite would leave every
   /// trial without one.
   kDecelModeUnmet,
-  /// The profile still sets a key that no longer exists
-  /// (`robot.arm.accel_limits_{package,path,group}`, replaced by
-  /// `robot.arm.qdd_max` / `qdd_provisional`). Ignoring it would run the
-  /// shipped box under the overlay's name; a configure FAILURE would take the
-  /// other controllers down, so it parks. The log names the key.
+  /// The profile still sets a key or a value that no longer exists:
+  /// `robot.arm.accel_limits_{package,path,group}` (replaced by
+  /// `robot.arm.qdd_max` / `qdd_provisional`), or `joint_cmd.accel_constraint:
+  /// box` (the CLIK carries kinematic or dynamic only). Ignoring it would run
+  /// something else under the overlay's name; a configure FAILURE would take
+  /// the other controllers down, so it parks. The log names the key.
   kRemovedKey,
 };
 
@@ -738,12 +739,14 @@ class DemoCatchingController final : public RTControllerInterface {
   /// pre-S10 R3, Q4).
   void ApplyArmAccelBox();
 
-  /// Assemble the position / velocity / acceleration boxes CLIK is given, in
-  /// Pinocchio order. Non-RT.
+  /// Assemble the position / velocity boxes CLIK is given, in Pinocchio order.
+  /// Non-RT.
   void BuildClikBoxes(int nv, rtc::tsid::ClikReferenceGenerator::Config& cfg);
   /// Decision K (S6-C2): puts `joint_cmd.accel_constraint`'s form into `cfg`
   /// after BuildClikBoxes. False (logged) when `dynamic` is selected but the
-  /// arm device has no usable `joint_limits.max_torque` — the arm is then held.
+  /// arm device has no usable `joint_limits.max_torque`, or when no form is
+  /// selected (on_configure parks such a profile first; this is the second
+  /// line) — the arm is then held.
   [[nodiscard]] bool ConfigureAccelConstraint(int nv,
                                               rtc::tsid::ClikReferenceGenerator::Config& cfg);
 
@@ -1287,9 +1290,12 @@ class DemoCatchingController final : public RTControllerInterface {
   bool arm_qdd_cfg_present_{false};
   bool arm_qdd_cfg_malformed_{false};
   bool arm_qdd_provisional_cfg_{true};
-  /// The first removed `robot.arm.accel_limits_*` key LoadConfig found, empty
-  /// when none; on_configure parks on it (kRemovedKey).
-  std::string removed_arm_box_key_;
+  /// The first removed key or value LoadConfig found, as the ERROR quotes it
+  /// after `catching.` (`robot.arm.accel_limits_*`, or `joint_cmd.accel_constraint:
+  /// box`); empty when none. on_configure parks on it (kRemovedKey).
+  std::string removed_key_;
+  /// What to write instead — the ERROR's second half. A string literal.
+  const char* removed_key_advice_{""};
   /// LoadConfig saw `planner.decel_mpc.enabled` reading false. The key is
   /// ignored; on_configure warns only under `supervisor.decel.mode: mpc`,
   /// where the old key would have parked and the law now runs.
@@ -1336,8 +1342,6 @@ class DemoCatchingController final : public RTControllerInterface {
   Eigen::VectorXd q_posture_;  // [nq] posture target handed to CLIK
   Eigen::VectorXd q_eval_;     // [nq] evaluation state: q_c on the arm, measured on the hand
   Eigen::VectorXd v_eval_;     // [nv]
-  /// D-16 box in PINOCCHIO order, or empty when the file did not provide one.
-  Eigen::VectorXd qdd_max_pin_;
 
   /// L4's soft-catch translational reference. Constructed at configure because
   /// its parameters are validated in the constructor — an optional rather than

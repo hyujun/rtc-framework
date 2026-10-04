@@ -1557,7 +1557,7 @@ TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
 
 // The acceleration box is two plain keys of the search fragment. The mirror is
 // what every reader of the loaded value (the search, the stop and homing ramp,
-// CLIK's `box` form, the tools) sees, so it is the place to pin the value.
+// the tools) sees, so it is the place to pin the value.
 TEST_P(ShippedCatchingProfile, MirrorsTheShippedAccelerationBox) {
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
@@ -1679,6 +1679,52 @@ TEST_P(ShippedCatchingProfile, AConsumedKeyLeftTbdParksTheSimProfileInsteadOfFai
   EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kConsumedValues);
   EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_P(ShippedCatchingProfile, WithoutAClikFormItParksInsteadOfFailingTheConfigure) {
+  // #712: the shipped sim profile with its form line removed, and with the
+  // line set to `box`, the form that no longer exists. `eta_tau` — the dynamic
+  // form's key — stays in both, as it does in an overlay that touches only
+  // that line; refused at parse, it would take every controller down with it.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+
+  struct Case {
+    const char* name;
+    bool box;
+    integrated_bringup::CatchingParkReason reason;
+  };
+
+  for (const Case& c :
+       {Case{"absent", false, integrated_bringup::CatchingParkReason::kConsumedValues},
+        Case{"box", true, integrated_bringup::CatchingParkReason::kRemovedKey}}) {
+    SCOPED_TRACE(profile + " " + c.name);
+    YAML::Node node = ShippedWithPlanner(profile, false, false);
+    YAML::Node joint_cmd = node["catching"]["joint_cmd"];
+    ASSERT_EQ(joint_cmd["accel_constraint"].as<std::string>(), "dynamic")
+        << "precondition: the shipped form";
+    ASSERT_TRUE(joint_cmd["eta_tau"]) << "precondition: the shipped profile sets the form's key";
+    if (c.box) {
+      joint_cmd["accel_constraint"] = "box";
+    } else {
+      joint_cmd.remove("accel_constraint");
+    }
+    auto node_handle =
+        NodeWithProfile("catching_shipped_noform_" + profile + "_" + c.name, "mpc_on");
+    DemoCatchingController ctrl{""};
+    BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+    const rclcpp_lifecycle::State prev;
+    ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << "a profile without a form must park, not refuse";
+    EXPECT_FALSE(ctrl.IsRealArmConfig()) << "precondition: judged on the sim axis";
+    EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
+    EXPECT_EQ(ctrl.GetParkReason(), c.reason);
+    EXPECT_FALSE(node_handle->has_parameter("joint_cmd.accel_constraint"))
+        << "a parked instance mirrors no form";
+    EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+    ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
 }
 
 TEST_P(ShippedCatchingProfile, ThePlannerAndTheOracleTogetherPark) {

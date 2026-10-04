@@ -2950,7 +2950,7 @@ TEST_F(AbortInHoldTest, AnAbortWithNoContactStillKeepsTheHandClosedUntilTheRetur
 // ramp used to step the command the law had just stepped — two steps in one
 // tick, about twice the previous step (1.9 – 2.4 times, measured on every row
 // below; #749). One case per row of the transition table that can be reached
-// that way, under each form of the CLIK's acceleration bound (box, kinematic,
+// that way, under each form of the CLIK's acceleration bound (kinematic,
 // dynamic).
 
 class StopEntryTest : public SupervisorScenarioTest,
@@ -3135,12 +3135,8 @@ TEST_P(StopEntryTest, ALongStaleInClosing) {
 // pinned as it is by kNormalTrialCommandDigest (L7 §4.1). What that leaves is
 // bounded here at the hold the parser defaults to and the shipped YAML does not
 // override: by then the command has settled, and the law's step plus the
-// ramp's is inside what one tick allows.
-//
-// Not under `box`. There the command is still settling 0.5 s into HOLD and the
-// tick HOLD ends on breaks the bound (measured 3.07e-5 rad the tick before,
-// 5.32e-5 rad on it; the other two forms: 1.5e-7 rad on both). No shipped
-// configuration runs that form, and the catching layer drops it in #712.
+// ramp's is inside what one tick allows (measured 1.5e-7 rad the tick before
+// and on it, under both forms).
 TEST_P(StopEntryTest, TheNormalEndOfHoldStaysInsideTheStepBoundAtTheShippedHold) {
   ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, Form([](YAML::Node& y) {
                                     y["catching"]["robot"]["hand"]["T_hold"] = 0.5;
@@ -3155,7 +3151,6 @@ TEST_P(StopEntryTest, TheNormalEndOfHoldStaysInsideTheStepBoundAtTheShippedHold)
   ASSERT_TRUE(log_[entry].body.clik_ran) << "precondition: HOLD's law did not run on its last tick";
   const std::vector<double> qdd = DerivedQddMax();
   ASSERT_GE(qdd.size(), static_cast<std::size_t>(kUr5eArmDof));
-  const bool box = std::string(GetParam()) == "box";
   double step_before = 0.0;
   double step_entry = 0.0;
   for (int j = 0; j < kUr5eArmDof; ++j) {
@@ -3164,9 +3159,6 @@ TEST_P(StopEntryTest, TheNormalEndOfHoldStaysInsideTheStepBoundAtTheShippedHold)
     const double step = std::abs(log_[entry].q_out[u] - log_[entry - 1].q_out[u]);
     step_before = std::max(step_before, last);
     step_entry = std::max(step_entry, step);
-    if (box) {
-      continue;  // measured and printed below, not asserted (see above)
-    }
     EXPECT_LE(step, last + qdd[u] * kDt * kDt + 1e-12)
         << "joint " << j << " moved " << step << " rad on the tick HOLD ended, " << last
         << " rad the tick before\n"
@@ -3176,13 +3168,9 @@ TEST_P(StopEntryTest, TheNormalEndOfHoldStaysInsideTheStepBoundAtTheShippedHold)
       "[ MEASURED ] #749 HOLD (T_hold 0.5 s over) -> RETREAT, %s: max |dq| [rad] before %.3e, on "
       "the tick HOLD ended %.3e\n",
       GetParam(), step_before, step_entry);
-  if (box) {
-    GTEST_SKIP() << "the bound is not asserted under `box`: " << step_before << " rad the tick "
-                 << "before, " << step_entry << " rad on the tick HOLD ended";
-  }
 }
 
-INSTANTIATE_TEST_SUITE_P(Forms, StopEntryTest, ::testing::Values("box", "kinematic", "dynamic"));
+INSTANTIATE_TEST_SUITE_P(Forms, StopEntryTest, ::testing::Values("kinematic", "dynamic"));
 
 /// The same rows under the mpc law (the segment follower), where TRACK_ERR and
 /// BALL_STALE_LONG are the two reasons that follow the command — it has no
@@ -4762,6 +4750,59 @@ TEST_F(SafetyGateParkTest, ARemovedAccelLimitsKeyParksNamingTheNewKeys) {
     ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kCleared), sim));
     EXPECT_NE(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
     ExpectActivates();
+  }
+}
+
+// ── #712: the CLIK's acceleration form has no default, and `box` is gone ─────
+//
+// Both cases carry `eta_tau`, the dynamic form's key, as every shipped profile
+// does. A profile that lost only its form line (or had it set to `box`) used
+// to be REFUSED at parse for that key — a configure FAILURE, so every
+// controller on the robot down — where these ask for a park.
+
+TEST_F(SafetyGateParkTest, AProfileThatNamesNoClikFormParksNamingTheKey) {
+  // The key has no default: no form is run on a profile's behalf. It parks the
+  // way any consumed value left open does, on both axes.
+  for (const bool sim : {false, true}) {
+    SCOPED_TRACE(sim ? "sim" : "real arm");
+    ASSERT_NO_FATAL_FAILURE(Configure(
+        [](YAML::Node& y) {
+          YAML::Node joint_cmd = y["catching"]["joint_cmd"];
+          ASSERT_TRUE(joint_cmd.remove("accel_constraint"))
+              << "precondition: the fixture names a form";
+          joint_cmd["eta_tau"] = 0.8;
+        },
+        sim));
+    ExpectParked({"joint_cmd.accel_constraint"});
+    ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+    // Positive control: the same profile with its form line is not parked.
+    ASSERT_NO_FATAL_FAILURE(
+        Configure([](YAML::Node& y) { y["catching"]["joint_cmd"]["eta_tau"] = 0.8; }, sim));
+    ExpectActivates();
+  }
+}
+
+TEST_F(SafetyGateParkTest, TheRemovedBoxFormParksNamingTheValueAndTheFormsLeft) {
+  // An old overlay that selects `box` must not read as a profile that merely
+  // left the key out: it parks under the removed-key reason, and the ERROR
+  // names the value and what to write instead.
+  for (const bool sim : {false, true}) {
+    SCOPED_TRACE(sim ? "sim" : "real arm");
+    ASSERT_NO_FATAL_FAILURE(Configure(
+        [](YAML::Node& y) {
+          y["catching"]["joint_cmd"]["accel_constraint"] = "box";
+          y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
+        },
+        sim));
+    EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+    EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
+    EXPECT_FALSE(
+        LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                          {"catching.joint_cmd.accel_constraint: box", "kinematic or dynamic"})
+            .empty())
+        << "the ERROR must name the removed value and the forms that are left";
+    EXPECT_EQ(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::FAILURE);
+    ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
   }
 }
 

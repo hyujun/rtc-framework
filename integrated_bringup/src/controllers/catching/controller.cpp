@@ -149,7 +149,8 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   arm_qdd_cfg_present_ = false;
   arm_qdd_cfg_malformed_ = false;
   arm_qdd_provisional_cfg_ = true;
-  removed_arm_box_key_.clear();
+  removed_key_.clear();
+  removed_key_advice_ = "";
   stale_decel_mpc_disabled_key_ = false;
   if (catching_section_present_) {
     // `planner.decel_mpc.enabled` no longer exists (the parser ignores it). Only
@@ -179,7 +180,10 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
       for (const char* removed :
            {"accel_limits_package", "accel_limits_path", "accel_limits_group"}) {
         if (arm[removed]) {
-          removed_arm_box_key_ = std::string("robot.arm.") + removed;
+          removed_key_ = std::string("robot.arm.") + removed;
+          removed_key_advice_ =
+              "set the acceleration box as 'catching.robot.arm.qdd_max' (rad/s², one per arm "
+              "joint) and 'catching.robot.arm.qdd_provisional'";
           break;
         }
       }
@@ -206,6 +210,23 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
           arm_qdd_provisional_cfg_ = prov.as<bool>();
         } catch (const std::exception&) {
           arm_qdd_provisional_cfg_ = true;
+        }
+      }
+    }
+    // `joint_cmd.accel_constraint: box` is a removed VALUE: this controller's
+    // CLIK no longer carries the acceleration box, and the parser reads the
+    // value as "no form selected". Remembered so that on_configure parks on it
+    // under kRemovedKey and names the value — an old overlay must not read as
+    // a profile that merely left the key out.
+    if (removed_key_.empty()) {
+      if (const YAML::Node joint_cmd = catching["joint_cmd"]; joint_cmd && joint_cmd.IsMap()) {
+        const YAML::Node form = joint_cmd["accel_constraint"];
+        if (form && form.IsScalar() && form.Scalar() == "box") {
+          removed_key_ = "joint_cmd.accel_constraint: box";
+          removed_key_advice_ =
+              "set 'catching.joint_cmd.accel_constraint' to kinematic or dynamic (the CLIK no "
+              "longer takes the acceleration box; 'catching.robot.arm.qdd_max' stays, for the "
+              "search and for the stop and homing ramps)";
         }
       }
     }
@@ -567,9 +588,9 @@ void DemoCatchingController::SeedArmCommand(const ControllerState& state) noexce
     }
   }
   track_err_ = 0.0;
-  // The CLIK anchor and v_prev go with it: a carried-over v_prev would make
-  // the first acceleration box a window around the PREVIOUS trial's velocity,
-  // and the first solve would raise bound_conflict for no reason (L5 §4.2).
+  // The CLIK anchor and v_prev go with it: a carried-over v_prev would pull
+  // the first solve's smoothing term toward the PREVIOUS trial's velocity
+  // (L5 §4.2).
   clik_.ResetAnchor();
 }
 
@@ -731,6 +752,9 @@ rtc::catching::Reason DemoCatchingController::SolveClikAndCommand(
     // `bound_conflict` is a DIFFERENT failure from a solver that did not
     // converge: the boxes disagreed, which the supervisor routes the same way
     // but which names a configuration problem rather than a numerical one.
+    // Only the CLIK's acceleration window raises it, and this controller does
+    // not pass one, so kJointConflict does not arise here; the mapping stays
+    // with the flag.
     return solve.bound_conflict ? Reason::kJointConflict : Reason::kQpFailed;
   }
 
