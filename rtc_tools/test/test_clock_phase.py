@@ -1,4 +1,4 @@
-"""Clock phase analysis (D-3 / S3.1a) — plan §5.
+"""Clock phase analysis (D-3 / S3.1a) — L8 §4.5.
 
 The tool's whole job is to turn a lane CSV into per-trial numbers, so the
 fixtures here inject a KNOWN defect and check it comes back. A fixture whose
@@ -116,7 +116,7 @@ def test_drops_are_carried_through(tmp_path):
 
 
 def test_required_eps_takes_the_binding_half_of_the_condition():
-    """Plan §5 has two inequalities; the proposal must satisfy BOTH."""
+    """L8 §4.5 has two inequalities; the proposal must satisfy BOTH."""
     from rtc_tools.analysis.clock_phase import Trial
 
     v_max, a_bound = 8.0, 12.0

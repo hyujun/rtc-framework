@@ -2,7 +2,7 @@
 
 The golden test replays the S8 pilot session ``260924_1218`` (25 throws at the
 sim, lead off; fixture cut by ``data/catching_pilot_260924_1218/make_fixture.py``)
-and pins the numbers the S8 plan was built on (sub-plan §4, #537): τ̂ 200 ms on
+and pins the numbers the S8 evaluation was built on (#537): τ̂ 200 ms on
 every arm joint, the t_c servo gap 122 mm, CLIK 2 mm, 25/25 supervisor Missed,
 D-3 ε 12 mm valid 7/25. Every statistic also gets a POSITIVE control — an
 injected defect it must catch — because a test that only checks "passes on
@@ -24,7 +24,7 @@ from rtc_tools.analysis import catching_trials as ct
 
 FIXTURE = Path(__file__).parent / "data" / "catching_pilot_260924_1218"
 MODULE = Path(ct.__file__)
-# plan §4.4 S3b: the fastest catch speed the S3.5b gate map opened for this
+# The fastest catch speed the S3.5b gate map opened for this
 # robot. The pilot's D-3 table (#537 5806998220) used it with clock_phase's
 # default a_bound.
 PILOT_V_MAX_M_S = 3.85
@@ -277,7 +277,7 @@ def test_wilson_interval_known_values():
     ("p", "floor", "n"), [(0.9, 0.7, 35), (0.8, 0.6, 44), (0.6, 0.5, 198), (0.95, 0.9, 254)]
 )
 def test_required_n_reproduces_the_s09_table(p, floor, n):
-    """Four cells of IMPLEMENTATION_PLAN.md §1a S0.9 (z 1.96, power 0.8)."""
+    """Four cells of the S0.9 table (z 1.96, power 0.8)."""
     assert ct.required_n(p, floor) == n
 
 
@@ -2056,7 +2056,7 @@ def test_wilson_lower_bound_hand_value_and_the_floor_line():
     # k=5, n=10, z=1.96: centre 0.5, half 1.96·√(0.025 + 3.8416/400)/1.38416.
     lo, hi = ct.wilson_interval(5, 10)
     assert lo == pytest.approx(0.2366, abs=1e-4) and hi == pytest.approx(0.7634, abs=1e-4)
-    # The S8-E pass line at floor 0.35 (plan §1a: pass = ≥ 84/200).
+    # The S8-E pass line at floor 0.35 (L8 §9 G8-D: pass = ≥ 84/200).
     assert ct.wilson_interval(84, 200)[0] == pytest.approx(0.3537, abs=1e-4)
     assert ct.wilson_interval(83, 200)[0] == pytest.approx(0.3489, abs=1e-4)
     assert ct.floor_verdict(84, 200, 0.35, 200) == "PASS"

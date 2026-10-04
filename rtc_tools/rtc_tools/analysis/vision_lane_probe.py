@@ -1,6 +1,6 @@
 """Record the ball_perception prediction lane and its inputs to CSV (S3.4).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §4.4 S3.4. This is the
+Stage S3.4 (``docs/dynamic_catching/ID_INDEX.md`` §3). This is the
 recording half; ``analyze_vision_lane`` reads what it writes. It subscribes to
 
 * ``prediction/trajectory`` (PointCloud2, D-4 layout) **twice** — once

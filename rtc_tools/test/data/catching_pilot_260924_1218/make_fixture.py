@@ -35,14 +35,31 @@ reproduces the full-session numbers within its tolerances.
 Usage (from the repo root, env sourced)::
 
     python3 rtc_tools/test/data/catching_pilot_260924_1218/make_fixture.py \\
-        ~/ros2_ws/rtc_ws/logging_data/260924_1218 \\
-        ~/.claude/plans/dynamic-catching-S8-tools/pilot_260924_1218 \\
-        integrated_bringup/config/ur5e_p1b
+        <session> <pilot_dir> <config_dir> [--out <dir>]
 
-where the second argument holds ``trials/``, ``clock_lane_trim.csv``,
-``ball_contact_lane.csv`` and ``p1b.urdf`` (the pilot wrote its lanes and
-trials outside the session tree; S8-A's ``sim_lanes:=true`` puts the lanes under
-``<session>/sim/``).
+Inputs, as the code reads them:
+
+* ``<session>`` — a controller session directory: ``controllers/<ctl>/<diag>.csv``
+  (the catching diag log) and ``controllers/<ctl>/planner_events.csv``. ``<ctl>`` and
+  ``<diag>`` come from the catching controller ``load_profile`` finds in
+  ``<config_dir>``;
+* ``<pilot_dir>`` — ``trials/`` (``trial_results.json`` plus the ``truth_csv`` file
+  each record names, as ``catching_sim_trials`` writes them), ``clock_lane_trim.csv``
+  (the sim's clock lane, with a ``ball_active`` column), ``ball_contact_lane.csv``
+  (the sim's contact lane, with a ``first_body`` column) and ``p1b.urdf`` (the
+  xacro-expanded URDF). This script does not read ``<session>/sim/``; the lanes and
+  trials are taken from here;
+* ``<config_dir>`` — an ``integrated_bringup/config/<robot>`` directory, with the
+  catching controller YAML under ``controllers/`` and ``mujoco_simulator.yaml``.
+
+A session of this shape comes from one ``catching_sim_trials`` run (controller
+session CSVs and trials directory; ``sim_lanes:=true`` writes the lanes under
+``<session>/sim/``), the same inputs ``catching_trials`` evaluates.
+
+The original inputs of the committed fixture (the pilot session ``260924_1218`` and its
+``pilot_dir``) no longer exist, so the committed fixture cannot be regenerated from them;
+rerunning this script on a new session produces a different fixture, and the golden
+numbers in ``test_catching_trials.py`` would have to be re-derived.
 """
 
 from __future__ import annotations

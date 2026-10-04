@@ -3214,7 +3214,7 @@ class TestCatchingDiagRoundTrip:
 
 
 class TestCatchingS7:
-    """S7 (plan §13): mode transitions over every panel, the hand/contact
+    """S7 (L8 §11): mode transitions over every panel, the hand/contact
     figure, and one verdict per attempt."""
 
     def _cycle_frame(self, outcomes=(1,)):

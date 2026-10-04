@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Vision-side S8-E gates: G8-B (prediction NEES) and G8-C2 (A⊥B), per trial.
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §4.4 D-S8-16 ②b/②c and
+D-S8-16 ②b/②c (``docs/dynamic_catching/ID_INDEX.md`` §5.4) and
 L8 §9.1 (G8-B, G8-C2). Pure functions over the files the S8-E capture leaves
 behind — no ROS, no pinocchio — called by
 :mod:`rtc_tools.analysis.catching_trials` (per session, one row per trial) and

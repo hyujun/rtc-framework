@@ -17,7 +17,7 @@ reference realised and `ref_u_des` is what it wanted before saturation; a
 saturated interval is uninterpretable from either one alone, and `ref_saturated`
 alone says it happened without saying by how much.
 
-THE S7 CYCLE (plan §13 S7). Every panel carries the supervisor's mode
+THE S7 CYCLE (L8 §11). Every panel carries the supervisor's mode
 transitions as thin vertical lines (derived from the per-tick `mode` column —
 there is no separate transition log, L7 §5.2), so an edge can be read against
 the reference and the error it happened on. A second figure, `catching_hand`,
@@ -33,7 +33,7 @@ cannot say this — an E-STOP does not move the supervisor to FAULT.
 
 WHAT IS NOT HERE. There is no ball-truth column in this file — the controller
 does not have one — so whether the verdict was RIGHT is not a question this
-plot answers. The sim trial analysis owns that (G7-E, plan §8).
+plot answers. The sim trial analysis owns that (G7-E, L7 §9).
 """
 
 from pathlib import Path

@@ -1,6 +1,6 @@
 """Relay the sim camera lane with drop and delay injection (S3.4).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §4.4 S3.4 — "지연·드롭
+Stage S3.4 (``docs/dynamic_catching/ID_INDEX.md`` §3) — "지연·드롭
 주입" and the ghost-track question (L1 §4.5, TBD-VIS-07). The estimator is
 pointed at this relay's output instead of ``/sim/ball/camera_position`` and the
 relay decides, per message, whether and when it goes through. Stamps are never

@@ -1,6 +1,6 @@
 """Drive N hand closure trials against a running bring-up (dynamic_catching S4.2).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §4.4 S4a, law ``L6_hand.md`` §4.2.
+Stage S4a (``docs/dynamic_catching/ID_INDEX.md`` §3), law L6 §4.2.
 
 Publishes alternating preshape/closed step targets to the catching controller's
 hand group and leaves the recording to that controller's own ``DeviceStateLog``

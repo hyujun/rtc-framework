@@ -239,7 +239,8 @@ GUI 로 뜬 figure 의 **subplot 을 우클릭**하면 x/y 범위를 숫자로 �
 
 가속 데이터는 없고 토크 한계는 있다는 전제에서, 팔 상태 (q, q̇) 표본마다
 `Σ_j |M_ij| a_j ≤ η_τ τ_max,i − |g_i| − |c_i|` 를 만족하는 최대 `a = s·w` 를 구하고
-(최악 부호 결합 — 2~4 배 보수적인 충분조건), 전 표본 최소값을 상수 box 로 낸다.
+(최악 부호 결합을 본 충분조건), 전 표본 최소값을 상수 box 로 낸다. 보수적인 이유는 둘이다 —
+최악 부호 조합의 충분조건이라는 것, 자세를 따르지 않는 관절별 상수 하나라는 것.
 표본 최소값은 표본 수에 따라 계속 내려가므로 최악 표본 10개에서 박스 안 국소 최소화
 (Powell) 로 정제한다. 판정식·절차는 `docs/dynamic_catching/ref/L3_planner.md` §4.3.
 
@@ -269,7 +270,7 @@ D-3 는 비율(RTF)이 아니라 **시행별 clock 위상 오차**로 판정한�
 `δ_max = max|δ|` 와 max pause (한 step 의 Δwall − Δsim 최대) 를 낸다. 창은 **비행 구간**이다 — lane 의
 `launch_seq`·`ball_active` 로 자르므로 투척 사이 대기 시간이 오차로 잡히지 않는다. **δ 는 판정이 아니라
 공변량이다** (D-S8-4 (c), L8 §4.5): 분포 (δ_max·max pause 의 p50/p95/max) 를 내고, `--eps-mm` 을 주면
-그 ε 에서 §5 유효 조건을 만족하는 시행 비율을 "valid under eps — COVARIATE" 로 병기한다. 95 % 를 통과시키는
+그 ε 에서 L8 §4.5 유효 조건을 만족하는 시행 비율을 "valid under eps — COVARIATE" 로 병기한다. 95 % 를 통과시키는
 ε 는 여전히 **제안값**으로만 낸다 (측정의 역산이지 예산이 아니다).
 
 ```bash
@@ -283,7 +284,7 @@ ros2 run rtc_tools analyze_clock_phase clock_lane.csv --plot out.png
 
 ### `hand_close.py` · `hand_close_trials.py` — 손 폐쇄 시간 T_close,e2e (dynamic_catching S4.2)
 
-`L6_hand.md` §4.2 의 ρ(t) = min_{i∈C}((q_i−q_i^pre)·s_i / |q_i^cls−q_i^pre|) 와
+L6 §4.2 의 ρ(t) = min_{i∈C}((q_i−q_i^pre)·s_i / |q_i^cls−q_i^pre|) 와
 T_close,e2e(η) = inf{t−t_cmd : ρ≥η} 를 **포구 컨트롤러의 `<hand>_state.csv`** 에서 낸다. 러너는
 `demo_catching_controller` 의 손 그룹에 preshape↔closed 계단을 N 회 쏘고, 분석기는 command lane 으로
 시행을 자른다 (`command_*` 가 바뀐 첫 행이 t_cmd).
@@ -816,7 +817,7 @@ ros2 run rtc_tools catch_speed_budget \
 - **기본값이 없는 인자는 전부 결정이다.** `--velocity-source` (`config` = 실행이 강제하는
   `joint_limits.max_velocity`, `model` = URDF `<limit velocity>` 정격), `--rotor-inertia` (URDF 에는
   회전자 반사관성이 없다 — 빼면 모든 가속이 과대평가되므로 0 을 주려면 **명시**해야 한다), 선행시간
-  다섯 항. 최소 비행시간 `T_det + L + T_close,tot + T_arm + T_margin` (plan S0.7 R1) 에는 **손 폐쇄
+  다섯 항. 최소 비행시간 `T_det + L + T_close,tot + T_arm + T_margin` (L1 §4.1 D-15) 에는 **손 폐쇄
   시간이 들어간다**; ramp 에 쓸 수 있는 시간은 `t_c − (T_det + L)` 다
 - **프레임.** judge 의 `p_model`·`v_model` 은 모델 world (URDF root) 이고 `LOCAL_WORLD_ALIGNED`
   Jacobian 이 쓰는 프레임과 같아 그대로 쓴다. 바닥 높이만 world 열을 쓴다
@@ -842,7 +843,7 @@ ros2 run rtc_tools catch_speed_budget \
   `rtc_controllers` `UnitSpeedSolver` 이고, 두 식의 일치는 `PlannerUnitSpeed` 테스트가 고정한다 — G3-I) 와 그것이
   내는 속도 `J_p q̇ᵘ`. `reference.v_max` 는 `--v-max-m-s derived` 면 수락 후보의 LP v_dir,max 최대 / η_v
   (S4.4 결정: TCP 항은 관절 정격 안에서 구속하지 않는다)
-- **DLS 단위속도의 감쇠 λ 는 C++ 와 같은 키에서 온다** (MPC MD-92): `--dls-damping` 의 기본은 `--controller-config` 의 `catching.planner.gamma.unit_speed_damping` (런타임 탐색이 `kUnitSpeedDamping` 대신 읽는 키 — 출하 1e-3) 이고, 키가 없으면 C++ 기본과 같은 `catch_speed_budget.DEFAULT_DLS_DAMPING` 이다. 쓴 값은 `gate_map_summary.yaml` 의 `dls_damping` 에 남는다. 인자를 주면 profile 을 덮는다. `--overlay` 가 있으면 그것을 얹은 트리에서 읽는다 (아래). (`catch_speed_budget` 은 profile 입력이 없어 상수를 그대로 쓰고, 그 상수가 출하 YAML 값과 같다는 테스트 `integrated_bringup/test/test_shipped_catching_config.py` 가 둘의 어긋남을 막는다.)
+- **DLS 단위속도의 감쇠 λ 는 C++ 와 같은 키에서 온다** (코어의 설계 값은 YAML 키로 둔다): `--dls-damping` 의 기본은 `--controller-config` 의 `catching.planner.gamma.unit_speed_damping` (런타임 탐색이 `kUnitSpeedDamping` 대신 읽는 키 — 출하 1e-3) 이고, 키가 없으면 C++ 기본과 같은 `catch_speed_budget.DEFAULT_DLS_DAMPING` 이다. 쓴 값은 `gate_map_summary.yaml` 의 `dls_damping` 에 남는다. 인자를 주면 profile 을 덮는다. `--overlay` 가 있으면 그것을 얹은 트리에서 읽는다 (아래). (`catch_speed_budget` 은 profile 입력이 없어 상수를 그대로 쓰고, 그 상수가 출하 YAML 값과 같다는 테스트 `integrated_bringup/test/test_shipped_catching_config.py` 가 둘의 어긋남을 막는다.)
 - **python 이 거는 경계**: p_stop 이 도달 구·바닥 안인가 (`planner.workspace.catch_box` 가 TBD 라 지도와
   같은 경계를 쓴다)
 - **도달시간은 두 층**을 항상 같이 낸다. `box` = 컨트롤러 YAML 의 가속 box (`catching.robot.arm.qdd_max` — `--controller-config`, 기본은 `--robot-config` 옆 `controllers/<--controller>.yaml`, `include:` 조각 합성) 로 C++ 가

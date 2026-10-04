@@ -1,4 +1,4 @@
-"""derive_accel_limits (dynamic_catching S2.5, plan §9) on synthetic models.
+"""derive_accel_limits (dynamic_catching S2.5, L3 §4.3) on synthetic models.
 
 The oracles are closed forms, not the tool's own |M|-bound:
 

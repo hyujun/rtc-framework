@@ -309,7 +309,7 @@ def ramp_speed_limit(
 def min_flight_time(
     detection_s: float, latency_s: float, close_total_s: float, arm_delay_s: float, margin_s: float
 ) -> float:
-    """Commit lead (plan S0.7 R1): T_det + L + T_freeze, T_freeze = T_close,tot + T_arm + T_margin.
+    """Commit lead (L1 §4.1 D-15): T_det + L + T_freeze, T_freeze = T_close,tot + T_arm + T_margin.
 
     The hand's closing time is part of the lead: the posture freezes that long
     before the catch, and a plan has to exist before it can freeze.
@@ -638,7 +638,7 @@ def main(argv: list[str] | None = None) -> int:
         "the URDF <limit velocity> (the rating). No default: it is a decision",
     )
     ap.add_argument("--eta-v", type=float, required=True, help="speed margin, applied to q̇_max")
-    ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (plan §9)")
+    ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (L3 §4.3)")
     ap.add_argument(
         "--rotor-inertia",
         type=_floats,
