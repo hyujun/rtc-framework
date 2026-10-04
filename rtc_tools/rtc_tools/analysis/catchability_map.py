@@ -3,7 +3,7 @@
 The judgement itself is NOT reimplemented here: it is the C++ executable
 ``catch_pose_ik_batch`` (``rtc_controllers``), which calls the very
 ``CatchPoseIk::Solve`` the runtime planner will call, with the very YAML keys it
-will read (plan §11 / S1.9). This module owns everything that is not the
+will read (L3 §4.2 / S1.9). This module owns everything that is not the
 judgement — the grid, the flight, the frames, the ModelConfig translation, the
 sharded subprocess driver, the aggregation and the plots — and it reaches the
 judge over CSV rather than re-deriving its verdict in python.
@@ -40,7 +40,7 @@ least one shipped arm the two differ by exactly a 180° turn about z: that URDF
 carries both a ``<name>`` and a ``<name>_link`` at the SAME origin, the model
 root is the latter and the configured arm base frame is the former. So
 world→base being the identity does not make world→*model world* the identity.
-plan §11 has the measured per-robot table. Feeding
+L3 §4.2 (frame convention) has the per-robot facts. Feeding
 world coordinates straight to the judge is therefore the "ball arrives from
 behind the arm" trap, with every number still plausible. So this module never
 takes "the" transform as one opaque matrix: the caller gives ``base_T_world``
@@ -65,7 +65,7 @@ the report. Radius and mass, which ARE exposed, are read from the YAML by
 appears to arrive from behind the arm, and every number in the report stays
 plausible. Hence :func:`world_to_base` takes the transform as an argument and
 this module embeds no per-robot value — pass the transform measured for the
-robot at hand (same-q MuJoCo FK against Pinocchio FK). Plan §11 carried the
+robot at hand (same-q MuJoCo FK against Pinocchio FK). The design plan carried the
 wrong row for one robot profile until 2026-09-21 (a 180-degree turn counted
 twice), which is exactly why this is a parameter and not a constant.
 """
@@ -102,9 +102,9 @@ from rtc_tools.analysis.derive_accel_limits import (
 
 # ── Physical constants that are NOT ball parameters ───────────────────────────
 
-# L0 §6 ``sim.ball.gravity`` default. Named (rather than inlined) for the same
-# reason clock_phase.py names its constants: the provenance has to be able to
-# say where the number came from.
+# L0 §6, the fixture ``BallModel`` gravity default (not a YAML key). Named (rather than
+# inlined) for the same reason clock_phase.py names its constants: the provenance has
+# to be able to say where the number came from.
 GRAVITY_W_M_S2: tuple[float, float, float] = (0.0, 0.0, -9.81)
 GRAVITY_SOURCE = "docs/dynamic_catching/L0_core.md §6 sim.ball.gravity default"
 
@@ -112,7 +112,7 @@ GRAVITY_SOURCE = "docs/dynamic_catching/L0_core.md §6 sim.ball.gravity default"
 # it the simulator returns zero aerodynamic force.
 MIN_AIRSPEED_M_S = 1e-6
 
-# L0 §4.1 / IMPLEMENTATION_PLAN.md §"항력 k" representative value [1/m], used by
+# L0 §4.1 drag model, representative k [1/m] (the doc no longer states the number), used by
 # the L2/L3/L4 reference tests and by clock_phase.py's a_bound default.
 #
 # It does NOT agree with the shipped tennis preset: rho 1.204, Cd 0.55,
@@ -2176,7 +2176,7 @@ def summarize_throws(
     ``manip_column`` selects which manipulability ranks the accepted candidates.
     It is a parameter because the GATE's definition is a YAML choice
     (``planner.catchability.definition``) — but w₅ and w₆ are two measurements
-    of the SAME pose (plan §11 C-3), so ranking by one and reporting both is
+    of the SAME pose (C-3), so ranking by one and reporting both is
     coherent. A candidate whose chosen measure is invalid ranks last rather than
     being dropped.
     """
@@ -2459,7 +2459,7 @@ def resolve_alpha_max(
 ) -> AlphaMaxResolution:
     """The ``alpha_max`` the JUDGE applied — one source of truth, named.
 
-    The θ report is the evidence plan §11 names for closing
+    The θ report is the evidence L3 §4.2 names for closing
     ``planner.ik.alpha_max``, so it has to be computed against the bound the
     judge actually accepted candidates under, not against a number this tool
     happens to default to.
@@ -2604,7 +2604,7 @@ def theta_report(
 
     θ is ‖e_a^C‖ [rad], the approach-axis cone angle at q*, and ``alpha_max`` is
     the acceptance bound ``planner.ik.alpha_max`` (still provisional, and this
-    distribution is the evidence meant to close it — plan §11). It MUST be the
+    distribution is the evidence meant to close it — L3 §4.2). It MUST be the
     bound the judge applied: take it from :func:`resolve_alpha_max`, never from
     a constant. Against a smaller number than the judge used,
     ``max_over_alpha_max`` exceeds 1 and ``fraction_near_limit`` is inflated.
@@ -2868,8 +2868,8 @@ def propose_throw_region(
 ) -> dict:
     """The ``sim.throw_region`` proposal: the axis-aligned box covering accepted throws.
 
-    The keys are the ones plan §11 reserves for this block, in radians where the
-    plan uses radians, with the grid's own degree values mirrored under
+    The keys are the ones L3 §4.2 reserves for this block, in radians where the
+    doc uses radians, with the grid's own degree values mirrored under
     ``covered_axes_deg``.
 
     **The region of ONE wait pose.** ``outcomes`` and ``judged`` must both be
@@ -3002,7 +3002,7 @@ def plot_azimuth_coverage(
     *,
     seed_id: int | None = None,
 ) -> Path:
-    """ "방위별 포구 가능 구간" (plan §11): accepted fraction and count per azimuth.
+    """ "방위별 포구 가능 구간" (L3 §4.2): accepted fraction and count per azimuth.
 
     ``outcomes`` are ONE seed's (:func:`summarize_throws`); ``seed_id`` goes into
     the title so the figure says which wait pose it is about.

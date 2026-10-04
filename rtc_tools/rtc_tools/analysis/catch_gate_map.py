@@ -2,7 +2,7 @@
 """Gate-catchable map: the rest of the planner's gate chain over a kinematic map (S3.5b).
 
 ``catchability_map`` answers "is there a good catch posture". This takes its
-accepted candidates and asks what the planner asks next (plan §11, L3 §4):
+accepted candidates and asks what the planner asks next (L3 §4):
 
     commit lead (§4.11) is there a plan early enough to command the hand: the closing
                         time, the arm delay and a margin all fit between the first plan and t_c
@@ -23,7 +23,7 @@ python owns is everything those functions take as input and leave as output:
   no runtime producer before S6.2, so it is computed here and handed over;
 - whether p_stop is inside the workspace. ``planner.workspace.catch_box`` is TBD,
   so the bound is the reach sphere and the floor — the ones the kinematic map used;
-- a second, PROVISIONAL reach layer (D-16 revision, plan §9). The shipped
+- a second, PROVISIONAL reach layer (D-16 revision, L3 §4.3). The shipped
   acceleration limit is one constant box from a worst-sign sufficient condition.
   This layer instead asks whether THIS move fits the torque limits: all joints
   follow one bang-bang / trapezoid path profile from the wait pose to q*, and the
@@ -388,7 +388,7 @@ def open_candidate_stats(rows: Sequence[Mapping], layer: str) -> dict | None:
     ``t_c_s`` is the catch time after release, i.e. the flight time the vision
     horizon has to cover; ``speed_m_s`` the ball speed at that point. The per-throw
     catch window is [min t_c, max t_c] over that throw's open candidates, and its
-    end is what the horizon requirement (plan §4.4 S3.6) is read from. Spreads are
+    end is what the horizon requirement (S3.6, L1 §4.1) is read from. Spreads are
     ``catchability_map.distribution`` (finite values only, same keys as the
     kinematic map's summary). ``None`` when the layer opened nothing.
     """

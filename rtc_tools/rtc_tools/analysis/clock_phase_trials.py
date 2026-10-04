@@ -1,6 +1,6 @@
 """Drive N launch trials against a running simulator (D-3 / S3.1a).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §5. The measurement wants
+Spec: L8 §4.5. The measurement wants
 "per configuration (2 robots), >= 200 launches" of clock phase error. This issues
 those launches against an already-running ``mujoco_simulator`` node and leaves
 the recording to the node's clock lane; ``analyze_clock_phase`` reads the CSV

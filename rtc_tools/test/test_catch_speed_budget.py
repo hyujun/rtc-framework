@@ -195,7 +195,7 @@ def test_speed_solution_moves_the_frame_along_v_hat_with_the_axis_held(arm):
 
 
 def test_direction_given_in_the_wrong_frame_gives_a_different_answer(arm):
-    # The fixture mounts the arm base half a turn from the model root, the trap plan §11 records:
+    # The fixture mounts the arm base half a turn from the model root, the trap L3 §4.2 records:
     # a direction expressed in the base frame is NOT the same input as one in the model world.
     v_hat = unit([0.5, -0.3, -0.8])
     flipped = np.array([-v_hat[0], -v_hat[1], v_hat[2]])

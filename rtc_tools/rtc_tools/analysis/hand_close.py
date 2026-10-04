@@ -1,6 +1,6 @@
 """Hand closure time T_close,e2e(eta) from a device state CSV (dynamic_catching S4.2).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §4.4 S4a, law: ``L6_hand.md`` §4.2.
+Stage S4a (``docs/dynamic_catching/ID_INDEX.md`` §3), law: L6 §4.2.
 
     rho(t)          = min over the caging set C of
                       (q_i(t) - q_i^pre) * s_i / |q_i^cls - q_i^pre|,  s_i = sign(q_i^cls - q_i^pre)

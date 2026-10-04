@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Pool catching_trials outputs across units and arms (dynamic_catching S8-E).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §4.4 D-S8-16 and the
-S8-E plan; §1a (G8-D definition, floor). One S8-E arm is several units (one sim
+Stage S8-E, D-S8-16 (``docs/dynamic_catching/ID_INDEX.md`` §3, §5.4); L8 §9
+(G8-D definition, floor). One S8-E arm is several units (one sim
 session + one ``catching_sim_trials`` trials dir each, 50 throws per unit), and
 each unit has been through :mod:`rtc_tools.analysis.catching_trials`, which
 leaves ``catching_trials.csv`` (one row per trial, with ``invalid_reason``) and
@@ -52,7 +52,7 @@ from rtc_tools.analysis import catching_trials as ct, catching_vision as cv
 TRIALS_CSV = "catching_trials.csv"
 SUMMARY_JSON = "catching_trials_summary.json"
 DEFAULT_N_VALID_TARGET = 200  # D-S8-3
-D3_S31B_N_MIN = 200  # plan §5 S3.1b: trials with a clock covariate
+D3_S31B_N_MIN = 200  # S3.1b: trials with a clock covariate
 POOL_COLUMNS = (
     "arm",
     "unit",

@@ -309,7 +309,7 @@ def ramp_speed_limit(
 def min_flight_time(
     detection_s: float, latency_s: float, close_total_s: float, arm_delay_s: float, margin_s: float
 ) -> float:
-    """Commit lead (plan S0.7 R1): T_det + L + T_freeze, T_freeze = T_close,tot + T_arm + T_margin.
+    """Commit lead (L1 §4.1 D-15): T_det + L + T_freeze, T_freeze = T_close,tot + T_arm + T_margin.
 
     The hand's closing time is part of the lead: the posture freezes that long
     before the catch, and a plan has to exist before it can freeze.

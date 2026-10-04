@@ -245,7 +245,7 @@ def test_first_flight_is_cut_at_the_receive_gap_and_compared_over_the_overlap():
     assert n == 4 and worst == pytest.approx(0.5)
 
 
-# ── T_det (detection latency, plan §7.3) ─────────────────────────────────────
+# ── T_det (detection latency, S3.6) ─────────────────────────────────────
 
 MS = 1_000_000
 

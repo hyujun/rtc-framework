@@ -1,6 +1,6 @@
 """Decode and summarise the ball_perception prediction lane (dynamic_catching S3.4).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §4.4 S3.4 and D-4. S3.4
+Stage S3.4 (``docs/dynamic_catching/ID_INDEX.md`` §3) and D-4. S3.4
 **measures only** — every policy question (how to treat a rewinding
 ``snapshot_sequence``, whether to accept partial ``validity``) belongs to S5.2.
 This module turns what ``sim_estimator_node`` publishes into numbers those
@@ -566,7 +566,7 @@ def first_flight(
 
 @dataclass(frozen=True)
 class DetectionLatency:
-    """One flight's T_det: launch → the first VALID prediction (plan §7.3, S3.6).
+    """One flight's T_det: launch → the first VALID prediction (S3.6).
 
     Two axes, each computed WITHIN one clock, never across the two (D-2):
 

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Catching sim trials: offline per-trial evaluation (dynamic_catching S8-A).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §4.4 S8 (the S8-A
-measurement substrate), §1a (G8-D success definition, S0.9 power table), §5
-(D-3 validity condition). One run of ``catching_sim_trials`` leaves three
-things behind — the controller's session CSVs, the runner's trials directory
-(``trial_results.json`` + one ground-truth CSV per trial) and, when the sim was
-started with its lanes on, the clock and contact truth lanes. This module joins
-them into one row per trial:
+Stage S8-A, the measurement substrate (``docs/dynamic_catching/ID_INDEX.md`` §3); L8 §9
+(G8-D success definition, S0.9 power table); L8 §4.5 (D-3 validity condition). One run of
+``catching_sim_trials`` leaves three things behind — the controller's session CSVs, the
+runner's trials directory (``trial_results.json`` + one ground-truth CSV per trial)
+and, when the sim was started with its lanes on, the clock and contact truth lanes.
+This module joins them into one row per trial:
 
 * **servo lag** — the arm's first-order lag τ̂ per joint, by least squares on
   ``q_cmd − q_meas ≈ τ q̇_meas`` over the moving ticks, with a trial-cluster
@@ -25,9 +24,9 @@ them into one row per trial:
   between the commit and the catch the column lies after the catch instant:
   ``tc_axis`` (:func:`tc_axis_columns`, #602) marks such a row ``shifted`` and
   the summary leaves it out of the t_c medians (``summary["tc_axis"]``).
-* **truth success** (G8-D, plan §1a) and the supervisor-vs-truth confusion
+* **truth success** (G8-D, L8 §9) and the supervisor-vs-truth confusion
   matrix — see :func:`truth_success`.
-* **D-3 covariate** (plan §5, D-S8-4 (c)) from the clock lane, reusing
+* **D-3 covariate** (L8 §4.5, D-S8-4 (c)) from the clock lane, reusing
   :mod:`rtc_tools.analysis.clock_phase`.
 * **first hand–ball contact episode** from the contact lane (G7-B3 input).
 * **``ref_saturated`` max streak** (G8-C3).
@@ -40,7 +39,7 @@ them into one row per trial:
   ``--dist`` box throw's nearest grid throw is open on the torque layer of a
   ``catch_gate_map`` output, and truth success over that open subset; see
   :func:`gate_map_verdict`.
-* **validity** (S8-E, plan §4.4 D-S8-16 ①) — each trial's ``invalid_reason``
+* **validity** (S8-E, D-S8-16 ①) — each trial's ``invalid_reason``
   (a rig failure, one of :data:`INVALID_REASONS` in precedence order, "" =
   valid; see :func:`record_invalid_reason` and :func:`lane_invalid_reason`).
   Every summary statistic is over the valid trials; the ITT bound counts the
@@ -137,7 +136,7 @@ DEFAULT_N_BOOT = 2000
 DEFAULT_SEED = 0
 DEFAULT_HOLD_WINDOW_S = 0.1  # hand-joint capture calibration window before t_hold_end
 TRUTH_TIME_AXES = ("stamp", "recv")
-# Rig-failure (invalid) reasons, in precedence order — plan §4.4 D-S8-16 ①: a
+# Rig-failure (invalid) reasons, in precedence order — D-S8-16 ①: a
 # trial gets the FIRST that matches, anything else that goes wrong (no plan,
 # abort, HAND_TIMEOUT, cycle not closed, supervisor Missed) is a FAILURE.
 INVALID_REASONS = ("srv_refused", "not_launched", "controller_silent", "lane_drop", "sim_stall")
@@ -166,7 +165,7 @@ def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """Wilson score interval for k successes in n trials.
 
     ``z`` is stated, never implied: 1.96 is the two-sided 95 % interval, whose
-    lower bound is the 97.5 % one-sided bound G8-D uses (plan §4.4 S8).
+    lower bound is the 97.5 % one-sided bound G8-D uses (L8 §9).
     """
     if n <= 0:
         return (math.nan, math.nan)
@@ -207,7 +206,7 @@ def required_n(
     """S0.9 required n: smallest n whose power stays ≥ ``power`` for every n' ≤ n_max.
 
     Power is saw-toothed in n, so the first n that crosses the target can fall
-    below it again; plan §1a takes the n after which it never does (up to
+    below it again; the S0.9 table takes the n after which it never does (up to
     ``n_max``). ``None`` when p ≤ floor or the target is never held.
     """
     if p <= floor:
@@ -326,7 +325,7 @@ def independence_test(
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
 ) -> IndependenceResult:
-    """A⊥B test (plan S8 sub-plan §6.5): whitened cross-covariance, cluster bootstrap.
+    """A⊥B test: whitened cross-covariance, cluster bootstrap.
 
     Samples of one trial are not independent of each other, so the bootstrap
     resamples whole CLUSTERS (trials). Each of the d² entries gets a percentile
@@ -382,7 +381,7 @@ def _nees(errors: np.ndarray, covs: np.ndarray) -> np.ndarray:
 def nees_summary(
     errors: np.ndarray, covs: np.ndarray, alpha: float = 0.05, coverage_level: float = 0.95
 ) -> NeesResult:
-    """Raw and centred NEES, two-sided chi² test and coverage (S8 sub-plan §6.4).
+    """Raw and centred NEES, two-sided chi² test and coverage.
 
     Two-sided on purpose: an estimator whose covariance is too LARGE (NEES far
     below dim — the expected state of a gravity-only filter at long horizons)
@@ -1379,7 +1378,7 @@ class ClockLane:
         return float(np.interp(sim_s, seg[:, 0], seg[:, 1])) - self.steady_offset
 
     def delta_at(self, seq: int, t_rel: float) -> float:
-        """δ(t) of plan §5 (clock_phase's definition) at controller time ``t_rel``."""
+        """δ(t) of L8 §4.5 (clock_phase's definition) at controller time ``t_rel``."""
         seg = self.segments[seq]
         if self.aligned:
             sim = t_rel + self.c_s
@@ -1802,7 +1801,7 @@ def truth_success(
     fk_at_tick,
     hold_radius_m: float,
 ) -> dict:
-    """G8-D truth success (plan §1a): the ball is in the hand from HOLD end to release.
+    """G8-D truth success (L8 §9): the ball is in the hand from HOLD end to release.
 
     Operational definition (documented, not tuned):
 
@@ -2191,8 +2190,8 @@ def command_kinematics_at_tc(ctx: TrialContext, t_c: float, t_lead: float) -> di
     from FK(q_cmd) — no measurement, no reference).
 
     A position servo with a lag leaves ``½ τ² a`` of a command that is still
-    accelerating, which a time lead does not compensate (MPC plan §8, "$t_c$
-    간격의 분해"). These columns are that acceleration and where it comes from,
+    accelerating, which a time lead does not compensate (MPC E1-F05, #631:
+    the $t_c$ gap decomposition). These columns are that acceleration and where it comes from,
     the same quantity under either planner:
 
     - ``cmd_speed_tc`` [m/s] — the command's speed at the lead tick ``kl``;
@@ -3291,7 +3290,7 @@ def tick_overrun(timing, steady_lo: float, steady_hi: float, dt: float) -> dict:
 def tick_overrun_summary(
     rows: Sequence[Mapping], status: str | None, dt: float | None
 ) -> dict | str:
-    """Tick-overrun covariate over ``rows`` (a covariate, not a verdict — plan §4.4 S8-E)."""
+    """Tick-overrun covariate over ``rows`` (a covariate, not a verdict — S8-E)."""
     if status is not None:
         return status
     have = [r for r in rows if np.isfinite(_num(r.get("tick_overrun_n")))]
@@ -3398,7 +3397,7 @@ def truth_block(
     """G8-D over the VALID trials, with the ITT bound (invalid counted as failure).
 
     ``lower_975`` is the Wilson lower bound at ``z`` — the 97.5 % one-sided
-    bound at the default 1.96 (plan §1a).
+    bound at the default 1.96 (L8 §9).
     """
     k = sum(1 for r in valid if _is_true(r.get("truth_success")))
     n = len(valid)
@@ -3787,7 +3786,7 @@ def _planner_cycle_times(ctl: Path, lane: ClockLane | None) -> PlannerWakes | No
     time (the sim can run faster or slower than 1×). A steady-clock instant
     therefore has no FIXED additive offset to ``t_relative_s`` in general —
     exactly the clock-drift problem the D-3 clock lane already exists to
-    measure (:class:`ClockLane`, plan §5).
+    measure (:class:`ClockLane`, L8 §4.5).
 
     The clock lane bridges the two clocks by recording ``(sim_time_sec,
     steady_ns)`` pairs from the SAME ``std::chrono::steady_clock``

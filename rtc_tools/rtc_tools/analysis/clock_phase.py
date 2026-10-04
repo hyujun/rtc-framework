@@ -1,6 +1,6 @@
 """Clock phase error per launch trial (dynamic_catching D-3 / S3.1a).
 
-Plan: ``docs/dynamic_catching/IMPLEMENTATION_PLAN.md`` §5. D-3 is judged on the
+Spec: L8 §4.5. D-3 is judged on the
 **per-trial clock phase error**, not on a rate. The existing RTF signal averages
 over 200 steps, so a 0.5 s flight carries one or two samples and a short stall is
 erased by the mean; and the throttle baseline is only reset when ``max_rtf``
@@ -33,7 +33,7 @@ NOT_EVALUATED-verdict stance).** The validity condition
 
 still needs ``eps_clk_alloc``, the share of the L3 §4.6 error budget given to
 the clock term. That share is ``r_cap / n_sigma`` at the target speed and is
-provisional (plan §5.1 re-judgement) — this tool does not pick it, and there is
+provisional (L8 §4.5 re-judgement) — this tool does not pick it, and there is
 no verdict here. What changed is what the numbers are *for*: D-S8-4 (c) found
 that a direct delta-vs-outcome correlation has no power at the trial counts
 S8 collects (n 25-50; r 0.3 needs n ~85), so instead of chasing a threshold
@@ -45,7 +45,7 @@ observed trials that would satisfy the condition under it — reported as
 "valid under eps", explicitly not a verdict. The tool also still prints the
 smallest ``eps_clk_alloc`` that would admit a given fraction of the observed
 trials (the S3.1a inversion); that number remains a **proposal for the user to
-confirm** (plan §5, §7.3), not something this run adopts, and the output says
+confirm** (L8 §4.5), not something this run adopts, and the output says
 so.
 """
 
@@ -58,7 +58,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# Plan §5: v_max is the fastest ball speed in the target throw distribution and
+# L8 §4.5: v_max is the fastest ball speed in the target throw distribution and
 # a_bound is g plus the drag acceleration ceiling. Until S3.5b fixes the
 # distribution these are the S0.7 assumed values, and the provenance says so.
 DEFAULT_V_MAX_M_S = 8.4  # S0.7 sweep: catch speed up to 8.4 m/s at T_f 1.5 s
@@ -150,7 +150,7 @@ def _summarise(seq: int, samples: list[tuple[float, float]]) -> Trial:
 
 
 def required_eps(trial: Trial, v_max: float, a_bound: float) -> float:
-    """Smallest eps_clk_alloc that would make this trial valid (plan §5)."""
+    """Smallest eps_clk_alloc that would make this trial valid (L8 §4.5)."""
     from_delta = v_max * trial.delta_max_s + 0.5 * a_bound * trial.delta_max_s**2
     from_pause = trial.max_pause_s * v_max
     return max(from_delta, from_pause)
@@ -188,7 +188,7 @@ def covariate_summary(
     trials: list[Trial], v_max: float, a_bound: float, eps_mm: float | None = None
 ) -> CovariateSummary:
     """Per-trial delta_max / max-pause distributions, plus an optional
-    valid-under-eps fraction (plan §5's condition, ``required_eps``).
+    valid-under-eps fraction (L8 §4.5's condition, ``required_eps``).
 
     This does not decide anything. The distributions are what S8-B/E correlate
     against catch outcomes and against a same-seed load A/B (D-S8-4 (c) —
