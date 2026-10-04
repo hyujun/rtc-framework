@@ -56,7 +56,7 @@ G7-2 · G7-4 의 신호 (speed scaling, 시계 건강) 는 repo 에 출처가 �
 | `ABORT_SAFE` | 치명 조건(상태 무관) | **관절공간 정지** — 원인과 무관하게 직전 명령에서 $\dot q_c\to0$ 까지 관절별 가속 한계로 감속한다 (`JointSpaceDecelStep`, 아래 "`ABORT_SAFE` 의 정지"). L4 · L5 를 거치지 않는다 | 정지 → `RETREAT` / fault latch 또는 정지 기한 초과 → `FAULT` (`ABORT_ESCALATED`) |
 | `FAULT` | CLIK 실패로 끝난 **시행**이 연속 $N_{qp}$ 회 (D-S9-D2), 또는 운동 기한 초과 — `ABORT_SAFE` 정지 램프·`RETREAT` 정지·`RETREAT` 복귀 (D-S9-D1) | `ABORT_SAFE` 와 같은 관절공간 감속으로 정지 후 $q_c$ 고정, 컨트롤러 fault 래치 (`HasLatchedFault()` true), 비무장. **RT 에서 deactivate 를 요청하지 않는다** | `/rtc_cm/reset_fault` → `ResetFault()` → 팔 정지 판정 통과 (D-S9-D3) → `IDLE` (P-1 reseed) |
 
-**전이는 (상태 × 사유) 표를 데이터로 둔다.** 위 표와 §4.2 표는 사람이 읽는 형태이고, 코드는 둘을 합친 표 하나 (`kTransitionTable`, 96 행 — `transition_table.hpp`) 를 단일 출처로 삼는다. 드라이버 (`AdvanceMode`) 는 매 tick (현재 모드, 그 tick 의 사유) 를 `LookupTransition` 으로 찾아 행이 있으면 전이한다. 행이 없는 (모드, 사유) 는 그 모드에서 해당 없음이다 — 모드는 그대로이고 사유만 기록된다. 표의 완전성 — 모든 상태에 진입·이탈이 최소 1개씩 있고, 모든 `Reason` 이 최소 한 행에서 쓰이며, 같은 (상태, 사유) 가 서로 다른 목적지로 두 번 나오지 않는다 — 은 `CheckTransitionTableComplete` 가 판정하고, **단위 테스트가 출하 표의 완전성을 고정한다** (`rtc_controllers/test/test_catching_supervisor_core.cpp` 의 `TransitionTable.ShippedTableIsComplete`, G7-A). configure · 기동 경로는 이 함수를 부르지 않는다.
+**전이는 (상태 × 사유) 표를 데이터로 둔다.** 위 표와 §4.2 표는 사람이 읽는 형태이고, 코드는 둘을 합친 표 하나 (`kTransitionTable`, 96 행 — `transition_table.hpp`) 를 단일 출처로 삼는다. 드라이버 (`AdvanceMode`) 는 매 tick (현재 모드, 그 tick 의 사유) 를 `LookupTransition` 으로 찾아 행이 있으면 전이한다. 행이 없는 (모드, 사유) 는 그 모드에서 해당 없음이다 — 모드는 그대로이고 사유만 기록된다. 표의 완전성 — 모든 상태에 진입·이탈이 최소 1개씩 있고, 모든 `Reason` 이 최소 한 행에서 쓰이며, 같은 (상태, 사유) 가 서로 다른 목적지로 두 번 나오지 않는다 — 은 `CheckTransitionTableComplete` 가 판정하고, **출하 표의 완전성은 컴파일 때 고정된다** — `transition_table.hpp` 끝의 `static_assert` 가 그 함수를 출하 표에 돌리므로 불완전한 표는 빌드되지 않는다. 단위 테스트 (`rtc_controllers/test/test_catching_supervisor_core.cpp` 의 `TransitionTable.*`, G7-A) 는 같은 판정을 한 번 더 하고, 일부러 깨뜨린 표를 그 함수가 잡는지를 본다. configure · 기동 경로는 이 함수를 부르지 않는다.
 
 표가 정한 해석 세 가지 (근거는 `transition_table.hpp` 머리 주석):
 
@@ -431,7 +431,7 @@ plan 접수 쪽의 방어 (reset floor · 동결 창) 는 §4.1 R-ADMIT 이 적�
 
 | 게이트 | 기준 | 태그 |
 |---|---|---|
-| G7-A | 위 시나리오 전부 기대 상태열과 일치, 출하 전이표가 완전성 검사 (`CheckTransitionTableComplete`, 단위 테스트) 를 통과 | `[SIM-ANY]` |
+| G7-A | 위 시나리오 전부 기대 상태열과 일치, 출하 전이표가 완전성 검사 (`CheckTransitionTableComplete` — `static_assert` 와 단위 테스트) 를 통과 | `[SIM-ANY]` |
 | G7-B | `closed_form`: 감속 전환 시 기준 상태 $(x,\dot x)$ 연속 (< 1e-9) | `[SIM-ANY]` |
 | G7-B′ | `mode: mpc` (MPC MD-39): node 0 를 전환 tick 의 명령 $(q_c,\dot q_c)$ 로 만든 구간에서 $\Vert p_d-\mathrm{FK}(q_c)\Vert$ · $\Vert V_{ff}-J\dot q_c\Vert$ · $\Delta q$ · $\Delta\dot q$ < 1e-9 — 정지한 첫 구간의 전환과, 움직이는 팔의 포구 전 재계획 전환 둘 다. `DECEL` 진입 tick 은 전환이 아니라 같은 구간의 다음 샘플이다 | `[SIM-ANY]` |
 | G7-B3 | 충격량 $\Delta p$ 기록과 시뮬레이션 접촉 참값의 최대 접촉력 상관 확인, 손가락 관절 토크가 한계 이내 (한계 권위 출처 D-12 확정 전까지 토크 비교 부분은 `NOT_EVALUATED`) | `[SIM-P1B]` |
