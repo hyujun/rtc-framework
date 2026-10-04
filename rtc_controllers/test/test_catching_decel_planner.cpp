@@ -343,7 +343,7 @@ TEST(DecelParams, RejectsAVelocitySlackKeyByName) {
   }
 }
 
-// MPC MD-92: the core's own design values as keys. The planner's defaults ARE
+// The core's own design values as keys. The planner's defaults ARE
 // the core's (DecelMpcParams) — a profile without the keys, and the shipped
 // profiles that write them, solve what the code solved before.
 TEST(DecelParams, TheDesignKeysDefaultToTheCoresOwnValues) {

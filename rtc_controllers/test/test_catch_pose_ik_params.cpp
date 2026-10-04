@@ -252,7 +252,7 @@ TEST(CatchPoseIkParams, AllFieldsAtOnceAreNotCrossWired) {
   EXPECT_DOUBLE_EQ(cfg.options.fd_step, kDefault.fd_step);
 }
 
-// MPC MD-92 / #698: `fd_step` has a key now (a design value like the rest).
+// #698: `fd_step` has a key now (a design value like the rest).
 // Absent keeps the struct default; a number moves the field and nothing else;
 // a step the finite difference would divide by zero (or by a negative or
 // non-finite number) is refused naming the key.

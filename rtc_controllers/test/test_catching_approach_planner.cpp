@@ -699,7 +699,7 @@ TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
   }
 }
 
-// MPC MD-92: the core's design values, from the YAML to every core the planner
+// The core's design values, from the YAML to every core the planner
 // builds — the stop cores (k = 0..k_max) and the catch cores (n_pre = 1..6).
 // Twelve distinct values; a core left on DecelMpcParams{} reads its default.
 TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
