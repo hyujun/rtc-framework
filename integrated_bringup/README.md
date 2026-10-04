@@ -1027,7 +1027,7 @@ ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dis
 | `run_unit.sh <out> <p1b\|leap> <overlay.yaml> <n> <seed>` | unit 하나. sim 을 띄우고, 컨트롤러의 미러가 기대값과 같은지 확인하고, 추정기를 띄우고, `catching_sim_trials` (`--dist s35b --host-watch abort`) 를 돌린 뒤 세션 로그를 unit 으로 옮긴다. `<out>/status` 가 `DONE` 또는 `FAIL:<이유>` 다. tree 가 dirty 하면 거부한다 (`ALLOW_DIRTY=1` 로 푼다) |
 | `run_all.sh` | plan 의 unit 을 차례로 돌린다. 다시 띄우면 `DONE` 인 unit 은 건너뛴다. 실패한 unit 은 `<dir>.fail<N>` 로 치우고 같은 seed 로 `MAX_TRY` (기본 3) 번까지 다시 돌린다. `$DATA/STOP` 파일이 있으면 그 unit 뒤에 멈춘다. **`repo_scripts/scripts/with_verify_hold.sh` 로 띄운다** |
 | `analyse_unit.sh <ur5e_p1b\|iiwa7_leap> <unit>...` | 끝난 unit 에 `rtc_tools` 의 `catching_trials` 와 `tc_vector.py` 를 돌려 `<unit>/ct/` 에 쓴다. unit 을 모으는 중에는 돌리지 않는다 (host 부하) |
-| `mk_overlay.py <out.yaml> <p1b\|leap> <mpc\|closed_form>` | 그 로봇의 `sim_overlays/catch_lead_on.yaml` 에 `mpc` 이면 mode 키 둘 (MD-75) 을 더한 overlay 를 쓴다. 다른 leaf 가 섞이면 거부한다 |
+| `mk_overlay.py <out.yaml> <p1b\|leap> <mpc\|closed_form>` | 그 로봇의 `sim_overlays/catch_lead_on.yaml` 에 `supervisor.decel.mode` 하나를 더한 overlay 를 쓴다 (두 arm 모두 mode 를 적는다 — 출하 기본값에 기대지 않는다). 다른 leaf 가 섞이면 거부한다 |
 | `summarize.py` | 로봇 하나의 G-1 판정 (짝 구성, 무효 처리, 성공 판정, Tango 검정, 기준 1–4). 규칙은 #632 의 규칙 코멘트가 정했다. 기계적인 부분은 `test/test_catching_eval_summarize.py` 가 고정한다 |
 | `tc_vector.py` | t_c 의 간격을 공의 진행 방향과 그 수직으로 나눈 값. `analyse_unit.sh` 가 부른다 |
 | `make_conditions.py` | 예측 격자 조건 (E0-F04, #647) 의 profile · overlay · `conditions.tsv` · plan 을 `$DATA/conditions/` 에 쓴다 |
@@ -1053,12 +1053,12 @@ plan 의 한 줄은 unit 하나다 (`#` 로 시작하면 주석):
 ```bash
 # conditions.tsv 의 행: cond robot profile overlay dt n_min points
 DATA=<자료 디렉토리> BALL_SIM_WS=<추정기 workspace> \
-PROFILE=<profile 열> EXPECT_MODE=closed_form \
+PROFILE=<profile 열> \
 EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.slice.dt=<dt 열>' \
   integrated_bringup/tools/catching_eval/run_unit.sh <out> <robot 열> <overlay 열> <n> <seed>
 ```
 
-`L-50` 행의 overlay 는 경로가 아니라 이름 (`catch_lead_on`) 이다. `run_unit.sh` 는 파일을 받으므로 `integrated_bringup/config/<robot>/sim_overlays/catch_lead_on.yaml` 을 넘긴다. `make_conditions.py` 는 overlay 의 leaf 규칙을 `test/test_catch_lead_overlays.py` 의 `_unread_leaves` 에서 경로로 불러 쓴다 — 그 테스트의 이름을 바꾸면 이 스크립트를 같이 고친다.
+조건의 overlay 는 mode 를 적지 않으므로 출하 법칙 (`supervisor.decel.mode`) 으로 돈다. `EXPECT_MODE` (기본 `mpc`) 가 그것과 다르면 맞춰 준다. `L-50` 행의 overlay 는 경로가 아니라 이름 (`catch_lead_on`) 이다. `run_unit.sh` 는 파일을 받으므로 `integrated_bringup/config/<robot>/sim_overlays/catch_lead_on.yaml` 을 넘긴다. `make_conditions.py` 는 overlay 의 leaf 규칙을 `test/test_catch_lead_overlays.py` 의 `_unread_leaves` 에서 경로로 불러 쓴다 — 그 테스트의 이름을 바꾸면 이 스크립트를 같이 고친다.
 
 `.last_minute` 는 세션 디렉토리의 이름이 분 단위라서 둔다: 같은 `DATA` 의 앞 unit 과 같은 분에는 다음 unit 을 띄우지 않는다. `DATA` 가 다른 두 평가를 같은 workspace 에서 같이 돌리면 이 보호가 닿지 않는다.
 

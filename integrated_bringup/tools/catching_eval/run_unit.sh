@@ -18,8 +18,8 @@
 # The overlay turns the APPROACH-stop MPC on in CLOSED LOOP: the planner stores
 # every segment, the RT takes a plan with its first segment and follows the
 # segments from APPROACH to the end of the stop (mode mpc, #662).
-# The controller's mirror must show mode mpc, the decel MPC enabled and the
-# approach grid before a single throw, or the unit is refused.
+# The controller's mirror must show mode mpc and the approach grid before a
+# single throw, or the unit is refused.
 # Two workspaces (MD-17): the sim and controller come from this workspace, the
 # estimator from $BALL_SIM_WS (its shipped catching profile is the default
 # PROFILE). The session's raw logs are copied into the unit at the end.
@@ -124,7 +124,6 @@ CN=/demo_catching_controller/demo_catching_controller
 for P in joint_cmd.lag.T_arm joint_cmd.lag.lead_enable planner.freeze.T_freeze \
          reference.omega reference.a_max reference.v_max control.dt \
          prediction.dt_expected io.n_min planner.slice.dt \
-         planner.decel_mpc.enabled \
          planner.decel_mpc.horizon.n_nodes planner.decel_mpc.horizon.dt_s \
          planner.decel_mpc.approach.n_pre_max planner.decel_mpc.approach.dt_pre_s \
          planner.decel_mpc.approach.rest_tol planner.decel_mpc.replan.k_max \
@@ -159,7 +158,6 @@ done
 if [ "${EXPECT_MODE:-mpc}" == "closed_form" ]; then
   grep -q 'DECEL law: mpc' "$OUT/launch.log" && why="$why mode_is_mpc"
 else
-grep -q 'planner.decel_mpc.enabled: Boolean value is: True' "$OUT/mirror.txt" || why="$why decel_enabled"
 grep -q "planner.decel_mpc.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-6}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
 grep -q 'planner.decel_mpc.horizon.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
 # The mode has no mirror: the startup lines say it (mpc prints both).

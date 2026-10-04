@@ -4,9 +4,10 @@
     mk_overlay.py <out.yaml> <p1b|leap> <mpc|closed_form>
 
 The overlay IS the repo's ``sim_overlays/catch_lead_on.yaml`` of the robot
-(read from the source tree, every leaf kept), plus, for ``mpc``, the two
-keys of MD-75: ``planner.decel_mpc.enabled: true`` and
-``supervisor.decel.mode: mpc``. Nothing else — in particular no ``gamma_ref``
+(read from the source tree, every leaf kept), plus the stop law of the arm:
+``supervisor.decel.mode: <mpc|closed_form>``. The overlay states the mode for
+both arms — the shipped default is not what tells them apart.
+Nothing else — in particular no ``gamma_ref``
 (the shipped value is what G-1 compares; the plan line checks it in the
 mirror with EXPECT_KV). After writing, the leaves are re-read and compared
 with the repo file's; any difference is refused.
@@ -46,32 +47,23 @@ def main(argv):
     c = doc
     for k in CATCHING:
         c = c[k]
-    if mode == "mpc":
-        c.setdefault("planner", {}).setdefault("decel_mpc", {})["enabled"] = True
-        c.setdefault("supervisor", {}).setdefault("decel", {})["mode"] = "mpc"
+    c.setdefault("supervisor", {}).setdefault("decel", {})["mode"] = mode
     with open(out, "w") as f:
         f.write(
-            f"# E1-F06 (G-1, #632) overlay: {ROBOTS[short]} {mode} = {src.name} + MD-75 mode keys\n"
+            f"# catching eval overlay: {ROBOTS[short]} {mode} = {src.name} + supervisor.decel.mode\n"
         )
         yaml.safe_dump(doc, f, sort_keys=False)
     got = dict(leaves(yaml.safe_load(Path(out).read_text())))
     want = dict(leaves(base))
     extra = {k: v for k, v in got.items() if k not in want}
-    expect_extra = (
-        {
-            (*CATCHING, "planner", "decel_mpc", "enabled"): True,
-            (*CATCHING, "supervisor", "decel", "mode"): "mpc",
-        }
-        if mode == "mpc"
-        else {}
-    )
+    expect_extra = {(*CATCHING, "supervisor", "decel", "mode"): mode}
     if any(got.get(k) != v for k, v in want.items()) or extra != expect_extra:
         Path(out).unlink()
-        raise SystemExit(f"refused: leaves differ from {src} + mode keys: extra {extra}")
+        raise SystemExit(f"refused: leaves differ from {src} + the mode key: extra {extra}")
     if any("gamma_ref" in k for k in got):
         Path(out).unlink()
         raise SystemExit("refused: gamma_ref in the overlay")
-    print(f"{out}: {len(want)} catch_lead_on leaves + {len(extra)} mode keys")
+    print(f"{out}: {len(want)} catch_lead_on leaves + {len(extra)} mode key")
 
 
 if __name__ == "__main__":
