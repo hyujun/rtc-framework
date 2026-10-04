@@ -1382,7 +1382,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
   struct Case {
     const char* name;
     bool set_floor;
-    bool box;
+    bool kinematic;
   };
 
   for (const Case& c : {Case{"shipped", false, false}, Case{"moved", true, true}}) {
@@ -1395,9 +1395,13 @@ TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
     if (c.set_floor) {
       planner["slice"]["t_lead_min"] = floor;
     }
-    if (c.box) {
-      node["catching"]["joint_cmd"]["accel_constraint"] = "box";
-      node["catching"]["joint_cmd"].remove("eta_tau");  // the dynamic form's key
+    if (c.kinematic) {
+      YAML::Node joint_cmd = node["catching"]["joint_cmd"];
+      joint_cmd["accel_constraint"] = "kinematic";
+      joint_cmd.remove("eta_tau");  // the dynamic form's key
+      // The form's own keys, at the validator's ceilings (no shipped value).
+      joint_cmd["task_accel_max_linear"] = 500.0;
+      joint_cmd["task_accel_max_angular"] = 500.0;
     }
     auto node_handle =
         NodeWithProfile("catching_shipped_tuning_mirror_" + profile + "_" + c.name, "mpc_on");
@@ -1410,7 +1414,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
     EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.slice.t_lead_min").as_double(), floor)
         << profile << " " << c.name;
     EXPECT_EQ(node_handle->get_parameter("joint_cmd.accel_constraint").as_string(),
-              c.box ? "box" : "dynamic")
+              c.kinematic ? "kinematic" : "dynamic")
         << profile << " " << c.name;
   }
 }
