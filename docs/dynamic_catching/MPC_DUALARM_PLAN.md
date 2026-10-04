@@ -165,7 +165,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 - [#711](https://github.com/hyujun/rtc-framework/issues/711) — refactor(catching): `Decel*` · `decel_*` 이름을 뜻에 맞게 — MD-48 의 rename, E3 착수 전
 - [#712](https://github.com/hyujun/rtc-framework/issues/712) — catching: CLIK 가속 제약에서 box 형태를 없앤다 — kinematic · dynamic 만 (MD-74 후속)
 - [#713](https://github.com/hyujun/rtc-framework/issues/713) — catching: 조정되지 않은 채 출하된 mpc planner 의 값 — `cost.w_perp` · `publish.slack_terminal_max`
-- [#714](https://github.com/hyujun/rtc-framework/issues/714) — catching: `planner.switch.samples` 는 교체 판정을 바꾸지 않는다
 - [#716](https://github.com/hyujun/rtc-framework/issues/716) — catching: formulation 의 포구 구간 다중 노드 (K_c) 와 그 위의 경로 이탈 항 `w_path` 가 구현에 없다
 - [#717](https://github.com/hyujun/rtc-framework/issues/717) — catching: 남은 일이 쓰는 private 스크립트를 repo 도구로
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
