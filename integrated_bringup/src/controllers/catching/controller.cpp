@@ -734,6 +734,14 @@ rtc::catching::Reason DemoCatchingController::SolveClikAndCommand(
     return solve.bound_conflict ? Reason::kJointConflict : Reason::kQpFailed;
   }
 
+  // Kept for a motion stage that takes the command over on this same tick
+  // (#749, Compute): the verdicts below and the supervisor's own are known only
+  // once the command has been stepped. Taken here, the one place a law writes
+  // the command, and not at the top of the tick: the decision can re-seed the
+  // command before a law runs.
+  arm_q_cmd_before_law_ = arm_q_cmd_;
+  arm_qd_cmd_before_law_ = arm_qd_cmd_;
+  law_stepped_cmd_ = true;
   const auto& q_ref = clik_.QRef();
   const auto& v_ref = clik_.VRef();
   for (int i = 0; i < arm_dof_ && i < kDemoCatchingMaxArmDof; ++i) {
@@ -2386,6 +2394,33 @@ void DemoCatchingController::UpdateHandCapture(const ControllerState& state) noe
 
 // ── Motion and hand stages (S7, after the decision) ─────────────────────────
 
+namespace {
+
+/// Whether RunArmMotion moves the arm command in `mode` (the joint-space stop,
+/// homing, the return). The same split as its switch, without a default, so a
+/// new mode has to be placed in both.
+constexpr bool MotionStageMovesTheArm(rtc::catching::Mode mode) noexcept {
+  using rtc::catching::Mode;
+  switch (mode) {
+    case Mode::kAbortSafe:
+    case Mode::kFault:
+    case Mode::kIdle:
+    case Mode::kRetreat:
+      return true;
+    case Mode::kArmed:
+    case Mode::kTracking:
+    case Mode::kApproach:
+    case Mode::kCommitted:
+    case Mode::kClosing:
+    case Mode::kDecel:
+    case Mode::kHold:
+      return false;
+  }
+  return false;
+}
+
+}  // namespace
+
 void DemoCatchingController::RunArmMotion(const ControllerState& state) noexcept {
   using rtc::catching::Mode;
   if (estop_active_) {
@@ -3276,6 +3311,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   tick_now_ = rtc::catching::NowReal{clock_()};
   tick_now_lead_ = rtc::catching::MakeNowLead(tick_now_, t_arm_ns_);
   law_horizon_extrap_ = false;
+  law_stepped_cmd_ = false;
   const rtc::catching::NowReal now = tick_now_;
   traj_view_ = rtc::catching::ReadTraj(snapshot, now, tick_now_lead_, t_stale_ns_,
                                        ActivationGeneration(), consumed_);
@@ -3339,11 +3375,29 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   // admitted on a tick is the one that tick's law can take.
   RunDecelLane();
 
+  const rtc::catching::Mode law_mode = mode_;
   const ReasonDecision decision = EvaluateReason(state, snapshot);
   if (decision.advance) {
     AdvanceMode(decision.reason);
   } else {
     last_reason_ = decision.reason;
+  }
+  // ONE step of the arm command per tick (#749, L7 §4.1). TRACK_ERR,
+  // REF_SATURATED and BALL_STALE_LONG are known only after the law has stepped
+  // the command, and the mode they lead to moves the command in RunArmMotion on
+  // this same tick. The law's step is put back, so that motion starts from the
+  // command the law found instead of stepping it a second time.
+  // The one edge that keeps the law's step is the normal end of a trial: a
+  // HOLD that ran out (no reason) is not an abort, and a normal trial's command
+  // stays what it was.
+  const bool hold_ran_out = law_mode == rtc::catching::Mode::kHold &&
+                            mode_ == rtc::catching::Mode::kRetreat &&
+                            decision.reason == rtc::catching::Reason::kNone;
+  // Not under an E-STOP: RunArmMotion leaves the command alone there, and that
+  // path is as it was.
+  if (law_stepped_cmd_ && !estop_active_ && MotionStageMovesTheArm(mode_) && !hold_ran_out) {
+    arm_q_cmd_ = arm_q_cmd_before_law_;
+    arm_qd_cmd_ = arm_qd_cmd_before_law_;
   }
   // Published every tick, including the early ones and the estopped ones —
   // the discipline the state message inherits as PROC-7. These two atomics

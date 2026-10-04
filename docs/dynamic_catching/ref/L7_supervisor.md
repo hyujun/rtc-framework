@@ -78,6 +78,19 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 
 를 매 tick 적용한다. $\ddot q_{\max}$ 는 팔의 관절별 가속 한계 (`robot.arm.qdd_max`, D-16 도출값 — homing 의 `eta_a` 축소는 걸지 않는다), 위치 상자는 CLIK 에 준 것과 같은 margin 적용 상자이고, 상자에 닿은 관절은 그 자리에서 $\dot q_{c,i}=0$ 이 된다. 할당 · QP · 모델이 없다. §4.3 의 task-space 감속 대상은 `closed_form` 의 `DECEL` · `HOLD` 에만 쓰이고 abort 에는 쓰이지 않는다. 한 경로로 두는 이유: 원인이 CLIK 이면 실패한 층을 거쳐 정지할 수 없고, 그 밖의 원인에서도 task-space 정지는 이득이 분명하지 않은 채 QP 의존을 늘린다. 한 tick 에 $\dot q_c=0$ 으로 두지 않는 이유는 그것이 무한 감속이기 때문이다 (position 인터페이스에서 드라이브의 보호 정지를 부른다). `FAULT` 도 같은 경로로 정지한다.
 
+**명령은 한 tick 에 한 step 이다 (#749).** `TRACK_ERR` · `REF_SATURATED` · `BALL_STALE_LONG` 은 그 tick 의 법칙이 명령을 한 step 적분한 **뒤에** 정해진다 — 추종 오차는 새 명령으로 판정하고, 포화는 풀이 뒤에 보고되고, 긴 stale 은 법칙이 정상으로 돈 뒤에 본다. 그 사유로 들어간 mode 의 motion 단계 (정지 ramp) 도 그 tick 에 돌기 때문에, 법칙의 step 위에 ramp 의 step 이 얹히면 한 tick 에 두 step 이 나간다 (실측: 직전 step 의 1.9 – 2.4 배. 속도 한계에 있던 명령이면 한계의 2 배다). 그래서 **법칙이 명령을 쓴 tick 에 motion 단계가 명령을 넘겨받으면 법칙의 step 을 버린다** (`Compute`, 결정과 `RunArmMotion` 사이). 규칙은 motion 단계가 명령을 움직이는 mode 넷 (`ABORT_SAFE` · `FAULT` · `IDLE` · `RETREAT`) 에 걸려 있고, 지금 법칙의 step 뒤에 닿는 것은 `ABORT_SAFE` 와 `APPROACH` 의 `REF_SATURATED` 로 들어가는 `RETREAT` 다. 위 식의 "직전 명령" 은 법칙이 쓰기 전의 명령이고, 나가는 명령은 거기서 ramp 한 step 이다. E-STOP 이 걸린 tick 은 대상이 아니다 (motion 단계가 명령을 움직이지 않는다).
+
+버리는 것은 명령뿐이다. CLIK 의 anchor 와 직전 속도는 되돌리지 않는다 (법칙은 이 시행에서 다시 돌지 않고, 다음 시행의 seed 가 둘을 새로 놓는다). **그 tick 의 기록은 두 가지가 섞인다**: `track_err_rad` 와 기준 (`ref_x` · `ref_xd` · `ref_xdd`) 은 버린 step 의 것 — 사유를 판정한 값 — 이고, `q_cmd` 는 실제로 나간 ramp 의 것이다. 기록에서 `track_err_rad` 를 `q_cmd` 로 다시 계산하면 그 tick 에서만 어긋난다. 그 tick 은 기록에서 가려낼 수 있다: mode 가 법칙 mode 에서 위 넷 가운데 하나로 바뀌고 사유가 위 셋 가운데 하나인 tick 이다.
+
+예외는 정상 종료 하나다. `T_hold` 가 지나 사유 없이 `HOLD → RETREAT` 로 가는 tick 은 abort 가 아니므로 법칙의 step 을 그대로 둔다 (정상 시행의 명령을 바꾸지 않는다 — `kNormalTrialCommandDigest`). 그 tick 에는 법칙의 step 과 ramp 의 step 이 같이 나간다. 그 합이 한 tick 의 한도 ($\vert\Delta q\vert$ 가 직전 tick 의 것 $+\ \ddot q_{\max}\Delta t^2$) 안인지는 HOLD 가 끝날 때 명령이 가라앉아 있는지에 달렸다 (`closed_form`, 시험 구성에서 실측):
+
+| 가속 제약의 형태 | `T_hold` 0.5 s (파서 기본값 — 출하 YAML 이 덮지 않는다) | 한도 |
+|---|---|---|
+| `dynamic` (출하) · `kinematic` | 직전 1.5e-7 rad → 그 tick 1.5e-7 rad | 안 — 테스트가 고정한다 |
+| `box` | 직전 3.07e-5 rad → 그 tick 5.32e-5 rad | **넘는다** (한도는 직전 $+$ 8.1e-6 rad). 단언하지 않고 수치만 찍는다 |
+
+`mpc` 는 HOLD 에서 팔이 이미 서 있어 1e-6 rad 수준이다. `T_hold` 를 명령이 가라앉기 전으로 줄이면 어느 형태든 넘는다 (0.02 s 에서 `box` 7.4e-5 → 1.35e-4 rad, `dynamic` 2.4e-5 → 3.4e-5 rad). `box` 는 출하 구성이 쓰지 않고 #712 가 포구 층에서 없앤다.
+
 `ABORT_SAFE` 는 감속이 **끝날 때까지** 머문다 (명령 속도가 전부 0). 시작한 tick 에 나가면 ABORT_SAFE 는 상태가 아니라 이름표가 되고, 다음 시행이 팔이 아직 움직이는 중에 시작한다. 래치된 fault 가 있으면 대신 `ABORT_ESCALATED` 로 FAULT 에 간다 — RETREAT 는 방금 실패한 것을 다시 시도하는 쪽으로 되돌리기 때문이다. `RETREAT` 진입은 plan 무효화 지점이다 (§4.8). E-STOP 리셋은 **모드를 건드리지 않는다**: 전이표가 `{FAULT, ESTOP} → FAULT` 를 갖고 있으므로 reset 이 IDLE 을 강제하면 P-1 (d) 가 지키려는 래치를 지운다.
 
 **감속은 시각 기준으로 시작한다 `[확정 A-5]`.** 실기 접촉 신호가 지문 센서뿐이라, 공이 손바닥에 먼저 닿으면 손가락이 닫히기 전까지 검출이 늦을 수 있다. 따라서 `DECEL` 진입은 $now_{lead}\ge t_c$ 로 하고, 지문 센서는 결과 판정과 abort에만 쓴다.

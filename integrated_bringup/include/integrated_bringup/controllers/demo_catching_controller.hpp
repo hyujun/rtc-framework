@@ -1382,6 +1382,13 @@ class DemoCatchingController final : public RTControllerInterface {
   std::array<double, kDemoCatchingMaxArmDof> arm_q_cmd_{};
   std::array<double, kDemoCatchingMaxArmDof> arm_qd_cmd_{};
   bool arm_cmd_seeded_{false};
+  /// The command as the law found it on this tick, and whether the law has
+  /// replaced it since (SolveClikAndCommand). TRACK_ERR, REF_SATURATED and
+  /// BALL_STALE_LONG are known only after that step; Compute puts these back
+  /// when the mode they lead to moves the command on the same tick (#749).
+  std::array<double, kDemoCatchingMaxArmDof> arm_q_cmd_before_law_{};
+  std::array<double, kDemoCatchingMaxArmDof> arm_qd_cmd_before_law_{};
+  bool law_stepped_cmd_{false};
   /// S8-I: whether `wait_pose_` is the switched-in pose adopted on this
   /// activation (source `current`). Cleared with the YAML restore on a fresh
   /// activation only — an E-STOP or fault reset keeps the adopted pose, so the
@@ -1556,6 +1563,8 @@ class DemoCatchingController final : public RTControllerInterface {
   //   wait_pose_refuse_seq_                      exempt: an edge counter the publish thread warns on (S8-I); never reset so no edge is missed
   //   wait_pose_refuse_reason_, wait_pose_refuse_joint_, wait_pose_refuse_value_   exempt: describe the LAST refusal, read only on the wait_pose_refuse_seq_ edge
   //   arm_qd_cmd_                                R, T
+  //   law_stepped_cmd_                           exempt: rewritten every tick
+  //   arm_q_cmd_before_law_, arm_qd_cmd_before_law_   exempt: written on the tick that reads them (law_stepped_cmd_ says whether)
   //   reference_seeded_, traj_hint_              R, T
   //   qp_fail_streak_                            T (activation only) and the fault reset; exempt from R (C-29) and from an E-STOP (D-S9-D2)
   //   track_err_                                 R, T

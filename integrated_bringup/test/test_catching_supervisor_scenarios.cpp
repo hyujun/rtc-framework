@@ -33,6 +33,7 @@
 #include "catching_decel_segment_fixture.hpp"
 #include "catching_tracking_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
+#include "rtc_controllers/catching/decel_target.hpp"
 #include "rtc_controllers/catching/hand_sequencer.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
@@ -773,6 +774,105 @@ class SupervisorScenarioTest : public ::testing::Test {
         << Window(d, 3);
     EXPECT_GE(entry.after_ns + t_arm_ns, t_c) << "DECEL entered before t_c\n" << Window(d, 3);
   }
+
+  /// #749: `t` is a tick that ended in a stop (ABORT_SAFE, or RETREAT's stop
+  /// stage) after its law had already stepped the command. The command that
+  /// left it must be ONE step of the joint-space ramp from the command the
+  /// tick started with — not the ramp's step on top of the law's.
+  ///
+  /// Two assertions, because they fail differently. The bound is the contract:
+  /// no joint moves further than it did the tick before plus what q̈max allows
+  /// in one tick. The equality names the mechanism: the ramp
+  /// (JointSpaceDecelStep, the function the stop itself runs) applied to the
+  /// carried command of tick t − 1 reproduces what went out. Both are trivially
+  /// true for an arm at rest, hence the precondition.
+  void ExpectTheStopTakesOverInOneStep(std::size_t t, const char* row) {
+    ASSERT_GE(t, 2U);
+    if (log_.size() == t + 1) {
+      Ticks(1);  // the tick after, for the record only
+    }
+    const TickRec& entry = log_[t];
+    const TickRec& before = log_[t - 1];
+    const TickRec& before2 = log_[t - 2];
+    ASSERT_TRUE(entry.q_out_valid && before.q_out_valid && before2.q_out_valid)
+        << Window(static_cast<int>(t), 3);
+    ASSERT_TRUE(before.body.clik_ran) << "precondition: the law was not running before the stop\n"
+                                      << Window(static_cast<int>(t), 3);
+    ASSERT_TRUE(entry.body.clik_ran)
+        << "precondition: the law did not step the command on the tick the stop took over\n"
+        << Window(static_cast<int>(t), 3);
+    const std::vector<double> qdd = DerivedQddMax();
+    ASSERT_GE(qdd.size(), static_cast<std::size_t>(kUr5eArmDof));
+
+    std::array<double, kUr5eArmDof> q = before.q_cmd;
+    std::array<double, kUr5eArmDof> qd = before.qd_cmd;
+    // The box the controller's own ramp clamps to, so a stop that reaches it
+    // is the same step here.
+    const std::vector<double>& lower = ctrl_->GetArmPositionBoxLowerForTesting();
+    const std::vector<double>& upper = ctrl_->GetArmPositionBoxUpperForTesting();
+    ASSERT_GE(lower.size(), static_cast<std::size_t>(kUr5eArmDof));
+    ASSERT_GE(upper.size(), static_cast<std::size_t>(kUr5eArmDof));
+    const auto ramp =
+        rtc::catching::JointSpaceDecelStep(q, qd, qdd, lower, upper, kUr5eArmDof, kDt);
+    ASSERT_TRUE(ramp.valid);
+
+    double moved = 0.0;
+    double step_entry = 0.0;
+    double step_after = 0.0;
+    double worst = 0.0;
+    for (int j = 0; j < kUr5eArmDof; ++j) {
+      const auto u = static_cast<std::size_t>(j);
+      const double last = std::abs(before.q_out[u] - before2.q_out[u]);
+      const double step = std::abs(entry.q_out[u] - before.q_out[u]);
+      const double allowed = last + qdd[u] * kDt * kDt;
+      moved = std::max(moved, last);
+      step_entry = std::max(step_entry, step);
+      worst = std::max(worst, step / allowed);
+      if (log_[t + 1].q_out_valid) {
+        step_after = std::max(step_after, std::abs(log_[t + 1].q_out[u] - entry.q_out[u]));
+      }
+      EXPECT_LE(step, allowed + 1e-12)
+          << row << ": joint " << j << " moved " << step << " rad on the tick the stop took over, "
+          << last << " rad the tick before\n"
+          << Window(static_cast<int>(t), 2);
+      EXPECT_DOUBLE_EQ(entry.q_out[u], q[u])
+          << row << ": joint " << j << " is not one ramp step from the command the tick began with";
+      EXPECT_DOUBLE_EQ(entry.qd_cmd[u], qd[u]) << row << ": joint " << j << " (velocity)";
+    }
+    std::printf(
+        "[ MEASURED ] #749 %s: max |dq| [rad] before %.3e, on the stop's first tick %.3e, "
+        "after %.3e; step / (before + qdd*h^2) = %.3f\n",
+        row, moved, step_entry, step_after, worst);
+    ASSERT_GT(moved, kMovingStep) << row
+                                  << ": the command was (nearly) at rest — the tick would "
+                                     "pass whatever it did. The scenario must stop a "
+                                     "moving arm.";
+  }
+
+  /// One tick of TRACK_ERR (see ATrackErrAbortReturnsAndReArms); the tick.
+  std::size_t KickTrackErr() {
+    state_.devices[0].positions[1] += kTrackErrKick;
+    const std::size_t kick = log_.size();
+    Ticks(1);
+    return kick;
+  }
+
+  /// Tick `t` took the edge `from` → `to` for `reason`.
+  void ExpectEdgeAt(std::size_t t, Mode from, Reason reason, Mode to = Mode::kAbortSafe) const {
+    ASSERT_GT(t, 0U);
+    ASSERT_LT(t, log_.size());
+    ASSERT_EQ(log_[t - 1].mode, from) << Window(static_cast<int>(t), 3);
+    ASSERT_EQ(log_[t].mode, to) << Window(static_cast<int>(t), 3);
+    ASSERT_EQ(log_[t].reason, reason) << Window(static_cast<int>(t), 3);
+  }
+
+  /// A measured-position offset well past `track_err_abort`.
+  static constexpr double kTrackErrKick = 0.6;
+
+  /// A per-tick step above which a doubled step breaks the bound above:
+  /// 2·Δ − q̈max·h² > Δ + q̈max·h² needs Δ > 2·q̈max·h² = 1.6e-5 rad on the
+  /// shipped box. 0.02 rad/s.
+  static constexpr double kMovingStep = 4e-5;
 
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
@@ -2839,6 +2939,358 @@ TEST_F(AbortInHoldTest, AnAbortAfterConfirmedContactKeepsTheBallUntilTheReturn) 
 
 TEST_F(AbortInHoldTest, AnAbortWithNoContactStillKeepsTheHandClosedUntilTheReturn) {
   AbortInHoldThenReturn(false);
+}
+
+// ── #749: the stop takes over in one step ───────────────────────────────────
+//
+// Three reasons are known only after the law has integrated the command:
+// TRACK_ERR (judged on the new command), REF_SATURATED (reported after the
+// solve) and BALL_STALE_LONG (judged after a healthy law tick). On that tick
+// the supervisor enters a mode whose motion is the joint-space ramp, and the
+// ramp used to step the command the law had just stepped — two steps in one
+// tick, about twice the previous step (1.9 – 2.4 times, measured on every row
+// below; #749). One case per row of the transition table that can be reached
+// that way, under each form of the CLIK's acceleration bound (box, kinematic,
+// dynamic).
+
+class StopEntryTest : public SupervisorScenarioTest,
+                      public ::testing::WithParamInterface<const char*> {
+ protected:
+  /// A `sat_ticks` no streak in these cases reaches (the key must be positive).
+  static constexpr int kNoSaturationAbort = 100000;
+
+  std::function<void(YAML::Node&)> Form(
+      const std::function<void(YAML::Node&)>& more = nullptr) const {
+    const std::string form = GetParam();
+    return [form, more](YAML::Node& y) {
+      y["catching"]["joint_cmd"]["accel_constraint"] = form;
+      if (form == "kinematic") {
+        // The form's own keys, at the validator's ceilings (no shipped value).
+        y["catching"]["joint_cmd"]["task_accel_max_linear"] = 500.0;
+        y["catching"]["joint_cmd"]["task_accel_max_angular"] = 500.0;
+      }
+      if (more) {
+        more(y);
+      }
+    };
+  }
+
+  /// G5-B's far target: the reference saturates from its first step and the
+  /// arm is still moving at every instant these cases stop it.
+  Eigen::Vector3d FarPc() const {
+    return start_pose_.translation() + Eigen::Vector3d(0.45, -0.35, 0.30);
+  }
+
+  static void NoSaturationAbort(YAML::Node& y) {
+    y["catching"]["supervisor"]["sat_ticks"] = kNoSaturationAbort;
+  }
+};
+
+TEST_P(StopEntryTest, ATrackErrInApproach) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 1.0, Form()));
+  ASSERT_TRUE(TickUntilMode(Mode::kApproach, 200)) << Transitions();
+  Ticks(20);
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kApproach, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "APPROACH TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ATrackErrInCommitted) {
+  // t_c 0.45 s out: APPROACH lasts 90 ms and the freeze finds the arm moving.
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.45, Form()));
+  ASSERT_TRUE(TickUntilMode(Mode::kCommitted, 400)) << Transitions();
+  Ticks(2);
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kCommitted, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "COMMITTED TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ATrackErrInClosing) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.4, Form()));
+  ASSERT_TRUE(TickUntilMode(Mode::kClosing, 400)) << Transitions();
+  Ticks(2);
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kClosing, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "CLOSING TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ATrackErrOnTheDecelEntryTick) {
+  // The tick that would enter DECEL (now_lead >= t_c, still CLOSING): the law
+  // it runs is the DECEL entry step, and CLOSING answers its TRACK_ERR.
+  ASSERT_NO_FATAL_FAILURE(BringUp(FarPc(), StartAxis(), 0.0, 0.4, Form(NoSaturationAbort)));
+  ASSERT_TRUE(TickUntilMode(Mode::kClosing, 400)) << Transitions();
+  std::size_t kick = 0;
+  pre_tick_ = [this, &kick] {
+    if (kick == 0 && ctrl_->GetMode() == Mode::kClosing &&
+        Now() >= ctrl_->GetFollowedPlanForTesting().t_c_ns) {
+      state_.devices[0].positions[1] += kTrackErrKick;
+      kick = log_.size();
+    }
+  };
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->GetMode() != Mode::kClosing; }, 400))
+      << Transitions();
+  pre_tick_ = nullptr;
+  ASSERT_GT(kick, 0U) << Transitions();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kClosing, Reason::kTrackErr));
+  ASSERT_LT(log_[kick - 1].before_ns, log_[kick - 1].plan_t_c_ns)
+      << "the kick came after the DECEL entry tick";
+  ExpectTheStopTakesOverInOneStep(kick, "CLOSING (DECEL entry step) TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ATrackErrInDecel) {
+  // The arm is still moving at t_c, so DECEL lasts more than its entry tick.
+  ASSERT_NO_FATAL_FAILURE(BringUp(FarPc(), StartAxis(), 0.0, 0.4, Form(NoSaturationAbort)));
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 400)) << Transitions();
+  Ticks(2);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kDecel) << Transitions();
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kDecel, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "DECEL TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ATrackErrInHold) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(FarPc(), StartAxis(), 0.0, 0.4, Form([](YAML::Node& y) {
+                                    NoSaturationAbort(y);
+                                    y["catching"]["robot"]["hand"]["T_hold"] = 0.3;
+                                  })));
+  ASSERT_TRUE(TickUntilMode(Mode::kHold, 1000)) << Transitions();
+  Ticks(3);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kHold) << Transitions();
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kHold, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "HOLD TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ASaturationInApproach) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(FarPc(), StartAxis(), 0.0, 1.0, Form([](YAML::Node& y) {
+                                    y["catching"]["supervisor"]["sat_ticks"] = 50;
+                                  })));
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 400)) << Transitions();
+  const std::size_t entry = log_.size() - 1;
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectEdgeAt(entry, Mode::kApproach, Reason::kRefSaturated, Mode::kRetreat));
+  ExpectTheStopTakesOverInOneStep(entry, "APPROACH REF_SATURATED -> RETREAT");
+}
+
+TEST_P(StopEntryTest, ASaturationInCommitted) {
+  // SaturationAfterTheFreezeAbortsOnRefSaturated's timing: the 40-tick streak
+  // completes inside COMMITTED.
+  ASSERT_NO_FATAL_FAILURE(BringUp(FarPc(), StartAxis(), 0.0, 0.4, Form([](YAML::Node& y) {
+                                    y["catching"]["supervisor"]["sat_ticks"] = 40;
+                                  })));
+  ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 400)) << Transitions();
+  const std::size_t entry = log_.size() - 1;
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(entry, Mode::kCommitted, Reason::kRefSaturated));
+  ExpectTheStopTakesOverInOneStep(entry, "COMMITTED REF_SATURATED -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ASaturationInClosing) {
+  // APPROACH is 20 ticks and COMMITTED 40: a 70-tick streak completes in CLOSING.
+  ASSERT_NO_FATAL_FAILURE(BringUp(FarPc(), StartAxis(), 0.0, 0.4, Form([](YAML::Node& y) {
+                                    y["catching"]["supervisor"]["sat_ticks"] = 70;
+                                  })));
+  ASSERT_TRUE(TickUntilMode(Mode::kAbortSafe, 400)) << Transitions();
+  const std::size_t entry = log_.size() - 1;
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(entry, Mode::kClosing, Reason::kRefSaturated));
+  ExpectTheStopTakesOverInOneStep(entry, "CLOSING REF_SATURATED -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ALongStaleInCommitted) {
+  // COMMITTED from 50 ms to 570 ms; the lane goes quiet at the freeze and is
+  // long-stale 0.22 s later, with the arm still on its way.
+  ASSERT_NO_FATAL_FAILURE(BringUp(FarPc(), StartAxis(), 0.0, 0.85, Form([](YAML::Node& y) {
+                                    NoSaturationAbort(y);
+                                    y["catching"]["planner"]["freeze"]["T_freeze"] = 0.8;
+                                    y["catching"]["supervisor"]["stale_committed_max_s"] = 0.02;
+                                  })));
+  ASSERT_TRUE(TickUntilMode(Mode::kCommitted, 400)) << Transitions();
+  publishing_ = false;
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->GetMode() != Mode::kCommitted; }, 400))
+      << Transitions();
+  const std::size_t entry = log_.size() - 1;
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(entry, Mode::kCommitted, Reason::kBallStaleLong));
+  ExpectTheStopTakesOverInOneStep(entry, "COMMITTED BALL_STALE_LONG -> ABORT_SAFE");
+}
+
+TEST_P(StopEntryTest, ALongStaleInClosing) {
+  // The lane goes quiet at the freeze (40 ms); long-stale 0.3 s later is
+  // inside CLOSING (120 ms – 400 ms).
+  ASSERT_NO_FATAL_FAILURE(BringUp(FarPc(), StartAxis(), 0.0, 0.4, Form(NoSaturationAbort)));
+  ASSERT_TRUE(TickUntilMode(Mode::kCommitted, 400)) << Transitions();
+  publishing_ = false;
+  ASSERT_TRUE(TickUntil(
+      [this] {
+        const Mode m = ctrl_->GetMode();
+        return m != Mode::kCommitted && m != Mode::kClosing;
+      },
+      400))
+      << Transitions();
+  const std::size_t entry = log_.size() - 1;
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(entry, Mode::kClosing, Reason::kBallStaleLong));
+  ExpectTheStopTakesOverInOneStep(entry, "CLOSING BALL_STALE_LONG -> ABORT_SAFE");
+}
+
+// The normal end of a trial (HOLD → RETREAT once T_hold is over) is not in the
+// table above: it is not an abort, the law's step stays, and the command is
+// pinned as it is by kNormalTrialCommandDigest (L7 §4.1). What that leaves is
+// bounded here at the hold the parser defaults to and the shipped YAML does not
+// override: by then the command has settled, and the law's step plus the
+// ramp's is inside what one tick allows.
+//
+// Not under `box`. There the command is still settling 0.5 s into HOLD and the
+// tick HOLD ends on breaks the bound (measured 3.07e-5 rad the tick before,
+// 5.32e-5 rad on it; the other two forms: 1.5e-7 rad on both). No shipped
+// configuration runs that form, and the catching layer drops it in #712.
+TEST_P(StopEntryTest, TheNormalEndOfHoldStaysInsideTheStepBoundAtTheShippedHold) {
+  ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6, Form([](YAML::Node& y) {
+                                    y["catching"]["robot"]["hand"]["T_hold"] = 0.5;
+                                  })));
+  tips_enabled_ = true;
+  ball_in_hand_ = true;
+  ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+  const std::size_t entry = log_.size() - 1;
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(entry, Mode::kHold, Reason::kNone, Mode::kRetreat));
+  ASSERT_GE(entry, 2U);
+  ASSERT_TRUE(log_[entry].body.clik_ran) << "precondition: HOLD's law did not run on its last tick";
+  const std::vector<double> qdd = DerivedQddMax();
+  ASSERT_GE(qdd.size(), static_cast<std::size_t>(kUr5eArmDof));
+  const bool box = std::string(GetParam()) == "box";
+  double step_before = 0.0;
+  double step_entry = 0.0;
+  for (int j = 0; j < kUr5eArmDof; ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    const double last = std::abs(log_[entry - 1].q_out[u] - log_[entry - 2].q_out[u]);
+    const double step = std::abs(log_[entry].q_out[u] - log_[entry - 1].q_out[u]);
+    step_before = std::max(step_before, last);
+    step_entry = std::max(step_entry, step);
+    if (box) {
+      continue;  // measured and printed below, not asserted (see above)
+    }
+    EXPECT_LE(step, last + qdd[u] * kDt * kDt + 1e-12)
+        << "joint " << j << " moved " << step << " rad on the tick HOLD ended, " << last
+        << " rad the tick before\n"
+        << Window(static_cast<int>(entry), 2);
+  }
+  std::printf(
+      "[ MEASURED ] #749 HOLD (T_hold 0.5 s over) -> RETREAT, %s: max |dq| [rad] before %.3e, on "
+      "the tick HOLD ended %.3e\n",
+      GetParam(), step_before, step_entry);
+  if (box) {
+    GTEST_SKIP() << "the bound is not asserted under `box`: " << step_before << " rad the tick "
+                 << "before, " << step_entry << " rad on the tick HOLD ended";
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Forms, StopEntryTest, ::testing::Values("box", "kinematic", "dynamic"));
+
+/// The same rows under the mpc law (the segment follower), where TRACK_ERR and
+/// BALL_STALE_LONG are the two reasons that follow the command — it has no
+/// reference generator, so nothing saturates. The first segment is at rest
+/// until t_c − 0.3 s and moves from there to t_c + 0.1 s.
+class StopEntryMpcTest : public DecelMpcScenarioTest {
+ protected:
+  /// A freeze and a close short enough that APPROACH and COMMITTED still hold
+  /// the arm while the segment moves it: APPROACH to t_c − 0.15 s, COMMITTED
+  /// to t_c − 0.10 s.
+  static void LateFreeze(YAML::Node& y) {
+    y["catching"]["robot"]["hand"]["T_close_e2e"] = 0.10;
+    y["catching"]["planner"]["freeze"]["T_freeze"] = 0.15;
+  }
+};
+
+TEST_F(StopEntryMpcTest, ATrackErrInApproach) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc(LateFreeze));
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickToJustBefore(first_seg_.t_c_ns - 200 * kMsNs)) << Transitions();
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kApproach, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "mpc APPROACH TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_F(StopEntryMpcTest, ATrackErrInCommitted) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc(LateFreeze));
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kCommitted, 1500)) << Transitions();
+  Ticks(5);
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kCommitted, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "mpc COMMITTED TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_F(StopEntryMpcTest, ATrackErrInClosing) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickToJustBefore(first_seg_.t_c_ns - 100 * kMsNs)) << Transitions();
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kClosing, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "mpc CLOSING TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_F(StopEntryMpcTest, ATrackErrOnTheDecelEntryTick) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kClosing, 1500)) << Transitions();
+  std::size_t kick = 0;
+  pre_tick_ = [this, &kick] {
+    if (kick == 0 && ctrl_->GetMode() == Mode::kClosing && Now() >= first_seg_.t_c_ns) {
+      state_.devices[0].positions[1] += kTrackErrKick;
+      kick = log_.size();
+    }
+  };
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->GetMode() != Mode::kClosing; }, 400))
+      << Transitions();
+  pre_tick_ = nullptr;
+  ASSERT_GT(kick, 0U) << Transitions();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kClosing, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "mpc CLOSING (DECEL entry step) TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_F(StopEntryMpcTest, ATrackErrInDecel) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
+  Ticks(3);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kDecel) << Transitions();
+  const std::size_t kick = KickTrackErr();
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(kick, Mode::kDecel, Reason::kTrackErr));
+  ExpectTheStopTakesOverInOneStep(kick, "mpc DECEL TRACK_ERR -> ABORT_SAFE");
+}
+
+TEST_F(StopEntryMpcTest, ALongStaleInClosing) {
+  // Quiet from the freeze (t_c − 0.36 s): long-stale 0.3 s later, in CLOSING,
+  // with the segment cruising.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kCommitted, 1500)) << Transitions();
+  publishing_ = false;
+  ASSERT_TRUE(TickUntil(
+      [this] {
+        const Mode m = ctrl_->GetMode();
+        return m != Mode::kCommitted && m != Mode::kClosing;
+      },
+      400))
+      << Transitions();
+  const std::size_t entry = log_.size() - 1;
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(entry, Mode::kClosing, Reason::kBallStaleLong));
+  ExpectTheStopTakesOverInOneStep(entry, "mpc CLOSING BALL_STALE_LONG -> ABORT_SAFE");
+}
+
+TEST_F(StopEntryMpcTest, ALongStaleInCommitted) {
+  // COMMITTED from t_c − 0.36 s to t_c − 0.10 s; quiet from the freeze,
+  // long-stale 0.22 s later (t_c − 0.14 s), the segment near its cruise speed.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc([](YAML::Node& y) {
+    y["catching"]["robot"]["hand"]["T_close_e2e"] = 0.10;
+    y["catching"]["supervisor"]["stale_committed_max_s"] = 0.02;
+  }));
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  ASSERT_TRUE(TickUntilMode(Mode::kCommitted, 1500)) << Transitions();
+  publishing_ = false;
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->GetMode() != Mode::kCommitted; }, 400))
+      << Transitions();
+  const std::size_t entry = log_.size() - 1;
+  ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(entry, Mode::kCommitted, Reason::kBallStaleLong));
+  ExpectTheStopTakesOverInOneStep(entry, "mpc COMMITTED BALL_STALE_LONG -> ABORT_SAFE");
 }
 
 TEST_F(SupervisorScenarioTest, TheHandClosesAtTcmdOnTheRealAxisUnderAnArmLag) {
