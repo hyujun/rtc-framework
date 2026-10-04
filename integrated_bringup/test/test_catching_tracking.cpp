@@ -44,12 +44,14 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -903,6 +905,150 @@ TEST_F(CatchingTrackingTest, ATickThatDoesNotRunTheLawClearsTheBlocksItDidNotCom
   // empty because there is no longer a plan.
   EXPECT_FALSE(stopped.plan_valid) << "the stop did not invalidate the plan";
   EXPECT_DOUBLE_EQ(stopped.plan_p_c[0], 0.0);
+}
+
+// ── The catch frame's provisional flag (D-17) ───────────────────────────────
+//
+// The flag is `urdf.extra_frames.<name>.provisional` in the ROBOT config, so
+// it reaches the controller through the model config and not through
+// `catching:`. The user clears it after looking at a render of the frame on
+// the hand; until then a real arm must not be driven to that frame.
+//
+// Every case above is the control: the same profile and the same devices —
+// which declare no backend, so they are judged on the real-arm axis — with the
+// flag cleared (MakeConfigWithCatchFrame), and the controller arms. The cases
+// below change the flag and nothing else. The shared builder stays the same in
+// all of them: the flag is not a property of the model it built.
+
+class CatchFrameFlagTest : public CatchingTrackingTest {
+ protected:
+  /// Configure — no activation — with `model_cfg` as the robot's model config.
+  /// `sim_backends` binds every device group to the simulator backend, which is
+  /// what moves the configure off the real-arm axis.
+  void Configure(const rtc_urdf_bridge::ModelConfig& model_cfg, bool sim_backends) {
+    ctrl_ = std::make_unique<DemoCatchingController>("");
+    ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
+    ctrl_->SetSystemModelConfig(model_cfg);
+    ctrl_->SetSharedModelBuilder(builder_);
+    auto devices = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
+    if (sim_backends) {
+      for (auto& [name, device] : devices) {
+        rtc::DeviceBackendBinding backend;
+        backend.type = integrated_bringup::kCatchingSimBackendType;
+        backend.state_topic = "/" + name + "/joint_states";
+        backend.command_topic = "/" + name + "/joint_command";
+        device.backend = backend;
+      }
+    }
+    ctrl_->SetDeviceNameConfigs(std::move(devices));
+    const rclcpp_lifecycle::State prev;
+    const YAML::Node yaml = YAML::Load(
+        TrackingYaml(topic_, start_pose_.translation(), start_pose_.rotation().col(2), 0.0, 5.0));
+    ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+
+  /// The model config of every case above, with the catch frame's flag set.
+  static rtc_urdf_bridge::ModelConfig ConfigWithFlag(bool provisional) {
+    rtc_urdf_bridge::ModelConfig cfg = MakeConfigWithCatchFrame();
+    cfg.extra_frames.back().provisional = provisional;
+    return cfg;
+  }
+
+  /// How many of the first `count` entries carry the catch frame's key with
+  /// `reason`.
+  template <std::size_t N>
+  static int CountFlagEntries(const std::array<rtc::catching::CatchingValidationEntry, N>& entries,
+                              std::size_t count, rtc::catching::CatchingValidationReason reason) {
+    int n = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+      if (std::string_view(entries[i].key) == rtc::catching::kCatchFrameProvisionalKey &&
+          entries[i].reason == reason) {
+        ++n;
+      }
+    }
+    return n;
+  }
+
+  int FlagFailures() const {
+    const auto& report = ctrl_->GetValidationReport();
+    return CountFlagEntries(report.failures, report.failure_count,
+                            rtc::catching::CatchingValidationReason::kProvisionalOnRealArm);
+  }
+
+  int FlagWarnings() const {
+    const auto& report = ctrl_->GetValidationReport();
+    return CountFlagEntries(report.warnings, report.warning_count,
+                            rtc::catching::CatchingValidationReason::kProvisionalWarning);
+  }
+};
+
+TEST_F(CatchFrameFlagTest, AProvisionalCatchFrameParksARealArmConfiguration) {
+  const rclcpp_lifecycle::State prev;
+
+  // The control, stated here so the two halves are read together.
+  ASSERT_NO_FATAL_FAILURE(Configure(ConfigWithFlag(false), /*sim_backends=*/false));
+  ASSERT_TRUE(ctrl_->IsRealArmConfig()) << "precondition: judged on the strict axis";
+  ASSERT_FALSE(ctrl_->IsSimOnlyDisabled()) << "precondition: the cleared profile arms";
+  const std::size_t cleared_failures = ctrl_->GetValidationReport().failure_count;
+  EXPECT_EQ(FlagFailures(), 0);
+  ASSERT_EQ(ctrl_->on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+
+  ASSERT_NO_FATAL_FAILURE(Configure(ConfigWithFlag(true), /*sim_backends=*/false));
+  ASSERT_TRUE(ctrl_->IsRealArmConfig());
+  EXPECT_EQ(FlagFailures(), 1);
+  EXPECT_EQ(ctrl_->GetValidationReport().failure_count, cleared_failures + 1)
+      << "something other than the flag changed between the two configures";
+  // Reporting the failure is not parking on it: on_configure parks only on the
+  // keys it counts as consumed, and a key outside that set ends as a warning.
+  EXPECT_TRUE(ctrl_->IsSimOnlyDisabled()) << "an unconfirmed catch frame did not park a real arm";
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kConsumedValues);
+  EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  EXPECT_EQ(ctrl_->ActivationGeneration(), 0U) << "the base activation ran anyway";
+}
+
+TEST_F(CatchFrameFlagTest, AProvisionalCatchFrameOnlyWarnsInSim) {
+  ASSERT_NO_FATAL_FAILURE(Configure(ConfigWithFlag(true), /*sim_backends=*/true));
+  ASSERT_FALSE(ctrl_->IsRealArmConfig()) << "precondition: judged on the sim axis";
+  EXPECT_EQ(FlagWarnings(), 1);
+  EXPECT_EQ(FlagFailures(), 0);
+  EXPECT_FALSE(ctrl_->IsSimOnlyDisabled());
+  const rclcpp_lifecycle::State prev;
+  EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_F(CatchFrameFlagTest, ACatchFrameWithNoFlagToReadCountsAsProvisional) {
+  // The model still has the frame (the builder is the shared one), but the
+  // config no longer lists it under extra_frames — what a catch frame named
+  // after a URDF link looks like. There is no flag to read, and silence is not
+  // a confirmation: without this rule, renaming the catch frame to a URDF frame
+  // would walk a real arm past the gate.
+  rtc_urdf_bridge::ModelConfig cfg = MakeConfigWithCatchFrame();
+  cfg.extra_frames.clear();
+  ASSERT_NO_FATAL_FAILURE(Configure(cfg, /*sim_backends=*/false));
+  ASSERT_TRUE(ctrl_->IsRealArmConfig());
+  EXPECT_EQ(FlagFailures(), 1);
+  EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kConsumedValues);
+}
+
+TEST_F(CatchFrameFlagTest, WithoutAModelTheFlagIsNotJudged) {
+  // No URDF path means no model: the arm is held, not driven, and nothing
+  // reads the catch frame. A gate on a value nothing reads would park the hand
+  // step rig of a robot that has no arm model at all.
+  rtc_urdf_bridge::ModelConfig cfg = ConfigWithFlag(true);
+  cfg.urdf_path.clear();
+  ctrl_ = std::make_unique<DemoCatchingController>("");
+  ctrl_->SetSystemModelConfig(cfg);
+  ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+  const rclcpp_lifecycle::State prev;
+  const YAML::Node yaml = YAML::Load(
+      TrackingYaml(topic_, start_pose_.translation(), start_pose_.rotation().col(2), 0.0, 5.0));
+  ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_TRUE(ctrl_->IsRealArmConfig());
+  EXPECT_EQ(FlagFailures(), 0);
+  EXPECT_EQ(FlagWarnings(), 0);
 }
 
 }  // namespace

@@ -20,6 +20,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -129,8 +130,36 @@ namespace {
   if (k == "robot.hand") {
     return true;
   }
+  // The catch frame's flag (D-17). on_configure reports it only when a model
+  // is configured — exactly when the tracking law reads the frame — so the key
+  // is consumed whenever it appears. Left out of this set, a provisional frame
+  // on a real arm ends as a "not consumed" warning and the arm goes on to arm.
+  if (k == rtc::catching::kCatchFrameProvisionalKey) {
+    return true;
+  }
   return k.starts_with("robot.hand.") && k != "robot.hand.T_close_e2e" &&
          k != "robot.hand.T_close_timeout" && k != "robot.hand.T_release_timeout";
+}
+
+/// Whether the catch frame still waits for the user's confirmation (D-17), or
+/// nullopt when no model is configured: the arm is then held, not driven
+/// (SetupArmCommand), nothing reads the frame, and there is nothing to judge.
+/// The condition is AcquireModelBuilder's own.
+///
+/// With a model, a catch frame that is not an `urdf.extra_frames` entry has no
+/// flag to read and counts as provisional. Silence does not prove the user
+/// looked at the frame — the rule `real_arm_config_` follows for the backends.
+[[nodiscard]] std::optional<bool> CatchFrameProvisional(const rtc_urdf_bridge::ModelConfig* cfg,
+                                                        std::string_view name) {
+  if (cfg == nullptr || cfg->urdf_path.empty()) {
+    return std::nullopt;
+  }
+  for (const auto& frame : cfg->extra_frames) {
+    if (frame.name == name) {
+      return frame.provisional;
+    }
+  }
+  return true;
 }
 
 /// Read-only descriptor for the mirrored profile parameters. They exist so an
@@ -1043,6 +1072,20 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     }
     report_ =
         rtc::catching::ValidateCatchingParams(params_, 1.0 / GetDefaultDt(), real_arm_config_);
+    // The catch frame's provisional flag lives in the robot config
+    // (`urdf.extra_frames`), not in `catching:`, so the validator above cannot
+    // see it. It follows the rule of every other provisional flag: it parks a
+    // real-arm configuration and warns in sim (L0 §5.3).
+    if (const auto provisional = CatchFrameProvisional(GetSystemModelConfig(), catch_frame_name_);
+        provisional.has_value()) {
+      if (*provisional) {
+        RCLCPP_WARN(logger_,
+                    "catch frame '%s' is not confirmed: 'urdf.extra_frames.%s.provisional' is "
+                    "true, or the frame is not an urdf.extra_frames entry and has no flag.",
+                    catch_frame_name_.c_str(), catch_frame_name_.c_str());
+      }
+      rtc::catching::CheckCatchFrameProvisional(report_, *provisional, real_arm_config_);
+    }
     // The DECEL law (MPC MD-44) — decided here, once, for the whole
     // configuration: the planner's setup below builds the decel cores only
     // for it, and the tick never changes it.
