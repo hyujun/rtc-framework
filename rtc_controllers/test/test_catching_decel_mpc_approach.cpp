@@ -1,6 +1,6 @@
 // E1-F07 (#660): the single-arm MPC core from APPROACH to the stop — the
 // pre-catch grid and the catch terms added to DecelMpc (decel_mpc.hpp;
-// formulation §1.6, plan MD-51 – MD-53). The stop-segment behaviour E1-F01
+// formulation §1.6, MD-51 – MD-53). The stop-segment behaviour E1-F01
 // pinned stays in test_catching_decel_mpc.cpp; this suite owns what is new,
 // plus the regression that the new code leaves the old problem alone.
 //
@@ -1274,7 +1274,7 @@ TEST(DecelMpcApproach, RtiConvergesOnAReach) {
   EXPECT_LE(res.slack_max, 1e-5);
 }
 
-// The velocity target is γ_ref·v̂_b (plan MD-53): the solution's γ follows it.
+// The velocity target is γ_ref·v̂_b (MD-53): the solution's γ follows it.
 TEST(DecelMpcApproach, SolutionGammaFollowsGammaRef) {
   Reach6 f = MakeReach6();
   f.params.w_v_par = 2000.0;
@@ -1730,9 +1730,9 @@ TEST(CatchPositionWeightTest, RejectsNonFiniteAndNonPositiveArguments) {
   EXPECT_EQ(w, sentinel) << "the output is written only on success";
 }
 
-// ── 9. Timing: the measurement the grid decision reads (plan MD-51) ──────────
+// ── 9. Timing: the measurement the grid decision reads (MD-51) ──────────
 // Informational: nothing here asserts a time. The grid is chosen from this
-// table by the rule in the plan (warm p99 ≤ 10 ms, cold p99 ≤ 12 ms, no failed
+// table by this rule (warm p99 ≤ 10 ms, cold p99 ≤ 12 ms, no failed
 // solve; Release, 7 dof, 200 samples) and confirmed by the user, because the
 // choice has costs outside this core (payload, sampler).
 //
@@ -1767,7 +1767,7 @@ const TimingGrid kTimingGrids[] = {
     {"B1", {12, 0.05, 7, 0.05, 1, {1, 1, 2, 3}}},
     {"A2", {12, 0.05, 14, 0.025, 2, {1, 1, 2, 2, 4, 4}}},
     {"B2", {12, 0.05, 7, 0.05, 2, {1, 1, 2, 3}}},
-    // The grid the plan settled on (MD-54): the pre-catch spacing doubled, so
+    // The grid MD-54 settled on: the pre-catch spacing doubled, so
     // B2's jerk hold (0.1 s) with half its pre-catch nodes.
     {"C1", {6, 0.1, 7, 0.05, 1, {1, 1, 2, 3}}},
 };
@@ -2006,9 +2006,10 @@ void RunGridTiming(const ArmModel& arm, const DecelMpcLimits& lim, const TimingG
 }
 
 // A warm solve from ANOTHER problem's iterates: ProxQP calls a feasible QP
-// infeasible on about a quarter of these (plan §8). The core retries from zero,
-// so a caller that left cold_start off on a new throw still gets the plan — the
-// one a cold solve gives. A QP that really is infeasible fails both runs.
+// infeasible on about a quarter of these (formulation §1.6; measured in E1-F07,
+// #660). The core retries from zero, so a caller that left cold_start off on a
+// new throw still gets the plan — the one a cold solve gives. A QP that really
+// is infeasible fails both runs.
 TEST(DecelMpcApproach, AStaleWarmStartIsRetriedCold) {
   const ArmModel arm = RealArm7();
   const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
@@ -2089,7 +2090,7 @@ TEST(DecelMpcApproachTiming, GridTable6R) {
   }
 }
 
-// The velocity slack is off by default (plan MD-52); what turning it on costs,
+// The velocity slack is off by default (MD-52); what turning it on costs,
 // and whether its penalty row provokes ProxQP's false-infeasible verdict, is
 // E1-F10's input.
 TEST(DecelMpcApproachTiming, VelocitySlackOn7R) {
@@ -2101,7 +2102,7 @@ TEST(DecelMpcApproachTiming, VelocitySlackOn7R) {
 
 // What the solve time depends on. Each variant changes ONE thing (two where
 // named) in the smallest decision grid; none is a recommendation — they locate
-// the cost for the decision recorded in the plan (§8, E1-F07). Findings of the
+// the cost for the decision recorded in E1-F07 (#660). Findings of the
 // 2026-10-01 run are there; in short: the time is the QP's (linearisation and
 // condensing are ~0.1 ms), it halves without the torque rows and again with
 // half the pre-catch nodes, the solver tolerance and a pure variable rescaling

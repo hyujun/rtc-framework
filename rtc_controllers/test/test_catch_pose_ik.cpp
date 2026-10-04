@@ -506,7 +506,7 @@ TEST(CatchPoseIk, RepeatedAndInterleavedSolvesAreBitIdentical) {
   // A DIFFERENT candidate in between. This is the leak a warm-started solver
   // would show: same inputs, different answer, because the previous problem's
   // state survived. The map and the planner would then disagree purely on
-  // search order (plan §11).
+  // search order (L3 §4.2).
   const CatchPoseIkResult unrelated =
       ik.Solve(*a.handle, a.frame, other.p_c, other.v_ball, other_seed, o);
   const CatchPoseIkResult third = ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, seed, o);

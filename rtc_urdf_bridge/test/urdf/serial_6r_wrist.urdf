@@ -5,8 +5,8 @@
      base_link → link_1 … link_6 → catch_frame, joint axes [Z Y Y Y Z Y]. The
      last three (Y Z Y) form a wrist, so the 6×6 arm Jacobian is full rank over
      a broad region and w₆ = √det(J₆J₆ᵀ) is a meaningful number rather than a
-     structural zero — unlike serial_6dof.urdf, whose axes are all Z (σ_min ≡ 0,
-     the fixture trap recorded in the dynamic_catching plan §제약·함정).
+     structural zero — unlike serial_6dof.urdf, whose axes are all Z (σ_min ≡ 0:
+     a fixture trap).
 
      Two properties this fixture exists for, neither of which serial_7dof.urdf
      has:
@@ -23,7 +23,7 @@
         flange z and not any base axis. A frame or row mix-up in the 5-row
         selection therefore changes the answer instead of cancelling — the
         symmetry-breaking a fixture needs to pin a frame convention
-        (dynamic_catching plan §11).
+        (L3 §4.2).
 
      The link origins carry y-offsets so the chain is not planar in any
      configuration. Limits are finite and asymmetric so a step that walks into

@@ -1,11 +1,11 @@
 // L2 predicted-trajectory sampler — gates G2-A..E, G2-G, G2-H
-// (docs/dynamic_catching/L2_prediction.md §9) plus the count / NaN / spacing
+// (docs/dynamic_catching/ref/L2_prediction.md §9) plus the count / NaN / spacing
 // items of L1 G1-A that belong to the ROS-free core.
 //
 // Ported from the reference test_l2.cpp with thresholds unchanged (removed
 // from docs; `git show 482d18b3:docs/dynamic_catching/test_l2.cpp`). Two
 // fixture changes, both forced by the port and approved at S1
-// kick-off (sub-plan F-3):
+// kick-off:
 //  • the reference built 60 points at 1/60 s; the snapshot holds kCap = 40, so
 //    the fixture is 40 points (horizon 0.65 s) and every in-horizon sweep stops
 //    at the last sample instead of 0.9 s;
@@ -388,7 +388,7 @@ TEST(CatchingTrajSampler, G2HSnapshotTypesAreTriviallyCopyable) {
   SUCCEED();
 }
 
-// Sampling is on the lead axis (plan §3): with T_arm ≠ 0 the sample at
+// Sampling is on the lead axis (L0 §4.5): with T_arm ≠ 0 the sample at
 // MakeNowLead(now, T_arm) is the flight at now + T_arm, and the horizon flag
 // trips T_arm before the real axis reaches the last sample.
 TEST(CatchingTrajSampler, SamplesOnLeadAxisWithNonZeroTArm) {

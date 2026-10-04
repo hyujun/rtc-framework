@@ -1,5 +1,5 @@
 // Axis-alignment error tests (dynamic_catching S2.1, gate G4-D —
-// docs/dynamic_catching/L4_reference.md §4.5, §9).
+// docs/dynamic_catching/ref/L4_reference.md §4.5, §9).
 //
 //   ExpIdentity            exp([e_a]×) z = a_d residual < 1e-12 (regular region)
 //   OmegaGridContinuity    1° grid ‖ω_ref‖ step < 1.5·K_a·π/180 over 0–180°
