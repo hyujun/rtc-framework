@@ -2913,7 +2913,8 @@ printf '# RELIABLE to match the advertised rclcpp::QoS(10); depth=10 over there\
 echo 'int existing() { return 0; }  // the peer uses keep_last(10)' >"$dir/rtc_demo/src/existing.cpp"
 printf '// rclcpp::QoS(10) is what the publisher advertises\n/* SensorDataQoS() on their side\n * keep_last(5) */\n' >>"$dir/rtc_demo/src/existing.cpp"
 out=$(run_hook "$dir")
-expect_not_contains "80b: a comment that names a QoS is not flagged (python)" "$out" "rtc_demo/rtc_demo/sub.py"
+# The needle is the sensor's own line: the formatter gate may name the same file.
+expect_not_contains "80b: a comment that names a QoS is not flagged (python)" "$out" "ARCH-6 (topic QoS depth != 1): rtc_demo/rtc_demo/sub.py"
 expect_contains "80c: a trailing comment on a code line still is (the line is code)" "$out" "ARCH-6 (topic QoS depth != 1): rtc_demo/src/existing.cpp"
 expect_not_contains "80d: ...but whole-line C++ comments are not" "$out" "rclcpp::QoS(10) is what the publisher"
 expect_not_contains "...nor a block comment's lines" "$out" "keep_last(5)"
