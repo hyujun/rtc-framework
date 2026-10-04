@@ -298,7 +298,7 @@ TEST_P(CatchingLimitsTest, RespectsTheJointAndStepLimitsThroughout) {
   ASSERT_NO_FATAL_FAILURE(BringUp(p_c, a_d, 0.0, 5.0, [&form](YAML::Node& y) {
     y["catching"]["joint_cmd"]["accel_constraint"] = form;
     if (form == "kinematic") {
-      // The form's own keys, at the validator's ceilings (no shipped value).
+      // The form's own keys, high in the validator's range (no shipped value).
       y["catching"]["joint_cmd"]["task_accel_max_linear"] = 500.0;
       y["catching"]["joint_cmd"]["task_accel_max_angular"] = 500.0;
     }

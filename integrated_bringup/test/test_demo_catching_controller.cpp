@@ -1399,7 +1399,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
       YAML::Node joint_cmd = node["catching"]["joint_cmd"];
       joint_cmd["accel_constraint"] = "kinematic";
       joint_cmd.remove("eta_tau");  // the dynamic form's key
-      // The form's own keys, at the validator's ceilings (no shipped value).
+      // The form's own keys, high in the validator's range (no shipped value).
       joint_cmd["task_accel_max_linear"] = 500.0;
       joint_cmd["task_accel_max_angular"] = 500.0;
     }
@@ -1688,6 +1688,23 @@ TEST_P(ShippedCatchingProfile, WithoutAClikFormItParksInsteadOfFailingTheConfigu
   // that line; refused at parse, it would take every controller down with it.
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
+  const rclcpp_lifecycle::State prev;
+
+  // Positive control: the same profile as shipped is NOT parked, so a park
+  // below is the form's and not some other value this profile leaves open.
+  {
+    YAML::Node node = ShippedWithPlanner(profile, false, false);
+    auto node_handle = NodeWithProfile("catching_shipped_noform_" + profile + "_shipped", "mpc_on");
+    DemoCatchingController ctrl{""};
+    BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+    ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_FALSE(ctrl.IsSimOnlyDisabled())
+        << profile << ": the shipped sim profile parks (reason "
+        << static_cast<int>(ctrl.GetParkReason()) << ") — the cases below would prove nothing";
+    EXPECT_EQ(node_handle->get_parameter("joint_cmd.accel_constraint").as_string(), "dynamic");
+    ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
 
   struct Case {
     const char* name;
@@ -1713,7 +1730,6 @@ TEST_P(ShippedCatchingProfile, WithoutAClikFormItParksInsteadOfFailingTheConfigu
         NodeWithProfile("catching_shipped_noform_" + profile + "_" + c.name, "mpc_on");
     DemoCatchingController ctrl{""};
     BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
-    const rclcpp_lifecycle::State prev;
     ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
               DemoCatchingController::CallbackReturn::SUCCESS)
         << "a profile without a form must park, not refuse";
