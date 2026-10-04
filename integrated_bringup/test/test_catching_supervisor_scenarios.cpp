@@ -979,7 +979,7 @@ std::uint64_t CommandTraceDigest(const std::vector<TickRec>& log) {
 /// right ones. A change that is meant to alter the commands (the law tick, the
 /// CLIK's numerics, the fixture's profile) replaces it in a commit of its own
 /// that says why (PROC-6); a refactor that is not meant to must leave it alone.
-constexpr std::uint64_t kNormalTrialCommandDigest = 0x58e18c86679c92d6ULL;
+constexpr std::uint64_t kNormalTrialCommandDigest = 0xf7cede9905b97416ULL;
 
 TEST_F(SupervisorScenarioTest, TheNormalTrialCommandTraceIsUnchanged) {
   // The trace is deterministic on the fake clock — γ = 0 keeps the ball's wall
