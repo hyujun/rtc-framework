@@ -75,7 +75,7 @@
 | E1-F07 – F09 | [#660](https://github.com/hyujun/rtc-framework/issues/660) · [#661](https://github.com/hyujun/rtc-framework/issues/661) · [#662](https://github.com/hyujun/rtc-framework/issues/662) | APPROACH–정지 코어 · 계획기 · RT 추종 |
 | E1-F10 · F11 | [#663](https://github.com/hyujun/rtc-framework/issues/663) · [#698](https://github.com/hyujun/rtc-framework/issues/698) | `mpc` 튜닝, config 의 기능별 분리 |
 | E2-F01 – F03 | [#633](https://github.com/hyujun/rtc-framework/issues/633) · [#634](https://github.com/hyujun/rtc-framework/issues/634) · [#635](https://github.com/hyujun/rtc-framework/issues/635) | G1 자산 · config · launch · joint 구동 |
-| E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
+| E1-F12 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
 
 ## 4. `MD-n` — MPC · dual-arm 확장의 결정
 
