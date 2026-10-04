@@ -91,6 +91,7 @@ supervisor:
     return_s: 5.0
     provisional: false
 joint_cmd:
+  accel_constraint: dynamic
   K_p: 20.0
   K_a: 8.0
   K_n: 1.0

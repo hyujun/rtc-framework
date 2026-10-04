@@ -112,6 +112,7 @@ catching:
     v_max: 2.0
     a_max: 15.0
   joint_cmd:
+    accel_constraint: dynamic
     K_p: 20.0
     K_a: 8.0
     K_n: 1.0
