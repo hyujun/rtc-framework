@@ -80,7 +80,7 @@ class QPSolverWrapper {
   // and a solver that is asked the same question twice can give two answers.
   // dynamic_catching's catch-pose IK is exactly that case: the offline
   // catchability map (S3.5a) and the runtime planner (S6.2) must agree, so
-  // every candidate starts cold (L3 §4.2, plan §11).
+  // every candidate starts cold (L3 §4.2).
   //
   // Only a settings enum changes — no allocation, safe on the RT path. This is
   // the same mechanism the non-finite-iterate guard already uses (#546); this

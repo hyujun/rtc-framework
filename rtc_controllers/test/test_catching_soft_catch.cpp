@@ -1,14 +1,14 @@
 // L4 soft-catch translational reference — gates G4-A, G4-B, G4-C, G4-F, G4-G,
-// G4-I (docs/dynamic_catching/L4_reference.md §9) plus the reference's A5 and
+// G4-I (docs/dynamic_catching/ref/L4_reference.md §9) plus the reference's A5 and
 // reset() regressions.
 //
 // Ported from the reference test_l4.cpp with thresholds unchanged (removed
 // from docs; `git show 482d18b3:docs/dynamic_catching/test_l4.cpp`).
 // Deliberately NOT ported:
 //  • D3a/D3b/D3c (γ derate) — the feature is out of v1 (D-8, G4-E); the tests
-//    go with it, they are not weakened (S1 sub-plan F-4);
+//    go with it, they are not weakened;
 //  • the three §4.5 axis-alignment cases (G4-D) — the functions move to
-//    rtc_math se3 in S2.1 and are tested there (sub-plan F-2).
+//    rtc_math se3 in S2.1 and are tested there.
 // One mechanical change: the reference read e/ė with step(…, dt = 0); dt ≤ 0 is
 // invalid now (L4 §5.1), so those reads use Evaluate(), which is the same
 // computation without the integration.
@@ -295,7 +295,7 @@ TEST(CatchingSoftCatch, DegenerateGammaRampIsFiniteStep) {
   EXPECT_EQ(gdd, 0.0);
 }
 
-// Time axis (plan §3, L4 §5.2): γ is evaluated at now + T_arm. With the
+// Time axis (L0 §4.5, L4 §5.2): γ is evaluated at now + T_arm. With the
 // profile built from absolute instants and T_arm ≠ 0, the γ seen at real
 // instant `now` is the profile value at now + T_arm, not at now.
 TEST(CatchingSoftCatch, GammaEvaluatedOnLeadAxis) {

@@ -1,6 +1,6 @@
 /// @file test_clik_golden.cpp
 /// @brief Golden-vector regression of ClikReferenceGenerator (dynamic_catching
-///        S2.2a, gate G5-A2 — docs/dynamic_catching/L5_joint_cmd.md §5.1).
+///        S2.2a, gate G5-A2 — docs/dynamic_catching/ref/L5_joint_cmd.md §5.1).
 ///
 /// Pins the pre-extension behaviour so the S2.2b options can be added with
 /// "all options off ⇒ bit-identical output" checked, not assumed. The golden

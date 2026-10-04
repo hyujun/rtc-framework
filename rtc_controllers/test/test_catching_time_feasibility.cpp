@@ -1,4 +1,4 @@
-// L3 reachability gates — G3-A, G3-B (docs/dynamic_catching/L3_planner.md §9)
+// L3 reachability gates — G3-A, G3-B (docs/dynamic_catching/ref/L3_planner.md §9)
 // plus the S1.5 fixes (invalid-limit flag, directional-speed projection and
 // zero guards) and the error-budget / stopping-distance formulas.
 //
@@ -8,7 +8,7 @@
 // script" is now a literal table (below) produced by that script's
 // independently written Python closed form `t_min`, whose agreement with the
 // velocity/acceleration LP + bisection is ≤ 1.2e-5 s on these rows (LP grid
-// resolution) — S1 sub-plan F-5. Generator: numpy default_rng(20260919),
+// resolution). Generator: numpy default_rng(20260919),
 // q0, q1 ~ U(−2, 2), a ~ U(5, 20), w0 ~ U(−π, π), w_max = π, 40 rows, plus two
 // |w0| > w_max rows; values printed with %.17g. Both reference files were
 // removed from docs; read them with
@@ -229,7 +229,7 @@ TEST(CatchingTimeFeasibility, MaxJointTMinTakesWorstJointAndOrsFlags) {
   EXPECT_TRUE(MaxJointTMin(short_span, w0, q1, wm, am).input_invalid);
 }
 
-// Reach-time gate is on the lead axis (L3 §4.3, plan §3): with T_arm ≠ 0 the
+// Reach-time gate is on the lead axis (L3 §4.3, L0 §4.5): with T_arm ≠ 0 the
 // same t_min that passes on the real axis fails once T_arm is subtracted.
 TEST(CatchingTimeFeasibility, ReachTimeGateOnLeadAxis) {
   constexpr std::int64_t kMs = 1'000'000;

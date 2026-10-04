@@ -7,10 +7,10 @@
 //
 // Why test-only: the controller never re-propagates the ball — it trusts the
 // vision prediction and only interpolates between its samples
-// (docs/dynamic_catching/L0_core.md §1, §5.1). This model generates the
+// (docs/dynamic_catching/ref/L0_core.md §1, §5.1). This model generates the
 // reference trajectories that the sampler / reference-generator suites compare
 // against. It lives under test/include, which is never installed, so no
-// production target can include it (plan S1.6).
+// production target can include it (S1.6).
 //
 // Header-only, allocation-free, noexcept — not an RT requirement here (no RT
 // gate applies to a fixture) but no reason to lose it either.

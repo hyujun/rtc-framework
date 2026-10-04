@@ -16,7 +16,7 @@
 // Why a rotation vector and not z × a_d: ‖z × a_d‖ = sinθ is non-monotone —
 // the reference collapses near 180° and jumps at any antiparallel threshold.
 // ‖e_a‖ = θ is continuous and monotone (derivation and measurements:
-// docs/dynamic_catching/L4_reference.md §4.5).
+// docs/dynamic_catching/ref/L4_reference.md §4.5).
 //
 // Every function here returns FINITE values for every input, and reports the
 // branch it took in AxisAlignRegion (NUM-7: no clamp that silently launders a

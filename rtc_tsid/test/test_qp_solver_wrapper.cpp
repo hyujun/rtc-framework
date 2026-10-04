@@ -290,7 +290,7 @@ TEST_F(QPSolverWrapperTest, RecoversAfterNonFiniteSolve) {
 // Warm starting is right for a controller and wrong for a sweep: dynamic
 // catching's offline catchability map and its runtime planner must return the
 // same catch pose for the same candidate, and with a retained warm start the
-// answer would depend on which candidate was tried first (L3 §4.2, plan §11).
+// answer would depend on which candidate was tried first (L3 §4.2).
 //
 // The tolerance is loosened on purpose. ProxQP stops as soon as its residual
 // test passes, so at a tight tolerance every start converges to the same point

@@ -1,5 +1,5 @@
-// G0-E — time axes of the catching core (plan §3, L0 §4.5) and the D-2 stamp
-// conversion (plan §3.1, E-1 recorded exception).
+// G0-E — time axes of the catching core (L0 §4.5) and the D-2 stamp
+// conversion (L1 §4.1, E-1 recorded exception).
 //
 // Two halves:
 //  • compile-time: no comparison exists between different time types, and each
@@ -8,7 +8,7 @@
 //  • run-time, on a T_arm ≠ 0 fixture: each decision flips at the instant its
 //    OWN axis says, and would flip at a different instant on the other axis.
 //    With T_arm = 0 the two axes coincide and none of these cases could tell a
-//    swapped axis apart (plan §3).
+//    swapped axis apart (L0 §4.5).
 #include "rtc_controllers/catching/time_types.hpp"
 
 #include <gtest/gtest.h>

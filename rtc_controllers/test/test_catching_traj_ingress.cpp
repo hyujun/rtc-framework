@@ -7,7 +7,7 @@
 //      survive a duplicate and must NOT survive a track change — the second
 //      half is the one that fails silently, as blindness after a vision
 //      restart rather than as an error.
-//   2. The two time axes (plan §3). Staleness is judged on the receive axis
+//   2. The two time axes (L0 §4.5). Staleness is judged on the receive axis
 //      and horizon exhaustion on the lead axis, and every case here uses
 //      T_arm != 0 so the two cannot be confused: at T_arm = 0 they coincide
 //      and a test that mixed them would still pass.

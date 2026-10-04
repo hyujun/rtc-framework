@@ -1,6 +1,6 @@
 // E1-F01 (#627): decel MPC core — jerk-input condensed QP with first-order
 // torque rows and slack (decel_mpc.hpp). Each #627 "Done when" item maps to a
-// named test here (plan §4):
+// named test here:
 //   1 ZeroSolutionAtRest                 5 TheAllocationGatesAreArmed,
 //   2 ReducesToMinJerkClosedForm,          CoreAllocatesNothingOutsideTheQpSolver,
 //     PresolveMatchesClosedForm            PresolveAndRejectionPathsAllocateNothing
