@@ -28,7 +28,7 @@
 namespace {
 
 constexpr std::string_view kUsage =
-    R"(catch_gate_batch — offline gate judge (dynamic_catching S3.5b, plan §11)
+    R"(catch_gate_batch — offline gate judge (dynamic_catching S3.5b, L3 §4.2)
 
 Every option is required; none has a default, because a gate fed a guessed
 constant still writes a complete map.
@@ -39,7 +39,7 @@ constant still writes a complete map.
   --seeds PATH          wait poses: seed_id,q0,...
   --out PATH            output CSV ('-' = stdout)
   --qdot-max "w0 w1 …"  joint velocity limits [rad/s], model joint order
-  --qddot-max "a0 a1 …" joint acceleration box [rad/s^2] (plan §9)
+  --qddot-max "a0 a1 …" joint acceleration box [rad/s^2] (L3 §4.3)
   --eta-v X             planner.gamma.eta_v, applied to the joint limits and v_max
   --v-max X             reference.v_max [m/s]
   --d-eff X             planner.hand.d_eff [m]

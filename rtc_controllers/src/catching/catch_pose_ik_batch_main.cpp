@@ -39,7 +39,7 @@ namespace {
 namespace rub = rtc_urdf_bridge;
 
 constexpr std::string_view kUsage =
-    R"(catch_pose_ik_batch — offline catch-pose judge (dynamic_catching S3.5a, plan §11)
+    R"(catch_pose_ik_batch — offline catch-pose judge (dynamic_catching S3.5a, L3 §4.2)
 
   --model-config PATH   ModelConfig YAML (PinocchioModelBuilder::LoadModelConfig
                         schema, NOT the ros__parameters robot config). Must
