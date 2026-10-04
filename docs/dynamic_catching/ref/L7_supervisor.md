@@ -56,7 +56,7 @@ G7-2 · G7-4 의 신호 (speed scaling, 시계 건강) 는 repo 에 출처가 �
 | `ABORT_SAFE` | 치명 조건(상태 무관) | **관절공간 정지** — 원인과 무관하게 직전 명령에서 $\dot q_c\to0$ 까지 관절별 가속 한계로 감속한다 (`JointSpaceDecelStep`, 아래 "`ABORT_SAFE` 의 정지"). L4 · L5 를 거치지 않는다 | 정지 → `RETREAT` / fault latch 또는 정지 기한 초과 → `FAULT` (`ABORT_ESCALATED`) |
 | `FAULT` | CLIK 실패로 끝난 **시행**이 연속 $N_{qp}$ 회 (D-S9-D2), 또는 운동 기한 초과 — `ABORT_SAFE` 정지 램프·`RETREAT` 정지·`RETREAT` 복귀 (D-S9-D1) | `ABORT_SAFE` 와 같은 관절공간 감속으로 정지 후 $q_c$ 고정, 컨트롤러 fault 래치 (`HasLatchedFault()` true), 비무장. **RT 에서 deactivate 를 요청하지 않는다** | `/rtc_cm/reset_fault` → `ResetFault()` → 팔 정지 판정 통과 (D-S9-D3) → `IDLE` (P-1 reseed) |
 
-**전이는 (상태 × 사유) 표를 데이터로 둔다.** 위 표와 §4.2 표는 사람이 읽는 형태이고, 코드는 둘을 합친 표 하나 (`kTransitionTable`, 95 행 — `transition_table.hpp`) 를 단일 출처로 삼는다. 드라이버 (`AdvanceMode`) 는 매 tick (현재 모드, 그 tick 의 사유) 를 `LookupTransition` 으로 찾아 행이 있으면 전이한다. 행이 없는 (모드, 사유) 는 그 모드에서 해당 없음이다 — 모드는 그대로이고 사유만 기록된다. 표의 완전성 — 모든 상태에 진입·이탈이 최소 1개씩 있고, 모든 `Reason` 이 최소 한 행에서 쓰이며, 같은 (상태, 사유) 가 서로 다른 목적지로 두 번 나오지 않는다 — 은 `CheckTransitionTableComplete` 가 판정하고, **단위 테스트가 출하 표의 완전성을 고정한다** (`rtc_controllers/test/test_catching_supervisor_core.cpp` 의 `TransitionTable.ShippedTableIsComplete`, G7-A). configure · 기동 경로는 이 함수를 부르지 않는다.
+**전이는 (상태 × 사유) 표를 데이터로 둔다.** 위 표와 §4.2 표는 사람이 읽는 형태이고, 코드는 둘을 합친 표 하나 (`kTransitionTable`, 96 행 — `transition_table.hpp`) 를 단일 출처로 삼는다. 드라이버 (`AdvanceMode`) 는 매 tick (현재 모드, 그 tick 의 사유) 를 `LookupTransition` 으로 찾아 행이 있으면 전이한다. 행이 없는 (모드, 사유) 는 그 모드에서 해당 없음이다 — 모드는 그대로이고 사유만 기록된다. 표의 완전성 — 모든 상태에 진입·이탈이 최소 1개씩 있고, 모든 `Reason` 이 최소 한 행에서 쓰이며, 같은 (상태, 사유) 가 서로 다른 목적지로 두 번 나오지 않는다 — 은 `CheckTransitionTableComplete` 가 판정하고, **출하 표의 완전성은 컴파일 때 고정된다** — `transition_table.hpp` 끝의 `static_assert` 가 그 함수를 출하 표에 돌리므로 불완전한 표는 빌드되지 않는다. 단위 테스트 (`rtc_controllers/test/test_catching_supervisor_core.cpp` 의 `TransitionTable.*`, G7-A) 는 같은 판정을 한 번 더 하고, 일부러 깨뜨린 표를 그 함수가 잡는지를 본다. configure · 기동 경로는 이 함수를 부르지 않는다.
 
 표가 정한 해석 세 가지 (근거는 `transition_table.hpp` 머리 주석):
 
@@ -122,12 +122,12 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 | `BALL_STALE_COMMITTED` | L1 stale | `COMMITTED`, `CLOSING` | 계속 진행 (동결 plan으로 포구 시도), 기록 `[확정 A-6]` |
 | `BALL_STALE_LONG` | stale 지속 > `supervisor.stale_committed_max_s` | `COMMITTED`, `CLOSING` | `ABORT_SAFE` `[확정 A-6]` |
 | `TRACK_CHANGED` | L1 트랙 변경 판정 (L1 §4.4 — 트랙 epoch. `generation` 을 어떻게 쓰는지는 L1 이 정한다, D-4) | `TRACKING`, `APPROACH` | `ARMED`/`RETREAT`. `PointCloud2`에 트랙 상태가 없어 `STATUS_LOST`를 이것으로 대체 |
-| `HORIZON_EXTRAP` | 지평 소진 — L1 `expired` 또는 L2 `after_horizon=true` (둘 다 $now_{lead}$ 가 마지막 점 **뒤**) | `TRACKING`, `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH`면 `RETREAT`, 동결 후면 기록 후 계속. `TRACKING` 에는 전이 행이 없어 상태는 그대로이고 사유만 기록된다. `DECEL` 부터는 내지 않는다 (전이 행도 없다) |
+| `HORIZON_EXTRAP` | 지평 소진 — L1 `expired` 또는 L2 `after_horizon=true` (둘 다 $now_{lead}$ 가 마지막 점 **뒤**) | `TRACKING`, `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH`면 `RETREAT`, 동결 후면 기록 후 계속. `TRACKING` 은 self-loop 행이다 — 상태는 그대로이고 사유만 기록된다 (plan 을 기다리는 상태라 팔은 움직이지 않고, 지평이 계속 소진된 lane 은 `BALL_STALE` 로 `ARMED` 에 돌아간다). `DECEL` 부터는 내지 않는다 (전이 행도 없다) |
 | `PRED_INCONSISTENT` | L1 예측 일관성 지표 $\bar\nu$ 가 임계 초과 (L1 §4.5) | `TRACKING`, `APPROACH` | `RETREAT` (`TRACKING` 이면 `ARMED`). 동결 후에는 기록만. **발화하지 않는다**: $\bar\nu$ 생산자가 없다 (L1 §6). 전이표 행 (`kPredInconsistent`) 은 남고 완전성 검사 대상이지만 어떤 tick 도 이 사유를 내지 않는다 |
 | `NO_CATCHABLE_PLAN` | 이 tick 에 채택할 plan 이 없다 — 계획기가 plan 없음을 게시했거나 (catchability manipulability 미달 D-18, IK 실패, 도달 불가 — 세부 사유는 L3 plan 사유 코드), RT 의 접수 판정 (`JudgePlan`) 이 box 에 든 plan 을 거부했거나, `mpc` 에서 그 plan 에 딸린 첫 구간이 판정을 통과하지 못했다 (§4.3a) | `TRACKING` | 비치명. `TRACKING` 유지, 기록 |
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
 | `QP_FAILED` | L5 QP 실패 status | `TRACKING` – `RETREAT` | `ABORT_SAFE`. 이 실패로 끝난 **시행**이 연속 $N_{qp}$ 회면 `FAULT` (D-S9-D2 — solve 단위가 아니다, §4.1) |
-| `REF_SATURATED` | **`closed_form` 의 사유다.** L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick, 또는 기준 생성기가 그 tick 에 유효한 기준을 내지 못함. 세는 것은 공을 추종하는 tick (`APPROACH`·`COMMITTED`·`CLOSING`) 의 연속 포화이고, 포화가 아닌 tick 과 감속 대상을 추종하는 tick 이 0 으로 되돌린다. `mpc` 는 soft-catch 기준을 돌리지 않으므로 **발화하지 않는다** (§4.3a) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]` |
+| `REF_SATURATED` | **`closed_form` 의 사유다.** L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick, 또는 기준 생성기가 그 tick 에 유효한 기준을 내지 못함. 세는 것은 공을 추종하는 tick (`APPROACH`·`COMMITTED`·`CLOSING`) 의 연속 포화이고, 포화가 아닌 tick 과 감속 대상을 추종하는 tick 이 0 으로 되돌린다. `DECEL` · `HOLD` 에서 기준이 무효이면 이 사유가 아니라 `PARAMS_TBD` 다 (§4.3). `mpc` 는 soft-catch 기준을 돌리지 않으므로 **발화하지 않는다** (§4.3a) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]` |
 | `JOINT_CONFLICT` | L5 `bound_conflict` | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `TRACK_ERR` | $\Vert q_{meas}-q_c(now)\Vert_2>$ `supervisor.track_err_abort` — 측정과 **같은 tick 의 명령** 의 차 (팔 관절 전체). 명령을 움직이는 tick (추종 법칙, homing, `RETREAT` 정지·복귀) 에서만 계산한다. 지연 링으로 $q_c(now-T_{arm})$ 와 비교하는 형태는 구현하지 않았다 — 선행을 켜면 명령이 측정보다 $T_{arm}$ 앞서므로 그만큼의 오차가 이 값에 들어 있다 | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `ABORT_ESCALATED` | fault latch (`n_qp` 시행 연속, D-S9-D2) 또는 운동 기한 초과 (D-S9-D1) — 원인은 CSV `fault_cause` | `ABORT_SAFE`, `RETREAT` | `FAULT` |
@@ -135,7 +135,7 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 | `FAULT_RESET` | `ResetFault` | `FAULT` | `IDLE` |
 | `SPEED_SCALING` | speed scaling ≠ 1 | `TRACKING` – `RETREAT` | `ABORT_SAFE`. **전이 행은 있으나 발화하는 코드가 없다** — repo 에 신호 출처가 없다 (TBD-ARM-03). 실기 단계가 신호를 연결한다 (G7-F) |
 | `CLOCK_UNHEALTHY` | PTP 임계 초과 | `IDLE` – `RETREAT` | `IDLE`·`ARMED`에서는 진입 거부, 운행 중 `ABORT_SAFE`. **전이 행은 있으나 발화하는 코드가 없다** — 신호 출처가 없다 (TBD-NET-01, G7-F) |
-| `PARAMS_TBD` | L0 검증 실패 (활성 구성 TBD·provisional) | `IDLE` | 진입 거부. 같은 사유를 준비 조건 상실 (§4.5) 과 "법칙에 필요한 값이 없음" (`mpc` 에서 따를 구간이 없음, §4.3a) 이 재사용한다 — 그때의 처리는 그 절이 적는다 |
+| `PARAMS_TBD` | L0 검증 실패 (활성 구성 TBD·provisional) | `IDLE` | 진입 거부. 같은 사유를 준비 조건 상실 (§4.5) 과 "법칙에 필요한 값이 없음" (`mpc` 에서 따를 구간이 없음, §4.3a. `closed_form` 의 `DECEL` · `HOLD` 에서 감속 대상이나 기준이 무효, §4.3) 이 재사용한다 — 그때의 처리는 그 절이 적는다 |
 | `HAND_TIMEOUT` | L6 폐쇄 타임아웃 (`CLOSING`·`DECEL`) · **`RETREAT` 의 release 뒤 손이 `robot.hand.T_release_timeout` 안에 `q_pre` 에 정착하지 못함** (D-S8-6 (a)) | `CLOSING`, `DECEL`, `RETREAT` | `CLOSING`·`DECEL`: 기록, 계속. `RETREAT`: **`IDLE` + 같은 tick disarm** — 정착 못 한 손이 스스로 재무장하지 않게 하고, 운전자가 다시 무장한다 (P-1 (c)). 시계는 복귀 도착 tick (`kReturn → kRelease`) 에 시작하고, 같은 tick 에 정착했으면 재무장이 이긴다. `IDLE` 에는 행이 없다 — 손을 기다리지 않는다 |
 | `TIP_STALE` | 지문 센서 stale | `COMMITTED` 이후 | 판정 불가로 기록 |
 
@@ -167,7 +167,7 @@ $$e=x_s-p_v(0)=0,\qquad \dot e=\dot x_s-v_v(0)=0$$
 
 정지거리 $\Vert\dot x_s\Vert^2/(2a_{dec})$는 L3 §4.9의 예약값($\dot x_s\approx\gamma_f v_c$)과 같다. **`a_dec` 는 단일 키** `supervisor.decel.a_dec` 이고 소비자는 둘이다: 계획기 탐색의 정지점 예약 (`StoppingPoint` — $p_{stop}=p_c+(\gamma_f\Vert v\Vert)^2/(2a_{dec})\,\hat v$, 두 planner 에 공통) 과 이 절의 감속 대상 (`closed_form` 만). `mpc` 에서는 RT 가 이 값을 쓰지 않는다 — 탐색의 예약에만 남는다.
 
-`DECEL` · `HOLD` 의 감속 대상 추종은 기준 포화를 세지 않는다 (§4.2 `REF_SATURATED`) — 정지 중의 포화는 정지가 길어지는 것이지 실패한 포구가 아니다. 대상이 정지 ($\tau\ge\tau_s$) 하면 `HOLD` 이고, `HOLD` 는 정지한 대상 ($p_v$ 고정) 을 계속 추종한다.
+`DECEL` · `HOLD` 의 감속 대상 추종은 기준 포화를 세지 않는다 (§4.2 `REF_SATURATED`) — 정지 중의 포화는 정지가 길어지는 것이지 실패한 포구가 아니다. 기준 생성기가 그 tick 에 기준을 내지 못하는 것 (무효) 은 포화가 아니다: 그 tick 에는 팔 명령이 쓰이지 않으므로 정지가 명령되지 않는 것이고, 감속 대상의 무효와 같이 `PARAMS_TBD` → `ABORT_SAFE` (관절공간 정지, §4.1) 다. 대상이 정지 ($\tau\ge\tau_s$) 하면 `HOLD` 이고, `HOLD` 는 정지한 대상 ($p_v$ 고정) 을 계속 추종한다.
 
 감속 대상 계산은 ROS 비의존 순수 조각이다 (`EvaluateDecelTarget`, `decel_target.hpp`).
 
@@ -431,7 +431,7 @@ plan 접수 쪽의 방어 (reset floor · 동결 창) 는 §4.1 R-ADMIT 이 적�
 
 | 게이트 | 기준 | 태그 |
 |---|---|---|
-| G7-A | 위 시나리오 전부 기대 상태열과 일치, 출하 전이표가 완전성 검사 (`CheckTransitionTableComplete`, 단위 테스트) 를 통과 | `[SIM-ANY]` |
+| G7-A | 위 시나리오 전부 기대 상태열과 일치, 출하 전이표가 완전성 검사 (`CheckTransitionTableComplete` — `static_assert` 와 단위 테스트) 를 통과 | `[SIM-ANY]` |
 | G7-B | `closed_form`: 감속 전환 시 기준 상태 $(x,\dot x)$ 연속 (< 1e-9) | `[SIM-ANY]` |
 | G7-B′ | `mode: mpc` (MPC MD-39): node 0 를 전환 tick 의 명령 $(q_c,\dot q_c)$ 로 만든 구간에서 $\Vert p_d-\mathrm{FK}(q_c)\Vert$ · $\Vert V_{ff}-J\dot q_c\Vert$ · $\Delta q$ · $\Delta\dot q$ < 1e-9 — 정지한 첫 구간의 전환과, 움직이는 팔의 포구 전 재계획 전환 둘 다. `DECEL` 진입 tick 은 전환이 아니라 같은 구간의 다음 샘플이다 | `[SIM-ANY]` |
 | G7-B3 | 충격량 $\Delta p$ 기록과 시뮬레이션 접촉 참값의 최대 접촉력 상관 확인, 손가락 관절 토크가 한계 이내 (한계 권위 출처 D-12 확정 전까지 토크 비교 부분은 `NOT_EVALUATED`) | `[SIM-P1B]` |

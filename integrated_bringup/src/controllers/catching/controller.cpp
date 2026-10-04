@@ -1401,7 +1401,14 @@ rtc::catching::Reason DemoCatchingController::RunDecelLawTick(
   target.p = tgt.p_v;
   target.v = tgt.v_v;
   target.a = tgt.a_v;
-  return StepReferenceAndSolve(state, target, tau, /*count_saturation=*/false);
+  const Reason law = StepReferenceAndSolve(state, target, tau, /*count_saturation=*/false);
+  // With the saturation count off, the only REF_SATURATED that step returns is
+  // the invalid one: the generator refused the step, there is no reference
+  // this tick, and the arm command was not written. That is not a stop taking
+  // longer — the stop is not being commanded at all — so it leaves as the
+  // reason the invalid target above uses, which DECEL and HOLD send to
+  // ABORT_SAFE: the joint-space ramp needs neither the reference nor CLIK.
+  return law == Reason::kRefSaturated ? Reason::kParamsTbd : law;
 }
 
 rtc::catching::Reason DemoCatchingController::EnterDecel(const ControllerState& state) noexcept {
@@ -1761,9 +1768,12 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHo
                          ? RunDecelMpcTick(state, /*entry=*/false, /*ball=*/nullptr)
                          : RunDecelLawTick(state);
   NoteLawVerdict(law);
-  // DECEL and HOLD have no REF_SATURATED row: a saturated reference while
-  // stopping is the stop taking longer, not a failed catch.
-  if (IsFatalLawReason(law) && law != Reason::kRefSaturated) {
+  // No REF_SATURATED reaches this point, which is why DECEL and HOLD have no
+  // row for it: the closed-form tick does not count saturation — a saturated
+  // reference while stopping is the stop taking longer, not a failed catch —
+  // and reports a refused step as PARAMS_TBD (RunDecelLawTick); the mpc tick
+  // has no reference generator.
+  if (IsFatalLawReason(law)) {
     return {law, true};
   }
   if (mode_ == Mode::kDecel) {

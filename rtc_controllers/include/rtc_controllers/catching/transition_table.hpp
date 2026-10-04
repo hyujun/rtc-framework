@@ -3,10 +3,11 @@
 // readable tables are merged into ONE machine table here, and the RT
 // supervisor body (S7.2) is meant to be a thin driver over it: look up
 // (current Mode, evaluated Reason) and, if a row exists, take the
-// transition. This header ships that table plus a startup self-check
-// (`CheckTransitionTableComplete`, run once at configure — not itself an RT
-// hot-path concern, but written noexcept/heap-free like everything else here
-// since nothing forces it onto the stack any harder).
+// transition. This header ships that table plus a completeness check
+// (`CheckTransitionTableComplete`), which the `static_assert` at the end of
+// this file runs on the shipped table at compile time: a table that fails it
+// does not build. Nothing calls it at run time — it stays an ordinary
+// constexpr function so the tests can feed it deliberately broken tables.
 //
 // ── Ambiguity resolutions (documented per task instruction) ─────────────────
 // The design doc's tables mix true (Mode × Reason) events (§4.2's abort
@@ -164,7 +165,7 @@ struct TransitionRow {
 
 // ── The merged (Mode × Reason) → Mode table ─────────────────────────────────
 // clang-format off
-inline constexpr std::array<TransitionRow, 95> kTransitionTable = {{
+inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     // IDLE (§4.1 row 1; §4.2 PARAMS_TBD, CLOCK_UNHEALTHY "IDLE 진입 거부")
     {Mode::kIdle, Reason::kNone, Mode::kArmed},
     {Mode::kIdle, Reason::kParamsTbd, Mode::kIdle},
@@ -179,13 +180,17 @@ inline constexpr std::array<TransitionRow, 95> kTransitionTable = {{
     {Mode::kArmed, Reason::kEstop, Mode::kIdle},
 
     // TRACKING (§4.1 row 3; §4.2 TRACK_CHANGED/BALL_STALE "TRACKING이면
-    // ARMED", PRED_INCONSISTENT id., NO_CATCHABLE_PLAN self-loop + record,
-    // "전 구간" fatal reasons, ESTOP clear)
+    // ARMED", PRED_INCONSISTENT id., NO_CATCHABLE_PLAN and HORIZON_EXTRAP
+    // self-loop + record — the supervisor raises HORIZON_EXTRAP here while the
+    // lane's horizon is spent, TRACKING only waits for a plan, and a lane that
+    // stays that way leaves through BALL_STALE — "전 구간" fatal reasons,
+    // ESTOP clear)
     {Mode::kTracking, Reason::kNone, Mode::kApproach},
     {Mode::kTracking, Reason::kTrackChanged, Mode::kArmed},
     {Mode::kTracking, Reason::kBallStale, Mode::kArmed},
     {Mode::kTracking, Reason::kPredInconsistent, Mode::kArmed},
     {Mode::kTracking, Reason::kNoCatchablePlan, Mode::kTracking},
+    {Mode::kTracking, Reason::kHorizonExtrap, Mode::kTracking},
     {Mode::kTracking, Reason::kQpFailed, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kTrackErr, Mode::kAbortSafe},
@@ -310,8 +315,8 @@ inline constexpr std::array<TransitionRow, 95> kTransitionTable = {{
 /// Look up the (from, reason) edge. Returns false with `to` untouched if no
 /// row matches (the supervisor body then treats the reason as inapplicable in
 /// this state and does not transition) — this does NOT distinguish "no row"
-/// from "duplicate row" the way `CheckTransitionTableComplete` does; run that
-/// once at configure to catch the latter.
+/// from "duplicate row" the way `CheckTransitionTableComplete` does (the
+/// shipped table is checked for the latter at compile time, below).
 [[nodiscard]] constexpr bool LookupTransition(std::span<const TransitionRow> table, Mode from,
                                               Reason reason, Mode& to) noexcept {
   for (const TransitionRow& row : table) {
@@ -323,7 +328,7 @@ inline constexpr std::array<TransitionRow, 95> kTransitionTable = {{
   return false;
 }
 
-/// Findings of the startup completeness self-check (§4.1: "기동 시 완전성을
+/// Findings of the completeness check (§4.1: "기동 시 완전성을
 /// 검사한다"). `ok` is true iff every array below is all-false and
 /// `duplicate_cell` is false.
 struct CompletenessResult {
@@ -404,5 +409,12 @@ struct CompletenessResult {
 
   return result;
 }
+
+// The shipped table is complete, or this header does not compile. A unit test
+// alone left the check to whoever ran the suite; here it is part of building
+// anything that includes the table.
+static_assert(CheckTransitionTableComplete(kTransitionTable).Ok(),
+              "kTransitionTable is incomplete: an unreachable or exit-less Mode, a Reason no row "
+              "uses, or one (Mode, Reason) cell with two destinations");
 
 }  // namespace rtc::catching
