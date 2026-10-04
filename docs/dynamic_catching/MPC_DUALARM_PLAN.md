@@ -167,15 +167,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 - [#713](https://github.com/hyujun/rtc-framework/issues/713) — catching: 조정되지 않은 채 출하된 mpc planner 의 값 — `cost.w_perp` · `publish.slack_terminal_max`
 - [#714](https://github.com/hyujun/rtc-framework/issues/714) — catching: `planner.switch.samples` 는 교체 판정을 바꾸지 않는다
 - [#716](https://github.com/hyujun/rtc-framework/issues/716) — catching: formulation 의 포구 구간 다중 노드 (K_c) 와 그 위의 경로 이탈 항 `w_path` 가 구현에 없다
-- [#718](https://github.com/hyujun/rtc-framework/issues/718) — catching: closed_form 의 DECEL · HOLD 에서 무효한 기준이 사유 없이 지나간다
 - [#717](https://github.com/hyujun/rtc-framework/issues/717) — catching: 남은 일이 쓰는 private 스크립트를 repo 도구로
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
-
-**안전 · 문서 정리**
-
-- [#706](https://github.com/hyujun/rtc-framework/issues/706) — [BUG] catching: provisional catch frame 이 실기 구성을 막지 않는다 — `CheckCatchFrameProvisional` 미배선
-- [#707](https://github.com/hyujun/rtc-framework/issues/707) — catching: closed_form 의 NormalTrial 명령 digest 가 단언되지 않는다 — 회귀 기준값이 계획 문서에만 있다
-- [#708](https://github.com/hyujun/rtc-framework/issues/708) — catching: 낡은 주석 · 틀린 절 번호 인용 · 없는 경로 정리
-- [#709](https://github.com/hyujun/rtc-framework/issues/709) — catching: 코드 주석 · 상수의 계획 문서 인용을 지금의 자리로 옮긴다
 
 **이 문서가 정하지 않은 것.** 실기 epic 과 E2 · E3 의 선후 (실기는 `ur5e_p1b` 이고 E2 · E3 는 G1 sim 이라 서로의 선행이 아니다). 실기 planner 는 단계 E 앞에서 정한다 (§3).
