@@ -1219,6 +1219,12 @@ for pkg_dir in $STALE_ARTIFACT_PKGS; do
     *) BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}" ;;
   esac
 done
+# Back into name order: the appended names came after the sorted ones, and the
+# order note below ("built in name order") is read as the order that ran.
+if [ -n "$STALE_ARTIFACT_PKGS" ]; then
+  # shellcheck disable=SC2046,SC2086  # a space-separated list of names
+  BUILD_PKGS=$(printf ' %s' $(printf '%s\n' $BUILD_PKGS | sort -u))
+fi
 
 # Emit `name<TAB>exempt<TAB>lineno` for every add_executable() in the CMake
 # source arriving on stdin. Used by ARCH-7 to diff target NAMES between HEAD and

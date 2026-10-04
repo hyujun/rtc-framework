@@ -2773,10 +2773,18 @@ git -C "$dir" checkout -qb branch-b "$base"
 echo 'int other() { return 10; }' >"$dir/rtc_other/src/other.cpp"
 git -C "$dir" commit -qam "branch B"
 before=$(calls "$count")
-out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE="$base"); rc=$?
+# No `colcon list` here, on any host: the order is the name order, and the
+# package added for its binaries takes its place in it (it was appended after
+# the changed ones, and the order note called that "name order").
+nocolcon=$(mktemp -d)
+printf '#!/bin/bash\nexit 1\n' >"$nocolcon/colcon"
+chmod +x "$nocolcon/colcon"
+out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE="$base" PATH="$nocolcon:$PATH"); rc=$?
+rm -rf "$nocolcon"
 expect_exit "branch B is verified" "$rc" 0
 expect_contains "rtc_demo, which B does not touch, is named" "$out" "installed binaries of [rtc_demo] were built from other source than this tree's"
 expect_contains "...and built and tested with the changed package" "$out" "built and tested [rtc_demo rtc_other]"
+expect_contains "...in the name order the note names" "$out" "could not order [rtc_demo rtc_other] by dependency"
 if [ "$(calls "$count")" = $((before + 2)) ]; then pass "both packages are tested"; else fail "calls for branch B: $(( $(calls "$count") - before ))"; fi
 # RTC_VERIFY_NO_REUSE switches the look off like the other reuses.
 git -C "$dir" checkout -q "$base"
