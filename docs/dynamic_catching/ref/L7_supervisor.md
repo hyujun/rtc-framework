@@ -136,7 +136,7 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
 | `QP_FAILED` | L5 QP 실패 status | `TRACKING` – `RETREAT` | `ABORT_SAFE`. 이 실패로 끝난 **시행**이 연속 $N_{qp}$ 회면 `FAULT` (D-S9-D2 — solve 단위가 아니다, §4.1) |
 | `REF_SATURATED` | **`closed_form` 의 사유다.** L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick, 또는 기준 생성기가 그 tick 에 유효한 기준을 내지 못함. 세는 것은 공을 추종하는 tick (`APPROACH`·`COMMITTED`·`CLOSING`) 의 연속 포화이고, 포화가 아닌 tick 과 감속 대상을 추종하는 tick 이 0 으로 되돌린다. `DECEL` · `HOLD` 에서 기준이 무효이면 이 사유가 아니라 `PARAMS_TBD` 다 (§4.3). `mpc` 는 soft-catch 기준을 돌리지 않으므로 **발화하지 않는다** (§4.3a) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]` |
-| `JOINT_CONFLICT` | L5 `bound_conflict`. **이 컨트롤러에서는 발화하지 않는다** — 그 플래그는 CLIK 의 `box` 형태에서만 서고 포구 층은 그 형태를 넘기지 않는다 (L5 §4.3). 사유 코드와 전이는 남아 있다 | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
+| `JOINT_CONFLICT` | L5 `bound_conflict`. **이 컨트롤러에서는 발화하지 않는다** — 그 플래그는 CLIK 의 `box` 형태에서만 서고 포구 층은 그 형태를 넘기지 않는다 (L5 §4.3). 사유 코드와 전이는 남아 있다 (#755) | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `TRACK_ERR` | $\Vert q_{meas}-q_c(now)\Vert_2>$ `supervisor.track_err_abort` — 측정과 **같은 tick 의 명령** 의 차 (팔 관절 전체). 명령을 움직이는 tick (추종 법칙, homing, `RETREAT` 정지·복귀) 에서만 계산한다. 지연 링으로 $q_c(now-T_{arm})$ 와 비교하는 형태는 구현하지 않았다 — 선행을 켜면 명령이 측정보다 $T_{arm}$ 앞서므로 그만큼의 오차가 이 값에 들어 있다 | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `ABORT_ESCALATED` | fault latch (`n_qp` 시행 연속, D-S9-D2) 또는 운동 기한 초과 (D-S9-D1) — 원인은 CSV `fault_cause` | `ABORT_SAFE`, `RETREAT` | `FAULT` |
 | `ESTOP` | E-STOP 발동·해제 (§4.1 P-1) | 전 구간 | 발동: 상태 정리, 해제: `IDLE`. 단 `FAULT` 에서는 `FAULT` 유지 — 해제가 fault 래치를 풀지 않는다 (P-1 (d)) |

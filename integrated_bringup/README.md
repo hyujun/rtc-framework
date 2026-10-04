@@ -265,7 +265,7 @@ MJCF 게인 그대로면 0.2 s 입니다. 근거는 `catch_lead_on.yaml` 헤더,
 reference.omega` (· `reference.a_max` · `robot.arm.qdd_max`) 로 합니다 — 기동 로그에는
 안 찍힙니다. `sim.yaml` 의 override 가 출하 키 둘 (`qdd_max` 는 float 배열) 뿐인 것은 `test/test_catch_lead_overlays.py` 가, 미러 값은
 `test_demo_catching_controller.cpp` (`ShippedCatchingProfile`) 가 핀합니다. 옛 `robot.arm.accel_limits_{package,path,group}` 키는 더 이상 없고,
-config 에 남아 있으면 컨트롤러가 park (`kRemovedKey`) 합니다 — sim 도 실기도 configure 는 SUCCESS, ERROR 가 지운 키와 새 키 (`robot.arm.qdd_max`·`robot.arm.qdd_provisional`) 를 대고 activate 는 거부됩니다 (조용히 무시하면 옛 overlay 가 출하 box 로 돌고, configure 를 실패시키면 CM 이 로봇의 모든 컨트롤러를 거부합니다). 지운 값도 같습니다: CLIK 의 가속 제약 `joint_cmd.accel_constraint` 는 `kinematic` · `dynamic` 뿐이고 **기본값이 없습니다** — `box` 를 적으면 `kRemovedKey` 로, 키가 없으면 소비 값 미정 (`kConsumedValues`) 으로 park 하며 ERROR 가 그 키를 지목합니다.
+config 에 남아 있으면 컨트롤러가 park (`kRemovedKey`) 합니다 — sim 도 실기도 configure 는 SUCCESS, ERROR 가 지운 키와 새 키 (`robot.arm.qdd_max`·`robot.arm.qdd_provisional`) 를 대고 activate 는 거부됩니다 (조용히 무시하면 옛 overlay 가 출하 box 로 돌고, configure 를 실패시키면 CM 이 로봇의 모든 컨트롤러를 거부합니다). 지운 값도 같습니다: CLIK 의 가속 제약 `joint_cmd.accel_constraint` 는 `kinematic` · `dynamic` 뿐이고 **기본값이 없습니다** — `box` 를 적으면 `kRemovedKey` 로, 키가 없거나 `TBD` 면 소비 값 미정 (`kConsumedValues`) 으로 park 하며 ERROR 가 그 키를 지목합니다. 지운 키 · 값이 여럿이면 한 번의 configure 가 모두 지목합니다.
 
 `sim_iiwa7_leap.launch.py` 도 같은 규칙으로 `config/iiwa7_leap/sim_overlays/` 를 읽습니다 (S8-D).
 `catch_lead_on` 은 `T_arm` 0.05 · `lead_enable` 을 켜고 (`T_freeze` 는 출하 0.19 가 이미 하한 0.1847 을 덮는다 —

@@ -92,9 +92,9 @@ $$\ell_i=\max\Big(-\dot q_{\max,i},\ \frac{q_{\min,i}+m_q-q_{c,i}}{\Delta t}\Big
 - $\Delta t$ 는 `ControllerState::dt` (= 1/`control_rate`). 가속 한계는 이 box 에 접지 않고 행으로 건다 (아래).
 - $H$ 는 $\mu^2>0$ 이므로 양정치이고, 차원 $n_v$ 와 제약 수가 고정이다. QP 해는 ProxQP `eps_abs` (1e-6) 안에서만 box 를 지킨다.
 
-**가속 창 (`box` 형태) 은 포구 층에서 쓰지 않는다 (#712).** `ClikReferenceGenerator` 에는 관절별 창 $\dot q_{prev}\pm\ddot q_{\max}\Delta t$ 를 위 box 에 접는 형태와 그 경계 충돌 규칙 (`bound_conflict` · `conflict_mask`) 이 남아 있다. 포구 컨트롤러는 그 형태를 넘기지 않는다. 그래서 `bound_conflict` 가 서지 않고, L7 의 `JOINT_CONFLICT` 는 이 컨트롤러에서 발화하지 않는다 (사유 코드 · 전이 · 기록 열은 남아 있다). 가속 한계와 속도 ∩ 위치 box 가 양립하지 않는 tick 은 아래 행이 hard 라 solve 실패로 끝난다.
+**가속 창 (`box` 형태) 은 포구 층에서 쓰지 않는다 (#712).** `ClikReferenceGenerator` 에는 관절별 창 $\dot q_{prev}\pm\ddot q_{\max}\Delta t$ 를 위 box 에 접는 형태와 그 경계 충돌 규칙 (`bound_conflict` · `conflict_mask`) 이 남아 있다. 포구 컨트롤러는 그 형태를 넘기지 않는다. 그래서 `bound_conflict` 가 서지 않고, L7 의 `JOINT_CONFLICT` 는 이 컨트롤러에서 발화하지 않는다 (사유 코드 · 전이 · 기록 열은 남아 있다 — 지울지는 #755). 가속 한계와 속도 ∩ 위치 box 가 양립하지 않는 tick 은 아래 행이 hard 라 solve 실패로 끝난다.
 
-**가속 제약의 두 형태.** $\dot v\approx(v-\dot q_c)/\Delta t$ 로 두면 두 형태 모두 $v$ 에 **선형**이다. $\dot q_c$ 는 cache 가 평가된 속도 (명령값 평가 모드에서 명령 속도 — $h$ · $\dot J$ 가 평가된 같은 상태) 의 **팔 성분**이다. 손은 다른 곳에서 명령되므로 그 가속은 이 solve 의 것이 아니다. 둘 중 하나를 고른다 (`joint_cmd.accel_constraint`). **기본값이 없다** — 키가 없으면 컨트롤러가 park 하고 ERROR 가 그 키를 지목한다 (다른 형태의 키가 같이 있어도 configure 실패가 아니라 park 다). 형태를 골랐는데 다른 형태의 키를 함께 주면 파서가 거부하고 `Init` 도 같은 규칙이다. 행은 box 아래에 부등식 행으로 붙는다 ($C=[I;\,C_a]$).
+**가속 제약의 두 형태.** $\dot v\approx(v-\dot q_c)/\Delta t$ 로 두면 두 형태 모두 $v$ 에 **선형**이다. $\dot q_c$ 는 cache 가 평가된 속도 (명령값 평가 모드에서 명령 속도 — $h$ · $\dot J$ 가 평가된 같은 상태) 의 **팔 성분**이다. 손은 다른 곳에서 명령되므로 그 가속은 이 solve 의 것이 아니다. 둘 중 하나를 고른다 (`joint_cmd.accel_constraint`). **기본값이 없다** — 키가 없거나 `TBD` 면 컨트롤러가 park 하고 ERROR 가 그 키를 지목한다 (다른 형태의 키가 같이 있어도 configure 실패가 아니라 park 다). 형태를 골랐는데 다른 형태의 키를 함께 주면 파서가 거부하고 `Init` 도 같은 규칙이다. 행은 box 아래에 부등식 행으로 붙는다 ($C=[I;\,C_a]$).
 
 - `kinematic` — 비용이 추종하는 과제 행의 가속 $J\dot v+\dot J\dot q_c$ 를 행마다 $\pm$`task_accel_max_linear` (위치 행) · `task_accel_max_angular` (회전 · 접근축 행). $\dot J\dot q_c$ 는 등록 frame 의 classical drift (`dJv`), 접근축 행은 LOCAL x, y 에서 ($\tfrac{d}{dt}(R^\top\omega)=R^\top\dot\omega$). **그 행만** 묶는다 — 영공간 운동 (5 행 과제의 접근축 roll 등) 은 속도 box 외에 가속 한계가 없다. 관절마다 묶는 것은 `dynamic` 이다
 - `dynamic` — 팔 관절 $i$ 의 토크 $\tau_i=\sum_{j\in arm}M_{ij}(q_c)\,\dot v_j+h_i(q_c,\dot q_c)$ 를 $|\tau_i|\le\eta_\tau\tau_{\max,i}$ 로 묶는다 (팔 인덱스당 한 행, 손 열은 행에 들어오지 않지만 손 속도는 $h$ 를 통해 들어온다). $M,h$ 는 cache 의 값, $\tau_{\max}$ 는 팔 device 의 `joint_limits.max_torque`, $\eta_\tau\in(0,1]$ (`joint_cmd.eta_tau`). **URDF 에 회전자 관성이 없어 $M$ 에 빠져 있다** — $\eta_\tau<1$ 이 그것을 덮는다고 가정한다 (오프라인 가속 box 도출은 MuJoCo `mj_inverse` 로 armature 포함 교차 검증했다). 실기 전 (S10) 재확인
@@ -174,7 +174,7 @@ MuJoCo 팔 actuator (`<general>` position-PD) 는 `servoj` 와 동특성이 다�
 
 ### 5.2 경계 계산 (RT)
 
-§4.3 의 box · 가속 행 · 충돌 규칙은 CLIK 내부 (`AssembleBox` · `AssembleAccelRows`) 에서 계산한다.
+§4.3 의 box · 가속 행은 CLIK 내부 (`AssembleBox` · `AssembleAccelRows`) 에서 계산한다.
 
 ### 5.3 컨트롤러 바인딩 (`integrated_bringup`)
 
@@ -214,7 +214,7 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 | `joint_cmd.damping_sq` | – | $\mu^2$ |
 | `joint_cmd.w_smooth` | – | 평활 항 $w_s$ |
 | `joint_cmd.qp.max_iter` | – | ProxQP 반복 상한 |
-| `joint_cmd.accel_constraint` | – | `kinematic` · `dynamic` (§4.3). 기본값 없음 — 키가 없거나 지운 값 `box` 면 park. 선택하지 않은 형태의 키가 있으면 파서가 거부한다 |
+| `joint_cmd.accel_constraint` | – | `kinematic` · `dynamic` (§4.3). 기본값 없음 — 키가 없거나 `TBD` 거나 지운 값 `box` 면 park. 선택하지 않은 형태의 키가 있으면 파서가 거부한다 |
 | `joint_cmd.task_accel_max_linear` | m/s² | `kinematic` 전용 — 위치 행 가속 한계 |
 | `joint_cmd.task_accel_max_angular` | rad/s² | `kinematic` 전용 — 회전 · 접근축 행 가속 한계 |
 | `joint_cmd.eta_tau` | – | `dynamic` 전용 — $\eta_\tau$. $\tau_{\max}$ 는 팔 device `joint_limits.max_torque` |
@@ -242,12 +242,12 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 |---|---|---|
 | G5-A | 정지 목표에서 위치 오차 < 1 mm, 축 오차 < 0.5° 수렴 | `[SIM-ANY]` |
 | G5-A2 | 옵션 전부 off 에서 기존 CLIK 출력 bit-identical, 기존 테스트 assertion 무수정 green | `[SIM-ANY]` |
-| G5-B | 무작위 기준 1e4 틱에서 속도 · 가속 한계 위반 0, 위치 한계 위반은 `limit_margin` 이내 (§4.3 충돌 규칙). "위반 0" 은 ProxQP `eps_abs` 안을 뜻한다 | `[SIM-ANY]` |
-| G5-B2 | 경계 충돌 유도 시나리오: `bound_conflict` 발생, $\vert\dot q^\ast-\dot q_{prev}\vert\le\ddot q_{\max}\Delta t$ 유지, L7 이 `ABORT_SAFE` 로 전이. CLIK 의 `box` 형태에서 판정한다 — 포구 컨트롤러는 그 형태를 넘기지 않는다 (§4.3) | `[SIM-ANY]` |
+| G5-B | 무작위 기준 1e4 틱에서 속도 · 가속 한계 위반 0, 위치 한계 위반은 `limit_margin` 이내. "위반 0" 은 ProxQP `eps_abs` 안을 뜻한다 | `[SIM-ANY]` |
+| G5-B2 | 경계 충돌 유도 시나리오 (CLIK 의 `box` 형태): `bound_conflict` 발생, $\vert\dot q^\ast-\dot q_{prev}\vert\le\ddot q_{\max}\Delta t$ 유지. CLIK 단독으로 판정한다 — 포구 컨트롤러는 그 형태를 넘기지 않으므로 L7 전이는 판정 대상이 아니다 (§4.3) | `[SIM-ANY]` |
 | G5-C | RT: page fault 0, 할당 0, QP 차원 고정, solve time 분위수 < 예산. `control_rate` 500 Hz 의 tick 2000 µs 기준 **p99 ≤ 400 µs (20 %) · 최대 ≤ 1500 µs (75 %)** — 평균이 아니라 꼬리로 건다 (L8 §5). 제어 PC 판정은 G8-A | `[SIM-ANY]` |
 | G5-C2 | backend 왕복: `ControllerOutput.devices[0].commands` 와 backend 가 쓴 명령 slot 이 전 틱에서 일치 (backend clamp 미발동) | `[SIM-P1B]` / `[HW-P1B]` |
 | G5-C3 | `max_iter` 설정값 준수, 초과 시 status 노출 + 관절공간 abort 경로 (가속 한계 준수), L7 `QP_FAILED` 전이. RT tick 에 try/catch 없음, `Compute` noexcept | `[SIM-ANY]` |
-| G5-C4 | 재무장 · E-STOP 해제 reseed 후 첫 틱에 `bound_conflict` 미발생, 자동 재개 없음, `ClearEstop` 후에도 latched fault 유지 | `[SIM-ANY]` |
+| G5-C4 | 재무장 · E-STOP 해제 reseed 후 첫 solve 가 $\dot q_{prev}=0$ 에서 시작 (직전 시행의 속도가 평활 항에 남지 않는다), 자동 재개 없음, `ClearEstop` 후에도 latched fault 유지 | `[SIM-ANY]` |
 | G5-E | 선행 보상의 방향 확인: $T_{arm}\neq0$ 순수 지연 fixture 위에서 같은 공 · 같은 plant 로 보상 off / on 을 돌려 $t_c$ 측정 자세의 위치 오차가 줄어든다. 순수 지연 모델이라 §4.4 의 1차 성분은 빠져 있다 (sim 런타임 판정은 L8 G8-E) | `[SIM-P1B]` |
 | G5-F | 실기 `T_arm` 식별 및 YAML 확정 | `[HW-P1B]` |
 
