@@ -275,6 +275,15 @@ TEST(TransitionTable, BrokenTableWithAnUndefinedAmbiguousCellIsDetected) {
   EXPECT_FALSE(result.Ok());
 }
 
+TEST(TransitionTable, ASpentHorizonLeavesTrackingWhereItIs) {
+  // The supervisor raises HORIZON_EXTRAP in TRACKING while the lane's horizon
+  // is spent. The row says what the driver already did with no row — stay and
+  // record — so "no row" keeps meaning "this reason does not occur here".
+  Mode to = Mode::kFault;
+  ASSERT_TRUE(LookupTransition(kTransitionTable, Mode::kTracking, Reason::kHorizonExtrap, to));
+  EXPECT_EQ(to, Mode::kTracking);
+}
+
 TEST(TransitionTable, AHandTimeoutEndsTheReturnInIdleAndIsRecordedElsewhere) {
   // #537 S8-C (D-S8-6 (a)): RETREAT's wait for the hand at q_pre times out
   // into IDLE. CLOSING and DECEL keep their record-only self-loops, and IDLE

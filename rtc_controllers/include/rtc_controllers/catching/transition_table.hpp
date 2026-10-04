@@ -164,7 +164,7 @@ struct TransitionRow {
 
 // ── The merged (Mode × Reason) → Mode table ─────────────────────────────────
 // clang-format off
-inline constexpr std::array<TransitionRow, 95> kTransitionTable = {{
+inline constexpr std::array<TransitionRow, 96> kTransitionTable = {{
     // IDLE (§4.1 row 1; §4.2 PARAMS_TBD, CLOCK_UNHEALTHY "IDLE 진입 거부")
     {Mode::kIdle, Reason::kNone, Mode::kArmed},
     {Mode::kIdle, Reason::kParamsTbd, Mode::kIdle},
@@ -179,13 +179,17 @@ inline constexpr std::array<TransitionRow, 95> kTransitionTable = {{
     {Mode::kArmed, Reason::kEstop, Mode::kIdle},
 
     // TRACKING (§4.1 row 3; §4.2 TRACK_CHANGED/BALL_STALE "TRACKING이면
-    // ARMED", PRED_INCONSISTENT id., NO_CATCHABLE_PLAN self-loop + record,
-    // "전 구간" fatal reasons, ESTOP clear)
+    // ARMED", PRED_INCONSISTENT id., NO_CATCHABLE_PLAN and HORIZON_EXTRAP
+    // self-loop + record — the supervisor raises HORIZON_EXTRAP here while the
+    // lane's horizon is spent, TRACKING only waits for a plan, and a lane that
+    // stays that way leaves through BALL_STALE — "전 구간" fatal reasons,
+    // ESTOP clear)
     {Mode::kTracking, Reason::kNone, Mode::kApproach},
     {Mode::kTracking, Reason::kTrackChanged, Mode::kArmed},
     {Mode::kTracking, Reason::kBallStale, Mode::kArmed},
     {Mode::kTracking, Reason::kPredInconsistent, Mode::kArmed},
     {Mode::kTracking, Reason::kNoCatchablePlan, Mode::kTracking},
+    {Mode::kTracking, Reason::kHorizonExtrap, Mode::kTracking},
     {Mode::kTracking, Reason::kQpFailed, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kJointConflict, Mode::kAbortSafe},
     {Mode::kTracking, Reason::kTrackErr, Mode::kAbortSafe},
