@@ -298,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
         f"  eps_clk_alloc that admits {args.admit * 100:.0f}% of trials : "
         f"{proposal * 1e3:.3f} mm  (v_max {args.v_max} m/s, a_bound {args.a_bound:.2f} m/s^2)"
     )
-    print("  (a PROPOSAL for the user to confirm — plan §5, §7.3 — not a threshold")
+    print("  (a PROPOSAL for the user to confirm — L8 §4.5 — not a threshold")
     print("  this run adopts)")
 
     summary = covariate_summary(stats.trials, args.v_max, args.a_bound, eps_mm=args.eps_mm)
@@ -311,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     print()
     print("  S3.1a / D-3: clock phase error is a COVARIATE (D-S8-4 (c)), not a")
-    print("  pass/fail — eps_clk_alloc is a provisional budget (plan §5.1), and")
+    print("  pass/fail — eps_clk_alloc is a provisional budget (L8 §4.5), and")
     print("  a direct delta-vs-outcome correlation has no power at S8's trial counts.")
     print("  The distributions above are what S8-B/E correlate against catch outcomes")
     print("  and against a same-seed load A/B; nothing here is a gate.")

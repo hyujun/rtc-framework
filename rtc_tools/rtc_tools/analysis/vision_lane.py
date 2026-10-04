@@ -768,7 +768,7 @@ def main(argv: list[str] | None = None) -> int:
         stamped = [d.t_det_stamp_s for d in lat if not math.isnan(d.t_det_stamp_s)]
         silent = [d.flight_index for d in lat if math.isnan(d.t_det_recv_s)]
         print()
-        print(f"T_det (plan §7.3)  : {len(lat)} flights, {len(seen)} with a VALID prediction")
+        print(f"T_det (S3.6)       : {len(lat)} flights, {len(seen)} with a VALID prediction")
         if seen:
             print(
                 f"  recv axis  [s]          : min {min(seen):.3f}  p50 {quantile(seen, 0.5):.3f}  "
@@ -792,7 +792,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  its quantisation is one ball sample period (publish.sample_rate_hz).")
     print()
     print("  This is a MEASUREMENT (S3.4). No threshold is applied here; the policy for")
-    print("  rewinds, partial validity and ghost tracks is S5.2's (plan §4.4, L1 §10).")
+    print("  rewinds, partial validity and ghost tracks is S5.2's (L1 §10).")
     return 0
 
 

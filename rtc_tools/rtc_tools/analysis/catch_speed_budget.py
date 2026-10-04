@@ -638,7 +638,7 @@ def main(argv: list[str] | None = None) -> int:
         "the URDF <limit velocity> (the rating). No default: it is a decision",
     )
     ap.add_argument("--eta-v", type=float, required=True, help="speed margin, applied to q̇_max")
-    ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (plan §9)")
+    ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (L3 §4.3)")
     ap.add_argument(
         "--rotor-inertia",
         type=_floats,

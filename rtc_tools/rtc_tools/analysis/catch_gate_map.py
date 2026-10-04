@@ -539,7 +539,7 @@ def main(argv: list[str] | None = None) -> int:
         help=f"the catching controller's config key (default {DEFAULT_CONTROLLER})",
     )
     ap.add_argument("--eta-v", type=float, required=True, help="planner.gamma.eta_v")
-    ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (plan §9)")
+    ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (L3 §4.3)")
     ap.add_argument("--rotor-inertia", type=_floats, required=True, help="[kg m²], arm order")
     ap.add_argument("--rotor-inertia-source", required=True, help="file:line or datasheet")
     ap.add_argument(
@@ -775,7 +775,7 @@ def main(argv: list[str] | None = None) -> int:
         "proposed_wait_pose": None if proposal is None else [float(x) for x in proposal],
         "note": "rollout (L3 §4.8) is not judged: an open cell is PASS(provisional), an empty "
         "map is conclusive. The torque layer is a sufficient condition without a runtime "
-        "counterpart (plan §9, D-16 revision).",
+        "counterpart (L3 §4.3, D-16 revision).",
     }
     (args.out_dir / "gate_map_summary.yaml").write_text(yaml.safe_dump(summary, sort_keys=False))
     print(yaml.safe_dump(summary, sort_keys=False))

@@ -4340,7 +4340,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--v-max",
         type=float,
-        help="D-3: fastest catch speed of the target distribution [m/s] (plan §5). No "
+        help="D-3: fastest catch speed of the target distribution [m/s] (L8 §4.5). No "
         "default — without it the validity is NOT_EVALUATED",
     )
     ap.add_argument(

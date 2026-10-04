@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         "--trials",
         type=int,
         default=200,
-        help="launches to issue (plan §5 proposes >= 200 per configuration)",
+        help="launches to issue (L8 §4.5 proposes >= 200 per configuration)",
     )
     parser.add_argument(
         "--flight-s",
