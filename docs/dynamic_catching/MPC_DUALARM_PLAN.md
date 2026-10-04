@@ -204,7 +204,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 - [#710](https://github.com/hyujun/rtc-framework/issues/710) — iiwa7_leap: `mode: mpc` 가 포구 계획을 내지 못한다 — 첫 풀이의 기준 궤적 (E1-F20 뒤에 다시 본다)
 - [#711](https://github.com/hyujun/rtc-framework/issues/711) — refactor(catching): `Decel*` · `decel_*` 이름을 뜻에 맞게 — MD-48 의 rename, E3 착수 전
-- [#712](https://github.com/hyujun/rtc-framework/issues/712) — catching: CLIK 가속 제약에서 box 형태를 없앤다 — kinematic · dynamic 만 (MD-74 후속)
 - [#755](https://github.com/hyujun/rtc-framework/issues/755) — catching: 포구 층에서 발화하지 않는 `JOINT_CONFLICT` 경로 — 지울지 정한다 (#712 후속)
 - [#713](https://github.com/hyujun/rtc-framework/issues/713) — catching: 조정되지 않은 채 출하된 mpc planner 의 값 — `cost.w_perp` · `publish.slack_terminal_max` (E1-F20 뒤)
 - [#716](https://github.com/hyujun/rtc-framework/issues/716) — catching: formulation 의 포구 구간 다중 노드 (K_c) 와 그 위의 경로 이탈 항 `w_path` 가 구현에 없다 (E1-F20 뒤)
