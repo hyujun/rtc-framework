@@ -14,7 +14,7 @@ namespace {
 /// decomposition, checked once up front. A rejected option set is never
 /// repaired into a working one (NUM-7) — silently substituting a default would
 /// make the offline map and the runtime planner disagree about what they ran,
-/// which is the one failure mode plan §11 exists to prevent.
+/// which is the one failure mode L3 §4.2 exists to prevent.
 [[nodiscard]] bool OptionsUsable(const CatchPoseIkOptions& o) noexcept {
   return o.max_iter > 0 &&                                              //
          std::isfinite(o.eps_pos) && o.eps_pos > 0.0 &&                 //
@@ -466,7 +466,7 @@ bool CatchPoseIk::QpTaskStep(const pinocchio::Model& pin, const CatchPoseIkOptio
   // every arm this runs on and the QP has no unique solution without it. It is
   // what plays the role §6.5's adaptive λ plays for the projector — except that
   // it is a constant, which is why it is validated (> 0) and why its default is
-  // a measured provisional rather than a guess (plan §4.4).
+  // a measured provisional rather than a guess (D-26).
   JtJ_.noalias() = J5w_.transpose() * J5w_;
   qp_data_.H = JtJ_;
   qp_data_.H.diagonal().array() += opt.mu;

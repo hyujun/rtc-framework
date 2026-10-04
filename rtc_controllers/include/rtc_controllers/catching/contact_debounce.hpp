@@ -1,6 +1,6 @@
 // ── Fingertip contact debouncer (L7 §4.4, dynamic_catching S1.8 / L7.3) ─────
 // Per fingertip i: a bias b_i and noise σ̂_i are estimated by a fixed-memory
-// moving average while the hand sits `Open` (ARMED/TRACKING window, driven by
+// moving average while the hand is settled at `q_pre` (ARMED/TRACKING window, driven by
 // the caller — this core does not know about FSM Mode). The live decision is
 //
 //   f_i(t) = ‖F_i(t) − b_i‖,   c_i(t) = 1[f_i > max(f_min, k_σ·σ̂_i)]
@@ -32,8 +32,7 @@
 //  3. An out-of-range fingertip index is rejected (no state mutated, sample
 //     reported as not accepted) rather than clamped or asserted — the
 //     reference `traj_sampler.hpp` `n > kMaxSamples` defect this repo's own
-//     S1 port already found (IMPLEMENTATION_PLAN.md "코드 대조" S1 findings)
-//     is exactly "log the overrun and keep indexing"; this core never
+//     S1 port already found is exactly "log the overrun and keep indexing"; this core never
 //     indexes past `kMaxFingertips`.
 #pragma once
 
@@ -116,7 +115,7 @@ class ContactDebouncer {
 
   /// Feed one sample into fingertip `idx`'s bias/noise estimate. Call only
   /// while the caller's FSM judges the hand to be in the learning window
-  /// (ARMED/TRACKING, `Open`) — this core has no notion of Mode.
+  /// (ARMED/TRACKING, hand settled at `q_pre`) — this core has no notion of Mode.
   ///
   /// @return true iff the sample was finite, `idx` in range, and accepted.
   ///         A rejected sample never touches `baseline_[idx]`.

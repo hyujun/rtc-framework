@@ -8,7 +8,7 @@
 // target acceleration does not step at sample boundaries (a one-sample Taylor
 // expansion p + v·dt + a·dt²/2 does — L2 §4.2).
 //
-// Time: sample instants and the query are absolute steady ns (plan §3). The
+// Time: sample instants and the query are absolute steady ns (L0 §4.5). The
 // query is the NowLead of the tick; the only relative seconds formed are the
 // in-interval offset and length, both as differences of two instants of the
 // same snapshot, so no origins are mixed.
@@ -151,7 +151,7 @@ inline constexpr std::int64_t kMinInterpIntervalNs = 100'000;
   return e;
 }
 
-/// Sample the trajectory at the tick's lead instant (plan §3: sampling is on the
+/// Sample the trajectory at the tick's lead instant (L0 §4.5: sampling is on the
 /// lead axis). `hint` is the interval index of the previous call on this
 /// snapshot — RT ticks move forward in time, so this is O(1) on average; a
 /// stale hint recovers by binary search (O(log n)). Reset it to 0 when

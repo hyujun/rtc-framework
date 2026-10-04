@@ -14,13 +14,12 @@
 // At τ=0 this makes the reference error e = x_s − p_v(0) and ė = ẋ_s − v_v(0)
 // EXACTLY zero (not merely small) — G7-B measures that. The reference
 // acceleration jumps from −a_dec·û_s to 0 at τ_s (infinite jerk); the doc
-// accepts this and offers `supervisor.decel.ramp_time` as a mitigation this
-// core does not implement (a ramp is a caller-side concern: L4 already
-// consumes a_v as a target, so a ramped a_dec is just a different a_dec
-// argument on the next call).
+// accepts this (L7 §4.3: a_dec is not ramped); a ramp would be a caller-side
+// concern: L4 already consumes a_v as a target, so a ramped a_dec is just a
+// different a_dec argument on the next call.
 //
 // This is a pure numeric core: ROS/time-type free (the caller derives τ from
-// NowLead/BallTime per plan §3 before calling in), Eigen-only, no heap,
+// NowLead/BallTime per L0 §4.5 before calling in), Eigen-only, no heap,
 // noexcept, fail-closed on non-finite input.
 //
 // ── Ambiguity resolutions (documented per task instruction) ─────────────────
@@ -32,7 +31,7 @@
 //     x_s with zero velocity/acceleration for every τ ≥ 0 (a degenerate but
 //     valid decel: there was nothing left to decelerate).
 //  2. τ < 0 is reported invalid rather than clamped to 0: the caller's own
-//     contract is "query only at or after DECEL entry" (plan §3, `DecelDue`),
+//     contract is "query only at or after DECEL entry" (L0 §4.5, `DecelDue`),
 //     so a negative τ signals a caller bug and fail-closed is preferred to
 //     silently answering a question that was never supposed to be asked.
 #pragma once
@@ -52,7 +51,7 @@ namespace rtc::catching {
 /// path just to test the guard.
 inline constexpr double kMinEntrySpeedSquared = 1e-12;
 
-/// TCP state at `DECEL` entry (plan §3: sampled once, at t_s = now_lead of the
+/// TCP state at `DECEL` entry (L0 §4.5: sampled once, at t_s = now_lead of the
 /// tick `DecelDue` first fired).
 struct DecelEntryState {
   Eigen::Vector3d x_s{Eigen::Vector3d::Zero()};     ///< position at entry [m]
@@ -79,7 +78,7 @@ struct DecelTarget {
 /// @param a_dec  deceleration magnitude [m/s²] — `supervisor.decel.a_dec`;
 ///               must be finite and > 0 or the result is invalid
 /// @param tau    seconds since entry on the lead axis (now_lead − t_s: DECEL
-///               is entered and its target sampled at now + T_arm, plan §3);
+///               is entered and its target sampled at now + T_arm, L0 §4.5);
 ///               must be finite and ≥ 0 or the result is invalid
 [[nodiscard]] inline DecelTarget EvaluateDecelTarget(const DecelEntryState& entry, double a_dec,
                                                      double tau) noexcept {
@@ -127,13 +126,14 @@ struct DecelTarget {
 
 // ── QP-independent joint-space deceleration (L7 §4.1, A-S5-10, S5.3) ────────
 //
-// The task-space target above is what `ABORT_SAFE` uses when the joint command
-// layer is HEALTHY: the virtual target goes through L4 and L5 like any other
-// reference. It is exactly the wrong thing when the abort was CAUSED by that
-// layer — `QP_FAILED` or `JOINT_CONFLICT` — because it would route the stop
-// through the component that just failed.
+// The task-space target above is DECEL's reference: it goes through L4 and L5
+// like any other reference. `ABORT_SAFE` never uses it — its stop is always in
+// joint space, whatever the cause (L7 §4.1). A task-space stop would be exactly
+// the wrong thing when the abort was CAUSED by that layer (`QP_FAILED` or
+// `JOINT_CONFLICT`), because it would route the stop through the component that
+// just failed, and one path for every cause is one path to verify.
 //
-// So this is the other path: no QP, no task space, no model. It walks each
+// So this is that path: no QP, no task space, no model. It walks each
 // joint's commanded velocity to zero at its own acceleration limit and
 // integrates the command from there.
 //

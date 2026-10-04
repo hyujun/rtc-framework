@@ -474,7 +474,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
            " turns the slack on, which needs " + Key("decel_mpc.catch.v_rel_allow") + " > 0 (got " +
            std::to_string(d.v_rel_allow) + ")");
   }
-  // The core's own design values (MD-92). Each range is the core's Init check
+  // The core's own design values (YAML keys). Each range is the core's Init check
   // (decel_mpc.cpp) with the key's name on it, so a profile is told which key
   // to fix instead of reading "kParamsInvalid" at configure.
   const YAML::Node cost = Section(decel, "cost", "decel_mpc.cost");

@@ -2,12 +2,12 @@
 // (dynamic_catching MPC plan E1-F01 / #627 — the stop segment; E1-F07 / #660 —
 // the pre-catch grid and the catch terms; formulation §1.1–§1.3, §1.6)
 //
-// "Decel" is the historical name (plan MD-48): with n_pre > 0 the horizon
+// "Decel" is the historical name (MD-48): with n_pre > 0 the horizon
 // starts before the catch. With the defaults (n_pre = 0, catch_terms = false)
 // this is exactly the E1-F01 stop problem described first below.
 //
 // Replaces nothing yet — the closed-form DECEL (decel_target.hpp) and the
-// QP-independent joint stop stay the safety nets (MPC_DUALARM_PLAN MD-11). This
+// QP-independent joint stop stay the safety nets (MD-11). This
 // is the numeric core the planner thread calls through DecelPlanner
 // (decel_planner.hpp, E1-F03); it knows no ROS, no controller, no robot.
 //
@@ -54,7 +54,7 @@
 //    line through p_c is where the hand stops, not how it approaches.
 // With catch_terms the cost gains three terms AT the catch node, linearised at
 // the reference x̄ (the same ½-weighted least-squares convention as above —
-// the formulation prints them without the ½):
+// formulation §1.3 puts them inside the same ½[…]):
 //      ½ ‖p_C(q_kc) − p̂_b‖²_{W_p}                        position
 //    + ½ w_a ‖e_a(q_kc)‖²                                 approach axis
 //    + ½ ‖v_C − γ_ref v̂_b‖²_{W_v},  W_v = w_∥ d̂d̂ᵀ + w_⊥(I − d̂d̂ᵀ)   velocity
@@ -265,7 +265,7 @@ struct DecelMpcInput {
   Eigen::Matrix3d w_p{Eigen::Matrix3d::Zero()};
   Eigen::Vector3d a_d{Eigen::Vector3d::UnitZ()};  ///< desired approach axis (unit, world)
   Eigen::Vector3d v_b{Eigen::Vector3d::Zero()};   ///< predicted ball velocity at t_c [m/s]
-  double gamma_ref{1.0};  ///< velocity cost target γ_ref·v̂_b, in (0, 1] (plan MD-53)
+  double gamma_ref{1.0};  ///< velocity cost target γ_ref·v̂_b, in (0, 1] (MD-53)
 };
 
 struct DecelMpcResult {
@@ -399,7 +399,7 @@ class DecelMpc {
   Eigen::VectorXd jerk_w_;
   // Stage structure of the (single) joint group: every joint shares one block
   // pattern, so the gains are scalars per (node, block). A second joint group
-  // with its own E (formulation §1.1, plan MD-49) gets its own instance of
+  // with its own E (formulation §1.1, MD-49) gets its own instance of
   // these four members; the terms below read gains only through them.
   std::array<int, kMaxMpcNodes> block_of_node_{};
   std::array<double, kMaxMpcNodes + 1> t_node_{};      // node instants from node 0 [s]

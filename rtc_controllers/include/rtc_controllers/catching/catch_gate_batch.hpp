@@ -1,5 +1,5 @@
 // ── Offline batch judge for the S3.5b gate-catchable map ────────────────────
-// dynamic_catching plan §11. `catch_pose_ik_batch` answers "is there a good
+// dynamic_catching L3 §4.2. `catch_pose_ik_batch` answers "is there a good
 // catch posture"; this answers the rest of the planner's chain for a candidate
 // that already has one — can the arm get there in time (L3 §4.3), is there a γ
 // that both the hand and the arm can live with (§4.5), and where would the arm
@@ -38,7 +38,7 @@ namespace rtc::catching {
 /// still produces a complete, plausible map.
 struct GateSettings {
   std::vector<double> qdot_max;   ///< joint velocity limits [rad/s], model joint order
-  std::vector<double> qddot_max;  ///< joint acceleration box [rad/s²] (plan §9, D-16)
+  std::vector<double> qddot_max;  ///< joint acceleration box [rad/s²] (L3 §4.3, D-16)
   double eta_v{0.0};          ///< `planner.gamma.eta_v`; applied to `qdot_max` AND `v_max` (S4.4)
   double v_max{0.0};          ///< `reference.v_max` [m/s]
   double d_eff{0.0};          ///< `planner.hand.d_eff` [m]

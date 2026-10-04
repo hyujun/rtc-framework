@@ -1,7 +1,7 @@
 // ── γ rollout: choosing (γ_f, T_w) by simulating the reference (L3 §4.8, S6-C) ──
 //
 // For one candidate the planner runs the L4 soft-catch reference WITHOUT
-// saturation, on the RT's own time axis (now_lead = now + T_arm, plan §3),
+// saturation, on the RT's own time axis (now_lead = now + T_arm, L0 §4.5),
 // against the target the RT will see — the vision snapshot sampled by
 // `SampleAt`, the same function the tick calls. It records the peak demanded
 // acceleration ‖u_des‖ (pre-saturation, L4 §5.2) and speed ‖ẋ‖, and the error

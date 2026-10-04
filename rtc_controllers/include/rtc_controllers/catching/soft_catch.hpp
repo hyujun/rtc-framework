@@ -24,7 +24,7 @@
 //  • dt ≤ 0 is invalid (L4 §5.1). The reference used step(…, dt = 0) to read
 //    e / ė without integrating; that is Evaluate() now.
 //
-// Time axis (plan §3, L4 §5.2): `t` and the profile's t0 / t1 are relative
+// Time axis (L0 §4.5, L4 §5.2): `t` and the profile's t0 / t1 are relative
 // seconds from ONE origin on the lead axis (now + T_arm). ProfileSeconds() and
 // MakeGammaProfile() form them from the absolute instants at the core boundary.
 //

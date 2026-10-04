@@ -213,7 +213,7 @@ struct PlanAdmissionContext {
   /// Steady instant of the RT's last trial reset; plans published before it
   /// belong to the trial the reset ended. 0 = no reset yet.
   std::int64_t reset_floor_ns{0};
-  /// (g) T_freeze [ns] (L7 §4.8's third admission condition, #537 S7): a plan
+  /// (g) T_freeze [ns] (L7 §4.1 R-ADMIT, #537 S7): a plan
   /// whose t_c − now is not ABOVE this would commit on the tick it is taken —
   /// and with t_c ≤ now, decelerate the tick after — so the controller would
   /// commit to a catch it never approached. 0 disables the check (a profile
