@@ -139,9 +139,11 @@
 #   refuse to build.
 #   Names, for a document that points here instead of restating this (the
 #   comment at each definition owns the detail): RTC_VERIFY_NO_REUSE=1 turns
-#   both reuses off; the pass files and rtc-verify-timing.log (one line per
-#   run, with its mode) are kept in .git/ ("Kept in .git/ beside the
-#   watermark"); a measurement holds the host through
+#   both reuses off; RTC_VERIFY_BASE=<commit> names the baseline of a --run
+#   (after a branch switch the watermark is not on this branch and nothing
+#   committed is graded -- see "Verification baseline"); the pass files and
+#   rtc-verify-timing.log (one line per run, with its mode) are kept in .git/
+#   ("Kept in .git/ beside the watermark"); a measurement holds the host through
 #   <workspace>/.rtc-verify-hold, which repo_scripts/scripts/with_verify_hold.sh
 #   writes for the lifetime of the driver it wraps (workspace_holds).
 #
@@ -310,14 +312,50 @@ fi
 # makes the fallback byte-identical to the pre-watermark behaviour rather than
 # producing a diff against an unrelated history — degrade toward the old gate,
 # never toward a workspace-wide rebuild.
+#
+# What the fallback costs: with HEAD as the baseline the commits of the branch
+# just switched to are not graded, and a tree with nothing uncommitted passes
+# with nothing looked at. Observed 2026-10-04 — the checkout was moved through
+# several branches cut from one commit to verify each, and a branch that
+# changed another package's header and test passed with that package never
+# built. So --run does two things the turn end does not:
+#   * it SAYS so when the watermark is a commit HEAD does not descend from and
+#     HEAD carries commits the two do not share (the notice below);
+#   * it takes the baseline by name, RTC_VERIFY_BASE=<commit>. The commit must
+#     be an ancestor of HEAD — a baseline on another branch is the
+#     unrelated-history diff again, so it blocks instead of being ignored. A
+#     named baseline also overrides "this tree already passed": that pass may
+#     be the empty one (see "Nothing changed since the last pass"). Package
+#     verdicts, keyed on content, are still reused.
+# The turn end ignores RTC_VERIFY_BASE: it builds nothing, and a branch switch
+# must not leave every later turn owing verdicts for commits made elsewhere.
 VERIFY_BASE_FILE="$(git rev-parse --git-dir 2>/dev/null || echo .git)/rtc-verify-base"
 VERIFY_BASE=HEAD
-if [ -f "$VERIFY_BASE_FILE" ]; then
+BASE_NAMED=""
+if [ -n "$RUN_MODE" ] && [ -n "${RTC_VERIFY_BASE:-}" ]; then
+  NAMED_BASE=$(git rev-parse --verify --quiet "${RTC_VERIFY_BASE}^{commit}" 2>/dev/null || true)
+  if [ -z "$NAMED_BASE" ] || ! git merge-base --is-ancestor "$NAMED_BASE" HEAD 2>/dev/null; then
+    echo "verify-changes --run: RTC_VERIFY_BASE='${RTC_VERIFY_BASE}' is not a commit HEAD descends from -- nothing graded. Name the commit this branch left the verified line at, e.g. RTC_VERIFY_BASE=\$(git merge-base origin/main HEAD)." >&2
+    exit 2
+  fi
+  VERIFY_BASE="$NAMED_BASE"
+  BASE_NAMED=1
+elif [ -f "$VERIFY_BASE_FILE" ]; then
   WATERMARK=$(cat "$VERIFY_BASE_FILE" 2>/dev/null || true)
   if [ -n "$WATERMARK" ] \
-     && git rev-parse --verify --quiet "${WATERMARK}^{commit}" >/dev/null 2>&1 \
-     && git merge-base --is-ancestor "$WATERMARK" HEAD 2>/dev/null; then
-    VERIFY_BASE="$WATERMARK"
+     && git rev-parse --verify --quiet "${WATERMARK}^{commit}" >/dev/null 2>&1; then
+    if git merge-base --is-ancestor "$WATERMARK" HEAD 2>/dev/null; then
+      VERIFY_BASE="$WATERMARK"
+    elif [ -n "$RUN_MODE" ]; then
+      # Only when HEAD holds commits the watermark's line does not: back on the
+      # commit a graded branch was cut from there is nothing left out.
+      FORK=$(git merge-base "$WATERMARK" HEAD 2>/dev/null || true)
+      UNGRADED=0
+      [ -z "$FORK" ] || UNGRADED=$(git rev-list --count "${FORK}..HEAD" 2>/dev/null || echo 0)
+      if [ "${UNGRADED:-0}" -gt 0 ]; then
+        echo "verify-changes --run: the watermark (${WATERMARK:0:8}) is not an ancestor of HEAD -- a branch switch, rebase or reset since this gate last passed. The baseline is HEAD: only what is not committed is graded, and the ${UNGRADED} commit(s) since ${FORK:0:8} are NOT. To grade them: RTC_VERIFY_BASE=${FORK:0:8} .claude/hooks/verify-changes.sh --run" >&2
+      fi
+    fi
   fi
 fi
 
@@ -691,8 +729,14 @@ fi
 # The install tree is the one of those --run does look at (STALE_ARTIFACT_PKGS,
 # taken above): a package whose binaries were rebuilt since its verdict is
 # built and tested again, unchanged tree or not.
+#
+# Nor does it say WHAT the last pass graded. A pass over an empty change set
+# (the HEAD fallback after a branch switch) records this tree like any other,
+# so a --run that names its baseline (RTC_VERIFY_BASE) is not answered from
+# here: it asked for the commits since that baseline to be graded.
 WORK_TREE=$(work_tree_id)
 if [ -n "$WORK_TREE" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] && [ -z "$STALE_ARTIFACT_PKGS" ] \
+   && [ -z "$BASE_NAMED" ] \
    && [ "$(cat "$PASS_TREE_FILE" 2>/dev/null || true)" = "${VERDICT_TAG}${WORK_TREE}" ]; then
   echo "verify-changes: the working tree is the one this gate last passed at (tree ${WORK_TREE:0:12}) -- nothing re-run." >&2
   [ -z "$RUN_MODE" ] || baseline_artifact_stamps
@@ -1266,8 +1310,17 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
     # A line carrying the `ARCH-6-exempt` marker is a recorded exception
     # (invariants.md ARCH-6 세부 스펙 — e.g. accumulating sensor streams) and
     # is dropped from the sensor so it does not re-flag every time the file changes.
-    HITS=$(grep -nE 'rclcpp::QoS[({]([0-9]{2,}|[02-9])[)}]|keep_last\(([0-9]{2,}|[02-9])\)|depth[[:space:]]*=[[:space:]]*([0-9]{2,}|[02-9])' "$f" 2>/dev/null | grep -v 'ARCH-6-exempt' || true)
-    BARE=$(grep -nE 'SensorDataQoS\(\)' "$f" 2>/dev/null | grep -v 'keep_last' | grep -v 'ARCH-6-exempt' || true)
+    # A whole-line comment is dropped too: it describes a QoS (often another
+    # node's -- "matches the estimator's rclcpp::QoS(10)"), it does not set
+    # one, and the file would otherwise ride the checklist at every change.
+    # Whole-line only: a trailing comment sits on a line of code. `#` opens a
+    # comment in Python and a directive in C/C++, so it is read by extension.
+    case "$f" in
+      *.py) QOS_COMMENT='^[0-9]+:[[:space:]]*#' ;;
+      *) QOS_COMMENT='^[0-9]+:[[:space:]]*(//|/\*|\*)' ;;
+    esac
+    HITS=$(grep -nE 'rclcpp::QoS[({]([0-9]{2,}|[02-9])[)}]|keep_last\(([0-9]{2,}|[02-9])\)|depth[[:space:]]*=[[:space:]]*([0-9]{2,}|[02-9])' "$f" 2>/dev/null | grep -v 'ARCH-6-exempt' | grep -vE "$QOS_COMMENT" || true)
+    BARE=$(grep -nE 'SensorDataQoS\(\)' "$f" 2>/dev/null | grep -v 'keep_last' | grep -v 'ARCH-6-exempt' | grep -vE "$QOS_COMMENT" || true)
     ALL=$(printf '%s\n%s' "$HITS" "$BARE" | grep -vE '^[[:space:]]*$' || true)
     if [ -n "$ALL" ]; then
       QOS_VIOLATIONS="${QOS_VIOLATIONS}  - ARCH-6 (topic QoS depth != 1): ${f}\n${ALL}\n"

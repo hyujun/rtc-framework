@@ -2838,5 +2838,86 @@ expect_not_contains "an independent package is not held back" "$out" "rtc_demo: 
 if grep -q '^test --packages-select rtc_demo ' "$ccalls"; then pass "...it is built and tested"; else fail "rtc_demo was not tested: $(cat "$ccalls")"; fi
 rm -rf "$ws" "$bstub" "$fake" "$ccalls" "$bcount"
 
+# 79. --run after a switch to a SIBLING branch. The watermark sits on the
+#     branch that was graded last. It is not an ancestor of HEAD, so the
+#     baseline falls back to HEAD, the change set is empty and nothing this
+#     branch committed is graded -- and the run used to end without a word
+#     about it. Observed 2026-10-04: the checkout was moved through several
+#     branches cut from the same commit, and a branch that changed a header and
+#     a test of another package passed with that package never built (its
+#     result file was a day old). The fallback stays: it is what keeps a
+#     branch switch from grading unrelated history. What changes is that --run
+#     says what it left out, and takes the baseline by name.
+dir=$(make_fixture)
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+fork=$(git -C "$dir" rev-parse HEAD)
+git -C "$dir" checkout -q -b one
+echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
+git -C "$dir" commit -qam "branch one"
+git -C "$dir" rev-parse HEAD >"$dir/.git/rtc-verify-base"
+git -C "$dir" checkout -q -b two "$fork"
+echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
+git -C "$dir" commit -qam "branch two"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "79: --run on a sibling branch is not blocked" "$rc" 0
+expect_contains "...it says the watermark is not on this branch" "$out" "is not an ancestor of HEAD"
+expect_contains "...and that the branch's commits were not graded" "$out" "1 commit(s)"
+expect_contains "...and how to grade them" "$out" "RTC_VERIFY_BASE=${fork:0:8}"
+if [ "$(calls "$count")" = 0 ]; then pass "...the fallback itself is unchanged: nothing is built"; else fail "the fallback built something (calls $(calls "$count"))"; fi
+# 79b. The baseline by name: the branch is graded from there.
+out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE="$fork"); rc=$?
+expect_exit "79b: --run with a named baseline passes" "$rc" 0
+if [ "$(calls "$count")" = 1 ]; then pass "...and the branch's package is built and tested"; else fail "the named baseline graded nothing (calls $(calls "$count"))"; fi
+expect_not_contains "...with no notice: the baseline is on this branch" "$out" "is not an ancestor of HEAD"
+# 79c. A named baseline overrides "this tree already passed". That pass may be
+#      the empty one above -- a tree that passed with nothing graded -- so a
+#      second --run that names the baseline must not be answered from it.
+#      (The package verdict is by content, so the package itself is not rebuilt.)
+out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE="$fork")
+expect_not_contains "79c: a named baseline is not answered by the whole-tree pass" "$out" "nothing re-run"
+expect_contains "...the package verdict is still reused" "$out" "verdict reused for [rtc_demo]"
+# 79d. A baseline HEAD does not descend from is refused, not ignored: grading
+#      against another branch is the unrelated-history diff the fallback exists
+#      to avoid, and silently falling back would be the empty pass again.
+out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE=one); rc=$?
+expect_exit "79d: a baseline off this branch blocks --run" "$rc" 2
+expect_contains "...and names the variable" "$out" "RTC_VERIFY_BASE"
+out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE=no-such-ref); rc=$?
+expect_exit "...so does one that is not a commit" "$rc" 2
+# 79e. Back on the commit both branches left: HEAD carries nothing the
+#      watermark's branch did not start from, so there is nothing to report.
+git -C "$dir" rev-parse two >"$dir/.git/rtc-verify-base"
+git -C "$dir" checkout -q --detach "$fork"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "79e: back on the fork point --run passes" "$rc" 0
+expect_not_contains "...without a notice" "$out" "is not an ancestor of HEAD"
+rm -rf "$dir" "$bstub" "$tstub" "$count"
+
+# 80. ARCH-6 reads code, not comments. The sensor greps a changed file whole,
+#     so a comment that DESCRIBES another node's QoS ("matches the estimator's
+#     rclcpp::QoS(10)") put the file on the checklist every time it changed
+#     (2026-10-04, a comment-only edit). The positive control comes first: a
+#     sensor that stopped firing would pass the comment case too.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/rtc_demo"
+printf 'def make(node, qos_profile):\n    return node.create_subscription(int, "t", print, qos_profile)\n' >"$dir/rtc_demo/rtc_demo/sub.py"
+git -C "$dir" add -A
+git -C "$dir" commit -qm "a python node"
+printf 'DEPTH = dict(depth=10)\n' >>"$dir/rtc_demo/rtc_demo/sub.py"
+out=$(run_hook "$dir")
+expect_contains "80: a depth other than 1 in code is flagged" "$out" "ARCH-6 (topic QoS depth != 1): rtc_demo/rtc_demo/sub.py"
+git -C "$dir" checkout -q -- rtc_demo/rtc_demo/sub.py
+printf '# RELIABLE to match the advertised rclcpp::QoS(10); depth=10 over there\n' >>"$dir/rtc_demo/rtc_demo/sub.py"
+echo 'int existing() { return 0; }  // the peer uses keep_last(10)' >"$dir/rtc_demo/src/existing.cpp"
+printf '// rclcpp::QoS(10) is what the publisher advertises\n/* SensorDataQoS() on their side\n * keep_last(5) */\n' >>"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook "$dir")
+expect_not_contains "80b: a comment that names a QoS is not flagged (python)" "$out" "rtc_demo/rtc_demo/sub.py"
+expect_contains "80c: a trailing comment on a code line still is (the line is code)" "$out" "ARCH-6 (topic QoS depth != 1): rtc_demo/src/existing.cpp"
+expect_not_contains "80d: ...but whole-line C++ comments are not" "$out" "rclcpp::QoS(10) is what the publisher"
+expect_not_contains "...nor a block comment's lines" "$out" "keep_last(5)"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
