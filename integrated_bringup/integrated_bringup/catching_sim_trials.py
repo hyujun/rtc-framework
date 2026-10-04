@@ -18,7 +18,7 @@ Per trial:
    record ground truth and every mode transition.
 3. The trial ends when the controller is back in ARMED after a RETREAT (the
    cycle closed), or in IDLE / FAULT, or after ``record_s``. The attempt's
-   verdict is the ``outcome`` published on the RETREAT entry (L7 §4.7).
+   verdict is the ``outcome`` published on the RETREAT entry (L7 §4.4).
 4. Reset the ball.
 
 This drives an already-running sim. It launches nothing: the sim, the ball
@@ -1171,7 +1171,7 @@ def _make_driver(profile: ArmProfile, args):
                     "final_outcome": (
                         OUTCOME_NAMES[self.outcome] if self.outcome is not None else None
                     ),
-                    # The attempt's verdict (L7 §4.7): published on RETREAT entry.
+                    # The attempt's verdict (L7 §4.4): published on RETREAT entry.
                     "outcome": (
                         OUTCOME_NAMES[self.retreat_outcome]
                         if self.retreat_outcome is not None

@@ -1902,7 +1902,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
 }
 
 TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
-  // MPC MD-92 / #698: every design value of the decel MPC core, of the catch
+  // #698: every design value of the decel MPC core, of the catch
   // pose IK, of the unit-speed solve and of the switch step bound is WRITTEN in
   // the shipped fragments, and at what the code used before the key existed —
   // so the shipped solves, rankings and tests did not move.

@@ -64,8 +64,10 @@ demo_catching_controller:
         publish:
           # Largest torque slack (fraction of tau_max) a published segment may
           # carry (MD-33). eta_tau + slack_max must not exceed joint_cmd.eta_tau
-          # under the dynamic CLIK form (checked at configure). E1-F06 tightens
-          # the terminal one from the recorded distribution.
+          # under the dynamic CLIK form (checked at configure). The terminal one
+          # is a guard value, not a tuned one: in every recorded solve the
+          # terminal slack stayed at numerical zero, so there is no
+          # distribution to tighten it from (#713).
           slack_max: 0.1
           slack_terminal_max: 0.1
           # Largest catch-node position error [m] a segment may carry (MD-62).
@@ -101,8 +103,8 @@ demo_catching_controller:
           # largest axis error of the reference the axis term is linearised at;
           # beyond it the solve fails closed. pi/2 as a decimal.
           axis_theta_max: 1.5707963267948966
-        # The core's design values (MPC plan MD-92). Each ships at the value the
-        # core had in code before they were keys, so no solve changes.
+        # The core's design values are YAML keys. Each ships at the value
+        # the core had in code before it was a key, so no solve changes.
         cost:
           # Jerk weight R_j per arm joint (arm joint order, 7 entries), each
           # > 0. All 1: the jerk is weighted evenly.

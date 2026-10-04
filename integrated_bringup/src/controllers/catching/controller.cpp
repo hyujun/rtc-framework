@@ -774,10 +774,10 @@ void DemoCatchingController::UpdateTrackError(const ControllerState& state) noex
 }
 
 void DemoCatchingController::RunJointSpaceAbort(const ControllerState& state) noexcept {
-  // The QP-independent stop (A-S5-10). Reached when the abort was CAUSED by
-  // the joint command layer, where routing the stop back through it is the one
-  // thing that cannot be done. (L7 records the exemption: ABORT_SAFE takes
-  // this stop whatever the cause, #537 S7 C-35.)
+  // The QP-independent stop (A-S5-10). ABORT_SAFE always stops here, whatever
+  // the cause (C-35, L7 §4.1): when the joint command layer caused the abort,
+  // routing the stop back through it is the one thing that cannot be done, and
+  // the other causes take the same single path.
   abort_stopped_ = RampArmToStop(state);
 }
 
@@ -2394,9 +2394,8 @@ void DemoCatchingController::RunArmMotion(const ControllerState& state) noexcept
   switch (mode_) {
     case Mode::kAbortSafe:
     case Mode::kFault:
-      // Only a stop caused by the joint command layer takes the QP-independent
-      // route (L7 §4.1) — and, recorded as an exemption (C-35), every
-      // ABORT_SAFE does. Run on every tick, seeded or not: `abort_stopped_` is
+      // Every ABORT_SAFE takes the QP-independent joint-space route, whatever
+      // caused it (C-35, L7 §4.1). Run on every tick, seeded or not: `abort_stopped_` is
       // ABORT_SAFE's only exit, and an arm that armed by the Q13 skip carries
       // no command until APPROACH, so a disarm in TRACKING reaches here with
       // nothing to ramp (RampArmToStop then answers "stopped"). Skipping the

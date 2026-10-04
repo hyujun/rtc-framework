@@ -486,7 +486,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return *std::min_element(tip_baseline_n_.begin(), tip_baseline_n_.begin() + n);
   }
 
-  /// How the last attempt ended (L7 §4.7). Kept across a re-arm — it is the
+  /// How the last attempt ended (L7 §4.4). Kept across a re-arm — it is the
   /// LAST attempt's verdict — and cleared by an activation or E-STOP reset.
   [[nodiscard]] rtc::catching::Outcome GetOutcomeForTesting() const noexcept { return outcome_; }
 

@@ -377,7 +377,7 @@ void DemoCatchingController::DeclareProfileParameters() {
           "slack is recorded (planner_events decel_slack_v), never a publish gate");
   declare("planner.decel_mpc.catch.v_rel_allow", decel.v_rel_allow,
           "decel MPC per-axis relative velocity the hand absorbs [m/s]; read when rho_v > 0");
-  // The core's own design values (MD-92), as run. jerk_weight is the profile's
+  // The core's own design values (YAML keys), as run. jerk_weight is the profile's
   // list in arm joint order; empty = the core's all-ones.
   declare("planner.decel_mpc.cost.jerk_weight", decel.jerk_weight,
           "decel MPC jerk weight R_j per arm joint (arm order); empty = all 1");

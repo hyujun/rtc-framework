@@ -246,8 +246,9 @@ demo_catching_controller:
     planner:
       # ── Planner thread (L3 §6, S6-A) ──────────────────────────────────────
       # ON: this profile has no oracle plan, so the planner is the plan box's
-      # only writer. Its search is a stub until S6-B (it publishes "no plan"),
-      # so TRACKING still self-loops on NO_CATCHABLE_PLAN as before.
+      # only writer. Its search is implemented (S6-B); only a configuration
+      # with no system model falls back to a stub that publishes "no plan",
+      # and TRACKING then self-loops on NO_CATCHABLE_PLAN.
       enabled: true
       # The longest the planner sleeps without a new trajectory (decision H,
       # 2026-09-23). It also re-plans on this cadence while vision is quiet.
