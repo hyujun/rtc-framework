@@ -12,7 +12,8 @@ and the box a = s·w is admissible at that state when, for every arm row i,
     Σ_j |M_ij(q)| · w_j · s  ≤  τ_dyn,i
 
 (the worst sign combination of the joint accelerations — a sufficient
-condition, typically 2–4× conservative). That LP in the single scalar s has the
+condition; the box is also conservative because it is one constant per joint, the
+minimum over all samples, that does not follow the posture). That LP in the single scalar s has the
 closed form s(q, q̇) = min_i τ_dyn,i / (|M| w)_i. The box is s* · w with
 s* = min over all samples; the row achieving the minimum is the binding joint.
 
