@@ -2192,6 +2192,62 @@ TEST_F(SupervisorScenarioTest, SaturationAfterTheFreezeAbortsOnRefSaturated) {
              Mode::kAbortSafe});
 }
 
+// ── A reference step the generator refuses while stopping (#718) ────────────
+//
+// DECEL and HOLD do not count saturation: a saturated reference while stopping
+// is the stop taking longer. A step the generator REFUSES is not that — there
+// is no reference that tick and the arm command is not written. The supervisor
+// used to pass over both alike, so the trial went on to HOLD and to a verdict
+// with the arm command left where the refusal began.
+//
+// The refusal is injected through the tick's own `dt`: the generator rejects a
+// step that is not positive. The shipped RT loop cannot produce one (its dt is
+// 1 / control_rate), which is why this is a line of defence rather than a
+// failure seen in a trial. The other way to a refusal — a generator whose own
+// state went non-finite — cannot be reached from outside the controller.
+class RefusedStopReferenceTest : public SupervisorScenarioTest {
+ protected:
+  void RefuseOneStepIn(Mode stage) {
+    ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, 0.6));
+    tips_enabled_ = true;
+    ball_in_hand_ = true;
+    ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
+    ASSERT_TRUE(TickUntilMode(stage, 1500)) << Transitions();
+    ASSERT_TRUE(log_.back().ref_valid) << "precondition: the law was stepping the reference";
+
+    // The tick that ENTERED the stage was evaluated by the stage before it, so
+    // the very next one is the stage's own evaluation. It has to be that one
+    // for DECEL: on this profile the virtual target stops at once and DECEL
+    // lasts a single tick.
+    state_.dt = 0.0;
+    const std::size_t refused = log_.size();
+    Ticks(1);
+    state_.dt = kDt;
+
+    EXPECT_FALSE(log_[refused].ref_valid) << "the injected step was not refused";
+    EXPECT_EQ(log_[refused].mode, Mode::kAbortSafe) << Window(static_cast<int>(refused), 3);
+    EXPECT_EQ(log_[refused].reason, Reason::kParamsTbd);
+    // The stop is the joint-space ramp, which needs neither the reference nor
+    // CLIK, and the attempt ends without a verdict of its own.
+    ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
+    EXPECT_EQ(ctrl_->GetOutcomeForTesting(), Outcome::kAborted) << Transitions();
+    ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+  }
+};
+
+TEST_F(RefusedStopReferenceTest, InDecelItAbortsOnParamsTbd) {
+  ASSERT_NO_FATAL_FAILURE(RefuseOneStepIn(Mode::kDecel));
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+             Mode::kClosing, Mode::kDecel, Mode::kAbortSafe, Mode::kRetreat, Mode::kArmed});
+}
+
+TEST_F(RefusedStopReferenceTest, InHoldItAbortsOnParamsTbd) {
+  ASSERT_NO_FATAL_FAILURE(RefuseOneStepIn(Mode::kHold));
+  ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+             Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kAbortSafe, Mode::kRetreat,
+             Mode::kArmed});
+}
+
 TEST_F(SupervisorScenarioTest, QpFailuresAbortAndTheThirdLatchesAFaultThatResetClears) {
   // A plan with a degenerate approach axis fails CLIK on its first law tick.
   // Each retry needs a NEW ball (Q15), and n_qp = 3 in a row latches the fault.

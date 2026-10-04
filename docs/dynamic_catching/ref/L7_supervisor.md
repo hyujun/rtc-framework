@@ -127,7 +127,7 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 | `NO_CATCHABLE_PLAN` | 이 tick 에 채택할 plan 이 없다 — 계획기가 plan 없음을 게시했거나 (catchability manipulability 미달 D-18, IK 실패, 도달 불가 — 세부 사유는 L3 plan 사유 코드), RT 의 접수 판정 (`JudgePlan`) 이 box 에 든 plan 을 거부했거나, `mpc` 에서 그 plan 에 딸린 첫 구간이 판정을 통과하지 못했다 (§4.3a) | `TRACKING` | 비치명. `TRACKING` 유지, 기록 |
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
 | `QP_FAILED` | L5 QP 실패 status | `TRACKING` – `RETREAT` | `ABORT_SAFE`. 이 실패로 끝난 **시행**이 연속 $N_{qp}$ 회면 `FAULT` (D-S9-D2 — solve 단위가 아니다, §4.1) |
-| `REF_SATURATED` | **`closed_form` 의 사유다.** L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick, 또는 기준 생성기가 그 tick 에 유효한 기준을 내지 못함. 세는 것은 공을 추종하는 tick (`APPROACH`·`COMMITTED`·`CLOSING`) 의 연속 포화이고, 포화가 아닌 tick 과 감속 대상을 추종하는 tick 이 0 으로 되돌린다. `mpc` 는 soft-catch 기준을 돌리지 않으므로 **발화하지 않는다** (§4.3a) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]` |
+| `REF_SATURATED` | **`closed_form` 의 사유다.** L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick, 또는 기준 생성기가 그 tick 에 유효한 기준을 내지 못함. 세는 것은 공을 추종하는 tick (`APPROACH`·`COMMITTED`·`CLOSING`) 의 연속 포화이고, 포화가 아닌 tick 과 감속 대상을 추종하는 tick 이 0 으로 되돌린다. `DECEL` · `HOLD` 에서 기준이 무효이면 이 사유가 아니라 `PARAMS_TBD` 다 (§4.3). `mpc` 는 soft-catch 기준을 돌리지 않으므로 **발화하지 않는다** (§4.3a) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]` |
 | `JOINT_CONFLICT` | L5 `bound_conflict` | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `TRACK_ERR` | $\Vert q_{meas}-q_c(now)\Vert_2>$ `supervisor.track_err_abort` — 측정과 **같은 tick 의 명령** 의 차 (팔 관절 전체). 명령을 움직이는 tick (추종 법칙, homing, `RETREAT` 정지·복귀) 에서만 계산한다. 지연 링으로 $q_c(now-T_{arm})$ 와 비교하는 형태는 구현하지 않았다 — 선행을 켜면 명령이 측정보다 $T_{arm}$ 앞서므로 그만큼의 오차가 이 값에 들어 있다 | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `ABORT_ESCALATED` | fault latch (`n_qp` 시행 연속, D-S9-D2) 또는 운동 기한 초과 (D-S9-D1) — 원인은 CSV `fault_cause` | `ABORT_SAFE`, `RETREAT` | `FAULT` |
@@ -135,7 +135,7 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 | `FAULT_RESET` | `ResetFault` | `FAULT` | `IDLE` |
 | `SPEED_SCALING` | speed scaling ≠ 1 | `TRACKING` – `RETREAT` | `ABORT_SAFE`. **전이 행은 있으나 발화하는 코드가 없다** — repo 에 신호 출처가 없다 (TBD-ARM-03). 실기 단계가 신호를 연결한다 (G7-F) |
 | `CLOCK_UNHEALTHY` | PTP 임계 초과 | `IDLE` – `RETREAT` | `IDLE`·`ARMED`에서는 진입 거부, 운행 중 `ABORT_SAFE`. **전이 행은 있으나 발화하는 코드가 없다** — 신호 출처가 없다 (TBD-NET-01, G7-F) |
-| `PARAMS_TBD` | L0 검증 실패 (활성 구성 TBD·provisional) | `IDLE` | 진입 거부. 같은 사유를 준비 조건 상실 (§4.5) 과 "법칙에 필요한 값이 없음" (`mpc` 에서 따를 구간이 없음, §4.3a) 이 재사용한다 — 그때의 처리는 그 절이 적는다 |
+| `PARAMS_TBD` | L0 검증 실패 (활성 구성 TBD·provisional) | `IDLE` | 진입 거부. 같은 사유를 준비 조건 상실 (§4.5) 과 "법칙에 필요한 값이 없음" (`mpc` 에서 따를 구간이 없음, §4.3a. `closed_form` 의 `DECEL` · `HOLD` 에서 감속 대상이나 기준이 무효, §4.3) 이 재사용한다 — 그때의 처리는 그 절이 적는다 |
 | `HAND_TIMEOUT` | L6 폐쇄 타임아웃 (`CLOSING`·`DECEL`) · **`RETREAT` 의 release 뒤 손이 `robot.hand.T_release_timeout` 안에 `q_pre` 에 정착하지 못함** (D-S8-6 (a)) | `CLOSING`, `DECEL`, `RETREAT` | `CLOSING`·`DECEL`: 기록, 계속. `RETREAT`: **`IDLE` + 같은 tick disarm** — 정착 못 한 손이 스스로 재무장하지 않게 하고, 운전자가 다시 무장한다 (P-1 (c)). 시계는 복귀 도착 tick (`kReturn → kRelease`) 에 시작하고, 같은 tick 에 정착했으면 재무장이 이긴다. `IDLE` 에는 행이 없다 — 손을 기다리지 않는다 |
 | `TIP_STALE` | 지문 센서 stale | `COMMITTED` 이후 | 판정 불가로 기록 |
 
@@ -167,7 +167,7 @@ $$e=x_s-p_v(0)=0,\qquad \dot e=\dot x_s-v_v(0)=0$$
 
 정지거리 $\Vert\dot x_s\Vert^2/(2a_{dec})$는 L3 §4.9의 예약값($\dot x_s\approx\gamma_f v_c$)과 같다. **`a_dec` 는 단일 키** `supervisor.decel.a_dec` 이고 소비자는 둘이다: 계획기 탐색의 정지점 예약 (`StoppingPoint` — $p_{stop}=p_c+(\gamma_f\Vert v\Vert)^2/(2a_{dec})\,\hat v$, 두 planner 에 공통) 과 이 절의 감속 대상 (`closed_form` 만). `mpc` 에서는 RT 가 이 값을 쓰지 않는다 — 탐색의 예약에만 남는다.
 
-`DECEL` · `HOLD` 의 감속 대상 추종은 기준 포화를 세지 않는다 (§4.2 `REF_SATURATED`) — 정지 중의 포화는 정지가 길어지는 것이지 실패한 포구가 아니다. 대상이 정지 ($\tau\ge\tau_s$) 하면 `HOLD` 이고, `HOLD` 는 정지한 대상 ($p_v$ 고정) 을 계속 추종한다.
+`DECEL` · `HOLD` 의 감속 대상 추종은 기준 포화를 세지 않는다 (§4.2 `REF_SATURATED`) — 정지 중의 포화는 정지가 길어지는 것이지 실패한 포구가 아니다. 기준 생성기가 그 tick 에 기준을 내지 못하는 것 (무효) 은 포화가 아니다: 그 tick 에는 팔 명령이 쓰이지 않으므로 정지가 명령되지 않는 것이고, 감속 대상의 무효와 같이 `PARAMS_TBD` → `ABORT_SAFE` (관절공간 정지, §4.1) 다. 대상이 정지 ($\tau\ge\tau_s$) 하면 `HOLD` 이고, `HOLD` 는 정지한 대상 ($p_v$ 고정) 을 계속 추종한다.
 
 감속 대상 계산은 ROS 비의존 순수 조각이다 (`EvaluateDecelTarget`, `decel_target.hpp`).
 
