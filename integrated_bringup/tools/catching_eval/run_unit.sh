@@ -95,6 +95,19 @@ keep_failed_session() {
   [ -n "$s" ] && [ -d "$WS/$s" ] && mv "$WS/$s" "$OUT/session_failed"
 }
 trap keep_failed_session EXIT
+# A signal ends the unit AND what it started. The launch and the estimator run
+# in sessions of their own (setsid), so the shell leaving does not stop them:
+# they stayed on this ROS domain, where the next unit's mirror reads and throws
+# then met two controllers, and kept logging into the session the EXIT trap had
+# just moved away. bash runs this once the command in front has returned (a
+# Ctrl-C or a hangup reaches that command too; a kill of this shell alone waits
+# for it).
+on_signal() {
+  cleanup
+  echo "FAIL:signal" > "$OUT/status"
+  exit 1
+}
+trap on_signal INT TERM HUP
 
 {
   echo "date_start: $(date -Is)"
