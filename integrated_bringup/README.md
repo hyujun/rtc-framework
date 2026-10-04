@@ -1024,11 +1024,11 @@ ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dis
 
 | 스크립트 | 하는 일 |
 |---|---|
-| `run_unit.sh <out> <p1b\|leap> <overlay.yaml> <n> <seed>` | unit 하나. sim 을 띄우고, 컨트롤러의 미러가 기대값과 같은지 확인하고, 추정기를 띄우고, `catching_sim_trials` (`--dist s35b --host-watch abort`) 를 돌린 뒤 세션 로그를 unit 으로 옮긴다. `<out>/status` 가 `DONE` 또는 `FAIL:<이유>` 다. tree 가 dirty 하면 거부한다 (`ALLOW_DIRTY=1` 로 푼다) |
+| `run_unit.sh <out> <p1b\|leap> <overlay.yaml> <n> <seed>` | unit 하나. sim 을 띄우고, 컨트롤러의 미러가 기대값과 같은지 확인하고, 추정기를 띄우고, `catching_sim_trials` (`--dist s35b --host-watch abort`) 를 돌린 뒤 세션 로그를 unit 으로 옮긴다. `<out>/status` 가 `DONE` 또는 `FAIL:<이유>` 다. tree 가 dirty 하면 거부한다 (`ALLOW_DIRTY=1` 로 푼다). INT · TERM · HUP 을 받으면 sim 과 추정기를 끝내고 `FAIL:signal` 을 적는다 (세션 로그는 다른 실패처럼 `<out>/session_failed` 로 옮긴다) |
 | `run_all.sh` | plan 의 unit 을 차례로 돌린다. 다시 띄우면 `DONE` 인 unit 은 건너뛴다. 실패한 unit 은 `<dir>.fail<N>` 로 치우고 같은 seed 로 `MAX_TRY` (기본 3) 번까지 다시 돌린다. `$DATA/STOP` 파일이 있으면 그 unit 뒤에 멈춘다. **`repo_scripts/scripts/with_verify_hold.sh` 로 띄운다** |
 | `analyse_unit.sh <ur5e_p1b\|iiwa7_leap> <unit>...` | 끝난 unit 에 `rtc_tools` 의 `catching_trials` 와 `tc_vector.py` 를 돌려 `<unit>/ct/` 에 쓴다. unit 을 모으는 중에는 돌리지 않는다 (host 부하) |
 | `mk_overlay.py <out.yaml> <p1b\|leap> <mpc\|closed_form>` | 그 로봇의 `sim_overlays/catch_lead_on.yaml` 에 `supervisor.decel.mode` 하나를 더한 overlay 를 쓴다 (두 arm 모두 mode 를 적는다 — 출하 기본값에 기대지 않는다). 다른 leaf 가 섞이면 거부한다 |
-| `summarize.py` | 로봇 하나의 G-1 판정 (짝 구성, 무효 처리, 성공 판정, Tango 검정, 기준 1–4). 규칙은 #632 의 규칙 코멘트가 정했다. 기계적인 부분은 `test/test_catching_eval_summarize.py` 가 고정한다 |
+| `summarize.py` | 로봇 하나의 G-1 판정 (짝 구성, 무효 처리, 성공 판정, Tango 검정, 기준 1–4). 규칙은 #632 의 규칙 코멘트가 정했다. 시행을 unit 의 디렉토리 이름으로 찾으므로 **이름이 같은 unit 둘은 거부한다** (두 arm 의 unit 이름이 달라야 한다). 기계적인 부분은 `test/test_catching_eval_summarize.py` 가 고정한다 |
 | `tc_vector.py` | t_c 의 간격을 공의 진행 방향과 그 수직으로 나눈 값. `analyse_unit.sh` 가 부른다 |
 | `make_conditions.py` | 예측 격자 조건 (E0-F04, #647) 의 profile · overlay · `conditions.tsv` · plan 을 `$DATA/conditions/` 에 쓴다 |
 
