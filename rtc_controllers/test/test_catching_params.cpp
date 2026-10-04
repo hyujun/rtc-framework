@@ -236,29 +236,54 @@ TEST(CatchingParams, InactiveConfigTbdPasses) {
 // ── decision K: joint_cmd.accel_constraint ──────────────────────────────────
 
 TEST(CatchingParams, AccelConstraintHasNoDefaultAndReadsEachForm) {
-  // No form is assumed (#712). A profile that names none is not decided, and
-  // the validator reports the key like any other active key left open. `box`
-  // — the form this key used to offer, and to default to — reads the same way.
+  // No form is assumed (#712). A profile that names none — the key absent, or
+  // `TBD` as every open key is written — is not decided, and the validator
+  // reports the key like any other active key left open. `box`, the form this
+  // key used to offer and to default to, is carried apart from that and
+  // reported as a removed value.
   YAML::Node absent = ValidRoot();
   ASSERT_TRUE(absent["joint_cmd"].remove("accel_constraint"))
       << "precondition: the baseline names a form";
+  YAML::Node tbd = ValidRoot();
+  tbd["joint_cmd"]["accel_constraint"] = "TBD";
   YAML::Node box = ValidRoot();
   box["joint_cmd"]["accel_constraint"] = "box";
-  for (const auto& [name, root] : {std::pair{"absent", absent}, std::pair{"box", box}}) {
-    SCOPED_TRACE(name);
-    const CatchingParams p = ParseCatchingParams(root);
-    EXPECT_EQ(p.joint_cmd_accel_constraint, CatchingAccelConstraint::kUnset);
+
+  struct Case {
+    const char* name;
+    YAML::Node root;
+    CatchingAccelConstraint form;
+    CatchingValidationReason reason;
+  };
+
+  for (const Case& c : {Case{"absent", absent, CatchingAccelConstraint::kUnset,
+                             CatchingValidationReason::kActiveConfigTbd},
+                        Case{"TBD", tbd, CatchingAccelConstraint::kUnset,
+                             CatchingValidationReason::kActiveConfigTbd},
+                        Case{"box", box, CatchingAccelConstraint::kRemovedBox,
+                             CatchingValidationReason::kRemovedValue}}) {
+    SCOPED_TRACE(c.name);
+    const CatchingParams p = ParseCatchingParams(c.root);
+    EXPECT_EQ(p.joint_cmd_accel_constraint, c.form);
     const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
     EXPECT_FALSE(r.armable);
-    EXPECT_TRUE(ReportHasFailure(r, CatchingValidationReason::kActiveConfigTbd,
-                                 "joint_cmd.accel_constraint"));
+    EXPECT_TRUE(ReportHasFailure(r, c.reason, "joint_cmd.accel_constraint"));
+    // Reported FIRST: the report drops what does not fit, and this entry is
+    // the one a caller must not miss (it would set up a CLIK with no form).
+    ASSERT_GE(r.failure_count, 1u);
+    EXPECT_STREQ(r.failures[0].key, "joint_cmd.accel_constraint");
   }
-  for (const auto& [text, form] : {std::pair{"kinematic", CatchingAccelConstraint::kKinematic},
-                                   std::pair{"dynamic", CatchingAccelConstraint::kDynamic}}) {
+  for (const CatchingAccelConstraint form :
+       {CatchingAccelConstraint::kKinematic, CatchingAccelConstraint::kDynamic}) {
+    // Through the one spelling the parser and the mirror share.
     YAML::Node root = ValidRoot();
-    root["joint_cmd"]["accel_constraint"] = text;
-    EXPECT_EQ(ParseCatchingParams(root).joint_cmd_accel_constraint, form) << text;
+    root["joint_cmd"]["accel_constraint"] = rtc::catching::AccelConstraintName(form);
+    EXPECT_EQ(ParseCatchingParams(root).joint_cmd_accel_constraint, form)
+        << rtc::catching::AccelConstraintName(form);
   }
+  EXPECT_STREQ(rtc::catching::AccelConstraintName(CatchingAccelConstraint::kKinematic),
+               "kinematic");
+  EXPECT_STREQ(rtc::catching::AccelConstraintName(CatchingAccelConstraint::kDynamic), "dynamic");
 }
 
 TEST(CatchingParams, AnUnsetFormIsReportedWhateverFormKeysTheProfileCarries) {
@@ -277,9 +302,11 @@ TEST(CatchingParams, AnUnsetFormIsReportedWhateverFormKeysTheProfileCarries) {
       root["joint_cmd"][key] = 0.7;
       CatchingParams p;
       ASSERT_NO_THROW(p = ParseCatchingParams(root));
-      EXPECT_EQ(p.joint_cmd_accel_constraint, CatchingAccelConstraint::kUnset);
+      EXPECT_EQ(p.joint_cmd_accel_constraint,
+                box ? CatchingAccelConstraint::kRemovedBox : CatchingAccelConstraint::kUnset);
       EXPECT_TRUE(ReportHasFailure(ValidateCatchingParams(p, kControlRateHz, false),
-                                   CatchingValidationReason::kActiveConfigTbd,
+                                   box ? CatchingValidationReason::kRemovedValue
+                                       : CatchingValidationReason::kActiveConfigTbd,
                                    "joint_cmd.accel_constraint"));
     }
   }
@@ -288,6 +315,10 @@ TEST(CatchingParams, AnUnsetFormIsReportedWhateverFormKeysTheProfileCarries) {
 TEST(CatchingParams, AccelConstraintRejectsAnUnknownForm) {
   YAML::Node root = ValidRoot();
   root["joint_cmd"]["accel_constraint"] = "torque";
+  ExpectRejectMentioning(root, "joint_cmd.accel_constraint");
+  // A key with no value is refused like any other key written that way; the
+  // open spelling is the literal `TBD`.
+  root["joint_cmd"]["accel_constraint"] = YAML::Node();
   ExpectRejectMentioning(root, "joint_cmd.accel_constraint");
 }
 

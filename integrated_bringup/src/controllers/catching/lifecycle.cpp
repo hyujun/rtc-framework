@@ -31,23 +31,6 @@ namespace integrated_bringup {
 
 namespace {
 
-/// `joint_cmd.accel_constraint` as a profile spells it. kUnset has no
-/// spelling: an instance that gets as far as printing it was not parked, and
-/// the text says so rather than naming a form.
-[[nodiscard]] const char* AccelConstraintText(
-    rtc::catching::CatchingAccelConstraint form) noexcept {
-  using Form = rtc::catching::CatchingAccelConstraint;
-  switch (form) {
-    case Form::kKinematic:
-      return "kinematic";
-    case Form::kDynamic:
-      return "dynamic";
-    case Form::kUnset:
-      break;
-  }
-  return "unset";
-}
-
 /// Human-readable tag for one validation entry. Static strings only — this
 /// runs in a lifecycle callback, but the report itself is allocation-free by
 /// contract and there is no reason to make its rendering the exception.
@@ -56,6 +39,8 @@ namespace {
   switch (reason) {
     case R::kActiveConfigTbd:
       return "still TBD in the active configuration";
+    case R::kRemovedValue:
+      return "holds a value that no longer exists";
     case R::kControlRateOutOfRange:
       return "control_rate out of range";
     case R::kRangeViolation:
@@ -329,7 +314,7 @@ void DemoCatchingController::DeclareProfileParameters() {
           "the key is absent). As of the FIRST configure of this node — read_only mirrors "
           "cannot follow a re-configure");
   declare("joint_cmd.accel_constraint",
-          std::string(AccelConstraintText(params_.joint_cmd_accel_constraint)),
+          std::string(rtc::catching::AccelConstraintName(params_.joint_cmd_accel_constraint)),
           "L5 §4.3 CLIK acceleration constraint form the profile selects (decision K) — the parsed "
           "key, also when the CLIK refused it and the arm is held. As of the FIRST configure of "
           "this node — read_only mirrors cannot follow a re-configure");
@@ -633,9 +618,10 @@ bool DemoCatchingController::ConfigureAccelConstraint(
   using Clik = rtc::tsid::ClikReferenceGenerator;
   switch (params_.joint_cmd_accel_constraint) {
     case Form::kUnset:
+    case Form::kRemovedBox:
       // on_configure parks a profile that selects no form before the CLIK is
-      // set up. This is the second line: the validation report is a fixed-size
-      // list, and a form must never be picked for a profile that named none.
+      // set up. This is the second line: a form must never be picked for a
+      // profile that named none.
       RCLCPP_ERROR(logger_,
                    "joint_cmd.accel_constraint selects no form (kinematic or dynamic) — the arm "
                    "will be held");
@@ -811,7 +797,7 @@ void DemoCatchingController::SetupArmCommand() {
               "arm command path ready: nv=%d, catch frame '%s' (idx %d), acceleration "
               "constraint %s",
               nv, catch_frame_name_.c_str(), catch_frame_idx_,
-              AccelConstraintText(params_.joint_cmd_accel_constraint));
+              rtc::catching::AccelConstraintName(params_.joint_cmd_accel_constraint));
 }
 
 void DemoCatchingController::AcquireModelBuilder() {
@@ -1030,13 +1016,28 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // A key or a value that no longer exists parks, sim and real arm alike:
     // the old overlay must not silently run as something else. A FAILURE here
     // would make CM refuse every controller on the robot.
-    if (!removed_key_.empty()) {
+    // Every one is named, so one configure tells the operator all of it.
+    const bool removed_box =
+        params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kRemovedBox;
+    if (!removed_arm_box_keys_.empty() || removed_box) {
       sim_only_disabled_ = true;
       park_reason_ = CatchingParkReason::kRemovedKey;
-      RCLCPP_ERROR(logger_,
-                   "DISABLED: 'catching.%s' was removed — %s. This controller will refuse to "
-                   "activate; the robot still comes up.",
-                   removed_key_.c_str(), removed_key_advice_);
+      for (const std::string& key : removed_arm_box_keys_) {
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: 'catching.%s' was removed — set the acceleration box as "
+                     "'catching.robot.arm.qdd_max' (rad/s², one per arm joint) and "
+                     "'catching.robot.arm.qdd_provisional'. This controller will refuse to "
+                     "activate; the robot still comes up.",
+                     key.c_str());
+      }
+      if (removed_box) {
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: 'catching.joint_cmd.accel_constraint: box' was removed — set the "
+                     "key to kinematic or dynamic (the CLIK no longer takes the acceleration box; "
+                     "'catching.robot.arm.qdd_max' stays, for the search and for the stop and "
+                     "homing ramps). This controller will refuse to activate; the robot still "
+                     "comes up.");
+      }
       return CallbackReturn::SUCCESS;
     }
     report_ =
@@ -1331,8 +1332,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                     "the decel box");
       }
     }
-    // #537 pre-S10 R3 (Q4): the box every ramp and the CLIK acceleration rows
-    // run on is still provisional. Judged only on a box that LOADED — an
+    // #537 pre-S10 R3 (Q4): the box the search and every joint-space ramp run
+    // on is still provisional. Judged only on a box that LOADED — an
     // absent one is the supervisor's verdict above — and after it, so the
     // more basic refusal is the one the operator reads. The flag has no
     // validator row in `catching:`, hence not a validator failure; the park is

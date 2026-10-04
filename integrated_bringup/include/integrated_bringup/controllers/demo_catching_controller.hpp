@@ -744,9 +744,9 @@ class DemoCatchingController final : public RTControllerInterface {
   void BuildClikBoxes(int nv, rtc::tsid::ClikReferenceGenerator::Config& cfg);
   /// Decision K (S6-C2): puts `joint_cmd.accel_constraint`'s form into `cfg`
   /// after BuildClikBoxes. False (logged) when `dynamic` is selected but the
-  /// arm device has no usable `joint_limits.max_torque`, or when no form is
-  /// selected (on_configure parks such a profile first; this is the second
-  /// line) — the arm is then held.
+  /// arm device has no usable `joint_limits.max_torque`, or when the profile
+  /// selects no form (on_configure parks such a profile first; this is the
+  /// second line) — the arm is then held.
   [[nodiscard]] bool ConfigureAccelConstraint(int nv,
                                               rtc::tsid::ClikReferenceGenerator::Config& cfg);
 
@@ -1290,12 +1290,11 @@ class DemoCatchingController final : public RTControllerInterface {
   bool arm_qdd_cfg_present_{false};
   bool arm_qdd_cfg_malformed_{false};
   bool arm_qdd_provisional_cfg_{true};
-  /// The first removed key or value LoadConfig found, as the ERROR quotes it
-  /// after `catching.` (`robot.arm.accel_limits_*`, or `joint_cmd.accel_constraint:
-  /// box`); empty when none. on_configure parks on it (kRemovedKey).
-  std::string removed_key_;
-  /// What to write instead — the ERROR's second half. A string literal.
-  const char* removed_key_advice_{""};
+  /// Every removed `robot.arm.accel_limits_*` key LoadConfig found, as the
+  /// ERROR quotes it after `catching.`; empty when none. on_configure parks on
+  /// them (kRemovedKey) — and on the removed `joint_cmd.accel_constraint: box`,
+  /// which the parser carries in `params_`.
+  std::vector<std::string> removed_arm_box_keys_;
   /// LoadConfig saw `planner.decel_mpc.enabled` reading false. The key is
   /// ignored; on_configure warns only under `supervisor.decel.mode: mpc`,
   /// where the old key would have parked and the law now runs.

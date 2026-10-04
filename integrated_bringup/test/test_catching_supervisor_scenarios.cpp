@@ -2965,7 +2965,7 @@ class StopEntryTest : public SupervisorScenarioTest,
     return [form, more](YAML::Node& y) {
       y["catching"]["joint_cmd"]["accel_constraint"] = form;
       if (form == "kinematic") {
-        // The form's own keys, at the validator's ceilings (no shipped value).
+        // The form's own keys, high in the validator's range (no shipped value).
         y["catching"]["joint_cmd"]["task_accel_max_linear"] = 500.0;
         y["catching"]["joint_cmd"]["task_accel_max_angular"] = 500.0;
       }
@@ -4762,19 +4762,26 @@ TEST_F(SafetyGateParkTest, ARemovedAccelLimitsKeyParksNamingTheNewKeys) {
 
 TEST_F(SafetyGateParkTest, AProfileThatNamesNoClikFormParksNamingTheKey) {
   // The key has no default: no form is run on a profile's behalf. It parks the
-  // way any consumed value left open does, on both axes.
+  // way any consumed value left open does, on both axes — the key absent, and
+  // the key written `TBD` (what the ERROR's "still TBD" invites).
   for (const bool sim : {false, true}) {
-    SCOPED_TRACE(sim ? "sim" : "real arm");
-    ASSERT_NO_FATAL_FAILURE(Configure(
-        [](YAML::Node& y) {
-          YAML::Node joint_cmd = y["catching"]["joint_cmd"];
-          ASSERT_TRUE(joint_cmd.remove("accel_constraint"))
-              << "precondition: the fixture names a form";
-          joint_cmd["eta_tau"] = 0.8;
-        },
-        sim));
-    ExpectParked({"joint_cmd.accel_constraint"});
-    ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+    for (const bool literal : {false, true}) {
+      SCOPED_TRACE(std::string(literal ? "TBD" : "absent") + (sim ? " (sim)" : " (real arm)"));
+      ASSERT_NO_FATAL_FAILURE(Configure(
+          [literal](YAML::Node& y) {
+            YAML::Node joint_cmd = y["catching"]["joint_cmd"];
+            ASSERT_TRUE(joint_cmd["accel_constraint"]) << "precondition: the fixture names a form";
+            if (literal) {
+              joint_cmd["accel_constraint"] = "TBD";
+            } else {
+              joint_cmd.remove("accel_constraint");
+            }
+            joint_cmd["eta_tau"] = 0.8;
+          },
+          sim));
+      ExpectParked({"joint_cmd.accel_constraint"});
+      ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+    }
     // Positive control: the same profile with its form line is not parked.
     ASSERT_NO_FATAL_FAILURE(
         Configure([](YAML::Node& y) { y["catching"]["joint_cmd"]["eta_tau"] = 0.8; }, sim));
@@ -4804,6 +4811,27 @@ TEST_F(SafetyGateParkTest, TheRemovedBoxFormParksNamingTheValueAndTheFormsLeft) 
     EXPECT_EQ(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::FAILURE);
     ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
   }
+}
+
+TEST_F(SafetyGateParkTest, EveryRemovedKeyAndValueIsNamedInOneConfigure) {
+  // An old overlay can carry more than one of them. Naming only the first
+  // costs a relaunch per key.
+  ASSERT_NO_FATAL_FAILURE(Configure(
+      [](YAML::Node& y) {
+        y["catching"]["robot"]["arm"]["accel_limits_path"] = "config/old/limits.yaml";
+        y["catching"]["robot"]["arm"]["accel_limits_group"] = "arm";
+        y["catching"]["joint_cmd"]["accel_constraint"] = "box";
+      },
+      /*sim=*/true));
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
+  for (const char* needle :
+       {"catching.robot.arm.accel_limits_path", "catching.robot.arm.accel_limits_group",
+        "catching.joint_cmd.accel_constraint: box"}) {
+    EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {needle, "was removed"}).empty())
+        << needle;
+  }
+  EXPECT_EQ(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::FAILURE);
+  ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
 TEST_F(SafetyGateParkTest, AProvisionalArmLagParksTheRealArm) {
