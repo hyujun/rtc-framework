@@ -32,8 +32,7 @@
 //  3. An out-of-range fingertip index is rejected (no state mutated, sample
 //     reported as not accepted) rather than clamped or asserted — the
 //     reference `traj_sampler.hpp` `n > kMaxSamples` defect this repo's own
-//     S1 port already found (IMPLEMENTATION_PLAN.md "코드 대조" S1 findings)
-//     is exactly "log the overrun and keep indexing"; this core never
+//     S1 port already found is exactly "log the overrun and keep indexing"; this core never
 //     indexes past `kMaxFingertips`.
 #pragma once
 

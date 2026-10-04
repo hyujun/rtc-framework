@@ -679,7 +679,7 @@ PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const Covarianc
   // γ continues from where the reference is when replacing (no step in γ)
   // and ramps over the window the rollout chose, [t_c − T_w, t_c] clipped to
   // now_lead — the exact profile the rollout judged. Evaluated against
-  // now_lead (plan §3).
+  // now_lead (L0 §4.5).
   plan.gamma_g0 = g0;
   plan.gamma_gf = best_gamma;
   plan.gamma_t0_ns = std::max(now_lead.ns, bs.t_ns - SecondsToNs(best_tw));

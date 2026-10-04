@@ -20,7 +20,7 @@
 // argument on the next call).
 //
 // This is a pure numeric core: ROS/time-type free (the caller derives τ from
-// NowLead/BallTime per plan §3 before calling in), Eigen-only, no heap,
+// NowLead/BallTime per L0 §4.5 before calling in), Eigen-only, no heap,
 // noexcept, fail-closed on non-finite input.
 //
 // ── Ambiguity resolutions (documented per task instruction) ─────────────────
@@ -32,7 +32,7 @@
 //     x_s with zero velocity/acceleration for every τ ≥ 0 (a degenerate but
 //     valid decel: there was nothing left to decelerate).
 //  2. τ < 0 is reported invalid rather than clamped to 0: the caller's own
-//     contract is "query only at or after DECEL entry" (plan §3, `DecelDue`),
+//     contract is "query only at or after DECEL entry" (L0 §4.5, `DecelDue`),
 //     so a negative τ signals a caller bug and fail-closed is preferred to
 //     silently answering a question that was never supposed to be asked.
 #pragma once
@@ -52,7 +52,7 @@ namespace rtc::catching {
 /// path just to test the guard.
 inline constexpr double kMinEntrySpeedSquared = 1e-12;
 
-/// TCP state at `DECEL` entry (plan §3: sampled once, at t_s = now_lead of the
+/// TCP state at `DECEL` entry (L0 §4.5: sampled once, at t_s = now_lead of the
 /// tick `DecelDue` first fired).
 struct DecelEntryState {
   Eigen::Vector3d x_s{Eigen::Vector3d::Zero()};     ///< position at entry [m]
@@ -79,7 +79,7 @@ struct DecelTarget {
 /// @param a_dec  deceleration magnitude [m/s²] — `supervisor.decel.a_dec`;
 ///               must be finite and > 0 or the result is invalid
 /// @param tau    seconds since entry on the lead axis (now_lead − t_s: DECEL
-///               is entered and its target sampled at now + T_arm, plan §3);
+///               is entered and its target sampled at now + T_arm, L0 §4.5);
 ///               must be finite and ≥ 0 or the result is invalid
 [[nodiscard]] inline DecelTarget EvaluateDecelTarget(const DecelEntryState& entry, double a_dec,
                                                      double tau) noexcept {

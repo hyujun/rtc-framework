@@ -7,7 +7,7 @@
 //
 // TWO CONSUMERS, ONE FUNCTION. The offline catchability map (S3.5a) and the
 // runtime planner (S6.2) must reach a bit-identical q* from the same YAML
-// (catch_pose_ik.hpp, plan §11), which they can only do if they resolve the
+// (catch_pose_ik.hpp, L3 §4.2), which they can only do if they resolve the
 // options the same way — so this is ordinary public API of the package, not a
 // helper of either caller.
 //

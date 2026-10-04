@@ -15,7 +15,7 @@
 // same inputs + same options must give a bit-identical q*. Everything here that
 // looks over-specified — no warm start between calls, no internal state
 // carried across Solve(), a deterministic finite-difference gradient — is in
-// service of that (plan §11).
+// service of that (L3 §4.2).
 //
 // It is NOT a controller. It runs on the planner thread, which may be
 // SCHED_FIFO, so it obeys the RT path rules (RT-1 no heap, RT-2 no throw, RT-3
@@ -62,7 +62,7 @@
 //    rather than a clamp applied to it afterwards. `DifferentialIk` stays, but
 //    only to form N — the projector belongs to the law, not to the solver.
 //
-//    The measurement behind the reversal (2 arms × 500 candidates, plan §4.4):
+//    The measurement behind the reversal (2 arms × 500 candidates, D-26):
 //    at μ = 1e-4 the QP accepts slightly more candidates than the DLS step
 //    (99.2% vs 98.8% on the 6R, 98.8% vs 98.2% on the 7R) at the same w₅ and a
 //    comparable residual, for ~22% more time per call. μ is not free: at
@@ -88,7 +88,7 @@
 //    a controller and wrong here: consecutive Solve() calls are DIFFERENT
 //    candidates, so a retained warm start would make each answer depend on
 //    which candidate was tried first and the offline map would stop agreeing
-//    with the runtime planner (plan §11). `ResetWarmStart()` (added to rtc_tsid
+//    with the runtime planner (L3 §4.2). `ResetWarmStart()` (added to rtc_tsid
 //    for this) is called once per Solve(); iterations WITHIN one Solve() do
 //    warm-start from each other, which is deterministic and wanted.
 //
@@ -119,7 +119,7 @@
 // ── Maximising w₅ in the null space ─────────────────────────────────────────
 // [확정 D-18] said roll should be left to the seed and that choosing it by
 // manipulability was out of v1 scope. That is reversed (user decision
-// 2026-09-20, plan §1 결정 로그): the step carries a null-space ascent term on
+// 2026-09-20, L3 §4.2): the step carries a null-space ascent term on
 // log w₅, so the free roll is spent on conditioning instead of on whatever the
 // seed happened to leave.
 //
@@ -180,7 +180,7 @@ namespace rtc::catching {
 /// This selects the GATE only. The null-space ascent always climbs w₅,
 /// whichever definition is active, so q* does not depend on this field — which
 /// is what makes w₅ and w₆ at the returned q* two measurements of the same pose
-/// and therefore comparable (plan §11 C-3). Under kArm6Row the gate is applied
+/// and therefore comparable (C-3). Under kArm6Row the gate is applied
 /// to a quantity that was not itself maximised; that is intended, and is the
 /// point of keeping both numbers.
 enum class ManipDefinition : std::uint8_t {
@@ -310,7 +310,7 @@ struct LogManip {
 ///
 /// Pre-allocated once with Resize(); every Solve() after that is heap-free,
 /// noexcept and silent. Holds no state between calls by design (determinism,
-/// plan §11) — the buffers are scratch, never warm-start data.
+/// L3 §4.2) — the buffers are scratch, never warm-start data.
 class CatchPoseIk {
  public:
   /// Size the buffers for an nv-DoF arm model. Off-RT (lifecycle / map setup):

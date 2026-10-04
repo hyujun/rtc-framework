@@ -1,4 +1,4 @@
-// ── Time axes of the catching core (dynamic_catching D-2, plan §3) ───────────
+// ── Time axes of the catching core (dynamic_catching D-2, L0 §4.5) ───────────
 // Three strong types over one clock (absolute steady nanoseconds):
 //
 //   BallTime — a physical instant of the BALL: t_c, t_cmd, every predicted
@@ -7,7 +7,7 @@
 //   NowLead  — NowReal + T_arm: the instant at which an arm command issued now
 //              is realised.
 //
-// The point of the types is that every decision is pinned to the axis plan §3
+// The point of the types is that every decision is pinned to the axis L0 §4.5
 // assigns it, at compile time. There is deliberately NO mixed-type comparison
 // operator: a generic `NowReal < BallTime` would let a sampling decision be
 // written on the real axis and still compile, which is exactly the bug that
@@ -119,7 +119,7 @@ static_assert(std::is_trivially_copyable_v<NowLead>);
 }
 
 /// APPROACH→COMMITTED: t_c − now ≤ T_freeze (real axis; T_freeze already
-/// includes T_arm in its lower bound, plan §3).
+/// includes T_arm in its lower bound, L0 §4.5).
 [[nodiscard]] constexpr bool CommitDue(NowReal now, BallTime t_c,
                                        std::int64_t t_freeze_ns) noexcept {
   return detail::SatSub(t_c.ns, now.ns) <= t_freeze_ns;

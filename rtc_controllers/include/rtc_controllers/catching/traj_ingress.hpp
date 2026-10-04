@@ -6,7 +6,7 @@
 // allowed to use, has it gone stale, has its horizon run out — lives here, so
 // it can be tested against a struct instead of against a publisher (D-1).
 //
-// Two axes run through this file and they are not interchangeable (plan §3):
+// Two axes run through this file and they are not interchangeable (L0 §4.5):
 //
 //   NowReal  — the steady receive axis. Staleness, ages and watchdogs are
 //              judged on it and ONLY on it. `header.stamp` never reaches a
@@ -16,7 +16,7 @@
 //              T_arm later; a horizon that ends before then is exhausted for
 //              the command even though it has not expired in real time.
 //
-// The T_arm ≠ 0 fixture requirement (plan §3) exists because the two axes
+// The T_arm ≠ 0 fixture requirement (L0 §4.5) exists because the two axes
 // coincide at T_arm = 0, which hides every confusion between them.
 
 #pragma once
@@ -39,7 +39,7 @@ enum class IngressReject : std::uint8_t {
   /// A point carries `validity` != VALID. C-1: the whole message is refused
   /// rather than the point dropped. S3.4 measured zero partial-invalid
   /// messages over 856 samples, so this is a fail-closed rule with no
-  /// observed cost; the decision to revisit it (plan C-1) belongs to whoever
+  /// observed cost; the decision to revisit it (C-1) belongs to whoever
   /// first sees the counter move.
   kNotEvaluated = 1,
   /// `snapshot_sequence` at or below the last accepted value WITHIN the same

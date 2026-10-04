@@ -40,7 +40,7 @@
 //     "발생 가능 상태: IDLE" column is read as "where this is currently
 //     OBSERVED", not a closed set, since it is not itself a completeness
 //     constraint the doc places on Reason applicability. S7.2 kept this
-//     reuse (no dedicated readiness-lost Reason; plan §7.3).
+//     reuse (no dedicated readiness-lost Reason; L7 §4.1).
 //
 //     The same reuse covers the MID-CYCLE modes, and there it is not a
 //     labelling choice but a safety one. Readiness can be lost while the arm

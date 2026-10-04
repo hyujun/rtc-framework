@@ -101,7 +101,7 @@ struct PlannerCycleRecord {
   std::int64_t traj_recv_ns{0};
   /// Steady instants: when the wake started and when the plan was stored
   /// (0 when nothing was stored). `publish_ns − traj_recv_ns` is the
-  /// receive → publish latency D-7a is judged on (plan §7.2).
+  /// receive → publish latency D-7a is judged on (L3 §5.3).
   std::int64_t wake_ns{0};
   std::int64_t publish_ns{0};
   /// The search's own account (S6-B): candidate counts, judgement rejects,

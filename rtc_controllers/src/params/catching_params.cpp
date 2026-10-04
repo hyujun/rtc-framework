@@ -21,7 +21,7 @@ namespace {
 // None of these are named by any dynamic_catching doc as a schema field —
 // each place a doc marks a value "provisional" (L0 §5.3), it does so in
 // prose or a table 근거 column, not with a boolean key, EXCEPT the catch
-// frame (D-17, plan §10), which already has one (`provisional: true`) but
+// frame (D-17, L5 §11), which already has one (`provisional: true`) but
 // lives in the robot's `urdf:` tree, a different YAML root than `catching:` —
 // CheckCatchFrameProvisional (S2.3a) applies the same rule to it from the
 // model config. For the provisional groups this validator DOES own,

@@ -9,8 +9,8 @@
 //
 // SeqLock requires trivially copyable payloads, and Eigen::Vector3d is not one,
 // so vectors are std::array<double, 3> and the computing side views them with
-// Eigen::Map (L0 §5.2, plan §6). Every instant is an absolute steady-ns
-// BallTime (plan §3); relative seconds exist only inside the numeric core.
+// Eigen::Map (L0 §5.2, L3 §5.3). Every instant is an absolute steady-ns
+// BallTime (L0 §4.5); relative seconds exist only inside the numeric core.
 //
 // This header is the single owner of the trajectory capacity kCap (L0 §5.2). It
 // is shared by L1/L2/L3 so that none of them depends on another for the type.
@@ -25,10 +25,10 @@ namespace rtc::catching {
 
 /// Compile-time capacity of one predicted trajectory [points].
 ///
-/// PROVISIONAL (plan D-15 / S0.7, user decision 2026-09-19): 40 holds ≈1.95 s at
+/// PROVISIONAL (D-15 / S0.7, user decision 2026-09-19): 40 holds ≈1.95 s at
 /// the 0.05 s sim-profile spacing, twice the largest point count the S0.7 sweep
 /// needed. The run-time bound n_max ≤ kCap comes from S3.6; if S3.6 needs more,
-/// raise this and re-run the S1 gates (plan §4.2 backfill). The snapshot is
+/// raise this and re-run the S1 gates (ID_INDEX §3). The snapshot is
 /// copied whole every RT tick (D-21 forbids gating the copy on
 /// SeqLock::sequence()), so this constant IS the per-tick copy cost.
 inline constexpr int kCap = 40;
@@ -54,7 +54,7 @@ inline constexpr int kMaxDecelNv = 8;
 /// axis, converted once on receipt by ConvertRemoteStamp + SampleBallTime).
 /// Position, velocity and acceleration are in the MODEL world (the Pinocchio
 /// universe the planner and CLIK work in): the ingress converts the vision
-/// frame once on receipt (plan §11 — the two can differ by a rigid transform,
+/// frame once on receipt (L3 §4.2 — the two can differ by a rigid transform,
 /// e.g. a model rooted at a frame rotated from the vision world).
 struct TrajSample {
   std::int64_t t_ns{0};
@@ -105,7 +105,7 @@ enum class PlanReason : std::uint8_t {
 
 /// Planner → RT payload (L3 §5.2). Field set frozen here; the planner fills it
 /// in S6. Instants are absolute steady ns; t_c / t_cmd / γ-profile times are on
-/// the BallTime axis and are compared against now_lead / now per plan §3.
+/// the BallTime axis and are compared against now_lead / now per L0 §4.5.
 struct PlanSnapshot {
   ProvenanceToken token{};
   std::uint64_t rt_iteration{0};  // RT state snapshot the plan was computed from (D-22)
@@ -155,7 +155,7 @@ struct PlanSnapshot {
 /// takes, without a copy.
 ///
 /// Instants are absolute steady ns on the LEAD axis (t_c is BallTime, which
-/// the RT compares against now_lead; plan §3). t0_ns is the EFFECTIVE instant
+/// the RT compares against now_lead; L0 §4.5). t0_ns is the EFFECTIVE instant
 /// t_eff — t_c for the pre-catch solve, a later grid point for a post-catch
 /// replan (MD-10, MD-31) — never "t_c" by assumption. All grid arithmetic is
 /// integer ns so that t0_ns lands exactly on t_c + k·dt_ns.

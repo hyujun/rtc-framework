@@ -4,9 +4,9 @@
 // a fixed-capacity, allocation-free ValidateCatchingParams(). Non-RT
 // (`on_configure`), same repo idiom as params/reach_gate_params.hpp.
 //
-// SCOPE. This is NOT the full controller config — that is frozen in S5 (plan
-// §4.4 S5.4, "S5~S9 필드 superset 동결"). It carries only the keys G0-C
-// (L0_core.md §9) and the CATCHING_MASTER.md §6 cross-constraint table
+// SCOPE. This is NOT the full controller config — that is frozen in S5
+// (S5.4, "S5~S9 필드 superset 동결"). It carries only the keys G0-C
+// (L0 §9) and the MASTER §6 cross-constraint table
 // reference:
 //   - reference.omega/zeta/v_max/a_max      (L4 §6)
 //   - planner.gamma.eta_v                   (L3 §6, D-9)
@@ -223,7 +223,7 @@ struct CatchingParams {
   /// refused outright in sim, and because CM latches `bring_up_failed` on any
   /// controller's configure failure that takes EVERY controller on the robot
   /// down with it — observed on a shipped sim profile 2026-09-22 (the robot and
-  /// the session are named in plan §7.3 A-S5-11, which owns the incident; this
+  /// the session are named in the record of A-S5-11, which owns the incident; this
   /// header is robot-agnostic and stays that way). The provisional rule says
   /// the right thing instead: sim warns, a real arm is blocked.
   bool reference_provisional{true};
@@ -382,7 +382,7 @@ struct CatchingParams {
   HandProfile hand;
 };
 
-/// Parse the `catching:` map (CATCHING_MASTER.md §6 top-level tree). An absent
+/// Parse the `catching:` map (MASTER §6 top-level tree). An absent
 /// section (e.g. no `sim:` tree in a real-arm config) is not an error: its keys
 /// take their doc defaults (TBD where open), which `ValidateCatchingParams`
 /// refuses only when the key is active. Throws `std::invalid_argument` (and

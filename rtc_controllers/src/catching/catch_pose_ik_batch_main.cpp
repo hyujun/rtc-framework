@@ -10,7 +10,7 @@
 // §"ARCH-7 의 범위" gives that category — it knows no robot (every model, frame
 // and option comes from argv), owns no RT loop and no ROS node, and appears in
 // no launch file or bringup chain. It is the development tool that generates a
-// plan §11 map and, later, the S6.2 equivalence oracle; it is never part of a
+// L3 §4.2 map and, later, the S6.2 equivalence oracle; it is never part of a
 // running system.
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"

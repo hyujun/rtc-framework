@@ -22,7 +22,7 @@
 //    zero / NaN guards on the joint limits (L3 §4.5 v0.5).
 //
 // All functions are allocation-free and noexcept (the planner may run
-// SCHED_FIFO, plan §7.2).
+// SCHED_FIFO, L3 §5.3).
 #pragma once
 
 #include "rtc_controllers/catching/time_types.hpp"
@@ -148,7 +148,7 @@ struct TMinResult {
 }
 
 /// Reach-time gate (L3 §4.3): t_k − now − T_arm − T_margin ≥ max_i t_min,i.
-/// Subtracting T_arm is comparing against now_lead (plan §3), hence NowLead.
+/// Subtracting T_arm is comparing against now_lead (L0 §4.5), hence NowLead.
 /// Necessary, not sufficient — the γ rollout (§4.8) checks sufficiency.
 [[nodiscard]] inline bool ReachTimeFeasible(BallTime t_k, NowLead now_lead,
                                             std::int64_t t_margin_ns,
