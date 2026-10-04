@@ -69,8 +69,8 @@
           xyz: [0.015, 0.145, 0.052]
           rpy: [0.0, 0.0, 0.0]
           # true (the default) until the frame has been looked at on THIS robot.
-          # Only the catching controller reads the flag, and only to refuse to
-          # arm real hardware; nothing in sim is blocked by it.
+          # The catching controller reads the flag at configure: while it is
+          # true a real-arm configuration is parked and sim only warns.
           provisional: true
 
     # ── Devices ──────────────────────────────────────────────────────────────
