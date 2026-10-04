@@ -869,7 +869,7 @@ bool DemoCatchingController::ResolveVisionFrame(TrajInputConfig& cfg) {
     RCLCPP_WARN(logger_,
                 "catching.io.arm_base_frame is not set: the vision frame '%s' is taken AS the "
                 "model world. That is wrong on a robot whose URDF root is not the frame vision "
-                "is measured against (plan §11 — ur5e_p1b's root is base_link, 180° from base)",
+                "is measured against (L3 §4.2 — ur5e_p1b's root is base_link, 180° from base)",
                 expected_frame_.c_str());
     return true;
   }
@@ -1053,7 +1053,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     if (!catching_section_present_) {
       RCLCPP_ERROR(logger_,
                    "refusing to configure: no `catching:` section. The hand profile has no "
-                   "defensible default — see L6 §6 and plan §4.4 S4.1.");
+                   "defensible default — see L6 §6.");
       return CallbackReturn::FAILURE;
     }
     // A key that no longer exists parks, sim and real arm alike: the old

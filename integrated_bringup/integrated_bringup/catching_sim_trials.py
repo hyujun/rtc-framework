@@ -902,7 +902,7 @@ def run_trials(
             if watch.aborted:
                 node.get_logger().error(
                     f"--host-watch abort: run ended after trial {idx} of {len(throws)}; "
-                    "re-run the unit with the same seed (plan D-S8-17)"
+                    "re-run the unit with the same seed (D-S8-17)"
                 )
                 break
         node.spin_for(0.3)
