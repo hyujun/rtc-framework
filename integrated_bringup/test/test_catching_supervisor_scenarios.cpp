@@ -845,8 +845,7 @@ TEST_F(SupervisorScenarioRealClockTest, NormalTrialIsCapturedAndReArms) {
 // ── MPC E1-F04 step 0: which reference instant the v1 command carries ───────
 
 /// FNV-1a over every tick's mode and the arm / hand commands it wrote — the
-/// digest a behaviour-preserving refactor must leave unchanged (recorded, and
-/// compared by hand across the refactor's commits).
+/// digest a behaviour-preserving refactor must leave unchanged.
 std::uint64_t CommandTraceDigest(const std::vector<TickRec>& log) {
   std::uint64_t h = 1469598103934665603ULL;
   const auto mix = [&h](const void* p, std::size_t n) {
@@ -870,16 +869,30 @@ std::uint64_t CommandTraceDigest(const std::vector<TickRec>& log) {
   return h;
 }
 
-TEST_F(SupervisorScenarioTest, TheNormalTrialCommandTraceHasARecordedDigest) {
-  // Not a claim about the values: the number a refactor of the law tick is
-  // compared against, commit to commit (MPC E1-F04, "기본값 동등 (b)"). The
-  // trace is deterministic on the fake clock — γ = 0 keeps the ball's wall
+/// CommandTraceDigest of NormalTrialCase(): the closed-form law, on this
+/// fixture's profile, bit for bit. The value is the same in a Release and in a
+/// Debug build (measured on GCC / x86-64 when the assertion was added) — the
+/// repo sets no -march, -ffast-math or -ffp-contract, so the optimiser has no
+/// licence to change a double.
+///
+/// It is a number to COMPARE AGAINST, not a claim that these commands are the
+/// right ones. A change that is meant to alter the commands (the law tick, the
+/// CLIK's numerics, the fixture's profile) replaces it in a commit of its own
+/// that says why (PROC-6); a refactor that is not meant to must leave it alone.
+constexpr std::uint64_t kNormalTrialCommandDigest = 0x58e18c86679c92d6ULL;
+
+TEST_F(SupervisorScenarioTest, TheNormalTrialCommandTraceIsUnchanged) {
+  // The trace is deterministic on the fake clock — γ = 0 keeps the ball's wall
   // stamps out of the reference.
   ASSERT_NO_FATAL_FAILURE(NormalTrialCase());
+  const std::uint64_t digest = CommandTraceDigest(log_);
   std::ostringstream hex;
-  hex << std::hex << CommandTraceDigest(log_);
+  hex << std::hex << digest;
   RecordProperty("normal_trial_command_digest", hex.str());
-  std::printf("[ MEASURED ] normal_trial_command_digest %s\n", hex.str().c_str());
+  EXPECT_EQ(digest, kNormalTrialCommandDigest)
+      << "the NormalTrial command trace changed: digest " << hex.str()
+      << ". If the change is meant to alter the commands, replace the constant in its own "
+         "commit with the reason; otherwise the refactor is not behaviour-preserving.";
 }
 
 TEST_F(SupervisorScenarioTest, TheV1CommandsTimeOffsetFromItsReferenceIsMeasured) {
