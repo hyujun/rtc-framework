@@ -39,6 +39,8 @@ namespace {
   switch (reason) {
     case R::kActiveConfigTbd:
       return "still TBD in the active configuration";
+    case R::kRemovedValue:
+      return "holds a value that no longer exists";
     case R::kControlRateOutOfRange:
       return "control_rate out of range";
     case R::kRangeViolation:
@@ -311,17 +313,11 @@ void DemoCatchingController::DeclareProfileParameters() {
           "L3 §4 smallest candidate lead t_c - t_plan [s] as run (planner.freeze.T_freeze when "
           "the key is absent). As of the FIRST configure of this node — read_only mirrors "
           "cannot follow a re-configure");
-  declare(
-      "joint_cmd.accel_constraint",
-      std::string(
-          params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic
-              ? "dynamic"
-          : params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kKinematic
-              ? "kinematic"
-              : "box"),
-      "L5 §4.3 CLIK acceleration constraint form the profile selects (decision K) — the parsed "
-      "key, also when the CLIK refused it and the arm is held. As of the FIRST configure of "
-      "this node — read_only mirrors cannot follow a re-configure");
+  declare("joint_cmd.accel_constraint",
+          std::string(rtc::catching::AccelConstraintName(params_.joint_cmd_accel_constraint)),
+          "L5 §4.3 CLIK acceleration constraint form the profile selects (decision K) — the parsed "
+          "key, also when the CLIK refused it and the arm is held. As of the FIRST configure of "
+          "this node — read_only mirrors cannot follow a re-configure");
   // The decel MPC as run (MPC E1-F03): an off-process analysis must read the
   // horizon, window and thresholds this controller used, not the file.
   const auto& decel = planner_params_.decel;
@@ -483,8 +479,8 @@ void DemoCatchingController::ApplyArmAccelBox() {
   arm_qdd_provisional_ = true;
   if (!arm_qdd_cfg_present_) {
     RCLCPP_WARN(logger_,
-                "no `robot.arm.qdd_max`: the CLIK acceleration box is OFF, so a command may step "
-                "by more than the joint can follow (D-16)");
+                "no `robot.arm.qdd_max`: the joint-space stop and homing ramps have no "
+                "acceleration limit to run on (D-16)");
     return;
   }
   if (arm_qdd_cfg_malformed_ || static_cast<int>(arm_qdd_cfg_.size()) != arm_dof_) {
@@ -505,7 +501,6 @@ void DemoCatchingController::ApplyArmAccelBox() {
 
 void DemoCatchingController::BuildClikBoxes(int nv,
                                             rtc::tsid::ClikReferenceGenerator::Config& cfg) {
-  qdd_max_pin_.resize(0);
   const auto& map = combined_cache_.ext_to_pin_v_map();
   const auto place = [&map, nv](int ext_idx, Eigen::VectorXd& dst, double value) {
     const int pv = map[static_cast<std::size_t>(ext_idx)];
@@ -615,47 +610,6 @@ void DemoCatchingController::BuildClikBoxes(int nv,
     cfg.v_limit_per_joint = v_limit;
   }
   clik_v_box_complete_ = v_complete;
-
-  // ── Acceleration box (D-16) ─────────────────────────────────────────────
-  // Only the ARM has a derived box — it is what the torque limits produced.
-  // CLIK needs the whole [nv] or nothing, so the hand entries are derived
-  // rather than invented: a joint allowed to reach its own velocity limit
-  // within one tick is unconstrained WITHIN the velocity box, which is exactly
-  // the statement "this box says nothing about the hand". The hand's command
-  // comes from the sequencer (L6), not from this solve.
-  if (!arm_qdd_max_.empty() && static_cast<int>(arm_qdd_max_.size()) == arm_dof_ && v_complete) {
-    Eigen::VectorXd a_max = Eigen::VectorXd::Zero(nv);
-    for (int i = 0; i < arm_dof_; ++i) {
-      place(i, a_max, arm_qdd_max_[static_cast<std::size_t>(i)]);
-    }
-    const double dt = GetDefaultDt();
-    for (int i = 0; i < hand_dof_; ++i) {
-      const int pv = map[static_cast<std::size_t>(arm_dof_ + i)];
-      if (pv >= 0 && pv < nv && dt > 0.0) {
-        // The hand is velocity-locked above, so its acceleration bound only
-        // has to be wide enough not to conflict with that lock. Derived from
-        // the lock rather than invented: reaching the locked velocity within
-        // one tick is what "unconstrained inside the box" means.
-        a_max[pv] = v_limit[pv] / dt;
-      }
-    }
-    bool all_positive = true;
-    for (int i = 0; i < nv; ++i) {
-      if (!(a_max[i] > 0.0) || !std::isfinite(a_max[i])) {
-        all_positive = false;
-        break;
-      }
-    }
-    if (all_positive) {
-      // The QP-free abort ramp decelerates on this box whatever form the QP
-      // carries; the QP itself carries it only as the `box` form (decision K
-      // — the constraint is one of box | kinematic | dynamic).
-      qdd_max_pin_ = a_max;
-      if (params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kBox) {
-        cfg.a_max = a_max;
-      }
-    }
-  }
 }
 
 bool DemoCatchingController::ConfigureAccelConstraint(
@@ -663,11 +617,15 @@ bool DemoCatchingController::ConfigureAccelConstraint(
   using Form = rtc::catching::CatchingAccelConstraint;
   using Clik = rtc::tsid::ClikReferenceGenerator;
   switch (params_.joint_cmd_accel_constraint) {
-    case Form::kBox:
-      cfg.accel_constraint = Clik::AccelConstraint::kBox;
-      RCLCPP_INFO(logger_, "CLIK acceleration constraint: box (D-16 per-joint window%s)",
-                  cfg.a_max.size() == nv ? "" : " — no derived box, so none");
-      return true;
+    case Form::kUnset:
+    case Form::kRemovedBox:
+      // on_configure parks a profile that selects no form before the CLIK is
+      // set up. This is the second line: a form must never be picked for a
+      // profile that named none.
+      RCLCPP_ERROR(logger_,
+                   "joint_cmd.accel_constraint selects no form (kinematic or dynamic) — the arm "
+                   "will be held");
+      return false;
     case Form::kKinematic:
       cfg.accel_constraint = Clik::AccelConstraint::kKinematic;
       cfg.task_accel_max_linear = params_.joint_cmd_task_accel_max_linear.value;
@@ -835,12 +793,11 @@ void DemoCatchingController::SetupArmCommand() {
   }
 
   clik_enabled_ = true;
-  RCLCPP_INFO(logger_, "arm command path ready: nv=%d, catch frame '%s' (idx %d), accel box %s", nv,
-              catch_frame_name_.c_str(), catch_frame_idx_,
-              qdd_max_pin_.size() == 0 ? "OFF"
-              : params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kBox
-                  ? "from the derived file"
-                  : "from the derived file (abort ramp only — the QP carries the selected form)");
+  RCLCPP_INFO(logger_,
+              "arm command path ready: nv=%d, catch frame '%s' (idx %d), acceleration "
+              "constraint %s",
+              nv, catch_frame_name_.c_str(), catch_frame_idx_,
+              rtc::catching::AccelConstraintName(params_.joint_cmd_accel_constraint));
 }
 
 void DemoCatchingController::AcquireModelBuilder() {
@@ -1056,18 +1013,31 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "defensible default — see L6 §6.");
       return CallbackReturn::FAILURE;
     }
-    // A key that no longer exists parks, sim and real arm alike: the old
-    // overlay must not silently run on the shipped box. A FAILURE here would
-    // make CM refuse every controller on the robot.
-    if (!removed_arm_box_key_.empty()) {
+    // A key or a value that no longer exists parks, sim and real arm alike:
+    // the old overlay must not silently run as something else. A FAILURE here
+    // would make CM refuse every controller on the robot.
+    // Every one is named, so one configure tells the operator all of it.
+    const bool removed_box =
+        params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kRemovedBox;
+    if (!removed_arm_box_keys_.empty() || removed_box) {
       sim_only_disabled_ = true;
       park_reason_ = CatchingParkReason::kRemovedKey;
-      RCLCPP_ERROR(logger_,
-                   "DISABLED: 'catching.%s' was removed — set the acceleration box as "
-                   "'catching.robot.arm.qdd_max' (rad/s², one per arm joint) and "
-                   "'catching.robot.arm.qdd_provisional'. This controller will refuse to "
-                   "activate; the robot still comes up.",
-                   removed_arm_box_key_.c_str());
+      for (const std::string& key : removed_arm_box_keys_) {
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: 'catching.%s' was removed — set the acceleration box as "
+                     "'catching.robot.arm.qdd_max' (rad/s², one per arm joint) and "
+                     "'catching.robot.arm.qdd_provisional'. This controller will refuse to "
+                     "activate; the robot still comes up.",
+                     key.c_str());
+      }
+      if (removed_box) {
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: 'catching.joint_cmd.accel_constraint: box' was removed — set the "
+                     "key to kinematic or dynamic (the CLIK no longer takes the acceleration box; "
+                     "'catching.robot.arm.qdd_max' stays, for the search and for the stop and "
+                     "homing ramps). This controller will refuse to activate; the robot still "
+                     "comes up.");
+      }
       return CallbackReturn::SUCCESS;
     }
     report_ =
@@ -1362,8 +1332,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                     "the decel box");
       }
     }
-    // #537 pre-S10 R3 (Q4): the box every ramp and the CLIK acceleration rows
-    // run on is still provisional. Judged only on a box that LOADED — an
+    // #537 pre-S10 R3 (Q4): the box the search and every joint-space ramp run
+    // on is still provisional. Judged only on a box that LOADED — an
     // absent one is the supervisor's verdict above — and after it, so the
     // more basic refusal is the one the operator reads. The flag has no
     // validator row in `catching:`, hence not a validator failure; the park is
@@ -1426,7 +1396,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
                  : park_reason_ == CatchingParkReason::kDecelModeUnmet
                      ? "supervisor.decel.mode mpc lacks a prerequisite"
                  : park_reason_ == CatchingParkReason::kRemovedKey
-                     ? "the profile sets a removed key"
+                     ? "the profile sets a removed key or value"
                      : "a consumed value is provisional or TBD");
     return CallbackReturn::FAILURE;
   }
@@ -1950,8 +1920,8 @@ bool DemoCatchingController::SetupPlannerSearch() {
 
 const char* DemoCatchingController::DecelMpcConfigInvalid() const noexcept {
   const auto& d = planner_params_.decel;
-  // The CLIK's torque box only exists in the dynamic form; the box and
-  // kinematic forms have none to exceed, so the pair is not judged there.
+  // The CLIK's torque box only exists in the dynamic form; the kinematic form
+  // has none to exceed, so the pair is not judged there.
   if (params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic &&
       !params_.joint_cmd_eta_tau.tbd &&
       !(d.eta_tau + d.slack_max <= params_.joint_cmd_eta_tau.value)) {

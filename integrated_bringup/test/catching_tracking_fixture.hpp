@@ -234,6 +234,7 @@ catching:
     a_max: )"
      << gains.a_max << R"(
   joint_cmd:
+    accel_constraint: dynamic
     K_p: 20.0
     K_a: 8.0
     K_n: 1.0

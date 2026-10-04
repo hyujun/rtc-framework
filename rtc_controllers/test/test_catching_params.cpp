@@ -91,6 +91,7 @@ supervisor:
     return_s: 5.0
     provisional: false
 joint_cmd:
+  accel_constraint: dynamic
   K_p: 20.0
   K_a: 8.0
   K_n: 1.0
@@ -234,21 +235,90 @@ TEST(CatchingParams, InactiveConfigTbdPasses) {
 
 // ── decision K: joint_cmd.accel_constraint ──────────────────────────────────
 
-TEST(CatchingParams, AccelConstraintDefaultsToBoxAndReadsEachForm) {
-  EXPECT_EQ(ParseCatchingParams(ValidRoot()).joint_cmd_accel_constraint,
-            CatchingAccelConstraint::kBox);
-  for (const auto& [text, form] : {std::pair{"box", CatchingAccelConstraint::kBox},
-                                   std::pair{"kinematic", CatchingAccelConstraint::kKinematic},
-                                   std::pair{"dynamic", CatchingAccelConstraint::kDynamic}}) {
+TEST(CatchingParams, AccelConstraintHasNoDefaultAndReadsEachForm) {
+  // No form is assumed (#712). A profile that names none — the key absent, or
+  // `TBD` as every open key is written — is not decided, and the validator
+  // reports the key like any other active key left open. `box`, the form this
+  // key used to offer and to default to, is carried apart from that and
+  // reported as a removed value.
+  YAML::Node absent = ValidRoot();
+  ASSERT_TRUE(absent["joint_cmd"].remove("accel_constraint"))
+      << "precondition: the baseline names a form";
+  YAML::Node tbd = ValidRoot();
+  tbd["joint_cmd"]["accel_constraint"] = "TBD";
+  YAML::Node box = ValidRoot();
+  box["joint_cmd"]["accel_constraint"] = "box";
+
+  struct Case {
+    const char* name;
+    YAML::Node root;
+    CatchingAccelConstraint form;
+    CatchingValidationReason reason;
+  };
+
+  for (const Case& c : {Case{"absent", absent, CatchingAccelConstraint::kUnset,
+                             CatchingValidationReason::kActiveConfigTbd},
+                        Case{"TBD", tbd, CatchingAccelConstraint::kUnset,
+                             CatchingValidationReason::kActiveConfigTbd},
+                        Case{"box", box, CatchingAccelConstraint::kRemovedBox,
+                             CatchingValidationReason::kRemovedValue}}) {
+    SCOPED_TRACE(c.name);
+    const CatchingParams p = ParseCatchingParams(c.root);
+    EXPECT_EQ(p.joint_cmd_accel_constraint, c.form);
+    const CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
+    EXPECT_FALSE(r.armable);
+    EXPECT_TRUE(ReportHasFailure(r, c.reason, "joint_cmd.accel_constraint"));
+    // Reported FIRST: the report drops what does not fit, and this entry is
+    // the one a caller must not miss (it would set up a CLIK with no form).
+    ASSERT_GE(r.failure_count, 1u);
+    EXPECT_STREQ(r.failures[0].key, "joint_cmd.accel_constraint");
+  }
+  for (const CatchingAccelConstraint form :
+       {CatchingAccelConstraint::kKinematic, CatchingAccelConstraint::kDynamic}) {
+    // Through the one spelling the parser and the mirror share.
     YAML::Node root = ValidRoot();
-    root["joint_cmd"]["accel_constraint"] = text;
-    EXPECT_EQ(ParseCatchingParams(root).joint_cmd_accel_constraint, form) << text;
+    root["joint_cmd"]["accel_constraint"] = rtc::catching::AccelConstraintName(form);
+    EXPECT_EQ(ParseCatchingParams(root).joint_cmd_accel_constraint, form)
+        << rtc::catching::AccelConstraintName(form);
+  }
+  EXPECT_STREQ(rtc::catching::AccelConstraintName(CatchingAccelConstraint::kKinematic),
+               "kinematic");
+  EXPECT_STREQ(rtc::catching::AccelConstraintName(CatchingAccelConstraint::kDynamic), "dynamic");
+}
+
+TEST(CatchingParams, AnUnsetFormIsReportedWhateverFormKeysTheProfileCarries) {
+  // A shipped profile that loses its form line still carries the form's keys
+  // (`eta_tau`). Refusing those at parse — as under a form that does not own
+  // them — would fail the configure where the caller is meant to park.
+  for (const char* key : {"eta_tau", "task_accel_max_linear", "task_accel_max_angular"}) {
+    for (const bool box : {false, true}) {
+      SCOPED_TRACE(std::string(key) + (box ? " under box" : " with no form"));
+      YAML::Node root = ValidRoot();
+      if (box) {
+        root["joint_cmd"]["accel_constraint"] = "box";
+      } else {
+        root["joint_cmd"].remove("accel_constraint");
+      }
+      root["joint_cmd"][key] = 0.7;
+      CatchingParams p;
+      ASSERT_NO_THROW(p = ParseCatchingParams(root));
+      EXPECT_EQ(p.joint_cmd_accel_constraint,
+                box ? CatchingAccelConstraint::kRemovedBox : CatchingAccelConstraint::kUnset);
+      EXPECT_TRUE(ReportHasFailure(ValidateCatchingParams(p, kControlRateHz, false),
+                                   box ? CatchingValidationReason::kRemovedValue
+                                       : CatchingValidationReason::kActiveConfigTbd,
+                                   "joint_cmd.accel_constraint"));
+    }
   }
 }
 
 TEST(CatchingParams, AccelConstraintRejectsAnUnknownForm) {
   YAML::Node root = ValidRoot();
   root["joint_cmd"]["accel_constraint"] = "torque";
+  ExpectRejectMentioning(root, "joint_cmd.accel_constraint");
+  // A key with no value is refused like any other key written that way; the
+  // open spelling is the literal `TBD`.
+  root["joint_cmd"]["accel_constraint"] = YAML::Node();
   ExpectRejectMentioning(root, "joint_cmd.accel_constraint");
 }
 
@@ -289,9 +359,11 @@ TEST(CatchingParams, DecelSwitchMarginMustBePositive) {
 }
 
 TEST(CatchingParams, KinematicFormNeedsItsBoundsAndOnlyThen) {
-  // Unset bounds are TBD: refused when kinematic is selected, silent otherwise.
-  const CatchingParams box = ParseCatchingParams(ValidRoot());
-  EXPECT_TRUE(ValidateCatchingParams(box, kControlRateHz, false).armable);
+  // Unset bounds are TBD: refused when kinematic is selected, silent otherwise
+  // (the baseline selects dynamic).
+  const CatchingParams other = ParseCatchingParams(ValidRoot());
+  ASSERT_EQ(other.joint_cmd_accel_constraint, CatchingAccelConstraint::kDynamic);
+  EXPECT_TRUE(ValidateCatchingParams(other, kControlRateHz, false).armable);
 
   YAML::Node root = ValidRoot();
   root["joint_cmd"]["accel_constraint"] = "kinematic";
@@ -330,9 +402,10 @@ TEST(CatchingParams, DynamicFormTakesTheD16EtaByDefaultAndRangeChecksIt) {
 
 TEST(CatchingParams, AFormsKeysUnderAnotherFormAreRefused) {
   // Written but not selected, the key would read as if it were in force.
-  YAML::Node box = ValidRoot();
-  box["joint_cmd"]["eta_tau"] = 0.7;
-  ExpectRejectMentioning(box, "joint_cmd.eta_tau");
+  YAML::Node kinematic = ValidRoot();
+  kinematic["joint_cmd"]["accel_constraint"] = "kinematic";
+  kinematic["joint_cmd"]["eta_tau"] = 0.7;
+  ExpectRejectMentioning(kinematic, "joint_cmd.eta_tau");
 
   YAML::Node dynamic = ValidRoot();
   dynamic["joint_cmd"]["accel_constraint"] = "dynamic";

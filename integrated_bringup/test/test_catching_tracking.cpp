@@ -276,7 +276,7 @@ TEST_F(CatchingTrackingTest, ConvergesToAStaticCatchPointAndAxis) {
 
 // ── G5-B: the boxes hold ────────────────────────────────────────────────────
 
-/// Under each form of the CLIK's acceleration bound (box, kinematic, dynamic).
+/// Under each form of the CLIK's acceleration bound (kinematic, dynamic).
 /// The run includes the tick
 /// the reference's saturation streak ends the approach on: under `dynamic` the
 /// command is at the velocity limit there, and a stop that stepped it a second
@@ -298,7 +298,7 @@ TEST_P(CatchingLimitsTest, RespectsTheJointAndStepLimitsThroughout) {
   ASSERT_NO_FATAL_FAILURE(BringUp(p_c, a_d, 0.0, 5.0, [&form](YAML::Node& y) {
     y["catching"]["joint_cmd"]["accel_constraint"] = form;
     if (form == "kinematic") {
-      // The form's own keys, at the validator's ceilings (no shipped value).
+      // The form's own keys, high in the validator's range (no shipped value).
       y["catching"]["joint_cmd"]["task_accel_max_linear"] = 500.0;
       y["catching"]["joint_cmd"]["task_accel_max_angular"] = 500.0;
     }
@@ -357,8 +357,7 @@ TEST_P(CatchingLimitsTest, RespectsTheJointAndStepLimitsThroughout) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Forms, CatchingLimitsTest,
-                         ::testing::Values("box", "kinematic", "dynamic"));
+INSTANTIATE_TEST_SUITE_P(Forms, CatchingLimitsTest, ::testing::Values("kinematic", "dynamic"));
 
 // ── Decision K (S6-C2): the dynamic form bounds the arm torque ──────────────
 

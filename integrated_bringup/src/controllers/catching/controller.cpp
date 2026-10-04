@@ -149,7 +149,7 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   arm_qdd_cfg_present_ = false;
   arm_qdd_cfg_malformed_ = false;
   arm_qdd_provisional_cfg_ = true;
-  removed_arm_box_key_.clear();
+  removed_arm_box_keys_.clear();
   stale_decel_mpc_disabled_key_ = false;
   if (catching_section_present_) {
     // `planner.decel_mpc.enabled` no longer exists (the parser ignores it). Only
@@ -179,8 +179,7 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
       for (const char* removed :
            {"accel_limits_package", "accel_limits_path", "accel_limits_group"}) {
         if (arm[removed]) {
-          removed_arm_box_key_ = std::string("robot.arm.") + removed;
-          break;
+          removed_arm_box_keys_.emplace_back(std::string("robot.arm.") + removed);
         }
       }
       // Read tolerantly: a bad box is not a configure failure but an empty box
@@ -567,9 +566,9 @@ void DemoCatchingController::SeedArmCommand(const ControllerState& state) noexce
     }
   }
   track_err_ = 0.0;
-  // The CLIK anchor and v_prev go with it: a carried-over v_prev would make
-  // the first acceleration box a window around the PREVIOUS trial's velocity,
-  // and the first solve would raise bound_conflict for no reason (L5 §4.2).
+  // The CLIK anchor and v_prev go with it: a carried-over v_prev would pull
+  // the first solve's smoothing term toward the PREVIOUS trial's velocity
+  // (L5 §4.2).
   clik_.ResetAnchor();
 }
 
@@ -731,6 +730,9 @@ rtc::catching::Reason DemoCatchingController::SolveClikAndCommand(
     // `bound_conflict` is a DIFFERENT failure from a solver that did not
     // converge: the boxes disagreed, which the supervisor routes the same way
     // but which names a configuration problem rather than a numerical one.
+    // Only the CLIK's acceleration window raises it, and this controller does
+    // not pass one, so kJointConflict does not arise here; whether the path
+    // stays is #755.
     return solve.bound_conflict ? Reason::kJointConflict : Reason::kQpFailed;
   }
 

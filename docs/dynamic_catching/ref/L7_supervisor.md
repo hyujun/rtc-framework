@@ -82,14 +82,9 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 
 버리는 것은 명령뿐이다. CLIK 의 anchor 와 직전 속도는 되돌리지 않는다 (법칙은 이 시행에서 다시 돌지 않고, 다음 시행의 seed 가 둘을 새로 놓는다). **그 tick 의 기록은 두 가지가 섞인다**: `track_err_rad` 와 기준 (`ref_x` · `ref_xd` · `ref_xdd`) 은 버린 step 의 것 — 사유를 판정한 값 — 이고, `q_cmd` 는 실제로 나간 ramp 의 것이다. 기록에서 `track_err_rad` 를 `q_cmd` 로 다시 계산하면 그 tick 에서만 어긋난다. 그 tick 은 기록에서 가려낼 수 있다: mode 가 법칙 mode 에서 위 넷 가운데 하나로 바뀌고 사유가 위 셋 가운데 하나인 tick 이다.
 
-예외는 정상 종료 하나다. `T_hold` 가 지나 사유 없이 `HOLD → RETREAT` 로 가는 tick 은 abort 가 아니므로 법칙의 step 을 그대로 둔다 (정상 시행의 명령을 바꾸지 않는다 — `kNormalTrialCommandDigest`). 그 tick 에는 법칙의 step 과 ramp 의 step 이 같이 나간다. 그 합이 한 tick 의 한도 ($\vert\Delta q\vert$ 가 직전 tick 의 것 $+\ \ddot q_{\max}\Delta t^2$) 안인지는 HOLD 가 끝날 때 명령이 가라앉아 있는지에 달렸다 (`closed_form`, 시험 구성에서 실측):
+예외는 정상 종료 하나다. `T_hold` 가 지나 사유 없이 `HOLD → RETREAT` 로 가는 tick 은 abort 가 아니므로 법칙의 step 을 그대로 둔다 (정상 시행의 명령을 바꾸지 않는다 — `kNormalTrialCommandDigest`). 그 tick 에는 법칙의 step 과 ramp 의 step 이 같이 나간다. 그 합이 한 tick 의 한도 ($\vert\Delta q\vert$ 가 직전 tick 의 것 $+\ \ddot q_{\max}\Delta t^2$) 안인지는 HOLD 가 끝날 때 명령이 가라앉아 있는지에 달렸다 (`closed_form`, 시험 구성에서 실측). `T_hold` 0.5 s (파서 기본값 — 출하 YAML 이 덮지 않는다) 에서는 `dynamic` (출하) · `kinematic` 모두 직전 1.5e-7 rad → 그 tick 1.5e-7 rad 로 한도 안이다 — 테스트가 고정한다.
 
-| 가속 제약의 형태 | `T_hold` 0.5 s (파서 기본값 — 출하 YAML 이 덮지 않는다) | 한도 |
-|---|---|---|
-| `dynamic` (출하) · `kinematic` | 직전 1.5e-7 rad → 그 tick 1.5e-7 rad | 안 — 테스트가 고정한다 |
-| `box` | 직전 3.07e-5 rad → 그 tick 5.32e-5 rad | **넘는다** (한도는 직전 $+$ 8.1e-6 rad). 단언하지 않고 수치만 찍는다 |
-
-`mpc` 는 HOLD 에서 팔이 이미 서 있어 1e-6 rad 수준이다. `T_hold` 를 명령이 가라앉기 전으로 줄이면 어느 형태든 넘는다 (0.02 s 에서 `box` 7.4e-5 → 1.35e-4 rad, `dynamic` 2.4e-5 → 3.4e-5 rad). `box` 는 출하 구성이 쓰지 않고 #712 가 포구 층에서 없앤다.
+`mpc` 는 HOLD 에서 팔이 이미 서 있어 1e-6 rad 수준이다. `T_hold` 를 명령이 가라앉기 전으로 줄이면 넘는다 (0.02 s 에서 `dynamic` 2.4e-5 → 3.4e-5 rad).
 
 `ABORT_SAFE` 는 감속이 **끝날 때까지** 머문다 (명령 속도가 전부 0). 시작한 tick 에 나가면 ABORT_SAFE 는 상태가 아니라 이름표가 되고, 다음 시행이 팔이 아직 움직이는 중에 시작한다. 래치된 fault 가 있으면 대신 `ABORT_ESCALATED` 로 FAULT 에 간다 — RETREAT 는 방금 실패한 것을 다시 시도하는 쪽으로 되돌리기 때문이다. `RETREAT` 진입은 plan 무효화 지점이다 (§4.8). E-STOP 리셋은 **모드를 건드리지 않는다**: 전이표가 `{FAULT, ESTOP} → FAULT` 를 갖고 있으므로 reset 이 IDLE 을 강제하면 P-1 (d) 가 지키려는 래치를 지운다.
 
@@ -141,7 +136,7 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 | `PLAN_INVALID` | plan 무효 | `APPROACH` | `RETREAT` |
 | `QP_FAILED` | L5 QP 실패 status | `TRACKING` – `RETREAT` | `ABORT_SAFE`. 이 실패로 끝난 **시행**이 연속 $N_{qp}$ 회면 `FAULT` (D-S9-D2 — solve 단위가 아니다, §4.1) |
 | `REF_SATURATED` | **`closed_form` 의 사유다.** L4 `ref.saturated` 가 연속 `supervisor.sat_ticks` tick, 또는 기준 생성기가 그 tick 에 유효한 기준을 내지 못함. 세는 것은 공을 추종하는 tick (`APPROACH`·`COMMITTED`·`CLOSING`) 의 연속 포화이고, 포화가 아닌 tick 과 감속 대상을 추종하는 tick 이 0 으로 되돌린다. `DECEL` · `HOLD` 에서 기준이 무효이면 이 사유가 아니라 `PARAMS_TBD` 다 (§4.3). `mpc` 는 soft-catch 기준을 돌리지 않으므로 **발화하지 않는다** (§4.3a) | `APPROACH`, `COMMITTED`, `CLOSING` | `APPROACH` 면 `RETREAT`, 동결 후면 `ABORT_SAFE` `[확정 D-8]` |
-| `JOINT_CONFLICT` | L5 `bound_conflict` | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
+| `JOINT_CONFLICT` | L5 `bound_conflict`. **이 컨트롤러에서는 발화하지 않는다** — 그 플래그는 CLIK 의 `box` 형태에서만 서고 포구 층은 그 형태를 넘기지 않는다 (L5 §4.3). 사유 코드와 전이는 남아 있다 (#755) | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `TRACK_ERR` | $\Vert q_{meas}-q_c(now)\Vert_2>$ `supervisor.track_err_abort` — 측정과 **같은 tick 의 명령** 의 차 (팔 관절 전체). 명령을 움직이는 tick (추종 법칙, homing, `RETREAT` 정지·복귀) 에서만 계산한다. 지연 링으로 $q_c(now-T_{arm})$ 와 비교하는 형태는 구현하지 않았다 — 선행을 켜면 명령이 측정보다 $T_{arm}$ 앞서므로 그만큼의 오차가 이 값에 들어 있다 | `TRACKING` – `RETREAT` | `ABORT_SAFE` |
 | `ABORT_ESCALATED` | fault latch (`n_qp` 시행 연속, D-S9-D2) 또는 운동 기한 초과 (D-S9-D1) — 원인은 CSV `fault_cause` | `ABORT_SAFE`, `RETREAT` | `FAULT` |
 | `ESTOP` | E-STOP 발동·해제 (§4.1 P-1) | 전 구간 | 발동: 상태 정리, 해제: `IDLE`. 단 `FAULT` 에서는 `FAULT` 유지 — 해제가 fault 래치를 풀지 않는다 (P-1 (d)) |

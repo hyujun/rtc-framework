@@ -56,11 +56,40 @@
 namespace rtc::catching {
 
 // ── TBD-capable scalar ────────────────────────────────────────────────────
-/// `joint_cmd.accel_constraint` (decision K). Mirrors
-/// rtc::tsid::ClikReferenceGenerator::AccelConstraint so this parameter header
-/// does not pull in the CLIK header (pinocchio + proxsuite); the binding maps
-/// one onto the other in a switch.
-enum class CatchingAccelConstraint : std::uint8_t { kBox, kKinematic, kDynamic };
+/// `joint_cmd.accel_constraint` (decision K). Names the forms of
+/// rtc::tsid::ClikReferenceGenerator::AccelConstraint a catching profile can
+/// select, so this parameter header does not pull in the CLIK header
+/// (pinocchio + proxsuite); the binding maps one onto the other in a switch.
+/// The CLIK's `box` form (a per-joint acceleration window) is not among them.
+/// Two values are not forms. `kUnset` is a profile that selects none (the key
+/// is absent or the literal `TBD`): the key has no default, so the validator
+/// reports it instead of a form being assumed. `kRemovedBox` is a profile that
+/// still writes `box`, the form this key used to offer and to default to; it
+/// is kept apart from kUnset so that the caller can say which of the two the
+/// operator has to fix.
+enum class CatchingAccelConstraint : std::uint8_t { kUnset, kRemovedBox, kKinematic, kDynamic };
+
+/// The key's YAML spelling of `form` — the one place it is written, for the
+/// parser and for whoever prints the loaded form. `unset` is not a spelling a
+/// profile can write; it names the absence.
+[[nodiscard]] constexpr const char* AccelConstraintName(CatchingAccelConstraint form) noexcept {
+  switch (form) {
+    case CatchingAccelConstraint::kKinematic:
+      return "kinematic";
+    case CatchingAccelConstraint::kDynamic:
+      return "dynamic";
+    case CatchingAccelConstraint::kRemovedBox:
+      return "box";
+    case CatchingAccelConstraint::kUnset:
+      break;
+  }
+  return "unset";
+}
+
+/// Whether `form` is one the CLIK can be given (not kUnset, not kRemovedBox).
+[[nodiscard]] constexpr bool IsSelectedForm(CatchingAccelConstraint form) noexcept {
+  return form == CatchingAccelConstraint::kKinematic || form == CatchingAccelConstraint::kDynamic;
+}
 
 /// `supervisor.decel.mode` — the DECEL law, chosen once per configure and
 /// never mixed within an activation (MPC MD-44). kClosedForm is the v1 L7
@@ -285,12 +314,15 @@ struct CatchingParams {
   TbdDouble joint_cmd_damping_sq{TbdDouble::Resolved(1e-4)};  // –, > 0
   int joint_cmd_max_iter{20};                                 // –, >= 1
   /// `joint_cmd.accel_constraint` (decision K, S6-C2): which acceleration
-  /// constraint the CLIK QP carries — `box` (the D-16 per-joint window, the
-  /// default and the S5 behaviour), `kinematic` (task acceleration J·v̇ + J̇·v
-  /// of the tracked rows), `dynamic` (arm torque M·v̇ + h ≤ η_τ·τ_max, τ_max =
-  /// the arm device's `joint_limits.max_torque`). Each form reads only its own
-  /// keys below; a key of another form is refused at parse.
-  CatchingAccelConstraint joint_cmd_accel_constraint{CatchingAccelConstraint::kBox};
+  /// constraint the CLIK QP carries — `kinematic` (task acceleration
+  /// J·v̇ + J̇·v of the tracked rows) or `dynamic` (arm torque
+  /// M·v̇ + h ≤ η_τ·τ_max, τ_max = the arm device's `joint_limits.max_torque`).
+  /// Each form reads only its own keys below; a key of another form is refused
+  /// at parse. No default: an absent key (or `TBD`) stays kUnset and the
+  /// validator reports `joint_cmd.accel_constraint` as kActiveConfigTbd. `box`
+  /// reads as kRemovedBox and is reported as kRemovedValue — refusing it at
+  /// parse would fail the configure, where the caller is meant to park.
+  CatchingAccelConstraint joint_cmd_accel_constraint{CatchingAccelConstraint::kUnset};
   TbdDouble joint_cmd_task_accel_max_linear{};   // m/s², > 0 — kinematic
   TbdDouble joint_cmd_task_accel_max_angular{};  // rad/s², > 0 — kinematic
   /// η_τ of the torque rows. The D-16 derivation's margin (0.8, user decision
@@ -410,6 +442,7 @@ enum class CatchingValidationReason : std::uint8_t {
   kCloseTimeoutNotAboveE2e,    // robot.hand.T_close_timeout <= T_close_e2e (L6 §6)
   kFreezeShorterThanClose,     // T_freeze < T_close_e2e + T_arm + h (L3 §4.11, #537 S7)
   kReleaseTimeoutNotAboveE2e,  // robot.hand.T_release_timeout <= T_close_e2e (D-S8-6)
+  kRemovedValue,  // the key holds a value that no longer exists (accel_constraint: box)
 };
 
 /// One report line: which rule fired, on which key, and (for the per-joint
