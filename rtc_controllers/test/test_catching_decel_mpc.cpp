@@ -8,7 +8,7 @@
 //   4 TerminalEqualityIsFullRank         7 ReevaluatedTorqueWithinLimits
 //                                        8 TimingDistribution*
 // plus the seam checks (derivatives, offset sign, armature) and the
-// structured-vs-dense assembly oracle for the optimisation (plan §9).
+// structured-vs-dense assembly oracle for the optimisation.
 //
 // The allocation gates: this binary links THREE sensors (CMakeLists note).
 // malloc_gate.hpp is the one that can see pinocchio's and ProxQP's own
