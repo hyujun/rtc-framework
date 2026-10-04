@@ -10,7 +10,7 @@
 # with two changes the experiment needs. It is the base arm of the hand-near
 # work (S8-G/S8-I arms were this plus their leaves; catch_wait_pose_current is
 # this plus `wait_pose_source`). The paired control s8f_shipped_score and the
-# beanbag twin were pruned after S8-F-1 was recorded (plan §4.4 S8-F).
+# beanbag twin were pruned after S8-F-1 was recorded.
 #
 # 1. THE CATCH BOX IS WIDENED. The shipped `planner.workspace.catch_box` is the
 #    hull of the S3.5b gate-open candidates around the shipped wait pose plus
@@ -22,7 +22,7 @@
 #    table (top z 0.05; z_min 0.15 keeps the stopping point clear of it). IK
 #    convergence, manipulability and the joint limits still judge every
 #    candidate — only the axis-aligned box moves. Sim exploration only: the
-#    shipped value is a safety gate and stays (plan §4.4 S8-F).
+#    shipped value is a safety gate and stays.
 #
 # 2. REACH BEFORE VELOCITY MATCH (the user's planning priority, #537
 #    2026-09-26). The runtime planner removes candidates only for finite input,
@@ -34,7 +34,7 @@
 #    better velocity match. `penalty` is one key for every rank gate, so it
 #    stays. S8-F-1 measured the priority against a paired control with the
 #    shipped weights and the same box (same seeds, McNemar): no effect, 17 vs
-#    21 (plan §4.4 S8-F-1). The arm stays because the hand-near throws need it.
+#    21 (S8-F-1). The arm stays because the hand-near throws need it.
 #
 # THE PATH IS THE TRAP. `ApplyControllerParamOverrides` creates any key that is
 # not in the shipped YAML without a warning (catch_lead_on.yaml header), so

@@ -10,7 +10,7 @@
 #
 # Not all of it is closed_form-only:
 #   reference.*, supervisor.decel.a_dec  read under mpc as well — the search
-#       ranks its candidates by this law's rollout (MPC plan MD-46)
+#       ranks its candidates by this law's rollout (MD-46)
 #   planner.switch.*                     closed_form only — under mpc the
 #       search is skipped while a plan is followed (MD-57)
 demo_catching_controller:
@@ -39,8 +39,8 @@ demo_catching_controller:
       # m/s^2. Still provisional (the real arm's value is S10's). S4.4 measured
       # torque-limited acceleration along v_hat at the catch pose as median 43,
       # and 21-23 under a 10x rotor-inertia assumption; 21 shipped as the
-      # conservative end. dynamic_catching S8-G (2026-09-27, #537 5847236227,
-      # plan §4.4 S8-G) measured 21 against 30 on the sim plant at omega 10:
+      # conservative end. dynamic_catching S8-G (2026-09-27, #537 5847236227)
+      # measured 21 against 30 on the sim plant at omega 10:
       # 21 saturated the reference on 18-25 % of the active ticks and aborted
       # 7-12 of 56 hand-near throws (REF_SATURATED), 30 saturated 1 % and
       # aborted none, at the same catch rate (10 vs 11) and torque p99 0.70.
@@ -53,7 +53,7 @@ demo_catching_controller:
     # The constant deceleration of the closed_form DECEL target (L7 §4.3) and
     # of the stopping point the search reserves behind each candidate (L3 §4.9).
     # 10 m/s^2 is the value the S3.5b gate map ran with, confirmed 2026-09-22
-    # (plan §7.3). The validator requires a_dec <= reference.a_max.
+    # (#537). The validator requires a_dec <= reference.a_max.
     supervisor:
       decel:
         a_dec: 10.0

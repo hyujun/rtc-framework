@@ -18,7 +18,7 @@ Per trial:
    record ground truth and every mode transition.
 3. The trial ends when the controller is back in ARMED after a RETREAT (the
    cycle closed), or in IDLE / FAULT, or after ``record_s``. The attempt's
-   verdict is the ``outcome`` published on the RETREAT entry (L7 §4.7).
+   verdict is the ``outcome`` published on the RETREAT entry (L7 §4.4).
 4. Reset the ball.
 
 This drives an already-running sim. It launches nothing: the sim, the ball
@@ -31,7 +31,7 @@ names and state topic are that device's roster. The wait pose, the commit lead
 and the lead axis are what the RUNNING controller loaded — its read-only mirror
 parameters (``planner.wait_pose``, ``planner.freeze.T_freeze``,
 ``joint_cmd.lag.{T_arm,lead_enable}``, ``control.dt``) — because a sim overlay
-changes them without changing the installed YAML (plan §4.4 S8-A). They are
+changes them without changing the installed YAML (S8-A). They are
 written to ``run_meta.json`` and to every trial record.
 
 Throw series (``--dist``):
@@ -57,7 +57,7 @@ Host load (``--host-watch``, #601): a sim that runs slower than the wall (RTF < 
 another session's build or test on the same host) makes the ball's stamp fall
 behind the controller's steady clock, and the controller drops a healthy input
 as ``BALL_STALE`` — the success rate then measures the host, not the catch
-(plan D-S8-17). After every throw the runner reads the sim's speed off the
+(D-S8-17). After every throw the runner reads the sim's speed off the
 truth rows it already records (stamp span / receive span, the slowest
 ``--host-window`` of sim time) and judges it against ``--host-rtf-min``:
 ``warn`` (default) records and logs, ``abort`` also ends the run with exit code
@@ -152,9 +152,9 @@ class ThrowBox:
 
 # D-S8-2 (a): the frozen gate-map box of each profile. Per profile, because the
 # box is the gate map's verdict for that robot and wait pose.
-#   ur5e_p1b   — the S3.5b box that opened ≥ 90 % of its throws (plan §4.4
-#                S3.5b result — 163/180 on the torque layer).
-#   iiwa7_leap — the S8-D map re-run (D-S8-14/15, plan §4.4 S8-D): of the
+#   ur5e_p1b   — the S3.5b box that opened ≥ 90 % of its throws (S3.5b
+#                result — 163/180 on the torque layer).
+#   iiwa7_leap — the S8-D map re-run (D-S8-14/15, S8-D): of the
 #                boxes of ur5e_p1b's width, the one opening the most throws
 #                that ALSO rise clear of the robot parked at the wait pose —
 #                164/180 at a first plan of 0.215 s (115/180 at 0.24 s),
@@ -902,7 +902,7 @@ def run_trials(
             if watch.aborted:
                 node.get_logger().error(
                     f"--host-watch abort: run ended after trial {idx} of {len(throws)}; "
-                    "re-run the unit with the same seed (plan D-S8-17)"
+                    "re-run the unit with the same seed (D-S8-17)"
                 )
                 break
         node.spin_for(0.3)
@@ -1171,7 +1171,7 @@ def _make_driver(profile: ArmProfile, args):
                     "final_outcome": (
                         OUTCOME_NAMES[self.outcome] if self.outcome is not None else None
                     ),
-                    # The attempt's verdict (L7 §4.7): published on RETREAT entry.
+                    # The attempt's verdict (L7 §4.4): published on RETREAT entry.
                     "outcome": (
                         OUTCOME_NAMES[self.retreat_outcome]
                         if self.retreat_outcome is not None

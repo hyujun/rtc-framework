@@ -98,7 +98,7 @@
     # sim planner's box to the EXECUTED envelope of those units (written by
     # `rtc_tools catching_arm_budget --write-envelope-box`): rank_reach failures
     # 95 -> 14 % with no change in catches (#537 5847236227). The principle is
-    # "planner limit = what the execution actually delivers" (plan §9). Here and
+    # "planner limit = what the execution actually delivers" (L3 §4.3). Here and
     # not in the controller YAML because the real arm's envelope is S10's to
     # measure — the controller YAML keeps the torque-derived box. The RT node
     # applies this like a sim_overlay (ApplyControllerParamOverrides); the

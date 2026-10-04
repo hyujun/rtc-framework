@@ -107,7 +107,7 @@ mujoco_simulator:
       collision_contype: 1
       collision_conaffinity: 1
       aerodynamics: true
-      # 투척 조건은 계획 §S0.7 / D-18 에서 유도했다. 목표는 T_f = 1.0 s — 그보다 짧은
+      # 투척 조건은 D-18 (S0.7) 에서 유도했다. 목표는 T_f = 1.0 s — 그보다 짧은
       # 비행은 R2 지평 요구 (0.46–0.86 s) 를 못 덮어 애초에 계획이 안 선다.
       #   포구점  = home 자세의 palm_lower xpos = (0.809, 0.038, 0.4255) [모델 실측]
       #   수평거리 = 4.0 m (D-18), 발사 높이 = 1.75 m (D-18 의 1.5–2.0 m 중앙)

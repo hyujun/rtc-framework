@@ -1,4 +1,4 @@
-"""The shipped catching config is one tree in four files (MPC plan MD-90).
+"""The shipped catching config is one tree in four files (MD-90).
 
 ``demo_catching_controller.yaml`` keeps the QP CLIK step, the bring-up sections
 and the key that selects the planner law; ``catching/search_grid.yaml``,

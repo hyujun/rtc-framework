@@ -14,7 +14,7 @@
 // law wrote to it, or the first thing exercising the E-STOP path would also
 // have been the first thing moving the arm.
 //
-// THE P-1 CONTRACT (plan §4.4 S5.1, L7 §4.1), in the four parts it was
+// THE P-1 CONTRACT (S5.1, L7 §4.1), in the four parts it was
 // approved in:
 //   (a) TriggerEstop / ClearEstop / ResetFault / ResetTargetInitialization
 //       update an atomic REQUEST or epoch and nothing else. The one writer of
@@ -428,7 +428,7 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   /// Plans that replaced the one being followed in APPROACH (§4.7, S6-B).
-  /// The vision → model-world transform the ingress applies (plan §11),
+  /// The vision → model-world transform the ingress applies (L3 §4.2),
   /// resolved at configure from `catching.io.arm_base_frame` +
   /// `catching.io.base_T_world` and the model.
   [[nodiscard]] const TrajInputConfig& GetTrajInputConfig() const noexcept {
@@ -486,7 +486,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return *std::min_element(tip_baseline_n_.begin(), tip_baseline_n_.begin() + n);
   }
 
-  /// How the last attempt ended (L7 §4.7). Kept across a re-arm — it is the
+  /// How the last attempt ended (L7 §4.4). Kept across a re-arm — it is the
   /// LAST attempt's verdict — and cleared by an activation or E-STOP reset.
   [[nodiscard]] rtc::catching::Outcome GetOutcomeForTesting() const noexcept { return outcome_; }
 
@@ -854,7 +854,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// ingress setup, because the vision-frame transform needs the model BEFORE
   /// the subscription exists.
   void AcquireModelBuilder();
-  /// Fills `cfg`'s vision → model-world transform (plan §11). False (logged)
+  /// Fills `cfg`'s vision → model-world transform (L3 §4.2). False (logged)
   /// on a named frame the model lacks or that is not rigid to its root.
   [[nodiscard]] bool ResolveVisionFrame(TrajInputConfig& cfg);
 
@@ -1781,7 +1781,7 @@ class DemoCatchingController final : public RTControllerInterface {
   rclcpp::Clock log_clock_{RCL_STEADY_TIME};
   /// The controller's own reading of the steady clock (SetClockForTesting).
   ///
-  /// Read per tick rather than accumulated as `iteration * dt` (plan §3): the
+  /// Read per tick rather than accumulated as `iteration * dt` (L0 §4.5): the
   /// two diverge by exactly the jitter and overrun this controller's deadlines
   /// are about, and the accumulated version cannot see a missed tick at all.
   /// The axis itself is `rtc::SteadyNowNs` — the same read the device backends

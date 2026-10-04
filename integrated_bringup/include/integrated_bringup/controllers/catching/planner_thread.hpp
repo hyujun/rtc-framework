@@ -5,7 +5,7 @@
 //
 // A `rtc::PeriodicRtThread` sibling of `rtc::mpc::MPCThread`, not a subclass of
 // it: the MPC thread's interface is built around `MPCSolution`, and forcing a
-// PlanSnapshot through it would couple the two for nothing (plan §6). The
+// PlanSnapshot through it would couple the two for nothing (L3 §5.3). The
 // thread is thin on purpose — the whole iteration body is
 // `rtc::catching::PlannerCycle::Run` (rtc_controllers, ROS-free), so what the
 // thread adds is only the WAKE SOURCE and the scheduling.

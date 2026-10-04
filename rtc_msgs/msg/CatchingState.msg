@@ -65,7 +65,7 @@ uint8 REASON_HAND_TIMEOUT         = 19
 uint8 REASON_TIP_STALE            = 20
 uint8 reason
 
-# Per-trial verdict (L7 §4.7). Filled from S8; MODE/REASON say what the
+# Per-trial verdict (L7 §4.4). Filled from S8; MODE/REASON say what the
 # controller is doing, this says how the last attempt ended.
 uint8 OUTCOME_NONE         = 0
 uint8 OUTCOME_CAPTURED     = 1

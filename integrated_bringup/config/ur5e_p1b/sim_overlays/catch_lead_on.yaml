@@ -6,7 +6,7 @@
 # This is the sim-runner's standard arm and the base of the other catching
 # overlays here (s8f_reach_first, catch_wait_pose_current). The S8-B ablation
 # arms (catch_lead_off, *_gamma0) and the S8-E beanbag arm were pruned once
-# their results were recorded (plan §4.4 S8-B/S8-E); git history has them.
+# their results were recorded (S8-B/S8-E, ID_INDEX.md §3); git history has them.
 #
 # WHAT IT IS FOR. The shipped controller runs with `joint_cmd.lag.T_arm: 0`
 # because a real-arm actuation lag is an S10 measurement. The sim arm is not

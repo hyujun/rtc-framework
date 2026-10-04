@@ -375,7 +375,7 @@ CloudReject CatchingTrajInput::OnCloud(const sensor_msgs::msg::PointCloud2& msg,
                 sizeof(double) * CovarianceSnapshot::kElems);
   }
 
-  // ── Vision world → model world (plan §11) ─────────────────────────────────
+  // ── Vision world → model world (L3 §4.2) ──────────────────────────────────
   // Before the format check so the check, the jump diagnostic and every
   // consumer see one frame. A rotation of the covariance skips exact-zero
   // rotation coefficients: an unknown (NaN) element must stay confined to the

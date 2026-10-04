@@ -1474,7 +1474,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
 }
 
 TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
-  // MPC plan MD-90: the profile is a main file plus three `include:` fragments
+  // MD-90: the profile is a main file plus three `include:` fragments
   // (catching/search_grid, planner_closed_form, planner_mpc). One mirrored key
   // per fragment is moved in the composed tree — the place a CM override
   // writes — and read back from the configured controller.
@@ -1902,7 +1902,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
 }
 
 TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
-  // MPC MD-92 / #698: every design value of the decel MPC core, of the catch
+  // #698: every design value of the decel MPC core, of the catch
   // pose IK, of the unit-speed solve and of the switch step bound is WRITTEN in
   // the shipped fragments, and at what the code used before the key existed —
   // so the shipped solves, rankings and tests did not move.

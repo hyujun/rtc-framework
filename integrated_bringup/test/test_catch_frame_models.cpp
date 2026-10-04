@@ -5,7 +5,7 @@
 //     relative to its parent (full / sub / tree / actuated),
 //   - its +z is the palm's outward normal: flexing every non-arm joint moves
 //     the fingertip centroid toward +z (the FK argument the axis proposal
-//     rests on, plan §10),
+//     rests on, L5 §11),
 //   - it is still provisional (D-17: the user confirms in sim, S2.3b sets the
 //     pocket offset),
 //   - the model dimensions the plan quotes (iiwa7_leap full nv 23).
@@ -117,7 +117,7 @@ void CheckRobot(const RobotCase& rc) {
   // SPEC CHANGE 2026-09-21 (PROC-6): this asserted `provisional == true`, as a
   // tripwire against shipping a confirmed-looking catch frame before S2.3b had
   // produced an offset and the user had checked it in sim. Both happened — the
-  // offset is the S4.5 measured catch point (plan §10) and the user confirmed the
+  // offset is the S4.5 measured catch point (L5 §11) and the user confirmed the
   // rendered frame — so the tripwire now points the other way: what ships must be
   // the confirmed state. A new robot profile copied from these, or a revert to the
   // placeholder, goes red here and has to be thought about rather than inherited.
@@ -186,7 +186,7 @@ void CheckRobot(const RobotCase& rc) {
 
 TEST(CatchFrameModels, Iiwa7Leap) {
   CheckRobot(kIiwa7Leap);
-  // Recorded for plan §2 (no closure sidecar → no actuated model).
+  // Recorded as properties (no closure sidecar → no actuated model).
   const rub::PinocchioModelBuilder builder(MakeConfig(kIiwa7Leap));
   RecordProperty("iiwa7_leap_full_nv", builder.GetFullModel()->nv);
   RecordProperty("iiwa7_leap_wbc_nv", builder.GetTreeModel("wbc")->nv);

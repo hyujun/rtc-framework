@@ -80,14 +80,14 @@
           root_link: "base"
           tip_links: ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
       # Frames the model builder adds to the full model (inherited by every
-      # derived model) — dynamic_catching D-10/D-17, plan §10. Changing a value
+      # derived model) — dynamic_catching D-10/D-17, L5 §11. Changing a value
       # needs a controller re-configure (read at model build).
       extra_frames:
         catch_frame:
           parent: "l_palm_link"
           # Pocket-centre offset (S2.3b, 2026-09-21) = the S4.5 MEASURED catch
-          # point, not the preshape fingertip centroid plan §10 first proposed
-          # (rationale and the rejected alternative: plan §10). In short: r_cap
+          # point, not the preshape fingertip centroid L5 §11 first proposed
+          # (rationale and the rejected alternative: L5 §11). In short: r_cap
           # is the lateral allowance measured AROUND this point, and t_c is the
           # instant the closing hand holds the ball, so the origin has to be
           # where the ball ends up — not the pocket mouth, which is the S4.5
@@ -98,7 +98,7 @@
           # robot (they do NOT for iiwa7_leap, which carries a π turn).
           # Cross-checked against the source of the measurement: the Pinocchio
           # catch-frame origin and the MuJoCo pocket point agree to 1.4 mm over
-          # 16 random arm poses. That residual is ε_model,p1b (plan §11, MJCF↔
+          # 16 random arm poses. That residual is ε_model,p1b (L3 §4.2, MJCF↔
           # URDF dimensions), not a frame mismatch — the two palm frames agree
           # to 3.4e-6 deg in orientation.
           xyz: [0.015, 0.145, 0.052]

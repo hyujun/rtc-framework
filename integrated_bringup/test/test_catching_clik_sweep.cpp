@@ -2,7 +2,7 @@
 //
 // The S5.3 suite answers "does the law converge on ONE catch". This one asks
 // how its task-space POSITION and AXIS performance move as the ball changes,
-// which is the question the gate maps (plan §11 S3.5b) leave open: they say
+// which is the question the gate maps (S3.5b, L3 §4.2) leave open: they say
 // which catch poses are reachable, not how well the law reaches them when the
 // ball gives it less time and a different approach direction.
 //
