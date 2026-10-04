@@ -2783,6 +2783,9 @@ git -C "$dir" checkout -q "$base"
 printf '\177ELF demo from the base again' >"$ws/install/rtc_demo/lib/librtc_demo.so"
 out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_NO_REUSE=1)
 expect_not_contains "RTC_VERIFY_NO_REUSE=1 does not look at the sources" "$out" "other source than this tree's"
+# ...and then does not say it found none stale: it did not look.
+expect_contains "...and says the binaries were not looked at" "$out" "the installed binaries were not looked at"
+expect_not_contains "...not that none was found stale" "$out" "found stale"
 rm -rf "$ws" "$bstub" "$tstub" "$count"
 
 # 76j. No false positive: the same source and the same binaries are reused, and
@@ -2832,21 +2835,117 @@ out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "--run beside a scratch file passes" "$rc" 0
 expect_not_contains "an untracked scratch file is not another source" "$out" "other source than this tree's"
 if [ "$(calls "$count")" = "$before" ]; then pass "...and builds nothing"; else fail "a scratch file had the package tested (calls $(( $(calls "$count") - before )))"; fi
+# A change set no gate reads is the other "nothing to do" exit: it speaks too.
+expect_contains "--run over nothing but scratch says that nothing was built" "$out" "nothing was built or tested"
 rm -f "$dir/rtc_demo/scratch_note.txt"
-# 76l. A package verified with a NEW file still untracked is recorded without
-#      an id, so committing that file does not read as another source.
-printf '#pragma once\nint fresh();\n' >"$dir/rtc_demo/include/fresh.hpp"
-out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
-expect_exit "76l setup: the tree with a new header passes" "$rc" 0
-if grep -q '^rtc_demo ' "$dir/.git/rtc-verify-pass-sources" 2>/dev/null; then fail "a package holding an untracked file kept a source id"; else pass "a package verified with an untracked file has no source id"; fi
+# 76l. An untracked file the build route takes is part of the source id: one
+#      of each class the route knows (untracked_routed) moves the id, and
+#      committing a tree verified with them does not read as another source.
+src_id() { sed -n 's/^rtc_demo //p' "$dir/.git/rtc-verify-pass-sources" 2>/dev/null; }
+mkdir -p "$dir/rtc_demo/scripts" "$dir/rtc_demo/test"
+last=$(src_id)
+for new_file in include/fresh.hpp scripts/tool.sh config/extra.yaml test/fixture.urdf; do
+  case "$new_file" in
+    *.hpp) printf '#pragma once\nint fresh();\n' >"$dir/rtc_demo/$new_file" ;;
+    *.sh) printf '#!/bin/bash\necho tool\n' >"$dir/rtc_demo/$new_file" ;;
+    *.yaml) printf 'key: 1\n' >"$dir/rtc_demo/$new_file" ;;
+    *) printf '<robot name="fixture"/>\n' >"$dir/rtc_demo/$new_file" ;;
+  esac
+  out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+  expect_exit "76l setup: the tree with an untracked $new_file passes" "$rc" 0
+  now=$(src_id)
+  if [ -n "$now" ] && [ "$now" != "$last" ]; then pass "an untracked $new_file is in the source id"; else fail "an untracked $new_file left the source id at [$now] (before: [$last])"; fi
+  last=$now
+done
 git -C "$dir" add -A
-git -C "$dir" commit -qm "the new header"
+git -C "$dir" commit -qm "the new files"
 before=$(calls "$count")
 out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
 expect_exit "--run after committing the verified tree passes" "$rc" 0
-expect_not_contains "committing a verified new file is not another source" "$out" "other source than this tree's"
+expect_not_contains "committing verified new files is not another source" "$out" "other source than this tree's"
 if [ "$(calls "$count")" = "$before" ]; then pass "...and nothing is tested again"; else fail "the committed tree was tested again (calls $(( $(calls "$count") - before )))"; fi
-if grep -q '^rtc_demo ' "$dir/.git/rtc-verify-pass-sources" 2>/dev/null; then pass "...and the clean tree gets its id back"; else fail "no source id after the commit"; fi
+if [ "$(src_id)" = "$last" ]; then pass "...and the id did not move at the commit"; else fail "the source id moved at the commit: [$last] -> [$(src_id)]"; fi
+rm -rf "$ws" "$bstub" "$tstub" "$count"
+
+# 76m. The incident again, by the door 76l closed: the branch is verified while
+#      its new header is still untracked, then committed, and the checkout goes
+#      back to the base. Recorded without an id, that package was baselined
+#      with the BASE's id over the branch's binaries and never found.
+dir=$(make_nested_fixture)
+ws=$(cd "$dir/../.." && pwd -P)
+count=$(mktemp)
+bstub=$(make_build_stub 0)
+tstub=$(make_test_stub "$count" 0)
+mkdir -p "$ws/install/rtc_demo/lib"
+printf '\177ELF demo from the base' >"$ws/install/rtc_demo/lib/librtc_demo.so"
+base=$(git -C "$dir" rev-parse HEAD)
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "76m setup: --run over the base passes" "$rc" 0
+git -C "$dir" checkout -qb branch-new-file
+printf '#pragma once\nint fresh();\n' >"$dir/rtc_demo/include/fresh.hpp"
+echo 'int existing() { return 12; }' >"$dir/rtc_demo/src/existing.cpp"
+printf '\177ELF demo from the branch' >"$ws/install/rtc_demo/lib/librtc_demo.so"
+out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE="$base"); rc=$?
+expect_exit "the branch is verified with its new header untracked" "$rc" 0
+git -C "$dir" add -A
+git -C "$dir" commit -qm "branch with a new header"
+out=$(run_stop "$dir" "$bstub" "$tstub")
+before=$(calls "$count")
+git -C "$dir" checkout -q "$base"
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run back on the base passes" "$rc" 0
+expect_contains "binaries of a branch verified with an untracked file are named" "$out" "installed binaries of [rtc_demo] were built from other source than this tree's"
+if [ "$(calls "$count")" = $((before + 1)) ]; then pass "...and the package is tested again"; else fail "calls after the return: $(( $(calls "$count") - before ))"; fi
+# 76n. The message is not lost to a README edit or a scratch note in the
+#      package: neither routes it to a build, so the line is the only thing
+#      that says why it was built.
+git -C "$dir" checkout -q branch-new-file
+out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE="$base" RTC_VERIFY_NO_REUSE=1); rc=$?
+expect_exit "76n setup: the branch is built again" "$rc" 0
+git -C "$dir" checkout -q "$base"
+echo '# demo, edited on the base' >"$dir/rtc_demo/README.md"
+echo 'a note' >"$dir/rtc_demo/scratch_note.txt"
+before=$(calls "$count")
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run on the base beside a README edit and a note passes" "$rc" 0
+expect_contains "the foreign binaries are still named" "$out" "installed binaries of [rtc_demo] were built from other source than this tree's"
+if [ "$(calls "$count")" = $((before + 1)) ]; then pass "...and built and tested"; else fail "calls: $(( $(calls "$count") - before ))"; fi
+git -C "$dir" checkout -q -- rtc_demo/README.md
+rm -f "$dir/rtc_demo/scratch_note.txt"
+# 76o. A few thousand untracked files do not switch the look off. The list was
+#      one awk argument: past the kernel's limit for one (128 KiB) awk did not
+#      start and every id came back empty.
+git -C "$dir" checkout -q branch-new-file
+out=$(run_hook_green "$dir" "$bstub" "$tstub" RTC_VERIFY_BASE="$base" RTC_VERIFY_NO_REUSE=1); rc=$?
+expect_exit "76o setup: the branch is built again" "$rc" 0
+git -C "$dir" checkout -q "$base"
+mkdir -p "$dir/dump"
+( cd "$dir/dump" && for i in $(seq 1 2500); do : >"an_untracked_file_with_a_long_enough_name_to_fill_the_list_$i.log"; done )
+if [ "$(git -C "$dir" ls-files -o --exclude-standard | wc -c)" -gt 140000 ]; then pass "76o setup: the untracked list is past one argument's limit"; else fail "the untracked list is too short to test the limit"; fi
+before=$(calls "$count")
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run beside thousands of untracked files passes" "$rc" 0
+expect_contains "...and still names the foreign binaries" "$out" "installed binaries of [rtc_demo] were built from other source than this tree's"
+if [ "$(calls "$count")" = $((before + 1)) ]; then pass "...and builds and tests them"; else fail "calls: $(( $(calls "$count") - before ))"; fi
+rm -rf "$dir/dump"
+# 76p. An untracked repository inside a package is scratch, not source: moving
+#      its HEAD is not another tree. It is listed as "dir/" and sits in the
+#      tree as a gitlink at "dir", so the two did not match and its commit id
+#      went into the package's source id.
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+git init -q "$dir/rtc_demo/vendor"
+echo one >"$dir/rtc_demo/vendor/file"
+git -C "$dir/rtc_demo/vendor" add -A
+git -C "$dir/rtc_demo/vendor" -c user.name=t -c user.email=t@example.com commit -qm one
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "76p setup: --run beside an embedded repository passes" "$rc" 0
+echo two >"$dir/rtc_demo/vendor/file"
+git -C "$dir/rtc_demo/vendor" -c user.name=t -c user.email=t@example.com commit -qam two
+before=$(calls "$count")
+out=$(run_hook_green "$dir" "$bstub" "$tstub"); rc=$?
+expect_exit "--run after the embedded repository moved passes" "$rc" 0
+expect_not_contains "an embedded repository's HEAD is not the package's source" "$out" "other source than this tree's"
+if [ "$(calls "$count")" = "$before" ]; then pass "...and nothing is tested again"; else fail "the embedded repository had the package tested (calls $(( $(calls "$count") - before )))"; fi
 rm -rf "$ws" "$bstub" "$tstub" "$count"
 
 # ── Build order ──────────────────────────────────────────────────────────────
