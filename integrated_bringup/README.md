@@ -108,10 +108,13 @@ integrated_bringup/
 │       ├── catalog.py                  <- /rtc_cm/list_controllers 동적 enumerator
 │       ├── config.py                   <- gain 스키마, 위젯 레이아웃, 캘리브레이션 표
 │       └── discovery.py                <- RobotShape (런타임 DOF/finger 추론)
-└── scripts/
-    ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI 진입점 (얇은 shim)
-    ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 진입점 (얇은 shim)
-    └── motion_editor_gui.py            <- 모션 에디터 GUI (PyQt5)
+├── scripts/
+│   ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI 진입점 (얇은 shim)
+│   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 진입점 (얇은 shim)
+│   └── motion_editor_gui.py            <- 모션 에디터 GUI (PyQt5)
+└── tools/                              <- 설치하지 않는 평가 도구 — source tree 에서 실행한다 (§포구 평가 도구)
+    ├── catching_eval/                  <- 포구 sim 평가: unit 드라이버 · overlay · 조건 생성 · 판정
+    └── catch_frame/                    <- catch frame 의 MuJoCo ↔ URDF 대조와 렌더
 ```
 
 > ◇ `mujoco_native_backend.hpp` 의 fingertip wrench lane 동작 (sim sensor B path):
@@ -1012,6 +1015,59 @@ ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dis
 **성공률 판정에 쓰는 unit 은 `abort` 로 돌리고, exit code 3 이면 같은 seed 로 unit 전체를 다시 돌린다** — 시행 단위 무효 + 보충 투척은 모집단을 바꾸므로 하지 않는다 (D-S8-17). `detections[].processes` 는 그 순간 host 에 있던 `colcon build|test`·`pytest`·`ctest` 프로세스 (러너 자신의 조상·자손은 제외; 공백이 든 인자 — 셸의 `-c` 스크립트·커밋 메시지 — 는 `<text>` 로 바꿔 읽으므로 그 이름을 *언급만* 하는 프로세스는 빠진다. 인자가 하나뿐인 command line 은 그대로 읽는다 — 제목을 고쳐 쓴 프로세스다) 로, 원인 후보일 뿐 판정이 아니다: 목록이 비어도 sim 이 느렸으면 부하다. sim 을 `max_rtf` ≠ 1 로 띄운 실행은 `--host-rtf-min` 을 그에 맞추거나 `off` 로 한다.
 
 `trial_results.json` 의 `outcome` 이 시행 판정, `cycle_closed` 가 순환 완료 여부, `err_q_at_throw` 가 투척 순간의 정렬 오차다. `wall_t_relative_offset` 은 이 기록을 `catching_diag.csv` 의 시간축에 잇는다 (시행 중앙값이라 sim 이 벽시계보다 느리면 흐른다 — `rtc_tools` `catching_trials` 는 clock lane 이 있으면 쓰지 않는다). `truth_csv` 는 trials dir 기준 파일 이름이다 (절대경로였던 예전 기록은 dir 을 옮기고 같은 `<out>` 으로 다시 돌리면 다른 run 의 파일을 가리켰다). 이제 homing 도 포구 컨트롤러가 하므로 모든 구간이 `catching_diag.csv` 에 행으로 남는다. `armed_at_throw` 는 투척 직전 컨트롤러가 발행한 무장 상태다. demo_controller_gui 의 Catching 패널은 같은 기준 (RETREAT 진입 때의 판정) 으로 이 패널이 본 시행 수를 판정별로 센다 (`this panel: attempts N: …`, 패널을 다시 띄우면 새로 센다).
+
+### 포구 평가 도구 (`tools/`)
+
+`integrated_bringup/tools/` 의 스크립트는 **설치하지 않는다. 측정하는 workspace 의 source tree 에서 실행한다.** repo 는 스크립트의 자리에서, colcon workspace 는 그 두 단계 위에서 찾는다 (`RTC_WS` 로 다른 곳을 가리킬 수 있다). repo 가 `<workspace>/src` 아래에 없으면 `run_unit.sh` 는 거부한다 — unit 에 적히는 revision 이 빌드된 tree 의 것이어야 하기 때문이다. 도구는 repo 안에 아무것도 쓰지 않는다. 원자료 · 실험 overlay · 실험 plan 은 repo 에 넣지 않는다.
+
+**`tools/catching_eval/` — 포구 sim 평가** (E1-F06 의 G-1 평가에 쓴 것, #632)
+
+| 스크립트 | 하는 일 |
+|---|---|
+| `run_unit.sh <out> <p1b\|leap> <overlay.yaml> <n> <seed>` | unit 하나. sim 을 띄우고, 컨트롤러의 미러가 기대값과 같은지 확인하고, 추정기를 띄우고, `catching_sim_trials` (`--dist s35b --host-watch abort`) 를 돌린 뒤 세션 로그를 unit 으로 옮긴다. `<out>/status` 가 `DONE` 또는 `FAIL:<이유>` 다. tree 가 dirty 하면 거부한다 (`ALLOW_DIRTY=1` 로 푼다). INT · TERM · HUP 을 받으면 sim 과 추정기를 끝내고 `FAIL:signal` 을 적는다 (세션 로그는 다른 실패처럼 `<out>/session_failed` 로 옮긴다) |
+| `run_all.sh` | plan 의 unit 을 차례로 돌린다. 다시 띄우면 `DONE` 인 unit 은 건너뛴다. 실패한 unit 은 `<dir>.fail<N>` 로 치우고 같은 seed 로 `MAX_TRY` (기본 3) 번까지 다시 돌린다. `$DATA/STOP` 파일이 있으면 그 unit 뒤에 멈춘다. **`repo_scripts/scripts/with_verify_hold.sh` 로 띄운다** |
+| `analyse_unit.sh <ur5e_p1b\|iiwa7_leap> <unit>...` | 끝난 unit 에 `rtc_tools` 의 `catching_trials` 와 `tc_vector.py` 를 돌려 `<unit>/ct/` 에 쓴다. unit 을 모으는 중에는 돌리지 않는다 (host 부하) |
+| `mk_overlay.py <out.yaml> <p1b\|leap> <mpc\|closed_form>` | 그 로봇의 `sim_overlays/catch_lead_on.yaml` 에 `supervisor.decel.mode` 하나를 더한 overlay 를 쓴다 (두 arm 모두 mode 를 적는다 — 출하 기본값에 기대지 않는다). 다른 leaf 가 섞이면 거부한다 |
+| `summarize.py` | 로봇 하나의 G-1 판정 (짝 구성, 무효 처리, 성공 판정, Tango 검정, 기준 1–4). 규칙은 #632 의 규칙 코멘트가 정했다. 시행을 unit 의 디렉토리 이름으로 찾으므로 **이름이 같은 unit 둘은 거부한다** (두 arm 의 unit 이름이 달라야 한다). 기계적인 부분은 `test/test_catching_eval_summarize.py` 가 고정한다 |
+| `tc_vector.py` | t_c 의 간격을 공의 진행 방향과 그 수직으로 나눈 값. `analyse_unit.sh` 가 부른다 |
+| `make_conditions.py` | 예측 격자 조건 (E0-F04, #647) 의 profile · overlay · `conditions.tsv` · plan 을 `$DATA/conditions/` 에 쓴다 |
+
+| 환경변수 | 쓰는 곳 | 뜻 |
+|---|---|---|
+| `DATA` | 전부 | 그 평가의 자료 디렉토리. **기본값이 없다 — 없으면 거부한다.** unit · `progress.log` · `.last_minute` 가 여기에 생긴다 |
+| `BALL_SIM_WS` | `run_unit.sh` · `make_conditions.py` | 추정기 (`ball_perception`) 의 colcon workspace. **없으면 거부한다.** 출하 profile 을 그 install 에서 읽는다 |
+| `PLAN` | `run_all.sh` | plan 파일. **없으면 거부한다** |
+| `PROFILE` | `run_unit.sh` | 추정기의 profile. 기본은 `BALL_SIM_WS` 의 출하 catching profile |
+| `EXPECT_MODE` · `EXPECT_KV` · `EXPECT_CLIK` · `EXPECT_TARM` · `EXPECT_COMMIT` · `EXPECT_BALL` · `EXPECT_NPRE` · `EXPECT_DTPRE` | `run_unit.sh` | 미러에서 읽어 대조할 값. 하나라도 다르면 `FAIL:overlay …` 로 거부한다. `EXPECT_KV` 는 `미러 이름=값` 을 `;` 로 이은 것이다 |
+| `ARM` · `HOST_WATCH` · `EVAL_DOMAIN` | `run_unit.sh` | 시행 기록의 arm 라벨 (기본 `mpc`), `--host-watch` (기본 `abort`), `ROS_DOMAIN_ID` (기본 88) |
+| `ONLY` · `MAX_TRY` · `IDLE_GRACE` · `IDLE_MAX_S` | `run_all.sh` | 이름이 이 접두어로 시작하는 unit 만, 재시도 횟수, unit 사이의 대기 |
+
+plan 의 한 줄은 unit 하나다 (`#` 로 시작하면 주석):
+
+```text
+<dir> <robot p1b|leap> <overlay 경로> <n> <seed> <mode mpc|closed_form> [<미러 이름=값;…>]
+```
+
+`make_conditions.py` 가 쓰는 plan 은 **이 형식이 아니다** — overlay 경로가 아니라 조건 이름을 적는다 (`<dir> <robot> <조건> <n> <seed>`). 조건 표를 읽어 batch 로 돌리는 드라이버는 아직 없다 (E3-F07, #646). 조건 하나는 `conditions.tsv` 의 그 행을 `run_unit.sh` 에 손으로 넘겨 돌린다:
+
+```bash
+# conditions.tsv 의 행: cond robot profile overlay dt n_min points
+DATA=<자료 디렉토리> BALL_SIM_WS=<추정기 workspace> \
+PROFILE=<profile 열> \
+EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.slice.dt=<dt 열>' \
+  integrated_bringup/tools/catching_eval/run_unit.sh <out> <robot 열> <overlay 열> <n> <seed>
+```
+
+조건의 overlay 는 mode 를 적지 않으므로 출하 법칙 (`supervisor.decel.mode`) 으로 돈다. `EXPECT_MODE` (기본 `mpc`) 가 그것과 다르면 맞춰 준다. `L-50` 행의 overlay 는 경로가 아니라 이름 (`catch_lead_on`) 이다. `run_unit.sh` 는 파일을 받으므로 `integrated_bringup/config/<robot>/sim_overlays/catch_lead_on.yaml` 을 넘긴다 (`<out>` · overlay · `DATA` · `PROFILE` 은 부른 자리 기준의 상대 경로여도 된다). `make_conditions.py` 는 overlay 의 leaf 규칙을 `test/test_catch_lead_overlays.py` 의 `_unread_leaves` 에서 경로로 불러 쓴다 — 그 테스트의 이름을 바꾸면 이 스크립트를 같이 고친다.
+
+`.last_minute` 는 세션 디렉토리의 이름이 분 단위라서 둔다: 같은 `DATA` 의 앞 unit 과 같은 분에는 다음 unit 을 띄우지 않는다. `DATA` 가 다른 두 평가를 같은 workspace 에서 같이 돌리면 이 보호가 닿지 않는다.
+
+**`tools/catch_frame/` — catch frame 확인** (workspace 환경을 source 한 python 으로 실행한다; `ur5e_p1b` 의 MJCF 는 `hand_description` 패키지에서, `iiwa7_leap` 의 것은 이 repo 의 `robot_descriptions/` 에서 읽는다)
+
+| 스크립트 | 하는 일 |
+|---|---|
+| `verify_catch_frame.py <ur5e_p1b\|iiwa7_leap>` | MJCF 의 palm body frame 과 URDF 의 palm link frame 이 같은 frame 인지 관절 표본 위에서 대조한다. 이어서 **스크립트에 적힌** pocket 점 (S4.5 의 MuJoCo 실측값) 을 부모 link 의 offset 으로 옮긴 값 (`proposed_xyz_parent_frame_m`) 을 낸다. 결과는 JSON. **출하 YAML 의 `urdf.extra_frames.catch_frame` 과 `robot.hand.q_pre` 는 읽지 않는다** — 출하 값이 이 값과 같은지는 JSON 과 YAML 을 직접 대조한다 |
+| `show_catch_frame.py <ur5e_p1b\|iiwa7_leap> --out <png>` | 출하 catch frame 을 preshape 손 위에 그린다 (원점의 공 반지름 구, 접근축의 marker). `--viewer` 는 MuJoCo viewer 를 연다 — 육안 확인용 |
 
 ---
 

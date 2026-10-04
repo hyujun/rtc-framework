@@ -1617,6 +1617,9 @@ if(BUILD_TESTING)
   # S7 G8-A2 (existence half): every RT-owned member of the catching
   # controller has a row in its header's reset table.
   ament_add_pytest_test(test_catching_reset_table test/test_catching_reset_table.py)
+  # tools/catching_eval/summarize.py (not installed — read from the source
+  # tree): the mechanical parts of the G-1 verdict, on planted inputs.
+  ament_add_pytest_test(test_catching_eval_summarize test/test_catching_eval_summarize.py)
 
   # ── Parallel ctest ─────────────────────────────────────────────────────────
   # colcon.pkg runs this package's tests four at a time. Two kinds of test
