@@ -276,25 +276,57 @@ TEST_F(CatchingTrackingTest, ConvergesToAStaticCatchPointAndAxis) {
 
 // ── G5-B: the boxes hold ────────────────────────────────────────────────────
 
-TEST_F(CatchingTrackingTest, RespectsTheJointAndStepLimitsThroughout) {
+/// Under each form of the CLIK's acceleration bound (box, kinematic, dynamic).
+/// The run includes the tick
+/// the reference's saturation streak ends the approach on: under `dynamic` the
+/// command is at the velocity limit there, and a stop that stepped it a second
+/// time on that tick left at twice the limit (#749).
+class CatchingLimitsTest : public CatchingTrackingTest,
+                           public ::testing::WithParamInterface<const char*> {};
+
+TEST_P(CatchingLimitsTest, RespectsTheJointAndStepLimitsThroughout) {
   // A target far enough away that the solver wants more than the joints can
   // give — which is when a box is the only thing between the law and a command
   // the drive answers with a protective stop.
   const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.45, -0.35, 0.30);
   const Eigen::Vector3d a_d = start_pose_.rotation().col(2);
-  ASSERT_NO_FATAL_FAILURE(BringUp(p_c, a_d));
+  const std::string form = GetParam();
+  // `sat_ticks` is named so the run ends the way this case needs whatever the
+  // default becomes: the reference saturates from its first step, and the
+  // streak ends the approach at tick 60 — before the lane goes stale (100
+  // ticks: RunClosedLoop republishes one sequence, and the lane drops it).
+  ASSERT_NO_FATAL_FAILURE(BringUp(p_c, a_d, 0.0, 5.0, [&form](YAML::Node& y) {
+    y["catching"]["joint_cmd"]["accel_constraint"] = form;
+    if (form == "kinematic") {
+      // The form's own keys, at the validator's ceilings (no shipped value).
+      y["catching"]["joint_cmd"]["task_accel_max_linear"] = 500.0;
+      y["catching"]["joint_cmd"]["task_accel_max_angular"] = 500.0;
+    }
+    y["catching"]["supervisor"]["sat_ticks"] = 60;
+  }));
   RunClosedLoop(4);  // IDLE → ARMED → TRACKING → APPROACH
   ASSERT_EQ(ctrl_->GetMode(), rtc::catching::Mode::kApproach);
 
   const auto configs = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
   const auto limits = configs.at("ur5e").joint_limits.value();
   std::array<double, kUr5eArmDof> previous = kUr5eHome;
+  bool saturation_ended_the_approach = false;
+  double speed_ratio = 0.0;         // this tick's worst |step| / limit
+  double speed_ratio_before = 0.0;  // ...on the tick before the approach ended
 
   for (int t = 0; t < 200; ++t) {
+    const bool in_approach = ctrl_->GetMode() == rtc::catching::Mode::kApproach;
     RunClosedLoop(1);
+    if (in_approach && ctrl_->GetMode() != rtc::catching::Mode::kApproach) {
+      saturation_ended_the_approach =
+          ctrl_->GetMode() == rtc::catching::Mode::kRetreat &&
+          ctrl_->GetLastReason() == rtc::catching::Reason::kRefSaturated;
+      speed_ratio_before = speed_ratio;
+    }
     if (last_output_.devices[0].num_channels < kUr5eArmDof) {
       continue;
     }
+    speed_ratio = 0.0;
     for (int i = 0; i < kUr5eArmDof; ++i) {
       const auto ui = static_cast<std::size_t>(i);
       const double q = last_output_.devices[0].commands[ui];
@@ -308,10 +340,25 @@ TEST_F(CatchingTrackingTest, RespectsTheJointAndStepLimitsThroughout) {
       const double step = std::abs(q - previous[ui]) / kDt;
       EXPECT_LE(step, limits.max_velocity[ui] + 1e-6)
           << "joint " << i << " stepped at " << step << " rad/s on tick " << t;
+      speed_ratio = std::max(speed_ratio, step / limits.max_velocity[ui]);
       previous[ui] = q;
     }
   }
+  // The run has to contain the tick it is here for (#749): the stop that takes
+  // over from the law, with the arm moving.
+  EXPECT_TRUE(saturation_ended_the_approach)
+      << "the approach did not end in the saturation abort; mode "
+      << static_cast<int>(ctrl_->GetMode()) << ", last reason "
+      << static_cast<int>(ctrl_->GetLastReason());
+  if (form == "dynamic") {
+    // ...and under this form with the command past half the velocity limit, so
+    // a second step on that tick would have crossed the limit above.
+    EXPECT_GT(speed_ratio_before, 0.5) << "the command was too slow for a doubled step to show";
+  }
 }
+
+INSTANTIATE_TEST_SUITE_P(Forms, CatchingLimitsTest,
+                         ::testing::Values("box", "kinematic", "dynamic"));
 
 // ── Decision K (S6-C2): the dynamic form bounds the arm torque ──────────────
 
