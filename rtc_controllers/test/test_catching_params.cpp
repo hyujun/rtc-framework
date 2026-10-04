@@ -331,9 +331,10 @@ TEST(CatchingParams, DynamicFormTakesTheD16EtaByDefaultAndRangeChecksIt) {
 
 TEST(CatchingParams, AFormsKeysUnderAnotherFormAreRefused) {
   // Written but not selected, the key would read as if it were in force.
-  YAML::Node box = ValidRoot();
-  box["joint_cmd"]["eta_tau"] = 0.7;
-  ExpectRejectMentioning(box, "joint_cmd.eta_tau");
+  YAML::Node kinematic = ValidRoot();
+  kinematic["joint_cmd"]["accel_constraint"] = "kinematic";
+  kinematic["joint_cmd"]["eta_tau"] = 0.7;
+  ExpectRejectMentioning(kinematic, "joint_cmd.eta_tau");
 
   YAML::Node dynamic = ValidRoot();
   dynamic["joint_cmd"]["accel_constraint"] = "dynamic";
