@@ -633,6 +633,19 @@ def peaks(rows):
     return out
 
 
+def refuse_shared_names(units):
+    """The rows of a unit are kept by its directory name. Two units of one name
+    (closed_form/p1b_631 and mpc/p1b_631, or one unit under both flags) would
+    both read the later one's rows, and the test would compare an arm with
+    itself — a pass that says nothing."""
+    names = collections.Counter(Path(u).name for u in units)
+    twice = sorted(n for n, c in names.items() if c > 1)
+    if twice:
+        raise SystemExit(
+            f"unit name twice across --cf and --mpc: {', '.join(twice)} (rows are kept by name)"
+        )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cfg", type=Path, required=True)
@@ -645,6 +658,7 @@ def main():
     a = ap.parse_args()
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text
 
+    refuse_shared_names(a.cf + a.mpc)
     CF = [load_unit(u, a.cfg, a.overlay_cf) for u in a.cf]
     MP = [load_unit(u, a.cfg, a.overlay_mpc) for u in a.mpc]
     profile = ct.load_profile(a.cfg, None, CF[0]["unit"] / "session")

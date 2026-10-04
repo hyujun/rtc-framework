@@ -133,6 +133,16 @@ def test_a_throw_twice_in_one_arm_is_refused():
         sm.pair([_row(631, 0, True), _row(631, 0, False)], [_row(631, 0, True)])
 
 
+def test_units_sharing_a_name_are_refused():
+    # Rows are kept by the unit's directory name: the same name in both arms
+    # would have each arm read the other's rows.
+    with pytest.raises(SystemExit, match="p1b_631"):
+        sm.refuse_shared_names(["cf/p1b_631", "cf/p1b_632", "mpc/p1b_631"])
+    with pytest.raises(SystemExit, match="twice"):
+        sm.refuse_shared_names(["u/p1b_631", "u/p1b_631"])
+    sm.refuse_shared_names(["u/cf_p1b_631", "u/mpc_p1b_631"])
+
+
 def test_the_test_block_is_the_repo_tango_on_the_table():
     t = sm.test_block({"n": 200, "both": 85, "mpc_only": 38, "cf_only": 48, "neither": 29})
     assert t["z"] == pytest.approx(1.0826, abs=1e-4)
