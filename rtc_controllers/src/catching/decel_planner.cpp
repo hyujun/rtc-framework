@@ -30,7 +30,7 @@ namespace {
   return static_cast<std::size_t>(i);
 }
 
-// The core's design values (MD-92) from `planner.decel_mpc.*`: the cost
+// The core's design values, all YAML keys, from `planner.decel_mpc.*`: the cost
 // scalars (the stop-path weight among them — both core kinds carry that term,
 // on their nodes from the catch on), the axis and trust-region limits, the
 // rest tolerance and the solver's tolerances. `jerk_weight` is already in

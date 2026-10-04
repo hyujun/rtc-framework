@@ -14,10 +14,9 @@
 // At τ=0 this makes the reference error e = x_s − p_v(0) and ė = ẋ_s − v_v(0)
 // EXACTLY zero (not merely small) — G7-B measures that. The reference
 // acceleration jumps from −a_dec·û_s to 0 at τ_s (infinite jerk); the doc
-// accepts this and offers `supervisor.decel.ramp_time` as a mitigation this
-// core does not implement (a ramp is a caller-side concern: L4 already
-// consumes a_v as a target, so a ramped a_dec is just a different a_dec
-// argument on the next call).
+// accepts this (L7 §4.3: a_dec is not ramped); a ramp would be a caller-side
+// concern: L4 already consumes a_v as a target, so a ramped a_dec is just a
+// different a_dec argument on the next call.
 //
 // This is a pure numeric core: ROS/time-type free (the caller derives τ from
 // NowLead/BallTime per L0 §4.5 before calling in), Eigen-only, no heap,
@@ -127,13 +126,14 @@ struct DecelTarget {
 
 // ── QP-independent joint-space deceleration (L7 §4.1, A-S5-10, S5.3) ────────
 //
-// The task-space target above is what `ABORT_SAFE` uses when the joint command
-// layer is HEALTHY: the virtual target goes through L4 and L5 like any other
-// reference. It is exactly the wrong thing when the abort was CAUSED by that
-// layer — `QP_FAILED` or `JOINT_CONFLICT` — because it would route the stop
-// through the component that just failed.
+// The task-space target above is DECEL's reference: it goes through L4 and L5
+// like any other reference. `ABORT_SAFE` never uses it — its stop is always in
+// joint space, whatever the cause (L7 §4.1). A task-space stop would be exactly
+// the wrong thing when the abort was CAUSED by that layer (`QP_FAILED` or
+// `JOINT_CONFLICT`), because it would route the stop through the component that
+// just failed, and one path for every cause is one path to verify.
 //
-// So this is the other path: no QP, no task space, no model. It walks each
+// So this is that path: no QP, no task space, no model. It walks each
 // joint's commanded velocity to zero at its own acceleration limit and
 // integrates the command from there.
 //

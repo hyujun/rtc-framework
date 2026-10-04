@@ -54,7 +54,7 @@
 //    line through p_c is where the hand stops, not how it approaches.
 // With catch_terms the cost gains three terms AT the catch node, linearised at
 // the reference x̄ (the same ½-weighted least-squares convention as above —
-// the formulation prints them without the ½):
+// formulation §1.3 puts them inside the same ½[…]):
 //      ½ ‖p_C(q_kc) − p̂_b‖²_{W_p}                        position
 //    + ½ w_a ‖e_a(q_kc)‖²                                 approach axis
 //    + ½ ‖v_C − γ_ref v̂_b‖²_{W_v},  W_v = w_∥ d̂d̂ᵀ + w_⊥(I − d̂d̂ᵀ)   velocity

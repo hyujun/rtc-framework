@@ -153,7 +153,7 @@ struct DecelPlannerParams {
   double rho_v{0.0};
   double v_rel_allow{0.0};
 
-  // ── The core's own design values (MD-92) ───────────────────────────────────
+  // ── The core's own design values (YAML keys) ───────────────────────────────
   // Each default equals DecelMpcParams' (a test pins it), so a profile without
   // the keys solves what it always did.
   /// `cost.jerk_weight` — R_j per joint in ARM (device) order, each > 0; empty

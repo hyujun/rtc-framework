@@ -80,10 +80,9 @@ struct TbdDouble {
   }
 };
 
-// Hand joint-array capacity. Mirrors the `kMaxHandDof = 16` the L0 §5.2
-// common-types header is planned to define once S1.2 lands (the widest
-// supported hand is 16 DoF, L0 §5.2). Duplicated here rather than depended on
-// because that header does not exist yet; unify when it does.
+// Hand joint-array capacity: the widest supported hand is 16 DoF (L0 §5.2).
+// This header is the one definition — there is no shared common-types header
+// for it, and other code takes the value from here.
 inline constexpr std::size_t kMaxHandDof = 16;
 
 /// `robot.hand.T_close_timeout` when the profile omits it: this many
