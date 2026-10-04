@@ -126,8 +126,12 @@
 #   A verdict is of the SOURCE. --run answers for the BINARIES as well: with a
 #   verdict it records the package's installed binaries, and it does not reuse
 #   a verdict whose binaries were rebuilt since -- it builds and tests that
-#   package again (see "The binaries a verdict was recorded with"). The turn
-#   end does not look at the install tree.
+#   package again (see "The binaries a verdict was recorded with"). So does
+#   it for binaries still the recorded ones but built from another tree's
+#   source (a branch verified in this checkout, then back on main: 2026-10-04,
+#   --run on main built nothing and the install kept the branch's binaries),
+#   and a --run with nothing to do says so on stderr. The turn end does not
+#   look at the install tree.
 #   --run is made to be backgrounded, so three things hold while it runs: it
 #   takes a lock, which a second --run refuses and the turn end reads as "a
 #   build to wait for" (run_lock_holder); a package edited during the build or
@@ -406,6 +410,8 @@ RUN_LOCK="$GIT_DIR_PATH/rtc-verify-run.lock"
 # matches: it builds and tests that package again, which leaves the install
 # tree built from the tree being graded.
 #   rtc-verify-pass-artifacts   "<pkg> <stamp>" per package with a verdict
+#   rtc-verify-pass-sources     "<pkg> <id>": the package's source content
+#                               (the next section) when the stamp was taken
 # The stamp is the name and CONTENT (blob id) of every shared or static
 # library under <workspace>/install/<pkg>/lib and of every ELF file directly
 # in lib/<pkg>/. Content, not mtime: a checkout or a pull rewrites source
@@ -424,7 +430,27 @@ RUN_LOCK="$GIT_DIR_PATH/rtc-verify-run.lock"
 # that build. What the turn end guarantees stays what it was: the source has a
 # green verdict. A package with no install directory has no stamp and is never
 # stale by it (ament_python, a fixture without a workspace).
+#
+# The stamp also does not say WHOSE source the binaries were built from. One
+# checkout is detached to a branch's commit, `RTC_VERIFY_BASE=<merge-base>
+# --run` builds and tests a package green (stamp: the branch's binaries), and
+# the checkout goes back to main: nothing is changed against the baseline and
+# the stamp matches, so --run exited at "nothing to do" with no output and the
+# install tree kept the branch's binaries (2026-10-04, twice: the same, run
+# from a second session that verified a branch which did not touch the
+# package, left it with the first branch's test binaries). So a verdict is
+# also recorded with the package's SOURCE id -- the hash of the files of its
+# directory as they are in the working tree, Markdown and untracked scratch
+# left out, one id per package (pkg_source_ids) -- and --run treats a package
+# whose present id differs from the recorded one while its binaries are still
+# the recorded ones as owed a build and a test, like a rebuilt one. The
+# message says which of the two it is. A package whose binaries were rebuilt
+# is the other case already; one with no install directory has no stamp and no
+# source id.
+# Dependents of a package rebuilt this way are not rebuilt: what is owed is
+# the package whose binaries are another tree's, not the ones linked to it.
 PASS_ARTIFACTS_FILE="$GIT_DIR_PATH/rtc-verify-pass-artifacts"
+PASS_SOURCES_FILE="$GIT_DIR_PATH/rtc-verify-pass-sources"
 artifact_stamp() {  # $1 = package
   local lib="$WORKSPACE/install/$1/lib" f
   [ -d "$lib" ] || return 0
@@ -453,15 +479,123 @@ verdict_packages() {  # $1 = package or PROC-3
   done
   return 0
 }
-remember_artifact_stamps() {  # $1 = package or PROC-3
-  local p stamp
+# One "<mode> <type> <blob>\t<path>" line per file of a package directory of
+# tree $1 (a tree id from work_tree_id), Markdown left out: what a package's
+# verdict key (pkg_content_key) and its source id (pkg_source_ids) are both
+# made of. One definition, so the two cannot come to disagree about what a
+# package's source is -- the key's comment has the reason Markdown is not.
+# quotePath off: a quoted non-ASCII path ends in `"`, and its ".md" would not
+# be seen.
+pkg_tree_lines() {  # $1 = a tree id
+  local pkgs
+  pkgs=$(git_scratch ls-tree -r --name-only "$1" 2>/dev/null \
+           | sed -n 's|^\([^/]*\)/package\.xml$|\1|p' || true)
+  git_scratch -c core.quotePath=false ls-tree -r "$1" 2>/dev/null \
+    | awk -v pkgs="$pkgs" '
+        BEGIN { n = split(pkgs, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") keep[a[i]] = 1 }
+        {
+          path = $0; sub(/^[^\t]*\t/, "", path)
+          top = path; sub(/\/.*/, "", top)
+          if ((top in keep) && path !~ /\.md$/) print
+        }' || true
+}
+# The untracked files the build route takes as part of their package (stdin to
+# stdout, one path per line): new source or a new shell script in an installed
+# source dir, a new YAML under config/, anything under test/ but Markdown --
+# what CHANGED_SRC_UNTRACKED, CHANGED_SH_BUILD and CHANGED_DATA_BUILD route to
+# a build ("Build/test scope excludes untracked scratch"). Those three lists
+# keep their own patterns (each feeds other gates too); a class added to one
+# of them is added here, and case 76l of the suite holds one file of each
+# class to both. Every other untracked file is scratch.
+untracked_routed() {
+  awk -F/ '
+    NF >= 3 && ( ($NF ~ /\.(cpp|hpp|h|cc|py|sh)$/ \
+                  && ($2 == "src" || $2 == "include" || $2 == "test" \
+                      || $2 == "launch" || $2 == "scripts" || $2 == $1)) \
+                 || ($2 == "config" && $NF ~ /\.(yaml|yml)$/) \
+                 || ($2 == "test" && $NF !~ /\.md$/) )' || true
+}
+# "<pkg> <id> <scratch>" per package directory of tree $1: the hash of its
+# files by blob (pkg_tree_lines), untracked scratch left out, and whether the
+# package holds such scratch (1) or not (0). The lines of a package are hashed
+# by one sha1sum each.
+#
+# An untracked file the build route takes (untracked_routed) IS in the id: it
+# was built and tested with the package, and its line is the same once it is
+# committed, so the id does not move at the commit. Left out, a branch
+# verified before its new header was added recorded no id at all, and the
+# return to the base found nothing (the incident above, by another door).
+#
+# Untracked SCRATCH is left out, and a package that holds some is recorded
+# WITHOUT an id (the callers below). Both halves are needed:
+#   * with it in, a note dropped in a package directory reads as "other
+#     source" and has the package built -- for rtc_base that is the PROC-3 full
+#     build the change-set routing keeps scratch away from;
+#   * recorded with it left out, the id would move if the file were committed
+#     and the package would be built once more for a tree that already passed.
+# A package with no id is never stale by its source: for that package the look
+# is as blind as it was before, until its next green build on a tree with no
+# scratch in it records one.
+#
+# The untracked list reaches awk on stdin, in front of the tree ("?" every
+# untracked path, "+" the routed ones; a tree line starts with its mode): as
+# one -v argument it was past the kernel's per-argument limit with a few
+# thousand files, awk did not start, and every id came back empty. An embedded
+# repository is listed as "dir/" and sits in the tree as a gitlink at "dir".
+pkg_source_ids() {  # $1 = a tree id
+  local untracked
+  [ -n "$1" ] || return 0
+  untracked=$(git -c core.quotePath=false ls-files -o --exclude-standard 2>/dev/null || true)
+  {
+    printf '%s\n' "$untracked" | sed -e 's|/$||' -e 's|^|? |'
+    printf '%s\n' "$untracked" | untracked_routed | sed -e 's|^|+ |'
+    pkg_tree_lines "$1"
+  } | awk '
+        BEGIN { cmd = "sha1sum | cut -c1-40 | tr -d \"\\n\"" }
+        /^\? / { scratch[substr($0, 3)] = 1; next }
+        /^\+ / { delete scratch[substr($0, 3)]; next }
+        {
+          path = $0; sub(/^[^\t]*\t/, "", path)
+          top = path; sub(/\/.*/, "", top)
+          pkg[top] = 1
+          if (path in scratch) { dirty[top] = 1; next }
+          buf[top] = buf[top] $0 "\n"
+        }
+        END {
+          for (t in pkg) {
+            printf "%s ", t; fflush()
+            printf "%s", buf[t] | cmd
+            close(cmd)
+            printf " %d\n", (t in dirty) ? 1 : 0
+          }
+        }' || true
+}
+# The ids of tree $1 in SOURCE_IDS, computed once per tree in a call: a --run
+# that builds K packages records K verdicts, and each asked for all of them.
+SOURCE_IDS=""
+SOURCE_IDS_TREE=""
+load_source_ids() {  # $1 = a tree id
+  if [ -z "$1" ]; then
+    SOURCE_IDS=""
+  elif [ "$1" != "$SOURCE_IDS_TREE" ]; then
+    SOURCE_IDS=$(pkg_source_ids "$1")
+    SOURCE_IDS_TREE="$1"
+  fi
+}
+remember_artifact_stamps() {  # $1 = package or PROC-3, $2 = the tree it passed on
+  local p stamp id
+  load_source_ids "${2:-$(work_tree_id)}"
   {
     while IFS= read -r p; do
       [ -n "$p" ] || continue
       stamp=$(artifact_stamp "$p")
+      id=$(awk -v p="$p" '$1 == p && $3 == 0 { print $2 }' <<< "$SOURCE_IDS")
       grep -v "^$p " "$PASS_ARTIFACTS_FILE" > "$PASS_ARTIFACTS_FILE.tmp" || true
       [ -z "$stamp" ] || printf '%s %s\n' "$p" "$stamp" >> "$PASS_ARTIFACTS_FILE.tmp"
       mv "$PASS_ARTIFACTS_FILE.tmp" "$PASS_ARTIFACTS_FILE"
+      grep -v "^$p " "$PASS_SOURCES_FILE" > "$PASS_SOURCES_FILE.tmp" || true
+      [ -z "$stamp" ] || [ -z "$id" ] || printf '%s %s\n' "$p" "$id" >> "$PASS_SOURCES_FILE.tmp"
+      mv "$PASS_SOURCES_FILE.tmp" "$PASS_SOURCES_FILE"
     done <<< "$(verdict_packages "$1")"
   } 2>/dev/null || true
 }
@@ -471,14 +605,23 @@ remember_artifact_stamps() {  # $1 = package or PROC-3
 # first case above can sit in any package. It is a baseline, not a verdict --
 # binaries already stale when it is taken are not found -- and it is never
 # refreshed here: only a green build and test replaces a stamp.
+# The same for the source id: a package with a stamp and no id gets the
+# content of the tree as it is -- unless it holds untracked scratch
+# (pkg_source_ids).
 baseline_artifact_stamps() {
-  local p stamp
+  local p stamp id
+  load_source_ids "${WORK_TREE:-$(work_tree_id)}"
   {
     while IFS= read -r p; do
       [ -n "$p" ] || continue
-      grep -q "^$p " "$PASS_ARTIFACTS_FILE" 2>/dev/null && continue
-      stamp=$(artifact_stamp "$p")
-      [ -z "$stamp" ] || printf '%s %s\n' "$p" "$stamp" >> "$PASS_ARTIFACTS_FILE"
+      if ! grep -q "^$p " "$PASS_ARTIFACTS_FILE" 2>/dev/null; then
+        stamp=$(artifact_stamp "$p")
+        [ -z "$stamp" ] || printf '%s %s\n' "$p" "$stamp" >> "$PASS_ARTIFACTS_FILE"
+      fi
+      grep -q "^$p " "$PASS_ARTIFACTS_FILE" 2>/dev/null || continue
+      grep -q "^$p " "$PASS_SOURCES_FILE" 2>/dev/null && continue
+      id=$(awk -v p="$p" '$1 == p && $3 == 0 { print $2 }' <<< "$SOURCE_IDS")
+      [ -z "$id" ] || printf '%s %s\n' "$p" "$id" >> "$PASS_SOURCES_FILE"
     done <<< "$(verdict_packages PROC-3)"
   } 2>/dev/null || true
 }
@@ -491,6 +634,23 @@ stale_artifact_pkgs() {
     [ -n "$p" ] && [ -f "$PROJECT_DIR/$p/package.xml" ] || continue
     [ "$(artifact_stamp "$p")" = "$stamp" ] || printf '%s ' "$p"
   done < "$PASS_ARTIFACTS_FILE"
+  return 0
+}
+# Packages (still in the repo) whose source id differs from the one recorded
+# with their verdict while their installed binaries are still the recorded
+# ones: built from another tree's source. Reads SOURCE_IDS (load_source_ids,
+# called by the caller: this one runs in a command substitution).
+# A package whose binaries differ is stale_artifact_pkgs's, not named here.
+stale_source_pkgs() {
+  local p id stamp
+  [ -f "$PASS_SOURCES_FILE" ] && [ -f "$PASS_ARTIFACTS_FILE" ] || return 0
+  [ -n "$SOURCE_IDS" ] || return 0
+  while read -r p id; do
+    [ -n "$p" ] && [ -f "$PROJECT_DIR/$p/package.xml" ] || continue
+    [ "$(awk -v p="$p" '$1 == p { print $2 }' <<< "$SOURCE_IDS")" != "$id" ] || continue
+    stamp=$(grep "^$p " "$PASS_ARTIFACTS_FILE" | cut -d' ' -f2 || true)
+    [ -n "$stamp" ] && [ "$(artifact_stamp "$p")" = "$stamp" ] && printf '%s ' "$p"
+  done < "$PASS_SOURCES_FILE"
   return 0
 }
 # Both pass files carry this tag in front of what they record. It names the
@@ -621,14 +781,55 @@ CHANGED=$(printf '%s\n%s\n' "$CHANGED_TRACKED" "$CHANGED_UNTRACKED" | grep -v '^
 # "The binaries a verdict was recorded with"): a package whose binaries were
 # rebuilt since its verdict is built and tested again -- with nothing changed
 # against the watermark, and with the tree the one that last passed.
+# ...and so does a package whose binaries are another tree's build (see "The
+# binaries a verdict was recorded with"): it needs the tree id before the exit.
 STALE_ARTIFACT_PKGS=""
+WORK_TREE=""
 if [ -n "$RUN_MODE" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ]; then
   STALE_ARTIFACT_PKGS=$(stale_artifact_pkgs)
   if [ -n "$STALE_ARTIFACT_PKGS" ]; then
     echo "verify-changes: the installed binaries of [${STALE_ARTIFACT_PKGS% }] are not the ones their verdict was recorded with (built again since) -- building and testing them again." >&2
   fi
+  WORK_TREE=$(work_tree_id)
+  load_source_ids "$WORK_TREE"
+  STALE_SOURCE_PKGS=$(stale_source_pkgs)
+  if [ -n "$STALE_SOURCE_PKGS" ]; then
+    # A package edited since its verdict differs in source as a matter of
+    # course and is built by the change set: only the others are news. "Edited"
+    # is what routes the package to a build -- a tracked file of it but
+    # Markdown, or an untracked one the route takes -- not any path under it:
+    # with a README edit or a scratch note there the package was rebuilt (for
+    # rtc_base, the whole workspace) with no line saying why. awk reads the
+    # whole list: `grep -q` leaving early fails the pipe under pipefail once
+    # the list is long, which read as "not edited".
+    ROUTED_BY_CHANGE=$( { printf '%s\n' "$CHANGED_TRACKED" | grep -v '\.md$' || true
+                          printf '%s\n' "$CHANGED_UNTRACKED" | untracked_routed; } )
+    FOREIGN_PKGS=""
+    for p in $STALE_SOURCE_PKGS; do
+      if ! awk -F/ -v p="$p" 'NF >= 2 && $1 == p { hit = 1 } END { exit !hit }' <<< "$ROUTED_BY_CHANGE"; then
+        FOREIGN_PKGS="${FOREIGN_PKGS}${p} "
+      fi
+    done
+    if [ -n "$FOREIGN_PKGS" ]; then
+      echo "verify-changes: the installed binaries of [${FOREIGN_PKGS% }] were built from other source than this tree's (a branch verified in this checkout?) -- building and testing them again." >&2
+    fi
+    STALE_ARTIFACT_PKGS="${STALE_ARTIFACT_PKGS}${STALE_SOURCE_PKGS}"
+  fi
 fi
+# --run leaving with nothing to do says so ($1 = why): it used to exit with no
+# output, which reads as a tool that did not start. What it says about the
+# install tree is what it looked at -- RTC_VERIFY_NO_REUSE switches the look
+# off, and a package with no recorded id or stamp is not one it can find.
+say_nothing_to_do() {
+  [ -n "$RUN_MODE" ] || return 0
+  if [ -n "${RTC_VERIFY_NO_REUSE:-}" ]; then
+    echo "verify-changes --run: $1 -- nothing was built or tested (RTC_VERIFY_NO_REUSE: the installed binaries were not looked at)." >&2
+  else
+    echo "verify-changes --run: $1 and no installed binaries were found stale -- nothing was built or tested." >&2
+  fi
+}
 if [ -z "$CHANGED" ] && [ -z "$STALE_ARTIFACT_PKGS" ]; then
+  say_nothing_to_do "nothing changed against the baseline (${VERIFY_BASE:0:8})"
   [ -z "$RUN_MODE" ] || baseline_artifact_stamps
   advance_verify_base
   exit 0
@@ -670,6 +871,7 @@ if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
    && [ -z "$CHANGED_YAML" ] && [ -z "$CHANGED_META" ] && [ -z "$CHANGED_TESTCFG" ] \
    && [ -z "$CHANGED_PKG_FILES" ] && [ -z "$CHANGED_TEST_DATA" ] \
    && [ -z "$STALE_ARTIFACT_PKGS" ]; then
+  say_nothing_to_do "no gate or build reads what changed against the baseline (${VERIFY_BASE:0:8}; untracked scratch?)"
   [ -z "$RUN_MODE" ] || baseline_artifact_stamps
   advance_verify_base
   exit 0
@@ -734,7 +936,7 @@ fi
 # (the HEAD fallback after a branch switch) records this tree like any other,
 # so a --run that names its baseline (RTC_VERIFY_BASE) is not answered from
 # here: it asked for the commits since that baseline to be graded.
-WORK_TREE=$(work_tree_id)
+[ -n "$WORK_TREE" ] || WORK_TREE=$(work_tree_id)
 if [ -n "$WORK_TREE" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] && [ -z "$STALE_ARTIFACT_PKGS" ] \
    && [ -z "$BASE_NAMED" ] \
    && [ "$(cat "$PASS_TREE_FILE" 2>/dev/null || true)" = "${VERDICT_TAG}${WORK_TREE}" ]; then
@@ -1017,6 +1219,12 @@ for pkg_dir in $STALE_ARTIFACT_PKGS; do
     *) BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}" ;;
   esac
 done
+# Back into name order: the appended names came after the sorted ones, and the
+# order note below ("built in name order") is read as the order that ran.
+if [ -n "$STALE_ARTIFACT_PKGS" ]; then
+  # shellcheck disable=SC2046,SC2086  # a space-separated list of names
+  BUILD_PKGS=$(printf ' %s' $(printf '%s\n' $BUILD_PKGS | sort -u))
+fi
 
 # Emit `name<TAB>exempt<TAB>lineno` for every add_executable() in the CMake
 # source arriving on stdin. Used by ARCH-7 to diff target NAMES between HEAD and
@@ -2056,21 +2264,9 @@ workspace_holds() {
 # Only a green build AND a green test is remembered, per package, at the moment
 # it happens: a turn blocked by another gate keeps the verdicts it did earn.
 pkg_content_key() {  # $1 = a tree id from work_tree_id
-  local pkgs
-  pkgs=$(git_scratch ls-tree -r --name-only "$1" 2>/dev/null \
-           | sed -n 's|^\([^/]*\)/package\.xml$|\1|p' || true)
-  # One "<mode> <type> <blob>\t<path>" line per file of a package directory,
-  # Markdown left out. quotePath off: a quoted non-ASCII path ends in `"`, and
-  # its ".md" would not be seen.
-  git_scratch -c core.quotePath=false ls-tree -r "$1" 2>/dev/null \
-    | awk -v pkgs="$pkgs" '
-        BEGIN { n = split(pkgs, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") keep[a[i]] = 1 }
-        {
-          path = $0; sub(/^[^\t]*\t/, "", path)
-          top = path; sub(/\/.*/, "", top)
-          if ((top in keep) && path !~ /\.md$/) print
-        }' \
-    | git hash-object --stdin 2>/dev/null || true
+  # One line per file of a package directory, Markdown left out
+  # (pkg_tree_lines, shared with the source id).
+  pkg_tree_lines "$1" | git hash-object --stdin 2>/dev/null || true
 }
 PKG_CONTENT_KEY=""
 if [ -n "${WORK_TREE:-}" ]; then
@@ -2095,14 +2291,14 @@ pkg_verdict_reusable() {  # $1 = package, $2 = key
   [ -n "$2" ] && [ -z "${RTC_VERIFY_NO_REUSE:-}" ] \
     && grep -qxF "$1 $2" "$PASS_PKGS_FILE" 2>/dev/null
 }
-remember_pkg_verdict() {  # $1 = package, $2 = key
+remember_pkg_verdict() {  # $1 = package, $2 = key, $3 = the tree it passed on
   [ -n "$2" ] || return 0
   {
     grep -v "^$1 " "$PASS_PKGS_FILE" > "$PASS_PKGS_FILE.tmp" || true
     printf '%s %s\n' "$1" "$2" >> "$PASS_PKGS_FILE.tmp"
     mv "$PASS_PKGS_FILE.tmp" "$PASS_PKGS_FILE"
   } 2>/dev/null || true
-  remember_artifact_stamps "$1"
+  remember_artifact_stamps "$1" "${3:-}"
 }
 # A green build and test, recorded -- if what the key names is still there.
 #
@@ -2124,7 +2320,7 @@ remember_tested_verdict() {  # $1 = package (or PROC-3), $2 = key at the start
     TEST_FAILURES="${TEST_FAILURES}  - ${1}: built and tested green, but its files changed while that ran — no verdict recorded: what was tested is not what is there now. Run '${RUN_CMD}' again and leave the packages alone until it finishes.\n"
     return 0
   fi
-  remember_pkg_verdict "$1" "$2"
+  remember_pkg_verdict "$1" "$2" "$tree_now"
 }
 BUILT_PKGS=""
 REUSED_PKGS=""
