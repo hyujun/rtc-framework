@@ -301,10 +301,11 @@ demo_catching_controller:
       # Decision K form (L5 §4.3). `dynamic` is the only form the catching
       # profiles run (MD-74, 2026-10-02): per-tick torque rows
       # M·v̇ + h within ±eta_tau·tau_max, eta_tau 0.8 being D-16's. Until then
-      # this robot ran the parser default `box` (the constant D-16 box, 9.2
-      # rad/s²), under which `supervisor.decel.mode: mpc` had every replan
-      # refused at the switch gate — the command fell behind the segment.
-      # The E0-F02 success rates of this robot were measured under `box`.
+      # this robot ran `box` (the parser default of the time, since removed:
+      # the constant D-16 box, 9.2 rad/s²), under which
+      # `supervisor.decel.mode: mpc` had every replan refused at the switch
+      # gate — the command fell behind the segment. The E0-F02 success rates
+      # of this robot were measured under `box`.
       accel_constraint: dynamic
       eta_tau: 0.8
       lag:

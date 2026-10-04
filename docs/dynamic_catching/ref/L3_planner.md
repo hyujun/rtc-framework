@@ -187,7 +187,7 @@ $$w_5(q^\ast)=\sqrt{\det\big(J_5J_5^\top\big)},\qquad J_5=\begin{bmatrix}J_p^{LW
 
 **한계 값 $\bar a$ 의 출처 `[확정 D-16]`.** 관절 가속 한계는 토크 한계(`devices.<group>.joint_limits.max_torque` = URDF `effort` = MJCF `forcerange`)에서 오프라인 도구로 도출한 **보수적 상수 box** 이고, 키는 `robot.arm.qdd_max` (`catching/search_grid.yaml`) 다. 자세 의존 한계는 쓰지 않는다.
 
-**이 box 는 탐색의 도달시간에 쓰는 값이고, 실행의 가속 제약과 같은 값이 아니다.** 출하 CLIK 의 가속 제약은 `joint_cmd.accel_constraint: dynamic` — 토크 행 ($M\dot v+h$ 를 $\pm\eta_\tau\tau_{\max}$ 안에) — 이고, box 는 `accel_constraint: box` 일 때만 CLIK 의 가속 행이 된다. 같은 키를 QP 비의존 정지 램프 (ABORT) 와 homing 램프도 읽는다. 따라서 이 절의 도달시간은 실행이 실제로 내는 가속과 다른 한계로 잰 값이다 — 순위 게이트라 후보를 제거하지는 않는다. `ur5e_p1b` 의 sim profile 은 이 키를 실행 envelope 값으로 덮는다 (`config/ur5e_p1b/sim.yaml`).
+**이 box 는 탐색의 도달시간에 쓰는 값이고, 실행의 가속 제약과 같은 값이 아니다.** 출하 CLIK 의 가속 제약은 `joint_cmd.accel_constraint: dynamic` — 토크 행 ($M\dot v+h$ 를 $\pm\eta_\tau\tau_{\max}$ 안에) — 이고, CLIK 은 이 box 를 읽지 않는다. 같은 키를 QP 비의존 정지 램프 (ABORT) 와 homing 램프도 읽는다. 따라서 이 절의 도달시간은 실행이 실제로 내는 가속과 다른 한계로 잰 값이다 — 순위 게이트라 후보를 제거하지는 않는다. `ur5e_p1b` 의 sim profile 은 이 키를 실행 envelope 값으로 덮는다 (`config/ur5e_p1b/sim.yaml`).
 
 **상수 box 의 도출 `[확정 D-16]`.** 가속 데이터는 없고 토크 한계는 있다. 오프라인 도구 `derive_accel_limits` (`rtc_tools/rtc_tools/analysis/derive_accel_limits.py`) 가 다음으로 box 를 만든다.
 
@@ -582,7 +582,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | `planner.catchability.manipulability_min.arm_5row` / `.arm_6row` | §4.2 D-18 정의별 하한 (차원이 달라 따로 둔다, C-3). 로봇별 값이다. TBD 인 정의로 판정하면 fail closed. 오프라인 지도 도구와 **같은 키** | – | 탐색 |
 | `planner.catchability.manipulability_min.provisional` | 위 하한이 provisional — 실기 구성 차단 (L0 §5.3) | – | 탐색 |
 | `planner.freeze.T_freeze` | §4.11 의 동결 창. 하한은 §4.11 의 코드 하한. 결정값이라 없으면 park | s | 주 |
-| `robot.arm.qdd_max` | §4.3 의 관절 가속 box (arm 관절 순서). 탐색의 도달시간, QP 비의존 정지 램프, homing 램프가 읽고, CLIK 은 `joint_cmd.accel_constraint: box` 일 때만 읽는다 | rad/s² | 탐색 |
+| `robot.arm.qdd_max` | §4.3 의 관절 가속 box (arm 관절 순서). 탐색의 도달시간, QP 비의존 정지 램프, homing 램프가 읽는다 (CLIK 은 읽지 않는다) | rad/s² | 탐색 |
 | `robot.arm.qdd_provisional` | 위 box 가 실기에 승인됐는가 — true 면 실기 구성 park. `qdd_max` 를 덮는 쪽이 함께 적는다 | – | 탐색 |
 | `reference.omega` · `zeta` · `v_max` · `a_max` | L4 §6. 탐색은 rollout (§4.8) 과 γ 창 (§4.5) 에서 읽는다 — 두 planner 모두 | – | CF |
 | `supervisor.decel.a_dec` | §4.9 정지점의 감속 (L7 §6 의 단일 키). 탐색은 두 planner 모두 읽는다 | m/s² | CF |

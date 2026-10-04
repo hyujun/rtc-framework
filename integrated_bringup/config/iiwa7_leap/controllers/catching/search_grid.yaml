@@ -16,8 +16,8 @@
 #       ranks candidates by that law's rollout, under mpc too (MD-46)
 #
 # What else reads a key kept here: `robot.arm.qdd_max` is the search's reach-time
-# limit, and also the QP-less stop ramp (ABORT), the homing ramp, and CLIK's
-# acceleration row when `joint_cmd.accel_constraint` is `box`.
+# limit, and also the QP-less stop ramp (ABORT) and the homing ramp. The CLIK
+# does not read it (`joint_cmd.accel_constraint` is kinematic or dynamic).
 demo_catching_controller:
   catching:
     planner:
