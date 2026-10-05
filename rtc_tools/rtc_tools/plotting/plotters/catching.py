@@ -708,7 +708,7 @@ def _print_segment_statistics(df):
     )
     if not (following.any() or (event != 0).any()):
         return
-    print("\nSegment segment:")
+    print("\nSegment lane:")
     print(f"  Ticks following a segment: {int(following.sum())}")
     if "segment_seq" in df.columns:
         print(f"  Distinct segments followed: {df.loc[following, 'segment_seq'].nunique()}")

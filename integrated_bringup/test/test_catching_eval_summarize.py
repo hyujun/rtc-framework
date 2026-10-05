@@ -253,6 +253,16 @@ def test_an_old_catching_trials_output_is_refused_not_skipped(tmp_path):
     assert "older catching_trials" in msg and "regenerate" in msg
 
 
+def test_a_ct_from_before_the_lane_metrics_is_refused_not_counted_as_zero(tmp_path):
+    # Neither spelling of the lane metrics: nothing renamed to refuse, and the replan
+    # block reads segment_aged — it used to count such a unit's aged segments as 0.
+    import pandas as pd
+
+    before = pd.DataFrame({"idx": [0, 1], "caught": [1, 0]}).set_index("idx")
+    with pytest.raises(SystemExit, match=r"catching_trials.csv: no segment_aged.*regenerate"):
+        sm.reject_old_ct_outputs(tmp_path, {"arm_joints": []}, before, None)
+
+
 def test_an_old_summary_json_and_an_old_vec_csv_are_refused_too(tmp_path):
     import pandas as pd
 

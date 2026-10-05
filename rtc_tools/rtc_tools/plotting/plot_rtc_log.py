@@ -45,7 +45,7 @@ from rtc_tools.plotting.io import (
     detect_log_type,
     detect_log_type_by_columns,
     load_log_csv,
-    normalize_columns,
+    normalize_log_columns,
     peek_csv_header,
     resolve_default_save_dir,
     select_run,
@@ -192,7 +192,7 @@ def main():
         print(f'Warning: CSV parse error — retrying with on_bad_lines="warn": {e}')
         df = pd.read_csv(args.csv_file, on_bad_lines="warn")
         try:
-            normalize_columns(df, args.csv_file)
+            normalize_log_columns(df, args.csv_file)
         except MixedColumnNamesError as mixed_err:
             print(f"Error: {mixed_err}")
             sys.exit(1)

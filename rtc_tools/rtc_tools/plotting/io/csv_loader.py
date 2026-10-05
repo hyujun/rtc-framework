@@ -232,7 +232,7 @@ def select_run(df, filepath, run_id=None):
     return out
 
 
-def normalize_columns(df, filepath):
+def normalize_log_columns(df, filepath):
     """``df`` with the old (`decel_*`) column names of the catching CSVs renamed to the
     current ones, in place; a header that mixes old and new names raises
     ``rtc_tools.utils.catching_keys.MixedColumnNamesError``. The plotters only know the
@@ -259,7 +259,7 @@ def load_log_csv(filepath, log_type, run_id=None):
     import pandas as pd
 
     _check_header_matches_data(filepath)
-    df = normalize_columns(pd.read_csv(filepath), filepath)
+    df = normalize_log_columns(pd.read_csv(filepath), filepath)
     # Before coercion: the stamped names must be normalized while the frame
     # still has them, and the bare names are what _STR_COLS is keyed on.
     _normalize_mask_columns(df)

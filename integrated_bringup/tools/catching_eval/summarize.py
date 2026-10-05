@@ -181,6 +181,14 @@ def reject_old_ct_outputs(unit, summ, ctdf, vec):
             )
     except OldToolOutputError as err:
         raise SystemExit(str(err)) from err
+    # A catching_trials from before the lane metrics wrote neither name: nothing above
+    # refuses it, and counting its aged segments as 0 would be the silent skip again.
+    if "segment_aged" not in ctdf.columns:
+        raise SystemExit(
+            f"{ct_dir / 'catching_trials.csv'}: no segment_aged column — written by a "
+            "catching_trials older than the segment lane's metrics; regenerate it with the "
+            "current tool"
+        )
 
 
 def load_unit(unit, cfg, overlay):

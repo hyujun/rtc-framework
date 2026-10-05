@@ -101,12 +101,6 @@ def test_the_new_layout_and_the_unmoved_keys_pass():
     ck.reject_renamed_keys({"planner": [1]})
 
 
-def test_a_composed_controller_config_is_judged_under_each_controller():
-    ck.reject_renamed_keys_in_config({"ctl": {"catching": {"planner": {"wait_pose": [0.0]}}}})
-    with pytest.raises(ck.RenamedCatchingKeyError, match=r"\[ctl\]"):
-        ck.reject_renamed_keys_in_config({"ctl": {"catching": {"planner": {"hand": {}}}}})
-
-
 def test_the_shipped_profiles_hold_no_old_key():
     from rtc_tools.utils.controller_config import load_controller_config
 

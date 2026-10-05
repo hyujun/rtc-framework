@@ -105,12 +105,21 @@ RENAMED_MIRRORS: dict[str, str] = {
 _NEW_TO_OLD = {new: old for old, new in RENAMED_MIRRORS.items()}
 
 
-class RenamedCatchingKeyError(ValueError):
+class RefusedCatchingInput(SystemExit):
+    """An input this package refuses because of the names it uses.
+
+    A ``SystemExit`` on purpose, like the other user-input errors of the analysis tools
+    (``raise SystemExit("missing …")``): a tool that does not catch it ends with the
+    message on one line and exit status 1, not with a traceback.
+    """
+
+
+class RenamedCatchingKeyError(RefusedCatchingInput):
     """A catching profile that still writes a key that moved."""
 
 
-class MixedMirrorNamesError(ValueError):
-    """A recorded mirror that holds an old name together with its new name."""
+class MixedMirrorNamesError(RefusedCatchingInput):
+    """A recorded mirror that holds an old name together with a new one."""
 
 
 def _has_path(node: object, path: str) -> bool:
@@ -136,21 +145,8 @@ def reject_renamed_keys(catching: object, *, source: str = "catching profile") -
         lines = "; ".join(f"catching.{old} → catching.{new}" for old, new in found)
         raise RenamedCatchingKeyError(
             f"{source}: renamed catching key(s) still written ({lines}) — "
-            "rename them (#711); this tool would otherwise read the default"
+            "rename them (#711); the old paths are no longer read"
         )
-
-
-def reject_renamed_keys_in_config(config: object, *, source: str = "controller config") -> None:
-    """:func:`reject_renamed_keys` for a composed controller config
-    (``{<config_key>: {catching: …}}``): every top-level value that holds a
-    ``catching`` map is judged; a bare ``{catching: …}`` is judged too."""
-    if not isinstance(config, Mapping):
-        return
-    if isinstance(config.get("catching"), Mapping):
-        reject_renamed_keys(config["catching"], source=source)
-    for key, node in config.items():
-        if isinstance(node, Mapping) and isinstance(node.get("catching"), Mapping):
-            reject_renamed_keys(node["catching"], source=f"{source} [{key}]")
 
 
 def mirror_name(name: str) -> str:
@@ -267,11 +263,11 @@ RENAMED_TRIALS_COLUMNS: dict[str, str] = {
 RENAMED_TRIALS_SUMMARY_KEYS: dict[str, str] = {"decel_lane": "segment_lane"}
 
 
-class MixedColumnNamesError(ValueError):
+class MixedColumnNamesError(RefusedCatchingInput):
     """A CSV header that holds an old column name together with a new one."""
 
 
-class OldToolOutputError(ValueError):
+class OldToolOutputError(RefusedCatchingInput):
     """A tool output (written by another tool of this package) that still has the
     names an older version of that tool wrote — it has to be regenerated."""
 
