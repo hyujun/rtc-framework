@@ -101,6 +101,10 @@ add_library(rtc_controllers STATIC
   # RNEA derivatives) and slack, solved through rtc_tsid's QPSolverWrapper. A
   # plain library unit like catch_pose_ik.cpp; the planner thread calls it (E1-F03).
   src/catching/mpc_segment_core.cpp
+  # dynamic_catching E1-F13 (#739): the mpc_docking numeric core — the ball in
+  # the capture frame and the rows built from it (relative state, corridor,
+  # chance rows, impact, manipulability), each with its derivative.
+  src/catching/mpc_docking_relative_state.cpp
   # dynamic_catching MPC E1-F02 (#628): the RT side of the segment payload —
   # closed-form joint reference between the published nodes, hand target by FK.
   src/catching/node_follower.cpp
@@ -590,6 +594,21 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_mpc_segment_core_approach PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
+  # dynamic_catching E1-F13 (#739): the mpc_docking relative-state seams — each
+  # derivative against a finite difference, the crossing-plane covariance
+  # against a Monte Carlo, the reference's sanity cases. The seams call into
+  # pinocchio's shared object, so the allocation claim needs the C-level malloc
+  # gate (one TU per binary) besides operator new.
+  ament_add_gtest(test_catching_mpc_docking_relative_state
+    test/test_catching_mpc_docking_relative_state.cpp TIMEOUT 300)
+  target_link_libraries(test_catching_mpc_docking_relative_state rtc_controllers)
+  target_include_directories(test_catching_mpc_docking_relative_state PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_docking_relative_state PRIVATE
+    -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_docking_relative_state PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
   # dynamic_catching MPC E1-F02 (#628): the segment node payload and its RT
   # sampler. Sample() calls into pinocchio's shared object (FK), so its
