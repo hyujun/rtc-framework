@@ -125,16 +125,6 @@ std::vector<Case> FeasibleCases(const dk::Rig& rig, const MpcDockingSegmentCore&
   return cases;
 }
 
-// The search's IK solution is near, not at, the pose the docking problem ends
-// up at: perturb the known catch pose by up to ±0.15 rad per joint.
-void PerturbTarget(MpcDockingSegmentCoreInput& in, unsigned seed) {
-  std::mt19937 gen(seed * 7919U + 13U);
-  std::uniform_real_distribution<double> uni(-0.15, 0.15);
-  for (Eigen::Index j = 0; j < in.q_catch_target.size(); ++j) {
-    in.q_catch_target[j] += uni(gen);
-  }
-}
-
 dk::Nodes NodesOf(const MpcDockingSegmentCoreResult& r) {
   return dk::Nodes{r.q, r.qd, r.qdd};
 }
@@ -190,7 +180,7 @@ TEST(MpcDockingSegmentCore, ConstructedFeasibleThrowsConverge) {
     double worst_kkt_ratio = 0.0;
     double worst_comp = 0.0;
     for (Case& c : cases) {
-      PerturbTarget(c.in, c.seed);
+      dk::PerturbTarget(c.in, c.seed);
       const std::string where = rig.arm.name + " seed " + std::to_string(c.seed);
       ASSERT_TRUE(core.Solve(c.in, out)) << where << " " << Describe(out);
       EXPECT_EQ(out.reason, MpcDockingReason::kConverged) << where << " " << Describe(out);
@@ -612,65 +602,7 @@ TEST(MpcDockingSegmentCore, InfeasibleProblemsAreReportedWithTheirRowGroup) {
 
 // ── Recorded conditions (no verdict) ─────────────────────────────────────────
 
-void RecordSolves(const std::string& tag, const dk::Rig& rig, int cases_wanted) {
-  MpcDockingSegmentCore core;
-  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
-            MpcDockingReason::kNone)
-      << tag;
-  MpcDockingSegmentCoreResult out;
-  core.ResizeResult(out);
-  int solved = 0;
-  int constructed_feasible = 0;
-  int converged = 0;
-  int feasible = 0;
-  int infeasible = 0;
-  int iteration_limit = 0;
-  int line_search_failed = 0;
-  int qp_failed = 0;
-  int iterations = 0;
-  int backtracks = 0;
-  double worst_violation = 0.0;
-  std::vector<double> total_us;
-  for (unsigned seed = 1; solved < cases_wanted; ++seed) {
-    dk::Throw th;
-    MpcDockingSegmentCoreInput in;
-    constructed_feasible += dk::MakeThrow(rig, core, seed, 0.0, th, in) ? 1 : 0;
-    PerturbTarget(in, seed);
-    ASSERT_TRUE(core.Solve(in, out)) << tag << " " << Describe(out);
-    ++solved;
-    converged += out.converged ? 1 : 0;
-    feasible += out.feasible ? 1 : 0;
-    infeasible += out.reason == MpcDockingReason::kInfeasible ? 1 : 0;
-    iteration_limit += out.reason == MpcDockingReason::kIterationLimit ? 1 : 0;
-    line_search_failed += out.reason == MpcDockingReason::kLineSearchFailed ? 1 : 0;
-    qp_failed += (out.reason == MpcDockingReason::kQpFailed ||
-                  out.reason == MpcDockingReason::kSolutionNonFinite)
-                     ? 1
-                     : 0;
-    iterations += out.iterations;
-    backtracks += out.backtracks;
-    for (int g = 0; g < kNumDockingRowGroups; ++g) {
-      worst_violation = std::max(worst_violation, out.violation[static_cast<std::size_t>(g)]);
-    }
-    total_us.push_back(out.total_us);
-  }
-  ::testing::Test::RecordProperty(tag + "_cases", solved);
-  ::testing::Test::RecordProperty(tag + "_constructed_feasible", constructed_feasible);
-  ::testing::Test::RecordProperty(tag + "_converged", converged);
-  ::testing::Test::RecordProperty(tag + "_feasible", feasible);
-  ::testing::Test::RecordProperty(tag + "_reason_infeasible", infeasible);
-  ::testing::Test::RecordProperty(tag + "_reason_iteration_limit", iteration_limit);
-  ::testing::Test::RecordProperty(tag + "_reason_line_search_failed", line_search_failed);
-  ::testing::Test::RecordProperty(tag + "_reason_qp_failed", qp_failed);
-  ::testing::Test::RecordProperty(tag + "_iterations_total", iterations);
-  ::testing::Test::RecordProperty(tag + "_backtracks_total", backtracks);
-  ::testing::Test::RecordProperty(tag + "_approach_nodes", core.NumApproachNodes());
-  RecordSci(tag + "_worst_violation", worst_violation);
-  fx::RecordMicros(tag + "_total_us_p50", fx::Percentile(total_us, 0.5));
-  fx::RecordMicros(tag + "_total_us_max", fx::Percentile(total_us, 1.0));
-}
-
-// A short lead on the 7-DOF arm, on three grids: one coarse pre-catch interval
+// A short lead on the 7-DOF arm, on four grids: one coarse pre-catch interval
 // (the QP then has no running terms and no approach rows at all), two, and
 // four fine ones. The stop is the shipped 7 × 0.05 s with blocks 1, 1, 2, 3.
 TEST(MpcDockingSegmentCore, RecordsShortLeadGrids) {
@@ -683,14 +615,8 @@ TEST(MpcDockingSegmentCore, RecordsShortLeadGrids) {
   for (const Grid& g : {Grid{"lead_0p10_x1", 1, 0.1}, Grid{"lead_0p10_x2", 2, 0.1},
                         Grid{"lead_0p04_x4", 4, 0.04}, Grid{"lead_0p05_x4", 4, 0.05}}) {
     dk::Rig rig = dk::MakeRig(fx::RealArm7());
-    rig.params.n_pre = g.n_pre;
-    rig.params.dt_pre = g.dt_pre;
-    rig.params.n_stop = 7;
-    rig.params.n_blocks = g.n_pre + 4;
-    rig.params.block_sizes.fill(1);
-    rig.params.block_sizes[static_cast<std::size_t>(g.n_pre) + 2] = 2;
-    rig.params.block_sizes[static_cast<std::size_t>(g.n_pre) + 3] = 3;
-    RecordSolves(std::string("real_7dof_") + g.tag, rig, 20);
+    dk::SetShortLeadGrid(rig.params, g.n_pre, g.dt_pre);
+    dk::RecordTally(std::string("real_7dof_") + g.tag, dk::SolveGeneratedThrows(rig, 20));
   }
 }
 
@@ -702,63 +628,7 @@ TEST(MpcDockingSegmentCore, RecordsRealThrowCondition) {
     dk::Rig rig = dk::MakeRig(arm);
     rig.params.c_cap_max = 1.0;
     rig.params.c_ent_max = 1.0;
-    MpcDockingSegmentCore core;
-    ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
-              MpcDockingReason::kNone);
-    MpcDockingSegmentCoreResult out;
-    core.ResizeResult(out);
-    int converged = 0;
-    int feasible = 0;
-    int infeasible = 0;
-    int iterations = 0;
-    int backtracks = 0;
-    std::array<int, kNumDockingElasticGroups> group_hits{};
-    const int cases = 10;
-    for (int i = 0; i < cases; ++i) {
-      // The ball comes down the capture axis of the nominal pose at 4–5 m/s
-      // in the WORLD; the hand starts at rest.
-      const Eigen::Index n = rig.model.nv;
-      const dk::HandState h = dk::HandAt(rig, rig.arm.q_nominal, Eigen::VectorXd::Zero(n));
-      const double speed = 4.0 + 0.1 * static_cast<double>(i);
-      std::mt19937 gen(100U + static_cast<unsigned>(i));
-      MpcDockingSegmentCoreInput in;
-      core.ResizeInput(in);
-      in.q0 = rig.arm.q_nominal;
-      in.catch_target_valid = true;
-      in.q_catch_target = rig.arm.q_nominal;
-      dk::FillBall(core, h.p + h.R * Eigen::Vector3d(0.0, 0.0, rig.params.s_ent),
-                   -speed * h.R.col(2), dk::SmallCovariance(gen), in);
-      ASSERT_TRUE(core.Solve(in, out)) << arm.name << " " << Describe(out);
-      converged += out.converged ? 1 : 0;
-      feasible += out.feasible ? 1 : 0;
-      infeasible += out.reason == MpcDockingReason::kInfeasible ? 1 : 0;
-      iterations += out.iterations;
-      backtracks += out.backtracks;
-      if (!out.feasible) {
-        ++group_hits[static_cast<std::size_t>(out.infeasible_group)];
-      }
-      if (i == 0 || i == cases - 1) {
-        const std::string tag = arm.name + "_ball_" + std::to_string(static_cast<int>(speed * 10));
-        ::testing::Test::RecordProperty(tag + "_reason", MpcDockingReasonName(out.reason));
-        RecordSci(tag + "_c_catch", out.c_catch);
-        RecordSci(tag + "_tau_ratio_max", out.tau_ratio_max);
-        RecordSci(tag + "_violation_velocity_set", out.violation[G(DockingRowGroup::kVelocitySet)]);
-        RecordSci(tag + "_violation_entrance", out.violation[G(DockingRowGroup::kEntrance)]);
-        RecordSci(tag + "_violation_torque", out.violation[G(DockingRowGroup::kTorque)]);
-      }
-    }
-    const std::string tag = arm.name + "_real_throw";
-    ::testing::Test::RecordProperty(tag + "_cases", cases);
-    ::testing::Test::RecordProperty(tag + "_converged", converged);
-    ::testing::Test::RecordProperty(tag + "_feasible", feasible);
-    ::testing::Test::RecordProperty(tag + "_reason_infeasible", infeasible);
-    ::testing::Test::RecordProperty(tag + "_iterations_total", iterations);
-    ::testing::Test::RecordProperty(tag + "_backtracks_total", backtracks);
-    for (int g = 0; g < kNumDockingElasticGroups; ++g) {
-      ::testing::Test::RecordProperty(
-          tag + "_residual_" + DockingRowGroupName(static_cast<DockingRowGroup>(g)),
-          group_hits[static_cast<std::size_t>(g)]);
-    }
+    dk::RecordTally(arm.name + "_real_throw_4p0_to_5p0", dk::SolveRealThrows(rig, 4.0, 5.0, 10));
   }
 }
 
@@ -970,7 +840,7 @@ TEST(MpcDockingSegmentCore, EveryStageOutsideTheSolverAllocatesNothing) {
     int restarts = 0;
     for (Case& c : cases) {
       c.in.p_line = c.th.p_b;
-      PerturbTarget(c.in, c.seed);
+      dk::PerturbTarget(c.in, c.seed);
       {
         const rtc::testing::ScopedAllocGate new_gate;
         const bool ok = core.Solve(c.in, out);
@@ -1068,7 +938,7 @@ TEST(MpcDockingSegmentCore, DeadlineReturnsTheLastAcceptedIterate) {
   std::vector<Case> cases = FeasibleCases(rig, core, 1);
   ASSERT_EQ(cases.size(), 1U);
   MpcDockingSegmentCoreInput in = cases[0].in;
-  PerturbTarget(in, 1);
+  dk::PerturbTarget(in, 1);
 
   // No deadline: the reference run.
   g_fake_now = 1000;
@@ -1130,7 +1000,7 @@ TEST(MpcDockingSegmentCore, IterationLimitReturnsAnIterateThatIsNotConverged) {
   core.ResizeResult(out);
   std::vector<Case> cases = FeasibleCases(rig, core, 1);
   ASSERT_EQ(cases.size(), 1U);
-  PerturbTarget(cases[0].in, 4);
+  dk::PerturbTarget(cases[0].in, 4);
   ASSERT_TRUE(core.Solve(cases[0].in, out));
   EXPECT_EQ(out.reason, MpcDockingReason::kIterationLimit);
   EXPECT_FALSE(out.converged);
@@ -1158,7 +1028,7 @@ TEST(MpcDockingSegmentCore, SingleIterationTakesAFullStepAndNeverReportsConverge
   std::vector<Case> cases = FeasibleCases(rig, rti, 1);
   ASSERT_EQ(cases.size(), 1U);
   MpcDockingSegmentCoreInput in = cases[0].in;
-  PerturbTarget(in, 9);
+  dk::PerturbTarget(in, 9);
   ASSERT_TRUE(rti.Solve(in, out));
   EXPECT_EQ(out.reason, MpcDockingReason::kIterationLimit);
   EXPECT_FALSE(out.converged);
@@ -1199,8 +1069,8 @@ TEST(MpcDockingSegmentCore, SameInputGivesTheSameAnswerWhateverWasSolvedBefore) 
     core.ResizeResult(other);
     std::vector<Case> cases = FeasibleCases(rig, core, 2);
     ASSERT_EQ(cases.size(), 2U);
-    PerturbTarget(cases[0].in, 1);
-    PerturbTarget(cases[1].in, 2);
+    dk::PerturbTarget(cases[0].in, 1);
+    dk::PerturbTarget(cases[1].in, 2);
     ASSERT_TRUE(core.Solve(cases[0].in, a));
     ASSERT_TRUE(core.Solve(cases[1].in, other));
     ASSERT_TRUE(core.Solve(cases[0].in, b));
@@ -1223,7 +1093,7 @@ TEST(MpcDockingSegmentCore, RestartFromItsOwnSolutionConvergesAtOnce) {
     core.ResizeResult(second);
     std::vector<Case> cases = FeasibleCases(rig, core, 1);
     ASSERT_EQ(cases.size(), 1U);
-    PerturbTarget(cases[0].in, 3);
+    dk::PerturbTarget(cases[0].in, 3);
     ASSERT_TRUE(core.Solve(cases[0].in, first));
     ASSERT_TRUE(first.converged);
     EXPECT_TRUE(first.init_qp_used);
@@ -1273,7 +1143,7 @@ TEST(MpcDockingSegmentCore, OptionalRowsAndTermsStillConverge) {
     for (Case& c : FeasibleCases(rig, core, 5)) {
       c.in.p_line = c.th.p_b;
       c.in.d_line = Eigen::Vector3d::UnitZ();
-      PerturbTarget(c.in, c.seed);
+      dk::PerturbTarget(c.in, c.seed);
       ASSERT_TRUE(core.Solve(c.in, out));
       const std::string where = arm.name + " seed " + std::to_string(c.seed) + " " + Describe(out);
       EXPECT_TRUE(out.converged) << where;
@@ -1563,7 +1433,7 @@ TEST(MpcDockingSegmentCore, RecordsSolveTimeByArmAndGrid) {
       for (int rep = 0; rep < 3; ++rep) {
         for (Case& c : cases) {
           MpcDockingSegmentCoreInput in = c.in;
-          PerturbTarget(in, c.seed);
+          dk::PerturbTarget(in, c.seed);
           ASSERT_TRUE(core.Solve(in, out));
           converged += out.converged ? 1 : 0;
           iterations += out.iterations;

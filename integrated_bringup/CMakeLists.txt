@@ -1451,6 +1451,35 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
+  # ── dynamic_catching E1-F13 (#739): the mpc_docking core on the shipped
+  # hand-locked sub-models ────────────────────────────────────────────────────
+  # rtc_controllers solves on the plain arm URDFs; the catch sub-models are
+  # xacro and only this package builds them. Recorded (no verdict): short-lead
+  # grids and a real throw on `ur5e_catch` and `iiwa7_catch`, with the shipped
+  # catch frame and joint ratings read from the shipped YAML. The throw
+  # generator and the tally are rtc_controllers' test-only fixture, pulled in
+  # by source-tree path like the other shared fixtures above.
+  ament_add_gtest(test_catching_docking_core_shipped
+    test/test_catching_docking_core_shipped.cpp TIMEOUT 300)
+  target_include_directories(test_catching_docking_core_shipped PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_compile_definitions(test_catching_docking_core_shipped PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+  target_link_libraries(test_catching_docking_core_shipped
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_catching_docking_core_shipped
+    rclcpp
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    ament_index_cpp
+  )
+
   # ── dynamic_catching S6-A R-1: the planner shares the `mpc` layout role ────
   # DemoWbc's MPC thread and the catching planner in one process, switched in
   # CM's order (deactivate, activate): thread count by name, affinity against

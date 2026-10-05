@@ -27,13 +27,16 @@
 #include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <numbers>
 #include <random>
 #include <string>
+#include <vector>
 
 namespace rtc::testing::mpc_docking {
 
@@ -419,6 +422,163 @@ inline bool MakeThrow(const Rig& rig, const MpcDockingSegmentCore& core, unsigne
   return WorstInequality(viol) <= -margin &&
          viol[static_cast<std::size_t>(DockingRowGroup::kEntrance)] <= 1e-9 &&
          viol[static_cast<std::size_t>(DockingRowGroup::kTerminal)] <= 1e-9;
+}
+
+// The search's IK solution is near, not at, the pose the docking problem ends
+// up at: perturb the catch-node target by up to ±0.15 rad per joint.
+inline void PerturbTarget(MpcDockingSegmentCoreInput& in, unsigned seed) {
+  std::mt19937 gen(seed * 7919U + 13U);
+  std::uniform_real_distribution<double> uni(-0.15, 0.15);
+  for (Eigen::Index j = 0; j < in.q_catch_target.size(); ++j) {
+    in.q_catch_target[j] += uni(gen);
+  }
+}
+
+// ── Recorded conditions (no verdict) ─────────────────────────────────────────
+// How a batch of solves ended. Used where the suite RECORDS a condition
+// instead of judging it — a short lead, a real throw — on the plain arms here
+// and on the shipped hand-locked sub-models in integrated_bringup.
+
+struct SolveTally {
+  int cases{0};
+  int constructed_feasible{0};  // the fixture's trajectory satisfied every hard row
+  int converged{0};
+  int feasible{0};
+  int infeasible{0};
+  int iteration_limit{0};
+  int line_search_failed{0};
+  int qp_failed{0};
+  int iterations{0};
+  int backtracks{0};
+  int mu_updates{0};
+  double worst_violation{0.0};  // over the solves that are NOT feasible: how far off
+  std::array<int, rtc::catching::kNumDockingElasticGroups> residual_group{};
+  std::vector<double> total_us;
+};
+
+inline void Tally(const rtc::catching::MpcDockingSegmentCoreResult& out, SolveTally& t) {
+  using rtc::catching::MpcDockingReason;
+  ++t.cases;
+  t.converged += out.converged ? 1 : 0;
+  t.feasible += out.feasible ? 1 : 0;
+  t.infeasible += out.reason == MpcDockingReason::kInfeasible ? 1 : 0;
+  t.iteration_limit += out.reason == MpcDockingReason::kIterationLimit ? 1 : 0;
+  t.line_search_failed += out.reason == MpcDockingReason::kLineSearchFailed ? 1 : 0;
+  t.qp_failed += (out.reason == MpcDockingReason::kQpFailed ||
+                  out.reason == MpcDockingReason::kSolutionNonFinite)
+                     ? 1
+                     : 0;
+  t.iterations += out.iterations;
+  t.backtracks += out.backtracks;
+  t.mu_updates += out.mu_updates;
+  if (!out.feasible) {
+    ++t.residual_group[static_cast<std::size_t>(out.infeasible_group)];
+    for (const double v : out.violation) {
+      t.worst_violation = std::max(t.worst_violation, v);
+    }
+  }
+  t.total_us.push_back(out.total_us);
+}
+
+inline void RecordTally(const std::string& tag, const SolveTally& t) {
+  const auto rec = [&tag](const char* key, int value) {
+    ::testing::Test::RecordProperty(tag + "_" + key, value);
+  };
+  rec("cases", t.cases);
+  rec("constructed_feasible", t.constructed_feasible);
+  rec("converged", t.converged);
+  rec("feasible", t.feasible);
+  rec("reason_infeasible", t.infeasible);
+  rec("reason_iteration_limit", t.iteration_limit);
+  rec("reason_line_search_failed", t.line_search_failed);
+  rec("reason_qp_failed", t.qp_failed);
+  rec("iterations_total", t.iterations);
+  rec("backtracks_total", t.backtracks);
+  rec("mu_updates_total", t.mu_updates);
+  for (int g = 0; g < rtc::catching::kNumDockingElasticGroups; ++g) {
+    const int hits = t.residual_group[static_cast<std::size_t>(g)];
+    if (hits > 0) {
+      ::testing::Test::RecordProperty(
+          tag + "_residual_" + rtc::catching::DockingRowGroupName(static_cast<DockingRowGroup>(g)),
+          hits);
+    }
+  }
+  // RecordProperty(double) goes through to_string (6 fixed decimals).
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.4e", t.worst_violation);
+  ::testing::Test::RecordProperty(tag + "_worst_violation_of_infeasible", buf);
+  mc::RecordMicros(tag + "_total_us_p50", mc::Percentile(t.total_us, 0.5));
+  mc::RecordMicros(tag + "_total_us_max", mc::Percentile(t.total_us, 1.0));
+}
+
+// `cases` throws from the fixture's generator on this rig, each solved from a
+// perturbed catch-pose target. The generator's own trajectory need not be
+// feasible here (that is counted, not required).
+inline SolveTally SolveGeneratedThrows(const Rig& rig, int cases) {
+  SolveTally tally;
+  MpcDockingSegmentCore core;
+  const auto why = core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, nullptr);
+  EXPECT_EQ(why, rtc::catching::MpcDockingReason::kNone)
+      << rtc::catching::MpcDockingReasonName(why);
+  if (why != rtc::catching::MpcDockingReason::kNone) {
+    return tally;
+  }
+  rtc::catching::MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  for (unsigned seed = 1; tally.cases < cases; ++seed) {
+    Throw th;
+    MpcDockingSegmentCoreInput in;
+    tally.constructed_feasible += MakeThrow(rig, core, seed, 0.0, th, in) ? 1 : 0;
+    PerturbTarget(in, seed);
+    EXPECT_TRUE(core.Solve(in, out)) << rtc::catching::MpcDockingReasonName(out.reason);
+    Tally(out, tally);
+  }
+  return tally;
+}
+
+// A real throw: the ball comes down the capture axis of the rig's nominal pose
+// at `speed` [m/s] in the WORLD, the hand starts at rest there.
+inline SolveTally SolveRealThrows(const Rig& rig, double speed_lo, double speed_hi, int cases) {
+  SolveTally tally;
+  MpcDockingSegmentCore core;
+  const auto why = core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, nullptr);
+  EXPECT_EQ(why, rtc::catching::MpcDockingReason::kNone)
+      << rtc::catching::MpcDockingReasonName(why);
+  if (why != rtc::catching::MpcDockingReason::kNone) {
+    return tally;
+  }
+  rtc::catching::MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  const Eigen::Index n = rig.model.nv;
+  const HandState h = HandAt(rig, rig.arm.q_nominal, Eigen::VectorXd::Zero(n));
+  for (int i = 0; i < cases; ++i) {
+    const double speed =
+        speed_lo + (speed_hi - speed_lo) * static_cast<double>(i) / std::max(cases - 1, 1);
+    std::mt19937 gen(100U + static_cast<unsigned>(i));
+    MpcDockingSegmentCoreInput in;
+    core.ResizeInput(in);
+    in.q0 = rig.arm.q_nominal;
+    in.catch_target_valid = true;
+    in.q_catch_target = rig.arm.q_nominal;
+    FillBall(core, h.p + h.R * Eigen::Vector3d(0.0, 0.0, rig.params.s_ent), -speed * h.R.col(2),
+             SmallCovariance(gen), in);
+    EXPECT_TRUE(core.Solve(in, out)) << rtc::catching::MpcDockingReasonName(out.reason);
+    Tally(out, tally);
+  }
+  return tally;
+}
+
+// The shipped stop segment (7 × 0.05 s, blocks 1, 1, 2, 3) behind `n_pre`
+// pre-catch intervals of `dt_pre`, one block each.
+inline void SetShortLeadGrid(MpcDockingSegmentCoreParams& p, int n_pre, double dt_pre) {
+  p.n_pre = n_pre;
+  p.dt_pre = dt_pre;
+  p.n_stop = 7;
+  p.dt_stop = 0.05;
+  p.n_blocks = n_pre + 4;
+  p.block_sizes.fill(1);
+  p.block_sizes[static_cast<std::size_t>(n_pre) + 2] = 2;
+  p.block_sizes[static_cast<std::size_t>(n_pre) + 3] = 3;
 }
 
 }  // namespace rtc::testing::mpc_docking
