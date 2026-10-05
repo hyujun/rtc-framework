@@ -184,18 +184,16 @@ for kv in "${KVS[@]}"; do
   esac
   grep -q "^${kv%%=*}: [A-Za-z]* value is: ${kv#*=}\$" "$OUT/mirror.txt" || why="$why ${kv%%=*}"
 done
-# EXPECT_MODE=closed_form: the same-day control unit (v1 law, no decel MPC).
-if [ "${EXPECT_MODE:-mpc}" == "closed_form" ]; then
-  grep -q 'DECEL law: mpc' "$OUT/launch.log" && why="$why mode_is_mpc"
-else
+# The startup lines say the mode too, in both modes (the expected line must be present):
+# EXPECT_MODE=closed_form is the same-day control unit (v1 law, no MPC segment planner).
+python3 "$D/check_segment_mode.py" "$OUT/launch.log" "${EXPECT_MODE:-mpc}" || why="$why mode_log"
+if [ "${EXPECT_MODE:-mpc}" != "closed_form" ]; then
 grep -q "planner.segment.mpc.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-6}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
 grep -q 'planner.segment.mpc.horizon.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
-# The startup lines say the mode too (mpc prints both).
-grep -q 'DECEL law: mpc' "$OUT/launch.log" || why="$why mode_mpc"
-grep -q "decel MPC approach grid: up to ${EXPECT_NPRE:-6} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
+grep -q "MPC segment planner approach grid: up to ${EXPECT_NPRE:-6} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
 grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not_e1f09_binary"
 fi
-grep 'decel MPC' "$OUT/launch.log" | sed 's/^.*demo_catching_controller\]: //' > "$OUT/decel_startup.txt"
+grep 'MPC segment planner \(ready\|approach grid\)' "$OUT/launch.log" | sed 's/^.*demo_catching_controller\]: //' > "$OUT/segment_startup.txt"
 BUDGET=$(grep -o 'planner enabled: wake timeout [0-9.]* s, budget [0-9.]* s' "$OUT/launch.log" | head -1 | sed 's/.*budget \([0-9.]*\) s$/\1/')
 echo "planner_budget_s: ${BUDGET}" >> "$OUT/conditions.txt"
 [ -n "$BUDGET" ] || why="$why no_budget_line"

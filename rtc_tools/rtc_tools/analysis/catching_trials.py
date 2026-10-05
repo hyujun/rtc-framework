@@ -109,7 +109,12 @@ from rtc_tools.analysis.catchability_map import (
     transform_point,
 )
 from rtc_tools.analysis.table_cells import is_true as _is_true, num as _num
-from rtc_tools.utils.catching_keys import normalize_run_meta, reject_renamed_keys
+from rtc_tools.utils.catching_keys import (
+    normalize_columns,
+    normalize_run_meta,
+    read_csv_normalized,
+    reject_renamed_keys,
+)
 from rtc_tools.utils.controller_config import load_controller_config
 from rtc_tools.utils.smoothing import COMMAND_SMOOTH_ROWS, box_smooth
 
@@ -877,11 +882,14 @@ class CatchFrameFk:
 
 
 def _read_csv(path: Path, usecols=None):
+    """``path`` (or ``path.gz``) as a frame. A file recorded with the old (`decel_*`)
+    column names of the controller CSVs comes back with the current ones, ``usecols``
+    names the current ones; a header that mixes old and new names is refused."""
     import pandas as pd  # noqa: PLC0415
 
     for candidate in (path, path.with_name(path.name + ".gz")):
         if candidate.is_file():
-            return pd.read_csv(candidate, usecols=usecols, low_memory=False)
+            return read_csv_normalized(pd.read_csv, candidate, usecols=usecols, low_memory=False)
     raise SystemExit(f"missing {path} (or {path.name}.gz)")
 
 
@@ -920,31 +928,31 @@ HAND_WITNESS_COLUMNS = ("hand_stalled_n", "hand_effort_frac", "hand_blocked_s", 
 # The vision snapshot the tick read (L8 §5.2) — G8-C2's exact join key into
 # the probe dump. Optional: a diag recorded before the columns has none.
 DIAG_INPUT_COLUMNS = ("input_snapshot_sequence", "input_generation")
-# The tick record's decel block (MPC E1-F04; columns since E1-F05, #631): what
+# The tick record's segment block (MPC E1-F04; columns since E1-F05, #631): what
 # the RT did with the MPC's segments. Optional, and each name on its own — a
 # diag recorded before the columns has none, and the E1-F09 measurement build
-# wrote the block WITHOUT ``decel_p_d_*``. See :func:`reference_at_lead` and
-# :func:`decel_lane_metrics`.
-DIAG_DECEL_COLUMNS = (
-    "decel_judged",
-    "decel_refusal",
-    "decel_event",
-    "decel_following",
-    "decel_seq",
-    "decel_rho",
-    "decel_p_d_x",
-    "decel_p_d_y",
-    "decel_p_d_z",
+# wrote the block WITHOUT ``segment_p_d_*``. See :func:`reference_at_lead` and
+# :func:`segment_lane_metrics`.
+DIAG_SEGMENT_COLUMNS = (
+    "segment_judged",
+    "segment_refusal",
+    "segment_event",
+    "segment_following",
+    "segment_seq",
+    "segment_rho",
+    "segment_p_d_x",
+    "segment_p_d_y",
+    "segment_p_d_z",
 )
 # CatchingDiagLogPod::SegmentEvent / rtc::catching::SegmentRefusal — the values
 # the lane metrics read (the full tables are in plotters/catching.py).
-DECEL_EVENT_ADMITTED = 1
-DECEL_EVENT_DEFERRED = 2
-DECEL_EVENT_WORKSPACE = 3
-DECEL_EVENT_SWITCHED = 4
-DECEL_EVENT_GATE_REFUSED = 5
-DECEL_EVENT_REPLACED = 10
-DECEL_REFUSAL_AGED = 5
+SEGMENT_EVENT_ADMITTED = 1
+SEGMENT_EVENT_DEFERRED = 2
+SEGMENT_EVENT_WORKSPACE = 3
+SEGMENT_EVENT_SWITCHED = 4
+SEGMENT_EVENT_GATE_REFUSED = 5
+SEGMENT_EVENT_REPLACED = 10
+SEGMENT_REFUSAL_AGED = 5
 # TCP command speed [m/s] above which the command counts as moving
 # (:func:`command_kinematics_at_tc`). An arm holding its command is at 0.
 CMD_MOVING_SPEED_M_S = 0.02
@@ -962,8 +970,8 @@ def diag_columns(header: Sequence[str]) -> list[str]:
     lead = [DIAG_LEAD_COLUMN] if DIAG_LEAD_COLUMN in header else []
     hand_witness = [c for c in HAND_WITNESS_COLUMNS if c in header]
     inputs = [c for c in DIAG_INPUT_COLUMNS if c in header]
-    decel = [c for c in DIAG_DECEL_COLUMNS if c in header]
-    return list(DIAG_COLUMNS) + lead + hand_witness + inputs + decel + joints
+    segment = [c for c in DIAG_SEGMENT_COLUMNS if c in header]
+    return list(DIAG_COLUMNS) + lead + hand_witness + inputs + segment + joints
 
 
 def arm_joints_from_diag(columns: Sequence[str]) -> list[str]:
@@ -2027,15 +2035,15 @@ class TrialContext:
     # The vision snapshot key per tick (DIAG_INPUT_COLUMNS), None when absent.
     input_seq: np.ndarray | None = None
     input_gen: np.ndarray | None = None
-    # The decel block per tick (DIAG_DECEL_COLUMNS), each None when its column
-    # is absent. ``decel_p_d`` is the followed segment's CLIK target, (n, 3).
-    decel_judged: np.ndarray | None = None
-    decel_refusal: np.ndarray | None = None
-    decel_event: np.ndarray | None = None
-    decel_following: np.ndarray | None = None
-    decel_seq: np.ndarray | None = None
-    decel_rho: np.ndarray | None = None
-    decel_p_d: np.ndarray | None = None
+    # The segment block per tick (DIAG_SEGMENT_COLUMNS), each None when its column
+    # is absent. ``segment_p_d`` is the followed segment's CLIK target, (n, 3).
+    segment_judged: np.ndarray | None = None
+    segment_refusal: np.ndarray | None = None
+    segment_event: np.ndarray | None = None
+    segment_following: np.ndarray | None = None
+    segment_seq: np.ndarray | None = None
+    segment_rho: np.ndarray | None = None
+    segment_p_d: np.ndarray | None = None
     _cache: dict = field(default_factory=dict)
 
     def fk_meas(self, ticks) -> np.ndarray:
@@ -2062,20 +2070,24 @@ def reference_at_lead(ctx: TrialContext, kl: int) -> tuple[np.ndarray | None, st
 
     The RT hands the CLIK one of two references (MPC plan MD-65): the soft-catch
     law's ``ref_x`` (``closed_form``), or the followed MPC segment's sample
-    ``decel_p_d`` (``mpc``, APPROACH to HOLD). Both are sampled one tick past
+    ``segment_p_d`` (``mpc``, APPROACH to HOLD). Both are sampled one tick past
     the lead instant (MD-40), so either is "what this tick's command tracks".
 
-    - ``"segment"`` — ``decel_following`` at ``kl`` and the ``decel_p_d_*``
+    - ``"segment"`` — ``segment_following`` at ``kl`` and the ``segment_p_d_*``
       columns exist;
     - ``"soft_catch"`` — otherwise, ``ref_valid`` at ``kl``;
     - ``"none"`` — neither. The reference is ``None`` and the columns read
       against it are NaN: on such a tick ``ref_x`` is the fresh record's zero
       vector, and a CLIK error taken against it is the catch frame's distance
       from the origin (0.9 m on the E1-F09 ``mpc`` units, whose diag has
-      ``decel_following`` but no ``decel_p_d``).
+      ``segment_following`` but no ``segment_p_d``).
     """
-    if ctx.decel_p_d is not None and ctx.decel_following is not None and ctx.decel_following[kl]:
-        return ctx.decel_p_d[kl], "segment"
+    if (
+        ctx.segment_p_d is not None
+        and ctx.segment_following is not None
+        and ctx.segment_following[kl]
+    ):
+        return ctx.segment_p_d[kl], "segment"
     if ctx.ref_valid[kl]:
         return ctx.ref[kl], "soft_catch"
     return None, "none"
@@ -2106,7 +2118,7 @@ def decompose_at_tc(
 
     ``ref`` is the reference THAT TRIAL's law gave the CLIK
     (:func:`reference_at_lead`, recorded as ``ref_source``): the soft-catch
-    ``ref_x`` under ``closed_form``, the followed segment's ``decel_p_d`` under
+    ``ref_x`` under ``closed_form``, the followed segment's ``segment_p_d`` under
     ``mpc`` — so the three terms mean the same thing under either planner
     (plan error · CLIK error · servo lag) and a paired comparison reads one
     column. With no reference at ``kl`` the CLIK and ref_vs_true terms are NaN.
@@ -2274,26 +2286,26 @@ def _runs(mask: np.ndarray) -> tuple[int, int]:
     return int(starts.size), int((ends - starts).max())
 
 
-DECEL_LANE_KEYS = (
-    "decel_segments_followed",
-    "decel_switches",
-    "decel_admitted",
-    "decel_replaced",
-    "decel_deferred",
-    "decel_deferred_max_ticks",
-    "decel_workspace_refused",
-    "decel_gate_refused",
-    "decel_aged",
-    "decel_rho_first",
-    "decel_rho_replan_max",
-    "decel_wait_node0_ms",
+SEGMENT_LANE_KEYS = (
+    "segment_n_followed",
+    "segment_switches",
+    "segment_admitted",
+    "segment_replaced",
+    "segment_deferred",
+    "segment_deferred_max_ticks",
+    "segment_workspace_refused",
+    "segment_gate_refused",
+    "segment_aged",
+    "segment_rho_first",
+    "segment_rho_replan_max",
+    "segment_wait_node0_ms",
 )
 
 
-def decel_lane_metrics(ctx: TrialContext) -> dict:
+def segment_lane_metrics(ctx: TrialContext) -> dict:
     """What the RT did with the MPC's segments over one trial (``mode: mpc``).
 
-    Read off the tick record's ``decel_event`` (one value per tick), so every
+    Read off the tick record's ``segment_event`` (one value per tick), so every
     count is of EVENTS, not ticks: an admission, a replacement, a switch and a
     gate refusal each last one tick; a deferral (a segment for a later grid
     point waiting in the box, MD-66) and an ``aged`` refusal repeat on every
@@ -2301,17 +2313,17 @@ def decel_lane_metrics(ctx: TrialContext) -> dict:
     as is, in logs from before MD-73, a ``catch_box`` refusal while TRACKING
     judges the pair.
 
-    - ``decel_segments_followed`` — distinct ``decel_seq`` the RT followed;
-    - ``decel_switches`` / ``_admitted`` / ``_replaced`` / ``_gate_refused``;
-    - ``decel_deferred`` — waits in the box, ``decel_deferred_max_ticks`` the
+    - ``segment_n_followed`` — distinct ``segment_seq`` the RT followed;
+    - ``segment_switches`` / ``_admitted`` / ``_replaced`` / ``_gate_refused``;
+    - ``segment_deferred`` — waits in the box, ``segment_deferred_max_ticks`` the
       longest of them [ticks];
-    - ``decel_workspace_refused`` — stop paths outside ``catch_box`` (MD-43).
+    - ``segment_workspace_refused`` — stop paths outside ``catch_box`` (MD-43).
       The RT dropped that check (MD-73): 0 in the logs written after it;
-    - ``decel_aged`` — segments dropped by the admission age bound (MD-37);
-    - ``decel_rho_first`` — the switch gate's ρ at the first switch (the seeded
-      command against node 0), ``decel_rho_replan_max`` the largest over the
+    - ``segment_aged`` — segments dropped by the admission age bound (MD-37);
+    - ``segment_rho_first`` — the switch gate's ρ at the first switch (the seeded
+      command against node 0), ``segment_rho_replan_max`` the largest over the
       later ones (NaN with a single switch);
-    - ``decel_wait_node0_ms`` — first APPROACH tick → first switch: how long
+    - ``segment_wait_node0_ms`` — first APPROACH tick → first switch: how long
       the adopted pair held the seeded command before node 0 (MD-68). The wait
       does not end with APPROACH: the mode can reach COMMITTED while the
       command is still held, so counting only the APPROACH ticks reads short.
@@ -2319,27 +2331,31 @@ def decel_lane_metrics(ctx: TrialContext) -> dict:
     All NaN on a diag without the columns. A ``closed_form`` trial of a diag
     that has them reads zeros (and NaN for the ρ and wait columns).
     """
-    rec: dict = dict.fromkeys(DECEL_LANE_KEYS, math.nan)
-    ev, following, seq = ctx.decel_event, ctx.decel_following, ctx.decel_seq
+    rec: dict = dict.fromkeys(SEGMENT_LANE_KEYS, math.nan)
+    ev, following, seq = ctx.segment_event, ctx.segment_following, ctx.segment_seq
     if ev is None or following is None or seq is None:
         return rec
-    switched = np.nonzero(ev == DECEL_EVENT_SWITCHED)[0]
-    rec["decel_segments_followed"] = len(np.unique(seq[following]))
-    rec["decel_switches"] = int(switched.size)
-    rec["decel_admitted"] = int(np.count_nonzero(ev == DECEL_EVENT_ADMITTED))
-    rec["decel_replaced"] = int(np.count_nonzero(ev == DECEL_EVENT_REPLACED))
-    rec["decel_deferred"], rec["decel_deferred_max_ticks"] = _runs(ev == DECEL_EVENT_DEFERRED)
-    rec["decel_workspace_refused"] = _runs(ev == DECEL_EVENT_WORKSPACE)[0]
-    rec["decel_gate_refused"] = int(np.count_nonzero(ev == DECEL_EVENT_GATE_REFUSED))
-    if ctx.decel_judged is not None and ctx.decel_refusal is not None:
-        rec["decel_aged"] = _runs(ctx.decel_judged & (ctx.decel_refusal == DECEL_REFUSAL_AGED))[0]
-    if switched.size and ctx.decel_rho is not None:
-        rec["decel_rho_first"] = float(ctx.decel_rho[switched[0]])
+    switched = np.nonzero(ev == SEGMENT_EVENT_SWITCHED)[0]
+    rec["segment_n_followed"] = len(np.unique(seq[following]))
+    rec["segment_switches"] = int(switched.size)
+    rec["segment_admitted"] = int(np.count_nonzero(ev == SEGMENT_EVENT_ADMITTED))
+    rec["segment_replaced"] = int(np.count_nonzero(ev == SEGMENT_EVENT_REPLACED))
+    rec["segment_deferred"], rec["segment_deferred_max_ticks"] = _runs(
+        ev == SEGMENT_EVENT_DEFERRED
+    )
+    rec["segment_workspace_refused"] = _runs(ev == SEGMENT_EVENT_WORKSPACE)[0]
+    rec["segment_gate_refused"] = int(np.count_nonzero(ev == SEGMENT_EVENT_GATE_REFUSED))
+    if ctx.segment_judged is not None and ctx.segment_refusal is not None:
+        rec["segment_aged"] = _runs(
+            ctx.segment_judged & (ctx.segment_refusal == SEGMENT_REFUSAL_AGED)
+        )[0]
+    if switched.size and ctx.segment_rho is not None:
+        rec["segment_rho_first"] = float(ctx.segment_rho[switched[0]])
         if switched.size > 1:
-            rec["decel_rho_replan_max"] = float(ctx.decel_rho[switched[1:]].max())
+            rec["segment_rho_replan_max"] = float(ctx.segment_rho[switched[1:]].max())
     k_app = _first(ctx.mode == MODE_APPROACH)
     if k_app is not None and switched.size and switched[0] >= k_app:
-        rec["decel_wait_node0_ms"] = float((ctx.t[switched[0]] - ctx.t[k_app]) * 1e3)
+        rec["segment_wait_node0_ms"] = float((ctx.t[switched[0]] - ctx.t[k_app]) * 1e3)
     return rec
 
 
@@ -2563,9 +2579,9 @@ class SessionResult:
     hand_window_rows: list[dict] = field(default_factory=list)
 
 
-def _decel_arrays(w) -> dict:
-    """The TrialContext's decel fields from one trial's diag window — each
-    ``None`` when its column is absent (DIAG_DECEL_COLUMNS)."""
+def _segment_arrays(w) -> dict:
+    """The TrialContext's segment fields from one trial's diag window — each
+    ``None`` when its column is absent (DIAG_SEGMENT_COLUMNS)."""
 
     def number(name):
         return w[name].to_numpy(float) if name in w.columns else None
@@ -2581,15 +2597,15 @@ def _decel_arrays(w) -> dict:
         v = number(name)
         return None if v is None else np.nan_to_num(v, nan=0.0).astype(int)
 
-    p_d = [f"decel_p_d_{a}" for a in "xyz"]
+    p_d = [f"segment_p_d_{a}" for a in "xyz"]
     return {
-        "decel_judged": flag("decel_judged"),
-        "decel_refusal": code("decel_refusal"),
-        "decel_event": code("decel_event"),
-        "decel_following": flag("decel_following"),
-        "decel_seq": code("decel_seq"),
-        "decel_rho": number("decel_rho"),
-        "decel_p_d": w[p_d].to_numpy(float) if all(c in w.columns for c in p_d) else None,
+        "segment_judged": flag("segment_judged"),
+        "segment_refusal": code("segment_refusal"),
+        "segment_event": code("segment_event"),
+        "segment_following": flag("segment_following"),
+        "segment_seq": code("segment_seq"),
+        "segment_rho": number("segment_rho"),
+        "segment_p_d": w[p_d].to_numpy(float) if all(c in w.columns for c in p_d) else None,
     }
 
 
@@ -2731,7 +2747,7 @@ def analyse_session(
             input_gen=w["input_generation"].to_numpy(float)
             if "input_generation" in w.columns
             else None,
-            **_decel_arrays(w),
+            **_segment_arrays(w),
         )
         lag_t.append(ctx.t)
         lag_cmd.append(ctx.q_cmd)
@@ -2773,7 +2789,7 @@ def analyse_session(
                 ctx, row.get("t_c", math.nan), _num(row.get("t_lead_s", math.nan))
             )
         )
-        row.update(decel_lane_metrics(ctx))
+        row.update(segment_lane_metrics(ctx))
         if planner_wakes is not None and trial.idx in lane.trial_offsets:
             wakes_t = (
                 wakes_t_rel
@@ -2918,7 +2934,7 @@ def _csv_header(path: Path) -> list[str]:
     found = _exists(path)
     if found is None:
         raise SystemExit(f"missing {path}")
-    return list(pd.read_csv(found, nrows=0).columns)
+    return normalize_columns(pd.read_csv(found, nrows=0).columns, source=str(found))
 
 
 def _hand_effort(ctl: Path, profile: CatchingProfile):
@@ -3769,7 +3785,7 @@ class PlannerWakes(NamedTuple):
     ``searched``: the wake ran a search — its ``outcome`` is neither ``idle``
     nor ``no_input`` (a replan-only wake stays ``idle``, MPC plan MD-29).
     ``pair_attempt`` / ``pair_published``: the wake tried a plan's first
-    segment (``decel_kind`` ``first``) / and published it.
+    segment (``segment_kind`` ``first``) / and published it.
     """
 
     wake_s: np.ndarray
@@ -3824,7 +3840,7 @@ def _planner_cycle_times(ctl: Path, lane: ClockLane | None) -> PlannerWakes | No
         return None
     header = _csv_header(path)
     optional = [
-        c for c in ("search_valid", "outcome", "decel_kind", "decel_outcome") if c in header
+        c for c in ("search_valid", "outcome", "segment_kind", "segment_outcome") if c in header
     ]
     df = _read_csv(path, usecols=["wake_ns", "plan_valid", *optional])
     wakes = PlannerWakes(df["wake_ns"].to_numpy(float) * 1e-9, df["plan_valid"].to_numpy(float))
@@ -3834,9 +3850,9 @@ def _planner_cycle_times(ctl: Path, lane: ClockLane | None) -> PlannerWakes | No
             wakes = wakes._replace(
                 searched=~df["outcome"].astype(str).isin(("idle", "no_input")).to_numpy()
             )
-    if "decel_kind" in df.columns and "decel_outcome" in df.columns:
-        first = (df["decel_kind"].astype(str) == "first").to_numpy()
-        published = (df["decel_outcome"].astype(str) == "published").to_numpy()
+    if "segment_kind" in df.columns and "segment_outcome" in df.columns:
+        first = (df["segment_kind"].astype(str) == "first").to_numpy()
+        published = (df["segment_outcome"].astype(str) == "published").to_numpy()
         wakes = wakes._replace(pair_attempt=first, pair_published=first & published)
     return wakes
 
@@ -3889,8 +3905,8 @@ def _summarise(
                 "first_plan_s",
                 "contact_t_minus_tc_ms",
                 *CMD_KINEMATICS_KEYS,
-                "decel_wait_node0_ms",
-                "decel_rho_replan_max",
+                "segment_wait_node0_ms",
+                "segment_rho_replan_max",
             )
         },
         # Which law's reference the t_c decomposition read, per valid trial
@@ -3969,11 +3985,11 @@ def _summarise(
             else None,
             "approach_plan_switches_distribution": switches,
         }
-    lane_rows = [r for r in valid if _num(r.get("decel_segments_followed")) > 0]
+    lane_rows = [r for r in valid if _num(r.get("segment_n_followed")) > 0]
     if lane_rows:
         # `mode: mpc` only: a trial that followed at least one segment.
-        followed = [int(r["decel_segments_followed"]) for r in lane_rows]
-        summary["decel_lane"] = {
+        followed = [int(r["segment_n_followed"]) for r in lane_rows]
+        summary["segment_lane"] = {
             "n_trials": len(lane_rows),
             "segments_followed_p50_min_max": [
                 float(np.median(followed)),
@@ -3981,22 +3997,24 @@ def _summarise(
                 max(followed),
             ],
             "events_total": {
-                k[len("decel_") :]: int(sum(_num(r[k]) for r in lane_rows))
+                k[len("segment_") :]: int(sum(_num(r[k]) for r in lane_rows))
                 for k in (
-                    "decel_admitted",
-                    "decel_replaced",
-                    "decel_switches",
-                    "decel_deferred",
-                    "decel_workspace_refused",
-                    "decel_gate_refused",
-                    "decel_aged",
+                    "segment_admitted",
+                    "segment_replaced",
+                    "segment_switches",
+                    "segment_deferred",
+                    "segment_workspace_refused",
+                    "segment_gate_refused",
+                    "segment_aged",
                 )
                 if all(np.isfinite(_num(r[k])) for r in lane_rows)
             },
-            "deferred_max_ticks": int(max(_num(r["decel_deferred_max_ticks"]) for r in lane_rows)),
-            "rho_first_p50_p95_max": _p50_p95_max(lane_rows, "decel_rho_first"),
-            "rho_replan_max_p50_p95_max": _p50_p95_max(lane_rows, "decel_rho_replan_max"),
-            "wait_node0_ms_p50_p95_max": _p50_p95_max(lane_rows, "decel_wait_node0_ms"),
+            "deferred_max_ticks": int(
+                max(_num(r["segment_deferred_max_ticks"]) for r in lane_rows)
+            ),
+            "rho_first_p50_p95_max": _p50_p95_max(lane_rows, "segment_rho_first"),
+            "rho_replan_max_p50_p95_max": _p50_p95_max(lane_rows, "segment_rho_replan_max"),
+            "wait_node0_ms_p50_p95_max": _p50_p95_max(lane_rows, "segment_wait_node0_ms"),
         }
     if gate_map is not None:
         summary["gate_map"] = {
@@ -4260,10 +4278,10 @@ def report(result: SessionResult) -> str:
         f"{med['cmd_accel_tc']:.1f} m/s², moving for {med['cmd_move_s']:.3f} s after holding "
         f"{med['cmd_hold_s']:.3f} s"
     )
-    if "decel_lane" in s:
-        dl = s["decel_lane"]
+    if "segment_lane" in s:
+        dl = s["segment_lane"]
         lines.append(
-            f"decel lane ({dl['n_trials']} trials followed a segment): segments per trial "
+            f"segment lane ({dl['n_trials']} trials followed a segment): segments per trial "
             f"p50/min/max {dl['segments_followed_p50_min_max']}, events {dl['events_total']}, "
             f"longest deferral {dl['deferred_max_ticks']} ticks, switch ρ first "
             f"{dl['rho_first_p50_p95_max']} · replan max {dl['rho_replan_max_p50_p95_max']} "

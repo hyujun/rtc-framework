@@ -70,10 +70,10 @@ FAULT_CAUSE_NAMES = ("none", "qp_failures", "stop_deadline", "return_deadline")
 FAULT_RESET_REFUSAL_NAMES = ("none", "command_moving", "arm_moving", "velocity_unreadable")
 
 
-# CatchingDiagLogPod's decel_event / decel_refusal wire values, in the enums'
-# own order (catching_diag_log_pod.hpp). `decel_refusal` is meaningful only on a
-# tick whose `decel_judged` is set.
-DECEL_EVENT_NAMES = (
+# CatchingDiagLogPod's segment_event / segment_refusal wire values, in the enums'
+# own order (catching_diag_log_pod.hpp). `segment_refusal` is meaningful only on a
+# tick whose `segment_judged` is set.
+SEGMENT_EVENT_NAMES = (
     "none",
     "admitted",
     "deferred",
@@ -86,7 +86,7 @@ DECEL_EVENT_NAMES = (
     "no_segment",
     "replaced",
 )
-DECEL_REFUSAL_NAMES = (
+SEGMENT_REFUSAL_NAMES = (
     "none",
     "invalid",
     "activation",
@@ -100,10 +100,13 @@ DECEL_REFUSAL_NAMES = (
 # written as numbers: the tables are what the test pins against the C++ enums.
 # `repeat` is judged on almost every tick once a segment was taken — it is
 # bookkeeping, not an event, so neither the lane nor the statistics list it.
-_DECEL_REFUSAL_QUIET = (DECEL_REFUSAL_NAMES.index("none"), DECEL_REFUSAL_NAMES.index("repeat"))
-_DECEL_EVENT_SWITCHED = DECEL_EVENT_NAMES.index("switched")
+_SEGMENT_REFUSAL_QUIET = (
+    SEGMENT_REFUSAL_NAMES.index("none"),
+    SEGMENT_REFUSAL_NAMES.index("repeat"),
+)
+_SEGMENT_EVENT_SWITCHED = SEGMENT_EVENT_NAMES.index("switched")
 # Events on which the switch gate wrote its account (rho, dq_max, ...).
-_DECEL_GATE_EVENTS = (_DECEL_EVENT_SWITCHED, DECEL_EVENT_NAMES.index("gate_refused"))
+_SEGMENT_GATE_EVENTS = (_SEGMENT_EVENT_SWITCHED, SEGMENT_EVENT_NAMES.index("gate_refused"))
 # Smallest command rate / acceleration / jerk the kinematics panel draws.
 _KINEMATICS_FLOOR = 1e-3
 
@@ -240,10 +243,10 @@ def _live(df):
     absence of data.
     """
     # Under `mode: mpc` the soft-catch reference never runs (`ref_valid` is 0 on
-    # every tick) and the arm follows the decel segment instead, so a log whose
-    # law ran only through `decel_following` must not read as "never ran".
+    # every tick) and the arm follows the MPC segment instead, so a log whose
+    # law ran only through `segment_following` must not read as "never ran".
     flags = [
-        df[c].astype(float) > 0.5 for c in ("ref_valid", "decel_following") if c in df.columns
+        df[c].astype(float) > 0.5 for c in ("ref_valid", "segment_following") if c in df.columns
     ]
     if not flags:
         return df
@@ -318,7 +321,7 @@ def plot_catching_diag(df, save_dir=None):
     - acceleration (the soft-catch law's saturation) needs `ref_xdd_x` — a
       pilot schema lacks it — and at least one `ref_valid` tick: under `mode:
       mpc` that law never runs;
-    - the segment feedforward and the decel lane need the decel block and a
+    - the segment feedforward and the segment lane need the segment block and a
       log in which the lane did something — a `closed_form` log has the
       columns, all zero;
     - command kinematics needs `q_cmd_*`.
@@ -331,14 +334,16 @@ def plot_catching_diag(df, save_dir=None):
     t = df["timestamp"]
     kin = _command_kinematics(df, t)
     ref_ran = not has("ref_valid") or bool((df["ref_valid"].astype(float) > 0.5).any())
-    following = has("decel_following") and bool((df["decel_following"].astype(float) > 0.5).any())
+    following = has("segment_following") and bool(
+        (df["segment_following"].astype(float) > 0.5).any()
+    )
     panels = ["pos"]
     if has("ref_xdd_x") and ref_ran:
         panels.append("acc")
     panels.append("track")
-    if following and all(has(f"decel_v_ff_{a}") for a in "xyz"):
+    if following and all(has(f"segment_v_ff_{a}") for a in "xyz"):
         panels.append("vff")
-    if has("decel_event") and (following or _decel_lane_active(df)):
+    if has("segment_event") and (following or _segment_lane_active(df)):
         panels.append("lane")
     if kin is not None:
         panels.append("kin")
@@ -376,14 +381,14 @@ def plot_catching_diag(df, save_dir=None):
                 linestyle="--",
                 label=f"p_c_{axis}",
             )
-        seg = f"decel_p_d_{axis}"
+        seg = f"segment_p_d_{axis}"
         if seg in df.columns:
             # Under mode mpc `ref_valid` is 0 on every tick and THIS is the
             # reference the arm follows; dash-dot keeps it apart from the
             # soft-catch reference (solid) and the catch point (dashed).
             ax.plot(
                 t,
-                _masked(df, seg, "decel_following"),
+                _masked(df, seg, "segment_following"),
                 linewidth=1.2,
                 color=colour,
                 linestyle="-.",
@@ -450,7 +455,7 @@ def plot_catching_diag(df, save_dir=None):
         for axis, colour in zip("xyz", ("C0", "C1", "C2"), strict=True):
             ax.plot(
                 t,
-                _masked(df, f"decel_v_ff_{axis}", "decel_following"),
+                _masked(df, f"segment_v_ff_{axis}", "segment_following"),
                 linewidth=1.0,
                 color=colour,
                 label=f"v_ff_{axis}",
@@ -459,9 +464,9 @@ def plot_catching_diag(df, save_dir=None):
         ax.legend(fontsize=7, ncol=3)
         ax.grid(True, alpha=0.3)
 
-    # ── 5. The decel lane: events, refusals, and the switch gate's ρ ───────
+    # ── 5. The segment lane: events, refusals, and the switch gate's ρ ───────
     if "lane" in ax_of:
-        _draw_decel_lane(ax_of["lane"], df, t)
+        _draw_segment_lane(ax_of["lane"], df, t)
 
     # ── 6. Command kinematics ──────────────────────────────────────────────
     if "kin" in ax_of:
@@ -515,27 +520,27 @@ def plot_catching_diag(df, save_dir=None):
     plt.close()
 
 
-def _decel_shown_refusals(df):
+def _segment_shown_refusals(df):
     """(mask, codes) of the lane's refusals worth showing: judged, and neither
     `none` nor `repeat`."""
     judged = (
-        df["decel_judged"].astype(float) > 0.5
-        if "decel_judged" in df.columns
+        df["segment_judged"].astype(float) > 0.5
+        if "segment_judged" in df.columns
         else pd.Series(True, index=df.index)
     )
-    refusal = df["decel_refusal"].astype(float).fillna(0).astype(int)
-    return judged & ~refusal.isin(_DECEL_REFUSAL_QUIET), refusal
+    refusal = df["segment_refusal"].astype(float).fillna(0).astype(int)
+    return judged & ~refusal.isin(_SEGMENT_REFUSAL_QUIET), refusal
 
 
-def _decel_lane_active(df):
+def _segment_lane_active(df):
     """Whether the lane did anything in this log (an event or a refusal)."""
-    if (df["decel_event"].astype(float).fillna(0) != 0).any():
+    if (df["segment_event"].astype(float).fillna(0) != 0).any():
         return True
-    return "decel_refusal" in df.columns and bool(_decel_shown_refusals(df)[0].any())
+    return "segment_refusal" in df.columns and bool(_segment_shown_refusals(df)[0].any())
 
 
-def _draw_decel_lane(ax, df, t):
-    """Decel events on a categorical axis, refusals above them, ρ on a twin.
+def _draw_segment_lane(ax, df, t):
+    """Segment events on a categorical axis, refusals above them, ρ on a twin.
 
     Refusals sit on one row of their own ABOVE the events (one series per
     refusal reason) rather than on the event axis: they are a different enum,
@@ -544,14 +549,14 @@ def _draw_decel_lane(ax, df, t):
     `repeat` is dropped: it is judged on almost every tick once a segment was
     taken and would paint the whole lane.
     """
-    refused_y = len(DECEL_EVENT_NAMES)
+    refused_y = len(SEGMENT_EVENT_NAMES)
     t = pd.Series(np.asarray(t, dtype=float), index=df.index)
-    event = df["decel_event"].astype(float).fillna(0).astype(int)
+    event = df["segment_event"].astype(float).fillna(0).astype(int)
     fired = event != 0
     if fired.any():
         ax.scatter(t[fired], event[fired], s=14, color="C0", marker="o", label="event")
-    if "decel_refusal" in df.columns:
-        shown, refusal = _decel_shown_refusals(df)
+    if "segment_refusal" in df.columns:
+        shown, refusal = _segment_shown_refusals(df)
         for k in sorted(refusal[shown].unique()):
             sel = shown & (refusal == k)
             ax.scatter(
@@ -560,22 +565,22 @@ def _draw_decel_lane(ax, df, t):
                 s=14,
                 marker="x",
                 color=f"C{(int(k) + 2) % 10}",
-                label=f"refused: {_code_name(DECEL_REFUSAL_NAMES, int(k))}",
+                label=f"refused: {_code_name(SEGMENT_REFUSAL_NAMES, int(k))}",
             )
     ax.set_yticks(range(refused_y + 1))
-    ax.set_yticklabels([*DECEL_EVENT_NAMES, "refused"], fontsize=7)
+    ax.set_yticklabels([*SEGMENT_EVENT_NAMES, "refused"], fontsize=7)
     ax.set_ylim(-0.8, refused_y + 0.8)
-    ax.set_ylabel("decel lane")
+    ax.set_ylabel("segment lane")
     ax.grid(True, alpha=0.3)
     handles, labels = ax.get_legend_handles_labels()
-    if "decel_rho" in df.columns:
+    if "segment_rho" in df.columns:
         # ρ only means something on the ticks the switch gate judged.
-        gate = event.isin(_DECEL_GATE_EVENTS)
+        gate = event.isin(_SEGMENT_GATE_EVENTS)
         ax_rho = ax.twinx()
         if gate.any():
             ax_rho.scatter(
                 t[gate],
-                df.loc[gate, "decel_rho"].astype(float),
+                df.loc[gate, "segment_rho"].astype(float),
                 s=26,
                 marker="D",
                 facecolors="none",
@@ -691,32 +696,32 @@ def plot_catching_hand(df, save_dir=None):
     plt.close()
 
 
-def _print_decel_statistics(df):
-    """The decel block: segments followed, events, refusals, switch-gate ρ."""
-    if "decel_event" not in df.columns:
+def _print_segment_statistics(df):
+    """The segment block: segments followed, events, refusals, switch-gate ρ."""
+    if "segment_event" not in df.columns:
         return
-    event = df["decel_event"].astype(float).fillna(0).astype(int)
+    event = df["segment_event"].astype(float).fillna(0).astype(int)
     following = (
-        df["decel_following"].astype(float) > 0.5
-        if "decel_following" in df.columns
+        df["segment_following"].astype(float) > 0.5
+        if "segment_following" in df.columns
         else pd.Series(False, index=df.index)
     )
     if not (following.any() or (event != 0).any()):
         return
-    print("\nDecel segment:")
+    print("\nSegment segment:")
     print(f"  Ticks following a segment: {int(following.sum())}")
-    if "decel_seq" in df.columns:
-        print(f"  Distinct segments followed: {df.loc[following, 'decel_seq'].nunique()}")
+    if "segment_seq" in df.columns:
+        print(f"  Distinct segments followed: {df.loc[following, 'segment_seq'].nunique()}")
     fired = event[event != 0]
     if len(fired) > 0:
-        print("  Events: " + _named_counts(fired, DECEL_EVENT_NAMES))
-    if "decel_refusal" in df.columns:
-        shown, refusal = _decel_shown_refusals(df)
+        print("  Events: " + _named_counts(fired, SEGMENT_EVENT_NAMES))
+    if "segment_refusal" in df.columns:
+        shown, refusal = _segment_shown_refusals(df)
         refused = refusal[shown]
         if len(refused) > 0:
-            print("  Refusals: " + _named_counts(refused, DECEL_REFUSAL_NAMES))
-    if "decel_rho" in df.columns:
-        rho = df.loc[event == _DECEL_EVENT_SWITCHED, "decel_rho"].astype(float).dropna()
+            print("  Refusals: " + _named_counts(refused, SEGMENT_REFUSAL_NAMES))
+    if "segment_rho" in df.columns:
+        rho = df.loc[event == _SEGMENT_EVENT_SWITCHED, "segment_rho"].astype(float).dropna()
         if len(rho) > 0:
             print(
                 f"  Switch ρ [{len(rho)} switch(es)]: p50 {rho.quantile(0.5):.3f}  "
@@ -827,7 +832,7 @@ def print_catching_diag_statistics(df):
                 f"median {usable['input_horizon_s'].median():.3f}"
             )
 
-    _print_decel_statistics(df)
+    _print_segment_statistics(df)
 
     # ── The law ────────────────────────────────────────────────────────────
     live = _live(df)

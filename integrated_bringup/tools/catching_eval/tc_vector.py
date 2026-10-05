@@ -147,9 +147,9 @@ if __name__ == "__main__":
         "contact_t_minus_tc_ms",
         "contact_body",
         "first_plan_s",
-        "decel_workspace_refused",
-        "decel_segments_followed",
-        "decel_wait_node0_ms",
+        "segment_workspace_refused",
+        "segment_n_followed",
+        "segment_wait_node0_ms",
         "t_launch",
     ]
     cols = [base[[c for c in keep if c in base]]]

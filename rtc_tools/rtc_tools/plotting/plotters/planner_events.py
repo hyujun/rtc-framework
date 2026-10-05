@@ -62,12 +62,12 @@ DECISION_ORDER = (
 
 # rtc::catching SegmentKindName order (planner_events_csv.hpp). `unknown` is the
 # trailing slot `_categorical_codes` maps unrecognised names to.
-DECEL_KIND_ORDER = ("none", "first", "same", "advance", "stop", "unknown")
+SEGMENT_KIND_ORDER = ("none", "first", "same", "advance", "stop", "unknown")
 
 # SegmentOutcomeName order (rtc_controllers/src/catching/mpc_segment_planner.cpp), plus
 # `not_due`: the stop-only planner's wait, in logs from before it was removed
 # (MPC plan MD-70).
-DECEL_OUTCOME_ORDER = (
+SEGMENT_OUTCOME_ORDER = (
     "off",
     "no_state",
     "stale_state",
@@ -91,13 +91,13 @@ DECEL_OUTCOME_ORDER = (
     "unknown",
 )
 
-# Outcomes of a decel step that solved nothing (SegmentStepWorthRecording in
+# Outcomes of a segment step that solved nothing (SegmentStepWorthRecording in
 # planner_events_csv.hpp, with the removed `not_due`).
-_DECEL_WAITED = ("off", "not_due", "up_to_date", "past_replan_window")
+_SEGMENT_WAITED = ("off", "not_due", "up_to_date", "past_replan_window")
 
-# One colour per solve kind, shared by the decel panels so a kind reads the same
+# One colour per solve kind, shared by the segment panels so a kind reads the same
 # on all of them. `unknown` is grey: it is a name this module has not caught up with.
-_DECEL_KIND_COLOURS = {
+_SEGMENT_KIND_COLOURS = {
     "first": "C0",
     "same": "C1",
     "advance": "C2",
@@ -155,93 +155,93 @@ def _categorical_codes(series, order):
     return series.astype(str).map(lambda v: lookup.get(v, fallback))
 
 
-def _decel_kind_series(df):
-    """The `decel_kind` names as strings, or None when the column is absent."""
-    return df["decel_kind"].astype(str) if "decel_kind" in df.columns else None
+def _segment_kind_series(df):
+    """The `segment_kind` names as strings, or None when the column is absent."""
+    return df["segment_kind"].astype(str) if "segment_kind" in df.columns else None
 
 
-def _decel_rows(df):
-    """Rows on which the decel planner did something.
+def _segment_rows(df):
+    """Rows on which the segment planner did something.
 
-    `decel_kind != "none"` is the writer's own statement of that. A log from
-    before that column has only `decel_outcome`: there a step that only waited
+    `segment_kind != "none"` is the writer's own statement of that. A log from
+    before that column has only `segment_outcome`: there a step that only waited
     (the writer's own "not worth a row" set) is not counted.
     """
-    if "decel_kind" in df.columns:
-        return df["decel_kind"].astype(str) != "none"
-    return ~df["decel_outcome"].astype(str).isin(_DECEL_WAITED)
+    if "segment_kind" in df.columns:
+        return df["segment_kind"].astype(str) != "none"
+    return ~df["segment_outcome"].astype(str).isin(_SEGMENT_WAITED)
 
 
-def _decel_panels(df):
-    """The decel panels this log has something for. A log from before the
-    decel planner has no columns; a `closed_form` session has them and every
+def _segment_panels(df):
+    """The segment panels this log has something for. A log from before the
+    segment planner has no columns; a `closed_form` session has them and every
     row says the planner was off — neither gets an empty panel."""
     cols = df.columns
-    if not ("decel_kind" in cols or "decel_outcome" in cols) or not _decel_rows(df).any():
+    if not ("segment_kind" in cols or "segment_outcome" in cols) or not _segment_rows(df).any():
         return []
     panels = []
-    if "decel_outcome" in cols:
+    if "segment_outcome" in cols:
         panels.append("outcome")
-    if "decel_solve_us" in cols:
+    if "segment_solve_us" in cols:
         panels.append("solve")
-    if "decel_catch_pos_err" in cols:
+    if "segment_catch_pos_err" in cols:
         panels.append("catch")
     return panels
 
 
-def _draw_decel_outcome(ax, df, t):
-    """Outcome of each decel solve at its category, coloured by solve kind."""
-    rows = _decel_rows(df)
-    kind = _decel_kind_series(df)
-    codes = _categorical_codes(df["decel_outcome"], DECEL_OUTCOME_ORDER)
+def _draw_segment_outcome(ax, df, t):
+    """Outcome of each segment solve at its category, coloured by solve kind."""
+    rows = _segment_rows(df)
+    kind = _segment_kind_series(df)
+    codes = _categorical_codes(df["segment_outcome"], SEGMENT_OUTCOME_ORDER)
     if kind is None:
         if rows.any():
             ax.scatter(t[rows], codes[rows], s=14, color="C0", marker="o", label="solve")
     else:
-        for name in DECEL_KIND_ORDER:
-            sel = rows & (kind.where(kind.isin(DECEL_KIND_ORDER), "unknown") == name)
+        for name in SEGMENT_KIND_ORDER:
+            sel = rows & (kind.where(kind.isin(SEGMENT_KIND_ORDER), "unknown") == name)
             if sel.any():
                 ax.scatter(
                     t[sel],
                     codes[sel],
                     s=14,
-                    color=_DECEL_KIND_COLOURS[name],
+                    color=_SEGMENT_KIND_COLOURS[name],
                     marker="o",
                     label=f"kind: {name}",
                 )
-    ax.set_yticks(range(len(DECEL_OUTCOME_ORDER)))
-    ax.set_yticklabels(DECEL_OUTCOME_ORDER, fontsize=7)
-    ax.set_ylabel("decel outcome")
+    ax.set_yticks(range(len(SEGMENT_OUTCOME_ORDER)))
+    ax.set_yticklabels(SEGMENT_OUTCOME_ORDER, fontsize=7)
+    ax.set_ylabel("segment outcome")
     if ax.get_legend_handles_labels()[0]:
         ax.legend(fontsize=8, loc="upper right")
     ax.grid(True, alpha=0.3)
 
 
-def _draw_decel_solve(ax, df, t):
-    """Decel solve time per solve kind (ms), with the iteration count on a twin."""
-    solve_ms = df["decel_solve_us"].astype(float) / 1e3
-    has_solve = df["decel_solve_us"].astype(float) > 0
-    kind = _decel_kind_series(df)
+def _draw_segment_solve(ax, df, t):
+    """Segment solve time per solve kind (ms), with the iteration count on a twin."""
+    solve_ms = df["segment_solve_us"].astype(float) / 1e3
+    has_solve = df["segment_solve_us"].astype(float) > 0
+    kind = _segment_kind_series(df)
     if kind is None:
         groups = [("solve", has_solve, "C0")]
     else:
-        kind = kind.where(kind.isin(DECEL_KIND_ORDER), "unknown")
+        kind = kind.where(kind.isin(SEGMENT_KIND_ORDER), "unknown")
         groups = [
-            (name, has_solve & (kind == name), _DECEL_KIND_COLOURS[name])
-            for name in DECEL_KIND_ORDER
+            (name, has_solve & (kind == name), _SEGMENT_KIND_COLOURS[name])
+            for name in SEGMENT_KIND_ORDER
         ]
     for name, sel, colour in groups:
         if sel.any():
             ax.scatter(t[sel], solve_ms[sel], s=14, color=colour, marker="o", label=name)
-    ax.set_ylabel("decel solve (ms)")
+    ax.set_ylabel("segment solve (ms)")
     ax.grid(True, alpha=0.3)
-    if "decel_iterations" in df.columns:
+    if "segment_iterations" in df.columns:
         ax_it = ax.twinx()
         # Markers, not a line: a solve between two wakes that solved nothing
         # is one finite value between NaNs, which a line does not draw.
         ax_it.plot(
             t[has_solve],
-            df.loc[has_solve, "decel_iterations"].astype(float),
+            df.loc[has_solve, "segment_iterations"].astype(float),
             linestyle="none",
             marker="+",
             markersize=4,
@@ -257,7 +257,7 @@ def _draw_decel_solve(ax, df, t):
         ax.legend(fontsize=8, loc="upper right")
 
 
-def _draw_decel_catch(ax, df, t):
+def _draw_segment_catch(ax, df, t):
     """The catch node as each solve left it, and the speed a first solve
     started from.
 
@@ -266,7 +266,7 @@ def _draw_decel_catch(ax, df, t):
     value between two NaN rows, and a line through the values would join one
     trial's last solve to the next trial's first. The two errors
     (position in mm, approach axis in degrees) share the left axis; the
-    velocity terms (‖v_rel‖ in m/s, γ) and `decel_x0_speed` (rad/s, first
+    velocity terms (‖v_rel‖ in m/s, γ) and `segment_x0_speed` (rad/s, first
     solves only) the right one.
     """
 
@@ -286,14 +286,14 @@ def _draw_decel_catch(ax, df, t):
                 label=label,
             )
 
-    draw(ax, "decel_catch_pos_err", 1e3, "catch pos err (mm)", "C0", "o")
-    draw(ax, "decel_catch_axis_err", float(np.degrees(1.0)), "catch axis err (deg)", "C2", "s")
+    draw(ax, "segment_catch_pos_err", 1e3, "catch pos err (mm)", "C0", "o")
+    draw(ax, "segment_catch_axis_err", float(np.degrees(1.0)), "catch axis err (deg)", "C2", "s")
     ax.set_ylabel("catch error (mm, deg)")
     ax.grid(True, alpha=0.3)
     ax_r = ax.twinx()
-    draw(ax_r, "decel_catch_v_rel", 1.0, "catch ‖v_rel‖ (m/s)", "C1", "o")
-    draw(ax_r, "decel_catch_gamma", 1.0, "catch γ", "C4", "x")
-    draw(ax_r, "decel_x0_speed", 1.0, "x0 speed (rad/s)", "C3", "^")
+    draw(ax_r, "segment_catch_v_rel", 1.0, "catch ‖v_rel‖ (m/s)", "C1", "o")
+    draw(ax_r, "segment_catch_gamma", 1.0, "catch γ", "C4", "x")
+    draw(ax_r, "segment_x0_speed", 1.0, "x0 speed (rad/s)", "C3", "^")
     ax_r.set_ylabel("‖v_rel‖ (m/s), γ, x0 speed (rad/s)")
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax_r.get_legend_handles_labels()
@@ -301,10 +301,10 @@ def _draw_decel_catch(ax, df, t):
         ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper right", ncol=2)
 
 
-_DECEL_DRAWERS = {
-    "outcome": _draw_decel_outcome,
-    "solve": _draw_decel_solve,
-    "catch": _draw_decel_catch,
+_SEGMENT_DRAWERS = {
+    "outcome": _draw_segment_outcome,
+    "solve": _draw_segment_solve,
+    "catch": _draw_segment_catch,
 }
 
 
@@ -321,10 +321,10 @@ def plot_planner_events(df, save_dir=None):
 
     t = _time_axis(df)
 
-    # The decel panels come after the six search panels and only when their
-    # columns exist, so a log from before the decel planner still gets six.
-    decel_panels = _decel_panels(df)
-    n_panels = 6 + len(decel_panels)
+    # The segment panels come after the six search panels and only when their
+    # columns exist, so a log from before the segment planner still gets six.
+    segment_panels = _segment_panels(df)
+    n_panels = 6 + len(segment_panels)
     fig, axes = plt.subplots(n_panels, 1, figsize=(14, 3 * n_panels), sharex=True)
     fig.suptitle(
         "Planner Events — search timing, funnel, rejects, decisions, rank gates",
@@ -409,9 +409,9 @@ def plot_planner_events(df, save_dir=None):
     axes[5].set_ylabel("rank gate\n(failed)")
     axes[5].grid(True, alpha=0.3)
 
-    # ── 7-9. Decel planner (only the panels whose columns exist) ────────────
-    for ax, name in zip(axes[6:], decel_panels, strict=True):
-        _DECEL_DRAWERS[name](ax, df, t)
+    # ── 7-9. Segment planner (only the panels whose columns exist) ────────────
+    for ax, name in zip(axes[6:], segment_panels, strict=True):
+        _SEGMENT_DRAWERS[name](ax, df, t)
 
     axes[-1].set_xlabel("Time (s)")
 
@@ -503,23 +503,23 @@ def print_planner_events_statistics(df):
             + ", ".join(f"{k}×{v}" for k, v in gate_fails.items())
         )
 
-    _print_decel_statistics(df)
+    _print_segment_statistics(df)
 
 
-def _print_decel_statistics(df):
+def _print_segment_statistics(df):
     """Per-kind solve record, outcome histogram, publish cadence, search vs plan."""
     n = len(df)
-    if "decel_kind" in df.columns:
-        kind = df["decel_kind"].astype(str)
-        outcome = df["decel_outcome"].astype(str) if "decel_outcome" in df.columns else None
-        us = df["decel_solve_us"].astype(float) if "decel_solve_us" in df.columns else None
-        for name in DECEL_KIND_ORDER[:-1]:
+    if "segment_kind" in df.columns:
+        kind = df["segment_kind"].astype(str)
+        outcome = df["segment_outcome"].astype(str) if "segment_outcome" in df.columns else None
+        us = df["segment_solve_us"].astype(float) if "segment_solve_us" in df.columns else None
+        for name in SEGMENT_KIND_ORDER[:-1]:
             if name == "none":
                 continue
             sel = kind == name
             if not sel.any():
                 continue
-            line = f"Decel kind {name}: {int(sel.sum())}"
+            line = f"Segment kind {name}: {int(sel.sum())}"
             if outcome is not None:
                 line += f", published {int((sel & (outcome == 'published')).sum())}"
             if us is not None:
@@ -535,15 +535,15 @@ def _print_decel_statistics(df):
             if len(active) > 0:
                 counts = active.value_counts()
                 print(
-                    "Decel outcome (kind != none): "
+                    "Segment outcome (kind != none): "
                     + ", ".join(f"{k}×{v}" for k, v in counts.items())
                 )
-    if "decel_publish_ns" in df.columns:
-        pub = df["decel_publish_ns"].astype(float)
+    if "segment_publish_ns" in df.columns:
+        pub = df["segment_publish_ns"].astype(float)
         pub = np.sort(pub[pub > 0].unique())
         if len(pub) >= 2:
             print(
-                f"Decel segment publish interval [ms]: p50 {np.median(np.diff(pub)) / 1e6:.1f} "
+                f"Segment publish interval [ms]: p50 {np.median(np.diff(pub)) / 1e6:.1f} "
                 f"(n={len(pub)} segments)"
             )
     if "search_valid" in df.columns and "plan_valid" in df.columns:
