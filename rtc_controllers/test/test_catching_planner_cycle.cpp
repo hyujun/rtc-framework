@@ -375,7 +375,7 @@ TEST(PlannerParams, SwitchSamplesIsBoundedAboveByName) {
       rtc::catching::kSwitchSamplesMax);
   const std::string why = message(rtc::catching::kSwitchSamplesMax + 1);
   ASSERT_FALSE(why.empty()) << "samples = kSwitchSamplesMax + 1 was accepted";
-  EXPECT_NE(why.find("'planner.switch.samples'"), std::string::npos) << why;
+  EXPECT_NE(why.find("'planner.search.grid.switch.samples'"), std::string::npos) << why;
   EXPECT_FALSE(message(1000000).empty());
 }
 

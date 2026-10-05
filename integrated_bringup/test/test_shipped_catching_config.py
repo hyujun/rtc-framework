@@ -1,9 +1,10 @@
 """The shipped catching config is one tree in four files (MD-90).
 
-``demo_catching_controller.yaml`` keeps the QP CLIK step, the bring-up sections
-and the key that selects the planner law; ``catching/search_grid.yaml``,
-``catching/planner_closed_form.yaml`` and ``catching/planner_mpc.yaml`` hold what
-each function is tuned with. The CM merges them before it applies an override.
+``demo_catching_controller.yaml`` keeps the QP CLIK step, the bring-up sections,
+the arm's acceleration box and the key that selects the segment mode;
+``catching/search_grid.yaml``, ``catching/planner_closed_form.yaml`` and
+``catching/segment_mpc.yaml`` hold what each function is tuned with. The CM
+merges them before it applies an override.
 
 What can go wrong without an error anywhere:
 
@@ -34,38 +35,18 @@ DUMP_ENV = "RTC_CONTROLLER_CONFIG_DUMP"
 
 SEARCH = "catching/search_grid.yaml"
 CLOSED_FORM = "catching/planner_closed_form.yaml"
-MPC = "catching/planner_mpc.yaml"
+MPC = "catching/segment_mpc.yaml"
 
-# Which keys each fragment owns. A trailing dot is a subtree, anything else is
-# one leaf. A key outside every entry belongs to the main file.
+# Which keys each fragment owns: a function's whole map (#711). A trailing dot
+# is a subtree, anything else is one leaf. A key outside every entry belongs to
+# the main file — `catching.planner.segment.mode`, the selector, among them.
 FRAGMENT_KEYS = {
-    SEARCH: (
-        "catching.planner.budget_s",
-        "catching.planner.max_ik",
-        "catching.planner.n_settle",
-        "catching.planner.slice.",
-        "catching.planner.time.",
-        "catching.planner.unc.",
-        "catching.planner.gamma.",
-        "catching.planner.rollout.",
-        "catching.planner.budget.",
-        "catching.planner.score.",
-        "catching.planner.workspace.",
-        "catching.planner.hand.",
-        "catching.planner.ik.",
-        "catching.planner.catchability.",
-        "catching.robot.arm.qdd_max",
-        "catching.robot.arm.qdd_provisional",
-    ),
+    SEARCH: ("catching.planner.search.",),
     CLOSED_FORM: (
         "catching.reference.",
         "catching.supervisor.decel.a_dec",
-        "catching.planner.switch.",
     ),
-    MPC: (
-        "catching.planner.decel_mpc.",
-        "catching.supervisor.decel.switch_margin",
-    ),
+    MPC: ("catching.planner.segment.mpc.",),
 }
 
 
@@ -143,7 +124,8 @@ def test_python_composes_the_tree_the_cm_composes(robot):
 
 @pytest.mark.parametrize("robot", ROBOTS)
 def test_the_unit_speed_damping_is_one_number_for_cpp_and_python(robot):
-    # The C++ search damps its unit-speed solve with planner.gamma.unit_speed_damping
+    # The C++ search damps its unit-speed solve with
+    # planner.search.grid.gamma.unit_speed_damping
     # (the shipped-profile C++ test pins it equal to kUnitSpeedDamping). The offline
     # tools must run on the same number: catch_gate_map reads the key from the profile
     # (below), and catch_speed_budget has no profile input at all, so its constant has
@@ -151,7 +133,8 @@ def test_the_unit_speed_damping_is_one_number_for_cpp_and_python(robot):
     from rtc_tools.analysis import catch_gate_map, catch_speed_budget  # noqa: PLC0415
 
     doc = load_controller_config(_main_path(robot), config_key=CONTROLLER, loader=yaml.BaseLoader)
-    shipped = float(doc[CONTROLLER]["catching"]["planner"]["gamma"]["unit_speed_damping"])
+    grid = doc[CONTROLLER]["catching"]["planner"]["search"]["grid"]
+    shipped = float(grid["gamma"]["unit_speed_damping"])
     assert shipped == 1.0e-3
     assert shipped == catch_speed_budget.DEFAULT_DLS_DAMPING
     assert catch_gate_map.load_unit_speed_damping(_main_path(robot), CONTROLLER) == shipped

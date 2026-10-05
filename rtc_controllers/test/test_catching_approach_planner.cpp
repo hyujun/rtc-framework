@@ -384,7 +384,7 @@ TEST(ApproachPlanner, ConfigureBuildsCatchCoresInTheStopCoresBox) {
         EXPECT_EQ(cp.eta_v, sp.eta_v) << j << "/" << k;
         EXPECT_EQ(cp.eta_tau, sp.eta_tau) << j << "/" << k;
         EXPECT_EQ(cp.m_q, sp.m_q) << j << "/" << k;
-        EXPECT_EQ(sp.eta_v, 0.9);  // planner.gamma.eta_v, not the core default
+        EXPECT_EQ(sp.eta_v, 0.9);  // planner.search.grid.gamma.eta_v, not the core default
       }
     }
   }
@@ -801,10 +801,10 @@ TEST(ApproachPlanner, TheJerkWeightListMustMatchTheArm) {
   MpcSegmentPlanner planner;
   std::string err;
   EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
-  EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
+  EXPECT_NE(err.find("planner.segment.mpc.cost.jerk_weight"), std::string::npos) << err;
   p.jerk_weight = std::vector<double>(7, 1.0);
   EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
-  EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
+  EXPECT_NE(err.find("planner.segment.mpc.cost.jerk_weight"), std::string::npos) << err;
   p.jerk_weight = std::vector<double>(6, 1.0);
   EXPECT_TRUE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err))
       << err;
@@ -826,8 +826,8 @@ TEST(ApproachPlanner, TheMarginIsComparedWithTheProfilesTrustRegion) {
   p.m_q = 0.05;
   p.delta_tr = 0.04;
   EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
-  EXPECT_NE(err.find("decel_mpc.linearization.delta_tr"), std::string::npos) << err;
-  EXPECT_NE(err.find("decel_mpc.m_q"), std::string::npos) << err;
+  EXPECT_NE(err.find("planner.segment.mpc.linearization.delta_tr"), std::string::npos) << err;
+  EXPECT_NE(err.find("planner.segment.mpc.m_q"), std::string::npos) << err;
   EXPECT_FALSE(planner.Configured());
 }
 

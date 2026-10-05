@@ -872,7 +872,7 @@ TEST_F(CatchingPlanLaneTest, AFittingMpcSegmentTorqueBoxConfiguresUnderTheDynami
   EXPECT_TRUE(ctrl_->IsSegmentPlannerConfigured());
 }
 
-// ── supervisor.decel.mode (MPC E1-F04, MD-34 · MD-42 · MD-44) ────────────────
+// ── planner.segment.mode (MPC E1-F04, MD-34 · MD-42 · MD-44) ────────────────
 
 TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
   using integrated_bringup::CatchingParkReason;
@@ -991,88 +991,70 @@ TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnAnMpcSegmentSettingItNeverRe
 }
 
 TEST_F(CatchingPlanLaneTest, TheLawIsChosenByPlannerSegmentModeAlone) {
-  // MPC MD-91: `planner.decel_mpc.enabled` is gone — the planner solves the
-  // segment MPC exactly when `supervisor.decel.mode` is mpc. A config that still
-  // writes the key is read as if it were absent (no rejection): every row
-  // below holds for the key absent, true and false alike.
+  // MPC MD-91: there is no `enabled` switch — the planner solves the segment
+  // MPC exactly when `planner.segment.mode` is mpc.
   using integrated_bringup::CatchingParkReason;
   using Return = DemoCatchingController::CallbackReturn;
-  for (const int stale : {-1, 0, 1}) {  // -1: key absent
-    const auto with_key = [stale](YAML::Node& y) {
-      if (stale >= 0) {
-        y["catching"]["planner"]["decel_mpc"]["enabled"] = stale == 1;
-      }
-    };
-    const std::string tag = stale < 0 ? "no key" : stale == 1 ? "enabled: true" : "enabled: false";
 
-    // closed_form: no MPC segment core, and no WARN about the segment MPC either.
-    {
-      const WarnCapture warns;
-      const ConfigureVerdict v = ConfigureOnly(true, [&](YAML::Node& y) {
-        with_key(y);
-        y["catching"]["planner"]["segment"]["mode"] = "closed_form";
-      });
-      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
-      EXPECT_FALSE(v.parked) << tag;
-      EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured()) << tag;
-      EXPECT_FALSE(WarnCapture::Contains("decel_mpc")) << tag << ": closed_form must not warn";
-      EXPECT_FALSE(WarnCapture::Contains("not built")) << tag << ": closed_form must not warn";
-    }
-    // mpc + planner on: the MPC segment planner runs.
-    {
-      const ConfigureVerdict v = ConfigureOnly(true, with_key);
-      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
-      EXPECT_FALSE(v.parked) << tag << ": reason " << static_cast<int>(v.reason);
-      EXPECT_TRUE(ctrl_->IsSegmentPlannerConfigured()) << tag;
-    }
-    // mpc + planner off + the oracle plan profile: configures (a test writes
-    // the box), with no MPC segment planner of its own.
-    {
-      const ConfigureVerdict v = ConfigureOnly(false, with_key);
-      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
-      EXPECT_FALSE(v.parked) << tag << ": reason " << static_cast<int>(v.reason);
-      EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured()) << tag;
-    }
-    // mpc + planner off + no oracle: nothing writes a segment, so it parks
-    // with the prerequisite reason — never the MPC-segment-config one.
-    {
-      const ConfigureVerdict v = ConfigureOnly(false, [&](YAML::Node& y) {
-        with_key(y);
-        y["diagnostic"]["oracle_plan"]["enabled"] = false;
-      });
-      ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
-      EXPECT_TRUE(v.parked) << tag;
-      EXPECT_EQ(v.reason, CatchingParkReason::kSegmentModeUnmet) << tag;
-    }
+  // closed_form: no MPC segment core, and no WARN about the segment MPC either.
+  {
+    const WarnCapture warns;
+    const ConfigureVerdict v = ConfigureOnly(
+        true, [](YAML::Node& y) { y["catching"]["planner"]["segment"]["mode"] = "closed_form"; });
+    ASSERT_EQ(v.ret, Return::SUCCESS);
+    EXPECT_FALSE(v.parked);
+    EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured());
+    EXPECT_FALSE(WarnCapture::Contains("segment.mpc")) << "closed_form must not warn";
+    EXPECT_FALSE(WarnCapture::Contains("not built")) << "closed_form must not warn";
+  }
+  // mpc + planner on: the MPC segment planner runs.
+  {
+    const ConfigureVerdict v = ConfigureOnly(true, nullptr);
+    ASSERT_EQ(v.ret, Return::SUCCESS);
+    EXPECT_FALSE(v.parked) << "reason " << static_cast<int>(v.reason);
+    EXPECT_TRUE(ctrl_->IsSegmentPlannerConfigured());
+  }
+  // mpc + planner off + the oracle plan profile: configures (a test writes
+  // the box), with no MPC segment planner of its own.
+  {
+    const ConfigureVerdict v = ConfigureOnly(false, nullptr);
+    ASSERT_EQ(v.ret, Return::SUCCESS);
+    EXPECT_FALSE(v.parked) << "reason " << static_cast<int>(v.reason);
+    EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured());
+  }
+  // mpc + planner off + no oracle: nothing writes a segment, so it parks
+  // with the prerequisite reason — never the MPC-segment-config one.
+  {
+    const ConfigureVerdict v = ConfigureOnly(
+        false, [](YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; });
+    ASSERT_EQ(v.ret, Return::SUCCESS);
+    EXPECT_TRUE(v.parked);
+    EXPECT_EQ(v.reason, CatchingParkReason::kSegmentModeUnmet);
   }
 }
 
-TEST_F(CatchingPlanLaneTest, ALeftoverDisabledDecelMpcKeyWarnsOnlyWhereTheLawNowRuns) {
-  // Of the removed `planner.decel_mpc.enabled`, only `false` under mode mpc
-  // changes behaviour (it used to park; the mpc law now runs), so only that
-  // combination warns. Never a rejection, never a park.
+TEST_F(CatchingPlanLaneTest, ALeftoverDecelMpcKeyParksUnderEitherMode) {
+  // `planner.decel_mpc` moved to `planner.segment.mpc` (#711) and is no longer
+  // read. A profile that still writes it — its long-removed `enabled` switch
+  // included, whatever the value — would run the shipped MPC values under its
+  // own name, so it parks under either mode and the ERROR names both paths.
+  using integrated_bringup::CatchingParkReason;
   using Return = DemoCatchingController::CallbackReturn;
-  const char* kNeedle = "decel_mpc.enabled";
   for (const char* mode : {"mpc", "closed_form"}) {
-    for (const int stale : {-1, 0, 1}) {  // -1: key absent
-      const std::string tag = std::string(mode) + ", " +
-                              (stale < 0    ? "no key"
-                               : stale == 1 ? "enabled: true"
-                                            : "enabled: false");
-      const WarnCapture warns;
+    for (const int stale : {0, 1}) {
+      const std::string tag =
+          std::string(mode) + ", " + (stale == 1 ? "enabled: true" : "enabled: false");
+      const WarnCapture logs;
       const ConfigureVerdict v = ConfigureOnly(true, [&](YAML::Node& y) {
         y["catching"]["planner"]["segment"]["mode"] = mode;
-        if (stale >= 0) {
-          y["catching"]["planner"]["decel_mpc"]["enabled"] = stale == 1;
-        }
+        y["catching"]["planner"]["decel_mpc"]["enabled"] = stale == 1;
       });
       ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
-      EXPECT_FALSE(v.parked) << tag;
-      const bool expect_warn = std::string(mode) == "mpc" && stale == 0;
-      EXPECT_EQ(WarnCapture::Contains(kNeedle), expect_warn) << tag;
-      if (expect_warn) {
-        EXPECT_TRUE(WarnCapture::Contains("supervisor.decel.mode: closed_form")) << tag;
-      }
+      EXPECT_TRUE(v.parked) << tag;
+      EXPECT_EQ(v.reason, CatchingParkReason::kRemovedKey) << tag;
+      EXPECT_TRUE(WarnCapture::Contains("'catching.planner.decel_mpc' was renamed")) << tag;
+      EXPECT_TRUE(WarnCapture::Contains("'catching.planner.segment.mpc'")) << tag;
+      EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured()) << tag;
     }
   }
 }

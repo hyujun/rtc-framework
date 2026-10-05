@@ -1372,7 +1372,7 @@ TEST_P(ShippedCatchingProfile, RunsThePlannerThroughTheWholeLifecycle) {
 
 TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
   // MPC E1-F10 (MD-72, MD-74): the two values a tuning overlay moves per arm.
-  // The lead floor is the commit lead while `planner.slice.t_lead_min` is
+  // The lead floor is the commit lead while `planner.search.grid.slice.t_lead_min` is
   // absent and the key's value once it is set; every shipped profile runs the
   // dynamic CLIK form. Each case moves the loaded value off the shipped one,
   // as above.
@@ -1411,7 +1411,8 @@ TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
     ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
               DemoCatchingController::CallbackReturn::SUCCESS)
         << profile << " " << c.name;
-    EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.slice.t_lead_min").as_double(), floor)
+    EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.search.grid.slice.t_lead_min").as_double(),
+                     floor)
         << profile << " " << c.name;
     EXPECT_EQ(node_handle->get_parameter("joint_cmd.accel_constraint").as_string(),
               c.kinematic ? "kinematic" : "dynamic")
@@ -1500,16 +1501,16 @@ TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
   const std::vector<Case> cases = {
       {"catching/search_grid.yaml",
        {"planner", "search", "grid", "time", "margin"},
-       "planner.time.margin",
+       "planner.search.grid.time.margin",
        0.01},
       {"catching/planner_closed_form.yaml", {"reference", "omega"}, "reference.omega", -1.0},
       {"catching/segment_mpc.yaml",
        {"planner", "segment", "mpc", "catch", "gamma_ref"},
-       "planner.decel_mpc.catch.gamma_ref",
+       "planner.segment.mpc.catch.gamma_ref",
        -0.1},
       {"catching/segment_mpc.yaml",
        {"planner", "segment", "mpc", "switch_margin"},
-       "supervisor.decel.switch_margin",
+       "planner.segment.mpc.switch_margin",
        -0.1},
   };
   const auto at = [](const YAML::Node& root, const std::vector<std::string>& path) {
@@ -1558,9 +1559,10 @@ TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
   }
 }
 
-// The acceleration box is two plain keys of the search fragment. The mirror is
-// what every reader of the loaded value (the search, the stop and homing ramp,
-// the tools) sees, so it is the place to pin the value.
+// The acceleration box is two plain keys of the main file: the search reads it,
+// and so do the stop and homing ramps, so it is no one function's. The mirror
+// is what every reader of the loaded value sees, so it is the place to pin the
+// value.
 TEST_P(ShippedCatchingProfile, MirrorsTheShippedAccelerationBox) {
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
@@ -1571,8 +1573,8 @@ TEST_P(ShippedCatchingProfile, MirrorsTheShippedAccelerationBox) {
                                 "/controllers/demo_catching_controller.yaml";
   const YAML::Node main_arm =
       YAML::LoadFile(main_path)["demo_catching_controller"]["catching"]["robot"]["arm"];
-  EXPECT_FALSE(main_arm["qdd_max"].IsDefined()) << profile << ": the box belongs to the search";
-  EXPECT_FALSE(main_arm["qdd_provisional"].IsDefined()) << profile;
+  EXPECT_TRUE(main_arm["qdd_max"].IsDefined()) << profile << ": the box is the arm's (main file)";
+  EXPECT_TRUE(main_arm["qdd_provisional"].IsDefined()) << profile;
 
   YAML::Node node = ShippedWithPlanner(profile, true, false);
   auto node_handle = NodeWithProfile("catching_shipped_box_" + profile, "mpc_on");
@@ -1936,8 +1938,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
                                 "/controllers/demo_catching_controller.yaml";
   const YAML::Node main_planner =
       YAML::LoadFile(main_path)["demo_catching_controller"]["catching"]["planner"];
-  EXPECT_FALSE(main_planner["decel_mpc"].IsDefined())
-      << profile << ": the decel MPC keys belong to catching/segment_mpc.yaml";
+  EXPECT_FALSE(main_planner["segment"]["mpc"].IsDefined())
+      << profile << ": the mpc segment planner's keys belong to catching/segment_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   EXPECT_EQ(planner.mpc_segment.rho_v, 0.0) << profile;
   EXPECT_EQ(planner.mpc_segment.v_rel_allow, 0.0) << profile;
@@ -1964,15 +1966,15 @@ TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
             DemoCatchingController::CallbackReturn::SUCCESS)
       << profile;
   EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
-  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.rho_v").as_double(), 2.0)
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.segment.mpc.catch.rho_v").as_double(), 2.0)
       << profile;
-  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.v_rel_allow").as_double(),
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.segment.mpc.catch.v_rel_allow").as_double(),
                    0.3)
       << profile;
   EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.rho_v, 2.0) << profile;
   EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.v_rel_allow, 0.3) << profile;
   // Read-only, like every other mirror of the profile.
-  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.catch.rho_v", 0.0))
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.segment.mpc.catch.rho_v", 0.0))
                    .successful);
 }
 
@@ -2115,26 +2117,27 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
   const auto dbl = [&](const char* name) { return node_handle->get_parameter(name).as_double(); };
   const auto integer = [&](const char* name) { return node_handle->get_parameter(name).as_int(); };
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.u_scale"), 500.0) << profile;
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.w_delta"), 2.5) << profile;
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.rho_tau"), 7.0) << profile;
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.catch.axis_theta_max"), 1.2) << profile;
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.delta_tr"), 0.2) << profile;
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.reference_rest_tol"), 2.0e-5) << profile;
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.linearization.ref_speed_fraction"), 0.8) << profile;
-  EXPECT_EQ(integer("planner.decel_mpc.solver.max_iter"), 300) << profile;
-  EXPECT_EQ(integer("planner.decel_mpc.solver.max_iter_in"), 150) << profile;
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.solver.eps_abs"), 2.0e-7) << profile;
-  EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.solver.eps_rel"), 1.0e-5) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.cost.u_scale"), 500.0) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.cost.w_delta"), 2.5) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.cost.rho_tau"), 7.0) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.catch.axis_theta_max"), 1.2) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.linearization.delta_tr"), 0.2) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.linearization.reference_rest_tol"), 2.0e-5) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.linearization.ref_speed_fraction"), 0.8) << profile;
+  EXPECT_EQ(integer("planner.segment.mpc.solver.max_iter"), 300) << profile;
+  EXPECT_EQ(integer("planner.segment.mpc.solver.max_iter_in"), 150) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.solver.eps_abs"), 2.0e-7) << profile;
+  EXPECT_DOUBLE_EQ(dbl("planner.segment.mpc.solver.eps_rel"), 1.0e-5) << profile;
   const auto jw =
-      node_handle->get_parameter("planner.decel_mpc.cost.jerk_weight").as_double_array();
+      node_handle->get_parameter("planner.segment.mpc.cost.jerk_weight").as_double_array();
   ASSERT_EQ(jw.size(), static_cast<std::size_t>(arm_dof)) << profile;
   for (int i = 0; i < arm_dof; ++i) {
     EXPECT_DOUBLE_EQ(jw[static_cast<std::size_t>(i)], 1.0 + 0.25 * i) << profile << " " << i;
   }
   EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.ref_speed_fraction, 0.8) << profile;
-  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.u_scale", 1.0))
-                   .successful);
+  EXPECT_FALSE(
+      node_handle->set_parameter(rclcpp::Parameter("planner.segment.mpc.cost.u_scale", 1.0))
+          .successful);
 }
 
 TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
@@ -2180,11 +2183,11 @@ TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
             DemoCatchingController::CallbackReturn::SUCCESS)
       << profile;
   EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
-  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.cost.w_perp").as_double(), 40.0)
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.segment.mpc.cost.w_perp").as_double(), 40.0)
       << profile;
   EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.w_perp, 40.0) << profile;
   // Read-only, like every other mirror of the profile.
-  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.w_perp", 0.0))
+  EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.segment.mpc.cost.w_perp", 0.0))
                    .successful);
 }
 

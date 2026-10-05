@@ -331,7 +331,7 @@ TEST(CatchingParams, AccelConstraintRejectsAnUnknownForm) {
   ExpectRejectMentioning(root, "joint_cmd.accel_constraint");
 }
 
-// ── MPC MD-34 · MD-39 · MD-44: supervisor.decel.mode / switch_margin ─────────
+// ── MPC MD-34 · MD-39 · MD-44: planner.segment.mode / switch_margin ─────────
 
 TEST(CatchingParams, SegmentModeDefaultsToClosedFormAndReadsMpc) {
   const CatchingParams absent = ParseCatchingParams(ValidRoot());
@@ -352,14 +352,14 @@ TEST(CatchingParams, SegmentModeDefaultsToClosedFormAndReadsMpc) {
 TEST(CatchingParams, SegmentModeRejectsAnUnknownLaw) {
   YAML::Node root = ValidRoot();
   root["planner"]["segment"]["mode"] = "MPC";  // case matters: one spelling per law
-  ExpectRejectMentioning(root, "supervisor.decel.mode");
+  ExpectRejectMentioning(root, "planner.segment.mode");
 }
 
 TEST(CatchingParams, SegmentSwitchMarginMustBePositive) {
   for (const char* bad : {"0.0", "-0.5", ".nan", ".inf"}) {
     YAML::Node root = ValidRoot();
     root["planner"]["segment"]["mpc"]["switch_margin"] = YAML::Load(bad);
-    ExpectRejectMentioning(root, "supervisor.decel.switch_margin");
+    ExpectRejectMentioning(root, "planner.segment.mpc.switch_margin");
   }
   // The message quotes the value as written: a tiny negative is not "0.000000".
   YAML::Node root = ValidRoot();
@@ -1148,10 +1148,10 @@ constexpr OneReasonCase kBlocksArming[] = {
     // D-9: 0 < eta_v <= 1.
     {"EtaVZeroFails_D9",
      [](YAML::Node& root) { root["planner"]["search"]["grid"]["gamma"]["eta_v"] = 0.0; },
-     CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"},
+     CatchingValidationReason::kEtaVOutOfRange, "planner.search.grid.gamma.eta_v"},
     {"EtaVAboveOneFails_D9",
      [](YAML::Node& root) { root["planner"]["search"]["grid"]["gamma"]["eta_v"] = 1.5; },
-     CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"},
+     CatchingValidationReason::kEtaVOutOfRange, "planner.search.grid.gamma.eta_v"},
     // L7 §4.3: a_dec <= reference.a_max.
     {"DecelExceedingAMaxFails",
      [](YAML::Node& root) {
@@ -1171,7 +1171,7 @@ constexpr OneReasonCase kSparesTheBound[] = {
        root["planner"]["search"]["grid"]["gamma"]["eta_v"] =
            1.0;  // upper bound is inclusive (D-9: 0 < eta_v <= 1)
      },
-     CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v"},
+     CatchingValidationReason::kEtaVOutOfRange, "planner.search.grid.gamma.eta_v"},
     {"DecelEqualToAMaxPasses",
      [](YAML::Node& root) {
        root["supervisor"]["decel"]["a_dec"] = 5.0;  // == a_max, inclusive bound
@@ -1300,12 +1300,12 @@ TEST(CatchingParams, ProvisionalCatchabilitySimWarnsRealBlocks) {
   const CatchingValidationReport sim = ValidateCatchingParams(p, kControlRateHz, false);
   EXPECT_TRUE(sim.armable);
   EXPECT_TRUE(ReportHasWarning(sim, CatchingValidationReason::kProvisionalWarning,
-                               "planner.catchability.manipulability_min"));
+                               "planner.search.grid.catchability.manipulability_min"));
 
   const CatchingValidationReport real = ValidateCatchingParams(p, kControlRateHz, true);
   EXPECT_FALSE(real.armable);
   EXPECT_TRUE(ReportHasFailure(real, CatchingValidationReason::kProvisionalOnRealArm,
-                               "planner.catchability.manipulability_min"));
+                               "planner.search.grid.catchability.manipulability_min"));
 }
 
 TEST(CatchingParams, ProvisionalHandSimWarnsRealBlocks) {

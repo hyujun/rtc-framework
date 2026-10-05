@@ -413,7 +413,7 @@ TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
 }
 
 TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating) {
-  // MPC E1-F09 (supervisor.decel.mode mpc): the segment lane's Load and judge in
+  // MPC E1-F09 (planner.segment.mode mpc): the segment lane's Load and judge in
   // TRACKING and from APPROACH on, the stop part's node-wise catch-box FK, the
   // pair's adoption, the wait before node 0, a same-node-0 replacement, the
   // first switch and two replan switches with their gates, the segment sample

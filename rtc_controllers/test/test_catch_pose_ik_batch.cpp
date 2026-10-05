@@ -619,8 +619,9 @@ TEST(CatchPoseIkBatchParamsTree, FormatShowsTheResolvedNumbers) {
   opt.manipulability_min = 0.174;
   opt.definition = rtc::catching::ManipDefinition::kArm6Row;
   const std::string text = FormatCatchPoseIkOptions(opt);
-  EXPECT_NE(text.find("planner.ik.k_manip 0.5\n"), std::string::npos) << text;
-  EXPECT_NE(text.find("planner.catchability.definition arm_6row\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("planner.search.grid.ik.k_manip 0.5\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("planner.search.grid.catchability.definition arm_6row\n"), std::string::npos)
+      << text;
   // Round-trip precision, like the CSV: the line carries the double itself.
   const std::string key = "manipulability_min ";
   const std::size_t at = text.rfind(key);

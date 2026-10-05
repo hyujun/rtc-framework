@@ -12,7 +12,7 @@
 // timing must cover the candidates that get as far as IK and the rollout.
 //
 // G3-C asks two things and this suite answers both:
-//   * the planner's cycle time: p99 < `planner.budget_s` — ASSERTED;
+//   * the planner's cycle time: p99 < `planner.search.grid.budget_s` — ASSERTED;
 //   * the rejection-reason distribution — RECORDED (RecordProperty, integer
 //     counts), together with the plan rate and the rank-gate failure counts of
 //     the chosen candidates. Those are measurements of the design under D-27,
@@ -271,7 +271,8 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   RecordProperty("rank_rollout", static_cast<int>(rank_fail[5]));
   RecordProperty("rollout_window_only", static_cast<int>(window_only));
 
-  EXPECT_LT(pct(0.99), budget_us) << "G3-C: the planner's p99 cycle exceeds planner.budget_s";
+  EXPECT_LT(pct(0.99), budget_us)
+      << "G3-C: the planner's p99 cycle exceeds planner.search.grid.budget_s";
   EXPECT_GT(plans, 0) << "not one of 1000 reachable throws produced a plan";
 }
 
