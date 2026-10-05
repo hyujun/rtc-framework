@@ -1002,7 +1002,7 @@ TEST_F(SupervisorScenarioTest, TheV1CommandsTimeOffsetFromItsReferenceIsMeasured
   // A first-order model of the CLIK (fixed point 2h) does not describe it:
   // the error starts at 0 when the reference is seeded at the arm, needs
   // 1/(hK_p) = 25 ticks to settle, and the posture row (w_arm · K_a) pulls the
-  // task back by more than hẋ on this approach. The decel convention does not
+  // task back by more than hẋ on this approach. The segment convention does not
   // rest on this number — while the RT follows a segment every target comes
   // from q_ref(s), so the command is q_ref(s + h) by construction, and that is
   // what the MPC follow scenarios assert. Under the shipped torque rows: the
@@ -1406,7 +1406,7 @@ TEST_F(MpcScenarioTest, TheRtTakesThePairAndFollowsItFromApproachToTheRearm) {
   os << "over " << n_follow << " ticks, max |FK(q_out) - FK(q_ref(t))| [m]: t = now+h " << err_p[0]
      << ", now+2h " << err_p[1] << ", now+3h " << err_p[2] << " (h*|p_dot|max " << kDt * speed_peak
      << "); joint max [rad]: " << err_q[0] << " / " << err_q[1] << " / " << err_q[2];
-  RecordProperty("decel_follow_time_label", os.str());
+  RecordProperty("segment_follow_time_label", os.str());
   std::printf("[ MEASURED ] %s\n", os.str().c_str());
   ASSERT_GT(n_follow, 100);
   // 2h is the label: at least twice as close as either neighbour. What is left
@@ -1945,7 +1945,7 @@ TEST_F(MpcScenarioTest, ClosedFormIsTheDefaultAndNeverReadsTheBox) {
                      t.rt_segment_pending;
             }),
             0)
-      << "closed_form touched the decel lane";
+      << "closed_form touched the segment lane";
 }
 
 TEST_F(SupervisorScenarioTest, ActivatedOutsideTheWaitPoseHomesThenArms) {

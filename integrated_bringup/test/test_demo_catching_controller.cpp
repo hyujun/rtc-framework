@@ -3053,7 +3053,7 @@ TEST(CatchingDiagLog, TheHeaderNamesTheJointsAndTipsItsColumnsAreIn) {
 }
 
 TEST(CatchingDiagLog, TheSegmentBlockIsWrittenAsNumbersAndIsZeroWhenTheLaneDidNotRun) {
-  // E1-F05 (#631): the tick record's decel block reaches the file. This
+  // E1-F05 (#631): the tick record's segment block reaches the file. This
   // controller runs `closed_form`, so the lane never judges a segment and the
   // block is the fresh POD's — which is what a reader sees on every tick of a
   // closed_form log. `segment_refusal` is a std::uint8_t: streamed without a
@@ -3072,17 +3072,17 @@ TEST(CatchingDiagLog, TheSegmentBlockIsWrittenAsNumbersAndIsZeroWhenTheLaneDidNo
 
   const auto csv = integrated_bringup::testfx::ReadCsv(ch.path);
   ASSERT_EQ(csv.rows.size(), 1U);
-  for (const char* col :
-       {"decel_judged", "decel_refusal", "decel_event", "decel_following", "decel_seq", "decel_k0",
-        "decel_held", "decel_p_d_x", "decel_p_d_y", "decel_p_d_z", "decel_v_ff_x", "decel_v_ff_y",
-        "decel_v_ff_z", "decel_rho", "decel_dq_max", "decel_dqd_max"}) {
+  for (const char* col : {"segment_judged", "segment_refusal", "segment_event", "segment_following",
+                          "segment_seq", "segment_k0", "segment_held", "segment_p_d_x",
+                          "segment_p_d_y", "segment_p_d_z", "segment_v_ff_x", "segment_v_ff_y",
+                          "segment_v_ff_z", "segment_rho", "segment_dq_max", "segment_dqd_max"}) {
     ASSERT_TRUE(csv.Has(col)) << col;
     EXPECT_DOUBLE_EQ(csv.At(0, col), 0.0) << col;
   }
-  EXPECT_EQ(csv.Text(0, "decel_refusal"), "0");
-  EXPECT_EQ(csv.Text(0, "decel_event"), "0");
-  ASSERT_TRUE(csv.Has("decel_gate_joint"));
-  EXPECT_DOUBLE_EQ(csv.At(0, "decel_gate_joint"), -1.0) << "no gate was judged";
+  EXPECT_EQ(csv.Text(0, "segment_refusal"), "0");
+  EXPECT_EQ(csv.Text(0, "segment_event"), "0");
+  ASSERT_TRUE(csv.Has("segment_gate_joint"));
+  EXPECT_DOUBLE_EQ(csv.At(0, "segment_gate_joint"), -1.0) << "no gate was judged";
 }
 
 TEST(CatchingDiagLog, AStoppedTickIsARowLikeAnyOtherAndSaysSo) {

@@ -355,17 +355,17 @@ TEST(PlannerEventsCsv, EveryRowHasTheHeadersWidthAndIdleWakesAreSkipped) {
 }
 
 TEST(PlannerEventsCsv, ASegmentStepEarnsARowOnlyWhenItDidSomething) {
-  // MPC E1-F03: the decel columns are appended (readers select by name), and
+  // MPC E1-F03: the segment columns are appended (readers select by name), and
   // a wake whose segment step only waited does not earn a row on its own.
   using rtc::catching::SegmentOutcome;
   std::ostringstream header;
   integrated_bringup::WritePlannerEventsHeader(header);
-  EXPECT_NE(header.str().find(",max_catchable,decel_outcome,"), std::string::npos);
+  EXPECT_NE(header.str().find(",max_catchable,segment_outcome,"), std::string::npos);
   // E1-F05: the search's own validity beside the published plan's, and the
   // E1-F08 record after the E1-F03 columns.
   EXPECT_NE(header.str().find(",plan_valid,search_valid,plan_reason,"), std::string::npos);
-  EXPECT_NE(header.str().find(",decel_tau_ratio_max,decel_kind,"), std::string::npos);
-  EXPECT_NE(header.str().find(",decel_catch_v_rel,decel_slack_v,"), std::string::npos);
+  EXPECT_NE(header.str().find(",segment_tau_ratio_max,segment_kind,"), std::string::npos);
+  EXPECT_NE(header.str().find(",segment_catch_v_rel,segment_slack_v,"), std::string::npos);
   rtc::catching::PlannerCycleRecord rec{};
   for (const SegmentOutcome waited :
        {SegmentOutcome::kOff, SegmentOutcome::kUpToDate, SegmentOutcome::kPastReplanWindow}) {
@@ -828,7 +828,7 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannerIsParkedWithoutThePlanner) {
       TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
   yaml["catching"]["planner"]["enabled"] = false;
   yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // no other writer of the segment box
-  // MD-44: the decel keys are read only under the law that follows them.
+  // MD-44: the mpc segment planner's keys are read only under the law that follows them.
   yaml["catching"]["planner"]["segment"]["mode"] = "mpc";
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
@@ -903,7 +903,7 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
   });
   // MD-45, MD-70: a plan goes out only with a segment that starts before
   // t_c, so without a pre-catch grid there is no MPC segment planner to build.
-  expect_park("a decel planner without the pre-catch grid", true, [](YAML::Node& y) {
+  expect_park("an MPC segment planner without the pre-catch grid", true, [](YAML::Node& y) {
     y["catching"]["planner"]["segment"]["mpc"]["approach"]["n_pre_max"] = 0;
   });
   expect_park("no planner and no oracle", false,
@@ -1412,14 +1412,15 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
                           << rtc::catching::CycleOutcomeName(planner.outcome) << ", decel "
                           << rtc::catching::SegmentOutcomeName(planner.segment.outcome) << " / "
                           << rtc::catching::MpcSegmentCoreReasonName(planner.segment.core_reason)
-                          << "; RT decel refusal " << static_cast<int>(end_record.segment_refusal);
+                          << "; RT segment refusal "
+                          << static_cast<int>(end_record.segment_refusal);
   EXPECT_TRUE(pair_taken);
   ASSERT_EQ(last, Mode::kHold) << "the trial did not reach HOLD: mode " << static_cast<int>(last)
                                << ", reason " << static_cast<int>(ctrl_->GetLastReason())
-                               << ", decel events " << counts.str() << ", last event "
+                               << ", segment events " << counts.str() << ", last event "
                                << static_cast<int>(end_record.segment_event) << ", gate rho "
                                << end_record.segment_rho << " (joint "
-                               << end_record.segment_gate_joint << "), last decel step "
+                               << end_record.segment_gate_joint << "), last segment step "
                                << rtc::catching::SegmentOutcomeName(planner.segment.outcome)
                                << " / "
                                << rtc::catching::MpcSegmentCoreReasonName(

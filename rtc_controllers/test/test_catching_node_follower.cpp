@@ -176,7 +176,7 @@ TEST(SegmentPayload, PayloadFitsItsBudget) {
   // trajectory.hpp; the core's block array is sized by it).
   EXPECT_EQ(rtc::catching::MpcSegmentCoreParams{}.block_sizes.size(),
             static_cast<std::size_t>(kMaxSegmentNodes));
-  RecordProperty("decel_payload_bytes", std::to_string(sizeof(SegmentSnapshot)));
+  RecordProperty("segment_payload_bytes", std::to_string(sizeof(SegmentSnapshot)));
 }
 
 TEST(SegmentPayload, ValidateAcceptsAWellFormedPayload) {

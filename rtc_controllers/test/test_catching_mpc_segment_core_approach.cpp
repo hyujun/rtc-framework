@@ -134,7 +134,7 @@ void AddSolution(Probe& p, const MpcSegmentCoreResult& r) {
 }
 
 [[nodiscard]] bool GoldenPrintMode() {
-  const char* e = std::getenv("RTC_DECEL_MPC_GOLDEN_PRINT");
+  const char* e = std::getenv("RTC_MPC_SEGMENT_CORE_GOLDEN_PRINT");
   return e != nullptr && e[0] != '\0' && e[0] != '0';
 }
 
@@ -1835,7 +1835,7 @@ void ReportSeries(const std::string& key, const Series& s) {
 }
 
 [[nodiscard]] int TimingSamples() {
-  const char* e = std::getenv("RTC_DECEL_MPC_TIMING_FULL");
+  const char* e = std::getenv("RTC_MPC_SEGMENT_CORE_TIMING_FULL");
   const bool full = e != nullptr && e[0] != '\0' && e[0] != '0';
   if (!OptimisedBuild()) {
     return 4;
