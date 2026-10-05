@@ -813,6 +813,27 @@ void DecelPlanner::NoteSolve(bool ok, bool catch_core, int index, std::int64_t t
   last_solve_t_c_ = t_c;
 }
 
+DecelBallTarget DecelPlanner::TargetAt(const BallPrediction& ball,
+                                       std::int64_t t_c_ns) const noexcept {
+  if (ball.Empty()) {
+    return DecelBallTarget{};
+  }
+  return MakeDecelBallTarget(*ball.traj, *ball.cov, ball.cov_matched, t_c_ns, consts_.v_eps);
+}
+
+// The target is built BEFORE the solve's own entry, which is where its clock
+// starts: the budget measures what it measured when the cycle built it.
+bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
+                             const BallPrediction& ball, DecelPlanSnapshot& out,
+                             DecelRecord& rec) noexcept {
+  return PlanFirst(rt, plan, TargetAt(ball, plan.t_c_ns), out, rec);
+}
+
+bool DecelPlanner::Replan(const PlannerRtState& rt, const BallPrediction& ball,
+                          DecelPlanSnapshot& out, DecelRecord& rec) noexcept {
+  return Replan(rt, TargetAt(ball, rt.plan_t_c_ns), out, rec);
+}
+
 bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
                              const DecelBallTarget& ball, DecelPlanSnapshot& out,
                              DecelRecord& rec) noexcept {

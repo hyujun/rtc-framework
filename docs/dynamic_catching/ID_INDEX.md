@@ -75,7 +75,8 @@
 | E1-F07 – F09 | [#660](https://github.com/hyujun/rtc-framework/issues/660) · [#661](https://github.com/hyujun/rtc-framework/issues/661) · [#662](https://github.com/hyujun/rtc-framework/issues/662) | APPROACH–정지 코어 · 계획기 · RT 추종 |
 | E1-F10 · F11 | [#663](https://github.com/hyujun/rtc-framework/issues/663) · [#698](https://github.com/hyujun/rtc-framework/issues/698) | `mpc` 튜닝, config 의 기능별 분리 |
 | E2-F01 – F03 | [#633](https://github.com/hyujun/rtc-framework/issues/633) · [#634](https://github.com/hyujun/rtc-framework/issues/634) · [#635](https://github.com/hyujun/rtc-framework/issues/635) | G1 자산 · config · launch · joint 구동 |
-| E1-F12 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
+| E1-F12 | [#738](https://github.com/hyujun/rtc-framework/issues/738) | 포구 탐색 · 구간 계획기의 추상 interface (`CatchSearch` · `SegmentPlanner`) |
+| E1-F13 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
 
 ## 4. `MD-n` — MPC · dual-arm 확장의 결정
 
@@ -241,7 +242,7 @@
 | P-3 | ball_perception 요청 이슈는 만들지 않고 레이아웃 변경은 파서의 필드·datatype 검사와 해시 진단이 감지한다 | — / MASTER §5.1, L8 |
 | A-2 | D-7a 스케줄러 판정은 제어 PC 측정으로 정한다 (측정은 생략돼 초기값 FIFO 유지) | — / L3 §5.3·§9 |
 | A-3 | 공분산은 RT 스냅샷에서 분리해 계획기 쪽 버퍼에만 두고 (같은 token) NaN(모름) 처리도 계획기 한 곳이다 | `RCI/traj_ingress.hpp` (Covariance), `hdr` / L1 §1·§5.2, L3 §5.3, L0 §5.2 |
-| A-4 | 계획기 탐색의 단일 진입점이 `PlannerSearch::Plan` 이고 NLP 전환은 v1 에 없다 (`mpc` 는 구간 계획이지 탐색 NLP 가 아니다) | `RCI/planner_cycle.hpp` (`PlanOnce`), `RCS/catching/planner_cycle.cpp` / L3 §4.1 |
+| A-4 | 계획기 탐색의 단일 진입점이 `CatchSearch::Plan` (구현 `PlannerSearch::Plan`) 이고 NLP 전환은 v1 에 없다 (`mpc` 는 구간 계획이지 탐색 NLP 가 아니다) | `RCI/catch_search.hpp`, `RCI/planner_cycle.hpp` (`PlanOnce`), `RCS/catching/planner_cycle.cpp` / L3 §4.1 |
 | A-5 | `DECEL` 진입은 t_c 시각 기준이고 지문 센서는 결과 판정·abort 전용이다 | — / L7 §4.1 ("감속은 시각 기준"), L4 §5, MASTER §10 |
 | A-6 | COMMITTED 이후 stale 은 동결 plan 으로 계속하고 `supervisor.stale_committed_max_s` 초과 시 ABORT_SAFE 다 | `par` (`supervisor_stale_committed_max_s`), YAML `supervisor` / L7 §4.2 |
 | A-7 | → D-15 로 합쳐졌다 (vision 요구 사양은 제어기가 정한다) | — / D-15 |

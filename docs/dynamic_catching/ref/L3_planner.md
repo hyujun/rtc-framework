@@ -4,7 +4,7 @@
 
 - **planner 는 둘이다**: `closed_form` 과 `mpc` (`supervisor.decel.mode` 가 고른다. 출하 값은 두 로봇 모두 `mpc`). **탐색 (`PlannerSearch`) 은 두 planner 공통**이고, 둘은 탐색 뒤에 decel 층 (`DecelPlanner`) 이 붙느냐로 갈린다 (§4.1). 각 절의 머리에 적용 범위 — **공통 / closed_form 전용 / mpc 전용** — 를 적는다
 - `mpc` 의 구간 계획 (APPROACH–정지 MPC) 의 수학은 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) 가 갖는다. 이 문서는 탐색이 낸 후보가 거기서 어떻게 쓰이는지만 가리킨다 (§4.1)
-- 코드: 탐색 코어 (순수 수치, ROS 의존 없음) 는 `rtc_controllers/{include,src}/…/catching/` (namespace `rtc::catching`), 계획기 스레드의 소유와 YAML 은 `integrated_bringup` 의 `controllers/catching/`
+- 코드: 탐색 코어 (순수 수치, ROS 의존 없음) 는 `rtc_controllers/{include,src}/…/catching/` (namespace `rtc::catching`), 계획기 스레드의 소유와 YAML 은 `integrated_bringup` 의 `controllers/catching/`. 한 wake (`PlannerCycle`) 는 탐색과 구간 계획기를 추상 interface `CatchSearch` · `SegmentPlanner` 로만 부른다 (§4.1)
 
 ---
 
@@ -67,10 +67,14 @@ rollout 이 정지점과 오차 예산보다 **먼저** 다 — 둘 다 rollout 
 
 **탐색 방식 `[확정 A-4]`.** [R1]은 $(q_c,t_c)$를 동시에 푸는 NLP를 썼다. 본 구현은 1차원 시간 탐색 + IK 다.
 
-- 계획기 코어는 "입력 스냅샷(궤적 + 공분산 + 로봇 상태) → `PlanSnapshot`" **단일 진입 함수**다 (`PlannerSearch::Plan`, `PlannerCycle::PlanOnce` 가 부른다). 스레드(§5.3), 입출력 SeqLock, RT 쪽 소비(L4·L7)는 탐색 전략과 독립이다
-- 탐색 구현은 하나 (`PlannerSearch`) 이고 추상 interface 는 없다 — `PlannerCycle` 이 구체 멤버로 갖는다
+- 계획기 코어는 "입력 스냅샷(궤적 + 공분산 + 로봇 상태) → `PlanSnapshot`" **단일 진입 함수**다 (`CatchSearch::Plan` — 구현은 `PlannerSearch::Plan`. `PlannerCycle::PlanOnce` 가 부른다). 스레드(§5.3), 입출력 SeqLock, RT 쪽 소비(L4·L7)는 탐색 전략과 독립이다
+- 탐색 구현은 하나 (`PlannerSearch`) 다. `PlannerCycle` 은 그것을 추상 interface `CatchSearch` (`catch_search.hpp` — `Plan` · `Monitor` · `NotePublished` · `ResetTrial`) 의 포인터로 소유하고, wake 는 interface 만 부른다. 구체 타입을 아는 것은 configure 경로 (`ConfigureSearch`) 뿐이다
 
-**두 planner (`closed_form` / `mpc`).** 탐색은 공통이다. planner 는 `supervisor.decel.mode` 가 고르는데, 코드에서는 planner 클래스가 따로 있는 것이 아니라 `PlannerCycle` 에 **decel 층이 붙었는가** (`DecelActive()` — decel box 가 묶여 있고 `DecelPlanner` 가 configure 됐다) 로 갈린다.
+**두 planner (`closed_form` / `mpc`).** 탐색은 공통이다. planner 는 `supervisor.decel.mode` 가 고르는데, 코드에서는 planner 마다 클래스가 있는 것이 아니라 `PlannerCycle` 에 **구간 계획기가 꽂혔는가** (`DecelActive()` — decel box 가 묶여 있고 추상 interface `SegmentPlanner` 의 구현이 꽂혀 있다) 로 갈린다. `SegmentPlanner` (`segment_planner.hpp`) 의 구현은 지금 `DecelPlanner` 하나이고, 아래의 `DecelPlanner::…` 호출은 모두 그 interface 를 거친다.
+
+- **꽂힌 것이 구성된 것이다.** `ConfigureSearch` · `ConfigureDecel` 은 매번 새 객체를 만들어 구성에 성공했을 때만 꽂고, 실패와 `ClearSearch` · `ClearDecel` 은 비운다 — cycle 은 구성되지 않은 구현을 들고 있지 않다. 호출자가 만든 구현은 `InstallSearch` · `InstallSegmentPlanner` 로 꽂는다 (configure 에서만 — 계획기 스레드가 멈춰 있을 때). 이 규칙은 두 `Configure` 가 전체 reset 이라는 데 기댄다 — 한 번 쓴 객체를 다시 구성한 것이 새 객체와 같은 답을 낸다 (`AReconfiguredSearchIsANewOne` · `AReconfiguredPlannerIsANewOne`)
+- **공의 예측은 view 로 건넨다.** 구간 계획기는 $t_c$ 의 공 한 점이 아니라 그 wake 가 읽은 궤적 · 공분산과 둘의 짝 여부 (`BallPrediction`) 를 받는다. 거기서 무엇을 뽑는가 — `mpc` 는 $t_c$ 의 공 (`MakeDecelBallTarget`) — 는 구현의 일이다. cycle 이 정하는 것은 그 wake 에 **따르는 plan 의 공이 있는가** 뿐이다: box 의 궤적이 그 plan 의 track 이 아니면, 그리고 포구 뒤에는, 빈 view 를 넘긴다
+- 스레드 · RT 계약 (계획기 스레드에서만 불린다, 할당 · 잠금 · 로그 · 예외 없음) 과 cycle 이 기록에서 되읽는 필드 (`SearchStats::publish`, 재계획의 `DecelRecord::source_seq`) 는 두 interface 헤더의 머리 주석이 갖는다
 
 - **`closed_form`**: 탐색이 낸 plan 을 그대로 게시한다. RT 는 그 plan 의 $p_c$ 와 γ 프로파일로 soft-catch DS (L4) 를 돌려 접근하고, $t_c$ 뒤에는 상수 감속의 가상 목표를 따른다 (L7 §4.3). APPROACH 동안에도 탐색이 계속 돌며 §4.7 의 교체 규칙으로 plan 을 바꾼다
 - **`mpc`**: 탐색이 유효한 plan 을 내면 같은 wake 에서 그 plan 의 첫 구간을 풀어 (`DecelPlanner::PlanFirst`) 둘을 한 쌍으로 게시한다. 구간이 보류되면 plan 도 게시하지 않는다. RT 는 plan 을 첫 구간과 함께만 채택하고, APPROACH 부터 정지 끝까지 관절 노드 구간을 따른다 — **RT 는 soft-catch DS 를 돌리지 않는다**. RT 가 plan 을 따르는 동안 탐색은 건너뛰고 구간의 재계획 (`DecelPlanner::Replan`) 만 한다. 따라서 plan 의 교체 (§4.7) 가 없다
@@ -603,6 +607,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | 방향 속력 | `unit_speed.hpp` |
 | γ rollout | `gamma_rollout.hpp` |
 | 탐색 · 선택 · 히스테리시스 | `planner_search.hpp` |
+| 탐색 · 구간 계획기의 추상 interface | `catch_search.hpp`, `segment_planner.hpp` |
 | 한 번의 wake · 게시 | `planner_cycle.hpp` |
 | 계획기 스레드 | `integrated_bringup` 의 `planner_thread.hpp` |
 

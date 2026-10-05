@@ -1,7 +1,8 @@
 // ── The planner's search: one cycle's candidates → one plan (S6-B, L3 §4) ────
 //
-// What `PlannerCycle::PlanOnce` delegates to once the binding has given it a
-// model. Candidates are the vision samples themselves (L3 §5.3, thinned to
+// The CatchSearch (catch_search.hpp) `PlannerCycle::PlanOnce` delegates to once
+// the binding has given it a model — the one implementation of that interface
+// today. Candidates are the vision samples themselves (L3 §5.3, thinned to
 // `planner.slice.dt`) whose lead lies in [slice.t_lead_min, slice.t_max].
 //
 // TWO KINDS OF GATE (decision C, D-27). JUDGEMENT gates remove a candidate —
@@ -38,6 +39,7 @@
 #pragma once
 
 #include "rtc_controllers/catching/catch_pose_ik.hpp"
+#include "rtc_controllers/catching/catch_search.hpp"
 #include "rtc_controllers/catching/gamma_rollout.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
@@ -206,7 +208,7 @@ struct SearchStats {
   double sigma_l{std::numeric_limits<double>::quiet_NaN()};
 };
 
-class PlannerSearch {
+class PlannerSearch final : public CatchSearch {
  public:
   using ClockFn = std::int64_t (*)() noexcept;
 
@@ -222,22 +224,22 @@ class PlannerSearch {
   /// follows; `now` is the planning 'now' on the steady axis.
   [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                                   bool cov_matched, const PlannerRtState& rt, NowReal now,
-                                  SearchStats& stats) noexcept;
+                                  SearchStats& stats) noexcept override;
 
   /// monitorOnly (§4.6): σ_ℓ at the t_c of the plan the RT follows
   /// (`rt.plan_id`). RT-safe.
   void Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
-               const PlannerRtState& rt, SearchStats& stats) const noexcept;
+               const PlannerRtState& rt, SearchStats& stats) const noexcept override;
 
   /// The cycle published `plan` (after its provenance re-check): remember it.
   /// It becomes "the current plan" only once the RT reports following it
   /// (`rt.plan_id`) — a publish the RT refused (freeze, age, a newer one)
   /// must not stand in for what the arm is actually doing.
-  void NotePublished(const PlanSnapshot& plan) noexcept;
+  void NotePublished(const PlanSnapshot& plan) noexcept override;
 
   /// A trial reset (the RT's reset epoch moved): forget the current plan and
   /// the settle count.
-  void ResetTrial() noexcept;
+  void ResetTrial() noexcept override;
 
   /// σ_max = √λ_max(Σ_pp) of sample k, or NaN when unknown (L3 §4.4).
   [[nodiscard]] static double SigmaMax(const CovarianceSnapshot& cov, int k) noexcept;

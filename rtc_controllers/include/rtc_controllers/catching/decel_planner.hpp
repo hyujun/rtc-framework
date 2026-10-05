@@ -2,11 +2,17 @@
 // (dynamic_catching MPC plan E1-F03 #629 · E1-F08 #661; decisions MD-24 –
 // MD-33, MD-55 – MD-64, MD-70)
 //
-// What PlannerCycle runs once a decel MPC is configured: solve the joint-node
-// segment the RT follows from APPROACH to the end of the stop (decel_mpc.hpp)
-// and hand back a DecelPlanSnapshot for the cycle to publish. ROS-free, so
-// the whole decision is testable against plain values; the cycle owns the
-// SeqLock, the re-check and the counter.
+// The SegmentPlanner (segment_planner.hpp) PlannerCycle runs once a decel MPC
+// is configured — the one implementation of that interface today: solve the
+// joint-node segment the RT follows from APPROACH to the end of the stop
+// (decel_mpc.hpp) and hand back a DecelPlanSnapshot for the cycle to publish.
+// ROS-free, so the whole decision is testable against plain values; the cycle
+// owns the SeqLock, the re-check and the counter.
+//
+// The cycle hands the ball over as a VIEW of the wake's trajectory and
+// covariance (BallPrediction); what this planner takes of it is the ball at
+// the plan's catch instant (MakeDecelBallTarget). The entry points that take
+// that value directly remain — the planner's own tests call them.
 //
 // ── The grid and the stop end (MD-10, MD-31, MD-54) ───────────────────────────
 // Nodes sit on t_c − j·Δ_pre (pre-catch, j ≤ n_pre_max) and t_c + k·Δ_s
@@ -96,6 +102,7 @@
 #include "rtc_controllers/catching/decel_mpc.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"  // CovarianceSnapshot
 #include "rtc_controllers/catching/trajectory.hpp"
 
@@ -278,10 +285,8 @@ struct DecelBallTarget {
                                                   const CovarianceSnapshot& cov, bool cov_matched,
                                                   std::int64_t t_c_ns, double v_eps) noexcept;
 
-class DecelPlanner {
+class DecelPlanner final : public SegmentPlanner {
  public:
-  using ClockFn = std::int64_t (*)() noexcept;
-
   DecelPlanner() = default;
 
   /// @brief Build the k_max + 1 stop cores and the n_pre_max catch cores and
@@ -295,7 +300,7 @@ class DecelPlanner {
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
 
   /// Replace the clock (tests pin it; the cycle forwards its own).
-  void SetClock(ClockFn clock) noexcept {
+  void SetClock(ClockFn clock) noexcept override {
     if (clock != nullptr) {
       clock_ = clock;
     }
@@ -303,7 +308,7 @@ class DecelPlanner {
 
   /// Drop the per-trial state (a trial reset, a new followed plan) — the
   /// published segments and their stop-path lines with them.
-  void ResetTrial() noexcept;
+  void ResetTrial() noexcept override;
 
   [[nodiscard]] const DecelPlannerParams& Params() const noexcept { return params_; }
 
@@ -331,6 +336,14 @@ class DecelPlanner {
                                const DecelBallTarget& ball, DecelPlanSnapshot& out,
                                DecelRecord& rec) noexcept;
 
+  /// @brief The same solve from the wake's prediction (the SegmentPlanner
+  ///        entry; RT-safe): the ball target is `ball` at `plan.t_c_ns`
+  ///        (MakeDecelBallTarget with this planner's v_eps), an invalid one
+  ///        when the view is empty.
+  [[nodiscard]] bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
+                               const BallPrediction& ball, DecelPlanSnapshot& out,
+                               DecelRecord& rec) noexcept override;
+
   /// @brief A later segment of the plan the RT follows (RT-safe; MD-58): the
   ///        grid point the replan budget reaches, solved from the segment the
   ///        RT reports pending or following (SourceSeq).
@@ -339,12 +352,18 @@ class DecelPlanner {
   [[nodiscard]] bool Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
                             DecelPlanSnapshot& out, DecelRecord& rec) noexcept;
 
+  /// @brief The same solve from the wake's prediction (the SegmentPlanner
+  ///        entry; RT-safe): the ball target is `ball` at `rt.plan_t_c_ns`, an
+  ///        invalid one when the view is empty.
+  [[nodiscard]] bool Replan(const PlannerRtState& rt, const BallPrediction& ball,
+                            DecelPlanSnapshot& out, DecelRecord& rec) noexcept override;
+
   /// The cycle published `p` (its decel_seq filled): a later replan may be
   /// solved from it. With `cost.w_perp` > 0 the segment takes the stop-path
   /// line of the solve that produced it — handed over once, by the PlanFirst
   /// or Replan that returned true right before this call. A segment published
   /// any other way carries no line, and no stop core is solved from it.
-  void NotePublished(const DecelPlanSnapshot& p) noexcept;
+  void NotePublished(const DecelPlanSnapshot& p) noexcept override;
 
   /// The track generation of the plan `rt` follows, from the segments
   /// published for it (the first one carries the plan's own token). False when
@@ -352,25 +371,26 @@ class DecelPlanner {
   /// committed track while `rt.track_generation` moves on to whatever it last
   /// consumed, so that field does not say whose ball the plan catches.
   [[nodiscard]] bool FollowedTrack(const PlannerRtState& rt,
-                                   std::uint64_t& generation) const noexcept;
+                                   std::uint64_t& generation) const noexcept override;
 
   /// Whether a segment whose node 0 is at `t0_ns` can still be read by the RT
   /// when it is published at `publish_ns`: publish + T_arm + 2 ticks < t0.
   /// The one statement of that lead — the solve's own late check and the
   /// cycle's re-checks at the publish stamp all use it.
-  [[nodiscard]] bool StartsInTime(std::int64_t publish_ns, std::int64_t t0_ns) const noexcept {
+  [[nodiscard]] bool StartsInTime(std::int64_t publish_ns,
+                                  std::int64_t t0_ns) const noexcept override {
     return publish_ns + t_arm_ns_ + 2 * h_ns_ < t0_ns;
   }
 
   /// The control period [ns].
-  [[nodiscard]] std::int64_t ControlDtNs() const noexcept { return h_ns_; }
+  [[nodiscard]] std::int64_t ControlDtNs() const noexcept override { return h_ns_; }
 
   /// The decel_seq of the segment a replan at `t_eff_ns` starts from, 0 when
   /// there is none (kNotFollowed): the one the RT reports pending (when it
   /// starts no later than t_eff), else the one it reports following — never
   /// inferred.
   [[nodiscard]] std::uint32_t SourceSeq(const PlannerRtState& rt,
-                                        std::int64_t t_eff_ns) const noexcept;
+                                        std::int64_t t_eff_ns) const noexcept override;
 
   /// The catch core for `n_pre` pre-catch intervals (1..n_pre_max), and the
   /// parameters each core was built with (tests and diagnostics).
@@ -426,6 +446,9 @@ class DecelPlanner {
   std::vector<DecelMpcResult> results_;
 
   // Where the solve's state comes from and how it is judged and packed.
+  // The ball at `t_c_ns` from a wake's prediction; invalid for an empty view.
+  [[nodiscard]] DecelBallTarget TargetAt(const BallPrediction& ball,
+                                         std::int64_t t_c_ns) const noexcept;
   [[nodiscard]] bool ConfigureApproach(const DecelPlannerModel& model, std::string& why);
   [[nodiscard]] bool WarmUp(const DecelPlannerModel& model, std::string& why);
   [[nodiscard]] bool CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,

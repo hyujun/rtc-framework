@@ -13,13 +13,18 @@
 //   4. The cycle's provenance handling (G3-L, planner side): what it publishes,
 //      what it refuses to publish, and that ids are monotone per publish.
 //   5. The RT contract of one wake (G3-K): no heap, no Eigen allocation.
+//   6. The two interfaces (E1-F12 #738): with a fake CatchSearch and a fake
+//      SegmentPlanner installed, what a wake calls, in what order and with
+//      what — so the wake is shown to go through the interfaces alone.
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_controllers/catching/catch_search.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 
 #include <gtest/gtest.h>
@@ -29,15 +34,23 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <ostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
 using rtc::catching::ActivityFor;
 using rtc::catching::AdmittedPlan;
+using rtc::catching::BallPrediction;
 using rtc::catching::CovarianceSnapshot;
 using rtc::catching::CycleOutcome;
+using rtc::catching::DecelKind;
+using rtc::catching::DecelOutcome;
+using rtc::catching::DecelPlanSnapshot;
+using rtc::catching::DecelRecord;
 using rtc::catching::JudgePlan;
 using rtc::catching::Mode;
 using rtc::catching::NowReal;
@@ -46,9 +59,11 @@ using rtc::catching::PlanAdmissionContext;
 using rtc::catching::PlannerActivity;
 using rtc::catching::PlannerCycle;
 using rtc::catching::PlannerCycleIo;
+using rtc::catching::PlannerCycleRecord;
 using rtc::catching::PlannerRtState;
 using rtc::catching::PlanRefusal;
 using rtc::catching::PlanSnapshot;
+using rtc::catching::SearchStats;
 using rtc::catching::TrajectorySnapshot;
 
 constexpr std::int64_t kMs = 1'000'000;
@@ -440,6 +455,21 @@ TEST(PlannerCycleRun, PublishesNothingInAModeWithNothingToPlanFor) {
   EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
 }
 
+TEST(PlannerCycleRun, AMonitorWakeWithoutASearchRecordsNothingToPublish) {
+  // COMMITTED with no search configured: there is no followed plan of ours to
+  // read σ_ℓ at, and the record says so the way a configured search does —
+  // nothing to publish, σ_ℓ unknown.
+  auto rig = std::make_unique<CycleRig>();
+  rig->boxes.rt.Store(RtIn(Mode::kCommitted));
+  rig->boxes.traj.Store(Traj(3));
+  rig->boxes.cov.Store(Cov(3));
+  const auto rec = rig->cycle.Run(NowReal{1});
+  EXPECT_EQ(rec.outcome, CycleOutcome::kIdle);
+  EXPECT_FALSE(rec.search.publish);
+  EXPECT_TRUE(std::isnan(rec.search.sigma_l));
+  EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+}
+
 TEST(PlannerCycleRun, NoTrajectoryOfThisActivationIsNoInput) {
   auto rig = std::make_unique<CycleRig>();
   rig->boxes.rt.Store(RtIn(Mode::kTracking));
@@ -589,6 +619,652 @@ TEST(PlannerCycleRun, OneWakeAllocatesNothing) {
   }
   EXPECT_EQ(outcome, CycleOutcome::kPublished)
       << "the gated loop did not exercise the publish path";
+  EXPECT_EQ(heap, 0U);
+  EXPECT_EQ(eigen, 0U);
+}
+
+// ── 6. The two interfaces (E1-F12 #738) ─────────────────────────────────────
+//
+// The fakes answer what the real implementations cannot — a catch point no arm
+// reaches, a control period of one second, a segment that "starts in time"
+// with its node 0 at instant 0 — so a wake that consulted a concrete type
+// instead of the installed object would publish something else, or nothing.
+// Every call goes into one log, the cycle's clock reads included: the order of
+// a wake is asserted, not inferred.
+
+enum class Call : std::uint8_t {
+  kClock,  // the cycle's own clock (the fakes read none)
+  kSearchPlan,
+  kSearchMonitor,
+  kSearchNotePublished,
+  kSearchResetTrial,
+  kSetClock,
+  kSegmentResetTrial,
+  kPlanFirst,
+  kReplan,
+  kSegmentNotePublished,
+  kFollowedTrack,
+  kStartsInTime,
+  kControlDtNs,
+  kSourceSeq,
+};
+
+std::ostream& operator<<(std::ostream& os, Call c) {
+  static constexpr std::array<const char*, 14> kNames{"Clock",
+                                                      "Search.Plan",
+                                                      "Search.Monitor",
+                                                      "Search.NotePublished",
+                                                      "Search.ResetTrial",
+                                                      "Segment.SetClock",
+                                                      "Segment.ResetTrial",
+                                                      "Segment.PlanFirst",
+                                                      "Segment.Replan",
+                                                      "Segment.NotePublished",
+                                                      "Segment.FollowedTrack",
+                                                      "Segment.StartsInTime",
+                                                      "Segment.ControlDtNs",
+                                                      "Segment.SourceSeq"};
+  return os << kNames.at(static_cast<std::size_t>(c));
+}
+
+using Calls = std::vector<Call>;
+
+// Fixed storage: the fakes log inside the allocation gate too.
+struct CallLog {
+  std::array<Call, 32> calls{};
+  std::size_t n{0};
+  bool overflow{false};
+
+  void Add(Call c) noexcept {
+    if (n < calls.size()) {
+      calls[n++] = c;
+    } else {
+      overflow = true;
+    }
+  }
+
+  void Clear() noexcept {
+    n = 0;
+    overflow = false;
+  }
+
+  [[nodiscard]] Calls Taken() const { return Calls(calls.begin(), calls.begin() + n); }
+};
+
+CallLog g_calls;
+
+// A clock that moves on every read, so WHEN the cycle reads it shows in what
+// it stamps, and each read is in the log.
+constexpr std::int64_t kStepBase = 5000 * kMs;
+std::int64_t g_step_now = kStepBase;
+
+std::int64_t StepClock() noexcept {
+  g_calls.Add(Call::kClock);
+  g_step_now += kMs;
+  return g_step_now;
+}
+
+constexpr std::int64_t kFakeTc = kStepBase + 10'000 * kMs;
+constexpr std::array<double, 3> kFakeCatchPoint{111.0, -222.0, 333.0};
+constexpr std::uint16_t kFakeIkCount = 4242;
+constexpr double kFakeSigmaL = 0.125;
+constexpr std::int64_t kFakeControlDtNs = 1000 * kMs;  // the real one is 2 ms
+constexpr std::uint32_t kFakeSourceSeq = 5;
+
+class FakeSearch final : public rtc::catching::CatchSearch {
+ public:
+  [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
+                                  bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                  SearchStats& stats) noexcept override {
+    g_calls.Add(Call::kSearchPlan);
+    plan_sequence = traj.token.snapshot_sequence;
+    plan_cov_sequence = cov.token.snapshot_sequence;
+    plan_cov_matched = cov_matched;
+    plan_now_ns = now.ns;
+    stats = SearchStats{};
+    stats.n_ik = kFakeIkCount;
+    stats.publish = publish;
+    PlanSnapshot p{};
+    p.token = traj.token;
+    p.token.activation_generation = rt.activation_generation;
+    p.rt_iteration = rt.rt_iteration;
+    p.rt_state_ns = rt.rt_state_ns;
+    p.valid = valid;
+    p.t_c_ns = kFakeTc;
+    p.p_c = kFakeCatchPoint;
+    return p;
+  }
+
+  void Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
+               const PlannerRtState& rt, SearchStats& stats) const noexcept override {
+    g_calls.Add(Call::kSearchMonitor);
+    monitor_sequence = traj.token.snapshot_sequence;
+    monitor_cov_sequence = cov.token.snapshot_sequence;
+    monitor_cov_matched = cov_matched;
+    monitor_plan_id = rt.plan_id;
+    stats = SearchStats{};
+    stats.publish = false;
+    stats.sigma_l = kFakeSigmaL;
+  }
+
+  void NotePublished(const PlanSnapshot& plan) noexcept override {
+    g_calls.Add(Call::kSearchNotePublished);
+    noted_plan_id = plan.plan_id;
+    noted_publish_ns = plan.publish_ns;
+    noted_valid = plan.valid;
+  }
+
+  void ResetTrial() noexcept override { g_calls.Add(Call::kSearchResetTrial); }
+
+  // What it answers.
+  bool valid{true};
+  bool publish{true};
+  // What it was handed.
+  std::uint64_t plan_sequence{0};
+  std::uint64_t plan_cov_sequence{0};
+  bool plan_cov_matched{false};
+  std::int64_t plan_now_ns{0};
+  mutable std::uint64_t monitor_sequence{0};
+  mutable std::uint64_t monitor_cov_sequence{0};
+  mutable bool monitor_cov_matched{false};
+  mutable std::uint32_t monitor_plan_id{0};
+  std::uint32_t noted_plan_id{0};
+  std::int64_t noted_publish_ns{0};
+  bool noted_valid{false};
+};
+
+class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
+ public:
+  void SetClock(ClockFn clock) noexcept override {
+    g_calls.Add(Call::kSetClock);
+    clock_seen = clock;
+  }
+
+  void ResetTrial() noexcept override { g_calls.Add(Call::kSegmentResetTrial); }
+
+  [[nodiscard]] bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
+                               const BallPrediction& ball, DecelPlanSnapshot& out,
+                               DecelRecord& rec) noexcept override {
+    g_calls.Add(Call::kPlanFirst);
+    static_cast<void>(rt);
+    NoteBall(ball);
+    first_plan_id = plan.plan_id;
+    first_p_c = plan.p_c;
+    Fill(plan.plan_id, plan.t_c_ns, out, rec);
+    rec.kind = DecelKind::kFirst;
+    return first_ok;
+  }
+
+  [[nodiscard]] bool Replan(const PlannerRtState& rt, const BallPrediction& ball,
+                            DecelPlanSnapshot& out, DecelRecord& rec) noexcept override {
+    g_calls.Add(Call::kReplan);
+    NoteBall(ball);
+    Fill(rt.plan_id, rt.plan_t_c_ns, out, rec);
+    rec.kind = DecelKind::kAdvance;
+    // The one record field the cycle reads back (SegmentPlanner::Replan): the
+    // seq this solve started from, which the re-check compares with SourceSeq.
+    rec.source_seq = kFakeSourceSeq;
+    return replan_ok;
+  }
+
+  void NotePublished(const DecelPlanSnapshot& p) noexcept override {
+    g_calls.Add(Call::kSegmentNotePublished);
+    noted_seq = p.decel_seq;
+    noted_publish_ns = p.publish_ns;
+  }
+
+  [[nodiscard]] bool FollowedTrack(const PlannerRtState& rt,
+                                   std::uint64_t& generation) const noexcept override {
+    g_calls.Add(Call::kFollowedTrack);
+    static_cast<void>(rt);
+    generation = followed_generation;
+    return followed;
+  }
+
+  [[nodiscard]] bool StartsInTime(std::int64_t publish_ns,
+                                  std::int64_t t0_ns) const noexcept override {
+    g_calls.Add(Call::kStartsInTime);
+    starts_publish_ns = publish_ns;
+    starts_t0_ns = t0_ns;
+    return starts_in_time;
+  }
+
+  [[nodiscard]] std::int64_t ControlDtNs() const noexcept override {
+    g_calls.Add(Call::kControlDtNs);
+    return kFakeControlDtNs;
+  }
+
+  [[nodiscard]] std::uint32_t SourceSeq(const PlannerRtState& rt,
+                                        std::int64_t t_eff_ns) const noexcept override {
+    g_calls.Add(Call::kSourceSeq);
+    static_cast<void>(rt);
+    source_t_eff_ns = t_eff_ns;
+    return source_seq;
+  }
+
+  // What it answers.
+  bool first_ok{true};
+  bool replan_ok{true};
+  bool followed{true};
+  std::uint64_t followed_generation{kTrack};
+  bool starts_in_time{true};
+  std::uint32_t source_seq{kFakeSourceSeq};
+  // What it was handed.
+  ClockFn clock_seen{nullptr};
+  bool ball_empty{true};
+  bool ball_cov_matched{false};
+  std::uint64_t ball_sequence{0};
+  std::uint64_t ball_cov_sequence{0};
+  std::uint32_t first_plan_id{0};
+  std::array<double, 3> first_p_c{};
+  std::uint32_t noted_seq{0};
+  std::int64_t noted_publish_ns{0};
+  mutable std::int64_t starts_publish_ns{0};
+  mutable std::int64_t starts_t0_ns{-1};
+  mutable std::int64_t source_t_eff_ns{-1};
+
+ private:
+  void NoteBall(const BallPrediction& ball) noexcept {
+    ball_empty = ball.Empty();
+    ball_cov_matched = ball.cov_matched;
+    ball_sequence = ball.Empty() ? 0 : ball.traj->token.snapshot_sequence;
+    ball_cov_sequence = ball.Empty() ? 0 : ball.cov->token.snapshot_sequence;
+  }
+
+  // A segment whose node 0 is at instant 0: the real planner's StartsInTime
+  // refuses it at any publish stamp.
+  static void Fill(std::uint32_t plan_id, std::int64_t t_c_ns, DecelPlanSnapshot& out,
+                   DecelRecord& rec) noexcept {
+    rec = DecelRecord{};
+    rec.outcome = DecelOutcome::kReady;
+    out = DecelPlanSnapshot{};
+    out.valid = true;
+    out.plan_id = plan_id;
+    out.t_c_ns = t_c_ns;
+    out.t0_ns = 0;
+    out.token.generation = kTrack;
+  }
+};
+
+PlannerRtState Following(Mode mode, std::uint32_t plan_id) {
+  PlannerRtState s = RtIn(mode);
+  s.plan_active = true;
+  s.plan_id = plan_id;
+  s.plan_t_c_ns = kFakeTc;
+  return s;
+}
+
+struct FakeRig {
+  Boxes boxes;
+  rtc::SeqLock<DecelPlanSnapshot> decel{};
+  PlannerCycle cycle;
+  FakeSearch* search{nullptr};           // owned by the cycle
+  FakeSegmentPlanner* segment{nullptr};  // owned by the cycle
+  PlannerCycleRecord rec{};
+
+  FakeRig() {
+    PlannerCycleIo io = boxes.Io();
+    io.decel = &decel;
+    EXPECT_TRUE(cycle.Bind(io));
+    EXPECT_FALSE(cycle.SearchConfigured());
+    EXPECT_FALSE(cycle.DecelConfigured());
+    auto s = std::make_unique<FakeSearch>();
+    auto p = std::make_unique<FakeSegmentPlanner>();
+    search = s.get();
+    segment = p.get();
+    cycle.InstallSearch(std::move(s));
+    cycle.InstallSegmentPlanner(std::move(p));
+    EXPECT_TRUE(cycle.SearchConfigured());
+    EXPECT_TRUE(cycle.DecelConfigured());
+    g_calls.Clear();
+    g_step_now = kStepBase;
+    cycle.SetClock(&StepClock);
+    // The cycle's first sight of the RT is a reset (epoch 0 → 1): taken here,
+    // in a mode with nothing to plan, so each test's wakes start clean.
+    boxes.rt.Store(RtIn(Mode::kIdle));
+    static_cast<void>(cycle.Run(NowReal{1}));
+  }
+
+  Calls Wake(std::int64_t wake_ns = 1995 * kMs) {
+    g_calls.Clear();
+    rec = cycle.Run(NowReal{wake_ns});
+    EXPECT_FALSE(g_calls.overflow);
+    return g_calls.Taken();
+  }
+
+  // A search wake that publishes the pair; returns its stamp.
+  std::int64_t PublishPair(std::uint64_t sequence = 3) {
+    boxes.rt.Store(RtIn(Mode::kTracking));
+    boxes.traj.Store(Traj(sequence));
+    boxes.cov.Store(Cov(sequence));
+    static_cast<void>(Wake());
+    EXPECT_EQ(rec.outcome, CycleOutcome::kPublished);
+    EXPECT_EQ(rec.decel.outcome, DecelOutcome::kPublished);
+    return rec.publish_ns;
+  }
+};
+
+TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPlannerOnly) {
+  auto rig = std::make_unique<FakeRig>();
+  // The rig's SetClock, then its first wake's reset: nothing else was called
+  // — a search has no clock to be handed.
+  EXPECT_EQ(rig->segment->clock_seen, &StepClock);
+  EXPECT_EQ(g_calls.Taken(),
+            (Calls{Call::kSetClock, Call::kSearchResetTrial, Call::kSegmentResetTrial}));
+  // A planner installed AFTER the cycle's SetClock is handed that clock on the
+  // way in: whichever order the two calls come in, its solves are timed on the
+  // axis the cycle stamps.
+  {
+    auto later = std::make_unique<FakeSegmentPlanner>();
+    FakeSegmentPlanner* const raw = later.get();
+    g_calls.Clear();
+    rig->cycle.InstallSegmentPlanner(std::move(later));
+    rig->segment = raw;
+    EXPECT_EQ(raw->clock_seen, &StepClock);
+    EXPECT_EQ(g_calls.Taken(), (Calls{Call::kSetClock}));
+  }
+  // "A segment planner is installed" does not make it a DecelPlanner: Decel()
+  // answers an unconfigured one, as a cycle without its own always has.
+  EXPECT_TRUE(rig->cycle.DecelConfigured());
+  EXPECT_FALSE(rig->cycle.Decel().Configured());
+  // Installing nothing is the cleared state: the wake is the S6-A stub again,
+  // and reads the clock once, for the "no plan" it publishes alone.
+  rig->cycle.InstallSegmentPlanner(nullptr);
+  rig->cycle.InstallSearch(nullptr);
+  rig->segment = nullptr;
+  rig->search = nullptr;
+  EXPECT_FALSE(rig->cycle.DecelConfigured());
+  EXPECT_FALSE(rig->cycle.SearchConfigured());
+  EXPECT_FALSE(rig->cycle.Decel().Configured());
+  rig->boxes.rt.Store(RtIn(Mode::kTracking));
+  rig->boxes.traj.Store(Traj(3));
+  rig->boxes.cov.Store(Cov(3));
+  EXPECT_EQ(rig->Wake(), (Calls{Call::kClock}));
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+  EXPECT_FALSE(rig->rec.plan_valid);
+  EXPECT_FALSE(rig->decel.Load().valid);
+}
+
+TEST(PlannerCycleInterfaces, ASearchWakePublishesThePairThroughBothInterfaces) {
+  for (const bool matched : {true, false}) {
+    SCOPED_TRACE(matched ? "the covariance is the trajectory's" : "another snapshot's covariance");
+    auto rig = std::make_unique<FakeRig>();
+    rig->boxes.rt.Store(RtIn(Mode::kTracking));
+    rig->boxes.traj.Store(Traj(3));
+    rig->boxes.cov.Store(Cov(matched ? 3 : 2));
+    // The order of a pair wake: search, first solve, ONE clock read, the
+    // "can the RT still read it" question at that stamp, then both are told.
+    EXPECT_EQ(rig->Wake(),
+              (Calls{Call::kSearchPlan, Call::kPlanFirst, Call::kClock, Call::kStartsInTime,
+                     Call::kSearchNotePublished, Call::kSegmentNotePublished}));
+    const std::int64_t stamp = kStepBase + kMs;  // the first read of the clock
+    const PlannerCycleRecord& rec = rig->rec;
+    EXPECT_EQ(rec.outcome, CycleOutcome::kPublished);
+    EXPECT_TRUE(rec.plan_valid);
+    EXPECT_TRUE(rec.search_valid);
+    EXPECT_EQ(rec.plan_id, 1U);
+    EXPECT_EQ(rec.cov_matched, matched);
+    EXPECT_EQ(rec.publish_ns, stamp);
+    EXPECT_EQ(rec.search.n_ik, kFakeIkCount) << "the record is not the installed search's";
+    EXPECT_EQ(rec.decel.outcome, DecelOutcome::kPublished);
+    EXPECT_EQ(rec.decel.kind, DecelKind::kFirst);
+    EXPECT_EQ(rec.decel.decel_seq, 1U);
+    EXPECT_EQ(rec.decel.publish_ns, stamp);
+    // The search was handed this wake's inputs.
+    EXPECT_EQ(rig->search->plan_sequence, 3U);
+    EXPECT_EQ(rig->search->plan_cov_sequence, matched ? 3U : 2U);
+    EXPECT_EQ(rig->search->plan_cov_matched, matched);
+    EXPECT_EQ(rig->search->plan_now_ns, 1995 * kMs);
+    // The segment planner was handed the plan under the id it is published
+    // with, and the prediction it was searched on — the pairing flag with it.
+    EXPECT_EQ(rig->segment->first_plan_id, 1U);
+    EXPECT_EQ(rig->segment->first_p_c, kFakeCatchPoint);
+    EXPECT_FALSE(rig->segment->ball_empty);
+    EXPECT_EQ(rig->segment->ball_sequence, 3U);
+    EXPECT_EQ(rig->segment->ball_cov_sequence, matched ? 3U : 2U);
+    EXPECT_EQ(rig->segment->ball_cov_matched, matched);
+    // Its answer decided the publish: node 0 at instant 0 is "in time" only
+    // because the installed planner said so.
+    EXPECT_EQ(rig->segment->starts_publish_ns, stamp);
+    EXPECT_EQ(rig->segment->starts_t0_ns, 0);
+    // Both boxes hold what the fakes produced, under one stamp.
+    const PlanSnapshot plan = rig->boxes.plan.Load();
+    const DecelPlanSnapshot seg = rig->decel.Load();
+    ASSERT_TRUE(plan.valid);
+    EXPECT_EQ(plan.p_c, kFakeCatchPoint);
+    EXPECT_EQ(plan.plan_id, 1U);
+    EXPECT_EQ(plan.publish_ns, stamp);
+    ASSERT_TRUE(seg.valid);
+    EXPECT_EQ(seg.plan_id, 1U);
+    EXPECT_EQ(seg.decel_seq, 1U);
+    EXPECT_EQ(seg.publish_ns, stamp);
+    // And both were told what was stored.
+    EXPECT_EQ(rig->search->noted_plan_id, 1U);
+    EXPECT_EQ(rig->search->noted_publish_ns, stamp);
+    EXPECT_TRUE(rig->search->noted_valid);
+    EXPECT_EQ(rig->segment->noted_seq, 1U);
+    EXPECT_EQ(rig->segment->noted_publish_ns, stamp);
+  }
+}
+
+TEST(PlannerCycleInterfaces, TheInstalledObjectsAnswersDecideWhatASearchWakePublishes) {
+  const auto search_wake = [](FakeRig& rig) {
+    rig.boxes.rt.Store(RtIn(Mode::kTracking));
+    rig.boxes.traj.Store(Traj(3));
+    rig.boxes.cov.Store(Cov(3));
+    return rig.Wake();
+  };
+  {
+    // The search says "publish nothing": the segment planner is not asked.
+    auto rig = std::make_unique<FakeRig>();
+    rig->search->publish = false;
+    EXPECT_EQ(search_wake(*rig), (Calls{Call::kSearchPlan}));
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+    EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+  }
+  {
+    // "No plan" goes out alone, and the search is told about it.
+    auto rig = std::make_unique<FakeRig>();
+    rig->search->valid = false;
+    EXPECT_EQ(search_wake(*rig),
+              (Calls{Call::kSearchPlan, Call::kClock, Call::kSearchNotePublished}));
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+    EXPECT_FALSE(rig->rec.plan_valid);
+    EXPECT_FALSE(rig->search->noted_valid);
+    EXPECT_FALSE(rig->decel.Load().valid);
+  }
+  {
+    // A withheld first segment withholds the plan: no clock read, no store,
+    // nobody told.
+    auto rig = std::make_unique<FakeRig>();
+    rig->segment->first_ok = false;
+    EXPECT_EQ(search_wake(*rig), (Calls{Call::kSearchPlan, Call::kPlanFirst}));
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+    EXPECT_TRUE(rig->rec.search_valid);
+    EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+    EXPECT_FALSE(rig->decel.Load().valid);
+    EXPECT_EQ(rig->cycle.LastPlanId(), 0U);
+  }
+  {
+    // A segment the RT could no longer read drops the pair at the re-check.
+    auto rig = std::make_unique<FakeRig>();
+    rig->segment->starts_in_time = false;
+    EXPECT_EQ(search_wake(*rig),
+              (Calls{Call::kSearchPlan, Call::kPlanFirst, Call::kClock, Call::kStartsInTime}));
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kSuperseded);
+    EXPECT_EQ(rig->rec.decel.outcome, DecelOutcome::kSuperseded);
+    EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+    EXPECT_FALSE(rig->decel.Load().valid);
+  }
+}
+
+TEST(PlannerCycleInterfaces, AFollowedPlansWakeHandsOverThatPlansBallOrNone) {
+  const Calls replan_published{Call::kFollowedTrack, Call::kReplan,
+                               Call::kClock,         Call::kSourceSeq,
+                               Call::kStartsInTime,  Call::kSegmentNotePublished};
+  auto rig = std::make_unique<FakeRig>();
+  const std::int64_t pair_stamp = rig->PublishPair();
+  // APPROACH, the box holds a newer snapshot of the plan's track: no search,
+  // the ball is handed over, and its pairing flag is THIS wake's reading — the
+  // record's cov_matched belongs to the search path and stays false.
+  rig->boxes.rt.Store(Following(Mode::kApproach, 1));
+  rig->boxes.traj.Store(Traj(4));
+  rig->boxes.cov.Store(Cov(4));
+  EXPECT_EQ(rig->Wake(), replan_published);
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kIdle) << "a replan changed the wake's outcome (MD-29)";
+  EXPECT_FALSE(rig->rec.cov_matched);
+  EXPECT_EQ(rig->rec.decel.outcome, DecelOutcome::kPublished);
+  EXPECT_EQ(rig->rec.decel.decel_seq, 2U);
+  EXPECT_FALSE(rig->segment->ball_empty);
+  EXPECT_EQ(rig->segment->ball_sequence, 4U);
+  EXPECT_TRUE(rig->segment->ball_cov_matched);
+  const std::int64_t stamp = pair_stamp + kMs;  // the wake's one read
+  EXPECT_EQ(rig->rec.decel.publish_ns, stamp);
+  EXPECT_EQ(rig->segment->starts_publish_ns, stamp);
+  EXPECT_EQ(rig->segment->source_t_eff_ns, 0) << "SourceSeq is asked at the segment's node 0";
+  EXPECT_EQ(rig->segment->noted_seq, 2U);
+  EXPECT_EQ(rig->decel.Load().decel_seq, 2U);
+
+  // Another snapshot's covariance: still the ball, flagged unmatched.
+  rig->boxes.cov.Store(Cov(3));
+  EXPECT_EQ(rig->Wake(), replan_published);
+  EXPECT_FALSE(rig->segment->ball_empty);
+  EXPECT_EQ(rig->segment->ball_cov_sequence, 3U);
+  EXPECT_FALSE(rig->segment->ball_cov_matched);
+  rig->boxes.cov.Store(Cov(4));
+
+  // The trajectory in the box is not the followed plan's track — by the
+  // segment planner's account of that plan, not by rt.track_generation: no
+  // ball. Still a replan; what to do without one is the planner's call.
+  rig->segment->followed_generation = kTrack + 1;
+  EXPECT_EQ(rig->Wake(), replan_published);
+  EXPECT_TRUE(rig->segment->ball_empty);
+  rig->segment->followed_generation = kTrack;
+  rig->segment->followed = false;
+  EXPECT_EQ(rig->Wake(), replan_published);
+  EXPECT_TRUE(rig->segment->ball_empty);
+  rig->segment->followed = true;
+
+  // COMMITTED: σ_ℓ is recorded first (Monitor, with this wake's pairing),
+  // then the same replan with the ball.
+  rig->boxes.rt.Store(Following(Mode::kCommitted, 1));
+  Calls committed{Call::kSearchMonitor};
+  committed.insert(committed.end(), replan_published.begin(), replan_published.end());
+  EXPECT_EQ(rig->Wake(), committed);
+  EXPECT_EQ(rig->search->monitor_sequence, 4U);
+  EXPECT_TRUE(rig->search->monitor_cov_matched);
+  EXPECT_EQ(rig->search->monitor_plan_id, 1U);
+  EXPECT_EQ(rig->rec.search.sigma_l, kFakeSigmaL);
+  EXPECT_FALSE(rig->segment->ball_empty);
+  EXPECT_TRUE(rig->segment->ball_cov_matched);
+
+  // DECEL: after the catch no ball is read — the view is EMPTY although the
+  // box still holds the followed track, and the followed track is not asked.
+  rig->boxes.rt.Store(Following(Mode::kDecel, 1));
+  EXPECT_EQ(rig->Wake(), (Calls{Call::kReplan, Call::kClock, Call::kSourceSeq, Call::kStartsInTime,
+                                Call::kSegmentNotePublished}));
+  EXPECT_TRUE(rig->segment->ball_empty);
+  EXPECT_EQ(rig->rec.decel.outcome, DecelOutcome::kPublished);
+  const std::uint32_t last_seq = rig->cycle.LastDecelSeq();
+
+  // The re-check's two questions, each refusing on its own; neither stores
+  // nor tells the planner.
+  rig->segment->source_seq = kFakeSourceSeq + 1;  // the RT reports another source now
+  EXPECT_EQ(rig->Wake(), (Calls{Call::kReplan, Call::kClock, Call::kSourceSeq}));
+  EXPECT_EQ(rig->rec.decel.outcome, DecelOutcome::kSuperseded);
+  rig->segment->source_seq = kFakeSourceSeq;
+  rig->segment->starts_in_time = false;
+  EXPECT_EQ(rig->Wake(),
+            (Calls{Call::kReplan, Call::kClock, Call::kSourceSeq, Call::kStartsInTime}));
+  EXPECT_EQ(rig->rec.decel.outcome, DecelOutcome::kSuperseded);
+  rig->segment->starts_in_time = true;
+  // A solve that is not publishable: the clock is not read at all.
+  rig->segment->replan_ok = false;
+  EXPECT_EQ(rig->Wake(), (Calls{Call::kReplan}));
+  EXPECT_EQ(rig->cycle.LastDecelSeq(), last_seq);
+  EXPECT_EQ(rig->decel.Load().decel_seq, last_seq);
+}
+
+TEST(PlannerCycleInterfaces, ATrialResetReachesBothBeforeAnythingElse) {
+  auto rig = std::make_unique<FakeRig>();
+  static_cast<void>(rig->PublishPair());
+  ASSERT_TRUE(rig->decel.Load().valid);
+  rig->boxes.rt.Store(RtIn(Mode::kTracking, /*reset_epoch=*/2));
+  // The new trial's first wake: both forget, then it is an ordinary search
+  // wake — the "right after a pair" wait went with the trial (no ControlDtNs).
+  EXPECT_EQ(rig->Wake(),
+            (Calls{Call::kSearchResetTrial, Call::kSegmentResetTrial, Call::kSearchPlan,
+                   Call::kPlanFirst, Call::kClock, Call::kStartsInTime, Call::kSearchNotePublished,
+                   Call::kSegmentNotePublished}));
+  EXPECT_TRUE(rig->rec.reset_seen);
+  rig->boxes.rt.Store(RtIn(Mode::kIdle, /*reset_epoch=*/3));
+  EXPECT_EQ(rig->Wake(), (Calls{Call::kSearchResetTrial, Call::kSegmentResetTrial}));
+  EXPECT_FALSE(rig->decel.Load().valid) << "the ended trial's segment stays in the box";
+}
+
+TEST(PlannerCycleInterfaces, RightAfterAPairTheSearchWaitsTheInstalledPlannersPeriods) {
+  // Three control periods OF THE INSTALLED PLANNER: one second each here. On
+  // the real planner's 2 ms the first wake below would already search.
+  auto rig = std::make_unique<FakeRig>();
+  const std::int64_t stamp = rig->PublishPair();
+  PlannerRtState s = RtIn(Mode::kTracking);
+  s.rt_state_ns = stamp + 3 * kFakeControlDtNs;
+  rig->boxes.rt.Store(s);
+  EXPECT_EQ(rig->Wake(), (Calls{Call::kControlDtNs}));
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kIdle);
+  s.rt_state_ns = stamp + 3 * kFakeControlDtNs + 1;
+  rig->boxes.rt.Store(s);
+  const Calls calls = rig->Wake();
+  ASSERT_GE(calls.size(), 2U);
+  EXPECT_EQ(calls[0], Call::kControlDtNs);
+  EXPECT_EQ(calls[1], Call::kSearchPlan);
+}
+
+TEST(PlannerCycleInterfaces, AWakeThroughTheInterfacesAllocatesNothing) {
+  // G3-K for the paths OneWakeAllocatesNothing does not reach — it runs the
+  // stub and binds no decel box: the pair, the three kinds of replan and a
+  // trial reset, with implementations installed. What an implementation
+  // allocates is its own suite's (AFullSearchAllocatesNothing, the decel
+  // planner's malloc gates); this is the cycle's part.
+  auto rig = std::make_unique<FakeRig>();
+  rig->boxes.traj.Store(Traj(3));
+  rig->boxes.cov.Store(Cov(3));
+  static_cast<void>(rig->PublishPair());  // warm, outside the gate
+
+  std::size_t heap = 0;
+  std::uint64_t eigen = 0;
+  int pairs = 0;
+  int replans = 0;
+  int resets = 0;
+  bool overflow = false;
+  constexpr int kRounds = 50;
+  {
+    rtc::testing::ScopedAllocGate heap_gate;
+    rtc::testing::ScopedNoMalloc eigen_gate;
+    for (int i = 0; i < kRounds; ++i) {
+      const auto epoch = static_cast<std::uint32_t>(10 + i);
+      g_calls.Clear();
+      rig->boxes.rt.Store(RtIn(Mode::kTracking, epoch));
+      PlannerCycleRecord rec = rig->cycle.Run(NowReal{2 + i});
+      resets += rec.reset_seen ? 1 : 0;
+      pairs += rec.decel.outcome == DecelOutcome::kPublished && rec.plan_valid ? 1 : 0;
+      const std::uint32_t plan_id = rig->cycle.LastPlanId();
+      for (const Mode m : {Mode::kApproach, Mode::kCommitted, Mode::kDecel}) {
+        PlannerRtState s = Following(m, plan_id);
+        s.reset_epoch = epoch;
+        rig->boxes.rt.Store(s);
+        rec = rig->cycle.Run(NowReal{2 + i});
+        replans += rec.decel.outcome == DecelOutcome::kPublished ? 1 : 0;
+      }
+      overflow = overflow || g_calls.overflow;
+    }
+    heap = heap_gate.count();
+    eigen = eigen_gate.violations();
+  }
+  EXPECT_EQ(resets, kRounds) << "the gated loop did not exercise the reset path";
+  EXPECT_EQ(pairs, kRounds) << "the gated loop did not exercise the pair path";
+  EXPECT_EQ(replans, 3 * kRounds) << "the gated loop did not exercise the replan paths";
+  EXPECT_FALSE(overflow);
   EXPECT_EQ(heap, 0U);
   EXPECT_EQ(eigen, 0U);
 }
