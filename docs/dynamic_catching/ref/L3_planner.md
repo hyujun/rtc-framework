@@ -531,9 +531,9 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | 주 | `demo_catching_controller.yaml` | 스레드 · 대기 자세 · 동결 · planner 의 선택 (`supervisor.decel.mode`) |
 | 탐색 | `catching/search_grid.yaml` | 탐색 — **두 planner 공통** |
 | CF | `catching/planner_closed_form.yaml` | `closed_form` 의 법칙. 단 `reference.*` 와 `supervisor.decel.a_dec` 는 `mpc` 에서도 탐색이 읽는다 (rollout · 정지점) |
-| MPC | `catching/planner_mpc.yaml` | `mpc` 의 법칙 — `supervisor.decel.mode: mpc` 일 때만 읽는다 |
+| MPC | `catching/segment_mpc.yaml` | `mpc` 의 법칙 — `supervisor.decel.mode: mpc` 일 때만 읽는다 |
 
-**mpc planner 의 키 (`planner.decel_mpc.*`, `supervisor.decel.switch_margin`) 는 `catching/planner_mpc.yaml` 과 formulation 이 갖는다** — 이 표의 범위가 아니다. 정의는 `planner_params.hpp` 의 `MpcSegmentPlannerParams` 다.
+**mpc planner 의 키 (`planner.decel_mpc.*`, `supervisor.decel.switch_margin`) 는 `catching/segment_mpc.yaml` 과 formulation 이 갖는다** — 이 표의 범위가 아니다. 정의는 `planner_params.hpp` 의 `MpcSegmentPlannerParams` 다.
 
 | 키 | 뜻 | 단위 | 자리 |
 |---|---|---|---|

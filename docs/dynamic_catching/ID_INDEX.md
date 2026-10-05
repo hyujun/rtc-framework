@@ -7,7 +7,7 @@
 - **새 ID 를 만들지 않는다.** 새 결정의 이유는 그 코드의 주석과 `ref/` 의 해당 절에 적는다 (AP-DOC-2). 이 표는 이미 코드에 박힌 ID 를 풀기 위해서만 있다
 - ID 가 가리키는 내용이 바뀌면 그 행을 지금의 것으로 고친다. 코드에서 그 ID 의 인용이 모두 사라지면 행을 지운다
 
-**경로 약어.** `IB` = `integrated_bringup`, `RC` = `rtc_controllers`, `RCI` = `RC/include/rtc_controllers/catching`, `RCS` = `RC/src`, `ctrl` = `IB/src/controllers/catching/controller.cpp`, `life` = `IB/src/controllers/catching/lifecycle.cpp`, `hdr` = `IB/include/integrated_bringup/controllers/demo_catching_controller.hpp`, `par` = `RCI/catching_params.hpp`, `tools` = `rtc_tools/rtc_tools/analysis`, `cfg` = `IB/config/<robot>/controllers/catching/planner_mpc.yaml`. `L3 §4.2` 는 `ref/L3_planner.md` 의 절, `MASTER` 는 `ref/CATCHING_MASTER.md`, `f` 는 `ref/mpc_multiframe_clik_formulation.md` 다. "어디에" 칸은 `코드 / 문서` 순이다.
+**경로 약어.** `IB` = `integrated_bringup`, `RC` = `rtc_controllers`, `RCI` = `RC/include/rtc_controllers/catching`, `RCS` = `RC/src`, `ctrl` = `IB/src/controllers/catching/controller.cpp`, `life` = `IB/src/controllers/catching/lifecycle.cpp`, `hdr` = `IB/include/integrated_bringup/controllers/demo_catching_controller.hpp`, `par` = `RCI/catching_params.hpp`, `tools` = `rtc_tools/rtc_tools/analysis`, `cfg` = `IB/config/<robot>/controllers/catching/segment_mpc.yaml`. `L3 §4.2` 는 `ref/L3_planner.md` 의 절, `MASTER` 는 `ref/CATCHING_MASTER.md`, `f` 는 `ref/mpc_multiframe_clik_formulation.md` 다. "어디에" 칸은 `코드 / 문서` 순이다.
 
 ## 1. 옛 인용 → 지금의 자리
 
@@ -152,7 +152,7 @@
 | MD-73 | RT 는 `catch_box` 를 검사하지 않는다 — `catch_box` 는 계획기 탐색의 것이고 `mpc` 전제에서도 빠진다. `SegmentEvent::kWorkspace` 값 3 은 번호만 남아 쓰이지 않는다. | `IB/src/controllers/catching/controller.cpp` (MD-73 주석), `catching_diag_log_pod.hpp` (`kWorkspace`) / L7 §4.3a, L3 §4.9 |
 | MD-74 | CLIK 의 가속 제약은 `dynamic` 으로 출하한다 (`joint_cmd.accel_constraint: dynamic`). 포구 층의 형태는 `kinematic` · `dynamic` 뿐이고 코드 기본값은 없다 (#712 — 결정 당시의 기본값 `box` 는 없앴다). | `IB/config/iiwa7_leap/controllers/demo_catching_controller.yaml` (`accel_constraint`), `IB/src/controllers/catching/lifecycle.cpp` / L5 (`accel_constraint`) |
 | MD-75 | `ur5e_p1b` 는 `catch.gamma_ref` 0.6 을 출하하고 `iiwa7_leap` 은 채택한 값이 없어 1.0 이다. | `cfg` `catch.gamma_ref` (두 로봇) / f §1.3 |
-| MD-76 | `iiwa7_leap` 의 `mpc` 는 첫 풀이 기준 궤적 문제로 미달인 채 출하값 그대로다. | `IB/config/iiwa7_leap/controllers/catching/planner_mpc.yaml` (주석) / — |
+| MD-76 | `iiwa7_leap` 의 `mpc` 는 첫 풀이 기준 궤적 문제로 미달인 채 출하값 그대로다. | `IB/config/iiwa7_leap/controllers/catching/segment_mpc.yaml` (주석) / — |
 | MD-77 | G1 의 device group 은 `g1` (waist 3 + 왼팔 7 + 오른팔 7 = 17 관절) 과 `p1b` (손 10 관절) 둘이다. | `IB/config/g1_p1b/` / f §0 |
 | MD-78 | tree 군의 `DemoJointController` 는 모델을 `sub_models` → `tree_models` → `arm` 순으로 찾고 tree 군의 팔 끝은 군 1 tree 의 `root_link` 다. | `IB/src/controllers/joint/controller.cpp` · `lifecycle.cpp`, `IB/include/integrated_bringup/support/model_config_lookup.hpp` / — |
 | MD-79 | `rtc_mujoco_sim` 은 위치 서보 게인을 쓸 때 actuator 의 biastype 을 affine 으로 맞추고 torque 모드로 되돌리면 복원한다. 게인 없는 `<motor>` 의 position 모드는 거부하지 않고 그룹당 한 번 경고한다. | `rtc_mujoco_sim/src/mujoco_sim_loop.cpp` (affine 절), `rtc_mujoco_sim/test/test_motor_servo_gains.cpp` / — |
@@ -162,7 +162,7 @@
 | MD-84 | `compare_mjcf_urdf` 는 MJCF 를 MuJoCo 가 컴파일하는 대로 읽는다 (default class tree, actuator 의 `forcerange` × `gear`). fixed link 병합은 `--link-map` 의 `fuse:` 로 선언한다. | `rtc_tools/rtc_tools/validation/compare_mjcf_urdf.py` / — |
 | MD-85 | 팔 모델이 있는데 팔 끝 frame 이 풀리지 않으면 joint · task · compliance · wbc 의 `on_configure` 가 거부하고 판정은 `support/arm_tip_resolution` 한 함수다. | `IB/include/integrated_bringup/support/arm_tip_resolution.hpp` (`ArmTipUnresolvedReason`), `IB/test/test_arm_tip_resolution.cpp` / — |
 | MD-86 | sim launch 네 개는 공통화하지 않고 쓰이지 않는 인자 (`kp` · `kd`, `mpc_engine`) 만 지웠다. `sim_g1_p1b` 의 `enable_mpc` 는 CPU layout 만 고르고 컨트롤러에 닿지 않는다. 모델 이름 조회는 `FindTreeModel` 이다. | `IB/launch/sim_g1_p1b.launch.py`, `IB/include/integrated_bringup/support/model_config_lookup.hpp` / — |
-| MD-88 | catching 컨트롤러의 config 는 기능별 파일로 나뉜다 — 주 파일 (QP CLIK) · `search_grid.yaml` · `planner_closed_form.yaml` · `planner_mpc.yaml`. | `IB/config/<robot>/controllers/demo_catching_controller.yaml`, `catching/*.yaml` / L3 §6 |
+| MD-88 | catching 컨트롤러의 config 는 기능별 파일로 나뉜다 — 주 파일 (QP CLIK) · `search_grid.yaml` · `planner_closed_form.yaml` · `segment_mpc.yaml`. | `IB/config/<robot>/controllers/demo_catching_controller.yaml`, `catching/*.yaml` / L3 §6 |
 | MD-89 | 두 로봇의 출하 DECEL 법칙은 `mpc` 이고 코드 기본값 (키 없음) 은 `closed_form` 이다. | `IB/config/<robot>/controllers/demo_catching_controller.yaml` (`supervisor.decel.mode`), `cfg` / L3 §0 · §6, L7 §6 |
 | MD-90 | CM 의 일반 `include:` 가 조각을 하나의 노드로 합친 뒤 override 를 적용하고 키 경로는 그대로이며 같은 leaf 가 두 파일에 있으면 에러다. planner 는 `supervisor.decel.mode` 하나로 고른다. | `rtc_controller_manager/src/controller_config_loader.cpp` (`kIncludeKey`), `IB/test/test_shipped_catching_config.py` / L3 §6 |
 | MD-91 | `planner.decel_mpc.enabled` 는 없고 planner 는 `supervisor.decel.mode` 로만 고른다. 코어 설계 파라미터 (비용 가중 · slack 벌점 · 선형화 · solver) 와 탐색 파라미터는 YAML 키이며 가속도 box 는 `robot.arm.qdd_max` 다. `joint_limits.max_acceleration` 은 지웠다. | `cfg` `cost.*` · `linearization.*` · `solver.*`, `RCI/planner_params.hpp` / L3 §6 |

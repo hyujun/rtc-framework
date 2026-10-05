@@ -15,7 +15,7 @@
 # (rtc_controller_manager README, `include:`):
 #   catching/search_grid.yaml          the catch-point search
 #   catching/planner_closed_form.yaml  the closed_form law
-#   catching/planner_mpc.yaml          the mpc law
+#   catching/segment_mpc.yaml          the mpc law
 # All three are always included: the law is chosen by that one key, not by
 # this list (a sim_overlay can then switch it, and the search reads the
 # closed_form values under mpc too). A fragment keeps the full key path, so an
@@ -24,7 +24,7 @@
 include:
   - catching/search_grid.yaml
   - catching/planner_closed_form.yaml
-  - catching/planner_mpc.yaml
+  - catching/segment_mpc.yaml
 demo_catching_controller:
   command_type: "position"
 
@@ -370,7 +370,7 @@ demo_catching_controller:
         provisional: true
       decel:
         # THE PLANNER SELECTOR. `a_dec` (catching/planner_closed_form.yaml) and
-        # `switch_margin` (catching/planner_mpc.yaml) are the two laws' own
+        # `switch_margin` (catching/segment_mpc.yaml) are the two laws' own
         # keys under this same `decel:` map.
         #
         # The DECEL law (MPC MD-44), chosen once per configuration and never

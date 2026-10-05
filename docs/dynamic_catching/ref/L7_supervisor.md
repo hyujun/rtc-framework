@@ -354,7 +354,7 @@ plan 접수 쪽의 방어 (reset floor · 동결 창) 는 §4.1 R-ADMIT 이 적�
 
 ## 6. YAML 파라미터
 
-키는 **단일 원천**이다. 파라미터 로딩은 `LoadConfig(YAML)` + `ParseCatchingParams`. 값과 그 근거는 로봇별 YAML 과 그 주석이 갖는다 — `integrated_bringup/config/<robot>/controllers/demo_catching_controller.yaml` (`supervisor.*` 대부분과 `decel.mode`), 같은 폴더의 `catching/planner_closed_form.yaml` (`decel.a_dec`) · `catching/planner_mpc.yaml` (`decel.switch_margin`). 키가 없을 때의 파서 기본값과 범위는 `rtc_controllers/include/rtc_controllers/catching/catching_params.hpp` 다.
+키는 **단일 원천**이다. 파라미터 로딩은 `LoadConfig(YAML)` + `ParseCatchingParams`. 값과 그 근거는 로봇별 YAML 과 그 주석이 갖는다 — `integrated_bringup/config/<robot>/controllers/demo_catching_controller.yaml` (`supervisor.*` 대부분과 `decel.mode`), 같은 폴더의 `catching/planner_closed_form.yaml` (`decel.a_dec`) · `catching/segment_mpc.yaml` (`decel.switch_margin`). 키가 없을 때의 파서 기본값과 범위는 `rtc_controllers/include/rtc_controllers/catching/catching_params.hpp` 다.
 
 | 키 | 단위 | 뜻 |
 |---|---|---|

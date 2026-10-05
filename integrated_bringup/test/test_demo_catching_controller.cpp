@@ -1480,7 +1480,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
 
 TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
   // MD-90: the profile is a main file plus three `include:` fragments
-  // (catching/search_grid, planner_closed_form, planner_mpc). One mirrored key
+  // (catching/search_grid, planner_closed_form, segment_mpc). One mirrored key
   // per fragment is moved in the composed tree — the place a CM override
   // writes — and read back from the configured controller.
   //
@@ -1500,11 +1500,11 @@ TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
   const std::vector<Case> cases = {
       {"catching/search_grid.yaml", {"planner", "time", "margin"}, "planner.time.margin", 0.01},
       {"catching/planner_closed_form.yaml", {"reference", "omega"}, "reference.omega", -1.0},
-      {"catching/planner_mpc.yaml",
+      {"catching/segment_mpc.yaml",
        {"planner", "decel_mpc", "catch", "gamma_ref"},
        "planner.decel_mpc.catch.gamma_ref",
        -0.1},
-      {"catching/planner_mpc.yaml",
+      {"catching/segment_mpc.yaml",
        {"supervisor", "decel", "switch_margin"},
        "supervisor.decel.switch_margin",
        -0.1},
@@ -1914,7 +1914,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
 
 TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
   // MPC MD-91: the relative-velocity slack row's keys are WRITTEN in
-  // catching/planner_mpc.yaml — not left to the code default — and both 0:
+  // catching/segment_mpc.yaml — not left to the code default — and both 0:
   // the row is off, so the shipped solve is the one before the keys existed.
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
@@ -1929,7 +1929,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
   const YAML::Node main_planner =
       YAML::LoadFile(main_path)["demo_catching_controller"]["catching"]["planner"];
   EXPECT_FALSE(main_planner["decel_mpc"].IsDefined())
-      << profile << ": the decel MPC keys belong to catching/planner_mpc.yaml";
+      << profile << ": the decel MPC keys belong to catching/segment_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   EXPECT_EQ(planner.mpc_segment.rho_v, 0.0) << profile;
   EXPECT_EQ(planner.mpc_segment.v_rel_allow, 0.0) << profile;
@@ -2130,7 +2130,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
 }
 
 TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
-  // #698: `cost.w_perp` is WRITTEN in catching/planner_mpc.yaml — not left to
+  // #698: `cost.w_perp` is WRITTEN in catching/segment_mpc.yaml — not left to
   // the code default — and 0: the stop-path term is off, so the shipped solve
   // is the one before the key existed (the core's own default).
   const auto& [profile, expected_dof] = GetParam();
@@ -2142,10 +2142,10 @@ TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
   ASSERT_TRUE(cost["w_perp"].IsDefined()) << profile << ": cost.w_perp is not written";
   EXPECT_EQ(cost["w_perp"].as<double>(), 0.0) << profile;
   const std::string fragment = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
-                               "/controllers/catching/planner_mpc.yaml";
+                               "/controllers/catching/segment_mpc.yaml";
   const YAML::Node in_fragment = YAML::LoadFile(
       fragment)["demo_catching_controller"]["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"];
-  EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to planner_mpc.yaml";
+  EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to segment_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   EXPECT_EQ(planner.mpc_segment.w_perp, 0.0) << profile;
   EXPECT_EQ(planner.mpc_segment.w_perp, rtc::catching::MpcSegmentCoreParams{}.w_perp) << profile;

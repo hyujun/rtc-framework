@@ -270,7 +270,7 @@ vision의 예측을 그대로 신뢰한다. 제어 PC는 $(p,v,a)$ 샘플 열 �
 
 ## 6. YAML 구성
 
-repo 패턴을 따른다: 포구 컨트롤러 YAML 은 로봇별 `integrated_bringup` config 의 controllers 디렉토리 (`demo_catching_controller.yaml`) 에 두고 `LoadConfig` + `ParseXxxParams` 로 읽으며, 런타임 조정 gain 만 `declare_parameter` 로 연다(generate_parameter_library 는 쓰지 않는다). 탐색 · planner 별 법의 키는 같은 디렉토리의 `catching/` 아래 조각 파일 (`search_grid.yaml` — 탐색, 두 planner 가 읽는다 · `planner_closed_form.yaml` · `planner_mpc.yaml`) 로 나뉘고, include 되어 같은 트리로 합쳐진다. robot-specific 값은 로봇 config 와 `robot.*` 에만 둔다(robot-agnostic 원칙, ARCH-1).
+repo 패턴을 따른다: 포구 컨트롤러 YAML 은 로봇별 `integrated_bringup` config 의 controllers 디렉토리 (`demo_catching_controller.yaml`) 에 두고 `LoadConfig` + `ParseXxxParams` 로 읽으며, 런타임 조정 gain 만 `declare_parameter` 로 연다(generate_parameter_library 는 쓰지 않는다). 탐색 · planner 별 법의 키는 같은 디렉토리의 `catching/` 아래 조각 파일 (`search_grid.yaml` — 탐색, 두 planner 가 읽는다 · `planner_closed_form.yaml` · `segment_mpc.yaml`) 로 나뉘고, include 되어 같은 트리로 합쳐진다. robot-specific 값은 로봇 config 와 `robot.*` 에만 둔다(robot-agnostic 원칙, ARCH-1).
 
 ```yaml
 catching:
