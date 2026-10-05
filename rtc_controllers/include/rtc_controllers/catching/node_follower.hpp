@@ -1,7 +1,7 @@
-// ── RT sampler of the decel MPC's joint nodes (MPC plan E1-F02, #628) ────────
+// ── RT sampler of the segment MPC's joint nodes (MPC plan E1-F02, #628) ────────
 //
 // The planner publishes the stop segment as joint NODES only (MD-9) in a
-// DecelPlanSnapshot (trajectory.hpp). This class is the RT side of that
+// SegmentSnapshot (trajectory.hpp). This class is the RT side of that
 // payload: at an instant on the lead axis it evaluates the joint reference
 // q_ref, q̇_ref, q̈_ref in closed form between nodes (jerk_segment.hpp — exact
 // for the MPC's own nodes, C² at every node) and derives the hand's target
@@ -28,8 +28,8 @@
 // its own pinocchio::Data, sizes every buffer). Sample() is noexcept,
 // allocates nothing, and is fail-closed — on failure `out` is untouched. It
 // checks the payload's SHAPE against its own (so it can never index out of
-// bounds) but not node VALUES: the caller runs ValidateDecelNodes once per new
-// payload (by decel_seq), exactly as the jerk segment contract expects.
+// bounds) but not node VALUES: the caller runs ValidateSegmentNodes once per new
+// payload (by segment_seq), exactly as the jerk segment contract expects.
 #pragma once
 
 #include "rtc_controllers/catching/trajectory.hpp"
@@ -48,10 +48,10 @@ namespace rtc::catching {
 
 /// One evaluation of a stop segment. Joint arrays are DEVICE order, first
 /// `nv` entries used.
-struct DecelNodeSample {
-  std::array<double, kMaxDecelNv> q{};
-  std::array<double, kMaxDecelNv> qd{};
-  std::array<double, kMaxDecelNv> qdd{};
+struct SegmentNodeSample {
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
   pinocchio::SE3 placement{pinocchio::SE3::Identity()};                    ///< T_WC(q_ref)
   Eigen::Matrix<double, 6, 1> twist{Eigen::Matrix<double, 6, 1>::Zero()};  ///< [v; ω] world axes
   double t_s{0.0};   ///< time since node 0 [s]
@@ -64,7 +64,7 @@ class NodeTrajectoryFollower {
 
   /// @brief Bind the arm model (non-RT).
   /// @param arm the arm's hand-locked model in pinocchio velocity order
-  ///        (the planner's catch sub-model), nq == nv ≤ kMaxDecelNv
+  ///        (the planner's catch sub-model), nq == nv ≤ kMaxSegmentNv
   /// @param frame the catch frame
   /// @param device_of_model `device_of_model[m]` = device index of model joint
   ///        m; a permutation of 0..nv−1
@@ -82,15 +82,15 @@ class NodeTrajectoryFollower {
   ///         shape does not match this arm or its capacities, or when
   ///         `t_lead_ns` is before node 0 (the switch rule keeps the current
   ///         plan until then; a query before node 0 is a caller bug).
-  [[nodiscard]] bool Sample(const DecelPlanSnapshot& plan, std::int64_t t_lead_ns,
-                            DecelNodeSample& out) noexcept;
+  [[nodiscard]] bool Sample(const SegmentSnapshot& plan, std::int64_t t_lead_ns,
+                            SegmentNodeSample& out) noexcept;
 
   /// @brief Joint-only evaluation, device order, no FK (RT-safe, stateless).
   /// Same shape checks and failure rule as Sample(); `held` reports t past
   /// node N. Used by the planner to read a published segment back. A segment
   /// with pre-catch nodes (n_pre > 0) is evaluated at dt_pre before its catch
-  /// node and at dt from it on (DecelNodeTimeNs, trajectory.hpp).
-  [[nodiscard]] static bool SampleJoints(const DecelPlanSnapshot& plan, std::int64_t t_lead_ns,
+  /// node and at dt from it on (SegmentNodeTimeNs, trajectory.hpp).
+  [[nodiscard]] static bool SampleJoints(const SegmentSnapshot& plan, std::int64_t t_lead_ns,
                                          std::span<double> q, std::span<double> qd,
                                          std::span<double> qdd, bool* held = nullptr) noexcept;
 
@@ -99,7 +99,7 @@ class NodeTrajectoryFollower {
   pinocchio::Data data_;
   pinocchio::FrameIndex frame_{0};
   int nv_{0};
-  std::array<int, kMaxDecelNv> device_of_model_{};
+  std::array<int, kMaxSegmentNv> device_of_model_{};
   Eigen::VectorXd q_model_;
   Eigen::VectorXd v_model_;
 };

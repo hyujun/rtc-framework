@@ -706,7 +706,7 @@ TEST_F(CatchingTrackingTest, DisarmingMidApproachRampsTheArmDownAndEndsInIdle) {
   // APPROACH, and so the mode did not move — which meant the driver stopped
   // calling the law while `WriteDeviceCommand` kept sending the carried
   // command. The arm's commanded velocity went to zero in ONE tick: the
-  // one-tick infinite deceleration `decel_target.hpp` says this controller
+  // one-tick infinite deceleration `joint_stop.hpp` says this controller
   // must never emit. And the machine never returned to IDLE, so the disarm had
   // no visible effect at all.
   const Eigen::Vector3d p_c = start_pose_.translation() + Eigen::Vector3d(0.10, 0.08, 0.05);
@@ -756,7 +756,7 @@ TEST_F(CatchingTrackingTest, DisarmingMidApproachRampsTheArmDownAndEndsInIdle) {
 }
 
 TEST_F(CatchingTrackingTest, TheStopStaysInsideTheBoxTheSolverWasGiven) {
-  // `JointSpaceDecelStep` documents its bounds as "the caller's box, already
+  // `JointSpaceStopStep` documents its bounds as "the caller's box, already
   // narrowed by limit_margin". Handing it the raw device limits instead lets
   // the ramp integrate out past the value CLIK was kept away from, and the
   // backend's clamp of that is invisible to the solver — the unattributable

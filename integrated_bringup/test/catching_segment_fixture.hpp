@@ -2,8 +2,8 @@
 
 // ── Hand-built APPROACH–stop segments (MPC E1-F04 · E1-F09 tests) ───────────
 //
-// The suites that play the decel planner (the oracle profile has no planner
-// thread, so the test is the decel box's one writer) need segments the RT can
+// The suites that play the MPC segment planner (the oracle profile has no planner
+// thread, so the test is the segment box's one writer) need segments the RT can
 // follow from the command it holds. This builds one in closed form on the
 // two-spacing grid (MD-54): `n_pre` pre-catch intervals of Δ_pre before t_c,
 // then kApproachNStop stop intervals of Δ_s. Node 0 is placed so that the
@@ -65,13 +65,13 @@ inline double ApproachJerk(int k, int n_pre, double v_c, double bump, double dt_
 /// (0 ≤ s − t0 ≤ Δ_pre) is (q_c, q̇_c, 0). The velocity step needs three
 /// pre-catch intervals after the first (n_pre ≥ 4); with fewer the joint
 /// cruises at q̇_c to t_c and stops. Device order; `n` joints. Stamps
-/// (`publish_ns`, `rt_state_ns`, `decel_seq`, the token) are the caller's.
+/// (`publish_ns`, `rt_state_ns`, `segment_seq`, the token) are the caller's.
 template <std::size_t N>
-rtc::catching::DecelPlanSnapshot MakeApproachSegment(const std::array<double, N>& q_c,
-                                                     const std::array<double, N>& qd_c, int n,
-                                                     std::uint32_t plan_id, std::int64_t t_c_ns,
-                                                     int n_pre, std::int64_t s_ns, double bump) {
-  rtc::catching::DecelPlanSnapshot seg{};
+rtc::catching::SegmentSnapshot MakeApproachSegment(const std::array<double, N>& q_c,
+                                                   const std::array<double, N>& qd_c, int n,
+                                                   std::uint32_t plan_id, std::int64_t t_c_ns,
+                                                   int n_pre, std::int64_t s_ns, double bump) {
+  rtc::catching::SegmentSnapshot seg{};
   seg.valid = true;
   seg.plan_id = plan_id;
   seg.t_c_ns = t_c_ns;
@@ -95,7 +95,7 @@ rtc::catching::DecelPlanSnapshot MakeApproachSegment(const std::array<double, N>
     double v = qd_c[u];
     double a = 0.0;
     for (int k = 0; k <= seg.n_nodes; ++k) {
-      const auto e = static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv + j);
+      const auto e = static_cast<std::size_t>(k * rtc::catching::kMaxSegmentNv + j);
       seg.q[e] = q;
       seg.qd[e] = v;
       seg.qdd[e] = a;
@@ -116,9 +116,9 @@ rtc::catching::DecelPlanSnapshot MakeApproachSegment(const std::array<double, N>
 /// nodes 0.., the replan a planner that predicted exactly would publish. A
 /// shift inside the pre-catch part keeps the remaining pre-catch intervals; one
 /// past the catch node is a stop-only segment at grid point k0 = shift − n_pre.
-inline rtc::catching::DecelPlanSnapshot ShiftSegment(const rtc::catching::DecelPlanSnapshot& seg,
-                                                     int shift) {
-  rtc::catching::DecelPlanSnapshot out = seg;
+inline rtc::catching::SegmentSnapshot ShiftSegment(const rtc::catching::SegmentSnapshot& seg,
+                                                   int shift) {
+  rtc::catching::SegmentSnapshot out = seg;
   out.n_nodes = seg.n_nodes - shift;
   if (shift <= seg.n_pre) {
     out.n_pre = seg.n_pre - shift;
@@ -134,8 +134,8 @@ inline rtc::catching::DecelPlanSnapshot ShiftSegment(const rtc::catching::DecelP
   out.qdd.fill(0.0);
   for (int k = 0; k <= out.n_nodes; ++k) {
     for (int j = 0; j < seg.nv; ++j) {
-      const auto dst = static_cast<std::size_t>(k * rtc::catching::kMaxDecelNv + j);
-      const auto src = static_cast<std::size_t>((k + shift) * rtc::catching::kMaxDecelNv + j);
+      const auto dst = static_cast<std::size_t>(k * rtc::catching::kMaxSegmentNv + j);
+      const auto src = static_cast<std::size_t>((k + shift) * rtc::catching::kMaxSegmentNv + j);
       out.q[dst] = seg.q[src];
       out.qd[dst] = seg.qd[src];
       out.qdd[dst] = seg.qdd[src];

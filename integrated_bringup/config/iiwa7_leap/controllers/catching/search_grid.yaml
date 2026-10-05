@@ -138,7 +138,7 @@ demo_catching_controller:
       # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
       # Read at configure by `ParseCatchPoseIkParams` (rtc_controllers) — the
       # same parser the offline catchability map drives — and handed to the
-      # planner thread's search (S6-B, `ConfigureSearch`), so the map and the
+      # planner thread's search (S6-B, `ConfigureGridCatchSearch`), so the map and the
       # runtime solve alike. Recorded here because G6-F asks the derivation and
       # the value to live together.
       #

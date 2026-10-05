@@ -117,7 +117,7 @@ $$\dot\Phi=A(x(t))\,\Phi,\qquad \Phi(t_0)=I$$
 ### 5.2 공용 타입
 
 - **시간 타입** `BallTime`, `NowReal`, `NowLead` (§4.5). 각각 `int64` ns 하나를 감싼 trivially copyable 타입 (`time_types.hpp`)
-- **용량 상수.** 궤적 용량 컴파일타임 상수 `kCap` 은 **공용 궤적 타입(`trajectory.hpp`, L2 §5.1)이 단독 소유**한다 (값은 코드에서 읽는다). 런타임 점 수 상한은 `kCap` 이고 `n_max` 키는 없다 (L2 §5.1). 요구 점 수가 `kCap` 을 넘으면 `kCap` 을 올린다. 같은 헤더가 `kMaxPlanNv` (계획기 변수 수), `kMaxDecelNodes` · `kMaxDecelNv` (mpc 감속 구간의 노드·변수 상한) 를 소유한다. 손은 `kMaxHandDof` (`catching_params.hpp`), 지문 센서는 `kMaxFingertips` (`contact_debounce.hpp`). 팔 DoF 의 컴파일타임 상한 상수는 없다 — 팔 차원은 모델에서 온다
+- **용량 상수.** 궤적 용량 컴파일타임 상수 `kCap` 은 **공용 궤적 타입(`trajectory.hpp`, L2 §5.1)이 단독 소유**한다 (값은 코드에서 읽는다). 런타임 점 수 상한은 `kCap` 이고 `n_max` 키는 없다 (L2 §5.1). 요구 점 수가 `kCap` 을 넘으면 `kCap` 을 올린다. 같은 헤더가 `kMaxPlanNv` (계획기 변수 수), `kMaxSegmentNodes` · `kMaxSegmentNv` (mpc 감속 구간의 노드·변수 상한) 를 소유한다. 손은 `kMaxHandDof` (`catching_params.hpp`), 지문 센서는 `kMaxFingertips` (`contact_debounce.hpp`). 팔 DoF 의 컴파일타임 상한 상수는 없다 — 팔 차원은 모델에서 온다
 - **SeqLock payload 규칙 `[확정]`.** `rtc::SeqLock`·`rtc::SpscQueue` 에 싣는 모든 타입(궤적 스냅샷, `PlanSnapshot`, RT 상태 POD)은 trivially copyable POD 다 — 벡터는 `std::array<double, 3>` 등으로, **Eigen 멤버 금지** (G0-1). 계산 측은 `Eigen::Map` 으로 본다. 각 타입 정의에 `static_assert(std::is_trivially_copyable_v<…>)` 를 둔다
 - **공분산 버퍼** — RT 스냅샷에 넣지 않고 계획기 쪽 버퍼에만 둔다 `[확정 A-3]`. NaN 원소는 "모름"이며 해석은 계획기 한 곳에서 한다
 - **트랙 식별** — vision 의 `generation`(uint64)을 궤적 스냅샷에 그대로 싣는다(D-4, L1 §4.4)

@@ -1,5 +1,5 @@
-// E1-F01 (#627): decel MPC core — jerk-input condensed QP with first-order
-// torque rows and slack (decel_mpc.hpp). Each #627 "Done when" item maps to a
+// E1-F01 (#627): MPC segment core — jerk-input condensed QP with first-order
+// torque rows and slack (mpc_segment_core.hpp). Each #627 "Done when" item maps to a
 // named test here:
 //   1 ZeroSolutionAtRest                 5 TheAllocationGatesAreArmed,
 //   2 ReducesToMinJerkClosedForm,          CoreAllocatesNothingOutsideTheQpSolver,
@@ -13,12 +13,12 @@
 // The allocation gates: this binary links THREE sensors (CMakeLists note).
 // malloc_gate.hpp is the one that can see pinocchio's and ProxQP's own
 // allocations; its positive control allocates inside pinocchio.
-#include "rtc_controllers/catching/decel_mpc.hpp"
-#include "rtc_controllers/catching/decel_mpc_torque.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
+#include "rtc_controllers/catching/mpc_segment_core_torque.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "rtc_controllers/testing/decel_mpc_fixture.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
+#include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/SVD>
@@ -38,35 +38,36 @@
 
 namespace {
 
-using rtc::catching::DecelMpc;
-using rtc::catching::DecelMpcInput;
-using rtc::catching::DecelMpcLimits;
-using rtc::catching::DecelMpcParams;
-using rtc::catching::DecelMpcReason;
-using rtc::catching::DecelMpcReasonName;
-using rtc::catching::DecelMpcResult;
+using rtc::catching::MpcSegmentCore;
+using rtc::catching::MpcSegmentCoreInput;
+using rtc::catching::MpcSegmentCoreLimits;
+using rtc::catching::MpcSegmentCoreParams;
+using rtc::catching::MpcSegmentCoreReason;
+using rtc::catching::MpcSegmentCoreReasonName;
+using rtc::catching::MpcSegmentCoreResult;
 
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
-// Arms, limits and the rest input live in decel_mpc_fixture.hpp, shared with
+// Arms, limits and the rest input live in mpc_segment_core_fixture.hpp, shared with
 // the E1-F07 approach suite.
-using rtc::testing::decel::ArmModel;
-using rtc::testing::decel::LimitsFromModel;
-using rtc::testing::decel::Percentile;
-using rtc::testing::decel::Rank;
-using rtc::testing::decel::RealArm6;
-using rtc::testing::decel::RealArm7;
-using rtc::testing::decel::RecordMicros;
-using rtc::testing::decel::RestInput;
-using rtc::testing::decel::Synthetic6R;
-using rtc::testing::decel::UseAsReference;
+using rtc::testing::mpc_segment_core::ArmModel;
+using rtc::testing::mpc_segment_core::LimitsFromModel;
+using rtc::testing::mpc_segment_core::Percentile;
+using rtc::testing::mpc_segment_core::Rank;
+using rtc::testing::mpc_segment_core::RealArm6;
+using rtc::testing::mpc_segment_core::RealArm7;
+using rtc::testing::mpc_segment_core::RecordMicros;
+using rtc::testing::mpc_segment_core::RestInput;
+using rtc::testing::mpc_segment_core::Synthetic6R;
+using rtc::testing::mpc_segment_core::UseAsReference;
 
 // A solved trajectory shifted by `t_shift` onto the same grid (the E1-F03
 // warm start): node k of the new reference is the old trajectory at t_shift+kΔ.
-void ShiftReference(const DecelMpcResult& r, double dt, double t_shift, DecelMpcInput& in) {
+void ShiftReference(const MpcSegmentCoreResult& r, double dt, double t_shift,
+                    MpcSegmentCoreInput& in) {
   const Eigen::Index n = r.q.rows();
   const Eigen::Index cols = r.q.cols();
   in.q_ref.resize(n, cols);
@@ -95,32 +96,32 @@ Eigen::VectorXd Rnea(const pinocchio::Model& m, pinocchio::Data& d, const Eigen:
 
 // ── 1. Zero solution at rest ─────────────────────────────────────────────────
 
-TEST(DecelMpc, ZeroSolutionAtRest) {
+TEST(MpcSegmentCore, ZeroSolutionAtRest) {
   const ArmModel arm = Synthetic6R();
-  DecelMpcLimits lim = LimitsFromModel(*arm.model);
+  MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model);
   // Precondition: gravity at q0 is inside η'τ_max, otherwise the torque rows
   // would (correctly) demand slack and the answer is not zero.
   pinocchio::Data data(*arm.model);
   const Eigen::VectorXd zero = Eigen::VectorXd::Zero(arm.model->nv);
   const Eigen::VectorXd g = Rnea(*arm.model, data, arm.q_nominal, zero, zero);
-  DecelMpcParams p;
+  MpcSegmentCoreParams p;
   lim.tau_max = lim.tau_max.cwiseMax(3.0 * g.cwiseAbs() / p.eta_tau);
 
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
 
   const double z_tol = 10.0 * p.solver.eps_abs;
   for (const bool with_reference : {false, true}) {
-    DecelMpcInput in = RestInput(arm.q_nominal);
+    MpcSegmentCoreInput in = RestInput(arm.q_nominal);
     if (with_reference) {
       in.q_ref = arm.q_nominal.replicate(1, p.n_nodes + 1);
       in.qd_ref.setZero(arm.model->nv, p.n_nodes + 1);
       in.qdd_ref.setZero(arm.model->nv, p.n_nodes + 1);
       in.reference_valid = true;
     }
-    ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);
+    ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
     EXPECT_EQ(res.presolved, !with_reference);
     EXPECT_LE(res.u.cwiseAbs().maxCoeff(), z_tol * p.u_scale) << "reference=" << with_reference;
     EXPECT_LE(res.slack.cwiseAbs().maxCoeff(), z_tol);
@@ -137,7 +138,7 @@ TEST(DecelMpc, ZeroSolutionAtRest) {
 // m_b = mean_{k∈b}(N − k − ½); (α, β) solve the 2×2 system below. The n_b
 // weighting is what distinguishes EᵀRE from an unweighted Σ u_b².
 
-Eigen::MatrixXd ClosedFormJerk(const DecelMpcParams& p, const Eigen::VectorXd& v0,
+Eigen::MatrixXd ClosedFormJerk(const MpcSegmentCoreParams& p, const Eigen::VectorXd& v0,
                                const Eigen::VectorXd& a0) {
   const int N = p.n_nodes;
   const double dt = p.dt;
@@ -175,8 +176,8 @@ Eigen::MatrixXd ClosedFormJerk(const DecelMpcParams& p, const Eigen::VectorXd& v
   return u;
 }
 
-DecelMpcParams KinematicOnlyParams() {
-  DecelMpcParams p;
+MpcSegmentCoreParams KinematicOnlyParams() {
+  MpcSegmentCoreParams p;
   p.rho_tau = 0.0;
   p.w_delta = 0.0;
   p.w_perp = 0.0;
@@ -184,15 +185,16 @@ DecelMpcParams KinematicOnlyParams() {
   return p;
 }
 
-TEST(DecelMpc, ReducesToMinJerkClosedForm) {
+TEST(MpcSegmentCore, ReducesToMinJerkClosedForm) {
   const ArmModel arm = Synthetic6R();
-  const DecelMpcParams p = KinematicOnlyParams();
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  const MpcSegmentCoreParams p = KinematicOnlyParams();
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)),
+            MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
 
-  DecelMpcInput in = RestInput(arm.q_nominal);
+  MpcSegmentCoreInput in = RestInput(arm.q_nominal);
   in.qd0 << 0.30, -0.25, 0.20, -0.15, 0.35, -0.30;
   in.qdd0 << 1.0, -0.5, 0.8, 0.0, -1.2, 0.4;
   // A resting reference that is NOT the answer: the main solve (not the
@@ -202,7 +204,7 @@ TEST(DecelMpc, ReducesToMinJerkClosedForm) {
   in.qdd_ref.setZero(6, p.n_nodes + 1);
   in.reference_valid = true;
 
-  ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);
+  ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
   EXPECT_FALSE(res.presolved);
   const Eigen::MatrixXd u_ref = ClosedFormJerk(p, in.qd0, in.qdd0);
   const double scale = u_ref.cwiseAbs().maxCoeff();
@@ -213,16 +215,17 @@ TEST(DecelMpc, ReducesToMinJerkClosedForm) {
   EXPECT_LE(res.qdd.col(p.n_nodes).cwiseAbs().maxCoeff(), 1e-6);
 }
 
-TEST(DecelMpc, PresolveMatchesClosedForm) {
+TEST(MpcSegmentCore, PresolveMatchesClosedForm) {
   const ArmModel arm = Synthetic6R();
-  const DecelMpcParams p = KinematicOnlyParams();
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  const MpcSegmentCoreParams p = KinematicOnlyParams();
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)),
+            MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
-  DecelMpcInput in = RestInput(arm.q_nominal);
+  MpcSegmentCoreInput in = RestInput(arm.q_nominal);
   in.qd0 << -0.2, 0.3, -0.1, 0.25, -0.3, 0.15;
-  ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);
+  ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
   EXPECT_TRUE(res.presolved);
   const Eigen::MatrixXd u_ref = ClosedFormJerk(p, in.qd0, in.qdd0);
   EXPECT_LE((res.u - u_ref).cwiseAbs().maxCoeff(), 1e-6 * u_ref.cwiseAbs().maxCoeff());
@@ -269,11 +272,12 @@ Eigen::MatrixXd TerminalMatrixOracle(int n, int n_nodes, const std::vector<int>&
   return a;
 }
 
-TEST(DecelMpc, StageGainsMatchIntegralOracle) {
+TEST(MpcSegmentCore, StageGainsMatchIntegralOracle) {
   const ArmModel arm = Synthetic6R();
-  const DecelMpcParams p;
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)), DecelMpcReason::kNone);
+  const MpcSegmentCoreParams p;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)),
+            MpcSegmentCoreReason::kNone);
   for (int m = 0; m < 3; ++m) {
     for (int k = 0; k <= p.n_nodes; ++k) {
       int k0 = 0;
@@ -291,7 +295,7 @@ TEST(DecelMpc, StageGainsMatchIntegralOracle) {
   }
 }
 
-TEST(DecelMpc, TerminalEqualityIsFullRank) {
+TEST(MpcSegmentCore, TerminalEqualityIsFullRank) {
   const ArmModel arm = Synthetic6R();
   const int n = arm.model->nv;
   // The rank helper itself: one block → rank n; two blocks → rank 2n and no
@@ -302,12 +306,12 @@ TEST(DecelMpc, TerminalEqualityIsFullRank) {
 
   for (const std::vector<int>& blocks :
        {std::vector<int>{4, 4, 4}, std::vector<int>{1, 1, 2, 2, 3, 3}}) {
-    DecelMpcParams p;
+    MpcSegmentCoreParams p;
     p.n_blocks = static_cast<int>(blocks.size());
     std::copy(blocks.begin(), blocks.end(), p.block_sizes.begin());
-    DecelMpc mpc;
+    MpcSegmentCore mpc;
     ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)),
-              DecelMpcReason::kNone);
+              MpcSegmentCoreReason::kNone);
     EXPECT_EQ(mpc.TerminalRank(), 2 * n);
     const Eigen::MatrixXd a = mpc.MainQp().A;
     EXPECT_EQ(Rank(a), 2 * n) << "B=" << blocks.size();
@@ -316,13 +320,13 @@ TEST(DecelMpc, TerminalEqualityIsFullRank) {
         (a - p.u_scale * TerminalMatrixOracle(n, p.n_nodes, blocks, p.dt)).cwiseAbs().maxCoeff(),
         1e-9 * p.u_scale);
   }
-  DecelMpcParams two;
+  MpcSegmentCoreParams two;
   two.n_blocks = 2;
   two.block_sizes[0] = 6;
   two.block_sizes[1] = 6;
-  DecelMpc mpc;
+  MpcSegmentCore mpc;
   EXPECT_EQ(mpc.Init(*arm.model, arm.frame, two, LimitsFromModel(*arm.model)),
-            DecelMpcReason::kBlocksTooFew);
+            MpcSegmentCoreReason::kBlocksTooFew);
 }
 
 // ── Torque fixture: rows ACTIVE and the hard problem feasible ────────────────
@@ -333,24 +337,24 @@ TEST(DecelMpc, TerminalEqualityIsFullRank) {
 
 struct TorqueFixture {
   ArmModel arm;
-  DecelMpcParams params;
-  DecelMpcLimits limits;
-  DecelMpcInput input;
+  MpcSegmentCoreParams params;
+  MpcSegmentCoreLimits limits;
+  MpcSegmentCoreInput input;
 };
 
 TorqueFixture MakeTorqueFixture(double armature = 0.0) {
-  TorqueFixture f{RealArm6(), DecelMpcParams{}, {}, {}};
+  TorqueFixture f{RealArm6(), MpcSegmentCoreParams{}, {}, {}};
   const pinocchio::Model& m = *f.arm.model;
   f.limits = LimitsFromModel(m, armature);
   f.limits.tau_max *= 10.0;
   f.input = RestInput(f.arm.q_nominal);
   f.input.qd0 << 1.2, -0.6, 0.8, 0.5, 0.4, 0.4;
 
-  DecelMpc loose;
-  EXPECT_EQ(loose.Init(m, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
-  DecelMpcResult r;
+  MpcSegmentCore loose;
+  EXPECT_EQ(loose.Init(m, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult r;
   loose.ResizeResult(r);
-  EXPECT_TRUE(loose.Solve(f.input, r)) << DecelMpcReasonName(r.reason);
+  EXPECT_TRUE(loose.Solve(f.input, r)) << MpcSegmentCoreReasonName(r.reason);
   double peak = 0.0;
   for (int k = 1; k <= f.params.n_nodes; ++k) {
     peak = std::max(peak, std::abs(r.tau_ratio(0, k - 1)) * f.limits.tau_max[0]);
@@ -361,7 +365,7 @@ TorqueFixture MakeTorqueFixture(double armature = 0.0) {
 
 // Solve the fixture's last main QP with the slack pinned to 0 (the hard
 // problem). Returns false when it is infeasible.
-bool SolveHard(const DecelMpc& mpc, const DecelMpcParams& p, Eigen::VectorXd& z) {
+bool SolveHard(const MpcSegmentCore& mpc, const MpcSegmentCoreParams& p, Eigen::VectorXd& z) {
   rtc::tsid::QPData hard = mpc.MainQp();
   const Eigen::Index n_in = hard.C.rows();
   const Eigen::Index nN = n_in / 5;
@@ -375,7 +379,7 @@ bool SolveHard(const DecelMpc& mpc, const DecelMpcParams& p, Eigen::VectorXd& z)
   return res.converged;
 }
 
-Eigen::MatrixXd JerkFromZ(const Eigen::VectorXd& z, const DecelMpcParams& p, int n) {
+Eigen::MatrixXd JerkFromZ(const Eigen::VectorXd& z, const MpcSegmentCoreParams& p, int n) {
   Eigen::MatrixXd u(n, p.n_nodes);
   int k = 0;
   for (int b = 0; b < p.n_blocks; ++b) {
@@ -390,14 +394,14 @@ Eigen::MatrixXd JerkFromZ(const Eigen::VectorXd& z, const DecelMpcParams& p, int
 
 // ── 3. Feasible ⇒ zero slack ─────────────────────────────────────────────────
 
-TEST(DecelMpc, SlackIsZeroWhenFeasible) {
+TEST(MpcSegmentCore, SlackIsZeroWhenFeasible) {
   const TorqueFixture f = MakeTorqueFixture();
   const int n = f.arm.model->nv;
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
-  ASSERT_TRUE(mpc.Solve(f.input, res)) << DecelMpcReasonName(res.reason);
+  ASSERT_TRUE(mpc.Solve(f.input, res)) << MpcSegmentCoreReasonName(res.reason);
 
   // The row binds (otherwise "slack is zero" would be vacuous) …
   EXPECT_GE(res.tau_ratio_max, f.params.eta_tau - 1e-4);
@@ -412,28 +416,28 @@ TEST(DecelMpc, SlackIsZeroWhenFeasible) {
   // Mutation: a penalty below the row multiplier makes slack cheaper than
   // obeying the limit — this test must see it.
   {
-    DecelMpcParams cheap = f.params;
+    MpcSegmentCoreParams cheap = f.params;
     cheap.rho_tau = 1e-8;
-    DecelMpc m2;
-    ASSERT_EQ(m2.Init(*f.arm.model, f.arm.frame, cheap, f.limits), DecelMpcReason::kNone);
-    DecelMpcResult r2;
+    MpcSegmentCore m2;
+    ASSERT_EQ(m2.Init(*f.arm.model, f.arm.frame, cheap, f.limits), MpcSegmentCoreReason::kNone);
+    MpcSegmentCoreResult r2;
     m2.ResizeResult(r2);
-    ASSERT_TRUE(m2.Solve(f.input, r2)) << DecelMpcReasonName(r2.reason);
+    ASSERT_TRUE(m2.Solve(f.input, r2)) << MpcSegmentCoreReasonName(r2.reason);
     EXPECT_GT(r2.slack_max, 1e-3) << "ρ_τ too small must leave slack";
   }
   // Positive control: a static-torque limit below gravity at the stop is
   // infeasible for the hard problem; the soft one reports terminal slack.
   {
-    DecelMpcLimits tight = f.limits;
+    MpcSegmentCoreLimits tight = f.limits;
     pinocchio::Data data(*f.arm.model);
     const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n);
     const Eigen::VectorXd g = Rnea(*f.arm.model, data, f.arm.q_nominal, zero, zero);
     tight.tau_max[1] = 0.5 * std::abs(g[1]) / f.params.eta_tau;
-    DecelMpc m3;
-    ASSERT_EQ(m3.Init(*f.arm.model, f.arm.frame, f.params, tight), DecelMpcReason::kNone);
-    DecelMpcResult r3;
+    MpcSegmentCore m3;
+    ASSERT_EQ(m3.Init(*f.arm.model, f.arm.frame, f.params, tight), MpcSegmentCoreReason::kNone);
+    MpcSegmentCoreResult r3;
     m3.ResizeResult(r3);
-    ASSERT_TRUE(m3.Solve(f.input, r3)) << DecelMpcReasonName(r3.reason);
+    ASSERT_TRUE(m3.Solve(f.input, r3)) << MpcSegmentCoreReasonName(r3.reason);
     EXPECT_GT(r3.slack_terminal_max, 0.1);
     Eigen::VectorXd z3;
     EXPECT_FALSE(SolveHard(m3, f.params, z3));
@@ -442,17 +446,17 @@ TEST(DecelMpc, SlackIsZeroWhenFeasible) {
 
 // ── 7. Re-evaluated torque inside the limit ──────────────────────────────────
 
-TEST(DecelMpc, ReevaluatedTorqueWithinLimits) {
+TEST(MpcSegmentCore, ReevaluatedTorqueWithinLimits) {
   // Armature on (the model copy inside the core carries it; the oracle below
   // must too). One RTI step: the pre-solve path linearises exactly once.
   const double armature = 0.1;
   const TorqueFixture f = MakeTorqueFixture(armature);
   const int n = f.arm.model->nv;
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*f.arm.model, f.arm.frame, f.params, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
-  ASSERT_TRUE(mpc.Solve(f.input, res)) << DecelMpcReasonName(res.reason);
+  ASSERT_TRUE(mpc.Solve(f.input, res)) << MpcSegmentCoreReasonName(res.reason);
   ASSERT_TRUE(res.presolved);
   ASSERT_LE(res.slack_max, 10.0 * f.params.solver.eps_abs);
 
@@ -478,7 +482,7 @@ TEST(DecelMpc, ReevaluatedTorqueWithinLimits) {
 
 // ── Torque seam: derivative, offset sign, armature ───────────────────────────
 
-TEST(DecelMpc, TorqueLinearizationMatchesFiniteDifference) {
+TEST(MpcSegmentCore, TorqueLinearizationMatchesFiniteDifference) {
   const ArmModel arm = RealArm7();
   pinocchio::Model m = *arm.model;
   const int n = m.nv;
@@ -517,7 +521,7 @@ TEST(DecelMpc, TorqueLinearizationMatchesFiniteDifference) {
   EXPECT_FALSE(rtc::catching::LinearizeTorqueAt(m, data, q, v, a, tau, bad));
 }
 
-TEST(DecelMpc, ArmatureEntersTorqueRows) {
+TEST(MpcSegmentCore, ArmatureEntersTorqueRows) {
   const ArmModel arm = RealArm6();
   const int n = arm.model->nv;
   pinocchio::Model m0 = *arm.model;
@@ -541,24 +545,24 @@ TEST(DecelMpc, ArmatureEntersTorqueRows) {
 // τ^lin differs from the true torque at the solution by O(‖x − x̄‖²), so
 // halving the reference perturbation quarters the error. A sign error in the
 // offset makes it first order (ratio ≈ 2).
-TEST(DecelMpc, TorqueLinearizationErrorIsSecondOrder) {
+TEST(MpcSegmentCore, TorqueLinearizationErrorIsSecondOrder) {
   const ArmModel arm = RealArm6();
   const int n = arm.model->nv;
-  DecelMpcParams p;
+  MpcSegmentCoreParams p;
   p.delta_tr = kInf;
-  DecelMpcLimits lim = LimitsFromModel(*arm.model);
+  MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model);
   lim.tau_max *= 10.0;  // rows present, not binding: the error is the model's alone
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
-  DecelMpcResult base;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult base;
   mpc.ResizeResult(base);
-  DecelMpcInput in = RestInput(arm.q_nominal);
+  MpcSegmentCoreInput in = RestInput(arm.q_nominal);
   in.qd0 << 1.0, -0.8, 0.9, 0.6, 0.5, 0.5;
   ASSERT_TRUE(mpc.Solve(in, base));
 
   pinocchio::Data data(*arm.model);
   const auto error_at = [&](double delta) {
-    DecelMpcInput pin = in;
+    MpcSegmentCoreInput pin = in;
     UseAsReference(base, pin);
     for (int k = 1; k < p.n_nodes; ++k) {
       for (int j = 0; j < n; ++j) {
@@ -568,9 +572,9 @@ TEST(DecelMpc, TorqueLinearizationErrorIsSecondOrder) {
         pin.qdd_ref(j, k) += 20.0 * delta * s;
       }
     }
-    DecelMpcResult r;
+    MpcSegmentCoreResult r;
     mpc.ResizeResult(r);
-    EXPECT_TRUE(mpc.Solve(pin, r)) << DecelMpcReasonName(r.reason);
+    EXPECT_TRUE(mpc.Solve(pin, r)) << MpcSegmentCoreReasonName(r.reason);
     double err = 0.0;
     for (int k = 1; k <= p.n_nodes; ++k) {
       const Eigen::VectorXd tau = Rnea(*arm.model, data, r.q.col(k), r.qd.col(k), r.qdd.col(k));
@@ -589,11 +593,11 @@ TEST(DecelMpc, TorqueLinearizationErrorIsSecondOrder) {
 
 // ── w_⊥ (D-5: implemented, default off) ─────────────────────────────────────
 
-TEST(DecelMpc, PerpendicularTermReducesOffLineError) {
+TEST(MpcSegmentCore, PerpendicularTermReducesOffLineError) {
   const ArmModel arm = RealArm6();
   const int n = arm.model->nv;
   pinocchio::Data data(*arm.model);
-  DecelMpcInput in = RestInput(arm.q_nominal);
+  MpcSegmentCoreInput in = RestInput(arm.q_nominal);
   in.qd0 << 0.8, -0.6, 0.9, 0.4, 0.5, 0.3;
   Eigen::MatrixXd j6 = Eigen::MatrixXd::Zero(6, n);
   pinocchio::computeFrameJacobian(*arm.model, data, arm.q_nominal, arm.frame,
@@ -603,14 +607,14 @@ TEST(DecelMpc, PerpendicularTermReducesOffLineError) {
   in.d_hat = v_tcp.normalized();
 
   const auto off_line = [&](double w) {
-    DecelMpcParams p;
+    MpcSegmentCoreParams p;
     p.w_perp = w;
-    DecelMpc mpc;
+    MpcSegmentCore mpc;
     EXPECT_EQ(mpc.Init(*arm.model, arm.frame, p, LimitsFromModel(*arm.model)),
-              DecelMpcReason::kNone);
-    DecelMpcResult r;
+              MpcSegmentCoreReason::kNone);
+    MpcSegmentCoreResult r;
     mpc.ResizeResult(r);
-    EXPECT_TRUE(mpc.Solve(in, r)) << DecelMpcReasonName(r.reason);
+    EXPECT_TRUE(mpc.Solve(in, r)) << MpcSegmentCoreReasonName(r.reason);
     const Eigen::Matrix3d perp = Eigen::Matrix3d::Identity() - in.d_hat * in.d_hat.transpose();
     double sum = 0.0;
     for (int k = 1; k <= p.n_nodes; ++k) {
@@ -628,32 +632,32 @@ TEST(DecelMpc, PerpendicularTermReducesOffLineError) {
 
 // ── Optimisation oracle: structured assembly == dense assembly ──────────────
 
-TEST(DecelMpc, StructuredAssemblyMatchesDense) {
+TEST(MpcSegmentCore, StructuredAssemblyMatchesDense) {
   const TorqueFixture f = MakeTorqueFixture(0.1);
-  DecelMpcParams p = f.params;
+  MpcSegmentCoreParams p = f.params;
   p.w_perp = 10.0;
-  DecelMpcInput in = f.input;
+  MpcSegmentCoreInput in = f.input;
   pinocchio::Data data(*f.arm.model);
   pinocchio::framesForwardKinematics(*f.arm.model, data, f.arm.q_nominal);
   in.p_c = data.oMf[f.arm.frame].translation();
   in.d_hat = Eigen::Vector3d(1.0, 2.0, -0.5).normalized();
 
-  DecelMpc fast, dense;
-  DecelMpcParams pd = p;
+  MpcSegmentCore fast, dense;
+  MpcSegmentCoreParams pd = p;
   pd.reference_assembly = true;
-  ASSERT_EQ(fast.Init(*f.arm.model, f.arm.frame, p, f.limits), DecelMpcReason::kNone);
-  ASSERT_EQ(dense.Init(*f.arm.model, f.arm.frame, pd, f.limits), DecelMpcReason::kNone);
-  DecelMpcResult rf, rd;
+  ASSERT_EQ(fast.Init(*f.arm.model, f.arm.frame, p, f.limits), MpcSegmentCoreReason::kNone);
+  ASSERT_EQ(dense.Init(*f.arm.model, f.arm.frame, pd, f.limits), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult rf, rd;
   fast.ResizeResult(rf);
   dense.ResizeResult(rd);
   // Two cycles: pre-solve path, then a shifted warm cycle.
   for (int cycle = 0; cycle < 2; ++cycle) {
-    DecelMpcInput ci = in;
+    MpcSegmentCoreInput ci = in;
     if (cycle == 1) {
       ShiftReference(rf, p.dt, 0.02, ci);
     }
-    ASSERT_TRUE(fast.Solve(ci, rf)) << DecelMpcReasonName(rf.reason);
-    ASSERT_TRUE(dense.Solve(ci, rd)) << DecelMpcReasonName(rd.reason);
+    ASSERT_TRUE(fast.Solve(ci, rf)) << MpcSegmentCoreReasonName(rf.reason);
+    ASSERT_TRUE(dense.Solve(ci, rd)) << MpcSegmentCoreReasonName(rd.reason);
     const rtc::tsid::QPData& a = fast.MainQp();
     const rtc::tsid::QPData& b = dense.MainQp();
     // Equal to rounding; infinite bounds must match exactly.
@@ -690,7 +694,7 @@ TEST(DecelMpc, StructuredAssemblyMatchesDense) {
 
 // ── 5. Allocation gates ──────────────────────────────────────────────────────
 
-TEST(DecelMpc, TheAllocationGatesAreArmed) {
+TEST(MpcSegmentCore, TheAllocationGatesAreArmed) {
   // operator-new gate sees std containers.
   {
     rtc::testing::ScopedAllocGate gate;
@@ -722,7 +726,8 @@ struct AllocCounts {
   std::size_t c_malloc{0};
 };
 
-AllocCounts GatedSolve(DecelMpc& mpc, const DecelMpcInput& in, DecelMpcResult& res, bool& ok) {
+AllocCounts GatedSolve(MpcSegmentCore& mpc, const MpcSegmentCoreInput& in,
+                       MpcSegmentCoreResult& res, bool& ok) {
   AllocCounts c;
   {
     rtc::testing::ScopedAllocGate new_gate;
@@ -734,8 +739,8 @@ AllocCounts GatedSolve(DecelMpc& mpc, const DecelMpcInput& in, DecelMpcResult& r
   return c;
 }
 
-DecelMpcInput PerpInput(const ArmModel& arm, const DecelMpcInput& base) {
-  DecelMpcInput in = base;
+MpcSegmentCoreInput PerpInput(const ArmModel& arm, const MpcSegmentCoreInput& base) {
+  MpcSegmentCoreInput in = base;
   pinocchio::Data data(*arm.model);
   pinocchio::framesForwardKinematics(*arm.model, data, arm.q_nominal);
   in.p_c = data.oMf[arm.frame].translation();
@@ -754,54 +759,54 @@ DecelMpcInput PerpInput(const ArmModel& arm, const DecelMpcInput& base) {
 //     gradient, w_⊥) and fails only at the conflict check;
 //   • C malloc over a full Solve is recorded (property + stdout), not asserted,
 //     so the follow-up has a baseline.
-TEST(DecelMpc, CoreAllocatesNothingOutsideTheQpSolver) {
+TEST(MpcSegmentCore, CoreAllocatesNothingOutsideTheQpSolver) {
   const ArmModel arm = RealArm7();
-  DecelMpcParams p;
+  MpcSegmentCoreParams p;
   p.w_perp = 10.0;  // the FK / frame-Jacobian path is measured too
-  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
-  DecelMpcInput in = PerpInput(arm, RestInput(arm.q_nominal));
+  MpcSegmentCoreInput in = PerpInput(arm, RestInput(arm.q_nominal));
   in.qd0 << 0.6, -0.4, 0.5, 0.7, -0.3, 0.4, 0.2;
-  ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);
-  DecelMpcInput warm = in;
+  ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
+  MpcSegmentCoreInput warm = in;
   ShiftReference(res, p.dt, 0.02, warm);
-  ASSERT_TRUE(mpc.Solve(warm, res)) << DecelMpcReasonName(res.reason);  // warm-up
-  DecelMpcInput next = warm;
+  ASSERT_TRUE(mpc.Solve(warm, res)) << MpcSegmentCoreReasonName(res.reason);  // warm-up
+  MpcSegmentCoreInput next = warm;
   ShiftReference(res, p.dt, 0.02, next);  // prepared outside the gate
-  DecelMpcInput outside = next;           // reference leaves the box by > δ
+  MpcSegmentCoreInput outside = next;     // reference leaves the box by > δ
   for (int k = 1; k <= p.n_nodes; ++k) {
     outside.q_ref(2, k) = lim.q_max[2] + 3.0 * p.delta_tr;
   }
 
   bool ok = false;
   const AllocCounts full = GatedSolve(mpc, next, res, ok);
-  EXPECT_TRUE(ok) << DecelMpcReasonName(res.reason);
+  EXPECT_TRUE(ok) << MpcSegmentCoreReasonName(res.reason);
   EXPECT_EQ(full.op_new, 0U) << "operator new inside Solve";
   RecordProperty("warm_solve_qp_solver_mallocs", static_cast<int>(full.c_malloc));
   std::printf("[alloc] warm Solve: %zu C mallocs (ProxQP, known limitation)\n", full.c_malloc);
 
   const AllocCounts core = GatedSolve(mpc, outside, res, ok);
   EXPECT_FALSE(ok);
-  ASSERT_EQ(res.reason, DecelMpcReason::kTrustRegionConflict);
+  ASSERT_EQ(res.reason, MpcSegmentCoreReason::kTrustRegionConflict);
   EXPECT_GT(res.linearize_us, 0.0) << "the rejection must come after linearisation";
   EXPECT_GT(res.condense_us, 0.0) << "the rejection must come after condensing";
   EXPECT_EQ(core.op_new, 0U);
   EXPECT_EQ(core.c_malloc, 0U) << "C-level allocation in linearisation / condensing";
 }
 
-TEST(DecelMpc, PresolveAndRejectionPathsAllocateNothing) {
+TEST(MpcSegmentCore, PresolveAndRejectionPathsAllocateNothing) {
   const ArmModel arm = RealArm7();
-  DecelMpcParams p;
+  MpcSegmentCoreParams p;
   p.w_perp = 10.0;
-  DecelMpc mpc;
-  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  MpcSegmentCore mpc;
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
-  DecelMpcInput in = PerpInput(arm, RestInput(arm.q_nominal));
+  MpcSegmentCoreInput in = PerpInput(arm, RestInput(arm.q_nominal));
   in.qd0 << 0.6, -0.4, 0.5, 0.7, -0.3, 0.4, 0.2;
   ASSERT_TRUE(mpc.Solve(in, res));  // warm-up of the pre-solve path
 
@@ -811,32 +816,32 @@ TEST(DecelMpc, PresolveAndRejectionPathsAllocateNothing) {
   EXPECT_EQ(c.op_new, 0U) << "pre-solve path";
   RecordProperty("presolve_path_qp_solver_mallocs", static_cast<int>(c.c_malloc));
 
-  DecelMpcInput nan_in = in;
+  MpcSegmentCoreInput nan_in = in;
   nan_in.qd0[2] = kNan;
   c = GatedSolve(mpc, nan_in, res, ok);
   EXPECT_FALSE(ok);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "non-finite rejection";
 
-  DecelMpcInput drift = in;
+  MpcSegmentCoreInput drift = in;
   UseAsReference(res, drift);
   drift.q0[0] += 2.0 * p.delta_tr;
   c = GatedSolve(mpc, drift, res, ok);
   EXPECT_FALSE(ok);
-  EXPECT_EQ(res.reason, DecelMpcReason::kTrustRegionConflict);
+  EXPECT_EQ(res.reason, MpcSegmentCoreReason::kTrustRegionConflict);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "trust-region rejection";
 
   // QP failure: at the upper edge of the box, moving outward at the velocity
   // limit — node 1 cannot stay inside.
-  DecelMpcInput edge = RestInput(arm.q_nominal);
+  MpcSegmentCoreInput edge = RestInput(arm.q_nominal);
   edge.q0[3] = lim.q_max[3] - p.m_q - 1e-9;
   edge.qd0[3] = p.eta_v * lim.qd_max[3];
   edge.p_c = in.p_c;
   edge.d_hat = in.d_hat;
   c = GatedSolve(mpc, edge, res, ok);
   EXPECT_FALSE(ok);
-  EXPECT_TRUE(res.reason == DecelMpcReason::kPresolveFailed ||
-              res.reason == DecelMpcReason::kQpFailed)
-      << DecelMpcReasonName(res.reason);
+  EXPECT_TRUE(res.reason == MpcSegmentCoreReason::kPresolveFailed ||
+              res.reason == MpcSegmentCoreReason::kQpFailed)
+      << MpcSegmentCoreReasonName(res.reason);
   EXPECT_EQ(c.op_new, 0U) << "QP failure path";
   RecordProperty("qp_failure_path_qp_solver_mallocs", static_cast<int>(c.c_malloc));
 }
@@ -846,204 +851,204 @@ TEST(DecelMpc, PresolveAndRejectionPathsAllocateNothing) {
 struct Snapshot {
   Eigen::MatrixXd q, qd, qdd, u, slack, tau_ratio;
 
-  explicit Snapshot(const DecelMpcResult& r)
+  explicit Snapshot(const MpcSegmentCoreResult& r)
       : q(r.q), qd(r.qd), qdd(r.qdd), u(r.u), slack(r.slack), tau_ratio(r.tau_ratio) {}
 
-  [[nodiscard]] bool Same(const DecelMpcResult& r) const {
+  [[nodiscard]] bool Same(const MpcSegmentCoreResult& r) const {
     return q == r.q && qd == r.qd && qdd == r.qdd && u == r.u && slack == r.slack &&
            tau_ratio == r.tau_ratio;
   }
 };
 
-class DecelMpcFailClosed : public ::testing::Test {
+class MpcSegmentCoreFailClosed : public ::testing::Test {
  protected:
   void SetUp() override {
     arm_ = Synthetic6R();
     params_.w_perp = 1.0;
     limits_ = LimitsFromModel(*arm_.model);
-    ASSERT_EQ(mpc_.Init(*arm_.model, arm_.frame, params_, limits_), DecelMpcReason::kNone);
+    ASSERT_EQ(mpc_.Init(*arm_.model, arm_.frame, params_, limits_), MpcSegmentCoreReason::kNone);
     mpc_.ResizeResult(res_);
     good_ = PerpInput(arm_, RestInput(arm_.q_nominal));
     good_.qd0 << 0.3, -0.2, 0.25, 0.1, -0.2, 0.3;
     ASSERT_TRUE(mpc_.Solve(good_, res_));
   }
 
-  void ExpectRejected(const DecelMpcInput& in, DecelMpcReason why, const char* what) {
+  void ExpectRejected(const MpcSegmentCoreInput& in, MpcSegmentCoreReason why, const char* what) {
     const Snapshot before(res_);
     EXPECT_FALSE(mpc_.Solve(in, res_)) << what;
-    EXPECT_EQ(res_.reason, why) << what << ": got " << DecelMpcReasonName(res_.reason);
+    EXPECT_EQ(res_.reason, why) << what << ": got " << MpcSegmentCoreReasonName(res_.reason);
     EXPECT_FALSE(res_.valid) << what;
     EXPECT_TRUE(before.Same(res_)) << what << ": outputs changed on failure";
   }
 
   ArmModel arm_;
-  DecelMpcParams params_;
-  DecelMpcLimits limits_;
-  DecelMpc mpc_;
-  DecelMpcResult res_;
-  DecelMpcInput good_;
+  MpcSegmentCoreParams params_;
+  MpcSegmentCoreLimits limits_;
+  MpcSegmentCore mpc_;
+  MpcSegmentCoreResult res_;
+  MpcSegmentCoreInput good_;
 };
 
-TEST_F(DecelMpcFailClosed, RejectsNonFiniteInput) {
+TEST_F(MpcSegmentCoreFailClosed, RejectsNonFiniteInput) {
   for (const double bad : {kNan, kInf, -kInf}) {
-    DecelMpcInput in = good_;
+    MpcSegmentCoreInput in = good_;
     in.q0[1] = bad;
-    ExpectRejected(in, DecelMpcReason::kNonFinite, "q0");
+    ExpectRejected(in, MpcSegmentCoreReason::kNonFinite, "q0");
     in = good_;
     in.qd0[4] = bad;
-    ExpectRejected(in, DecelMpcReason::kNonFinite, "qd0");
+    ExpectRejected(in, MpcSegmentCoreReason::kNonFinite, "qd0");
     in = good_;
     in.qdd0[0] = bad;
-    ExpectRejected(in, DecelMpcReason::kNonFinite, "qdd0");
+    ExpectRejected(in, MpcSegmentCoreReason::kNonFinite, "qdd0");
     in = good_;
     UseAsReference(res_, in);
     in.q_ref(2, 5) = bad;
-    ExpectRejected(in, DecelMpcReason::kNonFinite, "q_ref");
+    ExpectRejected(in, MpcSegmentCoreReason::kNonFinite, "q_ref");
     in = good_;
     UseAsReference(res_, in);
     in.qdd_ref(0, 3) = bad;
-    ExpectRejected(in, DecelMpcReason::kNonFinite, "qdd_ref");
+    ExpectRejected(in, MpcSegmentCoreReason::kNonFinite, "qdd_ref");
     in = good_;
     in.p_c[1] = bad;
-    ExpectRejected(in, DecelMpcReason::kNonFinite, "p_c");
+    ExpectRejected(in, MpcSegmentCoreReason::kNonFinite, "p_c");
     in = good_;
     in.d_hat[2] = bad;
-    ExpectRejected(in, DecelMpcReason::kNonFinite, "d_hat");
+    ExpectRejected(in, MpcSegmentCoreReason::kNonFinite, "d_hat");
   }
-  DecelMpcInput in = good_;
+  MpcSegmentCoreInput in = good_;
   in.d_hat = Eigen::Vector3d(1.0, 1.0, 0.0);
-  ExpectRejected(in, DecelMpcReason::kDirectionNotUnit, "d_hat not unit");
+  ExpectRejected(in, MpcSegmentCoreReason::kDirectionNotUnit, "d_hat not unit");
 }
 
-TEST_F(DecelMpcFailClosed, RejectsDimensionMismatch) {
-  DecelMpcInput in = good_;
+TEST_F(MpcSegmentCoreFailClosed, RejectsDimensionMismatch) {
+  MpcSegmentCoreInput in = good_;
   in.q0.resize(5);
   in.q0.setZero();
-  ExpectRejected(in, DecelMpcReason::kDimMismatch, "q0 size");
+  ExpectRejected(in, MpcSegmentCoreReason::kDimMismatch, "q0 size");
   in = good_;
   UseAsReference(res_, in);
   in.q_ref.conservativeResize(Eigen::NoChange, params_.n_nodes);
-  ExpectRejected(in, DecelMpcReason::kDimMismatch, "reference columns");
-  DecelMpcResult wrong;  // never resized
+  ExpectRejected(in, MpcSegmentCoreReason::kDimMismatch, "reference columns");
+  MpcSegmentCoreResult wrong;  // never resized
   EXPECT_FALSE(mpc_.Solve(good_, wrong));
-  EXPECT_EQ(wrong.reason, DecelMpcReason::kDimMismatch);
+  EXPECT_EQ(wrong.reason, MpcSegmentCoreReason::kDimMismatch);
   EXPECT_EQ(wrong.q.size(), 0) << "Solve must not resize";
 }
 
-TEST_F(DecelMpcFailClosed, RejectsInitialStateOutsideBox) {
-  DecelMpcInput in = good_;
+TEST_F(MpcSegmentCoreFailClosed, RejectsInitialStateOutsideBox) {
+  MpcSegmentCoreInput in = good_;
   in.q0[2] = limits_.q_min[2] + 0.5 * params_.m_q;
-  ExpectRejected(in, DecelMpcReason::kInitialStateOutsideBox, "q0 in margin");
+  ExpectRejected(in, MpcSegmentCoreReason::kInitialStateOutsideBox, "q0 in margin");
   in = good_;
   in.qd0[1] = -1.01 * params_.eta_v * limits_.qd_max[1];
-  ExpectRejected(in, DecelMpcReason::kInitialStateOutsideBox, "qd0 over eta_v");
+  ExpectRejected(in, MpcSegmentCoreReason::kInitialStateOutsideBox, "qd0 over eta_v");
 }
 
-TEST_F(DecelMpcFailClosed, RejectsReferenceNotAtRest) {
-  DecelMpcInput in = good_;
+TEST_F(MpcSegmentCoreFailClosed, RejectsReferenceNotAtRest) {
+  MpcSegmentCoreInput in = good_;
   UseAsReference(res_, in);
   in.qd_ref(3, params_.n_nodes) = 0.1;
-  ExpectRejected(in, DecelMpcReason::kReferenceNotAtRest, "terminal velocity");
+  ExpectRejected(in, MpcSegmentCoreReason::kReferenceNotAtRest, "terminal velocity");
   in = good_;
   UseAsReference(res_, in);
   in.qdd_ref(0, params_.n_nodes) = -0.1;
-  ExpectRejected(in, DecelMpcReason::kReferenceNotAtRest, "terminal acceleration");
+  ExpectRejected(in, MpcSegmentCoreReason::kReferenceNotAtRest, "terminal acceleration");
 }
 
-TEST_F(DecelMpcFailClosed, TrustRegionConflictFailsClosed) {
-  DecelMpcInput in = good_;
+TEST_F(MpcSegmentCoreFailClosed, TrustRegionConflictFailsClosed) {
+  MpcSegmentCoreInput in = good_;
   UseAsReference(res_, in);
   in.q0[5] += 1.5 * params_.delta_tr;
-  ExpectRejected(in, DecelMpcReason::kTrustRegionConflict, "x0 drifted");
+  ExpectRejected(in, MpcSegmentCoreReason::kTrustRegionConflict, "x0 drifted");
   // A reference outside the box by more than δ: lower > upper on its row.
   in = good_;
   UseAsReference(res_, in);
   for (int k = 1; k <= params_.n_nodes; ++k) {
     in.q_ref(2, k) = limits_.q_max[2] + 3.0 * params_.delta_tr;
   }
-  ExpectRejected(in, DecelMpcReason::kTrustRegionConflict, "reference outside box");
+  ExpectRejected(in, MpcSegmentCoreReason::kTrustRegionConflict, "reference outside box");
 }
 
-TEST(DecelMpc, RejectsBeforeInit) {
-  DecelMpc mpc;
-  DecelMpcResult res;
+TEST(MpcSegmentCore, RejectsBeforeInit) {
+  MpcSegmentCore mpc;
+  MpcSegmentCoreResult res;
   res.q.setZero(6, 13);
   EXPECT_FALSE(mpc.IsInitialized());
   EXPECT_FALSE(mpc.Solve(RestInput(Eigen::VectorXd::Zero(6)), res));
-  EXPECT_EQ(res.reason, DecelMpcReason::kNotInitialized);
+  EXPECT_EQ(res.reason, MpcSegmentCoreReason::kNotInitialized);
 }
 
-TEST(DecelMpc, InitValidatesParamsAndLimits) {
+TEST(MpcSegmentCore, InitValidatesParamsAndLimits) {
   const ArmModel arm = Synthetic6R();
-  const DecelMpcLimits good = LimitsFromModel(*arm.model);
-  const auto init = [&](const DecelMpcParams& p, const DecelMpcLimits& l) {
-    DecelMpc mpc;
-    const DecelMpcReason r = mpc.Init(*arm.model, arm.frame, p, l);
-    EXPECT_EQ(mpc.IsInitialized(), r == DecelMpcReason::kNone);
+  const MpcSegmentCoreLimits good = LimitsFromModel(*arm.model);
+  const auto init = [&](const MpcSegmentCoreParams& p, const MpcSegmentCoreLimits& l) {
+    MpcSegmentCore mpc;
+    const MpcSegmentCoreReason r = mpc.Init(*arm.model, arm.frame, p, l);
+    EXPECT_EQ(mpc.IsInitialized(), r == MpcSegmentCoreReason::kNone);
     return r;
   };
-  DecelMpcParams p;
-  EXPECT_EQ(init(p, good), DecelMpcReason::kNone);
+  MpcSegmentCoreParams p;
+  EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kNone);
   p.block_sizes[5] = 4;  // Σ = 13 ≠ N
-  EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid);
-  p = DecelMpcParams{};
-  p.n_nodes = rtc::catching::kMaxDecelNodes + 1;
-  EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid);
+  EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid);
+  p = MpcSegmentCoreParams{};
+  p.n_nodes = rtc::catching::kMaxSegmentNodes + 1;
+  EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid);
   for (const double bad : {0.0, -1.0, kNan}) {
-    p = DecelMpcParams{};
+    p = MpcSegmentCoreParams{};
     p.dt = bad;
-    EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid) << "dt " << bad;
-    p = DecelMpcParams{};
+    EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid) << "dt " << bad;
+    p = MpcSegmentCoreParams{};
     p.eta_tau = bad;
-    EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid) << "eta_tau " << bad;
-    p = DecelMpcParams{};
+    EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid) << "eta_tau " << bad;
+    p = MpcSegmentCoreParams{};
     p.delta_tr = bad;
-    EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid) << "delta_tr " << bad;
+    EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid) << "delta_tr " << bad;
   }
-  p = DecelMpcParams{};
+  p = MpcSegmentCoreParams{};
   p.jerk_weight = Eigen::VectorXd::Ones(5);
-  EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid);
+  EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid);
   // A rest tolerance at or below eps_abs would reject every shifted reference.
-  p = DecelMpcParams{};
+  p = MpcSegmentCoreParams{};
   p.reference_rest_tol = p.solver.eps_abs;
-  EXPECT_EQ(init(p, good), DecelMpcReason::kParamsInvalid);
+  EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kParamsInvalid);
   p.reference_rest_tol = 2.0 * p.solver.eps_abs;
-  EXPECT_EQ(init(p, good), DecelMpcReason::kNone);
+  EXPECT_EQ(init(p, good), MpcSegmentCoreReason::kNone);
 
-  p = DecelMpcParams{};
-  DecelMpcLimits l = good;
+  p = MpcSegmentCoreParams{};
+  MpcSegmentCoreLimits l = good;
   l.tau_max[2] = kNan;
-  EXPECT_EQ(init(p, l), DecelMpcReason::kLimitsInvalid);
+  EXPECT_EQ(init(p, l), MpcSegmentCoreReason::kLimitsInvalid);
   l = good;
   l.q_min[1] = l.q_max[1] + 0.1;
-  EXPECT_EQ(init(p, l), DecelMpcReason::kLimitsInvalid);
+  EXPECT_EQ(init(p, l), MpcSegmentCoreReason::kLimitsInvalid);
   l = good;
   l.qd_max[0] = 0.0;
-  EXPECT_EQ(init(p, l), DecelMpcReason::kLimitsInvalid);
+  EXPECT_EQ(init(p, l), MpcSegmentCoreReason::kLimitsInvalid);
   l = good;
   l.armature.resize(3);
-  EXPECT_EQ(init(p, l), DecelMpcReason::kLimitsInvalid);
+  EXPECT_EQ(init(p, l), MpcSegmentCoreReason::kLimitsInvalid);
 
-  DecelMpc mpc;
+  MpcSegmentCore mpc;
   EXPECT_EQ(mpc.Init(*arm.model, static_cast<pinocchio::FrameIndex>(arm.model->nframes), p, good),
-            DecelMpcReason::kFrameUnknown);
+            MpcSegmentCoreReason::kFrameUnknown);
 }
 
-TEST(DecelMpc, LockedJointIsAllowed) {
+TEST(MpcSegmentCore, LockedJointIsAllowed) {
   // q_min == q_max is a legitimate locked joint (NUM-7 availability case):
   // Init accepts it and the joint stays put.
   const ArmModel arm = Synthetic6R();
-  DecelMpcLimits l = LimitsFromModel(*arm.model);
+  MpcSegmentCoreLimits l = LimitsFromModel(*arm.model);
   l.q_min[4] = arm.q_nominal[4];
   l.q_max[4] = arm.q_nominal[4];
-  DecelMpcParams p;
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, l), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  MpcSegmentCoreParams p;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, l), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
-  DecelMpcInput in = RestInput(arm.q_nominal);
+  MpcSegmentCoreInput in = RestInput(arm.q_nominal);
   in.qd0 << 0.3, -0.2, 0.25, 0.1, 0.0, 0.3;
-  ASSERT_TRUE(mpc.Solve(in, res)) << DecelMpcReasonName(res.reason);
+  ASSERT_TRUE(mpc.Solve(in, res)) << MpcSegmentCoreReasonName(res.reason);
   EXPECT_LE((res.q.row(4).array() - arm.q_nominal[4]).abs().maxCoeff(), 1e-5);
 }
 
@@ -1054,15 +1059,15 @@ struct Samples {
   int failures{0};
   std::string failure_log;
 
-  void Fail(const DecelMpcResult& r) {
+  void Fail(const MpcSegmentCoreResult& r) {
     ++failures;
     if (failures <= 5) {
-      failure_log += std::string(" ") + DecelMpcReasonName(r.reason) + "/status" +
+      failure_log += std::string(" ") + MpcSegmentCoreReasonName(r.reason) + "/status" +
                      std::to_string(r.qp_status) + "/it" + std::to_string(r.iterations);
     }
   }
 
-  void Add(const DecelMpcResult& r) {
+  void Add(const MpcSegmentCoreResult& r) {
     presolve.push_back(r.presolve_us);
     linearize.push_back(r.linearize_us);
     condense.push_back(r.condense_us);
@@ -1114,21 +1119,22 @@ void Report(const std::string& key, const Samples& s) {
   return bt == "Release" || bt == "RelWithDebInfo" || bt == "MinSizeRel";
 }
 
-void RunTiming(const ArmModel& arm, const DecelMpcParams& p, const DecelMpcLimits& lim,
+void RunTiming(const ArmModel& arm, const MpcSegmentCoreParams& p, const MpcSegmentCoreLimits& lim,
                const std::string& key, int n_samples = 200, double* max_dev = nullptr,
-               const DecelMpcParams* dev_ref_params = nullptr, bool require_no_failures = true) {
+               const MpcSegmentCoreParams* dev_ref_params = nullptr,
+               bool require_no_failures = true) {
   if (!OptimisedBuild()) {
     n_samples = std::min(n_samples, 10);
     require_no_failures = false;
   }
   const int n = arm.model->nv;
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
-  DecelMpc ref;
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCore ref;
   if (dev_ref_params != nullptr) {
-    ASSERT_EQ(ref.Init(*arm.model, arm.frame, *dev_ref_params, lim), DecelMpcReason::kNone);
+    ASSERT_EQ(ref.Init(*arm.model, arm.frame, *dev_ref_params, lim), MpcSegmentCoreReason::kNone);
   }
-  DecelMpcResult res, rref;
+  MpcSegmentCoreResult res, rref;
   mpc.ResizeResult(res);
   ref.ResizeResult(rref);
   std::mt19937 rng(42);
@@ -1137,7 +1143,7 @@ void RunTiming(const ArmModel& arm, const DecelMpcParams& p, const DecelMpcLimit
   double dev = 0.0;
   pinocchio::Data fk_data(*arm.model);
   for (int i = 0; i < n_samples; ++i) {
-    DecelMpcInput in = RestInput(arm.q_nominal);
+    MpcSegmentCoreInput in = RestInput(arm.q_nominal);
     for (int j = 0; j < n; ++j) {
       in.q0[j] += 0.2 * uni(rng);
       in.qd0[j] = 0.6 * p.eta_v * lim.qd_max[j] * uni(rng);
@@ -1160,7 +1166,7 @@ void RunTiming(const ArmModel& arm, const DecelMpcParams& p, const DecelMpcLimit
       cold.Fail(res);
       continue;
     }
-    DecelMpcInput next = in;
+    MpcSegmentCoreInput next = in;
     ShiftReference(res, p.dt, 0.02, next);
     if (mpc.Solve(next, res)) {
       warm.Add(res);
@@ -1183,12 +1189,12 @@ void RunTiming(const ArmModel& arm, const DecelMpcParams& p, const DecelMpcLimit
   }
 }
 
-TEST(DecelMpcTiming, TimingDistribution6R) {
+TEST(MpcSegmentCoreTiming, TimingDistribution6R) {
   const ArmModel arm = RealArm6();
-  DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.1);
-  DecelMpcParams p;
+  MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.1);
+  MpcSegmentCoreParams p;
   RunTiming(arm, p, lim, "real_6dof");
-  DecelMpcParams dense = p;
+  MpcSegmentCoreParams dense = p;
   dense.reference_assembly = true;
   RunTiming(arm, dense, lim, "real_6dof.dense_assembly");
   // Torque rows binding (the fixture's tight first joint).
@@ -1199,29 +1205,29 @@ TEST(DecelMpcTiming, TimingDistribution6R) {
   RunTiming(f.arm, f.params, f.limits, "real_6dof.torque_active", 200, nullptr, nullptr, false);
 }
 
-TEST(DecelMpcTiming, TimingDistribution7R) {
+TEST(MpcSegmentCoreTiming, TimingDistribution7R) {
   const ArmModel arm = RealArm7();
-  DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
-  DecelMpcParams p;
+  MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  MpcSegmentCoreParams p;
   RunTiming(arm, p, lim, "real_7dof");
-  DecelMpcParams dense = p;
+  MpcSegmentCoreParams dense = p;
   dense.reference_assembly = true;
   RunTiming(arm, dense, lim, "real_7dof.dense_assembly");
-  DecelMpcParams perp = p;
+  MpcSegmentCoreParams perp = p;
   perp.w_perp = 10.0;
   RunTiming(arm, perp, lim, "real_7dof.w_perp_on");
 }
 
 // O-4: solver tolerance sweep — warm solve time and iterations against the
 // trajectory deviation from a tight-tolerance solve of the same inputs.
-TEST(DecelMpcTiming, SolverToleranceSweep7R) {
+TEST(MpcSegmentCoreTiming, SolverToleranceSweep7R) {
   const ArmModel arm = RealArm7();
-  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
-  DecelMpcParams tight;
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  MpcSegmentCoreParams tight;
   tight.solver.eps_abs = 1e-9;
   tight.solver.max_iter = 1000;
   for (const double eps : {1e-4, 1e-5, 1e-6, 1e-7}) {
-    DecelMpcParams p;
+    MpcSegmentCoreParams p;
     p.solver.eps_abs = eps;
     p.reference_rest_tol = 10.0 * eps;  // a shifted reference rests only to eps_abs
     double dev = 0.0;
@@ -1238,50 +1244,50 @@ TEST(DecelMpcTiming, SolverToleranceSweep7R) {
 // so node 1 is correctable and the remaining blocks absorb the rest. Pinned
 // because a review predicted a slow infeasibility verdict here; the solve
 // stays a few iterations.
-TEST(DecelMpc, VelocityDriftIsAbsorbedByJerk) {
+TEST(MpcSegmentCore, VelocityDriftIsAbsorbedByJerk) {
   const ArmModel arm = RealArm7();
-  DecelMpcParams p;
-  const DecelMpcLimits lim = LimitsFromModel(*arm.model, 0.2);
-  DecelMpc mpc;
-  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), DecelMpcReason::kNone);
-  DecelMpcResult res;
+  MpcSegmentCoreParams p;
+  const MpcSegmentCoreLimits lim = LimitsFromModel(*arm.model, 0.2);
+  MpcSegmentCore mpc;
+  ASSERT_EQ(mpc.Init(*arm.model, arm.frame, p, lim), MpcSegmentCoreReason::kNone);
+  MpcSegmentCoreResult res;
   mpc.ResizeResult(res);
-  DecelMpcInput in = RestInput(arm.q_nominal);
+  MpcSegmentCoreInput in = RestInput(arm.q_nominal);
   in.qd0 << 0.6, -0.4, 0.5, 0.7, -0.3, 0.4, 0.2;
   ASSERT_TRUE(mpc.Solve(in, res));
   for (const double dv : {0.5, 1.0, 2.5}) {
-    DecelMpcInput drift = in;
+    MpcSegmentCoreInput drift = in;
     UseAsReference(res, drift);
     drift.qd0[3] = std::min(drift.qd0[3] + dv, p.eta_v * lim.qd_max[3]);
-    DecelMpcResult r;
+    MpcSegmentCoreResult r;
     mpc.ResizeResult(r);
-    EXPECT_TRUE(mpc.Solve(drift, r)) << "dv=" << dv << " " << DecelMpcReasonName(r.reason);
+    EXPECT_TRUE(mpc.Solve(drift, r)) << "dv=" << dv << " " << MpcSegmentCoreReasonName(r.reason);
     EXPECT_LE(r.iterations, 20) << "dv=" << dv;
     EXPECT_LE(std::abs(r.q(3, 1) - drift.q_ref(3, 1)), p.delta_tr + 1e-6) << "dv=" << dv;
   }
 }
 
-// DecelMpcLimits::armature is ADDED to the armature the model carries — the
+// MpcSegmentCoreLimits::armature is ADDED to the armature the model carries — the
 // same torque rows come out of (model 0.1 + limits 0.1) and (model 0 +
 // limits 0.2).
-TEST(DecelMpc, LimitsArmatureAddsToModelArmature) {
+TEST(MpcSegmentCore, LimitsArmatureAddsToModelArmature) {
   const TorqueFixture f = MakeTorqueFixture();
   const int n = f.arm.model->nv;
   pinocchio::Model carrying = *f.arm.model;
   carrying.armature = Eigen::VectorXd::Constant(n, 0.1);
-  DecelMpcLimits half = f.limits;
+  MpcSegmentCoreLimits half = f.limits;
   half.armature = Eigen::VectorXd::Constant(n, 0.1);
-  DecelMpcLimits full = f.limits;
+  MpcSegmentCoreLimits full = f.limits;
   full.armature = Eigen::VectorXd::Constant(n, 0.2);
-  DecelMpcLimits none = f.limits;
+  MpcSegmentCoreLimits none = f.limits;
   none.armature.setZero();
 
-  const auto ratios = [&](const pinocchio::Model& m, const DecelMpcLimits& l) {
-    DecelMpc mpc;
-    EXPECT_EQ(mpc.Init(m, f.arm.frame, f.params, l), DecelMpcReason::kNone);
-    DecelMpcResult r;
+  const auto ratios = [&](const pinocchio::Model& m, const MpcSegmentCoreLimits& l) {
+    MpcSegmentCore mpc;
+    EXPECT_EQ(mpc.Init(m, f.arm.frame, f.params, l), MpcSegmentCoreReason::kNone);
+    MpcSegmentCoreResult r;
     mpc.ResizeResult(r);
-    EXPECT_TRUE(mpc.Solve(f.input, r)) << DecelMpcReasonName(r.reason);
+    EXPECT_TRUE(mpc.Solve(f.input, r)) << MpcSegmentCoreReasonName(r.reason);
     return Eigen::MatrixXd(r.tau_ratio);
   };
   const Eigen::MatrixXd a = ratios(carrying, half);

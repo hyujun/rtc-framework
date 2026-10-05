@@ -932,7 +932,7 @@ DIAG_DECEL_COLUMNS = (
     "decel_p_d_y",
     "decel_p_d_z",
 )
-# CatchingDiagLogPod::DecelEvent / rtc::catching::DecelRefusal — the values
+# CatchingDiagLogPod::SegmentEvent / rtc::catching::SegmentRefusal — the values
 # the lane metrics read (the full tables are in plotters/catching.py).
 DECEL_EVENT_ADMITTED = 1
 DECEL_EVENT_DEFERRED = 2
@@ -1552,7 +1552,7 @@ class PlanBridge:
     """``planner_events.csv`` rows by ``plan_id`` — the planner's own steady instants.
 
     ``wake_ns + lead_s`` is the plan's catch instant ``t_c`` on the steady
-    clock (``lead_s`` = t_c − wake, ``planner_search.cpp``), and the diag's
+    clock (``lead_s`` = t_c − wake, ``grid_catch_search.cpp``), and the diag's
     ``plan_t_c_s`` at a tick is ``t_c − that tick's steady now``, so the two
     give the steady instant of any tick that carries the plan.
     """

@@ -3613,7 +3613,7 @@ _PLANNER_EVENTS_COLUMNS = [
     "decel_source_seq",
 ]
 
-# RankGateBit order (rtc_controllers/catching/planner_search.hpp) — bit
+# RankGateBit order (rtc_controllers/catching/grid_catch_search.hpp) — bit
 # position k = index k here, so `rank_mask` below can be built from it.
 _PLANNER_EVENTS_RANK_BITS = [
     "rank_uncertainty",
@@ -3629,7 +3629,7 @@ def _planner_events_columns():
     return list(_PLANNER_EVENTS_COLUMNS)
 
 
-# DecelRecord fields whose default is NaN (decel_planner.hpp): a wake whose
+# SegmentRecord fields whose default is NaN (mpc_segment_planner.hpp): a wake whose
 # decel step did not compute them writes "nan", not 0.
 _PLANNER_EVENTS_DECEL_NAN_DEFAULTS = (
     "decel_slack_max",
@@ -3690,13 +3690,13 @@ def _planner_events_row(
     row["n_rollouts"] = n_rollouts
     row["rollout_us_max"] = rollout_us_max
     # The decel columns the writer fills with NAMES, as a wake with the decel
-    # planner off writes them (DecelOutcomeName / DecelMpcReasonName /
-    # DecelKindName).
+    # planner off writes them (SegmentOutcomeName / MpcSegmentCoreReasonName /
+    # SegmentKindName).
     row["decel_outcome"] = "off"
     row["decel_core_reason"] = "none"
     row["decel_kind"] = "none"
     # ... and the ones it leaves NaN on a wake that did not compute them
-    # (DecelRecord's defaults).
+    # (SegmentRecord's defaults).
     for nan_col in _PLANNER_EVENTS_DECEL_NAN_DEFAULTS:
         row[nan_col] = float("nan")
     for bit_col, val in rank_bits.items():
@@ -3968,14 +3968,14 @@ class TestDecelEnumTables:
 
         if not self._POD.exists():
             pytest.skip("C++ header is not beside this checkout")
-        assert self._cpp_enum(self._POD, "DecelEvent") == DECEL_EVENT_NAMES
+        assert self._cpp_enum(self._POD, "SegmentEvent") == DECEL_EVENT_NAMES
 
     def test_refusal_names_match_the_cpp_enum(self):
         from rtc_tools.plotting.plotters.catching import DECEL_REFUSAL_NAMES
 
         if not self._IO.exists():
             pytest.skip("C++ header is not beside this checkout")
-        assert self._cpp_enum(self._IO, "DecelRefusal") == DECEL_REFUSAL_NAMES
+        assert self._cpp_enum(self._IO, "SegmentRefusal") == DECEL_REFUSAL_NAMES
 
     def test_the_parser_reads_implicit_and_explicit_values(self, tmp_path):
         # Positive control for the two tests above: a reordered enum is seen.

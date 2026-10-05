@@ -15,11 +15,11 @@
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
-#include "rtc_controllers/catching/planner_search.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/time_feasibility.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
-#include "rtc_controllers/testing/planner_search_fixture.hpp"
+#include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 
 #include <gtest/gtest.h>
@@ -38,13 +38,13 @@ namespace {
 
 using rtc::catching::CatchPoseIkOptions;
 using rtc::catching::CovarianceSnapshot;
+using rtc::catching::GridCatchSearch;
+using rtc::catching::GridCatchSearchConstants;
+using rtc::catching::GridCatchSearchModel;
 using rtc::catching::JudgeReject;
 using rtc::catching::NowReal;
-using rtc::catching::PlannerConstants;
-using rtc::catching::PlannerModel;
 using rtc::catching::PlannerParams;
 using rtc::catching::PlannerRtState;
-using rtc::catching::PlannerSearch;
 using rtc::catching::PlanReason;
 using rtc::catching::PlanSnapshot;
 using rtc::catching::SearchStats;
@@ -67,11 +67,11 @@ struct Rig {
   rtc::testing::Arm arm = rtc::testing::Arm6R();
   Eigen::VectorXd q_ref;
   rtc::testing::Target target;
-  PlannerModel model{};
-  PlannerConstants constants{};
+  GridCatchSearchModel model{};
+  GridCatchSearchConstants constants{};
   PlannerParams params{};
   CatchPoseIkOptions ik{};
-  PlannerSearch search;
+  GridCatchSearch search;
 
   Rig() {
     q_ref = Eigen::VectorXd::Zero(arm.nv);
@@ -123,7 +123,7 @@ struct Rig {
     ik.manipulability_min = 0.0;
   }
 
-  bool Configure(PlannerSearch::ClockFn clock = &SteadyClock) {
+  bool Configure(GridCatchSearch::ClockFn clock = &SteadyClock) {
     return search.Configure(model, constants, params, ik, clock);
   }
 
@@ -212,7 +212,7 @@ TEST(PlannerUnitSpeed, TheSearchUsesTheProfilesDamping) {
 
 // The two keys the search divides or damps by cannot be unusable: a hand-built
 // PlannerParams (no parser in front) is refused at configure.
-TEST(PlannerSearchPlan, ConfigureRefusesAnUnusableSwitchSamplesOrDamping) {
+TEST(GridCatchSearchPlan, ConfigureRefusesAnUnusableSwitchSamplesOrDamping) {
   {
     auto rig = std::make_unique<Rig>();
     rig->params.switch_samples = 1;  // the bound divides by samples - 1
@@ -229,7 +229,7 @@ TEST(PlannerSearchPlan, ConfigureRefusesAnUnusableSwitchSamplesOrDamping) {
 
 // ── 2. Judgement vs rank ─────────────────────────────────────────────────────
 
-TEST(PlannerSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
+TEST(GridCatchSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -278,7 +278,7 @@ TEST(PlannerSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
   EXPECT_NEAR(plan.gamma_min, stats.chosen_g_min, 1e-12);
 }
 
-TEST(PlannerSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
+TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
   // S8-I (`planner.wait_pose_source: current`): the RT hands the adopted pose
   // over in PlannerRtState; the search seeds its IK from it. Handing over the
   // configured pose changes nothing; a different pose still yields a plan.
@@ -342,7 +342,7 @@ TEST(PlannerSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
   EXPECT_DOUBLE_EQ(back.score, base.score);
 }
 
-TEST(PlannerSearchPlan, TheAdoptedWaitPoseIsReadInDeviceOrder) {
+TEST(GridCatchSearchPlan, TheAdoptedWaitPoseIsReadInDeviceOrder) {
   // The RT hands the pose over in DEVICE order; the seed is in model order.
   // A rig whose model order is the device order reversed tells the two apart.
   auto rig = std::make_unique<Rig>();
@@ -364,7 +364,7 @@ TEST(PlannerSearchPlan, TheAdoptedWaitPoseIsReadInDeviceOrder) {
   }
 }
 
-TEST(PlannerSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
+TEST(GridCatchSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
   auto rig = std::make_unique<Rig>();
   // A box nowhere near the trajectory: every p_c fails the workspace gate.
   rig->params.catch_box.min = {100.0, 100.0, 100.0};
@@ -382,7 +382,7 @@ TEST(PlannerSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
             stats.n_in_window);
 }
 
-TEST(PlannerSearchPlan, AFailedRankGatePenalisesButDoesNotRemove) {
+TEST(GridCatchSearchPlan, AFailedRankGatePenalisesButDoesNotRemove) {
   // An unknown covariance fails the uncertainty rank gate for EVERY candidate:
   // decision D says the plan still exists, carries the bit, and costs the
   // penalty; decision C says only judgement gates remove.
@@ -404,7 +404,7 @@ TEST(PlannerSearchPlan, AFailedRankGatePenalisesButDoesNotRemove) {
                                       rig->params.score.w_sigma * 0.002 / rig->params.r_cap - 1e-9);
 }
 
-TEST(PlannerSearchPlan, AnUnsetDecisionKeepsEveryCandidateOut) {
+TEST(GridCatchSearchPlan, AnUnsetDecisionKeepsEveryCandidateOut) {
   // T_freeze unset (NaN) and no explicit t_lead_min: no lead is admissible,
   // so the planner plans nothing rather than guessing a freeze window.
   auto rig = std::make_unique<Rig>();
@@ -421,7 +421,7 @@ TEST(PlannerSearchPlan, AnUnsetDecisionKeepsEveryCandidateOut) {
 
 // ── 3. Settle and budget ─────────────────────────────────────────────────────
 
-TEST(PlannerSearchPlan, SettlesForNSnapshotsAfterATrackChange) {
+TEST(GridCatchSearchPlan, SettlesForNSnapshotsAfterATrackChange) {
   auto rig = std::make_unique<Rig>();
   rig->params.n_settle = 2;
   ASSERT_TRUE(rig->Configure());
@@ -475,10 +475,10 @@ std::uint64_t SearchSequenceDigest(Rig& rig) {
   return h.Value();
 }
 
-TEST(PlannerSearchPlan, AReconfiguredSearchIsANewOne) {
+TEST(GridCatchSearchPlan, AReconfiguredSearchIsANewOne) {
   // Configure is a full reset: a search that has run and is configured again
   // answers exactly as one built and configured now. PlannerCycle relies on
-  // it — ConfigureSearch installs a NEW search on every configure (E1-F12
+  // it — ConfigureGridCatchSearch installs a NEW search on every configure (E1-F12
   // #738) where it once configured the one in place again, and the two are
   // the same thing only if nothing a search did before survives its
   // Configure. n_settle 2 puts the per-trial part of that in view: a search
@@ -511,7 +511,7 @@ std::int64_t FakeClock() noexcept {
   return g_fake_ns;
 }
 
-TEST(PlannerSearchPlan, TheBudgetStopsTheIkAndSaysSo) {
+TEST(GridCatchSearchPlan, TheBudgetStopsTheIkAndSaysSo) {
   auto rig = std::make_unique<Rig>();
   rig->params.budget_s = 0.010;
   ASSERT_TRUE(rig->Configure(&FakeClock));
@@ -526,7 +526,7 @@ TEST(PlannerSearchPlan, TheBudgetStopsTheIkAndSaysSo) {
 
 // ── 4. Switching and freeze ──────────────────────────────────────────────────
 
-TEST(PlannerSearchSwitch, HoldsTheCurrentPlanWhenNothingIsBetter) {
+TEST(GridCatchSearchSwitch, HoldsTheCurrentPlanWhenNothingIsBetter) {
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -544,7 +544,7 @@ TEST(PlannerSearchSwitch, HoldsTheCurrentPlanWhenNothingIsBetter) {
   EXPECT_FALSE(stats.publish);
 }
 
-TEST(PlannerSearchSwitch, NothingReplacesAPlanInsideTheFreezeWindow) {
+TEST(GridCatchSearchSwitch, NothingReplacesAPlanInsideTheFreezeWindow) {
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -564,7 +564,7 @@ TEST(PlannerSearchSwitch, NothingReplacesAPlanInsideTheFreezeWindow) {
   EXPECT_FALSE(stats.publish);
 }
 
-TEST(PlannerSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall) {
+TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall) {
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -763,7 +763,7 @@ std::int64_t OneSlowIkClock() noexcept {
   return g_slow_ns;
 }
 
-TEST(PlannerSearchReview, OneSlowSolveDoesNotStopThePlannerForGood) {
+TEST(GridCatchSearchReview, OneSlowSolveDoesNotStopThePlannerForGood) {
   auto rig = std::make_unique<Rig>();
   rig->params.budget_s = 0.020;  // the shipped budget; the spike is 1.5× it
   g_slow_ns = 0;
@@ -786,7 +786,7 @@ TEST(PlannerSearchReview, OneSlowSolveDoesNotStopThePlannerForGood) {
   EXPECT_GT(widest, 1) << "the estimate never relaxed";
 }
 
-TEST(PlannerSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
+TEST(GridCatchSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -816,7 +816,7 @@ TEST(PlannerSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
   EXPECT_NEAR(next.p_c[1] - first.p_c[1], 0.005, 1e-12);
 }
 
-TEST(PlannerSearchReview, TheCurrentPlanIsWhatTheRtFollowsNotTheLastPublish) {
+TEST(GridCatchSearchReview, TheCurrentPlanIsWhatTheRtFollowsNotTheLastPublish) {
   // P1 is followed; P2 was published but the RT refused it (freeze, age). The
   // planner must keep treating P1 as current, not fall back to "no current"
   // and republish every cycle without hysteresis.
@@ -842,7 +842,7 @@ TEST(PlannerSearchReview, TheCurrentPlanIsWhatTheRtFollowsNotTheLastPublish) {
   EXPECT_FALSE(stats.publish);
 }
 
-TEST(PlannerSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan) {
+TEST(GridCatchSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan) {
   auto rig = std::make_unique<Rig>();
   rig->params.n_settle = 1;
   ASSERT_TRUE(rig->Configure());
@@ -872,7 +872,7 @@ TEST(PlannerSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan) 
 
 // ── 5. G3-K ──────────────────────────────────────────────────────────────────
 
-TEST(PlannerSearchPlan, AFullSearchAllocatesNothing) {
+TEST(GridCatchSearchPlan, AFullSearchAllocatesNothing) {
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -903,7 +903,7 @@ TEST(PlannerSearchPlan, AFullSearchAllocatesNothing) {
 
 // ── 6. R-2 timing and G3-G acceptance (recorded) ─────────────────────────────
 
-TEST(PlannerSearchTiming, RecordsIkAndCycleTimesOnThisHost) {
+TEST(GridCatchSearchTiming, RecordsIkAndCycleTimesOnThisHost) {
   // Not a pass/fail on time — dev-PC numbers are NOT the control PC's (S6-D).
   // Recorded so the report and #537 cite a measurement, not an estimate.
   auto rig = std::make_unique<Rig>();

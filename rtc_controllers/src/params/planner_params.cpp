@@ -359,15 +359,15 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
     out.catch_box.set = true;
   }
 
-  // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
+  // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────
   const YAML::Node decel = Section(planner, "decel_mpc", "decel_mpc");
-  DecelPlannerParams& d = out.decel;
+  MpcSegmentPlannerParams& d = out.mpc_segment;
   const YAML::Node horizon = Section(decel, "horizon", "decel_mpc.horizon");
   // From the section's kind, not the node: an absent section reads as an
   // empty but DEFINED node (catching_yaml_read.hpp).
   d.horizon_explicit = ReadSectionNode(decel, "horizon").kind == SectionKind::kMap;
   d.n_nodes =
-      ReadInt(horizon, "n_nodes", "decel_mpc.horizon.n_nodes", d.n_nodes, 3, kMaxDecelNodes);
+      ReadInt(horizon, "n_nodes", "decel_mpc.horizon.n_nodes", d.n_nodes, 3, kMaxSegmentNodes);
   d.dt_s = ReadBounded(horizon, "dt_s", "decel_mpc.horizon.dt_s", d.dt_s, 0.005, 0.1);
   if (std::fabs(d.dt_s * 1e9 - static_cast<double>(d.DtNs())) > 1e-3) {
     Reject(Key("decel_mpc.horizon.dt_s") +
@@ -375,9 +375,9 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
            "t_c + k·Δ_s is integer ns)");
   }
   if (const YAML::Node b = horizon["blocks"]; b) {
-    if (!b.IsSequence() || b.size() < 3 || b.size() > static_cast<std::size_t>(kMaxDecelNodes)) {
+    if (!b.IsSequence() || b.size() < 3 || b.size() > static_cast<std::size_t>(kMaxSegmentNodes)) {
       Reject(Key("decel_mpc.horizon.blocks") + " must be a sequence of 3.." +
-             std::to_string(kMaxDecelNodes) + " positive integers, got " + Spelling(b));
+             std::to_string(kMaxSegmentNodes) + " positive integers, got " + Spelling(b));
     }
     d.blocks = {};
     for (std::size_t i = 0; i < b.size(); ++i) {
@@ -390,9 +390,9 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
       }
       // Bounded above too: Σ is compared with n_nodes, and unbounded entries
       // could overflow the sum back into range.
-      if (v < 1 || v > kMaxDecelNodes) {
+      if (v < 1 || v > kMaxSegmentNodes) {
         Reject(Key("decel_mpc.horizon.blocks[" + std::to_string(i) + "]") + " must be in [1, " +
-               std::to_string(kMaxDecelNodes) + "]");
+               std::to_string(kMaxSegmentNodes) + "]");
       }
       d.blocks[i] = v;
     }
@@ -407,11 +407,11 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
            " but n_nodes is " + std::to_string(d.n_nodes) + " (Σ blocks = N)");
   }
   const YAML::Node replan = Section(decel, "replan", "decel_mpc.replan");
-  d.k_max = ReadInt(replan, "k_max", "decel_mpc.replan.k_max", d.k_max, 0, kMaxDecelReplans);
+  d.k_max = ReadInt(replan, "k_max", "decel_mpc.replan.k_max", d.k_max, 0, kMaxMpcSegmentReplans);
   for (int k = 0; k <= d.k_max; ++k) {
-    std::array<int, kMaxDecelNodes> blocks{};
+    std::array<int, kMaxSegmentNodes> blocks{};
     int n_blocks = 0;
-    if (!DecelBlocksFor(d, k, blocks, n_blocks)) {
+    if (!MpcSegmentBlocksFor(d, k, blocks, n_blocks)) {
       Reject(Key("decel_mpc.replan.k_max") + " = " + std::to_string(d.k_max) +
              ": replan instance " + std::to_string(k) + " (N = " + std::to_string(d.n_nodes - k) +
              ") would have fewer than 3 blocks");
@@ -432,7 +432,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   // The pre-catch part (E1-F08). Its nodes and the stop's share the
   // payload's node capacity and the core's block array.
   const YAML::Node approach = Section(decel, "approach", "decel_mpc.approach");
-  const int n_pre_cap = std::min(kMaxDecelNodes - d.n_nodes, kMaxDecelNodes - d.n_blocks);
+  const int n_pre_cap = std::min(kMaxSegmentNodes - d.n_nodes, kMaxSegmentNodes - d.n_blocks);
   d.n_pre_max = ReadInt(approach, "n_pre_max", "decel_mpc.approach.n_pre_max", d.n_pre_max, 0,
                         std::max(n_pre_cap, 0));
   d.dt_pre_s =
@@ -475,7 +475,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
            std::to_string(d.v_rel_allow) + ")");
   }
   // The core's own design values (YAML keys). Each range is the core's Init check
-  // (decel_mpc.cpp) with the key's name on it, so a profile is told which key
+  // (mpc_segment_core.cpp) with the key's name on it, so a profile is told which key
   // to fix instead of reading "kParamsInvalid" at configure.
   const YAML::Node cost = Section(decel, "cost", "decel_mpc.cost");
   if (const YAML::Node jw = cost["jerk_weight"]; jw) {
@@ -505,23 +505,24 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   // The stop-path weight (0 = off). The core takes any value >= 0; the upper
   // bound is the largest one its solves are tested with — nothing downstream
   // (not the configure warm-up either) would refuse a larger one.
-  d.w_perp = ReadInterval(cost, "w_perp", "decel_mpc.cost.w_perp", d.w_perp, 0.0, false,
-                          kDecelStopPathWeightMax, false,
-                          "[0, 1e4] (kDecelStopPathWeightMax, the largest weight the cores are "
-                          "tested with)");
+  d.w_perp =
+      ReadInterval(cost, "w_perp", "decel_mpc.cost.w_perp", d.w_perp, 0.0, false,
+                   kMpcSegmentStopPathWeightMax, false,
+                   "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
+                   "tested with)");
   d.axis_theta_max =
       ReadInterval(dcatch, "axis_theta_max", "decel_mpc.catch.axis_theta_max", d.axis_theta_max,
                    0.0, true, 3.14159265358979323846, true, "(0, pi)");
   const YAML::Node lin = Section(decel, "linearization", "decel_mpc.linearization");
   d.delta_tr = ReadPositive(lin, "delta_tr", "decel_mpc.linearization.delta_tr", d.delta_tr);
-  // Upper bound: DecelPlanner::Judge takes a solve as published only when node N
+  // Upper bound: MpcSegmentPlanner::Judge takes a solve as published only when node N
   // rests to reference_rest_tol, and the RT admits a payload only when node N
-  // rests to kDecelRestTol (ValidateDecelNodes). A looser tolerance would let
+  // rests to kSegmentRestTol (ValidateSegmentNodes). A looser tolerance would let
   // Judge accept nodes the validator then refuses.
   d.reference_rest_tol =
       ReadInterval(lin, "reference_rest_tol", "decel_mpc.linearization.reference_rest_tol",
-                   d.reference_rest_tol, 0.0, true, kDecelRestTol, false,
-                   "(0, 1e-3] (kDecelRestTol, the bound the RT admits a published node N by)");
+                   d.reference_rest_tol, 0.0, true, kSegmentRestTol, false,
+                   "(0, 1e-3] (kSegmentRestTol, the bound the RT admits a published node N by)");
   d.ref_speed_fraction =
       ReadInterval(lin, "ref_speed_fraction", "decel_mpc.linearization.ref_speed_fraction",
                    d.ref_speed_fraction, 0.0, true, 1.0, false, "(0, 1]");
@@ -534,7 +535,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   d.solver_eps_rel =
       ReadNonNegative(solver, "eps_rel", "decel_mpc.solver.eps_rel", d.solver_eps_rel);
   // A shifted previous solution meets the terminal equality only to eps_abs
-  // (the core's check, decel_mpc.cpp Init): a rest tolerance at or below it
+  // (the core's check, mpc_segment_core.cpp Init): a rest tolerance at or below it
   // would refuse every warm solve.
   if (!(d.reference_rest_tol > d.solver_eps_abs)) {
     Reject(Key("decel_mpc.linearization.reference_rest_tol") + " = " +
@@ -545,12 +546,12 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   return out;
 }
 
-bool DecelBlocksFor(const DecelPlannerParams& p, int k, std::array<int, kMaxDecelNodes>& blocks,
-                    int& n_blocks) noexcept {
-  if (k < 0 || k >= p.n_nodes || p.n_blocks < 1 || p.n_blocks > kMaxDecelNodes) {
+bool MpcSegmentBlocksFor(const MpcSegmentPlannerParams& p, int k,
+                         std::array<int, kMaxSegmentNodes>& blocks, int& n_blocks) noexcept {
+  if (k < 0 || k >= p.n_nodes || p.n_blocks < 1 || p.n_blocks > kMaxSegmentNodes) {
     return false;
   }
-  std::array<int, kMaxDecelNodes> b = p.blocks;
+  std::array<int, kMaxSegmentNodes> b = p.blocks;
   int n = p.n_blocks;
   for (int step = 0; step < k; ++step) {
     int largest = 0;

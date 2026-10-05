@@ -1,5 +1,5 @@
-// The planner's search (S6-B). See planner_search.hpp.
-#include "rtc_controllers/catching/planner_search.hpp"
+// The planner's search (S6-B). See grid_catch_search.hpp.
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 
 #include <Eigen/Eigenvalues>
 
@@ -41,8 +41,8 @@ constexpr double kSecondsToNs = 1e9;
 
 }  // namespace
 
-double PlannerSearch::SwitchStep(const TrajectorySnapshot& traj, const PlannerRtState& rt,
-                                 NowLead now_lead, double dp) const noexcept {
+double GridCatchSearch::SwitchStep(const TrajectorySnapshot& traj, const PlannerRtState& rt,
+                                   NowLead now_lead, double dp) const noexcept {
   const Eigen::Vector3d p_c(current_.p_c[0], current_.p_c[1], current_.p_c[2]);
   // The ramp terms need the ball target at the adoption instant; a target the
   // sampler cannot give fails the rule closed (NaN).
@@ -88,9 +88,10 @@ double PlannerSearch::SwitchStep(const TrajectorySnapshot& traj, const PlannerRt
   return worst;
 }
 
-bool PlannerSearch::Configure(const PlannerModel& model, const PlannerConstants& constants,
-                              const PlannerParams& params, const CatchPoseIkOptions& ik,
-                              ClockFn clock) {
+bool GridCatchSearch::Configure(const GridCatchSearchModel& model,
+                                const GridCatchSearchConstants& constants,
+                                const PlannerParams& params, const CatchPoseIkOptions& ik,
+                                ClockFn clock) {
   configured_ = false;
   if (model.handle == nullptr || model.nv <= 0 || model.nv > static_cast<int>(kMaxPlanNv) ||
       clock == nullptr) {
@@ -142,7 +143,7 @@ bool PlannerSearch::Configure(const PlannerModel& model, const PlannerConstants&
   return true;
 }
 
-void PlannerSearch::ResetTrial() noexcept {
+void GridCatchSearch::ResetTrial() noexcept {
   current_ = Current{};
   published_.fill(Current{});
   published_next_ = 0;
@@ -153,7 +154,7 @@ void PlannerSearch::ResetTrial() noexcept {
   settle_seen_ = 0;
 }
 
-void PlannerSearch::NotePublished(const PlanSnapshot& plan) noexcept {
+void GridCatchSearch::NotePublished(const PlanSnapshot& plan) noexcept {
   if (!plan.valid) {
     return;  // "no plan" leaves the RT's current plan (if any) where it was
   }
@@ -165,7 +166,7 @@ void PlannerSearch::NotePublished(const PlanSnapshot& plan) noexcept {
   slot.p_c = plan.p_c;
 }
 
-PlannerSearch::Current PlannerSearch::Followed(const PlannerRtState& rt) const noexcept {
+GridCatchSearch::Current GridCatchSearch::Followed(const PlannerRtState& rt) const noexcept {
   if (!rt.plan_active) {
     return Current{};
   }
@@ -179,7 +180,7 @@ PlannerSearch::Current PlannerSearch::Followed(const PlannerRtState& rt) const n
   return Current{};  // the RT follows a plan we did not publish (the oracle)
 }
 
-double PlannerSearch::SigmaMax(const CovarianceSnapshot& cov, int k) noexcept {
+double GridCatchSearch::SigmaMax(const CovarianceSnapshot& cov, int k) noexcept {
   if (!cov.valid || k < 0 || k >= cov.n || k >= static_cast<int>(kCap)) {
     return std::numeric_limits<double>::quiet_NaN();
   }
@@ -202,9 +203,9 @@ double PlannerSearch::SigmaMax(const CovarianceSnapshot& cov, int k) noexcept {
                              : std::numeric_limits<double>::quiet_NaN();
 }
 
-void PlannerSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                            bool cov_matched, const PlannerRtState& rt,
-                            SearchStats& stats) const noexcept {
+void GridCatchSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
+                              bool cov_matched, const PlannerRtState& rt,
+                              SearchStats& stats) const noexcept {
   stats = SearchStats{};
   stats.publish = false;
   const Current followed = Followed(rt);
@@ -228,9 +229,9 @@ void PlannerSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSnap
   }
 }
 
-PlanSnapshot PlannerSearch::Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                 bool cov_matched, const PlannerRtState& rt, NowReal now,
-                                 SearchStats& stats) noexcept {
+PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
+                                   bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                   SearchStats& stats) noexcept {
   stats = SearchStats{};
   const std::int64_t t_start = clock_ != nullptr ? clock_() : 0;
   PlanSnapshot plan{};

@@ -7,7 +7,7 @@
 // search runs behind it is the configuration's choice — a wake calls this
 // interface and nothing else.
 //
-// The one implementation today is PlannerSearch (planner_search.hpp): a grid
+// The one implementation today is GridCatchSearch (grid_catch_search.hpp): a grid
 // over the vision samples with a closed-form γ profile.
 //
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@
 //  • CLOCK. A search that measures its own budget takes its clock when it is
 //    configured. The cycle does not hand it one later (PlannerCycle::SetClock
 //    reaches the segment planner only).
-//  • SearchStats is the record a wake leaves (planner_search.hpp). It is
+//  • SearchStats is the record a wake leaves (grid_catch_search.hpp). It is
 //    declared there, with the search whose counters it holds; an
 //    implementation fills what it has and leaves the rest at the default. The
 //    cycle reads ONE field of it back: `publish` (see Plan).
@@ -34,7 +34,7 @@
 
 namespace rtc::catching {
 
-struct SearchStats;  // planner_search.hpp
+struct SearchStats;  // grid_catch_search.hpp
 
 /// @brief The search one planner wake runs: a trajectory snapshot and its
 ///        covariance in, one catch plan (or "no plan") out.

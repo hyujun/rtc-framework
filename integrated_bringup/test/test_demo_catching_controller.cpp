@@ -35,7 +35,7 @@
 #include "rtc_controllers/catching/catch_pose_ik.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
-#include "rtc_controllers/catching/decel_mpc.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/unit_speed.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
@@ -1881,7 +1881,7 @@ std::vector<double> ArmPositionsOf(const ControllerState& s) {
 TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   // MPC E1-F08 (#661, MD-54 · MD-55): the shipped profiles carry the
   // APPROACH–stop grid — 7 x 0.05 s after the catch, up to 6 x 0.1 s before
-  // it. Since MD-89 (2026-10-03) they also ship the decel MPC on and DECEL
+  // it. Since MD-89 (2026-10-03) they also ship the segment MPC on and DECEL
   // on `mpc` — the law the grid serves; before it they shipped both off and
   // the closed form. The CODE defaults are neither (14 x 0.025, n_pre_max 0,
   // `closed_form`), so only reading the file shows what a robot runs.
@@ -1890,7 +1890,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   const YAML::Node node =
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
-  const auto& d = planner.decel;
+  const auto& d = planner.mpc_segment;
   EXPECT_TRUE(d.horizon_explicit) << profile;
   EXPECT_EQ(d.n_nodes, 7) << profile;
   EXPECT_EQ(d.DtNs(), 50'000'000) << profile;
@@ -1902,7 +1902,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   EXPECT_EQ(d.n_pre_max, 6) << profile;
   EXPECT_EQ(d.DtPreNs(), 100'000'000) << profile;
   EXPECT_TRUE(d.replan_same_point) << profile;
-  // The budgets must leave the planner's wake inside the decel admission age
+  // The budgets must leave the planner's wake inside the segment admission age
   // bound the RT judges a segment by (50 ms): configure parks mode mpc unless
   // budget.replan_s + 3 ticks is below it (DecelModeUnmet).
   EXPECT_GT(d.budget_first_s, 0.0) << profile;
@@ -1931,14 +1931,14 @@ TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
   EXPECT_FALSE(main_planner["decel_mpc"].IsDefined())
       << profile << ": the decel MPC keys belong to catching/planner_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
-  EXPECT_EQ(planner.decel.rho_v, 0.0) << profile;
-  EXPECT_EQ(planner.decel.v_rel_allow, 0.0) << profile;
+  EXPECT_EQ(planner.mpc_segment.rho_v, 0.0) << profile;
+  EXPECT_EQ(planner.mpc_segment.v_rel_allow, 0.0) << profile;
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
   // The two keys moved in the composed tree — where a CM override writes —
   // reach the controller: its read-only mirrors carry the moved values and the
-  // decel planner configures with the slack row on (every catch core is built
+  // MPC segment planner configures with the slack row on (every catch core is built
   // and warmed with it). A mirror declared from the field's default would read
   // 0 here.
   const auto& [profile, expected_dof] = GetParam();
@@ -1955,21 +1955,21 @@ TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
       << profile;
-  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.rho_v").as_double(), 2.0)
       << profile;
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.v_rel_allow").as_double(),
                    0.3)
       << profile;
-  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.rho_v, 2.0) << profile;
-  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.v_rel_allow, 0.3) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.rho_v, 2.0) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.v_rel_allow, 0.3) << profile;
   // Read-only, like every other mirror of the profile.
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.catch.rho_v", 0.0))
                    .successful);
 }
 
 TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
-  // #698: every design value of the decel MPC core, of the catch
+  // #698: every design value of the MPC segment core, of the catch
   // pose IK, of the unit-speed solve and of the switch step bound is WRITTEN in
   // the shipped fragments, and at what the code used before the key existed —
   // so the shipped solves, rankings and tests did not move.
@@ -2019,13 +2019,13 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
     EXPECT_TRUE(k.section[k.name].IsDefined()) << profile << ": " << k.name << " is not written";
   }
 
-  // The core: the planner's parse equals DecelMpcParams{} field by field (the
+  // The core: the planner's parse equals MpcSegmentCoreParams{} field by field (the
   // fields the planner overwrites — grid, eta, m_q, catch terms — are not
   // compared). jerk_weight is written, one 1.0 per arm joint, which is the
   // core's empty = all-ones.
   const auto planner = rtc::catching::ParsePlannerParams(catching);
-  const rtc::catching::DecelMpcParams core{};
-  const auto& d = planner.decel;
+  const rtc::catching::MpcSegmentCoreParams core{};
+  const auto& d = planner.mpc_segment;
   ASSERT_EQ(d.jerk_weight.size(), static_cast<std::size_t>(arm_dof)) << profile;
   for (const double w : d.jerk_weight) {
     EXPECT_EQ(w, 1.0) << profile;
@@ -2071,9 +2071,9 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
-  // The twelve decel-MPC design keys moved in the composed tree — where a CM
+  // The twelve segment-MPC design keys moved in the composed tree — where a CM
   // override writes — reach the controller: each read-only mirror carries the
-  // moved value, and the decel planner configures with the cores built on them.
+  // moved value, and the MPC segment planner configures with the cores built on them.
   // A mirror declared from a default would read the shipped value here.
   const auto& [profile, total_dof] = GetParam();
   static_cast<void>(total_dof);
@@ -2104,7 +2104,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
       << profile;
-  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
   const auto dbl = [&](const char* name) { return node_handle->get_parameter(name).as_double(); };
   const auto integer = [&](const char* name) { return node_handle->get_parameter(name).as_int(); };
   EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.u_scale"), 500.0) << profile;
@@ -2124,7 +2124,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   for (int i = 0; i < arm_dof; ++i) {
     EXPECT_DOUBLE_EQ(jw[static_cast<std::size_t>(i)], 1.0 + 0.25 * i) << profile << " " << i;
   }
-  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.ref_speed_fraction, 0.8) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.ref_speed_fraction, 0.8) << profile;
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.u_scale", 1.0))
                    .successful);
 }
@@ -2147,14 +2147,14 @@ TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
       fragment)["demo_catching_controller"]["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"];
   EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to planner_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
-  EXPECT_EQ(planner.decel.w_perp, 0.0) << profile;
-  EXPECT_EQ(planner.decel.w_perp, rtc::catching::DecelMpcParams{}.w_perp) << profile;
+  EXPECT_EQ(planner.mpc_segment.w_perp, 0.0) << profile;
+  EXPECT_EQ(planner.mpc_segment.w_perp, rtc::catching::MpcSegmentCoreParams{}.w_perp) << profile;
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
   // The key moved in the composed tree — where a CM override writes — reaches
   // the controller: the read-only mirror carries the moved value, and the
-  // decel planner configures with the term ON, which means every stop core and
+  // MPC segment planner configures with the term ON, which means every stop core and
   // every catch core was built with it and warmed up on a line the planner
   // built (a warm-up that fails fails the configure). A mirror declared from
   // the field's default would read 0 here.
@@ -2170,10 +2170,10 @@ TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
       << profile;
-  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.cost.w_perp").as_double(), 40.0)
       << profile;
-  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.w_perp, 40.0) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.w_perp, 40.0) << profile;
   // Read-only, like every other mirror of the profile.
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.w_perp", 0.0))
                    .successful);
@@ -2198,7 +2198,7 @@ TEST_P(ShippedCatchingProfile, RefusesAJerkWeightListOfTheWrongLengthAtConfigure
   const rclcpp_lifecycle::State prev;
   const auto rc = ctrl.on_configure(prev, node_handle, node);
   EXPECT_FALSE(rc == DemoCatchingController::CallbackReturn::SUCCESS &&
-               ctrl.IsDecelPlannerConfigured())
+               ctrl.IsSegmentPlannerConfigured())
       << profile << ": a list one short was accepted";
 }
 

@@ -190,7 +190,7 @@ MuJoCo 팔 actuator (`<general>` position-PD) 는 `servoj` 와 동특성이 다�
 **CLIK 이 받는 입력은 planner 가 정한다** (단계 2).
 
 - `closed_form` (`RunTrackingTick`): soft-catch DS 의 목표 상태 (공 샘플 $p,v,a$ at now_lead) 를 γ 프로파일과 함께 기준 생성기 (`reference_->Step`) 에 넣어 얻은 $x_{ref},\dot x_{ref}$ 가 위치 목표와 선속도 ff 다. 접근축은 계획의 고정축 $a_d$, 각속도 ff 는 없다 (고정 포구점의 접근축은 돌지 않는다 — 꾸며낸 $\omega_{ff}$ 는 목표가 돈다고 스스로 말하는 것이다). 자세 목표는 시행 시작 자세다.
-- `mpc` (`RunDecelMpcTick`): RT 는 soft-catch DS 를 돌리지 않는다. MPC 구간의 샘플러가 catch frame 의 pose · twist 를 낸다 — 위치 목표 = 샘플 pose 의 병진, 접근축 = 샘플 pose 회전의 $z$ 열, 선속도 ff = 샘플 twist 의 선속도 부분, 각속도 ff = twist 의 각속도 부분. 자세 목표는 팔 관절마다 $q_{ref}+\dot q_{ref}/K_n$ ($q_{ref},\dot q_{ref}$ 는 구간 샘플의 관절 위치 · 속도) 이고 손 성분은 시행 자세를 유지한다. $K_n(q'-q)$ 에 $q'=q_{ref}+\dot q_{ref}/K_n$ 을 넣으면 $K_n(q_{ref}-q)+\dot q_{ref}$ 가 되어 자세 행에 속도 feedforward 를 주는 등가 형태다 (CLIK 에 자세 속도 ff 입력이 따로 없다). 구간이 비어 있거나 샘플이 비유한이면 abort 경로다.
+- `mpc` (`RunSegmentTick`): RT 는 soft-catch DS 를 돌리지 않는다. MPC 구간의 샘플러가 catch frame 의 pose · twist 를 낸다 — 위치 목표 = 샘플 pose 의 병진, 접근축 = 샘플 pose 회전의 $z$ 열, 선속도 ff = 샘플 twist 의 선속도 부분, 각속도 ff = twist 의 각속도 부분. 자세 목표는 팔 관절마다 $q_{ref}+\dot q_{ref}/K_n$ ($q_{ref},\dot q_{ref}$ 는 구간 샘플의 관절 위치 · 속도) 이고 손 성분은 시행 자세를 유지한다. $K_n(q'-q)$ 에 $q'=q_{ref}+\dot q_{ref}/K_n$ 을 넣으면 $K_n(q_{ref}-q)+\dot q_{ref}$ 가 되어 자세 행에 속도 feedforward 를 주는 등가 형태다 (CLIK 에 자세 속도 ff 입력이 따로 없다). 구간이 비어 있거나 샘플이 비유한이면 abort 경로다.
 
 catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으로 추가한 frame 이다 — 컨트롤러는 frame 이름만 참조하고 `RegisterFrame` 으로 index 를 얻는다. 파라미터는 `LoadConfig(YAML)` + `ParseXxxParams`, runtime gain 은 `declare_parameter` (L8).
 
