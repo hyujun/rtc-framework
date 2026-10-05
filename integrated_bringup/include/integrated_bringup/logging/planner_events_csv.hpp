@@ -64,17 +64,17 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
 }
 
 /// Whether the decel step did something worth a row on its own.
-[[nodiscard]] inline bool DecelStepWorthRecording(rtc::catching::DecelOutcome o) noexcept {
-  using rtc::catching::DecelOutcome;
-  return o != DecelOutcome::kOff && o != DecelOutcome::kUpToDate &&
-         o != DecelOutcome::kPastReplanWindow;
+[[nodiscard]] inline bool SegmentStepWorthRecording(rtc::catching::SegmentOutcome o) noexcept {
+  using rtc::catching::SegmentOutcome;
+  return o != SegmentOutcome::kOff && o != SegmentOutcome::kUpToDate &&
+         o != SegmentOutcome::kPastReplanWindow;
 }
 
 /// Whether a wake is worth a row (see the file header).
 [[nodiscard]] inline bool PlannerEventWorthRecording(
     const rtc::catching::PlannerCycleRecord& r) noexcept {
   return r.outcome != rtc::catching::CycleOutcome::kIdle || r.reset_seen ||
-         std::isfinite(r.search.sigma_l) || DecelStepWorthRecording(r.decel.outcome);
+         std::isfinite(r.search.sigma_l) || SegmentStepWorthRecording(r.segment.outcome);
 }
 
 inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::PlannerCycleRecord& r) {
@@ -105,14 +105,14 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
      << (s.chosen_rollout_window_only ? 1 : 0) << ',' << s.n_rollouts << ','
      << s.rollout_ns_max / 1000 << ',' << s.chosen_g_min << ',' << s.chosen_g_max << ','
      << s.chosen_v_dir_max << ',' << s.chosen_max_catchable << ',';
-  const auto& d = r.decel;
-  os << rtc::catching::DecelOutcomeName(d.outcome) << ',' << d.k << ',' << d.n_nodes << ','
-     << d.decel_seq << ',' << d.publish_ns << ',' << (d.x0_clamped ? 1 : 0) << ','
+  const auto& d = r.segment;
+  os << rtc::catching::SegmentOutcomeName(d.outcome) << ',' << d.k << ',' << d.n_nodes << ','
+     << d.segment_seq << ',' << d.publish_ns << ',' << (d.x0_clamped ? 1 : 0) << ','
      << (d.from_segment ? 1 : 0) << ',' << (d.presolved ? 1 : 0) << ',' << (d.cold_retry ? 1 : 0)
      << ',' << d.iterations << ',' << d.qp_status << ','
-     << rtc::catching::DecelMpcReasonName(d.core_reason) << ',' << d.solve_ns / 1000 << ','
+     << rtc::catching::MpcSegmentCoreReasonName(d.core_reason) << ',' << d.solve_ns / 1000 << ','
      << d.slack_max << ',' << d.slack_terminal_max << ',' << d.tau_ratio_max << ',';
-  os << rtc::catching::DecelKindName(d.kind) << ',' << (d.cold_start ? 1 : 0) << ','
+  os << rtc::catching::SegmentKindName(d.kind) << ',' << (d.cold_start ? 1 : 0) << ','
      << (d.solver_retried ? 1 : 0) << ',' << (d.ref_clamped ? 1 : 0) << ','
      << (d.ref_scaled ? 1 : 0) << ',' << d.ref_scale << ',' << d.ref_shortfall << ',' << d.x0_speed
      << ',' << d.catch_pos_err << ',' << d.catch_axis_err << ',' << d.catch_gamma << ','

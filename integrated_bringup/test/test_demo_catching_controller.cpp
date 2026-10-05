@@ -1890,7 +1890,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   const YAML::Node node =
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
-  const auto& d = planner.decel;
+  const auto& d = planner.mpc_segment;
   EXPECT_TRUE(d.horizon_explicit) << profile;
   EXPECT_EQ(d.n_nodes, 7) << profile;
   EXPECT_EQ(d.DtNs(), 50'000'000) << profile;
@@ -1931,8 +1931,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
   EXPECT_FALSE(main_planner["decel_mpc"].IsDefined())
       << profile << ": the decel MPC keys belong to catching/planner_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
-  EXPECT_EQ(planner.decel.rho_v, 0.0) << profile;
-  EXPECT_EQ(planner.decel.v_rel_allow, 0.0) << profile;
+  EXPECT_EQ(planner.mpc_segment.rho_v, 0.0) << profile;
+  EXPECT_EQ(planner.mpc_segment.v_rel_allow, 0.0) << profile;
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
@@ -1955,14 +1955,14 @@ TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
       << profile;
-  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.rho_v").as_double(), 2.0)
       << profile;
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.catch.v_rel_allow").as_double(),
                    0.3)
       << profile;
-  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.rho_v, 2.0) << profile;
-  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.v_rel_allow, 0.3) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.rho_v, 2.0) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.v_rel_allow, 0.3) << profile;
   // Read-only, like every other mirror of the profile.
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.catch.rho_v", 0.0))
                    .successful);
@@ -2019,13 +2019,13 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
     EXPECT_TRUE(k.section[k.name].IsDefined()) << profile << ": " << k.name << " is not written";
   }
 
-  // The core: the planner's parse equals DecelMpcParams{} field by field (the
+  // The core: the planner's parse equals MpcSegmentCoreParams{} field by field (the
   // fields the planner overwrites — grid, eta, m_q, catch terms — are not
   // compared). jerk_weight is written, one 1.0 per arm joint, which is the
   // core's empty = all-ones.
   const auto planner = rtc::catching::ParsePlannerParams(catching);
-  const rtc::catching::DecelMpcParams core{};
-  const auto& d = planner.decel;
+  const rtc::catching::MpcSegmentCoreParams core{};
+  const auto& d = planner.mpc_segment;
   ASSERT_EQ(d.jerk_weight.size(), static_cast<std::size_t>(arm_dof)) << profile;
   for (const double w : d.jerk_weight) {
     EXPECT_EQ(w, 1.0) << profile;
@@ -2104,7 +2104,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
       << profile;
-  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
   const auto dbl = [&](const char* name) { return node_handle->get_parameter(name).as_double(); };
   const auto integer = [&](const char* name) { return node_handle->get_parameter(name).as_int(); };
   EXPECT_DOUBLE_EQ(dbl("planner.decel_mpc.cost.u_scale"), 500.0) << profile;
@@ -2124,7 +2124,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   for (int i = 0; i < arm_dof; ++i) {
     EXPECT_DOUBLE_EQ(jw[static_cast<std::size_t>(i)], 1.0 + 0.25 * i) << profile << " " << i;
   }
-  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.ref_speed_fraction, 0.8) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.ref_speed_fraction, 0.8) << profile;
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.u_scale", 1.0))
                    .successful);
 }
@@ -2147,8 +2147,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
       fragment)["demo_catching_controller"]["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"];
   EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to planner_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
-  EXPECT_EQ(planner.decel.w_perp, 0.0) << profile;
-  EXPECT_EQ(planner.decel.w_perp, rtc::catching::DecelMpcParams{}.w_perp) << profile;
+  EXPECT_EQ(planner.mpc_segment.w_perp, 0.0) << profile;
+  EXPECT_EQ(planner.mpc_segment.w_perp, rtc::catching::MpcSegmentCoreParams{}.w_perp) << profile;
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
@@ -2170,10 +2170,10 @@ TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
   ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
             DemoCatchingController::CallbackReturn::SUCCESS)
       << profile;
-  EXPECT_TRUE(ctrl.IsDecelPlannerConfigured()) << profile;
+  EXPECT_TRUE(ctrl.IsSegmentPlannerConfigured()) << profile;
   EXPECT_DOUBLE_EQ(node_handle->get_parameter("planner.decel_mpc.cost.w_perp").as_double(), 40.0)
       << profile;
-  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().decel.w_perp, 40.0) << profile;
+  EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().mpc_segment.w_perp, 40.0) << profile;
   // Read-only, like every other mirror of the profile.
   EXPECT_FALSE(node_handle->set_parameter(rclcpp::Parameter("planner.decel_mpc.cost.w_perp", 0.0))
                    .successful);
@@ -2198,7 +2198,7 @@ TEST_P(ShippedCatchingProfile, RefusesAJerkWeightListOfTheWrongLengthAtConfigure
   const rclcpp_lifecycle::State prev;
   const auto rc = ctrl.on_configure(prev, node_handle, node);
   EXPECT_FALSE(rc == DemoCatchingController::CallbackReturn::SUCCESS &&
-               ctrl.IsDecelPlannerConfigured())
+               ctrl.IsSegmentPlannerConfigured())
       << profile << ": a list one short was accepted";
 }
 

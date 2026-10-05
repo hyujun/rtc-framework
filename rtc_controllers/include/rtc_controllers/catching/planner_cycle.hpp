@@ -12,8 +12,8 @@
 // (segment_planner.hpp) only, and owns whichever implementation was installed
 // behind each. "Installed" is "configured": the cycle never holds one that is
 // not ready to run, so a wake asks a pointer, not the object. What knows the
-// concrete types is the configure path alone — ConfigureSearch / ConfigureDecel
-// build today's one implementation of each, and Decel() hands that
+// concrete types is the configure path alone — ConfigureSearch / ConfigureMpcSegmentPlanner
+// build today's one implementation of each, and MpcSegmentPlannerForDiagnostics() hands that
 // implementation to tests.
 //
 // RT-1~10. The planner may run SCHED_FIFO (D-7a, shares the `mpc_main` role —
@@ -22,7 +22,7 @@
 // SeqLock::LoadInto: the covariance snapshot alone is 11.5 KB.
 //
 // THE DECEL PLANNER'S PART (MPC E1-F03 #629, E1-F08 #661). It runs when a
-// segment planner is installed (DecelPlanner, mpc_segment_planner.hpp) and the
+// segment planner is installed (MpcSegmentPlanner, mpc_segment_planner.hpp) and the
 // optional fifth box is bound; without either, a wake is the search alone and
 // the plan is published by itself. A replan never changes the wake's
 // CycleOutcome (MD-29) — the PlanSnapshot counters and the D-7a latency keep
@@ -123,7 +123,7 @@ struct PlannerCycleRecord {
   SearchStats search{};
   /// The decel planner's account (MPC E1-F03). `outcome == kOff` when it
   /// solved nothing this wake.
-  DecelRecord decel{};
+  SegmentRecord segment{};
 };
 
 static_assert(std::is_trivially_copyable_v<PlannerCycleRecord>);
@@ -136,7 +136,7 @@ struct PlannerCycleIo {
   const rtc::SeqLock<CovarianceSnapshot>* cov{nullptr};
   const rtc::SeqLock<PlannerRtState>* rt{nullptr};
   rtc::SeqLock<PlanSnapshot>* plan{nullptr};
-  rtc::SeqLock<DecelPlanSnapshot>* decel{nullptr};
+  rtc::SeqLock<SegmentSnapshot>* segment{nullptr};
 };
 
 class PlannerCycle {
@@ -149,8 +149,8 @@ class PlannerCycle {
   PlannerCycle() noexcept;
 
   // Not copied, not moved: it owns the installed implementations and keeps a
-  // typed pointer into one of them (Decel()), and the boxes it is bound to
-  // are the controller's.
+  // typed pointer into one of them (MpcSegmentPlannerForDiagnostics()), and the boxes it is bound
+  // to are the controller's.
   PlannerCycle(const PlannerCycle&) = delete;
   PlannerCycle& operator=(const PlannerCycle&) = delete;
 
@@ -181,19 +181,20 @@ class PlannerCycle {
   /// A search is installed (ConfigureSearch succeeded, or InstallSearch).
   [[nodiscard]] bool SearchConfigured() const noexcept { return search_ != nullptr; }
 
-  /// Non-RT. Build a DecelPlanner from `Configure`'s `params.decel` and the
+  /// Non-RT. Build a MpcSegmentPlanner from `Configure`'s `params.decel` and the
   /// cycle's clock and install it as the segment planner, in place of whatever
   /// was there — a NEW object every call. False, and no segment planner
   /// installed, with `error` naming the cause.
-  bool ConfigureDecel(const DecelPlannerModel& model, const DecelPlannerConstants& consts,
-                      std::string* error = nullptr);
+  bool ConfigureMpcSegmentPlanner(const MpcSegmentPlannerModel& model,
+                                  const MpcSegmentPlannerConstants& consts,
+                                  std::string* error = nullptr);
 
   /// Non-RT. Install a segment planner built and configured by the caller, or
   /// none (nullptr). It is handed the cycle's clock here, and again on every
   /// SetClock — whichever order the two calls come in, its solves are timed on
   /// the axis `publish_ns` is stamped on. Not while the planner thread runs.
   void InstallSegmentPlanner(std::unique_ptr<SegmentPlanner> planner) noexcept {
-    decel_planner_ = nullptr;
+    mpc_segment_planner_ = nullptr;
     segment_planner_ = std::move(planner);
     if (segment_planner_ != nullptr) {
       segment_planner_->SetClock(clock_);
@@ -201,29 +202,31 @@ class PlannerCycle {
   }
 
   /// Drop the segment planner (a configuration without one).
-  void ClearDecel() noexcept {
-    decel_planner_ = nullptr;
+  void ClearSegmentPlanner() noexcept {
+    mpc_segment_planner_ = nullptr;
     segment_planner_.reset();
   }
 
-  /// A segment planner is installed (ConfigureDecel succeeded, or
-  /// InstallSegmentPlanner). It does not say WHICH: see Decel().
-  [[nodiscard]] bool DecelConfigured() const noexcept { return segment_planner_ != nullptr; }
+  /// A segment planner is installed (ConfigureMpcSegmentPlanner succeeded, or
+  /// InstallSegmentPlanner). It does not say WHICH: see MpcSegmentPlannerForDiagnostics().
+  [[nodiscard]] bool SegmentPlannerConfigured() const noexcept {
+    return segment_planner_ != nullptr;
+  }
 
-  /// The DecelPlanner ConfigureDecel installed (tests and diagnostics: its
+  /// The MpcSegmentPlanner ConfigureMpcSegmentPlanner installed (tests and diagnostics: its
   /// cores' parameters and the input each was last handed). When the planner
-  /// in place is not one ConfigureDecel built — none installed, or one
+  /// in place is not one ConfigureMpcSegmentPlanner built — none installed, or one
   /// installed with InstallSegmentPlanner — this is an UNCONFIGURED
-  /// DecelPlanner (`Configured()` false), as it was before any configure.
+  /// MpcSegmentPlanner (`Configured()` false), as it was before any configure.
   ///
-  /// The reference is good until the next ConfigureDecel, ClearDecel or
+  /// The reference is good until the next ConfigureMpcSegmentPlanner, ClearSegmentPlanner or
   /// InstallSegmentPlanner: each replaces the object it refers to.
-  [[nodiscard]] const DecelPlanner& Decel() const noexcept;
+  [[nodiscard]] const MpcSegmentPlanner& MpcSegmentPlannerForDiagnostics() const noexcept;
 
   /// The seq the last stored decel segment carries (0 = none yet). Monotone
   /// over the cycle's lifetime — not reset by Configure — so the RT's `>`
   /// admission never sees a re-configure's counter restart below its memory.
-  [[nodiscard]] std::uint32_t LastDecelSeq() const noexcept { return last_decel_seq_; }
+  [[nodiscard]] std::uint32_t LastSegmentSeq() const noexcept { return last_segment_seq_; }
 
   /// Non-RT. The clock `publish_ns` is read from, forwarded to the installed
   /// segment planner. NOT to an installed search: a search takes its clock
@@ -260,9 +263,9 @@ class PlannerCycle {
 
   /// Test seam: called between the decel solve and its re-check (the window a
   /// reset or a plan change must land in for that re-check to matter).
-  void SetPostDecelHookForTesting(PostSearchHook hook, void* context) noexcept {
-    post_decel_hook_ = hook;
-    post_decel_context_ = context;
+  void SetPostSegmentHookForTesting(PostSearchHook hook, void* context) noexcept {
+    post_segment_hook_ = hook;
+    post_segment_context_ = context;
   }
 
   /// Test seam: called between a pair's segment Store and its plan Store
@@ -282,8 +285,8 @@ class PlannerCycle {
   std::uint32_t seen_reset_epoch_{0};
   PostSearchHook post_search_hook_{nullptr};
   void* post_search_context_{nullptr};
-  PostSearchHook post_decel_hook_{nullptr};
-  void* post_decel_context_{nullptr};
+  PostSearchHook post_segment_hook_{nullptr};
+  void* post_segment_context_{nullptr};
   PostSearchHook pair_store_hook_{nullptr};
   void* pair_store_context_{nullptr};
 
@@ -291,8 +294,8 @@ class PlannerCycle {
   // first segment, and a followed plan's segment is replanned. Off without a
   // decel box or an installed segment planner — the plan is then published
   // alone.
-  [[nodiscard]] bool DecelActive() const noexcept {
-    return io_.decel != nullptr && segment_planner_ != nullptr;
+  [[nodiscard]] bool SegmentActive() const noexcept {
+    return io_.segment != nullptr && segment_planner_ != nullptr;
   }
 
   void PublishPair(const PlannerRtState& rt, PlanSnapshot& plan, PlannerCycleRecord& rec) noexcept;
@@ -301,17 +304,18 @@ class PlannerCycle {
   // The followed plan's ball as this wake read it: the scratch trajectory and
   // covariance. Empty when they are not that plan's track — the track of the
   // segments published for it, not the one the RT consumed last. Called with
-  // a segment planner installed (DecelActive).
+  // a segment planner installed (SegmentActive).
   [[nodiscard]] BallPrediction FollowedBall(const PlannerRtState& rt) const noexcept;
   std::int64_t pair_publish_ns_{0};  // the last pair's stamp; 0 after a reset
   // Null = none installed. Replaced on the configure path only (non-RT, the
   // planner thread stopped); a wake reads the pointers and never writes them.
   std::unique_ptr<SegmentPlanner> segment_planner_;
-  // `segment_planner_` as the type ConfigureDecel built it, for Decel(). Null
-  // when the installed planner came another way, or there is none.
-  const DecelPlanner* decel_planner_{nullptr};
-  DecelPlanSnapshot decel_out_{};
-  std::uint32_t last_decel_seq_{0};
+  // `segment_planner_` as the type ConfigureMpcSegmentPlanner built it, for
+  // MpcSegmentPlannerForDiagnostics(). Null when the installed planner came another way, or there
+  // is none.
+  const MpcSegmentPlanner* mpc_segment_planner_{nullptr};
+  SegmentSnapshot segment_out_{};
+  std::uint32_t last_segment_seq_{0};
   // Scratch copies, filled with SeqLock::LoadInto so a wake copies each
   // snapshot once, straight into these, rather than building a by-value
   // Load() on the stack first (covariance 11.5 KB, trajectory ~13 KB).

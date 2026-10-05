@@ -11,7 +11,7 @@
 //               AnotherTracksBallIsNotTheFollowedPlansTarget,
 //               WithoutAReportNothingIsReplanned
 //   lifetime    ATrialResetWithdrawsTheSegment,
-//               WithoutADecelBoxThePlanIsPublishedAlone
+//               WithoutASegmentBoxThePlanIsPublishedAlone
 //
 //   stop line   TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch — the one
 //               test here on a SETTABLE clock (FakeTime): it asserts values,
@@ -57,14 +57,14 @@
 namespace {
 
 using rtc::catching::CycleOutcome;
-using rtc::catching::DecelKind;
-using rtc::catching::DecelOutcome;
-using rtc::catching::DecelOutcomeName;
-using rtc::catching::DecelPlanSnapshot;
 using rtc::catching::Mode;
 using rtc::catching::PlannerCycleRecord;
 using rtc::catching::PlannerRtState;
 using rtc::catching::PlanSnapshot;
+using rtc::catching::SegmentKind;
+using rtc::catching::SegmentOutcome;
+using rtc::catching::SegmentOutcomeName;
+using rtc::catching::SegmentSnapshot;
 
 constexpr std::int64_t kMs = 1'000'000;
 constexpr std::int64_t kTArm = 50 * kMs;  // the sim profile catch_lead_on's T_arm
@@ -103,7 +103,7 @@ struct Boxes {
   rtc::SeqLock<rtc::catching::CovarianceSnapshot> cov;
   rtc::SeqLock<PlannerRtState> rt;
   rtc::SeqLock<PlanSnapshot> plan;
-  rtc::SeqLock<DecelPlanSnapshot> decel;
+  rtc::SeqLock<SegmentSnapshot> segment;
 };
 
 // The RT side under `mode: mpc`: adopt the first plan in the box, hold
@@ -112,7 +112,7 @@ struct Boxes {
 struct RtStandIn {
   std::vector<double> wait_pose;  // device order
   bool adopt{true};               // false: never takes a plan
-  bool report_decel{true};        // false: an RT that reports no segment
+  bool report_segment{true};      // false: an RT that reports no segment
   // The newest segment it takes: a later one is published and never followed
   // (the RT's switch gate refused it).
   std::uint32_t take_up_to_seq{std::numeric_limits<std::uint32_t>::max()};
@@ -138,13 +138,13 @@ struct RtStandIn {
         t_c = p.t_c_ns;
       }
     }
-    if (following && report_decel) {
-      const DecelPlanSnapshot d = b.decel.Load();
-      if (d.valid && d.plan_id == plan_id && d.decel_seq > last_seq &&
-          d.decel_seq <= take_up_to_seq) {
-        last_seq = d.decel_seq;
+    if (following && report_segment) {
+      const SegmentSnapshot d = b.segment.Load();
+      if (d.valid && d.plan_id == plan_id && d.segment_seq > last_seq &&
+          d.segment_seq <= take_up_to_seq) {
+        last_seq = d.segment_seq;
         pending = true;
-        pending_seq = d.decel_seq;
+        pending_seq = d.segment_seq;
         pending_t0 = d.t0_ns;
       }
       if (pending && now + kTArm + kH >= pending_t0) {
@@ -167,10 +167,10 @@ struct RtStandIn {
       s.plan_active = true;
       s.plan_id = plan_id;
       s.plan_t_c_ns = t_c;
-      s.decel_pending = pending;
-      s.decel_pending_seq = pending ? pending_seq : 0;
-      s.decel_active = active;
-      s.decel_seq = active ? active_seq : 0;
+      s.segment_pending = pending;
+      s.segment_pending_seq = pending ? pending_seq : 0;
+      s.segment_active = active;
+      s.segment_seq = active ? active_seq : 0;
     }
     b.rt.Store(s);
     return s;
@@ -195,10 +195,10 @@ struct Rig {
   rtc::catching::PlannerModel search_model{};
   rtc::catching::PlannerConstants search_consts{};
   rtc::catching::CatchPoseIkOptions ik_options{};
-  rtc::catching::DecelPlannerModel decel_model{};
-  rtc::catching::DecelPlannerConstants decel_consts{};
+  rtc::catching::MpcSegmentPlannerModel mpc_segment_model{};
+  rtc::catching::MpcSegmentPlannerConstants mpc_segment_consts{};
 
-  explicit Rig(double catch_err_max = 0.02, bool bind_decel = true, double w_perp = 0.0,
+  explicit Rig(double catch_err_max = 0.02, bool bind_segment = true, double w_perp = 0.0,
                bool fake_clock = false) {
     rtc_urdf_bridge::ModelConfig config;
     config.urdf_path = std::string(RTC_TEST_ROBOT_DESCRIPTIONS_DIR) + "/ur5e/urdf/ur5e.urdf";
@@ -237,7 +237,7 @@ struct Rig {
     params.catch_box.set = true;
     params.catch_box.min = {-5.0, -5.0, -5.0};
     params.catch_box.max = {5.0, 5.0, 5.0};
-    auto& d = params.decel;
+    auto& d = params.mpc_segment;
     d.n_nodes = 7;
     d.dt_s = 0.05;
     d.blocks = {1, 1, 2, 3};
@@ -260,7 +260,7 @@ struct Rig {
     pm.handle = handle.get();
     pm.catch_frame = frame;
     pm.nv = nv;
-    rtc::catching::DecelPlannerModel dm;
+    rtc::catching::MpcSegmentPlannerModel dm;
     dm.arm = model;
     dm.catch_frame = frame;
     dm.nv = nv;
@@ -293,36 +293,37 @@ struct Rig {
     rtc::catching::CatchPoseIkOptions ik;
     ik.max_iter = 60;
     ik.manipulability_min = 0.0;
-    rtc::catching::DecelPlannerConstants dc;
+    rtc::catching::MpcSegmentPlannerConstants dc;
     dc.eta_v = 0.9;
     dc.t_arm_s = pc.t_arm_s;
     dc.control_dt = 0.002;
     dc.v_eps = 1e-6;
     io = rtc::catching::PlannerCycleIo{&boxes.traj, &boxes.cov, &boxes.rt, &boxes.plan,
-                                       bind_decel ? &boxes.decel : nullptr};
+                                       bind_segment ? &boxes.segment : nullptr};
     EXPECT_TRUE(cycle.Bind(io));
     EXPECT_TRUE(cycle.ConfigureSearch(pm, pc, ik));
     std::string err;
-    EXPECT_TRUE(cycle.ConfigureDecel(dm, dc, &err)) << err;
+    EXPECT_TRUE(cycle.ConfigureMpcSegmentPlanner(dm, dc, &err)) << err;
     search_model = pm;
     search_consts = pc;
     ik_options = ik;
-    decel_model = dm;
-    decel_consts = dc;
+    mpc_segment_model = dm;
+    mpc_segment_consts = dc;
   }
 
   // Configure again a cycle that has already run, with what it was built
   // with. The search is configured over the one in place (no ClearSearch) and
-  // the decel planner after a ClearDecel, which is how the controller's
+  // the decel planner after a ClearSegmentPlanner, which is how the controller's
   // configure reaches it.
   void Reconfigure() {
     cycle.Configure(params);
     EXPECT_TRUE(cycle.Bind(io));
-    cycle.ClearDecel();
-    EXPECT_FALSE(cycle.DecelConfigured());
+    cycle.ClearSegmentPlanner();
+    EXPECT_FALSE(cycle.SegmentPlannerConfigured());
     EXPECT_TRUE(cycle.ConfigureSearch(search_model, search_consts, ik_options));
     std::string err;
-    EXPECT_TRUE(cycle.ConfigureDecel(decel_model, decel_consts, &err)) << err;
+    EXPECT_TRUE(cycle.ConfigureMpcSegmentPlanner(mpc_segment_model, mpc_segment_consts, &err))
+        << err;
   }
 
   // The ball passes the catch point 0.7 s after the first snapshot; later
@@ -349,8 +350,8 @@ struct Rig {
 
 std::string Why(const PlannerCycleRecord& r) {
   return std::string(rtc::catching::CycleOutcomeName(r.outcome)) + " / decel " +
-         DecelOutcomeName(r.decel.outcome) + " / " +
-         rtc::catching::DecelMpcReasonName(r.decel.core_reason);
+         SegmentOutcomeName(r.segment.outcome) + " / " +
+         rtc::catching::MpcSegmentCoreReasonName(r.segment.core_reason);
 }
 
 // ── The pair ─────────────────────────────────────────────────────────────────
@@ -366,7 +367,7 @@ struct OrderProbe {
 void ProbeOrder(void* ctx) noexcept {
   auto* p = static_cast<OrderProbe*>(ctx);
   ++p->calls;
-  const DecelPlanSnapshot d = p->boxes->decel.Load();
+  const SegmentSnapshot d = p->boxes->segment.Load();
   const PlanSnapshot plan = p->boxes->plan.Load();
   p->segment_already_there = d.valid && d.plan_id == p->expected_plan_id;
   p->plan_not_yet_there = !plan.valid || plan.plan_id != p->expected_plan_id;
@@ -385,15 +386,15 @@ TEST(ApproachCycle, APairIsPublishedTogetherSegmentFirst) {
   ASSERT_EQ(rec.outcome, CycleOutcome::kPublished) << Why(rec);
   ASSERT_TRUE(rec.plan_valid);
   EXPECT_TRUE(rec.search_valid);
-  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kPublished);
-  EXPECT_EQ(rec.decel.kind, DecelKind::kFirst);
-  EXPECT_TRUE(rec.decel.cold_start);
+  EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kPublished);
+  EXPECT_EQ(rec.segment.kind, SegmentKind::kFirst);
+  EXPECT_TRUE(rec.segment.cold_start);
   // Between the two stores the segment is there and the plan is not.
   EXPECT_EQ(probe.calls, 1);
   EXPECT_TRUE(probe.segment_already_there);
   EXPECT_TRUE(probe.plan_not_yet_there);
   const PlanSnapshot plan = r->boxes.plan.Load();
-  const DecelPlanSnapshot seg = r->boxes.decel.Load();
+  const SegmentSnapshot seg = r->boxes.segment.Load();
   ASSERT_TRUE(plan.valid);
   ASSERT_TRUE(seg.valid);
   EXPECT_EQ(plan.plan_id, rec.plan_id);
@@ -403,11 +404,11 @@ TEST(ApproachCycle, APairIsPublishedTogetherSegmentFirst) {
   EXPECT_EQ(seg.publish_ns, rec.publish_ns);
   EXPECT_GT(seg.n_pre, 0);
   EXPECT_EQ(seg.t0_ns, plan.t_c_ns - seg.n_pre * seg.dt_pre_ns);
-  EXPECT_TRUE(rtc::catching::ValidateDecelNodes(seg));
+  EXPECT_TRUE(rtc::catching::ValidateSegmentNodes(seg));
   // Recorded for the sim comparison: the search plus the first solve.
   std::printf("[ record ] pair wake: search %.2f ms, first solve %.2f ms, n_pre %d\n",
               static_cast<double>(rec.search.search_ns) * 1e-6,
-              static_cast<double>(rec.decel.solve_ns) * 1e-6, seg.n_pre);
+              static_cast<double>(rec.segment.solve_ns) * 1e-6, seg.n_pre);
 }
 
 TEST(ApproachCycle, AWithheldSegmentWithholdsThePlan) {
@@ -416,15 +417,15 @@ TEST(ApproachCycle, AWithheldSegmentWithholdsThePlan) {
   r->StartTrajectory();
   const PlannerCycleRecord rec = r->Wake();
   EXPECT_EQ(rec.outcome, CycleOutcome::kHeld) << Why(rec);
-  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kCatchError);
+  EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kCatchError);
   // The search found a plan; the pair was not published. The two flags are
   // what tells this wake from one whose search found nothing.
   EXPECT_TRUE(rec.search_valid);
   EXPECT_FALSE(rec.plan_valid);
   EXPECT_FALSE(r->boxes.plan.Load().valid);
-  EXPECT_FALSE(r->boxes.decel.Load().valid);
+  EXPECT_FALSE(r->boxes.segment.Load().valid);
   EXPECT_EQ(r->cycle.LastPlanId(), 0U);
-  EXPECT_EQ(r->cycle.LastDecelSeq(), 0U);
+  EXPECT_EQ(r->cycle.LastSegmentSeq(), 0U);
 }
 
 struct TrajSwap {
@@ -446,23 +447,23 @@ TEST(ApproachCycle, ANewerSnapshotOfTheSameTrackStillPublishes) {
   r->rt.adopt = false;
   r->StartTrajectory();
   TrajSwap swap{r.get(), 2, kTrack};
-  r->cycle.SetPostDecelHookForTesting(&StoreNewerTrajectory, &swap);
+  r->cycle.SetPostSegmentHookForTesting(&StoreNewerTrajectory, &swap);
   PlannerCycleRecord rec = r->Wake();
   EXPECT_EQ(rec.outcome, CycleOutcome::kPublished) << Why(rec);
-  EXPECT_TRUE(r->boxes.decel.Load().valid);
+  EXPECT_TRUE(r->boxes.segment.Load().valid);
 
   auto q = std::make_unique<Rig>();
   q->rt.adopt = false;
   q->StartTrajectory();
   TrajSwap other{q.get(), 2, kTrack + 1};
-  q->cycle.SetPostDecelHookForTesting(&StoreNewerTrajectory, &other);
+  q->cycle.SetPostSegmentHookForTesting(&StoreNewerTrajectory, &other);
   rec = q->Wake();
   EXPECT_EQ(rec.outcome, CycleOutcome::kSuperseded) << Why(rec);
-  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kSuperseded);
+  EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kSuperseded);
   EXPECT_FALSE(q->boxes.plan.Load().valid);
-  EXPECT_FALSE(q->boxes.decel.Load().valid);
-  r->cycle.SetPostDecelHookForTesting(nullptr, nullptr);
-  q->cycle.SetPostDecelHookForTesting(nullptr, nullptr);
+  EXPECT_FALSE(q->boxes.segment.Load().valid);
+  r->cycle.SetPostSegmentHookForTesting(nullptr, nullptr);
+  q->cycle.SetPostSegmentHookForTesting(nullptr, nullptr);
 }
 
 TEST(ApproachCycle, RightAfterAPairTheSearchWaits) {
@@ -478,7 +479,7 @@ TEST(ApproachCycle, RightAfterAPairTheSearchWaits) {
   PlannerCycleRecord rec = r->cycle.Run(rtc::catching::NowReal{Now()});
   EXPECT_EQ(rec.outcome, CycleOutcome::kIdle);
   EXPECT_EQ(rec.search.n_ik, 0);
-  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kOff);
+  EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kOff);
   EXPECT_EQ(r->cycle.LastPlanId(), first.plan_id);
   // One that postdates it (the RT did not take the plan): the search resumes.
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -500,7 +501,7 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
   int advance = 0;
   int stop = 0;
   int searched = 0;
-  std::int32_t last_k = first.decel.k;
+  std::int32_t last_k = first.segment.k;
   std::uint64_t seq = 1;
   // Wake every ~15 ms through APPROACH, COMMITTED and DECEL to the end of the
   // replan window, with a new trajectory snapshot every other wake.
@@ -513,24 +514,24 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
     const PlannerCycleRecord rec = r->Wake();
     searched += rec.search.n_ik > 0 ? 1 : 0;
     EXPECT_NE(rec.outcome, CycleOutcome::kPublished) << "a second plan while following";
-    if (rec.decel.outcome != DecelOutcome::kPublished) {
+    if (rec.segment.outcome != SegmentOutcome::kPublished) {
       continue;
     }
     ++replans;
     // Every published replan started on a segment the RT reported (path (i)).
-    EXPECT_TRUE(rec.decel.from_segment);
-    EXPECT_NE(rec.decel.source_seq, 0U);
+    EXPECT_TRUE(rec.segment.from_segment);
+    EXPECT_NE(rec.segment.source_seq, 0U);
     // A new grid point or core is a new problem; the same point is not.
-    if (rec.decel.kind == DecelKind::kSame) {
+    if (rec.segment.kind == SegmentKind::kSame) {
       ++same;
-      EXPECT_FALSE(rec.decel.cold_start);
+      EXPECT_FALSE(rec.segment.cold_start);
     } else {
-      EXPECT_TRUE(rec.decel.cold_start) << rtc::catching::DecelKindName(rec.decel.kind);
-      advance += rec.decel.kind == DecelKind::kAdvance ? 1 : 0;
-      stop += rec.decel.kind == DecelKind::kStop ? 1 : 0;
+      EXPECT_TRUE(rec.segment.cold_start) << rtc::catching::SegmentKindName(rec.segment.kind);
+      advance += rec.segment.kind == SegmentKind::kAdvance ? 1 : 0;
+      stop += rec.segment.kind == SegmentKind::kStop ? 1 : 0;
     }
-    EXPECT_GE(rec.decel.k, last_k) << "the grid point never moves back";
-    last_k = rec.decel.k;
+    EXPECT_GE(rec.segment.k, last_k) << "the grid point never moves back";
+    last_k = rec.segment.k;
   }
   EXPECT_EQ(searched, 0) << "the search ran while the RT followed a plan";
   EXPECT_GT(replans, 0);
@@ -595,32 +596,33 @@ TEST(ApproachCycle, TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch) {
   for (const bool rt_takes_replans : {true, false}) {
     SCOPED_TRACE(rt_takes_replans ? "the RT takes every segment" : "the RT keeps the first");
     FakeTime time(kStart);
-    auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_decel=*/true,
+    auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/true,
                                    /*w_perp=*/2000.0, /*fake_clock=*/true);
-    ASSERT_TRUE(r->cycle.DecelConfigured());
-    const rtc::catching::DecelPlanner& decel = r->cycle.Decel();
+    ASSERT_TRUE(r->cycle.SegmentPlannerConfigured());
+    const rtc::catching::MpcSegmentPlanner& mpc_segment_planner =
+        r->cycle.MpcSegmentPlannerForDiagnostics();
     DriftingCatch drift(*r);
     r->StartTrajectory();
     const PlannerCycleRecord first = r->Wake();
     ASSERT_EQ(first.outcome, CycleOutcome::kPublished) << Why(first);
-    ASSERT_EQ(first.decel.kind, DecelKind::kFirst);
+    ASSERT_EQ(first.segment.kind, SegmentKind::kFirst);
     const PlanSnapshot plan = r->boxes.plan.Load();
     const std::int64_t t_c = plan.t_c_ns;
     if (!rt_takes_replans) {
-      r->rt.take_up_to_seq = first.decel.decel_seq;
+      r->rt.take_up_to_seq = first.segment.segment_seq;
     }
 
     std::map<std::uint32_t, Line> line_of;  // published segment → its line
     // The first segment's line is the PLAN's catch point along its ball.
     {
-      const auto& in = decel.ApproachCoreInput(-first.decel.k);
+      const auto& in = mpc_segment_planner.ApproachCoreInput(-first.segment.k);
       const Eigen::Vector3d p(plan.p_c[0], plan.p_c[1], plan.p_c[2]);
       const Eigen::Vector3d v(plan.v_c[0], plan.v_c[1], plan.v_c[2]);
       EXPECT_EQ(in.p_c, p);
       EXPECT_LT((in.d_hat - v.normalized()).norm(), 1e-12);
-      line_of[first.decel.decel_seq] = Line{in.p_c, in.d_hat};
+      line_of[first.segment.segment_seq] = Line{in.p_c, in.d_hat};
     }
-    Line newest_catch = line_of[first.decel.decel_seq];
+    Line newest_catch = line_of[first.segment.segment_seq];
     std::set<std::int32_t> stop_points;
     int stops = 0;
     int stops_off_the_newest_line = 0;
@@ -628,35 +630,35 @@ TEST(ApproachCycle, TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch) {
     while (DriftingCatch::Running(t_c)) {
       drift.Step(*r, time);
       const PlannerCycleRecord rec = r->Wake();
-      const bool stop = rec.decel.kind == DecelKind::kStop;
-      EXPECT_FALSE(stop && rec.decel.outcome == DecelOutcome::kNoBall)
+      const bool stop = rec.segment.kind == SegmentKind::kStop;
+      EXPECT_FALSE(stop && rec.segment.outcome == SegmentOutcome::kNoBall)
           << "a stop grid point whose source had no line";
-      if (rec.decel.outcome != DecelOutcome::kPublished) {
+      if (rec.segment.outcome != SegmentOutcome::kPublished) {
         continue;
       }
-      ASSERT_EQ(line_of.count(rec.decel.source_seq), 1U) << rec.decel.source_seq;
+      ASSERT_EQ(line_of.count(rec.segment.source_seq), 1U) << rec.segment.source_seq;
       if (!stop) {
         // A catch-core segment: the line of THIS wake's ball at t_c — the
         // trajectory in the box, evaluated here from what the rig stored.
-        const auto& in = decel.ApproachCoreInput(-rec.decel.k);
+        const auto& in = mpc_segment_planner.ApproachCoreInput(-rec.segment.k);
         const double dt = static_cast<double>(t_c - (r->traj_first_ns + 14 * 50 * kMs)) / 1e9;
         EXPECT_LT((in.p_c - (r->p_c + r->v_ball * dt)).norm(), 1e-9);
         EXPECT_LT((in.d_hat - r->v_ball.normalized()).norm(), 1e-9);
         newest_catch = Line{in.p_c, in.d_hat};
-        line_of[rec.decel.decel_seq] = newest_catch;
+        line_of[rec.segment.segment_seq] = newest_catch;
         ++catch_segments;
         continue;
       }
-      const Line& followed = line_of[rec.decel.source_seq];
-      const auto& in = decel.StopCoreInput(rec.decel.k);
-      EXPECT_EQ(in.p_c, followed.p) << "stop k " << rec.decel.k;
-      EXPECT_EQ(in.d_hat, followed.d) << "stop k " << rec.decel.k;
-      line_of[rec.decel.decel_seq] = followed;  // a stop segment inherits
-      stop_points.insert(rec.decel.k);
+      const Line& followed = line_of[rec.segment.source_seq];
+      const auto& in = mpc_segment_planner.StopCoreInput(rec.segment.k);
+      EXPECT_EQ(in.p_c, followed.p) << "stop k " << rec.segment.k;
+      EXPECT_EQ(in.d_hat, followed.d) << "stop k " << rec.segment.k;
+      line_of[rec.segment.segment_seq] = followed;  // a stop segment inherits
+      stop_points.insert(rec.segment.k);
       ++stops;
       stops_off_the_newest_line += (in.p_c - newest_catch.p).norm() > 1e-4 ? 1 : 0;
       if (!rt_takes_replans) {
-        EXPECT_EQ(rec.decel.source_seq, first.decel.decel_seq);
+        EXPECT_EQ(rec.segment.source_seq, first.segment.segment_seq);
       }
     }
     // Every stop grid point of the replan window was solved (k_max 2).
@@ -665,7 +667,7 @@ TEST(ApproachCycle, TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch) {
     if (!rt_takes_replans) {
       // The discriminating case: the newest PUBLISHED catch-core line is not
       // the followed one, and no stop core took it.
-      EXPECT_GT((newest_catch.p - line_of[first.decel.decel_seq].p).norm(), 1e-3);
+      EXPECT_GT((newest_catch.p - line_of[first.segment.segment_seq].p).norm(), 1e-3);
       EXPECT_EQ(stops_off_the_newest_line, stops);
     }
     std::printf(
@@ -700,15 +702,15 @@ CatchTrace RunCatch(Rig& r, FakeTime& time, bool rt_takes_replans) {
   const auto note = [&](const PlannerCycleRecord& rec) {
     rtc::testing::AddCycleRecord(h, rec);
     rtc::testing::AddPlan(h, r.boxes.plan.Load());
-    rtc::testing::AddSegment(h, r.boxes.decel.Load());
+    rtc::testing::AddSegment(h, r.boxes.segment.Load());
     ++t.wakes;
     t.searches += rec.search.n_ik > 0 ? 1 : 0;
     t.monitor_wakes += static_cast<Mode>(rec.mode) == Mode::kCommitted ? 1 : 0;
     t.decel_wakes += static_cast<Mode>(rec.mode) == Mode::kDecel ? 1 : 0;
     t.plans += rec.outcome == CycleOutcome::kPublished && rec.plan_valid ? 1 : 0;
-    const bool segment = rec.decel.outcome == DecelOutcome::kPublished;
+    const bool segment = rec.segment.outcome == SegmentOutcome::kPublished;
     t.segments += segment ? 1 : 0;
-    t.stop_segments += segment && rec.decel.kind == DecelKind::kStop ? 1 : 0;
+    t.stop_segments += segment && rec.segment.kind == SegmentKind::kStop ? 1 : 0;
   };
   DriftingCatch drift(r);
   r.StartTrajectory();
@@ -717,7 +719,7 @@ CatchTrace RunCatch(Rig& r, FakeTime& time, bool rt_takes_replans) {
   EXPECT_EQ(first.outcome, CycleOutcome::kPublished) << Why(first);
   const std::int64_t t_c = r.boxes.plan.Load().t_c_ns;
   if (!rt_takes_replans) {
-    r.rt.take_up_to_seq = first.decel.decel_seq;
+    r.rt.take_up_to_seq = first.segment.segment_seq;
   }
   while (first.outcome == CycleOutcome::kPublished && DriftingCatch::Running(t_c)) {
     drift.Step(r, time);
@@ -774,7 +776,7 @@ TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
     SCOPED_TRACE(rt_takes_replans ? "the RT takes every segment" : "the RT keeps the first");
     const auto& expected = kWholeCatchDigest[rt_takes_replans ? 0U : 1U];
     FakeTime time(kStart);
-    auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_decel=*/true,
+    auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/true,
                                    /*w_perp=*/2000.0, /*fake_clock=*/true);
     for (const RigHistory history :
          {RigHistory::kBuilt, RigHistory::kResetReconfigured, RigHistory::kReconfigured}) {
@@ -832,23 +834,23 @@ TEST(ApproachCycle, AnotherTracksBallIsNotTheFollowedPlansTarget) {
   ASSERT_EQ(r->Wake().outcome, CycleOutcome::kPublished);
   std::this_thread::sleep_for(std::chrono::milliseconds(15));
   PlannerCycleRecord rec = r->Wake();
-  ASSERT_EQ(rec.decel.outcome, DecelOutcome::kPublished) << Why(rec);
-  EXPECT_EQ(r->boxes.decel.Load().token.generation, kTrack);
-  const std::uint32_t seq = r->cycle.LastDecelSeq();
+  ASSERT_EQ(rec.segment.outcome, SegmentOutcome::kPublished) << Why(rec);
+  EXPECT_EQ(r->boxes.segment.Load().token.generation, kTrack);
+  const std::uint32_t seq = r->cycle.LastSegmentSeq();
   r->rt.track = kTrack + 1;
   r->StoreTrajectory(50, kTrack + 1);
   for (int i = 0; i < 4; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(15));
     rec = r->Wake();
-    ASSERT_LT(rec.decel.k, 0) << "the wakes are meant to fall before the catch";
-    EXPECT_EQ(rec.decel.outcome, DecelOutcome::kNoBall) << Why(rec);
+    ASSERT_LT(rec.segment.k, 0) << "the wakes are meant to fall before the catch";
+    EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kNoBall) << Why(rec);
   }
-  EXPECT_EQ(r->cycle.LastDecelSeq(), seq);
+  EXPECT_EQ(r->cycle.LastSegmentSeq(), seq);
   // The plan's own track again: the replans resume.
   r->StoreTrajectory(51, kTrack);
   std::this_thread::sleep_for(std::chrono::milliseconds(15));
   rec = r->Wake();
-  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kPublished) << Why(rec);
+  EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kPublished) << Why(rec);
 }
 
 TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
@@ -856,16 +858,16 @@ TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
   // followed (it dropped the one it had): the planner finds no source, and
   // does not infer one (MD-58).
   auto r = std::make_unique<Rig>();
-  r->rt.report_decel = false;
+  r->rt.report_segment = false;
   r->StartTrajectory();
   ASSERT_EQ(r->Wake().outcome, CycleOutcome::kPublished);
-  const std::uint32_t seq = r->cycle.LastDecelSeq();
+  const std::uint32_t seq = r->cycle.LastSegmentSeq();
   for (int i = 0; i < 5; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     const PlannerCycleRecord rec = r->Wake();
-    EXPECT_EQ(rec.decel.outcome, DecelOutcome::kNotFollowed) << Why(rec);
+    EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kNotFollowed) << Why(rec);
   }
-  EXPECT_EQ(r->cycle.LastDecelSeq(), seq);
+  EXPECT_EQ(r->cycle.LastSegmentSeq(), seq);
 }
 
 // ── Lifetime ─────────────────────────────────────────────────────────────────
@@ -876,7 +878,7 @@ TEST(ApproachCycle, ATrialResetWithdrawsTheSegment) {
   auto r = std::make_unique<Rig>();
   r->StartTrajectory();
   ASSERT_EQ(r->Wake().outcome, CycleOutcome::kPublished);
-  ASSERT_TRUE(r->boxes.decel.Load().valid);
+  ASSERT_TRUE(r->boxes.segment.Load().valid);
   PlannerRtState s = r->boxes.rt.Load();
   s.reset_epoch = 2;
   s.mode = static_cast<std::uint8_t>(Mode::kIdle);
@@ -885,26 +887,26 @@ TEST(ApproachCycle, ATrialResetWithdrawsTheSegment) {
   r->boxes.rt.Store(s);
   const PlannerCycleRecord rec = r->cycle.Run(rtc::catching::NowReal{Now()});
   EXPECT_TRUE(rec.reset_seen);
-  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kOff);
-  EXPECT_FALSE(r->boxes.decel.Load().valid) << "the ended trial's segment stays in the box";
+  EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kOff);
+  EXPECT_FALSE(r->boxes.segment.Load().valid) << "the ended trial's segment stays in the box";
 }
 
-TEST(ApproachCycle, WithoutADecelBoxThePlanIsPublishedAlone) {
+TEST(ApproachCycle, WithoutASegmentBoxThePlanIsPublishedAlone) {
   // No fifth box (a binding without the decel lane): the decel planner is
   // configured but solves nothing, and the search's plan goes out by itself.
-  auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_decel=*/false);
-  ASSERT_TRUE(r->cycle.DecelConfigured());
+  auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/false);
+  ASSERT_TRUE(r->cycle.SegmentPlannerConfigured());
   r->rt.adopt = false;
   r->StartTrajectory();
   const PlannerCycleRecord rec = r->Wake();
   ASSERT_EQ(rec.outcome, CycleOutcome::kPublished) << Why(rec);
   EXPECT_TRUE(rec.plan_valid);
-  EXPECT_EQ(rec.decel.outcome, DecelOutcome::kOff);
+  EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kOff);
   EXPECT_TRUE(r->boxes.plan.Load().valid);
-  EXPECT_EQ(r->boxes.decel.sequence(), 0U);
-  EXPECT_EQ(r->cycle.LastDecelSeq(), 0U);
-  r->cycle.ClearDecel();
-  EXPECT_FALSE(r->cycle.DecelConfigured());
+  EXPECT_EQ(r->boxes.segment.sequence(), 0U);
+  EXPECT_EQ(r->cycle.LastSegmentSeq(), 0U);
+  r->cycle.ClearSegmentPlanner();
+  EXPECT_FALSE(r->cycle.SegmentPlannerConfigured());
 }
 
 }  // namespace

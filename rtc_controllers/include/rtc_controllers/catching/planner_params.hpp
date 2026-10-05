@@ -21,7 +21,7 @@
 // malformed value of either kind is refused (std::invalid_argument).
 #pragma once
 
-#include "rtc_controllers/catching/trajectory.hpp"  // kMaxPlanNv, kMaxDecelNodes
+#include "rtc_controllers/catching/trajectory.hpp"  // kMaxPlanNv, kMaxSegmentNodes
 
 #include <yaml-cpp/yaml.h>
 
@@ -58,15 +58,15 @@ inline constexpr int kSwitchSamplesMax = 64;
 /// QP's condition number with nothing else to bound it — the configure
 /// warm-up cannot notice a value too large, its line runs through the catch
 /// frame — so the parser refuses anything above.
-inline constexpr double kDecelStopPathWeightMax = 1e4;
+inline constexpr double kMpcSegmentStopPathWeightMax = 1e4;
 
 /// Capacity of the decel planner's replan window: instances k = 0..k_max, one
-/// DecelMpc each (MD-31). A capacity, not a default (the default k_max is 4).
-inline constexpr int kMaxDecelReplans = 8;
+/// MpcSegmentCore each (MD-31). A capacity, not a default (the default k_max is 4).
+inline constexpr int kMaxMpcSegmentReplans = 8;
 
 /// `planner.decel_mpc.*` (MPC plan E1-F03 · E1-F08, MD-24 · MD-31 · MD-33 ·
 /// MD-54 – MD-64, MD-91). The decel MPC's settings the planner owns. Every
-/// design field of the core's DecelMpcParams comes from YAML — the grid
+/// design field of the core's MpcSegmentCoreParams comes from YAML — the grid
 /// (`horizon.*`, `approach.n_pre_max` / `dt_pre_s`), `eta_tau`, `m_q`, the
 /// catch weights and the relative-velocity slack (`catch.*`), the cost scalars
 /// (`cost.*`), the trust region and the rest tolerance (`linearization.*`) and
@@ -75,7 +75,7 @@ inline constexpr int kMaxDecelReplans = 8;
 /// What stays in code is not a design value: the solver's preconditioner and
 /// KKT backend (the RT no-allocation and infeasibility verdict rely on them),
 /// the test-only `reference_assembly`, and the capacities.
-struct DecelPlannerParams {
+struct MpcSegmentPlannerParams {
   // There is no `enabled`: the planner solves these segments exactly when
   // `supervisor.decel.mode` is mpc. That needs `planner.enabled` (the binding
   // parks the pair otherwise) and a pre-catch grid (`approach.n_pre_max` ≥ 1).
@@ -86,8 +86,8 @@ struct DecelPlannerParams {
   int n_nodes{14};
   double dt_s{0.025};
   /// `horizon.blocks` — move blocking, Σ = n_nodes, B ≥ 3. Post-catch replan
-  /// k uses DecelBlocksFor(k) (the largest trailing block shrinks first).
-  std::array<int, kMaxDecelNodes> blocks{1, 1, 2, 2, 4, 4};
+  /// k uses MpcSegmentBlocksFor(k) (the largest trailing block shrinks first).
+  std::array<int, kMaxSegmentNodes> blocks{1, 1, 2, 2, 4, 4};
   int n_blocks{6};
   /// `replan.k_max` — post-catch replans only at grid points k ≤ k_max; the
   /// stop still ends at t_c + N_s·Δ_s (MD-31).
@@ -147,14 +147,14 @@ struct DecelPlannerParams {
   /// row at the catch node: |v̂_b − v_C| ≤ v_rel_allow·(1 + s_v) per axis,
   /// penalised by rho_v·s_v. rho_v 0 (the default) builds no slack variable
   /// and no rows; rho_v > 0 needs v_rel_allow > 0 (the parser refuses the pair
-  /// otherwise). s_v is RECORDED (DecelRecord::slack_v), never a publish
+  /// otherwise). s_v is RECORDED (SegmentRecord::slack_v), never a publish
   /// gate: no threshold is defined for it, and with γ_ref < 1 the cost's own
   /// optimum sits off the rows, so s_v > 0 is then structural.
   double rho_v{0.0};
   double v_rel_allow{0.0};
 
   // ── The core's own design values (YAML keys) ───────────────────────────────
-  // Each default equals DecelMpcParams' (a test pins it), so a profile without
+  // Each default equals MpcSegmentCoreParams' (a test pins it), so a profile without
   // the keys solves what it always did.
   /// `cost.jerk_weight` — R_j per joint in ARM (device) order, each > 0; empty
   /// = all 1 (the core's default). A non-empty list must have one entry per
@@ -168,14 +168,14 @@ struct DecelPlannerParams {
   /// `cost.rho_tau` — torque slack penalty; 0 = the torque rows are off, which
   /// makes the publish judgement's slack condition vacuous.
   double rho_tau{10.0};
-  /// `cost.w_perp` [1/m²], in [0, kDecelStopPathWeightMax] — the stop-path
+  /// `cost.w_perp` [1/m²], in [0, kMpcSegmentStopPathWeightMax] — the stop-path
   /// term: on the nodes from the catch on, the catch frame's distance from a
   /// line is penalised; 0 (the default) = off, and no line is then built or
   /// required. The line is the BALL's (user decision 2026-10-03, #698):
   /// through its predicted catch position along its direction of travel at
   /// t_c, as the catch-core solve takes them. A stop-core replan keeps the
   /// line of the segment the RT follows (its source). A solve whose line
-  /// cannot be built is withheld (DecelPlanner, mpc_segment_planner.hpp), never run
+  /// cannot be built is withheld (MpcSegmentPlanner, mpc_segment_planner.hpp), never run
   /// on a default line.
   double w_perp{0.0};
   /// `catch.axis_theta_max` [rad], in (0, π) — the largest axis error of the
@@ -217,8 +217,9 @@ struct DecelPlannerParams {
 /// {1,1,2,2,4,3} {1,1,2,2,3,3} {1,1,2,2,3,2} {1,1,2,2,2,2} for k = 1..4.
 /// @return false when k is outside [0, n_nodes) or the pattern would drop
 ///         below B = 3 (the core's freedom rule).
-[[nodiscard]] bool DecelBlocksFor(const DecelPlannerParams& p, int k,
-                                  std::array<int, kMaxDecelNodes>& blocks, int& n_blocks) noexcept;
+[[nodiscard]] bool MpcSegmentBlocksFor(const MpcSegmentPlannerParams& p, int k,
+                                       std::array<int, kMaxSegmentNodes>& blocks,
+                                       int& n_blocks) noexcept;
 
 /// Axis-aligned box in the model world frame (decision I).
 struct CatchBox {
@@ -327,7 +328,7 @@ struct PlannerParams {
 
   // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
   /// `planner.decel_mpc.*`. Absent = the defaults.
-  DecelPlannerParams decel{};
+  MpcSegmentPlannerParams mpc_segment{};
 
   /// The candidate lead floor actually used: t_lead_min, or T_freeze.
   [[nodiscard]] double LeadMin() const noexcept {

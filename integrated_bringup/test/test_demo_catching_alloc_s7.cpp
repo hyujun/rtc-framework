@@ -423,7 +423,7 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
   constexpr double kBump = 0.08;      // rad/s: 1.6 rad/s² at the stop, inside the D-16 box
   using integrated_bringup::testfx::kApproachDtPreNs;
   using integrated_bringup::testfx::kApproachNPre;
-  using Event = integrated_bringup::CatchingDiagLogPod::DecelEvent;
+  using Event = integrated_bringup::CatchingDiagLogPod::SegmentEvent;
   ASSERT_NO_FATAL_FAILURE(BringUp(false, [](YAML::Node& y) {
     y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
@@ -431,12 +431,12 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
         std::vector<double>{-2.0, -2.0, -2.0};
     y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, 2.0};
   }));
-  const auto stamp = [this](rtc::catching::DecelPlanSnapshot& seg, std::uint32_t seq) {
+  const auto stamp = [this](rtc::catching::SegmentSnapshot& seg, std::uint32_t seq) {
     seg.token.activation_generation = ctrl_->GetPlannerRtState().activation_generation;
     seg.token.generation = 42;  // Publish()'s track
     seg.publish_ns = FakeSteadyClock::Now();
     seg.rt_state_ns = FakeSteadyClock::Now() - integrated_bringup::testfx::kDtNs;
-    seg.decel_seq = seq;
+    seg.segment_seq = seq;
   };
   // The first segment of plan (id, t_c) from the pose the RT reports, at rest.
   const auto first_segment = [this](std::uint32_t plan_id, std::int64_t t_c, double bump) {
@@ -450,7 +450,7 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
         q, rest, kUr5eArmDof, plan_id, t_c, kApproachNPre, t_c - kApproachNPre * kApproachDtPreNs,
         bump);
   };
-  rtc::catching::DecelPlanSnapshot base{};  // the trajectory the replans are cut from
+  rtc::catching::SegmentSnapshot base{};  // the trajectory the replans are cut from
   int adopted_at = -1;
   bool replacement_written = false;
   bool pre_replan_written = false;
@@ -481,24 +481,24 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
                            FakeSteadyClock::Now() + static_cast<std::int64_t>(kTcOffsetS * 1e9),
                            kBump);
       stamp(base, 1);
-      ctrl_->DecelBoxForTesting().Store(base);
+      ctrl_->SegmentBoxForTesting().Store(base);
     } else if (adopted_at >= 0 && !replacement_written && t == adopted_at + 5) {
       // The same node 0 solved again (MD-58): replaces the waiting segment.
       base = first_segment(base.plan_id, base.t_c_ns, 0.9 * kBump);
       stamp(base, 2);
-      ctrl_->DecelBoxForTesting().Store(base);
+      ctrl_->SegmentBoxForTesting().Store(base);
       replacement_written = true;
-    } else if (ctrl_->IsFollowingDecelForTesting() && !pre_replan_written) {
-      rtc::catching::DecelPlanSnapshot replan =
+    } else if (ctrl_->IsFollowingSegmentForTesting() && !pre_replan_written) {
+      rtc::catching::SegmentSnapshot replan =
           integrated_bringup::testfx::ShiftSegment(base, kApproachNPre - 1);
       stamp(replan, 3);
-      ctrl_->DecelBoxForTesting().Store(replan);
+      ctrl_->SegmentBoxForTesting().Store(replan);
       pre_replan_written = true;
     } else if (mode == Mode::kDecel && !post_replan_written) {
-      rtc::catching::DecelPlanSnapshot replan =
+      rtc::catching::SegmentSnapshot replan =
           integrated_bringup::testfx::ShiftSegment(base, kApproachNPre + 1);
       stamp(replan, 4);
-      ctrl_->DecelBoxForTesting().Store(replan);
+      ctrl_->SegmentBoxForTesting().Store(replan);
       post_replan_written = true;
     }
     std::uint64_t allocations = 0;
@@ -524,7 +524,7 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
       switched.insert(record.decel_seq);
     } else if (record.decel_following) {
       us_follow = std::max(us_follow, us);
-    } else if (mode == Mode::kApproach && ctrl_->HasPendingDecelForTesting()) {
+    } else if (mode == Mode::kApproach && ctrl_->HasPendingSegmentForTesting()) {
       us_wait = std::max(us_wait, us);
     }
     if (record.decel_following) {

@@ -1,4 +1,4 @@
-// E1-F02 (#628): the decel node payload (DecelPlanSnapshot, trajectory.hpp) and
+// E1-F02 (#628): the decel node payload (SegmentSnapshot, trajectory.hpp) and
 // its RT sampler (NodeTrajectoryFollower, node_follower.hpp). Each #628
 // "Done when" item maps to a named test (spec on #628, MD-27 / MD-30):
 //   1 payload shape + C² sampling   PayloadFitsItsBudget, Validate*,
@@ -18,7 +18,7 @@
 // payload's instants are realistic absolute steady ns (~1.7e18), not 0.
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
-#include "rtc_controllers/catching/mpc_segment_core.hpp"  // kMaxDecelNodes seen through the core too
+#include "rtc_controllers/catching/mpc_segment_core.hpp"  // kMaxSegmentNodes seen through the core too
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
@@ -51,12 +51,12 @@
 
 namespace {
 
-using rtc::catching::DecelNodeSample;
-using rtc::catching::DecelPlanSnapshot;
-using rtc::catching::kMaxDecelNodes;
-using rtc::catching::kMaxDecelNv;
+using rtc::catching::kMaxSegmentNodes;
+using rtc::catching::kMaxSegmentNv;
 using rtc::catching::NodeTrajectoryFollower;
-using rtc::catching::ValidateDecelNodes;
+using rtc::catching::SegmentNodeSample;
+using rtc::catching::SegmentSnapshot;
+using rtc::catching::ValidateSegmentNodes;
 
 constexpr std::int64_t kDtNs = 25'000'000;                 // Δ_s 0.025 s (MD-24)
 constexpr int kNodes = 14;                                 // N_s (MD-24)
@@ -90,22 +90,22 @@ Arm RealArm6() {
 constexpr std::array<int, 6> kDeviceOfModel{2, 0, 5, 1, 4, 3};
 
 std::size_t Idx(int k, int j) {
-  return static_cast<std::size_t>(k * kMaxDecelNv + j);
+  return static_cast<std::size_t>(k * kMaxSegmentNv + j);
 }
 
 // Consistent nodes: integrate a random piecewise-constant jerk from x0 (model
 // order), store in DEVICE order. Consistency is what makes the closed form
 // exact (jerk_segment.hpp), so C² is a property the sampler must reproduce.
 // Node N is then put at rest (a published segment's terminal equality, which
-// ValidateDecelNodes requires): only the last segment becomes inconsistent,
+// ValidateSegmentNodes requires): only the last segment becomes inconsistent,
 // and the continuity check below stops short of it.
-DecelPlanSnapshot MakePlan(const Eigen::VectorXd& q0_model, std::uint32_t seed,
-                           int n_nodes = kNodes, int k0 = 0) {
+SegmentSnapshot MakePlan(const Eigen::VectorXd& q0_model, std::uint32_t seed, int n_nodes = kNodes,
+                         int k0 = 0) {
   const int nv = static_cast<int>(q0_model.size());
   std::mt19937 rng(seed);
   std::uniform_real_distribution<double> jerk(-40.0, 40.0);
   std::uniform_real_distribution<double> vel(-1.0, 1.0);
-  DecelPlanSnapshot p{};
+  SegmentSnapshot p{};
   p.valid = true;
   p.nv = nv;
   p.n_nodes = n_nodes;
@@ -114,7 +114,7 @@ DecelPlanSnapshot MakePlan(const Eigen::VectorXd& q0_model, std::uint32_t seed,
   p.t_c_ns = kTc;
   p.t0_ns = kTc + static_cast<std::int64_t>(k0) * kDtNs;
   p.plan_id = 7;
-  p.decel_seq = 1;
+  p.segment_seq = 1;
   const double dt = static_cast<double>(kDtNs) * 1e-9;
   Eigen::VectorXd q = q0_model;
   Eigen::VectorXd qd(nv);
@@ -146,7 +146,7 @@ DecelPlanSnapshot MakePlan(const Eigen::VectorXd& q0_model, std::uint32_t seed,
 }
 
 // Model-order view of a device-order sample.
-Eigen::VectorXd ToModel(const std::array<double, kMaxDecelNv>& dev, int nv) {
+Eigen::VectorXd ToModel(const std::array<double, kMaxSegmentNv>& dev, int nv) {
   Eigen::VectorXd out(nv);
   for (int m = 0; m < nv; ++m) {
     out[m] = dev[static_cast<std::size_t>(kDeviceOfModel[static_cast<std::size_t>(m)])];
@@ -168,66 +168,66 @@ class NodeFollowerTest : public ::testing::Test {
 
 // ── 1. Payload and sampling ──────────────────────────────────────────────────
 
-TEST(DecelPayload, PayloadFitsItsBudget) {
+TEST(SegmentPayload, PayloadFitsItsBudget) {
   // MD-27: 3 node blocks × 8 joints × 25 nodes × 8 B = 4.8 KB plus a header.
-  EXPECT_LT(sizeof(DecelPlanSnapshot), 5U * 1024U);
-  EXPECT_GE(sizeof(DecelPlanSnapshot), 3U * kMaxDecelNv * (kMaxDecelNodes + 1) * sizeof(double));
+  EXPECT_LT(sizeof(SegmentSnapshot), 5U * 1024U);
+  EXPECT_GE(sizeof(SegmentSnapshot), 3U * kMaxSegmentNv * (kMaxSegmentNodes + 1) * sizeof(double));
   // The core and the payload share one capacity (the constant moved to
   // trajectory.hpp; the core's block array is sized by it).
-  EXPECT_EQ(rtc::catching::DecelMpcParams{}.block_sizes.size(),
-            static_cast<std::size_t>(kMaxDecelNodes));
-  RecordProperty("decel_payload_bytes", std::to_string(sizeof(DecelPlanSnapshot)));
+  EXPECT_EQ(rtc::catching::MpcSegmentCoreParams{}.block_sizes.size(),
+            static_cast<std::size_t>(kMaxSegmentNodes));
+  RecordProperty("decel_payload_bytes", std::to_string(sizeof(SegmentSnapshot)));
 }
 
-TEST(DecelPayload, ValidateAcceptsAWellFormedPayload) {
+TEST(SegmentPayload, ValidateAcceptsAWellFormedPayload) {
   Eigen::VectorXd q0 = Eigen::VectorXd::Constant(6, 0.3);
-  EXPECT_TRUE(ValidateDecelNodes(MakePlan(q0, 1)));
-  EXPECT_TRUE(ValidateDecelNodes(MakePlan(q0, 2, kMaxDecelNodes)));
-  EXPECT_TRUE(ValidateDecelNodes(MakePlan(q0, 3, 10, 4)));  // post-catch replan, k0 = 4
+  EXPECT_TRUE(ValidateSegmentNodes(MakePlan(q0, 1)));
+  EXPECT_TRUE(ValidateSegmentNodes(MakePlan(q0, 2, kMaxSegmentNodes)));
+  EXPECT_TRUE(ValidateSegmentNodes(MakePlan(q0, 3, 10, 4)));  // post-catch replan, k0 = 4
 }
 
-TEST(DecelPayload, ValidateRejectsEachMalformedField) {
+TEST(SegmentPayload, ValidateRejectsEachMalformedField) {
   const Eigen::VectorXd q0 = Eigen::VectorXd::Constant(6, 0.3);
-  const DecelPlanSnapshot good = MakePlan(q0, 1);
+  const SegmentSnapshot good = MakePlan(q0, 1);
   auto expect_rejected = [&](auto mutate, const char* what) {
-    DecelPlanSnapshot p = good;
+    SegmentSnapshot p = good;
     mutate(p);
-    EXPECT_FALSE(ValidateDecelNodes(p)) << what;
+    EXPECT_FALSE(ValidateSegmentNodes(p)) << what;
   };
-  expect_rejected([](DecelPlanSnapshot& p) { p.valid = false; }, "valid false");
-  expect_rejected([](DecelPlanSnapshot& p) { p.nv = 0; }, "nv 0");
-  expect_rejected([](DecelPlanSnapshot& p) { p.nv = kMaxDecelNv + 1; }, "nv over capacity");
-  expect_rejected([](DecelPlanSnapshot& p) { p.n_nodes = 0; }, "no segment");
-  expect_rejected([](DecelPlanSnapshot& p) { p.n_nodes = kMaxDecelNodes + 1; }, "nodes over cap");
-  expect_rejected([](DecelPlanSnapshot& p) { p.dt_ns = 0; }, "dt 0");
-  expect_rejected([](DecelPlanSnapshot& p) { p.k0 = -1; }, "negative grid index");
-  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns = p.t_c_ns - 1; }, "node 0 before t_c");
-  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns = p.t_c_ns + p.dt_ns; }, "t0 off k0's point");
-  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns += 1; }, "t0 off the grid by 1 ns");
+  expect_rejected([](SegmentSnapshot& p) { p.valid = false; }, "valid false");
+  expect_rejected([](SegmentSnapshot& p) { p.nv = 0; }, "nv 0");
+  expect_rejected([](SegmentSnapshot& p) { p.nv = kMaxSegmentNv + 1; }, "nv over capacity");
+  expect_rejected([](SegmentSnapshot& p) { p.n_nodes = 0; }, "no segment");
+  expect_rejected([](SegmentSnapshot& p) { p.n_nodes = kMaxSegmentNodes + 1; }, "nodes over cap");
+  expect_rejected([](SegmentSnapshot& p) { p.dt_ns = 0; }, "dt 0");
+  expect_rejected([](SegmentSnapshot& p) { p.k0 = -1; }, "negative grid index");
+  expect_rejected([](SegmentSnapshot& p) { p.t0_ns = p.t_c_ns - 1; }, "node 0 before t_c");
+  expect_rejected([](SegmentSnapshot& p) { p.t0_ns = p.t_c_ns + p.dt_ns; }, "t0 off k0's point");
+  expect_rejected([](SegmentSnapshot& p) { p.t0_ns += 1; }, "t0 off the grid by 1 ns");
   // Node N must be at rest: the sampler holds it past the end.
-  expect_rejected([](DecelPlanSnapshot& p) { p.qd[Idx(p.n_nodes, p.nv - 1)] = 2e-3; },
+  expect_rejected([](SegmentSnapshot& p) { p.qd[Idx(p.n_nodes, p.nv - 1)] = 2e-3; },
                   "node N moving");
-  expect_rejected([](DecelPlanSnapshot& p) { p.qdd[Idx(p.n_nodes, 0)] = -2e-3; },
+  expect_rejected([](SegmentSnapshot& p) { p.qdd[Idx(p.n_nodes, 0)] = -2e-3; },
                   "node N accelerating");
   // A NaN in each block, at the LAST used node and joint — a validator that
   // stopped one short of n_nodes or nv would pass it.
-  expect_rejected([](DecelPlanSnapshot& p) { p.q[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "q NaN");
-  expect_rejected([](DecelPlanSnapshot& p) { p.qd[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "qd NaN");
-  expect_rejected([](DecelPlanSnapshot& p) { p.qdd[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "qdd NaN");
+  expect_rejected([](SegmentSnapshot& p) { p.q[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "q NaN");
+  expect_rejected([](SegmentSnapshot& p) { p.qd[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "qd NaN");
+  expect_rejected([](SegmentSnapshot& p) { p.qdd[Idx(p.n_nodes, p.nv - 1)] = kNan; }, "qdd NaN");
   // Within the rest tolerance is at rest; entries past the used shape are not
   // the validator's business.
-  DecelPlanSnapshot p = good;
+  SegmentSnapshot p = good;
   p.qd[Idx(p.n_nodes, 0)] = 5e-4;
   p.q[Idx(p.n_nodes + 1, 0)] = kNan;
   p.q[Idx(0, p.nv)] = kNan;
-  EXPECT_TRUE(ValidateDecelNodes(p));
+  EXPECT_TRUE(ValidateSegmentNodes(p));
 }
 
 TEST_F(NodeFollowerTest, SampleReproducesNodesAndIsContinuousAcrossThem) {
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 11);
-  DecelNodeSample at{};
-  DecelNodeSample lo{};
-  DecelNodeSample hi{};
+  const SegmentSnapshot p = MakePlan(arm_.q_nominal, 11);
+  SegmentNodeSample at{};
+  SegmentNodeSample lo{};
+  SegmentNodeSample hi{};
   double worst_node = 0.0;
   double worst_jump_q = 0.0;
   double worst_jump_qd = 0.0;
@@ -263,8 +263,8 @@ TEST_F(NodeFollowerTest, SampleReproducesNodesAndIsContinuousAcrossThem) {
 TEST_F(NodeFollowerTest, AbsoluteInstantsKeepNanosecondResolution) {
   // t0 ~ 1.7e18 ns: converting the instant to seconds before subtracting would
   // lose ~100 ns and put an exact node query into the previous segment's end.
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 12, kNodes - 3, 3);
-  DecelNodeSample s{};
+  const SegmentSnapshot p = MakePlan(arm_.q_nominal, 12, kNodes - 3, 3);
+  SegmentNodeSample s{};
   ASSERT_TRUE(follower_.Sample(p, p.t0_ns + 5 * p.dt_ns, s));
   EXPECT_DOUBLE_EQ(s.t_s, 5 * 0.025);
   for (int j = 0; j < p.nv; ++j) {
@@ -273,22 +273,22 @@ TEST_F(NodeFollowerTest, AbsoluteInstantsKeepNanosecondResolution) {
 }
 
 TEST_F(NodeFollowerTest, BeforeNodeZeroFailsAndLeavesTheOutputUntouched) {
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 13);
-  DecelNodeSample s{};
+  const SegmentSnapshot p = MakePlan(arm_.q_nominal, 13);
+  SegmentNodeSample s{};
   s.q[0] = 42.0;
   s.t_s = -7.0;
   EXPECT_FALSE(follower_.Sample(p, p.t0_ns - 1, s));
   EXPECT_EQ(s.q[0], 42.0);
   EXPECT_EQ(s.t_s, -7.0);
-  std::array<double, kMaxDecelNv> q{};
-  std::array<double, kMaxDecelNv> qd{};
-  std::array<double, kMaxDecelNv> qdd{};
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
   EXPECT_FALSE(NodeTrajectoryFollower::SampleJoints(p, p.t0_ns - 1, q, qd, qdd));
 }
 
 TEST_F(NodeFollowerTest, HoldsNodeNPastTheEnd) {
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 14);
-  DecelNodeSample s{};
+  const SegmentSnapshot p = MakePlan(arm_.q_nominal, 14);
+  SegmentNodeSample s{};
   const std::int64_t end = p.t0_ns + static_cast<std::int64_t>(p.n_nodes) * p.dt_ns;
   ASSERT_TRUE(follower_.Sample(p, end - 1, s));
   EXPECT_FALSE(s.held);
@@ -303,18 +303,18 @@ TEST_F(NodeFollowerTest, HoldsNodeNPastTheEnd) {
 }
 
 TEST_F(NodeFollowerTest, RefusesAShapeItCannotIndex) {
-  const DecelPlanSnapshot good = MakePlan(arm_.q_nominal, 15);
-  DecelNodeSample s{};
+  const SegmentSnapshot good = MakePlan(arm_.q_nominal, 15);
+  SegmentNodeSample s{};
   const std::int64_t t = good.t0_ns + good.dt_ns;
   auto refused = [&](auto mutate) {
-    DecelPlanSnapshot p = good;
+    SegmentSnapshot p = good;
     mutate(p);
     return !follower_.Sample(p, t, s);
   };
-  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.nv = 7; }));  // not this arm
-  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.n_nodes = 0; }));
-  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.n_nodes = kMaxDecelNodes + 1; }));
-  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.dt_ns = 0; }));
+  EXPECT_TRUE(refused([](SegmentSnapshot& p) { p.nv = 7; }));  // not this arm
+  EXPECT_TRUE(refused([](SegmentSnapshot& p) { p.n_nodes = 0; }));
+  EXPECT_TRUE(refused([](SegmentSnapshot& p) { p.n_nodes = kMaxSegmentNodes + 1; }));
+  EXPECT_TRUE(refused([](SegmentSnapshot& p) { p.dt_ns = 0; }));
   NodeTrajectoryFollower uninit;
   EXPECT_FALSE(uninit.Sample(good, t, s));
 }
@@ -342,10 +342,10 @@ TEST_F(NodeFollowerTest, FkConsistencyAlongTheSegment) {
   // T_d = T(q_ref) and V_ff = ᵂJ(q_ref)·q̇_ref, against an independent path:
   // a separate Data, placement from plain FK, and the twist from the frame
   // Jacobian (not velocity FK, which the follower uses).
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 21);
+  const SegmentSnapshot p = MakePlan(arm_.q_nominal, 21);
   pinocchio::Data data(*arm_.model);
   Eigen::MatrixXd J = Eigen::MatrixXd::Zero(6, arm_.model->nv);
-  DecelNodeSample s{};
+  SegmentNodeSample s{};
   double worst_p = 0.0;
   double worst_r = 0.0;
   double worst_v = 0.0;
@@ -371,8 +371,8 @@ TEST_F(NodeFollowerTest, DeviceOrderIsMappedBeforeFk) {
   // Negative control for the mapping: FK of the DEVICE-order vector read as if
   // it were model order must differ — otherwise the permutation fixture would
   // not be testing anything.
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 22);
-  DecelNodeSample s{};
+  const SegmentSnapshot p = MakePlan(arm_.q_nominal, 22);
+  SegmentNodeSample s{};
   ASSERT_TRUE(follower_.Sample(p, p.t0_ns + 2 * p.dt_ns, s));
   pinocchio::Data data(*arm_.model);
   Eigen::VectorXd q_dev(p.nv);
@@ -405,8 +405,8 @@ TEST_F(NodeFollowerTest, ClikResidualIsRecorded) {
   clik.SetTaskGain(Eigen::Matrix<double, 6, 1>::Constant(5.0));
   clik.SetPostureGains(0.5, 0.0);
 
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 23);
-  DecelNodeSample s{};
+  const SegmentSnapshot p = MakePlan(arm_.q_nominal, 23);
+  SegmentNodeSample s{};
   double worst = 0.0;
   double worst_rel = 0.0;
   int solved = 0;
@@ -433,8 +433,8 @@ TEST_F(NodeFollowerTest, ClikResidualIsRecorded) {
 // ── 3. RT: allocation and cost ───────────────────────────────────────────────
 
 TEST_F(NodeFollowerTest, SampleAllocatesNothing) {
-  const DecelPlanSnapshot p = MakePlan(arm_.q_nominal, 31);
-  DecelNodeSample s{};
+  const SegmentSnapshot p = MakePlan(arm_.q_nominal, 31);
+  SegmentNodeSample s{};
   ASSERT_TRUE(follower_.Sample(p, p.t0_ns, s));  // warm-up outside the gates
   {
     // Positive control: an allocation INSIDE pinocchio's shared object.
@@ -471,17 +471,17 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
   //     So the read count is recorded here, and only required to be nonzero;
   //   • one store per millisecond — still 20× the planner's real rate (one per
   //     wake, ≥ 20 ms), i.e. the cost the tick actually pays with a retry.
-  const DecelPlanSnapshot base = MakePlan(arm_.q_nominal, 32);
+  const SegmentSnapshot base = MakePlan(arm_.q_nominal, 32);
   auto run = [&](std::chrono::microseconds writer_pause, std::size_t min_reads, const char* label) {
-    rtc::SeqLock<DecelPlanSnapshot> box;
-    DecelPlanSnapshot first = base;
+    rtc::SeqLock<SegmentSnapshot> box;
+    SegmentSnapshot first = base;
     box.Store(first);
     std::atomic<bool> stop{false};
     std::thread writer([&] {
       std::uint32_t seq = 2;
-      DecelPlanSnapshot p = base;
+      SegmentSnapshot p = base;
       while (!stop.load(std::memory_order_relaxed)) {
-        p.decel_seq = seq;
+        p.segment_seq = seq;
         for (int k = 0; k <= p.n_nodes; ++k) {
           for (int j = 0; j < p.nv; ++j) {
             p.q[Idx(k, j)] = static_cast<double>(seq % 1000) * 1e-3;
@@ -496,8 +496,8 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
     });
     std::vector<std::int64_t> ns;
     ns.reserve(1U << 20);
-    DecelPlanSnapshot copy{};
-    DecelNodeSample s{};
+    SegmentSnapshot copy{};
+    SegmentNodeSample s{};
     int torn = 0;
     int failed = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
@@ -508,7 +508,7 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
       const auto t1 = std::chrono::steady_clock::now();
       ns.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
       failed += ok ? 0 : 1;
-      if (copy.decel_seq < 2) {
+      if (copy.segment_seq < 2) {
         continue;  // the initial store, before the writer's first
       }
       const double v = copy.q[0];
@@ -518,7 +518,7 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
           uniform = uniform && copy.q[Idx(k, j)] == v;
         }
       }
-      torn += uniform && v == static_cast<double>(copy.decel_seq % 1000) * 1e-3 ? 0 : 1;
+      torn += uniform && v == static_cast<double>(copy.segment_seq % 1000) * 1e-3 ? 0 : 1;
     }
     stop.store(true);
     writer.join();
@@ -532,7 +532,7 @@ TEST_F(NodeFollowerTest, ContendedCopyNeverTearsAndIsRecorded) {
     RecordProperty(std::string("copy_sample_worst_ns_") + label, std::to_string(worst));
     RecordProperty(std::string("copy_sample_reads_") + label, std::to_string(ns.size()));
     std::printf("[ record ] %s: copy (%zu B) + Sample p99 %lld ns, worst %lld ns (%zu reads)\n",
-                label, sizeof(DecelPlanSnapshot), static_cast<long long>(p99),
+                label, sizeof(SegmentSnapshot), static_cast<long long>(p99),
                 static_cast<long long>(worst), ns.size());
   };
   run(std::chrono::microseconds(0), 1U, "back_to_back");
@@ -552,7 +552,7 @@ constexpr std::int64_t kDtPreNs = 100'000'000;  // Δ_pre 0.1 s (MD-54)
 constexpr std::int64_t kDtStopNs = 50'000'000;  // Δ_s 0.05 s (MD-54)
 
 struct MixedPlan {
-  DecelPlanSnapshot p{};
+  SegmentSnapshot p{};
   std::vector<double> dt_s;           // interval durations, node k → k+1
   std::vector<Eigen::VectorXd> jerk;  // model order, one per interval
   Eigen::VectorXd q0, qd0, qdd0;      // node 0, model order
@@ -567,7 +567,7 @@ MixedPlan MakeMixedPlan(const Eigen::VectorXd& q0_model, std::uint32_t seed, int
   std::uniform_real_distribution<double> jerk(-10.0, 10.0);
   std::uniform_real_distribution<double> vel(-0.5, 0.5);
   MixedPlan m;
-  DecelPlanSnapshot& p = m.p;
+  SegmentSnapshot& p = m.p;
   p.valid = true;
   p.nv = nv;
   p.n_pre = n_pre;
@@ -578,7 +578,7 @@ MixedPlan MakeMixedPlan(const Eigen::VectorXd& q0_model, std::uint32_t seed, int
   p.t_c_ns = kTc;
   p.t0_ns = kTc - static_cast<std::int64_t>(n_pre) * kDtPreNs;
   p.plan_id = 7;
-  p.decel_seq = 1;
+  p.segment_seq = 1;
   Eigen::VectorXd q = q0_model;
   Eigen::VectorXd qd(nv);
   Eigen::VectorXd qdd = Eigen::VectorXd::Zero(nv);
@@ -635,57 +635,57 @@ void Oracle(const MixedPlan& m, double t, Eigen::VectorXd& q, Eigen::VectorXd& q
   }
 }
 
-TEST(DecelPayload, NodeTimesFollowTheTwoSpacings) {
+TEST(SegmentPayload, NodeTimesFollowTheTwoSpacings) {
   const MixedPlan m = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 41, 3, 7);
-  const DecelPlanSnapshot& p = m.p;
-  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 0), kTc - 3 * kDtPreNs);
-  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 2), kTc - kDtPreNs);
-  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 3), kTc);  // the catch node
-  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 4), kTc + kDtStopNs);
-  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(p, 10), kTc + 7 * kDtStopNs);
+  const SegmentSnapshot& p = m.p;
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 0), kTc - 3 * kDtPreNs);
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 2), kTc - kDtPreNs);
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 3), kTc);  // the catch node
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 4), kTc + kDtStopNs);
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 10), kTc + 7 * kDtStopNs);
   // Stop-only: t0 + k·Δ, as before.
-  const DecelPlanSnapshot s = MakePlan(Eigen::VectorXd::Constant(6, 0.3), 1, 10, 4);
-  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(s, 0), kTc + 4 * kDtNs);
-  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(s, 10), kTc + 14 * kDtNs);
+  const SegmentSnapshot s = MakePlan(Eigen::VectorXd::Constant(6, 0.3), 1, 10, 4);
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(s, 0), kTc + 4 * kDtNs);
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(s, 10), kTc + 14 * kDtNs);
 }
 
-TEST(DecelPayload, ValidateAcceptsAndRejectsPreCatchShapes) {
-  const DecelPlanSnapshot good = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 42, 6, 7).p;
-  ASSERT_TRUE(ValidateDecelNodes(good));
-  EXPECT_TRUE(ValidateDecelNodes(MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 43, 1, 1).p));
+TEST(SegmentPayload, ValidateAcceptsAndRejectsPreCatchShapes) {
+  const SegmentSnapshot good = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 42, 6, 7).p;
+  ASSERT_TRUE(ValidateSegmentNodes(good));
+  EXPECT_TRUE(ValidateSegmentNodes(MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 43, 1, 1).p));
   auto expect_rejected = [&](auto mutate, const char* what) {
-    DecelPlanSnapshot p = good;
+    SegmentSnapshot p = good;
     mutate(p);
-    EXPECT_FALSE(ValidateDecelNodes(p)) << what;
+    EXPECT_FALSE(ValidateSegmentNodes(p)) << what;
   };
-  expect_rejected([](DecelPlanSnapshot& p) { p.n_pre = -1; }, "negative n_pre");
-  expect_rejected([](DecelPlanSnapshot& p) { p.n_pre = p.n_nodes; }, "no stop interval");
-  expect_rejected([](DecelPlanSnapshot& p) { p.dt_pre_ns = 0; }, "dt_pre 0");
-  expect_rejected([](DecelPlanSnapshot& p) { p.dt_pre_ns = -kDtPreNs; }, "negative dt_pre");
+  expect_rejected([](SegmentSnapshot& p) { p.n_pre = -1; }, "negative n_pre");
+  expect_rejected([](SegmentSnapshot& p) { p.n_pre = p.n_nodes; }, "no stop interval");
+  expect_rejected([](SegmentSnapshot& p) { p.dt_pre_ns = 0; }, "dt_pre 0");
+  expect_rejected([](SegmentSnapshot& p) { p.dt_pre_ns = -kDtPreNs; }, "negative dt_pre");
   expect_rejected(
-      [](DecelPlanSnapshot& p) {
-        p.dt_pre_ns = rtc::catching::kMaxDecelDtPreNs + 1;
+      [](SegmentSnapshot& p) {
+        p.dt_pre_ns = rtc::catching::kMaxSegmentDtPreNs + 1;
         p.t0_ns = p.t_c_ns - p.n_pre * p.dt_pre_ns;
       },
       "dt_pre over its bound");
-  expect_rejected([](DecelPlanSnapshot& p) { p.k0 = 1; }, "k0 with pre-catch nodes");
-  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns += 1; }, "t0 off by 1 ns");
+  expect_rejected([](SegmentSnapshot& p) { p.k0 = 1; }, "k0 with pre-catch nodes");
+  expect_rejected([](SegmentSnapshot& p) { p.t0_ns += 1; }, "t0 off by 1 ns");
   // Node 0 placed as if the whole segment were at Δ_s (a uniform-spacing writer).
-  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns = p.t_c_ns - p.n_pre * p.dt_ns; },
+  expect_rejected([](SegmentSnapshot& p) { p.t0_ns = p.t_c_ns - p.n_pre * p.dt_ns; },
                   "t0 at the stop spacing");
-  expect_rejected([](DecelPlanSnapshot& p) { p.t0_ns = p.t_c_ns; }, "t0 at t_c");
-  expect_rejected([](DecelPlanSnapshot& p) { p.qd[Idx(p.n_nodes, 0)] = 2e-3; }, "node N moving");
-  expect_rejected([](DecelPlanSnapshot& p) { p.q[Idx(0, p.nv - 1)] = kNan; }, "pre node NaN");
+  expect_rejected([](SegmentSnapshot& p) { p.t0_ns = p.t_c_ns; }, "t0 at t_c");
+  expect_rejected([](SegmentSnapshot& p) { p.qd[Idx(p.n_nodes, 0)] = 2e-3; }, "node N moving");
+  expect_rejected([](SegmentSnapshot& p) { p.q[Idx(0, p.nv - 1)] = kNan; }, "pre node NaN");
 }
 
 TEST_F(NodeFollowerTest, TwoSpacingSampleMatchesTheIntegratedJerk) {
   for (const int n_pre : {1, 2, 6}) {
     const MixedPlan m =
         MakeMixedPlan(arm_.q_nominal, 50U + static_cast<std::uint32_t>(n_pre), n_pre, 7);
-    const DecelPlanSnapshot& p = m.p;
-    std::array<double, kMaxDecelNv> q{};
-    std::array<double, kMaxDecelNv> qd{};
-    std::array<double, kMaxDecelNv> qdd{};
+    const SegmentSnapshot& p = m.p;
+    std::array<double, kMaxSegmentNv> q{};
+    std::array<double, kMaxSegmentNv> qd{};
+    std::array<double, kMaxSegmentNv> qdd{};
     Eigen::VectorXd oq;
     Eigen::VectorXd oqd;
     Eigen::VectorXd oqdd;
@@ -693,11 +693,11 @@ TEST_F(NodeFollowerTest, TwoSpacingSampleMatchesTheIntegratedJerk) {
     // interval was made inconsistent by putting node N at rest).
     std::vector<std::int64_t> instants;
     for (int k = 0; k < p.n_nodes; ++k) {
-      instants.push_back(rtc::catching::DecelNodeTimeNs(p, k));
+      instants.push_back(rtc::catching::SegmentNodeTimeNs(p, k));
     }
     std::mt19937_64 rng(n_pre);
     std::uniform_int_distribution<std::int64_t> pick(
-        p.t0_ns, rtc::catching::DecelNodeTimeNs(p, p.n_nodes - 1));
+        p.t0_ns, rtc::catching::SegmentNodeTimeNs(p, p.n_nodes - 1));
     for (int i = 0; i < 400; ++i) {
       instants.push_back(pick(rng));
     }
@@ -717,14 +717,14 @@ TEST_F(NodeFollowerTest, TwoSpacingSampleMatchesTheIntegratedJerk) {
 
 TEST_F(NodeFollowerTest, TwoSpacingSampleIsC2AtEveryNode) {
   const MixedPlan m = MakeMixedPlan(arm_.q_nominal, 60, 4, 7);
-  const DecelPlanSnapshot& p = m.p;
-  DecelNodeSample lo{};
-  DecelNodeSample hi{};
+  const SegmentSnapshot& p = m.p;
+  SegmentNodeSample lo{};
+  SegmentNodeSample hi{};
   double jump_q = 0.0;
   double jump_qd = 0.0;
   double jump_qdd = 0.0;
   for (int k = 1; k < p.n_nodes; ++k) {
-    const std::int64_t t = rtc::catching::DecelNodeTimeNs(p, k);
+    const std::int64_t t = rtc::catching::SegmentNodeTimeNs(p, k);
     ASSERT_TRUE(follower_.Sample(p, t - 1000, lo));
     ASSERT_TRUE(follower_.Sample(p, t + 1000, hi));
     for (std::size_t j = 0; j < static_cast<std::size_t>(p.nv); ++j) {
@@ -737,7 +737,7 @@ TEST_F(NodeFollowerTest, TwoSpacingSampleIsC2AtEveryNode) {
   EXPECT_LT(jump_qd, 1e-4);
   EXPECT_LT(jump_qdd, 1e-3);
   // The catch node is sampled exactly at t_c.
-  DecelNodeSample at{};
+  SegmentNodeSample at{};
   ASSERT_TRUE(follower_.Sample(p, kTc, at));
   for (int j = 0; j < p.nv; ++j) {
     EXPECT_EQ(at.q[static_cast<std::size_t>(j)], p.q[Idx(p.n_pre, j)]);
@@ -746,10 +746,10 @@ TEST_F(NodeFollowerTest, TwoSpacingSampleIsC2AtEveryNode) {
 }
 
 TEST_F(NodeFollowerTest, TwoSpacingHoldsNodeNPastItsEnd) {
-  const DecelPlanSnapshot p = MakeMixedPlan(arm_.q_nominal, 61, 3, 7).p;
+  const SegmentSnapshot p = MakeMixedPlan(arm_.q_nominal, 61, 3, 7).p;
   const std::int64_t end = kTc + 7 * kDtStopNs;
-  ASSERT_EQ(rtc::catching::DecelNodeTimeNs(p, p.n_nodes), end);
-  DecelNodeSample s{};
+  ASSERT_EQ(rtc::catching::SegmentNodeTimeNs(p, p.n_nodes), end);
+  SegmentNodeSample s{};
   ASSERT_TRUE(follower_.Sample(p, end - 1, s));
   EXPECT_FALSE(s.held);
   ASSERT_TRUE(follower_.Sample(p, end, s));
@@ -760,29 +760,29 @@ TEST_F(NodeFollowerTest, TwoSpacingHoldsNodeNPastItsEnd) {
 }
 
 TEST_F(NodeFollowerTest, RefusesABrokenPreCatchShape) {
-  const DecelPlanSnapshot good = MakeMixedPlan(arm_.q_nominal, 62, 3, 7).p;
-  DecelNodeSample s{};
+  const SegmentSnapshot good = MakeMixedPlan(arm_.q_nominal, 62, 3, 7).p;
+  SegmentNodeSample s{};
   const std::int64_t t = good.t0_ns + good.dt_pre_ns / 2;
   ASSERT_TRUE(follower_.Sample(good, t, s));
   auto refused = [&](auto mutate) {
-    DecelPlanSnapshot p = good;
+    SegmentSnapshot p = good;
     mutate(p);
-    std::array<double, kMaxDecelNv> q{};
-    std::array<double, kMaxDecelNv> qd{};
-    std::array<double, kMaxDecelNv> qdd{};
+    std::array<double, kMaxSegmentNv> q{};
+    std::array<double, kMaxSegmentNv> qd{};
+    std::array<double, kMaxSegmentNv> qdd{};
     return !follower_.Sample(p, t, s) && !NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd);
   };
-  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.n_pre = -1; }));
-  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.n_pre = p.n_nodes; }));
-  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.n_pre = kMaxDecelNodes + 1; }));
-  EXPECT_TRUE(refused([](DecelPlanSnapshot& p) { p.dt_pre_ns = 0; }));
+  EXPECT_TRUE(refused([](SegmentSnapshot& p) { p.n_pre = -1; }));
+  EXPECT_TRUE(refused([](SegmentSnapshot& p) { p.n_pre = p.n_nodes; }));
+  EXPECT_TRUE(refused([](SegmentSnapshot& p) { p.n_pre = kMaxSegmentNodes + 1; }));
+  EXPECT_TRUE(refused([](SegmentSnapshot& p) { p.dt_pre_ns = 0; }));
   EXPECT_TRUE(
-      refused([](DecelPlanSnapshot& p) { p.dt_pre_ns = rtc::catching::kMaxDecelDtPreNs + 1; }));
+      refused([](SegmentSnapshot& p) { p.dt_pre_ns = rtc::catching::kMaxSegmentDtPreNs + 1; }));
 }
 
 TEST_F(NodeFollowerTest, TwoSpacingSampleAllocatesNothing) {
-  const DecelPlanSnapshot p = MakeMixedPlan(arm_.q_nominal, 63, 6, 7).p;
-  DecelNodeSample s{};
+  const SegmentSnapshot p = MakeMixedPlan(arm_.q_nominal, 63, 6, 7).p;
+  SegmentNodeSample s{};
   ASSERT_TRUE(follower_.Sample(p, p.t0_ns, s));
   std::size_t news = 0;
   std::size_t mallocs = 0;
@@ -800,91 +800,91 @@ TEST_F(NodeFollowerTest, TwoSpacingSampleAllocatesNothing) {
   EXPECT_EQ(mallocs, 0U);
 }
 
-TEST(DecelAdmission, PreCatchSegmentNeedsTheContextToAcceptIt) {
-  using rtc::catching::DecelRefusal;
-  DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 70, 3, 7).p;
+TEST(SegmentAdmission, PreCatchSegmentNeedsTheContextToAcceptIt) {
+  using rtc::catching::SegmentRefusal;
+  SegmentSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 70, 3, 7).p;
   p.publish_ns = kTc - 500'000'000;
   p.rt_state_ns = p.publish_ns - 1'000'000;
-  rtc::catching::DecelAdmissionContext ctx{};
+  rtc::catching::SegmentAdmissionContext ctx{};
   ctx.plan_active = true;
   ctx.plan_id = p.plan_id;
   ctx.plan_t_c_ns = p.t_c_ns;
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
   ctx.max_age_ns = 50'000'000;
-  const rtc::catching::AdmittedDecel none{};
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kMalformed);
+  const rtc::catching::AdmittedSegment none{};
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kMalformed);
   ctx.accept_pre_catch = true;
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kNone);
   // The age check stays ahead of it: an aged pre-catch segment is kAged.
   ctx.accept_pre_catch = false;
   ctx.now = rtc::catching::NowReal{p.publish_ns + 60'000'000};
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kAged);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kAged);
   // A stop-only segment does not need it.
-  DecelPlanSnapshot s = MakePlan(Eigen::VectorXd::Constant(6, 0.3), 71);
+  SegmentSnapshot s = MakePlan(Eigen::VectorXd::Constant(6, 0.3), 71);
   s.publish_ns = p.publish_ns;
   s.rt_state_ns = p.rt_state_ns;
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(s, ctx, none), DecelRefusal::kNone);
+  EXPECT_EQ(rtc::catching::JudgeSegment(s, ctx, none), SegmentRefusal::kNone);
 }
 
-TEST(DecelAdmission, ASegmentOfAnotherJointCountIsMalformed) {
-  // ValidateDecelNodes bounds nv by the payload's capacity; whether the
+TEST(SegmentAdmission, ASegmentOfAnotherJointCountIsMalformed) {
+  // ValidateSegmentNodes bounds nv by the payload's capacity; whether the
   // caller's sampler can evaluate the segment is the context's to say. A
   // context that names its joint count refuses any other as kMalformed; one
   // that names none (0) does not look.
-  using rtc::catching::DecelRefusal;
-  DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 73, 3, 7).p;
+  using rtc::catching::SegmentRefusal;
+  SegmentSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 73, 3, 7).p;
   p.publish_ns = kTc - 500'000'000;
   p.rt_state_ns = p.publish_ns - 1'000'000;
-  rtc::catching::DecelAdmissionContext ctx{};
+  rtc::catching::SegmentAdmissionContext ctx{};
   ctx.plan_active = true;
   ctx.plan_id = p.plan_id;
   ctx.plan_t_c_ns = p.t_c_ns;
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
   ctx.max_age_ns = 50'000'000;
   ctx.accept_pre_catch = true;
-  const rtc::catching::AdmittedDecel none{};
+  const rtc::catching::AdmittedSegment none{};
   ASSERT_EQ(p.nv, 6);
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kNone);
   ctx.expected_nv = 6;
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kNone);
   ctx.expected_nv = 7;
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kMalformed);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kMalformed);
   ctx.expected_nv = 5;
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kMalformed);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kMalformed);
   // Still behind the age check, as the node scan is.
   ctx.now = rtc::catching::NowReal{p.publish_ns + 60'000'000};
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kAged);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kAged);
 }
 
-TEST(DecelAdmission, ASegmentForAnotherTrackIsNotThisPlans) {
+TEST(SegmentAdmission, ASegmentForAnotherTrackIsNotThisPlans) {
   // The segment carries the PLAN's track. A context that names the followed
   // plan's track refuses any other as kPlan — ahead of the age check, with
   // the plan's id and t_c; one that names none does not look.
-  using rtc::catching::DecelRefusal;
-  DecelPlanSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 72, 3, 7).p;
+  using rtc::catching::SegmentRefusal;
+  SegmentSnapshot p = MakeMixedPlan(Eigen::VectorXd::Constant(6, 0.3), 72, 3, 7).p;
   p.token.generation = 11;
   p.publish_ns = kTc - 500'000'000;
   p.rt_state_ns = p.publish_ns - 1'000'000;
-  rtc::catching::DecelAdmissionContext ctx{};
+  rtc::catching::SegmentAdmissionContext ctx{};
   ctx.plan_active = true;
   ctx.plan_id = p.plan_id;
   ctx.plan_t_c_ns = p.t_c_ns;
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
   ctx.max_age_ns = 50'000'000;
   ctx.accept_pre_catch = true;
-  const rtc::catching::AdmittedDecel none{};
+  const rtc::catching::AdmittedSegment none{};
   ctx.plan_track_generation = 12;
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone)
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kNone)
       << "the track is compared only when the context asks";
   ctx.check_track = true;
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kPlan);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kPlan);
   ctx.now = rtc::catching::NowReal{p.publish_ns + 60'000'000};
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kPlan)
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kPlan)
       << "another plan's segment is kPlan whatever its age";
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
   ctx.plan_track_generation = 11;
-  EXPECT_EQ(rtc::catching::JudgeDecelPlan(p, ctx, none), DecelRefusal::kNone);
+  EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kNone);
 }
 
 }  // namespace

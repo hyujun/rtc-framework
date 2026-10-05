@@ -17,12 +17,12 @@ using NodeMap = Eigen::Map<const Eigen::MatrixXd, 0, Eigen::OuterStride<>>;
 using OutMap = Eigen::Map<Eigen::VectorXd>;
 
 // Shape a sampler can index without going out of bounds. The sampler does not
-// run ValidateDecelNodes, so this is its only guard on n_pre: a broken one
+// run ValidateSegmentNodes, so this is its only guard on n_pre: a broken one
 // would give the node maps a column count of zero or less.
-[[nodiscard]] bool ShapeOk(const DecelPlanSnapshot& p) noexcept {
-  return p.nv >= 1 && p.nv <= kMaxDecelNv && p.n_nodes >= 1 && p.n_nodes <= kMaxDecelNodes &&
+[[nodiscard]] bool ShapeOk(const SegmentSnapshot& p) noexcept {
+  return p.nv >= 1 && p.nv <= kMaxSegmentNv && p.n_nodes >= 1 && p.n_nodes <= kMaxSegmentNodes &&
          p.dt_ns > 0 && p.n_pre >= 0 && p.n_pre < p.n_nodes &&
-         (p.n_pre == 0 || (p.dt_pre_ns > 0 && p.dt_pre_ns <= kMaxDecelDtPreNs));
+         (p.n_pre == 0 || (p.dt_pre_ns > 0 && p.dt_pre_ns <= kMaxSegmentDtPreNs));
 }
 
 }  // namespace
@@ -32,12 +32,12 @@ bool NodeTrajectoryFollower::Init(std::shared_ptr<const pinocchio::Model> arm,
                                   std::span<const int> device_of_model) {
   model_.reset();
   nv_ = 0;
-  if (!arm || arm->nq != arm->nv || arm->nv < 1 || arm->nv > kMaxDecelNv ||
+  if (!arm || arm->nq != arm->nv || arm->nv < 1 || arm->nv > kMaxSegmentNv ||
       frame >= static_cast<pinocchio::FrameIndex>(arm->nframes) ||
       device_of_model.size() != static_cast<std::size_t>(arm->nv)) {
     return false;
   }
-  std::array<bool, kMaxDecelNv> seen{};
+  std::array<bool, kMaxSegmentNv> seen{};
   for (int m = 0; m < arm->nv; ++m) {
     const int d = device_of_model[static_cast<std::size_t>(m)];
     if (d < 0 || d >= arm->nv || seen[static_cast<std::size_t>(d)]) {
@@ -55,7 +55,7 @@ bool NodeTrajectoryFollower::Init(std::shared_ptr<const pinocchio::Model> arm,
   return true;
 }
 
-bool NodeTrajectoryFollower::SampleJoints(const DecelPlanSnapshot& plan, std::int64_t t_lead_ns,
+bool NodeTrajectoryFollower::SampleJoints(const SegmentSnapshot& plan, std::int64_t t_lead_ns,
                                           std::span<double> q, std::span<double> qd,
                                           std::span<double> qdd, bool* held) noexcept {
   if (!ShapeOk(plan)) {
@@ -79,8 +79,8 @@ bool NodeTrajectoryFollower::SampleJoints(const DecelPlanSnapshot& plan, std::in
   const int first_col = in_pre ? 0 : plan.n_pre;
   const Eigen::Index rows = plan.nv;
   const Eigen::Index cols = in_pre ? plan.n_pre + 1 : plan.n_nodes - plan.n_pre + 1;
-  const auto offset = static_cast<std::size_t>(first_col) * kMaxDecelNv;
-  const Eigen::OuterStride<> stride(kMaxDecelNv);
+  const auto offset = static_cast<std::size_t>(first_col) * kMaxSegmentNv;
+  const Eigen::OuterStride<> stride(kMaxSegmentNv);
   const NodeMap Q(plan.q.data() + offset, rows, cols, stride);
   const NodeMap Qd(plan.qd.data() + offset, rows, cols, stride);
   const NodeMap Qdd(plan.qdd.data() + offset, rows, cols, stride);
@@ -93,20 +93,20 @@ bool NodeTrajectoryFollower::SampleJoints(const DecelPlanSnapshot& plan, std::in
     return false;
   }
   if (held != nullptr) {
-    *held = since_ns >= DecelNodeTimeNs(plan, plan.n_nodes) - plan.t0_ns;
+    *held = since_ns >= SegmentNodeTimeNs(plan, plan.n_nodes) - plan.t0_ns;
   }
   return true;
 }
 
-bool NodeTrajectoryFollower::Sample(const DecelPlanSnapshot& plan, std::int64_t t_lead_ns,
-                                    DecelNodeSample& out) noexcept {
+bool NodeTrajectoryFollower::Sample(const SegmentSnapshot& plan, std::int64_t t_lead_ns,
+                                    SegmentNodeSample& out) noexcept {
   if (model_ == nullptr || plan.nv != nv_) {
     return false;
   }
   // Evaluate into locals first: `out` must stay untouched on any failure.
-  std::array<double, kMaxDecelNv> q{};
-  std::array<double, kMaxDecelNv> qd{};
-  std::array<double, kMaxDecelNv> qdd{};
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
   bool held = false;
   if (!SampleJoints(plan, t_lead_ns, q, qd, qdd, &held)) {
     return false;

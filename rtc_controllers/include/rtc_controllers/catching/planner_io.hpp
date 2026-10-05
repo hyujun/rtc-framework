@@ -13,8 +13,8 @@
 //     (A-S5-8). The two are never enabled together; the binding parks a
 //     configuration that asks for both, because a SeqLock with two writers is
 //     a torn read waiting to happen.
-//   - `DecelPlanSnapshot` planner → RT (trajectory.hpp, MPC E1-F02). Stored
-//     by the planner only; judged by `JudgeDecelPlan` below. The RT tick reads
+//   - `SegmentSnapshot` planner → RT (trajectory.hpp, MPC E1-F02). Stored
+//     by the planner only; judged by `JudgeSegment` below. The RT tick reads
 //     it under `supervisor.decel.mode: mpc` only (E1-F04, MD-44) — from the
 //     tick that takes a plan together with its first segment to the end of the
 //     stop (E1-F09).
@@ -119,20 +119,20 @@ struct PlannerRtState {
   /// COMMITTED the RT takes no new plan, so the two can differ.
   std::int64_t plan_t_c_ns{0};
   /// Whether the RT is following a segment this tick, and which one (its
-  /// decel_seq) — the segment its command is sampled from, in every mode that
+  /// segment_seq) — the segment its command is sampled from, in every mode that
   /// follows one: APPROACH through HOLD (E1-F09). The planner evaluates the
   /// next solve's initial state on it (MD-58). Always false /
   /// 0 under `supervisor.decel.mode: closed_form`.
-  bool decel_active{false};
-  std::uint32_t decel_seq{0};
+  bool segment_active{false};
+  std::uint32_t segment_seq{0};
   /// The segment the RT has admitted and holds PENDING (its node 0 not reached
-  /// yet), if any, by decel_seq. The planner takes the next solve's initial
+  /// yet), if any, by segment_seq. The planner takes the next solve's initial
   /// state from the segment the RT will be following at that instant (MD-58),
   /// and only the RT knows whether it admitted, deferred or dropped one: a
   /// segment the switch gate refused, or one dropped with its trial, is no
   /// longer reported. Always false / 0 under `closed_form`.
-  bool decel_pending{false};
-  std::uint32_t decel_pending_seq{0};
+  bool segment_pending{false};
+  std::uint32_t segment_pending_seq{0};
 
   /// The vision track epoch of the last trajectory the RT consumed (L1 §4.4),
   /// and whether it has consumed one at all in this trial.
@@ -265,21 +265,21 @@ struct AdmittedPlan {
 // ── RT-side admission of a decel segment (MPC E1-F03, MD-27 · MD-32) ────────
 
 /// Why the RT did not take the decel segment in the box. `kNone` = admitted.
-enum class DecelRefusal : std::uint8_t {
+enum class SegmentRefusal : std::uint8_t {
   kNone = 0,
   kInvalid,      ///< `valid` false — the planner withdrew it (e.g. on a reset)
   kActivation,   ///< another activation generation (D-23)
   kPlan,         ///< not a segment of the plan the RT follows (id, t_c or — when
                  ///< the context names one — the plan's track differ)
-  kRepeat,       ///< decel_seq not newer than the one the RT already took
+  kRepeat,       ///< segment_seq not newer than the one the RT already took
   kAged,         ///< published outside [now − max_age, now]
   kBeforeReset,  ///< published before the RT's last trial reset
-  kMalformed,    ///< ValidateDecelNodes refused the shape or a node value, or
+  kMalformed,    ///< ValidateSegmentNodes refused the shape or a node value, or
                  ///< pre-catch nodes the context does not accept
 };
 
 /// What the RT knows when it judges a decel segment.
-struct DecelAdmissionContext {
+struct SegmentAdmissionContext {
   std::uint64_t activation_generation{0};
   /// The plan the RT follows: a stop belongs to exactly one catch plan.
   bool plan_active{false};
@@ -288,7 +288,7 @@ struct DecelAdmissionContext {
   NowReal now{0};
   /// Upper bound on `now − publish_ns` [ns]. NOT the trajectory's staleness
   /// bound: a segment is followed long after it was solved, so its age is
-  /// read once, at admission (MD-37 — the binding's kDecelAdmissionMaxAgeNs).
+  /// read once, at admission (MD-37 — the binding's kSegmentAdmissionMaxAgeNs).
   /// 0 disables.
   std::int64_t max_age_ns{0};
   std::int64_t reset_floor_ns{0};
@@ -310,7 +310,7 @@ struct DecelAdmissionContext {
   bool check_track{false};
   std::uint64_t plan_track_generation{0};
   /// The joint count the caller's sampler is bound to; a segment of another
-  /// `nv` is refused as kMalformed. 0 disables. ValidateDecelNodes bounds
+  /// `nv` is refused as kMalformed. 0 disables. ValidateSegmentNodes bounds
   /// `nv` by the payload's capacity only, and a segment the sampler cannot
   /// evaluate must not be admitted: taken with its plan, it would fail at
   /// node 0 and end the trial in ABORT_SAFE instead of leaving the pair.
@@ -318,76 +318,76 @@ struct DecelAdmissionContext {
 };
 
 /// The RT's memory of the last decel segment it admitted.
-struct AdmittedDecel {
+struct AdmittedSegment {
   bool seen{false};
-  std::uint32_t decel_seq{0};
+  std::uint32_t segment_seq{0};
 };
 
 /// Judge a decel segment the caller has already loaded (D-21: Load() every
 /// tick, unconditionally). Checks run in the enum's order; the node scan
 /// (kMalformed) is last because it is the only one that costs anything. A
-/// caller that admits a segment runs it once per decel_seq; one it DEFERS (a
+/// caller that admits a segment runs it once per segment_seq; one it DEFERS (a
 /// full pending slot) is judged again every tick until taken or aged — the
 /// age check ahead of the scan bounds that to max_age_ns.
-[[nodiscard]] inline DecelRefusal JudgeDecelPlan(const DecelPlanSnapshot& p,
-                                                 const DecelAdmissionContext& ctx,
-                                                 const AdmittedDecel& admitted) noexcept {
+[[nodiscard]] inline SegmentRefusal JudgeSegment(const SegmentSnapshot& p,
+                                                 const SegmentAdmissionContext& ctx,
+                                                 const AdmittedSegment& admitted) noexcept {
   if (!p.valid) {
-    return DecelRefusal::kInvalid;
+    return SegmentRefusal::kInvalid;
   }
   if (p.token.activation_generation != ctx.activation_generation) {
-    return DecelRefusal::kActivation;
+    return SegmentRefusal::kActivation;
   }
   if (!ctx.plan_active || p.plan_id != ctx.plan_id || p.t_c_ns != ctx.plan_t_c_ns) {
-    return DecelRefusal::kPlan;
+    return SegmentRefusal::kPlan;
   }
   if (ctx.check_track && p.token.generation != ctx.plan_track_generation) {
-    return DecelRefusal::kPlan;
+    return SegmentRefusal::kPlan;
   }
   // `>` on the planner's own counter (it starts at 1 and never wraps within a
   // controller lifetime at one store per wake).
-  if (admitted.seen && !(p.decel_seq > admitted.decel_seq)) {
-    return DecelRefusal::kRepeat;
+  if (admitted.seen && !(p.segment_seq > admitted.segment_seq)) {
+    return SegmentRefusal::kRepeat;
   }
   const std::int64_t age = ctx.now.ns - p.publish_ns;
   if (p.publish_ns <= 0 || age < 0 || (ctx.max_age_ns > 0 && age > ctx.max_age_ns)) {
-    return DecelRefusal::kAged;
+    return SegmentRefusal::kAged;
   }
   if (p.publish_ns < ctx.reset_floor_ns) {
-    return DecelRefusal::kBeforeReset;
+    return SegmentRefusal::kBeforeReset;
   }
   if (ctx.state_floor_ns > 0 && p.rt_state_ns < ctx.state_floor_ns) {
-    return DecelRefusal::kBeforeReset;
+    return SegmentRefusal::kBeforeReset;
   }
   if (p.n_pre > 0 && !ctx.accept_pre_catch) {
-    return DecelRefusal::kMalformed;
+    return SegmentRefusal::kMalformed;
   }
   if (ctx.expected_nv > 0 && p.nv != ctx.expected_nv) {
-    return DecelRefusal::kMalformed;
+    return SegmentRefusal::kMalformed;
   }
-  if (!ValidateDecelNodes(p)) {
-    return DecelRefusal::kMalformed;
+  if (!ValidateSegmentNodes(p)) {
+    return SegmentRefusal::kMalformed;
   }
-  return DecelRefusal::kNone;
+  return SegmentRefusal::kNone;
 }
 
-[[nodiscard]] constexpr const char* DecelRefusalName(DecelRefusal r) noexcept {
+[[nodiscard]] constexpr const char* SegmentRefusalName(SegmentRefusal r) noexcept {
   switch (r) {
-    case DecelRefusal::kNone:
+    case SegmentRefusal::kNone:
       return "none";
-    case DecelRefusal::kInvalid:
+    case SegmentRefusal::kInvalid:
       return "invalid";
-    case DecelRefusal::kActivation:
+    case SegmentRefusal::kActivation:
       return "activation";
-    case DecelRefusal::kPlan:
+    case SegmentRefusal::kPlan:
       return "plan";
-    case DecelRefusal::kRepeat:
+    case SegmentRefusal::kRepeat:
       return "repeat";
-    case DecelRefusal::kAged:
+    case SegmentRefusal::kAged:
       return "aged";
-    case DecelRefusal::kBeforeReset:
+    case SegmentRefusal::kBeforeReset:
       return "before_reset";
-    case DecelRefusal::kMalformed:
+    case SegmentRefusal::kMalformed:
       return "malformed";
   }
   return "unknown";
@@ -401,20 +401,19 @@ struct AdmittedDecel {
 /// over (subject to the switch gate below); the planner built its node 0 as
 /// the state the current one reaches there, so the switch is continuous to
 /// the accuracy of that prediction.
-enum class DecelSegmentChoice : std::uint8_t {
+enum class SegmentChoice : std::uint8_t {
   kNone = 0,  ///< nothing to sample yet (closed form / pre-DECEL continues)
   kCurrent,   ///< keep sampling the followed segment
   kPending,   ///< switch: the pending segment becomes the followed one
 };
 
-[[nodiscard]] constexpr DecelSegmentChoice ChooseDecelSegment(bool current_valid,
-                                                              bool pending_valid,
-                                                              std::int64_t pending_t0_ns,
-                                                              std::int64_t sample_ns) noexcept {
+[[nodiscard]] constexpr SegmentChoice ChooseSegment(bool current_valid, bool pending_valid,
+                                                    std::int64_t pending_t0_ns,
+                                                    std::int64_t sample_ns) noexcept {
   if (pending_valid && sample_ns >= pending_t0_ns) {
-    return DecelSegmentChoice::kPending;
+    return SegmentChoice::kPending;
   }
-  return current_valid ? DecelSegmentChoice::kCurrent : DecelSegmentChoice::kNone;
+  return current_valid ? SegmentChoice::kCurrent : SegmentChoice::kNone;
 }
 
 /// The continuity gate at a segment switch (MD-39). Per joint i, with
@@ -425,7 +424,7 @@ enum class DecelSegmentChoice : std::uint8_t {
 /// d_i that is not a positive finite number refuses rather than divides.
 /// K_p is an eigenvalue bound of the task gain, not a per-joint one: ρ is a
 /// heuristic measure, recorded to be tightened on measurement.
-struct DecelSwitchVerdict {
+struct SegmentSwitchVerdict {
   bool pass{false};
   /// max_i lhs_i / d_i; a joint without headroom (d_i not a positive finite
   /// number) or with a non-finite lhs_i counts as +inf, so one such joint
@@ -437,11 +436,11 @@ struct DecelSwitchVerdict {
   double dqd_max{0.0};  ///< max_i |q̇_c − q̇_ref| [rad/s]
 };
 
-[[nodiscard]] inline DecelSwitchVerdict JudgeDecelSwitch(
+[[nodiscard]] inline SegmentSwitchVerdict JudgeSegmentSwitch(
     std::span<const double> q_c, std::span<const double> qd_c, std::span<const double> q_ref,
     std::span<const double> qd_ref, std::span<const double> qdot_max, int nv, double k_p,
     double eta_v, double rho_max) noexcept {
-  DecelSwitchVerdict v;
+  SegmentSwitchVerdict v;
   const auto n = static_cast<std::size_t>(nv < 0 ? 0 : nv);
   if (nv < 1 || q_c.size() < n || qd_c.size() < n || q_ref.size() < n || qd_ref.size() < n ||
       qdot_max.size() < n || !(std::isfinite(k_p) && k_p >= 0.0) ||

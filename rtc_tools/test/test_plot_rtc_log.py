@@ -3968,14 +3968,14 @@ class TestDecelEnumTables:
 
         if not self._POD.exists():
             pytest.skip("C++ header is not beside this checkout")
-        assert self._cpp_enum(self._POD, "DecelEvent") == DECEL_EVENT_NAMES
+        assert self._cpp_enum(self._POD, "SegmentEvent") == DECEL_EVENT_NAMES
 
     def test_refusal_names_match_the_cpp_enum(self):
         from rtc_tools.plotting.plotters.catching import DECEL_REFUSAL_NAMES
 
         if not self._IO.exists():
             pytest.skip("C++ header is not beside this checkout")
-        assert self._cpp_enum(self._IO, "DecelRefusal") == DECEL_REFUSAL_NAMES
+        assert self._cpp_enum(self._IO, "SegmentRefusal") == DECEL_REFUSAL_NAMES
 
     def test_the_parser_reads_implicit_and_explicit_values(self, tmp_path):
         # Positive control for the two tests above: a reordered enum is seen.

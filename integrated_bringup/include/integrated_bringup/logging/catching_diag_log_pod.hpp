@@ -231,7 +231,7 @@ struct CatchingDiagLogPod {
   /// What happened to a decel segment this tick. One value per tick: the
   /// law's (a switch, or the reason there was nothing to follow) wins over
   /// the lane's (an admission), which ran earlier in the tick.
-  enum class DecelEvent : std::uint8_t {
+  enum class SegmentEvent : std::uint8_t {
     kNone = 0,
     kAdmitted = 1,      ///< a segment entered the pending slot
     kDeferred = 2,      ///< admissible, left in the box: the slot holds another grid point (MD-37)
@@ -246,10 +246,10 @@ struct CatchingDiagLogPod {
     kReplaced = 10,     ///< a newer segment for the pending one's node 0 took the slot (MD-58)
   };
   /// The lane judged the box this tick (mode mpc, COMMITTED / CLOSING / DECEL);
-  /// `decel_refusal` is meaningful only then (rtc::catching::DecelRefusal).
+  /// `decel_refusal` is meaningful only then (rtc::catching::SegmentRefusal).
   bool decel_judged{false};
   std::uint8_t decel_refusal{0};
-  DecelEvent decel_event{DecelEvent::kNone};
+  SegmentEvent decel_event{SegmentEvent::kNone};
   /// The RT stepped the CLIK toward a segment sample this tick; seq and k0
   /// are the followed segment's, the targets its sample at now_lead + h.
   bool decel_following{false};

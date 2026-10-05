@@ -759,8 +759,8 @@ def test_the_decel_codes_this_tool_reads_are_the_cpp_enums_values():
     it; this is what notices."""
     if not (_DIAG_POD_HPP.exists() and _PLANNER_IO_HPP.exists()):
         pytest.skip("C++ headers are not beside this checkout")
-    event = _cpp_enum(_DIAG_POD_HPP, "DecelEvent")
-    refusal = _cpp_enum(_PLANNER_IO_HPP, "DecelRefusal")
+    event = _cpp_enum(_DIAG_POD_HPP, "SegmentEvent")
+    refusal = _cpp_enum(_PLANNER_IO_HPP, "SegmentRefusal")
     assert event[ct.DECEL_EVENT_ADMITTED] == "admitted"
     assert event[ct.DECEL_EVENT_DEFERRED] == "deferred"
     assert event[ct.DECEL_EVENT_WORKSPACE] == "workspace"

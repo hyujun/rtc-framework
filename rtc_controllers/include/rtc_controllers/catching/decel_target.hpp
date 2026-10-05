@@ -160,7 +160,7 @@ struct DecelTarget {
 
 /// Result of one deceleration step. `stopped` is the caller's cue that the
 /// abort has completed and the supervisor may leave `ABORT_SAFE`.
-struct JointDecelStep {
+struct JointStopStep {
   bool valid{false};
   bool stopped{false};  // every joint's |q̇| reached zero
   bool clamped{false};  // at least one joint hit its position box this step
@@ -178,13 +178,13 @@ struct JointDecelStep {
 ///
 /// `n` is the number of joints to act on (the arm's); the arrays may be wider.
 /// Bounds are the caller's box, already margined.
-[[nodiscard]] inline JointDecelStep JointSpaceDecelStep(std::span<double> q_cmd,
-                                                        std::span<double> qd_cmd,
-                                                        std::span<const double> qdd_max,
-                                                        std::span<const double> q_min,
-                                                        std::span<const double> q_max,
-                                                        std::size_t n, double dt) noexcept {
-  JointDecelStep out{};
+[[nodiscard]] inline JointStopStep JointSpaceStopStep(std::span<double> q_cmd,
+                                                      std::span<double> qd_cmd,
+                                                      std::span<const double> qdd_max,
+                                                      std::span<const double> q_min,
+                                                      std::span<const double> q_max, std::size_t n,
+                                                      double dt) noexcept {
+  JointStopStep out{};
   if (!(dt > 0.0) || !std::isfinite(dt) || n > q_cmd.size() || n > qd_cmd.size() ||
       n > qdd_max.size() || n > q_min.size() || n > q_max.size()) {
     return out;

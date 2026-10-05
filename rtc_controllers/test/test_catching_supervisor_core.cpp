@@ -541,25 +541,25 @@ TEST_F(ContactDebounceTest, GaussianNoiseFalseAlarmRateAtTheDocDefaultKSigmaIsRe
 
 namespace {
 
-struct DecelArrays {
+struct JointStopArrays {
   std::array<double, 3> q{0.0, 0.0, 0.0};
   std::array<double, 3> qd{0.0, 0.0, 0.0};
   std::array<double, 3> qdd_max{10.0, 10.0, 10.0};
   std::array<double, 3> q_min{-3.0, -3.0, -3.0};
   std::array<double, 3> q_max{3.0, 3.0, 3.0};
 
-  rtc::catching::JointDecelStep Step(double dt) {
-    return rtc::catching::JointSpaceDecelStep(q, qd, qdd_max, q_min, q_max, 3, dt);
+  rtc::catching::JointStopStep Step(double dt) {
+    return rtc::catching::JointSpaceStopStep(q, qd, qdd_max, q_min, q_max, 3, dt);
   }
 };
 
 }  // namespace
 
-TEST(JointSpaceDecel, RampsEachJointDownAtItsOwnLimitAndIntegratesTheCommand) {
+TEST(JointSpaceStop, RampsEachJointDownAtItsOwnLimitAndIntegratesTheCommand) {
   // Per-joint limits, not a shared scalar: the wrist and the shoulder stop at
   // different rates, and a stop that used one number for both would either
   // over-brake one joint or under-brake the other.
-  DecelArrays a;
+  JointStopArrays a;
   a.qd = {1.0, -0.5, 0.2};
   a.qdd_max = {10.0, 5.0, 100.0};
   const double dt = 0.002;
@@ -575,10 +575,10 @@ TEST(JointSpaceDecel, RampsEachJointDownAtItsOwnLimitAndIntegratesTheCommand) {
   EXPECT_DOUBLE_EQ(a.q[0], (1.0 - 10.0 * dt) * dt);
 }
 
-TEST(JointSpaceDecel, ReachesAFullStopInTheTimeTheLimitAllows) {
+TEST(JointSpaceStop, ReachesAFullStopInTheTimeTheLimitAllows) {
   // |q̇|/q̈max is the shortest stop the joint can perform; anything faster is
   // a number the drive will not honour.
-  DecelArrays a;
+  JointStopArrays a;
   a.qd = {1.0, 0.0, 0.0};
   a.qdd_max = {10.0, 10.0, 10.0};
   const double dt = 0.002;
@@ -597,11 +597,11 @@ TEST(JointSpaceDecel, ReachesAFullStopInTheTimeTheLimitAllows) {
   EXPECT_NEAR(a.q[0], 0.5 * 1.0 * 0.1, 0.01);
 }
 
-TEST(JointSpaceDecel, StopsAtThePositionBoxRatherThanPastIt) {
+TEST(JointSpaceStop, StopsAtThePositionBoxRatherThanPastIt) {
   // The box handed in is the one CLIK was given, already narrowed by
   // limit_margin. A stop that overshot it would put the backend's own clamp in
   // the loop, and then the command and the motion disagree.
-  DecelArrays a;
+  JointStopArrays a;
   a.q = {2.999, 0.0, 0.0};
   a.qd = {1.0, 0.0, 0.0};
   const auto step = a.Step(0.002);
@@ -611,11 +611,11 @@ TEST(JointSpaceDecel, StopsAtThePositionBoxRatherThanPastIt) {
   EXPECT_DOUBLE_EQ(a.qd[0], 0.0) << "a joint parked on its limit still reports motion";
 }
 
-TEST(JointSpaceDecel, FailsClosedOnGarbageInput) {
+TEST(JointSpaceStop, FailsClosedOnGarbageInput) {
   // "Where should this joint go" has no honest answer when the inputs are not
   // finite, and the safe answer is "nowhere new" — NOT the measured pose,
   // which is the jump this path exists to avoid.
-  DecelArrays a;
+  JointStopArrays a;
   a.q = {0.5, 0.5, 0.5};
   a.qd = {1.0, 1.0, 1.0};
   const auto bad_dt = a.Step(0.0);
@@ -636,12 +636,12 @@ TEST(JointSpaceDecel, FailsClosedOnGarbageInput) {
   EXPECT_DOUBLE_EQ(a.qd[1], 1.0) << "the unusable joint was integrated anyway";
 }
 
-TEST(JointSpaceDecel, ANonFiniteCommandNeverReportsACompletedStop) {
+TEST(JointSpaceStop, ANonFiniteCommandNeverReportsACompletedStop) {
   // The path that matters on hardware: a solver that returned NaN (ProxQP
   // reports SOLVED on a NaN problem) leaves it in the command, and the abort
   // is what is supposed to bring the arm to rest FROM there. It cannot, and
   // saying it did would hand the next trial a NaN.
-  DecelArrays a;
+  JointStopArrays a;
   a.q = {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0};
   a.qd = {0.0, 0.0, 0.0};  // every other joint is already stopped
   const auto step = a.Step(0.002);

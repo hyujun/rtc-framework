@@ -354,10 +354,10 @@ TEST(PlannerEventsCsv, EveryRowHasTheHeadersWidthAndIdleWakesAreSkipped) {
   EXPECT_TRUE(integrated_bringup::PlannerEventWorthRecording(idle));
 }
 
-TEST(PlannerEventsCsv, ADecelStepEarnsARowOnlyWhenItDidSomething) {
+TEST(PlannerEventsCsv, ASegmentStepEarnsARowOnlyWhenItDidSomething) {
   // MPC E1-F03: the decel columns are appended (readers select by name), and
   // a wake whose decel step only waited does not earn a row on its own.
-  using rtc::catching::DecelOutcome;
+  using rtc::catching::SegmentOutcome;
   std::ostringstream header;
   integrated_bringup::WritePlannerEventsHeader(header);
   EXPECT_NE(header.str().find(",max_catchable,decel_outcome,"), std::string::npos);
@@ -367,20 +367,20 @@ TEST(PlannerEventsCsv, ADecelStepEarnsARowOnlyWhenItDidSomething) {
   EXPECT_NE(header.str().find(",decel_tau_ratio_max,decel_kind,"), std::string::npos);
   EXPECT_NE(header.str().find(",decel_catch_v_rel,decel_slack_v,"), std::string::npos);
   rtc::catching::PlannerCycleRecord rec{};
-  for (const DecelOutcome waited :
-       {DecelOutcome::kOff, DecelOutcome::kUpToDate, DecelOutcome::kPastReplanWindow}) {
-    rec.decel.outcome = waited;
+  for (const SegmentOutcome waited :
+       {SegmentOutcome::kOff, SegmentOutcome::kUpToDate, SegmentOutcome::kPastReplanWindow}) {
+    rec.segment.outcome = waited;
     EXPECT_FALSE(integrated_bringup::PlannerEventWorthRecording(rec))
-        << rtc::catching::DecelOutcomeName(waited);
+        << rtc::catching::SegmentOutcomeName(waited);
   }
-  for (const DecelOutcome acted :
-       {DecelOutcome::kPublished, DecelOutcome::kSlack, DecelOutcome::kSolveFailed,
-        DecelOutcome::kBudget, DecelOutcome::kSuperseded, DecelOutcome::kNoState}) {
-    rec.decel.outcome = acted;
+  for (const SegmentOutcome acted :
+       {SegmentOutcome::kPublished, SegmentOutcome::kSlack, SegmentOutcome::kSolveFailed,
+        SegmentOutcome::kBudget, SegmentOutcome::kSuperseded, SegmentOutcome::kNoState}) {
+    rec.segment.outcome = acted;
     EXPECT_TRUE(integrated_bringup::PlannerEventWorthRecording(rec))
-        << rtc::catching::DecelOutcomeName(acted);
+        << rtc::catching::SegmentOutcomeName(acted);
   }
-  rec.decel.outcome = DecelOutcome::kPublished;
+  rec.segment.outcome = SegmentOutcome::kPublished;
   std::ostringstream row;
   integrated_bringup::WritePlannerEventsRow(row, rec);
   const auto columns = [](const std::string& s) { return std::count(s.begin(), s.end(), ',') + 1; };
@@ -818,7 +818,7 @@ TEST_F(CatchingPlanLaneTest, ThePlannerFindsAReachableCatchPointAndTheRtFollowsI
 
 // ── The decel MPC on the planner thread (MPC E1-F03, #629) ──────────────────
 
-TEST_F(CatchingPlanLaneTest, TheDecelMpcIsParkedWithoutThePlanner) {
+TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannerIsParkedWithoutThePlanner) {
   ctrl_ = std::make_unique<DemoCatchingController>("");
   ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
   ctrl_->SetSharedModelBuilder(builder_);
@@ -837,7 +837,7 @@ TEST_F(CatchingPlanLaneTest, TheDecelMpcIsParkedWithoutThePlanner) {
   EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
 }
 
-TEST_F(CatchingPlanLaneTest, TheDecelTorqueBoxAndSlackMustFitTheCliksTorqueBox) {
+TEST_F(CatchingPlanLaneTest, TheMpcSegmentTorqueBoxAndSlackMustFitTheCliksTorqueBox) {
   // MD-33: η'_τ + slack_max ≤ joint_cmd.eta_tau under the dynamic CLIK form.
   ctrl_ = std::make_unique<DemoCatchingController>("");
   ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
@@ -857,10 +857,10 @@ TEST_F(CatchingPlanLaneTest, TheDecelTorqueBoxAndSlackMustFitTheCliksTorqueBox) 
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
-  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kDecelMpcInvalid);
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kMpcSegmentInvalid);
 }
 
-TEST_F(CatchingPlanLaneTest, AFittingDecelTorqueBoxConfiguresUnderTheDynamicClik) {
+TEST_F(CatchingPlanLaneTest, AFittingMpcSegmentTorqueBoxConfiguresUnderTheDynamicClik) {
   // The passing side of MD-33's configure check: 0.7 + 0.1 ≤ 0.8.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
     ApproachGrid(y);                                       // MD-45
@@ -868,7 +868,7 @@ TEST_F(CatchingPlanLaneTest, AFittingDecelTorqueBoxConfiguresUnderTheDynamicClik
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
     y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
   }));
-  EXPECT_TRUE(ctrl_->IsDecelPlannerConfigured());
+  EXPECT_TRUE(ctrl_->IsSegmentPlannerConfigured());
 }
 
 // ── supervisor.decel.mode (MPC E1-F04, MD-34 · MD-42 · MD-44) ────────────────
@@ -893,7 +893,7 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
     ASSERT_EQ(ok.ret, Return::SUCCESS);
     EXPECT_FALSE(ok.parked) << "planner " << planner << ": reason " << static_cast<int>(ok.reason);
     EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kMpc);
-    EXPECT_EQ(ctrl_->IsDecelPlannerConfigured(), planner);
+    EXPECT_EQ(ctrl_->IsSegmentPlannerConfigured(), planner);
   }
   expect_park("K_n = 0", true, [](YAML::Node& y) { y["catching"]["joint_cmd"]["K_n"] = 0.0; });
   expect_park("eta_v = 1", true,
@@ -944,7 +944,7 @@ TEST_F(CatchingPlanLaneTest, AMalformedDecelModeOrSwitchMarginFailsTheConfigure)
       Return::FAILURE);
 }
 
-TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoDecelCoresEvenWhenTheyAreEnabled) {
+TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoMpcSegmentCoresEvenWhenTheyAreEnabled) {
   // MD-44: the planner runs the closed form's part only.
   for (const char* mode : {"closed_form", ""}) {
     const ConfigureVerdict v = ConfigureOnly(true, [mode](YAML::Node& y) {
@@ -957,11 +957,11 @@ TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoDecelCoresEvenWhenTheyAreEnabled)
     ASSERT_EQ(v.ret, DemoCatchingController::CallbackReturn::SUCCESS) << mode;
     EXPECT_FALSE(v.parked) << mode;
     EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kClosedForm) << mode;
-    EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured()) << "mode '" << mode << "'";
+    EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured()) << "mode '" << mode << "'";
   }
 }
 
-TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnADecelSettingItNeverReads) {
+TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnAnMpcSegmentSettingItNeverReads) {
   // MD-44 (/code-review 2026-09-30): under closed_form no decel core is built,
   // so a decel torque box that would not fit the CLIK's is not a profile
   // mistake there — only the WARN that the MPC is not built. Under mpc the
@@ -978,12 +978,12 @@ TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnADecelSettingItNeverReads) {
   const ConfigureVerdict closed = ConfigureOnly(true, misfit("closed_form"));
   ASSERT_EQ(closed.ret, DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_FALSE(closed.parked) << "park reason " << static_cast<int>(closed.reason);
-  EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured());
+  EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured());
 
   const ConfigureVerdict mpc = ConfigureOnly(true, misfit("mpc"));
   ASSERT_EQ(mpc.ret, DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_TRUE(mpc.parked);
-  EXPECT_EQ(mpc.reason, integrated_bringup::CatchingParkReason::kDecelMpcInvalid);
+  EXPECT_EQ(mpc.reason, integrated_bringup::CatchingParkReason::kMpcSegmentInvalid);
 }
 
 TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
@@ -1010,7 +1010,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
       });
       ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
       EXPECT_FALSE(v.parked) << tag;
-      EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured()) << tag;
+      EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured()) << tag;
       EXPECT_FALSE(WarnCapture::Contains("decel_mpc")) << tag << ": closed_form must not warn";
       EXPECT_FALSE(WarnCapture::Contains("not built")) << tag << ": closed_form must not warn";
     }
@@ -1019,7 +1019,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
       const ConfigureVerdict v = ConfigureOnly(true, with_key);
       ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
       EXPECT_FALSE(v.parked) << tag << ": reason " << static_cast<int>(v.reason);
-      EXPECT_TRUE(ctrl_->IsDecelPlannerConfigured()) << tag;
+      EXPECT_TRUE(ctrl_->IsSegmentPlannerConfigured()) << tag;
     }
     // mpc + planner off + the oracle plan profile: configures (a test writes
     // the box), with no decel planner of its own.
@@ -1027,7 +1027,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
       const ConfigureVerdict v = ConfigureOnly(false, with_key);
       ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
       EXPECT_FALSE(v.parked) << tag << ": reason " << static_cast<int>(v.reason);
-      EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured()) << tag;
+      EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured()) << tag;
     }
     // mpc + planner off + no oracle: nothing writes a segment, so it parks
     // with the prerequisite reason — never the decel-config one.
@@ -1073,44 +1073,44 @@ TEST_F(CatchingPlanLaneTest, ALeftoverDisabledDecelMpcKeyWarnsOnlyWhereTheLawNow
   }
 }
 
-TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheDecelPlannersBox) {
+TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheMpcSegmentPlannersBox) {
   // The box getters report THIS configuration (/code-review 2026-09-30): a
   // closed_form re-configure builds no decel planner, so the box is zero.
   ASSERT_EQ(ConfigureOnly(true, nullptr).ret, DemoCatchingController::CallbackReturn::SUCCESS);
-  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
-  ASSERT_NE(ctrl_->GetDecelQMaxForTesting()[0], 0.0);
+  ASSERT_TRUE(ctrl_->IsSegmentPlannerConfigured());
+  ASSERT_NE(ctrl_->GetMpcSegmentPlannerQMaxForTesting()[0], 0.0);
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   YAML::Node yaml = ConfigureOnlyYaml(true);
   yaml["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
-  EXPECT_FALSE(ctrl_->IsDecelPlannerConfigured());
+  EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured());
   for (int d = 0; d < kUr5eArmDof; ++d) {
     const auto u = static_cast<std::size_t>(d);
-    EXPECT_EQ(ctrl_->GetDecelQMinForTesting()[u], 0.0) << "joint " << d;
-    EXPECT_EQ(ctrl_->GetDecelQMaxForTesting()[u], 0.0) << "joint " << d;
+    EXPECT_EQ(ctrl_->GetMpcSegmentPlannerQMinForTesting()[u], 0.0) << "joint " << d;
+    EXPECT_EQ(ctrl_->GetMpcSegmentPlannerQMaxForTesting()[u], 0.0) << "joint " << d;
   }
 }
 
-TEST_F(CatchingPlanLaneTest, TheDecelPlannersBoxSitsInsideTheCliksMarginedBox) {
+TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannersBoxSitsInsideTheCliksMarginedBox) {
   // MD-42. The fixture's elbow limit (±3.14) is inside the URDF's (±π), so the
   // CLIK's margined box (±3.09) is the binding side there — the case the
   // shipped iiwa7 A7 is on (device 3.0543 < URDF 3.05433).
   const ConfigureVerdict v = ConfigureOnly(true, nullptr);
   ASSERT_EQ(v.ret, DemoCatchingController::CallbackReturn::SUCCESS);
   ASSERT_FALSE(v.parked);
-  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
+  ASSERT_TRUE(ctrl_->IsSegmentPlannerConfigured());
   const auto& lo = ctrl_->GetMarginedArmQMinForTesting();
   const auto& hi = ctrl_->GetMarginedArmQMaxForTesting();
   ASSERT_EQ(static_cast<int>(lo.size()), kUr5eArmDof);
   for (int d = 0; d < kUr5eArmDof; ++d) {
     const auto u = static_cast<std::size_t>(d);
-    EXPECT_GE(ctrl_->GetDecelQMinForTesting()[u], lo[u]) << "joint " << d;
-    EXPECT_LE(ctrl_->GetDecelQMaxForTesting()[u], hi[u]) << "joint " << d;
+    EXPECT_GE(ctrl_->GetMpcSegmentPlannerQMinForTesting()[u], lo[u]) << "joint " << d;
+    EXPECT_LE(ctrl_->GetMpcSegmentPlannerQMaxForTesting()[u], hi[u]) << "joint " << d;
   }
-  EXPECT_DOUBLE_EQ(ctrl_->GetDecelQMaxForTesting()[2], 3.14 - 0.05);
-  EXPECT_DOUBLE_EQ(ctrl_->GetDecelQMinForTesting()[2], -3.14 + 0.05);
+  EXPECT_DOUBLE_EQ(ctrl_->GetMpcSegmentPlannerQMaxForTesting()[2], 3.14 - 0.05);
+  EXPECT_DOUBLE_EQ(ctrl_->GetMpcSegmentPlannerQMinForTesting()[2], -3.14 + 0.05);
 }
 
 TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlannersSegments) {
@@ -1158,8 +1158,8 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
     y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
   }));
-  ASSERT_TRUE(ctrl_->IsDecelPlannerConfigured());
-  using Event = integrated_bringup::CatchingDiagLogPod::DecelEvent;
+  ASSERT_TRUE(ctrl_->IsSegmentPlannerConfigured());
+  using Event = integrated_bringup::CatchingDiagLogPod::SegmentEvent;
   bool approached = false;
   bool pair_taken = false;
   int not_followed = 0;
@@ -1170,7 +1170,7 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   double rho_refused_max = 0.0;
   std::set<Mode> followed_in;
   std::set<std::uint32_t> followed_seqs;
-  std::array<int, 11> events{};  // tick records per DecelEvent, for the failure message
+  std::array<int, 11> events{};  // tick records per SegmentEvent, for the failure message
   Mode last = Mode::kIdle;
   integrated_bringup::CatchingDiagLogPod end_record{};
   auto next = std::chrono::steady_clock::now();
@@ -1191,13 +1191,13 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
       approached = true;
       // The tick that took the plan took its first segment with it.
       const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
-      const rtc::catching::DecelPlanSnapshot seg = ctrl_->GetPendingDecelForTesting();
+      const rtc::catching::SegmentSnapshot seg = ctrl_->GetPendingSegmentForTesting();
       EXPECT_EQ(before, Mode::kTracking);
       EXPECT_EQ(record.decel_event, Event::kAdmitted);
-      EXPECT_TRUE(ctrl_->HasPendingDecelForTesting());
-      EXPECT_TRUE(rt.decel_pending);
-      EXPECT_EQ(rt.decel_pending_seq, seg.decel_seq);
-      EXPECT_FALSE(rt.decel_active);
+      EXPECT_TRUE(ctrl_->HasPendingSegmentForTesting());
+      EXPECT_TRUE(rt.segment_pending);
+      EXPECT_EQ(rt.segment_pending_seq, seg.segment_seq);
+      EXPECT_FALSE(rt.segment_active);
       EXPECT_TRUE(seg.valid);
       EXPECT_EQ(seg.plan_id, plan.plan_id);
       EXPECT_EQ(seg.t_c_ns, plan.t_c_ns);
@@ -1205,19 +1205,19 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
       EXPECT_EQ(seg.token.generation, plan.token.generation);
       EXPECT_GT(seg.n_pre, 0);
       EXPECT_LT(seg.t0_ns, plan.t_c_ns);
-      EXPECT_TRUE(rtc::catching::ValidateDecelNodes(seg));
+      EXPECT_TRUE(rtc::catching::ValidateSegmentNodes(seg));
       pair_taken = seg.valid && seg.plan_id == plan.plan_id;
     }
     if (approached && (last == Mode::kApproach || last == Mode::kCommitted ||
                        last == Mode::kClosing || last == Mode::kDecel)) {
       // The planner's newest wake WHILE the RT holds a segment of its plan.
       const auto wake = ctrl_->GetPlannerThread()->LastRecord();
-      const bool replan = wake.decel.kind != rtc::catching::DecelKind::kFirst &&
-                          wake.decel.outcome != rtc::catching::DecelOutcome::kOff;
+      const bool replan = wake.segment.kind != rtc::catching::SegmentKind::kFirst &&
+                          wake.segment.outcome != rtc::catching::SegmentOutcome::kOff;
       not_followed +=
-          replan && wake.decel.outcome == rtc::catching::DecelOutcome::kNotFollowed ? 1 : 0;
-      replans_with_a_source += replan && wake.decel.source_seq != 0 ? 1 : 0;
-      EXPECT_TRUE(rt.decel_pending || rt.decel_active)
+          replan && wake.segment.outcome == rtc::catching::SegmentOutcome::kNotFollowed ? 1 : 0;
+      replans_with_a_source += replan && wake.segment.source_seq != 0 ? 1 : 0;
+      EXPECT_TRUE(rt.segment_pending || rt.segment_active)
           << "the RT follows a plan and reports no segment, mode " << static_cast<int>(last);
     }
     if (record.decel_event == Event::kSwitched) {
@@ -1231,8 +1231,8 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
     if (record.decel_following) {
       followed_in.insert(before);
       followed_seqs.insert(record.decel_seq);
-      EXPECT_TRUE(rt.decel_active);
-      EXPECT_EQ(rt.decel_seq, record.decel_seq);
+      EXPECT_TRUE(rt.segment_active);
+      EXPECT_EQ(rt.segment_seq, record.decel_seq);
       EXPECT_FALSE(record.ref_valid) << "the soft-catch reference ran while a segment was followed";
     }
     if (last == Mode::kAbortSafe || last == Mode::kRetreat || last == Mode::kHold) {
@@ -1248,8 +1248,8 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   }
   ASSERT_TRUE(approached) << "no plan was adopted; last planner record: outcome "
                           << rtc::catching::CycleOutcomeName(planner.outcome) << ", decel "
-                          << rtc::catching::DecelOutcomeName(planner.decel.outcome) << " / "
-                          << rtc::catching::DecelMpcReasonName(planner.decel.core_reason)
+                          << rtc::catching::SegmentOutcomeName(planner.segment.outcome) << " / "
+                          << rtc::catching::MpcSegmentCoreReasonName(planner.segment.core_reason)
                           << "; RT decel refusal " << static_cast<int>(end_record.decel_refusal);
   EXPECT_TRUE(pair_taken);
   ASSERT_EQ(last, Mode::kHold) << "the trial did not reach HOLD: mode " << static_cast<int>(last)
@@ -1258,8 +1258,10 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
                                << static_cast<int>(end_record.decel_event) << ", gate rho "
                                << end_record.decel_rho << " (joint " << end_record.decel_gate_joint
                                << "), last decel step "
-                               << rtc::catching::DecelOutcomeName(planner.decel.outcome) << " / "
-                               << rtc::catching::DecelMpcReasonName(planner.decel.core_reason);
+                               << rtc::catching::SegmentOutcomeName(planner.segment.outcome)
+                               << " / "
+                               << rtc::catching::MpcSegmentCoreReasonName(
+                                      planner.segment.core_reason);
   // Followed from APPROACH to the stop — DECEL is the same chain going on.
   // (Where node 0 falls — APPROACH or just past the freeze — is the throw's
   // lead; before it the command is held with the segment reported pending.)
@@ -1273,10 +1275,10 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   EXPECT_EQ(not_followed, 0) << "a replan wake found no source while the RT held a segment";
   EXPECT_GT(replans_with_a_source, 0) << "no replan wake was sampled while the plan was followed";
   // The stop's end is fixed (MD-21): t_c + N_s·Δ_s, whichever segment ends it.
-  const rtc::catching::DecelPlanSnapshot final_seg = ctrl_->GetFollowedDecelForTesting();
+  const rtc::catching::SegmentSnapshot final_seg = ctrl_->GetFollowedSegmentForTesting();
   const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
   ASSERT_TRUE(final_seg.valid);
-  EXPECT_EQ(rtc::catching::DecelNodeTimeNs(final_seg, final_seg.n_nodes),
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(final_seg, final_seg.n_nodes),
             plan.t_c_ns + 7 * 50'000'000LL);
   // The solves ran on the planner thread: still exactly one mpc_main (no
   // thread of its own — E-7).

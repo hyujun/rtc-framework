@@ -64,7 +64,7 @@ struct CatchLinearization {
 ///         antiparallel (the rotation axis is undefined there).
 /// @note RT-safe: no heap, noexcept. Every matrix argument must already be
 ///       sized; the outputs are unspecified when the return is not kNone.
-[[nodiscard]] DecelMpcReason LinearizeCatchAt(
+[[nodiscard]] MpcSegmentCoreReason LinearizeCatchAt(
     const pinocchio::Model& model, pinocchio::Data& data, pinocchio::FrameIndex frame,
     const Eigen::Ref<const Eigen::VectorXd>& q, const Eigen::Ref<const Eigen::VectorXd>& v,
     const Eigen::Vector3d& a_d, double axis_theta_max, bool with_axis, bool with_velocity,

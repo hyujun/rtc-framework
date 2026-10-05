@@ -5,20 +5,20 @@
 // The SegmentPlanner (segment_planner.hpp) PlannerCycle runs once a decel MPC
 // is configured — the one implementation of that interface today: solve the
 // joint-node segment the RT follows from APPROACH to the end of the stop
-// (mpc_segment_core.hpp) and hand back a DecelPlanSnapshot for the cycle to publish.
+// (mpc_segment_core.hpp) and hand back a SegmentSnapshot for the cycle to publish.
 // ROS-free, so the whole decision is testable against plain values; the cycle
 // owns the SeqLock, the re-check and the counter.
 //
 // The cycle hands the ball over as a VIEW of the wake's trajectory and
 // covariance (BallPrediction); what this planner takes of it is the ball at
-// the plan's catch instant (MakeDecelBallTarget). The entry points that take
+// the plan's catch instant (MakeMpcSegmentBallTarget). The entry points that take
 // that value directly remain — the planner's own tests call them.
 //
 // ── The grid and the stop end (MD-10, MD-31, MD-54) ───────────────────────────
 // Nodes sit on t_c − j·Δ_pre (pre-catch, j ≤ n_pre_max) and t_c + k·Δ_s
 // (stop), t_c the catch instant of the plan the segment belongs to. The stop
 // ends at t_c + N_s·Δ_s wherever a segment starts: a segment that starts at
-// the stop grid point k solves N_s − k nodes with its own DecelMpc, built at
+// the stop grid point k solves N_s − k nodes with its own MpcSegmentCore, built at
 // configure time (the core's N is fixed at Init, and re-solving N_s nodes
 // from a later start would push the end out on every replan). Post-catch
 // replans happen only for k ≤ k_max.
@@ -50,9 +50,9 @@
 //    slack (MD-33), the catch-node position error (catch cores), the velocity
 //    extrema between nodes (≤ q̇_max), node N at rest to the core's reference
 //    tolerance (a published segment is the next solve's reference), and the
-//    packed payload passing ValidateDecelNodes. The relative-velocity slack
+//    packed payload passing ValidateSegmentNodes. The relative-velocity slack
 //    s_v (`catch.rho_v` > 0) is NOT among them: it is recorded
-//    (DecelRecord::slack_v) and never judged — no threshold is defined for
+//    (SegmentRecord::slack_v) and never judged — no threshold is defined for
 //    it, and with γ_ref < 1 it is above 0 by construction.
 //
 // There is no stop-only planner (MD-70): a plan is published only with a
@@ -60,7 +60,7 @@
 //
 // ── The stop-path line (`cost.w_perp` > 0; #698) ──────────────────────────────
 // With w_⊥ > 0 the cores penalise, on the nodes from the catch on, the catch
-// frame's distance from a line (DecelMpcInput::p_c, d_hat). The planner fills
+// frame's distance from a line (MpcSegmentCoreInput::p_c, d_hat). The planner fills
 // that line on every solve; none runs on the input's default (origin, x).
 //  • The line is the BALL's: through its predicted position at t_c along its
 //    direction of travel there, d̂ = v̂_b/‖v̂_b‖ — the very vectors the solve
@@ -122,15 +122,15 @@ namespace rtc::catching {
 /// Largest age of the RT's report (steady now − rt_state_ns) a solve starts
 /// from. The RT stores every tick, so anything older means the
 /// tick stalled; 50 ms is one default planner wake timeout, 25 ticks at 2 ms.
-inline constexpr std::int64_t kDecelMaxRtStateAgeNs = 50'000'000;
+inline constexpr std::int64_t kMpcSegmentMaxRtStateAgeNs = 50'000'000;
 
 /// What one decel step did (the planner events CSV's decel columns). The CSV
-/// writes the NAME (DecelOutcomeName), never the value: the values carry no
+/// writes the NAME (SegmentOutcomeName), never the value: the values carry no
 /// meaning outside a build and move when an enumerator is added or removed.
-enum class DecelOutcome : std::uint8_t {
+enum class SegmentOutcome : std::uint8_t {
   kOff = 0,  ///< not attempted: not configured, or not a decel mode
   kNoState,  ///< no followed plan / t_c, unseeded command, or a size mismatch
-  /// The RT's report is older than kDecelMaxRtStateAgeNs (or from the
+  /// The RT's report is older than kMpcSegmentMaxRtStateAgeNs (or from the
   /// future): what it reports may no longer be what the arm does (an RT stall).
   kStaleState,
   kUpToDate,          ///< the published segment already starts at this t_eff or later
@@ -159,10 +159,10 @@ enum class DecelOutcome : std::uint8_t {
   // covers a ball speed that is not finite.
 };
 
-[[nodiscard]] const char* DecelOutcomeName(DecelOutcome o) noexcept;
+[[nodiscard]] const char* SegmentOutcomeName(SegmentOutcome o) noexcept;
 
 /// Which solve a record describes (E1-F08).
-enum class DecelKind : std::uint8_t {
+enum class SegmentKind : std::uint8_t {
   kNone = 0,  ///< no solve was chosen (the record's default)
   kFirst,     ///< the first segment of a plan, solved with the search (MD-56)
   kSame,      ///< a pre-catch grid point the source already starts at (MD-58)
@@ -170,20 +170,20 @@ enum class DecelKind : std::uint8_t {
   kStop,      ///< a stop core: the catch node or a post-catch grid point
 };
 
-[[nodiscard]] const char* DecelKindName(DecelKind k) noexcept;
+[[nodiscard]] const char* SegmentKindName(SegmentKind k) noexcept;
 
-struct DecelRecord {
-  DecelOutcome outcome{DecelOutcome::kOff};
-  DecelMpcReason core_reason{DecelMpcReason::kNone};
+struct SegmentRecord {
+  SegmentOutcome outcome{SegmentOutcome::kOff};
+  MpcSegmentCoreReason core_reason{MpcSegmentCoreReason::kNone};
   /// Grid index of node 0: t_eff = t_c + k·Δ_s for a stop grid point, −n_pre
   /// for a pre-catch one (the CSV's decel_k).
   std::int32_t k{-1};
   std::int32_t n_nodes{0};
-  std::uint32_t decel_seq{0};  ///< the published segment's seq (cycle)
-  bool x0_clamped{false};      ///< the start state (q or q̇) was projected into the box
-  bool from_segment{false};    ///< replan: x₀ came from a segment the RT reports
-  bool presolved{false};       ///< no reference: kinematic pre-solve + solve
-  bool cold_retry{false};      ///< a stop core's reference was refused, re-solved without it
+  std::uint32_t segment_seq{0};  ///< the published segment's seq (cycle)
+  bool x0_clamped{false};        ///< the start state (q or q̇) was projected into the box
+  bool from_segment{false};      ///< replan: x₀ came from a segment the RT reports
+  bool presolved{false};         ///< no reference: kinematic pre-solve + solve
+  bool cold_retry{false};        ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};
   std::int32_t qp_status{-1};
   std::int64_t solve_ns{0};    ///< solve start → solve end (the budget's measure)
@@ -192,7 +192,7 @@ struct DecelRecord {
   double slack_terminal_max{std::numeric_limits<double>::quiet_NaN()};
   double tau_ratio_max{std::numeric_limits<double>::quiet_NaN()};
 
-  DecelKind kind{DecelKind::kNone};
+  SegmentKind kind{SegmentKind::kNone};
   bool cold_start{false};      ///< the core's main QP started from zero
   bool solver_retried{false};  ///< the core's own warm → cold re-run (cold_retried)
   /// First solve: the reference's target was outside the core's position
@@ -219,7 +219,7 @@ struct DecelRecord {
 
 /// The arm the decel planner plans for (configure time, from the binding).
 /// Every array is MODEL order, `nv` entries.
-struct DecelPlannerModel {
+struct MpcSegmentPlannerModel {
   std::shared_ptr<const pinocchio::Model> arm;  ///< hand-locked catch sub-model
   pinocchio::FrameIndex catch_frame{0};
   int nv{0};
@@ -230,19 +230,19 @@ struct DecelPlannerModel {
   std::array<double, kMaxPlanNv> tau_max{};   ///< [N·m], device ratings
 };
 
-struct DecelPlannerConstants {
+struct MpcSegmentPlannerConstants {
   double eta_v{0.9};         ///< `planner.gamma.eta_v` (the core's velocity row)
   double t_arm_s{0.0};       ///< `joint_cmd.lag.T_arm` — real → lead axis
   double control_dt{0.002};  ///< the RT period [s]
   /// `planner.ik.v_eps` [m/s] — the ball speed below which its direction of
-  /// travel (and so a_d) is undefined (MakeDecelBallTarget).
+  /// travel (and so a_d) is undefined (MakeMpcSegmentBallTarget).
   double v_eps{1e-6};
 };
 
 /// The ball at a plan's catch instant as the solves take it
 /// (MD-63), MODEL world. `valid` covers p_b / v_b / a_d; `sigma_valid` the
 /// position covariance, which only weights the position term.
-struct DecelBallTarget {
+struct MpcSegmentBallTarget {
   bool valid{false};
   Eigen::Vector3d p_b{Eigen::Vector3d::Zero()};
   Eigen::Vector3d v_b{Eigen::Vector3d::Zero()};
@@ -265,10 +265,11 @@ struct DecelBallTarget {
 /// @param[out] ratio_max max |q̇|/q̇_max over nodes and extrema; +inf when a
 ///             value is not finite or the shapes do not match
 /// @return false on any value outside, non-finite, or a shape mismatch.
-[[nodiscard]] bool DecelBetweenNodeSpeedOk(const Eigen::Ref<const Eigen::MatrixXd>& qd,
-                                           const Eigen::Ref<const Eigen::MatrixXd>& qdd, int n_pre,
-                                           double dt_pre, double dt, std::span<const double> qd_max,
-                                           double& ratio_max) noexcept;
+[[nodiscard]] bool MpcSegmentBetweenNodeSpeedOk(const Eigen::Ref<const Eigen::MatrixXd>& qd,
+                                                const Eigen::Ref<const Eigen::MatrixXd>& qdd,
+                                                int n_pre, double dt_pre, double dt,
+                                                std::span<const double> qd_max,
+                                                double& ratio_max) noexcept;
 
 /// @brief The ball at `t_c_ns` from one trajectory snapshot and its
 ///        covariance (RT-safe, pure).
@@ -281,20 +282,22 @@ struct DecelBallTarget {
 /// NaN — otherwise the blocks of i and i + 1 interpolated linearly on integer
 /// ns. Both must be finite and the covariance must belong to the same snapshot
 /// (`cov_matched`); otherwise `sigma_valid` is false.
-[[nodiscard]] DecelBallTarget MakeDecelBallTarget(const TrajectorySnapshot& traj,
-                                                  const CovarianceSnapshot& cov, bool cov_matched,
-                                                  std::int64_t t_c_ns, double v_eps) noexcept;
+[[nodiscard]] MpcSegmentBallTarget MakeMpcSegmentBallTarget(const TrajectorySnapshot& traj,
+                                                            const CovarianceSnapshot& cov,
+                                                            bool cov_matched, std::int64_t t_c_ns,
+                                                            double v_eps) noexcept;
 
-class DecelPlanner final : public SegmentPlanner {
+class MpcSegmentPlanner final : public SegmentPlanner {
  public:
-  DecelPlanner() = default;
+  MpcSegmentPlanner() = default;
 
   /// @brief Build the k_max + 1 stop cores and the n_pre_max catch cores and
   ///        warm each up (non-RT). On failure — `params.n_pre_max` < 1
   ///        included (MD-70) — the planner is unconfigured and `error` (if
   ///        given) names the cause.
-  [[nodiscard]] bool Configure(const DecelPlannerModel& model, const DecelPlannerConstants& consts,
-                               const DecelPlannerParams& params, ClockFn clock,
+  [[nodiscard]] bool Configure(const MpcSegmentPlannerModel& model,
+                               const MpcSegmentPlannerConstants& consts,
+                               const MpcSegmentPlannerParams& params, ClockFn clock,
                                std::string* error = nullptr);
 
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
@@ -310,13 +313,13 @@ class DecelPlanner final : public SegmentPlanner {
   /// published segments and their stop-path lines with them.
   void ResetTrial() noexcept override;
 
-  [[nodiscard]] const DecelPlannerParams& Params() const noexcept { return params_; }
+  [[nodiscard]] const MpcSegmentPlannerParams& Params() const noexcept { return params_; }
 
   [[nodiscard]] int Nv() const noexcept { return nv_; }
 
   /// The stop core that starts at the stop grid point k, 0..k_max (tests and
   /// diagnostics).
-  [[nodiscard]] const DecelMpc& Core(int k) const noexcept {
+  [[nodiscard]] const MpcSegmentCore& Core(int k) const noexcept {
     return *cores_[static_cast<std::size_t>(k)];
   }
 
@@ -331,39 +334,39 @@ class DecelPlanner final : public SegmentPlanner {
   ///        will publish it under
   /// @param ball the ball at plan.t_c_ns (Σ_p only — p, v, a_d are the plan's)
   /// @return true when `out` holds a publishable segment (kReady); its
-  ///         publish_ns and decel_seq are the caller's.
+  ///         publish_ns and segment_seq are the caller's.
   [[nodiscard]] bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                               const DecelBallTarget& ball, DecelPlanSnapshot& out,
-                               DecelRecord& rec) noexcept;
+                               const MpcSegmentBallTarget& ball, SegmentSnapshot& out,
+                               SegmentRecord& rec) noexcept;
 
   /// @brief The same solve from the wake's prediction (the SegmentPlanner
   ///        entry; RT-safe): the ball target is `ball` at `plan.t_c_ns`
-  ///        (MakeDecelBallTarget with this planner's v_eps), an invalid one
+  ///        (MakeMpcSegmentBallTarget with this planner's v_eps), an invalid one
   ///        when the view is empty.
   [[nodiscard]] bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                               const BallPrediction& ball, DecelPlanSnapshot& out,
-                               DecelRecord& rec) noexcept override;
+                               const BallPrediction& ball, SegmentSnapshot& out,
+                               SegmentRecord& rec) noexcept override;
 
   /// @brief A later segment of the plan the RT follows (RT-safe; MD-58): the
   ///        grid point the replan budget reaches, solved from the segment the
   ///        RT reports pending or following (SourceSeq).
   /// @param ball the ball at rt.plan_t_c_ns; read at pre-catch grid points
   ///        only (a stop core's stop-path line is its source segment's)
-  [[nodiscard]] bool Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
-                            DecelPlanSnapshot& out, DecelRecord& rec) noexcept;
+  [[nodiscard]] bool Replan(const PlannerRtState& rt, const MpcSegmentBallTarget& ball,
+                            SegmentSnapshot& out, SegmentRecord& rec) noexcept;
 
   /// @brief The same solve from the wake's prediction (the SegmentPlanner
   ///        entry; RT-safe): the ball target is `ball` at `rt.plan_t_c_ns`, an
   ///        invalid one when the view is empty.
   [[nodiscard]] bool Replan(const PlannerRtState& rt, const BallPrediction& ball,
-                            DecelPlanSnapshot& out, DecelRecord& rec) noexcept override;
+                            SegmentSnapshot& out, SegmentRecord& rec) noexcept override;
 
-  /// The cycle published `p` (its decel_seq filled): a later replan may be
+  /// The cycle published `p` (its segment_seq filled): a later replan may be
   /// solved from it. With `cost.w_perp` > 0 the segment takes the stop-path
   /// line of the solve that produced it — handed over once, by the PlanFirst
   /// or Replan that returned true right before this call. A segment published
   /// any other way carries no line, and no stop core is solved from it.
-  void NotePublished(const DecelPlanSnapshot& p) noexcept override;
+  void NotePublished(const SegmentSnapshot& p) noexcept override;
 
   /// The track generation of the plan `rt` follows, from the segments
   /// published for it (the first one carries the plan's own token). False when
@@ -385,7 +388,7 @@ class DecelPlanner final : public SegmentPlanner {
   /// The control period [ns].
   [[nodiscard]] std::int64_t ControlDtNs() const noexcept override { return h_ns_; }
 
-  /// The decel_seq of the segment a replan at `t_eff_ns` starts from, 0 when
+  /// The segment_seq of the segment a replan at `t_eff_ns` starts from, 0 when
   /// there is none (kNotFollowed): the one the RT reports pending (when it
   /// starts no later than t_eff), else the one it reports following — never
   /// inferred.
@@ -394,30 +397,30 @@ class DecelPlanner final : public SegmentPlanner {
 
   /// The catch core for `n_pre` pre-catch intervals (1..n_pre_max), and the
   /// parameters each core was built with (tests and diagnostics).
-  [[nodiscard]] const DecelMpc& ApproachCore(int n_pre) const noexcept {
+  [[nodiscard]] const MpcSegmentCore& ApproachCore(int n_pre) const noexcept {
     return *catch_cores_[static_cast<std::size_t>(n_pre - 1)];
   }
 
-  [[nodiscard]] const DecelMpcParams& ApproachCoreParams(int n_pre) const noexcept {
+  [[nodiscard]] const MpcSegmentCoreParams& ApproachCoreParams(int n_pre) const noexcept {
     return catch_params_[static_cast<std::size_t>(n_pre - 1)];
   }
 
-  [[nodiscard]] const DecelMpcParams& StopCoreParams(int k) const noexcept {
+  [[nodiscard]] const MpcSegmentCoreParams& StopCoreParams(int k) const noexcept {
     return stop_params_[static_cast<std::size_t>(k)];
   }
 
   /// The input the catch core for `n_pre` (1..n_pre_max) / the stop core k
   /// (0..k_max) was last handed — after Configure, the warm-up's (tests and
   /// diagnostics: what line a solve ran on).
-  [[nodiscard]] const DecelMpcInput& ApproachCoreInput(int n_pre) const noexcept {
+  [[nodiscard]] const MpcSegmentCoreInput& ApproachCoreInput(int n_pre) const noexcept {
     return catch_inputs_[static_cast<std::size_t>(n_pre - 1)];
   }
 
-  [[nodiscard]] const DecelMpcInput& StopCoreInput(int k) const noexcept {
+  [[nodiscard]] const MpcSegmentCoreInput& StopCoreInput(int k) const noexcept {
     return inputs_[static_cast<std::size_t>(k)];
   }
 
-  [[nodiscard]] const DecelPlannerConstants& Constants() const noexcept { return consts_; }
+  [[nodiscard]] const MpcSegmentPlannerConstants& Constants() const noexcept { return consts_; }
 
   /// The rest tolerance Judge holds a published segment's node N to — the
   /// profile's `linearization.reference_rest_tol` (tests and diagnostics).
@@ -431,7 +434,7 @@ class DecelPlanner final : public SegmentPlanner {
 
  private:
   bool configured_{false};
-  DecelPlannerParams params_{};
+  MpcSegmentPlannerParams params_{};
   ClockFn clock_{nullptr};
   int nv_{0};
   std::array<int, kMaxPlanNv> device_of_model_{};
@@ -441,33 +444,34 @@ class DecelPlanner final : public SegmentPlanner {
 
   // The stop cores, k = 0..k_max. Behind pointers: a core owns a model copy
   // and a solver and is not meant to move.
-  std::vector<std::unique_ptr<DecelMpc>> cores_;
-  std::vector<DecelMpcInput> inputs_;  // sized per instance
-  std::vector<DecelMpcResult> results_;
+  std::vector<std::unique_ptr<MpcSegmentCore>> cores_;
+  std::vector<MpcSegmentCoreInput> inputs_;  // sized per instance
+  std::vector<MpcSegmentCoreResult> results_;
 
   // Where the solve's state comes from and how it is judged and packed.
   // The ball at `t_c_ns` from a wake's prediction; invalid for an empty view.
-  [[nodiscard]] DecelBallTarget TargetAt(const BallPrediction& ball,
-                                         std::int64_t t_c_ns) const noexcept;
-  [[nodiscard]] bool ConfigureApproach(const DecelPlannerModel& model, std::string& why);
-  [[nodiscard]] bool WarmUp(const DecelPlannerModel& model, std::string& why);
+  [[nodiscard]] MpcSegmentBallTarget TargetAt(const BallPrediction& ball,
+                                              std::int64_t t_c_ns) const noexcept;
+  [[nodiscard]] bool ConfigureApproach(const MpcSegmentPlannerModel& model, std::string& why);
+  [[nodiscard]] bool WarmUp(const MpcSegmentPlannerModel& model, std::string& why);
   [[nodiscard]] bool CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
-                                DecelRecord& rec) const noexcept;
+                                SegmentRecord& rec) const noexcept;
   [[nodiscard]] bool SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::Vector3d& v_b,
-                                    const Eigen::Vector3d& a_d, const DecelBallTarget& ball,
-                                    bool first, DecelMpcInput& in, DecelRecord& rec) const noexcept;
+                                    const Eigen::Vector3d& a_d, const MpcSegmentBallTarget& ball,
+                                    bool first, MpcSegmentCoreInput& in,
+                                    SegmentRecord& rec) const noexcept;
   // The stop-path line of a catch-core solve (w_⊥ > 0 only), from the ball as
   // `in` already carries it: p_c = in.p_b, d̂ = in.v_b/‖in.v_b‖. False — the
   // outcome recorded, nothing written — when no direction can be built.
-  [[nodiscard]] bool SetStopLine(DecelMpcInput& in, DecelRecord& rec) const noexcept;
-  [[nodiscard]] DecelOutcome Judge(const DecelMpcResult& r, bool ok, int n_pre, int n_total,
-                                   bool catch_core, std::int64_t start, std::int64_t end,
-                                   std::int64_t budget_ns, std::int64_t t_eff,
-                                   DecelRecord& rec) const noexcept;
+  [[nodiscard]] bool SetStopLine(MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept;
+  [[nodiscard]] SegmentOutcome Judge(const MpcSegmentCoreResult& r, bool ok, int n_pre, int n_total,
+                                     bool catch_core, std::int64_t start, std::int64_t end,
+                                     std::int64_t budget_ns, std::int64_t t_eff,
+                                     SegmentRecord& rec) const noexcept;
   void PackSegment(const PlannerRtState& rt, std::uint64_t track_generation, std::uint32_t plan_id,
                    std::int64_t t_c, std::int64_t t_eff, int n_pre, int k0, int n_total,
-                   const DecelMpcResult& r, DecelPlanSnapshot& out) const noexcept;
-  [[nodiscard]] const DecelPlanSnapshot* FindInRing(std::uint32_t seq) const noexcept;
+                   const MpcSegmentCoreResult& r, SegmentSnapshot& out) const noexcept;
+  [[nodiscard]] const SegmentSnapshot* FindInRing(std::uint32_t seq) const noexcept;
   [[nodiscard]] bool ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
                                   std::uint32_t plan_id, std::int64_t t_c) const noexcept;
   // `ok` false forgets the last solve: a call the core refused before its QP
@@ -476,14 +480,14 @@ class DecelPlanner final : public SegmentPlanner {
   void NoteSolve(bool ok, bool catch_core, int index, std::int64_t t_eff, std::uint32_t plan_id,
                  std::int64_t t_c) noexcept;
 
-  DecelPlannerConstants consts_{};
+  MpcSegmentPlannerConstants consts_{};
   // n_pre = j + 1 for index j. Same box as the stop cores (η_v, η_τ, m_q):
   // at t_c the stop core takes over a state the catch core left inside it.
-  std::vector<std::unique_ptr<DecelMpc>> catch_cores_;
-  std::vector<DecelMpcInput> catch_inputs_;
-  std::vector<DecelMpcResult> catch_results_;
-  std::vector<DecelMpcParams> catch_params_;
-  std::vector<DecelMpcParams> stop_params_;
+  std::vector<std::unique_ptr<MpcSegmentCore>> catch_cores_;
+  std::vector<MpcSegmentCoreInput> catch_inputs_;
+  std::vector<MpcSegmentCoreResult> catch_results_;
+  std::vector<MpcSegmentCoreParams> catch_params_;
+  std::vector<MpcSegmentCoreParams> stop_params_;
   // Model order: the rating q̇_max, and the core's position box (read from
   // the core: the margin is min(m_q, half the range)).
   std::array<double, kMaxPlanNv> qd_max_{};
@@ -502,7 +506,7 @@ class DecelPlanner final : public SegmentPlanner {
   // first. A segment the RT last reported pending or following is never the
   // one evicted (MD-58): a burst of same-point re-solves cannot push it out.
   static constexpr int kRingSize = 8;
-  std::array<DecelPlanSnapshot, kRingSize> ring_{};
+  std::array<SegmentSnapshot, kRingSize> ring_{};
   int ring_n_{0};
   std::uint32_t ring_plan_id_{0};
   std::int64_t ring_t_c_ns_{0};

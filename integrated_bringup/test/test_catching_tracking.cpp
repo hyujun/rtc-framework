@@ -756,7 +756,7 @@ TEST_F(CatchingTrackingTest, DisarmingMidApproachRampsTheArmDownAndEndsInIdle) {
 }
 
 TEST_F(CatchingTrackingTest, TheStopStaysInsideTheBoxTheSolverWasGiven) {
-  // `JointSpaceDecelStep` documents its bounds as "the caller's box, already
+  // `JointSpaceStopStep` documents its bounds as "the caller's box, already
   // narrowed by limit_margin". Handing it the raw device limits instead lets
   // the ramp integrate out past the value CLIK was kept away from, and the
   // backend's clamp of that is invisible to the solver — the unattributable

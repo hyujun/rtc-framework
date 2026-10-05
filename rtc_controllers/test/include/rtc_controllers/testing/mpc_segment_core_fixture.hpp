@@ -31,7 +31,7 @@
 #include <utility>
 #include <vector>
 
-namespace rtc::testing::decel {
+namespace rtc::testing::mpc_segment_core {
 
 struct ArmModel {
   std::shared_ptr<const pinocchio::Model> model;
@@ -78,9 +78,9 @@ inline ArmModel RealArm7() {
   return LoadArm(DescriptionPath("iiwa7/urdf/iiwa7.urdf"), "ee_link", q, "real_7dof");
 }
 
-inline rtc::catching::DecelMpcLimits LimitsFromModel(const pinocchio::Model& m,
-                                                     double armature = 0.0) {
-  rtc::catching::DecelMpcLimits lim;
+inline rtc::catching::MpcSegmentCoreLimits LimitsFromModel(const pinocchio::Model& m,
+                                                           double armature = 0.0) {
+  rtc::catching::MpcSegmentCoreLimits lim;
   lim.q_min = m.lowerPositionLimit;
   lim.q_max = m.upperPositionLimit;
   lim.qd_max = m.velocityLimit;
@@ -89,8 +89,8 @@ inline rtc::catching::DecelMpcLimits LimitsFromModel(const pinocchio::Model& m,
   return lim;
 }
 
-inline rtc::catching::DecelMpcInput RestInput(const Eigen::VectorXd& q0) {
-  rtc::catching::DecelMpcInput in;
+inline rtc::catching::MpcSegmentCoreInput RestInput(const Eigen::VectorXd& q0) {
+  rtc::catching::MpcSegmentCoreInput in;
   in.q0 = q0;
   in.qd0 = Eigen::VectorXd::Zero(q0.size());
   in.qdd0 = Eigen::VectorXd::Zero(q0.size());
@@ -98,8 +98,8 @@ inline rtc::catching::DecelMpcInput RestInput(const Eigen::VectorXd& q0) {
 }
 
 // The next cycle's reference: the solution just returned.
-inline void UseAsReference(const rtc::catching::DecelMpcResult& r,
-                           rtc::catching::DecelMpcInput& in) {
+inline void UseAsReference(const rtc::catching::MpcSegmentCoreResult& r,
+                           rtc::catching::MpcSegmentCoreInput& in) {
   in.q_ref = r.q;
   in.qd_ref = r.qd;
   in.qdd_ref = r.qdd;
@@ -128,4 +128,4 @@ inline void RecordMicros(const std::string& key, double us) {
   ::testing::Test::RecordProperty(key, static_cast<int>(std::lround(us)));
 }
 
-}  // namespace rtc::testing::decel
+}  // namespace rtc::testing::mpc_segment_core

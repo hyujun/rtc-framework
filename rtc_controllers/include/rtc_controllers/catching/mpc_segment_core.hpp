@@ -8,7 +8,7 @@
 //
 // Replaces nothing yet — the closed-form DECEL (decel_target.hpp) and the
 // QP-independent joint stop stay the safety nets (MD-11). This
-// is the numeric core the planner thread calls through DecelPlanner
+// is the numeric core the planner thread calls through MpcSegmentPlanner
 // (mpc_segment_planner.hpp, E1-F03); it knows no ROS, no controller, no robot.
 //
 // ── Problem ───────────────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@
 //    wrongly sized result instead of resizing it.
 #pragma once
 
-#include "rtc_controllers/catching/trajectory.hpp"  // kMaxDecelNodes, kMaxPlanNv
+#include "rtc_controllers/catching/trajectory.hpp"  // kMaxSegmentNodes, kMaxPlanNv
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
 
@@ -144,12 +144,12 @@
 namespace rtc::catching {
 
 /// Node capacity of the core: N = n_pre + n_nodes ≤ kMaxMpcNodes. Separate from
-/// the payload's kMaxDecelNodes (trajectory.hpp), which still bounds the stop
+/// the payload's kMaxSegmentNodes (trajectory.hpp), which still bounds the stop
 /// segment (n_nodes) and the number of blocks — what a published segment may
 /// carry is the planner's decision, not this core's.
 inline constexpr int kMaxMpcNodes = 32;
 
-enum class DecelMpcReason : std::uint8_t {
+enum class MpcSegmentCoreReason : std::uint8_t {
   kNone = 0,
   kNotInitialized,
   kParamsInvalid,
@@ -175,17 +175,17 @@ enum class DecelMpcReason : std::uint8_t {
 };
 
 /// @brief Stable name for logs and test messages.
-[[nodiscard]] const char* DecelMpcReasonName(DecelMpcReason reason) noexcept;
+[[nodiscard]] const char* MpcSegmentCoreReasonName(MpcSegmentCoreReason reason) noexcept;
 
 /// Tuning of the stop problem. Every field is validated by Init().
-struct DecelMpcParams {
-  int n_nodes{12};     ///< stop-segment nodes N_s (≤ kMaxDecelNodes); N = n_pre + n_nodes
+struct MpcSegmentCoreParams {
+  int n_nodes{12};     ///< stop-segment nodes N_s (≤ kMaxSegmentNodes); N = n_pre + n_nodes
   double dt{0.05};     ///< Δ_s [s]; n_nodes·Δ_s is the stopping time (header note)
   int n_pre{0};        ///< pre-catch nodes (0 = the stop segment only); N ≤ kMaxMpcNodes
   double dt_pre{0.0};  ///< Δ_a [s], > 0 when n_pre > 0
-  int n_blocks{6};     ///< B (3 ≤ B ≤ min(N, kMaxDecelNodes))
-  std::array<int, kMaxDecelNodes> block_sizes{1, 1, 2, 2, 3, 3};  ///< first B used, Σ = N
-  Eigen::VectorXd jerk_weight;                                    ///< R_j > 0 (n); empty = all 1
+  int n_blocks{6};     ///< B (3 ≤ B ≤ min(N, kMaxSegmentNodes))
+  std::array<int, kMaxSegmentNodes> block_sizes{1, 1, 2, 2, 3, 3};  ///< first B used, Σ = N
+  Eigen::VectorXd jerk_weight;                                      ///< R_j > 0 (n); empty = all 1
   /// Jerk scale [rad/s³]. NOT a pure preconditioner: the jerk cost is
   /// (u/u_scale)², so changing it re-weights jerk against w_Δ, w_⊥ and ρ_τ.
   double u_scale{1e3};
@@ -232,14 +232,14 @@ struct DecelMpcParams {
 };
 
 /// Joint limits in pinocchio velocity order (n each).
-struct DecelMpcLimits {
+struct MpcSegmentCoreLimits {
   Eigen::VectorXd q_min, q_max;  ///< [rad]; q_min ≤ q_max (equal allowed — a locked joint)
   Eigen::VectorXd qd_max;        ///< > 0 [rad/s]
   Eigen::VectorXd tau_max;       ///< > 0 [N·m]
   Eigen::VectorXd armature;      ///< ≥ 0 [kg·m²], ADDED to whatever armature the model carries
 };
 
-struct DecelMpcInput {
+struct MpcSegmentCoreInput {
   Eigen::VectorXd q0, qd0, qdd0;  ///< x_0 (n each)
   /// Linearisation reference x̄ (n × (N+1)); read only when reference_valid.
   Eigen::MatrixXd q_ref, qd_ref, qdd_ref;
@@ -268,7 +268,7 @@ struct DecelMpcInput {
   double gamma_ref{1.0};  ///< velocity cost target γ_ref·v̂_b, in (0, 1] (MD-53)
 };
 
-struct DecelMpcResult {
+struct MpcSegmentCoreResult {
   Eigen::MatrixXd q, qd, qdd;  ///< nodes, n × (N+1)
   Eigen::MatrixXd u;           ///< jerk, n × N [rad/s³]
   Eigen::MatrixXd slack;       ///< torque slack, n × N (column k−1 = node k), fraction of τ_max
@@ -281,7 +281,7 @@ struct DecelMpcResult {
   bool torque_evaluated{false};    ///< false when ρ_τ = 0 (rows off, tau_ratio_max not computed)
   bool presolved{false};           ///< this Solve ran the kinematic pre-solve
   bool valid{false};
-  DecelMpcReason reason{DecelMpcReason::kNotInitialized};
+  MpcSegmentCoreReason reason{MpcSegmentCoreReason::kNotInitialized};
   int qp_status{-1};  ///< proxsuite QPSolverOutput of the last QP (0 = solved)
   int iterations{0};  ///< main QP, its last run (pre-solve iterations in presolve_iterations)
   /// The warm main QP failed and was solved again from zero (header note);
@@ -301,24 +301,26 @@ struct DecelMpcResult {
   double solve_us{0.0};
 };
 
-class DecelMpc {
+class MpcSegmentCore {
  public:
-  DecelMpc() = default;
+  MpcSegmentCore() = default;
 
   /// @brief Build the problem for one arm (non-RT: copies the model, allocates).
   /// @param arm hand-locked arm model, pinocchio velocity order
   /// @param catch_frame frame for the w_⊥ term and the catch terms (validated
   ///        even when both are off); its +z is the approach axis
   /// @return kNone on success; the core stays uninitialised otherwise.
-  [[nodiscard]] DecelMpcReason Init(const pinocchio::Model& arm, pinocchio::FrameIndex catch_frame,
-                                    const DecelMpcParams& params, const DecelMpcLimits& limits);
+  [[nodiscard]] MpcSegmentCoreReason Init(const pinocchio::Model& arm,
+                                          pinocchio::FrameIndex catch_frame,
+                                          const MpcSegmentCoreParams& params,
+                                          const MpcSegmentCoreLimits& limits);
 
   /// @brief Size a result for this problem (non-RT).
-  void ResizeResult(DecelMpcResult& result) const;
+  void ResizeResult(MpcSegmentCoreResult& result) const;
 
   /// @brief Solve the stop problem from input.q0/qd0/qdd0 (RT-safe).
   /// @return result.valid. On failure the trajectory and slack are untouched.
-  [[nodiscard]] bool Solve(const DecelMpcInput& in, DecelMpcResult& out) noexcept;
+  [[nodiscard]] bool Solve(const MpcSegmentCoreInput& in, MpcSegmentCoreResult& out) noexcept;
 
   [[nodiscard]] bool IsInitialized() const noexcept { return initialized_; }
 
@@ -363,7 +365,7 @@ class DecelMpc {
   void AssembleTorqueRows() noexcept;
   void AssembleTorqueRowsDense() noexcept;
   void AssemblePerp() noexcept;
-  [[nodiscard]] DecelMpcReason LinearizeCatch() noexcept;
+  [[nodiscard]] MpcSegmentCoreReason LinearizeCatch() noexcept;
   void AssembleCatch() noexcept;
   void AccumulateNodeTerm(Eigen::Index k, const Eigen::Matrix<double, 3, Eigen::Dynamic>& a_q,
                           const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
@@ -372,15 +374,15 @@ class DecelMpc {
                                const Eigen::Matrix<double, 3, Eigen::Dynamic>* a_v,
                                const Eigen::Matrix3d& w, const Eigen::Vector3d& r) noexcept;
   void AssembleSlackVRows() noexcept;
-  void EvaluateCatch(DecelMpcResult& out) noexcept;
+  void EvaluateCatch(MpcSegmentCoreResult& out) noexcept;
   [[nodiscard]] bool AssembleBounds(tsid::QPData& qp, bool main) noexcept;
   void AssembleGradient(tsid::QPData& qp, bool main) noexcept;
-  [[nodiscard]] DecelMpcReason RunQp(tsid::QPData& qp, int& status, int& iterations) noexcept;
+  [[nodiscard]] MpcSegmentCoreReason RunQp(tsid::QPData& qp, int& status, int& iterations) noexcept;
   void ResetSolver() noexcept;
   void TrajectoryFromZ() noexcept;
 
   bool initialized_{false};
-  DecelMpcParams params_;
+  MpcSegmentCoreParams params_;
   int n_{0};
   int n_nodes_{0};  // N = n_pre + stop nodes
   int n_pre_{0};    // k_c
@@ -402,9 +404,9 @@ class DecelMpc {
   // with its own E (formulation §1.1, MD-49) gets its own instance of
   // these four members; the terms below read gains only through them.
   std::array<int, kMaxMpcNodes> block_of_node_{};
-  std::array<double, kMaxMpcNodes + 1> t_node_{};      // node instants from node 0 [s]
-  std::array<double, kMaxMpcNodes> dt_node_{};         // Δ_k of interval [k, k+1]
-  std::array<double, kMaxDecelNodes> block_weight_{};  // Σ_{k∈b} Δ_k/Δ_s
+  std::array<double, kMaxMpcNodes + 1> t_node_{};        // node instants from node 0 [s]
+  std::array<double, kMaxMpcNodes> dt_node_{};           // Δ_k of interval [k, k+1]
+  std::array<double, kMaxSegmentNodes> block_weight_{};  // Σ_{k∈b} Δ_k/Δ_s
 
   // ĝ: (N+1) × B per derivative order, scaled by u_scale.
   Eigen::MatrixXd gq_, gv_, ga_;
