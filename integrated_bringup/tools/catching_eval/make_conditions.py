@@ -33,6 +33,7 @@ from pathlib import Path
 
 import yaml
 
+from rtc_tools.utils.catching_keys import reject_renamed_keys
 from rtc_tools.utils.controller_config import load_controller_config
 
 REPO = str(Path(__file__).resolve().parents[3])
@@ -123,10 +124,11 @@ def main():
                 f"{cfg}/controllers/demo_catching_controller.yaml", config_key=CONTROLLER
             )[CONTROLLER]
             ctrl = shipped_ctrl["catching"]
+            reject_renamed_keys(ctrl, source=f"{cfg}/controllers/demo_catching_controller.yaml")
             ship = (
                 ctrl["prediction"]["dt_expected"],
                 ctrl["io"]["n_min"],
-                ctrl["planner"]["slice"]["dt"],
+                ctrl["planner"]["search"]["grid"]["slice"]["dt"],
             )
             assert ship == (0.05, 12, 0.05), (robot, ship)
             if cond == "L-50":
@@ -137,9 +139,12 @@ def main():
                 c = ov["integrated_rt_controller"]["ros__parameters"]["demo_catching_controller"][
                     "catching"
                 ]
+                reject_renamed_keys(c, source=f"{cfg}/sim_overlays/catch_lead_on.yaml")
                 c.setdefault("prediction", {})["dt_expected"] = step_s
                 c.setdefault("io", {})["n_min"] = n_min
-                c.setdefault("planner", {}).setdefault("slice", {})["dt"] = step_s
+                c.setdefault("planner", {}).setdefault("search", {}).setdefault(
+                    "grid", {}
+                ).setdefault("slice", {})["dt"] = step_s
                 problems = unread(
                     ov["integrated_rt_controller"]["ros__parameters"]["demo_catching_controller"],
                     shipped_ctrl,

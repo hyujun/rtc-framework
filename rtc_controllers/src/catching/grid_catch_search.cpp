@@ -67,7 +67,7 @@ double GridCatchSearch::SwitchStep(const TrajectorySnapshot& traj, const Planner
   // the search budget of the cycle's start, plus two ticks of slack. Over
   // that window the followed ramp can start — γ̇ = γ̈ = 0 on the snapshot's
   // tick is not the adoption's (2026-09-23 /code-review) — so the bound is
-  // the worst over `planner.switch.samples` instants of the ramp the RT is running.
+  // the worst over `planner.search.grid.switch.samples` instants of the ramp the RT is running.
   const GammaProfile ramp{rt.ramp_g0, rt.ramp_gf, 0.0,
                           static_cast<double>(rt.ramp_t1_ns - rt.ramp_t0_ns) * kNsToS};
   const std::int64_t span = SecondsToNs(params_.budget_s + 2.0 * constants_.control_dt);

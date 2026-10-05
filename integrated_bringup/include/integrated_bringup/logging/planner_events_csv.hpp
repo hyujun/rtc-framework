@@ -21,13 +21,13 @@
 // first segment is withheld is not published (MD-62): that wake reads
 // search_valid 1, plan_valid 0, outcome held.
 //
-// The `decel_*` columns are the MPC segment planner's account of the wake (MPC
-// E1-F03 · E1-F08): which solve it was (`decel_kind`), how it ended
-// (`decel_outcome`, `decel_core_reason`), and the catch node as solved —
+// The `segment_*` columns are the MPC segment planner's account of the wake (MPC
+// E1-F03 · E1-F08): which solve it was (`segment_kind`), how it ended
+// (`segment_outcome`, `segment_core_reason`), and the catch node as solved —
 // position [m] and axis [rad] error, γ, ‖v_rel‖ [m/s], the velocity slack. A
 // value the wake did not compute is NaN (0 for a flag or a count).
-// `decel_k` is the grid index of node 0: −n_pre for a pre-catch grid point,
-// k ≥ 0 for the stop grid point t_c + k·Δ_s — `decel_kind` says which.
+// `segment_k` is the grid index of node 0: −n_pre for a pre-catch grid point,
+// k ≥ 0 for the stop grid point t_c + k·Δ_s — `segment_kind` says which.
 // A wake whose segment step only waited (off, up to date, past the replan
 // window) does not earn a row on its own.
 //
@@ -53,14 +53,16 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "rej_not_evaluated,budget_hit,search_us,ik_us_max,rank_mask,rank_uncertainty,"
         "rank_reach,rank_gamma,rank_commit_lead,rank_error_budget,score,lead_s,gamma_f,"
         "decision,sigma_l,rank_rollout,t_w,rollout_window_only,n_rollouts,rollout_us_max,"
-        "g_min,g_max,v_dir_max,max_catchable,decel_outcome,decel_k,decel_n_nodes,decel_seq,"
-        "decel_publish_ns,decel_x0_clamped,decel_from_segment,"
-        "decel_presolved,decel_cold_retry,decel_iterations,decel_qp_status,decel_core_reason,"
-        "decel_solve_us,decel_slack_max,decel_slack_terminal_max,decel_tau_ratio_max,"
-        "decel_kind,decel_cold_start,decel_solver_retried,decel_ref_clamped,decel_ref_scaled,"
-        "decel_ref_scale,decel_ref_shortfall,decel_x0_speed,decel_catch_pos_err,"
-        "decel_catch_axis_err,decel_catch_gamma,decel_catch_v_rel,decel_slack_v,"
-        "decel_speed_ratio_max,decel_w_p_fallback,decel_w_delta_scale,decel_source_seq\n";
+        "g_min,g_max,v_dir_max,max_catchable,segment_outcome,segment_k,segment_n_nodes,segment_seq,"
+        "segment_publish_ns,segment_x0_clamped,segment_x0_from_segment,"
+        "segment_presolved,segment_cold_retry,segment_iterations,segment_qp_status,segment_core_"
+        "reason,"
+        "segment_solve_us,segment_slack_max,segment_slack_terminal_max,segment_tau_ratio_max,"
+        "segment_kind,segment_cold_start,segment_solver_retried,segment_ref_clamped,segment_ref_"
+        "scaled,"
+        "segment_ref_scale,segment_ref_shortfall,segment_x0_speed,segment_catch_pos_err,"
+        "segment_catch_axis_err,segment_catch_gamma,segment_catch_v_rel,segment_slack_v,"
+        "segment_speed_ratio_max,segment_w_p_fallback,segment_w_delta_scale,segment_source_seq\n";
 }
 
 /// Whether the segment step did something worth a row on its own.
@@ -108,7 +110,7 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   const auto& d = r.segment;
   os << rtc::catching::SegmentOutcomeName(d.outcome) << ',' << d.k << ',' << d.n_nodes << ','
      << d.segment_seq << ',' << d.publish_ns << ',' << (d.x0_clamped ? 1 : 0) << ','
-     << (d.from_segment ? 1 : 0) << ',' << (d.presolved ? 1 : 0) << ',' << (d.cold_retry ? 1 : 0)
+     << (d.x0_from_segment ? 1 : 0) << ',' << (d.presolved ? 1 : 0) << ',' << (d.cold_retry ? 1 : 0)
      << ',' << d.iterations << ',' << d.qp_status << ','
      << rtc::catching::MpcSegmentCoreReasonName(d.core_reason) << ',' << d.solve_ns / 1000 << ','
      << d.slack_max << ',' << d.slack_terminal_max << ',' << d.tau_ratio_max << ',';

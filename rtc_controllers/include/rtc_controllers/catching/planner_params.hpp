@@ -2,14 +2,14 @@
 //
 // The `catching.planner.*` keys the runtime planner reads. Sibling of
 // `catching_params.hpp` (the G0-C validator subset) and
-// `catch_pose_ik_params.hpp` (`planner.ik.*` / `planner.catchability.*`), not
-// part of either: those two describe WHAT a catch pose is, this one describes
-// how the planner searches for one and how it ranks what it finds. Non-RT
+// `catch_pose_ik_params.hpp` (`planner.search.grid.ik.*` / `planner.search.grid.catchability.*`),
+// not part of either: those two describe WHAT a catch pose is, this one describes how the planner
+// searches for one and how it ranks what it finds. Non-RT
 // (`on_configure`).
 //
 // Keys join in the commit that first reads them (a parsed key nothing reads is
 // a key nobody notices is wrong): S6-A the thread keys, S6-B the search,
-// ranking, switching and freeze keys below, MPC E1-F03 `planner.decel_mpc.*`
+// ranking, switching and freeze keys below, MPC E1-F03 `planner.segment.mpc.*`
 // (the segment MPC's stop horizon, replan window and publish thresholds), MPC
 // E1-F08 its APPROACH–stop keys (`approach`, `budget`, `catch`).
 //
@@ -46,12 +46,12 @@ inline constexpr int kPlannerMaxIkCapacity = 40;
 inline constexpr std::size_t kPlannerMaxGammaGrid = 16;
 inline constexpr std::size_t kPlannerMaxWindowGrid = 8;
 
-/// Upper bound of `planner.switch.samples`. `SwitchStep` evaluates the followed
+/// Upper bound of `planner.search.grid.switch.samples`. `SwitchStep` evaluates the followed
 /// ramp once per sample on the planner thread for every switch check, so the
 /// count is a cost on the cycle budget, not only a resolution (default 9).
 inline constexpr int kSwitchSamplesMax = 64;
 
-/// Upper bound of `planner.decel_mpc.cost.w_perp` [1/m²]: the largest
+/// Upper bound of `planner.segment.mpc.cost.w_perp` [1/m²]: the largest
 /// stop-path weight the cores are tested to solve with (a stop core alone in
 /// test_catching_mpc_segment_core.cpp, the planner's catch and stop cores on both
 /// test arms in test_catching_approach_planner.cpp). The weight raises the
@@ -64,20 +64,23 @@ inline constexpr double kMpcSegmentStopPathWeightMax = 1e4;
 /// MpcSegmentCore each (MD-31). A capacity, not a default (the default k_max is 4).
 inline constexpr int kMaxMpcSegmentReplans = 8;
 
-/// `planner.decel_mpc.*` (MPC plan E1-F03 · E1-F08, MD-24 · MD-31 · MD-33 ·
+/// `planner.segment.mpc.*` (MPC plan E1-F03 · E1-F08, MD-24 · MD-31 · MD-33 ·
 /// MD-54 – MD-64, MD-91). The segment MPC's settings the planner owns. Every
 /// design field of the core's MpcSegmentCoreParams comes from YAML — the grid
 /// (`horizon.*`, `approach.n_pre_max` / `dt_pre_s`), `eta_tau`, `m_q`, the
 /// catch weights and the relative-velocity slack (`catch.*`), the cost scalars
 /// (`cost.*`), the trust region and the rest tolerance (`linearization.*`) and
 /// the solver tolerances (`solver.*`); the shipped values are the core's own
-/// defaults. η_v is `planner.gamma.eta_v` (no second key for one margin).
+/// defaults. Two of them are numbers the grid search has a key of its own for
+/// — `v_eps` here, and `eta_v` (ParseCatchingParams reads it, with `mode` and
+/// `switch_margin`): a function keeps every value it is designed with under its
+/// own map, so the two can be tuned apart (#711).
 /// What stays in code is not a design value: the solver's preconditioner and
 /// KKT backend (the RT no-allocation and infeasibility verdict rely on them),
 /// the test-only `reference_assembly`, and the capacities.
 struct MpcSegmentPlannerParams {
   // There is no `enabled`: the planner solves these segments exactly when
-  // `supervisor.decel.mode` is mpc. That needs `planner.enabled` (the binding
+  // `planner.segment.mode` is mpc. That needs `planner.enabled` (the binding
   // parks the pair otherwise) and a pre-catch grid (`approach.n_pre_max` ≥ 1).
   /// `horizon.n_nodes` N_s and `horizon.dt_s` Δ_s: N_s·Δ_s IS the stopping
   /// time (MD-21). The default 14 × 0.025 = 0.35 s is E1-F03's (MD-24); the
@@ -96,6 +99,10 @@ struct MpcSegmentPlannerParams {
   double eta_tau{0.7};
   /// `m_q` [rad] — position margin inside the joint limits.
   double m_q{0.05};
+  /// `v_eps` [m/s] — the ball speed below which its direction of travel is
+  /// undefined: a solve that needs the direction is withheld (> 0). The mpc
+  /// segment planner's own floor; the search IK has `planner.search.grid.ik.v_eps`.
+  double v_eps{1e-6};
   /// `publish.slack_max` / `publish.slack_terminal_max` — the largest torque
   /// slack (fraction of τ_max) a published segment may carry, over nodes 1..N
   /// and at node N (MD-33). Both 0.1 until E1-F06 tightens the terminal one.
@@ -109,7 +116,7 @@ struct MpcSegmentPlannerParams {
   /// with (MD-54: 6). One catch core per count 1..n_pre_max is built at
   /// configure time (MD-64). 0 = no pre-catch grid: a plan is published only
   /// with a segment that starts before t_c, so the MPC segment planner refuses to
-  /// configure and `supervisor.decel.mode: mpc` parks (MD-70).
+  /// configure and `planner.segment.mode: mpc` parks (MD-70).
   int n_pre_max{0};
   /// `approach.dt_pre_s` [s] — the pre-catch spacing Δ_pre (MD-54), a whole
   /// number of nanoseconds.
@@ -240,7 +247,7 @@ struct ScoreWeights {
   double w_late{0.0};   ///< (t_k,max − t_k): > 0 prefers a late catch
   double w_gamma{5.0};  ///< −γ_f: > 0 prefers a soft catch
   /// Added once per failed RANK gate (decision D, 2026-09-23). An invented key
-  /// (`planner.score.penalty`): the decision fixes the rule, not the size. It
+  /// (`planner.search.grid.score.penalty`): the decision fixes the rule, not the size. It
   /// must dominate the continuous terms or a failed gate is a rounding error.
   double penalty{10.0};
 };
@@ -251,7 +258,7 @@ struct PlannerParams {
   bool enabled{false};
   /// `planner.wake_timeout_s` [s] (decision H). Also the thread's period.
   double wake_timeout_s{0.05};
-  /// `planner.budget_s` [s] — one cycle's compute budget (R-2).
+  /// `planner.search.grid.budget_s` [s] — one cycle's compute budget (R-2).
   double budget_s{0.020};
   /// `planner.wait_pose` [rad] — IK seed, ARM joint (device) order. 0 = absent.
   std::array<double, kMaxPlanNv> wait_pose{};
@@ -271,30 +278,30 @@ struct PlannerParams {
   /// `planner.sub_model` — the robot config's `urdf.sub_models` entry that
   /// reaches the catch frame's parent (R-3). Empty = unset.
   std::string sub_model;
-  /// `planner.max_ik` — IK candidates per cycle after the pre-filter (R-2).
+  /// `planner.search.grid.max_ik` — IK candidates per cycle after the pre-filter (R-2).
   int max_ik{8};
-  /// `planner.slice.dt` [s] — candidate spacing; the vision grid is thinned to
+  /// `planner.search.grid.slice.dt` [s] — candidate spacing; the vision grid is thinned to
   /// it (never interpolated at S6-B: L3 §5.3 "격자를 그대로").
   double slice_dt{0.05};
-  /// `planner.slice.t_lead_min` [s]; NaN = "equal to freeze.T_freeze".
+  /// `planner.search.grid.slice.t_lead_min` [s]; NaN = "equal to freeze.T_freeze".
   double slice_t_lead_min{std::numeric_limits<double>::quiet_NaN()};
-  /// `planner.slice.t_max` [s] — the latest candidate, from now.
+  /// `planner.search.grid.slice.t_max` [s] — the latest candidate, from now.
   double slice_t_max{0.95};
-  /// `planner.time.margin` [s] (§4.3).
+  /// `planner.search.grid.time.margin` [s] (§4.3).
   double time_margin{0.03};
-  /// `planner.n_settle` — snapshots to skip after a track change (§4.4).
+  /// `planner.search.grid.n_settle` — snapshots to skip after a track change (§4.4).
   int n_settle{3};
-  /// `planner.unc.kappa_sigma` (§4.4).
+  /// `planner.search.grid.unc.kappa_sigma` (§4.4).
   double kappa_sigma{0.3};
-  /// `planner.gamma.margin` [m/s] (§4.5).
+  /// `planner.search.grid.gamma.margin` [m/s] (§4.5).
   double gamma_margin{0.1};
-  /// `planner.gamma.unit_speed_damping` — λ of the DLS unit-speed solve behind
+  /// `planner.search.grid.gamma.unit_speed_damping` — λ of the DLS unit-speed solve behind
   /// v_dir,max (§4.5), in (0, 1]. The offline map reads the same key
   /// (catch_gate_map) so the two cannot differ.
   double unit_speed_damping{1e-3};
-  /// The rollout (§4.8, S6-C): `planner.gamma.grid` (γ_f candidates),
+  /// The rollout (§4.8, S6-C): `planner.search.grid.gamma.grid` (γ_f candidates),
   /// `window_grid` [s] (T_w candidates), `eta_a`, `eps_term` [m], and the
-  /// screening step `planner.rollout.dt_coarse` [s] (invented key: §4.8 left
+  /// screening step `planner.search.grid.rollout.dt_coarse` [s] (invented key: §4.8 left
   /// the coarse-to-fine method to S6.3).
   std::array<double, kPlannerMaxGammaGrid> gamma_grid{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6};
   std::size_t gamma_grid_n{7};
@@ -303,31 +310,31 @@ struct PlannerParams {
   double eta_a{0.8};
   double eps_term{0.002};
   double rollout_dt_coarse{0.01};
-  /// `planner.budget.*` (§4.6). σ_trk and δ are 0 until measured (S10).
+  /// `planner.search.grid.budget.*` (§4.6). σ_trk and δ are 0 until measured (S10).
   double n_sigma{2.0};
   double sigma_trk{0.0};
   double clock_err{0.0};
-  /// `planner.hand.d_eff` / `r_cap` [m] — the γ window's and the budget's hand
+  /// `planner.search.grid.hand.d_eff` / `r_cap` [m] — the γ window's and the budget's hand
   /// constants (first runtime consumer). NaN = unset.
   double d_eff{std::numeric_limits<double>::quiet_NaN()};
   double r_cap{std::numeric_limits<double>::quiet_NaN()};
-  /// `planner.switch.*` (§4.7). `eta_jump`: the fraction of the reference's
+  /// `planner.search.grid.switch.*` (§4.7). `eta_jump`: the fraction of the reference's
   /// `a_max` a switch may step u_des by (decision ⑥, 2026-09-23 — replaces the
   /// distance limits `e_jump_max` / `ed_jump_max`, which the parser refuses).
   double switch_delta_j{0.1};
   double switch_eta_jump{0.25};
-  /// `planner.switch.samples` in [2, kSwitchSamplesMax] — instants of the followed ramp the §4.7
-  /// step bound is taken the worst over (the code divides by samples − 1).
+  /// `planner.search.grid.switch.samples` in [2, kSwitchSamplesMax] — instants of the followed ramp
+  /// the §4.7 step bound is taken the worst over (the code divides by samples − 1).
   int switch_samples{9};
   /// `planner.freeze.T_freeze` [s] (decision G). NaN = unset.
   double t_freeze{std::numeric_limits<double>::quiet_NaN()};
-  /// `planner.score.*` (§4.10 + decision D).
+  /// `planner.search.grid.score.*` (§4.10 + decision D).
   ScoreWeights score{};
-  /// `planner.workspace.catch_box` (decision I). `set` false = unset.
+  /// `planner.search.grid.workspace.catch_box` (decision I). `set` false = unset.
   CatchBox catch_box{};
 
   // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────
-  /// `planner.decel_mpc.*`. Absent = the defaults.
+  /// `planner.segment.mpc.*`. Absent = the defaults.
   MpcSegmentPlannerParams mpc_segment{};
 
   /// The candidate lead floor actually used: t_lead_min, or T_freeze.
@@ -341,7 +348,7 @@ struct PlannerParams {
 /// defaults. Throws `std::invalid_argument` (and only that) on a present but
 /// malformed key: a non-map section, a non-bool flag, a number outside its L3
 /// §6 range, a `wait_pose` that is empty / non-finite / longer than
-/// `kMaxPlanNv`, a `catch_box` whose min exceeds its max, a `decel_mpc`
+/// `kMaxPlanNv`, a `catch_box` whose min exceeds its max, a `segment.mpc`
 /// horizon whose blocks do not sum to n_nodes, a Δ_s or Δ_pre that is not
 /// whole ns, a k_max whose replan patterns would drop below three blocks, or an
 /// n_pre_max whose pre-catch nodes or blocks would not fit next to the stop's.

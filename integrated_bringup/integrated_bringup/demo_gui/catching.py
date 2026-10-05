@@ -29,8 +29,8 @@ absent reference are different facts and only one of them is a measurement.
 
 Public surface (imported by app.py):
 - CATCHING_CONFIG_KEY, CATCHING_ENABLE_PARAM, CATCHING_STATE_TOPIC
-- CATCHING_DECEL_MODE_PARAM, DECEL_LAW_QUERY_PERIOD_S, DECEL_LAW_REPLY_TIMEOUT_S,
-  decel_law_query_due
+- CATCHING_SEGMENT_MODE_PARAM, SEGMENT_MODE_QUERY_PERIOD_S, SEGMENT_MODE_REPLY_TIMEOUT_S,
+  segment_mode_query_due
 - MODE_NAMES, REASON_NAMES, PLAN_REASON_NAMES
 - CatchingStatus
 """
@@ -53,13 +53,13 @@ CATCHING_ENABLE_PARAM = "catching.enable"
 # `mpc`). It is a parameter rather than a CatchingState field because the
 # message is frozen; it is declared only after a successful configure, so a
 # parked or unconfigured controller answers with an empty string.
-CATCHING_DECEL_MODE_PARAM = "supervisor.decel.mode"
+CATCHING_SEGMENT_MODE_PARAM = "planner.segment.mode"
 
 # Minimum spacing between reads of that parameter while it is still unknown.
-DECEL_LAW_QUERY_PERIOD_S = 2.0
+SEGMENT_MODE_QUERY_PERIOD_S = 2.0
 # A read with no reply after this long is taken as lost and asked again: a
 # service reply that never arrives leaves its future pending forever.
-DECEL_LAW_REPLY_TIMEOUT_S = 10.0
+SEGMENT_MODE_REPLY_TIMEOUT_S = 10.0
 
 # Relative to the controller's namespace — the controller publishes it under
 # its own node namespace rather than under a device group's, because it
@@ -157,28 +157,28 @@ _ALARM_MODES = frozenset({"ABORT_SAFE", "FAULT"})
 _NOT_A_REJECT = frozenset({"no_track"})
 
 
-def decel_law_query_due(
+def segment_mode_query_due(
     status: CatchingStatus,
     now_s: float,
     last_query_s: float | None,
     in_flight: bool,
 ) -> bool:
-    """Whether the GUI should ask the controller for its decel law now.
+    """Whether the GUI should ask the controller for its segment mode now.
 
     Throttled because a parked controller answers with an empty value forever:
     an unthrottled retry from the 200 ms refresh would send 5 requests/s
     indefinitely. Nothing is asked before the feed has been received once, and
     nothing once the law is cached. A read still `in_flight` blocks the next
-    one only until `DECEL_LAW_REPLY_TIMEOUT_S`: past that its reply is lost.
+    one only until `SEGMENT_MODE_REPLY_TIMEOUT_S`: past that its reply is lost.
     """
-    if status.feed.last_seen_s is None or status.decel_law is not None:
+    if status.feed.last_seen_s is None or status.segment_mode is not None:
         return False
     if last_query_s is None:
         return not in_flight
     waited_s = now_s - last_query_s
     if in_flight:
-        return waited_s >= DECEL_LAW_REPLY_TIMEOUT_S
-    return waited_s >= DECEL_LAW_QUERY_PERIOD_S
+        return waited_s >= SEGMENT_MODE_REPLY_TIMEOUT_S
+    return waited_s >= SEGMENT_MODE_QUERY_PERIOD_S
 
 
 def mode_name(value: int) -> str:
@@ -231,9 +231,9 @@ class CatchingStatus:
     armable: bool = False
     law_enabled: bool = False
     tick: int = 0
-    #: The controller's `supervisor.decel.mode`, once read; None = not read yet.
+    #: The controller's `planner.segment.mode`, once read; None = not read yet.
     #: Cached because the value is fixed at the node's first configure.
-    decel_law: str | None = None
+    segment_mode: str | None = None
 
     input_valid: bool = False
     input_stale: bool = True
@@ -306,12 +306,12 @@ class CatchingStatus:
     def update(self, msg, now_s: float) -> None:
         """Adopt one CatchingState. Duck-typed so tests need no ROS message."""
         # A feed that went silent and came back may be another controller
-        # process: the cached decel law is its predecessor's until read again.
+        # process: the cached segment mode is its predecessor's until read again.
         # (The tick check below catches a restart the gap did not show; this
         # one catches a restart whose first tick is ABOVE the last one seen —
         # a controller relaunched in the other mode and switched in later.)
         if self.feed.state(now_s) is FeedState.STALE:
-            self.decel_law = None
+            self.segment_mode = None
         self.feed.mark(now_s)
         prev_mode = self._prev_mode
         self.mode = int(msg.mode)
@@ -327,7 +327,7 @@ class CatchingStatus:
         # activation) restarted, so a cached law may belong to the previous
         # process and is read again. The first message has nothing to compare.
         if self._prev_tick is not None and new_tick < self._prev_tick:
-            self.decel_law = None
+            self.segment_mode = None
         self._prev_tick = new_tick
         self.tick = new_tick
 
@@ -457,7 +457,7 @@ class CatchingStatus:
         out = [
             f"mode: {mode_name(self.mode)}  reason: {reason_name(self.reason)}"
             f"  last attempt: {outcome_name(self.outcome)}  tick {self.tick}{feed_note}",
-            self._decel_law_line(),
+            self._segment_mode_line(),
             self._arm_line(),
             self._input_line(),
             self._plan_line(),
@@ -482,12 +482,12 @@ class CatchingStatus:
             return PLACEHOLDER
         return "ARMED" if self.requested_arm else "DISARMED"
 
-    def _decel_law_line(self) -> str:
-        if self.decel_law is None:
+    def _segment_mode_line(self) -> str:
+        if self.segment_mode is None:
             # Not read yet, or never declared: the controller mirrors the key
             # only once it has configured (a parked one answers with nothing).
-            return f"decel law: unknown ({CATCHING_DECEL_MODE_PARAM} not read)"
-        return f"decel law: {self.decel_law}"
+            return f"segment mode: unknown ({CATCHING_SEGMENT_MODE_PARAM} not read)"
+        return f"segment mode: {self.segment_mode}"
 
     def _arm_line(self) -> str:
         observed = "ARMED" if self.armed else "DISARMED"

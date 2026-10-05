@@ -407,12 +407,14 @@ def test_a_missing_box_key_is_refused_naming_the_key(tmp_path, arm):
 
 def _controller_with_damping(path: Path, damping) -> None:
     tree = yaml.safe_load(path.read_text())
-    tree[CONTROLLER]["catching"]["planner"] = {"gamma": {"unit_speed_damping": damping}}
+    tree[CONTROLLER]["catching"]["planner"] = {
+        "search": {"grid": {"gamma": {"unit_speed_damping": damping}}}
+    }
     path.write_text(yaml.safe_dump(tree))
 
 
 def test_the_dls_damping_comes_from_the_profile_key(tmp_path, arm):
-    """The C++ search damps its unit-speed solve with ``planner.gamma.unit_speed_damping``;
+    """The C++ search damps its unit-speed solve with ``planner.search.grid.gamma.unit_speed_damping``;
     the offline map reads the same key from the profile, and the CLI flag still overrides it."""
     argv = _write_run(tmp_path, arm)
     controller = Path(argv[argv.index("--controller-config") + 1])
@@ -456,7 +458,7 @@ def test_overlays_apply_in_the_order_given_leaf_by_leaf(tmp_path, arm):
         tmp_path / "a.yaml",
         {
             "robot": {"arm": {"qdd_max": [1.0] * 6}},
-            "planner": {"gamma": {"unit_speed_damping": 0.2}},
+            "planner": {"search": {"grid": {"gamma": {"unit_speed_damping": 0.2}}}},
         },
         node="integrated_rt_controller",
     )
@@ -484,7 +486,10 @@ def test_the_shipped_sim_yaml_as_overlay_gives_the_envelope_not_the_shipped_box(
 
 def test_an_overlay_moves_the_dls_damping(tmp_path, arm):
     argv = _write_run(tmp_path, arm)
-    overlay = _overlay(tmp_path / "ov.yaml", {"planner": {"gamma": {"unit_speed_damping": 0.07}}})
+    overlay = _overlay(
+        tmp_path / "ov.yaml",
+        {"planner": {"search": {"grid": {"gamma": {"unit_speed_damping": 0.07}}}}},
+    )
     assert cgm.main([*argv, "--overlay", str(overlay)]) == 0
     assert _summary(tmp_path)["dls_damping"] == 0.07
 
@@ -494,7 +499,7 @@ def test_a_bad_profile_damping_is_refused_naming_the_key(tmp_path, bad):
     path = tmp_path / "c.yaml"
     path.write_text(yaml.safe_dump({CONTROLLER: {"catching": {}}}))
     _controller_with_damping(path, bad)
-    with pytest.raises(SystemExit, match="planner.gamma.unit_speed_damping"):
+    with pytest.raises(SystemExit, match="planner.search.grid.gamma.unit_speed_damping"):
         cgm.load_unit_speed_damping(path, CONTROLLER)
 
 
@@ -621,3 +626,31 @@ def test_cli_refuses_a_map_whose_poses_do_not_match_this_model(tmp_path, arm):
     path.write_text("\n".join([",".join(head), *text[1:]]) + "\n")
     with pytest.raises(SystemExit, match="FK"):
         cgm.main(argv)
+
+
+# ── #711: a renamed key is refused, not read as the default ──────────────
+def test_a_profile_still_writing_the_old_damping_key_is_refused(tmp_path):
+    from rtc_tools.utils.catching_keys import RenamedCatchingKeyError
+
+    path = tmp_path / "c.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {CONTROLLER: {"catching": {"planner": {"gamma": {"unit_speed_damping": 0.05}}}}}
+        )
+    )
+    with pytest.raises(
+        RenamedCatchingKeyError, match="planner.gamma → catching.planner.search.grid.gamma"
+    ):
+        cgm.load_unit_speed_damping(path, CONTROLLER)
+    with pytest.raises(RenamedCatchingKeyError, match="planner.gamma"):
+        cgm.load_accel_box(path, CONTROLLER, 6)
+
+
+def test_an_overlay_still_writing_an_old_key_is_refused(tmp_path):
+    from rtc_tools.utils.catching_keys import RenamedCatchingKeyError
+
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump({CONTROLLER: {"catching": {}}}))
+    overlay = _overlay(tmp_path / "ov.yaml", {"planner": {"gamma": {"unit_speed_damping": 0.07}}})
+    with pytest.raises(RenamedCatchingKeyError, match="ov.yaml"):
+        cgm.load_unit_speed_damping(path, CONTROLLER, [overlay])

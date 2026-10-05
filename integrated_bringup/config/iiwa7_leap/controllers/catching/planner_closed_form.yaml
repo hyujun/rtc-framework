@@ -4,15 +4,14 @@
 # merges it into that file's tree; every key keeps its full path.
 #
 # v1's law: the L4 soft-catch reference the arm follows up to t_c, the constant
-# deceleration after it (L7 DECEL), and the rule for switching to a better
-# catch point mid-flight. Followed when `supervisor.decel.mode: closed_form`
-# (the main file).
+# deceleration after it (L7 DECEL). Followed when
+# `planner.segment.mode: closed_form` (the main file).
 #
-# Not all of it is closed_form-only:
-#   reference.*, supervisor.decel.a_dec  read under mpc as well — the search
-#       ranks its candidates by this law's rollout (MD-46)
-#   planner.switch.*                     closed_form only — under mpc the
-#       search is skipped while a plan is followed (MD-57)
+# The search ranks its candidates by this law's rollout under both modes
+# (MD-46), on its own copy of these five values
+# (planner.search.grid.reference.*, planner.search.grid.stop.a_dec in
+# search_grid.yaml). Under closed_form the copy must equal what is written
+# here, or the controller parks.
 demo_catching_controller:
   catching:
     # ── The L4 soft-catch reference (L4 §6, S5.3 consumes all four) ──────────
@@ -29,25 +28,12 @@ demo_catching_controller:
       # conservative end.
       a_max: 35.0
 
-    # ── Deceleration (L7 §6 `supervisor.decel.a_dec`, single-source key) ──────
-    # The constant deceleration of the closed_form DECEL target (L7 §4.3) and
-    # of the stopping point the search reserves behind each candidate (L3 §4.9).
+    # ── Deceleration (L7 §6 `supervisor.decel.a_dec`) ─────────────────────────
+    # The constant deceleration of the closed_form DECEL target (L7 §4.3). The
+    # stopping point the search reserves behind each candidate (L3 §4.9) reads
+    # its own copy, planner.search.grid.stop.a_dec.
     # 10 m/s^2 is the value the S3.5b gate map ran with, confirmed 2026-09-22
     # (#537). The validator requires a_dec <= reference.a_max.
     supervisor:
       decel:
         a_dec: 10.0
-
-    planner:
-      switch:
-        delta_J: 0.1
-        # A switch may step u_des by at most eta_jump * reference.a_max (L3 §4.7,
-        # decision 6 2026-09-23 — replaced e_jump_max/ed_jump_max, whose 10 mm
-        # refused every refresh). Ramp at rest, gamma 0: |dp_c| <= omega 10, a_max 35: 88 mm.
-        # Provisional until the sim remeasure.
-        eta_jump: 0.25
-        # Instants of the followed ramp the switch step bound is taken the worst
-        # over (L3 §4.7), in [2, 64]: the bound divides by samples - 1, and every
-        # sample is a ramp evaluation on the planner thread per switch check
-        # (kSwitchSamplesMax = 64 caps the cost; a larger value is refused).
-        samples: 9

@@ -1,6 +1,7 @@
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 
 #include "batch_csv.hpp"
+#include "rtc_controllers/catching/catching_params.hpp"
 
 #include <algorithm>
 #include <array>
@@ -203,6 +204,26 @@ pinocchio::FrameIndex ResolveCatchFrame(const pinocchio::Model& model,
   return id;
 }
 
+namespace {
+
+/// `tree` as found, unless it still writes a key that moved (#711): this judge
+/// reads the new paths only, so an old file would be judged on the in-code
+/// defaults under its own name — the case the controller parks on.
+CatchingTree RefuseRenamedKeys(CatchingTree tree, const std::string& source) {
+  const auto renamed = FindRenamedCatchingKeys(tree.node);
+  if (renamed.empty()) {
+    return tree;
+  }
+  std::string what =
+      "params file '" + source + "' (" + tree.path + ") still writes key(s) that were renamed:";
+  for (const RenamedCatchingKey& key : renamed) {
+    what += std::string(" '") + key.old_path + "' -> '" + key.new_path + "';";
+  }
+  throw std::invalid_argument(what + " rename them — the old paths are no longer read");
+}
+
+}  // namespace
+
 CatchingTree ResolveCatchingTree(const YAML::Node& root, const std::string& source) {
   const auto has_map = [](const YAML::Node& n, const char* key) {
     if (!n.IsMap()) {
@@ -219,15 +240,16 @@ CatchingTree ResolveCatchingTree(const YAML::Node& root, const std::string& sour
                                 "map — which one is the catching tree is ambiguous");
   }
   if (root_has_catching) {
-    return {root["catching"], "catching"};
+    return RefuseRenamedKeys({root["catching"], "catching"}, source);
   }
   if (root_has_planner) {
-    return {root, "<root>"};
+    return RefuseRenamedKeys({root, "<root>"}, source);
   }
   if (root.IsMap() && root.size() == 1) {
     const auto only = root.begin();
     if (only->first.IsScalar() && has_map(only->second, "catching")) {
-      return {only->second["catching"], only->first.Scalar() + ".catching"};
+      return RefuseRenamedKeys({only->second["catching"], only->first.Scalar() + ".catching"},
+                               source);
     }
   }
   throw std::invalid_argument(
@@ -243,22 +265,22 @@ std::string FormatCatchPoseIkOptions(const CatchPoseIkOptions& opt) {
   const auto integer = [&s](const char* key, int v) {
     s += std::string(key) + ' ' + std::to_string(v) + '\n';
   };
-  integer("planner.ik.max_iter", opt.max_iter);
-  num("planner.ik.eps_pos", opt.eps_pos);
-  num("planner.ik.alpha_max", opt.alpha_max);
-  num("planner.ik.rho", opt.rho);
-  num("planner.ik.sigma0", opt.sigma0);
-  num("planner.ik.lambda_max", opt.lambda_max);
-  num("planner.ik.dq_step_max", opt.dq_step_max);
-  num("planner.ik.mu", opt.mu);
-  num("planner.ik.qp_eps_abs", opt.qp_eps_abs);
-  integer("planner.ik.qp_max_iter", opt.qp_max_iter);
-  num("planner.ik.k_null", opt.k_null);
-  num("planner.ik.k_manip", opt.k_manip);
-  num("planner.ik.manip_grad_tol", opt.manip_grad_tol);
-  num("planner.ik.v_eps", opt.v_eps);
+  integer("planner.search.grid.ik.max_iter", opt.max_iter);
+  num("planner.search.grid.ik.eps_pos", opt.eps_pos);
+  num("planner.search.grid.ik.alpha_max", opt.alpha_max);
+  num("planner.search.grid.ik.rho", opt.rho);
+  num("planner.search.grid.ik.sigma0", opt.sigma0);
+  num("planner.search.grid.ik.lambda_max", opt.lambda_max);
+  num("planner.search.grid.ik.dq_step_max", opt.dq_step_max);
+  num("planner.search.grid.ik.mu", opt.mu);
+  num("planner.search.grid.ik.qp_eps_abs", opt.qp_eps_abs);
+  integer("planner.search.grid.ik.qp_max_iter", opt.qp_max_iter);
+  num("planner.search.grid.ik.k_null", opt.k_null);
+  num("planner.search.grid.ik.k_manip", opt.k_manip);
+  num("planner.search.grid.ik.manip_grad_tol", opt.manip_grad_tol);
+  num("planner.search.grid.ik.v_eps", opt.v_eps);
   num("fd_step", opt.fd_step);
-  s += std::string("planner.catchability.definition ") +
+  s += std::string("planner.search.grid.catchability.definition ") +
        (opt.definition == ManipDefinition::kArm6Row ? "arm_6row" : "arm_5row") + '\n';
   num("manipulability_min", opt.manipulability_min);
   return s;

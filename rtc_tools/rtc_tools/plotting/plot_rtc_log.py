@@ -45,10 +45,12 @@ from rtc_tools.plotting.io import (
     detect_log_type,
     detect_log_type_by_columns,
     load_log_csv,
+    normalize_log_columns,
     peek_csv_header,
     resolve_default_save_dir,
     select_run,
 )
+from rtc_tools.utils.catching_keys import MixedColumnNamesError
 
 # ── Main ──────────────────────────────────────────────────────────────────
 
@@ -179,7 +181,7 @@ def main():
     print(f"Loading ({log_type}): {args.csv_file}")
     try:
         df = load_log_csv(args.csv_file, log_type, run_id=args.run_id)
-    except UnknownRunIdError as e:
+    except (UnknownRunIdError, MixedColumnNamesError) as e:
         print(f"Error: {e}")
         sys.exit(1)
     except pd.errors.EmptyDataError:
@@ -189,6 +191,11 @@ def main():
     except pd.errors.ParserError as e:
         print(f'Warning: CSV parse error — retrying with on_bad_lines="warn": {e}')
         df = pd.read_csv(args.csv_file, on_bad_lines="warn")
+        try:
+            normalize_log_columns(df, args.csv_file)
+        except MixedColumnNamesError as mixed_err:
+            print(f"Error: {mixed_err}")
+            sys.exit(1)
         if df.empty:
             print(f"Error: No valid rows after skipping malformed lines: {args.csv_file}")
             sys.exit(1)

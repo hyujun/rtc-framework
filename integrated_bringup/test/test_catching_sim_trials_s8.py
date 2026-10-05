@@ -143,12 +143,12 @@ def _mirror(wait_pose):
         "reference.omega": 10.0,
         "reference.a_max": 21.0,
         "reference.v_max": 3.5,
-        "planner.gamma.eta_v": 0.9,
-        "planner.time.margin": 0.03,
+        "planner.search.grid.gamma.eta_v": 0.9,
+        "planner.search.grid.time.margin": 0.03,
         "robot.arm.qdd_max": [2.03] * 6,
         "prediction.dt_expected": 0.05,
         "io.n_min": 12,
-        "planner.slice.dt": 0.05,
+        "planner.search.grid.slice.dt": 0.05,
     }
 
 

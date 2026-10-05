@@ -31,6 +31,13 @@ from rtc_tools.analysis import (
     catching_decel as cd,
     catching_trials as ct,
 )
+from rtc_tools.utils.catching_keys import (
+    RENAMED_TRIALS_COLUMNS,
+    RENAMED_TRIALS_SUMMARY_KEYS,
+    OldToolOutputError,
+    normalize_mirror,
+    reject_old_output_names,
+)
 
 MARGIN = 0.10
 ALPHA = 0.025
@@ -103,12 +110,15 @@ def mode_log_verdict(mode_log):
 
 
 def kv_file(path):
+    """``name: value`` lines (a unit's ``mirror.txt``), the names under their current
+    spelling: a unit recorded before #711 carries the old mirror names, read through
+    the alias table; a file holding an old name and its new name is refused."""
     out = {}
     if path.is_file():
         for line in path.read_text().splitlines():
             k, _, v = line.partition(":")
             out[k.strip()] = v.strip()
-    return out
+    return normalize_mirror(out, source=str(path))
 
 
 def mirror_value(mirror, key):
@@ -145,6 +155,42 @@ def limit_check(q, qd, tau, lim):
 
 
 # ── one unit ─────────────────────────────────────────────────────────────────
+def reject_old_ct_outputs(unit, summ, ctdf, vec):
+    """Refuse a ``ct/`` that an older ``catching_trials`` / ``tc_vector`` wrote (the segment
+    lane's metrics said ``decel_*``): reading it would skip the lane silently."""
+    ct_dir = unit / "ct"
+    try:
+        reject_old_output_names(
+            [*summ, *summ.get("medians", {})],
+            {**RENAMED_TRIALS_COLUMNS, **RENAMED_TRIALS_SUMMARY_KEYS},
+            source=str(ct_dir / "catching_trials_summary.json"),
+            tool="catching_trials",
+        )
+        reject_old_output_names(
+            ctdf.columns,
+            RENAMED_TRIALS_COLUMNS,
+            source=str(ct_dir / "catching_trials.csv"),
+            tool="catching_trials",
+        )
+        if vec is not None:
+            reject_old_output_names(
+                vec.columns,
+                RENAMED_TRIALS_COLUMNS,
+                source=str(ct_dir / "vec.csv"),
+                tool="tc_vector",
+            )
+    except OldToolOutputError as err:
+        raise SystemExit(str(err)) from err
+    # A catching_trials from before the lane metrics wrote neither name: nothing above
+    # refuses it, and counting its aged segments as 0 would be the silent skip again.
+    if "segment_aged" not in ctdf.columns:
+        raise SystemExit(
+            f"{ct_dir / 'catching_trials.csv'}: no segment_aged column — written by a "
+            "catching_trials older than the segment lane's metrics; regenerate it with the "
+            "current tool"
+        )
+
+
 def load_unit(unit, cfg, overlay):
     unit = Path(unit)
     if (unit / "status").read_text().strip() != "DONE":
@@ -155,13 +201,14 @@ def load_unit(unit, cfg, overlay):
     dec = cd.analyse_unit(unit, unit / "session", cfg, overlays=[Path(overlay)])
     ctdf = pd.read_csv(unit / "ct" / "catching_trials.csv").set_index("idx")
     vec = pd.read_csv(unit / "ct" / "vec.csv") if (unit / "ct" / "vec.csv").is_file() else None
+    reject_old_ct_outputs(unit, summ, ctdf, vec)
     recs = json.loads((unit / "trials" / "trial_results.json").read_text())
     recs = recs["trials"] if isinstance(recs, dict) else recs
     rec = {int(r["idx"]): r for r in recs}
     ctl = unit / "session" / "controllers" / CTRL
     joints = summ["arm_joints"]
     arm = summ["arm_device"]
-    want = {"t_relative_s", "tick", "mode", "reason_name", "decel_event", "decel_rho"}
+    want = {"t_relative_s", "tick", "mode", "reason_name", "segment_event", "segment_rho"}
     want |= {f"plan_a_d_{a}" for a in "xyz"} | {f"q_cmd_{j}" for j in joints}
     want |= {f"q_meas_{j}" for j in joints}
     diag = ct._read_csv(ctl / "catching_diag.csv", usecols=lambda c: c in want)
@@ -304,30 +351,30 @@ def solve_block(units, arm_is_mpc):
     }
     sr = out["search"]
     sr["pass"] = None if sr["p99_us"] is None else sr["p99_us"] <= budget_us
-    if "decel_kind" in pe:
-        unknown = set(pe["decel_outcome"].dropna()) - POST_SOLVE - PRE_SOLVE
+    if "segment_kind" in pe:
+        unknown = set(pe["segment_outcome"].dropna()) - POST_SOLVE - PRE_SOLVE
         if unknown:
             raise SystemExit(
-                f"decel_outcome outside both lists: {sorted(unknown)} — analysis stops"
+                f"segment_outcome outside both lists: {sorted(unknown)} — analysis stops"
             )
-        solved = pe[pe["decel_outcome"].isin(POST_SOLVE)]
+        solved = pe[pe["segment_outcome"].isin(POST_SOLVE)]
         out["solve_us_sanity"] = {
-            "post_solve_zero": int((solved["decel_solve_us"] <= 0).sum()),
+            "post_solve_zero": int((solved["segment_solve_us"] <= 0).sum()),
             "pre_solve_nonzero": int(
-                (pe[pe["decel_outcome"].isin(PRE_SOLVE)]["decel_solve_us"] > 0).sum()
+                (pe[pe["segment_outcome"].isin(PRE_SOLVE)]["segment_solve_us"] > 0).sum()
             ),
         }
-        out["held"] = int(pe["decel_outcome"].isin(HELD).sum())
-        out["outcomes"] = pe["decel_outcome"].value_counts().to_dict()
-        firsts = {mirror_value(u["mirror"], "planner.decel_mpc.budget.first_s") for u in units}
-        replans = {mirror_value(u["mirror"], "planner.decel_mpc.budget.replan_s") for u in units}
+        out["held"] = int(pe["segment_outcome"].isin(HELD).sum())
+        out["outcomes"] = pe["segment_outcome"].value_counts().to_dict()
+        firsts = {mirror_value(u["mirror"], "planner.segment.mpc.budget.first_s") for u in units}
+        replans = {mirror_value(u["mirror"], "planner.segment.mpc.budget.replan_s") for u in units}
         for key, kinds, budgets_s in (("first", ("first",), firsts), ("replan", REPLAN, replans)):
-            v = solved[solved["decel_kind"].isin(kinds)]["decel_solve_us"]
+            v = solved[solved["segment_kind"].isin(kinds)]["segment_solve_us"]
             blk = {"n": int(len(v)), **{k: x for k, x in dist(v).items() if k != "n"}}
             if arm_is_mpc:
                 if len(budgets_s) != 1 or None in budgets_s:
                     raise SystemExit(
-                        f"decel budget {key} differs or missing in mirrors: {budgets_s}"
+                        f"segment budget {key} differs or missing in mirrors: {budgets_s}"
                     )
                 blk["budget_us"] = budgets_s.pop() * 1e6
                 blk["p99_us"] = nearest_rank(v, 0.99)
@@ -344,10 +391,10 @@ def replan_block(units):
     rho, switches, refused, aged = [], 0, 0, 0
     for u in units:
         d = u["diag"]
-        if "decel_event" not in d:
+        if "segment_event" not in d:
             return None
         m = d["mode"].to_numpy(int)
-        ev = d["decel_event"].to_numpy(int)
+        ev = d["segment_event"].to_numpy(int)
         enter = np.r_[True, m[1:] != m[:-1]]
         trial = np.cumsum(enter & (m == ct.MODE_APPROACH))
         sw = np.flatnonzero(ev == EVENT_SWITCHED)
@@ -355,10 +402,9 @@ def replan_block(units):
             pd.Series(trial[sw]).duplicated().to_numpy()
         )  # a trial's first switch is not a replan
         switches += int(later.sum())
-        rho += list(d["decel_rho"].to_numpy(float)[sw][later])
+        rho += list(d["segment_rho"].to_numpy(float)[sw][later])
         refused += int(np.sum(ev == EVENT_GATE_REFUSED))
-        if "decel_aged" in u["ct"]:
-            aged += int(pd.to_numeric(u["ct"]["decel_aged"], errors="coerce").fillna(0).sum())
+        aged += int(pd.to_numeric(u["ct"]["segment_aged"], errors="coerce").fillna(0).sum())
     return {
         "replan_switches": switches,
         "gate_refused": refused,

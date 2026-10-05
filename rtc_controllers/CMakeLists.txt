@@ -68,10 +68,10 @@ add_library(rtc_controllers STATIC
   # yaml-cpp parser, non-RT, called once at configure time — plus a fixed-
   # capacity, allocation-free ValidateCatchingParams() (L0 §5.3, §9 G0-C).
   src/params/catching_params.cpp
-  # dynamic_catching S3.5a: the `planner.ik.*` / `planner.catchability.*` half
+  # dynamic_catching S3.5a: the `planner.search.grid.ik.*` / `planner.search.grid.catchability.*` half
   # of the schema, producing the CatchPoseIkOptions S1.9 left without a parser.
   # Sibling of catching_params.cpp, not part of it — the G0-C validator subset
-  # declares planner.ik.* out of its scope. Strict on unknown keys under the
+  # declares planner.search.grid.ik.* out of its scope. Strict on unknown keys under the
   # section it wholly owns; retired keys are reported, as elsewhere in params/.
   src/params/catch_pose_ik_params.cpp
   # dynamic_catching S1.9: 5-row catch-pose IK + the catchability gate
@@ -538,10 +538,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_catching_params test/test_catching_params.cpp)
   target_link_libraries(test_catching_params rtc_controllers)
 
-  # Catch-pose IK schema (S3.5a): every planner.ik.* / planner.catchability.*
+  # Catch-pose IK schema (S3.5a): every planner.search.grid.ik.* / planner.search.grid.catchability.*
   # key reaches CatchPoseIkOptions, an absent section resolves to the struct's
   # own defaults (which is also how the doc-vs-code default agreement is
-  # pinned), and a typo under planner.ik is refused rather than defaulted.
+  # pinned), and a typo under planner.search.grid.ik is refused rather than defaulted.
   # Model-free — the parser touches no URDF and no solver.
   # dynamic_catching MPC E1-F01 (#627): closed-form jerk segment (header-only).
   ament_add_gtest(test_catching_jerk_segment test/test_catching_jerk_segment.cpp)
@@ -569,7 +569,7 @@ if(BUILD_TESTING)
   # dynamic_catching MPC E1-F07 (#660): the pre-catch grid and the catch terms
   # of the same core. A separate binary — the malloc gate is one TU per binary,
   # and this suite's timing table needs its own timeout: a smoke by default,
-  # the full 200-sample table (plan MD-51) with RTC_DECEL_MPC_TIMING_FULL=1,
+  # the full 200-sample table (plan MD-51) with RTC_MPC_SEGMENT_CORE_TIMING_FULL=1,
   # which takes several minutes. Same three allocation sensors and the same arm
   # fixtures (mpc_segment_core_fixture.hpp) as the E1-F01 suite above.
   ament_add_gtest(test_catching_mpc_segment_core_approach
@@ -594,7 +594,7 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_node_follower PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching MPC E1-F03 (#629): the planner.decel_mpc keys, and (the
+  # dynamic_catching MPC E1-F03 (#629): the planner.segment.mpc keys, and (the
   # second target) the RT's segment admission / switch rules. Pure functions —
   # no model, no solver. The MPC segment planner itself is
   # test_catching_approach_planner / _cycle below.

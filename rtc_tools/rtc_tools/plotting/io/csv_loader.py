@@ -15,6 +15,8 @@ says so loudly. Files without the column (archived sessions) load as one run.
 import csv
 import re
 
+from rtc_tools.utils.catching_keys import column_renames
+
 
 class LegacyCsvError(ValueError):
     """Raised when a CSV's header column count does not match its data rows."""
@@ -76,11 +78,11 @@ def _check_header_matches_data(filepath: str) -> None:
 # column, but that one is an integer enum code that pandas already reads as
 # numeric dtype, so listing the name here is a no-op for that file (only
 # object-dtype columns are coerced below).
-# `decel_outcome`/`decel_core_reason`/`decel_kind` are planner_events.csv's
+# `segment_outcome`/`segment_core_reason`/`segment_kind` are planner_events.csv's
 # SegmentOutcomeName / MpcSegmentCoreReasonName / SegmentKindName text. They are NOT
 # optional here: under pandas 2.x an object column outside this set goes through
 # to_numeric(errors="coerce"), so a column whose values are all "off"/"none"
-# (the decel planner disabled) turns into all-NaN and every `!= "off"` filter
+# (the segment planner disabled) turns into all-NaN and every `!= "off"` filter
 # downstream silently selects nothing.
 _STR_COLS = {
     "goal_type",
@@ -90,9 +92,9 @@ _STR_COLS = {
     "reason_name",
     "outcome",
     "decision",
-    "decel_outcome",
-    "decel_core_reason",
-    "decel_kind",
+    "segment_outcome",
+    "segment_core_reason",
+    "segment_kind",
     "timestamp",
 }
 
@@ -230,6 +232,17 @@ def select_run(df, filepath, run_id=None):
     return out
 
 
+def normalize_log_columns(df, filepath):
+    """``df`` with the old (`decel_*`) column names of the catching CSVs renamed to the
+    current ones, in place; a header that mixes old and new names raises
+    ``rtc_tools.utils.catching_keys.MixedColumnNamesError``. The plotters only know the
+    current names, so this is the one point a recorded file's names are translated."""
+    renames = column_renames(df.columns, source=str(filepath))
+    if renames:
+        df.rename(columns=renames, inplace=True)
+    return df
+
+
 def load_log_csv(filepath, log_type, run_id=None):
     """Load a CSV by log_type.
 
@@ -240,12 +253,13 @@ def load_log_csv(filepath, log_type, run_id=None):
       - pd.errors.EmptyDataError on empty input.
       - LegacyCsvError if header column count is shorter than data rows.
       - UnknownRunIdError if an explicit run_id is not in the file.
+      - MixedColumnNamesError if the header holds an old and a new catching column name.
     Caller handles ParserError fallback if desired.
     """
     import pandas as pd
 
     _check_header_matches_data(filepath)
-    df = pd.read_csv(filepath)
+    df = normalize_log_columns(pd.read_csv(filepath), filepath)
     # Before coercion: the stamped names must be normalized while the frame
     # still has them, and the bare names are what _STR_COLS is keyed on.
     _normalize_mask_columns(df)

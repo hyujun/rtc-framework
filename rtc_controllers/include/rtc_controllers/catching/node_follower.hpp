@@ -20,7 +20,7 @@
 // guarantees; the RT caller feeds q̇_ref into the posture task by handing it
 // q_ref + q̇_ref / k_a as the goal (MD-36).
 //
-// WIRING. The catching controller under `supervisor.decel.mode: mpc`:
+// WIRING. The catching controller under `planner.segment.mode: mpc`:
 // Sample() on every tick that follows a segment — APPROACH through HOLD
 // (E1-F09).
 //

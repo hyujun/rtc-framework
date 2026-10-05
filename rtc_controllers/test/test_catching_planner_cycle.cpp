@@ -208,9 +208,11 @@ TEST(PlannerParams, ReadsEveryKey) {
 planner:
   enabled: true
   wake_timeout_s: 0.04
-  budget_s: 0.015
   wait_pose: [0.1, -0.2, 0.3]
-  ik: {max_iter: 40}
+  search:
+    grid:
+      budget_s: 0.015
+      ik: {max_iter: 40}
 )"));
   EXPECT_TRUE(p.enabled);
   EXPECT_DOUBLE_EQ(p.wake_timeout_s, 0.04);
@@ -228,9 +230,9 @@ TEST(PlannerParams, AMalformedKeyIsRefusedRatherThanDefaulted) {
            "planner: {wake_timeout_s: TBD}",
            "planner: {wake_timeout_s: 0.001}",
            "planner: {wake_timeout_s: 0.6}",
-           "planner: {budget_s: 0.0005}",
-           "planner: {budget_s: 0.06}",
-           "planner: {budget_s: .nan}",
+           "planner: {search: {grid: {budget_s: 0.0005}}}",
+           "planner: {search: {grid: {budget_s: 0.06}}}",
+           "planner: {search: {grid: {budget_s: .nan}}}",
            "planner: {wait_pose: []}",
            "planner: {wait_pose: 0.3}",
            "planner: {wait_pose: [0.1, x]}",
@@ -240,8 +242,8 @@ TEST(PlannerParams, AMalformedKeyIsRefusedRatherThanDefaulted) {
         << bad;
   }
   // The boundaries themselves are inside the range.
-  EXPECT_NO_THROW(static_cast<void>(
-      ParsePlannerParams(YAML::Load("planner: {wake_timeout_s: 0.005, budget_s: 0.05}"))));
+  EXPECT_NO_THROW(static_cast<void>(ParsePlannerParams(
+      YAML::Load("planner: {wake_timeout_s: 0.005, search: {grid: {budget_s: 0.05}}}"))));
 }
 
 TEST(PlannerParams, AWaitPoseLongerThanThePlanCapacityIsRefused) {
@@ -257,18 +259,20 @@ TEST(PlannerParams, ReadsTheSearchKeys) {
   const auto p = ParsePlannerParams(YAML::Load(R"(
 planner:
   sub_model: "arm_catch"
-  max_ik: 5
-  n_settle: 2
-  slice: {dt: 0.05, t_lead_min: 0.3, t_max: 0.9}
-  time: {margin: 0.02}
-  unc: {kappa_sigma: 0.4}
-  gamma: {margin: 0.2, eta_v: 0.9}
-  budget: {n_sigma: 2.5, sigma_trk: 0.001, clock_err: 0.002}
-  hand: {d_eff: 0.28, r_cap: 0.024, provisional: true}
-  switch: {delta_J: 0.2, eta_jump: 0.4}
   freeze: {T_freeze: 0.36}
-  score: {w_sigma: 2, w_t: 3, w_q: 0.5, w_late: 0.1, w_gamma: 4, penalty: 20}
-  workspace: {catch_box: {min: [0.1, -0.3, 0.2], max: [1.0, 0.3, 0.9]}}
+  search:
+    grid:
+      max_ik: 5
+      n_settle: 2
+      slice: {dt: 0.05, t_lead_min: 0.3, t_max: 0.9}
+      time: {margin: 0.02}
+      unc: {kappa_sigma: 0.4}
+      gamma: {margin: 0.2, eta_v: 0.9}
+      budget: {n_sigma: 2.5, sigma_trk: 0.001, clock_err: 0.002}
+      hand: {d_eff: 0.28, r_cap: 0.024, provisional: true}
+      switch: {delta_J: 0.2, eta_jump: 0.4}
+      score: {w_sigma: 2, w_t: 3, w_q: 0.5, w_late: 0.1, w_gamma: 4, penalty: 20}
+      workspace: {catch_box: {min: [0.1, -0.3, 0.2], max: [1.0, 0.3, 0.9]}}
 )"));
   EXPECT_EQ(p.sub_model, "arm_catch");
   EXPECT_EQ(p.max_ik, 5);
@@ -315,8 +319,8 @@ TEST(PlannerParams, ADecisionLeftOutOrTbdIsUnsetNotDefaulted) {
   // T_freeze, catch_box, d_eff/r_cap are decisions (L3 §6 TBD): absent or TBD
   // must read as UNSET so the binding parks, never as a plausible number.
   for (const char* yaml : {"planner: {enabled: true}",
-                           "planner: {freeze: {T_freeze: TBD}, workspace: {catch_box: TBD}, "
-                           "hand: {d_eff: TBD, r_cap: TBD}}"}) {
+                           "planner: {freeze: {T_freeze: TBD}, search: {grid: {workspace: "
+                           "{catch_box: TBD}, hand: {d_eff: TBD, r_cap: TBD}}}}"}) {
     const auto p = ParsePlannerParams(YAML::Load(yaml));
     EXPECT_TRUE(std::isnan(p.t_freeze)) << yaml;
     EXPECT_TRUE(std::isnan(p.LeadMin())) << yaml << ": t_lead_min falls back to T_freeze";
@@ -331,21 +335,21 @@ TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
   for (const char* bad : {
            "planner: {sub_model: TBD}",
            "planner: {sub_model: ''}",
-           "planner: {max_ik: 0}",
-           "planner: {max_ik: 41}",
-           "planner: {slice: {t_max: 2.0}}",
-           "planner: {slice: 3}",
+           "planner: {search: {grid: {max_ik: 0}}}",
+           "planner: {search: {grid: {max_ik: 41}}}",
+           "planner: {search: {grid: {slice: {t_max: 2.0}}}}",
+           "planner: {search: {grid: {slice: 3}}}",
            "planner: {freeze: {T_freeze: -0.1}}",
-           "planner: {workspace: {catch_box: {min: [0, 0, 0]}}}",
-           "planner: {workspace: {catch_box: {min: [1, 0, 0], max: [0, 1, 1]}}}",
-           "planner: {workspace: {catch_box: {min: [0, 0], max: [1, 1, 1]}}}",
-           "planner: {score: {penalty: -1}}",
-           "planner: {switch: {eta_jump: 0}}",
-           "planner: {switch: {eta_jump: 1.5}}",
+           "planner: {search: {grid: {workspace: {catch_box: {min: [0, 0, 0]}}}}}",
+           "planner: {search: {grid: {workspace: {catch_box: {min: [1, 0, 0], max: [0, 1, 1]}}}}}",
+           "planner: {search: {grid: {workspace: {catch_box: {min: [0, 0], max: [1, 1, 1]}}}}}",
+           "planner: {search: {grid: {score: {penalty: -1}}}}",
+           "planner: {search: {grid: {switch: {eta_jump: 0}}}}",
+           "planner: {search: {grid: {switch: {eta_jump: 1.5}}}}",
            // Retired by the acceleration budget (decision ⑥): refused, never
            // silently run on the eta_jump default.
-           "planner: {switch: {e_jump_max: 0.01}}",
-           "planner: {switch: {ed_jump_max: 0.05}}",
+           "planner: {search: {grid: {switch: {e_jump_max: 0.01}}}}",
+           "planner: {search: {grid: {switch: {ed_jump_max: 0.05}}}}",
        }) {
     EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
         << bad;
@@ -357,20 +361,21 @@ TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
 TEST(PlannerParams, SwitchSamplesIsBoundedAboveByName) {
   const auto message = [](int samples) -> std::string {
     try {
-      static_cast<void>(ParsePlannerParams(
-          YAML::Load("planner: {switch: {samples: " + std::to_string(samples) + "}}")));
+      static_cast<void>(ParsePlannerParams(YAML::Load(
+          "planner: {search: {grid: {switch: {samples: " + std::to_string(samples) + "}}}}")));
     } catch (const std::invalid_argument& e) {
       return e.what();
     }
     return {};
   };
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {switch: {samples: " +
-                                          std::to_string(rtc::catching::kSwitchSamplesMax) + "}}"))
-                .switch_samples,
-            rtc::catching::kSwitchSamplesMax);
+  EXPECT_EQ(
+      ParsePlannerParams(YAML::Load("planner: {search: {grid: {switch: {samples: " +
+                                    std::to_string(rtc::catching::kSwitchSamplesMax) + "}}}}"))
+          .switch_samples,
+      rtc::catching::kSwitchSamplesMax);
   const std::string why = message(rtc::catching::kSwitchSamplesMax + 1);
   ASSERT_FALSE(why.empty()) << "samples = kSwitchSamplesMax + 1 was accepted";
-  EXPECT_NE(why.find("'planner.switch.samples'"), std::string::npos) << why;
+  EXPECT_NE(why.find("'planner.search.grid.switch.samples'"), std::string::npos) << why;
   EXPECT_FALSE(message(1000000).empty());
 }
 

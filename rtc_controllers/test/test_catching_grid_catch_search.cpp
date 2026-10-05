@@ -174,7 +174,7 @@ TEST(PlannerUnitSpeed, MatchesAnIndependentDynamicSizeDls) {
   EXPECT_NEAR(v_hat.dot(r.jp_qdot_u), 1.0, 1e-3);
 }
 
-// `planner.gamma.unit_speed_damping` reaches the search's unit-speed
+// `planner.search.grid.gamma.unit_speed_damping` reaches the search's unit-speed
 // solve. The chosen candidate's v_dir,max (L3 §4.5) is recomputed here, from
 // its own posture and ball direction, with the damping the profile gave — and
 // the two dampings give different numbers, so a search that kept the constant

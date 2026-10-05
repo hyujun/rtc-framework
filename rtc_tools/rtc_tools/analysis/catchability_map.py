@@ -99,6 +99,7 @@ from rtc_tools.analysis.derive_accel_limits import (
     load_robot_params,
     resolve_urdf_text,
 )
+from rtc_tools.utils.catching_keys import reject_renamed_keys
 
 # ── Physical constants that are NOT ball parameters ───────────────────────────
 
@@ -2175,7 +2176,7 @@ def summarize_throws(
 
     ``manip_column`` selects which manipulability ranks the accepted candidates.
     It is a parameter because the GATE's definition is a YAML choice
-    (``planner.catchability.definition``) — but w₅ and w₆ are two measurements
+    (``planner.search.grid.catchability.definition``) — but w₅ and w₆ are two measurements
     of the SAME pose (C-3), so ranking by one and reporting both is
     coherent. A candidate whose chosen measure is invalid ranks last rather than
     being dropped.
@@ -2326,7 +2327,7 @@ JUDGE_DEFAULT_ALPHA_MAX_SOURCE = (
     "CatchPoseIkOptions::alpha_max (the judge's in-code provisional default; this tool "
     "MIRRORS it, it does not read it back from the binary)"
 )
-ALPHA_MAX_KEY = "planner.ik.alpha_max"
+ALPHA_MAX_KEY = "planner.search.grid.ik.alpha_max"
 TBD_LITERAL = "TBD"
 
 PARAMS_SHAPE_CATCHING_AT_ROOT = "`catching:` at the document root"
@@ -2414,16 +2415,19 @@ def catching_tree_from_params(doc: object, *, label: str = "params") -> tuple[Ma
 
 
 def alpha_max_from_catching_tree(tree: Mapping, *, label: str = "params") -> float | None:
-    """``planner.ik.alpha_max`` [rad], or None when the tree leaves it open.
+    """``planner.search.grid.ik.alpha_max`` [rad], or None when the tree leaves it open.
 
     "Open" is: the key (or a section above it) absent or null, the literal
     string ``TBD``, or a non-finite number — the same three the judge's parser
     treats as TBD before falling back to its in-code default. Any other
     non-number raises, as it does in the judge.
     """
+    # A tree that still writes the pre-#711 key would read as "open" below and
+    # the report would silently use the judge's default; refuse it instead.
+    reject_renamed_keys(tree, source=label)
     node: object = tree
     walked = ""
-    for key in ("planner", "ik"):
+    for key in ("planner", "search", "grid", "ik"):
         if node is None:
             return None
         if not isinstance(node, Mapping):
@@ -2460,7 +2464,7 @@ def resolve_alpha_max(
     """The ``alpha_max`` the JUDGE applied — one source of truth, named.
 
     The θ report is the evidence L3 §4.2 names for closing
-    ``planner.ik.alpha_max``, so it has to be computed against the bound the
+    ``planner.search.grid.ik.alpha_max``, so it has to be computed against the bound the
     judge actually accepted candidates under, not against a number this tool
     happens to default to.
 
@@ -2543,12 +2547,12 @@ def resolve_alpha_max(
 
 
 def judge_reported_alpha_max(judge: Path, params_path: Path | None) -> float | None:
-    """``planner.ik.alpha_max`` as the JUDGE resolves it, or None if it cannot say.
+    """``planner.search.grid.ik.alpha_max`` as the JUDGE resolves it, or None if it cannot say.
 
     Asks the binary itself (``--print-options``, with the same ``--params``)
     instead of trusting this module's reading of the file or its mirror of the
     in-code default. The capability is OPTIONAL: a judge that does not offer it,
-    exits non-zero, or prints no parseable ``planner.ik.alpha_max`` line gives
+    exits non-zero, or prints no parseable ``planner.search.grid.ik.alpha_max`` line gives
     None, and the caller records that the value was not cross-checked.
     """
     argv = [str(judge), "--print-options"]
@@ -2603,7 +2607,7 @@ def theta_report(
     """θ over accepted candidates, and how much of it sits near ``alpha_max``.
 
     θ is ‖e_a^C‖ [rad], the approach-axis cone angle at q*, and ``alpha_max`` is
-    the acceptance bound ``planner.ik.alpha_max`` (still provisional, and this
+    the acceptance bound ``planner.search.grid.ik.alpha_max`` (still provisional, and this
     distribution is the evidence meant to close it — L3 §4.2). It MUST be the
     bound the judge applied: take it from :func:`resolve_alpha_max`, never from
     a constant. Against a smaller number than the judge used,
@@ -3330,10 +3334,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--params",
         type=Path,
-        help="YAML with the `catching:` tree for the judge. planner.ik.alpha_max, when it is "
+        help="YAML with the `catching:` tree for the judge. planner.search.grid.ik.alpha_max, when it is "
         "set there, is also the bound the theta report is computed against. The judge does not "
         "compose `include:` fragments: for a split controller config pass the fragment that "
-        "holds planner.ik and planner.catchability (a shipped profile's "
+        "holds planner.search.grid.ik and planner.search.grid.catchability (a shipped profile's "
         "controllers/catching/search_grid.yaml)",
     )
     ap.add_argument("--judge", type=Path, help=f"path to {JUDGE_EXECUTABLE} (default: ament)")

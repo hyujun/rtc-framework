@@ -91,6 +91,7 @@ import numpy as np
 
 from rtc_tools.analysis import catching_arm_budget as ab, catching_trials as ct
 from rtc_tools.analysis.catching_hand_near import _is_true as _truth_cell
+from rtc_tools.utils.catching_keys import reject_renamed_keys
 
 TOOL = "catching_decel"
 SMOOTH_TICKS = ab.ACCEL_SMOOTH_TICKS
@@ -510,6 +511,7 @@ def composed_a_dec(
         if path is None:
             continue
         tree = ab._overlay_catching(path, controller)
+        reject_renamed_keys(tree, source=str(path))
         if ((tree.get("supervisor") or {}).get("decel") or {}).get("a_dec") is not None:
             source = name
         catching = ab._deep_merge(catching, tree)
@@ -613,7 +615,7 @@ def analyse_unit(
 
     unit, session, config_dir = Path(unit), Path(session), Path(config_dir)
     run_meta = unit / "trials" / "run_meta.json"
-    meta = json.loads(run_meta.read_text()) if run_meta.is_file() else {}
+    meta = ct.load_run_meta(run_meta) if run_meta.is_file() else {}
     profile = ct.load_profile(config_dir, controller, session)
     node = ct._catching_controllers(config_dir)[profile.controller]
     diag_path = (

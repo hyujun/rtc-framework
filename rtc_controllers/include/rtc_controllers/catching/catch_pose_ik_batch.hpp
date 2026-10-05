@@ -117,8 +117,13 @@ struct CatchingTree {
 ///
 /// @param root   the loaded file.
 /// @param source what to call the file in a message (its path).
+/// A tree that still writes a key #711 moved (kRenamedCatchingKeys) is refused
+/// too, naming the old and the new path: the parser reads the new paths only,
+/// so the old file would be judged on in-code defaults.
+///
 /// @throws std::invalid_argument naming `source` and the shapes looked for; also
-///         when both (a) and (c) match, since which tree was meant is a guess.
+///         when both (a) and (c) match, since which tree was meant is a guess,
+///         and when the tree found holds a renamed key.
 [[nodiscard]] CatchingTree ResolveCatchingTree(const YAML::Node& root, const std::string& source);
 
 /// The options as `key value` lines, doubles at round-trip precision — what

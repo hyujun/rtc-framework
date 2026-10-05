@@ -56,7 +56,7 @@ from ``devices.<arm>.joint_state_names``, the joint speed box from
 ``devices.<arm>.joint_limits.max_velocity`` composed the same way
 ``catching_arm_budget._device_limits`` composes it (``_base.yaml`` with
 ``sim.yaml``'s overlay of the rating when it has one — the launch composes
-them in that order), ``planner.gamma.eta_v`` and ``planner.wait_pose`` from
+them in that order), ``planner.search.grid.gamma.eta_v`` and ``planner.wait_pose`` from
 the catching controller YAML. Kinematics are ``catch_speed_budget.
 ArmKinematics`` built from the profile's URDF and extra ``catch_frame``; the
 rotor inertia argument it takes is irrelevant here (the LP/DLS speed solves
@@ -227,10 +227,12 @@ def load_search_setup(
 
     catching = node.get("catching") or {}
     planner = catching.get("planner") or {}
-    gamma = planner.get("gamma") or {}
+    gamma = ((planner.get("search") or {}).get("grid") or {}).get("gamma") or {}
     eta_v = gamma.get("eta_v")
     if eta_v is None:
-        raise SystemExit(f"{profile.controller}: catching.planner.gamma.eta_v is not set")
+        raise SystemExit(
+            f"{profile.controller}: catching.planner.search.grid.gamma.eta_v is not set"
+        )
     wait_pose = planner.get("wait_pose")
 
     urdf_text, urdf_label = resolve_urdf_text(profile.robot_params, urdf_override)

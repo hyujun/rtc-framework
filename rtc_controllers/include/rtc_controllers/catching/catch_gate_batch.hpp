@@ -9,7 +9,7 @@
 //
 // What this does NOT judge, and the python side must not pretend it does:
 //   - the γ rollout (§4.8) — no such function exists before S6.3;
-//   - membership of p_stop in the catch workspace — `planner.workspace.catch_box`
+//   - membership of p_stop in the catch workspace — `planner.search.grid.workspace.catch_box`
 //     is still TBD, so p_stop is reported and the caller applies its own bound;
 //   - q̇ᵘ itself. It arrives as an input column (the map's python produces it);
 //     the runtime planner produces it with `UnitSpeedJointVelocity` (S6-B), the
@@ -39,15 +39,16 @@ namespace rtc::catching {
 struct GateSettings {
   std::vector<double> qdot_max;   ///< joint velocity limits [rad/s], model joint order
   std::vector<double> qddot_max;  ///< joint acceleration box [rad/s²] (L3 §4.3, D-16)
-  double eta_v{0.0};          ///< `planner.gamma.eta_v`; applied to `qdot_max` AND `v_max` (S4.4)
-  double v_max{0.0};          ///< `reference.v_max` [m/s]
-  double d_eff{0.0};          ///< `planner.hand.d_eff` [m]
+  double eta_v{
+      0.0};  ///< `planner.search.grid.gamma.eta_v`; applied to `qdot_max` AND `v_max` (S4.4)
+  double v_max{0.0};          ///< `planner.search.grid.reference.v_max` [m/s]
+  double d_eff{0.0};          ///< `planner.search.grid.hand.d_eff` [m]
   double t_close_total{0.0};  ///< T_close,e2e + h/2 [s] (L3 §4.5)
-  double gamma_margin{0.0};   ///< `planner.gamma.margin` [m/s]
-  double a_dec{0.0};          ///< `supervisor.decel.a_dec` [m/s²]
+  double gamma_margin{0.0};   ///< `planner.search.grid.gamma.margin` [m/s]
+  double a_dec{0.0};          ///< `planner.search.grid.stop.a_dec` [m/s²]
   double first_plan_s{0.0};   ///< when the first plan exists, from release: T_det + L [s]
   double t_arm_s{0.0};        ///< arm command delay T_arm [s]
-  double t_margin_s{0.0};     ///< `planner.time.margin` [s]
+  double t_margin_s{0.0};     ///< `planner.search.grid.time.margin` [s]
 };
 
 /// Why `settings` cannot be used, or empty if it can. `nv` is the posture width

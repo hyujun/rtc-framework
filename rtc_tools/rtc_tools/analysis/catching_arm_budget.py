@@ -64,6 +64,7 @@ import numpy as np
 import yaml
 
 from rtc_tools.analysis import catching_trials as ct
+from rtc_tools.utils.catching_keys import reject_renamed_keys
 from rtc_tools.utils.controller_config import (
     deep_merge as _deep_merge,
     overlay_catching as _overlay_catching,
@@ -80,7 +81,9 @@ MOVING_RAD_S = 0.05  # q̇_meas above this enters the servo-lag fit
 COMMIT_JOIN_TOL_S = 0.02
 DEFAULT_N_BOOT = 200
 DEFAULT_SEED = 0
-PLANNER_TIME_MARGIN_S = 0.03  # planner.time.margin default (PlannerParams::time_margin, L3 §4.3)
+PLANNER_TIME_MARGIN_S = (
+    0.03  # planner.search.grid.time.margin default (PlannerParams::time_margin, L3 §4.3)
+)
 
 
 # ── Reach time (L3 §4.3 closed form, the runtime's `TMinChecked`) ────────────
@@ -152,7 +155,9 @@ class ArmBudget:
     qdd_box: list[float]  # rad/s², the box the planner judged with ([] = none)
     t_arm_s: float
     dt: float
-    time_margin_s: float = PLANNER_TIME_MARGIN_S  # planner.time.margin the reach gate used
+    time_margin_s: float = (
+        PLANNER_TIME_MARGIN_S  # planner.search.grid.time.margin the reach gate used
+    )
     source: dict = field(default_factory=dict)
 
     @property
@@ -231,16 +236,20 @@ def resolve_budget(
     if sim_yaml.is_file():
         sim_tree = _overlay_catching(sim_yaml, profile.controller)
         if sim_tree:
+            reject_renamed_keys(sim_tree, source=str(sim_yaml))
             catching = _deep_merge(catching, sim_tree)
             composed.append("sim.yaml")
     for path in overlays:
-        catching = _deep_merge(catching, _overlay_catching(path, profile.controller))
+        layer = _overlay_catching(path, profile.controller)
+        reject_renamed_keys(layer, source=str(path))
+        catching = _deep_merge(catching, layer)
     if overlays:
         composed.append("overlays")
     files = "+".join(composed)
     ref = catching.get("reference") or {}
     planner = catching.get("planner") or {}
-    gamma = planner.get("gamma") or {}
+    grid = (planner.get("search") or {}).get("grid") or {}
+    gamma = grid.get("gamma") or {}
     arm = (catching.get("robot") or {}).get("arm") or {}
 
     def pick(mirror_key: str, file_value, label: str) -> float:
@@ -253,10 +262,10 @@ def resolve_budget(
     omega = pick("reference.omega", ref.get("omega", 10.0), "omega")
     a_max = pick("reference.a_max", ref.get("a_max"), "a_max")
     v_max = pick("reference.v_max", ref.get("v_max"), "v_max")
-    eta_v = pick("planner.gamma.eta_v", gamma.get("eta_v", 0.9), "eta_v")
+    eta_v = pick("planner.search.grid.gamma.eta_v", gamma.get("eta_v", 0.9), "eta_v")
     time_margin = pick(
-        "planner.time.margin",
-        (planner.get("time") or {}).get("margin", PLANNER_TIME_MARGIN_S),
+        "planner.search.grid.time.margin",
+        (grid.get("time") or {}).get("margin", PLANNER_TIME_MARGIN_S),
         "time_margin",
     )
     if mirror.get("robot.arm.qdd_max") is not None:
@@ -455,10 +464,10 @@ def analyse_unit(
 ) -> dict:
     """Everything the module docstring lists, for one unit.
 
-    ``time_margin_s`` None = the ``planner.time.margin`` the unit ran with
+    ``time_margin_s`` None = the ``planner.search.grid.time.margin`` the unit ran with
     (mirror, else the composed files); a number overrides it.
     """
-    meta = json.loads((unit / "trials" / "run_meta.json").read_text())
+    meta = ct.load_run_meta(unit / "trials" / "run_meta.json")
     profile = ct.load_profile(config_dir, controller, session)
     node = ct._catching_controllers(config_dir)[profile.controller]
     ctl = session / "controllers" / profile.controller
@@ -826,7 +835,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--time-margin-s",
         type=float,
-        help="override planner.time.margin in the reach re-judgement (default: what the unit ran "
+        help="override planner.search.grid.time.margin in the reach re-judgement (default: what the unit ran "
         "with — mirror, else the composed files)",
     )
     ap.add_argument("--n-boot", type=int, default=DEFAULT_N_BOOT)

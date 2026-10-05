@@ -481,7 +481,7 @@ def test_lead_off_trial_is_unchanged():
 def _reference_trial(*, ref_valid, following, p_d, committed=True, ref_is_zero=None):
     """``_lead_trial``'s geometry (lead 0.2 s; reference 10 mm off the ball,
     CLIK 2 mm, servo 3 mm) with the reference handed over as either law does:
-    the soft-catch ``ref_x``, or the followed segment's ``decel_p_d``. A tick
+    the soft-catch ``ref_x``, or the followed segment's ``segment_p_d``. A tick
     whose law did not run leaves its block ZERO, as the RT record does
     (``ref_is_zero`` overrides that, for the positive control)."""
     ref_is_zero = (not ref_valid) if ref_is_zero is None else ref_is_zero
@@ -508,8 +508,8 @@ def _reference_trial(*, ref_valid, following, p_d, committed=True, ref_is_zero=N
         q_meas=_ball(t) + _REF_OFF + _CLIK_OFF + _SERVO_OFF,
         fk=_IdentityFk(),
         t_lead=np.full(n, lead),
-        decel_following=None if following is None else np.full(n, following),
-        decel_p_d=reference if p_d else None,
+        segment_following=None if following is None else np.full(n, following),
+        segment_p_d=reference if p_d else None,
     )
     tt = np.arange(0.0, 1.2, 0.01)
     truth = ct.Truth(tt, _ball(tt), _V0 + np.outer(tt, _G))
@@ -526,7 +526,7 @@ def test_an_mpc_trial_is_decomposed_against_the_segment_it_followed():
 
 
 def test_a_soft_catch_trial_reads_ref_x_as_before():
-    assert _lead_trial(0.2, 0.2)["ref_source"] == "soft_catch"  # no decel columns at all
+    assert _lead_trial(0.2, 0.2)["ref_source"] == "soft_catch"  # no segment columns at all
     rec = _reference_trial(ref_valid=True, following=False, p_d=True)
     assert rec["ref_source"] == "soft_catch"
     assert rec["clik_mm"] == pytest.approx(2.0, abs=0.05)
@@ -534,7 +534,7 @@ def test_a_soft_catch_trial_reads_ref_x_as_before():
 
 
 def test_a_tick_with_no_reference_is_not_measured_against_the_zero_vector():
-    """The E1-F09 measurement build: `decel_following` is recorded, the target
+    """The E1-F09 measurement build: `segment_following` is recorded, the target
     is not, and `ref_valid` is 0 under mpc. Read against ``ref_x`` — the fresh
     record's zeros — the CLIK term is the catch frame's distance from the
     origin; it must come out NaN instead, and say why."""
@@ -563,60 +563,63 @@ def test_a_trial_without_a_commit_has_no_reference_source():
     assert math.isnan(rec["clik_mm"])
 
 
-def test_diag_columns_takes_each_decel_column_that_exists():
+def test_diag_columns_takes_each_segment_column_that_exists():
     base = [*ct.DIAG_COLUMNS, "q_cmd_a", "q_meas_a"]
-    assert not [c for c in ct.diag_columns(base) if c.startswith("decel_")]
-    patch_build = [*base, "decel_judged", "decel_event", "decel_following", "decel_seq"]
-    assert [c for c in ct.diag_columns(patch_build) if c.startswith("decel_")] == [
-        "decel_judged",
-        "decel_event",
-        "decel_following",
-        "decel_seq",
+    assert not [c for c in ct.diag_columns(base) if c.startswith("segment_")]
+    patch_build = [*base, "segment_judged", "segment_event", "segment_following", "segment_seq"]
+    assert [c for c in ct.diag_columns(patch_build) if c.startswith("segment_")] == [
+        "segment_judged",
+        "segment_event",
+        "segment_following",
+        "segment_seq",
     ]
-    full = [*base, *ct.DIAG_DECEL_COLUMNS, "decel_k0"]
+    full = [*base, *ct.DIAG_SEGMENT_COLUMNS, "segment_k0"]
     got = ct.diag_columns(full)
-    assert set(ct.DIAG_DECEL_COLUMNS) <= set(got)
-    assert "decel_k0" not in got  # not read
+    assert set(ct.DIAG_SEGMENT_COLUMNS) <= set(got)
+    assert "segment_k0" not in got  # not read
 
 
-def test_decel_arrays_are_none_for_the_columns_a_diag_lacks():
+def test_segment_arrays_are_none_for_the_columns_a_diag_lacks():
     pd = pytest.importorskip("pandas")
-    assert all(v is None for v in ct._decel_arrays(pd.DataFrame({"mode": [0, 0]})).values())
+    assert all(v is None for v in ct._segment_arrays(pd.DataFrame({"mode": [0, 0]})).values())
     patch_build = pd.DataFrame(
-        {"decel_judged": [0, 1], "decel_following": [0, 1], "decel_event": [0, 4]}
+        {"segment_judged": [0, 1], "segment_following": [0, 1], "segment_event": [0, 4]}
     )
-    arrays = ct._decel_arrays(patch_build)
-    assert arrays["decel_p_d"] is None and arrays["decel_seq"] is None
-    assert arrays["decel_following"].dtype == bool and list(arrays["decel_following"]) == [0, 1]
-    assert list(arrays["decel_event"]) == [0, 4]
+    arrays = ct._segment_arrays(patch_build)
+    assert arrays["segment_p_d"] is None and arrays["segment_seq"] is None
+    assert arrays["segment_following"].dtype == bool and list(arrays["segment_following"]) == [
+        0,
+        1,
+    ]
+    assert list(arrays["segment_event"]) == [0, 4]
     full = patch_build.assign(
-        decel_p_d_x=[0.1, 0.2], decel_p_d_y=[0.0, 0.0], decel_p_d_z=[1.0, 1.0]
+        segment_p_d_x=[0.1, 0.2], segment_p_d_y=[0.0, 0.0], segment_p_d_z=[1.0, 1.0]
     )
-    assert ct._decel_arrays(full)["decel_p_d"].shape == (2, 3)
+    assert ct._segment_arrays(full)["segment_p_d"].shape == (2, 3)
     # A row cut short reads NaN: not judged, not following, event 0, seq 0 —
     # never INT64_MIN, which would count as one more followed segment.
     cut = pd.DataFrame(
         {
-            "decel_judged": [1.0, np.nan],
-            "decel_following": [1.0, np.nan],
-            "decel_event": [4.0, np.nan],
-            "decel_refusal": [0.0, np.nan],
-            "decel_seq": [7.0, np.nan],
+            "segment_judged": [1.0, np.nan],
+            "segment_following": [1.0, np.nan],
+            "segment_event": [4.0, np.nan],
+            "segment_refusal": [0.0, np.nan],
+            "segment_seq": [7.0, np.nan],
         }
     )
-    arrays = ct._decel_arrays(cut)
-    assert list(arrays["decel_following"]) == [True, False]
-    assert list(arrays["decel_judged"]) == [True, False]
-    assert list(arrays["decel_event"]) == [4, 0]
-    assert list(arrays["decel_seq"]) == [7, 0]
+    arrays = ct._segment_arrays(cut)
+    assert list(arrays["segment_following"]) == [True, False]
+    assert list(arrays["segment_judged"]) == [True, False]
+    assert list(arrays["segment_event"]) == [4, 0]
+    assert list(arrays["segment_seq"]) == [7, 0]
     # Two of the three target columns are not a target.
-    assert ct._decel_arrays(full.drop(columns="decel_p_d_z"))["decel_p_d"] is None
+    assert ct._segment_arrays(full.drop(columns="segment_p_d_z"))["segment_p_d"] is None
 
 
 # ── What the RT did with the segments (MPC E1-F05) ──────────────────────────
 
 
-def _lane_ctx(n=200, **decel):
+def _lane_ctx(n=200, **segment):
     t = np.arange(n) * 0.002
     mode = np.full(n, ct.MODE_TRACKING)
     mode[20:60] = ct.MODE_APPROACH
@@ -636,7 +639,7 @@ def _lane_ctx(n=200, **decel):
         q_cmd=zeros,
         q_meas=zeros,
         fk=_IdentityFk(),
-        **decel,
+        **segment,
     )
 
 
@@ -650,84 +653,84 @@ def _planted_lane():
     rho = np.zeros(n)
     judged = np.zeros(n, bool)
     refusal = np.zeros(n, int)
-    ev[10:13] = ct.DECEL_EVENT_WORKSPACE  # the pair, judged on three TRACKING ticks
-    ev[20] = ct.DECEL_EVENT_ADMITTED
-    ev[30] = ct.DECEL_EVENT_REPLACED
-    ev[45], rho[45] = ct.DECEL_EVENT_SWITCHED, 1e-6
-    ev[50:55] = ct.DECEL_EVENT_DEFERRED
-    ev[55] = ct.DECEL_EVENT_ADMITTED
-    ev[70], rho[70] = ct.DECEL_EVENT_SWITCHED, 0.3
-    ev[80:83] = ct.DECEL_EVENT_DEFERRED
-    ev[83] = ct.DECEL_EVENT_WORKSPACE
-    ev[90] = ct.DECEL_EVENT_ADMITTED
-    ev[100], rho[100] = ct.DECEL_EVENT_SWITCHED, 0.2
-    ev[110] = ct.DECEL_EVENT_GATE_REFUSED
+    ev[10:13] = ct.SEGMENT_EVENT_WORKSPACE  # the pair, judged on three TRACKING ticks
+    ev[20] = ct.SEGMENT_EVENT_ADMITTED
+    ev[30] = ct.SEGMENT_EVENT_REPLACED
+    ev[45], rho[45] = ct.SEGMENT_EVENT_SWITCHED, 1e-6
+    ev[50:55] = ct.SEGMENT_EVENT_DEFERRED
+    ev[55] = ct.SEGMENT_EVENT_ADMITTED
+    ev[70], rho[70] = ct.SEGMENT_EVENT_SWITCHED, 0.3
+    ev[80:83] = ct.SEGMENT_EVENT_DEFERRED
+    ev[83] = ct.SEGMENT_EVENT_WORKSPACE
+    ev[90] = ct.SEGMENT_EVENT_ADMITTED
+    ev[100], rho[100] = ct.SEGMENT_EVENT_SWITCHED, 0.2
+    ev[110] = ct.SEGMENT_EVENT_GATE_REFUSED
     judged[20:] = True
     refusal[20:] = 4  # `repeat`: the lane's bookkeeping, not an event
-    refusal[120:124] = ct.DECEL_REFUSAL_AGED
-    refusal[130] = ct.DECEL_REFUSAL_AGED
+    refusal[120:124] = ct.SEGMENT_REFUSAL_AGED
+    refusal[130] = ct.SEGMENT_REFUSAL_AGED
     following = np.arange(n) >= 45
     seq = np.zeros(n, int)
     seq[45:70], seq[70:100], seq[100:] = 7, 9, 12
     return _lane_ctx(
         n,
-        decel_event=ev,
-        decel_rho=rho,
-        decel_judged=judged,
-        decel_refusal=refusal,
-        decel_following=following,
-        decel_seq=seq,
+        segment_event=ev,
+        segment_rho=rho,
+        segment_judged=judged,
+        segment_refusal=refusal,
+        segment_following=following,
+        segment_seq=seq,
     )
 
 
 def test_lane_metrics_count_the_planted_events():
-    rec = ct.decel_lane_metrics(_planted_lane())
-    assert rec["decel_segments_followed"] == 3
-    assert rec["decel_switches"] == 3
-    assert rec["decel_admitted"] == 3
-    assert rec["decel_replaced"] == 1
+    rec = ct.segment_lane_metrics(_planted_lane())
+    assert rec["segment_n_followed"] == 3
+    assert rec["segment_switches"] == 3
+    assert rec["segment_admitted"] == 3
+    assert rec["segment_replaced"] == 1
     # Episodes, not ticks: 8 deferred ticks are 2 waits, 4 catch_box ticks are
     # 2 refusals, 5 aged ticks are 2 dropped segments.
-    assert rec["decel_deferred"] == 2
-    assert rec["decel_deferred_max_ticks"] == 5
-    assert rec["decel_workspace_refused"] == 2
-    assert rec["decel_gate_refused"] == 1
-    assert rec["decel_aged"] == 2
-    assert rec["decel_rho_first"] == pytest.approx(1e-6)
-    assert rec["decel_rho_replan_max"] == pytest.approx(0.3)
+    assert rec["segment_deferred"] == 2
+    assert rec["segment_deferred_max_ticks"] == 5
+    assert rec["segment_workspace_refused"] == 2
+    assert rec["segment_gate_refused"] == 1
+    assert rec["segment_aged"] == 2
+    assert rec["segment_rho_first"] == pytest.approx(1e-6)
+    assert rec["segment_rho_replan_max"] == pytest.approx(0.3)
     # First APPROACH tick 20 → first switch 45, at 2 ms.
-    assert rec["decel_wait_node0_ms"] == pytest.approx(50.0)
-    assert set(rec) == set(ct.DECEL_LANE_KEYS)
+    assert rec["segment_wait_node0_ms"] == pytest.approx(50.0)
+    assert set(rec) == set(ct.SEGMENT_LANE_KEYS)
 
 
 def test_lane_metrics_are_nan_without_the_columns_and_zero_under_closed_form():
-    bare = ct.decel_lane_metrics(_lane_ctx())
-    assert set(bare) == set(ct.DECEL_LANE_KEYS)
+    bare = ct.segment_lane_metrics(_lane_ctx())
+    assert set(bare) == set(ct.SEGMENT_LANE_KEYS)
     assert all(math.isnan(v) for v in bare.values())
     n = 200
-    closed_form = ct.decel_lane_metrics(
+    closed_form = ct.segment_lane_metrics(
         _lane_ctx(
             n,
-            decel_event=np.zeros(n, int),
-            decel_rho=np.zeros(n),
-            decel_judged=np.zeros(n, bool),
-            decel_refusal=np.zeros(n, int),
-            decel_following=np.zeros(n, bool),
-            decel_seq=np.zeros(n, int),
+            segment_event=np.zeros(n, int),
+            segment_rho=np.zeros(n),
+            segment_judged=np.zeros(n, bool),
+            segment_refusal=np.zeros(n, int),
+            segment_following=np.zeros(n, bool),
+            segment_seq=np.zeros(n, int),
         )
     )
-    for key in ("decel_rho_first", "decel_rho_replan_max", "decel_wait_node0_ms"):
+    for key in ("segment_rho_first", "segment_rho_replan_max", "segment_wait_node0_ms"):
         assert math.isnan(closed_form.pop(key)), key
     assert set(closed_form.values()) == {0}
 
 
 def test_a_single_switch_has_no_replan_rho():
     ctx = _planted_lane()
-    ctx.decel_event[[70, 100]] = 0
-    rec = ct.decel_lane_metrics(ctx)
-    assert rec["decel_switches"] == 1
-    assert math.isnan(rec["decel_rho_replan_max"])
-    assert rec["decel_rho_first"] == pytest.approx(1e-6)
+    ctx.segment_event[[70, 100]] = 0
+    rec = ct.segment_lane_metrics(ctx)
+    assert rec["segment_switches"] == 1
+    assert math.isnan(rec["segment_rho_replan_max"])
+    assert rec["segment_rho_first"] == pytest.approx(1e-6)
 
 
 def _cpp_enum(header: Path, name: str) -> list[str]:
@@ -753,21 +756,21 @@ _DIAG_POD_HPP = (
 _PLANNER_IO_HPP = _REPO / "rtc_controllers/include/rtc_controllers/catching/planner_io.hpp"
 
 
-def test_the_decel_codes_this_tool_reads_are_the_cpp_enums_values():
-    """catching_diag.csv writes ``decel_event`` / ``decel_refusal`` as
+def test_the_segment_codes_this_tool_reads_are_the_cpp_enums_values():
+    """catching_diag.csv writes ``segment_event`` / ``segment_refusal`` as
     integers. An enumerator inserted or removed in C++ moves every value after
     it; this is what notices."""
     if not (_DIAG_POD_HPP.exists() and _PLANNER_IO_HPP.exists()):
         pytest.skip("C++ headers are not beside this checkout")
     event = _cpp_enum(_DIAG_POD_HPP, "SegmentEvent")
     refusal = _cpp_enum(_PLANNER_IO_HPP, "SegmentRefusal")
-    assert event[ct.DECEL_EVENT_ADMITTED] == "admitted"
-    assert event[ct.DECEL_EVENT_DEFERRED] == "deferred"
-    assert event[ct.DECEL_EVENT_WORKSPACE] == "workspace"
-    assert event[ct.DECEL_EVENT_SWITCHED] == "switched"
-    assert event[ct.DECEL_EVENT_GATE_REFUSED] == "gate_refused"
-    assert event[ct.DECEL_EVENT_REPLACED] == "replaced"
-    assert refusal[ct.DECEL_REFUSAL_AGED] == "aged"
+    assert event[ct.SEGMENT_EVENT_ADMITTED] == "admitted"
+    assert event[ct.SEGMENT_EVENT_DEFERRED] == "deferred"
+    assert event[ct.SEGMENT_EVENT_WORKSPACE] == "workspace"
+    assert event[ct.SEGMENT_EVENT_SWITCHED] == "switched"
+    assert event[ct.SEGMENT_EVENT_GATE_REFUSED] == "gate_refused"
+    assert event[ct.SEGMENT_EVENT_REPLACED] == "replaced"
+    assert refusal[ct.SEGMENT_REFUSAL_AGED] == "aged"
 
 
 # ── The command at t_c (MPC E1-F05) ─────────────────────────────────────────
@@ -896,18 +899,18 @@ def test_the_command_columns_are_nan_without_a_tc_or_a_usable_window():
 
 
 def test_golden_pilot_rows_carry_the_new_columns_without_moving_the_old(pilot):
-    # A soft-catch session from before the decel columns: every committed
+    # A soft-catch session from before the segment columns: every committed
     # trial is decomposed against ref_x, the lane columns are NaN, the command
     # columns are measured.
     assert pilot.summary["ref_source"] == {"soft_catch": 25}
-    assert "decel_lane" not in pilot.summary
+    assert "segment_lane" not in pilot.summary
     for row in pilot.rows:
-        assert all(math.isnan(row[k]) for k in ct.DECEL_LANE_KEYS)
+        assert all(math.isnan(row[k]) for k in ct.SEGMENT_LANE_KEYS)
         assert all(math.isfinite(row[k]) for k in ct.CMD_KINEMATICS_KEYS), row["idx"]
         assert 0.5 < row["cmd_speed_tc"] < 10.0
     for key in ct.CMD_KINEMATICS_KEYS:
         assert math.isfinite(pilot.summary["medians"][key])
-    assert math.isnan(pilot.summary["medians"]["decel_wait_node0_ms"])
+    assert math.isnan(pilot.summary["medians"]["segment_wait_node0_ms"])
 
 
 def test_lead_per_tick_sources():
@@ -1482,7 +1485,7 @@ def test_planner_cycle_times_reads_the_new_columns_only_where_the_log_has_them(t
     for d in (new, old):
         d.mkdir()
     (new / ct.PLANNER_EVENTS_CSV).write_text(
-        "wake_ns,outcome,plan_valid,search_valid,decel_outcome,decel_kind\n"
+        "wake_ns,outcome,plan_valid,search_valid,segment_outcome,segment_kind\n"
         "1000000000,held,0,1,catch_error,first\n"
         "2000000000,published,1,1,published,first\n"
         "3000000000,idle,0,0,published,same\n"
@@ -2692,3 +2695,148 @@ def test_shifted_rows_are_left_out_of_the_tc_medians_and_counted(pilot):
     line = ct.tc_axis_line(ta)
     assert "shifted 13" in line and "LEFT OUT" in line
     assert "LEFT OUT" not in ct.tc_axis_line(pilot.summary["tc_axis"])
+
+
+# ── Sessions recorded with the old `decel_*` column names (#711) ─────────────
+
+
+def _segment_block(n: int) -> dict:
+    """The diag's segment columns (new names), planted so every lane metric moves."""
+    i = np.arange(n)
+    judged = (i % 4 == 0).astype(int)
+    event = np.array([0, 2, 4, 5, 10, 1, 3])[i % 7]
+    return {
+        "segment_judged": judged,
+        "segment_refusal": np.where(judged & (i % 8 == 0), ct.SEGMENT_REFUSAL_AGED, 0),
+        "segment_event": event,
+        "segment_following": (i % 3 != 0).astype(int),
+        "segment_seq": i // 40 + 1,
+        "segment_rho": (i % 10) / 10.0,
+        "segment_p_d_x": 0.001 * i,
+        "segment_p_d_y": -0.001 * i,
+        "segment_p_d_z": 0.5 + 0.0 * i,
+    }
+
+
+def _old_names(df):
+    """``df`` as an older controller wrote it: the new column names back to the old."""
+    from rtc_tools.utils import catching_keys as ck
+
+    return df.rename(columns={new: old for old, new in ck.RENAMED_COLUMNS.items()})
+
+
+def _session_with_segment_columns(tmp_path: Path, *, old: bool):
+    """A copy of the pilot session whose diag and planner_events carry the segment
+    columns, named the new way or (``old``) the way a controller before #711 wrote them."""
+    import shutil
+
+    import pandas as pd
+
+    session = tmp_path / ("old" if old else "new") / "session"
+    shutil.copytree(FIXTURE / "session", session)
+    ctl = session / "controllers" / "demo_catching_controller"
+    diag = pd.read_csv(ctl / "catching_diag.csv.gz")
+    diag = diag.assign(**_segment_block(len(diag)))
+    pe = pd.read_csv(ctl / "planner_events.csv.gz")
+    n = len(pe)
+    pe = pe.assign(
+        segment_outcome=np.where(np.arange(n) % 3 == 0, "published", "off"),
+        segment_kind=np.where(np.arange(n) % 2 == 0, "first", "none"),
+        segment_solve_us=np.arange(n) % 5 * 100.0,
+    )
+    for name, frame in (("catching_diag", diag), ("planner_events", pe)):
+        out = _old_names(frame) if old else frame
+        out.to_csv(ctl / f"{name}.csv.gz", index=False)
+    return session, ctl
+
+
+def _same(a, b) -> bool:
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return np.array_equal(np.asarray(a), np.asarray(b), equal_nan=True)
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (math.isnan(a) and math.isnan(b))
+    return a == b
+
+
+def test_a_session_recorded_with_old_column_names_gives_the_same_result(tmp_path):
+    pytest.importorskip("pinocchio")
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    results = {}
+    for old in (False, True):
+        session, _ = _session_with_segment_columns(tmp_path, old=old)
+        results[old] = ct.analyse_session(
+            session, FIXTURE / "trials", profile, urdf, ct.Settings(n_boot=20)
+        )
+    new, old = results[False], results[True]
+    assert len(new.rows) == len(old.rows) > 0
+    # The planted block reached the lane metrics (not the all-None path).
+    assert any(r["segment_n_followed"] > 0 for r in new.rows if r["accepted"])
+    assert any(r["segment_aged"] > 0 for r in new.rows if r["accepted"])
+    assert any(r["segment_rho_first"] == r["segment_rho_first"] for r in new.rows)
+    for rn, ro in zip(new.rows, old.rows, strict=True):
+        assert rn.keys() == ro.keys()
+        assert not [k for k in rn if not _same(rn[k], ro[k])]
+    assert new.summary["segment_lane"] == old.summary["segment_lane"]
+    assert "decel_lane" not in new.summary and "decel_lane" not in old.summary
+    assert not [k for r in new.rows for k in r if k.startswith("decel_")]
+
+
+def test_the_planner_wakes_are_the_same_from_old_and_new_column_names(tmp_path):
+    lane = object()  # only "no lane -> None" is read of it
+    wakes = {}
+    for old in (False, True):
+        _, ctl = _session_with_segment_columns(tmp_path, old=old)
+        wakes[old] = ct._planner_cycle_times(ctl, lane)
+    new, old = wakes[False], wakes[True]
+    assert new.pair_attempt is not None and new.pair_attempt.any() and new.pair_published.any()
+    for a, b in zip(new, old, strict=True):
+        assert (a is None) == (b is None)
+        assert a is None or np.array_equal(a, b, equal_nan=True)
+
+
+def test_a_diag_and_its_header_read_the_same_from_old_and_new_column_names(tmp_path):
+    ctl = {old: _session_with_segment_columns(tmp_path, old=old)[1] for old in (False, True)}
+    for name in ("catching_diag", "planner_events"):
+        headers = {old: ct._csv_header(ctl[old] / f"{name}.csv") for old in ctl}
+        assert headers[False] == headers[True]
+        assert not [c for c in headers[True] if c.startswith("decel_")]
+        frames = {old: ct._read_csv(ctl[old] / f"{name}.csv") for old in ctl}
+        assert frames[False].equals(frames[True])
+    cols = ["t_relative_s", "segment_event", "segment_rho"]
+    got = {old: ct._read_csv(ctl[old] / "catching_diag.csv", usecols=cols) for old in ctl}
+    assert list(got[True].columns) == cols and got[False].equals(got[True])
+    got = {
+        old: ct._read_csv(ctl[old] / "catching_diag.csv", usecols=lambda c: c in set(cols))
+        for old in ctl
+    }
+    assert got[False].equals(got[True]) and "segment_event" in got[True]
+    # The columns diag_columns reads are found under the old names too.
+    assert set(ct.DIAG_SEGMENT_COLUMNS) <= set(
+        ct.diag_columns(ct._csv_header(ctl[True] / "catching_diag.csv"))
+    )
+
+
+def test_a_diag_that_mixes_old_and_new_column_names_is_refused(tmp_path):
+    import pandas as pd
+
+    from rtc_tools.utils import catching_keys as ck
+
+    _, ctl = _session_with_segment_columns(tmp_path, old=True)
+    path = ctl / "catching_diag.csv.gz"
+    diag = pd.read_csv(path)
+    diag = diag.rename(columns={"decel_rho": "segment_rho"})  # one column the new way
+    diag.to_csv(path, index=False)
+    for call in (
+        lambda: ct._read_csv(ctl / "catching_diag.csv"),
+        lambda: ct._csv_header(ctl / "catching_diag.csv"),
+    ):
+        with pytest.raises(ck.MixedColumnNamesError, match=r"decel_event.*segment_rho"):
+            call()
+    # And the other file of the pair, with one column under both names.
+    pe = ctl / "planner_events.csv.gz"
+    frame = pd.read_csv(pe)
+    frame["segment_kind"] = frame["decel_kind"]
+    frame.to_csv(pe, index=False)
+    with pytest.raises(ck.MixedColumnNamesError, match="decel_kind.*segment_kind"):
+        ct._read_csv(ctl / "planner_events.csv")

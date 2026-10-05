@@ -3,6 +3,7 @@
 Every input is built in the test — no recorded unit is read.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "catching_eval"))
+import check_segment_mode as csm  # noqa: E402
 import summarize as sm  # noqa: E402
 
 from rtc_tools.analysis import catching_trials as ct  # noqa: E402
@@ -201,3 +203,131 @@ def test_limit_check_is_strict():
     assert (at["pos"], at["vel"], at["torque"]) == (0, 0, 0)  # equal is not a violation
     over = sm.limit_check(np.array([[1.0001]]), np.array([[-2.0001]]), np.array([[5.0001]]), lim)
     assert (over["pos"], over["vel"], over["torque"]) == (1, 1, 1)
+
+
+# ── Old column names and old tool outputs (#711) ─────────────────────────────
+
+
+def _read_diag(tmp_path, *, old_names: bool):
+    """A diag as ``ct._read_csv`` returns it, summarize's own ``usecols`` included, for a
+    file written with the old column names or the new ones."""
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "t_relative_s": np.arange(12) * 0.002,
+            "mode": [ct.MODE_APPROACH] * 6 + [ct.MODE_HOLD] * 6,
+            "segment_event": [0, 4, 4, 5, 4, 0, 0, 4, 5, 0, 0, 0],
+            "segment_rho": np.linspace(0.1, 0.9, 12),
+        }
+    )
+    if old_names:
+        frame = frame.rename(columns={"segment_event": "decel_event", "segment_rho": "decel_rho"})
+    path = tmp_path / ("old" if old_names else "new") / "catching_diag.csv"
+    path.parent.mkdir()
+    frame.to_csv(path, index=False)
+    want = {"t_relative_s", "mode", "segment_event", "segment_rho"}
+    return ct._read_csv(path, usecols=lambda c: c in want)
+
+
+def _ct_frame(**columns):
+    import pandas as pd
+
+    return pd.DataFrame({"idx": [0, 1], "rtf_trial_min": [1.0, 1.0], **columns})
+
+
+def test_the_replan_block_is_the_same_for_a_diag_recorded_with_old_names(tmp_path):
+    diags = [_read_diag(tmp_path, old_names=old) for old in (False, True)]
+    blocks = [sm.replan_block([{"diag": d, "ct": _ct_frame(segment_aged=[1, 2])}]) for d in diags]
+    assert blocks[0] == blocks[1]
+    assert blocks[0]["aged"] == 3 and blocks[0]["replan_switches"] == 3
+
+
+def test_an_old_catching_trials_output_is_refused_not_skipped(tmp_path):
+    summ_new = {"arm_joints": [], "medians": {"segment_wait_node0_ms": 1.0}, "segment_lane": {}}
+    sm.reject_old_ct_outputs(tmp_path, summ_new, _ct_frame(segment_aged=[0, 0]), None)  # no error
+    with pytest.raises(SystemExit) as exc:
+        sm.reject_old_ct_outputs(tmp_path, summ_new, _ct_frame(decel_aged=[0, 0]), None)
+    msg = str(exc.value)
+    assert "catching_trials.csv" in msg and "decel_aged -> segment_aged" in msg
+    assert "older catching_trials" in msg and "regenerate" in msg
+
+
+def test_a_ct_from_before_the_lane_metrics_is_refused_not_counted_as_zero(tmp_path):
+    # Neither spelling of the lane metrics: nothing renamed to refuse, and the replan
+    # block reads segment_aged — it used to count such a unit's aged segments as 0.
+    import pandas as pd
+
+    before = pd.DataFrame({"idx": [0, 1], "caught": [1, 0]}).set_index("idx")
+    with pytest.raises(SystemExit, match=r"catching_trials.csv: no segment_aged.*regenerate"):
+        sm.reject_old_ct_outputs(tmp_path, {"arm_joints": []}, before, None)
+
+
+def test_an_old_summary_json_and_an_old_vec_csv_are_refused_too(tmp_path):
+    import pandas as pd
+
+    ok = _ct_frame(segment_aged=[0, 0])
+    with pytest.raises(SystemExit, match="decel_lane -> segment_lane"):
+        sm.reject_old_ct_outputs(tmp_path, {"decel_lane": {}}, ok, None)
+    with pytest.raises(SystemExit, match="decel_wait_node0_ms -> segment_wait_node0_ms"):
+        sm.reject_old_ct_outputs(tmp_path, {"medians": {"decel_wait_node0_ms": 1.0}}, ok, None)
+    vec = pd.DataFrame({"idx": [0], "decel_segments_followed": [2]})
+    with pytest.raises(SystemExit, match=r"vec.csv.*older tc_vector.*segment_n_followed"):
+        sm.reject_old_ct_outputs(tmp_path, {}, ok, vec)
+
+
+# ── check_segment_mode.py: which mode did the controller log? ────────────────
+
+_MPC_LINE = (
+    "[INFO] [1.0] [demo_catching_controller]: segment mode: mpc — takes a plan with its first "
+    "segment and follows the MPC's segments from APPROACH to the end of the stop"
+)
+_CF_LINE = (
+    "[INFO] [1.0] [demo_catching_controller]: segment mode: closed_form — the RT tick makes "
+    "the reference itself"
+)
+_OTHER = (
+    "[INFO] [1.0] [demo_catching_controller]: planner enabled: wake timeout 0.1 s, budget 0.2 s"
+)
+
+
+@pytest.mark.parametrize(
+    ("expected", "log", "passes"),
+    [
+        ("closed_form", _OTHER + "\n" + _CF_LINE + "\n", True),
+        ("mpc", _OTHER + "\n" + _MPC_LINE + "\n", True),
+        # positive controls: the case the old check passed — the mpc line is absent
+        # and the closed_form line is absent too (a controller that never configured).
+        ("closed_form", _OTHER + "\n", False),
+        ("closed_form", _OTHER + "\n" + _MPC_LINE + "\n", False),
+        ("mpc", _OTHER + "\n" + _CF_LINE + "\n", False),
+        ("mpc", _OTHER + "\n", False),
+        ("closed_form", "", False),
+        ("mpc", "", False),
+        # both lines: no controller configures twice into one launch.log
+        ("mpc", _MPC_LINE + "\n" + _CF_LINE + "\n", False),
+        ("closed_form", _MPC_LINE + "\n" + _CF_LINE + "\n", False),
+        # the old spelling says nothing about the mode
+        ("mpc", "[demo_catching_controller]: DECEL law: mpc — takes a plan\n", False),
+    ],
+)
+def test_the_segment_mode_check_needs_the_expected_line_present(expected, log, passes):
+    assert (csm.check(log, expected) is None) is passes
+
+
+def test_the_segment_mode_check_refuses_an_unknown_expected_mode():
+    assert "not one of" in csm.check(_MPC_LINE, "decel")
+
+
+def test_the_segment_mode_script_exits_on_the_verdict(tmp_path):
+    log = tmp_path / "launch.log"
+    log.write_text(_OTHER + "\n" + _CF_LINE + "\n")
+    script = Path(csm.__file__)
+    run = [sys.executable, str(script), str(log)]
+    assert subprocess.run([*run, "closed_form"], capture_output=True).returncode == 0
+    refused = subprocess.run([*run, "mpc"], capture_output=True, text=True)
+    assert refused.returncode == 1 and "no 'segment mode: mpc' line" in refused.stderr
+    log.write_text(_OTHER + "\n")  # nothing logged: both expectations fail
+    assert subprocess.run([*run, "closed_form"], capture_output=True).returncode == 1
+    assert subprocess.run([*run, "mpc", str(tmp_path / "missing.log")]).returncode == 2
+    assert subprocess.run([*run[:2], str(tmp_path / "missing.log"), "mpc"]).returncode == 1

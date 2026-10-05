@@ -16,7 +16,7 @@
 //    `rho`'s node looks fine when only `rho` is set); with all of them set at
 //    once, a crossed pair puts the other field's number in place.
 //
-// 3. IS A TYPO DEFAULTED? `planner.ik` is owned whole by this parser, so an
+// 3. IS A TYPO DEFAULTED? `planner.search.grid.ik` is owned whole by this parser, so an
 //    unknown key there is refused. That is the one behaviour a permissive
 //    parser would get backwards, so it is asserted directly, and its converse
 //    too: the retired keys L3 §6 names are REPORTED, not refused.
@@ -48,15 +48,15 @@ using rtc::catching::ParseCatchPoseIkParams;
 
 const CatchPoseIkOptions kDefault{};
 
-/// `catching:` root carrying `planner.ik` as an (initially empty) map.
+/// `catching:` root carrying `planner.search.grid.ik` as an (initially empty) map.
 YAML::Node IkRoot() {
-  YAML::Node root = YAML::Load("planner:\n  ik: {}\n");
+  YAML::Node root = YAML::Load("planner:\n  search:\n    grid:\n      ik: {}\n");
   return root;
 }
 
-/// `catching:` root carrying `planner.catchability` as an empty map.
+/// `catching:` root carrying `planner.search.grid.catchability` as an empty map.
 YAML::Node CatchabilityRoot() {
-  return YAML::Load("planner:\n  catchability: {}\n");
+  return YAML::Load("planner:\n  search:\n    grid:\n      catchability: {}\n");
 }
 
 void ExpectRejectMentioning(const YAML::Node& node, std::string_view needle) {
@@ -102,7 +102,7 @@ void ExpectAllDefaults(const CatchPoseIkConfig& cfg, const char* what) {
   EXPECT_TRUE(cfg.manipulability_min_provisional);  // fail-closed
 }
 
-// ── Table of every double-valued planner.ik key ─────────────────────────────
+// ── Table of every double-valued planner.search.grid.ik key ─────────────────────────────
 // `distinct` is in range and deliberately unequal to the default.
 struct DoubleField {
   const char* key;
@@ -142,24 +142,28 @@ TEST(CatchPoseIkParams, AbsentPlannerSectionGivesStructDefaults) {
 }
 
 TEST(CatchPoseIkParams, EmptyIkSectionGivesStructDefaults) {
-  ExpectAllDefaults(ParseCatchPoseIkParams(IkRoot()), "planner.ik: {}");
+  ExpectAllDefaults(ParseCatchPoseIkParams(IkRoot()), "planner.search.grid.ik: {}");
 }
 
 TEST(CatchPoseIkParams, NullIkSectionGivesStructDefaults) {
   // `ik:` with nothing under it is a null node, not a map — it must read as
   // "absent", not throw from being subscripted.
-  ExpectAllDefaults(ParseCatchPoseIkParams(YAML::Load("planner:\n  ik:\n")), "planner.ik: null");
+  ExpectAllDefaults(
+      ParseCatchPoseIkParams(YAML::Load("planner:\n  search:\n    grid:\n      ik:\n")),
+      "planner.search.grid.ik: null");
 }
 
 TEST(CatchPoseIkParams, UnrelatedPlannerKeysAreIgnored) {
   // planner.* at large belongs to other consumers (L3 §6 lists ~30 keys): this
-  // parser must not police it, only planner.ik.
+  // parser must not police it, only planner.search.grid.ik.
   YAML::Node root = YAML::Load(R"(
 planner:
-  budget_s: 0.01
-  n_settle: 3
-  hand:
-    d_eff: 0.095
+  search:
+    grid:
+      budget_s: 0.01
+      n_settle: 3
+      hand:
+        d_eff: 0.095
 )");
   ExpectAllDefaults(ParseCatchPoseIkParams(root), "foreign planner keys present");
 }
@@ -197,7 +201,7 @@ TEST(CatchPoseIkParams, EveryDoubleFieldReachesTheStruct) {
     SCOPED_TRACE(f.key);
     ASSERT_NE(f.distinct, f.get(kDefault)) << "case value equals the default: it proves nothing";
     YAML::Node root = IkRoot();
-    root["planner"]["ik"][f.key] = f.distinct;
+    root["planner"]["search"]["grid"]["ik"][f.key] = f.distinct;
     const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
     EXPECT_DOUBLE_EQ(f.get(cfg.options), f.distinct);
   }
@@ -208,7 +212,7 @@ TEST(CatchPoseIkParams, EveryIntFieldReachesTheStruct) {
     SCOPED_TRACE(f.key);
     ASSERT_NE(f.distinct, f.get(kDefault)) << "case value equals the default: it proves nothing";
     YAML::Node root = IkRoot();
-    root["planner"]["ik"][f.key] = f.distinct;
+    root["planner"]["search"]["grid"]["ik"][f.key] = f.distinct;
     const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
     EXPECT_EQ(f.get(cfg.options), f.distinct);
   }
@@ -219,16 +223,16 @@ TEST(CatchPoseIkParams, AllFieldsAtOnceAreNotCrossWired) {
   // wrong node shows up as another field's number.
   YAML::Node root = IkRoot();
   for (const DoubleField& f : kDoubleFields) {
-    root["planner"]["ik"][f.key] = f.distinct;
+    root["planner"]["search"]["grid"]["ik"][f.key] = f.distinct;
   }
   for (const IntField& f : kIntFields) {
-    root["planner"]["ik"][f.key] = f.distinct;
+    root["planner"]["search"]["grid"]["ik"][f.key] = f.distinct;
   }
-  root["planner"]["ik"]["alpha_max"] = 0.4;
-  root["planner"]["catchability"]["definition"] = "arm_6row";
-  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = 0.42;
-  root["planner"]["catchability"]["manipulability_min"]["arm_6row"] = 0.77;
-  root["planner"]["catchability"]["manipulability_min"]["provisional"] = false;
+  root["planner"]["search"]["grid"]["ik"]["alpha_max"] = 0.4;
+  root["planner"]["search"]["grid"]["catchability"]["definition"] = "arm_6row";
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_5row"] = 0.42;
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_6row"] = 0.77;
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["provisional"] = false;
 
   const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
   for (const DoubleField& f : kDoubleFields) {
@@ -259,14 +263,14 @@ TEST(CatchPoseIkParams, AllFieldsAtOnceAreNotCrossWired) {
 TEST(CatchPoseIkParams, FdStepKeyParsesAndIsRangeChecked) {
   EXPECT_DOUBLE_EQ(ParseCatchPoseIkParams(IkRoot()).options.fd_step, kDefault.fd_step);
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["fd_step"] = 2.5e-4;
+  root["planner"]["search"]["grid"]["ik"]["fd_step"] = 2.5e-4;
   const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
   EXPECT_DOUBLE_EQ(cfg.options.fd_step, 2.5e-4);
   EXPECT_DOUBLE_EQ(cfg.options.v_eps, kDefault.v_eps);  // its neighbour in the table
   for (const char* bad : {"0.0", "-1.0e-5", ".nan", ".inf", "soft"}) {
     YAML::Node r = IkRoot();
-    r["planner"]["ik"]["fd_step"] = bad;
-    ExpectRejectMentioning(r, "'planner.ik.fd_step'");
+    r["planner"]["search"]["grid"]["ik"]["fd_step"] = bad;
+    ExpectRejectMentioning(r, "'planner.search.grid.ik.fd_step'");
   }
 }
 
@@ -282,7 +286,7 @@ TEST(CatchPoseIkParams, AlphaMaxAbsentIsTbdAndKeepsTheProvisionalDefault) {
 
 TEST(CatchPoseIkParams, AlphaMaxLiteralTbdIsTbdAndKeepsTheProvisionalDefault) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["alpha_max"] = "TBD";
+  root["planner"]["search"]["grid"]["ik"]["alpha_max"] = "TBD";
   const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
   EXPECT_TRUE(cfg.alpha_max.tbd) << "'TBD' must not silently become a number";
   EXPECT_DOUBLE_EQ(cfg.options.alpha_max, kDefault.alpha_max);
@@ -291,7 +295,7 @@ TEST(CatchPoseIkParams, AlphaMaxLiteralTbdIsTbdAndKeepsTheProvisionalDefault) {
 TEST(CatchPoseIkParams, AlphaMaxNumberResolvesAndReachesTheStruct) {
   ASSERT_NE(0.4, kDefault.alpha_max);
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["alpha_max"] = 0.4;
+  root["planner"]["search"]["grid"]["ik"]["alpha_max"] = 0.4;
   const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
   EXPECT_FALSE(cfg.alpha_max.tbd);
   EXPECT_DOUBLE_EQ(cfg.alpha_max.value, 0.4);
@@ -302,7 +306,7 @@ TEST(CatchPoseIkParams, AlphaMaxAcceptsBothEndsOfItsRange) {
   // L3 §6 gives 0–π/2, both inclusive.
   for (const double a : {0.0, 1.5707963267948966}) {
     YAML::Node root = IkRoot();
-    root["planner"]["ik"]["alpha_max"] = a;
+    root["planner"]["search"]["grid"]["ik"]["alpha_max"] = a;
     const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
     EXPECT_DOUBLE_EQ(cfg.options.alpha_max, a);
   }
@@ -310,8 +314,8 @@ TEST(CatchPoseIkParams, AlphaMaxAcceptsBothEndsOfItsRange) {
 
 TEST(CatchPoseIkParams, AlphaMaxAboveHalfPiRejected) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["alpha_max"] = 1.6;  // > π/2
-  ExpectRejectMentioning(root, "'planner.ik.alpha_max'");
+  root["planner"]["search"]["grid"]["ik"]["alpha_max"] = 1.6;  // > π/2
+  ExpectRejectMentioning(root, "'planner.search.grid.ik.alpha_max'");
 }
 
 // ── The catchability gate: definition selects the row ───────────────────────
@@ -319,7 +323,7 @@ TEST(CatchPoseIkParams, AlphaMaxAboveHalfPiRejected) {
 TEST(CatchPoseIkParams, Arm5RowThresholdReachesTheStruct) {
   ASSERT_NE(0.42, kDefault.manipulability_min);
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = 0.42;
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_5row"] = 0.42;
   const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
   EXPECT_DOUBLE_EQ(cfg.options.manipulability_min, 0.42);
   EXPECT_DOUBLE_EQ(ActiveManipulabilityMin(cfg).value, 0.42);
@@ -327,9 +331,9 @@ TEST(CatchPoseIkParams, Arm5RowThresholdReachesTheStruct) {
 
 TEST(CatchPoseIkParams, DefinitionArm6RowSelectsItsOwnRow) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["definition"] = "arm_6row";
-  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = 0.42;
-  root["planner"]["catchability"]["manipulability_min"]["arm_6row"] = 0.77;
+  root["planner"]["search"]["grid"]["catchability"]["definition"] = "arm_6row";
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_5row"] = 0.42;
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_6row"] = 0.77;
   const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
   EXPECT_EQ(cfg.options.definition, ManipDefinition::kArm6Row);
   EXPECT_DOUBLE_EQ(cfg.options.manipulability_min, 0.77)
@@ -338,7 +342,7 @@ TEST(CatchPoseIkParams, DefinitionArm6RowSelectsItsOwnRow) {
 
 TEST(CatchPoseIkParams, DefinitionArm5RowIsAcceptedExplicitly) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["definition"] = "arm_5row";
+  root["planner"]["search"]["grid"]["catchability"]["definition"] = "arm_5row";
   const CatchPoseIkConfig cfg = ParseCatchPoseIkParams(root);
   EXPECT_EQ(cfg.options.definition, ManipDefinition::kArm5Row);
   EXPECT_DOUBLE_EQ(cfg.options.manipulability_min, kDefault.manipulability_min);
@@ -350,13 +354,13 @@ TEST(CatchPoseIkParams, TbdActiveThresholdLeavesTheOptionsUnusable) {
   // non-finite so it refuses the options rather than gating on the arm_5row
   // number. Both routes to that state are checked.
   YAML::Node by_definition = CatchabilityRoot();
-  by_definition["planner"]["catchability"]["definition"] = "arm_6row";
+  by_definition["planner"]["search"]["grid"]["catchability"]["definition"] = "arm_6row";
   const CatchPoseIkConfig a = ParseCatchPoseIkParams(by_definition);
   EXPECT_TRUE(ActiveManipulabilityMin(a).tbd);
   EXPECT_FALSE(std::isfinite(a.options.manipulability_min));
 
   YAML::Node by_literal = CatchabilityRoot();
-  by_literal["planner"]["catchability"]["manipulability_min"]["arm_5row"] = "TBD";
+  by_literal["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_5row"] = "TBD";
   const CatchPoseIkConfig b = ParseCatchPoseIkParams(by_literal);
   EXPECT_TRUE(b.manipulability_min_arm_5row.tbd);
   EXPECT_FALSE(std::isfinite(b.options.manipulability_min));
@@ -364,58 +368,59 @@ TEST(CatchPoseIkParams, TbdActiveThresholdLeavesTheOptionsUnusable) {
 
 TEST(CatchPoseIkParams, ProvisionalFlagIsRead) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["manipulability_min"]["provisional"] = false;
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["provisional"] = false;
   EXPECT_FALSE(ParseCatchPoseIkParams(root).manipulability_min_provisional);
 }
 
 TEST(CatchPoseIkParams, RejectsUnknownDefinition) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["definition"] = "arm_7row";
-  ExpectRejectMentioning(root, "'planner.catchability.definition'");
+  root["planner"]["search"]["grid"]["catchability"]["definition"] = "arm_7row";
+  ExpectRejectMentioning(root, "'planner.search.grid.catchability.definition'");
 }
 
 TEST(CatchPoseIkParams, RejectsNonScalarDefinition) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["definition"] = YAML::Load("[arm_5row]");
-  ExpectRejectMentioning(root, "'planner.catchability.definition'");
+  root["planner"]["search"]["grid"]["catchability"]["definition"] = YAML::Load("[arm_5row]");
+  ExpectRejectMentioning(root, "'planner.search.grid.catchability.definition'");
 }
 
 TEST(CatchPoseIkParams, RejectsNegativeThreshold) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = -0.1;
-  ExpectRejectMentioning(root, "'planner.catchability.manipulability_min.arm_5row'");
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_5row"] = -0.1;
+  ExpectRejectMentioning(root, "'planner.search.grid.catchability.manipulability_min.arm_5row'");
 }
 
 TEST(CatchPoseIkParams, RejectsNonNumericThreshold) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["manipulability_min"]["arm_6row"] = "lowish";
-  ExpectRejectMentioning(root, "'planner.catchability.manipulability_min.arm_6row'");
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_6row"] = "lowish";
+  ExpectRejectMentioning(root, "'planner.search.grid.catchability.manipulability_min.arm_6row'");
 }
 
 // ── Typo protection (the behaviour a permissive parser gets backwards) ──────
 
 TEST(CatchPoseIkParams, RejectsUnknownKeyUnderPlannerIk) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["eps_position"] = 0.005;  // plausible misspelling of eps_pos
-  ExpectRejectMentioning(root, "unknown key 'planner.ik.eps_position'");
+  root["planner"]["search"]["grid"]["ik"]["eps_position"] =
+      0.005;  // plausible misspelling of eps_pos
+  ExpectRejectMentioning(root, "unknown key 'planner.search.grid.ik.eps_position'");
 }
 
 TEST(CatchPoseIkParams, RejectsUnknownKeyEvenWhenEveryRealKeyIsPresent) {
   YAML::Node root = IkRoot();
   for (const DoubleField& f : kDoubleFields) {
-    root["planner"]["ik"][f.key] = f.distinct;
+    root["planner"]["search"]["grid"]["ik"][f.key] = f.distinct;
   }
-  root["planner"]["ik"]["rhoo"] = 0.2;
-  ExpectRejectMentioning(root, "unknown key 'planner.ik.rhoo'");
+  root["planner"]["search"]["grid"]["ik"]["rhoo"] = 0.2;
+  ExpectRejectMentioning(root, "unknown key 'planner.search.grid.ik.rhoo'");
 }
 
 TEST(CatchPoseIkParams, RetiredKeysAreReportedNotRejected) {
   // L3 §6: `lambda` and `manip_min` were removed in v0.5. A deployed config may
   // still carry them; their meaning is known, so they are migration reports.
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["lambda"] = 0.05;
-  root["planner"]["ik"]["manip_min"] = 0.1;
-  root["planner"]["ik"]["rho"] = 0.375;
+  root["planner"]["search"]["grid"]["ik"]["lambda"] = 0.05;
+  root["planner"]["search"]["grid"]["ik"]["manip_min"] = 0.1;
+  root["planner"]["search"]["grid"]["ik"]["rho"] = 0.375;
 
   CatchPoseIkRetiredKeys retired;
   CatchPoseIkConfig cfg;
@@ -439,7 +444,7 @@ TEST(CatchPoseIkParams, RetiredKeysReportFalseWhenAbsent) {
 
 TEST(CatchPoseIkParams, RetiredPointerIsOptional) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["lambda"] = 0.05;
+  root["planner"]["search"]["grid"]["ik"]["lambda"] = 0.05;
   EXPECT_NO_THROW(static_cast<void>(ParseCatchPoseIkParams(root)));
 }
 
@@ -462,8 +467,8 @@ TEST(CatchPoseIkParams, RejectsOutOfRangeDoubles) {
   for (const Case& c : cases) {
     SCOPED_TRACE(std::string(c.key) + " = " + std::to_string(c.value));
     YAML::Node root = IkRoot();
-    root["planner"]["ik"][c.key] = c.value;
-    ExpectRejectMentioning(root, std::string("'planner.ik.") + c.key + "'");
+    root["planner"]["search"]["grid"]["ik"][c.key] = c.value;
+    ExpectRejectMentioning(root, std::string("'planner.search.grid.ik.") + c.key + "'");
   }
 }
 
@@ -482,7 +487,7 @@ TEST(CatchPoseIkParams, AcceptsTheInclusiveEndsOfBoundedRanges) {
   for (const Case& c : cases) {
     SCOPED_TRACE(std::string(c.key) + " = " + std::to_string(c.value));
     YAML::Node root = IkRoot();
-    root["planner"]["ik"][c.key] = c.value;
+    root["planner"]["search"]["grid"]["ik"][c.key] = c.value;
     EXPECT_NO_THROW(static_cast<void>(ParseCatchPoseIkParams(root)));
   }
 }
@@ -499,15 +504,15 @@ TEST(CatchPoseIkParams, RejectsOutOfRangeIntegers) {
   for (const Case& c : cases) {
     SCOPED_TRACE(std::string(c.key) + " = " + std::to_string(c.value));
     YAML::Node root = IkRoot();
-    root["planner"]["ik"][c.key] = c.value;
-    ExpectRejectMentioning(root, std::string("'planner.ik.") + c.key + "'");
+    root["planner"]["search"]["grid"]["ik"][c.key] = c.value;
+    ExpectRejectMentioning(root, std::string("'planner.search.grid.ik.") + c.key + "'");
   }
 }
 
 TEST(CatchPoseIkParams, AcceptsIntegerRangeEnds) {
   for (const int v : {1, 100}) {
     YAML::Node root = IkRoot();
-    root["planner"]["ik"]["max_iter"] = v;
+    root["planner"]["search"]["grid"]["ik"]["max_iter"] = v;
     EXPECT_EQ(ParseCatchPoseIkParams(root).options.max_iter, v);
   }
 }
@@ -516,44 +521,44 @@ TEST(CatchPoseIkParams, AcceptsIntegerRangeEnds) {
 
 TEST(CatchPoseIkParams, RejectsStringWhereADoubleIsExpected) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["rho"] = "fast";
-  ExpectRejectMentioning(root, "'planner.ik.rho' must be a number");
+  root["planner"]["search"]["grid"]["ik"]["rho"] = "fast";
+  ExpectRejectMentioning(root, "'planner.search.grid.ik.rho' must be a number");
 }
 
 TEST(CatchPoseIkParams, RejectsSequenceWhereAScalarIsExpected) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["rho"] = YAML::Load("[0.1, 0.2]");
+  root["planner"]["search"]["grid"]["ik"]["rho"] = YAML::Load("[0.1, 0.2]");
   ExpectRejectMentioning(root, "must be a number, got a sequence");
 }
 
 TEST(CatchPoseIkParams, RejectsMapWhereAScalarIsExpected) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["v_eps"] = YAML::Load("{value: 1e-6}");
+  root["planner"]["search"]["grid"]["ik"]["v_eps"] = YAML::Load("{value: 1e-6}");
   ExpectRejectMentioning(root, "must be a number, got a map");
 }
 
 TEST(CatchPoseIkParams, RejectsSequenceForTheTbdScalar) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["alpha_max"] = YAML::Load("[0.26]");
+  root["planner"]["search"]["grid"]["ik"]["alpha_max"] = YAML::Load("[0.26]");
   ExpectRejectMentioning(root, "must be a number or the literal 'TBD', got a sequence");
 }
 
 TEST(CatchPoseIkParams, RejectsNonIntegerWhereAnIntIsExpected) {
   // 3.5 must not truncate to 3: an iteration cap the config did not ask for.
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["max_iter"] = 3.5;
-  ExpectRejectMentioning(root, "'planner.ik.max_iter' must be an integer");
+  root["planner"]["search"]["grid"]["ik"]["max_iter"] = 3.5;
+  ExpectRejectMentioning(root, "'planner.search.grid.ik.max_iter' must be an integer");
 }
 
 TEST(CatchPoseIkParams, RejectsStringWhereAnIntIsExpected) {
   YAML::Node root = IkRoot();
-  root["planner"]["ik"]["qp_max_iter"] = "fifty";
-  ExpectRejectMentioning(root, "'planner.ik.qp_max_iter' must be an integer");
+  root["planner"]["search"]["grid"]["ik"]["qp_max_iter"] = "fifty";
+  ExpectRejectMentioning(root, "'planner.search.grid.ik.qp_max_iter' must be an integer");
 }
 
 TEST(CatchPoseIkParams, RejectsNonBoolProvisional) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["manipulability_min"]["provisional"] = "maybe";
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["provisional"] = "maybe";
   ExpectRejectMentioning(root, "must be a bool");
 }
 
@@ -564,7 +569,8 @@ TEST(CatchPoseIkParams, RejectsNonMapRoot) {
 }
 
 TEST(CatchPoseIkParams, RejectsNonMapIkSection) {
-  ExpectRejectMentioning(YAML::Load("planner:\n  ik: 0.5\n"), "section 'planner.ik' must be a map");
+  ExpectRejectMentioning(YAML::Load("planner:\n  search:\n    grid:\n      ik: 0.5\n"),
+                         "section 'planner.search.grid.ik' must be a map");
 }
 
 TEST(CatchPoseIkParams, RejectsNonMapPlannerSection) {
@@ -572,13 +578,15 @@ TEST(CatchPoseIkParams, RejectsNonMapPlannerSection) {
 }
 
 TEST(CatchPoseIkParams, RejectsNonMapCatchabilitySection) {
-  ExpectRejectMentioning(YAML::Load("planner:\n  catchability: 5\n"),
-                         "section 'planner.catchability' must be a map");
+  ExpectRejectMentioning(YAML::Load("planner:\n  search:\n    grid:\n      catchability: 5\n"),
+                         "section 'planner.search.grid.catchability' must be a map");
 }
 
 TEST(CatchPoseIkParams, RejectsNonMapManipulabilityMinSection) {
-  ExpectRejectMentioning(YAML::Load("planner:\n  catchability:\n    manipulability_min: 0.1\n"),
-                         "section 'planner.catchability.manipulability_min' must be a map");
+  ExpectRejectMentioning(
+      YAML::Load(
+          "planner:\n  search:\n    grid:\n      catchability:\n        manipulability_min: 0.1\n"),
+      "section 'planner.search.grid.catchability.manipulability_min' must be a map");
 }
 
 // ── One config load feeds both parsers ──────────────────────────────────────
@@ -587,7 +595,7 @@ TEST(CatchPoseIkParams, SharesTheArm5RowKeyWithTheG0CValidator) {
   // The one key both schemas read. They must agree on it, or the map's gate
   // and the arming check would disagree about the same YAML.
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = 0.42;
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_5row"] = 0.42;
   const CatchPoseIkConfig ik = ParseCatchPoseIkParams(root);
   const rtc::catching::CatchingParams g0c = rtc::catching::ParseCatchingParams(root);
   ASSERT_FALSE(g0c.planner_catchability_manip_min_arm5row.tbd);
@@ -613,9 +621,10 @@ TEST(CatchPoseIkParams, SharedKeyIsReadTheSameWayByBothParsers) {
 
   for (const auto& c : kCases) {
     SCOPED_TRACE(c.spelling);
-    const YAML::Node root = YAML::Load(
-        std::string("planner:\n  catchability:\n    manipulability_min:\n      arm_5row: ") +
-        c.spelling + "\n");
+    const YAML::Node root =
+        YAML::Load(std::string("planner:\n  search:\n    grid:\n      catchability:\n        "
+                               "manipulability_min:\n          arm_5row: ") +
+                   c.spelling + "\n");
     const rtc::catching::TbdDouble ik = ParseCatchPoseIkParams(root).manipulability_min_arm_5row;
     const rtc::catching::TbdDouble g0c =
         rtc::catching::ParseCatchingParams(root).planner_catchability_manip_min_arm5row;
@@ -637,18 +646,19 @@ TEST(CatchPoseIkParams, SharedKeyIsReadTheSameWayByBothParsers) {
   EXPECT_DOUBLE_EQ(ik.value, g0c.value);
 
   // Neither a number nor `TBD`: refused by both, with the same exception type.
-  const YAML::Node words =
-      YAML::Load("planner:\n  catchability:\n    manipulability_min:\n      arm_5row: lowish\n");
+  const YAML::Node words = YAML::Load(
+      "planner:\n  search:\n    grid:\n      catchability:\n        manipulability_min:\n"
+      "          arm_5row: lowish\n");
   EXPECT_THROW((void)ParseCatchPoseIkParams(words), std::invalid_argument);
   EXPECT_THROW((void)rtc::catching::ParseCatchingParams(words), std::invalid_argument);
 }
 
 TEST(CatchPoseIkParams, SharedKeyOutOfRangeIsThrownHereAndReportedThere) {
   YAML::Node root = CatchabilityRoot();
-  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = -0.1;
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_5row"] = -0.1;
 
   // This parser: `options` must be ready for Solve, so it refuses outright.
-  ExpectRejectMentioning(root, "'planner.catchability.manipulability_min.arm_5row'");
+  ExpectRejectMentioning(root, "'planner.search.grid.catchability.manipulability_min.arm_5row'");
 
   // The G0-C parser: the value PARSES, as written...
   rtc::catching::CatchingParams g0c;
@@ -665,7 +675,7 @@ TEST(CatchPoseIkParams, SharedKeyOutOfRangeIsThrownHereAndReportedThere) {
   for (std::size_t i = 0; i < report.failure_count; ++i) {
     const rtc::catching::CatchingValidationEntry& e = report.failures[i];
     if (e.reason == rtc::catching::CatchingValidationReason::kRangeViolation &&
-        std::string_view(e.key) == "planner.catchability.manipulability_min.arm_5row") {
+        std::string_view(e.key) == "planner.search.grid.catchability.manipulability_min.arm_5row") {
       reported = true;
     }
   }
@@ -673,13 +683,14 @@ TEST(CatchPoseIkParams, SharedKeyOutOfRangeIsThrownHereAndReportedThere) {
 
   // Control: the same report for an in-range value does NOT carry that entry,
   // so the assertion above is about -0.1 and not about the rest of the config.
-  root["planner"]["catchability"]["manipulability_min"]["arm_5row"] = 0.1;
+  root["planner"]["search"]["grid"]["catchability"]["manipulability_min"]["arm_5row"] = 0.1;
   const rtc::catching::CatchingValidationReport ok =
       rtc::catching::ValidateCatchingParams(rtc::catching::ParseCatchingParams(root), 500.0, false);
   for (std::size_t i = 0; i < ok.failure_count; ++i) {
-    EXPECT_FALSE(
-        ok.failures[i].reason == rtc::catching::CatchingValidationReason::kRangeViolation &&
-        std::string_view(ok.failures[i].key) == "planner.catchability.manipulability_min.arm_5row");
+    EXPECT_FALSE(ok.failures[i].reason ==
+                     rtc::catching::CatchingValidationReason::kRangeViolation &&
+                 std::string_view(ok.failures[i].key) ==
+                     "planner.search.grid.catchability.manipulability_min.arm_5row");
   }
 }
 

@@ -18,7 +18,7 @@
 # from both source controllers plus one refusal).
 #
 # It is the s8f_reach_first arm plus that one leaf. The widened catch box is
-# not optional here: the shipped `planner.workspace.catch_box` is the hull
+# not optional here: the shipped `planner.search.grid.workspace.catch_box` is the hull
 # around the SHIPPED wait pose, so a ball passing the hand at another pose is
 # "outside the box" and gets no plan. Sim only — a real arm needs the
 # collision and safety check the shipped box is.
@@ -42,11 +42,13 @@ integrated_rt_controller:
         planner:
           freeze:
             T_freeze: 0.37
-          score:
-            w_t: 5.0
-            w_gamma: 1.0
-          workspace:
-            catch_box:
-              min: [-1.1, -1.1, 0.15]
-              max: [1.1, 1.1, 1.2]
+          search:
+            grid:
+              score:
+                w_t: 5.0
+                w_gamma: 1.0
+              workspace:
+                catch_box:
+                  min: [-1.1, -1.1, 0.15]
+                  max: [1.1, 1.1, 1.2]
           wait_pose_source: current

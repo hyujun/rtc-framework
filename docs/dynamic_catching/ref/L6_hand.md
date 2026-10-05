@@ -47,7 +47,7 @@ $$\Vert v\Vert_{\max}=\min(v_{dir,\max},v_{\max})+\frac{d_{eff}}{T_{close,tot}}$
 
 ($v_{dir,\max}$ 는 포구 자세의 방향 속도 상한 — L3 §4.5.) 예: $d_{eff}=4$ cm, $T_{close,tot}=60$ ms, $v_{dir,\max}=1.5$ m/s 면 2.17 m/s 뿐이고, 6 m/s 를 받으려면 $T_{close,tot}\le8.9$ ms 가 필요하다 ([R1] 의 DLR-Hand-II 5 ms 급).
 
-그래서 이 값은 목표 투척 속도를 정하기 전의 **go/no-go** 다. 이 값을 모른 채 `planner.gamma.*`, `reference.a_max`, rollout 창을 튜닝하면 재작업이 확정이다. 게이트: 목표 투척 속도 (catchability 지도가 정한 범위) 에서 γ 창이 비지 않을 것 — 비면 목표를 낮춘 뒤 진행한다. 토크에서 도출한 보수적 팔 가속 box 가 $v_{dir,\max}$ 를 낮출 수 있으므로 함께 판정한다.
+그래서 이 값은 목표 투척 속도를 정하기 전의 **go/no-go** 다. 이 값을 모른 채 `planner.search.grid.gamma.*`, `reference.a_max`, rollout 창을 튜닝하면 재작업이 확정이다. 게이트: 목표 투척 속도 (catchability 지도가 정한 범위) 에서 γ 창이 비지 않을 것 — 비면 목표를 낮춘 뒤 진행한다. 토크에서 도출한 보수적 팔 가속 box 가 $v_{dir,\max}$ 를 낮출 수 있으므로 함께 판정한다.
 
 ### 4.2 $T_{close}$의 정의 `[권장]`
 
@@ -99,7 +99,7 @@ $T_{close}$ 를 최소화하려면 폐쇄 자세로의 계단 position 명령 + 
 
 $$d_{eff}=v_{rel}\,T_{close,tot}$$
 
-  $v_{rel}$ 은 시각 발동 (아래 step 1 의 규칙) 으로 날려 넣은 공이 유지되는 상대속도 허용량의 실측이다. 유효 조건은 런타임 손 발동이 같은 **시각 발동** ($t_{cmd}=t_c-T_{close,e2e}$, §4.3) 이라는 것이다. 포켓의 기하 깊이는 접촉 물리량으로 MASTER TBD-HAND-04 에 따로 남는다. 값은 `catching/search_grid.yaml` 의 `planner.hand.d_eff` · `r_cap` 이다 (주석에 산정식이 있다). 두 값은 **YAML 의 `planner.hand.*` 이지 `robot.hand.*` 가 아니다.**
+  $v_{rel}$ 은 시각 발동 (아래 step 1 의 규칙) 으로 날려 넣은 공이 유지되는 상대속도 허용량의 실측이다. 유효 조건은 런타임 손 발동이 같은 **시각 발동** ($t_{cmd}=t_c-T_{close,e2e}$, §4.3) 이라는 것이다. 포켓의 기하 깊이는 접촉 물리량으로 MASTER TBD-HAND-04 에 따로 남는다. 값은 `catching/search_grid.yaml` 의 `planner.search.grid.hand.d_eff` · `r_cap` 이다 (주석에 산정식이 있다). 두 값은 **YAML 의 `planner.search.grid.hand.*` 이지 `robot.hand.*` 가 아니다.**
 
 산정 절차:
 
@@ -185,7 +185,7 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 | G6-C | 시뮬레이션 두 손의 $T_{close,e2e}(\eta)$ 분포 산출 (평균 · 최대 · 99 %, steady 시계와 tick × `dt` 두 축으로 재고 log drop 0), §4.1 go/no-go 판정 기록 — go/no-go 는 목표 속도에서 γ 창이 비지 않는 것이고, 입력 ($T_{close}$, $d_{eff}$, 가속 box, $\eta_v$, 목표 속도) 중 하나라도 provisional 이면 PASS(provisional) 로 기록한다 | `[SIM-P1B]` |
 | G6-D | 실기 p1b $T_{close,tot}$ 종단 간 분포 산출, 99 % 값을 YAML 에 반영 | `[HW-P1B]` |
 | G6-E | 고정 공 fixture 에서 폐쇄 후 유지 성공 (position 목표 유지 규칙, 반복 횟수는 사용자 결정) | `[HW-P1B]` |
-| G6-F | $d_{eff}$ **와 $r_{cap}$** 의 산정식 · 실측값 · provisional 표시가 YAML (`planner.hand.*`) 과 이 문서에 기록됨. YAML 의 표시는 값 옆 키가 아니라 블록 전체의 `planner.provisional` 이다 | `[SIM-ANY]` |
+| G6-F | $d_{eff}$ **와 $r_{cap}$** 의 산정식 · 실측값 · provisional 표시가 YAML (`planner.search.grid.hand.*`) 과 이 문서에 기록됨. YAML 의 표시는 값 옆 키가 아니라 블록 전체의 `planner.provisional` 이다 | `[SIM-ANY]` |
 
 ## 10. 미확정 항목
 

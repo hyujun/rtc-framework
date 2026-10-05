@@ -46,12 +46,12 @@ LEAD_ON_LEAVES = {
 # inverted score weights.
 REACH_FIRST = "s8f_reach_first"
 S8F_BOX = {
-    ("catching", "planner", "workspace", "catch_box", "min"): [-1.1, -1.1, 0.15],
-    ("catching", "planner", "workspace", "catch_box", "max"): [1.1, 1.1, 1.2],
+    ("catching", "planner", "search", "grid", "workspace", "catch_box", "min"): [-1.1, -1.1, 0.15],
+    ("catching", "planner", "search", "grid", "workspace", "catch_box", "max"): [1.1, 1.1, 1.2],
 }
 S8F_SCORE = {
-    ("catching", "planner", "score", "w_t"): 5.0,
-    ("catching", "planner", "score", "w_gamma"): 1.0,
+    ("catching", "planner", "search", "grid", "score", "w_t"): 5.0,
+    ("catching", "planner", "search", "grid", "score", "w_gamma"): 1.0,
 }
 # S8-I (#537 5850509543): the reach-first arm with the wait pose taken from
 # the arm's switched-in pose.
@@ -231,7 +231,7 @@ def _check_commit_window(catching: dict, ship: dict, profile: str) -> None:
     h = 1.0 / base["/**"]["ros__parameters"]["control_rate"]
     t_close_tot = ship["robot"]["hand"]["T_close_e2e"] + h / 2
     t_arm = effective("joint_cmd", "lag", "T_arm")
-    margin = effective("planner", "time", "margin")
+    margin = effective("planner", "search", "grid", "time", "margin")
     assert effective("planner", "freeze", "T_freeze") >= t_close_tot + t_arm + margin
     # L is the shipped comment's 0.14 (io.horizon_min: "... + L 0.14").
     horizon = effective("io", "horizon_min")
@@ -258,11 +258,11 @@ def test_s8f_reach_first_is_lead_on_plus_the_box_and_the_inverted_weights(arms, 
     extra = {k: v for k, v in leaves.items() if k not in base}
     assert extra == {**S8F_BOX, **S8F_SCORE}
     assert {k: v for k, v in leaves.items() if k in base} == base
-    ship = shipped["catching"]["planner"]["score"]
+    ship = shipped["catching"]["planner"]["search"]["grid"]["score"]
     assert (ship["w_t"], ship["w_gamma"]) == (1.0, 5.0), "the shipped weights the arm inverts"
     assert (
-        leaves[("catching", "planner", "score", "w_t")],
-        leaves[("catching", "planner", "score", "w_gamma")],
+        leaves[("catching", "planner", "search", "grid", "score", "w_t")],
+        leaves[("catching", "planner", "search", "grid", "score", "w_gamma")],
     ) == (
         ship["w_gamma"],
         ship["w_t"],
@@ -270,9 +270,9 @@ def test_s8f_reach_first_is_lead_on_plus_the_box_and_the_inverted_weights(arms, 
 
 
 def test_s8f_box_contains_the_shipped_one_and_clears_the_table(shipped):
-    ship = shipped["catching"]["planner"]["workspace"]["catch_box"]
-    lo = S8F_BOX[("catching", "planner", "workspace", "catch_box", "min")]
-    hi = S8F_BOX[("catching", "planner", "workspace", "catch_box", "max")]
+    ship = shipped["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]
+    lo = S8F_BOX[("catching", "planner", "search", "grid", "workspace", "catch_box", "min")]
+    hi = S8F_BOX[("catching", "planner", "search", "grid", "workspace", "catch_box", "max")]
     assert all(a <= b for a, b in zip(lo, ship["min"], strict=True))
     assert all(a >= b for a, b in zip(hi, ship["max"], strict=True))
     # The stopping point may not be reserved below the work table (top z 0.05,

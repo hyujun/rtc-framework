@@ -45,7 +45,7 @@
 //
 // 2. THE MANIPULABILITY MEASURE IS TAKEN ON THE UNWEIGHTED J₅.
 //    w₅ = √det(J₅J₅ᵀ) with J₅ exactly as §4.2 defines it — no W. The gate
-//    threshold (`planner.catchability.manipulability_min.arm_5row` = 0.1,
+//    threshold (`planner.search.grid.catchability.manipulability_min.arm_5row` = 0.1,
 //    provisional) was set against that mixed-unit definition, so weighting J
 //    here would silently move the gate by ρ² while every threshold in YAML
 //    stayed put. The weight belongs to the step, the measure belongs to the
@@ -175,7 +175,7 @@
 namespace rtc::catching {
 
 /// Which Jacobian the catchability gate is applied to
-/// (`planner.catchability.definition`).
+/// (`planner.search.grid.catchability.definition`).
 ///
 /// This selects the GATE only. The null-space ascent always climbs w₅,
 /// whichever definition is active, so q* does not depend on this field — which
@@ -218,25 +218,27 @@ enum class CatchPoseReason : std::uint8_t {
 /// key on its own.
 struct CatchPoseIkOptions {
   // ── Acceptance (L3 §4.2) ──────────────────────────────────────────────────
-  int max_iter{20};        ///< `planner.ik.max_iter`
-  double eps_pos{0.002};   ///< `planner.ik.eps_pos` [m]
-  double alpha_max{0.26};  ///< `planner.ik.alpha_max` [rad] — provisional ≈15° (L3 §6 too)
+  int max_iter{20};       ///< `planner.search.grid.ik.max_iter`
+  double eps_pos{0.002};  ///< `planner.search.grid.ik.eps_pos` [m]
+  double alpha_max{
+      0.26};  ///< `planner.search.grid.ik.alpha_max` [rad] — provisional ≈15° (L3 §6 too)
 
   // ── Step (L3 §4.2) ────────────────────────────────────────────────────────
-  double rho{0.1};              ///< `planner.ik.rho` [m/rad] — task weight, see note 1 above
-  double sigma0{1e-3};          ///< `planner.ik.sigma0` — §6.5 damping shell entry
-  double lambda_max{1e-2};      ///< `planner.ik.lambda_max` — §6.5 max damping
-  double dq_step_max{0.15};     ///< `planner.ik.dq_step_max` [rad] — bound on ‖q̇_d‖∞
-  double mu{1e-4};              ///< `planner.ik.mu` — task-QP regularisation, see note 4
-  double qp_eps_abs{1e-10};     ///< `planner.ik.qp_eps_abs` — QP absolute tolerance
-  int qp_max_iter{50};          ///< `planner.ik.qp_max_iter` — QP iteration cap
-  double k_null{0.0};           ///< `planner.ik.k_null` — posture pull toward the seed
-  double k_manip{0.0};          ///< `planner.ik.k_manip` — null-space ascent gain on log w₅
-  double manip_grad_tol{1e-4};  ///< `planner.ik.manip_grad_tol` — ascent stop on ‖N∇log w₅‖
-  double fd_step{1e-5};         ///< central-difference step h [rad] for ∇log w₅
+  double rho{0.1};      ///< `planner.search.grid.ik.rho` [m/rad] — task weight, see note 1 above
+  double sigma0{1e-3};  ///< `planner.search.grid.ik.sigma0` — §6.5 damping shell entry
+  double lambda_max{1e-2};  ///< `planner.search.grid.ik.lambda_max` — §6.5 max damping
+  double dq_step_max{0.15};  ///< `planner.search.grid.ik.dq_step_max` [rad] — bound on ‖q̇_d‖∞
+  double mu{1e-4};           ///< `planner.search.grid.ik.mu` — task-QP regularisation, see note 4
+  double qp_eps_abs{1e-10};  ///< `planner.search.grid.ik.qp_eps_abs` — QP absolute tolerance
+  int qp_max_iter{50};       ///< `planner.search.grid.ik.qp_max_iter` — QP iteration cap
+  double k_null{0.0};        ///< `planner.search.grid.ik.k_null` — posture pull toward the seed
+  double k_manip{0.0};  ///< `planner.search.grid.ik.k_manip` — null-space ascent gain on log w₅
+  double manip_grad_tol{
+      1e-4};  ///< `planner.search.grid.ik.manip_grad_tol` — ascent stop on ‖N∇log w₅‖
+  double fd_step{1e-5};  ///< central-difference step h [rad] for ∇log w₅
 
   // ── Input defence (NUM-7, L3 §4.2) ────────────────────────────────────────
-  double v_eps{1e-6};  ///< `planner.ik.v_eps` [m/s] — floor on ‖v̂‖ before normalising
+  double v_eps{1e-6};  ///< `planner.search.grid.ik.v_eps` [m/s] — floor on ‖v̂‖ before normalising
 
   // ── Gate (L3 §4.2 [확정 D-18]) ────────────────────────────────────────────
   ManipDefinition definition{ManipDefinition::kArm5Row};

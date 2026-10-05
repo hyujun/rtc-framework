@@ -384,7 +384,7 @@ TEST(ApproachPlanner, ConfigureBuildsCatchCoresInTheStopCoresBox) {
         EXPECT_EQ(cp.eta_v, sp.eta_v) << j << "/" << k;
         EXPECT_EQ(cp.eta_tau, sp.eta_tau) << j << "/" << k;
         EXPECT_EQ(cp.m_q, sp.m_q) << j << "/" << k;
-        EXPECT_EQ(sp.eta_v, 0.9);  // planner.gamma.eta_v, not the core default
+        EXPECT_EQ(sp.eta_v, 0.9);  // planner.search.grid.gamma.eta_v, not the core default
       }
     }
   }
@@ -649,7 +649,7 @@ TEST(ApproachPlanner, TheVelocitySlackKeysReachTheCatchCores) {
       "replan: {k_max: 2}, approach: {n_pre_max: 6, dt_pre_s: 0.1}";
   const auto params_of = [&](const std::string& catch_keys) {
     return rtc::catching::ParsePlannerParams(
-               YAML::Load("planner: {decel_mpc: {" + std::string(grid) + catch_keys + "}}"))
+               YAML::Load("planner: {segment: {mpc: {" + std::string(grid) + catch_keys + "}}}"))
         .mpc_segment;
   };
   for (const Arm& arm : {Arm6(), Arm7()}) {
@@ -711,11 +711,11 @@ TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
 TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
   const auto params_of = [](const std::string& body) {
     return rtc::catching::ParsePlannerParams(
-               YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, "
+               YAML::Load("planner: {segment: {mpc: {horizon: {n_nodes: 7, "
                           "dt_s: 0.05, blocks: [1, 1, 2, 3]}, replan: "
                           "{k_max: 2}, approach: {n_pre_max: 6, "
                           "dt_pre_s: 0.1}, " +
-                          body + "}}"))
+                          body + "}}}"))
         .mpc_segment;
   };
   const MpcSegmentCoreParams defaults{};
@@ -801,10 +801,10 @@ TEST(ApproachPlanner, TheJerkWeightListMustMatchTheArm) {
   MpcSegmentPlanner planner;
   std::string err;
   EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
-  EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
+  EXPECT_NE(err.find("planner.segment.mpc.cost.jerk_weight"), std::string::npos) << err;
   p.jerk_weight = std::vector<double>(7, 1.0);
   EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
-  EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
+  EXPECT_NE(err.find("planner.segment.mpc.cost.jerk_weight"), std::string::npos) << err;
   p.jerk_weight = std::vector<double>(6, 1.0);
   EXPECT_TRUE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err))
       << err;
@@ -826,8 +826,8 @@ TEST(ApproachPlanner, TheMarginIsComparedWithTheProfilesTrustRegion) {
   p.m_q = 0.05;
   p.delta_tr = 0.04;
   EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
-  EXPECT_NE(err.find("decel_mpc.linearization.delta_tr"), std::string::npos) << err;
-  EXPECT_NE(err.find("decel_mpc.m_q"), std::string::npos) << err;
+  EXPECT_NE(err.find("planner.segment.mpc.linearization.delta_tr"), std::string::npos) << err;
+  EXPECT_NE(err.find("planner.segment.mpc.m_q"), std::string::npos) << err;
   EXPECT_FALSE(planner.Configured());
 }
 
@@ -923,7 +923,7 @@ TEST(ApproachPlanner, ASamePointResolveIsWarmAndKeepsNodeZero) {
   EXPECT_EQ(r.rec.kind, SegmentKind::kSame);
   EXPECT_FALSE(r.rec.cold_start);
   EXPECT_EQ(r.rec.source_seq, s.seq);
-  EXPECT_TRUE(r.rec.from_segment);
+  EXPECT_TRUE(r.rec.x0_from_segment);
   EXPECT_EQ(r.out.t0_ns, t0);
   EXPECT_EQ(r.out.n_pre, 6);
   EXPECT_GT(r.rec.w_delta_scale, 0.0);  // σ 0.01 m: tr Σ / σ_ref² = 3e-4/9e-4
@@ -1285,10 +1285,10 @@ void ExpectNotSolved(const SegmentRecord& rec) {
 TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLine) {
   const auto params_of = [](const std::string& body) {
     return rtc::catching::ParsePlannerParams(
-               YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: "
+               YAML::Load("planner: {segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: "
                           "[1, 1, 2, 3]}, replan: {k_max: 2}, approach: {n_pre_max: 6, "
                           "dt_pre_s: 0.1}" +
-                          body + "}}"))
+                          body + "}}}"))
         .mpc_segment;
   };
   for (const Arm& arm : {Arm6(), Arm7()}) {

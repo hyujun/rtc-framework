@@ -142,20 +142,22 @@ grep -o 'commit at t_c − [0-9.]* s' "$OUT/launch.log" | head -1 > "$OUT/commit
 CN=/demo_catching_controller/demo_catching_controller
 for P in joint_cmd.lag.T_arm joint_cmd.lag.lead_enable planner.freeze.T_freeze \
          reference.omega reference.a_max reference.v_max control.dt \
-         prediction.dt_expected io.n_min planner.slice.dt \
-         planner.decel_mpc.horizon.n_nodes planner.decel_mpc.horizon.dt_s \
-         planner.decel_mpc.approach.n_pre_max planner.decel_mpc.approach.dt_pre_s \
-         planner.decel_mpc.approach.rest_tol planner.decel_mpc.replan.k_max \
-         planner.decel_mpc.replan.same_point planner.decel_mpc.budget.first_s \
-         planner.decel_mpc.budget.replan_s planner.decel_mpc.publish.catch_pos_err_max \
-         planner.decel_mpc.publish.slack_max planner.decel_mpc.eta_tau planner.decel_mpc.m_q \
-         planner.decel_mpc.catch.gamma_ref planner.decel_mpc.catch.w_v_par \
-         planner.decel_mpc.catch.w_v_perp planner.decel_mpc.catch.w_axis \
-         planner.decel_mpc.catch.kappa planner.decel_mpc.catch.sigma_floor \
-         planner.decel_mpc.catch.w_max planner.decel_mpc.catch.w_const \
-         planner.decel_mpc.catch.sigma_ref planner.gamma.eta_v planner.time.margin \
-         planner.slice.t_lead_min joint_cmd.accel_constraint \
-         supervisor.decel.mode supervisor.decel.switch_margin; do
+         prediction.dt_expected io.n_min planner.search.grid.slice.dt \
+         planner.segment.mpc.horizon.n_nodes planner.segment.mpc.horizon.dt_s \
+         planner.segment.mpc.approach.n_pre_max planner.segment.mpc.approach.dt_pre_s \
+         planner.segment.mpc.approach.rest_tol planner.segment.mpc.replan.k_max \
+         planner.segment.mpc.replan.same_point planner.segment.mpc.budget.first_s \
+         planner.segment.mpc.budget.replan_s planner.segment.mpc.publish.catch_pos_err_max \
+         planner.segment.mpc.publish.slack_max planner.segment.mpc.eta_tau planner.segment.mpc.m_q \
+         planner.segment.mpc.catch.gamma_ref planner.segment.mpc.catch.w_v_par \
+         planner.segment.mpc.catch.w_v_perp planner.segment.mpc.catch.w_axis \
+         planner.segment.mpc.catch.kappa planner.segment.mpc.catch.sigma_floor \
+         planner.segment.mpc.catch.w_max planner.segment.mpc.catch.w_const \
+         planner.segment.mpc.catch.sigma_ref planner.search.grid.gamma.eta_v \
+         planner.search.grid.time.margin planner.search.grid.slice.t_lead_min \
+         joint_cmd.accel_constraint planner.segment.mode planner.segment.mpc.switch_margin \
+         planner.segment.mpc.eta_v planner.search.grid.reference.omega \
+         planner.search.grid.reference.a_max planner.search.grid.reference.v_max; do
   echo "$P: $(ros2 param get $CN $P 2>&1)" >> "$OUT/mirror.txt"
 done
 echo "ball_type: $(ros2 param get /mujoco_simulator projectile_ball.ball_type 2>&1)" >> "$OUT/mirror.txt"
@@ -167,24 +169,31 @@ grep -q 'lead_enable: Boolean value is: True' "$OUT/mirror.txt" || why="$why lea
 grep -q "ball_type: String value is: ${EXPECT_BALL}\$" "$OUT/mirror.txt" || why="$why ball_type"
 grep -q "T_freeze: Double value is: ${EXPECT_COMMIT%0}\$\|T_freeze: Double value is: ${EXPECT_COMMIT}\$" "$OUT/mirror.txt" || why="$why T_freeze"
 grep -q "^joint_cmd.accel_constraint: String value is: ${EXPECT_CLIK:-dynamic}\$" "$OUT/mirror.txt" || why="$why clik_form"
-grep -q "^supervisor.decel.mode: String value is: ${EXPECT_MODE:-mpc}\$" "$OUT/mirror.txt" || why="$why mode_mirror"
+grep -q "^planner.segment.mode: String value is: ${EXPECT_MODE:-mpc}\$" "$OUT/mirror.txt" || why="$why mode_mirror"
 IFS=';' read -ra KVS <<< "${EXPECT_KV:-}"
 for kv in "${KVS[@]}"; do
   [ -z "$kv" ] && continue
+  # A plan written before #711 names the old mirror: refuse it by name rather than
+  # let the read-back fail as an unexplained missing line.
+  case ${kv%%=*} in
+    planner.decel_mpc.* | supervisor.decel.mode | supervisor.decel.switch_margin | \
+      planner.gamma.eta_v | planner.time.margin | planner.slice.*)
+      why="$why old_mirror_name:${kv%%=*}"
+      continue
+      ;;
+  esac
   grep -q "^${kv%%=*}: [A-Za-z]* value is: ${kv#*=}\$" "$OUT/mirror.txt" || why="$why ${kv%%=*}"
 done
-# EXPECT_MODE=closed_form: the same-day control unit (v1 law, no decel MPC).
-if [ "${EXPECT_MODE:-mpc}" == "closed_form" ]; then
-  grep -q 'DECEL law: mpc' "$OUT/launch.log" && why="$why mode_is_mpc"
-else
-grep -q "planner.decel_mpc.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-6}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
-grep -q 'planner.decel_mpc.horizon.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
-# The startup lines say the mode too (mpc prints both).
-grep -q 'DECEL law: mpc' "$OUT/launch.log" || why="$why mode_mpc"
-grep -q "decel MPC approach grid: up to ${EXPECT_NPRE:-6} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
+# The startup lines say the mode too, in both modes (the expected line must be present):
+# EXPECT_MODE=closed_form is the same-day control unit (v1 law, no MPC segment planner).
+python3 "$D/check_segment_mode.py" "$OUT/launch.log" "${EXPECT_MODE:-mpc}" || why="$why mode_log"
+if [ "${EXPECT_MODE:-mpc}" != "closed_form" ]; then
+grep -q "planner.segment.mpc.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-6}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
+grep -q 'planner.segment.mpc.horizon.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
+grep -q "MPC segment planner approach grid: up to ${EXPECT_NPRE:-6} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
 grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not_e1f09_binary"
 fi
-grep 'decel MPC' "$OUT/launch.log" | sed 's/^.*demo_catching_controller\]: //' > "$OUT/decel_startup.txt"
+grep 'MPC segment planner \(ready\|approach grid\)' "$OUT/launch.log" | sed 's/^.*demo_catching_controller\]: //' > "$OUT/segment_startup.txt"
 BUDGET=$(grep -o 'planner enabled: wake timeout [0-9.]* s, budget [0-9.]* s' "$OUT/launch.log" | head -1 | sed 's/.*budget \([0-9.]*\) s$/\1/')
 echo "planner_budget_s: ${BUDGET}" >> "$OUT/conditions.txt"
 [ -n "$BUDGET" ] || why="$why no_budget_line"

@@ -413,7 +413,7 @@ TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
 }
 
 TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating) {
-  // MPC E1-F09 (supervisor.decel.mode mpc): the segment lane's Load and judge in
+  // MPC E1-F09 (planner.segment.mode mpc): the segment lane's Load and judge in
   // TRACKING and from APPROACH on, the stop part's node-wise catch-box FK, the
   // pair's adoption, the wait before node 0, a same-node-0 replacement, the
   // first switch and two replan switches with their gates, the segment sample
@@ -425,11 +425,12 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
   using integrated_bringup::testfx::kApproachNPre;
   using Event = integrated_bringup::CatchingDiagLogPod::SegmentEvent;
   ASSERT_NO_FATAL_FAILURE(BringUp(false, [](YAML::Node& y) {
-    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    y["catching"]["planner"]["segment"]["mode"] = "mpc";
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
-    y["catching"]["planner"]["workspace"]["catch_box"]["min"] =
+    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
         std::vector<double>{-2.0, -2.0, -2.0};
-    y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, 2.0};
+    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
+        std::vector<double>{2.0, 2.0, 2.0};
   }));
   const auto stamp = [this](rtc::catching::SegmentSnapshot& seg, std::uint32_t seq) {
     seg.token.activation_generation = ctrl_->GetPlannerRtState().activation_generation;
@@ -515,19 +516,20 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
     if (mode == Mode::kTracking && ctrl_->GetMode() == Mode::kApproach) {
       adopted_at = t;
       us_pair = std::max(us_pair, us);
-      EXPECT_EQ(record.decel_event, Event::kAdmitted);
-    } else if (record.decel_event == Event::kAdmitted || record.decel_event == Event::kReplaced) {
+      EXPECT_EQ(record.segment_event, Event::kAdmitted);
+    } else if (record.segment_event == Event::kAdmitted ||
+               record.segment_event == Event::kReplaced) {
       us_admit = std::max(us_admit, us);
-      replaced = replaced || record.decel_event == Event::kReplaced;
-    } else if (record.decel_event == Event::kSwitched) {
+      replaced = replaced || record.segment_event == Event::kReplaced;
+    } else if (record.segment_event == Event::kSwitched) {
       us_switch = std::max(us_switch, us);
-      switched.insert(record.decel_seq);
-    } else if (record.decel_following) {
+      switched.insert(record.segment_seq);
+    } else if (record.segment_following) {
       us_follow = std::max(us_follow, us);
     } else if (mode == Mode::kApproach && ctrl_->HasPendingSegmentForTesting()) {
       us_wait = std::max(us_wait, us);
     }
-    if (record.decel_following) {
+    if (record.segment_following) {
       followed_in.insert(mode);
     }
     if (ctrl_->GetMode() == Mode::kRetreat && prev == Mode::kHold) {

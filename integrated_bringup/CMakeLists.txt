@@ -1432,7 +1432,7 @@ if(BUILD_TESTING)
 
   # ── dynamic_catching S6-C G3-C: 1000 synthetic throws through the planner ──
   # The shipped ur5e_p1b planner profile on the real catch sub-model: p99 of
-  # the planning cycle < planner.budget_s (asserted), rejection distribution and
+  # the planning cycle < planner.search.grid.budget_s (asserted), rejection distribution and
   # rank-gate counts recorded.
   ament_add_gtest(test_catching_planner_g3c test/test_catching_planner_g3c.cpp
     TIMEOUT 300)
@@ -1620,6 +1620,10 @@ if(BUILD_TESTING)
   # tools/catching_eval/summarize.py (not installed — read from the source
   # tree): the mechanical parts of the G-1 verdict, on planted inputs.
   ament_add_pytest_test(test_catching_eval_summarize test/test_catching_eval_summarize.py)
+  # The eval tools and the trial runner load a catching profile or a recorded
+  # mirror: an old key is refused, an old mirror name is read through the alias
+  # table (#711).
+  ament_add_pytest_test(test_catching_keys_tools test/test_catching_keys_tools.py)
 
   # ── Parallel ctest ─────────────────────────────────────────────────────────
   # colcon.pkg runs this package's tests four at a time. Two kinds of test

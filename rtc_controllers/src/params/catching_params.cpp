@@ -11,6 +11,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace rtc::catching {
@@ -29,7 +30,7 @@ namespace {
 // the catch frame's own placement:
 //   - `reference.provisional`                              (L4 §6, whole block)
 //   - `core.ball.provisional`                              (D-12 공 사양)
-//   - `planner.catchability.manipulability_min.provisional` (D-18)
+//   - `planner.search.grid.catchability.manipulability_min.provisional` (D-18)
 //   - `robot.hand.provisional`                              (L6 §6, whole profile)
 //   - `supervisor.deadline.provisional`                     (D-S9-D1, both deadlines)
 //   - `joint_cmd.lag.provisional`                           (#537 Q5, T_arm)
@@ -330,35 +331,54 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   out.reference_provisional = ReadOptional(reference, "provisional", true);
 
   const YAML::Node planner = ReadSection(node, "planner");
-  const YAML::Node gamma = ReadSection(planner, "gamma");
-  out.planner_gamma_eta_v = ReadTbdDouble(gamma, "eta_v", out.planner_gamma_eta_v);
+  const YAML::Node search = ReadSection(planner, "search");
+  const YAML::Node grid = ReadSection(search, "grid");
+  const YAML::Node gamma = ReadSection(grid, "gamma");
+  out.planner_search_grid_gamma_eta_v =
+      ReadTbdDouble(gamma, "eta_v", out.planner_search_grid_gamma_eta_v);
+  const YAML::Node grid_reference = ReadSection(grid, "reference");
+  out.planner_search_grid_reference_omega =
+      ReadTbdDouble(grid_reference, "omega", out.planner_search_grid_reference_omega);
+  out.planner_search_grid_reference_zeta =
+      ReadTbdDouble(grid_reference, "zeta", out.planner_search_grid_reference_zeta);
+  out.planner_search_grid_reference_v_max =
+      ReadTbdDouble(grid_reference, "v_max", out.planner_search_grid_reference_v_max);
+  out.planner_search_grid_reference_a_max =
+      ReadTbdDouble(grid_reference, "a_max", out.planner_search_grid_reference_a_max);
+  const YAML::Node grid_stop = ReadSection(grid, "stop");
+  out.planner_search_grid_stop_a_dec =
+      ReadTbdDouble(grid_stop, "a_dec", out.planner_search_grid_stop_a_dec);
 
-  const YAML::Node catchability = ReadSection(planner, "catchability");
+  const YAML::Node catchability = ReadSection(grid, "catchability");
   const YAML::Node manip_min = ReadSection(catchability, "manipulability_min");
   out.planner_catchability_manip_min_arm5row =
       ReadTbdDouble(manip_min, "arm_5row", out.planner_catchability_manip_min_arm5row);
   out.planner_catchability_manip_min_provisional = ReadOptional(manip_min, "provisional", true);
 
+  {
+    const YAML::Node segment = ReadSection(planner, "segment");
+    const std::string mode = ReadOptional<std::string>(segment, "mode", "closed_form");
+    if (mode == "closed_form") {
+      out.planner_segment_mode = CatchingSegmentMode::kClosedForm;
+    } else if (mode == "mpc") {
+      out.planner_segment_mode = CatchingSegmentMode::kMpc;
+    } else {
+      Reject("'planner.segment.mode' must be closed_form or mpc, got '", mode, "'");
+    }
+    const YAML::Node mpc = ReadSection(segment, "mpc");
+    out.planner_segment_mpc_switch_margin =
+        ReadOptional(mpc, "switch_margin", out.planner_segment_mpc_switch_margin);
+    if (!(std::isfinite(out.planner_segment_mpc_switch_margin) &&
+          out.planner_segment_mpc_switch_margin > 0.0)) {
+      Reject("'planner.segment.mpc.switch_margin' must be a positive number, got ",
+             params_detail::Spelling(mpc["switch_margin"]));
+    }
+    out.planner_segment_mpc_eta_v = ReadTbdDouble(mpc, "eta_v", out.planner_segment_mpc_eta_v);
+  }
+
   const YAML::Node supervisor = ReadSection(node, "supervisor");
   const YAML::Node decel = ReadSection(supervisor, "decel");
   out.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", out.supervisor_decel_a_dec);
-  {
-    const std::string mode = ReadOptional<std::string>(decel, "mode", "closed_form");
-    if (mode == "closed_form") {
-      out.supervisor_decel_mode = CatchingDecelMode::kClosedForm;
-    } else if (mode == "mpc") {
-      out.supervisor_decel_mode = CatchingDecelMode::kMpc;
-    } else {
-      Reject("'supervisor.decel.mode' must be closed_form or mpc, got '", mode, "'");
-    }
-    out.supervisor_decel_switch_margin =
-        ReadOptional(decel, "switch_margin", out.supervisor_decel_switch_margin);
-    if (!(std::isfinite(out.supervisor_decel_switch_margin) &&
-          out.supervisor_decel_switch_margin > 0.0)) {
-      Reject("'supervisor.decel.switch_margin' must be a positive number, got ",
-             params_detail::Spelling(decel["switch_margin"]));
-    }
-  }
 
   const YAML::Node io = ReadSection(node, "io");
   out.io_n_min = ReadPositiveCount(io, "n_min");
@@ -618,27 +638,75 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     CheckPositive(report, "reference.a_max", params.reference_a_max.value);
   }
 
-  // planner.gamma.eta_v — D-9: 0 < eta_v <= 1.
-  if (CheckActiveTbd(report, params.planner_gamma_eta_v, "planner.gamma.eta_v", true)) {
-    const double eta_v = params.planner_gamma_eta_v.value;
+  // planner.search.grid.gamma.eta_v — D-9: 0 < eta_v <= 1.
+  if (CheckActiveTbd(report, params.planner_search_grid_gamma_eta_v,
+                     "planner.search.grid.gamma.eta_v", true)) {
+    const double eta_v = params.planner_search_grid_gamma_eta_v.value;
     if (!std::isfinite(eta_v) || !(eta_v > 0.0) || !(eta_v <= 1.0)) {
-      AddFailure(report, CatchingValidationReason::kEtaVOutOfRange, "planner.gamma.eta_v");
+      AddFailure(report, CatchingValidationReason::kEtaVOutOfRange,
+                 "planner.search.grid.gamma.eta_v");
+    }
+  }
+  // planner.segment.mpc.eta_v — the same range, for the function that reads it:
+  // closed_form builds no mpc segment planner and follows no segment.
+  if (params.planner_segment_mode == CatchingSegmentMode::kMpc &&
+      CheckActiveTbd(report, params.planner_segment_mpc_eta_v, "planner.segment.mpc.eta_v", true)) {
+    const double eta_v = params.planner_segment_mpc_eta_v.value;
+    if (!std::isfinite(eta_v) || !(eta_v > 0.0) || !(eta_v <= 1.0)) {
+      AddFailure(report, CatchingValidationReason::kEtaVOutOfRange, "planner.segment.mpc.eta_v");
     }
   }
 
-  // planner.catchability.manipulability_min.arm_5row (D-18) + its provisional flag.
+  // planner.search.grid.reference.* / stop.a_dec — the search's own copies of
+  // the reference and the stop it rolls a candidate out on, held to the rules
+  // of the keys they copy: under mpc nothing else bounds them.
+  if (CheckActiveTbd(report, params.planner_search_grid_reference_omega,
+                     "planner.search.grid.reference.omega", true)) {
+    CheckRange(report, "planner.search.grid.reference.omega",
+               params.planner_search_grid_reference_omega.value, 1.0, 25.0);
+  }
+  if (CheckActiveTbd(report, params.planner_search_grid_reference_zeta,
+                     "planner.search.grid.reference.zeta", true)) {
+    if (params.planner_search_grid_reference_zeta.value != 1.0) {
+      AddFailure(report, CatchingValidationReason::kZetaNotCriticallyDamped,
+                 "planner.search.grid.reference.zeta");
+    }
+  }
+  if (CheckActiveTbd(report, params.planner_search_grid_reference_v_max,
+                     "planner.search.grid.reference.v_max", true)) {
+    CheckPositive(report, "planner.search.grid.reference.v_max",
+                  params.planner_search_grid_reference_v_max.value);
+  }
+  const bool grid_a_max_ok = CheckActiveTbd(report, params.planner_search_grid_reference_a_max,
+                                            "planner.search.grid.reference.a_max", true);
+  if (grid_a_max_ok) {
+    CheckPositive(report, "planner.search.grid.reference.a_max",
+                  params.planner_search_grid_reference_a_max.value);
+  }
+  if (CheckActiveTbd(report, params.planner_search_grid_stop_a_dec,
+                     "planner.search.grid.stop.a_dec", true)) {
+    CheckPositive(report, "planner.search.grid.stop.a_dec",
+                  params.planner_search_grid_stop_a_dec.value);
+    if (grid_a_max_ok && params.planner_search_grid_stop_a_dec.value >
+                             params.planner_search_grid_reference_a_max.value) {
+      AddFailure(report, CatchingValidationReason::kDecelExceedsAMax,
+                 "planner.search.grid.stop.a_dec");
+    }
+  }
+
+  // planner.search.grid.catchability.manipulability_min.arm_5row (D-18) + its provisional flag.
   const bool manip_resolved =
       CheckActiveTbd(report, params.planner_catchability_manip_min_arm5row,
-                     "planner.catchability.manipulability_min.arm_5row", true);
+                     "planner.search.grid.catchability.manipulability_min.arm_5row", true);
   if (manip_resolved) {
-    CheckRange(report, "planner.catchability.manipulability_min.arm_5row",
+    CheckRange(report, "planner.search.grid.catchability.manipulability_min.arm_5row",
                params.planner_catchability_manip_min_arm5row.value, 0.0,
                std::numeric_limits<double>::infinity());
-    CheckProvisional(report, "planner.catchability.manipulability_min",
+    CheckProvisional(report, "planner.search.grid.catchability.manipulability_min",
                      params.planner_catchability_manip_min_provisional, real_arm_config);
   }
 
-  // supervisor.decel.a_dec — > 0 and <= reference.a_max (L7 §4.3, single-source key).
+  // supervisor.decel.a_dec — > 0 and <= reference.a_max (L7 §4.3).
   const bool a_dec_ok =
       CheckActiveTbd(report, params.supervisor_decel_a_dec, "supervisor.decel.a_dec", true);
   if (a_dec_ok) {
@@ -1004,6 +1072,70 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   }
 
   return report;
+}
+
+namespace {
+
+/// Whether the dotted `path` is written under `node`, with any value.
+bool HasPath(const YAML::Node& node, std::string_view path) {
+  if (!node.IsDefined() || !node.IsMap()) {
+    return false;
+  }
+  const std::size_t dot = path.find('.');
+  const YAML::Node child = node[std::string(path.substr(0, dot))];
+  if (!child.IsDefined()) {
+    return false;
+  }
+  return dot == std::string_view::npos || HasPath(child, path.substr(dot + 1));
+}
+
+}  // namespace
+
+std::vector<RenamedCatchingKey> FindRenamedCatchingKeys(const YAML::Node& catching) {
+  std::vector<RenamedCatchingKey> found;
+  for (const RenamedCatchingKey& key : kRenamedCatchingKeys) {
+    if (HasPath(catching, key.old_path)) {
+      found.push_back(key);
+    }
+  }
+  return found;
+}
+
+std::size_t SearchCopiesThatDiffer(const CatchingParams& params,
+                                   std::array<CatchingKeyCopy, 5>& out) noexcept {
+  struct Pair {
+    const TbdDouble* copy;
+    const TbdDouble* source;
+    CatchingKeyCopy keys;
+  };
+
+  const std::array<Pair, 5> pairs{{
+      {&params.planner_search_grid_reference_v_max,
+       &params.reference_v_max,
+       {"planner.search.grid.reference.v_max", "reference.v_max"}},
+      {&params.planner_search_grid_reference_omega,
+       &params.reference_omega,
+       {"planner.search.grid.reference.omega", "reference.omega"}},
+      {&params.planner_search_grid_reference_zeta,
+       &params.reference_zeta,
+       {"planner.search.grid.reference.zeta", "reference.zeta"}},
+      {&params.planner_search_grid_reference_a_max,
+       &params.reference_a_max,
+       {"planner.search.grid.reference.a_max", "reference.a_max"}},
+      {&params.planner_search_grid_stop_a_dec,
+       &params.supervisor_decel_a_dec,
+       {"planner.search.grid.stop.a_dec", "supervisor.decel.a_dec"}},
+  }};
+  std::size_t n = 0;
+  for (const Pair& pair : pairs) {
+    if (pair.copy->tbd || pair.source->tbd) {
+      continue;
+    }
+    if (pair.copy->value != pair.source->value) {
+      out[n++] = pair.keys;
+    }
+  }
+  return n;
 }
 
 }  // namespace rtc::catching

@@ -78,7 +78,7 @@
 //  • The configure warm-ups solve on a synthetic line: through the catch
 //    frame at the mid pose along the synthetic ball's travel (that frame's
 //    −z), the same one for the stop cores and the catch cores.
-//  • Fail closed: a ball slower than `planner.ik.v_eps` has no direction
+//  • Fail closed: a ball slower than `planner.segment.mpc.v_eps` has no direction
 //    (kNoBall), a speed that is not finite is kInputNonFinite, and a stop
 //    grid point whose source segment carries no line is kNoBall — each
 //    withheld BEFORE the solve.
@@ -124,7 +124,7 @@ namespace rtc::catching {
 /// tick stalled; 50 ms is one default planner wake timeout, 25 ticks at 2 ms.
 inline constexpr std::int64_t kMpcSegmentMaxRtStateAgeNs = 50'000'000;
 
-/// What one segment step did (the planner events CSV's decel columns). The CSV
+/// What one segment step did (the planner events CSV's segment columns). The CSV
 /// writes the NAME (SegmentOutcomeName), never the value: the values carry no
 /// meaning outside a build and move when an enumerator is added or removed.
 enum class SegmentOutcome : std::uint8_t {
@@ -176,12 +176,12 @@ struct SegmentRecord {
   SegmentOutcome outcome{SegmentOutcome::kOff};
   MpcSegmentCoreReason core_reason{MpcSegmentCoreReason::kNone};
   /// Grid index of node 0: t_eff = t_c + k·Δ_s for a stop grid point, −n_pre
-  /// for a pre-catch one (the CSV's decel_k).
+  /// for a pre-catch one (the CSV's segment_k).
   std::int32_t k{-1};
   std::int32_t n_nodes{0};
   std::uint32_t segment_seq{0};  ///< the published segment's seq (cycle)
   bool x0_clamped{false};        ///< the start state (q or q̇) was projected into the box
-  bool from_segment{false};      ///< replan: x₀ came from a segment the RT reports
+  bool x0_from_segment{false};   ///< replan: x₀ came from a segment the RT reports
   bool presolved{false};         ///< no reference: kinematic pre-solve + solve
   bool cold_retry{false};        ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};
@@ -231,10 +231,10 @@ struct MpcSegmentPlannerModel {
 };
 
 struct MpcSegmentPlannerConstants {
-  double eta_v{0.9};         ///< `planner.gamma.eta_v` (the core's velocity row)
+  double eta_v{0.9};         ///< `planner.segment.mpc.eta_v` (the core's velocity row)
   double t_arm_s{0.0};       ///< `joint_cmd.lag.T_arm` — real → lead axis
   double control_dt{0.002};  ///< the RT period [s]
-  /// `planner.ik.v_eps` [m/s] — the ball speed below which its direction of
+  /// `planner.segment.mpc.v_eps` [m/s] — the ball speed below which its direction of
   /// travel (and so a_d) is undefined (MakeMpcSegmentBallTarget).
   double v_eps{1e-6};
 };

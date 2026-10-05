@@ -2969,24 +2969,24 @@ _CATCHING_DIAG_FIXED_COLUMNS = [
     "hand_effort_frac",
     "hand_blocked_s",
     "outcome_source",
-    # The tick record's decel block (MPC E1-F04 fields, E1-F05 columns).
-    "decel_judged",
-    "decel_refusal",
-    "decel_event",
-    "decel_following",
-    "decel_seq",
-    "decel_k0",
-    "decel_held",
-    "decel_p_d_x",
-    "decel_p_d_y",
-    "decel_p_d_z",
-    "decel_v_ff_x",
-    "decel_v_ff_y",
-    "decel_v_ff_z",
-    "decel_rho",
-    "decel_dq_max",
-    "decel_dqd_max",
-    "decel_gate_joint",
+    # The tick record's segment block (MPC E1-F04 fields, E1-F05 columns).
+    "segment_judged",
+    "segment_refusal",
+    "segment_event",
+    "segment_following",
+    "segment_seq",
+    "segment_k0",
+    "segment_held",
+    "segment_p_d_x",
+    "segment_p_d_y",
+    "segment_p_d_z",
+    "segment_v_ff_x",
+    "segment_v_ff_y",
+    "segment_v_ff_z",
+    "segment_rho",
+    "segment_dq_max",
+    "segment_dqd_max",
+    "segment_gate_joint",
 ]
 
 # 헤더 writer 가 마지막에 붙이는 가변 폭 블록의 접두. 순서까지 계약이다.
@@ -3042,8 +3042,8 @@ def _catching_diag_row(
     row["armed"] = 1
     row["armable"] = 1
     row["law_enabled"] = 1
-    if "decel_gate_joint" in row:
-        row["decel_gate_joint"] = -1  # the writer's "no gate judged"
+    if "segment_gate_joint" in row:
+        row["segment_gate_joint"] = -1  # the writer's "no gate judged"
     row["input_stale"] = stale
     row["input_valid"] = 0 if stale else 1
     row["input_n"] = 0 if stale else 8
@@ -3143,7 +3143,10 @@ class TestCatchingDiagDetection:
         body = (
             hdr.read_text().split("const CatchingDiagLogColumns& cols) {", 1)[1].split("\n}", 1)[0]
         )
-        joined = "".join(re.findall(r'os << "([^"]*)"', body))
+        # Adjacent string literals of one `os <<` are one literal (the compiler
+        # concatenates them): clang-format wraps a long header line into two.
+        statements = re.findall(r'os << ((?:"[^"]*"\s*)+)', body)
+        joined = "".join(re.findall(r'"([^"]*)"', "".join(statements)))
         cpp_columns = [c for c in joined.split(",") if c]
         n_fixed = len(_CATCHING_DIAG_FIXED_COLUMNS)
         assert cpp_columns[:n_fixed] == _CATCHING_DIAG_FIXED_COLUMNS, (
@@ -3578,39 +3581,39 @@ _PLANNER_EVENTS_COLUMNS = [
     "g_max",
     "v_dir_max",
     "max_catchable",
-    "decel_outcome",
-    "decel_k",
-    "decel_n_nodes",
-    "decel_seq",
-    "decel_publish_ns",
-    "decel_x0_clamped",
-    "decel_from_segment",
-    "decel_presolved",
-    "decel_cold_retry",
-    "decel_iterations",
-    "decel_qp_status",
-    "decel_core_reason",
-    "decel_solve_us",
-    "decel_slack_max",
-    "decel_slack_terminal_max",
-    "decel_tau_ratio_max",
-    "decel_kind",
-    "decel_cold_start",
-    "decel_solver_retried",
-    "decel_ref_clamped",
-    "decel_ref_scaled",
-    "decel_ref_scale",
-    "decel_ref_shortfall",
-    "decel_x0_speed",
-    "decel_catch_pos_err",
-    "decel_catch_axis_err",
-    "decel_catch_gamma",
-    "decel_catch_v_rel",
-    "decel_slack_v",
-    "decel_speed_ratio_max",
-    "decel_w_p_fallback",
-    "decel_w_delta_scale",
-    "decel_source_seq",
+    "segment_outcome",
+    "segment_k",
+    "segment_n_nodes",
+    "segment_seq",
+    "segment_publish_ns",
+    "segment_x0_clamped",
+    "segment_x0_from_segment",
+    "segment_presolved",
+    "segment_cold_retry",
+    "segment_iterations",
+    "segment_qp_status",
+    "segment_core_reason",
+    "segment_solve_us",
+    "segment_slack_max",
+    "segment_slack_terminal_max",
+    "segment_tau_ratio_max",
+    "segment_kind",
+    "segment_cold_start",
+    "segment_solver_retried",
+    "segment_ref_clamped",
+    "segment_ref_scaled",
+    "segment_ref_scale",
+    "segment_ref_shortfall",
+    "segment_x0_speed",
+    "segment_catch_pos_err",
+    "segment_catch_axis_err",
+    "segment_catch_gamma",
+    "segment_catch_v_rel",
+    "segment_slack_v",
+    "segment_speed_ratio_max",
+    "segment_w_p_fallback",
+    "segment_w_delta_scale",
+    "segment_source_seq",
 ]
 
 # RankGateBit order (rtc_controllers/catching/grid_catch_search.hpp) — bit
@@ -3630,21 +3633,21 @@ def _planner_events_columns():
 
 
 # SegmentRecord fields whose default is NaN (mpc_segment_planner.hpp): a wake whose
-# decel step did not compute them writes "nan", not 0.
-_PLANNER_EVENTS_DECEL_NAN_DEFAULTS = (
-    "decel_slack_max",
-    "decel_slack_terminal_max",
-    "decel_tau_ratio_max",
-    "decel_ref_scale",
-    "decel_ref_shortfall",
-    "decel_x0_speed",
-    "decel_catch_pos_err",
-    "decel_catch_axis_err",
-    "decel_catch_gamma",
-    "decel_catch_v_rel",
-    "decel_slack_v",
-    "decel_speed_ratio_max",
-    "decel_w_delta_scale",
+# segment step did not compute them writes "nan", not 0.
+_PLANNER_EVENTS_SEGMENT_NAN_DEFAULTS = (
+    "segment_slack_max",
+    "segment_slack_terminal_max",
+    "segment_tau_ratio_max",
+    "segment_ref_scale",
+    "segment_ref_shortfall",
+    "segment_x0_speed",
+    "segment_catch_pos_err",
+    "segment_catch_axis_err",
+    "segment_catch_gamma",
+    "segment_catch_v_rel",
+    "segment_slack_v",
+    "segment_speed_ratio_max",
+    "segment_w_delta_scale",
 )
 
 
@@ -3689,15 +3692,15 @@ def _planner_events_row(
     row["rollout_window_only"] = 0
     row["n_rollouts"] = n_rollouts
     row["rollout_us_max"] = rollout_us_max
-    # The decel columns the writer fills with NAMES, as a wake with the decel
+    # The segment columns the writer fills with NAMES, as a wake with the segment
     # planner off writes them (SegmentOutcomeName / MpcSegmentCoreReasonName /
     # SegmentKindName).
-    row["decel_outcome"] = "off"
-    row["decel_core_reason"] = "none"
-    row["decel_kind"] = "none"
+    row["segment_outcome"] = "off"
+    row["segment_core_reason"] = "none"
+    row["segment_kind"] = "none"
     # ... and the ones it leaves NaN on a wake that did not compute them
     # (SegmentRecord's defaults).
-    for nan_col in _PLANNER_EVENTS_DECEL_NAN_DEFAULTS:
+    for nan_col in _PLANNER_EVENTS_SEGMENT_NAN_DEFAULTS:
         row[nan_col] = float("nan")
     for bit_col, val in rank_bits.items():
         row[bit_col] = val
@@ -3908,12 +3911,12 @@ class TestPlannerEventsStatistics:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# decel columns — loader string set, catching_diag / planner_events panels
+# segment columns — loader string set, catching_diag / planner_events panels
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestDecelStringColumns:
-    def test_decel_name_columns_are_not_coerced_to_numbers(self):
+class TestSegmentStringColumns:
+    def test_segment_name_columns_are_not_coerced_to_numbers(self):
         """An all-"none" name column must survive the loader. Under pandas 2.x an
         object column outside _STR_COLS goes through to_numeric and becomes NaN,
         so the control column proves the coercion itself is live."""
@@ -3921,21 +3924,21 @@ class TestDecelStringColumns:
 
         df = pd.DataFrame(
             {
-                "decel_kind": pd.Series(["none", "first", "none"], dtype=object),
-                "decel_outcome": pd.Series(["off", "off", "published"], dtype=object),
-                "decel_core_reason": pd.Series(["none", "none", "none"], dtype=object),
+                "segment_kind": pd.Series(["none", "first", "none"], dtype=object),
+                "segment_outcome": pd.Series(["off", "off", "published"], dtype=object),
+                "segment_core_reason": pd.Series(["none", "none", "none"], dtype=object),
                 "some_numeric": pd.Series(["1", "2", "3"], dtype=object),
             }
         )
         _coerce_numeric_columns(df)
-        assert list(df["decel_kind"]) == ["none", "first", "none"]
-        assert list(df["decel_outcome"]) == ["off", "off", "published"]
-        assert list(df["decel_core_reason"]) == ["none", "none", "none"]
+        assert list(df["segment_kind"]) == ["none", "first", "none"]
+        assert list(df["segment_outcome"]) == ["off", "off", "published"]
+        assert list(df["segment_core_reason"]) == ["none", "none", "none"]
         assert list(df["some_numeric"]) == [1, 2, 3]
 
 
-class TestDecelEnumTables:
-    """catching_diag.csv writes `decel_event` / `decel_refusal` as integers
+class TestSegmentEnumTables:
+    """catching_diag.csv writes `segment_event` / `segment_refusal` as integers
     and the plotter names them from two tables. An enumerator inserted or
     removed in C++ moves every value after it; this compares the tables with
     the enums themselves."""
@@ -3964,18 +3967,18 @@ class TestDecelEnumTables:
         return tuple(names[i] for i in range(len(names)))
 
     def test_event_names_match_the_cpp_enum(self):
-        from rtc_tools.plotting.plotters.catching import DECEL_EVENT_NAMES
+        from rtc_tools.plotting.plotters.catching import SEGMENT_EVENT_NAMES
 
         if not self._POD.exists():
             pytest.skip("C++ header is not beside this checkout")
-        assert self._cpp_enum(self._POD, "SegmentEvent") == DECEL_EVENT_NAMES
+        assert self._cpp_enum(self._POD, "SegmentEvent") == SEGMENT_EVENT_NAMES
 
     def test_refusal_names_match_the_cpp_enum(self):
-        from rtc_tools.plotting.plotters.catching import DECEL_REFUSAL_NAMES
+        from rtc_tools.plotting.plotters.catching import SEGMENT_REFUSAL_NAMES
 
         if not self._IO.exists():
             pytest.skip("C++ header is not beside this checkout")
-        assert self._cpp_enum(self._IO, "SegmentRefusal") == DECEL_REFUSAL_NAMES
+        assert self._cpp_enum(self._IO, "SegmentRefusal") == SEGMENT_REFUSAL_NAMES
 
     def test_the_parser_reads_implicit_and_explicit_values(self, tmp_path):
         # Positive control for the two tests above: a reordered enum is seen.
@@ -3991,7 +3994,7 @@ class TestDecelEnumTables:
         assert self._cpp_enum(hpp, "Demo") == ("none", "first_thing", "second")
 
 
-class _DecelPlotHelpers:
+class _SegmentPlotHelpers:
     @staticmethod
     def _render(plot, df, tmp_path, monkeypatch, module):
         """Draw and return the figure, with the plotter's own close suppressed."""
@@ -4009,25 +4012,25 @@ class _DecelPlotHelpers:
         return len({tuple(round(b, 6) for b in ax.get_position().bounds) for ax in fig.axes})
 
 
-class TestCatchingDecelPlots(_DecelPlotHelpers):
+class TestCatchingSegmentPlots(_SegmentPlotHelpers):
     @staticmethod
     def _mpc_frame(columns=None, n=40):
         df = _catching_diag_frame(n=n, columns=columns, ref_valid=0)
         df["timestamp"] = df["t_relative_s"]
-        if "decel_following" in df.columns:
-            df["decel_following"] = 1
-            df["decel_event"] = 0
-            df.loc[5, "decel_event"] = 1
-            df.loc[10, "decel_event"] = 4
-            df.loc[15, "decel_event"] = 10
-            df.loc[20, "decel_event"] = 3
-            df["decel_judged"] = 1
-            df.loc[8, "decel_refusal"] = 5
-            df.loc[9, "decel_refusal"] = 4  # repeat: bookkeeping
-            df.loc[10, "decel_rho"] = 0.42
-        if "decel_p_d_x" in df.columns:
-            df["decel_p_d_x"] = np.linspace(0.3, 0.5, n)
-            df["decel_v_ff_x"] = 0.2
+        if "segment_following" in df.columns:
+            df["segment_following"] = 1
+            df["segment_event"] = 0
+            df.loc[5, "segment_event"] = 1
+            df.loc[10, "segment_event"] = 4
+            df.loc[15, "segment_event"] = 10
+            df.loc[20, "segment_event"] = 3
+            df["segment_judged"] = 1
+            df.loc[8, "segment_refusal"] = 5
+            df.loc[9, "segment_refusal"] = 4  # repeat: bookkeeping
+            df.loc[10, "segment_rho"] = 0.42
+        if "segment_p_d_x" in df.columns:
+            df["segment_p_d_x"] = np.linspace(0.3, 0.5, n)
+            df["segment_v_ff_x"] = 0.2
         for j in _CATCHING_ARM_JOINTS:
             df[f"q_cmd_{j}"] = np.sin(np.linspace(0.0, 3.0, n)) * 0.5
         return df
@@ -4042,12 +4045,12 @@ class TestCatchingDecelPlots(_DecelPlotHelpers):
 
         fig = self._fig(self._mpc_frame(), tmp_path, monkeypatch)
         try:
-            # position, tracking, segment v_ff, decel lane, command kinematics,
+            # position, tracking, segment v_ff, segment lane, command kinematics,
             # mode — and no acceleration panel: the soft-catch law never ran.
             assert self._panels(fig) == 6
             ylabels = [ax.get_ylabel() for ax in fig.axes]
             assert "accel (m/s²)" not in ylabels
-            assert "segment v_ff (m/s)" in ylabels and "decel lane" in ylabels
+            assert "segment v_ff (m/s)" in ylabels and "segment lane" in ylabels
             seg = [ln for ax in fig.axes for ln in ax.lines if ln.get_label() == "seg_x"]
             assert seg, "the followed segment was not drawn"
             assert np.isfinite(np.asarray(seg[0].get_ydata(), dtype=float)).any()
@@ -4061,7 +4064,7 @@ class TestCatchingDecelPlots(_DecelPlotHelpers):
 
     @staticmethod
     def _closed_form_frame(columns=None, n=40):
-        df = _catching_diag_frame(n=n, columns=columns)  # ref_valid 1, decel block zero
+        df = _catching_diag_frame(n=n, columns=columns)  # ref_valid 1, segment block zero
         df["timestamp"] = df["t_relative_s"]
         for j in _CATCHING_ARM_JOINTS:
             df[f"q_cmd_{j}"] = np.sin(np.linspace(0.0, 3.0, n)) * 0.5
@@ -4083,19 +4086,19 @@ class TestCatchingDecelPlots(_DecelPlotHelpers):
                 "accel (m/s²)",
                 "track error (rad)",
                 "segment v_ff (m/s)",
-                "decel lane",
+                "segment lane",
                 "command kinematics",
                 "supervisor mode",
             ]
         finally:
             plt.close("all")
 
-    def test_pre_decel_schema_keeps_only_the_panels_that_need_no_decel_column(
+    def test_pre_segment_schema_keeps_only_the_panels_that_need_no_segment_column(
         self, tmp_path, monkeypatch
     ):
         import matplotlib.pyplot as plt
 
-        columns = [c for c in _catching_diag_columns() if not c.startswith("decel_")]
+        columns = [c for c in _catching_diag_columns() if not c.startswith("segment_")]
         assert len(columns) == len(_catching_diag_columns()) - 17
         fig = self._fig(self._closed_form_frame(columns), tmp_path, monkeypatch)
         try:
@@ -4105,7 +4108,7 @@ class TestCatchingDecelPlots(_DecelPlotHelpers):
         finally:
             plt.close("all")
 
-    def test_a_closed_form_log_with_the_decel_columns_gets_no_empty_decel_panel(
+    def test_a_closed_form_log_with_the_segment_columns_gets_no_empty_segment_panel(
         self, tmp_path, monkeypatch
     ):
         import matplotlib.pyplot as plt
@@ -4115,7 +4118,7 @@ class TestCatchingDecelPlots(_DecelPlotHelpers):
         try:
             assert self._panels(fig) == 5
             ylabels = [ax.get_ylabel() for ax in fig.axes]
-            assert "decel lane" not in ylabels and "segment v_ff (m/s)" not in ylabels
+            assert "segment lane" not in ylabels and "segment v_ff (m/s)" not in ylabels
             assert not any(
                 ln.get_label() == "seg_x" and np.isfinite(np.asarray(ln.get_ydata(), float)).any()
                 for ax in fig.axes
@@ -4148,7 +4151,7 @@ class TestCatchingDecelPlots(_DecelPlotHelpers):
 
         fig = self._fig(self._mpc_frame(), tmp_path, monkeypatch)
         try:
-            (lane,) = [ax for ax in fig.axes if ax.get_ylabel() == "decel lane"]
+            (lane,) = [ax for ax in fig.axes if ax.get_ylabel() == "segment lane"]
             labels = [lab.get_text() for lab in lane.get_yticklabels()]
             assert labels[0] == "none" and labels[-1] == "refused"
             _, legend = lane.get_legend_handles_labels()
@@ -4162,17 +4165,17 @@ class TestCatchingDecelPlots(_DecelPlotHelpers):
     ):
         import matplotlib.pyplot as plt
 
-        dropped = {f"decel_{p}_{a}" for p in ("p_d", "v_ff") for a in "xyz"}
+        dropped = {f"segment_{p}_{a}" for p in ("p_d", "v_ff") for a in "xyz"}
         columns = [c for c in _catching_diag_columns() if c not in dropped]
         fig = self._fig(self._mpc_frame(columns), tmp_path, monkeypatch)
         try:
-            # position, tracking, decel lane, command kinematics, mode: no
+            # position, tracking, segment lane, command kinematics, mode: no
             # v_ff panel (no columns), no acceleration (mode mpc).
             assert self._panels(fig) == 5
             labels = [ln.get_label() for ax in fig.axes for ln in ax.lines]
             assert not any(lab.startswith("seg_") for lab in labels)
             ylabels = [ax.get_ylabel() for ax in fig.axes]
-            assert "decel lane" in ylabels
+            assert "segment lane" in ylabels
             assert "segment v_ff (m/s)" not in ylabels
             assert (tmp_path / "catching_diag.png").exists()
         finally:
@@ -4206,22 +4209,22 @@ class TestCatchingDecelPlots(_DecelPlotHelpers):
         assert "Switch ρ" in out, out
 
 
-class TestPlannerEventsDecelPlots(_DecelPlotHelpers):
+class TestPlannerEventsSegmentPlots(_SegmentPlotHelpers):
     @staticmethod
     def _frame(columns=None):
         columns = _planner_events_columns() if columns is None else columns
         rows = []
         for i in range(12):
             row = dict(zip(columns, _planner_events_row(i + 1, columns=columns), strict=True))
-            if "decel_kind" in row and i in (2, 3, 4, 8):
-                row["decel_kind"] = {2: "first", 3: "same", 4: "same", 8: "stop"}[i]
-                row["decel_outcome"] = "catch_error" if i == 4 else "published"
-                row["decel_solve_us"] = 900.0 + 10 * i
-                row["decel_iterations"] = 12
-                row["decel_catch_pos_err"] = 0.004
-                row["decel_catch_v_rel"] = 0.3
-                row["decel_x0_speed"] = 0.5 if i == 2 else float("nan")
-                row["decel_publish_ns"] = 2_000_000_000 + i * 50_000_000
+            if "segment_kind" in row and i in (2, 3, 4, 8):
+                row["segment_kind"] = {2: "first", 3: "same", 4: "same", 8: "stop"}[i]
+                row["segment_outcome"] = "catch_error" if i == 4 else "published"
+                row["segment_solve_us"] = 900.0 + 10 * i
+                row["segment_iterations"] = 12
+                row["segment_catch_pos_err"] = 0.004
+                row["segment_catch_v_rel"] = 0.3
+                row["segment_x0_speed"] = 0.5 if i == 2 else float("nan")
+                row["segment_publish_ns"] = 2_000_000_000 + i * 50_000_000
             rows.append([row[c] for c in columns])
         return pd.DataFrame(rows, columns=columns)
 
@@ -4279,28 +4282,30 @@ class TestPlannerEventsDecelPlots(_DecelPlotHelpers):
         finally:
             plt.close("all")
 
-    def test_a_log_from_before_decel_kind_counts_solves_not_waits(self, tmp_path, monkeypatch):
+    def test_a_log_from_before_segment_kind_counts_solves_not_waits(self, tmp_path, monkeypatch):
         import matplotlib.pyplot as plt
 
         from rtc_tools.plotting.plotters import planner_events as pe
 
-        # The schema before E1-F05: `decel_outcome` and no `decel_kind`, with
+        # The schema before E1-F05: `segment_outcome` and no `segment_kind`, with
         # the stop-only planner's `not_due` still in it (MD-70).
-        columns = [c for c in _planner_events_columns() if c not in ("decel_kind", "search_valid")]
+        columns = [
+            c for c in _planner_events_columns() if c not in ("segment_kind", "search_valid")
+        ]
         waits = self._frame(columns)
-        waits["decel_outcome"] = ["not_due", "up_to_date", "off"] * 4
-        assert not pe._decel_rows(waits).any()
-        assert pe._decel_panels(waits) == []
+        waits["segment_outcome"] = ["not_due", "up_to_date", "off"] * 4
+        assert not pe._segment_rows(waits).any()
+        assert pe._segment_panels(waits) == []
         solved = waits.copy()
-        solved.loc[3, "decel_outcome"] = "published"
-        solved.loc[3, "decel_solve_us"] = 900.0
-        assert list(np.nonzero(pe._decel_rows(solved).to_numpy())[0]) == [3]
+        solved.loc[3, "segment_outcome"] = "published"
+        solved.loc[3, "segment_solve_us"] = 900.0
+        assert list(np.nonzero(pe._segment_rows(solved).to_numpy())[0]) == [3]
         # `not_due` is a name the plot knows, not "unknown".
-        codes = pe._categorical_codes(solved["decel_outcome"], pe.DECEL_OUTCOME_ORDER)
-        assert pe.DECEL_OUTCOME_ORDER[int(codes.iloc[0])] == "not_due"
+        codes = pe._categorical_codes(solved["segment_outcome"], pe.SEGMENT_OUTCOME_ORDER)
+        assert pe.SEGMENT_OUTCOME_ORDER[int(codes.iloc[0])] == "not_due"
         fig = self._fig(solved, tmp_path, monkeypatch)
         try:
-            assert self._panels(fig) == 6 + len(pe._decel_panels(solved)) > 6
+            assert self._panels(fig) == 6 + len(pe._segment_panels(solved)) > 6
         finally:
             plt.close("all")
 
@@ -4315,12 +4320,12 @@ class TestPlannerEventsDecelPlots(_DecelPlotHelpers):
         out = capsys.readouterr().out
         assert "Searches: 10 of 12 wakes" in out, out
 
-    def test_a_session_whose_decel_planner_was_off_gets_no_decel_panel(
+    def test_a_session_whose_segment_planner_was_off_gets_no_segment_panel(
         self, tmp_path, monkeypatch
     ):
         import matplotlib.pyplot as plt
 
-        # The new schema, every row `decel_kind` none / `decel_outcome` off.
+        # The new schema, every row `segment_kind` none / `segment_outcome` off.
         fig = self._fig(_planner_events_frame(n=12), tmp_path, monkeypatch)
         try:
             assert self._panels(fig) == 6
@@ -4344,7 +4349,7 @@ class TestPlannerEventsDecelPlots(_DecelPlotHelpers):
             plt.close("all")
         print_planner_events_statistics(df)
         out = capsys.readouterr().out
-        assert "Decel kind" not in out and "search_valid" not in out, out
+        assert "Segment kind" not in out and "search_valid" not in out, out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4812,3 +4817,105 @@ class TestZoomStemStamp:
         written = {p.stem for p in tmp_path.glob("*.png")}
         stamped = {getattr(plt.figure(num), _zd.PNG_STEM_ATTR, None) for num in plt.get_fignums()}
         assert stamped <= written, f"stamped-but-never-written: {stamped - written}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Recorded with the old `decel_*` column names (#711)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _old_column_names(columns):
+    from rtc_tools.utils.catching_keys import RENAMED_COLUMNS
+
+    new_to_old = {new: old for old, new in RENAMED_COLUMNS.items()}
+    return [new_to_old.get(c, c) for c in columns]
+
+
+def _write_catching_csv(path, kind, *, old):
+    """A catching_diag.csv / planner_events.csv (``kind``) under the new column names,
+    or under the names a controller before the rename wrote."""
+    if kind == "catching_diag":
+        columns = _catching_diag_columns()
+        rows = [_catching_diag_row(i + 1, columns=columns) for i in range(12)]
+    else:
+        columns = _planner_events_columns()
+        rows = [_planner_events_row(i + 1, columns=columns) for i in range(20)]
+    _write_csv(str(path), _old_column_names(columns) if old else columns, rows)
+    return columns
+
+
+@pytest.mark.parametrize("kind", ["catching_diag", "planner_events"])
+def test_a_file_with_the_old_column_names_loads_as_the_new_ones(tmp_path, kind):
+    paths = {old: tmp_path / ("old" if old else "new") / f"{kind}.csv" for old in (False, True)}
+    for old, path in paths.items():
+        path.parent.mkdir()
+        columns = _write_catching_csv(path, kind, old=old)
+    assert any(c.startswith("segment_") for c in columns)
+    old_df = load_log_csv(str(paths[True]), kind)
+    new_df = load_log_csv(str(paths[False]), kind)
+    assert list(old_df.columns) == list(new_df.columns)
+    assert not [c for c in old_df.columns if c.startswith("decel_")]
+    pd.testing.assert_frame_equal(old_df, new_df)
+    # The string columns stay names under the old header too (the loader keys them on the new name).
+    if kind == "planner_events":
+        assert old_df["segment_kind"].iloc[0] == "none"
+        assert old_df["segment_kind"].dtype == new_df["segment_kind"].dtype
+
+
+def test_the_plotters_give_the_same_result_for_an_old_and_a_new_file(tmp_path, capsys):
+    from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+    from rtc_tools.plotting.plotters.planner_events import (
+        plot_planner_events,
+        print_planner_events_statistics,
+    )
+
+    out = {}
+    for old in (False, True):
+        d = tmp_path / ("old" if old else "new")
+        d.mkdir()
+        _write_catching_csv(d / "catching_diag.csv", "catching_diag", old=old)
+        _write_catching_csv(d / "planner_events.csv", "planner_events", old=old)
+        diag = load_log_csv(str(d / "catching_diag.csv"), "catching_diag")
+        events = load_log_csv(str(d / "planner_events.csv"), "planner_events")
+        capsys.readouterr()
+        print_catching_diag_statistics(diag)
+        print_planner_events_statistics(events)
+        plot_planner_events(events, save_dir=str(d))
+        text = capsys.readouterr().out
+        assert (d / "planner_events.png").exists()
+        out[old] = text.replace(str(d), "<dir>")
+    assert out[True] == out[False]
+    assert "segment" in out[True].lower()
+
+
+@pytest.mark.parametrize("kind", ["catching_diag", "planner_events"])
+def test_a_header_with_an_old_and_a_new_column_name_is_refused_by_the_loader(tmp_path, kind):
+    from rtc_tools.utils.catching_keys import MixedColumnNamesError
+
+    path = tmp_path / f"{kind}.csv"
+    _write_catching_csv(path, kind, old=True)
+    header = path.read_text().split("\n", 1)
+    new_name = "segment_event" if kind == "catching_diag" else "segment_kind"
+    old_name = new_name.replace("segment_", "decel_")
+    assert old_name in header[0].split(",")
+    # `segment_seq` is one name in both files: the other column of the pair stays old.
+    mixed = header[0].replace(old_name, new_name) + "\n" + header[1]
+    path.write_text(mixed)
+    with pytest.raises(MixedColumnNamesError) as exc:
+        load_log_csv(str(path), kind)
+    assert new_name in str(exc.value) and "decel_" in str(exc.value)
+
+
+def test_plot_rtc_log_stops_on_a_mixed_header_with_the_names(tmp_path, monkeypatch, capsys):
+    from rtc_tools.plotting.plot_rtc_log import main
+
+    path = tmp_path / "planner_events.csv"
+    _write_catching_csv(path, "planner_events", old=True)
+    head, body = path.read_text().split("\n", 1)
+    path.write_text(head.replace("decel_kind", "segment_kind") + "\n" + body)
+    monkeypatch.setattr("sys.argv", ["plot_rtc_log", str(path), "--no-show"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "segment_kind" in out and "decel_outcome" in out

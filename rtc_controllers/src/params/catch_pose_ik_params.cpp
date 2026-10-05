@@ -31,7 +31,7 @@ struct Range {
 constexpr Range kPositive{0.0, kInf, true};      // ">0"
 constexpr Range kNonNegative{0.0, kInf, false};  // "≥0"
 
-/// `planner.ik.eps_pos` is the one row whose 범위 column is "–". The bound used
+/// `planner.search.grid.ik.eps_pos` is the one row whose 범위 column is "–". The bound used
 /// here is not invented: `OptionsUsable` in catching/catch_pose_ik.cpp — the
 /// only other authority on a usable value — requires `eps_pos > 0`, and a
 /// non-positive acceptance tolerance would make the IK unable to accept any
@@ -43,9 +43,9 @@ constexpr Range kEpsPos = kPositive;
   throw std::invalid_argument("catching: " + msg);
 }
 
-/// Full dotted path of a `planner.ik` key, for every message below.
+/// Full dotted path of a `planner.search.grid.ik` key, for every message below.
 std::string IkKey(const char* key) {
-  return std::string("planner.ik.") + key;
+  return std::string("planner.search.grid.ik.") + key;
 }
 
 using params_detail::Spelling;
@@ -152,7 +152,7 @@ bool ReadBool(const YAML::Node& sec, const char* key, const std::string& path, b
   }
 }
 
-// ── Typo protection under `planner.ik` ──────────────────────────────────────
+// ── Typo protection under `planner.search.grid.ik` ──────────────────────────────────────
 // This parser owns that section whole, so a key it does not know is a typo (or
 // a key from a doc revision this build has not caught up with) and is refused.
 // The list is the accept-list, not documentation: it must contain exactly the
@@ -173,7 +173,7 @@ void SweepIkKeys(const YAML::Node& ik, CatchPoseIkRetiredKeys& retired) {
   }
   for (const auto& kv : ik) {
     if (!kv.first.IsScalar()) {
-      RejectMsg("keys of section 'planner.ik' must be scalars");
+      RejectMsg("keys of section 'planner.search.grid.ik' must be scalars");
     }
     const std::string name = kv.first.Scalar();
     if (name == "lambda") {
@@ -211,7 +211,9 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
   CatchPoseIkRetiredKeys local_retired;
 
   const YAML::Node planner = ReadSection(node, "planner", "planner");
-  const YAML::Node ik = ReadSection(planner, "ik", "planner.ik");
+  const YAML::Node search = ReadSection(planner, "search", "planner.search");
+  const YAML::Node grid = ReadSection(search, "grid", "planner.search.grid");
+  const YAML::Node ik = ReadSection(grid, "ik", "planner.search.grid.ik");
 
   SweepIkKeys(ik, local_retired);
   if (retired != nullptr) {
@@ -248,21 +250,23 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
     o.alpha_max = out.alpha_max.value;
   }
 
-  // ── planner.catchability.* ────────────────────────────────────────────────
-  const YAML::Node catchability = ReadSection(planner, "catchability", "planner.catchability");
-  const YAML::Node manip_min =
-      ReadSection(catchability, "manipulability_min", "planner.catchability.manipulability_min");
+  // ── planner.search.grid.catchability.* ────────────────────────────────────────────────
+  const YAML::Node catchability =
+      ReadSection(grid, "catchability", "planner.search.grid.catchability");
+  const YAML::Node manip_min = ReadSection(catchability, "manipulability_min",
+                                           "planner.search.grid.catchability.manipulability_min");
   out.manipulability_min_arm_5row =
-      ReadTbd(manip_min, "arm_5row", "planner.catchability.manipulability_min.arm_5row",
+      ReadTbd(manip_min, "arm_5row", "planner.search.grid.catchability.manipulability_min.arm_5row",
               out.manipulability_min_arm_5row, kNonNegative);
   out.manipulability_min_arm_6row =
-      ReadTbd(manip_min, "arm_6row", "planner.catchability.manipulability_min.arm_6row",
+      ReadTbd(manip_min, "arm_6row", "planner.search.grid.catchability.manipulability_min.arm_6row",
               out.manipulability_min_arm_6row, kNonNegative);
-  out.manipulability_min_provisional = ReadBool(
-      manip_min, "provisional", "planner.catchability.manipulability_min.provisional", true);
+  out.manipulability_min_provisional =
+      ReadBool(manip_min, "provisional",
+               "planner.search.grid.catchability.manipulability_min.provisional", true);
 
   if (const YAML::Node def = catchability["definition"]) {
-    const std::string path = "planner.catchability.definition";
+    const std::string path = "planner.search.grid.catchability.definition";
     if (!def.IsScalar()) {
       RejectMsg("'" + path + "' must be \"arm_5row\" or \"arm_6row\", got " + Spelling(def));
     }

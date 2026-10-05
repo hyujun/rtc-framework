@@ -65,7 +65,7 @@ from rtc_tools.analysis.derive_accel_limits import (
 )
 
 DEFAULT_CATCH_FRAME = "catch_frame"
-DEFAULT_GAMMA_MARGIN_M_S = 0.1  # L3 §6 planner.gamma.margin
+DEFAULT_GAMMA_MARGIN_M_S = 0.1  # L3 §6 planner.search.grid.gamma.margin
 DEFAULT_SPEED_STEP_M_S = 0.25
 DEFAULT_DLS_DAMPING = 1e-3
 # directional_speed_lp_value hands [J_p; J_w]·diag(q̇_max) to the LP instead of

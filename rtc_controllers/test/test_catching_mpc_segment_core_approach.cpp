@@ -56,7 +56,7 @@ using rtc::testing::mpc_segment_core::UseAsReference;
 // ── Golden regression: the E1-F01 problem is untouched ───────────────────────
 // The values below were captured from the build of `main` at edc0fa4e, BEFORE
 // any E1-F07 change to the core, by running this test with
-// RTC_DECEL_MPC_GOLDEN_PRINT=1. They pin what "the new parameters default to
+// RTC_MPC_SEGMENT_CORE_GOLDEN_PRINT=1. They pin what "the new parameters default to
 // off" has to mean: with defaults the core assembles the SAME QP and returns
 // the same stop.
 //
@@ -134,7 +134,7 @@ void AddSolution(Probe& p, const MpcSegmentCoreResult& r) {
 }
 
 [[nodiscard]] bool GoldenPrintMode() {
-  const char* e = std::getenv("RTC_DECEL_MPC_GOLDEN_PRINT");
+  const char* e = std::getenv("RTC_MPC_SEGMENT_CORE_GOLDEN_PRINT");
   return e != nullptr && e[0] != '\0' && e[0] != '0';
 }
 
@@ -1765,7 +1765,7 @@ TEST(CatchPositionWeightTest, RejectsNonFiniteAndNonPositiveArguments) {
 //               (cold_retried), so the series shows what leaving cold_start
 //               off costs.
 // No solve may fail (MD-51) — that is asserted; the times are not.
-// The full table needs RTC_DECEL_MPC_TIMING_FULL=1 (200 samples per grid); the
+// The full table needs RTC_MPC_SEGMENT_CORE_TIMING_FULL=1 (200 samples per grid); the
 // default run is a smoke of the same code.
 
 struct TimingGrid {
@@ -1835,7 +1835,7 @@ void ReportSeries(const std::string& key, const Series& s) {
 }
 
 [[nodiscard]] int TimingSamples() {
-  const char* e = std::getenv("RTC_DECEL_MPC_TIMING_FULL");
+  const char* e = std::getenv("RTC_MPC_SEGMENT_CORE_TIMING_FULL");
   const bool full = e != nullptr && e[0] != '\0' && e[0] != '0';
   if (!OptimisedBuild()) {
     return 4;

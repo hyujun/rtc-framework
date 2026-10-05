@@ -102,7 +102,7 @@ inline void AddSegmentRecord(ValueDigest& h, const catching::SegmentRecord& d) n
   h.Add(d.n_nodes);
   h.Add(d.segment_seq);
   h.Add(d.x0_clamped);
-  h.Add(d.from_segment);
+  h.Add(d.x0_from_segment);
   h.Add(d.presolved);
   h.Add(d.cold_retry);
   h.Add(d.iterations);

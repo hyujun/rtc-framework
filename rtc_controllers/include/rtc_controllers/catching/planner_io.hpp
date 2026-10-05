@@ -15,7 +15,7 @@
 //     a torn read waiting to happen.
 //   - `SegmentSnapshot` planner → RT (trajectory.hpp, MPC E1-F02). Stored
 //     by the planner only; judged by `JudgeSegment` below. The RT tick reads
-//     it under `supervisor.decel.mode: mpc` only (E1-F04, MD-44) — from the
+//     it under `planner.segment.mode: mpc` only (E1-F04, MD-44) — from the
 //     tick that takes a plan together with its first segment to the end of the
 //     stop (E1-F09).
 //
@@ -122,7 +122,7 @@ struct PlannerRtState {
   /// segment_seq) — the segment its command is sampled from, in every mode that
   /// follows one: APPROACH through HOLD (E1-F09). The planner evaluates the
   /// next solve's initial state on it (MD-58). Always false /
-  /// 0 under `supervisor.decel.mode: closed_form`.
+  /// 0 under `planner.segment.mode: closed_form`.
   bool segment_active{false};
   std::uint32_t segment_seq{0};
   /// The segment the RT has admitted and holds PENDING (its node 0 not reached
