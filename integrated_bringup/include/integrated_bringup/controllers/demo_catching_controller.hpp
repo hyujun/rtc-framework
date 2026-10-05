@@ -376,7 +376,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return segment_box_;
   }
 
-  /// The DECEL law this configure chose (MD-44).
+  /// The segment mode this configure chose (MD-44).
   [[nodiscard]] rtc::catching::CatchingSegmentMode GetSegmentMode() const noexcept {
     return segment_mode_;
   }
@@ -1623,7 +1623,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   admitted_segment_, segment_pending_, segment_pending_valid_, segment_current_, segment_current_valid_,
   //   segment_pair_ok_
   //                                              R, T (DropSegments; also on ABORT_SAFE / RETREAT entry, and HOLD drops the pending one)
-  //   segment_in_, segment_refusal_, segment_sample_   exempt: written on the tick that reads them (the tick record's decel_judged says whether the lane ran)
+  //   segment_in_, segment_refusal_, segment_sample_   exempt: written on the tick that reads them (the tick record's segment_judged says whether the lane ran)
   //   sat_streak_, law_horizon_extrap_           R, T
   //   outcome_, outcome_source_                  T (Aborted when an E-STOP ends an attempt);
   //                                              exempt from R: it reports the LAST attempt

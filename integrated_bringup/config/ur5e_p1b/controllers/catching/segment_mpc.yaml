@@ -103,7 +103,7 @@ demo_catching_controller:
             # rho_v s_v. rho_v 0 = off (no slack variable, no rows); on, it needs
             # v_rel_allow > 0 [m/s] — what the hand absorbs, not measured yet
             # (MD-52), so both ship 0.
-            # s_v is RECORDED (planner_events decel_slack_v), never a publish
+            # s_v is RECORDED (planner_events segment_slack_v), never a publish
             # gate: no threshold is defined for it, and with gamma_ref < 1 it is
             # above 0 by construction.
             rho_v: 0.0

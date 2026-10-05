@@ -1346,7 +1346,7 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
     const auto record = ctrl_->GetLastTickRecord();
     const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
     end_record = record;
-    if (const auto ev = static_cast<std::size_t>(record.decel_event); ev < events.size()) {
+    if (const auto ev = static_cast<std::size_t>(record.segment_event); ev < events.size()) {
       ++events[ev];
     }
     if (!approached && last == Mode::kApproach) {
@@ -1355,7 +1355,7 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
       const PlanSnapshot plan = ctrl_->GetFollowedPlanForTesting();
       const rtc::catching::SegmentSnapshot seg = ctrl_->GetPendingSegmentForTesting();
       EXPECT_EQ(before, Mode::kTracking);
-      EXPECT_EQ(record.decel_event, Event::kAdmitted);
+      EXPECT_EQ(record.segment_event, Event::kAdmitted);
       EXPECT_TRUE(ctrl_->HasPendingSegmentForTesting());
       EXPECT_TRUE(rt.segment_pending);
       EXPECT_EQ(rt.segment_pending_seq, seg.segment_seq);
@@ -1382,19 +1382,19 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
       EXPECT_TRUE(rt.segment_pending || rt.segment_active)
           << "the RT follows a plan and reports no segment, mode " << static_cast<int>(last);
     }
-    if (record.decel_event == Event::kSwitched) {
+    if (record.segment_event == Event::kSwitched) {
       ++switches;
-      rho_max = std::max(rho_max, record.decel_rho);
+      rho_max = std::max(rho_max, record.segment_rho);
     }
-    if (record.decel_event == Event::kGateRefused) {
+    if (record.segment_event == Event::kGateRefused) {
       ++gate_refused;
-      rho_refused_max = std::max(rho_refused_max, record.decel_rho);
+      rho_refused_max = std::max(rho_refused_max, record.segment_rho);
     }
-    if (record.decel_following) {
+    if (record.segment_following) {
       followed_in.insert(before);
-      followed_seqs.insert(record.decel_seq);
+      followed_seqs.insert(record.segment_seq);
       EXPECT_TRUE(rt.segment_active);
-      EXPECT_EQ(rt.segment_seq, record.decel_seq);
+      EXPECT_EQ(rt.segment_seq, record.segment_seq);
       EXPECT_FALSE(record.ref_valid) << "the soft-catch reference ran while a segment was followed";
     }
     if (last == Mode::kAbortSafe || last == Mode::kRetreat || last == Mode::kHold) {
@@ -1412,14 +1412,14 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
                           << rtc::catching::CycleOutcomeName(planner.outcome) << ", decel "
                           << rtc::catching::SegmentOutcomeName(planner.segment.outcome) << " / "
                           << rtc::catching::MpcSegmentCoreReasonName(planner.segment.core_reason)
-                          << "; RT decel refusal " << static_cast<int>(end_record.decel_refusal);
+                          << "; RT decel refusal " << static_cast<int>(end_record.segment_refusal);
   EXPECT_TRUE(pair_taken);
   ASSERT_EQ(last, Mode::kHold) << "the trial did not reach HOLD: mode " << static_cast<int>(last)
                                << ", reason " << static_cast<int>(ctrl_->GetLastReason())
                                << ", decel events " << counts.str() << ", last event "
-                               << static_cast<int>(end_record.decel_event) << ", gate rho "
-                               << end_record.decel_rho << " (joint " << end_record.decel_gate_joint
-                               << "), last decel step "
+                               << static_cast<int>(end_record.segment_event) << ", gate rho "
+                               << end_record.segment_rho << " (joint "
+                               << end_record.segment_gate_joint << "), last decel step "
                                << rtc::catching::SegmentOutcomeName(planner.segment.outcome)
                                << " / "
                                << rtc::catching::MpcSegmentCoreReasonName(

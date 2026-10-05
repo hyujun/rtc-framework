@@ -1783,8 +1783,8 @@ TEST_P(ShippedCatchingProfile, AnUnsetPlannerDecisionParksInsteadOfGuessing) {
     // construction: assigning to an existing YAML::Node rebinds the node it
     // aliases (the tree's `planner` would become the grid map).
     const bool grid = std::string(section) == "workspace" || std::string(section) == "hand";
-    YAML::Node planner = grid ? node["catching"]["planner"]["search"]["grid"]
-                              : node["catching"]["planner"];
+    YAML::Node planner =
+        grid ? node["catching"]["planner"]["search"]["grid"] : node["catching"]["planner"];
     ASSERT_TRUE(key == nullptr ? static_cast<bool>(planner[section])
                                : static_cast<bool>(planner[section][key]))
         << profile << ": precondition — the shipped file sets " << section;
@@ -3052,11 +3052,11 @@ TEST(CatchingDiagLog, TheHeaderNamesTheJointsAndTipsItsColumnsAreIn) {
   EXPECT_FALSE(csv.Has("q_cmd_a6")) << "a column exists for a joint the device does not have";
 }
 
-TEST(CatchingDiagLog, TheDecelBlockIsWrittenAsNumbersAndIsZeroWhenTheLaneDidNotRun) {
+TEST(CatchingDiagLog, TheSegmentBlockIsWrittenAsNumbersAndIsZeroWhenTheLaneDidNotRun) {
   // E1-F05 (#631): the tick record's decel block reaches the file. This
   // controller runs `closed_form`, so the lane never judges a segment and the
   // block is the fresh POD's — which is what a reader sees on every tick of a
-  // closed_form log. `decel_refusal` is a std::uint8_t: streamed without a
+  // closed_form log. `segment_refusal` is a std::uint8_t: streamed without a
   // cast it would be a raw NUL byte, not "0", and the width check above would
   // not notice.
   integrated_bringup::testfx::ScopedSessionDir session{"catching_diag"};

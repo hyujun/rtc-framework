@@ -1466,7 +1466,7 @@ void DemoCatchingController::AdoptFirstSegment() noexcept {
   admitted_segment_ = rtc::catching::AdmittedSegment{true, segment_in_.segment_seq};
   segment_pending_ = segment_in_;
   segment_pending_valid_ = true;
-  tick_record_.decel_event = CatchingDiagLogPod::SegmentEvent::kAdmitted;
+  tick_record_.segment_event = CatchingDiagLogPod::SegmentEvent::kAdmitted;
 }
 
 void DemoCatchingController::RunSegmentLane() noexcept {
@@ -1512,8 +1512,8 @@ void DemoCatchingController::RunSegmentLane() noexcept {
   // joint count could be admitted and never sampled.
   ctx.expected_nv = arm_dof_;
   segment_refusal_ = rtc::catching::JudgeSegment(segment_in_, ctx, admitted_segment_);
-  tick_record_.decel_judged = true;
-  tick_record_.decel_refusal = static_cast<std::uint8_t>(segment_refusal_);
+  tick_record_.segment_judged = true;
+  tick_record_.segment_refusal = static_cast<std::uint8_t>(segment_refusal_);
   if (segment_refusal_ != rtc::catching::SegmentRefusal::kNone) {
     return;
   }
@@ -1531,14 +1531,14 @@ void DemoCatchingController::RunSegmentLane() noexcept {
   // prediction (MD-58): it replaces the one waiting.
   const bool replace = segment_pending_valid_;
   if (replace && segment_in_.t0_ns != segment_pending_.t0_ns) {
-    tick_record_.decel_event = Event::kDeferred;
+    tick_record_.segment_event = Event::kDeferred;
     return;
   }
   // Judged once per segment_seq from here.
   admitted_segment_ = rtc::catching::AdmittedSegment{true, segment_in_.segment_seq};
   segment_pending_ = segment_in_;
   segment_pending_valid_ = true;
-  tick_record_.decel_event = replace ? Event::kReplaced : Event::kAdmitted;
+  tick_record_.segment_event = replace ? Event::kReplaced : Event::kAdmitted;
 }
 
 rtc::catching::Reason DemoCatchingController::RunSegmentTick(
@@ -1574,7 +1574,7 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
       tick_now_lead_.ns + static_cast<std::int64_t>(std::llround(state.dt * 1e9));
   const auto n = static_cast<std::size_t>(arm_dof_);
   const auto fail = [this](Event why) {
-    tick_record_.decel_event = why;
+    tick_record_.segment_event = why;
     return Reason::kParamsTbd;
   };
 
@@ -1593,14 +1593,14 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
                                      segment_pending_.t0_ns,
                                      s) != rtc::catching::SegmentChoice::kPending) {
       if (entry && !segment_current_valid_) {
-        tick_record_.decel_event = Event::kNotDue;
+        tick_record_.segment_event = Event::kNotDue;
       }
     } else if (!SegmentMatchesPlan(segment_pending_)) {
       segment_pending_valid_ = false;
-      tick_record_.decel_event = Event::kPlanMismatch;
+      tick_record_.segment_event = Event::kPlanMismatch;
     } else if (!segment_follower_.Sample(segment_pending_, s, segment_sample_)) {
       segment_pending_valid_ = false;
-      tick_record_.decel_event = Event::kSampleFailed;
+      tick_record_.segment_event = Event::kSampleFailed;
     } else {
       // MD-39: the command this tick starts from against the new segment at
       // the same instant — the step the switch would put into the CLIK.
@@ -1611,20 +1611,20 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
           std::span<const double>(segment_sample_.qd.data(), n),
           std::span<const double>(segment_qd_max_.data(), n), arm_dof_, segment_k_p_,
           segment_eta_v_, segment_switch_margin_);
-      tick_record_.decel_rho = gate.rho;
-      tick_record_.decel_dq_max = gate.dq_max;
-      tick_record_.decel_dqd_max = gate.dqd_max;
-      tick_record_.decel_gate_joint = gate.joint;
+      tick_record_.segment_rho = gate.rho;
+      tick_record_.segment_dq_max = gate.dq_max;
+      tick_record_.segment_dqd_max = gate.dqd_max;
+      tick_record_.segment_gate_joint = gate.joint;
       if (gate.pass) {
         segment_current_ = segment_pending_;
         segment_current_valid_ = true;
         sampled = true;
-        tick_record_.decel_event = Event::kSwitched;
+        tick_record_.segment_event = Event::kSwitched;
       } else {
         // A replan that would step the command is dropped and the followed
         // segment goes on; a first segment has none behind it, and the trial
         // aborts below.
-        tick_record_.decel_event = Event::kGateRefused;
+        tick_record_.segment_event = Event::kGateRefused;
       }
       segment_pending_valid_ = false;
     }
@@ -1640,8 +1640,8 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
     // closed form. The switch's event names why when it had a segment; the
     // lane's own verdict on this tick (kDeferred) names why the slot is empty
     // better than kNoSegment does, so it stays.
-    return fail(tick_record_.decel_event == Event::kNone ? Event::kNoSegment
-                                                         : tick_record_.decel_event);
+    return fail(tick_record_.segment_event == Event::kNone ? Event::kNoSegment
+                                                           : tick_record_.segment_event);
   }
   if (!sampled && !segment_follower_.Sample(segment_current_, s, segment_sample_)) {
     return fail(Event::kSampleFailed);
@@ -1670,13 +1670,13 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
   if (!q_posture_segment_.allFinite() || !target.position.allFinite()) {
     return fail(Event::kSampleFailed);
   }
-  tick_record_.decel_following = true;
-  tick_record_.decel_seq = segment_current_.segment_seq;
-  tick_record_.decel_k0 = segment_current_.k0;
-  tick_record_.decel_held = segment_sample_.held;
+  tick_record_.segment_following = true;
+  tick_record_.segment_seq = segment_current_.segment_seq;
+  tick_record_.segment_k0 = segment_current_.k0;
+  tick_record_.segment_held = segment_sample_.held;
   for (int a = 0; a < 3; ++a) {
-    tick_record_.decel_p_d[static_cast<std::size_t>(a)] = target.position[a];
-    tick_record_.decel_v_ff[static_cast<std::size_t>(a)] = target.linear_velocity_ff[a];
+    tick_record_.segment_p_d[static_cast<std::size_t>(a)] = target.position[a];
+    tick_record_.segment_v_ff[static_cast<std::size_t>(a)] = target.linear_velocity_ff[a];
   }
   const Reason law = SolveClikAndCommand(state, target, q_posture_segment_);
   // Past node N the sample holds the rest state: the stop has ended.

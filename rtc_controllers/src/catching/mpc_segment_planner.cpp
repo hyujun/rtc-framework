@@ -1092,7 +1092,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
     in.qd0[m] = qd[d];
     in.qdd0[m] = qdd[d];
   }
-  rec.from_segment = true;
+  rec.x0_from_segment = true;
   if (!in.q0.allFinite() || !in.qd0.allFinite() || !in.qdd0.allFinite()) {
     rec.outcome = SegmentOutcome::kInputNonFinite;
     return false;

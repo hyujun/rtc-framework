@@ -923,7 +923,7 @@ TEST(ApproachPlanner, ASamePointResolveIsWarmAndKeepsNodeZero) {
   EXPECT_EQ(r.rec.kind, SegmentKind::kSame);
   EXPECT_FALSE(r.rec.cold_start);
   EXPECT_EQ(r.rec.source_seq, s.seq);
-  EXPECT_TRUE(r.rec.from_segment);
+  EXPECT_TRUE(r.rec.x0_from_segment);
   EXPECT_EQ(r.out.t0_ns, t0);
   EXPECT_EQ(r.out.n_pre, 6);
   EXPECT_GT(r.rec.w_delta_scale, 0.0);  // σ 0.01 m: tr Σ / σ_ref² = 3e-4/9e-4

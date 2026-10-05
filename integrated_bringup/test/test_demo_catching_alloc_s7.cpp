@@ -516,19 +516,20 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
     if (mode == Mode::kTracking && ctrl_->GetMode() == Mode::kApproach) {
       adopted_at = t;
       us_pair = std::max(us_pair, us);
-      EXPECT_EQ(record.decel_event, Event::kAdmitted);
-    } else if (record.decel_event == Event::kAdmitted || record.decel_event == Event::kReplaced) {
+      EXPECT_EQ(record.segment_event, Event::kAdmitted);
+    } else if (record.segment_event == Event::kAdmitted ||
+               record.segment_event == Event::kReplaced) {
       us_admit = std::max(us_admit, us);
-      replaced = replaced || record.decel_event == Event::kReplaced;
-    } else if (record.decel_event == Event::kSwitched) {
+      replaced = replaced || record.segment_event == Event::kReplaced;
+    } else if (record.segment_event == Event::kSwitched) {
       us_switch = std::max(us_switch, us);
-      switched.insert(record.decel_seq);
-    } else if (record.decel_following) {
+      switched.insert(record.segment_seq);
+    } else if (record.segment_following) {
       us_follow = std::max(us_follow, us);
     } else if (mode == Mode::kApproach && ctrl_->HasPendingSegmentForTesting()) {
       us_wait = std::max(us_wait, us);
     }
-    if (record.decel_following) {
+    if (record.segment_following) {
       followed_in.insert(mode);
     }
     if (ctrl_->GetMode() == Mode::kRetreat && prev == Mode::kHold) {

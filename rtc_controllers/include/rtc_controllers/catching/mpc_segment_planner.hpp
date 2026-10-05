@@ -124,7 +124,7 @@ namespace rtc::catching {
 /// tick stalled; 50 ms is one default planner wake timeout, 25 ticks at 2 ms.
 inline constexpr std::int64_t kMpcSegmentMaxRtStateAgeNs = 50'000'000;
 
-/// What one segment step did (the planner events CSV's decel columns). The CSV
+/// What one segment step did (the planner events CSV's segment columns). The CSV
 /// writes the NAME (SegmentOutcomeName), never the value: the values carry no
 /// meaning outside a build and move when an enumerator is added or removed.
 enum class SegmentOutcome : std::uint8_t {
@@ -176,12 +176,12 @@ struct SegmentRecord {
   SegmentOutcome outcome{SegmentOutcome::kOff};
   MpcSegmentCoreReason core_reason{MpcSegmentCoreReason::kNone};
   /// Grid index of node 0: t_eff = t_c + k·Δ_s for a stop grid point, −n_pre
-  /// for a pre-catch one (the CSV's decel_k).
+  /// for a pre-catch one (the CSV's segment_k).
   std::int32_t k{-1};
   std::int32_t n_nodes{0};
   std::uint32_t segment_seq{0};  ///< the published segment's seq (cycle)
   bool x0_clamped{false};        ///< the start state (q or q̇) was projected into the box
-  bool from_segment{false};      ///< replan: x₀ came from a segment the RT reports
+  bool x0_from_segment{false};   ///< replan: x₀ came from a segment the RT reports
   bool presolved{false};         ///< no reference: kinematic pre-solve + solve
   bool cold_retry{false};        ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};

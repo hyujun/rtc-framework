@@ -342,115 +342,125 @@ void DemoCatchingController::DeclareProfileParameters() {
   // horizon, window and thresholds this controller used, not the file.
   const auto& mpc_segment = planner_params_.mpc_segment;
   declare("planner.segment.mpc.horizon.n_nodes", static_cast<std::int64_t>(mpc_segment.n_nodes),
-          "decel MPC nodes N_s; N_s * dt_s is the stopping time (MD-21)");
-  declare("planner.segment.mpc.horizon.dt_s", mpc_segment.dt_s, "decel MPC node spacing dt_s [s]");
+          "MPC segment planner nodes N_s; N_s * dt_s is the stopping time (MD-21)");
+  declare("planner.segment.mpc.horizon.dt_s", mpc_segment.dt_s,
+          "MPC segment planner node spacing dt_s [s]");
   declare("planner.segment.mpc.horizon.blocks",
           std::vector<std::int64_t>(mpc_segment.blocks.begin(),
                                     mpc_segment.blocks.begin() + mpc_segment.n_blocks),
-          "decel MPC move-blocking pattern of the stop part (sum = n_nodes)");
+          "MPC segment planner move-blocking pattern of the stop part (sum = n_nodes)");
   declare("planner.segment.mpc.m_q", mpc_segment.m_q,
-          "decel MPC position margin inside the limits [rad]");
+          "MPC segment planner position margin inside the limits [rad]");
   declare("planner.segment.mpc.replan.k_max", static_cast<std::int64_t>(mpc_segment.k_max),
-          "decel MPC post-catch replans at grid points k <= k_max (MD-31)");
+          "MPC segment planner post-catch replans at grid points k <= k_max (MD-31)");
   declare("planner.segment.mpc.eta_tau", mpc_segment.eta_tau,
-          "decel MPC torque row fraction of tau_max");
+          "MPC segment planner torque row fraction of tau_max");
   declare("planner.segment.mpc.publish.slack_max", mpc_segment.slack_max,
-          "decel MPC publish threshold on the torque slack, nodes 1..N (MD-33)");
+          "MPC segment planner publish threshold on the torque slack, nodes 1..N (MD-33)");
   declare("planner.segment.mpc.publish.slack_terminal_max", mpc_segment.slack_terminal_max,
-          "decel MPC publish threshold on the terminal (static) torque slack (MD-33)");
+          "MPC segment planner publish threshold on the terminal (static) torque slack (MD-33)");
   // The APPROACH–stop keys (MPC E1-F08): all provisional.
   declare("planner.segment.mpc.approach.n_pre_max",
           static_cast<std::int64_t>(mpc_segment.n_pre_max),
-          "decel MPC pre-catch intervals before t_c, at most (MD-54); 0 = no decel planner "
+          "MPC segment planner pre-catch intervals before t_c, at most (MD-54); 0 = no MPC segment "
+          "planner "
           "(mode mpc parks, MD-70)");
   declare("planner.segment.mpc.approach.dt_pre_s", mpc_segment.dt_pre_s,
-          "decel MPC pre-catch node spacing [s] (MD-54)");
+          "MPC segment planner pre-catch node spacing [s] (MD-54)");
   declare("planner.segment.mpc.approach.rest_tol", mpc_segment.rest_tol,
-          "decel MPC first solve: largest |q_dot_cmd| read as at rest [rad/s]");
+          "MPC segment planner first solve: largest |q_dot_cmd| read as at rest [rad/s]");
   declare("planner.segment.mpc.budget.first_s", mpc_segment.budget_first_s,
-          "decel MPC first-segment solve budget and lead [s] (MD-56)");
+          "MPC segment planner first-segment solve budget and lead [s] (MD-56)");
   declare("planner.segment.mpc.budget.replan_s", mpc_segment.budget_replan_s,
-          "decel MPC replan solve budget and lead [s] (MD-56)");
+          "MPC segment planner replan solve budget and lead [s] (MD-56)");
   declare("planner.segment.mpc.replan.same_point", mpc_segment.replan_same_point,
-          "decel MPC re-solves a pre-catch grid point with the newer prediction (MD-58)");
+          "MPC segment planner re-solves a pre-catch grid point with the newer prediction (MD-58)");
   declare("planner.segment.mpc.publish.catch_pos_err_max", mpc_segment.catch_pos_err_max,
-          "decel MPC publish threshold on the catch-node position error [m] (MD-62)");
-  declare("planner.segment.mpc.catch.w_axis", mpc_segment.w_axis, "decel MPC approach-axis weight");
+          "MPC segment planner publish threshold on the catch-node position error [m] (MD-62)");
+  declare("planner.segment.mpc.catch.w_axis", mpc_segment.w_axis,
+          "MPC segment planner approach-axis weight");
   declare("planner.segment.mpc.catch.w_v_par", mpc_segment.w_v_par,
-          "decel MPC relative-velocity weight along the ball's travel");
+          "MPC segment planner relative-velocity weight along the ball's travel");
   declare("planner.segment.mpc.catch.w_v_perp", mpc_segment.w_v_perp,
-          "decel MPC relative-velocity weight across the ball's travel");
+          "MPC segment planner relative-velocity weight across the ball's travel");
   declare("planner.segment.mpc.catch.gamma_ref", mpc_segment.gamma_ref,
-          "decel MPC velocity target fraction of the ball's velocity (MD-53)");
+          "MPC segment planner velocity target fraction of the ball's velocity (MD-53)");
   declare("planner.segment.mpc.catch.kappa", mpc_segment.kappa,
-          "decel MPC position weight gain: W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 (MD-63)");
+          "MPC segment planner position weight gain: W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 "
+          "(MD-63)");
   declare("planner.segment.mpc.catch.sigma_floor", mpc_segment.sigma_floor,
-          "decel MPC position weight tracking-error floor [m]");
+          "MPC segment planner position weight tracking-error floor [m]");
   declare("planner.segment.mpc.catch.w_max", mpc_segment.w_max,
-          "decel MPC position weight eigenvalue cap [1/m^2]");
+          "MPC segment planner position weight eigenvalue cap [1/m^2]");
   declare("planner.segment.mpc.catch.w_const", mpc_segment.w_const,
-          "decel MPC position weight without a usable covariance [1/m^2]");
+          "MPC segment planner position weight without a usable covariance [1/m^2]");
   declare("planner.segment.mpc.catch.sigma_ref", mpc_segment.sigma_ref,
-          "decel MPC w_delta schedule reference, compared with tr Sigma_p [m]");
+          "MPC segment planner w_delta schedule reference, compared with tr Sigma_p [m]");
   declare("planner.segment.mpc.catch.rho_v", mpc_segment.rho_v,
-          "decel MPC relative-velocity slack penalty at the catch node; 0 = no slack row. The "
-          "slack is recorded (planner_events decel_slack_v), never a publish gate");
-  declare("planner.segment.mpc.catch.v_rel_allow", mpc_segment.v_rel_allow,
-          "decel MPC per-axis relative velocity the hand absorbs [m/s]; read when rho_v > 0");
+          "MPC segment planner relative-velocity slack penalty at the catch node; 0 = no slack "
+          "row. The "
+          "slack is recorded (planner_events segment_slack_v), never a publish gate");
+  declare(
+      "planner.segment.mpc.catch.v_rel_allow", mpc_segment.v_rel_allow,
+      "MPC segment planner per-axis relative velocity the hand absorbs [m/s]; read when rho_v > 0");
   // The core's own design values (YAML keys), as run. jerk_weight is the profile's
   // list in arm joint order; empty = the core's all-ones.
   declare("planner.segment.mpc.cost.jerk_weight", mpc_segment.jerk_weight,
-          "decel MPC jerk weight R_j per arm joint (arm order); empty = all 1");
+          "MPC segment planner jerk weight R_j per arm joint (arm order); empty = all 1");
   declare("planner.segment.mpc.cost.u_scale", mpc_segment.u_scale,
-          "decel MPC jerk scale [rad/s^3]; the jerk cost is (u/u_scale)^2");
+          "MPC segment planner jerk scale [rad/s^3]; the jerk cost is (u/u_scale)^2");
   declare("planner.segment.mpc.cost.w_delta", mpc_segment.w_delta,
-          "decel MPC pull toward the reference [1/rad^2]");
+          "MPC segment planner pull toward the reference [1/rad^2]");
   declare("planner.segment.mpc.cost.rho_tau", mpc_segment.rho_tau,
-          "decel MPC torque slack penalty; 0 = torque rows off (the publish slack condition is "
+          "MPC segment planner torque slack penalty; 0 = torque rows off (the publish slack "
+          "condition is "
           "then vacuous)");
   declare("planner.segment.mpc.cost.w_perp", mpc_segment.w_perp,
-          "decel MPC stop-path weight [1/m^2]: distance of the catch frame, from the catch on, "
+          "MPC segment planner stop-path weight [1/m^2]: distance of the catch frame, from the "
+          "catch on, "
           "from the line through the ball's predicted catch position along its travel; 0 = off, at "
           "most 1e4");
   declare("planner.segment.mpc.catch.axis_theta_max", mpc_segment.axis_theta_max,
-          "decel MPC largest axis error of the reference the approach-axis term linearises at "
+          "MPC segment planner largest axis error of the reference the approach-axis term "
+          "linearises at "
           "[rad]");
   declare("planner.segment.mpc.linearization.delta_tr", mpc_segment.delta_tr,
-          "decel MPC trust-region half-width around the reference [rad]");
+          "MPC segment planner trust-region half-width around the reference [rad]");
   declare("planner.segment.mpc.linearization.reference_rest_tol", mpc_segment.reference_rest_tol,
-          "decel MPC bound on the supplied reference's terminal speed and acceleration");
+          "MPC segment planner bound on the supplied reference's terminal speed and acceleration");
   declare("planner.segment.mpc.linearization.ref_speed_fraction", mpc_segment.ref_speed_fraction,
-          "decel MPC first-solve reference speed as a fraction of eta_v * qdot_max");
+          "MPC segment planner first-solve reference speed as a fraction of eta_v * qdot_max");
   declare("planner.segment.mpc.solver.max_iter",
           static_cast<std::int64_t>(mpc_segment.solver_max_iter),
-          "decel MPC ProxQP outer iteration cap");
+          "MPC segment planner ProxQP outer iteration cap");
   declare("planner.segment.mpc.solver.max_iter_in",
           static_cast<std::int64_t>(mpc_segment.solver_max_iter_in),
-          "decel MPC ProxQP inner iteration cap per outer step");
+          "MPC segment planner ProxQP inner iteration cap per outer step");
   declare("planner.segment.mpc.solver.eps_abs", mpc_segment.solver_eps_abs,
-          "decel MPC ProxQP absolute tolerance");
+          "MPC segment planner ProxQP absolute tolerance");
   declare("planner.segment.mpc.solver.eps_rel", mpc_segment.solver_eps_rel,
-          "decel MPC ProxQP relative tolerance");
+          "MPC segment planner ProxQP relative tolerance");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,
           "D-S9-D1 motion deadline for a stop (ABORT_SAFE ramp, RETREAT stop stage) [s]");
   declare("supervisor.deadline.return_s", params_.supervisor_deadline_return_s.value,
           "D-S9-D1 motion deadline for RETREAT's return to the wait pose [s]");
-  // The DECEL law (MPC MD-44): one per configuration, never mixed. Like every
+  // The segment mode (MPC MD-44): one per configuration, never mixed. Like every
   // mirror here, read_only — it keeps the FIRST configure's value.
   declare(
       "planner.segment.mode",
       std::string(segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc ? "mpc"
                                                                             : "closed_form"),
-      "MPC MD-44: the DECEL law — closed_form (v1 L7) or mpc (the decel MPC's stop segment). "
+      "MPC MD-44: what the arm follows — closed_form (v1: the RT's own reference) or mpc (the "
+      "MPC segment planner's segments). "
       "As of the FIRST configure of this node — read_only mirrors cannot follow a re-configure");
   declare("planner.segment.mpc.eta_v", ResolvedSegmentMpcEtaV(),
           "speed margin η_v of the mpc segment planner's velocity box and of the RT's "
           "segment-switch gate headroom (D-9, MD-39) as run. As of the FIRST configure of this "
           "node — read_only mirrors cannot follow a re-configure");
   declare("planner.segment.mpc.switch_margin", segment_switch_margin_,
-          "MPC MD-39: rho_max of the decel segment switch gate (mode mpc). As of the FIRST "
+          "MPC MD-39: rho_max of the segment switch gate (mode mpc). As of the FIRST "
           "configure of this node — read_only mirrors cannot follow a re-configure");
 }
 
@@ -1406,7 +1416,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
         RCLCPP_WARN(logger_,
                     "planner.segment.mode is mpc under the oracle plan profile: no planner "
                     "publishes a stop segment here, so every DECEL aborts unless a test writes "
-                    "the decel box");
+                    "the segment box");
       }
     }
     // #537 pre-S10 R3 (Q4): the box the search and every joint-space ramp run
@@ -1862,7 +1872,7 @@ bool DemoCatchingController::SetupPlanner() {
                 "planner: no system model — the thread runs, but its search is the stub "
                 "(it publishes \"no plan\")%s",
                 segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
-                    ? " and the decel MPC does not run"
+                    ? " and the MPC segment planner does not run"
                     : "");
   } else if (!SetupGridCatchSearch()) {
     return false;
@@ -2019,7 +2029,7 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
     const rtc::catching::GridCatchSearchModel& pm) {
   if (pm.nv > rtc::catching::kMaxSegmentNv) {
     RCLCPP_ERROR(logger_,
-                 "planner.segment.mpc: the arm has %d joints but a decel segment carries at most "
+                 "planner.segment.mpc: the arm has %d joints but a segment carries at most "
                  "%d (kMaxSegmentNv) — set planner.segment.mode: closed_form or raise the capacity",
                  pm.nv, rtc::catching::kMaxSegmentNv);
     return false;
@@ -2032,7 +2042,7 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
   if (torque == nullptr || static_cast<int>(torque->size()) < pm.nv) {
     RCLCPP_ERROR(logger_,
                  "planner.segment.mpc: the arm device has no joint_limits.max_torque for its %d "
-                 "joints — the decel MPC's torque rows need them",
+                 "joints — the MPC segment planner's torque rows need them",
                  pm.nv);
     return false;
   }
@@ -2074,16 +2084,18 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
     return false;
   }
   const auto& d = planner_params_.mpc_segment;
-  RCLCPP_INFO(logger_,
-              "decel MPC ready: stop part %d x %.3f s (%.3f s), %d blocks, post-catch replans to "
-              "k = %d, eta_tau %.2f, publish slack <= %.2f / terminal %.2f, armature 0 (MD-25)",
-              d.n_nodes, d.dt_s, d.n_nodes * d.dt_s, d.n_blocks, d.k_max, d.eta_tau, d.slack_max,
-              d.slack_terminal_max);
-  RCLCPP_INFO(logger_,
-              "decel MPC approach grid: up to %d x %.3f s before t_c, budgets first %.3f s / "
-              "replan %.3f s, same-point re-solve %s, catch error <= %.3f m",
-              d.n_pre_max, d.dt_pre_s, d.budget_first_s, d.budget_replan_s,
-              d.replan_same_point ? "on" : "off", d.catch_pos_err_max);
+  RCLCPP_INFO(
+      logger_,
+      "MPC segment planner ready: stop part %d x %.3f s (%.3f s), %d blocks, post-catch replans to "
+      "k = %d, eta_tau %.2f, publish slack <= %.2f / terminal %.2f, armature 0 (MD-25)",
+      d.n_nodes, d.dt_s, d.n_nodes * d.dt_s, d.n_blocks, d.k_max, d.eta_tau, d.slack_max,
+      d.slack_terminal_max);
+  RCLCPP_INFO(
+      logger_,
+      "MPC segment planner approach grid: up to %d x %.3f s before t_c, budgets first %.3f s / "
+      "replan %.3f s, same-point re-solve %s, catch error <= %.3f m",
+      d.n_pre_max, d.dt_pre_s, d.budget_first_s, d.budget_replan_s,
+      d.replan_same_point ? "on" : "off", d.catch_pos_err_max);
   if (!d.horizon_explicit) {
     RCLCPP_WARN(logger_,
                 "planner.segment.mpc.horizon is not set: the stop part runs the code default "
@@ -2102,6 +2114,13 @@ void DemoCatchingController::SetupSegmentFollower() {
   segment_k_p_ = params_.joint_cmd_k_p.tbd ? 0.0 : params_.joint_cmd_k_p.value;
   segment_k_n_ = params_.joint_cmd_k_posture.tbd ? 0.0 : params_.joint_cmd_k_posture.value;
   if (segment_mode_ != rtc::catching::CatchingSegmentMode::kMpc) {
+    // Said for closed_form too. A driver that expects closed_form looks for
+    // this line: the absence of the mpc line proves nothing, since a configure
+    // that never got here is just as silent.
+    RCLCPP_INFO(logger_,
+                "segment mode: closed_form — the RT tick makes the reference itself (the L4 "
+                "soft-catch reference up to t_c, then the L7 constant-deceleration target); no "
+                "MPC segment planner is built and no segment is followed (MD-44)");
     return;
   }
   // The planner's catch sub-model — resolved whether or not the planner runs:
@@ -2129,7 +2148,7 @@ void DemoCatchingController::SetupSegmentFollower() {
     segment_qd_max_[u] = u < vmax.size() ? vmax[u] : 0.0;
   }
   RCLCPP_INFO(logger_,
-              "DECEL law: mpc — takes a plan with its first segment and follows the MPC's "
+              "segment mode: mpc — takes a plan with its first segment and follows the MPC's "
               "segments from APPROACH to the end of the stop (no soft-catch reference, no "
               "closed-form fallback; MD-44, MD-45); switch margin %.2f, admission age <= %.3f s",
               segment_switch_margin_, static_cast<double>(kSegmentAdmissionMaxAgeNs) * 1e-9);
@@ -2175,7 +2194,7 @@ const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
            "that starts before t_c, MD-45)";
   }
   if (!oracle_enabled_ && !(planner_params_.enabled && planner_cycle_.SegmentPlannerConfigured())) {
-    return "no decel planner runs (planner.enabled is false, or no model the cores accept)";
+    return "no MPC segment planner runs (planner.enabled is false, or no model the cores accept)";
   }
   // MD-37: a segment for the next grid point waits in the box while the
   // pending slot holds the one before it — at most the replan lead and three
@@ -2184,7 +2203,7 @@ const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
   const double min_age_s = planner_params_.mpc_segment.budget_replan_s + 3.0 * GetDefaultDt();
   if (planner_params_.enabled &&
       !(static_cast<double>(kSegmentAdmissionMaxAgeNs) * 1e-9 > min_age_s)) {
-    return "planner.segment.mpc.budget.replan_s + 3 control periods is not below the decel "
+    return "planner.segment.mpc.budget.replan_s + 3 control periods is not below the segment "
            "admission age bound";
   }
   return nullptr;

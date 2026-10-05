@@ -519,7 +519,7 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
     }
     ++replans;
     // Every published replan started on a segment the RT reported (path (i)).
-    EXPECT_TRUE(rec.segment.from_segment);
+    EXPECT_TRUE(rec.segment.x0_from_segment);
     EXPECT_NE(rec.segment.source_seq, 0U);
     // A new grid point or core is a new problem; the same point is not.
     if (rec.segment.kind == SegmentKind::kSame) {

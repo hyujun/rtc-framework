@@ -569,7 +569,7 @@ if(BUILD_TESTING)
   # dynamic_catching MPC E1-F07 (#660): the pre-catch grid and the catch terms
   # of the same core. A separate binary — the malloc gate is one TU per binary,
   # and this suite's timing table needs its own timeout: a smoke by default,
-  # the full 200-sample table (plan MD-51) with RTC_DECEL_MPC_TIMING_FULL=1,
+  # the full 200-sample table (plan MD-51) with RTC_MPC_SEGMENT_CORE_TIMING_FULL=1,
   # which takes several minutes. Same three allocation sensors and the same arm
   # fixtures (mpc_segment_core_fixture.hpp) as the E1-F01 suite above.
   ament_add_gtest(test_catching_mpc_segment_core_approach

@@ -225,8 +225,8 @@ struct CatchingDiagLogPod {
 
   // ── Segment MPC follower (MPC E1-F04) ──────────────────────────────────────
   // Every field is a CSV column (E1-F05, #631). The state message carries
-  // none of them: its field set is frozen (D-20). `decel_event` and
-  // `decel_refusal` are written as their integer values — the tables are in
+  // none of them: its field set is frozen (D-20). `segment_event` and
+  // `segment_refusal` are written as their integer values — the tables are in
   // the integrated_bringup README and in rtc_tools' catching plotter.
   /// What happened to a segment this tick. One value per tick: the
   /// law's (a switch, or the reason there was nothing to follow) wins over
@@ -246,24 +246,24 @@ struct CatchingDiagLogPod {
     kReplaced = 10,     ///< a newer segment for the pending one's node 0 took the slot (MD-58)
   };
   /// The lane judged the box this tick (mode mpc, COMMITTED / CLOSING / DECEL);
-  /// `decel_refusal` is meaningful only then (rtc::catching::SegmentRefusal).
-  bool decel_judged{false};
-  std::uint8_t decel_refusal{0};
-  SegmentEvent decel_event{SegmentEvent::kNone};
+  /// `segment_refusal` is meaningful only then (rtc::catching::SegmentRefusal).
+  bool segment_judged{false};
+  std::uint8_t segment_refusal{0};
+  SegmentEvent segment_event{SegmentEvent::kNone};
   /// The RT stepped the CLIK toward a segment sample this tick; seq and k0
   /// are the followed segment's, the targets its sample at now_lead + h.
-  bool decel_following{false};
-  std::uint32_t decel_seq{0};
-  std::int32_t decel_k0{0};
-  std::array<double, 3> decel_p_d{};
-  std::array<double, 3> decel_v_ff{};
-  bool decel_held{false};  ///< past the last node (the stop is held)
+  bool segment_following{false};
+  std::uint32_t segment_seq{0};
+  std::int32_t segment_k0{0};
+  std::array<double, 3> segment_p_d{};
+  std::array<double, 3> segment_v_ff{};
+  bool segment_held{false};  ///< past the last node (the stop is held)
   /// The switch gate's account on a tick that judged one (kSwitched or
   /// kGateRefused): ρ, the largest |Δq|, |Δq̇| and the refusing joint (−1).
-  double decel_rho{0.0};
-  double decel_dq_max{0.0};
-  double decel_dqd_max{0.0};
-  std::int32_t decel_gate_joint{-1};
+  double segment_rho{0.0};
+  double segment_dq_max{0.0};
+  double segment_dqd_max{0.0};
+  std::int32_t segment_gate_joint{-1};
 
   // ── Fingertip sensors (D-24) ─────────────────────────────────────────────
   // `tip_age_s` is filled from S5.4 because it is a MEASUREMENT — the D-24
@@ -432,10 +432,11 @@ inline void WriteCatchingDiagLogHeader(std::ostream& os,
   os << ",hand_stalled_n,hand_effort_frac,hand_blocked_s,outcome_source";
   // One literal per statement: rtc_tools' test_cpp_header_matches_this_list
   // reads the first literal of each `os <<` in this function.
-  os << ",decel_judged,decel_refusal,decel_event,decel_following,decel_seq,decel_k0,decel_held";
-  os << ",decel_p_d_x,decel_p_d_y,decel_p_d_z";
-  os << ",decel_v_ff_x,decel_v_ff_y,decel_v_ff_z";
-  os << ",decel_rho,decel_dq_max,decel_dqd_max,decel_gate_joint";
+  os << ",segment_judged,segment_refusal,segment_event,segment_following";
+  os << ",segment_seq,segment_k0,segment_held";
+  os << ",segment_p_d_x,segment_p_d_y,segment_p_d_z";
+  os << ",segment_v_ff_x,segment_v_ff_y,segment_v_ff_z";
+  os << ",segment_rho,segment_dq_max,segment_dqd_max,segment_gate_joint";
   // Per-joint and per-tip blocks come LAST, so everything above is a fixed
   // column list a reader can rely on without knowing the robot.
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
@@ -501,15 +502,15 @@ inline void WriteCatchingDiagLogRow(std::ostream& os, const CatchingDiagLogPod& 
      << p.hand_rho << ',' << (p.hand_timeout ? 1 : 0);
   os << ',' << static_cast<int>(p.hand_stalled_n) << ',' << p.hand_effort_frac << ','
      << p.hand_blocked_s << ',' << static_cast<int>(p.outcome_source);
-  // decel_refusal is a std::uint8_t and decel_event an enum over one: both go
+  // segment_refusal is a std::uint8_t and segment_event an enum over one: both go
   // out through int, or the stream writes the raw byte.
-  os << ',' << (p.decel_judged ? 1 : 0) << ',' << static_cast<int>(p.decel_refusal) << ','
-     << static_cast<int>(p.decel_event) << ',' << (p.decel_following ? 1 : 0) << ',' << p.decel_seq
-     << ',' << p.decel_k0 << ',' << (p.decel_held ? 1 : 0);
-  detail::WriteXyzRow(os, p.decel_p_d);
-  detail::WriteXyzRow(os, p.decel_v_ff);
-  os << ',' << p.decel_rho << ',' << p.decel_dq_max << ',' << p.decel_dqd_max << ','
-     << p.decel_gate_joint;
+  os << ',' << (p.segment_judged ? 1 : 0) << ',' << static_cast<int>(p.segment_refusal) << ','
+     << static_cast<int>(p.segment_event) << ',' << (p.segment_following ? 1 : 0) << ','
+     << p.segment_seq << ',' << p.segment_k0 << ',' << (p.segment_held ? 1 : 0);
+  detail::WriteXyzRow(os, p.segment_p_d);
+  detail::WriteXyzRow(os, p.segment_v_ff);
+  os << ',' << p.segment_rho << ',' << p.segment_dq_max << ',' << p.segment_dqd_max << ','
+     << p.segment_gate_joint;
   for (std::size_t i = 0; i < cols.num_arm_joints; ++i) {
     os << ',' << p.q_cmd[i];
   }
