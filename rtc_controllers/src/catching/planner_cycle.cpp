@@ -26,10 +26,11 @@ bool PlannerCycle::Bind(const PlannerCycleIo& io) noexcept {
   return bound_;
 }
 
-bool PlannerCycle::ConfigureSearch(const PlannerModel& model, const PlannerConstants& constants,
-                                   const CatchPoseIkOptions& ik) {
+bool PlannerCycle::ConfigureGridCatchSearch(const GridCatchSearchModel& model,
+                                            const GridCatchSearchConstants& constants,
+                                            const CatchPoseIkOptions& ik) {
   search_.reset();
-  auto search = std::make_unique<PlannerSearch>();
+  auto search = std::make_unique<GridCatchSearch>();
   if (!search->Configure(model, constants, params_, ik, clock_)) {
     return false;
   }

@@ -7,7 +7,7 @@
 // search runs behind it is the configuration's choice — a wake calls this
 // interface and nothing else.
 //
-// The one implementation today is PlannerSearch (grid_catch_search.hpp): a grid
+// The one implementation today is GridCatchSearch (grid_catch_search.hpp): a grid
 // over the vision samples with a closed-form γ profile.
 //
 // ── Contract ──────────────────────────────────────────────────────────────────

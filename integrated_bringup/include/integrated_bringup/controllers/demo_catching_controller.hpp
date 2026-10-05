@@ -444,7 +444,7 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Whether the planner has a model to search in (S6-B). False = the S6-A
   /// stub ("no plan") — a profile with no system model, e.g. a unit fixture.
-  [[nodiscard]] bool IsPlannerSearchConfigured() const noexcept {
+  [[nodiscard]] bool IsGridCatchSearchConfigured() const noexcept {
     return planner_cycle_.SearchConfigured();
   }
 
@@ -788,7 +788,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// the catch frame, the model↔device joint map, velocity/acceleration
   /// limits and the profile constants. Non-RT; false (and logged) on a model
   /// the planner cannot use.
-  [[nodiscard]] bool SetupPlannerSearch();
+  [[nodiscard]] bool SetupGridCatchSearch();
 
   /// The first planner value that is a decision and is unset, or nullptr.
   [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
@@ -802,7 +802,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// box as the q̈-estimate cap. Non-RT; false (and logged) on a model or
   /// rating the cores refuse.
   [[nodiscard]] bool SetupMpcSegmentPlanner(const std::shared_ptr<const pinocchio::Model>& model,
-                                            const rtc::catching::PlannerModel& pm);
+                                            const rtc::catching::GridCatchSearchModel& pm);
 
   /// The catch sub-model on `planner.sub_model`, its catch frame and the
   /// model→device joint map — what the planner search and the decel follower

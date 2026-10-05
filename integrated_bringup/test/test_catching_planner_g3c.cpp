@@ -45,13 +45,13 @@
 namespace {
 
 using rtc::catching::CovarianceSnapshot;
+using rtc::catching::GridCatchSearch;
+using rtc::catching::GridCatchSearchConstants;
+using rtc::catching::GridCatchSearchModel;
 using rtc::catching::JudgeReject;
 using rtc::catching::NowReal;
-using rtc::catching::PlannerConstants;
-using rtc::catching::PlannerModel;
 using rtc::catching::PlannerParams;
 using rtc::catching::PlannerRtState;
-using rtc::catching::PlannerSearch;
 using rtc::catching::SearchStats;
 using rtc::catching::TrajectorySnapshot;
 
@@ -108,7 +108,7 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   const auto arm_names =
       integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs().at("ur5e").joint_state_names;
 
-  PlannerModel pm;
+  GridCatchSearchModel pm;
   pm.handle = handle.get();
   pm.catch_frame = frame;
   pm.nv = nv;
@@ -125,7 +125,7 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   pm.accel_box = true;
 
   const YAML::Node c = shipped.controller["catching"];
-  PlannerConstants pc;
+  GridCatchSearchConstants pc;
   pc.eta_v = c["planner"]["gamma"]["eta_v"].as<double>();
   pc.v_max = c["reference"]["v_max"].as<double>();
   pc.a_dec = c["supervisor"]["decel"]["a_dec"].as<double>();
@@ -138,7 +138,7 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   pc.ref_a_max = c["reference"]["a_max"].as<double>();
   pc.control_dt = 0.002;
 
-  PlannerSearch search;
+  GridCatchSearch search;
   ASSERT_TRUE(search.Configure(pm, pc, shipped.params, shipped.ik.options, &SteadyClock));
 
   std::mt19937 rng(537);

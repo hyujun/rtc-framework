@@ -192,8 +192,8 @@ struct Rig {
   std::int64_t traj_first_ns{0};
   // What the cycle was configured with, kept for Reconfigure().
   rtc::catching::PlannerCycleIo io{};
-  rtc::catching::PlannerModel search_model{};
-  rtc::catching::PlannerConstants search_consts{};
+  rtc::catching::GridCatchSearchModel search_model{};
+  rtc::catching::GridCatchSearchConstants search_consts{};
   rtc::catching::CatchPoseIkOptions ik_options{};
   rtc::catching::MpcSegmentPlannerModel mpc_segment_model{};
   rtc::catching::MpcSegmentPlannerConstants mpc_segment_consts{};
@@ -256,7 +256,7 @@ struct Rig {
       cycle.SetClock(&SuiteClock);  // before the search and the decel planner take it
     }
 
-    rtc::catching::PlannerModel pm;
+    rtc::catching::GridCatchSearchModel pm;
     pm.handle = handle.get();
     pm.catch_frame = frame;
     pm.nv = nv;
@@ -278,7 +278,7 @@ struct Rig {
       dm.tau_max[u] = tau_max[u];
     }
     pm.accel_box = true;
-    rtc::catching::PlannerConstants pc;
+    rtc::catching::GridCatchSearchConstants pc;
     pc.eta_v = 0.9;
     pc.v_max = 3.0;
     pc.a_dec = 10.0;
@@ -301,7 +301,7 @@ struct Rig {
     io = rtc::catching::PlannerCycleIo{&boxes.traj, &boxes.cov, &boxes.rt, &boxes.plan,
                                        bind_segment ? &boxes.segment : nullptr};
     EXPECT_TRUE(cycle.Bind(io));
-    EXPECT_TRUE(cycle.ConfigureSearch(pm, pc, ik));
+    EXPECT_TRUE(cycle.ConfigureGridCatchSearch(pm, pc, ik));
     std::string err;
     EXPECT_TRUE(cycle.ConfigureMpcSegmentPlanner(dm, dc, &err)) << err;
     search_model = pm;
@@ -320,7 +320,7 @@ struct Rig {
     EXPECT_TRUE(cycle.Bind(io));
     cycle.ClearSegmentPlanner();
     EXPECT_FALSE(cycle.SegmentPlannerConfigured());
-    EXPECT_TRUE(cycle.ConfigureSearch(search_model, search_consts, ik_options));
+    EXPECT_TRUE(cycle.ConfigureGridCatchSearch(search_model, search_consts, ik_options));
     std::string err;
     EXPECT_TRUE(cycle.ConfigureMpcSegmentPlanner(mpc_segment_model, mpc_segment_consts, &err))
         << err;

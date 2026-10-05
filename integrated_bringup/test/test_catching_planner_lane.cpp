@@ -726,7 +726,7 @@ TEST_F(CatchingPlanLaneTest, WithNoCatchablePointThePlannerKeepsTrackingOnNoCatc
   // outcome the RT sees is the same as the stub's — "no plan", refused as
   // invalid, TRACKING self-looping on NO_CATCHABLE_PLAN — now for a reason.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true));
-  ASSERT_TRUE(ctrl_->IsPlannerSearchConfigured()) << "the real model gave the search no model";
+  ASSERT_TRUE(ctrl_->IsGridCatchSearchConfigured()) << "the real model gave the search no model";
   const CatchingPlannerThread* thread = ctrl_->GetPlannerThread();
   ASSERT_NE(thread, nullptr);
   EXPECT_TRUE(thread->Running());
@@ -787,7 +787,7 @@ TEST_F(CatchingPlanLaneTest, ThePlannerFindsAReachableCatchPointAndTheRtFollowsI
   cloud_n_ = 20;  // 0.95 s of prediction: the slice window is [T_freeze, 0.95]
 
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true));
-  ASSERT_TRUE(ctrl_->IsPlannerSearchConfigured());
+  ASSERT_TRUE(ctrl_->IsGridCatchSearchConfigured());
   bool approached = false;
   for (int t = 0; t < 600 && !approached; ++t) {
     if (t % 10 == 0) {

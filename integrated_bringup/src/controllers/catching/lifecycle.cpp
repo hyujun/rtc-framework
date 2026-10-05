@@ -198,7 +198,7 @@ int DemoCatchingController::ResolvedTrajNMin() const {
 
 double DemoCatchingController::ResolvedPlannerEtaV() const {
   // A TBD η_v runs the planner's own default (D-9) — as above, one place.
-  return params_.planner_gamma_eta_v.tbd ? rtc::catching::PlannerConstants{}.eta_v
+  return params_.planner_gamma_eta_v.tbd ? rtc::catching::GridCatchSearchConstants{}.eta_v
                                          : params_.planner_gamma_eta_v.value;
 }
 
@@ -279,7 +279,7 @@ void DemoCatchingController::DeclareProfileParameters() {
   // one level short ran the shipped profile with no warning). A TBD leaf is
   // therefore mirrored as the value the setup substituted for it (the
   // reference's struct default, the planner's η_v default), through the same
-  // resolvers SetupArmCommand / SetupPlannerSearch use.
+  // resolvers SetupArmCommand / SetupGridCatchSearch use.
   declare("reference.omega", params_.reference_omega.value,
           "L4 §6 reference natural frequency ω [rad/s]");
   declare("reference.a_max", ResolvedReferenceParams().a_max,
@@ -1789,7 +1789,7 @@ bool DemoCatchingController::SetupPlanner() {
                 decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
                     ? " and the decel MPC does not run"
                     : "");
-  } else if (!SetupPlannerSearch()) {
+  } else if (!SetupGridCatchSearch()) {
     return false;
   }
   RCLCPP_INFO(logger_,
@@ -1855,10 +1855,10 @@ bool DemoCatchingController::ResolveCatchSubModel(
   return true;
 }
 
-bool DemoCatchingController::SetupPlannerSearch() {
+bool DemoCatchingController::SetupGridCatchSearch() {
   const std::string& name = planner_params_.sub_model;
   std::shared_ptr<const pinocchio::Model> model;
-  rtc::catching::PlannerModel pm;
+  rtc::catching::GridCatchSearchModel pm;
   pinocchio::FrameIndex frame = 0;
   if (!ResolveCatchSubModel("planner", model, frame, pm.device_of_model)) {
     return false;
@@ -1884,7 +1884,7 @@ bool DemoCatchingController::SetupPlannerSearch() {
   const auto val = [](const rtc::catching::TbdDouble& v) {
     return v.tbd ? std::numeric_limits<double>::quiet_NaN() : v.value;
   };
-  rtc::catching::PlannerConstants pc;
+  rtc::catching::GridCatchSearchConstants pc;
   pc.eta_v = ResolvedPlannerEtaV();
   pc.v_max = val(params_.reference_v_max);
   pc.a_dec = val(params_.supervisor_decel_a_dec);
@@ -1900,7 +1900,7 @@ bool DemoCatchingController::SetupPlannerSearch() {
   pc.ref_a_max = val(params_.reference_a_max);
   pc.control_dt = GetDefaultDt();
 
-  if (!planner_cycle_.ConfigureSearch(pm, pc, catch_pose_ik_config_.options)) {
+  if (!planner_cycle_.ConfigureGridCatchSearch(pm, pc, catch_pose_ik_config_.options)) {
     RCLCPP_ERROR(logger_,
                  "planner: the search refused its model (nv %d, wait pose %d entries — "
                  "planner.wait_pose must give one per arm joint)",
@@ -1936,7 +1936,8 @@ const char* DemoCatchingController::MpcSegmentConfigInvalid() const noexcept {
 }
 
 bool DemoCatchingController::SetupMpcSegmentPlanner(
-    const std::shared_ptr<const pinocchio::Model>& model, const rtc::catching::PlannerModel& pm) {
+    const std::shared_ptr<const pinocchio::Model>& model,
+    const rtc::catching::GridCatchSearchModel& pm) {
   if (pm.nv > rtc::catching::kMaxSegmentNv) {
     RCLCPP_ERROR(logger_,
                  "planner.decel_mpc: the arm has %d joints but a decel segment carries at most "

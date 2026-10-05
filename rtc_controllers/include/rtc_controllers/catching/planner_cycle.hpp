@@ -12,9 +12,9 @@
 // (segment_planner.hpp) only, and owns whichever implementation was installed
 // behind each. "Installed" is "configured": the cycle never holds one that is
 // not ready to run, so a wake asks a pointer, not the object. What knows the
-// concrete types is the configure path alone — ConfigureSearch / ConfigureMpcSegmentPlanner
-// build today's one implementation of each, and MpcSegmentPlannerForDiagnostics() hands that
-// implementation to tests.
+// concrete types is the configure path alone — ConfigureGridCatchSearch /
+// ConfigureMpcSegmentPlanner build today's one implementation of each, and
+// MpcSegmentPlannerForDiagnostics() hands that implementation to tests.
 //
 // RT-1~10. The planner may run SCHED_FIFO (D-7a, shares the `mpc_main` role —
 // E-7 decision J), so `Run` allocates nothing, takes no lock, logs nothing and
@@ -162,13 +162,14 @@ class PlannerCycle {
   /// Non-RT. Take the thread parameters (budget, wait pose).
   void Configure(const PlannerParams& params) { params_ = params; }
 
-  /// Non-RT. Build a PlannerSearch on this model (S6-B) with `Configure`'s
+  /// Non-RT. Build a GridCatchSearch on this model (S6-B) with `Configure`'s
   /// params and the cycle's clock, and install it in place of whatever search
   /// was there — a NEW object every call, never the previous one configured
   /// again. Without a search `PlanOnce` is the S6-A stub ("no plan"). False,
   /// and no search installed, if the binding is unusable.
-  bool ConfigureSearch(const PlannerModel& model, const PlannerConstants& constants,
-                       const CatchPoseIkOptions& ik);
+  bool ConfigureGridCatchSearch(const GridCatchSearchModel& model,
+                                const GridCatchSearchConstants& constants,
+                                const CatchPoseIkOptions& ik);
 
   /// Non-RT. Install a search built and configured by the caller, or none
   /// (nullptr). It keeps the clock it was configured with: SetClock does not
@@ -178,7 +179,7 @@ class PlannerCycle {
   /// Drop the search (a configuration without one).
   void ClearSearch() noexcept { search_.reset(); }
 
-  /// A search is installed (ConfigureSearch succeeded, or InstallSearch).
+  /// A search is installed (ConfigureGridCatchSearch succeeded, or InstallSearch).
   [[nodiscard]] bool SearchConfigured() const noexcept { return search_ != nullptr; }
 
   /// Non-RT. Build a MpcSegmentPlanner from `Configure`'s `params.decel` and the
@@ -230,7 +231,7 @@ class PlannerCycle {
 
   /// Non-RT. The clock `publish_ns` is read from, forwarded to the installed
   /// segment planner. NOT to an installed search: a search takes its clock
-  /// when it is configured, so set this before ConfigureSearch.
+  /// when it is configured, so set this before ConfigureGridCatchSearch.
   void SetClock(ClockFn clock) noexcept {
     clock_ = clock;
     if (segment_planner_ != nullptr) {
