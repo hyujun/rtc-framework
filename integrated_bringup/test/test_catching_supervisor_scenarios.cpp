@@ -4752,6 +4752,72 @@ TEST_F(SafetyGateParkTest, ARemovedAccelLimitsKeyParksNamingTheNewKeys) {
   }
 }
 
+// ── #711: a key that moved parks, naming where it belongs now ───────────────
+
+TEST_F(SafetyGateParkTest, EveryMovedKeyParksNamingItsOldAndItsNewPath) {
+  // The parsers read the new paths only. An overlay that still writes an old
+  // one would be ignored, and the new key would run on its default — the
+  // shipped value, or closed_form for the mode — under the overlay's name.
+  // Like the removed keys above: a park in sim and on a real arm alike, never
+  // a configure FAILURE, and the ERROR says what to write instead.
+  const auto set_path = [](YAML::Node root, const std::string& path, const YAML::Node& value) {
+    const auto impl = [](const auto& self, YAML::Node node, const std::string& rest,
+                         const YAML::Node& leaf) -> void {
+      const std::size_t dot = rest.find('.');
+      if (dot == std::string::npos) {
+        node[rest] = leaf;
+        return;
+      }
+      self(self, node[rest.substr(0, dot)], rest.substr(dot + 1), leaf);
+    };
+    impl(impl, root, path, value);
+  };
+  for (const bool sim : {false, true}) {
+    for (const auto& key : rtc::catching::kRenamedCatchingKeys) {
+      SCOPED_TRACE(std::string(key.old_path) + (sim ? " (sim)" : " (real arm)"));
+      ASSERT_NO_FATAL_FAILURE(Configure(
+          [&](YAML::Node& y) {
+            // The old spelling of the selector, a plain value elsewhere: what
+            // is written under a moved key is not read.
+            const bool mode = std::string(key.old_path) == "supervisor.decel.mode";
+            set_path(y["catching"], key.old_path, YAML::Load(mode ? "mpc" : "1.0"));
+          },
+          sim));
+      EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
+      EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
+      EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                                     {std::string("'catching.") + key.old_path + "' was renamed",
+                                      std::string("'catching.") + key.new_path + "'"})
+                       .empty())
+          << "the ERROR must name the old path and the new one";
+      EXPECT_EQ(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::FAILURE);
+      ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+    }
+    // Positive control: `supervisor.decel.a_dec` did not move — the profile
+    // that carries it (every one does) is not parked for a moved key.
+    SCOPED_TRACE(sim ? "a_dec only (sim)" : "a_dec only (real arm)");
+    ASSERT_NO_FATAL_FAILURE(Configure(AccelBox(AccelBoxFlag::kCleared), sim));
+    EXPECT_NE(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
+    ExpectActivates();
+  }
+}
+
+TEST_F(SafetyGateParkTest, EveryMovedKeyOfAnOverlayIsNamedInOneConfigure) {
+  ASSERT_NO_FATAL_FAILURE(Configure(
+      [](YAML::Node& y) {
+        y["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
+        y["catching"]["planner"]["decel_mpc"]["approach"]["n_pre_max"] = 4;
+        y["catching"]["planner"]["slice"]["dt"] = 0.025;
+      },
+      /*sim=*/true));
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
+  for (const char* needle :
+       {"'catching.supervisor.decel.mode' was renamed", "'catching.planner.decel_mpc' was renamed",
+        "'catching.planner.slice' was renamed"}) {
+    EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {needle}).empty()) << needle;
+  }
+}
+
 // ── #712: the CLIK's acceleration form has no default, and `box` is gone ─────
 //
 // Both cases carry `eta_tau`, the dynamic form's key, as every shipped profile

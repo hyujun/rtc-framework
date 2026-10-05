@@ -174,6 +174,30 @@ TEST(MpcSegmentParams, TheOldDecelMpcSectionIsNotReadAndIsReportedAsRenamed) {
   }
 }
 
+TEST(MpcSegmentParams, VEpsIsTheMpcPlannersOwnKey) {
+  // The floor on the ball's speed, below which its direction of travel is
+  // undefined (#711: the mpc segment planner has its own key, beside the
+  // search IK's `planner.search.grid.ik.v_eps`).
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {enabled: true}")).mpc_segment.v_eps, 1e-6);
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {v_eps: 2.5e-3}}}"))
+                .mpc_segment.v_eps,
+            2.5e-3);
+  // The search IK's key does not reach it.
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {search: {grid: {ik: {v_eps: 5.0e-3}}}}"))
+                .mpc_segment.v_eps,
+            1e-6);
+  for (const char* bad : {"0.0", "-1.0e-6", ".nan", ".inf", "slow", "TBD", "[1.0e-6]"}) {
+    const std::string yaml = std::string("planner: {segment: {mpc: {v_eps: ") + bad + "}}}";
+    try {
+      static_cast<void>(ParsePlannerParams(YAML::Load(yaml)));
+      ADD_FAILURE() << bad << " was accepted";
+    } catch (const std::invalid_argument& e) {
+      EXPECT_NE(std::string(e.what()).find("'planner.segment.mpc.v_eps'"), std::string::npos)
+          << bad << ": " << e.what();
+    }
+  }
+}
+
 TEST(MpcSegmentParams, ParsesTheApproachKeys) {
   const auto p = ParsePlannerParams(YAML::Load(
       "planner: {segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "

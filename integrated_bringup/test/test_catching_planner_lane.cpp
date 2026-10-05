@@ -1059,6 +1059,182 @@ TEST_F(CatchingPlanLaneTest, ALeftoverDecelMpcKeyParksUnderEitherMode) {
   }
 }
 
+// ── #711: a function is handed its own keys ─────────────────────────────────
+
+namespace {
+
+/// `root` with the dotted `path` set to `value` (maps created on the way).
+void SetCatchingPath(YAML::Node root, const std::string& path, double value) {
+  const std::size_t dot = path.find('.');
+  if (dot == std::string::npos) {
+    root[path] = value;
+    return;
+  }
+  SetCatchingPath(root[path.substr(0, dot)], path.substr(dot + 1), value);
+}
+
+}  // namespace
+
+TEST_F(CatchingPlanLaneTest, EachFunctionIsHandedItsOwnKeysAndNoOtherFunctions) {
+  // The search and the mpc segment planner each read their numbers from their
+  // own map, and two of those numbers used to be one key for both. Moving one
+  // key must move the constant of the function that owns it, and nothing else
+  // either function was handed — a read wired to the other function's key, or
+  // to the closed_form law's, shows as the wrong column moving (or none).
+  enum Seen : std::size_t {
+    kGridEtaV,
+    kGridVMax,
+    kGridADec,
+    kGridOmega,
+    kGridAMax,
+    kMpcEtaV,
+    kMpcVEps,
+    kGateEtaV,
+    kSeenCount
+  };
+
+  const std::array<const char*, kSeenCount> names{
+      "search eta_v",     "search v_max", "search a_dec", "search ref omega",
+      "search ref a_max", "mpc eta_v",    "mpc v_eps",    "switch gate eta_v"};
+  using Values = std::array<double, kSeenCount>;
+  // Mode mpc (the fixture's): a copy that differs from the law's value only
+  // warns there, so every function is built and can be read.
+  const auto seen_with = [this](const std::function<void(YAML::Node&)>& tweak, Values& out) {
+    const ConfigureVerdict v = ConfigureOnly(true, tweak);
+    if (v.ret != DemoCatchingController::CallbackReturn::SUCCESS || v.parked ||
+        !ctrl_->IsSegmentPlannerConfigured()) {
+      return false;
+    }
+    const auto& grid = ctrl_->GetGridCatchSearchConstantsForTesting();
+    const auto& mpc = ctrl_->GetMpcSegmentPlannerConstantsForTesting();
+    out = {grid.eta_v,     grid.v_max, grid.a_dec, grid.ref_omega,
+           grid.ref_a_max, mpc.eta_v,  mpc.v_eps,  ctrl_->GetSegmentEtaVForTesting()};
+    return true;
+  };
+  Values base{};
+  ASSERT_TRUE(seen_with(nullptr, base));
+
+  struct Case {
+    const char* path;  // under catching:
+    double value;
+    std::vector<Seen> moves;
+  };
+
+  const std::vector<Case> cases{
+      {"planner.search.grid.gamma.eta_v", 0.8, {kGridEtaV}},
+      {"planner.search.grid.reference.v_max", 2.5, {kGridVMax}},
+      {"planner.search.grid.stop.a_dec", 8.0, {kGridADec}},
+      {"planner.search.grid.reference.omega", 12.0, {kGridOmega}},
+      {"planner.search.grid.reference.a_max", 25.0, {kGridAMax}},
+      {"planner.segment.mpc.eta_v", 0.7, {kMpcEtaV, kGateEtaV}},
+      {"planner.segment.mpc.v_eps", 1.0e-3, {kMpcVEps}},
+      // The keys these used to be read from reach neither function now.
+      {"planner.search.grid.ik.v_eps", 2.0e-3, {}},
+      {"reference.v_max", 2.5, {}},
+      {"reference.omega", 12.0, {}},
+      {"reference.a_max", 25.0, {}},
+      {"supervisor.decel.a_dec", 8.0, {}},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.path);
+    Values got{};
+    ASSERT_TRUE(
+        seen_with([&c](YAML::Node& y) { SetCatchingPath(y["catching"], c.path, c.value); }, got));
+    for (std::size_t i = 0; i < kSeenCount; ++i) {
+      const bool moves =
+          std::find(c.moves.begin(), c.moves.end(), static_cast<Seen>(i)) != c.moves.end();
+      if (moves) {
+        EXPECT_EQ(got[i], c.value) << names[i];
+        EXPECT_NE(base[i], c.value) << names[i] << ": the baseline already has this value";
+      } else {
+        EXPECT_EQ(got[i], base[i]) << names[i] << " moved";
+      }
+    }
+  }
+}
+
+TEST_F(CatchingPlanLaneTest, ASearchCopyThatDiffersParksUnderClosedFormAndOnlyWarnsUnderMpc) {
+  // The search rolls a candidate out on its own copies of the closed_form
+  // law's values. Under closed_form the arm follows that law, so a copy that
+  // differs ranks candidates by a motion the arm will not make: park, naming
+  // the pair. Under mpc they are two functions' values: a warning, then run.
+  // (zeta has no second legal value — the validator refuses anything but 1.)
+  using integrated_bringup::CatchingParkReason;
+  using Return = DemoCatchingController::CallbackReturn;
+
+  struct Pair {
+    const char* copy;
+    const char* source;
+    double other;  // legal for both keys, and not the fixture's value
+  };
+
+  for (const Pair& pair : {Pair{"planner.search.grid.reference.v_max", "reference.v_max", 2.5},
+                           Pair{"planner.search.grid.reference.omega", "reference.omega", 12.0},
+                           Pair{"planner.search.grid.reference.a_max", "reference.a_max", 25.0},
+                           Pair{"planner.search.grid.stop.a_dec", "supervisor.decel.a_dec", 8.0}}) {
+    const std::string differs =
+        std::string("'catching.") + pair.copy + "' differs from 'catching." + pair.source + "'";
+    for (const bool move_copy : {true, false}) {
+      const char* moved = move_copy ? pair.copy : pair.source;
+      for (const char* mode : {"closed_form", "mpc"}) {
+        SCOPED_TRACE(std::string(moved) + " moved, " + mode);
+        const WarnCapture logs;
+        const ConfigureVerdict v = ConfigureOnly(true, [&](YAML::Node& y) {
+          y["catching"]["planner"]["segment"]["mode"] = mode;
+          SetCatchingPath(y["catching"], moved, pair.other);
+        });
+        ASSERT_EQ(v.ret, Return::SUCCESS);
+        EXPECT_TRUE(WarnCapture::Contains(differs));
+        if (std::string(mode) == "closed_form") {
+          EXPECT_TRUE(v.parked);
+          EXPECT_EQ(v.reason, CatchingParkReason::kSearchCopyDiffers);
+          EXPECT_TRUE(WarnCapture::Contains("DISABLED: " + differs));
+        } else {
+          EXPECT_FALSE(v.parked) << "reason " << static_cast<int>(v.reason);
+          EXPECT_TRUE(ctrl_->IsSegmentPlannerConfigured());
+          EXPECT_FALSE(WarnCapture::Contains("DISABLED"));
+        }
+      }
+    }
+    // With the planner off nothing reads the copies: no park, no word.
+    const WarnCapture logs;
+    const ConfigureVerdict off = ConfigureOnly(false, [&](YAML::Node& y) {
+      y["catching"]["planner"]["segment"]["mode"] = "closed_form";
+      SetCatchingPath(y["catching"], pair.copy, pair.other);
+    });
+    ASSERT_EQ(off.ret, Return::SUCCESS) << pair.copy;
+    EXPECT_NE(off.reason, CatchingParkReason::kSearchCopyDiffers) << pair.copy;
+    EXPECT_FALSE(WarnCapture::Contains("differs from")) << pair.copy;
+  }
+  // Positive control: equal copies say nothing under either mode.
+  for (const char* mode : {"closed_form", "mpc"}) {
+    const WarnCapture logs;
+    const ConfigureVerdict v = ConfigureOnly(
+        true, [mode](YAML::Node& y) { y["catching"]["planner"]["segment"]["mode"] = mode; });
+    ASSERT_EQ(v.ret, Return::SUCCESS) << mode;
+    EXPECT_FALSE(v.parked) << mode << ": reason " << static_cast<int>(v.reason);
+    EXPECT_FALSE(WarnCapture::Contains("differs from")) << mode;
+  }
+}
+
+TEST_F(CatchingPlanLaneTest, AnMpcEtaVThatDiffersFromTheSearchsWarnsUnderMpcOnly) {
+  using Return = DemoCatchingController::CallbackReturn;
+  const std::string needle =
+      "'catching.planner.segment.mpc.eta_v' (0.7) differs from "
+      "'catching.planner.search.grid.gamma.eta_v' (0.9)";
+  for (const char* mode : {"mpc", "closed_form"}) {
+    const WarnCapture logs;
+    const ConfigureVerdict v = ConfigureOnly(true, [mode](YAML::Node& y) {
+      y["catching"]["planner"]["segment"]["mode"] = mode;
+      y["catching"]["planner"]["segment"]["mpc"]["eta_v"] = 0.7;
+    });
+    ASSERT_EQ(v.ret, Return::SUCCESS) << mode;
+    EXPECT_FALSE(v.parked) << mode << ": reason " << static_cast<int>(v.reason);
+    // closed_form builds no mpc segment planner: its eta_v is read by nothing.
+    EXPECT_EQ(WarnCapture::Contains(needle), std::string(mode) == "mpc") << mode;
+  }
+}
+
 TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheMpcSegmentPlannersBox) {
   // The box getters report THIS configuration (/code-review 2026-09-30): a
   // closed_form re-configure builds no MPC segment planner, so the box is zero.

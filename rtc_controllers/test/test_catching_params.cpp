@@ -367,6 +367,270 @@ TEST(CatchingParams, SegmentSwitchMarginMustBePositive) {
   ExpectRejectMentioning(root, "-1e-7");
 }
 
+// ── #711: a function keeps its design values under its own map ──────────────
+
+namespace {
+
+/// `root` with the dotted `path` set to `value` (maps created on the way).
+void SetPath(YAML::Node root, const std::string& path, const YAML::Node& value) {
+  const std::size_t dot = path.find('.');
+  if (dot == std::string::npos) {
+    root[path] = value;
+    return;
+  }
+  SetPath(root[path.substr(0, dot)], path.substr(dot + 1), value);
+}
+
+}  // namespace
+
+TEST(CatchingRenamedKeys, TheTableNamesEighteenMovesAndNoNewPathIsAnOldOne) {
+  using rtc::catching::kRenamedCatchingKeys;
+  ASSERT_EQ(kRenamedCatchingKeys.size(), 18U);
+  // Written out, not read back from the table: a table whose two columns were
+  // made equal by a blanket rename would pass every "found at its old path"
+  // check below on the NEW layout's own keys.
+  EXPECT_STREQ(kRenamedCatchingKeys[0].old_path, "supervisor.decel.mode");
+  EXPECT_STREQ(kRenamedCatchingKeys[0].new_path, "planner.segment.mode");
+  EXPECT_STREQ(kRenamedCatchingKeys[1].old_path, "supervisor.decel.switch_margin");
+  EXPECT_STREQ(kRenamedCatchingKeys[1].new_path, "planner.segment.mpc.switch_margin");
+  EXPECT_STREQ(kRenamedCatchingKeys[2].old_path, "planner.decel_mpc");
+  EXPECT_STREQ(kRenamedCatchingKeys[2].new_path, "planner.segment.mpc");
+  for (std::size_t i = 3; i < kRenamedCatchingKeys.size(); ++i) {
+    const std::string old_path = kRenamedCatchingKeys[i].old_path;
+    ASSERT_EQ(old_path.rfind("planner.", 0), 0U) << old_path;
+    EXPECT_EQ(std::string(kRenamedCatchingKeys[i].new_path),
+              "planner.search.grid." + old_path.substr(8));
+  }
+  for (const auto& a : kRenamedCatchingKeys) {
+    for (const auto& b : kRenamedCatchingKeys) {
+      const std::string new_path = a.new_path;
+      const std::string old_path = b.old_path;
+      // No new path is, or lies under, an old one: a migrated profile is clean.
+      EXPECT_FALSE(new_path == old_path || new_path.rfind(old_path + ".", 0) == 0)
+          << new_path << " vs " << old_path;
+    }
+  }
+}
+
+TEST(CatchingRenamedKeys, EachOldPathIsFoundWithAnyValueAndTheNewLayoutIsClean) {
+  using rtc::catching::FindRenamedCatchingKeys;
+  // The baseline is the new layout, with every moved key at its new path.
+  YAML::Node clean = ValidRoot();
+  for (const auto& key : rtc::catching::kRenamedCatchingKeys) {
+    if (std::string(key.new_path) != "planner.segment.mode") {
+      SetPath(clean, std::string(key.new_path) + ".probe", YAML::Load("1"));
+    }
+  }
+  clean["planner"]["segment"]["mode"] = "mpc";
+  EXPECT_TRUE(FindRenamedCatchingKeys(clean).empty());
+
+  for (const auto& key : rtc::catching::kRenamedCatchingKeys) {
+    for (const char* value : {"1", "{a: 1}", "~", "[]"}) {
+      SCOPED_TRACE(std::string(key.old_path) + " = " + value);
+      YAML::Node root = YAML::Clone(clean);
+      SetPath(root, key.old_path, YAML::Load(value));
+      const auto found = FindRenamedCatchingKeys(root);
+      ASSERT_EQ(found.size(), 1U);
+      EXPECT_STREQ(found[0].old_path, key.old_path);
+      EXPECT_STREQ(found[0].new_path, key.new_path);
+    }
+  }
+}
+
+TEST(CatchingRenamedKeys, SupervisorDecelIsJudgedLeafByLeafAndABrokenTreeIsNotAKey) {
+  using rtc::catching::FindRenamedCatchingKeys;
+  // `supervisor.decel.a_dec` stays: the map it lives in is not an old key.
+  EXPECT_TRUE(FindRenamedCatchingKeys(YAML::Load("supervisor: {decel: {a_dec: 10.0}}")).empty());
+  const auto both = FindRenamedCatchingKeys(
+      YAML::Load("supervisor: {decel: {a_dec: 10.0, mode: mpc, switch_margin: 1.0}}"));
+  ASSERT_EQ(both.size(), 2U);
+  EXPECT_STREQ(both[0].old_path, "supervisor.decel.mode");
+  EXPECT_STREQ(both[1].old_path, "supervisor.decel.switch_margin");
+  // Every one present is reported, in the table's order.
+  EXPECT_EQ(
+      FindRenamedCatchingKeys(YAML::Load("planner: {slice: {dt: 0.05}, decel_mpc: {}, hand: 1}"))
+          .size(),
+      3U);
+  // A node on the way that is not a map has no children; nothing throws.
+  for (const char* broken : {"supervisor: 3", "supervisor: {decel: [mode]}", "planner: [slice]",
+                             "[1, 2]", "~", "planner: ~"}) {
+    EXPECT_TRUE(FindRenamedCatchingKeys(YAML::Load(broken)).empty()) << broken;
+  }
+  EXPECT_TRUE(FindRenamedCatchingKeys(YAML::Node()).empty());
+}
+
+TEST(CatchingParams, TheSearchReadsItsOwnCopiesAndLeavesTheLawsValuesAlone) {
+  YAML::Node root = ValidRoot();
+  YAML::Node grid = root["planner"]["search"]["grid"];
+  grid["reference"]["v_max"] = 1.25;
+  grid["reference"]["omega"] = 12.0;
+  grid["reference"]["zeta"] = 0.5;
+  grid["reference"]["a_max"] = 4.5;
+  grid["stop"]["a_dec"] = 2.5;
+  grid["gamma"]["eta_v"] = 0.8;
+  root["planner"]["segment"]["mpc"]["eta_v"] = 0.7;
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_EQ(p.planner_search_grid_reference_v_max.value, 1.25);
+  EXPECT_EQ(p.planner_search_grid_reference_omega.value, 12.0);
+  EXPECT_EQ(p.planner_search_grid_reference_zeta.value, 0.5);
+  EXPECT_EQ(p.planner_search_grid_reference_a_max.value, 4.5);
+  EXPECT_EQ(p.planner_search_grid_stop_a_dec.value, 2.5);
+  EXPECT_EQ(p.planner_search_grid_gamma_eta_v.value, 0.8);
+  EXPECT_EQ(p.planner_segment_mpc_eta_v.value, 0.7);
+  // The closed_form law's keys are their own.
+  EXPECT_EQ(p.reference_v_max.value, 2.0);
+  EXPECT_EQ(p.reference_omega.value, 10.0);
+  EXPECT_EQ(p.reference_zeta.value, 1.0);
+  EXPECT_EQ(p.reference_a_max.value, 5.0);
+  EXPECT_EQ(p.supervisor_decel_a_dec.value, 3.0);
+
+  // And the other way: the law's keys do not reach the copies.
+  YAML::Node law = ValidRoot();
+  law["reference"]["v_max"] = 1.5;
+  law["reference"]["a_max"] = 4.0;
+  law["supervisor"]["decel"]["a_dec"] = 3.5;
+  const CatchingParams q = ParseCatchingParams(law);
+  EXPECT_EQ(q.planner_search_grid_reference_v_max.value, 2.0);
+  EXPECT_EQ(q.planner_search_grid_reference_a_max.value, 5.0);
+  EXPECT_EQ(q.planner_search_grid_stop_a_dec.value, 3.0);
+
+  // Absent copies take the defaults of the keys they copy: omega and zeta
+  // resolved, the three limits open.
+  YAML::Node bare = ValidRoot();
+  bare["planner"]["search"]["grid"].remove("reference");
+  bare["planner"]["search"]["grid"].remove("stop");
+  bare["planner"]["segment"].remove("mpc");
+  const CatchingParams d = ParseCatchingParams(bare);
+  EXPECT_FALSE(d.planner_search_grid_reference_omega.tbd);
+  EXPECT_EQ(d.planner_search_grid_reference_omega.value, 10.0);
+  EXPECT_FALSE(d.planner_search_grid_reference_zeta.tbd);
+  EXPECT_EQ(d.planner_search_grid_reference_zeta.value, 1.0);
+  EXPECT_TRUE(d.planner_search_grid_reference_v_max.tbd);
+  EXPECT_TRUE(d.planner_search_grid_reference_a_max.tbd);
+  EXPECT_TRUE(d.planner_search_grid_stop_a_dec.tbd);
+  EXPECT_FALSE(d.planner_segment_mpc_eta_v.tbd);
+  EXPECT_EQ(d.planner_segment_mpc_eta_v.value, 0.9);
+}
+
+TEST(CatchingParams, ASearchCopyIsHeldToTheRulesOfTheKeyItCopies) {
+  using R = CatchingValidationReason;
+
+  struct Case {
+    const char* leaf;  // under planner.search.grid
+    const char* value;
+    R reason;
+    std::size_t failures{1};
+  };
+
+  // Each bad value is legal for the law's own key at the same time (the
+  // baseline's), so the failure can only be the copy's.
+  for (const Case& c : {Case{"reference.omega", "TBD", R::kActiveConfigTbd},
+                        Case{"reference.omega", "30.0", R::kRangeViolation},
+                        Case{"reference.zeta", "TBD", R::kActiveConfigTbd},
+                        Case{"reference.zeta", "0.9", R::kZetaNotCriticallyDamped},
+                        Case{"reference.v_max", "TBD", R::kActiveConfigTbd},
+                        Case{"reference.v_max", "-1.0", R::kRangeViolation},
+                        Case{"reference.a_max", "TBD", R::kActiveConfigTbd},
+                        // a_max 0 also puts the copy's a_dec above it: both are the copy's
+                        Case{"reference.a_max", "0.0", R::kRangeViolation, 2},
+                        Case{"stop.a_dec", "TBD", R::kActiveConfigTbd},
+                        Case{"stop.a_dec", "-2.0", R::kRangeViolation},
+                        // above the copy's a_max 5, though the law's a_dec 3 is not
+                        Case{"stop.a_dec", "6.0", R::kDecelExceedsAMax}}) {
+    const std::string key = std::string("planner.search.grid.") + c.leaf;
+    SCOPED_TRACE(key + " = " + c.value);
+    YAML::Node root = ValidRoot();
+    SetPath(root, key, YAML::Load(c.value));
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(ReportHasFailure(r, c.reason, key.c_str()));
+    EXPECT_EQ(r.failure_count, c.failures) << "only the copy fails";
+  }
+  // An absent copy is an open one, like the key it copies.
+  YAML::Node root = ValidRoot();
+  root["planner"]["search"]["grid"]["stop"].remove("a_dec");
+  EXPECT_TRUE(
+      ReportHasFailure(ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false),
+                       R::kActiveConfigTbd, "planner.search.grid.stop.a_dec"));
+}
+
+TEST(CatchingParams, TheMpcEtaVIsItsOwnKeyAndIsJudgedOnlyUnderMpc) {
+  using R = CatchingValidationReason;
+  const char* kMpcKey = "planner.segment.mpc.eta_v";
+  const char* kGridKey = "planner.search.grid.gamma.eta_v";
+  for (const char* bad : {"1.5", "0.0", "-0.1"}) {
+    SCOPED_TRACE(bad);
+    YAML::Node root = ValidRoot();
+    root["planner"]["segment"]["mpc"]["eta_v"] = YAML::Load(bad);
+    // closed_form builds no mpc segment planner and follows no segment.
+    const auto cf = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_EQ(cf.failure_count, 0U);
+    root["planner"]["segment"]["mode"] = "mpc";
+    const auto mpc = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(ReportHasFailure(mpc, R::kEtaVOutOfRange, kMpcKey));
+    EXPECT_FALSE(ReportHasFailure(mpc, R::kEtaVOutOfRange, kGridKey));
+    EXPECT_EQ(mpc.failure_count, 1U);
+  }
+  // The search's eta_v is judged under either mode, and never as the mpc key.
+  for (const char* mode : {"closed_form", "mpc"}) {
+    YAML::Node root = ValidRoot();
+    root["planner"]["segment"]["mode"] = mode;
+    root["planner"]["search"]["grid"]["gamma"]["eta_v"] = 1.5;
+    const auto r = ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+    EXPECT_TRUE(ReportHasFailure(r, R::kEtaVOutOfRange, kGridKey)) << mode;
+    EXPECT_FALSE(ReportHasFailure(r, R::kEtaVOutOfRange, kMpcKey)) << mode;
+  }
+  YAML::Node open = ValidRoot();
+  open["planner"]["segment"]["mode"] = "mpc";
+  open["planner"]["segment"]["mpc"]["eta_v"] = "TBD";
+  EXPECT_TRUE(
+      ReportHasFailure(ValidateCatchingParams(ParseCatchingParams(open), kControlRateHz, false),
+                       R::kActiveConfigTbd, kMpcKey));
+}
+
+TEST(CatchingParams, SearchCopiesThatDifferNamesEachPairAndSkipsAnOpenOne) {
+  using rtc::catching::CatchingKeyCopy;
+  using rtc::catching::SearchCopiesThatDiffer;
+  std::array<CatchingKeyCopy, 5> out{};
+  EXPECT_EQ(SearchCopiesThatDiffer(ParseCatchingParams(ValidRoot()), out), 0U);
+
+  struct Pair {
+    const char* copy;
+    const char* source;
+  };
+
+  const std::array<Pair, 5> pairs{{
+      {"planner.search.grid.reference.v_max", "reference.v_max"},
+      {"planner.search.grid.reference.omega", "reference.omega"},
+      {"planner.search.grid.reference.zeta", "reference.zeta"},
+      {"planner.search.grid.reference.a_max", "reference.a_max"},
+      {"planner.search.grid.stop.a_dec", "supervisor.decel.a_dec"},
+  }};
+  for (const Pair& pair : pairs) {
+    for (const bool move_copy : {true, false}) {
+      SCOPED_TRACE(std::string(move_copy ? pair.copy : pair.source) + " moved");
+      YAML::Node root = ValidRoot();
+      SetPath(root, move_copy ? pair.copy : pair.source, YAML::Load("0.75"));
+      out = {};
+      ASSERT_EQ(SearchCopiesThatDiffer(ParseCatchingParams(root), out), 1U);
+      EXPECT_STREQ(out[0].copy, pair.copy);
+      EXPECT_STREQ(out[0].source, pair.source);
+      // An open value on either side is the validator's to report, not a difference.
+      SetPath(root, move_copy ? pair.copy : pair.source, YAML::Load("TBD"));
+      EXPECT_EQ(SearchCopiesThatDiffer(ParseCatchingParams(root), out), 0U);
+    }
+  }
+  // All five at once, in the table's order.
+  YAML::Node all = ValidRoot();
+  for (const Pair& pair : pairs) {
+    SetPath(all, pair.copy, YAML::Load("0.75"));
+  }
+  out = {};
+  ASSERT_EQ(SearchCopiesThatDiffer(ParseCatchingParams(all), out), 5U);
+  for (std::size_t i = 0; i < pairs.size(); ++i) {
+    EXPECT_STREQ(out[i].copy, pairs[i].copy);
+  }
+}
+
 TEST(CatchingParams, KinematicFormNeedsItsBoundsAndOnlyThen) {
   // Unset bounds are TBD: refused when kinematic is selected, silent otherwise
   // (the baseline selects dynamic).

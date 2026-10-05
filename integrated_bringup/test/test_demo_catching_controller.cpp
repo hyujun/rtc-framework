@@ -1945,6 +1945,43 @@ TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
   EXPECT_EQ(planner.mpc_segment.v_rel_allow, 0.0) << profile;
 }
 
+TEST_P(ShippedCatchingProfile, TheSearchsCopiesAndTheMpcsEqualTheKeysTheyCopy) {
+  // #711: the shipped search rolls out on the closed_form law's own values and
+  // the mpc segment planner runs the search's speed margin and speed floor, so
+  // a shipped profile configures without the "differs from" park or warning
+  // under either segment mode. Written once per function; this is what keeps
+  // the copies from drifting apart unnoticed.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const YAML::Node node =
+      integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
+  const auto params = rtc::catching::ParseCatchingParams(node["catching"]);
+  std::array<rtc::catching::CatchingKeyCopy, 5> differ{};
+  const std::size_t n = rtc::catching::SearchCopiesThatDiffer(params, differ);
+  for (std::size_t i = 0; i < n; ++i) {
+    ADD_FAILURE() << profile << ": " << differ[i].copy << " differs from " << differ[i].source;
+  }
+  // None of the five is open (an open pair is skipped by the comparison).
+  for (const rtc::catching::TbdDouble* v :
+       {&params.planner_search_grid_reference_v_max, &params.planner_search_grid_reference_omega,
+        &params.planner_search_grid_reference_zeta, &params.planner_search_grid_reference_a_max,
+        &params.planner_search_grid_stop_a_dec, &params.reference_v_max, &params.reference_omega,
+        &params.reference_zeta, &params.reference_a_max, &params.supervisor_decel_a_dec}) {
+    EXPECT_FALSE(v->tbd) << profile;
+  }
+  ASSERT_FALSE(params.planner_segment_mpc_eta_v.tbd) << profile;
+  ASSERT_FALSE(params.planner_search_grid_gamma_eta_v.tbd) << profile;
+  EXPECT_EQ(params.planner_segment_mpc_eta_v.value, params.planner_search_grid_gamma_eta_v.value)
+      << profile;
+  const YAML::Node planner = node["catching"]["planner"];
+  ASSERT_TRUE(planner["segment"]["mpc"]["v_eps"].IsDefined()) << profile;
+  ASSERT_TRUE(planner["segment"]["mpc"]["eta_v"].IsDefined()) << profile;
+  EXPECT_EQ(rtc::catching::ParsePlannerParams(node["catching"]).mpc_segment.v_eps,
+            rtc::catching::ParseCatchPoseIkParams(node["catching"]).options.v_eps)
+      << profile;
+  EXPECT_TRUE(rtc::catching::FindRenamedCatchingKeys(node["catching"]).empty()) << profile;
+}
+
 TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
   // The two keys moved in the composed tree — where a CM override writes —
   // reach the controller: its read-only mirrors carry the moved values and the
