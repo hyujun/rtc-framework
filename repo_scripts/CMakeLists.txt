@@ -149,6 +149,29 @@ if(BUILD_TESTING)
     TIMEOUT 60
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
   )
+
+  # ── Test registration ─────────────────────────────────────────────────────
+  # A test file of a CMake package runs only if that package's CMakeLists.txt
+  # names it, and a file nobody named changes nothing a build or a test run
+  # reports. On #711 a pytest of integrated_bringup was registered seven
+  # commits after it was added.
+  # Lives here because it reads every package's CMakeLists and test/ at once.
+  ament_add_test(test_registration
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate_test_registration.py
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
+  # The gate's own firing proof: an unregistered file is reported whether it is
+  # a .py or a .cpp, a mention in a comment registers nothing, and a gtest
+  # target's name does not vouch for a .py of the same stem.
+  ament_add_test(test_registration_self_test
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate_test_registration.py --self-test
+    TIMEOUT 60
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+  )
+  # The one test file here that `colcon test` does not run. It drives the Stop
+  # hook, and that hook's --run is what runs this package's tests.
+  # test-registration-exempt: test_verify_changes.sh -- run by CI's docs-validate job, not by colcon test
 endif()
 
 ament_package()
