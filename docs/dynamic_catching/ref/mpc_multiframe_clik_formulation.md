@@ -540,7 +540,7 @@ $$
 - `closed_form` 의 정지 시간은 포구 속도를 감속도 (`a_dec`) 로 나눈 값이라 vision 간격보다 짧을 수 있다. 그래서 $\Delta_s$ 는 $\Delta$ 와 따로 정한다. 정지 구간의 비용에 시간 항이 없으므로 최적해는 정지 구간 전체를 쓴다 — $T_s$ 는 정지 시간의 상한이 아니라 **정지 시간 그 자체**다 (MD-21).
 - 출력과 RT 평가는 §1.5 와 같다. `mpc` 에서 soft-catch DS 는 돌지 않는다 — APPROACH 부터 정지까지 $q_{ref}$ 에서 만든 pose · twist · 접근축과 관절 기준 (null space 자세 목표) 을 CLIK 에 넣는다 (MD-45).
 - 안전망은 §1.3 의 표와 같다. 코드 기본값은 `closed_form` 이고 MPC 는 YAML 로 켠다 — 출하 YAML 은 두 로봇 모두 켠다 (MD-89). `mpc` 에서 따를 구간이 없으면 `ABORT_SAFE` 다 (MD-44).
-- **이름.** key 와 그 key 를 따르는 식별자는 `segment` 다 (`planner.segment.mode` · `planner.segment.mpc.*`). CSV 의 `decel_*` 열 · 로그 문구에 남은 decel 은 역사적 이름이고 DECEL 상태 · closed_form 감속 법칙의 이름은 그대로다. `mode: mpc` 에서 범위는 APPROACH 부터 정지까지이다 (MD-48).
+- **이름.** key 와 그 key 를 따르는 식별자는 `segment` 다 (`planner.segment.mode` · `planner.segment.mpc.*`). 구간 lane 의 CSV 열 (`segment_*`) · 로그 문구도 `segment` 다. `decel` 은 DECEL 상태 · closed_form 감속 법칙의 이름으로만 남는다. `mode: mpc` 에서 범위는 APPROACH 부터 정지까지이다 (MD-48).
 - 두 planner 의 비교 기준은 게이트 G-1 이다. MPC arm 은 APPROACH–정지 MPC 다 (§6.5).
 - 정지 구간 환원형 — 포구 항을 끄고 $k_c=0$ — 은 코어의 회귀 케이스다 (§4 항목 9). 포구 뒤의 재계획이 푸는 문제가 이것이다.
 

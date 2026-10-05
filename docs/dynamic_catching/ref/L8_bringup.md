@@ -137,7 +137,7 @@ host 부하로 sim 이 실시간보다 느리면 발사 기준 sim 시간축의 
 
 ### 5.2 기록 레코드
 
-tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringup/include/integrated_bringup/logging/catching_diag_log_pod.hpp`). 두 가지가 규범이다. (1) 상태 메시지와 **같은 POD 한 벌** 을 쓴다 — 파일의 숫자와 화면의 숫자가 갈릴 수 없게 하려는 것이고, 그래서 float 이 아니라 double 로 싣는다. (2) `flags` 비트필드 대신 이름 있는 bool 을 쓴다 — CSV 헤더가 비트 이름을 실을 수 없어 저장된 파일이 그 run 의 헤더 없이는 해독 불가가 된다. 공 truth 는 컨트롤러에 없으므로 이 기록에 없다 (오프라인 평가 소관). CSV 열 목록의 SSoT 는 pod 헤더 (헤더 행 emit) 이고, 운용 설명은 `integrated_bringup/README.md` §DemoCatchingController "tick 레코드 CSV", 열 해석은 `rtc_tools/README.md` 다. 기록 경로: RT 는 SPSC 에 push 만 하고, drain 과 CSV 쓰기는 기존 CSV 인프라가 맡는다 (새 기록 스레드 없음). 계획기 timing · 이벤트 (`planner_events.csv`) 는 aux 타이머가 drain 한다.
+tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringup/include/integrated_bringup/logging/catching_diag_log_pod.hpp`). 두 가지가 규범이다. (1) 상태 메시지와 **같은 POD 한 벌** 을 쓴다 — 파일의 숫자와 화면의 숫자가 갈릴 수 없게 하려는 것이고, 그래서 float 이 아니라 double 로 싣는다. (2) `flags` 비트필드 대신 이름 있는 bool 을 쓴다 — CSV 헤더가 비트 이름을 실을 수 없어 저장된 파일이 그 run 의 헤더 없이는 해독 불가가 된다. 공 truth 는 컨트롤러에 없으므로 이 기록에 없다 (오프라인 평가 소관). CSV 열 목록의 SSoT 는 pod 헤더 (헤더 행 emit) 이고, 운용 설명은 `integrated_bringup/README.md` §DemoCatchingController "tick 레코드 CSV", 열 해석은 `rtc_tools/README.md` 다. 구간 lane 의 열은 `segment_*` 이고, 열 이름이 `decel_*` 인 옛 recording 은 도구가 별칭 표 한 벌로 읽으며 옛 이름과 새 이름이 섞인 파일은 거부한다. 기록 경로: RT 는 SPSC 에 push 만 하고, drain 과 CSV 쓰기는 기존 CSV 인프라가 맡는다 (새 기록 스레드 없음). 계획기 timing · 이벤트 (`planner_events.csv`) 는 aux 타이머가 drain 한다.
 
 토픽 기록: rosbag2 로 vision `PointCloud2`, truth (시뮬레이션), 상태 토픽을 기록한다.
 
@@ -179,7 +179,7 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 - 오차 원인 분해: 간극을 L3 §4.6 의 항별 ($A=p_{true}-\hat p_{live}$, $B=\hat p_{live}-p_c$, 추종, 시계) 로 분해해 표로 만든다. 시뮬레이션은 truth 가 있으므로 각 항을 직접 계산할 수 있고, $A\perp B$ 가정도 검증할 수 있다 (G8-C2).
 - 충격 구간 분해: $t_c$ 전후 100 ms 의 접촉력 · 관절 토크 · $q-q_c$ 괴리를 겹쳐 그린다 (L7 §4.7).
 - 무효 시행 급증: §4.5 clock 위상 오차 (δ_max · pause) 로그와 부하 구성을 확인한다.
-- `mpc` 에서 "기준" 은 `ref_x` 가 아니라 `catching_diag.csv` 의 `decel_*` 열 (따르는 구간이 CLIK 에 준 목표 위치 · 선속도 ff) 이다.
+- `mpc` 에서 "기준" 은 `ref_x` 가 아니라 `catching_diag.csv` 의 `segment_*` 열 (따르는 구간이 CLIK 에 준 목표 위치 · 선속도 ff) 이다.
 - E-STOP · fault 구간: `catching_diag` 플롯이 `estop_active` (CM 의 global latch) 와 `fault_latched` (컨트롤러 latch) 구간을 색을 달리해 음영으로 보인다 — 두 latch 는 해제 수단이 달라 한쪽만 끝나는 구간이 있을 수 있다. 해제는 GUI 헤더의 "Clear E-STOP" (사유 조회 → 확인 뒤 해제, 2 단계) · "Reset fault", 절차는 L7 §4.1. 사유 코드 `FAULT_RESET` · `ABORT_ESCALATED` 는 그 한 tick 에만 실리므로 상태 토픽을 폴링하는 쪽은 놓치기 쉽다 — CSV 로 본다. fault 의 **원인** 은 CSV 열 `fault_cause` 로, 거부된 reset 은 `fault_reset_refused` 로 본다 (상태 메시지에는 없는 CSV 전용 열). `rtc_tools` 의 catching 요약이 원인별로 센다.
 
 ## 9. 검증 방법과 합격 게이트
@@ -229,7 +229,7 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 
 - **공 패널** (`ball_launch.py`). 발사 조건 `(p0, v0, ω)` 의 파싱은 srv `/sim/launch_ball_at` 이 거부하는 것과 **같은 집합** 을 wire 앞에서 거부하고 틀린 필드를 이름으로 가리킨다 — 패널이 srv 가 거부하는 것을 받아들이면 일어나지 않은 발사를 보고하게 된다. truth 와 예측 피드는 **never / live / stale 세 상태** 로 구분한다 (never 와 stale 은 화면에서 같아 보이지만 뜻이 반대다 — 아무것도 돌지 않는다 대 멈췄다). ball_perception 이 없어도 "never received" 로 동작한다.
 - **손 step 패널** (`hand_step.py`). 손 자세는 컨트롤러가 미러한 읽기 전용 파라미터 (`hand.q_pre` · `q_close` · `caging_mask` · `eta_close`) 에서 읽고 파일에 박지 않는다 (화면의 자세와 실행의 자세가 갈리지 않게). ρ 는 `rtc_tools.analysis.hand_close.rho` 를 import 해서 쓴다 — 화면 값과 오프라인 보고서 값이 갈리지 않게 사본을 두지 않는다.
-- **포구 패널** (`catching.py`). 모드 · 사유, 입력 lane, plan, 추종 오차 · CLIK 상태, 슈퍼바이저 결과, 손 위상, 접촉 센서와 freshness 를 보인다. 세 가지를 합치지 않는다. ① **관측된 무장** 을 머리에 두고 요청된 무장 (`catching.enable` 파라미터) 을 옆에 둔다 — tick 이 E-STOP · fault 에서 latch 를 스스로 내리므로 파라미터 set 의 성공은 무장의 증거가 아니다. ② **거부된 입력 lane 과 조용한 lane** 은 거부 카운터로만 구별되므로 0 이 아닌 카운터는 항상 보인다. ③ 컨트롤러가 그 tick 에 계산하지 않은 블록 (`*_valid` false, PROC-7 이 0 으로 지운다) 은 0 이 아니라 `--` 로 보인다. 팔 기준을 만드는 planner (`closed_form` | `mpc`) 는 `CatchingState` 가 동결이라 읽기 전용 파라미터 `planner.segment.mode` 로 읽는다 (configure 가 끝나기 전이거나 park 된 컨트롤러는 빈 문자열을 답한다). 연속 투척의 진행 카운트는 결과의 엣지를 GUI 가 센다 (새 필드 없음).
+- **포구 패널** (`catching.py`). 모드 · 사유, 입력 lane, plan, 추종 오차 · CLIK 상태, 슈퍼바이저 결과, 손 위상, 접촉 센서와 freshness 를 보인다. 세 가지를 합치지 않는다. ① **관측된 무장** 을 머리에 두고 요청된 무장 (`catching.enable` 파라미터) 을 옆에 둔다 — tick 이 E-STOP · fault 에서 latch 를 스스로 내리므로 파라미터 set 의 성공은 무장의 증거가 아니다. ② **거부된 입력 lane 과 조용한 lane** 은 거부 카운터로만 구별되므로 0 이 아닌 카운터는 항상 보인다. ③ 컨트롤러가 그 tick 에 계산하지 않은 블록 (`*_valid` false, PROC-7 이 0 으로 지운다) 은 0 이 아니라 `--` 로 보인다. 팔 기준을 만드는 planner (`closed_form` | `mpc`) 는 `CatchingState` 가 동결이라 읽기 전용 파라미터 `planner.segment.mode` 로 읽고 `segment mode: <값>` 줄로 보인다 (configure 가 끝나기 전이거나 park 된 컨트롤러는 빈 문자열을 답한다). 연속 투척의 진행 카운트는 결과의 엣지를 GUI 가 센다 (새 필드 없음).
 - **헤더 공용 행.** "Clear E-STOP" (사유 조회 → 확인 뒤 해제의 2 단계) 과 "Reset fault" 는 포구 패널이 아니라 공용 위치에 있다 (절차는 L7 §4.1). 해제 요청이 latch 를 내렸으나 검증되지 않았다는 응답은 거부와 구별해 보인다.
 
 **plot.** `plot_rtc_log` 는 CSV 의 종류를 파일명과 컬럼으로 판별한다 (`catching_diag` · `planner_events`); 스레드 timing CSV 는 공통 스키마라 기존 timing plotter 를 쓴다.

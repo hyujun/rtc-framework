@@ -396,8 +396,8 @@ plan 접수 쪽의 방어 (reset floor · 동결 창) 는 §4.1 R-ADMIT 이 적�
 - 포획했는데 `Missed`: 판정 창과 센서 수신 시각 정렬(실기 async 센서 지연), 부호 규약(§4.4)을 확인한다. sim 에서는 공이 링크·손바닥에 얹힌 구조적 false-Missed 가 난다 (§4.4 손 관절 증거).
 - 감속 중 흔들림 (`closed_form`): `a_dec` 값과 L5 가속 한계의 정합을 확인한다.
 - `REF_SATURATED` 가 자주 발생 (`closed_form`): L3 rollout의 여유율(`eta_a`, η_v)이 낮거나 $T_w$ 가 짧은지 확인한다.
-- `mode: mpc` 에서 `ParamsTbd` 로 abort: `catching_diag.csv` 의 `decel_event` (구간 없음 · 게이트 거부 · plan 불일치 · 샘플 실패 · node 0 미도래) 와 게이트 열 (`decel_rho` · `decel_dq_max` · `decel_dqd_max` · `decel_gate_joint`), 접수 판정 `decel_refusal` 을 본다.
-- `mode: mpc` 에서 `TRACKING` 에 머묾 (`NoCatchablePlan`): plan 거부 사유와 첫 구간의 `decel_refusal` 을 함께 본다 — 구간이 통과하지 못하면 plan 도 받지 않는다 (§4.3a).
+- `mode: mpc` 에서 `ParamsTbd` 로 abort: `catching_diag.csv` 의 `segment_event` (구간 없음 · 게이트 거부 · plan 불일치 · 샘플 실패 · node 0 미도래) 와 게이트 열 (`segment_rho` · `segment_dq_max` · `segment_dqd_max` · `segment_gate_joint`), 접수 판정 `segment_refusal` 을 본다.
+- `mode: mpc` 에서 `TRACKING` 에 머묾 (`NoCatchablePlan`): plan 거부 사유와 첫 구간의 `segment_refusal` 을 함께 본다 — 구간이 통과하지 못하면 plan 도 받지 않는다 (§4.3a).
 - `ARMED` 에 안 들어감: homing 목표 `wait_pose` 와 `pose_tol`, 손 `q_pre` 도달, `PARAMS_TBD`, 그리고 팔·손 **속도 lane 의 판독 여부** (backend 가 속도를 싣지 않으면 §4.5 의 4·6 이 성립하지 않는다) 를 확인한다. 속도 lane 은 전이를 남기지 않으므로 로그가 유일한 표시다 — publish 스레드가 축별로 닫힐 때 WARN `<arm|hand> velocity lane UNREADABLE …` 한 줄, 열릴 때 INFO 한 줄을 낸다 (위치 gate 가 닫힌 경우는 gate 진단이 말한다 — 그동안 속도 lane 은 판정되지 않으므로 episode 는 시작도 끝도 나지 않고, 기억은 activation 마다 새로 시작한다).
 - `RETREAT` 복귀가 복귀 기한 fault 로 끝나고 reset 이 `kVelocityUnreadable` 로 거부됨: 같은 WARN 을 본다 — 팔 속도 lane 이 닫혀 있으면 도착 판정이 성립하지 않는다.
 - 접촉 직후 `TRACK_ERR` abort: 충격으로 벌어진 $q-q_c$ 가 임계를 넘은 것인지 본다 (§4.7-3 — 임계는 단일 상수다).

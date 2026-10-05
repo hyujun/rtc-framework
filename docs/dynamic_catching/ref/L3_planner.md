@@ -627,7 +627,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 - 포구점이 자주 바뀐다 (`closed_form`): `delta_J`, 점프 한계, 예측 품질(L2 `lastJump`)을 확인한다.
 - IK 수렴 실패: catch frame 축 정의 (D-17 YAML), `alpha_max`, seed(wait_pose)와 후보 자세의 거리를 확인한다.
 - manipulability 탈락이 지배적: $w_5$ 분포와 오프라인 지도 결과를 대조한다. 지도와 런타임이 다른 함수·키·seed 를 쓰고 있지 않은지 먼저 본다. arm base frame 이 로봇 config 의 CLIK `base_frame` 인지 확인한다 (ur5e_p1b `base` vs `base_link` 180° — §4.2 의 frame 규약).
-- `mpc` 에서 plan 이 유효한데 게시되지 않는다 (`held`): 첫 구간이 보류된 것이다 — `decel_outcome` 을 본다.
+- `mpc` 에서 plan 이 유효한데 게시되지 않는다 (`held`): 첫 구간이 보류된 것이다 — `segment_outcome` 을 본다.
 - 시뮬레이션 시각화(RViz): vision 예측 궤적(시각화용 `nav_msgs/Path` 로 재발행), 후보 점(색 = 탈락 사유), 선택된 $p_c$와 $a_d$, $p_{stop}$.
 
 ## 9. 검증 방법과 합격 게이트

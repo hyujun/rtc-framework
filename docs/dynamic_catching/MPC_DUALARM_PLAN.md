@@ -142,7 +142,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | `feat/tsid-clik-multiframe` | E2-F04 | `rtc_tsid` public API 변경. 기존 소비자 둘의 기능 동등성이 성공 기준이다 |
 | `feat/demo-dualarm-controller` | E2-F05 | 신규 controller. Sprint Contract = spec |
 | `feat/g1-dualarm-tooling` | E2-F06, E2-F07 | GUI 와 plot. 둘 다 `demo_dualarm_controller` 의 출력을 소비한다 |
-| (rename refactor) | — | `Decel*` 이름 (MD-48, #711) — feature 가 아니다. 기능 동등성이 성공 기준이다. PR 둘로 나눈다: C++ 식별자 · 파일 이름 (끝, #761) / public YAML key 와 CSV 열 · 로그 문구 · 도구. 범위와 시기는 §5 |
+| (rename refactor) | — | `Decel*` 이름 (MD-48, #711) — feature 가 아니다. 기능 동등성이 성공 기준이다. PR 둘로 나눈다: C++ 식별자 · 파일 이름 (끝, #761) / public YAML key 와 CSV 열 · 로그 문구 · 도구 (같은 브랜치 `refactor/catching-711-rename-keys-csv` 에서 CSV 열 · 로그 문구 · 표시 문구 · 도구까지 끝났다). 범위와 시기는 §5 |
 | `feat/catching-mpc-candidate-select` | E3-F01 | G1 구성의 후보 선택. interface 는 E1-F12 가 넣었다 |
 | `feat/catching-mpc-wholebody` | E3-F02, E3-F04 | 전신 항과 MPC ↔ CLIK 계약. 둘 다 활성 관절을 전체로 넓히는 작업이고 계약의 sanity check 가 전신 해를 입력으로 쓴다 |
 | `feat/collision-capsule-core` | E3-F03 | 신규 수치 코어. code review 단위 |
@@ -211,7 +211,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
 | 1a | #711 — C++ 식별자 · 파일 이름. `grid` 탐색의 클래스 (`PlannerSearch`) 도 함께 옮겼다 | 끝 — PR #761 (사용자 결정 2026-10-05) | 단독 `refactor/catching-711-rename-cpp` | — |
-| 1b · 1c | #711 — 1b: YAML key 를 기능별로 가르고 옮긴다 (`grid` 탐색의 key 포함). ROS 파라미터 미러, 옛 key 18 개의 park, key 의 경로나 미러의 이름을 읽는 것 전부 (분석 도구 · `catching_eval/` · GUI 의 조회). 1c: CSV 열 · 로그 문구 · 표시 문구 (GUI · plot) 와 그것을 읽는 도구 | 1a 뒤, E1-F16 (#742) 착수 전 (사용자 결정 2026-10-05) | 한 PR `refactor/catching-711-rename-keys-csv` — 커밋 순서는 key, 그 다음 CSV 열 | 1c: 새 CSV 열 이름과 옛 자료의 호환 |
+| 1b · 1c | #711 — 1b: YAML key 를 기능별로 가르고 옮긴다 (`grid` 탐색의 key 포함). ROS 파라미터 미러, 옛 key 18 개의 park, key 의 경로나 미러의 이름을 읽는 것 전부 (분석 도구 · `catching_eval/` · GUI 의 조회). 1c: CSV 열 · 로그 문구 · 표시 문구 (GUI · plot) 와 그것을 읽는 도구 | 1a 뒤, E1-F16 (#742) 착수 전 (사용자 결정 2026-10-05) | 한 PR `refactor/catching-711-rename-keys-csv` — 커밋 순서는 key, 그 다음 CSV 열. 1c (CSV 열 · 로그 문구 · 표시 문구 · 도구) 는 이 브랜치에서 끝났다 (merge 전) | 1c: 새 CSV 열 이름과 옛 자료의 호환 |
 | 2 | #755 | #636 (E2-F04) 의 Sprint Contract 가 가속 · 위치 한계의 충돌을 어떻게 알릴지 정한 뒤 | 지우면 단독이고 1b · 1c 의 바로 다음이다 (`rtc_msgs` 를 고치면 E-3). 그대로 두면 브랜치가 없다 | 지울 범위 |
 | 3 | #713 | E1-F20 뒤, 1b · 1c · 2 뒤 | 단독 — 정지 직선 · 이탈 거리의 로그 열과 `cost.w_perp` 의 값 | — |
 | 4 | #710 | E1-F20 의 `iiwa7_leap` 결과 | 결과에 따라 단독 또는 없음 | `mpc` 를 고칠지, leap 의 출하 기본값을 바꿀지 |
