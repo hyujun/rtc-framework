@@ -68,7 +68,7 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F12 | [#738](https://github.com/hyujun/rtc-framework/issues/738) | 포구 탐색 · 구간 계획기 interface 도입 (ARCH-3, 기능 동등 refactor) | — | **완료** — 탐색 · 구간 계획기를 `CatchSearch` · `SegmentPlanner` 뒤로 옮겼다. 기능 동등: 포구 한 번의 계획기 trace digest 여섯이 refactor 전후로 같다 |
+| E1-F12 | [#738](https://github.com/hyujun/rtc-framework/issues/738) | 포구 탐색 · 구간 계획기 interface 도입 (ARCH-3, 기능 동등 refactor) | — | **완료** ([#757](https://github.com/hyujun/rtc-framework/pull/757)) — 탐색 · 구간 계획기를 `CatchSearch` · `SegmentPlanner` 뒤로 옮겼다. 기능 동등: 포구 한 번의 계획기 trace digest 여섯이 refactor 전후로 같다 |
 | E1-F13 | [#739](https://github.com/hyujun/rtc-framework/issues/739) | mpc_docking 수치 코어 — 상대상태 · corridor · 확률 제약 · 토크 판정의 NLP (ProxQP 위 SQP) | E1-F12 (끝) | **다음** |
 | E1-F14 | [#740](https://github.com/hyujun/rtc-framework/issues/740) | NLP search 코어 — 후보별 NLP 풀이로 포구 후보를 고른다 (바깥 루프) | E1-F13 | 대기 |
 | E1-F15 | [#741](https://github.com/hyujun/rtc-framework/issues/741) | mpc_docking 의 입력 식별 (sim) — 포획 기하 · 속도 집합 · 폐쇄 창 | — (E1-F16 앞에 끝낸다) | 대기 |
