@@ -158,6 +158,14 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   return result_;
 }
 
+const Eigen::VectorXd& QPSolverWrapper::EqualityDual() const noexcept {
+  return qp_ ? qp_->results.y : no_dual_;
+}
+
+const Eigen::VectorXd& QPSolverWrapper::InequalityDual() const noexcept {
+  return qp_ ? qp_->results.z : no_dual_;
+}
+
 void QPSolverWrapper::ResetWarmStart() noexcept {
   if (qp_) {
     qp_->settings.initial_guess = proxsuite::proxqp::InitialGuessStatus::NO_INITIAL_GUESS;

@@ -348,5 +348,78 @@ TEST_F(QPSolverWrapperTest, ResetWarmStartMakesTheAnswerOrderIndependent) {
       << "warm start no longer leaks here — this fixture can no longer measure the reset";
 }
 
+// The dual accessors and their sign convention. A caller that builds a KKT
+// residual or an exact-penalty weight from the multipliers (the catching SQP
+// core) depends on BOTH the stationarity sign and "upper active ⇒ z > 0";
+// neither is stated in ProxQP's public headers, so they are pinned here.
+//
+//   min ½‖x‖² + gᵀx   s.t.  x0 + x1 + x2 = 1,   x0 ≤ 0.1,   x1 ≥ 0.6,   |x2| ≤ 5
+//
+// The unconstrained optimum of the equality-only problem puts x0 above 0.1
+// and x1 below 0.6, so the first row binds at its upper bound, the second at
+// its lower bound and the third stays inactive. The fixture breaks the
+// symmetry on purpose: one row per sign, different magnitudes.
+TEST_F(QPSolverWrapperTest, DualsFollowTheStationaritySignConvention) {
+  QPSolverConfig config;
+  config.eps_abs = 1e-9;
+  config.max_iter = 200;
+  config.update_preconditioner = true;
+  solver.Init(3, 1, 3, config);
+  EXPECT_EQ(solver.EqualityDual().size(), 1);
+  EXPECT_EQ(solver.InequalityDual().size(), 3);
+
+  QPData qp;
+  qp.Init(3, 1, 3);
+  qp.n_vars = 3;
+  qp.n_eq = 1;
+  qp.n_ineq = 3;
+  qp.H.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+  qp.g.head(3) << -2.0, 1.0, 0.0;
+  qp.A.row(0) << 1.0, 1.0, 1.0;
+  qp.b(0) = 1.0;
+  qp.C.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+  const double inf = std::numeric_limits<double>::infinity();
+  qp.l.head(3) << -inf, 0.6, -5.0;
+  qp.u.head(3) << 0.1, inf, 5.0;
+
+  const auto& result = solver.Solve(qp);
+  ASSERT_TRUE(result.converged);
+  const Eigen::Vector3d x = result.x_opt.head(3);
+  const Eigen::VectorXd& y = solver.EqualityDual();
+  const Eigen::VectorXd& z = solver.InequalityDual();
+  ASSERT_EQ(y.size(), 1);
+  ASSERT_EQ(z.size(), 3);
+
+  // The rows the fixture means to bind do bind.
+  EXPECT_NEAR(x(0), 0.1, 1e-7);
+  EXPECT_NEAR(x(1), 0.6, 1e-7);
+  EXPECT_NEAR(x(2), 0.3, 1e-7);
+
+  // Stationarity with the documented signs.
+  const Eigen::Vector3d grad = qp.H.topLeftCorner(3, 3) * x + qp.g.head(3) +
+                               qp.A.topLeftCorner(1, 3).transpose() * y +
+                               qp.C.topLeftCorner(3, 3).transpose() * z;
+  EXPECT_LT(grad.cwiseAbs().maxCoeff(), 1e-7);
+  // The opposite sign on z must NOT satisfy it — otherwise the residual above
+  // would be blind to the convention it exists to pin.
+  const Eigen::Vector3d grad_flipped = qp.H.topLeftCorner(3, 3) * x + qp.g.head(3) +
+                                       qp.A.topLeftCorner(1, 3).transpose() * y -
+                                       qp.C.topLeftCorner(3, 3).transpose() * z;
+  EXPECT_GT(grad_flipped.cwiseAbs().maxCoeff(), 1.0);
+
+  // Closed form: x2 free ⇒ y = −x2 = −0.3; z0 = 2 − 0.1 − y, z1 = −1 − 0.6 − y.
+  EXPECT_NEAR(y(0), -0.3, 1e-6);
+  EXPECT_NEAR(z(0), 2.2, 1e-6);
+  EXPECT_NEAR(z(1), -1.3, 1e-6);
+  EXPECT_NEAR(z(2), 0.0, 1e-6);
+  EXPECT_GT(z(0), 0.0) << "upper bound active";
+  EXPECT_LT(z(1), 0.0) << "lower bound active";
+}
+
+TEST_F(QPSolverWrapperTest, DualsAreEmptyBeforeInit) {
+  EXPECT_EQ(solver.EqualityDual().size(), 0);
+  EXPECT_EQ(solver.InequalityDual().size(), 0);
+}
+
 }  // namespace
 }  // namespace rtc::tsid

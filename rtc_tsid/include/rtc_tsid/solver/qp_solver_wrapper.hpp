@@ -87,6 +87,23 @@ class QPSolverWrapper {
   // makes it reachable deliberately rather than only as a fault response.
   void ResetWarmStart() noexcept;
 
+  // Multipliers of the LAST Solve(), in the caller's units (ProxQP unscales its
+  // results): y for the equality rows A x = b, z for the two-sided rows
+  // l ≤ C x ≤ u. Sign convention — ProxQP's stationarity condition
+  //
+  //   H x + g + Aᵀ y + Cᵀ z = 0,
+  //
+  // so z_i > 0 on a row active at its UPPER bound, z_i < 0 at its LOWER bound
+  // and z_i = 0 on an inactive one (pinned by test_qp_solver_wrapper).
+  //
+  // Sized to the solver's MAX dimensions (padded rows read 0), references into
+  // the solver — no copy, no allocation — and valid until the next Solve().
+  // Meaningful only when that Solve() reported converged: a failed solve
+  // leaves whatever iterates it stopped at, and a non-finite one leaves NaN.
+  // Empty before Init().
+  [[nodiscard]] const Eigen::VectorXd& EqualityDual() const noexcept;
+  [[nodiscard]] const Eigen::VectorXd& InequalityDual() const noexcept;
+
   // 설정 변경 (non-RT)
   void SetMaxIter(int iter) noexcept;
   void SetEpsAbs(double eps) noexcept;
@@ -110,6 +127,8 @@ class QPSolverWrapper {
   Eigen::MatrixXd c_seed_;
   Eigen::VectorXd l_inf_;
   Eigen::VectorXd u_inf_;
+  // What the dual accessors return before Init() (never resized).
+  Eigen::VectorXd no_dual_;
 };
 
 }  // namespace rtc::tsid
