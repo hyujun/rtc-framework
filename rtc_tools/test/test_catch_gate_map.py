@@ -499,7 +499,7 @@ def test_a_bad_profile_damping_is_refused_naming_the_key(tmp_path, bad):
     path = tmp_path / "c.yaml"
     path.write_text(yaml.safe_dump({CONTROLLER: {"catching": {}}}))
     _controller_with_damping(path, bad)
-    with pytest.raises(SystemExit, match="planner.gamma.unit_speed_damping"):
+    with pytest.raises(SystemExit, match="planner.search.grid.gamma.unit_speed_damping"):
         cgm.load_unit_speed_damping(path, CONTROLLER)
 
 
