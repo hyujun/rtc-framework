@@ -4825,6 +4825,28 @@ TEST_F(SafetyGateParkTest, EveryMovedKeyOfAnOverlayIsNamedInOneConfigure) {
   }
 }
 
+TEST_F(SafetyGateParkTest, TheSegmentModeIsLoggedUnderEitherMode) {
+  // A unit driver tells which arm it ran from this line. closed_form says it
+  // too: the absence of the mpc line is also what a configure that never got
+  // this far prints, so "no mpc line" could not stand for closed_form.
+  for (const char* mode : {"closed_form", "mpc"}) {
+    SCOPED_TRACE(mode);
+    ASSERT_NO_FATAL_FAILURE(Configure(
+        [mode](YAML::Node& y) {
+          y["catching"]["planner"]["segment"]["mode"] = mode;
+          y["catching"]["planner"]["sub_model"] = "ur5e_catch";  // the sampler's, under mpc
+        },
+        /*sim=*/true));
+    const std::string other = std::string(mode) == "mpc" ? "closed_form" : "mpc";
+    EXPECT_EQ(
+        LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {std::string("segment mode: ") + mode + " — "})
+            .size(),
+        1U);
+    EXPECT_TRUE(LogSink::Matching(RCUTILS_LOG_SEVERITY_INFO, {"segment mode: " + other}).empty());
+    ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+}
+
 // ── #712: the CLIK's acceleration form has no default, and `box` is gone ─────
 //
 // Both cases carry `eta_tau`, the dynamic form's key, as every shipped profile
