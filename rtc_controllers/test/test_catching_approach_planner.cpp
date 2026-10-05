@@ -11,6 +11,7 @@
 //                  PreCatchHandsOverToTheStopCores, TheSourceIsWhatTheRtReports, ...
 //   allocation     PathsBeforeTheSolveAllocateNothing, SolvesAllocateNothingOutsideProxQp
 //   configure      AReconfiguredPlannerIsANewOne — Configure is a full reset
+//   interface      TheViewEntriesSolveWhatTheValueEntriesSolve (E1-F12 #738)
 //
 // Fixtures break representation symmetries: the device order is a
 // non-identity permutation of the model order, T_arm ≠ 0 (real ≠ lead axis),
@@ -20,8 +21,10 @@
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
+#include "rtc_controllers/testing/planner_search_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
@@ -1933,6 +1936,123 @@ TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
         << err;
     EXPECT_EQ(SolveSequenceDigest(used, kReach), expected);
   }
+}
+
+// ── 5b. The SegmentPlanner entries (E1-F12 #738) ─────────────────────────────
+
+// One solve's whole result as a number: the segment and the record, every
+// value (planner_trace_digest.hpp).
+std::uint64_t SolveDigest(bool ok, const DecelPlanSnapshot& out, const DecelRecord& rec) {
+  rtc::testing::ValueDigest h;
+  h.Add(ok);
+  rtc::testing::AddSegment(h, out);
+  rtc::testing::AddDecelRecord(h, rec);
+  return h.Value();
+}
+
+TEST(ApproachPlanner, TheViewEntriesSolveWhatTheValueEntriesSolve) {
+  // PlannerCycle hands the ball over as a view of the wake's trajectory and
+  // covariance (SegmentPlanner::PlanFirst / Replan). Before the interface it
+  // built the ball target itself — MakeDecelBallTarget at the plan's t_c, with
+  // the planner's v_eps — and called the value entries. Two planners, one
+  // driven each way from the same inputs, on a clock that STEPS on every read:
+  // the same segment and the same record, bit for bit — solve_ns and the
+  // number of clock reads with it, so the budget still measures the interval
+  // it measured.
+  constexpr std::int64_t kStep = 1000;  // ns per clock read
+
+  struct BallCase {
+    const char* name;
+    bool empty;
+    bool matched;
+  };
+
+  for (const double w_perp : {0.0, 2000.0}) {
+    std::uint64_t matched_first = 0;
+    std::uint64_t matched_replan = 0;
+    for (const BallCase bc : {BallCase{"the trajectory's covariance", false, true},
+                              BallCase{"another snapshot's covariance", false, false},
+                              BallCase{"no prediction", true, false}}) {
+      SCOPED_TRACE(std::string(bc.name) + ", w_perp " + std::to_string(w_perp));
+      Rig by_value(Arm6(), PerpParams(w_perp));
+      Rig by_view(Arm6(), PerpParams(w_perp));
+      // Through the interface, as the cycle calls it.
+      rtc::catching::SegmentPlanner& iface = by_view.planner;
+      const Arm& arm = by_value.arm;
+      const std::int64_t now = kT0;
+      const Catch c = CatchAt(arm, Offset(arm, 0.03));
+      const std::int64_t t_c = now + kTArm + 800 * kMs;
+      // The ball passes the catch point at t_c, which is sample 14.
+      const auto traj =
+          rtc::testing::LineTrajectory(c.p, c.v, t_c - 14 * 50 * kMs, 50 * kMs, 20, 14,
+                                       /*seq=*/1, /*gen=*/5, /*activation=*/3, now - 5 * kMs);
+      const auto cov = rtc::testing::IsotropicCovariance(traj, 0.01);
+      const rtc::catching::BallPrediction view =
+          bc.empty ? rtc::catching::BallPrediction{}
+                   : rtc::catching::BallPrediction{&traj, &cov, bc.matched};
+      const auto value_at = [&](std::int64_t t_ns) {
+        return bc.empty ? DecelBallTarget{}
+                        : rtc::catching::MakeDecelBallTarget(traj, cov, bc.matched, t_ns,
+                                                             Consts().v_eps);
+      };
+      const PlannerRtState rest = RestingRt(arm, arm.q_nominal, now - kH);
+      const PlanSnapshot plan = PlanFor(arm, c, t_c);
+
+      // ── PlanFirst: the ball at plan.t_c_ns ────────────────────────────────
+      SetClock(now, kStep);
+      const bool ok_value =
+          by_value.planner.PlanFirst(rest, plan, value_at(plan.t_c_ns), by_value.out, by_value.rec);
+      const std::int64_t reads_value = (g_now.load() - now) / kStep;
+      SetClock(now, kStep);
+      const bool ok_view = iface.PlanFirst(rest, plan, view, by_view.out, by_view.rec);
+      const std::int64_t reads_view = (g_now.load() - now) / kStep;
+      ASSERT_TRUE(ok_value) << Why(by_value.rec);
+      const std::uint64_t first = SolveDigest(ok_value, by_value.out, by_value.rec);
+      EXPECT_EQ(SolveDigest(ok_view, by_view.out, by_view.rec), first) << Why(by_view.rec);
+      EXPECT_EQ(reads_view, reads_value);
+      EXPECT_GT(by_value.rec.solve_ns, 0) << "the stepping clock did not reach the solve";
+      EXPECT_EQ(by_view.rec.solve_ns, by_value.rec.solve_ns);
+      // Σ_p reaches the first solve only from a covariance that is the
+      // trajectory's.
+      EXPECT_EQ(by_view.rec.w_p_fallback, !(bc.matched && !bc.empty));
+      ASSERT_TRUE(ok_view);
+      by_value.Publish(now);
+      by_view.Publish(now);
+
+      // ── Replan: the ball at rt.plan_t_c_ns ────────────────────────────────
+      const std::int64_t later = now + 20 * kMs;
+      const PlannerRtState following =
+          FollowingRt(arm, arm.q_nominal, later - kH, t_c, /*pending=*/1, /*active=*/0);
+      SetClock(later, kStep);
+      const bool re_value = by_value.planner.Replan(following, value_at(following.plan_t_c_ns),
+                                                    by_value.out, by_value.rec);
+      const std::int64_t re_reads_value = (g_now.load() - later) / kStep;
+      SetClock(later, kStep);
+      const bool re_view = iface.Replan(following, view, by_view.out, by_view.rec);
+      const std::int64_t re_reads_view = (g_now.load() - later) / kStep;
+      const std::uint64_t replan = SolveDigest(re_value, by_value.out, by_value.rec);
+      EXPECT_EQ(SolveDigest(re_view, by_view.out, by_view.rec), replan) << Why(by_view.rec);
+      EXPECT_EQ(re_reads_view, re_reads_value);
+      EXPECT_EQ(by_view.rec.solve_ns, by_value.rec.solve_ns);
+      // A pre-catch grid point needs the ball: an empty view is none.
+      EXPECT_EQ(re_view, !bc.empty) << Why(by_view.rec);
+      if (bc.empty) {
+        EXPECT_EQ(by_view.rec.outcome, DecelOutcome::kNoBall);
+      }
+
+      // Non-vacuity: the pairing flag and the emptiness the view carries DO
+      // reach the solve — a view entry that dropped either would still match
+      // a value entry fed the same wrong ball, but not the matched case's.
+      if (bc.matched) {
+        matched_first = first;
+        matched_replan = replan;
+      } else {
+        EXPECT_NE(first, matched_first);
+        EXPECT_NE(replan, matched_replan);
+      }
+    }
+  }
+  SetClock(kT0);
 }
 
 // ── 6. Allocation (MD-23) ────────────────────────────────────────────────────
