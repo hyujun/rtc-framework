@@ -20,6 +20,7 @@
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
 #include "rtc_controllers/testing/planner_search_fixture.hpp"
+#include "rtc_controllers/testing/planner_trace_digest.hpp"
 
 #include <gtest/gtest.h>
 
@@ -441,6 +442,66 @@ TEST(PlannerSearchPlan, SettlesForNSnapshotsAfterATrackChange) {
       rig->search.Plan(changed, Rig::Cov(changed, 0.002), true, rig->Rt(), NowReal{kNow}, stats)
           .valid);
   EXPECT_TRUE(stats.settling);
+}
+
+std::int64_t PinnedClock() noexcept {
+  return kNow;
+}
+
+// One fixed sequence — a track settling, a plan published and followed, a
+// monitor — with every plan and record it produces digested
+// (planner_trace_digest.hpp).
+std::uint64_t SearchSequenceDigest(Rig& rig) {
+  rtc::testing::ValueDigest h;
+  SearchStats stats;
+  PlanSnapshot last{};
+  for (std::uint64_t seq = 1; seq <= 4; ++seq) {
+    const auto traj = rig.Traj(seq);
+    last = rig.search.Plan(traj, Rig::Cov(traj, 0.002), true, rig.Rt(), NowReal{kNow}, stats);
+    rtc::testing::AddPlan(h, last);
+    rtc::testing::AddSearchStats(h, stats);
+  }
+  last.plan_id = 31;
+  rig.search.NotePublished(last);
+  PlannerRtState rt = rig.Rt();
+  rt.plan_active = true;
+  rt.plan_id = 31;
+  const auto traj = rig.Traj(5);
+  const auto cov = Rig::Cov(traj, 0.002);
+  rtc::testing::AddPlan(h, rig.search.Plan(traj, cov, true, rt, NowReal{kNow}, stats));
+  rtc::testing::AddSearchStats(h, stats);
+  rig.search.Monitor(traj, cov, true, rt, stats);
+  rtc::testing::AddSearchStats(h, stats);
+  return h.Value();
+}
+
+TEST(PlannerSearchPlan, AReconfiguredSearchIsANewOne) {
+  // Configure is a full reset: a search that has run and is configured again
+  // answers exactly as one built and configured now. PlannerCycle relies on
+  // it — ConfigureSearch installs a NEW search on every configure (E1-F12
+  // #738) where it once configured the one in place again, and the two are
+  // the same thing only if nothing a search did before survives its
+  // Configure. n_settle 2 puts the per-trial part of that in view: a search
+  // that kept its settle count would plan on the first snapshot.
+  const auto make = [] {
+    auto rig = std::make_unique<Rig>();
+    rig->params.n_settle = 2;
+    EXPECT_TRUE(rig->Configure(&PinnedClock));
+    return rig;
+  };
+  auto fresh = make();
+  const std::uint64_t expected = SearchSequenceDigest(*fresh);
+
+  // Non-vacuity: run again WITHOUT a Configure in between, the same sequence
+  // answers differently — it does leave state behind for Configure to clear.
+  auto dirty = make();
+  static_cast<void>(SearchSequenceDigest(*dirty));
+  EXPECT_NE(SearchSequenceDigest(*dirty), expected);
+
+  auto used = make();
+  static_cast<void>(SearchSequenceDigest(*used));
+  ASSERT_TRUE(used->Configure(&PinnedClock));
+  EXPECT_EQ(SearchSequenceDigest(*used), expected);
 }
 
 std::int64_t g_fake_ns = 0;

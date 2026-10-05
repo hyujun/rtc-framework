@@ -10,6 +10,7 @@
 //   replans        ASamePointResolveIsWarmAndKeepsNodeZero, AdvanceIsColdAndStartsOnTheSource,
 //                  PreCatchHandsOverToTheStopCores, TheSourceIsWhatTheRtReports, ...
 //   allocation     PathsBeforeTheSolveAllocateNothing, SolvesAllocateNothingOutsideProxQp
+//   configure      AReconfiguredPlannerIsANewOne — Configure is a full reset
 //
 // Fixtures break representation symmetries: the device order is a
 // non-identity permutation of the model order, T_arm ≠ 0 (real ≠ lead axis),
@@ -21,6 +22,7 @@
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
+#include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 
@@ -1863,6 +1865,74 @@ TEST(ApproachBallTarget, RefusesWhatItCannotTrust) {
   // A ball slower than v_eps has no direction of travel.
   EXPECT_FALSE(rtc::catching::MakeDecelBallTarget(t, c, true, mid, 5.0).valid);
   EXPECT_FALSE(rtc::catching::MakeDecelBallTarget(t, c, true, mid, kNan).valid);
+}
+
+// ── 5a. Configure is a full reset (E1-F12 #738) ──────────────────────────────
+
+// One fixed sequence — the first segment of a plan for a catch `reach` away,
+// then two replans from what the RT reports — published as the cycle does,
+// under seqs 1, 2, 3, with every segment and record digested
+// (planner_trace_digest.hpp). The plan id and the catch instant are the same
+// whatever `reach` is.
+std::uint64_t SolveSequenceDigest(Rig& r, double reach) {
+  rtc::testing::ValueDigest h;
+  const auto add = [&](bool ok) {
+    h.Add(ok);
+    rtc::testing::AddSegment(h, r.out);
+    rtc::testing::AddDecelRecord(h, r.rec);
+  };
+  r.seq = 0;
+  const std::int64_t now = kT0;
+  const Catch c = CatchAt(r.arm, Offset(r.arm, reach));
+  const std::int64_t t_c = now + kTArm + 800 * kMs;
+  SetClock(now);
+  bool ok = r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, now - kH), PlanFor(r.arm, c, t_c),
+                                BallFor(c), r.out, r.rec);
+  add(ok);
+  std::uint32_t reported = ok ? r.Publish(now) : 0;
+  for (int i = 1; i <= 2; ++i) {
+    const std::int64_t later = now + i * 20 * kMs;
+    SetClock(later);
+    ok = r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, later - kH, t_c, reported, 0),
+                          BallFor(c), r.out, r.rec);
+    add(ok);
+    if (ok) {
+      reported = r.Publish(later);
+    }
+  }
+  SetClock(kT0);
+  return h.Value();
+}
+
+TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
+  // Configure is a full reset: a planner that has solved and published and is
+  // configured again answers exactly as one built and configured now.
+  // PlannerCycle relies on it — ConfigureDecel installs a NEW planner on every
+  // configure (E1-F12 #738) where it once configured the one in place again.
+  // The planner is first used on ANOTHER catch under the same plan id, catch
+  // instant and seqs: a planner that kept its ring would then start a replan
+  // from that catch's segment.
+  constexpr double kReach = 0.03;
+  constexpr double kOtherReach = 0.05;
+  for (const double w_perp : {0.0, kPerp}) {
+    SCOPED_TRACE("w_perp " + std::to_string(w_perp));
+    Rig fresh(Arm6(), PerpParams(w_perp));
+    const std::uint64_t expected = SolveSequenceDigest(fresh, kReach);
+
+    // Non-vacuity: WITHOUT a Configure in between, the other catch does change
+    // what the sequence answers — there is state for Configure to clear.
+    Rig dirty(Arm6(), PerpParams(w_perp));
+    static_cast<void>(SolveSequenceDigest(dirty, kOtherReach));
+    EXPECT_NE(SolveSequenceDigest(dirty, kReach), expected);
+
+    Rig used(Arm6(), PerpParams(w_perp));
+    static_cast<void>(SolveSequenceDigest(used, kOtherReach));
+    std::string err;
+    ASSERT_TRUE(used.planner.Configure(PlannerModelOf(used.arm), Consts(), PerpParams(w_perp),
+                                       &FakeClock, &err))
+        << err;
+    EXPECT_EQ(SolveSequenceDigest(used, kReach), expected);
+  }
 }
 
 // ── 6. Allocation (MD-23) ────────────────────────────────────────────────────

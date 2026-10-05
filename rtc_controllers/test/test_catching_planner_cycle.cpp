@@ -440,6 +440,21 @@ TEST(PlannerCycleRun, PublishesNothingInAModeWithNothingToPlanFor) {
   EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
 }
 
+TEST(PlannerCycleRun, AMonitorWakeWithoutASearchRecordsNothingToPublish) {
+  // COMMITTED with no search configured: there is no followed plan of ours to
+  // read σ_ℓ at, and the record says so the way a configured search does —
+  // nothing to publish, σ_ℓ unknown.
+  auto rig = std::make_unique<CycleRig>();
+  rig->boxes.rt.Store(RtIn(Mode::kCommitted));
+  rig->boxes.traj.Store(Traj(3));
+  rig->boxes.cov.Store(Cov(3));
+  const auto rec = rig->cycle.Run(NowReal{1});
+  EXPECT_EQ(rec.outcome, CycleOutcome::kIdle);
+  EXPECT_FALSE(rec.search.publish);
+  EXPECT_TRUE(std::isnan(rec.search.sigma_l));
+  EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+}
+
 TEST(PlannerCycleRun, NoTrajectoryOfThisActivationIsNoInput) {
   auto rig = std::make_unique<CycleRig>();
   rig->boxes.rt.Store(RtIn(Mode::kTracking));
