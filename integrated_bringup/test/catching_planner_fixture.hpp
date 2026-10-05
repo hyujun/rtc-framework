@@ -78,14 +78,21 @@ catching:
     enabled: )" +
          (planner_enabled ? "true" : "false") + R"(
     wake_timeout_s: 0.02
-    budget_s: 0.02
     wait_pose: [0.0, -1.0, 1.0, -1.5, -1.5, 0.0]
     # The S6-B decision values: without them an enabled planner parks. This
     # fixture has no system model, so the search stays the stub either way.
     sub_model: "arm_catch"
     freeze: {T_freeze: 0.36}
-    hand: {d_eff: 0.28, r_cap: 0.024}
-    workspace: {catch_box: {min: [-2.0, -2.0, -2.0], max: [2.0, 2.0, 2.0]}}
+    search:
+      grid:
+        budget_s: 0.02
+        hand: {d_eff: 0.28, r_cap: 0.024}
+        workspace: {catch_box: {min: [-2.0, -2.0, -2.0], max: [2.0, 2.0, 2.0]}}
+        reference: {v_max: 2.0, omega: 10.0, zeta: 1.0, a_max: 15.0}
+        # The search's own stop: no default, and an enabled planner parks on a
+        # TBD in a key it reads. (This fixture sets no supervisor.decel.a_dec —
+        # the closed_form law's key is read by nothing here.)
+        stop: {a_dec: 10.0}
   robot:
     arm:
       limit_margin: 0.05

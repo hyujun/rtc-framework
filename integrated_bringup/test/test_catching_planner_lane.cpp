@@ -436,12 +436,13 @@ class CatchingPlanLaneTest : public ::testing::Test {
       // (the arm waits where it is), which is also the pose the reachable-
       // ball cases below build their ball from.
       pl["freeze"]["T_freeze"] = 0.36;
-      pl["hand"]["d_eff"] = 0.2815;
-      pl["hand"]["r_cap"] = 0.024;
-      pl["workspace"]["catch_box"]["min"] = std::vector<double>{0.19, -0.30, 0.21};
-      pl["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
+      pl["search"]["grid"]["hand"]["d_eff"] = 0.2815;
+      pl["search"]["grid"]["hand"]["r_cap"] = 0.024;
+      pl["search"]["grid"]["workspace"]["catch_box"]["min"] =
+          std::vector<double>{0.19, -0.30, 0.21};
+      pl["search"]["grid"]["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
       pl["wake_timeout_s"] = 0.02;
-      pl["n_settle"] = 1;
+      pl["search"]["grid"]["n_settle"] = 1;
       // Cleared like every other provisional flag in TrackingYaml: this
       // fixture is judged on the REAL-ARM axis (its devices declare no
       // backend), where a provisional planner block parks the controller.
@@ -552,7 +553,7 @@ class CatchingPlanLaneTest : public ::testing::Test {
   /// up to 6 x 0.1 s before it. `mode: mpc` needs the pre-catch part (MD-45):
   /// the RT takes a plan only with a segment that starts before t_c.
   static void ApproachGrid(YAML::Node& y) {
-    YAML::Node d = y["catching"]["planner"]["decel_mpc"];
+    YAML::Node d = y["catching"]["planner"]["segment"]["mpc"];
     d["horizon"]["n_nodes"] = 7;
     d["horizon"]["dt_s"] = 0.05;
     d["horizon"]["blocks"] = std::vector<int>{1, 1, 2, 3};
@@ -570,15 +571,15 @@ class CatchingPlanLaneTest : public ::testing::Test {
     pl["enabled"] = planner;
     pl["sub_model"] = "ur5e_catch";
     pl["freeze"]["T_freeze"] = 0.36;
-    pl["hand"]["d_eff"] = 0.2815;
-    pl["hand"]["r_cap"] = 0.024;
-    pl["workspace"]["catch_box"]["min"] = std::vector<double>{0.19, -0.30, 0.21};
-    pl["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
+    pl["search"]["grid"]["hand"]["d_eff"] = 0.2815;
+    pl["search"]["grid"]["hand"]["r_cap"] = 0.024;
+    pl["search"]["grid"]["workspace"]["catch_box"]["min"] = std::vector<double>{0.19, -0.30, 0.21};
+    pl["search"]["grid"]["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
     pl["provisional"] = false;
     if (planner) {
       ApproachGrid(yaml);
     }
-    yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    yaml["catching"]["planner"]["segment"]["mode"] = "mpc";
     return yaml;
   }
 
@@ -828,12 +829,12 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannerIsParkedWithoutThePlanner) {
   yaml["catching"]["planner"]["enabled"] = false;
   yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // no other writer of the segment box
   // MD-44: the decel keys are read only under the law that follows them.
-  yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+  yaml["catching"]["planner"]["segment"]["mode"] = "mpc";
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_TRUE(ctrl_->IsSimOnlyDisabled());
-  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kDecelModeUnmet);
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kSegmentModeUnmet);
   EXPECT_EQ(ctrl_->on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
 }
 
@@ -848,11 +849,11 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentTorqueBoxAndSlackMustFitTheCliksTorque
   yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // one writer for the plan box
   YAML::Node pl = yaml["catching"]["planner"];
   pl["enabled"] = true;
-  pl["decel_mpc"]["eta_tau"] = 0.75;
-  pl["decel_mpc"]["publish"]["slack_max"] = 0.1;
+  pl["segment"]["mpc"]["eta_tau"] = 0.75;
+  pl["segment"]["mpc"]["publish"]["slack_max"] = 0.1;
   yaml["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
   yaml["catching"]["joint_cmd"]["eta_tau"] = 0.8;
-  yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";  // MD-44, as above
+  yaml["catching"]["planner"]["segment"]["mode"] = "mpc";  // MD-44, as above
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
@@ -863,8 +864,8 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentTorqueBoxAndSlackMustFitTheCliksTorque
 TEST_F(CatchingPlanLaneTest, AFittingMpcSegmentTorqueBoxConfiguresUnderTheDynamicClik) {
   // The passing side of MD-33's configure check: 0.7 + 0.1 ≤ 0.8.
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
-    ApproachGrid(y);                                       // MD-45
-    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";  // MD-44
+    ApproachGrid(y);                                      // MD-45
+    y["catching"]["planner"]["segment"]["mode"] = "mpc";  // MD-44
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
     y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
   }));
@@ -883,7 +884,7 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
     const ConfigureVerdict v = ConfigureOnly(planner, tweak, std::move(configs));
     EXPECT_EQ(v.ret, Return::SUCCESS) << what << ": a profile mistake parks, it does not fail";
     EXPECT_TRUE(v.parked) << what;
-    EXPECT_EQ(v.reason, CatchingParkReason::kDecelModeUnmet) << what;
+    EXPECT_EQ(v.reason, CatchingParkReason::kSegmentModeUnmet) << what;
     const rclcpp_lifecycle::State prev;
     EXPECT_EQ(ctrl_->on_activate(prev), Return::FAILURE) << what;
   };
@@ -892,16 +893,18 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
     const ConfigureVerdict ok = ConfigureOnly(planner, nullptr);
     ASSERT_EQ(ok.ret, Return::SUCCESS);
     EXPECT_FALSE(ok.parked) << "planner " << planner << ": reason " << static_cast<int>(ok.reason);
-    EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kMpc);
+    EXPECT_EQ(ctrl_->GetSegmentMode(), rtc::catching::CatchingSegmentMode::kMpc);
     EXPECT_EQ(ctrl_->IsSegmentPlannerConfigured(), planner);
   }
   expect_park("K_n = 0", true, [](YAML::Node& y) { y["catching"]["joint_cmd"]["K_n"] = 0.0; });
-  expect_park("eta_v = 1", true,
-              [](YAML::Node& y) { y["catching"]["planner"]["gamma"]["eta_v"] = 1.0; });
+  expect_park("eta_v = 1", true, [](YAML::Node& y) {
+    y["catching"]["planner"]["search"]["grid"]["gamma"]["eta_v"] = 1.0;
+    y["catching"]["planner"]["segment"]["mpc"]["eta_v"] = 1.0;  // the key the mpc gate reads
+  });
   // MD-45, MD-70: a plan goes out only with a segment that starts before
   // t_c, so without a pre-catch grid there is no MPC segment planner to build.
   expect_park("a decel planner without the pre-catch grid", true, [](YAML::Node& y) {
-    y["catching"]["planner"]["decel_mpc"]["approach"]["n_pre_max"] = 0;
+    y["catching"]["planner"]["segment"]["mpc"]["approach"]["n_pre_max"] = 0;
   });
   expect_park("no planner and no oracle", false,
               [](YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; });
@@ -919,29 +922,30 @@ TEST_F(CatchingPlanLaneTest, MpcItselfDoesNotNeedACatchBox) {
   using integrated_bringup::CatchingParkReason;
   using Return = DemoCatchingController::CallbackReturn;
   const auto no_box = [](YAML::Node& y) {
-    y["catching"]["planner"]["workspace"].remove("catch_box");
+    y["catching"]["planner"]["search"]["grid"]["workspace"].remove("catch_box");
   };
   const ConfigureVerdict oracle = ConfigureOnly(false, no_box);
   ASSERT_EQ(oracle.ret, Return::SUCCESS);
   EXPECT_FALSE(oracle.parked) << "reason " << static_cast<int>(oracle.reason);
-  EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kMpc);
+  EXPECT_EQ(ctrl_->GetSegmentMode(), rtc::catching::CatchingSegmentMode::kMpc);
   const ConfigureVerdict searching = ConfigureOnly(true, no_box);
   ASSERT_EQ(searching.ret, Return::SUCCESS);
   EXPECT_TRUE(searching.parked);
   EXPECT_EQ(searching.reason, CatchingParkReason::kPlannerUnset);
 }
 
-TEST_F(CatchingPlanLaneTest, AMalformedDecelModeOrSwitchMarginFailsTheConfigure) {
+TEST_F(CatchingPlanLaneTest, AMalformedSegmentModeOrSwitchMarginFailsTheConfigure) {
   using Return = DemoCatchingController::CallbackReturn;
   EXPECT_EQ(ConfigureOnly(
-                true, [](YAML::Node& y) { y["catching"]["supervisor"]["decel"]["mode"] = "mcp"; })
+                true, [](YAML::Node& y) { y["catching"]["planner"]["segment"]["mode"] = "mcp"; })
                 .ret,
             Return::FAILURE);
-  EXPECT_EQ(
-      ConfigureOnly(
-          true, [](YAML::Node& y) { y["catching"]["supervisor"]["decel"]["switch_margin"] = 0.0; })
-          .ret,
-      Return::FAILURE);
+  EXPECT_EQ(ConfigureOnly(true,
+                          [](YAML::Node& y) {
+                            y["catching"]["planner"]["segment"]["mpc"]["switch_margin"] = 0.0;
+                          })
+                .ret,
+            Return::FAILURE);
 }
 
 TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoMpcSegmentCoresEvenWhenTheyAreEnabled) {
@@ -949,14 +953,14 @@ TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoMpcSegmentCoresEvenWhenTheyAreEna
   for (const char* mode : {"closed_form", ""}) {
     const ConfigureVerdict v = ConfigureOnly(true, [mode](YAML::Node& y) {
       if (*mode == '\0') {
-        y["catching"]["supervisor"]["decel"].remove("mode");
+        y["catching"]["planner"]["segment"].remove("mode");
       } else {
-        y["catching"]["supervisor"]["decel"]["mode"] = mode;
+        y["catching"]["planner"]["segment"]["mode"] = mode;
       }
     });
     ASSERT_EQ(v.ret, DemoCatchingController::CallbackReturn::SUCCESS) << mode;
     EXPECT_FALSE(v.parked) << mode;
-    EXPECT_EQ(ctrl_->GetDecelMode(), rtc::catching::CatchingDecelMode::kClosedForm) << mode;
+    EXPECT_EQ(ctrl_->GetSegmentMode(), rtc::catching::CatchingSegmentMode::kClosedForm) << mode;
     EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured()) << "mode '" << mode << "'";
   }
 }
@@ -968,9 +972,9 @@ TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnAnMpcSegmentSettingItNeverRe
   // same setting parks.
   const auto misfit = [](const char* mode) {
     return [mode](YAML::Node& y) {
-      y["catching"]["supervisor"]["decel"]["mode"] = mode;
-      y["catching"]["planner"]["decel_mpc"]["eta_tau"] = 0.75;
-      y["catching"]["planner"]["decel_mpc"]["publish"]["slack_max"] = 0.1;
+      y["catching"]["planner"]["segment"]["mode"] = mode;
+      y["catching"]["planner"]["segment"]["mpc"]["eta_tau"] = 0.75;
+      y["catching"]["planner"]["segment"]["mpc"]["publish"]["slack_max"] = 0.1;
       y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
       y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
     };
@@ -986,7 +990,7 @@ TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnAnMpcSegmentSettingItNeverRe
   EXPECT_EQ(mpc.reason, integrated_bringup::CatchingParkReason::kMpcSegmentInvalid);
 }
 
-TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
+TEST_F(CatchingPlanLaneTest, TheLawIsChosenByPlannerSegmentModeAlone) {
   // MPC MD-91: `planner.decel_mpc.enabled` is gone — the planner solves the
   // segment MPC exactly when `supervisor.decel.mode` is mpc. A config that still
   // writes the key is read as if it were absent (no rejection): every row
@@ -1006,7 +1010,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
       const WarnCapture warns;
       const ConfigureVerdict v = ConfigureOnly(true, [&](YAML::Node& y) {
         with_key(y);
-        y["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
+        y["catching"]["planner"]["segment"]["mode"] = "closed_form";
       });
       ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
       EXPECT_FALSE(v.parked) << tag;
@@ -1038,7 +1042,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
       });
       ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
       EXPECT_TRUE(v.parked) << tag;
-      EXPECT_EQ(v.reason, CatchingParkReason::kDecelModeUnmet) << tag;
+      EXPECT_EQ(v.reason, CatchingParkReason::kSegmentModeUnmet) << tag;
     }
   }
 }
@@ -1057,7 +1061,7 @@ TEST_F(CatchingPlanLaneTest, ALeftoverDisabledDecelMpcKeyWarnsOnlyWhereTheLawNow
                                             : "enabled: false");
       const WarnCapture warns;
       const ConfigureVerdict v = ConfigureOnly(true, [&](YAML::Node& y) {
-        y["catching"]["supervisor"]["decel"]["mode"] = mode;
+        y["catching"]["planner"]["segment"]["mode"] = mode;
         if (stale >= 0) {
           y["catching"]["planner"]["decel_mpc"]["enabled"] = stale == 1;
         }
@@ -1082,7 +1086,7 @@ TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheMpcSegmentPlanners
   const rclcpp_lifecycle::State prev;
   ASSERT_EQ(ctrl_->on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   YAML::Node yaml = ConfigureOnlyYaml(true);
-  yaml["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
+  yaml["catching"]["planner"]["segment"]["mode"] = "closed_form";
   ASSERT_EQ(ctrl_->on_configure(prev, node_, yaml),
             DemoCatchingController::CallbackReturn::SUCCESS);
   EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured());
@@ -1143,15 +1147,15 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   cloud_n_ = 20;
   servo_ = true;
   ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
-    YAML::Node d = y["catching"]["planner"]["decel_mpc"];
+    YAML::Node d = y["catching"]["planner"]["segment"]["mpc"];
     ApproachGrid(y);
     // Head-room for a loaded host: this case is about what is published,
     // taken and followed, not how fast. The replan budget stays inside the
     // admission age bound (replan_s + 3 ticks < 50 ms, or configure parks).
     d["budget"]["first_s"] = 0.05;
     d["budget"]["replan_s"] = 0.04;
-    y["catching"]["planner"]["budget_s"] = 0.03;
-    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    y["catching"]["planner"]["search"]["grid"]["budget_s"] = 0.03;
+    y["catching"]["planner"]["segment"]["mode"] = "mpc";
     // The shipped CLIK form (MD-7): the MPC bounds acceleration by torque
     // rows, so the CLIK that executes its segments must too — under the
     // fixture's constant box the command falls behind the segment.

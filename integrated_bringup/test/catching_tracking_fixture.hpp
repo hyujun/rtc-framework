@@ -152,11 +152,11 @@ class CatchFrameOracle {
 };
 
 /// The SHIPPED ur5e_p1b acceleration box (`robot.arm.qdd_max`, rad/s²), read
-/// from the installed search fragment on every run so a suite's copy of it
+/// from the installed controller file on every run so a suite's copy of it
 /// cannot drift from the file the controller ships with.
 std::vector<double> ShippedQddMax() {
   const std::string path = ament_index_cpp::get_package_share_directory("integrated_bringup") +
-                           "/config/ur5e_p1b/controllers/catching/search_grid.yaml";
+                           "/config/ur5e_p1b/controllers/demo_catching_controller.yaml";
   const YAML::Node arm =
       YAML::LoadFile(path)["demo_catching_controller"]["catching"]["robot"]["arm"];
   if (!arm || !arm["qdd_max"]) {
@@ -291,12 +291,26 @@ catching:
       restitution: 0.75
       provisional: false
   planner:
-    gamma:
-      eta_v: 0.9
-    catchability:
-      manipulability_min:
-        arm_5row: 0.1
-        provisional: false
+    search:
+      grid:
+        # The grid search's own copy of the reference gains and the stop
+        # deceleration: a configuration where they differ from the law's parks.
+        reference:
+          omega: )"
+     << gains.omega << R"(
+          zeta: 1.0
+          v_max: )"
+     << gains.v_max << R"(
+          a_max: )"
+     << gains.a_max << R"(
+        stop:
+          a_dec: 10.0
+        gamma:
+          eta_v: 0.9
+        catchability:
+          manipulability_min:
+            arm_5row: 0.1
+            provisional: false
     # The S7 supervisor needs both once the law is wired (a configuration
     # without them is parked). The wait pose is the fixture's home, where
     # every suite measures the arm at start: an aligned arm skips homing

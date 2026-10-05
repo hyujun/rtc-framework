@@ -649,7 +649,7 @@ TEST(ApproachPlanner, TheVelocitySlackKeysReachTheCatchCores) {
       "replan: {k_max: 2}, approach: {n_pre_max: 6, dt_pre_s: 0.1}";
   const auto params_of = [&](const std::string& catch_keys) {
     return rtc::catching::ParsePlannerParams(
-               YAML::Load("planner: {decel_mpc: {" + std::string(grid) + catch_keys + "}}"))
+               YAML::Load("planner: {segment: {mpc: {" + std::string(grid) + catch_keys + "}}}"))
         .mpc_segment;
   };
   for (const Arm& arm : {Arm6(), Arm7()}) {
@@ -711,11 +711,11 @@ TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
 TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
   const auto params_of = [](const std::string& body) {
     return rtc::catching::ParsePlannerParams(
-               YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, "
+               YAML::Load("planner: {segment: {mpc: {horizon: {n_nodes: 7, "
                           "dt_s: 0.05, blocks: [1, 1, 2, 3]}, replan: "
                           "{k_max: 2}, approach: {n_pre_max: 6, "
                           "dt_pre_s: 0.1}, " +
-                          body + "}}"))
+                          body + "}}}"))
         .mpc_segment;
   };
   const MpcSegmentCoreParams defaults{};
@@ -1285,10 +1285,10 @@ void ExpectNotSolved(const SegmentRecord& rec) {
 TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLine) {
   const auto params_of = [](const std::string& body) {
     return rtc::catching::ParsePlannerParams(
-               YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: "
+               YAML::Load("planner: {segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: "
                           "[1, 1, 2, 3]}, replan: {k_max: 2}, approach: {n_pre_max: 6, "
                           "dt_pre_s: 0.1}" +
-                          body + "}}"))
+                          body + "}}}"))
         .mpc_segment;
   };
   for (const Arm& arm : {Arm6(), Arm7()}) {

@@ -425,11 +425,12 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
   using integrated_bringup::testfx::kApproachNPre;
   using Event = integrated_bringup::CatchingDiagLogPod::SegmentEvent;
   ASSERT_NO_FATAL_FAILURE(BringUp(false, [](YAML::Node& y) {
-    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    y["catching"]["planner"]["segment"]["mode"] = "mpc";
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
-    y["catching"]["planner"]["workspace"]["catch_box"]["min"] =
+    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
         std::vector<double>{-2.0, -2.0, -2.0};
-    y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, 2.0};
+    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
+        std::vector<double>{2.0, 2.0, 2.0};
   }));
   const auto stamp = [this](rtc::catching::SegmentSnapshot& seg, std::uint32_t seq) {
     seg.token.activation_generation = ctrl_->GetPlannerRtState().activation_generation;

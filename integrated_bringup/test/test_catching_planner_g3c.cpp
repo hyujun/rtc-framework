@@ -126,7 +126,7 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
 
   const YAML::Node c = shipped.controller["catching"];
   GridCatchSearchConstants pc;
-  pc.eta_v = c["planner"]["gamma"]["eta_v"].as<double>();
+  pc.eta_v = c["planner"]["search"]["grid"]["gamma"]["eta_v"].as<double>();
   pc.v_max = c["reference"]["v_max"].as<double>();
   pc.a_dec = c["supervisor"]["decel"]["a_dec"].as<double>();
   pc.t_arm_s = c["joint_cmd"]["lag"]["T_arm"].as<double>();

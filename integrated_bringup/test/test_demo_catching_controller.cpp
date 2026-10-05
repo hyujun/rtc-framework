@@ -1290,7 +1290,7 @@ TEST_P(ShippedCatchingProfile, WithoutAModelTheShippedMpcLawParks) {
   static_cast<void>(expected_dof);
   YAML::Node node =
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
-  ASSERT_EQ(node["catching"]["supervisor"]["decel"]["mode"].as<std::string>(), "mpc")
+  ASSERT_EQ(node["catching"]["planner"]["segment"]["mode"].as<std::string>(), "mpc")
       << profile << ": precondition — the shipped law";
   auto node_handle =
       std::make_shared<rclcpp_lifecycle::LifecycleNode>("catching_shipped_no_model_" + profile);
@@ -1303,7 +1303,7 @@ TEST_P(ShippedCatchingProfile, WithoutAModelTheShippedMpcLawParks) {
       << profile << ": a missing model parks this controller, it must not fail the bring-up";
   EXPECT_FALSE(ctrl.IsRealArmConfig()) << "precondition: judged on the sim axis";
   EXPECT_TRUE(ctrl.IsSimOnlyDisabled()) << profile;
-  EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kDecelModeUnmet)
+  EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kSegmentModeUnmet)
       << profile;
   EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
   ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
@@ -1325,7 +1325,7 @@ YAML::Node ShippedWithPlanner(const std::string& profile, bool planner, bool ora
   if (!planner) {
     // The shipped law (`mpc`, MD-89) follows the planner's segments, so a
     // profile with the planner off runs v1's law — the only one it can.
-    node["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
+    node["catching"]["planner"]["segment"]["mode"] = "closed_form";
   }
   return node;
 }
@@ -1389,11 +1389,11 @@ TEST_P(ShippedCatchingProfile, MirrorsTheLeadFloorAndTheClikFormAsRun) {
     YAML::Node node = ShippedWithPlanner(profile, true, false);
     YAML::Node planner = node["catching"]["planner"];
     const double t_freeze = planner["freeze"]["T_freeze"].as<double>();
-    ASSERT_FALSE(planner["slice"]["t_lead_min"].IsDefined())
+    ASSERT_FALSE(planner["search"]["grid"]["slice"]["t_lead_min"].IsDefined())
         << profile << ": the shipped profile sets the floor — pick another baseline";
     const double floor = c.set_floor ? t_freeze + 0.07 : t_freeze;
     if (c.set_floor) {
-      planner["slice"]["t_lead_min"] = floor;
+      planner["search"]["grid"]["slice"]["t_lead_min"] = floor;
     }
     if (c.kinematic) {
       YAML::Node joint_cmd = node["catching"]["joint_cmd"];
@@ -1498,14 +1498,17 @@ TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
   };
 
   const std::vector<Case> cases = {
-      {"catching/search_grid.yaml", {"planner", "time", "margin"}, "planner.time.margin", 0.01},
+      {"catching/search_grid.yaml",
+       {"planner", "search", "grid", "time", "margin"},
+       "planner.time.margin",
+       0.01},
       {"catching/planner_closed_form.yaml", {"reference", "omega"}, "reference.omega", -1.0},
       {"catching/segment_mpc.yaml",
-       {"planner", "decel_mpc", "catch", "gamma_ref"},
+       {"planner", "segment", "mpc", "catch", "gamma_ref"},
        "planner.decel_mpc.catch.gamma_ref",
        -0.1},
       {"catching/segment_mpc.yaml",
-       {"supervisor", "decel", "switch_margin"},
+       {"planner", "segment", "mpc", "switch_margin"},
        "supervisor.decel.switch_margin",
        -0.1},
   };
@@ -1774,7 +1777,12 @@ TEST_P(ShippedCatchingProfile, AnUnsetPlannerDecisionParksInsteadOfGuessing) {
   int n = 0;
   for (const auto& [section, key] : keys) {
     YAML::Node node = ShippedWithPlanner(profile, true, false);
-    YAML::Node planner = node["catching"]["planner"];
+    // The grid search's own sections sit under planner.search.grid. Chosen at
+    // construction: assigning to an existing YAML::Node rebinds the node it
+    // aliases (the tree's `planner` would become the grid map).
+    const bool grid = std::string(section) == "workspace" || std::string(section) == "hand";
+    YAML::Node planner = grid ? node["catching"]["planner"]["search"]["grid"]
+                              : node["catching"]["planner"];
     ASSERT_TRUE(key == nullptr ? static_cast<bool>(planner[section])
                                : static_cast<bool>(planner[section][key]))
         << profile << ": precondition — the shipped file sets " << section;
@@ -1835,7 +1843,7 @@ struct WaitPoseRig {
     // No arm model here (the S8-I refusal below needs none), so not the
     // shipped `mpc` law, which parks without one (MD-89): v1's law, as the
     // profile shipped until then.
-    node["catching"]["supervisor"]["decel"]["mode"] = "closed_form";
+    node["catching"]["planner"]["segment"]["mode"] = "closed_form";
     if (source != nullptr) {
       node["catching"]["planner"]["wait_pose_source"] = source;
     }
@@ -1904,12 +1912,12 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   EXPECT_TRUE(d.replan_same_point) << profile;
   // The budgets must leave the planner's wake inside the segment admission age
   // bound the RT judges a segment by (50 ms): configure parks mode mpc unless
-  // budget.replan_s + 3 ticks is below it (DecelModeUnmet).
+  // budget.replan_s + 3 ticks is below it (SegmentModeUnmet).
   EXPECT_GT(d.budget_first_s, 0.0) << profile;
   EXPECT_GT(d.budget_replan_s, 0.0) << profile;
   EXPECT_GT(d.catch_pos_err_max, 0.0) << profile;
-  ASSERT_TRUE(node["catching"]["supervisor"]["decel"]["mode"]) << profile;
-  EXPECT_EQ(node["catching"]["supervisor"]["decel"]["mode"].as<std::string>(), "mpc") << profile;
+  ASSERT_TRUE(node["catching"]["planner"]["segment"]["mode"]) << profile;
+  EXPECT_EQ(node["catching"]["planner"]["segment"]["mode"].as<std::string>(), "mpc") << profile;
 }
 
 TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
@@ -1920,7 +1928,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
   static_cast<void>(expected_dof);
   const YAML::Node node =
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
-  const YAML::Node dcatch = node["catching"]["planner"]["decel_mpc"]["catch"];
+  const YAML::Node dcatch = node["catching"]["planner"]["segment"]["mpc"]["catch"];
   ASSERT_TRUE(dcatch.IsMap()) << profile;
   ASSERT_TRUE(dcatch["rho_v"].IsDefined()) << profile << ": catch.rho_v is not written";
   ASSERT_TRUE(dcatch["v_rel_allow"].IsDefined()) << profile << ": catch.v_rel_allow is not written";
@@ -1944,7 +1952,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
   YAML::Node node = ShippedWithPlanner(profile, true, false);
-  YAML::Node dcatch = node["catching"]["planner"]["decel_mpc"]["catch"];
+  YAML::Node dcatch = node["catching"]["planner"]["segment"]["mpc"]["catch"];
   dcatch["rho_v"] = 2.0;
   dcatch["v_rel_allow"] = 0.3;
 
@@ -1980,8 +1988,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
   const YAML::Node catching = node["catching"];
   // The arm's joint count: `expected_dof` of the parameter counts the hand too.
   const auto arm_dof = static_cast<int>(catching["robot"]["arm"]["qdd_max"].size());
-  const YAML::Node mpc = catching["planner"]["decel_mpc"];
-  const YAML::Node ik = catching["planner"]["ik"];
+  const YAML::Node mpc = catching["planner"]["segment"]["mpc"];
+  const YAML::Node ik = catching["planner"]["search"]["grid"]["ik"];
 
   struct Key {
     YAML::Node section;
@@ -2013,8 +2021,8 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
                        Key{ik, "manip_grad_tol"},
                        Key{ik, "fd_step"},
                        Key{ik, "v_eps"},
-                       Key{catching["planner"]["gamma"], "unit_speed_damping"},
-                       Key{catching["planner"]["switch"], "samples"}}) {
+                       Key{catching["planner"]["search"]["grid"]["gamma"], "unit_speed_damping"},
+                       Key{catching["planner"]["search"]["grid"]["switch"], "samples"}}) {
     ASSERT_TRUE(k.section.IsMap()) << profile << ": the section of " << k.name << " is missing";
     EXPECT_TRUE(k.section[k.name].IsDefined()) << profile << ": " << k.name << " is not written";
   }
@@ -2078,7 +2086,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
   const auto& [profile, total_dof] = GetParam();
   static_cast<void>(total_dof);
   YAML::Node node = ShippedWithPlanner(profile, true, false);
-  YAML::Node mpc = node["catching"]["planner"]["decel_mpc"];
+  YAML::Node mpc = node["catching"]["planner"]["segment"]["mpc"];
   const auto arm_dof = static_cast<int>(node["catching"]["robot"]["arm"]["qdd_max"].size());
   YAML::Node weights;
   for (int i = 0; i < arm_dof; ++i) {
@@ -2137,14 +2145,15 @@ TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
   static_cast<void>(expected_dof);
   const YAML::Node node =
       integrated_bringup::testfx::ShippedControllerNode(profile, "demo_catching_controller");
-  const YAML::Node cost = node["catching"]["planner"]["decel_mpc"]["cost"];
+  const YAML::Node cost = node["catching"]["planner"]["segment"]["mpc"]["cost"];
   ASSERT_TRUE(cost.IsMap()) << profile;
   ASSERT_TRUE(cost["w_perp"].IsDefined()) << profile << ": cost.w_perp is not written";
   EXPECT_EQ(cost["w_perp"].as<double>(), 0.0) << profile;
   const std::string fragment = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
                                "/controllers/catching/segment_mpc.yaml";
-  const YAML::Node in_fragment = YAML::LoadFile(
-      fragment)["demo_catching_controller"]["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"];
+  const YAML::Node in_fragment =
+      YAML::LoadFile(fragment)["demo_catching_controller"]["catching"]["planner"]["segment"]["mpc"]
+                              ["cost"]["w_perp"];
   EXPECT_TRUE(in_fragment.IsDefined()) << profile << ": the key belongs to segment_mpc.yaml";
   const auto planner = rtc::catching::ParsePlannerParams(node["catching"]);
   EXPECT_EQ(planner.mpc_segment.w_perp, 0.0) << profile;
@@ -2161,7 +2170,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
   YAML::Node node = ShippedWithPlanner(profile, true, false);
-  node["catching"]["planner"]["decel_mpc"]["cost"]["w_perp"] = 40.0;
+  node["catching"]["planner"]["segment"]["mpc"]["cost"]["w_perp"] = 40.0;
 
   auto node_handle = NodeWithProfile("catching_shipped_w_perp_" + profile, "mpc_on");
   DemoCatchingController ctrl{""};
@@ -2191,7 +2200,7 @@ TEST_P(ShippedCatchingProfile, RefusesAJerkWeightListOfTheWrongLengthAtConfigure
   for (int i = 0; i < arm_dof - 1; ++i) {
     weights.push_back(1.0);
   }
-  node["catching"]["planner"]["decel_mpc"]["cost"]["jerk_weight"] = weights;
+  node["catching"]["planner"]["segment"]["mpc"]["cost"]["jerk_weight"] = weights;
   auto node_handle = NodeWithProfile("catching_shipped_jw_len_" + profile, "mpc_on");
   DemoCatchingController ctrl{""};
   BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));

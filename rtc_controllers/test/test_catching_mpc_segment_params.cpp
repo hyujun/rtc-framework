@@ -49,9 +49,9 @@ TEST(MpcSegmentParams, ParsesTheSectionAndKeepsDefaultsWhenAbsent) {
   const auto absent = ParsePlannerParams(YAML::Load("planner: {enabled: true}"));
   EXPECT_EQ(absent.mpc_segment.n_nodes, 14);
   const auto p = ParsePlannerParams(
-      YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, "
+      YAML::Load("planner: {segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 2, 2, "
                  "2]}, replan: {k_max: 2}, eta_tau: 0.6, m_q: 0.04, publish: {slack_max: "
-                 "0.2, slack_terminal_max: 0.05}}}"));
+                 "0.2, slack_terminal_max: 0.05}}}}"));
   const MpcSegmentPlannerParams& d = p.mpc_segment;
   EXPECT_EQ(d.n_nodes, 7);
   EXPECT_EQ(d.DtNs(), 50'000'000);
@@ -67,22 +67,22 @@ TEST(MpcSegmentParams, ParsesTheSectionAndKeepsDefaultsWhenAbsent) {
 
 TEST(MpcSegmentParams, RejectsAMalformedSection) {
   for (const char* bad : {
-           "planner: {decel_mpc: 3}",
-           "planner: {decel_mpc: {horizon: {n_nodes: 2, blocks: [1, 1]}}}",
-           "planner: {decel_mpc: {horizon: {n_nodes: 25}}}",
+           "planner: {segment: {mpc: 3}}",
+           "planner: {segment: {mpc: {horizon: {n_nodes: 2, blocks: [1, 1]}}}}",
+           "planner: {segment: {mpc: {horizon: {n_nodes: 25}}}}",
            // Σ blocks ≠ n_nodes
-           "planner: {decel_mpc: {horizon: {n_nodes: 14, blocks: [1, 1, 2, 2, 4]}}}",
-           "planner: {decel_mpc: {horizon: {blocks: [7, 7]}}}",
-           "planner: {decel_mpc: {horizon: {n_nodes: 14, blocks: [1, 1, 2, 2, 4, 4, 0]}}}",
+           "planner: {segment: {mpc: {horizon: {n_nodes: 14, blocks: [1, 1, 2, 2, 4]}}}}",
+           "planner: {segment: {mpc: {horizon: {blocks: [7, 7]}}}}",
+           "planner: {segment: {mpc: {horizon: {n_nodes: 14, blocks: [1, 1, 2, 2, 4, 4, 0]}}}}",
            // not a whole number of nanoseconds
-           "planner: {decel_mpc: {horizon: {dt_s: 0.0250000004}}}",
-           "planner: {decel_mpc: {horizon: {dt_s: 0.001}}}",
+           "planner: {segment: {mpc: {horizon: {dt_s: 0.0250000004}}}}",
+           "planner: {segment: {mpc: {horizon: {dt_s: 0.001}}}}",
            // k_max whose patterns drop below three blocks: {1,1,1} → k = 1 has 2
-           "planner: {decel_mpc: {horizon: {n_nodes: 3, blocks: [1, 1, 1]}, replan: {k_max: 1}}}",
-           "planner: {decel_mpc: {replan: {k_max: 9}}}",
-           "planner: {decel_mpc: {eta_tau: 0.0}}",
-           "planner: {decel_mpc: {publish: {slack_max: .nan}}}",
-           "planner: {decel_mpc: {publish: {slack_terminal_max: -0.01}}}",
+           "planner: {segment: {mpc: {horizon: {n_nodes: 3, blocks: [1, 1, 1]}, replan: {k_max: 1}}}}",
+           "planner: {segment: {mpc: {replan: {k_max: 9}}}}",
+           "planner: {segment: {mpc: {eta_tau: 0.0}}}",
+           "planner: {segment: {mpc: {publish: {slack_max: .nan}}}}",
+           "planner: {segment: {mpc: {publish: {slack_terminal_max: -0.01}}}}",
        }) {
     EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
         << bad;
@@ -148,7 +148,7 @@ TEST(MpcSegmentParams, ApproachKeysDefaultOff) {
   EXPECT_DOUBLE_EQ(d.w_const, 2500.0);
   EXPECT_DOUBLE_EQ(d.sigma_ref, 0.03);
   EXPECT_FALSE(d.horizon_explicit);
-  EXPECT_FALSE(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {m_q: 0.04}}"))
+  EXPECT_FALSE(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {m_q: 0.04}}}"))
                    .mpc_segment.horizon_explicit);
 }
 
@@ -168,12 +168,12 @@ TEST(MpcSegmentParams, ARemovedEnabledKeyIsIgnoredWhateverItsValue) {
 
 TEST(MpcSegmentParams, ParsesTheApproachKeys) {
   const auto p = ParsePlannerParams(
-      YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
+      YAML::Load("planner: {segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
                  "replan: {k_max: 2, same_point: false}, "
                  "approach: {n_pre_max: 6, dt_pre_s: 0.08, rest_tol: 0.02}, "
                  "budget: {first_s: 0.04, replan_s: 0.03}, publish: {catch_pos_err_max: 0.015}, "
                  "catch: {w_axis: 50, w_v_par: 2, w_v_perp: 10, gamma_ref: 0.8, kappa: 2, "
-                 "sigma_floor: 0.02, w_max: 5000, w_const: 1000, sigma_ref: 0.05}}}"));
+                 "sigma_floor: 0.02, w_max: 5000, w_const: 1000, sigma_ref: 0.05}}}}"));
   const MpcSegmentPlannerParams& d = p.mpc_segment;
   EXPECT_TRUE(d.horizon_explicit);
   EXPECT_EQ(d.n_pre_max, 6);
@@ -194,37 +194,37 @@ TEST(MpcSegmentParams, ParsesTheApproachKeys) {
   EXPECT_DOUBLE_EQ(d.sigma_ref, 0.05);
   // The pre-catch nodes fit next to the stop's: 24 − 7 nodes, 24 − 4 blocks.
   EXPECT_EQ(ParsePlannerParams(
-                YAML::Load("planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, "
-                           "1, 2, 3]}, approach: {n_pre_max: 17}}}"))
+                YAML::Load("planner: {segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, "
+                           "1, 2, 3]}, approach: {n_pre_max: 17}}}}"))
                 .mpc_segment.n_pre_max,
             17);
 }
 
 TEST(MpcSegmentParams, RejectsMalformedApproachKeys) {
   for (const char* bad : {
-           "planner: {decel_mpc: {approach: 3}}",
-           "planner: {decel_mpc: {approach: {n_pre_max: -1}}}",
+           "planner: {segment: {mpc: {approach: 3}}}",
+           "planner: {segment: {mpc: {approach: {n_pre_max: -1}}}}",
            // 14 stop nodes (the code default) leave 10 for the pre-catch part
-           "planner: {decel_mpc: {approach: {n_pre_max: 11}}}",
-           "planner: {decel_mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
-           "approach: {n_pre_max: 18}}}",
-           "planner: {decel_mpc: {approach: {dt_pre_s: 0.0}}}",
-           "planner: {decel_mpc: {approach: {dt_pre_s: 0.3}}}",
-           "planner: {decel_mpc: {approach: {dt_pre_s: 0.1000000004}}}",
-           "planner: {decel_mpc: {approach: {rest_tol: -0.01}}}",
-           "planner: {decel_mpc: {budget: {first_s: 0.0}}}",
-           "planner: {decel_mpc: {budget: {replan_s: 0.06}}}",
-           "planner: {decel_mpc: {replan: {same_point: maybe}}}",
-           "planner: {decel_mpc: {publish: {catch_pos_err_max: 0.0}}}",
-           "planner: {decel_mpc: {publish: {catch_pos_err_max: .nan}}}",
-           "planner: {decel_mpc: {catch: {w_axis: -1}}}",
-           "planner: {decel_mpc: {catch: {gamma_ref: 0.0}}}",
-           "planner: {decel_mpc: {catch: {gamma_ref: 1.1}}}",
-           "planner: {decel_mpc: {catch: {kappa: 0.0}}}",
-           "planner: {decel_mpc: {catch: {sigma_floor: 0.0}}}",
-           "planner: {decel_mpc: {catch: {w_max: 0.0}}}",
-           "planner: {decel_mpc: {catch: {w_const: .inf}}}",
-           "planner: {decel_mpc: {catch: {sigma_ref: 0.0}}}",
+           "planner: {segment: {mpc: {approach: {n_pre_max: 11}}}}",
+           "planner: {segment: {mpc: {horizon: {n_nodes: 7, dt_s: 0.05, blocks: [1, 1, 2, 3]}, "
+           "approach: {n_pre_max: 18}}}}",
+           "planner: {segment: {mpc: {approach: {dt_pre_s: 0.0}}}}",
+           "planner: {segment: {mpc: {approach: {dt_pre_s: 0.3}}}}",
+           "planner: {segment: {mpc: {approach: {dt_pre_s: 0.1000000004}}}}",
+           "planner: {segment: {mpc: {approach: {rest_tol: -0.01}}}}",
+           "planner: {segment: {mpc: {budget: {first_s: 0.0}}}}",
+           "planner: {segment: {mpc: {budget: {replan_s: 0.06}}}}",
+           "planner: {segment: {mpc: {replan: {same_point: maybe}}}}",
+           "planner: {segment: {mpc: {publish: {catch_pos_err_max: 0.0}}}}",
+           "planner: {segment: {mpc: {publish: {catch_pos_err_max: .nan}}}}",
+           "planner: {segment: {mpc: {catch: {w_axis: -1}}}}",
+           "planner: {segment: {mpc: {catch: {gamma_ref: 0.0}}}}",
+           "planner: {segment: {mpc: {catch: {gamma_ref: 1.1}}}}",
+           "planner: {segment: {mpc: {catch: {kappa: 0.0}}}}",
+           "planner: {segment: {mpc: {catch: {sigma_floor: 0.0}}}}",
+           "planner: {segment: {mpc: {catch: {w_max: 0.0}}}}",
+           "planner: {segment: {mpc: {catch: {w_const: .inf}}}}",
+           "planner: {segment: {mpc: {catch: {sigma_ref: 0.0}}}}",
        }) {
     EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
         << bad;
@@ -238,28 +238,28 @@ TEST(MpcSegmentParams, VelocitySlackKeysDefaultOffAndParse) {
   const MpcSegmentPlannerParams d = rtc::catching::PlannerParams{}.mpc_segment;
   EXPECT_EQ(d.rho_v, 0.0);
   EXPECT_EQ(d.v_rel_allow, 0.0);
-  const auto absent = ParsePlannerParams(YAML::Load("planner: {decel_mpc: {catch: {w_axis: 50}}}"));
+  const auto absent = ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {catch: {w_axis: 50}}}}"));
   EXPECT_EQ(absent.mpc_segment.rho_v, 0.0);
   EXPECT_EQ(absent.mpc_segment.v_rel_allow, 0.0);
 
   // Distinct values, so a swapped pair of reads would show.
   const auto on = ParsePlannerParams(
-      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 5.0, v_rel_allow: 0.25}}}"));
+      YAML::Load("planner: {segment: {mpc: {catch: {rho_v: 5.0, v_rel_allow: 0.25}}}}"));
   EXPECT_DOUBLE_EQ(on.mpc_segment.rho_v, 5.0);
   EXPECT_DOUBLE_EQ(on.mpc_segment.v_rel_allow, 0.25);
   // The written zeros (what the shipped profiles carry) are the off state.
   const auto zeros = ParsePlannerParams(
-      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 0.0, v_rel_allow: 0.0}}}"));
+      YAML::Load("planner: {segment: {mpc: {catch: {rho_v: 0.0, v_rel_allow: 0.0}}}}"));
   EXPECT_EQ(zeros.mpc_segment.rho_v, 0.0);
   EXPECT_EQ(zeros.mpc_segment.v_rel_allow, 0.0);
   // A bound without the slack is no contradiction: the bound is not read.
   const auto bound_only =
-      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {catch: {v_rel_allow: 0.25}}}"));
+      ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {catch: {v_rel_allow: 0.25}}}}"));
   EXPECT_EQ(bound_only.mpc_segment.rho_v, 0.0);
   EXPECT_DOUBLE_EQ(bound_only.mpc_segment.v_rel_allow, 0.25);
   // Bounded from below only (as the core's own check).
   const auto large = ParsePlannerParams(
-      YAML::Load("planner: {decel_mpc: {catch: {rho_v: 1.0e+9, v_rel_allow: 50.0}}}"));
+      YAML::Load("planner: {segment: {mpc: {catch: {rho_v: 1.0e+9, v_rel_allow: 50.0}}}}"));
   EXPECT_DOUBLE_EQ(large.mpc_segment.rho_v, 1e9);
   EXPECT_DOUBLE_EQ(large.mpc_segment.v_rel_allow, 50.0);
 }
@@ -287,8 +287,8 @@ TEST(MpcSegmentParams, RejectsAVelocitySlackKeyByName) {
   // rho_v out of range — with a valid bound beside it, so only the range can
   // be what refuses it.
   for (const char* bad : {"-0.1", ".nan", ".inf", "-.inf"}) {
-    const std::string why = message(std::string("planner: {decel_mpc: {catch: {rho_v: ") + bad +
-                                    ", v_rel_allow: 0.2}}}");
+    const std::string why = message(std::string("planner: {segment: {mpc: {catch: {rho_v: ") + bad +
+                                    ", v_rel_allow: 0.2}}}}");
     ASSERT_FALSE(why.empty()) << "rho_v: " << bad << " was accepted";
     EXPECT_TRUE(has(why, rho)) << why;
     EXPECT_TRUE(has(why, range)) << why;
@@ -298,7 +298,7 @@ TEST(MpcSegmentParams, RejectsAVelocitySlackKeyByName) {
   // be what refuses it.
   for (const char* bad : {"-0.01", ".nan", ".inf", "-.inf"}) {
     const std::string why =
-        message(std::string("planner: {decel_mpc: {catch: {v_rel_allow: ") + bad + "}}}");
+        message(std::string("planner: {segment: {mpc: {catch: {v_rel_allow: ") + bad + "}}}}");
     ASSERT_FALSE(why.empty()) << "v_rel_allow: " << bad << " was accepted";
     EXPECT_TRUE(has(why, allow)) << why;
     EXPECT_TRUE(has(why, range)) << why;
@@ -306,13 +306,13 @@ TEST(MpcSegmentParams, RejectsAVelocitySlackKeyByName) {
   }
   // Not a number at all.
   EXPECT_TRUE(
-      has(message("planner: {decel_mpc: {catch: {rho_v: soft}}}"), rho + " must be a number"));
-  EXPECT_TRUE(has(message("planner: {decel_mpc: {catch: {v_rel_allow: [0.2]}}}"),
+      has(message("planner: {segment: {mpc: {catch: {rho_v: soft}}}}"), rho + " must be a number"));
+  EXPECT_TRUE(has(message("planner: {segment: {mpc: {catch: {v_rel_allow: [0.2]}}}}"),
                   allow + " must be a number"));
   // The cross constraint: the slack on with no bound to be slack against —
   // the bound absent, and written as 0. Both keys are named.
-  for (const char* bad : {"planner: {decel_mpc: {catch: {rho_v: 1.0}}}",
-                          "planner: {decel_mpc: {catch: {rho_v: 1.0, v_rel_allow: 0.0}}}"}) {
+  for (const char* bad : {"planner: {segment: {mpc: {catch: {rho_v: 1.0}}}}",
+                          "planner: {segment: {mpc: {catch: {rho_v: 1.0, v_rel_allow: 0.0}}}}"}) {
     const std::string why = message(bad);
     ASSERT_FALSE(why.empty()) << bad << " was accepted";
     EXPECT_TRUE(has(why, rho)) << why;
@@ -343,7 +343,7 @@ TEST(MpcSegmentParams, TheDesignKeysDefaultToTheCoresOwnValues) {
   EXPECT_EQ(d.ref_speed_fraction, 0.9);  // the planner's own former constant (MD-62)
   // An absent section changes nothing either.
   const auto absent =
-      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {m_q: 0.05}}")).mpc_segment;
+      ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {m_q: 0.05}}}")).mpc_segment;
   EXPECT_TRUE(absent.jerk_weight.empty());
   EXPECT_EQ(absent.delta_tr, core.delta_tr);
   EXPECT_EQ(absent.solver_max_iter, core.solver.max_iter);
@@ -354,11 +354,12 @@ TEST(MpcSegmentParams, TheDesignKeysDefaultToTheCoresOwnValues) {
 TEST(MpcSegmentParams, TheDesignKeysParse) {
   const auto d = ParsePlannerParams(YAML::Load(R"(
 planner:
-  decel_mpc:
-    cost: {jerk_weight: [1.0, 2.0, 3.0], u_scale: 500.0, w_delta: 2.5, rho_tau: 7.0}
-    catch: {axis_theta_max: 1.2}
-    linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, ref_speed_fraction: 0.8}
-    solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, eps_rel: 1.0e-5}
+  segment:
+    mpc:
+      cost: {jerk_weight: [1.0, 2.0, 3.0], u_scale: 500.0, w_delta: 2.5, rho_tau: 7.0}
+      catch: {axis_theta_max: 1.2}
+      linearization: {delta_tr: 0.2, reference_rest_tol: 2.0e-5, ref_speed_fraction: 0.8}
+      solver: {max_iter: 300, max_iter_in: 150, eps_abs: 2.0e-7, eps_rel: 1.0e-5}
 )"))
                      .mpc_segment;
   ASSERT_EQ(d.jerk_weight.size(), 3U);
@@ -378,8 +379,8 @@ planner:
   EXPECT_EQ(d.solver_eps_rel, 1.0e-5);
   // Valid edges: rho_tau 0 (torque rows off), w_delta 0, ref_speed_fraction 1.
   const auto edge =
-      ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {rho_tau: 0.0, w_delta: "
-                                    "0.0}, linearization: {ref_speed_fraction: 1.0}}}"))
+      ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {rho_tau: 0.0, w_delta: "
+                                    "0.0}, linearization: {ref_speed_fraction: 1.0}}}}"))
           .mpc_segment;
   EXPECT_EQ(edge.rho_tau, 0.0);
   EXPECT_EQ(edge.w_delta, 0.0);
@@ -392,7 +393,7 @@ planner:
 TEST(MpcSegmentParams, RejectsADesignKeyByName) {
   const auto message = [](const std::string& body) -> std::string {
     try {
-      static_cast<void>(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {" + body + "}}")));
+      static_cast<void>(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {" + body + "}}}")));
     } catch (const std::invalid_argument& e) {
       return e.what();
     }
@@ -501,19 +502,19 @@ TEST(MpcSegmentParams, TheStopPathWeightDefaultsOffAndParses) {
   EXPECT_EQ(d.w_perp, 0.0);
   EXPECT_EQ(d.w_perp, core.w_perp);
   // Absent: the section, and the key inside a present section.
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {m_q: 0.05}}")).mpc_segment.w_perp,
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {m_q: 0.05}}}")).mpc_segment.w_perp,
             0.0);
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_delta: 2.5}}}"))
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_delta: 2.5}}}}"))
                 .mpc_segment.w_perp,
             0.0);
   // The written zero (what the shipped profiles carry) is the off state.
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_perp: 0.0}}}"))
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_perp: 0.0}}}}"))
                 .mpc_segment.w_perp,
             0.0);
   // Beside its neighbours, each with a value of its own: a read wired to
   // another field shows.
-  const auto on = ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {u_scale: 500.0, "
-                                                "w_delta: 2.5, rho_tau: 7.0, w_perp: 40.0}}}"))
+  const auto on = ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {u_scale: 500.0, "
+                                                "w_delta: 2.5, rho_tau: 7.0, w_perp: 40.0}}}}"))
                       .mpc_segment;
   EXPECT_EQ(on.w_perp, 40.0);
   EXPECT_EQ(on.u_scale, 500.0);
@@ -521,7 +522,7 @@ TEST(MpcSegmentParams, TheStopPathWeightDefaultsOffAndParses) {
   EXPECT_EQ(on.rho_tau, 7.0);
   // Both ends of [0, kMpcSegmentStopPathWeightMax] are values a profile may write.
   EXPECT_EQ(rtc::catching::kMpcSegmentStopPathWeightMax, 1e4);
-  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {cost: {w_perp: 1.0e+4}}}"))
+  EXPECT_EQ(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {cost: {w_perp: 1.0e+4}}}}"))
                 .mpc_segment.w_perp,
             rtc::catching::kMpcSegmentStopPathWeightMax);
 }
@@ -534,7 +535,7 @@ TEST(MpcSegmentParams, RejectsTheStopPathWeightByName) {
   const std::string key = "'planner.decel_mpc.cost.w_perp'";
   const auto message = [](const std::string& body) -> std::string {
     try {
-      static_cast<void>(ParsePlannerParams(YAML::Load("planner: {decel_mpc: {" + body + "}}")));
+      static_cast<void>(ParsePlannerParams(YAML::Load("planner: {segment: {mpc: {" + body + "}}}")));
     } catch (const std::invalid_argument& e) {
       return e.what();
     }

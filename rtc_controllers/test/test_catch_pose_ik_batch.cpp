@@ -531,11 +531,13 @@ TEST(CatchPoseIkBatchFrame, UniverseFrameIsRefused) {
 
 constexpr const char* kPlannerBody =
     "planner:\n"
-    "  ik:\n"
-    "    k_manip: 0.5\n"
-    "  catchability:\n"
-    "    manipulability_min:\n"
-    "      arm_5row: 0.174\n";
+    "  search:\n"
+    "    grid:\n"
+    "      ik:\n"
+    "        k_manip: 0.5\n"
+    "      catchability:\n"
+    "        manipulability_min:\n"
+    "          arm_5row: 0.174\n";
 
 [[nodiscard]] std::string Indented(const std::string& body, int spaces) {
   std::istringstream in(body);
@@ -596,7 +598,7 @@ TEST(CatchPoseIkBatchParamsTree, RejectsEverythingElseNamingTheFile) {
       "catching: 3\n",
       "planner: [1, 2]\n",
       // both markers at once
-      "catching:\n  planner: {}\nplanner:\n  ik: {}\n",
+      "catching:\n  planner: {}\nplanner:\n  search: {grid: {ik: {}}}\n",
       // not a map at all
       "[1, 2, 3]\n",
       "",

@@ -1077,7 +1077,7 @@ using integrated_bringup::testfx::kApproachDtNs;
 using integrated_bringup::testfx::kApproachDtPreNs;
 using integrated_bringup::testfx::kApproachNPre;
 using integrated_bringup::testfx::kApproachNStop;
-using rtc::catching::CatchingDecelMode;
+using rtc::catching::CatchingSegmentMode;
 using rtc::catching::SegmentRefusal;
 using rtc::catching::SegmentSnapshot;
 
@@ -1091,11 +1091,12 @@ class MpcScenarioTest : public SupervisorScenarioTest {
   /// and the shipped torque rows (the fixture's derived box, 2.03 rad/s²,
   /// would cap the follow's step).
   static void MpcProfile(YAML::Node& y) {
-    y["catching"]["supervisor"]["decel"]["mode"] = "mpc";
+    y["catching"]["planner"]["segment"]["mode"] = "mpc";
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
-    y["catching"]["planner"]["workspace"]["catch_box"]["min"] =
+    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
         std::vector<double>{-2.0, -2.0, -2.0};
-    y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, 2.0};
+    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
+        std::vector<double>{2.0, 2.0, 2.0};
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
   }
 
@@ -1106,7 +1107,7 @@ class MpcScenarioTest : public SupervisorScenarioTest {
         extra(y);
       }
     }));
-    ASSERT_EQ(ctrl_->GetDecelMode(), CatchingDecelMode::kMpc);
+    ASSERT_EQ(ctrl_->GetSegmentMode(), CatchingSegmentMode::kMpc);
     tips_enabled_ = true;
     ball_in_hand_ = true;
     ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
@@ -1484,7 +1485,8 @@ class MpcNoCatchBoxCheckTest : public MpcScenarioTest {
   void BringUpUnderABoxThatHoldsNoNode() {
     ASSERT_NO_FATAL_FAILURE(BringUpMpc([this](YAML::Node& y) {
       const double z = start_pose_.translation().z() - 0.2;
-      y["catching"]["planner"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, z};
+      y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
+          std::vector<double>{2.0, 2.0, z};
     }));
   }
 };
@@ -1917,7 +1919,7 @@ TEST_F(MpcScenarioTest, ClosedFormIsTheDefaultAndNeverReadsTheBox) {
   // on the tick the plan is taken — which closed_form never loads.
   ASSERT_NO_FATAL_FAILURE(NormalTrialCase());
   const std::uint64_t absent = CommandTraceDigest(log_);
-  EXPECT_EQ(ctrl_->GetDecelMode(), CatchingDecelMode::kClosedForm);
+  EXPECT_EQ(ctrl_->GetSegmentMode(), CatchingSegmentMode::kClosedForm);
 
   TearDown();
   log_.clear();
@@ -1927,7 +1929,7 @@ TEST_F(MpcScenarioTest, ClosedFormIsTheDefaultAndNeverReadsTheBox) {
   SetUp();
   WritePair();
   ASSERT_NO_FATAL_FAILURE(NormalTrialCase(
-      [](YAML::Node& y) { y["catching"]["supervisor"]["decel"]["mode"] = "closed_form"; }));
+      [](YAML::Node& y) { y["catching"]["planner"]["segment"]["mode"] = "closed_form"; }));
   ASSERT_GE(pair_tick_, 0) << "the box was never written";
   EXPECT_EQ(CommandTraceDigest(log_), absent) << "closed_form written out changed the trial";
   EXPECT_EQ(CountTicks([](const TickRec& t) {
