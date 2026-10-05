@@ -1,6 +1,6 @@
 // ── Arm fixtures shared by the decel MPC core suites (test-only) ──────────────
-// test_catching_decel_mpc.cpp (E1-F01: the stop segment) and
-// test_catching_decel_mpc_approach.cpp (E1-F07: the pre-catch grid and the
+// test_catching_mpc_segment_core.cpp (E1-F01: the stop segment) and
+// test_catching_mpc_segment_core_approach.cpp (E1-F07: the pre-catch grid and the
 // catch terms) must load the SAME arms with the SAME limits and nominal
 // postures: the second suite's golden regression and timing table are read
 // against the first suite's, and two copies of these loaders would let them
@@ -14,7 +14,7 @@
 // install(PATTERN EXCLUDE), so a header placed under include/ would ship.
 #pragma once
 
-#include "rtc_controllers/catching/decel_mpc.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 #include "test_urdf_path.hpp"

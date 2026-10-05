@@ -1,5 +1,5 @@
 // E1-F01 (#627): decel MPC core — jerk-input condensed QP with first-order
-// torque rows and slack (decel_mpc.hpp). Each #627 "Done when" item maps to a
+// torque rows and slack (mpc_segment_core.hpp). Each #627 "Done when" item maps to a
 // named test here:
 //   1 ZeroSolutionAtRest                 5 TheAllocationGatesAreArmed,
 //   2 ReducesToMinJerkClosedForm,          CoreAllocatesNothingOutsideTheQpSolver,
@@ -13,12 +13,12 @@
 // The allocation gates: this binary links THREE sensors (CMakeLists note).
 // malloc_gate.hpp is the one that can see pinocchio's and ProxQP's own
 // allocations; its positive control allocates inside pinocchio.
-#include "rtc_controllers/catching/decel_mpc.hpp"
-#include "rtc_controllers/catching/decel_mpc_torque.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
+#include "rtc_controllers/catching/mpc_segment_core_torque.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "rtc_controllers/testing/decel_mpc_fixture.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
+#include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/SVD>
@@ -51,7 +51,7 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
-// Arms, limits and the rest input live in decel_mpc_fixture.hpp, shared with
+// Arms, limits and the rest input live in mpc_segment_core_fixture.hpp, shared with
 // the E1-F07 approach suite.
 using rtc::testing::decel::ArmModel;
 using rtc::testing::decel::LimitsFromModel;

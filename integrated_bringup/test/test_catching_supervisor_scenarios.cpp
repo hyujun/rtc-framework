@@ -30,7 +30,7 @@
 
 #include "arm_lag_fixture.hpp"
 #include "catching_cloud_fixture.hpp"
-#include "catching_decel_segment_fixture.hpp"
+#include "catching_segment_fixture.hpp"
 #include "catching_tracking_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "rtc_controllers/catching/decel_target.hpp"
@@ -1068,7 +1068,7 @@ TEST_F(SupervisorScenarioTest, TheV1CommandsTimeOffsetFromItsReferenceIsMeasured
 // The oracle profile: no planner thread, so these cases are the decel box's
 // one writer. In TRACKING they write the first segment of the plan the oracle
 // stores on the same tick — the PAIR a planner publishes (MD-56) — built from
-// the arm state the RT last reported, at rest (catching_decel_segment_
+// the arm state the RT last reported, at rest (catching_segment_
 // fixture.hpp). Replans are the same trajectory from a later node, or one
 // built from the command of the tick that takes it, which is what a planner
 // with a perfect initial-state prediction would have published.

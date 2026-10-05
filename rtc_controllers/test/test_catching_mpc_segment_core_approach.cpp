@@ -1,18 +1,18 @@
 // E1-F07 (#660): the single-arm MPC core from APPROACH to the stop — the
-// pre-catch grid and the catch terms added to DecelMpc (decel_mpc.hpp;
+// pre-catch grid and the catch terms added to DecelMpc (mpc_segment_core.hpp;
 // formulation §1.6, MD-51 – MD-53). The stop-segment behaviour E1-F01
-// pinned stays in test_catching_decel_mpc.cpp; this suite owns what is new,
+// pinned stays in test_catching_mpc_segment_core.cpp; this suite owns what is new,
 // plus the regression that the new code leaves the old problem alone.
 //
 // The allocation gates: like the E1-F01 suite, this binary links THREE sensors
 // (CMakeLists note); malloc_gate.hpp is the one that sees pinocchio's and
 // ProxQP's own allocations.
-#include "rtc_controllers/catching/decel_mpc.hpp"
-#include "rtc_controllers/catching/decel_mpc_catch.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
+#include "rtc_controllers/catching/mpc_segment_core_catch.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "rtc_controllers/testing/decel_mpc_fixture.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
+#include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 #include "rtc_math/se3/axis_align.hpp"
 
 #include <Eigen/Core>
@@ -2130,7 +2130,7 @@ TEST(DecelMpcApproachTiming, CostDrivers7R) {
   run("gamma_ref_0.2", {{}, [](DecelMpcInput& in) { in.gamma_ref = 0.2; }});
   run("no_trust_region", {[](DecelMpcParams& p) { p.delta_tr = kInf; }, {}});
   run("torque_rows_off", {[](DecelMpcParams& p) { p.rho_tau = 0.0; }, {}});
-  // u_scale alone is NOT a preconditioner (decel_mpc.hpp): 1e2 weighs jerk
+  // u_scale alone is NOT a preconditioner (mpc_segment_core.hpp): 1e2 weighs jerk
   // a hundred times heavier against every other term.
   run("jerk_weight_x100", {[](DecelMpcParams& p) { p.u_scale = 1e2; }, {}});
   run("torque_off+jerk_x100", {[](DecelMpcParams& p) {

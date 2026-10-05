@@ -16,9 +16,9 @@
 // test/include).
 #pragma once
 
-#include "rtc_controllers/catching/decel_planner.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
+#include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
-#include "rtc_controllers/catching/planner_search.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 
 #include <array>

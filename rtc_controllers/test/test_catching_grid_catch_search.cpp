@@ -15,11 +15,11 @@
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
-#include "rtc_controllers/catching/planner_search.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/time_feasibility.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
-#include "rtc_controllers/testing/planner_search_fixture.hpp"
+#include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 
 #include <gtest/gtest.h>

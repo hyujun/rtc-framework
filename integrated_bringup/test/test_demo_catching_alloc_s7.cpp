@@ -25,7 +25,7 @@
 // so the production clock read stays inside a gated Compute().
 
 #include "catching_cloud_fixture.hpp"
-#include "catching_decel_segment_fixture.hpp"
+#include "catching_segment_fixture.hpp"
 #include "catching_tracking_fixture.hpp"
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"

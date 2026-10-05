@@ -39,7 +39,7 @@ inline constexpr int kCap = 40;
 inline constexpr int kMaxPlanNv = 32;
 
 /// Node capacity of a published segment: N ≤ kMaxDecelNodes, so a payload holds
-/// N + 1 node columns. The decel MPC core (decel_mpc.hpp, which includes this
+/// N + 1 node columns. The decel MPC core (mpc_segment_core.hpp, which includes this
 /// header) uses it for its stop segment and its block array; the core's own
 /// horizon, pre-catch nodes included, is bounded by its kMaxMpcNodes.
 inline constexpr int kMaxDecelNodes = 24;

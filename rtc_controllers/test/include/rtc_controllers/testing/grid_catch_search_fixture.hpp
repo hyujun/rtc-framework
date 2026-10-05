@@ -1,5 +1,5 @@
 // ── Inputs of the planner's search, shared by its suites (test-only) ─────────
-// test_catching_planner_search.cpp drives PlannerSearch alone; the APPROACH
+// test_catching_grid_catch_search.cpp drives PlannerSearch alone; the APPROACH
 // cycle suite (test_catching_approach_cycle.cpp, E1-F08 #661) drives the same
 // search through PlannerCycle with the decel planner behind it. Both build the
 // search's three inputs — a ball trajectory through a catch point, its

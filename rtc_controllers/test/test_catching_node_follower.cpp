@@ -17,8 +17,8 @@
 // the device order is a non-identity permutation of the model order, and the
 // payload's instants are realistic absolute steady ns (~1.7e18), not 0.
 #include "rtc_base/threading/seqlock.hpp"
-#include "rtc_controllers/catching/decel_mpc.hpp"  // kMaxDecelNodes seen through the core too
 #include "rtc_controllers/catching/jerk_segment.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"  // kMaxDecelNodes seen through the core too
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"

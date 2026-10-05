@@ -4,7 +4,7 @@
 // test_catching_approach_planner.cpp and test_catching_approach_cycle.cpp
 // (E1-F08); the stop-only planner E1-F03 shipped was removed with its tests
 // (MD-70).
-#include "rtc_controllers/catching/decel_mpc.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"

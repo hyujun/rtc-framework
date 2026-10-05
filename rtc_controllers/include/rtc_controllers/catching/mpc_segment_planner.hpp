@@ -5,7 +5,7 @@
 // The SegmentPlanner (segment_planner.hpp) PlannerCycle runs once a decel MPC
 // is configured — the one implementation of that interface today: solve the
 // joint-node segment the RT follows from APPROACH to the end of the stop
-// (decel_mpc.hpp) and hand back a DecelPlanSnapshot for the cycle to publish.
+// (mpc_segment_core.hpp) and hand back a DecelPlanSnapshot for the cycle to publish.
 // ROS-free, so the whole decision is testable against plain values; the cycle
 // owns the SeqLock, the re-check and the counter.
 //
@@ -99,7 +99,7 @@
 //    `device_of_model`, as for the search.
 #pragma once
 
-#include "rtc_controllers/catching/decel_mpc.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/segment_planner.hpp"

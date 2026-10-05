@@ -22,7 +22,7 @@
 // SeqLock::LoadInto: the covariance snapshot alone is 11.5 KB.
 //
 // THE DECEL PLANNER'S PART (MPC E1-F03 #629, E1-F08 #661). It runs when a
-// segment planner is installed (DecelPlanner, decel_planner.hpp) and the
+// segment planner is installed (DecelPlanner, mpc_segment_planner.hpp) and the
 // optional fifth box is bound; without either, a wake is the search alone and
 // the plan is published by itself. A replan never changes the wake's
 // CycleOutcome (MD-29) — the PlanSnapshot counters and the D-7a latency keep
@@ -52,10 +52,10 @@
 
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controllers/catching/catch_search.hpp"
-#include "rtc_controllers/catching/decel_planner.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
+#include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
-#include "rtc_controllers/catching/planner_search.hpp"
 #include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"

@@ -7,7 +7,7 @@
 // cycle's re-checks ask about them. The cycle owns the SeqLock, the re-check
 // and the segment counter; which planner solves is the configuration's choice.
 //
-// The one implementation today is DecelPlanner (decel_planner.hpp): linearised
+// The one implementation today is DecelPlanner (mpc_segment_planner.hpp): linearised
 // joint-space QPs on a grid anchored at the catch instant.
 //
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@
 //  • CLOCK. The cycle hands the planner its clock when it installs it and
 //    again on every PlannerCycle::SetClock, so the solves are timed on the
 //    axis the cycle stamps `publish_ns` on.
-//  • DecelRecord is the record a solve leaves (decel_planner.hpp). It is
+//  • DecelRecord is the record a solve leaves (mpc_segment_planner.hpp). It is
 //    declared there, with the planner whose counters it holds; an
 //    implementation fills what it has and leaves the rest at the default —
 //    with ONE exception, because the cycle reads it back: `source_seq` after a
@@ -45,7 +45,7 @@
 
 namespace rtc::catching {
 
-struct DecelRecord;  // decel_planner.hpp
+struct DecelRecord;  // mpc_segment_planner.hpp
 
 /// @brief The ball's prediction as one wake read it: the trajectory snapshot
 ///        and the covariance box, not owned.

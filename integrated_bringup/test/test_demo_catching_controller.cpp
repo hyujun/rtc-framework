@@ -35,7 +35,7 @@
 #include "rtc_controllers/catching/catch_pose_ik.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
-#include "rtc_controllers/catching/decel_mpc.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/unit_speed.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"

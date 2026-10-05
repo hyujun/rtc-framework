@@ -53,7 +53,7 @@ inline constexpr int kSwitchSamplesMax = 64;
 
 /// Upper bound of `planner.decel_mpc.cost.w_perp` [1/m²]: the largest
 /// stop-path weight the cores are tested to solve with (a stop core alone in
-/// test_catching_decel_mpc.cpp, the planner's catch and stop cores on both
+/// test_catching_mpc_segment_core.cpp, the planner's catch and stop cores on both
 /// test arms in test_catching_approach_planner.cpp). The weight raises the
 /// QP's condition number with nothing else to bound it — the configure
 /// warm-up cannot notice a value too large, its line runs through the catch
@@ -175,7 +175,7 @@ struct DecelPlannerParams {
   /// through its predicted catch position along its direction of travel at
   /// t_c, as the catch-core solve takes them. A stop-core replan keeps the
   /// line of the segment the RT follows (its source). A solve whose line
-  /// cannot be built is withheld (DecelPlanner, decel_planner.hpp), never run
+  /// cannot be built is withheld (DecelPlanner, mpc_segment_planner.hpp), never run
   /// on a default line.
   double w_perp{0.0};
   /// `catch.axis_theta_max` [rad], in (0, π) — the largest axis error of the

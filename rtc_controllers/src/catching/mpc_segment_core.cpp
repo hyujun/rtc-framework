@@ -1,7 +1,7 @@
-#include "rtc_controllers/catching/decel_mpc.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
 
-#include "rtc_controllers/catching/decel_mpc_catch.hpp"
-#include "rtc_controllers/catching/decel_mpc_torque.hpp"
+#include "rtc_controllers/catching/mpc_segment_core_catch.hpp"
+#include "rtc_controllers/catching/mpc_segment_core_torque.hpp"
 #include "rtc_controllers/gain_floor.hpp"
 #include "rtc_math/se3/axis_align.hpp"
 

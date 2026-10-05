@@ -475,7 +475,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
            std::to_string(d.v_rel_allow) + ")");
   }
   // The core's own design values (YAML keys). Each range is the core's Init check
-  // (decel_mpc.cpp) with the key's name on it, so a profile is told which key
+  // (mpc_segment_core.cpp) with the key's name on it, so a profile is told which key
   // to fix instead of reading "kParamsInvalid" at configure.
   const YAML::Node cost = Section(decel, "cost", "decel_mpc.cost");
   if (const YAML::Node jw = cost["jerk_weight"]; jw) {
@@ -534,7 +534,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   d.solver_eps_rel =
       ReadNonNegative(solver, "eps_rel", "decel_mpc.solver.eps_rel", d.solver_eps_rel);
   // A shifted previous solution meets the terminal equality only to eps_abs
-  // (the core's check, decel_mpc.cpp Init): a rest tolerance at or below it
+  // (the core's check, mpc_segment_core.cpp Init): a rest tolerance at or below it
   // would refuse every warm solve.
   if (!(d.reference_rest_tol > d.solver_eps_abs)) {
     Reject(Key("decel_mpc.linearization.reference_rest_tol") + " = " +

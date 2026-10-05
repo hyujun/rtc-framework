@@ -1,5 +1,5 @@
-// The planner's search (S6-B). See planner_search.hpp.
-#include "rtc_controllers/catching/planner_search.hpp"
+// The planner's search (S6-B). See grid_catch_search.hpp.
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 
 #include <Eigen/Eigenvalues>
 

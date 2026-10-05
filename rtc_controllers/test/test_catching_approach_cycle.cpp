@@ -4,7 +4,7 @@
 // budgets are measured), with the test as the RT stand-in. RUN_SERIAL: a
 // loaded host stretches the solves the budgets judge. The planner's own
 // decisions are test_catching_approach_planner.cpp; the core alone is E1-F07's
-// test_catching_decel_mpc_approach.cpp.
+// test_catching_mpc_segment_core_approach.cpp.
 //   pair        APairIsPublishedTogetherSegmentFirst, AWithheldSegmentWithholdsThePlan,
 //               ANewerSnapshotOfTheSameTrackStillPublishes, RightAfterAPairTheSearchWaits
 //   replans     OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport,
@@ -25,11 +25,11 @@
 // pins an RT that reports neither.
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/types/types.hpp"
-#include "rtc_controllers/catching/decel_planner.hpp"
+#include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
-#include "rtc_controllers/testing/planner_search_fixture.hpp"
+#include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
@@ -747,7 +747,7 @@ enum class RigHistory : std::uint8_t {
 /// a catch left behind: this catch's trace does not depend on that (measured —
 /// with both Configure-time resets removed all six numbers stay). That half is
 /// pinned on the two classes directly: AReconfiguredSearchIsANewOne
-/// (test_catching_planner_search.cpp) and AReconfiguredPlannerIsANewOne
+/// (test_catching_grid_catch_search.cpp) and AReconfiguredPlannerIsANewOne
 /// (test_catching_approach_planner.cpp).
 ///
 /// Numbers to COMPARE AGAINST, not a claim that these segments are the right

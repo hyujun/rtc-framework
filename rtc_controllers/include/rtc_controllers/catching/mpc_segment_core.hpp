@@ -9,7 +9,7 @@
 // Replaces nothing yet — the closed-form DECEL (decel_target.hpp) and the
 // QP-independent joint stop stay the safety nets (MD-11). This
 // is the numeric core the planner thread calls through DecelPlanner
-// (decel_planner.hpp, E1-F03); it knows no ROS, no controller, no robot.
+// (mpc_segment_planner.hpp, E1-F03); it knows no ROS, no controller, no robot.
 //
 // ── Problem ───────────────────────────────────────────────────────────────────
 // State x_k = (q_k, q̇_k, q̈_k) ∈ R^{3n} at nodes k = 0..N spaced Δ, input the

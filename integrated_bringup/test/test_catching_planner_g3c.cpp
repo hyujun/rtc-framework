@@ -23,8 +23,8 @@
 
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
-#include "rtc_controllers/catching/planner_search.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
 #include "shipped_config_test_fixture.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
