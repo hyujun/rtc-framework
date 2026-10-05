@@ -96,12 +96,12 @@ add_library(rtc_controllers STATIC
   src/params/planner_params.cpp
   src/catching/planner_cycle.cpp
   src/catching/grid_catch_search.cpp
-  # dynamic_catching MPC E1-F01 (#627): the decel MPC numeric core — a jerk-input
+  # dynamic_catching MPC E1-F01 (#627): the segment MPC numeric core — a jerk-input
   # condensed QP over the stop segment with first-order torque rows (pinocchio
   # RNEA derivatives) and slack, solved through rtc_tsid's QPSolverWrapper. A
   # plain library unit like catch_pose_ik.cpp; the planner thread calls it (E1-F03).
   src/catching/mpc_segment_core.cpp
-  # dynamic_catching MPC E1-F02 (#628): the RT side of the decel payload —
+  # dynamic_catching MPC E1-F02 (#628): the RT side of the segment payload —
   # closed-form joint reference between the published nodes, hand target by FK.
   src/catching/node_follower.cpp
   # dynamic_catching MPC E1-F03 (#629): the stop segment on the planner thread —
@@ -547,7 +547,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_catching_jerk_segment test/test_catching_jerk_segment.cpp)
   target_link_libraries(test_catching_jerk_segment rtc_controllers)
 
-  # dynamic_catching MPC E1-F01 (#627): the decel MPC core. Its Solve() calls
+  # dynamic_catching MPC E1-F01 (#627): the MPC segment core. Its Solve() calls
   # into pinocchio (RNEA derivatives, frame Jacobian) and ProxQP — library code
   # whose Eigen/C allocations neither the operator-new gate nor rtc_base's Eigen
   # tripwire can see (testing-debug.md §RT-1). So the RT gate here is THREE
@@ -582,7 +582,7 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
-  # dynamic_catching MPC E1-F02 (#628): the decel node payload and its RT
+  # dynamic_catching MPC E1-F02 (#628): the segment node payload and its RT
   # sampler. Sample() calls into pinocchio's shared object (FK), so its
   # allocation claim needs the C-level malloc gate as well as operator new;
   # the informational CLIK residual drives rtc_tsid's ClikReferenceGenerator.
@@ -596,7 +596,7 @@ if(BUILD_TESTING)
 
   # dynamic_catching MPC E1-F03 (#629): the planner.decel_mpc keys, and (the
   # second target) the RT's segment admission / switch rules. Pure functions —
-  # no model, no solver. The decel planner itself is
+  # no model, no solver. The MPC segment planner itself is
   # test_catching_approach_planner / _cycle below.
   ament_add_gtest(test_catching_mpc_segment_params test/test_catching_mpc_segment_params.cpp)
   target_link_libraries(test_catching_mpc_segment_params rtc_controllers)
@@ -605,7 +605,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_catching_segment_admission rtc_controllers)
   target_include_directories(test_catching_segment_admission PRIVATE ${rtc_base_test_include})
 
-  # dynamic_catching MPC E1-F08 (#661): the decel planner's APPROACH–stop
+  # dynamic_catching MPC E1-F08 (#661): the MPC segment planner's APPROACH–stop
   # solves on a fake clock (PlanFirst, Replan, the ball target, the publish
   # gates, the allocation boundary). Not E1-F07's test_catching_mpc_segment_core_approach
   # (the core alone). C-level malloc gate: one TU per binary.
@@ -681,7 +681,7 @@ if(BUILD_TESTING)
 
   # ── Parallel ctest ─────────────────────────────────────────────────────────
   # colcon.pkg runs this package's tests four at a time (48 s -> 23 s; the two
-  # decel-MPC suites are 34 s of it and now overlap). No test here opens a DDS
+  # segment-MPC suites are 34 s of it and now overlap). No test here opens a DDS
   # participant or writes outside its own result file, so none needs a lock.
   # The exception is a test that ASSERTS a measured wall-clock budget: it must
   # not share the cores with its siblings, and RUN_SERIAL gives it the box it

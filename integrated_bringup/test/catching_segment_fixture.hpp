@@ -2,8 +2,8 @@
 
 // ── Hand-built APPROACH–stop segments (MPC E1-F04 · E1-F09 tests) ───────────
 //
-// The suites that play the decel planner (the oracle profile has no planner
-// thread, so the test is the decel box's one writer) need segments the RT can
+// The suites that play the MPC segment planner (the oracle profile has no planner
+// thread, so the test is the segment box's one writer) need segments the RT can
 // follow from the command it holds. This builds one in closed form on the
 // two-spacing grid (MD-54): `n_pre` pre-catch intervals of Δ_pre before t_c,
 // then kApproachNStop stop intervals of Δ_s. Node 0 is placed so that the

@@ -10,7 +10,7 @@
 // Keys join in the commit that first reads them (a parsed key nothing reads is
 // a key nobody notices is wrong): S6-A the thread keys, S6-B the search,
 // ranking, switching and freeze keys below, MPC E1-F03 `planner.decel_mpc.*`
-// (the decel MPC's stop horizon, replan window and publish thresholds), MPC
+// (the segment MPC's stop horizon, replan window and publish thresholds), MPC
 // E1-F08 its APPROACH–stop keys (`approach`, `budget`, `catch`).
 //
 // TWO KINDS OF "MISSING". A key with a documented default (L3 §6) takes it when
@@ -60,12 +60,12 @@ inline constexpr int kSwitchSamplesMax = 64;
 /// frame — so the parser refuses anything above.
 inline constexpr double kMpcSegmentStopPathWeightMax = 1e4;
 
-/// Capacity of the decel planner's replan window: instances k = 0..k_max, one
+/// Capacity of the MPC segment planner's replan window: instances k = 0..k_max, one
 /// MpcSegmentCore each (MD-31). A capacity, not a default (the default k_max is 4).
 inline constexpr int kMaxMpcSegmentReplans = 8;
 
 /// `planner.decel_mpc.*` (MPC plan E1-F03 · E1-F08, MD-24 · MD-31 · MD-33 ·
-/// MD-54 – MD-64, MD-91). The decel MPC's settings the planner owns. Every
+/// MD-54 – MD-64, MD-91). The segment MPC's settings the planner owns. Every
 /// design field of the core's MpcSegmentCoreParams comes from YAML — the grid
 /// (`horizon.*`, `approach.n_pre_max` / `dt_pre_s`), `eta_tau`, `m_q`, the
 /// catch weights and the relative-velocity slack (`catch.*`), the cost scalars
@@ -108,7 +108,7 @@ struct MpcSegmentPlannerParams {
   /// `approach.n_pre_max` — the most pre-catch intervals a segment may start
   /// with (MD-54: 6). One catch core per count 1..n_pre_max is built at
   /// configure time (MD-64). 0 = no pre-catch grid: a plan is published only
-  /// with a segment that starts before t_c, so the decel planner refuses to
+  /// with a segment that starts before t_c, so the MPC segment planner refuses to
   /// configure and `supervisor.decel.mode: mpc` parks (MD-70).
   int n_pre_max{0};
   /// `approach.dt_pre_s` [s] — the pre-catch spacing Δ_pre (MD-54), a whole
@@ -197,7 +197,7 @@ struct MpcSegmentPlannerParams {
   double solver_eps_abs{1e-6};
   double solver_eps_rel{0.0};
   /// Whether the profile set `horizon` itself: the code default above is
-  /// MD-24's horizon, not MD-54's, and the configure warns when the decel
+  /// MD-24's horizon, not MD-54's, and the configure warns when the MPC segment
   /// planner runs on it.
   bool horizon_explicit{false};
 
@@ -326,7 +326,7 @@ struct PlannerParams {
   /// `planner.workspace.catch_box` (decision I). `set` false = unset.
   CatchBox catch_box{};
 
-  // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
+  // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────
   /// `planner.decel_mpc.*`. Absent = the defaults.
   MpcSegmentPlannerParams mpc_segment{};
 

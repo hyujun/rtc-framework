@@ -1064,7 +1064,7 @@ TEST_F(SupervisorScenarioTest, TheV1CommandsTimeOffsetFromItsReferenceIsMeasured
 // of the stop (mode mpc, MD-44 · MD-45)
 // ════════════════════════════════════════════════════════════════════════════
 //
-// The oracle profile: no planner thread, so these cases are the decel box's
+// The oracle profile: no planner thread, so these cases are the segment box's
 // one writer. In TRACKING they write the first segment of the plan the oracle
 // stores on the same tick — the PAIR a planner publishes (MD-56) — built from
 // the arm state the RT last reported, at rest (catching_segment_

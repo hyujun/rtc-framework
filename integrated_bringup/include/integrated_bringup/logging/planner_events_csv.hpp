@@ -21,14 +21,14 @@
 // first segment is withheld is not published (MD-62): that wake reads
 // search_valid 1, plan_valid 0, outcome held.
 //
-// The `decel_*` columns are the decel planner's account of the wake (MPC
+// The `decel_*` columns are the MPC segment planner's account of the wake (MPC
 // E1-F03 · E1-F08): which solve it was (`decel_kind`), how it ended
 // (`decel_outcome`, `decel_core_reason`), and the catch node as solved —
 // position [m] and axis [rad] error, γ, ‖v_rel‖ [m/s], the velocity slack. A
 // value the wake did not compute is NaN (0 for a flag or a count).
 // `decel_k` is the grid index of node 0: −n_pre for a pre-catch grid point,
 // k ≥ 0 for the stop grid point t_c + k·Δ_s — `decel_kind` says which.
-// A wake whose decel step only waited (off, up to date, past the replan
+// A wake whose segment step only waited (off, up to date, past the replan
 // window) does not earn a row on its own.
 //
 // Readers select columns by NAME: the set has grown and shrunk, and a log
@@ -63,7 +63,7 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "decel_speed_ratio_max,decel_w_p_fallback,decel_w_delta_scale,decel_source_seq\n";
 }
 
-/// Whether the decel step did something worth a row on its own.
+/// Whether the segment step did something worth a row on its own.
 [[nodiscard]] inline bool SegmentStepWorthRecording(rtc::catching::SegmentOutcome o) noexcept {
   using rtc::catching::SegmentOutcome;
   return o != SegmentOutcome::kOff && o != SegmentOutcome::kUpToDate &&

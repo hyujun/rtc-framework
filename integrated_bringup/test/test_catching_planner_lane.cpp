@@ -356,7 +356,7 @@ TEST(PlannerEventsCsv, EveryRowHasTheHeadersWidthAndIdleWakesAreSkipped) {
 
 TEST(PlannerEventsCsv, ASegmentStepEarnsARowOnlyWhenItDidSomething) {
   // MPC E1-F03: the decel columns are appended (readers select by name), and
-  // a wake whose decel step only waited does not earn a row on its own.
+  // a wake whose segment step only waited does not earn a row on its own.
   using rtc::catching::SegmentOutcome;
   std::ostringstream header;
   integrated_bringup::WritePlannerEventsHeader(header);
@@ -560,7 +560,7 @@ class CatchingPlanLaneTest : public ::testing::Test {
     d["approach"]["n_pre_max"] = 6;
   }
 
-  /// ConfigureOnly's profile: mode mpc, the decel MPC (with its approach grid)
+  /// ConfigureOnly's profile: mode mpc, the segment MPC (with its approach grid)
   /// as `planner` says.
   YAML::Node ConfigureOnlyYaml(bool planner) const {
     YAML::Node yaml = YAML::Load(
@@ -816,7 +816,7 @@ TEST_F(CatchingPlanLaneTest, ThePlannerFindsAReachableCatchPointAndTheRtFollowsI
   EXPECT_NEAR(a_d.dot(z), 1.0, 1e-9);
 }
 
-// ── The decel MPC on the planner thread (MPC E1-F03, #629) ──────────────────
+// ── The segment MPC on the planner thread (MPC E1-F03, #629) ──────────────────
 
 TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannerIsParkedWithoutThePlanner) {
   ctrl_ = std::make_unique<DemoCatchingController>("");
@@ -826,7 +826,7 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannerIsParkedWithoutThePlanner) {
   YAML::Node yaml = YAML::Load(
       TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
   yaml["catching"]["planner"]["enabled"] = false;
-  yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // no other writer of the decel box
+  yaml["diagnostic"]["oracle_plan"]["enabled"] = false;  // no other writer of the segment box
   // MD-44: the decel keys are read only under the law that follows them.
   yaml["catching"]["supervisor"]["decel"]["mode"] = "mpc";
   const rclcpp_lifecycle::State prev;
@@ -899,7 +899,7 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
   expect_park("eta_v = 1", true,
               [](YAML::Node& y) { y["catching"]["planner"]["gamma"]["eta_v"] = 1.0; });
   // MD-45, MD-70: a plan goes out only with a segment that starts before
-  // t_c, so without a pre-catch grid there is no decel planner to build.
+  // t_c, so without a pre-catch grid there is no MPC segment planner to build.
   expect_park("a decel planner without the pre-catch grid", true, [](YAML::Node& y) {
     y["catching"]["planner"]["decel_mpc"]["approach"]["n_pre_max"] = 0;
   });
@@ -962,8 +962,8 @@ TEST_F(CatchingPlanLaneTest, ClosedFormBuildsNoMpcSegmentCoresEvenWhenTheyAreEna
 }
 
 TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnAnMpcSegmentSettingItNeverReads) {
-  // MD-44 (/code-review 2026-09-30): under closed_form no decel core is built,
-  // so a decel torque box that would not fit the CLIK's is not a profile
+  // MD-44 (/code-review 2026-09-30): under closed_form no MPC segment core is built,
+  // so an MPC segment torque box that would not fit the CLIK's is not a profile
   // mistake there — only the WARN that the MPC is not built. Under mpc the
   // same setting parks.
   const auto misfit = [](const char* mode) {
@@ -988,7 +988,7 @@ TEST_F(CatchingPlanLaneTest, ClosedFormDoesNotParkOnAnMpcSegmentSettingItNeverRe
 
 TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
   // MPC MD-91: `planner.decel_mpc.enabled` is gone — the planner solves the
-  // decel MPC exactly when `supervisor.decel.mode` is mpc. A config that still
+  // segment MPC exactly when `supervisor.decel.mode` is mpc. A config that still
   // writes the key is read as if it were absent (no rejection): every row
   // below holds for the key absent, true and false alike.
   using integrated_bringup::CatchingParkReason;
@@ -1001,7 +1001,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
     };
     const std::string tag = stale < 0 ? "no key" : stale == 1 ? "enabled: true" : "enabled: false";
 
-    // closed_form: no decel core, and no WARN about the decel MPC either.
+    // closed_form: no MPC segment core, and no WARN about the segment MPC either.
     {
       const WarnCapture warns;
       const ConfigureVerdict v = ConfigureOnly(true, [&](YAML::Node& y) {
@@ -1014,7 +1014,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
       EXPECT_FALSE(WarnCapture::Contains("decel_mpc")) << tag << ": closed_form must not warn";
       EXPECT_FALSE(WarnCapture::Contains("not built")) << tag << ": closed_form must not warn";
     }
-    // mpc + planner on: the decel planner runs.
+    // mpc + planner on: the MPC segment planner runs.
     {
       const ConfigureVerdict v = ConfigureOnly(true, with_key);
       ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
@@ -1022,7 +1022,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
       EXPECT_TRUE(ctrl_->IsSegmentPlannerConfigured()) << tag;
     }
     // mpc + planner off + the oracle plan profile: configures (a test writes
-    // the box), with no decel planner of its own.
+    // the box), with no MPC segment planner of its own.
     {
       const ConfigureVerdict v = ConfigureOnly(false, with_key);
       ASSERT_EQ(v.ret, Return::SUCCESS) << tag;
@@ -1030,7 +1030,7 @@ TEST_F(CatchingPlanLaneTest, TheLawIsChosenBySupervisorDecelModeAlone) {
       EXPECT_FALSE(ctrl_->IsSegmentPlannerConfigured()) << tag;
     }
     // mpc + planner off + no oracle: nothing writes a segment, so it parks
-    // with the prerequisite reason — never the decel-config one.
+    // with the prerequisite reason — never the MPC-segment-config one.
     {
       const ConfigureVerdict v = ConfigureOnly(false, [&](YAML::Node& y) {
         with_key(y);
@@ -1075,7 +1075,7 @@ TEST_F(CatchingPlanLaneTest, ALeftoverDisabledDecelMpcKeyWarnsOnlyWhereTheLawNow
 
 TEST_F(CatchingPlanLaneTest, AReconfigureToClosedFormClearsTheMpcSegmentPlannersBox) {
   // The box getters report THIS configuration (/code-review 2026-09-30): a
-  // closed_form re-configure builds no decel planner, so the box is zero.
+  // closed_form re-configure builds no MPC segment planner, so the box is zero.
   ASSERT_EQ(ConfigureOnly(true, nullptr).ret, DemoCatchingController::CallbackReturn::SUCCESS);
   ASSERT_TRUE(ctrl_->IsSegmentPlannerConfigured());
   ASSERT_NE(ctrl_->GetMpcSegmentPlannerQMaxForTesting()[0], 0.0);

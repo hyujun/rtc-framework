@@ -1,4 +1,4 @@
-// RT sampler of the decel MPC's joint nodes (E1-F02). See node_follower.hpp.
+// RT sampler of the segment MPC's joint nodes (E1-F02). See node_follower.hpp.
 #include "rtc_controllers/catching/node_follower.hpp"
 
 #include "rtc_controllers/catching/jerk_segment.hpp"

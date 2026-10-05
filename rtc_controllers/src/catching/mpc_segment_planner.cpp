@@ -1,4 +1,4 @@
-// Decel planner (MPC E1-F03, E1-F08). See mpc_segment_planner.hpp.
+// MPC segment planner (MPC E1-F03, E1-F08). See mpc_segment_planner.hpp.
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 
 #include "rtc_controllers/catching/node_follower.hpp"

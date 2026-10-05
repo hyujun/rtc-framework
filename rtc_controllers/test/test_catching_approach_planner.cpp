@@ -1,4 +1,4 @@
-// E1-F08 (#661): the decel planner's APPROACH–stop solves (mpc_segment_planner.hpp
+// E1-F08 (#661): the MPC segment planner's APPROACH–stop solves (mpc_segment_planner.hpp
 // §APPROACH–stop) on a fake clock — PlanFirst, Replan, the ball target, the
 // between-node speed check and the allocation boundary. NOT the E1-F07 core
 // suite (test_catching_mpc_segment_core_approach.cpp drives MpcSegmentCore alone); the

@@ -1,6 +1,6 @@
 // E1-F08 (#661): the APPROACH–stop pair and replans as PlannerCycle runs them
-// (planner_cycle.hpp "THE DECEL PLANNER'S PART") — the real search on a real
-// 6-joint arm, the decel planner behind it, on the REAL steady clock (the
+// (planner_cycle.hpp "THE MPC SEGMENT PLANNER'S PART") — the real search on a real
+// 6-joint arm, the MPC segment planner behind it, on the REAL steady clock (the
 // budgets are measured), with the test as the RT stand-in. RUN_SERIAL: a
 // loaded host stretches the solves the budgets judge. The planner's own
 // decisions are test_catching_approach_planner.cpp; the core alone is E1-F07's
@@ -74,7 +74,7 @@ constexpr std::uint64_t kTrack = 7;
 
 // The suite's clock: the real steady clock, unless a test pins it (FakeTime).
 // A rig built with `fake_clock` hands the same function to the cycle, the
-// search and the decel planner, so on a pinned clock every budget and lead is
+// search and the MPC segment planner, so on a pinned clock every budget and lead is
 // measured against the test's own time — a solve takes zero of it.
 std::atomic<std::int64_t> g_fake_now{0};  // 0 = not pinned
 
@@ -253,7 +253,7 @@ struct Rig {
     d.w_perp = w_perp;
     cycle.Configure(params);
     if (fake_clock) {
-      cycle.SetClock(&SuiteClock);  // before the search and the decel planner take it
+      cycle.SetClock(&SuiteClock);  // before the search and the MPC segment planner take it
     }
 
     rtc::catching::GridCatchSearchModel pm;
@@ -313,7 +313,7 @@ struct Rig {
 
   // Configure again a cycle that has already run, with what it was built
   // with. The search is configured over the one in place (no ClearSearch) and
-  // the decel planner after a ClearSegmentPlanner, which is how the controller's
+  // the MPC segment planner after a ClearSegmentPlanner, which is how the controller's
   // configure reaches it.
   void Reconfigure() {
     cycle.Configure(params);
@@ -740,7 +740,7 @@ enum class RigHistory : std::uint8_t {
 };
 
 /// RunCatch's digests on the rig below: [RT takes every segment, RT keeps the
-/// first] × RigHistory. Taken on the code BEFORE the search and the decel
+/// first] × RigHistory. Taken on the code BEFORE the search and the MPC segment
 /// planner moved behind CatchSearch / SegmentPlanner (E1-F12 #738), when the
 /// cycle held both by value and a re-configure re-used the same two objects.
 /// The two re-configured columns are the cycle-level half of "building NEW
@@ -873,7 +873,7 @@ TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
 // ── Lifetime ─────────────────────────────────────────────────────────────────
 
 TEST(ApproachCycle, ATrialResetWithdrawsTheSegment) {
-  // The planner is the decel box's only writer: the ended trial's segment
+  // The planner is the segment box's only writer: the ended trial's segment
   // must not stay in it (the RT's plan match refuses it as well).
   auto r = std::make_unique<Rig>();
   r->StartTrajectory();
@@ -892,7 +892,7 @@ TEST(ApproachCycle, ATrialResetWithdrawsTheSegment) {
 }
 
 TEST(ApproachCycle, WithoutASegmentBoxThePlanIsPublishedAlone) {
-  // No fifth box (a binding without the decel lane): the decel planner is
+  // No fifth box (a binding without the segment lane): the MPC segment planner is
   // configured but solves nothing, and the search's plan goes out by itself.
   auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/false);
   ASSERT_TRUE(r->cycle.SegmentPlannerConfigured());

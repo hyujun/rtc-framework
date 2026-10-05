@@ -1,8 +1,8 @@
-// ── Decel MPC core: jerk-input condensed QP, APPROACH to the stop ─────────────
+// ── MPC segment core: jerk-input condensed QP, APPROACH to the stop ─────────────
 // (dynamic_catching MPC plan E1-F01 / #627 — the stop segment; E1-F07 / #660 —
 // the pre-catch grid and the catch terms; formulation §1.1–§1.3, §1.6)
 //
-// "Decel" is the historical name (MD-48): with n_pre > 0 the horizon
+// The segment is not only the stop (MD-48): with n_pre > 0 the horizon
 // starts before the catch. With the defaults (n_pre = 0, catch_terms = false)
 // this is exactly the E1-F01 stop problem described first below.
 //

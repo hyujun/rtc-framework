@@ -48,7 +48,7 @@
 //     and the supervisor has to answer something. With no row the mode simply
 //     stays, the driver stops calling the law, and the carried joint command
 //     freezes at whatever it held: a velocity step, i.e. exactly the one-tick
-//     infinite deceleration decel_target.hpp says the controller must never
+//     infinite deceleration joint_stop.hpp says the controller must never
 //     emit (observed 2026-09-23, code review of this branch). So every mode
 //     that can be carrying motion routes readiness-lost through ABORT_SAFE,
 //     which owns the ramp and already knows how to leave once the arm has

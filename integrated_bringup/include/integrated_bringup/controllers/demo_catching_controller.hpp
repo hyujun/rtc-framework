@@ -206,7 +206,7 @@ enum class CatchingParkReason : std::uint8_t {
   /// joint-space motions ramp with, `supervisor.decel.a_dec`, or a hand profile
   /// the sequencer can run.
   kSupervisorUnset,
-  /// `supervisor.decel.mode: mpc` with the planner on, but the decel MPC's
+  /// `supervisor.decel.mode: mpc` with the planner on, but the segment MPC's
   /// torque box plus its publish slack exceeds the CLIK's torque box
   /// (`joint_cmd.eta_tau`), so a published stop could ask for torque the CLIK
   /// refuses (MPC E1-F03, MD-33). A planner that is off is kDecelModeUnmet's.
@@ -214,7 +214,7 @@ enum class CatchingParkReason : std::uint8_t {
   /// `supervisor.decel.mode: mpc` without one of its prerequisites (MPC
   /// MD-34): the catch sub-model sampler, `joint_cmd.K_n` > 0, η_v < 1, the
   /// arm's per-joint velocity ratings and the CLIK's per-joint velocity and
-  /// position boxes, and a decel planner
+  /// position boxes, and an MPC segment planner
   /// (`approach.n_pre_max` > 0 with the
   /// planner on — without a pre-catch grid none is built, MD-70; the oracle
   /// profile is exempt). Under mpc the arm follows a segment from APPROACH to the end of
@@ -242,7 +242,7 @@ inline constexpr int kCatchingHandDeviceIdx = 1;
 inline constexpr int kDemoCatchingMaxArmDof = 32;
 inline constexpr int kDemoCatchingMaxHandDof = static_cast<int>(rtc::catching::kMaxHandDof);
 
-/// Upper bound on a decel segment's age when the RT admits it (MPC MD-37):
+/// Upper bound on a segment's age when the RT admits it (MPC MD-37):
 /// `now − publish_ns`, read once at admission. It filters a segment left in
 /// the box by a planner that stopped and an RT that stalled. A segment for
 /// the NEXT grid point waits in the box while the pending slot still holds
@@ -354,13 +354,13 @@ class DemoCatchingController final : public RTControllerInterface {
     return plan_box_.Load();
   }
 
-  /// The decel box (MPC E1-F02/F03) as the RT loads it under
+  /// The segment box (MPC E1-F02/F03) as the RT loads it under
   /// `supervisor.decel.mode: mpc` (E1-F04). Written by the planner thread only.
   [[nodiscard]] rtc::catching::SegmentSnapshot GetPublishedSegment() const noexcept {
     return segment_box_.Load();
   }
 
-  /// The decel box itself, for a test that plays the decel planner — ONLY
+  /// The segment box itself, for a test that plays the MPC segment planner — ONLY
   /// with the planner thread absent (the oracle profile), or it has two writers.
   [[nodiscard]] rtc::SeqLock<rtc::catching::SegmentSnapshot>& SegmentBoxForTesting() noexcept {
     return segment_box_;
@@ -382,7 +382,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return segment_current_valid_;
   }
 
-  /// The decel planner's joint position box as configured (MD-42), device
+  /// The MPC segment planner's joint position box as configured (MD-42), device
   /// order, and the CLIK's margined arm box it must sit inside.
   [[nodiscard]] const std::array<double, rtc::catching::kMaxPlanNv>&
   GetMpcSegmentPlannerQMinForTesting() const noexcept {
@@ -410,7 +410,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return segment_pending_;
   }
 
-  /// Whether the planner runs the decel MPC (`supervisor.decel.mode: mpc` and a
+  /// Whether the planner runs the segment MPC (`supervisor.decel.mode: mpc` and a
   /// model to plan in). Lifecycle / test callers only: it reads planner state
   /// that a configure rewrites with the thread joined, not an atomic.
   [[nodiscard]] bool IsSegmentPlannerConfigured() const noexcept {
@@ -793,11 +793,11 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The first planner value that is a decision and is unset, or nullptr.
   [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
 
-  /// Why the decel MPC cannot run under `supervisor.decel.mode: mpc` with the
-  /// planner on, or nullptr (decel torque box + publish slack over the CLIK's).
+  /// Why the segment MPC cannot run under `supervisor.decel.mode: mpc` with the
+  /// planner on, or nullptr (MPC segment torque box + publish slack over the CLIK's).
   [[nodiscard]] const char* MpcSegmentConfigInvalid() const noexcept;
 
-  /// Build the decel planner on the search's model (MPC E1-F03): the same
+  /// Build the MPC segment planner on the search's model (MPC E1-F03): the same
   /// sub-model, frame and joint map, the arm device's max_torque, the D-16
   /// box as the q̈-estimate cap. Non-RT; false (and logged) on a model or
   /// rating the cores refuse.
@@ -805,7 +805,7 @@ class DemoCatchingController final : public RTControllerInterface {
                                             const rtc::catching::GridCatchSearchModel& pm);
 
   /// The catch sub-model on `planner.sub_model`, its catch frame and the
-  /// model→device joint map — what the planner search and the decel follower
+  /// model→device joint map — what the planner search and the segment follower
   /// both stand on. Non-RT; false (and logged under `who`) when the model is
   /// missing or is not exactly the arm's joints.
   [[nodiscard]] bool ResolveCatchSubModel(
@@ -930,7 +930,7 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] rtc::catching::Reason RunDecelLawTick(const ControllerState& state) noexcept;
   /// Freeze the reference state as DECEL's entry and take the τ = 0 step.
   [[nodiscard]] rtc::catching::Reason EnterDecel(const ControllerState& state) noexcept;
-  /// `supervisor.decel.mode: mpc` (MD-37): load and judge the decel box on a
+  /// `supervisor.decel.mode: mpc` (MD-37): load and judge the segment box on a
   /// lane tick. TRACKING: against the plan this tick could adopt — a verdict
   /// only (`segment_pair_ok_`), since the plan and its first segment are taken
   /// together or not at all (E1-F09). APPROACH through DECEL: against the
@@ -965,7 +965,7 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Whether this tick may take the plan it loaded (TRACKING → APPROACH): no
   /// plan followed, the arm command path wired and readable, and JudgePlan
-  /// passed. The edge and the decel lane's pair verdict read the same test.
+  /// passed. The edge and the segment lane's pair verdict read the same test.
   [[nodiscard]] bool PlanAdoptableThisTick() const noexcept {
     return !plan_active_ && clik_enabled_ && arm_readable_ &&
            plan_refusal_ == rtc::catching::PlanRefusal::kNone;
@@ -973,7 +973,7 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Whether a segment belongs to the plan the RT follows (MD-35).
   [[nodiscard]] bool SegmentMatchesPlan(const rtc::catching::SegmentSnapshot& seg) const noexcept;
-  /// Forget every decel segment (pending and followed) and the admission
+  /// Forget every segment (pending and followed) and the admission
   /// memory — both resets, and every way out of a followed plan.
   void DropSegments() noexcept;
   /// Per-mode decisions split out of EvaluateReason (R-ORDER).
@@ -1349,7 +1349,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// see instead of a silently wrong gain set.
   std::optional<rtc::catching::SoftCatchTranslation> reference_;
 
-  // ── Decel MPC follower (MPC E1-F04 · E1-F09, MD-34 – MD-45; configure,
+  // ── Segment MPC follower (MPC E1-F04 · E1-F09, MD-34 – MD-45; configure,
   // non-RT) ──
   /// The planner this configuration follows — never mixed within it (MD-44).
   /// kMpc: the arm follows the planner's segments from APPROACH to the end of
@@ -1369,7 +1369,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The CLIK's per-joint velocity box was built (every arm and hand joint
   /// rated) — MD-34 asks for it, since the hand is locked through it.
   bool clik_v_box_complete_{false};
-  /// The decel planner's position box as handed to its cores (device order,
+  /// The MPC segment planner's position box as handed to its cores (device order,
   /// MD-42), kept for the configure-time check and the tests.
   std::array<double, rtc::catching::kMaxPlanNv> mpc_segment_planner_q_min_{};
   std::array<double, rtc::catching::kMaxPlanNv> mpc_segment_planner_q_max_{};
@@ -1677,9 +1677,9 @@ class DemoCatchingController final : public RTControllerInterface {
   /// ONE writer — the planner thread, or the RT's oracle stand-in, never both
   /// (a profile enabling both is parked). RT reader, every tick (D-21).
   rtc::SeqLock<rtc::catching::PlanSnapshot> plan_box_;
-  /// The decel MPC's segment (MPC E1-F02/F03, MD-27). ONE writer, the
+  /// The segment MPC's segment (MPC E1-F02/F03, MD-27). ONE writer, the
   /// planner thread; the RT tick reads it under `supervisor.decel.mode: mpc`
-  /// — the decel lane, TRACKING through DECEL (E1-F09). Declared
+  /// — the segment lane, TRACKING through DECEL (E1-F09). Declared
   /// before planner_thread_ so the thread (which holds a pointer to it through
   /// the cycle) is destroyed first.
   rtc::SeqLock<rtc::catching::SegmentSnapshot> segment_box_;
@@ -1741,10 +1741,10 @@ class DemoCatchingController final : public RTControllerInterface {
   std::atomic<std::uint64_t> plan_replaced_count_{0};
   // RT-OWNED END
 
-  // RT-owned decel lane state (MPC E1-F04 · E1-F09; mode mpc only — closed_form never
+  // RT-owned segment lane state (MPC E1-F04 · E1-F09; mode mpc only — closed_form never
   // writes any of it).
   // RT-OWNED BEGIN — tick state; every member here has a row in the reset table
-  /// This lane tick's Load of the decel box (D-21), and its verdict.
+  /// This lane tick's Load of the segment box (D-21), and its verdict.
   rtc::catching::SegmentSnapshot segment_in_{};
   rtc::catching::SegmentRefusal segment_refusal_{rtc::catching::SegmentRefusal::kInvalid};
   /// Payload-side memory of the last segment taken (or refused past

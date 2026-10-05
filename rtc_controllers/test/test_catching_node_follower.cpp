@@ -1,4 +1,4 @@
-// E1-F02 (#628): the decel node payload (SegmentSnapshot, trajectory.hpp) and
+// E1-F02 (#628): the segment node payload (SegmentSnapshot, trajectory.hpp) and
 // its RT sampler (NodeTrajectoryFollower, node_follower.hpp). Each #628
 // "Done when" item maps to a named test (spec on #628, MD-27 / MD-30):
 //   1 payload shape + C² sampling   PayloadFitsItsBudget, Validate*,

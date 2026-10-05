@@ -127,7 +127,7 @@ TEST(MpcSegmentParams, BlocksForShrinksTheLargestTrailingBlock) {
 }
 
 // E1-F08 (#661): the pre-catch keys. n_pre_max defaults to 0 — no pre-catch
-// grid, with which the decel planner does not configure (MD-70).
+// grid, with which the MPC segment planner does not configure (MD-70).
 TEST(MpcSegmentParams, ApproachKeysDefaultOff) {
   const MpcSegmentPlannerParams d = rtc::catching::PlannerParams{}.mpc_segment;
   EXPECT_EQ(d.n_pre_max, 0);

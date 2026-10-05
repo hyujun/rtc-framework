@@ -223,12 +223,12 @@ struct CatchingDiagLogPod {
   double wait_pose_refuse_value{0.0};
   std::array<double, kMaxArmJoints> wait_pose{};
 
-  // ── Decel MPC follower (MPC E1-F04) ──────────────────────────────────────
+  // ── Segment MPC follower (MPC E1-F04) ──────────────────────────────────────
   // Every field is a CSV column (E1-F05, #631). The state message carries
   // none of them: its field set is frozen (D-20). `decel_event` and
   // `decel_refusal` are written as their integer values — the tables are in
   // the integrated_bringup README and in rtc_tools' catching plotter.
-  /// What happened to a decel segment this tick. One value per tick: the
+  /// What happened to a segment this tick. One value per tick: the
   /// law's (a switch, or the reason there was nothing to follow) wins over
   /// the lane's (an admission), which ran earlier in the tick.
   enum class SegmentEvent : std::uint8_t {

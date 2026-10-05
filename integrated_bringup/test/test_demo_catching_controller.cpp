@@ -1881,7 +1881,7 @@ std::vector<double> ArmPositionsOf(const ControllerState& s) {
 TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   // MPC E1-F08 (#661, MD-54 · MD-55): the shipped profiles carry the
   // APPROACH–stop grid — 7 x 0.05 s after the catch, up to 6 x 0.1 s before
-  // it. Since MD-89 (2026-10-03) they also ship the decel MPC on and DECEL
+  // it. Since MD-89 (2026-10-03) they also ship the segment MPC on and DECEL
   // on `mpc` — the law the grid serves; before it they shipped both off and
   // the closed form. The CODE defaults are neither (14 x 0.025, n_pre_max 0,
   // `closed_form`), so only reading the file shows what a robot runs.
@@ -1902,7 +1902,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheApproachStopGridSwitchedOn) {
   EXPECT_EQ(d.n_pre_max, 6) << profile;
   EXPECT_EQ(d.DtPreNs(), 100'000'000) << profile;
   EXPECT_TRUE(d.replan_same_point) << profile;
-  // The budgets must leave the planner's wake inside the decel admission age
+  // The budgets must leave the planner's wake inside the segment admission age
   // bound the RT judges a segment by (50 ms): configure parks mode mpc unless
   // budget.replan_s + 3 ticks is below it (DecelModeUnmet).
   EXPECT_GT(d.budget_first_s, 0.0) << profile;
@@ -1938,7 +1938,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheVelocitySlackWrittenAndOff) {
 TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
   // The two keys moved in the composed tree — where a CM override writes —
   // reach the controller: its read-only mirrors carry the moved values and the
-  // decel planner configures with the slack row on (every catch core is built
+  // MPC segment planner configures with the slack row on (every catch core is built
   // and warmed with it). A mirror declared from the field's default would read
   // 0 here.
   const auto& [profile, expected_dof] = GetParam();
@@ -1969,7 +1969,7 @@ TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
 }
 
 TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
-  // #698: every design value of the decel MPC core, of the catch
+  // #698: every design value of the MPC segment core, of the catch
   // pose IK, of the unit-speed solve and of the switch step bound is WRITTEN in
   // the shipped fragments, and at what the code used before the key existed —
   // so the shipped solves, rankings and tests did not move.
@@ -2071,9 +2071,9 @@ TEST_P(ShippedCatchingProfile, ShipsTheDesignKeysWrittenAtTheCodeDefaults) {
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheDesignKeysItRunsWith) {
-  // The twelve decel-MPC design keys moved in the composed tree — where a CM
+  // The twelve segment-MPC design keys moved in the composed tree — where a CM
   // override writes — reach the controller: each read-only mirror carries the
-  // moved value, and the decel planner configures with the cores built on them.
+  // moved value, and the MPC segment planner configures with the cores built on them.
   // A mirror declared from a default would read the shipped value here.
   const auto& [profile, total_dof] = GetParam();
   static_cast<void>(total_dof);
@@ -2154,7 +2154,7 @@ TEST_P(ShippedCatchingProfile, ShipsTheStopPathWeightWrittenAndOff) {
 TEST_P(ShippedCatchingProfile, MirrorsTheStopPathWeightItRunsWith) {
   // The key moved in the composed tree — where a CM override writes — reaches
   // the controller: the read-only mirror carries the moved value, and the
-  // decel planner configures with the term ON, which means every stop core and
+  // MPC segment planner configures with the term ON, which means every stop core and
   // every catch core was built with it and warmed up on a line the planner
   // built (a warm-up that fails fails the configure). A mirror declared from
   // the field's default would read 0 here.

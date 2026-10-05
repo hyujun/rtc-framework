@@ -1,4 +1,4 @@
-// ── Arm fixtures shared by the decel MPC core suites (test-only) ──────────────
+// ── Arm fixtures shared by the MPC segment core suites (test-only) ──────────────
 // test_catching_mpc_segment_core.cpp (E1-F01: the stop segment) and
 // test_catching_mpc_segment_core_approach.cpp (E1-F07: the pre-catch grid and the
 // catch terms) must load the SAME arms with the SAME limits and nominal

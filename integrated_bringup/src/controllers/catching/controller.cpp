@@ -907,7 +907,7 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
   }
   s.plan_active = plan_active_;
   s.plan_id = plan_active_ ? plan_.plan_id : 0U;
-  // The decel planner's grid anchor (MPC E1-F03): the t_c of the plan the RT
+  // The MPC segment planner's grid anchor (MPC E1-F03): the t_c of the plan the RT
   // FOLLOWS — after COMMITTED it takes no new plan, so this is the committed
   // catch instant, whatever the planner last published.
   s.plan_t_c_ns = plan_active_ ? plan_.t_c_ns : 0;
@@ -2237,7 +2237,7 @@ void DemoCatchingController::ResetTrialState(bool reset_mode) noexcept {
   decel_entry_ = rtc::catching::DecelEntryState{};
   decel_t_s_ns_ = 0;
   decel_stopped_ = false;
-  // E-8 (MPC MD-35): the decel lane's memory goes with the plan it served. A
+  // E-8 (MPC MD-35): the segment lane's memory goes with the plan it served. A
   // segment of the stopped trial is also refused by the plan match and the
   // floors; this is the first line.
   DropSegments();
@@ -3371,7 +3371,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     plan_refusal_observed_.store(static_cast<std::uint8_t>(plan_refusal_),
                                  std::memory_order_relaxed);
   }
-  // The decel lane (MPC E1-F04 · E1-F09): mode mpc only — in TRACKING the
+  // The segment lane (MPC E1-F04 · E1-F09): mode mpc only — in TRACKING the
   // verdict on the pair this tick could adopt, from APPROACH through DECEL
   // the admission of the next segment. After the plan lane (it judges against
   // the plan that lane just judged) and before the decision, so a segment

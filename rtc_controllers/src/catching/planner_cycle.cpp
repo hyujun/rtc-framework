@@ -234,7 +234,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
       segment_planner_->ResetTrial();
     }
     pair_publish_ns_ = 0;
-    // The planner is the decel box's only writer, so withdrawing the ended
+    // The planner is the segment box's only writer, so withdrawing the ended
     // trial's segment is its job (the RT's plan match refuses it as well).
     if (io_.segment != nullptr) {
       io_.segment->Store(SegmentSnapshot{});

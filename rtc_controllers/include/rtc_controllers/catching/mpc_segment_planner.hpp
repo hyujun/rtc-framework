@@ -1,8 +1,8 @@
-// ── Decel planner: the APPROACH–stop segments, on the planner thread ─────────
+// ── MPC segment planner: the APPROACH–stop segments, on the planner thread ─────────
 // (dynamic_catching MPC plan E1-F03 #629 · E1-F08 #661; decisions MD-24 –
 // MD-33, MD-55 – MD-64, MD-70)
 //
-// The SegmentPlanner (segment_planner.hpp) PlannerCycle runs once a decel MPC
+// The SegmentPlanner (segment_planner.hpp) PlannerCycle runs once a segment MPC
 // is configured — the one implementation of that interface today: solve the
 // joint-node segment the RT follows from APPROACH to the end of the stop
 // (mpc_segment_core.hpp) and hand back a SegmentSnapshot for the cycle to publish.
@@ -124,11 +124,11 @@ namespace rtc::catching {
 /// tick stalled; 50 ms is one default planner wake timeout, 25 ticks at 2 ms.
 inline constexpr std::int64_t kMpcSegmentMaxRtStateAgeNs = 50'000'000;
 
-/// What one decel step did (the planner events CSV's decel columns). The CSV
+/// What one segment step did (the planner events CSV's decel columns). The CSV
 /// writes the NAME (SegmentOutcomeName), never the value: the values carry no
 /// meaning outside a build and move when an enumerator is added or removed.
 enum class SegmentOutcome : std::uint8_t {
-  kOff = 0,  ///< not attempted: not configured, or not a decel mode
+  kOff = 0,  ///< not attempted: not configured, or not a mode that plans a segment
   kNoState,  ///< no followed plan / t_c, unseeded command, or a size mismatch
   /// The RT's report is older than kMpcSegmentMaxRtStateAgeNs (or from the
   /// future): what it reports may no longer be what the arm does (an RT stall).
@@ -217,7 +217,7 @@ struct SegmentRecord {
   std::uint32_t source_seq{0};  ///< replan: the segment x₀ and the reference came from
 };
 
-/// The arm the decel planner plans for (configure time, from the binding).
+/// The arm the MPC segment planner plans for (configure time, from the binding).
 /// Every array is MODEL order, `nv` entries.
 struct MpcSegmentPlannerModel {
   std::shared_ptr<const pinocchio::Model> arm;  ///< hand-locked catch sub-model

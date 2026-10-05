@@ -318,7 +318,7 @@ void DemoCatchingController::DeclareProfileParameters() {
           "L5 §4.3 CLIK acceleration constraint form the profile selects (decision K) — the parsed "
           "key, also when the CLIK refused it and the arm is held. As of the FIRST configure of "
           "this node — read_only mirrors cannot follow a re-configure");
-  // The decel MPC as run (MPC E1-F03): an off-process analysis must read the
+  // The segment MPC as run (MPC E1-F03): an off-process analysis must read the
   // horizon, window and thresholds this controller used, not the file.
   const auto& mpc_segment = planner_params_.mpc_segment;
   declare("planner.decel_mpc.horizon.n_nodes", static_cast<std::int64_t>(mpc_segment.n_nodes),
@@ -1061,7 +1061,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       rtc::catching::CheckCatchFrameProvisional(report_, *provisional, real_arm_config_);
     }
     // The DECEL law (MPC MD-44) — decided here, once, for the whole
-    // configuration: the planner's setup below builds the decel cores only
+    // configuration: the planner's setup below builds the MPC segment cores only
     // for it, and the tick never changes it.
     decel_mode_ = params_.supervisor_decel_mode;
     decel_switch_margin_ = params_.supervisor_decel_switch_margin;
@@ -1164,10 +1164,10 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "controller will refuse to activate; the robot still comes up.");
       return CallbackReturn::SUCCESS;
     }
-    // The decel MPC (MPC E1-F03) runs on the planner thread, and its torque
+    // The segment MPC (MPC E1-F03) runs on the planner thread, and its torque
     // box plus publish slack must fit inside the CLIK's (MD-33). A profile
     // mistake: park, name it, keep the robot up. Only under the law that runs
-    // it and only with the planner on — closed_form builds no decel core and
+    // it and only with the planner on — closed_form builds no MPC segment core and
     // reads none of its keys (MD-44), and a planner-less mpc profile is
     // DecelModeUnmet's to judge (the oracle profile is exempt there).
     if (planner_params_.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
@@ -1752,7 +1752,7 @@ bool DemoCatchingController::SetupPlanner() {
     return false;
   }
   // Dropped on every configure (the thread is joined above): a re-configure
-  // with the planner or the decel MPC off must not report the previous one.
+  // with the planner or the segment MPC off must not report the previous one.
   planner_cycle_.ClearSegmentPlanner();
   if (!planner_params_.enabled) {
     return true;
@@ -1907,8 +1907,8 @@ bool DemoCatchingController::SetupGridCatchSearch() {
                  pm.nv, planner_params_.wait_pose_n);
     return false;
   }
-  // MD-44: the decel cores exist only for a configuration that follows them.
-  // Without a pre-catch grid there is no decel planner to build (MD-70) — a
+  // MD-44: the MPC segment cores exist only for a configuration that follows them.
+  // Without a pre-catch grid there is no MPC segment planner to build (MD-70) — a
   // profile mistake DecelModeUnmet parks on, not a configure failure.
   if (decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
       planner_params_.mpc_segment.n_pre_max > 0 && !SetupMpcSegmentPlanner(model, pm)) {
@@ -2089,7 +2089,7 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   // (kPlannerUnset).
   // MD-45, MD-70: the arm follows a segment from APPROACH, and a plan is
   // published only together with one that starts before t_c. Without a
-  // pre-catch grid no decel planner is built — no trial would ever start. The
+  // pre-catch grid no MPC segment planner is built — no trial would ever start. The
   // oracle profile has no planner: its test writes the box.
   if (!oracle_enabled_ && planner_params_.enabled && !(planner_params_.mpc_segment.n_pre_max > 0)) {
     return "planner.decel_mpc.approach.n_pre_max is 0 (the RT takes a plan only with a segment "

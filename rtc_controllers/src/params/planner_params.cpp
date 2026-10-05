@@ -359,7 +359,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
     out.catch_box.set = true;
   }
 
-  // ── Decel MPC (MPC E1-F03) ─────────────────────────────────────────────────
+  // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────
   const YAML::Node decel = Section(planner, "decel_mpc", "decel_mpc");
   MpcSegmentPlannerParams& d = out.mpc_segment;
   const YAML::Node horizon = Section(decel, "horizon", "decel_mpc.horizon");

@@ -1,4 +1,4 @@
-// ── Decel MPC catch-node linearisation seam (E1-F07, formulation §1.2) ───────
+// ── Segment MPC catch-node linearisation seam (E1-F07, formulation §1.2) ───────
 // The first-order models of the three nonlinear outputs the catch terms use,
 // at one reference point (q, v), exposed so a test can check each Jacobian
 // against a finite difference of the nonlinear output instead of only through

@@ -114,7 +114,7 @@ struct PlannerRtState {
   bool plan_active{false};
   std::uint32_t plan_id{0};
   /// That plan's catch instant t_c (BallTime / lead axis), 0 with no plan.
-  /// The decel planner's grid anchor t_c + k·Δ_s (MD-10): it must be the
+  /// The MPC segment planner's grid anchor t_c + k·Δ_s (MD-10): it must be the
   /// plan the RT FOLLOWS, not the one the planner last published — after
   /// COMMITTED the RT takes no new plan, so the two can differ.
   std::int64_t plan_t_c_ns{0};
@@ -142,7 +142,7 @@ struct PlannerRtState {
 
 static_assert(std::is_trivially_copyable_v<PlannerRtState>);
 
-/// What the planner does in a given supervisor mode (L3 §5.3). The decel MPC
+/// What the planner does in a given supervisor mode (L3 §5.3). The segment MPC
 /// (MPC E1-F08) replans a followed plan's segment in every one of them but
 /// kIdle, when it is configured.
 ///
@@ -153,8 +153,8 @@ enum class PlannerActivity : std::uint8_t {
   kIdle,     ///< nothing to plan for — wake, publish nothing
   kSearch,   ///< TRACKING / APPROACH: search candidates, publish a plan
   kMonitor,  ///< COMMITTED / CLOSING: the plan is frozen; monitorOnly (§4.6)
-  /// DECEL: nothing to search or monitor, but the decel MPC's post-catch
-  /// replans (MD-31) happen here — a no-op without a configured decel planner.
+  /// DECEL: nothing to search or monitor, but the segment MPC's post-catch
+  /// replans (MD-31) happen here — a no-op without a configured MPC segment planner.
   kDecel,
 };
 
@@ -262,9 +262,9 @@ struct AdmittedPlan {
   return PlanRefusal::kNone;
 }
 
-// ── RT-side admission of a decel segment (MPC E1-F03, MD-27 · MD-32) ────────
+// ── RT-side admission of a segment (MPC E1-F03, MD-27 · MD-32) ────────
 
-/// Why the RT did not take the decel segment in the box. `kNone` = admitted.
+/// Why the RT did not take the segment in the box. `kNone` = admitted.
 enum class SegmentRefusal : std::uint8_t {
   kNone = 0,
   kInvalid,      ///< `valid` false — the planner withdrew it (e.g. on a reset)
@@ -278,7 +278,7 @@ enum class SegmentRefusal : std::uint8_t {
                  ///< pre-catch nodes the context does not accept
 };
 
-/// What the RT knows when it judges a decel segment.
+/// What the RT knows when it judges a segment.
 struct SegmentAdmissionContext {
   std::uint64_t activation_generation{0};
   /// The plan the RT follows: a stop belongs to exactly one catch plan.
@@ -317,13 +317,13 @@ struct SegmentAdmissionContext {
   int expected_nv{0};
 };
 
-/// The RT's memory of the last decel segment it admitted.
+/// The RT's memory of the last segment it admitted.
 struct AdmittedSegment {
   bool seen{false};
   std::uint32_t segment_seq{0};
 };
 
-/// Judge a decel segment the caller has already loaded (D-21: Load() every
+/// Judge a segment the caller has already loaded (D-21: Load() every
 /// tick, unconditionally). Checks run in the enum's order; the node scan
 /// (kMalformed) is last because it is the only one that costs anything. A
 /// caller that admits a segment runs it once per segment_seq; one it DEFERS (a

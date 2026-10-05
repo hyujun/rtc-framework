@@ -93,7 +93,7 @@ enum class CatchingAccelConstraint : std::uint8_t { kUnset, kRemovedBox, kKinema
 
 /// `supervisor.decel.mode` — the DECEL law, chosen once per configure and
 /// never mixed within an activation (MPC MD-44). kClosedForm is the v1 L7
-/// virtual target and the default (the key absent); kMpc follows the decel
+/// virtual target and the default (the key absent); kMpc follows the segment
 /// MPC's stop segment on every DECEL.
 enum class CatchingDecelMode : std::uint8_t { kClosedForm, kMpc };
 

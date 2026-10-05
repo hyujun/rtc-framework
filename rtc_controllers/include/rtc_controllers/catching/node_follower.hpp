@@ -1,4 +1,4 @@
-// ── RT sampler of the decel MPC's joint nodes (MPC plan E1-F02, #628) ────────
+// ── RT sampler of the segment MPC's joint nodes (MPC plan E1-F02, #628) ────────
 //
 // The planner publishes the stop segment as joint NODES only (MD-9) in a
 // SegmentSnapshot (trajectory.hpp). This class is the RT side of that

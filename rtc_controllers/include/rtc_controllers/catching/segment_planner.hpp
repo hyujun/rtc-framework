@@ -2,7 +2,7 @@
 //
 // What PlannerCycle knows of the planner that solves the joint-node segments
 // the RT follows from APPROACH to the end of the stop (planner_cycle.hpp "THE
-// DECEL PLANNER'S PART"): the first segment of a plan the search just
+// MPC SEGMENT PLANNER'S PART"): the first segment of a plan the search just
 // produced, later segments of the plan the RT follows, and the questions the
 // cycle's re-checks ask about them. The cycle owns the SeqLock, the re-check
 // and the segment counter; which planner solves is the configuration's choice.

@@ -21,12 +21,12 @@
 // throws nothing. Buffers are members sized at construction and filled with
 // SeqLock::LoadInto: the covariance snapshot alone is 11.5 KB.
 //
-// THE DECEL PLANNER'S PART (MPC E1-F03 #629, E1-F08 #661). It runs when a
+// THE MPC SEGMENT PLANNER'S PART (MPC E1-F03 #629, E1-F08 #661). It runs when a
 // segment planner is installed (MpcSegmentPlanner, mpc_segment_planner.hpp) and the
 // optional fifth box is bound; without either, a wake is the search alone and
 // the plan is published by itself. A replan never changes the wake's
 // CycleOutcome (MD-29) — the PlanSnapshot counters and the D-7a latency keep
-// meaning what they meant; the decel account is PlannerCycleRecord::decel.
+// meaning what they meant; the segment account is PlannerCycleRecord::segment.
 //
 // A search wake that produces a plan also solves its first segment
 // (PlanFirst) and publishes the two as a PAIR (MD-56): segment first, then
@@ -121,7 +121,7 @@ struct PlannerCycleRecord {
   /// The search's own account (S6-B): candidate counts, judgement rejects,
   /// the chosen candidate's rank-gate bitmask, the switching decision, timing.
   SearchStats search{};
-  /// The decel planner's account (MPC E1-F03). `outcome == kOff` when it
+  /// The MPC segment planner's account (MPC E1-F03). `outcome == kOff` when it
   /// solved nothing this wake.
   SegmentRecord segment{};
 };
@@ -129,7 +129,7 @@ struct PlannerCycleRecord {
 static_assert(std::is_trivially_copyable_v<PlannerCycleRecord>);
 
 /// The boxes one cycle reads and writes. All owned by the controller. The
-/// first four are required; `decel` is optional (without it no segment is
+/// first four are required; `segment` is optional (without it no segment is
 /// solved and the plan is published alone).
 struct PlannerCycleIo {
   const rtc::SeqLock<TrajectorySnapshot>* traj{nullptr};
@@ -182,7 +182,7 @@ class PlannerCycle {
   /// A search is installed (ConfigureGridCatchSearch succeeded, or InstallSearch).
   [[nodiscard]] bool SearchConfigured() const noexcept { return search_ != nullptr; }
 
-  /// Non-RT. Build a MpcSegmentPlanner from `Configure`'s `params.decel` and the
+  /// Non-RT. Build a MpcSegmentPlanner from `Configure`'s `params.mpc_segment` and the
   /// cycle's clock and install it as the segment planner, in place of whatever
   /// was there — a NEW object every call. False, and no segment planner
   /// installed, with `error` naming the cause.
@@ -224,7 +224,7 @@ class PlannerCycle {
   /// InstallSegmentPlanner: each replaces the object it refers to.
   [[nodiscard]] const MpcSegmentPlanner& MpcSegmentPlannerForDiagnostics() const noexcept;
 
-  /// The seq the last stored decel segment carries (0 = none yet). Monotone
+  /// The seq the last stored segment carries (0 = none yet). Monotone
   /// over the cycle's lifetime — not reset by Configure — so the RT's `>`
   /// admission never sees a re-configure's counter restart below its memory.
   [[nodiscard]] std::uint32_t LastSegmentSeq() const noexcept { return last_segment_seq_; }
@@ -262,7 +262,7 @@ class PlannerCycle {
     post_search_context_ = context;
   }
 
-  /// Test seam: called between the decel solve and its re-check (the window a
+  /// Test seam: called between the segment solve and its re-check (the window a
   /// reset or a plan change must land in for that re-check to matter).
   void SetPostSegmentHookForTesting(PostSearchHook hook, void* context) noexcept {
     post_segment_hook_ = hook;
@@ -291,9 +291,9 @@ class PlannerCycle {
   PostSearchHook pair_store_hook_{nullptr};
   void* pair_store_context_{nullptr};
 
-  // The decel planner's part of a wake (MPC E1-F08): a plan goes out with its
+  // The MPC segment planner's part of a wake (MPC E1-F08): a plan goes out with its
   // first segment, and a followed plan's segment is replanned. Off without a
-  // decel box or an installed segment planner — the plan is then published
+  // segment box or an installed segment planner — the plan is then published
   // alone.
   [[nodiscard]] bool SegmentActive() const noexcept {
     return io_.segment != nullptr && segment_planner_ != nullptr;

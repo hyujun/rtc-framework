@@ -1,4 +1,4 @@
-// E1-F01 (#627): decel MPC core — jerk-input condensed QP with first-order
+// E1-F01 (#627): MPC segment core — jerk-input condensed QP with first-order
 // torque rows and slack (mpc_segment_core.hpp). Each #627 "Done when" item maps to a
 // named test here:
 //   1 ZeroSolutionAtRest                 5 TheAllocationGatesAreArmed,

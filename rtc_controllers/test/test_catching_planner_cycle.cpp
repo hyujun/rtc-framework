@@ -181,7 +181,7 @@ TEST(PlannerActivityPredicate, SearchesOnlyInTrackingAndApproach) {
       {Mode::kApproach, PlannerActivity::kSearch},
       {Mode::kCommitted, PlannerActivity::kMonitor},
       {Mode::kClosing, PlannerActivity::kMonitor},
-      // MPC E1-F03 (MD-29): DECEL hosts the decel MPC's post-catch replans.
+      // MPC E1-F03 (MD-29): DECEL hosts the segment MPC's post-catch replans.
       {Mode::kDecel, PlannerActivity::kDecel},
       {Mode::kHold, PlannerActivity::kIdle},
       {Mode::kRetreat, PlannerActivity::kIdle},
@@ -1223,9 +1223,9 @@ TEST(PlannerCycleInterfaces, RightAfterAPairTheSearchWaitsTheInstalledPlannersPe
 
 TEST(PlannerCycleInterfaces, AWakeThroughTheInterfacesAllocatesNothing) {
   // G3-K for the paths OneWakeAllocatesNothing does not reach — it runs the
-  // stub and binds no decel box: the pair, the three kinds of replan and a
+  // stub and binds no segment box: the pair, the three kinds of replan and a
   // trial reset, with implementations installed. What an implementation
-  // allocates is its own suite's (AFullSearchAllocatesNothing, the decel
+  // allocates is its own suite's (AFullSearchAllocatesNothing, the MPC segment
   // planner's malloc gates); this is the cycle's part.
   auto rig = std::make_unique<FakeRig>();
   rig->boxes.traj.Store(Traj(3));

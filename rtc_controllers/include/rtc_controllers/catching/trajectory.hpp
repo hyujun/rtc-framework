@@ -4,7 +4,7 @@
 //   TrajectorySnapshot — vision prediction, written by the nrt ingress
 //                        (L1), read every RT tick (L2) and by the planner (L3)
 //   PlanSnapshot       — planner (L3) → RT tick (L4/L7)
-//   SegmentSnapshot  — planner (L3) → RT tick: the decel MPC's stop segment
+//   SegmentSnapshot  — planner (L3) → RT tick: the segment MPC's stop segment
 //                        as joint nodes (MPC plan E1-F02, MD-27)
 //
 // SeqLock requires trivially copyable payloads, and Eigen::Vector3d is not one,
@@ -39,7 +39,7 @@ inline constexpr int kCap = 40;
 inline constexpr int kMaxPlanNv = 32;
 
 /// Node capacity of a published segment: N ≤ kMaxSegmentNodes, so a payload holds
-/// N + 1 node columns. The decel MPC core (mpc_segment_core.hpp, which includes this
+/// N + 1 node columns. The MPC segment core (mpc_segment_core.hpp, which includes this
 /// header) uses it for its stop segment and its block array; the core's own
 /// horizon, pre-catch nodes included, is bounded by its kMaxMpcNodes.
 inline constexpr int kMaxSegmentNodes = 24;
@@ -139,7 +139,7 @@ struct PlanSnapshot {
   bool valid{false};
 };
 
-/// Planner → RT: the decel MPC's stop segment (MPC plan E1-F02, MD-27). A
+/// Planner → RT: the segment MPC's stop segment (MPC plan E1-F02, MD-27). A
 /// SIBLING of PlanSnapshot on its own SeqLock, not a field of it: the RT stops
 /// taking PlanSnapshots once it has committed (JudgePlan too_late / repeat),
 /// and the stop segment is re-planned after that, up to k_max grid points past
