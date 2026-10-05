@@ -1939,10 +1939,11 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
     const std::shared_ptr<const pinocchio::Model>& model,
     const rtc::catching::GridCatchSearchModel& pm) {
   if (pm.nv > rtc::catching::kMaxSegmentNv) {
-    RCLCPP_ERROR(logger_,
-                 "planner.decel_mpc: the arm has %d joints but a decel segment carries at most "
-                 "%d (kMaxDecelNv) — set supervisor.decel.mode: closed_form or raise the capacity",
-                 pm.nv, rtc::catching::kMaxSegmentNv);
+    RCLCPP_ERROR(
+        logger_,
+        "planner.decel_mpc: the arm has %d joints but a decel segment carries at most "
+        "%d (kMaxSegmentNv) — set supervisor.decel.mode: closed_form or raise the capacity",
+        pm.nv, rtc::catching::kMaxSegmentNv);
     return false;
   }
   const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
@@ -2061,7 +2062,7 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   }
   if (!segment_follower_.Initialized() || segment_follower_.Nv() != arm_dof_) {
     return "the segment sampler has no catch sub-model (planner.sub_model, the catch frame, "
-           "at most kMaxDecelNv arm joints)";
+           "at most kMaxSegmentNv arm joints)";
   }
   if (!(segment_k_n_ > 0.0)) {
     return "joint_cmd.K_n is not above 0 (the posture feedforward divides by it, MD-36)";

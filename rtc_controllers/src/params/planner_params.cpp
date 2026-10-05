@@ -505,10 +505,11 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   // The stop-path weight (0 = off). The core takes any value >= 0; the upper
   // bound is the largest one its solves are tested with — nothing downstream
   // (not the configure warm-up either) would refuse a larger one.
-  d.w_perp = ReadInterval(cost, "w_perp", "decel_mpc.cost.w_perp", d.w_perp, 0.0, false,
-                          kMpcSegmentStopPathWeightMax, false,
-                          "[0, 1e4] (kDecelStopPathWeightMax, the largest weight the cores are "
-                          "tested with)");
+  d.w_perp =
+      ReadInterval(cost, "w_perp", "decel_mpc.cost.w_perp", d.w_perp, 0.0, false,
+                   kMpcSegmentStopPathWeightMax, false,
+                   "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
+                   "tested with)");
   d.axis_theta_max =
       ReadInterval(dcatch, "axis_theta_max", "decel_mpc.catch.axis_theta_max", d.axis_theta_max,
                    0.0, true, 3.14159265358979323846, true, "(0, pi)");
@@ -521,7 +522,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   d.reference_rest_tol =
       ReadInterval(lin, "reference_rest_tol", "decel_mpc.linearization.reference_rest_tol",
                    d.reference_rest_tol, 0.0, true, kSegmentRestTol, false,
-                   "(0, 1e-3] (kDecelRestTol, the bound the RT admits a published node N by)");
+                   "(0, 1e-3] (kSegmentRestTol, the bound the RT admits a published node N by)");
   d.ref_speed_fraction =
       ReadInterval(lin, "ref_speed_fraction", "decel_mpc.linearization.ref_speed_fraction",
                    d.ref_speed_fraction, 0.0, true, 1.0, false, "(0, 1]");

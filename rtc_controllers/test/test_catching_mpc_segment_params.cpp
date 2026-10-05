@@ -491,7 +491,7 @@ TEST(MpcSegmentParams, RejectsADesignKeyByName) {
     ASSERT_FALSE(why.empty()) << body << " was accepted";
     EXPECT_NE(why.find("planner.decel_mpc.linearization.reference_rest_tol'"), std::string::npos)
         << why;
-    EXPECT_NE(why.find("kDecelRestTol"), std::string::npos) << why;
+    EXPECT_NE(why.find("kSegmentRestTol"), std::string::npos) << why;
   }
   EXPECT_TRUE(message("linearization: {reference_rest_tol: 1.0e-3}").empty());
   // The cross-check message echoes tiny tolerances as written, not as 0.000000.
@@ -572,7 +572,7 @@ TEST(MpcSegmentParams, RejectsTheStopPathWeightByName) {
     ASSERT_FALSE(why.empty()) << "w_perp: " << bad << " was accepted";
     EXPECT_TRUE(has(why, key)) << why;
     EXPECT_TRUE(has(why, "must be a finite number in [0, 1e4]")) << why;
-    EXPECT_TRUE(has(why, "kDecelStopPathWeightMax")) << why;
+    EXPECT_TRUE(has(why, "kMpcSegmentStopPathWeightMax")) << why;
     EXPECT_FALSE(has(why, "w_delta")) << why;
     EXPECT_FALSE(has(why, "rho_tau")) << why;
   }

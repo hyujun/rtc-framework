@@ -202,7 +202,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   }
   if (!model.arm || model.nv < 1 || model.nv > kMaxSegmentNv || model.arm->nv != model.nv) {
     return fail("the arm model is missing or its joint count is outside 1.." +
-                std::to_string(kMaxSegmentNv) + " (kMaxDecelNv)");
+                std::to_string(kMaxSegmentNv) + " (kMaxSegmentNv)");
   }
   // Upper bounds keep every seconds → ns conversion far from int64 overflow.
   if (!std::isfinite(consts.eta_v) || !(consts.eta_v > 0.0) || consts.eta_v > 1.0 ||
@@ -273,7 +273,7 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
     auto core = std::make_unique<MpcSegmentCore>();
     const MpcSegmentCoreReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
     if (r != MpcSegmentCoreReason::kNone) {
-      return fail("DecelMpc::Init for replan instance " + std::to_string(k) +
+      return fail("MpcSegmentCore::Init for replan instance " + std::to_string(k) +
                   " (N = " + std::to_string(mp.n_nodes) + "): " + MpcSegmentCoreReasonName(r));
     }
     core->ResizeResult(results_[U(k)]);
@@ -394,7 +394,7 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
     auto core = std::make_unique<MpcSegmentCore>();
     const MpcSegmentCoreReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
     if (r != MpcSegmentCoreReason::kNone) {
-      why = "DecelMpc::Init for the catch core n_pre = " + std::to_string(j) + ": " +
+      why = "MpcSegmentCore::Init for the catch core n_pre = " + std::to_string(j) + ": " +
             MpcSegmentCoreReasonName(r);
       return false;
     }
