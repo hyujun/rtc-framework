@@ -68,7 +68,7 @@ rtc_tsid/
 │   ├── kinematics/
 │   │   └── clik_reference.hpp          -- ClikReferenceGenerator — velocity-level CLIK low-level reference
 │   └── solver/
-│       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼. `Init()` 1회 할당 후 `Solve()` 는 할당 없음 (`test_catch_pose_ik` 가 두 게이트로 실측). `ResetWarmStart()` 는 다음 `Solve()` 를 x=y=z=0 에서 시작시킨다 — **연속 solve 가 서로 다른 문제일 때** (오프라인 sweep·후보 루프) warm start 는 답을 호출 순서에 의존하게 만든다
+│       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼. `Init()` 1회 할당 후 `Solve()` 는 할당 없음 (`test_catch_pose_ik` 가 두 게이트로 실측). `ResetWarmStart()` 는 다음 `Solve()` 를 x=y=z=0 에서 시작시킨다 — **연속 solve 가 서로 다른 문제일 때** (오프라인 sweep·후보 루프) warm start 는 답을 호출 순서에 의존하게 만든다. `EqualityDual()` · `InequalityDual()` 은 마지막 `Solve()` 의 multiplier 를 참조로 낸다 (복사 · 할당 없음, `converged` 일 때만 뜻이 있다) — 부호는 ProxQP 의 정류 조건 `H x + g + Aᵀy + Cᵀz = 0` 이라 상한이 활성인 행은 z > 0, 하한이면 z < 0 이다
 ├── src/                                -- 구현 파일
 ├── config/                             -- YAML 설정 파일
 ├── test/                               -- GTest 파일 (ament_add_gtest 등록 — CMakeLists.txt 참조)
@@ -333,7 +333,7 @@ colcon test-result --verbose
 
 | 테스트 파일 | 설명 |
 |--------|------|
-| `test_qp_solver_wrapper` | ProxSuite QP 래퍼 기본 동작 + `ResetWarmStart()` 순서 독립성 (positive control 로 warm start 누출이 이 fixture 에서 실제로 보이는지 함께 잰다) |
+| `test_qp_solver_wrapper` | ProxSuite QP 래퍼 기본 동작 + `ResetWarmStart()` 순서 독립성 (positive control 로 warm start 누출이 이 fixture 에서 실제로 보이는지 함께 잰다) + multiplier accessor 의 부호 규약 (닫힌식 multiplier, 반대 부호는 정류 조건을 만족하지 않는다는 대조) |
 | `test_wbc_types` | WBC 타입 시스템 초기화/갱신 |
 | `test_posture_task` | 자세 태스크 잔차/자코비안 |
 | `test_se3_task` | SE3 pose tracking, mask, log3 singularity, gains |

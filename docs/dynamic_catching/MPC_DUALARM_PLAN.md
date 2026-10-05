@@ -25,7 +25,7 @@
 
 - **E1 의 남은 feature 를 먼저 한다 (E1-F13 부터).** E2 는 E1 의 선행이 아니고 고치는 패키지가 달라 (E2-F04 는 `rtc_tsid`) 다른 세션에서 병행할 수 있다. E3 는 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이 끝나면 착수한다.
 - **설계 (MD-46 · MD-47).** MPC 는 waist + dual arm (G1) 용으로 설계한다 (formulation §1.3). 단일 팔은 같은 MPC 에서 dual arm · waist 전용 항과 제약만 뺀 구성이었고, g1_p1b 는 같은 코어에 그 항을 더한다 (E3). closed_form 과 mpc 는 입력 (추정기의 공 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 이고 추정기 · supervisor · 손 시퀀서 · CLIK · `ABORT_SAFE` · E-STOP 은 공통이다.
-- **E1 의 남은 feature.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 를 더한다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 아직 구현을 서술하지 않는다). 수치 코어는 하나다: `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 형태, 출하 기본값은 바꾸지 않는다. 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다. 새 구현의 이름은 값 + interface 의 순서다 — 구간 계획기는 `<값>SegmentPlanner` · `<값>SegmentCore` (`MpcSegmentPlanner` · `MpcSegmentCore` 와 같다), 탐색은 `<값>CatchSearch` (`GridCatchSearch` 와 같다). `Decel*` 이름을 새로 쓰지 않는다 (MD-48).
+- **E1 의 남은 feature.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 를 더한다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 구현한 것은 그 문서의 §17 에 적는다). 수치 코어는 하나다: `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 형태, 출하 기본값은 바꾸지 않는다. 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다. 새 구현의 이름은 값 + interface 의 순서다 — 구간 계획기는 `<값>SegmentPlanner` · `<값>SegmentCore` (`MpcSegmentPlanner` · `MpcSegmentCore` 와 같다), 탐색은 `<값>CatchSearch` (`GridCatchSearch` 와 같다). `Decel*` 이름을 새로 쓰지 않는다 (MD-48).
 - 실기와 E2 · E3 의 선후는 이 문서가 정하지 않았다 (§5).
 
 ### 게이트 G-1 — 단일 팔 mpc planner 가 closed_form planner 와 비슷한 성능을 내는가
@@ -55,7 +55,7 @@
   - 행은 참고 문서의 식 · 제약 · 비용 항 하나씩이다. 그 feature 가 맡은 절의 식은 빠짐없이 행으로 둔다 — 구현하지 않는 것도 "구현하지 않음" 과 이유를 적어 남긴다.
   - 착수 때 (Sprint Contract 와 함께): 참고 문서의 수학 (절 · 식) ↔ 구현할 알고리즘 (이산화 · 선형화 · 행의 형태 · 자료 구조 · 호출 순서) ↔ 다르게 하는 곳과 이유. 다르게 하는 곳은 이 표로 승인을 받는다.
   - 완료 때 (PR 을 올리기 전): 같은 행에 구현한 것 (파일 · 함수, 코드가 실제로 계산하는 식) · 착수 때의 계획과 달라진 곳 · 그 행을 확인하는 테스트를 더한다.
-  - 대조표는 이슈에 남고, `ref/` 는 구현한 식으로 고쳐 쓴다.
+  - 대조표는 이슈에 남는다. `ref/` 의 설계 자료는 고쳐 쓰지 않는다 — 구현한 내용을 문서 끝의 새 절에 원래 절과 대응시켜 적고, 그 절에는 최종 구현만 적는다 (사용자 결정, [README.md](README.md) 의 `ref/` 규칙).
 - 기존 test assertion 은 약화하지 않는다 (PROC-6). RT 경로 (`Compute`, 샘플러, CLIK) 는 할당 0 을 게이트로 확인한다. 실험 overlay 와 원자료는 repo 밖에 둔다.
 
 ## 3. Epic · Feature

@@ -1,6 +1,6 @@
 # Arm–Hand Ball Catching을 위한 Inverse-Dynamics MPC 수학적 구성 (개정판 v3)
 
-> **구현 상태 (2026-10-05).** 이 문서는 아직 구현을 서술하지 않는다 — 단일 arm-hand 의 NLP search (§11) 와 mpc_docking (§10) 의 설계 자료다. 구현은 E1-F13 – F21 이 한다 (epic [#621](https://github.com/hyujun/rtc-framework/issues/621)); 둘이 꽂힐 계획기 interface 는 E1-F12 가 넣었다. 구현이 이 문서와 다르게 푸는 곳 — 입력 (jerk), 격자 ($h_0$ 없음), 지평 (포구 뒤 정지 구간까지), 손 스케줄 (손 시퀀서 그대로), 바깥 루프의 범위 (RT 가 plan 을 채택할 때까지), 1 차에서 빼는 항 — 은 승인된 것이고 E1-F13 ([#739](https://github.com/hyujun/rtc-framework/issues/739)) · E1-F14 ([#740](https://github.com/hyujun/rtc-framework/issues/740)) 의 범위에 적혀 있다. 그 feature 가 구현한 식으로 이 문서를 고쳐 쓴다.
+> **구현 상태.** §0 – §16 은 설계 자료이고 고치지 않는다 — 원래 설계와 구현을 견주어 볼 수 있게 그대로 둔다. 구현한 내용은 문서 끝의 §17 에 원래 절과 대응시켜 적는다 (17.$n$ 이 §$n$ 의 구현). 지금 §17 은 mpc_docking 의 수치 코어 (§10 의 inner 문제, E1-F13 [#739](https://github.com/hyujun/rtc-framework/issues/739)) 를 적는다. NLP search (§11) 와 계획기 · RT 쪽은 아직 구현하지 않았다 (E1-F14 – F21, epic [#621](https://github.com/hyujun/rtc-framework/issues/621)).
 
 작성일: 2026-10-02 (v1) · 개정: 2026-10-02 (v2, v3)
 
@@ -1235,3 +1235,256 @@ Independent coordinate로 reduction할 수 있다면 대응하는 reduced dynami
 - **확립된 방법 (b)**: RTI와 preparation/feedback 분리, shrinking-horizon NMPC, 예측 갱신마다의 포획 재계획.
 - **설계 제안 (c)**: Crossing-plane 분해, timing 기반 closing speed 하한, anticipated covariance와 drift margin, screening 조건 조합, jump 공분산 식(표준 결과로부터 유도), $\tau_{\mathrm{react}}$ 의 세 조건 결정, 절대 시각 격자와 국소 연속 포획 시각의 결합, reference 기반 초기 상태, arm/hand 정보 시각의 분리.
 - **대상 로봇에서 식별·검증할 설계 parameter**: Corridor 형상, weight, capture window, latency, $t_{\mathrm{occ}}$, $a_{\mathrm{lat}}$, $E_{\max}$, risk budget, gating 임계값.
+
+## 17. 구현 — mpc_docking 수치 코어
+
+§0 – §16 은 설계이고 이 절은 구현이다. `rtc_controllers` 의 `MpcDockingSegmentCore` (`catching/mpc_docking_segment_core.hpp`) 와 그것이 부르는 함수들 (`catching/mpc_docking_relative_state.hpp`, `catching/ball_node_samples.hpp`) 이 실제로 계산하는 식을 적는다. 소절 번호는 원래 절과 대응한다 — 17.$n$ 이 §$n$ 의 구현이다. 설계와 다른 곳은 이 절의 식이 코드의 것이다. 구현하지 않은 항도 소절마다 적는다.
+
+### 17.1 범위
+
+- 구현한 것은 §10 의 inner 문제 하나다 — 포구 시각 $t_c$ 가 정해진 후보 하나에 대해 팔 궤적을 푼다. 궤적은 포구에서 끝나지 않고 그 뒤 정지할 때까지 이어진다.
+- 결정변수는 팔 관절뿐이다. 모델은 호출자가 주는, 손 관절을 잠근 팔 모델이고 `model.armature` 에 입력 armature 를 더해 쓴다 (§7.2 의 보수 쪽 모델).
+- §11 의 바깥 루프 (후보 집합 · $J_{\mathrm{time}}$ · $J_{\mathrm{switch}}$ · 연속 포획 시각), §12 의 실행 구조, hand schedule (§6.2) 은 이 코어에 없다. 폐쇄 시각은 손 시퀀서가 정하고 코어는 그 명목값 $\delta_0$ 만 받는다 (17.8).
+- 코어는 ROS · 컨트롤러 · 로봇 이름을 모른다. 호출하는 것은 테스트뿐이고, 계획기에 꽂는 일은 다른 feature 가 한다.
+
+### 17.2 표기와 시간축
+
+격자는 포구 시각에 닻을 내린다. 포구 전 구간이 $n_{pre}$ 개 (간격 $\Delta_a$), 정지 구간이 $n_{stop}$ 개 (간격 $\Delta_s$) 이고 $N=n_{pre}+n_{stop}$, 포구 노드는 $k_c=n_{pre}$ 다.
+
+$$
+t_k=\begin{cases}t_c-(k_c-k)\Delta_a,&k\le k_c\\ t_c+(k-k_c)\Delta_s,&k\gt k_c\end{cases}
+$$
+
+§4.1 의 비균일 첫 구간 $h_0$ 는 없다 — 노드 0 의 시각이 곧 $t_c-n_{pre}\Delta_a$ 다. 풀 수 있는 것은 $n_{pre}\ge1$ 뿐이다.
+
+입력은 구간 상수 jerk $u_k$ 이고 상태는 $x_k=(q_k,\dot q_k,\ddot q_k)$ 다.
+
+$$
+q_{k+1}=q_k+\Delta_k\dot q_k+\tfrac12\Delta_k^2\ddot q_k+\tfrac16\Delta_k^3u_k,\qquad
+\dot q_{k+1}=\dot q_k+\Delta_k\ddot q_k+\tfrac12\Delta_k^2u_k,\qquad
+\ddot q_{k+1}=\ddot q_k+\Delta_ku_k .
+$$
+
+$u_k$ 는 블록마다 같은 값을 쓴다 (move blocking — 블록은 포구 노드를 넘지 않고, 포구 뒤에 셋 이상). 풀이의 변수는 $z=\tilde{\mathbf u}/u_s$ ($u_s$ 는 jerk 의 scale) 이고 상태는 소거한다 — $x_k=\Phi_kx_0+\Gamma_kE\tilde{\mathbf u}$. $x_0$ 는 입력이다.
+
+### 17.3 공 예측과 uncertainty
+
+코어는 공을 전파하지 않는다. 입력은 노드 $k=0,\dots,k_c$ 의 공 표본 $(\hat p_{b,k},\hat v_{b,k},\hat a_{b,k})$ 과 포구 노드의 6×6 공분산 $\Sigma_b$ ($[p;v]$ 순서, model world) 다.
+
+- **평균.** 예측 궤적의 표본 사이는 양 끝의 $p,v,a$ 를 맞추는 5 차 Hermite 로 보간한다 (다른 planner 와 같은 함수). §3.4 의 한 점 Taylor 전개가 아니다.
+- **공분산.** 가장 가까운 표본 $i$ 에서 $\Sigma(t)=F(t-t_i)\,\Sigma_i\,F(t-t_i)^\top$, $F(\Delta)=\begin{bmatrix}I&\Delta I\\0&I\end{bmatrix}$ (§3.4 그대로). 표본을 대칭화하고 쓴다.
+- **쓸 수 없는 공분산.** 원소가 비유한이거나, 예측 궤적과 다른 메시지의 것이거나, 분산이 음이면 '없음' 으로 표시한다 — 0 으로 바꾸지 않는다. 코어는 $\lambda_{\min}(\Sigma_b)\ge-10^{-9}\operatorname{tr}\Sigma_b$ 도 확인하고, 확률 제약이 켜져 있는데 공분산을 쓸 수 없으면 풀지 않고 사유를 낸다.
+- **확률 제약을 끈 풀이.** $\Sigma_b=0$ 으로 놓는다. 17.8 의 행은 결정적 행에서 $\kappa\varepsilon_\sigma$ 만큼 조인 것이 되고 timing 행은 만들지 않는다.
+
+구현하지 않은 것: §3.1 의 비행 모델, §3.3 의 anticipated covariance 와 drift margin, §3.5 의 정보 시각 · occlusion, §3.6 의 $\tau_{\mathrm{react}}$, §3.7 의 jump 공분산 · NIS gating. 공분산은 메시지의 $\Sigma_b(t_c\mid s_j)$ 를 그대로 쓴다.
+
+### 17.4 팔 예측과 inverse dynamics
+
+$\tau$ 는 변수가 아니다. 노드마다 $\tau_k=\mathrm{RNEA}(q_k,\dot q_k,\ddot q_k)$ 로 계산하고, QP 에는 반복값 $\bar x_k$ 에서의 1 차 모델을 넣는다.
+
+$$
+\tau_k\approx\bar\tau_k+D_k(x_k-\bar x_k),\qquad D_k=\begin{bmatrix}\partial_q\tau&\partial_{\dot q}\tau&M(\bar q_k)\end{bmatrix}.
+$$
+
+- **토크 행** ($k=1,\dots,N$): $\tau_{lo}\le\tau_k\le\tau_{hi}$. 관절마다 $1/\tau_{\max,j}$ 로 나눠 건다. $\tau_{lo}$ · $\tau_{hi}$ 는 여유 $\Delta\tau$ 를 이미 뺀 입력값이다 (없으면 $\mp\tau_{\max}$). hard 행이고 17.10 의 elastic 으로 구현한다. 노드 0 은 $x_0$ 라 행이 없다. 끝 노드의 행은 정지 자세의 중력 토크 판정이다.
+- **box** ($k=1,\dots,N$): $q_{\min}\le q_k\le q_{\max}$, $\vert\dot q_k\vert\le\dot q_{\max}$ 는 늘 건다. $\vert\ddot q_k\vert\le\ddot q_{\max}$ 와 $\vert u_k\vert\le j_{\max}$ 는 켜고 끄는 행이다. 선형 hard 행이라 elastic 이 없다. $x_0$ 가 box 밖이면 풀지 않는다.
+- **종단:** $\dot q_N=\ddot q_N=0$ (등식).
+- 한계는 노드에서만 건다. §4.3 의 구간 내부 극값 검사는 코어에 없다.
+- 연속 시간 기준 (§4.4) 은 구간별 3 차식이다 — 코어는 노드를 내고 RT 샘플러가 위 적분식으로 평가한다.
+
+### 17.5 손 좌표계의 상대 위치와 속도
+
+capture frame $H$ 는 팔 모델의 frame 이다. $R=R_{WH}$, $p_h$ 는 그 원점, Jacobian 은 `LOCAL_WORLD_ALIGNED` 하나만 쓴다 ($v_h=J_p\dot q$, $\omega_h=J_\omega\dot q$).
+
+$$
+r^W=\hat p_b-p_h,\qquad r^H=R^\top r^W,\qquad \nu^H=R^\top\big(\hat v_b-v_h-\omega_h\times r^W\big),
+$$
+
+$$
+s=e_3^\top r^H,\qquad\rho=E_\perp^\top r^H,\qquad c=-e_3^\top\nu^H .
+$$
+
+$\nu^H$ 는 §5.1 의 식과 같은 양이다 ($R^\top(\omega\times r)=\omega^H\times r^H$). 미분은
+
+$$
+\frac{\partial r^H}{\partial q}=-R^\top J_p+[r^H]_\times R^\top J_\omega=\frac{\partial\nu^H}{\partial\dot q},
+$$
+
+$$
+\frac{\partial\nu^H}{\partial q}=[\nu^H]_\times R^\top J_\omega+R^\top\Big(-\partial_qv_h+[r^W]_\times\partial_q\omega_h+[\omega_h]_\times J_p\Big).
+$$
+
+공은 world 에 고정된 점이라 마지막 항 $[\omega_h]_\times J_p$ 가 있다 (손에 고정된 점의 속도 미분에는 없는 항이다). $\partial_qv_h$ 는 pinocchio 의 점 속도 미분, $\partial_q\omega_h$ 는 frame 속도 미분의 각속도 행이다 (둘 다 `LOCAL_WORLD_ALIGNED`).
+
+### 17.6 포획 조건
+
+- **통과 평면** (§6.1). 포구 노드에 $\ell_{k_c}=0$, $\ell=s-s_{\mathrm{ent}}$. 포구 노드는 지평의 끝이 아니라 내부 노드다.
+- **lateral capture set.** 면 $(\tilde a_i,\tilde b_i)$ 를 ball-center 좌표의 파라미터로 받는다 (최대 8 면). 반지름 erosion 은 코어가 하지 않는다. 행은 17.8.
+- **접근 집합** $\mathcal A$ (§6.3). `Init` 때 정하고 풀이 동안 고정한다: $0\lt t_c-t_k\le T_{app}$ 인 노드 가운데 $k\ge1$ 인 것.
+- **gap.** $k\in\mathcal A$ 에서 $\ell_k\ge0$ (hard — elastic).
+- **corridor.** $g_c=\Vert\rho_k\Vert^2-\big(r_{\mathrm{ent}}+\ell_k^+\tan\theta+s_{c,k}\big)^2\le0$, $s_{c,k}\ge0$, $\ell^+=\max(\ell,0)$. $\ell^+$ 는 수치 가드다 — $\ell\ge0$ 이 그 자체로 제약이라 반복 중에는 어길 수 있고, 가드가 없으면 괄호가 0 이 되어 어떤 $s_c\ge0$ 로도 선형화한 행을 풀 수 없다. $\ell\ge0$ 에서는 §6.3 의 식과 같다.
+- **closing envelope.** $c_k^2\le c_{\mathrm{ent,max}}^2+2a_{\mathrm{brake}}\ell_k+s_{v,k}$, $s_{v,k}\ge0$ (§6.4 그대로).
+- **slack 의 값.** $s_c$ · $s_v$ 는 QP 의 변수다. 반복값에서는 그 점의 최소값 $s_c=\max(0,\Vert\rho\Vert-r_{\mathrm{ent}}-\ell^+\tan\theta)$, $s_v=\max(0,c^2-c_{\mathrm{ent,max}}^2-2a_{\mathrm{brake}}\ell)$ 로 평가한다.
+- **terminal velocity set** (§6.5) 은 조인 형태로 건다 — 17.8.
+
+구현하지 않은 것: 무접촉 일관성 조건의 검증 (오프라인의 일), hand schedule 과 preshape 조건, M1 (contact-triggered).
+
+### 17.7 충격
+
+접촉점은 capture frame 의 고정점 $p_c=p_h+Rp_c^H$ ($p_c^H$ 는 파라미터), 법선은 $n=Re_3$ 다 (§8.4 의 근사 $n\approx d$).
+
+$$
+J_c=J_p-[Rp_c^H]_\times J_\omega,\qquad g_n=n^\top(\hat v_b-J_c\dot q),\qquad c_n=-g_n,
+$$
+
+$$
+\beta_h=f^\top M^{-1}f,\quad f=J_c^\top n,\qquad m_{\mathrm{red}}=\Big(\frac1{m_b}+\beta_h\Big)^{-1},\qquad
+E_n^-=\tfrac12m_{\mathrm{red}}c_n^2,\qquad P_n=(1+e)\,m_{\mathrm{red}}c_n .
+$$
+
+$\beta_h$ 는 $My=f$ 를 Cholesky 로 풀어 $f^\top y$ 로 계산한다. 기울기는
+
+$$
+\frac{\partial\beta_h}{\partial q}=2\,n^\top\partial_q(J_cy)\big\vert_y+2\,(J_cy)^\top\partial_qn-y^\top\partial_q(My)\big\vert_y,\qquad\partial_qn=-[n]_\times J_\omega,
+$$
+
+이고 $\partial_q(My)\vert_y$ 는 $\mathrm{RNEA}(q,0,y)$ 의 $q$ 미분에서 중력 미분을 뺀 것이다.
+
+- **행** (임계가 유한할 때만): $g_n\le0$, $E_n^-/E_{\max}\le1$, $P_n/P_{\max}\le1$. 기본은 임계가 무한대 — 행이 없다.
+- **비용** $w_EE_n^-/E_{\mathrm{ref}}$ 는 잔차 $\sqrt{m_{\mathrm{red}}/2}\;c_n$ 의 제곱으로 넣는다 (17.10 의 Gauss–Newton).
+
+구현하지 않은 것: closed-chain $\beta_h^{cc}$ (손은 잠근 모델이다).
+
+### 17.8 확률 제약
+
+로봇 상태를 고정하고 공의 공분산만 쓴다 (§8.1 의 로봇 추종 항은 없다). $\Sigma_p$ 는 $\Sigma_b$ 의 위치 블록이다.
+
+**통과 평면의 분포** (§8.2).
+
+$$
+\Sigma_r^H=R^\top\Sigma_pR,\qquad\Pi=I+\frac{\nu^He_3^\top}{\tilde c},\qquad\tilde c=\max(c,c_{\min}),\qquad
+\Sigma_\rho=E_\perp^\top\Pi\,\Sigma_r^H\,\Pi^\top E_\perp,
+$$
+
+$$
+\sigma_s=\sqrt{d^\top\Sigma_pd+\varepsilon_\sigma^2},\quad d=Re_3,\qquad\sigma_t=\sigma_s/\tilde c .
+$$
+
+$\tilde c$ 는 수치 가드다 — $c\ge c_{\min}$ 이 제약이라 반복 중에는 어길 수 있고 $\Pi$ 는 $c\to0$ 에서 발산한다. $c\gt c_{\min}$ 에서는 §8.2 의 식과 같다. 모든 표준편차는 $\sqrt{\text{분산}+\varepsilon_\sigma^2}$ 다 (분산 0 에서 제곱근은 미분이 없다 — §8.3 은 lateral 행에만 적었다).
+
+**lateral 행** (포구 노드, 면마다).
+
+$$
+\tilde a_i^\top\rho+\kappa_i\sqrt{\tilde a_i^\top\Sigma_\rho\tilde a_i+\varepsilon_\sigma^2}\le\tilde b_i,\qquad\kappa_i=\Phi^{-1}(1-\epsilon_i),\quad0\lt\epsilon_i\le\tfrac12 .
+$$
+
+분산은 $\tilde a_i^\top\Sigma_\rho\tilde a_i=w^\top\Sigma_pw$, $w=R\,\Pi^\top E_\perp\tilde a_i$ 의 이차형식으로 직접 계산한다 (인수분해가 없어 특이한 $\Sigma_p$ 도 된다). 기울기는 $\Pi$ 가 $\nu^H$ 에, $\Sigma_r^H$ 가 $R$ 에 의존하는 것을 포함한다.
+
+**속도 행** (§8.3). capture frame 의 방향 $m$ 에 대해 $\operatorname{Var}(m^\top\nu^H)=\ell^\top\Sigma_b\ell$, $\ell=\begin{bmatrix}\omega_h\times Rm\\Rm\end{bmatrix}$ (§8.1 의 $L_N$ 과 같다). $\sigma_c$ 는 $m=e_3$, $\sigma_j$ 는 $m=E_\perp u_j$ 의 것이다.
+
+$$
+c-\kappa_\nu\sigma_c\ge c_{\min},\qquad c+\kappa_\nu\sigma_c\le c_{\mathrm{cap,max}},\qquad
+u_j^\top E_\perp^\top\nu^H+\kappa_\nu\sigma_j\le v_{\perp,\max}\cos(\pi/m)\quad(j=0,\dots,m-1).
+$$
+
+**timing 행** (§8.4, M2). 폐쇄는 통과보다 명목상 $\delta_0$ 뒤에 온다. $\delta_0$ 는 창의 중앙이 아닐 수 있다 (손 시퀀서가 정한다).
+
+$$
+c\,\sqrt{\sigma_{\max}^2-\sigma_\tau^2}\ge\sigma_s,\qquad
+\Phi\Big(\frac{\delta_{hi}-\delta_0}{\sigma_{\max}}\Big)-\Phi\Big(\frac{\delta_{lo}-\delta_0}{\sigma_{\max}}\Big)=1-\epsilon_t .
+$$
+
+$\sigma_{\max}$ 는 `Init` 에서 이 식의 근으로 구한다 ($\delta_{lo}\lt\delta_0\lt\delta_{hi}$ 에서 좌변이 $\sigma$ 에 단조 감소라 근이 하나다). $\delta_0$ 가 중앙이면 $\sigma_{\max}=\Delta_{\mathrm{win}}/2\kappa_t$ 로 §8.4 의 식과 같다. $\delta_0$ 가 창 안 (strict) 이 아니거나 $\sigma_{\max}\le\sigma_\tau$ 이면 `Init` 이 거부한다.
+
+**선형화 유효 조건** (§8.2). 제약이 아니라 풀이 뒤의 진단값이다 — $\tfrac12\Vert E_\perp^\top a_{\mathrm{rel}}\Vert(\kappa\sigma_t)^2$ 를 가장 가까운 면까지의 여유로 나눈 비. 여유가 양이 아니거나 $\tilde c$ 가 가드에 걸리면 '정의 안 됨' 으로 낸다.
+
+구현하지 않은 것: sensor coverage (M1), hand 정보 시각의 공분산, $\operatorname{Cov}(\delta\rho,\delta t)$, $J_{\mathrm{unc}}$ (§8.5), 공–link clearance 의 margin (§8.6), 2 차 보정 · scenario 검증.
+
+### 17.9 목적함수
+
+$$
+\begin{aligned}
+J=\;&\Delta_a\sum_{k=0}^{k_c-1}\Big[\Vert\tau_k\Vert^2_{R_\tau}+\Vert\ddot q_k\Vert^2_{R_a}+\Vert u_k/u_s\Vert^2_{R_j}+\Vert q_k-q_{\mathrm{nom}}\Vert^2_{Q_q}+w_m\psi_m(q_k)\Big]\\
+&+\Delta_a\sum_{k=0}^{k_c-1}\rho_T(t_k)\Big[\Vert r_k^H-r_{\mathrm{ref},k}^H\Vert^2_{Q_p}+\Vert\nu_k^H-\nu_{\mathrm{ref}}^H\Vert^2_{Q_v}\Big]\\
+&+\Vert\rho_{k_c}-\rho_{\mathrm{ref}}\Vert^2_{Q_{\rho,f}}+\Vert\nu_{k_c}^H-\nu_{\mathrm{ref}}^H\Vert^2_{Q_{\nu,f}}+w_E\frac{E_n^-}{E_{\mathrm{ref}}}
++\Delta_a\sum_{k\in\mathcal A}\big(\lambda_1^\top s_k+\Vert s_k\Vert^2_{\Lambda_2}\big)\\
+&+\Delta_s\sum_{k=k_c}^{N-1}\Vert u_k/u_s\Vert^2_{R_{j,stop}}+\Delta_s\,w_\perp\sum_{k=k_c}^{N}\big\Vert P_\perp\big(p_h(q_k)-p_{\mathrm{line}}\big)\big\Vert^2 .
+\end{aligned}
+$$
+
+$\rho_T(t)=\exp[-(t-t_c)^2/2\sigma_T^2]$, $r_{\mathrm{ref},k}^H=r_{\mathrm{ref}}^H+(t_c-t_k)(-\nu_{\mathrm{ref}}^H)$, $r_{\mathrm{ref}}^H=(\rho_{\mathrm{ref}},s_{\mathrm{ent}})$ 다.
+
+- 앞의 세 줄이 §9.2 – §9.5 의 항이고 마지막 줄은 정지 구간의 항이다 (jerk 와, 가중이 0 이 아닐 때 정지 직선에서 벗어난 거리). 결과는 두 묶음을 따로 낸다.
+- running cost 는 구간 길이를 곱하고, 식에 $\tfrac12$ 은 없다 (§9.1).
+- **노드 0.** $x_0$ 가 고정이라 노드 0 의 $\tau$ · $\ddot q$ · $q$ · $\psi_m$ · 근방 항은 상수다. QP 에는 노드 $1,\dots,k_c-1$ 만 들어가고 노드 0 의 값은 결과의 $J$ 에 더한다 — 후보 사이에서 $J$ 를 비교할 수 있게. $u_0$ 는 변수라 jerk 항은 stage 0 부터 있다. $k_c=1$ 이면 QP 에 running 항과 접근 행이 없다.
+- 입력이 jerk 라 §9.2 의 $j_k$ 는 $u_k$ 그 자체다.
+- $\psi_m=-\log\det(\bar J\bar J^\top+\delta I)$, $\bar J=D_x^{-1}JD_q$ ($J$ 는 6×$n$ frame Jacobian). QP 에는 기울기만 넣는다 — $\partial\psi_m/\partial q_k=-2\operatorname{tr}\big(A^{-1}\,\partial_{q_k}\bar J\,\bar J^\top\big)$, $A=\bar J\bar J^\top+\delta I$, $\partial_{q_k}J$ 는 운동학의 Hessian. 가중이 0 이면 계산하지 않는다.
+
+구현하지 않은 것: $J_{\mathrm{time}}$ · $J_{\mathrm{switch}}$ (한 후보 안에서 상수 — 바깥 루프의 것), $J_{\mathrm{unc}}$, 자세 항 $\Vert e_R\Vert^2_{Q_R}$.
+
+### 17.10 푸는 문제와 풀이
+
+**문제.** 17.9 의 $J$ 를 $z$ 와 slack 에 대해 최소화한다. 제약은 17.4 의 종단 등식 · box · 토크 행, 17.6 의 gap · corridor · envelope · 통과 평면, 17.8 의 lateral · 속도 · timing 행, 17.7 의 충격 행 (켰을 때) 이다. §10 의 충돌 행, 공–link clearance 행, M1 행은 없다.
+
+**SQP.** 반복값은 변수 공간의 점 $\bar z$ 다. 반복마다 $\bar x=x(\bar z)$ 에서 선형화하고 step $d$ 에 대한 QP 하나를 푼다 (ProxQP). Hessian 은 Gauss–Newton — 제곱 항마다 $2L^\top WL$ ($L$ 은 잔차의 $z$ 에 대한 Jacobian) 이고 $R_j\gt0$ 이라 양정치다.
+
+**hard 인 비선형 행은 elastic 이다.** (행 군, 노드) 마다 변수 $e\ge0$ 하나를 그 군의 행들이 같이 쓰고 비용에 $\mu_Ge$ 를 더한다. 군과 위반의 단위는 다음과 같다.
+
+| 군 | 행 | 단위 |
+|---|---|---|
+| 토크 | $\tau_{lo}\le\tau_k\le\tau_{hi}$, 노드마다 | $\tau_{\max}$ 의 비 |
+| gap | $\ell_k\ge0$, 접근 노드마다 | m |
+| 통과 평면 | $-e\le\ell_{k_c}\le e$ | m |
+| lateral | lateral 행 전부 | m |
+| timing | timing 행 | m |
+| 속도 집합 | 축 방향 둘 + 다각형 $m$ 면 | m/s |
+| 충격 | $g_n$, $E_n^-/E_{\max}$, $P_n/P_{\max}$ | m/s, 임계의 비 |
+
+corridor 와 envelope 는 자기 slack 이 있어 elastic 이 없다. box 와 종단 등식은 완화하지 않는다.
+
+**실행 가능의 뜻.** 해는 hard 행 전부를 비선형 모델로 다시 평가해 위반이 허용 오차 안일 때만 실행 가능하다. elastic 은 풀리지 않는 문제의 진단이지 완화가 아니다.
+
+**merit.** $\phi(z)=J(z)+\sum_G\mu_G\sum_{\text{노드}}\max_{i\in G}\mathrm{viol}_i(z)$ — QP 와 같은 군 · 같은 단위다. slack 은 그 점의 최소값으로 평가한다. QP 의 선형 모델이 예측하는 변화는
+
+$$
+D=\nabla J^\top d+\big[J_{\mathrm{slack}}(s^{QP})-J_{\mathrm{slack}}(\bar s)\big]+\sum_G\mu_G\Big(\sum e^{QP}-\sum\max_i\mathrm{viol}_i(\bar z)\Big)
+$$
+
+이고 QP 를 정확히 풀면 $D\le0$ 이다. step 길이 $\alpha$ 는 1 에서 시작해 줄이며
+
+$$
+\phi(\bar z+\alpha d)\le\phi(\bar z)+\alpha\,\big(D^\ast+2\,\eta_{QP}\big),\qquad D^\ast=\begin{cases}\eta D,&D\lt0\\D,&D\ge0\end{cases}
+$$
+
+을 만족하는 첫 값을 받는다. $\eta_{QP}=\sum_i\mu_{G(i)}\,(\text{행 }i\text{ 의 잔차})^+$ 는 그 QP 해가 elastic 행에 실제로 남긴 잔차의 벌점 값이다 (해에서 잰 값). QP 를 허용 오차까지만 풀면 0 이어야 할 elastic 이 남아 $D\gt0$ 이 되기도 하고 행에 잔차가 남기도 한다. 해 근처에서는 얻을 감소가 그보다 작아지므로, 이것을 허용하지 않으면 판정이 step 자신의 잡음보다 작은 감소를 요구하게 된다. 그래서 도달할 수 있는 KKT 잔차의 하한은 대략 $\mu\times$ (QP 의 절대 허용 오차) 다.
+
+**벌점의 갱신.** 벌점이 정확하려면 $\mu_G\gt\sum_{i\in G}\vert\lambda_i\vert$ 여야 한다. QP 에 elastic 이 남아 있는 동안은 multiplier 가 $\mu$ 에 붙어 있어 필요한 크기를 알려 주지 않는다. 그래서 $\mu_G$ 를 기하적으로 키워 QP 를 다시 풀되, 그 증가가 elastic 의 합을 정해진 비율 이상 줄일 때만 받아들이고 아니면 되돌린다 — 줄지 않으면 그 선형화에서 행을 만족할 수 없는 것이고 $\mu$ 를 더 키워도 QP 의 조건만 나빠진다. $\mu_G$ 에는 상한이 있다.
+
+**시작점.** 시작점은 늘 선형 행 (box · 종단 정지) 을 만족한다. 줄탐색이 그 볼록 집합 안에 머물러 반복값 전부가 선형 행을 만족하므로 QP 는 늘 풀린다.
+
+- 호출자가 준 노드 궤적이 있으면 블록 jerk 로 사영한다 — 블록마다 노드 가속 차분 $(\ddot q_{k+1}-\ddot q_k)/\Delta_k$ 의 평균. 같은 격자의 이전 해는 정확히 재현된다. 사영한 궤적이 선형 행을 만족하면 그것이 시작점이다.
+- 아니면 초기화 QP 를 푼다: 선형 행 아래에서 목표까지의 거리와 jerk 를 최소화한다. 목표는 호출자의 노드 궤적 (있을 때), 또는 포구 노드의 관절 자세 $q^\ast$ (탐색의 IK 해) 와 속도 $\dot q^\ast=J_p^\top(J_pJ_p^\top+\lambda^2I)^{-1}\big(\hat v_b-R\,\nu_{\mathrm{ref}}^H\big)$ 다. 목표를 속도 한계로 미리 자르지 않는다 — 한계는 QP 의 행이 건다.
+
+**끝나는 조건.**
+
+- 수렴: $\Vert\nabla_zL\Vert_\infty\le\epsilon_{KKT}\max(1,\Vert\nabla_zJ\Vert_\infty)$, hard 행의 위반과 상보성이 허용 오차 안. $\nabla L=g+C^\top\lambda+A^\top y$ 는 QP 의 multiplier 로 계산한다 (jerk 변수에서 $-Hd$ 와 같다).
+- 실행 불가: QP 에 elastic 이 남고 (벌점을 키워도 줄지 않고), 반복값이 정류점이거나 hard 행의 위반이 정해진 반복 수 동안 정해진 비율만큼 줄지 않았을 때. 사유와 함께 위반이 가장 큰 군을 낸다.
+- 반복 상한, 기한, 줄탐색 실패, QP 실패. 기한은 반복 사이에 본다. 어느 경우든 마지막으로 수용한 반복값과 그 점의 위반 · 비용 · KKT 잔차를 낸다.
+- 반복 상한이 1 이면 줄탐색 없이 full step 하나를 낸다 (real-time iteration). 이 결과는 수렴으로 보고되지 않는다.
+
+결과는 '실행 가능' 과 '수렴' 을 따로 낸다.
+
+구현하지 않은 것: second-order correction, 후보별 국소 연속 포획 시각 (§11.5 — 격자가 고정이다), 진단용 relaxation $s_f$ 를 따로 푸는 것 (elastic 이 그 역할을 한다).
+
+### 17.15 검증
+
+§15 의 항목 가운데 이 코어의 테스트가 보는 것은 다음과 같다 (`rtc_controllers/test/test_catching_mpc_docking_*.cpp`).
+
+- 1 · 2 (frame 과 부호, transport 항): $r^H$ · $\nu^H$ 와 17.6 – 17.8 의 행 전부의 기울기를 중심 차분과 비교한다. 손이 회전하고 공이 축에서 벗어난 상태에서 본다. `LOCAL` 경로가 같은 $\nu^H$ 를 내는지도 본다.
+- 5 (crossing-plane 분포): §15 의 예 ($\hat\nu=[0.3,-0.1,-2.0]$ m/s, $\sigma=[4,4,20]$ mm, 2×10⁵ 표본) 로 $\Sigma_\rho$ 를 Monte Carlo 와 비교한다. 고정 시각 식은 같은 허용 오차에서 벗어나야 한다. 이 검사는 식의 대수를 본다 — 1 차 근사의 크기는 포물선 공과 가속 · 회전하는 손의 실제 통과점으로 따로 잰다.
+- 8 (impact): $\beta_h$ 를 RNEA 로 만든 관성행렬 · 차분으로 만든 접촉 Jacobian 과 비교하고, armature 를 더하면 $\beta_h$ 가 줄어드는 것을 본다.
+- §8.2 의 sanity check 셋 ($\Sigma=0$, $\hat\nu\parallel e_3$, 정지한 손과 축을 따라 오는 공).
+- 조립: QP 의 기울기와 행을 비선형 문제의 중심 차분과 비교한다.
+- 풀이: 실행 가능한 것이 알려진 합성 투척이 수렴하고, hard 행을 코어 밖에서 다시 계산해 본다. 실행 불가능한 투척은 그렇게 보고된다.
+
+나머지 (3 · 4 · 6 · 7 · 9 – 15) 는 이 코어의 범위가 아니다.
