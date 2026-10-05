@@ -200,11 +200,11 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 
 ## 6. YAML 파라미터
 
-값 · 기본값 · 범위는 출하 YAML (`integrated_bringup/config/{ur5e_p1b,iiwa7_leap}/controllers/demo_catching_controller.yaml`, 가속 box 는 `catching/search_grid.yaml`) 과 파서 (`rtc_controllers/src/params/catching_params.cpp`) 가 갖는다. 같은 값은 한 키만 둔다. 팔 관절 이름 · 위치 / 속도 한계는 device config (`devices.<arm>`) 에서 오고 이 표의 키가 아니다.
+값 · 기본값 · 범위는 출하 YAML (`integrated_bringup/config/{ur5e_p1b,iiwa7_leap}/controllers/demo_catching_controller.yaml`, 가속 box 도 주 파일의 `robot.arm.qdd_*`) 과 파서 (`rtc_controllers/src/params/catching_params.cpp`) 가 갖는다. 한 기능 안의 같은 값은 한 키만 둔다 (L3 §6). 팔 관절 이름 · 위치 / 속도 한계는 device config (`devices.<arm>`) 에서 오고 이 표의 키가 아니다.
 
 | 키 | 단위 | 뜻 |
 |---|---|---|
-| `robot.arm.qdd_max` | rad/s² | 팔의 상수 가속 box (관절별). 탐색의 도달 시간, QP 없는 정지 램프, homing 이 읽는다 (CLIK 은 읽지 않는다). 위치는 `catching/search_grid.yaml`. 없거나 길이가 다르거나 양수가 아니면 box 없음 |
+| `robot.arm.qdd_max` | rad/s² | 팔의 상수 가속 box (관절별). 탐색의 도달 시간, QP 없는 정지 램프, homing 이 읽는다 (CLIK 은 읽지 않는다). 위치는 주 파일 `demo_catching_controller.yaml`. 없거나 길이가 다르거나 양수가 아니면 box 없음 |
 | `robot.arm.qdd_provisional` | – | 위 box 를 실기에서 써도 되는가. true (또는 키 부재) 는 sim 경고 · 실기 구성 park |
 | `robot.arm.limit_margin` | rad | CLIK 에 넘기는 위치 box 를 좁히는 마진 $m_q$ (§4.3) |
 | `joint_cmd.K_p` | 1/s | 위치 행 게인 (CLIK 대역; L4 `k_axis` 보다 크게) |

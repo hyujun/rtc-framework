@@ -1,6 +1,6 @@
 # L7 — Supervisor: 상태 머신, 접촉 판정, 감속, abort
 
-이 문서는 현재 구현의 L7 — 포구 임무의 상태 머신, 접촉 판정, 포구 후 감속, abort, E-STOP · fault 정책 — 을 표현한다. planner 는 `closed_form` 과 `mpc` 둘이고 (`supervisor.decel.mode`, 출하 YAML 은 `mpc`), 상태 머신과 전이표는 두 planner 에 공통이며 팔의 법칙만 갈린다. 갈리는 곳은 §4.3 (`closed_form`) 과 §4.3a (`mpc`) 에 나란히 적고, 다른 절에서는 어느 planner 의 서술인지를 밝힌다.
+이 문서는 현재 구현의 L7 — 포구 임무의 상태 머신, 접촉 판정, 포구 후 감속, abort, E-STOP · fault 정책 — 을 표현한다. segment mode 는 `closed_form` 과 `mpc` 둘이고 (`planner.segment.mode`, 출하 YAML 은 `mpc`), 상태 머신과 전이표는 두 mode 에 공통이며 팔의 법칙만 갈린다. 갈리는 곳은 §4.3 (`closed_form`) 과 §4.3a (`mpc`) 에 나란히 적고, 다른 절에서는 어느 planner 의 서술인지를 밝힌다.
 
 - 배치 `[확정 D-1]`: 순수 조각 — 전이표 데이터 (`transition_table.hpp`), 감속 대상 (`decel_target.hpp`) 과 관절공간 정지 (`joint_stop.hpp`), 관절공간 homing (`joint_home.hpp`), 접촉 debounce (`contact_debounce.hpp`) — 은 `rtc_controllers/include/rtc_controllers/catching/` (namespace `rtc::catching`) 에 있고, FSM 드라이버는 포구 컨트롤러 (`integrated_bringup/src/controllers/catching/controller.cpp`, `RTControllerInterface::Compute` 안) 다. YAML 은 `integrated_bringup` 바인딩. 별도 패키지는 없다
 
@@ -155,7 +155,7 @@ $$\dot q_{c,i}\leftarrow\operatorname{sign}(\dot q_{c,i})\,\max\big(\vert\dot q_
 
 ### 4.3 가상 감속 대상 — `closed_form` 의 `DECEL` `[논문 외 유도]`
 
-`supervisor.decel.mode: closed_form` 에서 `DECEL` · `HOLD` 의 팔 기준이다. `mpc` 의 같은 구간은 §4.3a 다. `ABORT_SAFE` 의 정지는 어느 planner 에서도 이 절의 대상이 아니다 (관절공간, §4.1).
+`planner.segment.mode: closed_form` 에서 `DECEL` · `HOLD` 의 팔 기준이다. `mpc` 의 같은 구간은 §4.3a 다. `ABORT_SAFE` 의 정지는 어느 planner 에서도 이 절의 대상이 아니다 (관절공간, §4.1).
 
 `DECEL` 진입 시각 $t_s$의 기준 상태 $(x_s,\dot x_s)$에서 시작한다. $\hat u_s=\dot x_s/\Vert\dot x_s\Vert$, $\tau=t-t_s$, $\tau_s=\Vert\dot x_s\Vert/a_{dec}$.
 
@@ -173,26 +173,26 @@ $$e=x_s-p_v(0)=0,\qquad \dot e=\dot x_s-v_v(0)=0$$
 
 **층간 제약: $a_{dec}\le$ `reference.a_max`.** $e^+=\dot e^+=0$ 이므로 전환 직후 $u_{des}=a_v$ 가 되어 크기가 정확히 $a_{dec}$ 다. $a_{dec}$ 가 L4 가속 한계보다 크면 `DECEL` 첫 틱부터 포화가 걸린다. L0 파라미터 검증기가 이 관계를 검사한다 (planner 와 무관하게).
 
-정지거리 $\Vert\dot x_s\Vert^2/(2a_{dec})$는 L3 §4.9의 예약값($\dot x_s\approx\gamma_f v_c$)과 같다. **`a_dec` 는 단일 키** `supervisor.decel.a_dec` 이고 소비자는 둘이다: 계획기 탐색의 정지점 예약 (`StoppingPoint` — $p_{stop}=p_c+(\gamma_f\Vert v\Vert)^2/(2a_{dec})\,\hat v$, 두 planner 에 공통) 과 이 절의 감속 대상 (`closed_form` 만). `mpc` 에서는 RT 가 이 값을 쓰지 않는다 — 탐색의 예약에만 남는다.
+정지거리 $\Vert\dot x_s\Vert^2/(2a_{dec})$는 L3 §4.9의 예약값($\dot x_s\approx\gamma_f v_c$)과 같다. **`supervisor.decel.a_dec` 의 소비자는 이 절의 감속 대상 (`closed_form` 만) 이다.** 계획기 탐색의 정지점 예약 (`StoppingPoint` — $p_{stop}=p_c+(\gamma_f\Vert v\Vert)^2/(2a_{dec})\,\hat v$, 두 segment mode 에 공통) 은 자기 복사본 `planner.search.grid.stop.a_dec` 를 읽고, `closed_form` 에서 둘이 다르면 park 한다 (L3 §6). `mpc` 에서는 RT 가 이 값을 쓰지 않는다.
 
 `DECEL` · `HOLD` 의 감속 대상 추종은 기준 포화를 세지 않는다 (§4.2 `REF_SATURATED`) — 정지 중의 포화는 정지가 길어지는 것이지 실패한 포구가 아니다. 기준 생성기가 그 tick 에 기준을 내지 못하는 것 (무효) 은 포화가 아니다: 그 tick 에는 팔 명령이 쓰이지 않으므로 정지가 명령되지 않는 것이고, 감속 대상의 무효와 같이 `PARAMS_TBD` → `ABORT_SAFE` (관절공간 정지, §4.1) 다. 대상이 정지 ($\tau\ge\tau_s$) 하면 `HOLD` 이고, `HOLD` 는 정지한 대상 ($p_v$ 고정) 을 계속 추종한다.
 
 감속 대상 계산은 ROS 비의존 순수 조각이다 (`EvaluateDecelTarget`, `decel_target.hpp`).
 
-### 4.3a MPC 구간 추종 — `APPROACH` 부터 정지까지 (`supervisor.decel.mode: mpc`) `[MPC E1-F04 · E1-F09]`
+### 4.3a MPC 구간 추종 — `APPROACH` 부터 정지까지 (`planner.segment.mode: mpc`) `[MPC E1-F04 · E1-F09]`
 
 이 절의 결정 ID 는 MD-34 – MD-45 · MD-56 – MD-58 · MD-65 – MD-69 다. 이 절은 동작만 적는다.
 
 `mpc` 에서 팔의 기준은 `APPROACH` 부터 `HOLD` 까지 계획기가 게시한 **관절 노드 구간** 하나의 흐름이다. RT 는 soft-catch 기준 생성기도 §4.3 의 closed-form 감속도 돌리지 않는다. 포구점 · 포구 시각의 탐색은 `closed_form` 과 같다 (L3).
 
-- **planner 는 하나를 고른다 (MD-44 · MD-45).** configure 에서 `supervisor.decel.mode` 로 정하고 활성화 동안 바뀌지 않는다. `closed_form` (코드 기본 — 키가 없을 때. 출하 YAML 은 두 로봇 `mpc`) 은 §4.3 과 L4 의 soft-catch 기준 그대로이고, RT 는 segment box 를 읽지 않으며 계획기는 MPC 구간 코어를 만들지 않는다. `mpc` 는 구간을 따른다. 따를 구간이 없으면 `ParamsTbd` 로 `ABORT_SAFE` 다. 다른 법칙으로 넘어가는 fallback 은 없다.
-- **전제 (MD-34).** `mpc` 는 catch sub-model 샘플러, `joint_cmd.K_n` > 0, `planner.gamma.eta_v` < 1, 팔 관절마다 `max_velocity` 와 CLIK 의 관절별 속도 · 위치 box, MPC 구간 계획기 (`planner.enabled` + `planner.decel_mpc.approach.n_pre_max` > 0, oracle profile 은 예외 — 켜는 키는 없고 `mode: mpc` 가 그것이다), 그리고 접수 나이 상한이 아래 "대기 구간" 의 대기 시간보다 클 것을 요구한다. 하나라도 없으면 park (`kDecelModeUnmet`). `planner.workspace.catch_box` 는 이 전제가 아니다 — 탐색의 키다. 포구 전 격자가 없으면 (`n_pre_max` 0) plan 과 함께 채택할 구간을 낼 수 없어 MPC 구간 계획기를 만들지 않는다 (MD-70).
+- **segment mode 는 하나를 고른다 (MD-44 · MD-45).** configure 에서 `planner.segment.mode` 로 정하고 활성화 동안 바뀌지 않는다. `closed_form` (코드 기본 — 키가 없을 때. 출하 YAML 은 두 로봇 `mpc`) 은 §4.3 과 L4 의 soft-catch 기준 그대로이고, RT 는 segment box 를 읽지 않으며 계획기는 MPC 구간 코어를 만들지 않는다. `mpc` 는 구간을 따른다. 따를 구간이 없으면 `ParamsTbd` 로 `ABORT_SAFE` 다. 다른 법칙으로 넘어가는 fallback 은 없다.
+- **전제 (MD-34).** `mpc` 는 catch sub-model 샘플러, `joint_cmd.K_n` > 0, `planner.segment.mpc.eta_v` < 1, 팔 관절마다 `max_velocity` 와 CLIK 의 관절별 속도 · 위치 box, MPC 구간 계획기 (`planner.enabled` + `planner.segment.mpc.approach.n_pre_max` > 0, oracle profile 은 예외 — 켜는 키는 없고 `mode: mpc` 가 그것이다), 그리고 접수 나이 상한이 아래 "대기 구간" 의 대기 시간보다 클 것을 요구한다. 하나라도 없으면 park (`kSegmentModeUnmet`). `planner.search.grid.workspace.catch_box` 는 이 전제가 아니다 — 탐색의 키다. 포구 전 격자가 없으면 (`n_pre_max` 0) plan 과 함께 채택할 구간을 낼 수 없어 MPC 구간 계획기를 만들지 않는다 (MD-70).
 - **쌍 채택 (MD-56 · MD-65).** 계획기는 plan 과 그 첫 구간을 쌍으로 게시한다 (구간 먼저, 같은 `publish_ns`). `TRACKING` 의 lane 은 이 tick 이 채택할 수 있는 plan 을 기준으로 box 의 구간을 **판정만** 하고 (`JudgeSegment`), `TRACKING → APPROACH` edge 가 plan 과 구간을 같은 tick 에 함께 채택한다. 구간이 통과하지 못하면 plan 도 받지 않는다 (`NO_CATCHABLE_PLAN` 으로 머문다). lane 이 구간을 먼저 채택해 두면 edge 가 걸리지 않은 tick 뒤로 그 구간이 `repeat` 로 거부돼 쌍이 들어오지 못한다 — 그래서 판정과 채택을 나눈다. 채택 뒤 `APPROACH` 에서 새 plan 은 받지 않는다 (MD-57).
 - **구간의 접수 판정 (MD-37 · MD-66 · MD-67).** `APPROACH` · `COMMITTED` · `CLOSING` · `DECEL` 의 매 tick 에 segment box 를 한 번 Load 하고 `JudgeSegment` 으로 판정한다. 통과 조건: `valid`, 같은 activation, 따르는 plan 과 같은 id · $t_c$ · track (구간은 **plan 이 가진 track** 을 싣는다. 동결 뒤 RT 가 마지막으로 소비한 track 과는 다를 수 있어 그것과는 비교하지 않는다), 이미 받은 것보다 새 `segment_seq`, 나이 ≤ 50 ms (`kSegmentAdmissionMaxAgeNs`, 게시 시각 기준), 게시 시각과 구간이 출발한 RT 상태 (`rt_state_ns`) 가 모두 reset floor 뒤, 관절 수가 샘플러가 묶인 팔과 같음 (평가할 수 없는 구간은 `malformed` — 채택해 두면 node 0 에서 abort 가 된다), 노드 값의 형식.
 - **RT 는 구간이 어디서 정지하는지를 판정하지 않는다 (MD-73).** `catch_box` 를 보는 것은 계획기의 탐색뿐이고, 탐색은 그것을 **포구점 $p_c$ 와 closed-form 정지점 $p_{stop}$ (§4.3 의 예약)** 두 곳에만 건다 (`grid_catch_search.cpp`). MPC 구간의 정지 위치는 관절 한계만 지키면 된다 — MPC 의 관절 행과 CLIK 의 box 가 그것을 지킨다. 그래서 정지 부분이 `catch_box` 를 벗어나는 구간도 채택되고 따라진다.
-- **대기 구간 — 교체와 나이 (MD-37 · MD-58).** 대기 슬롯은 하나다. 비었으면 채운다. 차 있으면 node 0 시각이 **같은** 더 새 구간 (같은 격자점을 새 예측으로 다시 푼 것) 만 교체하고, 다른 격자점의 구간은 box 에 두고 다음 tick 에 다시 본다 (덮어쓰면 그 사이의 시각에 따를 것이 없어진다). 다음 격자점의 구간이 box 에서 기다리는 시간은 최대 `planner.decel_mpc.budget.replan_s` + 3 tick 이고, 나이 상한이 그보다 커야 한다 (configure 가 확인한다). 그 시간을 넘겨 기다린 구간은 나이로 거부된다.
+- **대기 구간 — 교체와 나이 (MD-37 · MD-58).** 대기 슬롯은 하나다. 비었으면 채운다. 차 있으면 node 0 시각이 **같은** 더 새 구간 (같은 격자점을 새 예측으로 다시 푼 것) 만 교체하고, 다른 격자점의 구간은 box 에 두고 다음 tick 에 다시 본다 (덮어쓰면 그 사이의 시각에 따를 것이 없어진다). 다음 격자점의 구간이 box 에서 기다리는 시간은 최대 `planner.segment.mpc.budget.replan_s` + 3 tick 이고, 나이 상한이 그보다 커야 한다 (configure 가 확인한다). 그 시간을 넘겨 기다린 구간은 나이로 거부된다.
 - **node 0 전 (MD-68).** 첫 구간의 node 0 가 오기 전의 `APPROACH` (lead 에 따라 `COMMITTED` 초입까지) 는 채택 tick 에 seed 한 명령을 그대로 든다 — 법칙을 돌리지 않는다. 계획기가 첫 구간을 정지한 보고 자세에서 풀었으므로 그 전제와 같다.
-- **전환 게이트 (MD-38 · MD-39 · MD-40).** 샘플 시각은 $s=now_{lead}+h$ 다. 대기 구간은 $s\ge$ node 0 시각이고, 따르는 plan 과 id · $t_c$ 가 맞고, 관절마다 $\vert\Delta\dot q_i\vert+K_p\vert\Delta q_i\vert\le\rho_{\max}(1-\eta_v)\dot q_{\max,i}$ 일 때 따르는 구간이 된다 ($\Delta$ 는 들고 있는 명령과 구간의 $s$ 에서의 차, $K_p$ = `joint_cmd.K_p`, $\rho_{\max}$ = `supervisor.decel.switch_margin`). `HOLD` 를 뺀 모든 따르는 모드에서 같다. 게이트를 못 지난 구간은 버린다 — 따르던 구간이 있으면 그것을 계속 따르고, 없으면 (첫 구간) `ABORT_SAFE` 다. `DECEL` 진입은 전환이 아니다: $t_c$ 에 따르던 구간을 그대로 이어 따른다.
+- **전환 게이트 (MD-38 · MD-39 · MD-40).** 샘플 시각은 $s=now_{lead}+h$ 다. 대기 구간은 $s\ge$ node 0 시각이고, 따르는 plan 과 id · $t_c$ 가 맞고, 관절마다 $\vert\Delta\dot q_i\vert+K_p\vert\Delta q_i\vert\le\rho_{\max}(1-\eta_v)\dot q_{\max,i}$ 일 때 따르는 구간이 된다 ($\Delta$ 는 들고 있는 명령과 구간의 $s$ 에서의 차, $K_p$ = `joint_cmd.K_p`, $\rho_{\max}$ = `planner.segment.mpc.switch_margin`). `HOLD` 를 뺀 모든 따르는 모드에서 같다. 게이트를 못 지난 구간은 버린다 — 따르던 구간이 있으면 그것을 계속 따르고, 없으면 (첫 구간) `ABORT_SAFE` 다. `DECEL` 진입은 전환이 아니다: $t_c$ 에 따르던 구간을 그대로 이어 따른다.
 - **추종 tick (MD-36).** 구간을 $s$ 에서 샘플해 catch frame 의 위치 · 축 · twist 를 CLIK 목표와 feedforward 로 넘기고, 자세 목표를 $q_{ref}+\dot q_{ref}/K_n$ 으로 넘긴다 ($K_n(q'-q)=K_n(q_{ref}-q)+\dot q_{ref}$). tick 을 나가는 명령은 구간의 $now_{lead}+2h$ 값이고, 계획기는 RT 의 보고를 같은 label 로 읽는다. 따르는 중에 구간이 plan 과 어긋나거나 샘플이 실패하면 `ParamsTbd` 로 `ABORT_SAFE` 다. 구간의 마지막 노드를 지나면 정지로 보고 `HOLD` 다.
 - **`HOLD`.** 진입 tick 에 대기 구간을 버리고, `HOLD` 동안은 전환하지 않는다. 따르던 구간의 마지막 노드 뒤 샘플 (정지 상태) 을 계속 CLIK 에 넘긴다.
 - **감독 사유는 그대로다.** 공 lane 의 사유 (`BALL_STALE` · `TRACK_CHANGED` · `HORIZON_EXTRAP` → `RETREAT`, 동결 뒤 `BALL_STALE_LONG` → `ABORT_SAFE`) 와 CLIK 의 사유 (`QP_FAILED` · `JOINT_CONFLICT` · `TRACK_ERR`) 는 `closed_form` 과 같은 전이표 행을 탄다. `DECEL` 전의 추종 tick 은 구간을 샘플하기 전에 공 궤적을 lead 시각에서 한 번 샘플해 같은 판정을 한다 — 구간은 그 표본을 읽지 않는다. 기준 포화 (`REF_SATURATED`) 는 soft-catch 기준의 사유라 `mpc` 에서는 나지 않는다.
@@ -211,7 +211,7 @@ $$e=x_s-p_v(0)=0,\qquad \dot e=\dot x_s-v_v(0)=0$$
 | `DECEL → HOLD` | $\tau\ge\tau_s$ | 구간의 마지막 노드를 지남 |
 | `HOLD` | 정지한 대상을 추종 | 구간의 정지 상태를 추종, 대기 구간 폐기 · 전환 없음 |
 | `REF_SATURATED` | 공 추종 tick 에서 센다 | 발화하지 않는다 |
-| `supervisor.decel.a_dec` | 탐색의 정지점 예약 + `DECEL` 대상 | 탐색의 정지점 예약만 |
+| `supervisor.decel.a_dec` | `DECEL` 대상 (탐색의 정지점 예약은 복사본 `planner.search.grid.stop.a_dec`) | 읽지 않는다 |
 | 법칙에 필요한 것이 없을 때 | `ParamsTbd` (감속 대상이 유효하지 않음) | `ParamsTbd` (따를 구간 없음 · plan 불일치 · 샘플 실패) |
 
 ### 4.4 접촉 판정
@@ -354,7 +354,7 @@ plan 접수 쪽의 방어 (reset floor · 동결 창) 는 §4.1 R-ADMIT 이 적�
 
 ## 6. YAML 파라미터
 
-키는 **단일 원천**이다. 파라미터 로딩은 `LoadConfig(YAML)` + `ParseCatchingParams`. 값과 그 근거는 로봇별 YAML 과 그 주석이 갖는다 — `integrated_bringup/config/<robot>/controllers/demo_catching_controller.yaml` (`supervisor.*` 대부분과 `decel.mode`), 같은 폴더의 `catching/planner_closed_form.yaml` (`decel.a_dec`) · `catching/segment_mpc.yaml` (`decel.switch_margin`). 키가 없을 때의 파서 기본값과 범위는 `rtc_controllers/include/rtc_controllers/catching/catching_params.hpp` 다.
+이 절의 키 (`supervisor.*`) 는 **단일 원천**이다 — 다만 `a_dec` 는 탐색이 읽는 복사본이 따로 있다 (`planner.search.grid.stop.a_dec`, L3 §6). 파라미터 로딩은 `LoadConfig(YAML)` + `ParseCatchingParams`. 값과 그 근거는 로봇별 YAML 과 그 주석이 갖는다 — `integrated_bringup/config/<robot>/controllers/demo_catching_controller.yaml` (`supervisor.*` 와 선택자 `planner.segment.mode`), 같은 폴더의 `catching/planner_closed_form.yaml` (`supervisor.decel.a_dec`) · `catching/segment_mpc.yaml` (`planner.segment.mpc.switch_margin`). 키가 없을 때의 파서 기본값과 범위는 `rtc_controllers/include/rtc_controllers/catching/catching_params.hpp` 다.
 
 | 키 | 단위 | 뜻 |
 |---|---|---|
@@ -364,9 +364,9 @@ plan 접수 쪽의 방어 (reset floor · 동결 창) 는 §4.1 R-ADMIT 이 적�
 | `supervisor.deadline.return_s` | s | §4.1 운동 기한: `RETREAT` 복귀 단계. 시계는 복귀 시작 tick 에 새로 시작한다. 복귀는 대기 자세까지의 거리에 비례하므로 정지와 키를 나눈다 |
 | `supervisor.deadline.provisional` | – | 두 기한의 L0 §5.3 플래그 (없으면 `true`) — sim 은 경고, 실기 구성은 park. 실기 값은 실기에서 잰다 (D-S9-G) |
 | `supervisor.track_err_abort` | rad | §4.2 `TRACK_ERR` 임계. **단일 원천** — L5 는 이 키를 참조만 한다. `RETREAT` 정지 단계의 "따라잡음" 판정도 이 값이다 |
-| `supervisor.decel.a_dec` | m/s² | §4.3 감속 크기. **단일 원천**, ≤ `reference.a_max` (검증기). 소비자: 탐색의 정지점 예약 (두 planner) 과 `closed_form` 의 `DECEL` |
-| `supervisor.decel.mode` | – | planner 선택: `closed_form` · `mpc` (다른 값은 configure 실패, 키가 없으면 `closed_form`). `mpc` 의 전제가 빠지면 park (§4.3a). `closed_form` 은 segment MPC 키를 보지 않는다 |
-| `supervisor.decel.switch_margin` | – | §4.3a 전환 게이트의 $\rho_{\max}$, > 0 (아니면 configure 실패). `mpc` 에서만 읽는다 |
+| `supervisor.decel.a_dec` | m/s² | §4.3 감속 크기, ≤ `reference.a_max` (검증기). 소비자: `closed_form` 의 `DECEL`. 탐색의 정지점 예약은 복사본 `planner.search.grid.stop.a_dec` 를 읽는다 |
+| `planner.segment.mode` | – | segment mode 선택: `closed_form` · `mpc` (다른 값은 configure 실패, 키가 없으면 `closed_form`). `mpc` 의 전제가 빠지면 park (§4.3a). `closed_form` 은 segment MPC 키를 보지 않는다 |
+| `planner.segment.mpc.switch_margin` | – | §4.3a 전환 게이트의 $\rho_{\max}$, > 0 (아니면 configure 실패). `mpc` 에서만 읽는다 |
 | `supervisor.contact.f_min` | N | §4.4 접촉 임계의 절대 하한. sim fingertip lane 은 잡음이 없어 이 값만 유효하다 |
 | `supervisor.contact.k_sigma` | – | §4.4 잡음 배수. 실기 전용 (sim $\hat\sigma\approx0$) |
 | `supervisor.contact.n_debounce` | 샘플 | §4.4 $N_{deb}$ — 연속 참 샘플 수. 센서 주기에 의존한다 |

@@ -452,7 +452,7 @@ ros2 run rtc_tools catching_arm_budget units/w10_a21 units/w15_a30 --config-dir 
 - **B**: 같은 운동 (commit → 마지막 활성 tick 의 Δq, 초기 속도 포함) 의 도달시간을 컨트롤러가 로드한 D-16 box 와 실행 envelope 로
   **두 번** 재 (L3 §4.3 닫힌해 이식; `test/…` 가 손 유도 케이스로 검사) commit 시점 가용 lead 와 비교 — box 의 비관이 숫자가
   된다. `planner_events.csv` 의 유효 plan 중 rank gate 실패율도 함께
-- **한계의 출처** (ARCH-1): 관절은 diag `q_cmd_*`, 토크·속도 정격은 프로파일 device 명세, ω/`a_max`/`v_max`/η_v/`planner.time.margin`/box 는
+- **한계의 출처** (ARCH-1): 관절은 diag `q_cmd_*`, 토크·속도 정격은 프로파일 device 명세, ω/`a_max`/`v_max`/η_v/`planner.search.grid.time.margin`/box 는
   러너가 `run_meta.json` 에 남긴 컨트롤러 **미러** (S8-G 부터; 미러는 TBD 잎도 컨트롤러가 *실행한* 기본값으로 낸다) → 없으면
   launch 와 같은 순서로 파일을 합성한다: 컨트롤러 YAML → `sim.yaml` 의 `<controller>.catching` override → `--overlay`. 출처를
   `budget.source` 로 보고한다. `--time-margin-s` 는 그 해소값을 덮는 명시 override 다
@@ -552,7 +552,7 @@ ros2 run rtc_tools catching_grid_sweep --arm L-50 units/L-50_* --arm L-25 units/
 # → sweep/{grid_sweep_summary.json, grid_sweep_trials.csv}; 리포트는 stdout
 ```
 
-- **조건은 unit 이 말한다**: 러너가 `run_meta.json` 에 남긴 컨트롤러 미러의 `prediction.dt_expected` · `io.n_min` · `planner.slice.dt` 를
+- **조건은 unit 이 말한다**: 러너가 `run_meta.json` 에 남긴 컨트롤러 미러의 `prediction.dt_expected` · `io.n_min` · `planner.search.grid.slice.dt` 를
   arm 마다 옮겨 적고, 한 arm 의 unit 끼리 다르면 거부한다. 미러에 세 키가 없는 unit (컨트롤러가 미러하기 전에 기록된 것) 은 격자를
   모르므로 거부하며, `--allow-unknown-grid` 를 주면 `grid_known: false` 로 받는다 (E0-F02 unit 을 같은 투척의 대조로 쓸 때). 받은 점 수는 diag 에서 새 snapshot 을 받은 tick 의 `input_n` 최빈값이다
   (점 0 개인 snapshot 은 세지 않는다). 도구는 조건 이름도 로봇 상수도 모른다 (ARCH-1)
@@ -728,16 +728,16 @@ outc = cm.summarize_throws(judged, seed_id=best.seed_id, throw_count=len(throws)
   θ 분포는 `fraction_below` 와 `fraction_near_limit` 을 **둘 다** 낸다 — "α_max 의 몇 % 안"이
   양쪽으로 읽히고 결론이 뒤집히기 때문. 접근축 cone 이 binding 하는지는 `fraction_near_limit` 이 답한다
 - **θ 보고의 `alpha_max` 는 judge 가 실제로 적용한 값이다** (`resolve_alpha_max`). `--params` 가
-  `planner.ik.alpha_max` 를 주면 그 값을 쓴다. 파일 형태는 judge 의 loader 와 같은 세 가지만 받는다 —
+  `planner.search.grid.ik.alpha_max` 를 주면 그 값을 쓴다. 파일 형태는 judge 의 loader 와 같은 세 가지만 받는다 —
   root 의 `catching:` map / root 에 `planner:` 가 있는 catching tree 자체 / 출하 controller config 형태
   `<controller_name>: {catching: ...}` (유일한 top-level 항목일 때) — 그 밖은 기본값으로 떨어지지 않고
   **에러**다. `include:` 로 나뉜 컨트롤러 config (출하 catching profile) 는 judge 가 합성하지 않으므로
-  주 파일이 아니라 `planner.ik` · `planner.catchability` 가 든 조각 `controllers/catching/search_grid.yaml`
+  주 파일이 아니라 `planner.search.grid.ik` · `planner.search.grid.catchability` 가 든 조각 `controllers/catching/search_grid.yaml`
   을 넘긴다 — fingerprint 의 params sha256 도 그 파일의 것이다. `"TBD"`·키 부재는 "미지정" 이다. `--alpha-max-rad` 는 **기본값이 없는** 선택 인자로, params 가
   값을 주는데 다른 값을 넘기면 에러 (진실의 출처가 둘), 같으면 허용, params 가 미지정일 때만 단독으로 쓰인다
   (그때 judge 는 in-code 기본값으로 돌았으므로 이 인자는 그 기본값에 대한 호출자의 진술이다). 둘 다 없으면
   judge 의 in-code 기본값 0.26 의 **미러**를 쓰고 provenance 에 미러임과 출처를 적는다. judge 가
-  `--print-options` 를 제공하면 그 출력의 `planner.ik.alpha_max` 와 대조해 **다르면 sweep 전에 에러**이고,
+  `--print-options` 를 제공하면 그 출력의 `planner.search.grid.ik.alpha_max` 와 대조해 **다르면 sweep 전에 에러**이고,
   제공하지 않으면 provenance 에 "not cross-checked" 로 남는다
 - **seed 비교**는 포구 가능 throw 비율 내림차순, 동률이면 평균 `log w5` 로 가른다. 서로 다른 throw
   집합을 비교하려 하면 거부한다. runner-up 의 coverage 차이가 대기 자세 민감도 수치다. 비율의 분모는
@@ -843,8 +843,8 @@ ros2 run rtc_tools catch_speed_budget \
   `rtc_controllers` `UnitSpeedSolver` 이고, 두 식의 일치는 `PlannerUnitSpeed` 테스트가 고정한다 — G3-I) 와 그것이
   내는 속도 `J_p q̇ᵘ`. `reference.v_max` 는 `--v-max-m-s derived` 면 수락 후보의 LP v_dir,max 최대 / η_v
   (S4.4 결정: TCP 항은 관절 정격 안에서 구속하지 않는다)
-- **DLS 단위속도의 감쇠 λ 는 C++ 와 같은 키에서 온다** (코어의 설계 값은 YAML 키로 둔다): `--dls-damping` 의 기본은 `--controller-config` 의 `catching.planner.gamma.unit_speed_damping` (런타임 탐색이 `kUnitSpeedDamping` 대신 읽는 키 — 출하 1e-3) 이고, 키가 없으면 C++ 기본과 같은 `catch_speed_budget.DEFAULT_DLS_DAMPING` 이다. 쓴 값은 `gate_map_summary.yaml` 의 `dls_damping` 에 남는다. 인자를 주면 profile 을 덮는다. `--overlay` 가 있으면 그것을 얹은 트리에서 읽는다 (아래). (`catch_speed_budget` 은 profile 입력이 없어 상수를 그대로 쓰고, 그 상수가 출하 YAML 값과 같다는 테스트 `integrated_bringup/test/test_shipped_catching_config.py` 가 둘의 어긋남을 막는다.)
-- **python 이 거는 경계**: p_stop 이 도달 구·바닥 안인가 (`planner.workspace.catch_box` 가 TBD 라 지도와
+- **DLS 단위속도의 감쇠 λ 는 C++ 와 같은 키에서 온다** (코어의 설계 값은 YAML 키로 둔다): `--dls-damping` 의 기본은 `--controller-config` 의 `catching.planner.search.grid.gamma.unit_speed_damping` (런타임 탐색이 `kUnitSpeedDamping` 대신 읽는 키 — 출하 1e-3) 이고, 키가 없으면 C++ 기본과 같은 `catch_speed_budget.DEFAULT_DLS_DAMPING` 이다. 쓴 값은 `gate_map_summary.yaml` 의 `dls_damping` 에 남는다. 인자를 주면 profile 을 덮는다. `--overlay` 가 있으면 그것을 얹은 트리에서 읽는다 (아래). (`catch_speed_budget` 은 profile 입력이 없어 상수를 그대로 쓰고, 그 상수가 출하 YAML 값과 같다는 테스트 `integrated_bringup/test/test_shipped_catching_config.py` 가 둘의 어긋남을 막는다.)
+- **python 이 거는 경계**: p_stop 이 도달 구·바닥 안인가 (`planner.search.grid.workspace.catch_box` 가 TBD 라 지도와
   같은 경계를 쓴다)
 - **도달시간은 두 층**을 항상 같이 낸다. `box` = 컨트롤러 YAML 의 가속 box (`catching.robot.arm.qdd_max` — `--controller-config`, 기본은 `--robot-config` 옆 `controllers/<--controller>.yaml`, `include:` 조각 합성) 로 C++ 가
   판정. **런타임 트리는 controller YAML + ROS 파라미터 override** 라서 (예: `ur5e_p1b/sim.yaml` 은 `qdd_max` 를 sim envelope 로 덮고
@@ -868,7 +868,7 @@ ros2 run rtc_tools catch_gate_map \
   --controller-config <config>/<robot>/controllers/demo_catching_controller.yaml \
   --overlay <config>/<robot>/sim.yaml --eta-v 0.9 --eta-tau 0.8 \
   --rotor-inertia '0.1 0.1 0.1 0.1 0.1 0.1' --rotor-inertia-source '<mjcf>:<line> armature' \
-  --v-max-m-s derived --d-eff-m 0.095 --d-eff-source 'planner.hand.d_eff' \
+  --v-max-m-s derived --d-eff-m 0.095 --d-eff-source 'planner.search.grid.hand.d_eff' \
   --close-total-s 0.2815 --gamma-margin-m-s 0.1 \
   --a-dec-m-s2 10.0 --a-dec-source 'provisional' \
   --detection-s 0.10 --latency-s 0.14 --arm-delay-s 0.05 --time-margin-s 0.03 \

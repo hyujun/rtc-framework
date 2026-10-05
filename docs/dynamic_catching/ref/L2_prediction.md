@@ -34,7 +34,7 @@ vision 노드가 이미 예측 궤적을 발행하고(마스터 §5, D-4), 제�
 | G2-2 | 점 시각 필드 타입·기준 → 시각 정렬 식 | `horizon_ns` UINT32 (`header.stamp` 기준 상대 ns). L1 이 수신 시 절대 `BallTime` 으로 변환한다(D-2, L1 §4.1). 샘플러는 절대 시각만 받는다 |
 | G2-3 | `ax,ay,az`가 상수 $g$인지 항력 포함 총 가속도인지 | profile 이 정한다 — 출하 sim profile 은 이차 항력 모델이라 **그 점의 총 가속도 $g - k\lVert v\rVert v$**, 항력 절이 없는 profile 은 상수 $g$ |
 | G2-4 | 공분산을 RT까지 넘길지 | `[확정 A-3]` — RT 스냅샷에서 분리, 계획기 버퍼에만 |
-| G2-5 | 바닥 높이·작업셀 경계의 `W` 좌표 | 열림 (TBD-WS-01). 포구점의 작업공간 제한은 `planner.workspace.catch_box` 가 탐색에서 건다 (L3). 바닥 높이 · 작업셀 경계 키는 구현하지 않았다 |
+| G2-5 | 바닥 높이·작업셀 경계의 `W` 좌표 | 열림 (TBD-WS-01). 포구점의 작업공간 제한은 `planner.search.grid.workspace.catch_box` 가 탐색에서 건다 (L3). 바닥 높이 · 작업셀 경계 키는 구현하지 않았다 |
 
 ## 3. 참고자료
 
@@ -101,7 +101,7 @@ $$
 - now_lead 가 마지막 샘플 시각을 넘으면 Taylor 외삽하고 `after_horizon=true` 를 올린다. **L7이 감시하는 것은 이 플래그뿐이다.** 포구 전에는 이 플래그가 `HORIZON_EXTRAP` 사유이고, 동결 (COMMITTED · CLOSING) 이후에는 기록만 하고 따르지 않는다 (`SampleBallForLaw`).
 - 앞쪽(`before_horizon`, now_lead < 첫 샘플 시각)은 감시하지 않는다. vision 첫 점의 `horizon_ns` 가 0 이 아니거나 수신 지연이 있으면 정상 동작 중에도 발생할 수 있기 때문이다.
 - 지평 끝 정확히(= 마지막 샘플 시각)는 외삽이 아니다.
-- 지평 밖 외삽에 의존해 포구하는 것은 금지한다. L3는 마지막 샘플 시각에서 여유를 뺀 범위 안에서만 후보를 고른다 — 그 범위가 `planner.slice.t_max` 이다 (vision 지평 − 여유).
+- 지평 밖 외삽에 의존해 포구하는 것은 금지한다. L3는 마지막 샘플 시각에서 여유를 뺀 범위 안에서만 후보를 고른다 — 그 범위가 `planner.search.grid.slice.t_max` 이다 (vision 지평 − 여유).
 - 수신 궤적 지평이 요구(`io.horizon_min`, D-15)보다 짧으면 L1 이 진단하고 계획 후보에서 제외한다(L1 §4.1).
 - $p_z<z_{floor}$ 이거나 작업셀 밖인 샘플을 후보에서 제외하는 것은 구현하지 않았다 (G2-5). 포구점의 작업공간 제한은 `catch_box` 다 (L3).
 
@@ -155,10 +155,10 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 | 역할 | 하는 것 |
 |---|---|
 | 점 수 상한 (`prediction.max_samples`) | 컴파일 상수 `kCap` (`trajectory.hpp`) |
-| 지평 끝 여유 (`prediction.t_horizon_margin`) | `planner.slice.t_max` (`search_grid.yaml`) = vision 지평 − 여유 |
+| 지평 끝 여유 (`prediction.t_horizon_margin`) | `planner.search.grid.slice.t_max` (`search_grid.yaml`) = vision 지평 − 여유 |
 | 최소 간격 (`prediction.dt_min`) | `TrajInputConfig::dt_min_ns` 상수 (구조적 하한; 실제 간격 gate 는 `io.n_min`) |
 | 선행 보상 (`prediction.lead`) | `joint_cmd.lag.lead_enable` · `joint_cmd.lag.T_arm` (L5 §6) — 선행량은 $T_{arm}\times$ `lead_enable` |
-| 바닥 · 작업셀 (`prediction.z_floor`, `prediction.workcell`) | 구현하지 않았다 (G2-5). 포구점은 `planner.workspace.catch_box` |
+| 바닥 · 작업셀 (`prediction.z_floor`, `prediction.workcell`) | 구현하지 않았다 (G2-5). 포구점은 `planner.search.grid.workspace.catch_box` |
 
 ## 7. 단위 기술 구현 순서
 

@@ -19,7 +19,7 @@
 
 범위 밖: 카메라 처리와 공 상태 추정·예측(vision 노드 소관), PTP 설정 절차(인프라 문서 소관), 그리고 **이미 workspace에 있는 기능 전부**(§1.2).
 
-**planner 가 둘이다 `[확정]`.** `closed_form` 과 `mpc` 는 같은 입력 (추정기의 공 미래 궤적 + 공분산) 을 받아 같은 자리의 출력 (CLIK 입력 — task pose · twist feedforward · 접근축, null space 자세 목표) 을 내는 두 planner 다. 선택은 `supervisor.decel.mode` 이고 (이름은 역사적), **출하 기본값은 `mpc`** 다. 포구 후보 탐색 ($p_c$ · $t_c$ · 접근축 · 순위), 추정기, supervisor FSM, 손 시퀀서, CLIK, `ABORT_SAFE`, E-STOP 은 공통이다 (§2, §4). 이 문서와 L 문서들은 절마다 **공통 / closed_form 전용 / mpc 전용** 을 밝힌다.
+**planner 가 둘이다 `[확정]`.** `closed_form` 과 `mpc` 는 같은 입력 (추정기의 공 미래 궤적 + 공분산) 을 받아 같은 자리의 출력 (CLIK 입력 — task pose · twist feedforward · 접근축, null space 자세 목표) 을 내는 두 planner 다. 선택은 `planner.segment.mode` 이고 **출하 기본값은 `mpc`** 다. 포구 후보 탐색 ($p_c$ · $t_c$ · 접근축 · 순위), 추정기, supervisor FSM, 손 시퀀서, CLIK, `ABORT_SAFE`, E-STOP 은 공통이다 (§2, §4). 이 문서와 L 문서들은 절마다 **공통 / closed_form 전용 / mpc 전용** 을 밝힌다.
 
 ### 1.1 상세 구현 착수 조건 `[확정]`
 
@@ -138,7 +138,7 @@ flowchart TB
 | APPROACH – CLOSING 기준 | | L4 soft-catch DS 가 매 tick 생성 (γ profile 은 `PlanSnapshot`) | MPC 구간이 계획 (계획기 스레드) → 관절 노드 → RT 가 노드를 보간해 따르고 FK 로 손 pose 를 얻는다. **RT 는 soft-catch DS 를 돌리지 않는다** (DS 는 탐색의 후보 순위 rollout 에만 남는다) |
 | 포구 후 정지 (DECEL) | | TCP 직선 등감속 (L7 §4.3, 가상 감속 대상) | MPC 구간의 꼬리 (관절 공간) |
 | RT 의 공 샘플 | 지평 · stale 감독 (L7 §4.2) | 샘플 $(p,v,a)$ 를 L4 추종 대상으로 넘긴다 | 구간은 샘플을 읽지 않는다 (L2 §5.2) |
-| 구간 · plan 교체 | | $e_d$ 점프 교체 (L3 §4.7) | 구간 교체 gate (`supervisor.decel.switch_margin`) — 탐색은 구간을 따르는 동안 건너뛴다 |
+| 구간 · plan 교체 | | $e_d$ 점프 교체 (L3 §4.7) | 구간 교체 gate (`planner.segment.mpc.switch_margin`) — 탐색은 구간을 따르는 동안 건너뛴다 |
 | CLIK 입력 | 손 pose · twist ff · 접근축 $a_d$ | 자세 목표는 대기 자세 | 자세 목표 $q_{ref}+\dot q_{ref}/K_n$ |
 | `ABORT_SAFE` | 원인과 무관하게 항상 관절공간 정지 (`RunJointSpaceAbort`) | | |
 
@@ -270,7 +270,7 @@ vision의 예측을 그대로 신뢰한다. 제어 PC는 $(p,v,a)$ 샘플 열 �
 
 ## 6. YAML 구성
 
-repo 패턴을 따른다: 포구 컨트롤러 YAML 은 로봇별 `integrated_bringup` config 의 controllers 디렉토리 (`demo_catching_controller.yaml`) 에 두고 `LoadConfig` + `ParseXxxParams` 로 읽으며, 런타임 조정 gain 만 `declare_parameter` 로 연다(generate_parameter_library 는 쓰지 않는다). 탐색 · planner 별 법의 키는 같은 디렉토리의 `catching/` 아래 조각 파일 (`search_grid.yaml` — 탐색, 두 planner 가 읽는다 · `planner_closed_form.yaml` · `segment_mpc.yaml`) 로 나뉘고, include 되어 같은 트리로 합쳐진다. robot-specific 값은 로봇 config 와 `robot.*` 에만 둔다(robot-agnostic 원칙, ARCH-1).
+repo 패턴을 따른다: 포구 컨트롤러 YAML 은 로봇별 `integrated_bringup` config 의 controllers 디렉토리 (`demo_catching_controller.yaml`) 에 두고 `LoadConfig` + `ParseXxxParams` 로 읽으며, 런타임 조정 gain 만 `declare_parameter` 로 연다(generate_parameter_library 는 쓰지 않는다). 탐색 · planner 별 법의 키는 같은 디렉토리의 `catching/` 아래 조각 파일 (`search_grid.yaml` — 탐색 `planner.search.grid.*`, 두 planner 가 읽는다 · `planner_closed_form.yaml` — `reference.*` · `supervisor.decel.a_dec` · `segment_mpc.yaml` — `planner.segment.mpc.*`) 로 나뉘고, include 되어 같은 트리로 합쳐진다. 선택자 `planner.segment.mode` 와 `robot.arm.qdd_*` 는 주 파일에 있다. robot-specific 값은 로봇 config 와 `robot.*` 에만 둔다(robot-agnostic 원칙, ARCH-1).
 
 ```yaml
 catching:
@@ -279,31 +279,33 @@ catching:
   core: {...}         # L0
   io: {...}           # L1
   prediction: {...}   # L2
-  planner: {...}      # L3 (catchability 포함), mpc 의 planner.decel_mpc
-  reference: {...}    # L4 (closed_form 의 soft-catch 기준; 탐색의 rollout 은 mpc 에서도 읽는다)
+  planner: {...}      # L3 — 탐색 planner.search.grid (catchability 포함), 구간 선택 planner.segment.mode, mpc 의 planner.segment.mpc
+  reference: {...}    # L4 (closed_form 의 soft-catch 기준; 탐색의 rollout 은 자기 복사본 planner.search.grid.reference 를 읽는다)
   joint_cmd: {...}    # L5 (확장 CLIK 옵션, 가속 행)
-  supervisor: {...}   # L7 (supervisor.decel.mode 가 planner 선택)
+  supervisor: {...}   # L7 (감속 법칙 supervisor.decel.a_dec; planner 선택은 planner.segment.mode)
   logging: {...}      # L8
 ```
 
 모든 키는 layer 문서 §6 표에 `이름 / 타입 / 단위 / 범위 / 뜻` 으로 정의한다 (값은 YAML). 관절 위치·속도·토크 한계는 로봇 config 의 `devices.<group>.joint_limits`(URDF 와 교집합)를 쓰고 포구 YAML 에 복제하지 않는다.
 
-**한 물리량 = 한 키 `[확정]`.** 이름이 둘이던 같은 값은 단일 키다: `io.n_min`, `supervisor.decel.a_dec` (L7 §6, L3 가 읽음). `derate_step`·ramp 는 D-8 로 v1 에서 쓰이지 않으며 재도입 시 단일 키로 다시 정한다.
+**키는 기능이 갖는다 `[확정]`.** 한 기능이 쓰는 설계값은 전부 그 기능의 조각에 두고, 두 기능이 같은 수를 읽으면 각자 key 를 갖는다 — 탐색의 `planner.search.grid.reference.{v_max,omega,zeta,a_max}` · `stop.a_dec` 는 closed_form 법칙의 `reference.*` · `supervisor.decel.a_dec` 의 복사본이고, mpc 구간 계획기는 `planner.segment.mpc.{eta_v,v_eps}` 를 갖는다. 한 기능 안에서 이름이 둘이던 같은 값은 단일 키다: `io.n_min`, `supervisor.decel.a_dec` (L7 §6). `derate_step`·ramp 는 D-8 로 v1 에서 쓰이지 않으며 재도입 시 단일 키로 다시 정한다.
 
 **새 키.**
 
 - catch frame `[확정 D-17]`: 로봇 config 의 `extra_frames`(이름·부모·`xyz`·`rpy`·`provisional`)를 `rtc_urdf_bridge` 모델 빌더가 Pinocchio 모델에 추가하고, 포구 YAML 은 frame 이름만 참조한다(`catch_frame`). 스키마·초기값 산출은 L5 의 catch frame 절
-- catchability `[확정 D-18]`: `planner.catchability.manipulability_min.{arm_5row,arm_6row}`(provisional), `planner.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3). 정의·스키마: L3 §4.2. 지도 도구와 계획기가 **같은 키**를 쓴다. 발사 영역 `sim.throw_region.*` 는 YAML 키로 만들어지지 않았다 (동결 분포는 러너 인자, D-S8-2)
+- catchability `[확정 D-18]`: `planner.search.grid.catchability.manipulability_min.{arm_5row,arm_6row}`(provisional), `planner.search.grid.catchability.definition`(`arm_5row` 기본, w₅·w₆ 모두 기록 — C-3). 정의·스키마: L3 §4.2. 지도 도구와 계획기가 **같은 키**를 쓴다. 발사 영역 `sim.throw_region.*` 는 YAML 키로 만들어지지 않았다 (동결 분포는 러너 인자, D-S8-2)
 - 관절 가속 한계 `[확정 D-16]`: 토크 한계에서 도출한 보수적 상수 box 를 provenance 와 함께 YAML (`robot.arm.qdd_max`) 로 출력한다 (도출은 L3 §4.3). 이 box 는 **탐색의 도달시간 한계**에 쓰이고, 런타임 CLIK 의 가속 행은 `joint_cmd.accel_constraint` 가 정한다 (출하 `dynamic` = 토크 행)
 
 **TBD 검사는 "현재 활성 구성이 참조하는 키"에만 적용한다 `[권장]`.** 전체 키에 걸면 절대 `ARMED` 가 되지 않는다 — 실기에서 `sim.*` 가 영구히 TBD로 남기 때문이다. L0 검증기는 launch 구성(실기/시뮬, `lead_enable`)에 따라 검사 대상 집합을 정한다. `provisional: true` 인 값(D-12 사용자 값, catch frame)은 실기 arm 을 막는다(D-12, D-17).
 
-**층간 일치 제약도 검증기가 검사한다 (L0 §5.3).** 같은 값 제약은 단일 키로 없앴고, 남는 것은 부등식·관계다.
+**층간 일치 제약도 검증기가 검사한다 (L0 §5.3).** 한 기능 안의 같은 값 제약은 단일 키로 없앴고, 남는 것은 부등식·관계와 복사본의 일치다.
 
 | 키 A | 키 B | 관계 |
 |---|---|---|
-| L3 `ComputeGammaWindow` 의 TCP 속도 | `reference.v_max` | $= \eta_v\cdot$ `reference.v_max`, $0<\eta_v\le1$ `[확정 D-9]` (`planner.gamma.eta_v`) |
-| `supervisor.decel.a_dec` | `reference.a_max` | $a_{dec}\le a_{\max}$ (L7 §4.3) |
+| L3 `ComputeGammaWindow` 의 TCP 속도 | `planner.search.grid.reference.v_max` | $= \eta_v\cdot$ `planner.search.grid.reference.v_max`, $0<\eta_v\le1$ `[확정 D-9]` (`planner.search.grid.gamma.eta_v`) |
+| 탐색의 `planner.search.grid.reference.{v_max,omega,zeta,a_max}` · `stop.a_dec` | `reference.{v_max,omega,zeta,a_max}` · `supervisor.decel.a_dec` | 같은 값 — 원본의 검증 규칙을 따르고, 어긋나면 `closed_form` 은 park (`kSearchCopyDiffers`), `mpc` 는 WARN (L3 §6) |
+| `planner.search.grid.gamma.eta_v` | `planner.segment.mpc.eta_v` | 어긋나면 `mpc` 에서 WARN (L3 §6) |
+| `supervisor.decel.a_dec` | `reference.a_max` | $a_{dec}\le a_{\max}$ (L7 §4.3; 탐색의 복사본도 같은 규칙) |
 | 선행 보상량 (`NowLead` 의 $T_{arm}$) | `joint_cmd.lag.T_arm` × `lead_enable` | 같은 값 (L2 §4.4) |
 | `planner.freeze.T_freeze` | `robot.hand.T_close_e2e`, `joint_cmd.lag.T_arm`, $h$ | $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ (L3 §4.11) |
 | `robot.hand.q_close[i]` | `robot.hand.q_pre[i]` | caging 관절에서 $\vert$차$\vert>$ `rho_eps` (L6 §4.2) |
@@ -384,7 +386,7 @@ catching:
 | TBD-BALL-01 | 실제 공 지름·질량·재질(반발). sim 공 제원은 `rtc_mujoco_sim/config/mujoco_default.yaml` 의 `projectile_ball` (`radius_m`·`mass_kg`) 이고 `core.ball.*` 는 그 값을 provisional 로 복사한 것이다 | L0, L3 | 사용자 제공 (D-12) |
 | TBD-HAND-01 | P1b 실기 `T_close,tot` | L3, L6 | 실기 식별 `[HW-P1B]` |
 | TBD-HAND-03 | 지문 센서의 실기 잡음 (인터페이스·부호는 확정 — 접촉 판정은 ‖F − b‖ 크기만 쓴다) | L6, L7 | 실기 (L6 §10) |
-| TBD-HAND-04 | 포켓 유효 깊이 $d_{eff}$ · 포획 반경 $r_{cap}$ (두 손). 값은 provisional 이고 `planner.hand` (`search_grid.yaml`) 에 있다 — 실기 park 은 `planner.provisional` (블록 전체) 이 한다. `planner.hand.d_eff` 키의 뜻은 포켓 깊이가 아니라 시각 발동 fly-in 허용 상대속도 × $T_{close,tot}$ 다 (L3 §4.5·L6 §4.5); 깊이는 접촉 물리량이다. 투척 보정은 sim 에서 하지 않고 실기 단계 (#613) 에서만 한다 | L3 | 실기 |
+| TBD-HAND-04 | 포켓 유효 깊이 $d_{eff}$ · 포획 반경 $r_{cap}$ (두 손). 값은 provisional 이고 `planner.search.grid.hand` (`search_grid.yaml`) 에 있다 — 실기 park 은 `planner.provisional` (블록 전체) 이 한다. `planner.search.grid.hand.d_eff` 키의 뜻은 포켓 깊이가 아니라 시각 발동 fly-in 허용 상대속도 × $T_{close,tot}$ 다 (L3 §4.5·L6 §4.5); 깊이는 접촉 물리량이다. 투척 보정은 sim 에서 하지 않고 실기 단계 (#613) 에서만 한다 | L3 | 실기 |
 | TBD-HAND-05 | P1b preshape/폐쇄 자세, 전류(토크) 한계 | L6 | 사용자 제공. 자세는 손 프로파일 YAML (`robot.hand`, provisional), 전류(토크) 한계는 D-12 미결정 |
 | TBD-ARM-03 | UR 드라이버 speed scaling 상태 인터페이스 | L7 | 노출 없음. 신호 출처 확보는 실기 단계 |
 | TBD-WS-01 | 바닥 높이, 작업셀 경계 (`W`) | L2 | 셀 측정 |
