@@ -23,9 +23,9 @@
 | E3 | 필수 (E2 뒤) | 같은 MPC 에 dual arm · waist 항 추가 — g1_p1b |
 | 실기 (HW) | 필수 · sim 전용이 아니다 | 실기 단계 — 1차 목표 로봇은 `ur5e_p1b` ([#613](https://github.com/hyujun/rtc-framework/issues/613)) |
 
-- **E1 의 남은 feature 를 먼저 한다 (E1-F13 부터).** E2 는 E1 의 선행이 아니고 고치는 패키지가 달라 (E2-F04 는 `rtc_tsid`) 다른 세션에서 병행할 수 있다. E3 는 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이 끝나면 착수하고, 그 앞에 `Decel*` 이름의 rename refactor 가 온다 (MD-48 — 시기는 §5).
+- **E1 의 남은 feature 를 먼저 한다 (E1-F13 부터).** E2 는 E1 의 선행이 아니고 고치는 패키지가 달라 (E2-F04 는 `rtc_tsid`) 다른 세션에서 병행할 수 있다. E3 는 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이 끝나면 착수한다.
 - **설계 (MD-46 · MD-47).** MPC 는 waist + dual arm (G1) 용으로 설계한다 (formulation §1.3). 단일 팔은 같은 MPC 에서 dual arm · waist 전용 항과 제약만 뺀 구성이었고, g1_p1b 는 같은 코어에 그 항을 더한다 (E3). closed_form 과 mpc 는 입력 (추정기의 공 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 이고 추정기 · supervisor · 손 시퀀서 · CLIK · `ABORT_SAFE` · E-STOP 은 공통이다.
-- **E1 의 남은 feature.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 를 더한다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 아직 구현을 서술하지 않는다). 수치 코어는 하나다: `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 형태, 출하 기본값은 바꾸지 않는다. 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다.
+- **E1 의 남은 feature.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 를 더한다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 아직 구현을 서술하지 않는다). 수치 코어는 하나다: `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 형태, 출하 기본값은 바꾸지 않는다. 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다. 새 구현의 이름은 값 + interface 의 순서다 — 구간 계획기는 `<값>SegmentPlanner` · `<값>SegmentCore` (`MpcSegmentPlanner` · `MpcSegmentCore` 와 같다), 탐색은 `<값>CatchSearch` (`GridCatchSearch` 와 같다). `Decel*` 이름을 새로 쓰지 않는다 (MD-48).
 - 실기와 E2 · E3 의 선후는 이 문서가 정하지 않았다 (§5).
 
 ### 게이트 G-1 — 단일 팔 mpc planner 가 closed_form planner 와 비슷한 성능을 내는가
@@ -60,7 +60,7 @@
 
 ## 3. Epic · Feature
 
-**끝난 것.** E0 (기반 정비), E1 의 단일 팔 MPC (E1-F01 – F11) 와 계획기 interface (E1-F12) 는 끝났다 — feature 와 이슈는 [ID_INDEX.md](ID_INDEX.md) §3. E2-F01 – F03 (G1 자산 · config · launch · `demo_joint_controller` 의 G1 구동) 도 끝났다 — 같은 곳.
+**끝난 것.** E0 (기반 정비), E1 의 단일 팔 MPC (E1-F01 – F11) 와 계획기 interface (E1-F12) 는 끝났다 — feature 와 이슈는 [ID_INDEX.md](ID_INDEX.md) §3. E2-F01 – F03 (G1 자산 · config · launch · `demo_joint_controller` 의 G1 구동) 도 끝났다 — 같은 곳. `Decel*` 이름의 rename (MD-48, [#711](https://github.com/hyujun/rtc-framework/issues/711)) 도 끝났다 — #761 · #762.
 
 ### E1. 단일 팔 — NLP search · mpc_docking — [#621](https://github.com/hyujun/rtc-framework/issues/621) · 필수
 
@@ -76,7 +76,7 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 | E1-F18 | [#744](https://github.com/hyujun/rtc-framework/issues/744) | 로그 · plot_rtc_log · demo_controller_gui | E1-F17 | 대기 |
 | E1-F21 | [#747](https://github.com/hyujun/rtc-framework/issues/747) | 포구 가능 판정 지도 — 탐색이 어떤 공을 받는다고 판정하는가 (발사 위치 · 거리 · 비행시간 · 종단 속도). 오프라인 지도와 sim 의 판정 대 결과, 기술 통계로 보고한다 | E1-F16, sim 쪽은 E1-F17 · F18 | 대기 |
 | E1-F19 | [#745](https://github.com/hyujun/rtc-framework/issues/745) | 튜닝 (판정 전, 판정과 다른 seed) | E1-F18 · F21 | 대기 |
-| E1-F20 | [#746](https://github.com/hyujun/rtc-framework/issues/746) | 비교 평가 — search 둘 (`grid` · `nlp`), planner 셋 (`closed_form` · `mpc` · `mpc_docking`) | E1-F19, [#717](https://github.com/hyujun/rtc-framework/issues/717) | 대기 |
+| E1-F20 | [#746](https://github.com/hyujun/rtc-framework/issues/746) | 비교 평가 — search 둘 (`grid` · `nlp`), planner 셋 (`closed_form` · `mpc` · `mpc_docking`) | E1-F19 | 대기 |
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
 
@@ -91,7 +91,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ### E3. MPC dual arm · waist 확장 — [#623](https://github.com/hyujun/rtc-framework/issues/623) · 필수 (E2 뒤)
 
-같은 MPC 에 dual arm · waist 항을 더한다 (MD-46 · MD-47). 착수 조건: E2 (g1_p1b 준비) 와 E1-F07 (코어, 끝). 착수 전에 `Decel*` 이름의 rename refactor 를 한다 (MD-48, #711 — 시기는 §5). sim 전용. 게이트: G1 sim 에서 포구 시행이 돌고 성공률 · solve time p99 가 보고된다. 기존 두 로봇 회귀 없음 — 단일 팔 구성 (더한 항의 가중 0) 의 해가 불변이다.
+같은 MPC 에 dual arm · waist 항을 더한다 (MD-46 · MD-47). 착수 조건: E2 (g1_p1b 준비) 와 E1-F07 (코어, 끝). sim 전용. 게이트: G1 sim 에서 포구 시행이 돌고 성공률 · solve time p99 가 보고된다. 기존 두 로봇 회귀 없음 — 단일 팔 구성 (더한 항의 가중 0) 의 해가 불변이다.
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
@@ -142,7 +142,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | `feat/tsid-clik-multiframe` | E2-F04 | `rtc_tsid` public API 변경. 기존 소비자 둘의 기능 동등성이 성공 기준이다 |
 | `feat/demo-dualarm-controller` | E2-F05 | 신규 controller. Sprint Contract = spec |
 | `feat/g1-dualarm-tooling` | E2-F06, E2-F07 | GUI 와 plot. 둘 다 `demo_dualarm_controller` 의 출력을 소비한다 |
-| (rename refactor) | — | `Decel*` 이름 (MD-48, #711) — feature 가 아니다. 기능 동등성이 성공 기준이다. PR 둘로 나눈다: C++ 식별자 · 파일 이름 (끝, #761) / public YAML key 와 CSV 열 · 로그 문구 · 도구 (같은 브랜치 `refactor/catching-711-rename-keys-csv` 에서 CSV 열 · 로그 문구 · 표시 문구 · 도구까지 끝났다). 범위와 시기는 §5 |
 | `feat/catching-mpc-candidate-select` | E3-F01 | G1 구성의 후보 선택. interface 는 E1-F12 가 넣었다 |
 | `feat/catching-mpc-wholebody` | E3-F02, E3-F04 | 전신 항과 MPC ↔ CLIK 계약. 둘 다 활성 관절을 전체로 넓히는 작업이고 계약의 sanity check 가 전신 해를 입력으로 쓴다 |
 | `feat/collision-capsule-core` | E3-F03 | 신규 수치 코어. code review 단위 |
@@ -151,7 +150,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 **순서 — E1.** 위 표의 순서대로다: interface → 코어 둘 → planner 통합 → RT → tooling → 판정 지도 → 튜닝 → 평가. `feat/catching-docking-ident` 는 코어 둘과 병행하고 planner 통합 앞에 끝낸다. E2 의 브랜치는 E1 의 브랜치와 병행할 수 있다 (패키지가 다르다).
 
-**순서 — E2 · E3.** (1) `feat/tsid-clik-multiframe` → (2) `feat/demo-dualarm-controller` → `feat/g1-dualarm-tooling` → (3) E3 의 다섯 브랜치 (E2 와 E1-F07 뒤, MD-47). rename refactor (#711) 는 E3 의 브랜치보다 앞이다 — 시기는 §5. 병행은 서로 다른 패키지를 고치는 브랜치끼리만 한다.
+**순서 — E2 · E3.** (1) `feat/tsid-clik-multiframe` → (2) `feat/demo-dualarm-controller` → `feat/g1-dualarm-tooling` → (3) E3 의 다섯 브랜치 (E2 와 E1-F07 뒤, MD-47). 병행은 서로 다른 패키지를 고치는 브랜치끼리만 한다.
 
 ### 게이트 · escalation
 
@@ -165,7 +164,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | E1-F13 · F14 | 신규 수치 코어 (100+ 줄). E1-F14 는 두 번째 탐색 구현 | code review |
 | E1-F16 | lifecycle 의 configure 경로 | security review 권고 |
 | E3-F03 | 신규 수치 코어 (100+ 줄) | code review |
-| #711 | `Decel*` rename refactor (MD-48). key 를 옮기는 PR 은 public YAML key 와 lifecycle 의 configure 경로 (옛 key 의 park) 를 고친다 | PR 둘, 기능 동등성이 성공 기준. key 를 옮기는 PR 은 security review 권고 |
 | E2-F05 | 신규 controller | Sprint Contract = spec |
 
 ## 4. 남은 feature 를 구속하는 결정
@@ -182,7 +180,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | MD-13 | 토크는 1차까지 선형화하고 토크 · 자기충돌 행에는 slack 을 둔다. 위치 · 속도 한계, 종단 등식, trust region, 공–왼팔 행은 hard 다. 동역학은 손을 기준 자세로 잠근 축소 모델로 계산한다 | E3-F02 · F03 |
 | MD-46 | 설계는 formulation §1.3 하나다. g1_p1b 는 같은 코어에 dual arm · waist 전용 항 (waist 억제, 왼팔 rest, 각운동량, 자기충돌, 공–왼팔, waist 토크 행 · counter-swing, 관절군별 move blocking) 을 더한다. 포구 후보 ($t_c$) 를 MPC 의 바깥 루프가 고르게 하는 것이 닫아야 할 편차다 | E1-F14 · E3-F01 · F02 |
 | MD-47 | E3 의 착수 조건은 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이다. G-1 은 조건이 아니다 | E3 |
-| MD-48 | `Decel*` 식별자의 rename 은 E3 착수 전에 별도 refactor 로 한다 | E3 착수 (#711 — 시기는 §5) |
 | MD-49 | 코어는 비용 · 제약을 항 단위로 조립하고 관절군별 move blocking 행렬 $E$ 의 자리만 둔다. 다관절군 일반화는 E3 에서 한다 | E3-F02 |
 
 ## 5. 아직 정하지 않은 것
@@ -200,33 +197,24 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 **mpc planner · catching 의 남은 일**
 
 - [#710](https://github.com/hyujun/rtc-framework/issues/710) — iiwa7_leap: `mode: mpc` 가 포구 계획을 내지 못한다 — 첫 풀이의 기준 궤적
-- [#711](https://github.com/hyujun/rtc-framework/issues/711) — refactor(catching): `Decel*` · `decel_*` 이름을 뜻에 맞게 — MD-48 의 rename, E3 착수 전
 - [#755](https://github.com/hyujun/rtc-framework/issues/755) — catching: 포구 층에서 발화하지 않는 `JOINT_CONFLICT` 경로 — 지울지 정한다 (#712 후속)
 - [#713](https://github.com/hyujun/rtc-framework/issues/713) — catching: 조정되지 않은 채 출하된 mpc planner 의 값 — `cost.w_perp` · `publish.slack_terminal_max`
 - [#716](https://github.com/hyujun/rtc-framework/issues/716) — catching: formulation 의 포구 구간 다중 노드 (K_c) 와 그 위의 경로 이탈 항 `w_path` 가 구현에 없다
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
 
-**위 여섯의 순서 (권장 — #711 은 정했다).** 이 문서에서 여섯 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이고, #711 만 PR 이 둘이다. 이슈에 정해진 시기 (#710 · #713 · #716 은 E1-F20 뒤, #711 은 E3 착수 전) 안에서 고른 순서이고, "착수 때 정할 것" 은 아직 열려 있다.
+**위 다섯의 순서 (권장).** 이 문서에서 다섯 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 (#710 · #713 · #716 은 E1-F20 뒤) 안에서 고른 순서이고, "착수 때 정할 것" 은 아직 열려 있다.
 
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
-| 1a | #711 — C++ 식별자 · 파일 이름. `grid` 탐색의 클래스 (`PlannerSearch`) 도 함께 옮겼다 | 끝 — PR #761 (사용자 결정 2026-10-05) | 단독 `refactor/catching-711-rename-cpp` | — |
-| 1b · 1c | #711 — 1b: YAML key 를 기능별로 가르고 옮긴다 (`grid` 탐색의 key 포함). ROS 파라미터 미러, 옛 key 18 개의 park, key 의 경로나 미러의 이름을 읽는 것 전부 (분석 도구 · `catching_eval/` · GUI 의 조회). 1c: CSV 열 · 로그 문구 · 표시 문구 (GUI · plot) 와 그것을 읽는 도구 | 1a 뒤, E1-F16 (#742) 착수 전 (사용자 결정 2026-10-05) | 한 PR `refactor/catching-711-rename-keys-csv` — 커밋 순서는 key, 그 다음 CSV 열. 1c (CSV 열 · 로그 문구 · 표시 문구 · 도구) 는 이 브랜치에서 끝났다 (merge 전) | 1c: 새 CSV 열 이름과 옛 자료의 호환 |
-| 2 | #755 | #636 (E2-F04) 의 Sprint Contract 가 가속 · 위치 한계의 충돌을 어떻게 알릴지 정한 뒤 | 지우면 단독이고 1b · 1c 의 바로 다음이다 (`rtc_msgs` 를 고치면 E-3). 그대로 두면 브랜치가 없다 | 지울 범위 |
-| 3 | #713 | E1-F20 뒤, 1b · 1c · 2 뒤 | 단독 — 정지 직선 · 이탈 거리의 로그 열과 `cost.w_perp` 의 값 | — |
-| 4 | #710 | E1-F20 의 `iiwa7_leap` 결과 | 결과에 따라 단독 또는 없음 | `mpc` 를 고칠지, leap 의 출하 기본값을 바꿀지 |
+| 1 | #755 | #636 (E2-F04) 의 Sprint Contract 가 가속 · 위치 한계의 충돌을 어떻게 알릴지 정한 뒤 | 지우면 단독이다 (`rtc_msgs` 를 고치면 E-3). 그대로 두면 브랜치가 없다 | 지울 범위 |
+| 2 | #713 | E1-F20 뒤, #755 뒤 | 단독 — 정지 직선 · 이탈 거리의 로그 열과 `cost.w_perp` 의 값 | — |
+| 3 | #710 | E1-F20 의 `iiwa7_leap` 결과 | 결과에 따라 단독 또는 없음 | `mpc` 를 고칠지, leap 의 출하 기본값을 바꿀지 |
 | — | #716 | E1-F20 뒤 | 정하지 않았다 | 단일 팔에서도 할지, G1 구성의 항으로 E3 에서 할지 (권장은 E3) |
 | — | #715 | 보류 — 착수 조건이 없다 | — | — |
 
 - **묶지 않는 이유.** #710 · #716 의 범위는 E1-F20 의 결과가 나와야 정해진다. `mpc` 의 법칙을 한 PR 에서 두 곳 바꾸면 측정이 원인을 가르지 못한다 (#710 은 leap 의 계획 게시율, #713 은 정지 구간의 직선 이탈을 본다). PR 을 쌓지 않으므로 같은 파일을 고친다는 것은 묶을 이유가 아니다.
-- **1c · 2 · 3 은 모두 CSV 의 열을 바꾼다.** rename 이 `decel_*` 열을 옮기고, #755 가 지우면 `catching_diag` 의 열 둘이 빠지고, #713 이 `planner_events` 에 열을 더한다. 분석 도구가 옛 형식을 읽는 방식은 1c 가 정하고 2 · 3 은 그 위에 더한다 — 새 열은 새 이름으로 생긴다.
-- **#711 의 PR 은 둘이다.** 1a 는 key · CSV 열을 건드리지 않아 "그 밖의 문자열과 단언이 그대로다" 를 기계로 보일 수 있었다. 1b · 1c 는 E1-F16 (#742) 이 planner 키에 값을 더하고 search 키의 자리를 정하기 전에 끝낸다. 대가: 1b · 1c 가 끝날 때까지 C++ 의 이름과 key · 열의 이름이 다르고, G-1 (#632) 의 기록된 unit 을 읽는 호환이 비교 평가보다 먼저 필요하다 — 1c 에 넣는다.
-- **#711 에서 정한 것 (사용자 결정 2026-10-05).** DECEL 상태의 이름 (`Mode::kDecel` · `rtc_msgs` 의 `MODE_DECEL`) 과 `closed_form` · `grid` 탐색이 쓰는 감속 법칙의 이름 (`supervisor.decel.a_dec` · `decel_target.hpp`) 은 옮기지 않는다 — `rtc_msgs` 를 고치지 않는다. `supervisor.decel.mode` · `switch_margin` 은 옮긴다 (`planner.segment.mode` · `planner.segment.mpc.switch_margin`). ABORT 의 정지 ramp `JointSpaceDecelStep` 은 `JointSpaceStopStep` 으로 옮기고 `decel_target.hpp` 에서 떼어 냈다 (1a). CSV 의 `decel_*` 열은 옮기고, 분석 도구가 옛 열 이름을 새 이름으로 맞춰 읽는다 — 기록된 자료는 고치지 않는다 (1c). 측정과 선택지: [#711 의 분석](https://github.com/hyujun/rtc-framework/issues/711#issuecomment-5990768973) · [보충](https://github.com/hyujun/rtc-framework/issues/711#issuecomment-5990907056).
-- **#711 의 이름 (사용자 결정 2026-10-05).** 값 + interface 의 순서다. 어느 segment planner 든 내는 구간과 RT 의 계약은 `Segment*`, `mpc` 의 구현은 `MpcSegmentPlanner` · `MpcSegmentCore`, `grid` 탐색은 `GridCatchSearch` 다. 뒤에 오는 구현도 같은 순서로 짓는다 (`mpc_docking` · `nlp`). `closed_form` 은 segment planner 가 아니다 — 그 값에서는 계획기 스레드가 탐색만 돌고 RT 가 기준을 식으로 만든다. 계획기 스레드는 wake 마다 search (`grid`) 다음에 segment planner (`mpc`) 를 돌린다.
-- **key 는 기능이 갖는다 (1b — 사용자 방침 2026-10-05).** 탐색 (`grid` · `nlp`) 과 팔의 기준을 만드는 것 (`closed_form` · `mpc` · `mpc_docking`) 은 저마다 자기 YAML 조각에 자기가 읽는 설계 값을 모두 적는다 — `grid` 는 `planner.search.grid.*`, `mpc` 는 `planner.segment.mpc.*`, `closed_form` 은 `reference.*` · `supervisor.decel.a_dec`. 두 기능이 같은 수를 읽으면 key 를 기능마다 따로 둔다: `grid` 의 `planner.search.grid.reference.{v_max, omega, zeta, a_max}` · `stop.a_dec` (`closed_form` 값의 사본), `mpc` 의 `planner.segment.mpc.{eta_v, v_eps}`. 이것은 key 하나를 둔 기존 결정 (D-9, `supervisor.decel.a_dec` 의 "single-source key", L0 §5.3, L3 §6 의 "같은 값 일치 검사는 두지 않는다") 을 뒤집는다. 선택자 `planner.segment.mode` 와 `robot.arm.qdd_*` 는 주 파일, `planner.switch.*` 는 `grid` 의 조각 (`planner.search.grid.switch.*`) 이다. 다른 층의 사실 (`joint_cmd.*` · `hand.T_close_e2e` · `core.ball.mass` · `robot.arm.*` · `planner.freeze.T_freeze`) 은 한 곳에 그대로 둔다.
-- **사본이 어긋나면 (1b).** `planner.search.grid.reference.*` · `stop.a_dec` 가 `closed_form` 값과 다르면 `planner.segment.mode: closed_form` 은 park (`kSearchCopyDiffers`), `mpc` 는 WARN 이다. 두 `eta_v` 가 다르면 `mpc` 에서 WARN 이다. 사본은 원본의 검증 규칙을 따른다. 옮긴 옛 key 18 개 (`supervisor.decel` 은 leaf 마다, `a_dec` 는 남는다) 가 있으면 park 한다 (`kRemovedKey`).
-- **요구를 선택에 묶는 것은 #711 이 아니다.** key 를 가르는 것만으로는 "한 기능의 조각을 지우면 나머지가 돈다" 가 성립하지 않는다 — 지금 `reference.*` 는 `mpc` 에서도, `supervisor.decel.a_dec` 는 어느 값에서나 필요하고 `mpc` 의 key 는 `closed_form` 에서도 읽혀 범위를 벗어나면 configure 가 실패한다. 요구를 선택에 묶는 것과 `planner.search.mode` 의 파서 (값 `grid | nlp`) 는 **E1-F16 (#742) 이 한다** (사용자 결정 2026-10-05) — 그 feature 가 조합 · 파서 · 검증기 · park 를 고친다. #711 은 지금의 요구를 새 이름으로 그대로 옮긴다. 읽는 곳의 대조: [#711 의 검토 코멘트](https://github.com/hyujun/rtc-framework/issues/711#issuecomment-5991903201) · [#711 의 코멘트](https://github.com/hyujun/rtc-framework/issues/711#issuecomment-5991558451).
-- **#711 은 #574 를 기다리지 않는다.** 옛 key (18 개 — `planner.decel_mpc` · `supervisor.decel.mode` · `supervisor.decel.switch_margin` · 탐색의 `planner.*` 절) 가 있으면 park 하는 검사를 1b 에 넣는다 — 없어진 `box` 형태의 선례 (`CatchingParkReason::kRemovedKey`) 와 같은 방식이다.
+- **#755 와 #713 은 CSV 의 열을 바꾼다.** #755 가 지우면 `catching_diag` 의 열 둘이 빠지고, #713 이 `planner_events` 에 열을 더한다. 새 열은 새 이름으로 생긴다.
+- **요구를 선택에 묶는 것은 E1-F16 (#742) 이 한다 (사용자 결정 2026-10-05).** key 를 기능별로 가른 것만으로는 "한 기능의 조각을 지우면 나머지가 돈다" 가 성립하지 않는다 — 지금 `reference.*` 는 `mpc` 에서도, `supervisor.decel.a_dec` 는 어느 값에서나 필요하고 `mpc` 의 key 는 `closed_form` 에서도 읽혀 범위를 벗어나면 configure 가 실패한다. 요구를 선택에 묶는 것과 `planner.search.mode` 의 파서 (값 `grid | nlp`) 는 그 feature 가 조합 · 파서 · 검증기 · park 와 함께 고친다. 읽는 곳의 대조: [#711 의 검토 코멘트](https://github.com/hyujun/rtc-framework/issues/711#issuecomment-5991903201).
 - **#755 의 "msg 는 두고 전이 행만 지운다" 는 그대로는 되지 않는다.** 전이표는 어느 행에도 쓰이지 않는 사유를 거부하고 (`transition_table.hpp` 끝의 `static_assert`), 사유의 값은 `rtc_msgs` 의 상수와 번호가 같아야 한다. `rtc_msgs` 를 고치지 않는 형태는 발화하는 한 줄만 지우고 사유와 행을 두는 것이다.
 - **#716 에서 정하지 않은 것.** formulation §1.6 은 단일 팔의 포구 구간이 한 노드인 것을 손 폐쇄 명령 시각 ($t_c-T_{close}$ — 폐쇄가 $t_c$ 에 끝난다) 의 귀결로 적는다. 여러 노드로 두려면 세 planner 가 함께 쓰는 그 규칙이 바뀐다.
 
