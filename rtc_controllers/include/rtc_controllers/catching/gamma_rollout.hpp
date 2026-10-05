@@ -122,8 +122,8 @@ struct RolloutPeaks {
 
 /// Acceptance thresholds (L3 §4.8) and the grids.
 struct RolloutSettings {
-  double a_max{0.0};       ///< `reference.a_max` [m/s²]
-  double v_max{0.0};       ///< `reference.v_max` [m/s]
+  double a_max{0.0};       ///< `planner.search.grid.reference.a_max` [m/s²]
+  double v_max{0.0};       ///< `planner.search.grid.reference.v_max` [m/s]
   double eta_a{0.8};       ///< `planner.search.grid.gamma.eta_a`
   double eta_v{0.9};       ///< `planner.search.grid.gamma.eta_v`
   double eps_term{0.002};  ///< `planner.search.grid.gamma.eps_term` [m]

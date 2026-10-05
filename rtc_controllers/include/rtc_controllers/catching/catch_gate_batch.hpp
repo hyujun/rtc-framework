@@ -41,11 +41,11 @@ struct GateSettings {
   std::vector<double> qddot_max;  ///< joint acceleration box [rad/s²] (L3 §4.3, D-16)
   double eta_v{
       0.0};  ///< `planner.search.grid.gamma.eta_v`; applied to `qdot_max` AND `v_max` (S4.4)
-  double v_max{0.0};          ///< `reference.v_max` [m/s]
+  double v_max{0.0};          ///< `planner.search.grid.reference.v_max` [m/s]
   double d_eff{0.0};          ///< `planner.search.grid.hand.d_eff` [m]
   double t_close_total{0.0};  ///< T_close,e2e + h/2 [s] (L3 §4.5)
   double gamma_margin{0.0};   ///< `planner.search.grid.gamma.margin` [m/s]
-  double a_dec{0.0};          ///< `supervisor.decel.a_dec` [m/s²]
+  double a_dec{0.0};          ///< `planner.search.grid.stop.a_dec` [m/s²]
   double first_plan_s{0.0};   ///< when the first plan exists, from release: T_det + L [s]
   double t_arm_s{0.0};        ///< arm command delay T_arm [s]
   double t_margin_s{0.0};     ///< `planner.search.grid.time.margin` [s]

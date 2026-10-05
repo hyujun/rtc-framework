@@ -75,11 +75,11 @@ struct RankGateInputs {
   BallTime t_k{0};                                     ///< catch instant
   NowLead now_lead{0};                                 ///< the planning 'now' + T_arm
   std::int64_t t_margin_ns{0};                         ///< `planner.search.grid.time.margin`
-  double v_tcp_plan{0.0};                              ///< η_v · `reference.v_max` [m/s]
-  double d_eff{0.0};                                   ///< `planner.search.grid.hand.d_eff` [m]
-  double t_close_total{0.0};                           ///< T_close,e2e + h/2 [s]
-  double gamma_margin{0.0};                            ///< `planner.search.grid.gamma.margin` [m/s]
-  double a_dec{0.0};                                   ///< `supervisor.decel.a_dec` [m/s²]
+  double v_tcp_plan{0.0};     ///< η_v · `planner.search.grid.reference.v_max` [m/s]
+  double d_eff{0.0};          ///< `planner.search.grid.hand.d_eff` [m]
+  double t_close_total{0.0};  ///< T_close,e2e + h/2 [s]
+  double gamma_margin{0.0};   ///< `planner.search.grid.gamma.margin` [m/s]
+  double a_dec{0.0};          ///< `planner.search.grid.stop.a_dec` [m/s²]
 };
 
 /// Every gate's own result, not just the first failure.

@@ -41,11 +41,11 @@ constant still writes a complete map.
   --qdot-max "w0 w1 …"  joint velocity limits [rad/s], model joint order
   --qddot-max "a0 a1 …" joint acceleration box [rad/s^2] (L3 §4.3)
   --eta-v X             planner.search.grid.gamma.eta_v, applied to the joint limits and v_max
-  --v-max X             reference.v_max [m/s]
+  --v-max X             planner.search.grid.reference.v_max [m/s]
   --d-eff X             planner.search.grid.hand.d_eff [m]
   --t-close-total X     T_close,e2e + h/2 [s]
   --gamma-margin X      planner.search.grid.gamma.margin [m/s]
-  --a-dec X             supervisor.decel.a_dec [m/s^2]
+  --a-dec X             planner.search.grid.stop.a_dec [m/s^2]
   --first-plan-s X      when the first plan exists, from release: T_det + L [s]
   --t-arm-s X           arm command delay T_arm [s]
   --t-margin-s X        planner.search.grid.time.margin [s]
