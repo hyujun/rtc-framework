@@ -44,7 +44,7 @@
 
 **포구 구현의 구성 (D-1, 새 패키지 없음).**
 
-- rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`): 궤적 타입·샘플러(L2), 시간 타입, soft-catch 기준 생성기(L4, closed_form), 도달 가능성·계획기 탐색 코어·catchability 판정(L3), 감속 MPC 코어와 계획기 연결 (`decel_mpc*.hpp`, `decel_planner.hpp`, `node_follower.hpp` — mpc), L7 순수 조각, 파라미터 검증(L0)
+- rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`): 궤적 타입·샘플러(L2), 시간 타입, soft-catch 기준 생성기(L4, closed_form), 도달 가능성·계획기 탐색 코어·catchability 판정(L3), 감속 MPC 코어와 계획기 연결 (`mpc_segment_core*.hpp`, `mpc_segment_planner.hpp`, `node_follower.hpp` — mpc), L7 순수 조각, 파라미터 검증(L0)
 - `rtc_math` se3: 접근축 정렬 오차·각속도·Jacobian
 - `rtc_tsid`: CLIK 확장
 - `rtc_urdf_bridge` 모델 빌더: YAML 선언 추가 frame
@@ -184,7 +184,7 @@ layer 는 설계 문서의 단위다. 코드 위치는 D-1 로 확정됐다 — 
 | L0 | rtc_controllers `catching` (공용 타입·파라미터 검증), 공 동역학은 테스트 fixture 전용 위치 | 공용 타입, 파라미터 검증(활성 구성 키만 TBD 검사, 교차제약) | 공통 |
 | L1 | `integrated_bringup` 바인딩 (구독·필드 이름 파서·D-2 변환), 궤적 타입은 `catching` 공용 | `PointCloud2` 수신·파싱·검증, 스냅샷 브리지, stale 판정 | 공통 |
 | L2 | rtc_controllers `catching` | 궤적 샘플러 (5차 Hermite, 시각 정렬, 지평 감시), 시간 타입 | 공통 (샘플의 용도는 planner 가 정한다) |
-| L3 | 탐색 코어는 `catching`, 스레드 소유는 `integrated_bringup` | 포구점·시각·접근축 탐색, catchability(D-18), 계획기 스레드(D-7); closed_form 은 γ 결정과 plan 교체, mpc 는 APPROACH–정지 MPC (`decel_mpc*.hpp`) | 탐색 공통, 나머지 planner 별 |
+| L3 | 탐색 코어는 `catching`, 스레드 소유는 `integrated_bringup` | 포구점·시각·접근축 탐색, catchability(D-18), 계획기 스레드(D-7); closed_form 은 γ 결정과 plan 교체, mpc 는 APPROACH–정지 MPC (`mpc_segment_core*.hpp`) | 탐색 공통, 나머지 planner 별 |
 | L4 | `catching` (`soft_catch.hpp`), 접근축 정렬은 `rtc_math` se3 | soft-catch DS, 접근축 정렬. closed_form 의 RT 기준이고 mpc 에서는 탐색의 후보 순위 rollout 에만 쓰인다 | closed_form (mpc 는 rollout 만) |
 | L5 | `rtc_tsid` CLIK 확장 + 포구 컨트롤러(`catching` + `integrated_bringup`), catch frame 은 `rtc_urdf_bridge` | 확장 CLIK 과제 구성, 가속 행 (D-16), device 0 에 $q_c$ | 공통 |
 | L6 | `catching` (시퀀서), 손 프로파일 YAML 은 `integrated_bringup` | 손 시퀀서 → 손 device slot, `T_close,tot` | 공통 |
@@ -324,16 +324,16 @@ catching:
 | `PointCloud2` 파싱·레이아웃 검증 | 논문 외 설계 | L1 §5.1 | `integrated_bringup/include/integrated_bringup/controllers/catching/traj_input.hpp` (D-4) |
 | 순서·트랙·stale 판정 | 논문 외 설계 | L1 §4.4, §5.3 | `catching/traj_ingress.hpp` |
 | 관절 최소 도달시간 (P1 램프 제약) | [R1] + 논문 외 유도 | L3 §4.3 | `catching/time_feasibility.hpp` (`TMinChecked`) |
-| 5-DoF 포구 자세, 접근축 제약 | [R1] 식(3)의 변형 | L3 §4.2 | `catching/catch_pose_ik.hpp` (`rtc::compliance::DifferentialIk` m=5), 계획기 코어 `catching/planner_search.hpp` |
+| 5-DoF 포구 자세, 접근축 제약 | [R1] 식(3)의 변형 | L3 §4.2 | `catching/catch_pose_ik.hpp` (`rtc::compliance::DifferentialIk` m=5), 계획기 코어 `catching/grid_catch_search.hpp` |
 | catchability (arm 5행 manipulability) | 논문 외 설계 | L3 §4.2 | `catching/` 단일 함수 — 지도 도구와 계획기 공용 (D-18) |
 | γ 창 부등식, 방향 속력 | 논문 외 유도 | L3 §4.5 | `catching/time_feasibility.hpp` (`ComputeGammaWindow`, `MaxCatchableSpeed`) |
-| 포구 오차 예산 (직교 분해) | 논문 외 유도 | L3 §4.6 | `catching/planner_search.hpp` |
+| 포구 오차 예산 (직교 분해) | 논문 외 유도 | L3 §4.6 | `catching/grid_catch_search.hpp` |
 | 계획기 스레드 | 논문 외 설계 | L3 §5.3 | `rtc::PeriodicRtThread` subclass, `integrated_bringup` 소유 (D-7); 한 주기는 `catching/planner_cycle.hpp` |
 | 오차 좌표 soft-catch DS (closed_form 의 RT 기준, mpc 의 rollout) | [R3] 식(4)(5) | L4 §4.1 | `catching/soft_catch.hpp` |
 | Corollary(원점 = 포구점) · 예측 오차·재예측 점프 · 수렴 한계 (임계감쇠 닫힌해) | [R3] Corollary 1 + 논문 외 유도 | L4 §4.2–4.4 | `catching/soft_catch.hpp` (`CriticallyDampedError` 등) |
 | 접근축 회전벡터 오차와 Jacobian | 논문 외 유도 | L4 §4.5, L3 §4.2, L5 §4.2 | `rtc_math/include/rtc_math/se3/axis_align.hpp` + CLIK LOCAL 접근축 2행 |
 | 반암시적 오일러 안정 경계 | 논문 외 유도 | L4 §4.7 | `rtc_controllers/src/params/catching_params.cpp` 검증기 (L0 §5.3) |
-| 감속 MPC (jerk 입력 condensed QP, APPROACH 부터 정지) | formulation | L3, L7 | `catching/decel_mpc.hpp`, `decel_planner.hpp`, `node_follower.hpp` (mpc) |
+| 감속 MPC (jerk 입력 condensed QP, APPROACH 부터 정지) | formulation | L3, L7 | `catching/mpc_segment_core.hpp`, `mpc_segment_planner.hpp`, `node_follower.hpp` (mpc) |
 | 가상 감속 대상(연속 전환) | 논문 외 유도 | L7 §4.3 | `catching/decel_target.hpp` (closed_form) |
 | 충격량 예산 | [R16][R17][R18] + 논문 외 유도 | L7 §4.7 | 계획기 코어, L8 지표 (손–공 첫 접촉 episode 만) |
 | 팔 추종 지연 식별·선행 보상 | 논문 외 설계 | L5 §4.4–4.5 | 식별 도구 (실기 단계). backend 에 지연 보상 없음 |

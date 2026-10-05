@@ -327,7 +327,7 @@ $$
 |---|---|
 | QP 가 실행 불가능하거나 예산을 넘김 | 새 계획을 게시하지 않는다. RT 는 직전 계획을 계속 따른다 (직전 계획도 정지로 끝난다) |
 | 직전 계획이 없거나 나이 한계를 넘음 | `mpc` 는 APPROACH 부터 정지까지 MPC 구간만 따르고 `closed_form` 의 법칙 (`EvaluateDecelTarget`) 을 섞지 않는다 (MD-44 · MD-45) — 따를 구간이 없으면 `ABORT_SAFE` 다 |
-| `ABORT_SAFE` | 관절 공간 정지 `JointSpaceDecelStep` — 원인과 무관, QP 독립 (C-35) |
+| `ABORT_SAFE` | 관절 공간 정지 `JointSpaceStopStep` — 원인과 무관, QP 독립 (C-35) |
 
 **포구 시각.** $t_c$ 는 한 풀이 안에서 고정이다. 단일 팔 구성은 탐색이 고른 plan 의 $t_c$ 를 쓰고 (§1.6), G1 구성은 아래 바깥 루프가 후보 가운데서 고른다. $t_c$ 를 결정변수로 두는 것은 구현하지 않은 검토안이다 (§9).
 
@@ -341,7 +341,7 @@ $$
 - **순위.** 후보의 순위는 **공통 고정 가중**으로 매긴다 — 포구 위치 항을 $W_p$ 대신 $W^{rank} _ p$ 로 다시 평가한 비용이다. $W_p$ 는 불확실성이 큰 후보일수록 작아지므로, 그대로 비교하면 같은 오차가 불확실한 후보에서 더 싸게 보인다. $W^{rank} _ p$ 는 손의 포획 범위에서 정한다 (접근축에 수직인 방향은 손 벌림 폭, 접근축 방향은 깊이).
 - **COMMITTED 이후.** $t_c$ · $t_{cmd}$ 는 고정하고 $\hat p_b(t_c)$ 갱신에 따른 궤적 재계획만 계속한다. 고정된 $t_c$ 가 예측점 사이에 놓이면 공 예측은 L2 의 보간 (`SampleAt`) 으로 얻는다.
 
-**연속성.** $x_0$를 직전 게시 궤적의 $t_s$ 값으로 두므로 전환 시점에 전체 $(q,\dot q,\ddot q)$가 구성상 이어진다 — G1 에서는 왼팔 포함. RT 는 구간을 token · 속한 plan (id · $t_c$) · 게시 나이로 판정해 받고 $t_s$ 에 전환한다 (`JudgeDecelPlan`). 전환 때는 관절마다 명령과 새 구간의 차이를 본다 (연속성 게이트, L7 §4.3a). 이 구성에서 MPC 는 측정 상태를 되먹이지 않는다 — 기준 궤적을 다시 계획할 뿐이고, 로봇 상태의 되먹임은 CLIK 에만 있다.
+**연속성.** $x_0$를 직전 게시 궤적의 $t_s$ 값으로 두므로 전환 시점에 전체 $(q,\dot q,\ddot q)$가 구성상 이어진다 — G1 에서는 왼팔 포함. RT 는 구간을 token · 속한 plan (id · $t_c$) · 게시 나이로 판정해 받고 $t_s$ 에 전환한다 (`JudgeSegment`). 전환 때는 관절마다 명령과 새 구간의 차이를 본다 (연속성 게이트, L7 §4.3a). 이 구성에서 MPC 는 측정 상태를 되먹이지 않는다 — 기준 궤적을 다시 계획할 뿐이고, 로봇 상태의 되먹임은 CLIK 에만 있다.
 
 ### 1.4 각운동량 항의 위상 스케줄과 우선순위
 
@@ -409,7 +409,7 @@ $$
 
 G1 에서 여유 자유도 (전체 $n$ 대 두 과제 12행) 를 CLIK 이 계획과 같게 채우려면 $q_{ref}$ 전체가 자세 과제로 들어가야 한다 — 왼팔 counter-swing 과 waist 분배는 손의 목표만으로는 전달되지 않는다.
 
-payload 는 노드당 관절 $3n$ double 이다. $n=17$, $N=20$ 이면 $3\cdot17\cdot21\cdot8$ byte, 약 8.6 KB 다. 단일 팔 ($n=6$ · 7) 은 노드당 18 · 21 double 이다. 노드 수와 관절 수는 payload 의 용량 (`kMaxDecelNodes` · `kMaxDecelNv`) 안이어야 한다 — 관절 용량은 단일 팔 크기라 G1 구성은 이를 늘려야 한다. 단일 팔의 격자 (§1.6) 는 간격이 둘이다 (포구 전 $\Delta_a$, 정지 구간 $\Delta_s$). payload 는 포구 전 구간 수 `n_pre` 와 그 간격 `dt_pre_ns` 를 정지 간격 `dt_ns` 옆에 싣는다 — 노드 0 는 $t_c-n_{pre}\Delta_a$, 포구 노드는 $n_{pre}$ 번이다. 격자가 $t_c$ 에 고정이라 노드별 간격 배열은 필요 없다. 샘플러는 포구 노드를 경계로 두 간격을 정수 ns 로 갈라 읽는다 (MD-60). RT 는 포구 전 노드가 있는 구간을 받아 APPROACH 부터 따른다. 노드 payload (`DecelPlanSnapshot`, `rtc_controllers/include/rtc_controllers/catching/trajectory.hpp`) 는 `PlanSnapshot` 에 넣지 않고 형제 POD 와 자기 SeqLock 으로 보낸다 (SeqLock POD, D-21 소비 규약, MD-27) — RT 는 COMMITTED 뒤에 새 `PlanSnapshot` 을 받지 않는데 정지 구간은 그 뒤에도 다시 계획되고, 크기가 관절 용량에 비례해 매 tick 복사 비용이 된다.
+payload 는 노드당 관절 $3n$ double 이다. $n=17$, $N=20$ 이면 $3\cdot17\cdot21\cdot8$ byte, 약 8.6 KB 다. 단일 팔 ($n=6$ · 7) 은 노드당 18 · 21 double 이다. 노드 수와 관절 수는 payload 의 용량 (`kMaxSegmentNodes` · `kMaxSegmentNv`) 안이어야 한다 — 관절 용량은 단일 팔 크기라 G1 구성은 이를 늘려야 한다. 단일 팔의 격자 (§1.6) 는 간격이 둘이다 (포구 전 $\Delta_a$, 정지 구간 $\Delta_s$). payload 는 포구 전 구간 수 `n_pre` 와 그 간격 `dt_pre_ns` 를 정지 간격 `dt_ns` 옆에 싣는다 — 노드 0 는 $t_c-n_{pre}\Delta_a$, 포구 노드는 $n_{pre}$ 번이다. 격자가 $t_c$ 에 고정이라 노드별 간격 배열은 필요 없다. 샘플러는 포구 노드를 경계로 두 간격을 정수 ns 로 갈라 읽는다 (MD-60). RT 는 포구 전 노드가 있는 구간을 받아 APPROACH 부터 따른다. 노드 payload (`SegmentSnapshot`, `rtc_controllers/include/rtc_controllers/catching/trajectory.hpp`) 는 `PlanSnapshot` 에 넣지 않고 형제 POD 와 자기 SeqLock 으로 보낸다 (SeqLock POD, D-21 소비 규약, MD-27) — RT 는 COMMITTED 뒤에 새 `PlanSnapshot` 을 받지 않는데 정지 구간은 그 뒤에도 다시 계획되고, 크기가 관절 용량에 비례해 매 tick 복사 비용이 된다.
 
 ### 1.6 단일 팔 구성
 
@@ -457,7 +457,7 @@ $\mathcal K_c$ 가 $\lbrace k_c\rbrace$ 로 줄어드는 이유: 손 폐쇄 명�
 - 코어의 설계 값은 모두 `planner.decel_mpc.*` 의 키다 — 값은 로봇별 `planner_mpc.yaml` (`integrated_bringup/config/<robot>/controllers/catching/`) 에 있다. `cost.{jerk_weight, u_scale, w_delta, rho_tau, w_perp}` (jerk 가중 $R_j$ 는 팔 관절마다, jerk 비용은 $(u/u_{scale})^2$ 이라 $u_{scale}$ 이 jerk 를 $w_\Delta$ · $\rho_\tau$ 와 비교한 세기를 바꾼다. `rho_tau` 0 은 토크 행을 끈다 — 그때 게시 판정의 slack 조건은 빈다), `catch.{w_axis, w_v_par, w_v_perp, gamma_ref, kappa, sigma_floor, w_max, w_const, sigma_ref, rho_v, v_rel_allow, axis_theta_max}` (포구 항의 가중과 목표 배율, $W_p$ 의 $\kappa$ · 공분산 하한 · 가중 상한 · 공분산이 없을 때의 상수 가중, $w_\Delta$ 스케줄의 $\sigma_{ref}$, 상대속도 slack, 접근축 선형화의 상한), `linearization.{delta_tr, reference_rest_tol, ref_speed_fraction}` (trust region 반폭, 기준의 종단 정지 허용, 첫 기준의 속도 비 — `reference_rest_tol` 은 `solver.eps_abs` 보다 커야 한다), `solver.{max_iter, max_iter_in, eps_abs, eps_rel}`, 한계 여유 `eta_tau` · `m_q`. solver 의 preconditioner 갱신과 KKT backend 는 설계 값이 아니라 코드에 둔다 (RT 무할당 · infeasible 판정이 그것을 전제한다).
 - warm 풀이가 실패하면 solver 를 비우고 한 번 다시 푼다. 다른 문제가 남긴 반복값에서 시작하면 solver 가 실행 가능한 QP 를 실행 불가능으로 판정하기 때문이다.
 
-§1.3 에서 뺀 항을 지우고 구현의 형태로 적으면 다음이다. 코어 (`DecelMpc`) 가 푸는 문제 그대로다.
+§1.3 에서 뺀 항을 지우고 구현의 형태로 적으면 다음이다. 코어 (`MpcSegmentCore`) 가 푸는 문제 그대로다.
 
 $$
 \boxed{
@@ -540,7 +540,7 @@ $$
 - `closed_form` 의 정지 시간은 포구 속도를 감속도 (`a_dec`) 로 나눈 값이라 vision 간격보다 짧을 수 있다. 그래서 $\Delta_s$ 는 $\Delta$ 와 따로 정한다. 정지 구간의 비용에 시간 항이 없으므로 최적해는 정지 구간 전체를 쓴다 — $T_s$ 는 정지 시간의 상한이 아니라 **정지 시간 그 자체**다 (MD-21).
 - 출력과 RT 평가는 §1.5 와 같다. `mpc` 에서 soft-catch DS 는 돌지 않는다 — APPROACH 부터 정지까지 $q_{ref}$ 에서 만든 pose · twist · 접근축과 관절 기준 (null space 자세 목표) 을 CLIK 에 넣는다 (MD-45).
 - 안전망은 §1.3 의 표와 같다. 코드 기본값은 `closed_form` 이고 MPC 는 YAML 로 켠다 — 출하 YAML 은 두 로봇 모두 켠다 (MD-89). `mpc` 에서 따를 구간이 없으면 `ABORT_SAFE` 다 (MD-44).
-- **이름.** `supervisor.decel.mode`, `planner.decel_mpc.*`, `DecelMpc`, `DecelPlanSnapshot` 의 Decel 은 역사적 이름이다. `mode: mpc` 에서 범위는 APPROACH 부터 정지까지이고, `supervisor.decel.mode` 는 실제로 planner 를 고른다 (MD-48).
+- **이름.** key `supervisor.decel.mode` · `planner.decel_mpc.*`, 그 key 를 따르는 식별자, CSV 의 `decel_*` 열에 남은 decel 은 역사적 이름이다. `mode: mpc` 에서 범위는 APPROACH 부터 정지까지이고, `supervisor.decel.mode` 는 실제로 planner 를 고른다 (MD-48).
 - 두 planner 의 비교 기준은 게이트 G-1 이다. MPC arm 은 APPROACH–정지 MPC 다 (§6.5).
 - 정지 구간 환원형 — 포구 항을 끄고 $k_c=0$ — 은 코어의 회귀 케이스다 (§4 항목 9). 포구 뒤의 재계획이 푸는 문제가 이것이다.
 
@@ -594,7 +594,7 @@ horizon 은 0.75 s 와 1.0 s 둘을 시험한다. horizon 을 나누는 이유�
 | ball_perception profile | `sim_profile.catching.json` 의 사본 — 조건마다 따로 두고 출하 파일은 고치지 않는다 | `prediction.horizon_s`, `prediction.step_s`, `prediction.max_points` |
 | rtc-framework | `demo_catching_controller.yaml` 과 그 조각 `catching/search_grid.yaml` (로봇별) | `prediction.dt_expected`, `io.n_min` (주 파일), `planner.slice.dt` (조각) |
 
-- profile 만 촘촘하게 바꾸면 메시지는 받아들여진다. 거부 하한은 `prediction.dt_expected` 의 10 % (`kTrajSpacingFloorFraction`) 라 조건의 간격은 모두 그 위다. 대신 `planner.slice.dt` 가 남은 값이면 계획기가 후보를 그 간격으로 솎아 (`planner_search.cpp`) 경고 없이 옛 격자로 돈다. 세 키는 떠 있는 컨트롤러의 read-only 미러 파라미터로 확인한다.
+- profile 만 촘촘하게 바꾸면 메시지는 받아들여진다. 거부 하한은 `prediction.dt_expected` 의 10 % (`kTrajSpacingFloorFraction`) 라 조건의 간격은 모두 그 위다. 대신 `planner.slice.dt` 가 남은 값이면 계획기가 후보를 그 간격으로 솎아 (`grid_catch_search.cpp`) 경고 없이 옛 격자로 돈다. 세 키는 떠 있는 컨트롤러의 read-only 미러 파라미터로 확인한다.
 - 두 쪽의 값을 맞춰 보는 자동 검사는 없다. profile 은 ball_perception 쪽이 소유하고 (MD-18) rtc-framework 는 그 파일을 읽을 수 없다. 위 표의 키를 바꿀 때는 양쪽을 함께 확인한다.
 - 조건별 설정은 출하값을 덮어쓰지 않고 조건마다 따로 둔다 — 두 저장소 밖의 profile 사본과 sim overlay 다 (E0-F04, [#647](https://github.com/hyujun/rtc-framework/issues/647)).
 - 25 ms (1.0 s) · 18.75 ms (0.75 s) 보다 촘촘한 조건은 `kCap` 을 올려야 한다. `kCap` 은 스냅샷의 크기이고 스냅샷은 tick 마다 통째로 복사되므로 (L2 §5), 올리면 RT 비용이 함께 는다. 이 sweep 에는 넣지 않는다 `[선택]`.

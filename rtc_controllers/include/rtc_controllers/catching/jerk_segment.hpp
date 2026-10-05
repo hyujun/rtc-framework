@@ -1,7 +1,7 @@
 // ── Piecewise-constant-jerk joint trajectory: closed-form evaluation ─────────
 // (dynamic_catching MPC plan E1-F01; formulation §1.5)
 //
-// The decel MPC (decel_mpc.hpp) publishes joint NODES (q_k, q̇_k, q̈_k) at a
+// The segment MPC (mpc_segment_core.hpp) publishes joint NODES (q_k, q̇_k, q̈_k) at a
 // fixed spacing Δ and nothing between them (MD-9). Between
 // node k and k+1 the jerk is constant, u_k = (q̈_{k+1} − q̈_k)/Δ, so for
 // τ ∈ [0, Δ]:

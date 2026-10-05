@@ -1,7 +1,7 @@
-// E1-F08 (#661): the decel planner's APPROACH–stop solves (decel_planner.hpp
+// E1-F08 (#661): the MPC segment planner's APPROACH–stop solves (mpc_segment_planner.hpp
 // §APPROACH–stop) on a fake clock — PlanFirst, Replan, the ball target, the
 // between-node speed check and the allocation boundary. NOT the E1-F07 core
-// suite (test_catching_decel_mpc_approach.cpp drives DecelMpc alone); the
+// suite (test_catching_mpc_segment_core_approach.cpp drives MpcSegmentCore alone); the
 // cycle that wires these into a wake is test_catching_approach_cycle.cpp.
 // Spec on #661 (MD-55 – MD-64):
 //   configure      ConfigureBuildsCatchCoresInTheStopCoresBox, ...
@@ -17,14 +17,14 @@
 // non-identity permutation of the model order, T_arm ≠ 0 (real ≠ lead axis),
 // instants are realistic absolute steady ns, and both a 6- and a 7-joint arm
 // run.
-#include "rtc_controllers/catching/decel_planner.hpp"
+#include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
+#include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
-#include "rtc_controllers/testing/planner_search_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
@@ -51,23 +51,23 @@
 
 namespace {
 
-using rtc::catching::DecelBallTarget;
-using rtc::catching::DecelKind;
-using rtc::catching::DecelMpcParams;
-using rtc::catching::DecelMpcReason;
-using rtc::catching::DecelNodeTimeNs;
-using rtc::catching::DecelOutcome;
-using rtc::catching::DecelOutcomeName;
-using rtc::catching::DecelPlanner;
-using rtc::catching::DecelPlannerConstants;
-using rtc::catching::DecelPlannerModel;
-using rtc::catching::DecelPlannerParams;
-using rtc::catching::DecelPlanSnapshot;
-using rtc::catching::DecelRecord;
-using rtc::catching::kMaxDecelNv;
+using rtc::catching::kMaxSegmentNv;
 using rtc::catching::Mode;
+using rtc::catching::MpcSegmentBallTarget;
+using rtc::catching::MpcSegmentCoreParams;
+using rtc::catching::MpcSegmentCoreReason;
+using rtc::catching::MpcSegmentPlanner;
+using rtc::catching::MpcSegmentPlannerConstants;
+using rtc::catching::MpcSegmentPlannerModel;
+using rtc::catching::MpcSegmentPlannerParams;
 using rtc::catching::PlannerRtState;
 using rtc::catching::PlanSnapshot;
+using rtc::catching::SegmentKind;
+using rtc::catching::SegmentNodeTimeNs;
+using rtc::catching::SegmentOutcome;
+using rtc::catching::SegmentOutcomeName;
+using rtc::catching::SegmentRecord;
+using rtc::catching::SegmentSnapshot;
 
 constexpr std::int64_t kMs = 1'000'000;
 constexpr std::int64_t kTArm = 30 * kMs;                   // T_arm ≠ 0
@@ -139,8 +139,8 @@ std::size_t Dev(const Arm& a, int m) {
   return static_cast<std::size_t>(a.device_of_model[static_cast<std::size_t>(m)]);
 }
 
-DecelPlannerModel PlannerModelOf(const Arm& a) {
-  DecelPlannerModel pm;
+MpcSegmentPlannerModel MpcSegmentPlannerModelOf(const Arm& a) {
+  MpcSegmentPlannerModel pm;
   pm.arm = a.model;
   pm.catch_frame = a.frame;
   pm.nv = a.model->nv;
@@ -155,8 +155,8 @@ DecelPlannerModel PlannerModelOf(const Arm& a) {
   return pm;
 }
 
-DecelPlannerConstants Consts() {
-  DecelPlannerConstants c;
+MpcSegmentPlannerConstants Consts() {
+  MpcSegmentPlannerConstants c;
   c.eta_v = 0.9;
   c.t_arm_s = static_cast<double>(kTArm) * 1e-9;
   c.control_dt = static_cast<double>(kH) * 1e-9;
@@ -166,8 +166,8 @@ DecelPlannerConstants Consts() {
 
 // The shipped approach profile (MD-54): 7 × 0.05 s [1, 1, 2, 3] after the
 // catch, up to 6 × 0.1 s before it, k_max 2.
-DecelPlannerParams ApproachParams() {
-  DecelPlannerParams p;
+MpcSegmentPlannerParams ApproachParams() {
+  MpcSegmentPlannerParams p;
   p.n_nodes = 7;
   p.dt_s = 0.05;
   p.blocks = {1, 1, 2, 3};
@@ -228,8 +228,8 @@ PlanSnapshot PlanFor(const Arm& a, const Catch& c, std::int64_t t_c, std::uint32
   return p;
 }
 
-DecelBallTarget BallFor(const Catch& c, double sigma = 0.01) {
-  DecelBallTarget b;
+MpcSegmentBallTarget BallFor(const Catch& c, double sigma = 0.01) {
+  MpcSegmentBallTarget b;
   b.valid = true;
   b.p_b = c.p;
   b.v_b = c.v;
@@ -267,10 +267,10 @@ PlannerRtState FollowingRt(const Arm& a, const Eigen::VectorXd& q, std::int64_t 
   s.plan_active = true;
   s.plan_id = plan_id;
   s.plan_t_c_ns = t_c;
-  s.decel_pending = pending != 0;
-  s.decel_pending_seq = pending;
-  s.decel_active = active != 0;
-  s.decel_seq = active;
+  s.segment_pending = pending != 0;
+  s.segment_pending_seq = pending;
+  s.segment_active = active != 0;
+  s.segment_seq = active;
   return s;
 }
 
@@ -284,39 +284,40 @@ Eigen::VectorXd Offset(const Arm& a, double d) {
 
 struct Rig {
   Arm arm;
-  DecelPlanner planner;
-  DecelPlanSnapshot out{};
-  DecelRecord rec{};
+  MpcSegmentPlanner planner;
+  SegmentSnapshot out{};
+  SegmentRecord rec{};
   std::uint32_t seq{0};
 
-  explicit Rig(Arm a, DecelPlannerParams params = ApproachParams(),
-               DecelPlannerConstants consts = Consts())
+  explicit Rig(Arm a, MpcSegmentPlannerParams params = ApproachParams(),
+               MpcSegmentPlannerConstants consts = Consts())
       : arm(std::move(a)) {
     std::string err;
-    EXPECT_TRUE(planner.Configure(PlannerModelOf(arm), consts, params, &FakeClock, &err)) << err;
+    EXPECT_TRUE(planner.Configure(MpcSegmentPlannerModelOf(arm), consts, params, &FakeClock, &err))
+        << err;
   }
 
   // Publish what the last step produced the way the cycle does.
   std::uint32_t Publish(std::int64_t publish_ns) {
-    out.decel_seq = ++seq;
+    out.segment_seq = ++seq;
     out.publish_ns = publish_ns;
     planner.NotePublished(out);
-    return out.decel_seq;
+    return out.segment_seq;
   }
 };
 
-std::string Why(const DecelRecord& r) {
-  return std::string(DecelOutcomeName(r.outcome)) + " / " +
-         rtc::catching::DecelMpcReasonName(r.core_reason);
+std::string Why(const SegmentRecord& r) {
+  return std::string(SegmentOutcomeName(r.outcome)) + " / " +
+         rtc::catching::MpcSegmentCoreReasonName(r.core_reason);
 }
 
 // The catch node's frame position of a published segment (model order).
 // The catch frame's linear velocity at the catch node, world-aligned.
-Eigen::Vector3d CatchNodeVel(const Arm& a, const DecelPlanSnapshot& p) {
+Eigen::Vector3d CatchNodeVel(const Arm& a, const SegmentSnapshot& p) {
   Eigen::VectorXd q(a.model->nv);
   Eigen::VectorXd qd(a.model->nv);
   for (int m = 0; m < q.size(); ++m) {
-    const auto e = static_cast<std::size_t>(p.n_pre * kMaxDecelNv) + Dev(a, m);
+    const auto e = static_cast<std::size_t>(p.n_pre * kMaxSegmentNv) + Dev(a, m);
     q[m] = p.q[e];
     qd[m] = p.qd[e];
   }
@@ -327,10 +328,10 @@ Eigen::Vector3d CatchNodeVel(const Arm& a, const DecelPlanSnapshot& p) {
       .linear();
 }
 
-Eigen::Vector3d CatchNodePos(const Arm& a, const DecelPlanSnapshot& p) {
+Eigen::Vector3d CatchNodePos(const Arm& a, const SegmentSnapshot& p) {
   Eigen::VectorXd q(a.model->nv);
   for (int m = 0; m < q.size(); ++m) {
-    q[m] = p.q[static_cast<std::size_t>(p.n_pre * kMaxDecelNv) + Dev(a, m)];
+    q[m] = p.q[static_cast<std::size_t>(p.n_pre * kMaxSegmentNv) + Dev(a, m)];
   }
   return FkPos(a, q);
 }
@@ -394,36 +395,36 @@ TEST(ApproachPlanner, WithoutAPreCatchGridItDoesNotConfigure) {
   // so there is no planner to build without a pre-catch grid — and an
   // unconfigured one solves nothing.
   const Arm arm = Arm6();
-  DecelPlannerParams p = ApproachParams();
+  MpcSegmentPlannerParams p = ApproachParams();
   p.n_pre_max = 0;
-  DecelPlanner planner;
+  MpcSegmentPlanner planner;
   std::string err;
-  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
   EXPECT_NE(err.find("n_pre_max"), std::string::npos) << err;
   EXPECT_FALSE(planner.Configured());
   const Catch c = CatchAt(arm, Offset(arm, 0.03));
   SetClock(kT0);
-  DecelPlanSnapshot out{};
-  DecelRecord rec{};
+  SegmentSnapshot out{};
+  SegmentRecord rec{};
   EXPECT_FALSE(planner.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH),
                                  PlanFor(arm, c, kT0 + 800 * kMs), BallFor(c), out, rec));
-  EXPECT_EQ(rec.outcome, DecelOutcome::kOff);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kOff);
   EXPECT_FALSE(planner.Replan(FollowingRt(arm, arm.q_nominal, kT0 - kH, kT0 + 800 * kMs, 1, 0),
                               BallFor(c), out, rec));
-  EXPECT_EQ(rec.outcome, DecelOutcome::kOff);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kOff);
 }
 
 TEST(ApproachPlanner, ConfigureRefusesWhatItCannotBuildOn) {
-  const DecelPlannerParams p = ApproachParams();
-  DecelPlanner bad;
-  DecelPlannerModel pm = PlannerModelOf(Arm6());
+  const MpcSegmentPlannerParams p = ApproachParams();
+  MpcSegmentPlanner bad;
+  MpcSegmentPlannerModel pm = MpcSegmentPlannerModelOf(Arm6());
   std::string err;
   EXPECT_FALSE(bad.Configure(pm, Consts(), p, nullptr, &err));
   EXPECT_NE(err.find("clock"), std::string::npos) << err;
   pm.device_of_model[1] = pm.device_of_model[0];
   EXPECT_FALSE(bad.Configure(pm, Consts(), p, &FakeClock, &err));
   EXPECT_NE(err.find("permutation"), std::string::npos) << err;
-  pm = PlannerModelOf(Arm6());
+  pm = MpcSegmentPlannerModelOf(Arm6());
   pm.tau_max[3] = 0.0;
   EXPECT_FALSE(bad.Configure(pm, Consts(), p, &FakeClock, &err));
   EXPECT_NE(err.find("Init"), std::string::npos) << err;
@@ -431,11 +432,11 @@ TEST(ApproachPlanner, ConfigureRefusesWhatItCannotBuildOn) {
 }
 
 TEST(ApproachPlanner, ConfigureRefusesAPositionMarginTheTrustRegionCannotHold) {
-  DecelPlannerParams p = ApproachParams();
+  MpcSegmentPlannerParams p = ApproachParams();
   p.m_q = 0.1;  // the core's δ_tr
-  DecelPlanner planner;
+  MpcSegmentPlanner planner;
   std::string err;
-  EXPECT_FALSE(planner.Configure(PlannerModelOf(Arm6()), Consts(), p, &FakeClock, &err));
+  EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(Arm6()), Consts(), p, &FakeClock, &err));
   EXPECT_NE(err.find("trust region"), std::string::npos) << err;
 }
 
@@ -458,10 +459,10 @@ TEST(ApproachPlanner, FirstSolvePicksTheLargestPreCatchCountThatFits) {
     SetClock(now);
     const bool ok = r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, now - kH),
                                         PlanFor(r.arm, c, t_c), BallFor(c), r.out, r.rec);
-    EXPECT_EQ(r.rec.kind, DecelKind::kFirst);
+    EXPECT_EQ(r.rec.kind, SegmentKind::kFirst);
     if (row.n_pre == 0) {
       EXPECT_FALSE(ok);
-      EXPECT_EQ(r.rec.outcome, DecelOutcome::kTooLate) << row.numer;
+      EXPECT_EQ(r.rec.outcome, SegmentOutcome::kTooLate) << row.numer;
       continue;
     }
     // The grid point is recorded before the solve, published or not.
@@ -471,7 +472,7 @@ TEST(ApproachPlanner, FirstSolvePicksTheLargestPreCatchCountThatFits) {
       // One pre-catch interval reaches little (the known limit of n_pre 1 –
       // 2, #661): the catch gate may withhold it, and then says so.
       if (!ok) {
-        EXPECT_EQ(r.rec.outcome, DecelOutcome::kCatchError) << Why(r.rec);
+        EXPECT_EQ(r.rec.outcome, SegmentOutcome::kCatchError) << Why(r.rec);
         std::printf("[ record ] n_pre 1 withheld: catch error %.1f mm\n",
                     1e3 * r.rec.catch_pos_err);
         continue;
@@ -485,8 +486,8 @@ TEST(ApproachPlanner, FirstSolvePicksTheLargestPreCatchCountThatFits) {
     EXPECT_EQ(r.out.dt_pre_ns, kDtPre);
     EXPECT_EQ(r.out.dt_ns, kDt);
     // The stop end is t_c + N_s·Δ_s whatever n_pre is.
-    EXPECT_EQ(DecelNodeTimeNs(r.out, r.out.n_nodes), t_c + 7 * kDt);
-    EXPECT_TRUE(rtc::catching::ValidateDecelNodes(r.out));
+    EXPECT_EQ(SegmentNodeTimeNs(r.out, r.out.n_nodes), t_c + 7 * kDt);
+    EXPECT_TRUE(rtc::catching::ValidateSegmentNodes(r.out));
     // Its effective instant is reachable after the solve.
     EXPECT_GT(r.out.t0_ns, now + kTArm + kFirst + 2 * kH - 1);
   }
@@ -516,7 +517,7 @@ TEST(ApproachPlanner, FirstSegmentStartsAtTheCommandAndReachesTheBall) {
     EXPECT_TRUE(std::isfinite(r.rec.slack_v));
     // Node N rests to the core's reference tolerance.
     for (int m = 0; m < r.out.nv; ++m) {
-      const auto e = static_cast<std::size_t>(r.out.n_nodes * kMaxDecelNv + m);
+      const auto e = static_cast<std::size_t>(r.out.n_nodes * kMaxSegmentNv + m);
       EXPECT_LE(std::fabs(r.out.qd[e]), 1e-4);
       EXPECT_LE(std::fabs(r.out.qdd[e]), 1e-4);
     }
@@ -533,11 +534,11 @@ TEST(ApproachPlanner, TheFirstSolveNeedsTheArmAtRest) {
   PlannerRtState rt = RestingRt(r.arm, r.arm.q_nominal, kT0 - kH);
   rt.qd_cmd[3] = 0.051;  // rest_tol 0.05
   EXPECT_FALSE(r.planner.PlanFirst(rt, PlanFor(r.arm, c, t_c), BallFor(c), r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNotAtRest);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNotAtRest);
   EXPECT_DOUBLE_EQ(r.rec.x0_speed, 0.051);
   rt.qd_cmd[3] = kNan;
   EXPECT_FALSE(r.planner.PlanFirst(rt, PlanFor(r.arm, c, t_c), BallFor(c), r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNotAtRest);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNotAtRest);
   EXPECT_TRUE(std::isnan(r.rec.x0_speed));
   rt.qd_cmd[3] = 0.049;
   EXPECT_TRUE(r.planner.PlanFirst(rt, PlanFor(r.arm, c, t_c), BallFor(c), r.out, r.rec))
@@ -564,7 +565,7 @@ TEST(ApproachPlanner, TheFirstSolveTakesTheMeasuredPoseOfAnUnseededCommand) {
   PlannerRtState following = FollowingRt(r.arm, r.arm.q_nominal, kT0 - kH, t_c, seq, 0);
   following.cmd_seeded = false;
   EXPECT_FALSE(r.planner.Replan(following, BallFor(c), r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoState);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoState);
 }
 
 TEST(ApproachPlanner, TheReferenceIsClampedToTheBoxAndSlowedToTheVelocityBox) {
@@ -598,7 +599,7 @@ TEST(ApproachPlanner, TheReferenceIsClampedToTheBoxAndSlowedToTheVelocityBox) {
 TEST(ApproachPlanner, WithoutACovarianceThePositionWeightIsConstant) {
   Rig r(Arm6());
   const Catch c = CatchAt(r.arm, Offset(r.arm, 0.02));
-  DecelBallTarget ball = BallFor(c);
+  MpcSegmentBallTarget ball = BallFor(c);
   ball.sigma_valid = false;
   SetClock(kT0);
   ASSERT_TRUE(r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
@@ -612,7 +613,7 @@ TEST(ApproachPlanner, WithoutACovarianceThePositionWeightIsConstant) {
 
 TEST(ApproachPlanner, EachGateWithholdsOnItsOwn) {
   const Catch c0 = CatchAt(Arm6(), Offset(Arm6(), 0.02));
-  const auto first = [&](DecelPlannerParams p, std::int64_t clock_step) {
+  const auto first = [&](MpcSegmentPlannerParams p, std::int64_t clock_step) {
     Rig r(Arm6(), p);
     SetClock(kT0, clock_step);
     const bool ok =
@@ -623,20 +624,20 @@ TEST(ApproachPlanner, EachGateWithholdsOnItsOwn) {
     return r.rec;
   };
   // Budget: the fake clock advances the first budget plus one per read.
-  EXPECT_EQ(first(ApproachParams(), kFirst + 1).outcome, DecelOutcome::kBudget);
-  DecelPlannerParams p = ApproachParams();
+  EXPECT_EQ(first(ApproachParams(), kFirst + 1).outcome, SegmentOutcome::kBudget);
+  MpcSegmentPlannerParams p = ApproachParams();
   p.slack_max = -1.0;
-  EXPECT_EQ(first(p, 0).outcome, DecelOutcome::kSlack);
+  EXPECT_EQ(first(p, 0).outcome, SegmentOutcome::kSlack);
   p = ApproachParams();
   p.slack_terminal_max = kNan;  // a NaN threshold fails, not passes
-  EXPECT_EQ(first(p, 0).outcome, DecelOutcome::kSlack);
+  EXPECT_EQ(first(p, 0).outcome, SegmentOutcome::kSlack);
   p = ApproachParams();
   p.catch_pos_err_max = 1e-9;
-  DecelRecord rec = first(p, 0);
-  EXPECT_EQ(rec.outcome, DecelOutcome::kCatchError);
+  SegmentRecord rec = first(p, 0);
+  EXPECT_EQ(rec.outcome, SegmentOutcome::kCatchError);
   EXPECT_TRUE(std::isfinite(rec.catch_pos_err));
   p.catch_pos_err_max = kNan;
-  EXPECT_EQ(first(p, 0).outcome, DecelOutcome::kCatchError);
+  EXPECT_EQ(first(p, 0).outcome, SegmentOutcome::kCatchError);
 }
 
 // MPC MD-91: `catch.rho_v` / `catch.v_rel_allow`, from the YAML to the cores.
@@ -649,7 +650,7 @@ TEST(ApproachPlanner, TheVelocitySlackKeysReachTheCatchCores) {
   const auto params_of = [&](const std::string& catch_keys) {
     return rtc::catching::ParsePlannerParams(
                YAML::Load("planner: {decel_mpc: {" + std::string(grid) + catch_keys + "}}"))
-        .decel;
+        .mpc_segment;
   };
   for (const Arm& arm : {Arm6(), Arm7()}) {
     Rig off(arm, params_of(""));
@@ -685,13 +686,13 @@ TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
     ASSERT_NE(s0.seq, 0U);
     EXPECT_EQ(off.rec.slack_v, 0.0);
 
-    DecelPlannerParams p = ApproachParams();
+    MpcSegmentPlannerParams p = ApproachParams();
     p.rho_v = 0.05;
     p.v_rel_allow = 0.1;
     Rig on(arm, p);
     const Started s1 = StartPlan(on, kT0, 800 * kMs, 0.04);
     ASSERT_NE(s1.seq, 0U) << Why(on.rec);  // published: the slack withheld nothing
-    EXPECT_EQ(on.rec.outcome, DecelOutcome::kReady);
+    EXPECT_EQ(on.rec.outcome, SegmentOutcome::kReady);
     const double excess =
         (s1.c.v - CatchNodeVel(on.arm, on.out)).cwiseAbs().maxCoeff() / p.v_rel_allow - 1.0;
     std::printf("[ record ] n = %d: s_v %.3f, FK excess %.3f, |v_rel| %.3f m/s\n",
@@ -706,7 +707,7 @@ TEST(ApproachPlanner, TheVelocitySlackIsRecordedNotJudged) {
 
 // The core's design values, from the YAML to every core the planner
 // builds — the stop cores (k = 0..k_max) and the catch cores (n_pre = 1..6).
-// Twelve distinct values; a core left on DecelMpcParams{} reads its default.
+// Twelve distinct values; a core left on MpcSegmentCoreParams{} reads its default.
 TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
   const auto params_of = [](const std::string& body) {
     return rtc::catching::ParsePlannerParams(
@@ -715,9 +716,9 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
                           "{k_max: 2}, approach: {n_pre_max: 6, "
                           "dt_pre_s: 0.1}, " +
                           body + "}}"))
-        .decel;
+        .mpc_segment;
   };
-  const DecelMpcParams defaults{};
+  const MpcSegmentCoreParams defaults{};
   for (const Arm& arm : {Arm6(), Arm7()}) {
     const int n = static_cast<int>(arm.model->nv);
     // One entry per arm joint, in DEVICE order: entry d belongs to the model
@@ -736,7 +737,7 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
     Rig off(arm, params_of(""));
     ASSERT_TRUE(on.planner.Configured());
     ASSERT_TRUE(off.planner.Configured());
-    const auto check = [&](const DecelMpcParams& mp, const char* what, int i) {
+    const auto check = [&](const MpcSegmentCoreParams& mp, const char* what, int i) {
       SCOPED_TRACE(std::string(what) + " " + std::to_string(i));
       ASSERT_EQ(mp.jerk_weight.size(), n);
       for (int m = 0; m < n; ++m) {
@@ -766,9 +767,9 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
       check(on.planner.StopCoreParams(k), "stop core", k);
     }
     // The shipped values are the defaults: a planner built with the keys at
-    // them has every new field equal to DecelMpcParams{} (what the planner
+    // them has every new field equal to MpcSegmentCoreParams{} (what the planner
     // overwrites — grid, eta, m_q, catch terms — is not compared).
-    const auto same = [&](const DecelMpcParams& mp, const char* what, int i) {
+    const auto same = [&](const MpcSegmentCoreParams& mp, const char* what, int i) {
       SCOPED_TRACE(std::string(what) + " " + std::to_string(i));
       EXPECT_EQ(mp.u_scale, defaults.u_scale);
       EXPECT_EQ(mp.w_delta, defaults.w_delta);
@@ -795,34 +796,36 @@ TEST(ApproachPlanner, TheDesignKeysReachEveryCore) {
 // planner's configure refuses a wrong length — by key.
 TEST(ApproachPlanner, TheJerkWeightListMustMatchTheArm) {
   const Arm arm = Arm6();
-  DecelPlannerParams p = ApproachParams();
+  MpcSegmentPlannerParams p = ApproachParams();
   p.jerk_weight = {1.0, 1.0, 1.0, 1.0, 1.0};  // 5 for 6 joints
-  DecelPlanner planner;
+  MpcSegmentPlanner planner;
   std::string err;
-  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
   EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
   p.jerk_weight = std::vector<double>(7, 1.0);
-  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
   EXPECT_NE(err.find("decel_mpc.cost.jerk_weight"), std::string::npos) << err;
   p.jerk_weight = std::vector<double>(6, 1.0);
-  EXPECT_TRUE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err)) << err;
+  EXPECT_TRUE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err))
+      << err;
 }
 
 // m_q against the trust region used to be compared with a default-constructed
 // core's: a profile's own delta_tr must decide.
 TEST(ApproachPlanner, TheMarginIsComparedWithTheProfilesTrustRegion) {
   const Arm arm = Arm6();
-  DecelPlannerParams p = ApproachParams();
+  MpcSegmentPlannerParams p = ApproachParams();
   std::string err;
-  DecelPlanner planner;
+  MpcSegmentPlanner planner;
   // m_q 0.15 is above the default trust region (0.1) and below this one.
   p.m_q = 0.15;
   p.delta_tr = 0.3;
-  EXPECT_TRUE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err)) << err;
+  EXPECT_TRUE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err))
+      << err;
   // m_q 0.05 is below the default 0.1 and not below this one.
   p.m_q = 0.05;
   p.delta_tr = 0.04;
-  EXPECT_FALSE(planner.Configure(PlannerModelOf(arm), Consts(), p, &FakeClock, &err));
+  EXPECT_FALSE(planner.Configure(MpcSegmentPlannerModelOf(arm), Consts(), p, &FakeClock, &err));
   EXPECT_NE(err.find("decel_mpc.linearization.delta_tr"), std::string::npos) << err;
   EXPECT_NE(err.find("decel_mpc.m_q"), std::string::npos) << err;
   EXPECT_FALSE(planner.Configured());
@@ -833,7 +836,7 @@ TEST(ApproachPlanner, TheMarginIsComparedWithTheProfilesTrustRegion) {
 // clamp test pins; another value moves it.
 TEST(ApproachPlanner, TheReferenceSpeedFractionIsTheProfilesOwn) {
   for (const double fraction : {0.9, 0.5}) {
-    DecelPlannerParams p = ApproachParams();
+    MpcSegmentPlannerParams p = ApproachParams();
     p.ref_speed_fraction = fraction;
     Rig r(Arm6(), p);
     const Catch c = CatchAt(r.arm, Offset(r.arm, 0.02));
@@ -859,7 +862,7 @@ TEST(ApproachPlanner, TheReferenceSpeedFractionIsTheProfilesOwn) {
 // same the cores were built with, not a default-constructed core's.
 TEST(ApproachPlanner, TheReferenceRestToleranceIsTheProfilesInJudge) {
   for (const double tol : {1.0e-4, 3.0e-5, 5.0e-3}) {
-    DecelPlannerParams p = ApproachParams();
+    MpcSegmentPlannerParams p = ApproachParams();
     p.reference_rest_tol = tol;
     Rig r(Arm6(), p);
     ASSERT_TRUE(r.planner.Configured());
@@ -879,27 +882,27 @@ TEST(ApproachPlanner, BetweenNodeSpeedFindsTheInteriorExtremum) {
   const std::array<double, 1> lim_hi{1.2};
   const std::array<double, 1> lim_lo{1.05};
   double ratio = 0.0;
-  EXPECT_TRUE(rtc::catching::DecelBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_hi, ratio));
+  EXPECT_TRUE(rtc::catching::MpcSegmentBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_hi, ratio));
   EXPECT_NEAR(ratio, 1.1 / 1.2, 1e-12);
   // The nodes alone are inside 1.05; the extremum is not.
-  EXPECT_FALSE(rtc::catching::DecelBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_lo, ratio));
+  EXPECT_FALSE(rtc::catching::MpcSegmentBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_lo, ratio));
   EXPECT_NEAR(ratio, 1.1 / 1.05, 1e-12);
   // The spacing matters: read as Δ_s (n_pre 0) the peak is 1.0 + ½·4·0.025.
-  EXPECT_TRUE(rtc::catching::DecelBetweenNodeSpeedOk(qd, qdd, 0, 0.1, 0.05, lim_lo, ratio));
+  EXPECT_TRUE(rtc::catching::MpcSegmentBetweenNodeSpeedOk(qd, qdd, 0, 0.1, 0.05, lim_lo, ratio));
   EXPECT_NEAR(ratio, 1.05 / 1.05, 1e-12);
   // Same-sign q̈: monotone in between, the nodes decide.
   qdd << 4.0, 4.0, 0.0;
-  EXPECT_TRUE(rtc::catching::DecelBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_lo, ratio));
+  EXPECT_TRUE(rtc::catching::MpcSegmentBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_lo, ratio));
   // A NaN anywhere fails and records +inf.
   qdd(0, 1) = kNan;
-  EXPECT_FALSE(rtc::catching::DecelBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_hi, ratio));
+  EXPECT_FALSE(rtc::catching::MpcSegmentBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_hi, ratio));
   qdd(0, 1) = -4.0;
   qd(0, 2) = kNan;
-  EXPECT_FALSE(rtc::catching::DecelBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_hi, ratio));
+  EXPECT_FALSE(rtc::catching::MpcSegmentBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_hi, ratio));
   EXPECT_TRUE(std::isinf(ratio));
   qd(0, 2) = 0.0;
   const std::array<double, 1> lim_nan{kNan};
-  EXPECT_FALSE(rtc::catching::DecelBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_nan, ratio));
+  EXPECT_FALSE(rtc::catching::MpcSegmentBetweenNodeSpeedOk(qd, qdd, 2, 0.1, 0.05, lim_nan, ratio));
 }
 
 // ── 4. Replans ───────────────────────────────────────────────────────────────
@@ -917,7 +920,7 @@ TEST(ApproachPlanner, ASamePointResolveIsWarmAndKeepsNodeZero) {
   ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
                                BallFor(s.c), r.out, r.rec))
       << Why(r.rec);
-  EXPECT_EQ(r.rec.kind, DecelKind::kSame);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kSame);
   EXPECT_FALSE(r.rec.cold_start);
   EXPECT_EQ(r.rec.source_seq, s.seq);
   EXPECT_TRUE(r.rec.from_segment);
@@ -926,43 +929,43 @@ TEST(ApproachPlanner, ASamePointResolveIsWarmAndKeepsNodeZero) {
   EXPECT_GT(r.rec.w_delta_scale, 0.0);  // σ 0.01 m: tr Σ / σ_ref² = 3e-4/9e-4
   EXPECT_NEAR(r.rec.w_delta_scale, 3.0 * 1e-4 / 9e-4, 1e-12);
   // `replan.same_point: false` makes it up to date instead.
-  DecelPlannerParams p = ApproachParams();
+  MpcSegmentPlannerParams p = ApproachParams();
   p.replan_same_point = false;
   Rig q(Arm7(), p);
   const Started s2 = StartPlan(q, kT0, 800 * kMs);
   SetClock(now);
   EXPECT_FALSE(q.planner.Replan(FollowingRt(q.arm, q.arm.q_nominal, now - kH, s2.t_c, s2.seq, 0),
                                 BallFor(s2.c), q.out, q.rec));
-  EXPECT_EQ(q.rec.outcome, DecelOutcome::kUpToDate);
+  EXPECT_EQ(q.rec.outcome, SegmentOutcome::kUpToDate);
 }
 
 TEST(ApproachPlanner, AdvanceIsColdAndStartsOnTheSource) {
   Rig r(Arm6());
   const Started s = StartPlan(r, kT0, 800 * kMs);
   ASSERT_NE(s.seq, 0U);
-  const DecelPlanSnapshot source = r.out;
+  const SegmentSnapshot source = r.out;
   // Late enough that only five pre-catch intervals fit.
   const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 5 * kDtPre - 10 * kMs;
   SetClock(now);
   ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
                                BallFor(s.c), r.out, r.rec))
       << Why(r.rec);
-  EXPECT_EQ(r.rec.kind, DecelKind::kAdvance);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kAdvance);
   EXPECT_TRUE(r.rec.cold_start);
   EXPECT_EQ(r.rec.k, -5);
   EXPECT_EQ(r.out.n_pre, 5);
   EXPECT_EQ(r.out.t0_ns, s.t_c - 5 * kDtPre);
   // Node 0 is the source at t_eff — continuous where the RT switches.
-  std::array<double, kMaxDecelNv> q{};
-  std::array<double, kMaxDecelNv> qd{};
-  std::array<double, kMaxDecelNv> qdd{};
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
   ASSERT_TRUE(rtc::catching::NodeTrajectoryFollower::SampleJoints(source, r.out.t0_ns, q, qd, qdd));
   for (int j = 0; j < r.out.nv; ++j) {
     const auto u = static_cast<std::size_t>(j);
     EXPECT_NEAR(r.out.q[u], q[u], 1e-9) << j;
     EXPECT_NEAR(r.out.qd[u], qd[u], 1e-6) << j;
   }
-  EXPECT_EQ(DecelNodeTimeNs(r.out, r.out.n_nodes), DecelNodeTimeNs(source, source.n_nodes));
+  EXPECT_EQ(SegmentNodeTimeNs(r.out, r.out.n_nodes), SegmentNodeTimeNs(source, source.n_nodes));
 }
 
 TEST(ApproachPlanner, PreCatchHandsOverToTheStopCores) {
@@ -979,13 +982,13 @@ TEST(ApproachPlanner, PreCatchHandsOverToTheStopCores) {
     ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, followed),
                                  BallFor(s.c), r.out, r.rec))
         << "k " << k << ": " << Why(r.rec);
-    EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+    EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
     EXPECT_EQ(r.rec.k, k);
     EXPECT_TRUE(r.rec.cold_start) << k;  // another core / grid point
     EXPECT_EQ(r.out.n_pre, 0);
     EXPECT_EQ(r.out.k0, k);
     EXPECT_EQ(r.out.t0_ns, s.t_c + k * kDt);
-    EXPECT_EQ(DecelNodeTimeNs(r.out, r.out.n_nodes), s.t_c + 7 * kDt);
+    EXPECT_EQ(SegmentNodeTimeNs(r.out, r.out.n_nodes), s.t_c + 7 * kDt);
     EXPECT_TRUE(std::isnan(r.rec.catch_pos_err));  // no catch terms after t_c
     EXPECT_TRUE(std::isnan(r.rec.catch_v_rel));
     EXPECT_TRUE(std::isnan(r.rec.slack_v));
@@ -993,13 +996,13 @@ TEST(ApproachPlanner, PreCatchHandsOverToTheStopCores) {
     // At most one solve per stop grid point.
     ASSERT_FALSE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, followed),
                                   BallFor(s.c), r.out, r.rec));
-    EXPECT_EQ(r.rec.outcome, DecelOutcome::kUpToDate);
+    EXPECT_EQ(r.rec.outcome, SegmentOutcome::kUpToDate);
   }
   const std::int64_t now = s.t_c + 3 * kDt - lag - 1 * kMs;
   SetClock(now);
   EXPECT_FALSE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, followed),
                                 BallFor(s.c), r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kPastReplanWindow);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kPastReplanWindow);
   EXPECT_EQ(r.rec.k, 3);
 }
 
@@ -1008,19 +1011,19 @@ TEST(ApproachPlanner, TheSourceIsWhatTheRtReports) {
   const Started s = StartPlan(r, kT0, 800 * kMs);
   ASSERT_NE(s.seq, 0U);
   const std::int64_t now = kT0 + 20 * kMs;
-  const DecelBallTarget ball = BallFor(s.c);
+  const MpcSegmentBallTarget ball = BallFor(s.c);
   const Eigen::VectorXd& q = r.arm.q_nominal;
   SetClock(now);
   // Nothing reported: not followed — never "it is due, so it must be".
   EXPECT_FALSE(r.planner.Replan(FollowingRt(r.arm, q, now - kH, s.t_c, 0, 0), ball, r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNotFollowed);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNotFollowed);
   // A seq the ring never held.
   EXPECT_FALSE(r.planner.Replan(FollowingRt(r.arm, q, now - kH, s.t_c, 99, 0), ball, r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNotFollowed);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNotFollowed);
   // Another plan: not followed, and the ring survives it.
   EXPECT_FALSE(r.planner.Replan(FollowingRt(r.arm, q, now - kH, s.t_c, s.seq, 0, /*plan_id=*/8),
                                 ball, r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNotFollowed);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNotFollowed);
   EXPECT_EQ(r.planner.SourceSeq(FollowingRt(r.arm, q, now - kH, s.t_c, s.seq, 0), s.t_c), s.seq);
   // Pending wins over active when it starts no later than t_eff; a pending
   // one that starts after it does not.
@@ -1040,7 +1043,7 @@ TEST(ApproachPlanner, TheFollowedSegmentSurvivesABurstOfResolves) {
   Rig r(Arm6());
   const Started s = StartPlan(r, kT0, 800 * kMs);
   ASSERT_NE(s.seq, 0U);
-  const DecelBallTarget ball = BallFor(s.c);
+  const MpcSegmentBallTarget ball = BallFor(s.c);
   // The RT keeps following seq 1 while twelve same-point re-solves are
   // published (more than the ring holds).
   for (int i = 0; i < 12; ++i) {
@@ -1064,8 +1067,8 @@ TEST(ApproachPlanner, APreCatchGridPointNeedsABall) {
   const std::int64_t now = kT0 + 20 * kMs;
   SetClock(now);
   EXPECT_FALSE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
-                                DecelBallTarget{}, r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall);
+                                MpcSegmentBallTarget{}, r.out, r.rec));
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoBall);
   EXPECT_EQ(r.rec.k, -6);  // the grid point is recorded even when withheld
 }
 
@@ -1074,7 +1077,7 @@ TEST(ApproachPlanner, TheCatchNodeFollowsAMovedBall) {
   const Started s = StartPlan(r, kT0, 800 * kMs);
   ASSERT_NE(s.seq, 0U);
   const Eigen::Vector3d before = CatchNodePos(r.arm, r.out);
-  DecelBallTarget moved = BallFor(s.c);
+  MpcSegmentBallTarget moved = BallFor(s.c);
   moved.p_b += Eigen::Vector3d(0.0, 0.012, -0.008);
   const std::int64_t now = kT0 + 20 * kMs;
   SetClock(now);
@@ -1093,20 +1096,20 @@ TEST(ApproachPlanner, AStartOnTheVelocityBoxIsProjectedIntoIt) {
   ASSERT_NE(s.seq, 0U);
   // Put the source's catch node a hair past the velocity box on one joint (a
   // published node keeps the box only to the solver's tolerance).
-  DecelPlanSnapshot edge = r.out;
-  const auto e = static_cast<std::size_t>(edge.n_pre * kMaxDecelNv) + Dev(r.arm, 2);
+  SegmentSnapshot edge = r.out;
+  const auto e = static_cast<std::size_t>(edge.n_pre * kMaxSegmentNv) + Dev(r.arm, 2);
   edge.qd[e] = 0.9 * 3.0 * (1.0 + 1e-7);
-  edge.decel_seq = 50;
+  edge.segment_seq = 50;
   r.planner.NotePublished(edge);
   const std::int64_t lag = kTArm + kReplan + 2 * kH;
   const std::int64_t now = s.t_c - lag - 1 * kMs;  // the catch node (stop k = 0)
   SetClock(now);
   static_cast<void>(
-      r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, edge.decel_seq),
+      r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, edge.segment_seq),
                        BallFor(s.c), r.out, r.rec));
-  EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
   EXPECT_TRUE(r.rec.x0_clamped) << Why(r.rec);
-  EXPECT_NE(r.rec.core_reason, DecelMpcReason::kInitialStateOutsideBox);
+  EXPECT_NE(r.rec.core_reason, MpcSegmentCoreReason::kInitialStateOutsideBox);
 }
 
 TEST(ApproachPlanner, AStartInsideThePositionMarginIsProjectedIntoTheBox) {
@@ -1143,10 +1146,10 @@ TEST(ApproachPlanner, ANarrowJointUsesTheCoresBox) {
   // limits ± m_q would be an inverted interval.
   Arm arm = Arm6();
   const int j = 5;
-  DecelPlannerModel pm = PlannerModelOf(arm);
+  MpcSegmentPlannerModel pm = MpcSegmentPlannerModelOf(arm);
   pm.q_min[static_cast<std::size_t>(j)] = arm.q_nominal[j] - 0.02;
   pm.q_max[static_cast<std::size_t>(j)] = arm.q_nominal[j] + 0.02;
-  DecelPlanner planner;
+  MpcSegmentPlanner planner;
   std::string err;
   ASSERT_TRUE(planner.Configure(pm, Consts(), ApproachParams(), &FakeClock, &err)) << err;
   EXPECT_NEAR(planner.ApproachCore(1).PositionLow()[j], arm.q_nominal[j], 1e-12);
@@ -1154,8 +1157,8 @@ TEST(ApproachPlanner, ANarrowJointUsesTheCoresBox) {
   // The catch asks that joint for −0.03 rad; the reference is held at the box.
   const Catch c = CatchAt(arm, Offset(arm, 0.03));
   const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
-  DecelPlanSnapshot out{};
-  DecelRecord rec{};
+  SegmentSnapshot out{};
+  SegmentRecord rec{};
   SetClock(kT0);
   ASSERT_TRUE(planner.PlanFirst(RestingRt(arm, arm.q_nominal, kT0 - kH), PlanFor(arm, c, t_c),
                                 BallFor(c), out, rec))
@@ -1163,7 +1166,7 @@ TEST(ApproachPlanner, ANarrowJointUsesTheCoresBox) {
   EXPECT_TRUE(rec.ref_clamped);
   EXPECT_FALSE(rec.x0_clamped);
   for (int k = 0; k <= out.n_nodes; ++k) {
-    EXPECT_NEAR(out.q[static_cast<std::size_t>(k * kMaxDecelNv) + Dev(arm, j)], arm.q_nominal[j],
+    EXPECT_NEAR(out.q[static_cast<std::size_t>(k * kMaxSegmentNv) + Dev(arm, j)], arm.q_nominal[j],
                 1e-6)
         << k;
   }
@@ -1178,12 +1181,12 @@ TEST(ApproachPlanner, ARefusedSolveMakesTheNextOneCold) {
   ASSERT_NE(s.seq, 0U);
   const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 5 * kDtPre - 10 * kMs;
   const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0);
-  DecelBallTarget bad = BallFor(s.c);
+  MpcSegmentBallTarget bad = BallFor(s.c);
   bad.a_d *= 2.0;  // not a unit axis: refused by the core's input check
   SetClock(now);
   ASSERT_FALSE(r.planner.Replan(rt, bad, r.out, r.rec));
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kSolveFailed);
-  EXPECT_EQ(r.rec.core_reason, DecelMpcReason::kDirectionNotUnit);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kSolveFailed);
+  EXPECT_EQ(r.rec.core_reason, MpcSegmentCoreReason::kDirectionNotUnit);
   EXPECT_EQ(r.rec.k, -5);
   SetClock(now);
   ASSERT_TRUE(r.planner.Replan(rt, BallFor(s.c), r.out, r.rec)) << Why(r.rec);
@@ -1195,7 +1198,7 @@ TEST(ApproachPlanner, ARefusedSolveMakesTheNextOneCold) {
   ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, seq2, 0),
                                BallFor(s.c), r.out, r.rec))
       << Why(r.rec);
-  EXPECT_EQ(r.rec.kind, DecelKind::kSame);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kSame);
   EXPECT_FALSE(r.rec.cold_start);
 }
 
@@ -1213,8 +1216,8 @@ TEST(ApproachPlanner, ASegmentCarriesThePlansTrackNotTheRtsLatest) {
   ASSERT_TRUE(r.planner.FollowedTrack(rt, track));
   EXPECT_EQ(track, 5U);
   SetClock(now);
-  ASSERT_TRUE(r.planner.Replan(rt, DecelBallTarget{}, r.out, r.rec)) << Why(r.rec);
-  EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+  ASSERT_TRUE(r.planner.Replan(rt, MpcSegmentBallTarget{}, r.out, r.rec)) << Why(r.rec);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
   EXPECT_EQ(r.out.token.generation, 5U);
   // Another plan, or none: no track to name.
   PlannerRtState other = rt;
@@ -1233,8 +1236,8 @@ TEST(ApproachPlanner, ASegmentCarriesThePlansTrackNotTheRtsLatest) {
 
 constexpr double kPerp = 2000.0;  // [1/m²]
 
-DecelPlannerParams PerpParams(double w_perp) {
-  DecelPlannerParams p = ApproachParams();
+MpcSegmentPlannerParams PerpParams(double w_perp) {
+  MpcSegmentPlannerParams p = ApproachParams();
   p.w_perp = w_perp;
   return p;
 }
@@ -1242,8 +1245,8 @@ DecelPlannerParams PerpParams(double w_perp) {
 // A ball the plan's own does not equal: 10 mm aside, its travel turned by
 // 0.05 rad — so a line built from the wrong ball shows in both members.
 // `step` scales both (a sequence of predictions, each with a line of its own).
-DecelBallTarget MovedBall(const Catch& c, double step = 1.0) {
-  DecelBallTarget b = BallFor(c);
+MpcSegmentBallTarget MovedBall(const Catch& c, double step = 1.0) {
+  MpcSegmentBallTarget b = BallFor(c);
   b.p_b += step * Eigen::Vector3d(0.006, -0.008, 0.0);
   const Eigen::Vector3d side = c.v.unitOrthogonal();
   const double a = 0.05 * step;
@@ -1254,14 +1257,14 @@ DecelBallTarget MovedBall(const Catch& c, double step = 1.0) {
 
 // Σ over the stop nodes (the catch node to node N) of the catch frame's
 // squared distance from the line through `p` along the unit `d` [m²].
-double StopPathDeviation(const Arm& a, const DecelPlanSnapshot& s, const Eigen::Vector3d& p,
+double StopPathDeviation(const Arm& a, const SegmentSnapshot& s, const Eigen::Vector3d& p,
                          const Eigen::Vector3d& d) {
   const Eigen::Matrix3d perp = Eigen::Matrix3d::Identity() - d * d.transpose();
   double sum = 0.0;
   Eigen::VectorXd q(a.model->nv);
   for (int k = s.n_pre; k <= s.n_nodes; ++k) {
     for (int m = 0; m < q.size(); ++m) {
-      q[m] = s.q[static_cast<std::size_t>(k * kMaxDecelNv) + Dev(a, m)];
+      q[m] = s.q[static_cast<std::size_t>(k * kMaxSegmentNv) + Dev(a, m)];
     }
     sum += (perp * (FkPos(a, q) - p)).squaredNorm();
   }
@@ -1269,11 +1272,11 @@ double StopPathDeviation(const Arm& a, const DecelPlanSnapshot& s, const Eigen::
 }
 
 // A withheld record: no QP ran for it.
-void ExpectNotSolved(const DecelRecord& rec) {
+void ExpectNotSolved(const SegmentRecord& rec) {
   EXPECT_EQ(rec.qp_status, -1);
   EXPECT_EQ(rec.iterations, 0);
   EXPECT_EQ(rec.solve_ns, 0);
-  EXPECT_EQ(rec.core_reason, DecelMpcReason::kNone);
+  EXPECT_EQ(rec.core_reason, MpcSegmentCoreReason::kNone);
 }
 
 // YAML → planner → BOTH core kinds, and the configure warm-ups: each core is
@@ -1286,7 +1289,7 @@ TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLi
                           "[1, 1, 2, 3]}, replan: {k_max: 2}, approach: {n_pre_max: 6, "
                           "dt_pre_s: 0.1}" +
                           body + "}}"))
-        .decel;
+        .mpc_segment;
   };
   for (const Arm& arm : {Arm6(), Arm7()}) {
     Rig on(arm, params_of(", cost: {w_perp: 40.0}"));
@@ -1308,9 +1311,10 @@ TEST(ApproachPlanner, TheStopPathWeightReachesEveryCoreAndTheWarmUpsSolveOnOneLi
     // comparison below allows — and the 6-joint arm's is nowhere near it.
     ASSERT_GT(p.norm(), 0.05);
     ASSERT_GT((d - Eigen::Vector3d::UnitX()).norm(), arm.model->nv == 6 ? 0.05 : 1e-9);
-    const auto check = [&](const rtc::catching::DecelMpcInput& in_on,
-                           const rtc::catching::DecelMpcInput& in_off, const DecelMpcParams& mp_on,
-                           const DecelMpcParams& mp_off, const char* what, int i) {
+    const auto check = [&](const rtc::catching::MpcSegmentCoreInput& in_on,
+                           const rtc::catching::MpcSegmentCoreInput& in_off,
+                           const MpcSegmentCoreParams& mp_on, const MpcSegmentCoreParams& mp_off,
+                           const char* what, int i) {
       SCOPED_TRACE(std::string(what) + " " + std::to_string(i));
       EXPECT_EQ(mp_on.w_perp, 40.0);
       EXPECT_EQ(mp_off.w_perp, 0.0);
@@ -1368,7 +1372,7 @@ TEST(ApproachPlanner, APreCatchReplanTakesTheLineOfItsOwnBall) {
     Rig r(arm, PerpParams(kPerp));
     const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
     ASSERT_NE(s.seq, 0U);
-    const DecelBallTarget moved = MovedBall(s.c);
+    const MpcSegmentBallTarget moved = MovedBall(s.c);
     // The same grid point (n_pre 6), then a later one (n_pre 4, another core).
     const std::int64_t same = kT0 + 20 * kMs;
     const std::int64_t adv = s.t_c - kTArm - kReplan - 2 * kH - 4 * kDtPre - 10 * kMs;
@@ -1403,9 +1407,9 @@ TEST(ApproachPlanner, TheStopPathWeightKeepsTheStopNearerTheLine) {
       const std::int64_t now = s.t_c - kTArm - kReplan - 2 * kH - 1 * kMs;  // stop k = 0
       SetClock(now);
       ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
-                                   DecelBallTarget{}, r.out, r.rec))
+                                   MpcSegmentBallTarget{}, r.out, r.rec))
           << w << ": " << Why(r.rec);
-      ASSERT_EQ(r.rec.kind, DecelKind::kStop);
+      ASSERT_EQ(r.rec.kind, SegmentKind::kStop);
       stop[i] = StopPathDeviation(r.arm, r.out, s.c.p, d);
       ++i;
     }
@@ -1446,7 +1450,7 @@ TEST(ApproachPlanner, AStopCoreSolvesOnTheLineOfTheSegmentTheRtFollows) {
       Rig r(arm, PerpParams(kPerp));
       const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);  // S1, on the plan's line L1
       ASSERT_NE(s.seq, 0U);
-      const DecelBallTarget moved = MovedBall(s.c);
+      const MpcSegmentBallTarget moved = MovedBall(s.c);
       std::int64_t now = kT0 + 20 * kMs;
       SetClock(now);
       ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
@@ -1474,7 +1478,7 @@ TEST(ApproachPlanner, AStopCoreSolvesOnTheLineOfTheSegmentTheRtFollows) {
             r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, pending, active),
                              moved, r.out, r.rec))
             << k << ": " << Why(r.rec);
-        EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+        EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
         // k = 0 starts on the catch-core segment the RT reports; k = 1, 2 on
         // the stop segment published just before — which carries no line of
         // its own, only its source's.
@@ -1500,7 +1504,7 @@ TEST(ApproachPlanner, AStopCoreSolvesOnTheLineOfTheSegmentTheRtFollows) {
       now = s.t_c - lag - 1 * kMs;
       SetClock(now);
       ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
-                                   DecelBallTarget{}, r.out, r.rec))
+                                   MpcSegmentBallTarget{}, r.out, r.rec))
           << Why(r.rec);
       EXPECT_EQ(r.planner.StopCoreInput(0).p_c, s.c.p);
       EXPECT_LT((r.planner.StopCoreInput(0).d_hat - s.c.v.normalized()).norm(), 1e-12);
@@ -1513,20 +1517,20 @@ TEST(ApproachPlanner, AStopCoreSolvesOnTheLineOfTheSegmentTheRtFollows) {
       Rig r(arm, PerpParams(kPerp));
       const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
       ASSERT_NE(s.seq, 0U);
-      const DecelBallTarget moved = MovedBall(s.c);
+      const MpcSegmentBallTarget moved = MovedBall(s.c);
       std::int64_t now = kT0 + 20 * kMs;
       SetClock(now);
       ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
                                    moved, r.out, r.rec))
           << Why(r.rec);
       for (int j = 0; j < r.out.nv; ++j) {
-        r.out.qd[static_cast<std::size_t>(r.out.n_nodes * kMaxDecelNv + j)] = 5e-4;
+        r.out.qd[static_cast<std::size_t>(r.out.n_nodes * kMaxSegmentNv + j)] = 5e-4;
       }
       const std::uint32_t s2 = r.Publish(now);
       now = s.t_c - lag - 1 * kMs;
       SetClock(now);
       ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s2),
-                                   DecelBallTarget{}, r.out, r.rec))
+                                   MpcSegmentBallTarget{}, r.out, r.rec))
           << Why(r.rec);
       EXPECT_TRUE(r.rec.cold_retry);
       EXPECT_EQ(r.planner.StopCoreInput(0).p_c, moved.p_b);
@@ -1553,7 +1557,7 @@ TEST(ApproachPlanner, EvictionKeepsEachSegmentsLineWithIt) {
   std::vector<Line> lines{Line{s.seq, s.c.p, s.c.v.normalized()}};
   // The RT keeps following S1 while twelve same-point re-solves are published.
   for (int i = 1; i <= 12; ++i) {
-    const DecelBallTarget ball = MovedBall(s.c, 0.1 * i);
+    const MpcSegmentBallTarget ball = MovedBall(s.c, 0.1 * i);
     const std::int64_t now = kT0 + (10 + i) * kMs;
     SetClock(now);
     ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
@@ -1570,7 +1574,7 @@ TEST(ApproachPlanner, EvictionKeepsEachSegmentsLineWithIt) {
     }
     ++in_ring;
     SetClock(now);
-    ASSERT_TRUE(r.planner.Replan(rt, DecelBallTarget{}, r.out, r.rec))
+    ASSERT_TRUE(r.planner.Replan(rt, MpcSegmentBallTarget{}, r.out, r.rec))
         << line.seq << ": " << Why(r.rec);
     EXPECT_EQ(r.rec.source_seq, line.seq);
     EXPECT_EQ(r.planner.StopCoreInput(0).p_c, line.p) << line.seq;
@@ -1591,13 +1595,13 @@ TEST(ApproachPlanner, AStopCoreWhoseSourceHasNoLineIsWithheld) {
   for (const double w : {kPerp, 0.0}) {
     const bool on = w > 0.0;
     SCOPED_TRACE(on ? "w_perp on" : "w_perp off");
-    const auto expect = [on](bool ok, const DecelRecord& rec, std::uint32_t source) {
-      EXPECT_EQ(rec.kind, DecelKind::kStop);
+    const auto expect = [on](bool ok, const SegmentRecord& rec, std::uint32_t source) {
+      EXPECT_EQ(rec.kind, SegmentKind::kStop);
       EXPECT_EQ(rec.k, 0);
       EXPECT_EQ(rec.source_seq, source);  // followed: only the line is missing
       if (on) {
         EXPECT_FALSE(ok);
-        EXPECT_EQ(rec.outcome, DecelOutcome::kNoBall);
+        EXPECT_EQ(rec.outcome, SegmentOutcome::kNoBall);
         ExpectNotSolved(rec);
       } else {
         EXPECT_TRUE(ok) << Why(rec);
@@ -1610,9 +1614,9 @@ TEST(ApproachPlanner, AStopCoreWhoseSourceHasNoLineIsWithheld) {
       Rig r(Arm6(), PerpParams(w));
       const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
       ASSERT_NE(s.seq, 0U);
-      DecelPlanSnapshot foreign = r.out;
+      SegmentSnapshot foreign = r.out;
       foreign.plan_id = 8;
-      foreign.decel_seq = 50;
+      foreign.segment_seq = 50;
       r.planner.NotePublished(foreign);
       const std::int64_t now = s.t_c - lag - 1 * kMs;
       SetClock(now);
@@ -1628,7 +1632,7 @@ TEST(ApproachPlanner, AStopCoreWhoseSourceHasNoLineIsWithheld) {
       Rig r(Arm6(), PerpParams(w));
       const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
       ASSERT_NE(s.seq, 0U);
-      const DecelPlanSnapshot first = r.out;
+      const SegmentSnapshot first = r.out;
       std::int64_t now = kT0 + 20 * kMs;
       SetClock(now);
       ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
@@ -1656,12 +1660,12 @@ TEST(ApproachPlanner, AStopCoreWhoseSourceHasNoLineIsWithheld) {
       const PlannerRtState pre = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0);
       SetClock(now);
       ASSERT_TRUE(r.planner.Replan(pre, BallFor(s.c), r.out, r.rec)) << Why(r.rec);
-      DecelPlanSnapshot late = r.out;
-      DecelPlanSnapshot scratch{};
+      SegmentSnapshot late = r.out;
+      SegmentSnapshot scratch{};
       SetClock(now);
-      ASSERT_FALSE(r.planner.Replan(pre, DecelBallTarget{}, scratch, r.rec));
-      ASSERT_EQ(r.rec.outcome, DecelOutcome::kNoBall);  // the pre-catch meaning: no ball
-      late.decel_seq = 60;
+      ASSERT_FALSE(r.planner.Replan(pre, MpcSegmentBallTarget{}, scratch, r.rec));
+      ASSERT_EQ(r.rec.outcome, SegmentOutcome::kNoBall);  // the pre-catch meaning: no ball
+      late.segment_seq = 60;
       r.planner.NotePublished(late);
       now = s.t_c - lag - 1 * kMs;
       SetClock(now);
@@ -1673,13 +1677,13 @@ TEST(ApproachPlanner, AStopCoreWhoseSourceHasNoLineIsWithheld) {
 }
 
 // The parser's upper bound is a value the cores do solve with: at
-// kDecelStopPathWeightMax the planner configures (every warm-up), and the
+// kMpcSegmentStopPathWeightMax the planner configures (every warm-up), and the
 // first solve, a re-solve on a moved ball and the three stop cores all come
 // out publishable, on both arms.
 TEST(ApproachPlanner, TheStopPathWeightSolvesAtItsUpperBound) {
   const std::int64_t lag = kTArm + kReplan + 2 * kH;
   for (const Arm& arm : {Arm6(), Arm7()}) {
-    Rig r(arm, PerpParams(rtc::catching::kDecelStopPathWeightMax));
+    Rig r(arm, PerpParams(rtc::catching::kMpcSegmentStopPathWeightMax));
     ASSERT_TRUE(r.planner.Configured());
     ASSERT_EQ(r.planner.StopCoreParams(0).w_perp, 1e4);
     const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
@@ -1697,13 +1701,13 @@ TEST(ApproachPlanner, TheStopPathWeightSolvesAtItsUpperBound) {
       SetClock(now);
       ASSERT_TRUE(
           r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, followed),
-                           DecelBallTarget{}, r.out, r.rec))
+                           MpcSegmentBallTarget{}, r.out, r.rec))
           << k << ": " << Why(r.rec);
       iterations = std::max(iterations, r.rec.iterations);
       followed = r.Publish(now);
     }
     std::printf("[ record ] n = %d: w_perp %.0f, most QP iterations in one solve %d\n",
-                static_cast<int>(arm.model->nv), rtc::catching::kDecelStopPathWeightMax,
+                static_cast<int>(arm.model->nv), rtc::catching::kMpcSegmentStopPathWeightMax,
                 iterations);
   }
 }
@@ -1720,7 +1724,7 @@ TEST(ApproachPlanner, ABallWithoutADirectionIsWithheldOnlyWithTheTermOn) {
       Rig r(arm, PerpParams(w));
       const Catch c = CatchAt(r.arm, Offset(r.arm, 0.04));
       const std::int64_t t_c = kT0 + kTArm + 800 * kMs;
-      const rtc::catching::DecelMpcInput warm = r.planner.ApproachCoreInput(6);
+      const rtc::catching::MpcSegmentCoreInput warm = r.planner.ApproachCoreInput(6);
 
       // The first solve: below v_eps, exactly at it (an axis vector, so the
       // norm IS v_eps), and just above it.
@@ -1738,10 +1742,10 @@ TEST(ApproachPlanner, ABallWithoutADirectionIsWithheldOnlyWithTheTermOn) {
         const bool ok =
             r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, kT0 - kH),
                                 PlanFor(r.arm, still, t_c), BallFor(still), r.out, r.rec);
-        EXPECT_EQ(r.rec.kind, DecelKind::kFirst);
+        EXPECT_EQ(r.rec.kind, SegmentKind::kFirst);
         if (on && !row.has_direction) {
           EXPECT_FALSE(ok);
-          EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall) << row.v.norm();
+          EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoBall) << row.v.norm();
           EXPECT_EQ(r.rec.k, -6);  // the grid point is recorded even when withheld
           ExpectNotSolved(r.rec);
           // No line was written: the core's input still holds the warm-up's.
@@ -1752,26 +1756,26 @@ TEST(ApproachPlanner, ABallWithoutADirectionIsWithheldOnlyWithTheTermOn) {
         }
       }
       // A pre-catch replan with such a ball (a hand-made target: the one
-      // MakeDecelBallTarget builds is already invalid below v_eps).
+      // MakeMpcSegmentBallTarget builds is already invalid below v_eps).
       const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
       ASSERT_NE(s.seq, 0U);
-      DecelBallTarget ball = BallFor(s.c);
+      MpcSegmentBallTarget ball = BallFor(s.c);
       ball.v_b = 0.1 * v_eps * s.c.v.normalized();
       const std::int64_t now = kT0 + 20 * kMs;
       const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0);
       SetClock(now);
       const bool ok = r.planner.Replan(rt, ball, r.out, r.rec);
-      EXPECT_EQ(r.rec.kind, DecelKind::kSame);
+      EXPECT_EQ(r.rec.kind, SegmentKind::kSame);
       if (on) {
         EXPECT_FALSE(ok);
-        EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall);
+        EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoBall);
         ExpectNotSolved(r.rec);
         // Finite components whose norm is not: no direction either, and a
         // different reason.
         ball.v_b = Eigen::Vector3d(1e200, 1e200, 0.0);
         SetClock(now);
         EXPECT_FALSE(r.planner.Replan(rt, ball, r.out, r.rec));
-        EXPECT_EQ(r.rec.outcome, DecelOutcome::kInputNonFinite);
+        EXPECT_EQ(r.rec.outcome, SegmentOutcome::kInputNonFinite);
         ExpectNotSolved(r.rec);
       } else {
         EXPECT_TRUE(ok) << Why(r.rec);
@@ -1819,7 +1823,8 @@ TEST(ApproachBallTarget, AtASampleItIsThatSampleEvenBesideANan) {
   const auto t = Line();
   auto c = Cov(t);
   c.c[4][0] = kNan;  // the next sample's block
-  const DecelBallTarget b = rtc::catching::MakeDecelBallTarget(t, c, true, t.s[3].t_ns, 1e-6);
+  const MpcSegmentBallTarget b =
+      rtc::catching::MakeMpcSegmentBallTarget(t, c, true, t.s[3].t_ns, 1e-6);
   ASSERT_TRUE(b.valid);
   ASSERT_TRUE(b.sigma_valid);
   EXPECT_EQ(b.sigma_p(0, 0), c.c[3][0]);
@@ -1833,14 +1838,15 @@ TEST(ApproachBallTarget, BetweenSamplesItBlendsOnIntegerNanoseconds) {
   const auto t = Line();
   const auto c = Cov(t);
   const std::int64_t at = t.s[2].t_ns + 10 * kMs;  // α = 0.2
-  const DecelBallTarget b = rtc::catching::MakeDecelBallTarget(t, c, true, at, 1e-6);
+  const MpcSegmentBallTarget b = rtc::catching::MakeMpcSegmentBallTarget(t, c, true, at, 1e-6);
   ASSERT_TRUE(b.sigma_valid);
   EXPECT_NEAR(b.sigma_p(1, 1), 0.8 * c.c[2][7] + 0.2 * c.c[3][7], 1e-18);
   EXPECT_NEAR(b.sigma_p(1, 0), 0.8 * c.c[2][6] + 0.2 * c.c[3][6], 1e-18);
   const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(b.sigma_p);
   EXPECT_GT(es.eigenvalues().minCoeff(), 0.0);
   // The last sample is itself.
-  const DecelBallTarget last = rtc::catching::MakeDecelBallTarget(t, c, true, t.s[9].t_ns, 1e-6);
+  const MpcSegmentBallTarget last =
+      rtc::catching::MakeMpcSegmentBallTarget(t, c, true, t.s[9].t_ns, 1e-6);
   ASSERT_TRUE(last.sigma_valid);
   EXPECT_EQ(last.sigma_p(0, 0), c.c[9][0]);
 }
@@ -1850,24 +1856,24 @@ TEST(ApproachBallTarget, RefusesWhatItCannotTrust) {
   const auto c = Cov(t);
   const std::int64_t mid = t.s[2].t_ns + 10 * kMs;
   // Another snapshot's covariance: the ball, but no Σ_p.
-  DecelBallTarget b = rtc::catching::MakeDecelBallTarget(t, c, false, mid, 1e-6);
+  MpcSegmentBallTarget b = rtc::catching::MakeMpcSegmentBallTarget(t, c, false, mid, 1e-6);
   EXPECT_TRUE(b.valid);
   EXPECT_FALSE(b.sigma_valid);
   auto bad = c;
   bad.c[3][7] = kNan;
-  EXPECT_FALSE(rtc::catching::MakeDecelBallTarget(t, bad, true, mid, 1e-6).sigma_valid);
+  EXPECT_FALSE(rtc::catching::MakeMpcSegmentBallTarget(t, bad, true, mid, 1e-6).sigma_valid);
   bad = c;
   bad.n = 9;
-  EXPECT_FALSE(rtc::catching::MakeDecelBallTarget(t, bad, true, mid, 1e-6).sigma_valid);
+  EXPECT_FALSE(rtc::catching::MakeMpcSegmentBallTarget(t, bad, true, mid, 1e-6).sigma_valid);
   // Outside the horizon: extrapolated, neither.
-  b = rtc::catching::MakeDecelBallTarget(t, c, true, t.s[9].t_ns + 1, 1e-6);
+  b = rtc::catching::MakeMpcSegmentBallTarget(t, c, true, t.s[9].t_ns + 1, 1e-6);
   EXPECT_FALSE(b.valid);
   EXPECT_FALSE(b.sigma_valid);
-  b = rtc::catching::MakeDecelBallTarget(t, c, true, t.s[0].t_ns - 1, 1e-6);
+  b = rtc::catching::MakeMpcSegmentBallTarget(t, c, true, t.s[0].t_ns - 1, 1e-6);
   EXPECT_FALSE(b.valid);
   // A ball slower than v_eps has no direction of travel.
-  EXPECT_FALSE(rtc::catching::MakeDecelBallTarget(t, c, true, mid, 5.0).valid);
-  EXPECT_FALSE(rtc::catching::MakeDecelBallTarget(t, c, true, mid, kNan).valid);
+  EXPECT_FALSE(rtc::catching::MakeMpcSegmentBallTarget(t, c, true, mid, 5.0).valid);
+  EXPECT_FALSE(rtc::catching::MakeMpcSegmentBallTarget(t, c, true, mid, kNan).valid);
 }
 
 // ── 5a. Configure is a full reset (E1-F12 #738) ──────────────────────────────
@@ -1882,7 +1888,7 @@ std::uint64_t SolveSequenceDigest(Rig& r, double reach) {
   const auto add = [&](bool ok) {
     h.Add(ok);
     rtc::testing::AddSegment(h, r.out);
-    rtc::testing::AddDecelRecord(h, r.rec);
+    rtc::testing::AddSegmentRecord(h, r.rec);
   };
   r.seq = 0;
   const std::int64_t now = kT0;
@@ -1910,7 +1916,7 @@ std::uint64_t SolveSequenceDigest(Rig& r, double reach) {
 TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
   // Configure is a full reset: a planner that has solved and published and is
   // configured again answers exactly as one built and configured now.
-  // PlannerCycle relies on it — ConfigureDecel installs a NEW planner on every
+  // PlannerCycle relies on it — ConfigureMpcSegmentPlanner installs a NEW planner on every
   // configure (E1-F12 #738) where it once configured the one in place again.
   // The planner is first used on ANOTHER catch under the same plan id, catch
   // instant and seqs: a planner that kept its ring would then start a replan
@@ -1931,8 +1937,8 @@ TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
     Rig used(Arm6(), PerpParams(w_perp));
     static_cast<void>(SolveSequenceDigest(used, kOtherReach));
     std::string err;
-    ASSERT_TRUE(used.planner.Configure(PlannerModelOf(used.arm), Consts(), PerpParams(w_perp),
-                                       &FakeClock, &err))
+    ASSERT_TRUE(used.planner.Configure(MpcSegmentPlannerModelOf(used.arm), Consts(),
+                                       PerpParams(w_perp), &FakeClock, &err))
         << err;
     EXPECT_EQ(SolveSequenceDigest(used, kReach), expected);
   }
@@ -1942,18 +1948,18 @@ TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
 
 // One solve's whole result as a number: the segment and the record, every
 // value (planner_trace_digest.hpp).
-std::uint64_t SolveDigest(bool ok, const DecelPlanSnapshot& out, const DecelRecord& rec) {
+std::uint64_t SolveDigest(bool ok, const SegmentSnapshot& out, const SegmentRecord& rec) {
   rtc::testing::ValueDigest h;
   h.Add(ok);
   rtc::testing::AddSegment(h, out);
-  rtc::testing::AddDecelRecord(h, rec);
+  rtc::testing::AddSegmentRecord(h, rec);
   return h.Value();
 }
 
 TEST(ApproachPlanner, TheViewEntriesSolveWhatTheValueEntriesSolve) {
   // PlannerCycle hands the ball over as a view of the wake's trajectory and
   // covariance (SegmentPlanner::PlanFirst / Replan). Before the interface it
-  // built the ball target itself — MakeDecelBallTarget at the plan's t_c, with
+  // built the ball target itself — MakeMpcSegmentBallTarget at the plan's t_c, with
   // the planner's v_eps — and called the value entries. Two planners, one
   // driven each way from the same inputs, on a clock that STEPS on every read:
   // the same segment and the same record, bit for bit — solve_ns and the
@@ -1991,9 +1997,9 @@ TEST(ApproachPlanner, TheViewEntriesSolveWhatTheValueEntriesSolve) {
           bc.empty ? rtc::catching::BallPrediction{}
                    : rtc::catching::BallPrediction{&traj, &cov, bc.matched};
       const auto value_at = [&](std::int64_t t_ns) {
-        return bc.empty ? DecelBallTarget{}
-                        : rtc::catching::MakeDecelBallTarget(traj, cov, bc.matched, t_ns,
-                                                             Consts().v_eps);
+        return bc.empty ? MpcSegmentBallTarget{}
+                        : rtc::catching::MakeMpcSegmentBallTarget(traj, cov, bc.matched, t_ns,
+                                                                  Consts().v_eps);
       };
       const PlannerRtState rest = RestingRt(arm, arm.q_nominal, now - kH);
       const PlanSnapshot plan = PlanFor(arm, c, t_c);
@@ -2037,7 +2043,7 @@ TEST(ApproachPlanner, TheViewEntriesSolveWhatTheValueEntriesSolve) {
       // A pre-catch grid point needs the ball: an empty view is none.
       EXPECT_EQ(re_view, !bc.empty) << Why(by_view.rec);
       if (bc.empty) {
-        EXPECT_EQ(by_view.rec.outcome, DecelOutcome::kNoBall);
+        EXPECT_EQ(by_view.rec.outcome, SegmentOutcome::kNoBall);
       }
 
       // Non-vacuity: the pairing flag and the emptiness the view carries DO
@@ -2084,7 +2090,7 @@ TEST(ApproachPlanner, PathsBeforeTheSolveAllocateNothing) {
   Rig r(Arm7());
   const Started s = StartPlan(r, kT0, 800 * kMs);
   ASSERT_NE(s.seq, 0U);
-  const DecelBallTarget ball = BallFor(s.c);
+  const MpcSegmentBallTarget ball = BallFor(s.c);
   const PlanSnapshot plan = PlanFor(r.arm, s.c, s.t_c, 8);
   const std::int64_t now = kT0 + 20 * kMs;
   SetClock(now);
@@ -2092,26 +2098,26 @@ TEST(ApproachPlanner, PathsBeforeTheSolveAllocateNothing) {
   PlannerRtState moving = RestingRt(r.arm, r.arm.q_nominal, now - kH);
   moving.qd_cmd[0] = 0.3;
   Counts c = Gated([&] { ok = r.planner.PlanFirst(moving, plan, ball, r.out, r.rec); });
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNotAtRest);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNotAtRest);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "not-at-rest path";
   PlanSnapshot late = plan;
   late.t_c_ns = now + kTArm + kFirst;
   c = Gated([&] {
     ok = r.planner.PlanFirst(RestingRt(r.arm, r.arm.q_nominal, now - kH), late, ball, r.out, r.rec);
   });
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kTooLate);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kTooLate);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "too-late path";
   c = Gated([&] {
     ok = r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, 0), ball, r.out,
                           r.rec);
   });
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNotFollowed);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNotFollowed);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "not-followed path";
   c = Gated([&] {
     ok = r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
-                          DecelBallTarget{}, r.out, r.rec);
+                          MpcSegmentBallTarget{}, r.out, r.rec);
   });
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoBall);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "no-ball path";
   // A post-catch grid point after it was published: up to date.
   const std::int64_t lag = kTArm + kReplan + 2 * kH;
@@ -2125,7 +2131,7 @@ TEST(ApproachPlanner, PathsBeforeTheSolveAllocateNothing) {
     ok = r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, after - kH, s.t_c, 0, stop_seq), ball,
                           r.out, r.rec);
   });
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kUpToDate);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kUpToDate);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "up-to-date path";
   EXPECT_FALSE(ok);
 }
@@ -2136,7 +2142,7 @@ TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
   Rig r(Arm7());
   const Started s = StartPlan(r, kT0, 800 * kMs);  // warm-up outside the gates
   ASSERT_NE(s.seq, 0U);
-  const DecelBallTarget ball = BallFor(s.c);
+  const MpcSegmentBallTarget ball = BallFor(s.c);
   bool ok = false;
   SetClock(kT0);
   Counts c = Gated([&] {
@@ -2154,7 +2160,7 @@ TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
                           r.out, r.rec);
   });
   EXPECT_TRUE(ok) << Why(r.rec);
-  EXPECT_EQ(r.rec.kind, DecelKind::kSame);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kSame);
   EXPECT_EQ(c.op_new, 0U) << "same-point re-solve";
   r.Publish(same);
   const std::int64_t adv = s.t_c - kTArm - kReplan - 2 * kH - 4 * kDtPre - 10 * kMs;
@@ -2164,7 +2170,7 @@ TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
                           r.out, r.rec);
   });
   EXPECT_TRUE(ok) << Why(r.rec);
-  EXPECT_EQ(r.rec.kind, DecelKind::kAdvance);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kAdvance);
   EXPECT_EQ(c.op_new, 0U) << "grid advance";
   r.Publish(adv);
   const std::int64_t stop = s.t_c - kTArm - kReplan - 2 * kH - kMs;
@@ -2174,7 +2180,7 @@ TEST(ApproachPlanner, SolvesAllocateNothingOutsideProxQp) {
                           r.out, r.rec);
   });
   EXPECT_TRUE(ok) << Why(r.rec);
-  EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
   EXPECT_EQ(c.op_new, 0U) << "catch node → stop core";
   mallocs += c.c_malloc;
   RecordProperty("approach_qp_solver_mallocs", std::to_string(mallocs));
@@ -2188,7 +2194,7 @@ TEST(ApproachPlanner, TheStopLineAllocatesNothing) {
   Rig r(Arm7(), PerpParams(kPerp));
   const Started s = StartPlan(r, kT0, 800 * kMs);  // warm-up outside the gates
   ASSERT_NE(s.seq, 0U);
-  const DecelBallTarget ball = BallFor(s.c);
+  const MpcSegmentBallTarget ball = BallFor(s.c);
   bool ok = false;
   SetClock(kT0);
   Counts c = Gated([&] {
@@ -2197,7 +2203,7 @@ TEST(ApproachPlanner, TheStopLineAllocatesNothing) {
   });
   EXPECT_TRUE(ok) << Why(r.rec);
   EXPECT_EQ(c.op_new, 0U) << "first solve";
-  r.out.decel_seq = ++r.seq;
+  r.out.segment_seq = ++r.seq;
   r.out.publish_ns = kT0;
   c = Gated([&] { r.planner.NotePublished(r.out); });
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "keeping the line with the segment";
@@ -2207,32 +2213,32 @@ TEST(ApproachPlanner, TheStopLineAllocatesNothing) {
   c = Gated([&] { ok = r.planner.Replan(pre, ball, r.out, r.rec); });
   EXPECT_TRUE(ok) << Why(r.rec);
   EXPECT_EQ(c.op_new, 0U) << "same-point re-solve";
-  DecelBallTarget still = ball;
+  MpcSegmentBallTarget still = ball;
   still.v_b = 1e-8 * ball.v_b.normalized();
   SetClock(same);
   c = Gated([&] { ok = r.planner.Replan(pre, still, r.out, r.rec); });
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoBall);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "no-direction path";
   const std::int64_t stop = s.t_c - kTArm - kReplan - 2 * kH - kMs;
   const PlannerRtState post = FollowingRt(r.arm, r.arm.q_nominal, stop - kH, s.t_c, 0, r.seq);
   SetClock(stop);
-  c = Gated([&] { ok = r.planner.Replan(post, DecelBallTarget{}, r.out, r.rec); });
+  c = Gated([&] { ok = r.planner.Replan(post, MpcSegmentBallTarget{}, r.out, r.rec); });
   EXPECT_TRUE(ok) << Why(r.rec);
-  EXPECT_EQ(r.rec.kind, DecelKind::kStop);
+  EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
   EXPECT_EQ(c.op_new, 0U) << "stop core on its source's line";
   // A source without a line (a segment handed back after a reset): the next
   // stop grid point is withheld.
-  DecelPlanSnapshot again = r.out;
+  SegmentSnapshot again = r.out;
   r.planner.ResetTrial();
-  again.decel_seq = 70;
+  again.segment_seq = 70;
   r.planner.NotePublished(again);
   PlannerRtState lost = post;
-  lost.decel_seq = 70;
+  lost.segment_seq = 70;
   SetClock(stop + kDt);
   lost.rt_state_ns = stop + kDt - kH;
-  c = Gated([&] { ok = r.planner.Replan(lost, DecelBallTarget{}, r.out, r.rec); });
+  c = Gated([&] { ok = r.planner.Replan(lost, MpcSegmentBallTarget{}, r.out, r.rec); });
   EXPECT_FALSE(ok);
-  EXPECT_EQ(r.rec.outcome, DecelOutcome::kNoBall) << Why(r.rec);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoBall) << Why(r.rec);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "no-line path";
 }
 
@@ -2250,10 +2256,10 @@ double RssMb() {
 TEST(ApproachPlannerRecord, ConfigureCostAndTheFirstSolveAfterTheWarmUp) {
   for (const bool seven : {false, true}) {
     const Arm arm = seven ? Arm7() : Arm6();
-    const DecelPlannerModel pm = PlannerModelOf(arm);
+    const MpcSegmentPlannerModel pm = MpcSegmentPlannerModelOf(arm);
     const double rss0 = RssMb();
     const auto t0 = std::chrono::steady_clock::now();
-    DecelPlanner planner;
+    MpcSegmentPlanner planner;
     std::string err;
     ASSERT_TRUE(planner.Configure(pm, Consts(), ApproachParams(), &FakeClock, &err)) << err;
     const double configure_ms =
@@ -2262,8 +2268,8 @@ TEST(ApproachPlannerRecord, ConfigureCostAndTheFirstSolveAfterTheWarmUp) {
     // The first trial solve of each catch core after the warm-up: n_pre 6 … 2
     // by shrinking the lead (n_pre 1 reaches too little to be a fair solve).
     const Catch c = CatchAt(arm, Offset(arm, 0.03));
-    DecelPlanSnapshot out{};
-    DecelRecord rec{};
+    SegmentSnapshot out{};
+    SegmentRecord rec{};
     double first_max_ms = 0.0;
     for (int n_pre = 6; n_pre >= 2; --n_pre) {
       const std::int64_t t_c = kT0 + kTArm + kFirst + 2 * kH + n_pre * kDtPre + 5 * kMs;

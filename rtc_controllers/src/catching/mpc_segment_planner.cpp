@@ -1,5 +1,5 @@
-// Decel planner (MPC E1-F03, E1-F08). See decel_planner.hpp.
-#include "rtc_controllers/catching/decel_planner.hpp"
+// MPC segment planner (MPC E1-F03, E1-F08). See mpc_segment_planner.hpp.
+#include "rtc_controllers/catching/mpc_segment_planner.hpp"
 
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/traj_sampler.hpp"
@@ -36,7 +36,7 @@ namespace {
 // rest tolerance and the solver's tolerances. `jerk_weight` is already in
 // model order (empty = the core's all-ones); the preconditioner and the KKT
 // backend are not design values and keep the core's own setting.
-void ApplyCoreDesign(DecelMpcParams& mp, const DecelPlannerParams& p,
+void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
                      const Eigen::VectorXd& jerk_weight_model) {
   mp.jerk_weight = jerk_weight_model;
   mp.u_scale = p.u_scale;
@@ -54,69 +54,70 @@ void ApplyCoreDesign(DecelMpcParams& mp, const DecelPlannerParams& p,
 
 }  // namespace
 
-const char* DecelOutcomeName(DecelOutcome o) noexcept {
+const char* SegmentOutcomeName(SegmentOutcome o) noexcept {
   switch (o) {
-    case DecelOutcome::kOff:
+    case SegmentOutcome::kOff:
       return "off";
-    case DecelOutcome::kNoState:
+    case SegmentOutcome::kNoState:
       return "no_state";
-    case DecelOutcome::kStaleState:
+    case SegmentOutcome::kStaleState:
       return "stale_state";
-    case DecelOutcome::kUpToDate:
+    case SegmentOutcome::kUpToDate:
       return "up_to_date";
-    case DecelOutcome::kPastReplanWindow:
+    case SegmentOutcome::kPastReplanWindow:
       return "past_replan_window";
-    case DecelOutcome::kInputNonFinite:
+    case SegmentOutcome::kInputNonFinite:
       return "input_non_finite";
-    case DecelOutcome::kSolveFailed:
+    case SegmentOutcome::kSolveFailed:
       return "solve_failed";
-    case DecelOutcome::kBudget:
+    case SegmentOutcome::kBudget:
       return "budget";
-    case DecelOutcome::kLate:
+    case SegmentOutcome::kLate:
       return "late";
-    case DecelOutcome::kSlack:
+    case SegmentOutcome::kSlack:
       return "slack";
-    case DecelOutcome::kReady:
+    case SegmentOutcome::kReady:
       return "ready";
-    case DecelOutcome::kPublished:
+    case SegmentOutcome::kPublished:
       return "published";
-    case DecelOutcome::kSuperseded:
+    case SegmentOutcome::kSuperseded:
       return "superseded";
-    case DecelOutcome::kNotAtRest:
+    case SegmentOutcome::kNotAtRest:
       return "not_at_rest";
-    case DecelOutcome::kTooLate:
+    case SegmentOutcome::kTooLate:
       return "too_late";
-    case DecelOutcome::kNotFollowed:
+    case SegmentOutcome::kNotFollowed:
       return "not_followed";
-    case DecelOutcome::kNoBall:
+    case SegmentOutcome::kNoBall:
       return "no_ball";
-    case DecelOutcome::kCatchError:
+    case SegmentOutcome::kCatchError:
       return "catch_error";
-    case DecelOutcome::kSpeed:
+    case SegmentOutcome::kSpeed:
       return "speed";
   }
   return "unknown";
 }
 
-const char* DecelKindName(DecelKind k) noexcept {
+const char* SegmentKindName(SegmentKind k) noexcept {
   switch (k) {
-    case DecelKind::kNone:
+    case SegmentKind::kNone:
       return "none";
-    case DecelKind::kFirst:
+    case SegmentKind::kFirst:
       return "first";
-    case DecelKind::kSame:
+    case SegmentKind::kSame:
       return "same";
-    case DecelKind::kAdvance:
+    case SegmentKind::kAdvance:
       return "advance";
-    case DecelKind::kStop:
+    case SegmentKind::kStop:
       return "stop";
   }
   return "unknown";
 }
 
-DecelBallTarget MakeDecelBallTarget(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                    bool cov_matched, std::int64_t t_c_ns, double v_eps) noexcept {
-  DecelBallTarget b;
+MpcSegmentBallTarget MakeMpcSegmentBallTarget(const TrajectorySnapshot& traj,
+                                              const CovarianceSnapshot& cov, bool cov_matched,
+                                              std::int64_t t_c_ns, double v_eps) noexcept {
+  MpcSegmentBallTarget b;
   const SampleEval e = SampleAt(traj, NowLead{t_c_ns});
   const double speed = e.v.norm();
   // Written as "usable" so a NaN speed or v_eps is not.
@@ -173,8 +174,10 @@ DecelBallTarget MakeDecelBallTarget(const TrajectorySnapshot& traj, const Covari
   return b;
 }
 
-bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerConstants& consts,
-                             const DecelPlannerParams& params, ClockFn clock, std::string* error) {
+bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
+                                  const MpcSegmentPlannerConstants& consts,
+                                  const MpcSegmentPlannerParams& params, ClockFn clock,
+                                  std::string* error) {
   configured_ = false;
   perp_on_ = false;
   cores_.clear();
@@ -197,9 +200,9 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   if (clock == nullptr) {
     return fail("no clock");
   }
-  if (!model.arm || model.nv < 1 || model.nv > kMaxDecelNv || model.arm->nv != model.nv) {
+  if (!model.arm || model.nv < 1 || model.nv > kMaxSegmentNv || model.arm->nv != model.nv) {
     return fail("the arm model is missing or its joint count is outside 1.." +
-                std::to_string(kMaxDecelNv) + " (kMaxDecelNv)");
+                std::to_string(kMaxSegmentNv) + " (kMaxSegmentNv)");
   }
   // Upper bounds keep every seconds → ns conversion far from int64 overflow.
   if (!std::isfinite(consts.eta_v) || !(consts.eta_v > 0.0) || consts.eta_v > 1.0 ||
@@ -212,7 +215,7 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   if (params.n_pre_max < 1) {
     return fail("approach.n_pre_max is below 1 (a segment starts before t_c, MD-56)");
   }
-  if (params.k_max < 0 || params.k_max > kMaxDecelReplans || params.DtNs() <= 0) {
+  if (params.k_max < 0 || params.k_max > kMaxMpcSegmentReplans || params.DtNs() <= 0) {
     return fail("k_max or dt_s is outside its range");
   }
   // Device order must be a permutation (the payload is device order).
@@ -238,7 +241,7 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
       jerk_weight_model_[m] = params.jerk_weight[U(model.device_of_model[U(m)])];
     }
   }
-  DecelMpcLimits limits;
+  MpcSegmentCoreLimits limits;
   limits.q_min.resize(n);
   limits.q_max.resize(n);
   limits.qd_max.resize(n);
@@ -257,24 +260,24 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   inputs_.resize(U(params.k_max + 1));
   results_.resize(U(params.k_max + 1));
   for (int k = 0; k <= params.k_max; ++k) {
-    DecelMpcParams mp;
+    MpcSegmentCoreParams mp;
     ApplyCoreDesign(mp, params, jerk_weight_model_);
     mp.n_nodes = params.n_nodes - k;
     mp.dt = static_cast<double>(params.DtNs()) * 1e-9;
-    if (!DecelBlocksFor(params, k, mp.block_sizes, mp.n_blocks)) {
+    if (!MpcSegmentBlocksFor(params, k, mp.block_sizes, mp.n_blocks)) {
       return fail("replan instance " + std::to_string(k) + " has fewer than 3 blocks");
     }
     mp.eta_v = consts.eta_v;
     mp.eta_tau = params.eta_tau;
     mp.m_q = params.m_q;
-    auto core = std::make_unique<DecelMpc>();
-    const DecelMpcReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
-    if (r != DecelMpcReason::kNone) {
-      return fail("DecelMpc::Init for replan instance " + std::to_string(k) +
-                  " (N = " + std::to_string(mp.n_nodes) + "): " + DecelMpcReasonName(r));
+    auto core = std::make_unique<MpcSegmentCore>();
+    const MpcSegmentCoreReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
+    if (r != MpcSegmentCoreReason::kNone) {
+      return fail("MpcSegmentCore::Init for replan instance " + std::to_string(k) +
+                  " (N = " + std::to_string(mp.n_nodes) + "): " + MpcSegmentCoreReasonName(r));
     }
     core->ResizeResult(results_[U(k)]);
-    DecelMpcInput& in = inputs_[U(k)];
+    MpcSegmentCoreInput& in = inputs_[U(k)];
     in.q0 = Eigen::VectorXd::Zero(n);
     in.qd0 = Eigen::VectorXd::Zero(n);
     in.qdd0 = Eigen::VectorXd::Zero(n);
@@ -310,19 +313,19 @@ bool DecelPlanner::Configure(const DecelPlannerModel& model, const DecelPlannerC
   return true;
 }
 
-bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string& why) {
-  const DecelPlannerParams& params = params_;
+bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, std::string& why) {
+  const MpcSegmentPlannerParams& params = params_;
   const int n = nv_;
   dt_pre_ns_ = params.DtPreNs();
   first_ns_ = SecondsToNs(params.budget_first_s);
   replan_ns_ = SecondsToNs(params.budget_replan_s);
-  std::array<int, kMaxDecelNodes> stop_blocks{};
+  std::array<int, kMaxSegmentNodes> stop_blocks{};
   int stop_n_blocks = 0;
   if (!std::isfinite(consts_.v_eps) || !(consts_.v_eps > 0.0) || dt_pre_ns_ <= 0 ||
-      dt_pre_ns_ > kMaxDecelDtPreNs || first_ns_ <= 0 || replan_ns_ <= 0 ||
-      params.n_pre_max > kMaxDecelNodes - params.n_nodes ||
-      !DecelBlocksFor(params, 0, stop_blocks, stop_n_blocks) ||
-      params.n_pre_max > kMaxDecelNodes - stop_n_blocks) {
+      dt_pre_ns_ > kMaxSegmentDtPreNs || first_ns_ <= 0 || replan_ns_ <= 0 ||
+      params.n_pre_max > kMaxSegmentNodes - params.n_nodes ||
+      !MpcSegmentBlocksFor(params, 0, stop_blocks, stop_n_blocks) ||
+      params.n_pre_max > kMaxSegmentNodes - stop_n_blocks) {
     why = "the pre-catch grid (n_pre_max, dt_pre_s, the budgets or v_eps) is outside its range";
     return false;
   }
@@ -343,7 +346,7 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
     }
   }
   rest_tol_ref_ = params.reference_rest_tol;
-  DecelMpcLimits limits;
+  MpcSegmentCoreLimits limits;
   limits.q_min.resize(n);
   limits.q_max.resize(n);
   limits.qd_max.resize(n);
@@ -361,7 +364,7 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
   catch_results_.resize(count);
   catch_params_.reserve(count);
   for (int j = 1; j <= params.n_pre_max; ++j) {
-    DecelMpcParams mp;
+    MpcSegmentCoreParams mp;
     ApplyCoreDesign(mp, params, jerk_weight_model_);
     mp.n_pre = j;
     mp.dt_pre = static_cast<double>(dt_pre_ns_) * 1e-9;
@@ -388,16 +391,16 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
     mp.eta_v = consts_.eta_v;
     mp.eta_tau = params.eta_tau;
     mp.m_q = params.m_q;
-    auto core = std::make_unique<DecelMpc>();
-    const DecelMpcReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
-    if (r != DecelMpcReason::kNone) {
-      why = "DecelMpc::Init for the catch core n_pre = " + std::to_string(j) + ": " +
-            DecelMpcReasonName(r);
+    auto core = std::make_unique<MpcSegmentCore>();
+    const MpcSegmentCoreReason r = core->Init(*model.arm, model.catch_frame, mp, limits);
+    if (r != MpcSegmentCoreReason::kNone) {
+      why = "MpcSegmentCore::Init for the catch core n_pre = " + std::to_string(j) + ": " +
+            MpcSegmentCoreReasonName(r);
       return false;
     }
     const int cols = core->NumNodes() + 1;
     core->ResizeResult(catch_results_[U(j - 1)]);
-    DecelMpcInput& in = catch_inputs_[U(j - 1)];
+    MpcSegmentCoreInput& in = catch_inputs_[U(j - 1)];
     in.q0 = Eigen::VectorXd::Zero(n);
     in.qd0 = Eigen::VectorXd::Zero(n);
     in.qdd0 = Eigen::VectorXd::Zero(n);
@@ -411,7 +414,7 @@ bool DecelPlanner::ConfigureApproach(const DecelPlannerModel& model, std::string
   return WarmUp(model, why);
 }
 
-bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
+bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string& why) {
   // One solve per core at the middle of the joint range (MD-64): the first
   // ProxQP solve of a core is its slowest. The stop cores solve a stop from
   // rest (no reference: pre-solve + solve); the catch cores a catch where
@@ -423,7 +426,8 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
   warmup_max_ns_ = 0;
   warmup_total_ns_ = 0;
   // Timed on the real steady clock (the injected one may be a test's).
-  const auto timed = [this](DecelMpc& core, const DecelMpcInput& in, DecelMpcResult& res) {
+  const auto timed = [this](MpcSegmentCore& core, const MpcSegmentCoreInput& in,
+                            MpcSegmentCoreResult& res) {
     const auto t0 = std::chrono::steady_clock::now();
     const bool ok = core.Solve(in, res);
     const std::int64_t ns =
@@ -445,7 +449,7 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
   const Eigen::Vector3d v_ball = -5.0 * z;
   const Eigen::Vector3d d_ball = v_ball.normalized();
   for (std::size_t k = 0; k < cores_.size(); ++k) {
-    DecelMpcInput& in = inputs_[k];
+    MpcSegmentCoreInput& in = inputs_[k];
     in.q0 = q_mid;
     in.qd0.setZero();
     in.qdd0.setZero();
@@ -457,13 +461,13 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
     }
     if (!timed(*cores_[k], in, results_[k])) {
       why = "warm-up solve of stop core k = " + std::to_string(k) + ": " +
-            DecelMpcReasonName(results_[k].reason);
+            MpcSegmentCoreReasonName(results_[k].reason);
       return false;
     }
     in.cold_start = false;
   }
   for (std::size_t j = 0; j < catch_cores_.size(); ++j) {
-    DecelMpcInput& in = catch_inputs_[j];
+    MpcSegmentCoreInput& in = catch_inputs_[j];
     in.q0 = q_mid;
     in.qd0.setZero();
     in.qdd0.setZero();
@@ -486,7 +490,7 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
     }
     if (!timed(*catch_cores_[j], in, catch_results_[j])) {
       why = "warm-up solve of the catch core n_pre = " + std::to_string(j + 1) + ": " +
-            DecelMpcReasonName(catch_results_[j].reason);
+            MpcSegmentCoreReasonName(catch_results_[j].reason);
       return false;
     }
     in.reference_valid = false;
@@ -495,7 +499,7 @@ bool DecelPlanner::WarmUp(const DecelPlannerModel& model, std::string& why) {
   return true;
 }
 
-void DecelPlanner::ResetTrial() noexcept {
+void MpcSegmentPlanner::ResetTrial() noexcept {
   ring_n_ = 0;
   ring_plan_id_ = 0;
   ring_t_c_ns_ = 0;
@@ -505,23 +509,24 @@ void DecelPlanner::ResetTrial() noexcept {
   ready_line_.valid = false;
 }
 
-bool DecelPlanner::CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
-                              DecelRecord& rec) const noexcept {
+bool MpcSegmentPlanner::CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
+                                   SegmentRecord& rec) const noexcept {
   if (!rt.valid || (need_command && !rt.cmd_seeded) || rt.nv != nv_) {
-    rec.outcome = DecelOutcome::kNoState;
+    rec.outcome = SegmentOutcome::kNoState;
     return false;
   }
   const std::int64_t age = start - rt.rt_state_ns;
-  if (age < 0 || age > kDecelMaxRtStateAgeNs) {
-    rec.outcome = DecelOutcome::kStaleState;
+  if (age < 0 || age > kMpcSegmentMaxRtStateAgeNs) {
+    rec.outcome = SegmentOutcome::kStaleState;
     return false;
   }
   return true;
 }
 
-bool DecelPlanner::SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::Vector3d& v_b,
-                                  const Eigen::Vector3d& a_d, const DecelBallTarget& ball,
-                                  bool first, DecelMpcInput& in, DecelRecord& rec) const noexcept {
+bool MpcSegmentPlanner::SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::Vector3d& v_b,
+                                       const Eigen::Vector3d& a_d, const MpcSegmentBallTarget& ball,
+                                       bool first, MpcSegmentCoreInput& in,
+                                       SegmentRecord& rec) const noexcept {
   if (!p_b.allFinite() || !v_b.allFinite() || !a_d.allFinite()) {
     return false;
   }
@@ -557,19 +562,19 @@ bool DecelPlanner::SetCatchInputs(const Eigen::Vector3d& p_b, const Eigen::Vecto
   return true;
 }
 
-bool DecelPlanner::SetStopLine(DecelMpcInput& in, DecelRecord& rec) const noexcept {
+bool MpcSegmentPlanner::SetStopLine(MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept {
   // The ball as this solve takes it (SetCatchInputs wrote both, finite): the
   // line through p̂_b along v̂_b. Finite components can still have a norm that
   // overflows, and a ball at rest has no direction — neither is solved on a
   // line that was not built.
   const double speed = in.v_b.norm();
   if (!in.p_b.allFinite() || !std::isfinite(speed)) {
-    rec.outcome = DecelOutcome::kInputNonFinite;
+    rec.outcome = SegmentOutcome::kInputNonFinite;
     return false;
   }
   // Written as "usable", so a NaN v_eps is not.
   if (!(speed > consts_.v_eps)) {
-    rec.outcome = DecelOutcome::kNoBall;
+    rec.outcome = SegmentOutcome::kNoBall;
     return false;
   }
   in.p_c = in.p_b;
@@ -577,10 +582,10 @@ bool DecelPlanner::SetStopLine(DecelMpcInput& in, DecelRecord& rec) const noexce
   return true;
 }
 
-bool DecelBetweenNodeSpeedOk(const Eigen::Ref<const Eigen::MatrixXd>& qd,
-                             const Eigen::Ref<const Eigen::MatrixXd>& qdd, int n_pre, double dt_pre,
-                             double dt, std::span<const double> qd_max,
-                             double& ratio_max) noexcept {
+bool MpcSegmentBetweenNodeSpeedOk(const Eigen::Ref<const Eigen::MatrixXd>& qd,
+                                  const Eigen::Ref<const Eigen::MatrixXd>& qdd, int n_pre,
+                                  double dt_pre, double dt, std::span<const double> qd_max,
+                                  double& ratio_max) noexcept {
   const Eigen::Index n = qd.rows();
   const Eigen::Index cols = qd.cols();
   ratio_max = std::numeric_limits<double>::infinity();
@@ -622,10 +627,10 @@ bool DecelBetweenNodeSpeedOk(const Eigen::Ref<const Eigen::MatrixXd>& qd,
   return ok;
 }
 
-DecelOutcome DecelPlanner::Judge(const DecelMpcResult& r, bool ok, int n_pre, int n_total,
-                                 bool catch_core, std::int64_t start, std::int64_t end,
-                                 std::int64_t budget_ns, std::int64_t t_eff,
-                                 DecelRecord& rec) const noexcept {
+SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, int n_pre,
+                                        int n_total, bool catch_core, std::int64_t start,
+                                        std::int64_t end, std::int64_t budget_ns,
+                                        std::int64_t t_eff, SegmentRecord& rec) const noexcept {
   rec.solve_ns = end - start;
   rec.core_reason = r.reason;
   rec.presolved = r.presolved;
@@ -633,7 +638,7 @@ DecelOutcome DecelPlanner::Judge(const DecelMpcResult& r, bool ok, int n_pre, in
   rec.qp_status = r.qp_status;
   rec.solver_retried = r.cold_retried;
   if (!ok) {
-    return DecelOutcome::kSolveFailed;
+    return SegmentOutcome::kSolveFailed;
   }
   rec.slack_max = r.slack_max;
   rec.slack_terminal_max = r.slack_terminal_max;
@@ -648,48 +653,48 @@ DecelOutcome DecelPlanner::Judge(const DecelMpcResult& r, bool ok, int n_pre, in
   }
   // Every check passes on a positive comparison, so a NaN fails it.
   if (!(rec.solve_ns <= budget_ns)) {
-    return DecelOutcome::kBudget;
+    return SegmentOutcome::kBudget;
   }
   if (!StartsInTime(end, t_eff)) {
-    return DecelOutcome::kLate;
+    return SegmentOutcome::kLate;
   }
   const bool slack_ok = std::isfinite(r.slack_max) && r.slack_max <= params_.slack_max &&
                         std::isfinite(r.slack_terminal_max) &&
                         r.slack_terminal_max <= params_.slack_terminal_max;
   if (!slack_ok) {
-    return DecelOutcome::kSlack;
+    return SegmentOutcome::kSlack;
   }
   if (catch_core && !(r.catch_evaluated && std::isfinite(rec.catch_pos_err) &&
                       rec.catch_pos_err <= params_.catch_pos_err_max)) {
-    return DecelOutcome::kCatchError;
+    return SegmentOutcome::kCatchError;
   }
   double ratio = 0.0;
-  const bool speed_ok = DecelBetweenNodeSpeedOk(
+  const bool speed_ok = MpcSegmentBetweenNodeSpeedOk(
       r.qd.leftCols(n_total + 1), r.qdd.leftCols(n_total + 1), n_pre,
       static_cast<double>(dt_pre_ns_) * 1e-9, static_cast<double>(dt_ns_) * 1e-9,
       std::span<const double>(qd_max_.data(), static_cast<std::size_t>(nv_)), ratio);
   rec.speed_ratio_max = ratio;
   if (!speed_ok) {
-    return DecelOutcome::kSpeed;
+    return SegmentOutcome::kSpeed;
   }
   // A published segment can be the next solve's reference, and the core
   // takes a reference only at rest to its own tolerance (tighter than the
-  // payload's kDecelRestTol).
+  // payload's kSegmentRestTol).
   for (int m = 0; m < nv_; ++m) {
     if (!(std::fabs(r.qd(m, n_total)) <= rest_tol_ref_ &&
           std::fabs(r.qdd(m, n_total)) <= rest_tol_ref_)) {
-      rec.core_reason = DecelMpcReason::kNone;
-      return DecelOutcome::kSolveFailed;
+      rec.core_reason = MpcSegmentCoreReason::kNone;
+      return SegmentOutcome::kSolveFailed;
     }
   }
-  return DecelOutcome::kReady;
+  return SegmentOutcome::kReady;
 }
 
-void DecelPlanner::PackSegment(const PlannerRtState& rt, std::uint64_t track_generation,
-                               std::uint32_t plan_id, std::int64_t t_c, std::int64_t t_eff,
-                               int n_pre, int k0, int n_total, const DecelMpcResult& r,
-                               DecelPlanSnapshot& out) const noexcept {
-  out = DecelPlanSnapshot{};
+void MpcSegmentPlanner::PackSegment(const PlannerRtState& rt, std::uint64_t track_generation,
+                                    std::uint32_t plan_id, std::int64_t t_c, std::int64_t t_eff,
+                                    int n_pre, int k0, int n_total, const MpcSegmentCoreResult& r,
+                                    SegmentSnapshot& out) const noexcept {
+  out = SegmentSnapshot{};
   out.token.activation_generation = rt.activation_generation;
   out.token.generation = track_generation;
   out.rt_iteration = rt.rt_iteration;
@@ -705,7 +710,7 @@ void DecelPlanner::PackSegment(const PlannerRtState& rt, std::uint64_t track_gen
   out.n_pre = n_pre;
   for (int i = 0; i <= n_total; ++i) {
     for (int m = 0; m < nv_; ++m) {
-      const auto e = static_cast<std::size_t>(i * kMaxDecelNv + device_of_model_[U(m)]);
+      const auto e = static_cast<std::size_t>(i * kMaxSegmentNv + device_of_model_[U(m)]);
       out.q[e] = r.q(m, i);
       out.qd[e] = r.qd(m, i);
       out.qdd[e] = r.qdd(m, i);
@@ -719,39 +724,39 @@ void DecelPlanner::PackSegment(const PlannerRtState& rt, std::uint64_t track_gen
   out.valid = true;
 }
 
-const DecelPlanSnapshot* DecelPlanner::FindInRing(std::uint32_t seq) const noexcept {
+const SegmentSnapshot* MpcSegmentPlanner::FindInRing(std::uint32_t seq) const noexcept {
   for (int i = 0; i < ring_n_; ++i) {
-    if (ring_[U(i)].decel_seq == seq) {
+    if (ring_[U(i)].segment_seq == seq) {
       return &ring_[U(i)];
     }
   }
   return nullptr;
 }
 
-std::uint32_t DecelPlanner::SourceSeq(const PlannerRtState& rt,
-                                      std::int64_t t_eff_ns) const noexcept {
+std::uint32_t MpcSegmentPlanner::SourceSeq(const PlannerRtState& rt,
+                                           std::int64_t t_eff_ns) const noexcept {
   if (ring_n_ == 0 || !rt.plan_active || rt.plan_id != ring_plan_id_ ||
       rt.plan_t_c_ns != ring_t_c_ns_) {
     return 0;
   }
   // The pending one is what the RT follows from its node 0 on.
-  if (rt.decel_pending) {
-    const DecelPlanSnapshot* p = FindInRing(rt.decel_pending_seq);
+  if (rt.segment_pending) {
+    const SegmentSnapshot* p = FindInRing(rt.segment_pending_seq);
     if (p != nullptr && p->t0_ns <= t_eff_ns) {
-      return p->decel_seq;
+      return p->segment_seq;
     }
   }
-  if (rt.decel_active) {
-    const DecelPlanSnapshot* p = FindInRing(rt.decel_seq);
+  if (rt.segment_active) {
+    const SegmentSnapshot* p = FindInRing(rt.segment_seq);
     if (p != nullptr) {
-      return p->decel_seq;
+      return p->segment_seq;
     }
   }
   return 0;
 }
 
-bool DecelPlanner::FollowedTrack(const PlannerRtState& rt,
-                                 std::uint64_t& generation) const noexcept {
+bool MpcSegmentPlanner::FollowedTrack(const PlannerRtState& rt,
+                                      std::uint64_t& generation) const noexcept {
   if (ring_n_ == 0 || !rt.plan_active || rt.plan_id != ring_plan_id_ ||
       rt.plan_t_c_ns != ring_t_c_ns_) {
     return false;
@@ -761,7 +766,7 @@ bool DecelPlanner::FollowedTrack(const PlannerRtState& rt,
   return true;
 }
 
-void DecelPlanner::NotePublished(const DecelPlanSnapshot& p) noexcept {
+void MpcSegmentPlanner::NotePublished(const SegmentSnapshot& p) noexcept {
   if (ring_n_ > 0 && (p.plan_id != ring_plan_id_ || p.t_c_ns != ring_t_c_ns_)) {
     ring_n_ = 0;
   }
@@ -772,7 +777,7 @@ void DecelPlanner::NotePublished(const DecelPlanSnapshot& p) noexcept {
     // reported, so one of eight always qualifies.
     int victim = 0;
     for (int i = 0; i < ring_n_; ++i) {
-      const std::uint32_t s = ring_[U(i)].decel_seq;
+      const std::uint32_t s = ring_[U(i)].segment_seq;
       if (s != reported_pending_seq_ && s != reported_active_seq_) {
         victim = i;
         break;
@@ -797,14 +802,14 @@ void DecelPlanner::NotePublished(const DecelPlanSnapshot& p) noexcept {
   ++ring_n_;
 }
 
-bool DecelPlanner::ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
-                                std::uint32_t plan_id, std::int64_t t_c) const noexcept {
+bool MpcSegmentPlanner::ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
+                                     std::uint32_t plan_id, std::int64_t t_c) const noexcept {
   return !(last_solve_valid_ && last_solve_catch_ == catch_core && last_solve_index_ == index &&
            last_solve_t_eff_ == t_eff && last_solve_plan_id_ == plan_id && last_solve_t_c_ == t_c);
 }
 
-void DecelPlanner::NoteSolve(bool ok, bool catch_core, int index, std::int64_t t_eff,
-                             std::uint32_t plan_id, std::int64_t t_c) noexcept {
+void MpcSegmentPlanner::NoteSolve(bool ok, bool catch_core, int index, std::int64_t t_eff,
+                                  std::uint32_t plan_id, std::int64_t t_c) noexcept {
   last_solve_valid_ = ok;
   last_solve_catch_ = catch_core;
   last_solve_index_ = index;
@@ -813,36 +818,36 @@ void DecelPlanner::NoteSolve(bool ok, bool catch_core, int index, std::int64_t t
   last_solve_t_c_ = t_c;
 }
 
-DecelBallTarget DecelPlanner::TargetAt(const BallPrediction& ball,
-                                       std::int64_t t_c_ns) const noexcept {
+MpcSegmentBallTarget MpcSegmentPlanner::TargetAt(const BallPrediction& ball,
+                                                 std::int64_t t_c_ns) const noexcept {
   if (ball.Empty()) {
-    return DecelBallTarget{};
+    return MpcSegmentBallTarget{};
   }
-  return MakeDecelBallTarget(*ball.traj, *ball.cov, ball.cov_matched, t_c_ns, consts_.v_eps);
+  return MakeMpcSegmentBallTarget(*ball.traj, *ball.cov, ball.cov_matched, t_c_ns, consts_.v_eps);
 }
 
 // The target is built BEFORE the solve's own entry, which is where its clock
 // starts: the budget measures what it measured when the cycle built it.
-bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                             const BallPrediction& ball, DecelPlanSnapshot& out,
-                             DecelRecord& rec) noexcept {
+bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
+                                  const BallPrediction& ball, SegmentSnapshot& out,
+                                  SegmentRecord& rec) noexcept {
   return PlanFirst(rt, plan, TargetAt(ball, plan.t_c_ns), out, rec);
 }
 
-bool DecelPlanner::Replan(const PlannerRtState& rt, const BallPrediction& ball,
-                          DecelPlanSnapshot& out, DecelRecord& rec) noexcept {
+bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const BallPrediction& ball,
+                               SegmentSnapshot& out, SegmentRecord& rec) noexcept {
   return Replan(rt, TargetAt(ball, rt.plan_t_c_ns), out, rec);
 }
 
-bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                             const DecelBallTarget& ball, DecelPlanSnapshot& out,
-                             DecelRecord& rec) noexcept {
-  rec = DecelRecord{};
+bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
+                                  const MpcSegmentBallTarget& ball, SegmentSnapshot& out,
+                                  SegmentRecord& rec) noexcept {
+  rec = SegmentRecord{};
   ready_line_.valid = false;  // a line belongs to the solve that built it
   if (!configured_) {
     return false;
   }
-  rec.kind = DecelKind::kFirst;
+  rec.kind = SegmentKind::kFirst;
   const std::int64_t start = clock_();
   // Before a plan the RT has no command yet (cmd_seeded false): it reports
   // the MEASURED pose with zero velocity, which is where it seeds the command
@@ -851,7 +856,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
     return false;
   }
   if (!plan.valid || plan.t_c_ns <= 0 || plan.nv != nv_) {
-    rec.outcome = DecelOutcome::kNoState;
+    rec.outcome = SegmentOutcome::kNoState;
     return false;
   }
   // The arm rests at its wait pose: x₀ = (q_cmd, 0, 0).
@@ -864,14 +869,14 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   }
   rec.x0_speed = speed_finite ? speed : std::numeric_limits<double>::quiet_NaN();
   if (!(speed_finite && speed <= params_.rest_tol)) {
-    rec.outcome = DecelOutcome::kNotAtRest;
+    rec.outcome = SegmentOutcome::kNotAtRest;
     return false;
   }
   // The largest pre-catch count whose node 0 the solve can still meet.
   const std::int64_t now_lead = start + t_arm_ns_;
   const std::int64_t numer = plan.t_c_ns - now_lead - first_ns_ - 2 * h_ns_;
   if (numer < dt_pre_ns_) {
-    rec.outcome = DecelOutcome::kTooLate;
+    rec.outcome = SegmentOutcome::kTooLate;
     return false;
   }
   const int n_pre = static_cast<int>(std::min<std::int64_t>(params_.n_pre_max, numer / dt_pre_ns_));
@@ -880,9 +885,9 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   rec.k = -n_pre;
   rec.n_nodes = n_total;
 
-  DecelMpc& core = *catch_cores_[U(n_pre - 1)];
-  DecelMpcInput& in = catch_inputs_[U(n_pre - 1)];
-  DecelMpcResult& res = catch_results_[U(n_pre - 1)];
+  MpcSegmentCore& core = *catch_cores_[U(n_pre - 1)];
+  MpcSegmentCoreInput& in = catch_inputs_[U(n_pre - 1)];
+  MpcSegmentCoreResult& res = catch_results_[U(n_pre - 1)];
   // Reference: per joint a minimum-jerk reach from q_cmd to q_star over the
   // pre-catch part, held from the catch node on. The target is clamped into
   // the core's position box (the IK clamps to the limits themselves) and the
@@ -923,7 +928,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
     dq[U(m)] = step;
   }
   if (!finite) {
-    rec.outcome = DecelOutcome::kInputNonFinite;
+    rec.outcome = SegmentOutcome::kInputNonFinite;
     return false;
   }
   rec.ref_scale = scale_min;
@@ -951,7 +956,7 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   const Eigen::Map<const Eigen::Vector3d> v_c(plan.v_c.data());
   const Eigen::Map<const Eigen::Vector3d> a_d(plan.a_d.data());
   if (!SetCatchInputs(p_c, v_c, a_d, ball, /*first=*/true, in, rec)) {
-    rec.outcome = DecelOutcome::kInputNonFinite;
+    rec.outcome = SegmentOutcome::kInputNonFinite;
     return false;
   }
   // The stop-path line: the plan's catch point along the ball's travel.
@@ -963,15 +968,15 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   const std::int64_t end = clock_();
   NoteSolve(ok, true, n_pre, t_eff, plan.plan_id, plan.t_c_ns);
   rec.outcome = Judge(res, ok, n_pre, n_total, true, start, end, first_ns_, t_eff, rec);
-  if (rec.outcome != DecelOutcome::kReady) {
+  if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }
   PackSegment(rt, plan.token.generation, plan.plan_id, plan.t_c_ns, t_eff, n_pre, 0, n_total, res,
               out);
   out.x0_clamped = rec.x0_clamped;
-  if (!ValidateDecelNodes(out)) {
-    rec.outcome = DecelOutcome::kSolveFailed;
-    rec.core_reason = DecelMpcReason::kNone;
+  if (!ValidateSegmentNodes(out)) {
+    rec.outcome = SegmentOutcome::kSolveFailed;
+    rec.core_reason = MpcSegmentCoreReason::kNone;
     return false;
   }
   // A new plan: the RT reports nothing of it yet.
@@ -983,9 +988,9 @@ bool DecelPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
   return true;
 }
 
-bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
-                          DecelPlanSnapshot& out, DecelRecord& rec) noexcept {
-  rec = DecelRecord{};
+bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTarget& ball,
+                               SegmentSnapshot& out, SegmentRecord& rec) noexcept {
+  rec = SegmentRecord{};
   ready_line_.valid = false;  // a line belongs to the solve that built it
   if (!configured_) {
     return false;
@@ -995,11 +1000,11 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     return false;
   }
   if (!rt.plan_active || rt.plan_t_c_ns <= 0) {
-    rec.outcome = DecelOutcome::kNoState;
+    rec.outcome = SegmentOutcome::kNoState;
     return false;
   }
-  reported_pending_seq_ = rt.decel_pending ? rt.decel_pending_seq : 0;
-  reported_active_seq_ = rt.decel_active ? rt.decel_seq : 0;
+  reported_pending_seq_ = rt.segment_pending ? rt.segment_pending_seq : 0;
+  reported_active_seq_ = rt.segment_active ? rt.segment_seq : 0;
 
   // The grid point the replan budget reaches (MD-54, MD-58). Recorded as
   // soon as it is chosen, so a withheld solve still says where it was.
@@ -1018,7 +1023,7 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
     const std::int64_t k64 = earliest <= t_c ? 0 : CeilDiv(earliest - t_c, dt_ns_);
     if (k64 > params_.k_max) {
       rec.k = static_cast<std::int32_t>(std::min<std::int64_t>(k64, 1'000'000));
-      rec.outcome = DecelOutcome::kPastReplanWindow;
+      rec.outcome = SegmentOutcome::kPastReplanWindow;
       return false;
     }
     k = static_cast<int>(k64);
@@ -1028,29 +1033,29 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
   }
   const bool pre = n_pre > 0;
   const int n_total = rec.n_nodes;
-  rec.kind = pre ? DecelKind::kAdvance : DecelKind::kStop;
+  rec.kind = pre ? SegmentKind::kAdvance : SegmentKind::kStop;
 
   // The source is what the RT reports, never an inference (MD-58).
   const std::uint32_t src_seq = SourceSeq(rt, t_eff);
-  const DecelPlanSnapshot* src = src_seq != 0 ? FindInRing(src_seq) : nullptr;
+  const SegmentSnapshot* src = src_seq != 0 ? FindInRing(src_seq) : nullptr;
   if (src == nullptr) {
-    rec.outcome = DecelOutcome::kNotFollowed;
+    rec.outcome = SegmentOutcome::kNotFollowed;
     return false;
   }
   rec.source_seq = src_seq;
   if (t_eff < src->t0_ns) {
-    rec.outcome = DecelOutcome::kUpToDate;
+    rec.outcome = SegmentOutcome::kUpToDate;
     return false;
   }
   if (t_eff == src->t0_ns) {
     if (!(pre && params_.replan_same_point)) {
-      rec.outcome = DecelOutcome::kUpToDate;
+      rec.outcome = SegmentOutcome::kUpToDate;
       return false;
     }
-    rec.kind = DecelKind::kSame;
+    rec.kind = SegmentKind::kSame;
   }
   if (pre && !ball.valid) {
-    rec.outcome = DecelOutcome::kNoBall;
+    rec.outcome = SegmentOutcome::kNoBall;
     return false;
   }
   // A stop core's stop-path line is its SOURCE's — the line of the segment
@@ -1060,22 +1065,22 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
   // never on a default line.
   const auto src_slot = static_cast<std::size_t>(src - ring_.data());
   if (perp_on_ && !pre && !ring_line_[src_slot].valid) {
-    rec.outcome = DecelOutcome::kNoBall;
+    rec.outcome = SegmentOutcome::kNoBall;
     return false;
   }
 
   const std::size_t slot = pre ? U(n_pre - 1) : U(k);
-  DecelMpc& core = pre ? *catch_cores_[slot] : *cores_[slot];
-  DecelMpcInput& in = pre ? catch_inputs_[slot] : inputs_[slot];
-  DecelMpcResult& res = pre ? catch_results_[slot] : results_[slot];
+  MpcSegmentCore& core = pre ? *catch_cores_[slot] : *cores_[slot];
+  MpcSegmentCoreInput& in = pre ? catch_inputs_[slot] : inputs_[slot];
+  MpcSegmentCoreResult& res = pre ? catch_results_[slot] : results_[slot];
 
   // x₀: the source at t_eff (MD-58), projected into the core's box —
   // a published node keeps the box only to the solver's tolerance.
-  std::array<double, kMaxDecelNv> q{};
-  std::array<double, kMaxDecelNv> qd{};
-  std::array<double, kMaxDecelNv> qdd{};
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
   if (!NodeTrajectoryFollower::SampleJoints(*src, t_eff, q, qd, qdd)) {
-    rec.outcome = DecelOutcome::kInputNonFinite;
+    rec.outcome = SegmentOutcome::kInputNonFinite;
     return false;
   }
   for (int m = 0; m < nv_; ++m) {
@@ -1086,7 +1091,7 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
   }
   rec.from_segment = true;
   if (!in.q0.allFinite() || !in.qd0.allFinite() || !in.qdd0.allFinite()) {
-    rec.outcome = DecelOutcome::kInputNonFinite;
+    rec.outcome = SegmentOutcome::kInputNonFinite;
     return false;
   }
   for (int m = 0; m < nv_; ++m) {
@@ -1102,9 +1107,9 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
   // Reference: the source at the new grid's node instants — a column subset
   // of it, since both grids are anchored at t_c and share the end.
   for (int i = 0; i <= n_total; ++i) {
-    const std::int64_t t_i = DecelGridNodeTimeNs(t_eff, t_c, dt_pre_ns_, dt_ns_, n_pre, i);
+    const std::int64_t t_i = SegmentGridNodeTimeNs(t_eff, t_c, dt_pre_ns_, dt_ns_, n_pre, i);
     if (!NodeTrajectoryFollower::SampleJoints(*src, t_i, q, qd, qdd)) {
-      rec.outcome = DecelOutcome::kInputNonFinite;
+      rec.outcome = SegmentOutcome::kInputNonFinite;
       return false;
     }
     for (int m = 0; m < nv_; ++m) {
@@ -1119,7 +1124,7 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
   in.cold_start = ColdStartFor(pre, index, t_eff, rt.plan_id, t_c);
   rec.cold_start = in.cold_start;
   if (pre && !SetCatchInputs(ball.p_b, ball.v_b, ball.a_d, ball, /*first=*/false, in, rec)) {
-    rec.outcome = DecelOutcome::kNoBall;
+    rec.outcome = SegmentOutcome::kNoBall;
     return false;
   }
   if (perp_on_) {
@@ -1135,8 +1140,8 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
   }
   bool ok = core.Solve(in, res);
   if (!ok && !pre &&
-      (res.reason == DecelMpcReason::kTrustRegionConflict ||
-       res.reason == DecelMpcReason::kReferenceNotAtRest)) {
+      (res.reason == MpcSegmentCoreReason::kTrustRegionConflict ||
+       res.reason == MpcSegmentCoreReason::kReferenceNotAtRest)) {
     // The state left the source segment by more than the trust region, or
     // the source does not end at rest: its nodes cannot linearise this stop.
     // Re-solve from nothing. Not cold — the pre-solve's iterates are the
@@ -1150,16 +1155,16 @@ bool DecelPlanner::Replan(const PlannerRtState& rt, const DecelBallTarget& ball,
   const std::int64_t end = clock_();
   NoteSolve(ok, pre, index, t_eff, rt.plan_id, t_c);
   rec.outcome = Judge(res, ok, n_pre, n_total, pre, start, end, replan_ns_, t_eff, rec);
-  if (rec.outcome != DecelOutcome::kReady) {
+  if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }
   // The plan's track, not the RT's latest: after the freeze they can differ.
   PackSegment(rt, src->token.generation, rt.plan_id, t_c, t_eff, n_pre, pre ? 0 : k, n_total, res,
               out);
   out.x0_clamped = rec.x0_clamped;
-  if (!ValidateDecelNodes(out)) {
-    rec.outcome = DecelOutcome::kSolveFailed;
-    rec.core_reason = DecelMpcReason::kNone;
+  if (!ValidateSegmentNodes(out)) {
+    rec.outcome = SegmentOutcome::kSolveFailed;
+    rec.core_reason = MpcSegmentCoreReason::kNone;
     return false;
   }
   if (perp_on_) {

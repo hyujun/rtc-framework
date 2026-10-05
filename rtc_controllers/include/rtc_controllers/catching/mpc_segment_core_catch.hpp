@@ -1,8 +1,8 @@
-// ── Decel MPC catch-node linearisation seam (E1-F07, formulation §1.2) ───────
+// ── Segment MPC catch-node linearisation seam (E1-F07, formulation §1.2) ───────
 // The first-order models of the three nonlinear outputs the catch terms use,
 // at one reference point (q, v), exposed so a test can check each Jacobian
 // against a finite difference of the nonlinear output instead of only through
-// a QP answer (the same reason decel_mpc_torque.hpp exists):
+// a QP answer (the same reason mpc_segment_core_torque.hpp exists):
 //
 //   p_C(q + δq)          ≈ p + J_v δq                      catch-frame position
 //   e_a(q + δq)          ≈ e_a + L_a δq,  L_a = J_a J_ω    approach-axis error
@@ -23,7 +23,7 @@
 // argument must already be sized (j6_work 6 × n, the others 3 × n).
 #pragma once
 
-#include "rtc_controllers/catching/decel_mpc.hpp"
+#include "rtc_controllers/catching/mpc_segment_core.hpp"
 
 #include <Eigen/Core>
 #include <pinocchio/multibody/data.hpp>
@@ -64,7 +64,7 @@ struct CatchLinearization {
 ///         antiparallel (the rotation axis is undefined there).
 /// @note RT-safe: no heap, noexcept. Every matrix argument must already be
 ///       sized; the outputs are unspecified when the return is not kNone.
-[[nodiscard]] DecelMpcReason LinearizeCatchAt(
+[[nodiscard]] MpcSegmentCoreReason LinearizeCatchAt(
     const pinocchio::Model& model, pinocchio::Data& data, pinocchio::FrameIndex frame,
     const Eigen::Ref<const Eigen::VectorXd>& q, const Eigen::Ref<const Eigen::VectorXd>& v,
     const Eigen::Vector3d& a_d, double axis_theta_max, bool with_axis, bool with_velocity,

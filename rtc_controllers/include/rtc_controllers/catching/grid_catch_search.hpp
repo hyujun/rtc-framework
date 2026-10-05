@@ -59,7 +59,7 @@
 namespace rtc::catching {
 
 /// The arm model the search plans in (configure time, owned by the binding).
-struct PlannerModel {
+struct GridCatchSearchModel {
   /// The planner thread's own handle on the catch sub-model (R-3). No joint
   /// reorder may be installed on it (CatchPoseIk refuses one).
   rtc_urdf_bridge::RtModelHandle* handle{nullptr};
@@ -77,7 +77,7 @@ struct PlannerModel {
 /// Constants that live outside `planner.*` in the profile, resolved by the
 /// binding. NaN marks a value the profile leaves TBD — every gate that needs
 /// it then fails (a rank gate) rather than using a guess.
-struct PlannerConstants {
+struct GridCatchSearchConstants {
   double eta_v{0.9};                                       ///< `planner.gamma.eta_v` (D-9)
   double v_max{std::numeric_limits<double>::quiet_NaN()};  ///< `reference.v_max`
   double a_dec{std::numeric_limits<double>::quiet_NaN()};  ///< `supervisor.decel.a_dec`
@@ -208,14 +208,14 @@ struct SearchStats {
   double sigma_l{std::numeric_limits<double>::quiet_NaN()};
 };
 
-class PlannerSearch final : public CatchSearch {
+class GridCatchSearch final : public CatchSearch {
  public:
   using ClockFn = std::int64_t (*)() noexcept;
 
   /// Non-RT. Size every buffer. False (and unconfigured) if the model binding
   /// is unusable — no handle, nv outside (0, kMaxPlanNv], a wait pose that is
   /// not one entry per arm joint.
-  bool Configure(const PlannerModel& model, const PlannerConstants& constants,
+  bool Configure(const GridCatchSearchModel& model, const GridCatchSearchConstants& constants,
                  const PlannerParams& params, const CatchPoseIkOptions& ik, ClockFn clock);
 
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
@@ -260,8 +260,8 @@ class PlannerSearch final : public CatchSearch {
   };
 
   bool configured_{false};
-  PlannerModel model_{};
-  PlannerConstants constants_{};
+  GridCatchSearchModel model_{};
+  GridCatchSearchConstants constants_{};
   PlannerParams params_{};
   CatchPoseIkOptions ik_options_{};
   ClockFn clock_{nullptr};

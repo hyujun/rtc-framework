@@ -2,12 +2,12 @@
 //
 // What PlannerCycle knows of the planner that solves the joint-node segments
 // the RT follows from APPROACH to the end of the stop (planner_cycle.hpp "THE
-// DECEL PLANNER'S PART"): the first segment of a plan the search just
+// MPC SEGMENT PLANNER'S PART"): the first segment of a plan the search just
 // produced, later segments of the plan the RT follows, and the questions the
 // cycle's re-checks ask about them. The cycle owns the SeqLock, the re-check
 // and the segment counter; which planner solves is the configuration's choice.
 //
-// The one implementation today is DecelPlanner (decel_planner.hpp): linearised
+// The one implementation today is MpcSegmentPlanner (mpc_segment_planner.hpp): linearised
 // joint-space QPs on a grid anchored at the catch instant.
 //
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -29,12 +29,12 @@
 //  • CLOCK. The cycle hands the planner its clock when it installs it and
 //    again on every PlannerCycle::SetClock, so the solves are timed on the
 //    axis the cycle stamps `publish_ns` on.
-//  • DecelRecord is the record a solve leaves (decel_planner.hpp). It is
+//  • SegmentRecord is the record a solve leaves (mpc_segment_planner.hpp). It is
 //    declared there, with the planner whose counters it holds; an
 //    implementation fills what it has and leaves the rest at the default —
 //    with ONE exception, because the cycle reads it back: `source_seq` after a
 //    Replan that returned true (see Replan). The cycle itself writes
-//    `outcome` (kPublished / kSuperseded), `decel_seq` and `publish_ns`.
+//    `outcome` (kPublished / kSuperseded), `segment_seq` and `publish_ns`.
 #pragma once
 
 #include "rtc_controllers/catching/planner_io.hpp"
@@ -45,7 +45,7 @@
 
 namespace rtc::catching {
 
-struct DecelRecord;  // decel_planner.hpp
+struct SegmentRecord;  // mpc_segment_planner.hpp
 
 /// @brief The ball's prediction as one wake read it: the trajectory snapshot
 ///        and the covariance box, not owned.
@@ -90,20 +90,20 @@ class SegmentPlanner {
   ///        will publish it under
   /// @param ball this wake's prediction — the one `plan` was searched on.
   ///        Never empty here.
-  /// @param[out] out the segment; its `publish_ns` and `decel_seq` are the
+  /// @param[out] out the segment; its `publish_ns` and `segment_seq` are the
   ///             cycle's to fill
   /// @param[out] rec the solve's record
   /// @return true when `out` is publishable. False withholds the plan too.
   [[nodiscard]] virtual bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                                       const BallPrediction& ball, DecelPlanSnapshot& out,
-                                       DecelRecord& rec) noexcept = 0;
+                                       const BallPrediction& ball, SegmentSnapshot& out,
+                                       SegmentRecord& rec) noexcept = 0;
 
   /// @brief A later segment of the plan `rt` follows (RT-safe; MD-58).
   /// @param ball the followed plan's ball as this wake read it, or an empty
   ///        view: after the catch, and when the trajectory in the box is not
   ///        that plan's track
   /// @param[out] rec the solve's record. On a true return `rec.source_seq`
-  ///             MUST be the `decel_seq` of the segment the solve started
+  ///             MUST be the `segment_seq` of the segment the solve started
   ///             from — what SourceSeq(rt, out.t0_ns) answers. It is a publish
   ///             gate, not a diagnostic: the cycle asks SourceSeq again with
   ///             the RT's newest report and drops the segment (kSuperseded)
@@ -111,12 +111,12 @@ class SegmentPlanner {
   ///             would have every replan dropped.
   /// @return true when `out` is publishable; the cycle's re-check decides.
   [[nodiscard]] virtual bool Replan(const PlannerRtState& rt, const BallPrediction& ball,
-                                    DecelPlanSnapshot& out, DecelRecord& rec) noexcept = 0;
+                                    SegmentSnapshot& out, SegmentRecord& rec) noexcept = 0;
 
-  /// @brief The cycle stored `p` (its `decel_seq` and `publish_ns` filled): a
+  /// @brief The cycle stored `p` (its `segment_seq` and `publish_ns` filled): a
   ///        later Replan may start from it (RT-safe). Called right after the
   ///        PlanFirst or Replan that returned true for it, and only then.
-  virtual void NotePublished(const DecelPlanSnapshot& p) noexcept = 0;
+  virtual void NotePublished(const SegmentSnapshot& p) noexcept = 0;
 
   /// @brief The track generation of the plan `rt` follows, from the segments
   ///        published for it (RT-safe).
@@ -137,7 +137,7 @@ class SegmentPlanner {
   /// @brief The RT's control period [ns] (RT-safe).
   [[nodiscard]] virtual std::int64_t ControlDtNs() const noexcept = 0;
 
-  /// @brief The `decel_seq` of the segment a replan at `t_eff_ns` starts from
+  /// @brief The `segment_seq` of the segment a replan at `t_eff_ns` starts from
   ///        — one the RT reports pending or following, never inferred — or 0
   ///        when there is none (RT-safe).
   [[nodiscard]] virtual std::uint32_t SourceSeq(const PlannerRtState& rt,

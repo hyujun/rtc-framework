@@ -16,9 +16,9 @@
 // test/include).
 #pragma once
 
-#include "rtc_controllers/catching/decel_planner.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
+#include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
-#include "rtc_controllers/catching/planner_search.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 
 #include <array>
@@ -95,12 +95,12 @@ inline void AddSearchStats(ValueDigest& h, const catching::SearchStats& s) noexc
   h.Add(s.sigma_l);
 }
 
-inline void AddDecelRecord(ValueDigest& h, const catching::DecelRecord& d) noexcept {
+inline void AddSegmentRecord(ValueDigest& h, const catching::SegmentRecord& d) noexcept {
   h.Add(d.outcome);
   h.Add(d.core_reason);
   h.Add(d.k);
   h.Add(d.n_nodes);
-  h.Add(d.decel_seq);
+  h.Add(d.segment_seq);
   h.Add(d.x0_clamped);
   h.Add(d.from_segment);
   h.Add(d.presolved);
@@ -146,7 +146,7 @@ inline void AddCycleRecord(ValueDigest& h, const catching::PlannerCycleRecord& r
   h.Add(r.wake_ns);
   h.Add(r.publish_ns);
   AddSearchStats(h, r.search);
-  AddDecelRecord(h, r.decel);
+  AddSegmentRecord(h, r.segment);
 }
 
 inline void AddPlan(ValueDigest& h, const catching::PlanSnapshot& p) noexcept {
@@ -177,13 +177,13 @@ inline void AddPlan(ValueDigest& h, const catching::PlanSnapshot& p) noexcept {
   h.Add(p.valid);
 }
 
-inline void AddSegment(ValueDigest& h, const catching::DecelPlanSnapshot& p) noexcept {
+inline void AddSegment(ValueDigest& h, const catching::SegmentSnapshot& p) noexcept {
   h.Add(p.token);
   h.Add(p.rt_iteration);
   h.Add(p.rt_state_ns);
   h.Add(p.publish_ns);
   h.Add(p.plan_id);
-  h.Add(p.decel_seq);
+  h.Add(p.segment_seq);
   h.Add(p.t_c_ns);
   h.Add(p.t0_ns);
   h.Add(p.dt_ns);

@@ -1,4 +1,4 @@
-// ── Decel MPC torque linearisation seam (E1-F01, formulation §1.3) ───────────
+// ── Segment MPC torque linearisation seam (E1-F01, formulation §1.3) ───────────
 // One node's first-order torque model, exposed so a test can check the
 // derivative and the offset sign directly instead of only through a QP answer:
 //

@@ -95,19 +95,19 @@ add_library(rtc_controllers STATIC
   # SeqLocks; the thread that calls it lives in integrated_bringup (D-1).
   src/params/planner_params.cpp
   src/catching/planner_cycle.cpp
-  src/catching/planner_search.cpp
-  # dynamic_catching MPC E1-F01 (#627): the decel MPC numeric core — a jerk-input
+  src/catching/grid_catch_search.cpp
+  # dynamic_catching MPC E1-F01 (#627): the segment MPC numeric core — a jerk-input
   # condensed QP over the stop segment with first-order torque rows (pinocchio
   # RNEA derivatives) and slack, solved through rtc_tsid's QPSolverWrapper. A
   # plain library unit like catch_pose_ik.cpp; the planner thread calls it (E1-F03).
-  src/catching/decel_mpc.cpp
-  # dynamic_catching MPC E1-F02 (#628): the RT side of the decel payload —
+  src/catching/mpc_segment_core.cpp
+  # dynamic_catching MPC E1-F02 (#628): the RT side of the segment payload —
   # closed-form joint reference between the published nodes, hand target by FK.
   src/catching/node_follower.cpp
   # dynamic_catching MPC E1-F03 (#629): the stop segment on the planner thread —
   # x0 prediction at the effective instant, replan instances with a fixed stop
   # end, the publish gate. ROS-free; PlannerCycle runs it and publishes.
-  src/catching/decel_planner.cpp
+  src/catching/mpc_segment_planner.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -547,7 +547,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_catching_jerk_segment test/test_catching_jerk_segment.cpp)
   target_link_libraries(test_catching_jerk_segment rtc_controllers)
 
-  # dynamic_catching MPC E1-F01 (#627): the decel MPC core. Its Solve() calls
+  # dynamic_catching MPC E1-F01 (#627): the MPC segment core. Its Solve() calls
   # into pinocchio (RNEA derivatives, frame Jacobian) and ProxQP — library code
   # whose Eigen/C allocations neither the operator-new gate nor rtc_base's Eigen
   # tripwire can see (testing-debug.md §RT-1). So the RT gate here is THREE
@@ -557,12 +557,12 @@ if(BUILD_TESTING)
   # allocations made inside the shared libraries too. Real arm URDFs come from
   # the sibling robot_descriptions tree by source path (test-only, like the
   # rtc_urdf_bridge fixtures) for the timing distribution at real dimensions.
-  ament_add_gtest(test_catching_decel_mpc test/test_catching_decel_mpc.cpp TIMEOUT 300)
-  target_link_libraries(test_catching_decel_mpc rtc_controllers)
-  target_include_directories(test_catching_decel_mpc PRIVATE
+  ament_add_gtest(test_catching_mpc_segment_core test/test_catching_mpc_segment_core.cpp TIMEOUT 300)
+  target_link_libraries(test_catching_mpc_segment_core rtc_controllers)
+  target_include_directories(test_catching_mpc_segment_core PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_catching_decel_mpc PRIVATE -Wno-mismatched-new-delete)
-  target_compile_definitions(test_catching_decel_mpc PRIVATE
+  target_compile_options(test_catching_mpc_segment_core PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_segment_core PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
@@ -571,18 +571,18 @@ if(BUILD_TESTING)
   # and this suite's timing table needs its own timeout: a smoke by default,
   # the full 200-sample table (plan MD-51) with RTC_DECEL_MPC_TIMING_FULL=1,
   # which takes several minutes. Same three allocation sensors and the same arm
-  # fixtures (decel_mpc_fixture.hpp) as the E1-F01 suite above.
-  ament_add_gtest(test_catching_decel_mpc_approach
-    test/test_catching_decel_mpc_approach.cpp TIMEOUT 1500)
-  target_link_libraries(test_catching_decel_mpc_approach rtc_controllers)
-  target_include_directories(test_catching_decel_mpc_approach PRIVATE
+  # fixtures (mpc_segment_core_fixture.hpp) as the E1-F01 suite above.
+  ament_add_gtest(test_catching_mpc_segment_core_approach
+    test/test_catching_mpc_segment_core_approach.cpp TIMEOUT 1500)
+  target_link_libraries(test_catching_mpc_segment_core_approach rtc_controllers)
+  target_include_directories(test_catching_mpc_segment_core_approach PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_catching_decel_mpc_approach PRIVATE -Wno-mismatched-new-delete)
-  target_compile_definitions(test_catching_decel_mpc_approach PRIVATE
+  target_compile_options(test_catching_mpc_segment_core_approach PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_segment_core_approach PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
-  # dynamic_catching MPC E1-F02 (#628): the decel node payload and its RT
+  # dynamic_catching MPC E1-F02 (#628): the segment node payload and its RT
   # sampler. Sample() calls into pinocchio's shared object (FK), so its
   # allocation claim needs the C-level malloc gate as well as operator new;
   # the informational CLIK residual drives rtc_tsid's ClikReferenceGenerator.
@@ -594,16 +594,20 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_node_follower PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching MPC E1-F03 (#629): the planner.decel_mpc keys and the RT's
-  # decel admission / switch rules. Pure functions — no model, no solver. The
-  # decel planner itself is test_catching_approach_planner / _cycle below.
-  ament_add_gtest(test_catching_decel_planner test/test_catching_decel_planner.cpp)
-  target_link_libraries(test_catching_decel_planner rtc_controllers)
-  target_include_directories(test_catching_decel_planner PRIVATE ${rtc_base_test_include})
+  # dynamic_catching MPC E1-F03 (#629): the planner.decel_mpc keys, and (the
+  # second target) the RT's segment admission / switch rules. Pure functions —
+  # no model, no solver. The MPC segment planner itself is
+  # test_catching_approach_planner / _cycle below.
+  ament_add_gtest(test_catching_mpc_segment_params test/test_catching_mpc_segment_params.cpp)
+  target_link_libraries(test_catching_mpc_segment_params rtc_controllers)
+  target_include_directories(test_catching_mpc_segment_params PRIVATE ${rtc_base_test_include})
+  ament_add_gtest(test_catching_segment_admission test/test_catching_segment_admission.cpp)
+  target_link_libraries(test_catching_segment_admission rtc_controllers)
+  target_include_directories(test_catching_segment_admission PRIVATE ${rtc_base_test_include})
 
-  # dynamic_catching MPC E1-F08 (#661): the decel planner's APPROACH–stop
+  # dynamic_catching MPC E1-F08 (#661): the MPC segment planner's APPROACH–stop
   # solves on a fake clock (PlanFirst, Replan, the ball target, the publish
-  # gates, the allocation boundary). Not E1-F07's test_catching_decel_mpc_approach
+  # gates, the allocation boundary). Not E1-F07's test_catching_mpc_segment_core_approach
   # (the core alone). C-level malloc gate: one TU per binary.
   ament_add_gtest(test_catching_approach_planner test/test_catching_approach_planner.cpp
     TIMEOUT 300)
@@ -661,11 +665,11 @@ if(BUILD_TESTING)
   # against an independent DLS (G3-I runtime half), judgement vs rank gates,
   # settle, budget, switching/freeze, G3-K (a full search allocates nothing),
   # and the R-2 timing record. Needs the URDF fixtures, hence the extra dir.
-  ament_add_gtest(test_catching_planner_search test/test_catching_planner_search.cpp)
-  target_link_libraries(test_catching_planner_search rtc_controllers)
-  target_include_directories(test_catching_planner_search PRIVATE
+  ament_add_gtest(test_catching_grid_catch_search test/test_catching_grid_catch_search.cpp)
+  target_link_libraries(test_catching_grid_catch_search rtc_controllers)
+  target_include_directories(test_catching_grid_catch_search PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
-  target_compile_options(test_catching_planner_search PRIVATE -Wno-mismatched-new-delete)
+  target_compile_options(test_catching_grid_catch_search PRIVATE -Wno-mismatched-new-delete)
 
   # dynamic_catching S6-C: γ rollout — the L3 §4.8 table through the runtime
   # sampler (G3-B), the choice rule, coarse-to-fine, and no allocation (G3-K).
@@ -677,7 +681,7 @@ if(BUILD_TESTING)
 
   # ── Parallel ctest ─────────────────────────────────────────────────────────
   # colcon.pkg runs this package's tests four at a time (48 s -> 23 s; the two
-  # decel-MPC suites are 34 s of it and now overlap). No test here opens a DDS
+  # segment-MPC suites are 34 s of it and now overlap). No test here opens a DDS
   # participant or writes outside its own result file, so none needs a lock.
   # The exception is a test that ASSERTS a measured wall-clock budget: it must
   # not share the cores with its siblings, and RUN_SERIAL gives it the box it

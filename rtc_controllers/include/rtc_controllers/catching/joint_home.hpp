@@ -7,7 +7,7 @@
 // was never built; this replaces it.
 //
 // THE LAW, per joint, on the controller's CARRIED command (q, q̇) — the same
-// state the abort ramp (JointSpaceDecelStep) integrates, so the two hand over
+// state the abort ramp (JointSpaceStopStep) integrates, so the two hand over
 // without a step:
 //
 //   d      = q* − q                                (q* clamped into the box)
@@ -33,7 +33,7 @@
 //
 // Pure numeric core: no allocation, noexcept, fail-closed. A non-finite input
 // on a joint leaves that joint untouched and reports the step incomplete, like
-// JointSpaceDecelStep — "arrived" must never be the answer for a joint whose
+// JointSpaceStopStep — "arrived" must never be the answer for a joint whose
 // command is not a number.
 #pragma once
 

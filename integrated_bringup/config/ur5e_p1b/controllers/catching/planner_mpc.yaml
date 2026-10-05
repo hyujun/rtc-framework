@@ -34,7 +34,7 @@ demo_catching_controller:
           blocks: [1, 1, 2, 3]
         approach:
           # The pre-catch part (MD-54): up to n_pre_max intervals of dt_pre_s
-          # before t_c. 0 = no decel planner — mode: mpc then parks (MD-70).
+          # before t_c. 0 = no MPC segment planner — mode: mpc then parks (MD-70).
           n_pre_max: 6
           dt_pre_s: 0.1
           # The first solve assumes the arm rests at its wait pose; above this
@@ -140,7 +140,7 @@ demo_catching_controller:
           delta_tr: 0.1
           # Bound on |qd_N| and |qdd_N| of a supplied reference [rad/s, rad/s^2];
           # must exceed solver.eps_abs (a shifted previous solution is at rest
-          # only to eps_abs) and stay <= 1e-3 (kDecelRestTol: the RT refuses a
+          # only to eps_abs) and stay <= 1e-3 (kSegmentRestTol: the RT refuses a
           # published node N that rests looser than that). The third "rest tol" beside approach.rest_tol and
           # the planner's own admission tolerance.
           reference_rest_tol: 1.0e-4

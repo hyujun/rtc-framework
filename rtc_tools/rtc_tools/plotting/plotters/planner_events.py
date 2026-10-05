@@ -48,7 +48,7 @@ import numpy as np
 OUTCOME_ORDER = ("idle", "no_input", "published", "superseded", "held", "unknown")
 
 # rtc::catching::SwitchDecisionName order (rtc_controllers/catching/
-# planner_search.hpp).
+# grid_catch_search.hpp).
 DECISION_ORDER = (
     "no_current",
     "replaced",
@@ -60,11 +60,11 @@ DECISION_ORDER = (
     "unknown",
 )
 
-# rtc::catching DecelKindName order (planner_events_csv.hpp). `unknown` is the
+# rtc::catching SegmentKindName order (planner_events_csv.hpp). `unknown` is the
 # trailing slot `_categorical_codes` maps unrecognised names to.
 DECEL_KIND_ORDER = ("none", "first", "same", "advance", "stop", "unknown")
 
-# DecelOutcomeName order (rtc_controllers/src/catching/decel_planner.cpp), plus
+# SegmentOutcomeName order (rtc_controllers/src/catching/mpc_segment_planner.cpp), plus
 # `not_due`: the stop-only planner's wait, in logs from before it was removed
 # (MPC plan MD-70).
 DECEL_OUTCOME_ORDER = (
@@ -91,7 +91,7 @@ DECEL_OUTCOME_ORDER = (
     "unknown",
 )
 
-# Outcomes of a decel step that solved nothing (DecelStepWorthRecording in
+# Outcomes of a decel step that solved nothing (SegmentStepWorthRecording in
 # planner_events_csv.hpp, with the removed `not_due`).
 _DECEL_WAITED = ("off", "not_due", "up_to_date", "past_replan_window")
 
@@ -109,7 +109,7 @@ _DECEL_KIND_COLOURS = {
 # Candidate funnel, in the order candidates are narrowed (S6-B decision E).
 FUNNEL_COLUMNS = ("n_in_window", "n_ik", "n_pass")
 
-# JudgeReject order (rtc_controllers/catching/planner_search.hpp).
+# JudgeReject order (rtc_controllers/catching/grid_catch_search.hpp).
 REJECT_COLUMNS = (
     "rej_input",
     "rej_ik",
@@ -118,7 +118,7 @@ REJECT_COLUMNS = (
     "rej_not_evaluated",
 )
 
-# RankGateBit order (rtc_controllers/catching/planner_search.hpp). A `1`
+# RankGateBit order (rtc_controllers/catching/grid_catch_search.hpp). A `1`
 # means that gate FAILED for the chosen candidate, not that it passed.
 # `rank_rollout` (§4.8) is the whole-interval rollout check: no (gamma, T_w)
 # on the grid passed it.

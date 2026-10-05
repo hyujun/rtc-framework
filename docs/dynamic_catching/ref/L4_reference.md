@@ -120,7 +120,7 @@ $$\exists P\succ0,\ \alpha>0:\ P\mathcal A_k+\mathcal A_k^\top P\preceq-2\alpha 
 |---|---|---|
 | 탐색의 포구 자세 IK (`CatchPoseIk`, L3 §4.2) | 공통 | catch frame LOCAL 표현의 $e_a^C$ — 5 행 과제의 회전 2 행 |
 | RT 의 CLIK 5 행 과제 (`ClikReferenceGenerator::Compute(…, PositionAxisTarget, …)`, L5 §4.2) | 공통 | 회전 2 행의 기준 $S R_{WC}^\top(K_ae_a+\omega_{ff})$. 축 목표는 `closed_form` 에서 `PlanSnapshot` 의 $a_d$ ($\omega_{ff}=0$), `mpc` 에서 구간의 관절 노드를 FK 한 catch frame 의 $z$ 축 (각속도 feedforward 포함) |
-| MPC 코어의 포구 노드 접근축 항 (`decel_mpc.cpp`) | `mpc` | $e_a$ 와 $J_a$ (`AxisAlignJacobian`) 로 선형화한 비용 — 식은 formulation |
+| MPC 코어의 포구 노드 접근축 항 (`mpc_segment_core.cpp`) | `mpc` | $e_a$ 와 $J_a$ (`AxisAlignJacobian`) 로 선형화한 비용 — 식은 formulation |
 
 손바닥 바깥 법선 $z=R_{WC}\hat e_z$ (W), 목표 $a_d=-\hat v_O(t_c)$. 둘 다 단위벡터다.
 

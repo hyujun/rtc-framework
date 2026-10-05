@@ -2,7 +2,7 @@
 
 이 문서는 현재 구현의 **계획기 층** 을 표현한다 — 포구 후보의 탐색 (포구 시각 $t_c$ · 포구점 $p_c$ · 접근축 $a_d$ · 포구 자세 $q^\ast$ · γ 프로파일) 과 그 결과의 게시다.
 
-- **planner 는 둘이다**: `closed_form` 과 `mpc` (`supervisor.decel.mode` 가 고른다. 출하 값은 두 로봇 모두 `mpc`). **탐색 (`PlannerSearch`) 은 두 planner 공통**이고, 둘은 탐색 뒤에 decel 층 (`DecelPlanner`) 이 붙느냐로 갈린다 (§4.1). 각 절의 머리에 적용 범위 — **공통 / closed_form 전용 / mpc 전용** — 를 적는다
+- **planner 는 둘이다**: `closed_form` 과 `mpc` (`supervisor.decel.mode` 가 고른다. 출하 값은 두 로봇 모두 `mpc`). **탐색 (`GridCatchSearch`) 은 두 planner 공통**이고, 둘은 탐색 뒤에 구간 층 (`MpcSegmentPlanner`) 이 붙느냐로 갈린다 (§4.1). 각 절의 머리에 적용 범위 — **공통 / closed_form 전용 / mpc 전용** — 를 적는다
 - `mpc` 의 구간 계획 (APPROACH–정지 MPC) 의 수학은 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) 가 갖는다. 이 문서는 탐색이 낸 후보가 거기서 어떻게 쓰이는지만 가리킨다 (§4.1)
 - 코드: 탐색 코어 (순수 수치, ROS 의존 없음) 는 `rtc_controllers/{include,src}/…/catching/` (namespace `rtc::catching`), 계획기 스레드의 소유와 YAML 은 `integrated_bringup` 의 `controllers/catching/`. 한 wake (`PlannerCycle`) 는 탐색과 구간 계획기를 추상 interface `CatchSearch` · `SegmentPlanner` 로만 부른다 (§4.1)
 
@@ -16,7 +16,7 @@
 - γ 프로파일 $(\gamma_f,T_w)$, 손 폐쇄 명령 시각 $t_{cmd}$
 - 유효성과, plan 이 없을 때의 사유
 
-`mpc` 에서는 유효한 plan 을 그 plan 의 첫 MPC 구간 (`DecelPlanSnapshot`) 과 **한 쌍으로** 게시한다 (§5.3).
+`mpc` 에서는 유효한 plan 을 그 plan 의 첫 MPC 구간 (`SegmentSnapshot`) 과 **한 쌍으로** 게시한다 (§5.3).
 
 비범위: 실행 (`closed_form`: L4/L5, `mpc`: MPC 구간의 추종 — formulation · L7), 모드 전환 (L7), MPC 구간 계획기의 수학 (formulation).
 
@@ -51,7 +51,7 @@
 
 상대시각은 수치 코어 경계에서만 만든다. 비교는 타입별 오버로드로만 한다 (`time_types.hpp`) — 원점이 다른 상대시각끼리 비교하지 않기 위해서다.
 
-후보 하나에 계산을 적용하는 순서 (런타임 `PlannerSearch::Plan`, 연산량이 싼 것부터):
+후보 하나에 계산을 적용하는 순서 (런타임 `GridCatchSearch::Plan`, 연산량이 싼 것부터):
 
 $$\text{입력 · §4.9 작업공간}(p_c)\ \cdot\ \text{§4.4 불확실성}\to\text{§4.2 IK · manipulability (D-18)}\to\text{§4.3 도달시간}\to\text{§4.5 γ 창}\to\text{§4.8 rollout}\ (\gamma_f)\to\text{§4.9 정지점}(\gamma_f)\to\text{§4.6 오차 예산}(\gamma_f)$$
 
@@ -61,23 +61,23 @@ rollout 이 정지점과 오차 예산보다 **먼저** 다 — 둘 다 rollout 
 
 판정 게이트에서 탈락한 후보는 뒤 단계를 계산하지 않고 탈락 사유를 기록한다 (아래 "런타임 판정/순위 분리"). 통과한 후보 중 §4.10 규칙으로 하나를 고르고, `closed_form` 에서는 **§4.7 히스테리시스**로 현재 plan과 비교한다. 후보가 하나도 남지 않으면 plan 없음(포기)이며, 사유 코드를 함께 기록한다.
 
-**런타임 판정/순위 분리 (D-27).** 오프라인 지도는 자기가 계산하는 게이트를 **엄격한** 필터로 쓴다. 런타임 계획기 (`PlannerSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) · `planner.workspace.catch_box` 안의 $p_c$ 와 $p_{stop}$ — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가, 어디서 멈추는가의 문제). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `planner_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·작업공간·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창·정지점은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태).
+**런타임 판정/순위 분리 (D-27).** 오프라인 지도는 자기가 계산하는 게이트를 **엄격한** 필터로 쓴다. 런타임 계획기 (`GridCatchSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) · `planner.workspace.catch_box` 안의 $p_c$ 와 $p_{stop}$ — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가, 어디서 멈추는가의 문제). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `grid_catch_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·작업공간·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창·정지점은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태).
 
 런타임의 한 사이클은 이 순서로 돈다: 창 안의 전 후보에 싼 항 → 사전 점수 상위 후보마다 IK (+ manipulability) → $\dot q^u$ 와 `JudgeRankGates` (도달시간 · γ 창) → rollout 이 $(\gamma_f,T_w)$ 를 고름 → 그 $\gamma_f$ 로 $p_{stop}$ 판정 → 오차 예산 → 점수.
 
 **탐색 방식 `[확정 A-4]`.** [R1]은 $(q_c,t_c)$를 동시에 푸는 NLP를 썼다. 본 구현은 1차원 시간 탐색 + IK 다.
 
-- 계획기 코어는 "입력 스냅샷(궤적 + 공분산 + 로봇 상태) → `PlanSnapshot`" **단일 진입 함수**다 (`CatchSearch::Plan` — 구현은 `PlannerSearch::Plan`. `PlannerCycle::PlanOnce` 가 부른다). 스레드(§5.3), 입출력 SeqLock, RT 쪽 소비(L4·L7)는 탐색 전략과 독립이다
-- 탐색 구현은 하나 (`PlannerSearch`) 다. `PlannerCycle` 은 그것을 추상 interface `CatchSearch` (`catch_search.hpp` — `Plan` · `Monitor` · `NotePublished` · `ResetTrial`) 의 포인터로 소유하고, wake 는 interface 만 부른다. 구체 타입을 아는 것은 configure 경로 (`ConfigureSearch`) 뿐이다
+- 계획기 코어는 "입력 스냅샷(궤적 + 공분산 + 로봇 상태) → `PlanSnapshot`" **단일 진입 함수**다 (`CatchSearch::Plan` — 구현은 `GridCatchSearch::Plan`. `PlannerCycle::PlanOnce` 가 부른다). 스레드(§5.3), 입출력 SeqLock, RT 쪽 소비(L4·L7)는 탐색 전략과 독립이다
+- 탐색 구현은 하나 (`GridCatchSearch`) 다. `PlannerCycle` 은 그것을 추상 interface `CatchSearch` (`catch_search.hpp` — `Plan` · `Monitor` · `NotePublished` · `ResetTrial`) 의 포인터로 소유하고, wake 는 interface 만 부른다. 구체 타입을 아는 것은 configure 경로 (`ConfigureGridCatchSearch`) 뿐이다
 
-**두 planner (`closed_form` / `mpc`).** 탐색은 공통이다. planner 는 `supervisor.decel.mode` 가 고르는데, 코드에서는 planner 마다 클래스가 있는 것이 아니라 `PlannerCycle` 에 **구간 계획기가 꽂혔는가** (`DecelActive()` — decel box 가 묶여 있고 추상 interface `SegmentPlanner` 의 구현이 꽂혀 있다) 로 갈린다. `SegmentPlanner` (`segment_planner.hpp`) 의 구현은 지금 `DecelPlanner` 하나이고, 아래의 `DecelPlanner::…` 호출은 모두 그 interface 를 거친다.
+**두 planner (`closed_form` / `mpc`).** 탐색은 공통이다. planner 는 `supervisor.decel.mode` 가 고르는데, 코드에서는 planner 마다 클래스가 있는 것이 아니라 `PlannerCycle` 에 **구간 계획기가 꽂혔는가** (`SegmentActive()` — segment box 가 묶여 있고 추상 interface `SegmentPlanner` 의 구현이 꽂혀 있다) 로 갈린다. `SegmentPlanner` (`segment_planner.hpp`) 의 구현은 지금 `MpcSegmentPlanner` 하나이고, 아래의 `MpcSegmentPlanner::…` 호출은 모두 그 interface 를 거친다.
 
-- **꽂힌 것이 구성된 것이다.** `ConfigureSearch` · `ConfigureDecel` 은 매번 새 객체를 만들어 구성에 성공했을 때만 꽂고, 실패와 `ClearSearch` · `ClearDecel` 은 비운다 — cycle 은 구성되지 않은 구현을 들고 있지 않다. 호출자가 만든 구현은 `InstallSearch` · `InstallSegmentPlanner` 로 꽂는다 (configure 에서만 — 계획기 스레드가 멈춰 있을 때). 이 규칙은 두 `Configure` 가 전체 reset 이라는 데 기댄다 — 한 번 쓴 객체를 다시 구성한 것이 새 객체와 같은 답을 낸다 (`AReconfiguredSearchIsANewOne` · `AReconfiguredPlannerIsANewOne`)
-- **공의 예측은 view 로 건넨다.** 구간 계획기는 $t_c$ 의 공 한 점이 아니라 그 wake 가 읽은 궤적 · 공분산과 둘의 짝 여부 (`BallPrediction`) 를 받는다. 거기서 무엇을 뽑는가 — `mpc` 는 $t_c$ 의 공 (`MakeDecelBallTarget`) — 는 구현의 일이다. cycle 이 정하는 것은 그 wake 에 **따르는 plan 의 공이 있는가** 뿐이다: box 의 궤적이 그 plan 의 track 이 아니면, 그리고 포구 뒤에는, 빈 view 를 넘긴다
-- 스레드 · RT 계약 (계획기 스레드에서만 불린다, 할당 · 잠금 · 로그 · 예외 없음) 과 cycle 이 기록에서 되읽는 필드 (`SearchStats::publish`, 재계획의 `DecelRecord::source_seq`) 는 두 interface 헤더의 머리 주석이 갖는다
+- **꽂힌 것이 구성된 것이다.** `ConfigureGridCatchSearch` · `ConfigureMpcSegmentPlanner` 은 매번 새 객체를 만들어 구성에 성공했을 때만 꽂고, 실패와 `ClearSearch` · `ClearSegmentPlanner` 은 비운다 — cycle 은 구성되지 않은 구현을 들고 있지 않다. 호출자가 만든 구현은 `InstallSearch` · `InstallSegmentPlanner` 로 꽂는다 (configure 에서만 — 계획기 스레드가 멈춰 있을 때). 이 규칙은 두 `Configure` 가 전체 reset 이라는 데 기댄다 — 한 번 쓴 객체를 다시 구성한 것이 새 객체와 같은 답을 낸다 (`AReconfiguredSearchIsANewOne` · `AReconfiguredPlannerIsANewOne`)
+- **공의 예측은 view 로 건넨다.** 구간 계획기는 $t_c$ 의 공 한 점이 아니라 그 wake 가 읽은 궤적 · 공분산과 둘의 짝 여부 (`BallPrediction`) 를 받는다. 거기서 무엇을 뽑는가 — `mpc` 는 $t_c$ 의 공 (`MakeMpcSegmentBallTarget`) — 는 구현의 일이다. cycle 이 정하는 것은 그 wake 에 **따르는 plan 의 공이 있는가** 뿐이다: box 의 궤적이 그 plan 의 track 이 아니면, 그리고 포구 뒤에는, 빈 view 를 넘긴다
+- 스레드 · RT 계약 (계획기 스레드에서만 불린다, 할당 · 잠금 · 로그 · 예외 없음) 과 cycle 이 기록에서 되읽는 필드 (`SearchStats::publish`, 재계획의 `SegmentRecord::source_seq`) 는 두 interface 헤더의 머리 주석이 갖는다
 
 - **`closed_form`**: 탐색이 낸 plan 을 그대로 게시한다. RT 는 그 plan 의 $p_c$ 와 γ 프로파일로 soft-catch DS (L4) 를 돌려 접근하고, $t_c$ 뒤에는 상수 감속의 가상 목표를 따른다 (L7 §4.3). APPROACH 동안에도 탐색이 계속 돌며 §4.7 의 교체 규칙으로 plan 을 바꾼다
-- **`mpc`**: 탐색이 유효한 plan 을 내면 같은 wake 에서 그 plan 의 첫 구간을 풀어 (`DecelPlanner::PlanFirst`) 둘을 한 쌍으로 게시한다. 구간이 보류되면 plan 도 게시하지 않는다. RT 는 plan 을 첫 구간과 함께만 채택하고, APPROACH 부터 정지 끝까지 관절 노드 구간을 따른다 — **RT 는 soft-catch DS 를 돌리지 않는다**. RT 가 plan 을 따르는 동안 탐색은 건너뛰고 구간의 재계획 (`DecelPlanner::Replan`) 만 한다. 따라서 plan 의 교체 (§4.7) 가 없다
+- **`mpc`**: 탐색이 유효한 plan 을 내면 같은 wake 에서 그 plan 의 첫 구간을 풀어 (`MpcSegmentPlanner::PlanFirst`) 둘을 한 쌍으로 게시한다. 구간이 보류되면 plan 도 게시하지 않는다. RT 는 plan 을 첫 구간과 함께만 채택하고, APPROACH 부터 정지 끝까지 관절 노드 구간을 따른다 — **RT 는 soft-catch DS 를 돌리지 않는다**. RT 가 plan 을 따르는 동안 탐색은 건너뛰고 구간의 재계획 (`MpcSegmentPlanner::Replan`) 만 한다. 따라서 plan 의 교체 (§4.7) 가 없다
 - **탐색이 낸 후보가 `mpc` 에서 쓰이는 방식.** plan 의 $t_c$ 는 구간 격자의 닻이다 (포구 전 $t_c-j\Delta_{pre}$, 정지 $t_c+k\Delta_s$). 첫 풀이는 plan 의 $p_c$ · $v_c$ · $a_d$ 를 포구 노드의 목표 (공 위치 · 속도 · 접근축) 로, $q^\ast$ 를 선형화 기준 (대기 자세에서 $q^\ast$ 로 가는 관절별 최소 jerk 도달) 의 목표로 쓴다. 포구 전의 재계획은 plan 이 아니라 그 wake 의 최신 예측에서 $t_c$ 의 공을 다시 읽고, 포구 뒤의 재계획은 공을 읽지 않는다. plan 의 γ 프로파일 $(\gamma_f,T_w)$ 은 `mpc` 의 실행에 쓰이지 않는다 — 탐색의 순위와 게이트에만 쓰이고, MPC 의 속도 목표 비는 `planner.decel_mpc.catch.gamma_ref` 다. 식은 formulation 이 갖는다
 
 ### 4.2 5-DoF 포구 자세와 IK
@@ -226,7 +226,7 @@ $t_k$ 는 `BallTime`, $now$ 는 `NowReal` (L0 §4.5). 팔 명령이 $T_{arm}$ �
 
 $$\sigma_{\max}(t_k)=\sqrt{\lambda_{\max}\big(\Sigma_{pp}(t_k)\big)}\ \le\ \kappa_\sigma\,r_{cap}$$
 
-**$\Sigma_{pp}$는 vision이 준 값이다.** 각 샘플의 6×6 공분산에서 위치 3×3 블록을 꺼내 대칭화한 뒤 최대 고윳값을 쓴다(`Eigen::SelfAdjointEigenSolver::computeDirect`, 고정 크기·무할당 — `PlannerSearch::SigmaMax`). 제어 PC가 공분산을 전파하지 않는다. 공분산을 모르는 후보 (비유한 값, 또는 궤적과 token 이 다른 공분산) 는 이 게이트의 실패다.
+**$\Sigma_{pp}$는 vision이 준 값이다.** 각 샘플의 6×6 공분산에서 위치 3×3 블록을 꺼내 대칭화한 뒤 최대 고윳값을 쓴다(`Eigen::SelfAdjointEigenSolver::computeDirect`, 고정 크기·무할당 — `GridCatchSearch::SigmaMax`). 제어 PC가 공분산을 전파하지 않는다. 공분산을 모르는 후보 (비유한 값, 또는 궤적과 token 이 다른 공분산) 는 이 게이트의 실패다.
 
 `PointCloud2`에는 트랙 상태(`STATUS_INITIALIZING` 등)가 없으므로(마스터 §5.1), "초기화 직후 트랙 탈락"은 다음으로 대체한다.
 
@@ -316,8 +316,8 @@ $\sigma_c$는 **commit 시점 메시지**의 $t_c$ 샘플 공분산에서, $\sig
 
 commit 시점에는 $\sigma_\ell$ 을 아직 모른다. 경로는 둘이고, **판정에 쓰는 것은 경로 1 뿐이다**.
 
-1. **계획 단계**: 보수적으로 $\sigma_\ell=\sigma_c$ 로 둔다 (`PlannerSearch` 의 `CatchErrorSigma(γ_f, σ, σ, …)`). 그러면 식이 $\sigma_c^2$ 로 환원되는데, 이것은 **직교성 가정 없이도 상한**이다 — $\mathrm{Var}(A+\lambda B)$ 는 $\lambda=1-\gamma$ 의 볼록 2차식이라 $\lambda\in[0,1]$ 에서 최대가 끝점이고, $\sigma_\ell\le\sigma_c$ 인 한 그 값이 $\sigma_c^2$ 다.
-2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신한다 (`PlannerSearch::Monitor`). **이 값으로 abort 를 판단하지 않는다** — $\sigma_\ell$ 은 `planner_events.csv` 의 `sigma_l` 열로 기록만 하고, 동결 뒤의 낡은 입력은 steady 수신 나이로 판정한다 (L7). 따라서 직교 분해의 $\gamma$ 의존 이득은 어느 판정에도 쓰이지 않는다. 다시 보는 것은 실기 공분산 검증 수단을 정할 때다 (#613).
+1. **계획 단계**: 보수적으로 $\sigma_\ell=\sigma_c$ 로 둔다 (`GridCatchSearch` 의 `CatchErrorSigma(γ_f, σ, σ, …)`). 그러면 식이 $\sigma_c^2$ 로 환원되는데, 이것은 **직교성 가정 없이도 상한**이다 — $\mathrm{Var}(A+\lambda B)$ 는 $\lambda=1-\gamma$ 의 볼록 2차식이라 $\lambda\in[0,1]$ 에서 최대가 끝점이고, $\sigma_\ell\le\sigma_c$ 인 한 그 값이 $\sigma_c^2$ 다.
+2. **동결 후 감시**(§5.3 `monitorOnly`): 최신 메시지의 $t_c$ 샘플 공분산으로 $\sigma_\ell$ 을 갱신한다 (`GridCatchSearch::Monitor`). **이 값으로 abort 를 판단하지 않는다** — $\sigma_\ell$ 은 `planner_events.csv` 의 `sigma_l` 열로 기록만 하고, 동결 뒤의 낡은 입력은 steady 수신 나이로 판정한다 (L7). 따라서 직교 분해의 $\gamma$ 의존 이득은 어느 판정에도 쓰이지 않는다. 다시 보는 것은 실기 공분산 검증 수단을 정할 때다 (#613).
 
 **직교성이 깨질 때의 방향.** 정확한 오차항은 $2\gamma(1-\gamma)\mathrm{Cov}(A,B)$ 이고 $\gamma=0,1$ 에서 사라져 $\gamma=0.5$ 에서 최대다. **새 측정을 과소 반영하는(sluggish) 예측기** — 측정잡음 과대설정, 공정잡음 과소설정 같은 흔한 튜닝 실패 — 는 $\mathrm{Cov}(A,B)>0$ 을 만들어 위 식이 $\sigma_{gap}$ 을 **과소평가**하게 한다. 반대로 $\mathrm{Cov}(A,B)<0$ 이면 위 식은 $\sigma_{gap}$ 을 **과대평가**한다 (보수적).
 
@@ -352,7 +352,7 @@ $\sigma$ 는 스칼라로 썼지만 실제는 3×3이다. §4.4의 $\lambda_{\ma
 
 $$\omega^2(1-\gamma)\Vert\Delta p_c\Vert+\bigl(2\zeta\omega|\dot\gamma|+|\ddot\gamma|\bigr)\Vert o-p_c\Vert+2|\dot\gamma|\,\Vert v_o\Vert\;\le\;\eta_{jump}\,a_{\max}$$
 
-   $p_c$ 는 **옛** 포구점, $\omega,\zeta,a_{\max}$ 는 L4 기준의 값이다 (`SwitchAccelStepBound`). 좌변은 **RT 가 이 사이클의 게시를 채택할 수 있는 구간** $[now_{lead},\,now_{lead}+$`budget_s`$+2h]$ 의 최악값으로 판정한다 (`planner.switch.samples` 개의 순간에서 평가 — `PlannerSearch::SwitchStep`): $\gamma,\dot\gamma,\ddot\gamma$ 는 RT 가 실제로 돌리는 램프 (`PlannerRtState.ramp_*` — RT 가 채택하며 바꾼 g0·t0 포함) 를 그 구간에서 평가한 값, $(o,v_o)$ 는 같은 시각의 공 대상 (rollout 과 같은 샘플러) 이다. 스냅샷 tick 의 $\dot\gamma=\ddot\gamma=0$ 은 램프 시작 직전일 수 있어 채택 시점의 값이 아니다. 램프 정보가 없으면 스냅샷 값을 쓴다. RT 는 교체 plan 을 γ 는 이어서, 5차 램프는 **다시 시작해서** ($\dot\gamma=\ddot\gamma=0$) 채택하므로 실제 계단은 $\Delta u=\omega^2(1-\gamma)\Delta p_c-(2\zeta\omega\dot\gamma+\ddot\gamma)(o-p_c)-2\dot\gamma v_o$ 이고, 위 식은 그 삼각 상계다. 램프 항은 $\Vert\Delta p_c\Vert$ 가 아니라 $\Vert o-p_c\Vert$ 에 비례하므로 **램프가 도는 동안의 교체는 거의 다 거부된다** — 램프를 이어 붙이는 채택 ($\dot\gamma,\ddot\gamma$ 연속) 은 구현에 없다. 램프가 멈춘 구간 ($\dot\gamma=\ddot\gamma=0$) 에서는 $\Vert\Delta p_c\Vert\le\eta_{jump}a_{\max}/(\omega^2(1-\gamma))$ 다. 공 대상을 샘플할 수 없는 순간이 있으면 판정 불가 (거부) 다.
+   $p_c$ 는 **옛** 포구점, $\omega,\zeta,a_{\max}$ 는 L4 기준의 값이다 (`SwitchAccelStepBound`). 좌변은 **RT 가 이 사이클의 게시를 채택할 수 있는 구간** $[now_{lead},\,now_{lead}+$`budget_s`$+2h]$ 의 최악값으로 판정한다 (`planner.switch.samples` 개의 순간에서 평가 — `GridCatchSearch::SwitchStep`): $\gamma,\dot\gamma,\ddot\gamma$ 는 RT 가 실제로 돌리는 램프 (`PlannerRtState.ramp_*` — RT 가 채택하며 바꾼 g0·t0 포함) 를 그 구간에서 평가한 값, $(o,v_o)$ 는 같은 시각의 공 대상 (rollout 과 같은 샘플러) 이다. 스냅샷 tick 의 $\dot\gamma=\ddot\gamma=0$ 은 램프 시작 직전일 수 있어 채택 시점의 값이 아니다. 램프 정보가 없으면 스냅샷 값을 쓴다. RT 는 교체 plan 을 γ 는 이어서, 5차 램프는 **다시 시작해서** ($\dot\gamma=\ddot\gamma=0$) 채택하므로 실제 계단은 $\Delta u=\omega^2(1-\gamma)\Delta p_c-(2\zeta\omega\dot\gamma+\ddot\gamma)(o-p_c)-2\dot\gamma v_o$ 이고, 위 식은 그 삼각 상계다. 램프 항은 $\Vert\Delta p_c\Vert$ 가 아니라 $\Vert o-p_c\Vert$ 에 비례하므로 **램프가 도는 동안의 교체는 거의 다 거부된다** — 램프를 이어 붙이는 채택 ($\dot\gamma,\ddot\gamma$ 연속) 은 구현에 없다. 램프가 멈춘 구간 ($\dot\gamma=\ddot\gamma=0$) 에서는 $\Vert\Delta p_c\Vert\le\eta_{jump}a_{\max}/(\omega^2(1-\gamma))$ 다. 공 대상을 샘플할 수 없는 순간이 있으면 판정 불가 (거부) 다.
 3. `COMMITTED` 이후에는 포구점을 교체하지 않는다(L7). 그 앞에서도 따르는 plan 의 $t_c$ 까지 `planner.freeze.T_freeze` 이내면 교체하지 않는다 (`held_freeze`).
 
 **런타임.**
@@ -424,7 +424,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 **적용: 공통** (commit 은 supervisor 의 것이고 두 planner 에서 같다).
 
 - commit 조건 (APPROACH→COMMITTED, L0 §4.5): $t_c-now_{real}\le T_{freeze}$. 비교 대상은 **실제 시각**이고, 팔 선행분은 $T_{freeze}$ 하한의 $T_{arm}$ 항이 흡수한다. **$T_{freeze}$ 의 하한**: 검증기 `CheckFreezeCoversClose` 가 $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ ($h$ = 제어 주기) 를 강제한다 (`lead_enable` 과 무관하게 $T_{arm}$ 을 읽는다). 계획기 후보 창 하한 (`planner.slice.t_lead_min` 이 없을 때) 과 RT 채택 거부 (g) 도 $T_{freeze}$ 다. 순위 게이트 `kRankCommitLead` 는 후보의 선행 시간이 $t_k-now\ge T_{close,tot}+T_{arm}+T_{margin}$ ($T_{margin}$ = `planner.time.margin`) 인지를 본다 — 이쪽은 $T_{freeze}$ 의 조건이 아니라 후보의 순위 조건이다. $T_{arm}$ 을 올리면 $T_{freeze}$ 하한도 함께 올라가고 그만큼 후보 창이 짧아진다
-- 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다. **단일 출처 (C-14).** 계획기(`planner_search.cpp`)와 oracle(`StoreOraclePlan`)은 `PlanSnapshot::t_cmd_ns` 를 각자 채운다 (oracle 은 $t_{cmd}=t_c$). 손 명령에 쓰는 값은 **손 시퀀서**가 COMMITTED 에서 동결된 $t_c$ 와 손 프로파일로 계산한 것 하나다 (`HandSequencer::Commit`, 접촉 판정 창도 같은 값) — `PlanSnapshot::t_cmd_ns` 는 계획기 기록·진단용일 뿐 손 명령에 쓰이지 않는다. 손 명령 발동은 L6 §4.3/§5.3 의 `HandCommandDueRounded`(R-CLOSE, L7 §4.1) 로 한다.
+- 손 폐쇄 명령 시각: $t_{cmd}=t_c-T_{close,e2e}$ (종단 간 실측값, L6 §4.1 — D-11 로 $T_{link}$ 를 따로 재지 않는다). 팔 지연은 L5 선행 보상으로 이미 흡수되므로 빼지 않는다. **단일 출처 (C-14).** 계획기(`grid_catch_search.cpp`)와 oracle(`StoreOraclePlan`)은 `PlanSnapshot::t_cmd_ns` 를 각자 채운다 (oracle 은 $t_{cmd}=t_c$). 손 명령에 쓰는 값은 **손 시퀀서**가 COMMITTED 에서 동결된 $t_c$ 와 손 프로파일로 계산한 것 하나다 (`HandSequencer::Commit`, 접촉 판정 창도 같은 값) — `PlanSnapshot::t_cmd_ns` 는 계획기 기록·진단용일 뿐 손 명령에 쓰이지 않는다. 손 명령 발동은 L6 §4.3/§5.3 의 `HandCommandDueRounded`(R-CLOSE, L7 §4.1) 로 한다.
 - **$T_{tick}$은 여기에 넣지 않는다.** §4.5의 $T_{close,tot}=T_{close,e2e}+T_{tick}$ 에서 $T_{tick}=h/2$ 는 틱 양자화 오차의 **worst-case 예산**이다. L6 §4.3의 반올림 규칙(가장 가까운 틱)을 쓰면 오차는 $\pm h/2$ 로 영평균이라 명령 시각 자체를 당길 이유가 없다. γ 창(예산)에는 들어가고 $t_{cmd}$(명령)에는 들어가지 않는다 — 두 곳의 역할이 다르다.
 - **시간 규약 `[확정 D-2]`.** $t_c$ 와 $t_{cmd}$ 는 모두 공의 **물리 시각** `BallTime` (절대 steady ns) 단일 정의다. "선행축 시각" 이나 "실제시각축 시각" 이라는 별도의 $t_c$ 는 없다 — 축은 시각 값이 아니라 **판정마다 비교하는 '지금'** 에 붙는다 (L0 §4.5): 손 명령은 $now\ge t_{cmd}$ (실제, 손은 선행 보상 없음), DECEL 진입은 $now_{lead}\ge t_c$, rollout·γ 프로파일은 $now_{lead}$.
 - [R2]는 접촉 직전 일정 시간부터 예측 갱신을 멈췄다. 본 구현의 동결은 포구점·γ에만 적용하고, L2의 실시간 추정은 계속 사용한다(§4.6 둘째 항).
@@ -446,9 +446,9 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 
 ### 5.2 `PlanSnapshot`
 
-**적용: 공통.** `mpc` 는 여기에 `DecelPlanSnapshot` (별도 SeqLock) 이 더해진다.
+**적용: 공통.** `mpc` 는 여기에 `SegmentSnapshot` (별도 SeqLock) 이 더해진다.
 
-계획기 → RT 전달은 `rtc::SeqLock<PlanSnapshot>` 이다. 정의는 `rtc_controllers/include/rtc_controllers/catching/trajectory.hpp` (`PlanSnapshot` · `ProvenanceToken` · `PlanReason` · `DecelPlanSnapshot`), RT 쪽 수락 규칙은 `planner_io.hpp` (`JudgePlan` · `JudgeDecelPlan`) 다. **SeqLock payload 는 trivially copyable 이어야 하므로 `PlanSnapshot` 은 POD 다** — Eigen 멤버 금지, 벡터는 `std::array<double, N>`, 시각은 절대 정수 ns. 필드의 뜻 가운데 헤더에 없는 규범:
+계획기 → RT 전달은 `rtc::SeqLock<PlanSnapshot>` 이다. 정의는 `rtc_controllers/include/rtc_controllers/catching/trajectory.hpp` (`PlanSnapshot` · `ProvenanceToken` · `PlanReason` · `SegmentSnapshot`), RT 쪽 수락 규칙은 `planner_io.hpp` (`JudgePlan` · `JudgeSegment`) 다. **SeqLock payload 는 trivially copyable 이어야 하므로 `PlanSnapshot` 은 POD 다** — Eigen 멤버 금지, 벡터는 `std::array<double, N>`, 시각은 절대 정수 ns. 필드의 뜻 가운데 헤더에 없는 규범:
 
 - provenance (`activation_generation` · `generation` · `snapshot_sequence` · `traj_recv_ns`) 는 중첩 `ProvenanceToken token` 안에 있다. 궤적 스냅샷 · 공분산 버퍼 · plan 이 같은 네 값을 싣는다 (D-22, D-23)
 - `t_c_ns` · `t_cmd_ns` 는 둘 다 `BallTime` 이다 (§4.11, D-2) — 상대시간·축 구분이 없다. `t_cmd_ns` 는 기록·진단용이고 손 명령에 쓰이지 않는다 (§4.11)
@@ -462,7 +462,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 
 **R-ADMIT (C-31).** **(g)** `t_c-now\le T_{freeze}` 이면 거부한다(`kTooLate`) — 이 조건이 없으면 $T_{freeze}$ 안의 $t_c$ 를 가진 plan 도 채택 다음 tick 에 곧바로 commit 하고, $t_c\le now$ 인 plan 은 몇 tick 만에 `DECEL` 까지 통과해 버린다. 파라미터 검증기는 `T_freeze ≥ T_close_e2e + T_arm + h` 를 강제한다(§4.11 의 코드 하한). fixture 는 `planner.freeze`(`T_freeze`)를 명시해야 한다 — 미지정이면 이 조건이 꺼진다.
 
-**`mpc` 의 쌍.** RT 는 TRACKING 에서 plan 을 그 첫 구간 (`DecelPlanSnapshot`) 과 **같은 tick 에 함께** 채택한다 — 구간이 수락 (`JudgeDecelPlan`) 되지 않으면 plan 도 받지 않는다 ("plan 없음" 과 같다). 그리고 `mpc` 에서는 APPROACH 중에 온 다른 plan 을 받지 않는다 (§4.7).
+**`mpc` 의 쌍.** RT 는 TRACKING 에서 plan 을 그 첫 구간 (`SegmentSnapshot`) 과 **같은 tick 에 함께** 채택한다 — 구간이 수락 (`JudgeSegment`) 되지 않으면 plan 도 받지 않는다 ("plan 없음" 과 같다). 그리고 `mpc` 에서는 APPROACH 중에 온 다른 plan 을 받지 않는다 (§4.7).
 
 계획기 쪽도 대칭으로 검사한다: 계산 시작 시 최신 token 을 한 번 읽고, 게시 직전에 다시 읽어 그 사이 대체됐으면 게시를 버린다. 궤적 스냅샷의 token 과 공분산 버퍼의 token 이 다르면(궤적 N ↔ 공분산 N−1 혼합 포함) 그 조합은 쓰지 않는다.
 
@@ -475,7 +475,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 - 클래스: `rtc::PeriodicRtThread` 의 **형제 subclass** (`rtc::mpc::MPCThread` 를 상속하지 않는다 — PlanSnapshot 을 `MPCSolution` 에 억지로 넣게 된다). 탐색 코어는 rtc_controllers `catching`, 스레드 소유는 `integrated_bringup` 바인딩 (D-1)
 - 기동 `[확정 D-7c]`: event 구동 — nrt 파서가 새 궤적을 수락하면 eventfd 로 깨운다. `WaitForNextTick` 은 eventfd 대기 + 제한 시간 (`planner.wake_timeout_s`) 이라, vision 이 조용해도 움직이는 RT 상태에 대해 다시 계획한다. eventfd 는 여러 신호를 한 번으로 합치므로(coalescing), 깨어난 신호 횟수와 무관하게 **항상 최신 스냅샷을 읽는다**. RT tick 은 eventfd 에 손대지 않는다
 - 수명: configure 에서 전 버퍼(궤적·공분산 버퍼, IK 작업 공간, rollout 상태, 진단 큐)를 할당하고, activate 에서 layout profile 게이트 → lazy spawn → `Resume`, deactivate 에서 `Pause`, **join 은 `on_cleanup` 에서** 한다. 계획기 스레드는 **한 configuration 의 것**이다 — 스레드가 설정보다 오래 살면 다음 설정 (예: oracle 로 재구성) 에서 resume 돼 box writer 가 둘이 된다. `Pause()` 는 요청 플래그만 세우고 진행 중인 iteration 을 멈추지 않으므로, `on_deactivate` 이후에도 plan 이 한 번 더 게시될 수 있다 — RT 쪽은 그 payload 의 `activation_generation` 이 지금 것과 다르면 소비하지 않는다 (D-23, §5.2 (b))
-- 데이터: RT → 계획기는 `rtc::SeqLock<PlannerRtState>` (activation generation · tick · 시각 · mode · 팔 명령 $q_c,\dot q_c$ · 대기 자세 · L4 기준 상태 $x,\dot x,\gamma,\dot\gamma,\ddot\gamma$ 와 돌고 있는 γ 램프 · 따르는 `plan_id` 와 $t_c$ · 따르는 / 대기 중인 구간 · 리셋 epoch) 이고 RT tick 이 **매 tick** Store 한다. 궤적 스냅샷은 nrt 파서가 게시한 SeqLock, **공분산은 계획기 쪽 버퍼에만** (A-3 — NaN(모름) 처리도 계획기 한 곳에서), 출력은 `rtc::SeqLock<PlanSnapshot>` 와 (`mpc`) `rtc::SeqLock<DecelPlanSnapshot>` 이다. box 마다 writer 는 하나다. 재무장 리셋 (L7 §4.8) 은 RT 가 리셋 epoch 을 올리고 reset floor 를 적는 것뿐이다. 끝난 시행을 위해 올라온 wake 신호는 따로 비우지 않는다 — 깨어날 때의 read 가 이미 소비하고, 그 시행용으로 계산된 plan 은 RT 가 reset floor 로 거른다. 리셋을 본 wake 도중에 올라온 신호는 **새 시행**의 궤적이므로 남겨 둔다 (비우면 새 시행의 첫 plan 이 wake timeout 만큼 늦는다)
+- 데이터: RT → 계획기는 `rtc::SeqLock<PlannerRtState>` (activation generation · tick · 시각 · mode · 팔 명령 $q_c,\dot q_c$ · 대기 자세 · L4 기준 상태 $x,\dot x,\gamma,\dot\gamma,\ddot\gamma$ 와 돌고 있는 γ 램프 · 따르는 `plan_id` 와 $t_c$ · 따르는 / 대기 중인 구간 · 리셋 epoch) 이고 RT tick 이 **매 tick** Store 한다. 궤적 스냅샷은 nrt 파서가 게시한 SeqLock, **공분산은 계획기 쪽 버퍼에만** (A-3 — NaN(모름) 처리도 계획기 한 곳에서), 출력은 `rtc::SeqLock<PlanSnapshot>` 와 (`mpc`) `rtc::SeqLock<SegmentSnapshot>` 이다. box 마다 writer 는 하나다. 재무장 리셋 (L7 §4.8) 은 RT 가 리셋 epoch 을 올리고 reset floor 를 적는 것뿐이다. 끝난 시행을 위해 올라온 wake 신호는 따로 비우지 않는다 — 깨어날 때의 read 가 이미 소비하고, 그 시행용으로 계산된 plan 은 RT 가 reset floor 로 거른다. 리셋을 본 wake 도중에 올라온 신호는 **새 시행**의 궤적이므로 남겨 둔다 (비우면 새 시행의 첫 plan 이 wake timeout 만큼 늦는다)
 - **RT-1~10 준수 코드:** 할당 0, `noexcept`, 락·블로킹 I/O 없음, 로깅 금지. 진단(후보 수, 게이트별 탈락, 실행시간, 선택 결과)은 `rtc::SpscQueue` 로 넘기고 aux 타이머가 drain 해 CSV (`planner_events.csv`) 로 쓴다. 그러면 FIFO/OTHER 는 thread layout 값 하나로 바뀌고 코드가 바뀌지 않는다
 - 배치: thread layout 의 **`mpc` role** 을 쓴다 (`SelectThreadConfigs().mpc.main`, 스레드 이름 `mpc_main`). 계획기는 MPC 와 같은 역할이고 CM 이 active 컨트롤러를 하나만 두므로 같은 코어에 동시에 도는 FIFO 는 하나다. activate 게이트: `planner.enabled` 이고 layout profile 이 `mpc` role 의 코어를 돌려준 것 (`mpc_off`) 이면 `on_activate` 가 FAILURE 다
 - 스케줄러: `mpc` role 의 설정을 따른다 (D-7a). 제어 PC 에서의 FIFO · OTHER 비교 측정 (G3-J) 은 하지 않았다
@@ -486,7 +486,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 
 **한 번 깨어났을 때의 순서** (`PlannerCycle::Run`):
 
-1. RT 상태 (`PlannerRtState`) 읽기 — 이것이 계획할지를 정한다. 리셋 epoch 이 바뀌었으면 시행 상태를 버린다 (탐색의 현재 plan · settle 카운트, `mpc` 는 decel 상태와 decel box 의 구간까지)
+1. RT 상태 (`PlannerRtState`) 읽기 — 이것이 계획할지를 정한다. 리셋 epoch 이 바뀌었으면 시행 상태를 버린다 (탐색의 현재 plan · settle 카운트, `mpc` 는 구간 상태와 segment box 의 구간까지)
 2. 모드가 정하는 일 (`ActivityFor` — 모드의 술어이지 enum 순서 비교가 아니다. `mode >= Committed` 같은 나열 순서 의존은 상태를 추가하면 조용히 깨진다):
 
 | RT 모드 | `closed_form` | `mpc` |
@@ -499,16 +499,16 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 **탐색 wake** (두 planner 공통, 마지막 단계만 다르다):
 
 1. 궤적 스냅샷 읽기 — 지금 activation 의 것이 아니면 끝 (`no_input`). 이어서 공분산 읽기: token 이 궤적과 다르면 한 번 더 읽고, 그래도 다르면 그 조합은 쓰지 않는다 (공분산 모름으로 계획)
-2. 탐색 (`PlannerSearch::Plan`, §4.1 단일 진입 함수): 트랙 epoch 가 막 바뀌었으면 `n_settle` 동안 plan 없음 (§4.4) → vision 샘플 격자의 후보마다 창·작업공간 검사와 사전 점수 → IK 예산 안에서 §4.1 의 순서 → 점수 (§4.10). 예산 `budget_s` 가 다하면 남은 후보를 건너뛰고 지금까지의 최선을 쓴다. `closed_form` 에서 RT 가 plan 을 따르는 중이면 §4.7 이 게시 여부를 정한다
+2. 탐색 (`GridCatchSearch::Plan`, §4.1 단일 진입 함수): 트랙 epoch 가 막 바뀌었으면 `n_settle` 동안 plan 없음 (§4.4) → vision 샘플 격자의 후보마다 창·작업공간 검사와 사전 점수 → IK 예산 안에서 §4.1 의 순서 → 점수 (§4.10). 예산 `budget_s` 가 다하면 남은 후보를 건너뛰고 지금까지의 최선을 쓴다. `closed_form` 에서 RT 가 plan 을 따르는 중이면 §4.7 이 게시 여부를 정한다
 3. 게시 직전 재확인: 궤적 token 이 그대로이고 리셋 epoch · activation 이 그대로여야 한다 — 아니면 버린다 (`superseded`). 교체 규칙이 보류를 정했으면 게시하지 않는다 (`held`)
 4. 게시:
    - **`closed_form`**: `PlanSnapshot` 을 저장한다 — 유효한 plan 이든 "plan 없음" + 사유든
-   - **`mpc`**: plan 이 유효하면 첫 구간을 푼다 (`DecelPlanner::PlanFirst`). 보류되면 plan 도 게시하지 않는다 (`held`). 풀리면 쌍을 다시 확인한다 — 같은 트랙 (같은 스냅샷이 아니다: 첫 풀이가 궤적 주기보다 길 수 있다), 리셋 epoch · activation 그대로, RT 가 그 사이 다른 plan 을 따르지 않음, $t_c-$ 게시 시각 $>T_{freeze}$, 구간이 읽히기 전에 시작하지 않음 — 그리고 **구간을 먼저, plan 을 다음에** 저장한다 (RT 가 한 tick 에 쌍을 판정하므로 그때 구간이 있어야 한다). "plan 없음" 은 `mpc` 에서도 plan 만 게시한다
+   - **`mpc`**: plan 이 유효하면 첫 구간을 푼다 (`MpcSegmentPlanner::PlanFirst`). 보류되면 plan 도 게시하지 않는다 (`held`). 풀리면 쌍을 다시 확인한다 — 같은 트랙 (같은 스냅샷이 아니다: 첫 풀이가 궤적 주기보다 길 수 있다), 리셋 epoch · activation 그대로, RT 가 그 사이 다른 plan 을 따르지 않음, $t_c-$ 게시 시각 $>T_{freeze}$, 구간이 읽히기 전에 시작하지 않음 — 그리고 **구간을 먼저, plan 을 다음에** 저장한다 (RT 가 한 tick 에 쌍을 판정하므로 그때 구간이 있어야 한다). "plan 없음" 은 `mpc` 에서도 plan 만 게시한다
 
 - **동결 중에도 `monitorOnly()` 는 돈다**(§4.6): $\sigma_\ell$ 을 계산해 `planner_events.csv` 에 **기록만** 한다. 이 값이나 σ 성장률·L1 $\bar\nu$ 로 abort 를 판단하지 않는다 (§4.6 경로 2).
 - 시행 종료 시 plan 무효화는 L7이 한다(L7 §4.8).
 - 후보 시각은 vision 샘플 격자를 그대로 쓴다. `planner.slice.dt` 가 vision 간격보다 크면 격자를 솎아 쓴다. 보간해서 후보를 만들지 않는다 (공분산을 시각 보간할 필요가 없다).
-- 구간 재계획의 판정 (어느 격자점에서 다시 푸는가, 게시 조건, RT 의 구간 전환) 은 formulation 과 L7, 코드는 `decel_planner.hpp` 의 머리 주석이 갖는다.
+- 구간 재계획의 판정 (어느 격자점에서 다시 푸는가, 게시 조건, RT 의 구간 전환) 은 formulation 과 L7, 코드는 `mpc_segment_planner.hpp` 의 머리 주석이 갖는다.
 
 ### 5.4 방향 속력 (§4.5)
 
@@ -533,7 +533,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | CF | `catching/planner_closed_form.yaml` | `closed_form` 의 법칙. 단 `reference.*` 와 `supervisor.decel.a_dec` 는 `mpc` 에서도 탐색이 읽는다 (rollout · 정지점) |
 | MPC | `catching/planner_mpc.yaml` | `mpc` 의 법칙 — `supervisor.decel.mode: mpc` 일 때만 읽는다 |
 
-**mpc planner 의 키 (`planner.decel_mpc.*`, `supervisor.decel.switch_margin`) 는 `catching/planner_mpc.yaml` 과 formulation 이 갖는다** — 이 표의 범위가 아니다. 정의는 `planner_params.hpp` 의 `DecelPlannerParams` 다.
+**mpc planner 의 키 (`planner.decel_mpc.*`, `supervisor.decel.switch_margin`) 는 `catching/planner_mpc.yaml` 과 formulation 이 갖는다** — 이 표의 범위가 아니다. 정의는 `planner_params.hpp` 의 `MpcSegmentPlannerParams` 다.
 
 | 키 | 뜻 | 단위 | 자리 |
 |---|---|---|---|
@@ -606,7 +606,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | 포구 자세 IK + manipulability 게이트 | `catch_pose_ik.hpp` (+ `catch_pose_ik_params.hpp`) |
 | 방향 속력 | `unit_speed.hpp` |
 | γ rollout | `gamma_rollout.hpp` |
-| 탐색 · 선택 · 히스테리시스 | `planner_search.hpp` |
+| 탐색 · 선택 · 히스테리시스 | `grid_catch_search.hpp` |
 | 탐색 · 구간 계획기의 추상 interface | `catch_search.hpp`, `segment_planner.hpp` |
 | 한 번의 wake · 게시 | `planner_cycle.hpp` |
 | 계획기 스레드 | `integrated_bringup` 의 `planner_thread.hpp` |
