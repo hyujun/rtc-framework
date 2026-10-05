@@ -1499,7 +1499,9 @@ def _params_file(tmp_path: Path, doc: object, name: str = "params.yaml") -> Path
 
 
 def test_alpha_max_comes_from_the_params_file_when_it_sets_one(tmp_path: Path):
-    path = _params_file(tmp_path, {"catching": {"planner": {"ik": {"alpha_max": 0.35}}}})
+    path = _params_file(
+        tmp_path, {"catching": {"planner": {"search": {"grid": {"ik": {"alpha_max": 0.35}}}}}}
+    )
     resolved = cm.resolve_alpha_max(path, None)
     assert resolved.value_rad == pytest.approx(0.35)
     assert resolved.origin == "params"
@@ -1521,7 +1523,7 @@ def test_alpha_max_reads_the_controller_config_shape_and_the_bare_tree(tmp_path:
         {
             "some_controller": {
                 "gains": [1.0],
-                "catching": {"planner": {"ik": {"alpha_max": 0.31}}},
+                "catching": {"planner": {"search": {"grid": {"ik": {"alpha_max": 0.31}}}}},
             }
         },
         "wrapped.yaml",
@@ -1530,23 +1532,45 @@ def test_alpha_max_reads_the_controller_config_shape_and_the_bare_tree(tmp_path:
     assert resolved.value_rad == pytest.approx(0.31)
     assert resolved.params_shape == cm.PARAMS_SHAPE_CONTROLLER_CONFIG
 
-    bare = _params_file(tmp_path, {"planner": {"ik": {"alpha_max": 0.29}}}, "bare.yaml")
+    bare = _params_file(
+        tmp_path, {"planner": {"search": {"grid": {"ik": {"alpha_max": 0.29}}}}}, "bare.yaml"
+    )
     resolved = cm.resolve_alpha_max(bare, None)
     assert resolved.value_rad == pytest.approx(0.29)
     assert resolved.params_shape == cm.PARAMS_SHAPE_TREE_ITSELF
 
     # A file whose tree cannot be FOUND is not a file that leaves the value open.
     for name, doc in (
-        ("ros.yaml", {"/**": {"ros__parameters": {"planner": {"ik": {"alpha_max": 0.3}}}}}),
+        (
+            "ros.yaml",
+            {
+                "/**": {
+                    "ros__parameters": {
+                        "planner": {"search": {"grid": {"ik": {"alpha_max": 0.3}}}}
+                    }
+                }
+            },
+        ),
         ("list.yaml", [1, 2]),
         ("two.yaml", {"a": {"catching": {}}, "b": {"catching": {}}}),
-        ("both.yaml", {"catching": {"planner": {}}, "planner": {"ik": {"alpha_max": 0.3}}}),
+        (
+            "both.yaml",
+            {
+                "catching": {"planner": {}},
+                "planner": {"search": {"grid": {"ik": {"alpha_max": 0.3}}}},
+            },
+        ),
     ):
         with pytest.raises(ValueError, match="no `catching` tree|root must be a map|ambiguous"):
             cm.resolve_alpha_max(_params_file(tmp_path, doc, name), None)
     with pytest.raises(ValueError, match="must be a number"):
         cm.resolve_alpha_max(
-            _params_file(tmp_path, {"planner": {"ik": {"alpha_max": "wide"}}}, "bad.yaml"), None
+            _params_file(
+                tmp_path,
+                {"planner": {"search": {"grid": {"ik": {"alpha_max": "wide"}}}}},
+                "bad.yaml",
+            ),
+            None,
         )
 
 
@@ -1566,10 +1590,12 @@ def test_alpha_max_flag_alone_and_neither_source(tmp_path: Path):
     assert "catch_pose_ik.hpp" in neither.source
     assert neither.as_provenance()["origin"] == "judge_default"
 
-    # "TBD" — and a tree with no planner.ik at all — leave the value open, which
+    # "TBD" — and a tree with no planner.search.grid.ik at all — leave the value open, which
     # is NOT the same as the tree being missing.
     for name, ik in (("tbd.yaml", {"alpha_max": "TBD"}), ("absent.yaml", {"max_iter": 40})):
-        path = _params_file(tmp_path, {"catching": {"planner": {"ik": ik}}}, name)
+        path = _params_file(
+            tmp_path, {"catching": {"planner": {"search": {"grid": {"ik": ik}}}}}, name
+        )
         resolved = cm.resolve_alpha_max(path, None)
         assert (resolved.value_rad, resolved.origin) == (0.26, "judge_default")
         assert str(path) in resolved.source
@@ -1579,7 +1605,9 @@ def test_alpha_max_flag_alone_and_neither_source(tmp_path: Path):
 
 
 def test_alpha_max_from_both_sources_must_agree(tmp_path: Path):
-    path = _params_file(tmp_path, {"catching": {"planner": {"ik": {"alpha_max": 0.35}}}})
+    path = _params_file(
+        tmp_path, {"catching": {"planner": {"search": {"grid": {"ik": {"alpha_max": 0.35}}}}}}
+    )
     agreed = cm.resolve_alpha_max(path, 0.35)
     assert (agreed.value_rad, agreed.origin, agreed.flag_value_rad) == (0.35, "params", 0.35)
     # Neither side wins silently: whichever did, the report would be wrong
@@ -1634,7 +1662,9 @@ def test_cli_headline_is_the_best_single_seed_with_the_union_named_apart(
     pytest.importorskip("pinocchio")
     judge = _fake_judge(tmp_path)
     params = tmp_path / "params.yaml"
-    params.write_text("catching:\n  planner:\n    ik:\n      alpha_max: 0.35\nfake_reach: 10.0\n")
+    params.write_text(
+        "catching:\n  planner:\n    search:\n      grid:\n        ik:\n          alpha_max: 0.35\nfake_reach: 10.0\n"
+    )
     out_dir = _run_cli(tmp_path, judge, params)
     stderr = capsys.readouterr().err
 
@@ -1681,7 +1711,9 @@ def test_cli_headline_is_the_best_single_seed_with_the_union_named_apart(
 
     # Same --out-dir, same params PATH, different content: nothing is within
     # reach any more, and the map has to say so rather than replay the shards.
-    params.write_text("catching:\n  planner:\n    ik:\n      alpha_max: 0.35\nfake_reach: 0.0\n")
+    params.write_text(
+        "catching:\n  planner:\n    search:\n      grid:\n        ik:\n          alpha_max: 0.35\nfake_reach: 0.0\n"
+    )
     calls = _judge_calls(judge)
     _run_cli(tmp_path, judge, params)
     assert _judge_calls(judge) > calls
@@ -1703,7 +1735,7 @@ def test_alpha_max_is_held_against_the_judges_own_report(tmp_path: Path):
     assert "NOT cross-checked" in unchecked.as_provenance()["judge_report"]
 
     judge.with_name("print_options.txt").write_text(
-        "params_tree catching\nplanner.ik.max_iter 40\nplanner.ik.alpha_max 0.26000000000000001\n"
+        "params_tree catching\nplanner.search.grid.ik.max_iter 40\nplanner.search.grid.ik.alpha_max 0.26000000000000001\n"
     )
     reported = cm.judge_reported_alpha_max(judge, None)
     assert reported == 0.26
@@ -1721,9 +1753,11 @@ def test_alpha_max_is_held_against_the_judges_own_report(tmp_path: Path):
 
 def test_cli_refuses_an_alpha_max_the_judge_does_not_report(tmp_path: Path):
     judge = _fake_judge(tmp_path)
-    judge.with_name("print_options.txt").write_text("planner.ik.alpha_max 0.26\n")
+    judge.with_name("print_options.txt").write_text("planner.search.grid.ik.alpha_max 0.26\n")
     params = tmp_path / "params.yaml"
-    params.write_text("catching:\n  planner:\n    ik:\n      alpha_max: 0.35\n")
+    params.write_text(
+        "catching:\n  planner:\n    search:\n      grid:\n        ik:\n          alpha_max: 0.35\n"
+    )
     with pytest.raises(SystemExit, match="the judge reports"):
         _run_cli(tmp_path, judge, params)
     assert _judge_calls(judge) == 0
@@ -1732,7 +1766,9 @@ def test_cli_refuses_an_alpha_max_the_judge_does_not_report(tmp_path: Path):
 def test_cli_refuses_an_alpha_max_flag_that_contradicts_the_params_file(tmp_path: Path):
     judge = _fake_judge(tmp_path)
     params = tmp_path / "params.yaml"
-    params.write_text("catching:\n  planner:\n    ik:\n      alpha_max: 0.35\n")
+    params.write_text(
+        "catching:\n  planner:\n    search:\n      grid:\n        ik:\n          alpha_max: 0.35\n"
+    )
     with pytest.raises(SystemExit, match="two sources of truth"):
         _run_cli(tmp_path, judge, params, "--alpha-max-rad", "0.26")
     assert _judge_calls(judge) == 0, "the contradiction must not cost a sweep to find"
@@ -1875,3 +1911,13 @@ def test_judge_batch_reports_a_failing_shard_with_its_stderr(tmp_path: Path):
     # read as "those throws were not catchable" and nothing later contradicts it.
     with pytest.raises(RuntimeError, match="stderr"):
         cm.run_judge_batch(invocation, [candidate], work_dir=tmp_path / "w", workers=1)
+
+
+def test_a_params_file_with_the_old_alpha_max_key_is_refused_not_read_as_open(tmp_path: Path):
+    """``planner.ik.alpha_max`` moved (#711). Read as an absent key it would give the
+    judge's default and a theta report against a bound nobody chose."""
+    from rtc_tools.utils.catching_keys import RenamedCatchingKeyError
+
+    path = _params_file(tmp_path, {"catching": {"planner": {"ik": {"alpha_max": 0.35}}}})
+    with pytest.raises(RenamedCatchingKeyError, match=r"planner\.ik → catching\.planner\.search"):
+        cm.resolve_alpha_max(path, None)

@@ -109,6 +109,7 @@ from rtc_tools.analysis.catchability_map import (
     transform_point,
 )
 from rtc_tools.analysis.table_cells import is_true as _is_true, num as _num
+from rtc_tools.utils.catching_keys import normalize_run_meta, reject_renamed_keys
 from rtc_tools.utils.controller_config import load_controller_config
 from rtc_tools.utils.smoothing import COMMAND_SMOOTH_ROWS, box_smooth
 
@@ -553,6 +554,9 @@ def _catching_controllers(config_dir: Path) -> dict[str, dict]:
         for name, node in doc.items():
             if not isinstance(node, Mapping) or not isinstance(node.get("catching"), Mapping):
                 continue
+            # Every reader of this tree takes a default for a key it does not find; an
+            # old (pre-#711) key would be that — refuse it here, once.
+            reject_renamed_keys(node["catching"], source=str(path))
             logs = node.get("logs") or []
             if any(str(e.get("msg_type", "")).endswith(DIAG_LOG_TYPE) for e in logs):
                 found[str(name)] = dict(node)
@@ -1008,6 +1012,16 @@ class Trial:
         return self.launch_wall
 
 
+def load_run_meta(path: Path) -> dict:
+    """``run_meta.json`` with the controller mirror under its current names.
+
+    A unit recorded before #711 carries the old mirror names; they are read
+    through the alias table, and a file holding both an old name and its new
+    name is refused."""
+    path = Path(path)
+    return normalize_run_meta(json.loads(path.read_text()), source=str(path))
+
+
 def load_trials(trials_dir: Path) -> tuple[list[Trial], dict]:
     """Read ``trial_results.json``: a list of records, or ``{"trials": [...], ...}``."""
     trials_dir = Path(trials_dir)
@@ -1018,7 +1032,7 @@ def load_trials(trials_dir: Path) -> tuple[list[Trial], dict]:
     # read-only mirror (`controller_mirror`, incl. `control.dt`) for the run.
     run_meta = trials_dir / "run_meta.json"
     if run_meta.is_file():
-        meta.update(json.loads(run_meta.read_text()))
+        meta.update(load_run_meta(run_meta))
     out = []
     for r in records:
         off = r.get("wall_t_relative_offset")

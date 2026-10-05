@@ -11,7 +11,7 @@ Per arm:
 
 * truth success of the valid trials, Wilson 95 %, and the ITT count;
 * what the controller was told to expect — the read-only mirror's
-  ``prediction.dt_expected`` / ``io.n_min`` / ``planner.slice.dt`` from
+  ``prediction.dt_expected`` / ``io.n_min`` / ``planner.search.grid.slice.dt`` from
   ``run_meta.json`` — and what it received: the mode of the diag's
   ``input_n`` over the ticks that took a new snapshot. A unit whose mirror
   lacks any of the three (recorded before the controller mirrored them) is
@@ -68,7 +68,7 @@ from rtc_tools.analysis.vision_lane import EXPECTED_POINT_STEP as POINT_STEP
 TOOL = "catching_grid_sweep"
 FLIGHT_GAP_S = 0.5
 RTF_MIN = 0.95
-GRID_KEYS = ("prediction.dt_expected", "io.n_min", "planner.slice.dt")
+GRID_KEYS = ("prediction.dt_expected", "io.n_min", "planner.search.grid.slice.dt")
 # catching_trials.csv columns carried into the trial rows, converted below.
 CT_COLUMNS = (
     "pred_mm",
@@ -143,7 +143,7 @@ def planner_cycles(events: Path) -> dict | None:
 
 def analyse_unit(unit: Path, session: Path, flight_gap_s: float = FLIGHT_GAP_S) -> dict:
     trials = cd._trial_table(unit, unit / "ct", extra=CT_COLUMNS)
-    meta = json.loads((unit / "trials" / "run_meta.json").read_text())
+    meta = ct.load_run_meta(unit / "trials" / "run_meta.json")
     mirror = meta.get("controller_mirror") or {}
     ctl = _controller_dir(session)
     for r in trials:
@@ -265,7 +265,7 @@ def report(summaries: Sequence[dict], families: Mapping[str, list[dict]]) -> str
         ci = s["truth_ci95"]
         mi = s["message_interval_ms"]
         grid = (
-            f"dt {g['prediction.dt_expected']} n_min {g['io.n_min']} slice {g['planner.slice.dt']}"
+            f"dt {g['prediction.dt_expected']} n_min {g['io.n_min']} slice {g['planner.search.grid.slice.dt']}"
             if s["grid_known"]
             else "grid UNKNOWN (no mirror)"
         )
@@ -319,7 +319,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--ref", required=True, help="the arm every other arm is compared with")
     ap.add_argument("--pair", action="append", default=[], help="A:B, an extra comparison (B − A)")
     ap.add_argument(
-        "--budget-s", type=float, help="planner.budget_s — flags arms whose p99 exceeds it"
+        "--budget-s",
+        type=float,
+        help="planner.search.grid.budget_s — flags arms whose p99 exceeds it",
     )
     ap.add_argument("--flight-gap-s", type=float, default=FLIGHT_GAP_S)
     ap.add_argument("--rtf-min", type=float, default=RTF_MIN)

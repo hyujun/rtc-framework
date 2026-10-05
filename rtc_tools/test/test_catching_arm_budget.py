@@ -95,7 +95,7 @@ def make_config(
                         "base_T_world": {"yaw_deg": 0.0, "translation": [0, 0, 0]},
                     },
                     "reference": {"omega": OMEGA, "a_max": A_MAX, "v_max": 3.5},
-                    "planner": {"gamma": {"eta_v": 0.9}},
+                    "planner": {"search": {"grid": {"gamma": {"eta_v": 0.9}}}},
                     "robot": {"arm": arm_block},
                 },
                 "topics": {ARM: {"subscribe": []}, HAND: {"subscribe": []}},
@@ -250,7 +250,7 @@ def make_session(root: Path, *, n_trials: int = 3, mirror: bool = True) -> tuple
                 "reference.omega": OMEGA,
                 "reference.a_max": A_MAX,
                 "reference.v_max": 3.5,
-                "planner.gamma.eta_v": 0.9,
+                "planner.search.grid.gamma.eta_v": 0.9,
                 "robot.arm.qdd_max": list(BOX),
             }
         )
@@ -458,7 +458,7 @@ def test_without_a_mirror_sim_yaml_lies_between_the_profile_and_the_overlay(tmp_
     sim["/**"]["ros__parameters"][CONTROLLER] = {
         "catching": {
             "robot": {"arm": {"qdd_max": [9.0, 9.0]}},
-            "planner": {"time": {"margin": 0.05}},
+            "planner": {"search": {"grid": {"time": {"margin": 0.05}}}},
         }
     }
     _write_yaml(cfg / "sim.yaml", sim)
@@ -684,3 +684,70 @@ def test_an_unjudged_window_is_not_counted_as_closed(tmp_path):
     assert out["window_judged_n"] == 6
     assert out["window_open_frac"] == pytest.approx(1.0)
     assert out["g_max_p50"] == pytest.approx(0.5)
+
+
+# ── #711: renamed keys and mirror names ──────────────────────────────────
+def _rewrite_mirror(unit, rename):
+    path = unit / "trials" / "run_meta.json"
+    meta = json.loads(path.read_text())
+    meta["controller_mirror"] = {rename.get(k, k): v for k, v in meta["controller_mirror"].items()}
+    path.write_text(json.dumps(meta))
+
+
+def test_a_unit_recorded_with_the_old_mirror_name_gives_the_same_budget(tmp_path):
+    cfg = make_config(tmp_path / "share")
+    unit, session, _ = make_session(tmp_path, n_trials=1)
+    new = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]["budget"]
+    _rewrite_mirror(unit, {"planner.search.grid.gamma.eta_v": "planner.gamma.eta_v"})
+    old = ab.analyse_unit(unit, session, cfg, n_boot=5)["summary"]["budget"]
+    assert old == new
+    assert old["source"]["eta_v"] == "controller_mirror"
+
+
+def test_a_mirror_with_the_old_and_the_new_name_is_refused(tmp_path):
+    from rtc_tools.utils.catching_keys import MixedMirrorNamesError
+
+    cfg = make_config(tmp_path / "share")
+    unit, session, _ = make_session(tmp_path, n_trials=1)
+    path = unit / "trials" / "run_meta.json"
+    meta = json.loads(path.read_text())
+    meta["controller_mirror"]["planner.gamma.eta_v"] = 0.8
+    path.write_text(json.dumps(meta))
+    with pytest.raises(MixedMirrorNamesError, match="planner.gamma.eta_v"):
+        ab.analyse_unit(unit, session, cfg, n_boot=5)
+
+
+@pytest.mark.parametrize("where", ["overlay", "sim.yaml"])
+def test_an_overlay_or_sim_yaml_with_an_old_key_is_refused(tmp_path, where):
+    from rtc_tools.utils.catching_keys import RenamedCatchingKeyError
+
+    cfg = make_config(tmp_path / "share")
+    unit, session, _ = make_session(tmp_path, n_trials=1, mirror=False)
+    doc = {
+        "/**": {
+            "ros__parameters": {CONTROLLER: {"catching": {"planner": {"time": {"margin": 0.05}}}}}
+        }
+    }
+    overlays = []
+    if where == "sim.yaml":
+        _write_yaml(cfg / "sim.yaml", doc)
+    else:
+        overlays = [tmp_path / "ov.yaml"]
+        _write_yaml(overlays[0], doc)
+    with pytest.raises(
+        RenamedCatchingKeyError,
+        match=r"catching\.planner\.time → catching\.planner\.search\.grid\.time",
+    ):
+        ab.analyse_unit(unit, session, cfg, overlays=overlays, n_boot=5)
+
+
+def test_a_profile_with_an_old_key_is_refused(tmp_path):
+    from rtc_tools.utils.catching_keys import RenamedCatchingKeyError
+
+    cfg = make_config(tmp_path / "share")
+    path = cfg / "controllers" / f"{CONTROLLER}.yaml"
+    doc = yaml.safe_load(path.read_text())
+    doc[CONTROLLER]["catching"]["planner"] = {"gamma": {"eta_v": 0.9}}
+    _write_yaml(path, doc)
+    with pytest.raises(RenamedCatchingKeyError, match="planner.gamma"):
+        ct.load_profile(cfg, CONTROLLER)

@@ -985,3 +985,26 @@ def test_arch1_module_has_no_robot_constants():
     text = Path(cd.__file__).read_text().lower()
     for word in ("ur5e", "iiwa", "leap", "p1b", "panda"):
         assert word not in text, word
+
+
+def test_an_overlay_with_an_old_key_is_refused_and_a_dec_alone_is_fine(tmp_path):
+    from rtc_tools.utils.catching_keys import RenamedCatchingKeyError
+
+    cfg = make_config(tmp_path / "share")
+    node = ct._catching_controllers(cfg)[CONTROLLER]
+
+    def overlay(name, catching):
+        path = tmp_path / name
+        path.write_text(
+            yaml.safe_dump({"rt": {"ros__parameters": {CONTROLLER: {"catching": catching}}}})
+        )
+        return path
+
+    ok = overlay("ok.yaml", {"supervisor": {"decel": {"a_dec": 5.0}}})
+    assert cd.composed_a_dec(node, cfg, CONTROLLER, [ok]) == (5.0, "ok.yaml")
+    bad = overlay("bad.yaml", {"supervisor": {"decel": {"a_dec": 5.0, "mode": "mpc"}}})
+    with pytest.raises(
+        RenamedCatchingKeyError,
+        match=r"supervisor\.decel\.mode → catching\.planner\.segment\.mode",
+    ):
+        cd.composed_a_dec(node, cfg, CONTROLLER, [bad])

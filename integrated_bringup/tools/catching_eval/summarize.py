@@ -31,6 +31,7 @@ from rtc_tools.analysis import (
     catching_decel as cd,
     catching_trials as ct,
 )
+from rtc_tools.utils.catching_keys import normalize_mirror
 
 MARGIN = 0.10
 ALPHA = 0.025
@@ -103,12 +104,15 @@ def mode_log_verdict(mode_log):
 
 
 def kv_file(path):
+    """``name: value`` lines (a unit's ``mirror.txt``), the names under their current
+    spelling: a unit recorded before #711 carries the old mirror names, read through
+    the alias table; a file holding an old name and its new name is refused."""
     out = {}
     if path.is_file():
         for line in path.read_text().splitlines():
             k, _, v = line.partition(":")
             out[k.strip()] = v.strip()
-    return out
+    return normalize_mirror(out, source=str(path))
 
 
 def mirror_value(mirror, key):
@@ -319,8 +323,8 @@ def solve_block(units, arm_is_mpc):
         }
         out["held"] = int(pe["decel_outcome"].isin(HELD).sum())
         out["outcomes"] = pe["decel_outcome"].value_counts().to_dict()
-        firsts = {mirror_value(u["mirror"], "planner.decel_mpc.budget.first_s") for u in units}
-        replans = {mirror_value(u["mirror"], "planner.decel_mpc.budget.replan_s") for u in units}
+        firsts = {mirror_value(u["mirror"], "planner.segment.mpc.budget.first_s") for u in units}
+        replans = {mirror_value(u["mirror"], "planner.segment.mpc.budget.replan_s") for u in units}
         for key, kinds, budgets_s in (("first", ("first",), firsts), ("replan", REPLAN, replans)):
             v = solved[solved["decel_kind"].isin(kinds)]["decel_solve_us"]
             blk = {"n": int(len(v)), **{k: x for k, x in dist(v).items() if k != "n"}}

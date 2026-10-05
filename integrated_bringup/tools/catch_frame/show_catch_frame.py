@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from rtc_tools.utils.catching_keys import reject_renamed_keys
 from rtc_tools.utils.controller_config import load_controller_config
 
 REPO = Path(__file__).resolve().parents[3]
@@ -92,10 +93,11 @@ def catching_tree(path: Path) -> dict:
     """The `catching:` tree of a controller config, which is keyed by the
     controller name at the top level rather than by `ros__parameters`. Read
     composed with its `include:` fragments, as CM reads it: the shipped config
-    is four files, and the pocket (`planner.hand`) is in one of the fragments."""
+    is four files, and the pocket (`planner.search.grid.hand`) is in one of the fragments."""
     doc = load_controller_config(path) or {}
     for node in doc.values():
         if isinstance(node, dict) and "catching" in node:
+            reject_renamed_keys(node["catching"], source=str(path))
             return node["catching"]
     raise SystemExit(f"{path}: no <controller>.catching block")
 
@@ -143,7 +145,7 @@ def main() -> int:
     provisional = cf.get("provisional")
     q_pre = list(ctrl["robot"]["hand"]["q_pre"])
     r_ball = float(ctrl["core"]["ball"]["diameter"]) / 2.0
-    pocket = ctrl.get("planner", {}).get("hand", {})
+    pocket = ctrl.get("planner", {}).get("search", {}).get("grid", {}).get("hand", {})
     hand_joints = list(params["devices"][spec_cfg["hand_group"]]["joint_state_names"])
 
     print(f"robot          : {a.robot}")

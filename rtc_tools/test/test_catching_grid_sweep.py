@@ -19,8 +19,8 @@ import pytest
 from rtc_tools.analysis import catching_grid_sweep as gs
 
 CTL = "demo_catching_controller"
-GRID_50 = {"prediction.dt_expected": 0.05, "io.n_min": 12, "planner.slice.dt": 0.05}
-GRID_25 = {"prediction.dt_expected": 0.025, "io.n_min": 22, "planner.slice.dt": 0.025}
+GRID_50 = {"prediction.dt_expected": 0.05, "io.n_min": 12, "planner.search.grid.slice.dt": 0.05}
+GRID_25 = {"prediction.dt_expected": 0.025, "io.n_min": 22, "planner.search.grid.slice.dt": 0.025}
 
 
 def _write_csv(path, rows):
@@ -284,3 +284,23 @@ def test_the_point_step_is_the_decoder_layout_constant():
     from rtc_tools.analysis import vision_lane
 
     assert gs.POINT_STEP == vision_lane.EXPECTED_POINT_STEP
+
+
+# ── #711: sessions recorded with the old mirror names ────────────────────
+OLD_GRID_50 = {"prediction.dt_expected": 0.05, "io.n_min": 12, "planner.slice.dt": 0.05}
+
+
+def test_a_unit_recorded_with_the_old_mirror_name_reads_as_the_new_one(tmp_path):
+    old = make_unit(tmp_path, "old", [True, False], grid=OLD_GRID_50)
+    new = make_unit(tmp_path, "new", [True, False], grid=GRID_50)
+    got_old = gs.analyse_unit(old, old / "session")["grid"]
+    got_new = gs.analyse_unit(new, new / "session")["grid"]
+    assert got_old == got_new == GRID_50
+
+
+def test_a_unit_whose_mirror_has_the_old_and_the_new_name_is_refused(tmp_path):
+    from rtc_tools.utils.catching_keys import MixedMirrorNamesError
+
+    unit = make_unit(tmp_path, "mixed", [True], grid={**OLD_GRID_50, **GRID_50})
+    with pytest.raises(MixedMirrorNamesError, match="planner.slice.dt.*planner.search.grid"):
+        gs.analyse_unit(unit, unit / "session")

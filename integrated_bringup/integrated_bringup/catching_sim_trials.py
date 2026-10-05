@@ -121,15 +121,15 @@ MIRROR_PARAMETERS = (
     "reference.omega",
     "reference.a_max",
     "reference.v_max",
-    "planner.gamma.eta_v",
-    "planner.time.margin",
+    "planner.search.grid.gamma.eta_v",
+    "planner.search.grid.time.margin",
     "robot.arm.qdd_max",
     # The prediction grid the controller expects (E0-F04, #647): the vision
     # profile sets the grid, and a sweep over it must record what the
     # controller was told to expect.
     "prediction.dt_expected",
     "io.n_min",
-    "planner.slice.dt",
+    "planner.search.grid.slice.dt",
 )
 
 
@@ -224,11 +224,12 @@ def load_arm_profile(config_dir: str) -> ArmProfile:
     still look like a trial.
     """
     # The file plus its `include:` fragments, as the CM hands it to the controller.
+    from rtc_tools.utils.catching_keys import reject_renamed_keys
     from rtc_tools.utils.controller_config import load_controller_config
 
-    ctrl = load_controller_config(
-        os.path.join(config_dir, "controllers", f"{CATCHING}.yaml"), config_key=CATCHING
-    )[CATCHING]
+    controller_yaml = os.path.join(config_dir, "controllers", f"{CATCHING}.yaml")
+    ctrl = load_controller_config(controller_yaml, config_key=CATCHING)[CATCHING]
+    reject_renamed_keys(ctrl.get("catching"), source=controller_yaml)
     topics = ctrl.get("topics") or {}
     if not topics:
         raise ValueError(f"{CATCHING}.yaml has no topics — cannot tell which device is the arm")

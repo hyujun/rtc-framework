@@ -142,7 +142,7 @@ def make_config(
     if wait_pose is not None:
         catching["planner"]["wait_pose"] = list(wait_pose)
     if eta_v is not None:
-        catching["planner"]["gamma"] = {"eta_v": eta_v}
+        catching["planner"]["search"] = {"grid": {"gamma": {"eta_v": eta_v}}}
     _write_yaml(
         cfg / "controllers" / f"{CONTROLLER}.yaml",
         {
@@ -801,3 +801,17 @@ def test_the_admitted_box_never_inverts_and_falls_back_to_the_urdf():
     box_lo, box_hi, src = cws.admitted_joint_box(lo, hi, {}, {}, 0.05)
     assert np.array_equal(box_lo, lo) and np.array_equal(box_hi, hi)
     assert src == {"limits": "urdf", "margin_rad": 0.0}
+
+
+def test_a_profile_with_the_old_eta_v_key_is_refused_naming_both_paths(tmp_path):
+    from rtc_tools.utils.catching_keys import RenamedCatchingKeyError
+
+    cfg = make_config(tmp_path / "share", eta_v=None)
+    path = cfg / "controllers" / f"{CONTROLLER}.yaml"
+    doc = yaml.safe_load(path.read_text())
+    doc[CONTROLLER]["catching"]["planner"]["gamma"] = {"eta_v": ETA_V}
+    _write_yaml(path, doc)
+    with pytest.raises(
+        RenamedCatchingKeyError, match=r"planner\.gamma → catching\.planner\.search\.grid\.gamma"
+    ):
+        cws.load_search_setup(cfg, controller=CONTROLLER)

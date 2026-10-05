@@ -73,8 +73,8 @@ from .ball_launch import (
 )
 from .catalog import ControllerCatalog
 from .catching import (
-    CATCHING_DECEL_MODE_PARAM,
     CATCHING_ENABLE_PARAM,
+    CATCHING_SEGMENT_MODE_PARAM,
     CATCHING_STATE_TOPIC,
     CatchingStatus,
     decel_law_query_due,
@@ -2242,7 +2242,7 @@ class DemoControllerGUI(Node):
         self._catching.update(msg, time.monotonic())
 
     def _query_catching_decel_law(self) -> None:
-        """Read the controller's read-only `supervisor.decel.mode`. Tk thread.
+        """Read the controller's read-only `planner.segment.mode`. Tk thread.
 
         Driven by the periodic refresh, not by `_refresh_catching_panel` (the
         buttons call that too). Non-blocking for the same reason as the grasp
@@ -2260,7 +2260,7 @@ class DemoControllerGUI(Node):
         if not client.services_are_ready():
             return
         self._decel_law_in_flight = True
-        future = client.get_parameters([CATCHING_DECEL_MODE_PARAM])
+        future = client.get_parameters([CATCHING_SEGMENT_MODE_PARAM])
 
         def _on_done(fut):
             # Executor thread: extract only, never touch GUI/status state here.
@@ -2270,7 +2270,7 @@ class DemoControllerGUI(Node):
                 if resp.values:
                     value = resp.values[0].string_value or None
             except Exception as exc:  # noqa: BLE001 — any failure = not read
-                self.get_logger().debug(f"{CATCHING_DECEL_MODE_PARAM} query failed: {exc}")
+                self.get_logger().debug(f"{CATCHING_SEGMENT_MODE_PARAM} query failed: {exc}")
             self.root.after(0, self._apply_catching_decel_law, value)
 
         future.add_done_callback(_on_done)
@@ -2285,7 +2285,7 @@ class DemoControllerGUI(Node):
         if not isinstance(value, str) or not value:
             return
         self._catching.decel_law = value
-        self.get_logger().info(f"/{CATCHING_CONFIG_KEY} {CATCHING_DECEL_MODE_PARAM}={value}")
+        self.get_logger().info(f"/{CATCHING_CONFIG_KEY} {CATCHING_SEGMENT_MODE_PARAM}={value}")
         self._refresh_catching_panel()
 
     def _build_catching_panel(self, parent: tk.Frame) -> None:

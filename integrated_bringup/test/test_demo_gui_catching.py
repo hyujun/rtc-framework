@@ -20,7 +20,7 @@ import pytest
 
 from integrated_bringup.demo_gui.ball_launch import FEED_STALE_AFTER_S
 from integrated_bringup.demo_gui.catching import (
-    CATCHING_DECEL_MODE_PARAM,
+    CATCHING_SEGMENT_MODE_PARAM,
     DECEL_LAW_QUERY_PERIOD_S,
     DECEL_LAW_REPLY_TIMEOUT_S,
     HAND_PHASE_NAMES,
@@ -536,7 +536,7 @@ def test_a_panel_that_starts_inside_retreat_does_not_count_an_edge_it_did_not_se
 
 
 # ── Decel law line, its query throttle, and the Catching tab ────────────────
-# Added with the `supervisor.decel.mode` readout. Everything above predates it.
+# Added with the `planner.segment.mode` readout. Everything above predates it.
 
 
 def test_unknown_decel_law_is_said_and_follows_the_mode_line():
@@ -700,7 +700,7 @@ def test_ready_services_send_one_request_and_none_while_in_flight():
 
     state = _decel_state(ready=True)
     DemoControllerGUI._query_catching_decel_law(state)
-    assert state._client.calls == [[CATCHING_DECEL_MODE_PARAM]]
+    assert state._client.calls == [[CATCHING_SEGMENT_MODE_PARAM]]
     assert state._decel_law_in_flight is True
     state._decel_law_last_query_s = None  # the throttle alone must not be what blocks it
     DemoControllerGUI._query_catching_decel_law(state)

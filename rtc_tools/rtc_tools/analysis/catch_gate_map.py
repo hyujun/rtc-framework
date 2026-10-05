@@ -21,7 +21,7 @@ python owns is everything those functions take as input and leave as output:
   T_close,tot + T_arm + T_margin of L3 §4.11 is applied here;
 - q̇ᵘ, the damped least-squares unit-speed joint velocity behind v_dir,max. It has
   no runtime producer before S6.2, so it is computed here and handed over;
-- whether p_stop is inside the workspace. ``planner.workspace.catch_box`` is TBD,
+- whether p_stop is inside the workspace. ``planner.search.grid.workspace.catch_box`` is TBD,
   so the bound is the reach sphere and the floor — the ones the kinematic map used;
 - a second, PROVISIONAL reach layer (D-16 revision, L3 §4.3). The shipped
   acceleration limit is one constant box from a worst-sign sufficient condition.
@@ -72,6 +72,7 @@ from rtc_tools.analysis.derive_accel_limits import (
     load_robot_params,
     resolve_urdf_text,
 )
+from rtc_tools.utils.catching_keys import reject_renamed_keys
 from rtc_tools.utils.controller_config import (
     deep_merge,
     load_controller_config,
@@ -289,7 +290,7 @@ def stop_inside_workspace(
     reach_m: float,
     floor_world_z_m: float,
 ) -> bool:
-    """Reach sphere and floor — the stand-in for the TBD ``planner.workspace.catch_box``.
+    """Reach sphere and floor — the stand-in for the TBD ``planner.search.grid.workspace.catch_box``.
 
     Model world and world differ by a yaw and a translation only, so heights
     transfer by difference.
@@ -446,8 +447,11 @@ def composed_catching(
     tree = load_controller_config(controller_config, config_key=key)[key]
     catching = tree.get("catching") if isinstance(tree, Mapping) else None
     catching = dict(catching) if isinstance(catching, Mapping) else {}
+    reject_renamed_keys(catching, source=str(controller_config))
     for path in overlays:
-        catching = deep_merge(catching, overlay_catching(path, key))
+        layer = overlay_catching(path, key)
+        reject_renamed_keys(layer, source=str(path))
+        catching = deep_merge(catching, layer)
     return catching, tree
 
 
@@ -477,7 +481,7 @@ def load_accel_box(
 def load_unit_speed_damping(
     controller_config: Path, key: str, overlays: Sequence[Path] = ()
 ) -> float:
-    """``catching.planner.gamma.unit_speed_damping`` of a controller config, fragments composed.
+    """``catching.planner.search.grid.gamma.unit_speed_damping`` of a controller config, fragments composed.
 
     The C++ search reads the same key (``PlannerParams::unit_speed_damping``), so the offline
     map damps the unit-speed solve the way the runtime does — given the same ``overlays``.
@@ -486,7 +490,7 @@ def load_unit_speed_damping(
     """
     try:
         catching, _ = composed_catching(controller_config, key, overlays)
-        gamma = catching["planner"]["gamma"]
+        gamma = catching["planner"]["search"]["grid"]["gamma"]
     except (KeyError, TypeError):
         return DEFAULT_DLS_DAMPING
     value = gamma.get("unit_speed_damping") if isinstance(gamma, Mapping) else None
@@ -495,7 +499,7 @@ def load_unit_speed_damping(
     damping = float(value)
     if not (math.isfinite(damping) and damping > 0.0):
         raise SystemExit(
-            f"{controller_config}: planner.gamma.unit_speed_damping = {value!r} must be > 0"
+            f"{controller_config}: planner.search.grid.gamma.unit_speed_damping = {value!r} must be > 0"
         )
     return damping
 
@@ -538,26 +542,32 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_CONTROLLER,
         help=f"the catching controller's config key (default {DEFAULT_CONTROLLER})",
     )
-    ap.add_argument("--eta-v", type=float, required=True, help="planner.gamma.eta_v")
+    ap.add_argument("--eta-v", type=float, required=True, help="planner.search.grid.gamma.eta_v")
     ap.add_argument("--eta-tau", type=float, required=True, help="torque fraction (L3 §4.3)")
     ap.add_argument("--rotor-inertia", type=_floats, required=True, help="[kg m²], arm order")
     ap.add_argument("--rotor-inertia-source", required=True, help="file:line or datasheet")
     ap.add_argument(
         "--v-max-m-s",
         required=True,
-        help="reference.v_max: a number, or 'derived' = the largest LP v_dir,max over the "
+        help="planner.search.grid.reference.v_max: a number, or 'derived' = the largest LP v_dir,max over the "
         "accepted candidates at the unscaled joint limits (S4.4)",
     )
-    ap.add_argument("--d-eff-m", type=float, required=True, help="planner.hand.d_eff")
+    ap.add_argument("--d-eff-m", type=float, required=True, help="planner.search.grid.hand.d_eff")
     ap.add_argument("--d-eff-source", required=True, help="where that d_eff comes from")
     ap.add_argument("--close-total-s", type=float, required=True, help="T_close,e2e + h/2")
-    ap.add_argument("--gamma-margin-m-s", type=float, required=True, help="planner.gamma.margin")
-    ap.add_argument("--a-dec-m-s2", type=float, required=True, help="supervisor.decel.a_dec")
+    ap.add_argument(
+        "--gamma-margin-m-s", type=float, required=True, help="planner.search.grid.gamma.margin"
+    )
+    ap.add_argument(
+        "--a-dec-m-s2", type=float, required=True, help="planner.search.grid.stop.a_dec"
+    )
     ap.add_argument("--a-dec-source", required=True, help="where that a_dec comes from")
     ap.add_argument("--detection-s", type=float, required=True)
     ap.add_argument("--latency-s", type=float, required=True)
     ap.add_argument("--arm-delay-s", type=float, required=True)
-    ap.add_argument("--time-margin-s", type=float, required=True, help="planner.time.margin")
+    ap.add_argument(
+        "--time-margin-s", type=float, required=True, help="planner.search.grid.time.margin"
+    )
     ap.add_argument("--arm-base-frame", required=True, help="centre of the reach sphere")
     ap.add_argument("--max-reach-m", type=float, required=True)
     ap.add_argument("--floor-world-z-m", type=float, required=True)
@@ -571,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
         "--dls-damping",
         type=float,
         help="λ of the DLS unit-speed solve (default: the profile's "
-        "planner.gamma.unit_speed_damping, the value the C++ search runs with)",
+        "planner.search.grid.gamma.unit_speed_damping, the value the C++ search runs with)",
     )
     ap.add_argument("--fk-tolerance-m", type=float, default=DEFAULT_FK_TOLERANCE_M)
     args = ap.parse_args(argv)

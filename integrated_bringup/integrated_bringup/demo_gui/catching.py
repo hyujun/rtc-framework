@@ -29,7 +29,7 @@ absent reference are different facts and only one of them is a measurement.
 
 Public surface (imported by app.py):
 - CATCHING_CONFIG_KEY, CATCHING_ENABLE_PARAM, CATCHING_STATE_TOPIC
-- CATCHING_DECEL_MODE_PARAM, DECEL_LAW_QUERY_PERIOD_S, DECEL_LAW_REPLY_TIMEOUT_S,
+- CATCHING_SEGMENT_MODE_PARAM, DECEL_LAW_QUERY_PERIOD_S, DECEL_LAW_REPLY_TIMEOUT_S,
   decel_law_query_due
 - MODE_NAMES, REASON_NAMES, PLAN_REASON_NAMES
 - CatchingStatus
@@ -53,7 +53,7 @@ CATCHING_ENABLE_PARAM = "catching.enable"
 # `mpc`). It is a parameter rather than a CatchingState field because the
 # message is frozen; it is declared only after a successful configure, so a
 # parked or unconfigured controller answers with an empty string.
-CATCHING_DECEL_MODE_PARAM = "supervisor.decel.mode"
+CATCHING_SEGMENT_MODE_PARAM = "planner.segment.mode"
 
 # Minimum spacing between reads of that parameter while it is still unknown.
 DECEL_LAW_QUERY_PERIOD_S = 2.0
@@ -231,7 +231,7 @@ class CatchingStatus:
     armable: bool = False
     law_enabled: bool = False
     tick: int = 0
-    #: The controller's `supervisor.decel.mode`, once read; None = not read yet.
+    #: The controller's `planner.segment.mode`, once read; None = not read yet.
     #: Cached because the value is fixed at the node's first configure.
     decel_law: str | None = None
 
@@ -486,7 +486,7 @@ class CatchingStatus:
         if self.decel_law is None:
             # Not read yet, or never declared: the controller mirrors the key
             # only once it has configured (a parked one answers with nothing).
-            return f"decel law: unknown ({CATCHING_DECEL_MODE_PARAM} not read)"
+            return f"decel law: unknown ({CATCHING_SEGMENT_MODE_PARAM} not read)"
         return f"decel law: {self.decel_law}"
 
     def _arm_line(self) -> str:
