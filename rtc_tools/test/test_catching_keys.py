@@ -182,3 +182,131 @@ def test_run_meta_is_read_under_the_new_names_and_a_mixed_one_is_refused(tmp_pat
     )
     with pytest.raises(ck.MixedMirrorNamesError):
         ct.load_run_meta(path)
+
+
+# ── The two controller CSVs' renamed columns ────────────────────────────────
+
+_LOGGING = _REPO / "integrated_bringup/include/integrated_bringup/logging"
+
+
+def _cpp_header_columns(header: Path, function: str) -> list[str]:
+    """The column names ``function`` (a header writer) emits, from its string literals.
+    Adjacent literals of one statement are one (the compiler concatenates them)."""
+    body = header.read_text().split(function, 1)[1].split("\n}", 1)[0]
+    statements = re.findall(r'os << ((?:"[^"]*"\s*)+)', body)
+    joined = "".join(re.findall(r'"([^"]*)"', "".join(statements))).replace("\\n", "")
+    return [c for c in joined.split(",") if c]
+
+
+def _cpp_segment_columns() -> tuple[list[str], list[str]]:
+    diag = _LOGGING / "catching_diag_log_pod.hpp"
+    events = _LOGGING / "planner_events_csv.hpp"
+    if not diag.exists() or not events.exists():
+        pytest.skip("C++ logging headers are not beside this checkout")
+    return (
+        _cpp_header_columns(diag, "const CatchingDiagLogColumns& cols) {"),
+        _cpp_header_columns(events, "WritePlannerEventsHeader(std::ostream& os) {"),
+    )
+
+
+def test_the_column_alias_targets_are_the_segment_columns_the_cpp_headers_write():
+    diag, events = _cpp_segment_columns()
+    cpp_new = {c for c in [*diag, *events] if c.startswith("segment_")}
+    assert len(ck.RENAMED_COLUMNS) == 49
+    assert set(ck.RENAMED_COLUMNS.values()) == cpp_new
+    # 17 + 33 columns, `segment_seq` is in both files.
+    assert len([c for c in diag if c.startswith("segment_")]) == 17
+    assert len([c for c in events if c.startswith("segment_")]) == 33
+    # No header writes an old name any more; no old name is also a new one.
+    assert not [c for c in [*diag, *events] if c in ck.RENAMED_COLUMNS]
+    assert not set(ck.RENAMED_COLUMNS) & set(ck.RENAMED_COLUMNS.values())
+
+
+def test_each_column_alias_is_the_old_name_with_segment_for_decel():
+    for old, new in ck.RENAMED_COLUMNS.items():
+        expected = (
+            "segment_x0_from_segment"
+            if old == "decel_from_segment"
+            else old.replace("decel_", "segment_")
+        )
+        assert new == expected
+
+
+def test_the_trials_output_aliases_are_the_names_catching_trials_writes():
+    assert set(ck.RENAMED_TRIALS_COLUMNS.values()) == set(ct.SEGMENT_LANE_KEYS)
+    assert len(ck.RENAMED_TRIALS_COLUMNS) == len(ct.SEGMENT_LANE_KEYS) == 12
+    assert ck.RENAMED_TRIALS_COLUMNS["decel_segments_followed"] == "segment_n_followed"
+    assert not set(ck.RENAMED_TRIALS_COLUMNS) & set(ct.SEGMENT_LANE_KEYS)
+    assert ck.RENAMED_TRIALS_SUMMARY_KEYS == {"decel_lane": "segment_lane"}
+
+
+def test_old_column_names_are_renamed_and_the_others_are_left():
+    header = ["t_relative_s", "decel_event", "decel_seq", "q_cmd_a", "decel_from_segment"]
+    assert ck.column_renames(header) == {
+        "decel_event": "segment_event",
+        "decel_seq": "segment_seq",
+        "decel_from_segment": "segment_x0_from_segment",
+    }
+    assert ck.normalize_columns(header) == [
+        "t_relative_s",
+        "segment_event",
+        "segment_seq",
+        "q_cmd_a",
+        "segment_x0_from_segment",
+    ]
+    new = ["t_relative_s", "segment_event", "q_cmd_a"]
+    assert ck.column_renames(new) == {} and ck.normalize_columns(new) == new
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        ["decel_event", "segment_event"],  # one column under both names
+        ["decel_event", "segment_rho"],  # an old column and another column's new name
+        ["segment_judged", "decel_seq"],
+    ],
+)
+def test_a_header_with_an_old_and_a_new_column_name_is_refused_naming_both(header):
+    with pytest.raises(ck.MixedColumnNamesError) as exc:
+        ck.column_renames(header, source="catching_diag.csv")
+    msg = str(exc.value)
+    assert "catching_diag.csv" in msg
+    assert [c for c in header if c.startswith("decel_")][0] in msg
+    assert [c for c in header if c.startswith("segment_")][0] in msg
+    with pytest.raises(ck.MixedColumnNamesError):
+        ck.normalize_columns(header)
+
+
+def test_usecols_name_the_new_columns_whatever_the_file_has(tmp_path):
+    pd = pytest.importorskip("pandas")
+    old = tmp_path / "old.csv"
+    old.write_text("t,decel_event,decel_rho,q\n0,1,0.5,7\n1,4,0.25,8\n")
+    new = tmp_path / "new.csv"
+    new.write_text("t,segment_event,segment_rho,q\n0,1,0.5,7\n1,4,0.25,8\n")
+    for usecols in (None, ["segment_event", "t"], lambda c: c in {"segment_rho", "q"}):
+        a = ck.read_csv_normalized(pd.read_csv, old, usecols=usecols)
+        b = ck.read_csv_normalized(pd.read_csv, new, usecols=usecols)
+        assert list(a.columns) == list(b.columns)
+        assert a.equals(b)
+    assert "segment_event" in ck.read_csv_normalized(pd.read_csv, old).columns
+    mixed = tmp_path / "mixed.csv"
+    mixed.write_text("t,decel_event,segment_rho\n0,1,0.5\n")
+    with pytest.raises(ck.MixedColumnNamesError, match="mixed.csv"):
+        ck.read_csv_normalized(pd.read_csv, mixed)
+
+
+def test_an_old_tool_output_is_refused_naming_the_old_and_the_new_name():
+    ck.reject_old_output_names(
+        ["idx", "segment_aged"], ck.RENAMED_TRIALS_COLUMNS, source="x.csv", tool="catching_trials"
+    )
+    with pytest.raises(ck.OldToolOutputError) as exc:
+        ck.reject_old_output_names(
+            ["idx", "decel_aged", "decel_segments_followed"],
+            ck.RENAMED_TRIALS_COLUMNS,
+            source="x.csv",
+            tool="catching_trials",
+        )
+    msg = str(exc.value)
+    assert "x.csv" in msg and "older catching_trials" in msg and "regenerate" in msg
+    assert "decel_aged -> segment_aged" in msg
+    assert "decel_segments_followed -> segment_n_followed" in msg

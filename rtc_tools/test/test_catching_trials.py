@@ -2695,3 +2695,148 @@ def test_shifted_rows_are_left_out_of_the_tc_medians_and_counted(pilot):
     line = ct.tc_axis_line(ta)
     assert "shifted 13" in line and "LEFT OUT" in line
     assert "LEFT OUT" not in ct.tc_axis_line(pilot.summary["tc_axis"])
+
+
+# ── Sessions recorded with the old `decel_*` column names (#711) ─────────────
+
+
+def _segment_block(n: int) -> dict:
+    """The diag's segment columns (new names), planted so every lane metric moves."""
+    i = np.arange(n)
+    judged = (i % 4 == 0).astype(int)
+    event = np.array([0, 2, 4, 5, 10, 1, 3])[i % 7]
+    return {
+        "segment_judged": judged,
+        "segment_refusal": np.where(judged & (i % 8 == 0), ct.SEGMENT_REFUSAL_AGED, 0),
+        "segment_event": event,
+        "segment_following": (i % 3 != 0).astype(int),
+        "segment_seq": i // 40 + 1,
+        "segment_rho": (i % 10) / 10.0,
+        "segment_p_d_x": 0.001 * i,
+        "segment_p_d_y": -0.001 * i,
+        "segment_p_d_z": 0.5 + 0.0 * i,
+    }
+
+
+def _old_names(df):
+    """``df`` as an older controller wrote it: the new column names back to the old."""
+    from rtc_tools.utils import catching_keys as ck
+
+    return df.rename(columns={new: old for old, new in ck.RENAMED_COLUMNS.items()})
+
+
+def _session_with_segment_columns(tmp_path: Path, *, old: bool):
+    """A copy of the pilot session whose diag and planner_events carry the segment
+    columns, named the new way or (``old``) the way a controller before #711 wrote them."""
+    import shutil
+
+    import pandas as pd
+
+    session = tmp_path / ("old" if old else "new") / "session"
+    shutil.copytree(FIXTURE / "session", session)
+    ctl = session / "controllers" / "demo_catching_controller"
+    diag = pd.read_csv(ctl / "catching_diag.csv.gz")
+    diag = diag.assign(**_segment_block(len(diag)))
+    pe = pd.read_csv(ctl / "planner_events.csv.gz")
+    n = len(pe)
+    pe = pe.assign(
+        segment_outcome=np.where(np.arange(n) % 3 == 0, "published", "off"),
+        segment_kind=np.where(np.arange(n) % 2 == 0, "first", "none"),
+        segment_solve_us=np.arange(n) % 5 * 100.0,
+    )
+    for name, frame in (("catching_diag", diag), ("planner_events", pe)):
+        out = _old_names(frame) if old else frame
+        out.to_csv(ctl / f"{name}.csv.gz", index=False)
+    return session, ctl
+
+
+def _same(a, b) -> bool:
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return np.array_equal(np.asarray(a), np.asarray(b), equal_nan=True)
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (math.isnan(a) and math.isnan(b))
+    return a == b
+
+
+def test_a_session_recorded_with_old_column_names_gives_the_same_result(tmp_path):
+    pytest.importorskip("pinocchio")
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    urdf = (FIXTURE / "robot.urdf").read_text()
+    results = {}
+    for old in (False, True):
+        session, _ = _session_with_segment_columns(tmp_path, old=old)
+        results[old] = ct.analyse_session(
+            session, FIXTURE / "trials", profile, urdf, ct.Settings(n_boot=20)
+        )
+    new, old = results[False], results[True]
+    assert len(new.rows) == len(old.rows) > 0
+    # The planted block reached the lane metrics (not the all-None path).
+    assert any(r["segment_n_followed"] > 0 for r in new.rows if r["accepted"])
+    assert any(r["segment_aged"] > 0 for r in new.rows if r["accepted"])
+    assert any(r["segment_rho_first"] == r["segment_rho_first"] for r in new.rows)
+    for rn, ro in zip(new.rows, old.rows, strict=True):
+        assert rn.keys() == ro.keys()
+        assert not [k for k in rn if not _same(rn[k], ro[k])]
+    assert new.summary["segment_lane"] == old.summary["segment_lane"]
+    assert "decel_lane" not in new.summary and "decel_lane" not in old.summary
+    assert not [k for r in new.rows for k in r if k.startswith("decel_")]
+
+
+def test_the_planner_wakes_are_the_same_from_old_and_new_column_names(tmp_path):
+    lane = object()  # only "no lane -> None" is read of it
+    wakes = {}
+    for old in (False, True):
+        _, ctl = _session_with_segment_columns(tmp_path, old=old)
+        wakes[old] = ct._planner_cycle_times(ctl, lane)
+    new, old = wakes[False], wakes[True]
+    assert new.pair_attempt is not None and new.pair_attempt.any() and new.pair_published.any()
+    for a, b in zip(new, old, strict=True):
+        assert (a is None) == (b is None)
+        assert a is None or np.array_equal(a, b, equal_nan=True)
+
+
+def test_a_diag_and_its_header_read_the_same_from_old_and_new_column_names(tmp_path):
+    ctl = {old: _session_with_segment_columns(tmp_path, old=old)[1] for old in (False, True)}
+    for name in ("catching_diag", "planner_events"):
+        headers = {old: ct._csv_header(ctl[old] / f"{name}.csv") for old in ctl}
+        assert headers[False] == headers[True]
+        assert not [c for c in headers[True] if c.startswith("decel_")]
+        frames = {old: ct._read_csv(ctl[old] / f"{name}.csv") for old in ctl}
+        assert frames[False].equals(frames[True])
+    cols = ["t_relative_s", "segment_event", "segment_rho"]
+    got = {old: ct._read_csv(ctl[old] / "catching_diag.csv", usecols=cols) for old in ctl}
+    assert list(got[True].columns) == cols and got[False].equals(got[True])
+    got = {
+        old: ct._read_csv(ctl[old] / "catching_diag.csv", usecols=lambda c: c in set(cols))
+        for old in ctl
+    }
+    assert got[False].equals(got[True]) and "segment_event" in got[True]
+    # The columns diag_columns reads are found under the old names too.
+    assert set(ct.DIAG_SEGMENT_COLUMNS) <= set(
+        ct.diag_columns(ct._csv_header(ctl[True] / "catching_diag.csv"))
+    )
+
+
+def test_a_diag_that_mixes_old_and_new_column_names_is_refused(tmp_path):
+    import pandas as pd
+
+    from rtc_tools.utils import catching_keys as ck
+
+    _, ctl = _session_with_segment_columns(tmp_path, old=True)
+    path = ctl / "catching_diag.csv.gz"
+    diag = pd.read_csv(path)
+    diag = diag.rename(columns={"decel_rho": "segment_rho"})  # one column the new way
+    diag.to_csv(path, index=False)
+    for call in (
+        lambda: ct._read_csv(ctl / "catching_diag.csv"),
+        lambda: ct._csv_header(ctl / "catching_diag.csv"),
+    ):
+        with pytest.raises(ck.MixedColumnNamesError, match=r"decel_event.*segment_rho"):
+            call()
+    # And the other file of the pair, with one column under both names.
+    pe = ctl / "planner_events.csv.gz"
+    frame = pd.read_csv(pe)
+    frame["segment_kind"] = frame["decel_kind"]
+    frame.to_csv(pe, index=False)
+    with pytest.raises(ck.MixedColumnNamesError, match="decel_kind.*segment_kind"):
+        ct._read_csv(ctl / "planner_events.csv")

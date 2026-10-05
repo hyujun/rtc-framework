@@ -26,10 +26,13 @@ from integrated_bringup.demo_gui.catching import (
     OUTCOME_NAMES,
     PLAN_REASON_NAMES,
     REASON_NAMES,
+    SEGMENT_MODE_QUERY_PERIOD_S,
+    SEGMENT_MODE_REPLY_TIMEOUT_S,
     CatchingStatus,
     mode_name,
     outcome_name,
     reason_name,
+    segment_mode_query_due,
 )
 
 # The CloudReject enum's order, as SetupCatchingStatePublisher stamps it.

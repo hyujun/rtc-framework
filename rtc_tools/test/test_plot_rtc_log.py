@@ -4817,3 +4817,105 @@ class TestZoomStemStamp:
         written = {p.stem for p in tmp_path.glob("*.png")}
         stamped = {getattr(plt.figure(num), _zd.PNG_STEM_ATTR, None) for num in plt.get_fignums()}
         assert stamped <= written, f"stamped-but-never-written: {stamped - written}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Recorded with the old `decel_*` column names (#711)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _old_column_names(columns):
+    from rtc_tools.utils.catching_keys import RENAMED_COLUMNS
+
+    new_to_old = {new: old for old, new in RENAMED_COLUMNS.items()}
+    return [new_to_old.get(c, c) for c in columns]
+
+
+def _write_catching_csv(path, kind, *, old):
+    """A catching_diag.csv / planner_events.csv (``kind``) under the new column names,
+    or under the names a controller before the rename wrote."""
+    if kind == "catching_diag":
+        columns = _catching_diag_columns()
+        rows = [_catching_diag_row(i + 1, columns=columns) for i in range(12)]
+    else:
+        columns = _planner_events_columns()
+        rows = [_planner_events_row(i + 1, columns=columns) for i in range(20)]
+    _write_csv(str(path), _old_column_names(columns) if old else columns, rows)
+    return columns
+
+
+@pytest.mark.parametrize("kind", ["catching_diag", "planner_events"])
+def test_a_file_with_the_old_column_names_loads_as_the_new_ones(tmp_path, kind):
+    paths = {old: tmp_path / ("old" if old else "new") / f"{kind}.csv" for old in (False, True)}
+    for old, path in paths.items():
+        path.parent.mkdir()
+        columns = _write_catching_csv(path, kind, old=old)
+    assert any(c.startswith("segment_") for c in columns)
+    old_df = load_log_csv(str(paths[True]), kind)
+    new_df = load_log_csv(str(paths[False]), kind)
+    assert list(old_df.columns) == list(new_df.columns)
+    assert not [c for c in old_df.columns if c.startswith("decel_")]
+    pd.testing.assert_frame_equal(old_df, new_df)
+    # The string columns stay names under the old header too (the loader keys them on the new name).
+    if kind == "planner_events":
+        assert old_df["segment_kind"].iloc[0] == "none"
+        assert old_df["segment_kind"].dtype == new_df["segment_kind"].dtype
+
+
+def test_the_plotters_give_the_same_result_for_an_old_and_a_new_file(tmp_path, capsys):
+    from rtc_tools.plotting.plotters.catching import print_catching_diag_statistics
+    from rtc_tools.plotting.plotters.planner_events import (
+        plot_planner_events,
+        print_planner_events_statistics,
+    )
+
+    out = {}
+    for old in (False, True):
+        d = tmp_path / ("old" if old else "new")
+        d.mkdir()
+        _write_catching_csv(d / "catching_diag.csv", "catching_diag", old=old)
+        _write_catching_csv(d / "planner_events.csv", "planner_events", old=old)
+        diag = load_log_csv(str(d / "catching_diag.csv"), "catching_diag")
+        events = load_log_csv(str(d / "planner_events.csv"), "planner_events")
+        capsys.readouterr()
+        print_catching_diag_statistics(diag)
+        print_planner_events_statistics(events)
+        plot_planner_events(events, save_dir=str(d))
+        text = capsys.readouterr().out
+        assert (d / "planner_events.png").exists()
+        out[old] = text.replace(str(d), "<dir>")
+    assert out[True] == out[False]
+    assert "segment" in out[True].lower()
+
+
+@pytest.mark.parametrize("kind", ["catching_diag", "planner_events"])
+def test_a_header_with_an_old_and_a_new_column_name_is_refused_by_the_loader(tmp_path, kind):
+    from rtc_tools.utils.catching_keys import MixedColumnNamesError
+
+    path = tmp_path / f"{kind}.csv"
+    _write_catching_csv(path, kind, old=True)
+    header = path.read_text().split("\n", 1)
+    new_name = "segment_event" if kind == "catching_diag" else "segment_kind"
+    old_name = new_name.replace("segment_", "decel_")
+    assert old_name in header[0].split(",")
+    # `segment_seq` is one name in both files: the other column of the pair stays old.
+    mixed = header[0].replace(old_name, new_name) + "\n" + header[1]
+    path.write_text(mixed)
+    with pytest.raises(MixedColumnNamesError) as exc:
+        load_log_csv(str(path), kind)
+    assert new_name in str(exc.value) and "decel_" in str(exc.value)
+
+
+def test_plot_rtc_log_stops_on_a_mixed_header_with_the_names(tmp_path, monkeypatch, capsys):
+    from rtc_tools.plotting.plot_rtc_log import main
+
+    path = tmp_path / "planner_events.csv"
+    _write_catching_csv(path, "planner_events", old=True)
+    head, body = path.read_text().split("\n", 1)
+    path.write_text(head.replace("decel_kind", "segment_kind") + "\n" + body)
+    monkeypatch.setattr("sys.argv", ["plot_rtc_log", str(path), "--no-show"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "segment_kind" in out and "decel_outcome" in out
