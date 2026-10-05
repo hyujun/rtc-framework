@@ -196,10 +196,17 @@ int DemoCatchingController::ResolvedTrajNMin() const {
   return params_.io_n_min > 0 ? params_.io_n_min : 2;
 }
 
-double DemoCatchingController::ResolvedPlannerEtaV() const {
-  // A TBD η_v runs the planner's own default (D-9) — as above, one place.
-  return params_.planner_gamma_eta_v.tbd ? rtc::catching::GridCatchSearchConstants{}.eta_v
-                                         : params_.planner_gamma_eta_v.value;
+double DemoCatchingController::ResolvedSearchGridEtaV() const {
+  // A TBD η_v runs the search's own default (D-9) — as above, one place.
+  return params_.planner_search_grid_gamma_eta_v.tbd
+             ? rtc::catching::GridCatchSearchConstants{}.eta_v
+             : params_.planner_search_grid_gamma_eta_v.value;
+}
+
+double DemoCatchingController::ResolvedSegmentMpcEtaV() const {
+  // The mpc segment planner's own key, and its own default when TBD.
+  return params_.planner_segment_mpc_eta_v.tbd ? rtc::catching::MpcSegmentPlannerConstants{}.eta_v
+                                               : params_.planner_segment_mpc_eta_v.value;
 }
 
 void DemoCatchingController::DeclareProfileParameters() {
@@ -286,16 +293,29 @@ void DemoCatchingController::DeclareProfileParameters() {
           "L4 §6 reference acceleration limit [m/s²] as run (struct default when TBD)");
   declare("reference.v_max", ResolvedReferenceParams().v_max,
           "L4 §6 reference TCP speed limit [m/s] as run (struct default when TBD)");
-  declare("planner.gamma.eta_v", ResolvedPlannerEtaV(),
-          "L3 §4.5 speed margin η_v on v_max and the joint ratings (D-9) as run");
-  declare("planner.time.margin", planner_params_.time_margin,
+  declare("planner.search.grid.gamma.eta_v", ResolvedSearchGridEtaV(),
+          "L3 §4.5 speed margin η_v on v_max and the joint ratings (D-9) as the search runs it");
+  // The search's own copies of the reference it rolls a candidate out on: an
+  // overlay can move them apart from `reference.*` (a warning under mpc), and
+  // an analysis of the search must read what the SEARCH ran.
+  const auto as_run = [nan](const rtc::catching::TbdDouble& v) { return v.tbd ? nan : v.value; };
+  declare("planner.search.grid.reference.omega",
+          as_run(params_.planner_search_grid_reference_omega),
+          "L3 §4.8 natural frequency ω of the reference the search rolls out [rad/s] (NaN = TBD)");
+  declare("planner.search.grid.reference.a_max",
+          as_run(params_.planner_search_grid_reference_a_max),
+          "L3 §4.8 acceleration limit of the reference the search rolls out [m/s²] (NaN = TBD)");
+  declare("planner.search.grid.reference.v_max",
+          as_run(params_.planner_search_grid_reference_v_max),
+          "L3 §4.5 TCP speed limit the search's gamma window uses [m/s] (NaN = TBD)");
+  declare("planner.search.grid.time.margin", planner_params_.time_margin,
           "L3 §4.3 reach-time margin T_margin [s] the planner's gate uses");
   declare("robot.arm.qdd_max", arm_qdd_max_,
           "acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
   // The prediction grid the controller expects (E0-F04, #647). The
   // vision profile sets the grid and these three must follow it, but nothing
-  // checks the pair: a `planner.slice.dt` left at 0.05 on a 25 ms grid thins
+  // checks the pair: a `planner.search.grid.slice.dt` left at 0.05 on a 25 ms grid thins
   // the candidates to every other point without a warning, and the run
   // measures the 50 ms grid under the other grid's name.
   declare("prediction.dt_expected",
@@ -303,13 +323,13 @@ void DemoCatchingController::DeclareProfileParameters() {
           "expected vision prediction spacing [s] (NaN = TBD); the decode's spacing floor");
   declare("io.n_min", static_cast<std::int64_t>(ResolvedTrajNMin()),
           "fewest prediction points a message may carry, as run (the decode's default when TBD)");
-  declare("planner.slice.dt", planner_params_.slice_dt,
+  declare("planner.search.grid.slice.dt", planner_params_.slice_dt,
           "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
   // The two the E1-F10 tuning moves per arm (MD-72, MD-74): an
   // overlay one level short would otherwise run the shipped value under the
   // candidate's name. One launch configures once, which is what a unit driver
   // reads; like every mirror here they keep the FIRST configure's value.
-  declare("planner.slice.t_lead_min", planner_params_.LeadMin(),
+  declare("planner.search.grid.slice.t_lead_min", planner_params_.LeadMin(),
           "L3 §4 smallest candidate lead t_c - t_plan [s] as run (planner.freeze.T_freeze when "
           "the key is absent). As of the FIRST configure of this node — read_only mirrors "
           "cannot follow a re-configure");
@@ -321,94 +341,95 @@ void DemoCatchingController::DeclareProfileParameters() {
   // The segment MPC as run (MPC E1-F03): an off-process analysis must read the
   // horizon, window and thresholds this controller used, not the file.
   const auto& mpc_segment = planner_params_.mpc_segment;
-  declare("planner.decel_mpc.horizon.n_nodes", static_cast<std::int64_t>(mpc_segment.n_nodes),
+  declare("planner.segment.mpc.horizon.n_nodes", static_cast<std::int64_t>(mpc_segment.n_nodes),
           "decel MPC nodes N_s; N_s * dt_s is the stopping time (MD-21)");
-  declare("planner.decel_mpc.horizon.dt_s", mpc_segment.dt_s, "decel MPC node spacing dt_s [s]");
-  declare("planner.decel_mpc.horizon.blocks",
+  declare("planner.segment.mpc.horizon.dt_s", mpc_segment.dt_s, "decel MPC node spacing dt_s [s]");
+  declare("planner.segment.mpc.horizon.blocks",
           std::vector<std::int64_t>(mpc_segment.blocks.begin(),
                                     mpc_segment.blocks.begin() + mpc_segment.n_blocks),
           "decel MPC move-blocking pattern of the stop part (sum = n_nodes)");
-  declare("planner.decel_mpc.m_q", mpc_segment.m_q,
+  declare("planner.segment.mpc.m_q", mpc_segment.m_q,
           "decel MPC position margin inside the limits [rad]");
-  declare("planner.decel_mpc.replan.k_max", static_cast<std::int64_t>(mpc_segment.k_max),
+  declare("planner.segment.mpc.replan.k_max", static_cast<std::int64_t>(mpc_segment.k_max),
           "decel MPC post-catch replans at grid points k <= k_max (MD-31)");
-  declare("planner.decel_mpc.eta_tau", mpc_segment.eta_tau,
+  declare("planner.segment.mpc.eta_tau", mpc_segment.eta_tau,
           "decel MPC torque row fraction of tau_max");
-  declare("planner.decel_mpc.publish.slack_max", mpc_segment.slack_max,
+  declare("planner.segment.mpc.publish.slack_max", mpc_segment.slack_max,
           "decel MPC publish threshold on the torque slack, nodes 1..N (MD-33)");
-  declare("planner.decel_mpc.publish.slack_terminal_max", mpc_segment.slack_terminal_max,
+  declare("planner.segment.mpc.publish.slack_terminal_max", mpc_segment.slack_terminal_max,
           "decel MPC publish threshold on the terminal (static) torque slack (MD-33)");
   // The APPROACH–stop keys (MPC E1-F08): all provisional.
-  declare("planner.decel_mpc.approach.n_pre_max", static_cast<std::int64_t>(mpc_segment.n_pre_max),
+  declare("planner.segment.mpc.approach.n_pre_max",
+          static_cast<std::int64_t>(mpc_segment.n_pre_max),
           "decel MPC pre-catch intervals before t_c, at most (MD-54); 0 = no decel planner "
           "(mode mpc parks, MD-70)");
-  declare("planner.decel_mpc.approach.dt_pre_s", mpc_segment.dt_pre_s,
+  declare("planner.segment.mpc.approach.dt_pre_s", mpc_segment.dt_pre_s,
           "decel MPC pre-catch node spacing [s] (MD-54)");
-  declare("planner.decel_mpc.approach.rest_tol", mpc_segment.rest_tol,
+  declare("planner.segment.mpc.approach.rest_tol", mpc_segment.rest_tol,
           "decel MPC first solve: largest |q_dot_cmd| read as at rest [rad/s]");
-  declare("planner.decel_mpc.budget.first_s", mpc_segment.budget_first_s,
+  declare("planner.segment.mpc.budget.first_s", mpc_segment.budget_first_s,
           "decel MPC first-segment solve budget and lead [s] (MD-56)");
-  declare("planner.decel_mpc.budget.replan_s", mpc_segment.budget_replan_s,
+  declare("planner.segment.mpc.budget.replan_s", mpc_segment.budget_replan_s,
           "decel MPC replan solve budget and lead [s] (MD-56)");
-  declare("planner.decel_mpc.replan.same_point", mpc_segment.replan_same_point,
+  declare("planner.segment.mpc.replan.same_point", mpc_segment.replan_same_point,
           "decel MPC re-solves a pre-catch grid point with the newer prediction (MD-58)");
-  declare("planner.decel_mpc.publish.catch_pos_err_max", mpc_segment.catch_pos_err_max,
+  declare("planner.segment.mpc.publish.catch_pos_err_max", mpc_segment.catch_pos_err_max,
           "decel MPC publish threshold on the catch-node position error [m] (MD-62)");
-  declare("planner.decel_mpc.catch.w_axis", mpc_segment.w_axis, "decel MPC approach-axis weight");
-  declare("planner.decel_mpc.catch.w_v_par", mpc_segment.w_v_par,
+  declare("planner.segment.mpc.catch.w_axis", mpc_segment.w_axis, "decel MPC approach-axis weight");
+  declare("planner.segment.mpc.catch.w_v_par", mpc_segment.w_v_par,
           "decel MPC relative-velocity weight along the ball's travel");
-  declare("planner.decel_mpc.catch.w_v_perp", mpc_segment.w_v_perp,
+  declare("planner.segment.mpc.catch.w_v_perp", mpc_segment.w_v_perp,
           "decel MPC relative-velocity weight across the ball's travel");
-  declare("planner.decel_mpc.catch.gamma_ref", mpc_segment.gamma_ref,
+  declare("planner.segment.mpc.catch.gamma_ref", mpc_segment.gamma_ref,
           "decel MPC velocity target fraction of the ball's velocity (MD-53)");
-  declare("planner.decel_mpc.catch.kappa", mpc_segment.kappa,
+  declare("planner.segment.mpc.catch.kappa", mpc_segment.kappa,
           "decel MPC position weight gain: W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 (MD-63)");
-  declare("planner.decel_mpc.catch.sigma_floor", mpc_segment.sigma_floor,
+  declare("planner.segment.mpc.catch.sigma_floor", mpc_segment.sigma_floor,
           "decel MPC position weight tracking-error floor [m]");
-  declare("planner.decel_mpc.catch.w_max", mpc_segment.w_max,
+  declare("planner.segment.mpc.catch.w_max", mpc_segment.w_max,
           "decel MPC position weight eigenvalue cap [1/m^2]");
-  declare("planner.decel_mpc.catch.w_const", mpc_segment.w_const,
+  declare("planner.segment.mpc.catch.w_const", mpc_segment.w_const,
           "decel MPC position weight without a usable covariance [1/m^2]");
-  declare("planner.decel_mpc.catch.sigma_ref", mpc_segment.sigma_ref,
+  declare("planner.segment.mpc.catch.sigma_ref", mpc_segment.sigma_ref,
           "decel MPC w_delta schedule reference, compared with tr Sigma_p [m]");
-  declare("planner.decel_mpc.catch.rho_v", mpc_segment.rho_v,
+  declare("planner.segment.mpc.catch.rho_v", mpc_segment.rho_v,
           "decel MPC relative-velocity slack penalty at the catch node; 0 = no slack row. The "
           "slack is recorded (planner_events decel_slack_v), never a publish gate");
-  declare("planner.decel_mpc.catch.v_rel_allow", mpc_segment.v_rel_allow,
+  declare("planner.segment.mpc.catch.v_rel_allow", mpc_segment.v_rel_allow,
           "decel MPC per-axis relative velocity the hand absorbs [m/s]; read when rho_v > 0");
   // The core's own design values (YAML keys), as run. jerk_weight is the profile's
   // list in arm joint order; empty = the core's all-ones.
-  declare("planner.decel_mpc.cost.jerk_weight", mpc_segment.jerk_weight,
+  declare("planner.segment.mpc.cost.jerk_weight", mpc_segment.jerk_weight,
           "decel MPC jerk weight R_j per arm joint (arm order); empty = all 1");
-  declare("planner.decel_mpc.cost.u_scale", mpc_segment.u_scale,
+  declare("planner.segment.mpc.cost.u_scale", mpc_segment.u_scale,
           "decel MPC jerk scale [rad/s^3]; the jerk cost is (u/u_scale)^2");
-  declare("planner.decel_mpc.cost.w_delta", mpc_segment.w_delta,
+  declare("planner.segment.mpc.cost.w_delta", mpc_segment.w_delta,
           "decel MPC pull toward the reference [1/rad^2]");
-  declare("planner.decel_mpc.cost.rho_tau", mpc_segment.rho_tau,
+  declare("planner.segment.mpc.cost.rho_tau", mpc_segment.rho_tau,
           "decel MPC torque slack penalty; 0 = torque rows off (the publish slack condition is "
           "then vacuous)");
-  declare("planner.decel_mpc.cost.w_perp", mpc_segment.w_perp,
+  declare("planner.segment.mpc.cost.w_perp", mpc_segment.w_perp,
           "decel MPC stop-path weight [1/m^2]: distance of the catch frame, from the catch on, "
           "from the line through the ball's predicted catch position along its travel; 0 = off, at "
           "most 1e4");
-  declare("planner.decel_mpc.catch.axis_theta_max", mpc_segment.axis_theta_max,
+  declare("planner.segment.mpc.catch.axis_theta_max", mpc_segment.axis_theta_max,
           "decel MPC largest axis error of the reference the approach-axis term linearises at "
           "[rad]");
-  declare("planner.decel_mpc.linearization.delta_tr", mpc_segment.delta_tr,
+  declare("planner.segment.mpc.linearization.delta_tr", mpc_segment.delta_tr,
           "decel MPC trust-region half-width around the reference [rad]");
-  declare("planner.decel_mpc.linearization.reference_rest_tol", mpc_segment.reference_rest_tol,
+  declare("planner.segment.mpc.linearization.reference_rest_tol", mpc_segment.reference_rest_tol,
           "decel MPC bound on the supplied reference's terminal speed and acceleration");
-  declare("planner.decel_mpc.linearization.ref_speed_fraction", mpc_segment.ref_speed_fraction,
+  declare("planner.segment.mpc.linearization.ref_speed_fraction", mpc_segment.ref_speed_fraction,
           "decel MPC first-solve reference speed as a fraction of eta_v * qdot_max");
-  declare("planner.decel_mpc.solver.max_iter",
+  declare("planner.segment.mpc.solver.max_iter",
           static_cast<std::int64_t>(mpc_segment.solver_max_iter),
           "decel MPC ProxQP outer iteration cap");
-  declare("planner.decel_mpc.solver.max_iter_in",
+  declare("planner.segment.mpc.solver.max_iter_in",
           static_cast<std::int64_t>(mpc_segment.solver_max_iter_in),
           "decel MPC ProxQP inner iteration cap per outer step");
-  declare("planner.decel_mpc.solver.eps_abs", mpc_segment.solver_eps_abs,
+  declare("planner.segment.mpc.solver.eps_abs", mpc_segment.solver_eps_abs,
           "decel MPC ProxQP absolute tolerance");
-  declare("planner.decel_mpc.solver.eps_rel", mpc_segment.solver_eps_rel,
+  declare("planner.segment.mpc.solver.eps_rel", mpc_segment.solver_eps_rel,
           "decel MPC ProxQP relative tolerance");
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
@@ -419,11 +440,16 @@ void DemoCatchingController::DeclareProfileParameters() {
   // The DECEL law (MPC MD-44): one per configuration, never mixed. Like every
   // mirror here, read_only — it keeps the FIRST configure's value.
   declare(
-      "supervisor.decel.mode",
-      std::string(decel_mode_ == rtc::catching::CatchingDecelMode::kMpc ? "mpc" : "closed_form"),
+      "planner.segment.mode",
+      std::string(segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc ? "mpc"
+                                                                            : "closed_form"),
       "MPC MD-44: the DECEL law — closed_form (v1 L7) or mpc (the decel MPC's stop segment). "
       "As of the FIRST configure of this node — read_only mirrors cannot follow a re-configure");
-  declare("supervisor.decel.switch_margin", decel_switch_margin_,
+  declare("planner.segment.mpc.eta_v", ResolvedSegmentMpcEtaV(),
+          "speed margin η_v of the mpc segment planner's velocity box and of the RT's "
+          "segment-switch gate headroom (D-9, MD-39) as run. As of the FIRST configure of this "
+          "node — read_only mirrors cannot follow a re-configure");
+  declare("planner.segment.mpc.switch_margin", segment_switch_margin_,
           "MPC MD-39: rho_max of the decel segment switch gate (mode mpc). As of the FIRST "
           "configure of this node — read_only mirrors cannot follow a re-configure");
 }
@@ -1023,9 +1049,18 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // Every one is named, so one configure tells the operator all of it.
     const bool removed_box =
         params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kRemovedBox;
-    if (!removed_arm_box_keys_.empty() || removed_box) {
+    if (!removed_arm_box_keys_.empty() || removed_box || !renamed_keys_.empty()) {
       sim_only_disabled_ = true;
       park_reason_ = CatchingParkReason::kRemovedKey;
+      // A key that moved (#711) is no longer read: without this the new key
+      // would run on its default — the shipped value, or closed_form — under
+      // the old key's name.
+      for (const rtc::catching::RenamedCatchingKey& key : renamed_keys_) {
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: 'catching.%s' was renamed — write it as 'catching.%s'. This "
+                     "controller will refuse to activate; the robot still comes up.",
+                     key.old_path, key.new_path);
+      }
       for (const std::string& key : removed_arm_box_keys_) {
         RCLCPP_ERROR(logger_,
                      "DISABLED: 'catching.%s' was removed — set the acceleration box as "
@@ -1060,18 +1095,14 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       }
       rtc::catching::CheckCatchFrameProvisional(report_, *provisional, real_arm_config_);
     }
-    // The DECEL law (MPC MD-44) — decided here, once, for the whole
+    // The segment mode (MPC MD-44) — decided here, once, for the whole
     // configuration: the planner's setup below builds the MPC segment cores only
     // for it, and the tick never changes it.
-    decel_mode_ = params_.supervisor_decel_mode;
-    decel_switch_margin_ = params_.supervisor_decel_switch_margin;
-    if (stale_decel_mpc_disabled_key_ && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
-      RCLCPP_WARN(logger_,
-                  "catching.planner.decel_mpc.enabled: false is ignored — the key was removed. "
-                  "The mpc law runs because supervisor.decel.mode is mpc; set "
-                  "supervisor.decel.mode: closed_form to turn it off.");
-    }
+    segment_mode_ = params_.planner_segment_mode;
+    segment_switch_margin_ = params_.planner_segment_mpc_switch_margin;
     // Written by SetupMpcSegmentPlanner only when this configure builds it.
+    grid_catch_search_constants_ = {};
+    mpc_segment_planner_constants_ = {};
     mpc_segment_planner_q_min_.fill(0.0);
     mpc_segment_planner_q_max_.fill(0.0);
     clik_v_box_complete_ = false;
@@ -1164,18 +1195,60 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "controller will refuse to activate; the robot still comes up.");
       return CallbackReturn::SUCCESS;
     }
+    // The search rolls a candidate out on its own copies of the closed_form
+    // law's five values (planner.search.grid.reference.*, stop.a_dec). Under
+    // closed_form the arm follows that law, so a copy that differs makes the
+    // search rank candidates by a motion the arm will not make: park, name the
+    // pair, keep the robot up. Under mpc the arm follows the mpc segment
+    // planner's segments and the two are different functions' values — said
+    // once, then run. Only with the planner on: nothing else reads the copies.
+    if (planner_params_.enabled) {
+      const bool closed_form = segment_mode_ == rtc::catching::CatchingSegmentMode::kClosedForm;
+      std::array<rtc::catching::CatchingKeyCopy, 5> differ{};
+      const std::size_t n_differ = rtc::catching::SearchCopiesThatDiffer(params_, differ);
+      for (std::size_t i = 0; i < n_differ; ++i) {
+        if (closed_form) {
+          RCLCPP_ERROR(logger_,
+                       "DISABLED: 'catching.%s' differs from 'catching.%s' — under "
+                       "planner.segment.mode closed_form the search must roll a candidate out "
+                       "on the reference the arm follows. Set the two to one value. This "
+                       "controller will refuse to activate; the robot still comes up.",
+                       differ[i].copy, differ[i].source);
+        } else {
+          RCLCPP_WARN(logger_,
+                      "'catching.%s' differs from 'catching.%s': the search ranks candidates "
+                      "by a closed_form rollout on its own value (planner.segment.mode is mpc, "
+                      "so the arm does not follow that law).",
+                      differ[i].copy, differ[i].source);
+        }
+      }
+      if (closed_form && n_differ > 0) {
+        sim_only_disabled_ = true;
+        park_reason_ = CatchingParkReason::kSearchCopyDiffers;
+        return CallbackReturn::SUCCESS;
+      }
+      // The two speed margins: the search judges a candidate's reach with its
+      // own η_v, the mpc segment planner boxes the joint speeds with its own.
+      if (!closed_form && ResolvedSearchGridEtaV() != ResolvedSegmentMpcEtaV()) {
+        RCLCPP_WARN(logger_,
+                    "'catching.planner.segment.mpc.eta_v' (%g) differs from "
+                    "'catching.planner.search.grid.gamma.eta_v' (%g): the search admits "
+                    "candidates on one speed margin and the mpc segment planner plans on another.",
+                    ResolvedSegmentMpcEtaV(), ResolvedSearchGridEtaV());
+      }
+    }
     // The segment MPC (MPC E1-F03) runs on the planner thread, and its torque
     // box plus publish slack must fit inside the CLIK's (MD-33). A profile
     // mistake: park, name it, keep the robot up. Only under the law that runs
     // it and only with the planner on — closed_form builds no MPC segment core and
     // reads none of its keys (MD-44), and a planner-less mpc profile is
-    // DecelModeUnmet's to judge (the oracle profile is exempt there).
-    if (planner_params_.enabled && decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
+    // SegmentModeUnmet's to judge (the oracle profile is exempt there).
+    if (planner_params_.enabled && segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc) {
       if (const char* why = MpcSegmentConfigInvalid(); why != nullptr) {
         sim_only_disabled_ = true;
         park_reason_ = CatchingParkReason::kMpcSegmentInvalid;
         RCLCPP_ERROR(logger_,
-                     "DISABLED: supervisor.decel.mode is mpc but %s. This controller will "
+                     "DISABLED: planner.segment.mode is mpc but %s. This controller will "
                      "refuse to activate; the robot still comes up.",
                      why);
         return CallbackReturn::SUCCESS;
@@ -1318,12 +1391,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // APPROACH to the end of the stop, so a missing prerequisite would leave
     // every trial without one. Parked like any other profile mistake: the
     // robot comes up, this controller does not activate.
-    if (decel_mode_ == rtc::catching::CatchingDecelMode::kMpc) {
-      if (const char* why = DecelModeUnmet(); why != nullptr) {
+    if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc) {
+      if (const char* why = SegmentModeUnmet(); why != nullptr) {
         sim_only_disabled_ = true;
-        park_reason_ = CatchingParkReason::kDecelModeUnmet;
+        park_reason_ = CatchingParkReason::kSegmentModeUnmet;
         RCLCPP_ERROR(logger_,
-                     "DISABLED: supervisor.decel.mode is mpc but %s. This controller will refuse "
+                     "DISABLED: planner.segment.mode is mpc but %s. This controller will refuse "
                      "to activate; the robot still comes up.",
                      why);
         TearDownConfiguredResources();
@@ -1331,7 +1404,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       }
       if (oracle_enabled_) {
         RCLCPP_WARN(logger_,
-                    "supervisor.decel.mode is mpc under the oracle plan profile: no planner "
+                    "planner.segment.mode is mpc under the oracle plan profile: no planner "
                     "publishes a stop segment here, so every DECEL aborts unless a test writes "
                     "the decel box");
       }
@@ -1396,11 +1469,13 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
                  park_reason_ == CatchingParkReason::kPlannerOracleConflict
                      ? "planner and oracle plan both enabled"
                  : park_reason_ == CatchingParkReason::kMpcSegmentInvalid
-                     ? "planner.decel_mpc cannot run in this profile"
-                 : park_reason_ == CatchingParkReason::kDecelModeUnmet
-                     ? "supervisor.decel.mode mpc lacks a prerequisite"
+                     ? "planner.segment.mpc cannot run in this profile"
+                 : park_reason_ == CatchingParkReason::kSegmentModeUnmet
+                     ? "planner.segment.mode mpc lacks a prerequisite"
                  : park_reason_ == CatchingParkReason::kRemovedKey
-                     ? "the profile sets a removed key or value"
+                     ? "the profile sets a removed or renamed key, or a removed value"
+                 : park_reason_ == CatchingParkReason::kSearchCopyDiffers
+                     ? "the search's copy of a closed_form value differs from it"
                      : "a consumed value is provisional or TBD");
     return CallbackReturn::FAILURE;
   }
@@ -1563,13 +1638,13 @@ const char* DemoCatchingController::PlannerDecisionMissing() const noexcept {
     return "planner.freeze.T_freeze";
   }
   if (!p.catch_box.set) {
-    return "planner.workspace.catch_box";
+    return "planner.search.grid.workspace.catch_box";
   }
   if (!std::isfinite(p.d_eff)) {
-    return "planner.hand.d_eff";
+    return "planner.search.grid.hand.d_eff";
   }
   if (!std::isfinite(p.r_cap)) {
-    return "planner.hand.r_cap";
+    return "planner.search.grid.hand.r_cap";
   }
   return nullptr;
 }
@@ -1786,7 +1861,7 @@ bool DemoCatchingController::SetupPlanner() {
     RCLCPP_WARN(logger_,
                 "planner: no system model — the thread runs, but its search is the stub "
                 "(it publishes \"no plan\")%s",
-                decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
+                segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
                     ? " and the decel MPC does not run"
                     : "");
   } else if (!SetupGridCatchSearch()) {
@@ -1884,22 +1959,26 @@ bool DemoCatchingController::SetupGridCatchSearch() {
   const auto val = [](const rtc::catching::TbdDouble& v) {
     return v.tbd ? std::numeric_limits<double>::quiet_NaN() : v.value;
   };
+  // The search's own keys (planner.search.grid.*), not the closed_form law's:
+  // it runs under both segment modes, and on_configure has already parked a
+  // closed_form profile whose copies differ from the law's values.
   rtc::catching::GridCatchSearchConstants pc;
-  pc.eta_v = ResolvedPlannerEtaV();
-  pc.v_max = val(params_.reference_v_max);
-  pc.a_dec = val(params_.supervisor_decel_a_dec);
+  pc.eta_v = ResolvedSearchGridEtaV();
+  pc.v_max = val(params_.planner_search_grid_reference_v_max);
+  pc.a_dec = val(params_.planner_search_grid_stop_a_dec);
   pc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
   pc.t_close_e2e = val(params_.hand.T_close_e2e);
   // T_close,tot = T_close,e2e + h/2 (L3 §4.5): the tick quantisation budget.
   pc.t_close_total = pc.t_close_e2e + 0.5 * GetDefaultDt();
   pc.ball_mass = val(params_.ball.mass);
-  // The L4 reference the rollout replays (§4.8): the controller's own ω, ζ and
-  // a_max, and the control period as the confirmation step.
-  pc.ref_omega = val(params_.reference_omega);
-  pc.ref_zeta = val(params_.reference_zeta);
-  pc.ref_a_max = val(params_.reference_a_max);
+  // The L4 reference the rollout replays (§4.8): the search's ω, ζ and a_max,
+  // and the control period as the confirmation step.
+  pc.ref_omega = val(params_.planner_search_grid_reference_omega);
+  pc.ref_zeta = val(params_.planner_search_grid_reference_zeta);
+  pc.ref_a_max = val(params_.planner_search_grid_reference_a_max);
   pc.control_dt = GetDefaultDt();
 
+  grid_catch_search_constants_ = pc;
   if (!planner_cycle_.ConfigureGridCatchSearch(pm, pc, catch_pose_ik_config_.options)) {
     RCLCPP_ERROR(logger_,
                  "planner: the search refused its model (nv %d, wait pose %d entries — "
@@ -1909,8 +1988,8 @@ bool DemoCatchingController::SetupGridCatchSearch() {
   }
   // MD-44: the MPC segment cores exist only for a configuration that follows them.
   // Without a pre-catch grid there is no MPC segment planner to build (MD-70) — a
-  // profile mistake DecelModeUnmet parks on, not a configure failure.
-  if (decel_mode_ == rtc::catching::CatchingDecelMode::kMpc &&
+  // profile mistake SegmentModeUnmet parks on, not a configure failure.
+  if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc &&
       planner_params_.mpc_segment.n_pre_max > 0 && !SetupMpcSegmentPlanner(model, pm)) {
     return false;
   }
@@ -1929,7 +2008,7 @@ const char* DemoCatchingController::MpcSegmentConfigInvalid() const noexcept {
   if (params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic &&
       !params_.joint_cmd_eta_tau.tbd &&
       !(d.eta_tau + d.slack_max <= params_.joint_cmd_eta_tau.value)) {
-    return "planner.decel_mpc.eta_tau + publish.slack_max exceeds joint_cmd.eta_tau (a published "
+    return "planner.segment.mpc.eta_tau + publish.slack_max exceeds joint_cmd.eta_tau (a published "
            "stop could ask for torque the CLIK's torque box refuses, MD-33)";
   }
   return nullptr;
@@ -1939,11 +2018,10 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
     const std::shared_ptr<const pinocchio::Model>& model,
     const rtc::catching::GridCatchSearchModel& pm) {
   if (pm.nv > rtc::catching::kMaxSegmentNv) {
-    RCLCPP_ERROR(
-        logger_,
-        "planner.decel_mpc: the arm has %d joints but a decel segment carries at most "
-        "%d (kMaxSegmentNv) — set supervisor.decel.mode: closed_form or raise the capacity",
-        pm.nv, rtc::catching::kMaxSegmentNv);
+    RCLCPP_ERROR(logger_,
+                 "planner.segment.mpc: the arm has %d joints but a decel segment carries at most "
+                 "%d (kMaxSegmentNv) — set planner.segment.mode: closed_form or raise the capacity",
+                 pm.nv, rtc::catching::kMaxSegmentNv);
     return false;
   }
   const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
@@ -1953,7 +2031,7 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
   }
   if (torque == nullptr || static_cast<int>(torque->size()) < pm.nv) {
     RCLCPP_ERROR(logger_,
-                 "planner.decel_mpc: the arm device has no joint_limits.max_torque for its %d "
+                 "planner.segment.mpc: the arm device has no joint_limits.max_torque for its %d "
                  "joints — the decel MPC's torque rows need them",
                  pm.nv);
     return false;
@@ -1984,14 +2062,15 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
     dm.tau_max[u] = (*torque)[static_cast<std::size_t>(pm.device_of_model[u])];
   }
   rtc::catching::MpcSegmentPlannerConstants dc;
-  dc.eta_v = ResolvedPlannerEtaV();
+  dc.eta_v = ResolvedSegmentMpcEtaV();
   dc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
   dc.control_dt = GetDefaultDt();
-  // The ball's direction of travel is undefined below the IK's own floor.
-  dc.v_eps = catch_pose_ik_config_.options.v_eps;
+  // The ball's direction of travel is undefined below this floor.
+  dc.v_eps = planner_params_.mpc_segment.v_eps;
+  mpc_segment_planner_constants_ = dc;
   std::string error;
   if (!planner_cycle_.ConfigureMpcSegmentPlanner(dm, dc, &error)) {
-    RCLCPP_ERROR(logger_, "planner.decel_mpc: %s", error.c_str());
+    RCLCPP_ERROR(logger_, "planner.segment.mpc: %s", error.c_str());
     return false;
   }
   const auto& d = planner_params_.mpc_segment;
@@ -2007,7 +2086,7 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
               d.replan_same_point ? "on" : "off", d.catch_pos_err_max);
   if (!d.horizon_explicit) {
     RCLCPP_WARN(logger_,
-                "planner.decel_mpc.horizon is not set: the stop part runs the code default "
+                "planner.segment.mpc.horizon is not set: the stop part runs the code default "
                 "%d x %.3f s, not the MD-54 grid",
                 d.n_nodes, d.dt_s);
   }
@@ -2016,13 +2095,13 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
 
 void DemoCatchingController::SetupSegmentFollower() {
   // Unbound on every configure: a re-configure to closed_form must not keep
-  // the previous sampler, and DecelModeUnmet reads Initialized().
+  // the previous sampler, and SegmentModeUnmet reads Initialized().
   segment_follower_ = rtc::catching::NodeTrajectoryFollower{};
   segment_qd_max_.fill(0.0);
-  segment_eta_v_ = ResolvedPlannerEtaV();
+  segment_eta_v_ = ResolvedSegmentMpcEtaV();
   segment_k_p_ = params_.joint_cmd_k_p.tbd ? 0.0 : params_.joint_cmd_k_p.value;
   segment_k_n_ = params_.joint_cmd_k_posture.tbd ? 0.0 : params_.joint_cmd_k_posture.value;
-  if (decel_mode_ != rtc::catching::CatchingDecelMode::kMpc) {
+  if (segment_mode_ != rtc::catching::CatchingSegmentMode::kMpc) {
     return;
   }
   // The planner's catch sub-model — resolved whether or not the planner runs:
@@ -2030,7 +2109,7 @@ void DemoCatchingController::SetupSegmentFollower() {
   std::shared_ptr<const pinocchio::Model> model;
   pinocchio::FrameIndex frame = 0;
   std::array<int, rtc::catching::kMaxPlanNv> device_of_model{};
-  if (!ResolveCatchSubModel("supervisor.decel.mode mpc", model, frame, device_of_model)) {
+  if (!ResolveCatchSubModel("planner.segment.mode mpc", model, frame, device_of_model)) {
     return;
   }
   if (model->nv > rtc::catching::kMaxSegmentNv ||
@@ -2038,7 +2117,7 @@ void DemoCatchingController::SetupSegmentFollower() {
           model, frame,
           std::span<const int>(device_of_model.data(), static_cast<std::size_t>(model->nv)))) {
     RCLCPP_ERROR(logger_,
-                 "supervisor.decel.mode mpc: the segment sampler refused the sub-model "
+                 "planner.segment.mode mpc: the segment sampler refused the sub-model "
                  "(nv %d, capacity %d)",
                  model->nv, rtc::catching::kMaxSegmentNv);
     segment_follower_ = rtc::catching::NodeTrajectoryFollower{};
@@ -2053,10 +2132,10 @@ void DemoCatchingController::SetupSegmentFollower() {
               "DECEL law: mpc — takes a plan with its first segment and follows the MPC's "
               "segments from APPROACH to the end of the stop (no soft-catch reference, no "
               "closed-form fallback; MD-44, MD-45); switch margin %.2f, admission age <= %.3f s",
-              decel_switch_margin_, static_cast<double>(kSegmentAdmissionMaxAgeNs) * 1e-9);
+              segment_switch_margin_, static_cast<double>(kSegmentAdmissionMaxAgeNs) * 1e-9);
 }
 
-const char* DemoCatchingController::DecelModeUnmet() const noexcept {
+const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
   if (!clik_enabled_) {
     return "the arm command path is not wired (no model or CLIK)";
   }
@@ -2068,7 +2147,7 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
     return "joint_cmd.K_n is not above 0 (the posture feedforward divides by it, MD-36)";
   }
   if (!(segment_eta_v_ < 1.0)) {
-    return "planner.gamma.eta_v is not below 1 (the switch gate's headroom is (1 - eta_v) "
+    return "planner.segment.mpc.eta_v is not below 1 (the switch gate's headroom is (1 - eta_v) "
            "q_dot_max, MD-39)";
   }
   for (int i = 0; i < arm_dof_; ++i) {
@@ -2084,7 +2163,7 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   if (static_cast<int>(arm_q_min_margined_.size()) != arm_dof_) {
     return "the CLIK's position box is off (device position limits incomplete)";
   }
-  // planner.workspace.catch_box is not one of these (MD-73): the RT does not
+  // planner.search.grid.workspace.catch_box is not one of these (MD-73): the RT does not
   // judge where a stop ends. The search needs it, and says so itself
   // (kPlannerUnset).
   // MD-45, MD-70: the arm follows a segment from APPROACH, and a plan is
@@ -2092,7 +2171,7 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   // pre-catch grid no MPC segment planner is built — no trial would ever start. The
   // oracle profile has no planner: its test writes the box.
   if (!oracle_enabled_ && planner_params_.enabled && !(planner_params_.mpc_segment.n_pre_max > 0)) {
-    return "planner.decel_mpc.approach.n_pre_max is 0 (the RT takes a plan only with a segment "
+    return "planner.segment.mpc.approach.n_pre_max is 0 (the RT takes a plan only with a segment "
            "that starts before t_c, MD-45)";
   }
   if (!oracle_enabled_ && !(planner_params_.enabled && planner_cycle_.SegmentPlannerConfigured())) {
@@ -2105,7 +2184,7 @@ const char* DemoCatchingController::DecelModeUnmet() const noexcept {
   const double min_age_s = planner_params_.mpc_segment.budget_replan_s + 3.0 * GetDefaultDt();
   if (planner_params_.enabled &&
       !(static_cast<double>(kSegmentAdmissionMaxAgeNs) * 1e-9 > min_age_s)) {
-    return "planner.decel_mpc.budget.replan_s + 3 control periods is not below the decel "
+    return "planner.segment.mpc.budget.replan_s + 3 control periods is not below the decel "
            "admission age bound";
   }
   return nullptr;

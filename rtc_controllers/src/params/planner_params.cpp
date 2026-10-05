@@ -200,14 +200,19 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
     return out;
   }
   const YAML::Node& planner = section.node;
+  // Each function's design values sit under its own map (#711): the grid
+  // search's under `planner.search.grid`, the mpc segment planner's under
+  // `planner.segment.mpc`. What is read from `planner` itself is the thread's.
+  const YAML::Node search = Section(planner, "search", "search");
+  const YAML::Node grid = Section(search, "grid", "search.grid");
 
   // ── Thread ─────────────────────────────────────────────────────────────────
   out.enabled = ReadBool(planner, "enabled", "enabled", out.enabled);
   out.provisional = ReadBool(planner, "provisional", "provisional", out.provisional);
   out.wake_timeout_s = ReadBounded(planner, "wake_timeout_s", "wake_timeout_s", out.wake_timeout_s,
                                    kPlannerWakeTimeoutMinS, kPlannerWakeTimeoutMaxS);
-  out.budget_s = ReadBounded(planner, "budget_s", "budget_s", out.budget_s, kPlannerBudgetMinS,
-                             kPlannerBudgetMaxS);
+  out.budget_s = ReadBounded(grid, "budget_s", "search.grid.budget_s", out.budget_s,
+                             kPlannerBudgetMinS, kPlannerBudgetMaxS);
   if (const YAML::Node pose = planner["wait_pose"]; pose) {
     if (!pose.IsSequence() || pose.size() == 0) {
       Reject(Key("wait_pose") + " must be a non-empty sequence of joint angles, got " +
@@ -250,28 +255,35 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
     }
     out.sub_model = v.Scalar();
   }
-  out.max_ik = ReadInt(planner, "max_ik", "max_ik", out.max_ik, 1, kPlannerMaxIkCapacity);
-  out.n_settle = ReadInt(planner, "n_settle", "n_settle", out.n_settle, 0, 20);
+  out.max_ik = ReadInt(grid, "max_ik", "search.grid.max_ik", out.max_ik, 1, kPlannerMaxIkCapacity);
+  out.n_settle = ReadInt(grid, "n_settle", "search.grid.n_settle", out.n_settle, 0, 20);
 
-  const YAML::Node slice = Section(planner, "slice", "slice");
-  out.slice_dt = ReadBounded(slice, "dt", "slice.dt", out.slice_dt, 0.005, 0.05);
-  out.slice_t_max = ReadBounded(slice, "t_max", "slice.t_max", out.slice_t_max, 0.2, 1.5);
+  const YAML::Node slice = Section(grid, "slice", "search.grid.slice");
+  out.slice_dt = ReadBounded(slice, "dt", "search.grid.slice.dt", out.slice_dt, 0.005, 0.05);
+  out.slice_t_max =
+      ReadBounded(slice, "t_max", "search.grid.slice.t_max", out.slice_t_max, 0.2, 1.5);
   if (slice["t_lead_min"]) {
-    out.slice_t_lead_min = ReadBounded(slice, "t_lead_min", "slice.t_lead_min", 0.0, 1e-3, 1.5);
+    out.slice_t_lead_min =
+        ReadBounded(slice, "t_lead_min", "search.grid.slice.t_lead_min", 0.0, 1e-3, 1.5);
   }
 
-  const YAML::Node time = Section(planner, "time", "time");
-  out.time_margin = ReadBounded(time, "margin", "time.margin", out.time_margin, 0.0, 0.2);
+  const YAML::Node time = Section(grid, "time", "search.grid.time");
+  out.time_margin =
+      ReadBounded(time, "margin", "search.grid.time.margin", out.time_margin, 0.0, 0.2);
 
-  const YAML::Node unc = Section(planner, "unc", "unc");
-  out.kappa_sigma = ReadBounded(unc, "kappa_sigma", "unc.kappa_sigma", out.kappa_sigma, 0.05, 1.0);
+  const YAML::Node unc = Section(grid, "unc", "search.grid.unc");
+  out.kappa_sigma =
+      ReadBounded(unc, "kappa_sigma", "search.grid.unc.kappa_sigma", out.kappa_sigma, 0.05, 1.0);
 
-  const YAML::Node gamma = Section(planner, "gamma", "gamma");
-  out.gamma_margin = ReadBounded(gamma, "margin", "gamma.margin", out.gamma_margin, 0.0, 1.0);
-  out.unit_speed_damping = ReadInterval(gamma, "unit_speed_damping", "gamma.unit_speed_damping",
-                                        out.unit_speed_damping, 0.0, true, 1.0, false, "(0, 1]");
-  out.eta_a = ReadBounded(gamma, "eta_a", "gamma.eta_a", out.eta_a, 1e-3, 1.0);
-  out.eps_term = ReadBounded(gamma, "eps_term", "gamma.eps_term", out.eps_term, 1e-6, 1.0);
+  const YAML::Node gamma = Section(grid, "gamma", "search.grid.gamma");
+  out.gamma_margin =
+      ReadBounded(gamma, "margin", "search.grid.gamma.margin", out.gamma_margin, 0.0, 1.0);
+  out.unit_speed_damping =
+      ReadInterval(gamma, "unit_speed_damping", "search.grid.gamma.unit_speed_damping",
+                   out.unit_speed_damping, 0.0, true, 1.0, false, "(0, 1]");
+  out.eta_a = ReadBounded(gamma, "eta_a", "search.grid.gamma.eta_a", out.eta_a, 1e-3, 1.0);
+  out.eps_term =
+      ReadBounded(gamma, "eps_term", "search.grid.gamma.eps_term", out.eps_term, 1e-6, 1.0);
   const auto read_grid = [](const YAML::Node& sec, const char* key, const std::string& path,
                             auto& dst, std::size_t& n, double lo, double hi) {
     const YAML::Node v = sec[key];
@@ -297,86 +309,98 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
     }
     n = v.size();
   };
-  read_grid(gamma, "grid", "gamma.grid", out.gamma_grid, out.gamma_grid_n, 0.0, 1.0);
-  read_grid(gamma, "window_grid", "gamma.window_grid", out.window_grid, out.window_grid_n, 1e-3,
-            2.0);
-  const YAML::Node rollout = Section(planner, "rollout", "rollout");
-  out.rollout_dt_coarse =
-      ReadBounded(rollout, "dt_coarse", "rollout.dt_coarse", out.rollout_dt_coarse, 1e-4, 0.05);
+  read_grid(gamma, "grid", "search.grid.gamma.grid", out.gamma_grid, out.gamma_grid_n, 0.0, 1.0);
+  read_grid(gamma, "window_grid", "search.grid.gamma.window_grid", out.window_grid,
+            out.window_grid_n, 1e-3, 2.0);
+  const YAML::Node rollout = Section(grid, "rollout", "search.grid.rollout");
+  out.rollout_dt_coarse = ReadBounded(rollout, "dt_coarse", "search.grid.rollout.dt_coarse",
+                                      out.rollout_dt_coarse, 1e-4, 0.05);
 
-  const YAML::Node budget = Section(planner, "budget", "budget");
-  out.n_sigma = ReadBounded(budget, "n_sigma", "budget.n_sigma", out.n_sigma, 1.0, 3.0);
-  out.sigma_trk = ReadBounded(budget, "sigma_trk", "budget.sigma_trk", out.sigma_trk, 0.0, 1.0);
-  out.clock_err = ReadBounded(budget, "clock_err", "budget.clock_err", out.clock_err, 0.0, 1.0);
+  const YAML::Node budget = Section(grid, "budget", "search.grid.budget");
+  out.n_sigma = ReadBounded(budget, "n_sigma", "search.grid.budget.n_sigma", out.n_sigma, 1.0, 3.0);
+  out.sigma_trk =
+      ReadBounded(budget, "sigma_trk", "search.grid.budget.sigma_trk", out.sigma_trk, 0.0, 1.0);
+  out.clock_err =
+      ReadBounded(budget, "clock_err", "search.grid.budget.clock_err", out.clock_err, 0.0, 1.0);
 
-  const YAML::Node hand = Section(planner, "hand", "hand");
-  out.d_eff = ReadDecision(hand, "d_eff", "hand.d_eff", 1e-4, 10.0);
-  out.r_cap = ReadDecision(hand, "r_cap", "hand.r_cap", 1e-4, 1.0);
+  const YAML::Node hand = Section(grid, "hand", "search.grid.hand");
+  out.d_eff = ReadDecision(hand, "d_eff", "search.grid.hand.d_eff", 1e-4, 10.0);
+  out.r_cap = ReadDecision(hand, "r_cap", "search.grid.hand.r_cap", 1e-4, 1.0);
 
-  const YAML::Node sw = Section(planner, "switch", "switch");
-  out.switch_delta_j = ReadBounded(sw, "delta_J", "switch.delta_J", out.switch_delta_j, 0.0, 1e6);
+  const YAML::Node sw = Section(grid, "switch", "search.grid.switch");
+  out.switch_delta_j =
+      ReadBounded(sw, "delta_J", "search.grid.switch.delta_J", out.switch_delta_j, 0.0, 1e6);
   // The distance limits the acceleration budget replaced (decision ⑥): a
   // profile still carrying them was tuned for the old rule, so it is refused
   // rather than silently run on the eta_jump default.
   for (const char* retired : {"e_jump_max", "ed_jump_max"}) {
     if (sw && sw.IsMap() && sw[retired]) {
-      Reject(Key(std::string("switch.") + retired) +
-             " was replaced by switch.eta_jump (L3 §4.7, an acceleration budget)");
+      Reject(
+          Key(std::string("search.grid.switch.") + retired) +
+          " was replaced by planner.search.grid.switch.eta_jump (L3 §4.7, an acceleration budget)");
     }
   }
   out.switch_eta_jump =
-      ReadBounded(sw, "eta_jump", "switch.eta_jump", out.switch_eta_jump, 1e-6, 1.0);
+      ReadBounded(sw, "eta_jump", "search.grid.switch.eta_jump", out.switch_eta_jump, 1e-6, 1.0);
   // The step bound divides by samples − 1: fewer than two instants is no ramp.
   // And every sample is a ramp evaluation on the planner thread per switch
   // check, so the count is capped (kSwitchSamplesMax).
-  out.switch_samples =
-      ReadInt(sw, "samples", "switch.samples", out.switch_samples, 2, kSwitchSamplesMax);
+  out.switch_samples = ReadInt(sw, "samples", "search.grid.switch.samples", out.switch_samples, 2,
+                               kSwitchSamplesMax);
 
   const YAML::Node freeze = Section(planner, "freeze", "freeze");
   out.t_freeze = ReadDecision(freeze, "T_freeze", "freeze.T_freeze", 1e-3, 2.0);
 
-  const YAML::Node score = Section(planner, "score", "score");
-  out.score.w_sigma = ReadBounded(score, "w_sigma", "score.w_sigma", out.score.w_sigma, 0.0, 1e6);
-  out.score.w_t = ReadBounded(score, "w_t", "score.w_t", out.score.w_t, 0.0, 1e6);
-  out.score.w_q = ReadBounded(score, "w_q", "score.w_q", out.score.w_q, 0.0, 1e6);
-  out.score.w_late = ReadBounded(score, "w_late", "score.w_late", out.score.w_late, 0.0, 1e6);
-  out.score.w_gamma = ReadBounded(score, "w_gamma", "score.w_gamma", out.score.w_gamma, 0.0, 1e6);
-  out.score.penalty = ReadBounded(score, "penalty", "score.penalty", out.score.penalty, 0.0, 1e9);
+  const YAML::Node score = Section(grid, "score", "search.grid.score");
+  out.score.w_sigma =
+      ReadBounded(score, "w_sigma", "search.grid.score.w_sigma", out.score.w_sigma, 0.0, 1e6);
+  out.score.w_t = ReadBounded(score, "w_t", "search.grid.score.w_t", out.score.w_t, 0.0, 1e6);
+  out.score.w_q = ReadBounded(score, "w_q", "search.grid.score.w_q", out.score.w_q, 0.0, 1e6);
+  out.score.w_late =
+      ReadBounded(score, "w_late", "search.grid.score.w_late", out.score.w_late, 0.0, 1e6);
+  out.score.w_gamma =
+      ReadBounded(score, "w_gamma", "search.grid.score.w_gamma", out.score.w_gamma, 0.0, 1e6);
+  out.score.penalty =
+      ReadBounded(score, "penalty", "search.grid.score.penalty", out.score.penalty, 0.0, 1e9);
 
-  const YAML::Node workspace = Section(planner, "workspace", "workspace");
+  const YAML::Node workspace = Section(grid, "workspace", "search.grid.workspace");
   if (const YAML::Node box = workspace["catch_box"];
       box && !(box.IsScalar() && box.Scalar() == "TBD")) {
     if (!box.IsMap() || !box["min"] || !box["max"]) {
-      Reject(Key("workspace.catch_box") + " must be {min: [x, y, z], max: [x, y, z]}");
+      Reject(Key("search.grid.workspace.catch_box") + " must be {min: [x, y, z], max: [x, y, z]}");
     }
-    out.catch_box.min = Read3(box["min"], "workspace.catch_box.min");
-    out.catch_box.max = Read3(box["max"], "workspace.catch_box.max");
+    out.catch_box.min = Read3(box["min"], "search.grid.workspace.catch_box.min");
+    out.catch_box.max = Read3(box["max"], "search.grid.workspace.catch_box.max");
     for (std::size_t a = 0; a < 3; ++a) {
       if (out.catch_box.min[a] > out.catch_box.max[a]) {
-        Reject(Key("workspace.catch_box") + " has min > max on axis " + std::to_string(a));
+        Reject(Key("search.grid.workspace.catch_box") + " has min > max on axis " +
+               std::to_string(a));
       }
     }
     out.catch_box.set = true;
   }
 
   // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────
-  const YAML::Node decel = Section(planner, "decel_mpc", "decel_mpc");
+  // `planner.segment.mode` and, under `mpc`, `switch_margin` and `eta_v` are
+  // ParseCatchingParams' (the validator judges them); the rest is read here.
+  const YAML::Node segment = Section(planner, "segment", "segment");
+  const YAML::Node mpc = Section(segment, "mpc", "segment.mpc");
   MpcSegmentPlannerParams& d = out.mpc_segment;
-  const YAML::Node horizon = Section(decel, "horizon", "decel_mpc.horizon");
+  const YAML::Node horizon = Section(mpc, "horizon", "segment.mpc.horizon");
   // From the section's kind, not the node: an absent section reads as an
   // empty but DEFINED node (catching_yaml_read.hpp).
-  d.horizon_explicit = ReadSectionNode(decel, "horizon").kind == SectionKind::kMap;
+  d.horizon_explicit = ReadSectionNode(mpc, "horizon").kind == SectionKind::kMap;
   d.n_nodes =
-      ReadInt(horizon, "n_nodes", "decel_mpc.horizon.n_nodes", d.n_nodes, 3, kMaxSegmentNodes);
-  d.dt_s = ReadBounded(horizon, "dt_s", "decel_mpc.horizon.dt_s", d.dt_s, 0.005, 0.1);
+      ReadInt(horizon, "n_nodes", "segment.mpc.horizon.n_nodes", d.n_nodes, 3, kMaxSegmentNodes);
+  d.dt_s = ReadBounded(horizon, "dt_s", "segment.mpc.horizon.dt_s", d.dt_s, 0.005, 0.1);
   if (std::fabs(d.dt_s * 1e9 - static_cast<double>(d.DtNs())) > 1e-3) {
-    Reject(Key("decel_mpc.horizon.dt_s") +
+    Reject(Key("segment.mpc.horizon.dt_s") +
            " must be a whole number of nanoseconds (the grid "
            "t_c + k·Δ_s is integer ns)");
   }
   if (const YAML::Node b = horizon["blocks"]; b) {
     if (!b.IsSequence() || b.size() < 3 || b.size() > static_cast<std::size_t>(kMaxSegmentNodes)) {
-      Reject(Key("decel_mpc.horizon.blocks") + " must be a sequence of 3.." +
+      Reject(Key("segment.mpc.horizon.blocks") + " must be a sequence of 3.." +
              std::to_string(kMaxSegmentNodes) + " positive integers, got " + Spelling(b));
     }
     d.blocks = {};
@@ -385,13 +409,13 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
       try {
         v = b[i].as<int>();
       } catch (const YAML::Exception&) {
-        Reject(Key("decel_mpc.horizon.blocks[" + std::to_string(i) + "]") +
+        Reject(Key("segment.mpc.horizon.blocks[" + std::to_string(i) + "]") +
                " must be an integer, got " + Spelling(b[i]));
       }
       // Bounded above too: Σ is compared with n_nodes, and unbounded entries
       // could overflow the sum back into range.
       if (v < 1 || v > kMaxSegmentNodes) {
-        Reject(Key("decel_mpc.horizon.blocks[" + std::to_string(i) + "]") + " must be in [1, " +
+        Reject(Key("segment.mpc.horizon.blocks[" + std::to_string(i) + "]") + " must be in [1, " +
                std::to_string(kMaxSegmentNodes) + "]");
       }
       d.blocks[i] = v;
@@ -403,90 +427,93 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
     block_sum += d.blocks[static_cast<std::size_t>(i)];
   }
   if (block_sum != d.n_nodes) {
-    Reject(Key("decel_mpc.horizon.blocks") + " sums to " + std::to_string(block_sum) +
+    Reject(Key("segment.mpc.horizon.blocks") + " sums to " + std::to_string(block_sum) +
            " but n_nodes is " + std::to_string(d.n_nodes) + " (Σ blocks = N)");
   }
-  const YAML::Node replan = Section(decel, "replan", "decel_mpc.replan");
-  d.k_max = ReadInt(replan, "k_max", "decel_mpc.replan.k_max", d.k_max, 0, kMaxMpcSegmentReplans);
+  const YAML::Node replan = Section(mpc, "replan", "segment.mpc.replan");
+  d.k_max = ReadInt(replan, "k_max", "segment.mpc.replan.k_max", d.k_max, 0, kMaxMpcSegmentReplans);
   for (int k = 0; k <= d.k_max; ++k) {
     std::array<int, kMaxSegmentNodes> blocks{};
     int n_blocks = 0;
     if (!MpcSegmentBlocksFor(d, k, blocks, n_blocks)) {
-      Reject(Key("decel_mpc.replan.k_max") + " = " + std::to_string(d.k_max) +
+      Reject(Key("segment.mpc.replan.k_max") + " = " + std::to_string(d.k_max) +
              ": replan instance " + std::to_string(k) + " (N = " + std::to_string(d.n_nodes - k) +
              ") would have fewer than 3 blocks");
     }
   }
-  d.eta_tau = ReadBounded(decel, "eta_tau", "decel_mpc.eta_tau", d.eta_tau, 1e-3, 1.0);
-  d.m_q = ReadBounded(decel, "m_q", "decel_mpc.m_q", d.m_q, 0.0, 0.5);
-  const YAML::Node publish = Section(decel, "publish", "decel_mpc.publish");
+  // The ball speed below which its direction of travel is undefined — the mpc
+  // segment planner's own floor, beside the search IK's `search.grid.ik.v_eps`.
+  d.v_eps = ReadPositive(mpc, "v_eps", "segment.mpc.v_eps", d.v_eps);
+  d.eta_tau = ReadBounded(mpc, "eta_tau", "segment.mpc.eta_tau", d.eta_tau, 1e-3, 1.0);
+  d.m_q = ReadBounded(mpc, "m_q", "segment.mpc.m_q", d.m_q, 0.0, 0.5);
+  const YAML::Node publish = Section(mpc, "publish", "segment.mpc.publish");
   d.slack_max =
-      ReadBounded(publish, "slack_max", "decel_mpc.publish.slack_max", d.slack_max, 0.0, 1.0);
+      ReadBounded(publish, "slack_max", "segment.mpc.publish.slack_max", d.slack_max, 0.0, 1.0);
   d.slack_terminal_max =
-      ReadBounded(publish, "slack_terminal_max", "decel_mpc.publish.slack_terminal_max",
+      ReadBounded(publish, "slack_terminal_max", "segment.mpc.publish.slack_terminal_max",
                   d.slack_terminal_max, 0.0, 1.0);
   d.catch_pos_err_max =
-      ReadBounded(publish, "catch_pos_err_max", "decel_mpc.publish.catch_pos_err_max",
+      ReadBounded(publish, "catch_pos_err_max", "segment.mpc.publish.catch_pos_err_max",
                   d.catch_pos_err_max, 1e-6, 1.0);
 
   // The pre-catch part (E1-F08). Its nodes and the stop's share the
   // payload's node capacity and the core's block array.
-  const YAML::Node approach = Section(decel, "approach", "decel_mpc.approach");
+  const YAML::Node approach = Section(mpc, "approach", "segment.mpc.approach");
   const int n_pre_cap = std::min(kMaxSegmentNodes - d.n_nodes, kMaxSegmentNodes - d.n_blocks);
-  d.n_pre_max = ReadInt(approach, "n_pre_max", "decel_mpc.approach.n_pre_max", d.n_pre_max, 0,
+  d.n_pre_max = ReadInt(approach, "n_pre_max", "segment.mpc.approach.n_pre_max", d.n_pre_max, 0,
                         std::max(n_pre_cap, 0));
   d.dt_pre_s =
-      ReadBounded(approach, "dt_pre_s", "decel_mpc.approach.dt_pre_s", d.dt_pre_s, 0.005, 0.2);
+      ReadBounded(approach, "dt_pre_s", "segment.mpc.approach.dt_pre_s", d.dt_pre_s, 0.005, 0.2);
   if (std::fabs(d.dt_pre_s * 1e9 - static_cast<double>(d.DtPreNs())) > 1e-3) {
-    Reject(Key("decel_mpc.approach.dt_pre_s") +
+    Reject(Key("segment.mpc.approach.dt_pre_s") +
            " must be a whole number of nanoseconds (the grid t_c − k·Δ_pre is integer ns)");
   }
   d.rest_tol =
-      ReadBounded(approach, "rest_tol", "decel_mpc.approach.rest_tol", d.rest_tol, 0.0, 1.0);
-  const YAML::Node dbudget = Section(decel, "budget", "decel_mpc.budget");
-  d.budget_first_s = ReadBounded(dbudget, "first_s", "decel_mpc.budget.first_s", d.budget_first_s,
+      ReadBounded(approach, "rest_tol", "segment.mpc.approach.rest_tol", d.rest_tol, 0.0, 1.0);
+  const YAML::Node dbudget = Section(mpc, "budget", "segment.mpc.budget");
+  d.budget_first_s = ReadBounded(dbudget, "first_s", "segment.mpc.budget.first_s", d.budget_first_s,
                                  kPlannerBudgetMinS, kPlannerBudgetMaxS);
-  d.budget_replan_s = ReadBounded(dbudget, "replan_s", "decel_mpc.budget.replan_s",
+  d.budget_replan_s = ReadBounded(dbudget, "replan_s", "segment.mpc.budget.replan_s",
                                   d.budget_replan_s, kPlannerBudgetMinS, kPlannerBudgetMaxS);
   d.replan_same_point =
-      ReadBool(replan, "same_point", "decel_mpc.replan.same_point", d.replan_same_point);
-  const YAML::Node dcatch = Section(decel, "catch", "decel_mpc.catch");
-  d.w_axis = ReadBounded(dcatch, "w_axis", "decel_mpc.catch.w_axis", d.w_axis, 0.0, 1e6);
-  d.w_v_par = ReadBounded(dcatch, "w_v_par", "decel_mpc.catch.w_v_par", d.w_v_par, 0.0, 1e6);
-  d.w_v_perp = ReadBounded(dcatch, "w_v_perp", "decel_mpc.catch.w_v_perp", d.w_v_perp, 0.0, 1e6);
+      ReadBool(replan, "same_point", "segment.mpc.replan.same_point", d.replan_same_point);
+  const YAML::Node dcatch = Section(mpc, "catch", "segment.mpc.catch");
+  d.w_axis = ReadBounded(dcatch, "w_axis", "segment.mpc.catch.w_axis", d.w_axis, 0.0, 1e6);
+  d.w_v_par = ReadBounded(dcatch, "w_v_par", "segment.mpc.catch.w_v_par", d.w_v_par, 0.0, 1e6);
+  d.w_v_perp = ReadBounded(dcatch, "w_v_perp", "segment.mpc.catch.w_v_perp", d.w_v_perp, 0.0, 1e6);
   d.gamma_ref =
-      ReadBounded(dcatch, "gamma_ref", "decel_mpc.catch.gamma_ref", d.gamma_ref, 1e-6, 1.0);
-  d.kappa = ReadBounded(dcatch, "kappa", "decel_mpc.catch.kappa", d.kappa, 1e-6, 1e6);
+      ReadBounded(dcatch, "gamma_ref", "segment.mpc.catch.gamma_ref", d.gamma_ref, 1e-6, 1.0);
+  d.kappa = ReadBounded(dcatch, "kappa", "segment.mpc.catch.kappa", d.kappa, 1e-6, 1e6);
   d.sigma_floor =
-      ReadBounded(dcatch, "sigma_floor", "decel_mpc.catch.sigma_floor", d.sigma_floor, 1e-6, 1.0);
-  d.w_max = ReadBounded(dcatch, "w_max", "decel_mpc.catch.w_max", d.w_max, 1e-6, 1e9);
-  d.w_const = ReadBounded(dcatch, "w_const", "decel_mpc.catch.w_const", d.w_const, 1e-6, 1e9);
+      ReadBounded(dcatch, "sigma_floor", "segment.mpc.catch.sigma_floor", d.sigma_floor, 1e-6, 1.0);
+  d.w_max = ReadBounded(dcatch, "w_max", "segment.mpc.catch.w_max", d.w_max, 1e-6, 1e9);
+  d.w_const = ReadBounded(dcatch, "w_const", "segment.mpc.catch.w_const", d.w_const, 1e-6, 1e9);
   d.sigma_ref =
-      ReadBounded(dcatch, "sigma_ref", "decel_mpc.catch.sigma_ref", d.sigma_ref, 1e-6, 1.0);
+      ReadBounded(dcatch, "sigma_ref", "segment.mpc.catch.sigma_ref", d.sigma_ref, 1e-6, 1.0);
   // The relative-velocity slack row (0 = off). The core refuses the slack
   // without a bound to be slack against (Init → kParamsInvalid); here the
   // profile is told which key to set.
-  d.rho_v = ReadNonNegative(dcatch, "rho_v", "decel_mpc.catch.rho_v", d.rho_v);
+  d.rho_v = ReadNonNegative(dcatch, "rho_v", "segment.mpc.catch.rho_v", d.rho_v);
   d.v_rel_allow =
-      ReadNonNegative(dcatch, "v_rel_allow", "decel_mpc.catch.v_rel_allow", d.v_rel_allow);
+      ReadNonNegative(dcatch, "v_rel_allow", "segment.mpc.catch.v_rel_allow", d.v_rel_allow);
   if (d.rho_v > 0.0 && !(d.v_rel_allow > 0.0)) {
-    Reject(Key("decel_mpc.catch.rho_v") + " = " + std::to_string(d.rho_v) +
-           " turns the slack on, which needs " + Key("decel_mpc.catch.v_rel_allow") + " > 0 (got " +
-           std::to_string(d.v_rel_allow) + ")");
+    Reject(Key("segment.mpc.catch.rho_v") + " = " + std::to_string(d.rho_v) +
+           " turns the slack on, which needs " + Key("segment.mpc.catch.v_rel_allow") +
+           " > 0 (got " + std::to_string(d.v_rel_allow) + ")");
   }
   // The core's own design values (YAML keys). Each range is the core's Init check
   // (mpc_segment_core.cpp) with the key's name on it, so a profile is told which key
   // to fix instead of reading "kParamsInvalid" at configure.
-  const YAML::Node cost = Section(decel, "cost", "decel_mpc.cost");
+  const YAML::Node cost = Section(mpc, "cost", "segment.mpc.cost");
   if (const YAML::Node jw = cost["jerk_weight"]; jw) {
     if (!jw.IsSequence() || jw.size() == 0 || jw.size() > static_cast<std::size_t>(kMaxPlanNv)) {
-      Reject(Key("decel_mpc.cost.jerk_weight") +
+      Reject(Key("segment.mpc.cost.jerk_weight") +
              " must be a non-empty sequence of one positive number per arm joint, got " +
              Spelling(jw));
     }
     d.jerk_weight.clear();
     for (std::size_t i = 0; i < jw.size(); ++i) {
-      const std::string path = "decel_mpc.cost.jerk_weight[" + std::to_string(i) + "]";
+      const std::string path = "segment.mpc.cost.jerk_weight[" + std::to_string(i) + "]";
       double w = 0.0;
       try {
         w = jw[i].as<double>();
@@ -499,48 +526,49 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
       d.jerk_weight.push_back(w);
     }
   }
-  d.u_scale = ReadPositive(cost, "u_scale", "decel_mpc.cost.u_scale", d.u_scale);
-  d.w_delta = ReadNonNegative(cost, "w_delta", "decel_mpc.cost.w_delta", d.w_delta);
-  d.rho_tau = ReadNonNegative(cost, "rho_tau", "decel_mpc.cost.rho_tau", d.rho_tau);
+  d.u_scale = ReadPositive(cost, "u_scale", "segment.mpc.cost.u_scale", d.u_scale);
+  d.w_delta = ReadNonNegative(cost, "w_delta", "segment.mpc.cost.w_delta", d.w_delta);
+  d.rho_tau = ReadNonNegative(cost, "rho_tau", "segment.mpc.cost.rho_tau", d.rho_tau);
   // The stop-path weight (0 = off). The core takes any value >= 0; the upper
   // bound is the largest one its solves are tested with — nothing downstream
   // (not the configure warm-up either) would refuse a larger one.
   d.w_perp =
-      ReadInterval(cost, "w_perp", "decel_mpc.cost.w_perp", d.w_perp, 0.0, false,
+      ReadInterval(cost, "w_perp", "segment.mpc.cost.w_perp", d.w_perp, 0.0, false,
                    kMpcSegmentStopPathWeightMax, false,
                    "[0, 1e4] (kMpcSegmentStopPathWeightMax, the largest weight the cores are "
                    "tested with)");
   d.axis_theta_max =
-      ReadInterval(dcatch, "axis_theta_max", "decel_mpc.catch.axis_theta_max", d.axis_theta_max,
+      ReadInterval(dcatch, "axis_theta_max", "segment.mpc.catch.axis_theta_max", d.axis_theta_max,
                    0.0, true, 3.14159265358979323846, true, "(0, pi)");
-  const YAML::Node lin = Section(decel, "linearization", "decel_mpc.linearization");
-  d.delta_tr = ReadPositive(lin, "delta_tr", "decel_mpc.linearization.delta_tr", d.delta_tr);
+  const YAML::Node lin = Section(mpc, "linearization", "segment.mpc.linearization");
+  d.delta_tr = ReadPositive(lin, "delta_tr", "segment.mpc.linearization.delta_tr", d.delta_tr);
   // Upper bound: MpcSegmentPlanner::Judge takes a solve as published only when node N
   // rests to reference_rest_tol, and the RT admits a payload only when node N
   // rests to kSegmentRestTol (ValidateSegmentNodes). A looser tolerance would let
   // Judge accept nodes the validator then refuses.
   d.reference_rest_tol =
-      ReadInterval(lin, "reference_rest_tol", "decel_mpc.linearization.reference_rest_tol",
+      ReadInterval(lin, "reference_rest_tol", "segment.mpc.linearization.reference_rest_tol",
                    d.reference_rest_tol, 0.0, true, kSegmentRestTol, false,
                    "(0, 1e-3] (kSegmentRestTol, the bound the RT admits a published node N by)");
   d.ref_speed_fraction =
-      ReadInterval(lin, "ref_speed_fraction", "decel_mpc.linearization.ref_speed_fraction",
+      ReadInterval(lin, "ref_speed_fraction", "segment.mpc.linearization.ref_speed_fraction",
                    d.ref_speed_fraction, 0.0, true, 1.0, false, "(0, 1]");
-  const YAML::Node solver = Section(decel, "solver", "decel_mpc.solver");
-  d.solver_max_iter = ReadInt(solver, "max_iter", "decel_mpc.solver.max_iter", d.solver_max_iter, 1,
-                              std::numeric_limits<int>::max());
-  d.solver_max_iter_in = ReadInt(solver, "max_iter_in", "decel_mpc.solver.max_iter_in",
+  const YAML::Node solver = Section(mpc, "solver", "segment.mpc.solver");
+  d.solver_max_iter = ReadInt(solver, "max_iter", "segment.mpc.solver.max_iter", d.solver_max_iter,
+                              1, std::numeric_limits<int>::max());
+  d.solver_max_iter_in = ReadInt(solver, "max_iter_in", "segment.mpc.solver.max_iter_in",
                                  d.solver_max_iter_in, 1, std::numeric_limits<int>::max());
-  d.solver_eps_abs = ReadPositive(solver, "eps_abs", "decel_mpc.solver.eps_abs", d.solver_eps_abs);
+  d.solver_eps_abs =
+      ReadPositive(solver, "eps_abs", "segment.mpc.solver.eps_abs", d.solver_eps_abs);
   d.solver_eps_rel =
-      ReadNonNegative(solver, "eps_rel", "decel_mpc.solver.eps_rel", d.solver_eps_rel);
+      ReadNonNegative(solver, "eps_rel", "segment.mpc.solver.eps_rel", d.solver_eps_rel);
   // A shifted previous solution meets the terminal equality only to eps_abs
   // (the core's check, mpc_segment_core.cpp Init): a rest tolerance at or below it
   // would refuse every warm solve.
   if (!(d.reference_rest_tol > d.solver_eps_abs)) {
-    Reject(Key("decel_mpc.linearization.reference_rest_tol") + " = " +
+    Reject(Key("segment.mpc.linearization.reference_rest_tol") + " = " +
            Shown(lin, "reference_rest_tol", d.reference_rest_tol) + " must exceed " +
-           Key("decel_mpc.solver.eps_abs") + " (= " + Shown(solver, "eps_abs", d.solver_eps_abs) +
+           Key("segment.mpc.solver.eps_abs") + " (= " + Shown(solver, "eps_abs", d.solver_eps_abs) +
            ")");
   }
   return out;

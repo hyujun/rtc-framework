@@ -1,9 +1,9 @@
 // ── Catch-pose IK YAML schema (dynamic_catching S3.5a) ──────────────────────
 // The YAML parser for `CatchPoseIkOptions` — the one S1.9 left open as Q4. It
-// reads `planner.ik.*` plus the two `planner.catchability.*` keys that decide
-// the gate, and produces exactly that struct. Non-RT: the same G2
-// schema-layer shape as its siblings under `params/` — POD + a free
-// `ParseXxxParams`, yaml-cpp only, rclcpp-free, called once at configure time.
+// reads `planner.search.grid.ik.*` plus the two `planner.search.grid.catchability.*` keys that
+// decide the gate, and produces exactly that struct. Non-RT: the same G2 schema-layer shape as its
+// siblings under `params/` — POD + a free `ParseXxxParams`, yaml-cpp only, rclcpp-free, called once
+// at configure time.
 //
 // TWO CONSUMERS, ONE FUNCTION. The offline catchability map (S3.5a) and the
 // runtime planner (S6.2) must reach a bit-identical q* from the same YAML
@@ -12,7 +12,7 @@
 // helper of either caller.
 //
 // ── Why one function and one aggregate, not two ─────────────────────────────
-// `planner.catchability.definition` SELECTS which of the two thresholds
+// `planner.search.grid.catchability.definition` SELECTS which of the two thresholds
 // `CatchPoseIkOptions::manipulability_min` has to carry (they are different
 // quantities in different units — L3 §6: "차원이 달라 따로 둔다"). Handing the
 // thresholds back from a second, independent call would let a caller pair an
@@ -20,11 +20,11 @@
 // gate. Binding the two here means that pairing cannot be expressed.
 //
 // ── Scope, and the sibling this is NOT part of ──────────────────────────────
-// `catching_params.hpp` deliberately declares `planner.ik.*` out of its scope
+// `catching_params.hpp` deliberately declares `planner.search.grid.ik.*` out of its scope
 // (its G0-C subset is the cross-layer constraint table). This is its sibling,
 // not an extension of it: nothing here is added to `CatchingParams`. The two
 // DO overlap on one key,
-// `planner.catchability.manipulability_min.arm_5row` (+ its invented
+// `planner.search.grid.catchability.manipulability_min.arm_5row` (+ its invented
 // `provisional` flag, whose rationale lives in params/catching_params.cpp) —
 // unavoidable, because that key is both a G0-C cross-constraint and the gate
 // threshold `CatchPoseIkOptions` must carry. Precisely what the two share and
@@ -43,7 +43,7 @@
 // The SharedKey* cases in test/test_catch_pose_ik_params.cpp pin both halves,
 // so the documented difference cannot drift into an undocumented one.
 //
-// ── `planner.ik.fd_step` ────────────────────────────────────────────────────
+// ── `planner.search.grid.ik.fd_step` ────────────────────────────────────────────────────
 // The central-difference step h of ∇log w₅ is a design value like the others
 // and has a key (finite > 0; shipped at the struct's default). It was left out
 // while no profile needed to move it; #698 lists every design value in YAML.
@@ -53,7 +53,7 @@
 // of it, and each struct field already names its own key.
 //
 // RESOLVED DISCREPANCY (doc vs code default), the one this parser found:
-//   - `planner.ik.alpha_max` — L3 §6 gave the default as `TBD` while
+//   - `planner.search.grid.ik.alpha_max` — L3 §6 gave the default as `TBD` while
 //     `CatchPoseIkOptions::alpha_max` was already 0.26 rad (≈15°, marked
 //     provisional in its own comment). Reconciled toward the CODE on
 //     2026-09-21: L3 §6 now records `0.26 (provisional)`, so the two agree and
@@ -70,20 +70,20 @@
 //
 // ── Rejected, defaulted, reported: three different things ───────────────────
 //   - REJECTED (`std::invalid_argument`): a wrong type, a value outside the
-//     L3 §6 range, an unparseable scalar, an unknown key under `planner.ik`.
+//     L3 §6 range, an unparseable scalar, an unknown key under `planner.search.grid.ik`.
 //     The typo case is deliberate, and stricter than a permissive parser: a
 //     misspelt key under a section this parser wholly OWNS can only be a typo,
 //     and defaulting it would silently run the map with a tuning value the
 //     YAML plainly meant to change. (`planner.*` at large is NOT policed that
 //     way — L3 §6 gives that tree ~30 keys belonging to other consumers, so an
 //     unknown-key sweep there would reject other people's configuration.)
-//   - DEFAULTED: an absent key, and an absent `planner.ik` / `planner` /
-//     `planner.catchability` section. The result then equals the in-code
+//   - DEFAULTED: an absent key, and an absent `planner.search.grid.ik` / `planner` /
+//     `planner.search.grid.catchability` section. The result then equals the in-code
 //     `CatchPoseIkOptions` default, which is the L3 §6 default for every key
 //     — `alpha_max` included, since the reconciliation recorded in the
 //     RESOLVED DISCREPANCY note above.
-//   - REPORTED: the two keys L3 §6 marks removed in v0.5 (`planner.ik.lambda`,
-//     `planner.ik.manip_min`). A deployed config may still carry them and
+//   - REPORTED: the two keys L3 §6 marks removed in v0.5 (`planner.search.grid.ik.lambda`,
+//     `planner.search.grid.ik.manip_min`). A deployed config may still carry them and
 //     their meaning is known, so they are not typos: they are handed back in
 //     `CatchPoseIkRetiredKeys` for the caller to log, which is the convention
 //     the rest of `params/` uses (rtc_controllers/README.md `params/`).
@@ -98,15 +98,15 @@ namespace rtc::catching {
 
 /// Keys L3 §6 no longer honours but that a deployed config may still carry.
 /// `lambda` was replaced by the σ_min-adaptive pair `sigma0`/`lambda_max`
-/// (D-7d) and `manip_min` by `planner.catchability.manipulability_min` (§4.5).
+/// (D-7d) and `manip_min` by `planner.search.grid.catchability.manipulability_min` (§4.5).
 struct CatchPoseIkRetiredKeys {
-  bool lambda{false};     ///< `planner.ik.lambda` — superseded by sigma0 + lambda_max
-  bool manip_min{false};  ///< `planner.ik.manip_min` — superseded by catchability.*
+  bool lambda{false};     ///< `planner.search.grid.ik.lambda` — superseded by sigma0 + lambda_max
+  bool manip_min{false};  ///< `planner.search.grid.ik.manip_min` — superseded by catchability.*
 };
 
-/// Everything the L3 §6 `planner.ik.*` / `planner.catchability.*` rows resolve
-/// to: the tuning struct `CatchPoseIk::Solve` takes, plus the TBD-capable
-/// record of the keys the docs leave open.
+/// Everything the L3 §6 `planner.search.grid.ik.*` / `planner.search.grid.catchability.*` rows
+/// resolve to: the tuning struct `CatchPoseIk::Solve` takes, plus the TBD-capable record of the
+/// keys the docs leave open.
 ///
 /// `options` is what runs. The `TbdDouble` members are the PARSE RECORD of the
 /// keys L3 §6 leaves (or may leave) open — `options` cannot express "still
@@ -136,25 +136,25 @@ struct CatchPoseIkConfig {
   /// defaults.
   CatchPoseIkOptions options{};
 
-  /// `planner.ik.alpha_max` [rad], 0–π/2. L3 §6 records `0.26 (provisional)`,
+  /// `planner.search.grid.ik.alpha_max` [rad], 0–π/2. L3 §6 records `0.26 (provisional)`,
   /// which is `CatchPoseIkOptions::alpha_max`'s own default. This stays a
   /// `TbdDouble` — default-constructed, i.e. "not given" — because an explicit
   /// `TBD` in a config must remain representable, and an absent key must stay
   /// distinguishable from a decided one.
   TbdDouble alpha_max{};
 
-  /// `planner.catchability.manipulability_min.arm_5row`, ≥ 0. The default is
+  /// `planner.search.grid.catchability.manipulability_min.arm_5row`, ≥ 0. The default is
   /// read off `CatchPoseIkOptions` rather than repeating 0.1: the struct's
   /// `manipulability_min` default is that row (its `definition` default is
   /// `arm_5row`), so there is one number, not two that can drift.
   TbdDouble manipulability_min_arm_5row{
       TbdDouble::Resolved(CatchPoseIkOptions{}.manipulability_min)};
 
-  /// `planner.catchability.manipulability_min.arm_6row`, ≥ 0. L3 §6 default is
+  /// `planner.search.grid.catchability.manipulability_min.arm_6row`, ≥ 0. L3 §6 default is
   /// `TBD` — the value is to be proposed from the S3.5a/b map itself.
   TbdDouble manipulability_min_arm_6row{};
 
-  /// `planner.catchability.manipulability_min.provisional` — the invented key
+  /// `planner.search.grid.catchability.manipulability_min.provisional` — the invented key
   /// params/catching_params.cpp owns and documents. Fail-closed default: true.
   bool manipulability_min_provisional{true};
 };
@@ -170,7 +170,8 @@ struct CatchPoseIkConfig {
                                                              : cfg.manipulability_min_arm_5row;
 }
 
-/// Parse `planner.ik.*` + `planner.catchability.*` out of the `catching:` map.
+/// Parse `planner.search.grid.ik.*` + `planner.search.grid.catchability.*` out of the `catching:`
+/// map.
 ///
 /// @param node the `catching:` tree root — the SAME node `ParseCatchingParams`
 ///        takes, so one config load feeds both. Must be a map.
@@ -178,9 +179,9 @@ struct CatchPoseIkConfig {
 ///
 /// Throws `std::invalid_argument`, and only that (every `YAML::Exception` is
 /// translated), on: a missing/non-map root; a present `planner`,
-/// `planner.ik`, `planner.catchability` or `...manipulability_min` that is not
-/// a map; a value of the wrong YAML type; a value outside its L3 §6 range; an
-/// unknown key under `planner.ik`; a `definition` that is neither
+/// `planner.search.grid.ik`, `planner.search.grid.catchability` or `...manipulability_min` that is
+/// not a map; a value of the wrong YAML type; a value outside its L3 §6 range; an unknown key under
+/// `planner.search.grid.ik`; a `definition` that is neither
 /// `"arm_5row"` nor `"arm_6row"`. Every message names the full dotted key
 /// path. Non-RT: called from LoadConfig / on_configure or from an offline
 /// tool, never from a tick.

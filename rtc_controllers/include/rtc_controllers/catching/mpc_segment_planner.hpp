@@ -78,7 +78,7 @@
 //  • The configure warm-ups solve on a synthetic line: through the catch
 //    frame at the mid pose along the synthetic ball's travel (that frame's
 //    −z), the same one for the stop cores and the catch cores.
-//  • Fail closed: a ball slower than `planner.ik.v_eps` has no direction
+//  • Fail closed: a ball slower than `planner.segment.mpc.v_eps` has no direction
 //    (kNoBall), a speed that is not finite is kInputNonFinite, and a stop
 //    grid point whose source segment carries no line is kNoBall — each
 //    withheld BEFORE the solve.
@@ -231,10 +231,10 @@ struct MpcSegmentPlannerModel {
 };
 
 struct MpcSegmentPlannerConstants {
-  double eta_v{0.9};         ///< `planner.gamma.eta_v` (the core's velocity row)
+  double eta_v{0.9};         ///< `planner.segment.mpc.eta_v` (the core's velocity row)
   double t_arm_s{0.0};       ///< `joint_cmd.lag.T_arm` — real → lead axis
   double control_dt{0.002};  ///< the RT period [s]
-  /// `planner.ik.v_eps` [m/s] — the ball speed below which its direction of
+  /// `planner.segment.mpc.v_eps` [m/s] — the ball speed below which its direction of
   /// travel (and so a_d) is undefined (MakeMpcSegmentBallTarget).
   double v_eps{1e-6};
 };

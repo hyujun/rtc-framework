@@ -3,7 +3,7 @@
 // The CatchSearch (catch_search.hpp) `PlannerCycle::PlanOnce` delegates to once
 // the binding has given it a model — the one implementation of that interface
 // today. Candidates are the vision samples themselves (L3 §5.3, thinned to
-// `planner.slice.dt`) whose lead lies in [slice.t_lead_min, slice.t_max].
+// `planner.search.grid.slice.dt`) whose lead lies in [slice.t_lead_min, slice.t_max].
 //
 // TWO KINDS OF GATE (decision C, D-27). JUDGEMENT gates remove a candidate —
 // they are about whether the arm can be put there at all and where it would
@@ -18,9 +18,9 @@
 // ORDER (L3 §4.1, with the IK budget of R-2). The cheap terms — input,
 // workspace at p_c, uncertainty, lateness — are computed for every candidate
 // and give a PRE-score; IK (≈2 ms each on the development PC) runs on the best
-// `planner.max_ik` of those, in pre-score order, until `planner.budget_s` is
-// spent. Rank gates, the stopping point and the full score follow each
-// successful IK. The best full score wins (§4.10).
+// `planner.search.grid.max_ik` of those, in pre-score order, until `planner.search.grid.budget_s`
+// is spent. Rank gates, the stopping point and the full score follow each successful IK. The best
+// full score wins (§4.10).
 //
 // SWITCHING (§4.7) AND FREEZE (decision G). When the RT is following a plan
 // this search published, a better candidate replaces it only if it improves
@@ -78,16 +78,18 @@ struct GridCatchSearchModel {
 /// binding. NaN marks a value the profile leaves TBD — every gate that needs
 /// it then fails (a rank gate) rather than using a guess.
 struct GridCatchSearchConstants {
-  double eta_v{0.9};                                       ///< `planner.gamma.eta_v` (D-9)
-  double v_max{std::numeric_limits<double>::quiet_NaN()};  ///< `reference.v_max`
-  double a_dec{std::numeric_limits<double>::quiet_NaN()};  ///< `supervisor.decel.a_dec`
+  double eta_v{0.9};  ///< `planner.search.grid.gamma.eta_v` (D-9)
+  double v_max{
+      std::numeric_limits<double>::quiet_NaN()};  ///< `planner.search.grid.reference.v_max`
+  double a_dec{std::numeric_limits<double>::quiet_NaN()};  ///< `planner.search.grid.stop.a_dec`
   double t_arm_s{0.0};                                     ///< `joint_cmd.lag.T_arm`
   /// `robot.hand.T_close_e2e` and T_close,tot = that + h/2 (§4.5).
   double t_close_e2e{std::numeric_limits<double>::quiet_NaN()};
   double t_close_total{std::numeric_limits<double>::quiet_NaN()};
   double ball_mass{0.0};  ///< `core.ball.mass` [kg] — the impulse estimate
   /// The L4 reference (§4.8 rollout): ω, ζ, and the limits it is judged
-  /// against. NaN a_max → the rollout is unjudgeable (a rank failure).
+  /// against — `planner.search.grid.reference.{omega, zeta, a_max}`, the
+  /// search's own keys. NaN a_max → the rollout is unjudgeable (a rank failure).
   double ref_omega{10.0};
   double ref_zeta{1.0};
   double ref_a_max{std::numeric_limits<double>::quiet_NaN()};
@@ -126,7 +128,7 @@ enum class SwitchDecision : std::uint8_t {
   kHeldFreeze,       ///< within T_freeze of the current t_c (decision G)
   kHeldNoCandidate,  ///< no candidate passed; the RT keeps what it has
   /// The followed candidate is still the best, but its predicted catch point
-  /// moved by more than `planner.gamma.eps_term`: republished with the new
+  /// moved by more than `planner.search.grid.gamma.eps_term`: republished with the new
   /// p_c (jump limits and freeze still apply) — hysteresis must not pin a
   /// catch point the prediction has left (2026-09-23 /code-review).
   kRefreshed,

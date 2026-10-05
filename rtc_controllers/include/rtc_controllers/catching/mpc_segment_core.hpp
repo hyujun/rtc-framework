@@ -77,7 +77,7 @@
 //  • The horizon IS the stopping time. The cost has no time term, so the
 //    optimum always uses all of N·Δ: a longer horizon means a gentler but
 //    longer stop, never an earlier one. Choosing N and Δ is the caller's
-//    decision (`planner.decel_mpc.horizon`, MD-24), not this core's.
+//    decision (`planner.segment.mpc.horizon`, MD-24), not this core's.
 //  • Blocks: B ≥ 3 (after the catch node, when n_pre > 0 — the Init rank
 //    self-test cannot see that rule, pre-catch blocks supply rank too; the
 //    explicit count is the guard). The terminal equality has rank 2n for any B ≥ 2; B = 2

@@ -1,7 +1,7 @@
 // ── Shared YAML READING for the two `catching:` parsers (private) ───────────
 // `catching_params.cpp` (ParseCatchingParams, the G0-C subset) and
-// `catch_pose_ik_params.cpp` (ParseCatchPoseIkParams, `planner.ik.*` +
-// `planner.catchability.*`) read the same tree, and overlap on one key. They
+// `catch_pose_ik_params.cpp` (ParseCatchPoseIkParams, `planner.search.grid.ik.*` +
+// `planner.search.grid.catchability.*`) read the same tree, and overlap on one key. They
 // used to carry a private copy each of the helpers below, which is how two
 // parsers of one tree come to disagree about what a node MEANS (P5: generalise,
 // never fork).

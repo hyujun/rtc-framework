@@ -46,14 +46,14 @@ constexpr std::string_view kUsage =
                         declare the catch frame under `extra_frames`.
   --sub-model NAME      arm sub-model to judge in; omit to use the full model
   --catch-frame NAME    frame name (default: catch_frame)
-  --params PATH         YAML holding the `catching:` tree (planner.ik.*,
-                        planner.catchability.*). Omit to use in-code defaults.
+  --params PATH         YAML holding the `catching:` tree (planner.search.grid.ik.*,
+                        planner.search.grid.catchability.*). Omit to use in-code defaults.
                         Accepted shapes: a top-level `catching:` map; a shipped
                         controller config (`<controller>: {catching: ...}`); or
                         the tree itself (top-level `planner:`). Anything else
                         is an error, never a silent default. A config split
                         with `include:` is not composed here: pass the fragment
-                        that holds planner.ik / planner.catchability.
+                        that holds planner.search.grid.ik / planner.search.grid.catchability.
   --print-options       print the options --params resolves to (and where in
                         the file the tree was found) and exit; needs no model
   --candidates PATH     candidate CSV: id[,seed_id],p_c_x,p_c_y,p_c_z,v_x,v_y,v_z
@@ -139,8 +139,9 @@ struct Args {
   rtc::catching::CatchPoseIkRetiredKeys retired{};
   const auto parsed = rtc::catching::ParseCatchPoseIkParams(tree.node, &retired);
   if (retired.lambda || retired.manip_min) {
-    std::cerr << "catch_pose_ik_batch: note — the params file carries retired planner.ik keys"
-              << '\n';
+    std::cerr
+        << "catch_pose_ik_batch: note — the params file carries retired planner.search.grid.ik keys"
+        << '\n';
   }
   // An absent `planner` section is the parser's documented all-defaults case,
   // and legitimate (the S4.0 controller configs ship without one) — but it is

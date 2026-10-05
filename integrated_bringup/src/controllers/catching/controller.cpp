@@ -151,22 +151,13 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   arm_qdd_cfg_malformed_ = false;
   arm_qdd_provisional_cfg_ = true;
   removed_arm_box_keys_.clear();
-  stale_decel_mpc_disabled_key_ = false;
+  renamed_keys_.clear();
   if (catching_section_present_) {
-    // `planner.decel_mpc.enabled` no longer exists (the parser ignores it). Only
-    // a leftover `false` changes behaviour — it used to park under mode mpc and
-    // now the law runs — so only that is remembered, for on_configure to warn
-    // about once the mode is known. A value that is not a bool is not "false".
-    try {
-      const YAML::Node planner = catching["planner"];
-      const YAML::Node decel_mpc = planner ? planner["decel_mpc"] : YAML::Node();
-      const YAML::Node stale = decel_mpc ? decel_mpc["enabled"] : YAML::Node();
-      if (stale) {
-        stale_decel_mpc_disabled_key_ = !stale.as<bool>();
-      }
-    } catch (const std::exception&) {
-      stale_decel_mpc_disabled_key_ = false;  // not a map / not a bool: not a "false"
-    }
+    // The keys that moved (#711). The parsers below no longer read the old
+    // paths, so an overlay that still writes one would be ignored and the new
+    // key would run on its default under the overlay's name. on_configure
+    // parks on every one found (kRemovedKey).
+    renamed_keys_ = rtc::catching::FindRenamedCatchingKeys(catching);
     if (const YAML::Node frame = catching["catch_frame"]; frame) {
       catch_frame_name_ = frame.as<std::string>();
     }
@@ -918,7 +909,7 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
   // Both are dropped with the plan they belong to (DropSegments), and a
   // pending one the switch gate refused is gone from the slot — so "valid" is
   // the whole predicate, and what was dropped is no longer reported.
-  const bool mpc = decel_mode_ == rtc::catching::CatchingDecelMode::kMpc;
+  const bool mpc = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
   s.segment_active = mpc && segment_current_valid_;
   s.segment_seq = s.segment_active ? segment_current_.segment_seq : 0U;
   s.segment_pending = mpc && segment_pending_valid_;
@@ -1481,7 +1472,7 @@ void DemoCatchingController::AdoptFirstSegment() noexcept {
 void DemoCatchingController::RunSegmentLane() noexcept {
   using rtc::catching::Mode;
   using Event = CatchingDiagLogPod::SegmentEvent;
-  if (decel_mode_ != rtc::catching::CatchingDecelMode::kMpc) {
+  if (segment_mode_ != rtc::catching::CatchingSegmentMode::kMpc) {
     return;
   }
   segment_pair_ok_ = false;
@@ -1517,7 +1508,7 @@ void DemoCatchingController::RunSegmentLane() noexcept {
   ctx.accept_pre_catch = true;
   ctx.check_track = true;
   ctx.plan_track_generation = plan.token.generation;
-  // The sampler is bound to the arm (DecelModeUnmet): a segment of another
+  // The sampler is bound to the arm (SegmentModeUnmet): a segment of another
   // joint count could be admitted and never sampled.
   ctx.expected_nv = arm_dof_;
   segment_refusal_ = rtc::catching::JudgeSegment(segment_in_, ctx, admitted_segment_);
@@ -1619,7 +1610,7 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
           std::span<const double>(segment_sample_.q.data(), n),
           std::span<const double>(segment_sample_.qd.data(), n),
           std::span<const double>(segment_qd_max_.data(), n), arm_dof_, segment_k_p_,
-          segment_eta_v_, decel_switch_margin_);
+          segment_eta_v_, segment_switch_margin_);
       tick_record_.decel_rho = gate.rho;
       tick_record_.decel_dq_max = gate.dq_max;
       tick_record_.decel_dqd_max = gate.dqd_max;
@@ -1705,7 +1696,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
       rtc::catching::DecelDue(tick_now_lead_, rtc::catching::BallTime{committed_t_c_ns_})) {
     // MD-44: the configured law, and only it — under mpc there is no
     // closed-form entry to fall back to.
-    const Reason law = decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
+    const Reason law = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
                            ? RunSegmentTick(state, /*entry=*/true, /*ball=*/nullptr)
                            : EnterDecel(state);
     NoteLawVerdict(law);
@@ -1729,7 +1720,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
   // R-ORDER: the law runs whatever the ball lane says. Under mpc it is the
   // segment the arm has followed since APPROACH (MD-45); the ball is sampled
   // for the same supervision either way.
-  const Reason law = decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
+  const Reason law = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
                          ? RunSegmentTick(state, /*entry=*/false, &law_snapshot_)
                          : RunTrackingTick(state, law_snapshot_);
   NoteLawVerdict(law);
@@ -1775,7 +1766,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHo
   using rtc::catching::Mode;
   using rtc::catching::Outcome;
   using rtc::catching::Reason;
-  const Reason law = decel_mode_ == rtc::catching::CatchingDecelMode::kMpc
+  const Reason law = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
                          ? RunSegmentTick(state, /*entry=*/false, /*ball=*/nullptr)
                          : RunDecelLawTick(state);
   NoteLawVerdict(law);
@@ -1978,7 +1969,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     // one would put the arm in a mode with no law. The lane judged the pair on
     // this tick (`segment_pair_ok_`); until it passes, the answer is the same
     // "no plan" a refused plan gets.
-    const bool mpc = decel_mode_ == rtc::catching::CatchingDecelMode::kMpc;
+    const bool mpc = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
     if (PlanAdoptableThisTick() && (!mpc || segment_pair_ok_)) {
       // The plan in the box passed every admission check this tick (L3 §5.2
       // (a)-(g)) — the planner's, or the oracle's stand-in (A-S5-8), through
@@ -2010,7 +2001,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
   }
 
   if (mode_ == Mode::kApproach) {
-    const bool mpc = decel_mode_ == rtc::catching::CatchingDecelMode::kMpc;
+    const bool mpc = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
     // A replacement plan (§4.7, S6-B). The planner already applied the
     // switching rule; the RT adds its own freeze check (decision G) so a late
     // publish cannot move a catch point the supervisor is about to commit to.

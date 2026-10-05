@@ -206,12 +206,12 @@ enum class CatchingParkReason : std::uint8_t {
   /// joint-space motions ramp with, `supervisor.decel.a_dec`, or a hand profile
   /// the sequencer can run.
   kSupervisorUnset,
-  /// `supervisor.decel.mode: mpc` with the planner on, but the segment MPC's
+  /// `planner.segment.mode: mpc` with the planner on, but the segment MPC's
   /// torque box plus its publish slack exceeds the CLIK's torque box
   /// (`joint_cmd.eta_tau`), so a published stop could ask for torque the CLIK
-  /// refuses (MPC E1-F03, MD-33). A planner that is off is kDecelModeUnmet's.
+  /// refuses (MPC E1-F03, MD-33). A planner that is off is kSegmentModeUnmet's.
   kMpcSegmentInvalid,
-  /// `supervisor.decel.mode: mpc` without one of its prerequisites (MPC
+  /// `planner.segment.mode: mpc` without one of its prerequisites (MPC
   /// MD-34): the catch sub-model sampler, `joint_cmd.K_n` > 0, η_v < 1, the
   /// arm's per-joint velocity ratings and the CLIK's per-joint velocity and
   /// position boxes, and an MPC segment planner
@@ -220,14 +220,24 @@ enum class CatchingParkReason : std::uint8_t {
   /// profile is exempt). Under mpc the arm follows a segment from APPROACH to the end of
   /// the stop (MD-44, MD-45), so a missing prerequisite would leave every
   /// trial without one.
-  kDecelModeUnmet,
+  kSegmentModeUnmet,
   /// The profile still sets a key or a value that no longer exists:
   /// `robot.arm.accel_limits_{package,path,group}` (replaced by
   /// `robot.arm.qdd_max` / `qdd_provisional`), or `joint_cmd.accel_constraint:
-  /// box` (the CLIK carries kinematic or dynamic only). Ignoring it would run
-  /// something else under the overlay's name; a configure FAILURE would take
-  /// the other controllers down, so it parks. The log names the key.
+  /// box` (the CLIK carries kinematic or dynamic only), or a key that moved
+  /// (rtc::catching::kRenamedCatchingKeys — `supervisor.decel.mode`,
+  /// `planner.decel_mpc`, the search's keys that were directly under
+  /// `planner`). Ignoring it would run something else under the overlay's
+  /// name; a configure FAILURE would take the other controllers down, so it
+  /// parks. The log names the key, and for a moved key where it belongs now.
   kRemovedKey,
+  /// The planner is on under `planner.segment.mode: closed_form`, and one of
+  /// the search's own copies (`planner.search.grid.reference.*`,
+  /// `planner.search.grid.stop.a_dec`) differs from the closed_form law's value
+  /// (`reference.*`, `supervisor.decel.a_dec`): the search would rank
+  /// candidates by a motion the arm does not make. Under mpc the same
+  /// difference only warns.
+  kSearchCopyDiffers,
 };
 
 /// Controller-local device indices. This controller claims exactly two groups
@@ -355,7 +365,7 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   /// The segment box (MPC E1-F02/F03) as the RT loads it under
-  /// `supervisor.decel.mode: mpc` (E1-F04). Written by the planner thread only.
+  /// `planner.segment.mode: mpc` (E1-F04). Written by the planner thread only.
   [[nodiscard]] rtc::catching::SegmentSnapshot GetPublishedSegment() const noexcept {
     return segment_box_.Load();
   }
@@ -367,8 +377,8 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   /// The DECEL law this configure chose (MD-44).
-  [[nodiscard]] rtc::catching::CatchingDecelMode GetDecelMode() const noexcept {
-    return decel_mode_;
+  [[nodiscard]] rtc::catching::CatchingSegmentMode GetSegmentMode() const noexcept {
+    return segment_mode_;
   }
 
   /// The segment the RT follows (valid false when none) — test / lifecycle
@@ -394,6 +404,22 @@ class DemoCatchingController final : public RTControllerInterface {
     return mpc_segment_planner_q_max_;
   }
 
+  /// The constants the last configure handed the grid search and the mpc
+  /// segment planner (the defaults when it built neither), and the η_v of the
+  /// RT's segment-switch gate. Each function reads its own keys; these are how
+  /// a test tells which key reached which function.
+  [[nodiscard]] const rtc::catching::GridCatchSearchConstants&
+  GetGridCatchSearchConstantsForTesting() const noexcept {
+    return grid_catch_search_constants_;
+  }
+
+  [[nodiscard]] const rtc::catching::MpcSegmentPlannerConstants&
+  GetMpcSegmentPlannerConstantsForTesting() const noexcept {
+    return mpc_segment_planner_constants_;
+  }
+
+  [[nodiscard]] double GetSegmentEtaVForTesting() const noexcept { return segment_eta_v_; }
+
   [[nodiscard]] const std::vector<double>& GetMarginedArmQMinForTesting() const noexcept {
     return arm_q_min_margined_;
   }
@@ -410,7 +436,7 @@ class DemoCatchingController final : public RTControllerInterface {
     return segment_pending_;
   }
 
-  /// Whether the planner runs the segment MPC (`supervisor.decel.mode: mpc` and a
+  /// Whether the planner runs the segment MPC (`planner.segment.mode: mpc` and a
   /// model to plan in). Lifecycle / test callers only: it reads planner state
   /// that a configure rewrites with the thread joined, not an atomic.
   [[nodiscard]] bool IsSegmentPlannerConfigured() const noexcept {
@@ -705,8 +731,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The L4 reference parameters as RUN: a TBD `a_max` / `v_max` is the struct
   /// default. Read by SetupArmCommand and mirrored by DeclareProfileParameters.
   [[nodiscard]] rtc::catching::SoftCatchTranslation::Params ResolvedReferenceParams() const;
-  /// `planner.gamma.eta_v` as RUN (the planner default when TBD) — same two readers.
-  [[nodiscard]] double ResolvedPlannerEtaV() const;
+  /// `planner.search.grid.gamma.eta_v` as RUN (the search's default when TBD):
+  /// read by SetupGridCatchSearch and mirrored by DeclareProfileParameters.
+  [[nodiscard]] double ResolvedSearchGridEtaV() const;
+  /// `planner.segment.mpc.eta_v` as RUN (the mpc segment planner's default when
+  /// TBD): read by SetupMpcSegmentPlanner and SetupSegmentFollower, mirrored
+  /// like the one above.
+  [[nodiscard]] double ResolvedSegmentMpcEtaV() const;
   /// `io.n_min` as the trajectory decode runs it (its floor of 2 when TBD).
   [[nodiscard]] int ResolvedTrajNMin() const;
   void DeclareProfileParameters();
@@ -793,7 +824,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The first planner value that is a decision and is unset, or nullptr.
   [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
 
-  /// Why the segment MPC cannot run under `supervisor.decel.mode: mpc` with the
+  /// Why the segment MPC cannot run under `planner.segment.mode: mpc` with the
   /// planner on, or nullptr (MPC segment torque box + publish slack over the CLIK's).
   [[nodiscard]] const char* MpcSegmentConfigInvalid() const noexcept;
 
@@ -812,13 +843,13 @@ class DemoCatchingController final : public RTControllerInterface {
       const char* who, std::shared_ptr<const pinocchio::Model>& model, pinocchio::FrameIndex& frame,
       std::array<int, rtc::catching::kMaxPlanNv>& device_of_model);
 
-  /// `supervisor.decel.mode: mpc` (MPC E1-F04): bind the RT's segment
+  /// `planner.segment.mode: mpc` (MPC E1-F04): bind the RT's segment
   /// sampler to the catch sub-model and cache what the switch gate reads.
-  /// Non-RT; a failure is reported by DecelModeUnmet.
+  /// Non-RT; a failure is reported by SegmentModeUnmet.
   void SetupSegmentFollower();
 
   /// The first `mode: mpc` prerequisite that is missing, or nullptr (MD-34).
-  [[nodiscard]] const char* DecelModeUnmet() const noexcept;
+  [[nodiscard]] const char* SegmentModeUnmet() const noexcept;
 
   /// Spawn the planner thread on the `mpc` role (E-7 J) once per
   /// configuration, and open its timing CSV + 1 Hz drain timer. Non-RT
@@ -930,7 +961,7 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] rtc::catching::Reason RunDecelLawTick(const ControllerState& state) noexcept;
   /// Freeze the reference state as DECEL's entry and take the τ = 0 step.
   [[nodiscard]] rtc::catching::Reason EnterDecel(const ControllerState& state) noexcept;
-  /// `supervisor.decel.mode: mpc` (MD-37): load and judge the segment box on a
+  /// `planner.segment.mode: mpc` (MD-37): load and judge the segment box on a
   /// lane tick. TRACKING: against the plan this tick could adopt — a verdict
   /// only (`segment_pair_ok_`), since the plan and its first segment are taken
   /// together or not at all (E1-F09). APPROACH through DECEL: against the
@@ -1296,10 +1327,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// them (kRemovedKey) — and on the removed `joint_cmd.accel_constraint: box`,
   /// which the parser carries in `params_`.
   std::vector<std::string> removed_arm_box_keys_;
-  /// LoadConfig saw `planner.decel_mpc.enabled` reading false. The key is
-  /// ignored; on_configure warns only under `supervisor.decel.mode: mpc`,
-  /// where the old key would have parked and the law now runs.
-  bool stale_decel_mpc_disabled_key_{false};
+  /// Every key that moved (#711) and that LoadConfig still found at its old
+  /// path; empty when none. on_configure parks on them (kRemovedKey), naming
+  /// the old and the new path.
+  std::vector<rtc::catching::RenamedCatchingKey> renamed_keys_;
   std::vector<double> arm_qdd_max_;  // device order, the judged `robot.arm.qdd_max`
   /// The judged box's `provisional` flag. Meaningful only while `arm_qdd_max_`
   /// is not empty; rewritten by every ApplyArmAccelBox().
@@ -1354,9 +1385,9 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The planner this configuration follows — never mixed within it (MD-44).
   /// kMpc: the arm follows the planner's segments from APPROACH to the end of
   /// the stop and the soft-catch reference never runs (MD-45).
-  rtc::catching::CatchingDecelMode decel_mode_{rtc::catching::CatchingDecelMode::kClosedForm};
-  /// ρ_max of the switch gate (`supervisor.decel.switch_margin`, MD-39).
-  double decel_switch_margin_{1.0};
+  rtc::catching::CatchingSegmentMode segment_mode_{rtc::catching::CatchingSegmentMode::kClosedForm};
+  /// ρ_max of the switch gate (`planner.segment.mpc.switch_margin`, MD-39).
+  double segment_switch_margin_{1.0};
   /// η_v and K_p as the gate reads them (the planner's and the CLIK's).
   double segment_eta_v_{0.9};
   double segment_k_p_{0.0};
@@ -1371,6 +1402,10 @@ class DemoCatchingController final : public RTControllerInterface {
   bool clik_v_box_complete_{false};
   /// The MPC segment planner's position box as handed to its cores (device order,
   /// MD-42), kept for the configure-time check and the tests.
+  /// What SetupGridCatchSearch / SetupMpcSegmentPlanner handed over; reset by
+  /// every configure. Read by the ForTesting getters only.
+  rtc::catching::GridCatchSearchConstants grid_catch_search_constants_{};
+  rtc::catching::MpcSegmentPlannerConstants mpc_segment_planner_constants_{};
   std::array<double, rtc::catching::kMaxPlanNv> mpc_segment_planner_q_min_{};
   std::array<double, rtc::catching::kMaxPlanNv> mpc_segment_planner_q_max_{};
   /// [nq] posture goal of an mpc tick: q_posture_ with the arm entries set to
@@ -1678,7 +1713,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// (a profile enabling both is parked). RT reader, every tick (D-21).
   rtc::SeqLock<rtc::catching::PlanSnapshot> plan_box_;
   /// The segment MPC's segment (MPC E1-F02/F03, MD-27). ONE writer, the
-  /// planner thread; the RT tick reads it under `supervisor.decel.mode: mpc`
+  /// planner thread; the RT tick reads it under `planner.segment.mode: mpc`
   /// — the segment lane, TRACKING through DECEL (E1-F09). Declared
   /// before planner_thread_ so the thread (which holds a pointer to it through
   /// the cycle) is destroyed first.
@@ -1705,8 +1740,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// for the same reason as the timing ring.
   CatchingPlannerThread::EventQueue planner_events_{};
   std::ofstream planner_events_file_;
-  /// `planner.ik.*` / `planner.catchability.*` — the same parser and keys the
-  /// offline catchability map uses (S3.5a), so map and runtime solve alike.
+  /// `planner.search.grid.ik.*` / `planner.search.grid.catchability.*` — the same parser and keys
+  /// the offline catchability map uses (S3.5a), so map and runtime solve alike.
   rtc::catching::CatchPoseIkConfig catch_pose_ik_config_{};
   /// The planner thread's OWN model handle on `planner.sub_model` (R-3,
   /// thread-per-handle). Replaced only while no planner thread exists.

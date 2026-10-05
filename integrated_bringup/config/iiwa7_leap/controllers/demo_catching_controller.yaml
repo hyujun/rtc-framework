@@ -7,18 +7,23 @@
 # ── How this config is laid out (MD-90) ──────────────────────────────────────
 # This file holds the QP CLIK step (`catching.joint_cmd`), the bring-up
 # sections (ball, hand, vision ingress, supervisor thresholds, topics, logs),
-# the planner thread's own keys, and the one key that SELECTS the planner law:
-# `catching.supervisor.decel.mode` (closed_form | mpc).
+# the planner thread's own keys, the arm's acceleration box, and the one key
+# that SELECTS what the arm follows: `catching.planner.segment.mode`
+# (closed_form | mpc).
 #
 # What each function is tuned with lives in a fragment under catching/. The CM
 # merges the fragments into this tree before it applies any override
 # (rtc_controller_manager README, `include:`):
-#   catching/search_grid.yaml          the catch-point search
-#   catching/planner_closed_form.yaml  the closed_form law
-#   catching/segment_mpc.yaml          the mpc law
-# All three are always included: the law is chosen by that one key, not by
-# this list (a sim_overlay can then switch it, and the search reads the
-# closed_form values under mpc too). A fragment keeps the full key path, so an
+#   catching/search_grid.yaml          the catch-point search (planner.search.grid)
+#   catching/planner_closed_form.yaml  the closed_form law (reference,
+#                                      supervisor.decel.a_dec)
+#   catching/segment_mpc.yaml          the mpc segment planner (planner.segment.mpc)
+# All three are always included: the mode is chosen by that one key, not by
+# this list (a sim_overlay can then switch it). A function keeps every value
+# it is designed with in its own fragment: where two functions read the same
+# number, each has its own key (the search has its own copy of the
+# closed_form law's five values, the mpc segment planner its own eta_v and
+# v_eps). A fragment keeps the full key path, so an
 # override or a parameter mirror names a key exactly as it did in one file.
 # Each key lives in ONE file — the loader refuses a leaf that two files set.
 include:
@@ -142,7 +147,7 @@ demo_catching_controller:
     # source to tune against — LEAP ships no grasp posture anywhere in this
     # repo. Every value is inside `devices.leap.joint_limits` ∩ URDF. S4.5
     # closed the hand on a ball with these poses and it grasps (216 of 793
-    # placements) — see `planner.hand` (catching/search_grid.yaml) for what
+    # placements) — see `planner.search.grid.hand` (catching/search_grid.yaml) for what
     # that yielded.
     robot:
       arm:
@@ -151,7 +156,14 @@ demo_catching_controller:
         # the command actually written would differ, and the difference would
         # surface as a tracking error with no attributable cause (L5 §4.3).
         limit_margin: 0.05
-        # The acceleration box (`qdd_max`, `qdd_provisional`) is in catching/search_grid.yaml.
+        # [rad/s², arm joint order] torque-derived (derive_accel_limits, eta_tau 0.8), 2026-09-20.
+        qdd_max: [9.197629, 9.197629, 9.197629, 9.197629, 9.197629, 9.197629, 9.197629]
+        # Whether the box is cleared for the real arm. true parks a real-arm
+        # configuration (sim only); absent or not a bool counts as true. This flag
+        # is a statement about THESE qdd_max values: whoever overrides qdd_max
+        # (sim.yaml, an overlay) must set qdd_provisional with it — a separate
+        # key does not follow the box, it inherits whatever this file says.
+        qdd_provisional: true
       hand:
         provisional: true
         rho_eps: 0.02
@@ -240,10 +252,27 @@ demo_catching_controller:
 
     # What stays here is the planner THREAD's own: whether it runs, how it
     # wakes, the wait pose and the catch sub-model, the freeze lead and the
-    # block's provisional flag. The search's keys are in
-    # catching/search_grid.yaml, each law's in catching/planner_*.yaml —
-    # all under this same `planner:` map.
+    # block's provisional flag — and the key that selects the segment mode.
+    # The search's keys are in catching/search_grid.yaml (planner.search.grid)
+    # and the mpc segment planner's in catching/segment_mpc.yaml
+    # (planner.segment.mpc), both under this same `planner:` map.
     planner:
+      segment:
+        # THE SELECTOR: what the arm follows from APPROACH to the end of the
+        # stop (MPC MD-44), chosen once per configuration and never mixed
+        # within it. closed_form: the RT tick makes the reference itself — v1's
+        # L4 soft-catch reference, then L7's virtual target (the code default,
+        # when the key is absent). mpc: the planner thread's mpc segment
+        # planner publishes joint segments and the RT follows them (its keys:
+        # planner.segment.mpc, catching/segment_mpc.yaml) — needs
+        # planner.enabled and the approach grid
+        # (planner.segment.mpc.approach.n_pre_max > 0), else it parks; a DECEL
+        # with no segment to follow aborts (ABORT_SAFE), never closed_form.
+        # Shipped mpc by the user's decision (MD-89, 2026-10-03)
+        # although gate G-1 failed here: catch success 0.02 against closed_form's 0.49 on the same 300 throws — 285
+        # of them got no catchable plan (E1-F06, #632).
+        # Set closed_form to run v1's law.
+        mode: mpc
       # ── Planner thread (L3 §6, S6-A) ──────────────────────────────────────
       # ON: this profile has no oracle plan, so the planner is the plan box's
       # only writer. Its search is implemented (S6-B); only a configuration
@@ -303,7 +332,7 @@ demo_catching_controller:
       # M·v̇ + h within ±eta_tau·tau_max, eta_tau 0.8 being D-16's. Until then
       # this robot ran `box` (the parser default of the time, since removed:
       # the constant D-16 box, 9.2 rad/s²), under which
-      # `supervisor.decel.mode: mpc` had every replan refused at the switch
+      # `planner.segment.mode: mpc` had every replan refused at the switch
       # gate — the command fell behind the segment. The E0-F02 success rates
       # of this robot were measured under `box`.
       accel_constraint: dynamic
@@ -368,22 +397,6 @@ demo_catching_controller:
         stop_s: 4.28
         return_s: 6.09
         provisional: true
-      decel:
-        # THE PLANNER SELECTOR. `a_dec` (catching/planner_closed_form.yaml) and
-        # `switch_margin` (catching/segment_mpc.yaml) are the two laws' own
-        # keys under this same `decel:` map.
-        #
-        # The DECEL law (MPC MD-44), chosen once per configuration and never
-        # mixed within it. closed_form: v1 L7's virtual target (the code
-        # default, when the key is absent). mpc: every DECEL follows the decel
-        # MPC's stop segment — needs planner.enabled and the approach grid
-        # (planner.decel_mpc.approach.n_pre_max > 0), else it parks; a DECEL
-        # with no segment to follow aborts (ABORT_SAFE), never closed_form.
-        # Shipped mpc by the user's decision (MD-89, 2026-10-03)
-        # although gate G-1 failed here: catch success 0.02 against closed_form's 0.49 on the same 300 throws — 285
-        # of them got no catchable plan (E1-F06, #632).
-        # Set closed_form to run v1's law.
-        mode: mpc
 
   # Group order IS the device index order: iiwa7 = 0 (held), leap = 1
   # (stepped). No publishers — S4.0 emits no state message (D-20).

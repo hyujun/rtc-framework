@@ -26,7 +26,7 @@
 //
 // COARSE TO FINE (the budget, §4.8 "연산 예산"). Every combination is screened
 // at `dt_coarse`; only the winner is re-run at the control period to confirm.
-// The grid is the caller's (`planner.gamma.grid`, `window_grid`).
+// The grid is the caller's (`planner.search.grid.gamma.grid`, `window_grid`).
 //
 // The screen judges the PEAKS only; ‖e(t_c)‖ is judged by the confirmation.
 // Semi-implicit Euler at the coarse step lags a moving target by about γ‖v‖·dt
@@ -122,15 +122,15 @@ struct RolloutPeaks {
 
 /// Acceptance thresholds (L3 §4.8) and the grids.
 struct RolloutSettings {
-  double a_max{0.0};                    ///< `reference.a_max` [m/s²]
-  double v_max{0.0};                    ///< `reference.v_max` [m/s]
-  double eta_a{0.8};                    ///< `planner.gamma.eta_a`
-  double eta_v{0.9};                    ///< `planner.gamma.eta_v`
-  double eps_term{0.002};               ///< `planner.gamma.eps_term` [m]
-  double dt_coarse{0.01};               ///< screening step [s] (`planner.rollout.dt_coarse`)
-  double dt_fine{0.002};                ///< confirmation step [s] (the control period)
-  std::span<const double> gamma_grid;   ///< `planner.gamma.grid`
-  std::span<const double> window_grid;  ///< `planner.gamma.window_grid` [s]
+  double a_max{0.0};       ///< `reference.a_max` [m/s²]
+  double v_max{0.0};       ///< `reference.v_max` [m/s]
+  double eta_a{0.8};       ///< `planner.search.grid.gamma.eta_a`
+  double eta_v{0.9};       ///< `planner.search.grid.gamma.eta_v`
+  double eps_term{0.002};  ///< `planner.search.grid.gamma.eps_term` [m]
+  double dt_coarse{0.01};  ///< screening step [s] (`planner.search.grid.rollout.dt_coarse`)
+  double dt_fine{0.002};   ///< confirmation step [s] (the control period)
+  std::span<const double> gamma_grid;   ///< `planner.search.grid.gamma.grid`
+  std::span<const double> window_grid;  ///< `planner.search.grid.gamma.window_grid` [s]
 };
 
 /// The longest window of the grid — "the least the hand needs" when no

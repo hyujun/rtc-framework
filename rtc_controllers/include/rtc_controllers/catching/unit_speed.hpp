@@ -8,7 +8,7 @@
 // The SAME formula and rows as the offline map's python
 // (`rtc_tools.analysis.catch_speed_budget.dls_unit_velocity`), which fed the
 // S3.5b gate map, and the same damping: the search passes
-// `planner.gamma.unit_speed_damping` and `catch_gate_map` reads that key from
+// `planner.search.grid.gamma.unit_speed_damping` and `catch_gate_map` reads that key from
 // the profile (the python tool constant `DEFAULT_DLS_DAMPING` is its fallback
 // and is pinned equal to the shipped value). Before S6-B the runtime
 // had no producer and the map's q̇ᵘ had nothing to be equivalent to (G3-I's
@@ -31,7 +31,7 @@
 namespace rtc::catching {
 
 /// The damping the map used (python `DEFAULT_DLS_DAMPING`): the default of
-/// `planner.gamma.unit_speed_damping`, written in the shipped profiles.
+/// `planner.search.grid.gamma.unit_speed_damping`, written in the shipped profiles.
 inline constexpr double kUnitSpeedDamping = 1e-3;
 
 struct UnitSpeedResult {

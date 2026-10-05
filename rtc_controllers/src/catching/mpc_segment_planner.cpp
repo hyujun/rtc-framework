@@ -30,7 +30,7 @@ namespace {
   return static_cast<std::size_t>(i);
 }
 
-// The core's design values, all YAML keys, from `planner.decel_mpc.*`: the cost
+// The core's design values, all YAML keys, from `planner.segment.mpc.*`: the cost
 // scalars (the stop-path weight among them — both core kinds carry that term,
 // on their nodes from the catch on), the axis and trust-region limits, the
 // rest tolerance and the solver's tolerances. `jerk_weight` is already in
@@ -233,8 +233,9 @@ bool MpcSegmentPlanner::Configure(const MpcSegmentPlannerModel& model,
   jerk_weight_model_.resize(0);
   if (!params.jerk_weight.empty()) {
     if (params.jerk_weight.size() != static_cast<std::size_t>(n)) {
-      return fail("decel_mpc.cost.jerk_weight has " + std::to_string(params.jerk_weight.size()) +
-                  " entries, the arm has " + std::to_string(n) + " joints");
+      return fail("planner.segment.mpc.cost.jerk_weight has " +
+                  std::to_string(params.jerk_weight.size()) + " entries, the arm has " +
+                  std::to_string(n) + " joints");
     }
     jerk_weight_model_.resize(n);
     for (int m = 0; m < n; ++m) {
@@ -333,8 +334,10 @@ bool MpcSegmentPlanner::ConfigureApproach(const MpcSegmentPlannerModel& model, s
   // a limit would put the trust row's lower bound above its upper one. δ is
   // the profile's `linearization.delta_tr`, the value the cores are built with.
   if (!(params.m_q < params.delta_tr)) {
-    why = "decel_mpc.m_q must be below the trust region, decel_mpc.linearization.delta_tr (" +
-          std::to_string(params.delta_tr) + " rad) with a pre-catch grid";
+    why =
+        "planner.segment.mpc.m_q must be below the trust region, "
+        "planner.segment.mpc.linearization.delta_tr (" +
+        std::to_string(params.delta_tr) + " rad) with a pre-catch grid";
     return false;
   }
   for (int m = 0; m < n; ++m) {

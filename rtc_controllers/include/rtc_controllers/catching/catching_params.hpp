@@ -9,18 +9,20 @@
 // (L0 §9) and the MASTER §6 cross-constraint table
 // reference:
 //   - reference.omega/zeta/v_max/a_max      (L4 §6)
-//   - planner.gamma.eta_v                   (L3 §6, D-9)
-//   - planner.catchability.manipulability_min.arm_5row (L3 §6, D-18)
+//   - planner.search.grid.gamma.eta_v       (L3 §6, D-9)
+//   - planner.search.grid.catchability.manipulability_min.arm_5row (L3 §6, D-18)
+//   - planner.search.grid.reference.*, planner.search.grid.stop.a_dec — the
+//     search's own copies of the five values above and below (#711)
+//   - planner.segment.mode, planner.segment.mpc.{switch_margin, eta_v}
 //   - supervisor.decel.a_dec                (L7 §6)
 //   - core.ball.diameter/mass/restitution   (L0 §6, D-12)
 //   - sim.ball.drag_k                       (L0 §6 — sim-fixture-only, see below)
 //   - robot.hand.q_open/q_pre/q_close/caging_mask/rho_eps (L6 §6, §4.2)
 //   - robot.hand.eta_close/T_close_e2e       (L6 §6, added by S4.1)
-// `planner.ik.*`, `planner.hand.d_eff/r_cap`, catch frame (D-17), and the D-16
-// joint-accel box are out of scope: none of them appear in G0-C or the §6
-// cross-constraint table, and their owning steps (S2.3a, S2.5) have not
-// landed. See the .cpp for the YAML keys this file had to invent (the docs
-// name the physical relationship but not a schema field) and why.
+// `planner.search.grid.ik.*`, `planner.search.grid.hand.d_eff/r_cap`, catch frame (D-17), and the
+// D-16 joint-accel box are out of scope: none of them appear in G0-C or the §6 cross-constraint
+// table, and their owning steps (S2.3a, S2.5) have not landed. See the .cpp for the YAML keys this
+// file had to invent (the docs name the physical relationship but not a schema field) and why.
 //
 // S4a SCOPE (2026-09-20). The three L6 §5.1 fields the hand-timing step needs
 // — `q_open` (the pose homing opens the hand to), `eta_close` (the §4.2
@@ -52,6 +54,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace rtc::catching {
 
@@ -91,11 +94,51 @@ enum class CatchingAccelConstraint : std::uint8_t { kUnset, kRemovedBox, kKinema
   return form == CatchingAccelConstraint::kKinematic || form == CatchingAccelConstraint::kDynamic;
 }
 
-/// `supervisor.decel.mode` — the DECEL law, chosen once per configure and
-/// never mixed within an activation (MPC MD-44). kClosedForm is the v1 L7
-/// virtual target and the default (the key absent); kMpc follows the segment
-/// MPC's stop segment on every DECEL.
-enum class CatchingDecelMode : std::uint8_t { kClosedForm, kMpc };
+/// `planner.segment.mode` — what the arm follows from APPROACH to the end of
+/// the stop, chosen once per configure and never mixed within an activation
+/// (MPC MD-44). kClosedForm is v1 (the RT tick makes the L4 reference and the
+/// L7 virtual target itself) and the default (the key absent); kMpc follows
+/// the joint segments the mpc segment planner publishes.
+enum class CatchingSegmentMode : std::uint8_t { kClosedForm, kMpc };
+
+/// A key of the `catching:` tree that moved (#711): `old_path` is no longer
+/// read, `new_path` is where its value belongs. Paths are dotted and relative
+/// to `catching:`.
+struct RenamedCatchingKey {
+  const char* old_path;
+  const char* new_path;
+};
+
+/// Every key that moved. A tree that still carries one would run on the new
+/// key's default under the old key's name, so the binding parks on it
+/// (FindRenamedCatchingKeys) instead of ignoring it. `supervisor.decel` is
+/// listed leaf by leaf: `supervisor.decel.a_dec` stays where it is.
+inline constexpr std::array<RenamedCatchingKey, 18> kRenamedCatchingKeys{{
+    {"supervisor.decel.mode", "planner.segment.mode"},
+    {"supervisor.decel.switch_margin", "planner.segment.mpc.switch_margin"},
+    {"planner.decel_mpc", "planner.segment.mpc"},
+    {"planner.budget_s", "planner.search.grid.budget_s"},
+    {"planner.max_ik", "planner.search.grid.max_ik"},
+    {"planner.n_settle", "planner.search.grid.n_settle"},
+    {"planner.slice", "planner.search.grid.slice"},
+    {"planner.time", "planner.search.grid.time"},
+    {"planner.unc", "planner.search.grid.unc"},
+    {"planner.gamma", "planner.search.grid.gamma"},
+    {"planner.rollout", "planner.search.grid.rollout"},
+    {"planner.budget", "planner.search.grid.budget"},
+    {"planner.score", "planner.search.grid.score"},
+    {"planner.workspace", "planner.search.grid.workspace"},
+    {"planner.hand", "planner.search.grid.hand"},
+    {"planner.ik", "planner.search.grid.ik"},
+    {"planner.catchability", "planner.search.grid.catchability"},
+    {"planner.switch", "planner.search.grid.switch"},
+}};
+
+/// The entries of kRenamedCatchingKeys whose old path is present in
+/// `catching` — with any value, a map or a null included: a key that is
+/// written is a key somebody meant. Never throws; a node on the way that is
+/// not a map has no children.
+[[nodiscard]] std::vector<RenamedCatchingKey> FindRenamedCatchingKeys(const YAML::Node& catching);
 
 // A YAML scalar the schema may leave open as the literal string "TBD" (or an
 // unparseable/non-finite number, which L0 §5.3 treats the same way) until a
@@ -256,17 +299,36 @@ struct CatchingParams {
   /// the right thing instead: sim warns, a real arm is blocked.
   bool reference_provisional{true};
 
-  // planner: (L3 §6)
-  TbdDouble planner_gamma_eta_v{TbdDouble::Resolved(0.9)};                     // –, (0, 1] (D-9)
+  // planner.search.grid: (L3 §6) — the grid search's own design values
+  TbdDouble planner_search_grid_gamma_eta_v{TbdDouble::Resolved(0.9)};         // –, (0, 1] (D-9)
   TbdDouble planner_catchability_manip_min_arm5row{TbdDouble::Resolved(0.1)};  // –, >= 0 (D-18)
   bool planner_catchability_manip_min_provisional{true};  // invented key, see .cpp
+  /// `planner.search.grid.reference.*` and `planner.search.grid.stop.a_dec` —
+  /// the reference and the stop the search rolls a candidate out on (L3 §4.8,
+  /// §4.9). The search runs under both segment modes, so it has its own keys
+  /// for these five rather than reading the closed_form law's (`reference.*`,
+  /// `supervisor.decel.a_dec`). Same defaults and ranges as the keys they
+  /// copy; what a difference between the two means is SearchCopiesThatDiffer's.
+  TbdDouble planner_search_grid_reference_omega{TbdDouble::Resolved(10.0)};  // rad/s, [1, 25]
+  TbdDouble planner_search_grid_reference_zeta{TbdDouble::Resolved(1.0)};    // –, exactly 1
+  TbdDouble planner_search_grid_reference_v_max;                             // m/s, > 0
+  TbdDouble planner_search_grid_reference_a_max;                             // m/s², > 0
+  TbdDouble planner_search_grid_stop_a_dec;  // m/s², > 0 and <= the a_max above
+
+  // planner.segment: what the arm follows (MD-34 · MD-44)
+  CatchingSegmentMode planner_segment_mode{CatchingSegmentMode::kClosedForm};
+  /// `planner.segment.mpc.switch_margin` — ρ_max of the segment-switch
+  /// continuity gate (MD-39), > 0. Refused at parse time when not a positive
+  /// finite number; read only under kMpc.
+  double planner_segment_mpc_switch_margin{1.0};
+  /// `planner.segment.mpc.eta_v` — the mpc segment planner's speed margin on
+  /// the joint ratings and the headroom (1 − η_v) of the RT's segment-switch
+  /// gate (D-9, MD-39), (0, 1]. Its own key, beside the search's
+  /// `planner.search.grid.gamma.eta_v`; judged only under kMpc.
+  TbdDouble planner_segment_mpc_eta_v{TbdDouble::Resolved(0.9)};
 
   // supervisor: (L7 §6)
   TbdDouble supervisor_decel_a_dec;  // m/s², > 0 and <= reference_a_max (L7 §4.3)
-  CatchingDecelMode supervisor_decel_mode{CatchingDecelMode::kClosedForm};  // MD-34 · MD-44
-  /// ρ_max of the segment-switch continuity gate (MD-39), > 0. Refused at
-  /// parse time when not a positive finite number; read only under kMpc.
-  double supervisor_decel_switch_margin{1.0};
 
   // io: (L1 §6) — vision ingress. Consumed from S5.2.
   //
@@ -431,8 +493,8 @@ enum class CatchingValidationReason : std::uint8_t {
   kControlRateOutOfRange,      // control_rate_hz outside [kMinControlRateHz, kMaxControlRateHz]
   kRangeViolation,             // a resolved value is outside its L0/L3/L4/L6/L7 §6 range
   kZetaNotCriticallyDamped,    // reference.zeta != 1 (v1 requires the closed-form solution)
-  kEtaVOutOfRange,             // planner.gamma.eta_v not in (0, 1] (D-9)
-  kDecelExceedsAMax,           // supervisor.decel.a_dec > reference.a_max (L7 §4.3)
+  kEtaVOutOfRange,             // an eta_v key not in (0, 1] (D-9)
+  kDecelExceedsAMax,           // an a_dec key above its a_max (L7 §4.3, L3 §4.9)
   kUnstableDiscretization,     // omega*h >= 2*sqrt(2)-2 (L4 §4.7 discrete stability boundary)
   kDiscretizationAccuracy,     // omega*h > 0.05 (L4 §4.7 accuracy recommendation) — WARNING only
   kHandCagingGapTooSmall,      // |q_close[i] - q_pre[i]| <= rho_eps on a caging joint (L6 §4.2)
@@ -517,6 +579,23 @@ inline constexpr const char* kFreezeWindowKey = "planner.freeze.T_freeze";
 /// check that owns it. Allocation-free, noexcept.
 void CheckFreezeCoversClose(CatchingValidationReport& report, const CatchingParams& params,
                             double t_freeze_s, double control_rate_hz) noexcept;
+
+/// One of the grid search's copies and the closed_form law's key it copies
+/// (both dotted, below `catching:`).
+struct CatchingKeyCopy {
+  const char* copy;
+  const char* source;
+};
+
+/// The search's copies (`planner.search.grid.reference.*`,
+/// `planner.search.grid.stop.a_dec`) whose value differs from the closed_form
+/// law's key (`reference.*`, `supervisor.decel.a_dec`), written to the front
+/// of `out`; returns how many. A pair with a TBD on either side is skipped —
+/// the validator reports the TBD. What a difference means is the caller's:
+/// under kClosedForm the search would rank candidates by a motion the arm does
+/// not make, under kMpc the two are different functions' values.
+[[nodiscard]] std::size_t SearchCopiesThatDiffer(const CatchingParams& params,
+                                                 std::array<CatchingKeyCopy, 5>& out) noexcept;
 
 /// Key reported for the catch frame's provisional flag (D-17).
 inline constexpr const char* kCatchFrameProvisionalKey =

@@ -1432,7 +1432,7 @@ if(BUILD_TESTING)
 
   # ── dynamic_catching S6-C G3-C: 1000 synthetic throws through the planner ──
   # The shipped ur5e_p1b planner profile on the real catch sub-model: p99 of
-  # the planning cycle < planner.budget_s (asserted), rejection distribution and
+  # the planning cycle < planner.search.grid.budget_s (asserted), rejection distribution and
   # rank-gate counts recorded.
   ament_add_gtest(test_catching_planner_g3c test/test_catching_planner_g3c.cpp
     TIMEOUT 300)
