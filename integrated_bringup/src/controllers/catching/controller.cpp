@@ -4,6 +4,7 @@
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
+#include "rtc_controllers/catching/joint_stop.hpp"
 
 #include <unistd.h>  // close (planner wake eventfd)
 

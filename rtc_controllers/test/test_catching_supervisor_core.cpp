@@ -10,6 +10,7 @@
 #include "rtc_controllers/catching/contact_debounce.hpp"
 #include "rtc_controllers/catching/decel_target.hpp"
 #include "rtc_controllers/catching/joint_home.hpp"
+#include "rtc_controllers/catching/joint_stop.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 
