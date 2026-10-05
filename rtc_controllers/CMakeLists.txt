@@ -478,6 +478,15 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_traj_sampler PRIVATE -Wno-mismatched-new-delete)
 
+  # dynamic_catching E1-F13 (#739): the ball prediction at a planner node —
+  # the shared sampler's mean plus the 6x6 covariance propagated from the
+  # nearest sample. Header-only and RT-safe, hence both allocation sensors.
+  ament_add_gtest(test_catching_ball_node_samples test/test_catching_ball_node_samples.cpp)
+  target_link_libraries(test_catching_ball_node_samples rtc_controllers)
+  target_include_directories(test_catching_ball_node_samples PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_ball_node_samples PRIVATE -Wno-mismatched-new-delete)
+
   # L1 ingress judgement: order / track epoch / staleness / horizon / jump
   # (S5.2, G1-E and the pure half of G1-H·G1-J). Header-only, no ROS: the
   # PointCloud2 decode and the SeqLock live in the integration binding, and
