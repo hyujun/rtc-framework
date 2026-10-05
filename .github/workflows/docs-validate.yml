@@ -184,3 +184,11 @@ jobs:
         run: |
           python3 repo_scripts/scripts/validate_test_fixtures.py --self-test
           python3 repo_scripts/scripts/validate_test_fixtures.py
+
+      # A test file no CMakeLists.txt names is a test `colcon test` never runs,
+      # and nothing else reports it (#711: a pytest was registered seven
+      # commits after it was added).
+      - name: Test registration
+        run: |
+          python3 repo_scripts/scripts/validate_test_registration.py --self-test
+          python3 repo_scripts/scripts/validate_test_registration.py

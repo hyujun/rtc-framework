@@ -66,8 +66,11 @@
 #          is the interpreter exit status, and a missing PyYAML fails OPEN.
 #   1c. changed .claude/rules/*.md -> validate_claude_rules.py (globs can fire)
 #   1d. changed CMakeLists.txt / conftest.py / colcon.pkg / test sources -> the
-#        CI test gates validate_test_domains.py + validate_test_fixtures.py,
-#        WHOLE repo (a domain collision spans two packages; CI keeps main clean)
+#        CI test gates validate_test_domains.py + validate_test_fixtures.py +
+#        validate_test_registration.py, WHOLE repo (a domain collision spans
+#        two packages; CI keeps main clean). The third is what tells a new
+#        test/test_*.{cpp,py,sh} that no CMakeLists.txt names -- the "new .cpp
+#        must appear in CMakeLists.txt" check of Phase 1 reads src/ only.
 #   2. Build + test on changed packages -- EXECUTED under --run, only CHECKED
 #      at the turn end (see Modes and "Turn end: evidence, not execution")
 #        - a package is "changed" for this phase by its source (.cpp/.hpp/.h/
@@ -1818,7 +1821,7 @@ if [ -n "$CHANGED_RULES" ]; then
   fi
 fi
 
-# --- Phase 1d: test isolation gates (CI's test-domain and fixture checks) ---
+# --- Phase 1d: test gates (CI's domain, fixture and registration checks) ---
 # validate_test_domains.py (#401: one ROS_DOMAIN_ID per package, and every
 # participant-opening test claims one) and validate_test_fixtures.py (#454: no
 # fixture resolves a package outside the repo and deps.repos) ran only in CI.
@@ -1828,10 +1831,17 @@ fi
 # #513 (two integrated_bringup tests with no claim) and #571 (a new test on
 # udp_hand_driver's domain 54).
 #
+# validate_test_registration.py came third (2026-10-05). A test file of a CMake
+# package that no call in its CMakeLists.txt names is not run by `colcon test`,
+# and nothing downstream says so: the build passes, Phase 2 tests the package
+# green without it, and Phase 1's co-update check reads new .cpp under src/
+# only. On #711 integrated_bringup/test/test_catching_keys_tools.py was added
+# in 1c521b30 and registered seven commits later, in 26f88694.
+#
 # Whole-repo verdicts, unlike the doc gate's changed-lines scope: a collision
 # is between two packages, and the one this turn did not touch is half of it.
 # That cannot block an unrelated turn on inherited debt, because CI keeps main
-# clean on both. Each run takes about 0.5 s, so the trigger is only a
+# clean on all three. Each run takes about 0.5 s, so the trigger is only a
 # relevance filter: a build file, a pytest conftest, or a test source or
 # fixture header.
 #
@@ -1842,7 +1852,7 @@ fi
 TESTGATE_FAILURES=""
 CHANGED_TESTGATE=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|conftest\.py|colcon\.pkg)$|(^|/)test(ing)?/' || true)
 if [ -n "$CHANGED_TESTGATE" ]; then
-  for gate in validate_test_domains validate_test_fixtures; do
+  for gate in validate_test_domains validate_test_fixtures validate_test_registration; do
     gate_py="$PROJECT_DIR/repo_scripts/scripts/${gate}.py"
     if [ ! -f "$gate_py" ]; then
       echo "verify-changes: ${gate}.py not found; that test gate skipped." >&2
@@ -2715,7 +2725,7 @@ if [ -n "$RULES_FAILURES" ]; then
   REPORT="${REPORT}Path-scoped rule cannot fire (repo_scripts/scripts/validate_claude_rules.py):\n${RULES_FAILURES}\n"
 fi
 if [ -n "$TESTGATE_FAILURES" ]; then
-  REPORT="${REPORT}Test isolation gates (the CI checks, run whole-repo):\n${TESTGATE_FAILURES}\n"
+  REPORT="${REPORT}Test isolation gates and test registration (the CI checks, run whole-repo):\n${TESTGATE_FAILURES}\n"
 fi
 if [ -n "$TEST_FAILURES" ]; then
   REPORT="${REPORT}Test/build failures:\n${TEST_FAILURES}\n"
