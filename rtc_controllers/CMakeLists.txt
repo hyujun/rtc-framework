@@ -594,12 +594,16 @@ if(BUILD_TESTING)
   target_compile_definitions(test_catching_node_follower PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
 
-  # dynamic_catching MPC E1-F03 (#629): the planner.decel_mpc keys and the RT's
-  # decel admission / switch rules. Pure functions — no model, no solver. The
-  # decel planner itself is test_catching_approach_planner / _cycle below.
+  # dynamic_catching MPC E1-F03 (#629): the planner.decel_mpc keys, and (the
+  # second target) the RT's segment admission / switch rules. Pure functions —
+  # no model, no solver. The decel planner itself is
+  # test_catching_approach_planner / _cycle below.
   ament_add_gtest(test_catching_mpc_segment_params test/test_catching_mpc_segment_params.cpp)
   target_link_libraries(test_catching_mpc_segment_params rtc_controllers)
   target_include_directories(test_catching_mpc_segment_params PRIVATE ${rtc_base_test_include})
+  ament_add_gtest(test_catching_segment_admission test/test_catching_segment_admission.cpp)
+  target_link_libraries(test_catching_segment_admission rtc_controllers)
+  target_include_directories(test_catching_segment_admission PRIVATE ${rtc_base_test_include})
 
   # dynamic_catching MPC E1-F08 (#661): the decel planner's APPROACH–stop
   # solves on a fake clock (PlanFirst, Replan, the ball target, the publish
