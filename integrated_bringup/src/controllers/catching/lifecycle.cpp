@@ -1066,10 +1066,12 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       // would run on its default — the shipped value, or closed_form — under
       // the old key's name.
       for (const rtc::catching::RenamedCatchingKey& key : renamed_keys_) {
+        const char* note = rtc::catching::RenamedCatchingKeyNote(key.old_path);
+        const std::string also = note != nullptr ? std::string(" (") + note + ")" : std::string();
         RCLCPP_ERROR(logger_,
-                     "DISABLED: 'catching.%s' was renamed — write it as 'catching.%s'. This "
+                     "DISABLED: 'catching.%s' was renamed — write it as 'catching.%s'%s. This "
                      "controller will refuse to activate; the robot still comes up.",
-                     key.old_path, key.new_path);
+                     key.old_path, key.new_path, also.c_str());
       }
       for (const std::string& key : removed_arm_box_keys_) {
         RCLCPP_ERROR(logger_,

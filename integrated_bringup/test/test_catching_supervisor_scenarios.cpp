@@ -4797,6 +4797,22 @@ TEST_F(SafetyGateParkTest, EveryMovedKeyParksNamingItsOldAndItsNewPath) {
                                       std::string("'catching.") + key.new_path + "'"})
                        .empty())
           << "the ERROR must name the old path and the new one";
+      // Two old maps held a value two functions read; the park names the key
+      // the OTHER function has for it now, or moving the map alone would leave
+      // the mpc segment planner on its default.
+      const std::string old_path = key.old_path;
+      const char* second = old_path == "planner.gamma" ? "'catching.planner.segment.mpc.eta_v'"
+                           : old_path == "planner.ik"  ? "'catching.planner.segment.mpc.v_eps'"
+                                                       : nullptr;
+      const auto errors = LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                                            {"'catching." + old_path + "' was renamed"});
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors[0].find("was also the mpc segment planner's") != std::string::npos,
+                second != nullptr)
+          << errors[0];
+      if (second != nullptr) {
+        EXPECT_NE(errors[0].find(second), std::string::npos) << errors[0];
+      }
       EXPECT_EQ(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::FAILURE);
       ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
     }

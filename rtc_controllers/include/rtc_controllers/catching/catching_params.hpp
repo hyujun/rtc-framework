@@ -54,6 +54,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 #include <vector>
 
 namespace rtc::catching {
@@ -133,6 +134,22 @@ inline constexpr std::array<RenamedCatchingKey, 18> kRenamedCatchingKeys{{
     {"planner.catchability", "planner.search.grid.catchability"},
     {"planner.switch", "planner.search.grid.switch"},
 }};
+
+/// What else to say about a moved key, or nullptr: two of the old maps held a
+/// value that TWO functions read and that now has a key per function. A
+/// profile that only moves the map to its new path would leave the mpc segment
+/// planner on its default for that value, so the park names the second key.
+[[nodiscard]] constexpr const char* RenamedCatchingKeyNote(std::string_view old_path) noexcept {
+  if (old_path == "planner.gamma") {
+    return "its eta_v was also the mpc segment planner's speed margin, which is "
+           "'catching.planner.segment.mpc.eta_v' now";
+  }
+  if (old_path == "planner.ik") {
+    return "its v_eps was also the mpc segment planner's ball-speed floor, which is "
+           "'catching.planner.segment.mpc.v_eps' now";
+  }
+  return nullptr;
+}
 
 /// The entries of kRenamedCatchingKeys whose old path is present in
 /// `catching` — with any value, a map or a null included: a key that is

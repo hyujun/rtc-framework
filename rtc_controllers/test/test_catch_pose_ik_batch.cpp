@@ -586,6 +586,39 @@ TEST(CatchPoseIkBatchParamsTree, AcceptsTheBareTree) {
   ExpectResolvesToTheFilesValues(kPlannerBody, "<root>");
 }
 
+TEST(CatchPoseIkBatchParamsTree, RefusesAFileThatStillWritesAMovedKey) {
+  // The judge reads planner.search.grid.ik / .catchability only. A file from
+  // before #711 has a `planner` map, so it resolves, and every option would
+  // then be the in-code default with nothing said — the map judged under the
+  // file's name on values the file does not hold.
+  struct Case {
+    const char* yaml;
+    const char* old_path;
+    const char* new_path;
+  };
+
+  for (const Case& c :
+       {Case{"planner:\n  ik: {alpha_max: 0.4}\n", "planner.ik", "planner.search.grid.ik"},
+        Case{"catching:\n  planner:\n    catchability: {definition: arm_6row}\n",
+             "planner.catchability", "planner.search.grid.catchability"},
+        Case{"ctrl:\n  catching:\n    planner: {search: {grid: {ik: {}}}, hand: {d_eff: 0.2}}\n",
+             "planner.hand", "planner.search.grid.hand"}}) {
+    try {
+      (void)ResolveCatchingTree(YAML::Load(c.yaml), "old/params.yaml");
+      ADD_FAILURE() << "resolved a tree out of:\n" << c.yaml;
+    } catch (const std::invalid_argument& e) {
+      const std::string what = e.what();
+      EXPECT_NE(what.find("old/params.yaml"), std::string::npos) << what;
+      EXPECT_NE(what.find(std::string("'") + c.old_path + "' -> '" + c.new_path + "'"),
+                std::string::npos)
+          << what;
+    }
+  }
+  // Positive control: the same options at the new paths resolve.
+  EXPECT_NO_THROW((void)ResolveCatchingTree(
+      YAML::Load("planner:\n  search: {grid: {ik: {alpha_max: 0.4}}}\n"), "new/params.yaml"));
+}
+
 TEST(CatchPoseIkBatchParamsTree, RejectsEverythingElseNamingTheFile) {
   const char* const kRejected[] = {
       // two controllers: which one is a guess
