@@ -60,7 +60,7 @@
 
 ## 3. Epic · Feature
 
-**끝난 것.** E0 (기반 정비) 와 E1 의 단일 팔 MPC (E1-F01 – F11) 는 끝났다 — feature 와 이슈는 [ID_INDEX.md](ID_INDEX.md) §3. E2-F01 – F03 (G1 자산 · config · launch · `demo_joint_controller` 의 G1 구동) 도 끝났다 — 같은 곳.
+**끝난 것.** E0 (기반 정비), E1 의 단일 팔 MPC (E1-F01 – F11) 와 계획기 interface (E1-F12) 는 끝났다 — feature 와 이슈는 [ID_INDEX.md](ID_INDEX.md) §3. E2-F01 – F03 (G1 자산 · config · launch · `demo_joint_controller` 의 G1 구동) 도 끝났다 — 같은 곳.
 
 ### E1. 단일 팔 — NLP search · mpc_docking — [#621](https://github.com/hyujun/rtc-framework/issues/621) · 필수
 
@@ -68,11 +68,10 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F12 | [#738](https://github.com/hyujun/rtc-framework/issues/738) | 포구 탐색 · 구간 계획기 interface 도입 (ARCH-3, 기능 동등 refactor) | — | **완료** ([#757](https://github.com/hyujun/rtc-framework/pull/757)) — 탐색 · 구간 계획기를 `CatchSearch` · `SegmentPlanner` 뒤로 옮겼다. 기능 동등: 포구 한 번의 계획기 trace digest 여섯이 refactor 전후로 같다 |
 | E1-F13 | [#739](https://github.com/hyujun/rtc-framework/issues/739) | mpc_docking 수치 코어 — 상대상태 · corridor · 확률 제약 · 토크 판정의 NLP (ProxQP 위 SQP) | E1-F12 (끝) | **다음** |
 | E1-F14 | [#740](https://github.com/hyujun/rtc-framework/issues/740) | NLP search 코어 — 후보별 NLP 풀이로 포구 후보를 고른다 (바깥 루프) | E1-F13 | 대기 |
 | E1-F15 | [#741](https://github.com/hyujun/rtc-framework/issues/741) | mpc_docking 의 입력 식별 (sim) — 포획 기하 · 속도 집합 · 폐쇄 창 | — (E1-F16 앞에 끝낸다) | 대기 |
-| E1-F16 | [#742](https://github.com/hyujun/rtc-framework/issues/742) | 계획기 스레드 통합 — search · planner 선택 키, YAML 조각, `PlannerCycle` 배선 | E1-F12 · F13 · F14, E1-F15 의 값 | 대기 |
+| E1-F16 | [#742](https://github.com/hyujun/rtc-framework/issues/742) | 계획기 스레드 통합 — search · planner 선택 키, YAML 조각, `PlannerCycle` 배선 | E1-F12 (끝) · F13 · F14, E1-F15 의 값 | 대기 |
 | E1-F17 | [#743](https://github.com/hyujun/rtc-framework/issues/743) | RT 계약 · supervisor — mpc_docking 구간의 추종 | E1-F16 | 대기 |
 | E1-F18 | [#744](https://github.com/hyujun/rtc-framework/issues/744) | 로그 · plot_rtc_log · demo_controller_gui | E1-F17 | 대기 |
 | E1-F21 | [#747](https://github.com/hyujun/rtc-framework/issues/747) | 포구 가능 판정 지도 — 탐색이 어떤 공을 받는다고 판정하는가 (발사 위치 · 거리 · 비행시간 · 종단 속도). 오프라인 지도와 sim 의 판정 대 결과, 기술 통계로 보고한다 | E1-F16, sim 쪽은 E1-F17 · F18 | 대기 |
@@ -92,11 +91,11 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ### E3. MPC dual arm · waist 확장 — [#623](https://github.com/hyujun/rtc-framework/issues/623) · 필수 (E2 뒤)
 
-같은 MPC 에 dual arm · waist 항을 더한다 (MD-46 · MD-47). 착수 조건: E2 (g1_p1b 준비) 와 E1-F07 (코어, 끝). 첫 단계는 `Decel*` 이름의 rename refactor 다 (MD-48, #711) — E1-F12 뒤에 한다. sim 전용. 게이트: G1 sim 에서 포구 시행이 돌고 성공률 · solve time p99 가 보고된다. 기존 두 로봇 회귀 없음 — 단일 팔 구성 (더한 항의 가중 0) 의 해가 불변이다.
+같은 MPC 에 dual arm · waist 항을 더한다 (MD-46 · MD-47). 착수 조건: E2 (g1_p1b 준비) 와 E1-F07 (코어, 끝). 첫 단계는 `Decel*` 이름의 rename refactor 다 (MD-48, #711) — 그 앞에 두기로 한 E1-F12 는 끝났다. sim 전용. 게이트: G1 sim 에서 포구 시행이 돌고 성공률 · solve time p99 가 보고된다. 기존 두 로봇 회귀 없음 — 단일 팔 구성 (더한 항의 가중 0) 의 해가 불변이다.
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E3-F01 | [#640](https://github.com/hyujun/rtc-framework/issues/640) | G1 구성의 포구 후보 선택 (바깥 루프 — MD-46 의 편차를 닫는다). 계획기 interface · search 선택 키 · 단일 팔의 바깥 루프는 E1-F12 · F14 · F16 으로 옮겼다 | E1-F08 (끝), E1-F12 · F14 | 대기 |
+| E3-F01 | [#640](https://github.com/hyujun/rtc-framework/issues/640) | G1 구성의 포구 후보 선택 (바깥 루프 — MD-46 의 편차를 닫는다). 계획기 interface · search 선택 키 · 단일 팔의 바깥 루프는 E1-F12 · F14 · F16 으로 옮겼다 | E1-F08 (끝), E1-F12 (끝) · F14 | 대기 |
 | E3-F02 | [#641](https://github.com/hyujun/rtc-framework/issues/641) | 전신 항을 E1 코어에 추가 — 왼팔 rest · waist 억제 · 각운동량 · waist 토크 행 · counter-swing, 관절군별 move blocking | E1-F07 (끝), E2-F01 (끝) | 대기 |
 | E3-F03 | [#642](https://github.com/hyujun/rtc-framework/issues/642) | 충돌 제약 — capsule 모델 (신규 코어) 과 MPC 제약 행 (자기충돌 · 공–왼팔 거리) | E3-F02 | 대기 |
 | E3-F04 | [#643](https://github.com/hyujun/rtc-framework/issues/643) | MPC ↔ CLIK 계약의 전신 확장 — payload 관절 용량 (8 → G1 $n$ 17), 왼손 FK, 한계 여유. 단일 팔 계약은 `ID_INDEX.md` MD-36 · `ref/L7_supervisor.md` §4.3a | E1-F08 (끝), E2-F04 | 대기 |
@@ -131,21 +130,20 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `refactor/catching-planner-interface` | E1-F12 | interface 도입. 기능 동등성을 이 PR 만으로 판정한다 |
 | `feat/catching-docking-core` | E1-F13 | 신규 수치 코어. code review 단위 |
 | `feat/catching-nlp-search-core` | E1-F14 | 신규 수치 코어. code review 단위 |
 | `feat/catching-docking-ident` | E1-F15 | `rtc_tools` · `integrated_bringup/tools` 만 고친다 — 코어 둘과 병행한다 |
 | `feat/catching-docking-planner` | E1-F16 | 선택 키 · YAML 조각 · 배선 |
 | `feat/catching-docking-rt` | E1-F17 | RT 법칙. E-STOP · reset 경로를 건드리면 E-8 |
 | `feat/catching-docking-tooling` | E1-F18 | 로그 · plot · GUI |
-| `feat/catching-search-verdict-map` | E1-F21 | 판정 지도의 도구와 측정. **나누는 조건**: `grid` 의 오프라인 지도를 E1-F12 뒤에 먼저 만들면 브랜치를 나눈다 |
+| `feat/catching-search-verdict-map` | E1-F21 | 판정 지도의 도구와 측정. **나누는 조건**: `grid` 의 오프라인 지도를 먼저 만들면 브랜치를 나눈다 (그 선행인 E1-F12 는 끝났다) |
 | `feat/catching-docking-tune` | E1-F19 | 튜닝. 판정과 한 PR 에 섞지 않는다 |
 | `docs/catching-docking-eval` | E1-F20 | 게이트 판정 |
 | `feat/tsid-clik-multiframe` | E2-F04 | `rtc_tsid` public API 변경. 기존 소비자 둘의 기능 동등성이 성공 기준이다 |
 | `feat/demo-dualarm-controller` | E2-F05 | 신규 controller. Sprint Contract = spec |
 | `feat/g1-dualarm-tooling` | E2-F06, E2-F07 | GUI 와 plot. 둘 다 `demo_dualarm_controller` 의 출력을 소비한다 |
-| (rename refactor) | — | `Decel*` 이름 (MD-48, #711) — feature 가 아니다. 기능 동등성이 성공 기준이고 public YAML key 를 건드리므로 별도 PR. `refactor/catching-planner-interface` 뒤에 한다 |
-| `feat/catching-mpc-candidate-select` | E3-F01 | G1 구성의 후보 선택. interface 는 E1-F12 가 넣는다 |
+| (rename refactor) | — | `Decel*` 이름 (MD-48, #711) — feature 가 아니다. 기능 동등성이 성공 기준이고 public YAML key 를 건드리므로 별도 PR. 그 앞에 두기로 한 E1-F12 (interface) 는 끝났다 |
+| `feat/catching-mpc-candidate-select` | E3-F01 | G1 구성의 후보 선택. interface 는 E1-F12 가 넣었다 |
 | `feat/catching-mpc-wholebody` | E3-F02, E3-F04 | 전신 항과 MPC ↔ CLIK 계약. 둘 다 활성 관절을 전체로 넓히는 작업이고 계약의 sanity check 가 전신 해를 입력으로 쓴다 |
 | `feat/collision-capsule-core` | E3-F03 | 신규 수치 코어. code review 단위 |
 | `feat/g1-catch-controller` | E3-F05 | supervisor · 손 시퀀서 통합. E-STOP 경로를 건드리면 E-8 |
@@ -164,7 +162,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | E3-F05 | E-STOP 경로를 건드리면 E-8 | Critical |
 | 실기 (HW) | `mpc` 의 정지 구간과 작업셀 경계 (RT 가 `catch_box` 를 검사하지 않는다), `mpc` 구간의 샘플 시각을 바꾸는 RT 법칙 변경 — 둘 다 E-8 (#613) | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
 | E2-F04 | `rtc_tsid` public API 변경, 기존 소비자 둘 | code review, 기능 동등성이 성공 기준 |
-| E1-F12 | 계획기 interface 신설 (ARCH-3) | code review, 기능 동등성이 성공 기준 |
 | E1-F13 · F14 | 신규 수치 코어 (100+ 줄). E1-F14 는 두 번째 탐색 구현 | code review |
 | E1-F16 | lifecycle 의 configure 경로 | security review 권고 |
 | E3-F03 | 신규 수치 코어 (100+ 줄) | code review |
@@ -173,7 +170,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ## 4. 남은 feature 를 구속하는 결정
 
-아직 구현하지 않은 feature 를 구속하는 `MD-n` 이다. 나머지 `MD-n` 은 [ID_INDEX.md](ID_INDEX.md) §4. E1-F12 – F21 을 구속하는 결정 (solver · 조합 · 선택 키 · 식의 형태 · 1 차 범위 · 판정 방식) 은 `MD-n` 이 아니다 — 각 feature 이슈의 범위에 적혀 있고 선택지와 이유는 [#621 의 결정 코멘트](https://github.com/hyujun/rtc-framework/issues/621#issuecomment-5974865100) 에 있다.
+아직 구현하지 않은 feature 를 구속하는 `MD-n` 이다. 나머지 `MD-n` 은 [ID_INDEX.md](ID_INDEX.md) §4. E1-F13 – F21 을 구속하는 결정 (solver · 조합 · 선택 키 · 식의 형태 · 1 차 범위 · 판정 방식) 은 `MD-n` 이 아니다 — 각 feature 이슈의 범위에 적혀 있고 선택지와 이유는 [#621 의 결정 코멘트](https://github.com/hyujun/rtc-framework/issues/621#issuecomment-5974865100) 에 있다.
 
 | ID | 무엇을 정했나 | feature |
 |---|---|---|
@@ -185,7 +182,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | MD-13 | 토크는 1차까지 선형화하고 토크 · 자기충돌 행에는 slack 을 둔다. 위치 · 속도 한계, 종단 등식, trust region, 공–왼팔 행은 hard 다. 동역학은 손을 기준 자세로 잠근 축소 모델로 계산한다 | E3-F02 · F03 |
 | MD-46 | 설계는 formulation §1.3 하나다. g1_p1b 는 같은 코어에 dual arm · waist 전용 항 (waist 억제, 왼팔 rest, 각운동량, 자기충돌, 공–왼팔, waist 토크 행 · counter-swing, 관절군별 move blocking) 을 더한다. 포구 후보 ($t_c$) 를 MPC 의 바깥 루프가 고르게 하는 것이 닫아야 할 편차다 | E1-F14 · E3-F01 · F02 |
 | MD-47 | E3 의 착수 조건은 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이다. G-1 은 조건이 아니다 | E3 |
-| MD-48 | `Decel*` 식별자의 rename 은 E3 착수 전에 별도 refactor 로 한다 | E3 착수 (E1-F12 뒤) |
+| MD-48 | `Decel*` 식별자의 rename 은 E3 착수 전에 별도 refactor 로 한다 | E3 착수 (E1-F12 뒤 — 끝났다) |
 | MD-49 | 코어는 비용 · 제약을 항 단위로 조립하고 관절군별 move blocking 행렬 $E$ 의 자리만 둔다. 다관절군 일반화는 E3 에서 한다 | E3-F02 |
 
 ## 5. 아직 정하지 않은 것
@@ -203,7 +200,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 **mpc planner · catching 의 남은 일**
 
 - [#710](https://github.com/hyujun/rtc-framework/issues/710) — iiwa7_leap: `mode: mpc` 가 포구 계획을 내지 못한다 — 첫 풀이의 기준 궤적 (E1-F20 뒤에 다시 본다)
-- [#711](https://github.com/hyujun/rtc-framework/issues/711) — refactor(catching): `Decel*` · `decel_*` 이름을 뜻에 맞게 — MD-48 의 rename, E3 착수 전
+- [#711](https://github.com/hyujun/rtc-framework/issues/711) — refactor(catching): `Decel*` · `decel_*` 이름을 뜻에 맞게 — MD-48 의 rename, E3 착수 전 (선행인 E1-F12 는 끝났다)
 - [#755](https://github.com/hyujun/rtc-framework/issues/755) — catching: 포구 층에서 발화하지 않는 `JOINT_CONFLICT` 경로 — 지울지 정한다 (#712 후속)
 - [#713](https://github.com/hyujun/rtc-framework/issues/713) — catching: 조정되지 않은 채 출하된 mpc planner 의 값 — `cost.w_perp` · `publish.slack_terminal_max` (E1-F20 뒤)
 - [#716](https://github.com/hyujun/rtc-framework/issues/716) — catching: formulation 의 포구 구간 다중 노드 (K_c) 와 그 위의 경로 이탈 항 `w_path` 가 구현에 없다 (E1-F20 뒤)

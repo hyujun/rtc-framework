@@ -1,6 +1,6 @@
 # Arm–Hand Ball Catching을 위한 Inverse-Dynamics MPC 수학적 구성 (개정판 v3)
 
-> **구현 상태 (2026-10-04).** 이 문서는 아직 구현을 서술하지 않는다 — 단일 arm-hand 의 NLP search (§11) 와 mpc_docking (§10) 의 설계 자료다. 구현은 E1-F12 – F21 이 한다 (epic [#621](https://github.com/hyujun/rtc-framework/issues/621)). 구현이 이 문서와 다르게 푸는 곳 — 입력 (jerk), 격자 ($h_0$ 없음), 지평 (포구 뒤 정지 구간까지), 손 스케줄 (손 시퀀서 그대로), 바깥 루프의 범위 (RT 가 plan 을 채택할 때까지), 1 차에서 빼는 항 — 은 승인된 것이고 E1-F13 ([#739](https://github.com/hyujun/rtc-framework/issues/739)) · E1-F14 ([#740](https://github.com/hyujun/rtc-framework/issues/740)) 의 범위에 적혀 있다. 그 feature 가 구현한 식으로 이 문서를 고쳐 쓴다.
+> **구현 상태 (2026-10-05).** 이 문서는 아직 구현을 서술하지 않는다 — 단일 arm-hand 의 NLP search (§11) 와 mpc_docking (§10) 의 설계 자료다. 구현은 E1-F13 – F21 이 한다 (epic [#621](https://github.com/hyujun/rtc-framework/issues/621)); 둘이 꽂힐 계획기 interface 는 E1-F12 가 넣었다. 구현이 이 문서와 다르게 푸는 곳 — 입력 (jerk), 격자 ($h_0$ 없음), 지평 (포구 뒤 정지 구간까지), 손 스케줄 (손 시퀀서 그대로), 바깥 루프의 범위 (RT 가 plan 을 채택할 때까지), 1 차에서 빼는 항 — 은 승인된 것이고 E1-F13 ([#739](https://github.com/hyujun/rtc-framework/issues/739)) · E1-F14 ([#740](https://github.com/hyujun/rtc-framework/issues/740)) 의 범위에 적혀 있다. 그 feature 가 구현한 식으로 이 문서를 고쳐 쓴다.
 
 작성일: 2026-10-02 (v1) · 개정: 2026-10-02 (v2, v3)
 
