@@ -136,7 +136,7 @@ RT 규칙: 고정 크기, 할당 없음, `noexcept`, ROS 의존 없음. `SampleA
 - RT 루프(`RTControllerInterface::Compute`)는 **매 tick 무조건 `Load`** 하고(D-21, 재시도 상한 없음), payload 의 `snapshot_sequence` 로 새 스냅샷 여부를 판정한 뒤 `SampleAt(tr, now_lead, hint_)` 을 부른다 (`SampleBallForLaw`, `controller.cpp`).
 - **샘플이 무엇에 쓰이는가는 planner 가 정한다.**
   - `closed_form`: 샘플 $(p,v,a)$ 를 L4 추종 대상 상태로 넘긴다 (`StepReferenceAndSolve` 의 `target`; L8 §4.1 순서 2).
-  - `mpc`: `RunDecelMpcTick` 이 포구 전에 `SampleBallForLaw` 를 부르되 **구간(segment)은 샘플을 읽지 않는다** — 구간은 계획기가 낸 MPC 노드열을 따른다. 샘플은 감독에만 쓰인다: 샘플할 수 없으면 `BALL_STALE`, 지평 밖이면 `HORIZON_EXTRAP` (동결 전에만) — 사유가 남는다.
+  - `mpc`: `RunSegmentTick` 이 포구 전에 `SampleBallForLaw` 를 부르되 **구간(segment)은 샘플을 읽지 않는다** — 구간은 계획기가 낸 MPC 노드열을 따른다. 샘플은 감독에만 쓰인다: 샘플할 수 없으면 `BALL_STALE`, 지평 밖이면 `HORIZON_EXTRAP` (동결 전에만) — 사유가 남는다.
 - `hint_`는 컨트롤러 멤버 (`traj_hint_`) 로 유지하고, **`snapshot_sequence` 가 바뀌면 0으로 초기화**한다. 정확성은 이진 탐색이 지키지만 틱 비용이 흔들린다.
 - `Interpolate()` 가 `valid=false` 를 돌려주면(비단조 샘플 쌍 등) 그 틱은 invalid 로 처리한다.
 
