@@ -546,7 +546,8 @@ make_testgate_fixture() {
   dir=$(make_fixture)
   mkdir -p "$dir/repo_scripts/scripts" "$dir/rtc_other"
   cp "$REPO_ROOT/repo_scripts/scripts/validate_test_domains.py" \
-    "$REPO_ROOT/repo_scripts/scripts/validate_test_fixtures.py" "$dir/repo_scripts/scripts/"
+    "$REPO_ROOT/repo_scripts/scripts/validate_test_fixtures.py" \
+    "$REPO_ROOT/repo_scripts/scripts/validate_test_registration.py" "$dir/repo_scripts/scripts/"
   sed 's/rtc_demo/rtc_other/' "$dir/rtc_demo/package.xml" >"$dir/rtc_other/package.xml"
   printf 'project(rtc_other)\nament_add_gtest(t_other test/t.cpp\n  ENV ROS_DOMAIN_ID=%s)\n' \
     "$2" >"$dir/rtc_other/CMakeLists.txt"
@@ -583,6 +584,29 @@ echo 'int existing() { return 1; }' >"$dir/rtc_demo/src/existing.cpp"
 out=$(run_hook "$dir"); rc=$?
 expect_not_contains "a src-only turn does not run the test gates" "$out" "Test isolation gates"
 expect_exit "a src-only turn is not blocked by the test gates" "$rc" 0
+rm -rf "$dir"
+
+# 15l. A test file that no CMakeLists.txt names must BLOCK. `colcon test` does
+#      not run it and nothing says so: the package builds and tests green
+#      without it, and the co-update check above reads new .cpp under src/
+#      only. On #711 a pytest of integrated_bringup was registered seven
+#      commits after it was added.
+#      Both spellings, because the check that exists for .cpp excludes test/.
+dir=$(make_testgate_fixture 60 61)
+mkdir -p "$dir/rtc_demo/test"
+printf 'def test_new():\n    pass\n' >"$dir/rtc_demo/test/test_new.py"
+echo 'int main() { return 0; }' >"$dir/rtc_demo/test/test_fresh.cpp"
+out=$(run_hook "$dir"); rc=$?
+expect_contains "an unregistered test .py is reported" "$out" "rtc_demo/test/test_new.py: nothing in rtc_demo/CMakeLists.txt names it"
+expect_contains "an unregistered test .cpp is reported" "$out" "rtc_demo/test/test_fresh.cpp: nothing in rtc_demo/CMakeLists.txt names it"
+expect_exit "an unregistered test file blocks the turn" "$rc" 2
+# 15m. ...and naming them is all it takes. Without this the gate could block
+#      every turn that adds a test and 15l would still pass.
+printf 'ament_add_pytest_test(t_new test/test_new.py)\nament_add_gtest(t_fresh test/test_fresh.cpp)\n' \
+  >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "registered test files are not reported" "$out" "Test isolation gates"
+expect_exit "registered test files do not block" "$rc" 0
 rm -rf "$dir"
 
 # --- ARCH-7 target-name scope ------------------------------------------------
