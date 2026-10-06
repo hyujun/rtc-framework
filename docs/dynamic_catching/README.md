@@ -30,7 +30,7 @@ vision 이 예측한 공의 궤적을 받아 팔과 손으로 공을 잡는 컨�
 | [L7_supervisor.md](ref/L7_supervisor.md) | 상태 머신, abort 사유, 감속, `mpc` 의 구간 추종, 결과 판정, E-STOP · fault |
 | [L8_bringup.md](ref/L8_bringup.md) | 컨트롤러 통합, sim 기반, 평가, GUI · plot |
 | [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) | MPC planner 의 문제 (구현된 단일 팔 구성은 §1.6), 아직 구현하지 않은 dual-arm · waist 항과 다중 frame CLIK 의 설계 |
-| [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) | 단일 arm-hand 의 NLP search (§11) · mpc_docking (§10) 의 설계 자료 (§0 – §16) 와 그 구현 (§17 — 17.$n$ 이 §$n$ 의 구현). 설계 절은 고치지 않고, 구현한 feature 가 §17 에 구현한 내용을 적는다 (지금은 mpc_docking 의 수치 코어, E1-F13). 남은 구현은 E1-F14 – F21 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) §3 — 그 둘이 꽂힐 interface 는 E1-F12 가 넣었다) |
+| [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) | 단일 arm-hand 의 NLP search (§11) · mpc_docking (§10) 의 설계 자료 (§0 – §16) 와 그 구현 (§17 — 17.$n$ 이 §$n$ 의 구현). 설계 절은 고치지 않고, 구현한 feature 가 §17 에 구현한 내용을 적는다 (지금은 mpc_docking 의 수치 코어 17.1 – 17.10, E1-F13 — 과 NLP search 의 탐색 코어 17.11 · 17.12, E1-F14). 남은 구현은 E1-F14 의 후보별 연속 포획 시각과 E1-F15 – F21 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) §3 — 그 둘이 꽂힐 interface 는 E1-F12 가 넣었다) |
 
 - 목적은 **지금 구현의 수학과 구조를 표현하는 것** 이다 — 경위의 기록이 아니다
 - 구현과 다르게 적힌 곳은 지금 구현으로 고쳐 쓴다. **수학이 달라지는 수정은 사용자의 승인을 받고 한다.** 그 밖에는 될 수 있으면 고치지 않는다

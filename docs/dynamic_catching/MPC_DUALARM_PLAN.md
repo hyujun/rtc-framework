@@ -7,7 +7,7 @@
 
 | 무엇 | 어디에 |
 |---|---|
-| 수학 · 구조 (지금 구현의 서술) | [ref/](ref/) — [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) (구현한 것과 아직 구현하지 않은 설계의 구분은 그 문서 §0), [CATCHING_MASTER.md](ref/CATCHING_MASTER.md), `L0` – `L8`, [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) (§17 이 mpc_docking 수치 코어의 구현, §0 – §16 은 설계 자료) |
+| 수학 · 구조 (지금 구현의 서술) | [ref/](ref/) — [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) (구현한 것과 아직 구현하지 않은 설계의 구분은 그 문서 §0), [CATCHING_MASTER.md](ref/CATCHING_MASTER.md), `L0` – `L8`, [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) (§17 이 구현 — mpc_docking 수치 코어와 NLP search 의 탐색 코어, §0 – §16 은 설계 자료) |
 | 결정 ID (`MD-n` · `D-n` · `G…`) 의 뜻, 단계 · feature 의 이름과 이슈 번호, 옛 절 인용의 새 자리 | [ID_INDEX.md](ID_INDEX.md) (§1 · §3 · §4) |
 | 측정 · 검증 기록 | 각 feature 이슈의 코멘트 ("측정 · 검증 기록" 으로 시작하는 코멘트가 이 문서에 있던 기록이다) |
 | `MD-n` 의 근거와 경위 (옮기기 전 결정 로그의 원문) | [#705 의 기록 코멘트](https://github.com/hyujun/rtc-framework/issues/705#issuecomment-5974506385) — 고치지 않는 기록이다 |
