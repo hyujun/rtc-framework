@@ -473,6 +473,18 @@ void FillFeasibleSeed(const dk::Rig& rig, const MpcDockingSegmentCore& core,
   (void)dk::MakeThrow(rig, core, 2, 0.0, th, in);
 }
 
+// Which group an infeasible problem leaves its residual in is decided by the
+// RATIO of the penalties (the core grows them together, so the ratio is the
+// caller's): "the ball is not in the capture set" can be paid as an axial gap
+// or as a lateral miss, and with equal penalties the cheaper of the two is a
+// matter of geometry. These cases price the lateral rows ten times higher, so
+// a miss is reported as the axial gap.
+dk::Rig InfeasibleRig(const fx::ArmModel& arm) {
+  dk::Rig rig = dk::MakeRig(arm);
+  rig.params.mu_init[G(DockingRowGroup::kLateral)] = 1e3;
+  return rig;
+}
+
 std::vector<InfeasibleCase> InfeasibleCases(const fx::ArmModel& arm) {
   std::vector<InfeasibleCase> cases;
   // 1. The catch point is beyond the arm's reach: 1.5 m further UP the capture
@@ -483,7 +495,7 @@ std::vector<InfeasibleCase> InfeasibleCases(const fx::ArmModel& arm) {
   //    toss between the two).
   cases.push_back(
       {"out_of_reach",
-       dk::MakeRig(arm),
+       InfeasibleRig(arm),
        {DockingRowGroup::kEntrance},
        [](const dk::Rig& rig, const MpcDockingSegmentCore& core, MpcDockingSegmentCoreInput& in) {
          dk::Throw th;
@@ -495,7 +507,7 @@ std::vector<InfeasibleCase> InfeasibleCases(const fx::ArmModel& arm) {
   //    entrance plane's place 0.25 m up the capture axis of the hand's
   //    PRESENT pose, 40 ms from now. The hand would need ~6 m/s to be there.
   {
-    dk::Rig rig = dk::MakeRig(arm);
+    dk::Rig rig = InfeasibleRig(arm);
     rig.params.n_pre = 2;
     rig.params.dt_pre = 0.02;
     rig.params.n_blocks = 7;
@@ -518,21 +530,38 @@ std::vector<InfeasibleCase> InfeasibleCases(const fx::ArmModel& arm) {
            dk::FillBall(core, h.p + h.R * r_h, h.R * nu_h, dk::SmallCovariance(gen), in);
          }});
   }
-  // 3. The torque bounds are below what holding the arm takes.
+  // 3. The torque bounds are below what holding the arm takes, let alone
+  //    moving it: 2 % of the rating. The ball crosses 0.10 m up the capture
+  //    axis of the present pose in 0.3 s — an easy reach, and on the axis for
+  //    the same reason as above: what the arm gives up when it cannot afford
+  //    the motion is then the axial gap, not a lateral miss.
   {
-    dk::Rig rig = dk::MakeRig(arm);
+    dk::Rig rig = InfeasibleRig(arm);
     rig.limits.tau_lo = -0.02 * rig.limits.tau_max;
     rig.limits.tau_hi = 0.02 * rig.limits.tau_max;
-    cases.push_back({"torque_exceeded",
-                     rig,
-                     {DockingRowGroup::kTorque, DockingRowGroup::kEntrance},
-                     &FillFeasibleSeed});
+    cases.push_back(
+        {"torque_exceeded",
+         rig,
+         {DockingRowGroup::kTorque, DockingRowGroup::kEntrance},
+         [](const dk::Rig& r, const MpcDockingSegmentCore& core, MpcDockingSegmentCoreInput& in) {
+           const Eigen::Index n = r.model.nv;
+           const Eigen::VectorXd q0 = r.arm.q_nominal;
+           const dk::HandState h = dk::HandAt(r, q0, Eigen::VectorXd::Zero(n));
+           const Eigen::Vector3d r_h(0.0, 0.0, r.params.s_ent + 0.10);
+           const Eigen::Vector3d nu_h(0.0, 0.0, -0.8);
+           std::mt19937 gen(6);
+           core.ResizeInput(in);
+           in.q0 = q0;
+           in.catch_target_valid = true;
+           in.q_catch_target = q0;
+           dk::FillBall(core, h.p + h.R * r_h, h.R * nu_h, dk::SmallCovariance(gen), in);
+         }});
   }
   // 4. The axial position spread is so large that the timing row needs a
   //    closing speed above what the capture set allows (faces widened so the
   //    lateral rows are not what fails).
   {
-    dk::Rig rig = dk::MakeRig(arm);
+    dk::Rig rig = InfeasibleRig(arm);
     rig.params.face_b = {0.5, 0.5, 0.5, 0.5};
     cases.push_back(
         {"timing_vs_velocity_set",
@@ -1260,6 +1289,25 @@ TEST(MpcDockingSegmentCore, InitRejectsWhatItCannotSolve) {
   EXPECT_EQ(with([](dk::Rig& r) { r.params.face_eps[2] = 0.7; }), MpcDockingReason::kParamsInvalid)
       << "a risk above one half would loosen the row";
   EXPECT_EQ(with([](dk::Rig& r) { r.params.eps_sigma = 0.0; }), MpcDockingReason::kParamsInvalid);
+  EXPECT_EQ(with([](dk::Rig& r) { r.params.eps_sigma = 1e-200; }), MpcDockingReason::kParamsInvalid)
+      << "ε_σ² underflows to zero — the square root loses its derivative again";
+  EXPECT_EQ(with([](dk::Rig& r) { r.params.face_a[1] = Eigen::Vector2d(-2.0, 0.0); }),
+            MpcDockingReason::kParamsInvalid)
+      << "face normals must be unit";
+  EXPECT_EQ(with([](dk::Rig& r) {
+              r.params.lambda1_c = 0.0;
+              r.params.lambda2_c = 0.0;
+            }),
+            MpcDockingReason::kParamsInvalid)
+      << "a slack that costs nothing switches the corridor off";
+  EXPECT_EQ(with([](dk::Rig& r) {
+              r.params.lambda1_v = 0.0;
+              r.params.lambda2_v = 0.3;
+            }),
+            MpcDockingReason::kNone);
+  EXPECT_EQ(with([](dk::Rig& r) { r.params.stall_window = 0; }), MpcDockingReason::kParamsInvalid);
+  EXPECT_EQ(with([](dk::Rig& r) { r.params.stall_window = 17; }), MpcDockingReason::kParamsInvalid);
+  EXPECT_EQ(with([](dk::Rig& r) { r.params.stall_window = 16; }), MpcDockingReason::kNone);
   EXPECT_EQ(with([](dk::Rig& r) { r.params.mu_init[3] = 1e9; }), MpcDockingReason::kParamsInvalid)
       << "above mu_max";
   EXPECT_EQ(with([](dk::Rig& r) { r.params.max_iterations = 0; }),
@@ -1357,6 +1405,108 @@ TEST(MpcDockingSegmentCore, SolveRejectsBadInputAndLeavesTheResultUntouched) {
   // And the good input still solves afterwards.
   ASSERT_TRUE(core.Solve(good, out));
   EXPECT_TRUE(out.converged);
+}
+
+// A trust region smaller than the box tolerance must not cross the box rows
+// (lower > upper would make the QP infeasible), and a usable one still
+// converges — in more, smaller steps.
+TEST(MpcDockingSegmentCore, TrustRegionNeverMakesTheQpInfeasible) {
+  for (const double delta_tr : {1e-9, 0.05}) {
+    dk::Rig rig = dk::MakeRig(fx::RealArm7());
+    rig.params.delta_tr = delta_tr;
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult out;
+    core.ResizeResult(out);
+    for (Case& c : FeasibleCases(rig, core, 3)) {
+      dk::PerturbTarget(c.in, c.seed);
+      ASSERT_TRUE(core.Solve(c.in, out));
+      EXPECT_NE(out.reason, MpcDockingReason::kQpFailed) << delta_tr << " " << Describe(out);
+      EXPECT_LE(out.violation[G(DockingRowGroup::kBox)], kViolationTol) << Describe(out);
+      if (delta_tr > 1e-3) {
+        EXPECT_TRUE(out.converged) << Describe(out);
+      } else {
+        EXPECT_FALSE(out.converged) << "a 1e-9 rad step cannot reach the catch in 50 iterations";
+      }
+    }
+  }
+}
+
+// Why the core turns ProxQP's primal-infeasibility test off. Every QP here is
+// feasible by construction, yet with ProxQP's default threshold the solver
+// reports PRIMAL_INFEASIBLE on one of these — at the default penalty, under a
+// 0.05 rad trust region. This is a control on the SOLVER's behaviour: if it
+// stops failing (another ProxQP version), the setting may no longer be needed
+// — look again rather than deleting this test.
+TEST(MpcDockingSegmentCore, DefaultInfeasibilityThresholdMisreportsAFeasibleQp) {
+  dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  rig.params.delta_tr = 0.05;
+  rig.params.solver.eps_primal_inf = 1e-4;  // ProxQP's default
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  int misreported = 0;
+  for (Case& c : FeasibleCases(rig, core, 3)) {
+    dk::PerturbTarget(c.in, c.seed);
+    ASSERT_TRUE(core.Solve(c.in, out));
+    constexpr int kPrimalInfeasible = 2;  // proxsuite::proxqp::QPSolverOutput
+    misreported +=
+        (out.reason == MpcDockingReason::kQpFailed && out.qp_status == kPrimalInfeasible) ? 1 : 0;
+  }
+  EXPECT_GT(misreported, 0)
+      << "ProxQP no longer misreports this QP — eps_primal_inf = 0 may be unnecessary now";
+}
+
+// The longest stall window (the whole history ring) must still compare with
+// the PAST: a feasible throw is not cut short as "stalled".
+TEST(MpcDockingSegmentCore, LongestStallWindowStillComparesWithThePast) {
+  dk::Rig rig = dk::MakeRig(fx::RealArm6());
+  rig.params.stall_window = rtc::catching::kDockingStallHistory;
+  rig.params.delta_tr = 0.02;  // many small steps: well past 16 iterations
+  rig.params.mu_init.fill(1e-2);
+  rig.params.max_iterations = 200;
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  int long_runs = 0;
+  for (Case& c : FeasibleCases(rig, core, 5)) {
+    dk::PerturbTarget(c.in, c.seed);
+    ASSERT_TRUE(core.Solve(c.in, out));
+    EXPECT_NE(out.reason, MpcDockingReason::kInfeasible) << Describe(out);
+    EXPECT_TRUE(out.feasible) << Describe(out);
+    long_runs += out.iterations > rtc::catching::kDockingStallHistory ? 1 : 0;
+  }
+  EXPECT_GT(long_runs, 0) << "no solve ran past the window — the test does not reach the ring";
+}
+
+// A covariance whose quadratic forms overflow gives non-finite row values. A
+// NaN must not vanish inside a max and come back as "no violation".
+TEST(MpcDockingSegmentCore, NonFiniteRowValuesAreNotReportedFeasible) {
+  const dk::Rig rig = dk::MakeRig(fx::RealArm6());
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  MpcDockingSegmentCoreInput in = cases[0].in;
+  in.ball[static_cast<std::size_t>(core.CatchNode())].cov =
+      1e200 * BallCovariance::Identity();  // finite, PSD — and its forms overflow
+  const bool returned = core.Solve(in, out);
+  EXPECT_FALSE(out.feasible) << Describe(out);
+  EXPECT_FALSE(out.converged);
+  if (returned) {
+    EXPECT_TRUE(out.reason == MpcDockingReason::kSolutionNonFinite ||
+                out.reason == MpcDockingReason::kInfeasible ||
+                out.reason == MpcDockingReason::kQpFailed)
+        << Describe(out);
+  }
 }
 
 TEST(MpcDockingSegmentCore, StopLineNeedsAUnitDirection) {

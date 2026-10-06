@@ -221,12 +221,17 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       !FinitePositive(p.r_ent) || !rtc::IsFiniteNonNegative(p.tan_theta) ||
       !rtc::IsFiniteNonNegative(p.c_ent_max) || !rtc::IsFiniteNonNegative(p.a_brake) ||
       !rtc::IsFiniteNonNegative(p.lambda1_c) || !rtc::IsFiniteNonNegative(p.lambda2_c) ||
-      !rtc::IsFiniteNonNegative(p.lambda1_v) || !rtc::IsFiniteNonNegative(p.lambda2_v)) {
+      !rtc::IsFiniteNonNegative(p.lambda1_v) || !rtc::IsFiniteNonNegative(p.lambda2_v) ||
+      // A slack that costs nothing switches its row off without saying so.
+      !(p.lambda1_c + p.lambda2_c > 0.0) || !(p.lambda1_v + p.lambda2_v > 0.0)) {
     return MpcDockingReason::kParamsInvalid;
   }
   if (p.n_faces < 0 || p.n_faces > kMaxDockingFaces || !FinitePositive(p.c_min) ||
       !std::isfinite(p.c_cap_max) || !(p.c_cap_max > p.c_min) || !FinitePositive(p.v_perp_max) ||
-      p.speed_faces < 3 || p.speed_faces > kMaxDockingSpeedFaces || !FinitePositive(p.eps_sigma)) {
+      p.speed_faces < 3 || p.speed_faces > kMaxDockingSpeedFaces ||
+      // ε_σ enters squared, and σ_T too: the square must not underflow to 0.
+      !FinitePositive(p.eps_sigma) || !(p.eps_sigma * p.eps_sigma > 0.0) ||
+      !(p.sigma_T * p.sigma_T > 0.0) || !std::isfinite(1.0 / p.m_ball)) {
     return MpcDockingReason::kParamsInvalid;
   }
   // Risks → κ. A risk above ½ would give a NEGATIVE κ, i.e. loosen the row.
@@ -234,8 +239,11 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   std::array<double, kMaxDockingFaces> kappa_face{};
   for (int i = 0; i < p.n_faces; ++i) {
     const auto k = static_cast<std::size_t>(i);
-    if (!p.face_a[k].allFinite() || !(p.face_a[k].norm() > 0.0) || !std::isfinite(p.face_b[k]) ||
-        !risk_ok(p.face_eps[k]) || !NormalQuantile(1.0 - p.face_eps[k], kappa_face[k])) {
+    // Unit normals: the row adds ε_σ² to aᵀΣ_ρa under one root, and its
+    // violation is reported in metres — both only mean that for ‖a‖ = 1.
+    if (!p.face_a[k].allFinite() || !(std::abs(p.face_a[k].norm() - 1.0) <= kUnitTolerance) ||
+        !std::isfinite(p.face_b[k]) || !risk_ok(p.face_eps[k]) ||
+        !NormalQuantile(1.0 - p.face_eps[k], kappa_face[k])) {
       return MpcDockingReason::kParamsInvalid;
     }
   }
@@ -253,6 +261,9 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       return MpcDockingReason::kTimingWindowInvalid;
     }
     k_timing = std::sqrt(sigma_max * sigma_max - p.sigma_tau * p.sigma_tau);
+    if (!FinitePositive(k_timing)) {
+      return MpcDockingReason::kTimingWindowInvalid;  // σ_max within rounding of σ_τ
+    }
   }
 
   // ── Impact ──
@@ -274,7 +285,8 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       !FinitePositive(p.tol_complementarity) || !FinitePositive(p.tol_linear) ||
       !FinitePositive(p.init_w_q) || !rtc::IsFiniteNonNegative(p.init_w_v) ||
       !FinitePositive(p.init_pinv_damping) || !FinitePositive(p.solver.eps_abs) ||
-      !rtc::IsFiniteNonNegative(p.solver.eps_rel) || p.solver.max_iter < 1 ||
+      !rtc::IsFiniteNonNegative(p.solver.eps_rel) ||
+      !rtc::IsFiniteNonNegative(p.solver.eps_primal_inf) || p.solver.max_iter < 1 ||
       p.solver.max_iter_in < 1) {
     return MpcDockingReason::kParamsInvalid;
   }
@@ -297,8 +309,8 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   }
   for (Eigen::Index j = 0; j < nn; ++j) {
     if (!(limits.q_min[j] <= limits.q_max[j]) || !(limits.qd_max[j] > 0.0) ||
-        !(limits.tau_max[j] > 0.0) || !(limits.armature[j] >= 0.0) ||
-        (p.accel_box && !(limits.qdd_max[j] > 0.0)) ||
+        !(limits.tau_max[j] > 0.0) || !std::isfinite(1.0 / limits.tau_max[j]) ||
+        !(limits.armature[j] >= 0.0) || (p.accel_box && !(limits.qdd_max[j] > 0.0)) ||
         (p.jerk_box && !(limits.jerk_max[j] > 0.0)) ||
         (tau_bounds && !(limits.tau_lo[j] < limits.tau_hi[j]))) {
       return MpcDockingReason::kLimitsInvalid;
@@ -962,6 +974,14 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
     note(g, node_viol);
     ev.viol_sum[static_cast<std::size_t>(g)] += node_viol;
   };
+  // std::max and Positive() drop a NaN operand, so a non-finite row value
+  // would vanish from the maxima below and read as "no violation" (NUM-7).
+  // Every row value is therefore seen here BEFORE it enters one.
+  bool rows_finite = q_.allFinite() && v_.allFinite() && a_.allFinite();
+  const auto seen = [&rows_finite](double x) noexcept {
+    rows_finite = rows_finite && std::isfinite(x);
+    return x;
+  };
 
   // ── Torque (rows on nodes 1..N; cost on stages 0..k_c−1) ──
   for (Eigen::Index k = 0; k <= N; ++k) {
@@ -980,7 +1000,7 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
     if (k >= 1) {
       double node = 0.0;
       for (Eigen::Index j = 0; j < nn; ++j) {
-        const double t = tau_(j, k) * inv_tau_[j];
+        const double t = seen(tau_(j, k) * inv_tau_[j]);
         node = std::max(node, t - tau_hi_[j] * inv_tau_[j]);
         node = std::max(node, tau_lo_[j] * inv_tau_[j] - t);
         ev.tau_ratio_max = std::max(ev.tau_ratio_max, std::abs(t));
@@ -1005,7 +1025,9 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
       const double un = u / us;
       jerk += rj[j] * un * un;
       if (p.jerk_box) {
-        note(DockingRowGroup::kBox, Positive(std::abs(u) - u_hi_[j]));
+        // In units of u_s, the scale the QP's jerk rows live in — the solver
+        // holds them to its tolerance THERE, which is u_s times larger in u.
+        note(DockingRowGroup::kBox, Positive(std::abs(u) - u_hi_[j]) / us);
       }
       if (pre) {
         ev.cost.acc += da * r_acc_[j] * a_(j, k) * a_(j, k);
@@ -1056,7 +1078,8 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
     }
     if (is_app) {
       const auto ai = static_cast<std::size_t>(app);
-      add(DockingRowGroup::kGap, Positive(-(rel.s - p.s_ent)));
+      add(DockingRowGroup::kGap, Positive(-(seen(rel.s) - p.s_ent)));
+      (void)seen(rel.c);
       slack_c_[ai] = DockingCorridorMinSlack(rel, p.s_ent, p.r_ent, p.tan_theta);
       slack_v_[ai] = DockingEnvelopeMinSlack(rel, p.s_ent, p.c_ent_max, p.a_brake);
       DockingCorridorRow(rel, p.s_ent, p.r_ent, p.tan_theta, slack_c_[ai], corridor_[ai],
@@ -1068,7 +1091,8 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
       ++app;
     }
     if (k == kc) {
-      add(DockingRowGroup::kEntrance, std::abs(rel.s - p.s_ent));
+      add(DockingRowGroup::kEntrance, std::abs(seen(rel.s) - p.s_ent));
+      (void)seen(rel.c);
       const Eigen::Vector2d e_rho = rel.Rho() - p.rho_ref;
       const Eigen::Vector3d e_nu = rel.nu_h - p.nu_ref;
       ev.cost.terminal = p.q_rho_f.dot(e_rho.cwiseAbs2()) + p.q_nu_f.dot(e_nu.cwiseAbs2());
@@ -1078,21 +1102,21 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
         const auto fi = static_cast<std::size_t>(i);
         DockingLateralChanceRow(kin_, rel, sigma_p_, p.face_a[fi], kappa_face_[fi], p.c_min,
                                 p.eps_sigma, lateral_[fi]);
-        lateral = std::max(lateral, lateral_[fi].value - p.face_b[fi]);
+        lateral = std::max(lateral, seen(lateral_[fi].value) - p.face_b[fi]);
       }
       add(DockingRowGroup::kLateral, Positive(lateral));
       if (timing_on_) {
         DockingTimingRow(kin_, rel, sigma_p_, k_timing_, p.eps_sigma, timing_);
-        add(DockingRowGroup::kTiming, Positive(-timing_.value));
+        add(DockingRowGroup::kTiming, Positive(-seen(timing_.value)));
       }
       DockingAxialSpeedRow(kin_, rel, sigma_b_, -kappa_nu_, p.eps_sigma, axial_lo_);
       DockingAxialSpeedRow(kin_, rel, sigma_b_, kappa_nu_, p.eps_sigma, axial_hi_);
-      double vel = std::max(p.c_min - axial_lo_.value, axial_hi_.value - p.c_cap_max);
+      double vel = std::max(p.c_min - seen(axial_lo_.value), seen(axial_hi_.value) - p.c_cap_max);
       for (int i = 0; i < p.speed_faces; ++i) {
         const auto fi = static_cast<std::size_t>(i);
         DockingLateralSpeedRow(kin_, rel, sigma_b_, speed_face_[fi], kappa_nu_, p.eps_sigma,
                                speed_[fi]);
-        vel = std::max(vel, speed_[fi].value - speed_face_bound_);
+        vel = std::max(vel, seen(speed_[fi].value) - speed_face_bound_);
       }
       add(DockingRowGroup::kVelocitySet, Positive(vel));
       if (impact_on_) {
@@ -1103,12 +1127,12 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
         }
         ev.cost.impact = p.w_impact * impact_.energy.value / p.e_ref;
         if (impact_rows_) {
-          double imp = impact_.g_n.value;
+          double imp = seen(impact_.g_n.value);
           if (std::isfinite(p.e_max)) {
-            imp = std::max(imp, impact_.energy.value / p.e_max - 1.0);
+            imp = std::max(imp, seen(impact_.energy.value) / p.e_max - 1.0);
           }
           if (std::isfinite(p.p_max)) {
-            imp = std::max(imp, impact_.impulse.value / p.p_max - 1.0);
+            imp = std::max(imp, seen(impact_.impulse.value) / p.p_max - 1.0);
           }
           add(DockingRowGroup::kImpact, Positive(imp));
         }
@@ -1149,8 +1173,11 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
                       ev.cost.near + ev.cost.terminal + ev.cost.impact + ev.cost.slack;
   ev.cost.stop = ev.cost.stop_jerk + ev.cost.stop_line;
   ev.cost.total = ev.cost.reference + ev.cost.stop;
-  bool finite = std::isfinite(ev.cost.total) && std::isfinite(ev.tau_ratio_max);
+  bool finite = rows_finite && std::isfinite(ev.cost.total) && std::isfinite(ev.tau_ratio_max);
   for (const double v : ev.viol_max) {
+    finite = finite && std::isfinite(v);
+  }
+  for (const double v : ev.viol_sum) {
     finite = finite && std::isfinite(v);
   }
   ev.ok = finite;
@@ -1357,9 +1384,22 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
     for (Eigen::Index j = 0; j < nn; ++j) {
       // Every operand is finite (the evaluation was), so max/min cannot
       // launder a NaN into a vanished trust region (NUM-7). The iterate
-      // satisfies the box to the QP's tolerance, so lower ≤ upper.
-      qp_.l[row_q_ + o + j] = std::max(q_lo_[j] - q_(j, k), -tr);
-      qp_.u[row_q_ + o + j] = std::min(q_hi_[j] - q_(j, k), tr);
+      // satisfies the box only to the QP's tolerance: when it sits outside by
+      // more than a (tiny) trust region, the two would cross — the step back
+      // to the box then takes precedence over the trust region.
+      const double box_lo = q_lo_[j] - q_(j, k);
+      const double box_hi = q_hi_[j] - q_(j, k);
+      double lower = std::max(box_lo, -tr);
+      double upper = std::min(box_hi, tr);
+      if (lower > upper) {
+        if (box_lo > tr) {
+          upper = lower;
+        } else {
+          lower = upper;
+        }
+      }
+      qp_.l[row_q_ + o + j] = lower;
+      qp_.u[row_q_ + o + j] = upper;
       qp_.l[row_v_ + o + j] = -v_hi_[j] - v_(j, k);
       qp_.u[row_v_ + o + j] = v_hi_[j] - v_(j, k);
       if (p.accel_box) {
@@ -1522,25 +1562,33 @@ MpcDockingReason MpcDockingSegmentCore::RunQp(MpcDockingSegmentCoreResult& out) 
 }
 
 bool MpcDockingSegmentCore::GrowPenalties() noexcept {
-  // Raise μ_G of every group whose elastic the last QP left positive (and
-  // that is below the cap), keeping what is needed to undo it.
+  // When the last QP left an elastic positive, raise EVERY penalty by the same
+  // factor (until the largest reaches the cap), keeping what is needed to
+  // undo it. All of them, not only the groups with an elastic: the ratio
+  // between the groups is the caller's (mu_init) and it decides in which
+  // group an infeasible problem leaves its residual — growing some groups
+  // alone would move the diagnosis with the iteration count.
   std::array<double, kNumDockingElasticGroups> e_max{};
   ElasticByGroup(e_max, elastic_sum_);
-  bool grew = false;
-  mu_keep_ = mu_;
+  bool left = false;
+  double mu_top = 0.0;
   for (std::size_t g = 0; g < mu_.size(); ++g) {
-    if (e_max[g] > params_.tol_violation && mu_[g] < params_.mu_max) {
-      mu_[g] = std::min(mu_[g] * params_.mu_growth, params_.mu_max);
-      grew = true;
-    }
+    left = left || e_max[g] > params_.tol_violation;
+    mu_top = std::max(mu_top, mu_[g]);
   }
-  if (grew) {
-    x_keep_ = x_qp_;
-    y_keep_ = y_qp_;
-    z_keep_ = z_qp_;
-    SetPenaltyGradient();
+  const double factor = std::min(params_.mu_growth, params_.mu_max / mu_top);
+  if (!left || !(factor > 1.0)) {
+    return false;
   }
-  return grew;
+  mu_keep_ = mu_;
+  for (double& mu : mu_) {
+    mu *= factor;
+  }
+  x_keep_ = x_qp_;
+  y_keep_ = y_qp_;
+  z_keep_ = z_qp_;
+  SetPenaltyGradient();
+  return true;
 }
 
 void MpcDockingSegmentCore::RestorePenalties() noexcept {
@@ -1914,7 +1962,22 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       StageEnd(MpcDockingStage::kAssemble);
       out.assemble_us += MicrosSince(t0);
     }
-    const MpcDockingReason qp_why = RunQp(out);
+    MpcDockingReason qp_why = RunQp(out);
+    if (qp_why != MpcDockingReason::kNone && qp_why != MpcDockingReason::kSolutionNonFinite) {
+      // A penalty raised by an earlier probe can be what the solver chokes on
+      // at this linearisation: fall back to the initial penalties once.
+      bool raised = false;
+      for (std::size_t g = 0; g < mu_.size(); ++g) {
+        raised = raised || mu_[g] > p.mu_init[g];
+      }
+      if (raised) {
+        StageBegin(MpcDockingStage::kPostQp);
+        mu_ = p.mu_init;
+        SetPenaltyGradient();
+        StageEnd(MpcDockingStage::kPostQp);
+        qp_why = RunQp(out);
+      }
+    }
     if (qp_why != MpcDockingReason::kNone) {
       reason = qp_why;
       break;
@@ -1948,7 +2011,19 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
         for (const double e : e_sum) {
           after += e;
         }
-        keep = after <= (1.0 - p.mu_min_gain) * before;
+        // Kept when the larger penalty buys feasibility of the LINEARISED
+        // rows: the elastic total falls by min_gain, or — when a trust region
+        // caps what one step can remove, so that the total barely moves — the
+        // amount this step removes grows by min_gain.
+        double violation = 0.0;
+        for (const double v : ev_cur_.viol_sum) {
+          violation += v;
+        }
+        const double removed_before = violation - before;
+        const double removed_after = violation - after;
+        keep = after <= (1.0 - p.mu_min_gain) * before ||
+               (removed_after - removed_before > p.tol_violation &&
+                removed_after >= (1.0 + p.mu_min_gain) * removed_before);
       }
       if (!keep) {
         RestorePenalties();
@@ -1983,12 +2058,15 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     for (std::size_t g = 0; g < mu_.size(); ++g) {
       violation_now += p.mu_init[g] * ev_cur_.viol_sum[g];
     }
+    // Read the old entry BEFORE this iteration's overwrites it: with the
+    // longest window the two are the same slot of the ring.
+    const double violation_then = it >= p.stall_window
+                                      ? violation_hist_[static_cast<std::size_t>(
+                                            (it - p.stall_window) % kDockingStallHistory)]
+                                      : kInf;
     violation_hist_[static_cast<std::size_t>(it % kDockingStallHistory)] = violation_now;
-    const bool stalled = it >= p.stall_window &&
-                         violation_now >= (1.0 - p.stall_reduction) *
-                                              violation_hist_[static_cast<std::size_t>(
-                                                  (it - p.stall_window) % kDockingStallHistory)];
-    if (elastic_left && (stationary || stalled)) {
+    const bool stalled = violation_now >= (1.0 - p.stall_reduction) * violation_then;
+    if (elastic_left && !feasible_now && (stationary || stalled)) {
       // The linearised rows cannot be met here, a larger penalty does not
       // help (the probe above), and either the iterate is a stationary point
       // of the penalised problem or the violation has stopped falling: over
@@ -1997,7 +2075,8 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       // first-order model keeps promising a gain the arm's geometry does not
       // deliver, and the cost alone would be polished for many iterations.
       // (A violation with NO elastic left is not this case: the step that
-      // removes it is just small.)
+      // removes it is just small. Nor is an elastic at a FEASIBLE iterate:
+      // the QP is then stepping into a violation, which the merit judges.)
       reason = MpcDockingReason::kInfeasible;
       break;
     }

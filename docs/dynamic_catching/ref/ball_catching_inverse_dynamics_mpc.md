@@ -1319,12 +1319,12 @@ $$
 ### 17.6 포획 조건
 
 - **통과 평면** (§6.1). 포구 노드에 $\ell_{k_c}=0$, $\ell=s-s_{\mathrm{ent}}$. 포구 노드는 지평의 끝이 아니라 내부 노드다.
-- **lateral capture set.** 면 $(\tilde a_i,\tilde b_i)$ 를 ball-center 좌표의 파라미터로 받는다 (최대 8 면). 반지름 erosion 은 코어가 하지 않는다. 행은 17.8.
+- **lateral capture set.** 면 $(\tilde a_i,\tilde b_i)$ 를 ball-center 좌표의 파라미터로 받는다 (최대 8 면, $\Vert\tilde a_i\Vert=1$). 반지름 erosion 은 코어가 하지 않는다. 행은 17.8.
 - **접근 집합** $\mathcal A$ (§6.3). `Init` 때 정하고 풀이 동안 고정한다: $0\lt t_c-t_k\le T_{app}$ 인 노드 가운데 $k\ge1$ 인 것.
 - **gap.** $k\in\mathcal A$ 에서 $\ell_k\ge0$ (hard — elastic).
 - **corridor.** $g_c=\Vert\rho_k\Vert^2-\big(r_{\mathrm{ent}}+\ell_k^+\tan\theta+s_{c,k}\big)^2\le0$, $s_{c,k}\ge0$, $\ell^+=\max(\ell,0)$. $\ell^+$ 는 수치 가드다 — $\ell\ge0$ 이 그 자체로 제약이라 반복 중에는 어길 수 있고, 가드가 없으면 괄호가 0 이 되어 어떤 $s_c\ge0$ 로도 선형화한 행을 풀 수 없다. $\ell\ge0$ 에서는 §6.3 의 식과 같다.
 - **closing envelope.** $c_k^2\le c_{\mathrm{ent,max}}^2+2a_{\mathrm{brake}}\ell_k+s_{v,k}$, $s_{v,k}\ge0$ (§6.4 그대로).
-- **slack 의 값.** $s_c$ · $s_v$ 는 QP 의 변수다. 반복값에서는 그 점의 최소값 $s_c=\max(0,\Vert\rho\Vert-r_{\mathrm{ent}}-\ell^+\tan\theta)$, $s_v=\max(0,c^2-c_{\mathrm{ent,max}}^2-2a_{\mathrm{brake}}\ell)$ 로 평가한다.
+- **slack 의 값.** $s_c$ · $s_v$ 는 QP 의 변수다. 각 slack 의 벌점은 $\lambda_1+\lambda_2\gt0$ 이어야 한다 (0 이면 그 행이 사라진다). 반복값에서는 그 점의 최소값 $s_c=\max(0,\Vert\rho\Vert-r_{\mathrm{ent}}-\ell^+\tan\theta)$, $s_v=\max(0,c^2-c_{\mathrm{ent,max}}^2-2a_{\mathrm{brake}}\ell)$ 로 평가한다.
 - **terminal velocity set** (§6.5) 은 조인 형태로 건다 — 17.8.
 
 구현하지 않은 것: 무접촉 일관성 조건의 검증 (오프라인의 일), hand schedule 과 preshape 조건, M1 (contact-triggered).
@@ -1458,7 +1458,9 @@ $$
 
 을 만족하는 첫 값을 받는다. $\eta_{QP}=\sum_i\mu_{G(i)}\,(\text{행 }i\text{ 의 잔차})^+$ 는 그 QP 해가 elastic 행에 실제로 남긴 잔차의 벌점 값이다 (해에서 잰 값). QP 를 허용 오차까지만 풀면 0 이어야 할 elastic 이 남아 $D\gt0$ 이 되기도 하고 행에 잔차가 남기도 한다. 해 근처에서는 얻을 감소가 그보다 작아지므로, 이것을 허용하지 않으면 판정이 step 자신의 잡음보다 작은 감소를 요구하게 된다. 그래서 도달할 수 있는 KKT 잔차의 하한은 대략 $\mu\times$ (QP 의 절대 허용 오차) 다.
 
-**벌점의 갱신.** 벌점이 정확하려면 $\mu_G\gt\sum_{i\in G}\vert\lambda_i\vert$ 여야 한다. QP 에 elastic 이 남아 있는 동안은 multiplier 가 $\mu$ 에 붙어 있어 필요한 크기를 알려 주지 않는다. 그래서 $\mu_G$ 를 기하적으로 키워 QP 를 다시 풀되, 그 증가가 elastic 의 합을 정해진 비율 이상 줄일 때만 받아들이고 아니면 되돌린다 — 줄지 않으면 그 선형화에서 행을 만족할 수 없는 것이고 $\mu$ 를 더 키워도 QP 의 조건만 나빠진다. $\mu_G$ 에는 상한이 있다.
+**벌점의 갱신.** 벌점이 정확하려면 $\mu_G\gt\sum_{i\in G}\vert\lambda_i\vert$ 여야 한다. QP 에 elastic 이 남아 있는 동안은 multiplier 가 $\mu$ 에 붙어 있어 필요한 크기를 알려 주지 않는다. 그래서 벌점을 기하적으로 키워 QP 를 다시 풀되, 그 증가가 선형화한 행의 실행 가능성을 살 때만 받아들이고 아니면 되돌린다 — elastic 의 합이 정해진 비율 이상 줄거나, (trust region 이 한 step 이 없앨 수 있는 양을 묶고 있을 때) 그 step 이 없애는 위반이 정해진 비율 이상 늘 때다. 어느 쪽도 아니면 그 선형화에서 행을 만족할 수 없는 것이고 $\mu$ 를 더 키워도 QP 의 조건만 나빠진다. 키울 때는 **모든 군을 같은 배율로** 키운다 (가장 큰 것이 상한에 닿을 때까지) — 군 사이의 비는 입력 그대로이고, 풀리지 않는 문제의 잔류가 어느 군에 남는지는 그 비가 정한다.
+
+**QP 의 설정.** 이 QP 는 구성상 늘 실행 가능하다 (시작점이 선형 행을 만족하고, 비선형 행마다 elastic 이나 slack 이 있다). 그래서 solver 의 primal infeasibility 판정은 끈다 — 그 판정은 근사 인증서를 받아들여, 벌점이 큰 실행 가능한 QP 를 실행 불가로 보고했다.
 
 **시작점.** 시작점은 늘 선형 행 (box · 종단 정지) 을 만족한다. 줄탐색이 그 볼록 집합 안에 머물러 반복값 전부가 선형 행을 만족하므로 QP 는 늘 풀린다.
 

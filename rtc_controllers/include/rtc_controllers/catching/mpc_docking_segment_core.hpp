@@ -71,11 +71,13 @@
 //    bounded below by about μ · solver.eps_abs. The penalty is exact only for
 //    μ_G > Σ_{i∈G}|λ_i|; while an elastic stays positive the multipliers sit AT
 //    μ and say nothing about how large μ should be. What does tell is the
-//    QP's response: μ_G is grown geometrically (mu_growth, up to mu_max) and
-//    the QP solved again, and each step is KEPT only if it lowers the elastic
-//    total by mu_min_gain — otherwise the rows cannot be met at this
-//    linearisation, and a larger μ would only ruin the conditioning (ProxQP
-//    reports an always-feasible QP infeasible from μ ≈ 1e4 on).
+//    QP's response: the penalties are grown geometrically (mu_growth, until
+//    the largest reaches mu_max) and the QP solved again, and each step is
+//    KEPT only if it buys linearised feasibility (mu_min_gain) — otherwise
+//    the rows cannot be met at this linearisation, and a larger μ would only
+//    worsen the conditioning. ALL penalties grow by the same factor: their
+//    ratio is the caller's (mu_init), and it decides in which group an
+//    infeasible problem leaves its residual.
 //  • The starting point always satisfies the linear rows (box, terminal rest):
 //    the caller's node trajectory projected onto the block jerk when that
 //    satisfies them, otherwise an initialisation QP — nearest to a target under
@@ -158,8 +160,10 @@ enum class DockingRowGroup : std::uint8_t {
   kTiming,       ///< timing row [m]
   kVelocitySet,  ///< tightened V_cap [m/s]
   kImpact,       ///< g_n [m/s], E/E_max, P/P_max
-  kBox,          ///< q, q̇ (q̈, u) box [rad, rad/s, …] — largest excess, raw units
-  kTerminal,     ///< q̇_N = q̈_N = 0 [rad/s, rad/s²]
+  /// q, q̇ (q̈, u) box — largest excess, in rad, rad/s (rad/s²; the jerk excess
+  /// in units of u_s, the scale its rows are solved in).
+  kBox,
+  kTerminal,  ///< q̇_N = q̈_N = 0 [rad/s, rad/s²]
 };
 inline constexpr int kNumDockingElasticGroups = 7;
 inline constexpr int kNumDockingRowGroups = 9;
@@ -242,17 +246,21 @@ struct MpcDockingSegmentCoreParams {
   double tan_theta{0.3};         ///< corridor half-angle tangent, ≥ 0
   double c_ent_max{1.0};         ///< closing speed allowed at the entrance [m/s]
   double a_brake{5.0};           ///< relative braking [m/s²], ≥ 0
-  double lambda1_c{1.0};         ///< linear penalty on s_c [1/m]
-  double lambda2_c{0.0};         ///< quadratic penalty on s_c [1/m²]
-  double lambda1_v{1.0};         ///< linear penalty on s_v [(m/s)⁻²]
-  double lambda2_v{0.0};         ///< quadratic penalty on s_v [(m/s)⁻⁴]
+  /// Slack penalties; each slack needs λ₁ + λ₂ > 0 (a free slack would switch
+  /// its row off).
+  double lambda1_c{1.0};  ///< linear penalty on s_c [1/m]
+  double lambda2_c{0.0};  ///< quadratic penalty on s_c [1/m²]
+  double lambda1_v{1.0};  ///< linear penalty on s_v [(m/s)⁻²]
+  double lambda2_v{0.0};  ///< quadratic penalty on s_v [(m/s)⁻⁴]
 
   // ── Capture set at the catch node (§6.1, §6.5, §8.3) ──
   /// false: the ball is treated as known exactly (Σ = 0) — the chance rows
   /// reduce to their deterministic rows tightened by κ ε_σ, the timing row is
   /// not built, and no covariance is required.
   bool chance{true};
-  int n_faces{4};  ///< lateral faces a_iᵀρ ≤ b_i, ball-centre coordinates
+  /// Lateral faces a_iᵀρ ≤ b_i in ball-centre coordinates, with UNIT normals
+  /// a_i (Init rejects others — header of mpc_docking_relative_state.hpp).
+  int n_faces{4};
   std::array<Eigen::Vector2d, kMaxDockingFaces> face_a{
       Eigen::Vector2d{1.0, 0.0}, Eigen::Vector2d{-1.0, 0.0}, Eigen::Vector2d{0.0, 1.0},
       Eigen::Vector2d{0.0, -1.0}};
@@ -298,7 +306,9 @@ struct MpcDockingSegmentCoreParams {
   double mu_growth{10.0};  ///< > 1
   double mu_max{1e6};      ///< ≥ every mu_init
   /// A growth step is kept only if it lowers the QP's elastic total by at
-  /// least this fraction, in (0, 1); otherwise it is undone (header note).
+  /// least this fraction, or raises by this fraction what the step removes of
+  /// the linearised violation (the case under a trust region, where one step
+  /// cannot remove much); otherwise it is undone (header note). In (0, 1).
   double mu_min_gain{0.1};
   /// Infeasibility by stall: with an elastic left in the QP, the solve ends
   /// kInfeasible once the hard rows' violation has fallen by less than
@@ -320,11 +330,17 @@ struct MpcDockingSegmentCoreParams {
   /// Re-equilibrated every solve; PrimalDualLDLT (see QPSolverConfig). eps_rel
   /// is NOT zero: the elastic cost makes the multipliers as large as μ, and an
   /// absolute tolerance alone does not terminate on them.
+  /// ProxQP's primal-infeasibility test is OFF (eps_primal_inf = 0): every QP
+  /// here is feasible by construction (the start satisfies the linear rows and
+  /// every nonlinear row has an elastic or a slack), and the test's approximate
+  /// certificate fired on such QPs — at μ = 100 under a 0.05 rad trust region,
+  /// and regularly from μ ≈ 1e4.
   tsid::QPSolverConfig solver{.eps_abs = 1e-7,
                               .eps_rel = 1e-9,
                               .max_iter = 400,
                               .update_preconditioner = true,
-                              .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT};
+                              .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT,
+                              .eps_primal_inf = 0.0};
 };
 
 /// Joint limits in pinocchio velocity order (n each).
