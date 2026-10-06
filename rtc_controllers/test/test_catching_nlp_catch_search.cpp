@@ -1654,6 +1654,7 @@ TEST(NlpCatchSearchValidity, AFeasibleIterateThatDidNotConvergeIsNotChosen) {
 TEST(NlpCatchSearchReasons, ThePublishedReasonIsATableOverEveryValue) {
   const std::array<std::pair<NlpReject, PlanReason>, kNlpRejectCount> table{{
       {NlpReject::kNone, PlanReason::kNone},
+      {NlpReject::kFollowWindow, PlanReason::kHorizonShort},
       {NlpReject::kLeadShort, PlanReason::kHorizonShort},
       {NlpReject::kBallInvalid, PlanReason::kInputNonFinite},
       {NlpReject::kWorkspace, PlanReason::kStoppingDistance},

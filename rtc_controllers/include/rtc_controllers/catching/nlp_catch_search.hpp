@@ -447,6 +447,7 @@ class NlpCatchSearch final : public CatchSearch {
   switch (r) {
     case NlpReject::kNone:
       return PlanReason::kNone;
+    case NlpReject::kFollowWindow:  // outside what this wake looks at, as too near or too far is
     case NlpReject::kLeadShort:
     case NlpReject::kNoCandidate:
       return PlanReason::kHorizonShort;

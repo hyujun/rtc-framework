@@ -74,7 +74,10 @@ enum class SwitchDecision : std::uint8_t {
 /// candidate get" is a comparison of two values: a wake that chose nothing
 /// reports the reason of the candidate that got farthest.
 enum class NlpReject : std::uint8_t {
-  kNone = 0,     ///< a valid candidate; a wake that chose one
+  kNone = 0,  ///< a valid candidate; a wake that chose one
+  /// Outside the window around the cell of the first plan the RT followed on
+  /// this track (`follow_window`) — the first check, before any other is run.
+  kFollowWindow,
   kLeadShort,    ///< t_c − t_0 below the minimum lead (S1)
   kBallInvalid,  ///< the prediction cannot be sampled at one of its nodes, or is too slow
   kWorkspace,    ///< the catch point is outside the catch box
@@ -97,12 +100,14 @@ enum class NlpReject : std::uint8_t {
   kNotAtRest,    ///< the RT follows no plan and the arm's command is moving
   kRtInvalid,    ///< the RT's report cannot be planned from (width, age, NaN)
 };
-inline constexpr std::size_t kNlpRejectCount = 19;
+inline constexpr std::size_t kNlpRejectCount = 20;
 
 [[nodiscard]] constexpr const char* NlpRejectName(NlpReject r) noexcept {
   switch (r) {
     case NlpReject::kNone:
       return "none";
+    case NlpReject::kFollowWindow:
+      return "follow_window";
     case NlpReject::kLeadShort:
       return "lead_short";
     case NlpReject::kBallInvalid:
