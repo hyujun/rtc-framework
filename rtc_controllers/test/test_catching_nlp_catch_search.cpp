@@ -2505,10 +2505,19 @@ TEST(NlpCatchSearchFollowing, TheSwitchTermIsAnchoredOnThePlanTheRtFollows) {
     }
   }
   EXPECT_GE(judged, 4) << Table(rig->search, w3.stats);
-  // The term is part of the rank as well.
+  // The term is part of the rank as well: the candidate of the followed plan's
+  // cell first, the rest in the key's order.
+  const Candidate* on_plan = nullptr;
+  for (const Candidate& c : rig->search.Candidates()) {
+    if (c.t_c_ns == followed) {
+      on_plan = &c;
+    }
+  }
+  ASSERT_NE(on_plan, nullptr);
+  EXPECT_EQ(on_plan->rank, 0) << Table(rig->search, w3.stats);
   for (const Candidate& a : rig->search.Candidates()) {
     for (const Candidate& b : rig->search.Candidates()) {
-      if (a.rank >= 0 && b.rank >= 0 && a.rank < b.rank) {
+      if (a.rank >= 1 && b.rank >= 1 && a.rank < b.rank) {
         EXPECT_LE(a.rank_key, b.rank_key);
       }
     }
