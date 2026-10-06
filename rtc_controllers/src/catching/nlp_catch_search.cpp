@@ -964,7 +964,10 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   const int n_solve =
       static_cast<int>(std::min<std::int64_t>({static_cast<std::int64_t>(params_.max_solves),
                                                static_cast<std::int64_t>(n_ranked), by_budget}));
-  stats.budget_hit = n_solve < n_ranked;
+  // The TIME budget cut the solves — not `max_solves`, which is a cap the
+  // wake was configured with.
+  stats.budget_hit =
+      by_budget < std::min<std::int64_t>(params_.max_solves, static_cast<std::int64_t>(n_ranked));
 
   // The test seam's order, when it is a permutation of exactly these solves.
   bool permuted = eval_order_n_ == n_solve && n_solve > 0;

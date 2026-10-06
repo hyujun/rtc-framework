@@ -1692,7 +1692,9 @@ TEST(NlpCatchSearchReasons, EverySolveStageReasonComesFromAnInputThatReachedTheS
     const ReasonCase rc([](Rig& r) { r.params.max_solves = 2; }, kNoEdit);
     EXPECT_TRUE(rc.w.plan.valid);
     EXPECT_EQ(rc.w.stats.nlp.n_solved, 2);
-    EXPECT_TRUE(rc.w.stats.budget_hit);
+    // `max_solves` is a cap the wake was configured with, not the budget
+    // running out: the flag stays for the time budget (the next case).
+    EXPECT_FALSE(rc.w.stats.budget_hit);
     EXPECT_EQ(Count(rc.rig->search, NlpReject::kNotRanked), rc.w.stats.nlp.n_screened - 2);
     for (const Candidate& c : rc.rig->search.Candidates()) {
       EXPECT_EQ(c.reject == NlpReject::kNotRanked, c.rank >= 2) << c.index;
