@@ -572,6 +572,21 @@ class MpcDockingSegmentCore {
 
   [[nodiscard]] double TimingSigmaMax() const noexcept { return sigma_max_; }
 
+  /// The joint box the rows are built on and Solve checks the start state
+  /// against (model order, as Init took it): q ∈ [lower, upper], |q̇| ≤ limit.
+  /// A caller that screens or projects a start state reads the SAME numbers
+  /// here rather than keeping its own copy of the limits. Empty before Init.
+  [[nodiscard]] const Eigen::VectorXd& PositionLower() const noexcept { return q_lo_; }
+
+  [[nodiscard]] const Eigen::VectorXd& PositionUpper() const noexcept { return q_hi_; }
+
+  [[nodiscard]] const Eigen::VectorXd& VelocityLimit() const noexcept { return v_hi_; }
+
+  /// |q̈| ≤ limit — meaningful only with HasAccelerationBox(); zeros otherwise.
+  [[nodiscard]] const Eigen::VectorXd& AccelerationLimit() const noexcept { return a_hi_; }
+
+  [[nodiscard]] bool HasAccelerationBox() const noexcept { return params_.accel_box; }
+
   /// Rank of the assembled terminal-equality matrix found at Init (2n).
   [[nodiscard]] int TerminalRank() const noexcept { return terminal_rank_; }
 

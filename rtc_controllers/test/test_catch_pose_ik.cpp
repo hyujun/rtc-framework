@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <random>
@@ -545,6 +546,56 @@ TEST(CatchPoseIk, ManipulabilityMatchesADenseDeterminant) {
       EXPECT_TRUE(r.w5_valid);
       EXPECT_TRUE(r.w6_valid);
     }
+  }
+}
+
+TEST(CatchPoseIk, ManipulabilityAtAGivenPoseIsWhatASolveReportsAtItsOwn) {
+  for (const bool six : {true, false}) {
+    Arm a = six ? Arm6R() : Arm7R();
+    CatchPoseIk ik;
+    ik.Resize(a.nv);
+    // Another object: nothing of the solve that produced q* is left in it.
+    CatchPoseIk probe;
+    probe.Resize(a.nv);
+    std::mt19937 rng(911U);
+    int compared = 0;
+    for (int c = 0; c < 15; ++c) {
+      const Eigen::VectorXd seed = SampleQ(a, rng, 0.4);
+      const Target t = TargetAt(a, seed);
+      const CatchPoseIkResult r =
+          ik.Solve(*a.handle, a.frame, t.p_c, t.v_ball, seed, BaseOptions());
+      if (r.reason != CatchPoseReason::kNone)
+        continue;
+      ++compared;
+      double w5 = -1.0;
+      double w6 = -1.0;
+      ASSERT_TRUE(probe.Manipulability(*a.handle, a.frame, ResultQ(r), w5, w6)) << "case " << c;
+      EXPECT_EQ(w5, r.w5) << "case " << c;
+      EXPECT_EQ(w6, r.w6) << "case " << c;
+      // … and a pose that is not q* has other numbers: the seed's.
+      double w5_seed = -1.0;
+      double w6_seed = -1.0;
+      ASSERT_TRUE(probe.Manipulability(*a.handle, a.frame, seed, w5_seed, w6_seed));
+      const Eigen::MatrixXd j = StackJacobianRef(a, seed);
+      EXPECT_NEAR(w5_seed, ManipFromRows(j, 5), 1e-9 * std::max(1.0, w5_seed)) << "case " << c;
+      EXPECT_NEAR(w6_seed, ManipFromRows(j, 6), 1e-9 * std::max(1.0, w6_seed)) << "case " << c;
+    }
+    EXPECT_GT(compared, 5);
+    // What is not a pose of this arm is refused, with both numbers zeroed.
+    double w5 = 7.0;
+    double w6 = 7.0;
+    EXPECT_FALSE(probe.Manipulability(*a.handle, a.frame, Eigen::VectorXd::Zero(a.nv + 1), w5, w6));
+    EXPECT_EQ(w5, 0.0);
+    EXPECT_EQ(w6, 0.0);
+    Eigen::VectorXd bad = Eigen::VectorXd::Zero(a.nv);
+    bad[1] = std::numeric_limits<double>::quiet_NaN();
+    w5 = 7.0;
+    w6 = 7.0;
+    EXPECT_FALSE(probe.Manipulability(*a.handle, a.frame, bad, w5, w6));
+    EXPECT_EQ(w5, 0.0);
+    EXPECT_EQ(w6, 0.0);
+    CatchPoseIk unsized;
+    EXPECT_FALSE(unsized.Manipulability(*a.handle, a.frame, Eigen::VectorXd::Zero(a.nv), w5, w6));
   }
 }
 

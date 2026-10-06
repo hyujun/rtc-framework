@@ -135,7 +135,7 @@
 | MD-54 | 출하 격자는 포구 전 $\Delta_{pre}$ 0.1 s (최대 6 노드) + 정지 $\Delta_s$ 0.05 s × 7 (블록 {1,1,2,3}) 이다. | `cfg` `horizon` · `approach` / f §1.6 |
 | MD-55 | 포구 전 격자는 `planner.segment.mpc.approach.n_pre_max` 가 켠다 (코드 기본 0, 출하 6). 출하의 `enabled`/`closed_form` 조합은 MD-89 가 바꿈. | `cfg` `approach.n_pre_max`, `IB/test/test_demo_catching_controller.cpp` / f §1.6, L3 §6 |
 | MD-56 | 첫 구간은 탐색과 같은 wake 에서 풀어 plan 과 쌍으로 (구간을 먼저, 같은 `publish_ns`) 게시한다. 구간이 게시 조건을 못 넘으면 plan 도 게시하지 않고 예산 키는 `budget.first_s` · `budget.replan_s` 다. | `IB/src/controllers/catching/controller.cpp`, `lifecycle.cpp` (`budget.*`) / L3 §5.3, L7 §4.3a |
-| MD-57 | `mpc` 에서 RT 가 plan 을 따르는 동안 계획기는 탐색을 돌리지 않고 그 wake 에 구간을 다시 푼다. | `IB/src/controllers/catching/controller.cpp` (`Not under mpc`), `planner_closed_form.yaml` (헤더 주석) / L3 §4.7 · §5.3 |
+| MD-57 | `mpc` 에서 RT 가 plan 을 따르는 동안 계획기는 탐색을 돌리지 않고 그 wake 에 구간을 다시 푼다. 지금의 코드가 그렇다 — 결정은 "탐색은 채택 뒤에도 돈다" 로 바뀌었고 E1-F16 · F17 이 이 행을 지운다 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) §4). | `IB/src/controllers/catching/controller.cpp` (`Not under mpc`), `planner_closed_form.yaml` (헤더 주석) / L3 §4.7 · §5.3 |
 | MD-58 | 재계획의 $x_0$ 는 RT 가 보고한 구간 (대기 구간, 없으면 따르는 구간) 에서 평가하고 같은 포구 전 격자점은 새 예측으로 다시 푼다 (`replan.same_point`). 대기 슬롯의 교체는 node 0 시각이 같을 때다. | `IB/include/integrated_bringup/logging/catching_diag_log_pod.hpp` (`kReplaced`), `demo_catching_controller.hpp` (`segment_pending`) / L7 §4.3a, L3 §5.3 |
 | MD-59 | 폐기 — 측정 전용 키 `planner.segment.mpc.shadow` 는 지워졌다. | — / — |
 | MD-60 | 간격이 둘인 구간은 payload 의 `n_pre` · `dt_pre_ns` 로 싣고 노드 시각은 `SegmentNodeTimeNs` 한 함수가 정한다 (`ValidateSegmentNodes` · 샘플러가 그것을 쓴다). | `RCI/trajectory.hpp` (TWO SPACINGS), `IB/src/controllers/catching/controller.cpp` / f §1.6, L0 (`kMaxSegmentNodes`) |

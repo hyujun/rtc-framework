@@ -55,6 +55,10 @@ using rtc::catching::UnitSpeedSolver;
 constexpr std::int64_t kMs = 1'000'000;
 constexpr std::int64_t kNow = 10'000 * kMs;
 
+// What a search is handed when the RT reports no segment — every wake this
+// search has been called on so far (it does not read the argument).
+const rtc::catching::ReportedSegments kNoSegments{};
+
 std::int64_t SteadyClock() noexcept {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -187,8 +191,8 @@ TEST(PlannerUnitSpeed, TheSearchUsesTheProfilesDamping) {
     ASSERT_TRUE(rig->Configure());
     const auto traj = rig->Traj();
     SearchStats stats;
-    const PlanSnapshot plan =
-        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+    const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                               kNoSegments, NowReal{kNow}, stats);
     ASSERT_TRUE(plan.valid);
     const Eigen::Vector3d v(plan.v_c[0], plan.v_c[1], plan.v_c[2]);
     UnitSpeedSolver us;
@@ -234,8 +238,8 @@ TEST(GridCatchSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  const PlanSnapshot plan =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                             kNoSegments, NowReal{kNow}, stats);
   ASSERT_TRUE(plan.valid) << "reason " << static_cast<int>(plan.reason);
   EXPECT_TRUE(stats.publish);
   EXPECT_EQ(stats.decision, SwitchDecision::kNoCurrent);
@@ -286,8 +290,8 @@ TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  const PlanSnapshot base =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  const PlanSnapshot base = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                             kNoSegments, NowReal{kNow}, stats);
   ASSERT_TRUE(base.valid);
 
   PlannerRtState same = rig->Rt();
@@ -297,7 +301,7 @@ TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
         rig->params.wait_pose[static_cast<std::size_t>(j)];
   }
   const PlanSnapshot again =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, same, NowReal{kNow}, stats);
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, same, kNoSegments, NowReal{kNow}, stats);
   ASSERT_TRUE(again.valid);
   for (int j = 0; j < base.nv; ++j) {
     EXPECT_DOUBLE_EQ(again.q_star[static_cast<std::size_t>(j)],
@@ -310,7 +314,7 @@ TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
     moved.wait_pose[static_cast<std::size_t>(j)] += 0.3;
   }
   const PlanSnapshot shifted =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, moved, NowReal{kNow}, stats);
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, moved, kNoSegments, NowReal{kNow}, stats);
   EXPECT_TRUE(shifted.valid) << "a plan from a different seed, reason "
                              << static_cast<int>(shifted.reason);
   // The handover is not a no-op: the seed in force IS the handed pose, and the
@@ -328,8 +332,8 @@ TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
 
   // A later cycle WITHOUT an adopted pose (a refused switch-in, source yaml)
   // is back on the configure-time seed — not on the pose adopted before.
-  const PlanSnapshot back =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  const PlanSnapshot back = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                             kNoSegments, NowReal{kNow}, stats);
   ASSERT_TRUE(back.valid);
   for (int j = 0; j < rig->arm.nv; ++j) {
     EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j],
@@ -357,7 +361,7 @@ TEST(GridCatchSearchPlan, TheAdoptedWaitPoseIsReadInDeviceOrder) {
   }
   const auto traj = rig->Traj();
   SearchStats stats;
-  (void)rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats);
+  (void)rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
   for (int j = 0; j < rig->arm.nv; ++j) {
     EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j], 0.1 * (rig->arm.nv - j))
         << "model joint " << j << " must read device joint " << rig->arm.nv - 1 - j;
@@ -372,8 +376,8 @@ TEST(GridCatchSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  const PlanSnapshot plan =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                             kNoSegments, NowReal{kNow}, stats);
   EXPECT_FALSE(plan.valid);
   EXPECT_EQ(plan.reason, PlanReason::kStoppingDistance);
   EXPECT_EQ(stats.n_pass, 0);
@@ -390,13 +394,13 @@ TEST(GridCatchSearchPlan, AFailedRankGatePenalisesButDoesNotRemove) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats known;
-  const PlanSnapshot with_cov =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, known);
+  const PlanSnapshot with_cov = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                                 kNoSegments, NowReal{kNow}, known);
   ASSERT_TRUE(with_cov.valid);
   rig->search.ResetTrial();
   SearchStats unknown;
   const PlanSnapshot without = rig->search.Plan(traj, CovarianceSnapshot{}, /*cov_matched=*/false,
-                                                rig->Rt(), NowReal{kNow}, unknown);
+                                                rig->Rt(), kNoSegments, NowReal{kNow}, unknown);
   ASSERT_TRUE(without.valid) << "a rank gate removed the candidates";
   EXPECT_NE(unknown.chosen_rank_mask & rtc::catching::kRankUncertainty, 0);
   EXPECT_EQ(known.chosen_rank_mask & rtc::catching::kRankUncertainty, 0);
@@ -412,8 +416,8 @@ TEST(GridCatchSearchPlan, AnUnsetDecisionKeepsEveryCandidateOut) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  const PlanSnapshot plan =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                             kNoSegments, NowReal{kNow}, stats);
   EXPECT_FALSE(plan.valid);
   EXPECT_EQ(plan.reason, PlanReason::kHorizonShort);
   EXPECT_EQ(stats.n_in_window, 0);
@@ -428,19 +432,22 @@ TEST(GridCatchSearchPlan, SettlesForNSnapshotsAfterATrackChange) {
   SearchStats stats;
   for (std::uint64_t seq = 1; seq <= 2; ++seq) {
     const auto traj = rig->Traj(seq);
-    const PlanSnapshot p =
-        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+    const PlanSnapshot p = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                            kNoSegments, NowReal{kNow}, stats);
     EXPECT_FALSE(p.valid) << "seq " << seq;
     EXPECT_TRUE(stats.settling);
   }
   const auto third = rig->Traj(3);
   EXPECT_TRUE(
-      rig->search.Plan(third, Rig::Cov(third, 0.002), true, rig->Rt(), NowReal{kNow}, stats).valid);
+      rig->search
+          .Plan(third, Rig::Cov(third, 0.002), true, rig->Rt(), kNoSegments, NowReal{kNow}, stats)
+          .valid);
   // The same snapshot again does not count: settling is about NEW information.
   const auto changed = rig->Traj(4, /*gen=*/8);
-  EXPECT_FALSE(
-      rig->search.Plan(changed, Rig::Cov(changed, 0.002), true, rig->Rt(), NowReal{kNow}, stats)
-          .valid);
+  EXPECT_FALSE(rig->search
+                   .Plan(changed, Rig::Cov(changed, 0.002), true, rig->Rt(), kNoSegments,
+                         NowReal{kNow}, stats)
+                   .valid);
   EXPECT_TRUE(stats.settling);
 }
 
@@ -457,7 +464,8 @@ std::uint64_t SearchSequenceDigest(Rig& rig) {
   PlanSnapshot last{};
   for (std::uint64_t seq = 1; seq <= 4; ++seq) {
     const auto traj = rig.Traj(seq);
-    last = rig.search.Plan(traj, Rig::Cov(traj, 0.002), true, rig.Rt(), NowReal{kNow}, stats);
+    last = rig.search.Plan(traj, Rig::Cov(traj, 0.002), true, rig.Rt(), kNoSegments, NowReal{kNow},
+                           stats);
     rtc::testing::AddPlan(h, last);
     rtc::testing::AddSearchStats(h, stats);
   }
@@ -468,7 +476,7 @@ std::uint64_t SearchSequenceDigest(Rig& rig) {
   rt.plan_id = 31;
   const auto traj = rig.Traj(5);
   const auto cov = Rig::Cov(traj, 0.002);
-  rtc::testing::AddPlan(h, rig.search.Plan(traj, cov, true, rt, NowReal{kNow}, stats));
+  rtc::testing::AddPlan(h, rig.search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, stats));
   rtc::testing::AddSearchStats(h, stats);
   rig.search.Monitor(traj, cov, true, rt, stats);
   rtc::testing::AddSearchStats(h, stats);
@@ -517,8 +525,8 @@ TEST(GridCatchSearchPlan, TheBudgetStopsTheIkAndSaysSo) {
   ASSERT_TRUE(rig->Configure(&FakeClock));
   const auto traj = rig->Traj();
   SearchStats stats;
-  static_cast<void>(
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats));
+  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                     NowReal{kNow}, stats));
   EXPECT_TRUE(stats.budget_hit);
   EXPECT_LT(stats.n_ik, rig->params.max_ik);
   EXPECT_GT(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kNotEvaluated)], 0);
@@ -531,15 +539,16 @@ TEST(GridCatchSearchSwitch, HoldsTheCurrentPlanWhenNothingIsBetter) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  PlanSnapshot first =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                        NowReal{kNow}, stats);
   ASSERT_TRUE(first.valid);
   first.plan_id = 11;
   rig->search.NotePublished(first);
   auto rt = rig->Rt();
   rt.plan_active = true;
   rt.plan_id = 11;
-  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats));
+  static_cast<void>(
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldHysteresis);
   EXPECT_FALSE(stats.publish);
 }
@@ -549,8 +558,8 @@ TEST(GridCatchSearchSwitch, NothingReplacesAPlanInsideTheFreezeWindow) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  PlanSnapshot first =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                        NowReal{kNow}, stats);
   ASSERT_TRUE(first.valid);
   first.plan_id = 12;
   rig->search.NotePublished(first);
@@ -559,7 +568,8 @@ TEST(GridCatchSearchSwitch, NothingReplacesAPlanInsideTheFreezeWindow) {
   rt.plan_id = 12;
   // 'now' moved to within T_freeze of the committed catch instant.
   const NowReal late{first.t_c_ns - static_cast<std::int64_t>(0.5 * rig->params.t_freeze * 1e9)};
-  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, late, stats));
+  static_cast<void>(
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, late, stats));
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldFreeze);
   EXPECT_FALSE(stats.publish);
 }
@@ -569,8 +579,8 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  PlanSnapshot first =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                        NowReal{kNow}, stats);
   ASSERT_TRUE(first.valid);
   // Pretend the current plan was for an instant no candidate matches now:
   // further than half a slice (25 ms) from every sample. Beyond the whole
@@ -587,7 +597,7 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
   rt.gamma = 1.0;  // (1-γ)‖Δp‖ = 0 and γ̇ = 0: the jump limits cannot refuse
   rt.gamma_d = 0.0;
   const PlanSnapshot next =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats);
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
   EXPECT_EQ(stats.decision, SwitchDecision::kReplaced);
   EXPECT_TRUE(stats.publish);
   EXPECT_TRUE(next.valid);
@@ -598,7 +608,8 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
   rt.gamma_d = 5.0;
   first.p_c[0] += 1.0;  // a 1 m catch-point jump
   rig->search.NotePublished(first);
-  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats));
+  static_cast<void>(
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldJump);
   EXPECT_FALSE(stats.publish);
 }
@@ -691,8 +702,8 @@ SwitchDecision RefreshDecision(double dy, double gamma, double gamma_d,
   EXPECT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  PlanSnapshot first =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                        NowReal{kNow}, stats);
   EXPECT_TRUE(first.valid);
   first.plan_id = 41;
   rig->search.NotePublished(first);
@@ -714,7 +725,7 @@ SwitchDecision RefreshDecision(double dy, double gamma, double gamma_d,
     moved.s[static_cast<std::size_t>(k)].p[1] += dy;
   }
   const PlanSnapshot next =
-      rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, NowReal{kNow}, stats);
+      rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
   if (stats.decision == SwitchDecision::kRefreshed) {
     EXPECT_EQ(next.t_c_ns, first.t_c_ns) << "the same candidate, not a different one";
     EXPECT_NEAR(next.p_c[1] - first.p_c[1], dy, 1e-12);
@@ -771,15 +782,15 @@ TEST(GridCatchSearchReview, OneSlowSolveDoesNotStopThePlannerForGood) {
   ASSERT_TRUE(rig->Configure(&OneSlowIkClock));
   const auto traj = rig->Traj();
   SearchStats stats;
-  static_cast<void>(
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats));
+  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                     NowReal{kNow}, stats));
   ASSERT_GE(stats.ik_ns_max, 30 * kMs) << "premise: the first cycle saw one 30 ms solve";
   // Every later cycle still runs IK, and the search widens again as the
   // estimate relaxes — it used to stop at the first check forever.
   int widest = 0;
   for (int cycle = 0; cycle < 40; ++cycle) {
-    static_cast<void>(
-        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats));
+    static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                       NowReal{kNow}, stats));
     EXPECT_GE(stats.n_ik, 1) << "cycle " << cycle;
     widest = std::max(widest, static_cast<int>(stats.n_ik));
   }
@@ -791,8 +802,8 @@ TEST(GridCatchSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  PlanSnapshot first =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                        NowReal{kNow}, stats);
   ASSERT_TRUE(first.valid);
   first.plan_id = 21;
   rig->search.NotePublished(first);
@@ -808,7 +819,7 @@ TEST(GridCatchSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
     moved.s[static_cast<std::size_t>(k)].p[1] += 0.005;
   }
   const PlanSnapshot next =
-      rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, NowReal{kNow}, stats);
+      rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
   EXPECT_EQ(stats.decision, SwitchDecision::kRefreshed);
   EXPECT_TRUE(stats.publish);
   ASSERT_TRUE(next.valid);
@@ -824,8 +835,8 @@ TEST(GridCatchSearchReview, TheCurrentPlanIsWhatTheRtFollowsNotTheLastPublish) {
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
-  PlanSnapshot p1 =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  PlanSnapshot p1 = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                     NowReal{kNow}, stats);
   ASSERT_TRUE(p1.valid);
   p1.plan_id = 31;
   rig->search.NotePublished(p1);
@@ -836,7 +847,8 @@ TEST(GridCatchSearchReview, TheCurrentPlanIsWhatTheRtFollowsNotTheLastPublish) {
   auto rt = rig->Rt();
   rt.plan_active = true;
   rt.plan_id = 31;
-  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, NowReal{kNow}, stats));
+  static_cast<void>(
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
   EXPECT_NE(stats.decision, SwitchDecision::kNoCurrent);
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldHysteresis);
   EXPECT_FALSE(stats.publish);
@@ -848,12 +860,12 @@ TEST(GridCatchSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan
   ASSERT_TRUE(rig->Configure());
   SearchStats stats;
   const auto settle = rig->Traj(1);
-  static_cast<void>(
-      rig->search.Plan(settle, Rig::Cov(settle, 0.002), true, rig->Rt(), NowReal{kNow}, stats));
+  static_cast<void>(rig->search.Plan(settle, Rig::Cov(settle, 0.002), true, rig->Rt(), kNoSegments,
+                                     NowReal{kNow}, stats));
   ASSERT_TRUE(stats.settling) << "premise: the first snapshot of a track settles";
   const auto traj = rig->Traj(2);
-  PlanSnapshot first =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats);
+  PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                        NowReal{kNow}, stats);
   ASSERT_TRUE(first.valid);
   first.plan_id = 41;
   rig->search.NotePublished(first);
@@ -863,7 +875,7 @@ TEST(GridCatchSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan
   // A new track generation restarts the settle count.
   const auto other = rig->Traj(1, 8);
   const PlanSnapshot next =
-      rig->search.Plan(other, Rig::Cov(other, 0.002), true, rt, NowReal{kNow}, stats);
+      rig->search.Plan(other, Rig::Cov(other, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
   ASSERT_TRUE(stats.settling);
   EXPECT_FALSE(next.valid);
   EXPECT_FALSE(stats.publish) << "a no-plan publish would overwrite the followed plan's box";
@@ -879,7 +891,8 @@ TEST(GridCatchSearchPlan, AFullSearchAllocatesNothing) {
   const auto cov = Rig::Cov(traj, 0.002);
   const auto rt = rig->Rt();
   SearchStats stats;
-  ASSERT_TRUE(rig->search.Plan(traj, cov, true, rt, NowReal{kNow}, stats).valid);  // warm
+  ASSERT_TRUE(
+      rig->search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, stats).valid);  // warm
   std::size_t heap = 0;
   std::uint64_t eigen = 0;
   bool valid = false;
@@ -889,7 +902,7 @@ TEST(GridCatchSearchPlan, AFullSearchAllocatesNothing) {
     rtc::testing::ScopedNoMalloc eigen_gate;
     for (int i = 0; i < 5; ++i) {
       rig->search.ResetTrial();
-      valid = rig->search.Plan(traj, cov, true, rt, NowReal{kNow}, stats).valid;
+      valid = rig->search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, stats).valid;
       n_ik += stats.n_ik;
     }
     heap = heap_gate.count();
@@ -924,8 +937,8 @@ TEST(GridCatchSearchTiming, RecordsIkAndCycleTimesOnThisHost) {
     ASSERT_TRUE(rig->Configure());
     const auto traj = rig->Traj(static_cast<std::uint64_t>(c + 1));
     SearchStats stats;
-    static_cast<void>(
-        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), NowReal{kNow}, stats));
+    static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                       NowReal{kNow}, stats));
     cycle_us.push_back(stats.search_ns / 1000);
     ik_us.push_back(stats.ik_ns_max / 1000);
     ik_total += stats.n_ik;

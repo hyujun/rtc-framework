@@ -501,6 +501,22 @@ bool CatchPoseIk::QpTaskStep(const pinocchio::Model& pin, const CatchPoseIkOptio
   return qdot_clik_.allFinite();
 }
 
+bool CatchPoseIk::Manipulability(rtc_urdf_bridge::RtModelHandle& model,
+                                 pinocchio::FrameIndex catch_frame,
+                                 const Eigen::Ref<const Eigen::VectorXd>& q, double& w5,
+                                 double& w6) noexcept {
+  w5 = 0.0;
+  w6 = 0.0;
+  if (nv_ < 1 || q.size() != nv_ || !q.allFinite() || !StackJacobian(model, catch_frame, q)) {
+    return false;
+  }
+  const detail::LogManip l5 = LogW5();
+  const detail::LogManip l6 = LogW6();
+  w5 = l5.valid ? std::exp(l5.log_w) : 0.0;
+  w6 = l6.valid ? std::exp(l6.log_w) : 0.0;
+  return true;
+}
+
 void CatchPoseIk::ClampToLimits(const pinocchio::Model& pin, Eigen::VectorXd& q) noexcept {
   // Limits come from the model, never from a constant here (ARCH-1). A joint
   // the URDF left unlimited carries ±inf, for which this is a no-op; an

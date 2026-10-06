@@ -33,6 +33,7 @@
 // and only as a difference on one axis.
 #pragma once
 
+#include <cmath>
 #include <compare>
 #include <cstdint>
 #include <limits>
@@ -41,6 +42,23 @@
 namespace rtc::catching {
 
 inline constexpr double kNsToS = 1e-9;
+
+/// @brief A duration in seconds as integer nanoseconds, rounded to the nearest.
+[[nodiscard]] inline std::int64_t SecondsToNs(double s) noexcept {
+  return static_cast<std::int64_t>(std::llround(s * 1e9));
+}
+
+/// @brief ⌊a / b⌋ for b > 0, toward −∞ (the built-in `/` truncates toward 0).
+[[nodiscard]] constexpr std::int64_t FloorDiv(std::int64_t a, std::int64_t b) noexcept {
+  const std::int64_t q = a / b;
+  return (a % b != 0 && a < 0) ? q - 1 : q;
+}
+
+/// @brief ⌈a / b⌉ for b > 0.
+[[nodiscard]] constexpr std::int64_t CeilDiv(std::int64_t a, std::int64_t b) noexcept {
+  const std::int64_t q = a / b;
+  return (a % b != 0 && a > 0) ? q + 1 : q;
+}
 
 namespace detail {
 

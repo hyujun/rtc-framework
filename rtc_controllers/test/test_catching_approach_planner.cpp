@@ -17,6 +17,7 @@
 // non-identity permutation of the model order, T_arm ≠ 0 (real ≠ lead axis),
 // instants are realistic absolute steady ns, and both a 6- and a 7-joint arm
 // run.
+#include "rtc_controllers/catching/catch_search.hpp"  // CatchSolution
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
@@ -1039,6 +1040,84 @@ TEST(ApproachPlanner, TheSourceIsWhatTheRtReports) {
             seq2);
 }
 
+TEST(ApproachPlanner, TheReportedSegmentsAreCopiesOfThePublishedOnes) {
+  // What the cycle hands a search (SegmentPlanner::Reported, E1-F14 #740): the
+  // two segments the RT reports, by value. SourceSegmentAt on the copies names
+  // the segment SourceSeq names — one rule, read two ways.
+  const auto digest = [](const SegmentSnapshot& p) {
+    rtc::testing::ValueDigest h;
+    rtc::testing::AddSegment(h, p);
+    return h.Value();
+  };
+  Rig r(Arm6());
+  const Started s = StartPlan(r, kT0, 800 * kMs);
+  ASSERT_NE(s.seq, 0U);
+  const std::uint64_t first = digest(r.out);
+  const std::int64_t now = kT0 + 20 * kMs;
+  const Eigen::VectorXd& q = r.arm.q_nominal;
+  auto reported = std::make_unique<rtc::catching::ReportedSegments>();
+  const auto ask = [&](const PlannerRtState& rt) { r.planner.Reported(rt, *reported); };
+
+  // No plan followed, nothing reported, another plan's id, another t_c: none.
+  for (const PlannerRtState& rt :
+       {RestingRt(r.arm, q, now - kH), FollowingRt(r.arm, q, now - kH, s.t_c, 0, 0),
+        FollowingRt(r.arm, q, now - kH, s.t_c, s.seq, s.seq, /*plan_id=*/8),
+        FollowingRt(r.arm, q, now - kH, s.t_c + 1, s.seq, s.seq)}) {
+    reported->has_pending = true;  // stale flags must be overwritten
+    reported->has_following = true;
+    ask(rt);
+    EXPECT_FALSE(reported->has_pending);
+    EXPECT_FALSE(reported->has_following);
+    EXPECT_EQ(rtc::catching::SourceSegmentAt(*reported, s.t_c), nullptr);
+  }
+
+  SetClock(now);
+  ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, q, now - kH, s.t_c, s.seq, 0), BallFor(s.c),
+                               r.out, r.rec))
+      << Why(r.rec);
+  const std::uint32_t seq2 = r.Publish(now);
+  const std::uint64_t second = digest(r.out);
+  const std::int64_t t0_second = r.out.t0_ns;
+  ASSERT_NE(second, first);
+
+  const PlannerRtState both = FollowingRt(r.arm, q, now - kH, s.t_c, seq2, s.seq);
+  ask(both);
+  ASSERT_TRUE(reported->has_pending);
+  ASSERT_TRUE(reported->has_following);
+  EXPECT_EQ(digest(reported->pending), second);
+  EXPECT_EQ(digest(reported->following), first);
+  for (const std::int64_t t_eff : {t0_second, t0_second - 1}) {
+    const SegmentSnapshot* src = rtc::catching::SourceSegmentAt(*reported, t_eff);
+    ASSERT_NE(src, nullptr);
+    EXPECT_EQ(src->segment_seq, r.planner.SourceSeq(both, t_eff)) << t_eff - t0_second;
+  }
+  EXPECT_EQ(rtc::catching::SourceSegmentAt(*reported, t0_second)->segment_seq, seq2);
+  EXPECT_EQ(rtc::catching::SourceSegmentAt(*reported, t0_second - 1)->segment_seq, s.seq);
+
+  // A reported seq the ring never held is "none" for that slot alone, and a
+  // pending segment that is not due leaves nothing to start from without a
+  // followed one.
+  ask(FollowingRt(r.arm, q, now - kH, s.t_c, 99, seq2));
+  EXPECT_FALSE(reported->has_pending);
+  ASSERT_TRUE(reported->has_following);
+  EXPECT_EQ(digest(reported->following), second);
+  ask(FollowingRt(r.arm, q, now - kH, s.t_c, seq2, 0));
+  ASSERT_TRUE(reported->has_pending);
+  EXPECT_FALSE(reported->has_following);
+  EXPECT_EQ(rtc::catching::SourceSegmentAt(*reported, t0_second - 1), nullptr);
+
+  // Copies: the ring is emptied by another plan's segment, and what was
+  // handed out still reads as it did.
+  ask(both);
+  SegmentSnapshot other = r.out;
+  other.plan_id = 8;
+  other.segment_seq = seq2 + 1;
+  r.planner.NotePublished(other);
+  EXPECT_EQ(r.planner.SourceSeq(both, t0_second), 0U);
+  EXPECT_EQ(digest(reported->pending), second);
+  EXPECT_EQ(digest(reported->following), first);
+}
+
 TEST(ApproachPlanner, TheFollowedSegmentSurvivesABurstOfResolves) {
   Rig r(Arm6());
   const Started s = StartPlan(r, kT0, 800 * kMs);
@@ -2010,7 +2089,7 @@ TEST(ApproachPlanner, TheViewEntriesSolveWhatTheValueEntriesSolve) {
           by_value.planner.PlanFirst(rest, plan, value_at(plan.t_c_ns), by_value.out, by_value.rec);
       const std::int64_t reads_value = (g_now.load() - now) / kStep;
       SetClock(now, kStep);
-      const bool ok_view = iface.PlanFirst(rest, plan, view, by_view.out, by_view.rec);
+      const bool ok_view = iface.PlanFirst(rest, plan, view, nullptr, by_view.out, by_view.rec);
       const std::int64_t reads_view = (g_now.load() - now) / kStep;
       ASSERT_TRUE(ok_value) << Why(by_value.rec);
       const std::uint64_t first = SolveDigest(ok_value, by_value.out, by_value.rec);
@@ -2058,6 +2137,68 @@ TEST(ApproachPlanner, TheViewEntriesSolveWhatTheValueEntriesSolve) {
       }
     }
   }
+  SetClock(kT0);
+}
+
+TEST(ApproachPlanner, TheFirstSolveDoesNotReadASearchsSolution) {
+  // SegmentPlanner::PlanFirst is handed the arm trajectory the search solved
+  // for the plan, when it solved one (E1-F14 #740). This planner solves its own
+  // problem and must not take anything from it: with the search installed
+  // today the pointer is always null, so nothing in the cycle's own suites
+  // would show a planner that started reading it. Here it is non-null and
+  // PASSES the receiver's match rule (same t_c, same RT report) — a planner
+  // that used it would publish these nodes, or at least start from them.
+  constexpr std::int64_t kStep = 1000;  // ns per clock read
+  Rig with_null(Arm6(), PerpParams(0.0));
+  Rig with_solution(Arm6(), PerpParams(0.0));
+  const Arm& arm = with_null.arm;
+  const std::int64_t now = kT0;
+  const Catch c = CatchAt(arm, Offset(arm, 0.03));
+  const std::int64_t t_c = now + kTArm + 800 * kMs;
+  const auto traj =
+      rtc::testing::LineTrajectory(c.p, c.v, t_c - 14 * 50 * kMs, 50 * kMs, 20, 14,
+                                   /*seq=*/1, /*gen=*/5, /*activation=*/3, now - 5 * kMs);
+  const auto cov = rtc::testing::IsotropicCovariance(traj, 0.01);
+  const rtc::catching::BallPrediction view{&traj, &cov, true};
+  const PlannerRtState rest = RestingRt(arm, arm.q_nominal, now - kH);
+  const PlanSnapshot plan = PlanFor(arm, c, t_c);
+
+  auto solution = std::make_unique<rtc::catching::CatchSolution>();
+  solution->seg.valid = true;
+  solution->seg.t_c_ns = plan.t_c_ns;
+  solution->seg.rt_iteration = rest.rt_iteration;
+  solution->seg.rt_state_ns = rest.rt_state_ns;
+  solution->seg.token = plan.token;
+  solution->seg.nv = arm.model->nv;
+  solution->seg.n_pre = 2;
+  solution->seg.n_nodes = 9;
+  solution->seg.dt_pre_ns = 100 * kMs;
+  solution->seg.dt_ns = 50 * kMs;
+  solution->seg.t0_ns = plan.t_c_ns - 2 * 100 * kMs;
+  for (std::size_t i = 0; i < solution->seg.q.size(); ++i) {
+    solution->seg.q[i] = 0.3 + 1e-3 * static_cast<double>(i);  // finite, and nobody's
+    solution->seg.qd[i] = -0.2;
+    solution->seg.qdd[i] = 0.1;
+  }
+  solution->feasible = true;
+  solution->converged = true;
+
+  rtc::catching::SegmentPlanner& null_iface = with_null.planner;
+  rtc::catching::SegmentPlanner& solution_iface = with_solution.planner;
+  SetClock(now, kStep);
+  const bool ok_null =
+      null_iface.PlanFirst(rest, plan, view, nullptr, with_null.out, with_null.rec);
+  const std::int64_t reads_null = (g_now.load() - now) / kStep;
+  SetClock(now, kStep);
+  const bool ok_solution = solution_iface.PlanFirst(rest, plan, view, solution.get(),
+                                                    with_solution.out, with_solution.rec);
+  const std::int64_t reads_solution = (g_now.load() - now) / kStep;
+  ASSERT_TRUE(ok_null) << Why(with_null.rec);
+  EXPECT_EQ(SolveDigest(ok_solution, with_solution.out, with_solution.rec),
+            SolveDigest(ok_null, with_null.out, with_null.rec))
+      << Why(with_solution.rec);
+  EXPECT_EQ(reads_solution, reads_null);
+  EXPECT_GT(with_null.rec.solve_ns, 0) << "the stepping clock did not reach the solve";
   SetClock(kT0);
 }
 

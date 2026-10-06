@@ -48,7 +48,7 @@ import numpy as np
 OUTCOME_ORDER = ("idle", "no_input", "published", "superseded", "held", "unknown")
 
 # rtc::catching::SwitchDecisionName order (rtc_controllers/catching/
-# grid_catch_search.hpp).
+# search_stats.hpp).
 DECISION_ORDER = (
     "no_current",
     "replaced",
@@ -109,7 +109,7 @@ _SEGMENT_KIND_COLOURS = {
 # Candidate funnel, in the order candidates are narrowed (S6-B decision E).
 FUNNEL_COLUMNS = ("n_in_window", "n_ik", "n_pass")
 
-# JudgeReject order (rtc_controllers/catching/grid_catch_search.hpp).
+# JudgeReject order (rtc_controllers/catching/search_stats.hpp).
 REJECT_COLUMNS = (
     "rej_input",
     "rej_ik",

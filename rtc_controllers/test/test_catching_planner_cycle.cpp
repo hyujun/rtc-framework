@@ -45,6 +45,7 @@ namespace {
 using rtc::catching::ActivityFor;
 using rtc::catching::AdmittedPlan;
 using rtc::catching::BallPrediction;
+using rtc::catching::CatchSolution;
 using rtc::catching::CovarianceSnapshot;
 using rtc::catching::CycleOutcome;
 using rtc::catching::JudgePlan;
@@ -59,6 +60,7 @@ using rtc::catching::PlannerCycleRecord;
 using rtc::catching::PlannerRtState;
 using rtc::catching::PlanRefusal;
 using rtc::catching::PlanSnapshot;
+using rtc::catching::ReportedSegments;
 using rtc::catching::SearchStats;
 using rtc::catching::SegmentKind;
 using rtc::catching::SegmentOutcome;
@@ -715,13 +717,31 @@ constexpr std::uint16_t kFakeIkCount = 4242;
 constexpr double kFakeSigmaL = 0.125;
 constexpr std::int64_t kFakeControlDtNs = 1000 * kMs;  // the real one is 2 ms
 constexpr std::uint32_t kFakeSourceSeq = 5;
+// What crosses between the two fakes through the cycle. None of it is what a
+// real search or planner produces: joint angles of hundreds of radians, a
+// negative cost, segments numbered far above anything the cycle has stored.
+constexpr std::uint32_t kFakePendingSeq = 70'001;
+constexpr std::uint32_t kFakeFollowingSeq = 70'002;
+constexpr double kFakePendingQ = 611.0;
+constexpr double kFakeFollowingQ = -612.0;
+constexpr std::uint32_t kFakeSolutionSourceSeq = 80'001;
+constexpr double kFakeSolutionQ = 813.0;
+constexpr double kFakeSolutionCost = -814.0;
 
 class FakeSearch final : public rtc::catching::CatchSearch {
  public:
   [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                  bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                  bool cov_matched, const PlannerRtState& rt,
+                                  const ReportedSegments& arm, NowReal now,
                                   SearchStats& stats) noexcept override {
     g_calls.Add(Call::kSearchPlan);
+    // Read under the flags only: a snapshot whose flag is false is not written.
+    arm_has_pending = arm.has_pending;
+    arm_has_following = arm.has_following;
+    arm_pending_seq = arm.has_pending ? arm.pending.segment_seq : 0;
+    arm_following_seq = arm.has_following ? arm.following.segment_seq : 0;
+    arm_pending_q = arm.has_pending ? arm.pending.q[0] : 0.0;
+    arm_following_q = arm.has_following ? arm.following.q[0] : 0.0;
     plan_sequence = traj.token.snapshot_sequence;
     plan_cov_sequence = cov.token.snapshot_sequence;
     plan_cov_matched = cov_matched;
@@ -761,10 +781,34 @@ class FakeSearch final : public rtc::catching::CatchSearch {
 
   void ResetTrial() noexcept override { g_calls.Add(Call::kSearchResetTrial); }
 
+  // Not in the call log, as FakeSegmentPlanner::Reported is not: the order
+  // tests assert the wake's calls as they were before the two crossed.
+  [[nodiscard]] const CatchSolution* Solution() const noexcept override {
+    ++solution_calls;
+    return has_solution ? &solution : nullptr;
+  }
+
+  FakeSearch() {
+    solution.seg.valid = true;
+    solution.seg.t_c_ns = kFakeTc;
+    solution.seg.q[0] = kFakeSolutionQ;
+    solution.source_seq = kFakeSolutionSourceSeq;
+    solution.cost_reference = kFakeSolutionCost;
+  }
+
   // What it answers.
   bool valid{true};
   bool publish{true};
+  bool has_solution{true};
+  CatchSolution solution{};
   // What it was handed.
+  bool arm_has_pending{false};
+  bool arm_has_following{false};
+  std::uint32_t arm_pending_seq{0};
+  std::uint32_t arm_following_seq{0};
+  double arm_pending_q{0.0};
+  double arm_following_q{0.0};
+  mutable int solution_calls{0};
   std::uint64_t plan_sequence{0};
   std::uint64_t plan_cov_sequence{0};
   bool plan_cov_matched{false};
@@ -788,11 +832,15 @@ class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
   void ResetTrial() noexcept override { g_calls.Add(Call::kSegmentResetTrial); }
 
   [[nodiscard]] bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                               const BallPrediction& ball, SegmentSnapshot& out,
-                               SegmentRecord& rec) noexcept override {
+                               const BallPrediction& ball, const CatchSolution* solution,
+                               SegmentSnapshot& out, SegmentRecord& rec) noexcept override {
     g_calls.Add(Call::kPlanFirst);
     static_cast<void>(rt);
     NoteBall(ball);
+    first_solution = solution;
+    first_solution_source_seq = solution != nullptr ? solution->source_seq : 0;
+    first_solution_q = solution != nullptr ? solution->seg.q[0] : 0.0;
+    first_solution_cost = solution != nullptr ? solution->cost_reference : 0.0;
     first_plan_id = plan.plan_id;
     first_p_c = plan.p_c;
     Fill(plan.plan_id, plan.t_c_ns, out, rec);
@@ -839,6 +887,24 @@ class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
     return kFakeControlDtNs;
   }
 
+  // Not in the call log (see FakeSearch::Solution); counted here.
+  void Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept override {
+    ++reported_calls;
+    reported_rt_iteration = rt.rt_iteration;
+    out.has_pending = report_pending;
+    out.has_following = report_following;
+    if (report_pending) {
+      out.pending = SegmentSnapshot{};
+      out.pending.segment_seq = kFakePendingSeq;
+      out.pending.q[0] = kFakePendingQ;
+    }
+    if (report_following) {
+      out.following = SegmentSnapshot{};
+      out.following.segment_seq = kFakeFollowingSeq;
+      out.following.q[0] = kFakeFollowingQ;
+    }
+  }
+
   [[nodiscard]] std::uint32_t SourceSeq(const PlannerRtState& rt,
                                         std::int64_t t_eff_ns) const noexcept override {
     g_calls.Add(Call::kSourceSeq);
@@ -854,7 +920,17 @@ class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
   std::uint64_t followed_generation{kTrack};
   bool starts_in_time{true};
   std::uint32_t source_seq{kFakeSourceSeq};
+  // The real cycle never has a reported segment on a search wake (it replans
+  // a followed plan instead of searching), so only a fake can fill these.
+  bool report_pending{true};
+  bool report_following{true};
   // What it was handed.
+  const CatchSolution* first_solution{nullptr};
+  std::uint32_t first_solution_source_seq{0};
+  double first_solution_q{0.0};
+  double first_solution_cost{0.0};
+  mutable int reported_calls{0};
+  mutable std::uint64_t reported_rt_iteration{0};
   ClockFn clock_seen{nullptr};
   bool ball_empty{true};
   bool ball_cov_matched{false};
@@ -1226,6 +1302,88 @@ TEST(PlannerCycleInterfaces, RightAfterAPairTheSearchWaitsTheInstalledPlannersPe
   EXPECT_EQ(calls[1], Call::kSearchPlan);
 }
 
+// E1-F14 (#740): what the search and the segment planner hand each other goes
+// through the cycle untouched, in both directions, and the wake's order of
+// calls is the one the tests above assert — neither crossing is in that log.
+TEST(PlannerCycleInterfaces, TheSolutionAndTheReportedSegmentsCrossTheCycleUntouched) {
+  const auto search_wake = [](FakeRig& rig) {
+    rig.boxes.rt.Store(RtIn(Mode::kTracking));
+    rig.boxes.traj.Store(Traj(3));
+    rig.boxes.cov.Store(Cov(3));
+    return rig.Wake();
+  };
+  const Calls pair{Call::kSearchPlan,   Call::kPlanFirst,           Call::kClock,
+                   Call::kStartsInTime, Call::kSearchNotePublished, Call::kSegmentNotePublished};
+  {
+    SCOPED_TRACE("both reported, a solution");
+    auto rig = std::make_unique<FakeRig>();
+    EXPECT_EQ(search_wake(*rig), pair);
+    // segment planner → search: the planner is asked once, with this wake's
+    // RT report, and the search sees exactly what it answered.
+    EXPECT_EQ(rig->segment->reported_calls, 1);
+    EXPECT_EQ(rig->segment->reported_rt_iteration, RtIn(Mode::kTracking).rt_iteration);
+    EXPECT_TRUE(rig->search->arm_has_pending);
+    EXPECT_TRUE(rig->search->arm_has_following);
+    EXPECT_EQ(rig->search->arm_pending_seq, kFakePendingSeq);
+    EXPECT_EQ(rig->search->arm_following_seq, kFakeFollowingSeq);
+    EXPECT_EQ(rig->search->arm_pending_q, kFakePendingQ);
+    EXPECT_EQ(rig->search->arm_following_q, kFakeFollowingQ);
+    // search → segment planner: the search's own object, not a copy the cycle
+    // made and not null.
+    EXPECT_EQ(rig->search->solution_calls, 1);
+    EXPECT_EQ(rig->segment->first_solution, &rig->search->solution);
+    EXPECT_EQ(rig->segment->first_solution_source_seq, kFakeSolutionSourceSeq);
+    EXPECT_EQ(rig->segment->first_solution_q, kFakeSolutionQ);
+    EXPECT_EQ(rig->segment->first_solution_cost, kFakeSolutionCost);
+  }
+  {
+    SCOPED_TRACE("only the followed one, no solution");
+    auto rig = std::make_unique<FakeRig>();
+    rig->segment->report_pending = false;
+    rig->search->has_solution = false;
+    EXPECT_EQ(search_wake(*rig), pair);
+    EXPECT_FALSE(rig->search->arm_has_pending);
+    EXPECT_TRUE(rig->search->arm_has_following);
+    EXPECT_EQ(rig->search->arm_following_seq, kFakeFollowingSeq);
+    EXPECT_EQ(rig->segment->first_solution, nullptr);
+  }
+  {
+    SCOPED_TRACE("only the pending one");
+    auto rig = std::make_unique<FakeRig>();
+    rig->segment->report_following = false;
+    EXPECT_EQ(search_wake(*rig), pair);
+    EXPECT_TRUE(rig->search->arm_has_pending);
+    EXPECT_FALSE(rig->search->arm_has_following);
+    EXPECT_EQ(rig->search->arm_pending_seq, kFakePendingSeq);
+  }
+  {
+    // A wake whose search holds back asks for no solution: nothing is
+    // published for it to go with.
+    SCOPED_TRACE("the search publishes nothing");
+    auto rig = std::make_unique<FakeRig>();
+    rig->search->publish = false;
+    EXPECT_EQ(search_wake(*rig), (Calls{Call::kSearchPlan}));
+    EXPECT_EQ(rig->segment->reported_calls, 1);
+    EXPECT_TRUE(rig->search->arm_has_following);
+    EXPECT_EQ(rig->search->solution_calls, 0);
+  }
+  {
+    // Without a segment planner there is nobody to report a segment — and the
+    // cycle's scratch still holds the two an earlier wake was handed.
+    SCOPED_TRACE("the segment planner is removed after a wake that reported both");
+    auto rig = std::make_unique<FakeRig>();
+    EXPECT_EQ(search_wake(*rig), pair);
+    ASSERT_TRUE(rig->search->arm_has_pending);
+    ASSERT_TRUE(rig->search->arm_has_following);
+    rig->cycle.InstallSegmentPlanner(nullptr);
+    rig->segment = nullptr;
+    EXPECT_EQ(search_wake(*rig),
+              (Calls{Call::kSearchPlan, Call::kClock, Call::kSearchNotePublished}));
+    EXPECT_FALSE(rig->search->arm_has_pending);
+    EXPECT_FALSE(rig->search->arm_has_following);
+  }
+}
+
 TEST(PlannerCycleInterfaces, AWakeThroughTheInterfacesAllocatesNothing) {
   // G3-K for the paths OneWakeAllocatesNothing does not reach — it runs the
   // stub and binds no segment box: the pair, the three kinds of replan and a
@@ -1273,6 +1431,13 @@ TEST(PlannerCycleInterfaces, AWakeThroughTheInterfacesAllocatesNothing) {
   EXPECT_FALSE(overflow);
   EXPECT_EQ(heap, 0U);
   EXPECT_EQ(eigen, 0U);
+  // The gated pairs carried both crossings (E1-F14): two reported segments in
+  // (copied into the cycle's scratch), the search's solution out.
+  EXPECT_EQ(rig->segment->reported_calls, 1 + kRounds);
+  EXPECT_EQ(rig->search->arm_pending_seq, kFakePendingSeq);
+  EXPECT_EQ(rig->search->arm_following_q, kFakeFollowingQ);
+  EXPECT_EQ(rig->search->solution_calls, 1 + kRounds);
+  EXPECT_EQ(rig->segment->first_solution, &rig->search->solution);
 }
 
 }  // namespace

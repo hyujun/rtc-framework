@@ -12,12 +12,6 @@ namespace rtc::catching {
 
 namespace {
 
-constexpr double kSecondsToNs = 1e9;
-
-[[nodiscard]] std::int64_t SecondsToNs(double s) noexcept {
-  return static_cast<std::int64_t>(std::llround(s * kSecondsToNs));
-}
-
 [[nodiscard]] PlanReason ReasonFor(JudgeReject r) noexcept {
   switch (r) {
     case JudgeReject::kInput:
@@ -230,8 +224,10 @@ void GridCatchSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSn
 }
 
 PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                   bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                   bool cov_matched, const PlannerRtState& rt,
+                                   const ReportedSegments& arm, NowReal now,
                                    SearchStats& stats) noexcept {
+  static_cast<void>(arm);  // not read (see the header)
   stats = SearchStats{};
   const std::int64_t t_start = clock_ != nullptr ? clock_() : 0;
   PlanSnapshot plan{};

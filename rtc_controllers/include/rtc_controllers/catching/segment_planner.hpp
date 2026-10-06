@@ -46,6 +46,7 @@
 namespace rtc::catching {
 
 struct SegmentRecord;  // mpc_segment_planner.hpp
+struct CatchSolution;  // catch_search.hpp
 
 /// @brief The ball's prediction as one wake read it: the trajectory snapshot
 ///        and the covariance box, not owned.
@@ -90,13 +91,19 @@ class SegmentPlanner {
   ///        will publish it under
   /// @param ball this wake's prediction — the one `plan` was searched on.
   ///        Never empty here.
+  /// @param solution the arm trajectory the search solved for `plan`, or
+  ///        nullptr when it solved none (CatchSearch::Solution). A planner
+  ///        that solves its own problem ignores it; one that would solve the
+  ///        search's problem again may publish it instead, after the match
+  ///        check CatchSolution names. The cycle's scratch — valid for this
+  ///        call.
   /// @param[out] out the segment; its `publish_ns` and `segment_seq` are the
   ///             cycle's to fill
   /// @param[out] rec the solve's record
   /// @return true when `out` is publishable. False withholds the plan too.
   [[nodiscard]] virtual bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                                       const BallPrediction& ball, SegmentSnapshot& out,
-                                       SegmentRecord& rec) noexcept = 0;
+                                       const BallPrediction& ball, const CatchSolution* solution,
+                                       SegmentSnapshot& out, SegmentRecord& rec) noexcept = 0;
 
   /// @brief A later segment of the plan `rt` follows (RT-safe; MD-58).
   /// @param ball the followed plan's ball as this wake read it, or an empty
@@ -137,9 +144,18 @@ class SegmentPlanner {
   /// @brief The RT's control period [ns] (RT-safe).
   [[nodiscard]] virtual std::int64_t ControlDtNs() const noexcept = 0;
 
+  /// @brief The segments `rt` reports pending and following, copied from
+  ///        what this planner published (RT-safe) — what the cycle hands the
+  ///        search, so that a candidate's arm motion starts where the arm
+  ///        will be.
+  /// @param[out] out both flags are always written; a snapshot is written
+  ///             only when its flag is true (see ReportedSegments)
+  virtual void Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept = 0;
+
   /// @brief The `segment_seq` of the segment a replan at `t_eff_ns` starts from
   ///        — one the RT reports pending or following, never inferred — or 0
-  ///        when there is none (RT-safe).
+  ///        when there is none (RT-safe). SourceSegmentAt (planner_io.hpp) on
+  ///        what Reported() answers.
   [[nodiscard]] virtual std::uint32_t SourceSeq(const PlannerRtState& rt,
                                                 std::int64_t t_eff_ns) const noexcept = 0;
 

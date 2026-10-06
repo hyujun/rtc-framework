@@ -142,6 +142,54 @@ struct PlannerRtState {
 
 static_assert(std::is_trivially_copyable_v<PlannerRtState>);
 
+// ── The segments the RT reports, for a solve that starts on one (MD-58) ─────
+
+/// @brief The segments the RT reports for the plan it follows, as the segment
+///        planner published them — COPIED out of its memory.
+///
+/// Copies, not pointers: a planner keeps its published segments in a ring it
+/// compacts on the next publish, so a pointer into it names another segment
+/// one publish later. Two snapshots (~10 KB) are nothing beside one solve.
+///
+/// Both flags are false when the RT follows no plan, follows one the planner
+/// holds no segments of, or reports no segment. A snapshot whose flag is false
+/// is not written and must not be read.
+struct ReportedSegments {
+  bool has_pending{false};      ///< `pending` is rt.segment_pending_seq's segment
+  bool has_following{false};    ///< `following` is rt.segment_seq's segment
+  SegmentSnapshot pending{};    ///< admitted by the RT, its node 0 not reached yet
+  SegmentSnapshot following{};  ///< the one the RT's command is sampled from
+};
+
+static_assert(std::is_trivially_copyable_v<ReportedSegments>);
+
+/// @brief The segment a solve whose node 0 is at `t_eff_ns` starts from
+///        (MD-58): the pending one from its own node 0 on — that is what the
+///        RT will be following then — else the one it follows now.
+///
+/// The ONE statement of that rule. A segment planner's replan and a search
+/// that evaluates candidates on a moving arm both take their initial state
+/// from the segment this names, never from an inference about what the RT
+/// "should" be following.
+/// @param pending the segment the RT reports pending, or nullptr
+/// @param following the segment the RT reports following, or nullptr
+/// @return one of the two arguments, or nullptr when there is none
+[[nodiscard]] constexpr const SegmentSnapshot* SourceSegmentAt(const SegmentSnapshot* pending,
+                                                               const SegmentSnapshot* following,
+                                                               std::int64_t t_eff_ns) noexcept {
+  if (pending != nullptr && pending->t0_ns <= t_eff_ns) {
+    return pending;
+  }
+  return following;
+}
+
+/// @brief The same rule on the copies a search is handed.
+[[nodiscard]] constexpr const SegmentSnapshot* SourceSegmentAt(const ReportedSegments& reported,
+                                                               std::int64_t t_eff_ns) noexcept {
+  return SourceSegmentAt(reported.has_pending ? &reported.pending : nullptr,
+                         reported.has_following ? &reported.following : nullptr, t_eff_ns);
+}
+
 /// What the planner does in a given supervisor mode (L3 §5.3). The segment MPC
 /// (MPC E1-F08) replans a followed plan's segment in every one of them but
 /// kIdle, when it is configured.
