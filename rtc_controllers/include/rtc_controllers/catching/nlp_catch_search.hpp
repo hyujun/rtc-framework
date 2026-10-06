@@ -69,18 +69,27 @@
 // With `continuous_tc` each solved candidate is solved TWICE:
 //   ① on its lattice instant, as above (the same core, the same start);
 //   ② when ① ended on an iterate, again with the catch instant free inside
-//     the candidate's CELL — δt_c ∈ [−⌊h/2⌋, h − ⌊h/2⌋), further cut to where
-//     the predicted catch point stays inside the catch box and the prediction
-//     lasts. Only the interval that ends at the catch node stretches: node 0,
-//     the start state and every pre-catch node are ①'s, so the candidate
-//     keeps its index, its grid and its place in the next wake's memory.
+//     the candidate's CELL — δt_c ∈ [−⌊h/2⌋, h − ⌊h/2⌋), further cut to the
+//     instants the lattice search itself would take as a candidate: not
+//     nearer than the minimum lead, not past the window, and — each side of
+//     the lattice instant, found on the prediction the plan reads — as far
+//     as the ball there passes what the screening asks of the ball alone
+//     (inside the prediction, moving, inside the catch box, a covariance
+//     with `chance`). Only the interval that ends at the catch node
+//     stretches: node 0, the start state and every pre-catch node are ①'s,
+//     so the candidate keeps its index, its grid and its place in the next
+//     wake's memory.
 //   ② starts from the candidate's own continuous solution of the previous
 //   wake when there is one, else from ①'s solution at δt_c = 0. It is the
 //   candidate's solution when it is valid by ①'s own rule (in its share,
-//   every hard row, converged) and its catch point — read from the
-//   prediction at the catch instant it ended at — is inside the catch box.
+//   every hard row, converged) and the ball at the catch instant it ended at
+//   passes the same checks (the cut above finds an END of the instants that
+//   do; one that fails between two that pass is caught here).
 //   Otherwise the candidate keeps ①'s solution and ①'s verdict, and the
-//   record says that ② ran, why it was not taken and what it ended on.
+//   record says that ② ran, why it was not taken and what it ended on. What
+//   ② ended on is next wake's start for it either way — and when its search
+//   of the catch instant did not finish that is the best point it had
+//   solved, not the one it stopped at (`continuous_settled`).
 // The core is given the outer cost's two terms as functions of δt_c, so ②
 // minimises J⋆ + J_stop + J_time + J_switch over the trajectory AND the
 // instant; Φ is then evaluated at the instant it ended at, by the same
@@ -382,6 +391,9 @@ class NlpCatchSearch final : public CatchSearch {
     MpcDockingReason continuous_reason{MpcDockingReason::kNone};
     int continuous_iterations{0};
     int continuous_moves{0};  ///< moves of the catch instant
+    /// What ② returned solves the problem at the instant it is at (the core's
+    /// catch_time_settled) — also when its search of the instant did not end.
+    bool continuous_settled{false};
     std::int64_t continuous_solve_ns{0};
     std::int64_t delta_lo_ns{0}, delta_hi_ns{0};  ///< δt_c's box as given to the core
     /// The fixed-grid solve of a candidate that uses its continuous solution.
@@ -460,7 +472,21 @@ class NlpCatchSearch final : public CatchSearch {
   [[nodiscard]] std::size_t MemorySlot(std::int64_t index) const noexcept;
   [[nodiscard]] const Memory* Remembered(std::int64_t index) const noexcept;
   [[nodiscard]] const Memory* NearestRemembered(std::int64_t index) const noexcept;
+  /// The nearest remembered solution a candidate without one of its own can
+  /// start from (of this arm, begun by the candidate's node 0, catching
+  /// after it, with this stop part), or nullptr.
+  [[nodiscard]] const Memory* UsableNeighbour(const CandidateRecord& c) const noexcept;
 
+  /// What the ball at a catch instant refuses the instant for — the checks of
+  /// the screening that read the ball alone, in its order (kNone: none).
+  [[nodiscard]] NlpReject CatchBallVerdict(const BallNodeSample& ball) const noexcept;
+  /// One end of δt_c's box: `end_ns` when the ball at t̂ + end_ns passes
+  /// CatchBallVerdict, else the farthest instant toward it that does, by
+  /// halving from δt_c = 0 (which the screening passed).
+  [[nodiscard]] std::int64_t CatchOffsetEnd(const TrajectorySnapshot& traj,
+                                            const CovarianceSnapshot& cov, bool cov_matched,
+                                            std::int64_t t_hat_ns,
+                                            std::int64_t end_ns) const noexcept;
   /// x_0 of the candidate at node-0 instant t_s into `c` (model order).
   [[nodiscard]] bool StartState(const PlannerRtState& rt, const ReportedSegments& arm,
                                 bool following, CandidateRecord& c) noexcept;
@@ -482,6 +508,9 @@ class NlpCatchSearch final : public CatchSearch {
   /// The verdict on an iterate a core returned, as a reason (kNone: valid).
   [[nodiscard]] NlpReject Verdict(const MpcDockingSegmentCoreResult& res, bool past_deadline,
                                   double& worst, int& worst_group) const noexcept;
+  /// The numbers of the solve a candidate stands on, from the core's result.
+  static void RecordSolve(const MpcDockingSegmentCoreResult& res, double worst, int worst_group,
+                          CandidateRecord& c) noexcept;
   /// The solve with the catch instant free in the candidate's cell — or held
   /// at the followed plan's (`c.pinned`). `fixed` is this wake's fixed-grid
   /// solution of the candidate, or nullptr.

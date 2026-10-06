@@ -625,19 +625,11 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
       at_catch = b;
     }
   }
+  if (const NlpReject why = CatchBallVerdict(at_catch); why != NlpReject::kNone) {
+    c.reject = why;
+    return;
+  }
   const double speed = at_catch.v.norm();
-  if (!(speed >= ik_options_.v_eps)) {
-    c.reject = NlpReject::kBallInvalid;
-    return;
-  }
-  if (!params_.catch_box.Contains(at_catch.p.x(), at_catch.p.y(), at_catch.p.z())) {
-    c.reject = NlpReject::kWorkspace;
-    return;
-  }
-  if (params_.core.chance && !at_catch.cov_valid) {
-    c.reject = NlpReject::kCovariance;
-    return;
-  }
   if (!StartState(rt, arm, following, c)) {
     c.reject = NlpReject::kNoSource;
     return;
@@ -749,6 +741,43 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
   c.reject = NlpReject::kNotRanked;  // until a solve says otherwise
 }
 
+NlpReject NlpCatchSearch::CatchBallVerdict(const BallNodeSample& ball) const noexcept {
+  if (!ball.valid || ball.after_horizon || !ball.p.allFinite() || !ball.v.allFinite() ||
+      !ball.a.allFinite() || !(ball.v.norm() >= ik_options_.v_eps)) {
+    return NlpReject::kBallInvalid;
+  }
+  if (!params_.catch_box.Contains(ball.p.x(), ball.p.y(), ball.p.z())) {
+    return NlpReject::kWorkspace;
+  }
+  if (params_.core.chance && !ball.cov_valid) {
+    return NlpReject::kCovariance;
+  }
+  return NlpReject::kNone;
+}
+
+std::int64_t NlpCatchSearch::CatchOffsetEnd(const TrajectorySnapshot& traj,
+                                            const CovarianceSnapshot& cov, bool cov_matched,
+                                            std::int64_t t_hat_ns,
+                                            std::int64_t end_ns) const noexcept {
+  const auto passes = [&](std::int64_t delta_ns) noexcept {
+    int hint = 0;
+    return CatchBallVerdict(SampleBallNode(traj, params_.core.chance ? &cov : nullptr, cov_matched,
+                                           BallTime{t_hat_ns + delta_ns}, hint)) ==
+           NlpReject::kNone;
+  };
+  if (end_ns == 0 || passes(end_ns)) {
+    return end_ns;
+  }
+  // Passing at `in`, failing at `out`, one nanosecond apart at the end.
+  std::int64_t in = 0;
+  std::int64_t out = end_ns;
+  while (out - in > 1 || in - out > 1) {
+    const std::int64_t mid = in + (out - in) / 2;
+    (passes(mid) ? in : out) = mid;
+  }
+  return in;
+}
+
 void NlpCatchSearch::CatchPoseManipulability(const std::array<double, kMaxPlanNv>& q_dev,
                                              double& w5, double& w6) noexcept {
   for (int m = 0; m < nv_; ++m) {
@@ -849,6 +878,34 @@ bool NlpCatchSearch::StartFromNeighbour(const SegmentSnapshot& prev, const Candi
 // What a returned iterate is worth: past its share, a hard row off (the ball's
 // uncertainty alone, or the arm), not converged — or valid. `worst` and
 // `worst_group` are the largest violation and the group it is in.
+const NlpCatchSearch::Memory* NlpCatchSearch::UsableNeighbour(
+    const CandidateRecord& c) const noexcept {
+  const Memory* const other = NearestRemembered(c.index);
+  if (other == nullptr) {
+    return nullptr;
+  }
+  const SegmentSnapshot& seg = other->sol.seg;
+  return seg.nv == nv_ && seg.t0_ns <= c.t_s_ns && seg.t_c_ns > c.t_s_ns &&
+                 seg.n_nodes - seg.n_pre == params_.n_stop
+             ? other
+             : nullptr;
+}
+
+void NlpCatchSearch::RecordSolve(const MpcDockingSegmentCoreResult& res, double worst,
+                                 int worst_group, CandidateRecord& c) noexcept {
+  c.feasible = res.feasible;
+  c.converged = res.converged;
+  c.iterations = res.iterations;
+  c.start_us = res.start_us;
+  c.qp_us = res.qp_us;
+  c.qp_solves = res.qp_solves;
+  c.j_reference = res.cost.reference;
+  c.j_stop = res.cost.stop;
+  c.c_catch = res.c_catch;
+  c.worst_violation = worst;
+  c.worst_group = static_cast<DockingRowGroup>(worst_group);
+}
+
 NlpReject NlpCatchSearch::Verdict(const MpcDockingSegmentCoreResult& res, bool past_deadline,
                                   double& worst, int& worst_group) const noexcept {
   worst = 0.0;
@@ -914,15 +971,11 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
     StartFromOwn(*mine, c, in);
     in.initial_valid = true;
     c.start = Start::kSameCandidate;
-  } else if (const Memory* other = NearestRemembered(c.index);
-             other != nullptr && other->sol.seg.nv == nv_ && other->sol.seg.t0_ns <= c.t_s_ns &&
-             other->sol.seg.t_c_ns > c.t_s_ns &&
-             other->sol.seg.n_nodes - other->sol.seg.n_pre == params_.n_stop) {
-    if (StartFromNeighbour(other->sol.seg, c, in)) {
-      in.initial_valid = true;
-      c.start = Start::kNeighbour;
-      c.start_index = other->index;
-    }
+  } else if (const Memory* other = UsableNeighbour(c);
+             other != nullptr && StartFromNeighbour(other->sol.seg, c, in)) {
+    in.initial_valid = true;
+    c.start = Start::kNeighbour;
+    c.start_index = other->index;
   }
   if (in.initial_valid) {
     // Node 0 is the start state, whatever the remembered trajectory had there.
@@ -954,20 +1007,10 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
   if (ok) {
     // The trajectory is read only now: a refused solve leaves the result's
     // nodes as the previous candidate with this n_pre left them.
-    c.feasible = res.feasible;
-    c.converged = res.converged;
-    c.iterations = res.iterations;
-    c.start_us = res.start_us;
-    c.qp_us = res.qp_us;
-    c.qp_solves = res.qp_solves;
-    c.j_reference = res.cost.reference;
-    c.j_stop = res.cost.stop;
     double worst = 0.0;
     int worst_group = 0;
     const NlpReject verdict = Verdict(res, end_ns > in.deadline_ns, worst, worst_group);
-    c.c_catch = res.c_catch;
-    c.worst_violation = worst;
-    c.worst_group = static_cast<DockingRowGroup>(worst_group);
+    RecordSolve(res, worst, worst_group, c);
     // An iterate the SOLVER failed on — a QP that did not converge, an
     // evaluation that is not finite — says nothing about the rows, and the
     // next wake must not start from it (it would fail there again).
@@ -1041,28 +1084,17 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
   std::int64_t lo = c.delta_ns;
   std::int64_t hi = c.delta_ns;
   if (!c.pinned) {
-    // The cell, cut to where the predicted catch point p̂ + v̂ δ stays inside
-    // the catch box, axis by axis. δ = 0 passed the workspace check.
-    lo = -(h_ns_ / 2);
-    hi = h_ns_ - h_ns_ / 2 - 1;
-    for (int a = 0; a < 3; ++a) {
-      const double v = at_catch.v[a];
-      if (v == 0.0) {
-        continue;
-      }
-      const double d0 = (params_.catch_box.min[U(a)] - at_catch.p[a]) / v;
-      const double d1 = (params_.catch_box.max[U(a)] - at_catch.p[a]) / v;
-      const double first = std::min(d0, d1) * kNsPerSec;
-      const double last = std::max(d0, d1) * kNsPerSec;
-      if (first > static_cast<double>(lo)) {
-        lo = static_cast<std::int64_t>(std::ceil(first));
-      }
-      if (last < static_cast<double>(hi)) {
-        hi = static_cast<std::int64_t>(std::floor(last));
-      }
-    }
-    lo = std::min<std::int64_t>(lo, 0);
-    hi = std::max<std::int64_t>(hi, 0);
+    // The cell, without the instants the lattice search would not take as a
+    // candidate: nearer than the minimum lead or past the window (the
+    // lattice instant is neither, so 0 stays inside) …
+    lo = std::max(-(h_ns_ / 2), t_0_ns_ + t_lead_min_ns_ - c.t_hat_ns);
+    hi = std::min(h_ns_ - h_ns_ / 2 - 1, t_0_ns_ + t_max_ns_ - c.t_hat_ns);
+    // … and, each side, as far as the ball the plan will read there is one
+    // the screening passes — on the prediction itself: a straight line
+    // through the lattice instant's ball ends tens of µm off a wall the ball
+    // falls toward.
+    lo = CatchOffsetEnd(traj, cov, cov_matched, c.t_hat_ns, lo);
+    hi = CatchOffsetEnd(traj, cov, cov_matched, c.t_hat_ns, hi);
   }
   c.delta_lo_ns = lo;
   c.delta_hi_ns = hi;
@@ -1106,15 +1138,11 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
       StartFromOwn(*mine, c, in);
       in.initial_valid = true;
       start = Start::kSameCandidate;
-    } else if (const Memory* other = NearestRemembered(c.index);
-               other != nullptr && other->sol.seg.nv == nv_ && other->sol.seg.t0_ns <= c.t_s_ns &&
-               other->sol.seg.t_c_ns > c.t_s_ns &&
-               other->sol.seg.n_nodes - other->sol.seg.n_pre == params_.n_stop) {
-      if (StartFromNeighbour(other->sol.seg, c, in)) {
-        in.initial_valid = true;
-        start = Start::kNeighbour;
-        start_index = other->index;
-      }
+    } else if (const Memory* other = UsableNeighbour(c);
+               other != nullptr && StartFromNeighbour(other->sol.seg, c, in)) {
+      in.initial_valid = true;
+      start = Start::kNeighbour;
+      start_index = other->index;
     }
   } else if (own_tc != nullptr && usable(*own_tc) && own_tc->t_c_ns - c.t_hat_ns >= lo &&
              own_tc->t_c_ns - c.t_hat_ns <= hi) {
@@ -1162,6 +1190,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
   if (ok) {
     c.continuous_iterations = res.iterations;
     c.continuous_moves = res.catch_time_steps;
+    c.continuous_settled = res.catch_time_settled;
     c.objective_continuous = res.cost.total + res.cost.time;
     if (res.reason == MpcDockingReason::kQpFailed ||
         res.reason == MpcDockingReason::kSolutionNonFinite) {
@@ -1177,16 +1206,13 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
       out.sol.feasible = res.feasible;
       out.sol.converged = res.converged;
       if (verdict == NlpReject::kNone) {
-        // The catch point it ended at, as the plan will read it: the box was
-        // cut on a straight line through the lattice instant's ball.
+        // The ball at the instant it ended at, as the plan will read it: the
+        // box's ends are instants that pass, and an instant between two that
+        // pass need not (a wall the ball rises over and falls back under, a
+        // prediction sample without a covariance).
         int at_hint = 0;
-        const BallNodeSample ball =
-            SampleBallNode(traj, nullptr, false, BallTime{c.t_hat_ns + res.delta_ns}, at_hint);
-        if (!ball.valid || ball.after_horizon || !(ball.v.norm() >= ik_options_.v_eps)) {
-          verdict = NlpReject::kBallInvalid;
-        } else if (!params_.catch_box.Contains(ball.p.x(), ball.p.y(), ball.p.z())) {
-          verdict = NlpReject::kWorkspace;
-        }
+        verdict = CatchBallVerdict(
+            SampleBallNode(traj, &cov, cov_matched, BallTime{c.t_hat_ns + res.delta_ns}, at_hint));
       }
     }
   }
@@ -1203,17 +1229,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
     c.core_reason = res.reason;
     c.solved = ok;
     if (ok) {
-      c.feasible = res.feasible;
-      c.converged = res.converged;
-      c.iterations = res.iterations;
-      c.start_us = res.start_us;
-      c.qp_us = res.qp_us;
-      c.qp_solves = res.qp_solves;
-      c.j_reference = res.cost.reference;
-      c.j_stop = res.cost.stop;
-      c.c_catch = res.c_catch;
-      c.worst_violation = worst;
-      c.worst_group = static_cast<DockingRowGroup>(worst_group);
+      RecordSolve(res, worst, worst_group, c);
     }
     return;
   }
@@ -1232,17 +1248,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
   c.solve_ns = c.continuous_solve_ns;
   c.core_reason = res.reason;
   c.solved = true;
-  c.feasible = res.feasible;
-  c.converged = res.converged;
-  c.iterations = res.iterations;
-  c.start_us = res.start_us;
-  c.qp_us = res.qp_us;
-  c.qp_solves = res.qp_solves;
-  c.j_reference = res.cost.reference;
-  c.j_stop = res.cost.stop;
-  c.c_catch = res.c_catch;
-  c.worst_violation = worst;
-  c.worst_group = static_cast<DockingRowGroup>(worst_group);
+  RecordSolve(res, worst, worst_group, c);
   // Φ at the catch instant it ended at, by the fixed-grid solve's functions.
   c.j_time = NlpTimeCost(params_.w_time, c.lead_s, params_.t_ref_s);
   c.j_switch =
