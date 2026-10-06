@@ -3143,7 +3143,7 @@ struct PinnedSearch {
 };
 
 // Sequences of wakes on which the RT follows no plan, each on a rig of its own.
-[[nodiscard]] std::vector<PinnedSearch> PinnedSearches() {
+[[nodiscard]] std::vector<PinnedSearch> PinnedSearches(int follow_window = -1) {
   std::vector<PinnedSearch> all;
 
   struct Step {
@@ -3151,9 +3151,10 @@ struct PinnedSearch {
     std::int64_t clock_step_ns;
   };
 
-  const auto run = [&all](const std::string& name, auto&& edit, auto&& make_throw,
-                          std::span<const Step> steps) {
+  const auto run = [&all, follow_window](const std::string& name, auto&& edit, auto&& make_throw,
+                                         std::span<const Step> steps) {
     auto rig = std::make_unique<Rig>();
+    rig->params.follow_window = follow_window;
     edit(*rig);
     std::string err;
     if (!rig->Configure(&err)) {
@@ -3272,6 +3273,423 @@ TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
   EXPECT_GT(from_memory, 10);
   EXPECT_GT(deadlines, 0);
   EXPECT_TRUE(budget_hit);
+}
+
+// What SCREENING left of a wake's candidates: which lattice instants are
+// candidates, and for each the first necessary condition it failed — or that
+// it passed them all (whatever its solve then said).
+[[nodiscard]] std::uint64_t ScreeningDigest(const NlpCatchSearch& s, const Wake& w) {
+  rtc::testing::ValueDigest h;
+  h.Add(w.stats.nlp.n_lattice);
+  h.Add(w.stats.nlp.n_screened);
+  h.Add(w.stats.n_in_window);
+  h.Add(w.stats.n_ik);
+  for (const Candidate& c : s.Candidates()) {
+    h.Add(c.index);
+    h.Add(c.t_c_ns);
+    h.Add(c.t_s_ns);
+    h.Add(c.n_pre);
+    const bool passed = c.rank >= 0;
+    h.Add(passed);
+    if (!passed) {
+      for (const char* ch = NlpRejectName(c.reject); *ch != '\0'; ++ch) {
+        h.Add(*ch);
+      }
+    }
+    h.Add(c.ik_run);
+    h.Add(c.ik_reason);
+    h.Add(c.q0);
+    h.Add(c.qd0);
+    h.Add(c.qdd0);
+    h.Add(c.q_ik);
+    h.Add(c.source_seq);
+    h.Add(c.rank_key);
+  }
+  return h.Value();
+}
+
+// The wakes after adoption, on the off-axis throw: +41 ms and +82 ms with the
+// RT following the first wake's solution.
+[[nodiscard]] std::vector<std::uint64_t> FollowingScreeningDigests(int follow_window,
+                                                                   int* window_rejects = nullptr) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.follow_window = follow_window;
+  std::string err;
+  EXPECT_TRUE(rig->Configure(&err)) << err;
+  const auto adopted = AdoptFirst(*rig, 0.36);
+  const auto arm = Following(adopted->followed);
+  std::vector<std::uint64_t> out;
+  for (const std::int64_t after : {41 * kMs, 82 * kMs}) {
+    const std::int64_t now = kNow + after;
+    const Wake w = RunWake(*rig, adopted->ball, rig->FollowingRt(now, adopted->t_c_ns), *arm, now);
+    EXPECT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+    out.push_back(ScreeningDigest(rig->search, w));
+    if (window_rejects != nullptr) {
+      *window_rejects += Count(rig->search, NlpReject::kFollowWindow);
+    }
+  }
+  return out;
+}
+
+/// FollowingScreeningDigests() on the code BEFORE the window after adoption
+/// existed (the commit that added the follow_window reason and nothing that
+/// sets it) — the reference of "with the window off, screening is what it
+/// was" on the wakes the window is about. The rule of kPinnedSearchDigest.
+constexpr std::array<std::uint64_t, 2> kPinnedFollowingScreening{{
+    0x6a8fefced9fe395aULL,
+    0xdb509a86cb5cbfbbULL,
+}};
+
+TEST(NlpCatchSearchPinned, WithTheWindowOffScreeningAfterAdoptionIsUnchanged) {
+  int window_rejects = 0;
+  const std::vector<std::uint64_t> got = FollowingScreeningDigests(-1, &window_rejects);
+  ASSERT_EQ(got.size(), kPinnedFollowingScreening.size());
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    std::array<char, 32> hex{};
+    std::snprintf(hex.data(), hex.size(), "0x%016llx", static_cast<unsigned long long>(got[i]));
+    RecordProperty("following_screening_digest_" + std::to_string(i), hex.data());
+    std::printf("[ record ] following_screening_digest %zu: %s\n", i, hex.data());
+    EXPECT_EQ(got[i], kPinnedFollowingScreening[i]) << hex.data();
+  }
+  EXPECT_NE(got[0], got[1]);
+  EXPECT_EQ(window_rejects, 0);
+}
+
+// ── 10. After adoption: the window, the followed candidate's rank ────────────
+
+// The window is about wakes on which the RT follows a plan: with a window
+// configured, every wake WITHOUT one is the wake it was — solves and all.
+TEST(NlpCatchSearchWindow, AWakeWithoutAFollowedPlanDoesNotReadTheWindow) {
+  const std::vector<PinnedSearch> runs = PinnedSearches(/*follow_window=*/2);
+  ASSERT_EQ(runs.size(), kPinnedSearchDigest.size());
+  for (std::size_t i = 0; i < runs.size(); ++i) {
+    EXPECT_EQ(runs[i].digest, kPinnedSearchDigest[i].digest) << runs[i].name;
+  }
+}
+
+// A window wider than the lattice removes nothing: the wake after adoption is
+// the wake with no window, to the bit — what the window changes is which
+// candidates there are, and nothing else.
+TEST(NlpCatchSearchWindow, AWindowWiderThanTheLatticeChangesNothing) {
+  const auto wakes = [](int follow_window) {
+    auto rig = std::make_unique<Rig>();
+    rig->params.follow_window = follow_window;
+    std::string err;
+    EXPECT_TRUE(rig->Configure(&err)) << err;
+    const auto adopted = AdoptFirst(*rig, 0.36);
+    const auto arm = Following(adopted->followed);
+    std::vector<std::uint64_t> out;
+    for (const std::int64_t after : {41 * kMs, 82 * kMs}) {
+      const std::int64_t now = kNow + after;
+      const Wake w =
+          RunWake(*rig, adopted->ball, rig->FollowingRt(now, adopted->t_c_ns), *arm, now);
+      EXPECT_TRUE(w.plan.valid);
+      EXPECT_TRUE(w.stats.nlp.follow_anchor_set);
+      EXPECT_EQ(w.stats.nlp.follow_anchor_index, adopted->index);
+      out.push_back(PinnedWakeDigest(rig->search, w));
+    }
+    return out;
+  };
+  EXPECT_EQ(wakes(-1), wakes(64));
+}
+
+// A following wake of `rig` on `ball`, the RT on plan `t_c_ns` and reporting
+// `seg` as the segment it follows.
+[[nodiscard]] Wake FollowWake(Rig& rig, const Throw& ball, const SegmentSnapshot& seg,
+                              std::int64_t t_c_ns, std::int64_t now) {
+  const auto arm = Following(seg);
+  return RunWake(rig, ball, rig.FollowingRt(now, t_c_ns), *arm, now);
+}
+
+TEST(NlpCatchSearchWindow, CandidatesOutsideItAreRemovedBeforeAnythingIsChecked) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.follow_window = 1;
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const auto adopted = AdoptFirst(*rig, 0.36);
+  ASSERT_TRUE(adopted->first.plan.valid);
+  // The first wake follows no plan: no window, no anchor.
+  EXPECT_FALSE(adopted->first.stats.nlp.follow_anchor_set);
+  EXPECT_EQ(Count(rig->search, NlpReject::kFollowWindow), 0);
+  const std::int64_t i_a = adopted->index;
+  const std::int64_t h = Ns(rig->params.cand_dt);
+  const std::int64_t now = kNow + 41 * kMs;
+  const Wake w = FollowWake(*rig, adopted->ball, adopted->followed, adopted->t_c_ns, now);
+  ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+  EXPECT_TRUE(w.stats.nlp.follow_anchor_set);
+  EXPECT_EQ(w.stats.nlp.follow_anchor_index, i_a);
+  int outside = 0;
+  int inside = 0;
+  int ik_runs = 0;
+  for (const Candidate& c : rig->search.Candidates()) {
+    ik_runs += c.ik_run ? 1 : 0;
+    if (std::llabs(c.index - i_a) > 1) {
+      ++outside;
+      EXPECT_EQ(c.reject, NlpReject::kFollowWindow) << c.index;
+      EXPECT_FALSE(c.ik_run) << c.index << ": removed before its IK";
+      EXPECT_FALSE(c.solved) << c.index;
+      EXPECT_EQ(c.rank, -1) << c.index;
+      // It is still reported, as the lattice instant it is.
+      EXPECT_EQ(c.t_c_ns, rig->search.LatticeAnchorNs() + c.index * h);
+    } else {
+      ++inside;
+      EXPECT_NE(c.reject, NlpReject::kFollowWindow) << c.index;
+    }
+  }
+  EXPECT_GE(outside, 3) << Table(rig->search, w.stats);
+  EXPECT_EQ(inside, 3) << Table(rig->search, w.stats);
+  EXPECT_EQ(w.stats.nlp.n_follow_window, outside);
+  EXPECT_EQ(w.stats.n_ik, ik_runs);
+  EXPECT_LE(ik_runs, 3) << "no IK ran for a candidate outside the window";
+  EXPECT_EQ(w.stats.nlp.rejects[static_cast<std::size_t>(NlpReject::kFollowWindow)], outside);
+  EXPECT_LE(std::llabs(w.stats.nlp.chosen_index - i_a), 1);
+
+  // The RT now follows a plan two cells later (one this search did not put
+  // there). The anchor stays the FIRST plan's cell: the window does not follow
+  // the plan. And the followed plan's own cell is not removed, though it is
+  // outside the window.
+  const std::int64_t later = adopted->t_c_ns + 2 * h;
+  const std::int64_t now2 = kNow + 62 * kMs;
+  const Wake w2 = FollowWake(*rig, adopted->ball, adopted->followed, later, now2);
+  EXPECT_TRUE(w2.stats.nlp.follow_anchor_set);
+  EXPECT_EQ(w2.stats.nlp.follow_anchor_index, i_a) << "the window moved with the followed plan";
+  int kept_outside = 0;
+  for (const Candidate& c : rig->search.Candidates()) {
+    const bool in_window = std::llabs(c.index - i_a) <= 1;
+    const bool followed_cell = c.index == i_a + 2;
+    if (!in_window && !followed_cell) {
+      EXPECT_EQ(c.reject, NlpReject::kFollowWindow) << c.index;
+    } else {
+      EXPECT_NE(c.reject, NlpReject::kFollowWindow) << c.index;
+      kept_outside += followed_cell ? 1 : 0;
+    }
+  }
+  EXPECT_EQ(kept_outside, 1) << Table(rig->search, w2.stats);
+}
+
+TEST(NlpCatchSearchWindow, TheAnchorIsForgottenWithTheTrialTheTrackAndThePlan) {
+  const auto fresh = [](std::unique_ptr<Rig>& rig, std::unique_ptr<Adopted>& adopted) {
+    rig = std::make_unique<Rig>();
+    rig->params.follow_window = 1;
+    std::string err;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    adopted = AdoptFirst(*rig, 0.36);
+    ASSERT_TRUE(adopted->first.plan.valid);
+    const Wake w =
+        FollowWake(*rig, adopted->ball, adopted->followed, adopted->t_c_ns, kNow + 41 * kMs);
+    ASSERT_TRUE(w.stats.nlp.follow_anchor_set);
+    ASSERT_EQ(w.stats.nlp.follow_anchor_index, adopted->index);
+    ASSERT_GT(w.stats.nlp.n_follow_window, 0);
+  };
+  std::unique_ptr<Rig> rig;
+  std::unique_ptr<Adopted> adopted;
+  const std::int64_t h = Ns(0.04);
+  const std::int64_t now = kNow + 62 * kMs;
+
+  // A wake on which the RT follows no plan (it dropped it): the anchor goes,
+  // and the next plan it follows — two cells later — is a first one.
+  fresh(rig, adopted);
+  {
+    PlannerRtState moving = rig->RestingRt(now);
+    const Wake none = RunWake(*rig, adopted->ball, moving, NoSegments(), now);
+    EXPECT_FALSE(none.stats.nlp.follow_anchor_set);
+    EXPECT_EQ(Count(rig->search, NlpReject::kFollowWindow), 0);
+    const Wake again =
+        FollowWake(*rig, adopted->ball, adopted->followed, adopted->t_c_ns + 2 * h, now + 20 * kMs);
+    EXPECT_TRUE(again.stats.nlp.follow_anchor_set);
+    EXPECT_EQ(again.stats.nlp.follow_anchor_index, adopted->index + 2);
+  }
+
+  // A trial reset: the lattice is new, and so is the anchor.
+  fresh(rig, adopted);
+  {
+    rig->search.ResetTrial();
+    const Wake again =
+        FollowWake(*rig, adopted->ball, adopted->followed, adopted->t_c_ns + 2 * h, now);
+    EXPECT_TRUE(again.stats.nlp.follow_anchor_set);
+    const std::int64_t cell =
+        rtc::catching::NlpCellOf(rig->search.LatticeAnchorNs(), h, adopted->t_c_ns + 2 * h);
+    EXPECT_EQ(again.stats.nlp.follow_anchor_index, cell);
+    EXPECT_EQ(rig->search.LatticeAnchorNs(), now);
+  }
+
+  // Another track's prediction while the RT still reports the OLD track's
+  // segment: that plan is not this track's — no anchor, no window, no rank.
+  fresh(rig, adopted);
+  {
+    Throw other = OffAxisThrow(*rig, 0.36, /*seq=*/2);
+    other.traj.token.generation = kTrack + 1;
+    other.cov.token = other.traj.token;
+    const Wake w = FollowWake(*rig, other, adopted->followed, adopted->t_c_ns, now);
+    EXPECT_FALSE(w.stats.nlp.follow_anchor_set) << Table(rig->search, w.stats);
+    EXPECT_EQ(w.stats.nlp.n_follow_window, 0);
+    EXPECT_EQ(Count(rig->search, NlpReject::kFollowWindow), 0);
+    // The rank is the key's order alone.
+    for (const Candidate& a : rig->search.Candidates()) {
+      for (const Candidate& b : rig->search.Candidates()) {
+        if (a.rank >= 0 && b.rank >= 0 && a.rank < b.rank) {
+          EXPECT_LE(a.rank_key, b.rank_key);
+        }
+      }
+    }
+    // Back on the first track the anchor is taken anew (the track change
+    // dropped the lattice with it).
+    Throw back = adopted->ball;
+    back.traj.token.snapshot_sequence = 3;
+    back.cov.token = back.traj.token;
+    const Wake w2 = FollowWake(*rig, back, adopted->followed, adopted->t_c_ns, now + 20 * kMs);
+    EXPECT_TRUE(w2.stats.nlp.follow_anchor_set);
+    EXPECT_EQ(rig->search.LatticeAnchorNs(), now + 20 * kMs);
+  }
+}
+
+// What the window is for. Each wake's prediction puts the cheapest catch one
+// lattice cell later than the last, and the RT takes every plan it is given.
+struct Drift {
+  std::vector<std::int64_t> chosen_index;
+  std::vector<std::int64_t> t_c_ns;
+  std::vector<std::int32_t> recorded_cells;
+  std::vector<std::int64_t> recorded_ns;
+  std::vector<bool> at_edge;
+  std::int64_t i_a{0};
+  std::int64_t first_t_c_ns{0};
+  std::string tables;
+};
+
+[[nodiscard]] Drift RunDrift(int follow_window, int wakes) {
+  Drift d;
+  auto rig = std::make_unique<Rig>();
+  rig->params.follow_window = follow_window;
+  // An arm fast enough that the catch can move by a lattice cell between two
+  // wakes: what the wakes are then about is the choice, not the reach.
+  rig->params.limits.qd_max *= 4.0;
+  std::string err;
+  EXPECT_TRUE(rig->Configure(&err)) << err;
+  SegmentSnapshot followed{};
+  std::int64_t t_c = 0;
+  std::int64_t now = kNow;
+  for (int k = 0; k < wakes; ++k) {
+    // On the entrance plane 40 ms later than the wake before, off the axis so
+    // that every solution moves.
+    const Throw ball =
+        AxisThrow(*rig, 0.30 + 0.04 * k, 0.8, 0.002, static_cast<std::uint64_t>(k + 1), kTrack,
+                  Eigen::Vector2d(0.04, -0.03));
+    const Wake w = k == 0 ? RunWake(*rig, ball, rig->RestingRt(now), NoSegments(), now)
+                          : FollowWake(*rig, ball, followed, t_c, now);
+    d.tables += Table(rig->search, w.stats);
+    EXPECT_TRUE(w.plan.valid) << "wake " << k << Table(rig->search, w.stats);
+    if (!w.plan.valid || rig->search.Solution() == nullptr) {
+      break;
+    }
+    if (k == 1) {
+      d.i_a = w.stats.nlp.follow_anchor_index;
+      d.first_t_c_ns = t_c;
+    }
+    if (k >= 1) {
+      EXPECT_TRUE(w.stats.nlp.follow_anchor_set) << k;
+      EXPECT_EQ(w.stats.nlp.follow_anchor_index, d.i_a) << "wake " << k;
+      d.chosen_index.push_back(w.stats.nlp.chosen_index);
+      d.t_c_ns.push_back(w.plan.t_c_ns);
+      d.recorded_cells.push_back(w.stats.nlp.chosen_cells_from_anchor);
+      d.recorded_ns.push_back(w.stats.nlp.chosen_ns_from_first);
+      d.at_edge.push_back(w.stats.nlp.chosen_at_window_edge);
+    }
+    // The RT takes the plan: it follows this wake's solution from now on. The
+    // next wake comes once every candidate's node 0 is on that segment — the
+    // chosen candidate's wait after this one.
+    followed = rig->search.Solution()->seg;
+    followed.segment_seq = static_cast<std::uint32_t>(20 + k);
+    followed.plan_id = 4;
+    t_c = w.plan.t_c_ns;
+    const Candidate* chosen = Find(rig->search, w.stats.nlp.chosen_index);
+    now += (chosen != nullptr ? chosen->wait_ns : 50 * kMs) + kMs;
+  }
+  return d;
+}
+
+TEST(NlpCatchSearchWindow, ACatchInstantThatKeepsDriftingStopsAtTheWindowsEdge) {
+  // Five wakes: the window's cells are instants, and they come nearer with
+  // every wake — after the fifth its last cell is under the minimum lead.
+  constexpr int kWakes = 5;
+  constexpr int kWindow = 2;
+  const Drift free_run = RunDrift(-1, kWakes);
+  const Drift held = RunDrift(kWindow, kWakes);
+  ASSERT_EQ(free_run.chosen_index.size(), static_cast<std::size_t>(kWakes - 1)) << free_run.tables;
+  ASSERT_EQ(held.chosen_index.size(), static_cast<std::size_t>(kWakes - 1)) << held.tables;
+  ASSERT_EQ(free_run.i_a, held.i_a);
+  // Without the window the catch instant leaves the first plan's by more than
+  // the window would allow — and the record says by how much, in cells and in
+  // time, on every wake.
+  std::int64_t farthest = 0;
+  for (std::size_t i = 0; i < free_run.chosen_index.size(); ++i) {
+    const std::int64_t cells = free_run.chosen_index[i] - free_run.i_a;
+    farthest = std::max(farthest, cells);
+    EXPECT_EQ(free_run.recorded_cells[i], cells) << i;
+    EXPECT_EQ(free_run.recorded_ns[i], free_run.t_c_ns[i] - free_run.first_t_c_ns) << i;
+    EXPECT_FALSE(free_run.at_edge[i]) << "no window, no edge";
+  }
+  EXPECT_GT(farthest, kWindow) << "the drift never left the window" << free_run.tables;
+  // With it, never — and the wakes that would have gone farther say they
+  // ended on the window's last cell.
+  int edge_hits = 0;
+  for (std::size_t i = 0; i < held.chosen_index.size(); ++i) {
+    const std::int64_t cells = held.chosen_index[i] - held.i_a;
+    EXPECT_LE(std::llabs(cells), kWindow) << "wake " << i + 1 << held.tables;
+    EXPECT_EQ(held.recorded_cells[i], cells) << i;
+    EXPECT_EQ(held.recorded_ns[i], held.t_c_ns[i] - held.first_t_c_ns) << i;
+    EXPECT_EQ(held.at_edge[i], std::llabs(cells) == kWindow) << i;
+    edge_hits += held.at_edge[i] ? 1 : 0;
+    if (free_run.chosen_index[i] - free_run.i_a > kWindow) {
+      EXPECT_TRUE(held.at_edge[i]) << "wake " << i + 1 << held.tables;
+    }
+  }
+  EXPECT_GE(edge_hits, 2) << held.tables;
+  RecordProperty("drift_farthest_cells_without_window", static_cast<int>(farthest));
+  RecordProperty("drift_edge_hits_with_window", edge_hits);
+}
+
+// The plan the arm is on is solved first: with a budget of ONE solve, the
+// wake re-solves the followed candidate — though another has the smaller key
+// — and says `refreshed`.
+TEST(NlpCatchSearchWindow, TheFollowedCandidateIsSolvedFirstWhateverItsKey) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.max_solves = 1;
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const auto adopted = AdoptFirst(*rig, 0.36);
+  ASSERT_TRUE(adopted->first.plan.valid);
+  // A prediction whose cheapest catch is three cells earlier than the plan's.
+  const Throw ball =
+      AxisThrow(*rig, 0.24, 0.8, 0.002, /*seq=*/2, kTrack, Eigen::Vector2d(0.04, -0.03));
+  const std::int64_t now = kNow + 20 * kMs;
+  const Wake w = FollowWake(*rig, ball, adopted->followed, adopted->t_c_ns, now);
+  const Candidate* followed = Find(rig->search, adopted->index);
+  ASSERT_NE(followed, nullptr);
+  ASSERT_GE(followed->rank, 0) << Table(rig->search, w.stats);
+  EXPECT_EQ(followed->rank, 0) << Table(rig->search, w.stats);
+  int smaller_keys = 0;
+  for (const Candidate& c : rig->search.Candidates()) {
+    if (c.rank > 0) {
+      EXPECT_FALSE(c.solved) << c.index;
+      smaller_keys += c.rank_key < followed->rank_key ? 1 : 0;
+    }
+  }
+  ASSERT_GT(smaller_keys, 0) << "the followed candidate has the best key anyway — the wake does "
+                                "not show the rule"
+                             << Table(rig->search, w.stats);
+  // The rest are in key order.
+  for (const Candidate& a : rig->search.Candidates()) {
+    for (const Candidate& b : rig->search.Candidates()) {
+      if (a.rank >= 1 && b.rank >= 1 && a.rank < b.rank) {
+        EXPECT_LE(a.rank_key, b.rank_key);
+      }
+    }
+  }
+  EXPECT_EQ(w.stats.nlp.n_solved, 1);
+  EXPECT_TRUE(followed->solved);
+  ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+  EXPECT_EQ(w.plan.t_c_ns, adopted->t_c_ns);
+  EXPECT_EQ(w.stats.decision, SwitchDecision::kRefreshed);
 }
 
 }  // namespace

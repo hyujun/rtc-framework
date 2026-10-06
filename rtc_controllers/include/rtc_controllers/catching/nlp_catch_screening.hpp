@@ -86,6 +86,18 @@ struct NlpCandidateRange {
   return t_ref_ns + index * h_ns;
 }
 
+/// @brief The lattice CELL an instant lies in: the index i with
+///        t_c(i) − ⌊h/2⌋ ≤ t < t_c(i) − ⌊h/2⌋ + h.
+///
+/// Half-open, so that every instant is in exactly one cell — "the cell of the
+/// plan the RT follows" is then one candidate, also when that plan's catch
+/// instant is not a lattice instant.
+/// @param h_ns the lattice spacing, > 0
+[[nodiscard]] constexpr std::int64_t NlpCellOf(std::int64_t t_ref_ns, std::int64_t h_ns,
+                                               std::int64_t t_ns) noexcept {
+  return FloorDiv(t_ns - t_ref_ns + h_ns / 2, h_ns);
+}
+
 /// A candidate's arm grid: how many pre-catch intervals, and where node 0 is.
 struct NlpCandidateGrid {
   int n_pre{0};             ///< ⌊(t_c − t_0)/Δ_a⌋; 0 when the candidate is not ahead of t_0

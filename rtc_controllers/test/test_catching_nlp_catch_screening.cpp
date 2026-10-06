@@ -26,6 +26,7 @@ using rtc::catching::NlpCandidateGridAt;
 using rtc::catching::NlpCandidateInstant;
 using rtc::catching::NlpCandidateRange;
 using rtc::catching::NlpCandidatesInWindow;
+using rtc::catching::NlpCellOf;
 using rtc::catching::NlpClosingSpeedWindow;
 using rtc::catching::NlpReachCheck;
 using rtc::catching::NlpReachLimit;
@@ -511,6 +512,31 @@ TEST(NlpStartBox, AStateInsideIsUntouchedAndOneOutsideIsMovedToTheNearestFace) {
     std::array<double, 2> qd{9.0, 9.0};
     EXPECT_FALSE(ProjectStartIntoBox(q, qd, lo, hi, v_hi));
     EXPECT_EQ(q[0], 9.0);
+  }
+}
+
+// Every instant is in exactly one cell, the cell's own lattice instant is in
+// it, and the cells are h long — for an even and an odd spacing, on both
+// sides of the anchor.
+TEST(NlpCatchScreening, ALatticeCellIsHalfOpenAroundItsInstant) {
+  for (const std::int64_t h : {std::int64_t{40'000'000}, std::int64_t{7}}) {
+    const std::int64_t t_ref = 1'000'000'000'123LL;
+    for (std::int64_t i = -3; i <= 3; ++i) {
+      const std::int64_t t = NlpCandidateInstant(t_ref, h, i);
+      EXPECT_EQ(NlpCellOf(t_ref, h, t), i);
+      // The cell is [t − ⌊h/2⌋, t − ⌊h/2⌋ + h).
+      EXPECT_EQ(NlpCellOf(t_ref, h, t - h / 2), i);
+      EXPECT_EQ(NlpCellOf(t_ref, h, t - h / 2 - 1), i - 1);
+      EXPECT_EQ(NlpCellOf(t_ref, h, t - h / 2 + h - 1), i);
+      EXPECT_EQ(NlpCellOf(t_ref, h, t - h / 2 + h), i + 1);
+    }
+    // Consecutive instants never skip or repeat a boundary.
+    std::int64_t last = NlpCellOf(t_ref, h, t_ref - 3 * h);
+    for (std::int64_t t = t_ref - 3 * h + 1; t <= t_ref + 3 * h && h < 100; ++t) {
+      const std::int64_t cell = NlpCellOf(t_ref, h, t);
+      EXPECT_TRUE(cell == last || cell == last + 1) << t;
+      last = cell;
+    }
   }
 }
 

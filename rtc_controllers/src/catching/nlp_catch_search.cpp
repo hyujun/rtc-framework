@@ -119,6 +119,9 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
       !FinitePositive(constants.control_dt)) {
     return fail("nlp search: a time, weight or tolerance is non-finite or out of range");
   }
+  if (p.follow_window > kNlpMaxCandidates) {
+    return fail("nlp search: follow_window is wider than any wake's lattice");
+  }
   if (p.max_solves < 1 || p.max_solves > kNlpMaxSolves) {
     return fail("nlp search: max_solves must be in [1, " + std::to_string(kNlpMaxSolves) + "]");
   }
@@ -336,6 +339,9 @@ void NlpCatchSearch::ResetTrial() noexcept {
   track_generation_ = 0;
   chose_before_ = false;
   last_chosen_t_c_ns_ = 0;
+  follow_anchor_set_ = false;
+  follow_anchor_index_ = 0;
+  follow_first_t_c_ns_ = 0;
   solution_valid_ = false;
   for (Memory& m : memory_) {
     m.valid = false;
@@ -919,6 +925,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
     track_generation_ = traj.token.generation;
     anchor_set_ = false;
     chose_before_ = false;
+    follow_anchor_set_ = false;
     for (Memory& m : memory_) {
       m.valid = false;
     }
@@ -927,6 +934,28 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
     anchor_set_ = true;
     t_ref_ns_ = now.ns;
   }
+  // ── The plan the RT follows, when it is a plan of this track ──────────────
+  // A segment carries its plan's track: the one the RT reports names it.
+  const SegmentSnapshot* const reported =
+      arm.has_following ? &arm.following : (arm.has_pending ? &arm.pending : nullptr);
+  const bool on_track =
+      following && reported != nullptr && reported->token.generation == traj.token.generation;
+  std::int64_t followed_index = 0;
+  if (on_track) {
+    followed_index = NlpCellOf(t_ref_ns_, h_ns_, rt.plan_t_c_ns);
+    if (!follow_anchor_set_) {
+      // The first plan the RT followed on this track.
+      follow_anchor_set_ = true;
+      follow_anchor_index_ = followed_index;
+      follow_first_t_c_ns_ = rt.plan_t_c_ns;
+    }
+  } else {
+    // No plan of this track is followed (any more): the next one is a first.
+    follow_anchor_set_ = false;
+  }
+  stats.nlp.follow_anchor_set = follow_anchor_set_;
+  stats.nlp.follow_anchor_index = follow_anchor_set_ ? follow_anchor_index_ : 0;
+  const bool windowed = on_track && params_.follow_window >= 0;
   // The earliest instant a segment of this wake can be read by the RT.
   t_0_ns_ = now.ns + t_arm_ns_ + budget_ns_ + start_lead_ns_;
   // The IK seed: the wait pose — the RT's adopted one when it reports it.
@@ -957,6 +986,15 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
     c.t_s_ns = grid.t_s_ns;
     c.wait_ns = grid.wait_ns;
     c.lead_s = static_cast<double>(c.t_c_ns - t_0_ns_) / kNsPerSec;
+    if (windowed && c.index != followed_index) {
+      const std::int64_t off = c.index - follow_anchor_index_;
+      if (off > params_.follow_window || off < -static_cast<std::int64_t>(params_.follow_window)) {
+        // Before any other check: not a candidate of this wake at all.
+        c.reject = NlpReject::kFollowWindow;
+        ++stats.nlp.n_follow_window;
+        continue;
+      }
+    }
     Screen(traj, cov, cov_matched, rt, arm, following, has_previous, t_c_prev_ns, c, stats);
   }
   n_cands_ = static_cast<int>(count);
@@ -978,6 +1016,16 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
     const CandidateRecord& cb = cands_[U(b)];
     return ca.rank_key < cb.rank_key || (ca.rank_key == cb.rank_key && ca.index < cb.index);
   });
+  if (on_track) {
+    // The candidate of the followed plan's cell first, the rest in key order:
+    // whatever the budget holds, the plan the arm is on is solved again.
+    for (int r = 1; r < n_ranked; ++r) {
+      if (cands_[U(ranked_[U(r)])].index == followed_index) {
+        std::rotate(ranked_.begin(), ranked_.begin() + r, ranked_.begin() + r + 1);
+        break;
+      }
+    }
+  }
   for (int r = 0; r < n_ranked; ++r) {
     cands_[U(ranked_[U(r)])].rank = r;
   }
@@ -1115,6 +1163,13 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   stats.nlp.chosen_j_stop = c.j_stop;
   stats.nlp.chosen_j_time = c.j_time;
   stats.nlp.chosen_j_switch = c.j_switch;
+  if (follow_anchor_set_) {
+    const std::int64_t off = c.index - follow_anchor_index_;
+    stats.nlp.chosen_cells_from_anchor = static_cast<std::int32_t>(off);
+    stats.nlp.chosen_ns_from_first = c.t_c_ns - follow_first_t_c_ns_;
+    stats.nlp.chosen_at_window_edge =
+        windowed && (off == params_.follow_window || off == -params_.follow_window);
+  }
   stats.chosen_score = c.phi;
   stats.chosen_lead_s = static_cast<double>(c.t_c_ns - now.ns) / kNsPerSec;
   stats.publish = true;

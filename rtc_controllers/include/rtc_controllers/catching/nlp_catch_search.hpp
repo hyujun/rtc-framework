@@ -35,7 +35,8 @@
 //     lead (S1) → the ball at every node of its grid → workspace → covariance
 //     → a source segment → catch-pose IK and its catchability gate → joint
 //     reach (S4) → closing-speed window (S3).
-//  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose, and
+//  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose — the
+//     candidate of the followed plan's cell first, whatever its key (8) — and
 //     solve the best L, L = min(max_solves, ⌊(budget − screening)/solve_budget⌋).
 //     Each solve has its own deadline (its share), not the wake's. L is fixed
 //     before the first solve and no solve is skipped for what another took:
@@ -62,6 +63,24 @@
 //     a segment planner publishes. The plan's q_star is the SOLVED catch pose
 //     and its w5 / w6 are evaluated there (the IK pose is where the solve was
 //     aimed, not where it ended).
+//
+// ── After adoption ────────────────────────────────────────────────────────────
+// "The plan the RT follows" is a plan of THIS track when the segment it
+// reports carries the track generation of the prediction being searched
+// (a segment carries its plan's track). For such a plan, and only then:
+//  • its CELL — the half-open lattice cell its catch instant is in
+//    (NlpCellOf) — names one candidate, and that candidate is ranked first
+//    when it passes screening: a wake whose budget holds one solve re-solves
+//    what the arm is doing, and can say `refreshed`;
+//  • the cell of the FIRST such plan of the track is remembered (until
+//    ResetTrial, a new track, or a wake on which the RT follows no such
+//    plan), and with `follow_window` ≥ 0 the candidates farther than that
+//    many cells from it are removed before anything else is checked
+//    (`follow_window`) — the catch instant cannot wander off the one the
+//    approach was started for by more than the window, however many times
+//    the plan is replaced. The followed plan's own cell is never removed;
+//  • SearchStats::nlp records that cell and where the chosen candidate is
+//    from it, with or without a window.
 //
 // ── What a wake reports about the plan the RT follows ─────────────────────────
 // SearchStats::decision: kNoCurrent (the RT follows none); kRefreshed (the
@@ -183,6 +202,13 @@ struct NlpCatchSearchParams {
   double t_ref_s{0.5};       ///< T_ref > 0 [s] — the cost's time scale
   double rank_w_q{1.0};      ///< weight of ‖q^c − q_0‖² in the rank [1/rad²], ≥ 0
   double rank_w_manip{0.0};  ///< weight of ψ_m(q^c) in the rank, ≥ 0
+
+  // ── After the RT has adopted a plan ──
+  /// While the RT follows a plan of the track being searched, a wake looks
+  /// only at the candidates within this many lattice cells either side of the
+  /// cell of the FIRST plan it followed on that track (the cell the followed
+  /// plan is in now is never removed). Negative = no window.
+  int follow_window{-1};
 
   // ── The RT's report ──
   double rest_tol{1e-3};            ///< max |q̇_cmd| that counts as "at rest" [rad/s]
@@ -431,6 +457,10 @@ class NlpCatchSearch final : public CatchSearch {
   std::uint64_t track_generation_{0};
   bool chose_before_{false};
   std::int64_t last_chosen_t_c_ns_{0};
+  // The first plan the RT followed on this track: its cell and catch instant.
+  bool follow_anchor_set_{false};
+  std::int64_t follow_anchor_index_{0};
+  std::int64_t follow_first_t_c_ns_{0};
 
   CatchSolution solution_{};
   bool solution_valid_{false};

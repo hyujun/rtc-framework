@@ -171,6 +171,15 @@ struct NlpSearchStats {
   double chosen_j_stop{0.0};           ///< the stop part's cost — recorded, not chosen on
   double chosen_j_time{0.0};
   double chosen_j_switch{0.0};
+  // ── After adoption: the cell of the first plan the RT followed on this
+  // track, and where the chosen candidate is from it. Filled while the RT
+  // follows a plan of this track, whether or not a window is configured. ──
+  bool follow_anchor_set{false};             ///< that cell is known on this wake
+  std::int64_t follow_anchor_index{0};       ///< its lattice index i_a
+  std::uint16_t n_follow_window{0};          ///< candidates the window removed
+  std::int32_t chosen_cells_from_anchor{0};  ///< i − i_a of the chosen candidate
+  std::int64_t chosen_ns_from_first{0};      ///< its t_c − that first plan's t_c [ns]
+  bool chosen_at_window_edge{false};         ///< |i − i_a| is the window's width (window on)
   // ── The wake ──
   std::int64_t screen_ns{0};     ///< time spent before the first solve
   std::int64_t solve_ns_max{0};  ///< the slowest single solve
