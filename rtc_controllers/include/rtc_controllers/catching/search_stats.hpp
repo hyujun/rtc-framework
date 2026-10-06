@@ -180,6 +180,15 @@ struct NlpSearchStats {
   std::int32_t chosen_cells_from_anchor{0};  ///< i − i_a of the chosen candidate
   std::int64_t chosen_ns_from_first{0};      ///< its t_c − that first plan's t_c [ns]
   bool chosen_at_window_edge{false};         ///< |i − i_a| is the window's width (window on)
+  // ── The continuous solve (`continuous_tc`; zero without it) ──
+  std::uint16_t n_continuous_run{0};  ///< candidates whose continuous solve ran
+  std::uint16_t n_continuous{0};      ///< of those, the ones it is the solution of
+  std::uint16_t n_fallback{0};        ///< … and the ones that kept their fixed-grid solution
+  bool chosen_continuous{false};      ///< the chosen candidate's solution is a continuous one
+  std::int64_t chosen_delta_ns{0};    ///< its t_c − the lattice instant of its cell [ns]
+  /// σ_c at the chosen cell's LATTICE instant — the covariance its solve was
+  /// run with; the plan's sigma_c is the one at the catch instant itself.
+  double chosen_sigma_c_cell{0.0};
   // ── The wake ──
   std::int64_t screen_ns{0};     ///< time spent before the first solve
   std::int64_t solve_ns_max{0};  ///< the slowest single solve
