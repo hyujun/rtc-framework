@@ -1,5 +1,6 @@
 #include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 
+#include "rtc_controllers/catching/mpc_block_grid.hpp"
 #include "rtc_controllers/catching/mpc_segment_core_torque.hpp"
 #include "rtc_controllers/gain_floor.hpp"
 
@@ -13,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <numbers>
+#include <span>
 
 namespace rtc::catching {
 
@@ -151,40 +153,17 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
     return MpcDockingReason::kParamsInvalid;
   }
   const int n_nodes = p.n_pre + p.n_stop;
-  if (p.n_blocks < 3) {
-    return MpcDockingReason::kBlocksTooFew;
-  }
-  if (p.n_blocks > n_nodes || p.n_blocks > kMaxSegmentNodes) {
-    return MpcDockingReason::kParamsInvalid;
-  }
-  {
-    int sum = 0;
-    for (int b = 0; b < p.n_blocks; ++b) {
-      const int size = p.block_sizes[static_cast<std::size_t>(b)];
-      if (size < 1) {
-        return MpcDockingReason::kParamsInvalid;
-      }
-      sum += size;
-    }
-    if (sum != n_nodes) {
+  // The block partition: none may span the catch node, three after it
+  // (mpc_block_grid.hpp — the rule MpcSegmentCore shares).
+  switch (CheckBlockGrid(p.n_blocks, p.block_sizes, p.n_pre, n_nodes)) {
+    case BlockGridCheck::kOk:
+      break;
+    case BlockGridCheck::kInvalid:
       return MpcDockingReason::kParamsInvalid;
-    }
-    int start = 0;
-    int after_catch = 0;
-    for (int b = 0; b < p.n_blocks; ++b) {
-      const int end = start + p.block_sizes[static_cast<std::size_t>(b)];
-      if (start < p.n_pre && end > p.n_pre) {
-        return MpcDockingReason::kBlocksAcrossCatch;
-      }
-      if (start >= p.n_pre) {
-        ++after_catch;
-      }
-      start = end;
-    }
-    // The terminal equality takes two blocks; a third leaves the stop free.
-    if (after_catch < 3) {
+    case BlockGridCheck::kTooFew:
       return MpcDockingReason::kBlocksTooFew;
-    }
+    case BlockGridCheck::kAcrossCatch:
+      return MpcDockingReason::kBlocksAcrossCatch;
   }
 
   // ── Weights ──
@@ -380,11 +359,10 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       // times that side's spacing.
       block_span_[static_cast<std::size_t>(b)] =
           static_cast<double>(size) * (k < n_pre_ ? p.dt_pre : p.dt_stop);
-      for (int i = 0; i < size; ++i) {
-        block_of_node_[static_cast<std::size_t>(k++)] = b;
-      }
+      k += size;
     }
   }
+  FillBlockOfInterval(n_blocks_, p.block_sizes, block_of_node_);
   const double t_c = t_node_[static_cast<std::size_t>(n_pre_)];
   n_app_ = 0;
   for (int k = 1; k < n_pre_; ++k) {
@@ -403,29 +381,14 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   speed_face_bound_ = p.v_perp_max * std::cos(std::numbers::pi / p.speed_faces);
 
   // Stage gains ĝ_{m,k}[b]: the scalar triple integrator's response at node k
-  // to jerk u_scale held over block b (all others zero), from rest — the same
-  // recursion as MpcSegmentCore, so the two agree to the last bit.
+  // to jerk u_scale held over block b (all others zero), from rest — the one
+  // recursion MpcSegmentCore uses too (mpc_block_grid.hpp).
   const Eigen::Index N1 = n_nodes_ + 1;
   const Eigen::Index nb = n_blocks_;
-  gq_.setZero(N1, nb);
-  gv_.setZero(N1, nb);
-  ga_.setZero(N1, nb);
-  for (Eigen::Index b = 0; b < nb; ++b) {
-    double q = 0.0;
-    double v = 0.0;
-    double a = 0.0;
-    for (int k = 0; k < n_nodes_; ++k) {
-      const double dt = dt_node_[static_cast<std::size_t>(k)];
-      const double u =
-          block_of_node_[static_cast<std::size_t>(k)] == static_cast<int>(b) ? p.u_scale : 0.0;
-      q += dt * v + 0.5 * dt * dt * a + dt * dt * dt * u / 6.0;
-      v += dt * a + 0.5 * dt * dt * u;
-      a += dt * u;
-      gq_(k + 1, b) = q;
-      gv_(k + 1, b) = v;
-      ga_(k + 1, b) = a;
-    }
-  }
+  const auto n_intervals = static_cast<std::size_t>(n_nodes_);
+  ComputeBlockStageGains(std::span<const double>(dt_node_).first(n_intervals),
+                         std::span<const int>(block_of_node_).first(n_intervals), n_blocks_,
+                         p.u_scale, gq_, gv_, ga_);
 
   // ── Dimensions ──
   const int nN = n * n_nodes_;

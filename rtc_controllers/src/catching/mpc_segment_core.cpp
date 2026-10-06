@@ -1,5 +1,6 @@
 #include "rtc_controllers/catching/mpc_segment_core.hpp"
 
+#include "rtc_controllers/catching/mpc_block_grid.hpp"
 #include "rtc_controllers/catching/mpc_segment_core_catch.hpp"
 #include "rtc_controllers/catching/mpc_segment_core_torque.hpp"
 #include "rtc_controllers/gain_floor.hpp"
@@ -16,6 +17,7 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <span>
 
 namespace rtc::catching {
 
@@ -153,43 +155,17 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
     return MpcSegmentCoreReason::kParamsInvalid;
   }
   const int n_nodes = n_pre + n_stop;
-  if (params.n_blocks < 3) {
-    return MpcSegmentCoreReason::kBlocksTooFew;
-  }
-  // block_sizes holds kMaxSegmentNodes entries whatever N is.
-  if (params.n_blocks > n_nodes || params.n_blocks > kMaxSegmentNodes) {
-    return MpcSegmentCoreReason::kParamsInvalid;
-  }
-  int block_sum = 0;
-  for (int b = 0; b < params.n_blocks; ++b) {
-    const int size = params.block_sizes[static_cast<std::size_t>(b)];
-    if (size < 1) {
+  // The block partition: none may span the catch node, three after it
+  // (mpc_block_grid.hpp — the rule the docking core shares).
+  switch (CheckBlockGrid(params.n_blocks, params.block_sizes, n_pre, n_nodes)) {
+    case BlockGridCheck::kOk:
+      break;
+    case BlockGridCheck::kInvalid:
       return MpcSegmentCoreReason::kParamsInvalid;
-    }
-    block_sum += size;
-  }
-  if (block_sum != n_nodes) {
-    return MpcSegmentCoreReason::kParamsInvalid;
-  }
-  // The catch node splits the blocks: none may span it, and the terminal
-  // equality needs three after it. The rank self-check below cannot see the
-  // second rule — pre-catch blocks supply rank too.
-  {
-    int start = 0;
-    int after_catch = 0;
-    for (int b = 0; b < params.n_blocks; ++b) {
-      const int end = start + params.block_sizes[static_cast<std::size_t>(b)];
-      if (start < n_pre && end > n_pre) {
-        return MpcSegmentCoreReason::kBlocksAcrossCatch;
-      }
-      if (start >= n_pre) {
-        ++after_catch;
-      }
-      start = end;
-    }
-    if (after_catch < 3) {
+    case BlockGridCheck::kTooFew:
       return MpcSegmentCoreReason::kBlocksTooFew;
-    }
+    case BlockGridCheck::kAcrossCatch:
+      return MpcSegmentCoreReason::kBlocksAcrossCatch;
   }
   if (params.jerk_weight.size() != 0) {
     if (params.jerk_weight.size() != nn) {
@@ -298,35 +274,19 @@ MpcSegmentCoreReason MpcSegmentCore::Init(const pinocchio::Model& arm,
       block_weight_[static_cast<std::size_t>(b)] =
           k < n_pre_ ? static_cast<double>(size) * (params.dt_pre / params.dt)
                      : static_cast<double>(size);
-      for (int i = 0; i < size; ++i) {
-        block_of_node_[static_cast<std::size_t>(k++)] = b;
-      }
+      k += size;
     }
   }
+  FillBlockOfInterval(n_blocks_, params.block_sizes, block_of_node_);
 
   // Stage gains ĝ_{m,k}[b]: the scalar triple integrator's response at node k
   // to jerk u_scale held over block b (all others zero), from rest.
   const Eigen::Index N1 = n_nodes_ + 1;
   const Eigen::Index nb = n_blocks_;
-  gq_.setZero(N1, nb);
-  gv_.setZero(N1, nb);
-  ga_.setZero(N1, nb);
-  for (Eigen::Index b = 0; b < nb; ++b) {
-    double q = 0.0;
-    double v = 0.0;
-    double a = 0.0;
-    for (int k = 0; k < n_nodes_; ++k) {
-      const double dt = dt_node_[static_cast<std::size_t>(k)];
-      const double u =
-          block_of_node_[static_cast<std::size_t>(k)] == static_cast<int>(b) ? params.u_scale : 0.0;
-      q += dt * v + 0.5 * dt * dt * a + dt * dt * dt * u / 6.0;
-      v += dt * a + 0.5 * dt * dt * u;
-      a += dt * u;
-      gq_(k + 1, b) = q;
-      gv_(k + 1, b) = v;
-      ga_(k + 1, b) = a;
-    }
-  }
+  const auto n_intervals = static_cast<std::size_t>(n_nodes_);
+  ComputeBlockStageGains(std::span<const double>(dt_node_).first(n_intervals),
+                         std::span<const int>(block_of_node_).first(n_intervals), n_blocks_,
+                         params.u_scale, gq_, gv_, ga_);
 
   // Dense stage matrices (reference assembly and the rank self-check).
   g_dense_.setZero(3 * nn * N1, nu_);
