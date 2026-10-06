@@ -49,7 +49,7 @@
 단계 4·5·6 의 최소 집합이며 **다른 도구에서는 전부 직접 수행한다.** Claude Code 의 Stop hook 은 이 중 기계 판정 가능한 부분만 대신한다 (범위: hook 헤더).
 
 - **포매팅** — C/C++ 는 `clang-format` (루트 `.clang-format`), Python 은 `ruff format` + `ruff check` (루트 `pyproject.toml`). 변경한 파일에 적용
-- **빌드·테스트** — 변경한 패키지를 빌드 (`--tests` 필수)·테스트한다 (§9 hard rule 준수). `rtc_base`/`rtc_msgs` 를 건드렸으면 전체 downstream (PROC-3)
+- **빌드·테스트** — 변경한 패키지를 빌드 (`--tests` 필수)·테스트한다 (§9 hard rule 준수). `rtc_base`/`rtc_msgs` 를 건드렸으면 전체 downstream (PROC-3), 다른 패키지의 헤더를 바꿨으면 그것으로 컴파일하는 패키지도 (PROC-2)
 - **문서·메타데이터** — `.md` 를 고쳤으면 `python3 repo_scripts/scripts/validate_docs.py --files <파일들>`; 고친 YAML 의 parse·default·범위·단위; public header 의 Doxygen; public surface (header/launch/config/파일 add·del/dep) 변경 시 README; `CMakeLists.txt`·`package.xml` 동기화는 필수
 - CI 는 `docs-validate` (문서·생성물·셸 검사) 뿐이다 — **빌드·테스트·포매팅의 게이트는 위 로컬 검증뿐이다**
 
