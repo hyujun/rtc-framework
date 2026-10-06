@@ -45,6 +45,16 @@ struct QPSolverConfig {
   // E1-F01 #627) and ran ~3× slower there than PrimalDualLDLT. Automatic keeps
   // existing callers unchanged.
   proxsuite::proxqp::DenseBackend dense_backend{proxsuite::proxqp::DenseBackend::Automatic};
+  // Threshold of ProxQP's primal-infeasibility test (its own default). The
+  // test accepts an APPROXIMATE Farkas certificate — ‖Aᵀδy + Cᵀδz‖ within this
+  // fraction of ‖(δy, δz)‖ — so it also fires on feasible problems whose
+  // multipliers grow fast (a QP with large linear penalties on elastic
+  // variables, dynamic_catching E1-F13 #739: PRIMAL_INFEASIBLE on a QP that is
+  // feasible by construction). 0 leaves only an EXACT certificate
+  // (‖Aᵀδy + Cᵀδz‖ = 0): a QP that is infeasible without one runs to max_iter
+  // instead of being reported early. For a caller whose QP cannot be
+  // infeasible.
+  double eps_primal_inf{1e-4};
 };
 
 // ────────────────────────────────────────────────
@@ -87,6 +97,23 @@ class QPSolverWrapper {
   // makes it reachable deliberately rather than only as a fault response.
   void ResetWarmStart() noexcept;
 
+  // Multipliers of the LAST Solve(), in the caller's units (ProxQP unscales its
+  // results): y for the equality rows A x = b, z for the two-sided rows
+  // l ≤ C x ≤ u. Sign convention — ProxQP's stationarity condition
+  //
+  //   H x + g + Aᵀ y + Cᵀ z = 0,
+  //
+  // so z_i > 0 on a row active at its UPPER bound, z_i < 0 at its LOWER bound
+  // and z_i = 0 on an inactive one (pinned by test_qp_solver_wrapper).
+  //
+  // Sized to the solver's MAX dimensions (padded rows read 0), references into
+  // the solver — no copy, no allocation — and valid until the next Solve().
+  // Meaningful only when that Solve() reported converged: a failed solve
+  // leaves whatever iterates it stopped at, and a non-finite one leaves NaN.
+  // Empty before Init().
+  [[nodiscard]] const Eigen::VectorXd& EqualityDual() const noexcept;
+  [[nodiscard]] const Eigen::VectorXd& InequalityDual() const noexcept;
+
   // 설정 변경 (non-RT)
   void SetMaxIter(int iter) noexcept;
   void SetEpsAbs(double eps) noexcept;
@@ -110,6 +137,8 @@ class QPSolverWrapper {
   Eigen::MatrixXd c_seed_;
   Eigen::VectorXd l_inf_;
   Eigen::VectorXd u_inf_;
+  // What the dual accessors return before Init() (never resized).
+  Eigen::VectorXd no_dual_;
 };
 
 }  // namespace rtc::tsid

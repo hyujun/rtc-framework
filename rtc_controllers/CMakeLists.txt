@@ -101,6 +101,14 @@ add_library(rtc_controllers STATIC
   # RNEA derivatives) and slack, solved through rtc_tsid's QPSolverWrapper. A
   # plain library unit like catch_pose_ik.cpp; the planner thread calls it (E1-F03).
   src/catching/mpc_segment_core.cpp
+  # dynamic_catching E1-F13 (#739): the mpc_docking numeric core — the ball in
+  # the capture frame and the rows built from it (relative state, corridor,
+  # chance rows, impact, manipulability), each with its derivative.
+  src/catching/mpc_docking_relative_state.cpp
+  # ... and the SQP that assembles them: MpcDockingSegmentCore — approach,
+  # dock and stop as one condensed jerk problem over ProxQP, with elastic hard
+  # rows, an l1 merit and a deadline. Called by nothing but its tests yet.
+  src/catching/mpc_docking_segment_core.cpp
   # dynamic_catching MPC E1-F02 (#628): the RT side of the segment payload —
   # closed-form joint reference between the published nodes, hand target by FK.
   src/catching/node_follower.cpp
@@ -478,6 +486,15 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_traj_sampler PRIVATE -Wno-mismatched-new-delete)
 
+  # dynamic_catching E1-F13 (#739): the ball prediction at a planner node —
+  # the shared sampler's mean plus the 6x6 covariance propagated from the
+  # nearest sample. Header-only and RT-safe, hence both allocation sensors.
+  ament_add_gtest(test_catching_ball_node_samples test/test_catching_ball_node_samples.cpp)
+  target_link_libraries(test_catching_ball_node_samples rtc_controllers)
+  target_include_directories(test_catching_ball_node_samples PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_ball_node_samples PRIVATE -Wno-mismatched-new-delete)
+
   # L1 ingress judgement: order / track epoch / staleness / horizon / jump
   # (S5.2, G1-E and the pure half of G1-H·G1-J). Header-only, no ROS: the
   # PointCloud2 decode and the SeqLock live in the integration binding, and
@@ -579,6 +596,36 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_mpc_segment_core_approach PRIVATE -Wno-mismatched-new-delete)
   target_compile_definitions(test_catching_mpc_segment_core_approach PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
+    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
+  # dynamic_catching E1-F13 (#739): the mpc_docking relative-state seams — each
+  # derivative against a finite difference, the crossing-plane covariance
+  # against a Monte Carlo, the reference's sanity cases. The seams call into
+  # pinocchio's shared object, so the allocation claim needs the C-level malloc
+  # gate (one TU per binary) besides operator new.
+  ament_add_gtest(test_catching_mpc_docking_relative_state
+    test/test_catching_mpc_docking_relative_state.cpp TIMEOUT 300)
+  target_link_libraries(test_catching_mpc_docking_relative_state rtc_controllers)
+  target_include_directories(test_catching_mpc_docking_relative_state PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_docking_relative_state PRIVATE
+    -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_docking_relative_state PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+
+  # ... and the docking core's SQP on synthetic throws: constructed-feasible
+  # cases that must converge with every hard row re-evaluated outside the core,
+  # infeasible ones that must say so, the payload round trip through the RT
+  # sampler, the per-stage allocation gate (C-level malloc gate: one TU per
+  # binary) and the recorded timing.
+  ament_add_gtest(test_catching_mpc_docking_segment_core
+    test/test_catching_mpc_docking_segment_core.cpp TIMEOUT 900)
+  target_link_libraries(test_catching_mpc_docking_segment_core rtc_controllers)
+  target_include_directories(test_catching_mpc_docking_segment_core PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_docking_segment_core PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_docking_segment_core PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
