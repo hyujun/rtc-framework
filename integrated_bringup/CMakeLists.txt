@@ -1480,6 +1480,34 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
+  # ── dynamic_catching E1-F14 (#740): the NLP catch search on the shipped
+  # hand-locked sub-models ────────────────────────────────────────────────────
+  # What a wake costs on `ur5e_catch` and `iiwa7_catch`, against the real
+  # clock. Recorded (no verdict): Configure's time and memory, a candidate's
+  # screening, a cold and a warm solve by node count, a whole wake by the
+  # number of solves, and how far a solve runs past a short share. The models
+  # come from the same loader as the docking core's suite above.
+  ament_add_gtest(test_catching_nlp_search_shipped
+    test/test_catching_nlp_search_shipped.cpp TIMEOUT 600)
+  target_include_directories(test_catching_nlp_search_shipped PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_compile_definitions(test_catching_nlp_search_shipped PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+  target_link_libraries(test_catching_nlp_search_shipped
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_catching_nlp_search_shipped
+    rclcpp
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    ament_index_cpp
+  )
+
   # ── dynamic_catching S6-A R-1: the planner shares the `mpc` layout role ────
   # DemoWbc's MPC thread and the catching planner in one process, switched in
   # CM's order (deactivate, activate): thread count by name, affinity against
