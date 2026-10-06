@@ -20,7 +20,12 @@ WHAT IS NOT THE BRING-UP, on purpose:
 * no gravity while the ball flies — the approach is a straight line in the
   catch frame, which is what the planner's relative state is at one instant;
 * the hand does not move — the ball carries the whole relative velocity.
-  That equals a moving hand only while the hand moves at constant velocity;
+  That equals a moving hand only while the hand moves at constant velocity.
+  A trial can ask for the other case: ``accel`` is the ball's acceleration in
+  the catch frame (gravity less the hand's own), constant from the moment the
+  ball appears. The identification is flown without it; one stage flies the
+  verification conditions again with it, to see how far the straight line
+  carries;
 * the close command is a step applied on a control tick, with no controller,
   no transport and no estimator in between.
 
@@ -28,6 +33,9 @@ TIME. ``delta_o`` is (instant the closure is nominally complete) − (instant th
 ball centre would reach the catch frame's origin plane in free flight), with
 "nominally complete" = command tick + the shipped ``T_close_e2e``: exactly the
 quantity the hand sequencer controls when it commands at ``t_c − T_close_e2e``.
+An accelerating ball keeps the straight flight's command tick: it crosses the
+plane the trial names with the speed the trial names at the instant the
+straight line would, and reaches the hand earlier or later than that line says.
 
 THE VERDICT (kept from the tool this replaces): the scene plays out 1 s after
 the arrival, then gravity is applied along ±each catch-frame axis for 0.25 s
@@ -74,6 +82,21 @@ SETTLE_MAX_S = 12.0
 REST_LIN = 1e-3  # palm [m/s]
 REST_ANG = 5e-3  # palm [rad/s]
 REST_JOINT = 5e-3  # hand joints [rad/s]
+
+
+def flight_lead(c: float, drop: float, a_s: float) -> float:
+    """How long before it crosses a plane at closing speed ``c`` the ball was
+    ``drop`` above that plane, accelerating by ``a_s`` along +e₃ (negative:
+    toward the hand) [s].
+
+    A ball accelerating toward the hand was never more than c² / (2 |a_s|)
+    above the plane. When that is short of ``drop`` the answer is the instant
+    of that apex: the ball starts there, with no speed along the axis.
+    """
+    disc = c * c + 2.0 * a_s * drop
+    if disc <= 0.0:
+        return c / -a_s
+    return 2.0 * drop / (c + math.sqrt(disc))
 
 
 def rpy_matrix(rpy) -> np.ndarray:
@@ -492,7 +515,13 @@ class DockingRig:
     # ── The trial ────────────────────────────────────────────────────────────
 
     def fly_in(
-        self, rho, c: float, delta_o: float, nu_perp=(0.0, 0.0), s_pass: float = 0.0
+        self,
+        rho,
+        c: float,
+        delta_o: float,
+        nu_perp=(0.0, 0.0),
+        s_pass: float = 0.0,
+        accel=(0.0, 0.0, 0.0),
     ) -> dict:
         """One time-triggered fly-in.
 
@@ -500,6 +529,11 @@ class DockingRig:
         velocity ``(nu_perp, −c)`` in the catch frame. ``q_close`` is commanded
         on the control tick that makes the nominal closure complete
         ``delta_o`` after the ball's free-flight arrival at ``s = 0``.
+
+        With ``accel`` [m/s², catch frame] the ball has that velocity AT
+        ``(rho, s_pass)``, at the instant the line would have it there, and
+        accelerates from its appearance to the end of the play; the command
+        tick, and so ``t_first``'s zero, stay those of the line.
         """
         if not c > 0.0:
             raise ValueError("the closing speed must be positive")
@@ -508,14 +542,20 @@ class DockingRig:
         period = self.h * self.nsub
         t_close = self.cfg.t_close_e2e
         nu = np.array([nu_perp[0], nu_perp[1], -c], dtype=float)
+        acc = np.array(accel, dtype=float)
+        # From the ball's appearance to the line's arrival at s = 0.
+        lead = START_S / c
+        if acc.any():
+            lead = flight_lead(c, START_S - s_pass, float(acc[2])) + s_pass / c
         # The command is ON a tick; the ball's arrival then follows from delta_o.
-        earliest = max(LEAD_S, START_S / c - t_close + delta_o)
+        earliest = max(LEAD_S, lead - t_close + delta_o)
         tick = int(math.ceil(earliest / period - 1e-9))
         t_cmd = tick * period
         t_origin = t_cmd + t_close - delta_o
+        t_pass = t_origin - s_pass / c
         at_origin = np.array([rho[0], rho[1], 0.0]) + np.array([nu[0], nu[1], 0.0]) * (s_pass / c)
         n_cmd = tick * self.nsub
-        n_appear = int(math.ceil((t_origin - START_S / c) / self.h - 1e-9))
+        n_appear = int(math.ceil((t_origin - lead) / self.h - 1e-9))
         n_origin = int(math.ceil(t_origin / self.h))
         n_end = int(math.ceil((max(t_origin, t_cmd + t_close) + PLAY_S) / self.h))
 
@@ -525,8 +565,9 @@ class DockingRig:
             "delta_o": float(delta_o),
             "nu": [float(nu_perp[0]), float(nu_perp[1])],
             "s_pass": float(s_pass),
+            "accel": [float(v) for v in acc],
             "s_first": None,  # ball height when it first touched the hand
-            "t_first": None,  # ...and when, relative to the arrival at s = 0
+            "t_first": None,  # ...and when, relative to the line's arrival at s = 0
             "rho_first": None,  # ...and the hand's closure progress then
             "stray": None,  # a body that is not the hand, touched BEFORE the hand
         }
@@ -535,7 +576,13 @@ class DockingRig:
             if n == n_cmd:
                 self._command_close()
             if n == n_appear:
-                self.put_ball(at_origin + nu * (n * self.h - t_origin), nu)
+                since_pass = n * self.h - t_pass
+                self.put_ball(
+                    at_origin + nu * (n * self.h - t_origin) + 0.5 * acc * since_pass**2,
+                    nu + acc * since_pass,
+                )
+                # The robot's bodies are compensated: only the ball feels this.
+                m.opt.gravity[:] = self.rot @ acc
             mujoco.mj_step(m, d)
             if n < n_appear:
                 continue
@@ -555,6 +602,7 @@ class DockingRig:
         out["rho_end"] = round(self.progress(), 4)
         out["ball_end"] = [round(float(v), 4) for v in end]
         if left or np.linalg.norm(end) > LEFT_M:
+            m.opt.gravity[:] = 0.0
             out.update(held=False, why="missed" if out["s_first"] is None else "left", slip=None)
             return out
         slip = self._shake()

@@ -14,8 +14,8 @@ thread per worker, and no build running beside it::
       && python3 <repo>/integrated_bringup/tools/docking_ident/run_ident.py <profile> all )
 
 Stages, in order: ``selfcheck``, ``map-coarse``, ``map-fine``, ``lateral``,
-``vperp``, ``static``, ``verify`` (``all`` runs them in that order). Then
-``report.py <profile>`` prints the result.
+``vperp``, ``static``, ``verify``, ``accel`` (``all`` runs them in that order).
+Then ``report.py <profile>`` prints the result.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ import rig_config  # noqa: E402
 
 from rtc_tools.analysis import catching_capture_set as cs  # noqa: E402
 
-STAGES = ("selfcheck", "map-coarse", "map-fine", "lateral", "vperp", "static", "verify")
+STAGES = ("selfcheck", "map-coarse", "map-fine", "lateral", "vperp", "static", "verify", "accel")
 SAVE_EVERY = 200  # results between two writes of a store
 
 # Stage numbers that seed the random streams (a stage's draws never depend on
@@ -56,7 +56,14 @@ def _worker_init(profile: str) -> None:
 
 
 def _fly(spec: dict) -> tuple[str, dict]:
-    result = _RIG.fly_in(spec["rho"], spec["c"], spec["delta_o"], spec["nu"], spec["s_pass"])
+    result = _RIG.fly_in(
+        spec["rho"],
+        spec["c"],
+        spec["delta_o"],
+        spec["nu"],
+        spec["s_pass"],
+        spec.get("accel", (0.0, 0.0, 0.0)),
+    )
     return spec["id"], result
 
 
@@ -267,12 +274,15 @@ def stage_static(profile: str, directory: Path, pool) -> None:
     )
 
 
-def stage_verify(profile: str, directory: Path, pool) -> None:
+def _verify_specs(directory: Path, stage: str) -> dict[str, list[dict]]:
+    """Per box, the conditions drawn from its identified set (the same ones
+    whichever stage asks)."""
     fine, boxes = _boxes(directory)
+    out = {}
     for tag, box in boxes.items():
         ident = rp.identify(directory, tag, box, fine)
         if ident.get("polygon") is None or "v_perp_max" not in ident or "entrance" not in ident:
-            print(f"  verify {tag}: skipped — the set is not identified (lateral/vperp/static)")
+            print(f"  {stage} {tag}: skipped — the set is not identified (lateral/vperp/static)")
             continue
         whole = ident["entrance"]
         # rho is a point of the entrance plane; without a plane, of the origin plane.
@@ -282,14 +292,30 @@ def stage_verify(profile: str, directory: Path, pool) -> None:
         sample = cs.sample_capture_set(
             rng, ident["polygon"], box, ident["v_perp_max"], rp.VERIFY_N
         )
-        specs = [
+        out[tag] = [
             _spec(f"v{n:03d}", row[0:2], row[2], row[3], row[4:6], s_pass)
             for n, row in enumerate(sample)
         ]
+    return out
+
+
+def stage_verify(profile: str, directory: Path, pool) -> None:
+    for tag, specs in _verify_specs(directory, "verify").items():
         store = rp.Store(directory / f"verify_{tag}.json")
         fly_all(pool, store, specs, f"verify {tag}")
         held = sum(bool(store.items[s["id"]]["held"]) for s in specs)
         print(f"  verify {tag}: {held} of {len(specs)} held")
+
+
+def stage_accel(profile: str, directory: Path, pool) -> None:
+    """The verification conditions again, the ball accelerating toward the hand."""
+    for tag, specs in _verify_specs(directory, "accel").items():
+        store = rp.Store(directory / f"accel_{tag}.json")
+        for g, level in enumerate(rp.ACCEL_LEVELS):
+            again = [{**s, "id": f"g{g}_{s['id']}", "accel": [0.0, 0.0, -level]} for s in specs]
+            fly_all(pool, store, again, f"accel {tag} {level:g} m/s2")
+            held = sum(bool(store.items[s["id"]]["held"]) for s in again)
+            print(f"  accel {tag} {level:g} m/s2: {held} of {len(again)} held")
 
 
 _RUN = {
@@ -300,6 +326,7 @@ _RUN = {
     "vperp": stage_vperp,
     "static": stage_static,
     "verify": stage_verify,
+    "accel": stage_accel,
 }
 
 

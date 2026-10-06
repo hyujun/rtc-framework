@@ -23,6 +23,10 @@ THE PROTOCOL (fixed before any flight; the lattices are the constants below).
    the corridor are read from that field for the box's lateral set and tilts.
 6. ``verify`` — 300 conditions drawn from the identified set, flown once each.
    Failures are reported; nothing is shrunk and re-measured.
+7. ``accel`` — the same 300 conditions with the ball accelerating toward the
+   hand along the approach axis (gravity less the hand's own acceleration,
+   which the straight flights leave out). It identifies nothing: it says how
+   much of the set survives when the relative motion is not uniform.
 
 Run as ``report.py <profile>`` (with ``DATA`` set) to print the report.
 """
@@ -59,6 +63,7 @@ TAN_STEP = 0.1
 TAN_MAX = 1.0  # tilts of the approach table
 CORRIDOR_LENGTH = 0.15  # [m] the gap range the corridor is fitted over
 VERIFY_N = 300
+ACCEL_LEVELS = (5.0, 9.81)  # [m/s²] toward the hand along the approach axis
 CONFIDENCE = 0.95
 
 
@@ -286,6 +291,32 @@ def identify(directory: Path, tag: str, box: cs.Box, fine: FineMap) -> dict:
             "stray": sum(r["stray"] is not None for r in results),
             "s_pass": results[0]["s_pass"],
         }
+    accel_path = directory / f"accel_{tag}.json"
+    if "verify" in out and accel_path.is_file():
+        straight = Store(verify_path).items
+        flown = Store(accel_path).items
+        out["accel"] = []
+        for g, level in enumerate(ACCEL_LEVELS):
+            prefix = f"g{g}_"
+            rows = {k[len(prefix) :]: r for k, r in flown.items() if k.startswith(prefix)}
+            if not rows:
+                continue
+            held_n = sum(bool(r["held"]) for r in rows.values())
+            pairs = [(bool(straight[k]["held"]), bool(r["held"])) for k, r in rows.items()]
+            out["accel"].append(
+                {
+                    "level": level,
+                    "n": len(rows),
+                    "held": held_n,
+                    "lower": cs.clopper_pearson_lower(held_n, len(rows), CONFIDENCE),
+                    "lost": sum(before and not after for before, after in pairs),
+                    "gained": sum(after and not before for before, after in pairs),
+                    "why": {
+                        w: sum(r["why"] == w for r in rows.values())
+                        for w in sorted({r["why"] for r in rows.values()})
+                    },
+                }
+            )
     return out
 
 
@@ -481,6 +512,19 @@ def render_box(ident: dict, fine: FineMap) -> list[str]:
             f"$\\rho$ 를 정의한 높이 {_mm(check['s_pass'])} mm, 손보다 먼저 다른 것에 닿은 시행 "
             f"{check['stray']}"
         )
+    if ident.get("accel"):
+        out += [
+            "",
+            "같은 조건을 공이 손 쪽으로 가속하는 채로 (접근축 방향, 직선 비행과 같은 폐쇄 시각):",
+            "",
+            "| 상대 가속도 [m/s²] | 조건 | 유지 | 하한 | 직선에서만 유지 | 여기서만 유지 | 사유 |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        out += [
+            f"| {row['level']:g} | {row['n']} | {row['held']} | {row['lower']:.4f} | "
+            f"{row['lost']} | {row['gained']} | {row['why']} |"
+            for row in ident["accel"]
+        ]
     return out + [""]
 
 

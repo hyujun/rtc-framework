@@ -1078,7 +1078,7 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
 |---|---|
 | `rig_config.py` | 로봇 profile (이 패키지 `config/` 아래의 디렉토리 이름) 하나에서 rig 의 입력을 읽는다: 손 자세 · η · caging mask · `T_close_e2e`, catch frame, 대기 자세 (`rtc_tools` 의 `catching_trials.load_profile` 로), 그리고 sim 의 parameter 묶음 · 군 · 공. **로봇의 이름이나 관절 표는 이 디렉토리에 없다.** mujoco 없이 돈다 |
 | `rig.py` | MuJoCo rig. **sim 이 MJCF 위에 덮는 것을 전부 적용한다** — solver (`rtc_mujoco_sim` 의 `solver_param.yaml` 다음에 profile 의 YAML, scene 파일이 적은 option 은 그대로), servo 게인, 중력 보상, substep, 공 (종류별 상수 · 반발에서 구한 감쇠비 · `solimp` · priority · `condim` · 충돌 비트). 공의 상수는 C++ 에만 있어 `rig_config.py` 에 사본을 두고 테스트가 C++ 과 대조한다 |
-| `run_ident.py <profile> <stage>` | 단계별 실행: `selfcheck` · `map-coarse` · `map-fine` · `lateral` · `vperp` · `static` · `verify` (`all` 은 이 순서로 전부). 단계마다 `$DATA/<profile>/` 에 저장하고, 끊겨도 이미 있는 것은 다시 날리지 않는다 |
+| `run_ident.py <profile> <stage>` | 단계별 실행: `selfcheck` · `map-coarse` · `map-fine` · `lateral` · `vperp` · `static` · `verify` · `accel` (`all` 은 이 순서로 전부). 단계마다 `$DATA/<profile>/` 에 저장하고, 끊겨도 이미 있는 것은 다시 날리지 않는다 |
 | `report.py <profile>` | 저장된 판정에서 값을 계산해 (`rtc_tools.analysis.catching_capture_set`) 보고서를 낸다. simulator 를 쓰지 않으므로 원자료에서 언제든 다시 계산된다. **절차와 격자는 이 파일의 머리와 상수가 갖는다** |
 
 ```bash
@@ -1093,9 +1093,10 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
 - **판정** (바꾸지 않는다): 공이 원점 평면에 닿은 뒤 1 s 를 두고, 그 상태에서 catch frame 세 축 ±방향으로 중력을 0.25 s 씩 건다. 공이 0.25 m 안에 있고 어느 방향에서도 20 mm 넘게 미끄러지지 않으면 유지다
 - **폐쇄 시각** $\delta^O$ = (명령 tick + `T_close_e2e`) − (공 중심이 무접촉으로 catch frame 의 원점 평면에 닿을 시각). 손 시퀀서가 $t_c-T_{close,e2e}$ 에 닫으므로 이것이 시퀀서가 정하는 양이다. 코어의 창은 $s_{ent}$ 통과 기준이라 `report.py` 가 옮긴다 ($\delta=\delta^O+s_{ent}/c$)
 - **sim 과 다른 것** (일부러): 비행 중 중력이 없다 (직선 접근), 손이 서 있고 공이 상대속도를 전부 갖는다 (손이 등속일 때만 같다), 폐쇄 명령은 제어 tick 의 계단이다 (컨트롤러 · 추정기가 없다)
+- **`accel` 단계는 값을 식별하지 않는다** — 손이 등속이 아닐 때 (공의 상대 가속도 = 중력 − 손의 가속도) 식별된 집합이 얼마나 남는지를 본다. `verify` 의 300 조건을 공이 접근축을 따라 손 쪽으로 가속하는 채로 다시 날리고 (`report.py` 의 `ACCEL_LEVELS`), 조건별로 직선 비행과 견준다. 공은 $s_{ent}$ 평면을 직선 비행과 같은 시각 · 같은 속도로 지나고 폐쇄 명령 tick 도 같다 — 달라지는 것은 그 평면 뒤의 운동뿐이다. 느린 접근에서는 공이 시작 높이까지 거슬러 올라가지 못하므로 ($c^2/2a$) 축 방향 속도가 0 인 꼭짓점에서 출발한다
 - 손보다 먼저 다른 물체에 닿은 시행은 `stray` 에 그 body 를 적고 보고서가 센다
 - 값은 전부 **provisional** 이다 — sim 의 손 흡수 · 반발은 실기 값이 아니다 (`docs/dynamic_catching/ref/L6_hand.md` §4.5)
-- 테스트: `test/test_docking_ident_config.py` (colcon 에서 돈다 — 두 출하 profile 의 입력, 공 상수의 C++ 대조, 심은 자료에서의 `report.py`), `test/test_docking_ident_rig.py` (**mujoco 가 필요해 colcon 에서는 skip** — rig 를 고쳤으면 `.venv/bin/python -m pytest` 로 돌린다. 손으로 계산되는 합성 손에서 frame · 도착 시각 · 명령 시각 · 직선 · 판정을 본다)
+- 테스트: `test/test_docking_ident_config.py` (colcon 에서 돈다 — 두 출하 profile 의 입력, 공 상수의 C++ 대조, 심은 자료에서의 `report.py`), `test/test_docking_ident_rig.py` (**mujoco 가 필요해 colcon 에서는 skip** — rig 를 고쳤으면 `.venv/bin/python -m pytest` 로 돌린다. 손으로 계산되는 합성 손에서 frame · 도착 시각 · 명령 시각 · 직선 · 가속하는 비행 · 판정을 본다)
 
 ---
 

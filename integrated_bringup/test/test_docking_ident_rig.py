@@ -304,6 +304,56 @@ def test_the_catch_frame_follows_the_arm_and_its_own_rotation(tmp_path):
     assert abs(out["s_first"]) < 2 * turned.h + 1e-4 and abs(out["t_first"]) < 2.5 * turned.h
 
 
+# ── A ball that accelerates in the catch frame ────────────────────────────────
+
+
+def test_the_lead_of_a_flight_is_its_kinematics():
+    # Straight: the height over the speed.
+    assert rg.flight_lead(2.0, 0.3, 0.0) == pytest.approx(0.15)
+    # Either way the ball was `drop` above the plane that long before.
+    for a_s in (-3.0, 4.0):
+        lead = rg.flight_lead(2.0, 0.3, a_s)
+        assert 2.0 * lead + 0.5 * a_s * lead**2 == pytest.approx(0.3)
+    assert rg.flight_lead(2.0, 0.3, -3.0) > 0.15 > rg.flight_lead(2.0, 0.3, 4.0)
+    # c² / 2|a| = 5 mm is all the height a ball at 0.3 m/s under 9 m/s² ever
+    # had: it starts at that apex, c / |a| before the plane.
+    assert rg.flight_lead(0.3, 0.3, -9.0) == pytest.approx(0.3 / 9.0)
+    assert rg.flight_lead(0.3, 0.005, -9.0) == pytest.approx(0.3 / 9.0)  # exactly the apex
+
+
+def test_no_acceleration_is_the_straight_flight(rig):
+    straight = rig.fly_in((0.01, -0.005), 1.3, 0.004, (0.1, 0.05), 0.02)
+    assert rig.fly_in((0.01, -0.005), 1.3, 0.004, (0.1, 0.05), 0.02, (0.0, 0.0, 0.0)) == straight
+    assert straight["accel"] == [0.0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize(
+    ("c", "a_s"), [(1.0, -9.81), (1.0, 6.0), (0.3, -9.81)], ids=["toward", "away", "from-apex"]
+)
+def test_an_accelerating_ball_has_the_named_speed_at_the_named_plane(rig, c, a_s):
+    # It crosses s_pass at speed c when the line would, so it meets the palm
+    # (s = 0) the time tau after that with c tau − a_s tau² / 2 = s_pass —
+    # earlier than the line's arrival when it speeds up, later when it slows.
+    s_pass = 0.04
+    out = rig.fly_in((0.0, 0.0), c, 0.2, s_pass=s_pass, accel=(0.0, 0.0, a_s))
+    tau = (c - math.sqrt(c * c - 2.0 * a_s * s_pass)) / a_s
+    assert c * tau - 0.5 * a_s * tau**2 == pytest.approx(s_pass)
+    assert out["t_first"] == pytest.approx(tau - s_pass / c, abs=2.5 * rig.h)
+    assert (out["t_first"] < -5 * rig.h) == (a_s < 0.0)
+    assert abs(out["s_first"]) < 2 * (c - a_s * tau) * rig.h + 1e-4
+    assert out["stray"] is None and out["accel"] == [0.0, 0.0, a_s]
+    assert not rig.model.opt.gravity.any()  # only while the trial runs
+
+
+def test_a_sideways_acceleration_bends_the_line_about_the_named_point(rig):
+    # The ball is aimed at the catch point on the plane 0.1 above it and
+    # pulled along +y at 20 m/s²: by the palm, 0.1 s later, it is 0.1 m off —
+    # beside the palm's 50 mm half-width. Without the pull it lands on it.
+    assert rig.fly_in((0.0, 0.0), 1.0, 0.2, s_pass=0.1)["s_first"] is not None
+    out = rig.fly_in((0.0, 0.0), 1.0, 0.2, s_pass=0.1, accel=(0.0, 20.0, 0.0))
+    assert out["s_first"] is None and out["why"] == "missed"
+
+
 def test_the_same_trial_gives_the_same_result(rig):
     parked = rig.parked.qpos.copy()
     first = rig.fly_in((0.01, -0.005), 1.3, 0.004, (0.1, 0.05))

@@ -328,6 +328,45 @@ def test_one_box_is_identified_all_the_way(tmp_path):
     )
 
 
+def _plant_accel(directory: Path) -> None:
+    """Every verification condition again at each level: the first level loses
+    three that the straight flight held and holds the one it dropped."""
+    again = {
+        f"g{g}_v{n:03d}": _result(True)
+        for g in range(len(rp.ACCEL_LEVELS))
+        for n in range(rp.VERIFY_N)
+    }
+    for n in (1, 2, 3):
+        again[f"g0_v{n:03d}"] = _result(False)
+    again["g1_v007"] = _result(False)
+    _store(directory / "accel_w020.json", again)
+
+
+def test_the_accelerated_flights_are_compared_condition_by_condition(tmp_path):
+    box = _plant_identification(tmp_path)
+    fine = rp.FineMap(rp.Store(tmp_path / "map_fine.json"))
+    assert "accel" not in rp.identify(tmp_path, "w020", box, fine)  # not flown
+    _plant_accel(tmp_path)
+    first, second = rp.identify(tmp_path, "w020", box, fine)["accel"]
+    assert (first["level"], second["level"]) == rp.ACCEL_LEVELS
+    assert (first["n"], first["held"]) == (rp.VERIFY_N, rp.VERIFY_N - 3)
+    assert (first["lost"], first["gained"]) == (3, 1)  # v007 held here, not straight
+    assert first["lower"] == pytest.approx(
+        rp.cs.clopper_pearson_lower(rp.VERIFY_N - 3, rp.VERIFY_N)
+    )
+    assert (second["held"], second["lost"], second["gained"]) == (rp.VERIFY_N - 1, 0, 0)
+    # A level that was not flown is absent, and without the straight flights
+    # there is nothing to compare with.
+    path = tmp_path / "accel_w020.json"
+    items = {k: v for k, v in json.loads(path.read_text()).items() if k.startswith("g1_")}
+    path.write_text(json.dumps(items))
+    assert [r["level"] for r in rp.identify(tmp_path, "w020", box, fine)["accel"]] == [
+        rp.ACCEL_LEVELS[1]
+    ]
+    (tmp_path / "verify_w020.json").unlink()
+    assert "accel" not in rp.identify(tmp_path, "w020", box, fine)
+
+
 def test_stages_that_have_not_run_are_absent_not_guessed(tmp_path):
     box = _plant_identification(tmp_path)
     fine = rp.FineMap(rp.Store(tmp_path / "map_fine.json"))
@@ -349,6 +388,12 @@ def test_the_report_states_what_was_planted(tmp_path, monkeypatch):
     assert "무접촉 일관성: 성립" in text and "= 1.0 mm" in text
     assert "= 0.125 m/s" in text
     assert f"{rp.VERIFY_N} 조건 가운데 유지 {rp.VERIFY_N - 1}" in text
+    assert "상대 가속도" not in text
+    _plant_accel(tmp_path / "some_robot")
+    assert rp.main(["some_robot"]) == 0
+    text = (tmp_path / "some_robot" / "report.md").read_text()
+    assert f"| 5 | {rp.VERIFY_N} | {rp.VERIFY_N - 3} |" in text and "| 3 | 1 |" in text
+    assert f"| 9.81 | {rp.VERIFY_N} | {rp.VERIFY_N - 1} |" in text
     monkeypatch.delenv("DATA")
     with pytest.raises(SystemExit, match="DATA is not set"):
         rp.data_dir("some_robot")
