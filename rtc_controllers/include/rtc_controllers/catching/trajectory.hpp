@@ -259,16 +259,27 @@ inline constexpr std::int64_t kMaxSegmentDtCatchNs = 2 * kMaxSegmentDtPreNs;
   return SegmentGridNodeTimeNs(p.t0_ns, p.t_c_ns, p.dt_pre_ns, p.dt_ns, p.n_pre, k, p.dt_catch_ns);
 }
 
+/// Whether a catch interval with its own length (dt_catch_ns ≠ 0) is one a
+/// reader can evaluate: n_pre > 0, a length in (0, kMaxSegmentDtCatchNs] that
+/// is NOT dt_pre_ns (that grid is written with 0), and node 0 at
+/// t_c − (n_pre − 1)·Δ_pre − Δ_catch. The ONE statement of it: the validator
+/// and the RT sampler both call this, so that neither evaluates a grid the
+/// other calls malformed. (dt_pre_ns itself is the caller's to check.)
+[[nodiscard]] constexpr bool SegmentCatchIntervalOk(const SegmentSnapshot& p) noexcept {
+  return p.n_pre > 0 && p.dt_catch_ns > 0 && p.dt_catch_ns <= kMaxSegmentDtCatchNs &&
+         p.dt_catch_ns != p.dt_pre_ns &&
+         p.t0_ns == p.t_c_ns - static_cast<std::int64_t>(p.n_pre - 1) * p.dt_pre_ns - p.dt_catch_ns;
+}
+
 /// Whether a SegmentSnapshot's shape and node values can be sampled: sizes
 /// inside the capacities, a positive spacing, node 0 ON the grid t_c + k0·Δ
 /// (k0 ≥ 0) — or, with n_pre > 0, at t_c − n_pre·Δ_pre with k0 = 0 and at
 /// least one stop interval after t_c — node N at rest (kSegmentRestTol), and
 /// every used node entry finite. A catch interval with its own length
-/// (dt_catch_ns ≠ 0) needs n_pre > 0, a length in (0, kMaxSegmentDtCatchNs]
-/// that is NOT dt_pre_ns (that grid is written with 0), and node 0 at
-/// t_c − (n_pre − 1)·Δ_pre − Δ_catch. The RT runs this once per NEW payload (by
-/// segment_seq), not per tick — the sampler itself does not check node values
-/// (jerk_segment.hpp), so an unvalidated NaN node would reach the CLIK target.
+/// (dt_catch_ns ≠ 0) must pass SegmentCatchIntervalOk. The RT runs this once
+/// per NEW payload (by segment_seq), not per tick — the sampler itself does
+/// not check node values (jerk_segment.hpp), so an unvalidated NaN node would
+/// reach the CLIK target.
 [[nodiscard]] inline bool ValidateSegmentNodes(const SegmentSnapshot& p) noexcept {
   if (!p.valid || p.nv < 1 || p.nv > kMaxSegmentNv || p.n_nodes < 1 ||
       p.n_nodes > kMaxSegmentNodes || p.dt_ns <= 0 || p.k0 < 0 || p.k0 > kMaxSegmentNodes ||
@@ -283,10 +294,7 @@ inline constexpr std::int64_t kMaxSegmentDtCatchNs = 2 * kMaxSegmentDtPreNs;
       if (p.t0_ns != p.t_c_ns - static_cast<std::int64_t>(p.n_pre) * p.dt_pre_ns) {
         return false;
       }
-    } else if (p.dt_catch_ns < 0 || p.dt_catch_ns > kMaxSegmentDtCatchNs ||
-               p.dt_catch_ns == p.dt_pre_ns ||
-               p.t0_ns != p.t_c_ns - static_cast<std::int64_t>(p.n_pre - 1) * p.dt_pre_ns -
-                              p.dt_catch_ns) {
+    } else if (!SegmentCatchIntervalOk(p)) {
       return false;
     }
   } else if (p.dt_catch_ns != 0 ||

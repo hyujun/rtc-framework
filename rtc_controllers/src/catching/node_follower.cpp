@@ -25,16 +25,6 @@ using OutMap = Eigen::Map<Eigen::VectorXd>;
          (p.n_pre == 0 || (p.dt_pre_ns > 0 && p.dt_pre_ns <= kMaxSegmentDtPreNs));
 }
 
-// A catch interval with its own length (dt_catch_ns ≠ 0): the same guard for
-// that field, and the one relation the three-part split below rests on — node
-// 0's instant. A length the validator would refuse is refused here too, so
-// that no reader evaluates a grid another reader calls malformed.
-[[nodiscard]] bool CatchIntervalOk(const SegmentSnapshot& p) noexcept {
-  return p.n_pre > 0 && p.dt_catch_ns > 0 && p.dt_catch_ns <= kMaxSegmentDtCatchNs &&
-         p.dt_catch_ns != p.dt_pre_ns &&
-         p.t0_ns == p.t_c_ns - static_cast<std::int64_t>(p.n_pre - 1) * p.dt_pre_ns - p.dt_catch_ns;
-}
-
 // The three parts of a segment whose catch interval has its own length:
 // pre-catch columns 0..n_pre−1 at dt_pre, the catch interval between columns
 // n_pre−1 and n_pre at dt_catch, the stop columns n_pre..N at dt. Boundaries
@@ -123,7 +113,9 @@ bool NodeTrajectoryFollower::SampleJoints(const SegmentSnapshot& plan, std::int6
     // Its own path: a segment WITHOUT the field keeps the arithmetic below,
     // operation for operation (the same instant reached by another order of
     // operations is another double).
-    if (!CatchIntervalOk(plan) || !SampleWithCatchInterval(plan, since_ns, q, qd, qdd)) {
+    // (SegmentCatchIntervalOk: the validator's own test of that field, and
+    // the relation the three-part split rests on — node 0's instant.)
+    if (!SegmentCatchIntervalOk(plan) || !SampleWithCatchInterval(plan, since_ns, q, qd, qdd)) {
       return false;
     }
     if (held != nullptr) {
