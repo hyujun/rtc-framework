@@ -163,6 +163,14 @@
 //    end, or changes sign between two neighbouring nanoseconds. kkt_residual
 //    covers both parts. One real-time iteration (max_iterations = 1) cannot
 //    move the catch instant.
+//    A solve that ends any other way after the inner problem was solved at
+//    some instant — past its deadline or its iterations, on a step no length
+//    of which is accepted, at an instant it cannot meet a row at — returns
+//    the solved point with the lowest objective, not the point it stopped
+//    at: `catch_time_settled` says so, `reason` still says how the solve
+//    ended and `converged` stays false (the catch instant's own search did
+//    not finish). The first such point is the start's instant, so what comes
+//    back never costs more than the start's instant does.
 //  • The returned δt_c is a whole number of nanoseconds (the payload's and the
 //    RT's resolution), and so is every instant the solve stood at.
 //  • The cost gains c₁ δt_c + c₂ (δt_c − δ_ref)² (the caller's outer terms in
@@ -570,12 +578,18 @@ struct MpcDockingSegmentCoreResult {
   /// Moves of the catch instant, and ∂L/∂θ at the returned one (θ = δt_c/Δ_a).
   int catch_time_steps{0};
   double catch_time_gradient{0.0};
+  /// The returned iterate solves the problem with the catch instant held at
+  /// delta_ns. True with `converged`; with it false, the catch instant's own
+  /// search did not finish and this is the best point it had solved (header
+  /// note) — the per-QP numbers above are then still the last QP's.
+  bool catch_time_settled{false};
   // ── Iteration record ──
   int iterations{0};     ///< SQP iterations (QP linearisations)
   int qp_solves{0};      ///< QPs solved, μ re-solves and cold retries included
   int qp_iterations{0};  ///< ProxQP iterations, summed
   int backtracks{0};     ///< step halvings, summed over iterations
   int mu_updates{0};     ///< QP re-solves after growing a penalty
+  int mu_resets{0};      ///< failed QPs solved again at the initial penalties
   bool init_qp_used{false};
   int qp_status{-1};  ///< proxsuite QPSolverOutput of the last QP
   double start_us{0.0}, linearize_us{0.0}, assemble_us{0.0}, qp_us{0.0}, merit_us{0.0};
@@ -775,6 +789,9 @@ class MpcDockingSegmentCore {
   void PostCatchSensitivity() noexcept;
   void AddTheta(double rate) noexcept;
   [[nodiscard]] double Penalty(int group) const noexcept;
+  /// Every group's penalty at its initial value / whether any is above it.
+  void ResetPenalties() noexcept;
+  [[nodiscard]] bool PenaltiesRaised() const noexcept;
   void ElasticOfNewGroups(double& post_box_max, double& post_box_sum, double& terminal_max,
                           double& terminal_sum) const noexcept;
   void TrajectoryFromZ(const Eigen::VectorXd& z) noexcept;
@@ -900,6 +917,12 @@ class MpcDockingSegmentCore {
   std::int64_t bracket_lo_ns_{0}, bracket_hi_ns_{0}, prev_ns_{0};
   bool bracket_lo_known_{false}, bracket_hi_known_{false}, have_prev_{false};
   double prev_grad_{0.0};
+  // The solved point with the lowest objective this solve has stood at: its
+  // iterate, its instant, its objective and ∂L/∂θ there.
+  Eigen::VectorXd z_settled_;
+  std::int64_t settled_ns_{0};
+  double settled_objective_{0.0}, settled_grad_{0.0};
+  bool have_settled_{false};
   double time_c1_{0.0}, time_c2_{0.0};
   double tau_catch_{0.0};
   const TrajectorySnapshot* prediction_{nullptr};

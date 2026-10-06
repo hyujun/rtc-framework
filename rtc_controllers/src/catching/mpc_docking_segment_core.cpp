@@ -699,13 +699,13 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   j6_.setZero(6, nn);
   trust_side_.assign(static_cast<std::size_t>(nN), 0);
   trust_grad_.setZero(nw_);
-  mu_ = p.mu_init;
-  mu_post_box_ = p.mu_init_post_box;
-  mu_terminal_ = p.mu_init_terminal;
+  ResetPenalties();
   delta_ = 0.0;
   delta_eval_ = 0.0;
   delta_ns_ = 0;
   reduced_grad_ = 0.0;
+  z_settled_.setZero(nu_);
+  have_settled_ = false;
   kkt_jerk_ = 0.0;
   tau_catch_ = p.dt_pre;
   prediction_ = nullptr;
@@ -952,6 +952,23 @@ double MpcDockingSegmentCore::Penalty(int group) const noexcept {
     return mu_[static_cast<std::size_t>(group)];
   }
   return group == static_cast<int>(DockingRowGroup::kBox) ? mu_post_box_ : mu_terminal_;
+}
+
+void MpcDockingSegmentCore::ResetPenalties() noexcept {
+  mu_ = params_.mu_init;
+  mu_post_box_ = params_.mu_init_post_box;
+  mu_terminal_ = params_.mu_init_terminal;
+}
+
+bool MpcDockingSegmentCore::PenaltiesRaised() const noexcept {
+  bool raised = false;
+  for (std::size_t g = 0; g < mu_.size(); ++g) {
+    raised = raised || mu_[g] > params_.mu_init[g];
+  }
+  // The two groups that exist only with the catch instant a variable grow
+  // with the others (GrowPenalties) and fall back with them.
+  return raised || (tc_on_ && (mu_post_box_ > params_.mu_init_post_box ||
+                               mu_terminal_ > params_.mu_init_terminal));
 }
 
 void MpcDockingSegmentCore::ElasticOfNewGroups(double& post_box_max, double& post_box_sum,
@@ -2443,6 +2460,10 @@ MpcDockingReason MpcDockingSegmentCore::Prepare(const MpcDockingSegmentCoreInput
   bracket_lo_known_ = false;
   bracket_hi_known_ = false;
   have_prev_ = false;
+  // … and with nothing solved and no derivative read: what an earlier call
+  // left of either is not this call's.
+  have_settled_ = false;
+  reduced_grad_ = 0.0;
   // The grid, the free response and the catch node's ball at the start's δt_c.
   if (!SetCatchOffset(delta_)) {
     return MpcDockingReason::kBallInvalid;
@@ -2495,6 +2516,8 @@ void MpcDockingSegmentCore::ResetRecord(MpcDockingSegmentCoreResult& out) noexce
   out.capped_iterations = 0;
   out.catch_time_steps = 0;
   out.catch_time_gradient = 0.0;
+  out.catch_time_settled = false;
+  out.mu_resets = 0;
 }
 
 bool MpcDockingSegmentCore::Evaluate(const MpcDockingSegmentCoreInput& in,
@@ -2510,9 +2533,7 @@ bool MpcDockingSegmentCore::Evaluate(const MpcDockingSegmentCoreInput& in,
   }
   ProjectInitial(in);
   StageEnd(MpcDockingStage::kStart);
-  mu_ = params_.mu_init;
-  mu_post_box_ = params_.mu_init_post_box;
-  mu_terminal_ = params_.mu_init_terminal;
+  ResetPenalties();
   StageBegin(MpcDockingStage::kFinish);
   TrajectoryFromZ(z_);
   Evaluation ev;
@@ -2562,9 +2583,7 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
 
   // A new Solve is a new problem: the same input gives the same answer
   // whatever was solved before.
-  mu_ = p.mu_init;
-  mu_post_box_ = p.mu_init_post_box;
-  mu_terminal_ = p.mu_init_terminal;
+  ResetPenalties();
   solver_.ResetWarmStart();
   solver_warm_ = false;
 
@@ -2578,9 +2597,10 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     {
       const auto t0 = Clock::now();
       StageBegin(MpcDockingStage::kLinearize);
-      // The grid and the ball at the iterate's δt_c (a rejected trial point
-      // left them at its own).
-      const bool at = !tc_on_ || SetCatchOffset(delta_);
+      // The grid and the ball at the iterate's δt_c: rebuilt when the catch
+      // instant has moved since they were (a trial point of the line search
+      // or a penalty probe is at the same instant — θ is pinned).
+      const bool at = !tc_on_ || delta_ == delta_eval_ || SetCatchOffset(delta_);
       TrajectoryFromZ(z_);
       const bool ok = at && EvaluateTrajectory(true, ev_cur_);
       slack_c_cur_ = slack_c_;
@@ -2603,15 +2623,12 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     if (qp_why != MpcDockingReason::kNone && qp_why != MpcDockingReason::kSolutionNonFinite) {
       // A penalty raised by an earlier probe can be what the solver chokes on
       // at this linearisation: fall back to the initial penalties once.
-      bool raised = false;
-      for (std::size_t g = 0; g < mu_.size(); ++g) {
-        raised = raised || mu_[g] > p.mu_init[g];
-      }
-      if (raised) {
+      if (PenaltiesRaised()) {
         StageBegin(MpcDockingStage::kPostQp);
-        mu_ = p.mu_init;
+        ResetPenalties();
         SetPenaltyGradient();
         StageEnd(MpcDockingStage::kPostQp);
+        ++out.mu_resets;
         qp_why = RunQp(out);
       }
     }
@@ -2735,6 +2752,18 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       // instant says where the instant goes next; when it goes nowhere this is
       // the answer.
       StageBegin(MpcDockingStage::kPostQp);
+      if (solved_here) {
+        // A point to give back should the solve end before the catch
+        // instant's own search does: the cheapest one solved so far.
+        const double objective = ev_cur_.cost.total + ev_cur_.cost.time;
+        if (!have_settled_ || objective < settled_objective_) {
+          have_settled_ = true;
+          z_settled_ = z_;
+          settled_ns_ = delta_ns_;
+          settled_objective_ = objective;
+          settled_grad_ = reduced_grad_;
+        }
+      }
       const bool done = CatchTimeStep(p.tol_kkt * std::max(1.0, out.grad_norm));
       StageEnd(MpcDockingStage::kPostQp);
       if (done) {
@@ -2815,18 +2844,31 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
 
   StageBegin(MpcDockingStage::kFinish);
   bool at = true;
+  bool settled = false;
   if (tc_on_) {
+    settled = reason == MpcDockingReason::kConverged;
+    if (!settled && have_settled_) {
+      // The catch instant's search did not finish: the best point it solved
+      // on the way is the answer, not the one it stopped at (header note).
+      z_ = z_settled_;
+      delta_ns_ = settled_ns_;
+      delta_ = static_cast<double>(settled_ns_) / kNsPerSec;
+      reduced_grad_ = settled_grad_;
+      settled = true;
+    }
     // The grid and the ball at the returned δt_c — a whole number of
     // nanoseconds inside the box, as every instant this solve stood at.
-    at = SetCatchOffset(delta_);
+    at = delta_ == delta_eval_ || SetCatchOffset(delta_);
   }
   TrajectoryFromZ(z_);
   Evaluation final_ev;
   (void)EvaluateTrajectory(false, final_ev);
   if ((!final_ev.ok || !at) && reason != MpcDockingReason::kQpFailed) {
     reason = MpcDockingReason::kSolutionNonFinite;
+    settled = false;
   }
   Finish(final_ev, reason, out);
+  out.catch_time_settled = settled && out.feasible;
   StageEnd(MpcDockingStage::kFinish);
   out.total_us = MicrosSince(t_solve);
   return true;

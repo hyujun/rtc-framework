@@ -2578,6 +2578,179 @@ TEST(MpcDockingSegmentCoreCatchTime, AStartThatMustPayForTheTerminalRestStillCon
   }
 }
 
+// A solve cut short after the catch instant has moved gives back the best
+// point it SOLVED on the way — a solution of the problem at the instant it
+// reports — not the half-finished iterate at the instant it was cut at.
+TEST(MpcDockingSegmentCoreCatchTime, ASolveCutShortGivesBackTheBestPointItSolved) {
+  for (const dk::Rig& fixed_rig : Rigs()) {
+    const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 7 * kTcMs + 311, 20 * kTcMs);
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult fixed;
+    core.ResizeResult(fixed);
+    ASSERT_TRUE(SolveFixed(core, *c, fixed));
+    ASSERT_TRUE(fixed.converged) << DescribeTc(fixed);
+    dk::Rig slow_rig = c->rig;
+    slow_rig.params.delta_t_step = 0.0005;
+    int cut_short = 0;
+    int past_the_start = 0;
+    for (const int budget : {2, 3, 4, 6, 9}) {
+      const std::string where = fixed_rig.arm.name + " budget " + std::to_string(budget);
+      slow_rig.params.max_iterations = budget;
+      MpcDockingSegmentCore slow;
+      ASSERT_EQ(
+          slow.Init(slow_rig.model, slow_rig.arm.frame, slow_rig.params, slow_rig.limits, &NoClock),
+          MpcDockingReason::kNone);
+      MpcDockingSegmentCoreResult out;
+      slow.ResizeResult(out);
+      ASSERT_TRUE(slow.Solve(StartFrom(c->in, fixed), out));
+      ASSERT_FALSE(out.converged) << where << ": 0.5 ms a move cannot reach it" << DescribeTc(out);
+      ASSERT_EQ(out.reason, MpcDockingReason::kIterationLimit) << where;
+      ASSERT_GT(out.catch_time_steps, 0) << where;
+      ++cut_short;
+      // It reports a solved point, and says that the search did not finish.
+      EXPECT_TRUE(out.catch_time_settled) << where << DescribeTc(out);
+      EXPECT_TRUE(out.feasible) << where << DescribeTc(out);
+      // The instant the solve was cut at was not solved: the last move's
+      // destination never is (it would have moved again, or converged).
+      EXPECT_LE(std::abs(out.delta_ns),
+                static_cast<std::int64_t>(out.catch_time_steps - 1) * 500'000)
+          << where << DescribeTc(out);
+      past_the_start += out.delta_ns != 0 ? 1 : 0;
+      // It never costs more than the start's instant does …
+      EXPECT_LE(Objective(out), Objective(fixed) + 1e-9) << where;
+      // … and it IS the solution at its instant: the full core, the instant
+      // held there, starts from it and has nothing left to do.
+      MpcDockingSegmentCoreInput held = StartFrom(c->in, out);
+      held.delta_lo_ns = out.delta_ns;
+      held.delta_hi_ns = out.delta_ns;
+      MpcDockingSegmentCoreResult again;
+      core.ResizeResult(again);
+      ASSERT_TRUE(core.Solve(held, again)) << where;
+      EXPECT_FALSE(again.init_qp_used) << where;
+      EXPECT_TRUE(again.converged) << where << DescribeTc(again);
+      EXPECT_EQ(again.iterations, 1) << where;
+      EXPECT_LT((again.q - out.q).cwiseAbs().maxCoeff(), 1e-9) << where;
+      // The derivative it reports is that instant's, not the cut one's.
+      EXPECT_NEAR(out.catch_time_gradient, again.catch_time_gradient,
+                  1e-3 * std::max(1.0, std::abs(again.catch_time_gradient)))
+          << where;
+      std::printf("[ record ] %s: %s\n", where.c_str(), DescribeTc(out).c_str());
+    }
+    EXPECT_EQ(cut_short, 5);
+    EXPECT_GE(past_the_start, 2) << "every cut solve gave its start back";
+  }
+}
+
+// What a call reports of the catch instant is its own. A call that reads no
+// derivative reports none and a solve that solved nothing reports no solved
+// point — whatever the call before it on the same core left of either.
+TEST(MpcDockingSegmentCoreCatchTime, ACallReportsNothingAnEarlierCallLeft) {
+  const dk::Rig fixed_rig = dk::MakeRig(fx::RealArm7());
+  const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 7 * kTcMs + 311, 0);
+  MpcDockingSegmentCore full;
+  ASSERT_EQ(full.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  // Two iterations a solve: enough to confirm a solution it is handed, far
+  // too few to find one from the IK target.
+  dk::Rig short_rig = c->rig;
+  short_rig.params.max_iterations = 2;
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(
+      core.Init(short_rig.model, short_rig.arm.frame, short_rig.params, short_rig.limits, &NoClock),
+      MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult at;
+  MpcDockingSegmentCoreResult out;
+  full.ResizeResult(at);
+  core.ResizeResult(out);
+  MpcDockingSegmentCoreInput in = c->in;
+  in.time_c1 = 0.4;
+  in.time_c2 = 25.0;
+  in.delta_ref_ns = 3 * kTcMs;
+  dk::PerturbTarget(in, c->seed);
+  ASSERT_TRUE(full.Solve(in, at));
+  ASSERT_TRUE(at.converged) << DescribeTc(at);
+  // What every case below is preceded by: a solve that leaves a solved point
+  // and — held by the closed box off its best instant — a derivative far from
+  // zero.
+  const auto leave_both = [&] {
+    ASSERT_TRUE(core.Solve(StartFrom(in, at), out));
+    ASSERT_TRUE(out.converged) << DescribeTc(out);
+    ASSERT_TRUE(out.catch_time_settled);
+    ASSERT_GT(std::abs(out.catch_time_gradient), 1e-2) << DescribeTc(out);
+  };
+  leave_both();
+  ASSERT_TRUE(core.Evaluate(StartFrom(in, at), out));
+  EXPECT_EQ(out.catch_time_gradient, 0.0);
+  EXPECT_FALSE(out.catch_time_settled);
+  // A solve cut before it solved anything gives back the point it was cut at.
+  leave_both();
+  ASSERT_TRUE(core.Solve(in, out));
+  ASSERT_EQ(out.reason, MpcDockingReason::kIterationLimit) << DescribeTc(out);
+  EXPECT_FALSE(out.catch_time_settled) << DescribeTc(out);
+  EXPECT_GT((out.q - at.q).cwiseAbs().maxCoeff(), 1e-6) << "the earlier call's solution came back";
+  // A call refused before any iterate.
+  leave_both();
+  MpcDockingSegmentCoreInput refused = StartFrom(in, at);
+  refused.prediction = nullptr;
+  ASSERT_FALSE(core.Solve(refused, out));
+  EXPECT_EQ(out.catch_time_gradient, 0.0);
+  EXPECT_FALSE(out.catch_time_settled);
+}
+
+// The penalties of every group move as one: grown by the same factor, put
+// back together, and — when the solver fails on a QP after a growth step —
+// fallen back to their initial values together. At exit each group's penalty
+// over its initial value is therefore one number, the two groups that exist
+// only with the catch instant a variable included.
+TEST(MpcDockingSegmentCoreCatchTime, ThePenaltiesOfEveryGroupRiseAndFallBackTogether) {
+  int resets = 0;
+  int grown = 0;
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    dk::Rig fixed_rig = dk::MakeRig(arm);
+    // What makes the solver give a QP up after a penalty has grown: ProxQP's
+    // own primal-infeasibility test under a trust region
+    // (DefaultInfeasibilityThresholdMisreportsAFeasibleQp), at a threshold
+    // loose enough to fire on several of these solves.
+    fixed_rig.params.delta_tr = 0.05;
+    fixed_rig.params.solver.eps_primal_inf = 1e-2;
+    fixed_rig.params.mu_init.fill(1e-2);
+    fixed_rig.params.mu_init_post_box = 3e-2;
+    fixed_rig.params.mu_init_terminal = 5e-2;
+    for (const unsigned from : {1U, 20U, 40U, 60U, 80U}) {
+      const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, from, 7 * kTcMs + 311, 20 * kTcMs);
+      MpcDockingSegmentCore core;
+      ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+                MpcDockingReason::kNone);
+      MpcDockingSegmentCoreResult out;
+      core.ResizeResult(out);
+      MpcDockingSegmentCoreInput in = c->in;
+      dk::PerturbTarget(in, c->seed);
+      if (!core.Solve(in, out)) {
+        continue;
+      }
+      const double factor = out.mu[0] / c->rig.params.mu_init[0];
+      for (std::size_t g = 0; g < out.mu.size(); ++g) {
+        EXPECT_DOUBLE_EQ(out.mu[g] / c->rig.params.mu_init[g], factor) << arm.name << " " << g;
+      }
+      EXPECT_DOUBLE_EQ(out.mu_post_box / c->rig.params.mu_init_post_box, factor)
+          << arm.name << " seed " << c->seed << DescribeTc(out);
+      EXPECT_DOUBLE_EQ(out.mu_terminal / c->rig.params.mu_init_terminal, factor)
+          << arm.name << " seed " << c->seed << DescribeTc(out);
+      resets += out.mu_resets;
+      grown += out.mu_updates;
+      std::printf("[ record ] %s seed %u: mu x%.0e, %d growth steps, %d resets:%s\n",
+                  arm.name.c_str(), c->seed, factor, out.mu_updates, out.mu_resets,
+                  DescribeTc(out).c_str());
+    }
+  }
+  EXPECT_GT(grown, 0) << "no penalty grew";
+  EXPECT_GT(resets, 0)
+      << "no solve fell back to the initial penalties — the test does not reach it";
+  ::testing::Test::RecordProperty("mu_resets", resets);
+}
+
 // The core's own code allocates nothing with the catch instant a variable
 // either — the same gate, stage by stage, over solves that move the instant.
 TEST(MpcDockingSegmentCoreCatchTime, EveryStageOutsideTheSolverAllocatesNothing) {
