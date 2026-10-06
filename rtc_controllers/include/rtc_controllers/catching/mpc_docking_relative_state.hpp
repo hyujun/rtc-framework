@@ -44,6 +44,21 @@
 // Every standard deviation is √(variance + ε_σ²): at zero variance the plain
 // square root has no derivative.
 //
+// ── Derivatives with respect to the ball ──────────────────────────────────────
+// A catch instant that is a VARIABLE (MpcDockingSegmentCore's δt_c) moves the
+// ball the catch node's rows read: p_b and v_b are then functions of that
+// instant, with ṗ_b = v_b and v̇_b = a_b on the prediction. With the robot
+// state held fixed,
+//
+//   ∂r^H/∂p_b = Rᵀ      ∂r^H/∂v_b = 0
+//   ∂ν^H/∂p_b = −Rᵀ[ω_h]×      ∂ν^H/∂v_b = Rᵀ
+//
+// and every row at the catch node depends on the ball through r^H and ν^H
+// alone (the standard deviations depend on R and ω_h, not on the ball). The
+// catch-node rows report their gradient in (p_b, v_b) as a DockingBallGradient
+// when asked for one; the approach rows do not have one (their nodes are
+// before the catch node, at instants that do not move).
+//
 // ── Contracts ─────────────────────────────────────────────────────────────────
 // RT-safe: no heap after the work structs are sized (Resize / Init, non-RT),
 // noexcept. The model must have nq == nv. Preconditions the caller owns (the
@@ -122,6 +137,11 @@ struct DockingRelativeState {
   DockingMatrix3X dnu_dq;                         ///< ∂ν^H/∂q (3 × n)
   double s{0.0};                                  ///< e₃ᵀ r^H [m]
   double c{0.0};                                  ///< −e₃ᵀ ν^H [m/s]
+  /// With respect to the ball (header note): ∂r^H/∂p_b = Rᵀ, ∂ν^H/∂p_b =
+  /// −Rᵀ[ω_h]×, ∂ν^H/∂v_b = Rᵀ; ∂r^H/∂v_b is zero.
+  Eigen::Matrix3d dr_dpb{Eigen::Matrix3d::Zero()};
+  Eigen::Matrix3d dnu_dpb{Eigen::Matrix3d::Zero()};
+  Eigen::Matrix3d dnu_dvb{Eigen::Matrix3d::Zero()};
 
   void Resize(Eigen::Index n);
 
@@ -155,6 +175,23 @@ struct DockingScalar {
 
   void Resize(Eigen::Index n);
 };
+
+/// A scalar row's gradient in the ball's position and velocity (model world).
+struct DockingBallGradient {
+  Eigen::Vector3d dp{Eigen::Vector3d::Zero()};  ///< ∂/∂p_b
+  Eigen::Vector3d dv{Eigen::Vector3d::Zero()};  ///< ∂/∂v_b
+
+  /// The row's rate along the prediction, where ṗ_b = v_b and v̇_b = a_b.
+  [[nodiscard]] double Rate(const Eigen::Vector3d& v_b, const Eigen::Vector3d& a_b) const noexcept {
+    return dp.dot(v_b) + dv.dot(a_b);
+  }
+};
+
+/// @brief The ball gradient of a row whose gradient in (r^H, ν^H) is
+///        (`d_r`, `d_nu`) — the chain rule through `rel` (RT-safe).
+[[nodiscard]] DockingBallGradient DockingBallGradientOf(const DockingRelativeState& rel,
+                                                        const Eigen::Vector3d& d_r,
+                                                        const Eigen::Vector3d& d_nu) noexcept;
 
 /// @brief Approach corridor g = ‖ρ‖² − w², w = r_ent + ℓ⁺ tanθ + s_c,
 ///        ℓ = s − s_ent, ℓ⁺ = max(ℓ, 0); feasible when g ≤ 0.
@@ -204,15 +241,18 @@ void ComputeDockingCrossing(const DockingFrameKinematics& kin, const DockingRela
 /// The variance is evaluated as wᵀ Σ_p w with w = R Πᵀ E⊥ a — a quadratic form,
 /// no factorisation, so a singular Σ_p is fine. The gradient carries the
 /// dependence of Π on ν^H (through q and q̇) and of Σ^H_r on R.
+/// @param[out] ball the row's gradient in the ball, when not null
 void DockingLateralChanceRow(const DockingFrameKinematics& kin, const DockingRelativeState& rel,
                              const Eigen::Matrix3d& sigma_p, const Eigen::Vector2d& a, double kappa,
-                             double c_min, double eps_sigma, DockingScalar& h) noexcept;
+                             double c_min, double eps_sigma, DockingScalar& h,
+                             DockingBallGradient* ball = nullptr) noexcept;
 
 /// @brief Timing row t = c·k_t − σ_s(q), σ_s = √(dᵀ Σ_p d + ε_σ²); satisfied
 ///        when t ≥ 0. k_t = √(σ_max² − σ_τ²) is the caller's constant.
+/// @param[out] ball the row's gradient in the ball, when not null
 void DockingTimingRow(const DockingFrameKinematics& kin, const DockingRelativeState& rel,
                       const Eigen::Matrix3d& sigma_p, double k_t, double eps_sigma,
-                      DockingScalar& t) noexcept;
+                      DockingScalar& t, DockingBallGradient* ball = nullptr) noexcept;
 
 /// @brief σ_m = √(Var(mᵀ ν^H) + ε_σ²) for a capture-frame direction m, with
 ///        its gradient (through R and ω_h).
@@ -223,15 +263,18 @@ void DockingVelocitySigma(const DockingFrameKinematics& kin, const DockingCovari
 /// @brief Axial closing-speed row a = c + κ σ_c (σ_c along e₃). The lower
 ///        bound of V_cap passes κ = −κ_ν (a ≥ c_min), the upper κ = +κ_ν
 ///        (a ≤ c_cap,max).
+/// @param[out] ball the row's gradient in the ball, when not null
 void DockingAxialSpeedRow(const DockingFrameKinematics& kin, const DockingRelativeState& rel,
                           const DockingCovariance6& sigma_b, double kappa, double eps_sigma,
-                          DockingScalar& row) noexcept;
+                          DockingScalar& row, DockingBallGradient* ball = nullptr) noexcept;
 
 /// @brief Lateral-speed face row a = uᵀ E⊥ᵀ ν^H + κ σ_u for one face normal
 ///        u ∈ R² of the inscribed polygon; satisfied when a ≤ v⊥,max cos(π/m).
+/// @param[out] ball the row's gradient in the ball, when not null
 void DockingLateralSpeedRow(const DockingFrameKinematics& kin, const DockingRelativeState& rel,
                             const DockingCovariance6& sigma_b, const Eigen::Vector2d& u,
-                            double kappa, double eps_sigma, DockingScalar& row) noexcept;
+                            double kappa, double eps_sigma, DockingScalar& row,
+                            DockingBallGradient* ball = nullptr) noexcept;
 
 // ── Impact (reference §7) ──────────────────────────────────────────────────────
 
@@ -258,6 +301,12 @@ struct DockingImpact {
   /// √(m_red / 2) · c_n [√J]: the residual whose square is E — the
   /// Gauss–Newton form of the impact cost w_E E / E_ref.
   DockingScalar root_energy;
+  /// ∂/∂v_b of g_n, E, P and √E-residual (their ∂/∂p_b is zero: the contact
+  /// point and its normal are the hand's).
+  Eigen::Vector3d g_n_dvb{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d energy_dvb{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d impulse_dvb{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d root_energy_dvb{Eigen::Vector3d::Zero()};
 
   void Resize(Eigen::Index n);
 };

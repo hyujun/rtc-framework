@@ -230,7 +230,23 @@ bool ComputeDockingRelativeState(const DockingFrameKinematics& kin, const Eigen:
   }
   out.s = out.r_h.z();
   out.c = -out.nu_h.z();
+  // With respect to the ball: r^W = p_b − p_h and ν^H = Rᵀ(v_b − v_h − ω × r^W).
+  out.dr_dpb = rt;
+  out.dnu_dvb = rt;
+  Eigen::Matrix3d w_hat;
+  w_hat << 0.0, -kin.w.z(), kin.w.y(), kin.w.z(), 0.0, -kin.w.x(), -kin.w.y(), kin.w.x(), 0.0;
+  out.dnu_dpb.noalias() = -(rt * w_hat);
   return true;
+}
+
+DockingBallGradient DockingBallGradientOf(const DockingRelativeState& rel,
+                                          const Eigen::Vector3d& d_r,
+                                          const Eigen::Vector3d& d_nu) noexcept {
+  DockingBallGradient g;
+  g.dp.noalias() = rel.dr_dpb.transpose() * d_r;
+  g.dp.noalias() += rel.dnu_dpb.transpose() * d_nu;
+  g.dv.noalias() = rel.dnu_dvb.transpose() * d_nu;
+  return g;
 }
 
 bool DockingRelativeAcceleration(const pinocchio::Model& model, pinocchio::Data& data,
@@ -326,7 +342,8 @@ void ComputeDockingCrossing(const DockingFrameKinematics& kin, const DockingRela
 
 void DockingLateralChanceRow(const DockingFrameKinematics& kin, const DockingRelativeState& rel,
                              const Eigen::Matrix3d& sigma_p, const Eigen::Vector2d& a, double kappa,
-                             double c_min, double eps_sigma, DockingScalar& h) noexcept {
+                             double c_min, double eps_sigma, DockingScalar& h,
+                             DockingBallGradient* ball) noexcept {
   const bool guarded = !(rel.c > c_min);
   const double c_tilde = guarded ? c_min : rel.c;
   // g = Πᵀ E⊥ a = b + α e₃ with b = E⊥ a and α = νᵀ b / c̃.
@@ -356,11 +373,15 @@ void DockingLateralChanceRow(const DockingFrameKinematics& kin, const DockingRel
   h.dq.noalias() += kin.j_w.transpose() * rot_term;
   h.dq.noalias() += rel.dnu_dq.transpose() * alpha_term;
   h.dv.noalias() = rel.dr_dq.transpose() * alpha_term;
+  if (ball != nullptr) {
+    // aᵀρ reads r^H; the standard deviation reads the ball through α(ν^H).
+    *ball = DockingBallGradientOf(rel, b, alpha_term);
+  }
 }
 
 void DockingTimingRow(const DockingFrameKinematics& kin, const DockingRelativeState& rel,
                       const Eigen::Matrix3d& sigma_p, double k_t, double eps_sigma,
-                      DockingScalar& t) noexcept {
+                      DockingScalar& t, DockingBallGradient* ball) noexcept {
   const Eigen::Vector3d d = kin.R.col(2);
   const Eigen::Vector3d u = sigma_p * d;
   const double sigma_s = RegularizedSigma(d.dot(u), eps_sigma);
@@ -370,6 +391,10 @@ void DockingTimingRow(const DockingFrameKinematics& kin, const DockingRelativeSt
   t.dq = (-k_t) * rel.dnu_dq.row(2).transpose();
   t.dq.noalias() -= kin.j_w.transpose() * dxu;
   t.dv = (-k_t) * rel.dr_dq.row(2).transpose();
+  if (ball != nullptr) {
+    // c = −e₃ᵀ ν^H; σ_s does not read the ball.
+    *ball = DockingBallGradientOf(rel, Eigen::Vector3d::Zero(), Eigen::Vector3d(0.0, 0.0, -k_t));
+  }
 }
 
 void DockingVelocitySigma(const DockingFrameKinematics& kin, const DockingCovariance6& sigma_b,
@@ -396,18 +421,23 @@ void DockingVelocitySigma(const DockingFrameKinematics& kin, const DockingCovari
 
 void DockingAxialSpeedRow(const DockingFrameKinematics& kin, const DockingRelativeState& rel,
                           const DockingCovariance6& sigma_b, double kappa, double eps_sigma,
-                          DockingScalar& row) noexcept {
+                          DockingScalar& row, DockingBallGradient* ball) noexcept {
   DockingVelocitySigma(kin, sigma_b, Eigen::Vector3d::UnitZ(), eps_sigma, row);
   row.value = rel.c + kappa * row.value;
   row.dq *= kappa;
   row.dq -= rel.dnu_dq.row(2).transpose();
   row.dv *= kappa;
   row.dv -= rel.dr_dq.row(2).transpose();
+  if (ball != nullptr) {
+    // The standard deviation reads R and ω_h, not the ball.
+    *ball = DockingBallGradientOf(rel, Eigen::Vector3d::Zero(), Eigen::Vector3d(0.0, 0.0, -1.0));
+  }
 }
 
 void DockingLateralSpeedRow(const DockingFrameKinematics& kin, const DockingRelativeState& rel,
                             const DockingCovariance6& sigma_b, const Eigen::Vector2d& u,
-                            double kappa, double eps_sigma, DockingScalar& row) noexcept {
+                            double kappa, double eps_sigma, DockingScalar& row,
+                            DockingBallGradient* ball) noexcept {
   const Eigen::Vector3d m(u.x(), u.y(), 0.0);
   DockingVelocitySigma(kin, sigma_b, m, eps_sigma, row);
   row.value = u.x() * rel.nu_h.x() + u.y() * rel.nu_h.y() + kappa * row.value;
@@ -415,6 +445,9 @@ void DockingLateralSpeedRow(const DockingFrameKinematics& kin, const DockingRela
   row.dq += u.x() * rel.dnu_dq.row(0).transpose() + u.y() * rel.dnu_dq.row(1).transpose();
   row.dv *= kappa;
   row.dv += u.x() * rel.dr_dq.row(0).transpose() + u.y() * rel.dr_dq.row(1).transpose();
+  if (ball != nullptr) {
+    *ball = DockingBallGradientOf(rel, Eigen::Vector3d::Zero(), m);
+  }
 }
 
 // ── Impact ───────────────────────────────────────────────────────────────────
@@ -512,6 +545,12 @@ bool ComputeDockingImpact(const pinocchio::Model& model, pinocchio::FrameIndex f
   out.root_energy.value = root * c_n;
   out.root_energy.dq = (c_n * dm / (4.0 * root)) * out.beta.dq - root * out.g_n.dq;
   out.root_energy.dv = (-root) * out.g_n.dv;
+  // With respect to the ball's velocity: g_n = nᵀ(v_b − v_c), and E, P and the
+  // √E residual read it through c_n = −g_n alone (β_h does not).
+  out.g_n_dvb = normal;
+  out.energy_dvb = (-m_red * c_n) * normal;
+  out.impulse_dvb = (-gain * m_red) * normal;
+  out.root_energy_dvb = (-root) * normal;
   return true;
 }
 
