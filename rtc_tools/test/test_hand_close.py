@@ -26,6 +26,7 @@ from rtc_tools.analysis.hand_close import (
     joint_progress,
     load_profile,
     main,
+    nominal_closure_offset,
     quantile,
     rho,
     summarise_axis,
@@ -327,6 +328,22 @@ def test_p99_is_an_order_statistic():
     assert math.isnan(quantile([], 0.99))
 
 
+def test_std_is_the_sample_standard_deviation_of_the_closures_that_happened():
+    s = summarise_axis([0.10, 0.12, 0.14, math.nan])
+    assert s["n"] == 3 and s["mean"] == pytest.approx(0.12)
+    assert s["std"] == pytest.approx(0.02)  # n - 1: sqrt((0.02² + 0 + 0.02²) / 2)
+    assert math.isnan(summarise_axis([0.10])["std"])  # one closure has no spread
+    assert math.isnan(summarise_axis([math.nan])["std"])
+
+
+def test_the_closure_lands_mean_minus_t_close_e2e_after_the_catch_instant():
+    # A p99 shipped as T_close_e2e over a mean of 98.6 ms: closed 5.1 ms early.
+    assert nominal_closure_offset(0.0986, 0.1037) == pytest.approx(-0.0051)
+    assert nominal_closure_offset(0.11, 0.10) == pytest.approx(0.01)
+    assert math.isnan(nominal_closure_offset(0.0986, math.nan))
+    assert math.isnan(nominal_closure_offset(math.nan, 0.1037))
+
+
 def test_a_missing_column_is_fatal(tmp_path):
     profile = make_profile()
     csv = write_csv(tmp_path / "hand_state.csv", profile)
@@ -390,6 +407,64 @@ def test_cli_reports_both_axes_and_writes_a_plot(tmp_path, capsys):
     # The small-sample caveat must be printed, not left for the reader to know.
     assert "order statistic" in out
     assert plot.exists() and plot.stat().st_size > 0
+
+
+def _sidecar(tmp_path, profile, **extra):
+    path = tmp_path / "run.json"
+    payload = {
+        "joint_names": profile.joint_names,
+        "q_pre": profile.q_pre,
+        "q_close": profile.q_close,
+        "caging_mask": profile.caging_mask,
+        "eta_close": profile.eta_close,
+        "rho_eps": profile.rho_eps,
+        "dt": profile.dt,
+    }
+    payload.update(extra)
+    for key in [k for k, v in payload.items() if v is None]:
+        del payload[key]
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def _reported(out: str, axis: str) -> tuple[float, float]:
+    """(std, mean − T_close_e2e) in ms from the spread line of one axis."""
+    line = next(ln for ln in out.splitlines() if ln.strip().startswith(axis) and " std " in ln)
+    fields = line.split()
+    return float(fields[fields.index("std") + 1]), float(fields[-1])
+
+
+def test_cli_reports_the_spread_and_where_the_closure_lands(tmp_path, capsys):
+    profile = make_profile()
+    csv = write_csv(tmp_path / "hand_state.csv", profile, trials=5)
+    t_close = analytic_t_close()
+    sidecar = _sidecar(tmp_path, profile, T_close_e2e_at_run=t_close + 0.004)
+    assert load_profile(sidecar).t_close_e2e == pytest.approx(t_close + 0.004)
+
+    assert main([str(csv), "--profile", str(sidecar)]) == 0
+    out = capsys.readouterr().out
+    std, offset = _reported(out, "tick")
+    # Five identical step responses: no spread on the simulated-time axis, and
+    # the closure lands 4 ms early less the row it is read on (at most one dt).
+    assert std == pytest.approx(0.0, abs=1e-6)
+    assert -4.0 - 1e-6 <= offset <= -4.0 + DT * 1e3 + 1e-6
+    assert _reported(out, "steady")[1] == pytest.approx(offset, abs=1e-3)
+    assert f"{DT / math.sqrt(12.0) * 1e3:.3f} ms = dt / sqrt(12)" in out
+    assert "cannot be computed" not in out
+
+
+def test_cli_says_when_the_offset_or_the_tick_size_is_not_known(tmp_path, capsys):
+    profile = make_profile()
+    csv = write_csv(tmp_path / "hand_state.csv", profile, trials=5)
+    sidecar = _sidecar(tmp_path, profile, dt=None)  # no T_close_e2e_at_run, no dt
+    loaded = load_profile(sidecar)
+    assert math.isnan(loaded.t_close_e2e) and loaded.dt_is_assumed
+
+    assert main([str(csv), "--profile", str(sidecar)]) == 0
+    out = capsys.readouterr().out
+    assert math.isnan(_reported(out, "steady")[1])
+    assert "no T_close_e2e_at_run" in out and "cannot be computed" in out
+    assert "dt was ASSUMED" in out and "dt / sqrt(12)" not in out
 
 
 def test_cli_refuses_a_csv_with_no_closure(tmp_path):

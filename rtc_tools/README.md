@@ -311,8 +311,10 @@ ros2 run rtc_tools analyze_hand_close <session>/controllers/demo_catching_contro
 - ρ 는 **최소**다. 한 손가락만 늦어도 손 전체가 못 감싼 것이고 평균은 그것을 지운다. caging 집합은 프로파일이
   정한다 — p1b 출하 자세는 닫힐 때 index DIP 가 오히려 펴지므로 그 관절을 넣으면 진행으로 오독한다
 - p99 는 **순서통계량**이다. 성공 시행이 100 미만이면 p99 는 곧 최댓값이고 도구가 그렇게 말한다
+- **산포와 폐쇄가 끝나는 시각**: 축마다 표본 표준편차 (n − 1) 와 `mean − T_close_e2e` 를 낸다. 시퀀서가 $t_c-T_{close,e2e}$ 에 닫으므로 그 차이가 폐쇄가 $t_c$ 뒤 어디에 끝나는가 — 폐쇄 창을 쓰는 계획기의 $\delta_0$ 다 (`T_close_e2e` 가 같은 분포의 p99 라 작은 음수다). `T_close_e2e` 는 sidecar 의 `T_close_e2e_at_run` (그 run 의 컨트롤러가 읽은 값) 이고 없으면 "계산할 수 없음" 으로 낸다. tick 하나의 양자화 크기 `dt / sqrt(12)` 는 표준편차 **옆에** 적고 더하지 않는다 — 두 축 모두 CSV 행에서 읽으므로 표준편차에 이미 들어 있을 수 있다 (MPC 계획 E1-F15)
 - 테스트 `test/test_hand_close.py`: 1차 응답의 해석해 t = −τ·ln(1−η) 복원, ρ 의 min 거동, mask 제외, 역방향
-  관절 부호, 드롭 행 탐지, 순서통계량, `other` 자세가 시행을 열지 않음, 추정 dt 의 tick 축 불신
+  관절 부호, 드롭 행 탐지, 순서통계량, `other` 자세가 시행을 열지 않음, 추정 dt 의 tick 축 불신, 표준편차와
+  `mean − T_close_e2e` (sidecar 에 값이 없을 때의 표시 포함)
 
 ### `vision_lane.py` · `vision_lane_probe.py` · `camera_relay.py` — 예측 lane 실측 (dynamic_catching S3.4)
 
