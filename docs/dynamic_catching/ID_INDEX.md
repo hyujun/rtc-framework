@@ -76,7 +76,8 @@
 | E1-F10 · F11 | [#663](https://github.com/hyujun/rtc-framework/issues/663) · [#698](https://github.com/hyujun/rtc-framework/issues/698) | `mpc` 튜닝, config 의 기능별 분리 |
 | E2-F01 – F03 | [#633](https://github.com/hyujun/rtc-framework/issues/633) · [#634](https://github.com/hyujun/rtc-framework/issues/634) · [#635](https://github.com/hyujun/rtc-framework/issues/635) | G1 자산 · config · launch · joint 구동 |
 | E1-F12 | [#738](https://github.com/hyujun/rtc-framework/issues/738) | 포구 탐색 · 구간 계획기의 추상 interface (`CatchSearch` · `SegmentPlanner`) |
-| E1-F13 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
+| E1-F13 | [#739](https://github.com/hyujun/rtc-framework/issues/739) | mpc_docking 수치 코어 `MpcDockingSegmentCore` — 상대상태 · corridor · 확률 제약 · 토크 판정의 NLP (ProxQP 위 SQP). 구현한 식은 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) §17 |
+| E1-F14 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
 
 ## 4. `MD-n` — MPC · dual-arm 확장의 결정
 
