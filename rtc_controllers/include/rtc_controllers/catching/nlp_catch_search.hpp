@@ -1,0 +1,456 @@
+// ── The NLP catch search: one arm problem per candidate catch instant ─────────
+// (dynamic_catching E1-F14, #740; reference
+//  docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md §9.5, §11,
+//  §12.7, §17.11, §17.12)
+//
+// The second CatchSearch (catch_search.hpp). Where GridCatchSearch scores a
+// candidate catch point with closed-form gates, this one SOLVES the arm motion
+// that catches there — MpcDockingSegmentCore, the same problem the
+// mpc_docking segment planner solves — and chooses by that motion's cost. It
+// knows no ROS, no controller and no robot. Nothing installs it yet: the
+// planner cycle that would call it after the RT has adopted a plan is E1-F16.
+//
+// ── One wake (Plan) ───────────────────────────────────────────────────────────
+//  1. WHERE THE RESULT CAN START. t_0 = now + T_arm + budget + start_lead: the
+//     earliest instant a segment published by this wake can be read by the RT.
+//  2. CANDIDATES are the instants of a lattice of ABSOLUTE times,
+//     t_c(i) = t_ref + i·h, that lie in (t_0, t_0 + T_max]. t_ref is the first
+//     searching wake's `now` of the trial, so a candidate keeps its index from
+//     wake to wake (nlp_catch_screening.hpp).
+//  3. THE ARM GRID of a candidate is the core's, anchored at t_c:
+//     n_pre = ⌊(t_c − t_0)/Δ_a⌋ pre-catch intervals, node 0 at
+//     t_s = t_c − n_pre·Δ_a ∈ [t_0, t_0 + Δ_a). One core per n_pre is built at
+//     Configure; a wake solves each candidate on the core of its n_pre.
+//  4. THE START STATE x_0 is where the arm will be at t_s:
+//       – the RT follows no plan: its command, at rest (a command that moves
+//         is no start for a first plan — the wake's reason is not_at_rest);
+//       – the RT follows a plan: the segment it reports (ReportedSegments —
+//         the pending one from its node 0 on, else the followed one,
+//         SourceSegmentAt), evaluated at t_s by the RT's own sampler. Never
+//         the measured state, never the command extrapolated.
+//     A state outside the core's box is projected into it and marked.
+//  5. SCREENING, every candidate, in lattice order — each a NECESSARY
+//     condition, the first that fails is the candidate's reason:
+//     lead (S1) → the ball at every node of its grid → workspace → covariance
+//     → a source segment → catch-pose IK and its catchability gate → joint
+//     reach (S4) → closing-speed window (S3).
+//  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose, and
+//     solve the best L, L = min(max_solves, ⌊(budget − screening)/solve_budget⌋).
+//     Each solve has its own deadline (its share), not the wake's.
+//  7. A SOLVE'S START POINT comes from the PREVIOUS wake's memory only (so the
+//     order solves run in cannot matter): the same candidate's solution with
+//     the nodes that have passed dropped; else the nearest remembered
+//     candidate's solution stretched in time about t_s; else the IK pose.
+//  8. VALID is: solved inside its share, every hard row within tolerance, and
+//     converged. Φ = J⋆ + J_time + J_switch with J⋆ the solve's cost UP TO THE
+//     CATCH NODE (the stop part's terms are recorded, not chosen on). The
+//     smallest Φ wins, the smaller index on a tie.
+//  9. THE PLAN is that candidate; Solution() is its arm trajectory in the form
+//     a segment planner publishes.
+//
+// ── What a wake reports about the plan the RT follows ─────────────────────────
+// SearchStats::decision: kNoCurrent (the RT follows none); kRefreshed (the
+// chosen catch instant is the followed one, to the nanosecond); kReplaced (it
+// is another); kHeldNoCandidate with `publish` false (nothing is valid — the
+// RT keeps what it has). The switch term's anchor is the followed plan's catch
+// instant while there is one, else the instant this search last chose.
+//
+// ── Contracts ─────────────────────────────────────────────────────────────────
+//  • Configure is non-RT: it builds every core, input, result, the IK and the
+//    per-candidate memory, and runs each solver once (the first solve of a
+//    ProxQP object is its slowest and allocates the most).
+//  • Plan, Monitor, NotePublished, ResetTrial are noexcept and allocate
+//    nothing of their own — pinned with a C-level malloc gate over a whole
+//    Plan. The QP solvers inside the IK and the cores DO allocate in their
+//    own update()/solve() (#654): on hardware this search must not run on a
+//    SCHED_FIFO planner thread until that is closed.
+//  • `now` is the axis of every instant here (the lattice, t_0, the RT
+//    state's age). The clock handed to Configure measures DURATIONS only — the
+//    budget and the solves' deadlines — so a test can step it.
+//  • Joint vectors are in MODEL order inside (the cores' and the IK's), in the
+//    arm's DEVICE order at the interface (PlannerRtState, PlanSnapshot,
+//    SegmentSnapshot).
+#pragma once
+
+#include "rtc_controllers/catching/ball_node_samples.hpp"
+#include "rtc_controllers/catching/catch_pose_ik.hpp"
+#include "rtc_controllers/catching/catch_search.hpp"
+#include "rtc_controllers/catching/mpc_docking_relative_state.hpp"
+#include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
+#include "rtc_controllers/catching/nlp_catch_screening.hpp"
+#include "rtc_controllers/catching/planner_io.hpp"
+#include "rtc_controllers/catching/planner_params.hpp"  // CatchBox
+#include "rtc_controllers/catching/search_stats.hpp"
+#include "rtc_controllers/catching/time_types.hpp"
+#include "rtc_controllers/catching/traj_ingress.hpp"
+#include "rtc_controllers/catching/trajectory.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
+
+#include <Eigen/Core>
+#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody/model.hpp>
+
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace rtc::catching {
+
+/// Most solves one wake may run (the bound on `max_solves`).
+inline constexpr int kNlpMaxSolves = 32;
+/// Most lattice instants one wake may look at (the bound on `cand_capacity`).
+inline constexpr int kNlpMaxCandidates = 256;
+
+/// The arm model the search plans in (configure time, owned by the binding).
+struct NlpCatchSearchModel {
+  /// The hand-locked arm in pinocchio velocity order — what every core is
+  /// built on (MpcDockingSegmentCore::Init).
+  std::shared_ptr<const pinocchio::Model> arm;
+  /// The planner thread's own handle on the same sub-model, for the catch-pose
+  /// IK. No joint reorder may be installed on it (CatchPoseIk refuses one).
+  rtc_urdf_bridge::RtModelHandle* handle{nullptr};
+  pinocchio::FrameIndex catch_frame{0};  ///< in both; its +z is the approach axis
+  int nv{0};
+  /// `device_of_model[j]` = the arm device's index of model joint j.
+  std::array<int, kMaxPlanNv> device_of_model{};
+};
+
+/// Constants that live outside the search's own keys, resolved by the binding.
+struct NlpCatchSearchConstants {
+  double t_arm_s{0.0};       ///< `joint_cmd.lag.T_arm` [s]
+  double control_dt{0.002};  ///< the RT period [s]
+  /// `robot.hand.T_close_e2e` [s]; NaN = unknown, the plan's close instant is
+  /// then the catch instant.
+  double t_close_e2e{std::numeric_limits<double>::quiet_NaN()};
+};
+
+/// Tuning. Every field is validated by Configure.
+struct NlpCatchSearchParams {
+  // ── Candidates (§11.1) ──
+  double cand_dt{0.02};    ///< lattice spacing h [s], > 0
+  double t_lead_min{0.2};  ///< T_min: smallest t_c − t_0 [s]; ≥ n_pre_min·dt_pre
+  double t_max{0.6};       ///< T_max: largest t_c − t_0 [s]; ≤ n_pre_max·dt_pre
+  int cand_capacity{64};   ///< candidates a wake can hold; ≥ ⌊t_max/cand_dt⌋ + 1
+  CatchBox catch_box{};    ///< the catch point must lie inside (must be set)
+  /// The IK seed, DEVICE order, `wait_pose_n` = nv entries — the wait pose,
+  /// the same for every candidate and every wake (the RT's adopted wait pose
+  /// replaces it when it reports one).
+  std::array<double, kMaxPlanNv> wait_pose{};
+  int wait_pose_n{0};
+
+  // ── The arm grid: the keys the mpc_docking segment planner shares ──
+  int n_pre_min{2};      ///< fewest pre-catch intervals a candidate may have (≥ 1)
+  int n_pre_max{6};      ///< most; one core is built for each count in between
+  double dt_pre{0.1};    ///< Δ_a [s]
+  int n_stop{7};         ///< stop intervals after the catch node (≥ 3)
+  double dt_stop{0.05};  ///< Δ_s [s]
+  /// Move blocks of the stop part (Σ = n_stop, at least 3 blocks). Each
+  /// pre-catch interval is a block of its own.
+  int n_stop_blocks{4};
+  std::array<int, kMaxSegmentNodes> stop_block_sizes{1, 1, 2, 3};
+
+  // ── Budget (§11.2) ──
+  double budget_s{0.025};       ///< one wake's whole budget [s]
+  double solve_budget_s{0.01};  ///< one candidate's share [s]
+  double start_lead_s{0.004};   ///< margin between the budget's end and t_0 [s], ≥ 0
+  int max_solves{4};            ///< 1..kNlpMaxSolves
+
+  // ── Outer cost (§9.5) and the rank proxy (§11.3) ──
+  double w_time{0.0};        ///< w_T ≥ 0
+  double w_switch{0.0};      ///< w_sw ≥ 0
+  double t_ref_s{0.5};       ///< T_ref > 0 [s] — the cost's time scale
+  double rank_w_q{1.0};      ///< weight of ‖q^c − q_0‖² in the rank [1/rad²], ≥ 0
+  double rank_w_manip{0.0};  ///< weight of ψ_m(q^c) in the rank, ≥ 0
+
+  // ── The RT's report ──
+  double rest_tol{1e-3};            ///< max |q̇_cmd| that counts as "at rest" [rad/s]
+  double rt_state_age_max_s{0.05};  ///< oldest report a wake plans from [s]
+
+  /// The arm problem. `n_pre`, `dt_pre`, `n_stop`, `dt_stop`, `n_blocks` and
+  /// `block_sizes` are overwritten per core from the keys above; everything
+  /// else is every core's.
+  MpcDockingSegmentCoreParams core;
+  /// Joint limits, model order — the cores' box (the caller's margins already
+  /// applied). The reach condition reads the same numbers back from a core.
+  MpcDockingSegmentCoreLimits limits;
+};
+
+class NlpCatchSearch final : public CatchSearch {
+ public:
+  using ClockFn = std::int64_t (*)() noexcept;
+
+  NlpCatchSearch();
+  ~NlpCatchSearch() override;
+  // Owns its cores and scratch; a copy would be a second set of solvers.
+  NlpCatchSearch(const NlpCatchSearch&) = delete;
+  NlpCatchSearch& operator=(const NlpCatchSearch&) = delete;
+
+  /// @brief Build everything a wake uses (non-RT). A second call rebuilds from
+  ///        scratch.
+  /// @param clock steady clock for the budget and the solves' deadlines [ns]
+  /// @param[out] error why it failed, when it did
+  /// @return false, and unconfigured, on an unusable binding, a parameter out
+  ///         of range, a grid a core refuses, or a warm-up solve that never
+  ///         reached its QP.
+  [[nodiscard]] bool Configure(const NlpCatchSearchModel& model,
+                               const NlpCatchSearchConstants& constants,
+                               const NlpCatchSearchParams& params, const CatchPoseIkOptions& ik,
+                               ClockFn clock, std::string* error = nullptr);
+
+  [[nodiscard]] bool Configured() const noexcept { return configured_; }
+
+  /// One search (RT-safe apart from the QP solvers — header note).
+  [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
+                                  bool cov_matched, const PlannerRtState& rt,
+                                  const ReportedSegments& arm, NowReal now,
+                                  SearchStats& stats) noexcept override;
+
+  /// The chosen candidate's arm trajectory, or nullptr when the last Plan
+  /// chose none. Good until the next Plan or ResetTrial.
+  [[nodiscard]] const CatchSolution* Solution() const noexcept override {
+    return solution_valid_ ? &solution_ : nullptr;
+  }
+
+  /// monitorOnly: σ_ℓ = √λ_max(Σ_p) of the newest prediction at the followed
+  /// plan's catch instant; NaN when it cannot be read.
+  void Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
+               const PlannerRtState& rt, SearchStats& stats) const noexcept override;
+
+  /// Nothing to remember: the switch term's anchor is what the RT reports
+  /// following, or what this search last CHOSE — published or not.
+  void NotePublished(const PlanSnapshot& plan) noexcept override;
+
+  /// Forget the lattice anchor, every remembered solution and the last choice.
+  void ResetTrial() noexcept override;
+
+  // ── The last wake, candidate by candidate (tests, diagnostics, offline maps) ─
+
+  /// How a candidate's solve was started.
+  enum class Start : std::uint8_t {
+    kNone = 0,       ///< not solved
+    kIkTarget,       ///< no memory: the IK pose as the catch-node target
+    kSameCandidate,  ///< its own previous solution, the passed nodes dropped
+    kNeighbour,      ///< another candidate's previous solution, stretched in time
+  };
+
+  struct CandidateRecord {
+    std::int64_t index{0};    ///< lattice index
+    std::int64_t t_c_ns{0};   ///< catch instant
+    std::int64_t t_s_ns{0};   ///< node 0's instant
+    std::int64_t wait_ns{0};  ///< t_s − t_0
+    double lead_s{0.0};       ///< T = t_c − t_0 [s]
+    int n_pre{0};
+    NlpReject reject{NlpReject::kNone};
+    // ── Screening ──
+    CatchPoseReason ik_reason{CatchPoseReason::kNone};
+    bool ik_run{false};
+    NlpReachLimit reach_limit{NlpReachLimit::kNone};
+    int reach_joint{-1};
+    double speed_lo{0.0}, speed_hi{0.0};  ///< the closing-speed window [m/s]
+    double rank_key{0.0};
+    int rank{-1};  ///< position in the rank (0 = best), −1 when not screened in
+    /// The start state, MODEL order: where the arm is at t_s.
+    std::array<double, kMaxSegmentNv> q0{}, qd0{}, qdd0{};
+    std::array<double, kMaxSegmentNv> q_ik{};  ///< the IK pose, MODEL order (when it converged)
+    double w5{0.0}, w6{0.0};                   ///< the IK's manipulability at that pose
+    std::uint32_t source_seq{0};               ///< the segment x_0 was read from; 0 = rest
+    bool x0_clamped{false};
+    // ── The solve ──
+    Start start{Start::kNone};
+    std::int64_t start_index{0};  ///< the candidate whose memory started it
+    MpcDockingReason core_reason{MpcDockingReason::kNone};
+    DockingRowGroup worst_group{DockingRowGroup::kTorque};  ///< read on hard_row / chance
+    double worst_violation{0.0};
+    bool solved{false};  ///< the core returned an iterate
+    bool feasible{false};
+    bool converged{false};
+    int iterations{0};
+    std::int64_t solve_ns{0};
+    /// Where the solve's time went, as the core measured it on its own clock
+    /// [µs]: before the first iterate (start-point projection or the
+    /// initialisation QP), in the QP solver, and how many QPs that was.
+    double start_us{0.0}, qp_us{0.0};
+    int qp_solves{0};
+    double c_catch{0.0};  ///< closing speed at the catch node of the solution [m/s]
+    double j_reference{0.0}, j_stop{0.0}, j_time{0.0}, j_switch{0.0};
+    double phi{0.0};  ///< Φ, meaningful when `reject` is kNone
+  };
+
+  /// The last Plan's candidates, in lattice order.
+  [[nodiscard]] std::span<const CandidateRecord> Candidates() const noexcept {
+    return {cands_.data(), static_cast<std::size_t>(n_cands_)};
+  }
+
+  /// t_0 and the lattice anchor of the last Plan [ns].
+  [[nodiscard]] std::int64_t LastStartInstantNs() const noexcept { return t_0_ns_; }
+
+  [[nodiscard]] std::int64_t LatticeAnchorNs() const noexcept { return t_ref_ns_; }
+
+  /// The solution remembered for lattice index `index` — what the NEXT wake
+  /// starts that candidate from — or nullptr.
+  [[nodiscard]] const SegmentSnapshot* RememberedSolution(std::int64_t index) const noexcept;
+
+  /// The core for `n_pre` pre-catch intervals (n_pre_min..n_pre_max).
+  [[nodiscard]] const MpcDockingSegmentCore& Core(int n_pre) const noexcept;
+
+  // ── Test seams ──────────────────────────────────────────────────────────────
+
+  /// Solve the ranked candidates in another order: `order[i]` is the rank
+  /// position solved i-th. Applied only on a wake whose number of solves
+  /// equals `order.size()`; it changes neither which candidates are solved
+  /// nor the screening. Empty restores the rank order.
+  void SetEvaluationOrderForTesting(std::span<const int> order) noexcept;
+
+  /// Called right before and right after every QP-solving call — the IK's
+  /// Solve and a core's Solve — so that an allocation gate over a whole Plan
+  /// can be suspended exactly there (#654).
+  using SolverHook = void (*)(bool begin, void* user) noexcept;
+
+  void SetSolverHookForTesting(SolverHook hook, void* user) noexcept {
+    solver_hook_ = hook;
+    solver_user_ = user;
+  }
+
+  /// Forwarded to every core (MpcDockingSegmentCore::SetStageHook).
+  void SetCoreStageHookForTesting(MpcDockingSegmentCore::StageHook hook, void* user) noexcept;
+
+ private:
+  /// One remembered solution: the candidate it is of and its trajectory.
+  struct Memory {
+    bool valid{false};
+    std::int64_t index{0};
+    SegmentSnapshot seg{};  ///< DEVICE order, as it would be published
+    std::uint32_t source_seq{0};
+    double cost_reference{0.0}, cost_stop{0.0};
+    bool feasible{false}, converged{false};
+  };
+
+  [[nodiscard]] static std::size_t U(int i) noexcept { return static_cast<std::size_t>(i); }
+
+  [[nodiscard]] int CoreSlot(int n_pre) const noexcept { return n_pre - params_.n_pre_min; }
+
+  [[nodiscard]] std::size_t MemorySlot(std::int64_t index) const noexcept;
+  [[nodiscard]] const Memory* Remembered(std::int64_t index) const noexcept;
+  [[nodiscard]] const Memory* NearestRemembered(std::int64_t index) const noexcept;
+
+  /// x_0 of the candidate at node-0 instant t_s into `c` (model order).
+  [[nodiscard]] bool StartState(const PlannerRtState& rt, const ReportedSegments& arm,
+                                bool following, CandidateRecord& c) noexcept;
+  /// Every necessary condition, in order; sets c.reject.
+  void Screen(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
+              const PlannerRtState& rt, const ReportedSegments& arm, bool following,
+              bool has_previous, std::int64_t t_c_prev_ns, CandidateRecord& c,
+              SearchStats& stats) noexcept;
+  /// Fill the candidate's core input and solve it; sets c.reject and Φ.
+  void Solve(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
+             const PlannerRtState& rt, CandidateRecord& c, Memory& out) noexcept;
+  /// The core's result as the segment a planner publishes (device order).
+  void Pack(const PlannerRtState& rt, std::uint64_t track_generation, const CandidateRecord& c,
+            const MpcDockingSegmentCoreResult& r, SegmentSnapshot& out) const noexcept;
+  [[nodiscard]] bool WarmUp(std::string* error);
+
+  bool configured_{false};
+  NlpCatchSearchModel model_{};
+  NlpCatchSearchConstants constants_{};
+  NlpCatchSearchParams params_{};
+  CatchPoseIkOptions ik_options_{};
+  ClockFn clock_{nullptr};
+  int nv_{0};
+
+  // Integer forms of the keys (the arithmetic of the lattice and the grid).
+  std::int64_t h_ns_{0}, dt_pre_ns_{0}, dt_stop_ns_{0};
+  std::int64_t t_lead_min_ns_{0}, t_max_ns_{0};
+  std::int64_t t_arm_ns_{0}, control_dt_ns_{0};
+  std::int64_t budget_ns_{0}, solve_budget_ns_{0}, start_lead_ns_{0}, age_max_ns_{0};
+
+  // The arm problem, one per n_pre (index n_pre − n_pre_min).
+  std::vector<std::unique_ptr<MpcDockingSegmentCore>> cores_;
+  std::vector<MpcDockingSegmentCoreInput> inputs_;
+  std::vector<MpcDockingSegmentCoreResult> results_;
+  CatchPoseIk ik_;
+  // The cores' model (armature added) for the screening's own kinematics.
+  pinocchio::Model arm_model_;
+  pinocchio::Data arm_data_;
+  DockingFrameKinematics kin_;
+  DockingImpactWork impact_work_;
+  DockingImpact impact_;
+  DockingManipulabilityWork manip_work_;
+  Eigen::VectorXd manip_d_q_, manip_grad_;
+  Eigen::VectorXd q_model_, v_zero_, seed_, seed_yaml_;
+  bool timing_on_{false}, impact_on_{false};
+  double sigma_max_{0.0};
+
+  // Candidates of the last wake and the order they are solved in.
+  std::vector<CandidateRecord> cands_;
+  int n_cands_{0};
+  std::vector<int> ranked_;
+  std::array<int, kNlpMaxSolves> eval_order_{};
+  int eval_order_n_{0};
+
+  // Per-candidate memory. A wake READS `memory_` (the previous wakes') and
+  // WRITES `fresh_`; the two are merged when the wake ends.
+  std::vector<Memory> memory_;
+  std::vector<Memory> fresh_;
+
+  // The lattice and the last choice.
+  bool anchor_set_{false};
+  std::int64_t t_ref_ns_{0};
+  std::int64_t t_0_ns_{0};
+  bool track_known_{false};
+  std::uint64_t track_generation_{0};
+  bool chose_before_{false};
+  std::int64_t last_chosen_t_c_ns_{0};
+
+  CatchSolution solution_{};
+  bool solution_valid_{false};
+
+  SolverHook solver_hook_{nullptr};
+  void* solver_user_{nullptr};
+};
+
+/// @brief The PlanReason a reason of the NLP search is published as.
+///
+/// PlanSnapshot's reason set is frozen, so several reasons share one code; the
+/// exact one is in SearchStats::nlp and NlpCatchSearch::Candidates().
+[[nodiscard]] constexpr PlanReason NlpPlanReason(NlpReject r) noexcept {
+  switch (r) {
+    case NlpReject::kNone:
+      return PlanReason::kNone;
+    case NlpReject::kLeadShort:
+    case NlpReject::kNoCandidate:
+      return PlanReason::kHorizonShort;
+    case NlpReject::kBallInvalid:
+      return PlanReason::kInputNonFinite;
+    case NlpReject::kWorkspace:
+      return PlanReason::kStoppingDistance;  // the workspace gate's code, as the grid search's
+    case NlpReject::kCovariance:
+    case NlpReject::kChance:
+      return PlanReason::kUncertainty;
+    case NlpReject::kIk:
+      return PlanReason::kIkFailed;
+    case NlpReject::kManipulability:
+      return PlanReason::kManipulability;
+    case NlpReject::kReach:
+      return PlanReason::kReachTime;
+    case NlpReject::kSpeedWindow:
+      return PlanReason::kGammaWindow;
+    case NlpReject::kNotRanked:
+    case NlpReject::kDeadline:
+      return PlanReason::kBudgetExceeded;
+    case NlpReject::kSolverRejected:
+    case NlpReject::kNotAtRest:
+    case NlpReject::kNoSource:
+    case NlpReject::kRtInvalid:
+      return PlanReason::kLimitsInvalid;
+    case NlpReject::kHardRow:
+    case NlpReject::kUnconverged:
+      return PlanReason::kRollout;
+  }
+  return PlanReason::kNone;
+}
+
+}  // namespace rtc::catching

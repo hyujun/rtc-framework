@@ -109,6 +109,11 @@ add_library(rtc_controllers STATIC
   # dock and stop as one condensed jerk problem over ProxQP, with elastic hard
   # rows, an l1 merit and a deadline. Called by nothing but its tests yet.
   src/catching/mpc_docking_segment_core.cpp
+  # dynamic_catching E1-F14 (#740): the NLP catch search — the second
+  # CatchSearch. One core per pre-catch node count; a wake screens the lattice
+  # of absolute catch instants, solves the ranked candidates from the previous
+  # wake's solutions and chooses by the solve's cost. Installed by nothing yet.
+  src/catching/nlp_catch_search.cpp
   # dynamic_catching MPC E1-F02 (#628): the RT side of the segment payload —
   # closed-form joint reference between the published nodes, hand target by FK.
   src/catching/node_follower.cpp
@@ -626,6 +631,21 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_mpc_docking_segment_core PRIVATE -Wno-mismatched-new-delete)
   target_compile_definitions(test_catching_mpc_docking_segment_core PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
+    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
+  # dynamic_catching E1-F14 (#740): the NLP catch search on synthetic
+  # predictions — the choice against an exhaustive solve by the core, order
+  # independence of the solves, validity and reasons, the wakes after the RT
+  # follows a plan, and the allocation gate over a whole Plan (C-level malloc
+  # gate: one TU per binary) with the QP solvers bracketed out.
+  ament_add_gtest(test_catching_nlp_catch_search
+    test/test_catching_nlp_catch_search.cpp TIMEOUT 900)
+  target_link_libraries(test_catching_nlp_catch_search rtc_controllers)
+  target_include_directories(test_catching_nlp_catch_search PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_nlp_catch_search PRIVATE -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_nlp_catch_search PRIVATE
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
