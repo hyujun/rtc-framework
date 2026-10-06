@@ -114,7 +114,8 @@ integrated_bringup/
 │   └── motion_editor_gui.py            <- 모션 에디터 GUI (PyQt5)
 └── tools/                              <- 설치하지 않는 평가 도구 — source tree 에서 실행한다 (§포구 평가 도구)
     ├── catching_eval/                  <- 포구 sim 평가: unit 드라이버 · overlay · 조건 생성 · 판정
-    └── catch_frame/                    <- catch frame 의 MuJoCo ↔ URDF 대조와 렌더
+    ├── catch_frame/                    <- catch frame 의 MuJoCo ↔ URDF 대조와 렌더
+    └── docking_ident/                  <- mpc_docking 의 손 · 포획 입력 식별: fly-in rig · 단계별 실행기 · 보고서
 ```
 
 > ◇ `mujoco_native_backend.hpp` 의 fingertip wrench lane 동작 (sim sensor B path):
@@ -1068,6 +1069,33 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
 |---|---|
 | `verify_catch_frame.py <ur5e_p1b\|iiwa7_leap>` | MJCF 의 palm body frame 과 URDF 의 palm link frame 이 같은 frame 인지 관절 표본 위에서 대조한다. 이어서 **스크립트에 적힌** pocket 점 (S4.5 의 MuJoCo 실측값) 을 부모 link 의 offset 으로 옮긴 값 (`proposed_xyz_parent_frame_m`) 을 낸다. 결과는 JSON. **출하 YAML 의 `urdf.extra_frames.catch_frame` 과 `robot.hand.q_pre` 는 읽지 않는다** — 출하 값이 이 값과 같은지는 JSON 과 YAML 을 직접 대조한다 |
 | `show_catch_frame.py <ur5e_p1b\|iiwa7_leap> --out <png>` | 출하 catch frame 을 preshape 손 위에 그린다 (원점의 공 반지름 구, 접근축의 marker). `--viewer` 는 MuJoCo viewer 를 연다 — 육안 확인용 |
+
+**`tools/docking_ident/` — `mpc_docking` 의 손 · 포획 입력 식별** (MPC · dual-arm 계획 E1-F15, #741)
+
+`mpc_docking` (참고 문서 `docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md` §6 · §8.4 · §17.6 – §17.8) 이 받는 값 — 통과 평면 $s_{ent}$, lateral 집합 $\mathcal C_\perp$, 속도 집합 $\mathcal V_{cap}$, 폐쇄 창 — 을 sim 에서 재는 도구다. 팔을 대기 자세에 세우고 손을 `q_pre` 에 정착시킨 뒤, 출하 sim 공을 catch frame 의 직선을 따라 날리고 정해진 시각에 `q_close` 를 명령해 **유지되는가** 를 본다. 값을 YAML 에 넣는 것은 이 도구의 일이 아니다 (E1-F16, #742).
+
+| 파일 | 하는 일 |
+|---|---|
+| `rig_config.py` | 로봇 profile (이 패키지 `config/` 아래의 디렉토리 이름) 하나에서 rig 의 입력을 읽는다: 손 자세 · η · caging mask · `T_close_e2e`, catch frame, 대기 자세 (`rtc_tools` 의 `catching_trials.load_profile` 로), 그리고 sim 의 parameter 묶음 · 군 · 공. **로봇의 이름이나 관절 표는 이 디렉토리에 없다.** mujoco 없이 돈다 |
+| `rig.py` | MuJoCo rig. **sim 이 MJCF 위에 덮는 것을 전부 적용한다** — solver (`rtc_mujoco_sim` 의 `solver_param.yaml` 다음에 profile 의 YAML, scene 파일이 적은 option 은 그대로), servo 게인, 중력 보상, substep, 공 (종류별 상수 · 반발에서 구한 감쇠비 · `solimp` · priority · `condim` · 충돌 비트). 공의 상수는 C++ 에만 있어 `rig_config.py` 에 사본을 두고 테스트가 C++ 과 대조한다 |
+| `run_ident.py <profile> <stage>` | 단계별 실행: `selfcheck` · `map-coarse` · `map-fine` · `lateral` · `vperp` · `static` · `verify` (`all` 은 이 순서로 전부). 단계마다 `$DATA/<profile>/` 에 저장하고, 끊겨도 이미 있는 것은 다시 날리지 않는다 |
+| `report.py <profile>` | 저장된 판정에서 값을 계산해 (`rtc_tools.analysis.catching_capture_set`) 보고서를 낸다. simulator 를 쓰지 않으므로 원자료에서 언제든 다시 계산된다. **절차와 격자는 이 파일의 머리와 상수가 갖는다** |
+
+```bash
+( cd <workspace> \
+  && source <repo>/repo_scripts/scripts/setup_env.sh >/dev/null 2>&1 \
+  && export DATA=<자료 디렉토리> OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  && python3 <repo>/integrated_bringup/tools/docking_ident/run_ident.py ur5e_p1b all \
+  && python3 <repo>/integrated_bringup/tools/docking_ident/report.py ur5e_p1b )
+```
+
+- `DATA` 가 없으면 거부한다. `OMP_NUM_THREADS=1` 이 아니어도 거부한다 — worker (기본 6) 마다 thread pool 이 뜬다. **측정하는 동안 빌드를 돌리지 않는다**
+- **판정** (바꾸지 않는다): 공이 원점 평면에 닿은 뒤 1 s 를 두고, 그 상태에서 catch frame 세 축 ±방향으로 중력을 0.25 s 씩 건다. 공이 0.25 m 안에 있고 어느 방향에서도 20 mm 넘게 미끄러지지 않으면 유지다
+- **폐쇄 시각** $\delta^O$ = (명령 tick + `T_close_e2e`) − (공 중심이 무접촉으로 catch frame 의 원점 평면에 닿을 시각). 손 시퀀서가 $t_c-T_{close,e2e}$ 에 닫으므로 이것이 시퀀서가 정하는 양이다. 코어의 창은 $s_{ent}$ 통과 기준이라 `report.py` 가 옮긴다 ($\delta=\delta^O+s_{ent}/c$)
+- **sim 과 다른 것** (일부러): 비행 중 중력이 없다 (직선 접근), 손이 서 있고 공이 상대속도를 전부 갖는다 (손이 등속일 때만 같다), 폐쇄 명령은 제어 tick 의 계단이다 (컨트롤러 · 추정기가 없다)
+- 손보다 먼저 다른 물체에 닿은 시행은 `stray` 에 그 body 를 적고 보고서가 센다
+- 값은 전부 **provisional** 이다 — sim 의 손 흡수 · 반발은 실기 값이 아니다 (`docs/dynamic_catching/ref/L6_hand.md` §4.5)
+- 테스트: `test/test_docking_ident_config.py` (colcon 에서 돈다 — 두 출하 profile 의 입력, 공 상수의 C++ 대조, 심은 자료에서의 `report.py`), `test/test_docking_ident_rig.py` (**mujoco 가 필요해 colcon 에서는 skip** — rig 를 고쳤으면 `.venv/bin/python -m pytest` 로 돌린다. 손으로 계산되는 합성 손에서 frame · 도착 시각 · 명령 시각 · 직선 · 판정을 본다)
 
 ---
 
