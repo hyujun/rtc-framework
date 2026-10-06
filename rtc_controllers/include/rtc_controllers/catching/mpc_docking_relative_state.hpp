@@ -95,7 +95,7 @@ struct DockingFrameKinematics {
   Eigen::Vector3d w{Eigen::Vector3d::Zero()};      ///< ω_h = J_ω q̇ [rad/s], world axes
   DockingMatrix3X j_p, j_w;                        ///< 3 × n
   DockingMatrix3X dv_dq, dw_dq;                    ///< ∂_q v_h, ∂_q ω_h (3 × n)
-  DockingMatrix6X j6, d6_dq, d6_dv;                ///< 6 × n scratch
+  DockingMatrix6X d6_dq, d6_dv;                    ///< 6 × n scratch
   DockingMatrix3X pv_dv;                           ///< 3 × n scratch
 
   /// @brief Size every matrix for an n-joint arm (non-RT).

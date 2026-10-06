@@ -119,7 +119,6 @@ void DockingFrameKinematics::Resize(Eigen::Index n) {
   j_w.setZero(3, n);
   dv_dq.setZero(3, n);
   dw_dq.setZero(3, n);
-  j6.setZero(6, n);
   d6_dq.setZero(6, n);
   d6_dv.setZero(6, n);
   pv_dv.setZero(3, n);
@@ -529,11 +528,13 @@ bool ComputeDockingManipulability(const pinocchio::Model& model, pinocchio::Fram
       !(d_x_lin > 0.0) || !(d_x_ang > 0.0) || !(delta > 0.0)) {
     return false;
   }
-  work.j6.setZero();
-  pinocchio::computeFrameJacobian(model, work.data, q, frame, pinocchio::LOCAL_WORLD_ALIGNED,
-                                  work.j6);
+  // One kinematics pass: the Hessian routine computes the joint Jacobians it
+  // differentiates, and the frame Jacobian is read from those.
   pinocchio::computeJointKinematicHessians(model, work.data, q);
   const pinocchio::Frame& f = model.frames[frame];
+  work.j6.setZero();
+  pinocchio::getFrameJacobian(model, work.data, f.parentJoint, f.placement,
+                              pinocchio::LOCAL_WORLD_ALIGNED, work.j6);
   work.hessian.setZero();
   // The joint + placement overload: the frame-index one copies the Frame (its
   // name is a std::string — a heap allocation) and can throw on a bad index.
