@@ -396,4 +396,130 @@ TEST(NlpSearchShipped, RecordsHowFarASolveRunsPastAShortShare) {
   }
 }
 
+// The catch instant free inside a candidate's cell (`continuous_tc`, E1-F14
+// PR 2): what the second solve of a candidate costs beside the first, by the
+// number of pre-catch intervals, and what a whole wake costs with it.
+// Recorded, not judged — as everything in this file.
+TEST(NlpSearchShipped, RecordsTheContinuousSolveBesideTheFixedOne) {
+  for (ShippedArm& shipped : ShippedArms()) {
+    ASSERT_TRUE(shipped.rig.arm.model);
+    const std::string tag = shipped.rig.arm.name + "_continuous";
+    SCOPED_TRACE(tag);
+    Rig rig(std::move(shipped));
+    rig.params.continuous_tc = true;
+    // A candidate takes two shares: four candidates' worth of 0.2 s shares
+    // inside the budget.
+    rig.params.max_solves = 4;
+    const long rss_before = ResidentKb();
+    const std::int64_t t0 = SteadyNs();
+    std::string err;
+    ASSERT_TRUE(rig.Configure(&err)) << err;
+    RecordProperty(tag + "_configure_ms", static_cast<int>((SteadyNs() - t0) / kMs));
+    RecordProperty(tag + "_configure_rss_added_kb", static_cast<int>(ResidentKb() - rss_before));
+    const Throw ball = AxisThrow(rig, kBudgetS + kStarAfterT0S);
+
+    struct ByKind {
+      std::map<int, std::vector<std::int64_t>> fixed_ns, continuous_ns;
+      std::map<int, std::vector<std::int64_t>> fixed_iterations, continuous_iterations;
+    };
+
+    ByKind cold;
+    ByKind warm;
+    std::vector<std::int64_t> moves;
+    std::vector<std::int64_t> delta_us;
+    std::map<std::string, int> not_taken;
+    int ran = 0;
+    int used = 0;
+    constexpr int kTrials = 6;
+    for (int trial = 0; trial < kTrials; ++trial) {
+      rig.search->ResetTrial();
+      for (int wake = 0; wake < 3; ++wake) {
+        const std::int64_t now = kNow + (trial * 7 + wake * 33) * kMs;
+        SearchStats stats;
+        static_cast<void>(rig.search->Plan(ball.traj, ball.cov, true, rig.RestingRt(now),
+                                           NoSegments(), NowReal{now}, stats));
+        for (const Candidate& c : rig.search->Candidates()) {
+          if (!c.continuous_run) {
+            continue;
+          }
+          ++ran;
+          used += c.continuous_used ? 1 : 0;
+          ByKind& kind = wake == 0 ? cold : warm;
+          // The candidate's own fields are of the solve it uses.
+          kind.fixed_ns[c.n_pre].push_back(c.continuous_used ? c.fixed_solve_ns : c.solve_ns);
+          kind.fixed_iterations[c.n_pre].push_back(c.continuous_used ? c.fixed_iterations
+                                                                     : c.iterations);
+          kind.continuous_ns[c.n_pre].push_back(c.continuous_solve_ns);
+          kind.continuous_iterations[c.n_pre].push_back(c.continuous_iterations);
+          moves.push_back(c.continuous_moves);
+          if (c.continuous_used) {
+            delta_us.push_back(std::llabs(c.delta_ns) / 1000);
+          } else {
+            ++not_taken[NlpRejectName(c.continuous_reject)];
+          }
+        }
+      }
+    }
+    EXPECT_GT(ran, 0) << tag << ": no continuous solve ran";
+    RecordProperty(tag + "_solves_run", ran);
+    RecordProperty(tag + "_solves_taken", used);
+    for (const auto& [name, count] : not_taken) {
+      RecordProperty(tag + "_not_taken_" + name, count);
+    }
+    const auto median = [](std::vector<std::int64_t> v) {
+      std::sort(v.begin(), v.end());
+      return v.empty() ? std::int64_t{0} : v[v.size() / 2];
+    };
+    const auto largest = [](const std::vector<std::int64_t>& v) {
+      return v.empty() ? std::int64_t{0} : *std::max_element(v.begin(), v.end());
+    };
+    RecordProperty(tag + "_moves_median", static_cast<int>(median(moves)));
+    RecordProperty(tag + "_moves_max", static_cast<int>(largest(moves)));
+    RecordProperty(tag + "_abs_delta_median_us", static_cast<int>(median(delta_us)));
+    RecordProperty(tag + "_abs_delta_max_us", static_cast<int>(largest(delta_us)));
+    const auto record = [&](const char* when, const ByKind& kind) {
+      for (const auto& [n_pre, ns] : kind.fixed_ns) {
+        const std::string name = tag + "_" + when + "_n_pre_" + std::to_string(n_pre);
+        RecordUs(name + "_fixed", ns);
+        RecordUs(name + "_free", kind.continuous_ns.at(n_pre));
+        RecordProperty(name + "_fixed_median_iterations",
+                       static_cast<int>(median(kind.fixed_iterations.at(n_pre))));
+        RecordProperty(name + "_free_median_iterations",
+                       static_cast<int>(median(kind.continuous_iterations.at(n_pre))));
+        RecordProperty(name + "_free_max_iterations",
+                       static_cast<int>(largest(kind.continuous_iterations.at(n_pre))));
+      }
+    };
+    record("cold", cold);
+    record("warm", warm);
+
+    // A whole wake, by the number of candidates solved.
+    for (const int solves : {1, 2, 4}) {
+      rig.params.max_solves = solves;
+      ASSERT_TRUE(rig.Configure(&err)) << err;
+      std::vector<std::int64_t> cold_wake;
+      std::vector<std::int64_t> warm_wake;
+      int solved_min = solves;
+      for (int trial = 0; trial < 5; ++trial) {
+        rig.search->ResetTrial();
+        for (int wake = 0; wake < 4; ++wake) {
+          const std::int64_t now = kNow + (trial * 7 + wake * 33) * kMs;
+          SearchStats stats;
+          static_cast<void>(rig.search->Plan(ball.traj, ball.cov, true, rig.RestingRt(now),
+                                             NoSegments(), NowReal{now}, stats));
+          (wake == 0 ? cold_wake : warm_wake).push_back(stats.search_ns);
+          solved_min = std::min<int>(solved_min, stats.nlp.n_solved);
+        }
+      }
+      EXPECT_EQ(solved_min, solves) << tag;
+      const std::string name = tag + "_wake_" + std::to_string(solves) + "_candidates";
+      RecordUs(name + "_cold", cold_wake);
+      RecordUs(name + "_warm", warm_wake);
+    }
+  }
+#ifdef RTC_TEST_BUILD_TYPE
+  ::testing::Test::RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
+#endif
+}
+
 }  // namespace
