@@ -45,6 +45,16 @@ struct QPSolverConfig {
   // E1-F01 #627) and ran ~3× slower there than PrimalDualLDLT. Automatic keeps
   // existing callers unchanged.
   proxsuite::proxqp::DenseBackend dense_backend{proxsuite::proxqp::DenseBackend::Automatic};
+  // Threshold of ProxQP's primal-infeasibility test (its own default). The
+  // test accepts an APPROXIMATE Farkas certificate — ‖Aᵀδy + Cᵀδz‖ within this
+  // fraction of ‖(δy, δz)‖ — so it also fires on feasible problems whose
+  // multipliers grow fast (a QP with large linear penalties on elastic
+  // variables, dynamic_catching E1-F13 #739: PRIMAL_INFEASIBLE on a QP that is
+  // feasible by construction). 0 leaves only an EXACT certificate
+  // (‖Aᵀδy + Cᵀδz‖ = 0): a QP that is infeasible without one runs to max_iter
+  // instead of being reported early. For a caller whose QP cannot be
+  // infeasible.
+  double eps_primal_inf{1e-4};
 };
 
 // ────────────────────────────────────────────────

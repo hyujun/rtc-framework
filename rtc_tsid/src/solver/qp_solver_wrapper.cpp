@@ -25,6 +25,7 @@ void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
   // Bound inner Newton iterations so an infeasible/degenerate QP fails fast
   // instead of grinding for 0.5–1.4 s at the RT tick (ProxQP default = 1500).
   qp_->settings.max_iter_in = config_.max_iter_in;
+  qp_->settings.eps_primal_inf = config_.eps_primal_inf;
   qp_->settings.verbose = config_.verbose;
   qp_->settings.compute_timings = false;
 

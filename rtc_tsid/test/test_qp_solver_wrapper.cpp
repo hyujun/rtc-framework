@@ -416,6 +416,53 @@ TEST_F(QPSolverWrapperTest, DualsFollowTheStationaritySignConvention) {
   EXPECT_LT(z(1), 0.0) << "lower bound active";
 }
 
+// eps_primal_inf is ProxQP's threshold for accepting an APPROXIMATE
+// infeasibility certificate. 0 keeps only an exact one — and a QP with two
+// contradictory rows has one (δz = (1, −1) gives Cᵀδz = 0 exactly), so it is
+// still reported, never mistaken for solved. (Why a caller sets 0 — false
+// reports on feasible QPs with large penalties — is pinned where it occurs:
+// the docking core's suite has the control that fails without it.)
+TEST_F(QPSolverWrapperTest, ZeroPrimalInfeasibilityThresholdStillRejectsAContradiction) {
+  QPData qp;
+  qp.Init(2, 0, 2);
+  qp.n_vars = 2;
+  qp.n_ineq = 2;
+  qp.H.topLeftCorner(2, 2) = Eigen::Matrix2d::Identity();
+  // x0 ≤ −1 and x0 ≥ 1: no point satisfies both.
+  qp.C(0, 0) = 1.0;
+  qp.C(1, 0) = 1.0;
+  const double inf = std::numeric_limits<double>::infinity();
+  qp.l.head(2) << -inf, 1.0;
+  qp.u.head(2) << -1.0, inf;
+  constexpr int kPrimalInfeasible = 2;  // proxsuite::proxqp::QPSolverOutput
+
+  QPSolverConfig exact_only;
+  exact_only.max_iter = 50;
+  exact_only.eps_primal_inf = 0.0;
+  QPSolverWrapper wrapper;
+  wrapper.Init(2, 0, 2, exact_only);
+  const auto& result = wrapper.Solve(qp);
+  EXPECT_FALSE(result.converged);
+  EXPECT_EQ(result.status, kPrimalInfeasible);
+
+  // The default threshold does not call it solved either.
+  QPSolverConfig standard;
+  standard.max_iter = 50;
+  QPSolverWrapper reference;
+  reference.Init(2, 0, 2, standard);
+  EXPECT_FALSE(reference.Solve(qp).converged);
+
+  // And a feasible QP solves the same under both.
+  qp.l(1) = -3.0;  // x0 ≥ −3 with x0 ≤ −1
+  qp.g.head(2) << 0.0, -2.0;
+  QPSolverWrapper feasible_exact;
+  feasible_exact.Init(2, 0, 2, exact_only);
+  const auto& solved = feasible_exact.Solve(qp);
+  ASSERT_TRUE(solved.converged);
+  EXPECT_NEAR(solved.x_opt(0), -1.0, 1e-5);
+  EXPECT_NEAR(solved.x_opt(1), 2.0, 1e-5);
+}
+
 TEST_F(QPSolverWrapperTest, DualsAreEmptyBeforeInit) {
   EXPECT_EQ(solver.EqualityDual().size(), 0);
   EXPECT_EQ(solver.InequalityDual().size(), 0);
