@@ -15,6 +15,7 @@
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
+#include "rtc_controllers/testing/planner_trace_digest.hpp"
 
 #include <Eigen/Core>
 #include <gtest/gtest.h>
@@ -1733,6 +1734,368 @@ TEST(MpcDockingSegmentCore, RecordsSolveTimeByArmAndGrid) {
 #ifdef RTC_TEST_BUILD_TYPE
   ::testing::Test::RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
 #endif
+}
+
+// ── The core as it is, pinned bit for bit (E1-F14 PR 2, #740) ────────────────
+// The catch instant becomes a variable of this core (δt_c). A core that leaves
+// it off must stay the core it was: same dimensions, same code path, same
+// bits. These digests were taken BEFORE that change, over every way a solve
+// ends and over the QP it last assembled.
+
+void AddMatrix(rtc::testing::ValueDigest& h, const Eigen::MatrixXd& m) {
+  h.Add(m.rows());
+  h.Add(m.cols());
+  for (Eigen::Index c = 0; c < m.cols(); ++c) {
+    for (Eigen::Index r = 0; r < m.rows(); ++r) {
+      h.Add(m(r, c));
+    }
+  }
+}
+
+// Every value a solve leaves in its result — all but the wall-clock fields.
+void AddResult(rtc::testing::ValueDigest& h, bool returned, const MpcDockingSegmentCoreResult& r) {
+  h.Add(returned);
+  AddMatrix(h, r.q);
+  AddMatrix(h, r.qd);
+  AddMatrix(h, r.qdd);
+  AddMatrix(h, r.u);
+  h.Add(r.cost.total);
+  h.Add(r.cost.reference);
+  h.Add(r.cost.stop);
+  h.Add(r.cost.tau);
+  h.Add(r.cost.acc);
+  h.Add(r.cost.jerk);
+  h.Add(r.cost.posture);
+  h.Add(r.cost.manip);
+  h.Add(r.cost.near);
+  h.Add(r.cost.terminal);
+  h.Add(r.cost.impact);
+  h.Add(r.cost.slack);
+  h.Add(r.cost.stop_jerk);
+  h.Add(r.cost.stop_line);
+  h.Add(r.violation);
+  h.Add(r.elastic);
+  h.Add(r.mu);
+  h.Add(r.slack_c);
+  h.Add(r.slack_v);
+  h.Add(r.kkt_residual);
+  h.Add(r.grad_norm);
+  h.Add(r.complementarity);
+  h.Add(r.step_capped);
+  h.Add(r.c_catch);
+  h.Add(r.sigma_s);
+  h.Add(r.sigma_t);
+  h.Add(r.c_guarded);
+  h.Add(r.linearization_ratio);
+  h.Add(r.linearization_ratio_defined);
+  h.Add(r.tau_ratio_max);
+  h.Add(r.approach_nodes);
+  h.Add(r.iterations);
+  h.Add(r.qp_solves);
+  h.Add(r.qp_iterations);
+  h.Add(r.backtracks);
+  h.Add(r.mu_updates);
+  h.Add(r.init_qp_used);
+  h.Add(r.qp_status);
+  h.Add(r.reason);
+  h.Add(r.infeasible_group);
+  h.Add(r.feasible);
+  h.Add(r.converged);
+}
+
+// The last QP: its matrices, bounds, solution and multipliers.
+void AddLastQp(rtc::testing::ValueDigest& h, const MpcDockingSegmentCore& core) {
+  const rtc::tsid::QPData& qp = core.LastQp();
+  AddMatrix(h, qp.H);
+  AddMatrix(h, qp.g);
+  AddMatrix(h, qp.A);
+  AddMatrix(h, qp.b);
+  AddMatrix(h, qp.C);
+  AddMatrix(h, qp.l);
+  AddMatrix(h, qp.u);
+  AddMatrix(h, core.LastQpSolution());
+  AddMatrix(h, core.LastEqualityDual());
+  AddMatrix(h, core.LastInequalityDual());
+  h.Add(core.NumJerkVariables());
+  for (int g = 0; g < kNumDockingRowGroups; ++g) {
+    h.Add(core.GroupRowBegin(static_cast<DockingRowGroup>(g)));
+    h.Add(core.GroupRowCount(static_cast<DockingRowGroup>(g)));
+  }
+}
+
+struct PinnedSolve {
+  std::string name;
+  std::uint64_t digest{0};
+  MpcDockingReason reason{MpcDockingReason::kNone};
+  bool init_qp_used{false};
+  bool step_capped_seen{false};
+};
+
+// The solves that are pinned, in a fixed order. One core per path, so that no
+// digest depends on which path ran before it.
+std::vector<PinnedSolve> PinnedSolves() {
+  std::vector<PinnedSolve> all;
+  const auto run = [&all](const std::string& name, const dk::Rig& rig,
+                          MpcDockingSegmentCore::ClockFn clock, auto&& body) {
+    MpcDockingSegmentCore core;
+    if (core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, clock) !=
+        MpcDockingReason::kNone) {
+      ADD_FAILURE() << name << ": Init";
+      return;
+    }
+    MpcDockingSegmentCoreResult out;
+    core.ResizeResult(out);
+    rtc::testing::ValueDigest h;
+    PinnedSolve rec;
+    rec.name = name;
+    body(core, out, h, rec);
+    AddLastQp(h, core);
+    rec.digest = h.Value();
+    rec.reason = out.reason;
+    all.push_back(rec);
+  };
+  const auto solve = [](MpcDockingSegmentCore& core, const MpcDockingSegmentCoreInput& in,
+                        MpcDockingSegmentCoreResult& out, rtc::testing::ValueDigest& h,
+                        PinnedSolve& rec) {
+    const bool returned = core.Solve(in, out);
+    AddResult(h, returned, out);
+    rec.init_qp_used = rec.init_qp_used || out.init_qp_used;
+    rec.step_capped_seen = rec.step_capped_seen || out.step_capped;
+  };
+  const auto first_case = [](const dk::Rig& rig, const MpcDockingSegmentCore& core, unsigned push,
+                             MpcDockingSegmentCoreInput& in) {
+    std::vector<Case> cases = FeasibleCases(rig, core, 1);
+    if (cases.size() != 1U) {
+      ADD_FAILURE() << "no feasible case";
+      return false;
+    }
+    in = cases[0].in;
+    dk::PerturbTarget(in, push);
+    return true;
+  };
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    const dk::Rig base = dk::MakeRig(arm);
+    // The whole path of a feasible throw: from the IK target (initialisation
+    // QP), again from its own solution (start taken as given), and that
+    // solution judged without solving.
+    run(arm.name + "_converged", base, &NoClock,
+        [&](MpcDockingSegmentCore& core, MpcDockingSegmentCoreResult& out,
+            rtc::testing::ValueDigest& h, PinnedSolve& rec) {
+          MpcDockingSegmentCoreInput in;
+          if (!first_case(base, core, 1, in)) {
+            return;
+          }
+          solve(core, in, out, h, rec);
+          MpcDockingSegmentCoreInput again = in;
+          again.initial_valid = true;
+          again.q_init = out.q;
+          again.qd_init = out.qd;
+          again.qdd_init = out.qdd;
+          MpcDockingSegmentCoreResult second;
+          core.ResizeResult(second);
+          solve(core, again, second, h, rec);
+          MpcDockingSegmentCoreResult eval;
+          core.ResizeResult(eval);
+          AddResult(h, core.Evaluate(again, eval), eval);
+          // A start that breaks the linear rows goes through the
+          // initialisation QP's other target (the whole trajectory).
+          again.qdd_init *= 40.0;
+          solve(core, again, second, h, rec);
+        });
+    {
+      dk::Rig rig = base;
+      rig.params.max_iterations = 1;
+      run(arm.name + "_rti", rig, &NoClock,
+          [&](MpcDockingSegmentCore& core, MpcDockingSegmentCoreResult& out,
+              rtc::testing::ValueDigest& h, PinnedSolve& rec) {
+            MpcDockingSegmentCoreInput in;
+            if (first_case(rig, core, 9, in)) {
+              solve(core, in, out, h, rec);
+            }
+          });
+    }
+    {
+      dk::Rig rig = base;
+      rig.params.max_iterations = 2;
+      run(arm.name + "_iteration_limit", rig, &NoClock,
+          [&](MpcDockingSegmentCore& core, MpcDockingSegmentCoreResult& out,
+              rtc::testing::ValueDigest& h, PinnedSolve& rec) {
+            MpcDockingSegmentCoreInput in;
+            if (first_case(rig, core, 4, in)) {
+              solve(core, in, out, h, rec);
+            }
+          });
+    }
+    run(arm.name + "_deadline", base, &FakeClock,
+        [&](MpcDockingSegmentCore& core, MpcDockingSegmentCoreResult& out,
+            rtc::testing::ValueDigest& h, PinnedSolve& rec) {
+          MpcDockingSegmentCoreInput in;
+          if (!first_case(base, core, 1, in)) {
+            return;
+          }
+          g_fake_now = 1000;
+          in.deadline_ns = 500;
+          solve(core, in, out, h, rec);
+        });
+    {
+      // Every optional row and term, under a trust region small enough to cap
+      // the first steps.
+      dk::Rig rig = FullCostRig(arm);
+      rig.params.max_iterations = 50;
+      rig.params.tol_linear = dk::BaseParams(arm.model->nv).tol_linear;
+      rig.params.jerk_box = true;
+      rig.limits.jerk_max = Eigen::VectorXd::Constant(arm.model->nv, 4e3);
+      rig.params.delta_tr = 0.05;
+      run(arm.name + "_every_term_trust_region", rig, &NoClock,
+          [&](MpcDockingSegmentCore& core, MpcDockingSegmentCoreResult& out,
+              rtc::testing::ValueDigest& h, PinnedSolve& rec) {
+            MpcDockingSegmentCoreInput in;
+            if (!first_case(rig, core, 5, in)) {
+              return;
+            }
+            in.p_line = in.ball[static_cast<std::size_t>(core.CatchNode())].p +
+                        Eigen::Vector3d(0.02, -0.03, 0.01);
+            in.d_line = Eigen::Vector3d(0.3, -0.5, 0.8).normalized();
+            solve(core, in, out, h, rec);
+          });
+    }
+    {
+      // Three iterations under a trust region the first steps rest on: the
+      // last QP's step is a capped one.
+      dk::Rig rig = base;
+      rig.params.delta_tr = 0.02;
+      rig.params.max_iterations = 3;
+      run(arm.name + "_trust_region_capped", rig, &NoClock,
+          [&](MpcDockingSegmentCore& core, MpcDockingSegmentCoreResult& out,
+              rtc::testing::ValueDigest& h, PinnedSolve& rec) {
+            MpcDockingSegmentCoreInput in;
+            if (first_case(rig, core, 6, in)) {
+              solve(core, in, out, h, rec);
+            }
+          });
+    }
+    {
+      dk::Rig rig = base;
+      rig.params.chance = false;
+      run(arm.name + "_no_chance_rows", rig, &NoClock,
+          [&](MpcDockingSegmentCore& core, MpcDockingSegmentCoreResult& out,
+              rtc::testing::ValueDigest& h, PinnedSolve& rec) {
+            MpcDockingSegmentCoreInput in;
+            if (first_case(rig, core, 2, in)) {
+              solve(core, in, out, h, rec);
+            }
+          });
+    }
+    for (const InfeasibleCase& c : InfeasibleCases(arm)) {
+      run(arm.name + "_infeasible_" + c.name, c.rig, &NoClock,
+          [&](MpcDockingSegmentCore& core, MpcDockingSegmentCoreResult& out,
+              rtc::testing::ValueDigest& h, PinnedSolve& rec) {
+            MpcDockingSegmentCoreInput in;
+            c.fill(c.rig, core, in);
+            solve(core, in, out, h, rec);
+          });
+    }
+  }
+  return all;
+}
+
+/// PinnedSolves()' digests on the code BEFORE the catch instant became a
+/// variable of the core (E1-F14 PR 2). Numbers to compare against, tied to
+/// where they were taken — the rule of kWholeCatchDigest
+/// (test_catching_approach_cycle.cpp): a change MEANT to alter what the core
+/// without δt_c computes replaces them in a commit of its own that says why; a
+/// red on another host or after a library upgrade is the environment.
+struct PinnedDigest {
+  const char* name;
+  std::uint64_t digest;
+};
+
+constexpr std::array<PinnedDigest, 22> kPinnedCoreDigest{{
+    {"real_6dof_converged", 0x036c88c487850ddfULL},
+    {"real_6dof_rti", 0xcbb5fb83b4eee7a2ULL},
+    {"real_6dof_iteration_limit", 0x55b83155a1120b78ULL},
+    {"real_6dof_deadline", 0x575d790570b5f3d0ULL},
+    {"real_6dof_every_term_trust_region", 0x9a4efbdab2c85406ULL},
+    {"real_6dof_trust_region_capped", 0x4f1ee5530566f9ccULL},
+    {"real_6dof_no_chance_rows", 0x1046d94161545a8dULL},
+    {"real_6dof_infeasible_out_of_reach", 0x2e0d831fe3b13014ULL},
+    {"real_6dof_infeasible_lead_too_short", 0x792ce31699646d31ULL},
+    {"real_6dof_infeasible_torque_exceeded", 0x2d4c7bdc490b094fULL},
+    {"real_6dof_infeasible_timing_vs_velocity_set", 0xa04639ca40c95860ULL},
+    {"real_7dof_converged", 0x5fc0c4c751a4e522ULL},
+    {"real_7dof_rti", 0xfaeec49f91279b77ULL},
+    {"real_7dof_iteration_limit", 0x3d5f64b9ac649bb7ULL},
+    {"real_7dof_deadline", 0x7e29ad6726113dc8ULL},
+    {"real_7dof_every_term_trust_region", 0xa5ecddb9ceca693aULL},
+    {"real_7dof_trust_region_capped", 0x774b3cc22930d8deULL},
+    {"real_7dof_no_chance_rows", 0x760f11d31fe9bd63ULL},
+    {"real_7dof_infeasible_out_of_reach", 0x4ff27dc4d9533507ULL},
+    {"real_7dof_infeasible_lead_too_short", 0x5eace2e75d101ea8ULL},
+    {"real_7dof_infeasible_torque_exceeded", 0x0d853ce60be940cdULL},
+    {"real_7dof_infeasible_timing_vs_velocity_set", 0x90c3664d20b8f542ULL},
+}};
+
+TEST(MpcDockingSegmentCore, TheCoreWithoutACatchTimeVariableIsUnchangedBitForBit) {
+  const std::vector<PinnedSolve> solves = PinnedSolves();
+  ASSERT_EQ(solves.size(), kPinnedCoreDigest.size());
+  std::set<std::uint64_t> distinct;
+  std::set<MpcDockingReason> reasons;
+  bool init_qp = false;
+  bool capped = false;
+  for (std::size_t i = 0; i < solves.size(); ++i) {
+    const PinnedSolve& s = solves[i];
+    std::array<char, 32> hex{};
+    std::snprintf(hex.data(), hex.size(), "0x%016llx", static_cast<unsigned long long>(s.digest));
+    RecordProperty("core_digest_" + s.name, hex.data());
+    std::printf("[ record ] core_digest %s: %s (%s)\n", s.name.c_str(), hex.data(),
+                MpcDockingReasonName(s.reason));
+    EXPECT_EQ(s.name, kPinnedCoreDigest[i].name);
+    EXPECT_EQ(s.digest, kPinnedCoreDigest[i].digest)
+        << s.name << ": the core without δt_c changed: digest " << hex.data()
+        << ". A core that leaves the catch instant fixed must compute what it did before "
+           "(see kPinnedCoreDigest).";
+    distinct.insert(s.digest);
+    reasons.insert(s.reason);
+    init_qp = init_qp || s.init_qp_used;
+    capped = capped || s.step_capped_seen;
+  }
+  // The pinned solves went through every way a solve ends.
+  EXPECT_EQ(distinct.size(), solves.size()) << "two paths left the same digest";
+  for (const MpcDockingReason r : {MpcDockingReason::kConverged, MpcDockingReason::kIterationLimit,
+                                   MpcDockingReason::kDeadline, MpcDockingReason::kInfeasible}) {
+    EXPECT_EQ(reasons.count(r), 1U) << MpcDockingReasonName(r);
+  }
+  EXPECT_TRUE(init_qp);
+  EXPECT_TRUE(capped) << "no pinned solve rested on the trust region";
+}
+
+// The digest can tell: one bit of one node, or of one QP coefficient, moves it.
+TEST(MpcDockingSegmentCore, ThePinnedDigestSeesASingleBit) {
+  const dk::Rig rig = dk::MakeRig(fx::RealArm6());
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  ASSERT_TRUE(core.Solve(cases[0].in, out));
+  const auto digest = [](const MpcDockingSegmentCoreResult& r) {
+    rtc::testing::ValueDigest h;
+    AddResult(h, true, r);
+    return h.Value();
+  };
+  const std::uint64_t base = digest(out);
+  MpcDockingSegmentCoreResult moved = out;
+  const Eigen::Index last = moved.q.cols() - 1;
+  moved.q(0, last) = std::nextafter(moved.q(0, last), std::numeric_limits<double>::infinity());
+  EXPECT_NE(digest(moved), base);
+  moved = out;
+  moved.cost.near = std::nextafter(moved.cost.near, std::numeric_limits<double>::infinity());
+  EXPECT_NE(digest(moved), base);
+  moved = out;
+  moved.reason = MpcDockingReason::kIterationLimit;
+  EXPECT_NE(digest(moved), base);
 }
 
 }  // namespace

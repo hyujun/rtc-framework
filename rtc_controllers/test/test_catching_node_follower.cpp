@@ -24,6 +24,7 @@
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
+#include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
@@ -45,8 +46,10 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -885,6 +888,140 @@ TEST(SegmentAdmission, ASegmentForAnotherTrackIsNotThisPlans) {
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
   ctx.plan_track_generation = 11;
   EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kNone);
+}
+
+// ── The payload as it is, pinned bit for bit (E1-F14 PR 2, #740) ─────────────
+// The payload gets a third spacing (the catch interval's own length). A
+// payload that does not use it must be read as before — the validator's
+// verdict, every node instant and every sample, to the bit. The digest was
+// taken BEFORE that change.
+
+std::uint64_t PayloadDigest(const SegmentSnapshot& p, std::uint64_t seed) {
+  rtc::testing::ValueDigest h;
+  h.Add(ValidateSegmentNodes(p));
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    h.Add(rtc::catching::SegmentNodeTimeNs(p, k));
+  }
+  const std::int64_t end = rtc::catching::SegmentNodeTimeNs(p, p.n_nodes);
+  std::vector<std::int64_t> instants{p.t0_ns - 1};
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    const std::int64_t t = rtc::catching::SegmentNodeTimeNs(p, k);
+    instants.insert(instants.end(), {t - 1, t, t + 1});
+  }
+  std::mt19937_64 rng(seed);
+  std::uniform_int_distribution<std::int64_t> pick(p.t0_ns, end + 2 * p.dt_ns);
+  for (int i = 0; i < 400; ++i) {
+    instants.push_back(pick(rng));
+  }
+  for (const std::int64_t t : instants) {
+    std::array<double, kMaxSegmentNv> q{};
+    std::array<double, kMaxSegmentNv> qd{};
+    std::array<double, kMaxSegmentNv> qdd{};
+    bool held = false;
+    h.Add(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd, &held));
+    h.Add(q);
+    h.Add(qd);
+    h.Add(qdd);
+    h.Add(held);
+  }
+  return h.Value();
+}
+
+// The verdicts on shapes that are NOT well formed: both guards, for every
+// malformed field the two-spacing payload has.
+std::uint64_t MalformedDigest(const SegmentSnapshot& good) {
+  rtc::testing::ValueDigest h;
+  const std::int64_t t = good.t0_ns + 1'000'000;
+  const auto add = [&](auto mutate) {
+    SegmentSnapshot p = good;
+    mutate(p);
+    std::array<double, kMaxSegmentNv> q{};
+    std::array<double, kMaxSegmentNv> qd{};
+    std::array<double, kMaxSegmentNv> qdd{};
+    h.Add(ValidateSegmentNodes(p));
+    h.Add(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd));
+    h.Add(q);
+  };
+  add([](SegmentSnapshot&) {});
+  add([](SegmentSnapshot& p) { p.valid = false; });
+  add([](SegmentSnapshot& p) { p.nv = 0; });
+  add([](SegmentSnapshot& p) { p.n_nodes = kMaxSegmentNodes + 1; });
+  add([](SegmentSnapshot& p) { p.dt_ns = 0; });
+  add([](SegmentSnapshot& p) { p.k0 = 1; });
+  add([](SegmentSnapshot& p) { p.t0_ns += 1; });
+  add([](SegmentSnapshot& p) { p.n_pre = -1; });
+  add([](SegmentSnapshot& p) { p.n_pre = p.n_nodes; });
+  add([](SegmentSnapshot& p) { p.dt_pre_ns = 0; });
+  add([](SegmentSnapshot& p) { p.dt_pre_ns = rtc::catching::kMaxSegmentDtPreNs + 1; });
+  add([](SegmentSnapshot& p) { p.qd[Idx(p.n_nodes, 0)] = 2e-3; });
+  add([](SegmentSnapshot& p) { p.q[Idx(0, p.nv - 1)] = kNan; });
+  return h.Value();
+}
+
+struct PinnedPayload {
+  const char* name;
+  std::uint64_t digest;
+};
+
+/// Taken on the code BEFORE the payload learnt the catch interval's length
+/// (E1-F14 PR 2). Integer arithmetic and the closed-form jerk polynomial only:
+/// these do not depend on a solver. A change meant to alter how a payload
+/// WITHOUT that length is read replaces them in a commit of its own that says
+/// why (the rule of kWholeCatchDigest, test_catching_approach_cycle.cpp).
+constexpr std::array<PinnedPayload, 8> kPinnedPayloadDigest{{
+    {"stop_only", 0xc20bcbc5bd0ca4a4ULL},
+    {"stop_only_full", 0x2d751ec4271f9688ULL},
+    {"stop_only_k0_4", 0x9c1b76598bf3559eULL},
+    {"pre_1", 0xe4fe587b1240ef74ULL},
+    {"pre_2", 0x8f45d561e2815633ULL},
+    {"pre_6", 0x7bf142288f936a69ULL},
+    {"malformed_stop_only", 0xad11856410ceb491ULL},
+    {"malformed_pre_6", 0x2d2f9fc04024888aULL},
+}};
+
+TEST(SegmentPayload, APayloadWithoutACatchIntervalLengthIsReadAsBeforeBitForBit) {
+  const Eigen::VectorXd q0 = Eigen::VectorXd::Constant(6, 0.3);
+  std::vector<std::pair<std::string, std::uint64_t>> got;
+  got.emplace_back("stop_only", PayloadDigest(MakePlan(q0, 1), 11));
+  got.emplace_back("stop_only_full", PayloadDigest(MakePlan(q0, 2, kMaxSegmentNodes), 12));
+  got.emplace_back("stop_only_k0_4", PayloadDigest(MakePlan(q0, 3, 10, 4), 13));
+  got.emplace_back("pre_1", PayloadDigest(MakeMixedPlan(q0, 43, 1, 1).p, 14));
+  got.emplace_back("pre_2", PayloadDigest(MakeMixedPlan(q0, 52, 2, 7).p, 15));
+  got.emplace_back("pre_6", PayloadDigest(MakeMixedPlan(q0, 56, 6, 7).p, 16));
+  got.emplace_back("malformed_stop_only", MalformedDigest(MakePlan(q0, 1)));
+  got.emplace_back("malformed_pre_6", MalformedDigest(MakeMixedPlan(q0, 42, 6, 7).p));
+  ASSERT_EQ(got.size(), kPinnedPayloadDigest.size());
+  std::set<std::uint64_t> distinct;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    std::array<char, 32> hex{};
+    std::snprintf(hex.data(), hex.size(), "0x%016llx",
+                  static_cast<unsigned long long>(got[i].second));
+    RecordProperty("payload_digest_" + got[i].first, hex.data());
+    std::printf("[ record ] payload_digest %s: %s\n", got[i].first.c_str(), hex.data());
+    EXPECT_EQ(got[i].first, kPinnedPayloadDigest[i].name);
+    EXPECT_EQ(got[i].second, kPinnedPayloadDigest[i].digest)
+        << got[i].first
+        << ": a payload without a catch-interval length is read differently: " << hex.data()
+        << " (see kPinnedPayloadDigest)";
+    distinct.insert(got[i].second);
+  }
+  EXPECT_EQ(distinct.size(), got.size());
+}
+
+// The digest can tell: a sample one ulp off, or a node instant one ns off.
+TEST(SegmentPayload, ThePinnedPayloadDigestSeesASingleBit) {
+  const Eigen::VectorXd q0 = Eigen::VectorXd::Constant(6, 0.3);
+  const SegmentSnapshot good = MakeMixedPlan(q0, 56, 6, 7).p;
+  const std::uint64_t base = PayloadDigest(good, 16);
+  SegmentSnapshot p = good;
+  p.q[Idx(2, 1)] = std::nextafter(p.q[Idx(2, 1)], 10.0);
+  EXPECT_NE(PayloadDigest(p, 16), base);
+  p = good;
+  p.dt_ns += 1;
+  EXPECT_NE(PayloadDigest(p, 16), base);
+  p = good;
+  p.t0_ns += 1;  // now malformed for the validator; the sampler still reads it
+  EXPECT_NE(PayloadDigest(p, 16), base);
 }
 
 }  // namespace

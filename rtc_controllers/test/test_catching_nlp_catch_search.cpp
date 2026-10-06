@@ -3038,4 +3038,239 @@ TEST(NlpCatchSearchAllocation, AWakeAllocatesNothingOutsideTheQpSolvers) {
   }
 }
 
+// ── 9. The search as it is, pinned bit for bit (E1-F14 PR 2, #740) ───────────
+// The search gets a continuous solve per candidate (behind a switch) and a
+// window after adoption (behind another). With both off, a wake on which the
+// RT follows no plan must be the wake it was. These digests were taken BEFORE
+// either existed.
+
+// WakeDigest's values, with every reason by its NAME: a reason added to
+// NlpReject moves the numbers of the ones after it, and that is not a wake
+// behaving differently.
+[[nodiscard]] std::uint64_t PinnedWakeDigest(const NlpCatchSearch& s, const Wake& w) {
+  rtc::testing::ValueDigest h;
+  const auto add_reason = [&h](NlpReject r) {
+    for (const char* c = NlpRejectName(r); *c != '\0'; ++c) {
+      h.Add(*c);
+    }
+    h.Add('|');
+  };
+  rtc::testing::AddPlan(h, w.plan);
+  h.Add(w.stats.n_in_window);
+  h.Add(w.stats.n_ik);
+  h.Add(w.stats.n_pass);
+  h.Add(w.stats.budget_hit);
+  h.Add(w.stats.chosen_score);
+  h.Add(w.stats.decision);
+  h.Add(w.stats.publish);
+  add_reason(w.stats.nlp.reason);
+  h.Add(w.stats.nlp.n_lattice);
+  h.Add(w.stats.nlp.n_screened);
+  h.Add(w.stats.nlp.n_solved);
+  h.Add(w.stats.nlp.n_valid);
+  for (std::size_t i = 0; i < kNlpRejectCount; ++i) {
+    if (w.stats.nlp.rejects[i] != 0) {
+      add_reason(static_cast<NlpReject>(i));
+      h.Add(w.stats.nlp.rejects[i]);
+    }
+  }
+  h.Add(w.stats.nlp.chosen_index);
+  h.Add(w.stats.nlp.chosen_n_pre);
+  h.Add(w.stats.nlp.chosen_iterations);
+  h.Add(w.stats.nlp.chosen_phi);
+  h.Add(w.stats.nlp.chosen_j_reference);
+  h.Add(w.stats.nlp.chosen_j_stop);
+  h.Add(w.stats.nlp.chosen_j_time);
+  h.Add(w.stats.nlp.chosen_j_switch);
+  for (const Candidate& c : s.Candidates()) {
+    h.Add(c.index);
+    h.Add(c.t_c_ns);
+    h.Add(c.t_s_ns);
+    h.Add(c.n_pre);
+    add_reason(c.reject);
+    h.Add(c.ik_reason);
+    h.Add(c.rank);
+    h.Add(c.rank_key);
+    h.Add(c.q0);
+    h.Add(c.qd0);
+    h.Add(c.qdd0);
+    h.Add(c.q_ik);
+    h.Add(c.start);
+    h.Add(c.start_index);
+    h.Add(c.core_reason);
+    h.Add(c.solved);
+    h.Add(c.feasible);
+    h.Add(c.converged);
+    h.Add(c.late);
+    h.Add(c.iterations);
+    h.Add(c.qp_solves);
+    h.Add(c.j_reference);
+    h.Add(c.j_stop);
+    h.Add(c.j_time);
+    h.Add(c.j_switch);
+    h.Add(c.phi);
+    h.Add(c.worst_group);
+    h.Add(c.worst_violation);
+    h.Add(c.c_catch);
+    const SegmentSnapshot* m = s.RememberedSolution(c.index);
+    h.Add(m != nullptr);
+    if (m != nullptr) {
+      rtc::testing::AddSegment(h, *m);
+    }
+  }
+  const CatchSolution* sol = s.Solution();
+  h.Add(sol != nullptr);
+  if (sol != nullptr) {
+    rtc::testing::AddSegment(h, sol->seg);
+    h.Add(sol->cost_reference);
+    h.Add(sol->cost_stop);
+    h.Add(sol->feasible);
+    h.Add(sol->converged);
+  }
+  return h.Value();
+}
+
+struct PinnedSearch {
+  std::string name;
+  std::uint64_t digest{0};
+  int wakes{0};
+  int plans{0};
+  int solved{0};
+  int deadlines{0};
+  int from_memory{0};
+  bool budget_hit{false};
+};
+
+// Sequences of wakes on which the RT follows no plan, each on a rig of its own.
+[[nodiscard]] std::vector<PinnedSearch> PinnedSearches() {
+  std::vector<PinnedSearch> all;
+
+  struct Step {
+    std::int64_t after_ns;  // the wake's `now` − kNow
+    std::int64_t clock_step_ns;
+  };
+
+  const auto run = [&all](const std::string& name, auto&& edit, auto&& make_throw,
+                          std::span<const Step> steps) {
+    auto rig = std::make_unique<Rig>();
+    edit(*rig);
+    std::string err;
+    if (!rig->Configure(&err)) {
+      ADD_FAILURE() << name << ": " << err;
+      return;
+    }
+    const Throw ball = make_throw(*rig);
+    rtc::testing::ValueDigest h;
+    PinnedSearch rec;
+    rec.name = name;
+    for (const Step& step : steps) {
+      SetClockStep(step.clock_step_ns);
+      const std::int64_t now = kNow + step.after_ns;
+      const Wake w = RunWake(*rig, ball, rig->RestingRt(now), NoSegments(), now);
+      h.Add(PinnedWakeDigest(rig->search, w));
+      ++rec.wakes;
+      rec.plans += w.plan.valid ? 1 : 0;
+      rec.solved += w.stats.nlp.n_solved;
+      rec.budget_hit = rec.budget_hit || w.stats.budget_hit;
+      for (const Candidate& c : rig->search.Candidates()) {
+        rec.deadlines += c.reject == NlpReject::kDeadline ? 1 : 0;
+        rec.from_memory += c.start == NlpCatchSearch::Start::kSameCandidate ||
+                                   c.start == NlpCatchSearch::Start::kNeighbour
+                               ? 1
+                               : 0;
+      }
+    }
+    rec.digest = h.Value();
+    all.push_back(rec);
+  };
+  const auto no_edit = [](Rig&) {};
+  const auto axis = [](const Rig& rig) { return AxisThrow(rig, 0.28); };
+  const auto off_axis = [](const Rig& rig) { return OffAxisThrow(rig, 0.28); };
+  const std::array<Step, 3> three{{{0, 1000}, {41 * kMs, 1000}, {82 * kMs, 1000}}};
+  run("axis", no_edit, axis, three);
+  run("off_axis", no_edit, off_axis, three);
+  // Solves that run past their shares, and are refused for it.
+  const std::array<Step, 2> slow{{{0, 1000}, {41 * kMs, 100'000}}};
+  run("past_the_share", [](Rig& rig) { rig.params.solve_budget_s = 0.0004; }, axis, slow);
+  // A budget that holds fewer solves than passed the screening.
+  const std::array<Step, 2> cut{{{0, 200'000}, {41 * kMs, 200'000}}};
+  run("budget_cut", [](Rig& rig) { rig.params.solve_budget_s = 0.01; }, off_axis, cut);
+  // The outer cost's two terms on: the switch term is anchored on what the
+  // search last chose.
+  run(
+      "time_and_switch_terms",
+      [](Rig& rig) {
+        rig.params.w_time = 0.3;
+        rig.params.w_switch = 0.5;
+      },
+      off_axis, three);
+  // Every stop-part and impact term the search's cores can carry.
+  run(
+      "stop_line_and_impact",
+      [](Rig& rig) {
+        rig.params.core.w_perp = 30.0;
+        rig.params.core.w_impact = 0.5;
+        rig.params.core.e_ref = 0.05;
+        rig.params.core.e_max = 0.5;
+        rig.params.core.p_max = 0.5;
+      },
+      off_axis, three);
+  return all;
+}
+
+struct PinnedSearchDigest {
+  const char* name;
+  std::uint64_t digest;
+};
+
+/// PinnedSearches()' digests on the code BEFORE the continuous solve and the
+/// window after adoption (E1-F14 PR 2). Numbers to compare against, tied to
+/// where they were taken — the rule of kWholeCatchDigest
+/// (test_catching_approach_cycle.cpp): a change MEANT to alter what a wake
+/// leaves, with both switches off and the RT following no plan, replaces them
+/// in a commit of its own that says why.
+constexpr std::array<PinnedSearchDigest, 6> kPinnedSearchDigest{{
+    {"axis", 0x40ae1990d0f5baaeULL},
+    {"off_axis", 0x71d9348b3cfd85b8ULL},
+    {"past_the_share", 0xca95114736b6d4daULL},
+    {"budget_cut", 0xf77becbf0de812baULL},
+    {"time_and_switch_terms", 0x116fe3e0def3cbb2ULL},
+    {"stop_line_and_impact", 0x1dbdfb72a66be9e5ULL},
+}};
+
+TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
+  const std::vector<PinnedSearch> runs = PinnedSearches();
+  ASSERT_EQ(runs.size(), kPinnedSearchDigest.size());
+  std::set<std::uint64_t> distinct;
+  int deadlines = 0;
+  int from_memory = 0;
+  bool budget_hit = false;
+  for (std::size_t i = 0; i < runs.size(); ++i) {
+    const PinnedSearch& r = runs[i];
+    std::array<char, 32> hex{};
+    std::snprintf(hex.data(), hex.size(), "0x%016llx", static_cast<unsigned long long>(r.digest));
+    RecordProperty("search_digest_" + r.name, hex.data());
+    std::printf(
+        "[ record ] search_digest %s: %s — %d wakes, %d plans, %d solves, %d deadline, "
+        "%d from memory, budget_hit %d\n",
+        r.name.c_str(), hex.data(), r.wakes, r.plans, r.solved, r.deadlines, r.from_memory,
+        r.budget_hit ? 1 : 0);
+    EXPECT_EQ(r.name, kPinnedSearchDigest[i].name);
+    EXPECT_EQ(r.digest, kPinnedSearchDigest[i].digest)
+        << r.name << ": a wake without a followed plan changed: digest " << hex.data()
+        << " (see kPinnedSearchDigest)";
+    EXPECT_EQ(r.plans, r.wakes) << r.name << ": every pinned wake chooses a plan";
+    distinct.insert(r.digest);
+    deadlines += r.deadlines;
+    from_memory += r.from_memory;
+    budget_hit = budget_hit || r.budget_hit;
+  }
+  EXPECT_EQ(distinct.size(), runs.size());
+  // The pinned wakes went through the paths a wake has: solves started from
+  // memory, solves past their share, a budget that cut the solves.
+  EXPECT_GT(from_memory, 10);
+  EXPECT_GT(deadlines, 0);
+  EXPECT_TRUE(budget_hit);
+}
+
 }  // namespace
