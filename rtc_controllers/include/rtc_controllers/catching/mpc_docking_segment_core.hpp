@@ -73,9 +73,10 @@
 //    μ and say nothing about how large μ should be. What does tell is the
 //    QP's response: the penalties are grown geometrically (mu_growth, until
 //    the largest reaches mu_max) and the QP solved again, and each step is
-//    KEPT only if it buys linearised feasibility (mu_min_gain) — otherwise
-//    the rows cannot be met at this linearisation, and a larger μ would only
-//    worsen the conditioning. ALL penalties grow by the same factor: their
+//    KEPT only if it buys linearised feasibility (mu_min_gain,
+//    DockingPenaltyGrowthKept) — otherwise the rows cannot be met at this
+//    linearisation, and a larger μ would only worsen the conditioning. ALL
+//    penalties grow by the same factor: their
 //    ratio is the caller's (mu_init), and it decides in which group an
 //    infeasible problem leaves its residual.
 //  • The starting point always satisfies the linear rows (box, terminal rest):
@@ -92,8 +93,14 @@
 //  • An infeasible problem ends kInfeasible when, with an elastic left that a
 //    larger penalty does not remove, the iterate is stationary OR the hard
 //    rows' violation has stopped falling (stall_window, stall_reduction).
+//  • A step that rests on the trust region (delta_tr) proves nothing: the
+//    QP's multipliers are then not the problem's, and slow progress is the
+//    cap's doing. While `step_capped`, neither kConverged nor the two
+//    kInfeasible tests above can end the solve — a feasible problem under a
+//    small δ ends kIterationLimit or kDeadline.
 //  • max_iterations = 1 is one real-time iteration: a full step, no line
-//    search. It cannot report `converged`.
+//    search. It reports `converged` only when the point it STARTED from
+//    already meets the test (it then takes no step).
 //  • The deadline is read between iterations (a QP in progress is bounded only
 //    by the solver's own iteration cap). Past it, the last ACCEPTED iterate is
 //    returned with its violations and KKT residual.
@@ -108,11 +115,13 @@
 //
 // ── Contracts ─────────────────────────────────────────────────────────────────
 //  • Init() is non-RT (copies the model, allocates everything). Solve() is
-//    noexcept. It returns false — leaving the result's trajectory untouched —
-//    only when it rejects the call before any iterate exists (not initialised,
-//    bad sizes or values, x_0 outside the box, unusable ball input, no linear-
-//    feasible start). Otherwise it returns true and the result holds the last
-//    accepted iterate, whatever `reason` says.
+//    noexcept. It returns false — leaving the result's trajectory untouched
+//    and every other field of the result reset, so that nothing of an earlier
+//    solve stands next to this call's `reason` — only when it rejects the call
+//    before any iterate exists (not initialised, bad sizes or values, x_0
+//    outside the box, unusable ball input, no linear-feasible start).
+//    Otherwise it returns true and the result holds the last accepted
+//    iterate, whatever `reason` says.
 //  • Heap: this core allocates nothing in Solve() — pinned stage by stage with
 //    a C-level malloc gate (SetStageHook). ProxQP does allocate inside its own
 //    update()/solve() (#654), which is why this core must not yet run on a
@@ -185,16 +194,18 @@ enum class MpcDockingReason : std::uint8_t {
   kNonFinite,
   kInputOutOfRange,
   kInitialStateOutsideBox,
-  kBallInvalid,        ///< a node's ball mean is not valid
+  kBallInvalid,        ///< a node's ball mean is not valid, or lies past the prediction
   kCovarianceInvalid,  ///< chance rows on, catch-node covariance unusable or not PSD
   kTargetRequired,     ///< no initial trajectory and no catch-node target
-  kLinearInfeasible,   ///< no start point satisfies box + terminal rest
+  kLinearInfeasible,   ///< no start point satisfies box + terminal rest (solver certificate)
   // ── Solve ended with an iterate ──
   kConverged,  ///< KKT conditions met at a feasible point
   kIterationLimit,
   kDeadline,
   kInfeasible,        ///< stationary (or no descent) with a hard row still violated
   kLineSearchFailed,  ///< no acceptable step, hard rows hold
+  /// A QP did not converge. From the main QP an iterate exists (Solve returns
+  /// true); from the initialisation QP none does (Solve returns false).
   kQpFailed,
   kSolutionNonFinite,
 };
@@ -202,6 +213,24 @@ enum class MpcDockingReason : std::uint8_t {
 /// @brief Stable name for logs and test messages.
 [[nodiscard]] const char* MpcDockingReasonName(MpcDockingReason reason) noexcept;
 [[nodiscard]] const char* DockingRowGroupName(DockingRowGroup group) noexcept;
+
+/// @brief Whether a penalty growth step is kept (RT-safe). The rule Solve()
+///        applies to each probe — a free function so that its test can drive
+///        the cases a solve reaches rarely.
+///
+/// Kept when the larger penalty buys feasibility of the LINEARISED rows: the
+/// QP's elastic total falls by `min_gain`, or — when a trust region caps what
+/// one step can remove, so that the total barely moves — what the step removes
+/// of the violation grows by `min_gain` and by more than `tol_violation`. A
+/// step that adds violation counts as removing none.
+/// @param violation      Σ over groups of the hard rows' violation at the iterate
+/// @param elastic_before Σ of the QP's elastics at the smaller penalties
+/// @param elastic_after  Σ of the QP's elastics at the grown ones
+/// @param min_gain       params.mu_min_gain, in (0, 1)
+/// @param tol_violation  params.tol_violation
+[[nodiscard]] bool DockingPenaltyGrowthKept(double violation, double elastic_before,
+                                            double elastic_after, double min_gain,
+                                            double tol_violation) noexcept;
 
 /// Tuning. Every field is validated by Init(). Vectors of size n may be left
 /// empty for the default noted on each.
@@ -301,7 +330,9 @@ struct MpcDockingSegmentCoreParams {
   double armijo_eta{1e-4};
   double backtrack_beta{0.5};
   int max_backtracks{12};
-  double delta_tr{std::numeric_limits<double>::infinity()};  ///< |Δq_k| ≤ δ per step [rad]
+  /// Trust region |Δq_k| ≤ δ per step [rad]. A step resting on it cannot end
+  /// the solve as converged or infeasible (header note).
+  double delta_tr{std::numeric_limits<double>::infinity()};
   std::array<double, kNumDockingElasticGroups> mu_init{1e2, 1e2, 1e2, 1e2, 1e2, 1e2, 1e2};
   double mu_growth{10.0};  ///< > 1
   double mu_max{1e6};      ///< ≥ every mu_init
@@ -334,7 +365,9 @@ struct MpcDockingSegmentCoreParams {
   /// here is feasible by construction (the start satisfies the linear rows and
   /// every nonlinear row has an elastic or a slack), and the test's approximate
   /// certificate fired on such QPs — at μ = 100 under a 0.05 rad trust region,
-  /// and regularly from μ ≈ 1e4.
+  /// and regularly from μ ≈ 1e4. The INITIALISATION QP does not take that
+  /// setting: it is the one QP that can be infeasible, and it always runs with
+  /// QPSolverConfig's default threshold.
   tsid::QPSolverConfig solver{.eps_abs = 1e-7,
                               .eps_rel = 1e-9,
                               .max_iter = 400,
@@ -358,8 +391,10 @@ struct MpcDockingSegmentCoreLimits {
 
 struct MpcDockingSegmentCoreInput {
   Eigen::VectorXd q0, qd0, qdd0;  ///< x_0 (n each)
-  /// The ball at nodes 0..k_c (index = node). Every mean must be valid; only
-  /// the catch node's covariance is read (with params.chance).
+  /// The ball at nodes 0..k_c (index = node). Every mean must be valid and
+  /// inside the prediction (`after_horizon` false — an extrapolated ball is
+  /// rejected, kBallInvalid); only the catch node's covariance is read (with
+  /// params.chance).
   std::array<BallNodeSample, kMaxMpcNodes + 1> ball{};
   /// Optional start trajectory, n × (N+1) nodes. It is PROJECTED onto the block
   /// jerk: the start is rebuilt from x_0 with, per block, the mean of the
@@ -409,9 +444,14 @@ struct MpcDockingSegmentCoreResult {
   /// the smallest feasible value at the returned iterate.
   std::array<double, kMaxMpcNodes> slack_c{};
   std::array<double, kMaxMpcNodes> slack_v{};
-  double kkt_residual{0.0};     ///< ‖g + Cᵀλ + Aᵀy‖∞ on the jerk variables, last QP
+  /// ‖g + Cᵀλ + Aᵀy‖∞ on the jerk variables, last QP — without the trust
+  /// region's own multipliers, which are not the problem's.
+  double kkt_residual{0.0};
   double grad_norm{0.0};        ///< ‖∇J‖∞ on the jerk variables, same point
   double complementarity{0.0};  ///< max |λ_i · gap_i| of the last QP
+  /// The last QP's step rests on the trust region (delta_tr): the multipliers
+  /// of that bound are large enough to decide the stationarity test.
+  bool step_capped{false};
   // ── Diagnostics at the catch node ──
   double c_catch{0.0};    ///< closing speed [m/s]
   double sigma_s{0.0};    ///< [m] (0 without `chance`)
@@ -661,6 +701,9 @@ class MpcDockingSegmentCore {
   Eigen::VectorXd x_keep_, y_keep_, z_keep_;  // the solution before a penalty probe
   std::array<double, kNumDockingElasticGroups> mu_keep_{};
   std::vector<int> row_group_;  // per inequality row: its elastic group, or −1
+  /// Per position row: which of its bounds the trust region set (kTrust* bits).
+  std::vector<std::uint8_t> trust_side_;
+  Eigen::VectorXd trust_grad_;  // their multipliers' part of Cᵀλ (nu)
   double qp_noise_{0.0};        // Σ μ_G · (row residual)⁺ of the last QP solution
   Eigen::VectorXd cx_, kkt_;    // C·x (n_in), ∇L (nx)
   std::array<double, kNumDockingElasticGroups> elastic_sum_{};  // Σ e per group, last QP

@@ -441,6 +441,7 @@ inline void PerturbTarget(MpcDockingSegmentCoreInput& in, unsigned seed) {
 
 struct SolveTally {
   int cases{0};
+  int rejected{0};              // Solve() returned false: no iterate, nothing else tallied
   int constructed_feasible{0};  // the fixture's trajectory satisfied every hard row
   int converged{0};
   int feasible{0};
@@ -456,9 +457,16 @@ struct SolveTally {
   std::vector<double> total_us;
 };
 
-inline void Tally(const rtc::catching::MpcDockingSegmentCoreResult& out, SolveTally& t) {
+inline void Tally(const rtc::catching::MpcDockingSegmentCoreResult& out, bool solved,
+                  SolveTally& t) {
   using rtc::catching::MpcDockingReason;
   ++t.cases;
+  if (!solved) {
+    // A rejected call has a reason and nothing else: it is not a solve that
+    // ended infeasible in some row group.
+    ++t.rejected;
+    return;
+  }
   t.converged += out.converged ? 1 : 0;
   t.feasible += out.feasible ? 1 : 0;
   t.infeasible += out.reason == MpcDockingReason::kInfeasible ? 1 : 0;
@@ -485,6 +493,7 @@ inline void RecordTally(const std::string& tag, const SolveTally& t) {
     ::testing::Test::RecordProperty(tag + "_" + key, value);
   };
   rec("cases", t.cases);
+  rec("rejected", t.rejected);
   rec("constructed_feasible", t.constructed_feasible);
   rec("converged", t.converged);
   rec("feasible", t.feasible);
@@ -530,8 +539,9 @@ inline SolveTally SolveGeneratedThrows(const Rig& rig, int cases) {
     MpcDockingSegmentCoreInput in;
     tally.constructed_feasible += MakeThrow(rig, core, seed, 0.0, th, in) ? 1 : 0;
     PerturbTarget(in, seed);
-    EXPECT_TRUE(core.Solve(in, out)) << rtc::catching::MpcDockingReasonName(out.reason);
-    Tally(out, tally);
+    const bool solved = core.Solve(in, out);
+    EXPECT_TRUE(solved) << rtc::catching::MpcDockingReasonName(out.reason);
+    Tally(out, solved, tally);
   }
   return tally;
 }
@@ -562,8 +572,9 @@ inline SolveTally SolveRealThrows(const Rig& rig, double speed_lo, double speed_
     in.q_catch_target = rig.arm.q_nominal;
     FillBall(core, h.p + h.R * Eigen::Vector3d(0.0, 0.0, rig.params.s_ent), -speed * h.R.col(2),
              SmallCovariance(gen), in);
-    EXPECT_TRUE(core.Solve(in, out)) << rtc::catching::MpcDockingReasonName(out.reason);
-    Tally(out, tally);
+    const bool solved = core.Solve(in, out);
+    EXPECT_TRUE(solved) << rtc::catching::MpcDockingReasonName(out.reason);
+    Tally(out, solved, tally);
   }
   return tally;
 }

@@ -31,6 +31,12 @@ constexpr double kPsdRelTolerance = 1e-9;
 // Approach-window comparison slack [s] — node instants are products of
 // doubles, so a node exactly at the window's edge must not fall out by an ulp.
 constexpr double kWindowSlack = 1e-12;
+// ProxQP's "this QP has no feasible point".
+constexpr int kQpPrimalInfeasible =
+    static_cast<int>(proxsuite::proxqp::QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE);
+// Which side of a position row's bounds is the trust region rather than the box.
+constexpr std::uint8_t kTrustLower = 1;
+constexpr std::uint8_t kTrustUpper = 2;
 
 [[nodiscard]] bool FinitePositive(double x) noexcept {
   return std::isfinite(x) && x > 0.0;
@@ -124,6 +130,21 @@ const char* DockingRowGroupName(DockingRowGroup group) noexcept {
       return "terminal";
   }
   return "unknown";
+}
+
+bool DockingPenaltyGrowthKept(double violation, double elastic_before, double elastic_after,
+                              double min_gain, double tol_violation) noexcept {
+  if (elastic_after <= (1.0 - min_gain) * elastic_before) {
+    return true;
+  }
+  // What each step removes of the violation at the iterate. A step that ADDS
+  // to it (removed < 0: the QP trades rows for cost) has removed nothing, so
+  // the reference is 0 there — measured against a negative amount, any drop
+  // at all would pass and the penalty would ratchet to its cap.
+  const double removed_before = violation - elastic_before;
+  const double removed_after = violation - elastic_after;
+  return removed_after - removed_before > tol_violation &&
+         removed_after >= (1.0 + min_gain) * std::max(removed_before, 0.0);
 }
 
 // ── Init (non-RT) ────────────────────────────────────────────────────────────
@@ -564,7 +585,13 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   }
 
   solver_.Init(nx_, n_eq_, n_in_, p.solver);
-  init_solver_.Init(nu_, n_eq_, n_in_init_, p.solver);
+  // The initialisation QP is the one QP here that CAN be infeasible (x_0 may
+  // leave no way to stop inside the box), and it has no elastic for the
+  // solver's approximate certificate to trip over: it keeps ProxQP's own
+  // infeasibility test, whatever the main QP's setting.
+  tsid::QPSolverConfig init_solver = p.solver;
+  init_solver.eps_primal_inf = tsid::QPSolverConfig{}.eps_primal_inf;
+  init_solver_.Init(nu_, n_eq_, n_in_init_, init_solver);
 
   // ── Workspace ──
   x_qp_.setZero(nx_);
@@ -620,6 +647,8 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   work_n_.setZero(nn);
   zero_n_.setZero(nn);
   j6_.setZero(6, nn);
+  trust_side_.assign(static_cast<std::size_t>(nN), 0);
+  trust_grad_.setZero(nu_);
   mu_ = p.mu_init;
 
   initialized_ = true;
@@ -903,8 +932,13 @@ MpcDockingReason MpcDockingSegmentCore::RunInitQp(const MpcDockingSegmentCoreInp
   out.qp_status = res.status;
   out.init_qp_used = true;
   if (!res.converged) {
-    return res.non_finite ? MpcDockingReason::kSolutionNonFinite
-                          : MpcDockingReason::kLinearInfeasible;
+    if (res.non_finite) {
+      return MpcDockingReason::kSolutionNonFinite;
+    }
+    // "No start exists" only on the solver's certificate; running out of
+    // iterations says nothing about the rows.
+    return res.status == kQpPrimalInfeasible ? MpcDockingReason::kLinearInfeasible
+                                             : MpcDockingReason::kQpFailed;
   }
   StageBegin(MpcDockingStage::kStart);
   z_ = res.x_opt.head(nu_);
@@ -1354,13 +1388,19 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
       const double box_hi = q_hi_[j] - q_(j, k);
       double lower = std::max(box_lo, -tr);
       double upper = std::min(box_hi, tr);
+      // Which side the trust region set (PostQp: a step resting on it is
+      // capped, and says nothing about the rows).
+      std::uint8_t side = static_cast<std::uint8_t>((-tr > box_lo ? kTrustLower : 0) |
+                                                    (tr < box_hi ? kTrustUpper : 0));
       if (lower > upper) {
+        side = 0;  // the box decides both
         if (box_lo > tr) {
           upper = lower;
         } else {
           lower = upper;
         }
       }
+      trust_side_[static_cast<std::size_t>(o + j)] = side;
       qp_.l[row_q_ + o + j] = lower;
       qp_.u[row_q_ + o + j] = upper;
       qp_.l[row_v_ + o + j] = -v_hi_[j] - v_(j, k);
@@ -1574,7 +1614,6 @@ void MpcDockingSegmentCore::PostQp(MpcDockingSegmentCoreResult& out) noexcept {
   kkt_.noalias() += qp_.C.transpose() * z_qp_;
   kkt_.noalias() += qp_.A.transpose() * y_qp_;
   cx_.noalias() = qp_.C * x_qp_;
-  out.kkt_residual = kkt_.head(nu_).cwiseAbs().maxCoeff();
   out.grad_norm = qp_.g.head(nu_).cwiseAbs().maxCoeff();
   double comp = 0.0;
   for (Eigen::Index i = 0; i < n_in_; ++i) {
@@ -1586,6 +1625,24 @@ void MpcDockingSegmentCore::PostQp(MpcDockingSegmentCoreResult& out) noexcept {
     }
   }
   out.complementarity = comp;
+  // The trust region's own multipliers are not the problem's: their part of
+  // Cᵀλ is taken out of the residual that is reported and judged (ProxQP:
+  // upper-active ⇒ λ > 0). When that part is large enough to decide the
+  // stationarity test, the step rests on the trust region — it is capped by
+  // δ, not shaped by the problem. (Judged by its size, not by λ ≠ 0: the
+  // solver leaves rounding-sized multipliers on inactive rows.)
+  trust_grad_.setZero();
+  for (std::size_t i = 0; i < trust_side_.size(); ++i) {
+    const Eigen::Index row = row_q_ + static_cast<Eigen::Index>(i);
+    const double lam = z_qp_[row];
+    if ((lam > 0.0 && (trust_side_[i] & kTrustUpper) != 0) ||
+        (lam < 0.0 && (trust_side_[i] & kTrustLower) != 0)) {
+      trust_grad_ += lam * qp_.C.row(row).head(nu_).transpose();
+    }
+  }
+  out.kkt_residual = (kkt_.head(nu_) - trust_grad_).cwiseAbs().maxCoeff();
+  out.step_capped =
+      trust_grad_.cwiseAbs().maxCoeff() > params_.tol_kkt * std::max(1.0, out.grad_norm);
   ElasticByGroup(out.elastic, elastic_sum_);
   // What the solution leaves of the elastic groups' rows, in penalty units:
   // Σ μ_G · (row residual)⁺. Zero for an exact QP solution.
@@ -1759,7 +1816,9 @@ MpcDockingReason MpcDockingSegmentCore::Prepare(const MpcDockingSegmentCoreInput
   }
   for (Eigen::Index k = 0; k <= kc; ++k) {
     const BallNodeSample& b = in.ball[static_cast<std::size_t>(k)];
-    if (!b.valid || !b.p.allFinite() || !b.v.allFinite() || !b.a.allFinite()) {
+    // Past the end of the prediction the mean is an extrapolation and the
+    // covariance was propagated with no process noise: not a catch to plan.
+    if (!b.valid || b.after_horizon || !b.p.allFinite() || !b.v.allFinite() || !b.a.allFinite()) {
       return MpcDockingReason::kBallInvalid;
     }
   }
@@ -1829,6 +1888,23 @@ void MpcDockingSegmentCore::ResetRecord(MpcDockingSegmentCoreResult& out) noexce
   out.grad_norm = 0.0;
   out.complementarity = 0.0;
   out.elastic.fill(0.0);
+  out.step_capped = false;
+  // What Finish() writes: a call rejected before any iterate must not leave
+  // the previous solve's numbers next to its own reason.
+  out.cost = MpcDockingCost{};
+  out.violation.fill(0.0);
+  out.mu.fill(0.0);
+  out.slack_c.fill(0.0);
+  out.slack_v.fill(0.0);
+  out.c_catch = 0.0;
+  out.sigma_s = 0.0;
+  out.sigma_t = 0.0;
+  out.c_guarded = false;
+  out.linearization_ratio = 0.0;
+  out.linearization_ratio_defined = false;
+  out.tau_ratio_max = 0.0;
+  out.approach_nodes = 0;
+  out.infeasible_group = DockingRowGroup::kTorque;
 }
 
 bool MpcDockingSegmentCore::Evaluate(const MpcDockingSegmentCoreInput& in,
@@ -1899,6 +1975,7 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
   solver_warm_ = false;
 
   MpcDockingReason reason = MpcDockingReason::kIterationLimit;
+  int stall_from = 0;  // first iteration whose violation the stall test may read
   for (int it = 0; it < p.max_iterations; ++it) {
     if (it > 0 && clock_ != nullptr && in.deadline_ns > 0 && clock_() >= in.deadline_ns) {
       reason = MpcDockingReason::kDeadline;
@@ -1974,19 +2051,11 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
         for (const double e : e_sum) {
           after += e;
         }
-        // Kept when the larger penalty buys feasibility of the LINEARISED
-        // rows: the elastic total falls by min_gain, or — when a trust region
-        // caps what one step can remove, so that the total barely moves — the
-        // amount this step removes grows by min_gain.
         double violation = 0.0;
         for (const double v : ev_cur_.viol_sum) {
           violation += v;
         }
-        const double removed_before = violation - before;
-        const double removed_after = violation - after;
-        keep = after <= (1.0 - p.mu_min_gain) * before ||
-               (removed_after - removed_before > p.tol_violation &&
-                removed_after >= (1.0 + p.mu_min_gain) * removed_before);
+        keep = DockingPenaltyGrowthKept(violation, before, after, p.mu_min_gain, p.tol_violation);
       }
       if (!keep) {
         RestorePenalties();
@@ -2010,7 +2079,11 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     for (const double e : out.elastic) {
       elastic_left = elastic_left || e > p.tol_violation;
     }
-    const bool stationary = out.kkt_residual <= p.tol_kkt * std::max(1.0, out.grad_norm);
+    // Under a binding trust region the QP's multipliers are not the NLP's
+    // (with them ‖g + Cᵀλ + Aᵀy‖ = ‖H d‖, small because d is capped), so the
+    // step proves neither a KKT point nor that the rows cannot be met.
+    const bool stationary =
+        !out.step_capped && out.kkt_residual <= p.tol_kkt * std::max(1.0, out.grad_norm);
     if (stationary && feasible_now && out.complementarity <= p.tol_complementarity) {
       reason = MpcDockingReason::kConverged;
       break;
@@ -2023,12 +2096,18 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     }
     // Read the old entry BEFORE this iteration's overwrites it: with the
     // longest window the two are the same slot of the ring.
-    const double violation_then = it >= p.stall_window
+    // … and only entries from stall_from on count: slow progress under a
+    // capped step is the cap's doing.
+    if (out.step_capped) {
+      stall_from = it + 1;
+    }
+    const double violation_then = it - p.stall_window >= stall_from
                                       ? violation_hist_[static_cast<std::size_t>(
                                             (it - p.stall_window) % kDockingStallHistory)]
                                       : kInf;
     violation_hist_[static_cast<std::size_t>(it % kDockingStallHistory)] = violation_now;
-    const bool stalled = violation_now >= (1.0 - p.stall_reduction) * violation_then;
+    const bool stalled =
+        !out.step_capped && violation_now >= (1.0 - p.stall_reduction) * violation_then;
     if (elastic_left && !feasible_now && (stationary || stalled)) {
       // The linearised rows cannot be met here, a larger penalty does not
       // help (the probe above), and either the iterate is a stationary point
@@ -2039,7 +2118,8 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       // deliver, and the cost alone would be polished for many iterations.
       // (A violation with NO elastic left is not this case: the step that
       // removes it is just small. Nor is an elastic at a FEASIBLE iterate:
-      // the QP is then stepping into a violation, which the merit judges.)
+      // the QP is then stepping into a violation, which the merit judges. Nor
+      // is a step the trust region caps — both tests are off there.)
       reason = MpcDockingReason::kInfeasible;
       break;
     }

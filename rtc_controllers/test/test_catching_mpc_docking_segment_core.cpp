@@ -1039,7 +1039,9 @@ TEST(MpcDockingSegmentCore, IterationLimitReturnsAnIterateThatIsNotConverged) {
 
 // One real-time iteration: a full step with no line search. It can be feasible
 // but never `converged` — the planner judges it by the violations.
-TEST(MpcDockingSegmentCore, SingleIterationTakesAFullStepAndNeverReportsConverged) {
+// One real-time iteration takes the QP's full step unjudged. It can say
+// `converged` only about the point it started from — and then takes no step.
+TEST(MpcDockingSegmentCore, SingleIterationTakesAFullStepAndConvergesOnlyWhereItStarted) {
   dk::Rig rig = dk::MakeRig(fx::RealArm7());
   rig.params.max_iterations = 1;
   MpcDockingSegmentCore rti;
@@ -1083,6 +1085,8 @@ TEST(MpcDockingSegmentCore, SingleIterationTakesAFullStepAndNeverReportsConverge
   // It is the one-iteration case of "converged at the start": the core
   // recognises the KKT point and says so, without stepping.
   EXPECT_EQ(out.reason, MpcDockingReason::kConverged);
+  EXPECT_TRUE(out.converged);
+  EXPECT_EQ(out.iterations, 1);
 }
 
 TEST(MpcDockingSegmentCore, SameInputGivesTheSameAnswerWhateverWasSolvedBefore) {
@@ -1394,6 +1398,18 @@ TEST(MpcDockingSegmentCore, SolveRejectsBadInputAndLeavesTheResultUntouched) {
         in.q_catch_target = in.q0;
       },
       MpcDockingReason::kLinearInfeasible, "cannot stop inside the box");
+  // … and it is the solver's infeasibility certificate that says so, not its
+  // iteration cap: the initialisation QP is the one QP here that CAN be
+  // infeasible, so it keeps ProxQP's test on.
+  constexpr int kQpPrimalInfeasible = 2;  // proxsuite::proxqp::QPSolverOutput
+  EXPECT_EQ(out.qp_status, kQpPrimalInfeasible);
+  EXPECT_LT(out.qp_iterations, rig.params.solver.max_iter);
+  ::testing::Test::RecordProperty("linear_infeasible_qp_iterations", out.qp_iterations);
+  ::testing::Test::RecordProperty("linear_infeasible_total_us", static_cast<int>(out.total_us));
+  // The catch instant past the end of the prediction: the sampler extrapolates
+  // the mean there and says so, and the core does not plan a catch on it.
+  expect([&](auto& in) { in.ball[kc].after_horizon = true; }, MpcDockingReason::kBallInvalid,
+         "catch node past the prediction");
 
   // A wrongly sized result.
   MpcDockingSegmentCoreResult small;
@@ -1405,6 +1421,100 @@ TEST(MpcDockingSegmentCore, SolveRejectsBadInputAndLeavesTheResultUntouched) {
   // And the good input still solves afterwards.
   ASSERT_TRUE(core.Solve(good, out));
   EXPECT_TRUE(out.converged);
+}
+
+// A rejected call leaves no record of the solve before it: the caller that
+// reads `violation` or `cost` next to a rejection reason must not be reading
+// the previous candidate's.
+TEST(MpcDockingSegmentCore, RejectedCallLeavesNoRecordOfTheSolveBefore) {
+  const dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  ASSERT_TRUE(core.Solve(cases[0].in, out));
+  ASSERT_TRUE(out.converged) << Describe(out);
+  // The first solve left something in every field checked below.
+  ASSERT_GT(out.cost.total, 0.0);
+  ASSERT_GT(out.mu[0], 0.0);
+  ASSERT_GT(out.c_catch, 0.0);
+  ASSERT_GT(out.sigma_s, 0.0);
+  ASSERT_GT(out.tau_ratio_max, 0.0);
+  ASSERT_GT(out.approach_nodes, 0);
+  ASSERT_TRUE(out.linearization_ratio_defined);
+  out.infeasible_group = DockingRowGroup::kLateral;
+  out.violation.fill(0.25);
+  out.slack_c.fill(0.25);
+  out.slack_v.fill(0.25);
+
+  MpcDockingSegmentCoreInput bad = cases[0].in;
+  bad.ball[static_cast<std::size_t>(core.CatchNode())].cov_valid = false;
+  ASSERT_FALSE(core.Solve(bad, out));
+  EXPECT_EQ(out.reason, MpcDockingReason::kCovarianceInvalid);
+  EXPECT_EQ(out.cost.total, 0.0);
+  EXPECT_EQ(out.cost.reference, 0.0);
+  EXPECT_EQ(out.c_catch, 0.0);
+  EXPECT_EQ(out.sigma_s, 0.0);
+  EXPECT_EQ(out.sigma_t, 0.0);
+  EXPECT_EQ(out.tau_ratio_max, 0.0);
+  EXPECT_EQ(out.approach_nodes, 0);
+  EXPECT_FALSE(out.c_guarded);
+  EXPECT_FALSE(out.linearization_ratio_defined);
+  EXPECT_EQ(out.linearization_ratio, 0.0);
+  EXPECT_EQ(out.infeasible_group, DockingRowGroup::kTorque);
+  for (const double v : out.violation) {
+    EXPECT_EQ(v, 0.0);
+  }
+  for (const double v : out.mu) {
+    EXPECT_EQ(v, 0.0);
+  }
+  for (std::size_t i = 0; i < out.slack_c.size(); ++i) {
+    EXPECT_EQ(out.slack_c[i], 0.0);
+    EXPECT_EQ(out.slack_v[i], 0.0);
+  }
+  // Evaluate() rejects the same way.
+  ASSERT_TRUE(core.Solve(cases[0].in, out));
+  MpcDockingSegmentCoreInput no_trajectory = cases[0].in;
+  no_trajectory.initial_valid = false;
+  ASSERT_FALSE(core.Evaluate(no_trajectory, out));
+  EXPECT_EQ(out.cost.total, 0.0);
+  EXPECT_EQ(out.mu[0], 0.0);
+}
+
+// The rule a penalty growth step is kept by, on the cases a solve rarely
+// reaches. (elastic totals and the violation are sums over the groups, in the
+// rows' own units.)
+TEST(MpcDockingSegmentCore, PenaltyGrowthIsKeptOnlyWhenItBuysLinearisedFeasibility) {
+  using rtc::catching::DockingPenaltyGrowthKept;
+  constexpr double kGain = 0.1;
+  constexpr double kTol = 1e-6;
+  // The elastic total falls by the gain: kept, wherever the iterate is. (In
+  // the first case the step already removed most of the violation, 0.80 of
+  // 1.0, and removes 4 % more — only the elastic's own 15 % drop keeps it.)
+  EXPECT_TRUE(DockingPenaltyGrowthKept(1.0, 0.2, 0.17, kGain, kTol));
+  EXPECT_TRUE(DockingPenaltyGrowthKept(0.0, 1e-2, 0.0, kGain, kTol));
+  // Neither the elastic (−1.25 %) nor what the step removes (+5 %) gains.
+  EXPECT_FALSE(DockingPenaltyGrowthKept(0.5, 0.4, 0.395, kGain, kTol));
+  // Under a trust region the total barely moves; what counts is that the step
+  // removes more of the violation: 0.05 → 0.06 is +20 %, 0.05 → 0.052 is +4 %.
+  EXPECT_TRUE(DockingPenaltyGrowthKept(0.5, 0.45, 0.44, kGain, kTol));
+  EXPECT_FALSE(DockingPenaltyGrowthKept(0.5, 0.45, 0.448, kGain, kTol));
+  // A step that removed nothing and now removes something.
+  EXPECT_TRUE(DockingPenaltyGrowthKept(0.5, 0.5, 0.48, kGain, kTol));
+  // … but not by less than the tolerance the rows are judged to.
+  EXPECT_FALSE(DockingPenaltyGrowthKept(0.5, 0.5, 0.5 - 0.5 * kTol, kGain, kTol));
+  // A near-feasible iterate whose QP steps INTO a violation (the elastic
+  // exceeds the violation, so the step "removes" a negative amount). A 1 %
+  // drop of the elastic is not a gain; measured against the negative amount
+  // it would pass, at every growth step, up to the cap.
+  EXPECT_FALSE(DockingPenaltyGrowthKept(0.0, 1e-2, 0.99e-2, kGain, kTol));
+  EXPECT_FALSE(DockingPenaltyGrowthKept(1e-3, 1e-2, 0.95e-2, kGain, kTol));
+  // No change, or worse: never.
+  EXPECT_FALSE(DockingPenaltyGrowthKept(0.5, 0.4, 0.4, kGain, kTol));
+  EXPECT_FALSE(DockingPenaltyGrowthKept(0.5, 0.4, 0.45, kGain, kTol));
 }
 
 // A trust region smaller than the box tolerance must not cross the box rows
@@ -1426,8 +1536,16 @@ TEST(MpcDockingSegmentCore, TrustRegionNeverMakesTheQpInfeasible) {
       EXPECT_LE(out.violation[G(DockingRowGroup::kBox)], kViolationTol) << Describe(out);
       if (delta_tr > 1e-3) {
         EXPECT_TRUE(out.converged) << Describe(out);
+        // At the solution the step is zero: no trust region rests on it.
+        EXPECT_FALSE(out.step_capped) << Describe(out);
       } else {
         EXPECT_FALSE(out.converged) << "a 1e-9 rad step cannot reach the catch in 50 iterations";
+        // … and that is ALL it says: the problem is feasible, the step is
+        // capped. A stall or a small ‖H d‖ under a binding trust region is
+        // evidence about the cap, not about the rows.
+        EXPECT_EQ(out.reason, MpcDockingReason::kIterationLimit) << Describe(out);
+        EXPECT_TRUE(out.step_capped) << Describe(out);
+        EXPECT_EQ(out.iterations, rig.params.max_iterations);
       }
     }
   }
