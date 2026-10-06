@@ -167,6 +167,17 @@ struct PlanSnapshot {
 /// a segment that starts at t_c or after it — the stop part alone, as above.
 /// SegmentNodeTimeNs() is the one place a node's
 /// instant is computed.
+///
+/// THE CATCH INTERVAL'S OWN LENGTH (E1-F14, #740). A search that lets the
+/// catch instant move inside its candidate's cell stretches ONE interval — the
+/// last one before the catch node — and leaves every pre-catch node where it
+/// was. dt_catch_ns is that interval's length: node n_pre − 1 is at
+/// t0 + (n_pre − 1)·dt_pre_ns and the catch node dt_catch_ns after it, at t_c;
+/// node 0 is t_c − (n_pre − 1)·dt_pre_ns − dt_catch_ns. 0 means "the same as
+/// dt_pre_ns" and is the ONLY way to say so: a writer whose catch interval
+/// came out at dt_pre_ns writes 0, and the validator refuses dt_catch_ns equal
+/// to dt_pre_ns — one grid, one encoding, so a payload without the field is
+/// read by exactly the arithmetic it was read by before the field existed.
 struct SegmentSnapshot {
   // activation_generation and track generation of the followed plan. A
   // segment carries the PLAN's track (its first segment is packed from the
@@ -188,6 +199,9 @@ struct SegmentSnapshot {
   std::int32_t n_nodes{0};       // N; the segment ends at t0 + N·dt = t_c + N_s·dt
   std::int32_t nv{0};
   std::int32_t n_pre{0};  // pre-catch intervals before t_c (0 = the stop part alone)
+  // Length of the interval that ends at the catch node; 0 = dt_pre_ns (the
+  // only encoding of that). Used only when n_pre > 0.
+  std::int64_t dt_catch_ns{0};
 
   std::array<double, kMaxSegmentNv*(kMaxSegmentNodes + 1)> q{};    // [rad]
   std::array<double, kMaxSegmentNv*(kMaxSegmentNodes + 1)> qd{};   // [rad/s]
@@ -212,14 +226,26 @@ inline constexpr double kSegmentRestTol = 1e-3;
 /// n_pre·dt_pre_ns cannot overflow (a shape bound, not a tuning limit).
 inline constexpr std::int64_t kMaxSegmentDtPreNs = 1'000'000'000;
 
+/// Upper bound on the catch interval's own length (the same kind of bound): a
+/// catch instant moves by less than one pre-catch spacing inside its cell.
+inline constexpr std::int64_t kMaxSegmentDtCatchNs = 2 * kMaxSegmentDtPreNs;
+
 /// Instant of node k of a two-spacing grid (MD-54): pre-catch nodes at
 /// t0 + k·dt_pre, the catch node at t_c, stop nodes at t_c + (k − n_pre)·dt;
 /// with n_pre = 0, t0 + k·dt. The grid rule lives here — the payload's node
 /// instants and the planner's own grid both read it.
+///
+/// `dt_catch_ns` ≠ 0 is a grid whose last pre-catch interval has its own
+/// length (SegmentSnapshot's note): the nodes before the catch node stay at
+/// t0 + k·dt_pre, and the catch node is at t_c — which is then NOT
+/// t0 + n_pre·dt_pre.
 [[nodiscard]] constexpr std::int64_t SegmentGridNodeTimeNs(std::int64_t t0_ns, std::int64_t t_c_ns,
                                                            std::int64_t dt_pre_ns,
-                                                           std::int64_t dt_ns, int n_pre,
-                                                           int k) noexcept {
+                                                           std::int64_t dt_ns, int n_pre, int k,
+                                                           std::int64_t dt_catch_ns = 0) noexcept {
+  if (n_pre > 0 && dt_catch_ns != 0 && k >= n_pre) {
+    return t_c_ns + static_cast<std::int64_t>(k - n_pre) * dt_ns;
+  }
   if (n_pre > 0) {
     return k <= n_pre ? t0_ns + static_cast<std::int64_t>(k) * dt_pre_ns
                       : t_c_ns + static_cast<std::int64_t>(k - n_pre) * dt_ns;
@@ -230,14 +256,17 @@ inline constexpr std::int64_t kMaxSegmentDtPreNs = 1'000'000'000;
 /// Instant of node k (0 ≤ k ≤ n_nodes) of a payload whose shape the caller
 /// has checked (SegmentGridNodeTimeNs on its fields).
 [[nodiscard]] constexpr std::int64_t SegmentNodeTimeNs(const SegmentSnapshot& p, int k) noexcept {
-  return SegmentGridNodeTimeNs(p.t0_ns, p.t_c_ns, p.dt_pre_ns, p.dt_ns, p.n_pre, k);
+  return SegmentGridNodeTimeNs(p.t0_ns, p.t_c_ns, p.dt_pre_ns, p.dt_ns, p.n_pre, k, p.dt_catch_ns);
 }
 
 /// Whether a SegmentSnapshot's shape and node values can be sampled: sizes
 /// inside the capacities, a positive spacing, node 0 ON the grid t_c + k0·Δ
 /// (k0 ≥ 0) — or, with n_pre > 0, at t_c − n_pre·Δ_pre with k0 = 0 and at
 /// least one stop interval after t_c — node N at rest (kSegmentRestTol), and
-/// every used node entry finite. The RT runs this once per NEW payload (by
+/// every used node entry finite. A catch interval with its own length
+/// (dt_catch_ns ≠ 0) needs n_pre > 0, a length in (0, kMaxSegmentDtCatchNs]
+/// that is NOT dt_pre_ns (that grid is written with 0), and node 0 at
+/// t_c − (n_pre − 1)·Δ_pre − Δ_catch. The RT runs this once per NEW payload (by
 /// segment_seq), not per tick — the sampler itself does not check node values
 /// (jerk_segment.hpp), so an unvalidated NaN node would reach the CLIK target.
 [[nodiscard]] inline bool ValidateSegmentNodes(const SegmentSnapshot& p) noexcept {
@@ -247,11 +276,21 @@ inline constexpr std::int64_t kMaxSegmentDtPreNs = 1'000'000'000;
     return false;
   }
   if (p.n_pre > 0) {
-    if (p.dt_pre_ns <= 0 || p.dt_pre_ns > kMaxSegmentDtPreNs || p.k0 != 0 ||
-        p.t0_ns != p.t_c_ns - static_cast<std::int64_t>(p.n_pre) * p.dt_pre_ns) {
+    if (p.dt_pre_ns <= 0 || p.dt_pre_ns > kMaxSegmentDtPreNs || p.k0 != 0) {
       return false;
     }
-  } else if (p.t0_ns != p.t_c_ns + static_cast<std::int64_t>(p.k0) * p.dt_ns) {
+    if (p.dt_catch_ns == 0) {
+      if (p.t0_ns != p.t_c_ns - static_cast<std::int64_t>(p.n_pre) * p.dt_pre_ns) {
+        return false;
+      }
+    } else if (p.dt_catch_ns < 0 || p.dt_catch_ns > kMaxSegmentDtCatchNs ||
+               p.dt_catch_ns == p.dt_pre_ns ||
+               p.t0_ns != p.t_c_ns - static_cast<std::int64_t>(p.n_pre - 1) * p.dt_pre_ns -
+                              p.dt_catch_ns) {
+      return false;
+    }
+  } else if (p.dt_catch_ns != 0 ||
+             p.t0_ns != p.t_c_ns + static_cast<std::int64_t>(p.k0) * p.dt_ns) {
     return false;
   }
   for (int k = 0; k <= p.n_nodes; ++k) {

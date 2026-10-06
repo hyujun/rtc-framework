@@ -89,7 +89,11 @@ class NodeTrajectoryFollower {
   /// Same shape checks and failure rule as Sample(); `held` reports t past
   /// node N. Used by the planner to read a published segment back. A segment
   /// with pre-catch nodes (n_pre > 0) is evaluated at dt_pre before its catch
-  /// node and at dt from it on (SegmentNodeTimeNs, trajectory.hpp).
+  /// node and at dt from it on (SegmentNodeTimeNs, trajectory.hpp). One whose
+  /// catch interval has its own length (dt_catch_ns ≠ 0) is evaluated in
+  /// three parts — dt_pre up to node n_pre − 1, dt_catch from there to the
+  /// catch node, dt from it on — and is refused when that length or node 0's
+  /// instant is not what ValidateSegmentNodes accepts.
   [[nodiscard]] static bool SampleJoints(const SegmentSnapshot& plan, std::int64_t t_lead_ns,
                                          std::span<double> q, std::span<double> qd,
                                          std::span<double> qdd, bool* held = nullptr) noexcept;
