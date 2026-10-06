@@ -617,6 +617,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | γ rollout | `gamma_rollout.hpp` |
 | 탐색 · 선택 · 히스테리시스 | `grid_catch_search.hpp` |
 | 탐색 · 구간 계획기의 추상 interface | `catch_search.hpp`, `segment_planner.hpp` |
+| 탐색 wake 의 기록 (`SearchStats`) | `search_stats.hpp` |
 | 한 번의 wake · 게시 | `planner_cycle.hpp` |
 | 계획기 스레드 | `integrated_bringup` 의 `planner_thread.hpp` |
 

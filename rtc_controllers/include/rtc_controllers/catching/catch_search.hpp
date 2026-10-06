@@ -21,8 +21,7 @@
 //  • CLOCK. A search that measures its own budget takes its clock when it is
 //    configured. The cycle does not hand it one later (PlannerCycle::SetClock
 //    reaches the segment planner only).
-//  • SearchStats is the record a wake leaves (grid_catch_search.hpp). It is
-//    declared there, with the search whose counters it holds; an
+//  • SearchStats is the record a wake leaves (search_stats.hpp). An
 //    implementation fills what it has and leaves the rest at the default. The
 //    cycle reads ONE field of it back: `publish` (see Plan).
 #pragma once
@@ -34,7 +33,7 @@
 
 namespace rtc::catching {
 
-struct SearchStats;  // grid_catch_search.hpp
+struct SearchStats;  // search_stats.hpp
 
 /// @brief The search one planner wake runs: a trajectory snapshot and its
 ///        covariance in, one catch plan (or "no plan") out.
