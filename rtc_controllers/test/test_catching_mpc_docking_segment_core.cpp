@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <type_traits>
@@ -62,6 +63,7 @@ constexpr double kTerminalRestTol = 1e-6;
 constexpr double kKktRelTol = 1e-4;
 constexpr double kComplementarityTol = 1e-5;
 constexpr int kFeasibleCases = 20;
+constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 
 std::int64_t NoClock() noexcept {
   return 0;
@@ -1734,6 +1736,865 @@ TEST(MpcDockingSegmentCore, RecordsSolveTimeByArmAndGrid) {
 #ifdef RTC_TEST_BUILD_TYPE
   ::testing::Test::RecordProperty("build_type", RTC_TEST_BUILD_TYPE);
 #endif
+}
+
+// ── The catch instant as a variable (E1-F14 PR 2, #740) ──────────────────────
+// A core with catch_time_variable on a throw whose catch instant the test
+// knows: MakeThrow's constructed trajectory catches the ball at `t_true_ns`,
+// the prediction is that ball's (under gravity), and the core is anchored
+// `shift_ns` BEFORE that instant — so the constructed catch is at
+// δt_c = shift_ns, and a core that could not move the catch instant would
+// have to catch another ball than the one the trajectory was built for.
+
+constexpr std::int64_t kTcMs = 1'000'000;
+constexpr std::int64_t kTrueCatchNs = 1'727'000'000'123'456'789LL;  // a realistic steady ns
+
+struct TcCase {
+  dk::Rig rig;  // catch_time_variable on
+  dk::Throw th;
+  rtc::catching::TrajectorySnapshot traj{};
+  MpcDockingSegmentCoreInput in;
+  std::int64_t t_hat_ns{0};
+  unsigned seed{0};
+};
+
+dk::Rig WithCatchTime(dk::Rig rig) {
+  rig.params.catch_time_variable = true;
+  rig.params.delta_t_step = 0.02;
+  return rig;
+}
+
+// The first feasible seed from `from`, anchored `shift_ns` before the true
+// catch instant, with δt_c free in ±`half_box_ns` and starting at 0.
+std::unique_ptr<TcCase> MakeTcCase(const dk::Rig& fixed_rig, unsigned from, std::int64_t shift_ns,
+                                   std::int64_t half_box_ns) {
+  auto c = std::make_unique<TcCase>();
+  // The throw is built on a core WITHOUT the variable: its gains are the
+  // δt_c = 0 grid's whatever was solved (mpc_docking_fixture.hpp).
+  dk::Rig plain = fixed_rig;
+  plain.params.catch_time_variable = false;
+  MpcDockingSegmentCore ref;
+  if (ref.Init(plain.model, plain.arm.frame, plain.params, plain.limits, &NoClock) !=
+      MpcDockingReason::kNone) {
+    ADD_FAILURE() << "the reference core did not initialise";
+    return c;
+  }
+  bool found = false;
+  for (unsigned seed = from; !found && seed < from + 400; ++seed) {
+    found = dk::MakeThrow(plain, ref, seed, 1e-3, c->th, c->in);
+    c->seed = seed;
+  }
+  EXPECT_TRUE(found) << "no feasible throw";
+  c->rig = WithCatchTime(fixed_rig);
+  // 40 samples, 20 ms apart, from 0.6 s before the true catch instant.
+  c->traj = dk::BallisticPrediction(c->th.p_b, c->th.v_b, dk::kGravity, kTrueCatchNs,
+                                    kTrueCatchNs - 600 * kTcMs, 20 * kTcMs, 40);
+  c->t_hat_ns = kTrueCatchNs - shift_ns;
+  dk::FillBallAt(c->rig.params, c->traj, c->th.cov, c->t_hat_ns, c->in);
+  c->in.delta_start_ns = 0;
+  c->in.delta_lo_ns = -half_box_ns;
+  c->in.delta_hi_ns = half_box_ns;
+  return c;
+}
+
+// The core's objective: what it minimises, apart from the penalties.
+double Objective(const MpcDockingSegmentCoreResult& r) {
+  return r.cost.total + r.cost.time;
+}
+
+std::string DescribeTc(const MpcDockingSegmentCoreResult& r) {
+  char buf[256];
+  std::snprintf(buf, sizeof(buf),
+                " delta=%.6f ms moves=%d dL/dtheta=%.3e time=%.4f e_box=%.2e e_term=%.2e "
+                "capped=%d/%d",
+                static_cast<double>(r.delta_ns) * 1e-6, r.catch_time_steps, r.catch_time_gradient,
+                r.cost.time, r.elastic_post_box, r.elastic_terminal, r.capped_iterations,
+                r.iterations);
+  return Describe(r) + buf;
+}
+
+// The start trajectory of `z` on the grid stretched by `delta_ns`.
+void SetStartAt(const TcCase& c, const Eigen::VectorXd& z, std::int64_t delta_ns,
+                MpcDockingSegmentCoreInput& in) {
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(c.th.q0.size());
+  const dk::Nodes nodes = dk::NodesFromJerkAt(c.rig.params, c.th.q0, zero, zero, z,
+                                              static_cast<double>(delta_ns) / 1e9);
+  in.q_init = nodes.q;
+  in.qd_init = nodes.qd;
+  in.qdd_init = nodes.qdd;
+  in.initial_valid = true;
+  in.delta_start_ns = delta_ns;
+}
+
+TEST(MpcDockingSegmentCoreCatchTime, GradientAndRowsMatchFiniteDifferencesInZAndInTheCatchInstant) {
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    dk::Rig base_rig = FullCostRig(arm);
+    // The start is taken as given whatever it leaves of the (elastic) rest
+    // and box; a finite trust region far from binding, so that its rows exist.
+    base_rig.params.tol_linear = 0.5;
+    base_rig.params.delta_tr = 50.0;
+    const std::unique_ptr<TcCase> c = MakeTcCase(base_rig, 3, 0, 30 * kTcMs);
+    const dk::Rig& rig = c->rig;
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    ASSERT_TRUE(core.CatchTimeVariable());
+    MpcDockingSegmentCoreResult out;
+    core.ResizeResult(out);
+    MpcDockingSegmentCoreInput in = c->in;
+    in.p_line = c->th.p_b + Eigen::Vector3d(0.02, -0.03, 0.01);
+    in.d_line = Eigen::Vector3d(0.3, -0.5, 0.8).normalized();
+    in.time_c1 = 0.7;
+    in.time_c2 = 40.0;
+    in.delta_ref_ns = -4 * kTcMs;
+    const Eigen::Index n = core.Nv();
+    const Eigen::Index nu = core.NumJerkVariables();
+    const Eigen::Index th = core.CatchTimeColumn();
+    ASSERT_EQ(th, nu);
+    const int kc = core.CatchNode();
+    const int N = core.NumNodes();
+    const double da = rig.params.dt_pre;
+    // The base point: the constructed trajectory pushed off its optimum, at a
+    // catch instant that is NOT the anchor.
+    const std::int64_t delta0_ns = 6 * kTcMs + 137;
+    Eigen::VectorXd z0;
+    {
+      MpcDockingSegmentCore ref;
+      dk::Rig plain = rig;
+      plain.params.catch_time_variable = false;
+      ASSERT_EQ(ref.Init(plain.model, plain.arm.frame, plain.params, plain.limits, &NoClock),
+                MpcDockingReason::kNone);
+      z0 = dk::JerkThrough(ref, c->th.q0, c->th.q_c, c->th.v_c);
+      // The push stays in the null space of the δt_c = 0 grid's terminal
+      // equality, as in the test without the variable: what the start then
+      // leaves of the rest is what the stretched interval adds.
+      const int nb = ref.NumBlocks();
+      Eigen::MatrixXd m(2, nb);
+      for (int b = 0; b < nb; ++b) {
+        m(0, b) = ref.StageGain(1, N, b);
+        m(1, b) = ref.StageGain(2, N, b);
+      }
+      const Eigen::MatrixXd null_proj =
+          Eigen::MatrixXd::Identity(nb, nb) - m.transpose() * (m * m.transpose()).inverse() * m;
+      for (Eigen::Index j = 0; j < n; ++j) {
+        Eigen::VectorXd push(nb);
+        for (int b = 0; b < nb; ++b) {
+          push[b] = 0.02 * std::sin(1.3 * static_cast<double>(b * n + j) + 0.4);
+        }
+        const Eigen::VectorXd kept = null_proj * push;
+        for (int b = 0; b < nb; ++b) {
+          z0[b * n + j] += kept[b];
+        }
+      }
+    }
+    // The stretched interval's jerk is what makes ∂x_kc/∂δ's third entry.
+    const Eigen::Index catch_block = kc - 1;  // FullCostRig: one block per pre-catch interval
+    ASSERT_GT(z0.segment(catch_block * n, n).cwiseAbs().maxCoeff(), 1e-3);
+    SetStartAt(*c, z0, delta0_ns, in);
+    ASSERT_TRUE(core.Solve(in, out)) << DescribeTc(out);
+    ASSERT_FALSE(out.init_qp_used) << "the start must be taken as given";
+    const rtc::tsid::QPData base = core.LastQp();  // copy
+
+    // ── The cost: central differences of J's smooth part, in z and in δt_c ──
+    const auto smooth_cost = [&](const Eigen::VectorXd& z, std::int64_t delta_ns) {
+      SetStartAt(*c, z, delta_ns, in);
+      EXPECT_TRUE(core.Evaluate(in, out));
+      EXPECT_EQ(out.delta_ns, delta_ns);
+      return out.cost.total - out.cost.slack + out.cost.time;
+    };
+    const double h = 1e-6;
+    const std::int64_t h_ns = 2000;
+    const double h_s = static_cast<double>(h_ns) / 1e9;
+    double worst_grad = 0.0;
+    for (Eigen::Index i = 0; i < nu; ++i) {
+      Eigen::VectorXd zp = z0;
+      Eigen::VectorXd zm = z0;
+      zp[i] += h;
+      zm[i] -= h;
+      const double fd = (smooth_cost(zp, delta0_ns) - smooth_cost(zm, delta0_ns)) / (2.0 * h);
+      EXPECT_NEAR(base.g[i], fd, 2e-6 * std::max(1.0, std::abs(fd)))
+          << arm.name << " variable " << i;
+      worst_grad = std::max(worst_grad, std::abs(base.g[i] - fd));
+    }
+    // θ = δt_c/Δ_a: ∂J/∂θ = Δ_a ∂J/∂δt_c.
+    const double fd_theta =
+        da * (smooth_cost(z0, delta0_ns + h_ns) - smooth_cost(z0, delta0_ns - h_ns)) / (2.0 * h_s);
+    EXPECT_NEAR(base.g[th], fd_theta, 2e-6 * std::max(1.0, std::abs(fd_theta))) << arm.name;
+    EXPECT_GT(std::abs(fd_theta), 1e-3) << arm.name << ": the cost does not move with δt_c";
+    RecordSci(arm.name + "_tc_gradient_fd_max_abs_diff", worst_grad);
+    RecordSci(arm.name + "_tc_theta_gradient", base.g[th]);
+    RecordSci(arm.name + "_tc_theta_gradient_fd_abs_diff", std::abs(base.g[th] - fd_theta));
+
+    // ── Rows: a row's bound moves by minus the row's coefficients ──
+    struct Check {
+      int row;
+      bool upper;
+      bool before_catch;  // a row of a node k < k_c: no θ column, exactly
+      bool after_catch;   // a row whose θ column must be exercised
+    };
+
+    std::vector<Check> checks;
+    const int nN = static_cast<int>(n) * N;
+    const int tau0 = core.GroupRowBegin(DockingRowGroup::kTorque);
+    for (int k = 1; k <= N; ++k) {
+      for (int j = 0; j < static_cast<int>(n); ++j) {
+        const int r = (k - 1) * static_cast<int>(n) + j;
+        checks.push_back({tau0 + r, true, k < kc, k >= kc});
+        checks.push_back({tau0 + nN + r, false, k < kc, k >= kc});
+      }
+    }
+    const int app0 = core.GroupRowBegin(DockingRowGroup::kGap);
+    SetStartAt(*c, z0, delta0_ns, in);
+    ASSERT_TRUE(core.Evaluate(in, out));
+    ASSERT_GT(core.NumApproachNodes(), 0);
+    for (int i = 0; i < core.NumApproachNodes(); ++i) {
+      checks.push_back({app0 + 3 * i, false, true, false});
+      if (out.slack_c[static_cast<std::size_t>(i)] == 0.0) {
+        checks.push_back({app0 + 3 * i + 1, true, true, false});
+      }
+      checks.push_back({app0 + 3 * i + 2, true, true, false});
+    }
+    // The hard box rows of the nodes before the catch node (q, q̇, q̈).
+    const int box0 = core.GroupRowBegin(DockingRowGroup::kBox);
+    for (int block = 0; block < 3; ++block) {
+      for (int r = 0; r < (kc - 1) * static_cast<int>(n); ++r) {
+        checks.push_back({box0 + block * nN + r, true, true, false});
+        checks.push_back({box0 + block * nN + r, false, true, false});
+      }
+    }
+    const int ent0 = core.GroupRowBegin(DockingRowGroup::kEntrance);
+    checks.push_back({ent0, true, false, true});
+    checks.push_back({ent0 + 1, false, false, true});
+    const int lat0 = core.GroupRowBegin(DockingRowGroup::kLateral);
+    for (int i = 0; i < core.GroupRowCount(DockingRowGroup::kLateral); ++i) {
+      checks.push_back({lat0 + i, true, false, true});
+    }
+    checks.push_back({core.GroupRowBegin(DockingRowGroup::kTiming), false, false, true});
+    const int vel0 = core.GroupRowBegin(DockingRowGroup::kVelocitySet);
+    checks.push_back({vel0, false, false, true});
+    for (int i = 1; i < core.GroupRowCount(DockingRowGroup::kVelocitySet); ++i) {
+      checks.push_back({vel0 + i, true, false, true});
+    }
+    const int imp0 = core.GroupRowBegin(DockingRowGroup::kImpact);
+    for (int i = 0; i < 3; ++i) {
+      checks.push_back({imp0 + i, true, false, true});
+    }
+    // The elastic box of the nodes k ≥ k_c and the elastic terminal rest.
+    const int pbox0 = core.PostCatchBoxRowBegin();
+    const int pbox_n = core.PostCatchBoxRowCount();
+    ASSERT_EQ(pbox_n, (N - kc + 1) * static_cast<int>(n) * 3);
+    for (int r = 0; r < pbox_n; ++r) {
+      checks.push_back({pbox0 + r, true, false, true});
+      checks.push_back({pbox0 + pbox_n + r, false, false, true});
+    }
+    const int term0 = core.TerminalRowBegin();
+    for (int r = 0; r < 2 * static_cast<int>(n); ++r) {
+      checks.push_back({term0 + r, true, false, true});
+      checks.push_back({term0 + 2 * static_cast<int>(n) + r, false, false, true});
+    }
+    for (const Check& ck : checks) {
+      ASSERT_TRUE(std::isfinite(ck.upper ? base.u[ck.row] : base.l[ck.row])) << "row " << ck.row;
+    }
+    const auto bounds_at = [&](const Eigen::VectorXd& z, std::int64_t delta_ns) {
+      SetStartAt(*c, z, delta_ns, in);
+      EXPECT_TRUE(core.Solve(in, out));
+      EXPECT_FALSE(out.init_qp_used);
+      return std::make_pair(Eigen::VectorXd(core.LastQp().l), Eigen::VectorXd(core.LastQp().u));
+    };
+    Eigen::MatrixXd fd_rows(static_cast<Eigen::Index>(checks.size()), nu + 1);
+    for (Eigen::Index i = 0; i <= nu; ++i) {
+      Eigen::VectorXd zp = z0;
+      Eigen::VectorXd zm = z0;
+      std::int64_t dp = delta0_ns;
+      std::int64_t dm = delta0_ns;
+      double step = h;
+      if (i < nu) {
+        zp[i] += h;
+        zm[i] -= h;
+      } else {
+        dp += h_ns;
+        dm -= h_ns;
+        step = h_s / da;  // in θ
+      }
+      const auto [lp, up] = bounds_at(zp, dp);
+      const auto [lm, um] = bounds_at(zm, dm);
+      for (std::size_t r = 0; r < checks.size(); ++r) {
+        const int row = checks[r].row;
+        const double dbound = checks[r].upper ? (up[row] - um[row]) / (2.0 * step)
+                                              : (lp[row] - lm[row]) / (2.0 * step);
+        fd_rows(static_cast<Eigen::Index>(r), i) = -dbound;
+      }
+    }
+    double worst_row = 0.0;
+    double worst_theta = 0.0;
+    int theta_exercised = 0;
+    int theta_expected = 0;
+    for (std::size_t r = 0; r < checks.size(); ++r) {
+      const Check& ck = checks[r];
+      const Eigen::RowVectorXd coeff = base.C.row(ck.row).head(nu + 1);
+      const Eigen::RowVectorXd fd = fd_rows.row(static_cast<Eigen::Index>(r));
+      const double scale = std::max(1.0, fd.cwiseAbs().maxCoeff());
+      const double diff = (coeff - fd).cwiseAbs().maxCoeff();
+      EXPECT_LT(diff, 2e-5 * scale) << arm.name << " row " << ck.row;
+      worst_row = std::max(worst_row, diff / scale);
+      worst_theta = std::max(worst_theta, std::abs(coeff[th] - fd[th]) / scale);
+      if (ck.before_catch) {
+        // A node before the catch node does not move with the catch instant:
+        // no θ column at all, and the row's bound does not move with δt_c.
+        EXPECT_EQ(coeff[th], 0.0) << arm.name << " row " << ck.row;
+        EXPECT_LT(std::abs(fd[th]), 1e-7) << arm.name << " row " << ck.row;
+      }
+      if (ck.after_catch) {
+        ++theta_expected;
+        theta_exercised += std::abs(fd[th]) > 1e-6 ? 1 : 0;
+      }
+    }
+    // The θ column is exercised on (nearly) every row that should have one —
+    // not all: the box rows of q̈ move at ∂q̈_k/∂δ = u_{kc−1} whatever k is,
+    // but a torque row of one joint may not feel another's.
+    EXPECT_GT(theta_exercised, (theta_expected * 9) / 10) << arm.name;
+    // The trust region's rows on the nodes k ≥ k_c are the linearised
+    // displacement of q_k — the elastic box's q rows, coefficient for
+    // coefficient — bounded by ±δ.
+    for (int k = kc; k <= N; ++k) {
+      for (int j = 0; j < static_cast<int>(n); ++j) {
+        const int trust = box0 + (k - 1) * static_cast<int>(n) + j;
+        const int elastic = pbox0 + (k - kc) * 3 * static_cast<int>(n) + j;
+        EXPECT_EQ(base.C.row(trust).head(nu + 1), base.C.row(elastic).head(nu + 1));
+        EXPECT_EQ(base.l[trust], -rig.params.delta_tr);
+        EXPECT_EQ(base.u[trust], rig.params.delta_tr);
+      }
+    }
+    RecordSci(arm.name + "_tc_rows_fd_max_rel_diff", worst_row);
+    RecordSci(arm.name + "_tc_theta_column_fd_max_rel_diff", worst_theta);
+    ::testing::Test::RecordProperty(arm.name + "_tc_rows_checked", static_cast<int>(checks.size()));
+    ::testing::Test::RecordProperty(arm.name + "_tc_theta_rows_exercised", theta_exercised);
+  }
+}
+
+// With δt_c's box closed at 0 the problem is the fixed grid's: the two cores
+// reach the same trajectory (the elastic rest and box are then just another
+// way to write rows that hold).
+TEST(MpcDockingSegmentCoreCatchTime, ABoxClosedAtZeroIsTheFixedGridProblem) {
+  for (const dk::Rig& fixed_rig : Rigs()) {
+    const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 0, 0);
+    MpcDockingSegmentCore fixed;
+    MpcDockingSegmentCore moving;
+    ASSERT_EQ(fixed.Init(fixed_rig.model, fixed_rig.arm.frame, fixed_rig.params, fixed_rig.limits,
+                         &NoClock),
+              MpcDockingReason::kNone);
+    ASSERT_EQ(moving.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult a;
+    MpcDockingSegmentCoreResult b;
+    fixed.ResizeResult(a);
+    moving.ResizeResult(b);
+    MpcDockingSegmentCoreInput in = c->in;
+    dk::PerturbTarget(in, 3);
+    ASSERT_TRUE(fixed.Solve(in, a));
+    ASSERT_TRUE(moving.Solve(in, b));
+    ASSERT_TRUE(a.converged) << Describe(a);
+    EXPECT_TRUE(b.converged) << DescribeTc(b);
+    EXPECT_EQ(b.delta_ns, 0);
+    EXPECT_EQ(b.cost.time, 0.0);
+    EXPECT_LT((a.q - b.q).cwiseAbs().maxCoeff(), 1e-4) << fixed_rig.arm.name;
+    EXPECT_NEAR(a.cost.total, b.cost.total, 1e-5 * std::max(1.0, a.cost.total));
+    // Without the variable the result's fields for it stay at zero.
+    EXPECT_EQ(a.delta_ns, 0);
+    EXPECT_EQ(a.cost.time, 0.0);
+    EXPECT_EQ(a.mu_post_box, 0.0);
+    EXPECT_GT(b.mu_post_box, 0.0);
+  }
+}
+
+// The fixed-grid solution of a case: δt_c's box closed at 0, from the IK
+// target. What the search starts the continuous solve from.
+bool SolveFixed(MpcDockingSegmentCore& core, const TcCase& c, MpcDockingSegmentCoreResult& out) {
+  MpcDockingSegmentCoreInput in = c.in;
+  in.delta_start_ns = 0;
+  in.delta_lo_ns = 0;
+  in.delta_hi_ns = 0;
+  dk::PerturbTarget(in, c.seed);
+  return core.Solve(in, out);
+}
+
+MpcDockingSegmentCoreInput StartFrom(const MpcDockingSegmentCoreInput& in,
+                                     const MpcDockingSegmentCoreResult& from) {
+  MpcDockingSegmentCoreInput next = in;
+  next.initial_valid = true;
+  next.q_init = from.q;
+  next.qd_init = from.qd;
+  next.qdd_init = from.qdd;
+  next.delta_start_ns = from.delta_ns;
+  return next;
+}
+
+// The hard rows of a returned iterate, re-evaluated outside the core with the
+// ball read from the prediction at the returned catch instant.
+std::array<double, kNumDockingRowGroups> ViolationsOutsideTheCore(
+    const TcCase& c, const MpcDockingSegmentCore& core, const MpcDockingSegmentCoreResult& r) {
+  MpcDockingSegmentCoreInput at = c.in;
+  int hint = 0;
+  const rtc::catching::BallNodeSample ball = rtc::catching::SampleBallNode(
+      c.traj, nullptr, false, rtc::catching::BallTime{c.t_hat_ns + r.delta_ns}, hint);
+  auto& slot = at.ball[static_cast<std::size_t>(core.CatchNode())];
+  slot.p = ball.p;
+  slot.v = ball.v;
+  slot.a = ball.a;
+  return dk::HardRowViolations(c.rig, core, NodesOf(r), at);
+}
+
+// The block jerk of a result, in the core's scaled variable.
+Eigen::VectorXd JerkOf(const dk::Rig& rig, const MpcDockingSegmentCoreResult& r) {
+  const Eigen::Index n = r.u.rows();
+  Eigen::VectorXd z(n * rig.params.n_blocks);
+  int k = 0;
+  for (int b = 0; b < rig.params.n_blocks; ++b) {
+    z.segment(b * n, n) = r.u.col(k) / rig.params.u_scale;
+    k += rig.params.block_sizes[static_cast<std::size_t>(b)];
+  }
+  return z;
+}
+
+// An anchor off the instant the throw is best caught at: the catch instant
+// moves, the objective falls, and what comes back is a trajectory of the
+// stretched grid that holds every hard row at the instant it reports.
+TEST(MpcDockingSegmentCoreCatchTime, TheCatchInstantMovesAndTheObjectiveDoesNotRise) {
+  for (const dk::Rig& fixed_rig : Rigs()) {
+    for (const std::int64_t shift_ns : {7 * kTcMs + 311, -9 * kTcMs - 77}) {
+      const std::string where =
+          fixed_rig.arm.name + " shift " + std::to_string(shift_ns / kTcMs) + " ms";
+      const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, shift_ns, 20 * kTcMs);
+      MpcDockingSegmentCore core;
+      ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+                MpcDockingReason::kNone);
+      MpcDockingSegmentCoreResult fixed;
+      MpcDockingSegmentCoreResult moved;
+      core.ResizeResult(fixed);
+      core.ResizeResult(moved);
+      ASSERT_TRUE(SolveFixed(core, *c, fixed)) << where;
+      // The anchor is off: the fixed grid may or may not hold every row.
+      std::printf("[ record ] %s fixed: %s\n", where.c_str(), DescribeTc(fixed).c_str());
+      const MpcDockingSegmentCoreInput in = StartFrom(c->in, fixed);
+      ASSERT_TRUE(core.Solve(in, moved)) << where;
+      std::printf("[ record ] %s moved: %s\n", where.c_str(), DescribeTc(moved).c_str());
+      EXPECT_FALSE(moved.init_qp_used) << where << ": the fixed solution is a start";
+      EXPECT_TRUE(moved.converged) << where << DescribeTc(moved);
+      EXPECT_TRUE(moved.feasible) << where;
+      // The catch instant moved — by more than the lattice could have told —
+      // and stayed inside the box. (Not necessarily toward the instant the
+      // throw was built for: that trajectory is feasible, not optimal.)
+      EXPECT_GE(std::abs(moved.delta_ns), kTcMs) << where;
+      EXPECT_GE(moved.delta_ns, in.delta_lo_ns);
+      EXPECT_LE(moved.delta_ns, in.delta_hi_ns);
+      EXPECT_GT(moved.catch_time_steps, 0) << where;
+      ASSERT_TRUE(fixed.converged) << where;
+      EXPECT_LT(Objective(moved), Objective(fixed) - 1e-4) << where;
+      // It IS a minimum over the catch instant: the same problem solved with
+      // the instant held 1 ms either side costs more (no multiplier is read
+      // for this — two more solves and three numbers). At an end of the box
+      // only the inner side exists.
+      for (const std::int64_t off : {-kTcMs, kTcMs}) {
+        const std::int64_t at = moved.delta_ns + off;
+        if (at < in.delta_lo_ns || at > in.delta_hi_ns) {
+          continue;
+        }
+        MpcDockingSegmentCoreInput held = StartFrom(c->in, moved);
+        held.delta_lo_ns = at;
+        held.delta_hi_ns = at;
+        MpcDockingSegmentCoreResult beside;
+        core.ResizeResult(beside);
+        // The start is the neighbouring instant's trajectory: the node
+        // matrices are taken as nodes of THIS grid (delta_start_ns says so).
+        held.delta_start_ns = at;
+        ASSERT_TRUE(core.Solve(held, beside)) << where;
+        ASSERT_TRUE(beside.converged) << where << DescribeTc(beside);
+        EXPECT_EQ(beside.delta_ns, at);
+        EXPECT_GE(Objective(beside), Objective(moved) - 1e-7) << where << " " << off;
+      }
+      // The nodes are the stretched grid's, integrated from the returned jerk.
+      const Eigen::VectorXd zero = Eigen::VectorXd::Zero(core.Nv());
+      const dk::Nodes nodes =
+          dk::NodesFromJerkAt(c->rig.params, c->th.q0, zero, zero, JerkOf(c->rig, moved),
+                              static_cast<double>(moved.delta_ns) / 1e9);
+      EXPECT_LT((nodes.q - moved.q).cwiseAbs().maxCoeff(), 1e-10) << where;
+      EXPECT_LT((nodes.qd - moved.qd).cwiseAbs().maxCoeff(), 1e-9) << where;
+      EXPECT_LT((nodes.qdd - moved.qdd).cwiseAbs().maxCoeff(), 1e-8) << where;
+      // Every hard row, outside the core, at the reported instant.
+      const std::array<double, kNumDockingRowGroups> viol =
+          ViolationsOutsideTheCore(*c, core, moved);
+      for (int g = 0; g < kNumDockingRowGroups; ++g) {
+        const double limit =
+            g == static_cast<int>(DockingRowGroup::kTerminal) ? kTerminalRestTol : kViolationTol;
+        EXPECT_LE(viol[static_cast<std::size_t>(g)], limit)
+            << where << " " << DockingRowGroupName(static_cast<DockingRowGroup>(g));
+      }
+      // A restart from its own solution converges at once and gives it back.
+      MpcDockingSegmentCoreResult again;
+      core.ResizeResult(again);
+      ASSERT_TRUE(core.Solve(StartFrom(c->in, moved), again));
+      EXPECT_FALSE(again.init_qp_used) << where;
+      EXPECT_TRUE(again.converged) << where << DescribeTc(again);
+      EXPECT_EQ(again.iterations, 1) << where;
+      EXPECT_EQ(again.delta_ns, moved.delta_ns) << where;
+      EXPECT_LT((again.q - moved.q).cwiseAbs().maxCoeff(), 1e-9) << where;
+      RecordSci(where + " delta_ms", static_cast<double>(moved.delta_ns) * 1e-6);
+      RecordSci(where + " objective_fixed", Objective(fixed));
+      RecordSci(where + " objective_moved", Objective(moved));
+      ::testing::Test::RecordProperty(where + " iterations", moved.iterations);
+    }
+  }
+}
+
+// What the catch instant is moved on: ∂L/∂θ at a settled fixed-instant
+// problem is the derivative of that problem's OPTIMAL VALUE in θ (the
+// envelope theorem). Checked against the value itself: the problem solved
+// with the instant held either side of 0, and a central difference of the two
+// objectives.
+TEST(MpcDockingSegmentCoreCatchTime, TheReportedDerivativeIsTheOptimalValuesSlope) {
+  for (const dk::Rig& fixed_rig : Rigs()) {
+    const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 7 * kTcMs + 311, 0);
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult at;
+    core.ResizeResult(at);
+    MpcDockingSegmentCoreInput in = c->in;
+    in.time_c1 = 0.4;
+    in.time_c2 = 25.0;
+    in.delta_ref_ns = 3 * kTcMs;
+    dk::PerturbTarget(in, c->seed);
+    ASSERT_TRUE(core.Solve(in, at));
+    ASSERT_TRUE(at.converged) << DescribeTc(at);
+    // Held by the closed box, the derivative is not a residual …
+    EXPECT_EQ(at.catch_time_steps, 0);
+    EXPECT_LE(at.kkt_residual, c->rig.params.tol_kkt * std::max(1.0, at.grad_norm));
+    // … but it is far from zero here, or this test would compare two noises.
+    ASSERT_GT(std::abs(at.catch_time_gradient), 1e-2) << DescribeTc(at);
+    const std::int64_t h_ns = 500'000;
+    std::array<double, 2> value{};
+    for (int side = 0; side < 2; ++side) {
+      const std::int64_t delta = side == 0 ? -h_ns : h_ns;
+      MpcDockingSegmentCoreInput held = StartFrom(in, at);
+      held.delta_start_ns = delta;
+      held.delta_lo_ns = delta;
+      held.delta_hi_ns = delta;
+      MpcDockingSegmentCoreResult beside;
+      core.ResizeResult(beside);
+      ASSERT_TRUE(core.Solve(held, beside));
+      ASSERT_TRUE(beside.converged) << DescribeTc(beside);
+      value[static_cast<std::size_t>(side)] = Objective(beside);
+    }
+    // θ = δt_c/Δ_a.
+    const double slope =
+        c->rig.params.dt_pre * (value[1] - value[0]) / (2.0 * static_cast<double>(h_ns) / 1e9);
+    EXPECT_NEAR(at.catch_time_gradient, slope, 2e-3 * std::max(1.0, std::abs(slope)))
+        << fixed_rig.arm.name << DescribeTc(at);
+    RecordSci(fixed_rig.arm.name + "_dvalue_dtheta", at.catch_time_gradient);
+    RecordSci(fixed_rig.arm.name + "_dvalue_dtheta_fd", slope);
+  }
+}
+
+// δt_c's box is held exactly, and one move is at most delta_t_step.
+TEST(MpcDockingSegmentCoreCatchTime, TheBoxIsHeldAndAMoveIsAtMostTheStepLimit) {
+  for (const dk::Rig& fixed_rig : Rigs()) {
+    // Free in ±20 ms first: where the catch instant goes on its own.
+    const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 7 * kTcMs + 311, 20 * kTcMs);
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult fixed;
+    MpcDockingSegmentCoreResult free_run;
+    core.ResizeResult(fixed);
+    core.ResizeResult(free_run);
+    ASSERT_TRUE(SolveFixed(core, *c, fixed));
+    ASSERT_TRUE(core.Solve(StartFrom(c->in, fixed), free_run));
+    ASSERT_TRUE(free_run.converged) << DescribeTc(free_run);
+    ASSERT_GE(std::abs(free_run.delta_ns), 2 * kTcMs) << DescribeTc(free_run);
+    const std::int64_t toward = free_run.delta_ns > 0 ? 1 : -1;
+
+    // A box that ends 1.5 ms toward that instant: the answer is the box's end,
+    // and it is an answer (the box's multiplier is the problem's).
+    MpcDockingSegmentCoreInput boxed = StartFrom(c->in, fixed);
+    boxed.delta_lo_ns = -1'500'017;
+    boxed.delta_hi_ns = 1'500'017;
+    MpcDockingSegmentCoreResult held;
+    core.ResizeResult(held);
+    ASSERT_TRUE(core.Solve(boxed, held));
+    EXPECT_TRUE(held.converged) << DescribeTc(held);
+    EXPECT_EQ(held.delta_ns, toward * 1'500'017) << DescribeTc(held);
+    EXPECT_GT(-toward * held.catch_time_gradient,
+              c->rig.params.tol_kkt * std::max(1.0, held.grad_norm))
+        << "the derivative must still point out of the box";
+    EXPECT_LE(held.kkt_residual, c->rig.params.tol_kkt * std::max(1.0, held.grad_norm));
+    EXPECT_LT(Objective(held), Objective(fixed));
+    EXPECT_GT(Objective(held), Objective(free_run));
+
+    // A step limit of 0.5 ms: after m moves the instant is within m steps of
+    // its start, whatever the iteration budget cut the solve at — and the
+    // full solve ends at the instant the unlimited one found.
+    dk::Rig slow_rig = c->rig;
+    slow_rig.params.delta_t_step = 0.0005;
+    for (const int budget : {3, 6, 12, 200}) {
+      slow_rig.params.max_iterations = budget;
+      MpcDockingSegmentCore slow;
+      ASSERT_EQ(
+          slow.Init(slow_rig.model, slow_rig.arm.frame, slow_rig.params, slow_rig.limits, &NoClock),
+          MpcDockingReason::kNone);
+      MpcDockingSegmentCoreResult out;
+      slow.ResizeResult(out);
+      ASSERT_TRUE(slow.Solve(StartFrom(c->in, fixed), out));
+      EXPECT_LE(std::abs(out.delta_ns), static_cast<std::int64_t>(out.catch_time_steps) * 500'000)
+          << budget << DescribeTc(out);
+      if (budget == 3) {
+        EXPECT_GT(out.catch_time_steps, 0) << DescribeTc(out);
+        EXPECT_FALSE(out.converged) << "three iterations cannot reach it at 0.5 ms a move";
+        EXPECT_EQ(out.reason, MpcDockingReason::kIterationLimit);
+      }
+      if (budget == 200) {
+        EXPECT_TRUE(out.converged) << DescribeTc(out);
+        EXPECT_GE(out.catch_time_steps, 4);
+        EXPECT_NEAR(static_cast<double>(out.delta_ns), static_cast<double>(free_run.delta_ns),
+                    0.2 * static_cast<double>(kTcMs))
+            << DescribeTc(out);
+        EXPECT_NEAR(Objective(out), Objective(free_run), 1e-6);
+      }
+    }
+  }
+}
+
+// One real-time iteration cannot move the catch instant: it takes the jerk's
+// full step at the instant it started at.
+TEST(MpcDockingSegmentCoreCatchTime, ASingleIterationStaysAtItsCatchInstant) {
+  dk::Rig fixed_rig = dk::MakeRig(fx::RealArm7());
+  fixed_rig.params.max_iterations = 1;
+  const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 7 * kTcMs, 20 * kTcMs);
+  MpcDockingSegmentCore rti;
+  ASSERT_EQ(rti.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  rti.ResizeResult(out);
+  MpcDockingSegmentCoreInput in = c->in;
+  in.delta_start_ns = 2 * kTcMs + 5;
+  dk::PerturbTarget(in, 9);
+  ASSERT_TRUE(rti.Solve(in, out));
+  EXPECT_EQ(out.reason, MpcDockingReason::kIterationLimit);
+  EXPECT_EQ(out.iterations, 1);
+  EXPECT_EQ(out.delta_ns, 2 * kTcMs + 5);
+  EXPECT_EQ(out.catch_time_steps, 0);
+  EXPECT_GT(rti.LastQpSolution().head(rti.NumJerkVariables()).cwiseAbs().maxCoeff(), 1e-4);
+  // θ's own entry of the step is pinned to zero.
+  EXPECT_LT(std::abs(rti.LastQpSolution()[rti.CatchTimeColumn()]), 1e-9);
+}
+
+// A direction the objective is flat in: no time term, no near, terminal,
+// impact or stop-line cost — what is left that reads the catch instant is the
+// rows. Recorded, not judged on its count: how such a solve ends.
+TEST(MpcDockingSegmentCoreCatchTime, RecordsASolveWhoseObjectiveDoesNotReadTheCatchInstant) {
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    dk::Rig fixed_rig = dk::MakeRig(arm);
+    fixed_rig.params.q_p.setZero();
+    fixed_rig.params.q_v.setZero();
+    fixed_rig.params.q_rho_f.setZero();
+    fixed_rig.params.q_nu_f.setZero();
+    const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 5 * kTcMs, 20 * kTcMs);
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult fixed;
+    MpcDockingSegmentCoreResult out;
+    core.ResizeResult(fixed);
+    core.ResizeResult(out);
+    ASSERT_TRUE(SolveFixed(core, *c, fixed));
+    ASSERT_TRUE(core.Solve(StartFrom(c->in, fixed), out));
+    std::printf("[ record ] %s flat objective: %s\n", arm.name.c_str(), DescribeTc(out).c_str());
+    EXPECT_TRUE(out.q.allFinite());
+    EXPECT_GE(out.delta_ns, -20 * kTcMs);
+    EXPECT_LE(out.delta_ns, 20 * kTcMs);
+    if (out.converged && fixed.converged) {
+      EXPECT_LE(Objective(out), Objective(fixed) + 1e-9);
+    }
+    ::testing::Test::RecordProperty(arm.name + "_flat_reason", MpcDockingReasonName(out.reason));
+    ::testing::Test::RecordProperty(arm.name + "_flat_iterations", out.iterations);
+    ::testing::Test::RecordProperty(arm.name + "_flat_moves", out.catch_time_steps);
+    ::testing::Test::RecordProperty(arm.name + "_flat_capped_iterations", out.capped_iterations);
+    RecordSci(arm.name + "_flat_delta_ms", static_cast<double>(out.delta_ns) * 1e-6);
+  }
+}
+
+TEST(MpcDockingSegmentCoreCatchTime, RefusesWhatItCannotStartFrom) {
+  const dk::Rig fixed_rig = dk::MakeRig(fx::RealArm6());
+  const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 0, 10 * kTcMs);
+  // Init: the step limit and the two penalties are read with the flag only.
+  {
+    dk::Rig bad = c->rig;
+    bad.params.delta_t_step = 0.0;
+    MpcDockingSegmentCore core;
+    EXPECT_EQ(core.Init(bad.model, bad.arm.frame, bad.params, bad.limits, &NoClock),
+              MpcDockingReason::kParamsInvalid);
+    bad = c->rig;
+    bad.params.mu_init_terminal = 2.0 * bad.params.mu_max;
+    EXPECT_EQ(core.Init(bad.model, bad.arm.frame, bad.params, bad.limits, &NoClock),
+              MpcDockingReason::kParamsInvalid);
+    bad = c->rig;
+    bad.params.mu_init_post_box = 0.0;
+    EXPECT_EQ(core.Init(bad.model, bad.arm.frame, bad.params, bad.limits, &NoClock),
+              MpcDockingReason::kParamsInvalid);
+    // Without the flag they are not read at all.
+    bad.params.catch_time_variable = false;
+    bad.params.delta_t_step = -1.0;
+    EXPECT_EQ(core.Init(bad.model, bad.arm.frame, bad.params, bad.limits, &NoClock),
+              MpcDockingReason::kNone);
+    EXPECT_FALSE(core.CatchTimeVariable());
+    EXPECT_EQ(core.CatchTimeColumn(), -1);
+    EXPECT_EQ(core.PostCatchBoxRowCount(), 0);
+  }
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  out.q.setConstant(7.0);
+  const auto refused = [&](auto mutate, MpcDockingReason why, const char* what) {
+    MpcDockingSegmentCoreInput in = c->in;
+    mutate(in);
+    EXPECT_FALSE(core.Solve(in, out)) << what;
+    EXPECT_EQ(out.reason, why) << what << ": " << MpcDockingReasonName(out.reason);
+    EXPECT_EQ(out.q(0, 0), 7.0) << what << ": the trajectory must stay untouched";
+    EXPECT_EQ(out.delta_ns, 0) << what;
+    EXPECT_FALSE(core.Evaluate(in, out)) << what;
+  };
+  refused([](MpcDockingSegmentCoreInput& in) { in.prediction = nullptr; },
+          MpcDockingReason::kBallInvalid, "no prediction");
+  rtc::catching::TrajectorySnapshot invalid = c->traj;
+  invalid.valid = false;
+  refused([&](MpcDockingSegmentCoreInput& in) { in.prediction = &invalid; },
+          MpcDockingReason::kBallInvalid, "an invalid prediction");
+  refused([](MpcDockingSegmentCoreInput& in) { in.delta_start_ns = in.delta_hi_ns + 1; },
+          MpcDockingReason::kInputOutOfRange, "a start past the box");
+  refused([](MpcDockingSegmentCoreInput& in) { in.delta_start_ns = in.delta_lo_ns - 1; },
+          MpcDockingReason::kInputOutOfRange, "a start before the box");
+  refused(
+      [&](MpcDockingSegmentCoreInput& in) {
+        in.delta_lo_ns = -static_cast<std::int64_t>(std::llround(c->rig.params.dt_pre * 1e9));
+      },
+      MpcDockingReason::kInputOutOfRange, "a box that empties the catch interval");
+  refused([](MpcDockingSegmentCoreInput& in) { in.time_c2 = -1.0; },
+          MpcDockingReason::kInputOutOfRange, "a negative curvature");
+  refused([](MpcDockingSegmentCoreInput& in) { in.time_c1 = kNan; }, MpcDockingReason::kNonFinite,
+          "a NaN slope");
+  // The start instant past the end of the prediction: an extrapolated ball.
+  refused(
+      [&](MpcDockingSegmentCoreInput& in) {
+        const std::int64_t last = c->traj.s[static_cast<std::size_t>(c->traj.n - 1)].t_ns;
+        in.delta_hi_ns = last - c->t_hat_ns + 5 * kTcMs;
+        in.delta_start_ns = in.delta_hi_ns;
+      },
+      MpcDockingReason::kBallInvalid, "a start past the prediction");
+  // …and it still solves what it can start from.
+  MpcDockingSegmentCoreInput in = c->in;
+  dk::PerturbTarget(in, 2);
+  ASSERT_TRUE(core.Solve(in, out));
+  EXPECT_TRUE(out.converged) << DescribeTc(out);
+}
+
+// A box that reaches past the end of the prediction: the catch instant is
+// drawn there (a reward for catching later), and the ball cannot be read
+// there. The box ends at the prediction's last sample.
+TEST(MpcDockingSegmentCoreCatchTime, TheBoxEndsWhereThePredictionDoes) {
+  const dk::Rig fixed_rig = dk::MakeRig(fx::RealArm6());
+  // Anchored 15 ms before the true catch instant; the prediction is cut at
+  // the sample AT that instant, so it ends 15 ms into a ±20 ms box.
+  std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 15 * kTcMs, 20 * kTcMs);
+  int kept = 0;
+  while (kept < c->traj.n && c->traj.s[static_cast<std::size_t>(kept)].t_ns <= kTrueCatchNs) {
+    ++kept;
+  }
+  c->traj.n = kept;
+  const std::int64_t last = c->traj.s[static_cast<std::size_t>(kept - 1)].t_ns;
+  ASSERT_EQ(last - c->t_hat_ns, 15 * kTcMs);
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult fixed;
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(fixed);
+  core.ResizeResult(out);
+  ASSERT_TRUE(SolveFixed(core, *c, fixed));
+  MpcDockingSegmentCoreInput in = StartFrom(c->in, fixed);
+  in.time_c1 = -50.0;  // later is cheaper, by far
+  ASSERT_TRUE(core.Solve(in, out));
+  EXPECT_TRUE(out.q.allFinite());
+  EXPECT_TRUE(out.converged) << DescribeTc(out);
+  EXPECT_EQ(out.delta_ns, 15 * kTcMs) << DescribeTc(out);
+  EXPECT_LT(out.catch_time_gradient, 0.0) << "it would go later still";
+}
+
+// The core's own code allocates nothing with the catch instant a variable
+// either — the same gate, stage by stage, over solves that move the instant.
+TEST(MpcDockingSegmentCoreCatchTime, EveryStageOutsideTheSolverAllocatesNothing) {
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    dk::Rig fixed_rig = dk::MakeRig(arm);
+    fixed_rig.params.w_manip = 0.02;
+    fixed_rig.params.w_impact = 0.5;
+    fixed_rig.params.e_ref = 0.05;
+    fixed_rig.params.e_max = 0.5;
+    fixed_rig.params.p_max = 0.5;
+    fixed_rig.params.w_perp = 30.0;
+    fixed_rig.params.accel_box = true;
+    fixed_rig.params.jerk_box = true;
+    fixed_rig.limits.qdd_max = Eigen::VectorXd::Constant(arm.model->nv, 80.0);
+    fixed_rig.limits.jerk_max = Eigen::VectorXd::Constant(arm.model->nv, 5e3);
+    fixed_rig.params.mu_init.fill(1e-2);
+    fixed_rig.params.mu_init_post_box = 1e-2;
+    fixed_rig.params.mu_init_terminal = 1e-2;
+    const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 7 * kTcMs + 311, 20 * kTcMs);
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult out;
+    MpcDockingSegmentCoreResult next;
+    core.ResizeResult(out);
+    core.ResizeResult(next);
+    MpcDockingSegmentCoreInput in = c->in;
+    in.p_line = c->th.p_b;
+    in.time_c1 = 0.3;
+    in.time_c2 = 10.0;
+    dk::PerturbTarget(in, c->seed);
+    StageRecord rec;
+    core.SetStageHook(&CountingHook, &rec);
+    std::size_t news = 0;
+    int moves = 0;
+    int iterations = 0;
+    {
+      const rtc::testing::ScopedAllocGate new_gate;
+      // From the IK target (the initialisation QP, at this δt_c's gains) …
+      const bool ok = core.Solve(in, out);
+      news += new_gate.count();
+      ASSERT_TRUE(ok) << DescribeTc(out);
+    }
+    moves += out.catch_time_steps;
+    iterations += out.iterations;
+    const MpcDockingSegmentCoreInput again = StartFrom(in, out);
+    {
+      const rtc::testing::ScopedAllocGate new_gate;
+      // … from its own solution, and judged without solving.
+      const bool ok = core.Solve(again, next) && core.Evaluate(again, next);
+      news += new_gate.count();
+      ASSERT_TRUE(ok);
+    }
+    core.SetStageHook(nullptr, nullptr);
+    EXPECT_EQ(news, 0U) << arm.name << ": operator new inside Solve";
+    for (std::size_t s = 0; s < kStages; ++s) {
+      EXPECT_EQ(rec.mallocs[s], 0U) << arm.name << " stage " << StageName(s);
+      EXPECT_GT(rec.entries[s], 0) << arm.name << " stage " << StageName(s) << " never ran";
+    }
+    EXPECT_GT(moves, 0) << arm.name << ": the catch instant never moved" << DescribeTc(out);
+    EXPECT_GT(iterations, 4);
+    EXPECT_TRUE(out.init_qp_used);
+    ::testing::Test::RecordProperty(arm.name + "_tc_gate_iterations", iterations);
+    ::testing::Test::RecordProperty(arm.name + "_tc_gate_moves", moves);
+  }
 }
 
 // ── The core as it is, pinned bit for bit (E1-F14 PR 2, #740) ────────────────

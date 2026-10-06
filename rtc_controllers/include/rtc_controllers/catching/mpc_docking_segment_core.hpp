@@ -105,6 +105,67 @@
 //    by the solver's own iteration cap). Past it, the last ACCEPTED iterate is
 //    returned with its violations and KKT residual.
 //
+// ── The catch instant as a variable (catch_time_variable, E1-F14 #740) ────────
+// A search that keeps one candidate per lattice cell wants the best catch
+// instant INSIDE the cell. With `catch_time_variable` the core adds one
+// variable, δt_c: the catch node is at t̂ + δt_c, t̂ the instant the caller's
+// grid is anchored at. Off (the default), none of what follows exists — the
+// dimensions, the code path and every number are those of the core without it.
+//
+//  • The grid stretches in ONE place. Nodes before the catch node stay where
+//    they are; the interval that ends at the catch node has length
+//    τ = Δ_a + δt_c; the nodes after it follow t̂ + δt_c at Δ_s. So x_0, node
+//    0's instant and every pre-catch node are independent of δt_c, and
+//      x_kc = cubic of interval k_c − 1 evaluated at τ (exact),
+//      ∂x_kc/∂δt_c = f̄_c = (q̇_kc, q̈_kc, u_{kc−1}),
+//      ∂x_k/∂δt_c = A(Δ_s)^{k−kc} f̄_c                              k > k_c.
+//    Rows and costs on nodes before the catch node have no δt_c column — with
+//    one exception in the COST: the near term's reference line
+//    r_ref,k = r_ref + (t̂ + δt_c − t_k)(−ν_ref) moves with the catch instant.
+//  • The QP's variables gain θ = δt_c/Δ_a next to the jerk step: [d | θ | …],
+//    with the column of every row and cost term that moves with the catch
+//    instant. The stage gains and the free response of nodes k ≥ k_c are
+//    rebuilt at the δt_c of the point being evaluated.
+//  • The ball at the catch node is read from the caller's prediction at
+//    t̂ + δt_c (SampleBallNode — the interpolant every other consumer reads),
+//    and its rows move at ∂/∂p_b · v̂_b + ∂/∂v_b · â_b. The covariance stays
+//    the caller's (the candidate's own instant), as do the near weights
+//    ρ_T(t_k), the approach set A and the running-cost weight Δ_a of the
+//    stretched interval — its jerk is still u_{kc−1}, recovered over τ.
+//  • Two row groups depend on δt_c through the stage gains: the box on nodes
+//    k ≥ k_c and the terminal rest. They are elastic like every other hard
+//    nonlinear row (one elastic per node for the box, one for the rest; μ in
+//    mu_init_post_box / mu_init_terminal), enter the merit, and decide
+//    `feasible` on the nonlinear model as before — so a trajectory brought
+//    from another catch instant is a start, whatever it leaves of them. The
+//    trust region on those nodes is a row of its own (it shared the box's).
+//    Box rows before the catch node and the jerk box stay hard and linear.
+//  • δt_c does NOT move inside a QP: θ's row pins it. A joint step in (d, θ)
+//    was tried first and does not work — moving the catch instant with the
+//    jerk held leaves the terminal rest and the entrance plane off by a term
+//    of second order in the step (jerk change × time change) that the ℓ₁
+//    merit, at penalties sized for infeasibility and not for this, weighs far
+//    above what the objective gains: measured from a fixed-grid solution, a
+//    20 ms step left 1.3 rad/s of terminal speed for a gain of 0.02 in J, and
+//    no step above 0.1 µs passed the line search. So the two are nested:
+//      inner  the SQP above at a fixed δt_c — all of it, unchanged;
+//      outer  when the inner problem is settled (solved, or stationary with a
+//             row it cannot meet), the pin's multiplier is −∂L/∂θ, which by
+//             the envelope theorem is the derivative of the inner problem's
+//             optimal value in θ. δt_c moves on it by a secant kept inside a
+//             bracket of its sign change, by at most delta_t_step, to a whole
+//             nanosecond inside the caller's box [delta_lo_ns, delta_hi_ns].
+//    The solve ends kConverged when the inner problem is solved AND the
+//    derivative is within the KKT tolerance — or points out of the box at its
+//    end, or changes sign between two neighbouring nanoseconds. kkt_residual
+//    covers both parts. One real-time iteration (max_iterations = 1) cannot
+//    move the catch instant.
+//  • The returned δt_c is a whole number of nanoseconds (the payload's and the
+//    RT's resolution), and so is every instant the solve stood at.
+//  • The cost gains c₁ δt_c + c₂ (δt_c − δ_ref)² (the caller's outer terms in
+//    the catch instant). It is reported apart (cost.time) and is not in
+//    cost.total; the merit and the QP carry it.
+//
 // ── Result ────────────────────────────────────────────────────────────────────
 // Two flags, never merged: `feasible` (every hard row, re-evaluated on the
 // nonlinear model at the returned iterate, holds to tol_violation) and
@@ -325,6 +386,15 @@ struct MpcDockingSegmentCoreParams {
   bool accel_box{false};  ///< |q̈_k| ≤ q̈_max rows
   bool jerk_box{false};   ///< |u_k| ≤ j_max rows
 
+  // ── The catch instant as a variable (header note) ──
+  bool catch_time_variable{false};
+  /// Most that δt_c moves in one iteration [s], > 0 (read with the flag).
+  double delta_t_step{0.01};
+  /// Penalties of the two groups that are elastic only with the flag: the box
+  /// on nodes k ≥ k_c and the terminal rest. > 0, ≤ mu_max.
+  double mu_init_post_box{1e2};
+  double mu_init_terminal{1e2};
+
   // ── SQP ──
   int max_iterations{50};  ///< 1 = one real-time iteration
   double armijo_eta{1e-4};
@@ -415,6 +485,24 @@ struct MpcDockingSegmentCoreInput {
   Eigen::Vector3d d_line{Eigen::Vector3d::UnitX()};
   /// Absolute instant on the core's clock [ns]; ≤ 0 = no deadline.
   std::int64_t deadline_ns{0};
+
+  // ── Read only by a core with catch_time_variable ──
+  /// The prediction the catch node's ball is read from (its mean; the
+  /// covariance is ball[k_c]'s). Not owned; must outlive the call.
+  const TrajectorySnapshot* prediction{nullptr};
+  /// t̂: the catch node's instant on the ball axis at δt_c = 0 [ns].
+  std::int64_t t_catch_ns{0};
+  /// δt_c of the start point and its box [ns], lo ≤ start ≤ hi; the catch
+  /// interval must keep a positive length at lo. The start trajectory (when
+  /// there is one) is on the grid stretched by delta_start_ns.
+  std::int64_t delta_start_ns{0};
+  std::int64_t delta_lo_ns{0};
+  std::int64_t delta_hi_ns{0};
+  /// The cost's terms in the catch instant: c₁ δt_c + c₂ (δt_c − δ_ref)²
+  /// (c₁ [1/s], c₂ ≥ 0 [1/s²], δ_ref [ns]).
+  double time_c1{0.0};
+  double time_c2{0.0};
+  std::int64_t delta_ref_ns{0};
 };
 
 /// J at the returned iterate, by term (the reference's cost: no ½).
@@ -428,6 +516,9 @@ struct MpcDockingCost {
   double impact{0.0};    ///< w_E E_n / E_ref
   double slack{0.0};
   double stop_jerk{0.0}, stop_line{0.0};
+  /// c₁ δt_c + c₂ (δt_c − δ_ref)² — NOT part of `total`; 0 without
+  /// catch_time_variable.
+  double time{0.0};
 };
 
 struct MpcDockingSegmentCoreResult {
@@ -464,6 +555,18 @@ struct MpcDockingSegmentCoreResult {
   bool linearization_ratio_defined{false};
   double tau_ratio_max{0.0};  ///< max |τ/τ_max| over nodes 1..N (RNEA)
   int approach_nodes{0};      ///< |A|
+  // ── With catch_time_variable (zero otherwise) ──
+  /// δt_c of the returned iterate [ns] — the catch node is at t̂ + delta_ns.
+  std::int64_t delta_ns{0};
+  /// Largest elastic of the last QP and the penalty at exit, for the box on
+  /// nodes k ≥ k_c and for the terminal rest.
+  double elastic_post_box{0.0}, elastic_terminal{0.0};
+  double mu_post_box{0.0}, mu_terminal{0.0};
+  /// Iterations whose QP step rested on the trust region (delta_tr).
+  int capped_iterations{0};
+  /// Moves of the catch instant, and ∂L/∂θ at the returned one (θ = δt_c/Δ_a).
+  int catch_time_steps{0};
+  double catch_time_gradient{0.0};
   // ── Iteration record ──
   int iterations{0};     ///< SQP iterations (QP linearisations)
   int qp_solves{0};      ///< QPs solved, μ re-solves and cold retries included
@@ -546,6 +649,9 @@ class MpcDockingSegmentCore {
 
   [[nodiscard]] int Nv() const noexcept { return n_; }
 
+  /// Whether the catch instant is a variable of this core (header note).
+  [[nodiscard]] bool CatchTimeVariable() const noexcept { return tc_on_; }
+
   /// N = n_pre + n_stop: results hold N + 1 node columns.
   [[nodiscard]] int NumNodes() const noexcept { return n_nodes_; }
 
@@ -558,6 +664,8 @@ class MpcDockingSegmentCore {
   [[nodiscard]] double NodeTime(int k) const noexcept;
   /// Scaled stage gain ĝ_{m,k}[b] (m: 0 = q, 1 = q̇, 2 = q̈) — the same
   /// quantity as MpcSegmentCore::StageGain on the same grid.
+  /// With catch_time_variable both are those of the point evaluated LAST (its
+  /// δt_c), for the nodes k ≥ k_c; before any Solve, of δt_c = 0.
   [[nodiscard]] double StageGain(int m, int k, int b) const noexcept;
 
   /// |A| and its nodes (ascending); −1 outside.
@@ -592,6 +700,7 @@ class MpcDockingSegmentCore {
 
   // ── The last QP (diagnostics and tests) ──
   /// Variables: [d (n·B) | s_c (|A|) | s_v (|A|) | e]. d is the step of ũ/u_s.
+  /// With catch_time_variable: [d | θ | s_c | s_v | e], θ the step of δt_c/Δ_a.
   [[nodiscard]] const tsid::QPData& LastQp() const noexcept { return qp_; }
 
   [[nodiscard]] const Eigen::VectorXd& LastQpSolution() const noexcept { return x_qp_; }
@@ -607,12 +716,33 @@ class MpcDockingSegmentCore {
   [[nodiscard]] int GroupRowBegin(DockingRowGroup group) const noexcept;
   [[nodiscard]] int GroupRowCount(DockingRowGroup group) const noexcept;
 
+  // ── With catch_time_variable only (−1 / 0 otherwise) ──
+  /// Column of θ in the last QP.
+  [[nodiscard]] int CatchTimeColumn() const noexcept { return tc_on_ ? nu_ : -1; }
+
+  /// The row that bounds θ (δt_c's box and the step limit).
+  [[nodiscard]] int CatchTimeRow() const noexcept { return tc_on_ ? row_th_ : -1; }
+
+  /// The elastic box rows of the nodes k ≥ k_c: `PostCatchBoxRowCount()` rows
+  /// "… − e ≤ upper" then as many "… + e ≥ lower"; inside each half, node by
+  /// node (k_c first), then q, q̇ (, q̈), then joint.
+  [[nodiscard]] int PostCatchBoxRowBegin() const noexcept { return tc_on_ ? row_pbox_ : -1; }
+
+  [[nodiscard]] int PostCatchBoxRowCount() const noexcept { return tc_on_ ? n_pbox_ : 0; }
+
+  /// The elastic terminal-rest rows: 2n "… − e ≤ upper" (q̇_N then q̈_N), then
+  /// 2n "… + e ≥ lower".
+  [[nodiscard]] int TerminalRowBegin() const noexcept { return tc_on_ ? row_term_ : -1; }
+
  private:
   struct Evaluation {
     MpcDockingCost cost;
     std::array<double, kNumDockingRowGroups> viol_max{};
     std::array<double, kNumDockingElasticGroups> viol_sum{};  // Σ_nodes max_i viol
     double tau_ratio_max{0.0};
+    // With catch_time_variable: the two groups that are elastic only then.
+    double viol_post_box{0.0};  // Σ over nodes k ≥ k_c of the node's largest box excess
+    double viol_terminal{0.0};  // the largest |q̇_N|, |q̈_N|
     bool ok{false};
   };
 
@@ -633,6 +763,17 @@ class MpcDockingSegmentCore {
                                          bool need_initial) noexcept;
   static void ResetRecord(MpcDockingSegmentCoreResult& out) noexcept;
   void FreeResponse() noexcept;
+  /// Put the grid, the gains, the free response and the catch node's ball at
+  /// δt_c = `delta` [s] (catch_time_variable only). False when the ball cannot
+  /// be read there.
+  [[nodiscard]] bool SetCatchOffset(double delta) noexcept;
+  [[nodiscard]] bool CatchTimeStep(double tol) noexcept;
+  void RefreshInitQpGains() noexcept;
+  void PostCatchSensitivity() noexcept;
+  void AddTheta(double rate) noexcept;
+  [[nodiscard]] double Penalty(int group) const noexcept;
+  void ElasticOfNewGroups(double& post_box_max, double& post_box_sum, double& terminal_max,
+                          double& terminal_sum) const noexcept;
   void TrajectoryFromZ(const Eigen::VectorXd& z) noexcept;
   void ProjectInitial(const MpcDockingSegmentCoreInput& in) noexcept;
   [[nodiscard]] bool LinearRowsHold() const noexcept;
@@ -679,6 +820,15 @@ class MpcDockingSegmentCore {
   // First inequality row of each block.
   int row_q_{0}, row_v_{0}, row_a_{0}, row_u_{0}, row_tau_{0}, row_e_{0}, row_s_{0}, row_app_{0},
       row_ent_{0}, row_lat_{0}, row_tim_{0}, row_vel_{0}, row_imp_{0};
+  // The catch instant as a variable. With tc_on_ false: nw_ = nu_, the counts
+  // are 0 and none of the rows exist.
+  bool tc_on_{false};
+  int nw_{0};         // nu + 1: the smooth variables [d | θ]
+  int n_eq_main_{0};  // the main QP's equality rows: 2n, or 0 (the rest is elastic)
+  int n_post_{0};     // nodes k_c..N
+  int n_pbox_{0};     // n_post · n · (2 or 3): one half of the elastic box rows
+  int e_pbox_{0}, e_term_{0};
+  int row_th_{0}, row_pbox_{0}, row_term_{0};
   bool torque_cost_{false}, acc_cost_{false}, posture_cost_{false}, near_cost_{false};
   bool manip_on_{false}, impact_rows_{false}, impact_cost_{false}, impact_on_{false};
   bool timing_on_{false}, perp_on_{false};
@@ -715,6 +865,11 @@ class MpcDockingSegmentCore {
   Eigen::VectorXd x_qp_, y_qp_, z_qp_;
   Eigen::VectorXd x_keep_, y_keep_, z_keep_;  // the solution before a penalty probe
   std::array<double, kNumDockingElasticGroups> mu_keep_{};
+  double mu_post_box_{0.0}, mu_terminal_{0.0};  // the two groups' penalties
+  double mu_post_box_keep_{0.0}, mu_terminal_keep_{0.0};
+  double e_post_box_sum_{0.0}, e_terminal_sum_{0.0};  // Σ e, last QP
+  double kkt_jerk_{0.0};      // ‖∇L‖∞ on the jerk variables, last QP (trust region removed)
+  double reduced_grad_{0.0};  // ∂L/∂θ at the last QP's δt_c (catch_time_variable)
   std::vector<int> row_group_;  // per inequality row: its elastic group, or −1
   /// Per position row: which of its bounds the trust region set (kTrust* bits).
   std::vector<std::uint8_t> trust_side_;
@@ -731,6 +886,28 @@ class MpcDockingSegmentCore {
   Eigen::MatrixXd q_, v_, a_;  // trajectory of the point being evaluated
   std::array<double, kNumDockingElasticGroups> mu_{};
   std::array<double, kDockingStallHistory> violation_hist_{};  // ring, by iteration
+
+  // The catch instant: the iterate's δt_c, that of the point last evaluated,
+  // the trial's; the caller's box and cost terms [s]; the stretched interval.
+  double delta_{0.0}, delta_eval_{0.0};
+  double delta_lo_{0.0}, delta_hi_{0.0}, delta_ref_{0.0};
+  std::int64_t delta_ns_{0}, delta_lo_ns_{0}, delta_hi_ns_{0};
+  // The catch instant's search: the bracket of its derivative's sign change
+  // (an end is "known" once the derivative was read there) and the last move.
+  std::int64_t bracket_lo_ns_{0}, bracket_hi_ns_{0}, prev_ns_{0};
+  bool bracket_lo_known_{false}, bracket_hi_known_{false}, have_prev_{false};
+  double prev_grad_{0.0};
+  double time_c1_{0.0}, time_c2_{0.0};
+  double tau_catch_{0.0};
+  const TrajectorySnapshot* prediction_{nullptr};
+  std::int64_t t_catch_ns_{0};
+  int ball_hint_{0};
+  // ∂x_k/∂δt_c for k ≥ k_c (n × (N+1)), and the catch rows' rates along the ball.
+  Eigen::MatrixXd sq_, sv_, sa_;
+  Eigen::Vector3d r_rate_{Eigen::Vector3d::Zero()}, nu_rate_{Eigen::Vector3d::Zero()};
+  std::array<double, kMaxDockingFaces> lateral_rate_{};
+  std::array<double, kMaxDockingSpeedFaces> speed_rate_{};
+  double timing_rate_{0.0}, axial_lo_rate_{0.0}, axial_hi_rate_{0.0};
 
   // Per-solve inputs.
   std::array<BallNodeSample, kMaxMpcNodes + 1> ball_{};
@@ -760,12 +937,12 @@ class MpcDockingSegmentCore {
   Evaluation ev_cur_;
 
   // Assembly workspace.
-  Eigen::MatrixXd t_node_jac_;  // n × nu: one node's torque Jacobian in the jerk variables
-  Eigen::MatrixXd wt_;          // n × nu
-  Eigen::VectorXd row_;         // nu: the row MapRow built
+  Eigen::MatrixXd t_node_jac_;  // n × nw: one node's torque Jacobian in [d | θ]
+  Eigen::MatrixXd wt_;          // n × nw
+  Eigen::VectorXd row_;         // nw: the row MapRow built
   Eigen::Index row_len_{0};     // its non-zero prefix
   Eigen::VectorXd aq_, av_;     // n
-  Eigen::VectorXd work_n_, zero_n_;
+  Eigen::VectorXd work_n_, zero_n_, ones_n_;
   Eigen::MatrixXd j6_;
 };
 

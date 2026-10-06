@@ -50,6 +50,26 @@ constexpr std::uint8_t kTrustUpper = 2;
   return x > 0.0 ? x : 0.0;
 }
 
+// ns → s by DIVISION: the quotient is correctly rounded.
+constexpr double kNsPerSec = 1e9;
+
+// h += scale · (g_k ⊗ g_k) ⊗ diag(w): the Hessian of a diagonal-weighted sum
+// of squares of one node's state, in the block-jerk variables.
+void AddGainOuter(Eigen::MatrixXd& h, const Eigen::MatrixXd& g, Eigen::Index k,
+                  const Eigen::VectorXd& w, double scale, Eigen::Index nn, Eigen::Index nb) {
+  for (Eigen::Index b = 0; b < nb; ++b) {
+    for (Eigen::Index c = 0; c < nb; ++c) {
+      const double gg = scale * (g(k, b) * g(k, c));
+      if (gg == 0.0) {
+        continue;
+      }
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        h(b * nn + j, c * nn + j) += gg * w[j];
+      }
+    }
+  }
+}
+
 }  // namespace
 
 const char* MpcDockingReasonName(MpcDockingReason reason) noexcept {
@@ -295,6 +315,12 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       return MpcDockingReason::kParamsInvalid;
     }
   }
+  if (p.catch_time_variable &&
+      (!FinitePositive(p.delta_t_step) || !FinitePositive(p.mu_init_post_box) ||
+       p.mu_init_post_box > p.mu_max || !FinitePositive(p.mu_init_terminal) ||
+       p.mu_init_terminal > p.mu_max)) {
+    return MpcDockingReason::kParamsInvalid;
+  }
 
   // ── Limits (finite first — max/min below would launder a NaN, NUM-7) ──
   const auto sized = [nn](const Eigen::VectorXd& x) { return x.size() == nn && x.allFinite(); };
@@ -324,6 +350,7 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   n_nodes_ = n_nodes;
   n_pre_ = p.n_pre;
   n_blocks_ = p.n_blocks;
+  tc_on_ = p.catch_time_variable;
   frame_ = catch_frame;
   kappa_face_ = kappa_face;
   kappa_nu_ = kappa_nu;
@@ -414,8 +441,14 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   // ── Dimensions ──
   const int nN = n * n_nodes_;
   nu_ = n * n_blocks_;
-  n_elastic_ = n_nodes_ + n_app_ + 5;
-  o_sc_ = nu_;
+  // The catch instant as a variable: θ right after the jerk step, and the two
+  // elastic groups after the others. Without it every count below is 0 and
+  // every offset is what it was.
+  nw_ = nu_ + (tc_on_ ? 1 : 0);
+  n_post_ = tc_on_ ? n_nodes_ - n_pre_ + 1 : 0;
+  n_pbox_ = n_post_ * n * (p.accel_box ? 3 : 2);
+  n_elastic_ = n_nodes_ + n_app_ + 5 + (tc_on_ ? n_post_ + 1 : 0);
+  o_sc_ = nw_;
   o_sv_ = o_sc_ + n_app_;
   o_e_ = o_sv_ + n_app_;
   nx_ = o_e_ + n_elastic_;
@@ -426,7 +459,10 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   e_tim_ = e_lat_ + 1;
   e_vel_ = e_tim_ + 1;
   e_imp_ = e_vel_ + 1;
+  e_pbox_ = e_imp_ + 1;
+  e_term_ = e_pbox_ + n_post_;
   n_eq_ = 2 * n;
+  n_eq_main_ = tc_on_ ? 0 : n_eq_;
   row_q_ = 0;
   row_v_ = row_q_ + nN;
   row_a_ = row_v_ + nN;
@@ -440,7 +476,10 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   row_tim_ = row_lat_ + p.n_faces;
   row_vel_ = row_tim_ + 1;
   row_imp_ = row_vel_ + 2 + p.speed_faces;
-  n_in_ = row_imp_ + 3;
+  row_th_ = row_imp_ + 3;
+  row_pbox_ = row_th_ + (tc_on_ ? 1 : 0);
+  row_term_ = row_pbox_ + 2 * n_pbox_;
+  n_in_ = row_term_ + (tc_on_ ? 2 * n_eq_ : 0);
   n_in_init_ = row_tau_;
 
   // ── Constant Hessian of the jerk variables (no ½ in J ⇒ H = 2·…) ──
@@ -456,40 +495,26 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   h_const_.diagonal() = jerk_diag_;
   h_init_all_ = h_const_;
   h_init_catch_ = h_const_;
-  const auto add_gain_outer = [nn, nb](Eigen::MatrixXd& h, const Eigen::MatrixXd& g, Eigen::Index k,
-                                       const Eigen::VectorXd& w, double scale) {
-    for (Eigen::Index b = 0; b < nb; ++b) {
-      for (Eigen::Index c = 0; c < nb; ++c) {
-        const double gg = scale * (g(k, b) * g(k, c));
-        if (gg == 0.0) {
-          continue;
-        }
-        for (Eigen::Index j = 0; j < nn; ++j) {
-          h(b * nn + j, c * nn + j) += gg * w[j];
-        }
-      }
-    }
-  };
-  const Eigen::VectorXd ones = Eigen::VectorXd::Ones(nn);
+  ones_n_ = Eigen::VectorXd::Ones(nn);
   for (Eigen::Index k = 1; k < n_pre_; ++k) {
     if (acc_cost_) {
-      add_gain_outer(h_const_, ga_, k, r_acc_, 2.0 * p.dt_pre);
+      AddGainOuter(h_const_, ga_, k, r_acc_, 2.0 * p.dt_pre, nn, nb);
     }
     if (posture_cost_) {
-      add_gain_outer(h_const_, gq_, k, w_q_nom_, 2.0 * p.dt_pre);
+      AddGainOuter(h_const_, gq_, k, w_q_nom_, 2.0 * p.dt_pre, nn, nb);
     }
   }
   for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
-    add_gain_outer(h_init_all_, gq_, k, ones, 2.0 * p.init_w_q);
-    add_gain_outer(h_init_all_, gv_, k, ones, 2.0 * p.init_w_v);
+    AddGainOuter(h_init_all_, gq_, k, ones_n_, 2.0 * p.init_w_q, nn, nb);
+    AddGainOuter(h_init_all_, gv_, k, ones_n_, 2.0 * p.init_w_v, nn, nb);
   }
-  add_gain_outer(h_init_catch_, gq_, n_pre_, ones, 2.0 * p.init_w_q);
-  add_gain_outer(h_init_catch_, gv_, n_pre_, ones, 2.0 * p.init_w_v);
+  AddGainOuter(h_init_catch_, gq_, n_pre_, ones_n_, 2.0 * p.init_w_q, nn, nb);
+  AddGainOuter(h_init_catch_, gv_, n_pre_, ones_n_, 2.0 * p.init_w_v, nn, nb);
 
   // ── QP storage and constant parts ──
-  qp_.Init(nx_, n_eq_, n_in_);
+  qp_.Init(nx_, n_eq_main_, n_in_);
   qp_.n_vars = nx_;
-  qp_.n_eq = n_eq_;
+  qp_.n_eq = n_eq_main_;
   qp_.n_ineq = n_in_;
   qp_init_.Init(nu_, n_eq_, n_in_init_);
   qp_init_.n_vars = nu_;
@@ -497,11 +522,18 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   qp_init_.n_ineq = n_in_init_;
 
   const Eigen::Index N = n_nodes_;
+  // The terminal rest q̇_N = q̈_N = 0 in the jerk variables: the initialisation
+  // QP's equality, and the main QP's too unless the catch instant is a
+  // variable (the rest is then an elastic row group — header note).
+  qp_init_.A.setZero();
   for (Eigen::Index b = 0; b < nb; ++b) {
     for (Eigen::Index j = 0; j < nn; ++j) {
-      qp_.A(j, b * nn + j) = gv_(N, b);
-      qp_.A(nn + j, b * nn + j) = ga_(N, b);
+      qp_init_.A(j, b * nn + j) = gv_(N, b);
+      qp_init_.A(nn + j, b * nn + j) = ga_(N, b);
     }
+  }
+  if (!tc_on_) {
+    qp_.A.leftCols(nu_) = qp_init_.A;
   }
   for (Eigen::Index k = 1; k <= N; ++k) {
     const Eigen::Index o = (k - 1) * nn;
@@ -548,6 +580,21 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   for (Eigen::Index i = 0; i < 3; ++i) {
     qp_.C(row_imp_ + i, o_e_ + e_imp_) = -1.0;
   }
+  if (tc_on_) {
+    qp_.C(row_th_, nu_) = 1.0;
+    // One elastic per node k ≥ k_c for its box rows, one for the terminal
+    // rest: "… − e ≤ upper" in the first half, "… + e ≥ lower" in the second.
+    const Eigen::Index per_node = n_pbox_ / n_post_;
+    for (Eigen::Index i = 0; i < n_pbox_; ++i) {
+      const Eigen::Index e = o_e_ + e_pbox_ + i / per_node;
+      qp_.C(row_pbox_ + i, e) = -1.0;
+      qp_.C(row_pbox_ + n_pbox_ + i, e) = 1.0;
+    }
+    for (Eigen::Index i = 0; i < n_eq_; ++i) {
+      qp_.C(row_term_ + i, o_e_ + e_term_) = -1.0;
+      qp_.C(row_term_ + n_eq_ + i, o_e_ + e_term_) = 1.0;
+    }
+  }
   // Which penalty each inequality row answers to (−1: none — the linear rows,
   // the sign rows of the slacks and elastics, the two slack rows).
   row_group_.assign(static_cast<std::size_t>(n_in_), -1);
@@ -565,18 +612,21 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   tag_rows(row_tim_, 1, DockingRowGroup::kTiming);
   tag_rows(row_vel_, 2 + p.speed_faces, DockingRowGroup::kVelocitySet);
   tag_rows(row_imp_, 3, DockingRowGroup::kImpact);
+  if (tc_on_) {
+    tag_rows(row_pbox_, 2 * n_pbox_, DockingRowGroup::kBox);
+    tag_rows(row_term_, 2 * n_eq_, DockingRowGroup::kTerminal);
+  }
   // Everything open until a solve sets its bounds.
   qp_.l.setConstant(-kInf);
   qp_.u.setConstant(kInf);
   qp_.H.topLeftCorner(nu_, nu_) = h_const_;
 
-  qp_init_.A = qp_.A.leftCols(nu_);
   qp_init_.C = qp_.C.topLeftCorner(n_in_init_, nu_);
   qp_init_.H = h_init_all_;
 
   // Rank self-check of the assembled terminal equality (2n × nB).
   {
-    const Eigen::MatrixXd a = qp_.A.leftCols(nu_);
+    const Eigen::MatrixXd a = qp_init_.A;
     const Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(a);
     terminal_rank_ = static_cast<int>(qr.rank());
   }
@@ -584,7 +634,7 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
     return MpcDockingReason::kTerminalRankDeficient;
   }
 
-  solver_.Init(nx_, n_eq_, n_in_, p.solver);
+  solver_.Init(nx_, n_eq_main_, n_in_, p.solver);
   // The initialisation QP is the one QP here that CAN be infeasible (x_0 may
   // leave no way to stop inside the box), and it has no elastic for the
   // solver's approximate certificate to trip over: it keeps ProxQP's own
@@ -595,10 +645,10 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
 
   // ── Workspace ──
   x_qp_.setZero(nx_);
-  y_qp_.setZero(n_eq_);
+  y_qp_.setZero(n_eq_main_);
   z_qp_.setZero(n_in_);
   x_keep_.setZero(nx_);
-  y_keep_.setZero(n_eq_);
+  y_keep_.setZero(n_eq_main_);
   z_keep_.setZero(n_in_);
   cx_.setZero(n_in_);
   kkt_.setZero(nx_);
@@ -639,17 +689,29 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
   manip_grad_.setZero(nn, N1);
   perp_jac_.setZero(3, nn * N1);
   perp_res_.setZero(3, N1);
-  t_node_jac_.setZero(nn, nu_);
-  wt_.setZero(nn, nu_);
-  row_.setZero(nu_);
+  t_node_jac_.setZero(nn, nw_);
+  wt_.setZero(nn, nw_);
+  row_.setZero(nw_);
   aq_.setZero(nn);
   av_.setZero(nn);
   work_n_.setZero(nn);
   zero_n_.setZero(nn);
   j6_.setZero(6, nn);
   trust_side_.assign(static_cast<std::size_t>(nN), 0);
-  trust_grad_.setZero(nu_);
+  trust_grad_.setZero(nw_);
   mu_ = p.mu_init;
+  mu_post_box_ = p.mu_init_post_box;
+  mu_terminal_ = p.mu_init_terminal;
+  delta_ = 0.0;
+  delta_eval_ = 0.0;
+  delta_ns_ = 0;
+  reduced_grad_ = 0.0;
+  kkt_jerk_ = 0.0;
+  tau_catch_ = p.dt_pre;
+  prediction_ = nullptr;
+  sq_.setZero(nn, N1);
+  sv_.setZero(nn, N1);
+  sa_.setZero(nn, N1);
 
   initialized_ = true;
   return MpcDockingReason::kNone;
@@ -776,6 +838,201 @@ void MpcDockingSegmentCore::FreeResponse() noexcept {
   }
 }
 
+// ── The catch instant as a variable ──────────────────────────────────────────
+
+bool MpcDockingSegmentCore::SetCatchOffset(double delta) noexcept {
+  const MpcDockingSegmentCoreParams& p = params_;
+  const Eigen::Index kc = n_pre_;
+  // The ball at t̂ + δ. The prediction is read at a whole nanosecond (its
+  // sampler's resolution — and the instant the plan and the RT read when δ is
+  // one, as every returned δ is); what is left of δ below that is carried by
+  // that sample's own velocity and acceleration, so that the ball is a smooth
+  // function of δ between two such instants as well.
+  const double whole = std::round(delta * kNsPerSec);
+  if (prediction_ == nullptr || !std::isfinite(whole) || std::abs(whole) > 1e15) {
+    return false;
+  }
+  const double rest = delta - whole / kNsPerSec;
+  const BallNodeSample b =
+      SampleBallNode(*prediction_, nullptr, false,
+                     BallTime{t_catch_ns_ + static_cast<std::int64_t>(whole)}, ball_hint_);
+  if (!b.valid || b.after_horizon || !b.p.allFinite() || !b.v.allFinite() || !b.a.allFinite()) {
+    return false;
+  }
+  BallNodeSample& at_catch = ball_[static_cast<std::size_t>(kc)];
+  at_catch.p = b.p + rest * b.v + (0.5 * rest * rest) * b.a;
+  at_catch.v = b.v + rest * b.a;
+  at_catch.a = b.a;
+
+  // The grid: one interval stretched, the nodes after it shifted.
+  delta_eval_ = delta;
+  tau_catch_ = p.dt_pre + delta;
+  dt_node_[static_cast<std::size_t>(kc - 1)] = tau_catch_;
+  for (Eigen::Index k = kc; k <= n_nodes_; ++k) {
+    t_node_[static_cast<std::size_t>(k)] =
+        static_cast<double>(kc) * p.dt_pre + delta + static_cast<double>(k - kc) * p.dt_stop;
+  }
+  // The stage gains are a forward recursion over the intervals: the rows of
+  // the nodes before k_c come out as they were.
+  const auto n_intervals = static_cast<std::size_t>(n_nodes_);
+  ComputeBlockStageGains(std::span<const double>(dt_node_).first(n_intervals),
+                         std::span<const int>(block_of_node_).first(n_intervals), n_blocks_,
+                         p.u_scale, gq_, gv_, ga_);
+  FreeResponse();
+  return true;
+}
+
+// The initialisation QP at the gains SetCatchOffset left: its terminal
+// equality, its box rows and its two Hessians (catch_time_variable only — the
+// start point is found at the δt_c the caller starts from).
+void MpcDockingSegmentCore::RefreshInitQpGains() noexcept {
+  const MpcDockingSegmentCoreParams& p = params_;
+  const Eigen::Index nn = n_;
+  const Eigen::Index nb = n_blocks_;
+  const Eigen::Index N = n_nodes_;
+  for (Eigen::Index b = 0; b < nb; ++b) {
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      qp_init_.A(j, b * nn + j) = gv_(N, b);
+      qp_init_.A(nn + j, b * nn + j) = ga_(N, b);
+    }
+  }
+  for (Eigen::Index k = n_pre_; k <= N; ++k) {
+    const Eigen::Index o = (k - 1) * nn;
+    for (Eigen::Index b = 0; b < nb; ++b) {
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        qp_init_.C(row_q_ + o + j, b * nn + j) = gq_(k, b);
+        qp_init_.C(row_v_ + o + j, b * nn + j) = gv_(k, b);
+        if (p.accel_box) {
+          qp_init_.C(row_a_ + o + j, b * nn + j) = ga_(k, b);
+        }
+      }
+    }
+  }
+  h_init_all_.setZero();
+  h_init_all_.diagonal() = jerk_diag_;
+  h_init_catch_ = h_init_all_;
+  for (Eigen::Index k = 1; k <= N; ++k) {
+    AddGainOuter(h_init_all_, gq_, k, ones_n_, 2.0 * p.init_w_q, nn, nb);
+    AddGainOuter(h_init_all_, gv_, k, ones_n_, 2.0 * p.init_w_v, nn, nb);
+  }
+  AddGainOuter(h_init_catch_, gq_, n_pre_, ones_n_, 2.0 * p.init_w_q, nn, nb);
+  AddGainOuter(h_init_catch_, gv_, n_pre_, ones_n_, 2.0 * p.init_w_v, nn, nb);
+}
+
+// ∂x_k/∂δt_c at the trajectory in (q_, v_, a_) and the iterate z_, for the
+// nodes k ≥ k_c: f̄_c = (q̇_kc, q̈_kc, u_{kc−1}) carried through the stop part's
+// transition, A(T)·f̄_c with T = (k − k_c)Δ_s.
+void MpcDockingSegmentCore::PostCatchSensitivity() noexcept {
+  const Eigen::Index nn = n_;
+  const Eigen::Index kc = n_pre_;
+  const Eigen::Index block = block_of_node_[static_cast<std::size_t>(kc - 1)];
+  for (Eigen::Index k = kc; k <= n_nodes_; ++k) {
+    const double t = static_cast<double>(k - kc) * params_.dt_stop;
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const double u = params_.u_scale * z_[block * nn + j];
+      sq_(j, k) = v_(j, kc) + t * a_(j, kc) + (0.5 * t * t) * u;
+      sv_(j, k) = a_(j, kc) + t * u;
+      sa_(j, k) = u;
+    }
+  }
+}
+
+// Add `rate` — the row's derivative in δt_c [per second] beyond what its node
+// state carries — to the θ entry of the row MapRow built (θ = δt_c/Δ_a).
+void MpcDockingSegmentCore::AddTheta(double rate) noexcept {
+  if (!tc_on_) {
+    return;
+  }
+  row_[nu_] += params_.dt_pre * rate;
+  row_len_ = nw_;
+}
+
+double MpcDockingSegmentCore::Penalty(int group) const noexcept {
+  if (group < kNumDockingElasticGroups) {
+    return mu_[static_cast<std::size_t>(group)];
+  }
+  return group == static_cast<int>(DockingRowGroup::kBox) ? mu_post_box_ : mu_terminal_;
+}
+
+void MpcDockingSegmentCore::ElasticOfNewGroups(double& post_box_max, double& post_box_sum,
+                                               double& terminal_max,
+                                               double& terminal_sum) const noexcept {
+  post_box_max = 0.0;
+  post_box_sum = 0.0;
+  for (Eigen::Index i = 0; i < n_post_; ++i) {
+    const double e = Positive(x_qp_[o_e_ + e_pbox_ + i]);
+    post_box_max = std::max(post_box_max, e);
+    post_box_sum += e;
+  }
+  terminal_max = tc_on_ ? Positive(x_qp_[o_e_ + e_term_]) : 0.0;
+  terminal_sum = terminal_max;
+}
+
+// One move of the catch instant, from the derivative of the fixed-δt_c
+// problem's optimal value at the instant it was just settled at (∂L/∂θ,
+// PostQp). Returns true when the instant stays: the derivative is within
+// `tol`, or it points out of the box at the box's end, or the two instants
+// either side — one nanosecond apart — disagree about the direction.
+//
+// The value is smooth between changes of the active set and nothing says it
+// is convex, so the move is a secant on the derivative kept inside a bracket:
+// the latest instant the derivative was negative at (the minimum is later)
+// and the earliest it was positive at. Every move lands strictly inside the
+// bracket, so the search ends.
+bool MpcDockingSegmentCore::CatchTimeStep(double tol) noexcept {
+  const double g = reduced_grad_;
+  if (!(std::abs(g) > tol)) {
+    return true;  // stationary (and a NaN moves nothing)
+  }
+  if (g < 0.0) {
+    if (delta_ns_ >= delta_hi_ns_) {
+      return true;
+    }
+    bracket_lo_ns_ = delta_ns_;
+    bracket_lo_known_ = true;
+  } else {
+    if (delta_ns_ <= delta_lo_ns_) {
+      return true;
+    }
+    bracket_hi_ns_ = delta_ns_;
+    bracket_hi_known_ = true;
+  }
+  // The instants the next one may be: inside the bracket, an end the
+  // derivative has not been read at included.
+  const std::int64_t lo = bracket_lo_known_ ? bracket_lo_ns_ + 1 : bracket_lo_ns_;
+  const std::int64_t hi = bracket_hi_known_ ? bracket_hi_ns_ - 1 : bracket_hi_ns_;
+  if (lo > hi) {
+    return true;  // the sign changes between two neighbouring nanoseconds
+  }
+  const double step_max = params_.delta_t_step * kNsPerSec;
+  double step = g < 0.0 ? step_max : -step_max;
+  if (have_prev_ && prev_ns_ != delta_ns_) {
+    // dg/dδ over the last move; a positive slope gives the secant's root.
+    const double slope = (g - prev_grad_) / static_cast<double>(delta_ns_ - prev_ns_);
+    if (slope > 0.0 && std::isfinite(slope)) {
+      step = std::clamp(-g / slope, -step_max, step_max);
+    }
+  }
+  std::int64_t next = delta_ns_ + static_cast<std::int64_t>(std::llround(step));
+  if (next == delta_ns_) {
+    next += g < 0.0 ? 1 : -1;
+  }
+  if ((next > hi && !bracket_hi_known_) || (next < lo && !bracket_lo_known_)) {
+    // Past an end of the box the derivative has not been read at: that end.
+    next = std::clamp(next, lo, hi);
+  } else if (next < lo || next > hi) {
+    // Past an instant the derivative WAS read at, with the other sign: the
+    // bracket's middle.
+    next = std::clamp(bracket_lo_ns_ + (bracket_hi_ns_ - bracket_lo_ns_) / 2, lo, hi);
+  }
+  have_prev_ = true;
+  prev_ns_ = delta_ns_;
+  prev_grad_ = g;
+  delta_ns_ = next;
+  delta_ = static_cast<double>(next) / kNsPerSec;
+  return false;
+}
+
 void MpcDockingSegmentCore::TrajectoryFromZ(const Eigen::VectorXd& z) noexcept {
   const Eigen::Index nn = n_;
   const Eigen::Index nb = n_blocks_;
@@ -818,8 +1075,13 @@ void MpcDockingSegmentCore::ProjectInitial(const MpcDockingSegmentCoreInput& in)
 
 bool MpcDockingSegmentCore::LinearRowsHold() const noexcept {
   const Eigen::Index nn = n_;
-  const double tol = params_.tol_linear;
+  const double tol_hard = params_.tol_linear;
+  // With the catch instant a variable the box on nodes k ≥ k_c and the terminal
+  // rest are elastic groups, held to tol_violation like every other one: a
+  // solution of this core, taken as a start, holds them to THAT.
+  const double tol_soft = tc_on_ ? std::max(tol_hard, params_.tol_violation) : tol_hard;
   for (Eigen::Index k = 1; k <= n_nodes_; ++k) {
+    const double tol = k >= n_pre_ ? tol_soft : tol_hard;
     for (Eigen::Index j = 0; j < nn; ++j) {
       if (!(q_(j, k) >= q_lo_[j] - tol) || !(q_(j, k) <= q_hi_[j] + tol) ||
           !(std::abs(v_(j, k)) <= v_hi_[j] + tol) ||
@@ -828,6 +1090,7 @@ bool MpcDockingSegmentCore::LinearRowsHold() const noexcept {
       }
     }
   }
+  const double tol = tol_hard;
   if (params_.jerk_box) {
     for (Eigen::Index b = 0; b < n_blocks_; ++b) {
       for (Eigen::Index j = 0; j < nn; ++j) {
@@ -838,7 +1101,7 @@ bool MpcDockingSegmentCore::LinearRowsHold() const noexcept {
     }
   }
   for (Eigen::Index j = 0; j < nn; ++j) {
-    if (!(std::abs(v_(j, n_nodes_)) <= tol) || !(std::abs(a_(j, n_nodes_)) <= tol)) {
+    if (!(std::abs(v_(j, n_nodes_)) <= tol_soft) || !(std::abs(a_(j, n_nodes_)) <= tol_soft)) {
       return false;
     }
   }
@@ -852,6 +1115,9 @@ MpcDockingReason MpcDockingSegmentCore::RunInitQp(const MpcDockingSegmentCoreInp
   const Eigen::Index N = n_nodes_;
   const double us = params_.u_scale;
   StageBegin(MpcDockingStage::kStart);
+  if (tc_on_) {
+    RefreshInitQpGains();
+  }
   qp_init_.g.setZero();
   if (in.initial_valid) {
     // Nearest to the caller's whole trajectory.
@@ -1016,9 +1282,12 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
     const bool pre = k < kc;
     const double dt = pre ? da : ds;
     const Eigen::VectorXd& rj = pre ? r_jerk_ : r_jerk_stop_;
+    // The stretched interval's jerk is recovered over ITS length; its weight in
+    // the running cost stays Δ_a (header note).
+    const double len = tc_on_ && k == kc - 1 ? tau_catch_ : dt;
     double jerk = 0.0;
     for (Eigen::Index j = 0; j < nn; ++j) {
-      const double u = (a_(j, k + 1) - a_(j, k)) / dt;
+      const double u = (a_(j, k + 1) - a_(j, k)) / len;
       const double un = u / us;
       jerk += rj[j] * un * un;
       if (p.jerk_box) {
@@ -1047,6 +1316,26 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
   for (Eigen::Index j = 0; j < nn; ++j) {
     note(DockingRowGroup::kTerminal, std::abs(v_(j, N)));
     note(DockingRowGroup::kTerminal, std::abs(a_(j, N)));
+  }
+  if (tc_on_) {
+    // The two groups that are elastic with the catch instant a variable, as
+    // their elastics measure them: per node k ≥ k_c the largest box excess,
+    // and the largest |q̇_N|, |q̈_N|.
+    for (Eigen::Index k = kc; k <= N; ++k) {
+      double node = 0.0;
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        node = std::max(node, q_lo_[j] - q_(j, k));
+        node = std::max(node, q_(j, k) - q_hi_[j]);
+        node = std::max(node, std::abs(v_(j, k)) - v_hi_[j]);
+        if (p.accel_box) {
+          node = std::max(node, std::abs(a_(j, k)) - a_hi_[j]);
+        }
+      }
+      ev.viol_post_box += node;
+    }
+    ev.viol_terminal = ev.viol_max[static_cast<std::size_t>(DockingRowGroup::kTerminal)];
+    const double off = delta_eval_ - delta_ref_;
+    ev.cost.time = time_c1_ * delta_eval_ + time_c2_ * off * off;
   }
 
   // ── The ball in the capture frame: nodes 0..k_c ──
@@ -1094,25 +1383,52 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
       const Eigen::Vector3d e_nu = rel.nu_h - p.nu_ref;
       ev.cost.terminal = p.q_rho_f.dot(e_rho.cwiseAbs2()) + p.q_nu_f.dot(e_nu.cwiseAbs2());
 
+      // With the catch instant a variable the linearisation also needs each
+      // row's rate along the prediction (ṗ_b = v̂_b, v̇_b = â_b).
+      const bool rates = tc_on_ && with_jacobians;
+      DockingBallGradient ball_grad;
+      DockingBallGradient* const grad = rates ? &ball_grad : nullptr;
+      const Eigen::Vector3d& v_b = ball_[ki].v;
+      const Eigen::Vector3d& a_b = ball_[ki].a;
+      if (rates) {
+        r_rate_.noalias() = rel.dr_dpb * v_b;
+        nu_rate_.noalias() = rel.dnu_dpb * v_b;
+        nu_rate_.noalias() += rel.dnu_dvb * a_b;
+      }
       double lateral = 0.0;
       for (int i = 0; i < p.n_faces; ++i) {
         const auto fi = static_cast<std::size_t>(i);
         DockingLateralChanceRow(kin_, rel, sigma_p_, p.face_a[fi], kappa_face_[fi], p.c_min,
-                                p.eps_sigma, lateral_[fi]);
+                                p.eps_sigma, lateral_[fi], grad);
+        if (rates) {
+          lateral_rate_[fi] = ball_grad.Rate(v_b, a_b);
+        }
         lateral = std::max(lateral, seen(lateral_[fi].value) - p.face_b[fi]);
       }
       add(DockingRowGroup::kLateral, Positive(lateral));
       if (timing_on_) {
-        DockingTimingRow(kin_, rel, sigma_p_, k_timing_, p.eps_sigma, timing_);
+        DockingTimingRow(kin_, rel, sigma_p_, k_timing_, p.eps_sigma, timing_, grad);
+        if (rates) {
+          timing_rate_ = ball_grad.Rate(v_b, a_b);
+        }
         add(DockingRowGroup::kTiming, Positive(-seen(timing_.value)));
       }
-      DockingAxialSpeedRow(kin_, rel, sigma_b_, -kappa_nu_, p.eps_sigma, axial_lo_);
-      DockingAxialSpeedRow(kin_, rel, sigma_b_, kappa_nu_, p.eps_sigma, axial_hi_);
+      DockingAxialSpeedRow(kin_, rel, sigma_b_, -kappa_nu_, p.eps_sigma, axial_lo_, grad);
+      if (rates) {
+        axial_lo_rate_ = ball_grad.Rate(v_b, a_b);
+      }
+      DockingAxialSpeedRow(kin_, rel, sigma_b_, kappa_nu_, p.eps_sigma, axial_hi_, grad);
+      if (rates) {
+        axial_hi_rate_ = ball_grad.Rate(v_b, a_b);
+      }
       double vel = std::max(p.c_min - seen(axial_lo_.value), seen(axial_hi_.value) - p.c_cap_max);
       for (int i = 0; i < p.speed_faces; ++i) {
         const auto fi = static_cast<std::size_t>(i);
         DockingLateralSpeedRow(kin_, rel, sigma_b_, speed_face_[fi], kappa_nu_, p.eps_sigma,
-                               speed_[fi]);
+                               speed_[fi], grad);
+        if (rates) {
+          speed_rate_[fi] = ball_grad.Rate(v_b, a_b);
+        }
         vel = std::max(vel, seen(speed_[fi].value) - speed_face_bound_);
       }
       add(DockingRowGroup::kVelocitySet, Positive(vel));
@@ -1171,6 +1487,10 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
   ev.cost.stop = ev.cost.stop_jerk + ev.cost.stop_line;
   ev.cost.total = ev.cost.reference + ev.cost.stop;
   bool finite = rows_finite && std::isfinite(ev.cost.total) && std::isfinite(ev.tau_ratio_max);
+  if (tc_on_) {
+    finite = finite && std::isfinite(ev.cost.time) && std::isfinite(ev.viol_post_box) &&
+             std::isfinite(ev.viol_terminal);
+  }
   for (const double v : ev.viol_max) {
     finite = finite && std::isfinite(v);
   }
@@ -1200,6 +1520,17 @@ void MpcDockingSegmentCore::MapRow(Eigen::Index k, const Eigen::VectorXd* a_q,
       row_.segment(b * nn, nn) += gv_(k, b) * (*a_v);
     }
   }
+  if (tc_on_ && k >= n_pre_) {
+    // The node's state moves with the catch instant: a_qᵀ ∂q_k/∂δ + a_vᵀ ∂q̇_k/∂δ.
+    double rate = 0.0;
+    if (a_q != nullptr) {
+      rate += a_q->dot(sq_.col(k));
+    }
+    if (a_v != nullptr) {
+      rate += a_v->dot(sv_.col(k));
+    }
+    AddTheta(rate);
+  }
 }
 
 void MpcDockingSegmentCore::AddScalarResidual(double weight, double residual) noexcept {
@@ -1221,7 +1552,7 @@ void MpcDockingSegmentCore::AddScalarResidual(double weight, double residual) no
 }
 
 void MpcDockingSegmentCore::SetRow(Eigen::Index row, double lower, double upper) noexcept {
-  qp_.C.row(row).head(nu_) = row_.transpose();
+  qp_.C.row(row).head(nw_) = row_.transpose();
   qp_.l[row] = lower;
   qp_.u[row] = upper;
 }
@@ -1243,6 +1574,16 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
 
   // ── Gradient of the constant-Hessian terms at the iterate ──
   qp_.g.head(nu_) = jerk_diag_.cwiseProduct(z_);
+  if (tc_on_) {
+    PostCatchSensitivity();
+    // θ's row and column of H start from the time terms' curvature alone, its
+    // gradient from their slope (∂δ/∂θ = Δ_a). Every other term in θ is
+    // Gauss–Newton, below.
+    qp_.H.row(nu_).head(nw_).setZero();
+    qp_.H.col(nu_).head(nw_).setZero();
+    qp_.H(nu_, nu_) = 2.0 * time_c2_ * da * da;
+    qp_.g[nu_] = da * (time_c1_ + 2.0 * time_c2_ * (delta_eval_ - delta_ref_));
+  }
   for (Eigen::Index k = 1; k < kc; ++k) {
     if (!acc_cost_ && !posture_cost_) {
       break;
@@ -1267,14 +1608,21 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
                                              gv_(k, b) * d_tau_.block(0, col + nn, nn, nn) +
                                              ga_(k, b) * d_tau_.block(0, col + 2 * nn, nn, nn);
     }
+    if (tc_on_ && k >= kc) {
+      // ∂τ_k/∂δ through the node's state, as θ's column.
+      work_n_.noalias() = d_tau_.block(0, col, nn, nn) * sq_.col(k);
+      work_n_.noalias() += d_tau_.block(0, col + nn, nn, nn) * sv_.col(k);
+      work_n_.noalias() += d_tau_.block(0, col + 2 * nn, nn, nn) * sa_.col(k);
+      t_node_jac_.col(nu_) = da * work_n_;
+    }
     if (torque_cost_ && k < kc) {
       wt_ = r_tau2_.asDiagonal() * t_node_jac_;
-      qp_.H.topLeftCorner(nu_, nu_).noalias() += t_node_jac_.transpose() * wt_;
+      qp_.H.topLeftCorner(nw_, nw_).noalias() += t_node_jac_.transpose() * wt_;
       work_n_ = tau_.col(k);
-      qp_.g.head(nu_).noalias() += wt_.transpose() * work_n_;
+      qp_.g.head(nw_).noalias() += wt_.transpose() * work_n_;
     }
-    qp_.C.block(row_tau_ + o, 0, nn, nu_) = inv_tau_.asDiagonal() * t_node_jac_;
-    qp_.C.block(row_tau_ + nN + o, 0, nn, nu_) = qp_.C.block(row_tau_ + o, 0, nn, nu_);
+    qp_.C.block(row_tau_ + o, 0, nn, nw_) = inv_tau_.asDiagonal() * t_node_jac_;
+    qp_.C.block(row_tau_ + nN + o, 0, nn, nw_) = qp_.C.block(row_tau_ + o, 0, nn, nw_);
     for (Eigen::Index j = 0; j < nn; ++j) {
       const double t = tau_(j, k) * inv_tau_[j];
       qp_.l[row_tau_ + o + j] = -kInf;
@@ -1285,8 +1633,8 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
   }
   if (torque_cost_) {
     // The matrix products above are symmetric only to rounding.
-    for (Eigen::Index c = 0; c < nu_; ++c) {
-      for (Eigen::Index r = c + 1; r < nu_; ++r) {
+    for (Eigen::Index c = 0; c < nw_; ++c) {
+      for (Eigen::Index r = c + 1; r < nw_; ++r) {
         const double m = 0.5 * (qp_.H(r, c) + qp_.H(c, r));
         qp_.H(r, c) = m;
         qp_.H(c, r) = m;
@@ -1297,6 +1645,22 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
   // ── Catch-vicinity cost: nodes 1..k_c−1 ──
   const Eigen::Vector3d r_ref(p.rho_ref.x(), p.rho_ref.y(), p.s_ent);
   const double t_c = t_node_[static_cast<std::size_t>(kc)];
+  if (near_cost_ && tc_on_) {
+    // Node 0 is x_0 — a constant of the candidate without the variable, and
+    // still no function of the jerk. But its reference point is on the line
+    // through the catch instant, so its term moves with δt_c: a θ-only row.
+    const DockingRelativeState& rel = rel_[0];
+    const double w = 2.0 * da * near_weight_[0];
+    const Eigen::Vector3d r_ref_0 = r_ref - (t_c - t_node_[0]) * p.nu_ref;
+    for (Eigen::Index i = 0; i < 3; ++i) {
+      if (p.q_p[i] > 0.0) {
+        row_.setZero();
+        row_len_ = 0;
+        AddTheta(p.nu_ref[i]);
+        AddScalarResidual(w * p.q_p[i], rel.r_h[i] - r_ref_0[i]);
+      }
+    }
+  }
   if (near_cost_) {
     for (Eigen::Index k = 1; k < kc; ++k) {
       const auto ki = static_cast<std::size_t>(k);
@@ -1307,6 +1671,8 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
         if (p.q_p[i] > 0.0) {
           aq_ = rel.dr_dq.row(i).transpose();
           MapRow(k, &aq_, nullptr);
+          // The reference line moves with the catch instant: ∂r_ref,k/∂δ = −ν_ref.
+          AddTheta(p.nu_ref[i]);
           AddScalarResidual(w * p.q_p[i], rel.r_h[i] - r_ref_k[i]);
         }
         if (p.q_v[i] > 0.0) {
@@ -1326,6 +1692,7 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
       if (p.q_rho_f[i] > 0.0) {
         aq_ = rel.dr_dq.row(i).transpose();
         MapRow(kc, &aq_, nullptr);
+        AddTheta(r_rate_[i]);
         AddScalarResidual(2.0 * p.q_rho_f[i], rel.r_h[i] - p.rho_ref[i]);
       }
     }
@@ -1334,12 +1701,14 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
         aq_ = rel.dnu_dq.row(i).transpose();
         av_ = rel.dr_dq.row(i).transpose();
         MapRow(kc, &aq_, &av_);
+        AddTheta(nu_rate_[i]);
         AddScalarResidual(2.0 * p.q_nu_f[i], rel.nu_h[i] - p.nu_ref[i]);
       }
     }
     if (impact_cost_) {
       // w_E E / E_ref = (w_E / E_ref) · (√E)².
       MapRow(kc, &impact_.root_energy.dq, &impact_.root_energy.dv);
+      AddTheta(impact_.root_energy_dvb.dot(ball_[static_cast<std::size_t>(kc)].a));
       AddScalarResidual(2.0 * p.w_impact / p.e_ref, impact_.root_energy.value);
     }
   }
@@ -1372,11 +1741,16 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
   SetPenaltyGradient();
 
   // ── Linear rows ──
-  for (Eigen::Index j = 0; j < nn; ++j) {
-    qp_.b[j] = -v_(j, N);
-    qp_.b[nn + j] = -a_(j, N);
+  if (!tc_on_) {
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      qp_.b[j] = -v_(j, N);
+      qp_.b[nn + j] = -a_(j, N);
+    }
   }
-  for (Eigen::Index k = 1; k <= N; ++k) {
+  // With the catch instant a variable the nodes k ≥ k_c are written further
+  // down: their box is elastic there and the trust region a row of its own.
+  const Eigen::Index k_linear = tc_on_ ? kc - 1 : N;
+  for (Eigen::Index k = 1; k <= k_linear; ++k) {
     const Eigen::Index o = (k - 1) * nn;
     for (Eigen::Index j = 0; j < nn; ++j) {
       // Every operand is finite (the evaluation was), so max/min cannot
@@ -1435,6 +1809,96 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
     qp_.l[row_s_ + i] = 0.0;
     qp_.u[row_s_ + i] = kInf;
   }
+  if (tc_on_) {
+    const bool bounded = std::isfinite(tr);
+    const std::uint8_t both = bounded ? static_cast<std::uint8_t>(kTrustLower | kTrustUpper) : 0;
+    const Eigen::Index per_node = n_pbox_ / n_post_;
+    // ── Nodes k ≥ k_c: gains at this δt_c, a θ column, the box elastic ──
+    for (Eigen::Index k = kc; k <= N; ++k) {
+      const Eigen::Index o = (k - 1) * nn;
+      const Eigen::Index po = (k - kc) * per_node;
+      for (Eigen::Index j = 0; j < nn; ++j) {
+        // The trust region alone, on the linearised displacement of q_k.
+        const Eigen::Index tr_row = row_q_ + o + j;
+        const Eigen::Index up_q = row_pbox_ + po + j;
+        const Eigen::Index up_v = up_q + nn;
+        const Eigen::Index up_a = up_v + nn;
+        for (Eigen::Index b = 0; b < nb; ++b) {
+          const Eigen::Index c = b * nn + j;
+          qp_.C(tr_row, c) = gq_(k, b);
+          qp_.C(up_q, c) = gq_(k, b);
+          qp_.C(up_q + n_pbox_, c) = gq_(k, b);
+          qp_.C(up_v, c) = gv_(k, b);
+          qp_.C(up_v + n_pbox_, c) = gv_(k, b);
+          if (p.accel_box) {
+            qp_.C(up_a, c) = ga_(k, b);
+            qp_.C(up_a + n_pbox_, c) = ga_(k, b);
+          }
+        }
+        const double th_q = da * sq_(j, k);
+        const double th_v = da * sv_(j, k);
+        qp_.C(tr_row, nu_) = th_q;
+        qp_.C(up_q, nu_) = th_q;
+        qp_.C(up_q + n_pbox_, nu_) = th_q;
+        qp_.C(up_v, nu_) = th_v;
+        qp_.C(up_v + n_pbox_, nu_) = th_v;
+        trust_side_[static_cast<std::size_t>(o + j)] = both;
+        qp_.l[tr_row] = -tr;
+        qp_.u[tr_row] = tr;
+        // The hard speed (and acceleration) rows of these nodes are open:
+        // their elastic twins below carry the bounds.
+        qp_.l[row_v_ + o + j] = -kInf;
+        qp_.u[row_v_ + o + j] = kInf;
+        qp_.l[up_q] = -kInf;
+        qp_.u[up_q] = q_hi_[j] - q_(j, k);
+        qp_.l[up_q + n_pbox_] = q_lo_[j] - q_(j, k);
+        qp_.u[up_q + n_pbox_] = kInf;
+        qp_.l[up_v] = -kInf;
+        qp_.u[up_v] = v_hi_[j] - v_(j, k);
+        qp_.l[up_v + n_pbox_] = -v_hi_[j] - v_(j, k);
+        qp_.u[up_v + n_pbox_] = kInf;
+        if (p.accel_box) {
+          const double th_a = da * sa_(j, k);
+          qp_.C(up_a, nu_) = th_a;
+          qp_.C(up_a + n_pbox_, nu_) = th_a;
+          qp_.l[row_a_ + o + j] = -kInf;
+          qp_.u[row_a_ + o + j] = kInf;
+          qp_.l[up_a] = -kInf;
+          qp_.u[up_a] = a_hi_[j] - a_(j, k);
+          qp_.l[up_a + n_pbox_] = -a_hi_[j] - a_(j, k);
+          qp_.u[up_a + n_pbox_] = kInf;
+        }
+      }
+    }
+    // ── Terminal rest, elastic: −e ≤ q̇_N, q̈_N (linearised) ≤ e ──
+    for (Eigen::Index j = 0; j < nn; ++j) {
+      const Eigen::Index up_v = row_term_ + j;
+      const Eigen::Index up_a = up_v + nn;
+      for (Eigen::Index b = 0; b < nb; ++b) {
+        const Eigen::Index c = b * nn + j;
+        qp_.C(up_v, c) = gv_(N, b);
+        qp_.C(up_v + n_eq_, c) = gv_(N, b);
+        qp_.C(up_a, c) = ga_(N, b);
+        qp_.C(up_a + n_eq_, c) = ga_(N, b);
+      }
+      qp_.C(up_v, nu_) = da * sv_(j, N);
+      qp_.C(up_v + n_eq_, nu_) = da * sv_(j, N);
+      qp_.C(up_a, nu_) = da * sa_(j, N);
+      qp_.C(up_a + n_eq_, nu_) = da * sa_(j, N);
+      qp_.l[up_v] = -kInf;
+      qp_.u[up_v] = -v_(j, N);
+      qp_.l[up_v + n_eq_] = -v_(j, N);
+      qp_.u[up_v + n_eq_] = kInf;
+      qp_.l[up_a] = -kInf;
+      qp_.u[up_a] = -a_(j, N);
+      qp_.l[up_a + n_eq_] = -a_(j, N);
+      qp_.u[up_a + n_eq_] = kInf;
+    }
+    // ── θ is PINNED: δt_c does not move inside a QP (header note). The row's
+    // multiplier is then minus the problem's derivative in θ at this δt_c. ──
+    qp_.l[row_th_] = 0.0;
+    qp_.u[row_th_] = 0.0;
+  }
 
   // ── Approach rows ──
   for (Eigen::Index i = 0; i < n_app_; ++i) {
@@ -1458,41 +1922,54 @@ void MpcDockingSegmentCore::AssembleQp() noexcept {
   {
     const DockingRelativeState& rel = rel_[static_cast<std::size_t>(kc)];
     const double gap = rel.s - p.s_ent;
+    // Each row's θ entry: its node state's part (MapRow) and, since the ball
+    // the row reads moves with the catch instant, its rate along the
+    // prediction (AddTheta — nothing without catch_time_variable).
+    const Eigen::Vector3d& a_ball = ball_[static_cast<std::size_t>(kc)].a;
     aq_ = rel.dr_dq.row(2).transpose();
     MapRow(kc, &aq_, nullptr);
+    AddTheta(r_rate_[2]);
     SetRow(row_ent_, -kInf, -gap);
     SetRow(row_ent_ + 1, -gap, kInf);
     for (Eigen::Index i = 0; i < p.n_faces; ++i) {
       const auto fi = static_cast<std::size_t>(i);
       MapRow(kc, &lateral_[fi].dq, &lateral_[fi].dv);
+      AddTheta(lateral_rate_[fi]);
       SetRow(row_lat_ + i, -kInf, p.face_b[fi] - lateral_[fi].value);
     }
     if (timing_on_) {
       MapRow(kc, &timing_.dq, &timing_.dv);
+      AddTheta(timing_rate_);
       SetRow(row_tim_, -timing_.value, kInf);
     }
     MapRow(kc, &axial_lo_.dq, &axial_lo_.dv);
+    AddTheta(axial_lo_rate_);
     SetRow(row_vel_, p.c_min - axial_lo_.value, kInf);
     MapRow(kc, &axial_hi_.dq, &axial_hi_.dv);
+    AddTheta(axial_hi_rate_);
     SetRow(row_vel_ + 1, -kInf, p.c_cap_max - axial_hi_.value);
     for (Eigen::Index i = 0; i < p.speed_faces; ++i) {
       const auto fi = static_cast<std::size_t>(i);
       MapRow(kc, &speed_[fi].dq, &speed_[fi].dv);
+      AddTheta(speed_rate_[fi]);
       SetRow(row_vel_ + 2 + i, -kInf, speed_face_bound_ - speed_[fi].value);
     }
     if (impact_rows_) {
       MapRow(kc, &impact_.g_n.dq, &impact_.g_n.dv);
+      AddTheta(impact_.g_n_dvb.dot(a_ball));
       SetRow(row_imp_, -kInf, -impact_.g_n.value);
       if (std::isfinite(p.e_max)) {
         aq_ = impact_.energy.dq / p.e_max;
         av_ = impact_.energy.dv / p.e_max;
         MapRow(kc, &aq_, &av_);
+        AddTheta(impact_.energy_dvb.dot(a_ball) / p.e_max);
         SetRow(row_imp_ + 1, -kInf, 1.0 - impact_.energy.value / p.e_max);
       }
       if (std::isfinite(p.p_max)) {
         aq_ = impact_.impulse.dq / p.p_max;
         av_ = impact_.impulse.dv / p.p_max;
         MapRow(kc, &aq_, &av_);
+        AddTheta(impact_.impulse_dvb.dot(a_ball) / p.p_max);
         SetRow(row_imp_ + 2, -kInf, 1.0 - impact_.impulse.value / p.p_max);
       }
     }
@@ -1512,6 +1989,12 @@ void MpcDockingSegmentCore::SetPenaltyGradient() noexcept {
   qp_.g[o_e_ + e_tim_] = mu(DockingRowGroup::kTiming);
   qp_.g[o_e_ + e_vel_] = mu(DockingRowGroup::kVelocitySet);
   qp_.g[o_e_ + e_imp_] = mu(DockingRowGroup::kImpact);
+  if (tc_on_) {
+    for (Eigen::Index i = 0; i < n_post_; ++i) {
+      qp_.g[o_e_ + e_pbox_ + i] = mu_post_box_;
+    }
+    qp_.g[o_e_ + e_term_] = mu_terminal_;
+  }
 }
 
 void MpcDockingSegmentCore::ElasticByGroup(
@@ -1558,7 +2041,9 @@ MpcDockingReason MpcDockingSegmentCore::RunQp(MpcDockingSegmentCoreResult& out) 
   }
   solver_warm_ = true;
   x_qp_ = res->x_opt.head(nx_);
-  y_qp_ = solver_.EqualityDual();
+  if (n_eq_main_ > 0) {
+    y_qp_ = solver_.EqualityDual();
+  }
   z_qp_ = solver_.InequalityDual();
   d_ = x_qp_.head(nu_);
   return MpcDockingReason::kNone;
@@ -1579,6 +2064,13 @@ bool MpcDockingSegmentCore::GrowPenalties() noexcept {
     left = left || e_max[g] > params_.tol_violation;
     mu_top = std::max(mu_top, mu_[g]);
   }
+  if (tc_on_) {
+    double post_box_max = 0.0;
+    double terminal_max = 0.0;
+    ElasticOfNewGroups(post_box_max, e_post_box_sum_, terminal_max, e_terminal_sum_);
+    left = left || post_box_max > params_.tol_violation || terminal_max > params_.tol_violation;
+    mu_top = std::max({mu_top, mu_post_box_, mu_terminal_});
+  }
   const double factor = std::min(params_.mu_growth, params_.mu_max / mu_top);
   if (!left || !(factor > 1.0)) {
     return false;
@@ -1587,6 +2079,10 @@ bool MpcDockingSegmentCore::GrowPenalties() noexcept {
   for (double& mu : mu_) {
     mu *= factor;
   }
+  mu_post_box_keep_ = mu_post_box_;
+  mu_terminal_keep_ = mu_terminal_;
+  mu_post_box_ *= factor;
+  mu_terminal_ *= factor;
   x_keep_ = x_qp_;
   y_keep_ = y_qp_;
   z_keep_ = z_qp_;
@@ -1596,6 +2092,8 @@ bool MpcDockingSegmentCore::GrowPenalties() noexcept {
 
 void MpcDockingSegmentCore::RestorePenalties() noexcept {
   mu_ = mu_keep_;
+  mu_post_box_ = mu_post_box_keep_;
+  mu_terminal_ = mu_terminal_keep_;
   SetPenaltyGradient();
   x_qp_ = x_keep_;
   y_qp_ = y_keep_;
@@ -1612,9 +2110,11 @@ void MpcDockingSegmentCore::PostQp(MpcDockingSegmentCoreResult& out) noexcept {
   // part is reported.)
   kkt_ = qp_.g;
   kkt_.noalias() += qp_.C.transpose() * z_qp_;
-  kkt_.noalias() += qp_.A.transpose() * y_qp_;
+  if (n_eq_main_ > 0) {
+    kkt_.noalias() += qp_.A.transpose() * y_qp_;
+  }
   cx_.noalias() = qp_.C * x_qp_;
-  out.grad_norm = qp_.g.head(nu_).cwiseAbs().maxCoeff();
+  out.grad_norm = qp_.g.head(nw_).cwiseAbs().maxCoeff();
   double comp = 0.0;
   for (Eigen::Index i = 0; i < n_in_; ++i) {
     const double lam = z_qp_[i];
@@ -1637,13 +2137,29 @@ void MpcDockingSegmentCore::PostQp(MpcDockingSegmentCoreResult& out) noexcept {
     const double lam = z_qp_[row];
     if ((lam > 0.0 && (trust_side_[i] & kTrustUpper) != 0) ||
         (lam < 0.0 && (trust_side_[i] & kTrustLower) != 0)) {
-      trust_grad_ += lam * qp_.C.row(row).head(nu_).transpose();
+      trust_grad_ += lam * qp_.C.row(row).head(nw_).transpose();
     }
   }
-  out.kkt_residual = (kkt_.head(nu_) - trust_grad_).cwiseAbs().maxCoeff();
+  kkt_jerk_ = (kkt_.head(nu_) - trust_grad_.head(nu_)).cwiseAbs().maxCoeff();
+  out.kkt_residual = kkt_jerk_;
+  if (tc_on_) {
+    // ∂L/∂θ at this δt_c: θ's entry of g + Cᵀz without the pin's own
+    // multiplier (and without the trust region's, as above). By the envelope
+    // theorem it is the derivative of the fixed-δt_c problem's optimal value —
+    // what the catch instant is moved on. At an end of δt_c's box it is the
+    // box's multiplier when it points outward, and no residual.
+    reduced_grad_ = kkt_[nu_] - z_qp_[row_th_] - trust_grad_[nu_];
+    const bool held_by_box = (reduced_grad_ < 0.0 && delta_ns_ >= delta_hi_ns_) ||
+                             (reduced_grad_ > 0.0 && delta_ns_ <= delta_lo_ns_);
+    out.kkt_residual = std::max(kkt_jerk_, held_by_box ? 0.0 : std::abs(reduced_grad_));
+  }
   out.step_capped =
       trust_grad_.cwiseAbs().maxCoeff() > params_.tol_kkt * std::max(1.0, out.grad_norm);
   ElasticByGroup(out.elastic, elastic_sum_);
+  if (tc_on_) {
+    ElasticOfNewGroups(out.elastic_post_box, e_post_box_sum_, out.elastic_terminal,
+                       e_terminal_sum_);
+  }
   // What the solution leaves of the elastic groups' rows, in penalty units:
   // Σ μ_G · (row residual)⁺. Zero for an exact QP solution.
   double noise = 0.0;
@@ -1654,7 +2170,7 @@ void MpcDockingSegmentCore::PostQp(MpcDockingSegmentCoreResult& out) noexcept {
     }
     const double over = std::max(cx_[i] - qp_.u[i], qp_.l[i] - cx_[i]);
     if (over > 0.0) {
-      noise += mu_[static_cast<std::size_t>(g)] * over;
+      noise += Penalty(g) * over;
     }
   }
   qp_noise_ = noise;
@@ -1664,6 +2180,9 @@ double MpcDockingSegmentCore::Merit(const Evaluation& ev) const noexcept {
   double phi = ev.cost.total;
   for (std::size_t g = 0; g < mu_.size(); ++g) {
     phi += mu_[g] * ev.viol_sum[g];
+  }
+  if (tc_on_) {
+    phi += ev.cost.time + mu_post_box_ * ev.viol_post_box + mu_terminal_ * ev.viol_terminal;
   }
   return phi;
 }
@@ -1686,6 +2205,10 @@ double MpcDockingSegmentCore::LinearizedDecrease(const Evaluation& ev) const noe
   }
   for (std::size_t g = 0; g < mu_.size(); ++g) {
     dec += mu_[g] * (elastic_sum_[g] - ev.viol_sum[g]);
+  }
+  if (tc_on_) {
+    dec += qp_.g[nu_] * x_qp_[nu_] + mu_post_box_ * (e_post_box_sum_ - ev.viol_post_box) +
+           mu_terminal_ * (e_terminal_sum_ - ev.viol_terminal);
   }
   return dec;
 }
@@ -1718,6 +2241,12 @@ void MpcDockingSegmentCore::Finish(const Evaluation& ev, MpcDockingReason reason
   }
   out.tau_ratio_max = ev.tau_ratio_max;
   out.approach_nodes = n_app_;
+  if (tc_on_) {
+    out.delta_ns = static_cast<std::int64_t>(std::llround(delta_eval_ * kNsPerSec));
+    out.catch_time_gradient = reduced_grad_;
+    out.mu_post_box = mu_post_box_;
+    out.mu_terminal = mu_terminal_;
+  }
 
   // Catch-node diagnostics. kin_ still holds node k_c only if nothing after it
   // used the workspace, so it is recomputed here.
@@ -1763,7 +2292,10 @@ void MpcDockingSegmentCore::Finish(const Evaluation& ev, MpcDockingReason reason
     if (!(ev.viol_max[g] <= p.tol_violation)) {
       feasible = false;
     }
-    if (g < static_cast<std::size_t>(kNumDockingElasticGroups) && ev.viol_max[g] > worst) {
+    // The groups an elastic answers for: the first seven, and with the catch
+    // instant a variable the box and the terminal rest too.
+    if ((tc_on_ || g < static_cast<std::size_t>(kNumDockingElasticGroups)) &&
+        ev.viol_max[g] > worst) {
       worst = ev.viol_max[g];
       out.infeasible_group = static_cast<DockingRowGroup>(g);
     }
@@ -1858,13 +2390,63 @@ MpcDockingReason MpcDockingSegmentCore::Prepare(const MpcDockingSegmentCoreInput
       return MpcDockingReason::kInitialStateOutsideBox;
     }
   }
+  if (tc_on_) {
+    if (!std::isfinite(in.time_c1) || !std::isfinite(in.time_c2)) {
+      return MpcDockingReason::kNonFinite;
+    }
+    // δt_c's box must hold its start, be a time (not an instant) and leave the
+    // catch interval a positive length at its lower end.
+    constexpr std::int64_t kSpan = 1'000'000'000;
+    if (in.delta_lo_ns > in.delta_start_ns || in.delta_start_ns > in.delta_hi_ns ||
+        in.delta_lo_ns < -kSpan || in.delta_hi_ns > kSpan || in.delta_ref_ns < -kSpan ||
+        in.delta_ref_ns > kSpan ||
+        !(p.dt_pre + static_cast<double>(in.delta_lo_ns) / kNsPerSec > 0.0) ||
+        !(in.time_c2 >= 0.0)) {
+      return MpcDockingReason::kInputOutOfRange;
+    }
+    // A catch instant past the prediction's last sample reads an extrapolated
+    // ball: the box ends there, and a start beyond it is no start.
+    if (in.prediction == nullptr || !in.prediction->valid || in.prediction->n < 1 ||
+        in.prediction->n > kCap ||
+        in.t_catch_ns + in.delta_start_ns >
+            in.prediction->s[static_cast<std::size_t>(in.prediction->n - 1)].t_ns) {
+      return MpcDockingReason::kBallInvalid;
+    }
+  }
   q0_ = in.q0;
   v0_ = in.qd0;
   a0_ = in.qdd0;
   for (Eigen::Index k = 0; k <= kc; ++k) {
     ball_[static_cast<std::size_t>(k)] = in.ball[static_cast<std::size_t>(k)];
   }
-  FreeResponse();
+  if (!tc_on_) {
+    FreeResponse();
+    return MpcDockingReason::kNone;
+  }
+  prediction_ = in.prediction;
+  t_catch_ns_ = in.t_catch_ns;
+  ball_hint_ = 0;
+  delta_lo_ns_ = in.delta_lo_ns;
+  delta_hi_ns_ = std::min(
+      in.delta_hi_ns,
+      in.prediction->s[static_cast<std::size_t>(in.prediction->n - 1)].t_ns - in.t_catch_ns);
+  delta_lo_ = static_cast<double>(delta_lo_ns_) / kNsPerSec;
+  delta_hi_ = static_cast<double>(delta_hi_ns_) / kNsPerSec;
+  delta_ref_ = static_cast<double>(in.delta_ref_ns) / kNsPerSec;
+  time_c1_ = in.time_c1;
+  time_c2_ = in.time_c2;
+  delta_ns_ = in.delta_start_ns;
+  delta_ = static_cast<double>(in.delta_start_ns) / kNsPerSec;
+  // The catch instant's own search starts with the box as its bracket.
+  bracket_lo_ns_ = delta_lo_ns_;
+  bracket_hi_ns_ = delta_hi_ns_;
+  bracket_lo_known_ = false;
+  bracket_hi_known_ = false;
+  have_prev_ = false;
+  // The grid, the free response and the catch node's ball at the start's δt_c.
+  if (!SetCatchOffset(delta_)) {
+    return MpcDockingReason::kBallInvalid;
+  }
   return MpcDockingReason::kNone;
 }
 
@@ -1905,6 +2487,14 @@ void MpcDockingSegmentCore::ResetRecord(MpcDockingSegmentCoreResult& out) noexce
   out.tau_ratio_max = 0.0;
   out.approach_nodes = 0;
   out.infeasible_group = DockingRowGroup::kTorque;
+  out.delta_ns = 0;
+  out.elastic_post_box = 0.0;
+  out.elastic_terminal = 0.0;
+  out.mu_post_box = 0.0;
+  out.mu_terminal = 0.0;
+  out.capped_iterations = 0;
+  out.catch_time_steps = 0;
+  out.catch_time_gradient = 0.0;
 }
 
 bool MpcDockingSegmentCore::Evaluate(const MpcDockingSegmentCoreInput& in,
@@ -1921,6 +2511,8 @@ bool MpcDockingSegmentCore::Evaluate(const MpcDockingSegmentCoreInput& in,
   ProjectInitial(in);
   StageEnd(MpcDockingStage::kStart);
   mu_ = params_.mu_init;
+  mu_post_box_ = params_.mu_init_post_box;
+  mu_terminal_ = params_.mu_init_terminal;
   StageBegin(MpcDockingStage::kFinish);
   TrajectoryFromZ(z_);
   Evaluation ev;
@@ -1971,6 +2563,8 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
   // A new Solve is a new problem: the same input gives the same answer
   // whatever was solved before.
   mu_ = p.mu_init;
+  mu_post_box_ = p.mu_init_post_box;
+  mu_terminal_ = p.mu_init_terminal;
   solver_.ResetWarmStart();
   solver_warm_ = false;
 
@@ -1984,8 +2578,11 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     {
       const auto t0 = Clock::now();
       StageBegin(MpcDockingStage::kLinearize);
+      // The grid and the ball at the iterate's δt_c (a rejected trial point
+      // left them at its own).
+      const bool at = !tc_on_ || SetCatchOffset(delta_);
       TrajectoryFromZ(z_);
-      const bool ok = EvaluateTrajectory(true, ev_cur_);
+      const bool ok = at && EvaluateTrajectory(true, ev_cur_);
       slack_c_cur_ = slack_c_;
       slack_v_cur_ = slack_v_;
       StageEnd(MpcDockingStage::kLinearize);
@@ -2036,6 +2633,9 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       for (const double e : elastic_sum_) {
         before += e;
       }
+      if (tc_on_) {
+        before += e_post_box_sum_ + e_terminal_sum_;
+      }
       StageEnd(MpcDockingStage::kPostQp);
       if (!grew) {
         break;
@@ -2055,6 +2655,15 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
         for (const double v : ev_cur_.viol_sum) {
           violation += v;
         }
+        if (tc_on_) {
+          double post_box_max = 0.0;
+          double post_box_sum = 0.0;
+          double terminal_max = 0.0;
+          double terminal_sum = 0.0;
+          ElasticOfNewGroups(post_box_max, post_box_sum, terminal_max, terminal_sum);
+          after += post_box_sum + terminal_sum;
+          violation += ev_cur_.viol_post_box + ev_cur_.viol_terminal;
+        }
         keep = DockingPenaltyGrowthKept(violation, before, after, p.mu_min_gain, p.tol_violation);
       }
       if (!keep) {
@@ -2070,6 +2679,7 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     PostQp(out);
     StageEnd(MpcDockingStage::kPostQp);
     ++out.iterations;
+    out.capped_iterations += out.step_capped ? 1 : 0;
 
     bool feasible_now = true;
     for (const double v : ev_cur_.viol_max) {
@@ -2079,12 +2689,18 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     for (const double e : out.elastic) {
       elastic_left = elastic_left || e > p.tol_violation;
     }
+    if (tc_on_) {
+      elastic_left = elastic_left || out.elastic_post_box > p.tol_violation ||
+                     out.elastic_terminal > p.tol_violation;
+    }
     // Under a binding trust region the QP's multipliers are not the NLP's
     // (with them ‖g + Cᵀλ + Aᵀy‖ = ‖H d‖, small because d is capped), so the
     // step proves neither a KKT point nor that the rows cannot be met.
     const bool stationary =
-        !out.step_capped && out.kkt_residual <= p.tol_kkt * std::max(1.0, out.grad_norm);
-    if (stationary && feasible_now && out.complementarity <= p.tol_complementarity) {
+        !out.step_capped && kkt_jerk_ <= p.tol_kkt * std::max(1.0, out.grad_norm);
+    const bool solved_here =
+        stationary && feasible_now && out.complementarity <= p.tol_complementarity;
+    if (solved_here && !tc_on_) {
       reason = MpcDockingReason::kConverged;
       break;
     }
@@ -2093,6 +2709,10 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     double violation_now = 0.0;
     for (std::size_t g = 0; g < mu_.size(); ++g) {
       violation_now += p.mu_init[g] * ev_cur_.viol_sum[g];
+    }
+    if (tc_on_) {
+      violation_now +=
+          p.mu_init_post_box * ev_cur_.viol_post_box + p.mu_init_terminal * ev_cur_.viol_terminal;
     }
     // Read the old entry BEFORE this iteration's overwrites it: with the
     // longest window the two are the same slot of the ring.
@@ -2108,7 +2728,31 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     violation_hist_[static_cast<std::size_t>(it % kDockingStallHistory)] = violation_now;
     const bool stalled =
         !out.step_capped && violation_now >= (1.0 - p.stall_reduction) * violation_then;
-    if (elastic_left && !feasible_now && (stationary || stalled)) {
+    const bool infeasible_here = elastic_left && !feasible_now && (stationary || stalled);
+    if (tc_on_ && (solved_here || infeasible_here) && p.max_iterations > 1) {
+      // The fixed-δt_c problem is settled at this catch instant — solved, or
+      // stationary with a row it cannot meet. Its derivative in the catch
+      // instant says where the instant goes next; when it goes nowhere this is
+      // the answer.
+      StageBegin(MpcDockingStage::kPostQp);
+      const bool done = CatchTimeStep(p.tol_kkt * std::max(1.0, out.grad_norm));
+      StageEnd(MpcDockingStage::kPostQp);
+      if (done) {
+        reason = solved_here ? MpcDockingReason::kConverged : MpcDockingReason::kInfeasible;
+        break;
+      }
+      ++out.catch_time_steps;
+      // Another instant is another problem for the stall test.
+      stall_from = it + 1;
+      continue;
+    }
+    if (solved_here) {
+      // One real-time iteration cannot move the catch instant: it reports the
+      // point it started from, as solved at THAT instant.
+      reason = MpcDockingReason::kConverged;
+      break;
+    }
+    if (infeasible_here) {
       // The linearised rows cannot be met here, a larger penalty does not
       // help (the probe above), and either the iterate is a stationary point
       // of the penalised problem or the violation has stopped falling: over
@@ -2170,10 +2814,16 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
   }
 
   StageBegin(MpcDockingStage::kFinish);
+  bool at = true;
+  if (tc_on_) {
+    // The grid and the ball at the returned δt_c — a whole number of
+    // nanoseconds inside the box, as every instant this solve stood at.
+    at = SetCatchOffset(delta_);
+  }
   TrajectoryFromZ(z_);
   Evaluation final_ev;
   (void)EvaluateTrajectory(false, final_ev);
-  if (!final_ev.ok && reason != MpcDockingReason::kQpFailed) {
+  if ((!final_ev.ok || !at) && reason != MpcDockingReason::kQpFailed) {
     reason = MpcDockingReason::kSolutionNonFinite;
   }
   Finish(final_ev, reason, out);

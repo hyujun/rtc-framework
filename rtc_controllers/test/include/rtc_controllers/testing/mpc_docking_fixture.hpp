@@ -31,6 +31,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <numbers>
@@ -184,6 +185,91 @@ inline Eigen::VectorXd JerkThrough(const MpcDockingSegmentCore& core, const Eige
     }
   }
   return z;
+}
+
+// ── A catch instant that is a variable (E1-F14 PR 2, #740) ───────────────────
+// A core with `catch_time_variable` rebuilds its gains and node instants at
+// the δt_c of whatever point it evaluated last, so NodesFromJerk / FillBall
+// (which read them) describe the δt_c = 0 grid only on a core that has not
+// solved. The three helpers below read the PARAMETERS instead.
+
+// The trajectory of scaled block jerks z from x0 on the grid whose last
+// pre-catch interval is Δ_a + delta, integrated interval by interval.
+inline Nodes NodesFromJerkAt(const MpcDockingSegmentCoreParams& p, const Eigen::VectorXd& q0,
+                             const Eigen::VectorXd& qd0, const Eigen::VectorXd& qdd0,
+                             const Eigen::VectorXd& z, double delta) {
+  const Eigen::Index n = q0.size();
+  const int N = p.n_pre + p.n_stop;
+  Nodes out;
+  out.q.resize(n, N + 1);
+  out.qd.resize(n, N + 1);
+  out.qdd.resize(n, N + 1);
+  out.q.col(0) = q0;
+  out.qd.col(0) = qd0;
+  out.qdd.col(0) = qdd0;
+  int block = 0;
+  int left = p.block_sizes[0];
+  for (int k = 0; k < N; ++k) {
+    if (left == 0) {
+      ++block;
+      left = p.block_sizes[static_cast<std::size_t>(block)];
+    }
+    --left;
+    const double dt =
+        k < p.n_pre - 1 ? p.dt_pre : (k == p.n_pre - 1 ? p.dt_pre + delta : p.dt_stop);
+    for (Eigen::Index j = 0; j < n; ++j) {
+      const double u = p.u_scale * z[block * n + j];
+      const double q = out.q(j, k);
+      const double v = out.qd(j, k);
+      const double a = out.qdd(j, k);
+      out.q(j, k + 1) = q + v * dt + 0.5 * a * dt * dt + u * dt * dt * dt / 6.0;
+      out.qd(j, k + 1) = v + a * dt + 0.5 * u * dt * dt;
+      out.qdd(j, k + 1) = a + u * dt;
+    }
+  }
+  return out;
+}
+
+// A prediction of `n` samples, `spacing_ns` apart from `first_ns`, of a ball
+// under the constant acceleration `acc` that is at (p_at, v_at) at `at_ns`.
+inline rtc::catching::TrajectorySnapshot BallisticPrediction(
+    const Eigen::Vector3d& p_at, const Eigen::Vector3d& v_at, const Eigen::Vector3d& acc,
+    std::int64_t at_ns, std::int64_t first_ns, std::int64_t spacing_ns, int n) {
+  rtc::catching::TrajectorySnapshot t{};
+  t.valid = true;
+  t.n = n;
+  t.token.snapshot_sequence = 1;
+  for (int k = 0; k < n; ++k) {
+    auto& s = t.s[static_cast<std::size_t>(k)];
+    s.t_ns = first_ns + static_cast<std::int64_t>(k) * spacing_ns;
+    const double tau = static_cast<double>(s.t_ns - at_ns) / 1e9;
+    const Eigen::Vector3d p = p_at + v_at * tau + 0.5 * tau * tau * acc;
+    const Eigen::Vector3d v = v_at + acc * tau;
+    s.p = {p.x(), p.y(), p.z()};
+    s.v = {v.x(), v.y(), v.z()};
+    s.a = {acc.x(), acc.y(), acc.z()};
+  }
+  return t;
+}
+
+// The core's ball input for a grid anchored at `t_hat_ns` (the catch node's
+// instant at δt_c = 0), read from `traj`; the covariance goes to the catch
+// node only. `traj` must outlive every use of `in`.
+inline void FillBallAt(const MpcDockingSegmentCoreParams& p,
+                       const rtc::catching::TrajectorySnapshot& traj,
+                       const rtc::catching::BallCovariance& cov, std::int64_t t_hat_ns,
+                       MpcDockingSegmentCoreInput& in) {
+  const auto dt_pre_ns = static_cast<std::int64_t>(std::llround(p.dt_pre * 1e9));
+  int hint = 0;
+  for (int k = 0; k <= p.n_pre; ++k) {
+    const std::int64_t t = t_hat_ns - static_cast<std::int64_t>(p.n_pre - k) * dt_pre_ns;
+    in.ball[static_cast<std::size_t>(k)] =
+        rtc::catching::SampleBallNode(traj, nullptr, false, rtc::catching::BallTime{t}, hint);
+  }
+  in.ball[static_cast<std::size_t>(p.n_pre)].cov = cov;
+  in.ball[static_cast<std::size_t>(p.n_pre)].cov_valid = true;
+  in.prediction = &traj;
+  in.t_catch_ns = t_hat_ns;
 }
 
 struct HandState {
