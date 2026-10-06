@@ -44,6 +44,8 @@
 // (every comparison is written so that NaN is not "inside").
 #pragma once
 
+#include "rtc_controllers/catching/time_types.hpp"  // FloorDiv, CeilDiv
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -53,18 +55,6 @@
 namespace rtc::catching {
 
 // ── Lattice ───────────────────────────────────────────────────────────────────
-
-/// @brief ⌊a / b⌋ for b > 0, toward −∞ (the built-in `/` truncates toward 0).
-[[nodiscard]] constexpr std::int64_t FloorDiv(std::int64_t a, std::int64_t b) noexcept {
-  const std::int64_t q = a / b;
-  return (a % b != 0 && a < 0) ? q - 1 : q;
-}
-
-/// @brief ⌈a / b⌉ for b > 0.
-[[nodiscard]] constexpr std::int64_t CeilDiv(std::int64_t a, std::int64_t b) noexcept {
-  const std::int64_t q = a / b;
-  return (a % b != 0 && a > 0) ? q + 1 : q;
-}
 
 /// The lattice indices one wake evaluates: every i with
 /// t_ref + i·h ∈ [window_lo, window_hi]. Empty when `last < first`.

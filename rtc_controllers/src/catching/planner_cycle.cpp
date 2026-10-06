@@ -1,7 +1,8 @@
 // One planner wake (S6). See planner_cycle.hpp.
 #include "rtc_controllers/catching/planner_cycle.hpp"
 
-#include "rtc_base/types/types.hpp"  // rtc::SteadyNowNs
+#include "rtc_base/types/types.hpp"                 // rtc::SteadyNowNs
+#include "rtc_controllers/catching/time_types.hpp"  // SecondsToNs
 
 #include <cmath>
 #include <memory>
@@ -9,14 +10,6 @@
 #include <utility>
 
 namespace rtc::catching {
-
-namespace {
-
-[[nodiscard]] std::int64_t SecondsToNs(double s) noexcept {
-  return static_cast<std::int64_t>(std::llround(s * 1e9));
-}
-
-}  // namespace
 
 PlannerCycle::PlannerCycle() noexcept : clock_(&rtc::SteadyNowNs) {}
 

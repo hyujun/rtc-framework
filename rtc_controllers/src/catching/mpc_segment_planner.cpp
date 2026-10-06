@@ -2,6 +2,7 @@
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 
 #include "rtc_controllers/catching/node_follower.hpp"
+#include "rtc_controllers/catching/time_types.hpp"  // SecondsToNs, CeilDiv
 #include "rtc_controllers/catching/traj_sampler.hpp"
 
 #include <pinocchio/algorithm/frames.hpp>
@@ -16,15 +17,6 @@
 namespace rtc::catching {
 
 namespace {
-
-[[nodiscard]] std::int64_t SecondsToNs(double s) noexcept {
-  return static_cast<std::int64_t>(std::llround(s * 1e9));
-}
-
-// ⌈a / b⌉ for a ≥ 0, b > 0 (integer grid arithmetic, MD-27).
-[[nodiscard]] std::int64_t CeilDiv(std::int64_t a, std::int64_t b) noexcept {
-  return (a + b - 1) / b;
-}
 
 [[nodiscard]] std::size_t U(int i) noexcept {
   return static_cast<std::size_t>(i);

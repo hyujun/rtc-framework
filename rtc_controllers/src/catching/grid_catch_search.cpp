@@ -12,12 +12,6 @@ namespace rtc::catching {
 
 namespace {
 
-constexpr double kSecondsToNs = 1e9;
-
-[[nodiscard]] std::int64_t SecondsToNs(double s) noexcept {
-  return static_cast<std::int64_t>(std::llround(s * kSecondsToNs));
-}
-
 [[nodiscard]] PlanReason ReasonFor(JudgeReject r) noexcept {
   switch (r) {
     case JudgeReject::kInput:

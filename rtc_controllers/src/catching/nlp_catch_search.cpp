@@ -21,10 +21,6 @@ constexpr double kNsPerSec = 1e9;
 // its first iterations, bounded whatever the problem turns out to be.
 constexpr std::int64_t kWarmUpShares = 4;
 
-[[nodiscard]] std::int64_t SecondsToNs(double s) noexcept {
-  return static_cast<std::int64_t>(std::llround(s * 1e9));
-}
-
 [[nodiscard]] bool FiniteNonNegative(double x) noexcept {
   return std::isfinite(x) && x >= 0.0;
 }
