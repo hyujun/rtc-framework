@@ -629,6 +629,13 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
+  # dynamic_catching E1-F14 (#740): the NLP catch search's lattice, its
+  # necessary conditions (reach, closing-speed window) and its outer cost —
+  # pure functions of scalars, each checked against the reference's formula
+  # from both sides of its boundary. Header-only: no model, no solver.
+  ament_add_gtest(test_catching_nlp_catch_screening test/test_catching_nlp_catch_screening.cpp)
+  target_link_libraries(test_catching_nlp_catch_screening rtc_controllers)
+
   # dynamic_catching MPC E1-F02 (#628): the segment node payload and its RT
   # sampler. Sample() calls into pinocchio's shared object (FK), so its
   # allocation claim needs the C-level malloc gate as well as operator new;
