@@ -3186,5 +3186,72 @@ expect_not_contains "80d: ...but whole-line C++ comments are not" "$out" "rclcpp
 expect_not_contains "...nor a block comment's lines" "$out" "keep_last(5)"
 rm -rf "$dir"
 
+# 81. PROC-2: a changed PUBLIC HEADER routes the packages that compile against
+#     it, not only its own. The route used to be the owning package alone, so a
+#     struct that gained a field in one package passed with every dependent
+#     still built against the old layout (2026-10-06, twice in one task: a
+#     solver config struct, then a test fixture header another package's test
+#     includes by source path) -- and the PASS line named one package as if
+#     that were the whole answer. Dependents are read from package.xml: a
+#     build-type dependency, followed transitively (headers include headers);
+#     a run-time one (exec_depend) compiles against nothing.
+make_dependents_fixture() {
+  local dir p
+  dir=$(make_fixture)
+  printf '#pragma once\nstruct Config { int a; };\n' >"$dir/rtc_demo/include/config.hpp"
+  mkdir -p "$dir/rtc_demo/test/include/rtc_demo/testing" "$dir/demo_app/include" \
+    "$dir/demo_top/src" "$dir/demo_tools/demo_tools"
+  printf '#pragma once\nint fixture();\n' >"$dir/rtc_demo/test/include/rtc_demo/testing/fixture.hpp"
+  printf '#pragma once\nint app();\n' >"$dir/demo_app/include/app.hpp"
+  echo 'int top() { return 0; }' >"$dir/demo_top/src/top.cpp"
+  echo 'X = 1' >"$dir/demo_tools/demo_tools/tool.py"
+  # $1 = package, $2 = the dependency line
+  for p in "demo_app|<depend>rtc_demo</depend>" "demo_top|<test_depend condition=\"\$ROS_VERSION == 2\">demo_app</test_depend>" \
+           "demo_tools|<exec_depend>rtc_demo</exec_depend>"; do
+    cat >"$dir/${p%%|*}/package.xml" <<XML
+<?xml version="1.0"?>
+<package format="3">
+  <name>${p%%|*}</name>
+  <version>0.0.1</version>
+  <description>fixture</description>
+  <maintainer email="t@example.com">t</maintainer>
+  <license>MIT</license>
+  ${p#*|}
+</package>
+XML
+  done
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm "dependents"
+  echo "$dir"
+}
+dir=$(make_dependents_fixture)
+printf '#pragma once\nstruct Config { int a; int b; };\n' >"$dir/rtc_demo/include/config.hpp"
+out=$(run_hook "$dir")
+expect_contains "81: a changed public header routes its build dependents, transitively" "$out" "BUILD_PKGS=[demo_app demo_top rtc_demo]"
+expect_contains "...and says why they are there" "$out" "PROC-2"
+expect_not_contains "...a run-time dependent compiles against nothing" "$out" "demo_tools"
+git -C "$dir" checkout -q -- .
+# Control: the fan-out is the header's. A .cpp edit stays the owning package's
+# (what its dependents' tests say about it is the sensor matrix's question).
+echo 'int existing() { return 7; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook "$dir")
+expect_contains "81b: a source edit routes its own package only" "$out" "BUILD_PKGS=[rtc_demo]"
+git -C "$dir" checkout -q -- .
+# A test-only header is consumed by source path (<pkg>/test/include): same.
+printf '#pragma once\nint fixture(int);\n' >"$dir/rtc_demo/test/include/rtc_demo/testing/fixture.hpp"
+out=$(run_hook "$dir")
+expect_contains "81c: a changed test-only header routes them too" "$out" "BUILD_PKGS=[demo_app demo_top rtc_demo]"
+git -C "$dir" checkout -q -- .
+# A NEW header (untracked) is a changed header.
+printf '#pragma once\nint fresh();\n' >"$dir/rtc_demo/include/fresh.hpp"
+out=$(run_hook "$dir")
+expect_contains "81d: a new public header routes them too" "$out" "BUILD_PKGS=[demo_app demo_top rtc_demo]"
+rm -f "$dir/rtc_demo/include/fresh.hpp"
+# Direction: what is ABOVE the header's package, never what it depends on.
+printf '#pragma once\nint app(int);\n' >"$dir/demo_app/include/app.hpp"
+out=$(run_hook "$dir")
+expect_contains "81e: only the packages above are routed" "$out" "BUILD_PKGS=[demo_app demo_top]"
+rm -rf "$dir"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

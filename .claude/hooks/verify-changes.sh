@@ -81,6 +81,10 @@
 #          CHANGED_DATA_BUILD, and its limit: the owning package only)
 #        - rtc_base / rtc_msgs change -> ./build.sh full --tests + colcon test all
 #          (PROC-3: broad downstream impact)
+#        - a changed HEADER of any other package (<pkg>/include/,
+#          <pkg>/test/include/) also routes the packages that compile against
+#          it -- a build-type dependency in package.xml, transitively (PROC-2;
+#          see header_dependents). A .cpp edit stays its own package's
 #        - else                       -> ./build.sh -p <pkg> --tests + colcon test <pkg>,
 #          one package at a time (each suite has the box to itself), in
 #          DEPENDENCY order: a package is built and tested after the changed
@@ -1048,8 +1052,8 @@ CHANGED_SH_BUILD=$(echo "$CHANGED" | awk -F/ '
 #
 # LIMIT, not closed here: the route is the OWNING package. A test in another
 # package that reads this file by path (rtc_tools reads integrated_bringup's
-# config) is not run, as it is not run for a source change either -- only
-# rtc_base / rtc_msgs fan out (PROC-3).
+# config) is not run, as it is not run for a .cpp change either -- what fans
+# out is rtc_base / rtc_msgs (PROC-3) and a changed header (PROC-2, below).
 CHANGED_DATA_BUILD=$( {
     echo "$CHANGED_PKG_FILES"
     echo "$CHANGED_UNTRACKED" | awk -F/ 'NF >= 3 && $2 == "config" && $NF ~ /\.(yaml|yml)$/'
@@ -1214,6 +1218,70 @@ while IFS= read -r pkg_dir; do
 done <<< "$(printf '%s\n%s\n%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" "$CHANGED_SH_BUILD" \
              "$CHANGED_TESTCFG" "$CHANGED_DATA_BUILD" \
              | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
+# ── PROC-2: what compiles against a changed header ──────────────────────────
+#
+# A changed header of a package is a change to every package that includes it.
+# The route above is the OWNING package, so a struct that gained a field passed
+# with its dependents still compiled against the old layout, their tests not
+# run, and a PASS line that named one package (2026-10-06, twice in one task:
+# a solver config struct two packages below the one that links it, then a test
+# fixture header another package's test includes by source path). The verdict
+# KEY already says so -- it is the content of every package, so the dependents'
+# verdicts were void -- but nothing asked for them: only rtc_base / rtc_msgs
+# fanned out (PROC-3).
+# "Header" is by location: <pkg>/include/ (what the package exports) and
+# <pkg>/test/include/ (the never-installed test headers sibling packages take
+# by source path). A .cpp edit does not fan out: its dependents link the same
+# symbols, and what their tests say about a behaviour change is the sensor
+# matrix's question (docs/testing.md), not a consistency one.
+# "Compiles against" is read from package.xml: a build-type dependency
+# (<depend>, <build_depend>, <build_export_depend>, <test_depend>), followed
+# transitively because headers include headers. A run-time one (<exec_depend>)
+# compiles against nothing. No colcon: this runs at every turn end, and the
+# suite has none. A package directory is its name here, as everywhere above.
+# Over-approximates on purpose -- a comment-only header edit fans out too, and
+# the build system would recompile the dependents for it anyway; telling an
+# API change from a comment is not a judgment a grep can make.
+header_dependents() {  # $1 = package -> the packages that compile against it
+  local frontier="$1" seen=" $1 " next p f d
+  while [ -n "$frontier" ]; do
+    next=""
+    for p in $frontier; do
+      for f in "$PROJECT_DIR"/*/package.xml; do
+        [ -f "$f" ] || continue
+        grep -qE "<(depend|build_depend|build_export_depend|test_depend)( [^>]*)?>[[:space:]]*${p}[[:space:]]*</" "$f" 2>/dev/null || continue
+        d=$(basename "$(dirname "$f")")
+        case "$seen" in *" $d "*) continue ;; esac
+        seen="${seen}${d} "
+        next="${next} ${d}"
+      done
+    done
+    frontier="$next"
+  done
+  for d in $seen; do
+    [ "$d" = "$1" ] || printf '%s\n' "$d"
+  done
+}
+HEADER_PKGS=$(printf '%s\n%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_PKG_FILES" "$CHANGED_TEST_DATA" \
+  | awk -F/ 'NF >= 3 && $NF !~ /\.md$/ && ($2 == "include" || ($2 == "test" && $3 == "include")) { print $1 }' \
+  | sort -u || true)
+HEADER_FANOUT=""
+for pkg_dir in $HEADER_PKGS; do
+  [ -f "$pkg_dir/package.xml" ] || continue
+  added=""
+  for dep in $(header_dependents "$pkg_dir"); do
+    case " $BUILD_PKGS " in
+      *" $dep "*) ;;
+      *) BUILD_PKGS="${BUILD_PKGS} ${dep}"; added="${added} ${dep}" ;;
+    esac
+  done
+  [ -z "$added" ] || HEADER_FANOUT="${HEADER_FANOUT} ${pkg_dir}:[${added# }]"
+done
+if [ -n "$HEADER_FANOUT" ]; then
+  echo "verify-changes: a header changed in a package others compile against (PROC-2) -- routed to build/test with it:${HEADER_FANOUT}" >&2
+  # shellcheck disable=SC2046,SC2086  # a space-separated list of names
+  BUILD_PKGS=$(printf ' %s' $(printf '%s\n' $BUILD_PKGS | sort -u))
+fi
 # --run: a package whose installed binaries were rebuilt since its verdict is
 # owed a build and a test run whether or not its source changed.
 for pkg_dir in $STALE_ARTIFACT_PKGS; do

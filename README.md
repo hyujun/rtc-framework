@@ -66,7 +66,7 @@ rtc_msgs, rtc_base (독립)
   ├── rtc_communication ← rtc_base
   ├── rtc_inference ← rtc_base
   ├── rtc_controller_interface ← rtc_base, rtc_msgs, rtc_urdf_bridge
-  ├── rtc_controllers ← rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
+  ├── rtc_controllers ← rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge, rtc_tsid
   │     (rtc_controller_interface 의 형제 — 의존하지 않는다)
   ├── rtc_controller_manager ← rtc_controller_interface, rtc_controllers,
   │       rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge

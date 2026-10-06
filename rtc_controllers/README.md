@@ -844,7 +844,7 @@ rtc::joint::ComputeJointPdCommand(gains_view, inputs, dt, nq, nc0, cmd_type, pre
 | `pinocchio` | 기구학/동역학 (FK, Jacobian, Gravity, Coriolis, SE3/SO3, exp/log) |
 | `rtc_math` | SE3 헬퍼 (`rtc_math/se3/pinocchio_adapter.hpp` — CLIK/OSC 법칙의 log/exp 오차 계산) |
 | `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 (`ModelConfig`/`PinocchioModelBuilder`) |
-| `rtc_tsid` | 포구 자세 IK (`catching/catch_pose_ik.hpp`) 의 과제 스텝 QP — `QPSolverWrapper` (ProxQP). **2026-09-20 추가** (dynamic_catching D-26). rtc_tsid 는 rtc_controllers 를 의존하지 않아 순환은 없지만, 이 엣지로 rtc_controllers 의 모든 소비자(`rtc_controller_manager` 포함)가 ProxSuite 를 전이적으로 끌게 된다 |
+| `rtc_tsid` | 포구 자세 IK (`catching/catch_pose_ik.hpp`) 의 과제 스텝 QP, segment MPC 코어 (`catching/mpc_segment_core.hpp`) 와 mpc_docking 코어 (`catching/mpc_docking_segment_core.hpp`) 의 QP — `QPSolverWrapper` (ProxQP). **2026-09-20 추가** (dynamic_catching D-26). rtc_tsid 는 rtc_controllers 를 의존하지 않아 순환은 없지만, 이 엣지로 rtc_controllers 의 모든 소비자(`rtc_controller_manager` 포함)가 ProxSuite 를 전이적으로 끌게 된다 |
 | `yaml-cpp` | YAML 설정 파싱 |
 
 ---
