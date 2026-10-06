@@ -25,7 +25,7 @@
 
 - **E1 의 남은 feature 를 먼저 한다 (E1-F14 부터).** E2 는 E1 의 선행이 아니고 고치는 패키지가 달라 (E2-F04 는 `rtc_tsid`) 다른 세션에서 병행할 수 있다. E3 는 E2 (g1_p1b 준비) 와 E1-F07 (코어) 이 끝나면 착수한다.
 - **설계 (MD-46 · MD-47).** MPC 는 waist + dual arm (G1) 용으로 설계한다 (formulation §1.3). 단일 팔은 같은 MPC 에서 dual arm · waist 전용 항과 제약만 뺀 구성이었고, g1_p1b 는 같은 코어에 그 항을 더한다 (E3). closed_form 과 mpc 는 입력 (추정기의 공 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 이고 추정기 · supervisor · 손 시퀀서 · CLIK · `ABORT_SAFE` · E-STOP 은 공통이다.
-- **E1 의 남은 feature.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 를 더한다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 구현한 것은 그 문서의 §17 에 적는다). 수치 코어는 하나이고 이미 있다 (`MpcDockingSegmentCore`, E1-F13): `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 형태, 출하 기본값은 바꾸지 않는다. 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다. 새 구현의 이름은 값 + interface 의 순서다 — 구간 계획기는 `<값>SegmentPlanner` · `<값>SegmentCore` (`MpcSegmentPlanner` · `MpcSegmentCore` 와 같다), 탐색은 `<값>CatchSearch` (`GridCatchSearch` 와 같다). `Decel*` 이름을 새로 쓰지 않는다 (MD-48).
+- **E1 의 남은 feature.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 를 더한다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 구현한 것은 그 문서의 §17 에 적는다). 수치 코어는 하나이고 이미 있다 (`MpcDockingSegmentCore`, E1-F13): `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 payload, 출하 기본값 (선택 키의 값) 은 바꾸지 않는다. **탐색은 RT 가 plan 을 채택한 뒤에도 돈다** — 처음 채택한 plan 의 $t_c$ 에서 `t_stop_plan` 앞까지, 공을 잡기 직전까지만이고 모든 조합에서다 (사용자 결정, §4). 그래서 출하 조합 `grid` × `mpc` 의 동작도 바뀐다: wake 의 순서는 E1-F16 이, APPROACH 중에 plan 과 구간을 함께 바꾸는 RT 경로는 E1-F17 이 넣는다. 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다. 새 구현의 이름은 값 + interface 의 순서다 — 구간 계획기는 `<값>SegmentPlanner` · `<값>SegmentCore` (`MpcSegmentPlanner` · `MpcSegmentCore` 와 같다), 탐색은 `<값>CatchSearch` (`GridCatchSearch` 와 같다). `Decel*` 이름을 새로 쓰지 않는다 (MD-48).
 - 실기와 E2 · E3 의 선후는 이 문서가 정하지 않았다 (§5).
 
 ### 게이트 G-1 — 단일 팔 mpc planner 가 closed_form planner 와 비슷한 성능을 내는가
@@ -33,7 +33,7 @@
 두 planner 만 다른 paired A/B 시험으로 "closed_form 대비 비열등" 을 판정하는 게이트다 (정의: formulation §6.5). **결과: 두 로봇 FAIL** ([#632](https://github.com/hyujun/rtc-framework/issues/632) — 한계 · 시행 수 · seed · 수치는 거기에 있다). 남은 순서에 주는 뜻:
 
 - G-1 은 E3 의 착수 조건이 아니다 (MD-47). E3 의 항은 단일 팔 결과와 무관하게 G1 에서 필요하다.
-- 사용자는 FAIL 을 알고 두 로봇의 출하 DECEL 법칙을 `mpc` 로 정했다 (MD-89). 따라서 `mpc` 가 출하 기본값이지만 closed_form 대비 비열등은 확인되지 않았고, lead 를 끈 출하 구성으로 잰 적도 없다.
+- 사용자는 FAIL 을 알고 두 로봇의 출하 DECEL 법칙을 `mpc` 로 정했다 (MD-89). 따라서 `mpc` 가 출하 기본값이지만 closed_form 대비 비열등은 확인되지 않았고, lead 를 끈 출하 구성으로 잰 적도 없다. G-1 은 탐색이 채택에서 멈추는 `mpc` 로 쟀다 — E1-F16 · F17 뒤의 `grid` × `mpc` (채택 뒤에도 탐색한다) 는 잰 적이 없는 동작이다.
 - `iiwa7_leap` 은 `mpc` 가 포구 계획을 거의 내지 못한다 — 구조 문제가 열려 있다 (#710).
 
 ## 2. 관리 방식
@@ -68,10 +68,10 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F14 | [#740](https://github.com/hyujun/rtc-framework/issues/740) | NLP search 코어 — 후보별 NLP 풀이로 포구 후보를 고른다 (바깥 루프) | E1-F13 (끝) | **다음** |
+| E1-F14 | [#740](https://github.com/hyujun/rtc-framework/issues/740) | NLP search 코어 — 후보별 NLP 풀이로 포구 후보를 고른다 (바깥 루프). 채택 전과 채택 뒤 (움직이는 팔에서 출발) 의 탐색, 탐색 ↔ 구간 계획기의 자리 (탐색의 해 · RT 가 보고한 구간). PR 둘: 고정 격자, 그 뒤 후보별 국소 연속 $t_c$. `NlpCatchSearch` 를 부르는 것은 테스트뿐이다 — cycle 은 E1-F16 | E1-F13 (끝) | **다음** |
 | E1-F15 | [#741](https://github.com/hyujun/rtc-framework/issues/741) | mpc_docking 의 입력 식별 (sim) — 포획 기하 · 속도 집합 · 폐쇄 창 | — (E1-F16 앞에 끝낸다) | 대기 |
-| E1-F16 | [#742](https://github.com/hyujun/rtc-framework/issues/742) | 계획기 스레드 통합 — search · planner 선택 키, YAML 조각, `PlannerCycle` 배선 | E1-F12 (끝) · F13 (끝) · F14, E1-F15 의 값 | 대기 |
-| E1-F17 | [#743](https://github.com/hyujun/rtc-framework/issues/743) | RT 계약 · supervisor — mpc_docking 구간의 추종 | E1-F16 | 대기 |
+| E1-F16 | [#742](https://github.com/hyujun/rtc-framework/issues/742) | 계획기 스레드 통합 — search · planner 선택 키, YAML 조각, `PlannerCycle` 배선. 채택 뒤의 wake 순서 (탐색 → 구간), 탐색을 멈추는 `t_stop_plan`, 게시 규칙 ($t_c$ 가 같으면 구간만, 다르면 plan + 구간의 쌍) — `grid` × `mpc` 포함 | E1-F12 (끝) · F13 (끝) · F14, E1-F15 의 값 | 대기 |
+| E1-F17 | [#743](https://github.com/hyujun/rtc-framework/issues/743) | RT 계약 · supervisor — mpc_docking 구간의 추종, APPROACH 중에 plan 과 구간을 함께 바꾸는 경로 (`mpc` · `mpc_docking`) | E1-F16 | 대기 |
 | E1-F18 | [#744](https://github.com/hyujun/rtc-framework/issues/744) | 로그 · plot_rtc_log · demo_controller_gui | E1-F17 | 대기 |
 | E1-F21 | [#747](https://github.com/hyujun/rtc-framework/issues/747) | 포구 가능 판정 지도 — 탐색이 어떤 공을 받는다고 판정하는가 (발사 위치 · 거리 · 비행시간 · 종단 속도). 오프라인 지도와 sim 의 판정 대 결과, 기술 통계로 보고한다 | E1-F16, sim 쪽은 E1-F17 · F18 | 대기 |
 | E1-F19 | [#745](https://github.com/hyujun/rtc-framework/issues/745) | 튜닝 (판정 전, 판정과 다른 seed) | E1-F18 · F21 | 대기 |
@@ -155,7 +155,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | Feature | 사유 | 효력 |
 |---|---|---|
 | E1-F14 · F16 | solver 의 heap 할당 (RT-1 → E-1) — 계획기 스레드는 FIFO 일 수 있고 ProxQP 의 할당은 수용된 예외가 아니다 (#654). E1-F13 의 코어는 "실기의 FIFO 계획기 스레드에서는 #654 뒤에 돌린다" 로 컨펌됐다 (#739) — 같은 solver 를 부르는 feature 는 그 조건을 이어받는다 | Critical — 그 조건을 벗어나려면 착수 전 `[CONCERN]` 과 컨펌 |
-| E1-F17 | E-STOP · reset 경로를 건드리면 E-8 | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
+| E1-F17 | APPROACH 중의 plan 교체가 RT 의 채택 법칙을 바꾼다. E-STOP · reset 경로 (구간의 폐기) 를 건드리면 E-8 | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
 | E3-F05 | E-STOP 경로를 건드리면 E-8 | Critical |
 | 실기 (HW) | `mpc` 의 정지 구간과 작업셀 경계 (RT 가 `catch_box` 를 검사하지 않는다), `mpc` 구간의 샘플 시각을 바꾸는 RT 법칙 변경 — 둘 다 E-8 (#613) | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
 | E2-F04 | `rtc_tsid` public API 변경, 기존 소비자 둘 | code review, 기능 동등성이 성공 기준 |
@@ -166,7 +166,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ## 4. 남은 feature 를 구속하는 결정
 
-아직 구현하지 않은 feature 를 구속하는 `MD-n` 이다. 나머지 `MD-n` 은 [ID_INDEX.md](ID_INDEX.md) §4. E1-F14 – F21 을 구속하는 결정 (solver · 조합 · 선택 키 · 식의 형태 · 1 차 범위 · 판정 방식) 은 `MD-n` 이 아니다 — 각 feature 이슈의 범위에 적혀 있고 선택지와 이유는 [#621 의 결정 코멘트](https://github.com/hyujun/rtc-framework/issues/621#issuecomment-5974865100) 에 있다.
+아직 구현하지 않은 feature 를 구속하는 `MD-n` 이다. 나머지 `MD-n` 은 [ID_INDEX.md](ID_INDEX.md) §4. E1-F14 – F21 을 구속하는 결정 (solver · 조합 · 선택 키 · 식의 형태 · 1 차 범위 · 판정 방식) 은 `MD-n` 이 아니다 — 각 feature 이슈의 범위에 적혀 있고 선택지와 이유는 [#621 의 결정 코멘트](https://github.com/hyujun/rtc-framework/issues/621#issuecomment-5974865100) 에 있다. 그 가운데 **D5-2 ("바깥 루프는 RT 가 plan 을 채택할 때까지만") 는 뒤집혔다**: 탐색은 채택 뒤에도 돈다 — 처음 채택한 plan 의 $t_c$ 에서 `t_stop_plan` 앞까지, 모든 조합 (`grid` × `mpc` 포함) 에서. MD-57 ("plan 을 따르는 동안 탐색을 돌리지 않는다") 은 E1-F16 이 지운다. 무엇을 어느 feature 가 맡는지는 [#740 의 확정 코멘트](https://github.com/hyujun/rtc-framework/issues/740#issuecomment-6009380305) (N10 – N12) 와 #742 · #743 의 본문에 있다.
 
 | ID | 무엇을 정했나 | feature |
 |---|---|---|
