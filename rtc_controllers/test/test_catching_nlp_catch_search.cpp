@@ -859,7 +859,7 @@ TEST(NlpCatchSearchScreening, TheClosingSpeedWindowIsTheReferencesAtTheIkPose) {
     ball.cov = LateralCovariance(ball, 0.002, tc.sigma_axial, 0.002);
     const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
     const MpcDockingSegmentCoreParams& cp = rig->params.core;
-    const double sigma_max = rig->search.Core(rig->params.n_pre_min).TimingSigmaMax();
+    const double sigma_max = rig->search.Core(rig->params.n_pre_min)->TimingSigmaMax();
     ASSERT_GT(sigma_max, cp.sigma_tau);
     int judged = 0;
     for (const Candidate& c : rig->search.Candidates()) {
@@ -1089,6 +1089,27 @@ TEST(NlpCatchSearchChoice, ThePlanAndTheSolutionDescribeTheChosenCandidate) {
   EXPECT_EQ(w.plan.rt_state_ns, rt.rt_state_ns);
   EXPECT_GT(w.plan.w5, 0.0);
   EXPECT_GT(w.plan.w6, 0.0);
+  // … of the pose the plan carries — the SOLVED catch pose, not the IK pose
+  // the solve was aimed at: CatchPoseIk's own numbers at q_star.
+  {
+    Eigen::VectorXd q_star(6);
+    Eigen::VectorXd q_ik(6);
+    for (int m = 0; m < 6; ++m) {
+      q_star[m] =
+          w.plan.q_star[static_cast<std::size_t>(kDeviceOfModel[static_cast<std::size_t>(m)])];
+      q_ik[m] = c->q_ik[static_cast<std::size_t>(m)];
+    }
+    CatchPoseIk probe;
+    probe.Resize(6);
+    double w5 = 0.0;
+    double w6 = 0.0;
+    ASSERT_TRUE(probe.Manipulability(*rig->arm.handle, rig->arm.frame, q_star, w5, w6));
+    EXPECT_TRUE(BitsEqual(w.plan.w5, w5)) << w.plan.w5 << " vs " << w5;
+    EXPECT_TRUE(BitsEqual(w.plan.w6, w6)) << w.plan.w6 << " vs " << w6;
+    // The two poses are different poses here, with different numbers.
+    EXPECT_GT((q_star - q_ik).cwiseAbs().maxCoeff(), 1e-4);
+    EXPECT_GT(std::fabs(w.plan.w5 - c->w5), 1e-6 * c->w5) << w.plan.w5 << " vs " << c->w5;
+  }
   EXPECT_NEAR(w.plan.sigma_c, 0.002, 2e-4);  // √λ_max(Σ_p) of an isotropic 2 mm
   EXPECT_NEAR(w.plan.dp_impact, rig->params.core.m_ball * 0.8, 0.05);
   EXPECT_GT(w.stats.chosen_lead_s, 0.0);
@@ -1434,6 +1455,122 @@ TEST(NlpCatchSearchValidity, ASolvePastItsShareIsNotAValidCandidate) {
   }
   EXPECT_GT(ws.stats.nlp.solve_ns_max, 400'000);
   EXPECT_LE(wf.stats.nlp.solve_ns_max, 400'000);
+}
+
+// Advances the clock once, inside the first solve a wake runs.
+struct ClockJump {
+  std::int64_t jump_ns{0};
+  bool done{false};
+};
+
+void JumpInTheFirstSolve(MpcDockingStage stage, bool begin, void* user) noexcept {
+  auto* j = static_cast<ClockJump*>(user);
+  if (!j->done && begin && stage == MpcDockingStage::kStart) {
+    j->done = true;
+    g_clock.fetch_add(j->jump_ns, std::memory_order_relaxed);
+  }
+}
+
+TEST(NlpCatchSearchValidity, ACandidateTheRtCanNoLongerReadFromItsStartIsNotValid) {
+  // t_0 stands the wake's budget after `now`, and a candidate's node 0 its
+  // `wait` after t_0. The first solve of the wake takes `jump` — far over its
+  // share, as a QP in progress can (the core reads its deadline between
+  // iterations only) — so the wake ends `jump − budget` LATE. Every other
+  // solve is inside its own share and is exactly the solve of an undisturbed
+  // wake; but a segment whose node 0 has less wait than the wake is late by
+  // reaches the RT after the instant it starts at.
+  const std::int64_t budget_ns = Ns(Rig().params.budget_s);
+  const std::int64_t share_ns = Ns(Rig().params.solve_budget_s);
+  const auto run = [](Rig& rig, ClockJump& jump) {
+    std::string err;
+    EXPECT_TRUE(rig.Configure(&err)) << err;
+    rig.search.SetCoreStageHookForTesting(&JumpInTheFirstSolve, &jump);
+    const Throw ball = AxisThrow(rig, 0.28);
+    return RunWake(rig, ball, rig.RestingRt(kNow), NoSegments(), kNow);
+  };
+  auto base = std::make_unique<Rig>();
+  ClockJump none{0, false};
+  const Wake wb = run(*base, none);
+  ASSERT_TRUE(wb.plan.valid) << Table(base->search, wb.stats);
+  // The undisturbed wake is far inside one millisecond of this clock.
+  ASSERT_LT(wb.stats.search_ns, kMs);
+
+  // ── 30 ms late: the candidates with less wait than that are lost ──
+  {
+    const std::int64_t late_ns = 30 * kMs;
+    auto rig = std::make_unique<Rig>();
+    ClockJump jump{budget_ns + late_ns, false};
+    const Wake w = run(*rig, jump);
+    ASSERT_TRUE(jump.done);
+    ASSERT_EQ(w.stats.nlp.n_solved, wb.stats.nlp.n_solved) << Table(rig->search, w.stats);
+    int lost = 0;
+    int kept = 0;
+    const Candidate* best = nullptr;
+    for (const Candidate& f : base->search.Candidates()) {
+      const Candidate* s = Find(rig->search, f.index);
+      ASSERT_NE(s, nullptr);
+      ASSERT_EQ(s->wait_ns, f.wait_ns);
+      if (f.reject != NlpReject::kNone) {
+        EXPECT_FALSE(s->late) << f.index;
+        continue;
+      }
+      if (f.rank == 0) {
+        // The solve the time went into: past its own share.
+        EXPECT_EQ(s->reject, NlpReject::kDeadline) << Table(rig->search, w.stats);
+        EXPECT_FALSE(s->late);
+        EXPECT_GT(s->solve_ns, share_ns);
+        continue;
+      }
+      // Its own solve is the undisturbed one, inside its share.
+      EXPECT_LE(s->solve_ns, share_ns) << f.index;
+      EXPECT_TRUE(s->feasible && s->converged) << f.index;
+      EXPECT_TRUE(BitsEqual(s->phi, f.phi)) << f.index;
+      ASSERT_TRUE(f.wait_ns <= late_ns || f.wait_ns >= late_ns + kMs)
+          << "a wait within the wake's own duration of the lateness: " << f.wait_ns;
+      if (f.wait_ns <= late_ns) {
+        ++lost;
+        EXPECT_EQ(s->reject, NlpReject::kDeadline) << f.index << Table(rig->search, w.stats);
+        EXPECT_TRUE(s->late) << f.index;
+        // What it ended on is still a start for the next wake.
+        EXPECT_NE(rig->search.RememberedSolution(f.index), nullptr) << f.index;
+      } else {
+        ++kept;
+        EXPECT_EQ(s->reject, NlpReject::kNone) << f.index << Table(rig->search, w.stats);
+        EXPECT_FALSE(s->late) << f.index;
+        if (best == nullptr || s->phi < best->phi) {
+          best = s;  // lattice order: the smaller index stays on a tie
+        }
+      }
+    }
+    ASSERT_GT(lost, 0) << "no valid candidate starts early enough to be lost"
+                       << Table(base->search, wb.stats);
+    ASSERT_GT(kept, 0) << "no valid candidate starts late enough to be kept"
+                       << Table(base->search, wb.stats);
+    EXPECT_EQ(w.stats.nlp.n_valid, kept);
+    ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+    ASSERT_NE(best, nullptr);
+    EXPECT_EQ(w.stats.nlp.chosen_index, best->index);
+    ASSERT_NE(rig->search.Solution(), nullptr);
+    EXPECT_GE(rig->search.Solution()->seg.t0_ns - rig->search.LastStartInstantNs(), late_ns + kMs);
+  }
+
+  // ── 60 ms late: later than any node 0 (the waits are under one 50 ms interval) ──
+  {
+    auto rig = std::make_unique<Rig>();
+    ClockJump jump{budget_ns + 60 * kMs, false};
+    const Wake w = run(*rig, jump);
+    EXPECT_FALSE(w.plan.valid) << Table(rig->search, w.stats);
+    EXPECT_EQ(w.stats.nlp.reason, NlpReject::kDeadline);
+    EXPECT_EQ(w.plan.reason, PlanReason::kBudgetExceeded);
+    EXPECT_EQ(w.stats.nlp.n_valid, 0);
+    EXPECT_EQ(rig->search.Solution(), nullptr);
+    int late = 0;
+    for (const Candidate& c : rig->search.Candidates()) {
+      late += c.late ? 1 : 0;
+      EXPECT_NE(c.reject, NlpReject::kNone) << c.index;
+    }
+    EXPECT_GE(late, 3) << Table(rig->search, w.stats);
+  }
 }
 
 TEST(NlpCatchSearchValidity, AChanceRowViolationIsNotChosenThoughItsCostIsTheLowest) {
@@ -1945,6 +2082,64 @@ TEST(NlpCatchSearchReasons, ASolveRefusedBeforeAnyIterateIsItsOwnReasonAndLeaves
   EXPECT_EQ(run(reversed, reversed_table).first, base.first) << table << reversed_table;
 }
 
+TEST(NlpCatchSearchReasons, AnIterateTheSolverFailedOnIsTheSolversRefusalAndIsForgotten) {
+  // The timing row is off, so that the screening's closing-speed window does
+  // not read the covariance and the solves do.
+  auto rig = std::make_unique<Rig>();
+  rig->params.core.timing_row = false;
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const Throw ball = AxisThrow(*rig, 0.28);
+  const Wake w1 = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+  ASSERT_TRUE(w1.plan.valid) << Table(rig->search, w1.stats);
+  // The same throw under a covariance that is finite and positive — and whose
+  // chance rows are numbers no QP is solved with. The core returns the iterate
+  // it stood on with the SOLVER's reason; its row values say nothing.
+  Throw broken = ball;
+  for (int k = 0; k < broken.cov.n; ++k) {
+    auto& e = broken.cov.c[static_cast<std::size_t>(k)];
+    e.fill(0.0);
+    for (std::size_t r = 0; r < 6; ++r) {
+      e[r * 6 + r] = 1e100;
+    }
+  }
+  const Wake w2 = RunWake(*rig, broken, rig->RestingRt(kNow), NoSegments(), kNow);
+  EXPECT_FALSE(w2.plan.valid) << Table(rig->search, w2.stats);
+  EXPECT_EQ(w2.stats.nlp.reason, NlpReject::kSolverRejected) << Table(rig->search, w2.stats);
+  EXPECT_EQ(w2.plan.reason, PlanReason::kLimitsInvalid);
+  EXPECT_EQ(rig->search.Solution(), nullptr);
+  int failed = 0;
+  for (const Candidate& c : rig->search.Candidates()) {
+    if (c.rank < 0) {
+      continue;
+    }
+    ++failed;
+    EXPECT_TRUE(c.solved) << c.index;  // an iterate came back
+    EXPECT_TRUE(c.core_reason == MpcDockingReason::kQpFailed ||
+                c.core_reason == MpcDockingReason::kSolutionNonFinite)
+        << c.index << " " << MpcDockingReasonName(c.core_reason);
+    // Not a row's refusal, though the iterate's chance rows read as violated.
+    EXPECT_EQ(c.reject, NlpReject::kSolverRejected) << c.index;
+    EXPECT_FALSE(c.feasible);
+    // It started from the first wake's solution — and that is dropped.
+    EXPECT_EQ(c.start, NlpCatchSearch::Start::kSameCandidate) << c.index;
+    EXPECT_EQ(rig->search.RememberedSolution(c.index), nullptr) << c.index;
+  }
+  ASSERT_GE(failed, 4) << Table(rig->search, w2.stats);
+  EXPECT_EQ(Count(rig->search, NlpReject::kChance) + Count(rig->search, NlpReject::kHardRow), 0);
+  // The next wake starts each of them from the IK pose, as a first wake does,
+  // and ends where the first wake ended.
+  const Wake w3 = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+  ASSERT_TRUE(w3.plan.valid) << Table(rig->search, w3.stats);
+  for (const Candidate& c : rig->search.Candidates()) {
+    if (c.solved) {
+      EXPECT_EQ(c.start, NlpCatchSearch::Start::kIkTarget) << c.index;
+    }
+  }
+  EXPECT_EQ(w3.stats.nlp.chosen_index, w1.stats.nlp.chosen_index);
+  EXPECT_TRUE(BitsEqual(w3.stats.nlp.chosen_phi, w1.stats.nlp.chosen_phi));
+}
+
 // ── 6. The wakes after the RT follows a plan ─────────────────────────────────
 
 TEST(NlpCatchSearchFollowing, WithoutAReportedSegmentThereIsNothingToStartFrom) {
@@ -2406,6 +2601,14 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
     EXPECT_EQ(w.stats.publish, !following);
     EXPECT_EQ(w.stats.decision,
               following ? SwitchDecision::kHeldNoCandidate : SwitchDecision::kNoCurrent);
+    // What each refused solve ended on is remembered …
+    std::set<std::int64_t> refused;
+    for (const Candidate& c : rig->search.Candidates()) {
+      if (c.reject == NlpReject::kChance) {
+        EXPECT_NE(rig->search.RememberedSolution(c.index), nullptr) << c.index;
+        refused.insert(c.index);
+      }
+    }
     // The same throw at the same instant, its velocity known ten times better.
     Throw sharp = ball;
     sharp.cov = LateralCovariance(sharp, 0.002, 0.001, /*sigma_v=*/0.05);
@@ -2413,6 +2616,19 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
     EXPECT_TRUE(ok.plan.valid) << Table(rig->search, ok.stats);
     EXPECT_EQ(Count(rig->search, NlpReject::kChance), 0);
     EXPECT_TRUE(ok.stats.publish);
+    // … and is where the next wake starts that candidate: a start from an
+    // iterate the rows refused does not keep the candidate refused once the
+    // rows can be met.
+    int from_refused = 0;
+    for (const Candidate& c : rig->search.Candidates()) {
+      if (c.solved && refused.count(c.index) != 0) {
+        EXPECT_EQ(c.start, NlpCatchSearch::Start::kSameCandidate) << c.index;
+        EXPECT_EQ(c.reject, NlpReject::kNone) << c.index << Table(rig->search, ok.stats);
+        ++from_refused;
+      }
+    }
+    EXPECT_GE(from_refused, 3) << Table(rig->search, ok.stats);
+    EXPECT_EQ(refused.count(ok.stats.nlp.chosen_index), 1U);
   }
 }
 
@@ -2602,6 +2818,8 @@ TEST(NlpCatchSearchConfigure, RefusesAGridThatDoesNotCoverTheCandidateWindow) {
   refuses([](Rig& r) { r.params.cand_capacity = 10; }, "cand_capacity");  // needs 11
   refuses([](Rig& r) { r.params.cand_dt = 0.0; }, "non-finite or out of range");
   refuses([](Rig& r) { r.params.max_solves = 0; }, "max_solves");
+  // A share the budget does not hold once: no wake could run a solve.
+  refuses([](Rig& r) { r.params.solve_budget_s = 0.0401; }, "solve_budget_s is over budget_s");
   refuses([](Rig& r) { r.params.max_solves = 33; }, "max_solves");
   refuses([](Rig& r) { r.params.t_ref_s = 0.0; }, "non-finite or out of range");
   refuses([](Rig& r) { r.params.w_switch = -1.0; }, "non-finite or out of range");
@@ -2631,7 +2849,8 @@ TEST(NlpCatchSearchConfigure, BuildsOneCoreForEveryPreCatchCountOnTheSharedParam
   std::string err;
   ASSERT_TRUE(rig->Configure(&err)) << err;
   for (int n_pre = rig->params.n_pre_min; n_pre <= rig->params.n_pre_max; ++n_pre) {
-    const MpcDockingSegmentCore& core = rig->search.Core(n_pre);
+    ASSERT_NE(rig->search.Core(n_pre), nullptr) << n_pre;
+    const MpcDockingSegmentCore& core = *rig->search.Core(n_pre);
     EXPECT_TRUE(core.IsInitialized());
     EXPECT_EQ(core.CatchNode(), n_pre);
     EXPECT_EQ(core.NumNodes(), n_pre + 7);
@@ -2644,6 +2863,18 @@ TEST(NlpCatchSearchConfigure, BuildsOneCoreForEveryPreCatchCountOnTheSharedParam
     EXPECT_EQ(core.PositionLower(), rig->params.limits.q_min);
     EXPECT_EQ(core.PositionUpper(), rig->params.limits.q_max);
     EXPECT_FALSE(core.HasAccelerationBox());
+  }
+  // No core outside the configured counts — and none at all on a search that
+  // was never configured or whose Configure failed.
+  EXPECT_EQ(rig->search.Core(rig->params.n_pre_min - 1), nullptr);
+  EXPECT_EQ(rig->search.Core(rig->params.n_pre_max + 1), nullptr);
+  {
+    NlpCatchSearch never;
+    EXPECT_EQ(never.Core(rig->params.n_pre_min), nullptr);
+    auto broken = std::make_unique<Rig>();
+    broken->params.core.c_cap_max = 0.1;  // a core refuses it
+    ASSERT_FALSE(broken->Configure(&err));
+    EXPECT_EQ(broken->search.Core(broken->params.n_pre_min), nullptr);
   }
   // A second Configure is a new search: the first wake is a first wake.
   const Throw ball = AxisThrow(*rig, 0.28);

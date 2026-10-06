@@ -346,6 +346,18 @@ class CatchPoseIk {
                                         const Eigen::Ref<const Eigen::VectorXd>& q_seed,
                                         const CatchPoseIkOptions& opt) noexcept;
 
+  /// @brief w₅ and w₆ at a pose this solver did not produce — the two numbers
+  ///        a Solve reports at its q*, from the same Jacobian stack and the
+  ///        same factorisations (heap-free after Resize()).
+  /// @param q  joint pose in the model's order, nv entries [rad]
+  /// @param[out] w5,w6  0 where the factorisation is not valid
+  /// @return false when `q` has another size than nv or its Jacobian is not
+  ///         finite (both outputs are then 0).
+  [[nodiscard]] bool Manipulability(rtc_urdf_bridge::RtModelHandle& model,
+                                    pinocchio::FrameIndex catch_frame,
+                                    const Eigen::Ref<const Eigen::VectorXd>& q, double& w5,
+                                    double& w6) noexcept;
+
   [[nodiscard]] int nv() const noexcept { return nv_; }
 
  private:

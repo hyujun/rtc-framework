@@ -12,7 +12,8 @@
 //
 // ── One wake (Plan) ───────────────────────────────────────────────────────────
 //  1. WHERE THE RESULT CAN START. t_0 = now + T_arm + budget + start_lead: the
-//     earliest instant a segment published by this wake can be read by the RT.
+//     earliest instant a segment published by this wake can be read by the RT
+//     — if the wake keeps to its budget (8).
 //  2. CANDIDATES are the instants of a lattice of ABSOLUTE times,
 //     t_c(i) = t_ref + i·h, that lie in (t_0, t_0 + T_max]. t_ref is the first
 //     searching wake's `now` of the trial, so a candidate keeps its index from
@@ -36,17 +37,31 @@
 //     reach (S4) → closing-speed window (S3).
 //  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose, and
 //     solve the best L, L = min(max_solves, ⌊(budget − screening)/solve_budget⌋).
-//     Each solve has its own deadline (its share), not the wake's.
+//     Each solve has its own deadline (its share), not the wake's. L is fixed
+//     before the first solve and no solve is skipped for what another took:
+//     which candidates are solved must not depend on the order they run in.
 //  7. A SOLVE'S START POINT comes from the PREVIOUS wake's memory only (so the
 //     order solves run in cannot matter): the same candidate's solution with
 //     the nodes that have passed dropped; else the nearest remembered
 //     candidate's solution stretched in time about t_s; else the IK pose.
-//  8. VALID is: solved inside its share, every hard row within tolerance, and
-//     converged. Φ = J⋆ + J_time + J_switch with J⋆ the solve's cost UP TO THE
-//     CATCH NODE (the stop part's terms are recorded, not chosen on). The
+//     What is remembered is every iterate a solve ENDED ON — valid, cut by
+//     its deadline, unconverged, or stationary with a row still violated (the
+//     point the solve stays nearest to when the prediction sharpens). What is
+//     not: the iterate of a solve the solver itself failed on (a QP that did
+//     not converge, a non-finite evaluation). That candidate's memory is
+//     dropped, so its next solve starts elsewhere.
+//  8. VALID is: solved inside its share, every hard row within tolerance,
+//     converged — and still readable from its node 0. The core reads its
+//     deadline between iterations only, so solves overrun their shares and a
+//     wake can end past its budget; a candidate whose node 0 lies less than
+//     that overrun after t_0 is refused (`deadline`) like one that ran past
+//     its own share. Φ = J⋆ + J_time + J_switch with J⋆ the solve's cost UP TO
+//     THE CATCH NODE (the stop part's terms are recorded, not chosen on). The
 //     smallest Φ wins, the smaller index on a tie.
 //  9. THE PLAN is that candidate; Solution() is its arm trajectory in the form
-//     a segment planner publishes.
+//     a segment planner publishes. The plan's q_star is the SOLVED catch pose
+//     and its w5 / w6 are evaluated there (the IK pose is where the solve was
+//     aimed, not where it ended).
 //
 // ── What a wake reports about the plan the RT follows ─────────────────────────
 // SearchStats::decision: kNoCurrent (the RT follows none); kRefreshed (the
@@ -155,9 +170,12 @@ struct NlpCatchSearchParams {
 
   // ── Budget (§11.2) ──
   double budget_s{0.025};       ///< one wake's whole budget [s]
-  double solve_budget_s{0.01};  ///< one candidate's share [s]
-  double start_lead_s{0.004};   ///< margin between the budget's end and t_0 [s], ≥ 0
-  int max_solves{4};            ///< 1..kNlpMaxSolves
+  double solve_budget_s{0.01};  ///< one candidate's share [s], ≤ budget_s
+  /// Margin between the budget's end and t_0 [s], ≥ 0. It has to hold what
+  /// the search cannot measure: the time from `now` to Plan's entry, and from
+  /// Plan's return to the RT reading the published segment.
+  double start_lead_s{0.004};
+  int max_solves{4};  ///< 1..kNlpMaxSolves
 
   // ── Outer cost (§9.5) and the rank proxy (§11.3) ──
   double w_time{0.0};        ///< w_T ≥ 0
@@ -256,7 +274,7 @@ class NlpCatchSearch final : public CatchSearch {
     /// The start state, MODEL order: where the arm is at t_s.
     std::array<double, kMaxSegmentNv> q0{}, qd0{}, qdd0{};
     std::array<double, kMaxSegmentNv> q_ik{};  ///< the IK pose, MODEL order (when it converged)
-    double w5{0.0}, w6{0.0};                   ///< the IK's manipulability at that pose
+    double w5{0.0}, w6{0.0};                   ///< the IK's manipulability at THAT pose
     std::uint32_t source_seq{0};               ///< the segment x_0 was read from; 0 = rest
     bool x0_clamped{false};
     // ── The solve ──
@@ -270,6 +288,9 @@ class NlpCatchSearch final : public CatchSearch {
     bool converged{false};
     int iterations{0};
     std::int64_t solve_ns{0};
+    /// Valid by its own solve, refused because the wake ended too far past its
+    /// budget for the RT to read this candidate's node 0 (`reject` is kDeadline).
+    bool late{false};
     /// Where the solve's time went, as the core measured it on its own clock
     /// [µs]: before the first iterate (start-point projection or the
     /// initialisation QP), in the QP solver, and how many QPs that was.
@@ -294,8 +315,9 @@ class NlpCatchSearch final : public CatchSearch {
   /// starts that candidate from — or nullptr.
   [[nodiscard]] const SegmentSnapshot* RememberedSolution(std::int64_t index) const noexcept;
 
-  /// The core for `n_pre` pre-catch intervals (n_pre_min..n_pre_max).
-  [[nodiscard]] const MpcDockingSegmentCore& Core(int n_pre) const noexcept;
+  /// The core for `n_pre` pre-catch intervals, or nullptr: outside
+  /// n_pre_min..n_pre_max, or not configured.
+  [[nodiscard]] const MpcDockingSegmentCore* Core(int n_pre) const noexcept;
 
   // ── Test seams ──────────────────────────────────────────────────────────────
 
@@ -319,14 +341,15 @@ class NlpCatchSearch final : public CatchSearch {
   void SetCoreStageHookForTesting(MpcDockingSegmentCore::StageHook hook, void* user) noexcept;
 
  private:
-  /// One remembered solution: the candidate it is of and its trajectory.
+  /// One remembered solution: the candidate it is of and what its solve ended
+  /// on (the trajectory in DEVICE order, as it would be published).
   struct Memory {
     bool valid{false};
+    /// A wake's own entry only: the solver failed on this candidate, so what
+    /// was remembered for it is dropped when the wake ends.
+    bool forget{false};
     std::int64_t index{0};
-    SegmentSnapshot seg{};  ///< DEVICE order, as it would be published
-    std::uint32_t source_seq{0};
-    double cost_reference{0.0}, cost_stop{0.0};
-    bool feasible{false}, converged{false};
+    CatchSolution sol{};
   };
 
   [[nodiscard]] static std::size_t U(int i) noexcept { return static_cast<std::size_t>(i); }
@@ -348,6 +371,10 @@ class NlpCatchSearch final : public CatchSearch {
   /// Fill the candidate's core input and solve it; sets c.reject and Φ.
   void Solve(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
              const PlannerRtState& rt, CandidateRecord& c, Memory& out) noexcept;
+  /// w5 / w6 at the catch pose `q_dev` (DEVICE order); 0 where the
+  /// factorisation is not valid, as CatchPoseIk reports them.
+  void CatchPoseManipulability(const std::array<double, kMaxPlanNv>& q_dev, double& w5,
+                               double& w6) noexcept;
   /// The core's result as the segment a planner publishes (device order).
   void Pack(const PlannerRtState& rt, std::uint64_t track_generation, const CandidateRecord& c,
             const MpcDockingSegmentCoreResult& r, SegmentSnapshot& out) const noexcept;

@@ -160,6 +160,11 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
       solve_budget_ns_ <= 0 || budget_ns_ <= 0) {
     return fail("nlp search: a spacing or budget rounds to no nanoseconds, or dt_pre is over 1 s");
   }
+  // A share the budget does not hold once would leave every wake solving
+  // nothing and reporting a host too slow.
+  if (solve_budget_ns_ > budget_ns_) {
+    return fail("nlp search: solve_budget_s is over budget_s — no wake could run a solve");
+  }
   // The pre-catch grid must COVER the candidate window: a candidate farther
   // than n_pre_max·Δ_a would have the arm wait before it moves, and one
   // nearer than n_pre_min·Δ_a has no grid to solve on.
@@ -359,9 +364,9 @@ void NlpCatchSearch::SetCoreStageHookForTesting(MpcDockingSegmentCore::StageHook
   }
 }
 
-const MpcDockingSegmentCore& NlpCatchSearch::Core(int n_pre) const noexcept {
-  const int slot = std::clamp(CoreSlot(n_pre), 0, static_cast<int>(cores_.size()) - 1);
-  return *cores_[U(slot)];
+const MpcDockingSegmentCore* NlpCatchSearch::Core(int n_pre) const noexcept {
+  const int slot = CoreSlot(n_pre);
+  return slot >= 0 && slot < static_cast<int>(cores_.size()) ? cores_[U(slot)].get() : nullptr;
 }
 
 std::size_t NlpCatchSearch::MemorySlot(std::int64_t index) const noexcept {
@@ -397,7 +402,7 @@ const NlpCatchSearch::Memory* NlpCatchSearch::NearestRemembered(std::int64_t ind
 
 const SegmentSnapshot* NlpCatchSearch::RememberedSolution(std::int64_t index) const noexcept {
   const Memory* m = Remembered(index);
-  return m != nullptr ? &m->seg : nullptr;
+  return m != nullptr ? &m->sol.seg : nullptr;
 }
 
 void NlpCatchSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
@@ -472,12 +477,15 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
     return;
   }
   ++stats.n_in_window;
-  // The ball at every node of the grid, as the solve will read it.
+  // The ball at every node of the grid, as the solve will read it: its mean
+  // everywhere, its covariance at the catch node — the one node a row reads
+  // it at.
   int hint = 0;
   BallNodeSample at_catch;
   for (int k = 0; k <= c.n_pre; ++k) {
     const BallTime t{c.t_s_ns + static_cast<std::int64_t>(k) * dt_pre_ns_};
-    const BallNodeSample b = SampleBallNode(traj, &cov, cov_matched, t, hint);
+    const BallNodeSample b =
+        SampleBallNode(traj, k == c.n_pre ? &cov : nullptr, cov_matched, t, hint);
     if (!b.valid || b.after_horizon || !b.p.allFinite() || !b.v.allFinite() || !b.a.allFinite()) {
       c.reject = NlpReject::kBallInvalid;
       return;
@@ -611,6 +619,14 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
   c.reject = NlpReject::kNotRanked;  // until a solve says otherwise
 }
 
+void NlpCatchSearch::CatchPoseManipulability(const std::array<double, kMaxPlanNv>& q_dev,
+                                             double& w5, double& w6) noexcept {
+  for (int m = 0; m < nv_; ++m) {
+    q_model_[m] = q_dev[U(model_.device_of_model[U(m)])];
+  }
+  static_cast<void>(ik_.Manipulability(*model_.handle, model_.catch_frame, q_model_, w5, w6));
+}
+
 void NlpCatchSearch::Pack(const PlannerRtState& rt, std::uint64_t track_generation,
                           const CandidateRecord& c, const MpcDockingSegmentCoreResult& r,
                           SegmentSnapshot& out) const noexcept {
@@ -662,7 +678,7 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
   int hint = 0;
   for (int k = 0; k <= c.n_pre; ++k) {
     const BallTime t{c.t_s_ns + static_cast<std::int64_t>(k) * dt_pre_ns_};
-    in.ball[U(k)] = SampleBallNode(traj, &cov, cov_matched, t, hint);
+    in.ball[U(k)] = SampleBallNode(traj, k == c.n_pre ? &cov : nullptr, cov_matched, t, hint);
   }
   const BallNodeSample& at_catch = in.ball[U(c.n_pre)];
   // The stop line: through the catch point, along the ball's travel.
@@ -675,31 +691,32 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
 
   // The start point, from the previous wakes' memory only.
   const Memory* own = Remembered(c.index);
-  if (own != nullptr && own->seg.t_c_ns == c.t_c_ns && own->seg.nv == nv_ &&
-      own->seg.n_pre >= c.n_pre && own->seg.n_nodes - own->seg.n_pre == params_.n_stop) {
+  if (const SegmentSnapshot* mine = own != nullptr ? &own->sol.seg : nullptr;
+      mine != nullptr && mine->t_c_ns == c.t_c_ns && mine->nv == nv_ && mine->n_pre >= c.n_pre &&
+      mine->n_nodes - mine->n_pre == params_.n_stop) {
     // The same candidate: the nodes that have passed are dropped, the rest
     // are the same instants.
-    const int shift = own->seg.n_pre - c.n_pre;
+    const int shift = mine->n_pre - c.n_pre;
     for (int k = 0; k <= n_total; ++k) {
       for (int m = 0; m < nv_; ++m) {
         const std::size_t e = U((k + shift) * kMaxSegmentNv + model_.device_of_model[U(m)]);
-        in.q_init(m, k) = own->seg.q[e];
-        in.qd_init(m, k) = own->seg.qd[e];
-        in.qdd_init(m, k) = own->seg.qdd[e];
+        in.q_init(m, k) = mine->q[e];
+        in.qd_init(m, k) = mine->qd[e];
+        in.qdd_init(m, k) = mine->qdd[e];
       }
     }
     in.initial_valid = true;
     c.start = Start::kSameCandidate;
   } else if (const Memory* other = NearestRemembered(c.index);
-             other != nullptr && other->seg.nv == nv_ && other->seg.t0_ns <= c.t_s_ns &&
-             other->seg.t_c_ns > c.t_s_ns &&
-             other->seg.n_nodes - other->seg.n_pre == params_.n_stop) {
+             other != nullptr && other->sol.seg.nv == nv_ && other->sol.seg.t0_ns <= c.t_s_ns &&
+             other->sol.seg.t_c_ns > c.t_s_ns &&
+             other->sol.seg.n_nodes - other->sol.seg.n_pre == params_.n_stop) {
     // A new candidate: the nearest remembered solution as a function of
     // absolute time, stretched about node 0's instant so that its catch
     // instant lands on this one's: σ(t) = t_s + α (t − t_s),
     // α = (t_c,prev − t_s)/(t_c − t_s); velocities scale by α, accelerations
     // by α². From the catch node on, its stop part is taken as it is.
-    const SegmentSnapshot& prev = other->seg;
+    const SegmentSnapshot& prev = other->sol.seg;
     const double alpha =
         static_cast<double>(prev.t_c_ns - c.t_s_ns) / static_cast<double>(c.t_c_ns - c.t_s_ns);
     std::array<double, kMaxSegmentNv> q{};
@@ -758,6 +775,8 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
   c.core_reason = res.reason;
   c.solved = ok;
   out.valid = false;
+  out.forget = false;
+  out.index = c.index;
   if (ok) {
     // The trajectory is read only now: a refused solve leaves the result's
     // nodes as the previous candidate with this n_pre left them.
@@ -786,14 +805,22 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
     c.c_catch = res.c_catch;
     c.worst_violation = worst;
     c.worst_group = static_cast<DockingRowGroup>(worst_group);
-    Pack(rt, traj.token.generation, c, res, out.seg);
+    // An iterate the SOLVER failed on — a QP that did not converge, an
+    // evaluation that is not finite — says nothing about the rows, and the
+    // next wake must not start from it (it would fail there again).
+    if (res.reason == MpcDockingReason::kQpFailed ||
+        res.reason == MpcDockingReason::kSolutionNonFinite) {
+      c.reject = end_ns > in.deadline_ns ? NlpReject::kDeadline : NlpReject::kSolverRejected;
+      out.forget = true;
+      return;
+    }
+    Pack(rt, traj.token.generation, c, res, out.sol.seg);
     out.valid = true;
-    out.index = c.index;
-    out.source_seq = c.source_seq;
-    out.cost_reference = res.cost.reference;
-    out.cost_stop = res.cost.stop;
-    out.feasible = res.feasible;
-    out.converged = res.converged;
+    out.sol.source_seq = c.source_seq;
+    out.sol.cost_reference = res.cost.reference;
+    out.sol.cost_stop = res.cost.stop;
+    out.sol.feasible = res.feasible;
+    out.sol.converged = res.converged;
     if (res.reason == MpcDockingReason::kDeadline || end_ns > in.deadline_ns) {
       c.reject = NlpReject::kDeadline;
     } else if (!res.feasible) {
@@ -983,6 +1010,22 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
     stats.nlp.solve_ns_max = std::max(stats.nlp.solve_ns_max, c.solve_ns);
   }
 
+  // ── What the wake overran its budget by ───────────────────────────────────
+  // t_0 stands budget_s (and the start lead) after `now`, and a candidate's
+  // node 0 `wait_ns` after t_0. The solves overrun their shares (the core
+  // reads its deadline between iterations only), so the wake can end past its
+  // budget: a candidate whose node 0 is nearer than that overrun can no longer
+  // be read from its node 0 by the RT. Read once, after the last solve — so
+  // it is the same whatever order the solves ran in.
+  const std::int64_t late_ns = clock_() - t_start - budget_ns_;
+  for (int r = 0; late_ns > 0 && r < n_solve; ++r) {
+    CandidateRecord& c = cands_[U(ranked_[U(r)])];
+    if (c.reject == NlpReject::kNone && c.wait_ns < late_ns) {
+      c.reject = NlpReject::kDeadline;
+      c.late = true;
+    }
+  }
+
   // ── The choice ────────────────────────────────────────────────────────────
   int best_rank = -1;
   for (int r = 0; r < n_solve; ++r) {
@@ -1011,19 +1054,19 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
     }
   }
   if (best_rank >= 0) {
-    solution_.seg = fresh_[U(best_rank)].seg;
-    solution_.source_seq = fresh_[U(best_rank)].source_seq;
-    solution_.cost_reference = fresh_[U(best_rank)].cost_reference;
-    solution_.cost_stop = fresh_[U(best_rank)].cost_stop;
-    solution_.feasible = fresh_[U(best_rank)].feasible;
-    solution_.converged = fresh_[U(best_rank)].converged;
+    solution_ = fresh_[U(best_rank)].sol;
     solution_valid_ = true;
   }
   // This wake's solutions become the next wake's memory — only now, so that no
-  // solve of this wake started from another's.
+  // solve of this wake started from another's. A candidate the solver failed
+  // on loses what was remembered for it.
   for (int r = 0; r < n_solve; ++r) {
-    if (fresh_[U(r)].valid) {
-      memory_[MemorySlot(fresh_[U(r)].index)] = fresh_[U(r)];
+    const Memory& fresh = fresh_[U(r)];
+    Memory& kept = memory_[MemorySlot(fresh.index)];
+    if (fresh.valid) {
+      kept = fresh;
+    } else if (fresh.forget && kept.valid && kept.index == fresh.index) {
+      kept.valid = false;
     }
   }
   if (best_rank < 0) {
@@ -1049,8 +1092,8 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   for (int d = 0; d < nv_; ++d) {
     plan.q_star[U(d)] = seg.q[U(c.n_pre * kMaxSegmentNv + d)];
   }
-  plan.w5 = c.w5;
-  plan.w6 = c.w6;
+  // At the pose the plan carries — the solved one, not the IK's.
+  CatchPoseManipulability(plan.q_star, plan.w5, plan.w6);
   plan.dp_impact = params_.core.m_ball * c.c_catch;
   plan.score = c.phi;
   const double sigma = SigmaMaxOf(ball);
