@@ -57,6 +57,10 @@ using rtc::catching::TrajectorySnapshot;
 
 constexpr std::int64_t kMs = 1'000'000;
 constexpr std::int64_t kNow = 50'000 * kMs;
+
+// What a search is handed when the RT reports no segment — every wake this
+// search has been called on so far (it does not read the argument).
+const rtc::catching::ReportedSegments kNoSegments{};
 /// Half-width [rad] of the catch configurations drawn around the wait pose.
 constexpr double kQSpread = 1.2;
 
@@ -226,10 +230,10 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
     for (int s = 0; s <= shipped.params.n_settle; ++s) {
       traj->token.snapshot_sequence = static_cast<std::uint64_t>(10 + s);
       cov->token = traj->token;
-      static_cast<void>(search.Plan(*traj, *cov, true, rt, NowReal{kNow}, stats));
+      static_cast<void>(search.Plan(*traj, *cov, true, rt, kNoSegments, NowReal{kNow}, stats));
     }
     ASSERT_FALSE(stats.settling);
-    const auto plan = search.Plan(*traj, *cov, true, rt, NowReal{kNow}, stats);
+    const auto plan = search.Plan(*traj, *cov, true, rt, kNoSegments, NowReal{kNow}, stats);
     // The cycle as timed by the search itself (its own clock reads).
     cycle_us.push_back(stats.search_ns / 1000);
     plans += plan.valid ? 1 : 0;

@@ -343,9 +343,12 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   ///        entry; RT-safe): the ball target is `ball` at `plan.t_c_ns`
   ///        (MakeMpcSegmentBallTarget with this planner's v_eps), an invalid one
   ///        when the view is empty.
+  /// @param solution NOT READ: this planner solves its own problem (a
+  ///        minimum-jerk reference reach), which is not the one a search
+  ///        solves. Null and non-null give the same segment.
   [[nodiscard]] bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                               const BallPrediction& ball, SegmentSnapshot& out,
-                               SegmentRecord& rec) noexcept override;
+                               const BallPrediction& ball, const CatchSolution* solution,
+                               SegmentSnapshot& out, SegmentRecord& rec) noexcept override;
 
   /// @brief A later segment of the plan the RT follows (RT-safe; MD-58): the
   ///        grid point the replan budget reaches, solved from the segment the
@@ -388,10 +391,14 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   /// The control period [ns].
   [[nodiscard]] std::int64_t ControlDtNs() const noexcept override { return h_ns_; }
 
+  /// The segments `rt` reports pending and following, copied out of the ring
+  /// of published segments. Neither when the RT follows no plan, or a plan
+  /// the ring is not of (plan id and t_c), or the reported seq is not in it.
+  void Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept override;
+
   /// The segment_seq of the segment a replan at `t_eff_ns` starts from, 0 when
-  /// there is none (kNotFollowed): the one the RT reports pending (when it
-  /// starts no later than t_eff), else the one it reports following — never
-  /// inferred.
+  /// there is none (kNotFollowed): SourceSegmentAt on the two segments
+  /// Reported() answers — never inferred.
   [[nodiscard]] std::uint32_t SourceSeq(const PlannerRtState& rt,
                                         std::int64_t t_eff_ns) const noexcept override;
 
@@ -472,6 +479,16 @@ class MpcSegmentPlanner final : public SegmentPlanner {
                    std::int64_t t_c, std::int64_t t_eff, int n_pre, int k0, int n_total,
                    const MpcSegmentCoreResult& r, SegmentSnapshot& out) const noexcept;
   [[nodiscard]] const SegmentSnapshot* FindInRing(std::uint32_t seq) const noexcept;
+
+  // The ring's entries for the two segments `rt` reports — null where it
+  // reports none, the ring is another plan's, or the seq is not in it.
+  // Pointers INTO the ring: good until the next NotePublished.
+  struct RingReport {
+    const SegmentSnapshot* pending{nullptr};
+    const SegmentSnapshot* following{nullptr};
+  };
+
+  [[nodiscard]] RingReport ReportedInRing(const PlannerRtState& rt) const noexcept;
   [[nodiscard]] bool ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
                                   std::uint32_t plan_id, std::int64_t t_c) const noexcept;
   // `ok` false forgets the last solve: a call the core refused before its QP

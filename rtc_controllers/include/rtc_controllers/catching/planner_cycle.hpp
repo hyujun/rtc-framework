@@ -243,9 +243,11 @@ class PlannerCycle {
   [[nodiscard]] PlannerCycleRecord Run(NowReal wake) noexcept;
 
   /// The single search entry point (A-4, S6.6): the installed search's `Plan`,
-  /// the S6-A stub ("no plan") when there is none.
+  /// the S6-A stub ("no plan") when there is none. `arm` is what the segment
+  /// planner reports the RT following (CatchSearch::Plan).
   [[nodiscard]] PlanSnapshot PlanOnce(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                      bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                      bool cov_matched, const PlannerRtState& rt,
+                                      const ReportedSegments& arm, NowReal now,
                                       SearchStats& stats) noexcept;
 
   /// The id the next publish will carry minus one — i.e. the last id used.
@@ -324,6 +326,10 @@ class PlannerCycle {
   TrajectorySnapshot traj_{};
   TrajectorySnapshot traj_recheck_{};
   CovarianceSnapshot cov_{};
+  // The segments the RT reports, as the segment planner copied them out for
+  // this wake's search (CatchSearch::Plan's `arm`). A snapshot in it is
+  // meaningful only under its flag.
+  ReportedSegments reported_{};
 };
 
 /// Whether two provenance tokens name the same trajectory snapshot.

@@ -10,6 +10,16 @@
 // The one implementation today is GridCatchSearch (grid_catch_search.hpp): a grid
 // over the vision samples with a closed-form γ profile.
 //
+// TWO THINGS CROSS BETWEEN THE SEARCH AND THE SEGMENT PLANNER, both through the
+// cycle, neither interface knowing the other's implementation:
+//   • segment planner → search: the segments the RT reports (ReportedSegments,
+//     planner_io.hpp). A search that judges candidates by the arm motion they
+//     need has to start that motion where the arm will be, and once the RT
+//     follows a plan that is on a published segment.
+//   • search → segment planner: the chosen candidate's arm trajectory
+//     (CatchSolution, below), when the search solved one. A planner that would
+//     solve the same problem again can publish it instead.
+//
 // ── Contract ──────────────────────────────────────────────────────────────────
 //  • THREAD. Every member below is called from PlannerCycle::Run, on the
 //    planner thread — which may run SCHED_FIFO (D-7a). RT-1~10 apply to all of
@@ -31,9 +41,36 @@
 #include "rtc_controllers/catching/traj_ingress.hpp"  // CovarianceSnapshot
 #include "rtc_controllers/catching/trajectory.hpp"
 
+#include <cstdint>
+#include <type_traits>
+
 namespace rtc::catching {
 
 struct SearchStats;  // search_stats.hpp
+
+/// @brief The arm trajectory a search solved for the candidate it chose, in
+///        the form a segment planner publishes.
+///
+/// `seg` is a whole SegmentSnapshot — grid, nodes and the RT state it was
+/// solved from — so that the one evaluator of a two-spacing segment
+/// (NodeTrajectoryFollower::SampleJoints) reads a solution exactly as it reads
+/// a published segment. `seg.publish_ns`, `seg.segment_seq` and `seg.plan_id`
+/// are the cycle's to fill and are zero here.
+///
+/// A receiver uses it for a plan only when it is that plan's and of the same
+/// RT report: `seg.t_c_ns == plan.t_c_ns && seg.rt_iteration == rt.rt_iteration`.
+struct CatchSolution {
+  SegmentSnapshot seg{};
+  /// The `segment_seq` of the reported segment node 0's state was evaluated
+  /// on; 0 when the arm started at rest on its command.
+  std::uint32_t source_seq{0};
+  double cost_reference{0.0};  ///< the solve's cost up to the catch node
+  double cost_stop{0.0};       ///< and after it — not part of the choice
+  bool feasible{false};        ///< every hard row within tolerance
+  bool converged{false};       ///< the solve met its own stopping test
+};
+
+static_assert(std::is_trivially_copyable_v<CatchSolution>);
 
 /// @brief The search one planner wake runs: a trajectory snapshot and its
 ///        covariance in, one catch plan (or "no plan") out.
@@ -51,6 +88,9 @@ class CatchSearch {
   ///        `traj`'s (same provenance token). An unmatched one is not that
   ///        prediction's uncertainty and must not be used as if it were.
   /// @param rt the RT's report: the current command and the plan it follows
+  /// @param arm the segments `rt` reports pending and following, as copies
+  ///        (the cycle's scratch — valid for this call). Both absent when the
+  ///        RT follows no plan or no segment planner is installed
   /// @param now the planning 'now' on the steady axis (the wake instant)
   /// @param[out] stats the wake's search record; `stats.publish` false tells
   ///             the cycle to publish nothing (the RT keeps the plan it has)
@@ -58,8 +98,16 @@ class CatchSearch {
   ///         candidate was chosen. `plan_id` and `publish_ns` are the cycle's.
   [[nodiscard]] virtual PlanSnapshot Plan(const TrajectorySnapshot& traj,
                                           const CovarianceSnapshot& cov, bool cov_matched,
-                                          const PlannerRtState& rt, NowReal now,
-                                          SearchStats& stats) noexcept = 0;
+                                          const PlannerRtState& rt, const ReportedSegments& arm,
+                                          NowReal now, SearchStats& stats) noexcept = 0;
+
+  /// @brief The arm trajectory the last Plan() solved for the plan it
+  ///        returned, or nullptr: no plan was chosen, or this search does not
+  ///        solve one (RT-safe).
+  ///
+  /// Null IS "none" — there is no validity flag to forget. The pointer is good
+  /// until the next Plan() or ResetTrial().
+  [[nodiscard]] virtual const CatchSolution* Solution() const noexcept = 0;
 
   /// @brief A wake after the RT committed (monitorOnly, L3 §4.6): record what
   ///        the newest prediction says about the plan the RT follows. Nothing

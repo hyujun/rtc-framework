@@ -736,26 +736,34 @@ const SegmentSnapshot* MpcSegmentPlanner::FindInRing(std::uint32_t seq) const no
   return nullptr;
 }
 
-std::uint32_t MpcSegmentPlanner::SourceSeq(const PlannerRtState& rt,
-                                           std::int64_t t_eff_ns) const noexcept {
+MpcSegmentPlanner::RingReport MpcSegmentPlanner::ReportedInRing(
+    const PlannerRtState& rt) const noexcept {
+  // The ring is the last PUBLISHED plan's; it says nothing of another one.
   if (ring_n_ == 0 || !rt.plan_active || rt.plan_id != ring_plan_id_ ||
       rt.plan_t_c_ns != ring_t_c_ns_) {
-    return 0;
+    return {};
   }
-  // The pending one is what the RT follows from its node 0 on.
-  if (rt.segment_pending) {
-    const SegmentSnapshot* p = FindInRing(rt.segment_pending_seq);
-    if (p != nullptr && p->t0_ns <= t_eff_ns) {
-      return p->segment_seq;
-    }
+  return {rt.segment_pending ? FindInRing(rt.segment_pending_seq) : nullptr,
+          rt.segment_active ? FindInRing(rt.segment_seq) : nullptr};
+}
+
+void MpcSegmentPlanner::Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept {
+  const RingReport r = ReportedInRing(rt);
+  out.has_pending = r.pending != nullptr;
+  out.has_following = r.following != nullptr;
+  if (out.has_pending) {
+    out.pending = *r.pending;
   }
-  if (rt.segment_active) {
-    const SegmentSnapshot* p = FindInRing(rt.segment_seq);
-    if (p != nullptr) {
-      return p->segment_seq;
-    }
+  if (out.has_following) {
+    out.following = *r.following;
   }
-  return 0;
+}
+
+std::uint32_t MpcSegmentPlanner::SourceSeq(const PlannerRtState& rt,
+                                           std::int64_t t_eff_ns) const noexcept {
+  const RingReport r = ReportedInRing(rt);
+  const SegmentSnapshot* src = SourceSegmentAt(r.pending, r.following, t_eff_ns);
+  return src != nullptr ? src->segment_seq : 0;
 }
 
 bool MpcSegmentPlanner::FollowedTrack(const PlannerRtState& rt,
@@ -832,8 +840,10 @@ MpcSegmentBallTarget MpcSegmentPlanner::TargetAt(const BallPrediction& ball,
 // The target is built BEFORE the solve's own entry, which is where its clock
 // starts: the budget measures what it measured when the cycle built it.
 bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                                  const BallPrediction& ball, SegmentSnapshot& out,
-                                  SegmentRecord& rec) noexcept {
+                                  const BallPrediction& ball, const CatchSolution* solution,
+                                  SegmentSnapshot& out, SegmentRecord& rec) noexcept {
+  // A search's solution is another problem's (see the header): not read.
+  static_cast<void>(solution);
   return PlanFirst(rt, plan, TargetAt(ball, plan.t_c_ns), out, rec);
 }
 

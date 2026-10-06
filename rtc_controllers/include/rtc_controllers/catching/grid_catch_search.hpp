@@ -142,10 +142,16 @@ class GridCatchSearch final : public CatchSearch {
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
 
   /// One search. RT-safe. `rt` gives the current command and the plan the RT
-  /// follows; `now` is the planning 'now' on the steady axis.
+  /// follows; `now` is the planning 'now' on the steady axis. `arm` is NOT
+  /// READ: this search scores a candidate by closed-form gates on the catch
+  /// point, not by an arm motion that would have to start somewhere.
   [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                  bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                  bool cov_matched, const PlannerRtState& rt,
+                                  const ReportedSegments& arm, NowReal now,
                                   SearchStats& stats) noexcept override;
+
+  /// Always nullptr: this search solves no arm trajectory.
+  [[nodiscard]] const CatchSolution* Solution() const noexcept override { return nullptr; }
 
   /// monitorOnly (§4.6): σ_ℓ at the t_c of the plan the RT follows
   /// (`rt.plan_id`). RT-safe.

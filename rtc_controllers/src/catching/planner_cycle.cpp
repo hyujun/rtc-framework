@@ -125,7 +125,10 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
   plan.plan_id = last_plan_id_ + 1;
   // The prediction the plan was searched on, as this wake read it.
   const BallPrediction ball{&traj_, &cov_, rec.cov_matched};
-  if (!segment_planner_->PlanFirst(rt, plan, ball, segment_out_, rec.segment)) {
+  // What the search solved for this plan, if it solved anything: the planner
+  // may publish it rather than solve again (SegmentPlanner::PlanFirst).
+  const CatchSolution* const solution = search_ != nullptr ? search_->Solution() : nullptr;
+  if (!segment_planner_->PlanFirst(rt, plan, ball, solution, segment_out_, rec.segment)) {
     // Withheld together (MD-62): a plan without its segment would put the RT
     // in APPROACH with nothing to follow.
     rec.outcome = CycleOutcome::kHeld;
@@ -180,12 +183,14 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
 }
 
 PlanSnapshot PlannerCycle::PlanOnce(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
-                                    bool cov_matched, const PlannerRtState& rt, NowReal now,
+                                    bool cov_matched, const PlannerRtState& rt,
+                                    const ReportedSegments& arm, NowReal now,
                                     SearchStats& stats) noexcept {
   if (search_ != nullptr) {
-    return search_->Plan(traj, cov, cov_matched, rt, now, stats);
+    return search_->Plan(traj, cov, cov_matched, rt, arm, now, stats);
   }
   stats = SearchStats{};
+  static_cast<void>(arm);
   static_cast<void>(cov);
   static_cast<void>(cov_matched);
   static_cast<void>(now);
@@ -311,7 +316,16 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   }
 
   // ── 3. Search (A-4 single entry) ─────────────────────────────────────────
-  PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, wake, rec.search);
+  // With the segments the RT reports, for a search that starts a candidate's
+  // arm motion on one. On the wakes that reach this line today the RT follows
+  // no plan (a followed plan was replanned above, MD-57), so there are none.
+  if (SegmentActive()) {
+    segment_planner_->Reported(rt, reported_);
+  } else {
+    reported_.has_pending = false;
+    reported_.has_following = false;
+  }
+  PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, reported_, wake, rec.search);
   rec.search_valid = plan.valid;
   if (post_search_hook_ != nullptr) {
     post_search_hook_(post_search_context_);
