@@ -2530,6 +2530,54 @@ TEST(MpcDockingSegmentCoreCatchTime, TheBoxEndsWhereThePredictionDoes) {
   EXPECT_LT(out.catch_time_gradient, 0.0) << "it would go later still";
 }
 
+// A start that is off the terminal rest, where putting that right COSTS
+// objective: the fixed-grid solution with the stop part's jerk taken out — the
+// arm does not brake, and saves the braking's cost. The merit counts the rest
+// (and the box on the nodes after the catch node), so the step that pays is
+// taken; a merit that left the two groups out would see only a rising cost
+// and refuse every step.
+TEST(MpcDockingSegmentCoreCatchTime, AStartThatMustPayForTheTerminalRestStillConverges) {
+  for (dk::Rig fixed_rig : Rigs()) {
+    // The start is taken as given though it is far off the rest.
+    fixed_rig.params.tol_linear = 20.0;
+    const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 0, 0);
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult fixed;
+    MpcDockingSegmentCoreResult at_start;
+    MpcDockingSegmentCoreResult out;
+    core.ResizeResult(fixed);
+    core.ResizeResult(at_start);
+    core.ResizeResult(out);
+    ASSERT_TRUE(SolveFixed(core, *c, fixed));
+    ASSERT_TRUE(fixed.converged) << DescribeTc(fixed);
+    Eigen::VectorXd z = JerkOf(c->rig, fixed);
+    const Eigen::Index n = core.Nv();
+    // One block per pre-catch interval (BaseParams): the stop part's blocks
+    // are the ones from n_pre on.
+    z.tail(z.size() - c->rig.params.n_pre * n).setZero();
+    MpcDockingSegmentCoreInput in = c->in;
+    SetStartAt(*c, z, 0, in);
+    in.delta_lo_ns = 0;
+    in.delta_hi_ns = 0;
+    ASSERT_TRUE(core.Evaluate(in, at_start));
+    const double off = at_start.violation[G(DockingRowGroup::kTerminal)];
+    ASSERT_GT(off, 1e-2) << fixed_rig.arm.name << ": the start is at rest already";
+    // The premise: the start is cheaper than the solution it must become.
+    ASSERT_LT(Objective(at_start), Objective(fixed) - 1e-4) << fixed_rig.arm.name;
+    ASSERT_TRUE(core.Solve(in, out));
+    EXPECT_FALSE(out.init_qp_used) << fixed_rig.arm.name << ": the start must be taken as given";
+    EXPECT_TRUE(out.converged) << fixed_rig.arm.name << DescribeTc(out);
+    EXPECT_LE(out.violation[G(DockingRowGroup::kTerminal)], kTerminalRestTol);
+    EXPECT_GT(Objective(out), Objective(at_start) + 1e-4) << "feasibility was not paid for";
+    EXPECT_NEAR(Objective(out), Objective(fixed), 1e-6 * std::max(1.0, Objective(fixed)));
+    std::printf(
+        "[ record ] %s: terminal rest off by %.3f, objective %.5f -> %.5f (%d iterations)\n",
+        fixed_rig.arm.name.c_str(), off, Objective(at_start), Objective(out), out.iterations);
+  }
+}
+
 // The core's own code allocates nothing with the catch instant a variable
 // either — the same gate, stage by stage, over solves that move the instant.
 TEST(MpcDockingSegmentCoreCatchTime, EveryStageOutsideTheSolverAllocatesNothing) {

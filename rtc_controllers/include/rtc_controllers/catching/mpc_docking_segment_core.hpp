@@ -136,8 +136,11 @@
 //    k ≥ k_c and the terminal rest. They are elastic like every other hard
 //    nonlinear row (one elastic per node for the box, one for the rest; μ in
 //    mu_init_post_box / mu_init_terminal), enter the merit, and decide
-//    `feasible` on the nonlinear model as before — so a trajectory brought
-//    from another catch instant is a start, whatever it leaves of them. The
+//    `feasible` on the nonlinear model as before — so the iterate a move of
+//    the catch instant leaves is a point to go on from, whatever it leaves of
+//    them. (A START is taken as given when it holds the two groups to
+//    tol_violation — a solution of this core does — and goes through the
+//    initialisation QP, at its own δt_c, otherwise.) The
 //    trust region on those nodes is a row of its own (it shared the box's).
 //    Box rows before the catch node and the jerk box stay hard and linear.
 //  • δt_c does NOT move inside a QP: θ's row pins it. A joint step in (d, θ)
@@ -720,7 +723,7 @@ class MpcDockingSegmentCore {
   /// Column of θ in the last QP.
   [[nodiscard]] int CatchTimeColumn() const noexcept { return tc_on_ ? nu_ : -1; }
 
-  /// The row that bounds θ (δt_c's box and the step limit).
+  /// The row that pins θ at 0 (its multiplier is −∂L/∂θ at the QP's δt_c).
   [[nodiscard]] int CatchTimeRow() const noexcept { return tc_on_ ? row_th_ : -1; }
 
   /// The elastic box rows of the nodes k ≥ k_c: `PostCatchBoxRowCount()` rows

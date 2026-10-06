@@ -3550,6 +3550,25 @@ TEST(NlpCatchSearchWindow, TheAnchorIsForgottenWithTheTrialTheTrackAndThePlan) {
     EXPECT_TRUE(w2.stats.nlp.follow_anchor_set);
     EXPECT_EQ(rig->search.LatticeAnchorNs(), now + 20 * kMs);
   }
+
+  // A new track whose plan the RT follows already on the track's first wake
+  // (its segment carries the new track): the anchor is THAT plan's cell on the
+  // new lattice — nothing of the old track's is left to window around.
+  fresh(rig, adopted);
+  {
+    Throw other = OffAxisThrow(*rig, 0.36, /*seq=*/2);
+    other.traj.token.generation = kTrack + 1;
+    other.cov.token = other.traj.token;
+    SegmentSnapshot seg = adopted->followed;
+    seg.token.generation = kTrack + 1;
+    const std::int64_t plan_t_c = adopted->t_c_ns + 3 * h;
+    const Wake w = FollowWake(*rig, other, seg, plan_t_c, now);
+    EXPECT_TRUE(w.stats.nlp.follow_anchor_set) << Table(rig->search, w.stats);
+    ASSERT_EQ(rig->search.LatticeAnchorNs(), now);
+    const std::int64_t cell = rtc::catching::NlpCellOf(now, h, plan_t_c);
+    ASSERT_NE(cell, adopted->index) << "the two lattices give the plan the same index";
+    EXPECT_EQ(w.stats.nlp.follow_anchor_index, cell);
+  }
 }
 
 // What the window is for. Each wake's prediction puts the cheapest catch one
@@ -3834,6 +3853,10 @@ TEST(NlpCatchSearchContinuous, TheFreeCatchInstantNeverCostsMoreThanTheLatticeOn
       // Φ of both is on record (it leaves the stop part's cost out, so it is
       // not what the comparison above is made on).
       EXPECT_DOUBLE_EQ(c.phi, c.j_reference + c.j_time + c.j_switch);
+      // … with its time term at the catch instant the solve ended at.
+      EXPECT_DOUBLE_EQ(c.j_time, w_time * Sec(c.t_c_ns - rig->search.LastStartInstantNs()) /
+                                     rig->params.t_ref_s);
+      EXPECT_DOUBLE_EQ(c.lead_s, Sec(c.t_c_ns - rig->search.LastStartInstantNs()));
       EXPECT_GT(c.fixed_phi, 0.0);
       std::printf(
           "[ record ] w_time %.1f i %lld: delta %.3f ms, objective %.6f -> %.6f, phi "
