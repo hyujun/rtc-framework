@@ -535,6 +535,9 @@ bool ComputeDockingManipulability(const pinocchio::Model& model, pinocchio::Fram
   pinocchio::computeJointKinematicHessians(model, work.data, q);
   const pinocchio::Frame& f = model.frames[frame];
   work.hessian.setZero();
+  // The joint + placement overload: the frame-index one copies the Frame (its
+  // name is a std::string — a heap allocation) and can throw on a bad index.
+  // H(i, j, k) = ∂J_ij/∂q_k in the requested frame.
   pinocchio::getFrameKinematicHessian(model, work.data, f.parentJoint, f.placement,
                                       pinocchio::LOCAL_WORLD_ALIGNED, work.hessian);
   const double inv_lin = 1.0 / d_x_lin;
