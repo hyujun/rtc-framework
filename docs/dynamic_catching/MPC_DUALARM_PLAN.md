@@ -68,7 +68,7 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F14 | [#740](https://github.com/hyujun/rtc-framework/issues/740) | NLP search 코어 — 후보별 NLP 풀이로 포구 후보를 고른다 (바깥 루프). 채택 전과 채택 뒤 (움직이는 팔에서 출발) 의 탐색, 탐색 ↔ 구간 계획기의 자리 (탐색의 해 · RT 가 보고한 구간). PR 둘: 고정 격자, 그 뒤 후보별 국소 연속 $t_c$. `NlpCatchSearch` 를 부르는 것은 테스트뿐이다 — cycle 은 E1-F16 | E1-F13 (끝) | **다음** |
+| E1-F14 | [#740](https://github.com/hyujun/rtc-framework/issues/740) | NLP search 코어 — 후보별 NLP 풀이로 포구 후보를 고른다 (바깥 루프). 채택 전과 채택 뒤 (움직이는 팔에서 출발) 의 탐색, 탐색 ↔ 구간 계획기의 자리 (탐색의 해 · RT 가 보고한 구간). PR 둘: 고정 격자, 그 뒤 후보별 국소 연속 $t_c$. `NlpCatchSearch` 를 부르는 것은 테스트뿐이다 — cycle 은 E1-F16 | E1-F13 (끝) | **다음** — 고정 격자의 PR ([#767](https://github.com/hyujun/rtc-framework/pull/767)) 은 들어갔고 후보별 국소 연속 $t_c$ 의 PR 이 남았다 |
 | E1-F15 | [#741](https://github.com/hyujun/rtc-framework/issues/741) | mpc_docking 의 입력 식별 (sim) — 포획 기하 · 속도 집합 · 폐쇄 창 | — (E1-F16 앞에 끝낸다) | 대기 |
 | E1-F16 | [#742](https://github.com/hyujun/rtc-framework/issues/742) | 계획기 스레드 통합 — search · planner 선택 키, YAML 조각, `PlannerCycle` 배선. 채택 뒤의 wake 순서 (탐색 → 구간), 탐색을 멈추는 `t_stop_plan`, 게시 규칙 ($t_c$ 가 같으면 구간만, 다르면 plan + 구간의 쌍) — `grid` × `mpc` 포함 | E1-F12 (끝) · F13 (끝) · F14, E1-F15 의 값 | 대기 |
 | E1-F17 | [#743](https://github.com/hyujun/rtc-framework/issues/743) | RT 계약 · supervisor — mpc_docking 구간의 추종, APPROACH 중에 plan 과 구간을 함께 바꾸는 경로 (`mpc` · `mpc_docking`) | E1-F16 | 대기 |
