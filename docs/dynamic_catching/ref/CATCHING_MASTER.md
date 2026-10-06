@@ -44,7 +44,7 @@
 
 **포구 구현의 구성 (D-1, 새 패키지 없음).**
 
-- rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`): 궤적 타입·샘플러(L2), 시간 타입, soft-catch 기준 생성기(L4, closed_form), 도달 가능성·계획기 탐색 코어·catchability 판정(L3), 감속 MPC 코어와 계획기 연결 (`mpc_segment_core*.hpp`, `mpc_segment_planner.hpp`, `node_follower.hpp` — mpc), L7 순수 조각, 파라미터 검증(L0)
+- rtc_controllers 의 `catching` 하위 디렉토리 (namespace `rtc::catching`): 궤적 타입·샘플러(L2), 시간 타입, soft-catch 기준 생성기(L4, closed_form), 도달 가능성·계획기 탐색 코어·catchability 판정(L3), 감속 MPC 코어와 계획기 연결 (`mpc_segment_core*.hpp`, `mpc_segment_planner.hpp`, `node_follower.hpp` — mpc), mpc_docking 수치 코어 (`mpc_docking_*.hpp`, `ball_node_samples.hpp`, `mpc_block_grid.hpp` — 계획기에 꽂히지 않았고 테스트만 부른다), L7 순수 조각, 파라미터 검증(L0)
 - `rtc_math` se3: 접근축 정렬 오차·각속도·Jacobian
 - `rtc_tsid`: CLIK 확장
 - `rtc_urdf_bridge` 모델 빌더: YAML 선언 추가 frame

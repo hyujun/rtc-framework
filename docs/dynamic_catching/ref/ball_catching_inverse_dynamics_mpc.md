@@ -1482,7 +1482,7 @@ $$
 
 ### 17.15 검증
 
-§15 의 항목 가운데 이 코어의 테스트가 보는 것은 다음과 같다 (`rtc_controllers/test/test_catching_mpc_docking_*.cpp`).
+§15 의 항목 가운데 이 코어의 테스트가 보는 것은 다음과 같다 (`rtc_controllers/test/test_catching_mpc_docking_*.cpp`, 공 표본은 `test_catching_ball_node_samples.cpp`).
 
 - 1 · 2 (frame 과 부호, transport 항): $r^H$ · $\nu^H$ 와 17.6 – 17.8 의 행 전부의 기울기를 중심 차분과 비교한다. 손이 회전하고 공이 축에서 벗어난 상태에서 본다. `LOCAL` 경로가 같은 $\nu^H$ 를 내는지도 본다.
 - 5 (crossing-plane 분포): §15 의 예 ($\hat\nu=[0.3,-0.1,-2.0]$ m/s, $\sigma=[4,4,20]$ mm, 2×10⁵ 표본) 로 $\Sigma_\rho$ 를 Monte Carlo 와 비교한다. 고정 시각 식은 같은 허용 오차에서 벗어나야 한다. 이 검사는 식의 대수를 본다 — 1 차 근사의 크기는 포물선 공과 가속 · 회전하는 손의 실제 통과점으로 따로 잰다.
@@ -1490,5 +1490,6 @@ $$
 - §8.2 의 sanity check 셋 ($\Sigma=0$, $\hat\nu\parallel e_3$, 정지한 손과 축을 따라 오는 공).
 - 조립: QP 의 기울기와 행을 비선형 문제의 중심 차분과 비교한다.
 - 풀이: 실행 가능한 것이 알려진 합성 투척이 수렴하고, hard 행을 코어 밖에서 다시 계산해 본다. 실행 불가능한 투척은 그렇게 보고된다.
+- 출하 모델: `integrated_bringup/test/test_catching_docking_core_shipped.cpp` 가 손을 잠근 출하 sub-model 과 출하 catch frame · 관절 정격으로 짧은 lead 의 격자와 실제 투척 조건을 푼다. 판정이 아니라 기록이다 — 포획 집합의 값이 합성값이라, 단언하는 것은 모델이 출하된 것이라는 점과 풀이마다 결과가 나온다는 점뿐이다.
 
 나머지 (3 · 4 · 6 · 7 · 9 – 15) 는 이 코어의 범위가 아니다.
