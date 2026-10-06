@@ -74,7 +74,10 @@ enum class SwitchDecision : std::uint8_t {
 /// candidate get" is a comparison of two values: a wake that chose nothing
 /// reports the reason of the candidate that got farthest.
 enum class NlpReject : std::uint8_t {
-  kNone = 0,     ///< a valid candidate; a wake that chose one
+  kNone = 0,  ///< a valid candidate; a wake that chose one
+  /// Outside the window around the cell of the first plan the RT followed on
+  /// this track (`follow_window`) — the first check, before any other is run.
+  kFollowWindow,
   kLeadShort,    ///< t_c − t_0 below the minimum lead (S1)
   kBallInvalid,  ///< the prediction cannot be sampled at one of its nodes, or is too slow
   kWorkspace,    ///< the catch point is outside the catch box
@@ -97,12 +100,14 @@ enum class NlpReject : std::uint8_t {
   kNotAtRest,    ///< the RT follows no plan and the arm's command is moving
   kRtInvalid,    ///< the RT's report cannot be planned from (width, age, NaN)
 };
-inline constexpr std::size_t kNlpRejectCount = 19;
+inline constexpr std::size_t kNlpRejectCount = 20;
 
 [[nodiscard]] constexpr const char* NlpRejectName(NlpReject r) noexcept {
   switch (r) {
     case NlpReject::kNone:
       return "none";
+    case NlpReject::kFollowWindow:
+      return "follow_window";
     case NlpReject::kLeadShort:
       return "lead_short";
     case NlpReject::kBallInvalid:
@@ -166,6 +171,24 @@ struct NlpSearchStats {
   double chosen_j_stop{0.0};           ///< the stop part's cost — recorded, not chosen on
   double chosen_j_time{0.0};
   double chosen_j_switch{0.0};
+  // ── After adoption: the cell of the first plan the RT followed on this
+  // track, and where the chosen candidate is from it. Filled while the RT
+  // follows a plan of this track, whether or not a window is configured. ──
+  bool follow_anchor_set{false};             ///< that cell is known on this wake
+  std::int64_t follow_anchor_index{0};       ///< its lattice index i_a
+  std::uint16_t n_follow_window{0};          ///< candidates the window removed
+  std::int32_t chosen_cells_from_anchor{0};  ///< i − i_a of the chosen candidate
+  std::int64_t chosen_ns_from_first{0};      ///< its t_c − that first plan's t_c [ns]
+  bool chosen_at_window_edge{false};         ///< |i − i_a| is the window's width (window on)
+  // ── The continuous solve (`continuous_tc`; zero without it) ──
+  std::uint16_t n_continuous_run{0};  ///< candidates whose continuous solve ran
+  std::uint16_t n_continuous{0};      ///< of those, the ones it is the solution of
+  std::uint16_t n_fallback{0};        ///< … and the ones that kept their fixed-grid solution
+  bool chosen_continuous{false};      ///< the chosen candidate's solution is a continuous one
+  std::int64_t chosen_delta_ns{0};    ///< its t_c − the lattice instant of its cell [ns]
+  /// σ_c at the chosen cell's LATTICE instant — the covariance its solve was
+  /// run with; the plan's sigma_c is the one at the catch instant itself.
+  double chosen_sigma_c_cell{0.0};
   // ── The wake ──
   std::int64_t screen_ns{0};     ///< time spent before the first solve
   std::int64_t solve_ns_max{0};  ///< the slowest single solve

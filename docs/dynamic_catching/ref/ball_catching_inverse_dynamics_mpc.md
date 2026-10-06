@@ -1,6 +1,6 @@
 # Arm–Hand Ball Catching을 위한 Inverse-Dynamics MPC 수학적 구성 (개정판 v3)
 
-> **구현 상태.** §0 – §16 은 설계 자료이고 고치지 않는다 — 원래 설계와 구현을 견주어 볼 수 있게 그대로 둔다. 구현한 내용은 문서 끝의 §17 에 원래 절과 대응시켜 적는다 (17.$n$ 이 §$n$ 의 구현). 지금 §17 은 mpc_docking 의 수치 코어 (§10 의 inner 문제, E1-F13 [#739](https://github.com/hyujun/rtc-framework/issues/739)) 를 적는다. NLP search (§11) 와 계획기 · RT 쪽은 아직 구현하지 않았다 (E1-F14 – F21, epic [#621](https://github.com/hyujun/rtc-framework/issues/621)).
+> **구현 상태.** §0 – §16 은 설계 자료이고 고치지 않는다 — 원래 설계와 구현을 견주어 볼 수 있게 그대로 둔다. 구현한 내용은 문서 끝의 §17 에 원래 절과 대응시켜 적는다 (17.$n$ 이 §$n$ 의 구현). 지금 §17 은 mpc_docking 의 수치 코어 (§10 의 inner 문제, E1-F13 [#739](https://github.com/hyujun/rtc-framework/issues/739)) 와 NLP search 의 탐색 코어 (§11, E1-F14 [#740](https://github.com/hyujun/rtc-framework/issues/740) — 17.11 · 17.12) 를 적는다. 계획기 · RT 쪽은 아직 구현하지 않았다 (E1-F15 – F21, epic [#621](https://github.com/hyujun/rtc-framework/issues/621)).
 
 작성일: 2026-10-02 (v1) · 개정: 2026-10-02 (v2, v3)
 
@@ -1242,10 +1242,10 @@ Independent coordinate로 reduction할 수 있다면 대응하는 reduced dynami
 
 ### 17.1 범위
 
-- 구현한 것은 §10 의 inner 문제 하나다 — 포구 시각 $t_c$ 가 정해진 후보 하나에 대해 팔 궤적을 푼다. 궤적은 포구에서 끝나지 않고 그 뒤 정지할 때까지 이어진다.
+- 구현한 것은 §10 의 inner 문제 하나다 — 포구 시각 $t_c$ 가 정해진 후보 하나에 대해 팔 궤적을 푼다. 궤적은 포구에서 끝나지 않고 그 뒤 정지할 때까지 이어진다. 스위치 `catch_time_variable` 을 켠 코어는 그 후보의 포구 시각도 호출자가 준 구간 안에서 정한다 (17.11). 기본은 꺼짐이고, 끈 코어에는 그 경로가 없다.
 - 결정변수는 팔 관절뿐이다. 모델은 호출자가 주는, 손 관절을 잠근 팔 모델이고 `model.armature` 에 입력 armature 를 더해 쓴다 (§7.2 의 보수 쪽 모델).
-- §11 의 바깥 루프 (후보 집합 · $J_{\mathrm{time}}$ · $J_{\mathrm{switch}}$ · 연속 포획 시각), §12 의 실행 구조, hand schedule (§6.2) 은 이 코어에 없다. 폐쇄 시각은 손 시퀀서가 정하고 코어는 그 명목값 $\delta_0$ 만 받는다 (17.8).
-- 코어는 ROS · 컨트롤러 · 로봇 이름을 모른다. 호출하는 것은 테스트뿐이고, 계획기에 꽂는 일은 다른 feature 가 한다.
+- §11 의 바깥 루프 (후보 집합 · 순위 · 선택), §12 의 실행 구조, hand schedule (§6.2) 은 이 코어에 없다. $J_{\mathrm{time}}$ · $J_{\mathrm{switch}}$ 와 후보별 국소 연속 포획 시각 (§11.1) 은 포구 시각을 변수로 둔 코어에만 있다 — 그 코어는 두 항을 포구 시각의 함수로 받는다 (17.11). 폐쇄 시각은 손 시퀀서가 정하고 코어는 그 명목값 $\delta_0$ 만 받는다 (17.8).
+- 코어는 ROS · 컨트롤러 · 로봇 이름을 모른다. 호출하는 것은 NLP 탐색 (17.11) 과 테스트이고, 계획기에 꽂는 일은 다른 feature 가 한다.
 
 ### 17.2 표기와 시간축
 
@@ -1255,7 +1255,7 @@ $$
 t_k=\begin{cases}t_c-(k_c-k)\Delta_a,&k\le k_c\\ t_c+(k-k_c)\Delta_s,&k\gt k_c\end{cases}
 $$
 
-§4.1 의 비균일 첫 구간 $h_0$ 는 없다 — 노드 0 의 시각이 곧 $t_c-n_{pre}\Delta_a$ 다. 풀 수 있는 것은 $n_{pre}\ge1$ 뿐이다.
+§4.1 의 비균일 첫 구간 $h_0$ 는 없다 — 노드 0 의 시각이 곧 $t_c-n_{pre}\Delta_a$ 다. 풀 수 있는 것은 $n_{pre}\ge1$ 뿐이다. 포구 시각을 변수로 둔 코어에서는 위 식의 $t_c$ 가 닻 $\hat t$ 이고, 포구 노드와 그 뒤의 노드만 $\delta t_c$ 만큼 옮겨진다 — 포구 노드 앞 구간 하나의 길이가 $\Delta_a+\delta t_c$ 다 (17.11).
 
 입력은 구간 상수 jerk $u_k$ 이고 상태는 $x_k=(q_k,\dot q_k,\ddot q_k)$ 다.
 
@@ -1276,6 +1276,7 @@ $u_k$ 는 블록마다 같은 값을 쓴다 (move blocking — 블록은 포구 
 - **공분산.** 가장 가까운 표본 $i$ 에서 $\Sigma(t)=F(t-t_i)\,\Sigma_i\,F(t-t_i)^\top$, $F(\Delta)=\begin{bmatrix}I&\Delta I\\0&I\end{bmatrix}$ (§3.4 그대로). 표본을 대칭화하고 쓴다.
 - **쓸 수 없는 공분산.** 원소가 비유한이거나, 예측 궤적과 다른 메시지의 것이거나, 분산이 음이면 '없음' 으로 표시한다 — 0 으로 바꾸지 않는다. 코어는 $\lambda_{\min}(\Sigma_b)\ge-10^{-9}\operatorname{tr}\Sigma_b$ 도 확인하고, 확률 제약이 켜져 있는데 공분산을 쓸 수 없으면 풀지 않고 사유를 낸다.
 - **확률 제약을 끈 풀이.** $\Sigma_b=0$ 으로 놓는다. 17.8 의 행은 결정적 행에서 $\kappa\varepsilon_\sigma$ 만큼 조인 것이 되고 timing 행은 만들지 않는다.
+- **포구 시각을 변수로 둔 코어.** 포구 노드의 평균은 입력 표본이 아니라 예측 궤적에서 $\hat t+\delta t_c$ 로 직접 읽는다 (같은 보간 함수). 공분산은 입력의 것 그대로이고, $\delta t_c$ 의 구간은 예측의 마지막 표본에서 끝난다 (17.11).
 
 구현하지 않은 것: §3.1 의 비행 모델, §3.3 의 anticipated covariance 와 drift margin, §3.5 의 정보 시각 · occlusion, §3.6 의 $\tau_{\mathrm{react}}$, §3.7 의 jump 공분산 · NIS gating. 공분산은 메시지의 $\Sigma_b(t_c\mid s_j)$ 를 그대로 쓴다.
 
@@ -1288,8 +1289,8 @@ $$
 $$
 
 - **토크 행** ($k=1,\dots,N$): $\tau_{lo}\le\tau_k\le\tau_{hi}$. 관절마다 $1/\tau_{\max,j}$ 로 나눠 건다. $\tau_{lo}$ · $\tau_{hi}$ 는 여유 $\Delta\tau$ 를 이미 뺀 입력값이다 (없으면 $\mp\tau_{\max}$). hard 행이고 17.10 의 elastic 으로 구현한다. 노드 0 은 $x_0$ 라 행이 없다. 끝 노드의 행은 정지 자세의 중력 토크 판정이다.
-- **box** ($k=1,\dots,N$): $q_{\min}\le q_k\le q_{\max}$, $\vert\dot q_k\vert\le\dot q_{\max}$ 는 늘 건다. $\vert\ddot q_k\vert\le\ddot q_{\max}$ 와 $\vert u_k\vert\le j_{\max}$ 는 켜고 끄는 행이다. 선형 hard 행이라 elastic 이 없다. $x_0$ 가 box 밖이면 풀지 않는다.
-- **종단:** $\dot q_N=\ddot q_N=0$ (등식).
+- **box** ($k=1,\dots,N$): $q_{\min}\le q_k\le q_{\max}$, $\vert\dot q_k\vert\le\dot q_{\max}$ 는 늘 건다. $\vert\ddot q_k\vert\le\ddot q_{\max}$ 와 $\vert u_k\vert\le j_{\max}$ 는 켜고 끄는 행이다. 선형 hard 행이라 elastic 이 없다 (포구 시각을 변수로 둔 코어에서는 포구 노드부터의 box 가 elastic 행 군이다 — 17.11). $x_0$ 가 box 밖이면 풀지 않는다.
+- **종단:** $\dot q_N=\ddot q_N=0$ (등식; 포구 시각을 변수로 둔 코어에서는 elastic 행 군이다 — 17.11).
 - 한계는 노드에서만 건다. §4.3 의 구간 내부 극값 검사는 코어에 없다.
 - 연속 시간 기준 (§4.4) 은 구간별 3 차식이다 — 코어는 노드를 내고 RT 샘플러가 위 적분식으로 평가한다.
 
@@ -1413,7 +1414,7 @@ J=\;&\Delta_a\sum_{k=0}^{k_c-1}\Big[\Vert\tau_k\Vert^2_{R_\tau}+\Vert\ddot q_k\V
 \end{aligned}
 $$
 
-$\rho_T(t)=\exp[-(t-t_c)^2/2\sigma_T^2]$, $r_{\mathrm{ref},k}^H=r_{\mathrm{ref}}^H+(t_c-t_k)(-\nu_{\mathrm{ref}}^H)$, $r_{\mathrm{ref}}^H=(\rho_{\mathrm{ref}},s_{\mathrm{ent}})$ 다.
+$\rho_T(t)=\exp[-(t-t_c)^2/2\sigma_T^2]$, $r_{\mathrm{ref},k}^H=r_{\mathrm{ref}}^H+(t_c-t_k)(-\nu_{\mathrm{ref}}^H)$, $r_{\mathrm{ref}}^H=(\rho_{\mathrm{ref}},s_{\mathrm{ent}})$ 다. 포구 시각을 변수로 둔 코어에서는 $r_{\mathrm{ref},k}^H$ 의 $t_c$ 가 $\hat t+\delta t_c$ 이고 $\rho_T(t_k)$ 는 $\delta t_c=0$ 의 값이다 (17.11).
 
 - 앞의 세 줄이 §9.2 – §9.5 의 항이고 마지막 줄은 정지 구간의 항이다 (jerk 와, 가중이 0 이 아닐 때 정지 직선에서 벗어난 거리). 결과는 두 묶음을 따로 낸다.
 - running cost 는 구간 길이를 곱하고, 식에 $\tfrac12$ 은 없다 (§9.1).
@@ -1421,11 +1422,11 @@ $\rho_T(t)=\exp[-(t-t_c)^2/2\sigma_T^2]$, $r_{\mathrm{ref},k}^H=r_{\mathrm{ref}}
 - 입력이 jerk 라 §9.2 의 $j_k$ 는 $u_k$ 그 자체다.
 - $\psi_m=-\log\det(\bar J\bar J^\top+\delta I)$, $\bar J=D_x^{-1}JD_q$ ($J$ 는 6×$n$ frame Jacobian). QP 에는 기울기만 넣는다 — $\partial\psi_m/\partial q_k=-2\operatorname{tr}\big(A^{-1}\,\partial_{q_k}\bar J\,\bar J^\top\big)$, $A=\bar J\bar J^\top+\delta I$, $\partial_{q_k}J$ 는 운동학의 Hessian. 가중이 0 이면 계산하지 않는다.
 
-구현하지 않은 것: $J_{\mathrm{time}}$ · $J_{\mathrm{switch}}$ (한 후보 안에서 상수 — 바깥 루프의 것), $J_{\mathrm{unc}}$, 자세 항 $\Vert e_R\Vert^2_{Q_R}$.
+구현하지 않은 것: $J_{\mathrm{unc}}$, 자세 항 $\Vert e_R\Vert^2_{Q_R}$. $J_{\mathrm{time}}$ · $J_{\mathrm{switch}}$ 는 포구 시각이 고정인 코어에서는 한 후보 안의 상수라 바깥 루프의 것이다. 포구 시각을 변수로 둔 코어는 그 둘을 $\delta t_c$ 의 함수로 받아 같이 최소화하고, 값은 $J$ 와 따로 낸다 (17.11).
 
 ### 17.10 푸는 문제와 풀이
 
-**문제.** 17.9 의 $J$ 를 $z$ 와 slack 에 대해 최소화한다. 제약은 17.4 의 종단 등식 · box · 토크 행, 17.6 의 gap · corridor · envelope · 통과 평면, 17.8 의 lateral · 속도 · timing 행, 17.7 의 충격 행 (켰을 때) 이다. §10 의 충돌 행, 공–link clearance 행, M1 행은 없다.
+**문제.** 17.9 의 $J$ 를 $z$ 와 slack 에 대해 최소화한다 (포구 시각을 변수로 둔 코어는 $\delta t_c$ 에 대해서도 — 17.11). 제약은 17.4 의 종단 등식 · box · 토크 행, 17.6 의 gap · corridor · envelope · 통과 평면, 17.8 의 lateral · 속도 · timing 행, 17.7 의 충격 행 (켰을 때) 이다. §10 의 충돌 행, 공–link clearance 행, M1 행은 없다.
 
 **SQP.** 반복값은 변수 공간의 점 $\bar z$ 다. 반복마다 $\bar x=x(\bar z)$ 에서 선형화하고 step $d$ 에 대한 QP 하나를 푼다 (ProxQP). Hessian 은 Gauss–Newton — 제곱 항마다 $2L^\top WL$ ($L$ 은 잔차의 $z$ 에 대한 Jacobian) 이고 $R_j\gt0$ 이라 양정치다.
 
@@ -1441,7 +1442,7 @@ $\rho_T(t)=\exp[-(t-t_c)^2/2\sigma_T^2]$, $r_{\mathrm{ref},k}^H=r_{\mathrm{ref}}
 | 속도 집합 | 축 방향 둘 + 다각형 $m$ 면 | m/s |
 | 충격 | $g_n$, $E_n^-/E_{\max}$, $P_n/P_{\max}$ | m/s, 임계의 비 |
 
-corridor 와 envelope 는 자기 slack 이 있어 elastic 이 없다. box 와 종단 등식은 완화하지 않는다.
+corridor 와 envelope 는 자기 slack 이 있어 elastic 이 없다. box 와 종단 등식은 완화하지 않는다 — 포구 시각을 변수로 둔 코어에서는 포구 전 노드의 box 와 jerk box 만 그렇고, 포구 노드부터의 box 와 종단 정지는 elastic 행 군이다 (17.11).
 
 **실행 가능의 뜻.** 해는 hard 행 전부를 비선형 모델로 다시 평가해 위반이 허용 오차 안일 때만 실행 가능하다. elastic 은 풀리지 않는 문제의 진단이지 완화가 아니다.
 
@@ -1463,7 +1464,7 @@ $$
 
 **QP 의 설정.** 이 QP 는 구성상 늘 실행 가능하다 (시작점이 선형 행을 만족하고, 비선형 행마다 elastic 이나 slack 이 있다). 그래서 solver 의 primal infeasibility 판정은 끈다 — 그 판정은 근사 인증서를 받아들여, 벌점이 큰 실행 가능한 QP 를 실행 불가로 보고했다. 초기화 QP 는 다르다: $x_0$ 에 따라 선형 행을 만족하는 시작점이 없을 수 있고 elastic 도 없으므로 판정을 켜 둔다. '시작점 없음' 은 그 판정이 났을 때만 보고하고, 초기화 QP 가 다른 이유로 풀리지 않으면 QP 실패다.
 
-**시작점.** 시작점은 늘 선형 행 (box · 종단 정지) 을 만족한다. 줄탐색이 그 볼록 집합 안에 머물러 반복값 전부가 선형 행을 만족하므로 QP 는 늘 풀린다.
+**시작점.** 시작점은 늘 선형 행 (box · 종단 정지) 을 만족한다. 줄탐색이 그 볼록 집합 안에 머물러 반복값 전부가 선형 행을 만족하므로 QP 는 늘 풀린다. 포구 시각을 변수로 둔 코어에서는 포구 시각을 옮긴 뒤의 반복값이 포구 노드부터의 box 와 종단 정지를 어길 수 있다 — 그 두 군이 elastic 이라 QP 는 그때도 풀린다 (17.11).
 
 - 호출자가 준 노드 궤적이 있으면 블록 jerk 로 사영한다 — 블록마다 노드 가속 차분 $(\ddot q_{k+1}-\ddot q_k)/\Delta_k$ 의 평균. 같은 격자의 이전 해는 정확히 재현된다. 사영한 궤적이 선형 행을 만족하면 그것이 시작점이다.
 - 아니면 초기화 QP 를 푼다: 선형 행 아래에서 목표까지의 거리와 jerk 를 최소화한다. 목표는 호출자의 노드 궤적 (있을 때), 또는 포구 노드의 관절 자세 $q^\ast$ (탐색의 IK 해) 와 속도 $\dot q^\ast=J_p^\top(J_pJ_p^\top+\lambda^2I)^{-1}\big(\hat v_b-R\,\nu_{\mathrm{ref}}^H\big)$ 다. 목표를 속도 한계로 미리 자르지 않는다 — 한계는 QP 의 행이 건다.
@@ -1476,9 +1477,9 @@ $$
 - 반복 상한, 기한, 줄탐색 실패, QP 실패. 기한은 반복 사이에 본다. 어느 경우든 마지막으로 수용한 반복값과 그 점의 위반 · 비용 · KKT 잔차를 낸다.
 - 반복 상한이 1 이면 줄탐색 없이 full step 하나를 낸다 (real-time iteration). 수렴은 시작점이 이미 수렴 조건을 만족할 때만 보고되고, 그때는 step 을 내지 않는다.
 
-결과는 '실행 가능' 과 '수렴' 을 따로 낸다.
+결과는 '실행 가능' 과 '수렴' 을 따로 낸다. 포구 시각을 변수로 둔 코어가 포구 시각을 옮기는 방법과 그때의 끝나는 조건은 17.11 에 있다.
 
-구현하지 않은 것: second-order correction, 후보별 국소 연속 포획 시각 (§11.5 — 격자가 고정이다), 진단용 relaxation $s_f$ 를 따로 푸는 것 (elastic 이 그 역할을 한다).
+구현하지 않은 것: second-order correction, 단일 NLP 형태의 연속 포획 시각 (§11.5), 진단용 relaxation $s_f$ 를 따로 푸는 것 (elastic 이 그 역할을 한다).
 
 ### 17.11 바깥 루프 — 포구 후보의 탐색
 
@@ -1547,7 +1548,7 @@ $$
 L=\min\Big\{L_{\max},\ \Big\lfloor\frac{T_{\mathrm{budget}}-t_{\mathrm{screen}}}{T_{\mathrm{solve}}}\Big\rfloor\Big\}
 $$
 
-$t_{\mathrm{screen}}$ 은 필요조건에 쓴 시간, $T_{\mathrm{solve}}$ 는 후보 하나의 몫이다. 풀이마다 자기 시작 시각에서 잰 자기 기한 (몫) 을 갖는다 — 다른 후보가 쓰거나 남긴 시간은 넘어오지 않는다. $L$ 은 첫 풀이 전에 정하고, 앞 풀이가 시간을 넘겼다고 뒤 풀이를 건너뛰지 않는다 (무엇을 푸는가가 푸는 순서에 달리지 않게). $T_{\mathrm{solve}}\le T_{\mathrm{budget}}$ 가 아니면 구성을 거부한다. worker 는 하나다. 코어 · 입력 · 결과 · 후보의 기억은 구성할 때 전부 만든다.
+$t_{\mathrm{screen}}$ 은 필요조건에 쓴 시간, $T_{\mathrm{solve}}$ 는 후보 하나의 몫이다. 풀이마다 자기 시작 시각에서 잰 자기 기한 (몫) 을 갖는다 — 다른 후보가 쓰거나 남긴 시간은 넘어오지 않는다. $L$ 은 첫 풀이 전에 정하고, 앞 풀이가 시간을 넘겼다고 뒤 풀이를 건너뛰지 않는다 (무엇을 푸는가가 푸는 순서에 달리지 않게). $T_{\mathrm{solve}}\le T_{\mathrm{budget}}$ 가 아니면 구성을 거부한다. worker 는 하나다. 코어 · 입력 · 결과 · 후보의 기억은 구성할 때 전부 만든다. RT 가 이 track 의 plan 을 따르고 있으면 그 plan 의 셀의 후보가 위 순서와 무관하게 맨 앞이다 (17.12).
 
 **시작점 (§11.4).** 풀이의 시작점은 **앞선 탐색들의 기억**에서만 가져온다. 이번 탐색의 해는 따로 모았다가 탐색이 끝날 때 기억에 넣으므로 풀이의 순서가 결과를 바꾸지 않는다. 기억은 후보의 index 마다 하나이고, 이번에 풀지 않은 후보의 기억은 남는다.
 
@@ -1586,29 +1587,108 @@ $$
 
 | 순서 | 사유 | 뜻 |
 |---|---|---|
-| 1 | lead 부족 | $T\lt T_{\min}$ |
-| 2 | 공 | 격자의 노드에서 공을 읽을 수 없거나 속력이 하한 아래 |
-| 3 | 작업 영역 | $\hat p_b(t_c)$ 가 box 밖 |
-| 4 | 공분산 | 확률 제약에 쓸 공분산이 없음 |
-| 5 | 출발 구간 없음 | 그 후보의 $t_s$ 에 RT 가 보고한 구간이 없음 (17.12) |
-| 6 | IK | 포구 자세의 IK 가 수렴하지 않음 |
-| 7 | 조작성 | IK 의 조작성 gate |
-| 8 | 도달 | (S4) 의 두 식 |
-| 9 | 속도 창 | (S3) 의 창이 빔 |
-| 10 | 순위 밖 | 필요조건은 지났으나 $L$ 안에 들지 못함 |
-| 11 | 기한 | 풀이가 자기 몫을 넘김, 또는 탐색이 늦게 끝나 노드 0 부터 읽을 수 없음 |
-| 12 | 풀이 거부 | 코어가 반복값 없이 거부 (17.10 — 시작점 없음 등), 또는 solver 가 실패한 점을 냄 (QP 미수렴 · 유한하지 않은 평가) |
-| 13 | hard 행 | 확률 제약이 아닌 hard 행이 하나라도 어긋남 |
-| 14 | 확률 제약 | 어긋난 것이 lateral · timing · 속도 집합의 행뿐 |
-| 15 | 미수렴 | hard 행은 맞으나 수렴하지 않음 |
+| 1 | 창 밖 | 채택 뒤의 창 (`follow_window`) 밖의 셀 — 다른 검사보다 먼저 본다 (17.12) |
+| 2 | lead 부족 | $T\lt T_{\min}$ |
+| 3 | 공 | 격자의 노드에서 공을 읽을 수 없거나 속력이 하한 아래 |
+| 4 | 작업 영역 | $\hat p_b(t_c)$ 가 box 밖 |
+| 5 | 공분산 | 확률 제약에 쓸 공분산이 없음 |
+| 6 | 출발 구간 없음 | 그 후보의 $t_s$ 에 RT 가 보고한 구간이 없음 (17.12) |
+| 7 | IK | 포구 자세의 IK 가 수렴하지 않음 |
+| 8 | 조작성 | IK 의 조작성 gate |
+| 9 | 도달 | (S4) 의 두 식 |
+| 10 | 속도 창 | (S3) 의 창이 빔 |
+| 11 | 순위 밖 | 필요조건은 지났으나 $L$ 안에 들지 못함 |
+| 12 | 기한 | 풀이가 자기 몫을 넘김, 또는 탐색이 늦게 끝나 노드 0 부터 읽을 수 없음 |
+| 13 | 풀이 거부 | 코어가 반복값 없이 거부 (17.10 — 시작점 없음 등), 또는 solver 가 실패한 점을 냄 (QP 미수렴 · 유한하지 않은 평가) |
+| 14 | hard 행 | 확률 제약이 아닌 hard 행이 하나라도 어긋남 |
+| 15 | 확률 제약 | 어긋난 것이 lateral · timing · 속도 집합의 행뿐 |
+| 16 | 미수렴 | hard 행은 맞으나 수렴하지 않음 |
 
 탐색에만 있는 사유: 후보 없음 (창 안에 격자점이 없음), 정지 아님 · RT 상태 못 씀 · 출발 구간 없음 (17.12).
 
-13 과 14 는 코어가 끝난 점에서 어느 군의 행이 어긋나 있는가로 가른다. 풀리지 않는 풀이가 위반을 어느 군에 남기는가는 17.10 의 벌점 비가 정한다. 팔의 자세와 무관한 확률 제약 (공 속도의 불확실성이 큰 경우의 속도 집합) 은 14 로 끝난다. 팔의 자세로 조금 줄일 수 있는 확률 제약 (측면 위치의 불확실성이 큰 경우의 lateral 행) 은, 줄이려다 다른 군의 행까지 어긴 채 끝날 수 있고 그때는 13 이다.
+14 와 15 는 코어가 끝난 점에서 어느 군의 행이 어긋나 있는가로 가른다. 풀리지 않는 풀이가 위반을 어느 군에 남기는가는 17.10 의 벌점 비가 정한다. 팔의 자세와 무관한 확률 제약 (공 속도의 불확실성이 큰 경우의 속도 집합) 은 15 로 끝난다. 팔의 자세로 조금 줄일 수 있는 확률 제약 (측면 위치의 불확실성이 큰 경우의 lateral 행) 은, 줄이려다 다른 군의 행까지 어긴 채 끝날 수 있고 그때는 14 다.
 
-구현하지 않은 것: 후보별 국소 연속 포획 시각과 단일 NLP 형태 (§11.5), (V4) reachability margin — 그 재료인 $\Sigma_b^{\mathrm{ant}}$ 를 쓰지 않는다 (17.3), hand schedule 의 (S2) · (V5), 병렬 worker, pipeline 실행 (P2), 여러 IK branch.
+**셀 안의 포구 시각 — 코어 (`catch_time_variable`).** 격자의 후보 사이는 $h$ 만큼 떨어져 있고 가장 좋은 포구 시각은 대개 격자 위에 있지 않다. 스위치를 켠 코어는 변수 하나 $\delta t_c$ 를 더한다. 닻 $\hat t$ 는 호출자가 준 시각이고 (탐색에서는 후보의 격자 시각 $t_c^{(i)}$) 포구 노드가 $\hat t+\delta t_c$ 에 있다. 기본은 꺼짐이고, 끈 코어에는 아래의 어느 것도 없다 — 변수와 행의 수 · 계산 경로 · 결과의 수치가 스위치가 없던 코어와 같다.
+
+격자는 한 곳에서만 늘어난다. 포구 노드 앞 구간의 길이를 $\tau=\Delta_a+\delta t_c$ 라 하면
+
+$$
+t_k=\begin{cases}\hat t-(k_c-k)\Delta_a,&k\lt k_c\\ \hat t+\delta t_c,&k=k_c\\ \hat t+\delta t_c+(k-k_c)\Delta_s,&k\gt k_c\end{cases}
+$$
+
+이다 — 포구 전 구간을 균일하게 늘이는 것이 아니다. 노드 0 의 시각 $t_s$ 와 $x_0$, 포구 전 노드는 $\delta t_c$ 에 의존하지 않는다. 포구 노드의 상태는 구간 $k_c-1$ 의 3 차식 (17.2) 을 $\tau$ 에서 평가한 것이고 (정확), 그 미분은
+
+$$
+\frac{\partial x_{k_c}}{\partial\delta t_c}=\bar f_c=\big(\dot q_{k_c},\ \ddot q_{k_c},\ u_{k_c-1}\big),\qquad
+\frac{\partial x_k}{\partial\delta t_c}=A(\Delta_s)^{k-k_c}\,\bar f_c\quad(k\gt k_c)
+$$
+
+다. $A(\Delta)$ 는 17.2 의 전이식이 $x_k$ 에 곱하는 행렬이다. 노드 $k\ge k_c$ 의 stage gain 과 자유 응답은 평가하는 점의 $\delta t_c$ 에서 다시 만든다 — $\delta t_c=0$ 의 것을 쓰지 않는다.
+
+- **포구 전 노드.** 포구 노드 앞 노드의 행과 비용에는 $\delta t_c$ 의 열이 없다. 예외는 비용의 근방 항 하나다: 기준선 $r_{\mathrm{ref},k}^H=r_{\mathrm{ref}}^H+(\hat t+\delta t_c-t_k)(-\nu_{\mathrm{ref}}^H)$ 가 포구 시각과 함께 움직여 잔차 $r_k^H-r_{\mathrm{ref},k}^H$ 의 $\delta t_c$ 기울기가 $+\nu_{\mathrm{ref}}^H$ 다. 상태가 상수인 노드 0 의 항도 그렇다.
+- **공.** 포구 노드의 공 평균은 예측 궤적에서 $\hat t+\delta t_c$ 로 읽는다 (17.3 의 보간 함수). 포구 노드의 행과 비용은 공을 $r^H$ · $\nu^H$ 로만 읽으므로, 그 $\delta t_c$ 계수에는 공에 대한 미분에 $\dot{\hat p}_b=\hat v_b$, $\dot{\hat v}_b=\hat a_b$ 를 곱한 것이 더해진다.
+
+$$
+\frac{\partial r^H}{\partial\hat p_b}=R^\top,\qquad\frac{\partial r^H}{\partial\hat v_b}=0,\qquad
+\frac{\partial\nu^H}{\partial\hat p_b}=-R^\top[\omega_h]_\times,\qquad\frac{\partial\nu^H}{\partial\hat v_b}=R^\top .
+$$
+
+- **$\delta t_c=0$ 의 값으로 두는 것.** 공분산 $\Sigma_b$ (호출자가 준 것 그대로), 근방 가중 $\rho_T(t_k)$, 접근 집합 $\mathcal A$, 늘어난 구간의 running cost 가중 $\Delta_a$. 그 구간의 jerk 는 여전히 $u_{k_c-1}$ 이고, 노드 가속에서 되찾을 때는 $\tau$ 로 나눈다.
+- **elastic 인 두 군.** stage gain 을 거쳐 $\delta t_c$ 에 의존하는 선형 행은 노드 $k\ge k_c$ 의 box 와 종단 정지다. 둘은 17.10 의 hard 인 비선형 행과 같은 elastic 행 군이다 — box 는 노드마다 elastic 하나, 종단 정지는 양쪽을 합쳐 하나이고 벌점은 군마다 파라미터다. merit 에 들어가고, '실행 가능' 은 비선형 모델로 다시 평가해 정한다. 그 노드들의 trust region 은 box 와 같이 쓰던 행에서 나와 자기 행을 갖는다. 포구 전 노드의 box 와 jerk box 는 hard 인 선형 행 그대로다.
+- **시각의 항.** 비용에 $c_1\,\delta t_c+c_2\,(\delta t_c-\delta_{\mathrm{ref}})^2$ 을 더한다. $c_1$, $c_2\ge0$, $\delta_{\mathrm{ref}}$ 는 입력이다. QP 와 merit 는 이 항을 갖고, 결과는 그 값을 17.9 의 $J$ 와 따로 낸다 (합에 넣지 않는다).
+
+**풀이는 중첩이다.** $\theta=\delta t_c/\Delta_a$ 는 QP 의 변수이고 ($[\,d\mid\theta\mid s_c\mid s_v\mid e\,]$) 포구 시각과 함께 움직이는 모든 행과 비용 항에 $\theta$ 의 열이 있다. 그러나 QP 안에서 $\theta$ 는 움직이지 않는다 — $\theta$ 의 행이 0 에 묶는다.
+
+- 안쪽: $\delta t_c$ 를 고정한 문제다. 17.10 의 SQP 그대로다.
+- 바깥쪽: 안쪽 문제가 끝나면 (풀렸거나, 맞출 수 없는 행을 남긴 채 정류했으면) 묶은 행의 multiplier 가 $-\partial L/\partial\theta$ 이고, envelope 정리에 의해 이것은 안쪽 문제의 최적값을 $\theta$ 로 미분한 값이다. $\delta t_c$ 를 그 미분의 부호가 바뀌는 구간 안에서 secant 로 옮긴다 — 한 번에 `delta_t_step` 이하, 호출자가 준 구간 $[\delta_{lo},\delta_{hi}]$ 안의 정수 ns 로.
+
+$(d,\theta)$ 를 한 QP 에서 같이 밟지 않는 까닭은 2 차 항이다. jerk 를 둔 채 포구 시각을 옮기면 종단 정지와 통과 평면이 jerk 의 변화 × 시각의 변화만큼 어긋나는데, 고정 격자의 해에서 잰 20 ms 의 step 은 목적함수를 0.02 줄이면서 종단 속도 1.3 rad/s 를 남겼고 ℓ₁ merit 는 약 0.1 µs 보다 큰 step 을 전부 거부했다.
+
+- **끝나는 조건.** 포구 시각이 더 움직이지 않는 것은 그 미분이 KKT 허용 오차 안이거나, 구간의 끝에서 바깥을 가리키거나, 이웃한 두 ns 사이에서 부호가 바뀔 때다. 그때 안쪽 문제가 풀려 있으면 수렴이고, 17.10 의 실행 불가로 끝나 있으면 실행 불가다. KKT 잔차는 jerk 변수의 것과 $\partial L/\partial\theta$ 를 함께 본다.
+- **끝나지 못한 풀이.** 안쪽 문제가 어떤 시각에서 풀린 뒤에 풀이가 다르게 끝나면 — 기한, 반복 상한, 어느 길이도 받아들여지지 않는 step, 옮긴 시각에서의 실행 불가 — 끊긴 점이 아니라 그때까지 풀린 점 가운데 목적함수 ($J$ + 시각의 항) 가 가장 낮은 것을 돌려준다. 결과가 그 사실을 표시하고 (`catch_time_settled`), 끝난 사유는 그대로이며 수렴은 아니다 — 포구 시각의 탐색이 끝나지 않았다. 처음 풀리는 점이 시작점의 시각이라, 돌려준 점의 목적함수는 시작 시각에서 푼 것보다 크지 않다.
+- 반복 상한이 1 인 풀이 (real-time iteration) 는 포구 시각을 옮기지 못한다.
+- 돌려주는 $\delta t_c$ 와 풀이가 섰던 모든 시각은 정수 ns 다 (payload 와 RT 의 분해능). 결과에 $\delta t_c$, 포구 시각을 옮긴 횟수, 끝난 점의 $\partial L/\partial\theta$ 를 낸다.
+
+**셀 안의 포구 시각 — 탐색 (`continuous_tc`).** 기본은 꺼짐이다. 켜면 푸는 후보마다 두 번 푼다.
+
+1. ① 격자 시각에서, 위에 적은 그대로 (같은 코어, 같은 시작점).
+2. ② ① 이 반복값을 냈으면, 포구 시각을 그 후보의 **셀** 안에서 풀어 주고 다시 (포구 시각을 변수로 둔, 같은 $n_{pre}$ 의 코어).
+
+셀은 반열린 구간이고, 격자 탐색이 후보로 받지 않을 시각을 뺀다 — 셀 안에서도 그런 시각은 포구 시각이 아니다.
+
+$$
+\delta t_c\in\Big[-\Big\lfloor\frac h2\Big\rfloor,\ h-\Big\lfloor\frac h2\Big\rfloor\Big),\qquad
+T_{\min}\le\hat t+\delta t_c-t_0\le T_{\max},\qquad
+\hat p_b(\hat t+\delta t_c)\in\text{box},\qquad \hat t+\delta t_c\le t_{\mathrm{pred},\max} .
+$$
+
+- 첫 조건 둘은 (S1) 의 최소 lead 와 창의 끝이다. 격자 시각이 둘 다 지났으므로 $\delta t_c=0$ 은 늘 안이다.
+- 공의 조건은 예측 자체로 본다 (plan 이 읽는 보간 함수). 셀의 양 끝에서 그 시각의 공이 필요조건 가운데 공만 읽는 것 — 예측 지평 안, 최소 속력, 포구 작업 영역 (box), chance 행이 켜져 있으면 공분산이 있음 — 을 지나는지 보고, 아니면 $\delta t_c=0$ 에서 그 끝 쪽으로 이분해 지나는 마지막 ns 를 끝으로 삼는다. 격자 시각의 공을 지나는 직선 $\hat p_b(\hat t)+\hat v_b(\hat t)\,\delta t_c$ 로 자르지 않는다: 공이 가속하는 쪽의 벽에서 직선은 공보다 늦게 벽에 닿아 (중력, 4 ms 에서 약 80 µm) 그 끝의 포구점이 box 밖이다.
+- 이분은 지나는 시각의 **끝** 을 찾는다. 지나는 두 시각 사이에 지나지 않는 시각이 있을 수 있어 (공이 넘었다가 다시 내려오는 벽, 공분산이 없는 표본) 풀이가 끝난 시각의 공을 한 번 더 본다 (아래 "쓰는 해").
+
+- 늘어나는 것은 포구 노드 앞 구간 하나라 노드 0 · 출발 상태 · 포구 전 노드는 ① 의 것이다. 후보의 index 와 격자, 다음 탐색의 기억에서의 자리가 그대로다.
+- **시작점.** 앞선 탐색에서 그 후보가 남긴 연속 해가 있고 그 해가 끝난 포구 시각이 이번의 구간 안이면 그것에서 — 지난 노드를 버리고, 그 포구 시각에서 — 시작하고, 아니면 이번 탐색의 ① 의 해에서 $\delta t_c=0$ 으로 시작한다. 연속 해의 기억은 고정 격자 해의 기억과 따로 있고, 똑같이 후보의 index 마다 하나다 (포구 시각은 격자 위에 없어도 셀은 격자의 것이다).
+- **시각의 항.** 코어에 $c_1=w_T/T_{\mathrm{ref}}$, $c_2=w_{\mathrm{sw}}/T_{\mathrm{ref}}^2$, $\delta_{\mathrm{ref}}=t_{c,\mathrm{prev}}-\hat t$ 를 준다 ($t_{c,\mathrm{prev}}$ 가 없으면 $c_2=0$). 그래서 ② 는 $J^\star$ + 정지 구간의 항 + $J_{\mathrm{time}}+J_{\mathrm{switch}}$ 를 궤적과 포구 시각에 대해 같이 최소화한다.
+- **공분산.** ② 가 쓰는 공분산은 셀의 격자 시각의 것 — 필요조건이 본 것 — 이다. plan 에 싣는 $\sqrt{\lambda_{\max}(\Sigma_p)}$ 는 포구 시각 자신의 것이다.
+- **쓰는 해.** ② 가 ① 과 같은 규칙으로 유효하고 (자기 몫 안 · hard 행 전부 · 수렴) 끝난 포구 시각의 공이 셀을 자를 때와 같은 검사를 지나면 ② 가 그 후보의 해다. 아니면 후보는 ① 의 해와 ① 의 판정을 그대로 갖고, 기록에는 ② 가 돌았다는 것 · 쓰지 않은 사유 · 끝난 점이 남는다. 포구 시각의 탐색이 끝나기 전에 끊긴 ② 는 수렴이 아니므로 쓰지 않는다 — 코어가 돌려준 것이 풀린 점이어도 그렇다 (기록의 `continuous_settled`). 그 점은 다음 탐색에서 그 후보의 시작점이다.
+- **$\Phi$.** ② 를 쓰는 후보의 $\Phi$ 는 끝난 포구 시각 $\hat t+\delta t_c^\star$ 에서 ① 과 같은 함수로 계산한다 — $T=\hat t+\delta t_c^\star-t_0$ 이고 $J_{\mathrm{switch}}$ 도 $\Phi$ 의 항이다. 유효한 ② 는 $\Phi$ 가 ① 보다 커도 쓴다: $\Phi$ 에는 코어가 같이 최소화한 정지 구간의 항이 없다. 두 값을 다 기록한다.
+- **예산.** 후보 하나가 몫 둘을 쓴다 (풀이마다 자기 몫). $n_{\mathrm{pass}}$ 를 필요조건을 지난 후보의 수라 하면
+
+$$
+L=\min\Big\{L_{\max},\ n_{\mathrm{pass}},\ \Big\lfloor\frac{T_{\mathrm{budget}}-t_{\mathrm{screen}}}{2\,T_{\mathrm{solve}}}\Big\rfloor\Big\}
+$$
+
+  이고, $2\,T_{\mathrm{solve}}\le T_{\mathrm{budget}}$ 와 $\lfloor h/2\rfloor\lt\Delta_a$ (셀의 이른 끝에서도 포구 노드 앞 구간의 길이가 양이다) 가 아니면 구성을 거부한다.
+- **내는 것.** plan 과 구간의 $t_c$ 는 $\hat t+\delta t_c^\star$ 다. plan 의 `p_c` · `v_c` · `a_d` · `sigma_c` · `t_cmd_ns` 는 그 시각의 값이고 `q_star` 는 해의 포구 노드다.
+- **구간 payload.** 포구 노드 앞 구간의 길이를 따로 싣는다 — `dt_catch_ns` $=\Delta_a+\delta t_c^\star$ 이고 $\delta t_c^\star=0$ 이면 0 이다. 0 이 "`dt_pre_ns` 와 같다" 의 유일한 표기라서 `dt_catch_ns` 가 `dt_pre_ns` 와 같은 payload 는 검증이 거부한다. `dt_catch_ns` 가 0 이 아닌 구간의 노드 시각은 $k\lt n_{pre}$ 에서 $t_s+k\,\Delta_a$, 포구 노드에서 $t_c$, 그 뒤에서 $t_c+(k-n_{pre})\Delta_s$ 이고 노드 0 은 $t_c-(n_{pre}-1)\Delta_a-\tau$ 다 ($\tau$ 가 `dt_catch_ns`). RT 샘플러는 그런 구간을 세 부분으로 평가한다 — 노드 $n_{pre}-1$ 까지 $\Delta_a$, 거기서 포구 노드까지 $\tau$, 그 뒤 $\Delta_s$. `MpcSegmentPlanner` 가 내는 구간은 늘 0 이다.
+
+RT 가 따르는 plan 의 셀은 이 두 번 풀이의 예외다 (17.12).
+
+구현하지 않은 것: 단일 NLP 형태 (§11.5), 공분산 · 근방 가중 · 접근 집합을 $\delta t_c$ 의 함수로 두는 것, 코어 안에서 $\delta t_c$ 에 commit 하한을 두는 것 (탐색을 부르는 주기의 일이다), 두 스위치의 YAML 키와 값, (V4) reachability margin — 그 재료인 $\Sigma_b^{\mathrm{ant}}$ 를 쓰지 않는다 (17.3), hand schedule 의 (S2) · (V5), 병렬 worker, pipeline 실행 (P2), 여러 IK branch.
 
 **검증.** `rtc_controllers/test/test_catching_nlp_catch_screening.cpp` 가 격자와 (S3) · (S4) 의 식을 스칼라로 다시 써서 경계 양쪽에서 본다. `test_catching_nlp_catch_search.cpp` 는 탐색을 본다: IK 의 판정을 IK 를 직접 부른 것과, 고른 후보와 $\Phi$ 를 테스트가 코어를 직접 불러 창 안의 후보를 전부 푼 것의 최소와 (정지 출발 · 움직이는 출발), 풀이 순서를 바꾼 결과를 서로 bit 단위로 비교하고, 사유마다 그것을 내는 입력을 둔다. `integrated_bringup/test/test_catching_nlp_search_shipped.cpp` 는 출하 sub-model 에서 구성 · 필요조건 · 풀이 · 탐색 한 번의 시간을 기록한다 (판정이 아니다).
+
+셀 안의 포구 시각은 다음이 본다. `test_catching_mpc_docking_segment_core.cpp`: $\delta t_c$ 의 열과 기울기를 중심 차분과, 0 에 닫은 구간의 풀이를 고정 격자의 풀이와 비교하고, 포구 시각이 움직여도 목적함수가 오르지 않는 것, 보고한 $\partial L/\partial\theta$ 가 최적값의 기울기인 것, 구간과 step 상한, 반복 1 회가 포구 시각을 옮기지 않는 것, 구간이 예측의 끝에서 끝나는 것, 반복 상한에 끊긴 풀이가 풀린 점을 돌려주는 것 (그 시각을 고정한 풀이가 한 반복 만에 같은 점을 낸다), 앞선 호출이 남긴 미분과 풀린 점이 다음 호출의 결과에 나오지 않는 것, 벌점이 군 전부에서 같은 배율로 오르고 같이 처음 값으로 돌아가는 것을 보고, 스위치를 끈 코어의 결과를 고정해 둔 digest 와 bit 단위로 비교한다. `test_catching_mpc_docking_relative_state.cpp` 는 공에 대한 미분을 중심 차분과 비교하고, `test_catching_nlp_catch_screening.cpp` 는 셀이 반열린 구간인 것을 본다. `test_catching_node_follower.cpp` 는 `dt_catch_ns` 가 있는 payload 의 노드 시각 · 샘플러 (노드 값과 그 사이의 적분) · 거부 사례를 보고, 그 필드가 0 인 payload 가 전과 bit 단위로 같게 읽히는 것을 본다. `test_catching_nlp_catch_search.cpp` 는 두 스위치를 끄고 RT 가 plan 을 따르지 않는 탐색의 결과와 창을 끈 채택 뒤의 필요조건을 고정해 둔 digest 와 bit 단위로 비교하고, ② 를 쓰는 후보의 목적함수가 ① 보다 크지 않은 것, 수렴하지 않은 ② 가 ① 로 돌아가는 것, plan 과 구간이 끝난 포구 시각의 것인 것, 구간의 끝이 공이 box 를 나가는 ns 인 것 (직선 예측과 가속하는 예측 둘 다) · 최소 lead 와 창의 끝 · 공분산이 끝나는 표본 경계인 것, 공분산이 없는 시각에서 끝난 ② 를 쓰지 않는 것, 따르는 plan 의 셀 (17.12) 과 창 (17.12) 의 규칙, 구성의 거부를 본다. `test_catching_nlp_search_shipped.cpp` 는 출하 sub-model 에서 연속 풀이를 고정 풀이 옆에 기록한다 ($n_{pre}$ 별 시간 · 반복 수 · 포구 시각을 옮긴 횟수, 후보 1 · 2 · 4 개의 탐색 한 번).
 
 ### 17.12 실행 구조 — 예측이 갱신될 때의 탐색
 
@@ -1625,9 +1705,24 @@ $$
 
 **따르는 후보의 재풀이.** 예측이 그대로이고 RT 가 직전 해를 따르고 있으면, 그 후보의 출발 상태는 직전 해 위에 있고 시작점은 그 해의 남은 노드다 (17.11). 코어는 그 점에서 수렴 조건을 이미 만족해 같은 궤적을 낸다.
 
+**이 track 의 plan 과 그 셀.** RT 가 따르는 plan 은, RT 가 보고한 구간이 지금 탐색하는 예측과 같은 track 세대를 실을 때 "이 track 의 plan" 이다 (구간은 자기 plan 의 track 을 싣는다). 그 plan 의 **셀**은 포구 시각이 든 반열린 격자 셀이다 — 포구 시각이 격자 위에 없어도 후보 하나를 가리킨다.
+
+$$
+i=\Big\lfloor\frac{t_c-t_{\mathrm{ref}}+\lfloor h/2\rfloor}{h}\Big\rfloor
+\quad\Longleftrightarrow\quad
+t_c^{(i)}-\Big\lfloor\frac h2\Big\rfloor\le t_c\lt t_c^{(i)}-\Big\lfloor\frac h2\Big\rfloor+h .
+$$
+
+RT 가 이 track 의 plan 을 따르는 동안만 아래가 적용된다. 앞의 셋은 `continuous_tc` 와 무관하다.
+
+- **먼저 푼다.** 그 셀의 후보가 필요조건을 지나면 순위의 맨 앞에 둔다 (17.11 의 순서와 무관하게, 늘). 예산이 풀이 하나만 담는 탐색도 팔이 하고 있는 것을 다시 풀고 "갱신" 을 낼 수 있다.
+- **창 (`follow_window`).** 이 track 에서 RT 가 **처음** 따른 plan 의 셀 $i_a$ 를 기억한다. 창 $W\ge0$ (셀의 수) 이 있으면 $\vert i-i_a\vert\gt W$ 인 후보를 다른 어떤 검사보다 먼저 뺀다 (사유 "창 밖" — 공도 IK 도 보지 않는다). 따르는 plan 자신의 셀은 빼지 않는다. 그래서 plan 이 몇 번 교체되든 포구 시각은 접근을 시작한 셀에서 창보다 멀리 가지 못한다. $i_a$ 는 시도를 다시 시작할 때 (`ResetTrial`), track 이 바뀔 때, RT 가 이 track 의 plan 을 따르지 않는 탐색이 있을 때 지운다. 음수는 창 없음이고 기본이 그것이다.
+- **기록.** 창이 있든 없든 탐색마다 $i_a$, 창이 뺀 후보의 수, 고른 후보의 $i-i_a$, 고른 $t_c$ 와 처음 따른 plan 의 $t_c$ 의 차 (ns), 고른 후보가 창의 끝 ($\vert i-i_a\vert=W$) 인지를 남긴다.
+- **`continuous_tc` 에서 따르는 plan 의 셀.** 17.11 의 두 번 풀이의 예외다. 그 후보의 포구 시각은 격자 시각도 자유 변수도 아닌 **plan 의 것**이다: 필요조건을 그 시각에서 보고, 포구 시각을 변수로 둔 코어로 $\delta t_c$ 를 그 값에 묶은 채 한 번 푼다. 그것을 고르면 "갱신" 이다. 같은 셀의 다른 포구 시각은 후보로 존재하지 않으므로 plan 이 자기 셀 안의 다른 시각으로 교체되는 일은 없다.
+
 **멈추는 때.** 탐색 자신은 멈추는 규칙을 갖지 않는다. $T\lt T_{\min}$ 이 된 후보가 차례로 빠질 뿐이고, 탐색을 언제까지 부를지는 부르는 쪽이 정한다.
 
-구현하지 않은 것: $t\ge t_c^\star-\tau_{\mathrm{react}}$ 에서 바깥 루프를 멈추는 것, real-time iteration 과 preparation / feedback 의 분리, P1 · P2, closure 지령 시각의 갱신.
+구현하지 않은 것: $t\ge t_c^\star-\tau_{\mathrm{react}}$ 에서 바깥 루프를 멈추는 것, real-time iteration 과 preparation / feedback 의 분리, P1 · P2, closure 지령 시각의 갱신, 채택 뒤에 따르는 셀 안에서 포구 시각을 옮기는 것, commit 에 따라 포구 시각을 묶는 것, 계획기의 한 주기가 격자 밖 포구 시각의 plan 을 게시하는 것.
 
 ### 17.15 검증
 

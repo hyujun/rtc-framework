@@ -1654,6 +1654,7 @@ TEST(NlpCatchSearchValidity, AFeasibleIterateThatDidNotConvergeIsNotChosen) {
 TEST(NlpCatchSearchReasons, ThePublishedReasonIsATableOverEveryValue) {
   const std::array<std::pair<NlpReject, PlanReason>, kNlpRejectCount> table{{
       {NlpReject::kNone, PlanReason::kNone},
+      {NlpReject::kFollowWindow, PlanReason::kHorizonShort},
       {NlpReject::kLeadShort, PlanReason::kHorizonShort},
       {NlpReject::kBallInvalid, PlanReason::kInputNonFinite},
       {NlpReject::kWorkspace, PlanReason::kStoppingDistance},
@@ -2504,10 +2505,19 @@ TEST(NlpCatchSearchFollowing, TheSwitchTermIsAnchoredOnThePlanTheRtFollows) {
     }
   }
   EXPECT_GE(judged, 4) << Table(rig->search, w3.stats);
-  // The term is part of the rank as well.
+  // The term is part of the rank as well: the candidate of the followed plan's
+  // cell first, the rest in the key's order.
+  const Candidate* on_plan = nullptr;
+  for (const Candidate& c : rig->search.Candidates()) {
+    if (c.t_c_ns == followed) {
+      on_plan = &c;
+    }
+  }
+  ASSERT_NE(on_plan, nullptr);
+  EXPECT_EQ(on_plan->rank, 0) << Table(rig->search, w3.stats);
   for (const Candidate& a : rig->search.Candidates()) {
     for (const Candidate& b : rig->search.Candidates()) {
-      if (a.rank >= 0 && b.rank >= 0 && a.rank < b.rank) {
+      if (a.rank >= 1 && b.rank >= 1 && a.rank < b.rank) {
         EXPECT_LE(a.rank_key, b.rank_key);
       }
     }
@@ -3036,6 +3046,1644 @@ TEST(NlpCatchSearchAllocation, AWakeAllocatesNothingOutsideTheQpSolvers) {
     static_cast<void>(rig->search.Solution());
     EXPECT_EQ(gate.count(), 0U);
   }
+}
+
+// ── 9. The search as it is, pinned bit for bit (E1-F14 PR 2, #740) ───────────
+// The search gets a continuous solve per candidate (behind a switch) and a
+// window after adoption (behind another). With both off, a wake on which the
+// RT follows no plan must be the wake it was. These digests were taken BEFORE
+// either existed.
+
+// WakeDigest's values, with every reason by its NAME: a reason added to
+// NlpReject moves the numbers of the ones after it, and that is not a wake
+// behaving differently.
+[[nodiscard]] std::uint64_t PinnedWakeDigest(const NlpCatchSearch& s, const Wake& w) {
+  rtc::testing::ValueDigest h;
+  const auto add_reason = [&h](NlpReject r) {
+    for (const char* c = NlpRejectName(r); *c != '\0'; ++c) {
+      h.Add(*c);
+    }
+    h.Add('|');
+  };
+  rtc::testing::AddPlan(h, w.plan);
+  h.Add(w.stats.n_in_window);
+  h.Add(w.stats.n_ik);
+  h.Add(w.stats.n_pass);
+  h.Add(w.stats.budget_hit);
+  h.Add(w.stats.chosen_score);
+  h.Add(w.stats.decision);
+  h.Add(w.stats.publish);
+  add_reason(w.stats.nlp.reason);
+  h.Add(w.stats.nlp.n_lattice);
+  h.Add(w.stats.nlp.n_screened);
+  h.Add(w.stats.nlp.n_solved);
+  h.Add(w.stats.nlp.n_valid);
+  for (std::size_t i = 0; i < kNlpRejectCount; ++i) {
+    if (w.stats.nlp.rejects[i] != 0) {
+      add_reason(static_cast<NlpReject>(i));
+      h.Add(w.stats.nlp.rejects[i]);
+    }
+  }
+  h.Add(w.stats.nlp.chosen_index);
+  h.Add(w.stats.nlp.chosen_n_pre);
+  h.Add(w.stats.nlp.chosen_iterations);
+  h.Add(w.stats.nlp.chosen_phi);
+  h.Add(w.stats.nlp.chosen_j_reference);
+  h.Add(w.stats.nlp.chosen_j_stop);
+  h.Add(w.stats.nlp.chosen_j_time);
+  h.Add(w.stats.nlp.chosen_j_switch);
+  for (const Candidate& c : s.Candidates()) {
+    h.Add(c.index);
+    h.Add(c.t_c_ns);
+    h.Add(c.t_s_ns);
+    h.Add(c.n_pre);
+    add_reason(c.reject);
+    h.Add(c.ik_reason);
+    h.Add(c.rank);
+    h.Add(c.rank_key);
+    h.Add(c.q0);
+    h.Add(c.qd0);
+    h.Add(c.qdd0);
+    h.Add(c.q_ik);
+    h.Add(c.start);
+    h.Add(c.start_index);
+    h.Add(c.core_reason);
+    h.Add(c.solved);
+    h.Add(c.feasible);
+    h.Add(c.converged);
+    h.Add(c.late);
+    h.Add(c.iterations);
+    h.Add(c.qp_solves);
+    h.Add(c.j_reference);
+    h.Add(c.j_stop);
+    h.Add(c.j_time);
+    h.Add(c.j_switch);
+    h.Add(c.phi);
+    h.Add(c.worst_group);
+    h.Add(c.worst_violation);
+    h.Add(c.c_catch);
+    const SegmentSnapshot* m = s.RememberedSolution(c.index);
+    h.Add(m != nullptr);
+    if (m != nullptr) {
+      rtc::testing::AddSegment(h, *m);
+    }
+  }
+  const CatchSolution* sol = s.Solution();
+  h.Add(sol != nullptr);
+  if (sol != nullptr) {
+    rtc::testing::AddSegment(h, sol->seg);
+    h.Add(sol->cost_reference);
+    h.Add(sol->cost_stop);
+    h.Add(sol->feasible);
+    h.Add(sol->converged);
+  }
+  return h.Value();
+}
+
+struct PinnedSearch {
+  std::string name;
+  std::uint64_t digest{0};
+  int wakes{0};
+  int plans{0};
+  int solved{0};
+  int deadlines{0};
+  int from_memory{0};
+  bool budget_hit{false};
+};
+
+// Sequences of wakes on which the RT follows no plan, each on a rig of its own.
+[[nodiscard]] std::vector<PinnedSearch> PinnedSearches(int follow_window = -1) {
+  std::vector<PinnedSearch> all;
+
+  struct Step {
+    std::int64_t after_ns;  // the wake's `now` − kNow
+    std::int64_t clock_step_ns;
+  };
+
+  const auto run = [&all, follow_window](const std::string& name, auto&& edit, auto&& make_throw,
+                                         std::span<const Step> steps) {
+    auto rig = std::make_unique<Rig>();
+    rig->params.follow_window = follow_window;
+    edit(*rig);
+    std::string err;
+    if (!rig->Configure(&err)) {
+      ADD_FAILURE() << name << ": " << err;
+      return;
+    }
+    const Throw ball = make_throw(*rig);
+    rtc::testing::ValueDigest h;
+    PinnedSearch rec;
+    rec.name = name;
+    for (const Step& step : steps) {
+      SetClockStep(step.clock_step_ns);
+      const std::int64_t now = kNow + step.after_ns;
+      const Wake w = RunWake(*rig, ball, rig->RestingRt(now), NoSegments(), now);
+      h.Add(PinnedWakeDigest(rig->search, w));
+      ++rec.wakes;
+      rec.plans += w.plan.valid ? 1 : 0;
+      rec.solved += w.stats.nlp.n_solved;
+      rec.budget_hit = rec.budget_hit || w.stats.budget_hit;
+      for (const Candidate& c : rig->search.Candidates()) {
+        rec.deadlines += c.reject == NlpReject::kDeadline ? 1 : 0;
+        rec.from_memory += c.start == NlpCatchSearch::Start::kSameCandidate ||
+                                   c.start == NlpCatchSearch::Start::kNeighbour
+                               ? 1
+                               : 0;
+      }
+    }
+    rec.digest = h.Value();
+    all.push_back(rec);
+  };
+  const auto no_edit = [](Rig&) {};
+  const auto axis = [](const Rig& rig) { return AxisThrow(rig, 0.28); };
+  const auto off_axis = [](const Rig& rig) { return OffAxisThrow(rig, 0.28); };
+  const std::array<Step, 3> three{{{0, 1000}, {41 * kMs, 1000}, {82 * kMs, 1000}}};
+  run("axis", no_edit, axis, three);
+  run("off_axis", no_edit, off_axis, three);
+  // Solves that run past their shares, and are refused for it.
+  const std::array<Step, 2> slow{{{0, 1000}, {41 * kMs, 100'000}}};
+  run("past_the_share", [](Rig& rig) { rig.params.solve_budget_s = 0.0004; }, axis, slow);
+  // A budget that holds fewer solves than passed the screening.
+  const std::array<Step, 2> cut{{{0, 200'000}, {41 * kMs, 200'000}}};
+  run("budget_cut", [](Rig& rig) { rig.params.solve_budget_s = 0.01; }, off_axis, cut);
+  // The outer cost's two terms on: the switch term is anchored on what the
+  // search last chose.
+  run(
+      "time_and_switch_terms",
+      [](Rig& rig) {
+        rig.params.w_time = 0.3;
+        rig.params.w_switch = 0.5;
+      },
+      off_axis, three);
+  // Every stop-part and impact term the search's cores can carry.
+  run(
+      "stop_line_and_impact",
+      [](Rig& rig) {
+        rig.params.core.w_perp = 30.0;
+        rig.params.core.w_impact = 0.5;
+        rig.params.core.e_ref = 0.05;
+        rig.params.core.e_max = 0.5;
+        rig.params.core.p_max = 0.5;
+      },
+      off_axis, three);
+  return all;
+}
+
+struct PinnedSearchDigest {
+  const char* name;
+  std::uint64_t digest;
+};
+
+/// PinnedSearches()' digests on the code BEFORE the continuous solve and the
+/// window after adoption (E1-F14 PR 2). Numbers to compare against, tied to
+/// where they were taken — the rule of kWholeCatchDigest
+/// (test_catching_approach_cycle.cpp): a change MEANT to alter what a wake
+/// leaves, with both switches off and the RT following no plan, replaces them
+/// in a commit of its own that says why.
+constexpr std::array<PinnedSearchDigest, 6> kPinnedSearchDigest{{
+    {"axis", 0x40ae1990d0f5baaeULL},
+    {"off_axis", 0x71d9348b3cfd85b8ULL},
+    {"past_the_share", 0xca95114736b6d4daULL},
+    {"budget_cut", 0xf77becbf0de812baULL},
+    {"time_and_switch_terms", 0x116fe3e0def3cbb2ULL},
+    {"stop_line_and_impact", 0x1dbdfb72a66be9e5ULL},
+}};
+
+TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
+  const std::vector<PinnedSearch> runs = PinnedSearches();
+  ASSERT_EQ(runs.size(), kPinnedSearchDigest.size());
+  std::set<std::uint64_t> distinct;
+  int deadlines = 0;
+  int from_memory = 0;
+  bool budget_hit = false;
+  for (std::size_t i = 0; i < runs.size(); ++i) {
+    const PinnedSearch& r = runs[i];
+    std::array<char, 32> hex{};
+    std::snprintf(hex.data(), hex.size(), "0x%016llx", static_cast<unsigned long long>(r.digest));
+    RecordProperty("search_digest_" + r.name, hex.data());
+    std::printf(
+        "[ record ] search_digest %s: %s — %d wakes, %d plans, %d solves, %d deadline, "
+        "%d from memory, budget_hit %d\n",
+        r.name.c_str(), hex.data(), r.wakes, r.plans, r.solved, r.deadlines, r.from_memory,
+        r.budget_hit ? 1 : 0);
+    EXPECT_EQ(r.name, kPinnedSearchDigest[i].name);
+    EXPECT_EQ(r.digest, kPinnedSearchDigest[i].digest)
+        << r.name << ": a wake without a followed plan changed: digest " << hex.data()
+        << " (see kPinnedSearchDigest)";
+    EXPECT_EQ(r.plans, r.wakes) << r.name << ": every pinned wake chooses a plan";
+    distinct.insert(r.digest);
+    deadlines += r.deadlines;
+    from_memory += r.from_memory;
+    budget_hit = budget_hit || r.budget_hit;
+  }
+  EXPECT_EQ(distinct.size(), runs.size());
+  // The pinned wakes went through the paths a wake has: solves started from
+  // memory, solves past their share, a budget that cut the solves.
+  EXPECT_GT(from_memory, 10);
+  EXPECT_GT(deadlines, 0);
+  EXPECT_TRUE(budget_hit);
+}
+
+// What SCREENING left of a wake's candidates: which lattice instants are
+// candidates, and for each the first necessary condition it failed — or that
+// it passed them all (whatever its solve then said).
+[[nodiscard]] std::uint64_t ScreeningDigest(const NlpCatchSearch& s, const Wake& w) {
+  rtc::testing::ValueDigest h;
+  h.Add(w.stats.nlp.n_lattice);
+  h.Add(w.stats.nlp.n_screened);
+  h.Add(w.stats.n_in_window);
+  h.Add(w.stats.n_ik);
+  for (const Candidate& c : s.Candidates()) {
+    h.Add(c.index);
+    h.Add(c.t_c_ns);
+    h.Add(c.t_s_ns);
+    h.Add(c.n_pre);
+    const bool passed = c.rank >= 0;
+    h.Add(passed);
+    if (!passed) {
+      for (const char* ch = NlpRejectName(c.reject); *ch != '\0'; ++ch) {
+        h.Add(*ch);
+      }
+    }
+    h.Add(c.ik_run);
+    h.Add(c.ik_reason);
+    h.Add(c.q0);
+    h.Add(c.qd0);
+    h.Add(c.qdd0);
+    h.Add(c.q_ik);
+    h.Add(c.source_seq);
+    h.Add(c.rank_key);
+  }
+  return h.Value();
+}
+
+// The wakes after adoption, on the off-axis throw: +41 ms and +82 ms with the
+// RT following the first wake's solution.
+[[nodiscard]] std::vector<std::uint64_t> FollowingScreeningDigests(int follow_window,
+                                                                   int* window_rejects = nullptr) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.follow_window = follow_window;
+  std::string err;
+  EXPECT_TRUE(rig->Configure(&err)) << err;
+  const auto adopted = AdoptFirst(*rig, 0.36);
+  const auto arm = Following(adopted->followed);
+  std::vector<std::uint64_t> out;
+  for (const std::int64_t after : {41 * kMs, 82 * kMs}) {
+    const std::int64_t now = kNow + after;
+    const Wake w = RunWake(*rig, adopted->ball, rig->FollowingRt(now, adopted->t_c_ns), *arm, now);
+    EXPECT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+    out.push_back(ScreeningDigest(rig->search, w));
+    if (window_rejects != nullptr) {
+      *window_rejects += Count(rig->search, NlpReject::kFollowWindow);
+    }
+  }
+  return out;
+}
+
+/// FollowingScreeningDigests() on the code BEFORE the window after adoption
+/// existed (the commit that added the follow_window reason and nothing that
+/// sets it) — the reference of "with the window off, screening is what it
+/// was" on the wakes the window is about. The rule of kPinnedSearchDigest.
+constexpr std::array<std::uint64_t, 2> kPinnedFollowingScreening{{
+    0x6a8fefced9fe395aULL,
+    0xdb509a86cb5cbfbbULL,
+}};
+
+TEST(NlpCatchSearchPinned, WithTheWindowOffScreeningAfterAdoptionIsUnchanged) {
+  int window_rejects = 0;
+  const std::vector<std::uint64_t> got = FollowingScreeningDigests(-1, &window_rejects);
+  ASSERT_EQ(got.size(), kPinnedFollowingScreening.size());
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    std::array<char, 32> hex{};
+    std::snprintf(hex.data(), hex.size(), "0x%016llx", static_cast<unsigned long long>(got[i]));
+    RecordProperty("following_screening_digest_" + std::to_string(i), hex.data());
+    std::printf("[ record ] following_screening_digest %zu: %s\n", i, hex.data());
+    EXPECT_EQ(got[i], kPinnedFollowingScreening[i]) << hex.data();
+  }
+  EXPECT_NE(got[0], got[1]);
+  EXPECT_EQ(window_rejects, 0);
+}
+
+// ── 10. After adoption: the window, the followed candidate's rank ────────────
+
+// The window is about wakes on which the RT follows a plan: with a window
+// configured, every wake WITHOUT one is the wake it was — solves and all.
+TEST(NlpCatchSearchWindow, AWakeWithoutAFollowedPlanDoesNotReadTheWindow) {
+  const std::vector<PinnedSearch> runs = PinnedSearches(/*follow_window=*/2);
+  ASSERT_EQ(runs.size(), kPinnedSearchDigest.size());
+  for (std::size_t i = 0; i < runs.size(); ++i) {
+    EXPECT_EQ(runs[i].digest, kPinnedSearchDigest[i].digest) << runs[i].name;
+  }
+}
+
+// A window wider than the lattice removes nothing: the wake after adoption is
+// the wake with no window, to the bit — what the window changes is which
+// candidates there are, and nothing else.
+TEST(NlpCatchSearchWindow, AWindowWiderThanTheLatticeChangesNothing) {
+  const auto wakes = [](int follow_window) {
+    auto rig = std::make_unique<Rig>();
+    rig->params.follow_window = follow_window;
+    std::string err;
+    EXPECT_TRUE(rig->Configure(&err)) << err;
+    const auto adopted = AdoptFirst(*rig, 0.36);
+    const auto arm = Following(adopted->followed);
+    std::vector<std::uint64_t> out;
+    for (const std::int64_t after : {41 * kMs, 82 * kMs}) {
+      const std::int64_t now = kNow + after;
+      const Wake w =
+          RunWake(*rig, adopted->ball, rig->FollowingRt(now, adopted->t_c_ns), *arm, now);
+      EXPECT_TRUE(w.plan.valid);
+      EXPECT_TRUE(w.stats.nlp.follow_anchor_set);
+      EXPECT_EQ(w.stats.nlp.follow_anchor_index, adopted->index);
+      out.push_back(PinnedWakeDigest(rig->search, w));
+    }
+    return out;
+  };
+  EXPECT_EQ(wakes(-1), wakes(64));
+}
+
+// A following wake of `rig` on `ball`, the RT on plan `t_c_ns` and reporting
+// `seg` as the segment it follows.
+[[nodiscard]] Wake FollowWake(Rig& rig, const Throw& ball, const SegmentSnapshot& seg,
+                              std::int64_t t_c_ns, std::int64_t now) {
+  const auto arm = Following(seg);
+  return RunWake(rig, ball, rig.FollowingRt(now, t_c_ns), *arm, now);
+}
+
+TEST(NlpCatchSearchWindow, CandidatesOutsideItAreRemovedBeforeAnythingIsChecked) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.follow_window = 1;
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const auto adopted = AdoptFirst(*rig, 0.36);
+  ASSERT_TRUE(adopted->first.plan.valid);
+  // The first wake follows no plan: no window, no anchor.
+  EXPECT_FALSE(adopted->first.stats.nlp.follow_anchor_set);
+  EXPECT_EQ(Count(rig->search, NlpReject::kFollowWindow), 0);
+  const std::int64_t i_a = adopted->index;
+  const std::int64_t h = Ns(rig->params.cand_dt);
+  const std::int64_t now = kNow + 41 * kMs;
+  const Wake w = FollowWake(*rig, adopted->ball, adopted->followed, adopted->t_c_ns, now);
+  ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+  EXPECT_TRUE(w.stats.nlp.follow_anchor_set);
+  EXPECT_EQ(w.stats.nlp.follow_anchor_index, i_a);
+  int outside = 0;
+  int inside = 0;
+  int ik_runs = 0;
+  for (const Candidate& c : rig->search.Candidates()) {
+    ik_runs += c.ik_run ? 1 : 0;
+    if (std::llabs(c.index - i_a) > 1) {
+      ++outside;
+      EXPECT_EQ(c.reject, NlpReject::kFollowWindow) << c.index;
+      EXPECT_FALSE(c.ik_run) << c.index << ": removed before its IK";
+      EXPECT_FALSE(c.solved) << c.index;
+      EXPECT_EQ(c.rank, -1) << c.index;
+      // It is still reported, as the lattice instant it is.
+      EXPECT_EQ(c.t_c_ns, rig->search.LatticeAnchorNs() + c.index * h);
+    } else {
+      ++inside;
+      EXPECT_NE(c.reject, NlpReject::kFollowWindow) << c.index;
+    }
+  }
+  EXPECT_GE(outside, 3) << Table(rig->search, w.stats);
+  EXPECT_EQ(inside, 3) << Table(rig->search, w.stats);
+  EXPECT_EQ(w.stats.nlp.n_follow_window, outside);
+  EXPECT_EQ(w.stats.n_ik, ik_runs);
+  EXPECT_LE(ik_runs, 3) << "no IK ran for a candidate outside the window";
+  EXPECT_EQ(w.stats.nlp.rejects[static_cast<std::size_t>(NlpReject::kFollowWindow)], outside);
+  EXPECT_LE(std::llabs(w.stats.nlp.chosen_index - i_a), 1);
+
+  // The RT now follows a plan two cells later (one this search did not put
+  // there). The anchor stays the FIRST plan's cell: the window does not follow
+  // the plan. And the followed plan's own cell is not removed, though it is
+  // outside the window.
+  const std::int64_t later = adopted->t_c_ns + 2 * h;
+  const std::int64_t now2 = kNow + 62 * kMs;
+  const Wake w2 = FollowWake(*rig, adopted->ball, adopted->followed, later, now2);
+  EXPECT_TRUE(w2.stats.nlp.follow_anchor_set);
+  EXPECT_EQ(w2.stats.nlp.follow_anchor_index, i_a) << "the window moved with the followed plan";
+  int kept_outside = 0;
+  for (const Candidate& c : rig->search.Candidates()) {
+    const bool in_window = std::llabs(c.index - i_a) <= 1;
+    const bool followed_cell = c.index == i_a + 2;
+    if (!in_window && !followed_cell) {
+      EXPECT_EQ(c.reject, NlpReject::kFollowWindow) << c.index;
+    } else {
+      EXPECT_NE(c.reject, NlpReject::kFollowWindow) << c.index;
+      kept_outside += followed_cell ? 1 : 0;
+    }
+  }
+  EXPECT_EQ(kept_outside, 1) << Table(rig->search, w2.stats);
+}
+
+TEST(NlpCatchSearchWindow, TheAnchorIsForgottenWithTheTrialTheTrackAndThePlan) {
+  const auto fresh = [](std::unique_ptr<Rig>& rig, std::unique_ptr<Adopted>& adopted) {
+    rig = std::make_unique<Rig>();
+    rig->params.follow_window = 1;
+    std::string err;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    adopted = AdoptFirst(*rig, 0.36);
+    ASSERT_TRUE(adopted->first.plan.valid);
+    const Wake w =
+        FollowWake(*rig, adopted->ball, adopted->followed, adopted->t_c_ns, kNow + 41 * kMs);
+    ASSERT_TRUE(w.stats.nlp.follow_anchor_set);
+    ASSERT_EQ(w.stats.nlp.follow_anchor_index, adopted->index);
+    ASSERT_GT(w.stats.nlp.n_follow_window, 0);
+  };
+  std::unique_ptr<Rig> rig;
+  std::unique_ptr<Adopted> adopted;
+  const std::int64_t h = Ns(0.04);
+  const std::int64_t now = kNow + 62 * kMs;
+
+  // A wake on which the RT follows no plan (it dropped it): the anchor goes,
+  // and the next plan it follows — two cells later — is a first one.
+  fresh(rig, adopted);
+  {
+    PlannerRtState moving = rig->RestingRt(now);
+    const Wake none = RunWake(*rig, adopted->ball, moving, NoSegments(), now);
+    EXPECT_FALSE(none.stats.nlp.follow_anchor_set);
+    EXPECT_EQ(Count(rig->search, NlpReject::kFollowWindow), 0);
+    const Wake again =
+        FollowWake(*rig, adopted->ball, adopted->followed, adopted->t_c_ns + 2 * h, now + 20 * kMs);
+    EXPECT_TRUE(again.stats.nlp.follow_anchor_set);
+    EXPECT_EQ(again.stats.nlp.follow_anchor_index, adopted->index + 2);
+  }
+
+  // A trial reset: the lattice is new, and so is the anchor.
+  fresh(rig, adopted);
+  {
+    rig->search.ResetTrial();
+    const Wake again =
+        FollowWake(*rig, adopted->ball, adopted->followed, adopted->t_c_ns + 2 * h, now);
+    EXPECT_TRUE(again.stats.nlp.follow_anchor_set);
+    const std::int64_t cell =
+        rtc::catching::NlpCellOf(rig->search.LatticeAnchorNs(), h, adopted->t_c_ns + 2 * h);
+    EXPECT_EQ(again.stats.nlp.follow_anchor_index, cell);
+    EXPECT_EQ(rig->search.LatticeAnchorNs(), now);
+  }
+
+  // Another track's prediction while the RT still reports the OLD track's
+  // segment: that plan is not this track's — no anchor, no window, no rank.
+  fresh(rig, adopted);
+  {
+    Throw other = OffAxisThrow(*rig, 0.36, /*seq=*/2);
+    other.traj.token.generation = kTrack + 1;
+    other.cov.token = other.traj.token;
+    const Wake w = FollowWake(*rig, other, adopted->followed, adopted->t_c_ns, now);
+    EXPECT_FALSE(w.stats.nlp.follow_anchor_set) << Table(rig->search, w.stats);
+    EXPECT_EQ(w.stats.nlp.n_follow_window, 0);
+    EXPECT_EQ(Count(rig->search, NlpReject::kFollowWindow), 0);
+    // The rank is the key's order alone.
+    for (const Candidate& a : rig->search.Candidates()) {
+      for (const Candidate& b : rig->search.Candidates()) {
+        if (a.rank >= 0 && b.rank >= 0 && a.rank < b.rank) {
+          EXPECT_LE(a.rank_key, b.rank_key);
+        }
+      }
+    }
+    // Back on the first track the anchor is taken anew (the track change
+    // dropped the lattice with it).
+    Throw back = adopted->ball;
+    back.traj.token.snapshot_sequence = 3;
+    back.cov.token = back.traj.token;
+    const Wake w2 = FollowWake(*rig, back, adopted->followed, adopted->t_c_ns, now + 20 * kMs);
+    EXPECT_TRUE(w2.stats.nlp.follow_anchor_set);
+    EXPECT_EQ(rig->search.LatticeAnchorNs(), now + 20 * kMs);
+  }
+
+  // A new track whose plan the RT follows already on the track's first wake
+  // (its segment carries the new track): the anchor is THAT plan's cell on the
+  // new lattice — nothing of the old track's is left to window around.
+  fresh(rig, adopted);
+  {
+    Throw other = OffAxisThrow(*rig, 0.36, /*seq=*/2);
+    other.traj.token.generation = kTrack + 1;
+    other.cov.token = other.traj.token;
+    SegmentSnapshot seg = adopted->followed;
+    seg.token.generation = kTrack + 1;
+    const std::int64_t plan_t_c = adopted->t_c_ns + 3 * h;
+    const Wake w = FollowWake(*rig, other, seg, plan_t_c, now);
+    EXPECT_TRUE(w.stats.nlp.follow_anchor_set) << Table(rig->search, w.stats);
+    ASSERT_EQ(rig->search.LatticeAnchorNs(), now);
+    const std::int64_t cell = rtc::catching::NlpCellOf(now, h, plan_t_c);
+    ASSERT_NE(cell, adopted->index) << "the two lattices give the plan the same index";
+    EXPECT_EQ(w.stats.nlp.follow_anchor_index, cell);
+  }
+}
+
+// What the window is for. Each wake's prediction puts the cheapest catch one
+// lattice cell later than the last, and the RT takes every plan it is given.
+struct Drift {
+  std::vector<std::int64_t> chosen_index;
+  std::vector<std::int64_t> t_c_ns;
+  std::vector<std::int32_t> recorded_cells;
+  std::vector<std::int64_t> recorded_ns;
+  std::vector<bool> at_edge;
+  std::int64_t i_a{0};
+  std::int64_t first_t_c_ns{0};
+  std::string tables;
+};
+
+[[nodiscard]] Drift RunDrift(int follow_window, int wakes) {
+  Drift d;
+  auto rig = std::make_unique<Rig>();
+  rig->params.follow_window = follow_window;
+  // An arm fast enough that the catch can move by a lattice cell between two
+  // wakes: what the wakes are then about is the choice, not the reach.
+  rig->params.limits.qd_max *= 4.0;
+  std::string err;
+  EXPECT_TRUE(rig->Configure(&err)) << err;
+  SegmentSnapshot followed{};
+  std::int64_t t_c = 0;
+  std::int64_t now = kNow;
+  for (int k = 0; k < wakes; ++k) {
+    // On the entrance plane 40 ms later than the wake before, off the axis so
+    // that every solution moves.
+    const Throw ball =
+        AxisThrow(*rig, 0.30 + 0.04 * k, 0.8, 0.002, static_cast<std::uint64_t>(k + 1), kTrack,
+                  Eigen::Vector2d(0.04, -0.03));
+    const Wake w = k == 0 ? RunWake(*rig, ball, rig->RestingRt(now), NoSegments(), now)
+                          : FollowWake(*rig, ball, followed, t_c, now);
+    d.tables += Table(rig->search, w.stats);
+    EXPECT_TRUE(w.plan.valid) << "wake " << k << Table(rig->search, w.stats);
+    if (!w.plan.valid || rig->search.Solution() == nullptr) {
+      break;
+    }
+    if (k == 1) {
+      d.i_a = w.stats.nlp.follow_anchor_index;
+      d.first_t_c_ns = t_c;
+    }
+    if (k >= 1) {
+      EXPECT_TRUE(w.stats.nlp.follow_anchor_set) << k;
+      EXPECT_EQ(w.stats.nlp.follow_anchor_index, d.i_a) << "wake " << k;
+      d.chosen_index.push_back(w.stats.nlp.chosen_index);
+      d.t_c_ns.push_back(w.plan.t_c_ns);
+      d.recorded_cells.push_back(w.stats.nlp.chosen_cells_from_anchor);
+      d.recorded_ns.push_back(w.stats.nlp.chosen_ns_from_first);
+      d.at_edge.push_back(w.stats.nlp.chosen_at_window_edge);
+    }
+    // The RT takes the plan: it follows this wake's solution from now on. The
+    // next wake comes once every candidate's node 0 is on that segment — the
+    // chosen candidate's wait after this one.
+    followed = rig->search.Solution()->seg;
+    followed.segment_seq = static_cast<std::uint32_t>(20 + k);
+    followed.plan_id = 4;
+    t_c = w.plan.t_c_ns;
+    const Candidate* chosen = Find(rig->search, w.stats.nlp.chosen_index);
+    now += (chosen != nullptr ? chosen->wait_ns : 50 * kMs) + kMs;
+  }
+  return d;
+}
+
+TEST(NlpCatchSearchWindow, ACatchInstantThatKeepsDriftingStopsAtTheWindowsEdge) {
+  // Five wakes: the window's cells are instants, and they come nearer with
+  // every wake — after the fifth its last cell is under the minimum lead.
+  constexpr int kWakes = 5;
+  constexpr int kWindow = 2;
+  const Drift free_run = RunDrift(-1, kWakes);
+  const Drift held = RunDrift(kWindow, kWakes);
+  ASSERT_EQ(free_run.chosen_index.size(), static_cast<std::size_t>(kWakes - 1)) << free_run.tables;
+  ASSERT_EQ(held.chosen_index.size(), static_cast<std::size_t>(kWakes - 1)) << held.tables;
+  ASSERT_EQ(free_run.i_a, held.i_a);
+  // Without the window the catch instant leaves the first plan's by more than
+  // the window would allow — and the record says by how much, in cells and in
+  // time, on every wake.
+  std::int64_t farthest = 0;
+  for (std::size_t i = 0; i < free_run.chosen_index.size(); ++i) {
+    const std::int64_t cells = free_run.chosen_index[i] - free_run.i_a;
+    farthest = std::max(farthest, cells);
+    EXPECT_EQ(free_run.recorded_cells[i], cells) << i;
+    EXPECT_EQ(free_run.recorded_ns[i], free_run.t_c_ns[i] - free_run.first_t_c_ns) << i;
+    EXPECT_FALSE(free_run.at_edge[i]) << "no window, no edge";
+  }
+  EXPECT_GT(farthest, kWindow) << "the drift never left the window" << free_run.tables;
+  // With it, never — and the wakes that would have gone farther say they
+  // ended on the window's last cell.
+  int edge_hits = 0;
+  for (std::size_t i = 0; i < held.chosen_index.size(); ++i) {
+    const std::int64_t cells = held.chosen_index[i] - held.i_a;
+    EXPECT_LE(std::llabs(cells), kWindow) << "wake " << i + 1 << held.tables;
+    EXPECT_EQ(held.recorded_cells[i], cells) << i;
+    EXPECT_EQ(held.recorded_ns[i], held.t_c_ns[i] - held.first_t_c_ns) << i;
+    EXPECT_EQ(held.at_edge[i], std::llabs(cells) == kWindow) << i;
+    edge_hits += held.at_edge[i] ? 1 : 0;
+    if (free_run.chosen_index[i] - free_run.i_a > kWindow) {
+      EXPECT_TRUE(held.at_edge[i]) << "wake " << i + 1 << held.tables;
+    }
+  }
+  EXPECT_GE(edge_hits, 2) << held.tables;
+  RecordProperty("drift_farthest_cells_without_window", static_cast<int>(farthest));
+  RecordProperty("drift_edge_hits_with_window", edge_hits);
+}
+
+// The plan the arm is on is solved first: with a budget of ONE solve, the
+// wake re-solves the followed candidate — though another has the smaller key
+// — and says `refreshed`.
+TEST(NlpCatchSearchWindow, TheFollowedCandidateIsSolvedFirstWhateverItsKey) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.max_solves = 1;
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const auto adopted = AdoptFirst(*rig, 0.36);
+  ASSERT_TRUE(adopted->first.plan.valid);
+  // A prediction whose cheapest catch is three cells earlier than the plan's.
+  const Throw ball =
+      AxisThrow(*rig, 0.24, 0.8, 0.002, /*seq=*/2, kTrack, Eigen::Vector2d(0.04, -0.03));
+  const std::int64_t now = kNow + 20 * kMs;
+  const Wake w = FollowWake(*rig, ball, adopted->followed, adopted->t_c_ns, now);
+  const Candidate* followed = Find(rig->search, adopted->index);
+  ASSERT_NE(followed, nullptr);
+  ASSERT_GE(followed->rank, 0) << Table(rig->search, w.stats);
+  EXPECT_EQ(followed->rank, 0) << Table(rig->search, w.stats);
+  int smaller_keys = 0;
+  for (const Candidate& c : rig->search.Candidates()) {
+    if (c.rank > 0) {
+      EXPECT_FALSE(c.solved) << c.index;
+      smaller_keys += c.rank_key < followed->rank_key ? 1 : 0;
+    }
+  }
+  ASSERT_GT(smaller_keys, 0) << "the followed candidate has the best key anyway — the wake does "
+                                "not show the rule"
+                             << Table(rig->search, w.stats);
+  // The rest are in key order.
+  for (const Candidate& a : rig->search.Candidates()) {
+    for (const Candidate& b : rig->search.Candidates()) {
+      if (a.rank >= 1 && b.rank >= 1 && a.rank < b.rank) {
+        EXPECT_LE(a.rank_key, b.rank_key);
+      }
+    }
+  }
+  EXPECT_EQ(w.stats.nlp.n_solved, 1);
+  EXPECT_TRUE(followed->solved);
+  ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+  EXPECT_EQ(w.plan.t_c_ns, adopted->t_c_ns);
+  EXPECT_EQ(w.stats.decision, SwitchDecision::kRefreshed);
+}
+
+// ── 11. The catch instant inside a cell (continuous_tc) ──────────────────────
+// THE THROW of these tests is on the wait pose's entrance plane 300 ms after
+// kNow — halfway between the lattice instants at 280 and 320 ms. The catch
+// that costs least is therefore between two candidates, which is what the
+// continuous solve is for and what a lattice-only test cannot show.
+
+[[nodiscard]] std::unique_ptr<Rig> ContinuousRig() {
+  auto rig = std::make_unique<Rig>();
+  rig->params.continuous_tc = true;
+  // Two shares a candidate: a budget that still holds every candidate.
+  rig->params.budget_s = 0.08;
+  return rig;
+}
+
+[[nodiscard]] Throw BetweenLatticeThrow(const Rig& rig, std::uint64_t seq = 1) {
+  return AxisThrow(rig, 0.30, 0.8, 0.002, seq, kTrack, Eigen::Vector2d(0.04, -0.03));
+}
+
+// What the core minimises, evaluated OUTSIDE the search: a core of this
+// file's own (the cell's grid, the catch instant a variable), fed the
+// candidate's problem as the search states it, judging a trajectory it is
+// handed — never solving. `seg` is on the grid stretched by its own
+// δt_c = t_c − t̂.
+struct OutsideEvaluation {
+  bool ok{false};
+  bool feasible{false};
+  double objective{0.0};       // J_ref + J_stop + the two terms in the catch instant
+  double max_node_error{0.0};  // |evaluated q − the segment's q|: the nodes are that grid's
+};
+
+[[nodiscard]] OutsideEvaluation EvaluateOutside(const Rig& rig, const Throw& t, const Candidate& c,
+                                                const SegmentSnapshot& seg) {
+  OutsideEvaluation out;
+  MpcDockingSegmentCoreParams cp = CoreParamsFor(rig.params, c.n_pre);
+  cp.catch_time_variable = true;
+  MpcDockingSegmentCore core;
+  if (core.Init(*rig.arm.model, rig.arm.frame, cp, rig.params.limits, &StepClock) !=
+      MpcDockingReason::kNone) {
+    return out;
+  }
+  MpcDockingSegmentCoreInput in;
+  MpcDockingSegmentCoreResult res;
+  core.ResizeInput(in);
+  core.ResizeResult(res);
+  for (std::size_t m = 0; m < 6; ++m) {
+    in.q0[static_cast<Eigen::Index>(m)] = c.q0[m];
+    in.qd0[static_cast<Eigen::Index>(m)] = c.qd0[m];
+    in.qdd0[static_cast<Eigen::Index>(m)] = c.qdd0[m];
+  }
+  int hint = 0;
+  for (int k = 0; k <= c.n_pre; ++k) {
+    const std::int64_t at = k == c.n_pre ? c.t_hat_ns : c.t_s_ns + k * Ns(rig.params.dt_pre);
+    in.ball[static_cast<std::size_t>(k)] =
+        SampleBallNode(t.traj, k == c.n_pre ? &t.cov : nullptr, true, BallTime{at}, hint);
+  }
+  const BallNodeSample& at_catch = in.ball[static_cast<std::size_t>(c.n_pre)];
+  in.p_line = at_catch.p;
+  in.d_line = at_catch.v.normalized();
+  in.prediction = &t.traj;
+  in.t_catch_ns = c.t_hat_ns;
+  in.delta_start_ns = seg.t_c_ns - c.t_hat_ns;
+  in.delta_lo_ns = std::min<std::int64_t>(in.delta_start_ns, -Ns(rig.params.cand_dt) / 2);
+  in.delta_hi_ns = std::max<std::int64_t>(in.delta_start_ns, Ns(rig.params.cand_dt) / 2);
+  in.time_c1 = rig.params.w_time / rig.params.t_ref_s;
+  in.initial_valid = true;
+  for (int k = 0; k <= seg.n_nodes; ++k) {
+    for (std::size_t m = 0; m < 6; ++m) {
+      const auto e = static_cast<std::size_t>(k * kMaxSegmentNv + kDeviceOfModel[m]);
+      in.q_init(static_cast<Eigen::Index>(m), k) = seg.q[e];
+      in.qd_init(static_cast<Eigen::Index>(m), k) = seg.qd[e];
+      in.qdd_init(static_cast<Eigen::Index>(m), k) = seg.qdd[e];
+    }
+  }
+  if (!core.Evaluate(in, res)) {
+    return out;
+  }
+  out.ok = true;
+  out.feasible = res.feasible;
+  out.objective = res.cost.total + res.cost.time;
+  out.max_node_error = (res.q - in.q_init).cwiseAbs().maxCoeff();
+  return out;
+}
+
+TEST(NlpCatchSearchContinuous, TheFreeCatchInstantNeverCostsMoreThanTheLatticeOne) {
+  for (const double w_time : {0.0, 0.3}) {
+    SCOPED_TRACE("w_time " + std::to_string(w_time));
+    auto rig = ContinuousRig();
+    rig->params.w_time = w_time;
+    std::string err;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    const Throw ball = BetweenLatticeThrow(*rig);
+    const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+    ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+    int pairs = 0;
+    int moved = 0;
+    const std::int64_t half = Ns(rig->params.cand_dt) / 2;
+    for (const Candidate& c : rig->search.Candidates()) {
+      if (!c.continuous_used) {
+        continue;
+      }
+      // Started from this wake's fixed-grid solution, and converged.
+      ASSERT_EQ(c.continuous_start, NlpCatchSearch::Start::kFixedSolution) << c.index;
+      ASSERT_EQ(c.fixed_reject, NlpReject::kNone) << c.index;
+      EXPECT_TRUE(c.converged);
+      EXPECT_EQ(c.reject, NlpReject::kNone);
+      ++pairs;
+      moved += std::llabs(c.delta_ns) >= kMs ? 1 : 0;
+      // Inside its cell, and the catch instant is the cell's moved by δt_c.
+      EXPECT_GE(c.delta_ns, -half);
+      EXPECT_LT(c.delta_ns, Ns(rig->params.cand_dt) - half);
+      EXPECT_EQ(c.t_c_ns, c.t_hat_ns + c.delta_ns);
+      EXPECT_EQ(c.t_hat_ns, rig->search.LatticeAnchorNs() + c.index * Ns(rig->params.cand_dt));
+      // The core's objective at the two solves' ends, as the cores reported it …
+      EXPECT_LE(c.objective_continuous, c.objective_fixed + 1e-9) << c.index;
+      // … and as a core outside the search evaluates the two trajectories.
+      const SegmentSnapshot* fixed = rig->search.RememberedSolution(c.index);
+      const SegmentSnapshot* free_tc = rig->search.RememberedContinuous(c.index);
+      ASSERT_NE(fixed, nullptr);
+      ASSERT_NE(free_tc, nullptr);
+      EXPECT_EQ(fixed->t_c_ns, c.t_hat_ns);
+      EXPECT_EQ(free_tc->t_c_ns, c.t_c_ns);
+      const OutsideEvaluation on_lattice = EvaluateOutside(*rig, ball, c, *fixed);
+      const OutsideEvaluation on_free = EvaluateOutside(*rig, ball, c, *free_tc);
+      ASSERT_TRUE(on_lattice.ok && on_free.ok);
+      EXPECT_TRUE(on_free.feasible) << c.index;
+      EXPECT_LT(on_free.max_node_error, 1e-9) << "the nodes are not the stretched grid's";
+      EXPECT_LT(on_lattice.max_node_error, 1e-9);
+      EXPECT_NEAR(on_lattice.objective, c.objective_fixed, 1e-9) << c.index;
+      EXPECT_NEAR(on_free.objective, c.objective_continuous, 1e-9) << c.index;
+      EXPECT_LE(on_free.objective, on_lattice.objective + 1e-9) << c.index;
+      // Φ of both is on record (it leaves the stop part's cost out, so it is
+      // not what the comparison above is made on).
+      EXPECT_DOUBLE_EQ(c.phi, c.j_reference + c.j_time + c.j_switch);
+      // … with its time term at the catch instant the solve ended at.
+      EXPECT_DOUBLE_EQ(c.j_time, w_time * Sec(c.t_c_ns - rig->search.LastStartInstantNs()) /
+                                     rig->params.t_ref_s);
+      EXPECT_DOUBLE_EQ(c.lead_s, Sec(c.t_c_ns - rig->search.LastStartInstantNs()));
+      EXPECT_GT(c.fixed_phi, 0.0);
+      std::printf(
+          "[ record ] w_time %.1f i %lld: delta %.3f ms, objective %.6f -> %.6f, phi "
+          "%.6f -> %.6f, iterations %d + %d (%d moves)\n",
+          w_time, static_cast<long long>(c.index), static_cast<double>(c.delta_ns) * 1e-6,
+          c.objective_fixed, c.objective_continuous, c.fixed_phi, c.phi, c.fixed_iterations,
+          c.iterations, c.continuous_moves);
+    }
+    EXPECT_GE(pairs, 3) << Table(rig->search, w.stats);
+    EXPECT_GE(moved, 1) << "no candidate's catch instant left its lattice instant by 1 ms";
+    EXPECT_EQ(w.stats.nlp.n_continuous, pairs);
+    EXPECT_EQ(w.stats.nlp.n_continuous_run, w.stats.nlp.n_continuous + w.stats.nlp.n_fallback);
+    RecordProperty("pairs_w_time_" + std::to_string(static_cast<int>(w_time * 10)), pairs);
+    RecordProperty("moved_1ms_w_time_" + std::to_string(static_cast<int>(w_time * 10)), moved);
+  }
+}
+
+// Everything a continuous wake leaves — WakeDigest's values with the reasons
+// by name, and the continuous solves' own.
+[[nodiscard]] std::uint64_t ContinuousWakeDigest(const NlpCatchSearch& s, const Wake& w) {
+  rtc::testing::ValueDigest h;
+  h.Add(PinnedWakeDigest(s, w));
+  h.Add(w.stats.nlp.n_continuous_run);
+  h.Add(w.stats.nlp.n_continuous);
+  h.Add(w.stats.nlp.n_fallback);
+  h.Add(w.stats.nlp.chosen_continuous);
+  h.Add(w.stats.nlp.chosen_delta_ns);
+  for (const Candidate& c : s.Candidates()) {
+    h.Add(c.t_hat_ns);
+    h.Add(c.delta_ns);
+    h.Add(c.pinned);
+    h.Add(c.continuous_run);
+    h.Add(c.continuous_used);
+    for (const char* ch = NlpRejectName(c.continuous_reject); *ch != '\0'; ++ch) {
+      h.Add(*ch);
+    }
+    h.Add(c.continuous_start);
+    h.Add(c.continuous_reason);
+    h.Add(c.continuous_iterations);
+    h.Add(c.continuous_moves);
+    h.Add(c.delta_lo_ns);
+    h.Add(c.delta_hi_ns);
+    h.Add(c.objective_fixed);
+    h.Add(c.objective_continuous);
+    h.Add(c.fixed_phi);
+    const SegmentSnapshot* m = s.RememberedContinuous(c.index);
+    h.Add(m != nullptr);
+    if (m != nullptr) {
+      rtc::testing::AddSegment(h, *m);
+      h.Add(m->dt_catch_ns);
+    }
+  }
+  const CatchSolution* sol = s.Solution();
+  if (sol != nullptr) {
+    h.Add(sol->seg.dt_catch_ns);
+  }
+  return h.Value();
+}
+
+// A continuous solve that does not converge leaves the candidate exactly as
+// the lattice-only search has it: the same wake with the switch off is the
+// reference, value for value.
+TEST(NlpCatchSearchContinuous, AnUnconvergedOneFallsBackToTheFixedGridSolution) {
+  const auto wake = [](bool continuous, Wake& w) {
+    auto rig = ContinuousRig();
+    rig->params.continuous_tc = continuous;
+    // A catch instant that may move 2 µs a step: it cannot settle in the
+    // core's iterations, on any candidate whose best instant is off the
+    // lattice.
+    rig->params.core.delta_t_step = 2e-6;
+    std::string err;
+    EXPECT_TRUE(rig->Configure(&err)) << err;
+    const Throw ball = BetweenLatticeThrow(*rig);
+    w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+    return rig;
+  };
+  Wake off;
+  Wake on;
+  const auto rig_off = wake(false, off);
+  const auto rig_on = wake(true, on);
+  ASSERT_TRUE(off.plan.valid);
+  ASSERT_TRUE(on.plan.valid) << Table(rig_on->search, on.stats);
+  int fell_back = 0;
+  for (const Candidate& c : rig_on->search.Candidates()) {
+    if (!c.continuous_run) {
+      continue;
+    }
+    if (c.continuous_used) {
+      // Its best instant IS (within the tolerance) its lattice instant.
+      EXPECT_LT(std::llabs(c.delta_ns), 100'000) << c.index;
+      continue;
+    }
+    ++fell_back;
+    // It is on record that the solve ran, how it ended and why it was not taken.
+    EXPECT_EQ(c.continuous_reject, NlpReject::kUnconverged) << c.index;
+    EXPECT_EQ(c.continuous_reason, MpcDockingReason::kIterationLimit) << c.index;
+    EXPECT_GT(c.continuous_iterations, 20);
+    EXPECT_GT(c.continuous_moves, 10);
+    EXPECT_GT(c.continuous_solve_ns, 0);
+    // The candidate is its fixed-grid solve's: catch instant, verdict, cost.
+    EXPECT_EQ(c.delta_ns, 0);
+    EXPECT_EQ(c.t_c_ns, c.t_hat_ns);
+    EXPECT_EQ(c.reject, NlpReject::kNone);
+    // What the unconverged solve ended on is remembered — as a start, like
+    // every iterate a solve ended on — and it is not the solution.
+    ASSERT_NE(rig_on->search.RememberedContinuous(c.index), nullptr);
+  }
+  ASSERT_GE(fell_back, 2) << Table(rig_on->search, on.stats);
+  EXPECT_EQ(on.stats.nlp.n_fallback, fell_back);
+  // The wake is the lattice-only wake: the plan, every candidate's numbers,
+  // the fixed-grid memory, the solution.
+  bool any_used = false;
+  for (const Candidate& c : rig_on->search.Candidates()) {
+    any_used = any_used || c.continuous_used;
+  }
+  if (!any_used) {
+    EXPECT_EQ(PinnedWakeDigest(rig_on->search, on), PinnedWakeDigest(rig_off->search, off));
+  }
+  EXPECT_EQ(on.plan.t_c_ns, off.plan.t_c_ns);
+  EXPECT_FALSE(on.stats.nlp.chosen_continuous);
+  EXPECT_EQ(on.stats.nlp.chosen_delta_ns, 0);
+  ASSERT_NE(rig_on->search.Solution(), nullptr);
+  EXPECT_EQ(rig_on->search.Solution()->seg.dt_catch_ns, 0);
+  EXPECT_EQ(rig_on->search.Solution()->seg.t_c_ns, on.plan.t_c_ns);
+  EXPECT_DOUBLE_EQ(on.plan.score, off.plan.score);
+}
+
+// The plan of a wake that chose a continuous solution, and the segment that
+// goes with it.
+TEST(NlpCatchSearchContinuous, ThePlanAndTheSegmentAreOfTheCatchInstantItEndedAt) {
+  auto rig = ContinuousRig();
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const Throw ball = BetweenLatticeThrow(*rig);
+  const PlannerRtState rt = rig->RestingRt(kNow);
+  const Wake w = RunWake(*rig, ball, rt, NoSegments(), kNow);
+  ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+  ASSERT_TRUE(w.stats.nlp.chosen_continuous) << Table(rig->search, w.stats);
+  const std::int64_t delta = w.stats.nlp.chosen_delta_ns;
+  ASSERT_GE(std::llabs(delta), kMs) << "the chosen catch instant is the lattice's";
+  const Candidate* c = Find(rig->search, w.stats.nlp.chosen_index);
+  ASSERT_NE(c, nullptr);
+  const CatchSolution* sol = rig->search.Solution();
+  ASSERT_NE(sol, nullptr);
+  const SegmentSnapshot& seg = sol->seg;
+  // The receiver's test of "this segment is that plan's" (catch_search.hpp),
+  // to the nanosecond.
+  EXPECT_EQ(w.plan.t_c_ns, c->t_hat_ns + delta);
+  EXPECT_EQ(seg.t_c_ns, w.plan.t_c_ns);
+  EXPECT_EQ(seg.rt_iteration, rt.rt_iteration);
+  EXPECT_NE(w.plan.t_c_ns, c->t_hat_ns);
+  // The segment: the catch interval's own length, node 0 where the cell's
+  // grid has it, and a shape both readers accept.
+  EXPECT_EQ(seg.dt_catch_ns, Ns(rig->params.dt_pre) + delta);
+  EXPECT_EQ(seg.dt_pre_ns, Ns(rig->params.dt_pre));
+  EXPECT_EQ(seg.t0_ns, c->t_s_ns);
+  EXPECT_EQ(seg.t0_ns, c->t_hat_ns - c->n_pre * Ns(rig->params.dt_pre));
+  EXPECT_EQ(seg.n_pre, c->n_pre);
+  EXPECT_TRUE(ValidateSegmentNodes(seg));
+  EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(seg, seg.n_pre), w.plan.t_c_ns);
+  // The RT's sampler reads the core's nodes back at their instants …
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  for (int k = 0; k < seg.n_nodes; ++k) {
+    ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(seg, rtc::catching::SegmentNodeTimeNs(seg, k),
+                                                     q, qd, qdd));
+    for (std::size_t d = 0; d < 6; ++d) {
+      const auto e = static_cast<std::size_t>(k * kMaxSegmentNv) + d;
+      EXPECT_EQ(q[d], seg.q[e]) << "node " << k;
+      EXPECT_EQ(qd[d], seg.qd[e]) << "node " << k;
+    }
+  }
+  // … and the nodes are a trajectory of the grid stretched by that δt_c: a
+  // core outside the search rebuilds them from their own jerk on it.
+  const OutsideEvaluation outside = EvaluateOutside(*rig, ball, *c, seg);
+  ASSERT_TRUE(outside.ok);
+  EXPECT_LT(outside.max_node_error, 1e-9);
+  EXPECT_TRUE(outside.feasible);
+  // Halfway through the catch interval: the constant jerk between its two nodes.
+  {
+    const std::int64_t tau_ns = seg.dt_catch_ns;
+    const std::int64_t at = w.plan.t_c_ns - tau_ns / 2;
+    ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(seg, at, q, qd, qdd));
+    const double tau = static_cast<double>(tau_ns) / 1e9;
+    const double t = static_cast<double>(at - (w.plan.t_c_ns - tau_ns)) / 1e9;
+    for (std::size_t d = 0; d < 6; ++d) {
+      const auto a = static_cast<std::size_t>((seg.n_pre - 1) * kMaxSegmentNv) + d;
+      const auto b = static_cast<std::size_t>(seg.n_pre * kMaxSegmentNv) + d;
+      const double u = (seg.qdd[b] - seg.qdd[a]) / tau;
+      EXPECT_NEAR(q[d], seg.q[a] + seg.qd[a] * t + 0.5 * seg.qdd[a] * t * t + u * t * t * t / 6.0,
+                  1e-12);
+    }
+  }
+  // The plan's catch point is the ball at THAT instant, its pose the solved
+  // catch node, its close instant counted from it.
+  int hint = 0;
+  const BallNodeSample at_tc =
+      SampleBallNode(ball.traj, &ball.cov, true, BallTime{w.plan.t_c_ns}, hint);
+  int hint2 = 0;
+  const BallNodeSample at_cell =
+      SampleBallNode(ball.traj, &ball.cov, true, BallTime{c->t_hat_ns}, hint2);
+  for (std::size_t a = 0; a < 3; ++a) {
+    EXPECT_TRUE(BitsEqual(w.plan.p_c[a], at_tc.p[static_cast<Eigen::Index>(a)]));
+    EXPECT_TRUE(BitsEqual(w.plan.v_c[a], at_tc.v[static_cast<Eigen::Index>(a)]));
+  }
+  EXPECT_GT((at_tc.p - at_cell.p).norm(), 5e-4) << "the two instants' balls are the same point";
+  for (std::size_t d = 0; d < 6; ++d) {
+    EXPECT_EQ(w.plan.q_star[d], seg.q[static_cast<std::size_t>(seg.n_pre * kMaxSegmentNv) + d]);
+  }
+  EXPECT_EQ(w.plan.t_cmd_ns, w.plan.t_c_ns - Ns(rig->constants.t_close_e2e));
+  EXPECT_DOUBLE_EQ(w.plan.score, c->phi);
+  EXPECT_DOUBLE_EQ(c->j_time, 0.0);
+  EXPECT_DOUBLE_EQ(w.stats.chosen_lead_s, Sec(w.plan.t_c_ns - kNow));
+  // The covariance the solve ran with is the cell's; the plan's is the instant's.
+  EXPECT_GT(w.stats.nlp.chosen_sigma_c_cell, 0.0);
+  EXPECT_GT(w.plan.sigma_c, 0.0);
+}
+
+// The cell of the plan the RT follows is not searched: its catch instant is
+// the plan's. With the prediction unchanged, the wake's solution of it is the
+// rest of the followed one, and the decision is `refreshed`.
+TEST(NlpCatchSearchContinuous, TheFollowedCellIsSolvedAtThePlansInstantAndGivesItsRestBack) {
+  struct Later {
+    const char* name;
+    int dropped;
+  };
+
+  for (const Later later : {Later{"the same grid", 0}, Later{"one interval has passed", 1},
+                            Later{"two intervals have passed", 2}}) {
+    SCOPED_TRACE(later.name);
+    auto rig = ContinuousRig();
+    std::string err;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    const Throw ball = AxisThrow(*rig, 0.38, 0.8, 0.002, 1, kTrack, Eigen::Vector2d(0.04, -0.03));
+    const Wake first = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+    ASSERT_TRUE(first.plan.valid) << Table(rig->search, first.stats);
+    ASSERT_TRUE(first.stats.nlp.chosen_continuous) << Table(rig->search, first.stats);
+    ASSERT_GE(std::llabs(first.stats.nlp.chosen_delta_ns), kMs);
+    const std::int64_t index = first.stats.nlp.chosen_index;
+    const Candidate* chosen = Find(rig->search, index);
+    ASSERT_NE(chosen, nullptr);
+    const std::int64_t wait_ns = chosen->wait_ns;
+    SegmentSnapshot before = rig->search.Solution()->seg;
+    before.segment_seq = 11;
+    before.plan_id = 4;
+    const std::int64_t t_c = first.plan.t_c_ns;
+    const std::int64_t after_ns =
+        later.dropped == 0 ? wait_ns / 2 : wait_ns + (later.dropped - 1) * 50 * kMs + 20 * kMs;
+    const std::int64_t now = kNow + after_ns;
+    const Wake w = FollowWake(*rig, ball, before, t_c, now);
+    const Candidate* c = Find(rig->search, index);
+    ASSERT_NE(c, nullptr);
+    // The followed cell: pinned at the plan's instant, solved once.
+    EXPECT_TRUE(c->pinned) << Table(rig->search, w.stats);
+    EXPECT_EQ(c->t_c_ns, t_c);
+    EXPECT_EQ(c->delta_lo_ns, c->delta_ns);
+    EXPECT_EQ(c->delta_hi_ns, c->delta_ns);
+    EXPECT_EQ(c->delta_ns, t_c - c->t_hat_ns);
+    EXPECT_EQ(c->continuous_moves, 0);
+    ASSERT_EQ(c->reject, NlpReject::kNone) << Table(rig->search, w.stats);
+    EXPECT_EQ(c->start, NlpCatchSearch::Start::kSameCandidate);
+    EXPECT_EQ(c->rank, 0);
+    ASSERT_EQ(before.n_pre - c->n_pre, later.dropped) << Table(rig->search, w.stats);
+    int pinned = 0;
+    for (const Candidate& other : rig->search.Candidates()) {
+      pinned += other.pinned ? 1 : 0;
+    }
+    EXPECT_EQ(pinned, 1);
+    const SegmentSnapshot* after = rig->search.RememberedContinuous(index);
+    ASSERT_NE(after, nullptr);
+    ASSERT_EQ(after->t_c_ns, before.t_c_ns);
+    EXPECT_EQ(after->dt_catch_ns, before.dt_catch_ns);
+    ASSERT_EQ(after->n_nodes, before.n_nodes - later.dropped);
+    const double diff = TailDifference(*after, before, later.dropped);
+    RecordProperty(std::string("continuous_tail_max_dq_dropped_") + std::to_string(later.dropped),
+                   std::to_string(static_cast<long long>(std::llround(diff * 1e18))) + "e-18");
+    EXPECT_LT(diff, 1e-9) << "iterations " << c->iterations << Table(rig->search, w.stats);
+    // The catch instant in force stays, to the nanosecond: refreshed.
+    ASSERT_TRUE(w.plan.valid);
+    EXPECT_EQ(w.stats.nlp.chosen_index, index) << Table(rig->search, w.stats);
+    EXPECT_EQ(w.plan.t_c_ns, t_c);
+    EXPECT_EQ(w.stats.decision, SwitchDecision::kRefreshed);
+    EXPECT_EQ(rig->search.Solution()->seg.t_c_ns, t_c);
+    EXPECT_TRUE(ValidateSegmentNodes(rig->search.Solution()->seg));
+  }
+}
+
+// Which cell is "the plan's" is the half-open cell its catch instant is in —
+// at the cell's first nanosecond it is this one, one nanosecond before it is
+// the one before.
+TEST(NlpCatchSearchContinuous, ThePinnedCellIsTheHalfOpenCellOfThePlansInstant) {
+  auto rig = ContinuousRig();
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const auto adopted = AdoptFirst(*rig, 0.36);
+  ASSERT_TRUE(adopted->first.plan.valid);
+  const std::int64_t h = Ns(rig->params.cand_dt);
+  const Candidate* chosen = Find(rig->search, adopted->index);
+  ASSERT_NE(chosen, nullptr);
+  const std::int64_t t_hat = chosen->t_hat_ns;
+  const std::int64_t now = kNow + adopted->wait_ns / 2;
+
+  struct Case {
+    std::int64_t plan_t_c;
+    std::int64_t index;
+    std::int64_t delta;
+  };
+
+  for (const Case k : {Case{t_hat - h / 2, adopted->index, -h / 2},
+                       Case{t_hat - h / 2 - 1, adopted->index - 1, h - h / 2 - 1},
+                       Case{t_hat + h - h / 2 - 1, adopted->index, h - h / 2 - 1},
+                       Case{t_hat + h - h / 2, adopted->index + 1, -h / 2}}) {
+    rig->search.ResetTrial();
+    // The lattice is anchored anew by the reset: on the same `now` as before.
+    static_cast<void>(RunWake(*rig, adopted->ball, rig->RestingRt(kNow), NoSegments(), kNow));
+    const Wake w = FollowWake(*rig, adopted->ball, adopted->followed, k.plan_t_c, now);
+    int pinned = 0;
+    for (const Candidate& c : rig->search.Candidates()) {
+      if (c.pinned) {
+        ++pinned;
+        EXPECT_EQ(c.index, k.index) << Table(rig->search, w.stats);
+        EXPECT_EQ(c.delta_ns, k.delta);
+        EXPECT_EQ(c.t_c_ns, k.plan_t_c);
+      }
+    }
+    EXPECT_EQ(pinned, 1) << k.plan_t_c - t_hat << Table(rig->search, w.stats);
+  }
+}
+
+// Whether the ball at catch instant `t_ns` is inside the rig's catch box.
+[[nodiscard]] bool InCatchBox(const Rig& rig, const Throw& ball, std::int64_t t_ns) {
+  int hint = 0;
+  const BallNodeSample at = SampleBallNode(ball.traj, nullptr, false, BallTime{t_ns}, hint);
+  return at.valid && rig.params.catch_box.Contains(at.p.x(), at.p.y(), at.p.z());
+}
+
+// The first candidate of the wake whose continuous solve was taken, more than
+// `past_ns` later than its lattice instant.
+[[nodiscard]] const Candidate* MovedLater(const NlpCatchSearch& s, std::int64_t past_ns) {
+  for (const Candidate& c : s.Candidates()) {
+    if (c.continuous_used && c.delta_ns > past_ns) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+// A wall of the catch box across the ball's path at catch instant `t_wall_ns`,
+// on the axis the ball moves fastest along at `t_ns`.
+void PutWallAt(Rig& rig, const Throw& ball, std::int64_t t_ns, std::int64_t t_wall_ns) {
+  int hint = 0;
+  const BallNodeSample here = SampleBallNode(ball.traj, nullptr, false, BallTime{t_ns}, hint);
+  const BallNodeSample wall = SampleBallNode(ball.traj, nullptr, false, BallTime{t_wall_ns}, hint);
+  Eigen::Index axis = 0;
+  here.v.cwiseAbs().maxCoeff(&axis);
+  auto& side = here.v[axis] > 0.0 ? rig.params.catch_box.max : rig.params.catch_box.min;
+  side[static_cast<std::size_t>(axis)] = wall.p[axis];
+}
+
+// δt_c's box is the cell cut to where the catch point stays in the catch box,
+// and a catch instant that wants to go past the wall rests on it.
+TEST(NlpCatchSearchContinuous, TheCatchInstantStaysWhereTheCatchPointIsInsideTheCatchBox) {
+  auto probe = ContinuousRig();
+  std::string err;
+  ASSERT_TRUE(probe->Configure(&err)) << err;
+  const Throw ball = BetweenLatticeThrow(*probe);
+  const Wake free_wake = RunWake(*probe, ball, probe->RestingRt(kNow), NoSegments(), kNow);
+  ASSERT_TRUE(free_wake.plan.valid);
+  // A candidate whose catch instant went later than its lattice instant by
+  // more than 6 ms: the box will end 4 ms after that lattice instant.
+  const Candidate* target = MovedLater(probe->search, 6 * kMs);
+  ASSERT_NE(target, nullptr) << Table(probe->search, free_wake.stats);
+  auto rig = ContinuousRig();
+  PutWallAt(*rig, ball, target->t_hat_ns, target->t_hat_ns + 4 * kMs);
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+  const Candidate* c = Find(rig->search, target->index);
+  ASSERT_NE(c, nullptr);
+  ASSERT_TRUE(c->continuous_run) << Table(rig->search, w.stats);
+  // The box ends at the last instant the ball is inside the wall, not at the
+  // cell's end.
+  EXPECT_NEAR(static_cast<double>(c->delta_hi_ns), 4e6, 2.0);
+  EXPECT_TRUE(InCatchBox(*rig, ball, c->t_hat_ns + c->delta_hi_ns));
+  EXPECT_FALSE(InCatchBox(*rig, ball, c->t_hat_ns + c->delta_hi_ns + 1));
+  EXPECT_EQ(c->delta_lo_ns, -Ns(rig->params.cand_dt) / 2);
+  // It wanted to go later, and the box held it — on a solution that is taken.
+  ASSERT_TRUE(c->continuous_used) << NlpRejectName(c->continuous_reject)
+                                  << Table(rig->search, w.stats);
+  EXPECT_EQ(c->delta_ns, c->delta_hi_ns);
+  EXPECT_TRUE(InCatchBox(*rig, ball, c->t_c_ns));
+  // The candidates past the wall are refused by the workspace, as before.
+  EXPECT_GT(Count(rig->search, NlpReject::kWorkspace), 0) << Table(rig->search, w.stats);
+}
+
+// The box's end is found on the prediction the plan reads. Under an
+// acceleration toward the wall, a straight line through the lattice instant's
+// ball reaches the wall later than the ball does: an end taken from the line
+// is an instant whose catch point is outside the catch box.
+TEST(NlpCatchSearchContinuous, TheBoxEndsWhereThePredictedBallLeavesNotWhereAStraightLineDoes) {
+  auto probe = ContinuousRig();
+  std::string err;
+  ASSERT_TRUE(probe->Configure(&err)) << err;
+  // The line throw, speeding up along its travel at 2 m/s² about the instant
+  // it was built for.
+  Throw ball = BetweenLatticeThrow(*probe);
+  const Eigen::Vector3d acc = 2.0 * ball.v_hat;
+  for (int k = 0; k < ball.traj.n; ++k) {
+    auto& smp = ball.traj.s[static_cast<std::size_t>(k)];
+    const double tau = Sec(smp.t_ns - kNow) - 0.30;
+    for (std::size_t a = 0; a < 3; ++a) {
+      const double acc_a = acc[static_cast<Eigen::Index>(a)];
+      smp.p[a] += 0.5 * acc_a * tau * tau;
+      smp.v[a] += acc_a * tau;
+      smp.a[a] = acc_a;
+    }
+  }
+  const Wake free_wake = RunWake(*probe, ball, probe->RestingRt(kNow), NoSegments(), kNow);
+  const Candidate* target = nullptr;
+  for (const Candidate& c : probe->search.Candidates()) {
+    if (c.continuous_run && target == nullptr) {
+      target = &c;
+    }
+  }
+  ASSERT_NE(target, nullptr) << Table(probe->search, free_wake.stats);
+  auto rig = ContinuousRig();
+  PutWallAt(*rig, ball, target->t_hat_ns, target->t_hat_ns + 4 * kMs);
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+  const Candidate* c = Find(rig->search, target->index);
+  ASSERT_NE(c, nullptr);
+  ASSERT_TRUE(c->continuous_run) << Table(rig->search, w.stats);
+  // The premise: the line through the lattice instant's ball is still inside
+  // the wall well after the ball has left.
+  int hint = 0;
+  const BallNodeSample at_cell =
+      SampleBallNode(ball.traj, nullptr, false, BallTime{c->t_hat_ns}, hint);
+  const Eigen::Vector3d on_line = at_cell.p + at_cell.v * 0.00401;
+  ASSERT_TRUE(rig->params.catch_box.Contains(on_line.x(), on_line.y(), on_line.z()));
+  ASSERT_FALSE(InCatchBox(*rig, ball, c->t_hat_ns + 4 * kMs + 10'000));
+  // The end is the ball's.
+  EXPECT_NEAR(static_cast<double>(c->delta_hi_ns), 4e6, 2.0);
+  EXPECT_TRUE(InCatchBox(*rig, ball, c->t_hat_ns + c->delta_hi_ns));
+  EXPECT_FALSE(InCatchBox(*rig, ball, c->t_hat_ns + c->delta_hi_ns + 1));
+  // No solve is refused for a catch point the box's own end put outside.
+  for (const Candidate& other : rig->search.Candidates()) {
+    if (other.continuous_run) {
+      EXPECT_NE(other.continuous_reject, NlpReject::kWorkspace) << other.index;
+      EXPECT_TRUE(InCatchBox(*rig, ball, other.t_hat_ns + other.delta_hi_ns)) << other.index;
+      EXPECT_TRUE(InCatchBox(*rig, ball, other.t_hat_ns + other.delta_lo_ns)) << other.index;
+    }
+    if (other.continuous_used) {
+      EXPECT_TRUE(InCatchBox(*rig, ball, other.t_c_ns)) << other.index;
+    }
+  }
+}
+
+// δt_c's box leaves out the instants the lattice search would not take as a
+// candidate: nearer than the minimum lead, or past the window.
+TEST(NlpCatchSearchContinuous, TheCatchInstantStaysInsideTheLeadAndTheWindow) {
+  const auto make = [] {
+    auto rig = ContinuousRig();
+    rig->params.w_time = 0.3;  // earlier is cheaper: the lead is what holds it
+    return rig;
+  };
+  auto probe = make();
+  std::string err;
+  ASSERT_TRUE(probe->Configure(&err)) << err;
+  const Throw ball = BetweenLatticeThrow(*probe);
+  const Wake free_wake = RunWake(*probe, ball, probe->RestingRt(kNow), NoSegments(), kNow);
+  const std::int64_t t_0 = probe->search.LastStartInstantNs();
+  const std::int64_t h = Ns(probe->params.cand_dt);
+  // The first and the last candidate the continuous solve ran on, with their
+  // whole cell inside the lead and the window.
+  const Candidate* first = nullptr;
+  const Candidate* last = nullptr;
+  for (const Candidate& c : probe->search.Candidates()) {
+    if (!c.continuous_run) {
+      continue;
+    }
+    EXPECT_EQ(c.delta_lo_ns, std::max(-(h / 2), t_0 + Ns(probe->params.t_lead_min) - c.t_hat_ns));
+    EXPECT_EQ(c.delta_hi_ns, std::min(h - h / 2 - 1, t_0 + Ns(probe->params.t_max) - c.t_hat_ns));
+    if (c.delta_lo_ns != -(h / 2) || c.delta_hi_ns != h - h / 2 - 1) {
+      continue;
+    }
+    if (first == nullptr) {
+      first = &c;
+    }
+    last = &c;
+  }
+  ASSERT_NE(first, nullptr) << Table(probe->search, free_wake.stats);
+  ASSERT_NE(first, last) << Table(probe->search, free_wake.stats);
+  // A minimum lead that ends 1 ms before the first one's lattice instant and
+  // a window that ends 1 ms after the last one's.
+  auto rig = make();
+  rig->params.t_lead_min = Sec(first->t_hat_ns - kMs - t_0);
+  rig->params.t_max = Sec(last->t_hat_ns + kMs - t_0);
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+  ASSERT_EQ(rig->search.LastStartInstantNs(), t_0);
+  const std::int64_t lead_min = first->t_hat_ns - kMs - t_0;
+  const std::int64_t t_end = last->t_hat_ns + kMs;
+  const Candidate* a = Find(rig->search, first->index);
+  const Candidate* b = Find(rig->search, last->index);
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  ASSERT_TRUE(a->continuous_run) << Table(rig->search, w.stats);
+  ASSERT_TRUE(b->continuous_run) << Table(rig->search, w.stats);
+  EXPECT_EQ(a->delta_lo_ns, -kMs);
+  EXPECT_EQ(a->delta_hi_ns, h - h / 2 - 1);
+  EXPECT_EQ(b->delta_lo_ns, -(h / 2));
+  EXPECT_EQ(b->delta_hi_ns, kMs);
+  int used = 0;
+  for (const Candidate& c : rig->search.Candidates()) {
+    if (c.reject != NlpReject::kNone) {
+      continue;
+    }
+    // Every valid candidate is at an instant the screening's own two rules
+    // of the catch instant pass.
+    EXPECT_GE(c.t_c_ns - t_0, lead_min) << c.index << Table(rig->search, w.stats);
+    EXPECT_LE(c.t_c_ns, t_end) << c.index;
+    used += c.continuous_used ? 1 : 0;
+  }
+  EXPECT_GT(used, 0) << Table(rig->search, w.stats);
+  std::printf(
+      "[ record ] lead cut: i %lld delta %.3f ms in [%.3f, %.3f]; window cut: i %lld "
+      "delta %.3f ms in [%.3f, %.3f]\n",
+      static_cast<long long>(a->index), static_cast<double>(a->delta_ns) * 1e-6,
+      static_cast<double>(a->delta_lo_ns) * 1e-6, static_cast<double>(a->delta_hi_ns) * 1e-6,
+      static_cast<long long>(b->index), static_cast<double>(b->delta_ns) * 1e-6,
+      static_cast<double>(b->delta_lo_ns) * 1e-6, static_cast<double>(b->delta_hi_ns) * 1e-6);
+}
+
+// BetweenLatticeThrow's line sampled every 10 ms (40 samples): a lattice
+// instant is on a sample, and inside its cell are instants whose nearest
+// sample — the one the covariance is read from — is another one.
+[[nodiscard]] Throw DenseThrow(const Rig& rig) {
+  const Throw coarse = BetweenLatticeThrow(rig);
+  const auto& first = coarse.traj.s[0];
+  const Eigen::Vector3d p0(first.p[0], first.p[1], first.p[2]);
+  const Eigen::Vector3d v(first.v[0], first.v[1], first.v[2]);
+  Throw t;
+  t.traj = rtc::testing::LineTrajectory(p0, v, kNow, 10 * kMs, rtc::catching::kCap, 0, 1, kTrack,
+                                        kActivation, kNow - 5 * kMs);
+  t.cov = rtc::testing::IsotropicCovariance(t.traj, 0.002);
+  t.v_hat = coarse.v_hat;
+  return t;
+}
+
+[[nodiscard]] bool HasCovarianceAt(const Throw& ball, std::int64_t t_ns) {
+  int hint = 0;
+  return SampleBallNode(ball.traj, &ball.cov, true, BallTime{t_ns}, hint).cov_valid;
+}
+
+// With the chance rows on, an instant whose covariance is not known is not a
+// catch instant — for the lattice search (screening) and inside a cell alike.
+// Where such instants reach a cell's end, δt_c's box ends before them.
+TEST(NlpCatchSearchContinuous, TheBoxEndsWhereTheCovarianceDoes) {
+  auto probe = ContinuousRig();
+  std::string err;
+  ASSERT_TRUE(probe->Configure(&err)) << err;
+  ASSERT_TRUE(probe->params.core.chance);
+  Throw ball = DenseThrow(*probe);
+  const Wake free_wake = RunWake(*probe, ball, probe->RestingRt(kNow), NoSegments(), kNow);
+  const Candidate* target = MovedLater(probe->search, kMs);
+  ASSERT_NE(target, nullptr) << Table(probe->search, free_wake.stats);
+  const std::int64_t h = Ns(probe->params.cand_dt);
+  // The sample 20 ms after the lattice instant's has no covariance: the
+  // instants nearest to it are the cell's last 5 ms.
+  const std::int64_t t_hat = target->t_hat_ns;
+  ASSERT_EQ((t_hat - kNow) % (10 * kMs), 0) << "the lattice instant is not on a sample";
+  const auto dead = static_cast<std::size_t>((t_hat + 20 * kMs - kNow) / (10 * kMs));
+  ASSERT_LT(dead, static_cast<std::size_t>(ball.traj.n));
+  ball.cov.c[dead][0] = std::numeric_limits<double>::quiet_NaN();
+  ASSERT_TRUE(HasCovarianceAt(ball, t_hat));
+  ASSERT_FALSE(HasCovarianceAt(ball, t_hat + h - h / 2 - 1));
+  auto rig = ContinuousRig();
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+  const Candidate* c = Find(rig->search, target->index);
+  ASSERT_NE(c, nullptr);
+  ASSERT_TRUE(c->continuous_run) << Table(rig->search, w.stats);
+  EXPECT_NEAR(static_cast<double>(c->delta_hi_ns), 15e6, 2.0);
+  EXPECT_TRUE(HasCovarianceAt(ball, t_hat + c->delta_hi_ns));
+  EXPECT_FALSE(HasCovarianceAt(ball, t_hat + c->delta_hi_ns + 1));
+  EXPECT_EQ(c->delta_lo_ns, -(h / 2));
+  for (const Candidate& other : rig->search.Candidates()) {
+    if (other.reject == NlpReject::kNone) {
+      EXPECT_TRUE(HasCovarianceAt(ball, other.t_c_ns)) << other.index;
+    }
+  }
+}
+
+// … and where they lie between two instants that pass, the box does not see
+// them: the solve's result is checked at the instant it ended on, and a
+// solution there is not taken.
+TEST(NlpCatchSearchContinuous, ASolutionAtAnInstantWithoutACovarianceIsNotTaken) {
+  auto probe = ContinuousRig();
+  std::string err;
+  ASSERT_TRUE(probe->Configure(&err)) << err;
+  Throw ball = DenseThrow(*probe);
+  const Wake free_wake = RunWake(*probe, ball, probe->RestingRt(kNow), NoSegments(), kNow);
+  ASSERT_TRUE(free_wake.plan.valid);
+  // A candidate whose catch instant ended 5 – 15 ms from its lattice instant:
+  // nearest to the sample 10 ms from it, whose instants are all inside the cell.
+  const Candidate* target = nullptr;
+  for (const Candidate& c : probe->search.Candidates()) {
+    const std::int64_t off = std::llabs(c.delta_ns);
+    if (c.continuous_used && off > 5 * kMs + kMs / 2 && off < 15 * kMs - kMs / 2 &&
+        target == nullptr) {
+      target = &c;
+    }
+  }
+  ASSERT_NE(target, nullptr) << Table(probe->search, free_wake.stats);
+  const std::int64_t t_hat = target->t_hat_ns;
+  const std::int64_t delta = target->delta_ns;
+  const std::int64_t h = Ns(probe->params.cand_dt);
+  ASSERT_EQ((t_hat - kNow) % (10 * kMs), 0) << "the lattice instant is not on a sample";
+  const auto dead =
+      static_cast<std::size_t>((t_hat + (delta > 0 ? 10 : -10) * kMs - kNow) / (10 * kMs));
+  ball.cov.c[dead][0] = std::numeric_limits<double>::quiet_NaN();
+  ASSERT_FALSE(HasCovarianceAt(ball, t_hat + delta));
+  ASSERT_TRUE(HasCovarianceAt(ball, t_hat));
+  ASSERT_TRUE(HasCovarianceAt(ball, t_hat - h / 2));
+  ASSERT_TRUE(HasCovarianceAt(ball, t_hat + h - h / 2 - 1));
+  auto rig = ContinuousRig();
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+  const Candidate* c = Find(rig->search, target->index);
+  ASSERT_NE(c, nullptr);
+  ASSERT_TRUE(c->continuous_run) << Table(rig->search, w.stats);
+  // Both ends pass: the box is the whole cell, and the solve — the same
+  // problem as before — ends where it did.
+  EXPECT_EQ(c->delta_lo_ns, -(h / 2));
+  EXPECT_EQ(c->delta_hi_ns, h - h / 2 - 1);
+  const SegmentSnapshot* ended = rig->search.RememberedContinuous(c->index);
+  ASSERT_NE(ended, nullptr);
+  EXPECT_EQ(ended->t_c_ns, t_hat + delta);
+  // It is not the candidate's solution, and the record says why.
+  EXPECT_FALSE(c->continuous_used) << Table(rig->search, w.stats);
+  EXPECT_EQ(c->continuous_reject, NlpReject::kCovariance);
+  EXPECT_EQ(c->continuous_reason, MpcDockingReason::kConverged);
+  EXPECT_EQ(c->t_c_ns, t_hat);
+  EXPECT_EQ(c->reject, NlpReject::kNone);
+  // Nothing the wake calls valid — and so nothing it can publish — is at an
+  // instant without a covariance.
+  for (const Candidate& other : rig->search.Candidates()) {
+    if (other.reject == NlpReject::kNone) {
+      EXPECT_TRUE(HasCovarianceAt(ball, other.t_c_ns)) << other.index;
+    }
+  }
+  ASSERT_TRUE(w.plan.valid) << Table(rig->search, w.stats);
+  EXPECT_GT(w.plan.sigma_c, 0.0);
+}
+
+// The same wake with its solves permuted, bit for bit — the continuous
+// solves and what they remember included.
+TEST(NlpCatchSearchContinuous, PermutingTheSolvesChangesNothing) {
+  const auto two_wakes = [](std::span<const int> order, int* solved, std::string* table) {
+    auto rig = ContinuousRig();
+    std::string err;
+    EXPECT_TRUE(rig->Configure(&err)) << err;
+    const Throw ball = BetweenLatticeThrow(*rig);
+    const Wake w1 = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+    EXPECT_TRUE(w1.plan.valid);
+    rig->search.SetEvaluationOrderForTesting(order);
+    const std::int64_t now = kNow + 41 * kMs;
+    const Wake w2 = RunWake(*rig, ball, rig->RestingRt(now), NoSegments(), now);
+    if (solved != nullptr) {
+      *solved = w2.stats.nlp.n_solved;
+    }
+    if (table != nullptr) {
+      *table = Table(rig->search, w2.stats);
+      // The wake is the one the test is about: continuous solves started from
+      // their own memory and from this wake's fixed-grid solution.
+      std::set<NlpCatchSearch::Start> starts;
+      for (const Candidate& c : rig->search.Candidates()) {
+        if (c.continuous_run) {
+          starts.insert(c.continuous_start);
+        }
+      }
+      EXPECT_TRUE(starts.contains(NlpCatchSearch::Start::kSameCandidate)) << *table;
+      EXPECT_TRUE(starts.contains(NlpCatchSearch::Start::kFixedSolution)) << *table;
+    }
+    return ContinuousWakeDigest(rig->search, w2);
+  };
+  int n = 0;
+  std::string table;
+  const std::uint64_t base = two_wakes({}, &n, &table);
+  ASSERT_GE(n, 4) << table;
+  std::vector<int> order(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    order[static_cast<std::size_t>(i)] = i;
+  }
+  std::vector<std::vector<int>> orders;
+  orders.emplace_back(order.rbegin(), order.rend());
+  std::vector<int> rotated = order;
+  std::rotate(rotated.begin(), rotated.begin() + 1, rotated.end());
+  orders.push_back(rotated);
+  std::vector<int> swapped = order;
+  for (std::size_t i = 0; i + 1 < swapped.size(); i += 2) {
+    std::swap(swapped[i], swapped[i + 1]);
+  }
+  orders.push_back(swapped);
+  for (const std::vector<int>& o : orders) {
+    EXPECT_EQ(two_wakes(o, nullptr, nullptr), base) << "order starting " << o[0] << "," << o[1];
+  }
+}
+
+TEST(NlpCatchSearchContinuous, ConfigureRefusesWhatCannotHoldTwoSolvesOrACell) {
+  {
+    auto rig = ContinuousRig();
+    rig->params.budget_s = 0.007;  // one share of 4 ms fits, two do not
+    std::string err;
+    EXPECT_FALSE(rig->Configure(&err));
+    EXPECT_NE(err.find("solve_budget_s is over budget_s"), std::string::npos) << err;
+    EXPECT_NE(err.find("continuous_tc"), std::string::npos) << err;
+    rig->params.continuous_tc = false;
+    EXPECT_TRUE(rig->Configure(&err)) << err;
+  }
+  {
+    // Half a cell as long as the pre-catch interval: the catch interval would
+    // have no length at the cell's early end.
+    auto rig = ContinuousRig();
+    rig->params.cand_dt = 0.1;
+    std::string err;
+    EXPECT_FALSE(rig->Configure(&err));
+    EXPECT_NE(err.find("half of cand_dt"), std::string::npos) << err;
+    rig->params.continuous_tc = false;
+    EXPECT_TRUE(rig->Configure(&err)) << err;
+  }
+  {
+    auto rig = ContinuousRig();
+    std::string err;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    for (int n_pre = rig->params.n_pre_min; n_pre <= rig->params.n_pre_max; ++n_pre) {
+      ASSERT_NE(rig->search.ContinuousCore(n_pre), nullptr);
+      EXPECT_TRUE(rig->search.ContinuousCore(n_pre)->CatchTimeVariable());
+      EXPECT_FALSE(rig->search.Core(n_pre)->CatchTimeVariable());
+      EXPECT_EQ(rig->search.ContinuousCore(n_pre)->CatchNode(), n_pre);
+    }
+    // The budget holds half as many candidates.
+    const Throw ball = BetweenLatticeThrow(*rig);
+    rig->params.budget_s = 0.02;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+    EXPECT_LE(w.stats.nlp.n_solved, 2) << "20 ms hold two candidates of two 4 ms shares each";
+    EXPECT_GE(w.stats.nlp.n_solved, 1);
+    EXPECT_TRUE(w.stats.budget_hit);
+  }
+  {
+    auto rig = std::make_unique<Rig>();
+    std::string err;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    EXPECT_EQ(rig->search.ContinuousCore(rig->params.n_pre_min), nullptr);
+  }
+}
+
+// The allocation gate over wakes with the continuous solve on: the QP solvers
+// bracketed out, the cores' own stages gated again inside them — both sets.
+TEST(NlpCatchSearchContinuous, AWakeAllocatesNothingOutsideTheQpSolvers) {
+  auto rig = ContinuousRig();
+  rig->params.rank_w_manip = 0.1;
+  rig->params.w_time = 0.2;
+  rig->params.w_switch = 0.5;
+  rig->params.follow_window = 3;
+  rig->params.core.w_manip = 0.02;
+  rig->params.core.w_impact = 0.5;
+  rig->params.core.e_ref = 0.05;
+  rig->params.core.e_max = 0.5;
+  rig->params.core.p_max = 0.5;
+  rig->params.core.w_perp = 50.0;
+  std::string err;
+  ASSERT_TRUE(rig->Configure(&err)) << err;
+  GateLog log;
+  rig->search.SetSolverHookForTesting(&SolverHook, &log);
+  rig->search.SetCoreStageHookForTesting(&StageHook, &log);
+  const Throw ball = BetweenLatticeThrow(*rig);
+  auto arm = std::make_unique<ReportedSegments>();
+
+  struct Step {
+    bool following;
+    std::int64_t now;
+  };
+
+  // A first wake, one from memory, two on the reported segment.
+  const std::array<Step, 4> steps{
+      {{false, kNow}, {false, kNow + 41 * kMs}, {true, kNow + 66 * kMs}, {true, kNow + 99 * kMs}}};
+  std::array<Wake, 4> wakes{};
+  std::array<PlannerRtState, 4> reports{};
+  std::int64_t followed_t_c = 0;
+  std::size_t counted = 0;
+  int continuous_used = 0;
+  int pinned = 0;
+  int moves = 0;
+  for (std::size_t i = 0; i < steps.size(); ++i) {
+    reports[i] = steps[i].following ? rig->FollowingRt(steps[i].now, followed_t_c)
+                                    : rig->RestingRt(steps[i].now);
+    const ReportedSegments& reported = steps[i].following ? *arm : NoSegments();
+    {
+      rtc::testing::detail::MallocGateCount() = 0;
+      ++rtc::testing::detail::MallocGateDepth();
+      wakes[i].plan = rig->search.Plan(ball.traj, ball.cov, true, reports[i], reported,
+                                       NowReal{steps[i].now}, wakes[i].stats);
+      --rtc::testing::detail::MallocGateDepth();
+      counted += rtc::testing::detail::MallocGateCount();
+    }
+    ASSERT_EQ(rtc::testing::detail::MallocGateDepth(), 0) << "the hooks are not balanced";
+    for (const Candidate& c : rig->search.Candidates()) {
+      continuous_used += c.continuous_used ? 1 : 0;
+      pinned += c.pinned && c.solved ? 1 : 0;
+      moves += c.continuous_moves;
+    }
+    if (i == 1) {
+      ASSERT_TRUE(wakes[i].plan.valid) << Table(rig->search, wakes[i].stats);
+      arm->has_following = true;
+      arm->following = rig->search.Solution()->seg;
+      arm->following.segment_seq = 11;
+      followed_t_c = wakes[i].plan.t_c_ns;
+    }
+  }
+  EXPECT_EQ(counted, 0U) << "Plan allocated outside the QP solvers";
+  EXPECT_GT(continuous_used, 4);
+  EXPECT_GT(pinned, 0) << "no wake solved a pinned candidate";
+  EXPECT_GT(moves, 4);
+  EXPECT_GT(log.solver_calls, 30);
+  EXPECT_GT(log.stages, 100);
 }
 
 }  // namespace

@@ -77,7 +77,8 @@
 | E2-F01 – F03 | [#633](https://github.com/hyujun/rtc-framework/issues/633) · [#634](https://github.com/hyujun/rtc-framework/issues/634) · [#635](https://github.com/hyujun/rtc-framework/issues/635) | G1 자산 · config · launch · joint 구동 |
 | E1-F12 | [#738](https://github.com/hyujun/rtc-framework/issues/738) | 포구 탐색 · 구간 계획기의 추상 interface (`CatchSearch` · `SegmentPlanner`) |
 | E1-F13 | [#739](https://github.com/hyujun/rtc-framework/issues/739) | mpc_docking 수치 코어 `MpcDockingSegmentCore` — 상대상태 · corridor · 확률 제약 · 토크 판정의 NLP (ProxQP 위 SQP). 구현한 식은 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) §17 |
-| E1-F14 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
+| E1-F14 | [#740](https://github.com/hyujun/rtc-framework/issues/740) | NLP search 코어 `NlpCatchSearch` — 후보마다 `MpcDockingSegmentCore` 로 팔 궤적을 풀어 포구 후보를 고른다 (채택 전 · 채택 뒤, 탐색 ↔ 구간 계획기의 자리). 스위치 둘은 기본이 꺼짐이다: 후보의 셀 안에서 포구 시각을 푸는 것 (`continuous_tc`), 채택 뒤의 탐색 창 (`follow_window`). 부르는 것은 테스트뿐이다 — cycle 은 E1-F16. 구현한 식은 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) §17.11 · §17.12 |
+| E1-F15 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
 
 ## 4. `MD-n` — MPC · dual-arm 확장의 결정
 
@@ -138,7 +139,7 @@
 | MD-57 | `mpc` 에서 RT 가 plan 을 따르는 동안 계획기는 탐색을 돌리지 않고 그 wake 에 구간을 다시 푼다. 지금의 코드가 그렇다 — 결정은 "탐색은 채택 뒤에도 돈다" 로 바뀌었고 E1-F16 · F17 이 이 행을 지운다 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) §4). | `IB/src/controllers/catching/controller.cpp` (`Not under mpc`), `planner_closed_form.yaml` (헤더 주석) / L3 §4.7 · §5.3 |
 | MD-58 | 재계획의 $x_0$ 는 RT 가 보고한 구간 (대기 구간, 없으면 따르는 구간) 에서 평가하고 같은 포구 전 격자점은 새 예측으로 다시 푼다 (`replan.same_point`). 대기 슬롯의 교체는 node 0 시각이 같을 때다. | `IB/include/integrated_bringup/logging/catching_diag_log_pod.hpp` (`kReplaced`), `demo_catching_controller.hpp` (`segment_pending`) / L7 §4.3a, L3 §5.3 |
 | MD-59 | 폐기 — 측정 전용 키 `planner.segment.mpc.shadow` 는 지워졌다. | — / — |
-| MD-60 | 간격이 둘인 구간은 payload 의 `n_pre` · `dt_pre_ns` 로 싣고 노드 시각은 `SegmentNodeTimeNs` 한 함수가 정한다 (`ValidateSegmentNodes` · 샘플러가 그것을 쓴다). | `RCI/trajectory.hpp` (TWO SPACINGS), `IB/src/controllers/catching/controller.cpp` / f §1.6, L0 (`kMaxSegmentNodes`) |
+| MD-60 | 간격이 둘인 구간은 payload 의 `n_pre` · `dt_pre_ns` 로 싣고 노드 시각은 `SegmentNodeTimeNs` 한 함수가 정한다 (`ValidateSegmentNodes` · 샘플러가 그것을 쓴다). 포구 노드 앞 구간 하나의 길이가 다른 구간은 그 길이를 `dt_catch_ns` 로 싣는다 — 0 이 "`dt_pre_ns` 와 같다" 이고 그 유일한 표기다. | `RCI/trajectory.hpp` (TWO SPACINGS), `IB/src/controllers/catching/controller.cpp` / f §1.6, L0 (`kMaxSegmentNodes`) |
 | MD-61 | 포구 뒤 재계획은 격자점 `replan.k_max` (출하 2) 까지이고 정지 끝은 그대로다. | `cfg` `replan.k_max` / f §1.6, L3 §5.3 |
 | MD-62 | 첫 풀이의 기준은 관절별 최소 jerk 곡선이고 게시 조건은 풀이 성공 · 예산 · 효력 시각 전 · slack · 포구 노드 위치 오차 ≤ `publish.catch_pos_err_max` · 속도 극값 · 마지막 노드의 정지다. 못 넘으면 구간도 plan 도 게시하지 않는다. | `cfg` `publish.catch_pos_err_max` · `linearization.ref_speed_fraction`, `IB/include/integrated_bringup/logging/planner_events_csv.hpp` / f §1.5 |
 | MD-63 | 첫 풀이의 $\hat p_b,\hat v_b,a_d$ 는 plan 의 값이고 재계획은 가장 새 궤적을 $t_c$ 에서 읽으며 $\Sigma_p$ 는 $t_c$ 를 감싸는 두 표본을 선형 보간한다. $W_p$ 는 $\Sigma_p$ 의 고유값마다 하한 · 상한을 둔 가중이고 공분산이 없으면 상수 가중이다. | `cfg` `catch.kappa` · `sigma_floor` · `w_max` · `w_const`, `RCS/catching/mpc_segment_core.cpp` (`CatchPositionWeight`), `RCS/catching/mpc_segment_planner.cpp` / f §1.6 |

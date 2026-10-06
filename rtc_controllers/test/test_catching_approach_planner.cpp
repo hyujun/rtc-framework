@@ -908,6 +908,37 @@ TEST(ApproachPlanner, BetweenNodeSpeedFindsTheInteriorExtremum) {
 
 // ── 4. Replans ───────────────────────────────────────────────────────────────
 
+// The segment MPC never stretches the catch interval (E1-F14, #740): whatever
+// its output buffer held, the catch interval's length comes back 0 — on the
+// first segment, a pre-catch replan and a stop replan. The shared digest does
+// not read that field, so this is what pins it.
+TEST(ApproachPlanner, ItsSegmentsCarryNoCatchIntervalLength) {
+  Rig r(Arm7());
+  r.out.dt_catch_ns = 77 * kMs;
+  const Started s = StartPlan(r, kT0, 800 * kMs);
+  ASSERT_NE(s.seq, 0U);
+  ASSERT_EQ(r.out.n_pre, 6);
+  EXPECT_EQ(r.out.dt_catch_ns, 0);
+
+  r.out.dt_catch_ns = 77 * kMs;
+  std::int64_t now = kT0 + 20 * kMs;
+  SetClock(now);
+  ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, s.seq, 0),
+                               BallFor(s.c), r.out, r.rec))
+      << Why(r.rec);
+  ASSERT_GT(r.out.n_pre, 0);
+  EXPECT_EQ(r.out.dt_catch_ns, 0);
+
+  r.out.dt_catch_ns = 77 * kMs;
+  now = s.t_c - (kTArm + kReplan + 2 * kH) - 1 * kMs;
+  SetClock(now);
+  ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, 0, s.seq),
+                               BallFor(s.c), r.out, r.rec))
+      << Why(r.rec);
+  ASSERT_EQ(r.out.n_pre, 0);
+  EXPECT_EQ(r.out.dt_catch_ns, 0);
+}
+
 TEST(ApproachPlanner, ASamePointResolveIsWarmAndKeepsNodeZero) {
   Rig r(Arm7());
   const Started s = StartPlan(r, kT0, 800 * kMs);

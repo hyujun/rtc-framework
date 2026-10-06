@@ -45,6 +45,8 @@ using rtc::catching::ComputeDockingImpact;
 using rtc::catching::ComputeDockingManipulability;
 using rtc::catching::ComputeDockingRelativeState;
 using rtc::catching::DockingAxialSpeedRow;
+using rtc::catching::DockingBallGradient;
+using rtc::catching::DockingBallGradientOf;
 using rtc::catching::DockingCorridorMinSlack;
 using rtc::catching::DockingCorridorRow;
 using rtc::catching::DockingCovariance6;
@@ -951,6 +953,200 @@ TEST(DockingRelativeState, SizeMismatchIsRejected) {
   DockingRelativeState rel;
   rel.Resize(s.model.nv - 1);
   EXPECT_FALSE(ComputeDockingRelativeState(kin, s.p_b, s.v_b, rel));
+}
+
+// ── Derivatives with respect to the ball (E1-F14 PR 2, #740) ─────────────────
+// A catch instant that is a variable moves the ball the catch node's rows
+// read. Each gradient in (p_b, v_b) is checked against central differences of
+// the row's VALUE with the robot state held fixed — and its rate along a
+// prediction against the value's difference along that prediction.
+
+using BallFn =
+    std::function<Eigen::VectorXd(const Eigen::Vector3d& p_b, const Eigen::Vector3d& v_b)>;
+
+// Central difference of f in p_b (wrt_v = false) or v_b: rows × 3.
+Eigen::MatrixXd FdBall(const State& s, const BallFn& f, bool wrt_v) {
+  const Eigen::VectorXd f0 = f(s.p_b, s.v_b);
+  Eigen::MatrixXd jac(f0.size(), 3);
+  for (Eigen::Index i = 0; i < 3; ++i) {
+    Eigen::Vector3d pp = s.p_b;
+    Eigen::Vector3d pm = s.p_b;
+    Eigen::Vector3d vp = s.v_b;
+    Eigen::Vector3d vm = s.v_b;
+    (wrt_v ? vp : pp)[i] += kFdStep;
+    (wrt_v ? vm : pm)[i] -= kFdStep;
+    jac.col(i) = (f(pp, vp) - f(pm, vm)) / (2.0 * kFdStep);
+  }
+  return jac;
+}
+
+Evaluated EvaluateWithBall(const State& s, const Eigen::Vector3d& p_b, const Eigen::Vector3d& v_b) {
+  State moved = s;
+  moved.p_b = p_b;
+  moved.v_b = v_b;
+  return Evaluate(moved, s.q, s.v);
+}
+
+TEST(DockingRelativeState, RelativeStateMatchesFiniteDifferencesInTheBall) {
+  for (const State& s : States()) {
+    const Evaluated at = Evaluate(s, s.q, s.v);
+    const BallFn r_h = [&](const Eigen::Vector3d& p, const Eigen::Vector3d& v) {
+      return Eigen::VectorXd(EvaluateWithBall(s, p, v).rel.r_h);
+    };
+    const BallFn nu_h = [&](const Eigen::Vector3d& p, const Eigen::Vector3d& v) {
+      return Eigen::VectorXd(EvaluateWithBall(s, p, v).rel.nu_h);
+    };
+    const Eigen::MatrixXd fd_nu_p = FdBall(s, nu_h, false);
+    EXPECT_LT(MaxAbs(FdBall(s, r_h, false) - at.rel.dr_dpb), kFdTol) << s.arm.name;
+    EXPECT_LT(MaxAbs(FdBall(s, r_h, true)), 1e-9) << s.arm.name << " r^H does not read v_b";
+    EXPECT_LT(MaxAbs(fd_nu_p - at.rel.dnu_dpb), kFdTol) << s.arm.name;
+    EXPECT_LT(MaxAbs(FdBall(s, nu_h, true) - at.rel.dnu_dvb), kFdTol) << s.arm.name;
+    // The transport term is what a rotating hand adds: without it the
+    // derivative in p_b would be zero, and here it is not.
+    EXPECT_GT(MaxAbs(fd_nu_p), 0.2) << s.arm.name << ": the fixture's hand must rotate";
+  }
+}
+
+// A catch-node row and, when asked, its ball gradient.
+using BallRowFn = std::function<void(const Evaluated&, DockingScalar&, DockingBallGradient*)>;
+
+void ExpectBallGradient(const State& s, const BallRowFn& row, const char* what, bool reads_p,
+                        bool reads_v) {
+  const Eigen::Index n = s.model.nv;
+  const Evaluated at = Evaluate(s, s.q, s.v);
+  DockingScalar with;
+  DockingScalar without;
+  with.Resize(n);
+  without.Resize(n);
+  DockingBallGradient g;
+  row(at, with, &g);
+  row(at, without, nullptr);
+  // Asking for the ball gradient changes nothing else, to the bit.
+  EXPECT_EQ(with.value, without.value) << what;
+  EXPECT_EQ(with.dq, without.dq) << what;
+  EXPECT_EQ(with.dv, without.dv) << what;
+  const BallFn value = [&](const Eigen::Vector3d& p, const Eigen::Vector3d& v) {
+    DockingScalar out;
+    out.Resize(n);
+    row(EvaluateWithBall(s, p, v), out, nullptr);
+    return Eigen::VectorXd::Constant(1, out.value);
+  };
+  const Eigen::MatrixXd fd_p = FdBall(s, value, false);
+  const Eigen::MatrixXd fd_v = FdBall(s, value, true);
+  EXPECT_LT(MaxAbs(fd_p.row(0).transpose() - g.dp), kFdTol * std::max(1.0, MaxAbs(fd_p)))
+      << what << " ∂/∂p_b on " << s.arm.name;
+  EXPECT_LT(MaxAbs(fd_v.row(0).transpose() - g.dv), kFdTol * std::max(1.0, MaxAbs(fd_v)))
+      << what << " ∂/∂v_b on " << s.arm.name;
+  // Two orders above the tolerance the gradients are held to: a dropped term
+  // of this size cannot pass.
+  if (reads_p) {
+    EXPECT_GT(MaxAbs(fd_p), 1e-4) << what << ": the fixture does not exercise ∂/∂p_b";
+  }
+  if (reads_v) {
+    EXPECT_GT(MaxAbs(fd_v), 1e-4) << what << ": the fixture does not exercise ∂/∂v_b";
+  }
+  // Along a prediction — the ball accelerating, and not only by gravity — the
+  // row moves at Rate(v_b, a_b).
+  const Eigen::Vector3d a_b(0.7, -1.1, -9.81);
+  const auto along = [&](double dt) {
+    return value(s.p_b + s.v_b * dt + 0.5 * dt * dt * a_b, s.v_b + a_b * dt)[0];
+  };
+  const double fd_rate = (along(kFdStep) - along(-kFdStep)) / (2.0 * kFdStep);
+  EXPECT_NEAR(g.Rate(s.v_b, a_b), fd_rate, kFdTol * std::max(1.0, std::abs(fd_rate)))
+      << what << " rate on " << s.arm.name;
+  EXPECT_GT(std::abs(fd_rate), 1e-3) << what << ": the fixture's row does not move in time";
+  // The acceleration's part is there: with a_b = 0 the rate is another number.
+  if (reads_v) {
+    EXPECT_GT(std::abs(g.Rate(s.v_b, a_b) - g.Rate(s.v_b, Eigen::Vector3d::Zero())), 1e-4) << what;
+  }
+}
+
+TEST(DockingRelativeState, CatchNodeRowsMatchFiniteDifferencesInTheBall) {
+  const Eigen::Matrix3d sigma_p = TestSigmaP();
+  const DockingCovariance6 sigma_b = TestSigmaB();
+  const double eps = 1e-4;
+  for (const State& s : States()) {
+    const double c_now = Evaluate(s, s.q, s.v).rel.c;
+    for (const double c_min : {0.3 * c_now, 1.5 * c_now}) {
+      for (const Eigen::Vector2d& a : {Eigen::Vector2d(1.0, 0.0), Eigen::Vector2d(-0.6, 0.8)}) {
+        const BallRowFn lateral = [&](const Evaluated& e, DockingScalar& out,
+                                      DockingBallGradient* ball) {
+          DockingLateralChanceRow(e.kin, e.rel, sigma_p, a, 2.3, c_min, eps, out, ball);
+        };
+        ExpectBallGradient(s, lateral, c_min < c_now ? "lateral chance" : "lateral chance (c̃)",
+                           true, true);
+      }
+    }
+    const BallRowFn timing = [&](const Evaluated& e, DockingScalar& out,
+                                 DockingBallGradient* ball) {
+      DockingTimingRow(e.kin, e.rel, sigma_p, 0.012, eps, out, ball);
+    };
+    // k_t is a time: the row's gradients are of its size.
+    {
+      const Eigen::Index n = s.model.nv;
+      DockingScalar out;
+      out.Resize(n);
+      DockingBallGradient g;
+      timing(Evaluate(s, s.q, s.v), out, &g);
+      const BallFn value = [&](const Eigen::Vector3d& p, const Eigen::Vector3d& v) {
+        DockingScalar o;
+        o.Resize(n);
+        timing(EvaluateWithBall(s, p, v), o, nullptr);
+        return Eigen::VectorXd::Constant(1, o.value);
+      };
+      EXPECT_LT(MaxAbs(FdBall(s, value, false).row(0).transpose() - g.dp), kFdTol) << s.arm.name;
+      EXPECT_LT(MaxAbs(FdBall(s, value, true).row(0).transpose() - g.dv), kFdTol) << s.arm.name;
+      EXPECT_NEAR(g.dv.norm(), 0.012, 1e-12) << "∂/∂v_b of c·k_t is −k_t R e₃";
+    }
+    for (const double kappa : {-2.1, 2.1}) {
+      const BallRowFn axial = [&](const Evaluated& e, DockingScalar& out,
+                                  DockingBallGradient* ball) {
+        DockingAxialSpeedRow(e.kin, e.rel, sigma_b, kappa, eps, out, ball);
+      };
+      ExpectBallGradient(s, axial, "axial speed", true, true);
+    }
+    const BallRowFn face = [&](const Evaluated& e, DockingScalar& out, DockingBallGradient* ball) {
+      DockingLateralSpeedRow(e.kin, e.rel, sigma_b, Eigen::Vector2d(0.5, std::sqrt(0.75)), 1.9, eps,
+                             out, ball);
+    };
+    ExpectBallGradient(s, face, "lateral speed", true, true);
+    // The entrance plane and the terminal cost read r^H and ν^H themselves.
+    const BallRowFn gap = [&](const Evaluated& e, DockingScalar& out, DockingBallGradient* ball) {
+      out.value = e.rel.s;
+      if (ball != nullptr) {
+        *ball = DockingBallGradientOf(e.rel, Eigen::Vector3d::UnitZ(), Eigen::Vector3d::Zero());
+      }
+    };
+    ExpectBallGradient(s, gap, "entrance gap", true, false);
+  }
+}
+
+TEST(DockingRelativeState, ImpactMatchesFiniteDifferencesInTheBallsVelocity) {
+  const Eigen::Vector3d p_c_hand(0.012, -0.02, 0.035);
+  const double m_ball = 0.058;
+  const double restitution = 0.4;
+  for (const State& s : States()) {
+    const ImpactEval at = EvaluateImpact(s, s.q, s.v, p_c_hand, m_ball, restitution);
+    ASSERT_TRUE(at.ok);
+    const BallFn values = [&](const Eigen::Vector3d&, const Eigen::Vector3d& v) {
+      State moved = s;
+      moved.v_b = v;
+      const ImpactEval e = EvaluateImpact(moved, s.q, s.v, p_c_hand, m_ball, restitution);
+      EXPECT_TRUE(e.ok);
+      Eigen::VectorXd out(4);
+      out << e.impact.g_n.value, e.impact.energy.value, e.impact.impulse.value,
+          e.impact.root_energy.value;
+      return out;
+    };
+    const Eigen::MatrixXd fd = FdBall(s, values, true);
+    EXPECT_LT(MaxAbs(fd.row(0).transpose() - at.impact.g_n_dvb), kFdTol) << s.arm.name;
+    EXPECT_LT(MaxAbs(fd.row(1).transpose() - at.impact.energy_dvb), kFdTol) << s.arm.name;
+    EXPECT_LT(MaxAbs(fd.row(2).transpose() - at.impact.impulse_dvb), kFdTol) << s.arm.name;
+    EXPECT_LT(MaxAbs(fd.row(3).transpose() - at.impact.root_energy_dvb), kFdTol) << s.arm.name;
+    EXPECT_NEAR(at.impact.g_n_dvb.norm(), 1.0, 1e-12);
+    EXPECT_GT(MaxAbs(fd.row(1)), 1e-3) << "the fixture's ball must hit";
+    EXPECT_GT(MaxAbs(fd.row(3)), 1e-3);
+  }
 }
 
 }  // namespace

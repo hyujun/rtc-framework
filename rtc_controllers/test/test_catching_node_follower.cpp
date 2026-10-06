@@ -24,6 +24,7 @@
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
+#include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
@@ -45,8 +46,10 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -885,6 +888,408 @@ TEST(SegmentAdmission, ASegmentForAnotherTrackIsNotThisPlans) {
   ctx.now = rtc::catching::NowReal{p.publish_ns + 2'000'000};
   ctx.plan_track_generation = 11;
   EXPECT_EQ(rtc::catching::JudgeSegment(p, ctx, none), SegmentRefusal::kNone);
+}
+
+// ── A catch interval with its own length (E1-F14 PR 2, #740) ─────────────────
+// MakeMixedPlan's segment with its LAST pre-catch interval at `dt_catch_ns`
+// instead of Δ_pre: the nodes before it stay where they were and the catch
+// node is at t_c. The oracle integrates the drawn jerks over the builder's own
+// list of durations, so a sampler that read the catch interval at Δ_pre, put
+// its start one column off, or measured from the wrong node disagrees by O(1).
+
+MixedPlan MakeCatchIntervalPlan(const Eigen::VectorXd& q0_model, std::uint32_t seed, int n_pre,
+                                int n_stop, std::int64_t dt_catch_ns) {
+  const int nv = static_cast<int>(q0_model.size());
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<double> jerk(-10.0, 10.0);
+  std::uniform_real_distribution<double> vel(-0.5, 0.5);
+  MixedPlan m;
+  SegmentSnapshot& p = m.p;
+  p.valid = true;
+  p.nv = nv;
+  p.n_pre = n_pre;
+  p.n_nodes = n_pre + n_stop;
+  p.dt_ns = kDtStopNs;
+  p.dt_pre_ns = kDtPreNs;
+  p.dt_catch_ns = dt_catch_ns;
+  p.k0 = 0;
+  p.t_c_ns = kTc;
+  p.t0_ns = kTc - static_cast<std::int64_t>(n_pre - 1) * kDtPreNs - dt_catch_ns;
+  p.plan_id = 7;
+  p.segment_seq = 1;
+  Eigen::VectorXd q = q0_model;
+  Eigen::VectorXd qd(nv);
+  Eigen::VectorXd qdd = Eigen::VectorXd::Zero(nv);
+  for (int j = 0; j < nv; ++j) {
+    qd[j] = vel(rng);
+  }
+  m.q0 = q;
+  m.qd0 = qd;
+  m.qdd0 = qdd;
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    for (int mj = 0; mj < nv; ++mj) {
+      const int d = kDeviceOfModel[static_cast<std::size_t>(mj)];
+      p.q[Idx(k, d)] = q[mj];
+      p.qd[Idx(k, d)] = qd[mj];
+      p.qdd[Idx(k, d)] = qdd[mj];
+    }
+    if (k == p.n_nodes) {
+      for (int j = 0; j < nv; ++j) {
+        p.qd[Idx(k, j)] = 0.0;
+        p.qdd[Idx(k, j)] = 0.0;
+      }
+      break;
+    }
+    const double dt = k < n_pre - 1    ? static_cast<double>(kDtPreNs) * 1e-9
+                      : k == n_pre - 1 ? static_cast<double>(dt_catch_ns) * 1e-9
+                                       : static_cast<double>(kDtStopNs) * 1e-9;
+    Eigen::VectorXd u(nv);
+    for (int mj = 0; mj < nv; ++mj) {
+      u[mj] = jerk(rng);
+      q[mj] += qd[mj] * dt + 0.5 * qdd[mj] * dt * dt + u[mj] * dt * dt * dt / 6.0;
+      qd[mj] += qdd[mj] * dt + 0.5 * u[mj] * dt * dt;
+      qdd[mj] += u[mj] * dt;
+    }
+    m.dt_s.push_back(dt);
+    m.jerk.push_back(u);
+  }
+  return m;
+}
+
+// Shorter and longer than Δ_pre, neither a multiple of anything on the grid.
+constexpr std::array<std::int64_t, 2> kCatchLengths{kDtPreNs - 37'000'003, kDtPreNs + 29'000'007};
+
+TEST(SegmentPayload, NodeTimesFollowTheCatchIntervalsOwnLength) {
+  for (const std::int64_t dt_catch : kCatchLengths) {
+    const SegmentSnapshot p =
+        MakeCatchIntervalPlan(Eigen::VectorXd::Constant(6, 0.3), 71, 3, 7, dt_catch).p;
+    ASSERT_TRUE(ValidateSegmentNodes(p));
+    // The nodes before the catch node are where a segment WITHOUT the field
+    // has them, counted from node 0 …
+    EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 0), p.t0_ns);
+    EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 1), p.t0_ns + kDtPreNs);
+    EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 2), p.t0_ns + 2 * kDtPreNs);
+    // … the catch node is at t_c, which is NOT t0 + n_pre·Δ_pre …
+    EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 3), kTc);
+    EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 3) - rtc::catching::SegmentNodeTimeNs(p, 2),
+              dt_catch);
+    EXPECT_NE(rtc::catching::SegmentNodeTimeNs(p, 3), p.t0_ns + 3 * kDtPreNs);
+    // … and the stop nodes follow it.
+    EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 4), kTc + kDtStopNs);
+    EXPECT_EQ(rtc::catching::SegmentNodeTimeNs(p, 10), kTc + 7 * kDtStopNs);
+  }
+  // The grid helper with the argument left out is the two-spacing grid.
+  EXPECT_EQ(rtc::catching::SegmentGridNodeTimeNs(100, 400, 100, 50, 3, 3), 400);
+  EXPECT_EQ(rtc::catching::SegmentGridNodeTimeNs(100, 400, 100, 50, 3, 2), 300);
+  EXPECT_EQ(rtc::catching::SegmentGridNodeTimeNs(130, 400, 100, 50, 3, 2, 70), 330);
+  EXPECT_EQ(rtc::catching::SegmentGridNodeTimeNs(130, 400, 100, 50, 3, 3, 70), 400);
+  EXPECT_EQ(rtc::catching::SegmentGridNodeTimeNs(130, 400, 100, 50, 3, 5, 70), 500);
+}
+
+TEST_F(NodeFollowerTest, CatchIntervalSampleIsTheNodesAndTheIntegratedJerkBetweenThem) {
+  for (const std::int64_t dt_catch : kCatchLengths) {
+    for (const int n_pre : {1, 2, 6}) {
+      SCOPED_TRACE("n_pre " + std::to_string(n_pre) + ", dt_catch " + std::to_string(dt_catch));
+      const MixedPlan m = MakeCatchIntervalPlan(
+          arm_.q_nominal, 80U + static_cast<std::uint32_t>(n_pre), n_pre, 7, dt_catch);
+      const SegmentSnapshot& p = m.p;
+      ASSERT_TRUE(ValidateSegmentNodes(p));
+      std::array<double, kMaxSegmentNv> q{};
+      std::array<double, kMaxSegmentNv> qd{};
+      std::array<double, kMaxSegmentNv> qdd{};
+      // At a node: the node, to the bit (every node but N, which the builder
+      // put at rest — that one is the held value).
+      for (int k = 0; k <= p.n_nodes; ++k) {
+        ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, rtc::catching::SegmentNodeTimeNs(p, k),
+                                                         q, qd, qdd));
+        for (int j = 0; j < p.nv; ++j) {
+          const auto ju = static_cast<std::size_t>(j);
+          EXPECT_EQ(q[ju], p.q[Idx(k, j)]) << "node " << k;
+          EXPECT_EQ(qd[ju], p.qd[Idx(k, j)]) << "node " << k;
+          EXPECT_EQ(qdd[ju], p.qdd[Idx(k, j)]) << "node " << k;
+        }
+      }
+      // Between nodes: the jerks the builder drew, integrated. The ends of
+      // the catch interval ± 1 ns are in the list by name; the last stop
+      // interval is not (node N was put at rest).
+      const std::int64_t catch_begin = rtc::catching::SegmentNodeTimeNs(p, n_pre - 1);
+      std::vector<std::int64_t> instants{p.t0_ns,     p.t0_ns + 1,     catch_begin - 1,
+                                         catch_begin, catch_begin + 1, kTc - 1,
+                                         kTc,         kTc + 1};
+      if (n_pre == 1) {
+        instants.erase(instants.begin() + 2);  // before node 0
+      }
+      std::mt19937_64 rng(static_cast<std::uint64_t>(n_pre));
+      std::uniform_int_distribution<std::int64_t> anywhere(
+          p.t0_ns, rtc::catching::SegmentNodeTimeNs(p, p.n_nodes - 1));
+      std::uniform_int_distribution<std::int64_t> in_catch(catch_begin, kTc);
+      for (int i = 0; i < 300; ++i) {
+        instants.push_back(anywhere(rng));
+        instants.push_back(in_catch(rng));
+      }
+      Eigen::VectorXd oq;
+      Eigen::VectorXd oqd;
+      Eigen::VectorXd oqdd;
+      double worst = 0.0;
+      for (const std::int64_t t : instants) {
+        ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd)) << t - p.t0_ns;
+        Oracle(m, static_cast<double>(t - p.t0_ns) * 1e-9, oq, oqd, oqdd);
+        worst = std::max({worst, (ToModel(q, p.nv) - oq).cwiseAbs().maxCoeff(),
+                          (ToModel(qd, p.nv) - oqd).cwiseAbs().maxCoeff(),
+                          (ToModel(qdd, p.nv) - oqdd).cwiseAbs().maxCoeff()});
+      }
+      EXPECT_LT(worst, 1e-9);
+      // Continuous at both ends of the catch interval: one nanosecond before
+      // an end, extended by that nanosecond at the sampled rate, is the end.
+      for (const std::int64_t end : {catch_begin, kTc}) {
+        if (end == p.t0_ns) {
+          continue;  // n_pre 1: the catch interval starts the segment
+        }
+        std::array<double, kMaxSegmentNv> q1{};
+        std::array<double, kMaxSegmentNv> qd1{};
+        std::array<double, kMaxSegmentNv> qdd1{};
+        ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, end - 1, q, qd, qdd));
+        ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(p, end, q1, qd1, qdd1));
+        for (std::size_t j = 0; j < static_cast<std::size_t>(p.nv); ++j) {
+          EXPECT_NEAR(q1[j], q[j] + qd[j] * 1e-9, 1e-9);
+          EXPECT_NEAR(qd1[j], qd[j] + qdd[j] * 1e-9, 1e-9);
+          EXPECT_NEAR(qdd1[j], qdd[j], 1e-6);  // the jerk over 1 ns
+        }
+      }
+    }
+  }
+}
+
+TEST_F(NodeFollowerTest, CatchIntervalHoldsNodeNPastItsEndAndFkStillRuns) {
+  const SegmentSnapshot p = MakeCatchIntervalPlan(arm_.q_nominal, 90, 3, 7, kCatchLengths[1]).p;
+  const std::int64_t end = kTc + 7 * kDtStopNs;
+  SegmentNodeSample s{};
+  ASSERT_TRUE(follower_.Sample(p, end - 1, s));
+  EXPECT_FALSE(s.held);
+  ASSERT_TRUE(follower_.Sample(p, end, s));
+  EXPECT_TRUE(s.held);
+  for (int j = 0; j < p.nv; ++j) {
+    EXPECT_EQ(s.q[static_cast<std::size_t>(j)], p.q[Idx(p.n_nodes, j)]);
+  }
+  // Before node 0 it fails and leaves the output alone, as every segment does.
+  SegmentNodeSample before{};
+  before.t_s = -7.0;
+  EXPECT_FALSE(follower_.Sample(p, p.t0_ns - 1, before));
+  EXPECT_EQ(before.t_s, -7.0);
+}
+
+// A shape that is not well formed is refused by BOTH readers: the validator
+// (once per new payload) and the sampler (every tick, which does not run it).
+TEST_F(NodeFollowerTest, AMalformedCatchIntervalIsRefusedByTheValidatorAndTheSampler) {
+  const SegmentSnapshot good = MakeCatchIntervalPlan(arm_.q_nominal, 91, 3, 7, kCatchLengths[0]).p;
+  const std::int64_t t = good.t0_ns + good.dt_pre_ns / 2;
+  SegmentNodeSample s{};
+  ASSERT_TRUE(ValidateSegmentNodes(good));
+  ASSERT_TRUE(follower_.Sample(good, t, s));
+  const auto expect_refused = [&](auto mutate, const char* what) {
+    SegmentSnapshot p = good;
+    mutate(p);
+    std::array<double, kMaxSegmentNv> q{};
+    std::array<double, kMaxSegmentNv> qd{};
+    std::array<double, kMaxSegmentNv> qdd{};
+    EXPECT_FALSE(ValidateSegmentNodes(p)) << what;
+    EXPECT_FALSE(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd)) << what;
+    EXPECT_FALSE(follower_.Sample(p, t, s)) << what;
+  };
+  expect_refused([](SegmentSnapshot& p) { p.t0_ns += 1; }, "t0 one ns late");
+  expect_refused([](SegmentSnapshot& p) { p.t0_ns -= 1; }, "t0 one ns early");
+  // Node 0 placed as if the catch interval were Δ_pre.
+  expect_refused([](SegmentSnapshot& p) { p.t0_ns = p.t_c_ns - p.n_pre * p.dt_pre_ns; },
+                 "t0 of the two-spacing grid");
+  expect_refused(
+      [](SegmentSnapshot& p) {
+        p.dt_catch_ns = -1;
+        p.t0_ns = p.t_c_ns - (p.n_pre - 1) * p.dt_pre_ns - p.dt_catch_ns;
+      },
+      "a negative length");
+  expect_refused(
+      [](SegmentSnapshot& p) {
+        p.dt_catch_ns = rtc::catching::kMaxSegmentDtCatchNs + 1;
+        p.t0_ns = p.t_c_ns - (p.n_pre - 1) * p.dt_pre_ns - p.dt_catch_ns;
+      },
+      "a length over its bound");
+  // The two-spacing grid has ONE encoding: the field at 0.
+  expect_refused(
+      [](SegmentSnapshot& p) {
+        p.dt_catch_ns = p.dt_pre_ns;
+        p.t0_ns = p.t_c_ns - p.n_pre * p.dt_pre_ns;
+      },
+      "a length equal to dt_pre");
+  // A stop-only segment has no catch interval to give a length to.
+  SegmentSnapshot stop_only = MakePlan(arm_.q_nominal, 5);
+  ASSERT_TRUE(ValidateSegmentNodes(stop_only));
+  stop_only.dt_catch_ns = 40'000'000;
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  EXPECT_FALSE(ValidateSegmentNodes(stop_only));
+  EXPECT_FALSE(NodeTrajectoryFollower::SampleJoints(stop_only, stop_only.t0_ns + 1, q, qd, qdd));
+  // The bound itself is a length.
+  SegmentSnapshot at_bound = good;
+  at_bound.dt_catch_ns = rtc::catching::kMaxSegmentDtCatchNs;
+  at_bound.t0_ns =
+      at_bound.t_c_ns - (at_bound.n_pre - 1) * at_bound.dt_pre_ns - at_bound.dt_catch_ns;
+  EXPECT_TRUE(ValidateSegmentNodes(at_bound));
+  EXPECT_TRUE(NodeTrajectoryFollower::SampleJoints(at_bound, at_bound.t0_ns + 1, q, qd, qdd));
+}
+
+TEST_F(NodeFollowerTest, CatchIntervalSampleAllocatesNothing) {
+  const SegmentSnapshot p = MakeCatchIntervalPlan(arm_.q_nominal, 92, 6, 7, kCatchLengths[1]).p;
+  SegmentNodeSample s{};
+  ASSERT_TRUE(follower_.Sample(p, p.t0_ns, s));
+  std::size_t news = 0;
+  std::size_t mallocs = 0;
+  {
+    rtc::testing::ScopedAllocGate new_gate;
+    rtc::testing::ScopedMallocGate malloc_gate;
+    for (int i = 0; i < 600; ++i) {
+      const std::int64_t t = p.t0_ns + i * 2'000'000;  // all three parts and past the end
+      static_cast<void>(follower_.Sample(p, t, s));
+    }
+    news = new_gate.count();
+    mallocs = malloc_gate.count();
+  }
+  EXPECT_EQ(news, 0U);
+  EXPECT_EQ(mallocs, 0U);
+}
+
+// ── The payload as it is, pinned bit for bit (E1-F14 PR 2, #740) ─────────────
+// The payload gets a third spacing (the catch interval's own length). A
+// payload that does not use it must be read as before — the validator's
+// verdict, every node instant and every sample, to the bit. The digest was
+// taken BEFORE that change.
+
+std::uint64_t PayloadDigest(const SegmentSnapshot& p, std::uint64_t seed) {
+  rtc::testing::ValueDigest h;
+  h.Add(ValidateSegmentNodes(p));
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    h.Add(rtc::catching::SegmentNodeTimeNs(p, k));
+  }
+  const std::int64_t end = rtc::catching::SegmentNodeTimeNs(p, p.n_nodes);
+  std::vector<std::int64_t> instants{p.t0_ns - 1};
+  for (int k = 0; k <= p.n_nodes; ++k) {
+    const std::int64_t t = rtc::catching::SegmentNodeTimeNs(p, k);
+    instants.insert(instants.end(), {t - 1, t, t + 1});
+  }
+  std::mt19937_64 rng(seed);
+  std::uniform_int_distribution<std::int64_t> pick(p.t0_ns, end + 2 * p.dt_ns);
+  for (int i = 0; i < 400; ++i) {
+    instants.push_back(pick(rng));
+  }
+  for (const std::int64_t t : instants) {
+    std::array<double, kMaxSegmentNv> q{};
+    std::array<double, kMaxSegmentNv> qd{};
+    std::array<double, kMaxSegmentNv> qdd{};
+    bool held = false;
+    h.Add(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd, &held));
+    h.Add(q);
+    h.Add(qd);
+    h.Add(qdd);
+    h.Add(held);
+  }
+  return h.Value();
+}
+
+// The verdicts on shapes that are NOT well formed: both guards, for every
+// malformed field the two-spacing payload has.
+std::uint64_t MalformedDigest(const SegmentSnapshot& good) {
+  rtc::testing::ValueDigest h;
+  const std::int64_t t = good.t0_ns + 1'000'000;
+  const auto add = [&](auto mutate) {
+    SegmentSnapshot p = good;
+    mutate(p);
+    std::array<double, kMaxSegmentNv> q{};
+    std::array<double, kMaxSegmentNv> qd{};
+    std::array<double, kMaxSegmentNv> qdd{};
+    h.Add(ValidateSegmentNodes(p));
+    h.Add(NodeTrajectoryFollower::SampleJoints(p, t, q, qd, qdd));
+    h.Add(q);
+  };
+  add([](SegmentSnapshot&) {});
+  add([](SegmentSnapshot& p) { p.valid = false; });
+  add([](SegmentSnapshot& p) { p.nv = 0; });
+  add([](SegmentSnapshot& p) { p.n_nodes = kMaxSegmentNodes + 1; });
+  add([](SegmentSnapshot& p) { p.dt_ns = 0; });
+  add([](SegmentSnapshot& p) { p.k0 = 1; });
+  add([](SegmentSnapshot& p) { p.t0_ns += 1; });
+  add([](SegmentSnapshot& p) { p.n_pre = -1; });
+  add([](SegmentSnapshot& p) { p.n_pre = p.n_nodes; });
+  add([](SegmentSnapshot& p) { p.dt_pre_ns = 0; });
+  add([](SegmentSnapshot& p) { p.dt_pre_ns = rtc::catching::kMaxSegmentDtPreNs + 1; });
+  add([](SegmentSnapshot& p) { p.qd[Idx(p.n_nodes, 0)] = 2e-3; });
+  add([](SegmentSnapshot& p) { p.q[Idx(0, p.nv - 1)] = kNan; });
+  return h.Value();
+}
+
+struct PinnedPayload {
+  const char* name;
+  std::uint64_t digest;
+};
+
+/// Taken on the code BEFORE the payload learnt the catch interval's length
+/// (E1-F14 PR 2). Integer arithmetic and the closed-form jerk polynomial only:
+/// these do not depend on a solver. A change meant to alter how a payload
+/// WITHOUT that length is read replaces them in a commit of its own that says
+/// why (the rule of kWholeCatchDigest, test_catching_approach_cycle.cpp).
+constexpr std::array<PinnedPayload, 8> kPinnedPayloadDigest{{
+    {"stop_only", 0xc20bcbc5bd0ca4a4ULL},
+    {"stop_only_full", 0x2d751ec4271f9688ULL},
+    {"stop_only_k0_4", 0x9c1b76598bf3559eULL},
+    {"pre_1", 0xe4fe587b1240ef74ULL},
+    {"pre_2", 0x8f45d561e2815633ULL},
+    {"pre_6", 0x7bf142288f936a69ULL},
+    {"malformed_stop_only", 0xad11856410ceb491ULL},
+    {"malformed_pre_6", 0x2d2f9fc04024888aULL},
+}};
+
+TEST(SegmentPayload, APayloadWithoutACatchIntervalLengthIsReadAsBeforeBitForBit) {
+  const Eigen::VectorXd q0 = Eigen::VectorXd::Constant(6, 0.3);
+  std::vector<std::pair<std::string, std::uint64_t>> got;
+  got.emplace_back("stop_only", PayloadDigest(MakePlan(q0, 1), 11));
+  got.emplace_back("stop_only_full", PayloadDigest(MakePlan(q0, 2, kMaxSegmentNodes), 12));
+  got.emplace_back("stop_only_k0_4", PayloadDigest(MakePlan(q0, 3, 10, 4), 13));
+  got.emplace_back("pre_1", PayloadDigest(MakeMixedPlan(q0, 43, 1, 1).p, 14));
+  got.emplace_back("pre_2", PayloadDigest(MakeMixedPlan(q0, 52, 2, 7).p, 15));
+  got.emplace_back("pre_6", PayloadDigest(MakeMixedPlan(q0, 56, 6, 7).p, 16));
+  got.emplace_back("malformed_stop_only", MalformedDigest(MakePlan(q0, 1)));
+  got.emplace_back("malformed_pre_6", MalformedDigest(MakeMixedPlan(q0, 42, 6, 7).p));
+  ASSERT_EQ(got.size(), kPinnedPayloadDigest.size());
+  std::set<std::uint64_t> distinct;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    std::array<char, 32> hex{};
+    std::snprintf(hex.data(), hex.size(), "0x%016llx",
+                  static_cast<unsigned long long>(got[i].second));
+    RecordProperty("payload_digest_" + got[i].first, hex.data());
+    std::printf("[ record ] payload_digest %s: %s\n", got[i].first.c_str(), hex.data());
+    EXPECT_EQ(got[i].first, kPinnedPayloadDigest[i].name);
+    EXPECT_EQ(got[i].second, kPinnedPayloadDigest[i].digest)
+        << got[i].first
+        << ": a payload without a catch-interval length is read differently: " << hex.data()
+        << " (see kPinnedPayloadDigest)";
+    distinct.insert(got[i].second);
+  }
+  EXPECT_EQ(distinct.size(), got.size());
+}
+
+// The digest can tell: a sample one ulp off, or a node instant one ns off.
+TEST(SegmentPayload, ThePinnedPayloadDigestSeesASingleBit) {
+  const Eigen::VectorXd q0 = Eigen::VectorXd::Constant(6, 0.3);
+  const SegmentSnapshot good = MakeMixedPlan(q0, 56, 6, 7).p;
+  const std::uint64_t base = PayloadDigest(good, 16);
+  SegmentSnapshot p = good;
+  p.q[Idx(2, 1)] = std::nextafter(p.q[Idx(2, 1)], 10.0);
+  EXPECT_NE(PayloadDigest(p, 16), base);
+  p = good;
+  p.dt_ns += 1;
+  EXPECT_NE(PayloadDigest(p, 16), base);
+  p = good;
+  p.t0_ns += 1;  // now malformed for the validator; the sampler still reads it
+  EXPECT_NE(PayloadDigest(p, 16), base);
 }
 
 }  // namespace

@@ -30,13 +30,13 @@ vision 이 예측한 공의 궤적을 받아 팔과 손으로 공을 잡는 컨�
 | [L7_supervisor.md](ref/L7_supervisor.md) | 상태 머신, abort 사유, 감속, `mpc` 의 구간 추종, 결과 판정, E-STOP · fault |
 | [L8_bringup.md](ref/L8_bringup.md) | 컨트롤러 통합, sim 기반, 평가, GUI · plot |
 | [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) | MPC planner 의 문제 (구현된 단일 팔 구성은 §1.6), 아직 구현하지 않은 dual-arm · waist 항과 다중 frame CLIK 의 설계 |
-| [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) | 단일 arm-hand 의 NLP search (§11) · mpc_docking (§10) 의 설계 자료 (§0 – §16) 와 그 구현 (§17 — 17.$n$ 이 §$n$ 의 구현). 설계 절은 고치지 않고, 구현한 feature 가 §17 에 구현한 내용을 적는다 (지금은 mpc_docking 의 수치 코어 17.1 – 17.10, E1-F13 — 과 NLP search 의 탐색 코어 17.11 · 17.12, E1-F14). 남은 구현은 E1-F14 의 후보별 연속 포획 시각과 E1-F15 – F21 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) §3 — 그 둘이 꽂힐 interface 는 E1-F12 가 넣었다) |
+| [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) | 단일 arm-hand 의 NLP search (§11) · mpc_docking (§10) 의 설계 자료 (§0 – §16) 와 그 구현 (§17 — 17.$n$ 이 §$n$ 의 구현). 설계 절은 고치지 않고, 구현한 feature 가 §17 에 구현한 내용을 적는다 (지금은 mpc_docking 의 수치 코어 17.1 – 17.10, E1-F13 — 과 NLP search 의 탐색 코어 17.11 · 17.12, E1-F14). 남은 구현은 E1-F15 – F21 ([MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) §3 — 그 둘이 꽂힐 interface 는 E1-F12 가 넣었다) |
 
 - 목적은 **지금 구현의 수학과 구조를 표현하는 것** 이다 — 경위의 기록이 아니다
 - 구현과 다르게 적힌 곳은 지금 구현으로 고쳐 쓴다. **수학이 달라지는 수정은 사용자의 승인을 받고 한다.** 그 밖에는 될 수 있으면 고치지 않는다
 - **설계 자료는 예외다 — 고쳐 쓰지 않는다 (사용자 결정).** 구현보다 먼저 쓴 설계 문서 (지금은 `ball_catching_inverse_dynamics_mpc.md`) 는 원래 설계와 구현을 견주어 볼 수 있게 설계 절을 그대로 두고, 구현한 내용을 문서 끝의 새 절에 원래 절과 대응시켜 적는다. 그 절에는 최종 구현만 적는다 — 달라진 경위는 feature 이슈의 구현 대조표가 갖는다
 - 절 번호는 바꾸지 않는다. 코드 주석이 `L3 §6`, `formulation §1.3` 식으로 인용한다. 새 절은 문서 끝에 더한다
-- planner 는 둘이다: `closed_form` 과 `mpc` (출하 기본값). 포구 후보의 탐색은 두 planner 가 공유하고, `mpc` 에서는 APPROACH 부터 정지까지 팔 기준을 MPC 구간이 만든다. 두 번째 탐색 (`nlp`) 과 세 번째 planner (`mpc_docking`) 는 아직 구현하지 않았다 — 둘이 같이 쓸 수치 코어 (`MpcDockingSegmentCore`, E1-F13) 만 있고 그것을 부르는 것은 테스트뿐이다 (남은 것은 E1-F14 – F21). 그 둘이 꽂힐 추상 interface (`CatchSearch` · `SegmentPlanner`) 는 있다 (E1-F12, [L3 §4.1](ref/L3_planner.md))
+- planner 는 둘이다: `closed_form` 과 `mpc` (출하 기본값). 포구 후보의 탐색은 두 planner 가 공유하고, `mpc` 에서는 APPROACH 부터 정지까지 팔 기준을 MPC 구간이 만든다. 두 번째 탐색 (`nlp`) 과 세 번째 planner (`mpc_docking`) 는 아직 고를 수 없다 — 둘이 같이 쓸 수치 코어 (`MpcDockingSegmentCore`, E1-F13) 와 탐색 코어 (`NlpCatchSearch`, E1-F14) 가 있고 그것들을 부르는 것은 테스트뿐이다 (남은 것은 E1-F15 – F21). 그 둘이 꽂힐 추상 interface (`CatchSearch` · `SegmentPlanner`) 는 있다 (E1-F12, [L3 §4.1](ref/L3_planner.md))
 
 ## 입력 계약
 

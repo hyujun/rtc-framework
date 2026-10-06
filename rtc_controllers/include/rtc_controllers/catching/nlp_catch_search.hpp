@@ -35,7 +35,8 @@
 //     lead (S1) → the ball at every node of its grid → workspace → covariance
 //     → a source segment → catch-pose IK and its catchability gate → joint
 //     reach (S4) → closing-speed window (S3).
-//  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose, and
+//  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose — the
+//     candidate of the followed plan's cell first, whatever its key (8) — and
 //     solve the best L, L = min(max_solves, ⌊(budget − screening)/solve_budget⌋).
 //     Each solve has its own deadline (its share), not the wake's. L is fixed
 //     before the first solve and no solve is skipped for what another took:
@@ -63,6 +64,64 @@
 //     and its w5 / w6 are evaluated there (the IK pose is where the solve was
 //     aimed, not where it ended).
 //
+// ── The catch instant inside a cell (continuous_tc) ───────────────────────────
+// The lattice is 20 – 40 ms coarse and the best catch instant is rarely on it.
+// With `continuous_tc` each solved candidate is solved TWICE:
+//   ① on its lattice instant, as above (the same core, the same start);
+//   ② when ① ended on an iterate, again with the catch instant free inside
+//     the candidate's CELL — δt_c ∈ [−⌊h/2⌋, h − ⌊h/2⌋), further cut to the
+//     instants the lattice search itself would take as a candidate: not
+//     nearer than the minimum lead, not past the window, and — each side of
+//     the lattice instant, found on the prediction the plan reads — as far
+//     as the ball there passes what the screening asks of the ball alone
+//     (inside the prediction, moving, inside the catch box, a covariance
+//     with `chance`). Only the interval that ends at the catch node
+//     stretches: node 0, the start state and every pre-catch node are ①'s,
+//     so the candidate keeps its index, its grid and its place in the next
+//     wake's memory.
+//   ② starts from the candidate's own continuous solution of the previous
+//   wake when there is one, else from ①'s solution at δt_c = 0. It is the
+//   candidate's solution when it is valid by ①'s own rule (in its share,
+//   every hard row, converged) and the ball at the catch instant it ended at
+//   passes the same checks (the cut above finds an END of the instants that
+//   do; one that fails between two that pass is caught here).
+//   Otherwise the candidate keeps ①'s solution and ①'s verdict, and the
+//   record says that ② ran, why it was not taken and what it ended on. What
+//   ② ended on is next wake's start for it either way — and when its search
+//   of the catch instant did not finish that is the best point it had
+//   solved, not the one it stopped at (`continuous_settled`).
+// The core is given the outer cost's two terms as functions of δt_c, so ②
+// minimises J⋆ + J_stop + J_time + J_switch over the trajectory AND the
+// instant; Φ is then evaluated at the instant it ended at, by the same
+// functions as ①'s. A valid ② is taken even if its Φ is the larger one (Φ
+// leaves out J_stop, which the core does not): both are recorded.
+// The covariance ② is solved with is the cell's lattice instant's — the one
+// the screening passed; the plan's sigma_c is the catch instant's own.
+//
+// The cell of the plan the RT follows is the one exception: its catch instant
+// is the PLAN's (not the lattice's, not free) — the candidate is screened
+// there and solved once, by ②'s core with δt_c held. Choosing it is
+// `refreshed`; a catch instant elsewhere in the same cell does not exist as a
+// candidate, so a plan is never replaced by its own cell.
+//
+// ── After adoption ────────────────────────────────────────────────────────────
+// "The plan the RT follows" is a plan of THIS track when the segment it
+// reports carries the track generation of the prediction being searched
+// (a segment carries its plan's track). For such a plan, and only then:
+//  • its CELL — the half-open lattice cell its catch instant is in
+//    (NlpCellOf) — names one candidate, and that candidate is ranked first
+//    when it passes screening: a wake whose budget holds one solve re-solves
+//    what the arm is doing, and can say `refreshed`;
+//  • the cell of the FIRST such plan of the track is remembered (until
+//    ResetTrial, a new track, or a wake on which the RT follows no such
+//    plan), and with `follow_window` ≥ 0 the candidates farther than that
+//    many cells from it are removed before anything else is checked
+//    (`follow_window`) — the catch instant cannot wander off the one the
+//    approach was started for by more than the window, however many times
+//    the plan is replaced. The followed plan's own cell is never removed;
+//  • SearchStats::nlp records that cell and where the chosen candidate is
+//    from it, with or without a window.
+//
 // ── What a wake reports about the plan the RT follows ─────────────────────────
 // SearchStats::decision: kNoCurrent (the RT follows none); kRefreshed (the
 // chosen catch instant is the followed one, to the nanosecond); kReplaced (it
@@ -74,6 +133,8 @@
 //  • Configure is non-RT: it builds every core, input, result, the IK and the
 //    per-candidate memory, and runs each solver once (the first solve of a
 //    ProxQP object is its slowest and allocates the most).
+//  • A solution with δt_c ≠ 0 is a segment whose catch interval has its own
+//    length (SegmentSnapshot::dt_catch_ns) and whose t_c_ns is the plan's.
 //  • Plan, Monitor, NotePublished, ResetTrial are noexcept and allocate
 //    nothing of their own — pinned with a C-level malloc gate over a whole
 //    Plan. The QP solvers inside the IK and the cores DO allocate in their
@@ -184,6 +245,20 @@ struct NlpCatchSearchParams {
   double rank_w_q{1.0};      ///< weight of ‖q^c − q_0‖² in the rank [1/rad²], ≥ 0
   double rank_w_manip{0.0};  ///< weight of ψ_m(q^c) in the rank, ≥ 0
 
+  // ── The catch instant inside a candidate's cell ──
+  /// After a candidate's fixed-grid solve, solve it again with the catch
+  /// instant free inside its lattice cell (MpcDockingSegmentCore's
+  /// catch_time_variable; the step limit and the two penalties are `core`'s).
+  /// A candidate then takes two shares of the budget.
+  bool continuous_tc{false};
+
+  // ── After the RT has adopted a plan ──
+  /// While the RT follows a plan of the track being searched, a wake looks
+  /// only at the candidates within this many lattice cells either side of the
+  /// cell of the FIRST plan it followed on that track (the cell the followed
+  /// plan is in now is never removed). Negative = no window.
+  int follow_window{-1};
+
   // ── The RT's report ──
   double rest_tol{1e-3};            ///< max |q̇_cmd| that counts as "at rest" [rad/s]
   double rt_state_age_max_s{0.05};  ///< oldest report a wake plans from [s]
@@ -253,11 +328,17 @@ class NlpCatchSearch final : public CatchSearch {
     kIkTarget,       ///< no memory: the IK pose as the catch-node target
     kSameCandidate,  ///< its own previous solution, the passed nodes dropped
     kNeighbour,      ///< another candidate's previous solution, stretched in time
+    kFixedSolution,  ///< (continuous solve) this wake's fixed-grid solution of the candidate
   };
 
   struct CandidateRecord {
-    std::int64_t index{0};    ///< lattice index
-    std::int64_t t_c_ns{0};   ///< catch instant
+    std::int64_t index{0};     ///< lattice index
+    std::int64_t t_c_ns{0};    ///< catch instant: t_hat_ns + delta_ns
+    std::int64_t t_hat_ns{0};  ///< the cell's lattice instant (the arm grid's anchor)
+    std::int64_t delta_ns{0};  ///< 0 unless a continuous solution, or a pinned candidate
+    /// The cell of the plan the RT follows, with `continuous_tc`: its catch
+    /// instant is that plan's and does not move.
+    bool pinned{false};
     std::int64_t t_s_ns{0};   ///< node 0's instant
     std::int64_t wait_ns{0};  ///< t_s − t_0
     double lead_s{0.0};       ///< T = t_c − t_0 [s]
@@ -299,6 +380,30 @@ class NlpCatchSearch final : public CatchSearch {
     double c_catch{0.0};  ///< closing speed at the catch node of the solution [m/s]
     double j_reference{0.0}, j_stop{0.0}, j_time{0.0}, j_switch{0.0};
     double phi{0.0};  ///< Φ, meaningful when `reject` is kNone
+    // ── The continuous solve (`continuous_tc`). The fields above are of the
+    // solve the candidate USES; these are of the other one, and of the pair. ──
+    bool continuous_run{false};   ///< it ran
+    bool continuous_used{false};  ///< the candidate's solution is the continuous one
+    /// Why it is not, when it ran and is not: the verdict a fixed-grid solve
+    /// would have had (deadline, hard_row, chance, unconverged, …).
+    NlpReject continuous_reject{NlpReject::kNone};
+    Start continuous_start{Start::kNone};
+    MpcDockingReason continuous_reason{MpcDockingReason::kNone};
+    int continuous_iterations{0};
+    int continuous_moves{0};  ///< moves of the catch instant
+    /// What ② returned solves the problem at the instant it is at (the core's
+    /// catch_time_settled) — also when its search of the instant did not end.
+    bool continuous_settled{false};
+    std::int64_t continuous_solve_ns{0};
+    std::int64_t delta_lo_ns{0}, delta_hi_ns{0};  ///< δt_c's box as given to the core
+    /// The fixed-grid solve of a candidate that uses its continuous solution.
+    NlpReject fixed_reject{NlpReject::kNone};
+    int fixed_iterations{0};
+    std::int64_t fixed_solve_ns{0};
+    double fixed_phi{0.0};  ///< its Φ (meaningful when fixed_reject is kNone)
+    /// What the core minimises — J_ref + J_stop + its two terms in the catch
+    /// instant — at each solve's end (0 for a solve that did not run).
+    double objective_fixed{0.0}, objective_continuous{0.0};
   };
 
   /// The last Plan's candidates, in lattice order.
@@ -315,9 +420,17 @@ class NlpCatchSearch final : public CatchSearch {
   /// starts that candidate from — or nullptr.
   [[nodiscard]] const SegmentSnapshot* RememberedSolution(std::int64_t index) const noexcept;
 
+  /// The CONTINUOUS solution remembered for lattice index `index` (its
+  /// t_c_ns is off the lattice by the δt_c it ended at), or nullptr.
+  [[nodiscard]] const SegmentSnapshot* RememberedContinuous(std::int64_t index) const noexcept;
+
   /// The core for `n_pre` pre-catch intervals, or nullptr: outside
   /// n_pre_min..n_pre_max, or not configured.
   [[nodiscard]] const MpcDockingSegmentCore* Core(int n_pre) const noexcept;
+
+  /// Its twin with the catch instant a variable; nullptr without
+  /// `continuous_tc`.
+  [[nodiscard]] const MpcDockingSegmentCore* ContinuousCore(int n_pre) const noexcept;
 
   // ── Test seams ──────────────────────────────────────────────────────────────
 
@@ -359,7 +472,21 @@ class NlpCatchSearch final : public CatchSearch {
   [[nodiscard]] std::size_t MemorySlot(std::int64_t index) const noexcept;
   [[nodiscard]] const Memory* Remembered(std::int64_t index) const noexcept;
   [[nodiscard]] const Memory* NearestRemembered(std::int64_t index) const noexcept;
+  /// The nearest remembered solution a candidate without one of its own can
+  /// start from (of this arm, begun by the candidate's node 0, catching
+  /// after it, with this stop part), or nullptr.
+  [[nodiscard]] const Memory* UsableNeighbour(const CandidateRecord& c) const noexcept;
 
+  /// What the ball at a catch instant refuses the instant for — the checks of
+  /// the screening that read the ball alone, in its order (kNone: none).
+  [[nodiscard]] NlpReject CatchBallVerdict(const BallNodeSample& ball) const noexcept;
+  /// One end of δt_c's box: `end_ns` when the ball at t̂ + end_ns passes
+  /// CatchBallVerdict, else the farthest instant toward it that does, by
+  /// halving from δt_c = 0 (which the screening passed).
+  [[nodiscard]] std::int64_t CatchOffsetEnd(const TrajectorySnapshot& traj,
+                                            const CovarianceSnapshot& cov, bool cov_matched,
+                                            std::int64_t t_hat_ns,
+                                            std::int64_t end_ns) const noexcept;
   /// x_0 of the candidate at node-0 instant t_s into `c` (model order).
   [[nodiscard]] bool StartState(const PlannerRtState& rt, const ReportedSegments& arm,
                                 bool following, CandidateRecord& c) noexcept;
@@ -371,13 +498,34 @@ class NlpCatchSearch final : public CatchSearch {
   /// Fill the candidate's core input and solve it; sets c.reject and Φ.
   void Solve(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov, bool cov_matched,
              const PlannerRtState& rt, CandidateRecord& c, Memory& out) noexcept;
+  /// The start trajectory of `c` from a remembered solution of the SAME
+  /// candidate (the nodes that have passed dropped), or from another one's
+  /// stretched in time about node 0; false when it cannot be read.
+  void StartFromOwn(const SegmentSnapshot& mine, const CandidateRecord& c,
+                    MpcDockingSegmentCoreInput& in) const noexcept;
+  [[nodiscard]] bool StartFromNeighbour(const SegmentSnapshot& prev, const CandidateRecord& c,
+                                        MpcDockingSegmentCoreInput& in) const noexcept;
+  /// The verdict on an iterate a core returned, as a reason (kNone: valid).
+  [[nodiscard]] NlpReject Verdict(const MpcDockingSegmentCoreResult& res, bool past_deadline,
+                                  double& worst, int& worst_group) const noexcept;
+  /// The numbers of the solve a candidate stands on, from the core's result.
+  static void RecordSolve(const MpcDockingSegmentCoreResult& res, double worst, int worst_group,
+                          CandidateRecord& c) noexcept;
+  /// The solve with the catch instant free in the candidate's cell — or held
+  /// at the followed plan's (`c.pinned`). `fixed` is this wake's fixed-grid
+  /// solution of the candidate, or nullptr.
+  void SolveContinuous(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
+                       bool cov_matched, const PlannerRtState& rt, bool has_previous,
+                       std::int64_t t_c_prev_ns, const Memory* fixed, CandidateRecord& c,
+                       Memory& out) noexcept;
   /// w5 / w6 at the catch pose `q_dev` (DEVICE order); 0 where the
   /// factorisation is not valid, as CatchPoseIk reports them.
   void CatchPoseManipulability(const std::array<double, kMaxPlanNv>& q_dev, double& w5,
                                double& w6) noexcept;
   /// The core's result as the segment a planner publishes (device order).
   void Pack(const PlannerRtState& rt, std::uint64_t track_generation, const CandidateRecord& c,
-            const MpcDockingSegmentCoreResult& r, SegmentSnapshot& out) const noexcept;
+            const MpcDockingSegmentCoreResult& r, std::int64_t delta_ns,
+            SegmentSnapshot& out) const noexcept;
   [[nodiscard]] bool WarmUp(std::string* error);
 
   bool configured_{false};
@@ -398,6 +546,10 @@ class NlpCatchSearch final : public CatchSearch {
   std::vector<std::unique_ptr<MpcDockingSegmentCore>> cores_;
   std::vector<MpcDockingSegmentCoreInput> inputs_;
   std::vector<MpcDockingSegmentCoreResult> results_;
+  // Their twins with the catch instant a variable (`continuous_tc`; else empty).
+  std::vector<std::unique_ptr<MpcDockingSegmentCore>> cores_tc_;
+  std::vector<MpcDockingSegmentCoreInput> inputs_tc_;
+  std::vector<MpcDockingSegmentCoreResult> results_tc_;
   CatchPoseIk ik_;
   // The cores' model (armature added) for the screening's own kinematics.
   pinocchio::Model arm_model_;
@@ -422,6 +574,10 @@ class NlpCatchSearch final : public CatchSearch {
   // WRITES `fresh_`; the two are merged when the wake ends.
   std::vector<Memory> memory_;
   std::vector<Memory> fresh_;
+  // The same pair for the continuous solutions, by lattice index too: a
+  // continuous solution's catch instant is not a lattice instant, its cell is.
+  std::vector<Memory> memory_tc_;
+  std::vector<Memory> fresh_tc_;
 
   // The lattice and the last choice.
   bool anchor_set_{false};
@@ -431,6 +587,10 @@ class NlpCatchSearch final : public CatchSearch {
   std::uint64_t track_generation_{0};
   bool chose_before_{false};
   std::int64_t last_chosen_t_c_ns_{0};
+  // The first plan the RT followed on this track: its cell and catch instant.
+  bool follow_anchor_set_{false};
+  std::int64_t follow_anchor_index_{0};
+  std::int64_t follow_first_t_c_ns_{0};
 
   CatchSolution solution_{};
   bool solution_valid_{false};
@@ -447,6 +607,7 @@ class NlpCatchSearch final : public CatchSearch {
   switch (r) {
     case NlpReject::kNone:
       return PlanReason::kNone;
+    case NlpReject::kFollowWindow:  // outside what this wake looks at, as too near or too far is
     case NlpReject::kLeadShort:
     case NlpReject::kNoCandidate:
       return PlanReason::kHorizonShort;

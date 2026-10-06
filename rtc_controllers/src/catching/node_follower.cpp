@@ -25,6 +25,44 @@ using OutMap = Eigen::Map<Eigen::VectorXd>;
          (p.n_pre == 0 || (p.dt_pre_ns > 0 && p.dt_pre_ns <= kMaxSegmentDtPreNs));
 }
 
+// The three parts of a segment whose catch interval has its own length:
+// pre-catch columns 0..n_pre−1 at dt_pre, the catch interval between columns
+// n_pre−1 and n_pre at dt_catch, the stop columns n_pre..N at dt. Boundaries
+// are integer ns; an instant on one belongs to the part that STARTS there.
+[[nodiscard]] bool SampleWithCatchInterval(const SegmentSnapshot& plan, std::int64_t since_ns,
+                                           std::span<double> q, std::span<double> qd,
+                                           std::span<double> qdd) noexcept {
+  const std::int64_t catch_begin_ns = static_cast<std::int64_t>(plan.n_pre - 1) * plan.dt_pre_ns;
+  const std::int64_t catch_end_ns = catch_begin_ns + plan.dt_catch_ns;
+  int first_col = plan.n_pre;
+  Eigen::Index cols = plan.n_nodes - plan.n_pre + 1;
+  std::int64_t dt_ns = plan.dt_ns;
+  std::int64_t part_begin_ns = catch_end_ns;
+  if (since_ns < catch_begin_ns) {
+    first_col = 0;
+    cols = plan.n_pre;
+    dt_ns = plan.dt_pre_ns;
+    part_begin_ns = 0;
+  } else if (since_ns < catch_end_ns) {
+    first_col = plan.n_pre - 1;
+    cols = 2;
+    dt_ns = plan.dt_catch_ns;
+    part_begin_ns = catch_begin_ns;
+  }
+  const Eigen::Index rows = plan.nv;
+  const auto offset = static_cast<std::size_t>(first_col) * kMaxSegmentNv;
+  const Eigen::OuterStride<> stride(kMaxSegmentNv);
+  const NodeMap Q(plan.q.data() + offset, rows, cols, stride);
+  const NodeMap Qd(plan.qd.data() + offset, rows, cols, stride);
+  const NodeMap Qdd(plan.qdd.data() + offset, rows, cols, stride);
+  OutMap q_out(q.data(), rows);
+  OutMap qd_out(qd.data(), rows);
+  OutMap qdd_out(qdd.data(), rows);
+  const double dt = static_cast<double>(dt_ns) * 1e-9;
+  const double t = static_cast<double>(since_ns - part_begin_ns) * 1e-9;
+  return SampleJerkTrajectory(Q, Qd, Qdd, dt, t, q_out, qd_out, qdd_out);
+}
+
 }  // namespace
 
 bool NodeTrajectoryFollower::Init(std::shared_ptr<const pinocchio::Model> arm,
@@ -70,6 +108,20 @@ bool NodeTrajectoryFollower::SampleJoints(const SegmentSnapshot& plan, std::int6
   const std::int64_t since_ns = t_lead_ns - plan.t0_ns;
   if (since_ns < 0) {
     return false;
+  }
+  if (plan.dt_catch_ns != 0) {
+    // Its own path: a segment WITHOUT the field keeps the arithmetic below,
+    // operation for operation (the same instant reached by another order of
+    // operations is another double).
+    // (SegmentCatchIntervalOk: the validator's own test of that field, and
+    // the relation the three-part split rests on — node 0's instant.)
+    if (!SegmentCatchIntervalOk(plan) || !SampleWithCatchInterval(plan, since_ns, q, qd, qdd)) {
+      return false;
+    }
+    if (held != nullptr) {
+      *held = since_ns >= SegmentNodeTimeNs(plan, plan.n_nodes) - plan.t0_ns;
+    }
+    return true;
   }
   // Two spacings (MD-60): before the catch node the pre-catch columns
   // 0..n_pre at dt_pre, from it on the stop columns n_pre..N at dt. The split
