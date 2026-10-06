@@ -23,10 +23,12 @@ THE PROTOCOL (fixed before any flight; the lattices are the constants below).
    the corridor are read from that field for the box's lateral set and tilts.
 6. ``verify`` — 300 conditions drawn from the identified set, flown once each.
    Failures are reported; nothing is shrunk and re-measured.
-7. ``accel`` — the same 300 conditions with the ball accelerating toward the
-   hand along the approach axis (gravity less the hand's own acceleration,
-   which the straight flights leave out). It identifies nothing: it says how
-   much of the set survives when the relative motion is not uniform.
+7. ``accel`` — the same 300 conditions with the ball accelerating in the
+   catch frame (gravity less the hand's own acceleration, which the straight
+   flights leave out): toward the hand along the approach axis, and the way
+   gravity pulls it past a hand standing still at the wait pose. It
+   identifies nothing: it says how much of the set survives when the relative
+   motion is not uniform.
 
 Run as ``report.py <profile>`` (with ``DATA`` set) to print the report.
 """
@@ -63,7 +65,14 @@ TAN_STEP = 0.1
 TAN_MAX = 1.0  # tilts of the approach table
 CORRIDOR_LENGTH = 0.15  # [m] the gap range the corridor is fitted over
 VERIFY_N = 300
-ACCEL_LEVELS = (5.0, 9.81)  # [m/s²] toward the hand along the approach axis
+# (label, frame, acceleration [m/s²]). "catch": in the catch frame. "world":
+# in the model's world, turned into the catch frame of the hand at the wait
+# pose — gravity as a hand that stands still sees it.
+ACCEL_CASES = (
+    ("접근축 5", "catch", (0.0, 0.0, -5.0)),
+    ("접근축 9.81", "catch", (0.0, 0.0, -9.81)),
+    ("대기 자세의 중력", "world", (0.0, 0.0, -9.81)),
+)
 CONFIDENCE = 0.95
 
 
@@ -296,7 +305,7 @@ def identify(directory: Path, tag: str, box: cs.Box, fine: FineMap) -> dict:
         straight = Store(verify_path).items
         flown = Store(accel_path).items
         out["accel"] = []
-        for g, level in enumerate(ACCEL_LEVELS):
+        for g, (label, _, _) in enumerate(ACCEL_CASES):
             prefix = f"g{g}_"
             rows = {k[len(prefix) :]: r for k, r in flown.items() if k.startswith(prefix)}
             if not rows:
@@ -305,7 +314,8 @@ def identify(directory: Path, tag: str, box: cs.Box, fine: FineMap) -> dict:
             pairs = [(bool(straight[k]["held"]), bool(r["held"])) for k, r in rows.items()]
             out["accel"].append(
                 {
-                    "level": level,
+                    "label": label,
+                    "accel": next(iter(rows.values())).get("accel"),  # catch frame
                     "n": len(rows),
                     "held": held_n,
                     "lower": cs.clopper_pearson_lower(held_n, len(rows), CONFIDENCE),
@@ -515,16 +525,19 @@ def render_box(ident: dict, fine: FineMap) -> list[str]:
     if ident.get("accel"):
         out += [
             "",
-            "같은 조건을 공이 손 쪽으로 가속하는 채로 (접근축 방향, 직선 비행과 같은 폐쇄 시각):",
+            "같은 조건을 공이 catch frame 에서 가속하는 채로 (직선 비행과 같은 폐쇄 시각):",
             "",
-            "| 상대 가속도 [m/s²] | 조건 | 유지 | 하한 | 직선에서만 유지 | 여기서만 유지 | 사유 |",
-            "|---|---|---|---|---|---|---|",
+            "| 상대 가속도 | catch frame 성분 [m/s²] | 조건 | 유지 | 하한 | 직선에서만 유지 "
+            "| 여기서만 유지 | 사유 |",
+            "|---|---|---|---|---|---|---|---|",
         ]
-        out += [
-            f"| {row['level']:g} | {row['n']} | {row['held']} | {row['lower']:.4f} | "
-            f"{row['lost']} | {row['gained']} | {row['why']} |"
-            for row in ident["accel"]
-        ]
+        for row in ident["accel"]:
+            vector = row["accel"]
+            shown = "—" if vector is None else "(" + ", ".join(f"{v:+.2f}" for v in vector) + ")"
+            out.append(
+                f"| {row['label']} | {shown} | {row['n']} | {row['held']} | {row['lower']:.4f} | "
+                f"{row['lost']} | {row['gained']} | {row['why']} |"
+            )
     return out + [""]
 
 

@@ -332,8 +332,8 @@ def _plant_accel(directory: Path) -> None:
     """Every verification condition again at each level: the first level loses
     three that the straight flight held and holds the one it dropped."""
     again = {
-        f"g{g}_v{n:03d}": _result(True)
-        for g in range(len(rp.ACCEL_LEVELS))
+        f"g{g}_v{n:03d}": {**_result(True), "accel": [0.1 * g, 0.0, -5.0]}
+        for g in range(len(rp.ACCEL_CASES))
         for n in range(rp.VERIFY_N)
     }
     for n in (1, 2, 3):
@@ -347,8 +347,11 @@ def test_the_accelerated_flights_are_compared_condition_by_condition(tmp_path):
     fine = rp.FineMap(rp.Store(tmp_path / "map_fine.json"))
     assert "accel" not in rp.identify(tmp_path, "w020", box, fine)  # not flown
     _plant_accel(tmp_path)
-    first, second = rp.identify(tmp_path, "w020", box, fine)["accel"]
-    assert (first["level"], second["level"]) == rp.ACCEL_LEVELS
+    first, second, third = rp.identify(tmp_path, "w020", box, fine)["accel"]
+    assert [r["label"] for r in (first, second, third)] == [c[0] for c in rp.ACCEL_CASES]
+    # What the report shows is the vector the flights record, not the protocol's.
+    assert first["accel"] == [0.0, 0.0, -5.0] and third["accel"] == [0.2, 0.0, -5.0]
+    assert (third["held"], third["lost"], third["gained"]) == (rp.VERIFY_N, 0, 1)
     assert (first["n"], first["held"]) == (rp.VERIFY_N, rp.VERIFY_N - 3)
     assert (first["lost"], first["gained"]) == (3, 1)  # v007 held here, not straight
     assert first["lower"] == pytest.approx(
@@ -360,8 +363,8 @@ def test_the_accelerated_flights_are_compared_condition_by_condition(tmp_path):
     path = tmp_path / "accel_w020.json"
     items = {k: v for k, v in json.loads(path.read_text()).items() if k.startswith("g1_")}
     path.write_text(json.dumps(items))
-    assert [r["level"] for r in rp.identify(tmp_path, "w020", box, fine)["accel"]] == [
-        rp.ACCEL_LEVELS[1]
+    assert [r["label"] for r in rp.identify(tmp_path, "w020", box, fine)["accel"]] == [
+        rp.ACCEL_CASES[1][0]
     ]
     (tmp_path / "verify_w020.json").unlink()
     assert "accel" not in rp.identify(tmp_path, "w020", box, fine)
@@ -392,8 +395,10 @@ def test_the_report_states_what_was_planted(tmp_path, monkeypatch):
     _plant_accel(tmp_path / "some_robot")
     assert rp.main(["some_robot"]) == 0
     text = (tmp_path / "some_robot" / "report.md").read_text()
-    assert f"| 5 | {rp.VERIFY_N} | {rp.VERIFY_N - 3} |" in text and "| 3 | 1 |" in text
-    assert f"| 9.81 | {rp.VERIFY_N} | {rp.VERIFY_N - 1} |" in text
+    assert f"| 접근축 5 | (+0.00, +0.00, -5.00) | {rp.VERIFY_N} | {rp.VERIFY_N - 3} |" in text
+    assert "| 3 | 1 |" in text
+    assert f"| 접근축 9.81 | (+0.10, +0.00, -5.00) | {rp.VERIFY_N} | {rp.VERIFY_N - 1} |" in text
+    assert f"| 대기 자세의 중력 | (+0.20, +0.00, -5.00) | {rp.VERIFY_N} | {rp.VERIFY_N} |" in text
     monkeypatch.delenv("DATA")
     with pytest.raises(SystemExit, match="DATA is not set"):
         rp.data_dir("some_robot")

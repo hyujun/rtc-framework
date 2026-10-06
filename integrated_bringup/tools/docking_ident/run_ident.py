@@ -56,13 +56,11 @@ def _worker_init(profile: str) -> None:
 
 
 def _fly(spec: dict) -> tuple[str, dict]:
+    accel = spec.get("accel", (0.0, 0.0, 0.0))
+    if spec.get("accel_frame") == "world":
+        accel = _RIG.rot.T @ np.asarray(accel, dtype=float)  # the settled hand's frame
     result = _RIG.fly_in(
-        spec["rho"],
-        spec["c"],
-        spec["delta_o"],
-        spec["nu"],
-        spec["s_pass"],
-        spec.get("accel", (0.0, 0.0, 0.0)),
+        spec["rho"], spec["c"], spec["delta_o"], spec["nu"], spec["s_pass"], accel
     )
     return spec["id"], result
 
@@ -308,14 +306,17 @@ def stage_verify(profile: str, directory: Path, pool) -> None:
 
 
 def stage_accel(profile: str, directory: Path, pool) -> None:
-    """The verification conditions again, the ball accelerating toward the hand."""
+    """The verification conditions again, the ball accelerating in the catch frame."""
     for tag, specs in _verify_specs(directory, "accel").items():
         store = rp.Store(directory / f"accel_{tag}.json")
-        for g, level in enumerate(rp.ACCEL_LEVELS):
-            again = [{**s, "id": f"g{g}_{s['id']}", "accel": [0.0, 0.0, -level]} for s in specs]
-            fly_all(pool, store, again, f"accel {tag} {level:g} m/s2")
+        for g, (label, frame, vector) in enumerate(rp.ACCEL_CASES):
+            again = [
+                {**s, "id": f"g{g}_{s['id']}", "accel": list(vector), "accel_frame": frame}
+                for s in specs
+            ]
+            fly_all(pool, store, again, f"accel {tag} [{label}]")
             held = sum(bool(store.items[s["id"]]["held"]) for s in again)
-            print(f"  accel {tag} {level:g} m/s2: {held} of {len(again)} held")
+            print(f"  accel {tag} [{label}]: {held} of {len(again)} held")
 
 
 _RUN = {
