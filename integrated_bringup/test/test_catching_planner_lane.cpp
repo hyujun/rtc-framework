@@ -1447,10 +1447,12 @@ void CatchingPlanLaneTest::RealClockPairCase(bool docking) {
     y["catching"]["planner"]["search"]["grid"]["budget_s"] = 0.03;
     if (docking) {
       // The shipped docking design, with the fixture's budgets: the shipped
-      // budget.first_s (0.035 s) is below a cold docking solve here (p50
-      // 35 - 40 ms in the E1-F16 sim runs), so it is 0.15 s — a first
-      // segment's node 0 is first_s + 2h past the wake, well inside the
-      // 1.2 s flight. replan_s 0.04 is as for mpc.
+      // budget.first_s (0.035 s) is below a docking first solve on a loaded
+      // host (in the #743 sim runs none finished inside it, and none inside
+      // 0.080 s either — the times recorded there are where the deadline
+      // cut the solve), so it is 0.15 s — a first segment's node 0 is
+      // first_s + 2h past the wake, well inside the 1.2 s flight. replan_s
+      // 0.04 is as for mpc.
       integrated_bringup::testfx::ApplyShippedDocking(y);
       YAML::Node d = y["catching"]["planner"]["segment"]["mpc_docking"];
       d["budget"]["first_s"] = 0.15;
