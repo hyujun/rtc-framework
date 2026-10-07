@@ -33,6 +33,7 @@ import yaml
 
 from rtc_tools.utils.catching_keys import reject_renamed_keys
 from rtc_tools.utils.controller_config import load_controller_config
+from rtc_tools.utils.rotations import rpy_matrix
 
 REPO = Path(__file__).resolve().parents[3]
 CFG = REPO / "integrated_bringup/config"
@@ -100,25 +101,6 @@ def catching_tree(path: Path) -> dict:
             reject_renamed_keys(node["catching"], source=str(path))
             return node["catching"]
     raise SystemExit(f"{path}: no <controller>.catching block")
-
-
-def rpy_to_mat(rpy) -> np.ndarray:
-    r, p, y = rpy
-    cr, sr, cp, sp, cy, sy = (
-        np.cos(r),
-        np.sin(r),
-        np.cos(p),
-        np.sin(p),
-        np.cos(y),
-        np.sin(y),
-    )
-    return np.array(
-        [
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ]
-    )
 
 
 def main() -> int:
@@ -217,7 +199,7 @@ def main() -> int:
 
     palm_o, palm_r = d.xpos[pid].copy(), d.xmat[pid].reshape(3, 3).copy()
     origin = palm_o + palm_r @ xyz  # the catch frame origin
-    approach = palm_r @ rpy_to_mat(rpy) @ np.array([0.0, 0.0, 1.0])
+    approach = palm_r @ rpy_matrix(rpy) @ np.array([0.0, 0.0, 1.0])
     print(f"catch origin   : world {np.round(origin, 4).tolist()}")
     print(f"approach axis  : world {np.round(approach, 4).tolist()}  (catch +z)")
 

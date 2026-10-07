@@ -27,6 +27,11 @@ only valid while no CSV row was dropped, so this tool checks the sample spacing
 and says so when it cannot trust it — a dropped row shifts every later tick
 count silently.
 
+Beside the mean, maximum and p99 the report gives each axis's sample standard
+deviation and ``mean − T_close_e2e`` (:func:`nominal_closure_offset`): the
+spread and the nominal instant of the closure relative to the catch instant,
+which a planner with a closure WINDOW needs (dynamic_catching E1-F15, #741).
+
 The profile comes from a JSON sidecar written by ``run_hand_close_trials``,
 which reads it from the CONTROLLER's read-only parameters rather than from the
 shipped YAML. A run whose controller read something else must not be analysed
@@ -73,6 +78,10 @@ class HandProfile:
     # value does not just stretch the axis — it widens the drop gate and can
     # call a run trusted that dropped rows. Reported, never silently used.
     dt_is_assumed: bool = False
+    # `hand.T_close_e2e` as the controller had it loaded for the run (sidecar
+    # `T_close_e2e_at_run`): what the hand sequencer subtracts from the catch
+    # instant to time the close command. NaN when the sidecar does not say.
+    t_close_e2e: float = math.nan
 
     @property
     def caging_indices(self) -> list[int]:
@@ -112,6 +121,7 @@ def load_profile(path: Path) -> HandProfile:
         rho_eps=float(data.get("rho_eps", 0.02)),
         dt=float(data.get("dt", 0.002)),
         dt_is_assumed="dt" not in data,
+        t_close_e2e=float(data.get("T_close_e2e_at_run", math.nan)),
     )
     profile.validate()
     return profile
@@ -305,15 +315,38 @@ def quantile(values: list[float], q: float) -> float:
 
 
 def summarise_axis(values: list[float]) -> dict[str, float]:
+    """n, mean, max, p99 and the sample standard deviation of the finite values.
+
+    ``std`` divides by n − 1 and is NaN for fewer than two closures.
+    """
     finite = [v for v in values if not math.isnan(v)]
     if not finite:
-        return {"n": 0, "mean": math.nan, "max": math.nan, "p99": math.nan}
+        return {"n": 0, "mean": math.nan, "max": math.nan, "p99": math.nan, "std": math.nan}
+    mean = sum(finite) / len(finite)
+    std = math.nan
+    if len(finite) > 1:
+        std = math.sqrt(sum((v - mean) ** 2 for v in finite) / (len(finite) - 1))
     return {
         "n": len(finite),
-        "mean": sum(finite) / len(finite),
+        "mean": mean,
         "max": max(finite),
         "p99": quantile(finite, 0.99),
+        "std": std,
     }
+
+
+def nominal_closure_offset(mean_t_close_s: float, t_close_e2e_s: float) -> float:
+    """How long after the catch instant the closure is complete, on average.
+
+    The hand sequencer commands the close at ``t_c − T_close_e2e`` (L6 §4.3), so
+    a closure that takes ``mean_t_close_s`` completes ``mean − T_close_e2e``
+    after ``t_c``. ``T_close_e2e`` is shipped as a high quantile of the same
+    distribution, which makes this small and NEGATIVE: the hand is, on average,
+    closed slightly before the instant it was timed for. It is the ``delta_0``
+    of a closure window measured from ``t_c`` (reference §8.4, §17.8). NaN when
+    either input is.
+    """
+    return mean_t_close_s - t_close_e2e_s
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -380,6 +413,31 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("  steady is L6 §4.2's definition and includes host stalls; tick is simulated")
     print("  time and cannot be compared with a real-hardware measurement. Report both.")
+    print()
+    print("  spread (sample std, n - 1) and the closure's offset from the catch instant")
+    for label, values in (("steady [ms]", steady), ("tick   [ms]", tick)):
+        s = summarise_axis(values)
+        offset = nominal_closure_offset(s["mean"], profile.t_close_e2e)
+        print(f"  {label}      std {s['std'] * 1e3:9.3f}   mean - T_close_e2e {offset * 1e3:9.3f}")
+    if math.isnan(profile.t_close_e2e):
+        print("  !! the sidecar carries no T_close_e2e_at_run: the offset cannot be computed.")
+    else:
+        print(
+            f"  T_close_e2e at the run: {profile.t_close_e2e * 1e3:.3f} ms (the sequencer closes"
+        )
+        print("  at t_c - T_close_e2e, so the offset is where the closure lands after t_c).")
+    if profile.dt_is_assumed:
+        print("  !! dt was ASSUMED: the size of one tick's quantisation is not known.")
+    else:
+        print(
+            f"  One tick is {profile.dt * 1e3:.3f} ms. Both axes are read on CSV rows, so a "
+            "std may already"
+        )
+        print(
+            f"  hold up to the quantisation of a tick ({profile.dt / math.sqrt(12.0) * 1e3:.3f} "
+            "ms = dt / sqrt(12)): it is"
+        )
+        print("  reported beside the std, never added to it here.")
 
     if args.plot is not None:
         _write_plot(args.plot, stats.trials, profile)

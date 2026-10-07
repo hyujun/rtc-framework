@@ -38,7 +38,8 @@ rtc_tools/
 │   │   ├── catching_decel.py            ← DECEL 정지 구간 지표 (관절 가속·jerk 피크, 정지 거리, 한계 여유) · 같은 투척의 복제 불일치율 · paired 비열등 (Tango) 검정 (MPC 계획 E0-F02 · E1-F06)
 │   │   ├── catching_grid_sweep.py       ← 예측 격자 조건별 성공률 · 같은 투척의 paired 비교 (Holm) · 수신 메시지 주기·크기 · 계획기 계산 시간 (MPC 계획 E0-F04)
 │   │   ├── catching_pool.py             ← catching_trials 출력 여러 unit·arm 합산: 보충 절단·G8-D 판정·McNemar·D-3 S3.1b (S8-E)
-│   │   └── catching_vision.py           ← G8-B (예측 NEES, 발사~첫 접촉 창 결합)·G8-C2 (A/B, probe dump 정확 결합) 순수 함수 (S8-E)
+│   │   ├── catching_vision.py            ← G8-B (예측 NEES, 발사~첫 접촉 창 결합)·G8-C2 (A/B, probe dump 정확 결합) 순수 함수 (S8-E)
+│   │   └── catching_capture_set.py      ← fly-in 판정 → mpc_docking 의 포획 집합 (통과 평면·lateral 다각형·속도 집합·폐쇄 창) 순수 함수 (MPC 계획 E1-F15)
 │   ├── conversion/
 │   │   ├── urdf_to_mjcf.py             ← URDF/XACRO → MJCF 변환 (관절 분류 + 후처리)
 │   │   └── ctf_to_chrome_trace.py      ← LTTng CTF trace → Chrome Trace JSON (Perfetto UI)
@@ -56,6 +57,7 @@ rtc_tools/
 │       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (RTC_SESSION_DIR / RTC_RUN_ID 관리)
 │       ├── controller_config.py         ← 컨트롤러 YAML + `include:` 조각의 합성 (CM `LoadControllerConfig` 의 Python mirror)
 │       ├── smoothing.py                 ← box 평활 하나 (catching 의 plot 패널과 분석 열이 공유)
+│       ├── rotations.py                 ← URDF roll-pitch-yaw → 회전행렬 하나 (MJCF 대조 · catch frame 도구 · docking rig 가 공유)
 │       └── hand_data_plot.py            ← 손 CSV 데이터 시각화
 ├── test/                                 ← pytest 유닛 테스트 (Testing 섹션 참조)
 ├── resource/
@@ -310,8 +312,10 @@ ros2 run rtc_tools analyze_hand_close <session>/controllers/demo_catching_contro
 - ρ 는 **최소**다. 한 손가락만 늦어도 손 전체가 못 감싼 것이고 평균은 그것을 지운다. caging 집합은 프로파일이
   정한다 — p1b 출하 자세는 닫힐 때 index DIP 가 오히려 펴지므로 그 관절을 넣으면 진행으로 오독한다
 - p99 는 **순서통계량**이다. 성공 시행이 100 미만이면 p99 는 곧 최댓값이고 도구가 그렇게 말한다
+- **산포와 폐쇄가 끝나는 시각**: 축마다 표본 표준편차 (n − 1) 와 `mean − T_close_e2e` 를 낸다. 시퀀서가 $t_c-T_{close,e2e}$ 에 닫으므로 그 차이가 폐쇄가 $t_c$ 뒤 어디에 끝나는가 — 폐쇄 창을 쓰는 계획기의 $\delta_0$ 다 (`T_close_e2e` 가 같은 분포의 p99 라 작은 음수다). `T_close_e2e` 는 sidecar 의 `T_close_e2e_at_run` (그 run 의 컨트롤러가 읽은 값) 이고 없으면 "계산할 수 없음" 으로 낸다. tick 하나의 양자화 크기 `dt / sqrt(12)` 는 표준편차 **옆에** 적고 더하지 않는다 — 두 축 모두 CSV 행에서 읽으므로 표준편차에 이미 들어 있을 수 있다 (MPC 계획 E1-F15)
 - 테스트 `test/test_hand_close.py`: 1차 응답의 해석해 t = −τ·ln(1−η) 복원, ρ 의 min 거동, mask 제외, 역방향
-  관절 부호, 드롭 행 탐지, 순서통계량, `other` 자세가 시행을 열지 않음, 추정 dt 의 tick 축 불신
+  관절 부호, 드롭 행 탐지, 순서통계량, `other` 자세가 시행을 열지 않음, 추정 dt 의 tick 축 불신, 표준편차와
+  `mean − T_close_e2e` (sidecar 에 값이 없을 때의 표시 포함)
 
 ### `vision_lane.py` · `vision_lane_probe.py` · `camera_relay.py` — 예측 lane 실측 (dynamic_catching S3.4)
 
@@ -570,6 +574,19 @@ ros2 run rtc_tools catching_grid_sweep --arm L-50 units/L-50_* --arm L-25 units/
   점 0 개 snapshot 제외, 후보 없는 계획 주기 제외, `shifted` 시행의 오차 제외·RTF 계수·예산 초과 표시, 격자가 다른 unit 거부, 심은 불일치 (2:1)
   의 표·차이·McNemar, seed 가 다른 투척은 짝짓지 않음, CLI 출력, `.gz` 세션, `planner_events.csv` 없는 unit 의 계수, 미러 없는 unit 의 거부와
   `--allow-unknown-grid`, RTF 값 없는 시행의 분리, `point_step` 이 decoder 상수와 같은지
+
+### `catching_capture_set.py` — 포획 집합 식별의 산술 (MPC · dual-arm 계획 E1-F15)
+
+`mpc_docking` (참고 문서 `docs/dynamic_catching/ref/ball_catching_inverse_dynamics_mpc.md` §6 · §8.4 · §17.6 – §17.8) 이 받는 손 · 포획 쪽 값 — 통과 평면 $s_{ent}$, lateral 집합 $\mathcal C_\perp$, 속도 집합 $\mathcal V_{cap}$, 폐쇄 창 — 을 fly-in 판정에서 계산하는 **순수 함수**다. CLI 가 없고 simulator · ROS · 로봇 이름을 모른다. 판정을 만드는 rig 와 드라이버는 로봇 config 옆 (`integrated_bringup/tools/docking_ident/`) 에 있다.
+
+- **판정은 격자의 셀에 속한다.** 셀의 시행 전부가 유지돼야 그 셀이 유지다 (`held_cells`). 그래서 이 모듈이 내는 구간의 끝은 모두 셀의 **가장자리**다
+- **상자** (`held_boxes` · `box_by_min_width`): (closing speed, 폐쇄 시각) 지도에서 전부 유지된 직사각형. 후보는 폭으로 묻는다 — 폐쇄 시각의 폭이 요청한 값 이상인 것 가운데 closing speed 의 상한이 가장 큰 것, 같으면 면적이 큰 것
+- **폐쇄 시각의 축이 둘이다.** 유지 여부는 공이 **원점**에 닿는 시각 기준 ($\delta^O$) 으로 정해지고, 코어의 창은 $s=s_{ent}$ **통과** 기준 ($\delta=\delta^O+s_{ent}/c$) 이다. 코어는 허용하는 모든 속도에 창 하나를 쓰므로 상자에서 얻는 창은 $s_{ent}(1/c_{lo}-1/c_{hi})$ 만큼 좁다 (`entrance_window`). **빈 창도 그대로 돌려준다.** `entrance_rows` 는 $c_{hi}$ 를 두고 $c_{lo}$ 를 올린 부분 구간마다의 창을 낸다 — 부분 구간은 유지가 측정된 상자의 부분집합이다
+- **lateral 다각형** (`inscribed_circle` · `capture_polygon`): 유지된 셀 (정사각형) 안의 가장 큰 격자점 중심 원에서 시작해, 방향이 고정된 8 면을 한 칸씩 밀어 넓힌 볼록 다각형. 단위 법선 · 공 중심 좌표 (코어의 `face_a` · `face_b`). 재지 않은 곳은 유지가 아니다
+- **통과 평면** (`Occupancy` · `approach_table` · `ApproachTable.entrance`): preshape 손의 정적 접촉 격자에서, lateral 집합의 모든 점을 지나는 모든 기울기의 직선이 그 위로 무접촉인 가장 낮은 높이. 위에서부터 내리며 처음 막히는 높이에서 멈춘다. 격자 사이의 위치는 둘러싼 열 가운데 하나라도 닿으면 닿는 것이고, lateral 격자를 벗어난 직선은 닿은 것으로 세되 따로 표시한다 (`scan_limited`). `corridor_fit` 은 같은 격자에서 축 둘레의 무접촉 원뿔 (`r_ent` · `tan_theta`) 을 낸다
+- **옆 속도의 상한** (`rings_within_drop` · `largest_held_radius`): 속도 고리의 유지율을 옆 속도가 없는 기준 고리의 유지율과 견준다 — 허용한 폭보다 더 낮지 않으면 통과이고, 통과가 이어지는 마지막 고리의 바깥 가장자리가 상한이다. 시행 하나의 판정이 집합 안에서도 확실하지 않아 "고리의 시행 전부가 유지" 로는 기준 고리 자신도 통과하지 못한다
+- **검증**: `sample_capture_set` (식별한 집합에서 균등 추출) 과 `clopper_pearson_lower` (유지율의 단측 정확 하한 — 300 / 300 이면 95 % 에서 0.990)
+- 테스트 `test/test_catching_capture_set.py`: 답을 읽어낼 수 있는 도형 (셀의 직사각형, 손바닥 옆의 벽, 원뿔, 떠 있는 기둥) 과, 규칙이 길어 읽어낼 수 없는 곳은 느리게 다시 쓴 기준 구현과의 일치
 
 ### `catching_wait_pose_search.py` — 대기 자세 탐색 (dynamic_catching S8-I)
 

@@ -1681,6 +1681,13 @@ if(BUILD_TESTING)
   # mirror: an old key is refused, an old mirror name is read through the alias
   # table (#711).
   ament_add_pytest_test(test_catching_keys_tools test/test_catching_keys_tools.py)
+  # tools/docking_ident (not installed — read from the source tree, E1-F15): the
+  # rig's inputs out of the shipped profiles, its copy of the simulator's ball
+  # against rtc_mujoco_sim's C++, and report.py on planted stores. The rig
+  # itself needs mujoco: test_docking_ident_rig.py skips under colcon and is
+  # run by hand with the workspace venv (its header).
+  ament_add_pytest_test(test_docking_ident_config test/test_docking_ident_config.py)
+  ament_add_pytest_test(test_docking_ident_rig test/test_docking_ident_rig.py)
 
   # ── Parallel ctest ─────────────────────────────────────────────────────────
   # colcon.pkg runs this package's tests four at a time. Two kinds of test
