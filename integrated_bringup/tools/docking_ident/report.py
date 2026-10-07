@@ -298,9 +298,13 @@ def identify(directory: Path, tag: str, box: cs.Box, fine: FineMap) -> dict:
     occupancy, _ = load_field(field_path)
     table = cs.approach_table(occupancy, lateral_points(polygon), cs.slope_fan(TAN_MAX, TAN_STEP))
 
+    heights: dict[float, cs.EntranceHeight | None] = {}
+
     def entrance(c_lo: float) -> cs.EntranceHeight | None:
-        tan = v_perp_max / c_lo
-        return table.entrance(tan, TAN_STEP) if tan <= TAN_MAX + 1e-9 else None
+        if c_lo not in heights:
+            tan = v_perp_max / c_lo
+            heights[c_lo] = table.entrance(tan, TAN_STEP) if tan <= TAN_MAX + 1e-9 else None
+        return heights[c_lo]
 
     whole = entrance(box.c_lo)
     out["entrance"] = whole  # None: the tilt is beyond the table
@@ -315,8 +319,10 @@ def identify(directory: Path, tag: str, box: cs.Box, fine: FineMap) -> dict:
             out["corridor"] = cs.corridor_fit(occupancy, whole.s_ent, length)
 
     verify_path = directory / f"verify_{tag}.json"
+    straight: dict = {}
     if verify_path.is_file():
-        results = list(Store(verify_path).items.values())
+        straight = Store(verify_path).items
+        results = list(straight.values())
         held_n = sum(bool(r["held"]) for r in results)
         out["verify"] = {
             "n": len(results),
@@ -328,7 +334,6 @@ def identify(directory: Path, tag: str, box: cs.Box, fine: FineMap) -> dict:
         }
     accel_path = directory / f"accel_{tag}.json"
     if "verify" in out and accel_path.is_file():
-        straight = Store(verify_path).items
         flown = Store(accel_path).items
         out["accel"] = []
         for g, (label, _, _) in enumerate(ACCEL_CASES):
@@ -404,8 +409,13 @@ def render(profile: str, directory: Path) -> str:
             f"- 같은 조건 두 번의 결과: {'일치' if check['repeatable'] else '**불일치**'}",
             f"- 단단한 면에서의 반발 계수: {check['restitution']:.3f} "
             f"(목표 {check['applied']['ball']['restitution_target']})",
-            f"- 빈 손 폐쇄 시간 (η 도달): {check['empty_close_s'] * 1e3:.1f} ms "
-            f"(`T_close_e2e` {check['t_close_e2e'] * 1e3:.1f} ms)",
+            "- 빈 손 폐쇄 시간 (η 도달): "
+            + (
+                f"{check['empty_close_s'] * 1e3:.1f} ms"
+                if check["empty_close_s"] is not None
+                else "**η 에 닿지 않음** (빈 손이 제한 시간 안에 닫히지 않는다)"
+            )
+            + f" (`T_close_e2e` {check['t_close_e2e'] * 1e3:.1f} ms)",
             f"- 정착: {check['settle_s']:.1f} s, `q_pre` 와의 최대 차 {check['hand_error']:.4f} rad",
             f"- 축 위의 첫 접촉: {check['axis_contact']}",
             f"- 접촉 검사 (kinematics + collision) 와 `mj_forward` 의 일치: "

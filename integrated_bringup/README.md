@@ -1089,6 +1089,7 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
   && python3 <repo>/integrated_bringup/tools/docking_ident/report.py ur5e_p1b )
 ```
 
+- 단계는 store 에 없는 조건만 날린다. **store 의 결과가 이번 실행이 묻는 조건과 다르면 거부한다** (id 는 실행마다 같지만 조건은 앞 단계 — 상자 · lateral 집합 — 에서 나온다): 상자나 규칙을 바꿨으면 그 단계부터의 store 를 치우고 다시 날린다
 - `DATA` 가 없으면 거부한다. `OMP_NUM_THREADS=1` 이 아니어도 거부한다 — worker (기본 6) 마다 thread pool 이 뜬다. **측정하는 동안 빌드를 돌리지 않는다**
 - **판정** (바꾸지 않는다): 공이 원점 평면에 닿은 뒤 1 s 를 두고, 그 상태에서 catch frame 세 축 ±방향으로 중력을 0.25 s 씩 건다. 공이 0.25 m 안에 있고 어느 방향에서도 20 mm 넘게 미끄러지지 않으면 유지다
 - **폐쇄 시각** $\delta^O$ = (명령 tick + `T_close_e2e`) − (공 중심이 무접촉으로 catch frame 의 원점 평면에 닿을 시각). 손 시퀀서가 $t_c-T_{close,e2e}$ 에 닫으므로 이것이 시퀀서가 정하는 양이다. 코어의 창은 $s_{ent}$ 통과 기준이라 `report.py` 가 옮긴다 ($\delta=\delta^O+s_{ent}/c$)

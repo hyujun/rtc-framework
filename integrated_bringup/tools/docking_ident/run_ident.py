@@ -70,8 +70,47 @@ def _field_slab(xs_slab: list[float]) -> tuple[list[float], np.ndarray, np.ndarr
     return xs_slab, hand, stray
 
 
+# What a fly-in is asked for, as its result records it (fly_in's out dict).
+_CONDITION_KEYS = ("rho", "c", "delta_o", "nu", "s_pass")
+
+
+def same_condition(spec: dict, result: dict) -> bool:
+    """Was ``result`` flown at what ``spec`` asks for? A result without the
+    ``accel`` key is a straight flight. A world-frame acceleration is recorded
+    in the catch frame and is not compared."""
+    for key in _CONDITION_KEYS:
+        if not np.allclose(spec[key], result[key], rtol=0.0, atol=1e-12):
+            return False
+    if spec.get("accel_frame") == "world":
+        return True
+    return bool(
+        np.allclose(
+            spec.get("accel", (0.0, 0.0, 0.0)),
+            result.get("accel", (0.0, 0.0, 0.0)),
+            rtol=0.0,
+            atol=1e-12,
+        )
+    )
+
+
 def fly_all(pool, store: rp.Store, specs: list[dict], label: str) -> None:
-    """Fly every spec that is not in the store yet, saving as it goes."""
+    """Fly every spec that is not in the store yet, saving as it goes.
+
+    An id is reused by every run of a stage, but what it is flown at follows
+    from earlier stages (the box, the lateral set): a store left from another
+    box or another rule would otherwise answer for conditions it never flew.
+    """
+    stale = [
+        s["id"]
+        for s in specs
+        if s["id"] in store.items and not same_condition(s, store.items[s["id"]])
+    ]
+    if stale:
+        raise SystemExit(
+            f"{store.path}: {len(stale)} stored result(s) (first: {stale[0]}) were flown at "
+            "other conditions than this run asks for — the box, the lateral set or a rule "
+            "changed. Move the store away and fly the stage again"
+        )
     todo = [s for s in specs if s["id"] not in store.items]
     if not todo:
         return

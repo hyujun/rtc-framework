@@ -220,6 +220,17 @@ def test_configs_the_simulator_would_refuse_are_refused(tmp_path):
         )
     with pytest.raises(ValueError, match="not in the model"):
         rg.DockingRig(make_config(tmp_path, hand_joints=("thumb_j",)))
+    # A group joint the model lacks must not compensate some other body.
+    with pytest.raises(ValueError, match="group joint 'ghost_j'"):
+        rg.build_model(
+            make_config(
+                tmp_path,
+                groups=(
+                    rc.SimGroup("arm", ("arm_j", "ghost_j"), (500.0, 500.0), (50.0, 50.0)),
+                    rc.SimGroup("hand", ("finger_j",), (300.0,), (10.0,)),
+                ),
+            )
+        )
     with pytest.raises(ValueError, match="ball_type"):
         rg.build_model(make_config(tmp_path, ball=rc.BallConfig("marble", RADIUS, 0.057, 1, 1)))
 

@@ -15,6 +15,7 @@ The rig itself needs ``mujoco`` and is tested in test_docking_ident_rig.py.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import sys
@@ -27,6 +28,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "integrated_bringup" / "tools" / "docking_ident"))
 import report as rp  # noqa: E402
 import rig_config as rc  # noqa: E402
+import run_ident as ri  # noqa: E402
 
 PROFILES = ["ur5e_p1b", "iiwa7_leap"]
 
@@ -88,6 +90,29 @@ def test_a_profile_that_is_not_one_is_refused(tmp_path):
     (tmp_path / "bare").mkdir()
     with pytest.raises(SystemExit):
         rc.load_rig_config("bare", config_root=tmp_path)
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_an_empty_caging_set_is_refused(profile):
+    cfg = rc.load_rig_config(profile)
+    with pytest.raises(SystemExit, match="caging_mask"):
+        dataclasses.replace(cfg, caging_mask=tuple(False for _ in cfg.caging_mask))
+
+
+def test_a_store_flown_at_other_conditions_is_refused(tmp_path):
+    spec = ri._spec("v000", (0.01, 0.0), 1.0, 0.0)
+    flown = {k: spec[k] for k in ("rho", "c", "delta_o", "nu", "s_pass")}
+    store = _store(tmp_path / "verify_w020.json", {"v000": {**_result(True), **flown}})
+    ri.fly_all(None, store, [spec], "same")  # nothing to fly, nothing to refuse
+    with pytest.raises(SystemExit, match="other conditions"):
+        ri.fly_all(None, store, [ri._spec("v000", (0.02, 0.0), 1.0, 0.0)], "moved")
+    # A result without `accel` was a straight flight; one in the catch frame is
+    # compared, one given in the world frame is not (its record is rotated).
+    with pytest.raises(SystemExit, match="other conditions"):
+        ri.fly_all(None, store, [{**spec, "accel": [0.0, 0.0, -9.81]}], "accel")
+    ri.fly_all(None, store, [{**spec, "accel": [0.0, 0.0, -9.81], "accel_frame": "world"}], "w")
+    # A spec the store does not hold is simply still to fly.
+    assert "v001" not in store.items
 
 
 # ── The copy of the simulator's ball ──────────────────────────────────────────

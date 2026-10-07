@@ -198,10 +198,12 @@ def _joint_actuator(model: mujoco.MjModel, joint: str) -> tuple[int, int]:
 def _compensated_bodies(model: mujoco.MjModel, joints) -> set[int]:
     """The bodies the simulator compensates gravity on for a group: the bodies
     its joints move, and every jointless body hanging off those."""
-    bodies = {
-        int(model.jnt_bodyid[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, j)])
-        for j in joints
-    }
+    bodies = set()
+    for joint in joints:
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint)
+        if jid < 0:  # −1 would silently index the LAST joint's body
+            raise ValueError(f"group joint '{joint}' is not in the model")
+        bodies.add(int(model.jnt_bodyid[jid]))
     changed = True
     while changed:
         changed = False

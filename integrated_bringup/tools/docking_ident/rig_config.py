@@ -128,6 +128,12 @@ class RigConfig:
     catch_rpy: tuple[float, float, float]  # [rad]
     ball: BallConfig
 
+    def __post_init__(self) -> None:
+        # The closure progress is the minimum over the caging set: of nothing
+        # it is undefined, and the rig would fail on its first fly-in instead.
+        if not any(self.caging_mask):
+            raise RigConfigError(f"{self.profile}: caging_mask puts no joint in the caging set")
+
 
 def _ros_parameters(path: Path) -> dict:
     """Every ``ros__parameters`` block of a parameter file, merged."""
