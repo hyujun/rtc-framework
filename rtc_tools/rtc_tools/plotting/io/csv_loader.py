@@ -83,7 +83,10 @@ def _check_header_matches_data(filepath: str) -> None:
 # optional here: under pandas 2.x an object column outside this set goes through
 # to_numeric(errors="coerce"), so a column whose values are all "off"/"none"
 # (the segment planner disabled) turns into all-NaN and every `!= "off"` filter
-# downstream silently selects nothing.
+# downstream silently selects nothing. `nlp_reason` (NlpRejectName, or `off`),
+# `segment_infeasible_group` (DockingRowGroupName, or `none`), `replace_step`
+# (ReplaceStepName) and the two `replacement_*` names are the same case, and
+# all-`off`/`none` is what every session of another search or planner writes.
 _STR_COLS = {
     "goal_type",
     "command_type",
@@ -95,6 +98,11 @@ _STR_COLS = {
     "segment_outcome",
     "segment_core_reason",
     "segment_kind",
+    "nlp_reason",
+    "segment_infeasible_group",
+    "replace_step",
+    "replacement_outcome",
+    "replacement_core_reason",
     "timestamp",
 }
 

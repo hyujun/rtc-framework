@@ -33,12 +33,20 @@ does not draw a budget line the way `plot_timing_breakdown` does — a
 threshold with no data behind it would be a guess this module cannot check.
 `budget_hit` (whether the search's own budget fired) is a per-row flag and is
 covered in `print_planner_events_statistics` instead.
+
+A SOLVE THAT WAS CUT IS NOT A SOLVE TIME. A solve the core stopped at its
+deadline records the instant it was stopped at; the time the solve takes is at
+least that and is not in the log. The solve panel draws those as hollow
+triangles and the statistics keep them out of every distribution — the rule and
+its reason are `rtc_tools.analysis.planner_solves`, which both read from.
 """
 
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+from rtc_tools.analysis import planner_solves
 
 # rtc::catching::CycleOutcomeName order (integrated_bringup/logging/
 # planner_events_csv.hpp / rtc_controllers/catching/planner_cycle.hpp). This
@@ -142,6 +150,22 @@ RANK_COLUMNS = (
 )
 
 
+# NlpRejectName order (rtc_controllers/catching/search_stats.hpp) as a WAKE's
+# reason: `none` (it chose a plan), the candidate reasons, then the three that
+# are no candidate's.
+NLP_REASON_ORDER = (
+    "none",
+    *planner_solves.NLP_REJECT_REASONS,
+    "no_candidate",
+    "not_at_rest",
+    "rt_invalid",
+    "unknown",
+)
+
+# The NLP search's funnel, in the order candidates are narrowed.
+NLP_FUNNEL_COLUMNS = ("nlp_n_lattice", "nlp_n_screened", "nlp_n_solved", "nlp_n_valid")
+
+
 def _time_axis(df):
     """Seconds since the first logged wake.
 
@@ -196,6 +220,44 @@ def _segment_panels(df):
         panels.append("solve")
     if "segment_catch_pos_err" in cols:
         panels.append("catch")
+    # The docking core's account: only where some solve filled it (a session of
+    # another planner has the columns and NaN in every row).
+    if _any_finite(df, [f"segment_viol_{g}" for g in planner_solves.DOCKING_ROW_GROUPS]):
+        panels.append("rows")
+    if _any_finite(df, ["segment_c_catch"]):
+        panels.append("crossing")
+    return panels
+
+
+def _any_finite(df, names):
+    """Whether any of the columns `names` the frame has holds a finite value."""
+    return any(
+        np.isfinite(df[name].astype(float).to_numpy()).any()
+        for name in names
+        if name in df.columns
+    )
+
+
+def _nlp_rows(df):
+    """Rows on which an NLP search ran (all false without the column)."""
+    if "nlp_ran" not in df.columns:
+        return np.zeros(len(df), bool)
+    return (df["nlp_ran"].astype(float) > 0.5).to_numpy()
+
+
+def _nlp_panels(df):
+    """The NLP-search panels this log has something for: none on a log from
+    before the columns, and none on a session of another search."""
+    if not _nlp_rows(df).any():
+        return []
+    panels = ["nlp_funnel"]
+    if "nlp_reason" in df.columns:
+        panels.append("nlp_reason")
+    # Only where a wake chose a candidate or solved one: a search that screened
+    # every candidate out has nothing to draw here.
+    solved = "nlp_solve_us_max" in df.columns and (df["nlp_solve_us_max"].astype(float) > 0).any()
+    if solved or _any_finite(df, ["nlp_phi", "nlp_j_reference"]):
+        panels.append("nlp_chosen")
     return panels
 
 
@@ -240,9 +302,25 @@ def _draw_segment_solve(ax, df, t):
             (name, has_solve & (kind == name), _SEGMENT_KIND_COLOURS[name])
             for name in SEGMENT_KIND_ORDER
         ]
+    # A solve the core cut at its deadline is drawn apart (module docstring):
+    # where it is on the y axis is when it was stopped, not how long it takes.
+    cut = planner_solves.cut_at_deadline(df)
     for name, sel, colour in groups:
-        if sel.any():
-            ax.scatter(t[sel], solve_ms[sel], s=14, color=colour, marker="o", label=name)
+        done = (sel & ~cut).to_numpy()
+        if done.any():
+            ax.scatter(t[done], solve_ms[done], s=14, color=colour, marker="o", label=name)
+        stopped = (sel & cut).to_numpy()
+        if stopped.any():
+            ax.scatter(
+                t[stopped],
+                solve_ms[stopped],
+                s=22,
+                facecolors="none",
+                edgecolors=colour,
+                marker="^",
+                linewidths=0.9,
+                label=f"{name}: cut at deadline (≥)",
+            )
     ax.set_ylabel("segment solve (ms)")
     ax.grid(True, alpha=0.3)
     if "segment_iterations" in df.columns:
@@ -311,10 +389,185 @@ def _draw_segment_catch(ax, df, t):
         ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper right", ncol=2)
 
 
+def _markers(axis, t, values, label, colour, marker, size=3.5):
+    """`values` at the rows where it is finite, as markers (a row that did not
+    compute the value is NaN, and a line would join one throw to the next)."""
+    values = np.asarray(values, float)
+    ok = np.isfinite(values)
+    if ok.any():
+        axis.plot(
+            np.asarray(t)[ok],
+            values[ok],
+            linestyle="none",
+            marker=marker,
+            markersize=size,
+            color=colour,
+            label=label,
+        )
+    return bool(ok.any())
+
+
+def _legend(ax, *others, **kw):
+    handles, labels = ax.get_legend_handles_labels()
+    for other in others:
+        h, lab = other.get_legend_handles_labels()
+        handles, labels = handles + h, labels + lab
+    if handles:
+        ax.legend(handles, labels, fontsize=7, loc="upper right", **kw)
+
+
+def _draw_segment_rows(ax, df, t):
+    """Violation of each row group at the iterate the docking core returned
+    (log axis, the group's own unit — only rows violated by more than
+    `planner_solves.VIOLATION_FLOOR` are drawn: 0 is "holds"),
+    and the last QP's stationarity residual on a twin. A solve the core ended as
+    infeasible has its named group ringed."""
+    named = (
+        df["segment_infeasible_group"].astype(str).to_numpy()
+        if "segment_infeasible_group" in df.columns
+        else None
+    )
+    for i, group in enumerate(planner_solves.DOCKING_ROW_GROUPS):
+        name = f"segment_viol_{group}"
+        if name not in df.columns:
+            continue
+        v = df[name].astype(float).to_numpy()
+        # Rounding at an iterate that satisfies the row is not a violation, and
+        # on a log axis it would stretch the panel over ten decades of it.
+        violated = np.where(v > planner_solves.VIOLATION_FLOOR, v, np.nan)
+        colour = f"C{i}"
+        _markers(ax, t, violated, group, colour, "o")
+        if named is not None:
+            ring = (named == group) & np.isfinite(violated)
+            if ring.any():
+                ax.scatter(
+                    np.asarray(t)[ring],
+                    violated[ring],
+                    s=60,
+                    facecolors="none",
+                    edgecolors=colour,
+                    linewidths=1.0,
+                )
+    ax.set_yscale("log")
+    ax.set_ylabel("row violation\n(group unit; ring = infeasible group)")
+    ax.grid(True, alpha=0.3)
+    ax_r = ax.twinx()
+    if "segment_kkt_residual" in df.columns:
+        k = df["segment_kkt_residual"].astype(float).to_numpy()
+        _markers(ax_r, t, np.where(k > 0, k, np.nan), "KKT residual", "0.3", "+", size=4)
+        ax_r.set_yscale("log")
+    ax_r.set_ylabel("KKT residual")
+    _legend(ax, ax_r, ncol=3)
+
+
+def _draw_segment_crossing(ax, df, t):
+    """The catch node as the docking core left it: closing speed c_N (left),
+    and on the right axis σ_s and the signed room of the lateral rows and the
+    timing row in mm (negative = violated), with σ_t in ms."""
+
+    def col(name, scale=1.0):
+        if name not in df.columns:
+            return np.full(len(df), np.nan)
+        return df[name].astype(float).to_numpy() * scale
+
+    _markers(ax, t, col("segment_c_catch"), "c_N (m/s)", "C0", "o")
+    ax.set_ylabel("closing speed c_N (m/s)")
+    ax.grid(True, alpha=0.3)
+    ax_r = ax.twinx()
+    _markers(ax_r, t, col("segment_sigma_s", 1e3), "σ_s (mm)", "C1", "s")
+    _markers(ax_r, t, col("segment_sigma_t", 1e3), "σ_t (ms)", "C2", "x")
+    _markers(ax_r, t, col("segment_chance_lateral", 1e3), "lateral room (mm)", "C3", "^")
+    _markers(ax_r, t, col("segment_chance_timing", 1e3), "timing room (mm)", "C4", "v")
+    ax_r.axhline(0.0, color="0.5", linewidth=0.6)
+    ax_r.set_ylabel("σ_s, room (mm) · σ_t (ms)")
+    _legend(ax, ax_r, ncol=2)
+
+
 _SEGMENT_DRAWERS = {
     "outcome": _draw_segment_outcome,
     "solve": _draw_segment_solve,
     "catch": _draw_segment_catch,
+    "rows": _draw_segment_rows,
+    "crossing": _draw_segment_crossing,
+}
+
+
+def _draw_nlp_funnel(ax, df, t):
+    """The NLP search's candidates per wake, stage by stage."""
+    ran = _nlp_rows(df)
+    for name, colour, marker in zip(
+        NLP_FUNNEL_COLUMNS, ("C0", "C1", "C2", "C3"), "osx^", strict=True
+    ):
+        if name in df.columns:
+            v = np.where(ran, df[name].astype(float).to_numpy(), np.nan)
+            _markers(ax, t, v, name, colour, marker)
+    ax.set_ylabel("nlp candidates")
+    ax.grid(True, alpha=0.3)
+    _legend(ax, ncol=2)
+
+
+def _draw_nlp_reason(ax, df, t):
+    """Each NLP wake's reason at its category: `none` is a wake that chose a
+    plan, any other the reason of the candidate that got farthest."""
+    ran = _nlp_rows(df)
+    codes = _categorical_codes(df["nlp_reason"], NLP_REASON_ORDER).to_numpy()
+    chose = ran & (df["nlp_reason"].astype(str).to_numpy() == "none")
+    refused = ran & ~chose
+    if refused.any():
+        ax.scatter(
+            np.asarray(t)[refused], codes[refused], s=12, color="C3", marker="x", label="no plan"
+        )
+    if chose.any():
+        ax.scatter(
+            np.asarray(t)[chose], codes[chose], s=14, color="C2", marker="o", label="chose a plan"
+        )
+    ax.set_yticks(range(len(NLP_REASON_ORDER)))
+    ax.set_yticklabels(NLP_REASON_ORDER, fontsize=6)
+    ax.set_ylabel("nlp wake reason")
+    ax.grid(True, alpha=0.3)
+    _legend(ax)
+
+
+def _draw_nlp_chosen(ax, df, t):
+    """The chosen candidate's cost — Φ (what it was chosen on) and J⋆ (the
+    solve's cost up to the catch) — and, on a twin, the wake's slowest
+    candidate solve. A wake that cut a candidate at its deadline is drawn as a
+    hollow triangle: that time is a cut instant (module docstring)."""
+
+    def col(name, scale=1.0):
+        if name not in df.columns:
+            return np.full(len(df), np.nan)
+        return df[name].astype(float).to_numpy() * scale
+
+    _markers(ax, t, col("nlp_phi"), "Φ (chosen)", "C0", "o")
+    _markers(ax, t, col("nlp_j_reference"), "J⋆ (chosen)", "C1", "s")
+    ax.set_ylabel("chosen candidate cost")
+    ax.grid(True, alpha=0.3)
+    ax_r = ax.twinx()
+    ms = col("nlp_solve_us_max", 1e-3)
+    ms = np.where(ms > 0, ms, np.nan)
+    cut = col("nlp_rej_deadline") > 0
+    _markers(ax_r, t, np.where(cut, np.nan, ms), "slowest solve (ms)", "0.3", "+", size=4)
+    stopped = cut & np.isfinite(ms)
+    if stopped.any():
+        ax_r.scatter(
+            np.asarray(t)[stopped],
+            ms[stopped],
+            s=22,
+            facecolors="none",
+            edgecolors="0.3",
+            marker="^",
+            linewidths=0.9,
+            label="a candidate cut at deadline (≥)",
+        )
+    ax_r.set_ylabel("slowest candidate solve (ms)")
+    _legend(ax, ax_r, ncol=2)
+
+
+_NLP_DRAWERS = {
+    "nlp_funnel": _draw_nlp_funnel,
+    "nlp_reason": _draw_nlp_reason,
+    "nlp_chosen": _draw_nlp_chosen,
 }
 
 
@@ -334,7 +587,8 @@ def plot_planner_events(df, save_dir=None):
     # The segment panels come after the six search panels and only when their
     # columns exist, so a log from before the segment planner still gets six.
     segment_panels = _segment_panels(df)
-    n_panels = 6 + len(segment_panels)
+    nlp_panels = _nlp_panels(df)
+    n_panels = 6 + len(segment_panels) + len(nlp_panels)
     fig, axes = plt.subplots(n_panels, 1, figsize=(14, 3 * n_panels), sharex=True)
     fig.suptitle(
         "Planner Events — search timing, funnel, rejects, decisions, rank gates",
@@ -420,8 +674,12 @@ def plot_planner_events(df, save_dir=None):
     axes[5].grid(True, alpha=0.3)
 
     # ── 7-9. Segment planner (only the panels whose columns exist) ────────────
-    for ax, name in zip(axes[6:], segment_panels, strict=True):
+    n_segment = len(segment_panels)
+    for ax, name in zip(axes[6 : 6 + n_segment], segment_panels, strict=True):
         _SEGMENT_DRAWERS[name](ax, df, t)
+    # ── The NLP search's own panels, after them (only on a log that has them) ──
+    for ax, name in zip(axes[6 + n_segment :], nlp_panels, strict=True):
+        _NLP_DRAWERS[name](ax, df, t)
 
     axes[-1].set_xlabel("Time (s)")
 
@@ -523,6 +781,7 @@ def _print_segment_statistics(df):
         kind = df["segment_kind"].astype(str)
         outcome = df["segment_outcome"].astype(str) if "segment_outcome" in df.columns else None
         us = df["segment_solve_us"].astype(float) if "segment_solve_us" in df.columns else None
+        cut_all = planner_solves.cut_at_deadline(df)
         for name in SEGMENT_KIND_ORDER[:-1]:
             if name == "none":
                 continue
@@ -533,11 +792,22 @@ def _print_segment_statistics(df):
             if outcome is not None:
                 line += f", published {int((sel & (outcome == 'published')).sum())}"
             if us is not None:
-                ms = us[sel & (us > 0)].dropna() / 1e3
-                if len(ms) > 0:
+                # Solves that ended and solves the core cut, apart: a cut
+                # solve's time is the cut instant (planner_solves).
+                solved = (sel & (us > 0)).to_numpy()
+                times = planner_solves.summarise_times(
+                    us[solved].to_numpy() / 1e3, cut_all[solved]
+                )
+                done = times["done"]
+                if done is not None:
                     line += (
-                        f" | solve [ms]: p50 {ms.quantile(0.5):.2f}  "
-                        f"p99 {ms.quantile(0.99):.2f}  max {ms.max():.2f}"
+                        f" | solve [ms] (n={times['n_done']}): p50 {done['p50']:.2f}  "
+                        f"p99 {done['p99']:.2f}  max {done['max']:.2f}"
+                    )
+                if times["n_cut"]:
+                    line += (
+                        f" | cut at the deadline: {times['n_cut']} "
+                        f"(>= {times['cut_min_ms']:.2f} ms, not a solve time)"
                     )
             print(line)
         if outcome is not None:
@@ -569,3 +839,44 @@ def _print_segment_statistics(df):
             f"({sv - pv}) is plans the search found and the wake did not publish — under mode "
             f"mpc a plan goes out only with its first segment."
         )
+    _print_solve_account(df)
+
+
+def _print_solve_account(df):
+    """The solve table by what each solve was and how it ended, the NLP
+    search's wakes, and where replacements ended — each only when the log has
+    it (`rtc_tools.analysis.planner_solves`)."""
+    groups = planner_solves.solve_groups(df)
+    if groups:
+        print("Segment solves by kind / outcome / core reason / infeasible group:")
+        for line in planner_solves.format_solve_groups(groups):
+            print(line)
+    nlp = planner_solves.nlp_summary(df)
+    if nlp is not None:
+        reasons = ", ".join(f"{k}×{v}" for k, v in nlp.get("reasons", {}).items())
+        print(f"NLP search wakes: {nlp['wakes']} | reason: {reasons}")
+        funnel = ", ".join(f"{k} {v:.1f}" for k, v in nlp["funnel"].items())
+        print(f"NLP candidate funnel (mean per wake): {funnel}")
+        if nlp["rejects"]:
+            print(
+                "NLP candidates removed, by reason: "
+                + ", ".join(f"{k}×{v}" for k, v in nlp["rejects"].items())
+            )
+        times = nlp.get("solve_ms_max")
+        if times is not None and times["n"]:
+            done = times["done"]
+            line = "NLP slowest candidate solve per wake [ms]:"
+            if done is not None:
+                line += (
+                    f" (n={times['n_done']}) p50 {done['p50']:.2f}  p99 {done['p99']:.2f}  "
+                    f"max {done['max']:.2f}"
+                )
+            if times["n_cut"]:
+                line += (
+                    f" | wakes that cut a candidate at its deadline: {times['n_cut']} "
+                    f"(>= {times['cut_min_ms']:.2f} ms, not a solve time)"
+                )
+            print(line)
+    replaced = planner_solves.replace_summary(df)
+    if replaced:
+        print("Replacement attempts ended: " + ", ".join(f"{k}×{v}" for k, v in replaced.items()))
