@@ -4,7 +4,8 @@
 // What is tested: with no plan noted as followed the ring holds the segments
 // of ONE plan (a segment of another plan empties it); with one noted it holds
 // that plan's and the newest plan's — the followed plan and its replacement —
-// and a report is read plan by plan; it holds eight, and a full ring drops the
+// and keeps a replacement the RT is noted to hold through any push; a report
+// is read plan by plan; it holds eight, and a full ring drops the
 // oldest segment the RT did not last report, so the followed and the pending
 // segment survive a burst of pushes; a payload moves with its segment; and the
 // three questions the cycle asks — which segments the RT reports (Reported),
@@ -487,6 +488,120 @@ TEST(SegmentRingTwoPlans, AfterTheSwitchTheNextPushDropsThePlanTheRtLeft) {
   EXPECT_TRUE(HoldsWithPayload(ring, 4));
   EXPECT_FALSE(ring.IsOf(Rt(1)));
   EXPECT_TRUE(ring.IsOf(RtSwitched(3)));
+}
+
+TEST(SegmentRingTwoPlans, AHeldReplacementsFirstSegmentStaysWhateverIsPushedMeanwhile) {
+  constexpr std::uint32_t kThirdPlan = kPlan + 2;
+  constexpr std::int64_t kThirdCatch = kCatch + 90'000'000;
+  SegmentRing<int> ring;
+  ring.Push(Seg(1, /*t0_ns=*/1'000), PayloadFor(1));
+  ring.Push(Seg(2, /*t0_ns=*/2'000), PayloadFor(2));
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(NewSeg(3, /*t0_ns=*/3'000), PayloadFor(3));
+  // The RT holds the pair, and a segment of the plan it still follows is
+  // stored all the same (a replan that was under way): the replacement's first
+  // segment is the one thing the planner has of the plan the RT is about to
+  // follow, and it stays.
+  const PlannerRtState held = RtHolding(/*following=*/1, /*pending=*/3);
+  ring.NoteReported(held);
+  ring.Push(Seg(4, /*t0_ns=*/2'500), PayloadFor(4));
+  for (std::uint32_t seq = 1; seq <= 4; ++seq) {
+    ASSERT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
+  EXPECT_EQ(ring.Find(3)->plan_id, kNewPlan);
+  const SegmentRing<int>::Report r = ring.ReportedIn(held);
+  EXPECT_EQ(r.following, ring.Find(1));
+  EXPECT_EQ(r.pending, ring.Find(3));
+  EXPECT_EQ(ring.SourceSeq(held, 2'999), 1U);
+  EXPECT_EQ(ring.SourceSeq(held, 3'000), 3U);
+  // A segment of a THIRD plan does not drop it either: the followed plan's,
+  // the held replacement's and the stored segment's plan are all kept.
+  ring.NoteReported(held);
+  ring.Push(Seg(5, 0, kThirdPlan, kThirdCatch), PayloadFor(5));
+  for (std::uint32_t seq = 1; seq <= 5; ++seq) {
+    ASSERT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
+  EXPECT_EQ(ring.ReportedIn(held).pending, ring.Find(3));
+  // The RT reports the switch: it follows the replacement and holds nothing.
+  // The next push drops the plan it left, as it does without a detour — and
+  // the third plan's with it.
+  ring.NoteReported(RtSwitched(/*following=*/3));
+  ring.Push(NewSeg(6, /*t0_ns=*/3'500), PayloadFor(6));
+  for (const std::uint32_t seq : {1U, 2U, 4U, 5U}) {
+    EXPECT_EQ(ring.Find(seq), nullptr) << seq;
+  }
+  EXPECT_TRUE(HoldsWithPayload(ring, 3));
+  EXPECT_TRUE(HoldsWithPayload(ring, 6));
+  EXPECT_FALSE(ring.IsOf(Rt(1)));
+  EXPECT_TRUE(ring.IsOf(RtSwitched(3)));
+}
+
+TEST(SegmentRingTwoPlans, OnlyTheReplacementTheReportHoldsIsKeptThroughAPush) {
+  // What keeps a replacement's entries through a push of the followed plan is
+  // the report HOLDING that plan: the flag, and that plan's id and catch
+  // instant. Each of the reports below holds something else — or nothing.
+  struct Case {
+    const char* what;
+    void (*change)(PlannerRtState&);
+  };
+
+  const Case cases[] = {
+      {"the flag is false, the fields are a previous report's",
+       [](PlannerRtState& s) { s.plan_pending = false; }},
+      {"another replacement's id", [](PlannerRtState& s) { s.plan_pending_id += 5; }},
+      {"another replacement's catch instant",
+       [](PlannerRtState& s) { s.plan_pending_t_c_ns += 1; }},
+      {"no plan followed at all", [](PlannerRtState& s) { s.plan_active = false; }},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.what);
+    SegmentRing<int> ring;
+    PushSeqs(ring, 1, 2);
+    ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+    ring.Push(NewSeg(3), PayloadFor(3));
+    PlannerRtState report = RtHolding(/*following=*/1, /*pending=*/3);
+    c.change(report);
+    ring.NoteReported(report);
+    ring.Push(Seg(4), PayloadFor(4));
+    EXPECT_EQ(ring.Find(3), nullptr);
+    // The stored segment's own plan is kept in every case.
+    for (const std::uint32_t seq : {1U, 2U, 4U}) {
+      EXPECT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+    }
+  }
+  // The control: the report that holds it keeps it.
+  SegmentRing<int> ring;
+  PushSeqs(ring, 1, 2);
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(NewSeg(3), PayloadFor(3));
+  ring.NoteReported(RtHolding(/*following=*/1, /*pending=*/3));
+  ring.Push(Seg(4), PayloadFor(4));
+  EXPECT_TRUE(HoldsWithPayload(ring, 3));
+}
+
+TEST(SegmentRingTwoPlans, AFullRingKeepsAHeldReplacementsFirstSegmentThroughABurst) {
+  // Eight entries, and the two the RT reports are never the one dropped — the
+  // pending one found under the plan the RT holds. Seven segments of the
+  // followed plan and the replacement's first fill the ring; twenty-two more
+  // of the followed plan go through it.
+  SegmentRing<int> ring;
+  PushSeqs(ring, 1, 7);
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(NewSeg(8), PayloadFor(8));
+  const PlannerRtState held = RtHolding(/*following=*/1, /*pending=*/8);
+  ring.NoteReported(held);
+  PushSeqs(ring, 9, 30);
+  EXPECT_TRUE(HoldsWithPayload(ring, 1));
+  ASSERT_TRUE(HoldsWithPayload(ring, 8));
+  EXPECT_EQ(ring.Find(8)->plan_id, kNewPlan);
+  EXPECT_EQ(ring.ReportedIn(held).pending, ring.Find(8));
+  EXPECT_EQ(ring.ReportedIn(held).following, ring.Find(1));
+  for (std::uint32_t seq = 2; seq <= 7; ++seq) {
+    EXPECT_EQ(ring.Find(seq), nullptr) << seq;
+  }
+  for (std::uint32_t seq = 25; seq <= 30; ++seq) {
+    EXPECT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
 }
 
 TEST(SegmentRingTwoPlans, TheReportIsReadPlanByPlanInTheThreeStatesOfAReplacement) {

@@ -51,6 +51,10 @@ void PlannerCycle::RunReplan(const PlannerRtState& rt, const BallPrediction& bal
   // from what the RT no longer reports would start somewhere the arm is not.
   // A mere segment_seq change is not a reason to drop it — in a chain that
   // switches every 0.05 – 0.1 s that rule would discard most solves.
+  //
+  // A report that by now shows a replacement HELD drops it too: the RT takes
+  // nothing until it has switched or dropped the pair, and a segment of the
+  // plan it is about to leave has nowhere to go.
   const std::int64_t publish_ns = clock_();
   const PlannerRtState rt_now = io_.rt->Load();
   const auto m = static_cast<Mode>(rt_now.mode);
@@ -58,7 +62,7 @@ void PlannerCycle::RunReplan(const PlannerRtState& rt, const BallPrediction& bal
                        m == Mode::kClosing || m == Mode::kDecel;
   if (!rt_now.valid || !mode_ok || rt_now.reset_epoch != rt.reset_epoch ||
       rt_now.activation_generation != rt.activation_generation || !rt_now.plan_active ||
-      rt_now.plan_id != rt.plan_id || rt_now.plan_t_c_ns != rt.plan_t_c_ns ||
+      rt_now.plan_id != rt.plan_id || rt_now.plan_t_c_ns != rt.plan_t_c_ns || rt_now.plan_pending ||
       segment_planner_->SourceSeq(rt_now, segment_out_.t0_ns) != rec.segment.source_seq ||
       !segment_planner_->StartsInTime(publish_ns, segment_out_.t0_ns)) {
     rec.segment.outcome = SegmentOutcome::kSuperseded;

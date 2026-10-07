@@ -40,7 +40,8 @@
 // slot, and whatever is stored before the RT has read the pair lands on top of
 // the segment it may be adopting. Once the RT follows a plan every wake through
 // DECEL replans its segment, and the re-check of a replan is that the RT still
-// reports the same source segment.
+// follows that plan, reports the same source segment for the new node 0, and
+// holds no replacement.
 //
 // WHILE A PLAN IS FOLLOWED THE SEARCH GOES ON, AND MAY REPLACE IT (E1-F16,
 // E1-F17). In APPROACH, until the first catch instant the RT followed since

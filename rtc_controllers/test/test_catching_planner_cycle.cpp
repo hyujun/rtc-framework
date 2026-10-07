@@ -2353,6 +2353,60 @@ TEST(PlannerCycleReplacement, AWithheldFirstSegmentKeepsThePlanItsAccountAndRepl
   EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff);
 }
 
+TEST(PlannerCycleReplacement, AReplanIsDroppedAtItsRecheckWhenTheRtHoldsAReplacementByThen) {
+  // The RT can take a pair late — after the wait behind the pair has run out
+  // — so a wake that read "nothing held" can find a replacement held by the
+  // time its replan is solved. That replan is of the plan the RT is about to
+  // leave, and the RT takes nothing until it has switched or dropped the
+  // pair: it is not stored. Behind a search, and on the replan-alone wake.
+  struct Ctx {
+    FakeRig* rig;
+    bool held;
+  };
+
+  for (const std::int64_t wake_ns : {kFollowWake, kFakeTc - 300 * kMs}) {
+    const bool searches = wake_ns == kFollowWake;
+    for (const bool held : {true, false}) {
+      SCOPED_TRACE(std::string(searches ? "behind a search" : "the replan alone") +
+                   (held ? ", a replacement held by the re-check" : ", nothing held (control)"));
+      ReplacingRig rig;
+      rig->search->decision = SwitchDecision::kRefreshed;
+      Ctx ctx{rig.rig.get(), held};
+      rig->cycle.SetPostSegmentHookForTesting(
+          [](void* user) noexcept {
+            auto* x = static_cast<Ctx*>(user);
+            PlannerRtState s = Following(Mode::kApproach, 1);
+            s.rt_iteration += 1;
+            s.plan_pending = x->held;
+            s.plan_pending_id = 2;
+            s.plan_pending_t_c_ns = kFakeTc + 40 * kMs;
+            x->rig->boxes.rt.Store(s);
+          },
+          &ctx);
+      const Stored before(*rig.rig);
+      const Calls calls = rig->Wake(wake_ns);
+      Calls expected = searches ? Calls{Call::kSearchPlan} : Calls{};
+      const Calls solved{Call::kFollowedTrack, Call::kReplan, Call::kClock};
+      expected.insert(expected.end(), solved.begin(), solved.end());
+      EXPECT_EQ(rig->rec.outcome, searches ? CycleOutcome::kHeld : CycleOutcome::kIdle);
+      EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+      if (held) {
+        // Dropped before either question of the re-check is asked of the
+        // planner; nothing stored, nobody told.
+        EXPECT_EQ(calls, expected);
+        EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kSuperseded);
+        EXPECT_EQ(Stored(*rig.rig), before);
+      } else {
+        const Calls stored{Call::kSourceSeq, Call::kStartsInTime, Call::kSegmentNotePublished};
+        expected.insert(expected.end(), stored.begin(), stored.end());
+        EXPECT_EQ(calls, expected);
+        EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+        EXPECT_EQ(rig->segment_box.Load().segment_seq, before.last_segment_seq + 1);
+      }
+    }
+  }
+}
+
 TEST(PlannerCycleReplacement, WhileTheRtHoldsAReplacementAWakeRunsNothing) {
   // The RT took the pair and holds it until its first segment starts: it takes
   // nothing else until then, so neither a search nor a replan has anywhere to
