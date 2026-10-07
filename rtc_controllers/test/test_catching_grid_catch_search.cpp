@@ -98,7 +98,7 @@ struct Rig {
     constants.v_max = 3.0;
     constants.a_dec = 10.0;
     constants.t_arm_s = 0.0;
-    constants.t_close_e2e = 0.1;
+    constants.t_close_lead = 0.1;
     constants.t_close_total = 0.101;
     constants.ball_mass = 0.057;
     constants.ref_omega = 10.0;
@@ -423,6 +423,45 @@ TEST(GridCatchSearchPlan, AnUnsetDecisionKeepsEveryCandidateOut) {
   EXPECT_EQ(stats.n_in_window, 0);
 }
 
+// ── 2a. The hand-close lead (E1-F16) ─────────────────────────────────────────
+
+// `robot.hand.T_close_lead` is what the hand sequencer subtracts from t_c; the
+// MEASURED closure time (`t_close_total`) only feeds the γ window. The command
+// instant and the commit gate follow the lead, not the closure time.
+TEST(GridCatchSearchPlan, TheCloseLeadDrivesTheCommandInstantAndTheCommitGate) {
+  const auto run = [](double lead, double total, SearchStats& stats) {
+    auto rig = std::make_unique<Rig>();
+    rig->constants.t_close_lead = lead;
+    rig->constants.t_close_total = total;
+    EXPECT_TRUE(rig->Configure());
+    const auto traj = rig->Traj();
+    return rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                            NowReal{kNow}, stats);
+  };
+  // A short lead beside a long measured closure (e2e 0.10 s ≠ lead 0.03 s; the
+  // total here is far above every lead of the slice): the gate reads
+  // lead + h/2 + T_arm + margin, so no candidate fails it. A gate reading the
+  // closure time would fail them all.
+  SearchStats short_lead;
+  const PlanSnapshot a = run(0.03, 5.0, short_lead);
+  ASSERT_TRUE(a.valid) << "reason " << static_cast<int>(a.reason);
+  EXPECT_EQ(a.t_cmd_ns, a.t_c_ns - rtc::catching::SecondsToNs(0.03));
+  EXPECT_EQ(short_lead.chosen_rank_mask & rtc::catching::kRankCommitLead, 0);
+  // A lead longer than any candidate's: every one fails the gate (a rank gate —
+  // the plan stays), whatever the short measured closure time says.
+  SearchStats long_lead;
+  const PlanSnapshot b = run(10.0, 0.101, long_lead);
+  ASSERT_TRUE(b.valid) << "a rank gate removed the candidates";
+  EXPECT_EQ(b.t_cmd_ns, b.t_c_ns - rtc::catching::SecondsToNs(10.0));
+  EXPECT_NE(long_lead.chosen_rank_mask & rtc::catching::kRankCommitLead, 0);
+  // An unknown lead: the close instant is the catch instant, and the gate fails.
+  SearchStats unknown;
+  const PlanSnapshot c = run(std::numeric_limits<double>::quiet_NaN(), 0.101, unknown);
+  ASSERT_TRUE(c.valid);
+  EXPECT_EQ(c.t_cmd_ns, c.t_c_ns);
+  EXPECT_NE(unknown.chosen_rank_mask & rtc::catching::kRankCommitLead, 0);
+}
+
 // ── 3. Settle and budget ─────────────────────────────────────────────────────
 
 TEST(GridCatchSearchPlan, SettlesForNSnapshotsAfterATrackChange) {
@@ -486,7 +525,7 @@ std::uint64_t SearchSequenceDigest(Rig& rig) {
 TEST(GridCatchSearchPlan, AReconfiguredSearchIsANewOne) {
   // Configure is a full reset: a search that has run and is configured again
   // answers exactly as one built and configured now. PlannerCycle relies on
-  // it — ConfigureGridCatchSearch installs a NEW search on every configure (E1-F12
+  // it — a configure installs a NEW search (MakeGridCatchSearch) every time (E1-F12
   // #738) where it once configured the one in place again, and the two are
   // the same thing only if nothing a search did before survives its
   // Configure. n_settle 2 puts the per-trial part of that in view: a search

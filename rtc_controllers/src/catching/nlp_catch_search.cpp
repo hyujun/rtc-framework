@@ -1591,8 +1591,8 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   const BallNodeSample ball = SampleBallNode(traj, &cov, cov_matched, BallTime{c.t_c_ns}, hint);
   const double speed = ball.v.norm();
   plan.t_c_ns = c.t_c_ns;
-  plan.t_cmd_ns = std::isfinite(constants_.t_close_e2e)
-                      ? c.t_c_ns - SecondsToNs(constants_.t_close_e2e)
+  plan.t_cmd_ns = std::isfinite(constants_.t_close_lead)
+                      ? c.t_c_ns - SecondsToNs(constants_.t_close_lead)
                       : c.t_c_ns;
   plan.p_c = {ball.p.x(), ball.p.y(), ball.p.z()};
   plan.v_c = {ball.v.x(), ball.v.y(), ball.v.z()};

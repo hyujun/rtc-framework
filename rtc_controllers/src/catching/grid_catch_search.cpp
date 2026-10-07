@@ -385,7 +385,10 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   const std::span<const double> qddot(model_.qddot_max.data(), model_.accel_box ? nvs : 0U);
   const NowLead now_lead = MakeNowLead(now, SecondsToNs(constants_.t_arm_s));
   const double v_tcp_plan = PlanningTcpSpeed(constants_.eta_v, constants_.v_max);
-  const double commit_lead = constants_.t_close_total + constants_.t_arm_s + params_.time_margin;
+  // The hand closes t_close_lead before t_c; with lead == T_close,e2e this is
+  // T_close,tot + T_arm + margin (T_close,tot = e2e + h/2) up to rounding.
+  const double commit_lead = constants_.t_close_lead + 0.5 * constants_.control_dt +
+                             constants_.t_arm_s + params_.time_margin;
   const std::int64_t budget_ns = SecondsToNs(params_.budget_s);
 
   // Where the reference starts (§4.8): its own state when it is running (a
@@ -667,8 +670,8 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   const Eigen::Vector3d v(bs.v[0], bs.v[1], bs.v[2]);
   const double speed = v.norm();
   plan.t_c_ns = bs.t_ns;
-  plan.t_cmd_ns = std::isfinite(constants_.t_close_e2e)
-                      ? bs.t_ns - SecondsToNs(constants_.t_close_e2e)
+  plan.t_cmd_ns = std::isfinite(constants_.t_close_lead)
+                      ? bs.t_ns - SecondsToNs(constants_.t_close_lead)
                       : bs.t_ns;
   plan.p_c = bs.p;
   plan.a_d = {-v.x() / speed, -v.y() / speed, -v.z() / speed};

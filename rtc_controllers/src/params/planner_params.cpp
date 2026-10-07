@@ -187,7 +187,7 @@ std::array<double, 3> Read3(const YAML::Node& v, const std::string& path) {
 
 }  // namespace
 
-PlannerParams ParsePlannerParams(const YAML::Node& catching) {
+PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySelection& selection) {
   if (!catching || !catching.IsMap()) {
     Reject("must be given the `catching:` map");
   }
@@ -203,8 +203,13 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   // Each function's design values sit under its own map (#711): the grid
   // search's under `planner.search.grid`, the mpc segment planner's under
   // `planner.segment.mpc`. What is read from `planner` itself is the thread's.
+  //
+  // ONLY A SELECTED FUNCTION'S MAP IS OPENED (PlannerKeySelection). One that is
+  // not selected is taken as absent, which is how every reader below already
+  // treats a missing section: defaults, and the unset decisions unset.
   const YAML::Node search = Section(planner, "search", "search");
-  const YAML::Node grid = Section(search, "grid", "search.grid");
+  const YAML::Node grid =
+      selection.search_grid ? Section(search, "grid", "search.grid") : YAML::Node();
 
   // ── Thread ─────────────────────────────────────────────────────────────────
   out.enabled = ReadBool(planner, "enabled", "enabled", out.enabled);
@@ -384,7 +389,8 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching) {
   // `planner.segment.mode` and, under `mpc`, `switch_margin` and `eta_v` are
   // ParseCatchingParams' (the validator judges them); the rest is read here.
   const YAML::Node segment = Section(planner, "segment", "segment");
-  const YAML::Node mpc = Section(segment, "mpc", "segment.mpc");
+  const YAML::Node mpc =
+      selection.segment_mpc ? Section(segment, "mpc", "segment.mpc") : YAML::Node();
   MpcSegmentPlannerParams& d = out.mpc_segment;
   const YAML::Node horizon = Section(mpc, "horizon", "segment.mpc.horizon");
   // From the section's kind, not the node: an absent section reads as an

@@ -84,8 +84,13 @@ struct GridCatchSearchConstants {
       std::numeric_limits<double>::quiet_NaN()};  ///< `planner.search.grid.reference.v_max`
   double a_dec{std::numeric_limits<double>::quiet_NaN()};  ///< `planner.search.grid.stop.a_dec`
   double t_arm_s{0.0};                                     ///< `joint_cmd.lag.T_arm`
-  /// `robot.hand.T_close_e2e` and T_close,tot = that + h/2 (§4.5).
-  double t_close_e2e{std::numeric_limits<double>::quiet_NaN()};
+  /// `robot.hand.T_close_lead` [s] — what the hand sequencer subtracts from the
+  /// catch instant. It fills `plan.t_cmd_ns` and, with h/2, T_arm and the
+  /// margin, the commit lead (kRankCommitLead). NaN: the close instant is the
+  /// catch instant and the commit gate fails.
+  double t_close_lead{std::numeric_limits<double>::quiet_NaN()};
+  /// The MEASURED closure time, T_close,tot = `robot.hand.T_close_e2e` + h/2
+  /// (§4.5) — what the γ window and MaxCatchableSpeed use.
   double t_close_total{std::numeric_limits<double>::quiet_NaN()};
   double ball_mass{0.0};  ///< `core.ball.mass` [kg] — the impulse estimate
   /// The L4 reference (§4.8 rollout): ω, ζ, and the limits it is judged
@@ -102,7 +107,7 @@ enum RankGateBit : std::uint16_t {
   kRankUncertainty = 1U << 0,  ///< σ_max > κ_σ r_cap, or σ unknown (§4.4)
   kRankReach = 1U << 1,        ///< t_min exceeds the lead (§4.3)
   kRankGamma = 1U << 2,        ///< γ window empty or unjudgeable (§4.5)
-  kRankCommitLead = 1U << 3,   ///< lead < T_close,tot + T_arm + margin (§4.11)
+  kRankCommitLead = 1U << 3,   ///< lead < T_close,lead + h/2 + T_arm + margin (§4.11)
   kRankErrorBudget = 1U << 4,  ///< n_σ σ_gap > r_cap (§4.6)
   kRankRollout = 1U << 5,      ///< no (γ_f, T_w) passes the whole-interval rollout (§4.8)
 };

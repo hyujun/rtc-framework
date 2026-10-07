@@ -199,9 +199,10 @@ struct NlpCatchSearchModel {
 struct NlpCatchSearchConstants {
   double t_arm_s{0.0};       ///< `joint_cmd.lag.T_arm` [s]
   double control_dt{0.002};  ///< the RT period [s]
-  /// `robot.hand.T_close_e2e` [s]; NaN = unknown, the plan's close instant is
-  /// then the catch instant.
-  double t_close_e2e{std::numeric_limits<double>::quiet_NaN()};
+  /// `robot.hand.T_close_lead` [s] — what the hand sequencer subtracts from the
+  /// catch instant; NaN = unknown, the plan's close instant is then the catch
+  /// instant.
+  double t_close_lead{std::numeric_limits<double>::quiet_NaN()};
 };
 
 /// Tuning. Every field is validated by Configure.

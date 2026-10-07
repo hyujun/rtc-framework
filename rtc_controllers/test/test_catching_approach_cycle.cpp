@@ -283,7 +283,7 @@ struct Rig {
     pc.v_max = 3.0;
     pc.a_dec = 10.0;
     pc.t_arm_s = static_cast<double>(kTArm) * 1e-9;
-    pc.t_close_e2e = 0.1;
+    pc.t_close_lead = 0.1;
     pc.t_close_total = 0.101;
     pc.ball_mass = 0.057;
     pc.ref_omega = 10.0;
