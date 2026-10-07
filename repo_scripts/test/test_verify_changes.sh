@@ -2130,7 +2130,10 @@ rm -rf "$dir"
 # FAKE_COLCON_RED = the packages that fail in mode red (default: all of them).
 # FAKE_COLCON_TOPO = what `list` prints (unset: this colcon has no `list`, as
 # the suite's older cases assume); FAKE_COLCON_ABOVE = what it prints for a
-# --packages-above query.
+# --packages-above query. FAKE_COLCON_SKIPPED = "<pkg>:<name>": `test` also
+# writes pytest-style xunit files for that package -- <name>.xunit.xml with
+# every case skipped, and <name>_partial.xunit.xml with one case of four
+# skipped -- the way colcon's pytest leaves them.
 # A "result file" here is one line: "<summary>|<failing test name>".
 make_fake_colcon() {
   local d
@@ -2181,6 +2184,12 @@ case "$verb" in
         failed+=("$p")
       else
         echo "2 tests, 0 errors, 0 failures, 0 skipped|" >"build/$p/Testing/20261001-0900/Test.xml"
+      fi
+      if [ "${FAKE_COLCON_SKIPPED%%:*}" = "$p" ]; then
+        name="${FAKE_COLCON_SKIPPED#*:}"
+        mkdir -p "build/$p/test_results/$p"
+        echo '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="0" skipped="3" tests="3" time="0.07"><testcase classname="x" name="" time="0.000"><skipped message="collection skipped">mujoco absent</skipped></testcase></testsuite></testsuites>' >"build/$p/test_results/$p/$name.xunit.xml"
+        echo '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="0" skipped="1" tests="4" time="0.07"></testsuite></testsuites>' >"build/$p/test_results/$p/${name}_partial.xunit.xml"
       fi
     done
     if [ ${#pkgs[@]} -eq 1 ]; then
@@ -2296,6 +2305,22 @@ expect_contains "...by name" "$out" "build/test verdict missing for: rtc_demo"
 out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green FAKE_COLCON_CALLS="$ccalls"); rc=$?
 expect_exit "a package whose tests pass passes --run" "$rc" 0
 expect_contains "...and says what it tested" "$out" "built and tested [rtc_demo]"
+expect_not_contains "...with no note when every result file ran something" "$out" "every case was SKIPPED"
+# 66b'. A result file this run wrote in which EVERY case was skipped is named
+#       after the PASS line -- a note, not a verdict: the run still passes.
+#       A partially skipped file is not named, nor is an all-skipped file an
+#       earlier run left on disk.
+mkdir -p "$ws/build/rtc_demo/test_results/rtc_demo"
+echo '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="0" skipped="2" tests="2"></testsuite></testsuites>' >"$ws/build/rtc_demo/test_results/rtc_demo/test_old_skip.xunit.xml"
+touch -d '2026-09-01 00:00:00' "$ws/build/rtc_demo/test_results/rtc_demo/test_old_skip.xunit.xml"
+echo 'int existing() { return 2; }' >"$dir/rtc_demo/src/existing.cpp"
+out=$(run_hook_colcon "$dir" "$bstub" "$fake" FAKE_COLCON_MODE=green FAKE_COLCON_CALLS="$ccalls" FAKE_COLCON_SKIPPED="rtc_demo:test_needs_venv"); rc=$?
+expect_exit "a result file skipped whole still passes --run" "$rc" 0
+expect_contains "...and the PASS line is still there" "$out" "verify-changes --run: PASS"
+expect_contains "...followed by the note" "$out" "every case was SKIPPED"
+expect_contains "...naming the file and how many cases it skipped" "$out" "build/rtc_demo/test_results/rtc_demo/test_needs_venv.xunit.xml (3 cases, every one skipped)"
+expect_not_contains "a partially skipped file is not named" "$out" "test_needs_venv_partial"
+expect_not_contains "an all-skipped file an earlier run left is not named" "$out" "test_old_skip"
 out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
 expect_exit "the turn end over a green --run passes" "$rc" 0
 rm -rf "$ws" "$bstub" "$fake" "$ccalls"
