@@ -55,6 +55,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 
 namespace rtc::catching {
@@ -84,8 +85,13 @@ struct GridCatchSearchConstants {
       std::numeric_limits<double>::quiet_NaN()};  ///< `planner.search.grid.reference.v_max`
   double a_dec{std::numeric_limits<double>::quiet_NaN()};  ///< `planner.search.grid.stop.a_dec`
   double t_arm_s{0.0};                                     ///< `joint_cmd.lag.T_arm`
-  /// `robot.hand.T_close_e2e` and T_close,tot = that + h/2 (§4.5).
-  double t_close_e2e{std::numeric_limits<double>::quiet_NaN()};
+  /// `robot.hand.T_close_lead` [s] — what the hand sequencer subtracts from the
+  /// catch instant. It fills `plan.t_cmd_ns` and, with h/2, T_arm and the
+  /// margin, the commit lead (kRankCommitLead). NaN: the close instant is the
+  /// catch instant and the commit gate fails.
+  double t_close_lead{std::numeric_limits<double>::quiet_NaN()};
+  /// The MEASURED closure time, T_close,tot = `robot.hand.T_close_e2e` + h/2
+  /// (§4.5) — what the γ window and MaxCatchableSpeed use.
   double t_close_total{std::numeric_limits<double>::quiet_NaN()};
   double ball_mass{0.0};  ///< `core.ball.mass` [kg] — the impulse estimate
   /// The L4 reference (§4.8 rollout): ω, ζ, and the limits it is judged
@@ -95,6 +101,12 @@ struct GridCatchSearchConstants {
   double ref_zeta{1.0};
   double ref_a_max{std::numeric_limits<double>::quiet_NaN()};
   double control_dt{0.002};  ///< the rollout's confirmation step [s]
+  /// The arm follows a segment planner's segments (`planner.segment.mode` other
+  /// than closed_form). The η_jump bound of the switching rule (§4.7) is the
+  /// step a switch puts into the L4 reference's u_des — and there is no such
+  /// reference under those modes (the RT reports none), so the bound is not
+  /// judged: a switch is decided by ΔJ alone.
+  bool follows_segments{false};
 };
 
 /// Rank-gate failure bits (decision E: the gate bitmask the CSV carries).
@@ -102,7 +114,7 @@ enum RankGateBit : std::uint16_t {
   kRankUncertainty = 1U << 0,  ///< σ_max > κ_σ r_cap, or σ unknown (§4.4)
   kRankReach = 1U << 1,        ///< t_min exceeds the lead (§4.3)
   kRankGamma = 1U << 2,        ///< γ window empty or unjudgeable (§4.5)
-  kRankCommitLead = 1U << 3,   ///< lead < T_close,tot + T_arm + margin (§4.11)
+  kRankCommitLead = 1U << 3,   ///< lead < T_close,lead + h/2 + T_arm + margin (§4.11)
   kRankErrorBudget = 1U << 4,  ///< n_σ σ_gap > r_cap (§4.6)
   kRankRollout = 1U << 5,      ///< no (γ_f, T_w) passes the whole-interval rollout (§4.8)
 };
@@ -131,8 +143,6 @@ enum RankGateBit : std::uint16_t {
 
 class GridCatchSearch final : public CatchSearch {
  public:
-  using ClockFn = std::int64_t (*)() noexcept;
-
   /// Non-RT. Size every buffer. False (and unconfigured) if the model binding
   /// is unusable — no handle, nv outside (0, kMaxPlanNv], a wait pose that is
   /// not one entry per arm joint.
@@ -140,6 +150,14 @@ class GridCatchSearch final : public CatchSearch {
                  const PlannerParams& params, const CatchPoseIkOptions& ik, ClockFn clock);
 
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
+
+  /// Replace the steady clock the search measures its budget on (non-RT; the
+  /// planner thread is not running). A null `clock` is ignored.
+  void SetClock(ClockFn clock) noexcept override {
+    if (clock != nullptr) {
+      clock_ = clock;
+    }
+  }
 
   /// One search. RT-safe. `rt` gives the current command and the plan the RT
   /// follows; `now` is the planning 'now' on the steady axis. `arm` is NOT
@@ -243,5 +261,15 @@ class GridCatchSearch final : public CatchSearch {
   std::size_t published_next_{0};
   Current current_{};
 };
+
+/// @brief A new, configured GridCatchSearch (non-RT).
+///
+/// The one place the configure path builds this search, so the integration
+/// package and the tests build it the same way; the result is handed to
+/// PlannerCycle::InstallSearch.
+/// @return nullptr when Configure refuses the binding.
+[[nodiscard]] std::unique_ptr<GridCatchSearch> MakeGridCatchSearch(
+    const GridCatchSearchModel& model, const GridCatchSearchConstants& constants,
+    const PlannerParams& params, const CatchPoseIkOptions& ik, GridCatchSearch::ClockFn clock);
 
 }  // namespace rtc::catching

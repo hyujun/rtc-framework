@@ -134,8 +134,8 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   pc.v_max = c["reference"]["v_max"].as<double>();
   pc.a_dec = c["supervisor"]["decel"]["a_dec"].as<double>();
   pc.t_arm_s = c["joint_cmd"]["lag"]["T_arm"].as<double>();
-  pc.t_close_e2e = c["robot"]["hand"]["T_close_e2e"].as<double>();
-  pc.t_close_total = pc.t_close_e2e + 0.001;
+  pc.t_close_lead = c["robot"]["hand"]["T_close_e2e"].as<double>();
+  pc.t_close_total = pc.t_close_lead + 0.001;
   pc.ball_mass = c["core"]["ball"]["mass"].as<double>();
   pc.ref_omega = c["reference"]["omega"].as<double>();
   pc.ref_zeta = c["reference"]["zeta"].as<double>();

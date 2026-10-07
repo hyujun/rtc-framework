@@ -9,8 +9,10 @@
 # (<dir>.fail<N>, kept as evidence) and retried with the same seed, at most
 # MAX_TRY attempts per invocation; FAIL:host_busy and FAIL:estimator not
 # activated are rig failures and are what the retries are for.
-# Plan lines: <dir> <robot p1b|leap> <overlay> <n> <seed> <mode mpc|closed_form> [<key=value;key=value>]
+# Plan lines: <dir> <robot p1b|leap> <overlay> <n> <seed> <mode mpc|closed_form|mpc_docking> [<key=value;key=value>]
 # (the last field is run_unit.sh's EXPECT_KV: mirror values the unit must read back).
+# The mode may also be mpc_docking. The search mode is not a plan column: EXPECT_SEARCH
+# (grid|nlp, default grid) is read from the environment by run_unit.sh for every unit.
 D=$(cd "$(dirname "$0")" && pwd)
 [ -n "$DATA" ] || { echo "run_all.sh: DATA is not set (the data directory of this evaluation)" >&2; exit 2; }
 [ -n "$PLAN" ] && [ -f "$PLAN" ] || { echo "run_all.sh: PLAN is not set or not a file (the plan of this evaluation)" >&2; exit 2; }

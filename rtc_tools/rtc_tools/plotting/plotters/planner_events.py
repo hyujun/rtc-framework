@@ -45,7 +45,15 @@ import numpy as np
 # file only logs non-idle wakes (see the C++ header), but `idle` is kept in
 # the category order because PlannerEventWorthRecording can still record one
 # (a reset or a monitor-only sigma_l on an otherwise idle wake).
-OUTCOME_ORDER = ("idle", "no_input", "published", "superseded", "held", "unknown")
+OUTCOME_ORDER = (
+    "idle",
+    "no_input",
+    "published",
+    "superseded",
+    "held",
+    "held_replace_unsupported",
+    "unknown",
+)
 
 # rtc::catching::SwitchDecisionName order (rtc_controllers/catching/
 # search_stats.hpp).

@@ -161,6 +161,11 @@ HandProfile ReadHandProfile(const YAML::Node& hand_node) {
   out.provisional = ReadOptional(hand_node, "provisional", true);
   out.eta_close = ReadTbdDouble(hand_node, "eta_close", out.eta_close);
   out.T_close_e2e = ReadTbdDouble(hand_node, "T_close_e2e", out.T_close_e2e);
+  // Absent → HandProfile::CloseLead() answers T_close_e2e (the two were one
+  // key before E1-F16). An explicit value, or an explicit `TBD`, is the
+  // profile's design lead.
+  out.T_close_lead_given = static_cast<bool>(hand_node["T_close_lead"]);
+  out.T_close_lead = ReadTbdDouble(hand_node, "T_close_lead", out.T_close_lead);
 
   // ── Sequencer keys (S7.1) ─────────────────────────────────────────────────
   // `T_pre` is refused by name: #537 S7 decision Q4 removed the time-based
@@ -323,62 +328,109 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   }
   CatchingParams out;
 
-  const YAML::Node reference = ReadSection(node, "reference");
-  out.reference_omega = ReadTbdDouble(reference, "omega", out.reference_omega);
-  out.reference_zeta = ReadTbdDouble(reference, "zeta", out.reference_zeta);
-  out.reference_v_max = ReadTbdDouble(reference, "v_max", out.reference_v_max);
-  out.reference_a_max = ReadTbdDouble(reference, "a_max", out.reference_a_max);
-  out.reference_provisional = ReadOptional(reference, "provisional", true);
-
+  // The two selectors first: a function that does not run has no say in
+  // whether this profile parses (E1-F16).
   const YAML::Node planner = ReadSection(node, "planner");
   const YAML::Node search = ReadSection(planner, "search");
-  const YAML::Node grid = ReadSection(search, "grid");
-  const YAML::Node gamma = ReadSection(grid, "gamma");
-  out.planner_search_grid_gamma_eta_v =
-      ReadTbdDouble(gamma, "eta_v", out.planner_search_grid_gamma_eta_v);
-  const YAML::Node grid_reference = ReadSection(grid, "reference");
-  out.planner_search_grid_reference_omega =
-      ReadTbdDouble(grid_reference, "omega", out.planner_search_grid_reference_omega);
-  out.planner_search_grid_reference_zeta =
-      ReadTbdDouble(grid_reference, "zeta", out.planner_search_grid_reference_zeta);
-  out.planner_search_grid_reference_v_max =
-      ReadTbdDouble(grid_reference, "v_max", out.planner_search_grid_reference_v_max);
-  out.planner_search_grid_reference_a_max =
-      ReadTbdDouble(grid_reference, "a_max", out.planner_search_grid_reference_a_max);
-  const YAML::Node grid_stop = ReadSection(grid, "stop");
-  out.planner_search_grid_stop_a_dec =
-      ReadTbdDouble(grid_stop, "a_dec", out.planner_search_grid_stop_a_dec);
-
-  const YAML::Node catchability = ReadSection(grid, "catchability");
-  const YAML::Node manip_min = ReadSection(catchability, "manipulability_min");
-  out.planner_catchability_manip_min_arm5row =
-      ReadTbdDouble(manip_min, "arm_5row", out.planner_catchability_manip_min_arm5row);
-  out.planner_catchability_manip_min_provisional = ReadOptional(manip_min, "provisional", true);
-
+  const YAML::Node segment = ReadSection(planner, "segment");
   {
-    const YAML::Node segment = ReadSection(planner, "segment");
+    const std::string mode = ReadOptional<std::string>(search, "mode", "grid");
+    if (mode == "grid") {
+      out.planner_search_mode = CatchingSearchMode::kGrid;
+    } else if (mode == "nlp") {
+      out.planner_search_mode = CatchingSearchMode::kNlp;
+    } else {
+      Reject("'planner.search.mode' must be grid or nlp, got '", mode, "'");
+    }
+  }
+  {
     const std::string mode = ReadOptional<std::string>(segment, "mode", "closed_form");
     if (mode == "closed_form") {
       out.planner_segment_mode = CatchingSegmentMode::kClosedForm;
     } else if (mode == "mpc") {
       out.planner_segment_mode = CatchingSegmentMode::kMpc;
+    } else if (mode == "mpc_docking") {
+      out.planner_segment_mode = CatchingSegmentMode::kMpcDocking;
     } else {
-      Reject("'planner.segment.mode' must be closed_form or mpc, got '", mode, "'");
+      Reject("'planner.segment.mode' must be closed_form, mpc or mpc_docking, got '", mode, "'");
     }
+  }
+  // The keys of ONE function, read as a block. Selected: a key that does not
+  // read is refused, as every key is. Not selected: the block is taken when
+  // all of it reads — its values stay visible to whoever compares functions
+  // (the search's copies against the law's keys) — and left at its defaults
+  // when any of it does not. A fragment that is wrong, or left over from
+  // another selection, cannot fail the configure of a controller that never
+  // runs it. (The validator applies the same rule to ranges and TBDs.)
+  const auto read_function = [&out](bool selected, const auto& read) {
+    if (selected) {
+      read(out);
+      return;
+    }
+    CatchingParams trial = out;
+    try {
+      read(trial);
+    } catch (const std::invalid_argument&) {
+      return;
+    }
+    out = std::move(trial);
+  };
+  const bool closed_form = out.planner_segment_mode == CatchingSegmentMode::kClosedForm;
+  const bool grid_search = out.planner_search_mode == CatchingSearchMode::kGrid;
+  const bool mpc_planner = out.planner_segment_mode == CatchingSegmentMode::kMpc;
+
+  // The closed_form law (catching/planner_closed_form.yaml).
+  read_function(closed_form, [&node](CatchingParams& o) {
+    const YAML::Node reference = ReadSection(node, "reference");
+    o.reference_omega = ReadTbdDouble(reference, "omega", o.reference_omega);
+    o.reference_zeta = ReadTbdDouble(reference, "zeta", o.reference_zeta);
+    o.reference_v_max = ReadTbdDouble(reference, "v_max", o.reference_v_max);
+    o.reference_a_max = ReadTbdDouble(reference, "a_max", o.reference_a_max);
+    o.reference_provisional = ReadOptional(reference, "provisional", true);
+    const YAML::Node decel = ReadSection(ReadSection(node, "supervisor"), "decel");
+    o.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", o.supervisor_decel_a_dec);
+  });
+
+  // The grid search (catching/search_grid.yaml).
+  read_function(grid_search, [&search](CatchingParams& o) {
+    const YAML::Node grid = ReadSection(search, "grid");
+    const YAML::Node gamma = ReadSection(grid, "gamma");
+    o.planner_search_grid_gamma_eta_v =
+        ReadTbdDouble(gamma, "eta_v", o.planner_search_grid_gamma_eta_v);
+    const YAML::Node grid_reference = ReadSection(grid, "reference");
+    o.planner_search_grid_reference_omega =
+        ReadTbdDouble(grid_reference, "omega", o.planner_search_grid_reference_omega);
+    o.planner_search_grid_reference_zeta =
+        ReadTbdDouble(grid_reference, "zeta", o.planner_search_grid_reference_zeta);
+    o.planner_search_grid_reference_v_max =
+        ReadTbdDouble(grid_reference, "v_max", o.planner_search_grid_reference_v_max);
+    o.planner_search_grid_reference_a_max =
+        ReadTbdDouble(grid_reference, "a_max", o.planner_search_grid_reference_a_max);
+    const YAML::Node grid_stop = ReadSection(grid, "stop");
+    o.planner_search_grid_stop_a_dec =
+        ReadTbdDouble(grid_stop, "a_dec", o.planner_search_grid_stop_a_dec);
+
+    const YAML::Node catchability = ReadSection(grid, "catchability");
+    const YAML::Node manip_min = ReadSection(catchability, "manipulability_min");
+    o.planner_catchability_manip_min_arm5row =
+        ReadTbdDouble(manip_min, "arm_5row", o.planner_catchability_manip_min_arm5row);
+    o.planner_catchability_manip_min_provisional = ReadOptional(manip_min, "provisional", true);
+  });
+
+  // The mpc segment planner (catching/segment_mpc.yaml).
+  read_function(mpc_planner, [&segment](CatchingParams& o) {
     const YAML::Node mpc = ReadSection(segment, "mpc");
-    out.planner_segment_mpc_switch_margin =
-        ReadOptional(mpc, "switch_margin", out.planner_segment_mpc_switch_margin);
-    if (!(std::isfinite(out.planner_segment_mpc_switch_margin) &&
-          out.planner_segment_mpc_switch_margin > 0.0)) {
+    o.planner_segment_mpc_switch_margin =
+        ReadOptional(mpc, "switch_margin", o.planner_segment_mpc_switch_margin);
+    if (!(std::isfinite(o.planner_segment_mpc_switch_margin) &&
+          o.planner_segment_mpc_switch_margin > 0.0)) {
       Reject("'planner.segment.mpc.switch_margin' must be a positive number, got ",
              params_detail::Spelling(mpc["switch_margin"]));
     }
-    out.planner_segment_mpc_eta_v = ReadTbdDouble(mpc, "eta_v", out.planner_segment_mpc_eta_v);
-  }
+    o.planner_segment_mpc_eta_v = ReadTbdDouble(mpc, "eta_v", o.planner_segment_mpc_eta_v);
+  });
 
   const YAML::Node supervisor = ReadSection(node, "supervisor");
-  const YAML::Node decel = ReadSection(supervisor, "decel");
-  out.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", out.supervisor_decel_a_dec);
 
   const YAML::Node io = ReadSection(node, "io");
   out.io_n_min = ReadPositiveCount(io, "n_min");
@@ -580,12 +632,13 @@ void CheckCatchFrameProvisional(CatchingValidationReport& report, bool catch_fra
 
 void CheckFreezeCoversClose(CatchingValidationReport& report, const CatchingParams& params,
                             double t_freeze_s, double control_rate_hz) noexcept {
-  if (!std::isfinite(t_freeze_s) || params.hand.T_close_e2e.tbd || params.joint_cmd_lag_t_arm.tbd ||
+  const TbdDouble lead = params.hand.CloseLead();
+  if (!std::isfinite(t_freeze_s) || lead.tbd || params.joint_cmd_lag_t_arm.tbd ||
       !std::isfinite(control_rate_hz) || !(control_rate_hz > 0.0)) {
     return;  // an unset value is reported by the check that owns it
   }
   const double h = 1.0 / control_rate_hz;
-  const double need = params.hand.T_close_e2e.value + params.joint_cmd_lag_t_arm.value + h;
+  const double need = lead.value + params.joint_cmd_lag_t_arm.value + h;
   if (!(t_freeze_s >= need)) {
     AddFailure(report, CatchingValidationReason::kFreezeShorterThanClose, kFreezeWindowKey);
   }
@@ -615,16 +668,23 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     AddFailure(report, CatchingValidationReason::kControlRateOutOfRange, "control_rate");
   }
 
-  // reference.omega / zeta / v_max / a_max — active in every configuration.
-  if (CheckActiveTbd(report, params.reference_omega, "reference.omega", true)) {
+  // What the configuration selects decides which functions' keys it is held to
+  // (E1-F16): a key of a function that does not run is neither required nor
+  // judged — the rule `planner.segment.mpc.eta_v` below already followed.
+  const bool closed_form = params.planner_segment_mode == CatchingSegmentMode::kClosedForm;
+  const bool grid = params.planner_search_mode == CatchingSearchMode::kGrid;
+
+  // reference.omega / zeta / v_max / a_max — the closed_form law's reference.
+  // A mode that follows segments builds no reference and reads none of it.
+  if (CheckActiveTbd(report, params.reference_omega, "reference.omega", closed_form)) {
     CheckRange(report, "reference.omega", params.reference_omega.value, 1.0, 25.0);
   }
-  if (CheckActiveTbd(report, params.reference_zeta, "reference.zeta", true)) {
+  if (CheckActiveTbd(report, params.reference_zeta, "reference.zeta", closed_form)) {
     if (params.reference_zeta.value != 1.0) {
       AddFailure(report, CatchingValidationReason::kZetaNotCriticallyDamped, "reference.zeta");
     }
   }
-  if (CheckActiveTbd(report, params.reference_v_max, "reference.v_max", true)) {
+  if (CheckActiveTbd(report, params.reference_v_max, "reference.v_max", closed_form)) {
     CheckPositive(report, "reference.v_max", params.reference_v_max.value);
   }
   // The block as a whole (L0 §5.3). Keyed on `reference` without a trailing
@@ -632,15 +692,18 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   // as `robot.hand` and `core.ball` are. A consumer's gate has to match the
   // dotless key too, or a provisional reference reaches a real arm unnoticed
   // (the hand profile shipped with that hole once).
-  CheckProvisional(report, "reference", params.reference_provisional, real_arm_config);
-  const bool a_max_ok = CheckActiveTbd(report, params.reference_a_max, "reference.a_max", true);
+  if (closed_form) {
+    CheckProvisional(report, "reference", params.reference_provisional, real_arm_config);
+  }
+  const bool a_max_ok =
+      CheckActiveTbd(report, params.reference_a_max, "reference.a_max", closed_form);
   if (a_max_ok) {
     CheckPositive(report, "reference.a_max", params.reference_a_max.value);
   }
 
-  // planner.search.grid.gamma.eta_v — D-9: 0 < eta_v <= 1.
+  // planner.search.grid.gamma.eta_v — D-9: 0 < eta_v <= 1. The grid search's.
   if (CheckActiveTbd(report, params.planner_search_grid_gamma_eta_v,
-                     "planner.search.grid.gamma.eta_v", true)) {
+                     "planner.search.grid.gamma.eta_v", grid)) {
     const double eta_v = params.planner_search_grid_gamma_eta_v.value;
     if (!std::isfinite(eta_v) || !(eta_v > 0.0) || !(eta_v <= 1.0)) {
       AddFailure(report, CatchingValidationReason::kEtaVOutOfRange,
@@ -659,32 +722,33 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
 
   // planner.search.grid.reference.* / stop.a_dec — the search's own copies of
   // the reference and the stop it rolls a candidate out on, held to the rules
-  // of the keys they copy: under mpc nothing else bounds them.
+  // of the keys they copy: under mpc nothing else bounds them. The grid
+  // search's, like every key of this block.
   if (CheckActiveTbd(report, params.planner_search_grid_reference_omega,
-                     "planner.search.grid.reference.omega", true)) {
+                     "planner.search.grid.reference.omega", grid)) {
     CheckRange(report, "planner.search.grid.reference.omega",
                params.planner_search_grid_reference_omega.value, 1.0, 25.0);
   }
   if (CheckActiveTbd(report, params.planner_search_grid_reference_zeta,
-                     "planner.search.grid.reference.zeta", true)) {
+                     "planner.search.grid.reference.zeta", grid)) {
     if (params.planner_search_grid_reference_zeta.value != 1.0) {
       AddFailure(report, CatchingValidationReason::kZetaNotCriticallyDamped,
                  "planner.search.grid.reference.zeta");
     }
   }
   if (CheckActiveTbd(report, params.planner_search_grid_reference_v_max,
-                     "planner.search.grid.reference.v_max", true)) {
+                     "planner.search.grid.reference.v_max", grid)) {
     CheckPositive(report, "planner.search.grid.reference.v_max",
                   params.planner_search_grid_reference_v_max.value);
   }
   const bool grid_a_max_ok = CheckActiveTbd(report, params.planner_search_grid_reference_a_max,
-                                            "planner.search.grid.reference.a_max", true);
+                                            "planner.search.grid.reference.a_max", grid);
   if (grid_a_max_ok) {
     CheckPositive(report, "planner.search.grid.reference.a_max",
                   params.planner_search_grid_reference_a_max.value);
   }
   if (CheckActiveTbd(report, params.planner_search_grid_stop_a_dec,
-                     "planner.search.grid.stop.a_dec", true)) {
+                     "planner.search.grid.stop.a_dec", grid)) {
     CheckPositive(report, "planner.search.grid.stop.a_dec",
                   params.planner_search_grid_stop_a_dec.value);
     if (grid_a_max_ok && params.planner_search_grid_stop_a_dec.value >
@@ -697,7 +761,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
   // planner.search.grid.catchability.manipulability_min.arm_5row (D-18) + its provisional flag.
   const bool manip_resolved =
       CheckActiveTbd(report, params.planner_catchability_manip_min_arm5row,
-                     "planner.search.grid.catchability.manipulability_min.arm_5row", true);
+                     "planner.search.grid.catchability.manipulability_min.arm_5row", grid);
   if (manip_resolved) {
     CheckRange(report, "planner.search.grid.catchability.manipulability_min.arm_5row",
                params.planner_catchability_manip_min_arm5row.value, 0.0,
@@ -706,9 +770,10 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
                      params.planner_catchability_manip_min_provisional, real_arm_config);
   }
 
-  // supervisor.decel.a_dec — > 0 and <= reference.a_max (L7 §4.3).
+  // supervisor.decel.a_dec — > 0 and <= reference.a_max (L7 §4.3). The
+  // closed_form stop's: a mode that follows segments stops on its last one.
   const bool a_dec_ok =
-      CheckActiveTbd(report, params.supervisor_decel_a_dec, "supervisor.decel.a_dec", true);
+      CheckActiveTbd(report, params.supervisor_decel_a_dec, "supervisor.decel.a_dec", closed_form);
   if (a_dec_ok) {
     CheckPositive(report, "supervisor.decel.a_dec", params.supervisor_decel_a_dec.value);
     if (a_max_ok && params.supervisor_decel_a_dec.value > params.reference_a_max.value) {
@@ -959,6 +1024,13 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
     CheckRange(report, "robot.hand.T_close_e2e", params.hand.T_close_e2e.value, 0.0,
                std::numeric_limits<double>::infinity());
   }
+  // Its own report line only when the profile wrote the key: an absent lead IS
+  // T_close_e2e, and that key's line above already says what is missing.
+  if (params.hand.T_close_lead_given &&
+      CheckActiveTbd(report, params.hand.T_close_lead, "robot.hand.T_close_lead", true)) {
+    CheckRange(report, "robot.hand.T_close_lead", params.hand.T_close_lead.value, 0.0,
+               std::numeric_limits<double>::infinity());
+  }
   if (params.hand.tbd) {
     AddFailure(report, CatchingValidationReason::kActiveConfigTbd, "robot.hand.q_pre/q_close");
   } else {
@@ -1061,7 +1133,7 @@ CatchingValidationReport ValidateCatchingParams(const CatchingParams& params,
 
   // ζ·ω·h (`dt` 기준, L4 §4.7): only meaningful once control_rate and omega
   // both resolved to a real number.
-  if (rate_ok && !params.reference_omega.tbd) {
+  if (closed_form && rate_ok && !params.reference_omega.tbd) {
     const double h = 1.0 / control_rate_hz;
     const double s = params.reference_omega.value * h;
     if (s >= kDiscreteStabilityLimit) {

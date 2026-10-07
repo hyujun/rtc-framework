@@ -33,6 +33,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <ostream>
 #include <stdexcept>
@@ -57,6 +59,7 @@ using rtc::catching::PlannerActivity;
 using rtc::catching::PlannerCycle;
 using rtc::catching::PlannerCycleIo;
 using rtc::catching::PlannerCycleRecord;
+using rtc::catching::PlannerParams;
 using rtc::catching::PlannerRtState;
 using rtc::catching::PlanRefusal;
 using rtc::catching::PlanSnapshot;
@@ -749,6 +752,7 @@ class FakeSearch final : public rtc::catching::CatchSearch {
     stats = SearchStats{};
     stats.n_ik = kFakeIkCount;
     stats.publish = publish;
+    stats.decision = decision;
     PlanSnapshot p{};
     p.token = traj.token;
     p.token.activation_generation = rt.activation_generation;
@@ -781,6 +785,16 @@ class FakeSearch final : public rtc::catching::CatchSearch {
 
   void ResetTrial() noexcept override { g_calls.Add(Call::kSearchResetTrial); }
 
+  // Not in the call log: the order tests assert the wake's calls, and the
+  // clock is handed over on the configure path. A null clock leaves the one
+  // held, as the contract says.
+  void SetClock(ClockFn clock) noexcept override {
+    ++set_clock_calls;
+    if (clock != nullptr) {
+      clock_seen = clock;
+    }
+  }
+
   // Not in the call log, as FakeSegmentPlanner::Reported is not: the order
   // tests assert the wake's calls as they were before the two crossed.
   [[nodiscard]] const CatchSolution* Solution() const noexcept override {
@@ -800,8 +814,12 @@ class FakeSearch final : public rtc::catching::CatchSearch {
   bool valid{true};
   bool publish{true};
   bool has_solution{true};
+  // The switching verdict it records (the default is SearchStats' own).
+  rtc::catching::SwitchDecision decision{rtc::catching::SwitchDecision::kNoCurrent};
   CatchSolution solution{};
   // What it was handed.
+  ClockFn clock_seen{nullptr};
+  int set_clock_calls{0};
   bool arm_has_pending{false};
   bool arm_has_following{false};
   std::uint32_t arm_pending_seq{0};
@@ -1025,11 +1043,12 @@ struct FakeRig {
   }
 };
 
-TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPlannerOnly) {
+TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesBothInterfaces) {
   auto rig = std::make_unique<FakeRig>();
-  // The rig's SetClock, then its first wake's reset: nothing else was called
-  // — a search has no clock to be handed.
+  // The rig's SetClock, then its first wake's reset: the one logged call is
+  // the segment planner's (the search's clock hand-over is not in the log).
   EXPECT_EQ(rig->segment->clock_seen, &StepClock);
+  EXPECT_EQ(rig->search->clock_seen, &StepClock);
   EXPECT_EQ(g_calls.Taken(),
             (Calls{Call::kSetClock, Call::kSearchResetTrial, Call::kSegmentResetTrial}));
   // A planner installed AFTER the cycle's SetClock is handed that clock on the
@@ -1044,11 +1063,7 @@ TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPl
     EXPECT_EQ(raw->clock_seen, &StepClock);
     EXPECT_EQ(g_calls.Taken(), (Calls{Call::kSetClock}));
   }
-  // "A segment planner is installed" does not make it a MpcSegmentPlanner:
-  // MpcSegmentPlannerForDiagnostics() answers an unconfigured one, as a cycle without its own
-  // always has.
   EXPECT_TRUE(rig->cycle.SegmentPlannerConfigured());
-  EXPECT_FALSE(rig->cycle.MpcSegmentPlannerForDiagnostics().Configured());
   // Installing nothing is the cleared state: the wake is the S6-A stub again,
   // and reads the clock once, for the "no plan" it publishes alone.
   rig->cycle.InstallSegmentPlanner(nullptr);
@@ -1057,7 +1072,6 @@ TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPl
   rig->search = nullptr;
   EXPECT_FALSE(rig->cycle.SegmentPlannerConfigured());
   EXPECT_FALSE(rig->cycle.SearchConfigured());
-  EXPECT_FALSE(rig->cycle.MpcSegmentPlannerForDiagnostics().Configured());
   rig->boxes.rt.Store(RtIn(Mode::kTracking));
   rig->boxes.traj.Store(Traj(3));
   rig->boxes.cov.Store(Cov(3));
@@ -1065,6 +1079,270 @@ TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPl
   EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
   EXPECT_FALSE(rig->rec.plan_valid);
   EXPECT_FALSE(rig->segment_box.Load().valid);
+}
+
+TEST(PlannerCycleInterfaces, InstallSearchAndSetClockBothReachTheInstalledSearch) {
+  auto rig = std::make_unique<FakeRig>();
+  // The rig installed the search before its SetClock: the SetClock reached it.
+  ASSERT_NE(rig->search, nullptr);
+  EXPECT_EQ(rig->search->clock_seen, &StepClock);
+  // A later SetClock replaces what the search holds.
+  rig->cycle.SetClock(&FixedClock);
+  EXPECT_EQ(rig->search->clock_seen, &FixedClock);
+  // A search installed AFTER the cycle's SetClock is handed that clock on the
+  // way in, once, whichever order the two calls come in.
+  auto later = std::make_unique<FakeSearch>();
+  FakeSearch* const raw = later.get();
+  EXPECT_TRUE(raw->clock_seen == nullptr);
+  rig->cycle.InstallSearch(std::move(later));
+  rig->search = raw;
+  EXPECT_EQ(raw->clock_seen, &FixedClock);
+  EXPECT_EQ(raw->set_clock_calls, 1);
+  rig->cycle.SetClock(&StepClock);
+  EXPECT_EQ(raw->clock_seen, &StepClock);
+  EXPECT_EQ(raw->set_clock_calls, 2);
+  // Installing nothing hands nothing, and SetClock with no search is fine.
+  rig->cycle.InstallSearch(nullptr);
+  rig->search = nullptr;
+  rig->cycle.SetClock(&FixedClock);
+  EXPECT_FALSE(rig->cycle.SearchConfigured());
+}
+
+// ── While a plan is followed the search goes on (E1-F16) ─────────────────────
+
+// The cycle's parameters with the search allowed to run while a plan is
+// followed: until the catch instant is `t_stop_plan_s` away.
+PlannerParams FollowingSearchParams(double t_stop_plan_s) {
+  PlannerParams params{};
+  params.t_freeze = 0.1;
+  params.t_stop_plan = t_stop_plan_s;
+  return params;
+}
+
+[[nodiscard]] int IndexOf(const Calls& calls, Call what) {
+  for (std::size_t i = 0; i < calls.size(); ++i) {
+    if (calls[i] == what) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+TEST(PlannerCycleFollowing, TheWakeReplansFirstThenSearchesAndPublishesNeitherPlanNorPair) {
+  using rtc::catching::SwitchDecision;
+
+  struct Case {
+    const char* what;
+    bool publish;
+    bool valid;
+    SwitchDecision decision;
+    CycleOutcome outcome;
+  };
+
+  // What the search answers, and what the wake records of it. Nothing is
+  // stored in any of them: the RT follows a plan and takes no second one.
+  const Case cases[] = {
+      {"another plan is better", true, true, SwitchDecision::kReplaced,
+       CycleOutcome::kHeldReplaceUnsupported},
+      {"the followed plan, refreshed", true, true, SwitchDecision::kRefreshed, CycleOutcome::kHeld},
+      {"kept by hysteresis", false, true, SwitchDecision::kHeldHysteresis, CycleOutcome::kHeld},
+      {"no candidate this wake", true, false, SwitchDecision::kReplaced, CycleOutcome::kHeld},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.what);
+    auto rig = std::make_unique<FakeRig>();
+    rig->cycle.Configure(FollowingSearchParams(0.5));
+    rig->search->publish = c.publish;
+    rig->search->valid = c.valid;
+    rig->search->decision = c.decision;
+    rig->boxes.rt.Store(Following(Mode::kApproach, 9));
+    rig->boxes.traj.Store(Traj(3));
+    rig->boxes.cov.Store(Cov(3));
+    const std::uint64_t plan_stores = rig->boxes.plan.sequence();
+    // 10 s before the followed catch instant: far outside t_stop_plan.
+    const Calls calls = rig->Wake(kFakeTc - 10'000 * kMs);
+    // The segment first, then the search — and the search's instant is read
+    // on the cycle's clock AFTER the replan, not the wake's: a candidate's lead
+    // and the age of the RT's report are measured from where the search starts.
+    const int replan = IndexOf(calls, Call::kReplan);
+    const int search = IndexOf(calls, Call::kSearchPlan);
+    ASSERT_GE(replan, 0);
+    ASSERT_GT(search, replan);
+    const std::int64_t wake_ns = kFakeTc - 10'000 * kMs;
+    EXPECT_GT(rig->search->plan_now_ns, wake_ns);
+    EXPECT_GT(rig->search->plan_now_ns, kStepBase);  // a reading of the stepping clock
+    EXPECT_LE(rig->search->plan_now_ns, g_step_now);
+    // The search was handed the segments the RT reports — the ones a
+    // candidate's arm motion has to start on.
+    EXPECT_TRUE(rig->search->arm_has_following);
+    EXPECT_EQ(rig->search->arm_following_seq, kFakeFollowingSeq);
+    EXPECT_EQ(rig->search->arm_following_q, kFakeFollowingQ);
+    EXPECT_TRUE(rig->search->arm_has_pending);
+    EXPECT_EQ(rig->search->arm_pending_seq, kFakePendingSeq);
+    // Recorded, not published: no plan stored, no pair solved, the search told
+    // of no publish. The replan's own segment is the one store of the wake.
+    EXPECT_EQ(rig->rec.outcome, c.outcome);
+    EXPECT_EQ(rig->rec.search.decision, c.decision);
+    EXPECT_EQ(rig->rec.search_valid, c.valid);
+    EXPECT_FALSE(rig->rec.plan_valid);
+    EXPECT_EQ(rig->rec.publish_ns, 0);
+    EXPECT_EQ(rig->boxes.plan.sequence(), plan_stores);
+    EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
+    EXPECT_EQ(IndexOf(calls, Call::kSearchNotePublished), -1);
+    EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+    EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+  }
+  EXPECT_STREQ(rtc::catching::CycleOutcomeName(CycleOutcome::kHeldReplaceUnsupported),
+               "held_replace_unsupported");
+}
+
+TEST(PlannerCycleFollowing, TheSearchStopsAtTStopPlanBeforeTheFirstFollowedCatchInstant) {
+  const double t_stop_s = 0.5;
+  const std::int64_t t_stop_ns = 500 * kMs;
+  const auto searched_at = [](std::int64_t wake_ns, Mode mode, double t_stop_plan) {
+    auto rig = std::make_unique<FakeRig>();
+    rig->cycle.Configure(FollowingSearchParams(t_stop_plan));
+    rig->boxes.rt.Store(Following(mode, 9));
+    rig->boxes.traj.Store(Traj(3));
+    rig->boxes.cov.Store(Cov(3));
+    const Calls calls = rig->Wake(wake_ns);
+    return IndexOf(calls, Call::kSearchPlan) >= 0;
+  };
+  // Both sides of the boundary: the search runs while t_c − now is ABOVE
+  // t_stop_plan, and a wake exactly on it is the replan alone.
+  EXPECT_TRUE(searched_at(kFakeTc - t_stop_ns - 1, Mode::kApproach, t_stop_s));
+  EXPECT_FALSE(searched_at(kFakeTc - t_stop_ns, Mode::kApproach, t_stop_s));
+  EXPECT_FALSE(searched_at(kFakeTc - t_stop_ns + 1, Mode::kApproach, t_stop_s));
+  // COMMITTED ends it whatever the instant: the wake monitors, it does not plan.
+  EXPECT_FALSE(searched_at(kFakeTc - 10'000 * kMs, Mode::kCommitted, t_stop_s));
+  // A t_stop_plan nobody set is "never": parameters no profile filled in keep
+  // the wake a replan alone.
+  EXPECT_FALSE(searched_at(kFakeTc - 10'000 * kMs, Mode::kApproach,
+                           std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_FALSE(searched_at(kFakeTc - 10'000 * kMs, Mode::kApproach, 0.0));
+}
+
+TEST(PlannerCycleFollowing, TheStopIsMeasuredFromTheFirstPlanFollowedSinceTheReset) {
+  auto rig = std::make_unique<FakeRig>();
+  rig->cycle.Configure(FollowingSearchParams(0.5));
+  rig->boxes.traj.Store(Traj(3));
+  rig->boxes.cov.Store(Cov(3));
+  // The first followed catch instant is kFakeTc: a wake 1 s before it searches.
+  rig->boxes.rt.Store(Following(Mode::kApproach, 9));
+  EXPECT_GE(IndexOf(rig->Wake(kFakeTc - 1000 * kMs), Call::kSearchPlan), 0);
+  // Should the RT then report a LATER catch instant for the plan it follows,
+  // the stop does not move out with it: 0.3 s before the first one is inside
+  // t_stop_plan, although 1.3 s before the reported one.
+  PlannerRtState later = Following(Mode::kApproach, 9);
+  later.plan_t_c_ns = kFakeTc + 1000 * kMs;
+  rig->boxes.rt.Store(later);
+  EXPECT_EQ(IndexOf(rig->Wake(kFakeTc - 300 * kMs), Call::kSearchPlan), -1);
+  // A reset forgets it: the next followed plan's instant is the first again.
+  PlannerRtState reset = Following(Mode::kApproach, 10);
+  reset.reset_epoch = 2;
+  reset.plan_t_c_ns = kFakeTc + 1000 * kMs;
+  rig->boxes.rt.Store(reset);
+  EXPECT_GE(IndexOf(rig->Wake(kFakeTc - 300 * kMs), Call::kSearchPlan), 0);
+}
+
+TEST(PlannerCycleFollowing, EveryExitOfAFollowingWakeHasReplannedFirst) {
+  // No trajectory of this activation: the search has no input — the segment
+  // was replanned before the wake found that out.
+  {
+    auto rig = std::make_unique<FakeRig>();
+    rig->cycle.Configure(FollowingSearchParams(0.5));
+    rig->boxes.rt.Store(Following(Mode::kApproach, 9));
+    const Calls calls = rig->Wake(kFakeTc - 10'000 * kMs);
+    EXPECT_GE(IndexOf(calls, Call::kReplan), 0);
+    EXPECT_EQ(IndexOf(calls, Call::kSearchPlan), -1);
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kNoInput);
+    EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+  }
+  // The trajectory moved during the search. A wake that publishes would be
+  // superseded; this one publishes nothing whatever the trajectory did, so its
+  // record stands — the search's verdict is not lost, and "superseded" keeps
+  // counting plans that were dropped for a newer prediction (MD-29).
+  {
+    auto rig = std::make_unique<FakeRig>();
+    rig->cycle.Configure(FollowingSearchParams(0.5));
+    rig->search->decision = rtc::catching::SwitchDecision::kReplaced;
+    rig->boxes.rt.Store(Following(Mode::kApproach, 9));
+    rig->boxes.traj.Store(Traj(3));
+    rig->boxes.cov.Store(Cov(3));
+
+    struct Ctx {
+      Boxes* boxes;
+    } ctx{&rig->boxes};
+
+    rig->cycle.SetPostSearchHookForTesting(
+        [](void* user) noexcept { static_cast<Ctx*>(user)->boxes->traj.Store(Traj(4)); }, &ctx);
+    const Calls calls = rig->Wake(kFakeTc - 10'000 * kMs);
+    const int replan = IndexOf(calls, Call::kReplan);
+    ASSERT_GE(replan, 0);
+    EXPECT_GT(IndexOf(calls, Call::kSearchPlan), replan);
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeldReplaceUnsupported);
+    EXPECT_EQ(rig->rec.search.decision, rtc::catching::SwitchDecision::kReplaced);
+    EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+    EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
+  }
+}
+
+// A wake in which the RT follows NO plan is timed from the wake, as before:
+// only the following wake's search starts after another solve.
+TEST(PlannerCycleFollowing, ASearchWithNoPlanFollowedIsStillTimedFromTheWake) {
+  auto rig = std::make_unique<FakeRig>();
+  rig->cycle.Configure(FollowingSearchParams(0.5));
+  rig->boxes.rt.Store(RtIn(Mode::kTracking));
+  rig->boxes.traj.Store(Traj(3));
+  rig->boxes.cov.Store(Cov(3));
+  const std::int64_t wake_ns = kFakeTc - 10'000 * kMs;
+  static_cast<void>(rig->Wake(wake_ns));
+  EXPECT_EQ(rig->search->plan_now_ns, wake_ns);
+}
+
+TEST(PlannerParams, TheSearchStopsWhereThePlanFreezesUnlessTheProfileSaysEarlier) {
+  // Absent: T_freeze. Written: its own value. Neither: unset, like T_freeze.
+  EXPECT_DOUBLE_EQ(
+      ParsePlannerParams(YAML::Load("planner: {freeze: {T_freeze: 0.36}}")).t_stop_plan, 0.36);
+  const auto p =
+      ParsePlannerParams(YAML::Load("planner: {freeze: {T_freeze: 0.36, t_stop_plan: 0.5}}"));
+  EXPECT_DOUBLE_EQ(p.t_freeze, 0.36);
+  EXPECT_DOUBLE_EQ(p.t_stop_plan, 0.5);
+  EXPECT_TRUE(std::isnan(ParsePlannerParams(YAML::Load("planner: {enabled: true}")).t_stop_plan));
+  EXPECT_TRUE(std::isnan(PlannerParams{}.t_stop_plan));
+  // Below T_freeze it still PARSES: that the pair is in order is the binding's
+  // check, which parks and names both. A malformed number is refused here.
+  EXPECT_DOUBLE_EQ(
+      ParsePlannerParams(YAML::Load("planner: {freeze: {T_freeze: 0.36, t_stop_plan: 0.2}}"))
+          .t_stop_plan,
+      0.2);
+  for (const char* bad : {"planner: {freeze: {T_freeze: 0.36, t_stop_plan: -1.0}}",
+                          "planner: {freeze: {T_freeze: 0.36, t_stop_plan: soon}}",
+                          "planner: {freeze: {T_freeze: 0.36, t_stop_plan: TBD}}",
+                          "planner: {freeze: {T_freeze: 0.36, t_stop_plan: 9.0}}"}) {
+    EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
+        << bad;
+  }
+}
+
+TEST(PlannerCycleInterfaces, TheCycleNamesNoImplementation) {
+  // What a wake calls is the two interfaces. Which search and which segment
+  // planner stand behind them is the configure path's knowledge alone: a
+  // cycle that included one of their headers could reach around the interface
+  // without a test noticing, so the files themselves are held to it —
+  // comments too, which is where the next include starts.
+  for (const char* file :
+       {"include/rtc_controllers/catching/planner_cycle.hpp", "src/catching/planner_cycle.cpp"}) {
+    const std::string path = std::string(RTC_CONTROLLERS_SOURCE_DIR) + "/" + file;
+    std::ifstream in(path);
+    ASSERT_TRUE(in.is_open()) << path;
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty()) << path;
+    for (const char* name : {"grid_catch_search", "mpc_segment_planner", "nlp_catch_search",
+                             "GridCatchSearch", "MpcSegmentPlanner", "NlpCatchSearch"}) {
+      EXPECT_EQ(text.find(name), std::string::npos) << file << " names " << name;
+    }
+  }
 }
 
 TEST(PlannerCycleInterfaces, ASearchWakePublishesThePairThroughBothInterfaces) {

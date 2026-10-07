@@ -15,7 +15,8 @@ thread per worker, and no build running beside it::
 
 Stages, in order: ``selfcheck``, ``map-coarse``, ``map-fine``, ``lateral``,
 ``vperp``, ``static``, ``verify``, ``accel`` (``all`` runs them in that order).
-Then ``report.py <profile>`` prints the result.
+``--box w040`` keeps the stages that fly per box to that one. Then
+``report.py <profile>`` prints the result.
 """
 
 from __future__ import annotations
@@ -235,36 +236,56 @@ def stage_map_fine(profile: str, directory: Path, pool) -> None:
     fly_all(pool, store, specs, "map-fine")
 
 
+# The boxes the per-box stages fly (``--box``); None: every box of the map.
+_ONLY_BOXES: tuple[str, ...] | None = None
+
+
 def _boxes(directory: Path) -> tuple[rp.FineMap, dict[str, cs.Box]]:
     fine = rp.FineMap(rp.Store(directory / "map_fine.json"))
     boxes = rp.distinct_boxes(fine.boxes())
     if not boxes:
         raise SystemExit("the fine map has no box of any requested width")
+    if _ONLY_BOXES is not None:
+        unknown = sorted(set(_ONLY_BOXES) - set(boxes))
+        if unknown:
+            raise SystemExit(f"--box {unknown}: the fine map's boxes are {sorted(boxes)}")
+        boxes = {tag: box for tag, box in boxes.items() if tag in _ONLY_BOXES}
     return fine, boxes
+
+
+def _lateral_spec(fine: rp.FineMap, box: cs.Box, q: int, i: int, j: int, k: int) -> dict:
+    """Fly-in ``k`` of condition ``q`` at lateral cell ``(i, j)``."""
+    xs = rp.lattice(rp.LATERAL)
+    half = 0.5 * rp.LATERAL[1]
+    rng = np.random.default_rng([rp.SEED, _STREAM["lateral"], q, i, j, k])
+    c, delta_o = _in_cell(rng, *fine.cell(box, rp.CONDITIONS[q]))
+    rho = (xs[i] + rng.uniform(-half, half), xs[j] + rng.uniform(-half, half))
+    return _spec(f"q{q}_x{i}_y{j}_k{k}", rho, c, delta_o)
 
 
 def stage_lateral(profile: str, directory: Path, pool) -> None:
     fine, boxes = _boxes(directory)
-    xs = rp.lattice(rp.LATERAL)
-    half = 0.5 * rp.LATERAL[1]
+    n = rp.LATERAL[2]
     for tag, box in boxes.items():
         store = rp.Store(directory / f"lateral_{tag}.json")
-        alive = np.ones((xs.size, xs.size), dtype=bool)
+        # The first pass: one fly-in of the centre condition at every cell.
+        first = [_lateral_spec(fine, box, 0, i, j, 0) for i in range(n) for j in range(n)]
+        fly_all(pool, store, first, f"lateral {tag} first pass")
+        cells = list(zip(*np.nonzero(rp.lateral_candidates(store)), strict=True))
+        print(f"  lateral {tag}: {len(cells)} candidate cells", flush=True)
+        # Every candidate under every condition, none skipped for having failed.
         for q, which in enumerate(rp.CONDITIONS):
-            a, b = fine.cell(box, which)
-            # One pass per fly-in: a cell that has failed is not flown again.
-            for k in range(rp.TRIALS):
-                specs = []
-                for i, j in zip(*np.nonzero(alive), strict=True):
-                    rng = np.random.default_rng([rp.SEED, _STREAM["lateral"], q, i, j, k])
-                    c, delta_o = _in_cell(rng, a, b)
-                    rho = (xs[i] + rng.uniform(-half, half), xs[j] + rng.uniform(-half, half))
-                    specs.append(_spec(f"q{q}_x{i}_y{j}_k{k}", rho, c, delta_o))
-                fly_all(pool, store, specs, f"lateral {tag} {which} #{k}")
-                for spec in specs:
-                    _, i, j, _ = (int(part[1:]) for part in spec["id"].split("_"))
-                    alive[i, j] &= bool(store.items[spec["id"]]["held"])
-        print(f"  lateral {tag}: {int(alive.sum())} cells held under all conditions")
+            specs = [
+                _lateral_spec(fine, box, q, int(i), int(j), k)
+                for i, j in cells
+                for k in range(rp.LATERAL_TRIALS)
+            ]
+            fly_all(pool, store, specs, f"lateral {tag} {which}")
+        verdict = rp.lateral_verdict(store)
+        print(
+            f"  lateral {tag}: {int(verdict.held.sum())} cells in the set, reference "
+            f"{verdict.reference} at {verdict.reference_rate:.3f}"
+        )
 
 
 def stage_vperp(profile: str, directory: Path, pool) -> None:
@@ -374,6 +395,24 @@ def stage_accel(profile: str, directory: Path, pool) -> None:
             print(f"  accel {tag} [{label}]: {held} of {len(again)} held")
 
 
+def check_closure_axis(directory: Path, t_close_e2e: float) -> None:
+    """Refuse to add to stores whose ``delta_o`` is on another axis.
+
+    A fly-in commands the closure ``T_close_e2e − delta_o`` before the ball
+    reaches the origin plane, so a result's ``delta_o`` means something only
+    beside the ``T_close_e2e`` it was flown with — and a result does not record
+    that. The self-check does: a profile whose value has moved since then would
+    fly the same ids, at the same ``delta_o``, at other instants.
+    """
+    flown = rp.closure_axis(directory)
+    if flown is not None and abs(flown - t_close_e2e) > 1e-12:
+        raise SystemExit(
+            f"{directory}: its stores were flown with delta_o measured against T_close_e2e = "
+            f"{flown} s, and the profile now gives {t_close_e2e} s — a fly-in added now would be "
+            "on another axis. Fly the protocol into an empty directory, from selfcheck on"
+        )
+
+
 _RUN = {
     "selfcheck": stage_selfcheck,
     "map-coarse": stage_map_coarse,
@@ -391,12 +430,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("profile", help="a robot profile under the bring-up's config/")
     parser.add_argument("stage", choices=(*STAGES, "all"))
     parser.add_argument("--workers", type=int, default=6, help="processes, each with its own rig")
+    parser.add_argument(
+        "--box",
+        action="append",
+        metavar="TAG",
+        help="fly the per-box stages (lateral, vperp, verify, accel) for this box only, "
+        "e.g. w040; may be repeated (default: every box of the fine map)",
+    )
     args = parser.parse_args(argv)
+    global _ONLY_BOXES
+    _ONLY_BOXES = tuple(args.box) if args.box else None
     if os.environ.get("OMP_NUM_THREADS") != "1":
         raise SystemExit("set OMP_NUM_THREADS=1: every worker would start a thread pool")
     directory = rp.data_dir(args.profile)
     directory.mkdir(parents=True, exist_ok=True)
     stages = STAGES if args.stage == "all" else (args.stage,)
+    if stages[0] != "selfcheck":
+        check_closure_axis(directory, rig_config.load_rig_config(args.profile).t_close_e2e)
     context = multiprocessing.get_context("spawn")
     with context.Pool(args.workers, initializer=_worker_init, initargs=(args.profile,)) as pool:
         for stage in stages:

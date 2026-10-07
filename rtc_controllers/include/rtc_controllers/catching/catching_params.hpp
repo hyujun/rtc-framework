@@ -13,12 +13,23 @@
 //   - planner.search.grid.catchability.manipulability_min.arm_5row (L3 §6, D-18)
 //   - planner.search.grid.reference.*, planner.search.grid.stop.a_dec — the
 //     search's own copies of the five values above and below (#711)
-//   - planner.segment.mode, planner.segment.mpc.{switch_margin, eta_v}
+//   - planner.search.mode, planner.segment.mode,
+//     planner.segment.mpc.{switch_margin, eta_v}
 //   - supervisor.decel.a_dec                (L7 §6)
 //   - core.ball.diameter/mass/restitution   (L0 §6, D-12)
 //   - sim.ball.drag_k                       (L0 §6 — sim-fixture-only, see below)
 //   - robot.hand.q_open/q_pre/q_close/caging_mask/rho_eps (L6 §6, §4.2)
 //   - robot.hand.eta_close/T_close_e2e       (L6 §6, added by S4.1)
+//   - robot.hand.T_close_lead                (E1-F16: what the sequencer subtracts from t_c)
+// WHICH KEYS A CONFIGURATION IS HELD TO follows what it selects (E1-F16):
+// `reference.*` and `supervisor.decel.a_dec` are the closed_form law's and are
+// judged only under `planner.segment.mode: closed_form`; the
+// `planner.search.grid.*` keys only under `planner.search.mode: grid`. A key of
+// a function the configuration did not select is neither required nor judged —
+// by the parser too: such a function's keys are read as one block, taken when
+// all of it reads (the values stay visible to whoever compares two functions)
+// and left at their defaults when any of it does not, where under the
+// selection that runs the function the same key refuses the parse.
 // `planner.search.grid.ik.*`, `planner.search.grid.hand.d_eff/r_cap`, catch frame (D-17), and the
 // D-16 joint-accel box are out of scope: none of them appear in G0-C or the §6 cross-constraint
 // table, and their owning steps (S2.3a, S2.5) have not landed. See the .cpp for the YAML keys this
@@ -98,9 +109,56 @@ enum class CatchingAccelConstraint : std::uint8_t { kUnset, kRemovedBox, kKinema
 /// `planner.segment.mode` — what the arm follows from APPROACH to the end of
 /// the stop, chosen once per configure and never mixed within an activation
 /// (MPC MD-44). kClosedForm is v1 (the RT tick makes the L4 reference and the
-/// L7 virtual target itself) and the default (the key absent); kMpc follows
-/// the joint segments the mpc segment planner publishes.
-enum class CatchingSegmentMode : std::uint8_t { kClosedForm, kMpc };
+/// L7 virtual target itself) and the default (the key absent); kMpc and
+/// kMpcDocking follow the joint segments a segment planner publishes — the mpc
+/// segment planner's, or the docking planner's (E1-F16).
+enum class CatchingSegmentMode : std::uint8_t { kClosedForm, kMpc, kMpcDocking };
+
+/// `planner.search.mode` — which search turns a predicted ball into a catch
+/// plan (E1-F16), chosen once per configure. kGrid is the default (the key
+/// absent): the grid over the vision samples. kNlp solves the docking problem
+/// per candidate.
+enum class CatchingSearchMode : std::uint8_t { kGrid, kNlp };
+
+/// The YAML spelling of each mode — what the parser accepts and what a log or
+/// a mirrored parameter writes back.
+[[nodiscard]] constexpr const char* SegmentModeName(CatchingSegmentMode mode) noexcept {
+  switch (mode) {
+    case CatchingSegmentMode::kClosedForm:
+      return "closed_form";
+    case CatchingSegmentMode::kMpc:
+      return "mpc";
+    case CatchingSegmentMode::kMpcDocking:
+      return "mpc_docking";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] constexpr const char* SearchModeName(CatchingSearchMode mode) noexcept {
+  switch (mode) {
+    case CatchingSearchMode::kGrid:
+      return "grid";
+    case CatchingSearchMode::kNlp:
+      return "nlp";
+  }
+  return "unknown";
+}
+
+/// Whether the arm follows published joint segments under `mode` (every mode
+/// but closed_form). The RT's segment lane, the pair admission and the
+/// planner's first-segment solve are on exactly when this holds.
+[[nodiscard]] constexpr bool FollowsSegments(CatchingSegmentMode mode) noexcept {
+  return mode != CatchingSegmentMode::kClosedForm;
+}
+
+/// Whether a search and a segment mode can run together. The nlp search's plan
+/// is the catch node of a joint trajectory it solved; the closed_form law
+/// follows a Cartesian reference to a catch point and has no use for it — its
+/// plan fields the law reads (the γ ramp) are not what that search produces.
+[[nodiscard]] constexpr bool SearchSegmentCombinationAllowed(CatchingSearchMode search,
+                                                             CatchingSegmentMode segment) noexcept {
+  return !(search == CatchingSearchMode::kNlp && segment == CatchingSegmentMode::kClosedForm);
+}
 
 /// A key of the `catching:` tree that moved (#711): `old_path` is no longer
 /// read, `new_path` is where its value belongs. Paths are dotted and relative
@@ -256,7 +314,24 @@ struct HandProfile {
   int dof{0};
   double rho_eps{0.02};   // L6 §6 default [rad]
   TbdDouble eta_close;    // –, [0.5, 1]   — L6 §4.2 closure threshold η
-  TbdDouble T_close_e2e;  // s, >= 0       — L6 §4.2 end-to-end closure time
+  TbdDouble T_close_e2e;  // s, >= 0       — L6 §4.2 end-to-end closure time (MEASURED)
+  /// How long before the ball reaches the catch point (the catch-frame
+  /// origin) the hand is told to close [s], >= 0 (E1-F16). A DESIGN value of
+  /// the hand, apart from the measured T_close_e2e — a hand that holds only
+  /// when it closes after the ball has arrived wants a lead well below its
+  /// closure time. What reads which: the lead times the command (the
+  /// sequencer, the plan's t_cmd, the freeze-window bound, the search's commit
+  /// gate); T_close_e2e bounds how long a closure may take (the timeouts) and
+  /// is what the closing hand absorbs (the search's γ window).
+  /// The sequencer subtracts a lead from a plan's CATCH INSTANT, which is that
+  /// arrival only for a planner that puts t_c there; the binding hands each
+  /// reader the lead from the t_c its configuration plans with.
+  /// Absent from the YAML the lead IS T_close_e2e — the two were one key
+  /// before, and a profile written then keeps the timing it had. Read it
+  /// through CloseLead(), which applies that rule; this field alone is only
+  /// what the YAML wrote.
+  TbdDouble T_close_lead;
+  bool T_close_lead_given{false};  // true when the YAML has the key
   // ── Sequencer (S7.1, L6 §5.3/§6) ─────────────────────────────────────────
   /// How long HOLD lasts before RETREAT [s], [0, 5]. 0.5 s, not L6's original
   /// 1.0: a trial cycle is dominated by this wait and the ball is caged well
@@ -281,6 +356,12 @@ struct HandProfile {
   bool tbd{true};
   bool q_open_tbd{true};
   bool provisional{true};
+
+  /// The lead the sequencer runs on: `T_close_lead` when the profile gives it
+  /// (resolved or the `TBD` literal), else `T_close_e2e`.
+  [[nodiscard]] constexpr TbdDouble CloseLead() const noexcept {
+    return T_close_lead_given ? T_close_lead : T_close_e2e;
+  }
 };
 
 /// D-12 공 사양 (L0 §6 `core.ball.*`). `provisional` reads an invented
@@ -331,6 +412,9 @@ struct CatchingParams {
   TbdDouble planner_search_grid_reference_v_max;                             // m/s, > 0
   TbdDouble planner_search_grid_reference_a_max;                             // m/s², > 0
   TbdDouble planner_search_grid_stop_a_dec;  // m/s², > 0 and <= the a_max above
+
+  // planner.search.mode: which search plans (E1-F16)
+  CatchingSearchMode planner_search_mode{CatchingSearchMode::kGrid};
 
   // planner.segment: what the arm follows (MD-34 · MD-44)
   CatchingSegmentMode planner_segment_mode{CatchingSegmentMode::kClosedForm};
@@ -519,7 +603,7 @@ enum class CatchingValidationReason : std::uint8_t {
   kProvisionalWarning,         // same value, but the sim configuration only warns — WARNING only
   kWeightOrdering,             // CLIK weights violate w_task/w_a >> w_arm >> damping_sq (L5 §4.3)
   kCloseTimeoutNotAboveE2e,    // robot.hand.T_close_timeout <= T_close_e2e (L6 §6)
-  kFreezeShorterThanClose,     // T_freeze < T_close_e2e + T_arm + h (L3 §4.11, #537 S7)
+  kFreezeShorterThanClose,     // T_freeze < T_close_lead + T_arm + h (L3 §4.11, #537 S7)
   kReleaseTimeoutNotAboveE2e,  // robot.hand.T_release_timeout <= T_close_e2e (D-S8-6)
   kRemovedValue,  // the key holds a value that no longer exists (accel_constraint: box)
 };
@@ -581,18 +665,18 @@ struct CatchingValidationReport {
 /// Key reported when the freeze window cannot contain the hand's closure.
 inline constexpr const char* kFreezeWindowKey = "planner.freeze.T_freeze";
 
-/// L3 §4.11's lower bound on the freeze window: T_freeze ≥ T_close_e2e + T_arm
-/// + h. COMMITTED starts at t_c − T_freeze and the close command goes out at
-/// t_cmd = t_c − T_close_e2e, so a window shorter than the closure has already
-/// missed its own close command on the tick it commits; T_arm is the servo
-/// lead the reference runs ahead by, and one tick h is the rounding of both
-/// instants onto the tick grid.
+/// L3 §4.11's lower bound on the freeze window: T_freeze ≥ T_close_lead +
+/// T_arm + h. COMMITTED starts at t_c − T_freeze and the close command goes
+/// out at t_cmd = t_c − T_close_lead, so a window shorter than the lead has
+/// already missed its own close command on the tick it commits; T_arm is the
+/// servo lead the reference runs ahead by, and one tick h is the rounding of
+/// both instants onto the tick grid.
 ///
 /// `t_freeze_s` is `planner.freeze.T_freeze` (the planner's key, parsed by
 /// planner_params.hpp — this header does not depend on that one, so the
 /// caller passes the number, the same arrangement as
 /// CheckCatchFrameProvisional). A NaN `t_freeze_s` or an unresolved
-/// T_close_e2e / T_arm is not judged here: an unset value is reported by the
+/// T_close_lead / T_arm is not judged here: an unset value is reported by the
 /// check that owns it. Allocation-free, noexcept.
 void CheckFreezeCoversClose(CatchingValidationReport& report, const CatchingParams& params,
                             double t_freeze_s, double control_rate_hz) noexcept;

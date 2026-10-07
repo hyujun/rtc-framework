@@ -17,7 +17,7 @@
 | 구현됨 | vision 샘플 격자 위의 1 차원 시각 탐색 + 후보별 5 행 IK (제약 QP 과제 스텝 + 영공간 $\log w_5$ 상승) + 닫힌식 게이트 (도달시간 · γ 창 · 정지점 · 오차 예산) + soft-catch DS rollout 으로 $(\gamma_f, T_w)$ 선택 + 가중 점수 | §2 |
 | 구현됨 | 판정 게이트 / 순위 게이트의 분리 (D-27), IK 예산과 사전 점수 순서 (R-2), 교체 히스테리시스와 $u_{des}$ 계단 상한, 동결 | §2.2, §2.11 |
 | 구현됨 | `closed_form` 의 RT 법칙 — 오차 좌표 soft-catch DS (LTI, $\zeta=1$), 5 차 γ 램프, 반암시적 Euler, 방사형 포화, DECEL 의 등감속 가상 대상, HOLD | §3 |
-| 구현됨 | 두 segment mode 가 공유하는 탐색 — `mpc` 에서는 이 탐색의 plan 을 MPC 구간 계획기가 받는다 (MD-46) | §1.4, §4 |
+| 구현됨 | 모든 segment mode 가 공유하는 탐색 — `mpc` · `mpc_docking` 에서는 이 탐색의 plan 을 구간 계획기가 받고, RT 가 plan 을 따르는 동안에도 탐색은 돌지만 결과는 게시되지 않는다 (MD-46, §1.4) | §1.4, §4 |
 | 구현하지 않음 | 충격량 게이트, γ derate, LPV $A_i(\theta)$, $(q^\ast, t_c)$ 동시 NLP, 격자 사이 보간 후보, $\sigma_\ell$ 로 하는 abort, $a_{dec}$ 램프, 교체 때 램프 이어 붙이기 | §6 |
 
 ### 0.2 시간축 (L0 §4.5, D-2)
@@ -95,9 +95,9 @@ $$
 
 판정 통과 후보 가운데 점수 $J$ 최소를 고른다. 판정 통과 후보가 없을 때만 plan 없음이다.
 
-### 1.4 두 planner 에서의 쓰임 (MD-46)
+### 1.4 segment mode 에서의 쓰임 (MD-46)
 
-탐색은 `closed_form` 과 `mpc` 에 공통이다. `closed_form` 에서는 plan 의 $p_c$ · γ 프로파일 · $a_d$ 를 RT 가 §3 의 법칙으로 그대로 실행하고, APPROACH 동안 탐색이 계속 돌며 §2.11 로 plan 을 교체한다. `mpc` 에서는 plan 의 $t_c$ (격자의 닻) · $p_c$ · $v_c$ · $a_d$ (포구 노드 목표) · $q^\ast$ (첫 선형화 기준) 만 MPC 가 읽고, $(\gamma_f, T_w)$ 는 순위에만 쓰인다 — RT 는 DS 를 돌리지 않고 교체도 없다. 차이의 표는 §4.3.
+탐색은 `closed_form` · `mpc` · `mpc_docking` 에 공통이다 (탐색의 다른 구현 `nlp` 는 formulation §17.11 이 갖는다). `closed_form` 에서는 plan 의 $p_c$ · γ 프로파일 · $a_d$ 를 RT 가 §3 의 법칙으로 그대로 실행하고, APPROACH 동안 탐색이 계속 돌며 §2.11 로 plan 을 교체한다. `mpc` 에서는 plan 의 $t_c$ (격자의 닻) · $p_c$ · $v_c$ · $a_d$ (포구 노드 목표) · $q^\ast$ (첫 선형화 기준) 만 MPC 가 읽고, $(\gamma_f, T_w)$ 는 순위에만 쓰인다 — RT 는 DS 를 돌리지 않는다. 구간 계획기 아래에서 탐색은 RT 가 plan 을 따르는 동안에도 (`planner.freeze.t_stop_plan` 까지) 돌고 교체를 **판정**하지만 RT 가 교체 쌍을 받지 않으므로 게시하지 않고 기록만 한다 (`held_replace_unsupported`, L3 §5.3 — E1-F17). 차이의 표는 §4.3.
 
 ---
 
@@ -300,7 +300,7 @@ $$
 | `kRankUncertainty` | $\sigma_k$ 모름 $\vee$ $\sigma_k\gt\kappa_\sigma r_{cap}$ |
 | `kRankReach` | §2.5 의 게이트 실패 (쓸 수 없는 결과 포함) |
 | `kRankGamma` | §2.6 의 게이트 실패 |
-| `kRankCommitLead` | $\ell_k\lt T_{close,tot}+T_{arm}+T_{margin}$ |
+| `kRankCommitLead` | $\ell_k\lt T_{close,lead}+h/2+T_{arm}+T_{margin}$ |
 | `kRankErrorBudget` | $\neg\big(n_\sigma\sigma_{gap}\le r_{cap}\big)$ ($\sigma_k$ 모름이면 NaN → 실패) |
 | `kRankRollout` | §2.7 의 전 구간 수락 없음 |
 
@@ -327,7 +327,7 @@ $$
 
 판정 통과 후보 가운데 $J$ 최소 (동률은 먼저 평가된 쪽 — IK 순서) 를 고른다. $\sigma$ 를 모르거나 도달시간을 쓸 수 없는 후보는 그 항이 빠지되 해당 순위 게이트 실패로 $M_k$ 에 들어간다. $w_{late}\gt0$ 은 늦은 포구 ([R1] 의 "latest" — 예측이 정확해지는 시간을 번다), $w_\gamma\gt0$ 은 soft catch (충격량 · 오차 예산 두 근거) 를 선호한다. $\gamma_f$ 를 사전식 1 순위로 두지 않는 이유는 격자값이라 동률이 거의 없어 나머지 가중이 전부 죽기 때문이다 — 사전식은 $w_\gamma\to\infty$ 의 특수한 경우다. $w_{pen}$ (키는 `score.penalty`) 은 연속 항을 압도해야 한다. $q_n$ 항은 clamp 전 seed 와 비교한다 — seed 가 한계 안이면 같은 값이다.
 
-### 2.11 교체 규칙 — `closed_form` 전용 (L3 §4.7)
+### 2.11 교체 규칙 — `closed_form` 이 게시한다 (L3 §4.7)
 
 RT 가 **이 탐색이 게시한** plan 을 따르고 있을 때 (RT 의 `plan_id` 를 최근 게시 링에서 찾는다 — RT 가 거부한 게시는 현재가 되지 않는다) 게시 여부는 다음 순서로 정해진다. 기본은 "게시하지 않음" (RT 는 가진 plan 을 지킨다).
 
@@ -335,7 +335,7 @@ RT 가 **이 탐색이 게시한** plan 을 따르고 있을 때 (RT 의 `plan_i
 2. **후보 없음.** 판정 통과 후보가 없으면 (settle 중 · 창 안 후보 0 · 입력 무효 · 미구성도 같다) `held_no_candidate` — "plan 없음" 을 게시하지 않는다 (RT 가 아직 안 읽은 교체를 덮는다).
 3. **현재 plan 의 점수.** $\vert t_k-t_{c,cur}\vert\le n_s\Delta_v/2$ 인 통과 후보가 있으면 그 $J_{cur}$ (없으면 현재 plan 은 이번 검사에서 **불가능**).
 4. **개선.** $\text{better}\iff\neg\text{feasible}_{cur} \vee J_{cur}-J_{best}\gt\Delta_J$.
-5. **가속 계단.** 교체가 $u_{des}$ 에 넣는 계단의 상계 (`SwitchAccelStepBound`):
+5. **가속 계단** (구간 계획기 아래에서는 보지 않는다 — 계단이 들어갈 L4 기준이 없어 항상 통과로 둔다, `follows_segments`). 교체가 $u_{des}$ 에 넣는 계단의 상계 (`SwitchAccelStepBound`):
 
 $$
 \Delta u\le\omega^2\vert1-\gamma\vert \Vert\Delta p_c\Vert+\big(2\zeta\omega\vert\dot\gamma\vert+\vert\ddot\gamma\vert\big)\Vert o-p_c\Vert+2\vert\dot\gamma\vert \Vert v_O\Vert \le \eta_{jump}a_{\max},
@@ -353,7 +353,7 @@ $$
 | better, 계단 실패 | `held_jump` | 아니오 |
 | better, 계단 통과 | `replaced` | 예 |
 
-히스테리시스는 "다른 후보로 바꾸는가" 의 규칙이지 "옛 예측을 붙잡는가" 가 아니다 — 붙잡으면 soft catch 가 $(1-\gamma_f)\Vert\delta\Vert$ 만큼 빗나간다. `mpc` 에서는 RT 가 plan 을 따르는 동안 탐색 자체를 건너뛰므로 이 절은 쓰이지 않는다.
+히스테리시스는 "다른 후보로 바꾸는가" 의 규칙이지 "옛 예측을 붙잡는가" 가 아니다 — 붙잡으면 soft catch 가 $(1-\gamma_f)\Vert\delta\Vert$ 만큼 빗나간다. 구간 계획기 (`mpc` · `mpc_docking`) 에서도 이 절의 순서는 돌지만 (5 는 항상 통과) 결과는 게시되지 않고 `replaced` 는 `kHeldReplaceUnsupported` 로 기록된다. RT 가 plan 을 바꾸지 않으므로 plan 은 처음 게시한 것이 끝까지 간다 (E1-F17 이 이 보류를 푼다).
 
 ### 2.12 게시 — plan 의 값
 
@@ -361,7 +361,7 @@ $$
 
 $$
 t_c=t_{k^\ast},\quad p_c=\hat p_{k^\ast},\quad v_c=\hat v_{k^\ast},\quad a_d=-\frac{v_c}{\Vert v_c\Vert},\quad
-t_{cmd}=t_c-T_{close,e2e},
+t_{cmd}=t_c-T_{close,lead},
 $$
 
 $$
@@ -369,13 +369,13 @@ $$
 \sigma_c=\sigma_{k^\ast} (\text{모름이면 }0),\quad\sigma_\ell=\sigma_c,\quad \Delta p_{impact}=m_b(1-\gamma_f^\ast)\Vert v_c\Vert .
 $$
 
-γ 램프는 rollout 이 돌린 것과 **같은 프로파일** 이다 (같은 $t_0$ 규칙; 창 규칙으로 고른 후보는 거친 단계의 것). $q^\ast$ 는 device 순서로 싣고, $w_5$ · $w_6$ 를 함께 기록한다. $t_{cmd}$ ($T_{close,e2e}$ 가 TBD 면 $t_c$) 는 기록 · 진단용이다 — 손 명령에 쓰는 값은 손 시퀀서가 동결된 $t_c$ 로 계산한 하나다 (C-14). $T_{tick}=h/2$ 는 γ 창의 예산에는 들어가고 $t_{cmd}$ 에는 들어가지 않는다 (틱 반올림 오차는 영평균). $\Delta p_{impact}$ 는 기록일 뿐 게이트가 아니다 (TBD-IMP-01).
+γ 램프는 rollout 이 돌린 것과 **같은 프로파일** 이다 (같은 $t_0$ 규칙; 창 규칙으로 고른 후보는 거친 단계의 것). $q^\ast$ 는 device 순서로 싣고, $w_5$ · $w_6$ 를 함께 기록한다. $t_{cmd}$ ($T_{close,lead}$ 가 TBD 면 $t_c$; $T_{close,lead}$ 는 손이 폐쇄를 지령하는 선행으로 잰 폐쇄 시간 $T_{close,e2e}$ 와 다른 설계값이다 — L6 §4.2) 는 기록 · 진단용이다 — 손 명령에 쓰는 값은 손 시퀀서가 동결된 $t_c$ 로 계산한 하나다 (C-14). $T_{tick}=h/2$ 는 γ 창의 예산에는 들어가고 $t_{cmd}$ 에는 들어가지 않는다 (틱 반올림 오차는 영평균). $\Delta p_{impact}$ 는 기록일 뿐 게이트가 아니다 (TBD-IMP-01).
 
 게시 직전 cycle 이 token · 리셋 epoch · activation 을 다시 확인하고, RT 는 `JudgePlan` (유효 · activation · 트랙 · 새 `plan_id` · 나이 · reset floor · $t_c-now\gt T_{freeze}$) 으로 받는다 (L3 §5.2).
 
 ### 2.13 동결 후 감시 (`Monitor`)
 
-COMMITTED · CLOSING 의 wake 는 따르는 plan 의 $t_c$ 에 가장 가까운 샘플에서 $\sigma_\ell=\sigma_{\max}$ 를 계산해 **기록만** 한다. 이 값으로 abort 를 판단하지 않는다 — 동결 뒤의 낡은 입력은 수신 나이로 판정한다 (L7).
+COMMITTED · CLOSING 의 wake 는 따르는 plan 의 $t_c$ 의 공분산 (가장 가까운 샘플의 $6\times6$ 을 $F\Sigma F^\top$ 으로 $t_c$ 까지 전파한 것, L3 §5.3) 에서 $\sigma_\ell=\sigma_{\max}$ 를 계산해 **기록만** 한다. 이 값으로 abort 를 판단하지 않는다 — 동결 뒤의 낡은 입력은 수신 나이로 판정한다 (L7).
 
 ### 2.14 사유
 
@@ -489,7 +489,7 @@ $$
 | DECEL → HOLD | $\tau\ge\tau_s$ | 정지한 대상 추종 |
 | REF_SATURATED | `sat_ticks` 연속 포화 (공 추종 tick) | COMMITTED 전 RETREAT / 후 ABORT_SAFE |
 
-$T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane 의 사유 (`BALL_STALE` · `HORIZON_EXTRAP` · `BALL_STALE_LONG`) 와 CLIK 의 사유 (`QP_FAILED` · `JOINT_CONFLICT` · `TRACK_ERR`) 는 두 planner 공통이고, 전체 상태 머신 · 사유 · 리셋 목록은 L7 §4.1 · §4.8.
+$T_{freeze}\ge T_{close,lead}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane 의 사유 (`BALL_STALE` · `HORIZON_EXTRAP` · `BALL_STALE_LONG`) 와 CLIK 의 사유 (`QP_FAILED` · `JOINT_CONFLICT` · `TRACK_ERR`) 는 두 planner 공통이고, 전체 상태 머신 · 사유 · 리셋 목록은 L7 §4.1 · §4.8.
 
 ---
 
@@ -505,7 +505,7 @@ $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane 
 | 파라미터 | 탐색의 복사본 `planner.search.grid.reference.*` · `stop.a_dec` | `reference.*` · `supervisor.decel.a_dec` |
 | 그 뒤 | CLIK · 팔 지연 없음 ($\sigma_{trk}$ 가 그 자리) | CLIK → $T_{arm}$ 선행 보상 → 팔 |
 
-복사본은 원본의 검증 규칙을 따르고, 계획기가 켜져 있을 때 (TBD 인 쌍은 비교하지 않는다) `closed_form` 에서 원본과 다르면 park (`kSearchCopyDiffers` — 탐색이 팔이 따르지 않는 운동으로 후보를 매기게 된다), `mpc` 에서는 WARN 이다 (L3 §6). 복사본을 두는 이유는 탐색이 두 segment mode 에서 돌기 때문이다.
+복사본은 원본의 검증 규칙을 따르고, 계획기가 켜져 있을 때 (TBD 인 쌍은 비교하지 않는다) `closed_form` 에서 원본과 다르면 park (`kSearchCopyDiffers` — 탐색이 팔이 따르지 않는 운동으로 후보를 매기게 된다), 구간 계획기에서는 WARN 이다 (L3 §6). 복사본을 두는 이유는 탐색이 여러 segment mode 에서 돌기 때문이다.
 
 ### 4.2 탐색이 법칙에 대해 가정하는 것
 
@@ -514,15 +514,15 @@ $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane 
 - 정지: §2.8 의 $p_{stop}$ 은 $\dot x_s=\gamma_fv_c$ 를 가정한 §3.6 의 닫힌식이다. 실제 $\dot x_s$ 는 $t_c$ 의 기준 속도이고 $\epsilon_{conv}$ 만큼 다르다.
 - 도달시간 (§2.5) 은 관절별 시간최적 프로파일의 필요조건이고 실제 운동은 과제 공간 DS 다 — 충분성은 rollout.
 
-### 4.3 `mpc` 와의 차이
+### 4.3 `mpc` · `mpc_docking` 과의 차이
 
-| | `closed_form` | `mpc` |
+| | `closed_form` | `mpc` (`mpc_docking` 도 같은 곳이 많다) |
 |---|---|---|
-| 탐색 | §2 전부 | §2 전부 (교체 §2.11 제외 — 따르는 동안 탐색을 건너뛴다) |
+| 탐색 | §2 전부 | §2 전부 (교체 §2.11 은 판정만 하고 게시하지 않는다 — 따르는 동안에도 탐색은 돈다) |
 | plan 에서 실행이 읽는 것 | $p_c$, $a_d$, $(\gamma_0, \gamma_f, t_0, t_1)$, $t_c$ | $t_c$ (격자 닻), $p_c$ · $v_c$ · $a_d$ (포구 노드 목표), $q^\ast$ (첫 선형화 기준) |
 | $(\gamma_f, T_w)$ | 실행된다 | 순위에만. 속도 목표 비는 `planner.segment.mpc.catch.gamma_ref` |
 | APPROACH – 정지 | §3 (DS → DECEL → HOLD) | MPC 관절 노드 구간 (formulation §1.6) |
-| 예측 변화의 흡수 | plan 교체 (§2.11) | 구간 재계획 |
+| 예측 변화의 흡수 | plan 교체 (§2.11) | 구간 재계획 (plan 의 교체는 보류 — 위) |
 | `REF_SATURATED` | 있음 | 없음 |
 
 ---
@@ -576,7 +576,8 @@ $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane 
 | $\omega, \zeta, v_{\max}, a_{\max}$ (RT) · $a_{dec}$ (RT) | `reference.*`, `supervisor.decel.a_dec` | `SoftCatchTranslation::Params`, `EvaluateDecelTarget` |
 | $\ddot q_{\max}$ | `robot.arm.qdd_max` (주 파일) | `MaxJointTMin` |
 | $q_n$ | `planner.wait_pose`, `wait_pose_source` | §2.3, §2.10 |
-| $T_{freeze}$, $T_{arm}$, $T_{close,e2e}$, `sat_ticks` | `planner.freeze.T_freeze`, `joint_cmd.lag.T_arm`, `robot.hand.T_close_e2e`, `supervisor.sat_ticks` | §3.8 |
+| $T_{freeze}$, $T_{arm}$, $T_{close,lead}$, `sat_ticks` | `planner.freeze.T_freeze`, `joint_cmd.lag.T_arm`, `robot.hand.T_close_lead` (없으면 `T_close_e2e`), `supervisor.sat_ticks` | §3.8 |
+| $T_{close,e2e}$ ($T_{close,tot}=T_{close,e2e}+h/2$) | `robot.hand.T_close_e2e` (잰 값) | §2.6 |
 
 코드 대응: 후보 · 순서 · 점수 · 교체 · 게시는 `grid_catch_search.cpp`, IK 는 `catch_pose_ik.cpp`, 도달시간 · γ 창 · 정지점 · 오차 예산은 `time_feasibility.hpp` 를 `rank_gates.hpp` 의 `JudgeRankGates` 가 묶고, $\dot q^u$ 는 `unit_speed.hpp`, rollout 은 `gamma_rollout.hpp`, DS · γ 프로파일 · 닫힌해는 `soft_catch.hpp`, 감속 대상은 `decel_target.hpp`, 관절공간 정지는 `joint_stop.hpp`, 축 정렬 오차는 `rtc_math` 의 `axis_align.hpp`, RT 의 채택 · tick · DECEL 진입은 `controller.cpp` (`RunTrackingTick` · `StepReferenceAndSolve` · `EnterDecel` · `RunDecelLawTick`) 다. 테스트는 L3 §9 · L4 §9 · L7 §9.
 

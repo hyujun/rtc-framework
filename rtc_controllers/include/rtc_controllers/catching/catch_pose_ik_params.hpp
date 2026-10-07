@@ -94,6 +94,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <string_view>
+
 namespace rtc::catching {
 
 /// Keys L3 §6 no longer honours but that a deployed config may still carry.
@@ -176,6 +178,11 @@ struct CatchPoseIkConfig {
 /// @param node the `catching:` tree root — the SAME node `ParseCatchingParams`
 ///        takes, so one config load feeds both. Must be a map.
 /// @param retired optional; receives which retired keys were present.
+/// @param search_map the search whose keys these are, as the name of its map
+///        under `planner.search` — the same sub-schema (`ik.*`,
+///        `catchability.*`) is read from `planner.search.<search_map>`, and
+///        every message names its paths there. The defaults and ranges do not
+///        depend on it.
 ///
 /// Throws `std::invalid_argument`, and only that (every `YAML::Exception` is
 /// translated), on: a missing/non-map root; a present `planner`,
@@ -186,6 +193,7 @@ struct CatchPoseIkConfig {
 /// path. Non-RT: called from LoadConfig / on_configure or from an offline
 /// tool, never from a tick.
 [[nodiscard]] CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node,
-                                                       CatchPoseIkRetiredKeys* retired = nullptr);
+                                                       CatchPoseIkRetiredKeys* retired = nullptr,
+                                                       std::string_view search_map = "grid");
 
 }  // namespace rtc::catching

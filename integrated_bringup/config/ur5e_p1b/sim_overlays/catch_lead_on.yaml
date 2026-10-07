@@ -18,12 +18,13 @@
 #
 # WHAT T_arm 0.05 CHANGES. T_arm is not only the lead: the validator derives
 # the commit window from it, so T_freeze moves with it.
-#   T_freeze 0.37 = T_close,tot 0.2815 + T_arm 0.05 + margin 0.03 = 0.3615,
-#                   rounded up (L3 §4.11 lower bound). The shipped 0.36 was
-#                   derived with T_arm 0 and falls short of that bound — the
-#                   validator would still pass it (CheckFreezeCoversClose asks
-#                   only T_close_e2e + T_arm + h = 0.3325), so this is the
-#                   design bound, not a configure requirement.
+#   T_freeze 0.37 = T_close_lead 0.2805 + h/2 0.001 + T_arm 0.05 + margin
+#                   0.03 = 0.3615, rounded up (L3 §4.11 lower bound). The
+#                   shipped 0.36 was derived with T_arm 0 and falls short of
+#                   that bound — the validator would still pass it
+#                   (CheckFreezeCoversClose asks only T_close_lead + T_arm + h
+#                   = 0.3325), so this is the design bound, not a configure
+#                   requirement.
 #                   Startup log: "commit at t_c − 0.370 s".
 #   io.horizon_min 0.51 / io.n_min 12 are already the shipped values: they were
 #                   derived with T_arm 0.05 (see the shipped file's comments).

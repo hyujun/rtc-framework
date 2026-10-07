@@ -199,9 +199,10 @@ struct NlpCatchSearchModel {
 struct NlpCatchSearchConstants {
   double t_arm_s{0.0};       ///< `joint_cmd.lag.T_arm` [s]
   double control_dt{0.002};  ///< the RT period [s]
-  /// `robot.hand.T_close_e2e` [s]; NaN = unknown, the plan's close instant is
-  /// then the catch instant.
-  double t_close_e2e{std::numeric_limits<double>::quiet_NaN()};
+  /// `robot.hand.T_close_lead` [s] — what the hand sequencer subtracts from the
+  /// catch instant; NaN = unknown, the plan's close instant is then the catch
+  /// instant.
+  double t_close_lead{std::numeric_limits<double>::quiet_NaN()};
 };
 
 /// Tuning. Every field is validated by Configure.
@@ -274,8 +275,6 @@ struct NlpCatchSearchParams {
 
 class NlpCatchSearch final : public CatchSearch {
  public:
-  using ClockFn = std::int64_t (*)() noexcept;
-
   NlpCatchSearch();
   ~NlpCatchSearch() override;
   // Owns its cores and scratch; a copy would be a second set of solvers.
@@ -295,6 +294,23 @@ class NlpCatchSearch final : public CatchSearch {
                                ClockFn clock, std::string* error = nullptr);
 
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
+
+  /// Replace the steady clock the budget and the solves' deadlines are read
+  /// on (non-RT; the planner thread is not running). A null `clock` is
+  /// ignored. Every core it owns takes the same clock, so a deadline set from
+  /// this search's clock is checked on that axis.
+  void SetClock(ClockFn clock) noexcept override {
+    if (clock == nullptr) {
+      return;
+    }
+    clock_ = clock;
+    for (auto& core : cores_) {
+      core->SetClock(clock);
+    }
+    for (auto& core : cores_tc_) {
+      core->SetClock(clock);
+    }
+  }
 
   /// One search (RT-safe apart from the QP solvers — header note).
   [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,

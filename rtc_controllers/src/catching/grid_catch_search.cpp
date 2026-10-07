@@ -1,6 +1,8 @@
 // The planner's search (S6-B). See grid_catch_search.hpp.
 #include "rtc_controllers/catching/grid_catch_search.hpp"
 
+#include "rtc_controllers/catching/ball_node_samples.hpp"
+
 #include <Eigen/Eigenvalues>
 
 #include <algorithm>
@@ -31,6 +33,20 @@ namespace {
       return PlanReason::kNone;
   }
   return PlanReason::kNone;
+}
+
+// σ_max = √λ_max(Σ_pp) of a position block, NaN when it is unknown — the one
+// formula behind SigmaMax (a sample's block) and Monitor (a propagated one).
+[[nodiscard]] double SigmaMaxOfBlock(const Eigen::Matrix3d& s) noexcept {
+  if (!s.allFinite()) {
+    return std::numeric_limits<double>::quiet_NaN();  // NaN is "not known" (L1)
+  }
+  const Eigen::Matrix3d sym = 0.5 * (s + s.transpose());
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es;
+  es.computeDirect(sym, Eigen::EigenvaluesOnly);
+  const double lmax = es.eigenvalues().maxCoeff();
+  return std::isfinite(lmax) ? std::sqrt(std::max(lmax, 0.0))
+                             : std::numeric_limits<double>::quiet_NaN();
 }
 
 }  // namespace
@@ -186,15 +202,7 @@ double GridCatchSearch::SigmaMax(const CovarianceSnapshot& cov, int k) noexcept 
       s(r, q) = c[static_cast<std::size_t>(r * 6 + q)];
     }
   }
-  if (!s.allFinite()) {
-    return std::numeric_limits<double>::quiet_NaN();  // NaN is "not known" (L1)
-  }
-  const Eigen::Matrix3d sym = 0.5 * (s + s.transpose());
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es;
-  es.computeDirect(sym, Eigen::EigenvaluesOnly);
-  const double lmax = es.eigenvalues().maxCoeff();
-  return std::isfinite(lmax) ? std::sqrt(std::max(lmax, 0.0))
-                             : std::numeric_limits<double>::quiet_NaN();
+  return SigmaMaxOfBlock(s);
 }
 
 void GridCatchSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
@@ -206,21 +214,17 @@ void GridCatchSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSn
   if (!followed.valid || !cov_matched || !traj.valid) {
     return;
   }
-  // The sample nearest the committed t_c — the covariance is on the vision
-  // grid and is not interpolated (A-S5-5; the ν̄/interpolation rule is S7).
-  const int n = std::clamp(traj.n, 0, static_cast<int>(kCap));
-  int best = -1;
-  std::int64_t best_d = std::numeric_limits<std::int64_t>::max();
-  for (int k = 0; k < n; ++k) {
-    const std::int64_t d = std::llabs(traj.s[static_cast<std::size_t>(k)].t_ns - followed.t_c_ns);
-    if (d < best_d) {
-      best_d = d;
-      best = k;
-    }
+  // The ball's covariance at the committed t_c, by the rule every planner
+  // reads the prediction by: the nearest sample's, propagated over t_c − t_i
+  // (ball_node_samples.hpp). An unusable one records NaN, as before.
+  int hint = 0;
+  const BallNodeSample node =
+      SampleBallNode(traj, &cov, cov_matched, BallTime{followed.t_c_ns}, hint);
+  if (!node.valid) {
+    return;
   }
-  if (best >= 0) {
-    stats.sigma_l = SigmaMax(cov, best);
-  }
+  stats.sigma_l = node.cov_valid ? SigmaMaxOfBlock(node.cov.topLeftCorner<3, 3>())
+                                 : std::numeric_limits<double>::quiet_NaN();
 }
 
 PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
@@ -385,7 +389,10 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   const std::span<const double> qddot(model_.qddot_max.data(), model_.accel_box ? nvs : 0U);
   const NowLead now_lead = MakeNowLead(now, SecondsToNs(constants_.t_arm_s));
   const double v_tcp_plan = PlanningTcpSpeed(constants_.eta_v, constants_.v_max);
-  const double commit_lead = constants_.t_close_total + constants_.t_arm_s + params_.time_margin;
+  // The hand closes t_close_lead before t_c; with lead == T_close,e2e this is
+  // T_close,tot + T_arm + margin (T_close,tot = e2e + h/2) up to rounding.
+  const double commit_lead = constants_.t_close_lead + 0.5 * constants_.control_dt +
+                             constants_.t_arm_s + params_.time_margin;
   const std::int64_t budget_ns = SecondsToNs(params_.budget_s);
 
   // Where the reference starts (§4.8): its own state when it is running (a
@@ -632,8 +639,11 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
                                   (bs.p[2] - current_.p_c[2]) * (bs.p[2] - current_.p_c[2]));
       // The step the switch puts into u_des, held to η_jump·a_max (§4.7,
       // decision ⑥), at its worst over the instants the RT may adopt it.
-      const double step = SwitchStep(traj, rt, now_lead, dp);
-      const bool jump_ok = step <= params_.switch_eta_jump * constants_.ref_a_max;
+      // Not judged when the arm follows segments: there is no L4 reference
+      // whose u_des a switch could step (GridCatchSearchConstants).
+      const double step = constants_.follows_segments ? 0.0 : SwitchStep(traj, rt, now_lead, dp);
+      const bool jump_ok =
+          constants_.follows_segments || step <= params_.switch_eta_jump * constants_.ref_a_max;
       const bool best_is_current =
           std::fabs(static_cast<double>(bs.t_ns - current_.t_c_ns)) <= half;
       if (!better) {
@@ -667,8 +677,8 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   const Eigen::Vector3d v(bs.v[0], bs.v[1], bs.v[2]);
   const double speed = v.norm();
   plan.t_c_ns = bs.t_ns;
-  plan.t_cmd_ns = std::isfinite(constants_.t_close_e2e)
-                      ? bs.t_ns - SecondsToNs(constants_.t_close_e2e)
+  plan.t_cmd_ns = std::isfinite(constants_.t_close_lead)
+                      ? bs.t_ns - SecondsToNs(constants_.t_close_lead)
                       : bs.t_ns;
   plan.p_c = bs.p;
   plan.a_d = {-v.x() / speed, -v.y() / speed, -v.z() / speed};
@@ -708,6 +718,18 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   stats.chosen_max_catchable = best_max_catchable;
   stats.search_ns = clock_() - t_start;
   return plan;
+}
+
+std::unique_ptr<GridCatchSearch> MakeGridCatchSearch(const GridCatchSearchModel& model,
+                                                     const GridCatchSearchConstants& constants,
+                                                     const PlannerParams& params,
+                                                     const CatchPoseIkOptions& ik,
+                                                     GridCatchSearch::ClockFn clock) {
+  auto search = std::make_unique<GridCatchSearch>();
+  if (!search->Configure(model, constants, params, ik, clock)) {
+    return nullptr;
+  }
+  return search;
 }
 
 }  // namespace rtc::catching

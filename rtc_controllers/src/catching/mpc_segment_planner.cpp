@@ -1,6 +1,7 @@
 // MPC segment planner (MPC E1-F03, E1-F08). See mpc_segment_planner.hpp.
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 
+#include "rtc_controllers/catching/ball_node_samples.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/time_types.hpp"  // SecondsToNs, CeilDiv
 #include "rtc_controllers/catching/traj_sampler.hpp"
@@ -13,6 +14,8 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <memory>
+#include <string>
 
 namespace rtc::catching {
 
@@ -46,66 +49,6 @@ void ApplyCoreDesign(MpcSegmentCoreParams& mp, const MpcSegmentPlannerParams& p,
 
 }  // namespace
 
-const char* SegmentOutcomeName(SegmentOutcome o) noexcept {
-  switch (o) {
-    case SegmentOutcome::kOff:
-      return "off";
-    case SegmentOutcome::kNoState:
-      return "no_state";
-    case SegmentOutcome::kStaleState:
-      return "stale_state";
-    case SegmentOutcome::kUpToDate:
-      return "up_to_date";
-    case SegmentOutcome::kPastReplanWindow:
-      return "past_replan_window";
-    case SegmentOutcome::kInputNonFinite:
-      return "input_non_finite";
-    case SegmentOutcome::kSolveFailed:
-      return "solve_failed";
-    case SegmentOutcome::kBudget:
-      return "budget";
-    case SegmentOutcome::kLate:
-      return "late";
-    case SegmentOutcome::kSlack:
-      return "slack";
-    case SegmentOutcome::kReady:
-      return "ready";
-    case SegmentOutcome::kPublished:
-      return "published";
-    case SegmentOutcome::kSuperseded:
-      return "superseded";
-    case SegmentOutcome::kNotAtRest:
-      return "not_at_rest";
-    case SegmentOutcome::kTooLate:
-      return "too_late";
-    case SegmentOutcome::kNotFollowed:
-      return "not_followed";
-    case SegmentOutcome::kNoBall:
-      return "no_ball";
-    case SegmentOutcome::kCatchError:
-      return "catch_error";
-    case SegmentOutcome::kSpeed:
-      return "speed";
-  }
-  return "unknown";
-}
-
-const char* SegmentKindName(SegmentKind k) noexcept {
-  switch (k) {
-    case SegmentKind::kNone:
-      return "none";
-    case SegmentKind::kFirst:
-      return "first";
-    case SegmentKind::kSame:
-      return "same";
-    case SegmentKind::kAdvance:
-      return "advance";
-    case SegmentKind::kStop:
-      return "stop";
-  }
-  return "unknown";
-}
-
 MpcSegmentBallTarget MakeMpcSegmentBallTarget(const TrajectorySnapshot& traj,
                                               const CovarianceSnapshot& cov, bool cov_matched,
                                               std::int64_t t_c_ns, double v_eps) noexcept {
@@ -119,45 +62,25 @@ MpcSegmentBallTarget MakeMpcSegmentBallTarget(const TrajectorySnapshot& traj,
     b.v_b = e.v;
     b.a_d = -e.v / speed;
   }
-  // Σ_p: SampleAt's bracket, on integer ns. `traj.n` is bounded before any
-  // index (wire data), and the covariance must hold the same samples.
+  // Σ_p: the position block of the covariance SampleBallNode gives at t_c —
+  // the nearest sample's, propagated over t_c − t_i (ball_node_samples.hpp), the
+  // one rule every planner reads the prediction's covariance by. `traj.n` is
+  // bounded before any index (wire data), the covariance must hold the same
+  // samples, and an instant outside the prediction is refused here (the node
+  // sample does not refuse the one past it).
   const int n = traj.n;
   if (!cov_matched || !cov.valid || !traj.valid || n < 1 || n > kCap || cov.n != n) {
     return b;
   }
-  const auto t_at = [&traj](int i) noexcept { return traj.s[static_cast<std::size_t>(i)].t_ns; };
-  if (t_c_ns < t_at(0) || t_c_ns > t_at(n - 1)) {
+  if (t_c_ns < traj.s[0].t_ns || t_c_ns > traj.s[static_cast<std::size_t>(n - 1)].t_ns) {
     return b;
   }
-  int i = 0;
-  while (i + 1 < n && t_at(i + 1) <= t_c_ns) {
-    ++i;
+  int hint = 0;
+  const BallNodeSample node = SampleBallNode(traj, &cov, cov_matched, BallTime{t_c_ns}, hint);
+  if (!node.valid || !node.cov_valid) {
+    return b;
   }
-  const auto block = [&cov](int k, int r, int c) noexcept {
-    return cov.c[static_cast<std::size_t>(k)][static_cast<std::size_t>(r * 6 + c)];
-  };
-  Eigen::Matrix3d s = Eigen::Matrix3d::Zero();
-  if (t_c_ns == t_at(i)) {
-    for (int r = 0; r < 3; ++r) {
-      for (int c = 0; c < 3; ++c) {
-        s(r, c) = block(i, r, c);
-      }
-    }
-  } else {
-    if (i + 1 >= n) {
-      return b;
-    }
-    const std::int64_t span = t_at(i + 1) - t_at(i);
-    if (span < kMinInterpIntervalNs) {
-      return b;
-    }
-    const double alpha = static_cast<double>(t_c_ns - t_at(i)) / static_cast<double>(span);
-    for (int r = 0; r < 3; ++r) {
-      for (int c = 0; c < 3; ++c) {
-        s(r, c) = (1.0 - alpha) * block(i, r, c) + alpha * block(i + 1, r, c);
-      }
-    }
-  }
+  const Eigen::Matrix3d s = node.cov.topLeftCorner<3, 3>();
   if (!s.allFinite()) {
     return b;
   }
@@ -495,11 +418,7 @@ bool MpcSegmentPlanner::WarmUp(const MpcSegmentPlannerModel& model, std::string&
 }
 
 void MpcSegmentPlanner::ResetTrial() noexcept {
-  ring_n_ = 0;
-  ring_plan_id_ = 0;
-  ring_t_c_ns_ = 0;
-  reported_pending_seq_ = 0;
-  reported_active_seq_ = 0;
+  ring_.Clear();
   last_solve_valid_ = false;
   ready_line_.valid = false;
 }
@@ -627,7 +546,7 @@ SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, 
                                         std::int64_t end, std::int64_t budget_ns,
                                         std::int64_t t_eff, SegmentRecord& rec) const noexcept {
   rec.solve_ns = end - start;
-  rec.core_reason = r.reason;
+  SetCoreReason(rec, r.reason);
   rec.presolved = r.presolved;
   rec.iterations = r.iterations + r.presolve_iterations;
   rec.qp_status = r.qp_status;
@@ -678,7 +597,7 @@ SegmentOutcome MpcSegmentPlanner::Judge(const MpcSegmentCoreResult& r, bool ok, 
   for (int m = 0; m < nv_; ++m) {
     if (!(std::fabs(r.qd(m, n_total)) <= rest_tol_ref_ &&
           std::fabs(r.qdd(m, n_total)) <= rest_tol_ref_)) {
-      rec.core_reason = MpcSegmentCoreReason::kNone;
+      SetCoreReason(rec, MpcSegmentCoreReason::kNone);
       return SegmentOutcome::kSolveFailed;
     }
   }
@@ -719,90 +638,26 @@ void MpcSegmentPlanner::PackSegment(const PlannerRtState& rt, std::uint64_t trac
   out.valid = true;
 }
 
-const SegmentSnapshot* MpcSegmentPlanner::FindInRing(std::uint32_t seq) const noexcept {
-  for (int i = 0; i < ring_n_; ++i) {
-    if (ring_[U(i)].segment_seq == seq) {
-      return &ring_[U(i)];
-    }
-  }
-  return nullptr;
-}
-
-MpcSegmentPlanner::RingReport MpcSegmentPlanner::ReportedInRing(
-    const PlannerRtState& rt) const noexcept {
-  // The ring is the last PUBLISHED plan's; it says nothing of another one.
-  if (ring_n_ == 0 || !rt.plan_active || rt.plan_id != ring_plan_id_ ||
-      rt.plan_t_c_ns != ring_t_c_ns_) {
-    return {};
-  }
-  return {rt.segment_pending ? FindInRing(rt.segment_pending_seq) : nullptr,
-          rt.segment_active ? FindInRing(rt.segment_seq) : nullptr};
-}
-
 void MpcSegmentPlanner::Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept {
-  const RingReport r = ReportedInRing(rt);
-  out.has_pending = r.pending != nullptr;
-  out.has_following = r.following != nullptr;
-  if (out.has_pending) {
-    out.pending = *r.pending;
-  }
-  if (out.has_following) {
-    out.following = *r.following;
-  }
+  ring_.Reported(rt, out);
 }
 
 std::uint32_t MpcSegmentPlanner::SourceSeq(const PlannerRtState& rt,
                                            std::int64_t t_eff_ns) const noexcept {
-  const RingReport r = ReportedInRing(rt);
-  const SegmentSnapshot* src = SourceSegmentAt(r.pending, r.following, t_eff_ns);
-  return src != nullptr ? src->segment_seq : 0;
+  return ring_.SourceSeq(rt, t_eff_ns);
 }
 
 bool MpcSegmentPlanner::FollowedTrack(const PlannerRtState& rt,
                                       std::uint64_t& generation) const noexcept {
-  if (ring_n_ == 0 || !rt.plan_active || rt.plan_id != ring_plan_id_ ||
-      rt.plan_t_c_ns != ring_t_c_ns_) {
-    return false;
-  }
-  // Every segment of a plan carries the plan's track (PlanFirst, Replan).
-  generation = ring_[U(ring_n_ - 1)].token.generation;
-  return true;
+  return ring_.FollowedTrack(rt, generation);
 }
 
 void MpcSegmentPlanner::NotePublished(const SegmentSnapshot& p) noexcept {
-  if (ring_n_ > 0 && (p.plan_id != ring_plan_id_ || p.t_c_ns != ring_t_c_ns_)) {
-    ring_n_ = 0;
-  }
-  ring_plan_id_ = p.plan_id;
-  ring_t_c_ns_ = p.t_c_ns;
-  if (ring_n_ == kRingSize) {
-    // Evict the oldest segment the RT did not last report; at most two are
-    // reported, so one of eight always qualifies.
-    int victim = 0;
-    for (int i = 0; i < ring_n_; ++i) {
-      const std::uint32_t s = ring_[U(i)].segment_seq;
-      if (s != reported_pending_seq_ && s != reported_active_seq_) {
-        victim = i;
-        break;
-      }
-    }
-    for (int i = victim; i + 1 < ring_n_; ++i) {
-      ring_[U(i)] = ring_[U(i + 1)];
-      if (perp_on_) {
-        ring_line_[U(i)] = ring_line_[U(i + 1)];
-      }
-    }
-    --ring_n_;
-  }
-  ring_[U(ring_n_)] = p;
-  if (perp_on_) {
-    // The segment's stop-path line: the one the solve that produced it ran
-    // on, handed over once. A segment published without such a solve right
-    // before it has none, and a stop core is not solved from it.
-    ring_line_[U(ring_n_)] = ready_line_;
-    ready_line_.valid = false;
-  }
-  ++ring_n_;
+  // The segment's stop-path line: the one the solve that produced it ran on,
+  // handed over once. A segment published without such a solve right before
+  // it has none, and a stop core is not solved from it.
+  ring_.Push(p, ready_line_);
+  ready_line_.valid = false;
 }
 
 bool MpcSegmentPlanner::ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
@@ -981,12 +836,11 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   out.x0_clamped = rec.x0_clamped;
   if (!ValidateSegmentNodes(out)) {
     rec.outcome = SegmentOutcome::kSolveFailed;
-    rec.core_reason = MpcSegmentCoreReason::kNone;
+    SetCoreReason(rec, MpcSegmentCoreReason::kNone);
     return false;
   }
   // A new plan: the RT reports nothing of it yet.
-  reported_pending_seq_ = 0;
-  reported_active_seq_ = 0;
+  ring_.ClearReported();
   if (perp_on_) {
     ready_line_ = StopLine{true, in.p_c, in.d_hat};
   }
@@ -1008,8 +862,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
     rec.outcome = SegmentOutcome::kNoState;
     return false;
   }
-  reported_pending_seq_ = rt.segment_pending ? rt.segment_pending_seq : 0;
-  reported_active_seq_ = rt.segment_active ? rt.segment_seq : 0;
+  ring_.NoteReported(rt);
 
   // The grid point the replan budget reaches (MD-54, MD-58). Recorded as
   // soon as it is chosen, so a withheld solve still says where it was.
@@ -1042,7 +895,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
 
   // The source is what the RT reports, never an inference (MD-58).
   const std::uint32_t src_seq = SourceSeq(rt, t_eff);
-  const SegmentSnapshot* src = src_seq != 0 ? FindInRing(src_seq) : nullptr;
+  const SegmentSnapshot* src = src_seq != 0 ? ring_.Find(src_seq) : nullptr;
   if (src == nullptr) {
     rec.outcome = SegmentOutcome::kNotFollowed;
     return false;
@@ -1068,8 +921,8 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   // `ball` holds on this wake and whatever was published since: the hand
   // stops on the line it is on. A source without a line is not solved from —
   // never on a default line.
-  const auto src_slot = static_cast<std::size_t>(src - ring_.data());
-  if (perp_on_ && !pre && !ring_line_[src_slot].valid) {
+  const StopLine& src_line = ring_.PayloadOf(src);
+  if (perp_on_ && !pre && !src_line.valid) {
     rec.outcome = SegmentOutcome::kNoBall;
     return false;
   }
@@ -1139,8 +992,8 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
         return false;
       }
     } else {
-      in.p_c = ring_line_[src_slot].p_c;
-      in.d_hat = ring_line_[src_slot].d_hat;
+      in.p_c = src_line.p_c;
+      in.d_hat = src_line.d_hat;
     }
   }
   bool ok = core.Solve(in, res);
@@ -1169,7 +1022,7 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   out.x0_clamped = rec.x0_clamped;
   if (!ValidateSegmentNodes(out)) {
     rec.outcome = SegmentOutcome::kSolveFailed;
-    rec.core_reason = MpcSegmentCoreReason::kNone;
+    SetCoreReason(rec, MpcSegmentCoreReason::kNone);
     return false;
   }
   if (perp_on_) {
@@ -1178,6 +1031,18 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
     ready_line_ = StopLine{true, in.p_c, in.d_hat};
   }
   return true;
+}
+
+std::unique_ptr<MpcSegmentPlanner> MakeMpcSegmentPlanner(const MpcSegmentPlannerModel& model,
+                                                         const MpcSegmentPlannerConstants& consts,
+                                                         const MpcSegmentPlannerParams& params,
+                                                         MpcSegmentPlanner::ClockFn clock,
+                                                         std::string* error) {
+  auto planner = std::make_unique<MpcSegmentPlanner>();
+  if (!planner->Configure(model, consts, params, clock, error)) {
+    return nullptr;
+  }
+  return planner;
 }
 
 }  // namespace rtc::catching

@@ -106,9 +106,14 @@
 #include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/contact_debounce.hpp"
 #include "rtc_controllers/catching/decel_target.hpp"
+#include "rtc_controllers/catching/docking_params.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/hand_capture.hpp"
 #include "rtc_controllers/catching/hand_sequencer.hpp"
 #include "rtc_controllers/catching/joint_home.hpp"
+#include "rtc_controllers/catching/mpc_docking_segment_planner.hpp"
+#include "rtc_controllers/catching/mpc_segment_planner.hpp"
+#include "rtc_controllers/catching/nlp_catch_search.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
@@ -238,6 +243,16 @@ enum class CatchingParkReason : std::uint8_t {
   /// candidates by a motion the arm does not make. Under mpc the same
   /// difference only warns.
   kSearchCopyDiffers,
+  /// `planner.search.mode` and `planner.segment.mode` name a pair that cannot
+  /// run together (rtc::catching::SearchSegmentCombinationAllowed): the nlp
+  /// search under closed_form. The configure log names both keys.
+  kSearchSegmentCombination,
+  /// The nlp search or the mpc_docking segment planner is selected with the
+  /// planner on and cannot run on this profile (E1-F16): an identified value
+  /// of `robot.hand.docking.*` is unset, the search's and the planner's grids
+  /// differ, or a docking core refused its parameters at Init — the configure
+  /// log names the key, or the core's own reason.
+  kMpcDockingInvalid,
 };
 
 /// Controller-local device indices. This controller claims exactly two groups
@@ -381,6 +396,11 @@ class DemoCatchingController final : public RTControllerInterface {
     return segment_mode_;
   }
 
+  /// The search this configure chose (`planner.search.mode`).
+  [[nodiscard]] rtc::catching::CatchingSearchMode GetSearchMode() const noexcept {
+    return search_mode_;
+  }
+
   /// The segment the RT follows (valid false when none) — test / lifecycle
   /// callers only, between ticks.
   [[nodiscard]] const rtc::catching::SegmentSnapshot& GetFollowedSegmentForTesting()
@@ -470,8 +490,39 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Whether the planner has a model to search in (S6-B). False = the S6-A
   /// stub ("no plan") — a profile with no system model, e.g. a unit fixture.
+  /// It does not say WHICH search: see the typed accessors below.
   [[nodiscard]] bool IsGridCatchSearchConfigured() const noexcept {
     return planner_cycle_.SearchConfigured();
+  }
+
+  /// The search and the segment planner the last configure built and handed
+  /// to the cycle, by their concrete type — nullptr for each one it did not
+  /// build (E1-F16: one search and at most one segment planner per
+  /// configuration). Lifecycle / test callers only; good until the next
+  /// configure or cleanup.
+  [[nodiscard]] const rtc::catching::GridCatchSearch* GetGridCatchSearchForTesting()
+      const noexcept {
+    return grid_search_;
+  }
+
+  [[nodiscard]] const rtc::catching::NlpCatchSearch* GetNlpCatchSearchForTesting() const noexcept {
+    return nlp_search_;
+  }
+
+  [[nodiscard]] const rtc::catching::MpcSegmentPlanner* GetMpcSegmentPlannerForTesting()
+      const noexcept {
+    return mpc_segment_planner_;
+  }
+
+  [[nodiscard]] const rtc::catching::MpcDockingSegmentPlanner*
+  GetMpcDockingSegmentPlannerForTesting() const noexcept {
+    return mpc_docking_planner_;
+  }
+
+  /// `robot.hand.docking.*` as parsed (every configuration parses it; only a
+  /// docking function requires it).
+  [[nodiscard]] const rtc::catching::HandDockingParams& GetHandDockingParams() const noexcept {
+    return hand_docking_;
   }
 
   /// Plans the RT has adopted (TRACKING → APPROACH edges it took on a plan).
@@ -809,6 +860,17 @@ class DemoCatchingController final : public RTControllerInterface {
   /// Fill and store this tick's PlannerRtState. RT only, every tick.
   void StorePlannerRtState(const ControllerState& state, rtc::catching::NowReal now) noexcept;
 
+  /// The catch sub-model and the arm's ratings on it, MODEL order.
+  struct PlannerArm {
+    std::shared_ptr<const pinocchio::Model> model;
+    pinocchio::FrameIndex frame{0};
+    int nv{0};
+    std::array<int, rtc::catching::kMaxPlanNv> device_of_model{};
+    std::array<double, rtc::catching::kMaxPlanNv> qdot_max{};   ///< device ratings [rad/s]
+    std::array<double, rtc::catching::kMaxPlanNv> qddot_max{};  ///< `robot.arm.qdd_max` [rad/s²]
+    bool accel_box{false};                                      ///< the box above is loaded
+  };
+
   /// Configure-time planner setup: arm-width checks, the wake eventfd, the
   /// cycle's box binding, and (S6-B) the search's model on the catch
   /// sub-model. Non-RT. Returns false (and logs) on a configuration the
@@ -819,7 +881,55 @@ class DemoCatchingController final : public RTControllerInterface {
   /// the catch frame, the model↔device joint map, velocity/acceleration
   /// limits and the profile constants. Non-RT; false (and logged) on a model
   /// the planner cannot use.
-  [[nodiscard]] bool SetupGridCatchSearch();
+  [[nodiscard]] bool SetupGridCatchSearch(const PlannerArm& arm);
+
+  /// Build the nlp search on the catch sub-model (E1-F16) and hand it to the
+  /// cycle. Non-RT. False = a configure failure (logged); a refusal of the
+  /// search's own parameters or of a docking core is NOT one — it is recorded
+  /// in `docking_refusal_`, which on_configure parks on.
+  [[nodiscard]] bool SetupNlpCatchSearch(const PlannerArm& arm);
+
+  /// Build the mpc_docking segment planner on the catch sub-model (E1-F16).
+  /// Same return rule as SetupNlpCatchSearch.
+  [[nodiscard]] bool SetupMpcDockingSegmentPlanner(const PlannerArm& arm);
+
+  /// The box a docking core is held to, model order: the URDF's position
+  /// limits inside the CLIK's margined box, `eta_v` of the velocity ratings,
+  /// the acceleration box when one is loaded, and the torque ratings with the
+  /// CLIK's own torque margin (`joint_cmd.eta_tau` under the dynamic form).
+  /// Non-RT; false (logged under `who`) when the arm device has no torque
+  /// ratings.
+  [[nodiscard]] bool BuildDockingLimits(const PlannerArm& arm, double eta_v, const char* who,
+                                        rtc::catching::MpcDockingSegmentCoreLimits& out);
+
+  /// Read the docking keys of the functions this configuration selects
+  /// (`robot.hand.docking.*` always). Non-RT; throws std::invalid_argument on
+  /// a malformed key, which on_configure turns into a configure failure.
+  void ParseDockingConfig();
+
+  /// Why a selected docking function cannot run on this profile, or nullptr:
+  /// an unset identified value, a grid the two functions do not share, a
+  /// reference closing speed outside the hand's speed band. The text names the
+  /// keys; it is good until the next configure.
+  [[nodiscard]] const char* DockingConfigInvalid();
+
+  /// The speed margin η_v the segment planner in use plans with and the RT's
+  /// switch gate keeps as headroom: the mode's own key.
+  [[nodiscard]] double ResolvedSegmentEtaV() const;
+
+  /// The close lead as the sequencer runs it, from a plan's catch instant [s]:
+  /// `robot.hand.T_close_lead` (to the ball's arrival at the catch point),
+  /// less the flight from the entrance plane when the planner whose segments
+  /// the arm follows (mpc_docking) puts t_c at the entrance crossing. NaN
+  /// while unresolved.
+  [[nodiscard]] double ResolvedCloseLead() const;
+  /// The lead from the ball's crossing of the hand's ENTRANCE plane, at the
+  /// reference closing speed of `core` [s]: `robot.hand.T_close_lead` less
+  /// s_ent / c. What a docking function's nominal closure instant is
+  /// T_close_e2e minus, whichever planner's segments the arm follows. NaN when
+  /// the lead, s_ent or the speed is not known.
+  [[nodiscard]] double EntranceCloseLead(
+      const rtc::catching::MpcDockingSegmentCoreParams& core) const;
 
   /// The first planner value that is a decision and is unset, or nullptr.
   [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;
@@ -832,8 +942,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// sub-model, frame and joint map, the arm device's max_torque, the D-16
   /// box as the q̈-estimate cap. Non-RT; false (and logged) on a model or
   /// rating the cores refuse.
-  [[nodiscard]] bool SetupMpcSegmentPlanner(const std::shared_ptr<const pinocchio::Model>& model,
-                                            const rtc::catching::GridCatchSearchModel& pm);
+  [[nodiscard]] bool SetupMpcSegmentPlanner(const PlannerArm& arm);
 
   /// The catch sub-model on `planner.sub_model`, its catch frame and the
   /// model→device joint map — what the planner search and the segment follower
@@ -842,6 +951,11 @@ class DemoCatchingController final : public RTControllerInterface {
   [[nodiscard]] bool ResolveCatchSubModel(
       const char* who, std::shared_ptr<const pinocchio::Model>& model, pinocchio::FrameIndex& frame,
       std::array<int, rtc::catching::kMaxPlanNv>& device_of_model);
+
+  /// The catch sub-model with the arm's ratings on it — what every search and
+  /// segment planner is built from, resolved once per configure. Non-RT; false
+  /// (logged) as ResolveCatchSubModel.
+  [[nodiscard]] bool ResolvePlannerArm(PlannerArm& arm);
 
   /// `planner.segment.mode: mpc` (MPC E1-F04): bind the RT's segment
   /// sampler to the catch sub-model and cache what the switch gate reads.
@@ -1386,6 +1500,9 @@ class DemoCatchingController final : public RTControllerInterface {
   /// kMpc: the arm follows the planner's segments from APPROACH to the end of
   /// the stop and the soft-catch reference never runs (MD-45).
   rtc::catching::CatchingSegmentMode segment_mode_{rtc::catching::CatchingSegmentMode::kClosedForm};
+  /// The search this configuration plans with (`planner.search.mode`) — one per
+  /// configure, like the segment mode.
+  rtc::catching::CatchingSearchMode search_mode_{rtc::catching::CatchingSearchMode::kGrid};
   /// ρ_max of the switch gate (`planner.segment.mpc.switch_margin`, MD-39).
   double segment_switch_margin_{1.0};
   /// η_v and K_p as the gate reads them (the planner's and the CLIK's).
@@ -1405,6 +1522,26 @@ class DemoCatchingController final : public RTControllerInterface {
   /// What SetupGridCatchSearch / SetupMpcSegmentPlanner handed over; reset by
   /// every configure. Read by the ForTesting getters only.
   rtc::catching::GridCatchSearchConstants grid_catch_search_constants_{};
+  /// The search and the segment planner the cycle owns, as the types this
+  /// configure built them (nullptr = not built). The cycle knows them through
+  /// their interfaces only; these are for diagnostics and tests.
+  const rtc::catching::GridCatchSearch* grid_search_{nullptr};
+  const rtc::catching::NlpCatchSearch* nlp_search_{nullptr};
+  const rtc::catching::MpcSegmentPlanner* mpc_segment_planner_{nullptr};
+  const rtc::catching::MpcDockingSegmentPlanner* mpc_docking_planner_{nullptr};
+  /// The `catching:` tree as loaded: the docking maps are read from it at
+  /// configure, once the arm's width is known (their per-joint weights are
+  /// one scalar a joint).
+  YAML::Node catching_node_;
+  /// `robot.hand.docking.*` — the hand's identified capture set (E1-F15).
+  rtc::catching::HandDockingParams hand_docking_{};
+  /// `planner.search.nlp.*` / `planner.segment.mpc_docking.*`, read only when
+  /// selected (the defaults otherwise).
+  rtc::catching::NlpCatchSearchParams nlp_search_params_{};
+  rtc::catching::MpcDockingSegmentPlannerParams mpc_docking_params_{};
+  /// Why a selected docking function cannot run, as the configure log says it
+  /// (empty = it can). Set by DockingConfigInvalid and by the two setups.
+  std::string docking_refusal_;
   rtc::catching::MpcSegmentPlannerConstants mpc_segment_planner_constants_{};
   std::array<double, rtc::catching::kMaxPlanNv> mpc_segment_planner_q_min_{};
   std::array<double, rtc::catching::kMaxPlanNv> mpc_segment_planner_q_max_{};
@@ -1484,7 +1621,11 @@ class DemoCatchingController final : public RTControllerInterface {
   double homing_qd_tol_{0.02};
   double decel_a_dec_{0.0};
   std::int64_t t_hold_ns_{0};
+  /// `robot.hand.T_close_e2e`: how long a closure takes (the release timeout's floor).
   std::int64_t t_close_e2e_ns_{0};
+  /// The close lead as run (ResolvedCloseLead): what the close command leads
+  /// the plan's catch instant by — committed_t_cmd_ns_ = t_c − this.
+  std::int64_t t_close_lead_ns_{0};
   /// RETREAT's wait for the hand at q_pre (D-S8-6); 0 = no timeout.
   std::int64_t t_release_timeout_ns_{0};
   /// Motion deadlines (#537 S9b, D-S9-D1): a stop (ABORT_SAFE ramp, RETREAT

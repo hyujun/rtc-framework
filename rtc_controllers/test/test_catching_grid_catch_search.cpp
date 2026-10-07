@@ -15,6 +15,7 @@
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
+#include "rtc_controllers/catching/ball_node_samples.hpp"
 #include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/time_feasibility.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
@@ -22,6 +23,7 @@
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 
+#include <Eigen/Eigenvalues>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -98,7 +100,7 @@ struct Rig {
     constants.v_max = 3.0;
     constants.a_dec = 10.0;
     constants.t_arm_s = 0.0;
-    constants.t_close_e2e = 0.1;
+    constants.t_close_lead = 0.1;
     constants.t_close_total = 0.101;
     constants.ball_mass = 0.057;
     constants.ref_omega = 10.0;
@@ -423,6 +425,102 @@ TEST(GridCatchSearchPlan, AnUnsetDecisionKeepsEveryCandidateOut) {
   EXPECT_EQ(stats.n_in_window, 0);
 }
 
+// ── 2a. The hand-close lead (E1-F16) ─────────────────────────────────────────
+
+// `robot.hand.T_close_lead` is what the hand sequencer subtracts from t_c; the
+// MEASURED closure time (`t_close_total`) only feeds the γ window. The command
+// instant and the commit gate follow the lead, not the closure time.
+TEST(GridCatchSearchPlan, TheCloseLeadDrivesTheCommandInstantAndTheCommitGate) {
+  const auto run = [](double lead, double total, SearchStats& stats) {
+    auto rig = std::make_unique<Rig>();
+    rig->constants.t_close_lead = lead;
+    rig->constants.t_close_total = total;
+    EXPECT_TRUE(rig->Configure());
+    const auto traj = rig->Traj();
+    return rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                            NowReal{kNow}, stats);
+  };
+  // A short lead beside a long measured closure (e2e 0.10 s ≠ lead 0.03 s; the
+  // total here is far above every lead of the slice): the gate reads
+  // lead + h/2 + T_arm + margin, so no candidate fails it. A gate reading the
+  // closure time would fail them all.
+  SearchStats short_lead;
+  const PlanSnapshot a = run(0.03, 5.0, short_lead);
+  ASSERT_TRUE(a.valid) << "reason " << static_cast<int>(a.reason);
+  EXPECT_EQ(a.t_cmd_ns, a.t_c_ns - rtc::catching::SecondsToNs(0.03));
+  EXPECT_EQ(short_lead.chosen_rank_mask & rtc::catching::kRankCommitLead, 0);
+  // A lead longer than any candidate's: every one fails the gate (a rank gate —
+  // the plan stays), whatever the short measured closure time says.
+  SearchStats long_lead;
+  const PlanSnapshot b = run(10.0, 0.101, long_lead);
+  ASSERT_TRUE(b.valid) << "a rank gate removed the candidates";
+  EXPECT_EQ(b.t_cmd_ns, b.t_c_ns - rtc::catching::SecondsToNs(10.0));
+  EXPECT_NE(long_lead.chosen_rank_mask & rtc::catching::kRankCommitLead, 0);
+  // An unknown lead: the close instant is the catch instant, and the gate fails.
+  SearchStats unknown;
+  const PlanSnapshot c = run(std::numeric_limits<double>::quiet_NaN(), 0.101, unknown);
+  ASSERT_TRUE(c.valid);
+  EXPECT_EQ(c.t_cmd_ns, c.t_c_ns);
+  EXPECT_NE(unknown.chosen_rank_mask & rtc::catching::kRankCommitLead, 0);
+}
+
+// ── 2b. The monitored covariance (E1-F16) ────────────────────────────────────
+
+// The followed plan's σ is read by the rule every planner reads the prediction
+// by: the nearest sample's covariance propagated to t_c, F Σ Fᵀ — not that
+// sample's block as it stands.
+TEST(GridCatchSearchMonitor, SigmaIsThePropagatedPositionBlockAtTheCatchInstant) {
+  auto rig = std::make_unique<Rig>();
+  ASSERT_TRUE(rig->Configure());
+  const auto traj = rig->Traj();
+  auto cov = Rig::Cov(traj, 0.002);
+  for (int k = 0; k < traj.n; ++k) {
+    auto& e = cov.c[static_cast<std::size_t>(k)];
+    e[14] = 3e-4;          // p_z p_z
+    e[35] = 1e-2;          // v_z v_z
+    e[17] = e[32] = 1e-3;  // p_z v_z (|rho| < 1: the whole matrix stays PSD)
+    e[0] = 1e-4;           // p_x p_x
+    e[7] = 2e-4;           // p_y p_y
+  }
+  // t_c between samples 10 and 11, not at the midpoint: the nearest is sample 10.
+  const std::int64_t t_c = traj.s[10].t_ns + 13 * kMs;
+  PlanSnapshot followed{};
+  followed.valid = true;
+  followed.plan_id = 31;
+  followed.t_c_ns = t_c;
+  rig->search.NotePublished(followed);
+  PlannerRtState rt = rig->Rt();
+  rt.plan_active = true;
+  rt.plan_id = 31;
+  SearchStats stats;
+  rig->search.Monitor(traj, cov, true, rt, stats);
+  ASSERT_TRUE(std::isfinite(stats.sigma_l));
+
+  const auto sigma_of = [](const Eigen::Matrix3d& pp) {
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(pp);
+    return std::sqrt(std::max(es.eigenvalues().maxCoeff(), 0.0));
+  };
+  // The same statistic from SampleBallNode's propagated block ...
+  int hint = 0;
+  const rtc::catching::BallNodeSample node =
+      rtc::catching::SampleBallNode(traj, &cov, true, rtc::catching::BallTime{t_c}, hint);
+  ASSERT_TRUE(node.cov_valid);
+  EXPECT_NEAR(stats.sigma_l, sigma_of(node.cov.topLeftCorner<3, 3>()), 1e-12);
+  // ... and from F Sigma_10 F^T written out.
+  Eigen::Matrix<double, 6, 6> sigma;
+  for (int r = 0; r < 6; ++r) {
+    for (int q = 0; q < 6; ++q) {
+      sigma(r, q) = cov.c[10][static_cast<std::size_t>(r * 6 + q)];
+    }
+  }
+  Eigen::Matrix<double, 6, 6> F = Eigen::Matrix<double, 6, 6>::Identity();
+  F.topRightCorner<3, 3>() = 0.013 * Eigen::Matrix3d::Identity();
+  const Eigen::Matrix<double, 6, 6> moved = F * sigma * F.transpose();
+  EXPECT_NEAR(stats.sigma_l, sigma_of(moved.topLeftCorner<3, 3>()), 1e-12);
+  // It is not the sample's own block, which the old reading gave.
+  EXPECT_GT(std::abs(stats.sigma_l - GridCatchSearch::SigmaMax(cov, 10)), 1e-5);
+}
+
 // ── 3. Settle and budget ─────────────────────────────────────────────────────
 
 TEST(GridCatchSearchPlan, SettlesForNSnapshotsAfterATrackChange) {
@@ -486,7 +584,7 @@ std::uint64_t SearchSequenceDigest(Rig& rig) {
 TEST(GridCatchSearchPlan, AReconfiguredSearchIsANewOne) {
   // Configure is a full reset: a search that has run and is configured again
   // answers exactly as one built and configured now. PlannerCycle relies on
-  // it — ConfigureGridCatchSearch installs a NEW search on every configure (E1-F12
+  // it — a configure installs a NEW search (MakeGridCatchSearch) every time (E1-F12
   // #738) where it once configured the one in place again, and the two are
   // the same thing only if nothing a search did before survives its
   // Configure. n_settle 2 puts the per-trial part of that in view: a search
@@ -612,6 +710,38 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
       rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldJump);
   EXPECT_FALSE(stats.publish);
+}
+
+TEST(GridCatchSearchSwitch, UnderASegmentModeTheJumpLimitIsNotJudged) {
+  // E1-F16: the η_jump bound is the step a switch puts into the L4 reference's
+  // u_des. An arm that follows a segment planner's segments has no such
+  // reference, so the 1 m switch the closed_form law holds (kHeldJump, the case
+  // above) is decided by ΔJ alone there. Same search, same wake, one flag.
+  for (const bool follows : {false, true}) {
+    SCOPED_TRACE(follows ? "the arm follows segments" : "closed_form");
+    auto rig = std::make_unique<Rig>();
+    rig->constants.follows_segments = follows;
+    ASSERT_TRUE(rig->Configure());
+    const auto traj = rig->Traj();
+    SearchStats stats;
+    PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                          NowReal{kNow}, stats);
+    ASSERT_TRUE(first.valid);
+    first.plan_id = 13;
+    first.t_c_ns = kNow + 5000 * kMs;  // no candidate is at it: the current plan is infeasible
+    first.p_c[0] += 1.0;               // a 1 m catch-point jump
+    rig->search.NotePublished(first);
+    auto rt = rig->Rt();
+    rt.plan_active = true;
+    rt.plan_id = 13;
+    rt.ref_valid = true;
+    rt.gamma = 0.0;  // mid-ramp and moving: the jump limit refuses under closed_form
+    rt.gamma_d = 5.0;
+    static_cast<void>(
+        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
+    EXPECT_EQ(stats.decision, follows ? SwitchDecision::kReplaced : SwitchDecision::kHeldJump);
+    EXPECT_EQ(stats.publish, follows);
+  }
 }
 
 // ── 4a. The switch's acceleration budget (§4.7, decision ⑥) ─────────────────

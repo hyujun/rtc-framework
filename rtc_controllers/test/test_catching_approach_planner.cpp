@@ -17,6 +17,7 @@
 // non-identity permutation of the model order, T_arm ≠ 0 (real ≠ lead axis),
 // instants are realistic absolute steady ns, and both a 6- and a 7-joint arm
 // run.
+#include "rtc_controllers/catching/ball_node_samples.hpp"
 #include "rtc_controllers/catching/catch_search.hpp"  // CatchSolution
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
@@ -308,8 +309,7 @@ struct Rig {
 };
 
 std::string Why(const SegmentRecord& r) {
-  return std::string(SegmentOutcomeName(r.outcome)) + " / " +
-         rtc::catching::MpcSegmentCoreReasonName(r.core_reason);
+  return std::string(SegmentOutcomeName(r.outcome)) + " / " + r.core_reason_name;
 }
 
 // The catch node's frame position of a published segment (model order).
@@ -1219,7 +1219,7 @@ TEST(ApproachPlanner, AStartOnTheVelocityBoxIsProjectedIntoIt) {
                        BallFor(s.c), r.out, r.rec));
   EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
   EXPECT_TRUE(r.rec.x0_clamped) << Why(r.rec);
-  EXPECT_NE(r.rec.core_reason, MpcSegmentCoreReason::kInitialStateOutsideBox);
+  EXPECT_NE(rtc::catching::MpcCoreReasonOf(r.rec), MpcSegmentCoreReason::kInitialStateOutsideBox);
 }
 
 TEST(ApproachPlanner, AStartInsideThePositionMarginIsProjectedIntoTheBox) {
@@ -1296,7 +1296,7 @@ TEST(ApproachPlanner, ARefusedSolveMakesTheNextOneCold) {
   SetClock(now);
   ASSERT_FALSE(r.planner.Replan(rt, bad, r.out, r.rec));
   EXPECT_EQ(r.rec.outcome, SegmentOutcome::kSolveFailed);
-  EXPECT_EQ(r.rec.core_reason, MpcSegmentCoreReason::kDirectionNotUnit);
+  EXPECT_EQ(rtc::catching::MpcCoreReasonOf(r.rec), MpcSegmentCoreReason::kDirectionNotUnit);
   EXPECT_EQ(r.rec.k, -5);
   SetClock(now);
   ASSERT_TRUE(r.planner.Replan(rt, BallFor(s.c), r.out, r.rec)) << Why(r.rec);
@@ -1386,7 +1386,7 @@ void ExpectNotSolved(const SegmentRecord& rec) {
   EXPECT_EQ(rec.qp_status, -1);
   EXPECT_EQ(rec.iterations, 0);
   EXPECT_EQ(rec.solve_ns, 0);
-  EXPECT_EQ(rec.core_reason, MpcSegmentCoreReason::kNone);
+  EXPECT_EQ(rtc::catching::MpcCoreReasonOf(rec), MpcSegmentCoreReason::kNone);
 }
 
 // YAML → planner → BOTH core kinds, and the configure warm-ups: each core is
@@ -1946,12 +1946,41 @@ TEST(ApproachBallTarget, AtASampleItIsThatSampleEvenBesideANan) {
 
 TEST(ApproachBallTarget, BetweenSamplesItBlendsOnIntegerNanoseconds) {
   const auto t = Line();
-  const auto c = Cov(t);
-  const std::int64_t at = t.s[2].t_ns + 10 * kMs;  // α = 0.2
+  auto c = Cov(t);
+  // A velocity block and a cross block that are not zero: only then does the
+  // propagation differ from the nearest sample's own position block.
+  for (int k = 0; k < t.n; ++k) {
+    auto& b = c.c[static_cast<std::size_t>(k)];
+    const double s2 = 1e-4 * (k + 1);
+    b[21] = 4.0 * s2;           // v_x v_x
+    b[28] = 5.0 * s2;           // v_y v_y
+    b[35] = 6.0 * s2;           // v_z v_z
+    b[22] = b[27] = 0.25 * s2;  // v_x v_y
+    b[3] = b[18] = 0.5 * s2;    // p_x v_x
+    b[10] = b[25] = 0.75 * s2;  // p_y v_y
+  }
+  const std::int64_t at = t.s[2].t_ns + 13 * kMs;  // nearest: sample 2, Δ = +13 ms
   const MpcSegmentBallTarget b = rtc::catching::MakeMpcSegmentBallTarget(t, c, true, at, 1e-6);
   ASSERT_TRUE(b.sigma_valid);
-  EXPECT_NEAR(b.sigma_p(1, 1), 0.8 * c.c[2][7] + 0.2 * c.c[3][7], 1e-18);
-  EXPECT_NEAR(b.sigma_p(1, 0), 0.8 * c.c[2][6] + 0.2 * c.c[3][6], 1e-18);
+  // The one rule every planner reads the prediction by (SampleBallNode) ...
+  int hint = 0;
+  const rtc::catching::BallNodeSample node =
+      rtc::catching::SampleBallNode(t, &c, true, rtc::catching::BallTime{at}, hint);
+  ASSERT_TRUE(node.cov_valid);
+  EXPECT_NEAR((b.sigma_p - node.cov.topLeftCorner<3, 3>()).cwiseAbs().maxCoeff(), 0.0, 1e-12);
+  // ... and F Σ_2 Fᵀ written out, so this is not the function against itself.
+  Eigen::Matrix<double, 6, 6> sigma;
+  for (int r = 0; r < 6; ++r) {
+    for (int q = 0; q < 6; ++q) {
+      sigma(r, q) = c.c[2][static_cast<std::size_t>(r * 6 + q)];
+    }
+  }
+  Eigen::Matrix<double, 6, 6> F = Eigen::Matrix<double, 6, 6>::Identity();
+  F.topRightCorner<3, 3>() = 0.013 * Eigen::Matrix3d::Identity();
+  const Eigen::Matrix<double, 6, 6> expected = F * sigma * F.transpose();
+  EXPECT_NEAR((b.sigma_p - expected.topLeftCorner<3, 3>()).cwiseAbs().maxCoeff(), 0.0, 1e-12);
+  // The propagation moved it: not the nearest sample's block as it stands.
+  EXPECT_GT(std::abs(b.sigma_p(0, 0) - c.c[2][0]), 1e-9);
   const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(b.sigma_p);
   EXPECT_GT(es.eigenvalues().minCoeff(), 0.0);
   // The last sample is itself.
@@ -1969,9 +1998,14 @@ TEST(ApproachBallTarget, RefusesWhatItCannotTrust) {
   MpcSegmentBallTarget b = rtc::catching::MakeMpcSegmentBallTarget(t, c, false, mid, 1e-6);
   EXPECT_TRUE(b.valid);
   EXPECT_FALSE(b.sigma_valid);
+  // The covariance is the nearest sample's (sample 2 at `mid`): a NaN there is
+  // refused, a NaN only in the far bracketing sample (3) does not matter.
   auto bad = c;
-  bad.c[3][7] = kNan;
+  bad.c[2][7] = kNan;
   EXPECT_FALSE(rtc::catching::MakeMpcSegmentBallTarget(t, bad, true, mid, 1e-6).sigma_valid);
+  bad = c;
+  bad.c[3][7] = kNan;
+  EXPECT_TRUE(rtc::catching::MakeMpcSegmentBallTarget(t, bad, true, mid, 1e-6).sigma_valid);
   bad = c;
   bad.n = 9;
   EXPECT_FALSE(rtc::catching::MakeMpcSegmentBallTarget(t, bad, true, mid, 1e-6).sigma_valid);
@@ -2026,8 +2060,8 @@ std::uint64_t SolveSequenceDigest(Rig& r, double reach) {
 TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
   // Configure is a full reset: a planner that has solved and published and is
   // configured again answers exactly as one built and configured now.
-  // PlannerCycle relies on it — ConfigureMpcSegmentPlanner installs a NEW planner on every
-  // configure (E1-F12 #738) where it once configured the one in place again.
+  // PlannerCycle relies on it — a configure installs a NEW planner (MakeMpcSegmentPlanner)
+  // every time (E1-F12 #738) where it once configured the one in place again.
   // The planner is first used on ANOTHER catch under the same plan id, catch
   // instant and seqs: a planner that kept its ring would then start a replan
   // from that catch's segment.

@@ -11,7 +11,7 @@
 // there is no timed preshape (`t_c − T_pre`): Preshape is entered by the
 // supervisor's `Ready()`, and Release ends at `q_pre` rather than at `q_open`.
 //
-// THE CLOSE INSTANT (L6 §4.3). t_cmd = t_c − T_close_e2e, from the FROZEN t_c
+// THE CLOSE INSTANT (L6 §4.3). t_cmd = t_c − T_close_lead, from the FROZEN t_c
 // the supervisor commits to and the hand profile — one source, so the planner's
 // own `t_cmd_ns` is a record, not an input (#537 S7, C-14). The command goes
 // out on the first tick with now ≥ t_cmd − h/2 (`HandCommandDueRounded`): the
@@ -63,6 +63,13 @@ struct HandSequencerConfig {
   std::array<bool, kMaxHandDof> caging_mask{};
   int dof{0};
   double eta_close{1.0};
+  /// How long before the catch instant t_c the close is commanded: the
+  /// profile's `robot.hand.T_close_lead` as the binding resolved it for the
+  /// t_c its planner publishes. Apart from the closure time below — a hand may
+  /// be told to close later (or earlier) than its closure takes (E1-F16).
+  std::int64_t t_close_lead_ns{0};
+  /// `robot.hand.T_close_e2e`: how long a closure takes, measured. Read here
+  /// only as the floor of the timeout.
   std::int64_t t_close_e2e_ns{0};
   std::int64_t t_close_timeout_ns{0};
   HandHoldMode hold_mode{HandHoldMode::kCloseTarget};
@@ -77,7 +84,7 @@ struct HandSequencerConfig {
     if (!std::isfinite(eta_close) || !(eta_close > 0.0) || eta_close > 1.0) {
       return false;
     }
-    if (t_close_e2e_ns < 0 || !(t_close_timeout_ns > t_close_e2e_ns)) {
+    if (t_close_lead_ns < 0 || t_close_e2e_ns < 0 || !(t_close_timeout_ns > t_close_e2e_ns)) {
       return false;
     }
     if (!std::isfinite(q_tol) || !(q_tol > 0.0) || !std::isfinite(qd_tol) || !(qd_tol > 0.0)) {
@@ -123,6 +130,7 @@ struct HandSequencerConfig {
                  ? -1
                  : static_cast<std::int64_t>(std::llround(v.value * 1e9));
     };
+    c.t_close_lead_ns = to_ns(p.CloseLead());
     c.t_close_e2e_ns = to_ns(p.T_close_e2e);
     c.t_close_timeout_ns = to_ns(p.T_close_timeout);
     c.hold_mode = p.hold_mode;
@@ -184,7 +192,7 @@ class HandSequencer {
   /// closed yet.
   void Ready() noexcept { Enter(HandPhase::kPreshape); }
 
-  /// Arm the close for t_cmd = t_c − T_close_e2e. Only from Preshape, and
+  /// Arm the close for t_cmd = t_c − T_close_lead. Only from Preshape, and
   /// only once per trial — the catch instant is frozen at COMMITTED, and a
   /// second commit would be a second, different instant. Returns whether the
   /// commit took.
@@ -192,7 +200,7 @@ class HandSequencer {
     if (!active_ || phase_ != HandPhase::kPreshape || commit_armed_ || close_issued_) {
       return false;
     }
-    t_cmd_ = BallTime{detail::SatSub(t_c.ns, cfg_.t_close_e2e_ns)};
+    t_cmd_ = BallTime{detail::SatSub(t_c.ns, cfg_.t_close_lead_ns)};
     commit_armed_ = true;
     return true;
   }

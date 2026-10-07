@@ -16,8 +16,10 @@
 #
 # WHAT T_arm 0.05 CHANGES. The validator derives the commit window from T_arm,
 # but the shipped T_freeze already covers it:
-#   L3 §4.11 lower bound = T_close,tot 0.1047 + T_arm 0.05 + margin 0.03
-#                        = 0.1847 <= shipped T_freeze 0.19, so T_freeze stays.
+#   L3 §4.11 lower bound = T_close_lead 0.0577 + h/2 0.001 + T_arm 0.05 +
+#                          margin 0.03 = 0.1387 <= shipped T_freeze 0.19 (it
+#                          was 0.1847 while the lead was the closure time
+#                          0.1037), so T_freeze stays.
 #                          Startup log: "commit at t_c − 0.190 s".
 #   io.horizon_min 0.51 / io.n_min stay shipped (R1 here needs only 0.33).
 #

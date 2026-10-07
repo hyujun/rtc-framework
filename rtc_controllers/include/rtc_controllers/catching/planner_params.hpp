@@ -13,6 +13,17 @@
 // (the segment MPC's stop horizon, replan window and publish thresholds), MPC
 // E1-F08 its APPROACH–stop keys (`approach`, `budget`, `catch`).
 //
+// WHOSE KEYS ARE READ (E1-F16). `planner.search.grid.*` is the grid search's
+// and `planner.segment.mpc.*` the mpc segment planner's. A configuration runs
+// one search and at most one segment planner (`planner.search.mode`,
+// `planner.segment.mode`), and a function that does not run has no say in
+// whether the configuration is valid: the caller names the functions it
+// selected (PlannerKeySelection) and only their maps are opened. A map that is
+// not opened leaves its fields here at the defaults, its unset decisions
+// unset, and a malformed value in it unreported. What is read from `planner`
+// itself (the thread keys, `wait_pose`, `sub_model`, `freeze`) is read under
+// every selection.
+//
 // TWO KINDS OF "MISSING". A key with a documented default (L3 §6) takes it when
 // absent. A key whose value is a DECISION (`freeze.T_freeze`,
 // `workspace.catch_box`, `sub_model`) has no default: absent or `TBD` is
@@ -328,6 +339,13 @@ struct PlannerParams {
   int switch_samples{9};
   /// `planner.freeze.T_freeze` [s] (decision G). NaN = unset.
   double t_freeze{std::numeric_limits<double>::quiet_NaN()};
+  /// `planner.freeze.t_stop_plan` [s], ≥ T_freeze: while the RT follows a plan
+  /// on a segment planner's segments, the search goes on running until the
+  /// followed plan's catch instant is this close — then only the segment is
+  /// replanned. Absent from the YAML it is T_freeze (the parser fills it in).
+  /// NaN = the search does not run at all while a plan is followed: the value
+  /// of a PlannerParams no parser filled, and of an unset T_freeze.
+  double t_stop_plan{std::numeric_limits<double>::quiet_NaN()};
   /// `planner.search.grid.score.*` (§4.10 + decision D).
   ScoreWeights score{};
   /// `planner.search.grid.workspace.catch_box` (decision I). `set` false = unset.
@@ -343,15 +361,23 @@ struct PlannerParams {
   }
 };
 
+/// Which functions' maps ParsePlannerParams opens (the header's "WHOSE KEYS ARE
+/// READ"). The default opens every one — what a caller with no configuration
+/// to select from wants (a test of one map, a tool that lists the keys).
+struct PlannerKeySelection {
+  bool search_grid{true};  ///< `planner.search.grid.*`
+  bool segment_mpc{true};  ///< `planner.segment.mpc.*`
+};
+
 /// Parse `planner.*` from the `catching:` tree root (the same node
 /// ParseCatchingParams takes). An absent `planner:` section yields the
-/// defaults. Throws `std::invalid_argument` (and only that) on a present but
-/// malformed key: a non-map section, a non-bool flag, a number outside its L3
-/// §6 range, a `wait_pose` that is empty / non-finite / longer than
-/// `kMaxPlanNv`, a `catch_box` whose min exceeds its max, a `segment.mpc`
-/// horizon whose blocks do not sum to n_nodes, a Δ_s or Δ_pre that is not
-/// whole ns, a k_max whose replan patterns would drop below three blocks, or an
+/// defaults, and so does a map `selection` leaves closed. Throws `std::invalid_argument` (and only
+/// that) on a present but malformed key: a non-map section, a non-bool flag, a number outside its
+/// L3 §6 range, a `wait_pose` that is empty / non-finite / longer than `kMaxPlanNv`, a `catch_box`
+/// whose min exceeds its max, a `segment.mpc` horizon whose blocks do not sum to n_nodes, a Δ_s or
+/// Δ_pre that is not whole ns, a k_max whose replan patterns would drop below three blocks, or an
 /// n_pre_max whose pre-catch nodes or blocks would not fit next to the stop's.
-[[nodiscard]] PlannerParams ParsePlannerParams(const YAML::Node& catching);
+[[nodiscard]] PlannerParams ParsePlannerParams(const YAML::Node& catching,
+                                               const PlannerKeySelection& selection = {});
 
 }  // namespace rtc::catching

@@ -74,9 +74,11 @@ from .ball_launch import (
 from .catalog import ControllerCatalog
 from .catching import (
     CATCHING_ENABLE_PARAM,
+    CATCHING_SEARCH_MODE_PARAM,
     CATCHING_SEGMENT_MODE_PARAM,
     CATCHING_STATE_TOPIC,
     CatchingStatus,
+    search_mode_query_due,
     segment_mode_query_due,
 )
 from .config import (
@@ -269,6 +271,9 @@ class DemoControllerGUI(Node):
         # Throttle state of the segment-mode parameter read (Tk thread only).
         self._segment_mode_last_query_s: float | None = None
         self._segment_mode_in_flight = False
+        # Same for the search-mode read (a second, independent throttle).
+        self._search_mode_last_query_s: float | None = None
+        self._search_mode_in_flight = False
         self.create_subscription(
             CatchingState,
             f"/{CATCHING_CONFIG_KEY}/{CATCHING_STATE_TOPIC}",
@@ -1124,6 +1129,7 @@ class DemoControllerGUI(Node):
         self._refresh_hand_step_panel()
         self._refresh_catching_panel()
         self._query_catching_segment_mode()
+        self._query_catching_search_mode()
         self.root.after(200, self._schedule_refresh)
 
     def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
@@ -2286,6 +2292,47 @@ class DemoControllerGUI(Node):
             return
         self._catching.segment_mode = value
         self.get_logger().info(f"/{CATCHING_CONFIG_KEY} {CATCHING_SEGMENT_MODE_PARAM}={value}")
+        self._refresh_catching_panel()
+
+    def _query_catching_search_mode(self) -> None:
+        """Read the controller's read-only `planner.search.mode`. Tk thread.
+
+        The segment-mode read's twin (own throttle, own cache): a controller
+        built before the key existed answers with an empty value, which is not
+        cached, so the line stays `unknown` rather than guessing grid.
+        """
+        now_s = time.monotonic()
+        if not search_mode_query_due(
+            self._catching, now_s, self._search_mode_last_query_s, self._search_mode_in_flight
+        ):
+            return
+        self._search_mode_last_query_s = now_s
+        client = self._get_param_client(CATCHING_CONFIG_KEY)
+        if not client.services_are_ready():
+            return
+        self._search_mode_in_flight = True
+        future = client.get_parameters([CATCHING_SEARCH_MODE_PARAM])
+
+        def _on_done(fut):
+            # Executor thread: extract only, never touch GUI/status state here.
+            value = None
+            try:
+                resp = fut.result()
+                if resp.values:
+                    value = resp.values[0].string_value or None
+            except Exception as exc:  # noqa: BLE001 — any failure = not read
+                self.get_logger().debug(f"{CATCHING_SEARCH_MODE_PARAM} query failed: {exc}")
+            self.root.after(0, self._apply_catching_search_mode, value)
+
+        future.add_done_callback(_on_done)
+
+    def _apply_catching_search_mode(self, value) -> None:
+        """Cache the search mode the controller reported. Tk thread only."""
+        self._search_mode_in_flight = False
+        if not isinstance(value, str) or not value:
+            return
+        self._catching.search_mode = value
+        self.get_logger().info(f"/{CATCHING_CONFIG_KEY} {CATCHING_SEARCH_MODE_PARAM}={value}")
         self._refresh_catching_panel()
 
     def _build_catching_panel(self, parent: tk.Frame) -> None:

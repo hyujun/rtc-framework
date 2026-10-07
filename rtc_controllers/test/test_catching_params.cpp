@@ -43,17 +43,20 @@ namespace {
 
 using rtc::catching::CatchingAccelConstraint;
 using rtc::catching::CatchingParams;
+using rtc::catching::CatchingSearchMode;
 using rtc::catching::CatchingSegmentMode;
 using rtc::catching::CatchingValidationReason;
 using rtc::catching::CatchingValidationReport;
 using rtc::catching::CheckCatchFrameProvisional;
 using rtc::catching::CheckFreezeCoversClose;
 using rtc::catching::HandHoldMode;
+using rtc::catching::HandProfile;
 using rtc::catching::kCatchFrameProvisionalKey;
 using rtc::catching::kCloseTimeoutPerE2e;
 using rtc::catching::kFreezeWindowKey;
 using rtc::catching::ParseCatchingParams;
 using rtc::catching::ReleaseTimeoutPerE2e;
+using rtc::catching::TbdDouble;
 using rtc::catching::ValidateCatchingParams;
 
 constexpr double kControlRateHz = 500.0;  // repo default (rtc::kDefaultControlRateHz)
@@ -355,14 +358,275 @@ TEST(CatchingParams, SegmentModeRejectsAnUnknownLaw) {
   ExpectRejectMentioning(root, "planner.segment.mode");
 }
 
+TEST(CatchingParams, SegmentModeReadsMpcDockingAndSaysWhichModesFollowSegments) {
+  YAML::Node root = ValidRoot();
+  root["planner"]["segment"]["mode"] = "mpc_docking";
+  EXPECT_EQ(ParseCatchingParams(root).planner_segment_mode, CatchingSegmentMode::kMpcDocking);
+  EXPECT_FALSE(FollowsSegments(CatchingSegmentMode::kClosedForm));
+  EXPECT_TRUE(FollowsSegments(CatchingSegmentMode::kMpc));
+  EXPECT_TRUE(FollowsSegments(CatchingSegmentMode::kMpcDocking));
+  // The names are the YAML's spellings: what the parser takes it gives back.
+  for (const char* mode : {"closed_form", "mpc", "mpc_docking"}) {
+    root["planner"]["segment"]["mode"] = mode;
+    EXPECT_STREQ(SegmentModeName(ParseCatchingParams(root).planner_segment_mode), mode);
+  }
+}
+
+// ── E1-F16: planner.search.mode and what a selection is held to ─────────────
+
+TEST(CatchingParams, SearchModeDefaultsToGridAndReadsNlp) {
+  EXPECT_EQ(ParseCatchingParams(ValidRoot()).planner_search_mode, CatchingSearchMode::kGrid);
+  YAML::Node root = ValidRoot();
+  for (const char* mode : {"grid", "nlp"}) {
+    root["planner"]["search"]["mode"] = mode;
+    EXPECT_STREQ(SearchModeName(ParseCatchingParams(root).planner_search_mode), mode);
+  }
+  EXPECT_EQ(ParseCatchingParams(root).planner_search_mode, CatchingSearchMode::kNlp);
+}
+
+TEST(CatchingParams, SearchModeRejectsAnUnknownSearch) {
+  YAML::Node root = ValidRoot();
+  root["planner"]["search"]["mode"] = "Grid";  // one spelling per search
+  ExpectRejectMentioning(root, "planner.search.mode");
+  root["planner"]["search"]["mode"] = "mpc";  // a segment mode is not a search
+  ExpectRejectMentioning(root, "planner.search.mode");
+}
+
+TEST(CatchingParams, EverySearchRunsWithEverySegmentModeButNlpWithClosedForm) {
+  using S = CatchingSearchMode;
+  using G = CatchingSegmentMode;
+  int allowed = 0;
+  for (const S search : {S::kGrid, S::kNlp}) {
+    for (const G segment : {G::kClosedForm, G::kMpc, G::kMpcDocking}) {
+      const bool refused = search == S::kNlp && segment == G::kClosedForm;
+      EXPECT_EQ(SearchSegmentCombinationAllowed(search, segment), !refused);
+      allowed += refused ? 0 : 1;
+    }
+  }
+  EXPECT_EQ(allowed, 5);
+}
+
+TEST(CatchingParams, TheClosedFormLawsKeysAreRequiredOnlyUnderClosedForm) {
+  // `reference.*` and `supervisor.decel.a_dec` are the closed_form law's: a
+  // configuration that follows segments builds no reference and stops on its
+  // last segment, so their absence is not a missing value there.
+  YAML::Node root = ValidRoot();
+  root.remove("reference");
+  root["supervisor"].remove("decel");
+  const auto missing = [&root](const char* key) {
+    return ReportHasFailure(
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false),
+        CatchingValidationReason::kActiveConfigTbd, key);
+  };
+  EXPECT_TRUE(missing("reference.v_max"));
+  EXPECT_TRUE(missing("reference.a_max"));
+  EXPECT_TRUE(missing("supervisor.decel.a_dec"));
+  for (const char* mode : {"mpc", "mpc_docking"}) {
+    root["planner"]["segment"]["mode"] = mode;
+    EXPECT_FALSE(missing("reference.v_max")) << mode;
+    EXPECT_FALSE(missing("reference.a_max")) << mode;
+    EXPECT_FALSE(missing("supervisor.decel.a_dec")) << mode;
+    const CatchingValidationReport r =
+        ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, true);
+    // Nor is its provisional flag a real-arm blocker there: nothing reads the block.
+    EXPECT_FALSE(ReportHasFailure(r, CatchingValidationReason::kProvisionalOnRealArm, "reference"))
+        << mode;
+  }
+}
+
+TEST(CatchingParams, AValueOfAnUnselectedFunctionIsNotJudged) {
+  // Positive control first: the same wrong values ARE refused where they run.
+  YAML::Node root = ValidRoot();
+  root["reference"]["omega"] = 500.0;  // far outside [1, 25], and ω·h = 1 is unstable
+  root["supervisor"]["decel"]["a_dec"] = -1.0;
+  const auto report = [&root] {
+    return ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  };
+  EXPECT_TRUE(
+      ReportHasFailure(report(), CatchingValidationReason::kRangeViolation, "reference.omega"));
+  EXPECT_TRUE(ReportHasFailure(report(), CatchingValidationReason::kUnstableDiscretization,
+                               "reference.omega"));
+  EXPECT_TRUE(ReportHasFailure(report(), CatchingValidationReason::kRangeViolation,
+                               "supervisor.decel.a_dec"));
+  root["planner"]["segment"]["mode"] = "mpc";
+  for (std::size_t i = 0; i < report().failure_count; ++i) {
+    const std::string_view key = report().failures[i].key;
+    EXPECT_FALSE(key.starts_with("reference") || key == "supervisor.decel.a_dec") << key;
+  }
+}
+
+// The parser follows the same rule as the validator: a key of a function that
+// does not run cannot fail the parse, so a value that is not even a number — a
+// typo in a fragment left over from another selection — leaves that function's
+// block at its defaults instead of refusing the configure. The same value
+// under the selection that runs it is refused (the control). A block that DOES
+// read is still taken where its function does not run: its values stay
+// visible to whoever compares two functions' keys.
+TEST(CatchingParams, AMalformedKeyOfAnUnselectedFunctionDoesNotFailTheParse) {
+  struct Case {
+    const char* what;
+    std::vector<std::string> path;  // under the catching root
+    const char* search;             // the selection under which the key is read ...
+    const char* segment;
+    const char* other_search;  // ... and one under which it is not
+    const char* other_segment;
+  };
+
+  const Case cases[] = {
+      {"reference.omega", {"reference", "omega"}, "grid", "closed_form", "grid", "mpc"},
+      {"supervisor.decel.a_dec",
+       {"supervisor", "decel", "a_dec"},
+       "grid",
+       "closed_form",
+       "grid",
+       "mpc_docking"},
+      {"planner.search.grid.gamma.eta_v",
+       {"planner", "search", "grid", "gamma", "eta_v"},
+       "grid",
+       "mpc",
+       "nlp",
+       "mpc"},
+      {"planner.search.grid.reference.a_max",
+       {"planner", "search", "grid", "reference", "a_max"},
+       "grid",
+       "mpc",
+       "nlp",
+       "mpc_docking"},
+      {"planner.segment.mpc.eta_v",
+       {"planner", "segment", "mpc", "eta_v"},
+       "grid",
+       "mpc",
+       "grid",
+       "mpc_docking"},
+      {"planner.segment.mpc.switch_margin",
+       {"planner", "segment", "mpc", "switch_margin"},
+       "grid",
+       "mpc",
+       "grid",
+       "closed_form"},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.what);
+    YAML::Node root = ValidRoot();
+    YAML::Node parent = root;
+    for (std::size_t i = 0; i + 1 < c.path.size(); ++i) {
+      parent.reset(parent[c.path[i]]);
+    }
+    parent[c.path.back()] = "not-a-number";
+    root["planner"]["search"]["mode"] = c.search;
+    root["planner"]["segment"]["mode"] = c.segment;
+    EXPECT_THROW(static_cast<void>(ParseCatchingParams(root)), std::exception);
+    root["planner"]["search"]["mode"] = c.other_search;
+    root["planner"]["segment"]["mode"] = c.other_segment;
+    EXPECT_NO_THROW(static_cast<void>(ParseCatchingParams(root)));
+  }
+  // A zero switch margin is a range the PARSER refuses under mpc. Under
+  // another planner the mpc block is left at its defaults — all of it, the
+  // well-formed eta_v beside the bad margin too: a block is one function's.
+  YAML::Node root = ValidRoot();
+  root["planner"]["segment"]["mpc"]["switch_margin"] = 0.0;
+  root["planner"]["segment"]["mpc"]["eta_v"] = 0.7;
+  root["planner"]["segment"]["mode"] = "mpc";
+  EXPECT_THROW(static_cast<void>(ParseCatchingParams(root)), std::exception);
+  root["planner"]["segment"]["mode"] = "mpc_docking";
+  const rtc::catching::CatchingParams defaults;
+  const auto parsed = ParseCatchingParams(root);
+  EXPECT_DOUBLE_EQ(parsed.planner_segment_mpc_switch_margin,
+                   defaults.planner_segment_mpc_switch_margin);
+  EXPECT_GT(parsed.planner_segment_mpc_switch_margin, 0.0);
+  EXPECT_EQ(parsed.planner_segment_mpc_eta_v.tbd, defaults.planner_segment_mpc_eta_v.tbd);
+  // ... and a well-formed block of a function that does not run is still read.
+  root["planner"]["segment"]["mpc"]["switch_margin"] = 1.5;
+  EXPECT_DOUBLE_EQ(ParseCatchingParams(root).planner_segment_mpc_eta_v.value, 0.7);
+  EXPECT_DOUBLE_EQ(ParseCatchingParams(root).planner_segment_mpc_switch_margin, 1.5);
+}
+
+TEST(CatchingParams, TheGridSearchsKeysAreRequiredOnlyUnderGrid) {
+  YAML::Node root = ValidRoot();
+  root["planner"]["segment"]["mode"] = "mpc";
+  root["planner"]["search"]["grid"]["reference"]["a_max"] = "TBD";
+  root["planner"]["search"]["grid"]["stop"]["a_dec"] = "TBD";
+  root["planner"]["search"]["grid"]["gamma"]["eta_v"] = 7.0;  // outside (0, 1]
+  const auto report = [&root] {
+    return ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  };
+  EXPECT_TRUE(ReportHasFailure(report(), CatchingValidationReason::kActiveConfigTbd,
+                               "planner.search.grid.reference.a_max"));
+  EXPECT_TRUE(ReportHasFailure(report(), CatchingValidationReason::kActiveConfigTbd,
+                               "planner.search.grid.stop.a_dec"));
+  EXPECT_TRUE(ReportHasFailure(report(), CatchingValidationReason::kEtaVOutOfRange,
+                               "planner.search.grid.gamma.eta_v"));
+  root["planner"]["search"]["mode"] = "nlp";
+  for (std::size_t i = 0; i < report().failure_count; ++i) {
+    EXPECT_FALSE(std::string_view(report().failures[i].key).starts_with("planner.search.grid."))
+        << report().failures[i].key;
+  }
+}
+
+// ── E1-F16: robot.hand.T_close_lead — the design lead, apart from the closure time ──
+
+TEST(CatchingParams, AnAbsentCloseLeadIsTheClosureTime) {
+  const CatchingParams p = ParseCatchingParams(ValidRoot());
+  EXPECT_FALSE(p.hand.T_close_lead_given);
+  ASSERT_FALSE(p.hand.CloseLead().tbd);
+  EXPECT_DOUBLE_EQ(p.hand.CloseLead().value, 0.15);
+  // A hand profile built in code, not parsed, follows the same rule.
+  HandProfile built{};
+  built.T_close_e2e = TbdDouble::Resolved(0.2);
+  EXPECT_DOUBLE_EQ(built.CloseLead().value, 0.2);
+  EXPECT_TRUE(HandProfile{}.CloseLead().tbd);
+}
+
+TEST(CatchingParams, AGivenCloseLeadLeavesTheClosureTimeAndItsTimeoutsAlone) {
+  YAML::Node root = ValidRoot();
+  const CatchingParams before = ParseCatchingParams(root);
+  root["robot"]["hand"]["T_close_lead"] = 0.03;  // a hand that closes after the ball is in
+  const CatchingParams p = ParseCatchingParams(root);
+  EXPECT_TRUE(p.hand.T_close_lead_given);
+  EXPECT_DOUBLE_EQ(p.hand.CloseLead().value, 0.03);
+  EXPECT_DOUBLE_EQ(p.hand.T_close_e2e.value, 0.15);
+  // Both timeouts are derived from how long a closure TAKES, not from the lead.
+  EXPECT_DOUBLE_EQ(p.hand.T_close_timeout.value, kCloseTimeoutPerE2e * 0.15);
+  EXPECT_DOUBLE_EQ(p.hand.T_release_timeout.value, before.hand.T_release_timeout.value);
+  EXPECT_TRUE(ValidateCatchingParams(p, kControlRateHz, false).armable);
+  // And a timeout between the lead and the closure time is still refused: it is
+  // judged against the closure time.
+  root["robot"]["hand"]["T_close_timeout"] = 0.1;
+  EXPECT_TRUE(ReportHasFailure(
+      ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false),
+      CatchingValidationReason::kCloseTimeoutNotAboveE2e, "robot.hand.T_close_timeout"));
+}
+
+TEST(CatchingParams, ACloseLeadIsHeldToItsOwnRange) {
+  YAML::Node root = ValidRoot();
+  const auto report = [&root] {
+    return ValidateCatchingParams(ParseCatchingParams(root), kControlRateHz, false);
+  };
+  root["robot"]["hand"]["T_close_lead"] = 0.0;  // command at the catch instant itself
+  EXPECT_TRUE(report().armable);
+  root["robot"]["hand"]["T_close_lead"] = -0.01;
+  EXPECT_TRUE(ReportHasFailure(report(), CatchingValidationReason::kRangeViolation,
+                               "robot.hand.T_close_lead"));
+  root["robot"]["hand"]["T_close_lead"] = "TBD";
+  EXPECT_TRUE(ReportHasFailure(report(), CatchingValidationReason::kActiveConfigTbd,
+                               "robot.hand.T_close_lead"));
+  EXPECT_TRUE(ParseCatchingParams(root).hand.CloseLead().tbd);
+  root["robot"]["hand"]["T_close_lead"] = "soon";
+  ExpectRejectMentioning(root, "T_close_lead");
+}
+
 TEST(CatchingParams, SegmentSwitchMarginMustBePositive) {
+  // Under the planner whose key it is (E1-F16: a key of a function that does
+  // not run cannot fail the parse — AMalformedKeyOfAnUnselectedFunction… below).
   for (const char* bad : {"0.0", "-0.5", ".nan", ".inf"}) {
     YAML::Node root = ValidRoot();
+    root["planner"]["segment"]["mode"] = "mpc";
     root["planner"]["segment"]["mpc"]["switch_margin"] = YAML::Load(bad);
     ExpectRejectMentioning(root, "planner.segment.mpc.switch_margin");
   }
   // The message quotes the value as written: a tiny negative is not "0.000000".
   YAML::Node root = ValidRoot();
+  root["planner"]["segment"]["mode"] = "mpc";
   root["planner"]["segment"]["mpc"]["switch_margin"] = YAML::Load("-1e-7");
   ExpectRejectMentioning(root, "-1e-7");
 }
@@ -1327,6 +1591,30 @@ TEST(CatchingParams, FreezeWindowCountsTheServoLead) {
   const CatchingParams p = ParseCatchingParams(root);
   CatchingValidationReport r = ValidateCatchingParams(p, kControlRateHz, false);
   CheckFreezeCoversClose(r, p, 0.2, kControlRateHz);
+  EXPECT_TRUE(
+      ReportHasFailure(r, CatchingValidationReason::kFreezeShorterThanClose, kFreezeWindowKey));
+}
+
+TEST(CatchingParams, FreezeWindowIsJudgedAgainstTheCloseLeadNotTheClosureTime) {
+  // Closure time 0.15 s, lead 0.03 s: the close command goes out 0.03 s before
+  // the catch, so a window of 0.04 s contains it although the closure itself
+  // takes longer — and one shorter than lead + h does not.
+  YAML::Node root = ValidRoot();
+  root["robot"]["hand"]["T_close_lead"] = 0.03;
+  const CatchingParams p = ParseCatchingParams(root);
+  CatchingValidationReport covers = ValidateCatchingParams(p, kControlRateHz, false);
+  CheckFreezeCoversClose(covers, p, 0.04, kControlRateHz);
+  EXPECT_FALSE(ReportHasFailure(covers, CatchingValidationReason::kFreezeShorterThanClose,
+                                kFreezeWindowKey));
+  CatchingValidationReport short_by_a_tick = ValidateCatchingParams(p, kControlRateHz, false);
+  CheckFreezeCoversClose(short_by_a_tick, p, 0.031, kControlRateHz);
+  EXPECT_TRUE(ReportHasFailure(short_by_a_tick, CatchingValidationReason::kFreezeShorterThanClose,
+                               kFreezeWindowKey));
+  // A lead LONGER than the closure moves the bound up with it.
+  root["robot"]["hand"]["T_close_lead"] = 0.25;
+  const CatchingParams late = ParseCatchingParams(root);
+  CatchingValidationReport r = ValidateCatchingParams(late, kControlRateHz, false);
+  CheckFreezeCoversClose(r, late, 0.2, kControlRateHz);
   EXPECT_TRUE(
       ReportHasFailure(r, CatchingValidationReason::kFreezeShorterThanClose, kFreezeWindowKey));
 }

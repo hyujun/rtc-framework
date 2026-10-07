@@ -10,11 +10,11 @@
 // THE TWO INTERFACES (E1-F12 #738, ARCH-3). A wake calls the search and the
 // segment planner through CatchSearch (catch_search.hpp) and SegmentPlanner
 // (segment_planner.hpp) only, and owns whichever implementation was installed
-// behind each. "Installed" is "configured": the cycle never holds one that is
-// not ready to run, so a wake asks a pointer, not the object. What knows the
-// concrete types is the configure path alone — ConfigureGridCatchSearch /
-// ConfigureMpcSegmentPlanner build today's one implementation of each, and
-// MpcSegmentPlannerForDiagnostics() hands that implementation to tests.
+// behind each. "Installed" is "configured": the cycle is handed objects that
+// are ready to run and builds none, so a wake asks a pointer, not the object.
+// What knows the concrete types is the configure path alone — the integration
+// package and the tests build each object with its own factory, configure it,
+// and install it (InstallSearch / InstallSegmentPlanner).
 //
 // RT-1~10. The planner may run SCHED_FIFO (D-7a, shares the `mpc_main` role —
 // E-7 decision J), so `Run` allocates nothing, takes no lock, logs nothing and
@@ -22,11 +22,10 @@
 // SeqLock::LoadInto: the covariance snapshot alone is 11.5 KB.
 //
 // THE MPC SEGMENT PLANNER'S PART (MPC E1-F03 #629, E1-F08 #661). It runs when a
-// segment planner is installed (MpcSegmentPlanner, mpc_segment_planner.hpp) and the
-// optional fifth box is bound; without either, a wake is the search alone and
-// the plan is published by itself. A replan never changes the wake's
-// CycleOutcome (MD-29) — the PlanSnapshot counters and the D-7a latency keep
-// meaning what they meant; the segment account is PlannerCycleRecord::segment.
+// segment planner is installed and the optional fifth box is bound; without either, a wake is the
+// search alone and the plan is published by itself. A replan never changes the wake's CycleOutcome
+// (MD-29) — the PlanSnapshot counters and the D-7a latency keep meaning what they meant; the
+// segment account is PlannerCycleRecord::segment.
 //
 // A search wake that produces a plan also solves its first segment
 // (PlanFirst) and publishes the two as a PAIR (MD-56): segment first, then
@@ -38,9 +37,24 @@
 // it can be read, and refuses one the RT started following another plan
 // during. Right after a pair the search waits until the RT state postdates it
 // by 3 ticks: a second plan published before the RT reports the first would
-// overwrite the segment it may be adopting. Once the RT follows a plan the
-// search is skipped (MD-57) and every wake through DECEL is a Replan, whose
-// re-check is that the RT still reports the same source segment.
+// overwrite the segment it may be adopting. Once the RT follows a plan every
+// wake through DECEL is a Replan, whose re-check is that the RT still reports
+// the same source segment.
+//
+// WHILE A PLAN IS FOLLOWED THE SEARCH GOES ON (E1-F16). In APPROACH, after the
+// segment's replan, the wake still runs the search against the newest
+// prediction, handing it the segments the RT reports so that a candidate's arm
+// motion starts where the arm will be. What it finds is RECORDED and not
+// published: the RT does not take a second plan for a ball it already follows
+// one for, so a plan the search would switch to is held
+// (kHeldReplaceUnsupported) and one it would refresh is held as any other
+// (kHeld). The replan comes first so that the followed segment is never later
+// for the search's sake, and the search is timed from where it starts — the
+// cycle's clock after the replan, not the wake instant. Such a wake is never
+// "superseded": that outcome counts plans dropped at the publish re-check, and
+// this wake publishes nothing. The search stops when the first catch instant the RT
+// followed since the last reset is within `planner.freeze.t_stop_plan`, and at
+// COMMITTED whichever comes first; from then on a wake is the replan alone.
 //
 // WHAT S6-A IMPLEMENTS. The cycle, the provenance handling and a STUB search:
 // `PlanOnce` never produces a candidate, so every search wake publishes a
@@ -52,17 +66,16 @@
 
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controllers/catching/catch_search.hpp"
-#include "rtc_controllers/catching/grid_catch_search.hpp"
-#include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/search_stats.hpp"
 #include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 
 #include <cstdint>
 #include <memory>
-#include <string>
+#include <type_traits>
 #include <utility>
 
 namespace rtc::catching {
@@ -75,6 +88,10 @@ enum class CycleOutcome : std::uint8_t {
   kPublished,   ///< a PlanSnapshot (valid or "no plan") was stored
   kSuperseded,  ///< the trajectory or the trial moved during compute — dropped
   kHeld,        ///< the switching rule kept the RT's current plan (§4.7, G)
+  /// The RT follows a plan on a segment planner's segments and the search chose
+  /// ANOTHER one (SwitchDecision::kReplaced). Not published: the RT takes no
+  /// replacement pair. The search's record says what it would have switched to.
+  kHeldReplaceUnsupported,
 };
 
 [[nodiscard]] constexpr const char* CycleOutcomeName(CycleOutcome o) noexcept {
@@ -89,6 +106,8 @@ enum class CycleOutcome : std::uint8_t {
       return "superseded";
     case CycleOutcome::kHeld:
       return "held";
+    case CycleOutcome::kHeldReplaceUnsupported:
+      return "held_replace_unsupported";
   }
   return "unknown";
 }
@@ -121,7 +140,7 @@ struct PlannerCycleRecord {
   /// The search's own account (S6-B): candidate counts, judgement rejects,
   /// the chosen candidate's rank-gate bitmask, the switching decision, timing.
   SearchStats search{};
-  /// The MPC segment planner's account (MPC E1-F03). `outcome == kOff` when it
+  /// The segment planner's account (MPC E1-F03). `outcome == kOff` when it
   /// solved nothing this wake.
   SegmentRecord segment{};
 };
@@ -148,9 +167,8 @@ class PlannerCycle {
 
   PlannerCycle() noexcept;
 
-  // Not copied, not moved: it owns the installed implementations and keeps a
-  // typed pointer into one of them (MpcSegmentPlannerForDiagnostics()), and the boxes it is bound
-  // to are the controller's.
+  // Not copied, not moved: it owns the installed implementations, and the boxes
+  // it is bound to are the controller's.
   PlannerCycle(const PlannerCycle&) = delete;
   PlannerCycle& operator=(const PlannerCycle&) = delete;
 
@@ -162,40 +180,30 @@ class PlannerCycle {
   /// Non-RT. Take the thread parameters (budget, wait pose).
   void Configure(const PlannerParams& params) { params_ = params; }
 
-  /// Non-RT. Build a GridCatchSearch on this model (S6-B) with `Configure`'s
-  /// params and the cycle's clock, and install it in place of whatever search
-  /// was there — a NEW object every call, never the previous one configured
-  /// again. Without a search `PlanOnce` is the S6-A stub ("no plan"). False,
-  /// and no search installed, if the binding is unusable.
-  bool ConfigureGridCatchSearch(const GridCatchSearchModel& model,
-                                const GridCatchSearchConstants& constants,
-                                const CatchPoseIkOptions& ik);
-
-  /// Non-RT. Install a search built and configured by the caller, or none
-  /// (nullptr). It keeps the clock it was configured with: SetClock does not
-  /// reach a search. Not while the planner thread runs.
-  void InstallSearch(std::unique_ptr<CatchSearch> search) noexcept { search_ = std::move(search); }
+  /// Non-RT. Install a search built and configured by the caller, in place of
+  /// whatever was there, or none (nullptr). It is handed the cycle's clock
+  /// here, and again on every SetClock — whichever order the two calls come
+  /// in, its budget is measured on the axis `publish_ns` is stamped on. Without
+  /// a search `PlanOnce` is the S6-A stub ("no plan"). Not while the planner
+  /// thread runs.
+  void InstallSearch(std::unique_ptr<CatchSearch> search) noexcept {
+    search_ = std::move(search);
+    if (search_ != nullptr) {
+      search_->SetClock(clock_);
+    }
+  }
 
   /// Drop the search (a configuration without one).
   void ClearSearch() noexcept { search_.reset(); }
 
-  /// A search is installed (ConfigureGridCatchSearch succeeded, or InstallSearch).
+  /// A search is installed (InstallSearch).
   [[nodiscard]] bool SearchConfigured() const noexcept { return search_ != nullptr; }
 
-  /// Non-RT. Build a MpcSegmentPlanner from `Configure`'s `params.mpc_segment` and the
-  /// cycle's clock and install it as the segment planner, in place of whatever
-  /// was there — a NEW object every call. False, and no segment planner
-  /// installed, with `error` naming the cause.
-  bool ConfigureMpcSegmentPlanner(const MpcSegmentPlannerModel& model,
-                                  const MpcSegmentPlannerConstants& consts,
-                                  std::string* error = nullptr);
-
-  /// Non-RT. Install a segment planner built and configured by the caller, or
-  /// none (nullptr). It is handed the cycle's clock here, and again on every
-  /// SetClock — whichever order the two calls come in, its solves are timed on
-  /// the axis `publish_ns` is stamped on. Not while the planner thread runs.
+  /// Non-RT. Install a segment planner built and configured by the caller, in
+  /// place of whatever was there, or none (nullptr). It is handed the cycle's clock here, and again
+  /// on every SetClock — whichever order the two calls come in, its solves are timed on the axis
+  /// `publish_ns` is stamped on. Not while the planner thread runs.
   void InstallSegmentPlanner(std::unique_ptr<SegmentPlanner> planner) noexcept {
-    mpc_segment_planner_ = nullptr;
     segment_planner_ = std::move(planner);
     if (segment_planner_ != nullptr) {
       segment_planner_->SetClock(clock_);
@@ -203,26 +211,13 @@ class PlannerCycle {
   }
 
   /// Drop the segment planner (a configuration without one).
-  void ClearSegmentPlanner() noexcept {
-    mpc_segment_planner_ = nullptr;
-    segment_planner_.reset();
-  }
+  void ClearSegmentPlanner() noexcept { segment_planner_.reset(); }
 
-  /// A segment planner is installed (ConfigureMpcSegmentPlanner succeeded, or
-  /// InstallSegmentPlanner). It does not say WHICH: see MpcSegmentPlannerForDiagnostics().
+  /// A segment planner is installed (InstallSegmentPlanner). It does not say
+  /// WHICH: the caller that built it keeps the typed object if it needs one.
   [[nodiscard]] bool SegmentPlannerConfigured() const noexcept {
     return segment_planner_ != nullptr;
   }
-
-  /// The MpcSegmentPlanner ConfigureMpcSegmentPlanner installed (tests and diagnostics: its
-  /// cores' parameters and the input each was last handed). When the planner
-  /// in place is not one ConfigureMpcSegmentPlanner built — none installed, or one
-  /// installed with InstallSegmentPlanner — this is an UNCONFIGURED
-  /// MpcSegmentPlanner (`Configured()` false), as it was before any configure.
-  ///
-  /// The reference is good until the next ConfigureMpcSegmentPlanner, ClearSegmentPlanner or
-  /// InstallSegmentPlanner: each replaces the object it refers to.
-  [[nodiscard]] const MpcSegmentPlanner& MpcSegmentPlannerForDiagnostics() const noexcept;
 
   /// The seq the last stored segment carries (0 = none yet). Monotone
   /// over the cycle's lifetime — not reset by Configure — so the RT's `>`
@@ -230,10 +225,13 @@ class PlannerCycle {
   [[nodiscard]] std::uint32_t LastSegmentSeq() const noexcept { return last_segment_seq_; }
 
   /// Non-RT. The clock `publish_ns` is read from, forwarded to the installed
-  /// segment planner. NOT to an installed search: a search takes its clock
-  /// when it is configured, so set this before ConfigureGridCatchSearch.
+  /// search and segment planner (a null clock is ignored by them, not
+  /// installed). Not while the planner thread runs.
   void SetClock(ClockFn clock) noexcept {
     clock_ = clock;
+    if (search_ != nullptr) {
+      search_->SetClock(clock);
+    }
     if (segment_planner_ != nullptr) {
       segment_planner_->SetClock(clock);
     }
@@ -309,14 +307,17 @@ class PlannerCycle {
   // segments published for it, not the one the RT consumed last. Called with
   // a segment planner installed (SegmentActive).
   [[nodiscard]] BallPrediction FollowedBall(const PlannerRtState& rt) const noexcept;
+  // Whether a wake in which the RT follows a plan still runs the search
+  // (header: "WHILE A PLAN IS FOLLOWED"). Called with a segment planner
+  // installed and `rt.plan_active`.
+  [[nodiscard]] bool SearchesWhileFollowing(const PlannerRtState& rt, NowReal wake) const noexcept;
   std::int64_t pair_publish_ns_{0};  // the last pair's stamp; 0 after a reset
+  // The catch instant of the first plan the RT followed since the last reset
+  // (0 = it follows none): what `t_stop_plan` is measured back from.
+  std::int64_t first_followed_t_c_ns_{0};
   // Null = none installed. Replaced on the configure path only (non-RT, the
   // planner thread stopped); a wake reads the pointers and never writes them.
   std::unique_ptr<SegmentPlanner> segment_planner_;
-  // `segment_planner_` as the type ConfigureMpcSegmentPlanner built it, for
-  // MpcSegmentPlannerForDiagnostics(). Null when the installed planner came another way, or there
-  // is none.
-  const MpcSegmentPlanner* mpc_segment_planner_{nullptr};
   SegmentSnapshot segment_out_{};
   std::uint32_t last_segment_seq_{0};
   // Scratch copies, filled with SeqLock::LoadInto so a wake copies each

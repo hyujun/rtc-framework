@@ -94,6 +94,9 @@ add_library(rtc_controllers STATIC
   # re-check → publish. ROS-free so the whole cycle is testable against plain
   # SeqLocks; the thread that calls it lives in integrated_bringup (D-1).
   src/params/planner_params.cpp
+  # dynamic_catching E1-F16: the docking keys — the hand's identified capture set
+  # (`robot.hand.docking.*`) and the two docking functions' own maps.
+  src/params/docking_params.cpp
   src/catching/planner_cycle.cpp
   src/catching/grid_catch_search.cpp
   # dynamic_catching MPC E1-F01 (#627): the segment MPC numeric core — a jerk-input
@@ -121,6 +124,10 @@ add_library(rtc_controllers STATIC
   # x0 prediction at the effective instant, replan instances with a fixed stop
   # end, the publish gate. ROS-free; PlannerCycle runs it and publishes.
   src/catching/mpc_segment_planner.cpp
+  # dynamic_catching E1-F16 (#742): the second segment planner — the docking
+  # problem per segment (MpcDockingSegmentCore), installed in PlannerCycle
+  # under `planner.segment.mode: mpc_docking`.
+  src/catching/mpc_docking_segment_planner.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -649,12 +656,33 @@ if(BUILD_TESTING)
     RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
     RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
+  # dynamic_catching E1-F16 (#742): the docking segment planner — configure and
+  # its refusals, the first segment (the search's solution adopted, or solved
+  # from rest), replans, "nothing is published after the catch", the interface
+  # queries, and the allocation gate over PlanFirst / Replan (C-level malloc
+  # gate: one TU per binary) with the QP solvers bracketed out.
+  ament_add_gtest(test_catching_mpc_docking_segment_planner
+    test/test_catching_mpc_docking_segment_planner.cpp TIMEOUT 900)
+  target_link_libraries(test_catching_mpc_docking_segment_planner rtc_controllers)
+  target_include_directories(test_catching_mpc_docking_segment_planner PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_mpc_docking_segment_planner PRIVATE
+    -Wno-mismatched-new-delete)
+  target_compile_definitions(test_catching_mpc_docking_segment_planner PRIVATE
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots"
+    RTC_TEST_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
   # dynamic_catching E1-F14 (#740): the NLP catch search's lattice, its
   # necessary conditions (reach, closing-speed window) and its outer cost —
   # pure functions of scalars, each checked against the reference's formula
   # from both sides of its boundary. Header-only: no model, no solver.
   ament_add_gtest(test_catching_nlp_catch_screening test/test_catching_nlp_catch_screening.cpp)
   target_link_libraries(test_catching_nlp_catch_screening rtc_controllers)
+
+  # dynamic_catching E1-F16 (#742): the ring of published segments both segment
+  # planners keep (SegmentRing). Header-only pure logic: no model, no solver.
+  ament_add_gtest(test_catching_segment_ring test/test_catching_segment_ring.cpp)
+  target_link_libraries(test_catching_segment_ring rtc_controllers)
 
   # dynamic_catching MPC E1-F02 (#628): the segment node payload and its RT
   # sampler. Sample() calls into pinocchio's shared object (FK), so its
@@ -675,6 +703,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_catching_mpc_segment_params test/test_catching_mpc_segment_params.cpp)
   target_link_libraries(test_catching_mpc_segment_params rtc_controllers)
   target_include_directories(test_catching_mpc_segment_params PRIVATE ${rtc_base_test_include})
+  # dynamic_catching E1-F16: the docking keys (`robot.hand.docking.*`,
+  # `planner.search.nlp.*`, `planner.segment.mpc_docking.*`). Pure parsing — no
+  # model, no solver.
+  ament_add_gtest(test_catching_docking_params test/test_catching_docking_params.cpp)
+  target_link_libraries(test_catching_docking_params rtc_controllers)
+  target_include_directories(test_catching_docking_params PRIVATE ${rtc_base_test_include})
   ament_add_gtest(test_catching_segment_admission test/test_catching_segment_admission.cpp)
   target_link_libraries(test_catching_segment_admission rtc_controllers)
   target_include_directories(test_catching_segment_admission PRIVATE ${rtc_base_test_include})
@@ -734,6 +768,10 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_planner_cycle PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_planner_cycle PRIVATE -Wno-mismatched-new-delete)
+  # The cycle's two source files are read as text: they must not name a
+  # concrete search or segment planner (E1-F16).
+  target_compile_definitions(test_catching_planner_cycle PRIVATE
+    RTC_CONTROLLERS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
   # dynamic_catching S6-B: the planner's search on the 6R wrist fixture — q̇ᵘ
   # against an independent DLS (G3-I runtime half), judgement vs rank gates,

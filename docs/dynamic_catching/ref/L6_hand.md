@@ -37,7 +37,7 @@
 
 $$\gamma\ge1-\frac{d_{eff}}{\Vert v\Vert\,T_{close,tot}},\qquad T_{close,tot}=T_{close,e2e}+T_{tick}$$
 
-$T_{close,e2e}$ 는 RT 가 폐쇄 명령을 기록한 tick 부터 인코더 $\rho\ge\eta$ 까지의 **종단 간 실측값**이다. 실기 p1b 에서는 backend 발행 → `udp_hand_node` 250 Hz 주기 양자화 → 모터 응답이 모두 이 값에 들어간다. sim 에서는 `mujoco_native` lock-step 이라 전달 지연이 사실상 0 이고 $T_{close,e2e}$ 는 MJCF 게인이 정한다.
+$T_{close,e2e}$ 는 RT 가 폐쇄 명령을 기록한 tick 부터 인코더 $\rho\ge\eta$ 까지의 **종단 간 실측값**이다 — 잰 폐쇄 시간 **만** 뜻한다. 폐쇄를 얼마나 일찍 지령하는가는 다른 값 $T_{close,lead}$ (§4.3) 다. 실기 p1b 에서는 backend 발행 → `udp_hand_node` 250 Hz 주기 양자화 → 모터 응답이 모두 이 값에 들어간다. sim 에서는 `mujoco_native` lock-step 이라 전달 지연이 사실상 0 이고 $T_{close,e2e}$ 는 MJCF 게인이 정한다.
 
 손 성능은 $T_{close,tot}$ 하나로 요약되어 계획에 들어간다. 따라서 이 값의 **정의와 측정 절차**가 L6 의 핵심 산출물이다.
 
@@ -59,7 +59,7 @@ $$\rho(t)=\min_{i\in\mathcal C}\frac{(q_i(t)-q_i^{pre})\,s_i}{|q_i^{cls}-q_i^{pr
   $\mathcal C$ 는 caging 에 필요한 관절 집합 (YAML `caging_mask`) 이다. **$\mathcal C$ 의 모든 관절은 $|q_i^{cls}-q_i^{pre}|>\epsilon_\rho$ 를 만족해야 한다** (`rho_eps`) — 그렇지 않으면 0 으로 나누고 $s_i$ 도 정의되지 않는다. 파라미터 검증기가 강제한다 (`armable=false`).
 - $T_{close,e2e}(\eta)=\inf\{t-t_{cmd}:\rho(t)\ge\eta\}$. $\eta$ 는 공이 빠져나갈 수 없는 진행률이며, **판단이 아니라 실측이다**: 손이 공을 실제로 쥔 시행의 정지 $\rho$ 의 중앙값 바로 아래로 정한다. 빈 허공에서만 완주하는 값 (예: 0.9) 은 도달 불가능한 임계라서, 그 값으로 잰 $T_{close,e2e}$ 는 공을 쥐는 동작의 시간이 아니다.
 
-명령 기록 시각과 인코더 수신 시각은 모두 RT 의 steady 시계로 잰다. 인코더 샘플의 원격 stamp 를 비교에 쓰지 않는다 (L0 §4.5 "메시지 stale · 나이" 행, `header.stamp` 판단 금지). 분포는 계단 응답 반복으로 구한다 (손당 200 회 — 99 % 는 20 회로 말할 수 없다), 출하값은 그 p99 다.
+명령 기록 시각과 인코더 수신 시각은 모두 RT 의 steady 시계로 잰다. 인코더 샘플의 원격 stamp 를 비교에 쓰지 않는다 (L0 §4.5 "메시지 stale · 나이" 행, `header.stamp` 판단 금지). 분포는 계단 응답 반복으로 구한다 (손당 200 회 — 99 % 는 20 회로 말할 수 없다). sim 의 출하값은 200 회 시행의 **평균**이다 (표준편차는 두 손 모두 0.2 ms 미만 — sim 손은 거의 매번 같은 tick 에 닫힌다). 이 값이 명령 시각을 정하던 때에는 보수 쪽 p99 였고, 지금은 명령 시각을 정하지 않으므로 잰 값 그대로다.
 
 $T_{close,e2e}$ 는 **자세 쌍의 성질**이다 (이동하는 관절 집합과 이동량이 바뀐다). 자세를 바꾸면 이월하지 않고 다시 잰다. 병목은 가장 먼 거리를 가야 하는 관절의 이동량과 토크 포화이므로, 자세를 정할 때 $T_{close}$ 를 목적함수에 넣는다. 토크 포화가 지배하는 손 (p1b) 과 관성 · 강성이 지배하는 손 (leap) 은 운용 토크 한계에 대한 민감도가 다르다.
 
@@ -74,7 +74,20 @@ $T_{close,e2e}$ 는 **자세 쌍의 성질**이다 (이동하는 관절 집합�
 시간 비교는 L0 §4.5 규약을 따른다. 손 명령에는 팔 지연 선행 ($T_{arm}$) 을 적용하지 않는다 — 비교 대상은 **now_real** (매 tick steady 실측) 이다.
 
 - Preshape: **시각 조건이 아니다.** 팔이 `wait_pose` 에 도착하면 (또는 재무장으로 `Ready` 에 놓이면) 손은 즉시 `q_pre` 를 지시받는다 — ARMED~COMMITTED 내내 그 상태가 유지된다 (L7 §4.1). `q_open` 은 팔이 homing 중일 때만 쓴다.
-- Close: $t_{cmd}=t_c-T_{close,e2e}$. 시퀀서가 **동결된** $t_c$ 와 프로파일에서 계산하는 단일 출처다 (계획기의 $t_{cmd}$ 는 기록일 뿐 입력이 아니다).
+- Close: $t_{cmd}=t_c-T_{close,lead}$. 시퀀서가 **동결된** $t_c$ 와 프로파일에서 계산하는 단일 출처다 (계획기의 $t_{cmd}$ 는 기록일 뿐 입력이 아니다). 시퀀서는 COMMITTED 에서 **한 번** 이 시각을 정하고 갱신하지 않는다 — $t_c$ 가 그 뒤 예측 갱신으로 움직여도 지령 시각은 따라가지 않는다 (formulation ball_catching_inverse_dynamics_mpc.md §12.7 의 M2 — E1-F17 이후).
+
+**손의 시간은 둘이고 서로 다른 일을 한다.**
+
+| 값 | 무엇 | 어디서 읽는가 |
+|---|---|---|
+| `robot.hand.T_close_e2e` | **잰** 폐쇄 시간 (§4.2) | `T_close_timeout` · `T_release_timeout` 의 유도와 검사, 탐색의 $T_{close,tot}=T_{close,e2e}+h/2$ (γ 창 · 최대 포획 속력 · $d_{eff}$ 의 유도, L3 §4.5), docking 코어의 $\delta_0$ |
+| `robot.hand.T_close_lead` | 공이 포구점 (catch frame 의 원점) 에 닿기 **얼마 전에** 폐쇄를 지령하는가 — 손의 **설계값**. 식별한 유지 창 (그 축에서 명령 → 원점 도달) 의 가운데로 정한다 | 시퀀서의 $t_{cmd}$, 계획기의 $t_{cmd}$ 기록, $T_{freeze}$ 하한 (L3 §4.11), 탐색의 commit 게이트 |
+
+두 값이 같을 이유는 없다. 키가 없으면 $T_{close,lead}=T_{close,e2e}$ 이고 컨트롤러가 configure 에서 WARN 한다. 유지 창이 어디에 있는가는 손마다 다르다 — 한 손은 막 닫혔을 때 공이 도착하는 것이 맞고 (명령 → 원점 도달이 $T_{close,e2e}$ 근처), 다른 손은 아직 닫히는 중에 공이 도착해야 맞다 (§4.6).
+
+**$t_c$ 의 축.** 시퀀서가 lead 를 빼는 $t_c$ 가 팔의 운동에서 어느 순간인가는 **팔이 따르는 구간을 만든 계획기**가 정한다 — plan 을 낸 탐색이 아니다. `closed_form` 과 `mpc` 구간 계획기는 $t_c$ 에 catch frame 의 원점을 공 위에 놓으므로 (`grid` 든 `nlp` 든) `T_close_lead` 를 적힌 그대로 쓴다. `mpc_docking` 구간 계획기는 $t_c$ 를 공이 **입구 평면** (원점 앞 `robot.hand.docking.s_ent`) 을 지나는 순간에 두므로 컨트롤러가 configure 에서 한 번 환산한다.
+$$T_{close,lead}^{(t_c)}=T_{close,lead}-\frac{s_{ent}}{c_{ref}},\qquad c_{ref}=-\nu_{ref,z}$$
+($c_{ref}$ 는 그 코어의 기준 접근 속력 `core.catch.nu_ref`). 시퀀서 · RT 의 $t_{cmd}$ (접촉 판정 창) · 탐색이 plan 에 적는 $t_{cmd}$ 가 이 값 하나를 쓴다 (mirror `hand.T_close_lead`, `hand.T_close_lead_from_t_c`). **docking 코어는 따로다**: `nlp` 탐색과 `mpc_docking` 의 코어는 포구 노드가 언제나 입구 평면 통과이므로, 어느 구간 계획기 아래에서든 자기 기준 속력으로 환산한 lead 로 명목 폐쇄 순간 $\delta_0=T_{close,e2e}-(T_{close,lead}-s_{ent}/c_{ref})$ 을 받는다 (mirror `hand.docking.closure.delta_0`). 환산한 lead 가 음수면 (명령이 입구 통과 뒤가 된다) park 한다 (`kMpcDockingInvalid`). `nlp` × `mpc` 는 그래서 탐색의 모형 (입구 통과가 $t_c$) 과 실행 (원점 도달이 $t_c$) 이 $s_{ent}/c_{ref}$ 만큼 다른 조합이다 — 탐색의 해를 그대로 실행하는 것은 `nlp` × `mpc_docking` 뿐이다.
 
 RT 틱 $h$ 단위로만 명령할 수 있으므로 $t_{cmd}$ 를 넘지 않는 마지막 틱이 아니라 **처음으로 now_real ≥ $t_{cmd}-h/2$ 인 틱**에서 명령한다 (가장 가까운 틱으로 반올림, `HandCommandDueRounded` — L7 §4.1 R-CLOSE). 오차는 $\pm h/2$ 의 영평균이다. $h$ 는 `ControllerState::dt` (= 1/`control_rate`, 500 Hz 고정이 아니다) 이고, G6-A 는 실측 tick 간격으로 판정한다.
 
@@ -99,7 +112,7 @@ $T_{close}$ 를 최소화하려면 폐쇄 자세로의 계단 position 명령 + 
 
 $$d_{eff}=v_{rel}\,T_{close,tot}$$
 
-  $v_{rel}$ 은 시각 발동 (아래 step 1 의 규칙) 으로 날려 넣은 공이 유지되는 상대속도 허용량의 실측이다. 유효 조건은 런타임 손 발동이 같은 **시각 발동** ($t_{cmd}=t_c-T_{close,e2e}$, §4.3) 이라는 것이다. 포켓의 기하 깊이는 접촉 물리량으로 MASTER TBD-HAND-04 에 따로 남는다. 값은 `catching/search_grid.yaml` 의 `planner.search.grid.hand.d_eff` · `r_cap` 이다 (주석에 산정식이 있다). 두 값은 **YAML 의 `planner.search.grid.hand.*` 이지 `robot.hand.*` 가 아니다.**
+  $v_{rel}$ 은 시각 발동 (아래 step 1 의 규칙) 으로 날려 넣은 공이 유지되는 상대속도 허용량의 실측이다. 유효 조건은 런타임 손 발동이 같은 **시각 발동** ($t_{cmd}=t_c-T_{close,lead}$, §4.3) 이라는 것이다. $d_{eff}$ 는 $T_{close,tot}$ 를 잰 폐쇄 시간으로 곱하므로 $T_{close,e2e}$ 가 바뀌면 같은 $v_{rel}$ 로 다시 유도한다. 포켓의 기하 깊이는 접촉 물리량으로 MASTER TBD-HAND-04 에 따로 남는다. 값은 `catching/search_grid.yaml` 의 `planner.search.grid.hand.d_eff` · `r_cap` 이다 (주석에 산정식이 있다). 두 값은 **YAML 의 `planner.search.grid.hand.*` 이지 `robot.hand.*` 가 아니다.**
 
 산정 절차:
 
@@ -110,6 +123,34 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 산출값은 **provisional** 이며 사용자 승인 대상이다. 산정식 · 실험값 · provisional 표시를 YAML 과 이 문서에 함께 기록한다 (G6-F).
 
 **자세는 공의 자세다.** `q_pre` · `q_close` 와 위 값들은 특정 공 (출하 sim 공 = ITF Type 2 테니스공) 에 대해 정한 것이다. 공 사양이 바뀌면 재산정한다 — 작은 공까지 하나의 `q_close` 로 잡으려면 맨 계단 위치 명령으로는 안 되고 §4.4 의 유지 규칙이 필요하다. 자세는 사람이 만든 후보가 아니라 위 접촉 시험을 적합도로 한 탐색으로 정한다 — 실패 양상은 둘이다: (1) 나란한 손가락들이 서로 다른 시각에 도착해 공을 옆으로 짜낸다, (2) `q_close` 가 손가락이 멈추는 자세보다 깊으면 파지가 성립한 뒤에도 아직 안 닿은 관절이 계속 말려 공을 다시 민다. 그래서 `q_close` 는 주먹이 아니라 공에 걸려 멈추는 자세 근처다.
+
+### 4.6 식별한 폐쇄 창과 포획 집합 (sim, provisional)
+
+`mpc_docking` 구간 계획기와 `nlp` 탐색이 읽는 손의 값은 YAML 의 `robot.hand.docking.*` (L3 §6 · integrated_bringup README) 이고, 이 절은 그 값이 **무엇을 잰 것인지**와 출하값을 적는다. 식별 도구는 `integrated_bringup/tools/docking_ident` 다: 열린 손 (preshape) 에 공을 catch frame 의 한 직선을 따라 날려 넣고 정해진 순간에 `q_close` 를 지령한 뒤 닫힘 이후 "유지" 를 판정한다. 값은 **sim 식별이라 provisional** 이다 (sim 손의 흡수 · 반발은 실기의 것이 아니다, §4.5) — 원자료는 저장소 밖에 있다. 상자 `w040`: 접근 속력 대역은 `ur5e_p1b` 0.5 – 0.6 m/s, `iiwa7_leap` 1.6 – 1.7 m/s 이고 식별은 그 밖을 날리지 않았다.
+
+- **폐쇄 창.** 폐쇄가 끝나는 순간이 공의 도달에 대해 어디에 있을 때 유지되는가. 명령 → 원점 도달의 창과 같은 것을 "폐쇄 완료 − 입구 평면 통과" 축에서 적은 것이 `closure.delta_lo` · `delta_hi` 이다 (폐쇄가 명령 뒤 $T_{close,e2e}$ 에 끝나는 축). 정해진 명목 순간 $\delta_0=T_{close,e2e}-T^{(t_c)}_{close,lead}$ 는 키가 아니다.
+- **lateral 집합.** 공의 중심이 입구 평면을 지나는 위치 (catch frame $x,y$) 가운데 유지되는 5 mm 셀의 집합이다. 셀은 **유지율 규칙**으로 고른다: 가운데 조건에서 유지한 셀과 그 둘레 두 링을 후보로 삼아 5 조건 × 8 회, 어느 것도 건너뛰지 않고 날려, 40 회의 유지율이 기준 셀 (가운데 조건 유지가 가장 많은 셀, 같으면 40 회 유지율이 높은 것) 의 것과 5 %p 안이면 집합에 든다. 다각형은 그 셀들 안에 들어가는 볼록 다각형이다.
+- **속도 집합.** 접근축 속력은 상자의 대역이고, 옆 속도의 상한은 유지율이 영속도 링의 것과 5 %p 안에 드는 마지막 링이다.
+
+측정값 (2026-10-07):
+
+| | `ur5e_p1b` | `iiwa7_leap` |
+|---|---|---|
+| `T_close_e2e` (200 회 평균) | 0.278 s (표준편차 0) | 0.098 s (표준편차 0.14 ms) |
+| `T_close_lead` — 명령 → 원점 도달의 유지 창 | 0.2805 s (260.5 – 300.5 ms 의 가운데) | 0.0577 s (31.7 – 83.7 ms 의 가운데) |
+| 입구 평면 축으로 환산한 lead (`mpc_docking` 이 실행하는 값) / docking 코어의 $\delta_0$ | 0.2678 s / 10.2 ms | 0.0256 s / 72.4 ms |
+| `docking.s_ent` | 7.0 mm | 53.0 mm |
+| 통로 `r_ent` / `tan_theta` | 17.7 mm / 0.4599 | 22.1 mm / 0.2764 |
+| lateral 집합 | 후보 147 셀 중 **4 셀**, 내접원 중심 (−5, −5) mm 반지름 2.5 mm, 가장 가까운 면 2.3 mm | 후보 459 셀 중 **43 셀 — 한 영역이 아니라 흩어져 있다**, 내접원 중심 (−20, 20) mm 반지름 3.5 mm, 가장 가까운 면 3.3 mm |
+| 접근 속력 대역 `c_min`–`c_cap_max` / `v_perp_max` | 0.5 – 0.6 m/s / 0.125 m/s | 1.6 – 1.7 m/s / 0.325 m/s |
+| `closure.delta_lo` / `delta_hi` | −8.50 / +29.17 ms | +47.43 / +97.48 ms |
+| 검증 (집합에서 뽑은 300 조건) | 277 유지, 95 % 하한 0.893 | 284 유지, 하한 0.920 |
+| 접근축 가속 (5 · 9.81 m/s² · 대기 자세의 중력) | 300 / 300 / 300 | 287 / 275 / 289 (유지율 0.932 / 0.886 / 0.940) |
+| `planner.search.grid.hand.d_eff` (1.0 m/s × $T_{close,tot}$) | 0.279 m | 0.099 m |
+
+- `a_brake` (5.0) · `c_ent_max` (대역의 위 끝) 은 식별한 값이 아니라 접근 envelope 의 설계값이다. 반발계수 0.732 는 sim 공의 강체 면 값이고 손 자체의 것은 재지 않았다. 접촉점 (`contact_point_hand`) 은 첫 접촉 위치다.
+- **`iiwa7_leap` 은 공이 도달한 뒤에 닫혀야 유지되는 손이다** — 폐쇄 완료는 원점 도달 14 – 66 ms 뒤의 창 안에 있어야 하고, 출하 `grid` × `mpc` 에서 폐쇄 지령은 $t_c-0.1037$ 에서 $t_c-0.0577$ 로 옮겨졌다 (옛 규칙은 폐쇄를 도달 6 ms 전에 끝내 창에서 20 ms 벗어났다). `ur5e_p1b` 의 창은 폐쇄 완료가 도달 22.5 ms 전 – 17.5 ms 뒤이고, 막 닫혔을 때 공이 오는 쪽이다.
+- 두 로봇의 lateral 집합은 **작다.** `ur5e_p1b` 는 4 셀이 (40 · 40 · 38 · 38 / 40 회 유지) 집합이고 근처의 열두 셀은 32 – 37 회 유지에 그쳤다 — 가운데는 매번 유지하지만 (영속도에서 160 / 160) 그 둘레는 0.8 – 0.95 다. `iiwa7_leap` 은 43 셀이 기준 셀 (40 / 40) 의 5 %p 안이지만 한 영역을 이루지 않고 (손은 약 60 × 60 mm 에서 셀당 0.8 – 0.95 로, 흩어진 셀에서 38 회 이상 유지한다) 다각형은 가장 큰 연결 덩어리 안에 든다 (그 중심에서 영속도 157 / 160 유지). 가장 가까운 면까지의 거리가 `ur5e_p1b` 2.3 mm · `iiwa7_leap` 3.3 mm 라서 lateral chance 행은 공의 위치를 각각 십분의 수 mm · 1 mm 안팎으로 아는 경우에만 공을 받는다.
 
 ## 5. C++ 구현
 
@@ -149,7 +190,9 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 | `robot.hand.rho_eps` | rad | §4.2 $|q^{cls}_i-q^{pre}_i|$ 하한 (검증기가 강제) |
 | `robot.hand.hold.mode` | – | §4.4 유지 목표 규칙: `close_target` \| `measured_offset` |
 | `robot.hand.hold.delta_rad` | rad | `measured_offset` 에서만 쓰는 여유량. Close 가 timeout 으로 끝나 측정이 비유한인 관절은 `q_close` 를 쓴다 |
-| `robot.hand.T_close_e2e` | s | §4.2 종단 간 실측 (sim 은 계단 응답 p99, 실기는 G6-D) |
+| `robot.hand.T_close_e2e` | s | §4.2 종단 간 **실측** — 잰 폐쇄 시간만 뜻한다 (sim 은 200 회 시행의 평균, 실기는 G6-D). 시한 · γ 창 · $\delta_0$ 가 읽는다. 명령 시각은 정하지 않는다 |
+| `robot.hand.T_close_lead` | s | §4.3 폐쇄를 공이 포구점 (원점) 에 닿기 얼마 전에 지령하는가 — 설계값, 원점 도달 축. 없으면 `T_close_e2e` 이고 configure 가 WARN 한다 (`HandProfile::CloseLead()`). `mpc_docking` 구간 계획기 아래에서는 컨트롤러가 입구 평면 축으로 환산해 쓴다 (§4.3). 검증기: $T_{freeze}\ge T_{close,lead}+T_{arm}+h$ |
+| `robot.hand.docking.*` | – | §4.6 입구 평면 · 통로 · lateral 집합 · 속도 집합 · 폐쇄 창 · 충격 (`provisional: true`). 항상 파싱하고 **`nlp` 탐색 또는 `mpc_docking` 이 선택됐을 때만 요구한다** — 비었거나 TBD 면 park (`kMpcDockingInvalid`, 키 이름을 적는다). 키 목록과 값은 integrated_bringup README |
 | `robot.hand.T_hold` | s | HOLD 의 길이 (재무장 · 시퀀서 도착 판정과 함께 튜닝) |
 | `robot.hand.T_close_timeout` | s | Close 가 $\eta$ 에 못 닿고 Hold 로 넘어가는 시한. 키가 없으면 파서가 $2\,T_{close,e2e}$ 로 유도한다. 검증기: `> T_close_e2e` |
 | `robot.hand.T_release_timeout` | s | `RETREAT` 의 `q_pre` 도착 대기 (L7 `HAND_TIMEOUT`). 키가 없으면 파서가 $m\,T_{close,e2e}$ 로 유도한다, $m=2\max\!\big(1/\eta,\ \ln(S_{\max}/q_{tol})/\ln\tfrac{1}{1-\eta}\big)$, $S_{\max}=\max_i|q_{close,i}-q_{pre,i}|$ (전 관절). 근거: $T_{close,e2e}$ 는 $\rho$ 가 $\eta$ 에 닿는 시각까지만 재지만 release 는 `q_pre` 에 **정착**해야 하므로 두 극한 플랜트 (토크 포화 — 이동 ∝ 거리 → $1/\eta$, 1차 선형 — `q_tol` 까지 로그 정착) 중 느린 쪽에 close timeout 과 같은 2 배를 곱한다. 상수 배수는 한 값으로 두 극한 플랜트를 못 덮는다. 개방이 1차 모델보다 느린 손은 키를 명시한다 (키가 있으면 유도하지 않는다). 검증기: 유한 · > 0 · `> T_close_e2e` |
@@ -192,5 +235,6 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 - TBD-HAND-01, TBD-HAND-04 의 투척 보정 (sim 보정은 하지 않고 실기에서만 한다 — §4.5 step 2), `index_mcp_aa_joint` 위치 한계 불일치 (TBD-HAND-05 — YAML 과 URDF · MJCF ctrlrange 가 다르다 — 유효 한계는 교집합), 손 프로파일 값 (provisional)
 - **p1b 의 폐쇄 속도** — $T_{close,e2e}$ 가 **최소 비행시간에 그대로 들어간다.** 폐쇄 병목은 가장 먼 거리를 가는 관절 (엄지 `thumb_cmc_fe`) 의 이동량이므로 자세를 다시 찾을 때 $T_{close}$ 를 목적함수에 넣는다. p1b $d_{eff}$ 의 포켓 깊이 쪽 값은 스캔 상한에 걸린 하한값이다
 - **자세 탐색 도구는 저장소에 없다** (작업용으로만 있었다). 시각 발동 fly-in 과 열린 손의 접촉 스캔은 `integrated_bringup/tools/docking_ident` 에 있다 (`mpc_docking` 의 입력 식별용 — 로봇 profile 이름만 받는다). 자세를 다시 찾거나 `g1_p1b` 의 손을 식별하려면 탐색 쪽이 다시 필요하다 — 편입이 후속 항목이다
-- **`T_close_e2e` 의 뜻이 둘로 갈린다 (사용자 결정 2026-10-07, 구현은 E1-F16).** 지금은 한 키가 "측정한 종단 간 폐쇄 시간" (§4.2) 이면서 시퀀서가 닫기 시작하는 lead ($t_{cmd}=t_c-T_{close,e2e}$, §4.3) 다. `mpc_docking` 의 입력 식별 (E1-F15) 에서 두 값이 같을 수 없음이 드러났다 — 손이 공의 도착보다 얼마나 일찍 · 늦게 닫혀야 유지되는가 (폐쇄 창) 는 손마다 다르고, `iiwa7_leap` 은 도착 **뒤** 에 닫혀야 한다. lead 는 설계값으로 따로 두고 이 키는 측정값으로 남기는 것이 E1-F16 의 일이다. 폐쇄 창 · lateral 집합 · 옆 속도 상한 · 통과 평면의 값 (sim, provisional) 은 YAML 이 아니라 [#741](https://github.com/hyujun/rtc-framework/issues/741) 의 결과 코멘트에 있다
+- **폐쇄 창 · lateral 집합 · 속도 집합은 sim 식별이다 (provisional).** 값은 §4.6 과 `robot.hand.docking` 에 있고 실기의 손에서 다시 재야 한다 — sim 손의 흡수 · 반발은 실기의 것이 아니다. lateral 집합이 작다 (`ur5e_p1b` 4 셀, `iiwa7_leap` 43 셀이 흩어짐) 는 것은 재측정한 그대로이며 규칙을 느슨하게 해서 키운 것이 아니다. `T_close_lead` 도 같은 식별에서 나온 설계값이라 provisional 이다
+- **closure 지령 시각의 갱신 (ball_catching_inverse_dynamics_mpc.md §12.7 의 M2) 은 구현하지 않았다** (E1-F17 이후). 시퀀서는 COMMITTED 에서 $t_{cmd}=t_c-T_{close,lead}$ 를 한 번 정한다
 - TBD-HAND-03 지문 잡음 (실기 σ) — 부호 · frame 은 닫혀 있다 (접촉 판정은 바이어스를 뺀 크기 $\Vert F-b\Vert$ 만 쓴다). sim 지문 lane 은 잡음이 0 이라 `NOT_EVALUATED(sim 무잡음)` 이고 값은 실기에서 잰다

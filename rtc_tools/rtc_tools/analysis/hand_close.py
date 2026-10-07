@@ -28,7 +28,8 @@ and says so when it cannot trust it — a dropped row shifts every later tick
 count silently.
 
 Beside the mean, maximum and p99 the report gives each axis's sample standard
-deviation and ``mean − T_close_e2e`` (:func:`nominal_closure_offset`): the
+deviation and ``mean − T_close_lead`` (:func:`nominal_closure_offset`; an older
+sidecar without a lead falls back to ``T_close_e2e``): the
 spread and the nominal instant of the closure relative to the catch instant,
 which a planner with a closure WINDOW needs (dynamic_catching E1-F15, #741).
 
@@ -79,9 +80,24 @@ class HandProfile:
     # call a run trusted that dropped rows. Reported, never silently used.
     dt_is_assumed: bool = False
     # `hand.T_close_e2e` as the controller had it loaded for the run (sidecar
-    # `T_close_e2e_at_run`): what the hand sequencer subtracts from the catch
-    # instant to time the close command. NaN when the sidecar does not say.
+    # `T_close_e2e_at_run`): the MEASURED closure time. NaN when the sidecar
+    # does not say.
     t_close_e2e: float = math.nan
+    # `hand.T_close_lead_from_t_c` as run (sidecar `T_close_lead_at_run`):
+    # what the hand sequencer subtracts from the catch instant to time the close
+    # command. NaN when the sidecar does not say (a controller built before the
+    # lead was split from T_close_e2e, where the two were one value).
+    t_close_lead: float = math.nan
+
+    @property
+    def sequencer_lead(self) -> tuple[float, str]:
+        """(value, parameter name) the sequencer subtracted from t_c at the run.
+
+        The lead when the sidecar has one, else T_close_e2e (an older run).
+        """
+        if not math.isnan(self.t_close_lead):
+            return self.t_close_lead, "T_close_lead"
+        return self.t_close_e2e, "T_close_e2e"
 
     @property
     def caging_indices(self) -> list[int]:
@@ -122,6 +138,7 @@ def load_profile(path: Path) -> HandProfile:
         dt=float(data.get("dt", 0.002)),
         dt_is_assumed="dt" not in data,
         t_close_e2e=float(data.get("T_close_e2e_at_run", math.nan)),
+        t_close_lead=float(data.get("T_close_lead_at_run", math.nan)),
     )
     profile.validate()
     return profile
@@ -335,18 +352,20 @@ def summarise_axis(values: list[float]) -> dict[str, float]:
     }
 
 
-def nominal_closure_offset(mean_t_close_s: float, t_close_e2e_s: float) -> float:
+def nominal_closure_offset(mean_t_close_s: float, t_close_lead_s: float) -> float:
     """How long after the catch instant the closure is complete, on average.
 
-    The hand sequencer commands the close at ``t_c − T_close_e2e`` (L6 §4.3), so
-    a closure that takes ``mean_t_close_s`` completes ``mean − T_close_e2e``
-    after ``t_c``. ``T_close_e2e`` is shipped as a high quantile of the same
-    distribution, which makes this small and NEGATIVE: the hand is, on average,
+    The hand sequencer commands the close at ``t_c − T_close_lead`` (L6 §4.3), so
+    a closure that takes ``mean_t_close_s`` completes ``mean − T_close_lead``
+    after ``t_c``. ``t_close_lead_s`` is what the sequencer subtracted at the
+    run: ``T_close_lead``, or ``T_close_e2e`` for a run that predates the split
+    (``HandProfile.sequencer_lead`` picks). When the lead is a high quantile of
+    the same distribution this is small and NEGATIVE: the hand is, on average,
     closed slightly before the instant it was timed for. It is the ``delta_0``
     of a closure window measured from ``t_c`` (reference §8.4, §17.8). NaN when
     either input is.
     """
-    return mean_t_close_s - t_close_e2e_s
+    return mean_t_close_s - t_close_lead_s
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -415,17 +434,30 @@ def main(argv: list[str] | None = None) -> int:
     print("  time and cannot be compared with a real-hardware measurement. Report both.")
     print()
     print("  spread (sample std, n - 1) and the closure's offset from the catch instant")
+    lead, lead_name = profile.sequencer_lead
     for label, values in (("steady [ms]", steady), ("tick   [ms]", tick)):
         s = summarise_axis(values)
-        offset = nominal_closure_offset(s["mean"], profile.t_close_e2e)
-        print(f"  {label}      std {s['std'] * 1e3:9.3f}   mean - T_close_e2e {offset * 1e3:9.3f}")
-    if math.isnan(profile.t_close_e2e):
-        print("  !! the sidecar carries no T_close_e2e_at_run: the offset cannot be computed.")
-    else:
+        offset = nominal_closure_offset(s["mean"], lead)
+        print(f"  {label}      std {s['std'] * 1e3:9.3f}   mean - {lead_name} {offset * 1e3:9.3f}")
+    if math.isnan(lead):
         print(
-            f"  T_close_e2e at the run: {profile.t_close_e2e * 1e3:.3f} ms (the sequencer closes"
+            "  !! the sidecar carries no T_close_lead_at_run and no T_close_e2e_at_run:"
+            " the offset cannot be computed."
         )
-        print("  at t_c - T_close_e2e, so the offset is where the closure lands after t_c).")
+    else:
+        if not math.isnan(profile.t_close_e2e):
+            print(
+                f"  T_close_e2e at the run: {profile.t_close_e2e * 1e3:.3f} ms (measured closure)"
+            )
+        if lead_name == "T_close_lead":
+            print(f"  T_close_lead at the run: {lead * 1e3:.3f} ms (the sequencer closes")
+        else:
+            print(
+                "  !! the sidecar has no T_close_lead_at_run (a run before the lead was split"
+                " from T_close_e2e): falling back to T_close_e2e as what the sequencer"
+                f" subtracts, {lead * 1e3:.3f} ms (the sequencer closes"
+            )
+        print(f"  at t_c - {lead_name}, so the offset is where the closure lands after t_c).")
     if profile.dt_is_assumed:
         print("  !! dt was ASSUMED: the size of one tick's quantisation is not known.")
     else:

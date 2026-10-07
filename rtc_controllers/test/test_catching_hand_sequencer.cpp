@@ -54,6 +54,7 @@ HandSequencerConfig MakeConfig() {
   c.q_close = {0.5, -0.4, 0.9};
   c.caging_mask = {true, true, false};
   c.eta_close = 0.7;
+  c.t_close_lead_ns = 150 * kMs;
   c.t_close_e2e_ns = 150 * kMs;
   c.t_close_timeout_ns = 300 * kMs;
   c.q_tol = 0.01;
@@ -171,6 +172,46 @@ TEST(HandSequencer, IsInactiveUntilToldAndHomesToOpenThenWaitsAtPre) {
 
   seq.Deactivate();
   EXPECT_FALSE(seq.Update(NowReal{2 * kH}, kH, s.Q(), s.Qd()).active);
+}
+
+TEST(HandSequencer, TheCloseIsCommandedTheLeadBeforeTheCatchNotTheClosureTime) {
+  // A hand that holds only when it closes after the ball is in: the closure
+  // takes 150 ms, the command goes out 30 ms before the catch instant.
+  HandSequencerConfig c = MakeConfig();
+  c.t_close_lead_ns = 30 * kMs;
+  HandSequencer seq;
+  ASSERT_TRUE(seq.Configure(c));
+  seq.Home();
+  seq.Ready();
+  ASSERT_TRUE(seq.Commit(BallTime{1000 * kMs}));
+  EXPECT_EQ(seq.TCmd().ns, 970 * kMs);
+  // The timeout stays a bound on the closure: above T_close_e2e, whatever the lead.
+  c.t_close_lead_ns = 400 * kMs;  // longer than the timeout — a valid lead
+  EXPECT_TRUE(c.Valid());
+  c.t_close_lead_ns = -1;  // unresolved
+  EXPECT_FALSE(c.Valid());
+}
+
+TEST(HandSequencer, AProfilesLeadIsItsOwnKeyAndTheClosureTimeWhenAbsent) {
+  rtc::catching::HandProfile p{};
+  p.dof = kDof;
+  p.tbd = false;
+  p.q_open_tbd = false;
+  p.q_pre = MakeConfig().q_pre;
+  p.q_close = MakeConfig().q_close;
+  p.caging_mask = MakeConfig().caging_mask;
+  p.eta_close = rtc::catching::TbdDouble::Resolved(0.7);
+  p.T_close_e2e = rtc::catching::TbdDouble::Resolved(0.15);
+  p.T_close_timeout = rtc::catching::TbdDouble::Resolved(0.3);
+  EXPECT_EQ(HandSequencerConfig::FromProfile(p).t_close_lead_ns, 150 * kMs);
+  p.T_close_lead = rtc::catching::TbdDouble::Resolved(0.03);
+  p.T_close_lead_given = true;
+  const HandSequencerConfig c = HandSequencerConfig::FromProfile(p);
+  EXPECT_EQ(c.t_close_lead_ns, 30 * kMs);
+  EXPECT_EQ(c.t_close_e2e_ns, 150 * kMs);
+  EXPECT_TRUE(c.Valid());
+  p.T_close_lead = rtc::catching::TbdDouble{};  // the literal TBD
+  EXPECT_FALSE(HandSequencerConfig::FromProfile(p).Valid());
 }
 
 TEST(HandSequencer, CommitsOnlyFromPreshapeAndOnlyOnce) {

@@ -1,6 +1,6 @@
 # Arm–Hand Ball Catching을 위한 Inverse-Dynamics MPC 수학적 구성 (개정판 v3)
 
-> **구현 상태.** §0 – §16 은 설계 자료이고 고치지 않는다 — 원래 설계와 구현을 견주어 볼 수 있게 그대로 둔다. 구현한 내용은 문서 끝의 §17 에 원래 절과 대응시켜 적는다 (17.$n$ 이 §$n$ 의 구현). 지금 §17 은 mpc_docking 의 수치 코어 (§10 의 inner 문제, E1-F13 [#739](https://github.com/hyujun/rtc-framework/issues/739)) 와 NLP search 의 탐색 코어 (§11, E1-F14 [#740](https://github.com/hyujun/rtc-framework/issues/740) — 17.11 · 17.12) 를 적는다. 계획기 · RT 쪽은 아직 구현하지 않았다 (E1-F16 – F21, epic [#621](https://github.com/hyujun/rtc-framework/issues/621)).
+> **구현 상태.** §0 – §16 은 설계 자료이고 고치지 않는다 — 원래 설계와 구현을 견주어 볼 수 있게 그대로 둔다. 구현한 내용은 문서 끝의 §17 에 원래 절과 대응시켜 적는다 (17.$n$ 이 §$n$ 의 구현). 지금 §17 은 mpc_docking 의 수치 코어 (§10 의 inner 문제, E1-F13 [#739](https://github.com/hyujun/rtc-framework/issues/739)) 와 NLP search 의 탐색 코어 (§11, E1-F14 [#740](https://github.com/hyujun/rtc-framework/issues/740) — 17.11 · 17.12) 를 적는다. 계획기의 한 주기가 그 탐색과 구간 계획기 (`MpcDockingSegmentPlanner`) 를 부르는 것은 E1-F16 [#742](https://github.com/hyujun/rtc-framework/issues/742) 이고 17.12 가 적는다. RT 쪽 (교체 쌍의 수용 등) 은 아직 구현하지 않았다 (E1-F17 – F21, epic [#621](https://github.com/hyujun/rtc-framework/issues/621)).
 
 작성일: 2026-10-02 (v1) · 개정: 2026-10-02 (v2, v3)
 
@@ -1245,7 +1245,7 @@ Independent coordinate로 reduction할 수 있다면 대응하는 reduced dynami
 - 구현한 것은 §10 의 inner 문제 하나다 — 포구 시각 $t_c$ 가 정해진 후보 하나에 대해 팔 궤적을 푼다. 궤적은 포구에서 끝나지 않고 그 뒤 정지할 때까지 이어진다. 스위치 `catch_time_variable` 을 켠 코어는 그 후보의 포구 시각도 호출자가 준 구간 안에서 정한다 (17.11). 기본은 꺼짐이고, 끈 코어에는 그 경로가 없다.
 - 결정변수는 팔 관절뿐이다. 모델은 호출자가 주는, 손 관절을 잠근 팔 모델이고 `model.armature` 에 입력 armature 를 더해 쓴다 (§7.2 의 보수 쪽 모델).
 - §11 의 바깥 루프 (후보 집합 · 순위 · 선택), §12 의 실행 구조, hand schedule (§6.2) 은 이 코어에 없다. $J_{\mathrm{time}}$ · $J_{\mathrm{switch}}$ 와 후보별 국소 연속 포획 시각 (§11.1) 은 포구 시각을 변수로 둔 코어에만 있다 — 그 코어는 두 항을 포구 시각의 함수로 받는다 (17.11). 폐쇄 시각은 손 시퀀서가 정하고 코어는 그 명목값 $\delta_0$ 만 받는다 (17.8).
-- 코어는 ROS · 컨트롤러 · 로봇 이름을 모른다. 호출하는 것은 NLP 탐색 (17.11) 과 테스트이고, 계획기에 꽂는 일은 다른 feature 가 한다.
+- 코어는 ROS · 컨트롤러 · 로봇 이름을 모른다. 호출하는 것은 NLP 탐색 (17.11) · `MpcDockingSegmentPlanner` (17.12) 와 테스트이고, 계획기에 꽂는 일은 컨트롤러의 configure 경로가 한다.
 
 ### 17.2 표기와 시간축
 
@@ -1692,7 +1692,7 @@ RT 가 따르는 plan 의 셀은 이 두 번 풀이의 예외다 (17.12).
 
 ### 17.12 실행 구조 — 예측이 갱신될 때의 탐색
 
-§12.7 가운데 바깥 루프가 하는 일의 구현이다. 실행 구조의 나머지 (§12.1 – §12.6, P1 · P2 의 실행 방식, closure 지령 시각의 갱신) 는 탐색에 없다. `NlpCatchSearch` 를 부르는 것은 테스트뿐이고, 계획기의 한 주기는 그것을 아직 부르지 않는다.
+§12.7 가운데 바깥 루프가 하는 일과 계획기의 한 주기 (`PlannerCycle::Run`) 가 그것을 부르는 방식의 구현이다. 실행 구조의 나머지 (§12.1 – §12.6, P1 · P2 의 실행 방식, closure 지령 시각의 갱신) 는 없다. 앞쪽은 탐색 (`NlpCatchSearch`) 이 하는 일이고, 계획기가 부르는 순서 · 구간 계획기 · 게시하지 않는 것은 "채택 뒤의 한 주기" 부터다.
 
 **예측 하나마다.** 탐색 한 번이 §12.7 의 한 주기다: 필요조건을 전부 다시 보고, 순위에 든 후보를 17.11 의 시작점에서 다시 푼다. 풀이는 자기 몫 안에서 수렴할 때까지 돈다 — real-time iteration 이 아니다.
 
@@ -1720,9 +1720,34 @@ RT 가 이 track 의 plan 을 따르는 동안만 아래가 적용된다. 앞의
 - **기록.** 창이 있든 없든 탐색마다 $i_a$, 창이 뺀 후보의 수, 고른 후보의 $i-i_a$, 고른 $t_c$ 와 처음 따른 plan 의 $t_c$ 의 차 (ns), 고른 후보가 창의 끝 ($\vert i-i_a\vert=W$) 인지를 남긴다.
 - **`continuous_tc` 에서 따르는 plan 의 셀.** 17.11 의 두 번 풀이의 예외다. 그 후보의 포구 시각은 격자 시각도 자유 변수도 아닌 **plan 의 것**이다: 필요조건을 그 시각에서 보고, 포구 시각을 변수로 둔 코어로 $\delta t_c$ 를 그 값에 묶은 채 한 번 푼다. 그것을 고르면 "갱신" 이다. 같은 셀의 다른 포구 시각은 후보로 존재하지 않으므로 plan 이 자기 셀 안의 다른 시각으로 교체되는 일은 없다.
 
-**멈추는 때.** 탐색 자신은 멈추는 규칙을 갖지 않는다. $T\lt T_{\min}$ 이 된 후보가 차례로 빠질 뿐이고, 탐색을 언제까지 부를지는 부르는 쪽이 정한다.
+**멈추는 때.** 탐색 자신은 멈추는 규칙을 갖지 않는다. $T\lt T_{\min}$ 이 된 후보가 차례로 빠질 뿐이고, 탐색을 언제까지 부를지는 부르는 쪽 (계획기의 한 주기, 아래) 이 정한다.
 
-구현하지 않은 것: $t\ge t_c^\star-\tau_{\mathrm{react}}$ 에서 바깥 루프를 멈추는 것, real-time iteration 과 preparation / feedback 의 분리, P1 · P2, closure 지령 시각의 갱신, 채택 뒤에 따르는 셀 안에서 포구 시각을 옮기는 것, commit 에 따라 포구 시각을 묶는 것, 계획기의 한 주기가 격자 밖 포구 시각의 plan 을 게시하는 것.
+**채택 뒤의 한 주기 (`PlannerCycle::Run`).** 계획기는 탐색과 구간 계획기를 추상 interface (`CatchSearch` · `SegmentPlanner`) 로만 안다 — 어느 탐색 (`grid` · `nlp`) 과 어느 구간 계획기 (`mpc` · `mpc_docking`) 가 꽂혔는지는 configure 경로의 일이다 (조합과 그 선택 키는 L3 §4.1 · §6). 구간 계획기가 꽂혀 있고 RT 가 plan 을 따르는 APPROACH 의 한 wake 는 다음 순서다.
+
+1. **구간의 재계획** — 매 wake, 모든 출구에서. 따르는 구간이 탐색의 사정으로 늦어지는 일이 없다.
+2. **탐색** — 처음 따른 plan 의 $t_c$ (리셋 뒤 RT 가 처음 따른 것) 까지 남은 시간이 `planner.freeze.t_stop_plan` 보다 길 때만, 그리고 모드가 APPROACH 일 때만 (COMMITTED 부터는 재계획뿐). 탐색은 RT 가 보고한 구간 (`arm`) 을 받아 후보의 출발 상태를 거기서 평가하고, 그 시각은 wake 가 아니라 **재계획이 끝난 뒤의 시계**다 (lead · RT 보고의 나이 · 후보가 출발할 수 있는 순간을 탐색이 시작하는 곳에서 잰다). `t_stop_plan` 은 $T_{\mathrm{freeze}}$ 이상이어야 하고 (아니면 park) 키가 없으면 $T_{\mathrm{freeze}}$ 다. 값이 NaN (어느 profile 도 채우지 않은 파라미터) 이면 따르는 동안 탐색은 돌지 않는다.
+3. **탐색이 낸 것은 게시하지 않는다.** RT 는 이미 따르고 있는 공에 두 번째 plan 을 받지 않는다. 탐색의 판정이 교체 (`kReplaced`) 이고 plan 이 유효하면 그 wake 는 `kHeldReplaceUnsupported` (CSV 의 `held_replace_unsupported`) 이고, 그 밖 (갱신 · plan 없음 · 보류) 은 `kHeld` 다. `PublishPair` 도 plan 의 평문 저장도 거치지 않는다. 탐색의 기록 (`SearchStats`) 은 그대로 남는다. 탐색이 도는 사이 새 예측이 들어와도 이 wake 는 `superseded` 가 아니다 — 그 결과는 게시 직전의 재확인에서 버린 plan 을 세는 것이고 (MD-29), 이 wake 는 게시하지 않는다.
+
+`closed_form` 구간 (구간 계획기가 없음) 의 주기는 이 절의 대상이 아니다 — 탐색이 매 wake 돌고 교체는 L3 §4.7 의 규칙이 정한다. `grid` 탐색이 구간 계획기 아래에서 교체를 판정하는 방식 (ΔJ 만) 은 L3 §4.7 이 갖는다.
+
+**`MpcDockingSegmentPlanner` (`mpc_docking_segment_planner.hpp`).** 두 번째 `SegmentPlanner` 다. 포구 구간의 격자는 포구 노드 앞 $n_{\mathrm{pre}}$ 개의 구간 (간격 $\Delta_{\mathrm{pre}}$) 과 그 뒤 정지 구간이고, $n_{\mathrm{pre}}=1\ldots n_{\mathrm{pre,max}}$ 마다 `MpcDockingSegmentCore` 하나를 configure 때 만들어 한 번 풀어 둔다. **포구 노드는 공이 입구 평면을 지나는 순간**이다 — 이 계획기 아래에서 plan 의 $t_c$ 는 어느 탐색이 냈든 그것을 뜻한다 (손의 제어 지령 시각은 L6 §4.3).
+
+- **첫 구간 (`PlanFirst`).** RT 가 아직 명령을 seed 하지 않은 보고 (plan 을 받기 전 — 측정 자세와 영속도) 에서도 푼다: RT 는 쌍을 받을 때 그 자세에 명령을 seed 한다. 팔이 명령 위에서 정지해 있을 때만 푼다 ($\max_j\vert\dot q_{\mathrm{cmd},j}\vert\le$ `approach.rest_tol`, 아니면 `kNotAtRest`). 탐색의 해 (`CatchSolution`) 가 이 plan 의 것이면 (같은 $t_c$ · 같은 RT 보고 · 이 계획기의 격자 · `dt_catch_ns == 0`) 다시 풀지 않고 노드를 이 계획기의 코어에서 **평가**해 (hard 행의 위반 · slack · 토크) 그대로 게시한다 — 노드는 bit 단위로 탐색의 것이고 `converged` 는 `CatchSolution` 의 것이다 (평가는 수렴하지 않는다). 아니면 $x_0=(q_{\mathrm{cmd}},0,0)$ 에서 plan 의 $q^\ast$ 를 포구 자세 목표로 풀어 낸다.
+- **재계획 (`Replan`).** 같은 $t_c$ 를 두고, 재계획 예산이 닿는 첫 격자점에서 다시 푼다. $x_0$ 와 시작 궤적은 RT 가 보고한 구간 (`SourceSeq`) 에서 `NodeTrajectoryFollower::SampleJoints` 로 평가한다. 포구 전 구간이 하나도 남지 않으면 (`kPastReplanWindow`) 풀지 않는다 — **포구 뒤에는 아무것도 게시하지 않는다.** 마지막으로 게시한 구간이 팔을 포구를 지나 정지까지 데려간다.
+- **게시 조건.** 예산 (`budget.first_s` · `budget.replan_s`, 코어의 기한이기도 하다) 안에서 끝남, `StartsInTime`, 실행 가능하고 수렴, 포구 구간과 속도 envelope 의 slack 이 상한 (`publish.slack_c_max` · `slack_v_max`) 안, 노드 사이의 관절 속도가 정격 안, `ValidateSegmentNodes` 통과. 어느 하나라도 아니면 구간은 보류되고 plan 도 게시되지 않는다 (쌍 게시, MD-56).
+- **한계.** `ProxQP` 가 solve 안에서 할당하므로 (#654) sim 전용이다 — 실기의 SCHED_FIFO 계획기 스레드에서는 #654 뒤다.
+
+**`SegmentRing<Payload>` (`segment_ring.hpp`).** 한 plan 이 게시한 구간을 최대 8 개 오래된 것부터 담는 고정 크기 버퍼다. 다른 plan 의 구간이 들어오면 비운다. 가득 찼을 때는 RT 가 마지막으로 보고한 둘을 빼고 가장 오래된 것을 버리므로 (RT 는 최대 둘을 보고한다) 같은 격자점의 재풀이가 몰려도 따르는 구간이 밀려나지 않는다. `MpcSegmentPlanner` (payload: 정지선) 와 `MpcDockingSegmentPlanner` (payload 없음) 가 같은 것을 쓴다.
+
+**공분산의 규칙은 하나다.** 시각 $t$ 의 공은 평균을 `SampleAt` 로, 공분산을 **가장 가까운 표본**의 $6\times6$ 을 $F(t-t_i)\,\Sigma_i\,F(t-t_i)^\top$ ($F$ 는 등속 전이) 로 전파한 값으로 읽는다 (`SampleBallNode`). 이 코어 · NLP 탐색 · `MpcSegmentPlanner` 의 공 대상 · `GridCatchSearch::Monitor` 가 같은 함수를 부른다. 예측 밖의 시각은 호출하는 쪽이 거부한다.
+
+**미룬 것 (E1-F17).** 아래는 구현하지 않았고 이 절의 동작은 그것이 없다는 전제다.
+
+- RT 가 **교체 쌍** (새 plan 과 그 첫 구간) 을 받는 것. 지금 RT 는 따르는 plan 을 바꾸지 않으므로 탐색이 낸 교체는 위처럼 기록만 한다.
+- **2-plan ring** (옛 plan 과 새 plan 의 구간을 함께 들고 있는 것), 움직이는 팔에서 시작하는 **첫 구간** (`PlanFirst` 는 정지한 팔만), `grid` 탐색이 `arm` 을 읽는 것 (읽는 것은 `nlp` 탐색이다).
+- **closure 지령 시각의 갱신 (§12.7 의 M2).** 손 시퀀서는 COMMITTED 에서 한 번 $t_{\mathrm{cmd}}=t_c-T_{\mathrm{close,lead}}$ 로 지령한다.
+
+구현하지 않은 것: $\tau_{\mathrm{react}}$ 로 정하는 바깥 루프의 정지 (설계 키 `t_stop_plan` 이 처음 채택한 $t_c$ 에서 그것을 대신한다), real-time iteration 과 preparation / feedback 의 분리, P1 · P2 의 병렬 실행, 채택 뒤에 따르는 셀 안에서 포구 시각을 옮기는 것, commit 에 따라 포구 시각을 묶는 것, 계획기의 한 주기가 격자 밖 포구 시각의 plan 을 게시하는 것, `mpc_docking` 의 포구 뒤 정지 재풀이.
 
 ### 17.15 검증
 

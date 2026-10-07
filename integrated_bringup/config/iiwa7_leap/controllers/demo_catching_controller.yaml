@@ -7,29 +7,41 @@
 # ── How this config is laid out (MD-90) ──────────────────────────────────────
 # This file holds the QP CLIK step (`catching.joint_cmd`), the bring-up
 # sections (ball, hand, vision ingress, supervisor thresholds, topics, logs),
-# the planner thread's own keys, the arm's acceleration box, and the one key
-# that SELECTS what the arm follows: `catching.planner.segment.mode`
-# (closed_form | mpc).
+# the planner thread's own keys, the arm's acceleration box, and the two keys
+# that SELECT what runs: `catching.planner.search.mode` (grid | nlp) — which
+# search turns a predicted ball into a catch plan — and
+# `catching.planner.segment.mode` (closed_form | mpc | mpc_docking) — what the
+# arm follows. Every pair runs but nlp with closed_form, which parks.
 #
 # What each function is tuned with lives in a fragment under catching/. The CM
 # merges the fragments into this tree before it applies any override
 # (rtc_controller_manager README, `include:`):
-#   catching/search_grid.yaml          the catch-point search (planner.search.grid)
+#   catching/search_grid.yaml          the grid search (planner.search.grid)
+#   catching/search_nlp.yaml           the nlp search (planner.search.nlp)
 #   catching/planner_closed_form.yaml  the closed_form law (reference,
 #                                      supervisor.decel.a_dec)
 #   catching/segment_mpc.yaml          the mpc segment planner (planner.segment.mpc)
-# All three are always included: the mode is chosen by that one key, not by
-# this list (a sim_overlay can then switch it). A function keeps every value
-# it is designed with in its own fragment: where two functions read the same
-# number, each has its own key (the search has its own copy of the
-# closed_form law's five values, the mpc segment planner its own eta_v and
-# v_eps). A fragment keeps the full key path, so an
-# override or a parameter mirror names a key exactly as it did in one file.
-# Each key lives in ONE file — the loader refuses a leaf that two files set.
+#   catching/segment_mpc_docking.yaml  the docking segment planner
+#                                      (planner.segment.mpc_docking)
+# All five are always included: what runs is chosen by the two keys, not by
+# this list (a sim_overlay can then switch it). Only the selected functions'
+# keys are read and required — a fragment of a function that does not run can
+# be absent, or wrong, without this controller noticing. A function keeps every
+# value it is designed with in its own fragment: where two functions read the
+# same number, each has its own key (the grid search has its own copy of the
+# closed_form law's five values, each segment planner its own eta_v). What is
+# MEASURED on the hand is not a function's: it lives once, in `robot.hand`
+# below (the closure time, the close lead, the docking capture set), and every
+# function that needs it reads it from there. A fragment keeps the full key
+# path, so an override or a parameter mirror names a key exactly as it did in
+# one file. Each key lives in ONE file — the loader refuses a leaf that two
+# files set.
 include:
   - catching/search_grid.yaml
+  - catching/search_nlp.yaml
   - catching/planner_closed_form.yaml
   - catching/segment_mpc.yaml
+  - catching/segment_mpc_docking.yaml
 demo_catching_controller:
   command_type: "position"
 
@@ -94,8 +106,10 @@ demo_catching_controller:
       # and this one, which on hardware is a PTP/NTP question (TBD-NET-01, S10
       # confirms it). The sim value is the `sim.io` override below.
       future_tol: 0.001
-      # R1 (the commit condition) for THIS hand: T_close,tot 0.1047 + T_arm
-      # 0.05 + margin 0.03 + L 0.14 = 0.3247, so any value >= 0.33 is safe.
+      # R1 (the commit condition) for THIS hand, set when the close lead was
+      # the closure time 0.1037: T_close,tot 0.1047 + T_arm 0.05 + margin 0.03
+      # + L 0.14 = 0.3247, so any value >= 0.33 is safe (with the lead
+      # robot.hand.T_close_lead 0.0577 it is 0.2787 — safer still).
       # 0.51 is ur5e_p1b's figure (its T_close,tot is 0.2815), kept because it
       # is stricter and the sim profile's 1.0 s horizon clears it on every
       # prediction — it rejects nothing here. Re-derive it if the profile
@@ -209,7 +223,114 @@ demo_catching_controller:
         # lighter (armature 0.003-0.006 vs 0.05) — this hand is stiffness
         # dominated, not torque-saturation dominated.
         # The analyser's tick axis is NOT usable here — see L6 §4.2.
-        T_close_e2e: 0.1037
+        #
+        # THE MEASURED CLOSURE TIME, and only that (E1-F16, #742): the mean of
+        # the 200-trial re-measurement of E1-F15 (#741) — 98.010 ms on the
+        # steady and the tick axis alike, sample std 0.141 ms (max 100.0). It
+        # bounds how long a closure may take (T_close_timeout is derived from
+        # it) and is what the closing hand absorbs in the grid search's gamma
+        # window. It no longer times the close command: that is T_close_lead
+        # below. (It was 0.1037 — the p99 above — while it did both.)
+        T_close_e2e: 0.098
+        # HOW LONG BEFORE THE BALL REACHES THE CATCH POINT THE HAND IS TOLD TO
+        # CLOSE — a design value, set from where the hand holds (E1-F15/E1-F16
+        # docking identification, box w040): the closure held when it was
+        # commanded 31.7 – 83.7 ms before the ball centre reached the
+        # catch-frame origin, and this is the middle of that window. THIS HAND
+        # HOLDS WHEN IT IS STILL CLOSING AS THE BALL ARRIVES: the closure
+        # completes T_close_e2e - 0.0577 = 40 ms after the arrival (the window
+        # is 14 – 66 ms after it), where the old rule (close 0.1037 before it)
+        # had it complete 6 ms BEFORE the arrival — 20 ms outside the window.
+        # Read by the hand sequencer, the plan's t_cmd, the freeze-window bound
+        # and the grid search's commit gate. Whose catch instant the lead is
+        # subtracted from, and the one conversion the controller makes under
+        # the mpc_docking segment planner (mirror hand.T_close_lead_from_t_c),
+        # are L6 §4.3's; this hand's converted lead and the docking cores'
+        # delta_0 are in L6 §4.6. Absent, the key is T_close_e2e (and the
+        # configure log says so). Provisional (sim).
+        T_close_lead: 0.0577
+
+        # ── The docking capture set (E1-F15 #741, re-measured in E1-F16 #742) ──
+        # What the nlp search and the mpc_docking segment planner need to know
+        # of THIS hand, identified in sim with tools/docking_ident (README):
+        # the ball flown into the preshape hand along a line of the catch
+        # frame, q_close commanded at a set instant, "held" judged after the
+        # closure. Read by every configuration, REQUIRED only when one of
+        # those two functions is selected (a value left TBD parks it then).
+        # PROVISIONAL — a sim identification: the sim hand's absorption and
+        # restitution are not the real hand's (L6 §4.5), and the lateral set
+        # is small against the resolution it was measured at (below).
+        # Box w040: closing speed 1.6 – 1.7 m/s, 300 conditions drawn from the
+        # set held 284 times (95 % lower bound 0.920); with the ball
+        # accelerating in the catch frame, 287 (5 m/s² along the approach
+        # axis), 275 (9.81 m/s² along it) and 289 (gravity at the wait pose)
+        # of 300 — lower bounds 0.932, 0.886, 0.940.
+        docking:
+          provisional: true
+          # Entrance plane: the ball centre this far above the catch-frame
+          # origin along the approach axis has not touched the open hand on
+          # any approach of the set [m]. The catch node of a docking solve is
+          # the ball's crossing of it.
+          s_ent: 0.0530
+          # The cone the ball's line must stay inside on its way to the
+          # entrance: radius at the entrance [m] and half-angle tangent (the
+          # identification's scan ended before the cone did).
+          corridor:
+            r_ent: 0.0221
+            tan_theta: 0.2764
+          # Where the ball centre may cross the entrance plane, catch-frame
+          # x, y [m]: a convex polygon of unit normals a_i and offsets b_i
+          # (a_i . rho <= b_i), as flat lists — faces_a is [ax0, ay0, ax1,
+          # ay1, …]. rho_ref is the point the terminal cost aims at (the
+          # centre of the set's inscribed circle).
+          # MEASURED BY HOLD RATE (#742): a 5 mm cell is in the set when its
+          # 40 fly-ins (5 conditions x 8) hold as often as the best cell's to
+          # within 5 points. 43 of 459 candidate cells are (the best 40 of
+          # 40), and they do NOT make one region: the hand holds at 0.8 – 0.95
+          # a cell over some 60 x 60 mm and at 38+ of 40 in scattered cells of
+          # it. The polygon is what fits inside the largest connected group,
+          # around (-20, 20) mm — its nearest face is 3.3 mm from rho_ref
+          # (157 of 160 held there with no lateral speed), so the lateral
+          # chance row admits a ball known to a millimetre or so only.
+          lateral:
+            n_faces: 8
+            faces_a: [1.0, 0.0, 0.7071067812, 0.7071067812, 0.0, 1.0, -0.7071067812, 0.7071067812,
+                      -1.0, 0.0, -0.7071067812, -0.7071067812, 0.0, -1.0, 0.7071067812, -0.7071067812]
+            faces_b: [-0.015381, 0.003266, 0.024619, 0.031551, 0.024619, 0.003266, -0.015381,
+                      -0.025018]
+            rho_ref: [-0.020, 0.020]
+          # The relative velocity the hand holds [m/s]: the closing speed
+          # along the approach axis (the box's band — the identification
+          # flew nothing outside it) and the lateral speed (the last ring
+          # whose hold rate stays within 5 points of the zero-speed ring's).
+          # c_ent_max and a_brake are the approach envelope's design values,
+          # not identified: the closing speed allowed at the entrance (the
+          # band's top) and the relative braking the envelope assumes.
+          speed:
+            c_min: 1.6
+            c_cap_max: 1.7
+            c_ent_max: 1.7
+            v_perp_max: 0.325
+            a_brake: 5.0
+          # When the closure has to be complete, measured from the entrance
+          # crossing [s]: the window, on the axis where the closure completes
+          # T_close_e2e after its command (the identification's own axis,
+          # which had 103.7 ms in it, moved by 103.7 - 98.0 ms). The nominal
+          # instant is NOT a key: it is T_close_e2e - T_close_lead. sigma_tau
+          # is the closure time's sample std (a tick's quantisation, 0.58 ms,
+          # is not added).
+          closure:
+            delta_lo: 0.04743
+            delta_hi: 0.09748
+            sigma_tau: 0.000141
+          # The impact model: where on the hand the ball first lands (catch
+          # frame [m] — the first contact of a ball coming down the approach
+          # axis onto the open hand) and the restitution (the sim ball's on a
+          # rigid surface; the hand's own was not measured). e_max / p_max
+          # (energy and impulse caps) are not set: those rows are off.
+          impact:
+            contact_point_hand: [-0.0005, 0.0, -0.0344]
+            restitution: 0.732
 
         # SET, not derived (S8-D, #537). The L6 §6 derivation from this profile
         # (the slower of a torque-saturated and a first-order release, doubled)
@@ -252,11 +373,21 @@ demo_catching_controller:
 
     # What stays here is the planner THREAD's own: whether it runs, how it
     # wakes, the wait pose and the catch sub-model, the freeze lead and the
-    # block's provisional flag — and the key that selects the segment mode.
-    # The search's keys are in catching/search_grid.yaml (planner.search.grid)
-    # and the mpc segment planner's in catching/segment_mpc.yaml
-    # (planner.segment.mpc), both under this same `planner:` map.
+    # block's provisional flag — and the two keys that select the search and
+    # the segment mode. Each function's keys are in its fragment under
+    # catching/ (planner.search.grid, planner.search.nlp, planner.segment.mpc,
+    # planner.segment.mpc_docking), all under this same `planner:` map.
     planner:
+      search:
+        # THE SELECTOR of the search (E1-F16): which function turns a predicted
+        # ball into a catch plan, chosen once per configuration. grid: one
+        # candidate per vision sample, a closed-form gamma profile per
+        # candidate (the code default, when the key is absent; its keys:
+        # planner.search.grid). nlp: the docking problem solved per candidate
+        # catch instant (its keys: planner.search.nlp) — needs a segment
+        # planner (segment.mode mpc or mpc_docking; with closed_form it parks)
+        # and robot.hand.docking, and is sim only until #654.
+        mode: grid
       segment:
         # THE SELECTOR: what the arm follows from APPROACH to the end of the
         # stop (MPC MD-44), chosen once per configuration and never mixed
@@ -268,6 +399,10 @@ demo_catching_controller:
         # planner.enabled and the approach grid
         # (planner.segment.mpc.approach.n_pre_max > 0), else it parks; a DECEL
         # with no segment to follow aborts (ABORT_SAFE), never closed_form.
+        # mpc_docking: the docking segment planner's segments instead (its
+        # keys: planner.segment.mpc_docking, catching/segment_mpc_docking.yaml)
+        # — the docking problem per segment, nothing published after the
+        # catch; needs robot.hand.docking and is sim only until #654.
         # Shipped mpc by the user's decision (MD-89, 2026-10-03)
         # although gate G-1 failed here: catch success 0.02 against closed_form's 0.49 on the same 300 throws — 285
         # of them got no catchable plan (E1-F06, #632).
@@ -297,12 +432,21 @@ demo_catching_controller:
       # The robot config's catch sub-model (R-3): arm root → catch frame parent.
       sub_model: "iiwa7_catch"
       freeze:
-        # Decision G (2026-09-23): the L3 §4.11 lower bound T_close,tot 0.1047 +
-        # T_arm (0, shipped) + margin 0.03 = 0.135, rounded up with room.
-        # Also covers the S8-D sim overlays' T_arm 0.05 (bound 0.1847), so
-        # those leave it alone. Provisional.
-        # Read by the search, by both laws and by the RT (the commit instant).
+        # Decision G (2026-09-23), set when the close lead was the closure time
+        # 0.1037: the L3 §4.11 lower bound T_close,tot 0.1047 + T_arm (0,
+        # shipped) + margin 0.03 = 0.135, rounded up with room. Also covers the
+        # S8-D sim overlays' T_arm 0.05 (bound 0.1847), so those leave it
+        # alone. With the lead robot.hand.T_close_lead 0.0577 the bound is
+        # 0.0887 (0.1387 with T_arm 0.05) — the value is kept, it only freezes
+        # earlier than it must. Provisional.
+        # Read by the search, by every segment mode and by the RT (the commit
+        # instant).
         T_freeze: 0.19
+        # While a plan is followed on a segment planner's segments the search
+        # still runs, until the catch instant is this close [s]: not set, so it
+        # is T_freeze — the search stops where the plan freezes. A larger
+        # value stops it earlier; one below T_freeze parks.
+        # t_stop_plan: 0.19
       # The whole block is provisional (L0 §5.3): sim warns, a real arm parks.
       # That flag is the only one `planner:` has, across the fragments too — it
       # covers `hand.d_eff` and `hand.r_cap` (catching/search_grid.yaml), which

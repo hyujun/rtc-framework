@@ -6,16 +6,16 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace rtc::catching {
 
 namespace {
 
-// ── The L3 §6 ranges, in code, once ─────────────────────────────────────────
-// This block is the code's single copy of the table's 범위 column for the rows
-// this parser owns; the header deliberately does not restate it (AP-DOC-1).
-// `hi` is inclusive; `lo_open` distinguishes the table's ">0" rows from its
-// "≥0" rows, which is a real difference here — `lambda_max`, `k_null`,
+// ── The L3 §6 ranges, in code, once ─────────────────────────────────────────// This block is the
+// code's single copy of the table's 범위 column for the rows this parser owns; the header
+// deliberately does not restate it (AP-DOC-1). `hi` is inclusive; `lo_open` distinguishes the
+// table's ">0" rows from its "≥0" rows, which is a real difference here — `lambda_max`, `k_null`,
 // `k_manip` and `manip_grad_tol` are legitimately 0 (k_manip = 0 is what
 // recovers the pre-D-25 behaviour) while `mu` = 0 makes the task QP's Hessian
 // singular and `v_eps` = 0 removes the NUM-7 speed floor entirely.
@@ -43,9 +43,10 @@ constexpr Range kEpsPos = kPositive;
   throw std::invalid_argument("catching: " + msg);
 }
 
-/// Full dotted path of a `planner.search.grid.ik` key, for every message below.
-std::string IkKey(const char* key) {
-  return std::string("planner.search.grid.ik.") + key;
+/// Full dotted path of a key of a search's `ik` map, for every message below.
+/// `base` is that search's own map — "planner.search.grid" for the grid search.
+std::string IkKey(const std::string& base, const char* key) {
+  return base + ".ik." + key;
 }
 
 using params_detail::Spelling;
@@ -79,12 +80,13 @@ void CheckRange(const std::string& path, const YAML::Node& v, double d, const Ra
 /// Subscripting it through a CONST reference is what makes that work: the
 /// const overload hands back an undefined node (falsy), whereas an explicitly
 /// default-constructed `YAML::Node` is DEFINED and would be fed to `as<>()`.
-double ReadDouble(const YAML::Node& sec, const char* key, double fallback, const Range& r) {
+double ReadDouble(const std::string& base, const YAML::Node& sec, const char* key, double fallback,
+                  const Range& r) {
   const YAML::Node v = sec[key];
   if (!v) {
     return fallback;
   }
-  const std::string path = IkKey(key);
+  const std::string path = IkKey(base, key);
   double d = std::numeric_limits<double>::quiet_NaN();
   try {
     d = v.as<double>();
@@ -97,12 +99,13 @@ double ReadDouble(const YAML::Node& sec, const char* key, double fallback, const
 
 /// Read one int key. `as<int>()` requires the whole scalar to convert, so
 /// "3.5" and "twenty" are both refused rather than truncated.
-int ReadInt(const YAML::Node& sec, const char* key, int fallback, int lo, int hi) {
+int ReadInt(const std::string& base, const YAML::Node& sec, const char* key, int fallback, int lo,
+            int hi) {
   const YAML::Node v = sec[key];
   if (!v) {
     return fallback;
   }
-  const std::string path = IkKey(key);
+  const std::string path = IkKey(base, key);
   int i = 0;
   try {
     i = v.as<int>();
@@ -152,7 +155,7 @@ bool ReadBool(const YAML::Node& sec, const char* key, const std::string& path, b
   }
 }
 
-// ── Typo protection under `planner.search.grid.ik` ──────────────────────────────────────
+// ── Typo protection under a search's `ik` map ────────────────────────────────
 // This parser owns that section whole, so a key it does not know is a typo (or
 // a key from a doc revision this build has not caught up with) and is refused.
 // The list is the accept-list, not documentation: it must contain exactly the
@@ -167,13 +170,13 @@ constexpr const char* kIkKeys[] = {
 /// Keys L3 §6 marks removed in v0.5. Present-but-retired is REPORTED, not
 /// refused: the meaning is known, so a deployed config carrying one is a
 /// migration case and the caller logs it (rtc_controllers/README.md `params/`).
-void SweepIkKeys(const YAML::Node& ik, CatchPoseIkRetiredKeys& retired) {
+void SweepIkKeys(const std::string& base, const YAML::Node& ik, CatchPoseIkRetiredKeys& retired) {
   if (!ik.IsMap()) {
     return;
   }
   for (const auto& kv : ik) {
     if (!kv.first.IsScalar()) {
-      RejectMsg("keys of section 'planner.search.grid.ik' must be scalars");
+      RejectMsg("keys of section '" + base + ".ik' must be scalars");
     }
     const std::string name = kv.first.Scalar();
     if (name == "lambda") {
@@ -192,7 +195,7 @@ void SweepIkKeys(const YAML::Node& ik, CatchPoseIkRetiredKeys& retired) {
       }
     }
     if (!known) {
-      RejectMsg("unknown key '" + IkKey(name.c_str()) +
+      RejectMsg("unknown key '" + IkKey(base, name.c_str()) +
                 "' — L3 §6 defines no such parameter (typo?)");
     }
   }
@@ -200,7 +203,8 @@ void SweepIkKeys(const YAML::Node& ik, CatchPoseIkRetiredKeys& retired) {
 
 }  // namespace
 
-CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkRetiredKeys* retired) {
+CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkRetiredKeys* retired,
+                                         std::string_view search_map) {
   if (retired != nullptr) {
     *retired = CatchPoseIkRetiredKeys{};
   }
@@ -210,33 +214,37 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
   CatchPoseIkConfig out;
   CatchPoseIkRetiredKeys local_retired;
 
+  // The search whose keys these are: every path below is under its own map.
+  const std::string map_name(search_map);
+  const std::string base = "planner.search." + map_name;
   const YAML::Node planner = ReadSection(node, "planner", "planner");
   const YAML::Node search = ReadSection(planner, "search", "planner.search");
-  const YAML::Node grid = ReadSection(search, "grid", "planner.search.grid");
-  const YAML::Node ik = ReadSection(grid, "ik", "planner.search.grid.ik");
+  const YAML::Node grid = ReadSection(search, map_name.c_str(), base);
+  const YAML::Node ik = ReadSection(grid, "ik", base + ".ik");
 
-  SweepIkKeys(ik, local_retired);
+  SweepIkKeys(base, ik, local_retired);
   if (retired != nullptr) {
     *retired = local_retired;
   }
 
   CatchPoseIkOptions& o = out.options;
-  o.max_iter = ReadInt(ik, "max_iter", o.max_iter, 1, 100);
-  o.eps_pos = ReadDouble(ik, "eps_pos", o.eps_pos, kEpsPos);
-  o.rho = ReadDouble(ik, "rho", o.rho, Range{0.01, 1.0, false});
-  o.sigma0 = ReadDouble(ik, "sigma0", o.sigma0, kPositive);
-  o.lambda_max = ReadDouble(ik, "lambda_max", o.lambda_max, kNonNegative);
-  o.dq_step_max = ReadDouble(ik, "dq_step_max", o.dq_step_max, kPositive);
-  o.mu = ReadDouble(ik, "mu", o.mu, kPositive);
-  o.qp_eps_abs = ReadDouble(ik, "qp_eps_abs", o.qp_eps_abs, kPositive);
-  o.qp_max_iter = ReadInt(ik, "qp_max_iter", o.qp_max_iter, 1, std::numeric_limits<int>::max());
-  o.k_null = ReadDouble(ik, "k_null", o.k_null, kNonNegative);
-  o.k_manip = ReadDouble(ik, "k_manip", o.k_manip, kNonNegative);
-  o.manip_grad_tol = ReadDouble(ik, "manip_grad_tol", o.manip_grad_tol, kNonNegative);
-  o.v_eps = ReadDouble(ik, "v_eps", o.v_eps, kPositive);
+  o.max_iter = ReadInt(base, ik, "max_iter", o.max_iter, 1, 100);
+  o.eps_pos = ReadDouble(base, ik, "eps_pos", o.eps_pos, kEpsPos);
+  o.rho = ReadDouble(base, ik, "rho", o.rho, Range{0.01, 1.0, false});
+  o.sigma0 = ReadDouble(base, ik, "sigma0", o.sigma0, kPositive);
+  o.lambda_max = ReadDouble(base, ik, "lambda_max", o.lambda_max, kNonNegative);
+  o.dq_step_max = ReadDouble(base, ik, "dq_step_max", o.dq_step_max, kPositive);
+  o.mu = ReadDouble(base, ik, "mu", o.mu, kPositive);
+  o.qp_eps_abs = ReadDouble(base, ik, "qp_eps_abs", o.qp_eps_abs, kPositive);
+  o.qp_max_iter =
+      ReadInt(base, ik, "qp_max_iter", o.qp_max_iter, 1, std::numeric_limits<int>::max());
+  o.k_null = ReadDouble(base, ik, "k_null", o.k_null, kNonNegative);
+  o.k_manip = ReadDouble(base, ik, "k_manip", o.k_manip, kNonNegative);
+  o.manip_grad_tol = ReadDouble(base, ik, "manip_grad_tol", o.manip_grad_tol, kNonNegative);
+  o.v_eps = ReadDouble(base, ik, "v_eps", o.v_eps, kPositive);
   // The central-difference step of the log w5 gradient: a zero or negative
   // step would divide by it.
-  o.fd_step = ReadDouble(ik, "fd_step", o.fd_step, kPositive);
+  o.fd_step = ReadDouble(base, ik, "fd_step", o.fd_step, kPositive);
 
   // alpha_max: L3 §6 records `0.26 (provisional)`, which is the struct's own
   // default (see the header's RESOLVED DISCREPANCY note). It is still read as a
@@ -244,29 +252,25 @@ CatchPoseIkConfig ParseCatchPoseIkParams(const YAML::Node& node, CatchPoseIkReti
   // representable: a TBD (or absent) key leaves the struct's provisional 0.26
   // in `options` and records the openness in `out.alpha_max`, so nothing here
   // turns a TBD into a decided number without saying so.
-  out.alpha_max =
-      ReadTbd(ik, "alpha_max", IkKey("alpha_max"), out.alpha_max, Range{0.0, kPiOver2, false});
+  out.alpha_max = ReadTbd(ik, "alpha_max", IkKey(base, "alpha_max"), out.alpha_max,
+                          Range{0.0, kPiOver2, false});
   if (!out.alpha_max.tbd) {
     o.alpha_max = out.alpha_max.value;
   }
 
-  // ── planner.search.grid.catchability.* ────────────────────────────────────────────────
-  const YAML::Node catchability =
-      ReadSection(grid, "catchability", "planner.search.grid.catchability");
-  const YAML::Node manip_min = ReadSection(catchability, "manipulability_min",
-                                           "planner.search.grid.catchability.manipulability_min");
-  out.manipulability_min_arm_5row =
-      ReadTbd(manip_min, "arm_5row", "planner.search.grid.catchability.manipulability_min.arm_5row",
-              out.manipulability_min_arm_5row, kNonNegative);
-  out.manipulability_min_arm_6row =
-      ReadTbd(manip_min, "arm_6row", "planner.search.grid.catchability.manipulability_min.arm_6row",
-              out.manipulability_min_arm_6row, kNonNegative);
+  // ── <search map>.catchability.* ──────────────────────────────────────────────
+  const std::string manip = base + ".catchability.manipulability_min";
+  const YAML::Node catchability = ReadSection(grid, "catchability", base + ".catchability");
+  const YAML::Node manip_min = ReadSection(catchability, "manipulability_min", manip);
+  out.manipulability_min_arm_5row = ReadTbd(manip_min, "arm_5row", manip + ".arm_5row",
+                                            out.manipulability_min_arm_5row, kNonNegative);
+  out.manipulability_min_arm_6row = ReadTbd(manip_min, "arm_6row", manip + ".arm_6row",
+                                            out.manipulability_min_arm_6row, kNonNegative);
   out.manipulability_min_provisional =
-      ReadBool(manip_min, "provisional",
-               "planner.search.grid.catchability.manipulability_min.provisional", true);
+      ReadBool(manip_min, "provisional", manip + ".provisional", true);
 
   if (const YAML::Node def = catchability["definition"]) {
-    const std::string path = "planner.search.grid.catchability.definition";
+    const std::string path = base + ".catchability.definition";
     if (!def.IsScalar()) {
       RejectMsg("'" + path + "' must be \"arm_5row\" or \"arm_6row\", got " + Spelling(def));
     }

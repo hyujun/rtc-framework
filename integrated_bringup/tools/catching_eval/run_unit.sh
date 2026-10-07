@@ -17,6 +17,9 @@
 # (ALLOW_DIRTY=1 overrides), unless the CLIK form mirror says `dynamic`
 # (EXPECT_CLIK), the mode mirror says EXPECT_MODE, and every `key=value` of
 # EXPECT_KV (';'-separated, mirror names) reads back from the controller.
+# E1-F16 addition: the search-mode mirror says EXPECT_SEARCH (default grid) (search_mirror), and
+# so does the startup `search mode:` line (mode_log); EXPECT_MODE may be closed_form, mpc or
+# mpc_docking.
 # The overlay turns the APPROACH-stop MPC on in CLOSED LOOP: the planner stores
 # every segment, the RT takes a plan with its first segment and follows the
 # segments from APPROACH to the end of the stop (mode mpc, #662).
@@ -155,7 +158,9 @@ for P in joint_cmd.lag.T_arm joint_cmd.lag.lead_enable planner.freeze.T_freeze \
          planner.segment.mpc.catch.w_max planner.segment.mpc.catch.w_const \
          planner.segment.mpc.catch.sigma_ref planner.search.grid.gamma.eta_v \
          planner.search.grid.time.margin planner.search.grid.slice.t_lead_min \
-         joint_cmd.accel_constraint planner.segment.mode planner.segment.mpc.switch_margin \
+         joint_cmd.accel_constraint planner.segment.mode planner.search.mode \
+         planner.segment.mpc.switch_margin \
+         planner.segment.mpc_docking.approach.n_pre_max planner.segment.mpc_docking.stop.n_nodes \
          planner.segment.mpc.eta_v planner.search.grid.reference.omega \
          planner.search.grid.reference.a_max planner.search.grid.reference.v_max; do
   echo "$P: $(ros2 param get $CN $P 2>&1)" >> "$OUT/mirror.txt"
@@ -170,6 +175,7 @@ grep -q "ball_type: String value is: ${EXPECT_BALL}\$" "$OUT/mirror.txt" || why=
 grep -q "T_freeze: Double value is: ${EXPECT_COMMIT%0}\$\|T_freeze: Double value is: ${EXPECT_COMMIT}\$" "$OUT/mirror.txt" || why="$why T_freeze"
 grep -q "^joint_cmd.accel_constraint: String value is: ${EXPECT_CLIK:-dynamic}\$" "$OUT/mirror.txt" || why="$why clik_form"
 grep -q "^planner.segment.mode: String value is: ${EXPECT_MODE:-mpc}\$" "$OUT/mirror.txt" || why="$why mode_mirror"
+grep -q "^planner.search.mode: String value is: ${EXPECT_SEARCH:-grid}\$" "$OUT/mirror.txt" || why="$why search_mirror"
 IFS=';' read -ra KVS <<< "${EXPECT_KV:-}"
 for kv in "${KVS[@]}"; do
   [ -z "$kv" ] && continue
@@ -186,14 +192,22 @@ for kv in "${KVS[@]}"; do
 done
 # The startup lines say the mode too, in both modes (the expected line must be present):
 # EXPECT_MODE=closed_form is the same-day control unit (v1 law, no MPC segment planner).
-python3 "$D/check_segment_mode.py" "$OUT/launch.log" "${EXPECT_MODE:-mpc}" || why="$why mode_log"
-if [ "${EXPECT_MODE:-mpc}" != "closed_form" ]; then
+python3 "$D/check_segment_mode.py" "$OUT/launch.log" "${EXPECT_MODE:-mpc}" --search "${EXPECT_SEARCH:-grid}" || why="$why mode_log"
+# Each segment planner mirrors and logs its own grid: the mpc planner under
+# planner.segment.mpc.*, the docking planner under planner.segment.mpc_docking.*.
+if [ "${EXPECT_MODE:-mpc}" == "mpc" ]; then
 grep -q "planner.segment.mpc.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-6}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
 grep -q 'planner.segment.mpc.horizon.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
 grep -q "MPC segment planner approach grid: up to ${EXPECT_NPRE:-6} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
 grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not_e1f09_binary"
 fi
-grep 'MPC segment planner \(ready\|approach grid\)' "$OUT/launch.log" | sed 's/^.*demo_catching_controller\]: //' > "$OUT/segment_startup.txt"
+if [ "${EXPECT_MODE:-mpc}" == "mpc_docking" ]; then
+grep -q "planner.segment.mpc_docking.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-9}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
+grep -q 'planner.segment.mpc_docking.stop.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
+grep -q "mpc_docking segment planner ready: up to ${EXPECT_NPRE:-9} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
+grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not_e1f09_binary"
+fi
+grep 'MPC segment planner \(ready\|approach grid\)\|mpc_docking segment planner ready' "$OUT/launch.log" | sed 's/^.*demo_catching_controller\]: //' > "$OUT/segment_startup.txt"
 BUDGET=$(grep -o 'planner enabled: wake timeout [0-9.]* s, budget [0-9.]* s' "$OUT/launch.log" | head -1 | sed 's/.*budget \([0-9.]*\) s$/\1/')
 echo "planner_budget_s: ${BUDGET}" >> "$OUT/conditions.txt"
 [ -n "$BUDGET" ] || why="$why no_budget_line"

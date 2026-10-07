@@ -1,0 +1,118 @@
+# demo_catching_controller — the mpc_docking segment planner (ur5e_p1b)
+#
+# A fragment of ../demo_catching_controller.yaml (its `include:` list). The CM
+# merges it into that file's tree; every key keeps its full path.
+#
+# The segment planner that solves the docking problem per segment (MPC ·
+# dual-arm plan E1-F13, #739; wired in E1-F16, #742): the RT follows its joint
+# segments from APPROACH through the catch to the end of the stop. Read only
+# when `planner.segment.mode: mpc_docking` (the main file). Every key here is
+# under planner.segment.mpc_docking, and the planner reads its design values
+# from here alone.
+#
+# PROVISIONAL, SIM ONLY. The values below are starting values, not tuned
+# (E1-F19). The QP solver allocates inside a solve (#654), so this planner must
+# not run on a SCHED_FIFO planner thread on hardware until that is closed.
+demo_catching_controller:
+  catching:
+    planner:
+      segment:
+        mpc_docking:
+          # rho_max of the RT's segment-switch gate, per joint:
+          # |dqd| + K_p |dq| <= rho_max (1 - eta_v) qd_max (MD-39).
+          switch_margin: 1.0
+          # The speed margin on the joint ratings: the cores' velocity box is
+          # eta_v * qd_max and the RT's switch gate keeps (1 - eta_v) of the
+          # rating as its headroom, so it must stay below 1. Under
+          # planner.search.mode nlp the search's cores take the same margin.
+          eta_v: 0.9
+          # ── The grid ────────────────────────────────────────────────────────
+          # A segment has up to n_pre_max intervals of dt_pre_s before the catch
+          # node (one core per count) and the stop part after it; every segment
+          # runs to the end of the stop. Under planner.search.mode nlp this
+          # grid has to be the search's (planner.search.nlp.n_pre / .dt_pre_s /
+          # .stop) — a difference parks.
+          approach:
+            n_pre_max: 9
+            dt_pre_s: 0.1
+            # max |q_dot_cmd| that counts as "at rest" for a plan's first
+            # segment [rad/s].
+            rest_tol: 0.05
+          stop:
+            n_nodes: 7
+            dt_s: 0.05
+            blocks: [1, 1, 2, 3]
+          # A first segment's and a replan's budget [s] — also the core's
+          # deadline. Nothing is published after the catch: the last segment
+          # published before it carries the arm to rest.
+          budget:
+            first_s: 0.035
+            replan_s: 0.025
+          replan:
+            # Re-solve at a grid point the followed segment already starts at.
+            same_point: true
+          # The corridor and the speed envelope are soft in the problem: the
+          # largest slack a published segment may lean on [m], [m/s].
+          publish:
+            slack_c_max: 0.0
+            slack_v_max: 0.0
+          # The docking core's tuning (MpcDockingSegmentCoreParams) — what is NOT
+          # a property of the hand. The hand's identified values (the entrance
+          # plane, the corridor, the lateral set, the speed band, the closure
+          # window, the contact point) are robot.hand.docking in the main file
+          # and reach every core from there; the grid is this map's own keys
+          # above. A per-joint weight is one number for every joint.
+          # Starting values: the weights the core's own suites solve with
+          # (E1-F13); tuning them on the shipped arms is E1-F19.
+          core:
+            u_scale: 1.0e+3
+            cost:
+              r_tau: 1.0e-4
+              r_acc: 1.0e-3
+              r_jerk: 1.0
+              # Posture cost toward planner.wait_pose (the nominal posture).
+              w_q_nom: 0.1
+              w_manip: 0.0
+            catch:
+              q_p: [20.0, 20.0, 20.0]
+              q_v: [1.0, 1.0, 1.0]
+              sigma_T: 0.1
+              # Reference relative velocity at the catch node, catch frame
+              # [m/s]: straight down the approach axis at the middle of the
+              # hand's closing-speed band (robot.hand.docking.speed, c
+              # 0.5 – 0.6 m/s). on_configure parks when it leaves the band.
+              nu_ref: [0.0, 0.0, -0.55]
+              q_rho_f: [1.0e+3, 1.0e+3]
+              q_nu_f: [5.0, 5.0, 5.0]
+              w_impact: 0.0
+              e_ref: 1.0
+            approach:
+              window: 0.12
+              lambda1_c: 1.0
+              lambda2_c: 0.0
+              lambda1_v: 1.0
+              lambda2_v: 0.0
+            capture:
+              # Chance rows on: the lateral, speed and timing rows are
+              # tightened by the ball's covariance at the catch node.
+              chance: true
+              face_eps: 0.0125
+              speed_faces: 8
+              eps_nu: 0.01
+              eps_sigma: 1.0e-4
+            timing:
+              row: true
+              eps_t: 0.05
+            stop:
+              w_perp: 0.0
+            rows:
+              accel_box: false
+              jerk_box: false
+            sqp:
+              max_iterations: 50
+              tol_violation: 1.0e-6
+              tol_kkt: 1.0e-4
+            solver:
+              eps_abs: 1.0e-7
+              eps_rel: 1.0e-9
+              max_iter: 400

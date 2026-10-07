@@ -182,7 +182,7 @@ struct Rig {
     }
     constants.t_arm_s = 0.0;
     constants.control_dt = 0.002;
-    constants.t_close_e2e = 0.1;
+    constants.t_close_lead = 0.1;
 
     // The lattice: one candidate every 40 ms. The arm grid: 50 ms intervals,
     // 2..8 before the catch — so two candidates in a row often share a core.
@@ -1074,7 +1074,7 @@ TEST(NlpCatchSearchChoice, ThePlanAndTheSolutionDescribeTheChosenCandidate) {
   const BallNodeSample b = SampleBallNode(ball.traj, &ball.cov, true, BallTime{c->t_c_ns}, hint);
   // The plan: the ball at the catch instant, the approach axis against it.
   EXPECT_EQ(w.plan.t_c_ns, c->t_c_ns);
-  EXPECT_EQ(w.plan.t_cmd_ns, c->t_c_ns - Ns(rig->constants.t_close_e2e));
+  EXPECT_EQ(w.plan.t_cmd_ns, c->t_c_ns - Ns(rig->constants.t_close_lead));
   for (int a = 0; a < 3; ++a) {
     const auto u = static_cast<std::size_t>(a);
     EXPECT_TRUE(BitsEqual(w.plan.p_c[u], b.p[a]));
@@ -4067,7 +4067,7 @@ TEST(NlpCatchSearchContinuous, ThePlanAndTheSegmentAreOfTheCatchInstantItEndedAt
   for (std::size_t d = 0; d < 6; ++d) {
     EXPECT_EQ(w.plan.q_star[d], seg.q[static_cast<std::size_t>(seg.n_pre * kMaxSegmentNv) + d]);
   }
-  EXPECT_EQ(w.plan.t_cmd_ns, w.plan.t_c_ns - Ns(rig->constants.t_close_e2e));
+  EXPECT_EQ(w.plan.t_cmd_ns, w.plan.t_c_ns - Ns(rig->constants.t_close_lead));
   EXPECT_DOUBLE_EQ(w.plan.score, c->phi);
   EXPECT_DOUBLE_EQ(c->j_time, 0.0);
   EXPECT_DOUBLE_EQ(w.stats.chosen_lead_s, Sec(w.plan.t_c_ns - kNow));

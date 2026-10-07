@@ -31,6 +31,7 @@ Public surface (imported by app.py):
 - CATCHING_CONFIG_KEY, CATCHING_ENABLE_PARAM, CATCHING_STATE_TOPIC
 - CATCHING_SEGMENT_MODE_PARAM, SEGMENT_MODE_QUERY_PERIOD_S, SEGMENT_MODE_REPLY_TIMEOUT_S,
   segment_mode_query_due
+- CATCHING_SEARCH_MODE_PARAM, search_mode_query_due (same throttle, `planner.search.mode`)
 - MODE_NAMES, REASON_NAMES, PLAN_REASON_NAMES
 - CatchingStatus
 """
@@ -49,11 +50,14 @@ CATCHING_CONFIG_KEY = "demo_catching_controller"
 # msg/srv for something a parameter already expresses would be an E-3 decision.
 CATCHING_ENABLE_PARAM = "catching.enable"
 
-# The read-only parameter naming the arm-reference planner (`closed_form` |
-# `mpc`). It is a parameter rather than a CatchingState field because the
+# The read-only parameter naming the arm-reference planner (`closed_form` | `mpc` |
+# `mpc_docking`). It is a parameter rather than a CatchingState field because the
 # message is frozen; it is declared only after a successful configure, so a
 # parked or unconfigured controller answers with an empty string.
 CATCHING_SEGMENT_MODE_PARAM = "planner.segment.mode"
+# The catch-point search choice ({grid, nlp}), mirrored beside it. Read with the
+# same throttle; a controller built before the key existed never declares it.
+CATCHING_SEARCH_MODE_PARAM = "planner.search.mode"
 
 # Minimum spacing between reads of that parameter while it is still unknown.
 SEGMENT_MODE_QUERY_PERIOD_S = 2.0
@@ -171,7 +175,27 @@ def segment_mode_query_due(
     nothing once the law is cached. A read still `in_flight` blocks the next
     one only until `SEGMENT_MODE_REPLY_TIMEOUT_S`: past that its reply is lost.
     """
-    if status.feed.last_seen_s is None or status.segment_mode is not None:
+    return _mirror_query_due(status, status.segment_mode, now_s, last_query_s, in_flight)
+
+
+def search_mode_query_due(
+    status: CatchingStatus,
+    now_s: float,
+    last_query_s: float | None,
+    in_flight: bool,
+) -> bool:
+    """`segment_mode_query_due` for `planner.search.mode`: same throttle, own cache."""
+    return _mirror_query_due(status, status.search_mode, now_s, last_query_s, in_flight)
+
+
+def _mirror_query_due(
+    status: CatchingStatus,
+    cached: str | None,
+    now_s: float,
+    last_query_s: float | None,
+    in_flight: bool,
+) -> bool:
+    if status.feed.last_seen_s is None or cached is not None:
         return False
     if last_query_s is None:
         return not in_flight
@@ -234,6 +258,8 @@ class CatchingStatus:
     #: The controller's `planner.segment.mode`, once read; None = not read yet.
     #: Cached because the value is fixed at the node's first configure.
     segment_mode: str | None = None
+    #: The controller's `planner.search.mode` (grid | nlp), read and cached the same way.
+    search_mode: str | None = None
 
     input_valid: bool = False
     input_stale: bool = True
@@ -312,6 +338,7 @@ class CatchingStatus:
         # a controller relaunched in the other mode and switched in later.)
         if self.feed.state(now_s) is FeedState.STALE:
             self.segment_mode = None
+            self.search_mode = None
         self.feed.mark(now_s)
         prev_mode = self._prev_mode
         self.mode = int(msg.mode)
@@ -328,6 +355,7 @@ class CatchingStatus:
         # process and is read again. The first message has nothing to compare.
         if self._prev_tick is not None and new_tick < self._prev_tick:
             self.segment_mode = None
+            self.search_mode = None
         self._prev_tick = new_tick
         self.tick = new_tick
 
@@ -458,6 +486,7 @@ class CatchingStatus:
             f"mode: {mode_name(self.mode)}  reason: {reason_name(self.reason)}"
             f"  last attempt: {outcome_name(self.outcome)}  tick {self.tick}{feed_note}",
             self._segment_mode_line(),
+            self._search_mode_line(),
             self._arm_line(),
             self._input_line(),
             self._plan_line(),
@@ -488,6 +517,11 @@ class CatchingStatus:
             # only once it has configured (a parked one answers with nothing).
             return f"segment mode: unknown ({CATCHING_SEGMENT_MODE_PARAM} not read)"
         return f"segment mode: {self.segment_mode}"
+
+    def _search_mode_line(self) -> str:
+        if self.search_mode is None:
+            return f"search mode: unknown ({CATCHING_SEARCH_MODE_PARAM} not read)"
+        return f"search mode: {self.search_mode}"
 
     def _arm_line(self) -> str:
         observed = "ARMED" if self.armed else "DISARMED"

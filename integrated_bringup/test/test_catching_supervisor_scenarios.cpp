@@ -1587,7 +1587,7 @@ TEST_F(MpcScenarioTest, ABallThatGoesStaleEndsTheApproachAsBefore) {
 }
 
 TEST_F(MpcScenarioTest, AnotherPlanInApproachIsNotTaken) {
-  // MD-57: under mpc the followed plan is not replaced — its segments belong
+  // Under a segment planner the followed plan is not replaced — its segments belong
   // to it. A plan that reaches the box all the same (admissible, outside the
   // freeze window) is left there and the trial runs on the one it took.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());

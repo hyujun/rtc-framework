@@ -7,8 +7,8 @@
 // cycle's re-checks ask about them. The cycle owns the SeqLock, the re-check
 // and the segment counter; which planner solves is the configuration's choice.
 //
-// The one implementation today is MpcSegmentPlanner (mpc_segment_planner.hpp): linearised
-// joint-space QPs on a grid anchored at the catch instant.
+// The one implementation today is the mpc segment planner: linearised joint-space
+// QPs on a grid anchored at the catch instant.
 //
 // ── Contract ──────────────────────────────────────────────────────────────────
 //  • THREAD. Every member except SetClock is called from PlannerCycle::Run, on
@@ -29,12 +29,11 @@
 //  • CLOCK. The cycle hands the planner its clock when it installs it and
 //    again on every PlannerCycle::SetClock, so the solves are timed on the
 //    axis the cycle stamps `publish_ns` on.
-//  • SegmentRecord is the record a solve leaves (mpc_segment_planner.hpp). It is
-//    declared there, with the planner whose counters it holds; an
-//    implementation fills what it has and leaves the rest at the default —
-//    with ONE exception, because the cycle reads it back: `source_seq` after a
-//    Replan that returned true (see Replan). The cycle itself writes
-//    `outcome` (kPublished / kSuperseded), `segment_seq` and `publish_ns`.
+//  • SegmentRecord is the record a solve leaves (below). An implementation
+//    fills what it has and leaves the rest at the default — with ONE
+//    exception, because the cycle reads it back: `source_seq` after a Replan
+//    that returned true (see Replan). The cycle itself writes `outcome`
+//    (kPublished / kSuperseded), `segment_seq` and `publish_ns`.
 #pragma once
 
 #include "rtc_controllers/catching/planner_io.hpp"
@@ -42,11 +41,169 @@
 #include "rtc_controllers/catching/trajectory.hpp"
 
 #include <cstdint>
+#include <limits>
 
 namespace rtc::catching {
 
-struct SegmentRecord;  // mpc_segment_planner.hpp
 struct CatchSolution;  // catch_search.hpp
+
+/// What one segment step did (the planner events CSV's segment columns). The CSV
+/// writes the NAME (SegmentOutcomeName), never the value: the values carry no
+/// meaning outside a build and move when an enumerator is added or removed.
+enum class SegmentOutcome : std::uint8_t {
+  kOff = 0,  ///< not attempted: not configured, or not a mode that plans a segment
+  kNoState,  ///< no followed plan / t_c, unseeded command, or a size mismatch
+  /// The RT's report is older than the planner's age limit (or from the
+  /// future): what it reports may no longer be what the arm does (an RT stall).
+  kStaleState,
+  kUpToDate,          ///< the published segment already starts at this t_eff or later
+  kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s (MD-31)
+  kInputNonFinite,    ///< the predicted x₀ (w_⊥ > 0: or the ball's speed) is not finite
+  kSolveFailed,       ///< the core refused or the QP failed (core_reason)
+  kBudget,            ///< solved after budget_s
+  kLate,              ///< t_eff passed while solving
+  kSlack,             ///< slack non-finite or over its threshold (MD-33)
+  kReady,             ///< publishable; the cycle's re-check decides
+  kPublished,         ///< stored (set by the cycle)
+  kSuperseded,        ///< the trial or the followed plan moved during the solve (cycle)
+  // E1-F08 (#661). A solved segment whose packed form fails the terminal-rest
+  // or node check is kSolveFailed with core_reason kNone.
+  kNotAtRest,    ///< first solve: max |q̇_cmd| above approach.rest_tol
+  kTooLate,      ///< first solve: not even one pre-catch interval fits before t_c
+  kNotFollowed,  ///< replan: no segment of ours the RT reports pending or following
+  kNoBall,       ///< no usable ball at t_c (pre-catch point); w_⊥ > 0: no stop-path line
+  kCatchError,   ///< catch-node position error not finite or over catch_pos_err_max
+  kSpeed,        ///< a between-node velocity extremum over q̇_max
+  // kNoBall is NOT pre-catch only. With `cost.w_perp` > 0 it is also what a
+  // solve reports when it has no stop-path line to run on (header note): the
+  // first solve or a pre-catch replan whose ball is slower than v_eps at t_c,
+  // and a STOP grid point — at or after the catch, where no ball is read at
+  // all — whose source segment carries no line. kInputNonFinite likewise
+  // covers a ball speed that is not finite.
+};
+
+[[nodiscard]] constexpr const char* SegmentOutcomeName(SegmentOutcome o) noexcept {
+  switch (o) {
+    case SegmentOutcome::kOff:
+      return "off";
+    case SegmentOutcome::kNoState:
+      return "no_state";
+    case SegmentOutcome::kStaleState:
+      return "stale_state";
+    case SegmentOutcome::kUpToDate:
+      return "up_to_date";
+    case SegmentOutcome::kPastReplanWindow:
+      return "past_replan_window";
+    case SegmentOutcome::kInputNonFinite:
+      return "input_non_finite";
+    case SegmentOutcome::kSolveFailed:
+      return "solve_failed";
+    case SegmentOutcome::kBudget:
+      return "budget";
+    case SegmentOutcome::kLate:
+      return "late";
+    case SegmentOutcome::kSlack:
+      return "slack";
+    case SegmentOutcome::kReady:
+      return "ready";
+    case SegmentOutcome::kPublished:
+      return "published";
+    case SegmentOutcome::kSuperseded:
+      return "superseded";
+    case SegmentOutcome::kNotAtRest:
+      return "not_at_rest";
+    case SegmentOutcome::kTooLate:
+      return "too_late";
+    case SegmentOutcome::kNotFollowed:
+      return "not_followed";
+    case SegmentOutcome::kNoBall:
+      return "no_ball";
+    case SegmentOutcome::kCatchError:
+      return "catch_error";
+    case SegmentOutcome::kSpeed:
+      return "speed";
+  }
+  return "unknown";
+}
+
+/// Which solve a record describes (E1-F08).
+enum class SegmentKind : std::uint8_t {
+  kNone = 0,  ///< no solve was chosen (the record's default)
+  kFirst,     ///< the first segment of a plan, solved with the search (MD-56)
+  kSame,      ///< a pre-catch grid point the source already starts at (MD-58)
+  kAdvance,   ///< a later pre-catch grid point
+  kStop,      ///< a stop core: the catch node or a post-catch grid point
+};
+
+[[nodiscard]] constexpr const char* SegmentKindName(SegmentKind k) noexcept {
+  switch (k) {
+    case SegmentKind::kNone:
+      return "none";
+    case SegmentKind::kFirst:
+      return "first";
+    case SegmentKind::kSame:
+      return "same";
+    case SegmentKind::kAdvance:
+      return "advance";
+    case SegmentKind::kStop:
+      return "stop";
+  }
+  return "unknown";
+}
+
+struct SegmentRecord {
+  SegmentOutcome outcome{SegmentOutcome::kOff};
+  /// The solving core's own reason as its code: an enumerator of the installed
+  /// planner's core, 0 = none. Comparable and digestable, meaningless without
+  /// knowing the planner.
+  std::uint8_t core_reason{0};
+  /// That code's name as the planner's core spells it (static storage, never
+  /// null) — what a log or CSV writes.
+  const char* core_reason_name{"none"};
+  /// Grid index of node 0: t_eff = t_c + k·Δ_s for a stop grid point, −n_pre
+  /// for a pre-catch one (the CSV's segment_k).
+  std::int32_t k{-1};
+  std::int32_t n_nodes{0};
+  std::uint32_t segment_seq{0};  ///< the published segment's seq (cycle)
+  bool x0_clamped{false};        ///< the start state (q or q̇) was projected into the box
+  bool x0_from_segment{false};   ///< replan: x₀ came from a segment the RT reports
+  bool presolved{false};         ///< no reference: kinematic pre-solve + solve
+  /// First solve: the segment is the search's own solution (CatchSolution),
+  /// re-evaluated by the planner and published as it is — nothing was solved.
+  bool from_search{false};
+  bool cold_retry{false};  ///< a stop core's reference was refused, re-solved without it
+  std::int32_t iterations{0};
+  std::int32_t qp_status{-1};
+  std::int64_t solve_ns{0};    ///< solve start → solve end (the budget's measure)
+  std::int64_t publish_ns{0};  ///< the stored segment's stamp (cycle); 0 when not stored
+  double slack_max{std::numeric_limits<double>::quiet_NaN()};
+  double slack_terminal_max{std::numeric_limits<double>::quiet_NaN()};
+  double tau_ratio_max{std::numeric_limits<double>::quiet_NaN()};
+
+  SegmentKind kind{SegmentKind::kNone};
+  bool cold_start{false};      ///< the core's main QP started from zero
+  bool solver_retried{false};  ///< the core's own warm → cold re-run (cold_retried)
+  /// First solve: the reference's target was outside the core's position
+  /// box (clamped), or its minimum-jerk speed over 0.9·η_v·q̇_max (scaled).
+  bool ref_clamped{false};
+  bool ref_scaled{false};
+  double ref_scale{std::numeric_limits<double>::quiet_NaN()};      ///< smallest per-joint factor
+  double ref_shortfall{std::numeric_limits<double>::quiet_NaN()};  ///< largest |d| cut [rad]
+  double x0_speed{std::numeric_limits<double>::quiet_NaN()};       ///< first solve: max |q̇_cmd|
+  /// Catch node at the solution (FK), when the solve ran the catch terms.
+  double catch_pos_err{std::numeric_limits<double>::quiet_NaN()};   ///< [m]
+  double catch_axis_err{std::numeric_limits<double>::quiet_NaN()};  ///< [rad]
+  double catch_gamma{std::numeric_limits<double>::quiet_NaN()};
+  /// ‖v̂_b − J_v q̇‖ at the catch node [m/s], and the core's velocity slack s_v
+  /// (fraction of v_rel_allow, linear model; 0 when the slack row is off).
+  double catch_v_rel{std::numeric_limits<double>::quiet_NaN()};
+  double slack_v{std::numeric_limits<double>::quiet_NaN()};
+  /// max over nodes and between-node extrema of |q̇|/q̇_max.
+  double speed_ratio_max{std::numeric_limits<double>::quiet_NaN()};
+  bool w_p_fallback{false};  ///< W_p was the constant w_const·I (no usable Σ_p)
+  double w_delta_scale{std::numeric_limits<double>::quiet_NaN()};
+  std::uint32_t source_seq{0};  ///< replan: the segment x₀ and the reference came from
+};
 
 /// @brief The ball's prediction as one wake read it: the trajectory snapshot
 ///        and the covariance box, not owned.

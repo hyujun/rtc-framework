@@ -38,6 +38,7 @@
 // rtc_tools' test_cpp_header_matches_this_list reads the column list back out
 // of this file by joining them.
 
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 
 #include <cmath>
@@ -111,9 +112,9 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   os << rtc::catching::SegmentOutcomeName(d.outcome) << ',' << d.k << ',' << d.n_nodes << ','
      << d.segment_seq << ',' << d.publish_ns << ',' << (d.x0_clamped ? 1 : 0) << ','
      << (d.x0_from_segment ? 1 : 0) << ',' << (d.presolved ? 1 : 0) << ',' << (d.cold_retry ? 1 : 0)
-     << ',' << d.iterations << ',' << d.qp_status << ','
-     << rtc::catching::MpcSegmentCoreReasonName(d.core_reason) << ',' << d.solve_ns / 1000 << ','
-     << d.slack_max << ',' << d.slack_terminal_max << ',' << d.tau_ratio_max << ',';
+     << ',' << d.iterations << ',' << d.qp_status << ',' << d.core_reason_name << ','
+     << d.solve_ns / 1000 << ',' << d.slack_max << ',' << d.slack_terminal_max << ','
+     << d.tau_ratio_max << ',';
   os << rtc::catching::SegmentKindName(d.kind) << ',' << (d.cold_start ? 1 : 0) << ','
      << (d.solver_retried ? 1 : 0) << ',' << (d.ref_clamped ? 1 : 0) << ','
      << (d.ref_scaled ? 1 : 0) << ',' << d.ref_scale << ',' << d.ref_shortfall << ',' << d.x0_speed

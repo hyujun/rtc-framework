@@ -27,6 +27,7 @@ from integrated_bringup.catching_sim_trials import (
     frozen_throws,
     load_arm_profile,
     mirror_from_replies,
+    mirror_names,
     parse_args,
     trial_throws,
 )
@@ -134,7 +135,10 @@ def test_the_default_arguments_still_build_the_reference_series():
 
 
 def _mirror(wait_pose):
+    # grid x closed_form: the one selection that declares every name.
     return {
+        "planner.search.mode": "grid",
+        "planner.segment.mode": "closed_form",
         "planner.wait_pose": wait_pose,
         "planner.freeze.T_freeze": 0.52,
         "joint_cmd.lag.T_arm": 0.2,
@@ -169,6 +173,55 @@ def test_a_missing_mirror_value_or_a_wrong_length_pose_is_refused():
         apply_mirror(arm, parked)
     with pytest.raises(ValueError, match="has 7 values"):
         apply_mirror(arm, _mirror([0.0] * 7))
+
+
+@pytest.mark.parametrize(
+    ("search", "segment", "absent"),
+    [
+        ("grid", "mpc", ("reference.omega", "reference.a_max", "reference.v_max")),
+        ("grid", "mpc_docking", ("reference.omega", "reference.a_max", "reference.v_max")),
+        (
+            "nlp",
+            "mpc_docking",
+            (
+                "reference.omega",
+                "reference.a_max",
+                "reference.v_max",
+                "planner.search.grid.gamma.eta_v",
+                "planner.search.grid.time.margin",
+                "planner.search.grid.slice.dt",
+            ),
+        ),
+    ],
+)
+def test_a_function_that_does_not_run_owes_no_mirror(search, segment, absent):
+    # E1-F16: the controller mirrors only the functions it runs. Their names
+    # being absent is the selection, not a parked configure.
+    arm = load_arm_profile(os.path.join(CONFIG, "ur5e_p1b"))
+    mirror = _mirror(list(arm.wait_pose))
+    mirror["planner.search.mode"] = search
+    mirror["planner.segment.mode"] = segment
+    for name in absent:
+        del mirror[name]
+    assert set(mirror) == set(mirror_names(search, segment))
+    assert apply_mirror(arm, mirror).wait_pose == arm.wait_pose
+    # ... and what the selection DOES run is still owed.
+    owed = [n for n in mirror_names(search, segment) if n.startswith("planner.search.grid.")]
+    for name in owed:
+        short = dict(mirror)
+        short[name] = None
+        with pytest.raises(ValueError, match=name):
+            apply_mirror(arm, short)
+
+
+def test_a_selector_that_was_not_read_owes_every_name_and_is_named_itself():
+    arm = load_arm_profile(os.path.join(CONFIG, "ur5e_p1b"))
+    mirror = _mirror(list(arm.wait_pose))
+    mirror["planner.search.mode"] = None
+    assert mirror_names(None, "mpc") == MIRROR_PARAMETERS
+    assert mirror_names("grid", "spline") == MIRROR_PARAMETERS
+    with pytest.raises(ValueError, match="planner.search.mode"):
+        apply_mirror(arm, mirror)
 
 
 def test_a_parked_controller_is_named_even_though_the_batch_reply_is_empty():
