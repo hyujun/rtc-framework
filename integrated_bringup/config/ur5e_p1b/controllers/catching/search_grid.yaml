@@ -101,10 +101,14 @@ demo_catching_controller:
           # d_eff IS NOT THE POCKET DEPTH (decided 2026-09-22, #537). The L3 §4.5
           # gamma window only ever uses d_eff / T_close,tot — the relative speed the
           # hand can absorb — so the key holds that speed times T_close,tot:
-          #   d_eff 0.2815 m = 1.0 m/s x (T_close_e2e 0.2805 + h/2 0.001) s.
+          #   d_eff 0.279 m = 1.0 m/s x (T_close_e2e 0.278 + h/2 0.001) s.
+          #                    Re-derived when T_close_e2e became the measured mean
+          #                    (E1-F16, #742; it was 0.2815 with 0.2805): the speed
+          #                    is what is decided, the time is whatever the hand's is.
           #                    1.0 m/s is the time-triggered fly-in figure (L6 §4.5,
-          #                    S4.4): closure fired at t_c - T_close_e2e, ball centred
-          #                    on the catch point, 7/9 held at 1.0 m/s, 5/9 at 1.5.
+          #                    S4.4): closure fired the closure time before t_c, ball
+          #                    centred on the catch point, 7/9 held at 1.0 m/s, 5/9
+          #                    at 1.5.
           # With the pocket depth below instead (0.34 m/s) the S3.5b gate map of this
           # robot is empty for every wait pose; everything that opens stands on the
           # fly-in figure. Valid only under that same time-triggered closure rule,
@@ -128,7 +132,7 @@ demo_catching_controller:
           # bias for a slow-closing hand, not the hand's limit (L6 §4.5).
           # With the two user-posed pairs this block was TBD: 0 held of 851.
           hand:
-            d_eff: 0.2815
+            d_eff: 0.279
             r_cap: 0.024
 
           # ── Catch-pose IK + catchability gate (L3 §6, S3.5a) ──────────────────
@@ -201,8 +205,11 @@ demo_catching_controller:
 
           # ── Switching to a better catch point (L3 §4.7) ──────────────────────
           # The search's own rule for replacing the catch point it published.
-          # Under segment mode mpc the search is skipped while a plan is followed
-          # (MD-57), so nothing switches there.
+          # While the arm follows a segment planner's segments the search still
+          # runs (until planner.freeze.t_stop_plan), decides a switch by delta_J
+          # alone (eta_jump bounds a step in the closed_form reference, and there
+          # is none), and what it would switch to is recorded, not published
+          # (held_replace_unsupported) — so nothing switches there.
           switch:
             delta_J: 0.1
             # A switch may step u_des by at most eta_jump * reference.a_max (L3 §4.7,

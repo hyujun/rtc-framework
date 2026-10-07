@@ -1,0 +1,144 @@
+# demo_catching_controller — the nlp catch search (ur5e_p1b)
+#
+# A fragment of ../demo_catching_controller.yaml (its `include:` list). The CM
+# merges it into that file's tree; every key keeps its full path.
+#
+# The search that solves the docking problem for each candidate catch instant
+# and chooses by the solve's cost (MPC · dual-arm plan E1-F14, #740). Read only
+# when `planner.search.mode: nlp` (the main file) — and then it needs a segment
+# planner: `planner.segment.mode` mpc or mpc_docking (nlp with closed_form
+# parks). Every key here is under planner.search.nlp, and the nlp search reads
+# its design values from here alone.
+#
+# PROVISIONAL, SIM ONLY. The values below are starting values, not tuned
+# (E1-F19). The QP solver allocates inside a solve (#654), so this search must
+# not run on a SCHED_FIFO planner thread on hardware until that is closed.
+demo_catching_controller:
+  catching:
+    planner:
+      search:
+        nlp:
+          # ── Candidates: a lattice of catch instants ─────────────────────────
+          # One every vision period (prediction.dt_expected, the main file).
+          cand_dt: 0.05
+          # Smallest and largest t_c - t_0 [s]. The smallest has to leave room
+          # for the commit: a pair is published only while t_c is more than
+          # planner.freeze.T_freeze (0.36 s) away. The largest is what
+          # n_pre.max pre-catch intervals reach.
+          t_lead_min: 0.40
+          t_max: 0.90
+          cand_capacity: 24
+          # The catch point must lie inside (model world frame). The same box
+          # the grid search judges with (planner.search.grid.workspace.catch_box).
+          catch_box:
+            min: [0.19, -0.30, 0.21]
+            max: [1.04, 0.31, 0.96]
+          # ── The arm grid ────────────────────────────────────────────────────
+          # A candidate's trajectory has n_pre intervals of dt_pre_s before the
+          # catch node (one core per count) and the stop part after it. Under
+          # planner.segment.mode mpc_docking this grid has to be that planner's
+          # (planner.segment.mpc_docking.approach / .stop): it republishes the
+          # search's solution — a difference parks.
+          n_pre:
+            min: 4
+            max: 9
+          dt_pre_s: 0.1
+          stop:
+            n_nodes: 7
+            dt_s: 0.05
+            blocks: [1, 1, 2, 3]
+          # ── Budget ──────────────────────────────────────────────────────────
+          # One wake's whole budget, one candidate's share, the margin between
+          # the budget's end and node 0, and the most solves a wake runs. A cold
+          # solve on these grids took 8 – 20 ms and a warm one 6 – 7 ms on the
+          # shipped sub-models (E1-F14, #740): two solves a wake.
+          budget:
+            budget_s: 0.040
+            solve_s: 0.018
+            start_lead_s: 0.004
+            max_solves: 2
+          # ── Outer cost and the rank proxy ───────────────────────────────────
+          cost:
+            w_time: 0.0
+            w_switch: 0.0
+            t_ref_s: 0.5
+            rank_w_q: 1.0
+            rank_w_manip: 0.0
+          # A second solve per candidate with the catch instant free inside
+          # its lattice cell. Off: it takes four to five fixed solves (#740),
+          # and its solutions are off the mpc_docking planner's grid.
+          continuous_tc: false
+          # After the RT follows a plan: no window on the candidates.
+          follow_window: -1
+          rest_tol: 1.0e-3
+          rt_state_age_max_s: 0.05
+          # The catch-pose IK that seeds every candidate — the same sub-schema
+          # as the grid search's (planner.search.grid.ik / .catchability),
+          # read from this search's own map. The manipulability gate is off:
+          # the solve judges the pose.
+          ik:
+            max_iter: 60
+          catchability:
+            manipulability_min:
+              arm_5row: 0.0
+              provisional: true
+          # The docking core's tuning (MpcDockingSegmentCoreParams) — what is NOT
+          # a property of the hand. The hand's identified values (the entrance
+          # plane, the corridor, the lateral set, the speed band, the closure
+          # window, the contact point) are robot.hand.docking in the main file
+          # and reach every core from there; the grid is this map's own keys
+          # above. A per-joint weight is one number for every joint.
+          # Starting values: the weights the core's own suites solve with
+          # (E1-F13); tuning them on the shipped arms is E1-F19.
+          core:
+            u_scale: 1.0e+3
+            cost:
+              r_tau: 1.0e-4
+              r_acc: 1.0e-3
+              r_jerk: 1.0
+              # Posture cost toward planner.wait_pose (the nominal posture).
+              w_q_nom: 0.1
+              w_manip: 0.0
+            catch:
+              q_p: [20.0, 20.0, 20.0]
+              q_v: [1.0, 1.0, 1.0]
+              sigma_T: 0.1
+              # Reference relative velocity at the catch node, catch frame
+              # [m/s]: straight down the approach axis at the middle of the
+              # hand's closing-speed band (robot.hand.docking.speed, c
+              # 0.5 – 0.6 m/s). on_configure parks when it leaves the band.
+              nu_ref: [0.0, 0.0, -0.55]
+              q_rho_f: [1.0e+3, 1.0e+3]
+              q_nu_f: [5.0, 5.0, 5.0]
+              w_impact: 0.0
+              e_ref: 1.0
+            approach:
+              window: 0.12
+              lambda1_c: 1.0
+              lambda2_c: 0.0
+              lambda1_v: 1.0
+              lambda2_v: 0.0
+            capture:
+              # Chance rows on: the lateral, speed and timing rows are
+              # tightened by the ball's covariance at the catch node.
+              chance: true
+              face_eps: 0.0125
+              speed_faces: 8
+              eps_nu: 0.01
+              eps_sigma: 1.0e-4
+            timing:
+              row: true
+              eps_t: 0.05
+            stop:
+              w_perp: 0.0
+            rows:
+              accel_box: false
+              jerk_box: false
+            sqp:
+              max_iterations: 50
+              tol_violation: 1.0e-6
+              tol_kkt: 1.0e-4
+            solver:
+              eps_abs: 1.0e-7
+              eps_rel: 1.0e-9
+              max_iter: 400

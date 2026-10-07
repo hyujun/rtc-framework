@@ -1,10 +1,13 @@
-"""The shipped catching config is one tree in four files (MD-90).
+"""The shipped catching config is one tree in six files (MD-90, E1-F16).
 
-``demo_catching_controller.yaml`` keeps the QP CLIK step, the bring-up sections,
-the arm's acceleration box and the key that selects the segment mode;
-``catching/search_grid.yaml``, ``catching/planner_closed_form.yaml`` and
-``catching/segment_mpc.yaml`` hold what each function is tuned with. The CM
-merges them before it applies an override.
+``demo_catching_controller.yaml`` keeps the QP CLIK step, the bring-up sections
+(the hand's measured values among them), the arm's acceleration box and the two
+keys that select the search and the segment mode; five fragments under
+``catching/`` hold what each function is tuned with — the two searches
+(``search_grid.yaml``, ``search_nlp.yaml``), the closed_form law
+(``planner_closed_form.yaml``) and the two segment planners
+(``segment_mpc.yaml``, ``segment_mpc_docking.yaml``). The CM merges them before
+it applies an override.
 
 What can go wrong without an error anywhere:
 
@@ -34,19 +37,27 @@ ROBOTS = ("ur5e_p1b", "iiwa7_leap")
 DUMP_ENV = "RTC_CONTROLLER_CONFIG_DUMP"
 
 SEARCH = "catching/search_grid.yaml"
+SEARCH_NLP = "catching/search_nlp.yaml"
 CLOSED_FORM = "catching/planner_closed_form.yaml"
 MPC = "catching/segment_mpc.yaml"
+MPC_DOCKING = "catching/segment_mpc_docking.yaml"
 
 # Which keys each fragment owns: a function's whole map (#711). A trailing dot
 # is a subtree, anything else is one leaf. A key outside every entry belongs to
-# the main file — `catching.planner.segment.mode`, the selector, among them.
+# the main file — the two selectors (`catching.planner.search.mode`,
+# `catching.planner.segment.mode`) and the hand's measured values
+# (`catching.robot.hand.*`) among them. The dots matter: `planner.search.` would
+# claim the search selector for the grid search, and `planner.segment.mpc`
+# without one would hand the docking planner's map to the mpc planner.
 FRAGMENT_KEYS = {
-    SEARCH: ("catching.planner.search.",),
+    SEARCH: ("catching.planner.search.grid.",),
+    SEARCH_NLP: ("catching.planner.search.nlp.",),
     CLOSED_FORM: (
         "catching.reference.",
         "catching.supervisor.decel.a_dec",
     ),
     MPC: ("catching.planner.segment.mpc.",),
+    MPC_DOCKING: ("catching.planner.segment.mpc_docking.",),
 }
 
 
@@ -69,10 +80,87 @@ def _owner(leaf: str) -> str | None:
 
 
 @pytest.mark.parametrize("robot", ROBOTS)
-def test_main_file_includes_the_three_fragments(robot):
+def test_main_file_includes_the_five_fragments(robot):
     doc = yaml.safe_load(_main_path(robot).read_text())
     assert list(doc) == ["include", CONTROLLER]
-    assert doc["include"] == [SEARCH, CLOSED_FORM, MPC]
+    assert doc["include"] == [SEARCH, SEARCH_NLP, CLOSED_FORM, MPC, MPC_DOCKING]
+
+
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_the_selectors_and_the_hands_measured_values_are_the_main_files(robot):
+    leaves = _leaf_paths(_main_path(robot))
+    for key in (
+        "catching.planner.search.mode",
+        "catching.planner.segment.mode",
+        "catching.robot.hand.T_close_e2e",
+        "catching.robot.hand.T_close_lead",
+        "catching.robot.hand.docking.s_ent",
+        "catching.robot.hand.docking.provisional",
+    ):
+        assert key in leaves, f"{robot}: '{key}' is not in the main file"
+    # What is measured on the hand is in no function's fragment: a second copy
+    # there is how two functions come to run on two hands.
+    for fragment in FRAGMENT_KEYS:
+        strays = [
+            leaf
+            for leaf in _leaf_paths(_main_path(robot).parent / fragment)
+            if leaf.split(".")[-1] in HAND_MEASURED or ".robot.hand." in leaf
+        ]
+        assert not strays, f"{robot}/{fragment} holds the hand's values: {strays}"
+
+
+# The docking core's fields that are the hand's (robot.hand.docking) or derived
+# from it — never keys of a function's `core:` map.
+HAND_MEASURED = {
+    "s_ent",
+    "r_ent",
+    "tan_theta",
+    "n_faces",
+    "faces_a",
+    "faces_b",
+    "rho_ref",
+    "c_min",
+    "c_cap_max",
+    "c_ent_max",
+    "v_perp_max",
+    "a_brake",
+    "delta_lo",
+    "delta_hi",
+    "delta_0",
+    "sigma_tau",
+    "contact_point_hand",
+    "restitution",
+    "e_max",
+    "p_max",
+    "m_ball",
+}
+
+
+@pytest.mark.parametrize("robot", ROBOTS)
+@pytest.mark.parametrize("fragment", (SEARCH_NLP, MPC_DOCKING))
+def test_a_docking_fragment_says_it_is_provisional_and_sim_only(robot, fragment):
+    head = []
+    for line in (_main_path(robot).parent / fragment).read_text().splitlines():
+        if not line.startswith("#"):
+            break
+        head.append(line)
+    text = "\n".join(head)
+    assert "PROVISIONAL" in text and "SIM ONLY" in text, f"{robot}/{fragment}"
+    assert "#654" in text, f"{robot}/{fragment}: the hardware condition is not named"
+
+
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_the_two_docking_functions_share_one_grid(robot):
+    # Under nlp x mpc_docking the planner republishes the search's solution,
+    # which needs one grid: shipped equal, so that pair runs as shipped.
+    doc = load_controller_config(_main_path(robot), config_key=CONTROLLER)
+    tree = doc[CONTROLLER]["catching"]["planner"]
+    nlp, docking = tree["search"]["nlp"], tree["segment"]["mpc_docking"]
+    assert nlp["dt_pre_s"] == docking["approach"]["dt_pre_s"]
+    assert nlp["stop"] == docking["stop"]
+    assert nlp["n_pre"]["max"] <= docking["approach"]["n_pre_max"]
+    assert nlp["continuous_tc"] is False
+    assert nlp["core"] == docking["core"], f"{robot}: the two cores are tuned apart"
 
 
 @pytest.mark.parametrize("robot", ROBOTS)
