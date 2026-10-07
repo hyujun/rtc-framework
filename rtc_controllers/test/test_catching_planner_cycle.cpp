@@ -64,6 +64,7 @@ using rtc::catching::PlannerParams;
 using rtc::catching::PlannerRtState;
 using rtc::catching::PlanRefusal;
 using rtc::catching::PlanSnapshot;
+using rtc::catching::ReplaceStep;
 using rtc::catching::ReportedSegments;
 using rtc::catching::SearchStats;
 using rtc::catching::SegmentKind;
@@ -1855,6 +1856,7 @@ TEST(PlannerCycleReplacement, AnotherPlanGoesOutAsAPairSegmentFirstAndNothingIsR
   EXPECT_EQ(rec.segment.publish_ns, stamp);
   EXPECT_EQ(rec.segment.source_seq, kFakeSourceSeq);
   EXPECT_EQ(rec.replacement.outcome, SegmentOutcome::kOff);
+  EXPECT_EQ(rec.replace_step, ReplaceStep::kPublished);
   // The search ran first, so it is timed from the wake, on the wake's report
   // and with the segments the RT reports.
   EXPECT_EQ(rig->search->plan_now_ns, kFollowWake);
@@ -1942,6 +1944,7 @@ TEST(PlannerCycleReplacement, EveryOtherVerdictReplansBehindTheSearchOnTheReport
     EXPECT_FALSE(rig->rec.plan_valid);
     EXPECT_EQ(rig->rec.publish_ns, 0);
     EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff);
+    EXPECT_EQ(rig->rec.replace_step, ReplaceStep::kNone) << "no replacement was attempted";
     // The replan's is the one store of the wake.
     EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
     EXPECT_EQ(rig->cycle.LastPlanId(), before.last_plan_id);
@@ -2125,9 +2128,11 @@ TEST(PlannerCycleReplacement, EachRecheckConditionAloneDropsThePairAndStoresNoth
       EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
       EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
       EXPECT_EQ(rig->boxes.plan.Load().plan_id, 2U);
+      EXPECT_EQ(rig->rec.replace_step, ReplaceStep::kPublished);
       continue;
     }
     EXPECT_EQ(rig->rec.outcome, CycleOutcome::kSuperseded);
+    EXPECT_EQ(rig->rec.replace_step, ReplaceStep::kSuperseded);
     EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kSuperseded);
     EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kFirst);
     EXPECT_FALSE(rig->rec.plan_valid);
@@ -2230,6 +2235,7 @@ TEST(PlannerCycleReplacement, APairThatCouldNotStartBeforeTheFollowedPlanFreezes
     if (margin_ns > 0) {
       EXPECT_EQ(calls, kReplacementPairCalls);
       EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+      EXPECT_EQ(rig->rec.replace_step, ReplaceStep::kPublished);
       continue;
     }
     Calls expected{Call::kSearchPlan, Call::kClock};
@@ -2241,6 +2247,7 @@ TEST(PlannerCycleReplacement, APairThatCouldNotStartBeforeTheFollowedPlanFreezes
     EXPECT_EQ(rig->rec.search.decision, SwitchDecision::kReplaced);
     EXPECT_TRUE(rig->rec.search_valid);
     EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff) << "no solve ran";
+    EXPECT_EQ(rig->rec.replace_step, ReplaceStep::kTooLateFollowed);
     EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
     EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
     EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
@@ -2281,6 +2288,7 @@ TEST(PlannerCycleReplacement, APairWhoseCatchInstantWouldBeFrozenAtItsEarliestSt
     if (margin_ns > 0) {
       EXPECT_EQ(calls, kReplacementPairCalls);
       EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+      EXPECT_EQ(rig->rec.replace_step, ReplaceStep::kPublished);
       continue;
     }
     Calls expected{Call::kSearchPlan, Call::kClock};
@@ -2292,6 +2300,7 @@ TEST(PlannerCycleReplacement, APairWhoseCatchInstantWouldBeFrozenAtItsEarliestSt
     EXPECT_EQ(rig->rec.search.decision, SwitchDecision::kReplaced);
     EXPECT_TRUE(rig->rec.search_valid);
     EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff) << "no solve ran";
+    EXPECT_EQ(rig->rec.replace_step, ReplaceStep::kTooLateNew);
     EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
     EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
     EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
@@ -2328,6 +2337,7 @@ TEST(PlannerCycleReplacement, AWithheldFirstSegmentKeepsThePlanItsAccountAndRepl
   EXPECT_EQ(rig->rec.search.decision, SwitchDecision::kReplaced);
   // The withheld solve's account is kept beside the replan's.
   EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kCatchError);
+  EXPECT_EQ(rig->rec.replace_step, ReplaceStep::kWithheld);
   EXPECT_EQ(rig->rec.replacement.kind, SegmentKind::kFirst);
   EXPECT_EQ(rig->rec.replacement.source_seq, kFakeSourceSeq);
   EXPECT_TRUE(rig->rec.replacement.x0_from_segment);

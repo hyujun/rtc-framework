@@ -67,11 +67,15 @@ class ValueDigest {
   std::uint64_t h_{kFnvOffsetBasis};
 };
 
-// Every field of each struct, in declaration order — with ONE exception:
-// SearchStats::nlp, the NLP search's block (E1-F14). A digest is a pin on the
-// behaviour of the searches it was recorded from, and a block those searches
-// leave at its default would move every recorded constant without any of them
-// behaving differently. The NLP search's own tests assert that block directly.
+// Every field of each struct, in declaration order — except the blocks and
+// fields that were added for one implementation or for the log after the
+// constants were recorded: SearchStats::nlp (the NLP search's block, E1-F14),
+// SegmentRecord::docking (the mpc_docking planner's block, E1-F18), and
+// PlannerCycleRecord's `replacement` and `replace_step`. A digest is a pin on
+// the behaviour of the searches and planners it was recorded from, and a
+// block those leave at its default would move every recorded constant without
+// any of them behaving differently. Each of the excepted ones is asserted
+// directly by the tests of what fills it.
 
 inline void AddSearchStats(ValueDigest& h, const catching::SearchStats& s) noexcept {
   h.Add(s.settling);

@@ -94,10 +94,10 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 
 ### 테스트 격리
 
-- **노드를 만드는 테스트는 전용 `ROS_DOMAIN_ID` 로 격리한다** — 배정 단위는 패키지 하나에 도메인 하나이고 값은 literal 이다. 번호를 손으로 고르지 않는다: 현재 배정과 충돌 검사는 `python3 repo_scripts/scripts/validate_test_domains.py --list` 가 소스에서 파생한다. `ament_python` 패키지는 `test/conftest.py` 의 `os.environ["ROS_DOMAIN_ID"]` 로 주장한다.
-- **패키지 안 병렬** (`colcon.pkg` 의 `ctest-args: ["-j", n]`) 을 켠 패키지는 `ROS_DOMAIN_ID` 를 주장하는 테스트 전부를 `RESOURCE_LOCK ros_domain_<n>` 에 올리고 (게이트가 차단), 측정한 wall-clock 을 단언하는 테스트는 `RUN_SERIAL TRUE` 로 혼자 돌린다 (게이트가 못 본다 — 테스트를 추가하는 사람이 판정). 기록만 하는 duration 을 인용할 때는 단독 실행 값을 쓴다. participant 를 여는 python 패키지는 xdist worker 를 요청할 수 없다.
+- **노드를 만드는 테스트는 전용 `ROS_DOMAIN_ID` 로 격리한다** — 배정 단위는 패키지 하나에 도메인 하나이고 값은 literal 이다. 번호를 손으로 고르지 않는다 — 배정과 충돌 검사는 `validate_test_domains.py --list` 가 소스에서 파생한다.
+- **패키지 안 병렬** (`colcon.pkg` 의 `ctest-args: ["-j", n]`) 을 켠 패키지는 `ROS_DOMAIN_ID` 를 주장하는 테스트 전부를 `RESOURCE_LOCK ros_domain_<n>` 에 올리고 (게이트가 차단), 측정한 wall-clock 을 단언하는 테스트는 `RUN_SERIAL TRUE` 로 혼자 돌린다 (게이트 밖 — 추가하는 사람이 판정). 기록용 duration 은 단독 실행 값을 인용한다. participant 를 여는 python 패키지는 xdist worker 를 요청할 수 없다.
 - **컨트롤러를 configure 하는 테스트는 세션 디렉토리도 격리한다** (`RTC_SESSION_DIR`) — 격리하지 않으면 테스트 행이 워크스페이스의 실제 `logging_data/` 세션에 섞인다.
-- `.venv` 격리는 AGENTS.md §9.2. 그 격리의 false-green 방향: `colcon test` 의 pytest 는 시스템 python 으로 돌아 `.venv` 전용 패키지에 의존하는 테스트가 **조용히 skip** 된다. CI green 을 근거로 로컬 skip 을 무시하지 않고, 자작 게이트에는 "검사가 아예 안 돌았음" 을 통과와 구분하는 플래그를 둔다.
+- `.venv` 격리는 AGENTS.md §9.2. `colcon test` 의 pytest 는 시스템 python 이라 false-green 이 둘 있다. ① `.venv` 전용 패키지에 의존하는 테스트가 **조용히 skip** 된다 — CI green 으로 로컬 skip 을 덮지 않고, 자작 게이트는 "안 돌았음" 을 통과와 구분한다. ② 같은 라이브러리의 **버전이 다르면** colcon 이 green 인 코드가 런타임에서 깨진다 — 런타임의 동작을 켜는 스위치가 있으면 `test/conftest.py` 가 켠다 (`rtc_tools/test/conftest.py`).
 
 ## 런타임 판독
 

@@ -806,6 +806,54 @@ TEST(MpcDockingPlannerFirstSolved, ASolveThatTakesLongerThanItsBudgetIsWithheldA
   EXPECT_FALSE(r->out.valid);
 }
 
+// The record's docking block is the core's account of the solve, for EVERY
+// solve that reached an iterate — the one that is published and the one that is
+// cut at its deadline alike, slacks included: a solve that did not make it is
+// the one whose account is wanted.
+TEST(MpcDockingPlannerFirstSolved, EverySolveThatReachedAnIterateLeavesTheCoresAccount) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  auto fast = RunFirst(*s->planner, s->rt, s->plan, s->Ball(), nullptr, kNow);
+  ASSERT_TRUE(fast->ok) << Describe(fast->rec);
+  const rtc::catching::DockingSolveStats& d = fast->rec.docking;
+  EXPECT_TRUE(d.ran);
+  EXPECT_GE(d.qp_solves, fast->rec.iterations);
+  EXPECT_GT(fast->rec.iterations, 0);
+  EXPECT_GE(d.qp_iterations, d.qp_solves);
+  EXPECT_GT(d.qp_us, 0.0);
+  EXPECT_GT(d.linearize_us, 0.0);
+  EXPECT_TRUE(std::isfinite(d.kkt_residual));
+  EXPECT_STREQ(d.infeasible_group_name, "none");
+  for (const double v : d.violation) {
+    EXPECT_LE(v, s->rig.params.core.tol_violation);
+  }
+  EXPECT_GT(d.c_catch, 0.0);
+  EXPECT_TRUE(std::isfinite(d.lateral_margin));
+  EXPECT_GE(d.lateral_margin, -s->rig.params.core.tol_violation);
+  EXPECT_TRUE(std::isfinite(d.cost_reference));
+  EXPECT_TRUE(std::isfinite(fast->rec.slack_max));
+  EXPECT_TRUE(std::isfinite(fast->rec.slack_v));
+
+  // Cut at the deadline (a 40 ms clock step against the 35 ms budget): the
+  // core hands back its last accepted iterate, and its account with it.
+  auto cut = RunFirst(*s->planner, s->rt, s->plan, s->Ball(), nullptr, kNow, 40 * kMs);
+  ASSERT_FALSE(cut->ok);
+  ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
+  EXPECT_STREQ(cut->rec.core_reason_name, "deadline");
+  EXPECT_TRUE(cut->rec.docking.ran);
+  EXPECT_GT(cut->rec.docking.qp_solves, 0);
+  EXPECT_TRUE(std::isfinite(cut->rec.slack_max)) << "recorded for a solve that was not published";
+  EXPECT_TRUE(std::isfinite(cut->rec.slack_v));
+  EXPECT_STREQ(cut->rec.docking.infeasible_group_name, "none");
+
+  // Nothing was solved: the block stays at its default.
+  PlannerRtState stale = s->rt;
+  stale.valid = false;
+  auto none = RunFirst(*s->planner, stale, s->plan, s->Ball(), nullptr, kNow);
+  EXPECT_FALSE(none->ok);
+  EXPECT_FALSE(none->rec.docking.ran);
+}
+
 TEST(MpcDockingPlannerFirstSolved, AnUnconfiguredPlannerPlansNothingAndSaysOff) {
   auto s = std::make_unique<Scene>();
   ASSERT_NO_FATAL_FAILURE(s->Setup());

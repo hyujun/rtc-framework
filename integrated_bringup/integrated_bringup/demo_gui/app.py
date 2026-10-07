@@ -78,7 +78,10 @@ from .catching import (
     CATCHING_SEGMENT_MODE_PARAM,
     CATCHING_STATE_TOPIC,
     CatchingStatus,
+    budget_param_names,
+    search_budget_query_due,
     search_mode_query_due,
+    segment_budget_query_due,
     segment_mode_query_due,
 )
 from .config import (
@@ -274,6 +277,11 @@ class DemoControllerGUI(Node):
         # Same for the search-mode read (a second, independent throttle).
         self._search_mode_last_query_s: float | None = None
         self._search_mode_in_flight = False
+        # Budget reads of the selected planners: kind -> [last_query_s, in_flight].
+        self._budget_throttle: dict[str, list] = {
+            "segment": [None, False],
+            "search": [None, False],
+        }
         self.create_subscription(
             CatchingState,
             f"/{CATCHING_CONFIG_KEY}/{CATCHING_STATE_TOPIC}",
@@ -1130,6 +1138,8 @@ class DemoControllerGUI(Node):
         self._refresh_catching_panel()
         self._query_catching_segment_mode()
         self._query_catching_search_mode()
+        self._query_catching_budget("segment")
+        self._query_catching_budget("search")
         self.root.after(200, self._schedule_refresh)
 
     def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
@@ -2333,6 +2343,63 @@ class DemoControllerGUI(Node):
             return
         self._catching.search_mode = value
         self.get_logger().info(f"/{CATCHING_CONFIG_KEY} {CATCHING_SEARCH_MODE_PARAM}={value}")
+        self._refresh_catching_panel()
+
+    def _query_catching_budget(self, kind: str) -> None:
+        """Read the budget parameters of the selected `kind` (segment | search). Tk thread.
+
+        Same mechanism as the mode reads: asked only once the mode is known, only
+        for the parameters that mode declares (the others are "not set"), and a
+        failed or partial read is not cached so the throttle retries.
+        """
+        status = self._catching
+        throttle = self._budget_throttle[kind]
+        due = segment_budget_query_due if kind == "segment" else search_budget_query_due
+        if not due(status, time.monotonic(), throttle[0], throttle[1]):
+            return
+        mode = status.segment_mode if kind == "segment" else status.search_mode
+        names = budget_param_names(kind, mode)
+        throttle[0] = time.monotonic()
+        client = self._get_param_client(CATCHING_CONFIG_KEY)
+        if not client.services_are_ready():
+            return
+        throttle[1] = True
+        future = client.get_parameters(list(names))
+
+        def _on_done(fut):
+            # Executor thread: extract only, never touch GUI/status state here.
+            values = None
+            try:
+                resp = fut.result()
+                got = []
+                for v in resp.values:
+                    # ParameterType: 2 = integer, 3 = double; anything else = not set.
+                    if v.type == 3:
+                        got.append(float(v.double_value))
+                    elif v.type == 2:
+                        got.append(float(v.integer_value))
+                if len(got) == len(names):
+                    values = tuple(got)
+            except Exception as exc:  # noqa: BLE001 — any failure = not read
+                self.get_logger().debug(f"{kind} budget query failed: {exc}")
+            self.root.after(0, self._apply_catching_budget, kind, mode, values)
+
+        future.add_done_callback(_on_done)
+
+    def _apply_catching_budget(self, kind: str, mode, values) -> None:
+        """Cache the budgets read for `mode`. Tk thread only.
+
+        Dropped when the cached mode has changed since the request went out
+        (a relaunch in between): the values belong to the previous controller.
+        """
+        self._budget_throttle[kind][1] = False
+        current = self._catching.segment_mode if kind == "segment" else self._catching.search_mode
+        if values is None or current != mode:
+            return
+        if kind == "segment":
+            self._catching.segment_budget = values
+        else:
+            self._catching.search_budget = values
         self._refresh_catching_panel()
 
     def _build_catching_panel(self, parent: tk.Frame) -> None:

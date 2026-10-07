@@ -1232,6 +1232,82 @@ TEST(MpcDockingSegmentCore, WithoutChanceRowsNoCovarianceIsNeeded) {
   EXPECT_EQ(out.q(0, 0), 7.0) << "a rejected call leaves the trajectory untouched";
 }
 
+// lateral_margin and timing_margin are the two groups' violation with its sign
+// kept: a row that holds reads 0 in `violation` and its room here; a row that
+// does not reads the same number in both, negated here. A problem without the
+// timing row has no timing margin, and a call refused before any iterate none
+// at all.
+TEST(MpcDockingSegmentCore, TheMarginsAreTheSignedFormOfTheLateralAndTimingViolation) {
+  const auto check = [](const MpcDockingSegmentCoreResult& out, const std::string& where) {
+    ASSERT_TRUE(std::isfinite(out.lateral_margin)) << where;
+    ASSERT_TRUE(std::isfinite(out.timing_margin)) << where;
+    EXPECT_DOUBLE_EQ(out.violation[G(DockingRowGroup::kLateral)],
+                     std::max(0.0, -out.lateral_margin))
+        << where;
+    EXPECT_DOUBLE_EQ(out.violation[G(DockingRowGroup::kTiming)], std::max(0.0, -out.timing_margin))
+        << where;
+  };
+  int holding = 0;
+  for (const dk::Rig& rig : Rigs()) {
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult out;
+    core.ResizeResult(out);
+    for (Case& c : FeasibleCases(rig, core, 2)) {
+      const std::string where = rig.arm.name + " seed " + std::to_string(c.seed);
+      ASSERT_TRUE(core.Solve(c.in, out)) << where;
+      ASSERT_TRUE(out.feasible) << where << " " << Describe(out);
+      ASSERT_NO_FATAL_FAILURE(check(out, where));
+      // Feasible: both rows hold, so both margins are room (to the tolerance
+      // the rows are held to).
+      EXPECT_GE(out.lateral_margin, -kViolationTol) << where;
+      EXPECT_GE(out.timing_margin, -kViolationTol) << where;
+      holding += out.lateral_margin > 0.0 && out.timing_margin > 0.0 ? 1 : 0;
+    }
+  }
+  EXPECT_GT(holding, 0) << "no case with room on both rows: the sign was never exercised";
+  int violated = 0;
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    for (const InfeasibleCase& c : InfeasibleCases(arm)) {
+      const std::string where = arm.name + " " + c.name;
+      MpcDockingSegmentCore core;
+      ASSERT_EQ(core.Init(c.rig.model, c.rig.arm.frame, c.rig.params, c.rig.limits, &NoClock),
+                MpcDockingReason::kNone)
+          << where;
+      MpcDockingSegmentCoreResult out;
+      core.ResizeResult(out);
+      MpcDockingSegmentCoreInput in;
+      c.fill(c.rig, core, in);
+      ASSERT_TRUE(core.Solve(in, out)) << where;
+      ASSERT_NO_FATAL_FAILURE(check(out, where));
+      violated += out.lateral_margin < -kViolationTol || out.timing_margin < -kViolationTol ? 1 : 0;
+    }
+  }
+  ::testing::Test::RecordProperty("cases_with_a_violated_margin", violated);
+
+  // Without chance rows the timing row is not built: no margin to report. The
+  // lateral faces are still rows of the problem.
+  dk::Rig rig = dk::MakeRig(fx::RealArm6());
+  rig.params.chance = false;
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  ASSERT_TRUE(core.Solve(cases[0].in, out));
+  EXPECT_TRUE(std::isnan(out.timing_margin));
+  EXPECT_TRUE(std::isfinite(out.lateral_margin));
+  // Refused before any iterate: the solve before it leaves nothing behind.
+  MpcDockingSegmentCoreInput bad = cases[0].in;
+  bad.q0.setConstant(std::numeric_limits<double>::quiet_NaN());
+  ASSERT_FALSE(core.Solve(bad, out));
+  EXPECT_TRUE(std::isnan(out.lateral_margin));
+  EXPECT_TRUE(std::isnan(out.timing_margin));
+}
+
 // The timing row's σ_max: with the closure centred in the window it is the
 // reference's Δ_win / (2 κ_t).
 TEST(MpcDockingSegmentCore, TimingSigmaMaxCentredIsTheReferenceFormula) {
@@ -1622,6 +1698,10 @@ TEST(MpcDockingSegmentCore, NonFiniteRowValuesAreNotReportedFeasible) {
   const bool returned = core.Solve(in, out);
   EXPECT_FALSE(out.feasible) << Describe(out);
   EXPECT_FALSE(out.converged);
+  // … nor as rows with room: a maximum over the faces would drop a NaN face
+  // and report the room of the others.
+  EXPECT_FALSE(out.lateral_margin > 0.0) << out.lateral_margin;
+  EXPECT_FALSE(out.timing_margin > 0.0) << out.timing_margin;
   if (returned) {
     EXPECT_TRUE(out.reason == MpcDockingReason::kSolutionNonFinite ||
                 out.reason == MpcDockingReason::kInfeasible ||

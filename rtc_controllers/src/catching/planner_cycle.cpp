@@ -156,7 +156,12 @@ bool PlannerCycle::PublishReplacement(const PlannerRtState& rt, PlanSnapshot& pl
   // pair whose segment could only start that late is not solved for.
   if (t_freeze_ns > 0) {
     const std::int64_t earliest = segment_planner_->EarliestFirstStartNs(clock_());
-    if (!(earliest < rt.plan_t_c_ns - t_freeze_ns) || !(plan.t_c_ns - earliest > t_freeze_ns)) {
+    if (!(earliest < rt.plan_t_c_ns - t_freeze_ns)) {
+      rec.replace_step = ReplaceStep::kTooLateFollowed;
+      return false;
+    }
+    if (!(plan.t_c_ns - earliest > t_freeze_ns)) {
+      rec.replace_step = ReplaceStep::kTooLateNew;
       return false;
     }
   }
@@ -172,6 +177,7 @@ bool PlannerCycle::PublishReplacement(const PlannerRtState& rt, PlanSnapshot& pl
     // segment account is the replan's: this solve's is kept beside it.
     rec.replacement = rec.segment;
     rec.segment = SegmentRecord{};
+    rec.replace_step = ReplaceStep::kWithheld;
     return false;
   }
   if (post_segment_hook_ != nullptr) {
@@ -204,9 +210,11 @@ bool PlannerCycle::PublishReplacement(const PlannerRtState& rt, PlanSnapshot& pl
       !segment_planner_->StartsInTime(publish_ns, segment_out_.t0_ns)) {
     rec.outcome = CycleOutcome::kSuperseded;
     rec.segment.outcome = SegmentOutcome::kSuperseded;
+    rec.replace_step = ReplaceStep::kSuperseded;
     return true;
   }
   StorePair(plan, publish_ns, rec);
+  rec.replace_step = ReplaceStep::kPublished;
   return true;
 }
 

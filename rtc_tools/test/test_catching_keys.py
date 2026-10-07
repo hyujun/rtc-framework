@@ -203,14 +203,65 @@ def _cpp_segment_columns() -> tuple[list[str], list[str]]:
     )
 
 
+# `segment_*` columns added AFTER the rename (E1-F18, #744: the docking core's
+# account of a solve). They were never written under a `decel_*` name, so they
+# have no alias — and a `segment_*` column added from here on has to be named
+# here for the test below to pass.
+_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME = (
+    "segment_qp_solves",
+    "segment_qp_iterations",
+    "segment_backtracks",
+    "segment_mu_updates",
+    "segment_start_us",
+    "segment_linearize_us",
+    "segment_assemble_us",
+    "segment_qp_us",
+    "segment_merit_us",
+    "segment_kkt_residual",
+    "segment_grad_norm",
+    "segment_complementarity",
+    "segment_infeasible_group",
+    "segment_viol_torque",
+    "segment_viol_gap",
+    "segment_viol_entrance",
+    "segment_viol_lateral",
+    "segment_viol_timing",
+    "segment_viol_velocity_set",
+    "segment_viol_impact",
+    "segment_viol_box",
+    "segment_viol_terminal",
+    "segment_elastic_torque",
+    "segment_elastic_gap",
+    "segment_elastic_entrance",
+    "segment_elastic_lateral",
+    "segment_elastic_timing",
+    "segment_elastic_velocity_set",
+    "segment_elastic_impact",
+    "segment_c_catch",
+    "segment_c_guarded",
+    "segment_sigma_s",
+    "segment_sigma_t",
+    "segment_chance_lateral",
+    "segment_chance_timing",
+    "segment_cost_reference",
+    "segment_cost_stop",
+)
+
+
 def test_the_column_alias_targets_are_the_segment_columns_the_cpp_headers_write():
     diag, events = _cpp_segment_columns()
     cpp_new = {c for c in [*diag, *events] if c.startswith("segment_")}
+    added = set(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME)
+    assert len(added) == len(_SEGMENT_COLUMNS_ADDED_AFTER_THE_RENAME) == 37
+    assert added <= cpp_new
     assert len(ck.RENAMED_COLUMNS) == 49
-    assert set(ck.RENAMED_COLUMNS.values()) == cpp_new
-    # 17 + 33 columns, `segment_seq` is in both files.
+    # Every renamed column, and nothing else: what the headers write beyond the
+    # alias targets is exactly the columns added after the rename.
+    assert set(ck.RENAMED_COLUMNS.values()) == cpp_new - added
+    # 17 + 33 renamed columns, `segment_seq` is in both files; the events file
+    # has the 37 added ones as well.
     assert len([c for c in diag if c.startswith("segment_")]) == 17
-    assert len([c for c in events if c.startswith("segment_")]) == 33
+    assert len([c for c in events if c.startswith("segment_")]) == 33 + 37
     # No header writes an old name any more; no old name is also a new one.
     assert not [c for c in [*diag, *events] if c in ck.RENAMED_COLUMNS]
     assert not set(ck.RENAMED_COLUMNS) & set(ck.RENAMED_COLUMNS.values())

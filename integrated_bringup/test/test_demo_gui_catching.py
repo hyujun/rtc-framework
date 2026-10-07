@@ -30,10 +30,13 @@ from integrated_bringup.demo_gui.catching import (
     SEGMENT_MODE_QUERY_PERIOD_S,
     SEGMENT_MODE_REPLY_TIMEOUT_S,
     CatchingStatus,
+    budget_param_names,
     mode_name,
     outcome_name,
     reason_name,
+    search_budget_query_due,
     search_mode_query_due,
+    segment_budget_query_due,
     segment_mode_query_due,
 )
 
@@ -872,3 +875,134 @@ def test_the_search_done_callback_only_hands_the_value_to_the_tk_thread():
     assert state.root.after_calls == [(0, state._apply_catching_search_mode, "nlp")]
     assert state._catching.search_mode is None
     assert state.refreshes == 0
+
+
+# ── Budgets of the selected planners and the withheld-plan hint (E1-F18 D5-a) ───
+
+
+def _live(**attrs):
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=0.0)
+    for k, v in attrs.items():
+        setattr(status, k, v)
+    return status
+
+
+@pytest.mark.parametrize(
+    ("kind", "mode", "names"),
+    [
+        (
+            "segment",
+            "mpc",
+            ("planner.segment.mpc.budget.first_s", "planner.segment.mpc.budget.replan_s"),
+        ),
+        (
+            "segment",
+            "mpc_docking",
+            (
+                "planner.segment.mpc_docking.budget.first_s",
+                "planner.segment.mpc_docking.budget.replan_s",
+            ),
+        ),
+        (
+            "search",
+            "nlp",
+            (
+                "planner.search.nlp.budget.budget_s",
+                "planner.search.nlp.budget.solve_s",
+                "planner.search.nlp.budget.max_solves",
+            ),
+        ),
+        ("segment", "closed_form", ()),
+        ("search", "grid", ()),
+        ("segment", None, ()),
+        ("search", "something_new", ()),
+    ],
+)
+def test_budget_params_asked_for_follow_the_selected_mode(kind, mode, names):
+    assert budget_param_names(kind, mode) == names
+
+
+def test_budget_query_is_due_only_for_a_known_mode_with_a_budget():
+    assert segment_budget_query_due(_live(), 10.0, None, False) is False  # mode unknown
+    assert segment_budget_query_due(_live(segment_mode="closed_form"), 10.0, None, False) is False
+    status = _live(segment_mode="mpc")
+    assert segment_budget_query_due(status, 10.0, None, False) is True
+    assert segment_budget_query_due(status, 10.0, None, True) is False
+    assert segment_budget_query_due(status, 11.0, 10.0, False) is False
+    assert segment_budget_query_due(status, 10.0 + SEGMENT_MODE_QUERY_PERIOD_S, 10.0, False)
+    status.segment_budget = (0.035, 0.025)
+    assert segment_budget_query_due(status, 99.0, None, False) is False
+    assert search_budget_query_due(_live(search_mode="grid"), 10.0, None, False) is False
+    assert search_budget_query_due(_live(search_mode="nlp"), 10.0, None, False) is True
+
+
+def test_search_line_shows_nlp_budgets_in_ms_and_sim_only():
+    status = _live(search_mode="nlp", search_budget=(0.04, 0.012, 6.0))
+    assert status.lines(0.0)[2] == (
+        "search mode: nlp — wake budget 40 ms · solve 12 ms · ≤ 6 solves · sim only"
+    )
+
+
+def test_segment_line_shows_budgets_and_sim_only_only_where_it_applies():
+    docking = _live(segment_mode="mpc_docking", segment_budget=(0.035, 0.025))
+    assert (
+        docking.lines(0.0)[1]
+        == "segment mode: mpc_docking — first 35 ms · replan 25 ms · sim only"
+    )
+    mpc = _live(segment_mode="mpc", segment_budget=(0.035, 0.0125))
+    assert mpc.lines(0.0)[1] == "segment mode: mpc — first 35 ms · replan 12.5 ms"
+
+
+def test_modes_without_a_budget_or_before_it_is_read_show_the_mode_alone():
+    assert _live(segment_mode="mpc").lines(0.0)[1] == "segment mode: mpc"
+    assert _live(segment_mode="closed_form").lines(0.0)[1] == "segment mode: closed_form"
+    assert _live(search_mode="grid").lines(0.0)[2] == "search mode: grid"
+    # A budget of the wrong arity (a mismatched build) is not guessed at.
+    assert _live(segment_mode="mpc", segment_budget=(0.1,)).lines(0.0)[1] == "segment mode: mpc"
+    assert _live(search_mode="nlp").lines(0.0)[2] == "search mode: nlp"
+    assert _live(segment_mode="mpc_docking").lines(0.0)[1] == "segment mode: mpc_docking"
+
+
+def test_budgets_are_forgotten_with_the_modes_they_belong_to():
+    status = _live(
+        segment_mode="mpc",
+        segment_budget=(0.035, 0.025),
+        search_mode="nlp",
+        search_budget=(1, 2, 3),
+    )
+    status.update(make_msg(tick=1), now_s=0.1)  # tick 1234 -> 1: restart
+    assert status.segment_budget is None
+    assert status.search_budget is None
+    status.segment_budget = (0.035, 0.025)
+    status.search_budget = (1, 2, 3)
+    status.update(make_msg(tick=5000), now_s=FEED_STALE_AFTER_S * 2 + 1.0)  # silent gap
+    assert status.segment_budget is None
+    assert status.search_budget is None
+
+
+_HINT_FRAGMENT = "publishes a plan only with its first segment"
+
+
+@pytest.mark.parametrize("mode", ["mpc", "mpc_docking"])
+def test_hint_follows_the_plan_line_when_no_plan_and_the_planner_withholds_whole_plans(mode):
+    status = CatchingStatus()
+    status.update(make_msg(plan_valid=False), now_s=0.0)
+    status.segment_mode = mode
+    lines = status.lines(0.0)
+    i = next(n for n, line in enumerate(lines) if line.startswith("plan:"))
+    assert _HINT_FRAGMENT in lines[i + 1]
+    assert "segment_outcome, segment_core_reason" in lines[i + 1]
+
+
+def test_hint_is_absent_for_closed_form_unknown_mode_and_a_valid_plan():
+    for overrides, mode in [
+        ({"plan_valid": False}, "closed_form"),
+        ({"plan_valid": False}, None),
+        ({"plan_valid": True}, "mpc"),
+        ({"plan_valid": True}, "mpc_docking"),
+    ]:
+        status = CatchingStatus()
+        status.update(make_msg(**overrides), now_s=0.0)
+        status.segment_mode = mode
+        assert _HINT_FRAGMENT not in text(status, 0.0)

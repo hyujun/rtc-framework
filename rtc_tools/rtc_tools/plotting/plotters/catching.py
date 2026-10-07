@@ -138,7 +138,9 @@ def mode_transitions(df):
         return []
     mode = df["mode"].astype(float)
     t = df[time_col].astype(float)
-    changed = mode.ne(mode.shift()).to_numpy()
+    # A copy: under copy-on-write (pandas 3, the venv's) to_numpy() hands back
+    # a read-only view, and the write below would raise.
+    changed = mode.ne(mode.shift()).to_numpy(copy=True)
     changed[0] = False
     out = []
     for i in changed.nonzero()[0]:

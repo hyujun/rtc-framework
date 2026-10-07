@@ -92,7 +92,7 @@ from typing import NamedTuple
 import numpy as np
 import yaml
 
-from rtc_tools.analysis import catching_vision as cv, clock_phase, hand_close
+from rtc_tools.analysis import catching_vision as cv, clock_phase, hand_close, planner_solves
 from rtc_tools.analysis.catch_gate_map import REASON_NONE
 from rtc_tools.analysis.catch_speed_budget import (
     DEFAULT_CATCH_FRAME,
@@ -2675,6 +2675,11 @@ def analyse_session(
     if contact_lane_path is not None:
         contacts = load_contacts(contact_lane_path, robot_links)
     planner_wakes = _planner_cycle_times(ctl, lane)
+    verdict_events = _planner_verdict_events(ctl) if planner_wakes is not None else None
+    if verdict_events is not None and len(verdict_events) != len(planner_wakes.wake_s):
+        # Two reads of one file: the rows are the same rows only while the
+        # counts agree (a session still being written would not).
+        verdict_events = None
     wakes_t_rel = None
     if planner_wakes is not None and lane.aligned:
         # One map for the whole session: steady → sim (lane rows) − c.
@@ -2812,6 +2817,12 @@ def analyse_session(
                     pair_published=planner_wakes.pair_published,
                 )
             )
+            if verdict_events is not None:
+                row.update(
+                    plan_verdict_window(
+                        wakes_t, planner_wakes[1], verdict_events, trial.t_launch, trial.t_end
+                    )
+                )
         row["ref_saturated_max_streak"] = max_streak(ctx.ref_valid & ctx.ref_saturated)
 
         def fk_world(ticks, ctx=ctx):
@@ -3860,6 +3871,163 @@ def _planner_cycle_times(ctl: Path, lane: ClockLane | None) -> PlannerWakes | No
     return wakes
 
 
+def _planner_verdict_events(ctl: Path):
+    """The columns :func:`plan_verdict_window` reads, as many as the log has —
+    a frame with one row per ``planner_events.csv`` row, in the file's order
+    (the order of :func:`_planner_cycle_times`' arrays). ``None`` without the
+    file or on a log without ``outcome``."""
+    path = _exists(ctl / PLANNER_EVENTS_CSV)
+    if path is None:
+        return None
+    header = _csv_header(path)
+    if "outcome" not in header:
+        return None
+    return _read_csv(path, usecols=[c for c in VERDICT_COLUMNS if c in header])
+
+
+#: rtc::catching::PlanReason by code (rtc_controllers/catching/trajectory.hpp) —
+#: what ``planner_events.csv``'s ``plan_reason`` holds on a wake that published
+#: "no plan". ``test_catching_trials.py`` pins this against the header.
+PLAN_REASON_NAMES = (
+    "none",
+    "uncertainty",
+    "ik_failed",
+    "manipulability",
+    "reach_time",
+    "limits_invalid",
+    "gamma_window",
+    "stopping_distance",
+    "rollout",
+    "error_budget",
+    "impulse",
+    "horizon_short",
+    "budget_exceeded",
+    "input_non_finite",
+)
+
+#: ``planner_events.csv`` columns :func:`plan_verdict_window` reads when the log
+#: has them; ``outcome`` and ``plan_valid`` are the two it cannot do without.
+VERDICT_COLUMNS = (
+    "outcome",
+    "decision",
+    "search_valid",
+    "plan_reason",
+    "nlp_reason",
+    "segment_kind",
+    "segment_outcome",
+    "segment_core_reason",
+    "segment_solve_us",
+    "replace_step",
+    "replacement_core_reason",
+    "replacement_solve_us",
+)
+
+PLAN_VERDICT_PUBLISHED = "published"
+PLAN_VERDICT_WITHHELD = "withheld"
+PLAN_VERDICT_NO_PLAN = "no_plan"
+PLAN_VERDICT_NO_SEARCH = "no_search"
+
+
+def _wake_reject_reason(row: Mapping) -> str:
+    """Why ONE searching wake left the RT without a newly published plan.
+
+    ``segment:<outcome>[/<core reason>]`` — the search found a plan and its
+    first segment was withheld or dropped; ``cycle:<outcome>[/<decision>]`` —
+    it found one and the cycle did not publish it for another reason (a newer
+    trajectory, the switching rule); ``search:<reason>`` — the search found
+    none: the NLP search's own reason where the log has it, else the
+    ``PlanReason`` of the "no plan" it published.
+    """
+
+    def text(key):
+        value = row.get(key)
+        return "" if value is None or value != value else str(value)
+
+    outcome = text("outcome")
+    if _num(row.get("search_valid")) > 0.5:
+        seg = text("segment_outcome")
+        if text("segment_kind") == "first" and seg not in ("", "published"):
+            core = text("segment_core_reason")
+            return f"segment:{seg}" + (f"/{core}" if core not in ("", "none") else "")
+        decision = text("decision")
+        return f"cycle:{outcome}" + (f"/{decision}" if outcome == "held" and decision else "")
+    nlp = text("nlp_reason")
+    if nlp not in ("", "off", "none"):
+        return f"search:{nlp}"
+    code = _num(row.get("plan_reason"))
+    if outcome == "published" and np.isfinite(code) and 0 < int(code) < len(PLAN_REASON_NAMES):
+        return f"search:{PLAN_REASON_NAMES[int(code)]}"
+    return f"cycle:{outcome}" if outcome != "published" else "search:none"
+
+
+def plan_verdict_window(
+    wake_t_relative_s: np.ndarray, plan_valid: np.ndarray, events, t_launch: float, t_end: float
+) -> dict:
+    """One throw's verdict — did the planner give the RT a plan — and why not.
+
+    Over the wakes of ``[t_launch, t_end]`` (the whole throw; ``events`` is
+    :func:`_planner_verdict_events`, one row per wake on the same index as the two
+    arrays):
+
+    - ``plan_verdict``: ``published`` — a valid plan was stored on some wake;
+      ``withheld`` — a search found one and none was stored (under a planner
+      that publishes a plan with its first segment: the segment was withheld);
+      ``no_plan`` — wakes searched and none found one; ``no_search`` — no wake
+      of the throw searched.
+    - ``plan_reject`` / ``plan_reject_last``: for a throw that is not
+      ``published``, the most frequent :func:`_wake_reject_reason` among its
+      wakes (ties go to the later one) and the last wake's. For ``withheld``
+      the wakes are the ones whose search found a plan, for ``no_plan`` every
+      wake that searched. Empty for ``published`` and ``no_search``. Two
+      reductions of one list, and neither is "the" reason: early wakes of a
+      throw fail on the prediction, late ones on the time left.
+    - ``first_solve_cut``: first-segment solves the core cut at its deadline —
+      the wake's own and a withheld replacement's
+      (:func:`rtc_tools.analysis.planner_solves.first_solves_cut`); absent on
+      a log without the columns.
+    - ``replace_attempts`` / ``replace_published``: wakes that tried to replace
+      the followed plan, and those whose pair was stored; absent on a log
+      without ``replace_step``.
+    """
+    sel = np.nonzero((wake_t_relative_s >= t_launch) & (wake_t_relative_s <= t_end))[0]
+    ev = events.iloc[sel]
+    outcome = ev["outcome"].astype(str).to_numpy()
+    searched = ~np.isin(outcome, ("idle", "no_input"))
+    published = np.asarray(plan_valid[sel], float) > 0.5
+    # A log from before `search_valid`: a published valid plan is the only
+    # "found" it can say.
+    found = (
+        searched & (ev["search_valid"].to_numpy(float) > 0.5)
+        if "search_valid" in ev.columns
+        else published
+    )
+    if published.any():
+        verdict, pick = PLAN_VERDICT_PUBLISHED, None
+    elif found.any():
+        verdict, pick = PLAN_VERDICT_WITHHELD, found
+    elif searched.any():
+        verdict, pick = PLAN_VERDICT_NO_PLAN, searched
+    else:
+        verdict, pick = PLAN_VERDICT_NO_SEARCH, None
+    out = {"plan_verdict": verdict, "plan_reject": "", "plan_reject_last": ""}
+    if pick is not None:
+        reasons = [_wake_reject_reason(r) for r in ev.loc[pick].to_dict("records")]
+        counts: dict[str, int] = {}
+        for reason in reasons:
+            counts[reason] = counts.get(reason, 0) + 1
+        best = max(counts.values())
+        # Ties go to the reason seen last.
+        out["plan_reject"] = next(r for r in reversed(reasons) if counts[r] == best)
+        out["plan_reject_last"] = reasons[-1]
+    if {"segment_kind", "segment_core_reason", "segment_solve_us"} <= set(ev.columns):
+        out["first_solve_cut"] = int(planner_solves.first_solves_cut(ev).sum())
+    if "replace_step" in ev.columns:
+        step = ev["replace_step"].astype(str).to_numpy()
+        out["replace_attempts"] = int((step != "none").sum())
+        out["replace_published"] = int((step == "published").sum())
+    return out
+
+
 def _median(rows: Sequence[Mapping], key: str) -> float:
     values = [r[key] for r in rows if key in r and np.isfinite(r[key])]
     return float(np.median(values)) if values else math.nan
@@ -3987,6 +4155,23 @@ def _summarise(
             if ratios
             else None,
             "approach_plan_switches_distribution": switches,
+        }
+    judged = [r for r in valid if "plan_verdict" in r]
+    if judged:
+        # Per throw: did the planner give the RT a plan, and why not
+        # (plan_verdict_window). Counts, no verdict of this tool's own.
+        def tally(key, rows):
+            counts: dict[str, int] = {}
+            for r in rows:
+                counts[str(r[key])] = counts.get(str(r[key]), 0) + 1
+            return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+        refused = [r for r in judged if r["plan_reject"]]
+        summary["plan_verdict"] = {
+            "n_trials": len(judged),
+            "verdict": tally("plan_verdict", judged),
+            "reject_most_frequent": tally("plan_reject", refused),
+            "reject_last": tally("plan_reject_last", refused),
         }
     lane_rows = [r for r in valid if _num(r.get("segment_n_followed")) > 0]
     if lane_rows:

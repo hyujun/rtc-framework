@@ -644,7 +644,8 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 
 ## 8. 디버깅 방법
 
-- 계획마다 기록 (`planner_events.csv`): 후보 수, 게이트별 탈락 수(히스토그램), 선택 후보의 $(t_c,\gamma_f,T_w)$ 와 γ 창 ($\gamma_{\min}$ · $\gamma_{\max}$ · $v_{dir,\max}$ · $\Vert v\Vert_{\max}$), 순위 게이트 비트마스크, 실행시간, 교체 여부와 사유. `mpc` 는 구간 풀이의 결과가 `decel_*` 열에 더해진다.
+- 계획마다 기록 (`planner_events.csv`): 후보 수, 게이트별 탈락 수(히스토그램), 선택 후보의 $(t_c,\gamma_f,T_w)$ 와 γ 창 ($\gamma_{\min}$ · $\gamma_{\max}$ · $v_{dir,\max}$ · $\Vert v\Vert_{\max}$), 순위 게이트 비트마스크, 실행시간, 교체 여부와 사유. 구간 계획기 (`mpc` · `mpc_docking`) 는 구간 풀이의 결과를 `segment_*` 열에 더한다. `nlp` 탐색은 자기 기록을 `nlp_*` 열에 낸다 — wake 의 사유 (plan 을 못 냈으면 가장 멀리 간 후보의 사유), 후보 수 (격자 · screening 통과 · 푼 것 · 유효), 검사별로 탈락한 후보 수, 고른 후보의 비용 ($J^\star$ · $\Phi$). `mpc_docking` 은 iterate 가 있는 풀이마다 코어의 기록을 더한다 — QP 의 수와 반복, 단계별 시간, KKT 잔차, 행 그룹별 위반과 불능으로 끝났을 때의 그룹, 포구 노드의 $c_N$ · $\sigma_s$ · $\sigma_t$ 와 lateral · timing 행의 부호 있는 여유 (음수가 위반). 교체를 시도한 wake 는 그 시도가 어디서 끝났는지를 `replace_step` 에 남긴다 (주기가 첫 구간을 청하지 않음 둘 · 구간 계획기의 보류 · re-check 탈락 · 게시).
+- **기한에 끊긴 풀이의 시간은 풀이 시간이 아니다.** 코어가 기한에 끊은 풀이 (`segment_core_reason` 이 `deadline`) 의 `segment_solve_us` 는 끊긴 시각이고, 풀이에 걸리는 시간은 그 이상이라는 것만 안다. outcome `budget` 은 끊겼다는 뜻이 아니다 — 기한이 없는 코어 (`mpc`) 나 다른 사유로 끝난 풀이가 예산을 넘긴 것도 `budget` 이고 그 시간은 끝까지 푼 시간이다. 도구 (`rtc_tools.analysis.planner_solves`) 는 둘을 나눠 센다.
 - "항상 탈락": 게이트별 탈락 히스토그램에서 첫 번째 병목을 찾는다. γ 창이 원인이면 $d_{eff}$, $T_{close}$, $v_{dir,\max}$ 값을 먼저 의심한다.
 - 포구점이 자주 바뀐다 (`closed_form`): `delta_J`, 점프 한계, 예측 품질(L2 `lastJump`)을 확인한다.
 - IK 수렴 실패: catch frame 축 정의 (D-17 YAML), `alpha_max`, seed(wait_pose)와 후보 자세의 거리를 확인한다.
