@@ -933,6 +933,17 @@ NlpReject NlpCatchSearch::Verdict(const MpcDockingSegmentCoreResult& res, bool p
   return res.converged ? NlpReject::kNone : NlpReject::kUnconverged;
 }
 
+std::int64_t NlpCatchSearch::SolveDeadlineNs(std::int64_t start_ns) noexcept {
+  std::int64_t deadline = start_ns + solve_budget_ns_;
+  // Under a caller's cap the wake has to END by its budget: a share that
+  // would reach past that is cut there.
+  if (solve_deadline_cap_ns_ > 0) {
+    deadline = std::min(deadline, solve_deadline_cap_ns_);
+  }
+  solve_deadline_max_ns_ = std::max(solve_deadline_max_ns_, deadline);
+  return deadline;
+}
+
 void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                            bool cov_matched, const PlannerRtState& rt, CandidateRecord& c,
                            Memory& out) noexcept {
@@ -992,7 +1003,7 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
   const std::int64_t start_ns = clock_();
   // Its own share of the budget, from its own start: what another candidate
   // spent or saved does not reach it.
-  in.deadline_ns = start_ns + solve_budget_ns_;
+  in.deadline_ns = SolveDeadlineNs(start_ns);
   const bool ok = core.Solve(in, res);
   const std::int64_t end_ns = clock_();
   if (solver_hook_ != nullptr) {
@@ -1172,7 +1183,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
     solver_hook_(true, solver_user_);
   }
   const std::int64_t start_ns = clock_();
-  in.deadline_ns = start_ns + solve_budget_ns_;  // a share of its own
+  in.deadline_ns = SolveDeadlineNs(start_ns);  // a share of its own
   const bool ok = core.Solve(in, res);
   const std::int64_t end_ns = clock_();
   if (solver_hook_ != nullptr) {
@@ -1260,9 +1271,12 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
 PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                                   bool cov_matched, const PlannerRtState& rt,
                                   const ReportedSegments& arm, NowReal now,
-                                  SearchStats& stats) noexcept {
+                                  std::int64_t budget_cap_ns, SearchStats& stats) noexcept {
   stats = SearchStats{};
   stats.nlp.ran = true;
+  wake_budget_ns_ = budget_cap_ns > 0 ? std::min(budget_ns_, budget_cap_ns) : budget_ns_;
+  solve_deadline_cap_ns_ = 0;
+  solve_deadline_max_ns_ = 0;
   PlanSnapshot plan{};
   plan.token = traj.token;
   plan.token.activation_generation = rt.activation_generation;
@@ -1278,6 +1292,9 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
     return plan;
   }
   const std::int64_t t_start = clock_();
+  if (budget_cap_ns > 0) {
+    solve_deadline_cap_ns_ = t_start + wake_budget_ns_;
+  }
   const bool following = rt.plan_active;
   // A wake that ends without a candidate while the RT follows a plan HOLDS:
   // publishing "no plan" would take away what the arm is doing.
@@ -1373,7 +1390,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   stats.nlp.follow_anchor_index = follow_anchor_set_ ? follow_anchor_index_ : 0;
   const bool windowed = on_track && params_.follow_window >= 0;
   // The earliest instant a segment of this wake can be read by the RT.
-  t_0_ns_ = now.ns + t_arm_ns_ + budget_ns_ + start_lead_ns_;
+  t_0_ns_ = now.ns + t_arm_ns_ + wake_budget_ns_ + start_lead_ns_;
   // The IK seed: the wait pose — the RT's adopted one when it reports it.
   seed_ = seed_yaml_;
   if (rt.wait_pose_adopted) {
@@ -1457,7 +1474,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
     cands_[U(ranked_[U(r)])].rank = r;
   }
   stats.nlp.screen_ns = clock_() - t_start;
-  const std::int64_t left_ns = budget_ns_ - stats.nlp.screen_ns;
+  const std::int64_t left_ns = wake_budget_ns_ - stats.nlp.screen_ns;
   // A candidate takes one share — two with the continuous solve after it.
   const std::int64_t per_candidate_ns =
       params_.continuous_tc ? 2 * solve_budget_ns_ : solve_budget_ns_;
@@ -1517,7 +1534,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   // budget: a candidate whose node 0 is nearer than that overrun can no longer
   // be read from its node 0 by the RT. Read once, after the last solve — so
   // it is the same whatever order the solves ran in.
-  const std::int64_t late_ns = clock_() - t_start - budget_ns_;
+  const std::int64_t late_ns = clock_() - t_start - wake_budget_ns_;
   for (int r = 0; late_ns > 0 && r < n_solve; ++r) {
     CandidateRecord& c = cands_[U(ranked_[U(r)])];
     if (c.reject == NlpReject::kNone && c.wait_ns < late_ns) {

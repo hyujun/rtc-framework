@@ -13,7 +13,9 @@
 // ── One wake (Plan) ───────────────────────────────────────────────────────────
 //  1. WHERE THE RESULT CAN START. t_0 = now + T_arm + budget + start_lead: the
 //     earliest instant a segment published by this wake can be read by the RT
-//     — if the wake keeps to its budget (8).
+//     — if the wake keeps to its budget (8). "budget" is `budget_s`, or the
+//     cap the caller passes when that is smaller (CatchSearch::Plan): a wake
+//     that has more to run behind the search is given less.
 //  2. CANDIDATES are the instants of a lattice of ABSOLUTE times,
 //     t_c(i) = t_ref + i·h, that lie in (t_0, t_0 + T_max]. t_ref is the first
 //     searching wake's `now` of the trial, so a candidate keeps its index from
@@ -38,7 +40,9 @@
 //  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose — the
 //     candidate of the followed plan's cell first, whatever its key (8) — and
 //     solve the best L, L = min(max_solves, ⌊(budget − screening)/solve_budget⌋).
-//     Each solve has its own deadline (its share), not the wake's. L is fixed
+//     Each solve has its own deadline (its share), not the wake's — except
+//     under a caller's cap (below), where it is also no later than the wake's
+//     end. L is fixed
 //     before the first solve and no solve is skipped for what another took:
 //     which candidates are solved must not depend on the order they run in.
 //  7. A SOLVE'S START POINT comes from the PREVIOUS wake's memory only (so the
@@ -313,10 +317,13 @@ class NlpCatchSearch final : public CatchSearch {
   }
 
   /// One search (RT-safe apart from the QP solvers — header note).
+  /// `budget_cap_ns` > 0 makes the wake's budget min(`budget_s`, the cap):
+  /// t_0, the number of solves and the overrun are counted on it, and no
+  /// solve's deadline is later than the wake's start plus it.
   [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                                   bool cov_matched, const PlannerRtState& rt,
                                   const ReportedSegments& arm, NowReal now,
-                                  SearchStats& stats) noexcept override;
+                                  std::int64_t budget_cap_ns, SearchStats& stats) noexcept override;
 
   /// The chosen candidate's arm trajectory, or nullptr when the last Plan
   /// chose none. Good until the next Plan or ResetTrial.
@@ -429,6 +436,16 @@ class NlpCatchSearch final : public CatchSearch {
 
   /// t_0 and the lattice anchor of the last Plan [ns].
   [[nodiscard]] std::int64_t LastStartInstantNs() const noexcept { return t_0_ns_; }
+
+  /// The budget the last Plan ran on [ns]: `budget_s`, or the caller's cap
+  /// when that was smaller.
+  [[nodiscard]] std::int64_t LastWakeBudgetNs() const noexcept { return wake_budget_ns_; }
+
+  /// The latest deadline a solve of the last Plan was given [ns, the search's
+  /// clock]; 0 when it ran none (tests).
+  [[nodiscard]] std::int64_t LastSolveDeadlineMaxNsForTesting() const noexcept {
+    return solve_deadline_max_ns_;
+  }
 
   [[nodiscard]] std::int64_t LatticeAnchorNs() const noexcept { return t_ref_ns_; }
 
@@ -557,6 +574,14 @@ class NlpCatchSearch final : public CatchSearch {
   std::int64_t t_lead_min_ns_{0}, t_max_ns_{0};
   std::int64_t t_arm_ns_{0}, control_dt_ns_{0};
   std::int64_t budget_ns_{0}, solve_budget_ns_{0}, start_lead_ns_{0}, age_max_ns_{0};
+  // This wake's budget — budget_ns_, or the caller's cap when that is smaller —
+  // and, under a cap, the instant no solve's deadline may pass (0 = none): a
+  // solve's deadline is its own share from its own start otherwise.
+  std::int64_t wake_budget_ns_{0};
+  std::int64_t solve_deadline_cap_ns_{0};
+  std::int64_t solve_deadline_max_ns_{0};
+  // The deadline of a solve that starts at `start_ns`.
+  [[nodiscard]] std::int64_t SolveDeadlineNs(std::int64_t start_ns) noexcept;
 
   // The arm problem, one per n_pre (index n_pre − n_pre_min).
   std::vector<std::unique_ptr<MpcDockingSegmentCore>> cores_;

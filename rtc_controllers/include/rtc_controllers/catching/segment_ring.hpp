@@ -1,14 +1,26 @@
-// ── The published segments of one plan (E1-F16 #742) ─────────────────────────
+// ── The published segments of the followed plan and of its replacement ───────
+// (E1-F16 #742, E1-F17 #743)
 //
 // A segment planner solves a later segment from an earlier one: the initial
 // state of a replan is evaluated on the segment the RT reports pending or
-// following (MD-58), and the search is handed the same two (SegmentPlanner::
-// Reported). So a planner keeps what it published — and every planner keeps it
-// the same way, which is why it is here and not in each of them:
+// following (MD-58), the first segment of a REPLACEMENT plan starts on one too,
+// and the search is handed the same two (SegmentPlanner::Reported). So a
+// planner keeps what it published — and every planner keeps it the same way,
+// which is why it is here and not in each of them:
 //
-//  • ONE plan. The ring holds the segments of the plan the last stored segment
-//    belongs to (its `plan_id` and `t_c_ns`); a segment of another plan empties
-//    it first. A report of a plan the ring is not of finds nothing in it.
+//  • TWO plans at most. Every entry is of the plan it carries (`plan_id` and
+//    `t_c_ns`). The ring holds the segments of the plan the RT was last noted
+//    to follow (NoteReported) and of the plan the last stored segment belongs
+//    to; storing a segment drops the entries of any other plan. So the first
+//    segment of a replacement is stored beside the followed plan's segments —
+//    the arm is still on them — and with nothing noted as followed a segment
+//    of another plan leaves the ring with that plan alone.
+//  • A REPORT is read plan by plan. The followed segment is looked up among
+//    the entries of the plan the RT follows; the pending one among those, or —
+//    while the RT holds a replacement (PlannerRtState::plan_pending) — among
+//    the replacement's. A seq that is in the ring under another plan is not
+//    what the RT reports. A report of a plan the ring holds nothing of finds
+//    nothing in it.
 //  • EIGHT segments, oldest first. When it is full the oldest one the RT did
 //    not last report is dropped (MD-58): the RT reports at most two, so one of
 //    eight always qualifies, and a burst of same-point re-solves cannot push
@@ -34,7 +46,8 @@ namespace rtc::catching {
 /// The payload of a ring whose planner remembers nothing beside a segment.
 struct NoSegmentPayload {};
 
-/// @brief The segments published for one plan, with a payload each (header).
+/// @brief The segments published for the followed plan and its replacement,
+///        with a payload each (header).
 template <typename Payload>
 class SegmentRing {
  public:
@@ -49,41 +62,46 @@ class SegmentRing {
   /// @brief Forget everything: a trial reset (RT-safe).
   void Clear() noexcept {
     n_ = 0;
-    plan_id_ = 0;
-    t_c_ns_ = 0;
     ClearReported();
   }
 
-  /// @brief Take what `rt` reports pending and following as the two segments
-  ///        the next Push must not drop (RT-safe). A replan calls it with the
-  ///        report it solves from.
-  void NoteReported(const PlannerRtState& rt) noexcept {
-    reported_pending_seq_ = rt.segment_pending ? rt.segment_pending_seq : 0;
-    reported_active_seq_ = rt.segment_active ? rt.segment_seq : 0;
-  }
+  /// @brief Take what `rt` reports as what the next Push must keep (RT-safe):
+  ///        the plan it follows — whose segments stay when a segment of
+  ///        another plan is stored — and the two segments it reports pending
+  ///        and following, which a full ring does not drop. A solve calls it
+  ///        with the report it starts from.
+  void NoteReported(const PlannerRtState& rt) noexcept { noted_ = Named::Of(rt); }
 
-  /// @brief Nothing is reported: a new plan, of which the RT has said nothing
-  ///        yet (RT-safe).
-  void ClearReported() noexcept {
-    reported_pending_seq_ = 0;
-    reported_active_seq_ = 0;
-  }
+  /// @brief Nothing is reported: the RT follows no plan (RT-safe). The next
+  ///        Push of another plan's segment leaves the ring with that plan
+  ///        alone.
+  void ClearReported() noexcept { noted_ = Named{}; }
 
-  /// @brief Store a published segment and its payload (RT-safe). A segment of
-  ///        another plan than the ring's empties the ring first.
+  /// @brief Store a published segment and its payload (RT-safe). Entries that
+  ///        are neither of its plan nor of the plan last noted as followed are
+  ///        dropped first.
   void Push(const SegmentSnapshot& p, const Payload& payload) noexcept {
-    if (n_ > 0 && (p.plan_id != plan_id_ || p.t_c_ns != t_c_ns_)) {
-      n_ = 0;
+    int kept = 0;
+    for (int i = 0; i < n_; ++i) {
+      const SegmentSnapshot& s = seg_[U(i)];
+      if (IsOfPlan(s, p.plan_id, p.t_c_ns) ||
+          (noted_.plan_active && IsOfPlan(s, noted_.plan_id, noted_.plan_t_c_ns))) {
+        if (kept != i) {
+          seg_[U(kept)] = s;
+          payload_[U(kept)] = payload_[U(i)];
+        }
+        ++kept;
+      }
     }
-    plan_id_ = p.plan_id;
-    t_c_ns_ = p.t_c_ns;
+    n_ = kept;
     if (n_ == kSize) {
       // Drop the oldest segment the RT did not last report; at most two are
       // reported, so one of eight always qualifies.
+      const Report keep = Lookup(noted_);
       int victim = 0;
       for (int i = 0; i < n_; ++i) {
-        const std::uint32_t s = seg_[U(i)].segment_seq;
-        if (s != reported_pending_seq_ && s != reported_active_seq_) {
+        const SegmentSnapshot* s = &seg_[U(i)];
+        if (s != keep.pending && s != keep.following) {
           victim = i;
           break;
         }
@@ -103,10 +121,11 @@ class SegmentRing {
 
   /// Whether the ring holds segments of the plan `rt` follows.
   [[nodiscard]] bool IsOf(const PlannerRtState& rt) const noexcept {
-    return n_ > 0 && rt.plan_active && rt.plan_id == plan_id_ && rt.plan_t_c_ns == t_c_ns_;
+    return rt.plan_active && NewestOf(rt.plan_id, rt.plan_t_c_ns) != nullptr;
   }
 
-  /// The entry with `seq`, or nullptr. Good until the next Push or Clear.
+  /// The entry with `seq`, or nullptr — the oldest one, should the two plans'
+  /// entries share a seq. Good until the next Push or Clear.
   [[nodiscard]] const SegmentSnapshot* Find(std::uint32_t seq) const noexcept {
     for (int i = 0; i < n_; ++i) {
       if (seg_[U(i)].segment_seq == seq) {
@@ -116,21 +135,21 @@ class SegmentRing {
     return nullptr;
   }
 
-  /// The payload stored with `entry` — a pointer Find or ReportedIn returned.
+  /// The payload stored with `entry` — a pointer Find, ReportedIn or Source
+  /// returned.
   [[nodiscard]] const Payload& PayloadOf(const SegmentSnapshot* entry) const noexcept {
     return payload_[static_cast<std::size_t>(entry - seg_.data())];
   }
 
-  /// @brief The ring's entries for the two segments `rt` reports — null where
-  ///        it reports none, the ring is another plan's, or the seq is not in
-  ///        it (RT-safe). Pointers INTO the ring: good until the next Push.
+  /// @brief The ring's entries for the two segments `rt` reports (RT-safe):
+  ///        the followed one among the entries of the plan `rt` follows, the
+  ///        pending one among the entries of the replacement `rt` holds
+  ///        (`rt.plan_pending`) or of the followed plan. Null where `rt`
+  ///        reports none, where the seq is not in the ring under that plan,
+  ///        and both when the ring holds nothing of the followed plan.
+  ///        Pointers INTO the ring: good until the next Push.
   [[nodiscard]] Report ReportedIn(const PlannerRtState& rt) const noexcept {
-    // The ring is the last PUBLISHED plan's; it says nothing of another one.
-    if (!IsOf(rt)) {
-      return {};
-    }
-    return {rt.segment_pending ? Find(rt.segment_pending_seq) : nullptr,
-            rt.segment_active ? Find(rt.segment_seq) : nullptr};
+    return Lookup(Named::Of(rt));
   }
 
   /// @brief SegmentPlanner::Reported on this ring: the two reported segments
@@ -147,13 +166,20 @@ class SegmentRing {
     }
   }
 
-  /// @brief SegmentPlanner::SourceSeq on this ring: the `segment_seq` of the
-  ///        segment a solve at `t_eff_ns` starts from (SourceSegmentAt on what
-  ///        the RT reports — never inferred), 0 when there is none (RT-safe).
+  /// @brief The entry a solve at `t_eff_ns` starts from: SourceSegmentAt on
+  ///        what the RT reports — never inferred — or nullptr when there is
+  ///        none (RT-safe). A pointer INTO the ring: good until the next Push.
+  [[nodiscard]] const SegmentSnapshot* Source(const PlannerRtState& rt,
+                                              std::int64_t t_eff_ns) const noexcept {
+    const Report r = ReportedIn(rt);
+    return SourceSegmentAt(r.pending, r.following, t_eff_ns);
+  }
+
+  /// @brief SegmentPlanner::SourceSeq on this ring: the `segment_seq` of
+  ///        Source(rt, t_eff_ns), 0 when there is none (RT-safe).
   [[nodiscard]] std::uint32_t SourceSeq(const PlannerRtState& rt,
                                         std::int64_t t_eff_ns) const noexcept {
-    const Report r = ReportedIn(rt);
-    const SegmentSnapshot* src = SourceSegmentAt(r.pending, r.following, t_eff_ns);
+    const SegmentSnapshot* src = Source(rt, t_eff_ns);
     return src != nullptr ? src->segment_seq : 0;
   }
 
@@ -162,26 +188,106 @@ class SegmentRing {
   ///        that plan (RT-safe).
   [[nodiscard]] bool FollowedTrack(const PlannerRtState& rt,
                                    std::uint64_t& generation) const noexcept {
-    if (!IsOf(rt)) {
+    const SegmentSnapshot* s = rt.plan_active ? NewestOf(rt.plan_id, rt.plan_t_c_ns) : nullptr;
+    if (s == nullptr) {
       return false;
     }
     // Every segment of a plan carries the plan's track.
-    generation = seg_[U(n_ - 1)].token.generation;
+    generation = s->token.generation;
     return true;
   }
 
  private:
+  // What a report names: the followed plan, the replacement it holds, and the
+  // two segments — the part of PlannerRtState the ring reads.
+  struct Named {
+    bool plan_active{false};
+    std::uint32_t plan_id{0};
+    std::int64_t plan_t_c_ns{0};
+    bool plan_pending{false};
+    std::uint32_t plan_pending_id{0};
+    std::int64_t plan_pending_t_c_ns{0};
+    bool segment_active{false};
+    std::uint32_t segment_seq{0};
+    bool segment_pending{false};
+    std::uint32_t segment_pending_seq{0};
+
+    [[nodiscard]] static constexpr Named Of(const PlannerRtState& rt) noexcept {
+      Named n;
+      n.plan_active = rt.plan_active;
+      n.plan_id = rt.plan_id;
+      n.plan_t_c_ns = rt.plan_t_c_ns;
+      n.plan_pending = rt.plan_pending;
+      n.plan_pending_id = rt.plan_pending_id;
+      n.plan_pending_t_c_ns = rt.plan_pending_t_c_ns;
+      n.segment_active = rt.segment_active;
+      n.segment_seq = rt.segment_seq;
+      n.segment_pending = rt.segment_pending;
+      n.segment_pending_seq = rt.segment_pending_seq;
+      return n;
+    }
+  };
+
   [[nodiscard]] static constexpr std::size_t U(int i) noexcept {
     return static_cast<std::size_t>(i);
+  }
+
+  [[nodiscard]] static constexpr bool IsOfPlan(const SegmentSnapshot& s, std::uint32_t plan_id,
+                                               std::int64_t t_c_ns) noexcept {
+    return s.plan_id == plan_id && s.t_c_ns == t_c_ns;
+  }
+
+  // The entry of plan (plan_id, t_c_ns) with `seq`, or nullptr.
+  [[nodiscard]] const SegmentSnapshot* FindIn(std::uint32_t plan_id, std::int64_t t_c_ns,
+                                              std::uint32_t seq) const noexcept {
+    for (int i = 0; i < n_; ++i) {
+      if (seg_[U(i)].segment_seq == seq && IsOfPlan(seg_[U(i)], plan_id, t_c_ns)) {
+        return &seg_[U(i)];
+      }
+    }
+    return nullptr;
+  }
+
+  // The last stored entry of plan (plan_id, t_c_ns), or nullptr.
+  [[nodiscard]] const SegmentSnapshot* NewestOf(std::uint32_t plan_id,
+                                                std::int64_t t_c_ns) const noexcept {
+    for (int i = n_ - 1; i >= 0; --i) {
+      if (IsOfPlan(seg_[U(i)], plan_id, t_c_ns)) {
+        return &seg_[U(i)];
+      }
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] Report Lookup(const Named& named) const noexcept {
+    // The ring says nothing of a plan it holds no segment of.
+    if (!named.plan_active || NewestOf(named.plan_id, named.plan_t_c_ns) == nullptr) {
+      return {};
+    }
+    Report r;
+    if (named.segment_active) {
+      r.following = FindIn(named.plan_id, named.plan_t_c_ns, named.segment_seq);
+    }
+    if (named.segment_pending) {
+      // A held replacement's first segment is the pending one; without a
+      // replacement it is the followed plan's.
+      if (named.plan_pending) {
+        r.pending =
+            FindIn(named.plan_pending_id, named.plan_pending_t_c_ns, named.segment_pending_seq);
+      }
+      if (r.pending == nullptr) {
+        r.pending = FindIn(named.plan_id, named.plan_t_c_ns, named.segment_pending_seq);
+      }
+    }
+    return r;
   }
 
   std::array<SegmentSnapshot, kSize> seg_{};
   std::array<Payload, kSize> payload_{};
   int n_{0};
-  std::uint32_t plan_id_{0};
-  std::int64_t t_c_ns_{0};
-  std::uint32_t reported_pending_seq_{0};
-  std::uint32_t reported_active_seq_{0};
+  // The report the next Push keeps by: the followed plan's entries, and the
+  // two reported segments.
+  Named noted_{};
 };
 
 }  // namespace rtc::catching

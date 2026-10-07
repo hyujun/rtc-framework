@@ -9,6 +9,9 @@
 //   publish gates  EachGateWithholdsOnItsOwn, BetweenNodeSpeed*
 //   replans        ASamePointResolveIsWarmAndKeepsNodeZero, AdvanceIsColdAndStartsOnTheSource,
 //                  PreCatchHandsOverToTheStopCores, TheSourceIsWhatTheRtReports, ...
+//   replacement    ApproachPlannerReplacement.* — the first segment of a plan
+//                  that replaces the followed one starts on the reported
+//                  segment, on a quintic reference (E1-F17 #743)
 //   allocation     PathsBeforeTheSolveAllocateNothing, SolvesAllocateNothingOutsideProxQp
 //   configure      AReconfiguredPlannerIsANewOne — Configure is a full reset
 //   interface      TheViewEntriesSolveWhatTheValueEntriesSolve (E1-F12 #738)
@@ -25,6 +28,7 @@
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/segment_planner.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
+#include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
@@ -2267,6 +2271,373 @@ TEST(ApproachPlanner, TheFirstSolveDoesNotReadASearchsSolution) {
   SetClock(kT0);
 }
 
+// ── 5a. The first segment of a REPLACEMENT (E1-F17 #743) ─────────────────────
+// The RT follows a plan and the search replaces it. The new plan's first
+// segment starts where the arm will be at its node 0 — on the segment the RT
+// reports, read by the RT's own evaluator — not at rest on the command; its
+// reference is the quintic from that moving state to the new catch pose; and
+// the followed plan's segments stay in the ring beside the new one.
+
+constexpr std::uint32_t kReplacementId = 8;
+
+// Plan 7 started from rest at kT0 and published as seq 1 (six pre-catch
+// intervals, node 0 at kT0 + 230 ms), and the wake `wake_after` later at which
+// the search replaces it: a catch `shift` after the old one, at a pose `reach`
+// off the nominal one.
+struct Replacement {
+  Started first;
+  SegmentSnapshot source{};  // seq 1
+  std::int64_t now{0};
+  Catch c;
+  std::int64_t t_c{0};
+  PlanSnapshot plan{};
+};
+
+Replacement Replace(Rig& r, std::int64_t wake_after, std::int64_t shift, double reach = 0.05) {
+  Replacement x;
+  x.first = StartPlan(r, kT0, 800 * kMs, 0.04);
+  x.source = r.out;
+  x.now = kT0 + wake_after;
+  x.c = CatchAt(r.arm, Offset(r.arm, reach));
+  x.t_c = x.first.t_c + shift;
+  x.plan = PlanFor(r.arm, x.c, x.t_c, kReplacementId);
+  return x;
+}
+
+// A segment read at `t_ns` by the RT's evaluator, MODEL order.
+struct ModelState {
+  Eigen::VectorXd q;
+  Eigen::VectorXd qd;
+  Eigen::VectorXd qdd;
+};
+
+ModelState SampleModel(const Arm& a, const SegmentSnapshot& seg, std::int64_t t_ns) {
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  EXPECT_TRUE(rtc::catching::NodeTrajectoryFollower::SampleJoints(seg, t_ns, q, qd, qdd));
+  const int nv = a.model->nv;
+  ModelState s{Eigen::VectorXd(nv), Eigen::VectorXd(nv), Eigen::VectorXd(nv)};
+  for (int m = 0; m < nv; ++m) {
+    s.q[m] = q[Dev(a, m)];
+    s.qd[m] = qd[Dev(a, m)];
+    s.qdd[m] = qdd[Dev(a, m)];
+  }
+  return s;
+}
+
+// The start state a catch core was handed is `want`, to the bit.
+void ExpectStartIs(const rtc::catching::MpcSegmentCoreInput& in, const ModelState& want) {
+  ASSERT_EQ(in.q0.size(), want.q.size());
+  for (Eigen::Index m = 0; m < want.q.size(); ++m) {
+    EXPECT_TRUE(rtc::testing::BitsEqual(in.q0[m], want.q[m])) << "q, joint " << m;
+    EXPECT_TRUE(rtc::testing::BitsEqual(in.qd0[m], want.qd[m])) << "q̇, joint " << m;
+    EXPECT_TRUE(rtc::testing::BitsEqual(in.qdd0[m], want.qdd[m])) << "q̈, joint " << m;
+  }
+}
+
+TEST(ApproachPlannerReplacement, TheFirstSegmentStartsOnTheFollowedSegmentAtNodeZero) {
+  for (Arm arm : {Arm6(), Arm7()}) {
+    Rig r(std::move(arm));
+    SCOPED_TRACE(std::to_string(r.arm.model->nv) + " joints");
+    // The wake is 330 ms after the first one; the new catch is 40 ms after
+    // the old one, so the new grid is not the old one's.
+    const Replacement x = Replace(r, 330 * kMs, 40 * kMs);
+    ASSERT_NE(x.first.seq, 0U);
+    ASSERT_EQ(x.source.t0_ns, x.first.t_c - 6 * kDtPre);
+    const PlannerRtState rt =
+        FollowingRt(r.arm, r.arm.q_nominal, x.now - kH, x.first.t_c, 0, x.first.seq);
+    SetClock(x.now);
+    const bool ok = r.planner.PlanFirst(rt, x.plan, BallFor(x.c), r.out, r.rec);
+    EXPECT_EQ(r.rec.kind, SegmentKind::kFirst);
+    // The grid is the NEW plan's: n_pre = ⌊(t_c' − now_lead − first − 2h)/Δ_pre⌋
+    // = ⌊471 ms / 100 ms⌋, node 0 at t_c' − 4·Δ_pre — 240 ms into the source,
+    // between two of its nodes.
+    ASSERT_EQ(r.rec.k, -4) << Why(r.rec);
+    const std::int64_t t0 = x.t_c - 4 * kDtPre;
+    // The start is the reported segment at node 0's instant, bit for bit.
+    ASSERT_TRUE(r.rec.x0_from_segment) << Why(r.rec);
+    EXPECT_EQ(r.rec.source_seq, x.first.seq);
+    EXPECT_EQ(r.rec.source_seq, r.planner.SourceSeq(rt, t0)) << "the cycle's publish gate";
+    ASSERT_FALSE(r.rec.x0_clamped) << "the comparison below is of an unprojected start";
+    const ModelState x0 = SampleModel(r.arm, x.source, t0);
+    ASSERT_NO_FATAL_FAILURE(ExpectStartIs(r.planner.ApproachCoreInput(4), x0));
+    // ... and it is a MOVING start, which is neither the reported command nor
+    // a state at rest.
+    const double speed = x0.qd.cwiseAbs().maxCoeff();
+    EXPECT_GT(speed, 1e-3) << "the source is at rest there: this start shows nothing";
+    EXPECT_EQ(r.rec.x0_speed, speed);
+    EXPECT_GT((x0.q - r.arm.q_nominal).cwiseAbs().maxCoeff(), 1e-4);
+    EXPECT_TRUE(r.rec.cold_start);
+    EXPECT_EQ(r.rec.w_delta_scale, 0.0);
+    EXPECT_FALSE(r.rec.ref_scaled);
+
+    // The solve, and the segment it leaves: the new plan's.
+    ASSERT_TRUE(ok) << Why(r.rec);
+    EXPECT_EQ(r.out.plan_id, kReplacementId);
+    EXPECT_EQ(r.out.t_c_ns, x.t_c);
+    EXPECT_EQ(r.out.token.generation, 5U);  // the plan's token (PlanFor)
+    EXPECT_EQ(r.out.n_pre, 4);
+    EXPECT_EQ(r.out.k0, 0);
+    EXPECT_EQ(r.out.t0_ns, t0);
+    EXPECT_EQ(SegmentNodeTimeNs(r.out, r.out.n_nodes), x.t_c + 7 * kDt);
+    EXPECT_TRUE(rtc::catching::ValidateSegmentNodes(r.out));
+    EXPECT_FALSE(r.out.x0_clamped);
+    // Node 0 is that start, in DEVICE order — continuous where the RT switches.
+    for (int m = 0; m < r.arm.model->nv; ++m) {
+      EXPECT_NEAR(r.out.q[Dev(r.arm, m)], x0.q[m], 1e-9) << m;
+      EXPECT_NEAR(r.out.qd[Dev(r.arm, m)], x0.qd[m], 1e-6) << m;
+    }
+    EXPECT_LE((CatchNodePos(r.arm, r.out) - x.c.p).norm(), 0.02);
+
+    // Published, it sits BESIDE the followed plan's segment: the report of the
+    // old plan still names its source and its track, the report of an RT
+    // holding the pair names both, and the report after the switch names the
+    // new one.
+    const std::uint32_t seq2 = r.Publish(x.now);
+    EXPECT_EQ(r.planner.SourceSeq(rt, x.first.t_c), x.first.seq);
+    std::uint64_t track = 0;
+    EXPECT_TRUE(r.planner.FollowedTrack(rt, track));
+    EXPECT_EQ(track, 5U);
+    PlannerRtState held = rt;
+    held.segment_pending = true;
+    held.segment_pending_seq = seq2;
+    held.plan_pending = true;
+    held.plan_pending_id = kReplacementId;
+    held.plan_pending_t_c_ns = x.t_c;
+    EXPECT_EQ(r.planner.SourceSeq(held, t0 - 1), x.first.seq);
+    EXPECT_EQ(r.planner.SourceSeq(held, t0), seq2);
+    // Without the RT saying it holds the replacement, that seq is not pending.
+    PlannerRtState unheld = held;
+    unheld.plan_pending = false;
+    EXPECT_EQ(r.planner.SourceSeq(unheld, t0), x.first.seq);
+    const PlannerRtState switched =
+        FollowingRt(r.arm, r.arm.q_nominal, x.now - kH, x.t_c, 0, seq2, kReplacementId);
+    EXPECT_EQ(r.planner.SourceSeq(switched, x.t_c), seq2);
+    EXPECT_TRUE(r.planner.FollowedTrack(switched, track));
+    // Should the RT drop the pair, a replan of the OLD plan still has its
+    // source (whatever the solve then makes of it).
+    SetClock(x.now);
+    static_cast<void>(r.planner.Replan(rt, BallFor(x.first.c), r.out, r.rec));
+    EXPECT_NE(r.rec.outcome, SegmentOutcome::kNotFollowed) << Why(r.rec);
+    EXPECT_EQ(r.rec.source_seq, x.first.seq);
+  }
+}
+
+TEST(ApproachPlannerReplacement, WithoutAReportedSegmentItIsNotFollowed) {
+  Rig r(Arm6());
+  const Replacement x = Replace(r, 330 * kMs, 40 * kMs);
+  ASSERT_NE(x.first.seq, 0U);
+  const MpcSegmentBallTarget ball = BallFor(x.c);
+  const Eigen::VectorXd& q = r.arm.q_nominal;
+  const std::int64_t t_c = x.first.t_c;
+  const auto refused = [&](const char* what, const PlannerRtState& rt, const PlanSnapshot& plan,
+                           SegmentOutcome want) {
+    SCOPED_TRACE(what);
+    SetClock(x.now);
+    SegmentSnapshot out{};
+    EXPECT_FALSE(r.planner.PlanFirst(rt, plan, ball, out, r.rec));
+    EXPECT_EQ(r.rec.outcome, want) << Why(r.rec);
+    EXPECT_EQ(r.rec.kind, SegmentKind::kFirst);
+    EXPECT_FALSE(out.valid);
+  };
+  // Nothing reported: not followed — never "it follows a plan, so it must be
+  // on its last segment".
+  refused("nothing reported", FollowingRt(r.arm, q, x.now - kH, t_c, 0, 0), x.plan,
+          SegmentOutcome::kNotFollowed);
+  EXPECT_EQ(r.rec.k, -4);  // the grid point is recorded even when withheld
+  EXPECT_EQ(r.rec.source_seq, 0U);
+  EXPECT_FALSE(r.rec.x0_from_segment);
+  refused("a seq the ring never held", FollowingRt(r.arm, q, x.now - kH, t_c, 0, 99), x.plan,
+          SegmentOutcome::kNotFollowed);
+  refused("another plan than the ring holds",
+          FollowingRt(r.arm, q, x.now - kH, t_c, 0, x.first.seq, /*plan_id=*/9), x.plan,
+          SegmentOutcome::kNotFollowed);
+  refused("another catch instant than the ring holds",
+          FollowingRt(r.arm, q, x.now - kH, t_c + 1, 0, x.first.seq), x.plan,
+          SegmentOutcome::kNotFollowed);
+  // A replacement starts on the command the RT runs: it has to be seeded.
+  PlannerRtState unseeded = FollowingRt(r.arm, q, x.now - kH, t_c, 0, x.first.seq);
+  unseeded.cmd_seeded = false;
+  refused("command not seeded", unseeded, x.plan, SegmentOutcome::kNoState);
+  // Not even one pre-catch interval before the new catch.
+  PlanSnapshot late = x.plan;
+  late.t_c_ns = x.now + kTArm + kFirst + 2 * kH + kDtPre - 1;
+  refused("too late", FollowingRt(r.arm, q, x.now - kH, t_c, 0, x.first.seq), late,
+          SegmentOutcome::kTooLate);
+
+  // The rest check is the resting arm's: a command that moves — it does, the
+  // arm follows a plan — withholds nothing here, and is not even read.
+  PlannerRtState moving = FollowingRt(r.arm, q, x.now - kH, t_c, 0, x.first.seq);
+  moving.qd_cmd[3] = 1.0;
+  SetClock(x.now);
+  static_cast<void>(r.planner.PlanFirst(moving, x.plan, ball, r.out, r.rec));
+  EXPECT_NE(r.rec.outcome, SegmentOutcome::kNotAtRest) << Why(r.rec);
+  EXPECT_TRUE(r.rec.x0_from_segment);
+  const ModelState on_source = SampleModel(r.arm, x.source, x.t_c - 4 * kDtPre);
+  ASSERT_NO_FATAL_FAILURE(ExpectStartIs(r.planner.ApproachCoreInput(4), on_source));
+  moving.qd_cmd[3] = kNan;
+  SetClock(x.now);
+  static_cast<void>(r.planner.PlanFirst(moving, x.plan, ball, r.out, r.rec));
+  EXPECT_NE(r.rec.outcome, SegmentOutcome::kNotAtRest) << Why(r.rec);
+  EXPECT_TRUE(r.rec.x0_from_segment);
+  // With no plan followed the same command is refused as it always was.
+  PlannerRtState free_arm = RestingRt(r.arm, q, x.now - kH);
+  free_arm.qd_cmd[3] = 1.0;
+  refused("no plan followed, a moving command", free_arm, x.plan, SegmentOutcome::kNotAtRest);
+}
+
+TEST(ApproachPlannerReplacement, TheSourceIsThePendingSegmentFromItsNodeZeroOnElseTheFollowed) {
+  Rig r(Arm6());
+  const Started s = StartPlan(r, kT0, 800 * kMs, 0.04);
+  ASSERT_NE(s.seq, 0U);
+  const SegmentSnapshot followed = r.out;
+  ASSERT_EQ(followed.t0_ns, kT0 + 230 * kMs);
+  // A replan of the followed plan, five pre-catch intervals: node 0 at
+  // t_c − 500 ms = kT0 + 330 ms. The RT takes it and holds it pending.
+  const std::int64_t replan_at = kT0 + 180 * kMs;
+  SetClock(replan_at);
+  ASSERT_TRUE(r.planner.Replan(FollowingRt(r.arm, r.arm.q_nominal, replan_at - kH, s.t_c, s.seq, 0),
+                               BallFor(s.c), r.out, r.rec))
+      << Why(r.rec);
+  const std::uint32_t seq2 = r.Publish(replan_at);
+  const SegmentSnapshot pending = r.out;
+  ASSERT_EQ(pending.t0_ns, kT0 + 330 * kMs);
+
+  // The search replaces the plan at kT0 + 210 ms, the RT following seq 1 with
+  // seq 2 pending. Every new catch instant below leaves five pre-catch
+  // intervals, so node 0 is 500 ms before it — on either side of the pending
+  // segment's node 0.
+  const std::int64_t now = kT0 + 210 * kMs;
+  const PlannerRtState rt = FollowingRt(r.arm, r.arm.q_nominal, now - kH, s.t_c, seq2, s.seq);
+  const Catch c2 = CatchAt(r.arm, Offset(r.arm, 0.05));
+
+  struct Row {
+    const char* what;
+    std::int64_t t_c;  // the replacement's catch instant
+    bool pending;      // the source is the pending segment
+  };
+
+  for (const Row& row : {Row{"node 0 20 ms before the pending one's", kT0 + 810 * kMs, false},
+                         Row{"node 0 one ns before the pending one's", kT0 + 830 * kMs - 1, false},
+                         Row{"node 0 at the pending one's", kT0 + 830 * kMs, true},
+                         Row{"node 0 20 ms after the pending one's", kT0 + 850 * kMs, true}}) {
+    SCOPED_TRACE(row.what);
+    const std::int64_t t0 = row.t_c - 5 * kDtPre;
+    ASSERT_EQ(t0 >= pending.t0_ns, row.pending);
+    SetClock(now);
+    static_cast<void>(r.planner.PlanFirst(rt, PlanFor(r.arm, c2, row.t_c, kReplacementId),
+                                          BallFor(c2), r.out, r.rec));
+    ASSERT_EQ(r.rec.k, -5) << Why(r.rec);
+    ASSERT_TRUE(r.rec.x0_from_segment) << Why(r.rec);
+    EXPECT_EQ(r.rec.source_seq, row.pending ? seq2 : s.seq);
+    EXPECT_EQ(r.rec.source_seq, r.planner.SourceSeq(rt, t0));
+    if (!r.rec.x0_clamped) {
+      const ModelState want = SampleModel(r.arm, row.pending ? pending : followed, t0);
+      ASSERT_NO_FATAL_FAILURE(ExpectStartIs(r.planner.ApproachCoreInput(5), want));
+    }
+  }
+}
+
+TEST(ApproachPlannerReplacement, TheReferenceIsTheQuinticFromTheMovingStartToTheCatchPose) {
+  for (Arm arm : {Arm6(), Arm7()}) {
+    Rig r(std::move(arm));
+    SCOPED_TRACE(std::to_string(r.arm.model->nv) + " joints");
+    const Replacement x = Replace(r, 330 * kMs, 40 * kMs);
+    ASSERT_NE(x.first.seq, 0U);
+    const PlannerRtState rt =
+        FollowingRt(r.arm, r.arm.q_nominal, x.now - kH, x.first.t_c, 0, x.first.seq);
+    SetClock(x.now);
+    // The reference is built before the solve: what the solve makes of it is
+    // not this test's.
+    static_cast<void>(r.planner.PlanFirst(rt, x.plan, BallFor(x.c), r.out, r.rec));
+    constexpr int kNPre = 4;
+    constexpr int kNTotal = kNPre + 7;
+    ASSERT_EQ(r.rec.k, -kNPre) << Why(r.rec);
+    ASSERT_TRUE(r.rec.x0_from_segment) << Why(r.rec);
+    ASSERT_FALSE(r.rec.x0_clamped);
+    EXPECT_FALSE(r.rec.ref_clamped);
+    EXPECT_FALSE(r.rec.ref_scaled);
+    EXPECT_EQ(r.rec.ref_scale, 1.0);
+    EXPECT_EQ(r.rec.ref_shortfall, 0.0);
+    const rtc::catching::MpcSegmentCoreInput& in = r.planner.ApproachCoreInput(kNPre);
+    ASSERT_TRUE(in.reference_valid);
+    ASSERT_EQ(in.q_ref.cols(), kNTotal + 1);
+    const ModelState x0 = SampleModel(r.arm, x.source, x.t_c - kNPre * kDtPre);
+    const double span = 0.4;  // n_pre · Δ_pre [s]
+    double moved_by_the_start = 0.0;
+    for (int m = 0; m < r.arm.model->nv; ++m) {
+      SCOPED_TRACE("joint " + std::to_string(m));
+      const double q0 = x0.q[m];
+      const double v0 = x0.qd[m];
+      const double a0 = x0.qdd[m];
+      const double q_star = x.c.q_catch[m];
+      // Node 0 is the start state, and the catch node the catch pose at rest —
+      // exactly, not to a tolerance.
+      EXPECT_TRUE(rtc::testing::BitsEqual(in.q_ref(m, 0), q0));
+      EXPECT_TRUE(rtc::testing::BitsEqual(in.qd_ref(m, 0), v0));
+      EXPECT_TRUE(rtc::testing::BitsEqual(in.qdd_ref(m, 0), a0));
+      // ... held from the catch node to the end of the stop.
+      for (int k = kNPre; k <= kNTotal; ++k) {
+        EXPECT_EQ(in.q_ref(m, k), q_star) << k;
+        EXPECT_EQ(in.qd_ref(m, k), 0.0) << k;
+        EXPECT_EQ(in.qdd_ref(m, k), 0.0) << k;
+      }
+      // Between them the quintic with those six boundary values, written here
+      // in time (the planner writes it in s = t/T):
+      //   q(t) = q0 + v0·t + ½a0·t² + a3·t³ + a4·t⁴ + a5·t⁵.
+      const double d = q_star - q0;
+      const double t1 = span;
+      const double t2 = t1 * t1;
+      const double a3 = (20.0 * d - 12.0 * v0 * t1 - 3.0 * a0 * t2) / (2.0 * t2 * t1);
+      const double a4 = (-30.0 * d + 16.0 * v0 * t1 + 3.0 * a0 * t2) / (2.0 * t2 * t2);
+      const double a5 = (12.0 * d - 6.0 * v0 * t1 - a0 * t2) / (2.0 * t2 * t2 * t1);
+      for (int k = 0; k <= kNPre; ++k) {
+        const double t = 0.1 * k;
+        const double pos = q0 + t * (v0 + t * (0.5 * a0 + t * (a3 + t * (a4 + t * a5))));
+        const double vel = v0 + t * (a0 + t * (3.0 * a3 + t * (4.0 * a4 + t * 5.0 * a5)));
+        const double acc = a0 + t * (6.0 * a3 + t * (12.0 * a4 + t * 20.0 * a5));
+        EXPECT_NEAR(in.q_ref(m, k), pos, 1e-12) << k;
+        EXPECT_NEAR(in.qd_ref(m, k), vel, 1e-12) << k;
+        EXPECT_NEAR(in.qdd_ref(m, k), acc, 1e-12) << k;
+      }
+      // Non-vacuous: the rest-to-rest minimum-jerk reach between the same two
+      // poses is another curve.
+      const double s = 0.25;
+      const double rest =
+          q0 + d * (10.0 * s * s * s - 15.0 * s * s * s * s + 6.0 * s * s * s * s * s);
+      moved_by_the_start = std::max(moved_by_the_start, std::fabs(in.q_ref(m, 1) - rest));
+    }
+    EXPECT_GT(moved_by_the_start, 1e-4) << "the start's velocity left no mark on the reference";
+
+    // A reach the velocity box could not make from rest in this time is NOT
+    // shortened (that peak-speed bound is the rest-to-rest curve's): the
+    // reference ends on the catch pose itself.
+    Catch far = x.c;
+    far.q_catch = r.arm.q_nominal;
+    far.q_catch[0] += 1.5;
+    SetClock(x.now);
+    static_cast<void>(r.planner.PlanFirst(rt, PlanFor(r.arm, far, x.t_c, kReplacementId),
+                                          BallFor(x.c), r.out, r.rec));
+    ASSERT_TRUE(r.rec.x0_from_segment) << Why(r.rec);
+    EXPECT_FALSE(r.rec.ref_scaled);
+    EXPECT_EQ(r.rec.ref_scale, 1.0);
+    EXPECT_EQ(r.rec.ref_shortfall, 0.0);
+    EXPECT_FALSE(r.rec.ref_clamped);
+    EXPECT_EQ(in.q_ref(0, kNPre), far.q_catch[0]);
+    // A catch pose past a joint's limit is still clamped into the core's box.
+    Catch over = x.c;
+    over.q_catch[1] = r.arm.model->upperPositionLimit[1] + 0.2;
+    SetClock(x.now);
+    static_cast<void>(r.planner.PlanFirst(rt, PlanFor(r.arm, over, x.t_c, kReplacementId),
+                                          BallFor(x.c), r.out, r.rec));
+    ASSERT_TRUE(r.rec.x0_from_segment) << Why(r.rec);
+    EXPECT_TRUE(r.rec.ref_clamped);
+    EXPECT_LT(in.q_ref(1, kNPre), r.arm.model->upperPositionLimit[1]);
+    EXPECT_EQ(in.q_ref(1, kNPre), in.q_ref(1, kNTotal));
+  }
+}
+
 // ── 6. Allocation (MD-23) ────────────────────────────────────────────────────
 
 struct Counts {
@@ -2446,6 +2817,39 @@ TEST(ApproachPlanner, TheStopLineAllocatesNothing) {
   EXPECT_FALSE(ok);
   EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNoBall) << Why(r.rec);
   EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "no-line path";
+}
+
+TEST(ApproachPlannerReplacement, AllocatesNothingOutsideProxQp) {
+  // The paths a replacement adds: the withhold with no reported segment, the
+  // solve from a moving start (through it the C mallocs are ProxQP's, #654,
+  // so operator new is the gate), and storing its segment beside the followed
+  // plan's.
+  Rig r(Arm7());
+  const Replacement x = Replace(r, 330 * kMs, 40 * kMs);  // the first solve: outside the gates
+  ASSERT_NE(x.first.seq, 0U);
+  const MpcSegmentBallTarget ball = BallFor(x.c);
+  const PlannerRtState none = FollowingRt(r.arm, r.arm.q_nominal, x.now - kH, x.first.t_c, 0, 0);
+  const PlannerRtState rt =
+      FollowingRt(r.arm, r.arm.q_nominal, x.now - kH, x.first.t_c, 0, x.first.seq);
+  bool ok = true;
+  SetClock(x.now);
+  Counts c = Gated([&] { ok = r.planner.PlanFirst(none, x.plan, ball, r.out, r.rec); });
+  EXPECT_FALSE(ok);
+  EXPECT_EQ(r.rec.outcome, SegmentOutcome::kNotFollowed);
+  EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "not-followed path";
+  SetClock(x.now);
+  c = Gated([&] { ok = r.planner.PlanFirst(rt, x.plan, ball, r.out, r.rec); });
+  EXPECT_TRUE(ok) << Why(r.rec);
+  EXPECT_TRUE(r.rec.x0_from_segment);
+  EXPECT_EQ(c.op_new, 0U) << "a replacement's first solve";
+  r.out.segment_seq = ++r.seq;
+  r.out.publish_ns = x.now;
+  c = Gated([&] { r.planner.NotePublished(r.out); });
+  EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "keeping the replacement beside the followed plan";
+  std::uint32_t source = 0;
+  c = Gated([&] { source = r.planner.SourceSeq(rt, x.first.t_c); });
+  EXPECT_EQ(source, x.first.seq);
+  EXPECT_EQ(c.op_new + c.c_malloc, 0U) << "the report of the followed plan";
 }
 
 // ── 7. Records (not judged): what the cores cost at configure, and what the

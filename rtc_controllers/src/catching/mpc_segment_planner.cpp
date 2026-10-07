@@ -709,28 +709,34 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   }
   rec.kind = SegmentKind::kFirst;
   const std::int64_t start = clock_();
+  // The RT follows a plan: this is the first segment of its REPLACEMENT, and
+  // it starts on the segment the arm will be on, not at rest.
+  const bool following = rt.plan_active;
   // Before a plan the RT has no command yet (cmd_seeded false): it reports
   // the MEASURED pose with zero velocity, which is where it seeds the command
-  // when it takes the plan — the same x₀ either way.
-  if (!CheckState(rt, start, /*need_command=*/false, rec)) {
+  // when it takes the plan — the same x₀ either way. While it follows one the
+  // command is what the segments were started on: it has to be seeded.
+  if (!CheckState(rt, start, /*need_command=*/following, rec)) {
     return false;
   }
   if (!plan.valid || plan.t_c_ns <= 0 || plan.nv != nv_) {
     rec.outcome = SegmentOutcome::kNoState;
     return false;
   }
-  // The arm rests at its wait pose: x₀ = (q_cmd, 0, 0).
-  double speed = 0.0;
-  bool speed_finite = true;
-  for (int d = 0; d < nv_; ++d) {
-    const double v = rt.qd_cmd[U(d)];
-    speed_finite = speed_finite && std::isfinite(v);
-    speed = std::max(speed, std::fabs(v));
-  }
-  rec.x0_speed = speed_finite ? speed : std::numeric_limits<double>::quiet_NaN();
-  if (!(speed_finite && speed <= params_.rest_tol)) {
-    rec.outcome = SegmentOutcome::kNotAtRest;
-    return false;
+  if (!following) {
+    // The arm rests at its wait pose: x₀ = (q_cmd, 0, 0).
+    double speed = 0.0;
+    bool speed_finite = true;
+    for (int d = 0; d < nv_; ++d) {
+      const double v = rt.qd_cmd[U(d)];
+      speed_finite = speed_finite && std::isfinite(v);
+      speed = std::max(speed, std::fabs(v));
+    }
+    rec.x0_speed = speed_finite ? speed : std::numeric_limits<double>::quiet_NaN();
+    if (!(speed_finite && speed <= params_.rest_tol)) {
+      rec.outcome = SegmentOutcome::kNotAtRest;
+      return false;
+    }
   }
   // The largest pre-catch count whose node 0 the solve can still meet.
   const std::int64_t now_lead = start + t_arm_ns_;
@@ -748,65 +754,71 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
   MpcSegmentCore& core = *catch_cores_[U(n_pre - 1)];
   MpcSegmentCoreInput& in = catch_inputs_[U(n_pre - 1)];
   MpcSegmentCoreResult& res = catch_results_[U(n_pre - 1)];
-  // Reference: per joint a minimum-jerk reach from q_cmd to q_star over the
-  // pre-catch part, held from the catch node on. The target is clamped into
-  // the core's position box (the IK clamps to the limits themselves) and the
-  // reach shortened where its peak speed 1.875·|d|/T would pass
-  // 0.9·η_v·q̇_max — a reference the box cannot follow would only be refused
-  // by the trust region.
   const double t_span = static_cast<double>(n_pre) * static_cast<double>(dt_pre_ns_) * 1e-9;
-  std::array<double, kMaxPlanNv> dq{};
-  bool finite = true;
-  double scale_min = 1.0;
-  double shortfall = 0.0;
-  for (int m = 0; m < nv_; ++m) {
-    const auto d = U(device_of_model_[U(m)]);
-    const double reported = rt.q_cmd[d];
-    const double target = plan.q_star[d];
-    if (!std::isfinite(reported) || !std::isfinite(target)) {
-      finite = false;
-      break;
+  if (following) {
+    if (!StartOnSource(rt, plan, t_eff, n_pre, n_total, t_span, in, rec)) {
+      return false;
     }
-    // Into the core's box, as Replan does: a wait pose inside the m_q margin
-    // of a limit would otherwise be refused on every wake, and with it the
-    // plan (MD-62).
-    const double q0 = std::clamp(reported, q_lo_[U(m)], q_hi_[U(m)]);
-    rec.x0_clamped = rec.x0_clamped || q0 != reported;
-    in.q0[m] = q0;
-    in.qd0[m] = 0.0;
-    in.qdd0[m] = 0.0;
-    const double clamped = std::clamp(target, q_lo_[U(m)], q_hi_[U(m)]);
-    rec.ref_clamped = rec.ref_clamped || clamped != target;
-    double step = clamped - q0;
-    const double allowed = params_.ref_speed_fraction * v_box_[U(m)] * t_span / 1.875;
-    if (!(std::fabs(step) <= allowed)) {
-      rec.ref_scaled = true;
-      scale_min = std::min(scale_min, allowed / std::fabs(step));
-      shortfall = std::max(shortfall, std::fabs(step) - allowed);
-      step = std::copysign(allowed, step);
-    }
-    dq[U(m)] = step;
-  }
-  if (!finite) {
-    rec.outcome = SegmentOutcome::kInputNonFinite;
-    return false;
-  }
-  rec.ref_scale = scale_min;
-  rec.ref_shortfall = shortfall;
-  for (int k = 0; k <= n_total; ++k) {
-    // Integer ratio: s is exactly 1 from the catch node on, where the
-    // velocity and acceleration polynomials vanish exactly.
-    const double s = static_cast<double>(std::min(k, n_pre)) / static_cast<double>(n_pre);
-    const double s2 = s * s;
-    const double s3 = s2 * s;
-    const double pos = 10.0 * s3 - 15.0 * s3 * s + 6.0 * s3 * s2;
-    const double vel = (30.0 * s2 - 60.0 * s3 + 30.0 * s2 * s2) / t_span;
-    const double acc = (60.0 * s - 180.0 * s2 + 120.0 * s3) / (t_span * t_span);
+  } else {
+    // Reference: per joint a minimum-jerk reach from q_cmd to q_star over the
+    // pre-catch part, held from the catch node on. The target is clamped into
+    // the core's position box (the IK clamps to the limits themselves) and the
+    // reach shortened where its peak speed 1.875·|d|/T would pass
+    // 0.9·η_v·q̇_max — a reference the box cannot follow would only be refused
+    // by the trust region.
+    std::array<double, kMaxPlanNv> dq{};
+    bool finite = true;
+    double scale_min = 1.0;
+    double shortfall = 0.0;
     for (int m = 0; m < nv_; ++m) {
-      const double step = dq[U(m)];
-      in.q_ref(m, k) = in.q0[m] + step * pos;
-      in.qd_ref(m, k) = step * vel;
-      in.qdd_ref(m, k) = step * acc;
+      const auto d = U(device_of_model_[U(m)]);
+      const double reported = rt.q_cmd[d];
+      const double target = plan.q_star[d];
+      if (!std::isfinite(reported) || !std::isfinite(target)) {
+        finite = false;
+        break;
+      }
+      // Into the core's box, as Replan does: a wait pose inside the m_q margin
+      // of a limit would otherwise be refused on every wake, and with it the
+      // plan (MD-62).
+      const double q0 = std::clamp(reported, q_lo_[U(m)], q_hi_[U(m)]);
+      rec.x0_clamped = rec.x0_clamped || q0 != reported;
+      in.q0[m] = q0;
+      in.qd0[m] = 0.0;
+      in.qdd0[m] = 0.0;
+      const double clamped = std::clamp(target, q_lo_[U(m)], q_hi_[U(m)]);
+      rec.ref_clamped = rec.ref_clamped || clamped != target;
+      double step = clamped - q0;
+      const double allowed = params_.ref_speed_fraction * v_box_[U(m)] * t_span / 1.875;
+      if (!(std::fabs(step) <= allowed)) {
+        rec.ref_scaled = true;
+        scale_min = std::min(scale_min, allowed / std::fabs(step));
+        shortfall = std::max(shortfall, std::fabs(step) - allowed);
+        step = std::copysign(allowed, step);
+      }
+      dq[U(m)] = step;
+    }
+    if (!finite) {
+      rec.outcome = SegmentOutcome::kInputNonFinite;
+      return false;
+    }
+    rec.ref_scale = scale_min;
+    rec.ref_shortfall = shortfall;
+    for (int k = 0; k <= n_total; ++k) {
+      // Integer ratio: s is exactly 1 from the catch node on, where the
+      // velocity and acceleration polynomials vanish exactly.
+      const double s = static_cast<double>(std::min(k, n_pre)) / static_cast<double>(n_pre);
+      const double s2 = s * s;
+      const double s3 = s2 * s;
+      const double pos = 10.0 * s3 - 15.0 * s3 * s + 6.0 * s3 * s2;
+      const double vel = (30.0 * s2 - 60.0 * s3 + 30.0 * s2 * s2) / t_span;
+      const double acc = (60.0 * s - 180.0 * s2 + 120.0 * s3) / (t_span * t_span);
+      for (int m = 0; m < nv_; ++m) {
+        const double step = dq[U(m)];
+        in.q_ref(m, k) = in.q0[m] + step * pos;
+        in.qd_ref(m, k) = step * vel;
+        in.qdd_ref(m, k) = step * acc;
+      }
     }
   }
   in.reference_valid = true;
@@ -839,10 +851,109 @@ bool MpcSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSnapshot& 
     SetCoreReason(rec, MpcSegmentCoreReason::kNone);
     return false;
   }
-  // A new plan: the RT reports nothing of it yet.
-  ring_.ClearReported();
+  // A new plan: the RT reports nothing of it yet. What it does report — the
+  // plan it follows and that plan's segments, which the arm stays on until the
+  // replacement's node 0 — the ring keeps beside the new segment.
+  if (following) {
+    ring_.NoteReported(rt);
+  } else {
+    ring_.ClearReported();
+  }
   if (perp_on_) {
     ready_line_ = StopLine{true, in.p_c, in.d_hat};
+  }
+  return true;
+}
+
+bool MpcSegmentPlanner::StartOnSource(const PlannerRtState& rt, const PlanSnapshot& plan,
+                                      std::int64_t t_eff, int n_pre, int n_total, double t_span,
+                                      MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept {
+  // The source is what the RT reports, never an inference (MD-58): the arm is
+  // on the followed plan's segments until the RT switches.
+  const SegmentSnapshot* src = ring_.Source(rt, t_eff);
+  if (src == nullptr) {
+    rec.outcome = SegmentOutcome::kNotFollowed;
+    return false;
+  }
+  rec.source_seq = src->segment_seq;
+  // x₀: the source at t_eff, projected into the core's box — a published node
+  // keeps the box only to the solver's tolerance.
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  if (!NodeTrajectoryFollower::SampleJoints(*src, t_eff, q, qd, qdd)) {
+    rec.outcome = SegmentOutcome::kInputNonFinite;
+    return false;
+  }
+  for (int m = 0; m < nv_; ++m) {
+    const auto d = U(device_of_model_[U(m)]);
+    in.q0[m] = q[d];
+    in.qd0[m] = qd[d];
+    in.qdd0[m] = qdd[d];
+  }
+  rec.x0_from_segment = true;
+  if (!in.q0.allFinite() || !in.qd0.allFinite() || !in.qdd0.allFinite()) {
+    rec.outcome = SegmentOutcome::kInputNonFinite;
+    return false;
+  }
+  double speed = 0.0;
+  for (int m = 0; m < nv_; ++m) {
+    speed = std::max(speed, std::fabs(in.qd0[m]));
+    const double qc = std::clamp(in.q0[m], q_lo_[U(m)], q_hi_[U(m)]);
+    const double v = v_box_[U(m)];
+    const double vc = std::clamp(in.qd0[m], -v, v);
+    if (qc != in.q0[m] || vc != in.qd0[m]) {
+      rec.x0_clamped = true;
+      in.q0[m] = qc;
+      in.qd0[m] = vc;
+    }
+  }
+  rec.x0_speed = speed;
+  // Reference: per joint the quintic from (q₀, q̇₀, q̈₀) at node 0 to
+  // (q_star, 0, 0) at the catch node, held from there on. In s = t/T,
+  //   q(s) = q₀ + q̇₀T·s + ½q̈₀T²·s² + c₃s³ + c₄s⁴ + c₅s⁵,
+  //   c₃ = 10d − 6q̇₀T − 1.5q̈₀T², c₄ = −15d + 8q̇₀T + 1.5q̈₀T²,
+  //   c₅ = 6d − 3q̇₀T − 0.5q̈₀T², d = q_star − q₀
+  // — the minimum-jerk reach of a start at rest when q̇₀ = q̈₀ = 0. The target
+  // is clamped into the core's position box. The reach is NOT shortened to a
+  // peak speed: that bound is the zero-boundary curve's, and the speed of this
+  // one is the QP's rows and the between-node check's to judge.
+  rec.ref_scale = 1.0;
+  rec.ref_shortfall = 0.0;
+  const double t2 = t_span * t_span;
+  for (int m = 0; m < nv_; ++m) {
+    const double target = plan.q_star[U(device_of_model_[U(m)])];
+    if (!std::isfinite(target)) {
+      rec.outcome = SegmentOutcome::kInputNonFinite;
+      return false;
+    }
+    const double clamped = std::clamp(target, q_lo_[U(m)], q_hi_[U(m)]);
+    rec.ref_clamped = rec.ref_clamped || clamped != target;
+    const double q0 = in.q0[m];
+    const double v0t = in.qd0[m] * t_span;
+    const double a0t2 = in.qdd0[m] * t2;
+    const double d = clamped - q0;
+    const double c3 = 10.0 * d - 6.0 * v0t - 1.5 * a0t2;
+    const double c4 = -15.0 * d + 8.0 * v0t + 1.5 * a0t2;
+    const double c5 = 6.0 * d - 3.0 * v0t - 0.5 * a0t2;
+    // Node 0 is the start state itself, bit for bit.
+    in.q_ref(m, 0) = q0;
+    in.qd_ref(m, 0) = in.qd0[m];
+    in.qdd_ref(m, 0) = in.qdd0[m];
+    for (int k = 1; k < n_pre; ++k) {
+      const double s = static_cast<double>(k) / static_cast<double>(n_pre);
+      const double s2 = s * s;
+      const double s3 = s2 * s;
+      in.q_ref(m, k) = q0 + v0t * s + 0.5 * a0t2 * s2 + c3 * s3 + c4 * s3 * s + c5 * s3 * s2;
+      in.qd_ref(m, k) =
+          in.qd0[m] + (a0t2 * s + 3.0 * c3 * s2 + 4.0 * c4 * s3 + 5.0 * c5 * s2 * s2) / t_span;
+      in.qdd_ref(m, k) = in.qdd0[m] + (6.0 * c3 * s + 12.0 * c4 * s2 + 20.0 * c5 * s3) / t2;
+    }
+    for (int k = n_pre; k <= n_total; ++k) {
+      in.q_ref(m, k) = clamped;
+      in.qd_ref(m, k) = 0.0;
+      in.qdd_ref(m, k) = 0.0;
+    }
   }
   return true;
 }
@@ -894,13 +1005,12 @@ bool MpcSegmentPlanner::Replan(const PlannerRtState& rt, const MpcSegmentBallTar
   rec.kind = pre ? SegmentKind::kAdvance : SegmentKind::kStop;
 
   // The source is what the RT reports, never an inference (MD-58).
-  const std::uint32_t src_seq = SourceSeq(rt, t_eff);
-  const SegmentSnapshot* src = src_seq != 0 ? ring_.Find(src_seq) : nullptr;
+  const SegmentSnapshot* src = ring_.Source(rt, t_eff);
   if (src == nullptr) {
     rec.outcome = SegmentOutcome::kNotFollowed;
     return false;
   }
-  rec.source_seq = src_seq;
+  rec.source_seq = src->segment_seq;
   if (t_eff < src->t0_ns) {
     rec.outcome = SegmentOutcome::kUpToDate;
     return false;

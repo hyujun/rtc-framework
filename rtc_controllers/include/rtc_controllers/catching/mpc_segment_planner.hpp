@@ -24,16 +24,28 @@
 // replans happen only for k ≤ k_max.
 //
 // ── The two solves (MD-55 – MD-64) ────────────────────────────────────────────
-//  • PlanFirst — the search's wake, for the plan it is about to publish. The
-//    arm rests at its wait pose (max |q̇_cmd| ≤ rest_tol, else kNotAtRest) —
-//    before a plan the RT reports the measured pose with no command behind it
-//    (cmd_seeded false), which is where it seeds the command on adoption;
+//  • PlanFirst — the search's wake, for the plan it is about to publish.
 //    n_pre = min(n_pre_max, ⌊(t_c − now_lead − first − 2h)/Δ_pre⌋) ≥ 1
-//    (else kTooLate). x₀ = (q_cmd, 0, 0); the reference is a per-joint
-//    minimum-jerk reach to q_star (clamped to the core's box, slowed to
-//    0.9·η_v·q̇_max), held from the catch node on; p̂_b, v̂_b, a_d are the
-//    plan's, Σ_p the snapshot's. Cold start, w_Δ scale 0, no retry: a catch
-//    core cannot be solved without a reference.
+//    (else kTooLate), t_c the NEW plan's; p̂_b, v̂_b, a_d are the plan's, Σ_p
+//    the snapshot's. Cold start, w_Δ scale 0, no retry: a catch core cannot be
+//    solved without a reference. Where it starts depends on what the RT does:
+//      – NO PLAN FOLLOWED. The arm rests at its wait pose (max |q̇_cmd| ≤
+//        rest_tol, else kNotAtRest) — before a plan the RT reports the measured
+//        pose with no command behind it (cmd_seeded false), which is where it
+//        seeds the command on adoption. x₀ = (q_cmd, 0, 0); the reference is a
+//        per-joint minimum-jerk reach to q_star (clamped to the core's box,
+//        slowed to 0.9·η_v·q̇_max), held from the catch node on.
+//      – A PLAN FOLLOWED (rt.plan_active): the segment is the first of that
+//        plan's REPLACEMENT, and the arm is moving. x₀ = (q, q̇, q̈) is the
+//        segment the RT reports pending or following (SourceSeq at node 0's
+//        instant) evaluated there and projected into the core's box, as a
+//        replan's is; none reported is kNotFollowed. The reference is per
+//        joint the quintic from (q₀, q̇₀, q̈₀) to (q_star, 0, 0) at the catch
+//        node, held from there on — the minimum-jerk reach is that curve with
+//        a start at rest. Its speed is not scaled: the QP's rows and the
+//        between-node check judge it. The followed plan's segments stay in
+//        the ring beside the new one: the arm is on them until the RT
+//        switches at the new segment's node 0.
 //  • Replan — the grid point earliest = now_lead + replan + 2h reaches: the
 //    largest pre-catch count that fits, else the catch node, else the first
 //    stop grid point ≥ earliest (k ≤ k_max, else kPastReplanWindow). Its
@@ -245,12 +257,16 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   }
 
   /// @brief The first segment of a plan the search just produced (RT-safe;
-  ///        MD-56). The arm rests at the reported command; the reference is a
-  ///        minimum-jerk reach to the plan's q_star over the pre-catch part.
-  ///        A reported pose outside the core's position box (inside the m_q
-  ///        margin of a limit) is projected into it, as Replan does, and
-  ///        marked `x0_clamped` — the core refuses a start outside its box,
-  ///        and a plan is published only with its segment.
+  ///        MD-56). With no plan followed the arm rests at the reported
+  ///        command and the reference is a minimum-jerk reach to the plan's
+  ///        q_star over the pre-catch part; with one followed
+  ///        (`rt.plan_active`) the start is the reported segment at node 0's
+  ///        instant and the reference the quintic from that state to
+  ///        (q_star, 0, 0) — see the header note. A start outside the core's
+  ///        box (a pose inside the m_q margin of a limit, a node on the
+  ///        velocity box) is projected into it, as Replan does, and marked
+  ///        `x0_clamped` — the core refuses a start outside its box, and a
+  ///        plan is published only with its segment.
   /// @param plan the search's plan, its `plan_id` already the one the cycle
   ///        will publish it under
   /// @param ball the ball at plan.t_c_ns (Σ_p only — p, v, a_d are the plan's)
@@ -265,8 +281,8 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   ///        (MakeMpcSegmentBallTarget with this planner's v_eps), an invalid one
   ///        when the view is empty.
   /// @param solution NOT READ: this planner solves its own problem (a
-  ///        minimum-jerk reference reach), which is not the one a search
-  ///        solves. Null and non-null give the same segment.
+  ///        reference reach to q_star), which is not the one a search solves.
+  ///        Null and non-null give the same segment.
   [[nodiscard]] bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
                                const BallPrediction& ball, const CatchSolution* solution,
                                SegmentSnapshot& out, SegmentRecord& rec) noexcept override;
@@ -312,14 +328,25 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   /// The control period [ns].
   [[nodiscard]] std::int64_t ControlDtNs() const noexcept override { return h_ns_; }
 
+  /// `budget.replan_s` [ns].
+  [[nodiscard]] std::int64_t ReplanBudgetNs() const noexcept override { return replan_ns_; }
+
+  /// now + T_arm + `budget.first_s` + 2 ticks: the bound PlanFirst's grid
+  /// point is the first one behind.
+  [[nodiscard]] std::int64_t EarliestFirstStartNs(std::int64_t now_ns) const noexcept override {
+    return now_ns + t_arm_ns_ + first_ns_ + 2 * h_ns_;
+  }
+
   /// The segments `rt` reports pending and following, copied out of the ring
-  /// of published segments. Neither when the RT follows no plan, or a plan
-  /// the ring is not of (plan id and t_c), or the reported seq is not in it.
+  /// of published segments (SegmentRing::ReportedIn). Neither when the RT
+  /// follows no plan, or a plan the ring holds nothing of (plan id and t_c),
+  /// or the reported seq is not in it under the plan it is reported for.
   void Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept override;
 
-  /// The segment_seq of the segment a replan at `t_eff_ns` starts from, 0 when
-  /// there is none (kNotFollowed): SourceSegmentAt on the two segments
-  /// Reported() answers — never inferred.
+  /// The segment_seq of the segment a solve at `t_eff_ns` starts from — a
+  /// replan, or the first segment of a replacement — 0 when there is none
+  /// (kNotFollowed): SourceSegmentAt on the two segments Reported() answers,
+  /// never inferred.
   [[nodiscard]] std::uint32_t SourceSeq(const PlannerRtState& rt,
                                         std::int64_t t_eff_ns) const noexcept override;
 
@@ -392,6 +419,14 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   // `in` already carries it: p_c = in.p_b, d̂ = in.v_b/‖in.v_b‖. False — the
   // outcome recorded, nothing written — when no direction can be built.
   [[nodiscard]] bool SetStopLine(MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept;
+  // The start and the reference of a first segment whose arm follows a plan
+  // (header note): x₀ from the reported segment at `t_eff`, projected into the
+  // core's box, and the quintic from it to the plan's q_star over the
+  // `t_span` seconds of the pre-catch part. False — the outcome recorded —
+  // when no segment is reported or a value is not finite.
+  [[nodiscard]] bool StartOnSource(const PlannerRtState& rt, const PlanSnapshot& plan,
+                                   std::int64_t t_eff, int n_pre, int n_total, double t_span,
+                                   MpcSegmentCoreInput& in, SegmentRecord& rec) const noexcept;
   [[nodiscard]] SegmentOutcome Judge(const MpcSegmentCoreResult& r, bool ok, int n_pre, int n_total,
                                      bool catch_core, std::int64_t start, std::int64_t end,
                                      std::int64_t budget_ns, std::int64_t t_eff,
@@ -447,9 +482,10 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   };
 
   bool perp_on_{false};
-  // The published segments of the followed plan (segment_ring.hpp), each with
-  // its stop-path line: a catch-core segment's own, a stop segment's inherited
-  // from its source. A stop core solves on its source's entry.
+  // The published segments of the followed plan and of a replacement
+  // published for it (segment_ring.hpp), each with its stop-path line: a
+  // catch-core segment's own, a stop segment's inherited from its source. A
+  // stop core solves on its source's entry.
   SegmentRing<StopLine> ring_{};
   // The line of the solve that just came out publishable, for the
   // NotePublished that follows it; dropped by the next solve and by

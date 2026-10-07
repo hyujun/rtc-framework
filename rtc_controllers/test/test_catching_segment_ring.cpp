@@ -1,13 +1,16 @@
 // The ring of published segments both segment planners keep (E1-F16 #742,
 // segment_ring.hpp). Header-only pure logic: no model, no solver.
 //
-// What is tested: the ring holds the segments of ONE plan (a segment of
-// another plan empties it); it holds eight, and a full ring drops the oldest
-// segment the RT did not last report, so the followed and the pending segment
-// survive a burst of pushes; a payload moves with its segment; and the three
-// questions the cycle asks — which segments the RT reports (Reported), which
-// one a solve at an instant starts from (SourceSeq), whose track the plan is
-// (FollowedTrack) — are answered from what the RT reports, never inferred.
+// What is tested: with no plan noted as followed the ring holds the segments
+// of ONE plan (a segment of another plan empties it); with one noted it holds
+// that plan's and the newest plan's — the followed plan and its replacement —
+// and a report is read plan by plan; it holds eight, and a full ring drops the
+// oldest segment the RT did not last report, so the followed and the pending
+// segment survive a burst of pushes; a payload moves with its segment; and the
+// three questions the cycle asks — which segments the RT reports (Reported),
+// which one a solve at an instant starts from (SourceSeq), whose track the
+// plan is (FollowedTrack) — are answered from what the RT reports, never
+// inferred.
 //
 // A segment here carries only what the ring reads: plan id, catch instant,
 // seq, node-0 instant and the track generation. Its payload is an int that
@@ -380,6 +383,287 @@ TEST(SegmentRingReport, FollowedTrackIsThePlansTrackWhenTheRtFollowsThePlan) {
   inactive.plan_active = false;
   EXPECT_FALSE(ring.FollowedTrack(inactive, generation));
   EXPECT_EQ(generation, 123U);
+}
+
+// ── Two plans: the followed one and its replacement ──────────────────────────
+//
+// The first segment of a replacement plan is published while the arm is still
+// on the followed plan's segments: both plans are in the ring until the RT
+// switches (or drops the replacement), and a report is read plan by plan.
+
+constexpr std::uint32_t kNewPlan = kPlan + 1;
+constexpr std::int64_t kNewCatch = kCatch + 40'000'000;
+constexpr std::uint64_t kNewTrack = kTrack + 1;
+
+[[nodiscard]] SegmentSnapshot NewSeg(std::uint32_t seq, std::int64_t t0_ns = 0) {
+  return Seg(seq, t0_ns, kNewPlan, kNewCatch, kNewTrack);
+}
+
+// The RT following (kPlan, kCatch) while it holds the replacement (kNewPlan,
+// kNewCatch): `pending` is then the replacement's first segment.
+[[nodiscard]] PlannerRtState RtHolding(std::uint32_t following, std::uint32_t pending) {
+  PlannerRtState rt = Rt(following, pending);
+  rt.plan_pending = true;
+  rt.plan_pending_id = kNewPlan;
+  rt.plan_pending_t_c_ns = kNewCatch;
+  return rt;
+}
+
+// The RT after the switch: it follows the replacement.
+[[nodiscard]] PlannerRtState RtSwitched(std::uint32_t following, std::uint32_t pending = 0) {
+  return Rt(following, pending, kNewPlan, kNewCatch);
+}
+
+TEST(SegmentRingTwoPlans, TheFollowedPlansSegmentsStayWhenTheReplacementsFirstIsPushed) {
+  SegmentRing<int> ring;
+  PushSeqs(ring, 1, 3);
+  ring.NoteReported(Rt(/*following=*/2, /*pending=*/3));
+  ring.Push(NewSeg(4), PayloadFor(4));
+  for (std::uint32_t seq = 1; seq <= 4; ++seq) {
+    ASSERT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
+  for (std::uint32_t seq = 1; seq <= 3; ++seq) {
+    EXPECT_EQ(ring.Find(seq)->plan_id, kPlan) << seq;
+    EXPECT_EQ(ring.Find(seq)->t_c_ns, kCatch) << seq;
+  }
+  EXPECT_EQ(ring.Find(4)->plan_id, kNewPlan);
+  EXPECT_EQ(ring.Find(4)->t_c_ns, kNewCatch);
+  // The ring is of both plans now.
+  EXPECT_TRUE(ring.IsOf(Rt(2)));
+  EXPECT_TRUE(ring.IsOf(RtSwitched(4)));
+  EXPECT_FALSE(ring.IsOf(Rt(2, 0, kPlan + 2, kCatch)));
+  // An unreported segment of the followed plan stays too: the plan is kept,
+  // not only the two segments the RT named.
+  EXPECT_NE(ring.Find(1), nullptr);
+}
+
+TEST(SegmentRingTwoPlans, AThirdPlansPushDropsOnlyWhatIsNeitherFollowedNorNewest) {
+  constexpr std::uint32_t kThirdPlan = kPlan + 2;
+  constexpr std::int64_t kThirdCatch = kCatch + 90'000'000;
+  SegmentRing<int> ring;
+  PushSeqs(ring, 1, 2);
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(NewSeg(3), PayloadFor(3));
+  // The RT did not take that replacement and still follows the first plan; the
+  // search replaces it again.
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(Seg(4, 0, kThirdPlan, kThirdCatch), PayloadFor(4));
+  EXPECT_EQ(ring.Find(3), nullptr) << "the replacement nobody follows";
+  for (const std::uint32_t seq : {1U, 2U, 4U}) {
+    EXPECT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
+  EXPECT_EQ(ring.Find(1)->plan_id, kPlan);
+  EXPECT_EQ(ring.Find(4)->plan_id, kThirdPlan);
+
+  // The same id with another catch instant is another plan.
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(Seg(5, 0, kThirdPlan, kThirdCatch + 1), PayloadFor(5));
+  EXPECT_EQ(ring.Find(4), nullptr);
+  for (const std::uint32_t seq : {1U, 2U, 5U}) {
+    EXPECT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
+
+  // A later segment of the FOLLOWED plan (a replan after the RT dropped the
+  // replacement) leaves that plan alone in the ring.
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(Seg(6), PayloadFor(6));
+  EXPECT_EQ(ring.Find(5), nullptr);
+  for (const std::uint32_t seq : {1U, 2U, 6U}) {
+    EXPECT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
+}
+
+TEST(SegmentRingTwoPlans, AfterTheSwitchTheNextPushDropsThePlanTheRtLeft) {
+  SegmentRing<int> ring;
+  PushSeqs(ring, 1, 2);
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(NewSeg(3), PayloadFor(3));
+  // The RT switched: it follows the replacement, and a replan of it is stored.
+  ring.NoteReported(RtSwitched(/*following=*/3));
+  ring.Push(NewSeg(4), PayloadFor(4));
+  EXPECT_EQ(ring.Find(1), nullptr);
+  EXPECT_EQ(ring.Find(2), nullptr);
+  EXPECT_TRUE(HoldsWithPayload(ring, 3));
+  EXPECT_TRUE(HoldsWithPayload(ring, 4));
+  EXPECT_FALSE(ring.IsOf(Rt(1)));
+  EXPECT_TRUE(ring.IsOf(RtSwitched(3)));
+}
+
+TEST(SegmentRingTwoPlans, TheReportIsReadPlanByPlanInTheThreeStatesOfAReplacement) {
+  SegmentRing<int> ring;
+  ring.Push(Seg(1, /*t0_ns=*/1'000), 10);
+  ring.Push(Seg(2, /*t0_ns=*/2'000), 20);
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(NewSeg(3, /*t0_ns=*/3'000), 30);
+  std::uint64_t generation = 0;
+  ReportedSegments out;
+
+  // (1) The RT follows the old plan and holds nothing: the replacement's
+  // segment is in the ring and is not reported.
+  {
+    const PlannerRtState rt = Rt(/*following=*/1);
+    const SegmentRing<int>::Report r = ring.ReportedIn(rt);
+    EXPECT_EQ(r.following, ring.Find(1));
+    EXPECT_EQ(r.pending, nullptr);
+    EXPECT_EQ(ring.SourceSeq(rt, 2'999), 1U);
+    EXPECT_EQ(ring.SourceSeq(rt, 3'000), 1U);
+    EXPECT_EQ(ring.SourceSeq(rt, 9'000), 1U);
+    generation = 0;
+    ASSERT_TRUE(ring.FollowedTrack(rt, generation));
+    EXPECT_EQ(generation, kTrack);
+    // ... and a pending segment of the old plan is read as before.
+    const PlannerRtState with_pending = Rt(/*following=*/1, /*pending=*/2);
+    EXPECT_EQ(ring.ReportedIn(with_pending).pending, ring.Find(2));
+    EXPECT_EQ(ring.SourceSeq(with_pending, 1'999), 1U);
+    EXPECT_EQ(ring.SourceSeq(with_pending, 2'000), 2U);
+  }
+  // (2) The RT follows the old plan and holds the replacement, whose first
+  // segment waits: the followed one is the old plan's, the pending one the
+  // replacement's.
+  {
+    const PlannerRtState rt = RtHolding(/*following=*/1, /*pending=*/3);
+    const SegmentRing<int>::Report r = ring.ReportedIn(rt);
+    ASSERT_EQ(r.following, ring.Find(1));
+    ASSERT_EQ(r.pending, ring.Find(3));
+    EXPECT_EQ(r.following->plan_id, kPlan);
+    EXPECT_EQ(r.pending->plan_id, kNewPlan);
+    EXPECT_EQ(ring.PayloadOf(r.following), 10);
+    EXPECT_EQ(ring.PayloadOf(r.pending), 30);
+    EXPECT_EQ(ring.SourceSeq(rt, 2'999), 1U);
+    EXPECT_EQ(ring.SourceSeq(rt, 3'000), 3U);
+    EXPECT_EQ(ring.SourceSeq(rt, 3'001), 3U);
+    // The plan the RT follows is still the old one, and so is its track.
+    EXPECT_TRUE(ring.IsOf(rt));
+    generation = 0;
+    ASSERT_TRUE(ring.FollowedTrack(rt, generation));
+    EXPECT_EQ(generation, kTrack);
+    ring.Reported(rt, out);
+    ASSERT_TRUE(out.has_following);
+    ASSERT_TRUE(out.has_pending);
+    EXPECT_EQ(out.following.segment_seq, 1U);
+    EXPECT_EQ(out.following.t_c_ns, kCatch);
+    EXPECT_EQ(out.pending.segment_seq, 3U);
+    EXPECT_EQ(out.pending.t_c_ns, kNewCatch);
+    EXPECT_EQ(out.pending.t0_ns, 3'000);
+  }
+  // (3) The RT switched: it follows the replacement on its first segment.
+  {
+    const PlannerRtState rt = RtSwitched(/*following=*/3);
+    const SegmentRing<int>::Report r = ring.ReportedIn(rt);
+    EXPECT_EQ(r.following, ring.Find(3));
+    EXPECT_EQ(r.pending, nullptr);
+    EXPECT_EQ(ring.SourceSeq(rt, 0), 3U);
+    EXPECT_EQ(ring.SourceSeq(rt, 9'000), 3U);
+    generation = 0;
+    ASSERT_TRUE(ring.FollowedTrack(rt, generation));
+    EXPECT_EQ(generation, kNewTrack);
+    // The old plan's segments are still in the ring (nothing was pushed
+    // since) and are not the new plan's: a seq of theirs is not reported.
+    ASSERT_NE(ring.Find(1), nullptr);
+    const SegmentRing<int>::Report stale = ring.ReportedIn(RtSwitched(/*following=*/1, 2));
+    EXPECT_EQ(stale.following, nullptr);
+    EXPECT_EQ(stale.pending, nullptr);
+    EXPECT_EQ(ring.SourceSeq(RtSwitched(/*following=*/1, 2), 9'000), 0U);
+    ring.Reported(RtSwitched(/*following=*/1, 2), out);
+    EXPECT_FALSE(out.has_following);
+    EXPECT_FALSE(out.has_pending);
+  }
+}
+
+TEST(SegmentRingTwoPlans, WithoutAHeldReplacementASeqOfTheOtherPlanIsNotPending) {
+  SegmentRing<int> ring;
+  ring.Push(Seg(1, /*t0_ns=*/1'000), 10);
+  ring.Push(Seg(2, /*t0_ns=*/2'000), 20);
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(NewSeg(3, /*t0_ns=*/3'000), 30);
+  ASSERT_NE(ring.Find(3), nullptr);
+
+  // plan_pending false: seq 3 is in the ring under another plan than the one
+  // the RT follows, so it is not what the RT reports pending.
+  const PlannerRtState rt = Rt(/*following=*/1, /*pending=*/3);
+  const SegmentRing<int>::Report r = ring.ReportedIn(rt);
+  EXPECT_EQ(r.following, ring.Find(1));
+  EXPECT_EQ(r.pending, nullptr);
+  EXPECT_EQ(ring.SourceSeq(rt, 3'000), 1U) << "the followed one: nothing is pending";
+  ReportedSegments out;
+  out.has_pending = true;
+  ring.Reported(rt, out);
+  EXPECT_TRUE(out.has_following);
+  EXPECT_FALSE(out.has_pending);
+
+  // A held replacement that is not the one in the ring — another id, another
+  // catch instant — does not find it either.
+  PlannerRtState other = RtHolding(/*following=*/1, /*pending=*/3);
+  other.plan_pending_id = kNewPlan + 5;
+  EXPECT_EQ(ring.ReportedIn(other).pending, nullptr);
+  other = RtHolding(/*following=*/1, /*pending=*/3);
+  other.plan_pending_t_c_ns = kNewCatch + 1;
+  EXPECT_EQ(ring.ReportedIn(other).pending, nullptr);
+  // The held plan's fields alone do not make a replacement: the flag does.
+  other = RtHolding(/*following=*/1, /*pending=*/3);
+  other.plan_pending = false;
+  EXPECT_EQ(ring.ReportedIn(other).pending, nullptr);
+
+  // The followed segment is never looked up in the replacement.
+  const SegmentRing<int>::Report wrong_side = ring.ReportedIn(RtHolding(/*following=*/3, 0));
+  EXPECT_EQ(wrong_side.following, nullptr);
+  EXPECT_EQ(ring.SourceSeq(RtHolding(/*following=*/3, 0), 9'000), 0U);
+  // A pending segment of the followed plan is still found while a
+  // replacement is held.
+  EXPECT_EQ(ring.ReportedIn(RtHolding(/*following=*/1, /*pending=*/2)).pending, ring.Find(2));
+  // With nothing of the followed plan in the ring a report finds nothing —
+  // the replacement's segment included.
+  PlannerRtState unknown = RtHolding(/*following=*/1, /*pending=*/3);
+  unknown.plan_id = kPlan + 7;
+  EXPECT_EQ(ring.ReportedIn(unknown).pending, nullptr);
+  EXPECT_EQ(ring.ReportedIn(unknown).following, nullptr);
+}
+
+TEST(SegmentRingTwoPlans, ASeqBothPlansCarryIsReadUnderThePlanItIsReportedFor) {
+  SegmentRing<int> ring;
+  ring.Push(Seg(1, /*t0_ns=*/1'000), 10);
+  ring.NoteReported(Rt(/*following=*/1));
+  ring.Push(NewSeg(1, /*t0_ns=*/3'000), 111);
+  const SegmentRing<int>::Report held = ring.ReportedIn(RtHolding(/*following=*/1, /*pending=*/1));
+  ASSERT_NE(held.following, nullptr);
+  ASSERT_NE(held.pending, nullptr);
+  EXPECT_NE(held.following, held.pending);
+  EXPECT_EQ(held.following->plan_id, kPlan);
+  EXPECT_EQ(ring.PayloadOf(held.following), 10);
+  EXPECT_EQ(held.pending->plan_id, kNewPlan);
+  EXPECT_EQ(ring.PayloadOf(held.pending), 111);
+  const SegmentRing<int>::Report switched = ring.ReportedIn(RtSwitched(/*following=*/1));
+  ASSERT_NE(switched.following, nullptr);
+  EXPECT_EQ(ring.PayloadOf(switched.following), 111);
+}
+
+TEST(SegmentRingTwoPlans, AFullRingTakesTheReplacementAndKeepsTheReportedSegments) {
+  SegmentRing<int> ring;
+  PushSeqs(ring, 1, kFull);
+  ring.NoteReported(Rt(/*following=*/1, /*pending=*/2));
+  ring.Push(NewSeg(9), PayloadFor(9));
+  // The oldest segment the RT did not report made room; the plan stays.
+  EXPECT_EQ(ring.Find(3), nullptr);
+  for (const std::uint32_t seq : {1U, 2U, 4U, 5U, 6U, 7U, 8U, 9U}) {
+    EXPECT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
+  EXPECT_EQ(ring.ReportedIn(RtHolding(/*following=*/1, /*pending=*/9)).pending, ring.Find(9));
+  // While the RT holds the replacement, its first segment is one of the two
+  // reported — in the replacement's plan, where the eviction has to look for
+  // it: a burst of pushes into the full ring drops neither it nor the
+  // followed segment.
+  ring.NoteReported(RtHolding(/*following=*/1, /*pending=*/9));
+  for (std::uint32_t seq = 10; seq <= 30; ++seq) {
+    ring.Push(NewSeg(seq), PayloadFor(seq));
+  }
+  EXPECT_TRUE(HoldsWithPayload(ring, 1));
+  EXPECT_TRUE(HoldsWithPayload(ring, 9));
+  for (std::uint32_t seq = 2; seq <= 8; ++seq) {
+    EXPECT_EQ(ring.Find(seq), nullptr) << seq;
+  }
+  for (std::uint32_t seq = 25; seq <= 30; ++seq) {
+    EXPECT_TRUE(HoldsWithPayload(ring, seq)) << seq;
+  }
 }
 
 // ── A ring with nothing to remember ──────────────────────────────────────────

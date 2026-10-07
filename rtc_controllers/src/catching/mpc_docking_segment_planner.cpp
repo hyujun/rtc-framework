@@ -38,6 +38,18 @@ void SetCoreReason(SegmentRecord& rec, MpcDockingReason reason) noexcept {
   rec.core_reason_name = MpcDockingReasonName(reason);
 }
 
+// max |v_i|; NaN when a component is not finite (std::max would drop it).
+[[nodiscard]] double MaxAbsOrNan(const Eigen::Ref<const Eigen::VectorXd>& v) noexcept {
+  double worst = 0.0;
+  for (Eigen::Index i = 0; i < v.size(); ++i) {
+    if (!std::isfinite(v[i])) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    worst = std::max(worst, std::fabs(v[i]));
+  }
+  return worst;
+}
+
 // Whether a warm-up solve got as far as its main QP.
 struct WarmUpProbe {
   bool reached_qp{false};
@@ -259,6 +271,11 @@ const MpcDockingSegmentCoreResult* MpcDockingSegmentPlanner::LastResult(int n_pr
                                                                   : nullptr;
 }
 
+const MpcDockingSegmentCoreInput* MpcDockingSegmentPlanner::LastInputForTesting(
+    int n_pre) const noexcept {
+  return n_pre >= 1 && n_pre <= static_cast<int>(inputs_.size()) ? &inputs_[U(n_pre - 1)] : nullptr;
+}
+
 void MpcDockingSegmentPlanner::ResetTrial() noexcept {
   ring_.Clear();
 }
@@ -433,11 +450,15 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   }
   rec.kind = SegmentKind::kFirst;
   const std::int64_t start = clock_();
+  // The RT follows a plan: this is the first segment of its REPLACEMENT, and
+  // it starts on the segment the arm will be on, not at rest.
+  const bool following = rt.plan_active;
   // Before a plan the RT has no command yet (cmd_seeded false): it reports
   // the MEASURED pose with zero velocity, which is where it seeds the command
   // when it takes the plan — the same x₀ either way. Requiring a seeded
-  // command here would withhold every first pair.
-  if (!CheckState(rt, start, /*need_command=*/false, rec)) {
+  // command there would withhold every first pair. While it follows a plan
+  // the command is what the segments were started on: it has to be seeded.
+  if (!CheckState(rt, start, /*need_command=*/following, rec)) {
     return false;
   }
   if (!plan.valid || plan.t_c_ns <= 0 || plan.nv != nv_) {
@@ -448,25 +469,31 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     rec.outcome = SegmentOutcome::kNoBall;
     return false;
   }
-  // The arm rests on its command: a first solve starts from (q_cmd, 0, 0).
-  // A NaN is not "at rest": std::max would drop it.
-  double speed = 0.0;
-  bool speed_finite = true;
-  for (int d = 0; d < nv_; ++d) {
-    const double v = rt.qd_cmd[U(d)];
-    speed_finite = speed_finite && std::isfinite(v);
-    speed = std::max(speed, std::fabs(v));
-  }
-  rec.x0_speed = speed_finite ? speed : std::numeric_limits<double>::quiet_NaN();
-  if (!(speed_finite && speed <= params_.rest_tol)) {
-    rec.outcome = SegmentOutcome::kNotAtRest;
-    return false;
+  if (!following) {
+    // The arm rests on its command: a first solve starts from (q_cmd, 0, 0).
+    // A NaN is not "at rest": std::max would drop it.
+    double speed = 0.0;
+    bool speed_finite = true;
+    for (int d = 0; d < nv_; ++d) {
+      const double v = rt.qd_cmd[U(d)];
+      speed_finite = speed_finite && std::isfinite(v);
+      speed = std::max(speed, std::fabs(v));
+    }
+    rec.x0_speed = speed_finite ? speed : std::numeric_limits<double>::quiet_NaN();
+    if (!(speed_finite && speed <= params_.rest_tol)) {
+      rec.outcome = SegmentOutcome::kNotAtRest;
+      return false;
+    }
   }
   const std::int64_t t_c = plan.t_c_ns;
 
   // ── The search's own solution, when it is this plan's ─────────────────────
+  // ... and started where this planner would start it: on the segment the RT
+  // reports for the solution's node 0 (none, for an arm that follows no
+  // plan). A solution that started anywhere else is not published.
   if (solution != nullptr && solution->seg.t_c_ns == t_c &&
-      solution->seg.rt_iteration == rt.rt_iteration && OnGrid(solution->seg)) {
+      solution->seg.rt_iteration == rt.rt_iteration && OnGrid(solution->seg) &&
+      StartsOnTheReport(rt, *solution)) {
     const SegmentSnapshot& seg = solution->seg;
     const int n_pre = seg.n_pre;
     const int n_total = seg.n_nodes;
@@ -491,6 +518,10 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
       in.qd0[m] = in.qd_init(m, 0);
       in.qdd0[m] = in.qdd_init(m, 0);
     }
+    if (following) {
+      rec.x0_from_segment = true;
+      rec.x0_speed = MaxAbsOrNan(in.qd0);
+    }
     in.initial_valid = true;
     in.catch_target_valid = false;
     in.deadline_ns = 0;
@@ -513,11 +544,11 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
       rec.outcome = SegmentOutcome::kSolveFailed;
       return false;
     }
-    ring_.ClearReported();  // a new plan: the RT reports nothing of it yet
+    NoteFirst(rt);
     return true;
   }
 
-  // ── A solve from rest ─────────────────────────────────────────────────────
+  // ── A solve: from rest, or from the segment the arm will be on ────────────
   const std::int64_t earliest = start + t_arm_ns_ + first_ns_ + 2 * h_ns_;
   if (t_c - earliest < dt_pre_ns_) {
     rec.outcome = SegmentOutcome::kTooLate;
@@ -532,14 +563,47 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   MpcDockingSegmentCore& core = *cores_[U(n_pre - 1)];
   MpcDockingSegmentCoreInput& in = inputs_[U(n_pre - 1)];
   MpcDockingSegmentCoreResult& res = results_[U(n_pre - 1)];
+  // The start state, model order. q̇₀ and q̈₀ stay zero for an arm at rest.
   std::array<double, kMaxSegmentNv> q0{};
   std::array<double, kMaxSegmentNv> qd0{};
+  std::array<double, kMaxSegmentNv> qdd0{};
   bool finite = true;
-  for (int m = 0; m < nv_; ++m) {
-    const std::size_t d = U(device_of_model_[U(m)]);
-    q0[U(m)] = rt.q_cmd[d];
-    finite = finite && std::isfinite(rt.q_cmd[d]) && std::isfinite(plan.q_star[d]);
-    in.q_catch_target[m] = plan.q_star[d];
+  if (following) {
+    // The source is what the RT reports, never an inference (MD-58): that
+    // segment, read back by the RT's own evaluator at node 0's instant.
+    const SegmentSnapshot* src = ring_.Source(rt, t_eff);
+    if (src == nullptr) {
+      rec.outcome = SegmentOutcome::kNotFollowed;
+      return false;
+    }
+    rec.source_seq = src->segment_seq;
+    std::array<double, kMaxSegmentNv> q{};
+    std::array<double, kMaxSegmentNv> qd{};
+    std::array<double, kMaxSegmentNv> qdd{};
+    if (!NodeTrajectoryFollower::SampleJoints(*src, t_eff, q, qd, qdd)) {
+      rec.outcome = SegmentOutcome::kInputNonFinite;
+      return false;
+    }
+    rec.x0_from_segment = true;
+    double speed = 0.0;
+    for (int m = 0; m < nv_; ++m) {
+      const std::size_t d = U(device_of_model_[U(m)]);
+      q0[U(m)] = q[d];
+      qd0[U(m)] = qd[d];
+      qdd0[U(m)] = qdd[d];
+      finite = finite && std::isfinite(q[d]) && std::isfinite(qd[d]) && std::isfinite(qdd[d]) &&
+               std::isfinite(plan.q_star[d]);
+      speed = std::max(speed, std::fabs(qd[d]));
+      in.q_catch_target[m] = plan.q_star[d];
+    }
+    rec.x0_speed = finite ? speed : std::numeric_limits<double>::quiet_NaN();
+  } else {
+    for (int m = 0; m < nv_; ++m) {
+      const std::size_t d = U(device_of_model_[U(m)]);
+      q0[U(m)] = rt.q_cmd[d];
+      finite = finite && std::isfinite(rt.q_cmd[d]) && std::isfinite(plan.q_star[d]);
+      in.q_catch_target[m] = plan.q_star[d];
+    }
   }
   if (!finite) {
     rec.outcome = SegmentOutcome::kInputNonFinite;
@@ -555,8 +619,8 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
                           std::span<const double>(core.VelocityLimit().data(), n));
   for (int m = 0; m < nv_; ++m) {
     in.q0[m] = q0[U(m)];
-    in.qd0[m] = 0.0;
-    in.qdd0[m] = 0.0;
+    in.qd0[m] = following ? qd0[U(m)] : 0.0;
+    in.qdd0[m] = following ? qdd0[U(m)] : 0.0;
   }
   in.initial_valid = false;
   in.catch_target_valid = true;
@@ -573,8 +637,27 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     rec.outcome = SegmentOutcome::kSolveFailed;
     return false;
   }
-  ring_.ClearReported();  // a new plan: the RT reports nothing of it yet
+  NoteFirst(rt);
   return true;
+}
+
+bool MpcDockingSegmentPlanner::StartsOnTheReport(const PlannerRtState& rt,
+                                                 const CatchSolution& solution) const noexcept {
+  const std::uint32_t source = ring_.SourceSeq(rt, solution.seg.t0_ns);
+  // An arm that follows a plan starts on a segment: a solution that started
+  // on none is not that arm's.
+  return solution.source_seq == source && (!rt.plan_active || source != 0);
+}
+
+void MpcDockingSegmentPlanner::NoteFirst(const PlannerRtState& rt) noexcept {
+  // A new plan: the RT reports nothing of it yet. What it does report — the
+  // plan it follows and that plan's segments, which the arm stays on until the
+  // replacement's node 0 — the ring keeps beside the new segment.
+  if (rt.plan_active) {
+    ring_.NoteReported(rt);
+  } else {
+    ring_.ClearReported();
+  }
 }
 
 bool MpcDockingSegmentPlanner::Replan(const PlannerRtState& rt, const BallPrediction& ball,
@@ -613,13 +696,12 @@ bool MpcDockingSegmentPlanner::Replan(const PlannerRtState& rt, const BallPredic
   rec.kind = SegmentKind::kAdvance;
 
   // The source is what the RT reports, never an inference (MD-58).
-  const std::uint32_t src_seq = ring_.SourceSeq(rt, t_eff);
-  const SegmentSnapshot* src = src_seq != 0 ? ring_.Find(src_seq) : nullptr;
+  const SegmentSnapshot* src = ring_.Source(rt, t_eff);
   if (src == nullptr) {
     rec.outcome = SegmentOutcome::kNotFollowed;
     return false;
   }
-  rec.source_seq = src_seq;
+  rec.source_seq = src->segment_seq;
   if (t_eff < src->t0_ns) {
     rec.outcome = SegmentOutcome::kUpToDate;
     return false;

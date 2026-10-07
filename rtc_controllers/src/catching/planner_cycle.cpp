@@ -110,6 +110,11 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
     rec.segment.outcome = SegmentOutcome::kSuperseded;
     return;
   }
+  StorePair(plan, publish_ns, rec);
+}
+
+void PlannerCycle::StorePair(PlanSnapshot& plan, std::int64_t publish_ns,
+                             PlannerCycleRecord& rec) noexcept {
   last_plan_id_ = plan.plan_id;
   plan.publish_ns = publish_ns;
   segment_out_.publish_ns = publish_ns;
@@ -126,6 +131,7 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
   }
   segment_planner_->NotePublished(segment_out_);
   pair_publish_ns_ = publish_ns;
+  pair_plan_id_ = plan.plan_id;
   rec.outcome = CycleOutcome::kPublished;
   rec.plan_id = plan.plan_id;
   rec.plan_valid = plan.valid;
@@ -134,6 +140,83 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
   rec.segment.outcome = SegmentOutcome::kPublished;
   rec.segment.segment_seq = segment_out_.segment_seq;
   rec.segment.publish_ns = publish_ns;
+}
+
+bool PlannerCycle::PublishReplacement(const PlannerRtState& rt, PlanSnapshot& plan,
+                                      PlannerCycleRecord& rec) noexcept {
+  const std::int64_t t_freeze_ns =
+      std::isfinite(params_.t_freeze) && params_.t_freeze > 0.0 ? SecondsToNs(params_.t_freeze) : 0;
+  // A first segment cannot start before this; the RT switches at its node 0,
+  // and takes no replacement once the plan it follows is frozen. One that
+  // could only start there is not solved for.
+  if (t_freeze_ns > 0 &&
+      !(segment_planner_->EarliestFirstStartNs(clock_()) < rt.plan_t_c_ns - t_freeze_ns)) {
+    return false;
+  }
+  // The id the plan will carry; the segment names it.
+  plan.plan_id = last_plan_id_ + 1;
+  // The prediction the plan was searched on, as this wake read it, and the RT
+  // report the search solved on: a solution the search hands over is of that
+  // report (CatchSolution).
+  const BallPrediction ball{&traj_, &cov_, rec.cov_matched};
+  const CatchSolution* const solution = search_ != nullptr ? search_->Solution() : nullptr;
+  if (!segment_planner_->PlanFirst(rt, plan, ball, solution, segment_out_, rec.segment)) {
+    // Withheld together (MD-62). The followed plan goes on, and the wake's
+    // segment account is the replan's: this solve's is kept beside it.
+    rec.replacement = rec.segment;
+    rec.segment = SegmentRecord{};
+    return false;
+  }
+  if (post_segment_hook_ != nullptr) {
+    post_segment_hook_(post_segment_context_);
+  }
+  const std::int64_t publish_ns = clock_();
+  io_.traj->LoadInto(traj_recheck_);
+  const PlannerRtState rt_now = io_.rt->Load();
+  // What the pair's re-check asks (PublishPair), for an RT that follows a
+  // plan: it still follows THAT plan, in APPROACH, and holds no replacement;
+  // the segment the solve started on is still the one it reports for node 0
+  // (as a replan's re-check asks); and the RT could still take the pair — the
+  // new catch instant outside T_freeze, node 0 readable and before the
+  // followed plan freezes.
+  if (traj_recheck_.token.activation_generation != traj_.token.activation_generation ||
+      traj_recheck_.token.generation != traj_.token.generation || !rt_now.valid ||
+      rt_now.reset_epoch != rt.reset_epoch ||
+      rt_now.activation_generation != rt.activation_generation || !rt_now.plan_active ||
+      rt_now.plan_id != rt.plan_id || rt_now.plan_t_c_ns != rt.plan_t_c_ns ||
+      static_cast<Mode>(rt_now.mode) != Mode::kApproach || rt_now.plan_pending ||
+      segment_planner_->SourceSeq(rt_now, segment_out_.t0_ns) != rec.segment.source_seq ||
+      !(plan.t_c_ns - publish_ns > t_freeze_ns) ||
+      (t_freeze_ns > 0 && !(segment_out_.t0_ns < rt.plan_t_c_ns - t_freeze_ns)) ||
+      !segment_planner_->StartsInTime(publish_ns, segment_out_.t0_ns)) {
+    rec.outcome = CycleOutcome::kSuperseded;
+    rec.segment.outcome = SegmentOutcome::kSuperseded;
+    return true;
+  }
+  StorePair(plan, publish_ns, rec);
+  return true;
+}
+
+void PlannerCycle::ReplanBehindSearch(const PlannerRtState& rt, PlannerCycleRecord& rec) noexcept {
+  // The search took its time: the RT's report is read again, both because a
+  // replan refuses a stale one and because it may have moved. A trial that
+  // ended, another plan followed, or a replacement the RT took meanwhile
+  // leaves nothing of the wake's plan to replan.
+  const PlannerRtState fresh = io_.rt->Load();
+  if (!fresh.valid || fresh.reset_epoch != rt.reset_epoch ||
+      fresh.activation_generation != rt.activation_generation || !fresh.plan_active ||
+      fresh.plan_id != rt.plan_id || fresh.plan_t_c_ns != rt.plan_t_c_ns || fresh.plan_pending) {
+    return;
+  }
+  RunReplan(fresh, FollowedBall(fresh), rec);
+}
+
+std::int64_t PlannerCycle::FollowingSearchCapNs() const noexcept {
+  if (!std::isfinite(params_.dt_expected) || !(params_.dt_expected > 0.0)) {
+    return 0;
+  }
+  const std::int64_t cap = SecondsToNs(params_.dt_expected) - segment_planner_->ReplanBudgetNs();
+  return cap > 0 ? cap : 0;
 }
 
 bool PlannerCycle::SearchesWhileFollowing(const PlannerRtState& rt, NowReal wake) const noexcept {
@@ -151,12 +234,13 @@ bool PlannerCycle::SearchesWhileFollowing(const PlannerRtState& rt, NowReal wake
 PlanSnapshot PlannerCycle::PlanOnce(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                                     bool cov_matched, const PlannerRtState& rt,
                                     const ReportedSegments& arm, NowReal now,
-                                    SearchStats& stats) noexcept {
+                                    std::int64_t budget_cap_ns, SearchStats& stats) noexcept {
   if (search_ != nullptr) {
-    return search_->Plan(traj, cov, cov_matched, rt, arm, now, stats);
+    return search_->Plan(traj, cov, cov_matched, rt, arm, now, budget_cap_ns, stats);
   }
   stats = SearchStats{};
   static_cast<void>(arm);
+  static_cast<void>(budget_cap_ns);
   static_cast<void>(cov);
   static_cast<void>(cov_matched);
   static_cast<void>(now);
@@ -205,6 +289,7 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
       segment_planner_->ResetTrial();
     }
     pair_publish_ns_ = 0;
+    pair_plan_id_ = 0;
     first_followed_t_c_ns_ = 0;
     // The planner is the segment box's only writer, so withdrawing the ended
     // trial's segment is its job (the RT's plan match refuses it as well).
@@ -251,25 +336,34 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   if (activity != PlannerActivity::kSearch) {
     return rec;
   }
-  // The RT follows a plan on a segment planner's segments: nothing the search
-  // finds below is published (header: "WHILE A PLAN IS FOLLOWED").
+  // The RT follows a plan on a segment planner's segments (header: "WHILE A
+  // PLAN IS FOLLOWED").
   bool following = false;
   if (SegmentActive()) {
+    // Right after a pair, until the RT's report could show what it did with
+    // it: anything stored meanwhile lands in the one-slot segment box on top
+    // of the pair's segment. A report that already follows the pair's plan
+    // has shown it.
+    if (pair_publish_ns_ > 0 && !(rt.plan_active && rt.plan_id == pair_plan_id_) &&
+        rt.rt_state_ns <= pair_publish_ns_ + 3 * segment_planner_->ControlDtNs()) {
+      return rec;
+    }
     if (rt.plan_active) {
-      // APPROACH: the segment first — on every wake, whatever the search does
-      // after it — so that the followed segment is never later for the
-      // search's sake. A replan leaves the wake's outcome alone (MD-29).
-      io_.traj->LoadInto(traj_);
-      io_.cov->LoadInto(cov_);
-      RunReplan(rt, FollowedBall(rt), rec);
+      if (rt.plan_pending) {
+        // The RT holds a replacement until its first segment starts and takes
+        // nothing else until then: neither a search nor a replan has anywhere
+        // to go.
+        rec.outcome = CycleOutcome::kHeld;
+        return rec;
+      }
       if (!SearchesWhileFollowing(rt, wake)) {
+        // The replan alone. It leaves the wake's outcome alone (MD-29).
+        io_.traj->LoadInto(traj_);
+        io_.cov->LoadInto(cov_);
+        RunReplan(rt, FollowedBall(rt), rec);
         return rec;
       }
       following = true;
-    } else if (pair_publish_ns_ > 0 &&
-               rt.rt_state_ns <= pair_publish_ns_ + 3 * segment_planner_->ControlDtNs()) {
-      // Right after a pair, until the RT state could show it adopted it.
-      return rec;
     }
   }
 
@@ -277,6 +371,12 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   io_.traj->LoadInto(traj_);
   if (!traj_.valid || traj_.token.activation_generation != rt.activation_generation) {
     rec.outcome = CycleOutcome::kNoInput;
+    if (following) {
+      // Nothing to search on is no reason to leave the followed segment as it
+      // is: the replan runs (without a ball — the box holds none of this
+      // activation).
+      ReplanBehindSearch(rt, rec);
+    }
     return rec;
   }
   rec.snapshot_sequence = traj_.token.snapshot_sequence;
@@ -305,26 +405,32 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     reported_.has_pending = false;
     reported_.has_following = false;
   }
-  // A following wake's search starts after the segment's replan, and its
-  // clock says so: leads, the report's age and the instants a candidate may
-  // start at are measured from where the search begins, not from the wake.
-  const NowReal search_now = following ? NowReal{clock_()} : wake;
-  PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, reported_, search_now, rec.search);
+  // The search is the first thing a wake runs, so it is timed from the wake.
+  // On a following wake the replan comes behind it: the search is given what
+  // one prediction period leaves beside that replan's budget.
+  const std::int64_t budget_cap_ns = following ? FollowingSearchCapNs() : 0;
+  PlanSnapshot plan =
+      PlanOnce(traj_, cov_, rec.cov_matched, rt, reported_, wake, budget_cap_ns, rec.search);
   rec.search_valid = plan.valid;
   if (post_search_hook_ != nullptr) {
     post_search_hook_(post_search_context_);
   }
-  // The RT follows a plan on segments and takes no second one: what the search
-  // would publish is held, and the record says which kind it was — another
-  // plan (the search's own verdict, not a comparison of instants: a grid search
-  // moves its candidates with every snapshot), or the followed one again.
-  // Before the provenance re-check: that re-check is for what is about to be
-  // PUBLISHED, and "superseded" counts plans that were dropped for it (MD-29).
+  // The RT follows a plan. Another plan — the search's own verdict, not a
+  // comparison of instants: a grid search moves its candidates with every
+  // snapshot — goes out as a replacement pair when its first segment can be
+  // solved and the pair's re-check holds; every other verdict (the followed
+  // plan again, kept, no candidate), and a replacement that was withheld,
+  // leaves the followed plan in force and its segment is replanned. A plan is
+  // never published here without its first segment, and "no plan" never: it
+  // would take away what the arm is doing.
   if (following) {
-    rec.outcome =
-        plan.valid && rec.search.publish && rec.search.decision == SwitchDecision::kReplaced
-            ? CycleOutcome::kHeldReplaceUnsupported
-            : CycleOutcome::kHeld;
+    rec.outcome = CycleOutcome::kHeld;
+    const bool replace =
+        plan.valid && rec.search.publish && rec.search.decision == SwitchDecision::kReplaced;
+    if (replace && PublishReplacement(rt, plan, rec)) {
+      return rec;
+    }
+    ReplanBehindSearch(rt, rec);
     return rec;
   }
 

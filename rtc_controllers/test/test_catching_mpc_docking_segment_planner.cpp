@@ -15,6 +15,10 @@
 //      segment the RT reports; the queries of the interface on what was
 //      published; and the decision this class exists to pin: NOTHING IS
 //      PUBLISHED AFTER THE CATCH.
+//   4a. the first segment of a REPLACEMENT (E1-F17 #743) — the RT follows a
+//      plan and the search replaces it: the new plan's first segment starts
+//      on the segment the RT reports, a search's solution is published only
+//      when it started there, and the followed plan's segments stay.
 //   5. allocation — a C-level malloc gate over PlanFirst and Replan, the QP
 //      solver bracketed out and the core's own stages gated again inside it.
 //
@@ -71,6 +75,7 @@ using rtc::catching::MakeMpcDockingSegmentPlanner;
 using rtc::catching::Mode;
 using rtc::catching::MpcDockingReason;
 using rtc::catching::MpcDockingReasonName;
+using rtc::catching::MpcDockingSegmentCoreInput;
 using rtc::catching::MpcDockingSegmentPlanner;
 using rtc::catching::MpcDockingSegmentPlannerConstants;
 using rtc::catching::MpcDockingSegmentPlannerModel;
@@ -316,7 +321,7 @@ struct Scene {
     ball = AxisThrow(rig, t_star_s);
     rt = rig.RestingRt(kNow);
     SearchStats stats;
-    plan = rig.search.Plan(ball.traj, ball.cov, true, rt, NoSegments(), NowReal{kNow}, stats);
+    plan = rig.search.Plan(ball.traj, ball.cov, true, rt, NoSegments(), NowReal{kNow}, 0, stats);
     ASSERT_TRUE(plan.valid) << "the search chose nothing: " << NlpRejectName(stats.nlp.reason);
     const CatchSolution* sol = rig.search.Solution();
     ASSERT_NE(sol, nullptr);
@@ -1097,6 +1102,386 @@ TEST(MpcDockingPlannerReplan, NothingIsPublishedAfterTheCatchOrWithinOneInterval
   }
 }
 
+// ── 4a. The first segment of a REPLACEMENT (E1-F17 #743) ─────────────────────
+
+// A followed plan (Followed: seq 1) and the search's replacement of it: the
+// same throw 30 ms later, to be caught 30 ms later — the first problem shifted
+// in time, so it is as solvable as the first one, but the arm is on seq 1 by
+// then. The new grid is anchored at the new catch instant: its points fall
+// BETWEEN the nodes of seq 1.
+struct Replaced {
+  Followed f;
+  Throw ball;           // the replacement's prediction
+  PlanSnapshot plan;    // the replacement
+  int n1{0};            // its pre-catch intervals at `now`
+  std::int64_t now{0};  // the wake's first clock read
+  std::int64_t t0{0};   // node 0 of its first segment
+
+  void Setup() {
+    ASSERT_NO_FATAL_FAILURE(f.Setup());
+    constexpr std::int64_t kShiftNs = 30 * kMs;
+    ball = AxisThrow(f.scene->rig, 0.28 + 0.03);
+    plan = f.scene->plan;
+    plan.plan_id = kPlanId + 1;
+    plan.t_c_ns = f.t_c + kShiftNs;
+    // One interval fewer than the followed segment has: node 0 is 80 ms after
+    // that segment's. The wake is the first-solve lead (35 ms + 2 × 2 ms)
+    // and a 10 ms margin before it — after the followed segment's node 0, so
+    // the RT is on it.
+    n1 = f.n0 - 1;
+    t0 = plan.t_c_ns - n1 * kDtPreNs;
+    now = t0 - 39 * kMs - 10 * kMs;
+    ASSERT_EQ(t0, f.first.t0_ns + 80 * kMs);
+    ASSERT_GT(now, f.first.t0_ns);
+  }
+
+  [[nodiscard]] BallPrediction Ball() const { return BallPrediction{&ball.traj, &ball.cov, true}; }
+
+  // The RT following seq 1 of the old plan, reported at the wake.
+  [[nodiscard]] PlannerRtState Rt() const { return f.RtAt(now); }
+
+  // The same RT holding the replacement, whose first segment `seq` waits.
+  [[nodiscard]] PlannerRtState RtHolding(std::uint32_t seq) const {
+    PlannerRtState rt = Rt();
+    rt.segment_pending = true;
+    rt.segment_pending_seq = seq;
+    rt.plan_pending = true;
+    rt.plan_pending_id = plan.plan_id;
+    rt.plan_pending_t_c_ns = plan.t_c_ns;
+    return rt;
+  }
+};
+
+// The start state the core for `n_pre` was last handed is `seg` read at
+// `t_ns` by the RT's evaluator (device → model order), to the bit: q̈ always,
+// q and q̇ when the start was not projected into the box.
+void ExpectStartOnSegment(const MpcDockingSegmentPlanner& planner, int n_pre,
+                          const SegmentSnapshot& seg, std::int64_t t_ns, bool clamped) {
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(seg, t_ns, q, qd, qdd));
+  const MpcDockingSegmentCoreInput* in = planner.LastInputForTesting(n_pre);
+  ASSERT_NE(in, nullptr);
+  ASSERT_EQ(in->q0.size(), 6);
+  for (std::size_t m = 0; m < 6; ++m) {
+    const auto d = static_cast<std::size_t>(kDeviceOfModel[m]);
+    const auto e = static_cast<Eigen::Index>(m);
+    if (!clamped) {
+      EXPECT_TRUE(BitsEqual(in->q0[e], q[d])) << "q, model joint " << m;
+      EXPECT_TRUE(BitsEqual(in->qd0[e], qd[d])) << "q̇, model joint " << m;
+    }
+    EXPECT_TRUE(BitsEqual(in->qdd0[e], qdd[d])) << "q̈, model joint " << m;
+  }
+}
+
+TEST(MpcDockingPlannerReplacement, StartsOnTheReportedSegmentAtNodeZeroOfTheNewPlansGrid) {
+  Replaced x;
+  ASSERT_NO_FATAL_FAILURE(x.Setup());
+  MpcDockingSegmentPlanner& planner = *x.f.scene->planner;
+  const PlannerRtState rt = x.Rt();
+  auto r = RunFirst(planner, rt, x.plan, x.Ball(), nullptr, x.now);
+
+  // Before the solve: the new plan's grid, the source, and the start the core
+  // was handed.
+  EXPECT_EQ(r->rec.kind, SegmentKind::kFirst);
+  EXPECT_FALSE(r->rec.from_search);
+  EXPECT_NE(r->rec.outcome, SegmentOutcome::kNotAtRest) << Describe(r->rec);
+  ASSERT_EQ(r->rec.k, -x.n1) << Describe(r->rec);
+  ASSERT_TRUE(r->rec.x0_from_segment) << Describe(r->rec);
+  EXPECT_EQ(r->rec.source_seq, 1U);
+  EXPECT_EQ(r->rec.source_seq, planner.SourceSeq(rt, x.t0)) << "the cycle's publish gate";
+  EXPECT_FALSE(r->rec.x0_clamped) << "the q and q̇ comparisons below are skipped";
+  ASSERT_NO_FATAL_FAILURE(ExpectStartOnSegment(planner, x.n1, x.f.first, x.t0, r->rec.x0_clamped));
+  const MpcDockingSegmentCoreInput* in = planner.LastInputForTesting(x.n1);
+  ASSERT_NE(in, nullptr);
+  // The same cold path as a solve from rest: toward the plan's catch pose.
+  EXPECT_FALSE(in->initial_valid);
+  EXPECT_TRUE(in->catch_target_valid);
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(x.f.first, x.t0, q, qd, qdd));
+  double speed = 0.0;
+  for (std::size_t m = 0; m < 6; ++m) {
+    const auto d = static_cast<std::size_t>(kDeviceOfModel[m]);
+    speed = std::max(speed, std::fabs(qd[d]));
+    EXPECT_TRUE(BitsEqual(in->q_catch_target[static_cast<Eigen::Index>(m)], x.plan.q_star[d])) << m;
+  }
+  EXPECT_EQ(r->rec.x0_speed, speed);
+
+  // The solve, and the segment it leaves: the NEW plan's, on its grid.
+  ASSERT_TRUE(r->ok) << Describe(r->rec);
+  const SegmentSnapshot& out = r->out;
+  EXPECT_EQ(out.plan_id, x.plan.plan_id);
+  EXPECT_EQ(out.t_c_ns, x.plan.t_c_ns);
+  EXPECT_EQ(out.token.generation, x.plan.token.generation);
+  EXPECT_EQ(out.token.activation_generation, rt.activation_generation);
+  EXPECT_EQ(out.rt_iteration, rt.rt_iteration);
+  EXPECT_EQ(out.rt_state_ns, rt.rt_state_ns);
+  EXPECT_EQ(out.n_pre, x.n1);
+  EXPECT_EQ(out.t0_ns, x.t0);
+  EXPECT_EQ(out.n_nodes, x.n1 + x.f.scene->rig.params.n_stop);
+  EXPECT_EQ(out.publish_ns, 0);
+  EXPECT_EQ(out.segment_seq, 0U);
+  EXPECT_TRUE(ValidateSegmentNodes(out));
+  EXPECT_TRUE(planner.StartsInTime(g_clock.load(), out.t0_ns));
+  // Node 0 is the source read at node 0's instant, in device order.
+  if (!r->rec.x0_clamped) {
+    for (int d = 0; d < 6; ++d) {
+      const auto i = static_cast<std::size_t>(d);
+      EXPECT_DOUBLE_EQ(out.q[i], q[i]) << d;
+      EXPECT_DOUBLE_EQ(out.qd[i], qd[i]) << d;
+      EXPECT_DOUBLE_EQ(out.qdd[i], qdd[i]) << d;
+    }
+  }
+
+  // Published, it sits BESIDE the followed plan's segment.
+  SegmentSnapshot second = out;
+  second.segment_seq = 2;
+  second.publish_ns = x.now + 100'000;
+  planner.NotePublished(second);
+  std::uint64_t generation = 0;
+  ASSERT_TRUE(planner.FollowedTrack(rt, generation));
+  EXPECT_EQ(generation, x.f.first.token.generation);
+  EXPECT_EQ(planner.SourceSeq(rt, x.f.t_c), 1U) << "the old plan's report still has its source";
+  // The RT holding the pair: the followed segment is the old plan's, the
+  // pending one the replacement's.
+  const PlannerRtState held = x.RtHolding(2);
+  EXPECT_EQ(planner.SourceSeq(held, x.t0 - 1), 1U);
+  EXPECT_EQ(planner.SourceSeq(held, x.t0), 2U);
+  auto reported = std::make_unique<ReportedSegments>();
+  planner.Reported(held, *reported);
+  ASSERT_TRUE(reported->has_following);
+  ASSERT_TRUE(reported->has_pending);
+  EXPECT_EQ(reported->following.segment_seq, 1U);
+  EXPECT_EQ(reported->following.plan_id, x.f.first.plan_id);
+  EXPECT_EQ(reported->pending.segment_seq, 2U);
+  EXPECT_EQ(reported->pending.plan_id, x.plan.plan_id);
+  EXPECT_EQ(reported->pending.t_c_ns, x.plan.t_c_ns);
+  // Without the RT saying it holds the replacement, seq 2 is not pending.
+  PlannerRtState unheld = held;
+  unheld.plan_pending = false;
+  EXPECT_EQ(planner.SourceSeq(unheld, x.t0), 1U);
+  // After the switch the RT follows the replacement on that segment.
+  PlannerRtState switched = x.f.scene->rig.FollowingRt(x.now, x.plan.t_c_ns);
+  switched.plan_id = x.plan.plan_id;
+  switched.segment_active = true;
+  switched.segment_seq = 2;
+  EXPECT_EQ(planner.SourceSeq(switched, x.plan.t_c_ns), 2U);
+  EXPECT_TRUE(planner.FollowedTrack(switched, generation));
+  // Should the RT drop the pair instead, a replan of the OLD plan still finds
+  // its source (whatever the solve then makes of it).
+  const std::int64_t replan_at = x.f.NowFor(x.f.n0 - 1);
+  auto again = RunReplan(planner, x.f.RtAt(replan_at), x.f.scene->Ball(), replan_at);
+  EXPECT_NE(again->rec.outcome, SegmentOutcome::kNotFollowed) << Describe(again->rec);
+  EXPECT_EQ(again->rec.source_seq, 1U);
+}
+
+TEST(MpcDockingPlannerReplacement, RefusesWhatItCannotStartFromWithTheNamedOutcome) {
+  Replaced x;
+  ASSERT_NO_FATAL_FAILURE(x.Setup());
+  MpcDockingSegmentPlanner& planner = *x.f.scene->planner;
+  const PlannerRtState rt = x.Rt();
+  BallPrediction ball = x.Ball();
+  const auto refused = [&](const char* what, const PlannerRtState& report, const PlanSnapshot& plan,
+                           SegmentOutcome want) {
+    SCOPED_TRACE(what);
+    auto r = RunFirst(planner, report, plan, ball, nullptr, x.now);
+    EXPECT_FALSE(r->ok);
+    EXPECT_EQ(r->rec.outcome, want) << Describe(r->rec);
+    EXPECT_EQ(r->rec.kind, SegmentKind::kFirst);
+    EXPECT_FALSE(r->out.valid);
+    return r;
+  };
+  // No segment of ours the RT reports: never "it follows a plan, so it must be
+  // on its last segment".
+  {
+    PlannerRtState report = rt;
+    report.segment_active = false;
+    auto r = refused("the RT reports no segment", report, x.plan, SegmentOutcome::kNotFollowed);
+    EXPECT_EQ(r->rec.k, -x.n1) << "the grid point is recorded even when withheld";
+    EXPECT_EQ(r->rec.source_seq, 0U);
+    EXPECT_FALSE(r->rec.x0_from_segment);
+    report = rt;
+    report.segment_seq = 9;
+    refused("the RT reports a seq that is not ours", report, x.plan, SegmentOutcome::kNotFollowed);
+    report = rt;
+    report.plan_id += 5;
+    refused("the RT follows a plan the ring holds nothing of", report, x.plan,
+            SegmentOutcome::kNotFollowed);
+    report = rt;
+    report.plan_t_c_ns += 1;
+    refused("the RT follows another catch instant", report, x.plan, SegmentOutcome::kNotFollowed);
+  }
+  // A replacement starts on the command the RT runs: it has to be seeded.
+  {
+    PlannerRtState report = rt;
+    report.cmd_seeded = false;
+    refused("command not seeded", report, x.plan, SegmentOutcome::kNoState);
+  }
+  // Not even one pre-catch interval before the new catch.
+  {
+    PlanSnapshot late = x.plan;
+    late.t_c_ns = x.now + 39 * kMs + kDtPreNs - 1;
+    refused("one nanosecond short of an interval", rt, late, SegmentOutcome::kTooLate);
+  }
+  // The rest check is the resting arm's. A command that moves — it does, the
+  // arm follows a plan — withholds nothing here: the start is the segment's.
+  {
+    PlannerRtState report = rt;
+    report.qd_cmd[0] = 2 * planner.Params().rest_tol;
+    auto r = RunFirst(planner, report, x.plan, ball, nullptr, x.now);
+    EXPECT_NE(r->rec.outcome, SegmentOutcome::kNotAtRest) << Describe(r->rec);
+    EXPECT_TRUE(r->rec.x0_from_segment);
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectStartOnSegment(planner, x.n1, x.f.first, x.t0, r->rec.x0_clamped));
+    report.qd_cmd[0] = std::numeric_limits<double>::quiet_NaN();
+    r = RunFirst(planner, report, x.plan, ball, nullptr, x.now);
+    EXPECT_NE(r->rec.outcome, SegmentOutcome::kNotAtRest) << Describe(r->rec);
+    EXPECT_TRUE(r->rec.x0_from_segment);
+    // With no plan followed the same command is refused as it always was.
+    PlannerRtState free_arm = x.f.scene->rig.RestingRt(x.now);
+    free_arm.qd_cmd[0] = 2 * planner.Params().rest_tol;
+    refused("no plan followed, a moving command", free_arm, x.plan, SegmentOutcome::kNotAtRest);
+  }
+  // No ball is no ball, followed or not.
+  ball = BallPrediction{};
+  refused("empty view", rt, x.plan, SegmentOutcome::kNoBall);
+}
+
+TEST(MpcDockingPlannerReplacement, TheSourceIsThePendingSegmentFromItsNodeZeroOnElseTheFollowed) {
+  // SourceSegmentAt on what the RT reports: a pending segment of the followed
+  // plan is the source once the new node 0 has reached its own — one
+  // nanosecond decides.
+  for (const bool due : {false, true}) {
+    SCOPED_TRACE(due ? "pending, node 0 at the new node 0" : "pending, node 0 one ns after it");
+    Replaced x;
+    ASSERT_NO_FATAL_FAILURE(x.Setup());
+    MpcDockingSegmentPlanner& planner = *x.f.scene->planner;
+    // A second segment of the followed plan the RT holds pending: seq 1's
+    // nodes a little off, so the two read differently everywhere.
+    SegmentSnapshot second = x.f.first;
+    second.segment_seq = 2;
+    second.publish_ns = kNow + 200'000;
+    second.t0_ns = due ? x.t0 : x.t0 + 1;
+    for (double& v : second.q) {
+      v += 0.01;
+    }
+    planner.NotePublished(second);
+    PlannerRtState rt = x.Rt();
+    rt.segment_pending = true;
+    rt.segment_pending_seq = 2;
+    auto r = RunFirst(planner, rt, x.plan, x.Ball(), nullptr, x.now);
+    ASSERT_EQ(r->rec.k, -x.n1) << Describe(r->rec);
+    ASSERT_TRUE(r->rec.x0_from_segment) << Describe(r->rec);
+    EXPECT_EQ(r->rec.source_seq, due ? 2U : 1U);
+    EXPECT_EQ(r->rec.source_seq, planner.SourceSeq(rt, x.t0));
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectStartOnSegment(planner, x.n1, due ? second : x.f.first, x.t0, r->rec.x0_clamped));
+  }
+}
+
+// A solution of the replacement's problem on this planner's grid, of the RT
+// report `rt`, that claims to have started on segment `source_seq`: the
+// followed plan's first segment moved onto the new catch instant. Whether it
+// would pass the evaluation is not what the tests below ask — they ask which
+// PATH the planner takes, and SegmentRecord::from_search says that before
+// anything is evaluated.
+[[nodiscard]] std::unique_ptr<CatchSolution> ClaimedSolution(const Replaced& x,
+                                                             const PlannerRtState& rt,
+                                                             std::uint32_t source_seq) {
+  auto sol = std::make_unique<CatchSolution>();
+  sol->seg = x.f.first;
+  sol->seg.plan_id = 0;
+  sol->seg.segment_seq = 0;
+  sol->seg.publish_ns = 0;
+  sol->seg.t_c_ns = x.plan.t_c_ns;
+  sol->seg.t0_ns = x.plan.t_c_ns - static_cast<std::int64_t>(sol->seg.n_pre) * kDtPreNs;
+  sol->seg.rt_iteration = rt.rt_iteration;
+  sol->seg.rt_state_ns = rt.rt_state_ns;
+  sol->source_seq = source_seq;
+  sol->feasible = true;
+  sol->converged = true;
+  return sol;
+}
+
+TEST(MpcDockingPlannerReplacement,
+     ASearchsSolutionIsPublishedOnlyWhenItStartedOnTheReportedSegment) {
+  Replaced x;
+  ASSERT_NO_FATAL_FAILURE(x.Setup());
+  MpcDockingSegmentPlanner& planner = *x.f.scene->planner;
+  const PlannerRtState rt = x.Rt();
+  // The other three conditions hold for every solution below: this plan's
+  // catch instant, this RT report, this planner's grid.
+  const auto run = [&](const char* what, const PlannerRtState& report, std::uint32_t claimed) {
+    SCOPED_TRACE(what);
+    const std::unique_ptr<CatchSolution> sol = ClaimedSolution(x, report, claimed);
+    EXPECT_EQ(sol->seg.t_c_ns, x.plan.t_c_ns);
+    EXPECT_EQ(sol->seg.rt_iteration, report.rt_iteration);
+    return RunFirst(planner, report, x.plan, x.Ball(), sol.get(), x.now);
+  };
+  const std::int64_t t0_sol = x.plan.t_c_ns - static_cast<std::int64_t>(x.f.n0) * kDtPreNs;
+  ASSERT_EQ(planner.SourceSeq(rt, t0_sol), 1U);
+
+  // It started on the segment the RT reports for its node 0: the search's
+  // nodes are what the planner takes (re-evaluated, not solved again).
+  auto r = run("started on the followed segment", rt, 1);
+  EXPECT_TRUE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_EQ(r->rec.source_seq, 1U);
+  EXPECT_TRUE(r->rec.x0_from_segment);
+  EXPECT_EQ(r->rec.k, -x.f.n0);
+  EXPECT_NE(r->rec.outcome, SegmentOutcome::kNotAtRest);
+
+  // It started anywhere else: the planner solves from the reported segment
+  // itself, on its own grid point.
+  r = run("started at rest on the command", rt, 0);
+  EXPECT_FALSE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_EQ(r->rec.source_seq, 1U);
+  EXPECT_TRUE(r->rec.x0_from_segment);
+  EXPECT_EQ(r->rec.k, -x.n1);
+  r = run("started on a segment the RT does not report", rt, 7);
+  EXPECT_FALSE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_EQ(r->rec.source_seq, 1U);
+
+  // The RT's report moved since the search read it: a pending segment is due
+  // at the solution's node 0, so that is where a first segment starts now.
+  SegmentSnapshot second = x.f.first;
+  second.segment_seq = 2;
+  second.publish_ns = kNow + 200'000;
+  second.t0_ns = t0_sol;
+  planner.NotePublished(second);
+  PlannerRtState moved = rt;
+  moved.segment_pending = true;
+  moved.segment_pending_seq = 2;
+  ASSERT_EQ(planner.SourceSeq(moved, t0_sol), 2U);
+  r = run("started on the followed segment, a pending one is due", moved, 1);
+  EXPECT_FALSE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_EQ(r->rec.source_seq, 2U);
+  r = run("started on the pending segment that is due", moved, 2);
+  EXPECT_TRUE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_EQ(r->rec.source_seq, 2U);
+
+  // An arm that follows a plan starts on a segment: with none reported, a
+  // solution that started on none is not published either — nothing is.
+  PlannerRtState silent = rt;
+  silent.segment_active = false;
+  r = run("nothing reported, a solution that started at rest", silent, 0);
+  EXPECT_FALSE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_FALSE(r->ok);
+  EXPECT_EQ(r->rec.outcome, SegmentOutcome::kNotFollowed) << Describe(r->rec);
+
+  // With no plan followed the rule is the one it was: a solution that started
+  // at rest is the search's own, one that claims a segment is not.
+  const PlannerRtState free_arm = x.f.scene->rig.RestingRt(x.now);
+  r = run("no plan followed, started at rest", free_arm, 0);
+  EXPECT_TRUE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_FALSE(r->rec.x0_from_segment);
+  r = run("no plan followed, claims a segment", free_arm, 1);
+  EXPECT_FALSE(r->rec.from_search) << Describe(r->rec);
+  EXPECT_FALSE(r->rec.x0_from_segment);
+}
+
 // ── 5. Allocation ────────────────────────────────────────────────────────────
 
 struct GateLog {
@@ -1213,6 +1598,78 @@ TEST(MpcDockingPlannerAllocation, PlanFirstAndReplanAllocateNothingOutsideTheQpS
   // The solver and the stages were what the bracket stepped around.
   EXPECT_GE(log.solver_calls, 3);
   EXPECT_GT(log.stages, 3);
+}
+
+TEST(MpcDockingPlannerAllocation, AReplacementsFirstSegmentAllocatesNothingOutsideTheQpSolver) {
+  // The paths a replacement adds to PlanFirst, under the same gate: the solve
+  // from the reported segment, the search's solution taken when it started
+  // there, the withhold with nothing reported, and the replacement's segment
+  // stored beside the followed plan's.
+  Replaced x;
+  ASSERT_NO_FATAL_FAILURE(x.Setup());
+  MpcDockingSegmentPlanner& planner = *x.f.scene->planner;
+  GateLog log;
+  planner.SetSolverHookForTesting(&SolverHook, &log);
+  planner.SetCoreStageHookForTesting(&StageHook, &log);
+
+  // Everything a call reads and writes is built before the gate.
+  auto solve = std::make_unique<Result>();
+  auto adopt = std::make_unique<Result>();
+  auto silent = std::make_unique<Result>();
+  auto reported = std::make_unique<ReportedSegments>();
+  const BallPrediction ball = x.Ball();
+  const PlannerRtState rt = x.Rt();
+  PlannerRtState nothing = rt;
+  nothing.segment_active = false;
+  const std::unique_ptr<CatchSolution> sol = ClaimedSolution(x, rt, 1);
+  std::size_t counted = 0;
+
+  SetClockAt(x.now);
+  counted += Gated(
+      [&] { solve->ok = planner.PlanFirst(rt, x.plan, ball, nullptr, solve->out, solve->rec); });
+  ASSERT_EQ(rtc::testing::detail::MallocGateDepth(), 0) << "the hooks are not balanced";
+  SetClockAt(x.now);
+  counted += Gated(
+      [&] { adopt->ok = planner.PlanFirst(rt, x.plan, ball, sol.get(), adopt->out, adopt->rec); });
+  ASSERT_EQ(rtc::testing::detail::MallocGateDepth(), 0) << "the hooks are not balanced";
+  SetClockAt(x.now);
+  counted += Gated([&] {
+    silent->ok = planner.PlanFirst(nothing, x.plan, ball, nullptr, silent->out, silent->rec);
+  });
+  ASSERT_EQ(rtc::testing::detail::MallocGateDepth(), 0) << "the hooks are not balanced";
+  // The gated calls took the paths the claim is about.
+  EXPECT_TRUE(solve->rec.x0_from_segment) << Describe(solve->rec);
+  EXPECT_FALSE(solve->rec.from_search);
+  EXPECT_EQ(solve->rec.source_seq, 1U);
+  EXPECT_TRUE(adopt->rec.from_search) << Describe(adopt->rec);
+  EXPECT_EQ(silent->rec.outcome, SegmentOutcome::kNotFollowed) << Describe(silent->rec);
+
+  // The replacement's segment beside the followed plan's, and the queries on
+  // the report of an RT that holds the pair. (The cycle stores a segment only
+  // after the PlanFirst that returned true for it.)
+  ASSERT_TRUE(solve->ok) << Describe(solve->rec);
+  SegmentSnapshot second = solve->out;
+  second.segment_seq = 2;
+  second.publish_ns = x.now + 100'000;
+  const PlannerRtState held = x.RtHolding(2);
+  std::uint64_t generation = 0;
+  bool followed = false;
+  std::uint32_t source = 0;
+  counted += Gated([&] {
+    planner.NotePublished(second);
+    followed = planner.FollowedTrack(held, generation);
+    source = planner.SourceSeq(held, x.t0);
+    planner.Reported(held, *reported);
+  });
+  EXPECT_TRUE(followed);
+  EXPECT_EQ(source, 2U);
+  EXPECT_TRUE(reported->has_following);
+  EXPECT_TRUE(reported->has_pending);
+
+  EXPECT_EQ(counted, 0U) << "a replacement's PlanFirst or a query allocated outside the QP solver";
+  // The solver and the stages were what the bracket stepped around.
+  EXPECT_GE(log.solver_calls, 2);
+  EXPECT_GT(log.stages, 0);
 }
 
 // ── 6. In the cycle, behind the nlp search ───────────────────────────────────

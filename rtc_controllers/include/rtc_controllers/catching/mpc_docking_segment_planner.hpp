@@ -17,18 +17,30 @@
 //  • THE CATCH NODE is where the ball crosses the hand's entrance plane (the
 //    core's ℓ_kc = 0): under this planner a plan's t_c is that crossing,
 //    whichever search produced it.
-//  • PlanFirst — the first segment of a plan, from an arm AT REST on its
-//    command (max |q̇_cmd| ≤ `approach.rest_tol`; otherwise kNotAtRest).
+//  • PlanFirst — the first segment of a plan. Where it starts depends on what
+//    the RT does:
+//      – NO PLAN FOLLOWED: from an arm AT REST on its command (max |q̇_cmd| ≤
+//        `approach.rest_tol`; otherwise kNotAtRest), x₀ = (q_cmd, 0, 0).
+//      – A PLAN FOLLOWED (rt.plan_active): the segment is the first of that
+//        plan's REPLACEMENT and the arm is moving. x₀ = (q, q̇, q̈) is the
+//        segment the RT reports pending or following (SourceSeq at node 0's
+//        instant) evaluated there, projected into the core's box as a
+//        replan's is; none reported is kNotFollowed. The followed plan's
+//        segments stay in the ring beside the new one: the arm is on them
+//        until the RT switches at the new segment's node 0.
+//    Either way:
 //      – A search that solved the same problem hands its solution in
-//        (CatchSolution). When it is this plan's, of this RT report and on
-//        this planner's grid, it is NOT solved again: the nodes are
+//        (CatchSolution). When it is this plan's, of this RT report, on this
+//        planner's grid, and started on the segment the RT reports for its
+//        node 0 (CatchSolution::source_seq is SourceSeq there — none, for an
+//        arm that follows no plan), it is NOT solved again: the nodes are
 //        re-evaluated on this planner's own core against the wake's
 //        prediction (the hard rows' violation, the slacks, the torque) and
 //        published as they are, bit for bit. Whether the solve that produced
 //        them converged is the search's statement (CatchSolution::converged):
 //        an evaluation does not converge.
-//      – Otherwise the core solves from x₀ = (q_cmd, 0, 0), started by its
-//        initialisation QP toward the plan's catch pose (plan.q_star).
+//      – Otherwise the core solves from x₀, started by its initialisation QP
+//        toward the plan's catch pose (plan.q_star).
 //  • Replan — a later segment of the followed plan, at the first grid point
 //    the replan budget still reaches (the one that leaves the most pre-catch
 //    intervals). x₀ is the source segment (the one the RT reports pending or
@@ -150,6 +162,15 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
 
   [[nodiscard]] std::int64_t ControlDtNs() const noexcept override { return h_ns_; }
 
+  /// `budget.replan_s` [ns].
+  [[nodiscard]] std::int64_t ReplanBudgetNs() const noexcept override { return replan_ns_; }
+
+  /// now + T_arm + `budget.first_s` + 2 ticks: the bound PlanFirst's grid
+  /// point is the first one behind.
+  [[nodiscard]] std::int64_t EarliestFirstStartNs(std::int64_t now_ns) const noexcept override {
+    return now_ns + t_arm_ns_ + first_ns_ + 2 * h_ns_;
+  }
+
   void Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept override;
 
   [[nodiscard]] std::uint32_t SourceSeq(const PlannerRtState& rt,
@@ -166,6 +187,11 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
   /// The result the core for `n_pre` last wrote (after Configure: the
   /// warm-up's), or nullptr.
   [[nodiscard]] const MpcDockingSegmentCoreResult* LastResult(int n_pre) const noexcept;
+
+  /// The input the core for `n_pre` was last handed (after Configure: the
+  /// warm-up's), or nullptr — the start state and the catch target a solve
+  /// ran from (tests).
+  [[nodiscard]] const MpcDockingSegmentCoreInput* LastInputForTesting(int n_pre) const noexcept;
 
   /// The slowest and the summed configure-time warm-up solve [ns].
   [[nodiscard]] std::int64_t WarmUpMaxNs() const noexcept { return warmup_max_ns_; }
@@ -200,6 +226,14 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
                MpcDockingSegmentCoreInput& in) const noexcept;
   // Whether `seg` is on this planner's grid for its own n_pre.
   [[nodiscard]] bool OnGrid(const SegmentSnapshot& seg) const noexcept;
+  // Whether a search's solution started where a first segment of this report
+  // starts: on the segment the RT reports for the solution's node 0 — and on
+  // none when the RT follows no plan.
+  [[nodiscard]] bool StartsOnTheReport(const PlannerRtState& rt,
+                                       const CatchSolution& solution) const noexcept;
+  // What the ring keeps when a first segment comes out publishable: the
+  // followed plan's segments under a replacement, nothing otherwise.
+  void NoteFirst(const PlannerRtState& rt) noexcept;
   // What the core returned, judged: kReady or the reason it is withheld.
   [[nodiscard]] SegmentOutcome Judge(const MpcDockingSegmentCoreResult& r, bool ok, bool converged,
                                      int n_pre, std::int64_t start, std::int64_t end,
@@ -229,9 +263,9 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
   std::vector<std::unique_ptr<MpcDockingSegmentCore>> cores_;
   std::vector<MpcDockingSegmentCoreInput> inputs_;
   std::vector<MpcDockingSegmentCoreResult> results_;
-  // The published segments of the followed plan. Nothing is remembered beside
-  // a segment: no solve here starts after the catch, where a line would be
-  // inherited.
+  // The published segments of the followed plan and of a replacement
+  // published for it. Nothing is remembered beside a segment: no solve here
+  // starts after the catch, where a line would be inherited.
   SegmentRing<NoSegmentPayload> ring_{};
   std::int64_t warmup_max_ns_{0};
   std::int64_t warmup_total_ns_{0};

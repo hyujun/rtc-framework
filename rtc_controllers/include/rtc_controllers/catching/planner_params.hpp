@@ -346,6 +346,13 @@ struct PlannerParams {
   /// NaN = the search does not run at all while a plan is followed: the value
   /// of a PlannerParams no parser filled, and of an unset T_freeze.
   double t_stop_plan{std::numeric_limits<double>::quiet_NaN()};
+  /// `prediction.dt_expected` [s] — the period predictions arrive at, filled
+  /// by the binding (it is not a `planner.*` key and no parser here reads it).
+  /// A wake that searches while a plan is followed runs the segment's replan
+  /// behind the search, and the two have to fit one such period: the search
+  /// is then capped at this minus the segment planner's replan budget. NaN (or
+  /// not positive) = no cap.
+  double dt_expected{std::numeric_limits<double>::quiet_NaN()};
   /// `planner.search.grid.score.*` (§4.10 + decision D).
   ScoreWeights score{};
   /// `planner.search.grid.workspace.catch_box` (decision I). `set` false = unset.
