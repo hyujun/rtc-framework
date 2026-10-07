@@ -1746,6 +1746,7 @@ RT 가 이 track 의 plan 을 따르는 동안만 아래가 적용된다. 앞의
 - RT 가 **교체 쌍** (새 plan 과 그 첫 구간) 을 받는 것. 지금 RT 는 따르는 plan 을 바꾸지 않으므로 탐색이 낸 교체는 위처럼 기록만 한다.
 - **2-plan ring** (옛 plan 과 새 plan 의 구간을 함께 들고 있는 것), 움직이는 팔에서 시작하는 **첫 구간** (`PlanFirst` 는 정지한 팔만), `grid` 탐색이 `arm` 을 읽는 것 (읽는 것은 `nlp` 탐색이다).
 - **closure 지령 시각의 갱신 (§12.7 의 M2).** 손 시퀀서는 COMMITTED 에서 한 번 $t_{\mathrm{cmd}}=t_c-T_{\mathrm{close,lead}}$ 로 지령한다.
+- **따르는 wake 의 예산.** 그 wake 는 재계획 (구간 계획기의 `budget.replan_s`) 뒤에 탐색 (그 탐색의 `budget_s`) 을 돌리고, 둘을 함께 묶는 예산은 없다. `nlp` 탐색의 조각이 적는 값에서는 두 예산의 합이 예측 주기 (`prediction.dt_expected`) 를 넘고 `grid` 의 값에서는 넘지 않는다. 순서와 예산은 교체 쌍과 함께 다시 정한다.
 
 구현하지 않은 것: $\tau_{\mathrm{react}}$ 로 정하는 바깥 루프의 정지 (설계 키 `t_stop_plan` 이 처음 채택한 $t_c$ 에서 그것을 대신한다), real-time iteration 과 preparation / feedback 의 분리, P1 · P2 의 병렬 실행, 채택 뒤에 따르는 셀 안에서 포구 시각을 옮기는 것, commit 에 따라 포구 시각을 묶는 것, 계획기의 한 주기가 격자 밖 포구 시각의 plan 을 게시하는 것, `mpc_docking` 의 포구 뒤 정지 재풀이.
 
