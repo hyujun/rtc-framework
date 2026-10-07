@@ -33,6 +33,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <ostream>
 #include <stdexcept>
@@ -57,6 +59,7 @@ using rtc::catching::PlannerActivity;
 using rtc::catching::PlannerCycle;
 using rtc::catching::PlannerCycleIo;
 using rtc::catching::PlannerCycleRecord;
+using rtc::catching::PlannerParams;
 using rtc::catching::PlannerRtState;
 using rtc::catching::PlanRefusal;
 using rtc::catching::PlanSnapshot;
@@ -781,6 +784,16 @@ class FakeSearch final : public rtc::catching::CatchSearch {
 
   void ResetTrial() noexcept override { g_calls.Add(Call::kSearchResetTrial); }
 
+  // Not in the call log: the order tests assert the wake's calls, and the
+  // clock is handed over on the configure path. A null clock leaves the one
+  // held, as the contract says.
+  void SetClock(ClockFn clock) noexcept override {
+    ++set_clock_calls;
+    if (clock != nullptr) {
+      clock_seen = clock;
+    }
+  }
+
   // Not in the call log, as FakeSegmentPlanner::Reported is not: the order
   // tests assert the wake's calls as they were before the two crossed.
   [[nodiscard]] const CatchSolution* Solution() const noexcept override {
@@ -802,6 +815,8 @@ class FakeSearch final : public rtc::catching::CatchSearch {
   bool has_solution{true};
   CatchSolution solution{};
   // What it was handed.
+  ClockFn clock_seen{nullptr};
+  int set_clock_calls{0};
   bool arm_has_pending{false};
   bool arm_has_following{false};
   std::uint32_t arm_pending_seq{0};
@@ -1025,11 +1040,12 @@ struct FakeRig {
   }
 };
 
-TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPlannerOnly) {
+TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesBothInterfaces) {
   auto rig = std::make_unique<FakeRig>();
-  // The rig's SetClock, then its first wake's reset: nothing else was called
-  // — a search has no clock to be handed.
+  // The rig's SetClock, then its first wake's reset: the one logged call is
+  // the segment planner's (the search's clock hand-over is not in the log).
   EXPECT_EQ(rig->segment->clock_seen, &StepClock);
+  EXPECT_EQ(rig->search->clock_seen, &StepClock);
   EXPECT_EQ(g_calls.Taken(),
             (Calls{Call::kSetClock, Call::kSearchResetTrial, Call::kSegmentResetTrial}));
   // A planner installed AFTER the cycle's SetClock is handed that clock on the
@@ -1044,11 +1060,7 @@ TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPl
     EXPECT_EQ(raw->clock_seen, &StepClock);
     EXPECT_EQ(g_calls.Taken(), (Calls{Call::kSetClock}));
   }
-  // "A segment planner is installed" does not make it a MpcSegmentPlanner:
-  // MpcSegmentPlannerForDiagnostics() answers an unconfigured one, as a cycle without its own
-  // always has.
   EXPECT_TRUE(rig->cycle.SegmentPlannerConfigured());
-  EXPECT_FALSE(rig->cycle.MpcSegmentPlannerForDiagnostics().Configured());
   // Installing nothing is the cleared state: the wake is the S6-A stub again,
   // and reads the clock once, for the "no plan" it publishes alone.
   rig->cycle.InstallSegmentPlanner(nullptr);
@@ -1057,7 +1069,6 @@ TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPl
   rig->search = nullptr;
   EXPECT_FALSE(rig->cycle.SegmentPlannerConfigured());
   EXPECT_FALSE(rig->cycle.SearchConfigured());
-  EXPECT_FALSE(rig->cycle.MpcSegmentPlannerForDiagnostics().Configured());
   rig->boxes.rt.Store(RtIn(Mode::kTracking));
   rig->boxes.traj.Store(Traj(3));
   rig->boxes.cov.Store(Cov(3));
@@ -1065,6 +1076,53 @@ TEST(PlannerCycleInterfaces, InstalledIsConfiguredAndTheClockReachesTheSegmentPl
   EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
   EXPECT_FALSE(rig->rec.plan_valid);
   EXPECT_FALSE(rig->segment_box.Load().valid);
+}
+
+TEST(PlannerCycleInterfaces, InstallSearchAndSetClockBothReachTheInstalledSearch) {
+  auto rig = std::make_unique<FakeRig>();
+  // The rig installed the search before its SetClock: the SetClock reached it.
+  ASSERT_NE(rig->search, nullptr);
+  EXPECT_EQ(rig->search->clock_seen, &StepClock);
+  // A later SetClock replaces what the search holds.
+  rig->cycle.SetClock(&FixedClock);
+  EXPECT_EQ(rig->search->clock_seen, &FixedClock);
+  // A search installed AFTER the cycle's SetClock is handed that clock on the
+  // way in, once, whichever order the two calls come in.
+  auto later = std::make_unique<FakeSearch>();
+  FakeSearch* const raw = later.get();
+  EXPECT_TRUE(raw->clock_seen == nullptr);
+  rig->cycle.InstallSearch(std::move(later));
+  rig->search = raw;
+  EXPECT_EQ(raw->clock_seen, &FixedClock);
+  EXPECT_EQ(raw->set_clock_calls, 1);
+  rig->cycle.SetClock(&StepClock);
+  EXPECT_EQ(raw->clock_seen, &StepClock);
+  EXPECT_EQ(raw->set_clock_calls, 2);
+  // Installing nothing hands nothing, and SetClock with no search is fine.
+  rig->cycle.InstallSearch(nullptr);
+  rig->search = nullptr;
+  rig->cycle.SetClock(&FixedClock);
+  EXPECT_FALSE(rig->cycle.SearchConfigured());
+}
+
+TEST(PlannerCycleInterfaces, TheCycleNamesNoImplementation) {
+  // What a wake calls is the two interfaces. Which search and which segment
+  // planner stand behind them is the configure path's knowledge alone: a
+  // cycle that included one of their headers could reach around the interface
+  // without a test noticing, so the files themselves are held to it —
+  // comments too, which is where the next include starts.
+  for (const char* file :
+       {"include/rtc_controllers/catching/planner_cycle.hpp", "src/catching/planner_cycle.cpp"}) {
+    const std::string path = std::string(RTC_CONTROLLERS_SOURCE_DIR) + "/" + file;
+    std::ifstream in(path);
+    ASSERT_TRUE(in.is_open()) << path;
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty()) << path;
+    for (const char* name : {"grid_catch_search", "mpc_segment_planner", "nlp_catch_search",
+                             "GridCatchSearch", "MpcSegmentPlanner", "NlpCatchSearch"}) {
+      EXPECT_EQ(text.find(name), std::string::npos) << file << " names " << name;
+    }
+  }
 }
 
 TEST(PlannerCycleInterfaces, ASearchWakePublishesThePairThroughBothInterfaces) {

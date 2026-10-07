@@ -309,8 +309,7 @@ struct Rig {
 };
 
 std::string Why(const SegmentRecord& r) {
-  return std::string(SegmentOutcomeName(r.outcome)) + " / " +
-         rtc::catching::MpcSegmentCoreReasonName(r.core_reason);
+  return std::string(SegmentOutcomeName(r.outcome)) + " / " + r.core_reason_name;
 }
 
 // The catch node's frame position of a published segment (model order).
@@ -1220,7 +1219,7 @@ TEST(ApproachPlanner, AStartOnTheVelocityBoxIsProjectedIntoIt) {
                        BallFor(s.c), r.out, r.rec));
   EXPECT_EQ(r.rec.kind, SegmentKind::kStop);
   EXPECT_TRUE(r.rec.x0_clamped) << Why(r.rec);
-  EXPECT_NE(r.rec.core_reason, MpcSegmentCoreReason::kInitialStateOutsideBox);
+  EXPECT_NE(rtc::catching::MpcCoreReasonOf(r.rec), MpcSegmentCoreReason::kInitialStateOutsideBox);
 }
 
 TEST(ApproachPlanner, AStartInsideThePositionMarginIsProjectedIntoTheBox) {
@@ -1297,7 +1296,7 @@ TEST(ApproachPlanner, ARefusedSolveMakesTheNextOneCold) {
   SetClock(now);
   ASSERT_FALSE(r.planner.Replan(rt, bad, r.out, r.rec));
   EXPECT_EQ(r.rec.outcome, SegmentOutcome::kSolveFailed);
-  EXPECT_EQ(r.rec.core_reason, MpcSegmentCoreReason::kDirectionNotUnit);
+  EXPECT_EQ(rtc::catching::MpcCoreReasonOf(r.rec), MpcSegmentCoreReason::kDirectionNotUnit);
   EXPECT_EQ(r.rec.k, -5);
   SetClock(now);
   ASSERT_TRUE(r.planner.Replan(rt, BallFor(s.c), r.out, r.rec)) << Why(r.rec);
@@ -1387,7 +1386,7 @@ void ExpectNotSolved(const SegmentRecord& rec) {
   EXPECT_EQ(rec.qp_status, -1);
   EXPECT_EQ(rec.iterations, 0);
   EXPECT_EQ(rec.solve_ns, 0);
-  EXPECT_EQ(rec.core_reason, MpcSegmentCoreReason::kNone);
+  EXPECT_EQ(rtc::catching::MpcCoreReasonOf(rec), MpcSegmentCoreReason::kNone);
 }
 
 // YAML → planner → BOTH core kinds, and the configure warm-ups: each core is
@@ -2061,8 +2060,8 @@ std::uint64_t SolveSequenceDigest(Rig& r, double reach) {
 TEST(ApproachPlanner, AReconfiguredPlannerIsANewOne) {
   // Configure is a full reset: a planner that has solved and published and is
   // configured again answers exactly as one built and configured now.
-  // PlannerCycle relies on it — ConfigureMpcSegmentPlanner installs a NEW planner on every
-  // configure (E1-F12 #738) where it once configured the one in place again.
+  // PlannerCycle relies on it — a configure installs a NEW planner (MakeMpcSegmentPlanner)
+  // every time (E1-F12 #738) where it once configured the one in place again.
   // The planner is first used on ANOTHER catch under the same plan id, catch
   // instant and seqs: a planner that kept its ring would then start a replan
   // from that catch's segment.

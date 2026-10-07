@@ -656,6 +656,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_catching_nlp_catch_screening test/test_catching_nlp_catch_screening.cpp)
   target_link_libraries(test_catching_nlp_catch_screening rtc_controllers)
 
+  # dynamic_catching E1-F16 (#742): the ring of published segments both segment
+  # planners keep (SegmentRing). Header-only pure logic: no model, no solver.
+  ament_add_gtest(test_catching_segment_ring test/test_catching_segment_ring.cpp)
+  target_link_libraries(test_catching_segment_ring rtc_controllers)
+
   # dynamic_catching MPC E1-F02 (#628): the segment node payload and its RT
   # sampler. Sample() calls into pinocchio's shared object (FK), so its
   # allocation claim needs the C-level malloc gate as well as operator new;
@@ -734,6 +739,10 @@ if(BUILD_TESTING)
   target_include_directories(test_catching_planner_cycle PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_planner_cycle PRIVATE -Wno-mismatched-new-delete)
+  # The cycle's two source files are read as text: they must not name a
+  # concrete search or segment planner (E1-F16).
+  target_compile_definitions(test_catching_planner_cycle PRIVATE
+    RTC_CONTROLLERS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
   # dynamic_catching S6-B: the planner's search on the 6R wrist fixture — q̇ᵘ
   # against an independent DLS (G3-I runtime half), judgement vs rank gates,

@@ -717,4 +717,16 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   return plan;
 }
 
+std::unique_ptr<GridCatchSearch> MakeGridCatchSearch(const GridCatchSearchModel& model,
+                                                     const GridCatchSearchConstants& constants,
+                                                     const PlannerParams& params,
+                                                     const CatchPoseIkOptions& ik,
+                                                     GridCatchSearch::ClockFn clock) {
+  auto search = std::make_unique<GridCatchSearch>();
+  if (!search->Configure(model, constants, params, ik, clock)) {
+    return nullptr;
+  }
+  return search;
+}
+
 }  // namespace rtc::catching

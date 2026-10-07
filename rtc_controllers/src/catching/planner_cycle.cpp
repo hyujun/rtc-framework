@@ -6,8 +6,6 @@
 
 #include <cmath>
 #include <memory>
-#include <string>
-#include <utility>
 
 namespace rtc::catching {
 
@@ -17,43 +15,6 @@ bool PlannerCycle::Bind(const PlannerCycleIo& io) noexcept {
   bound_ = io.traj != nullptr && io.cov != nullptr && io.rt != nullptr && io.plan != nullptr;
   io_ = bound_ ? io : PlannerCycleIo{};
   return bound_;
-}
-
-bool PlannerCycle::ConfigureGridCatchSearch(const GridCatchSearchModel& model,
-                                            const GridCatchSearchConstants& constants,
-                                            const CatchPoseIkOptions& ik) {
-  search_.reset();
-  auto search = std::make_unique<GridCatchSearch>();
-  if (!search->Configure(model, constants, params_, ik, clock_)) {
-    return false;
-  }
-  search_ = std::move(search);
-  return true;
-}
-
-bool PlannerCycle::ConfigureMpcSegmentPlanner(const MpcSegmentPlannerModel& model,
-                                              const MpcSegmentPlannerConstants& consts,
-                                              std::string* error) {
-  // The one in place goes first: its cores are not kept alive beside the new
-  // ones, and a failed configure leaves none installed.
-  ClearSegmentPlanner();
-  auto planner = std::make_unique<MpcSegmentPlanner>();
-  if (!planner->Configure(model, consts, params_.mpc_segment, clock_, error)) {
-    return false;
-  }
-  mpc_segment_planner_ = planner.get();
-  segment_planner_ = std::move(planner);
-  return true;
-}
-
-const MpcSegmentPlanner& PlannerCycle::MpcSegmentPlannerForDiagnostics() const noexcept {
-  if (mpc_segment_planner_ != nullptr) {
-    return *mpc_segment_planner_;
-  }
-  // What a cycle with no MpcSegmentPlanner of its own has always answered: one
-  // that is not configured.
-  static const MpcSegmentPlanner unconfigured;
-  return unconfigured;
 }
 
 BallPrediction PlannerCycle::FollowedBall(const PlannerRtState& rt) const noexcept {

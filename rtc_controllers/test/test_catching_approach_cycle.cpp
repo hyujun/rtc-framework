@@ -25,6 +25,7 @@
 // pins an RT that reports neither.
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/types/types.hpp"
+#include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
@@ -52,6 +53,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -197,6 +199,13 @@ struct Rig {
   rtc::catching::CatchPoseIkOptions ik_options{};
   rtc::catching::MpcSegmentPlannerModel mpc_segment_model{};
   rtc::catching::MpcSegmentPlannerConstants mpc_segment_consts{};
+  // The clock the objects are built with — the cycle's own, which installing
+  // them hands them again.
+  rtc::catching::CatchSearch::ClockFn clock{&rtc::SteadyNowNs};
+  // The planner InstallPlanners last installed, for the tests that read what
+  // its cores were handed. Owned by the cycle: good until the next
+  // InstallPlanners, ClearSegmentPlanner or InstallSegmentPlanner.
+  const rtc::catching::MpcSegmentPlanner* mpc_segment_planner{nullptr};
 
   explicit Rig(double catch_err_max = 0.02, bool bind_segment = true, double w_perp = 0.0,
                bool fake_clock = false) {
@@ -253,7 +262,8 @@ struct Rig {
     d.w_perp = w_perp;
     cycle.Configure(params);
     if (fake_clock) {
-      cycle.SetClock(&SuiteClock);  // before the search and the MPC segment planner take it
+      clock = &SuiteClock;
+      cycle.SetClock(clock);
     }
 
     rtc::catching::GridCatchSearchModel pm;
@@ -301,14 +311,27 @@ struct Rig {
     io = rtc::catching::PlannerCycleIo{&boxes.traj, &boxes.cov, &boxes.rt, &boxes.plan,
                                        bind_segment ? &boxes.segment : nullptr};
     EXPECT_TRUE(cycle.Bind(io));
-    EXPECT_TRUE(cycle.ConfigureGridCatchSearch(pm, pc, ik));
-    std::string err;
-    EXPECT_TRUE(cycle.ConfigureMpcSegmentPlanner(dm, dc, &err)) << err;
     search_model = pm;
     search_consts = pc;
     ik_options = ik;
     mpc_segment_model = dm;
     mpc_segment_consts = dc;
+    InstallPlanners();
+  }
+
+  // Build the search and the MPC segment planner from what the rig holds and
+  // install them in the cycle, each in place of the one there.
+  void InstallPlanners() {
+    auto search =
+        rtc::catching::MakeGridCatchSearch(search_model, search_consts, params, ik_options, clock);
+    EXPECT_NE(search, nullptr);
+    cycle.InstallSearch(std::move(search));
+    std::string err;
+    auto planner = rtc::catching::MakeMpcSegmentPlanner(mpc_segment_model, mpc_segment_consts,
+                                                        params.mpc_segment, clock, &err);
+    EXPECT_NE(planner, nullptr) << err;
+    mpc_segment_planner = planner.get();
+    cycle.InstallSegmentPlanner(std::move(planner));
   }
 
   // Configure again a cycle that has already run, with what it was built
@@ -320,10 +343,7 @@ struct Rig {
     EXPECT_TRUE(cycle.Bind(io));
     cycle.ClearSegmentPlanner();
     EXPECT_FALSE(cycle.SegmentPlannerConfigured());
-    EXPECT_TRUE(cycle.ConfigureGridCatchSearch(search_model, search_consts, ik_options));
-    std::string err;
-    EXPECT_TRUE(cycle.ConfigureMpcSegmentPlanner(mpc_segment_model, mpc_segment_consts, &err))
-        << err;
+    InstallPlanners();
   }
 
   // The ball passes the catch point 0.7 s after the first snapshot; later
@@ -350,8 +370,7 @@ struct Rig {
 
 std::string Why(const PlannerCycleRecord& r) {
   return std::string(rtc::catching::CycleOutcomeName(r.outcome)) + " / decel " +
-         SegmentOutcomeName(r.segment.outcome) + " / " +
-         rtc::catching::MpcSegmentCoreReasonName(r.segment.core_reason);
+         SegmentOutcomeName(r.segment.outcome) + " / " + r.segment.core_reason_name;
 }
 
 // ── The pair ─────────────────────────────────────────────────────────────────
@@ -599,8 +618,7 @@ TEST(ApproachCycle, TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch) {
     auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/true,
                                    /*w_perp=*/2000.0, /*fake_clock=*/true);
     ASSERT_TRUE(r->cycle.SegmentPlannerConfigured());
-    const rtc::catching::MpcSegmentPlanner& mpc_segment_planner =
-        r->cycle.MpcSegmentPlannerForDiagnostics();
+    const rtc::catching::MpcSegmentPlanner& mpc_segment_planner = *r->mpc_segment_planner;
     DriftingCatch drift(*r);
     r->StartTrajectory();
     const PlannerCycleRecord first = r->Wake();

@@ -103,6 +103,7 @@
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/segment_planner.hpp"
+#include "rtc_controllers/catching/segment_ring.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"  // CovarianceSnapshot
 #include "rtc_controllers/catching/trajectory.hpp"
 
@@ -124,98 +125,18 @@ namespace rtc::catching {
 /// tick stalled; 50 ms is one default planner wake timeout, 25 ticks at 2 ms.
 inline constexpr std::int64_t kMpcSegmentMaxRtStateAgeNs = 50'000'000;
 
-/// What one segment step did (the planner events CSV's segment columns). The CSV
-/// writes the NAME (SegmentOutcomeName), never the value: the values carry no
-/// meaning outside a build and move when an enumerator is added or removed.
-enum class SegmentOutcome : std::uint8_t {
-  kOff = 0,  ///< not attempted: not configured, or not a mode that plans a segment
-  kNoState,  ///< no followed plan / t_c, unseeded command, or a size mismatch
-  /// The RT's report is older than kMpcSegmentMaxRtStateAgeNs (or from the
-  /// future): what it reports may no longer be what the arm does (an RT stall).
-  kStaleState,
-  kUpToDate,          ///< the published segment already starts at this t_eff or later
-  kPastReplanWindow,  ///< t_eff beyond t_c + k_max·Δ_s (MD-31)
-  kInputNonFinite,    ///< the predicted x₀ (w_⊥ > 0: or the ball's speed) is not finite
-  kSolveFailed,       ///< the core refused or the QP failed (core_reason)
-  kBudget,            ///< solved after budget_s
-  kLate,              ///< t_eff passed while solving
-  kSlack,             ///< slack non-finite or over its threshold (MD-33)
-  kReady,             ///< publishable; the cycle's re-check decides
-  kPublished,         ///< stored (set by the cycle)
-  kSuperseded,        ///< the trial or the followed plan moved during the solve (cycle)
-  // E1-F08 (#661). A solved segment whose packed form fails the terminal-rest
-  // or node check is kSolveFailed with core_reason kNone.
-  kNotAtRest,    ///< first solve: max |q̇_cmd| above approach.rest_tol
-  kTooLate,      ///< first solve: not even one pre-catch interval fits before t_c
-  kNotFollowed,  ///< replan: no segment of ours the RT reports pending or following
-  kNoBall,       ///< no usable ball at t_c (pre-catch point); w_⊥ > 0: no stop-path line
-  kCatchError,   ///< catch-node position error not finite or over catch_pos_err_max
-  kSpeed,        ///< a between-node velocity extremum over q̇_max
-  // kNoBall is NOT pre-catch only. With `cost.w_perp` > 0 it is also what a
-  // solve reports when it has no stop-path line to run on (header note): the
-  // first solve or a pre-catch replan whose ball is slower than v_eps at t_c,
-  // and a STOP grid point — at or after the catch, where no ball is read at
-  // all — whose source segment carries no line. kInputNonFinite likewise
-  // covers a ball speed that is not finite.
-};
+/// Record the solving core's reason in `rec`: its code and the name the core
+/// spells it by (SegmentRecord::core_reason / core_reason_name, RT-safe).
+inline void SetCoreReason(SegmentRecord& rec, MpcSegmentCoreReason reason) noexcept {
+  rec.core_reason = static_cast<std::uint8_t>(reason);
+  rec.core_reason_name = MpcSegmentCoreReasonName(reason);
+}
 
-[[nodiscard]] const char* SegmentOutcomeName(SegmentOutcome o) noexcept;
-
-/// Which solve a record describes (E1-F08).
-enum class SegmentKind : std::uint8_t {
-  kNone = 0,  ///< no solve was chosen (the record's default)
-  kFirst,     ///< the first segment of a plan, solved with the search (MD-56)
-  kSame,      ///< a pre-catch grid point the source already starts at (MD-58)
-  kAdvance,   ///< a later pre-catch grid point
-  kStop,      ///< a stop core: the catch node or a post-catch grid point
-};
-
-[[nodiscard]] const char* SegmentKindName(SegmentKind k) noexcept;
-
-struct SegmentRecord {
-  SegmentOutcome outcome{SegmentOutcome::kOff};
-  MpcSegmentCoreReason core_reason{MpcSegmentCoreReason::kNone};
-  /// Grid index of node 0: t_eff = t_c + k·Δ_s for a stop grid point, −n_pre
-  /// for a pre-catch one (the CSV's segment_k).
-  std::int32_t k{-1};
-  std::int32_t n_nodes{0};
-  std::uint32_t segment_seq{0};  ///< the published segment's seq (cycle)
-  bool x0_clamped{false};        ///< the start state (q or q̇) was projected into the box
-  bool x0_from_segment{false};   ///< replan: x₀ came from a segment the RT reports
-  bool presolved{false};         ///< no reference: kinematic pre-solve + solve
-  bool cold_retry{false};        ///< a stop core's reference was refused, re-solved without it
-  std::int32_t iterations{0};
-  std::int32_t qp_status{-1};
-  std::int64_t solve_ns{0};    ///< solve start → solve end (the budget's measure)
-  std::int64_t publish_ns{0};  ///< the stored segment's stamp (cycle); 0 when not stored
-  double slack_max{std::numeric_limits<double>::quiet_NaN()};
-  double slack_terminal_max{std::numeric_limits<double>::quiet_NaN()};
-  double tau_ratio_max{std::numeric_limits<double>::quiet_NaN()};
-
-  SegmentKind kind{SegmentKind::kNone};
-  bool cold_start{false};      ///< the core's main QP started from zero
-  bool solver_retried{false};  ///< the core's own warm → cold re-run (cold_retried)
-  /// First solve: the reference's target was outside the core's position
-  /// box (clamped), or its minimum-jerk speed over 0.9·η_v·q̇_max (scaled).
-  bool ref_clamped{false};
-  bool ref_scaled{false};
-  double ref_scale{std::numeric_limits<double>::quiet_NaN()};      ///< smallest per-joint factor
-  double ref_shortfall{std::numeric_limits<double>::quiet_NaN()};  ///< largest |d| cut [rad]
-  double x0_speed{std::numeric_limits<double>::quiet_NaN()};       ///< first solve: max |q̇_cmd|
-  /// Catch node at the solution (FK), when the solve ran the catch terms.
-  double catch_pos_err{std::numeric_limits<double>::quiet_NaN()};   ///< [m]
-  double catch_axis_err{std::numeric_limits<double>::quiet_NaN()};  ///< [rad]
-  double catch_gamma{std::numeric_limits<double>::quiet_NaN()};
-  /// ‖v̂_b − J_v q̇‖ at the catch node [m/s], and the core's velocity slack s_v
-  /// (fraction of v_rel_allow, linear model; 0 when the slack row is off).
-  double catch_v_rel{std::numeric_limits<double>::quiet_NaN()};
-  double slack_v{std::numeric_limits<double>::quiet_NaN()};
-  /// max over nodes and between-node extrema of |q̇|/q̇_max.
-  double speed_ratio_max{std::numeric_limits<double>::quiet_NaN()};
-  bool w_p_fallback{false};  ///< W_p was the constant w_const·I (no usable Σ_p)
-  double w_delta_scale{std::numeric_limits<double>::quiet_NaN()};
-  std::uint32_t source_seq{0};  ///< replan: the segment x₀ and the reference came from
-};
+/// The core reason a record written by this planner carries (RT-safe). Only
+/// meaningful for a record this planner filled.
+[[nodiscard]] inline MpcSegmentCoreReason MpcCoreReasonOf(const SegmentRecord& rec) noexcept {
+  return static_cast<MpcSegmentCoreReason>(rec.core_reason);
+}
 
 /// The arm the MPC segment planner plans for (configure time, from the binding).
 /// Every array is MODEL order, `nv` entries.
@@ -478,17 +399,6 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   void PackSegment(const PlannerRtState& rt, std::uint64_t track_generation, std::uint32_t plan_id,
                    std::int64_t t_c, std::int64_t t_eff, int n_pre, int k0, int n_total,
                    const MpcSegmentCoreResult& r, SegmentSnapshot& out) const noexcept;
-  [[nodiscard]] const SegmentSnapshot* FindInRing(std::uint32_t seq) const noexcept;
-
-  // The ring's entries for the two segments `rt` reports — null where it
-  // reports none, the ring is another plan's, or the seq is not in it.
-  // Pointers INTO the ring: good until the next NotePublished.
-  struct RingReport {
-    const SegmentSnapshot* pending{nullptr};
-    const SegmentSnapshot* following{nullptr};
-  };
-
-  [[nodiscard]] RingReport ReportedInRing(const PlannerRtState& rt) const noexcept;
   [[nodiscard]] bool ColdStartFor(bool catch_core, int index, std::int64_t t_eff,
                                   std::uint32_t plan_id, std::int64_t t_c) const noexcept;
   // `ok` false forgets the last solve: a call the core refused before its QP
@@ -519,17 +429,6 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   std::int64_t warmup_max_ns_{0};
   std::int64_t warmup_total_ns_{0};
 
-  // Published segments of the plan in `ring_plan_id_` / `ring_t_c_ns_`, oldest
-  // first. A segment the RT last reported pending or following is never the
-  // one evicted (MD-58): a burst of same-point re-solves cannot push it out.
-  static constexpr int kRingSize = 8;
-  std::array<SegmentSnapshot, kRingSize> ring_{};
-  int ring_n_{0};
-  std::uint32_t ring_plan_id_{0};
-  std::int64_t ring_t_c_ns_{0};
-  std::uint32_t reported_pending_seq_{0};
-  std::uint32_t reported_active_seq_{0};
-
   // The last solve, for the cold-start rule: a new plan, another core or
   // another grid point is a new problem.
   bool last_solve_valid_{false};
@@ -548,14 +447,26 @@ class MpcSegmentPlanner final : public SegmentPlanner {
   };
 
   bool perp_on_{false};
-  // The line of each published segment, beside `ring_` (same index, moved
-  // with it on eviction): a catch-core segment's own, a stop segment's
-  // inherited from its source. A stop core solves on its source's entry.
-  std::array<StopLine, kRingSize> ring_line_{};
+  // The published segments of the followed plan (segment_ring.hpp), each with
+  // its stop-path line: a catch-core segment's own, a stop segment's inherited
+  // from its source. A stop core solves on its source's entry.
+  SegmentRing<StopLine> ring_{};
   // The line of the solve that just came out publishable, for the
   // NotePublished that follows it; dropped by the next solve and by
   // NotePublished itself, so it can only ever go to that solve's segment.
   StopLine ready_line_{};
 };
+
+/// @brief A new, configured MpcSegmentPlanner (non-RT).
+///
+/// The one place the configure path builds this planner, so the integration
+/// package and the tests build it the same way; the result is handed to
+/// PlannerCycle::InstallSegmentPlanner.
+/// @return nullptr when Configure refuses, with `error` (if given) naming the
+///         cause.
+[[nodiscard]] std::unique_ptr<MpcSegmentPlanner> MakeMpcSegmentPlanner(
+    const MpcSegmentPlannerModel& model, const MpcSegmentPlannerConstants& consts,
+    const MpcSegmentPlannerParams& params, MpcSegmentPlanner::ClockFn clock,
+    std::string* error = nullptr);
 
 }  // namespace rtc::catching

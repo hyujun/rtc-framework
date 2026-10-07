@@ -7,8 +7,8 @@
 // search runs behind it is the configuration's choice — a wake calls this
 // interface and nothing else.
 //
-// The one implementation today is GridCatchSearch (grid_catch_search.hpp): a grid
-// over the vision samples with a closed-form γ profile.
+// The implementations are the grid search (a grid over the vision samples with
+// a closed-form γ profile) and the NLP search.
 //
 // TWO THINGS CROSS BETWEEN THE SEARCH AND THE SEGMENT PLANNER, both through the
 // cycle, neither interface knowing the other's implementation:
@@ -21,16 +21,18 @@
 //     solve the same problem again can publish it instead.
 //
 // ── Contract ──────────────────────────────────────────────────────────────────
-//  • THREAD. Every member below is called from PlannerCycle::Run, on the
-//    planner thread — which may run SCHED_FIFO (D-7a). RT-1~10 apply to all of
-//    them: no allocation, no lock, no log, no throw. An implementation sizes
-//    its buffers when it is built and configured, on the non-RT configure
-//    path, before it is installed (PlannerCycle::InstallSearch).
+//  • THREAD. Every member below except SetClock is called from
+//    PlannerCycle::Run, on the planner thread — which may run SCHED_FIFO (D-7a). RT-1~10 apply to
+//    all of them: no allocation, no lock, no log, no throw. An implementation sizes its buffers
+//    when it is built and configured, on the non-RT configure path, before it is installed
+//    (PlannerCycle::InstallSearch).
 //  • ONE CALLER. The planner thread is the only caller once the object is
-//    installed; nothing here is synchronised.
-//  • CLOCK. A search that measures its own budget takes its clock when it is
-//    configured. The cycle does not hand it one later (PlannerCycle::SetClock
-//    reaches the segment planner only).
+//    installed; nothing here is synchronised. SetClock is called while that
+//    thread is not running.
+//  • CLOCK. A search that measures its own budget is handed the cycle's clock
+//    when the cycle installs it and again on every PlannerCycle::SetClock
+//    (SetClock below), so the budget is measured on the axis the cycle stamps
+//    `publish_ns` on.
 //  • SearchStats is the record a wake leaves (search_stats.hpp). An
 //    implementation fills what it has and leaves the rest at the default. The
 //    cycle reads ONE field of it back: `publish` (see Plan).
@@ -79,7 +81,15 @@ static_assert(std::is_trivially_copyable_v<CatchSolution>);
 /// the thread and RT contract every override is held to.
 class CatchSearch {
  public:
+  using ClockFn = std::int64_t (*)() noexcept;
+
   virtual ~CatchSearch() = default;
+
+  /// @brief Replace the steady clock the search measures its budget on
+  ///        (non-RT; the planner thread is not running). A null `clock` is
+  ///        ignored. Called by the cycle on install and on
+  ///        PlannerCycle::SetClock.
+  virtual void SetClock(ClockFn clock) noexcept = 0;
 
   /// @brief One search (RT-safe).
   /// @param traj the trajectory snapshot this wake plans against — already

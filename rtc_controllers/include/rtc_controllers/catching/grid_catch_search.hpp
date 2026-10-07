@@ -55,6 +55,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 
 namespace rtc::catching {
@@ -136,8 +137,6 @@ enum RankGateBit : std::uint16_t {
 
 class GridCatchSearch final : public CatchSearch {
  public:
-  using ClockFn = std::int64_t (*)() noexcept;
-
   /// Non-RT. Size every buffer. False (and unconfigured) if the model binding
   /// is unusable — no handle, nv outside (0, kMaxPlanNv], a wait pose that is
   /// not one entry per arm joint.
@@ -145,6 +144,14 @@ class GridCatchSearch final : public CatchSearch {
                  const PlannerParams& params, const CatchPoseIkOptions& ik, ClockFn clock);
 
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
+
+  /// Replace the steady clock the search measures its budget on (non-RT; the
+  /// planner thread is not running). A null `clock` is ignored.
+  void SetClock(ClockFn clock) noexcept override {
+    if (clock != nullptr) {
+      clock_ = clock;
+    }
+  }
 
   /// One search. RT-safe. `rt` gives the current command and the plan the RT
   /// follows; `now` is the planning 'now' on the steady axis. `arm` is NOT
@@ -248,5 +255,15 @@ class GridCatchSearch final : public CatchSearch {
   std::size_t published_next_{0};
   Current current_{};
 };
+
+/// @brief A new, configured GridCatchSearch (non-RT).
+///
+/// The one place the configure path builds this search, so the integration
+/// package and the tests build it the same way; the result is handed to
+/// PlannerCycle::InstallSearch.
+/// @return nullptr when Configure refuses the binding.
+[[nodiscard]] std::unique_ptr<GridCatchSearch> MakeGridCatchSearch(
+    const GridCatchSearchModel& model, const GridCatchSearchConstants& constants,
+    const PlannerParams& params, const CatchPoseIkOptions& ik, GridCatchSearch::ClockFn clock);
 
 }  // namespace rtc::catching
