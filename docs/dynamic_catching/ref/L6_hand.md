@@ -74,7 +74,7 @@ $T_{close,e2e}$ 는 **자세 쌍의 성질**이다 (이동하는 관절 집합�
 시간 비교는 L0 §4.5 규약을 따른다. 손 명령에는 팔 지연 선행 ($T_{arm}$) 을 적용하지 않는다 — 비교 대상은 **now_real** (매 tick steady 실측) 이다.
 
 - Preshape: **시각 조건이 아니다.** 팔이 `wait_pose` 에 도착하면 (또는 재무장으로 `Ready` 에 놓이면) 손은 즉시 `q_pre` 를 지시받는다 — ARMED~COMMITTED 내내 그 상태가 유지된다 (L7 §4.1). `q_open` 은 팔이 homing 중일 때만 쓴다.
-- Close: $t_{cmd}=t_c-T_{close,lead}$. 시퀀서가 **동결된** $t_c$ 와 프로파일에서 계산하는 단일 출처다 (계획기의 $t_{cmd}$ 는 기록일 뿐 입력이 아니다). 시퀀서는 COMMITTED 에서 **한 번** 이 시각을 정하고 갱신하지 않는다 — $t_c$ 가 그 뒤 예측 갱신으로 움직여도 지령 시각은 따라가지 않는다 (formulation ball_catching_inverse_dynamics_mpc.md §12.7 의 M2 — E1-F17 이후).
+- Close: $t_{cmd}=t_c-T_{close,lead}$. 시퀀서가 **동결된** $t_c$ 와 프로파일에서 계산하는 단일 출처다 (계획기의 $t_{cmd}$ 는 기록일 뿐 입력이 아니다). 시퀀서는 COMMITTED 진입에서 이 시각으로 무장한다. `closed_form` 에서는 그것으로 끝이다 — 한 번 정하고 갱신하지 않는다. 팔이 구간 계획기 (`mpc` · `mpc_docking`) 의 구간을 따를 때는 폐쇄가 지령될 때까지 아래 "commit 뒤의 지령 시각" 이 옮긴다.
 
 **손의 시간은 둘이고 서로 다른 일을 한다.**
 
@@ -88,6 +88,15 @@ $T_{close,e2e}$ 는 **자세 쌍의 성질**이다 (이동하는 관절 집합�
 **$t_c$ 의 축.** 시퀀서가 lead 를 빼는 $t_c$ 가 팔의 운동에서 어느 순간인가는 **팔이 따르는 구간을 만든 계획기**가 정한다 — plan 을 낸 탐색이 아니다. `closed_form` 과 `mpc` 구간 계획기는 $t_c$ 에 catch frame 의 원점을 공 위에 놓으므로 (`grid` 든 `nlp` 든) `T_close_lead` 를 적힌 그대로 쓴다. `mpc_docking` 구간 계획기는 $t_c$ 를 공이 **입구 평면** (원점 앞 `robot.hand.docking.s_ent`) 을 지나는 순간에 두므로 컨트롤러가 configure 에서 한 번 환산한다.
 $$T_{close,lead}^{(t_c)}=T_{close,lead}-\frac{s_{ent}}{c_{ref}},\qquad c_{ref}=-\nu_{ref,z}$$
 ($c_{ref}$ 는 그 코어의 기준 접근 속력 `core.catch.nu_ref`). 시퀀서 · RT 의 $t_{cmd}$ (접촉 판정 창) · 탐색이 plan 에 적는 $t_{cmd}$ 가 이 값 하나를 쓴다 (mirror `hand.T_close_lead`, `hand.T_close_lead_from_t_c`). **docking 코어는 따로다**: `nlp` 탐색과 `mpc_docking` 의 코어는 포구 노드가 언제나 입구 평면 통과이므로, 어느 구간 계획기 아래에서든 자기 기준 속력으로 환산한 lead 로 명목 폐쇄 순간 $\delta_0=T_{close,e2e}-(T_{close,lead}-s_{ent}/c_{ref})$ 을 받는다 (mirror `hand.docking.closure.delta_0`). 환산한 lead 가 음수면 (명령이 입구 통과 뒤가 된다) park 한다 (`kMpcDockingInvalid`). `nlp` × `mpc` 는 그래서 탐색의 모형 (입구 통과가 $t_c$) 과 실행 (원점 도달이 $t_c$) 이 $s_{ent}/c_{ref}$ 만큼 다른 조합이다 — 탐색의 해를 그대로 실행하는 것은 `nlp` × `mpc_docking` 뿐이다.
+
+**commit 뒤의 지령 시각 (구간 계획기).** 동결은 $t_c$ 를 묶지만 공의 예측은 그 뒤에도 갱신된다. 팔이 구간을 따르는 mode 에서는 `COMMITTED` 동안, 폐쇄가 지령되기 전까지, 공이 **lead 를 센 그 평면** 을 지나는 시각 $\hat t_x$ 를 다시 풀어 지령 시각을 옮긴다 (formulation ball_catching_inverse_dynamics_mpc.md §12.7 의 M2).
+$$t_{cmd}=\hat t_x-T_{close,lead}^{(t_c)}$$
+- **어느 평면인가.** 위 "$t_c$ 의 축" 과 하나의 규칙이다 — 그 계획기의 $t_c$ 가 공을 두는 곳. `mpc` 는 catch frame 의 원점을 지나는 평면 ($s=0$), `mpc_docking` 은 입구 평면 ($s=s_{ent}$) 이고, 둘 다 catch frame 의 $z$ 축에 수직이다. 평면과 lead 는 한 쌍이다: 입구 축으로 환산한 lead 를 쓰는 구성만 입구 평면을 쓰고, 그 밖은 원점 축의 lead 와 $s=0$ 이다.
+- **무엇으로 푸는가.** 손은 RT 가 들고 있는 구간 (그 시각에 팔이 있을 구간) 위에, 공은 동결된 track 의 가장 새 예측 위에 놓는다. 식 · 풀이 · 창은 formulation §17.16 이 갖는다.
+- **언제 푸는가.** `COMMITTED` 의 tick 가운데 입력이 바뀐 tick 에만 — 동결된 track 의 새 예측이 들어왔거나, 손을 읽는 구간이 바뀐 tick: 따르는 구간이 바뀌었거나, 대기 슬롯에 구간이 들어오거나 바뀌었거나, 대기 구간이 따라지지 못하고 버려진 tick (전환 게이트의 거부 · plan 불일치 · 샘플 실패). 풀이는 대기 구간을 그 node 0 부터 읽으므로 대기 슬롯의 변화도 입력의 변화다.
+- **실패한 풀이.** 통과 시각을 얻지 못하면 (그 시각의 공이 예측 밖이거나 손이 구간 밖, 동결된 $t_c$ 에서 포구 전 간격 하나보다 먼 통과, 수렴하지 않음) 지령 시각은 **그대로다** — 처음에는 $t_c-T_{close,lead}^{(t_c)}$, 한 번 옮긴 뒤에는 마지막으로 얻은 값.
+- **지나간 시각.** 옮긴 $t_{cmd}$ 가 이미 지났으면 그 tick 에 폐쇄를 지령한다. 지령한 뒤에는 옮기지 않는다 (`HandSequencer::Retime` 은 commit 과 폐쇄 지령 사이에서만 듣는다).
+- **함께 움직이는 것 · 움직이지 않는 것.** RT 가 가진 $t_{cmd}$ (접촉 판정 창의 시작, L7 §4.4) 가 같은 값으로 옮겨진다. `DECEL` 진입 ($now_{lead}\ge t_c$) 과 판정 창의 끝은 동결된 $t_c$ 그대로다 — 팔의 구간 격자가 그 $t_c$ 에 닻 내려 있다.
 
 RT 틱 $h$ 단위로만 명령할 수 있으므로 $t_{cmd}$ 를 넘지 않는 마지막 틱이 아니라 **처음으로 now_real ≥ $t_{cmd}-h/2$ 인 틱**에서 명령한다 (가장 가까운 틱으로 반올림, `HandCommandDueRounded` — L7 §4.1 R-CLOSE). 오차는 $\pm h/2$ 의 영평균이다. $h$ 는 `ControllerState::dt` (= 1/`control_rate`, 500 Hz 고정이 아니다) 이고, G6-A 는 실측 tick 간격으로 판정한다.
 
@@ -164,7 +173,7 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 
 ### 5.3 시퀀서
 
-- 입력: $t_c$ (동결된 값), now_real, $h$ = `ControllerState::dt`, 손 device 측정 관절 위치 · 속도, L7 지시 (`Home` / `Ready` / `Commit(t_c)` / `Abort` / `Release`)
+- 입력: $t_c$ (동결된 값), now_real, $h$ = `ControllerState::dt`, 손 device 측정 관절 위치 · 속도, L7 지시 (`Home` / `Ready` / `Commit(t_c)` / `Retime(t_x)` / `Abort` / `Release`)
 - 출력: 손 device slot (device 1) 의 position 목표 (`devices[1].commands`, `CommandType::kPosition`), 현재 phase, $\rho(t)$, `close_issued`, `at_target` (`q_tol` · `qd_tol` 판정), 타임아웃 플래그
 - phase: Open, Preshape, Close, Hold, Release (msg 상수 그대로)
 - 포구 컨트롤러 `Compute` 안에서 매 tick 호출 (RT). 진단은 SPSC 로 aux drain
@@ -172,7 +181,7 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 
 전이 규칙 (한 tick 에 최대 한 번 — 이번 tick 에 들어간 phase 는 아직 명령되지 않았으므로 판정하지 않는다):
 - `Open → Preshape`: 팔이 `wait_pose` 에 도착했다는 L7 지시 (`Ready`) 에서 — **시각 조건이 아니다**. `Ready()` 는 아직 닫히지 않은 commit 을 취소한다
-- `Preshape → Close`: `Commit(t_c)` 가 무장된 뒤 `now_real ≥ t_cmd-h/2` (`HandCommandDueRounded`, §4.3), **COMMITTED 에서만**. commit 은 시행당 한 번 (동결된 $t_c$ 는 하나)
+- `Preshape → Close`: `Commit(t_c)` 가 무장된 뒤 `now_real ≥ t_cmd-h/2` (`HandCommandDueRounded`, §4.3), **COMMITTED 에서만**. commit 은 시행당 한 번 (동결된 $t_c$ 는 하나). 무장된 $t_{cmd}$ 는 `Retime(t_x)` 가 $t_x-T_{close,lead}$ 로 옮긴다 (§4.3 "commit 뒤의 지령 시각") — commit 뒤 · 폐쇄 지령 전에만 듣고, 이미 지난 시각도 받는다 (다음 `Update` 가 지령한다 — 컨트롤러는 같은 tick 에 `Update` 를 부른다)
 - `Close → Hold`: $\rho\ge\eta$ 또는 `T_close_timeout` 경과 (타임아웃이면 플래그). 유지 목표는 `hold.mode` 에 따른다 (§4.4)
 - `Hold → Release`: L7 지시 (시각은 L7 §4.8 "RETREAT 순서" — 판정과 무관하게 팔이 대기 자세에 도착한 뒤. RETREAT 복귀 중에는 손을 열지 않는다)
 - `Release` 목표는 **`q_pre`** 다 (`q_open` 은 homing 전용) — `at_target` (`q_tol`, `qd_tol`) 이면 `Preshape` 로 복귀해 다음 시행의 ARMED 준비를 마친다. 도달을 기다리는 쪽은 L7 이다: `RETREAT` 의 release 뒤 `T_release_timeout` 안에 도달하지 못하면 L7 이 `HAND_TIMEOUT` 으로 `IDLE` 에 가고 disarm 한다 (시퀀서 자체는 시계를 추가로 갖지 않는다)
@@ -236,5 +245,4 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 - **p1b 의 폐쇄 속도** — $T_{close,e2e}$ 가 **최소 비행시간에 그대로 들어간다.** 폐쇄 병목은 가장 먼 거리를 가는 관절 (엄지 `thumb_cmc_fe`) 의 이동량이므로 자세를 다시 찾을 때 $T_{close}$ 를 목적함수에 넣는다. p1b $d_{eff}$ 의 포켓 깊이 쪽 값은 스캔 상한에 걸린 하한값이다
 - **자세 탐색 도구는 저장소에 없다** (작업용으로만 있었다). 시각 발동 fly-in 과 열린 손의 접촉 스캔은 `integrated_bringup/tools/docking_ident` 에 있다 (`mpc_docking` 의 입력 식별용 — 로봇 profile 이름만 받는다). 자세를 다시 찾거나 `g1_p1b` 의 손을 식별하려면 탐색 쪽이 다시 필요하다 — 편입이 후속 항목이다
 - **폐쇄 창 · lateral 집합 · 속도 집합은 sim 식별이다 (provisional).** 값은 §4.6 과 `robot.hand.docking` 에 있고 실기의 손에서 다시 재야 한다 — sim 손의 흡수 · 반발은 실기의 것이 아니다. lateral 집합이 작다 (`ur5e_p1b` 4 셀, `iiwa7_leap` 43 셀이 흩어짐) 는 것은 재측정한 그대로이며 규칙을 느슨하게 해서 키운 것이 아니다. `T_close_lead` 도 같은 식별에서 나온 설계값이라 provisional 이다
-- **closure 지령 시각의 갱신 (ball_catching_inverse_dynamics_mpc.md §12.7 의 M2) 은 구현하지 않았다** (E1-F17 이후). 시퀀서는 COMMITTED 에서 $t_{cmd}=t_c-T_{close,lead}$ 를 한 번 정한다
 - TBD-HAND-03 지문 잡음 (실기 σ) — 부호 · frame 은 닫혀 있다 (접촉 판정은 바이어스를 뺀 크기 $\Vert F-b\Vert$ 만 쓴다). sim 지문 lane 은 잡음이 0 이라 `NOT_EVALUATED(sim 무잡음)` 이고 값은 실기에서 잰다

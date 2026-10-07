@@ -138,7 +138,7 @@ flowchart TB
 | APPROACH – CLOSING 기준 | | L4 soft-catch DS 가 매 tick 생성 (γ profile 은 `PlanSnapshot`) | MPC 구간이 계획 (계획기 스레드) → 관절 노드 → RT 가 노드를 보간해 따르고 FK 로 손 pose 를 얻는다. **RT 는 soft-catch DS 를 돌리지 않는다** (DS 는 탐색의 후보 순위 rollout 에만 남는다) |
 | 포구 후 정지 (DECEL) | | TCP 직선 등감속 (L7 §4.3, 가상 감속 대상) | MPC 구간의 꼬리 (관절 공간) |
 | RT 의 공 샘플 | 지평 · stale 감독 (L7 §4.2) | 샘플 $(p,v,a)$ 를 L4 추종 대상으로 넘긴다 | 구간은 샘플을 읽지 않는다 (L2 §5.2) |
-| 구간 · plan 교체 | | $e_d$ 점프 교체 (L3 §4.7) | 구간 교체 gate (`planner.segment.mpc.switch_margin`) — 탐색은 구간을 따르는 동안에도 돌지만 plan 의 교체는 게시하지 않는다 (RT 가 교체 쌍을 받지 않는다, E1-F17) |
+| 구간 · plan 교체 | | $e_d$ 점프 교체 (L3 §4.7) | 구간 교체 gate (`planner.segment.mpc.switch_margin`) — 탐색은 구간을 따르는 동안에도 돌고, plan 의 교체는 그 첫 구간과의 쌍으로 게시돼 RT 가 그 구간의 node 0 에서 같은 gate 를 지나 함께 바꾼다 (L7 §4.3a) |
 | CLIK 입력 | 손 pose · twist ff · 접근축 $a_d$ | 자세 목표는 대기 자세 | 자세 목표 $q_{ref}+\dot q_{ref}/K_n$ |
 | `ABORT_SAFE` | 원인과 무관하게 항상 관절공간 정지 (`RunJointSpaceAbort`) | | |
 

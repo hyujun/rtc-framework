@@ -1251,7 +1251,7 @@ $$
 | commit ($t_c-T_{freeze}$) 뒤 | 고정 (그 plan 의 값) | 손 폐쇄 명령 $t_{cmd}$ 가 나가기 전에 $t_c$ 가 고정돼야 한다. $T_{freeze}$ 는 손 폐쇄의 끝에서 끝 시간 + $T_{arm}$ + $h$ 이상이다 (컨트롤러의 설정 검사) |
 
 - 따라서 $t_c$ 가 실제로 움직이는 곳은 계획기 안의 후보 탐색이다 — 바깥 루프가 후보마다 팔 문제를 푸는 구성 (단일 팔의 NLP 탐색, G1) 이다.
-- 단일 팔 구성의 `mpc` planner 는 탐색이 $t_c$ 를 고르고 MPC 는 plan 채택 때부터 돈다. APPROACH 에서는 plan 을 바꾸지 않는다 ([#660](https://github.com/hyujun/rtc-framework/issues/660) 결정 9, 기능 [#661](https://github.com/hyujun/rtc-framework/issues/661)). 그래서 $\delta t_c=0$ 이다 (§1.6).
+- 단일 팔 구성의 `mpc` planner 는 탐색이 $t_c$ 를 고르고 MPC 는 plan 채택 때부터 돈다. APPROACH 에서 $t_c$ 가 바뀌는 길은 plan 과 그 첫 구간을 함께 바꾸는 교체 쌍뿐이고 (L7 §4.3a) 한 plan 의 구간 안에서는 $t_c$ 가 움직이지 않는다 ([#660](https://github.com/hyujun/rtc-framework/issues/660) 결정 9, 기능 [#661](https://github.com/hyujun/rtc-framework/issues/661)). 그래서 $\delta t_c=0$ 이다 (§1.6).
 - 채택 전 첫 풀이 ([#660](https://github.com/hyujun/rtc-framework/issues/660) 의 결정 8) 에서 $t_c$ 를 한 번 보정하는 것은 `[선택]` 이다. 그러면 plan 의 $t_c$ · $t_{cmd}$ · $p_c$ · $a_d$ 를 보정된 $t_c$ 에서 다시 채워 구간과 함께 게시해야 한다. 이 경우 탐색의 $q^\ast$ 와 $\gamma_f$ 는 옛 $t_c$ 의 값으로 남는다.
 
 *폐기한 대안.*
