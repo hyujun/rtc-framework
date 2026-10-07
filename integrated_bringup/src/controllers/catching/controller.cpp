@@ -1883,16 +1883,19 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
   }
   // The close instant follows the prediction until the close is commanded:
   // re-solved on the ticks whose inputs changed — a new snapshot of the
-  // committed track, or a change of the segments the hand is read on (one
-  // switched to, or one that entered the pending slot: the solve reads the
-  // pending one from its node 0 on). After the law (the switch is this
-  // tick's) and before the edge below reads the instant.
+  // committed track, or a change of the segments the hand is read on: one
+  // switched to, one that entered the pending slot (the solve reads the
+  // pending one from its node 0 on), or one that left it unfollowed. After
+  // the law (the switch is this tick's) and before the edge below reads the
+  // instant.
   using Event = CatchingDiagLogPod::SegmentEvent;
   const Event segment_event = tick_record_.segment_event;
+  const bool segments_changed =
+      segment_event == Event::kSwitched || segment_event == Event::kAdmitted ||
+      segment_event == Event::kReplaced || segment_event == Event::kGateRefused ||
+      segment_event == Event::kPlanMismatch || segment_event == Event::kSampleFailed;
   if (!closing && rtc::catching::FollowsSegments(segment_mode_) &&
-      !(hand_seq_enabled_ && hand_seq_.CloseIssued()) &&
-      (law_snapshot_new_ || segment_event == Event::kSwitched ||
-       segment_event == Event::kAdmitted || segment_event == Event::kReplaced)) {
+      !(hand_seq_enabled_ && hand_seq_.CloseIssued()) && (law_snapshot_new_ || segments_changed)) {
     RetimeClose(state);
   }
   // COMMITTED → CLOSING once the close command has gone out (R-CLOSE). The
