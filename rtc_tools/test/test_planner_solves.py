@@ -171,6 +171,24 @@ class TestSolveGroups:
         assert groups[1]["violation"] == {}
         assert groups[1]["qp_share_p50"] == pytest.approx(0.9)
 
+    def test_a_planner_that_fills_no_docking_block_has_no_qp_count(self):
+        # Its row has the count columns at 0 (the writer's value for a count
+        # nothing computed): that is not "0 QPs".
+        df = _frame(
+            [
+                (
+                    "first",
+                    "published",
+                    "none",
+                    7_000,
+                    {"segment_qp_solves": 0, "segment_qp_iterations": 0},
+                )
+            ]
+        )
+        group = ps.solve_groups(df)[0]
+        assert group["qp_solves_p50"] is None and group["qp_iterations_per_qp_p50"] is None
+        assert ps.format_solve_groups([group])[1].split()[6] == "-"
+
     def test_no_solve_no_group(self):
         assert ps.solve_groups(_frame([("none", "off", "none", 0)])) == []
         assert ps.solve_groups(pd.DataFrame({"wake_ns": [1]})) == []
