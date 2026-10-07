@@ -233,17 +233,19 @@ struct CatchingDiagLogPod {
   /// the lane's (an admission), which ran earlier in the tick.
   enum class SegmentEvent : std::uint8_t {
     kNone = 0,
-    kAdmitted = 1,      ///< a segment entered the pending slot
-    kDeferred = 2,      ///< admissible, left in the box: the slot holds another grid point (MD-37)
-    kWorkspace = 3,     ///< retired (MD-73): the RT no longer checks catch_box. Never written;
-                        ///< the number stays for the logs and tools that carry it
-    kSwitched = 4,      ///< the pending segment became the followed one
-    kGateRefused = 5,   ///< pending dropped: the continuity gate refused it (MD-39)
-    kPlanMismatch = 6,  ///< a segment does not end the followed plan (MD-35)
-    kSampleFailed = 7,  ///< a segment could not be sampled at now_lead + h
-    kNotDue = 8,        ///< DECEL entry with a pending segment whose node 0 is later
-    kNoSegment = 9,     ///< nothing followed and nothing pending (→ ABORT_SAFE, MD-44)
-    kReplaced = 10,     ///< a newer segment for the pending one's node 0 took the slot (MD-58)
+    kAdmitted = 1,       ///< a segment entered the pending slot
+    kDeferred = 2,       ///< admissible, left in the box: the slot holds another grid point (MD-37)
+    kWorkspace = 3,      ///< retired (MD-73): the RT no longer checks catch_box. Never written;
+                         ///< the number stays for the logs and tools that carry it
+    kSwitched = 4,       ///< the pending segment became the followed one
+    kGateRefused = 5,    ///< pending dropped: the continuity gate refused it (MD-39)
+    kPlanMismatch = 6,   ///< a segment does not end the followed plan (MD-35)
+    kSampleFailed = 7,   ///< a segment could not be sampled at now_lead + h
+    kNotDue = 8,         ///< DECEL entry with a pending segment whose node 0 is later
+    kNoSegment = 9,      ///< nothing followed and nothing pending (→ ABORT_SAFE, MD-44)
+    kReplaced = 10,      ///< a newer segment for the pending one's node 0 took the slot (MD-58)
+    kPairAdmitted = 11,  ///< APPROACH: a replacement plan entered the slot with its first segment
+    kPlanSwitched = 12,  ///< that segment became the followed one and its plan the followed plan
   };
   /// The lane judged the box this tick (mode mpc, COMMITTED / CLOSING / DECEL);
   /// `segment_refusal` is meaningful only then (rtc::catching::SegmentRefusal).

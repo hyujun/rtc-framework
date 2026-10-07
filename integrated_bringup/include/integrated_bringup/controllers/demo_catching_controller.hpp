@@ -450,6 +450,13 @@ class DemoCatchingController final : public RTControllerInterface {
 
   [[nodiscard]] bool HasPendingSegmentForTesting() const noexcept { return segment_pending_valid_; }
 
+  /// Whether a replacement plan waits for its first segment's node 0.
+  [[nodiscard]] bool HasPendingPlanForTesting() const noexcept { return plan_next_valid_; }
+
+  [[nodiscard]] const rtc::catching::PlanSnapshot& GetPendingPlanForTesting() const noexcept {
+    return plan_next_;
+  }
+
   /// The segment waiting for its node 0 (valid false when none) — test callers
   /// only, between ticks.
   [[nodiscard]] const rtc::catching::SegmentSnapshot& GetPendingSegmentForTesting() const noexcept {
@@ -1081,8 +1088,26 @@ class DemoCatchingController final : public RTControllerInterface {
   /// together or not at all (E1-F09). APPROACH through DECEL: against the
   /// followed plan, admitting a segment into the pending slot — when it is
   /// empty, or when the newer segment starts at the pending one's node 0 (the
-  /// same grid point solved again, MD-58).
+  /// same grid point solved again, MD-58). In APPROACH a segment of ANOTHER
+  /// plan is judged once more against the plan this tick loaded: when that
+  /// plan is admissible too they are a replacement pair, which waits in the
+  /// slot (`plan_next_`) until its node 0 — one replacement at a time, and
+  /// behind a waiting segment of the followed plan that starts no later.
   void RunSegmentLane() noexcept;
+
+  /// Whether this tick may take the plan it loaded as a REPLACEMENT of the one
+  /// it follows: APPROACH only, JudgePlan passed (its own freeze check is on
+  /// the new catch instant), another plan than the followed one, none waiting,
+  /// and the followed plan still outside the freeze window.
+  [[nodiscard]] bool ReplacementAdoptableThisTick() const noexcept {
+    return mode_ == rtc::catching::Mode::kApproach && plan_active_ && !plan_next_valid_ &&
+           plan_refusal_ == rtc::catching::PlanRefusal::kNone &&
+           plan_in_.plan_id != plan_.plan_id &&
+           (plan_freeze_ns_ <= 0 || plan_.t_c_ns - tick_now_.ns > plan_freeze_ns_);
+  }
+
+  /// Empty the pending slot, and with it a replacement plan that waited on it.
+  void DropPendingSegment() noexcept;
   /// The TRACKING → APPROACH edge's second half under mpc: the segment the
   /// lane judged this tick becomes the pending one. Only after AdoptPlan, and
   /// only when `segment_pair_ok_`.
@@ -1090,7 +1115,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The mpc law tick of every mode that follows a segment — APPROACH,
   /// COMMITTED, CLOSING, DECEL, HOLD (MD-38, MD-44, MD-45): take the pending
   /// segment when its node 0 is due and the gate passes (not in HOLD), then
-  /// follow the current one at now_lead + h. Before the first segment's node
+  /// follow the current one at now_lead + h. A pending segment that is a
+  /// replacement's first one takes its plan with it on that tick (`plan_ =
+  /// plan_next_`); a gate refusal, or a new catch instant already inside the
+  /// freeze window, drops the pair and the followed plan goes on. Before the first segment's node
   /// 0 the carried command is held. `entry` is the CLOSING → DECEL tick.
   /// `ball` is the trajectory the ball lane is supervised on before DECEL
   /// (SampleBallForLaw — its verdict comes first, as in the soft-catch law
@@ -1118,8 +1146,9 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Whether a segment belongs to the plan the RT follows (MD-35).
   [[nodiscard]] bool SegmentMatchesPlan(const rtc::catching::SegmentSnapshot& seg) const noexcept;
-  /// Forget every segment (pending and followed) and the admission
-  /// memory — both resets, and every way out of a followed plan.
+  /// Forget every segment (pending and followed), a replacement plan that
+  /// waits on the pending one, and the admission memory — both resets, and
+  /// every way out of a followed plan.
   void DropSegments() noexcept;
   /// Per-mode decisions split out of EvaluateReason (R-ORDER).
   [[nodiscard]] ReasonDecision EvaluateIdle(const ControllerState& state) noexcept;
@@ -1762,8 +1791,8 @@ class DemoCatchingController final : public RTControllerInterface {
   //   last_trial_generation_, last_trial_generation_valid_   R writes, T clears
   //   decel_entry_, decel_t_s_ns_, decel_stopped_, hold_entry_ns_     R, T
   //   admitted_segment_, segment_pending_, segment_pending_valid_, segment_current_, segment_current_valid_,
-  //   segment_pair_ok_
-  //                                              R, T (DropSegments; also on ABORT_SAFE / RETREAT entry, and HOLD drops the pending one)
+  //   segment_pair_ok_, plan_next_, plan_next_valid_
+  //                                              R, T (DropSegments; also on ABORT_SAFE / RETREAT entry, HOLD drops the pending one, and COMMITTED a waiting replacement with its segment)
   //   segment_in_, segment_refusal_, segment_sample_   exempt: written on the tick that reads them (the tick record's segment_judged says whether the lane ran)
   //   sat_streak_, law_horizon_extrap_           R, T
   //   outcome_, outcome_source_                  T (Aborted when an E-STOP ends an attempt);
@@ -1930,6 +1959,13 @@ class DemoCatchingController final : public RTControllerInterface {
   /// by a newer segment for the same node 0 instant, MD-58).
   rtc::catching::SegmentSnapshot segment_pending_{};
   bool segment_pending_valid_{false};
+  /// A replacement plan taken in APPROACH together with its first segment and
+  /// not followed yet: `segment_pending_` is that first segment, and the plan
+  /// becomes `plan_` on the tick the segment's node 0 switch passes. Until
+  /// then the arm follows the old plan's segment. Valid only while
+  /// `segment_pending_valid_` is; dropped wherever the pending segment is.
+  rtc::catching::PlanSnapshot plan_next_{};
+  bool plan_next_valid_{false};
   /// The segment the RT follows.
   rtc::catching::SegmentSnapshot segment_current_{};
   bool segment_current_valid_{false};

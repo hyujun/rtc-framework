@@ -1243,6 +1243,81 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
     EXPECT_FALSE(r.body.ref_valid) << "the soft-catch reference ran under mpc";
   }
 
+  /// A replacement of the followed plan and its first segment (E1-F17): the
+  /// next plan id, the catch instant moved by `shift_ns`, and a segment with
+  /// kApproachNPre pre-catch intervals whose node 0 is the command the RT holds
+  /// now, at rest. That is the arm's state until the first segment's first
+  /// interval ends (it is at rest there), so a node 0 inside that interval —
+  /// or before the first segment starts — is continuous with what the arm
+  /// does.
+  struct Replacement {
+    PlanSnapshot plan{};
+    SegmentSnapshot seg{};
+  };
+
+  Replacement MakeReplacement(std::int64_t shift_ns, std::uint32_t seq) const {
+    Replacement r;
+    r.plan = ctrl_->GetFollowedPlanForTesting();
+    r.plan.plan_id = ctrl_->GetPublishedPlan().plan_id + 1;
+    r.plan.t_c_ns += shift_ns;
+    r.plan.t_cmd_ns = r.plan.t_c_ns;
+    r.plan.gamma_t1_ns = r.plan.t_c_ns;
+    r.plan.publish_ns = Now();
+    std::array<double, kUr5eArmDof> q{};
+    const std::array<double, kUr5eArmDof> rest{};
+    const auto& qc = ctrl_->GetArmCommandForTesting();
+    for (int i = 0; i < kUr5eArmDof; ++i) {
+      q[static_cast<std::size_t>(i)] = qc[static_cast<std::size_t>(i)];
+    }
+    r.seg = integrated_bringup::testfx::MakeApproachSegment(
+        q, rest, kUr5eArmDof, r.plan.plan_id, r.plan.t_c_ns, kApproachNPre,
+        r.plan.t_c_ns - kApproachNPre * kApproachDtPreNs, kBump);
+    Stamp(r.seg, seq);
+    return r;
+  }
+
+  /// The planner's order (MD-56): the segment, then its plan.
+  void StoreReplacement(const Replacement& r) {
+    ctrl_->SegmentBoxForTesting().Store(r.seg);
+    ctrl_->PlanBoxForTesting().Store(r.plan);
+  }
+
+  /// Tick until a tick records `event`; that tick's index, or -1.
+  int TickUntilEvent(SegmentEvent event, int max_ticks) {
+    for (int i = 0; i < max_ticks; ++i) {
+      Tick();
+      if (log_.back().body.segment_event == event) {
+        return static_cast<int>(log_.size()) - 1;
+      }
+    }
+    return -1;
+  }
+
+  /// The trial ends as a normal one on the plan with catch instant `t_c_ns`:
+  /// COMMITTED on the first tick inside that plan's freeze window, DECEL at
+  /// its t_c, HOLD, the return and the re-arm.
+  void ExpectTheTrialEndsOn(std::int64_t t_c_ns) {
+    ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
+    ASSERT_TRUE(TickUntilMode(Mode::kArmed, 1500)) << Transitions();
+    ExpectSeq({Mode::kIdle, Mode::kArmed, Mode::kTracking, Mode::kApproach, Mode::kCommitted,
+               Mode::kClosing, Mode::kDecel, Mode::kHold, Mode::kRetreat, Mode::kArmed});
+    EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured)
+        << Transitions();
+    const int c = Entry(Mode::kCommitted);
+    ASSERT_GT(c, 0);
+    EXPECT_EQ(log_[static_cast<std::size_t>(c)].plan_t_c_ns, t_c_ns);
+    EXPECT_LE(t_c_ns - log_[static_cast<std::size_t>(c)].before_ns, kFreezeNs)
+        << "COMMITTED before the plan's freeze window";
+    EXPECT_GT(t_c_ns - log_[static_cast<std::size_t>(c) - 1].before_ns, kFreezeNs)
+        << "COMMITTED later than the first tick inside it";
+    const int d = Entry(Mode::kDecel);
+    ASSERT_GT(d, 0);
+    EXPECT_EQ(log_[static_cast<std::size_t>(d) - 1].plan_t_c_ns, t_c_ns);
+    ExpectDecelAtTc();
+  }
+
+  static constexpr std::int64_t kFreezeNs = 360 * kMsNs;  // the fixture's T_freeze
+
   /// The tick the pair was last written before (the adoption tick, when it
   /// was taken), and the segment written.
   int pair_tick_{-1};
@@ -1611,9 +1686,10 @@ TEST_P(MpcScenarioTest, ABallThatGoesStaleEndsTheApproachAsBefore) {
 }
 
 TEST_P(MpcScenarioTest, AnotherPlanInApproachIsNotTaken) {
-  // Under a segment planner the followed plan is not replaced — its segments belong
-  // to it. A plan that reaches the box all the same (admissible, outside the
-  // freeze window) is left there and the trial runs on the one it took.
+  // Under a segment planner the followed plan is replaced only by a PAIR — the
+  // segments the arm follows belong to their plan. A plan that reaches the box
+  // without a segment of its own (admissible, outside the freeze window) is
+  // left there and the trial runs on the one it took.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(TakeThePair());
   const PlanSnapshot followed = ctrl_->GetFollowedPlanForTesting();
@@ -1849,6 +1925,278 @@ TEST_P(MpcScenarioTest, AReplanPastTheGateIsDroppedAndTheFollowedSegmentGoesOn) 
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
+// ── A replacement plan with its first segment (E1-F17, #743) ────────────────
+//
+// The oracle writes no plan once one is followed, so these cases are the plan
+// box's writer too. The first segment's node 0 is t_c − 0.4 s and the freeze
+// t_c − 0.36 s: a replacement that is to be taken has its node 0 before that.
+
+TEST_P(MpcScenarioTest, AReplacementPairWaitsInTheSlotAndTakesItsPlanAtNodeZero) {
+  // The slot is empty: the arm follows the first segment. The pair waits for
+  // its node 0, 20 ms after the first segment's, and until then everything —
+  // the followed plan, the followed segment, the report — is the old plan's.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  const PlanSnapshot old_plan = ctrl_->GetFollowedPlanForTesting();
+  const Replacement r = MakeReplacement(20 * kMsNs, 2);
+  ASSERT_GT(r.seg.t0_ns, Now() + 4 * kHNs) << "node 0 is too close to see the wait";
+  StoreReplacement(r);
+  const std::size_t at = log_.size();
+  Tick();
+  ASSERT_EQ(log_[at].body.segment_event, SegmentEvent::kPairAdmitted)
+      << "refusal " << static_cast<int>(log_[at].body.segment_refusal) << '\n'
+      << Window(static_cast<int>(at), 2);
+  EXPECT_EQ(static_cast<SegmentRefusal>(log_[at].body.segment_refusal), SegmentRefusal::kNone);
+  ASSERT_TRUE(ctrl_->HasPendingPlanForTesting());
+  EXPECT_EQ(ctrl_->GetPendingPlanForTesting().plan_id, r.plan.plan_id);
+  {
+    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
+    EXPECT_TRUE(rt.plan_pending);
+    EXPECT_EQ(rt.plan_pending_id, r.plan.plan_id);
+    EXPECT_EQ(rt.plan_pending_t_c_ns, r.plan.t_c_ns);
+    EXPECT_EQ(rt.plan_id, old_plan.plan_id) << "the report names the replacement before the switch";
+    EXPECT_EQ(rt.plan_t_c_ns, old_plan.t_c_ns);
+    EXPECT_TRUE(rt.segment_active);
+    EXPECT_EQ(rt.segment_seq, 1U);
+    EXPECT_TRUE(rt.segment_pending);
+    EXPECT_EQ(rt.segment_pending_seq, 2U);
+  }
+  const int sw = TickUntilEvent(SegmentEvent::kPlanSwitched, 100);
+  ASSERT_GT(sw, static_cast<int>(at)) << Transitions();
+  for (int i = static_cast<int>(at); i < sw; ++i) {
+    const auto& t = log_[static_cast<std::size_t>(i)];
+    ASSERT_EQ(t.mode, Mode::kApproach) << Window(i, 2);
+    ASSERT_EQ(t.plan_id, old_plan.plan_id) << "the plan changed before its segment\n"
+                                           << Window(i, 2);
+    ASSERT_TRUE(t.body.segment_following) << Window(i, 2);
+    ASSERT_EQ(t.body.segment_seq, 1U) << Window(i, 2);
+  }
+  // The switch tick: plan id, catch instant and followed segment together.
+  const auto& s = log_[static_cast<std::size_t>(sw)];
+  EXPECT_GE(s.before_ns + kHNs, r.seg.t0_ns) << "switched before node 0";
+  EXPECT_LT(log_[static_cast<std::size_t>(sw) - 1].before_ns + kHNs, r.seg.t0_ns)
+      << "switched later than the first due tick";
+  EXPECT_EQ(s.mode, Mode::kApproach);
+  EXPECT_EQ(s.plan_id, r.plan.plan_id);
+  EXPECT_EQ(s.plan_t_c_ns, r.plan.t_c_ns);
+  EXPECT_TRUE(s.body.segment_following);
+  EXPECT_EQ(s.body.segment_seq, 2U);
+  EXPECT_LT(s.body.segment_rho, 0.2) << "node 0 is the held command: the gate is barely used";
+  EXPECT_FALSE(ctrl_->HasPendingPlanForTesting());
+  EXPECT_FALSE(ctrl_->HasPendingSegmentForTesting());
+  EXPECT_EQ(ctrl_->GetPlanReplacedCount(), 1U);
+  EXPECT_EQ(ctrl_->GetPlanAdmittedCount(), 1U) << "a replacement is the same attempt";
+  {
+    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
+    EXPECT_FALSE(rt.plan_pending);
+    EXPECT_EQ(rt.plan_pending_id, 0U);
+    EXPECT_EQ(rt.plan_id, r.plan.plan_id);
+    EXPECT_EQ(rt.plan_t_c_ns, r.plan.t_c_ns);
+    EXPECT_EQ(rt.segment_seq, 2U);
+    EXPECT_FALSE(rt.segment_pending);
+  }
+  // … and the trial ends on the NEW catch instant.
+  ASSERT_NO_FATAL_FAILURE(ExpectTheTrialEndsOn(r.plan.t_c_ns));
+  EXPECT_EQ(CountEvent(SegmentEvent::kPairAdmitted), 1);
+  EXPECT_EQ(CountEvent(SegmentEvent::kPlanSwitched), 1);
+  EXPECT_EQ(CountEvent(SegmentEvent::kPlanMismatch), 0);
+  EXPECT_EQ(CountTicks([&](const TickRec& t) {
+              return t.body.segment_following && t.plan_id == r.plan.plan_id &&
+                     t.body.segment_seq != 2U;
+            }),
+            0)
+      << "the new plan was followed on the old plan's segment";
+}
+
+TEST_P(MpcScenarioTest, AReplacementPairWaitsBehindAnEarlierSegmentOfTheFollowedPlan) {
+  // The slot holds the first segment, node 0 at t_c − 0.4 s; the pair's is 20
+  // ms later. The planner took the pair's start on the first segment, so that
+  // one goes first: the pair stays in the box until the slot is free.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  const PlanSnapshot old_plan = ctrl_->GetFollowedPlanForTesting();
+  ASSERT_TRUE(TickToJustBefore(first_seg_.t0_ns - 10 * kMsNs)) << Transitions();
+  ASSERT_TRUE(ctrl_->HasPendingSegmentForTesting());
+  ASSERT_FALSE(ctrl_->IsFollowingSegmentForTesting());
+  const Replacement r = MakeReplacement(20 * kMsNs, 2);
+  StoreReplacement(r);
+  const std::size_t at = log_.size();
+  Tick();
+  EXPECT_EQ(log_[at].body.segment_event, SegmentEvent::kDeferred)
+      << Window(static_cast<int>(at), 2);
+  EXPECT_FALSE(ctrl_->HasPendingPlanForTesting()) << "the pair took the slot of an earlier segment";
+  EXPECT_EQ(ctrl_->GetPendingSegmentForTesting().segment_seq, 1U);
+  const int first = TickUntilEvent(SegmentEvent::kSwitched, 100);
+  ASSERT_GT(first, static_cast<int>(at)) << Transitions();
+  EXPECT_EQ(log_[static_cast<std::size_t>(first)].body.segment_seq, 1U);
+  EXPECT_EQ(log_[static_cast<std::size_t>(first)].plan_id, old_plan.plan_id);
+  for (int i = static_cast<int>(at); i < first; ++i) {
+    ASSERT_EQ(log_[static_cast<std::size_t>(i)].body.segment_event, SegmentEvent::kDeferred)
+        << Window(i, 2);
+  }
+  // The slot is free on the next tick: the pair is taken there.
+  Tick();
+  EXPECT_EQ(log_.back().body.segment_event, SegmentEvent::kPairAdmitted)
+      << Window(static_cast<int>(log_.size()) - 1, 2);
+  ASSERT_TRUE(ctrl_->HasPendingPlanForTesting());
+  const int sw = TickUntilEvent(SegmentEvent::kPlanSwitched, 100);
+  ASSERT_GT(sw, first) << Transitions();
+  EXPECT_EQ(log_[static_cast<std::size_t>(sw)].plan_id, r.plan.plan_id);
+  EXPECT_EQ(log_[static_cast<std::size_t>(sw)].body.segment_seq, 2U);
+  ASSERT_NO_FATAL_FAILURE(ExpectTheTrialEndsOn(r.plan.t_c_ns));
+}
+
+TEST_P(MpcScenarioTest, AReplacementPairPutsOutALaterSegmentOfTheFollowedPlan) {
+  // The slot holds the first segment, node 0 at t_c − 0.4 s; the pair's is 20
+  // ms EARLIER. The plan the waiting segment belongs to is about to be
+  // replaced before it starts: the pair takes the slot and the first segment
+  // is never followed.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  const PlanSnapshot old_plan = ctrl_->GetFollowedPlanForTesting();
+  ASSERT_TRUE(TickToJustBefore(first_seg_.t0_ns - 40 * kMsNs)) << Transitions();
+  const Replacement r = MakeReplacement(-20 * kMsNs, 2);
+  ASSERT_LT(r.seg.t0_ns, first_seg_.t0_ns);
+  StoreReplacement(r);
+  const std::size_t at = log_.size();
+  Tick();
+  ASSERT_EQ(log_[at].body.segment_event, SegmentEvent::kPairAdmitted)
+      << Window(static_cast<int>(at), 2);
+  ASSERT_TRUE(ctrl_->HasPendingPlanForTesting());
+  EXPECT_EQ(ctrl_->GetPendingSegmentForTesting().segment_seq, 2U);
+  EXPECT_EQ(log_[at].plan_id, old_plan.plan_id);
+  EXPECT_FALSE(log_[at].body.segment_following) << "nothing is followed yet: the command is held";
+  const int sw = TickUntilEvent(SegmentEvent::kPlanSwitched, 100);
+  ASSERT_GT(sw, static_cast<int>(at)) << Transitions();
+  EXPECT_GE(log_[static_cast<std::size_t>(sw)].before_ns + kHNs, r.seg.t0_ns);
+  EXPECT_LT(log_[static_cast<std::size_t>(sw) - 1].before_ns + kHNs, r.seg.t0_ns);
+  EXPECT_EQ(log_[static_cast<std::size_t>(sw)].plan_id, r.plan.plan_id);
+  EXPECT_EQ(log_[static_cast<std::size_t>(sw)].body.segment_seq, 2U);
+  EXPECT_LT(log_[static_cast<std::size_t>(sw)].body.segment_dq_max, 1e-9)
+      << "node 0 is the command the arm holds";
+  ASSERT_NO_FATAL_FAILURE(ExpectTheTrialEndsOn(r.plan.t_c_ns));
+  EXPECT_EQ(CountTicks([](const TickRec& t) {
+              return t.body.segment_following && t.body.segment_seq == 1U;
+            }),
+            0)
+      << "the segment the pair put out was followed";
+  EXPECT_EQ(CountEvent(SegmentEvent::kSwitched), 0);
+}
+
+TEST_P(MpcScenarioTest, AReplacementPastTheSwitchGateIsDroppedAndTheFollowedPlanGoesOn) {
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  const PlanSnapshot old_plan = ctrl_->GetFollowedPlanForTesting();
+  Replacement r = MakeReplacement(20 * kMsNs, 2);
+  for (int k = 0; k <= r.seg.n_nodes; ++k) {
+    r.seg.q[static_cast<std::size_t>(k * rtc::catching::kMaxSegmentNv)] += 0.05;
+  }
+  StoreReplacement(r);
+  const int g = TickUntilEvent(SegmentEvent::kGateRefused, 100);
+  ASSERT_GT(g, 0) << Transitions();
+  EXPECT_EQ(CountEvent(SegmentEvent::kPairAdmitted), 1);
+  EXPECT_FALSE(ctrl_->HasPendingPlanForTesting()) << "the refused pair's plan still waits";
+  EXPECT_FALSE(ctrl_->HasPendingSegmentForTesting());
+  EXPECT_EQ(log_[static_cast<std::size_t>(g)].plan_id, old_plan.plan_id);
+  EXPECT_TRUE(log_[static_cast<std::size_t>(g)].body.segment_following);
+  EXPECT_EQ(log_[static_cast<std::size_t>(g)].body.segment_seq, 1U);
+  {
+    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
+    EXPECT_FALSE(rt.plan_pending) << "the dropped pair is still reported";
+    EXPECT_FALSE(rt.segment_pending);
+    EXPECT_EQ(rt.plan_id, old_plan.plan_id);
+    EXPECT_EQ(rt.segment_seq, 1U);
+  }
+  // The pair is still in the two boxes; it is not taken a second time.
+  ASSERT_NO_FATAL_FAILURE(ExpectTheTrialEndsOn(old_plan.t_c_ns));
+  EXPECT_EQ(CountEvent(SegmentEvent::kPairAdmitted), 1);
+  EXPECT_EQ(CountEvent(SegmentEvent::kPlanSwitched), 0);
+  EXPECT_EQ(ctrl_->GetPlanReplacedCount(), 0U);
+  EXPECT_EQ(CountTicks([](const TickRec& t) {
+              return t.body.segment_following && t.body.segment_seq != 1U;
+            }),
+            0)
+      << "the refused pair's segment was followed";
+}
+
+TEST_P(MpcScenarioTest, AReplacementWhoseCatchInstantIsInsideTheFreezeIsNotTaken) {
+  // The new catch instant is 50 ms earlier: 0.35 s away, inside T_freeze. The
+  // plan is refused as too late (R-ADMIT), and its segment with it.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  const PlanSnapshot old_plan = ctrl_->GetFollowedPlanForTesting();
+  const Replacement r = MakeReplacement(-50 * kMsNs, 2);
+  ASSERT_LE(r.plan.t_c_ns - Now(), kFreezeNs);
+  StoreReplacement(r);
+  const std::size_t at = log_.size();
+  Tick();
+  EXPECT_EQ(log_[at].refusal, PlanRefusal::kTooLate);
+  EXPECT_TRUE(log_[at].body.segment_judged);
+  EXPECT_EQ(static_cast<SegmentRefusal>(log_[at].body.segment_refusal), SegmentRefusal::kPlan);
+  EXPECT_FALSE(ctrl_->HasPendingPlanForTesting());
+  ASSERT_NO_FATAL_FAILURE(ExpectTheTrialEndsOn(old_plan.t_c_ns));
+  EXPECT_EQ(CountEvent(SegmentEvent::kPairAdmitted), 0);
+  EXPECT_EQ(ctrl_->GetPlanReplacedCount(), 0U);
+}
+
+TEST_P(MpcScenarioTest, AReplacementStillWaitingAtTheFreezeIsDroppedAndNoneIsTakenAfterIt) {
+  // The pair's node 0 (t_c − 0.3 s) is later than the followed plan's freeze
+  // (t_c − 0.36 s). COMMITTED freezes the followed plan: the waiting pair
+  // goes, and a pair that arrives after it is not looked at.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  const PlanSnapshot old_plan = ctrl_->GetFollowedPlanForTesting();
+  const Replacement r = MakeReplacement(100 * kMsNs, 2);
+  ASSERT_GT(r.seg.t0_ns, old_plan.t_c_ns - kFreezeNs);
+  StoreReplacement(r);
+  const std::size_t at = log_.size();
+  Tick();
+  ASSERT_EQ(log_[at].body.segment_event, SegmentEvent::kPairAdmitted)
+      << Window(static_cast<int>(at), 2);
+  ASSERT_TRUE(ctrl_->HasPendingPlanForTesting());
+  ASSERT_TRUE(TickUntilMode(Mode::kCommitted, 100)) << Transitions();
+  EXPECT_FALSE(ctrl_->HasPendingPlanForTesting()) << "COMMITTED kept the waiting replacement";
+  EXPECT_FALSE(ctrl_->HasPendingSegmentForTesting());
+  EXPECT_TRUE(ctrl_->IsFollowingSegmentForTesting());
+  EXPECT_EQ(ctrl_->GetFollowedPlanForTesting().plan_id, old_plan.plan_id);
+  {
+    const rtc::catching::PlannerRtState rt = ctrl_->GetPlannerRtState();
+    EXPECT_FALSE(rt.plan_pending);
+    EXPECT_FALSE(rt.segment_pending);
+    EXPECT_EQ(rt.plan_id, old_plan.plan_id);
+  }
+  // Another pair, admissible in every other respect, on the first COMMITTED tick.
+  Replacement late = MakeReplacement(120 * kMsNs, 3);
+  StoreReplacement(late);
+  Ticks(5);
+  EXPECT_FALSE(ctrl_->HasPendingPlanForTesting());
+  EXPECT_EQ(ctrl_->GetFollowedPlanForTesting().plan_id, old_plan.plan_id);
+  ASSERT_NO_FATAL_FAILURE(ExpectTheTrialEndsOn(old_plan.t_c_ns));
+  EXPECT_EQ(CountEvent(SegmentEvent::kPairAdmitted), 1);
+  EXPECT_EQ(CountEvent(SegmentEvent::kPlanSwitched), 0);
+  EXPECT_EQ(CountEvent(SegmentEvent::kPlanMismatch), 0);
+  EXPECT_EQ(ctrl_->GetPlanReplacedCount(), 0U);
+}
+
+TEST_P(MpcScenarioTest, AWaitingReplacementGoesWithThePlanWhenTheBallGoesStale) {
+  // RETREAT ends the plan: the replacement that waited on it goes too.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(TakeThePair());
+  ASSERT_TRUE(TickToJustBefore(first_seg_.t0_ns - 100 * kMsNs)) << Transitions();
+  const Replacement r = MakeReplacement(-20 * kMsNs, 2);
+  StoreReplacement(r);
+  Tick();
+  ASSERT_TRUE(ctrl_->HasPendingPlanForTesting()) << Transitions();
+  publishing_ = false;
+  // Hold the pair's node 0 off: the stale verdict has to come first.
+  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 400)) << Transitions();
+  const int ret = Entry(Mode::kRetreat);
+  EXPECT_FALSE(ctrl_->HasPendingPlanForTesting()) << Window(ret, 2);
+  EXPECT_FALSE(ctrl_->HasPendingSegmentForTesting());
+  EXPECT_FALSE(ctrl_->IsFollowingSegmentForTesting());
+  EXPECT_FALSE(ctrl_->GetPlannerRtState().plan_pending);
+}
+
 // ── E-STOP and reset (MD-35, E-8) ───────────────────────────────────────────
 
 class MpcEstopTest : public MpcScenarioTest {
@@ -1864,6 +2212,8 @@ class MpcEstopTest : public MpcScenarioTest {
     EXPECT_FALSE(ctrl_->IsFollowingSegmentForTesting())
         << "E-8: the stop kept the followed segment";
     EXPECT_FALSE(ctrl_->HasPendingSegmentForTesting()) << "E-8: the stop kept the waiting segment";
+    EXPECT_FALSE(ctrl_->HasPendingPlanForTesting()) << "E-8: the stop kept a waiting replacement";
+    EXPECT_FALSE(ctrl_->GetPlannerRtState().plan_pending);
     EXPECT_FALSE(log_[trig].rt_segment_active);
     EXPECT_FALSE(log_[trig].rt_segment_pending);
     EXPECT_FALSE(log_[trig].body.segment_following);
@@ -1924,6 +2274,22 @@ TEST_P(MpcEstopTest, AnEstopInDecelDropsTheFollowedAndTheWaitingSegment) {
   ASSERT_TRUE(ctrl_->IsFollowingSegmentForTesting());
   ASSERT_TRUE(ctrl_->HasPendingSegmentForTesting()) << Transitions();
   ASSERT_NO_FATAL_FAILURE(StopAndExpectNothingCarriesOver());
+}
+
+TEST_P(MpcEstopTest, AnEstopWhileAReplacementWaitsDropsThePlanAndItsSegment) {
+  // E-8: the replacement plan is state of the trial the stop ends. Left
+  // behind, it would be taken at the next trial's first switch.
+  ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+  ASSERT_NO_FATAL_FAILURE(FollowThePair());
+  const Replacement r = MakeReplacement(100 * kMsNs, 2);
+  StoreReplacement(r);
+  Ticks(3);
+  ASSERT_EQ(ctrl_->GetMode(), Mode::kApproach);
+  ASSERT_TRUE(ctrl_->HasPendingPlanForTesting()) << Transitions();
+  ASSERT_TRUE(ctrl_->IsFollowingSegmentForTesting());
+  ASSERT_NO_FATAL_FAILURE(StopAndExpectNothingCarriesOver());
+  EXPECT_EQ(CountEvent(SegmentEvent::kPlanSwitched), 0);
+  EXPECT_EQ(ctrl_->GetPlanReplacedCount(), 0U);
 }
 
 TEST_P(MpcEstopTest, AnEstopPairBetweenTwoTicksDropsTheSegment) {

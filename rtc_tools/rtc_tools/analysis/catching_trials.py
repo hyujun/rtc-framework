@@ -952,6 +952,8 @@ SEGMENT_EVENT_WORKSPACE = 3
 SEGMENT_EVENT_SWITCHED = 4
 SEGMENT_EVENT_GATE_REFUSED = 5
 SEGMENT_EVENT_REPLACED = 10
+SEGMENT_EVENT_PAIR_ADMITTED = 11
+SEGMENT_EVENT_PLAN_SWITCHED = 12
 SEGMENT_REFUSAL_AGED = 5
 # TCP command speed [m/s] above which the command counts as moving
 # (:func:`command_kinematics_at_tc`). An arm holding its command is at 0.
@@ -2335,7 +2337,8 @@ def segment_lane_metrics(ctx: TrialContext) -> dict:
     ev, following, seq = ctx.segment_event, ctx.segment_following, ctx.segment_seq
     if ev is None or following is None or seq is None:
         return rec
-    switched = np.nonzero(ev == SEGMENT_EVENT_SWITCHED)[0]
+    # A replacement plan's first segment is switched to like any other.
+    switched = np.nonzero((ev == SEGMENT_EVENT_SWITCHED) | (ev == SEGMENT_EVENT_PLAN_SWITCHED))[0]
     rec["segment_n_followed"] = len(np.unique(seq[following]))
     rec["segment_switches"] = int(switched.size)
     rec["segment_admitted"] = int(np.count_nonzero(ev == SEGMENT_EVENT_ADMITTED))

@@ -230,10 +230,10 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
     for (int s = 0; s <= shipped.params.n_settle; ++s) {
       traj->token.snapshot_sequence = static_cast<std::uint64_t>(10 + s);
       cov->token = traj->token;
-      static_cast<void>(search.Plan(*traj, *cov, true, rt, kNoSegments, NowReal{kNow}, stats));
+      static_cast<void>(search.Plan(*traj, *cov, true, rt, kNoSegments, NowReal{kNow}, 0, stats));
     }
     ASSERT_FALSE(stats.settling);
-    const auto plan = search.Plan(*traj, *cov, true, rt, kNoSegments, NowReal{kNow}, stats);
+    const auto plan = search.Plan(*traj, *cov, true, rt, kNoSegments, NowReal{kNow}, 0, stats);
     // The cycle as timed by the search itself (its own clock reads).
     cycle_us.push_back(stats.search_ns / 1000);
     plans += plan.valid ? 1 : 0;

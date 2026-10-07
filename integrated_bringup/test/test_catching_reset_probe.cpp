@@ -102,6 +102,10 @@ class DemoCatchingControllerResetProbe {
     c_.segment_current_valid_ = true;
     // MPC E1-F09: the pair verdict of the tick the reset lands on.
     c_.segment_pair_ok_ = true;
+    // E1-F17: a replacement plan that waits on the pending segment.
+    c_.plan_next_.valid = true;
+    c_.plan_next_.plan_id = 77;
+    c_.plan_next_valid_ = true;
   }
 
   /// Every segment and the admission memory gone (DropSegments).
@@ -113,6 +117,9 @@ class DemoCatchingControllerResetProbe {
     EXPECT_FALSE(c_.segment_current_valid_);
     EXPECT_FALSE(c_.segment_current_.valid);
     EXPECT_FALSE(c_.segment_pair_ok_);
+    EXPECT_FALSE(c_.plan_next_valid_) << "a waiting replacement plan outlived its trial";
+    EXPECT_FALSE(c_.plan_next_.valid);
+    EXPECT_EQ(c_.plan_next_.plan_id, 0U);
   }
 
   void Rearm() { c_.ResetForRearm(); }
@@ -182,6 +189,7 @@ class DemoCatchingControllerResetProbe {
     EXPECT_EQ(c_.release_start_ns_, DemoCatchingControllerResetProbe::kNs);
     EXPECT_TRUE(c_.segment_current_valid_);
     EXPECT_TRUE(c_.segment_pending_valid_);
+    EXPECT_TRUE(c_.plan_next_valid_);
   }
 
   /// MD-35 / MD-38: ABORT_SAFE and RETREAT entry drop every segment; HOLD
@@ -202,6 +210,27 @@ class DemoCatchingControllerResetProbe {
     EXPECT_TRUE(c_.segment_current_valid_) << "HOLD holds the stop it follows";
     EXPECT_EQ(c_.segment_current_.segment_seq, 8U);
     EXPECT_TRUE(c_.admitted_segment_.seen);
+    EXPECT_FALSE(c_.plan_next_valid_) << "HOLD kept a replacement whose segment it dropped";
+    // COMMITTED freezes the followed plan: a replacement that still waits goes,
+    // with its segment; the followed segment and the admission memory stay.
+    Poison();
+    c_.mode_ = Mode::kCommitted;
+    c_.OnModeEntered(Mode::kApproach);
+    EXPECT_FALSE(c_.plan_next_valid_);
+    EXPECT_FALSE(c_.plan_next_.valid);
+    EXPECT_FALSE(c_.segment_pending_valid_);
+    EXPECT_FALSE(c_.segment_pending_.valid);
+    EXPECT_TRUE(c_.segment_current_valid_);
+    EXPECT_EQ(c_.segment_current_.segment_seq, 8U);
+    EXPECT_TRUE(c_.admitted_segment_.seen);
+    // … and without one, COMMITTED leaves the pending segment of the followed
+    // plan where it is.
+    Poison();
+    c_.plan_next_valid_ = false;
+    c_.mode_ = Mode::kCommitted;
+    c_.OnModeEntered(Mode::kApproach);
+    EXPECT_TRUE(c_.segment_pending_valid_);
+    EXPECT_EQ(c_.segment_pending_.segment_seq, 9U);
   }
 
   void CheckRearm() {
