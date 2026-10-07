@@ -1,6 +1,6 @@
 # MPC · dual-arm catching 과 실기 단계 — 계획
 
-- 상태: **E0 완료 · E1 진행 중 (단일 팔 MPC 의 E1-F01 – F11, 계획기 interface 의 E1-F12, mpc_docking 수치 코어의 E1-F13, NLP search 코어의 E1-F14, mpc_docking 입력 식별의 E1-F15, 계획기 스레드 통합의 E1-F16, RT 계약 · supervisor 의 E1-F17 은 끝났고 NLP search · mpc_docking 의 E1-F18 – F21 이 남았다 — E1-F18 이 다음) · E2 진행 중 (E2-F04 가 다음 — E1 과 병행할 수 있다)** · E3 · 실기 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태는 §3 의 표가 갖는다 (§2 "상태는 한 곳에만")
+- 상태: **E0 완료 · E1 진행 중 (단일 팔 MPC 의 E1-F01 – F11, 계획기 interface 의 E1-F12, mpc_docking 수치 코어의 E1-F13, NLP search 코어의 E1-F14, mpc_docking 입력 식별의 E1-F15, 계획기 스레드 통합의 E1-F16, RT 계약 · supervisor 의 E1-F17 은 끝났고 NLP search · mpc_docking 의 E1-F18 – F21 이 남았다 — E1-F18 진행 중) · E2 진행 중 (E2-F04 가 다음 — E1 과 병행할 수 있다)** · E3 · 실기 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태는 §3 의 표가 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지 — 끝났다) 와 그 위의 NLP search · mpc_docking (E1 의 남은 feature) · G1 + proto_1b bring-up 과 QP 다중 frame CLIK (E2) → 같은 MPC 에 dual arm · waist 항 추가 (E3, g1_p1b) → 실기 단계 (`ur5e_p1b`)
 
 **이 문서는 구현이 끝나면 지우는 파일이다.** 상태 · 순서 · 남은 일의 범위 · 아직 정하지 않은 것 · 관리 규칙만 갖고, 영구히 보관할 정보는 갖지 않는다. 영구 정보의 자리:
@@ -68,7 +68,7 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F18 | [#744](https://github.com/hyujun/rtc-framework/issues/744) | 로그 · plot_rtc_log · demo_controller_gui | E1-F17 (끝) | 대기 |
+| E1-F18 | [#744](https://github.com/hyujun/rtc-framework/issues/744) | 로그 · plot_rtc_log · demo_controller_gui. ① `planner_events.csv` 에 `nlp` 탐색의 열 (wake 의 사유 · 후보 수 · 사유별 수 · 고른 후보의 비용), `mpc_docking` 풀이의 열 (반복과 QP 의 수 · KKT 잔차 · 불능 행 그룹과 그룹별 위반 · 부호 있는 chance 여유 · $c_N$ · $\sigma_s$ · $\sigma_t$ · 시간의 구성), 교체 쌍이 어디서 끝났는가의 열을 더한다 — 뒤에 더하고 옛 recording 을 읽는 경로는 그대로다. ② `catching_trials` 에 투척마다의 판정과 거부 사유. ③ 기한에 끊긴 풀이 (코어의 사유가 `deadline`) 를 요약 · 패널 · 통계가 끝난 풀이와 나눠 보인다. ④ unit 하나의 요약 도구, `plot_rtc_log` 패널, GUI 의 정적 표시. RT tick 쪽 로그 · `mpc` 계획기 · `rtc_msgs` · 출하 YAML 은 건드리지 않는다. Sprint Contract · 결정 · 열의 표는 [#744 의 확정판](https://github.com/hyujun/rtc-framework/issues/744#issuecomment-6041172572) | E1-F17 (끝) | **진행 중** |
 | E1-F21 | [#747](https://github.com/hyujun/rtc-framework/issues/747) | 포구 가능 판정 지도 — 탐색이 어떤 공을 받는다고 판정하는가 (발사 위치 · 거리 · 비행시간 · 종단 속도). 오프라인 지도와 sim 의 판정 대 결과, 기술 통계로 보고한다 | E1-F16 · F17 (끝), sim 쪽은 E1-F18 | 대기 |
 | E1-F19 | [#745](https://github.com/hyujun/rtc-framework/issues/745) | 튜닝 (판정 전, 판정과 다른 seed). E1-F16 에서 넘어온 것: 출하값 (sim 식별, provisional) 으로는 두 docking 기능이 sim 에서 포구까지 가지 못한다 — `nlp` 는 plan 을 내지 못하고 `mpc_docking` 의 첫 구간은 예산 안에 풀리지 않는다. 그래서 `Replan` · nlp solve 의 시간 분포도 아직 없다. 수치와 원자료의 자리는 [#745 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6034273846). E1-F17 에서 넘어온 것: 그 feature 가 넣은 RT 경로 가운데 교체 쌍의 채택 · 전환 (`mpc` 포함), `mpc_docking` 구간의 추종, 그 아래의 폐쇄 재시각은 sim 에서 한 번도 실행되지 않았다 (근거는 테스트) — 쌍이 게시될 만큼 비행이 긴 투척과 docking 의 첫 구간이 서는 값이 여기서 필요하고, "RT 가 `mpc_docking` 구간을 따른 sim 기록" 은 #743 의 Done when 에서 옮겨 왔다. docking 의 풀이 시간을 정하는 것 (불능 문제를 불능으로 판정하는 비용, 포구 노드의 lateral 행) 과 효과가 없던 조정은 [#745 의 E1-F17 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6040514661) | E1-F18 · F21 | 대기 |
 | E1-F20 | [#746](https://github.com/hyujun/rtc-framework/issues/746) | 비교 평가 — search 둘 (`grid` · `nlp`), planner 셋 (`closed_form` · `mpc` · `mpc_docking`) | E1-F19 | 대기 |
