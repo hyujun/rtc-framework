@@ -205,6 +205,20 @@ class HandSequencer {
     return true;
   }
 
+  /// Move the armed close to t_cmd = t_x − T_close_lead, for a crossing
+  /// instant t_x re-predicted after the commit. Heard only between the commit
+  /// and the close command: before the commit there is no instant to move,
+  /// and once the close is commanded it is not taken back. An instant already
+  /// past is accepted — the next Update commands the close. Returns whether
+  /// the instant was taken.
+  bool Retime(BallTime t_x) noexcept {
+    if (!active_ || !commit_armed_ || close_issued_) {
+      return false;
+    }
+    t_cmd_ = BallTime{detail::SatSub(t_x.ns, cfg_.t_close_lead_ns)};
+    return true;
+  }
+
   /// Open to q_pre (Q4) and wait there. From any active phase; the Release
   /// ends in Preshape once the hand has settled.
   void Release() noexcept {
