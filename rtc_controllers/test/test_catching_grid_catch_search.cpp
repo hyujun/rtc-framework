@@ -712,6 +712,38 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
   EXPECT_FALSE(stats.publish);
 }
 
+TEST(GridCatchSearchSwitch, UnderASegmentModeTheJumpLimitIsNotJudged) {
+  // E1-F16: the η_jump bound is the step a switch puts into the L4 reference's
+  // u_des. An arm that follows a segment planner's segments has no such
+  // reference, so the 1 m switch the closed_form law holds (kHeldJump, the case
+  // above) is decided by ΔJ alone there. Same search, same wake, one flag.
+  for (const bool follows : {false, true}) {
+    SCOPED_TRACE(follows ? "the arm follows segments" : "closed_form");
+    auto rig = std::make_unique<Rig>();
+    rig->constants.follows_segments = follows;
+    ASSERT_TRUE(rig->Configure());
+    const auto traj = rig->Traj();
+    SearchStats stats;
+    PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                          NowReal{kNow}, stats);
+    ASSERT_TRUE(first.valid);
+    first.plan_id = 13;
+    first.t_c_ns = kNow + 5000 * kMs;  // no candidate is at it: the current plan is infeasible
+    first.p_c[0] += 1.0;               // a 1 m catch-point jump
+    rig->search.NotePublished(first);
+    auto rt = rig->Rt();
+    rt.plan_active = true;
+    rt.plan_id = 13;
+    rt.ref_valid = true;
+    rt.gamma = 0.0;  // mid-ramp and moving: the jump limit refuses under closed_form
+    rt.gamma_d = 5.0;
+    static_cast<void>(
+        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
+    EXPECT_EQ(stats.decision, follows ? SwitchDecision::kReplaced : SwitchDecision::kHeldJump);
+    EXPECT_EQ(stats.publish, follows);
+  }
+}
+
 // ── 4a. The switch's acceleration budget (§4.7, decision ⑥) ─────────────────
 
 /// Δu_des the RT's adoption actually produces: the L4 law evaluated before and

@@ -639,8 +639,11 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
                                   (bs.p[2] - current_.p_c[2]) * (bs.p[2] - current_.p_c[2]));
       // The step the switch puts into u_des, held to η_jump·a_max (§4.7,
       // decision ⑥), at its worst over the instants the RT may adopt it.
-      const double step = SwitchStep(traj, rt, now_lead, dp);
-      const bool jump_ok = step <= params_.switch_eta_jump * constants_.ref_a_max;
+      // Not judged when the arm follows segments: there is no L4 reference
+      // whose u_des a switch could step (GridCatchSearchConstants).
+      const double step = constants_.follows_segments ? 0.0 : SwitchStep(traj, rt, now_lead, dp);
+      const bool jump_ok =
+          constants_.follows_segments || step <= params_.switch_eta_jump * constants_.ref_a_max;
       const bool best_is_current =
           std::fabs(static_cast<double>(bs.t_ns - current_.t_c_ns)) <= half;
       if (!better) {

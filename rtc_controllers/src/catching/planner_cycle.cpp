@@ -136,6 +136,18 @@ void PlannerCycle::PublishPair(const PlannerRtState& rt, PlanSnapshot& plan,
   rec.segment.publish_ns = publish_ns;
 }
 
+bool PlannerCycle::SearchesWhileFollowing(const PlannerRtState& rt, NowReal wake) const noexcept {
+  // A NaN (or non-positive) t_stop_plan is "never": the value of parameters no
+  // profile filled in, and the same side an unset T_freeze falls on in the
+  // search's own freeze rule.
+  if (search_ == nullptr || static_cast<Mode>(rt.mode) != Mode::kApproach ||
+      first_followed_t_c_ns_ <= 0 || !std::isfinite(params_.t_stop_plan) ||
+      !(params_.t_stop_plan > 0.0)) {
+    return false;
+  }
+  return first_followed_t_c_ns_ - wake.ns > SecondsToNs(params_.t_stop_plan);
+}
+
 PlanSnapshot PlannerCycle::PlanOnce(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                                     bool cov_matched, const PlannerRtState& rt,
                                     const ReportedSegments& arm, NowReal now,
@@ -193,11 +205,19 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
       segment_planner_->ResetTrial();
     }
     pair_publish_ns_ = 0;
+    first_followed_t_c_ns_ = 0;
     // The planner is the segment box's only writer, so withdrawing the ended
     // trial's segment is its job (the RT's plan match refuses it as well).
     if (io_.segment != nullptr) {
       io_.segment->Store(SegmentSnapshot{});
     }
+  }
+  // The first catch instant followed since the reset — remembered here, on
+  // every wake, so that it is the first one whatever the activity was then.
+  if (!rt.plan_active) {
+    first_followed_t_c_ns_ = 0;
+  } else if (first_followed_t_c_ns_ == 0) {
+    first_followed_t_c_ns_ = rt.plan_t_c_ns;
   }
   const PlannerActivity activity = ActivityFor(static_cast<Mode>(rt.mode));
   if (activity == PlannerActivity::kMonitor) {
@@ -231,18 +251,24 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   if (activity != PlannerActivity::kSearch) {
     return rec;
   }
+  // The RT follows a plan on a segment planner's segments: nothing the search
+  // finds below is published (header: "WHILE A PLAN IS FOLLOWED").
+  bool following = false;
   if (SegmentActive()) {
     if (rt.plan_active) {
-      // APPROACH: the RT follows a plan, the search is skipped (MD-57) and
-      // the wake replans its segment. The outcome stays kIdle (MD-29).
+      // APPROACH: the segment first — on every wake, whatever the search does
+      // after it — so that the followed segment is never later for the
+      // search's sake. A replan leaves the wake's outcome alone (MD-29).
       io_.traj->LoadInto(traj_);
       io_.cov->LoadInto(cov_);
       RunReplan(rt, FollowedBall(rt), rec);
-      return rec;
-    }
-    // Right after a pair, until the RT state could show it adopted it.
-    if (pair_publish_ns_ > 0 &&
-        rt.rt_state_ns <= pair_publish_ns_ + 3 * segment_planner_->ControlDtNs()) {
+      if (!SearchesWhileFollowing(rt, wake)) {
+        return rec;
+      }
+      following = true;
+    } else if (pair_publish_ns_ > 0 &&
+               rt.rt_state_ns <= pair_publish_ns_ + 3 * segment_planner_->ControlDtNs()) {
+      // Right after a pair, until the RT state could show it adopted it.
       return rec;
     }
   }
@@ -271,8 +297,8 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
 
   // ── 3. Search (A-4 single entry) ─────────────────────────────────────────
   // With the segments the RT reports, for a search that starts a candidate's
-  // arm motion on one. On the wakes that reach this line today the RT follows
-  // no plan (a followed plan was replanned above, MD-57), so there are none.
+  // arm motion on one: none while the RT follows no plan, the followed (and
+  // the pending) one while it does.
   if (SegmentActive()) {
     segment_planner_->Reported(rt, reported_);
   } else {
@@ -302,6 +328,16 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   // freeze G): publishing nothing IS the decision.
   if (!rec.search.publish) {
     rec.outcome = CycleOutcome::kHeld;
+    return rec;
+  }
+  // The RT follows a plan on segments and takes no second one: what the search
+  // would publish is held, and the record says which kind it was — another
+  // plan (the search's own verdict, not a comparison of instants: a grid search
+  // moves its candidates with every snapshot), or the followed one again.
+  if (following) {
+    rec.outcome = plan.valid && rec.search.decision == SwitchDecision::kReplaced
+                      ? CycleOutcome::kHeldReplaceUnsupported
+                      : CycleOutcome::kHeld;
     return rec;
   }
   // A plan and its first segment go together (MPC E1-F08, MD-56). "No plan"

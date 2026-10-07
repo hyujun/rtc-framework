@@ -37,9 +37,21 @@
 // it can be read, and refuses one the RT started following another plan
 // during. Right after a pair the search waits until the RT state postdates it
 // by 3 ticks: a second plan published before the RT reports the first would
-// overwrite the segment it may be adopting. Once the RT follows a plan the
-// search is skipped (MD-57) and every wake through DECEL is a Replan, whose
-// re-check is that the RT still reports the same source segment.
+// overwrite the segment it may be adopting. Once the RT follows a plan every
+// wake through DECEL is a Replan, whose re-check is that the RT still reports
+// the same source segment.
+//
+// WHILE A PLAN IS FOLLOWED THE SEARCH GOES ON (E1-F16). In APPROACH, after the
+// segment's replan, the wake still runs the search against the newest
+// prediction, handing it the segments the RT reports so that a candidate's arm
+// motion starts where the arm will be. What it finds is RECORDED and not
+// published: the RT does not take a second plan for a ball it already follows
+// one for, so a plan the search would switch to is held
+// (kHeldReplaceUnsupported) and one it would refresh is held as any other
+// (kHeld). The replan comes first so that the followed segment is never later
+// for the search's sake. The search stops when the first catch instant the RT
+// followed since the last reset is within `planner.freeze.t_stop_plan`, and at
+// COMMITTED whichever comes first; from then on a wake is the replan alone.
 //
 // WHAT S6-A IMPLEMENTS. The cycle, the provenance handling and a STUB search:
 // `PlanOnce` never produces a candidate, so every search wake publishes a
@@ -73,6 +85,10 @@ enum class CycleOutcome : std::uint8_t {
   kPublished,   ///< a PlanSnapshot (valid or "no plan") was stored
   kSuperseded,  ///< the trajectory or the trial moved during compute — dropped
   kHeld,        ///< the switching rule kept the RT's current plan (§4.7, G)
+  /// The RT follows a plan on a segment planner's segments and the search chose
+  /// ANOTHER one (SwitchDecision::kReplaced). Not published: the RT takes no
+  /// replacement pair. The search's record says what it would have switched to.
+  kHeldReplaceUnsupported,
 };
 
 [[nodiscard]] constexpr const char* CycleOutcomeName(CycleOutcome o) noexcept {
@@ -87,6 +103,8 @@ enum class CycleOutcome : std::uint8_t {
       return "superseded";
     case CycleOutcome::kHeld:
       return "held";
+    case CycleOutcome::kHeldReplaceUnsupported:
+      return "held_replace_unsupported";
   }
   return "unknown";
 }
@@ -286,7 +304,14 @@ class PlannerCycle {
   // segments published for it, not the one the RT consumed last. Called with
   // a segment planner installed (SegmentActive).
   [[nodiscard]] BallPrediction FollowedBall(const PlannerRtState& rt) const noexcept;
+  // Whether a wake in which the RT follows a plan still runs the search
+  // (header: "WHILE A PLAN IS FOLLOWED"). Called with a segment planner
+  // installed and `rt.plan_active`.
+  [[nodiscard]] bool SearchesWhileFollowing(const PlannerRtState& rt, NowReal wake) const noexcept;
   std::int64_t pair_publish_ns_{0};  // the last pair's stamp; 0 after a reset
+  // The catch instant of the first plan the RT followed since the last reset
+  // (0 = it follows none): what `t_stop_plan` is measured back from.
+  std::int64_t first_followed_t_c_ns_{0};
   // Null = none installed. Replaced on the configure path only (non-RT, the
   // planner thread stopped); a wake reads the pointers and never writes them.
   std::unique_ptr<SegmentPlanner> segment_planner_;

@@ -355,6 +355,12 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
 
   const YAML::Node freeze = Section(planner, "freeze", "freeze");
   out.t_freeze = ReadDecision(freeze, "T_freeze", "freeze.T_freeze", 1e-3, 2.0);
+  // Absent → T_freeze: the search stops where the plan freezes. That it is not
+  // BELOW T_freeze is the binding's check (it parks, naming both values) — a
+  // malformed number is refused here like any other.
+  out.t_stop_plan = freeze["t_stop_plan"]
+                        ? ReadBounded(freeze, "t_stop_plan", "freeze.t_stop_plan", 0.0, 1e-3, 2.0)
+                        : out.t_freeze;
 
   const YAML::Node score = Section(grid, "score", "search.grid.score");
   out.score.w_sigma =

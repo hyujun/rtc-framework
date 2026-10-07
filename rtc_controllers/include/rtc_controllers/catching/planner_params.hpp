@@ -339,6 +339,13 @@ struct PlannerParams {
   int switch_samples{9};
   /// `planner.freeze.T_freeze` [s] (decision G). NaN = unset.
   double t_freeze{std::numeric_limits<double>::quiet_NaN()};
+  /// `planner.freeze.t_stop_plan` [s], ≥ T_freeze: while the RT follows a plan
+  /// on a segment planner's segments, the search goes on running until the
+  /// followed plan's catch instant is this close — then only the segment is
+  /// replanned. Absent from the YAML it is T_freeze (the parser fills it in).
+  /// NaN = the search does not run at all while a plan is followed: the value
+  /// of a PlannerParams no parser filled, and of an unset T_freeze.
+  double t_stop_plan{std::numeric_limits<double>::quiet_NaN()};
   /// `planner.search.grid.score.*` (§4.10 + decision D).
   ScoreWeights score{};
   /// `planner.search.grid.workspace.catch_box` (decision I). `set` false = unset.

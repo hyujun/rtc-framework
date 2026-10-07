@@ -101,6 +101,12 @@ struct GridCatchSearchConstants {
   double ref_zeta{1.0};
   double ref_a_max{std::numeric_limits<double>::quiet_NaN()};
   double control_dt{0.002};  ///< the rollout's confirmation step [s]
+  /// The arm follows a segment planner's segments (`planner.segment.mode` other
+  /// than closed_form). The η_jump bound of the switching rule (§4.7) is the
+  /// step a switch puts into the L4 reference's u_des — and there is no such
+  /// reference under those modes (the RT reports none), so the bound is not
+  /// judged: a switch is decided by ΔJ alone.
+  bool follows_segments{false};
 };
 
 /// Rank-gate failure bits (decision E: the gate bitmask the CSV carries).
