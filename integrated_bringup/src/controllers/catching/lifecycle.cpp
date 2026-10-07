@@ -247,7 +247,7 @@ void DemoCatchingController::DeclareProfileParameters() {
           "(robot.hand.T_close_lead; T_close_e2e when the key is absent)");
   declare("hand.T_close_lead_from_t_c", ResolvedCloseLead(),
           "the same lead as the sequencer runs it, from a plan's catch instant [s]: shorter by "
-          "s_ent / closing speed when t_c is the entrance crossing (nlp search, mpc_docking)");
+          "s_ent / closing speed under mpc_docking, whose catch instant is the entrance crossing");
   // What RETREAT actually waits (S8-C): usually DERIVED from the poses, η and
   // q_tol, so the YAML alone does not show it.
   declare("hand.T_release_timeout", hand.T_release_timeout.value,
@@ -552,7 +552,11 @@ void DemoCatchingController::DeclareProfileParameters() {
     declare("hand.docking.closure.delta_hi", h.delta_hi,
             "closure window after the entrance crossing, upper end [s]");
     declare("hand.docking.closure.sigma_tau", h.sigma_tau, "closure latency jitter [s]");
-    declare("hand.docking.closure.delta_0", hand.T_close_e2e.value - ResolvedCloseLead(),
+    // By the reference closing speed of the planner whose segments the arm
+    // follows when that is the docking planner, else the nlp search's own.
+    declare("hand.docking.closure.delta_0",
+            hand.T_close_e2e.value -
+                EntranceCloseLead(docking ? mpc_docking_params_.core : nlp_search_params_.core),
             "nominal closure instant after the entrance crossing [s] — derived: T_close_e2e - "
             "(T_close_lead - s_ent / closing speed)");
   }
@@ -1352,6 +1356,30 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
         return CallbackReturn::SUCCESS;
       }
     }
+    // SIM ONLY (#654). Both docking functions solve with a QP solver that
+    // allocates inside a solve, on the planner thread — which runs SCHED_FIFO
+    // beside a real arm. And the hand's capture set is a sim identification
+    // until it is measured on the hand (robot.hand.docking.provisional), like
+    // every other provisional block (L0 §5.3). Either parks a real-arm
+    // configuration that selects one of the two — when #654 closes, what is
+    // left of this condition is `hand_docking_.provisional`, not nothing.
+    if (planner_params_.enabled && real_arm_config_ &&
+        (search_mode_ == rtc::catching::CatchingSearchMode::kNlp ||
+         segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking)) {
+      sim_only_disabled_ = true;
+      park_reason_ = CatchingParkReason::kMpcDockingInvalid;
+      RCLCPP_ERROR(logger_,
+                   "DISABLED: real-arm configuration with planner.search.mode %s and "
+                   "planner.segment.mode %s — the nlp search and the mpc_docking planner are sim "
+                   "only until their QP solver's allocations are off the planner thread (#654)%s. "
+                   "Nothing was commanded.",
+                   rtc::catching::SearchModeName(search_mode_),
+                   rtc::catching::SegmentModeName(segment_mode_),
+                   hand_docking_.provisional
+                       ? ", and `robot.hand.docking.provisional` is true (a sim identification)"
+                       : "");
+      return CallbackReturn::SUCCESS;
+    }
     // The search rolls a candidate out on its own copies of the closed_form
     // law's five values (planner.search.grid.reference.*, stop.a_dec). Under
     // closed_form the arm follows that law, so a copy that differs makes the
@@ -1866,10 +1894,14 @@ void DemoCatchingController::SetupSupervisor() {
   };
   t_hold_ns_ = to_ns(params_.hand.T_hold);
   t_close_e2e_ns_ = to_ns(params_.hand.T_close_e2e);
-  // As run: from the plan's catch instant (ResolvedCloseLead).
+  // As run: from the plan's catch instant (ResolvedCloseLead). ONE value for
+  // the sequencer and for the RT's own t_cmd (the contact window opens on it):
+  // where the resolved one does not exist — a docking selection whose values
+  // nothing judged because the planner is off — both take the profile's own.
   const double close_lead_s = ResolvedCloseLead();
-  t_close_lead_ns_ =
-      std::isfinite(close_lead_s) ? static_cast<std::int64_t>(std::llround(close_lead_s * 1e9)) : 0;
+  t_close_lead_ns_ = std::isfinite(close_lead_s) && close_lead_s >= 0.0
+                         ? static_cast<std::int64_t>(std::llround(close_lead_s * 1e9))
+                         : to_ns(params_.hand.CloseLead());
   t_release_timeout_ns_ = to_ns(params_.hand.T_release_timeout);
   stop_deadline_ns_ = to_ns(params_.supervisor_deadline_stop_s);
   return_deadline_ns_ = to_ns(params_.supervisor_deadline_return_s);
@@ -1880,9 +1912,9 @@ void DemoCatchingController::SetupSupervisor() {
   if (!hand_step_enabled_ && params_.hand.dof == hand_dof_) {
     rtc::catching::HandSequencerConfig seq =
         rtc::catching::HandSequencerConfig::FromProfile(params_.hand);
-    // The lead as run from the plan's catch instant (ResolvedCloseLead); an
-    // unresolved one stays the invalid value FromProfile gave it.
-    if (seq.t_close_lead_ns >= 0 && t_close_lead_ns_ >= 0 && std::isfinite(close_lead_s)) {
+    // The same lead the RT runs; a profile without one keeps the invalid value
+    // FromProfile gave it, and the sequencer refuses to configure.
+    if (seq.t_close_lead_ns >= 0) {
       seq.t_close_lead_ns = t_close_lead_ns_;
     }
     hand_seq_enabled_ = hand_seq_.Configure(seq);
@@ -2267,18 +2299,23 @@ double DemoCatchingController::ResolvedCloseLead() const {
   // `robot.hand.T_close_lead` is the hand's: how long before the ball reaches
   // the catch point (the catch-frame origin) the close has to be commanded.
   // What the sequencer subtracts it from is a plan's catch instant t_c, and
-  // t_c is not that arrival under every selection: the nlp search and the
-  // mpc_docking planner put t_c at the ball's crossing of the ENTRANCE plane,
-  // s_ent before the origin along the approach axis. Under either, the lead
-  // from t_c is shorter by that flight at the reference closing speed.
-  const bool nlp = search_mode_ == rtc::catching::CatchingSearchMode::kNlp;
-  const bool docking = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking;
-  if (!nlp && !docking) {
+  // what t_c is in the arm's motion is decided by the planner whose SEGMENTS
+  // the arm follows — not by the search that produced the plan. closed_form
+  // and the mpc planner put the catch-frame origin on the ball at t_c. The
+  // mpc_docking planner puts its catch node at the ball's crossing of the
+  // ENTRANCE plane, s_ent before the origin along the approach axis: there the
+  // lead from t_c is shorter by that flight at the reference closing speed.
+  if (segment_mode_ != rtc::catching::CatchingSegmentMode::kMpcDocking) {
     return lead.value;
   }
-  // The planner whose segments the arm executes speaks for the closing speed.
-  const double c = -(docking ? mpc_docking_params_.core : nlp_search_params_.core).nu_ref.z();
-  if (!std::isfinite(hand_docking_.s_ent) || !std::isfinite(c) || !(c > 0.0)) {
+  return EntranceCloseLead(mpc_docking_params_.core);
+}
+
+double DemoCatchingController::EntranceCloseLead(
+    const rtc::catching::MpcDockingSegmentCoreParams& core) const {
+  const rtc::catching::TbdDouble lead = params_.hand.CloseLead();
+  const double c = -core.nu_ref.z();
+  if (lead.tbd || !std::isfinite(hand_docking_.s_ent) || !std::isfinite(c) || !(c > 0.0)) {
     return std::numeric_limits<double>::quiet_NaN();  // DockingConfigInvalid names it
   }
   return lead.value - hand_docking_.s_ent / c;
@@ -2346,12 +2383,27 @@ const char* DemoCatchingController::DockingConfigInvalid() {
         "'catching.planner.segment.mpc_docking.approach.n_pre_max' is unset (the "
         "planner's pre-catch grid — its map is not in this profile?)");
   }
-  if (!(ResolvedCloseLead() >= 0.0)) {
+  if ((nlp && !(EntranceCloseLead(nlp_search_params_.core) >= 0.0)) ||
+      (docking && !(EntranceCloseLead(mpc_docking_params_.core) >= 0.0))) {
     return refuse(
         "'catching.robot.hand.T_close_lead' is shorter than the ball's flight from the "
         "entrance plane to the catch point (robot.hand.docking.s_ent over the "
         "reference closing speed, core.catch.nu_ref): the close would be due after "
-        "the catch instant");
+        "the entrance crossing");
+  }
+  // A first segment is planned from the RT state the wake loaded, and the
+  // segment planners refuse one older than their bound: a search allowed to
+  // run that long leaves no first segment to publish, ever.
+  const double age_max_s =
+      1e-9 * static_cast<double>(docking ? rtc::catching::kMpcDockingMaxRtStateAgeNs
+                                         : rtc::catching::kMpcSegmentMaxRtStateAgeNs);
+  if (nlp && !(nlp_search_params_.budget_s < age_max_s)) {
+    return refuse("'catching.planner.search.nlp.budget.budget_s' is " +
+                  std::to_string(nlp_search_params_.budget_s) +
+                  " s, not below the oldest RT state the segment planner plans a first segment "
+                  "from (" +
+                  std::to_string(age_max_s) +
+                  " s): every plan the search found would be withheld as stale");
   }
   if (nlp && docking) {
     // The planner republishes the search's solution after re-evaluating it on
@@ -2481,8 +2533,10 @@ bool DemoCatchingController::SetupNlpCatchSearch(const PlannerArm& arm) {
   if (!BuildDockingLimits(arm, ResolvedSegmentEtaV(), "planner.search.nlp", np.limits)) {
     return false;
   }
-  rtc::catching::ApplyHandDocking(hand_docking_, val(params_.hand.T_close_e2e), ResolvedCloseLead(),
-                                  val(params_.ball.mass), np.core);
+  // The cores' nominal closure instant is from THEIR catch node, the entrance
+  // crossing — whichever planner's segments the arm follows.
+  rtc::catching::ApplyHandDocking(hand_docking_, val(params_.hand.T_close_e2e),
+                                  EntranceCloseLead(np.core), val(params_.ball.mass), np.core);
   // The nominal posture of the posture cost: the wait pose, model order.
   np.core.q_nom.resize(arm.nv);
   for (int m = 0; m < arm.nv; ++m) {
@@ -2536,8 +2590,8 @@ bool DemoCatchingController::SetupMpcDockingSegmentPlanner(const PlannerArm& arm
   dc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
   dc.control_dt = GetDefaultDt();
   rtc::catching::MpcDockingSegmentPlannerParams dp = mpc_docking_params_;
-  rtc::catching::ApplyHandDocking(hand_docking_, val(params_.hand.T_close_e2e), ResolvedCloseLead(),
-                                  val(params_.ball.mass), dp.core);
+  rtc::catching::ApplyHandDocking(hand_docking_, val(params_.hand.T_close_e2e),
+                                  EntranceCloseLead(dp.core), val(params_.ball.mass), dp.core);
   dp.core.q_nom.resize(arm.nv);
   for (int m = 0; m < arm.nv; ++m) {
     const auto d = static_cast<std::size_t>(arm.device_of_model[static_cast<std::size_t>(m)]);

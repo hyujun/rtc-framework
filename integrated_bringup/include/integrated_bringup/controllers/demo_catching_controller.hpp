@@ -919,9 +919,17 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// The close lead as the sequencer runs it, from a plan's catch instant [s]:
   /// `robot.hand.T_close_lead` (to the ball's arrival at the catch point),
-  /// less the flight from the entrance plane when the selected search or
-  /// segment planner puts t_c at the entrance crossing. NaN while unresolved.
+  /// less the flight from the entrance plane when the planner whose segments
+  /// the arm follows (mpc_docking) puts t_c at the entrance crossing. NaN
+  /// while unresolved.
   [[nodiscard]] double ResolvedCloseLead() const;
+  /// The lead from the ball's crossing of the hand's ENTRANCE plane, at the
+  /// reference closing speed of `core` [s]: `robot.hand.T_close_lead` less
+  /// s_ent / c. What a docking function's nominal closure instant is
+  /// T_close_e2e minus, whichever planner's segments the arm follows. NaN when
+  /// the lead, s_ent or the speed is not known.
+  [[nodiscard]] double EntranceCloseLead(
+      const rtc::catching::MpcDockingSegmentCoreParams& core) const;
 
   /// The first planner value that is a decision and is unset, or nullptr.
   [[nodiscard]] const char* PlannerDecisionMissing() const noexcept;

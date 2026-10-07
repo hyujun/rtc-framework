@@ -224,16 +224,19 @@ demo_catching_controller:
         # holds when it has just closed as the ball arrives.)
         # Read by the hand sequencer, the plan's t_cmd, the freeze-window bound
         # and the grid search's commit gate. The sequencer subtracts a lead
-        # from a plan's catch instant t_c, and t_c is the arrival at the origin
-        # only under the grid search with closed_form or mpc: the nlp search
-        # and the mpc_docking planner put t_c at the crossing of the entrance
-        # plane (docking.s_ent before the origin), so under either the
+        # from a plan's catch instant t_c, and what t_c is in the arm's motion
+        # is decided by the planner whose SEGMENTS the arm follows: closed_form
+        # and mpc put the catch-frame origin on the ball at t_c (whichever
+        # search made the plan), so under them this value runs as written.
+        # The mpc_docking planner puts t_c at the ball's crossing of the
+        # entrance plane (docking.s_ent before the origin), so under it the
         # controller runs this value LESS s_ent over the reference closing
-        # speed — 0.2805 - 0.007 / 0.55 = 0.2678 s, and the closure then
-        # completes T_close_e2e - 0.2678 = 10.2 ms after the crossing (the
-        # docking core's delta_0, mid-window). Mirrored as
-        # hand.T_close_lead_from_t_c. Absent, the key is T_close_e2e (and the
-        # configure log says so). Provisional (sim).
+        # speed — 0.2805 - 0.007 / 0.55 = 0.2678 s (mirrored as
+        # hand.T_close_lead_from_t_c). The docking cores of either docking
+        # function are given that same entrance-axis lead: their closure
+        # completes T_close_e2e - 0.2678 = 10.2 ms after the crossing (delta_0,
+        # mid-window). Absent, the key is T_close_e2e (and the configure log
+        # says so). Provisional (sim).
         T_close_lead: 0.2805
 
         # ── The docking capture set (E1-F15 #741, re-measured in E1-F16 #742) ──
