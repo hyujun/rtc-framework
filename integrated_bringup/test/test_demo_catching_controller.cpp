@@ -1483,86 +1483,6 @@ TEST_P(ShippedCatchingProfile, MirrorsTheTrialRunnerInputsTheControllerLoaded) {
   EXPECT_FALSE(result.successful);
 }
 
-TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheController) {
-  // MD-90: the profile is a main file plus three `include:` fragments
-  // (catching/search_grid, planner_closed_form, segment_mpc). One mirrored key
-  // per fragment is moved in the composed tree — the place a CM override
-  // writes — and read back from the configured controller.
-  //
-  // The main file read on its own must NOT hold these keys: that is what makes
-  // each line below a statement about its fragment, and what turns the suite
-  // red when an entry is dropped from the include list.
-  const auto& [profile, expected_dof] = GetParam();
-  static_cast<void>(expected_dof);
-
-  struct Case {
-    const char* fragment;
-    std::vector<std::string> path;  // under `catching:`
-    const char* mirror;
-    double moved_by;
-  };
-
-  const std::vector<Case> cases = {
-      {"catching/search_grid.yaml",
-       {"planner", "search", "grid", "time", "margin"},
-       "planner.search.grid.time.margin",
-       0.01},
-      {"catching/planner_closed_form.yaml", {"reference", "omega"}, "reference.omega", -1.0},
-      {"catching/segment_mpc.yaml",
-       {"planner", "segment", "mpc", "catch", "gamma_ref"},
-       "planner.segment.mpc.catch.gamma_ref",
-       -0.1},
-      {"catching/segment_mpc.yaml",
-       {"planner", "segment", "mpc", "switch_margin"},
-       "planner.segment.mpc.switch_margin",
-       -0.1},
-  };
-  const auto at = [](const YAML::Node& root, const std::vector<std::string>& path) {
-    YAML::Node cursor = YAML::Clone(root);  // a const walk: operator[] must not insert
-    for (const auto& key : path) {
-      const YAML::Node& view = cursor;
-      const YAML::Node next = view[key];
-      if (!next.IsDefined()) {
-        return YAML::Node(YAML::NodeType::Undefined);
-      }
-      cursor.reset(next);
-    }
-    return cursor;
-  };
-
-  const std::string main_path = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
-                                "/controllers/demo_catching_controller.yaml";
-  const YAML::Node main_only = YAML::LoadFile(main_path)["demo_catching_controller"]["catching"];
-  YAML::Node node = ShippedWithPlanner(profile, true, false);
-
-  std::vector<double> moved;
-  for (const Case& c : cases) {
-    ASSERT_FALSE(at(main_only, c.path).IsDefined())
-        << profile << ": " << c.mirror << " is in the main file, not in " << c.fragment;
-    const YAML::Node shipped = at(node["catching"], c.path);
-    ASSERT_TRUE(shipped.IsDefined()) << profile << ": " << c.mirror
-                                     << " is missing from the composed tree (" << c.fragment << ")";
-    moved.push_back(shipped.as<double>() + c.moved_by);
-    YAML::Node parent = node["catching"];
-    for (std::size_t i = 0; i + 1 < c.path.size(); ++i) {
-      parent.reset(parent[c.path[i]]);
-    }
-    parent[c.path.back()] = moved.back();
-  }
-
-  auto node_handle = NodeWithProfile("catching_shipped_fragments_" + profile, "mpc_on");
-  DemoCatchingController ctrl{""};
-  BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
-  const rclcpp_lifecycle::State prev;
-  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
-            DemoCatchingController::CallbackReturn::SUCCESS)
-      << profile;
-  for (std::size_t i = 0; i < cases.size(); ++i) {
-    EXPECT_DOUBLE_EQ(node_handle->get_parameter(cases[i].mirror).as_double(), moved[i])
-        << profile << ": " << cases[i].mirror << " (" << cases[i].fragment << ")";
-  }
-}
-
 // The acceleration box is two plain keys of the main file: the search reads it,
 // and so do the stop and homing ramps, so it is no one function's. The mirror
 // is what every reader of the loaded value sees, so it is the place to pin the
@@ -2447,6 +2367,134 @@ class ConfigureLog {
 
   rcutils_logging_output_handler_t previous_;
 };
+
+TEST_P(ShippedCatchingProfile, AKeyOfEachFragmentReachesTheControllerThatRunsIt) {
+  // MD-90, E1-F16: the profile is a main file plus five `include:` fragments,
+  // one per function. One mirrored key per fragment is moved in the composed
+  // tree — the place a CM override writes — and read back from a controller
+  // configured with a selection that RUNS that fragment's function: a function
+  // that does not run has no mirror, because its keys are not read.
+  //
+  // The main file read on its own must NOT hold these keys: that is what makes
+  // each line below a statement about its fragment, and what turns the suite
+  // red when an entry is dropped from the include list.
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+
+  using Path = std::vector<std::string>;  // under `catching:`
+
+  struct Case {
+    const char* fragment;
+    const char* search;
+    const char* segment;
+    Path path;
+    const char* mirror;
+    double moved_by;
+    // Keys that have to move with it for the selection to run: the grid
+    // search's own copy of a closed_form value parks grid x closed_form when
+    // the two differ.
+    std::vector<Path> with;
+  };
+
+  const std::vector<Case> cases = {
+      {kFragmentGrid,
+       "grid",
+       "mpc",
+       {"planner", "search", "grid", "time", "margin"},
+       "planner.search.grid.time.margin",
+       0.01,
+       {}},
+      {kFragmentClosedForm,
+       "grid",
+       "closed_form",
+       {"reference", "omega"},
+       "reference.omega",
+       -1.0,
+       {{"planner", "search", "grid", "reference", "omega"}}},
+      {kFragmentMpc,
+       "grid",
+       "mpc",
+       {"planner", "segment", "mpc", "catch", "gamma_ref"},
+       "planner.segment.mpc.catch.gamma_ref",
+       -0.1,
+       {}},
+      {kFragmentMpc,
+       "grid",
+       "mpc",
+       {"planner", "segment", "mpc", "switch_margin"},
+       "planner.segment.mpc.switch_margin",
+       -0.1,
+       {}},
+      {kFragmentNlp,
+       "nlp",
+       "mpc",
+       {"planner", "search", "nlp", "t_max"},
+       "planner.search.nlp.t_max",
+       -0.01,
+       {}},
+      {kFragmentDocking,
+       "grid",
+       "mpc_docking",
+       {"planner", "segment", "mpc_docking", "switch_margin"},
+       "planner.segment.mpc_docking.switch_margin",
+       -0.1,
+       {}},
+  };
+  const auto at = [](const YAML::Node& root, const Path& path) {
+    YAML::Node cursor = YAML::Clone(root);  // a const walk: operator[] must not insert
+    for (const auto& key : path) {
+      const YAML::Node& view = cursor;
+      const YAML::Node next = view[key];
+      if (!next.IsDefined()) {
+        return YAML::Node(YAML::NodeType::Undefined);
+      }
+      cursor.reset(next);
+    }
+    return cursor;
+  };
+  const auto move = [&at](YAML::Node catching, const Path& path, double by) {
+    const double moved = at(catching, path).as<double>() + by;
+    YAML::Node parent = catching;
+    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+      parent.reset(parent[path[i]]);
+    }
+    parent[path.back()] = moved;
+    return moved;
+  };
+
+  const std::string main_path = std::string(RTC_DEMO_SHARED_CONFIG_DIR) + "/" + profile +
+                                "/controllers/demo_catching_controller.yaml";
+  const YAML::Node main_only = YAML::LoadFile(main_path)["demo_catching_controller"]["catching"];
+
+  int n = 0;
+  for (const Case& c : cases) {
+    SCOPED_TRACE(std::string(c.mirror) + " (" + c.fragment + ", " + c.search + " x " + c.segment +
+                 ")");
+    ASSERT_FALSE(at(main_only, c.path).IsDefined())
+        << profile << ": the key is in the main file, not in its fragment";
+    YAML::Node node = ShippedWithSelection(profile, c.search, c.segment, {});
+    ASSERT_TRUE(at(node["catching"], c.path).IsDefined())
+        << profile << ": the key is missing from the composed tree";
+    const double moved = move(node["catching"], c.path, c.moved_by);
+    for (const Path& other : c.with) {
+      ASSERT_TRUE(at(node["catching"], other).IsDefined()) << profile;
+      static_cast<void>(move(node["catching"], other, c.moved_by));
+    }
+
+    auto node_handle = NodeWithProfile(
+        "catching_shipped_fragments_" + profile + "_" + std::to_string(n++), "mpc_on");
+    DemoCatchingController ctrl{""};
+    BringUpShipped(ctrl, profile, ShippedSimConfigs(profile, node));
+    const rclcpp_lifecycle::State prev;
+    const ConfigureLog log;
+    ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    ASSERT_FALSE(ctrl.IsSimOnlyDisabled()) << "the moved key parked the selection:\n"
+                                           << ConfigureLog::All();
+    EXPECT_DOUBLE_EQ(node_handle->get_parameter(c.mirror).as_double(), moved);
+  }
+}
 
 TEST_P(ShippedCatchingProfile, EachSelectionConfiguresOnItsOwnFragmentsAlone) {
   const auto& [profile, expected_dof] = GetParam();
