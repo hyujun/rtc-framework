@@ -26,18 +26,26 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-mujoco = pytest.importorskip(
-    "mujoco",
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "integrated_bringup" / "tools" / "docking_ident"))
+import rig_config as rc  # noqa: E402
+
+try:
+    import mujoco
+except ImportError:
+    mujoco = None
+else:
+    import rig as rg
+
+# Every test is SKIPPED without mujoco, not the module: a file that collects
+# nothing makes pytest exit 5, which colcon reports as a failed test.
+pytestmark = pytest.mark.skipif(
+    mujoco is None,
     reason=(
         "mujoco absent — this file is manual-only: colcon runs pytest under /usr/bin/python3. "
         "Run: .venv/bin/python -m pytest <this file>"
     ),
 )
-
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "integrated_bringup" / "tools" / "docking_ident"))
-import rig as rg  # noqa: E402
-import rig_config as rc  # noqa: E402
 
 RADIUS = 0.0335
 PALM_TOP = 0.01  # palm box half-height: its top face in the palm frame
