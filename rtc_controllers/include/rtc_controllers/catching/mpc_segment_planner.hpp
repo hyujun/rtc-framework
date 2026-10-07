@@ -276,12 +276,12 @@ struct MpcSegmentBallTarget {
 ///
 /// Position and velocity are SampleAt's: valid only inside the horizon (not
 /// extrapolated) and with ‖v‖ > v_eps. Σ_p is the position block of the
-/// covariance bracketing t_c by SampleAt's own integer rule
-/// (t_i ≤ t_c < t_{i+1}; the last sample is itself): at t_c == t_i exactly
-/// sample i's block alone — a zero weight times a NaN neighbour would still be
-/// NaN — otherwise the blocks of i and i + 1 interpolated linearly on integer
-/// ns. Both must be finite and the covariance must belong to the same snapshot
-/// (`cov_matched`); otherwise `sigma_valid` is false.
+/// covariance SampleBallNode gives at t_c (ball_node_samples.hpp): the nearest
+/// sample's, propagated over t_c − t_i by F Σ Fᵀ with the constant-velocity
+/// transition — the one rule every planner reads the prediction by. It must be
+/// finite (a NaN in the nearest sample, not in a farther one, counts) and the
+/// covariance must belong to the same snapshot (`cov_matched`); otherwise
+/// `sigma_valid` is false.
 [[nodiscard]] MpcSegmentBallTarget MakeMpcSegmentBallTarget(const TrajectorySnapshot& traj,
                                                             const CovarianceSnapshot& cov,
                                                             bool cov_matched, std::int64_t t_c_ns,

@@ -1,6 +1,7 @@
 // MPC segment planner (MPC E1-F03, E1-F08). See mpc_segment_planner.hpp.
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 
+#include "rtc_controllers/catching/ball_node_samples.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/time_types.hpp"  // SecondsToNs, CeilDiv
 #include "rtc_controllers/catching/traj_sampler.hpp"
@@ -119,45 +120,25 @@ MpcSegmentBallTarget MakeMpcSegmentBallTarget(const TrajectorySnapshot& traj,
     b.v_b = e.v;
     b.a_d = -e.v / speed;
   }
-  // Σ_p: SampleAt's bracket, on integer ns. `traj.n` is bounded before any
-  // index (wire data), and the covariance must hold the same samples.
+  // Σ_p: the position block of the covariance SampleBallNode gives at t_c —
+  // the nearest sample's, propagated over t_c − t_i (ball_node_samples.hpp), the
+  // one rule every planner reads the prediction's covariance by. `traj.n` is
+  // bounded before any index (wire data), the covariance must hold the same
+  // samples, and an instant outside the prediction is refused here (the node
+  // sample does not refuse the one past it).
   const int n = traj.n;
   if (!cov_matched || !cov.valid || !traj.valid || n < 1 || n > kCap || cov.n != n) {
     return b;
   }
-  const auto t_at = [&traj](int i) noexcept { return traj.s[static_cast<std::size_t>(i)].t_ns; };
-  if (t_c_ns < t_at(0) || t_c_ns > t_at(n - 1)) {
+  if (t_c_ns < traj.s[0].t_ns || t_c_ns > traj.s[static_cast<std::size_t>(n - 1)].t_ns) {
     return b;
   }
-  int i = 0;
-  while (i + 1 < n && t_at(i + 1) <= t_c_ns) {
-    ++i;
+  int hint = 0;
+  const BallNodeSample node = SampleBallNode(traj, &cov, cov_matched, BallTime{t_c_ns}, hint);
+  if (!node.valid || !node.cov_valid) {
+    return b;
   }
-  const auto block = [&cov](int k, int r, int c) noexcept {
-    return cov.c[static_cast<std::size_t>(k)][static_cast<std::size_t>(r * 6 + c)];
-  };
-  Eigen::Matrix3d s = Eigen::Matrix3d::Zero();
-  if (t_c_ns == t_at(i)) {
-    for (int r = 0; r < 3; ++r) {
-      for (int c = 0; c < 3; ++c) {
-        s(r, c) = block(i, r, c);
-      }
-    }
-  } else {
-    if (i + 1 >= n) {
-      return b;
-    }
-    const std::int64_t span = t_at(i + 1) - t_at(i);
-    if (span < kMinInterpIntervalNs) {
-      return b;
-    }
-    const double alpha = static_cast<double>(t_c_ns - t_at(i)) / static_cast<double>(span);
-    for (int r = 0; r < 3; ++r) {
-      for (int c = 0; c < 3; ++c) {
-        s(r, c) = (1.0 - alpha) * block(i, r, c) + alpha * block(i + 1, r, c);
-      }
-    }
-  }
+  const Eigen::Matrix3d s = node.cov.topLeftCorner<3, 3>();
   if (!s.allFinite()) {
     return b;
   }

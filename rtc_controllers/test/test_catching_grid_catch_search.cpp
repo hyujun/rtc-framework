@@ -15,6 +15,7 @@
 //
 // Include order: the Eigen allocation tripwire must precede every Eigen header.
 #include "rtc_base/testing/no_malloc_scope.hpp"
+#include "rtc_controllers/catching/ball_node_samples.hpp"
 #include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/time_feasibility.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
@@ -22,6 +23,7 @@
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 
+#include <Eigen/Eigenvalues>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -460,6 +462,63 @@ TEST(GridCatchSearchPlan, TheCloseLeadDrivesTheCommandInstantAndTheCommitGate) {
   ASSERT_TRUE(c.valid);
   EXPECT_EQ(c.t_cmd_ns, c.t_c_ns);
   EXPECT_NE(unknown.chosen_rank_mask & rtc::catching::kRankCommitLead, 0);
+}
+
+// ── 2b. The monitored covariance (E1-F16) ────────────────────────────────────
+
+// The followed plan's σ is read by the rule every planner reads the prediction
+// by: the nearest sample's covariance propagated to t_c, F Σ Fᵀ — not that
+// sample's block as it stands.
+TEST(GridCatchSearchMonitor, SigmaIsThePropagatedPositionBlockAtTheCatchInstant) {
+  auto rig = std::make_unique<Rig>();
+  ASSERT_TRUE(rig->Configure());
+  const auto traj = rig->Traj();
+  auto cov = Rig::Cov(traj, 0.002);
+  for (int k = 0; k < traj.n; ++k) {
+    auto& e = cov.c[static_cast<std::size_t>(k)];
+    e[14] = 3e-4;          // p_z p_z
+    e[35] = 1e-2;          // v_z v_z
+    e[17] = e[32] = 1e-3;  // p_z v_z (|rho| < 1: the whole matrix stays PSD)
+    e[0] = 1e-4;           // p_x p_x
+    e[7] = 2e-4;           // p_y p_y
+  }
+  // t_c between samples 10 and 11, not at the midpoint: the nearest is sample 10.
+  const std::int64_t t_c = traj.s[10].t_ns + 13 * kMs;
+  PlanSnapshot followed{};
+  followed.valid = true;
+  followed.plan_id = 31;
+  followed.t_c_ns = t_c;
+  rig->search.NotePublished(followed);
+  PlannerRtState rt = rig->Rt();
+  rt.plan_active = true;
+  rt.plan_id = 31;
+  SearchStats stats;
+  rig->search.Monitor(traj, cov, true, rt, stats);
+  ASSERT_TRUE(std::isfinite(stats.sigma_l));
+
+  const auto sigma_of = [](const Eigen::Matrix3d& pp) {
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(pp);
+    return std::sqrt(std::max(es.eigenvalues().maxCoeff(), 0.0));
+  };
+  // The same statistic from SampleBallNode's propagated block ...
+  int hint = 0;
+  const rtc::catching::BallNodeSample node =
+      rtc::catching::SampleBallNode(traj, &cov, true, rtc::catching::BallTime{t_c}, hint);
+  ASSERT_TRUE(node.cov_valid);
+  EXPECT_NEAR(stats.sigma_l, sigma_of(node.cov.topLeftCorner<3, 3>()), 1e-12);
+  // ... and from F Sigma_10 F^T written out.
+  Eigen::Matrix<double, 6, 6> sigma;
+  for (int r = 0; r < 6; ++r) {
+    for (int q = 0; q < 6; ++q) {
+      sigma(r, q) = cov.c[10][static_cast<std::size_t>(r * 6 + q)];
+    }
+  }
+  Eigen::Matrix<double, 6, 6> F = Eigen::Matrix<double, 6, 6>::Identity();
+  F.topRightCorner<3, 3>() = 0.013 * Eigen::Matrix3d::Identity();
+  const Eigen::Matrix<double, 6, 6> moved = F * sigma * F.transpose();
+  EXPECT_NEAR(stats.sigma_l, sigma_of(moved.topLeftCorner<3, 3>()), 1e-12);
+  // It is not the sample's own block, which the old reading gave.
+  EXPECT_GT(std::abs(stats.sigma_l - GridCatchSearch::SigmaMax(cov, 10)), 1e-5);
 }
 
 // ── 3. Settle and budget ─────────────────────────────────────────────────────
