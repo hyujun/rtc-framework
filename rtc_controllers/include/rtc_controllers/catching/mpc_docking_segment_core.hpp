@@ -564,6 +564,14 @@ struct MpcDockingSegmentCoreResult {
   /// margin is positive, c is not guarded, `chance` is on).
   double linearization_ratio{0.0};
   bool linearization_ratio_defined{false};
+  /// What the catch node's lateral rows and its timing row leave, signed [m]:
+  /// min over faces of b − h, and the timing row's value. Positive is room,
+  /// negative the violation `violation` reports for the group — which is 0
+  /// for a row that holds and so cannot say how far it is from not holding.
+  /// The rows are the ones the solve ran on, tightened by `chance` or not.
+  /// NaN without a face / with the timing row off, and before any iterate.
+  double lateral_margin{std::numeric_limits<double>::quiet_NaN()};
+  double timing_margin{std::numeric_limits<double>::quiet_NaN()};
   double tau_ratio_max{0.0};  ///< max |τ/τ_max| over nodes 1..N (RNEA)
   int approach_nodes{0};      ///< |A|
   // ── With catch_time_variable (zero otherwise) ──
@@ -760,6 +768,10 @@ class MpcDockingSegmentCore {
     // With catch_time_variable: the two groups that are elastic only then.
     double viol_post_box{0.0};  // Σ over nodes k ≥ k_c of the node's largest box excess
     double viol_terminal{0.0};  // the largest |q̇_N|, |q̈_N|
+    // Signed room of the catch node's lateral rows and its timing row (result's
+    // lateral_margin / timing_margin); NaN where the row does not exist.
+    double lateral_margin{std::numeric_limits<double>::quiet_NaN()};
+    double timing_margin{std::numeric_limits<double>::quiet_NaN()};
     bool ok{false};
   };
 

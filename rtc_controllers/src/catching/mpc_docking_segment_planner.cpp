@@ -38,6 +38,40 @@ void SetCoreReason(SegmentRecord& rec, MpcDockingReason reason) noexcept {
   rec.core_reason_name = MpcDockingReasonName(reason);
 }
 
+// The record's group arrays are sized apart from the core (segment_planner.hpp
+// does not include it): the two have to agree.
+static_assert(kSegmentDockingRowGroups == static_cast<std::size_t>(kNumDockingRowGroups));
+static_assert(kSegmentDockingElasticGroups == static_cast<std::size_t>(kNumDockingElasticGroups));
+
+// The core's account of a solve that reached an iterate, as the record carries it.
+void RecordSolve(const MpcDockingSegmentCoreResult& r, DockingSolveStats& s) noexcept {
+  s.ran = true;
+  s.qp_solves = r.qp_solves;
+  s.qp_iterations = r.qp_iterations;
+  s.backtracks = r.backtracks;
+  s.mu_updates = r.mu_updates;
+  s.start_us = r.start_us;
+  s.linearize_us = r.linearize_us;
+  s.assemble_us = r.assemble_us;
+  s.qp_us = r.qp_us;
+  s.merit_us = r.merit_us;
+  s.kkt_residual = r.kkt_residual;
+  s.grad_norm = r.grad_norm;
+  s.complementarity = r.complementarity;
+  s.infeasible_group_name =
+      r.reason == MpcDockingReason::kInfeasible ? DockingRowGroupName(r.infeasible_group) : "none";
+  s.violation = r.violation;
+  s.elastic = r.elastic;
+  s.c_catch = r.c_catch;
+  s.c_guarded = r.c_guarded;
+  s.sigma_s = r.sigma_s;
+  s.sigma_t = r.sigma_t;
+  s.lateral_margin = r.lateral_margin;
+  s.timing_margin = r.timing_margin;
+  s.cost_reference = r.cost.reference;
+  s.cost_stop = r.cost.stop;
+}
+
 // max |v_i|; NaN when a component is not finite (std::max would drop it).
 [[nodiscard]] double MaxAbsOrNan(const Eigen::Ref<const Eigen::VectorXd>& v) noexcept {
   double worst = 0.0;
@@ -374,6 +408,20 @@ SegmentOutcome MpcDockingSegmentPlanner::Judge(const MpcDockingSegmentCoreResult
   rec.iterations = r.iterations;
   rec.qp_status = r.qp_status;
   rec.tau_ratio_max = r.tau_ratio_max;
+  // An iterate exists from here on, whatever the solve ended as: its account
+  // and its slacks are recorded for every ending, so that a solve that failed
+  // or was cut can be read for WHY. The corridor and the speed envelope are
+  // soft in the problem: a solution every hard row accepts may still lean on
+  // their slacks.
+  RecordSolve(r, rec.docking);
+  double slack_c = 0.0;
+  double slack_v = 0.0;
+  for (int i = 0; i < r.approach_nodes && i < kMaxMpcNodes; ++i) {
+    slack_c = std::max(slack_c, r.slack_c[U(i)]);
+    slack_v = std::max(slack_v, r.slack_v[U(i)]);
+  }
+  rec.slack_max = slack_c;
+  rec.slack_v = slack_v;
   if (r.reason == MpcDockingReason::kDeadline || end - start > budget_ns) {
     return SegmentOutcome::kBudget;
   }
@@ -383,16 +431,6 @@ SegmentOutcome MpcDockingSegmentPlanner::Judge(const MpcDockingSegmentCoreResult
   if (!r.feasible || !converged) {
     return SegmentOutcome::kSolveFailed;
   }
-  // The corridor and the speed envelope are soft in the problem: a solution
-  // every hard row accepts may still lean on their slacks.
-  double slack_c = 0.0;
-  double slack_v = 0.0;
-  for (int i = 0; i < r.approach_nodes && i < kMaxMpcNodes; ++i) {
-    slack_c = std::max(slack_c, r.slack_c[U(i)]);
-    slack_v = std::max(slack_v, r.slack_v[U(i)]);
-  }
-  rec.slack_max = slack_c;
-  rec.slack_v = slack_v;
   const double tol = params_.core.tol_violation;
   if (!std::isfinite(slack_c) || !std::isfinite(slack_v) || slack_c > params_.slack_c_max + tol ||
       slack_v > params_.slack_v_max + tol) {

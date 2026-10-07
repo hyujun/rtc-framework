@@ -42,8 +42,11 @@
 #include "rtc_controllers/catching/traj_ingress.hpp"  // CovarianceSnapshot
 #include "rtc_controllers/catching/trajectory.hpp"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 
 namespace rtc::catching {
 
@@ -154,6 +157,51 @@ enum class SegmentKind : std::uint8_t {
   return "unknown";
 }
 
+/// How many row groups a docking solve reports on, and how many of them — the
+/// leading ones — carry an elastic. The groups are the docking core's
+/// (mpc_docking_segment_core.hpp: DockingRowGroup, in that order); the planner
+/// that fills the block below asserts the two counts against it.
+inline constexpr std::size_t kSegmentDockingRowGroups = 9;
+inline constexpr std::size_t kSegmentDockingElasticGroups = 7;
+
+/// What a solve of the mpc_docking planner adds to SegmentRecord: why the solve
+/// ended where it did and where its time went. Left at its default by every
+/// other planner (`ran` false), and by a docking solve the core refused before
+/// any iterate existed. Not part of the trace digest of the fields below.
+struct DockingSolveStats {
+  bool ran{false};  ///< a docking solve (or evaluation) that reached an iterate filled this
+  std::int32_t qp_solves{0};      ///< QPs solved, penalty re-solves and cold retries included
+  std::int32_t qp_iterations{0};  ///< the QP solver's iterations, summed
+  std::int32_t backtracks{0};     ///< step halvings, summed over iterations
+  std::int32_t mu_updates{0};     ///< QP re-solves after growing a penalty
+  /// Where the solve's time went, on the core's own clock [µs]: before the
+  /// first iterate, linearising, assembling the QPs, in the QP solver, and in
+  /// the merit evaluation.
+  double start_us{0.0}, linearize_us{0.0}, assemble_us{0.0}, qp_us{0.0}, merit_us{0.0};
+  double kkt_residual{0.0};  ///< stationarity residual of the last QP (∞-norm)
+  double grad_norm{0.0};  ///< ‖∇J‖∞ at the same point — what the residual is judged against
+  double complementarity{0.0};  ///< max |λ_i · gap_i| of the last QP
+  /// The row group the core named when it ended infeasible, as the core spells
+  /// it (static storage, never null); "none" for every other ending.
+  const char* infeasible_group_name{"none"};
+  /// Largest violation per row group at the returned iterate, in the group's
+  /// unit (≥ 0; 0 for a group that holds), and the largest elastic per elastic
+  /// group in the last QP.
+  std::array<double, kSegmentDockingRowGroups> violation{};
+  std::array<double, kSegmentDockingElasticGroups> elastic{};
+  // ── The catch node at the returned iterate ──
+  double c_catch{0.0};    ///< closing speed [m/s]
+  bool c_guarded{false};  ///< the closing speed is at or below the core's floor
+  double sigma_s{0.0};  ///< std of the ball along the crossing direction [m]; 0 without chance rows
+  double sigma_t{0.0};  ///< std of the crossing instant [s]; 0 without chance rows
+  /// Signed room of the catch node's lateral rows and of its timing row [m]:
+  /// positive is room, negative a violation. NaN for a row the problem lacks.
+  double lateral_margin{0.0};
+  double timing_margin{0.0};
+  double cost_reference{0.0};  ///< the solve's cost up to the catch node
+  double cost_stop{0.0};       ///< the stop part's cost
+};
+
 struct SegmentRecord {
   SegmentOutcome outcome{SegmentOutcome::kOff};
   /// The solving core's own reason as its code: an enumerator of the installed
@@ -215,7 +263,12 @@ struct SegmentRecord {
   /// The segment x₀ came from (a replan: the reference too): a replan, and the
   /// first solve of a replacement. 0 when x₀ is the reported command.
   std::uint32_t source_seq{0};
+  /// The mpc_docking planner's own account of the solve (E1-F18). Not a field
+  /// of the trace digest.
+  DockingSolveStats docking{};
 };
+
+static_assert(std::is_trivially_copyable_v<SegmentRecord>);
 
 /// @brief The ball's prediction as one wake read it: the trajectory snapshot
 ///        and the covariance box, not owned.

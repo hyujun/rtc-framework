@@ -141,6 +141,42 @@ enum class CycleOutcome : std::uint8_t {
   return "unknown";
 }
 
+/// Where a wake's attempt to REPLACE the plan the RT follows ended (header:
+/// "WHILE A PLAN IS FOLLOWED"). The search's verdict alone (`search.decision`
+/// kReplaced) does not say it: the pair may never be solved for, be withheld
+/// with its first segment, or be dropped at its re-check — and the first of
+/// those leaves no other trace in the record. A log writes the NAME.
+enum class ReplaceStep : std::uint8_t {
+  kNone = 0,  ///< no replacement was attempted on this wake
+  /// Not solved for: no first segment could start before the followed plan
+  /// freezes.
+  kTooLateFollowed,
+  /// Not solved for: the earliest start of a first segment is within T_freeze
+  /// of the NEW plan's catch instant.
+  kTooLateNew,
+  kWithheld,    ///< solved for, and its first segment was withheld (`replacement`)
+  kSuperseded,  ///< solved, and the pair's re-check dropped it
+  kPublished,   ///< the replacement pair was stored
+};
+
+[[nodiscard]] constexpr const char* ReplaceStepName(ReplaceStep s) noexcept {
+  switch (s) {
+    case ReplaceStep::kNone:
+      return "none";
+    case ReplaceStep::kTooLateFollowed:
+      return "too_late_followed";
+    case ReplaceStep::kTooLateNew:
+      return "too_late_new";
+    case ReplaceStep::kWithheld:
+      return "withheld";
+    case ReplaceStep::kSuperseded:
+      return "superseded";
+    case ReplaceStep::kPublished:
+      return "published";
+  }
+  return "unknown";
+}
+
 struct PlannerCycleRecord {
   CycleOutcome outcome{CycleOutcome::kIdle};
   /// This wake saw the RT's reset epoch move (a trial reset since last wake).
@@ -179,6 +215,8 @@ struct PlannerCycleRecord {
   /// every other wake; a replacement pair that was published or superseded is
   /// accounted in `segment`, as a first pair is.
   SegmentRecord replacement{};
+  /// How far this wake's replacement got (kNone: it attempted none).
+  ReplaceStep replace_step{ReplaceStep::kNone};
 };
 
 static_assert(std::is_trivially_copyable_v<PlannerCycleRecord>);

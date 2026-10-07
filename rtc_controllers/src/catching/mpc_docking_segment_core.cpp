@@ -1413,6 +1413,9 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
         nu_rate_.noalias() += rel.dnu_dvb * a_b;
       }
       double lateral = 0.0;
+      // The same maximum without the floor at 0: how far inside the tightest
+      // face is, for the result's lateral_margin.
+      double lateral_signed = -kInf;
       for (int i = 0; i < p.n_faces; ++i) {
         const auto fi = static_cast<std::size_t>(i);
         DockingLateralChanceRow(kin_, rel, sigma_p_, p.face_a[fi], kappa_face_[fi], p.c_min,
@@ -1420,15 +1423,21 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
         if (rates) {
           lateral_rate_[fi] = ball_grad.Rate(v_b, a_b);
         }
-        lateral = std::max(lateral, seen(lateral_[fi].value) - p.face_b[fi]);
+        const double excess = seen(lateral_[fi].value) - p.face_b[fi];
+        lateral = std::max(lateral, excess);
+        lateral_signed = std::max(lateral_signed, excess);
       }
       add(DockingRowGroup::kLateral, Positive(lateral));
+      if (p.n_faces > 0) {
+        ev.lateral_margin = -lateral_signed;
+      }
       if (timing_on_) {
         DockingTimingRow(kin_, rel, sigma_p_, k_timing_, p.eps_sigma, timing_, grad);
         if (rates) {
           timing_rate_ = ball_grad.Rate(v_b, a_b);
         }
         add(DockingRowGroup::kTiming, Positive(-seen(timing_.value)));
+        ev.timing_margin = timing_.value;
       }
       DockingAxialSpeedRow(kin_, rel, sigma_b_, -kappa_nu_, p.eps_sigma, axial_lo_, grad);
       if (rates) {
@@ -2257,6 +2266,8 @@ void MpcDockingSegmentCore::Finish(const Evaluation& ev, MpcDockingReason reason
     out.slack_v[static_cast<std::size_t>(i)] = slack_v_[static_cast<std::size_t>(i)];
   }
   out.tau_ratio_max = ev.tau_ratio_max;
+  out.lateral_margin = ev.lateral_margin;
+  out.timing_margin = ev.timing_margin;
   out.approach_nodes = n_app_;
   if (tc_on_) {
     out.delta_ns = static_cast<std::int64_t>(std::llround(delta_eval_ * kNsPerSec));
@@ -2505,6 +2516,8 @@ void MpcDockingSegmentCore::ResetRecord(MpcDockingSegmentCoreResult& out) noexce
   out.c_guarded = false;
   out.linearization_ratio = 0.0;
   out.linearization_ratio_defined = false;
+  out.lateral_margin = std::numeric_limits<double>::quiet_NaN();
+  out.timing_margin = std::numeric_limits<double>::quiet_NaN();
   out.tau_ratio_max = 0.0;
   out.approach_nodes = 0;
   out.infeasible_group = DockingRowGroup::kTorque;
