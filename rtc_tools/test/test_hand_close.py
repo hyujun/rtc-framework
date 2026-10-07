@@ -490,3 +490,42 @@ def test_cli_refuses_a_csv_with_no_closure(tmp_path):
         )
     )
     assert main([str(csv), "--profile", str(sidecar)]) == 2
+
+
+# ── T_close_lead: what the sequencer subtracts, split from the measured T_close_e2e ──
+
+
+def _offset_line(tmp_path, capsys, **extra):
+    profile = make_profile()
+    csv = write_csv(tmp_path / "hand_state.csv", profile, trials=5)
+    sidecar = _sidecar(tmp_path, profile, **extra)
+    assert main([str(csv), "--profile", str(sidecar)]) == 0
+    return capsys.readouterr().out
+
+
+def test_the_offset_uses_the_lead_when_the_sidecar_has_one(tmp_path, capsys):
+    t_close = analytic_t_close()
+    out = _offset_line(
+        tmp_path, capsys, T_close_e2e_at_run=t_close + 0.020, T_close_lead_at_run=t_close + 0.004
+    )
+    assert load_profile(tmp_path / "run.json").t_close_lead == pytest.approx(t_close + 0.004)
+    offset = _reported(out, "tick")[1]
+    # Against the lead (4 ms), not the 20 ms measured value.
+    assert -4.0 - 1e-6 <= offset <= -4.0 + DT * 1e3 + 1e-6
+    assert "mean - T_close_lead" in out and "T_close_e2e at the run" in out
+    assert "cannot be computed" not in out and "falling back" not in out
+
+
+def test_the_offset_falls_back_to_t_close_e2e_without_a_lead(tmp_path, capsys):
+    t_close = analytic_t_close()
+    out = _offset_line(tmp_path, capsys, T_close_e2e_at_run=t_close + 0.004)
+    assert math.isnan(load_profile(tmp_path / "run.json").t_close_lead)
+    offset = _reported(out, "tick")[1]
+    assert -4.0 - 1e-6 <= offset <= -4.0 + DT * 1e3 + 1e-6
+    assert "mean - T_close_e2e" in out and "falling back to T_close_e2e" in out
+
+
+def test_the_offset_cannot_be_computed_with_neither_value(tmp_path, capsys):
+    out = _offset_line(tmp_path, capsys)
+    assert math.isnan(_reported(out, "steady")[1])
+    assert "cannot be computed" in out
