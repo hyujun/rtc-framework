@@ -146,12 +146,15 @@ bool PlannerCycle::PublishReplacement(const PlannerRtState& rt, PlanSnapshot& pl
                                       PlannerCycleRecord& rec) noexcept {
   const std::int64_t t_freeze_ns =
       std::isfinite(params_.t_freeze) && params_.t_freeze > 0.0 ? SecondsToNs(params_.t_freeze) : 0;
-  // A first segment cannot start before this; the RT switches at its node 0,
-  // and takes no replacement once the plan it follows is frozen. One that
-  // could only start there is not solved for.
-  if (t_freeze_ns > 0 &&
-      !(segment_planner_->EarliestFirstStartNs(clock_()) < rt.plan_t_c_ns - t_freeze_ns)) {
-    return false;
+  // A first segment cannot start before `earliest`, and the RT switches at its
+  // node 0. There it takes no replacement once the plan it follows is frozen,
+  // and none whose own catch instant is by then inside the freeze window. A
+  // pair whose segment could only start that late is not solved for.
+  if (t_freeze_ns > 0) {
+    const std::int64_t earliest = segment_planner_->EarliestFirstStartNs(clock_());
+    if (!(earliest < rt.plan_t_c_ns - t_freeze_ns) || !(plan.t_c_ns - earliest > t_freeze_ns)) {
+      return false;
+    }
   }
   // The id the plan will carry; the segment names it.
   plan.plan_id = last_plan_id_ + 1;
@@ -178,7 +181,12 @@ bool PlannerCycle::PublishReplacement(const PlannerRtState& rt, PlanSnapshot& pl
   // the segment the solve started on is still the one it reports for node 0
   // (as a replan's re-check asks); and the RT could still take the pair — the
   // new catch instant outside T_freeze, node 0 readable and before the
-  // followed plan freezes.
+  // followed plan freezes — and would still switch to it at node 0: the RT
+  // drops a held pair whose catch instant is within T_freeze of the switch
+  // tick. That tick is the first whose sample instant reaches node 0, T_arm
+  // (and up to a control period) before it on the real axis, so what is left
+  // there is t_c − t0 plus T_arm at least; t_c − t0 alone is held above
+  // T_freeze — conservative by T_arm.
   if (traj_recheck_.token.activation_generation != traj_.token.activation_generation ||
       traj_recheck_.token.generation != traj_.token.generation || !rt_now.valid ||
       rt_now.reset_epoch != rt.reset_epoch ||
@@ -188,6 +196,7 @@ bool PlannerCycle::PublishReplacement(const PlannerRtState& rt, PlanSnapshot& pl
       segment_planner_->SourceSeq(rt_now, segment_out_.t0_ns) != rec.segment.source_seq ||
       !(plan.t_c_ns - publish_ns > t_freeze_ns) ||
       (t_freeze_ns > 0 && !(segment_out_.t0_ns < rt.plan_t_c_ns - t_freeze_ns)) ||
+      (t_freeze_ns > 0 && !(plan.t_c_ns - segment_out_.t0_ns > t_freeze_ns)) ||
       !segment_planner_->StartsInTime(publish_ns, segment_out_.t0_ns)) {
     rec.outcome = CycleOutcome::kSuperseded;
     rec.segment.outcome = SegmentOutcome::kSuperseded;

@@ -2141,25 +2141,34 @@ TEST(PlannerCycleReplacement, EachRecheckConditionAloneDropsThePairAndStoresNoth
 }
 
 TEST(PlannerCycleReplacement, TheFreezeBoundsOfThePairsRecheckAreOnTheNanosecond) {
-  // Two instants the re-check holds against T_freeze, each on both sides of
-  // its bound and each with the other far inside.
+  // Three instants the re-check holds against T_freeze, each on both sides of
+  // its bound and each with the others far inside.
   //  • The NEW catch instant: more than T_freeze after the publish stamp.
-  //  • The new segment's node 0: before the FOLLOWED plan's freeze,
-  //    t_c − T_freeze — the RT switches at node 0 and takes no replacement once
-  //    the plan it follows is frozen.
+  //  • The new segment's node 0 against the FOLLOWED plan's freeze,
+  //    t_c − T_freeze: before it — the RT switches at node 0 and takes no
+  //    replacement once the plan it follows is frozen.
+  //  • Node 0 against the NEW plan's catch instant: more than T_freeze before
+  //    it — the RT drops a held pair whose catch instant is inside the freeze
+  //    window when it gets to the switch.
+  // (The planner's bound on where a first segment can start is put long
+  // before the wake: the pre-solve check asks the last two questions of that
+  // bound, and every case here has to get through it to the re-check.)
   const auto run = [](std::int64_t new_t_c_offset_from_stamp, std::int64_t node0_ns,
-                      double t_freeze_s) {
+                      double t_freeze_s, bool node0_is_before_the_new_t_c = false) {
     PlannerParams params = FollowingSearchParams(0.5);
     params.t_freeze = t_freeze_s;
     ReplacingRig rig(params);
+    rig->segment->first_lead_ns = -1'000'000 * kMs;
     // The stamp is the wake's second clock read with a freeze window (the
     // first asks where a first segment could start), its first without one.
     const bool freeze = t_freeze_s > 0.0;
     const std::int64_t stamp = g_step_now + (freeze ? 2 : 1) * kMs;
     rig->search->t_c_ns = stamp + new_t_c_offset_from_stamp;
-    rig->segment->first_t0_ns = node0_ns;
+    rig->segment->first_t0_ns =
+        node0_is_before_the_new_t_c ? rig->search->t_c_ns - node0_ns : node0_ns;
     const Stored before(*rig.rig);
-    static_cast<void>(rig->Wake(kFollowWake));
+    const Calls calls = rig->Wake(kFollowWake);
+    EXPECT_GE(IndexOf(calls, Call::kPlanFirst), 0) << "held before the solve: not the re-check";
     EXPECT_EQ(rig->rec.publish_ns == stamp, rig->rec.outcome == CycleOutcome::kPublished);
     if (rig->rec.outcome != CycleOutcome::kPublished) {
       EXPECT_EQ(rig->rec.outcome, CycleOutcome::kSuperseded);
@@ -2168,22 +2177,35 @@ TEST(PlannerCycleReplacement, TheFreezeBoundsOfThePairsRecheckAreOnTheNanosecond
     }
     return rig->rec.outcome == CycleOutcome::kPublished;
   };
-  const std::int64_t far = 5000 * kMs;
+  const std::int64_t near = 5000 * kMs;   // a new catch instant before the followed one
+  const std::int64_t far = 15'000 * kMs;  // and one after it
   const std::int64_t followed_freeze = kFakeTc - kFreezeNs;
+  EXPECT_TRUE(run(near, 0, kFreezeS));
   EXPECT_TRUE(run(far, 0, kFreezeS));
-  // The new catch instant.
+  // The new catch instant against the stamp.
   EXPECT_TRUE(run(kFreezeNs + 1, 0, kFreezeS));
   EXPECT_FALSE(run(kFreezeNs, 0, kFreezeS));
   EXPECT_FALSE(run(kFreezeNs - 1, 0, kFreezeS));
   EXPECT_FALSE(run(-1, 0, kFreezeS)) << "a catch instant already past";
-  // Node 0 against the followed plan's freeze.
+  // Node 0 against the followed plan's freeze (the new catch instant far
+  // after it).
   EXPECT_TRUE(run(far, followed_freeze - 1, kFreezeS));
   EXPECT_FALSE(run(far, followed_freeze, kFreezeS));
   EXPECT_FALSE(run(far, followed_freeze + 1, kFreezeS));
-  // Without a freeze window (T_freeze unset) neither instant has a bound: the
-  // new catch instant only has to be ahead of the stamp.
+  // Node 0 against the new plan's catch instant (both far before the followed
+  // plan's freeze): what is left at node 0 has to be MORE than T_freeze.
+  EXPECT_TRUE(run(near, kFreezeNs + 1, kFreezeS, /*node0_is_before_the_new_t_c=*/true));
+  EXPECT_FALSE(run(near, kFreezeNs, kFreezeS, /*node0_is_before_the_new_t_c=*/true));
+  EXPECT_FALSE(run(near, kFreezeNs - 1, kFreezeS, /*node0_is_before_the_new_t_c=*/true));
+  EXPECT_FALSE(run(near, 0, kFreezeS, /*node0_is_before_the_new_t_c=*/true))
+      << "node 0 at the catch instant";
+  EXPECT_FALSE(run(near, -kMs, kFreezeS, /*node0_is_before_the_new_t_c=*/true))
+      << "node 0 after the catch instant";
+  // Without a freeze window (T_freeze unset) none of the three has a bound:
+  // the new catch instant only has to be ahead of the stamp.
   const double unset = std::numeric_limits<double>::quiet_NaN();
   EXPECT_TRUE(run(1, followed_freeze + 1, unset));
+  EXPECT_TRUE(run(near, 0, unset, /*node0_is_before_the_new_t_c=*/true));
   EXPECT_FALSE(run(0, 0, unset));
 }
 
@@ -2191,11 +2213,13 @@ TEST(PlannerCycleReplacement, APairThatCouldNotStartBeforeTheFollowedPlanFreezes
   // Before the first solve: where could a first segment start at the earliest
   // (the planner's own bound, asked at the cycle's clock)? Not before the
   // followed plan's freeze → no solve; the followed plan goes on and its
-  // segment is replanned.
+  // segment is replanned. (The new plan's catch instant is 5 s after the
+  // followed one's: its own bound on that start is far inside.)
   const std::int64_t followed_freeze = kFakeTc - kFreezeNs;
   for (const std::int64_t margin_ns : {std::int64_t{1}, std::int64_t{0}, -kMs}) {
     SCOPED_TRACE(margin_ns);
     ReplacingRig rig;
+    rig->search->t_c_ns = kFakeTc + 5000 * kMs;
     const std::int64_t asked_at = g_step_now + kMs;  // the wake's first clock read
     // The earliest start is `margin_ns` BEFORE the followed plan's freeze.
     rig->segment->first_lead_ns = followed_freeze - margin_ns - asked_at;
@@ -2232,6 +2256,47 @@ TEST(PlannerCycleReplacement, APairThatCouldNotStartBeforeTheFollowedPlanFreezes
   EXPECT_EQ(rig->segment->earliest_calls, 0);
   EXPECT_GE(IndexOf(calls, Call::kPlanFirst), 0);
   EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+}
+
+TEST(PlannerCycleReplacement, APairWhoseCatchInstantWouldBeFrozenAtItsEarliestStartIsNotSolvedFor) {
+  // The other question asked of the planner's bound before the first solve.
+  // The RT switches to a held pair at its first segment's node 0 and drops it
+  // there when the NEW catch instant is within T_freeze: a pair whose segment
+  // cannot start more than T_freeze before its own catch instant would be held
+  // by the RT until node 0 — nothing published meanwhile — and then dropped.
+  // It is not solved for; the followed plan's segment is replanned. (The
+  // followed plan's freeze is seconds away: that bound is far inside.)
+  for (const std::int64_t margin_ns : {std::int64_t{1}, std::int64_t{0}, -kMs}) {
+    SCOPED_TRACE(margin_ns);
+    ReplacingRig rig;
+    const std::int64_t asked_at = g_step_now + kMs;  // the wake's first clock read
+    const std::int64_t earliest = asked_at + kFakeFirstLeadNs;
+    ASSERT_LT(earliest, kFakeTc - kFreezeNs - 1000 * kMs);
+    // At its earliest start the new plan has T_freeze + `margin_ns` left.
+    rig->search->t_c_ns = earliest + kFreezeNs + margin_ns;
+    const Stored before(*rig.rig);
+    const Calls calls = rig->Wake(kFollowWake);
+    EXPECT_EQ(rig->segment->earliest_calls, 1);
+    EXPECT_EQ(rig->segment->earliest_now_ns, asked_at);
+    if (margin_ns > 0) {
+      EXPECT_EQ(calls, kReplacementPairCalls);
+      EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+      continue;
+    }
+    Calls expected{Call::kSearchPlan, Call::kClock};
+    expected.insert(expected.end(), kReplanBehindSearchCalls.begin() + 1,
+                    kReplanBehindSearchCalls.end());
+    EXPECT_EQ(calls, expected);
+    EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+    EXPECT_EQ(rig->rec.search.decision, SwitchDecision::kReplaced);
+    EXPECT_TRUE(rig->rec.search_valid);
+    EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff) << "no solve ran";
+    EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+    EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+    EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
+    EXPECT_EQ(rig->cycle.LastPlanId(), before.last_plan_id);
+  }
 }
 
 TEST(PlannerCycleReplacement, AWithheldFirstSegmentKeepsThePlanItsAccountAndReplans) {

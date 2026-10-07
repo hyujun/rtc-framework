@@ -47,10 +47,13 @@
 // the last reset is within `planner.freeze.t_stop_plan`, a wake runs:
 //   1. THE SEARCH, against the newest prediction and with the segments the RT
 //      reports, so that a candidate's arm motion starts where the arm will be.
-//      It is timed from the wake, and capped: one prediction period
-//      (PlannerParams::dt_expected) has to hold it AND the replan behind it,
-//      so it is handed that period minus the segment planner's replan budget
-//      (CatchSearch::Plan's `budget_cap_ns`; no cap when either is unknown).
+//      It is timed from the wake, and capped: it is handed one prediction
+//      period (PlannerParams::dt_expected) minus the segment planner's replan
+//      budget (CatchSearch::Plan's `budget_cap_ns`; no cap when either is
+//      unknown), so that the search and the REPLAN behind it fit one period.
+//      That is all the cycle bounds. A wake that goes on to a replacement
+//      pair runs the first solve on its own budget on top of the search, and
+//      nothing holds that sum to the period.
 //   2. Then ONE of two things.
 //      • The search chose ANOTHER plan (SwitchDecision::kReplaced): its first
 //        segment is solved from the moving arm (SegmentPlanner::PlanFirst with
@@ -58,16 +61,23 @@
 //        first, one publish_ns, a new plan id, as a first pair does. The RT
 //        holds it until that segment's node 0 and switches there; the arm
 //        stays on the followed plan's segments until then, and the segment
-//        planner keeps them. The pair is not solved for at all when a first
-//        segment could not start before the followed plan freezes
-//        (EarliestFirstStartNs against t_c − T_freeze). Its re-check drops it
-//        (kSuperseded, nothing stored, no replan either) unless: the
+//        planner keeps them. Two instants bound WHERE that node 0 may be,
+//        both because of what the RT does at the switch: it takes no
+//        replacement once the plan it follows is frozen, and it drops a held
+//        pair whose own catch instant is within T_freeze by then. So node 0
+//        has to be before the followed plan's freeze (t_c − T_freeze of the
+//        followed plan) AND more than T_freeze before the new plan's catch
+//        instant (the switch tick is T_arm earlier than node 0 on the real
+//        axis: the bound is conservative by that much). The pair is not
+//        solved for at all when the earliest instant a first segment could
+//        start (EarliestFirstStartNs) already breaks either. Its re-check
+//        drops it (kSuperseded, nothing stored, no replan either) unless: the
 //        prediction is still that track's; the trial and the activation are
 //        the same; the RT still follows the same plan, in APPROACH, and holds
 //        no replacement; the segment the solve started on is still the one
 //        the RT reports for node 0; the new catch instant is above T_freeze
-//        away; node 0 is before the followed plan's freeze and can still be
-//        read.
+//        away from the publish stamp; node 0 is inside both bounds above and
+//        can still be read.
 //      • Anything else — the followed plan again, kept by the switching rule,
 //        no candidate, no trajectory to search on, or a replacement whose
 //        first segment was withheld (kHeld; that solve's account is
@@ -334,8 +344,10 @@ class PlannerCycle {
   // one `rt` follows (header: "WHILE A PLAN IS FOLLOWED"). True when the wake
   // is done with — the pair was stored, or dropped at its re-check
   // (kSuperseded). False when nothing was published and the followed plan's
-  // segment is still to be replanned: no first segment could start before the
-  // followed plan freezes, or the solve withheld it (rec.replacement).
+  // segment is still to be replanned: no first segment could start in time
+  // for the RT to switch to it (before the followed plan freezes, and more
+  // than T_freeze before the new catch instant), or the solve withheld it
+  // (rec.replacement).
   [[nodiscard]] bool PublishReplacement(const PlannerRtState& rt, PlanSnapshot& plan,
                                         PlannerCycleRecord& rec) noexcept;
   // The replan of a wake that searched first, on the RT's report read again.
