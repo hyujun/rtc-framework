@@ -6,6 +6,7 @@
 - **접근축 정렬 (§4.5) 은 두 planner 가 다 쓴다** — 탐색의 포구 자세 IK, RT 의 CLIK 5 행 과제, 그리고 `mpc` 의 MPC 코어가 같은 오차 정의를 쓴다
 - 코드: 병진 기준·γ 프로파일은 `rtc_controllers/include/rtc_controllers/catching/soft_catch.hpp` (namespace `rtc::catching`), 축 정렬 오차·Jacobian 은 `rtc_math/include/rtc_math/se3/axis_align.hpp` (namespace `rtc::math::se3`)
 - L3가 γ rollout에서 **이 layer의 같은 코드**를 호출한다
+- 이 층의 법칙을 탐색 (L3) · 감속 (L7) 과 한 문제의 순서로 이어 적은 수식 통합본은 [grid_search_closed_form_formulation.md](grid_search_closed_form_formulation.md) 다 (§3 이 이 층). 결정과 게이트는 이 문서가 그대로 SSoT 다
 
 ---
 

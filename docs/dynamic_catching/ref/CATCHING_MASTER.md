@@ -4,7 +4,7 @@
 
 - 대상 독자: 구현자(Claude Code 포함), 이론 검토자(Junho)
 - 구현 대상: **기존 `rtc-framework` workspace** (신규 workspace·신규 패키지 아님, D-1)
-- 문서 세트: 본 문서 + `L0_core.md` … `L8_bringup.md`. 수식 정식화는 `mpc_multiframe_clik_formulation.md`
+- 문서 세트: 본 문서 + `L0_core.md` … `L8_bringup.md`. 수식 정식화는 `mpc_multiframe_clik_formulation.md` (`mpc` 구간) 와 `grid_search_closed_form_formulation.md` (격자 탐색 · `closed_form` 구간)
 - 상태 표기: `[확정]` 사용자 결정, `[확정 D-x]` plan 결정 로그의 결정, `[권장]` 설계 권장안, `[TBD-xx]` 미확정(추측 금지, §9 참조), `[논문 외 유도]` 원문에 없는 본 문서의 유도
 
 ### 0.1 개정 이력

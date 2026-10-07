@@ -7,7 +7,7 @@
 
 | 무엇 | 어디에 |
 |---|---|
-| 수학 · 구조 (지금 구현의 서술) | [ref/](ref/) — [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) (구현한 것과 아직 구현하지 않은 설계의 구분은 그 문서 §0), [CATCHING_MASTER.md](ref/CATCHING_MASTER.md), `L0` – `L8`, [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) (§17 이 구현 — mpc_docking 수치 코어와 NLP search 의 탐색 코어, §0 – §16 은 설계 자료) |
+| 수학 · 구조 (지금 구현의 서술) | [ref/](ref/) — [mpc_multiframe_clik_formulation.md](ref/mpc_multiframe_clik_formulation.md) (구현한 것과 아직 구현하지 않은 설계의 구분은 그 문서 §0), [grid_search_closed_form_formulation.md](ref/grid_search_closed_form_formulation.md) (격자 탐색과 `closed_form` 구간의 수식 통합본), [CATCHING_MASTER.md](ref/CATCHING_MASTER.md), `L0` – `L8`, [ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) (§17 이 구현 — mpc_docking 수치 코어와 NLP search 의 탐색 코어, §0 – §16 은 설계 자료) |
 | 결정 ID (`MD-n` · `D-n` · `G…`) 의 뜻, 단계 · feature 의 이름과 이슈 번호, 옛 절 인용의 새 자리 | [ID_INDEX.md](ID_INDEX.md) (§1 · §3 · §4) |
 | 측정 · 검증 기록 | 각 feature 이슈의 코멘트 ("측정 · 검증 기록" 으로 시작하는 코멘트가 이 문서에 있던 기록이다) |
 | `MD-n` 의 근거와 경위 (옮기기 전 결정 로그의 원문) | [#705 의 기록 코멘트](https://github.com/hyujun/rtc-framework/issues/705#issuecomment-5974506385) — 고치지 않는 기록이다 |
@@ -209,6 +209,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 - **#755 와 #713 은 CSV 의 열을 바꾼다.** #755 가 지우면 `catching_diag` 의 열 둘이 빠지고, #713 이 `planner_events` 에 열을 더한다. 새 열은 새 이름으로 생긴다.
 - **요구를 선택에 묶는 것은 E1-F16 (#742) 이 한다 (사용자 결정 2026-10-05).** key 를 기능별로 가른 것만으로는 "한 기능의 조각을 지우면 나머지가 돈다" 가 성립하지 않는다 — 지금 `reference.*` 는 `mpc` 에서도, `supervisor.decel.a_dec` 는 어느 값에서나 필요하고 `mpc` 의 key 는 `closed_form` 에서도 읽혀 범위를 벗어나면 configure 가 실패한다. 요구를 선택에 묶는 것과 `planner.search.mode` 의 파서 (값 `grid | nlp`) 는 그 feature 가 조합 · 파서 · 검증기 · park 와 함께 고친다. 읽는 곳의 대조: [#711 의 검토 코멘트](https://github.com/hyujun/rtc-framework/issues/711#issuecomment-5991903201).
 - **#755 의 "msg 는 두고 전이 행만 지운다" 는 그대로는 되지 않는다.** 전이표는 어느 행에도 쓰이지 않는 사유를 거부하고 (`transition_table.hpp` 끝의 `static_assert`), 사유의 값은 `rtc_msgs` 의 상수와 번호가 같아야 한다. `rtc_msgs` 를 고치지 않는 형태는 발화하는 한 줄만 지우고 사유와 행을 두는 것이다.
+- **E1-F15 의 값을 E1-F16 (#742) 이 어떻게 읽는가 (사용자 결정 2026-10-07).** 식별값은 YAML 이 아니라 [#741](https://github.com/hyujun/rtc-framework/issues/741) 의 결과 코멘트에 있고, 읽는 법은 [#742 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/742#issuecomment-6028432389) 가 갖는다. 정해진 것: **`T_close_e2e` 는 손이 $t_c$ 보다 얼마나 먼저 닫기 시작하는가의 설계값 (lead) 으로 본다** — 측정한 폐쇄 시간과 같을 필요가 없다 (`iiwa7_leap` 은 손이 공의 도착 뒤에 닫혀야 유지된다). 그 키는 지금 timeout 유도 · $T_{freeze}$ 의 하한 · 최소 비행시간에도 읽히므로, lead 와 측정한 폐쇄 시간을 가르는 것은 E1-F16 이 한다. E1-F16 의 Sprint Contract 에서 정할 것: 어느 상자 후보를 쓰는가와 상자 규칙 (지금 후보는 여섯 모두 접근 속도의 폭이 0.1 m/s 다), 옆 속도 고리의 허용 폭 (식별은 기본값 5 %p 로 했다)
 - **#716 에서 정하지 않은 것.** formulation §1.6 은 단일 팔의 포구 구간이 한 노드인 것을 손 폐쇄 명령 시각 ($t_c-T_{close}$ — 폐쇄가 $t_c$ 에 끝난다) 의 귀결로 적는다. 여러 노드로 두려면 세 planner 가 함께 쓰는 그 규칙이 바뀐다.
 
 **이 문서가 정하지 않은 것.** 실기 epic 과 E2 · E3 의 선후 (실기는 `ur5e_p1b` 이고 E2 · E3 는 G1 sim 이라 서로의 선행이 아니다). 실기 planner 는 단계 E 앞에서 정한다 (§3).
