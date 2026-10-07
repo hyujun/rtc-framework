@@ -412,20 +412,31 @@ TEST_F(DemoCatchingAllocS7Test, TheJointSpaceStopTicksWithoutAllocating) {
   EXPECT_EQ(allocations, 0U);
 }
 
-TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating) {
-  // MPC E1-F09 (planner.segment.mode mpc): the segment lane's Load and judge in
-  // TRACKING and from APPROACH on, the stop part's node-wise catch-box FK, the
-  // pair's adoption, the wait before node 0, a same-node-0 replacement, the
-  // first switch and two replan switches with their gates, the segment sample
-  // and the posture feedforward in every mode that follows — every tick gated.
-  // The box writes (this test plays the planner) are outside the gate.
+/// The segment-following tick under each segment planner (E1-F17): the RT's
+/// lane is one code path for `mpc` and `mpc_docking`, so the gate is run on
+/// both.
+class DemoCatchingAllocS7SegmentTest : public DemoCatchingAllocS7Test,
+                                       public ::testing::WithParamInterface<const char*> {};
+
+TEST_P(DemoCatchingAllocS7SegmentTest, TheMpcTicksFromThePairToTheHoldWithoutAllocating) {
+  // MPC E1-F09 (planner.segment.mode mpc; E1-F17: and mpc_docking): the segment lane's Load and
+  // judge in TRACKING and from APPROACH on, the stop part's node-wise catch-box FK, the pair's
+  // adoption, the wait before node 0, a same-node-0 replacement, the first switch and two replan
+  // switches with their gates, the segment sample and the posture feedforward in every mode that
+  // follows — every tick gated. The box writes (this test plays the planner) are outside the gate.
   constexpr double kTcOffsetS = 0.7;  // BringUp's oracle t_c − now
   constexpr double kBump = 0.08;      // rad/s: 1.6 rad/s² at the stop, inside the D-16 box
   using integrated_bringup::testfx::kApproachDtPreNs;
   using integrated_bringup::testfx::kApproachNPre;
   using Event = integrated_bringup::CatchingDiagLogPod::SegmentEvent;
-  ASSERT_NO_FATAL_FAILURE(BringUp(false, [](YAML::Node& y) {
-    y["catching"]["planner"]["segment"]["mode"] = "mpc";
+  const std::string segment_mode = GetParam();
+  ASSERT_NO_FATAL_FAILURE(BringUp(false, [&segment_mode](YAML::Node& y) {
+    if (segment_mode == "mpc_docking") {
+      // The shipped docking design the RT's lane reads (the close lead, the
+      // switch margin, eta_v); the planner itself does not run here.
+      integrated_bringup::testfx::ApplyShippedDocking(y);
+    }
+    y["catching"]["planner"]["segment"]["mode"] = segment_mode;
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
     y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
         std::vector<double>{-2.0, -2.0, -2.0};
@@ -548,9 +559,9 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
         << "no gated tick followed a segment in mode " << static_cast<int>(m);
   }
   std::printf(
-      "[ MEASURED ] mpc worst tick [us]: pair %.1f, wait %.1f, admission %.1f, switch %.1f, "
+      "[ MEASURED ] %s worst tick [us]: pair %.1f, wait %.1f, admission %.1f, switch %.1f, "
       "follow %.1f, any %.1f\n",
-      us_pair, us_wait, us_admit, us_switch, us_follow, us_worst);
+      segment_mode.c_str(), us_pair, us_wait, us_admit, us_switch, us_follow, us_worst);
   RecordProperty("worst_us_pair", static_cast<int>(us_pair));
   RecordProperty("worst_us_wait", static_cast<int>(us_wait));
   RecordProperty("worst_us_admission", static_cast<int>(us_admit));
@@ -558,6 +569,12 @@ TEST_F(DemoCatchingAllocS7Test, TheMpcTicksFromThePairToTheHoldWithoutAllocating
   RecordProperty("worst_us_follow", static_cast<int>(us_follow));
   RecordProperty("worst_us_mpc_tick", static_cast<int>(us_worst));
 }
+
+INSTANTIATE_TEST_SUITE_P(SegmentPlanners, DemoCatchingAllocS7SegmentTest,
+                         ::testing::Values("mpc", "mpc_docking"),
+                         [](const ::testing::TestParamInfo<const char*>& info) {
+                           return std::string(info.param) == "mpc_docking" ? "MpcDocking" : "Mpc";
+                         });
 
 }  // namespace
 

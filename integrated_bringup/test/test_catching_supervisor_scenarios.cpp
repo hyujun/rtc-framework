@@ -1081,17 +1081,24 @@ using rtc::catching::CatchingSegmentMode;
 using rtc::catching::SegmentRefusal;
 using rtc::catching::SegmentSnapshot;
 
-class MpcScenarioTest : public SupervisorScenarioTest {
+class SegmentScenarioBase : public SupervisorScenarioTest {
  protected:
   static constexpr double kBump = 0.3;       // rad/s — the approach's velocity step
   static constexpr double kTcOffsetS = 0.6;  // the oracle's t_c − now
 
-  /// mode mpc on the scenario profile: the catch sub-model the sampler binds
-  /// to, a wide catch box (the search's key — the RT does not read it, MD-73),
-  /// and the shipped torque rows (the fixture's derived box, 2.03 rad/s²,
-  /// would cap the follow's step).
-  static void MpcProfile(YAML::Node& y) {
-    y["catching"]["planner"]["segment"]["mode"] = "mpc";
+  /// A segment mode on the scenario profile: the catch sub-model the sampler
+  /// binds to, a wide catch box (the search's key — the RT does not read it,
+  /// MD-73), and the shipped torque rows (the fixture's derived box, 2.03
+  /// rad/s², would cap the follow's step). `mpc_docking` also reads the
+  /// planner's fragment and the hand's capture set (the shipped ur5e_p1b
+  /// ones, ApplyShippedDocking): the close lead it runs, the switch margin and
+  /// η_v come from there. The RT reads nothing else of either planner — the
+  /// lane, the payload and the gate are the same code under both.
+  static void SegmentProfile(YAML::Node& y, const std::string& mode) {
+    if (mode == "mpc_docking") {
+      integrated_bringup::testfx::ApplyShippedDocking(y);
+    }
+    y["catching"]["planner"]["segment"]["mode"] = mode;
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
     y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
         std::vector<double>{-2.0, -2.0, -2.0};
@@ -1100,14 +1107,17 @@ class MpcScenarioTest : public SupervisorScenarioTest {
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
   }
 
-  void BringUpMpc(const std::function<void(YAML::Node&)>& extra = nullptr) {
-    ASSERT_NO_FATAL_FAILURE(BringUp(NearPc(), StartAxis(), 0.0, kTcOffsetS, [extra](YAML::Node& y) {
-      MpcProfile(y);
-      if (extra) {
-        extra(y);
-      }
-    }));
-    ASSERT_EQ(ctrl_->GetSegmentMode(), CatchingSegmentMode::kMpc);
+  void BringUpSegmentMode(const std::string& mode,
+                          const std::function<void(YAML::Node&)>& extra = nullptr) {
+    ASSERT_NO_FATAL_FAILURE(
+        BringUp(NearPc(), StartAxis(), 0.0, kTcOffsetS, [mode, extra](YAML::Node& y) {
+          SegmentProfile(y, mode);
+          if (extra) {
+            extra(y);
+          }
+        }));
+    ASSERT_EQ(ctrl_->GetSegmentMode(),
+              mode == "mpc_docking" ? CatchingSegmentMode::kMpcDocking : CatchingSegmentMode::kMpc);
     tips_enabled_ = true;
     ball_in_hand_ = true;
     ASSERT_NO_FATAL_FAILURE(LearnBaselineInArmed());
@@ -1240,7 +1250,21 @@ class MpcScenarioTest : public SupervisorScenarioTest {
   SegmentSnapshot first_seg_{};
 };
 
-TEST_F(MpcScenarioTest, TheRtTakesThePairAndFollowsItFromApproachToTheRearm) {
+/// The scenarios below run under BOTH segment planners (E1-F17): the RT follows
+/// `mpc`'s segments and `mpc_docking`'s through one lane, so one body each.
+class MpcScenarioTest : public SegmentScenarioBase,
+                        public ::testing::WithParamInterface<const char*> {
+ protected:
+  void BringUpMpc(const std::function<void(YAML::Node&)>& extra = nullptr) {
+    BringUpSegmentMode(GetParam(), extra);
+  }
+};
+
+std::string SegmentModeName(const ::testing::TestParamInfo<const char*>& info) {
+  return std::string(info.param) == "mpc_docking" ? "MpcDocking" : "Mpc";
+}
+
+TEST_P(MpcScenarioTest, TheRtTakesThePairAndFollowsItFromApproachToTheRearm) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(TakeThePair());
   const SegmentSnapshot seg = first_seg_;
@@ -1419,25 +1443,25 @@ TEST_F(MpcScenarioTest, TheRtTakesThePairAndFollowsItFromApproachToTheRearm) {
 
 // ── The pair: a plan is taken with its first segment, or not at all ─────────
 
-TEST_F(MpcScenarioTest, APlanWithoutItsSegmentIsNotTaken) {
+TEST_P(MpcScenarioTest, APlanWithoutItsSegmentIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair(nullptr, /*write=*/false);
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(SegmentRefusal::kInvalid));
 }
 
-TEST_F(MpcScenarioTest, APlanWithAnAgedSegmentIsNotTaken) {
+TEST_P(MpcScenarioTest, APlanWithAnAgedSegmentIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair([this](SegmentSnapshot& s) { s.publish_ns = Now() - 60 * kMsNs; });
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(SegmentRefusal::kAged));
 }
 
-TEST_F(MpcScenarioTest, APlanWithAnotherPlansSegmentIsNotTaken) {
+TEST_P(MpcScenarioTest, APlanWithAnotherPlansSegmentIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair([](SegmentSnapshot& s) { s.plan_id += 1; });
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(SegmentRefusal::kPlan));
 }
 
-TEST_F(MpcScenarioTest, APlanWithASegmentForAnotherTrackIsNotTaken) {
+TEST_P(MpcScenarioTest, APlanWithASegmentForAnotherTrackIsNotTaken) {
   // The segment carries the PLAN's track; one solved for another ball is not
   // this plan's, whatever its id says.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
@@ -1445,7 +1469,7 @@ TEST_F(MpcScenarioTest, APlanWithASegmentForAnotherTrackIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(SegmentRefusal::kPlan));
 }
 
-TEST_F(MpcScenarioTest, APlanWithAMalformedSegmentIsNotTaken) {
+TEST_P(MpcScenarioTest, APlanWithAMalformedSegmentIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair([](SegmentSnapshot& s) {
     s.q[static_cast<std::size_t>(3 * rtc::catching::kMaxSegmentNv + 2)] =
@@ -1454,7 +1478,7 @@ TEST_F(MpcScenarioTest, APlanWithAMalformedSegmentIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(SegmentRefusal::kMalformed));
 }
 
-TEST_F(MpcScenarioTest, APlanWithASegmentOfAnotherJointCountIsNotTaken) {
+TEST_P(MpcScenarioTest, APlanWithASegmentOfAnotherJointCountIsNotTaken) {
   // Well-formed in itself — every used node entry finite, the last at rest —
   // and not this arm's: the sampler is bound to the arm's joints and could
   // never evaluate it. Taken with its plan, the trial would enter APPROACH
@@ -1464,7 +1488,7 @@ TEST_F(MpcScenarioTest, APlanWithASegmentOfAnotherJointCountIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(SegmentRefusal::kMalformed));
 }
 
-TEST_F(MpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken) {
+TEST_P(MpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken) {
   // MD-37: published after the floor, predicted from an RT state before it.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair([](SegmentSnapshot& s) { s.rt_state_ns = 1; });
@@ -1491,14 +1515,14 @@ class MpcNoCatchBoxCheckTest : public MpcScenarioTest {
   }
 };
 
-TEST_F(MpcNoCatchBoxCheckTest, APairWhoseStopLeavesTheCatchBoxIsTaken) {
+TEST_P(MpcNoCatchBoxCheckTest, APairWhoseStopLeavesTheCatchBoxIsTaken) {
   ASSERT_NO_FATAL_FAILURE(BringUpUnderABoxThatHoldsNoNode());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-TEST_F(MpcNoCatchBoxCheckTest, AReplanWhoseStopLeavesTheCatchBoxIsFollowed) {
+TEST_P(MpcNoCatchBoxCheckTest, AReplanWhoseStopLeavesTheCatchBoxIsFollowed) {
   ASSERT_NO_FATAL_FAILURE(BringUpUnderABoxThatHoldsNoNode());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
@@ -1518,7 +1542,7 @@ TEST_F(MpcNoCatchBoxCheckTest, AReplanWhoseStopLeavesTheCatchBoxIsFollowed) {
 
 // ── Nothing to follow is ABORT_SAFE, from APPROACH on (MD-44) ───────────────
 
-TEST_F(MpcScenarioTest, AFirstSegmentPastTheSwitchGateAbortsInApproach) {
+TEST_P(MpcScenarioTest, AFirstSegmentPastTheSwitchGateAbortsInApproach) {
   // MD-39 (2): 0.05 rad off on one joint — K_p·Δq = 1 rad/s against a
   // headroom of (1 − 0.9)·2 = 0.2 rad/s. The pair is admissible (admission
   // does not compare node 0 with the command); the gate at node 0 refuses it,
@@ -1550,7 +1574,7 @@ TEST_F(MpcScenarioTest, AFirstSegmentPastTheSwitchGateAbortsInApproach) {
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kAborted);
 }
 
-TEST_F(MpcScenarioTest, AClikFailureWhileFollowingIsAnAbort) {
+TEST_P(MpcScenarioTest, AClikFailureWhileFollowingIsAnAbort) {
   // A hand reading the solve cannot use (NaN) fails the CLIK on the next
   // mpc tick: the same kQpFailed → ABORT_SAFE as the soft-catch law's.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
@@ -1569,7 +1593,7 @@ TEST_F(MpcScenarioTest, AClikFailureWhileFollowingIsAnAbort) {
   EXPECT_FALSE(log_[static_cast<std::size_t>(a)].rt_segment_active);
 }
 
-TEST_F(MpcScenarioTest, ABallThatGoesStaleEndsTheApproachAsBefore) {
+TEST_P(MpcScenarioTest, ABallThatGoesStaleEndsTheApproachAsBefore) {
   // The ball lane's reasons are the supervisor's whichever law runs: a
   // prediction that stops arriving ends the approach by BALL_STALE → RETREAT,
   // and the segments go with the plan.
@@ -1586,7 +1610,7 @@ TEST_F(MpcScenarioTest, ABallThatGoesStaleEndsTheApproachAsBefore) {
   EXPECT_FALSE(log_[static_cast<std::size_t>(r)].rt_segment_pending);
 }
 
-TEST_F(MpcScenarioTest, AnotherPlanInApproachIsNotTaken) {
+TEST_P(MpcScenarioTest, AnotherPlanInApproachIsNotTaken) {
   // Under a segment planner the followed plan is not replaced — its segments belong
   // to it. A plan that reaches the box all the same (admissible, outside the
   // freeze window) is left there and the trial runs on the one it took.
@@ -1611,7 +1635,7 @@ TEST_F(MpcScenarioTest, AnotherPlanInApproachIsNotTaken) {
 
 // ── The pending slot (MD-37, MD-58) ─────────────────────────────────────────
 
-TEST_F(MpcScenarioTest, ANewerSegmentForTheSameNodeZeroReplacesTheWaitingOne) {
+TEST_P(MpcScenarioTest, ANewerSegmentForTheSameNodeZeroReplacesTheWaitingOne) {
   // The same grid point solved again on a newer prediction: here, the same
   // start with a smaller velocity step.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
@@ -1645,7 +1669,7 @@ TEST_F(MpcScenarioTest, ANewerSegmentForTheSameNodeZeroReplacesTheWaitingOne) {
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-TEST_F(MpcScenarioTest, ASegmentForALaterNodeZeroWaitsInTheBoxUntilTheSlotIsFree) {
+TEST_P(MpcScenarioTest, ASegmentForALaterNodeZeroWaitsInTheBoxUntilTheSlotIsFree) {
   // MD-37: the next grid point's segment arrives while the slot still holds
   // the one before it. It is left in the box — taking it would leave the
   // instant in between nothing to follow — and admitted once the slot clears.
@@ -1679,7 +1703,7 @@ TEST_F(MpcScenarioTest, ASegmentForALaterNodeZeroWaitsInTheBoxUntilTheSlotIsFree
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-TEST_F(MpcScenarioTest, ASegmentThatWaitsPastTheAgeBoundIsNeverTaken) {
+TEST_P(MpcScenarioTest, ASegmentThatWaitsPastTheAgeBoundIsNeverTaken) {
   // The age bound is read when the segment is admitted, and a deferred one is
   // judged again every tick: left waiting for longer than the bound, it is
   // refused as aged and the followed segment goes on.
@@ -1710,7 +1734,7 @@ TEST_F(MpcScenarioTest, ASegmentThatWaitsPastTheAgeBoundIsNeverTaken) {
 
 // ── Replans (MD-38, MD-39) ──────────────────────────────────────────────────
 
-TEST_F(MpcScenarioTest, AReplanBuiltFromTheMovingCommandSwitchesWithoutAStep) {
+TEST_P(MpcScenarioTest, AReplanBuiltFromTheMovingCommandSwitchesWithoutAStep) {
   // G7-B′ on a moving arm (MD-39 (1)): one pre-catch interval before t_c the
   // arm is cruising on the first segment. A replan whose node 0 is made from
   // the command the switch tick starts from is continuous to rounding — in
@@ -1760,7 +1784,7 @@ TEST_F(MpcScenarioTest, AReplanBuiltFromTheMovingCommandSwitchesWithoutAStep) {
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-TEST_F(MpcScenarioTest, AReplanOnTheSameTrajectoryIsTakenAtItsNodeZero) {
+TEST_P(MpcScenarioTest, AReplanOnTheSameTrajectoryIsTakenAtItsNodeZero) {
   // Before the catch (an APPROACH–stop segment from a later node) and after it
   // (a stop-only segment at grid point 1): each waits for its node 0 and is
   // taken on the first tick that is due, the gate barely used.
@@ -1798,7 +1822,7 @@ TEST_F(MpcScenarioTest, AReplanOnTheSameTrajectoryIsTakenAtItsNodeZero) {
   EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
-TEST_F(MpcScenarioTest, AReplanPastTheGateIsDroppedAndTheFollowedSegmentGoesOn) {
+TEST_P(MpcScenarioTest, AReplanPastTheGateIsDroppedAndTheFollowedSegmentGoesOn) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   SegmentSnapshot replan = integrated_bringup::testfx::ShiftSegment(first_seg_, kApproachNPre - 1);
@@ -1868,7 +1892,7 @@ class MpcEstopTest : public MpcScenarioTest {
   }
 };
 
-TEST_F(MpcEstopTest, AnEstopWhileTheFirstSegmentWaitsDropsIt) {
+TEST_P(MpcEstopTest, AnEstopWhileTheFirstSegmentWaitsDropsIt) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(TakeThePair());
   Ticks(10);
@@ -1878,7 +1902,7 @@ TEST_F(MpcEstopTest, AnEstopWhileTheFirstSegmentWaitsDropsIt) {
   ASSERT_NO_FATAL_FAILURE(StopAndExpectNothingCarriesOver());
 }
 
-TEST_F(MpcEstopTest, AnEstopWhileFollowingInApproachDropsTheSegment) {
+TEST_P(MpcEstopTest, AnEstopWhileFollowingInApproachDropsTheSegment) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   Ticks(10);
@@ -1887,7 +1911,7 @@ TEST_F(MpcEstopTest, AnEstopWhileFollowingInApproachDropsTheSegment) {
   ASSERT_NO_FATAL_FAILURE(StopAndExpectNothingCarriesOver());
 }
 
-TEST_F(MpcEstopTest, AnEstopInDecelDropsTheFollowedAndTheWaitingSegment) {
+TEST_P(MpcEstopTest, AnEstopInDecelDropsTheFollowedAndTheWaitingSegment) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
@@ -1902,7 +1926,7 @@ TEST_F(MpcEstopTest, AnEstopInDecelDropsTheFollowedAndTheWaitingSegment) {
   ASSERT_NO_FATAL_FAILURE(StopAndExpectNothingCarriesOver());
 }
 
-TEST_F(MpcEstopTest, AnEstopPairBetweenTwoTicksDropsTheSegment) {
+TEST_P(MpcEstopTest, AnEstopPairBetweenTwoTicksDropsTheSegment) {
   // Trigger and clear both land before the next tick: the epoch moved, so the
   // tick resets the trial — the segment with it — though no tick saw the stop.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
@@ -1920,7 +1944,7 @@ TEST_F(MpcEstopTest, AnEstopPairBetweenTwoTicksDropsTheSegment) {
   EXPECT_EQ(CountTicks([](const TickRec& t) { return t.body.segment_following; }, pair), 0);
 }
 
-TEST_F(MpcScenarioTest, ClosedFormIsTheDefaultAndNeverReadsTheBox) {
+TEST_F(SegmentScenarioBase, ClosedFormIsTheDefaultAndNeverReadsTheBox) {
   // "기본값 동등" (a): the key absent and closed_form written out drive the
   // NormalTrial to the same command digest, with an admissible pair in the box
   // on the tick the plan is taken — which closed_form never loads.
@@ -3193,7 +3217,7 @@ class StopEntryMpcTest : public MpcScenarioTest {
   }
 };
 
-TEST_F(StopEntryMpcTest, ATrackErrInApproach) {
+TEST_P(StopEntryMpcTest, ATrackErrInApproach) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc(LateFreeze));
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickToJustBefore(first_seg_.t_c_ns - 200 * kMsNs)) << Transitions();
@@ -3202,7 +3226,7 @@ TEST_F(StopEntryMpcTest, ATrackErrInApproach) {
   ExpectTheStopTakesOverInOneStep(kick, "mpc APPROACH TRACK_ERR -> ABORT_SAFE");
 }
 
-TEST_F(StopEntryMpcTest, ATrackErrInCommitted) {
+TEST_P(StopEntryMpcTest, ATrackErrInCommitted) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc(LateFreeze));
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickUntilMode(Mode::kCommitted, 1500)) << Transitions();
@@ -3212,7 +3236,7 @@ TEST_F(StopEntryMpcTest, ATrackErrInCommitted) {
   ExpectTheStopTakesOverInOneStep(kick, "mpc COMMITTED TRACK_ERR -> ABORT_SAFE");
 }
 
-TEST_F(StopEntryMpcTest, ATrackErrInClosing) {
+TEST_P(StopEntryMpcTest, ATrackErrInClosing) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickToJustBefore(first_seg_.t_c_ns - 100 * kMsNs)) << Transitions();
@@ -3221,7 +3245,7 @@ TEST_F(StopEntryMpcTest, ATrackErrInClosing) {
   ExpectTheStopTakesOverInOneStep(kick, "mpc CLOSING TRACK_ERR -> ABORT_SAFE");
 }
 
-TEST_F(StopEntryMpcTest, ATrackErrOnTheDecelEntryTick) {
+TEST_P(StopEntryMpcTest, ATrackErrOnTheDecelEntryTick) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickUntilMode(Mode::kClosing, 1500)) << Transitions();
@@ -3240,7 +3264,7 @@ TEST_F(StopEntryMpcTest, ATrackErrOnTheDecelEntryTick) {
   ExpectTheStopTakesOverInOneStep(kick, "mpc CLOSING (DECEL entry step) TRACK_ERR -> ABORT_SAFE");
 }
 
-TEST_F(StopEntryMpcTest, ATrackErrInDecel) {
+TEST_P(StopEntryMpcTest, ATrackErrInDecel) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   ASSERT_NO_FATAL_FAILURE(FollowThePair());
   ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
@@ -3251,7 +3275,7 @@ TEST_F(StopEntryMpcTest, ATrackErrInDecel) {
   ExpectTheStopTakesOverInOneStep(kick, "mpc DECEL TRACK_ERR -> ABORT_SAFE");
 }
 
-TEST_F(StopEntryMpcTest, ALongStaleInClosing) {
+TEST_P(StopEntryMpcTest, ALongStaleInClosing) {
   // Quiet from the freeze (t_c − 0.36 s): long-stale 0.3 s later, in CLOSING,
   // with the segment cruising.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
@@ -3270,7 +3294,7 @@ TEST_F(StopEntryMpcTest, ALongStaleInClosing) {
   ExpectTheStopTakesOverInOneStep(entry, "mpc CLOSING BALL_STALE_LONG -> ABORT_SAFE");
 }
 
-TEST_F(StopEntryMpcTest, ALongStaleInCommitted) {
+TEST_P(StopEntryMpcTest, ALongStaleInCommitted) {
   // COMMITTED from t_c − 0.36 s to t_c − 0.10 s; quiet from the freeze,
   // long-stale 0.22 s later (t_c − 0.14 s), the segment near its cruise speed.
   ASSERT_NO_FATAL_FAILURE(BringUpMpc([](YAML::Node& y) {
@@ -3286,6 +3310,15 @@ TEST_F(StopEntryMpcTest, ALongStaleInCommitted) {
   ASSERT_NO_FATAL_FAILURE(ExpectEdgeAt(entry, Mode::kCommitted, Reason::kBallStaleLong));
   ExpectTheStopTakesOverInOneStep(entry, "mpc COMMITTED BALL_STALE_LONG -> ABORT_SAFE");
 }
+
+INSTANTIATE_TEST_SUITE_P(SegmentPlanners, MpcScenarioTest, ::testing::Values("mpc", "mpc_docking"),
+                         SegmentModeName);
+INSTANTIATE_TEST_SUITE_P(SegmentPlanners, MpcNoCatchBoxCheckTest,
+                         ::testing::Values("mpc", "mpc_docking"), SegmentModeName);
+INSTANTIATE_TEST_SUITE_P(SegmentPlanners, MpcEstopTest, ::testing::Values("mpc", "mpc_docking"),
+                         SegmentModeName);
+INSTANTIATE_TEST_SUITE_P(SegmentPlanners, StopEntryMpcTest, ::testing::Values("mpc", "mpc_docking"),
+                         SegmentModeName);
 
 TEST_F(SupervisorScenarioTest, TheHandClosesAtTcmdOnTheRealAxisUnderAnArmLag) {
   constexpr int kDelayTicks = 25;  // 50 ms
