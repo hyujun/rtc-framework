@@ -151,14 +151,9 @@ def _identity_3x3() -> list[list[float]]:
 
 def _rpy_to_rot3(roll: float, pitch: float, yaw: float) -> list[list[float]]:
     """ZYX Euler angles (URDF convention) to 3x3 rotation matrix."""
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    return [
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr],
-    ]
+    from rtc_tools.utils.rotations import rpy_matrix  # noqa: PLC0415 — numpy stays lazy here
+
+    return rpy_matrix((roll, pitch, yaw)).tolist()
 
 
 def _quat_to_rot3(w: float, x: float, y: float, z: float) -> list[list[float]]:

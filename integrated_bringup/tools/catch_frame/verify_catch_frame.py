@@ -34,6 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
+from rtc_tools.utils.rotations import rpy_matrix
+
 REPO = Path(__file__).resolve().parents[3]
 CFG = REPO / "integrated_bringup/config"
 
@@ -162,25 +164,6 @@ Q_PRE = {
         ],
     },
 }
-
-
-def rpy_to_mat(rpy) -> np.ndarray:
-    r, p, y = rpy
-    cr, sr, cp, sp, cy, sy = (
-        np.cos(r),
-        np.sin(r),
-        np.cos(p),
-        np.sin(p),
-        np.cos(y),
-        np.sin(y),
-    )
-    return np.array(
-        [
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ]
-    )
 
 
 def se3(rot, pos):
@@ -324,7 +307,7 @@ def run(name: str, samples: int, seed: int) -> dict:
     # ── part 2: proposed YAML offset, verified end to end ────────────────────
     # Anchored on the MJCF-matching frame so the base convention above cannot
     # absorb an error in the offset; the residual left here is epsilon_model.
-    r_catch = rpy_to_mat(spec["rpy"])
+    r_catch = rpy_matrix(spec["rpy"])
     p_catch = np.asarray(spec["pocket_catch"], float)
     xyz = r_catch @ p_catch  # catch-frame point -> parent-link coordinates
     errs = []

@@ -67,6 +67,7 @@ from rig_config import (
 )
 
 from rtc_tools.analysis.hand_close import joint_progress
+from rtc_tools.utils.rotations import rpy_matrix
 
 # ── The verdict ──
 PLAY_S = 1.0  # after the arrival, before the shake
@@ -84,26 +85,6 @@ SETTLE_MAX_S = 12.0
 REST_LIN = 1e-3  # palm [m/s]
 REST_ANG = 5e-3  # palm [rad/s]
 REST_JOINT = 5e-3  # hand joints [rad/s]
-
-
-def rpy_matrix(rpy) -> np.ndarray:
-    """URDF fixed-axis roll-pitch-yaw as a rotation matrix (Rz Ry Rx)."""
-    r, p, y = rpy
-    cr, sr, cp, sp, cy, sy = (
-        math.cos(r),
-        math.sin(r),
-        math.cos(p),
-        math.sin(p),
-        math.cos(y),
-        math.sin(y),
-    )
-    return np.array(
-        [
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ]
-    )
 
 
 _SOLVERS = {"PGS": mujoco.mjtSolver.mjSOL_PGS, "CG": mujoco.mjtSolver.mjSOL_CG}

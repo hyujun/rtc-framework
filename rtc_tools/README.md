@@ -57,6 +57,7 @@ rtc_tools/
 │       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (RTC_SESSION_DIR / RTC_RUN_ID 관리)
 │       ├── controller_config.py         ← 컨트롤러 YAML + `include:` 조각의 합성 (CM `LoadControllerConfig` 의 Python mirror)
 │       ├── smoothing.py                 ← box 평활 하나 (catching 의 plot 패널과 분석 열이 공유)
+│       ├── rotations.py                 ← URDF roll-pitch-yaw → 회전행렬 하나 (MJCF 대조 · catch frame 도구 · docking rig 가 공유)
 │       └── hand_data_plot.py            ← 손 CSV 데이터 시각화
 ├── test/                                 ← pytest 유닛 테스트 (Testing 섹션 참조)
 ├── resource/
