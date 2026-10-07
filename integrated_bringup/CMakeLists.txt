@@ -1681,6 +1681,10 @@ if(BUILD_TESTING)
   # tools/catching_eval/summarize.py (not installed — read from the source
   # tree): the mechanical parts of the G-1 verdict, on planted inputs.
   ament_add_pytest_test(test_catching_eval_summarize test/test_catching_eval_summarize.py)
+  # tools/catching_eval/unit_report.py (same: read from the source tree): one
+  # unit's report on a planted unit — a solve cut at the core's deadline is
+  # counted, never given a solve time.
+  ament_add_pytest_test(test_catching_eval_unit_report test/test_catching_eval_unit_report.py)
   # The eval tools and the trial runner load a catching profile or a recorded
   # mirror: an old key is refused, an old mirror name is read through the alias
   # table (#711).

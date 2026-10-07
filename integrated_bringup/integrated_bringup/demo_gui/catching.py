@@ -32,6 +32,8 @@ Public surface (imported by app.py):
 - CATCHING_SEGMENT_MODE_PARAM, SEGMENT_MODE_QUERY_PERIOD_S, SEGMENT_MODE_REPLY_TIMEOUT_S,
   segment_mode_query_due
 - CATCHING_SEARCH_MODE_PARAM, search_mode_query_due (same throttle, `planner.search.mode`)
+- budget_param_names, segment_budget_query_due, search_budget_query_due (the budgets of the
+  selected planner, read once the mode is known)
 - MODE_NAMES, REASON_NAMES, PLAN_REASON_NAMES
 - CatchingStatus
 """
@@ -205,6 +207,103 @@ def _mirror_query_due(
     return waited_s >= SEGMENT_MODE_QUERY_PERIOD_S
 
 
+# Read-only budget mirrors of the SELECTED planner, in the order `_format_budget`
+# reads them. Only the selected implementation declares its own (the others are
+# "not set"), so nothing is asked before the mode is known. The grid search and
+# the closed-form law declare no budget parameter: they have nothing to show.
+_SEGMENT_BUDGET_PARAMS = {
+    "mpc": (
+        "planner.segment.mpc.budget.first_s",
+        "planner.segment.mpc.budget.replan_s",
+    ),
+    "mpc_docking": (
+        "planner.segment.mpc_docking.budget.first_s",
+        "planner.segment.mpc_docking.budget.replan_s",
+    ),
+}
+_SEARCH_BUDGET_PARAMS = {
+    "nlp": (
+        "planner.search.nlp.budget.budget_s",
+        "planner.search.nlp.budget.solve_s",
+        "planner.search.nlp.budget.max_solves",
+    ),
+}
+
+# Implementations that exist only in simulation (issue #654: a hardware
+# configuration selecting one is parked at configure). Stated from the mode name
+# so the operator sees it without a query that could fail.
+_SIM_ONLY_MODES = frozenset({"nlp", "mpc_docking"})
+
+# Segment modes whose planner publishes a plan only together with its first
+# segment, so a withheld segment leaves no plan and no reason on the feed.
+_PLAN_WITH_FIRST_SEGMENT_MODES = frozenset({"mpc", "mpc_docking"})
+
+PLAN_WITH_FIRST_SEGMENT_HINT = (
+    "  (this planner publishes a plan only with its first segment — a withheld one shows "
+    "nothing here; see planner_events.csv: segment_outcome, segment_core_reason)"
+)
+
+
+def budget_param_names(kind: str, mode: str | None) -> tuple[str, ...]:
+    """Budget parameters to read for the selected `mode`; `kind` is segment | search.
+
+    Empty when the mode is unknown or declares no budget, which is also the
+    answer for a mode this build has never heard of: nothing is guessed.
+    """
+    table = _SEGMENT_BUDGET_PARAMS if kind == "segment" else _SEARCH_BUDGET_PARAMS
+    return table.get(mode, ()) if mode is not None else ()
+
+
+def segment_budget_query_due(
+    status: CatchingStatus,
+    now_s: float,
+    last_query_s: float | None,
+    in_flight: bool,
+) -> bool:
+    """`segment_mode_query_due` for the selected segment planner's budgets."""
+    if not budget_param_names("segment", status.segment_mode):
+        return False
+    return _mirror_query_due(status, status.segment_budget, now_s, last_query_s, in_flight)
+
+
+def search_budget_query_due(
+    status: CatchingStatus,
+    now_s: float,
+    last_query_s: float | None,
+    in_flight: bool,
+) -> bool:
+    """`segment_budget_query_due` for the selected search's budgets."""
+    if not budget_param_names("search", status.search_mode):
+        return False
+    return _mirror_query_due(status, status.search_budget, now_s, last_query_s, in_flight)
+
+
+def _ms(seconds: float) -> str:
+    text = f"{seconds * 1e3:.1f}"
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _format_mode_line(label: str, mode: str, budget: tuple[float, ...] | None) -> str:
+    """`<label> mode: <mode>` plus budgets and the sim-only mark, when known.
+
+    The budget parameters are seconds; the operator reads milliseconds.
+    """
+    parts: list[str] = []
+    if budget is not None and mode == "nlp" and len(budget) == 3:
+        parts += [
+            f"wake budget {_ms(budget[0])} ms",
+            f"solve {_ms(budget[1])} ms",
+            f"≤ {int(budget[2])} solves",
+        ]
+    elif budget is not None and mode in _SEGMENT_BUDGET_PARAMS and len(budget) == 2:
+        parts += [f"first {_ms(budget[0])} ms", f"replan {_ms(budget[1])} ms"]
+    if parts and mode in _SIM_ONLY_MODES:
+        # Static (no query), but only on a line that already carries budgets:
+        # until they are read the line is the mode alone, as before.
+        parts.append("sim only")
+    return f"{label} mode: {mode}" + (" — " + " · ".join(parts) if parts else "")
+
+
 def mode_name(value: int) -> str:
     """Name for a wire mode, or the raw value when this build does not know it.
 
@@ -260,6 +359,10 @@ class CatchingStatus:
     segment_mode: str | None = None
     #: The controller's `planner.search.mode` (grid | nlp), read and cached the same way.
     search_mode: str | None = None
+    #: Budgets [s] of the selected planners, in `budget_param_names` order; None =
+    #: not read (or the mode has none). Reset together with the modes they belong to.
+    segment_budget: tuple[float, ...] | None = None
+    search_budget: tuple[float, ...] | None = None
 
     input_valid: bool = False
     input_stale: bool = True
@@ -339,6 +442,8 @@ class CatchingStatus:
         if self.feed.state(now_s) is FeedState.STALE:
             self.segment_mode = None
             self.search_mode = None
+            self.segment_budget = None
+            self.search_budget = None
         self.feed.mark(now_s)
         prev_mode = self._prev_mode
         self.mode = int(msg.mode)
@@ -356,6 +461,8 @@ class CatchingStatus:
         if self._prev_tick is not None and new_tick < self._prev_tick:
             self.segment_mode = None
             self.search_mode = None
+            self.segment_budget = None
+            self.search_budget = None
         self._prev_tick = new_tick
         self.tick = new_tick
 
@@ -490,6 +597,7 @@ class CatchingStatus:
             self._arm_line(),
             self._input_line(),
             self._plan_line(),
+            *self._plan_hint_lines(),
             self._law_line(),
             self._hand_line(),
             self._tips_line(),
@@ -516,12 +624,12 @@ class CatchingStatus:
             # Not read yet, or never declared: the controller mirrors the key
             # only once it has configured (a parked one answers with nothing).
             return f"segment mode: unknown ({CATCHING_SEGMENT_MODE_PARAM} not read)"
-        return f"segment mode: {self.segment_mode}"
+        return _format_mode_line("segment", self.segment_mode, self.segment_budget)
 
     def _search_mode_line(self) -> str:
         if self.search_mode is None:
             return f"search mode: unknown ({CATCHING_SEARCH_MODE_PARAM} not read)"
-        return f"search mode: {self.search_mode}"
+        return _format_mode_line("search", self.search_mode, self.search_budget)
 
     def _arm_line(self) -> str:
         observed = "ARMED" if self.armed else "DISARMED"
@@ -561,6 +669,12 @@ class CatchingStatus:
             f"seq={self.input_snapshot_sequence} age={self.input_age_s * 1e3:.1f} ms "
             f"horizon={self.input_horizon_s:.3f} s"
         )
+
+    def _plan_hint_lines(self) -> list[str]:
+        """Why "no plan" may name nothing, for planners that withhold the whole plan."""
+        if not self.plan_valid and self.segment_mode in _PLAN_WITH_FIRST_SEGMENT_MODES:
+            return [PLAN_WITH_FIRST_SEGMENT_HINT]
+        return []
 
     def _plan_line(self) -> str:
         if not self.plan_valid:
