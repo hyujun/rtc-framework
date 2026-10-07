@@ -85,9 +85,9 @@ $T_{close,e2e}$ 는 **자세 쌍의 성질**이다 (이동하는 관절 집합�
 
 두 값이 같을 이유는 없다. 키가 없으면 $T_{close,lead}=T_{close,e2e}$ 이고 컨트롤러가 configure 에서 WARN 한다. 유지 창이 어디에 있는가는 손마다 다르다 — 한 손은 막 닫혔을 때 공이 도착하는 것이 맞고 (명령 → 원점 도달이 $T_{close,e2e}$ 근처), 다른 손은 아직 닫히는 중에 공이 도착해야 맞다 (§4.6).
 
-**$t_c$ 의 축.** 시퀀서가 lead 를 빼는 $t_c$ 는 선택에 따라 다른 순간이다. `grid` 탐색 × {`closed_form`, `mpc`} 에서는 공이 원점에 닿는 순간이고 `T_close_lead` 가 그 축의 값이다. `nlp` 탐색이나 `mpc_docking` 구간 계획기 아래에서 $t_c$ 는 공이 **입구 평면** (원점 앞 `robot.hand.docking.s_ent`) 을 지나는 순간이다. 컨트롤러가 configure 에서 한 번 환산한다.
+**$t_c$ 의 축.** 시퀀서가 lead 를 빼는 $t_c$ 가 팔의 운동에서 어느 순간인가는 **팔이 따르는 구간을 만든 계획기**가 정한다 — plan 을 낸 탐색이 아니다. `closed_form` 과 `mpc` 구간 계획기는 $t_c$ 에 catch frame 의 원점을 공 위에 놓으므로 (`grid` 든 `nlp` 든) `T_close_lead` 를 적힌 그대로 쓴다. `mpc_docking` 구간 계획기는 $t_c$ 를 공이 **입구 평면** (원점 앞 `robot.hand.docking.s_ent`) 을 지나는 순간에 두므로 컨트롤러가 configure 에서 한 번 환산한다.
 $$T_{close,lead}^{(t_c)}=T_{close,lead}-\frac{s_{ent}}{c_{ref}},\qquad c_{ref}=-\nu_{ref,z}$$
-($c_{ref}$ 는 그 코어의 기준 접근 속력 `core.catch.nu_ref`). 시퀀서 · 계획기의 $t_{cmd}$ · 탐색의 `t_close_lead` 상수 · docking 코어의 $\delta_0=T_{close,e2e}-T^{(t_c)}_{close,lead}$ 가 환산한 값을 쓴다 (mirror `hand.T_close_lead`, `hand.T_close_lead_from_t_c`, `hand.docking.closure.delta_0`). 환산한 lead 가 음수면 (명령이 포구 순간 뒤가 된다) park 한다 (`kMpcDockingInvalid`).
+($c_{ref}$ 는 그 코어의 기준 접근 속력 `core.catch.nu_ref`). 시퀀서 · RT 의 $t_{cmd}$ (접촉 판정 창) · 탐색이 plan 에 적는 $t_{cmd}$ 가 이 값 하나를 쓴다 (mirror `hand.T_close_lead`, `hand.T_close_lead_from_t_c`). **docking 코어는 따로다**: `nlp` 탐색과 `mpc_docking` 의 코어는 포구 노드가 언제나 입구 평면 통과이므로, 어느 구간 계획기 아래에서든 자기 기준 속력으로 환산한 lead 로 명목 폐쇄 순간 $\delta_0=T_{close,e2e}-(T_{close,lead}-s_{ent}/c_{ref})$ 을 받는다 (mirror `hand.docking.closure.delta_0`). 환산한 lead 가 음수면 (명령이 입구 통과 뒤가 된다) park 한다 (`kMpcDockingInvalid`). `nlp` × `mpc` 는 그래서 탐색의 모형 (입구 통과가 $t_c$) 과 실행 (원점 도달이 $t_c$) 이 $s_{ent}/c_{ref}$ 만큼 다른 조합이다 — 탐색의 해를 그대로 실행하는 것은 `nlp` × `mpc_docking` 뿐이다.
 
 RT 틱 $h$ 단위로만 명령할 수 있으므로 $t_{cmd}$ 를 넘지 않는 마지막 틱이 아니라 **처음으로 now_real ≥ $t_{cmd}-h/2$ 인 틱**에서 명령한다 (가장 가까운 틱으로 반올림, `HandCommandDueRounded` — L7 §4.1 R-CLOSE). 오차는 $\pm h/2$ 의 영평균이다. $h$ 는 `ControllerState::dt` (= 1/`control_rate`, 500 Hz 고정이 아니다) 이고, G6-A 는 실측 tick 간격으로 판정한다.
 
@@ -138,7 +138,7 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 |---|---|---|
 | `T_close_e2e` (200 회 평균) | 0.278 s (표준편차 0) | 0.098 s (표준편차 0.14 ms) |
 | `T_close_lead` — 명령 → 원점 도달의 유지 창 | 0.2805 s (260.5 – 300.5 ms 의 가운데) | 0.0577 s (31.7 – 83.7 ms 의 가운데) |
-| 입구 평면 축으로 환산한 lead / $\delta_0$ | 0.2678 s / 10.2 ms | 0.0256 s / 72.4 ms |
+| 입구 평면 축으로 환산한 lead (`mpc_docking` 이 실행하는 값) / docking 코어의 $\delta_0$ | 0.2678 s / 10.2 ms | 0.0256 s / 72.4 ms |
 | `docking.s_ent` | 7.0 mm | 53.0 mm |
 | 통로 `r_ent` / `tan_theta` | 17.7 mm / 0.4599 | 22.1 mm / 0.2764 |
 | lateral 집합 | 후보 147 셀 중 **4 셀**, 내접원 중심 (−5, −5) mm 반지름 2.5 mm, 가장 가까운 면 2.3 mm | 후보 459 셀 중 **43 셀 — 한 영역이 아니라 흩어져 있다**, 내접원 중심 (−20, 20) mm 반지름 3.5 mm, 가장 가까운 면 3.3 mm |
@@ -191,7 +191,7 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 | `robot.hand.hold.mode` | – | §4.4 유지 목표 규칙: `close_target` \| `measured_offset` |
 | `robot.hand.hold.delta_rad` | rad | `measured_offset` 에서만 쓰는 여유량. Close 가 timeout 으로 끝나 측정이 비유한인 관절은 `q_close` 를 쓴다 |
 | `robot.hand.T_close_e2e` | s | §4.2 종단 간 **실측** — 잰 폐쇄 시간만 뜻한다 (sim 은 200 회 시행의 평균, 실기는 G6-D). 시한 · γ 창 · $\delta_0$ 가 읽는다. 명령 시각은 정하지 않는다 |
-| `robot.hand.T_close_lead` | s | §4.3 폐쇄를 공이 포구점 (원점) 에 닿기 얼마 전에 지령하는가 — 설계값, 원점 도달 축. 없으면 `T_close_e2e` 이고 configure 가 WARN 한다 (`HandProfile::CloseLead()`). `nlp` 탐색 · `mpc_docking` 에서는 컨트롤러가 입구 평면 축으로 환산해 쓴다 (§4.3). 검증기: $T_{freeze}\ge T_{close,lead}+T_{arm}+h$ |
+| `robot.hand.T_close_lead` | s | §4.3 폐쇄를 공이 포구점 (원점) 에 닿기 얼마 전에 지령하는가 — 설계값, 원점 도달 축. 없으면 `T_close_e2e` 이고 configure 가 WARN 한다 (`HandProfile::CloseLead()`). `mpc_docking` 구간 계획기 아래에서는 컨트롤러가 입구 평면 축으로 환산해 쓴다 (§4.3). 검증기: $T_{freeze}\ge T_{close,lead}+T_{arm}+h$ |
 | `robot.hand.docking.*` | – | §4.6 입구 평면 · 통로 · lateral 집합 · 속도 집합 · 폐쇄 창 · 충격 (`provisional: true`). 항상 파싱하고 **`nlp` 탐색 또는 `mpc_docking` 이 선택됐을 때만 요구한다** — 비었거나 TBD 면 park (`kMpcDockingInvalid`, 키 이름을 적는다). 키 목록과 값은 integrated_bringup README |
 | `robot.hand.T_hold` | s | HOLD 의 길이 (재무장 · 시퀀서 도착 판정과 함께 튜닝) |
 | `robot.hand.T_close_timeout` | s | Close 가 $\eta$ 에 못 닿고 Hold 로 넘어가는 시한. 키가 없으면 파서가 $2\,T_{close,e2e}$ 로 유도한다. 검증기: `> T_close_e2e` |
