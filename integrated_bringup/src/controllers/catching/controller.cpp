@@ -265,6 +265,12 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   planner_params_ = catching_section_present_
                         ? rtc::catching::ParsePlannerParams(catching, planner_keys)
                         : rtc::catching::PlannerParams{};
+  // Not a `planner.*` key: the period predictions arrive at, which a wake
+  // that searches while a plan is followed has to share with the replan
+  // behind the search (PlannerParams::dt_expected). Unset = no cap.
+  planner_params_.dt_expected = params_.prediction_dt_expected.tbd
+                                    ? std::numeric_limits<double>::quiet_NaN()
+                                    : params_.prediction_dt_expected.value;
   // The catch-pose IK's keys are the selected search's own: the same
   // sub-schema (`ik.*`, `catchability.*`) under `planner.search.<mode>`.
   catch_pose_ik_config_ =
@@ -935,6 +941,12 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
   s.segment_seq = s.segment_active ? segment_current_.segment_seq : 0U;
   s.segment_pending = mpc && segment_pending_valid_;
   s.segment_pending_seq = s.segment_pending ? segment_pending_.segment_seq : 0U;
+  // A replacement that waits for its first segment's node 0: the pending
+  // segment is that plan's, the followed one (and plan_id above) still the
+  // old plan's. The planner publishes nothing more until this is gone.
+  s.plan_pending = mpc && plan_next_valid_;
+  s.plan_pending_id = s.plan_pending ? plan_next_.plan_id : 0U;
+  s.plan_pending_t_c_ns = s.plan_pending ? plan_next_.t_c_ns : 0;
   // The ramp SetIntercept was given (first adoption and replacements alike).
   s.ramp_valid = s.ref_valid && plan_active_;
   if (s.ramp_valid) {
@@ -1029,6 +1041,11 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       // The freeze (L3 §4.11, R-TRACK). From here the catch instant, the hand's
       // close instant and the track are fixed: the planner may keep publishing,
       // and none of it is taken.
+      // A replacement that still waits is not taken any more: the catch
+      // instant frozen here is the followed plan's.
+      if (plan_next_valid_) {
+        DropPendingSegment();
+      }
       trial_committed_ = true;
       committed_t_c_ns_ = plan_.t_c_ns;
       committed_t_cmd_ns_ = rtc::catching::detail::SatSub(plan_.t_c_ns, t_close_lead_ns_);
@@ -1040,8 +1057,7 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
     case Mode::kHold:
       hold_entry_ns_ = tick_now_.ns;
       // HOLD follows the stop it has and takes no new one (MD-38).
-      segment_pending_ = rtc::catching::SegmentSnapshot{};
-      segment_pending_valid_ = false;
+      DropPendingSegment();
       break;
     case Mode::kRetreat: {
       // The plan is over, whether it ended in a catch or an abort. Dropping it
@@ -1467,19 +1483,70 @@ rtc::catching::Reason DemoCatchingController::EnterDecel(const ControllerState& 
 
 void DemoCatchingController::DropSegments() noexcept {
   admitted_segment_ = rtc::catching::AdmittedSegment{};
-  segment_pending_ = rtc::catching::SegmentSnapshot{};
-  segment_pending_valid_ = false;
+  DropPendingSegment();
   segment_current_ = rtc::catching::SegmentSnapshot{};
   segment_current_valid_ = false;
   segment_pair_ok_ = false;
 }
 
+void DemoCatchingController::RetimeClose(const ControllerState& state) noexcept {
+  if (!segment_current_valid_ || !law_snapshot_.valid) {
+    return;
+  }
+  rtc::catching::PlaneCrossingParams params{};
+  // One pre-catch interval either side of the committed catch instant: a
+  // crossing further away is not the one this segment was planned to meet.
+  params.window_ns =
+      segment_current_.n_pre > 0 ? segment_current_.dt_pre_ns : segment_current_.dt_ns;
+  // A quarter of a tick: the sequencer rounds the command to the nearest one.
+  params.tol_ns = static_cast<std::int64_t>(std::llround(state.dt * 1e9)) / 4;
+  params.max_iterations = kCloseRetimeMaxIterations;
+  int hint = 0;
+  const auto gap = [this, &hint](std::int64_t t_ns, double& g) noexcept {
+    // The hand: the segment the arm will be on at t — the pending one from its
+    // node 0 on, else the followed one (the planner's own rule, MD-58).
+    const rtc::catching::SegmentSnapshot* seg = rtc::catching::SourceSegmentAt(
+        segment_pending_valid_ ? &segment_pending_ : nullptr, &segment_current_, t_ns);
+    if (!segment_follower_.Sample(*seg, t_ns, retime_sample_)) {
+      return false;
+    }
+    // The ball: the committed track, inside its prediction only.
+    const rtc::catching::SampleEval ball =
+        rtc::catching::SampleAt(law_snapshot_, rtc::catching::NowLead{t_ns}, hint);
+    if (!ball.valid || ball.extrapolated) {
+      return false;
+    }
+    g = rtc::catching::PlaneGap(retime_sample_.placement.rotation(),
+                                retime_sample_.placement.translation(), ball.p, close_plane_s_);
+    return true;
+  };
+  const rtc::catching::PlaneCrossing crossing =
+      rtc::catching::SolvePlaneCrossing(gap, committed_t_c_ns_, params);
+  if (!crossing.valid) {
+    return;
+  }
+  committed_t_cmd_ns_ = rtc::catching::detail::SatSub(crossing.t_ns, t_close_lead_ns_);
+  if (hand_seq_enabled_) {
+    static_cast<void>(hand_seq_.Retime(rtc::catching::BallTime{crossing.t_ns}));
+  }
+}
+
+void DemoCatchingController::DropPendingSegment() noexcept {
+  segment_pending_ = rtc::catching::SegmentSnapshot{};
+  segment_pending_valid_ = false;
+  // A replacement plan waits on its first segment and on nothing else: without
+  // the segment it is a plan the arm could not follow.
+  plan_next_ = rtc::catching::PlanSnapshot{};
+  plan_next_valid_ = false;
+}
+
 bool DemoCatchingController::SegmentMatchesPlan(
     const rtc::catching::SegmentSnapshot& seg) const noexcept {
   // The plan the RT follows, as it follows it: its id and its t_c — the
-  // planner's grid anchor. Under mpc a followed plan is never replaced, so t_c
-  // is fixed from the adoption; from COMMITTED on it must also be the instant
-  // the freeze recorded (the hand's close and the DECEL edge run on that one).
+  // planner's grid anchor. A replacement changes both on the tick its first
+  // segment is switched to, and only in APPROACH; from COMMITTED on t_c must
+  // also be the instant the freeze recorded (the hand's close and the DECEL
+  // edge run on that one).
   return plan_active_ && seg.plan_id == plan_.plan_id && seg.t_c_ns == plan_.t_c_ns &&
          (!trial_committed_ || seg.t_c_ns == committed_t_c_ns_);
 }
@@ -1538,9 +1605,44 @@ void DemoCatchingController::RunSegmentLane() noexcept {
   // joint count could be admitted and never sampled.
   ctx.expected_nv = arm_dof_;
   segment_refusal_ = rtc::catching::JudgeSegment(segment_in_, ctx, admitted_segment_);
+  // A replacement pair (APPROACH): the box holds a segment of another plan
+  // and this tick loaded a plan it may take in place of the followed one. The
+  // same segment is judged against THAT plan — id, catch instant and track —
+  // and the verdict recorded is this second one.
+  bool replacement = false;
+  if (!pairing && segment_refusal_ == rtc::catching::SegmentRefusal::kPlan &&
+      ReplacementAdoptableThisTick()) {
+    ctx.plan_id = plan_in_.plan_id;
+    ctx.plan_t_c_ns = plan_in_.t_c_ns;
+    ctx.plan_track_generation = plan_in_.token.generation;
+    segment_refusal_ = rtc::catching::JudgeSegment(segment_in_, ctx, admitted_segment_);
+    replacement = segment_refusal_ == rtc::catching::SegmentRefusal::kNone;
+  }
   tick_record_.segment_judged = true;
   tick_record_.segment_refusal = static_cast<std::uint8_t>(segment_refusal_);
   if (segment_refusal_ != rtc::catching::SegmentRefusal::kNone) {
+    return;
+  }
+  if (replacement) {
+    // The one slot again. A segment of the followed plan that waits for a node
+    // 0 no later than the pair's goes first — the planner took the pair's
+    // start state on it (SourceSegmentAt) — and the pair stays in the box,
+    // judged afresh next tick. One that starts later is put out: the pair
+    // starts on the followed segment, and the plan it belongs to is about to
+    // be replaced.
+    if (segment_pending_valid_ && segment_pending_.t0_ns <= segment_in_.t0_ns) {
+      tick_record_.segment_event = Event::kDeferred;
+      return;
+    }
+    // Both remembered from here: a pair that is dropped later (the switch
+    // gate, the freeze, COMMITTED) is not taken a second time.
+    admitted_segment_ = rtc::catching::AdmittedSegment{true, segment_in_.segment_seq};
+    admitted_plan_ = rtc::catching::AdmittedPlan{true, plan_in_.plan_id};
+    segment_pending_ = segment_in_;
+    segment_pending_valid_ = true;
+    plan_next_ = plan_in_;
+    plan_next_valid_ = true;
+    tick_record_.segment_event = Event::kPairAdmitted;
     return;
   }
   if (pairing) {
@@ -1555,8 +1657,11 @@ void DemoCatchingController::RunSegmentLane() noexcept {
   // between nothing to take — and is judged again next tick. A newer segment
   // for the SAME node 0 is the same grid point solved again on a newer
   // prediction (MD-58): it replaces the one waiting.
+  //
+  // While a replacement pair holds the slot nothing of the followed plan
+  // enters it: the pair's first segment is the next one the arm takes.
   const bool replace = segment_pending_valid_;
-  if (replace && segment_in_.t0_ns != segment_pending_.t0_ns) {
+  if (replace && (plan_next_valid_ || segment_in_.t0_ns != segment_pending_.t0_ns)) {
     tick_record_.segment_event = Event::kDeferred;
     return;
   }
@@ -1621,11 +1726,21 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
       if (entry && !segment_current_valid_) {
         tick_record_.segment_event = Event::kNotDue;
       }
-    } else if (!SegmentMatchesPlan(segment_pending_)) {
-      segment_pending_valid_ = false;
+    } else if (plan_next_valid_
+                   // A replacement's first segment belongs to the plan that
+                   // waits with it, and that plan is taken only while its catch
+                   // instant is still outside the freeze window: inside it the
+                   // tick that took it would commit to it.
+                   ? (segment_pending_.plan_id != plan_next_.plan_id ||
+                      segment_pending_.t_c_ns != plan_next_.t_c_ns ||
+                      (plan_freeze_ns_ > 0 &&
+                       rtc::catching::detail::SatSub(plan_next_.t_c_ns, tick_now_.ns) <=
+                           plan_freeze_ns_))
+                   : !SegmentMatchesPlan(segment_pending_)) {
+      DropPendingSegment();
       tick_record_.segment_event = Event::kPlanMismatch;
     } else if (!segment_follower_.Sample(segment_pending_, s, segment_sample_)) {
-      segment_pending_valid_ = false;
+      DropPendingSegment();
       tick_record_.segment_event = Event::kSampleFailed;
     } else {
       // MD-39: the command this tick starts from against the new segment at
@@ -1642,17 +1757,26 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
       tick_record_.segment_dqd_max = gate.dqd_max;
       tick_record_.segment_gate_joint = gate.joint;
       if (gate.pass) {
+        tick_record_.segment_event = Event::kSwitched;
+        if (plan_next_valid_) {
+          // The replacement: the plan and its first segment on one tick, so
+          // the followed segment is never another plan's than the followed
+          // one (MD-35). The same attempt, counted apart from adoptions.
+          AdoptPlan(plan_next_);
+          plan_replaced_count_.fetch_add(1, std::memory_order_relaxed);
+          tick_record_.segment_event = Event::kPlanSwitched;
+        }
         segment_current_ = segment_pending_;
         segment_current_valid_ = true;
         sampled = true;
-        tick_record_.segment_event = Event::kSwitched;
       } else {
         // A replan that would step the command is dropped and the followed
-        // segment goes on; a first segment has none behind it, and the trial
-        // aborts below.
+        // segment goes on — a replacement pair with it, and the followed plan
+        // stays; a first segment has none behind it, and the trial aborts
+        // below.
         tick_record_.segment_event = Event::kGateRefused;
       }
-      segment_pending_valid_ = false;
+      DropPendingSegment();
     }
   }
   if (!segment_current_valid_) {
@@ -1756,6 +1880,23 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
   }
   if (stale_long) {
     return {Reason::kBallStaleLong, true};
+  }
+  // The close instant follows the prediction until the close is commanded:
+  // re-solved on the ticks whose inputs changed — a new snapshot of the
+  // committed track, or a change of the segments the hand is read on: one
+  // switched to, one that entered the pending slot (the solve reads the
+  // pending one from its node 0 on), or one that left it unfollowed. After
+  // the law (the switch is this tick's) and before the edge below reads the
+  // instant.
+  using Event = CatchingDiagLogPod::SegmentEvent;
+  const Event segment_event = tick_record_.segment_event;
+  const bool segments_changed =
+      segment_event == Event::kSwitched || segment_event == Event::kAdmitted ||
+      segment_event == Event::kReplaced || segment_event == Event::kGateRefused ||
+      segment_event == Event::kPlanMismatch || segment_event == Event::kSampleFailed;
+  if (!closing && rtc::catching::FollowsSegments(segment_mode_) &&
+      !(hand_seq_enabled_ && hand_seq_.CloseIssued()) && (law_snapshot_new_ || segments_changed)) {
+    RetimeClose(state);
   }
   // COMMITTED → CLOSING once the close command has gone out (R-CLOSE). The
   // sequencer owns that instant; a hand-step profile has no sequencer and
@@ -2034,11 +2175,12 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     // Re-targeted in place — no Reset — so the reference state is continuous;
     // the new plan's γ ramp starts from the γ the reference is at.
     //
-    // Not under a segment planner: the segments the arm follows belong to the
-    // plan it took. The planner goes on searching while that plan is followed
-    // but publishes no replacement (held_replace_unsupported), and a plan that
-    // arrives anyway has no segment of its own — taking it would turn every
-    // followed and pending segment into a plan mismatch.
+    // Not here under a segment planner: the segments the arm follows belong
+    // to the plan it took, so a replacement is taken only as a pair with its
+    // first segment — by the segment lane, into the pending slot — and
+    // becomes the followed plan on the tick that segment is switched to
+    // (RunSegmentTick). A plan that arrives without a segment of its own is
+    // not taken.
     if (!mpc && plan_active_ && plan_refusal_ == rtc::catching::PlanRefusal::kNone &&
         plan_in_.plan_id != plan_.plan_id) {
       const std::int64_t to_tc = plan_.t_c_ns - tick_now_.ns;
@@ -3333,6 +3475,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   tick_now_lead_ = rtc::catching::MakeNowLead(tick_now_, t_arm_ns_);
   law_horizon_extrap_ = false;
   law_stepped_cmd_ = false;
+  law_snapshot_new_ = false;
   const rtc::catching::NowReal now = tick_now_;
   traj_view_ = rtc::catching::ReadTraj(snapshot, now, tick_now_lead_, t_stale_ns_,
                                        ActivationGeneration(), consumed_);
@@ -3352,6 +3495,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     const std::uint64_t followed = frozen ? committed_generation_ : plan_.token.generation;
     if (plan_active_ && snapshot.valid && snapshot.token.generation == followed) {
       law_snapshot_ = snapshot;
+      law_snapshot_new_ = true;
     }
   }
 

@@ -45,6 +45,8 @@ import numpy as np
 # file only logs non-idle wakes (see the C++ header), but `idle` is kept in
 # the category order because PlannerEventWorthRecording can still record one
 # (a reset or a monitor-only sigma_l on an otherwise idle wake).
+# `held_replace_unsupported` is no longer written (a replacement the search
+# chooses is published as a pair): it stays for the logs that carry it.
 OUTCOME_ORDER = (
     "idle",
     "no_input",

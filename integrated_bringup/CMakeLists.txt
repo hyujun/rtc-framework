@@ -803,6 +803,10 @@ if(BUILD_TESTING)
     Eigen3
   )
   target_compile_options(test_demo_catching_alloc_s7 PRIVATE -Wno-mismatched-new-delete)
+  # The second robot's gate (E1-F17 D7) brings the controller up from the
+  # shipped iiwa7_leap profile.
+  target_compile_definitions(test_demo_catching_alloc_s7 PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
 
   # S7 G8-A2 (truth half): the reset table's rows hold at run time — every
   # RT-owned member poisoned, a reset run, each member checked against its row.

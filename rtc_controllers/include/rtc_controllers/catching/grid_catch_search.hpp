@@ -22,6 +22,15 @@
 // is spent. Rank gates, the stopping point and the full score follow each successful IK. The best
 // full score wins (§4.10).
 //
+// WHERE THE REACH STARTS (§4.3). The reach-time gate asks whether the arm gets
+// from its state at now_lead to the candidate's q* in the lead. Before a plan
+// that state is the command the RT reports. While the RT follows a segment
+// planner's segments it is the segment the RT will be on at now_lead — the
+// pending one from its own node 0 on, else the followed one (SourceSegmentAt)
+// — evaluated at now_lead by the evaluator the RT samples with. Only that
+// gate's start moves: the reference the rollout runs starts where it did, and
+// the switching rule is unchanged.
+//
 // SWITCHING (§4.7) AND FREEZE (decision G). When the RT is following a plan
 // this search published, a better candidate replaces it only if it improves
 // the score by more than `switch.delta_J` (or the current one is no longer
@@ -57,6 +66,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 
 namespace rtc::catching {
 
@@ -160,13 +170,18 @@ class GridCatchSearch final : public CatchSearch {
   }
 
   /// One search. RT-safe. `rt` gives the current command and the plan the RT
-  /// follows; `now` is the planning 'now' on the steady axis. `arm` is NOT
-  /// READ: this search scores a candidate by closed-form gates on the catch
-  /// point, not by an arm motion that would have to start somewhere.
+  /// follows; `now` is the planning 'now' on the steady axis. `arm` gives the
+  /// start of the reach-time gate while the RT follows a segment (header
+  /// note); with no segment in it, or one that cannot be read at now_lead (its
+  /// joint count is not the model's, the instant is before its node 0, a value
+  /// is not finite), the start is the reported command. `budget_cap_ns` > 0
+  /// bounds the IK budget from above: the candidates are evaluated until
+  /// min(`planner.search.grid.budget_s`, the cap) is spent — the first one
+  /// always is.
   [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                                   bool cov_matched, const PlannerRtState& rt,
                                   const ReportedSegments& arm, NowReal now,
-                                  SearchStats& stats) noexcept override;
+                                  std::int64_t budget_cap_ns, SearchStats& stats) noexcept override;
 
   /// Always nullptr: this search solves no arm trajectory.
   [[nodiscard]] const CatchSolution* Solution() const noexcept override { return nullptr; }
@@ -191,6 +206,17 @@ class GridCatchSearch final : public CatchSearch {
 
   /// The IK seed in force after the last `Plan` call, model order (tests).
   [[nodiscard]] const Eigen::VectorXd& IkSeedForTesting() const noexcept { return seed_; }
+
+  /// The joint position and velocity the last `Plan` started every candidate's
+  /// reach from, model order, `nv` entries each (tests). A `Plan` that ended
+  /// before it judged a candidate leaves an earlier call's.
+  [[nodiscard]] std::span<const double> ReachStartPositionForTesting() const noexcept {
+    return {q0_.data(), static_cast<std::size_t>(model_.nv)};
+  }
+
+  [[nodiscard]] std::span<const double> ReachStartVelocityForTesting() const noexcept {
+    return {w0_.data(), static_cast<std::size_t>(model_.nv)};
+  }
 
  private:
   struct Candidate {

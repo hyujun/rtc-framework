@@ -247,7 +247,7 @@ TEST(NlpSearchShipped, RecordsConfigureAndSolveTimesByNodeCount) {
         const std::int64_t now = kNow + (trial * 7 + wake * 33) * kMs;
         SearchStats stats;
         const PlanSnapshot plan = rig.search->Plan(ball.traj, ball.cov, true, rig.RestingRt(now),
-                                                   NoSegments(), NowReal{now}, stats);
+                                                   NoSegments(), NowReal{now}, 0, stats);
         static_cast<void>(plan);
         if (stats.n_ik > 0) {
           screen_per_candidate.push_back(stats.nlp.screen_ns / stats.n_ik);
@@ -343,7 +343,7 @@ TEST(NlpSearchShipped, RecordsAWholeWakeByTheNumberOfSolves) {
           const std::int64_t now = kNow + (trial * 7 + wake * 33) * kMs;
           SearchStats stats;
           const PlanSnapshot plan = rig.search->Plan(ball.traj, ball.cov, true, rig.RestingRt(now),
-                                                     NoSegments(), NowReal{now}, stats);
+                                                     NoSegments(), NowReal{now}, 0, stats);
           static_cast<void>(plan);
           (wake == 0 ? cold_wake : warm_wake).push_back(stats.search_ns);
           screen.push_back(stats.nlp.screen_ns);
@@ -381,7 +381,7 @@ TEST(NlpSearchShipped, RecordsHowFarASolveRunsPastAShortShare) {
       const std::int64_t now = kNow + trial * 7 * kMs;
       SearchStats stats;
       static_cast<void>(rig.search->Plan(ball.traj, ball.cov, true, rig.RestingRt(now),
-                                         NoSegments(), NowReal{now}, stats));
+                                         NoSegments(), NowReal{now}, 0, stats));
       solved += stats.nlp.n_solved;
       for (const Candidate& c : rig.search->Candidates()) {
         if (c.reject == NlpReject::kDeadline) {
@@ -437,7 +437,7 @@ TEST(NlpSearchShipped, RecordsTheContinuousSolveBesideTheFixedOne) {
         const std::int64_t now = kNow + (trial * 7 + wake * 33) * kMs;
         SearchStats stats;
         static_cast<void>(rig.search->Plan(ball.traj, ball.cov, true, rig.RestingRt(now),
-                                           NoSegments(), NowReal{now}, stats));
+                                           NoSegments(), NowReal{now}, 0, stats));
         for (const Candidate& c : rig.search->Candidates()) {
           if (!c.continuous_run) {
             continue;
@@ -506,7 +506,7 @@ TEST(NlpSearchShipped, RecordsTheContinuousSolveBesideTheFixedOne) {
           const std::int64_t now = kNow + (trial * 7 + wake * 33) * kMs;
           SearchStats stats;
           static_cast<void>(rig.search->Plan(ball.traj, ball.cov, true, rig.RestingRt(now),
-                                             NoSegments(), NowReal{now}, stats));
+                                             NoSegments(), NowReal{now}, 0, stats));
           (wake == 0 ? cold_wake : warm_wake).push_back(stats.search_ns);
           solved_min = std::min<int>(solved_min, stats.nlp.n_solved);
         }

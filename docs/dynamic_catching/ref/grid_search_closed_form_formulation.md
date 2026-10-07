@@ -97,7 +97,7 @@ $$
 
 ### 1.4 segment mode 에서의 쓰임 (MD-46)
 
-탐색은 `closed_form` · `mpc` · `mpc_docking` 에 공통이다 (탐색의 다른 구현 `nlp` 는 formulation §17.11 이 갖는다). `closed_form` 에서는 plan 의 $p_c$ · γ 프로파일 · $a_d$ 를 RT 가 §3 의 법칙으로 그대로 실행하고, APPROACH 동안 탐색이 계속 돌며 §2.11 로 plan 을 교체한다. `mpc` 에서는 plan 의 $t_c$ (격자의 닻) · $p_c$ · $v_c$ · $a_d$ (포구 노드 목표) · $q^\ast$ (첫 선형화 기준) 만 MPC 가 읽고, $(\gamma_f, T_w)$ 는 순위에만 쓰인다 — RT 는 DS 를 돌리지 않는다. 구간 계획기 아래에서 탐색은 RT 가 plan 을 따르는 동안에도 (`planner.freeze.t_stop_plan` 까지) 돌고 교체를 **판정**하지만 RT 가 교체 쌍을 받지 않으므로 게시하지 않고 기록만 한다 (`held_replace_unsupported`, L3 §5.3 — E1-F17). 차이의 표는 §4.3.
+탐색은 `closed_form` · `mpc` · `mpc_docking` 에 공통이다 (탐색의 다른 구현 `nlp` 는 formulation §17.11 이 갖는다). `closed_form` 에서는 plan 의 $p_c$ · γ 프로파일 · $a_d$ 를 RT 가 §3 의 법칙으로 그대로 실행하고, APPROACH 동안 탐색이 계속 돌며 §2.11 로 plan 을 교체한다. `mpc` 에서는 plan 의 $t_c$ (격자의 닻) · $p_c$ · $v_c$ · $a_d$ (포구 노드 목표) · $q^\ast$ (첫 선형화 기준) 만 MPC 가 읽고, $(\gamma_f, T_w)$ 는 순위에만 쓰인다 — RT 는 DS 를 돌리지 않는다. 구간 계획기 아래에서 탐색은 RT 가 plan 을 따르는 동안에도 (`planner.freeze.t_stop_plan` 까지) 돌고, 교체를 판정하면 계획기가 새 plan 을 그 첫 구간과 쌍으로 게시해 RT 가 그 구간의 node 0 에서 둘을 함께 바꾼다 (L3 §5.3, L7 §4.3a). 그 동안 도달시간의 출발 (§2.4) 은 RT 가 보고한 구간 위의 상태다. 차이의 표는 §4.3.
 
 ---
 
@@ -203,6 +203,8 @@ $$
 q_0=q_c,\qquad w_0=\dot q_c\enspace(\text{명령이 seed 되지 않았으면 }0),\qquad
 \dot q_{plan}=\eta_v\dot q_{\max},\qquad now_{lead}=now+T_{arm}.
 $$
+
+RT 가 구간 계획기의 구간을 따르는 동안에는 $(q_0,w_0)$ 가 보고 시각의 명령이 아니라, $now_{lead}$ 에 팔이 있을 보고된 구간 (대기 구간의 node 0 이 $now_{lead}$ 이전이면 그것, 아니면 추종 구간) 을 $now_{lead}$ 에서 평가한 $(q,\dot q)$ 다. 그 구간을 읽을 수 없으면 위 식 그대로다 (L3 §4.3). 아래 rollout 의 출발은 바뀌지 않는다.
 
 rollout 의 출발 $(x_0, \dot x_0)$ 는 기준 생성기가 돌고 있으면 **그 상태** (교체는 거기서 이어진다), 아니면 $q_c$ 의 catch frame 위치에 정지다. 램프 시작값은 $\gamma_0=\gamma_{RT}$ (따르는 plan 이 있고 기준이 돌면), 아니면 0.
 
@@ -353,7 +355,7 @@ $$
 | better, 계단 실패 | `held_jump` | 아니오 |
 | better, 계단 통과 | `replaced` | 예 |
 
-히스테리시스는 "다른 후보로 바꾸는가" 의 규칙이지 "옛 예측을 붙잡는가" 가 아니다 — 붙잡으면 soft catch 가 $(1-\gamma_f)\Vert\delta\Vert$ 만큼 빗나간다. 구간 계획기 (`mpc` · `mpc_docking`) 에서도 이 절의 순서는 돌지만 (5 는 항상 통과) 결과는 게시되지 않고 `replaced` 는 `kHeldReplaceUnsupported` 로 기록된다. RT 가 plan 을 바꾸지 않으므로 plan 은 처음 게시한 것이 끝까지 간다 (E1-F17 이 이 보류를 푼다).
+히스테리시스는 "다른 후보로 바꾸는가" 의 규칙이지 "옛 예측을 붙잡는가" 가 아니다 — 붙잡으면 soft catch 가 $(1-\gamma_f)\Vert\delta\Vert$ 만큼 빗나간다. 구간 계획기 (`mpc` · `mpc_docking`) 에서도 이 절의 순서는 돈다 (5 는 항상 통과). 다만 게시는 탐색이 아니라 계획기의 한 주기가 한다: `replaced` 는 새 plan 과 그 첫 구간의 쌍으로 게시되고, `refreshed` 를 포함한 그 밖의 판정은 게시되지 않고 구간의 재계획으로 간다 (L3 §5.3).
 
 ### 2.12 게시 — plan 의 값
 
@@ -431,7 +433,7 @@ $$
 
 - **첫 채택** (TRACKING → APPROACH 다음 tick, 법칙의 첫 호출): 기준을 현재 명령 자세의 catch frame 위치에 정지로 리셋하고 ($x\leftarrow p_C(q_c)$, $\dot x\leftarrow0$) plan 의 $(p_c, \gamma_0, \gamma_f, t_0, t_1)$ 을 건다. 첫 명령 스텝이 DS 자신의 첫 스텝이 되게 — 생성기가 놓여 있던 곳에서의 점프가 아니라. 리셋이 거부되면 `REF_SATURATED`, 프로파일이 무효면 `PLAN_INVALID` 다.
 - **매 tick** (APPROACH · COMMITTED · CLOSING): 대상 $o=$ `SampleAt`$(now_{lead})$, $t=$ `ProfileSeconds`$(now_{lead}, t_0)$ 로 §3.3 을 한 번.
-- **교체** (APPROACH 에서만, `closed_form` 에서만; 받은 plan 의 `plan_id` 가 따르는 것과 다르고 **옛 plan** 의 $t_c-now\gt T_{freeze}$ 일 때): 생성기를 리셋하지 않고 포구점 $p_c$ · γ 램프 · 접근축 $a_d$ 를 새 plan 의 것으로 바꾼다 (대상 $o$ 는 그대로 공이다) — 기준 상태 $(x, \dot x)$ 는 연속이고 오차만 점프한다. 새 램프는 **채택 tick 의 기준 γ** $\gamma_{now}$ 에서 ($\gamma_0\leftarrow\gamma_{now}$, plan 의 $\gamma_0$ 는 한 탐색 전의 값이라 쓰지 않는다), **그 tick 이후에** ($t_0\leftarrow\max(t_0, now_{lead})$) 시작한다. 시작이 이미 지난 램프는 첫 스텝에서 올라가 있어 γ 계단이 되고, 계단은 $\gamma(o-p_c)$ · $\ddot\gamma(o-p_c)$ 를 통해 $e$ · $u_{des}$ 의 계단이 된다.
+- **교체** (APPROACH 에서만. 아래는 `closed_form` 의 것이다 — 구간 계획기 아래의 교체는 plan 과 첫 구간의 쌍을 그 구간의 node 0 에서 받는 것이고 L7 §4.3a 가 적는다; 받은 plan 의 `plan_id` 가 따르는 것과 다르고 **옛 plan** 의 $t_c-now\gt T_{freeze}$ 일 때): 생성기를 리셋하지 않고 포구점 $p_c$ · γ 램프 · 접근축 $a_d$ 를 새 plan 의 것으로 바꾼다 (대상 $o$ 는 그대로 공이다) — 기준 상태 $(x, \dot x)$ 는 연속이고 오차만 점프한다. 새 램프는 **채택 tick 의 기준 γ** $\gamma_{now}$ 에서 ($\gamma_0\leftarrow\gamma_{now}$, plan 의 $\gamma_0$ 는 한 탐색 전의 값이라 쓰지 않는다), **그 tick 이후에** ($t_0\leftarrow\max(t_0, now_{lead})$) 시작한다. 시작이 이미 지난 램프는 첫 스텝에서 올라가 있어 γ 계단이 되고, 계단은 $\gamma(o-p_c)$ · $\ddot\gamma(o-p_c)$ 를 통해 $e$ · $u_{des}$ 의 계단이 된다.
 
 ### 3.5 CLIK 입력 (L5 §4.2)
 
@@ -518,11 +520,11 @@ $T_{freeze}\ge T_{close,lead}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane
 
 | | `closed_form` | `mpc` (`mpc_docking` 도 같은 곳이 많다) |
 |---|---|---|
-| 탐색 | §2 전부 | §2 전부 (교체 §2.11 은 판정만 하고 게시하지 않는다 — 따르는 동안에도 탐색은 돈다) |
+| 탐색 | §2 전부 | §2 전부 (따르는 동안에도 돈다. 교체 §2.11 의 판정이 `replaced` 면 계획기가 plan 과 첫 구간의 쌍을 게시한다 — L3 §5.3) |
 | plan 에서 실행이 읽는 것 | $p_c$, $a_d$, $(\gamma_0, \gamma_f, t_0, t_1)$, $t_c$ | $t_c$ (격자 닻), $p_c$ · $v_c$ · $a_d$ (포구 노드 목표), $q^\ast$ (첫 선형화 기준) |
 | $(\gamma_f, T_w)$ | 실행된다 | 순위에만. 속도 목표 비는 `planner.segment.mpc.catch.gamma_ref` |
 | APPROACH – 정지 | §3 (DS → DECEL → HOLD) | MPC 관절 노드 구간 (formulation §1.6) |
-| 예측 변화의 흡수 | plan 교체 (§2.11) | 구간 재계획 (plan 의 교체는 보류 — 위) |
+| 예측 변화의 흡수 | plan 교체 (§2.11) | 같은 포구는 구간 재계획, 다른 포구는 교체 쌍 (L7 §4.3a) |
 | `REF_SATURATED` | 있음 | 없음 |
 
 ---

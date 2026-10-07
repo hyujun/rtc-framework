@@ -2,6 +2,7 @@
 #include "rtc_controllers/catching/grid_catch_search.hpp"
 
 #include "rtc_controllers/catching/ball_node_samples.hpp"
+#include "rtc_controllers/catching/node_follower.hpp"
 
 #include <Eigen/Eigenvalues>
 
@@ -230,8 +231,7 @@ void GridCatchSearch::Monitor(const TrajectorySnapshot& traj, const CovarianceSn
 PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                                    bool cov_matched, const PlannerRtState& rt,
                                    const ReportedSegments& arm, NowReal now,
-                                   SearchStats& stats) noexcept {
-  static_cast<void>(arm);  // not read (see the header)
+                                   std::int64_t budget_cap_ns, SearchStats& stats) noexcept {
   stats = SearchStats{};
   const std::int64_t t_start = clock_ != nullptr ? clock_() : 0;
   PlanSnapshot plan{};
@@ -373,12 +373,31 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   }
   const int n_ik_max = std::min(n_order, params_.max_ik);
 
-  // RT state into model order.
+  const NowLead now_lead = MakeNowLead(now, SecondsToNs(constants_.t_arm_s));
+  // Where the arm's reach starts (§4.3), model order. While the RT follows a
+  // segment, that is the segment it will be on at now_lead (SourceSegmentAt)
+  // read there by the RT's own evaluator; with none reported — or one that
+  // cannot be read there — it is the reported command.
   const int nv = model_.nv;
+  std::array<double, kMaxSegmentNv> seg_q{};
+  std::array<double, kMaxSegmentNv> seg_qd{};
+  std::array<double, kMaxSegmentNv> seg_qdd{};
+  const SegmentSnapshot* const source = SourceSegmentAt(arm, now_lead.ns);
+  bool on_segment =
+      source != nullptr && source->nv == nv &&
+      NodeTrajectoryFollower::SampleJoints(*source, now_lead.ns, seg_q, seg_qd, seg_qdd);
+  for (int j = 0; on_segment && j < nv; ++j) {
+    const auto d = static_cast<std::size_t>(model_.device_of_model[static_cast<std::size_t>(j)]);
+    on_segment = d < seg_q.size() && std::isfinite(seg_q[d]) && std::isfinite(seg_qd[d]);
+  }
+  // The reported command, model order: where the reference starts (below).
+  std::array<double, kMaxPlanNv> q_cmd_model{};
   for (int j = 0; j < nv; ++j) {
     const auto d = static_cast<std::size_t>(model_.device_of_model[static_cast<std::size_t>(j)]);
-    q0_[static_cast<std::size_t>(j)] = rt.q_cmd[d];
-    w0_[static_cast<std::size_t>(j)] = rt.cmd_seeded ? rt.qd_cmd[d] : 0.0;
+    q_cmd_model[static_cast<std::size_t>(j)] = rt.q_cmd[d];
+    q0_[static_cast<std::size_t>(j)] = on_segment ? seg_q[d] : rt.q_cmd[d];
+    w0_[static_cast<std::size_t>(j)] =
+        on_segment ? seg_qd[d] : (rt.cmd_seeded ? rt.qd_cmd[d] : 0.0);
     qdot_plan_[static_cast<std::size_t>(j)] =
         constants_.eta_v * model_.qdot_max[static_cast<std::size_t>(j)];
   }
@@ -387,13 +406,15 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   const std::span<const double> w0(w0_.data(), nvs);
   const std::span<const double> qdot_plan(qdot_plan_.data(), nvs);
   const std::span<const double> qddot(model_.qddot_max.data(), model_.accel_box ? nvs : 0U);
-  const NowLead now_lead = MakeNowLead(now, SecondsToNs(constants_.t_arm_s));
   const double v_tcp_plan = PlanningTcpSpeed(constants_.eta_v, constants_.v_max);
   // The hand closes t_close_lead before t_c; with lead == T_close,e2e this is
   // T_close,tot + T_arm + margin (T_close,tot = e2e + h/2) up to rounding.
   const double commit_lead = constants_.t_close_lead + 0.5 * constants_.control_dt +
                              constants_.t_arm_s + params_.time_margin;
-  const std::int64_t budget_ns = SecondsToNs(params_.budget_s);
+  // Its own budget, or the caller's cap when that is the smaller one.
+  const std::int64_t own_budget_ns = SecondsToNs(params_.budget_s);
+  const std::int64_t budget_ns =
+      budget_cap_ns > 0 ? std::min(own_budget_ns, budget_cap_ns) : own_budget_ns;
 
   // Where the reference starts (§4.8): its own state when it is running (a
   // replacement continues from it), else the catch frame at the current
@@ -404,7 +425,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
     x0 = Eigen::Vector3d(rt.ref_x[0], rt.ref_x[1], rt.ref_x[2]);
     xd0 = Eigen::Vector3d(rt.ref_xd[0], rt.ref_xd[1], rt.ref_xd[2]);
   } else {
-    model_.handle->ComputeForwardKinematics(q0);
+    model_.handle->ComputeForwardKinematics(std::span<const double>(q_cmd_model.data(), nvs));
     x0 = model_.handle->GetFramePosition(model_.catch_frame);
   }
   const double g0 = (current_.valid && rt.ref_valid) ? rt.gamma : 0.0;

@@ -47,6 +47,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -420,7 +421,8 @@ class CatchingPlanLaneTest : public ::testing::Test {
     ctrl_ = std::make_unique<DemoCatchingController>("");
     ctrl_->SetSystemModelConfig(MakeConfigWithCatchFrame());
     ctrl_->SetSharedModelBuilder(builder_);
-    ctrl_->SetDeviceNameConfigs(integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
+    ctrl_->SetDeviceNameConfigs(sim_axis_ ? SimAxisConfigs()
+                                          : integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs());
     YAML::Node yaml = YAML::Load(
         TrackingYaml(topic_, Eigen::Vector3d(0.5, 0.2, 0.4), Eigen::Vector3d::UnitZ(), 0.0, 1.0));
     yaml["diagnostic"]["oracle_plan"]["enabled"] = oracle;
@@ -467,6 +469,19 @@ class CatchingPlanLaneTest : public ::testing::Test {
     state_ = MakeState();
   }
 
+  /// The fixture's devices as the sim runs them (backend mujoco_native): the
+  /// SIM axis, the only one a docking function runs on (#654 parks it on a
+  /// real arm).
+  static std::map<std::string, rtc::DeviceNameConfig> SimAxisConfigs() {
+    auto configs = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
+    for (auto& entry : configs) {
+      rtc::DeviceBackendBinding backend;
+      backend.type = integrated_bringup::kCatchingSimBackendType;
+      entry.second.backend = backend;
+    }
+    return configs;
+  }
+
   static ControllerState MakeState() {
     ControllerState state{};
     state.num_devices = 2;
@@ -491,6 +506,21 @@ class CatchingPlanLaneTest : public ::testing::Test {
     if (ball_set_) {
       spec.p0 = ball_p0_;
       spec.vel = ball_vel_;
+      if (ball_cov_) {
+        spec.cov_diag = *ball_cov_;
+      }
+      if (ball_advances_) {
+        // A ball that is flying: every message starts where the previous
+        // one's ball has got to, instead of restarting at p0.
+        const auto steady = std::chrono::steady_clock::now();
+        if (!ball_first_pub_) {
+          ball_first_pub_ = steady;
+        }
+        const double elapsed = std::chrono::duration<double>(steady - *ball_first_pub_).count();
+        for (std::size_t i = 0; i < 3; ++i) {
+          spec.p0[i] += ball_vel_[i] * elapsed;
+        }
+      }
     }
     auto msg = integrated_bringup::testing::MakeCloud(spec);
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -583,6 +613,10 @@ class CatchingPlanLaneTest : public ::testing::Test {
     return yaml;
   }
 
+  /// The real-clock closed loop of the planner in the loop, with the segment
+  /// planner `docking` selects (the two TEST_Fs below).
+  void RealClockPairCase(bool docking);
+
   /// Tick with a fresh prediction until the supervisor reaches `mode` (or the
   /// tick budget runs out). Returns whether it did.
   bool TickUntil(Mode mode, int budget = 200) {
@@ -632,6 +666,16 @@ class CatchingPlanLaneTest : public ::testing::Test {
   std::array<double, 3> ball_p0_{};
   std::array<double, 3> ball_vel_{};
   int cloud_n_{8};
+  /// BringUp's devices run on the sim axis (SimAxisConfigs).
+  bool sim_axis_{false};
+  /// The prediction's covariance diagonal; unset keeps the cloud fixture's
+  /// (5 mm)² — wider than the docking hand's lateral capture set.
+  std::optional<std::array<double, 6>> ball_cov_;
+  /// The ball moves between messages (p0 is its position at the first one);
+  /// off, every message restarts the ball at p0 (the cases that only need a
+  /// catchable prediction).
+  bool ball_advances_{false};
+  std::optional<std::chrono::steady_clock::time_point> ball_first_pub_;
   static inline int counter_ = 0;
 };
 
@@ -913,6 +957,71 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcPrerequisiteParksTheController) {
   auto slow = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
   slow.at("ur5e").joint_limits->max_velocity[3] = 0.0;
   expect_park("an arm joint without max_velocity", false, nullptr, slow);
+}
+
+TEST_F(CatchingPlanLaneTest, EachMissingMpcDockingPrerequisiteParksAndNamesItsOwnKey) {
+  // SegmentModeUnmet's docking branch (E1-F17): the same three prerequisites
+  // the mpc test above parks on, read from the keys of the planner the arm
+  // follows — and the log says which key. Under the shipped docking design
+  // (the hand's capture set and the planner's fragment) the profile itself
+  // configures, on both writers of the plan box.
+  using integrated_bringup::CatchingParkReason;
+  using Return = DemoCatchingController::CallbackReturn;
+  const auto docking = [](YAML::Node& y) {
+    integrated_bringup::testfx::ApplyShippedDocking(y);
+    y["catching"]["planner"]["segment"]["mode"] = "mpc_docking";
+  };
+  for (const bool planner : {true, false}) {
+    const WarnCapture log;
+    const ConfigureVerdict ok = ConfigureOnly(planner, docking, SimAxisConfigs());
+    ASSERT_EQ(ok.ret, Return::SUCCESS);
+    EXPECT_FALSE(ok.parked) << "planner " << planner << ": reason " << static_cast<int>(ok.reason);
+    EXPECT_EQ(ctrl_->GetSegmentMode(), rtc::catching::CatchingSegmentMode::kMpcDocking);
+    EXPECT_EQ(ctrl_->IsSegmentPlannerConfigured(), planner);
+    EXPECT_EQ(ctrl_->GetMpcDockingSegmentPlannerForTesting() != nullptr, planner);
+  }
+  const auto expect_park = [&](const char* what, bool planner, const char* said,
+                               const std::function<void(YAML::Node&)>& more) {
+    const WarnCapture log;
+    const ConfigureVerdict v = ConfigureOnly(
+        planner,
+        [&](YAML::Node& y) {
+          docking(y);
+          more(y);
+        },
+        SimAxisConfigs());
+    EXPECT_EQ(v.ret, Return::SUCCESS) << what << ": a profile mistake parks, it does not fail";
+    EXPECT_TRUE(v.parked) << what;
+    EXPECT_EQ(v.reason, CatchingParkReason::kSegmentModeUnmet) << what;
+    EXPECT_TRUE(WarnCapture::Contains(said)) << what << ": the log does not say '" << said << "'";
+    const rclcpp_lifecycle::State prev;
+    EXPECT_EQ(ctrl_->on_activate(prev), Return::FAILURE) << what;
+  };
+  // eta_v >= 1 cannot reach SegmentModeUnmet's docking branch: the planner's
+  // own parse refuses the key first, and that is a configure FAILURE, not a
+  // park (the mpc key is not parsed that way). The branch's eta_v line is
+  // unreachable through this key.
+  {
+    const WarnCapture log;
+    const ConfigureVerdict v = ConfigureOnly(
+        true,
+        [&](YAML::Node& y) {
+          docking(y);
+          y["catching"]["planner"]["segment"]["mpc_docking"]["eta_v"] = 1.0;
+        },
+        SimAxisConfigs());
+    EXPECT_EQ(v.ret, Return::FAILURE);
+    EXPECT_TRUE(WarnCapture::Contains("planner.segment.mpc_docking.eta_v"));
+  }
+  // The admission age bound is 50 ms (kSegmentAdmissionMaxAgeNs): a replan
+  // budget plus three control periods that reaches it would refuse the
+  // segments that wait in the box for the pending slot.
+  expect_park("replan_s + 3 periods at the age bound", true,
+              "planner.segment.mpc_docking.budget.replan_s", [](YAML::Node& y) {
+                y["catching"]["planner"]["segment"]["mpc_docking"]["budget"]["replan_s"] = 0.05;
+              });
+  expect_park("no planner and no oracle", false, "no segment planner runs",
+              [](YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; });
 }
 
 TEST_F(CatchingPlanLaneTest, MpcItselfDoesNotNeedACatchBox) {
@@ -1275,9 +1384,10 @@ TEST_F(CatchingPlanLaneTest, TheMpcSegmentPlannersBoxSitsInsideTheCliksMarginedB
   EXPECT_DOUBLE_EQ(ctrl_->GetMpcSegmentPlannerQMinForTesting()[2], -3.14 + 0.05);
 }
 
-TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlannersSegments) {
-  // MPC E1-F09 (#662), planner in the loop: a reachable throw, the
-  // APPROACH–stop grid on, mode mpc, the arm servoed so the trial runs to its
+void CatchingPlanLaneTest::RealClockPairCase(bool docking) {
+  // MPC E1-F09 (#662), planner in the loop, under mpc and (E1-F17) the real
+  // MpcDockingSegmentPlanner: a reachable throw, the
+  // APPROACH–stop grid on, the arm servoed so the trial runs to its
   // end. The planner publishes the plan TOGETHER with its first segment — one
   // publish_ns, the segment starting before t_c — and the RT takes the two on
   // one tick. From there it reports the segment it holds, the planner replans
@@ -1296,24 +1406,65 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
         kUr5eArmDof);
   }();
   const Eigen::Vector3d z = pose.rotation().col(2);
-  const Eigen::Vector3d target = pose.translation() + 0.03 * z;
-  const Eigen::Vector3d vel = -1.5 * z;
-  const Eigen::Vector3d p0 = target - 0.5 * vel;
+  // mpc: the throw of the case's origin — 1.5 m/s down the approach axis, the
+  // catch point 3 cm out, reached 0.5 s after every message.
+  Eigen::Vector3d target = pose.translation() + 0.03 * z;
+  Eigen::Vector3d vel = -1.5 * z;
+  Eigen::Vector3d p0 = target - 0.5 * vel;
+  if (docking) {
+    // The docking planner runs on the sim axis only (#654).
+    sim_axis_ = true;
+    // mpc_docking: the ball the HAND'S capture set holds — a closing speed in
+    // the identified band (robot.hand.docking.speed, c 0.5 - 0.6 m/s; 1.5 m/s
+    // is outside it, the planner would refuse every candidate) and a line
+    // that crosses the entrance plane (s_ent) at the lateral set's reference
+    // point rho_ref, whose faces are millimetres wide. It flies: the planner
+    // replans against a ball whose crossing time must not slide with every
+    // message. Its prediction is as tight as that set needs (the cloud's own
+    // (5 mm)² would leave the chance rows no lateral room).
+    const YAML::Node hand = YAML::LoadFile(
+        ament_index_cpp::get_package_share_directory("integrated_bringup") +
+        "/config/ur5e_p1b/controllers/demo_catching_controller.yaml")["demo_catching_controller"]
+                                                                     ["catching"]["robot"]["hand"]
+                                                                     ["docking"];
+    const double s_ent = hand["s_ent"].as<double>();
+    const std::vector<double> rho_ref = hand["lateral"]["rho_ref"].as<std::vector<double>>();
+    target = pose.translation() + pose.rotation() * Eigen::Vector3d(rho_ref[0], rho_ref[1], s_ent);
+    vel = -0.55 * z;
+    p0 = target - 1.2 * vel;
+    ball_advances_ = true;
+    ball_cov_ = std::array<double, 6>{1e-10, 1e-10, 1e-10, 1e-10, 1e-10, 1e-10};
+  }
   ball_set_ = true;
   ball_p0_ = {p0.x(), p0.y(), p0.z()};
   ball_vel_ = {vel.x(), vel.y(), vel.z()};
-  cloud_n_ = 20;
+  cloud_n_ = docking ? 40 : 20;
   servo_ = true;
-  ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [](YAML::Node& y) {
-    YAML::Node d = y["catching"]["planner"]["segment"]["mpc"];
-    ApproachGrid(y);
+  ASSERT_NO_FATAL_FAILURE(BringUp(/*oracle=*/false, /*planner=*/true, [docking](YAML::Node& y) {
     // Head-room for a loaded host: this case is about what is published,
     // taken and followed, not how fast. The replan budget stays inside the
     // admission age bound (replan_s + 3 ticks < 50 ms, or configure parks).
-    d["budget"]["first_s"] = 0.05;
-    d["budget"]["replan_s"] = 0.04;
     y["catching"]["planner"]["search"]["grid"]["budget_s"] = 0.03;
-    y["catching"]["planner"]["segment"]["mode"] = "mpc";
+    if (docking) {
+      // The shipped docking design, with the fixture's budgets: the shipped
+      // budget.first_s (0.035 s) is below a docking first solve on a loaded
+      // host (in the #743 sim runs none finished inside it, and none inside
+      // 0.080 s either — the times recorded there are where the deadline
+      // cut the solve), so it is 0.15 s — a first segment's node 0 is
+      // first_s + 2h past the wake, well inside the 1.2 s flight. replan_s
+      // 0.04 is as for mpc.
+      integrated_bringup::testfx::ApplyShippedDocking(y);
+      YAML::Node d = y["catching"]["planner"]["segment"]["mpc_docking"];
+      d["budget"]["first_s"] = 0.15;
+      d["budget"]["replan_s"] = 0.04;
+      y["catching"]["planner"]["segment"]["mode"] = "mpc_docking";
+    } else {
+      YAML::Node d = y["catching"]["planner"]["segment"]["mpc"];
+      ApproachGrid(y);
+      d["budget"]["first_s"] = 0.05;
+      d["budget"]["replan_s"] = 0.04;
+      y["catching"]["planner"]["segment"]["mode"] = "mpc";
+    }
     // The shipped CLIK form (MD-7): the MPC bounds acceleration by torque
     // rows, so the CLIK that executes its segments must too — under the
     // fixture's constant box the command falls behind the segment.
@@ -1321,10 +1472,13 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
     y["catching"]["joint_cmd"]["eta_tau"] = 0.8;
   }));
   ASSERT_TRUE(ctrl_->IsSegmentPlannerConfigured());
+  ASSERT_EQ(ctrl_->GetSegmentMode(), docking ? rtc::catching::CatchingSegmentMode::kMpcDocking
+                                             : rtc::catching::CatchingSegmentMode::kMpc);
   using Event = integrated_bringup::CatchingDiagLogPod::SegmentEvent;
   bool approached = false;
   bool pair_taken = false;
   int not_followed = 0;
+  int not_followed_while_waiting = 0;
   int replans_with_a_source = 0;
   int switches = 0;
   int gate_refused = 0;
@@ -1376,8 +1530,19 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
       const auto wake = ctrl_->GetPlannerThread()->LastRecord();
       const bool replan = wake.segment.kind != rtc::catching::SegmentKind::kFirst &&
                           wake.segment.outcome != rtc::catching::SegmentOutcome::kOff;
-      not_followed +=
-          replan && wake.segment.outcome == rtc::catching::SegmentOutcome::kNotFollowed ? 1 : 0;
+      const bool no_source =
+          replan && wake.segment.outcome == rtc::catching::SegmentOutcome::kNotFollowed;
+      // A docking replan during the first segment's wait: its budget
+      // (replan_s) is shorter than the first segment's (first_s, which has to
+      // cover a cold solve), so the first lattice point it reaches can lie
+      // before the waiting segment's node 0 — nothing the RT reports covers
+      // it yet. Counted apart and reported; every other wake has to find its
+      // source.
+      if (docking && no_source && rt.segment_pending && !rt.segment_active) {
+        ++not_followed_while_waiting;
+      } else {
+        not_followed += no_source ? 1 : 0;
+      }
       replans_with_a_source += replan && wake.segment.source_seq != 0 ? 1 : 0;
       EXPECT_TRUE(rt.segment_pending || rt.segment_active)
           << "the RT follows a plan and reports no segment, mode " << static_cast<int>(last);
@@ -1449,9 +1614,19 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   os << "switches " << switches << ", segments followed " << followed_seqs.size()
      << ", gate refusals " << gate_refused << " (max rho " << rho_refused_max
      << "), max switch rho " << rho_max << ", replan wakes with a source " << replans_with_a_source
+     << ", replan wakes before node 0 with no source yet " << not_followed_while_waiting
      << "; events " << counts.str();
   RecordProperty("real_clock_closed_loop", os.str());
   std::printf("[ MEASURED ] %s\n", os.str().c_str());
+}
+
+TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlannersSegments) {
+  RealClockPairCase(/*docking=*/false);
+}
+
+TEST_F(CatchingPlanLaneTest,
+       OnTheRealClockTheRtTakesTheDockingPlannersPairAndFollowsItsSegmentsToTheHold) {
+  RealClockPairCase(/*docking=*/true);
 }
 
 // ── Vision world → model world (L3 §4.2, S6-C sim finding) ──────────────────

@@ -133,6 +133,20 @@ struct PlannerRtState {
   /// longer reported. Always false / 0 under `closed_form`.
   bool segment_pending{false};
   std::uint32_t segment_pending_seq{0};
+  /// A REPLACEMENT plan the RT has admitted together with its first segment and
+  /// holds until that segment's node 0, if any: its `plan_id` and catch instant
+  /// (BallTime / lead axis). While one waits, `plan_active` / `plan_id` /
+  /// `plan_t_c_ns` and `segment_active` / `segment_seq` still name the plan and
+  /// the segment the arm FOLLOWS, and `segment_pending` / `segment_pending_seq`
+  /// name the replacement's first segment — a segment of THIS plan, not of the
+  /// followed one. On the tick the RT switches, `plan_id` becomes this plan and
+  /// the flag goes false; when the RT drops the pair instead, the report goes
+  /// back to the followed plan with nothing pending. With the flag false a
+  /// pending segment is the followed plan's. Always false / 0 under
+  /// `closed_form`.
+  bool plan_pending{false};
+  std::uint32_t plan_pending_id{0};
+  std::int64_t plan_pending_t_c_ns{0};
 
   /// The vision track epoch of the last trajectory the RT consumed (L1 §4.4),
   /// and whether it has consumed one at all in this trial.
@@ -144,12 +158,17 @@ static_assert(std::is_trivially_copyable_v<PlannerRtState>);
 
 // ── The segments the RT reports, for a solve that starts on one (MD-58) ─────
 
-/// @brief The segments the RT reports for the plan it follows, as the segment
-///        planner published them — COPIED out of its memory.
+/// @brief The segments the RT reports, as the segment planner published them —
+///        COPIED out of its memory.
 ///
 /// Copies, not pointers: a planner keeps its published segments in a ring it
 /// compacts on the next publish, so a pointer into it names another segment
 /// one publish later. Two snapshots (~10 KB) are nothing beside one solve.
+///
+/// `following` is a segment of the plan the RT follows. `pending` is one of
+/// that plan too, or — while the RT holds a replacement plan
+/// (PlannerRtState::plan_pending) — that replacement's first segment; its own
+/// `plan_id` / `t_c_ns` say which.
 ///
 /// Both flags are false when the RT follows no plan, follows one the planner
 /// holds no segments of, or reports no segment. A snapshot whose flag is false

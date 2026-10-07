@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <random>
 #include <span>
@@ -310,6 +311,65 @@ TEST(HandSequencer, ALateCommitClosesOnTheNextTick) {
   ASSERT_TRUE(seq.Commit(BallTime{100 * kMs}));  // t_cmd = −50 ms
   const HandState s = At(MakeConfig().q_pre);
   EXPECT_TRUE(seq.Update(NowReal{0}, kH, s.Q(), s.Qd()).close_issued_now);
+}
+
+// ── The close instant re-predicted after the commit ─────────────────────────
+
+TEST(HandSequencer, RetimeMovesTheArmedCloseAndTheCloseTickFollowsIt) {
+  const HandSequencerConfig c = MakeConfig();
+  const HandState s = At(c.q_pre);
+  for (const std::int64_t delta : {-20 * kMs, 14 * kMs}) {
+    HandSequencer seq = Ready(c);
+    ASSERT_TRUE(seq.Commit(BallTime{1000 * kMs}));
+    ASSERT_EQ(seq.TCmd().ns, 850 * kMs);
+    ASSERT_TRUE(seq.Retime(BallTime{1000 * kMs + delta}));
+    EXPECT_EQ(seq.TCmd().ns, 850 * kMs + delta);
+    EXPECT_TRUE(seq.CommitArmed());
+    std::int64_t issued = -1;
+    for (std::int64_t now = 700 * kMs; now <= 950 * kMs; now += kH) {
+      if (seq.Update(NowReal{now}, kH, s.Q(), s.Qd()).close_issued_now) {
+        issued = now;
+        break;
+      }
+    }
+    ASSERT_GE(issued, 0);
+    EXPECT_LE(std::abs(issued - (850 * kMs + delta)), kH / 2)
+        << "the close did not follow the re-timed instant, delta " << delta;
+  }
+}
+
+TEST(HandSequencer, RetimeIsHeardOnlyBetweenTheCommitAndTheClose) {
+  const HandSequencerConfig c = MakeConfig();
+  const HandState s = At(c.q_pre);
+  HandSequencer idle;
+  ASSERT_TRUE(idle.Configure(c));
+  EXPECT_FALSE(idle.Retime(BallTime{1000 * kMs})) << "an inactive sequencer took an instant";
+  HandSequencer seq = Ready(c);
+  EXPECT_FALSE(seq.Retime(BallTime{1000 * kMs})) << "no commit: there is no close to move";
+  EXPECT_FALSE(seq.CommitArmed()) << "a re-time armed the close";
+  ASSERT_TRUE(seq.Commit(BallTime{1000 * kMs}));
+  ASSERT_TRUE(seq.Retime(BallTime{990 * kMs}));
+  // The close goes out at t_cmd = 840 ms …
+  ASSERT_TRUE(seq.Update(NowReal{840 * kMs}, kH, s.Q(), s.Qd()).close_issued_now);
+  ASSERT_TRUE(seq.CloseIssued());
+  // … and from then on the instant is fixed, whatever is predicted.
+  EXPECT_FALSE(seq.Retime(BallTime{1200 * kMs}));
+  EXPECT_EQ(seq.TCmd().ns, 840 * kMs);
+  // A cancelled commit has no close either.
+  HandSequencer cancelled = Ready(c);
+  ASSERT_TRUE(cancelled.Commit(BallTime{1000 * kMs}));
+  cancelled.Ready();
+  EXPECT_FALSE(cancelled.Retime(BallTime{1000 * kMs}));
+}
+
+TEST(HandSequencer, ARetimeToAnInstantAlreadyPastClosesOnTheNextTick) {
+  const HandSequencerConfig c = MakeConfig();
+  const HandState s = At(c.q_pre);
+  HandSequencer seq = Ready(c);
+  ASSERT_TRUE(seq.Commit(BallTime{1000 * kMs}));  // t_cmd = 850 ms
+  ASSERT_FALSE(seq.Update(NowReal{500 * kMs}, kH, s.Q(), s.Qd()).close_issued_now);
+  ASSERT_TRUE(seq.Retime(BallTime{600 * kMs}));  // t_cmd = 450 ms, 50 ms ago
+  EXPECT_TRUE(seq.Update(NowReal{500 * kMs + kH}, kH, s.Q(), s.Qd()).close_issued_now);
 }
 
 // ── Close → Hold (L6 §4.2) ──────────────────────────────────────────────────

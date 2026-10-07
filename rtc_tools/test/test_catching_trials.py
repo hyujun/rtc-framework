@@ -770,6 +770,8 @@ def test_the_segment_codes_this_tool_reads_are_the_cpp_enums_values():
     assert event[ct.SEGMENT_EVENT_SWITCHED] == "switched"
     assert event[ct.SEGMENT_EVENT_GATE_REFUSED] == "gate_refused"
     assert event[ct.SEGMENT_EVENT_REPLACED] == "replaced"
+    assert event[ct.SEGMENT_EVENT_PAIR_ADMITTED] == "pair_admitted"
+    assert event[ct.SEGMENT_EVENT_PLAN_SWITCHED] == "plan_switched"
     assert refusal[ct.SEGMENT_REFUSAL_AGED] == "aged"
 
 

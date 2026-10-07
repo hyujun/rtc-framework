@@ -3,7 +3,8 @@
 // What PlannerCycle knows of the planner that solves the joint-node segments
 // the RT follows from APPROACH to the end of the stop (planner_cycle.hpp "THE
 // MPC SEGMENT PLANNER'S PART"): the first segment of a plan the search just
-// produced, later segments of the plan the RT follows, and the questions the
+// produced — the first plan of a catch, or the REPLACEMENT of the plan the RT
+// follows — later segments of the plan the RT follows, and the questions the
 // cycle's re-checks ask about them. The cycle owns the SeqLock, the re-check
 // and the segment counter; which planner solves is the configuration's choice.
 //
@@ -32,7 +33,8 @@
 //  • SegmentRecord is the record a solve leaves (below). An implementation
 //    fills what it has and leaves the rest at the default — with ONE
 //    exception, because the cycle reads it back: `source_seq` after a Replan
-//    that returned true (see Replan). The cycle itself writes `outcome`
+//    that returned true, and after a PlanFirst that returned true for an RT
+//    that follows a plan (see both). The cycle itself writes `outcome`
 //    (kPublished / kSuperseded), `segment_seq` and `publish_ns`.
 #pragma once
 
@@ -68,9 +70,10 @@ enum class SegmentOutcome : std::uint8_t {
   kSuperseded,        ///< the trial or the followed plan moved during the solve (cycle)
   // E1-F08 (#661). A solved segment whose packed form fails the terminal-rest
   // or node check is kSolveFailed with core_reason kNone.
-  kNotAtRest,    ///< first solve: max |q̇_cmd| above approach.rest_tol
+  kNotAtRest,    ///< first solve, no plan followed: max |q̇_cmd| above approach.rest_tol
   kTooLate,      ///< first solve: not even one pre-catch interval fits before t_c
-  kNotFollowed,  ///< replan: no segment of ours the RT reports pending or following
+  kNotFollowed,  ///< replan, or a replacement's first solve: no segment of ours the RT
+                 ///< reports pending or following
   kNoBall,       ///< no usable ball at t_c (pre-catch point); w_⊥ > 0: no stop-path line
   kCatchError,   ///< catch-node position error not finite or over catch_pos_err_max
   kSpeed,        ///< a between-node velocity extremum over q̇_max
@@ -166,8 +169,10 @@ struct SegmentRecord {
   std::int32_t n_nodes{0};
   std::uint32_t segment_seq{0};  ///< the published segment's seq (cycle)
   bool x0_clamped{false};        ///< the start state (q or q̇) was projected into the box
-  bool x0_from_segment{false};   ///< replan: x₀ came from a segment the RT reports
-  bool presolved{false};         ///< no reference: kinematic pre-solve + solve
+  /// x₀ came from a segment the RT reports: a replan, and the first solve of a
+  /// replacement (the RT follows a plan).
+  bool x0_from_segment{false};
+  bool presolved{false};  ///< no reference: kinematic pre-solve + solve
   /// First solve: the segment is the search's own solution (CatchSolution),
   /// re-evaluated by the planner and published as it is — nothing was solved.
   bool from_search{false};
@@ -184,12 +189,17 @@ struct SegmentRecord {
   bool cold_start{false};      ///< the core's main QP started from zero
   bool solver_retried{false};  ///< the core's own warm → cold re-run (cold_retried)
   /// First solve: the reference's target was outside the core's position
-  /// box (clamped), or its minimum-jerk speed over 0.9·η_v·q̇_max (scaled).
+  /// box (clamped), or — from an arm at rest — its minimum-jerk speed over
+  /// 0.9·η_v·q̇_max (scaled). A reference that starts on a moving arm is never
+  /// scaled.
   bool ref_clamped{false};
   bool ref_scaled{false};
   double ref_scale{std::numeric_limits<double>::quiet_NaN()};      ///< smallest per-joint factor
   double ref_shortfall{std::numeric_limits<double>::quiet_NaN()};  ///< largest |d| cut [rad]
-  double x0_speed{std::numeric_limits<double>::quiet_NaN()};       ///< first solve: max |q̇_cmd|
+  /// First solve: the largest joint speed of the start — max |q̇_cmd| with no
+  /// plan followed, max |q̇₀| of the reported segment at node 0's instant (as
+  /// read, before the projection) under a replacement.
+  double x0_speed{std::numeric_limits<double>::quiet_NaN()};
   /// Catch node at the solution (FK), when the solve ran the catch terms.
   double catch_pos_err{std::numeric_limits<double>::quiet_NaN()};   ///< [m]
   double catch_axis_err{std::numeric_limits<double>::quiet_NaN()};  ///< [rad]
@@ -202,7 +212,9 @@ struct SegmentRecord {
   double speed_ratio_max{std::numeric_limits<double>::quiet_NaN()};
   bool w_p_fallback{false};  ///< W_p was the constant w_const·I (no usable Σ_p)
   double w_delta_scale{std::numeric_limits<double>::quiet_NaN()};
-  std::uint32_t source_seq{0};  ///< replan: the segment x₀ and the reference came from
+  /// The segment x₀ came from (a replan: the reference too): a replan, and the
+  /// first solve of a replacement. 0 when x₀ is the reported command.
+  std::uint32_t source_seq{0};
 };
 
 /// @brief The ball's prediction as one wake read it: the trajectory snapshot
@@ -243,6 +255,22 @@ class SegmentPlanner {
 
   /// @brief The first segment of a plan the search just produced (RT-safe;
   ///        MD-56). A plan is published only together with it.
+  ///
+  /// What `rt` reports decides where the segment starts:
+  ///  - NO PLAN FOLLOWED (`rt.plan_active` false): the arm rests on its
+  ///    command — x₀ = (q_cmd, 0, 0), and an arm that does not rest is
+  ///    kNotAtRest.
+  ///  - A PLAN FOLLOWED: `plan` REPLACES it. The arm is on that plan's
+  ///    segments until the RT switches at the new segment's node 0, so
+  ///    x₀ = (q, q̇, q̈) is the segment SourceSeq(rt, node 0's instant) names,
+  ///    evaluated at that instant by NodeTrajectoryFollower::SampleJoints —
+  ///    as a replan's is. No such segment is kNotFollowed. The command has to
+  ///    be seeded. The followed plan's segments are kept: Reported, SourceSeq
+  ///    and FollowedTrack go on answering for the followed plan, and a later
+  ///    Replan of it still finds its source.
+  ///
+  /// Either way node 0 is on the grid anchored at `plan.t_c_ns`, and the
+  /// segment carries `plan`'s id, catch instant and track.
   /// @param rt the RT's report this wake started from
   /// @param plan the search's plan, its `plan_id` already the one the cycle
   ///        will publish it under
@@ -256,7 +284,11 @@ class SegmentPlanner {
   ///        call.
   /// @param[out] out the segment; its `publish_ns` and `segment_seq` are the
   ///             cycle's to fill
-  /// @param[out] rec the solve's record
+  /// @param[out] rec the solve's record. On a true return for an RT that
+  ///             follows a plan `rec.source_seq` MUST be the `segment_seq` of
+  ///             the segment the solve started from — what
+  ///             SourceSeq(rt, out.t0_ns) answers — so that the cycle can ask
+  ///             again with the RT's newest report, as it does for a replan.
   /// @return true when `out` is publishable. False withholds the plan too.
   [[nodiscard]] virtual bool PlanFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
                                        const BallPrediction& ball, const CatchSolution* solution,
@@ -279,7 +311,9 @@ class SegmentPlanner {
 
   /// @brief The cycle stored `p` (its `segment_seq` and `publish_ns` filled): a
   ///        later Replan may start from it (RT-safe). Called right after the
-  ///        PlanFirst or Replan that returned true for it, and only then.
+  ///        PlanFirst or Replan that returned true for it, and only then. The
+  ///        first segment of a replacement is remembered BESIDE the followed
+  ///        plan's segments, not instead of them.
   virtual void NotePublished(const SegmentSnapshot& p) noexcept = 0;
 
   /// @brief The track generation of the plan `rt` follows, from the segments
@@ -301,18 +335,34 @@ class SegmentPlanner {
   /// @brief The RT's control period [ns] (RT-safe).
   [[nodiscard]] virtual std::int64_t ControlDtNs() const noexcept = 0;
 
+  /// @brief The budget of one Replan [ns], > 0 (RT-safe): what a wake that
+  ///        searches while a plan is followed has to leave for the replan
+  ///        behind the search.
+  [[nodiscard]] virtual std::int64_t ReplanBudgetNs() const noexcept = 0;
+
+  /// @brief The earliest instant node 0 of a first segment solved from
+  ///        `now_ns` can be at [ns, lead axis] (RT-safe): `now_ns` plus the
+  ///        arm's command latency, the first-solve budget and two control
+  ///        periods — the bound PlanFirst places node 0 behind. The cycle asks
+  ///        it before a replacement's first solve: a segment that could not
+  ///        start before the followed plan freezes is not worth solving.
+  [[nodiscard]] virtual std::int64_t EarliestFirstStartNs(std::int64_t now_ns) const noexcept = 0;
+
   /// @brief The segments `rt` reports pending and following, copied from
   ///        what this planner published (RT-safe) — what the cycle hands the
   ///        search, so that a candidate's arm motion starts where the arm
-  ///        will be.
+  ///        will be. The followed one is a segment of the plan `rt` follows;
+  ///        the pending one is that plan's, or the first segment of the
+  ///        replacement `rt` holds (`rt.plan_pending`).
   /// @param[out] out both flags are always written; a snapshot is written
   ///             only when its flag is true (see ReportedSegments)
   virtual void Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept = 0;
 
-  /// @brief The `segment_seq` of the segment a replan at `t_eff_ns` starts from
-  ///        — one the RT reports pending or following, never inferred — or 0
-  ///        when there is none (RT-safe). SourceSegmentAt (planner_io.hpp) on
-  ///        what Reported() answers.
+  /// @brief The `segment_seq` of the segment a solve at `t_eff_ns` starts from
+  ///        — a replan, or the first segment of a replacement: one the RT
+  ///        reports pending or following, never inferred — or 0 when there is
+  ///        none (RT-safe). SourceSegmentAt (planner_io.hpp) on what Reported()
+  ///        answers.
   [[nodiscard]] virtual std::uint32_t SourceSeq(const PlannerRtState& rt,
                                                 std::int64_t t_eff_ns) const noexcept = 0;
 

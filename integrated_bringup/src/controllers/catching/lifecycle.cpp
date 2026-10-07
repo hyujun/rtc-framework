@@ -1902,6 +1902,14 @@ void DemoCatchingController::SetupSupervisor() {
   t_close_lead_ns_ = std::isfinite(close_lead_s) && close_lead_s >= 0.0
                          ? static_cast<std::int64_t>(std::llround(close_lead_s * 1e9))
                          : to_ns(params_.hand.CloseLead());
+  // The plane that lead is counted back from (RetimeClose): the entrance plane
+  // exactly when the lead above is the entrance one, else the catch frame's
+  // origin — the two are one statement about where t_c puts the ball.
+  close_plane_s_ = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking &&
+                           std::isfinite(close_lead_s) && close_lead_s >= 0.0 &&
+                           std::isfinite(hand_docking_.s_ent)
+                       ? hand_docking_.s_ent
+                       : 0.0;
   t_release_timeout_ns_ = to_ns(params_.hand.T_release_timeout);
   stop_deadline_ns_ = to_ns(params_.supervisor_deadline_stop_s);
   return_deadline_ns_ = to_ns(params_.supervisor_deadline_return_s);

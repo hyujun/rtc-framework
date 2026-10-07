@@ -553,6 +553,15 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catching_hand_sequencer PRIVATE -Wno-mismatched-new-delete)
 
+  # Plane crossing (E1-F17): the instant the ball crosses a plane of the catch
+  # frame, by the secant method — closed-form roots, every refusal, no
+  # allocation. alloc_gate.hpp → its own binary.
+  ament_add_gtest(test_catching_plane_crossing test/test_catching_plane_crossing.cpp)
+  target_link_libraries(test_catching_plane_crossing rtc_controllers)
+  target_include_directories(test_catching_plane_crossing PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_plane_crossing PRIVATE -Wno-mismatched-new-delete)
+
   # Hand-joint capture witness (#537 S8-C, D-S8-8 (b)): each clause, the
   # fail-closed paths, no allocation, and G7-C's synthetic-noise false alarms.
   ament_add_gtest(test_catching_hand_capture test/test_catching_hand_capture.cpp)

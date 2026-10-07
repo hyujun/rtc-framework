@@ -85,6 +85,8 @@ SEGMENT_EVENT_NAMES = (
     "not_due",
     "no_segment",
     "replaced",
+    "pair_admitted",
+    "plan_switched",
 )
 SEGMENT_REFUSAL_NAMES = (
     "none",
@@ -105,8 +107,10 @@ _SEGMENT_REFUSAL_QUIET = (
     SEGMENT_REFUSAL_NAMES.index("repeat"),
 )
 _SEGMENT_EVENT_SWITCHED = SEGMENT_EVENT_NAMES.index("switched")
+# A switch that took a replacement plan with its first segment is a switch too.
+_SEGMENT_SWITCH_EVENTS = (_SEGMENT_EVENT_SWITCHED, SEGMENT_EVENT_NAMES.index("plan_switched"))
 # Events on which the switch gate wrote its account (rho, dq_max, ...).
-_SEGMENT_GATE_EVENTS = (_SEGMENT_EVENT_SWITCHED, SEGMENT_EVENT_NAMES.index("gate_refused"))
+_SEGMENT_GATE_EVENTS = (*_SEGMENT_SWITCH_EVENTS, SEGMENT_EVENT_NAMES.index("gate_refused"))
 # Smallest command rate / acceleration / jerk the kinematics panel draws.
 _KINEMATICS_FLOOR = 1e-3
 
@@ -721,7 +725,7 @@ def _print_segment_statistics(df):
         if len(refused) > 0:
             print("  Refusals: " + _named_counts(refused, SEGMENT_REFUSAL_NAMES))
     if "segment_rho" in df.columns:
-        rho = df.loc[event == _SEGMENT_EVENT_SWITCHED, "segment_rho"].astype(float).dropna()
+        rho = df.loc[event.isin(_SEGMENT_SWITCH_EVENTS), "segment_rho"].astype(float).dropna()
         if len(rho) > 0:
             print(
                 f"  Switch ρ [{len(rho)} switch(es)]: p50 {rho.quantile(0.5):.3f}  "

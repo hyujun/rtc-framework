@@ -10,6 +10,9 @@
 //   4. Switching (§4.7) and freeze (decision G): hold on no improvement, on
 //      the freeze window, and replace when the current plan is infeasible.
 //   5. G3-K: a full search (IK + q̇ᵘ + gates) allocates nothing.
+//   5a. The arm (E1-F17): while the RT follows a segment the reach starts on
+//      that segment at now_lead, bit for bit; with none readable, on the
+//      reported command.
 //   6. R-2 / G3-G: timing and IK acceptance recorded as integer µs / counts
 //      (RecordProperty's to_string squashes small doubles).
 //
@@ -17,8 +20,11 @@
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/catching/ball_node_samples.hpp"
 #include "rtc_controllers/catching/grid_catch_search.hpp"
+#include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/time_feasibility.hpp"
+#include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
+#include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
@@ -27,8 +33,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -44,12 +52,16 @@ using rtc::catching::GridCatchSearch;
 using rtc::catching::GridCatchSearchConstants;
 using rtc::catching::GridCatchSearchModel;
 using rtc::catching::JudgeReject;
+using rtc::catching::kMaxSegmentNv;
+using rtc::catching::NodeTrajectoryFollower;
 using rtc::catching::NowReal;
 using rtc::catching::PlannerParams;
 using rtc::catching::PlannerRtState;
 using rtc::catching::PlanReason;
 using rtc::catching::PlanSnapshot;
+using rtc::catching::ReportedSegments;
 using rtc::catching::SearchStats;
+using rtc::catching::SegmentSnapshot;
 using rtc::catching::SwitchDecision;
 using rtc::catching::TrajectorySnapshot;
 using rtc::catching::UnitSpeedSolver;
@@ -57,8 +69,8 @@ using rtc::catching::UnitSpeedSolver;
 constexpr std::int64_t kMs = 1'000'000;
 constexpr std::int64_t kNow = 10'000 * kMs;
 
-// What a search is handed when the RT reports no segment — every wake this
-// search has been called on so far (it does not read the argument).
+// What a search is handed when the RT reports no segment: the reach then
+// starts on the reported command.
 const rtc::catching::ReportedSegments kNoSegments{};
 
 std::int64_t SteadyClock() noexcept {
@@ -194,7 +206,7 @@ TEST(PlannerUnitSpeed, TheSearchUsesTheProfilesDamping) {
     const auto traj = rig->Traj();
     SearchStats stats;
     const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
-                                               kNoSegments, NowReal{kNow}, stats);
+                                               kNoSegments, NowReal{kNow}, 0, stats);
     ASSERT_TRUE(plan.valid);
     const Eigen::Vector3d v(plan.v_c[0], plan.v_c[1], plan.v_c[2]);
     UnitSpeedSolver us;
@@ -241,7 +253,7 @@ TEST(GridCatchSearchPlan, FindsTheReachableCatchPointOnTheTrajectory) {
   const auto traj = rig->Traj();
   SearchStats stats;
   const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
-                                             kNoSegments, NowReal{kNow}, stats);
+                                             kNoSegments, NowReal{kNow}, 0, stats);
   ASSERT_TRUE(plan.valid) << "reason " << static_cast<int>(plan.reason);
   EXPECT_TRUE(stats.publish);
   EXPECT_EQ(stats.decision, SwitchDecision::kNoCurrent);
@@ -293,7 +305,7 @@ TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
   const auto traj = rig->Traj();
   SearchStats stats;
   const PlanSnapshot base = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
-                                             kNoSegments, NowReal{kNow}, stats);
+                                             kNoSegments, NowReal{kNow}, 0, stats);
   ASSERT_TRUE(base.valid);
 
   PlannerRtState same = rig->Rt();
@@ -302,8 +314,8 @@ TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
     same.wait_pose[static_cast<std::size_t>(j)] =
         rig->params.wait_pose[static_cast<std::size_t>(j)];
   }
-  const PlanSnapshot again =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, same, kNoSegments, NowReal{kNow}, stats);
+  const PlanSnapshot again = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, same, kNoSegments,
+                                              NowReal{kNow}, 0, stats);
   ASSERT_TRUE(again.valid);
   for (int j = 0; j < base.nv; ++j) {
     EXPECT_DOUBLE_EQ(again.q_star[static_cast<std::size_t>(j)],
@@ -315,8 +327,8 @@ TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
   for (int j = 0; j < rig->arm.nv; ++j) {
     moved.wait_pose[static_cast<std::size_t>(j)] += 0.3;
   }
-  const PlanSnapshot shifted =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, moved, kNoSegments, NowReal{kNow}, stats);
+  const PlanSnapshot shifted = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, moved,
+                                                kNoSegments, NowReal{kNow}, 0, stats);
   EXPECT_TRUE(shifted.valid) << "a plan from a different seed, reason "
                              << static_cast<int>(shifted.reason);
   // The handover is not a no-op: the seed in force IS the handed pose, and the
@@ -335,7 +347,7 @@ TEST(GridCatchSearchPlan, AnAdoptedWaitPoseInTheRtStateBecomesTheIkSeed) {
   // A later cycle WITHOUT an adopted pose (a refused switch-in, source yaml)
   // is back on the configure-time seed — not on the pose adopted before.
   const PlanSnapshot back = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
-                                             kNoSegments, NowReal{kNow}, stats);
+                                             kNoSegments, NowReal{kNow}, 0, stats);
   ASSERT_TRUE(back.valid);
   for (int j = 0; j < rig->arm.nv; ++j) {
     EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j],
@@ -363,7 +375,8 @@ TEST(GridCatchSearchPlan, TheAdoptedWaitPoseIsReadInDeviceOrder) {
   }
   const auto traj = rig->Traj();
   SearchStats stats;
-  (void)rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
+  (void)rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, 0,
+                         stats);
   for (int j = 0; j < rig->arm.nv; ++j) {
     EXPECT_DOUBLE_EQ(rig->search.IkSeedForTesting()[j], 0.1 * (rig->arm.nv - j))
         << "model joint " << j << " must read device joint " << rig->arm.nv - 1 - j;
@@ -379,7 +392,7 @@ TEST(GridCatchSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
   const auto traj = rig->Traj();
   SearchStats stats;
   const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
-                                             kNoSegments, NowReal{kNow}, stats);
+                                             kNoSegments, NowReal{kNow}, 0, stats);
   EXPECT_FALSE(plan.valid);
   EXPECT_EQ(plan.reason, PlanReason::kStoppingDistance);
   EXPECT_EQ(stats.n_pass, 0);
@@ -397,12 +410,12 @@ TEST(GridCatchSearchPlan, AFailedRankGatePenalisesButDoesNotRemove) {
   const auto traj = rig->Traj();
   SearchStats known;
   const PlanSnapshot with_cov = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
-                                                 kNoSegments, NowReal{kNow}, known);
+                                                 kNoSegments, NowReal{kNow}, 0, known);
   ASSERT_TRUE(with_cov.valid);
   rig->search.ResetTrial();
   SearchStats unknown;
   const PlanSnapshot without = rig->search.Plan(traj, CovarianceSnapshot{}, /*cov_matched=*/false,
-                                                rig->Rt(), kNoSegments, NowReal{kNow}, unknown);
+                                                rig->Rt(), kNoSegments, NowReal{kNow}, 0, unknown);
   ASSERT_TRUE(without.valid) << "a rank gate removed the candidates";
   EXPECT_NE(unknown.chosen_rank_mask & rtc::catching::kRankUncertainty, 0);
   EXPECT_EQ(known.chosen_rank_mask & rtc::catching::kRankUncertainty, 0);
@@ -419,7 +432,7 @@ TEST(GridCatchSearchPlan, AnUnsetDecisionKeepsEveryCandidateOut) {
   const auto traj = rig->Traj();
   SearchStats stats;
   const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
-                                             kNoSegments, NowReal{kNow}, stats);
+                                             kNoSegments, NowReal{kNow}, 0, stats);
   EXPECT_FALSE(plan.valid);
   EXPECT_EQ(plan.reason, PlanReason::kHorizonShort);
   EXPECT_EQ(stats.n_in_window, 0);
@@ -438,7 +451,7 @@ TEST(GridCatchSearchPlan, TheCloseLeadDrivesTheCommandInstantAndTheCommitGate) {
     EXPECT_TRUE(rig->Configure());
     const auto traj = rig->Traj();
     return rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                            NowReal{kNow}, stats);
+                            NowReal{kNow}, 0, stats);
   };
   // A short lead beside a long measured closure (e2e 0.10 s ≠ lead 0.03 s; the
   // total here is far above every lead of the slice): the gate reads
@@ -531,20 +544,20 @@ TEST(GridCatchSearchPlan, SettlesForNSnapshotsAfterATrackChange) {
   for (std::uint64_t seq = 1; seq <= 2; ++seq) {
     const auto traj = rig->Traj(seq);
     const PlanSnapshot p = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
-                                            kNoSegments, NowReal{kNow}, stats);
+                                            kNoSegments, NowReal{kNow}, 0, stats);
     EXPECT_FALSE(p.valid) << "seq " << seq;
     EXPECT_TRUE(stats.settling);
   }
   const auto third = rig->Traj(3);
-  EXPECT_TRUE(
-      rig->search
-          .Plan(third, Rig::Cov(third, 0.002), true, rig->Rt(), kNoSegments, NowReal{kNow}, stats)
-          .valid);
+  EXPECT_TRUE(rig->search
+                  .Plan(third, Rig::Cov(third, 0.002), true, rig->Rt(), kNoSegments, NowReal{kNow},
+                        0, stats)
+                  .valid);
   // The same snapshot again does not count: settling is about NEW information.
   const auto changed = rig->Traj(4, /*gen=*/8);
   EXPECT_FALSE(rig->search
                    .Plan(changed, Rig::Cov(changed, 0.002), true, rig->Rt(), kNoSegments,
-                         NowReal{kNow}, stats)
+                         NowReal{kNow}, 0, stats)
                    .valid);
   EXPECT_TRUE(stats.settling);
 }
@@ -563,7 +576,7 @@ std::uint64_t SearchSequenceDigest(Rig& rig) {
   for (std::uint64_t seq = 1; seq <= 4; ++seq) {
     const auto traj = rig.Traj(seq);
     last = rig.search.Plan(traj, Rig::Cov(traj, 0.002), true, rig.Rt(), kNoSegments, NowReal{kNow},
-                           stats);
+                           0, stats);
     rtc::testing::AddPlan(h, last);
     rtc::testing::AddSearchStats(h, stats);
   }
@@ -574,7 +587,8 @@ std::uint64_t SearchSequenceDigest(Rig& rig) {
   rt.plan_id = 31;
   const auto traj = rig.Traj(5);
   const auto cov = Rig::Cov(traj, 0.002);
-  rtc::testing::AddPlan(h, rig.search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, stats));
+  rtc::testing::AddPlan(h,
+                        rig.search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, 0, stats));
   rtc::testing::AddSearchStats(h, stats);
   rig.search.Monitor(traj, cov, true, rt, stats);
   rtc::testing::AddSearchStats(h, stats);
@@ -624,10 +638,47 @@ TEST(GridCatchSearchPlan, TheBudgetStopsTheIkAndSaysSo) {
   const auto traj = rig->Traj();
   SearchStats stats;
   static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                     NowReal{kNow}, stats));
+                                     NowReal{kNow}, 0, stats));
   EXPECT_TRUE(stats.budget_hit);
   EXPECT_LT(stats.n_ik, rig->params.max_ik);
   EXPECT_GT(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kNotEvaluated)], 0);
+}
+
+TEST(GridCatchSearchPlan, ACallersCapBelowItsBudgetIsTheBudgetItRunsOn) {
+  // CatchSearch::Plan's budget cap (E1-F17): a wake that has a replan to run
+  // behind the search gives the search less than its own budget. On the fake
+  // clock (3 ms a read) the cap decides how many candidates get their IK.
+  const auto run = [](double budget_s, std::int64_t cap_ns) {
+    auto rig = std::make_unique<Rig>();
+    rig->params.budget_s = budget_s;
+    EXPECT_TRUE(rig->Configure(&FakeClock));
+    const auto traj = rig->Traj();
+    SearchStats stats;
+    static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
+                                       NowReal{kNow}, cap_ns, stats));
+    return stats;
+  };
+  // Its own budget holds every candidate.
+  const SearchStats own = run(1.0, 0);
+  EXPECT_FALSE(own.budget_hit);
+  ASSERT_GT(own.n_ik, 2);
+  // A cap below it is the budget: fewer IKs, and the record says the budget
+  // cut them — exactly as a search whose OWN budget is that small.
+  const SearchStats capped = run(1.0, 10 * kMs);
+  EXPECT_TRUE(capped.budget_hit);
+  EXPECT_LT(capped.n_ik, own.n_ik);
+  EXPECT_GE(capped.n_ik, 1) << "the first candidate always runs";
+  const SearchStats small = run(0.010, 0);
+  EXPECT_EQ(capped.n_ik, small.n_ik);
+  EXPECT_EQ(capped.budget_hit, small.budget_hit);
+  // The smaller of the two decides, whichever it is.
+  const SearchStats cap_above = run(0.010, 1000 * kMs);
+  EXPECT_EQ(cap_above.n_ik, small.n_ik);
+  EXPECT_TRUE(cap_above.budget_hit);
+  // No cap is 0; a cap that is not positive is no cap either.
+  const SearchStats negative = run(1.0, -10 * kMs);
+  EXPECT_EQ(negative.n_ik, own.n_ik);
+  EXPECT_FALSE(negative.budget_hit);
 }
 
 // ── 4. Switching and freeze ──────────────────────────────────────────────────
@@ -638,15 +689,15 @@ TEST(GridCatchSearchSwitch, HoldsTheCurrentPlanWhenNothingIsBetter) {
   const auto traj = rig->Traj();
   SearchStats stats;
   PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                        NowReal{kNow}, stats);
+                                        NowReal{kNow}, 0, stats);
   ASSERT_TRUE(first.valid);
   first.plan_id = 11;
   rig->search.NotePublished(first);
   auto rt = rig->Rt();
   rt.plan_active = true;
   rt.plan_id = 11;
-  static_cast<void>(
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
+  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments,
+                                     NowReal{kNow}, 0, stats));
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldHysteresis);
   EXPECT_FALSE(stats.publish);
 }
@@ -657,7 +708,7 @@ TEST(GridCatchSearchSwitch, NothingReplacesAPlanInsideTheFreezeWindow) {
   const auto traj = rig->Traj();
   SearchStats stats;
   PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                        NowReal{kNow}, stats);
+                                        NowReal{kNow}, 0, stats);
   ASSERT_TRUE(first.valid);
   first.plan_id = 12;
   rig->search.NotePublished(first);
@@ -667,7 +718,7 @@ TEST(GridCatchSearchSwitch, NothingReplacesAPlanInsideTheFreezeWindow) {
   // 'now' moved to within T_freeze of the committed catch instant.
   const NowReal late{first.t_c_ns - static_cast<std::int64_t>(0.5 * rig->params.t_freeze * 1e9)};
   static_cast<void>(
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, late, stats));
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, late, 0, stats));
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldFreeze);
   EXPECT_FALSE(stats.publish);
 }
@@ -678,7 +729,7 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
   const auto traj = rig->Traj();
   SearchStats stats;
   PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                        NowReal{kNow}, stats);
+                                        NowReal{kNow}, 0, stats);
   ASSERT_TRUE(first.valid);
   // Pretend the current plan was for an instant no candidate matches now:
   // further than half a slice (25 ms) from every sample. Beyond the whole
@@ -695,7 +746,7 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
   rt.gamma = 1.0;  // (1-γ)‖Δp‖ = 0 and γ̇ = 0: the jump limits cannot refuse
   rt.gamma_d = 0.0;
   const PlanSnapshot next =
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
+      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, 0, stats);
   EXPECT_EQ(stats.decision, SwitchDecision::kReplaced);
   EXPECT_TRUE(stats.publish);
   EXPECT_TRUE(next.valid);
@@ -706,8 +757,8 @@ TEST(GridCatchSearchSwitch, AnInfeasibleCurrentPlanIsReplacedWhenTheJumpIsSmall)
   rt.gamma_d = 5.0;
   first.p_c[0] += 1.0;  // a 1 m catch-point jump
   rig->search.NotePublished(first);
-  static_cast<void>(
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
+  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments,
+                                     NowReal{kNow}, 0, stats));
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldJump);
   EXPECT_FALSE(stats.publish);
 }
@@ -725,7 +776,7 @@ TEST(GridCatchSearchSwitch, UnderASegmentModeTheJumpLimitIsNotJudged) {
     const auto traj = rig->Traj();
     SearchStats stats;
     PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                          NowReal{kNow}, stats);
+                                          NowReal{kNow}, 0, stats);
     ASSERT_TRUE(first.valid);
     first.plan_id = 13;
     first.t_c_ns = kNow + 5000 * kMs;  // no candidate is at it: the current plan is infeasible
@@ -737,8 +788,8 @@ TEST(GridCatchSearchSwitch, UnderASegmentModeTheJumpLimitIsNotJudged) {
     rt.ref_valid = true;
     rt.gamma = 0.0;  // mid-ramp and moving: the jump limit refuses under closed_form
     rt.gamma_d = 5.0;
-    static_cast<void>(
-        rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
+    static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments,
+                                       NowReal{kNow}, 0, stats));
     EXPECT_EQ(stats.decision, follows ? SwitchDecision::kReplaced : SwitchDecision::kHeldJump);
     EXPECT_EQ(stats.publish, follows);
   }
@@ -833,7 +884,7 @@ SwitchDecision RefreshDecision(double dy, double gamma, double gamma_d,
   const auto traj = rig->Traj();
   SearchStats stats;
   PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                        NowReal{kNow}, stats);
+                                        NowReal{kNow}, 0, stats);
   EXPECT_TRUE(first.valid);
   first.plan_id = 41;
   rig->search.NotePublished(first);
@@ -854,8 +905,8 @@ SwitchDecision RefreshDecision(double dy, double gamma, double gamma_d,
   for (int k = 0; k < moved.n; ++k) {
     moved.s[static_cast<std::size_t>(k)].p[1] += dy;
   }
-  const PlanSnapshot next =
-      rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
+  const PlanSnapshot next = rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, kNoSegments,
+                                             NowReal{kNow}, 0, stats);
   if (stats.decision == SwitchDecision::kRefreshed) {
     EXPECT_EQ(next.t_c_ns, first.t_c_ns) << "the same candidate, not a different one";
     EXPECT_NEAR(next.p_c[1] - first.p_c[1], dy, 1e-12);
@@ -913,14 +964,14 @@ TEST(GridCatchSearchReview, OneSlowSolveDoesNotStopThePlannerForGood) {
   const auto traj = rig->Traj();
   SearchStats stats;
   static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                     NowReal{kNow}, stats));
+                                     NowReal{kNow}, 0, stats));
   ASSERT_GE(stats.ik_ns_max, 30 * kMs) << "premise: the first cycle saw one 30 ms solve";
   // Every later cycle still runs IK, and the search widens again as the
   // estimate relaxes — it used to stop at the first check forever.
   int widest = 0;
   for (int cycle = 0; cycle < 40; ++cycle) {
     static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                       NowReal{kNow}, stats));
+                                       NowReal{kNow}, 0, stats));
     EXPECT_GE(stats.n_ik, 1) << "cycle " << cycle;
     widest = std::max(widest, static_cast<int>(stats.n_ik));
   }
@@ -933,7 +984,7 @@ TEST(GridCatchSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
   const auto traj = rig->Traj();
   SearchStats stats;
   PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                        NowReal{kNow}, stats);
+                                        NowReal{kNow}, 0, stats);
   ASSERT_TRUE(first.valid);
   first.plan_id = 21;
   rig->search.NotePublished(first);
@@ -948,8 +999,8 @@ TEST(GridCatchSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
   for (int k = 0; k < moved.n; ++k) {
     moved.s[static_cast<std::size_t>(k)].p[1] += 0.005;
   }
-  const PlanSnapshot next =
-      rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
+  const PlanSnapshot next = rig->search.Plan(moved, Rig::Cov(moved, 0.002), true, rt, kNoSegments,
+                                             NowReal{kNow}, 0, stats);
   EXPECT_EQ(stats.decision, SwitchDecision::kRefreshed);
   EXPECT_TRUE(stats.publish);
   ASSERT_TRUE(next.valid);
@@ -966,7 +1017,7 @@ TEST(GridCatchSearchReview, TheCurrentPlanIsWhatTheRtFollowsNotTheLastPublish) {
   const auto traj = rig->Traj();
   SearchStats stats;
   PlanSnapshot p1 = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                     NowReal{kNow}, stats);
+                                     NowReal{kNow}, 0, stats);
   ASSERT_TRUE(p1.valid);
   p1.plan_id = 31;
   rig->search.NotePublished(p1);
@@ -977,8 +1028,8 @@ TEST(GridCatchSearchReview, TheCurrentPlanIsWhatTheRtFollowsNotTheLastPublish) {
   auto rt = rig->Rt();
   rt.plan_active = true;
   rt.plan_id = 31;
-  static_cast<void>(
-      rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats));
+  static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, kNoSegments,
+                                     NowReal{kNow}, 0, stats));
   EXPECT_NE(stats.decision, SwitchDecision::kNoCurrent);
   EXPECT_EQ(stats.decision, SwitchDecision::kHeldHysteresis);
   EXPECT_FALSE(stats.publish);
@@ -991,11 +1042,11 @@ TEST(GridCatchSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan
   SearchStats stats;
   const auto settle = rig->Traj(1);
   static_cast<void>(rig->search.Plan(settle, Rig::Cov(settle, 0.002), true, rig->Rt(), kNoSegments,
-                                     NowReal{kNow}, stats));
+                                     NowReal{kNow}, 0, stats));
   ASSERT_TRUE(stats.settling) << "premise: the first snapshot of a track settles";
   const auto traj = rig->Traj(2);
   PlanSnapshot first = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                        NowReal{kNow}, stats);
+                                        NowReal{kNow}, 0, stats);
   ASSERT_TRUE(first.valid);
   first.plan_id = 41;
   rig->search.NotePublished(first);
@@ -1004,8 +1055,8 @@ TEST(GridCatchSearchReview, SettlingWhileFollowingHoldsInsteadOfPublishingNoPlan
   rt.plan_id = 41;
   // A new track generation restarts the settle count.
   const auto other = rig->Traj(1, 8);
-  const PlanSnapshot next =
-      rig->search.Plan(other, Rig::Cov(other, 0.002), true, rt, kNoSegments, NowReal{kNow}, stats);
+  const PlanSnapshot next = rig->search.Plan(other, Rig::Cov(other, 0.002), true, rt, kNoSegments,
+                                             NowReal{kNow}, 0, stats);
   ASSERT_TRUE(stats.settling);
   EXPECT_FALSE(next.valid);
   EXPECT_FALSE(stats.publish) << "a no-plan publish would overwrite the followed plan's box";
@@ -1022,7 +1073,7 @@ TEST(GridCatchSearchPlan, AFullSearchAllocatesNothing) {
   const auto rt = rig->Rt();
   SearchStats stats;
   ASSERT_TRUE(
-      rig->search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, stats).valid);  // warm
+      rig->search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, 0, stats).valid);  // warm
   std::size_t heap = 0;
   std::uint64_t eigen = 0;
   bool valid = false;
@@ -1032,7 +1083,7 @@ TEST(GridCatchSearchPlan, AFullSearchAllocatesNothing) {
     rtc::testing::ScopedNoMalloc eigen_gate;
     for (int i = 0; i < 5; ++i) {
       rig->search.ResetTrial();
-      valid = rig->search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, stats).valid;
+      valid = rig->search.Plan(traj, cov, true, rt, kNoSegments, NowReal{kNow}, 0, stats).valid;
       n_ik += stats.n_ik;
     }
     heap = heap_gate.count();
@@ -1040,6 +1091,235 @@ TEST(GridCatchSearchPlan, AFullSearchAllocatesNothing) {
   }
   EXPECT_TRUE(valid);
   EXPECT_GT(n_ik, 0) << "the gated loop ran no IK — the expensive half was not measured";
+  EXPECT_EQ(heap, 0U);
+  EXPECT_EQ(eigen, 0U);
+}
+
+// ── 5a. The arm: where the reach starts (E1-F17 #743) ────────────────────────
+
+// A segment of `nv` joints that is moving at every instant, with node values
+// that tell joint, node and derivative apart. Four 50 ms intervals from
+// `t0_ns`; nothing but what the sampler reads is filled.
+[[nodiscard]] SegmentSnapshot MovingSegment(int nv, std::uint32_t seq, std::int64_t t0_ns,
+                                            double bias) {
+  SegmentSnapshot s{};
+  s.valid = true;
+  s.segment_seq = seq;
+  s.nv = nv;
+  s.n_nodes = 4;
+  s.n_pre = 0;
+  s.dt_ns = 50 * kMs;
+  s.t0_ns = t0_ns;
+  s.t_c_ns = t0_ns;
+  for (int k = 0; k <= s.n_nodes; ++k) {
+    for (int d = 0; d < nv; ++d) {
+      const auto e = static_cast<std::size_t>(k * kMaxSegmentNv + d);
+      s.q[e] = bias + 0.05 * d + 0.02 * k;
+      s.qd[e] = 0.3 - 0.04 * d + 0.01 * k;
+      s.qdd[e] = -0.2 + 0.03 * d - 0.05 * k;
+    }
+  }
+  return s;
+}
+
+// T_arm ≠ 0 and a model order that is the device order reversed: the start is
+// read at now + T_arm, in DEVICE order.
+constexpr std::int64_t kArmLagNs = 30 * kMs;
+constexpr std::int64_t kNowLead = kNow + kArmLagNs;
+
+[[nodiscard]] std::unique_ptr<Rig> ArmRig() {
+  auto rig = std::make_unique<Rig>();
+  for (int j = 0; j < rig->arm.nv; ++j) {
+    rig->model.device_of_model[static_cast<std::size_t>(j)] = rig->arm.nv - 1 - j;
+  }
+  rig->constants.t_arm_s = static_cast<double>(kArmLagNs) * 1e-9;
+  return rig;
+}
+
+// The RT's report with a seeded, moving command — distinct per device joint,
+// and nowhere near a segment built by MovingSegment.
+[[nodiscard]] PlannerRtState MovingCommandRt(const Rig& rig) {
+  PlannerRtState rt = rig.Rt();
+  rt.cmd_seeded = true;
+  for (int d = 0; d < rig.arm.nv; ++d) {
+    rt.qd_cmd[static_cast<std::size_t>(d)] = 0.011 * (d + 1);
+  }
+  return rt;
+}
+
+// One search on `arm`; the candidates were judged, so the start was built.
+void SearchOn(Rig& rig, const PlannerRtState& rt, const ReportedSegments& arm) {
+  const auto traj = rig.Traj();
+  SearchStats stats;
+  static_cast<void>(
+      rig.search.Plan(traj, Rig::Cov(traj, 0.002), true, rt, arm, NowReal{kNow}, 0, stats));
+  ASSERT_GT(stats.n_ik, 0) << "no candidate was judged: the reach start was not built";
+}
+
+// The start the last search used is `segment` read at now_lead by the RT's
+// own evaluator, device → model order, to the bit.
+void ExpectStartOnSegment(const Rig& rig, const SegmentSnapshot& segment) {
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(segment, kNowLead, q, qd, qdd));
+  const std::span<const double> q0 = rig.search.ReachStartPositionForTesting();
+  const std::span<const double> w0 = rig.search.ReachStartVelocityForTesting();
+  ASSERT_EQ(q0.size(), static_cast<std::size_t>(rig.arm.nv));
+  ASSERT_EQ(w0.size(), static_cast<std::size_t>(rig.arm.nv));
+  for (int j = 0; j < rig.arm.nv; ++j) {
+    const auto m = static_cast<std::size_t>(j);
+    const auto d = static_cast<std::size_t>(rig.arm.nv - 1 - j);
+    EXPECT_TRUE(rtc::testing::BitsEqual(q0[m], q[d])) << "q, model joint " << j;
+    EXPECT_TRUE(rtc::testing::BitsEqual(w0[m], qd[d])) << "q̇, model joint " << j;
+  }
+}
+
+// The start the last search used is the reported command, device → model
+// order, to the bit — the velocity zero while the command is not seeded.
+void ExpectStartOnCommand(const Rig& rig, const PlannerRtState& rt) {
+  const std::span<const double> q0 = rig.search.ReachStartPositionForTesting();
+  const std::span<const double> w0 = rig.search.ReachStartVelocityForTesting();
+  ASSERT_EQ(q0.size(), static_cast<std::size_t>(rig.arm.nv));
+  ASSERT_EQ(w0.size(), static_cast<std::size_t>(rig.arm.nv));
+  for (int j = 0; j < rig.arm.nv; ++j) {
+    const auto m = static_cast<std::size_t>(j);
+    const auto d = static_cast<std::size_t>(rig.arm.nv - 1 - j);
+    EXPECT_TRUE(rtc::testing::BitsEqual(q0[m], rt.q_cmd[d])) << "q, model joint " << j;
+    EXPECT_TRUE(rtc::testing::BitsEqual(w0[m], rt.cmd_seeded ? rt.qd_cmd[d] : 0.0))
+        << "q̇, model joint " << j;
+  }
+}
+
+TEST(GridCatchSearchArm, WhileASegmentIsFollowedTheReachStartsOnItAtNowLead) {
+  auto rig = ArmRig();
+  ASSERT_TRUE(rig->Configure());
+  const PlannerRtState rt = MovingCommandRt(*rig);
+  auto arm = std::make_unique<ReportedSegments>();
+  arm->has_following = true;
+  // now_lead is 20 ms into the segment's first interval: between two nodes.
+  arm->following = MovingSegment(rig->arm.nv, 5, kNowLead - 20 * kMs, 0.1);
+  ASSERT_NO_FATAL_FAILURE(SearchOn(*rig, rt, *arm));
+  ASSERT_NO_FATAL_FAILURE(ExpectStartOnSegment(*rig, arm->following));
+  // Non-vacuous: that state is neither the reported command nor the segment
+  // read at the wake instant (T_arm earlier).
+  std::array<double, kMaxSegmentNv> q{};
+  std::array<double, kMaxSegmentNv> qd{};
+  std::array<double, kMaxSegmentNv> qdd{};
+  ASSERT_TRUE(NodeTrajectoryFollower::SampleJoints(arm->following, kNowLead, q, qd, qdd));
+  std::array<double, kMaxSegmentNv> q_wake{};
+  ASSERT_TRUE(
+      NodeTrajectoryFollower::SampleJoints(arm->following, kNowLead - 10 * kMs, q_wake, qd, qdd));
+  for (int d = 0; d < rig->arm.nv; ++d) {
+    const auto u = static_cast<std::size_t>(d);
+    EXPECT_NE(q[u], rt.q_cmd[u]) << d;
+    EXPECT_NE(q[u], q_wake[u]) << d;
+  }
+  // The same wake with nothing reported starts on the command again: the
+  // start is this call's, not a remembered one.
+  ASSERT_NO_FATAL_FAILURE(SearchOn(*rig, rt, kNoSegments));
+  ASSERT_NO_FATAL_FAILURE(ExpectStartOnCommand(*rig, rt));
+}
+
+TEST(GridCatchSearchArm, ThePendingSegmentIsTheStartFromItsOwnNodeZeroOn) {
+  // SourceSegmentAt: the pending segment once now_lead has reached its node 0,
+  // the followed one before that — one nanosecond apart.
+  for (const bool due : {false, true}) {
+    SCOPED_TRACE(due ? "pending, node 0 at now_lead" : "pending, node 0 one ns after now_lead");
+    auto rig = ArmRig();
+    ASSERT_TRUE(rig->Configure());
+    const PlannerRtState rt = MovingCommandRt(*rig);
+    auto arm = std::make_unique<ReportedSegments>();
+    arm->has_following = true;
+    arm->following = MovingSegment(rig->arm.nv, 5, kNowLead - 20 * kMs, 0.1);
+    arm->has_pending = true;
+    arm->pending = MovingSegment(rig->arm.nv, 6, due ? kNowLead : kNowLead + 1, -0.3);
+    const SegmentSnapshot& want = due ? arm->pending : arm->following;
+    ASSERT_EQ(rtc::catching::SourceSegmentAt(*arm, kNowLead), &want);
+    ASSERT_NO_FATAL_FAILURE(SearchOn(*rig, rt, *arm));
+    ASSERT_NO_FATAL_FAILURE(ExpectStartOnSegment(*rig, want));
+  }
+}
+
+TEST(GridCatchSearchArm, WithNoReadableSegmentTheReachStartsOnTheReportedCommand) {
+  const char* const cases[] = {"nothing reported",
+                               "a pending segment that is not due, nothing followed",
+                               "a followed segment of another joint count",
+                               "a followed segment whose node 0 is after now_lead",
+                               "a followed segment with a NaN node",
+                               "a followed segment with a NaN node velocity"};
+  for (int i = 0; i < 6; ++i) {
+    SCOPED_TRACE(cases[i]);
+    auto rig = ArmRig();
+    ASSERT_TRUE(rig->Configure());
+    auto arm = std::make_unique<ReportedSegments>();
+    const SegmentSnapshot moving = MovingSegment(rig->arm.nv, 5, kNowLead - 20 * kMs, 0.1);
+    switch (i) {
+      case 1:
+        arm->has_pending = true;
+        arm->pending = MovingSegment(rig->arm.nv, 6, kNowLead + 1, -0.3);
+        break;
+      case 2:
+        arm->has_following = true;
+        arm->following = moving;
+        arm->following.nv = rig->arm.nv - 1;
+        break;
+      case 3:
+        arm->has_following = true;
+        arm->following = MovingSegment(rig->arm.nv, 5, kNowLead + 1, 0.1);
+        break;
+      case 4:
+        arm->has_following = true;
+        arm->following = moving;
+        arm->following.q[2] = std::numeric_limits<double>::quiet_NaN();
+        break;
+      case 5:
+        arm->has_following = true;
+        arm->following = moving;
+        arm->following.qd[3] = std::numeric_limits<double>::quiet_NaN();
+        break;
+      default:
+        break;
+    }
+    // Seeded and moving, then unseeded: the command's own two forms.
+    PlannerRtState rt = MovingCommandRt(*rig);
+    ASSERT_NO_FATAL_FAILURE(SearchOn(*rig, rt, *arm));
+    ASSERT_NO_FATAL_FAILURE(ExpectStartOnCommand(*rig, rt));
+    rt.cmd_seeded = false;
+    ASSERT_NO_FATAL_FAILURE(SearchOn(*rig, rt, *arm));
+    ASSERT_NO_FATAL_FAILURE(ExpectStartOnCommand(*rig, rt));
+  }
+}
+
+TEST(GridCatchSearchArm, ASearchFromAFollowedSegmentAllocatesNothing) {
+  auto rig = ArmRig();
+  ASSERT_TRUE(rig->Configure());
+  const auto traj = rig->Traj();
+  const auto cov = Rig::Cov(traj, 0.002);
+  const PlannerRtState rt = MovingCommandRt(*rig);
+  auto arm = std::make_unique<ReportedSegments>();
+  arm->has_following = true;
+  arm->following = MovingSegment(rig->arm.nv, 5, kNowLead - 20 * kMs, 0.1);
+  arm->has_pending = true;
+  arm->pending = MovingSegment(rig->arm.nv, 6, kNowLead - 5 * kMs, -0.3);
+  SearchStats stats;
+  static_cast<void>(rig->search.Plan(traj, cov, true, rt, *arm, NowReal{kNow}, 0, stats));  // warm
+  std::size_t heap = 0;
+  std::uint64_t eigen = 0;
+  int n_ik = 0;
+  {
+    rtc::testing::ScopedAllocGate heap_gate;
+    rtc::testing::ScopedNoMalloc eigen_gate;
+    for (int i = 0; i < 5; ++i) {
+      rig->search.ResetTrial();
+      static_cast<void>(rig->search.Plan(traj, cov, true, rt, *arm, NowReal{kNow}, 0, stats));
+      n_ik += stats.n_ik;
+    }
+    heap = heap_gate.count();
+    eigen = eigen_gate.violations();
+  }
+  EXPECT_GT(n_ik, 0) << "the gated loop judged no candidate — the start was not built";
+  ASSERT_NO_FATAL_FAILURE(ExpectStartOnSegment(*rig, arm->pending));
   EXPECT_EQ(heap, 0U);
   EXPECT_EQ(eigen, 0U);
 }
@@ -1068,7 +1348,7 @@ TEST(GridCatchSearchTiming, RecordsIkAndCycleTimesOnThisHost) {
     const auto traj = rig->Traj(static_cast<std::uint64_t>(c + 1));
     SearchStats stats;
     static_cast<void>(rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(), kNoSegments,
-                                       NowReal{kNow}, stats));
+                                       NowReal{kNow}, 0, stats));
     cycle_us.push_back(stats.search_ns / 1000);
     ik_us.push_back(stats.ik_ns_max / 1000);
     ik_total += stats.n_ik;

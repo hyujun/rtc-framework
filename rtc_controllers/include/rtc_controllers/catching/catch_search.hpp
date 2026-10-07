@@ -60,7 +60,9 @@ struct SearchStats;  // search_stats.hpp
 /// are the cycle's to fill and are zero here.
 ///
 /// A receiver uses it for a plan only when it is that plan's and of the same
-/// RT report: `seg.t_c_ns == plan.t_c_ns && seg.rt_iteration == rt.rt_iteration`.
+/// RT report: `seg.t_c_ns == plan.t_c_ns && seg.rt_iteration == rt.rt_iteration`
+/// — and, to publish it, when node 0 started on the segment the RT reports for
+/// that instant: `source_seq` equal to SegmentPlanner::SourceSeq(rt, seg.t0_ns).
 struct CatchSolution {
   SegmentSnapshot seg{};
   /// The `segment_seq` of the reported segment node 0's state was evaluated
@@ -102,6 +104,10 @@ class CatchSearch {
   ///        (the cycle's scratch — valid for this call). Both absent when the
   ///        RT follows no plan or no segment planner is installed
   /// @param now the planning 'now' on the steady axis (the wake instant)
+  /// @param budget_cap_ns an upper bound on this call's compute budget [ns],
+  ///        0 = none. The search runs on the smaller of its own budget and
+  ///        this: the cycle caps a wake that has a replan to run behind the
+  ///        search, so that the two fit one prediction period.
   /// @param[out] stats the wake's search record; `stats.publish` false tells
   ///             the cycle to publish nothing (the RT keeps the plan it has)
   /// @return the plan, with its provenance filled and `valid` false when no
@@ -109,7 +115,8 @@ class CatchSearch {
   [[nodiscard]] virtual PlanSnapshot Plan(const TrajectorySnapshot& traj,
                                           const CovarianceSnapshot& cov, bool cov_matched,
                                           const PlannerRtState& rt, const ReportedSegments& arm,
-                                          NowReal now, SearchStats& stats) noexcept = 0;
+                                          NowReal now, std::int64_t budget_cap_ns,
+                                          SearchStats& stats) noexcept = 0;
 
   /// @brief The arm trajectory the last Plan() solved for the plan it
   ///        returned, or nullptr: no plan was chosen, or this search does not

@@ -113,7 +113,7 @@ using Candidate = NlpCatchSearch::CandidateRecord;
 
 static_assert(noexcept(std::declval<NlpCatchSearch&>().Plan(
     std::declval<const TrajectorySnapshot&>(), std::declval<const CovarianceSnapshot&>(), true,
-    std::declval<const PlannerRtState&>(), std::declval<const ReportedSegments&>(), NowReal{},
+    std::declval<const PlannerRtState&>(), std::declval<const ReportedSegments&>(), NowReal{}, 0,
     std::declval<SearchStats&>())));
 static_assert(noexcept(std::declval<const NlpCatchSearch&>().Solution()));
 static_assert(noexcept(std::declval<NlpCatchSearch&>().ResetTrial()));
@@ -324,7 +324,7 @@ struct Wake {
 [[nodiscard]] Wake RunWake(Rig& rig, const Throw& t, const PlannerRtState& rt,
                            const ReportedSegments& arm, std::int64_t now, bool cov_matched = true) {
   Wake w;
-  w.plan = rig.search.Plan(t.traj, t.cov, cov_matched, rt, arm, NowReal{now}, w.stats);
+  w.plan = rig.search.Plan(t.traj, t.cov, cov_matched, rt, arm, NowReal{now}, 0, w.stats);
   return w;
 }
 
@@ -2915,6 +2915,120 @@ TEST(NlpCatchSearchMonitor, ReportsThePositionSpreadAtTheFollowedCatchInstant) {
   EXPECT_FALSE(stats.publish);
 }
 
+// ── 7a. The caller's cap on the wake's budget (E1-F17 #743) ──────────────────
+//
+// CatchSearch::Plan's `budget_cap_ns`: a wake that has a replan to run behind
+// the search gives the search less than `budget_s`. The wake's budget is then
+// the smaller of the two — t_0, the number of solves and the overrun are
+// counted on it — and no solve's deadline is later than the wake's start plus
+// it.
+
+struct CappedWake {
+  Wake w;
+  std::int64_t t_start{0};       // the wake's first clock read
+  std::int64_t t_0{0};           // LastStartInstantNs
+  std::int64_t wake_budget{0};   // LastWakeBudgetNs
+  std::int64_t deadline_max{0};  // LastSolveDeadlineMaxNsForTesting
+};
+
+// One wake of a search whose own budget is `budget_s`, under `cap_ns`, on a
+// clock that moves `step_ns` a read (the wake's first read is `step_ns`).
+[[nodiscard]] CappedWake RunCapped(double budget_s, std::int64_t cap_ns, std::int64_t step_ns) {
+  auto rig = std::make_unique<Rig>();
+  rig->params.budget_s = budget_s;
+  std::string err;
+  EXPECT_TRUE(rig->Configure(&err)) << err;
+  const Throw ball = AxisThrow(*rig, 0.28);
+  SetClockStep(step_ns);
+  CappedWake r;
+  r.t_start = step_ns;
+  r.w.plan = rig->search.Plan(ball.traj, ball.cov, true, rig->RestingRt(kNow), NoSegments(),
+                              NowReal{kNow}, cap_ns, r.w.stats);
+  r.t_0 = rig->search.LastStartInstantNs();
+  r.wake_budget = rig->search.LastWakeBudgetNs();
+  r.deadline_max = rig->search.LastSolveDeadlineMaxNsForTesting();
+  return r;
+}
+
+TEST(NlpCatchSearchBudgetCap, ACapBelowItsBudgetIsTheWakesBudget) {
+  constexpr std::int64_t kBudget = 40 * kMs;    // the rig's budget_s
+  constexpr std::int64_t kShare = 4 * kMs;      // its solve_budget_s
+  constexpr std::int64_t kStartLead = 4 * kMs;  // its start_lead_s (T_arm is 0)
+  constexpr std::int64_t kStep = 1000;
+  // No cap: the wake as it always was.
+  const CappedWake own = RunCapped(0.04, 0, kStep);
+  ASSERT_TRUE(own.w.plan.valid) << NlpRejectName(own.w.stats.nlp.reason);
+  EXPECT_EQ(own.wake_budget, kBudget);
+  EXPECT_EQ(own.t_0, kNow + kBudget + kStartLead);
+  ASSERT_GT(own.w.stats.nlp.n_solved, 2);
+  EXPECT_FALSE(own.w.stats.budget_hit);
+  // A cap that is not below the budget — equal, above, or not positive —
+  // changes neither t_0 nor what is solved.
+  for (const std::int64_t cap : {kBudget, 10 * kBudget, std::int64_t{-1}}) {
+    SCOPED_TRACE(cap);
+    const CappedWake same = RunCapped(0.04, cap, kStep);
+    EXPECT_EQ(same.wake_budget, kBudget);
+    EXPECT_EQ(same.t_0, own.t_0);
+    EXPECT_EQ(same.w.stats.nlp.n_solved, own.w.stats.nlp.n_solved);
+    EXPECT_EQ(same.w.plan.valid, own.w.plan.valid);
+    EXPECT_EQ(same.w.plan.t_c_ns, own.w.plan.t_c_ns);
+    if (cap > 0) {
+      EXPECT_LE(same.deadline_max, same.t_start + kBudget);
+    }
+  }
+  // A cap below it IS the wake's budget: a result can start that much
+  // earlier, fewer solves fit, and the record says the budget cut them.
+  {
+    constexpr std::int64_t kCap = 10 * kMs;
+    const CappedWake capped = RunCapped(0.04, kCap, kStep);
+    EXPECT_EQ(capped.wake_budget, kCap);
+    EXPECT_EQ(capped.t_0, kNow + kCap + kStartLead);
+    EXPECT_TRUE(capped.w.stats.budget_hit);
+    ASSERT_GT(capped.w.stats.nlp.n_solved, 0);
+    EXPECT_LE(capped.w.stats.nlp.n_solved, (kCap - capped.w.stats.nlp.screen_ns) / kShare);
+    EXPECT_LT(capped.w.stats.nlp.n_solved, own.w.stats.nlp.n_solved);
+    EXPECT_GT(capped.deadline_max, capped.t_start);
+    EXPECT_LE(capped.deadline_max, capped.t_start + kCap);
+    // The same wake as a search whose OWN budget is that small.
+    const CappedWake small = RunCapped(0.010, 0, kStep);
+    EXPECT_EQ(capped.t_0, small.t_0);
+    EXPECT_EQ(capped.w.stats.nlp.n_solved, small.w.stats.nlp.n_solved);
+    EXPECT_EQ(capped.w.plan.valid, small.w.plan.valid);
+    EXPECT_EQ(capped.w.plan.t_c_ns, small.w.plan.t_c_ns);
+  }
+  // A cap that does not hold one share: no solve, no deadline, no plan.
+  {
+    const CappedWake none = RunCapped(0.04, kShare - 1, kStep);
+    EXPECT_EQ(none.wake_budget, kShare - 1);
+    EXPECT_EQ(none.w.stats.nlp.n_solved, 0);
+    EXPECT_EQ(none.deadline_max, 0);
+    EXPECT_FALSE(none.w.plan.valid);
+    EXPECT_TRUE(none.w.stats.budget_hit);
+  }
+}
+
+TEST(NlpCatchSearchBudgetCap, NoSolvesDeadlineIsPastTheCappedWakesEnd) {
+  // A share is counted from its solve's own start, so on a slow clock the
+  // later solves of a wake are given deadlines past the wake's budget — the
+  // overrun the header's step 8 describes. Under a cap the wake has to END by
+  // then: every such deadline is cut at the wake's start plus its budget.
+  // Two searches that differ in nothing else — one whose own budget is 39 ms,
+  // one with 40 ms capped at 39 ms — on a clock of 1 ms a read.
+  constexpr std::int64_t kCap = 39 * kMs;
+  constexpr std::int64_t kStep = kMs;
+  const CappedWake own = RunCapped(0.039, 0, kStep);
+  const CappedWake capped = RunCapped(0.04, kCap, kStep);
+  ASSERT_GT(own.w.stats.nlp.n_solved, 0) << NlpRejectName(own.w.stats.nlp.reason);
+  // The uncapped wake does hand out a deadline past its budget: the scenario
+  // exercises the cut.
+  ASSERT_GT(own.deadline_max, own.t_start + kCap)
+      << "no solve of this wake reaches past its budget: nothing is cut";
+  EXPECT_EQ(capped.t_0, own.t_0);
+  EXPECT_EQ(capped.wake_budget, kCap);
+  EXPECT_EQ(capped.w.stats.nlp.n_solved, own.w.stats.nlp.n_solved);
+  EXPECT_EQ(capped.deadline_max, capped.t_start + kCap);
+}
+
 // ── 8. Allocation ────────────────────────────────────────────────────────────
 
 struct GateLog {
@@ -3004,7 +3118,7 @@ TEST(NlpCatchSearchAllocation, AWakeAllocatesNothingOutsideTheQpSolvers) {
       rtc::testing::detail::MallocGateCount() = 0;
       ++rtc::testing::detail::MallocGateDepth();
       plan = rig->search.Plan(steps[i].ball->traj, steps[i].ball->cov, true, reports[i], reported,
-                              NowReal{steps[i].now}, stats);
+                              NowReal{steps[i].now}, 0, stats);
       --rtc::testing::detail::MallocGateDepth();
       counted += rtc::testing::detail::MallocGateCount();
     }
@@ -4660,7 +4774,7 @@ TEST(NlpCatchSearchContinuous, AWakeAllocatesNothingOutsideTheQpSolvers) {
       rtc::testing::detail::MallocGateCount() = 0;
       ++rtc::testing::detail::MallocGateDepth();
       wakes[i].plan = rig->search.Plan(ball.traj, ball.cov, true, reports[i], reported,
-                                       NowReal{steps[i].now}, wakes[i].stats);
+                                       NowReal{steps[i].now}, 0, wakes[i].stats);
       --rtc::testing::detail::MallocGateDepth();
       counted += rtc::testing::detail::MallocGateCount();
     }

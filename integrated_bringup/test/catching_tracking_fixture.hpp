@@ -165,6 +165,27 @@ std::vector<double> ShippedQddMax() {
   return arm["qdd_max"].as<std::vector<double>>();
 }
 
+/// The SHIPPED ur5e_p1b `mpc_docking` design merged into a profile YAML: the
+/// segment planner's fragment (`planner.segment.mpc_docking`) and the hand's
+/// identified capture set (`robot.hand.docking`), read from the installed
+/// files on every run so no suite carries a copy of a value. The
+/// `provisional` flag of the capture set is cleared like every other one in
+/// TrackingYaml (the fixture is judged on the real-arm axis). The caller sets
+/// `planner.segment.mode` and anything else it needs (a budget).
+void ApplyShippedDocking(YAML::Node& y) {
+  const std::string dir = ament_index_cpp::get_package_share_directory("integrated_bringup") +
+                          "/config/ur5e_p1b/controllers/";
+  const YAML::Node main =
+      YAML::LoadFile(dir + "demo_catching_controller.yaml")["demo_catching_controller"]["catching"];
+  const YAML::Node fragment = YAML::LoadFile(
+      dir + "catching/segment_mpc_docking.yaml")["demo_catching_controller"]["catching"]["planner"]
+                                                ["segment"]["mpc_docking"];
+  YAML::Node docking = YAML::Clone(main["robot"]["hand"]["docking"]);
+  docking["provisional"] = false;
+  y["catching"]["robot"]["hand"]["docking"] = docking;
+  y["catching"]["planner"]["segment"]["mpc_docking"] = YAML::Clone(fragment);
+}
+
 /// What a profile says about the box's `qdd_provisional` flag.
 enum class AccelBoxFlag { kCleared, kProvisional, kAbsent };
 

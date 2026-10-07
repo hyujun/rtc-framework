@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <ostream>
 #include <stdexcept>
@@ -720,6 +721,8 @@ constexpr std::uint16_t kFakeIkCount = 4242;
 constexpr double kFakeSigmaL = 0.125;
 constexpr std::int64_t kFakeControlDtNs = 1000 * kMs;  // the real one is 2 ms
 constexpr std::uint32_t kFakeSourceSeq = 5;
+constexpr std::int64_t kFakeReplanBudgetNs = 7 * kMs;  // nobody's budget.replan_s
+constexpr std::int64_t kFakeFirstLeadNs = 300 * kMs;   // nor anybody's first-solve lead
 // What crosses between the two fakes through the cycle. None of it is what a
 // real search or planner produces: joint angles of hundreds of radians, a
 // negative cost, segments numbered far above anything the cycle has stored.
@@ -736,8 +739,11 @@ class FakeSearch final : public rtc::catching::CatchSearch {
   [[nodiscard]] PlanSnapshot Plan(const TrajectorySnapshot& traj, const CovarianceSnapshot& cov,
                                   bool cov_matched, const PlannerRtState& rt,
                                   const ReportedSegments& arm, NowReal now,
+                                  std::int64_t budget_cap_ns,
                                   SearchStats& stats) noexcept override {
     g_calls.Add(Call::kSearchPlan);
+    plan_budget_cap_ns = budget_cap_ns;
+    plan_rt_iteration = rt.rt_iteration;
     // Read under the flags only: a snapshot whose flag is false is not written.
     arm_has_pending = arm.has_pending;
     arm_has_following = arm.has_following;
@@ -759,7 +765,7 @@ class FakeSearch final : public rtc::catching::CatchSearch {
     p.rt_iteration = rt.rt_iteration;
     p.rt_state_ns = rt.rt_state_ns;
     p.valid = valid;
-    p.t_c_ns = kFakeTc;
+    p.t_c_ns = t_c_ns;
     p.p_c = kFakeCatchPoint;
     return p;
   }
@@ -814,6 +820,8 @@ class FakeSearch final : public rtc::catching::CatchSearch {
   bool valid{true};
   bool publish{true};
   bool has_solution{true};
+  // The catch instant of the plan it answers with.
+  std::int64_t t_c_ns{kFakeTc};
   // The switching verdict it records (the default is SearchStats' own).
   rtc::catching::SwitchDecision decision{rtc::catching::SwitchDecision::kNoCurrent};
   CatchSolution solution{};
@@ -831,6 +839,8 @@ class FakeSearch final : public rtc::catching::CatchSearch {
   std::uint64_t plan_cov_sequence{0};
   bool plan_cov_matched{false};
   std::int64_t plan_now_ns{0};
+  std::int64_t plan_budget_cap_ns{-1};
+  std::uint64_t plan_rt_iteration{0};
   mutable std::uint64_t monitor_sequence{0};
   mutable std::uint64_t monitor_cov_sequence{0};
   mutable bool monitor_cov_matched{false};
@@ -853,7 +863,8 @@ class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
                                const BallPrediction& ball, const CatchSolution* solution,
                                SegmentSnapshot& out, SegmentRecord& rec) noexcept override {
     g_calls.Add(Call::kPlanFirst);
-    static_cast<void>(rt);
+    first_rt_iteration = rt.rt_iteration;
+    first_rt_plan_active = rt.plan_active;
     NoteBall(ball);
     first_solution = solution;
     first_solution_source_seq = solution != nullptr ? solution->source_seq : 0;
@@ -863,12 +874,23 @@ class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
     first_p_c = plan.p_c;
     Fill(plan.plan_id, plan.t_c_ns, out, rec);
     rec.kind = SegmentKind::kFirst;
+    out.t0_ns = first_t0_ns;
+    if (rt.plan_active) {
+      // The first segment of a replacement starts on a reported segment, and
+      // says which (SegmentPlanner::PlanFirst): the cycle reads it back.
+      rec.source_seq = kFakeSourceSeq;
+      rec.x0_from_segment = true;
+    }
+    if (!first_ok) {
+      rec.outcome = first_refusal;
+    }
     return first_ok;
   }
 
   [[nodiscard]] bool Replan(const PlannerRtState& rt, const BallPrediction& ball,
                             SegmentSnapshot& out, SegmentRecord& rec) noexcept override {
     g_calls.Add(Call::kReplan);
+    replan_rt_iteration = rt.rt_iteration;
     NoteBall(ball);
     Fill(rt.plan_id, rt.plan_t_c_ns, out, rec);
     rec.kind = SegmentKind::kAdvance;
@@ -905,6 +927,19 @@ class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
     return kFakeControlDtNs;
   }
 
+  // Not in the call log, like Reported below: the order tests assert the
+  // wake's solves, stores and clock reads.
+  [[nodiscard]] std::int64_t ReplanBudgetNs() const noexcept override {
+    ++replan_budget_calls;
+    return replan_budget_ns;
+  }
+
+  [[nodiscard]] std::int64_t EarliestFirstStartNs(std::int64_t now_ns) const noexcept override {
+    ++earliest_calls;
+    earliest_now_ns = now_ns;
+    return now_ns + first_lead_ns;
+  }
+
   // Not in the call log (see FakeSearch::Solution); counted here.
   void Reported(const PlannerRtState& rt, ReportedSegments& out) const noexcept override {
     ++reported_calls;
@@ -938,8 +973,15 @@ class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
   std::uint64_t followed_generation{kTrack};
   bool starts_in_time{true};
   std::uint32_t source_seq{kFakeSourceSeq};
-  // The real cycle never has a reported segment on a search wake (it replans
-  // a followed plan instead of searching), so only a fake can fill these.
+  // What a withheld first segment says, node 0 of the first segment it fills
+  // (0: see Fill), its replan budget, and how far after `now` a first segment
+  // can start at the earliest.
+  SegmentOutcome first_refusal{SegmentOutcome::kSolveFailed};
+  std::int64_t first_t0_ns{0};
+  std::int64_t replan_budget_ns{kFakeReplanBudgetNs};
+  std::int64_t first_lead_ns{kFakeFirstLeadNs};
+  // On a first search wake only a fake can report segments (the real planner
+  // has published none yet); on a following wake a real one does too.
   bool report_pending{true};
   bool report_following{true};
   // What it was handed.
@@ -949,6 +991,12 @@ class FakeSegmentPlanner final : public rtc::catching::SegmentPlanner {
   double first_solution_cost{0.0};
   mutable int reported_calls{0};
   mutable std::uint64_t reported_rt_iteration{0};
+  mutable int replan_budget_calls{0};
+  mutable int earliest_calls{0};
+  mutable std::int64_t earliest_now_ns{0};
+  std::uint64_t first_rt_iteration{0};
+  bool first_rt_plan_active{false};
+  std::uint64_t replan_rt_iteration{0};
   ClockFn clock_seen{nullptr};
   bool ball_empty{true};
   bool ball_cov_matched{false};
@@ -1128,7 +1176,7 @@ PlannerParams FollowingSearchParams(double t_stop_plan_s) {
   return -1;
 }
 
-TEST(PlannerCycleFollowing, TheWakeReplansFirstThenSearchesAndPublishesNeitherPlanNorPair) {
+TEST(PlannerCycleFollowing, TheSearchOfAFollowingWakeIsHandedTheSegmentsTheRtReports) {
   using rtc::catching::SwitchDecision;
 
   struct Case {
@@ -1136,17 +1184,16 @@ TEST(PlannerCycleFollowing, TheWakeReplansFirstThenSearchesAndPublishesNeitherPl
     bool publish;
     bool valid;
     SwitchDecision decision;
-    CycleOutcome outcome;
   };
 
-  // What the search answers, and what the wake records of it. Nothing is
-  // stored in any of them: the RT follows a plan and takes no second one.
+  // What the search answers. What the wake then does with each answer — the
+  // pair, or the replan behind the search — is PlannerCycleReplacement's; here:
+  // whatever the answer, the search was handed the RT's segments.
   const Case cases[] = {
-      {"another plan is better", true, true, SwitchDecision::kReplaced,
-       CycleOutcome::kHeldReplaceUnsupported},
-      {"the followed plan, refreshed", true, true, SwitchDecision::kRefreshed, CycleOutcome::kHeld},
-      {"kept by hysteresis", false, true, SwitchDecision::kHeldHysteresis, CycleOutcome::kHeld},
-      {"no candidate this wake", true, false, SwitchDecision::kReplaced, CycleOutcome::kHeld},
+      {"another plan is better", true, true, SwitchDecision::kReplaced},
+      {"the followed plan, refreshed", true, true, SwitchDecision::kRefreshed},
+      {"kept by hysteresis", false, true, SwitchDecision::kHeldHysteresis},
+      {"no candidate this wake", true, false, SwitchDecision::kReplaced},
   };
   for (const Case& c : cases) {
     SCOPED_TRACE(c.what);
@@ -1158,20 +1205,9 @@ TEST(PlannerCycleFollowing, TheWakeReplansFirstThenSearchesAndPublishesNeitherPl
     rig->boxes.rt.Store(Following(Mode::kApproach, 9));
     rig->boxes.traj.Store(Traj(3));
     rig->boxes.cov.Store(Cov(3));
-    const std::uint64_t plan_stores = rig->boxes.plan.sequence();
     // 10 s before the followed catch instant: far outside t_stop_plan.
     const Calls calls = rig->Wake(kFakeTc - 10'000 * kMs);
-    // The segment first, then the search — and the search's instant is read
-    // on the cycle's clock AFTER the replan, not the wake's: a candidate's lead
-    // and the age of the RT's report are measured from where the search starts.
-    const int replan = IndexOf(calls, Call::kReplan);
-    const int search = IndexOf(calls, Call::kSearchPlan);
-    ASSERT_GE(replan, 0);
-    ASSERT_GT(search, replan);
-    const std::int64_t wake_ns = kFakeTc - 10'000 * kMs;
-    EXPECT_GT(rig->search->plan_now_ns, wake_ns);
-    EXPECT_GT(rig->search->plan_now_ns, kStepBase);  // a reading of the stepping clock
-    EXPECT_LE(rig->search->plan_now_ns, g_step_now);
+    ASSERT_GE(IndexOf(calls, Call::kSearchPlan), 0);
     // The search was handed the segments the RT reports — the ones a
     // candidate's arm motion has to start on.
     EXPECT_TRUE(rig->search->arm_has_following);
@@ -1179,21 +1215,7 @@ TEST(PlannerCycleFollowing, TheWakeReplansFirstThenSearchesAndPublishesNeitherPl
     EXPECT_EQ(rig->search->arm_following_q, kFakeFollowingQ);
     EXPECT_TRUE(rig->search->arm_has_pending);
     EXPECT_EQ(rig->search->arm_pending_seq, kFakePendingSeq);
-    // Recorded, not published: no plan stored, no pair solved, the search told
-    // of no publish. The replan's own segment is the one store of the wake.
-    EXPECT_EQ(rig->rec.outcome, c.outcome);
-    EXPECT_EQ(rig->rec.search.decision, c.decision);
-    EXPECT_EQ(rig->rec.search_valid, c.valid);
-    EXPECT_FALSE(rig->rec.plan_valid);
-    EXPECT_EQ(rig->rec.publish_ns, 0);
-    EXPECT_EQ(rig->boxes.plan.sequence(), plan_stores);
-    EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
-    EXPECT_EQ(IndexOf(calls, Call::kSearchNotePublished), -1);
-    EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
-    EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
   }
-  EXPECT_STREQ(rtc::catching::CycleOutcomeName(CycleOutcome::kHeldReplaceUnsupported),
-               "held_replace_unsupported");
 }
 
 TEST(PlannerCycleFollowing, TheSearchStopsAtTStopPlanBeforeTheFirstFollowedCatchInstant) {
@@ -1245,9 +1267,9 @@ TEST(PlannerCycleFollowing, TheStopIsMeasuredFromTheFirstPlanFollowedSinceTheRes
   EXPECT_GE(IndexOf(rig->Wake(kFakeTc - 300 * kMs), Call::kSearchPlan), 0);
 }
 
-TEST(PlannerCycleFollowing, EveryExitOfAFollowingWakeHasReplannedFirst) {
-  // No trajectory of this activation: the search has no input — the segment
-  // was replanned before the wake found that out.
+TEST(PlannerCycleFollowing, AFollowingWakeEndsInAReplanOrAPairWhateverTheTrajectoryDid) {
+  // No trajectory of this activation: the search has no input — and the
+  // followed plan's segment is replanned all the same.
   {
     auto rig = std::make_unique<FakeRig>();
     rig->cycle.Configure(FollowingSearchParams(0.5));
@@ -1258,14 +1280,17 @@ TEST(PlannerCycleFollowing, EveryExitOfAFollowingWakeHasReplannedFirst) {
     EXPECT_EQ(rig->rec.outcome, CycleOutcome::kNoInput);
     EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
   }
-  // The trajectory moved during the search. A wake that publishes would be
-  // superseded; this one publishes nothing whatever the trajectory did, so its
-  // record stands — the search's verdict is not lost, and "superseded" keeps
-  // counting plans that were dropped for a newer prediction (MD-29).
-  {
+  // The trajectory moved during the search: a newer snapshot of the same
+  // track. A wake with no plan followed would be superseded by it; a following
+  // wake is not — "superseded" counts what a publish re-check dropped (MD-29),
+  // and neither of the two things this wake goes on to is dropped for a newer
+  // snapshot of the track.
+  for (const bool replace : {false, true}) {
+    SCOPED_TRACE(replace ? "the search chose another plan" : "the search kept the plan");
     auto rig = std::make_unique<FakeRig>();
     rig->cycle.Configure(FollowingSearchParams(0.5));
-    rig->search->decision = rtc::catching::SwitchDecision::kReplaced;
+    rig->search->decision = replace ? rtc::catching::SwitchDecision::kReplaced
+                                    : rtc::catching::SwitchDecision::kRefreshed;
     rig->boxes.rt.Store(Following(Mode::kApproach, 9));
     rig->boxes.traj.Store(Traj(3));
     rig->boxes.cov.Store(Cov(3));
@@ -1277,18 +1302,32 @@ TEST(PlannerCycleFollowing, EveryExitOfAFollowingWakeHasReplannedFirst) {
     rig->cycle.SetPostSearchHookForTesting(
         [](void* user) noexcept { static_cast<Ctx*>(user)->boxes->traj.Store(Traj(4)); }, &ctx);
     const Calls calls = rig->Wake(kFakeTc - 10'000 * kMs);
-    const int replan = IndexOf(calls, Call::kReplan);
-    ASSERT_GE(replan, 0);
-    EXPECT_GT(IndexOf(calls, Call::kSearchPlan), replan);
-    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeldReplaceUnsupported);
-    EXPECT_EQ(rig->rec.search.decision, rtc::catching::SwitchDecision::kReplaced);
-    EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
-    EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
+    const int search = IndexOf(calls, Call::kSearchPlan);
+    ASSERT_GE(search, 0);
+    EXPECT_EQ(rig->rec.search.decision, rig->search->decision);
+    // Either way the solve behind the search ran on the prediction the search
+    // read, not on the one that landed meanwhile.
+    EXPECT_EQ(rig->segment->ball_sequence, 3U);
+    if (replace) {
+      // The pair: its re-check asks for the same TRACK, not the same snapshot.
+      EXPECT_GT(IndexOf(calls, Call::kPlanFirst), search);
+      EXPECT_EQ(IndexOf(calls, Call::kReplan), -1);
+      EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+      EXPECT_NE(rig->boxes.plan.sequence(), 0U);
+      EXPECT_EQ(rig->boxes.plan.Load().plan_id, rig->rec.plan_id);
+    } else {
+      // The replan, behind the search.
+      EXPECT_GT(IndexOf(calls, Call::kReplan), search);
+      EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+      EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+      EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
+    }
   }
 }
 
-// A wake in which the RT follows NO plan is timed from the wake, as before:
-// only the following wake's search starts after another solve.
+// A wake in which the RT follows NO plan is timed from the wake — as a
+// following wake's search is (PlannerCycleReplacement): the search is the
+// first thing either runs.
 TEST(PlannerCycleFollowing, ASearchWithNoPlanFollowedIsStillTimedFromTheWake) {
   auto rig = std::make_unique<FakeRig>();
   rig->cycle.Configure(FollowingSearchParams(0.5));
@@ -1716,6 +1755,851 @@ TEST(PlannerCycleInterfaces, AWakeThroughTheInterfacesAllocatesNothing) {
   EXPECT_EQ(rig->search->arm_following_q, kFakeFollowingQ);
   EXPECT_EQ(rig->search->solution_calls, 1 + kRounds);
   EXPECT_EQ(rig->segment->first_solution, &rig->search->solution);
+}
+
+// ── A followed plan is replaced: the replacement pair (E1-F17 #743) ──────────
+//
+// A wake while the RT follows a plan runs the search FIRST and then one of two
+// things: the search chose another plan → its first segment is solved from the
+// moving arm and the two go out as a pair; anything else → the followed plan's
+// segment is replanned, on the RT's report read again. Observed through the
+// fakes' call log (the order), their records of what they were handed, and the
+// boxes.
+
+using rtc::catching::SwitchDecision;
+
+// The first wake's instant: 10 s before the followed catch instant, far
+// outside t_stop_plan.
+constexpr std::int64_t kFollowWake = kFakeTc - 10'000 * kMs;
+constexpr double kFreezeS = 0.1;
+constexpr std::int64_t kFreezeNs = 100 * kMs;
+
+// A rig whose RT follows plan 1 — the pair the cycle itself published — in
+// APPROACH, and whose search answers "another plan" on the next wake.
+struct ReplacingRig {
+  std::unique_ptr<FakeRig> rig = std::make_unique<FakeRig>();
+  std::int64_t first_stamp{0};
+
+  explicit ReplacingRig(PlannerParams params = FollowingSearchParams(0.5)) {
+    rig->cycle.Configure(params);
+    first_stamp = rig->PublishPair();
+    rig->search->decision = SwitchDecision::kReplaced;
+    rig->boxes.rt.Store(Following(Mode::kApproach, 1));
+    rig->boxes.traj.Store(Traj(4));
+    rig->boxes.cov.Store(Cov(4));
+  }
+
+  FakeRig* operator->() const { return rig.get(); }
+};
+
+const Calls kReplacementPairCalls{Call::kSearchPlan,          Call::kClock,
+                                  Call::kPlanFirst,           Call::kClock,
+                                  Call::kSourceSeq,           Call::kStartsInTime,
+                                  Call::kSearchNotePublished, Call::kSegmentNotePublished};
+const Calls kReplanBehindSearchCalls{
+    Call::kSearchPlan,   Call::kFollowedTrack,       Call::kReplan, Call::kClock, Call::kSourceSeq,
+    Call::kStartsInTime, Call::kSegmentNotePublished};
+
+// What the two boxes and the cycle's counters hold, to show that a wake stored
+// nothing.
+struct Stored {
+  std::uint64_t plan_stores{0};
+  std::uint64_t segment_stores{0};
+  std::uint32_t last_plan_id{0};
+  std::uint32_t last_segment_seq{0};
+
+  explicit Stored(FakeRig& rig)
+      : plan_stores(rig.boxes.plan.sequence()),
+        segment_stores(rig.segment_box.sequence()),
+        last_plan_id(rig.cycle.LastPlanId()),
+        last_segment_seq(rig.cycle.LastSegmentSeq()) {}
+
+  friend bool operator==(const Stored&, const Stored&) = default;
+};
+
+struct PairProbe {
+  FakeRig* rig{nullptr};
+  int calls{0};
+  std::uint32_t segment_plan_id{0};
+  std::uint32_t plan_plan_id{0};
+};
+
+TEST(PlannerCycleReplacement, AnotherPlanGoesOutAsAPairSegmentFirstAndNothingIsReplanned) {
+  ReplacingRig rig;
+  PairProbe probe{rig.rig.get()};
+  rig->cycle.SetPairStoreHookForTesting(
+      [](void* user) noexcept {
+        auto* p = static_cast<PairProbe*>(user);
+        ++p->calls;
+        p->segment_plan_id = p->rig->segment_box.Load().plan_id;
+        p->plan_plan_id = p->rig->boxes.plan.Load().plan_id;
+      },
+      &probe);
+  const std::int64_t clock_before = g_step_now;
+  // The search, then — its verdict being another plan — the first-solve bound
+  // read on the clock, the first solve, ONE stamp, the two re-check questions
+  // a replan's re-check asks too, and both told. No replan: the followed
+  // plan's segment is not touched on a wake that replaces the plan.
+  EXPECT_EQ(rig->Wake(kFollowWake), kReplacementPairCalls);
+  const std::int64_t stamp = clock_before + 2 * kMs;  // the wake's second read
+  const PlannerCycleRecord& rec = rig->rec;
+  EXPECT_EQ(rec.outcome, CycleOutcome::kPublished);
+  EXPECT_TRUE(rec.plan_valid);
+  EXPECT_TRUE(rec.search_valid);
+  EXPECT_EQ(rec.search.decision, SwitchDecision::kReplaced);
+  EXPECT_EQ(rec.plan_id, 2U) << "a replacement carries a new plan id";
+  EXPECT_EQ(rec.publish_ns, stamp);
+  EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kPublished);
+  EXPECT_EQ(rec.segment.kind, SegmentKind::kFirst);
+  EXPECT_EQ(rec.segment.segment_seq, 2U);
+  EXPECT_EQ(rec.segment.publish_ns, stamp);
+  EXPECT_EQ(rec.segment.source_seq, kFakeSourceSeq);
+  EXPECT_EQ(rec.replacement.outcome, SegmentOutcome::kOff);
+  // The search ran first, so it is timed from the wake, on the wake's report
+  // and with the segments the RT reports.
+  EXPECT_EQ(rig->search->plan_now_ns, kFollowWake);
+  EXPECT_EQ(rig->search->plan_sequence, 4U);
+  EXPECT_TRUE(rig->search->arm_has_following);
+  EXPECT_EQ(rig->search->arm_following_seq, kFakeFollowingSeq);
+  // The first solve was handed the wake's report — the one the search solved
+  // on — the plan under its new id, the search's solution and its prediction.
+  EXPECT_TRUE(rig->segment->first_rt_plan_active);
+  EXPECT_EQ(rig->segment->first_rt_iteration, Following(Mode::kApproach, 1).rt_iteration);
+  EXPECT_EQ(rig->segment->first_plan_id, 2U);
+  EXPECT_EQ(rig->segment->first_solution, &rig->search->solution);
+  EXPECT_FALSE(rig->segment->ball_empty);
+  EXPECT_EQ(rig->segment->ball_sequence, 4U);
+  // The earliest a first segment could start was asked at the wake's first
+  // clock read, and the re-check's questions at the stamp and at node 0.
+  EXPECT_EQ(rig->segment->earliest_calls, 1);
+  EXPECT_EQ(rig->segment->earliest_now_ns, clock_before + kMs);
+  EXPECT_EQ(rig->segment->starts_publish_ns, stamp);
+  EXPECT_EQ(rig->segment->source_t_eff_ns, 0);
+  // Segment first: between the two stores the segment box already holds the
+  // replacement's segment and the plan box still the followed plan.
+  EXPECT_EQ(probe.calls, 1);
+  EXPECT_EQ(probe.segment_plan_id, 2U);
+  EXPECT_EQ(probe.plan_plan_id, 1U);
+  // Both boxes hold the pair, under one stamp and one plan id; both were told.
+  const PlanSnapshot plan = rig->boxes.plan.Load();
+  const SegmentSnapshot seg = rig->segment_box.Load();
+  ASSERT_TRUE(plan.valid);
+  ASSERT_TRUE(seg.valid);
+  EXPECT_EQ(plan.plan_id, 2U);
+  EXPECT_EQ(seg.plan_id, 2U);
+  EXPECT_EQ(seg.segment_seq, 2U);
+  EXPECT_EQ(plan.publish_ns, stamp);
+  EXPECT_EQ(seg.publish_ns, stamp);
+  EXPECT_EQ(rig->search->noted_plan_id, 2U);
+  EXPECT_EQ(rig->search->noted_publish_ns, stamp);
+  EXPECT_EQ(rig->segment->noted_seq, 2U);
+  EXPECT_EQ(rig->segment->noted_publish_ns, stamp);
+  EXPECT_EQ(rig->cycle.LastPlanId(), 2U);
+}
+
+TEST(PlannerCycleReplacement, EveryOtherVerdictReplansBehindTheSearchOnTheReportReadAgain) {
+  struct Case {
+    const char* what;
+    bool publish;
+    bool valid;
+    SwitchDecision decision;
+  };
+
+  const Case cases[] = {
+      {"the followed plan, refreshed", true, true, SwitchDecision::kRefreshed},
+      {"kept by hysteresis", false, true, SwitchDecision::kHeldHysteresis},
+      {"another plan, but the search holds it back", false, true, SwitchDecision::kReplaced},
+      {"no candidate this wake", true, false, SwitchDecision::kReplaced},
+      {"no candidate, held", false, false, SwitchDecision::kHeldNoCandidate},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.what);
+    ReplacingRig rig;
+    rig->search->publish = c.publish;
+    rig->search->valid = c.valid;
+    rig->search->decision = c.decision;
+
+    // The RT ticks while the search runs: the same plan, a later report.
+    struct Ctx {
+      FakeRig* rig;
+    } ctx{rig.rig.get()};
+
+    rig->cycle.SetPostSearchHookForTesting(
+        [](void* user) noexcept {
+          PlannerRtState later = Following(Mode::kApproach, 1);
+          later.rt_iteration += 1;
+          later.rt_state_ns += 2 * kMs;
+          static_cast<Ctx*>(user)->rig->boxes.rt.Store(later);
+        },
+        &ctx);
+    const Stored before(*rig.rig);
+    // The search first, then the replan — never the other way round, and no
+    // first solve.
+    EXPECT_EQ(rig->Wake(kFollowWake), kReplanBehindSearchCalls);
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+    EXPECT_EQ(rig->rec.search.decision, c.decision);
+    EXPECT_EQ(rig->rec.search_valid, c.valid);
+    EXPECT_FALSE(rig->rec.plan_valid);
+    EXPECT_EQ(rig->rec.publish_ns, 0);
+    EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff);
+    // The replan's is the one store of the wake.
+    EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
+    EXPECT_EQ(rig->cycle.LastPlanId(), before.last_plan_id);
+    EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+    EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+    EXPECT_EQ(rig->segment_box.Load().segment_seq, before.last_segment_seq + 1);
+    // The search was handed the wake's report; the replan the one read after.
+    const std::uint64_t wake_iteration = Following(Mode::kApproach, 1).rt_iteration;
+    EXPECT_EQ(rig->search->plan_rt_iteration, wake_iteration);
+    EXPECT_EQ(rig->segment->replan_rt_iteration, wake_iteration + 1);
+    EXPECT_EQ(rig->search->plan_now_ns, kFollowWake);
+  }
+}
+
+TEST(PlannerCycleReplacement, AReportThatMovedDuringTheSearchLeavesNothingToReplan) {
+  // What the RT may report by the time the search is done. The replan is of
+  // the plan the wake started on: another trial, another plan, or a
+  // replacement the RT holds by now, and there is nothing of it to replan.
+  struct Case {
+    const char* what;
+    void (*change)(PlannerRtState&);
+    bool replans;
+  };
+
+  const Case cases[] = {
+      {"the same plan, a later tick", [](PlannerRtState& s) { s.rt_iteration += 1; }, true},
+      {"committed meanwhile",
+       [](PlannerRtState& s) { s.mode = static_cast<std::uint8_t>(Mode::kCommitted); }, true},
+      {"a trial reset", [](PlannerRtState& s) { s.reset_epoch += 1; }, false},
+      {"another activation", [](PlannerRtState& s) { s.activation_generation += 1; }, false},
+      {"no plan followed", [](PlannerRtState& s) { s.plan_active = false; }, false},
+      {"another plan followed", [](PlannerRtState& s) { s.plan_id += 1; }, false},
+      {"another catch instant", [](PlannerRtState& s) { s.plan_t_c_ns += 1; }, false},
+      {"a replacement held", [](PlannerRtState& s) { s.plan_pending = true; }, false},
+      {"an invalid report", [](PlannerRtState& s) { s.valid = false; }, false},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.what);
+    ReplacingRig rig;
+    rig->search->decision = SwitchDecision::kRefreshed;
+
+    struct Ctx {
+      FakeRig* rig;
+      void (*change)(PlannerRtState&);
+    } ctx{rig.rig.get(), c.change};
+
+    rig->cycle.SetPostSearchHookForTesting(
+        [](void* user) noexcept {
+          auto* x = static_cast<Ctx*>(user);
+          PlannerRtState s = Following(Mode::kApproach, 1);
+          x->change(s);
+          x->rig->boxes.rt.Store(s);
+        },
+        &ctx);
+    const Stored before(*rig.rig);
+    const Calls calls = rig->Wake(kFollowWake);
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+    if (c.replans) {
+      EXPECT_EQ(calls, kReplanBehindSearchCalls);
+      EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+    } else {
+      EXPECT_EQ(calls, (Calls{Call::kSearchPlan}));
+      EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kOff);
+      EXPECT_EQ(Stored(*rig.rig), before);
+    }
+  }
+}
+
+TEST(PlannerCycleReplacement, WithNothingToSearchOnTheFollowedSegmentIsStillReplanned) {
+  // No trajectory of this activation: no search — and the replan runs, without
+  // a ball (the followed track is not even asked: the box holds none).
+  ReplacingRig rig;
+  rig->boxes.traj.Store(Traj(5, kActivation - 1));
+  const Stored before(*rig.rig);
+  EXPECT_EQ(rig->Wake(kFollowWake), (Calls{Call::kReplan, Call::kClock, Call::kSourceSeq,
+                                           Call::kStartsInTime, Call::kSegmentNotePublished}));
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kNoInput);
+  EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
+  EXPECT_EQ(rig->cycle.LastPlanId(), before.last_plan_id);
+  EXPECT_TRUE(rig->segment->ball_empty);
+  EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+  EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+}
+
+// What lands between the first solve and the pair's re-check.
+struct RecheckCase {
+  const char* what;
+  // Before the wake: what the installed objects answer.
+  void (*arrange)(FakeRig&);
+  // Between the solve and the re-check: what the boxes hold by then.
+  void (*land)(FakeRig&);
+  bool published;
+};
+
+void Nothing(FakeRig& rig) {
+  static_cast<void>(rig);
+}
+
+void StoreRt(FakeRig& rig, void (*change)(PlannerRtState&)) {
+  PlannerRtState s = Following(Mode::kApproach, 1);
+  change(s);
+  rig.boxes.rt.Store(s);
+}
+
+TEST(PlannerCycleReplacement, EachRecheckConditionAloneDropsThePairAndStoresNothing) {
+  const RecheckCase cases[] = {
+      // The control, and what the re-check lets through.
+      {"nothing moved", &Nothing, &Nothing, true},
+      {"a newer snapshot of the same track", &Nothing,
+       [](FakeRig& rig) {
+         rig.boxes.traj.Store(Traj(9));
+         rig.boxes.cov.Store(Cov(9));
+       },
+       true},
+      {"the same plan, a later tick", &Nothing,
+       [](FakeRig& rig) { StoreRt(rig, [](PlannerRtState& s) { s.rt_iteration += 1; }); }, true},
+      // The trajectory.
+      {"another track", &Nothing,
+       [](FakeRig& rig) {
+         TrajectorySnapshot t = Traj(9);
+         t.token.generation = kTrack + 1;
+         rig.boxes.traj.Store(t);
+       },
+       false},
+      {"another activation's trajectory", &Nothing,
+       [](FakeRig& rig) { rig.boxes.traj.Store(Traj(9, kActivation + 1)); }, false},
+      // The RT's report.
+      {"a trial reset", &Nothing,
+       [](FakeRig& rig) { StoreRt(rig, [](PlannerRtState& s) { s.reset_epoch += 1; }); }, false},
+      {"another activation", &Nothing,
+       [](FakeRig& rig) { StoreRt(rig, [](PlannerRtState& s) { s.activation_generation += 1; }); },
+       false},
+      {"an invalid report", &Nothing,
+       [](FakeRig& rig) { StoreRt(rig, [](PlannerRtState& s) { s.valid = false; }); }, false},
+      {"no plan followed any more", &Nothing,
+       [](FakeRig& rig) { StoreRt(rig, [](PlannerRtState& s) { s.plan_active = false; }); }, false},
+      {"another plan followed", &Nothing,
+       [](FakeRig& rig) { StoreRt(rig, [](PlannerRtState& s) { s.plan_id += 1; }); }, false},
+      {"another catch instant followed", &Nothing,
+       [](FakeRig& rig) { StoreRt(rig, [](PlannerRtState& s) { s.plan_t_c_ns += 1; }); }, false},
+      {"committed meanwhile", &Nothing,
+       [](FakeRig& rig) {
+         StoreRt(rig,
+                 [](PlannerRtState& s) { s.mode = static_cast<std::uint8_t>(Mode::kCommitted); });
+       },
+       false},
+      {"a replacement already held", &Nothing,
+       [](FakeRig& rig) { StoreRt(rig, [](PlannerRtState& s) { s.plan_pending = true; }); }, false},
+      // The segment the solve started on is no longer the one reported.
+      {"another source segment reported",
+       [](FakeRig& rig) { rig.segment->source_seq = kFakeSourceSeq + 1; }, &Nothing, false},
+      // The RT could not take it any more.
+      {"the segment can no longer be read",
+       [](FakeRig& rig) { rig.segment->starts_in_time = false; }, &Nothing, false},
+  };
+  for (const RecheckCase& c : cases) {
+    SCOPED_TRACE(c.what);
+    ReplacingRig rig;
+    c.arrange(*rig.rig);
+
+    struct Ctx {
+      FakeRig* rig;
+      void (*land)(FakeRig&);
+    } ctx{rig.rig.get(), c.land};
+
+    rig->cycle.SetPostSegmentHookForTesting(
+        [](void* user) noexcept {
+          auto* x = static_cast<Ctx*>(user);
+          x->land(*x->rig);
+        },
+        &ctx);
+    const Stored before(*rig.rig);
+    const Calls calls = rig->Wake(kFollowWake);
+    EXPECT_GE(IndexOf(calls, Call::kPlanFirst), 0);
+    // Published or dropped, a wake whose first segment came out publishable
+    // does not replan: a segment of the followed plan would land in the one
+    // slot the pair's segment is in.
+    EXPECT_EQ(IndexOf(calls, Call::kReplan), -1);
+    if (c.published) {
+      EXPECT_EQ(calls, kReplacementPairCalls);
+      EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+      EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+      EXPECT_EQ(rig->boxes.plan.Load().plan_id, 2U);
+      continue;
+    }
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kSuperseded);
+    EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kSuperseded);
+    EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kFirst);
+    EXPECT_FALSE(rig->rec.plan_valid);
+    EXPECT_EQ(rig->rec.publish_ns, 0);
+    EXPECT_EQ(Stored(*rig.rig), before);
+    EXPECT_EQ(IndexOf(calls, Call::kSearchNotePublished), -1);
+    EXPECT_EQ(IndexOf(calls, Call::kSegmentNotePublished), -1);
+    EXPECT_EQ(rig->boxes.plan.Load().plan_id, 1U);
+    EXPECT_EQ(rig->segment_box.Load().plan_id, 1U);
+  }
+}
+
+TEST(PlannerCycleReplacement, TheFreezeBoundsOfThePairsRecheckAreOnTheNanosecond) {
+  // Three instants the re-check holds against T_freeze, each on both sides of
+  // its bound and each with the others far inside.
+  //  • The NEW catch instant: more than T_freeze after the publish stamp.
+  //  • The new segment's node 0 against the FOLLOWED plan's freeze,
+  //    t_c − T_freeze: before it — the RT switches at node 0 and takes no
+  //    replacement once the plan it follows is frozen.
+  //  • Node 0 against the NEW plan's catch instant: more than T_freeze before
+  //    it — the RT drops a held pair whose catch instant is inside the freeze
+  //    window when it gets to the switch.
+  // (The planner's bound on where a first segment can start is put long
+  // before the wake: the pre-solve check asks the last two questions of that
+  // bound, and every case here has to get through it to the re-check.)
+  const auto run = [](std::int64_t new_t_c_offset_from_stamp, std::int64_t node0_ns,
+                      double t_freeze_s, bool node0_is_before_the_new_t_c = false) {
+    PlannerParams params = FollowingSearchParams(0.5);
+    params.t_freeze = t_freeze_s;
+    ReplacingRig rig(params);
+    rig->segment->first_lead_ns = -1'000'000 * kMs;
+    // The stamp is the wake's second clock read with a freeze window (the
+    // first asks where a first segment could start), its first without one.
+    const bool freeze = t_freeze_s > 0.0;
+    const std::int64_t stamp = g_step_now + (freeze ? 2 : 1) * kMs;
+    rig->search->t_c_ns = stamp + new_t_c_offset_from_stamp;
+    rig->segment->first_t0_ns =
+        node0_is_before_the_new_t_c ? rig->search->t_c_ns - node0_ns : node0_ns;
+    const Stored before(*rig.rig);
+    const Calls calls = rig->Wake(kFollowWake);
+    EXPECT_GE(IndexOf(calls, Call::kPlanFirst), 0) << "held before the solve: not the re-check";
+    EXPECT_EQ(rig->rec.publish_ns == stamp, rig->rec.outcome == CycleOutcome::kPublished);
+    if (rig->rec.outcome != CycleOutcome::kPublished) {
+      EXPECT_EQ(rig->rec.outcome, CycleOutcome::kSuperseded);
+      EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kSuperseded);
+      EXPECT_EQ(Stored(*rig.rig), before);
+    }
+    return rig->rec.outcome == CycleOutcome::kPublished;
+  };
+  const std::int64_t near = 5000 * kMs;   // a new catch instant before the followed one
+  const std::int64_t far = 15'000 * kMs;  // and one after it
+  const std::int64_t followed_freeze = kFakeTc - kFreezeNs;
+  EXPECT_TRUE(run(near, 0, kFreezeS));
+  EXPECT_TRUE(run(far, 0, kFreezeS));
+  // The new catch instant against the stamp.
+  EXPECT_TRUE(run(kFreezeNs + 1, 0, kFreezeS));
+  EXPECT_FALSE(run(kFreezeNs, 0, kFreezeS));
+  EXPECT_FALSE(run(kFreezeNs - 1, 0, kFreezeS));
+  EXPECT_FALSE(run(-1, 0, kFreezeS)) << "a catch instant already past";
+  // Node 0 against the followed plan's freeze (the new catch instant far
+  // after it).
+  EXPECT_TRUE(run(far, followed_freeze - 1, kFreezeS));
+  EXPECT_FALSE(run(far, followed_freeze, kFreezeS));
+  EXPECT_FALSE(run(far, followed_freeze + 1, kFreezeS));
+  // Node 0 against the new plan's catch instant (both far before the followed
+  // plan's freeze): what is left at node 0 has to be MORE than T_freeze.
+  EXPECT_TRUE(run(near, kFreezeNs + 1, kFreezeS, /*node0_is_before_the_new_t_c=*/true));
+  EXPECT_FALSE(run(near, kFreezeNs, kFreezeS, /*node0_is_before_the_new_t_c=*/true));
+  EXPECT_FALSE(run(near, kFreezeNs - 1, kFreezeS, /*node0_is_before_the_new_t_c=*/true));
+  EXPECT_FALSE(run(near, 0, kFreezeS, /*node0_is_before_the_new_t_c=*/true))
+      << "node 0 at the catch instant";
+  EXPECT_FALSE(run(near, -kMs, kFreezeS, /*node0_is_before_the_new_t_c=*/true))
+      << "node 0 after the catch instant";
+  // Without a freeze window (T_freeze unset) none of the three has a bound:
+  // the new catch instant only has to be ahead of the stamp.
+  const double unset = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(run(1, followed_freeze + 1, unset));
+  EXPECT_TRUE(run(near, 0, unset, /*node0_is_before_the_new_t_c=*/true));
+  EXPECT_FALSE(run(0, 0, unset));
+}
+
+TEST(PlannerCycleReplacement, APairThatCouldNotStartBeforeTheFollowedPlanFreezesIsNotSolvedFor) {
+  // Before the first solve: where could a first segment start at the earliest
+  // (the planner's own bound, asked at the cycle's clock)? Not before the
+  // followed plan's freeze → no solve; the followed plan goes on and its
+  // segment is replanned. (The new plan's catch instant is 5 s after the
+  // followed one's: its own bound on that start is far inside.)
+  const std::int64_t followed_freeze = kFakeTc - kFreezeNs;
+  for (const std::int64_t margin_ns : {std::int64_t{1}, std::int64_t{0}, -kMs}) {
+    SCOPED_TRACE(margin_ns);
+    ReplacingRig rig;
+    rig->search->t_c_ns = kFakeTc + 5000 * kMs;
+    const std::int64_t asked_at = g_step_now + kMs;  // the wake's first clock read
+    // The earliest start is `margin_ns` BEFORE the followed plan's freeze.
+    rig->segment->first_lead_ns = followed_freeze - margin_ns - asked_at;
+    const Stored before(*rig.rig);
+    const Calls calls = rig->Wake(kFollowWake);
+    EXPECT_EQ(rig->segment->earliest_calls, 1);
+    EXPECT_EQ(rig->segment->earliest_now_ns, asked_at);
+    if (margin_ns > 0) {
+      EXPECT_EQ(calls, kReplacementPairCalls);
+      EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+      continue;
+    }
+    Calls expected{Call::kSearchPlan, Call::kClock};
+    expected.insert(expected.end(), kReplanBehindSearchCalls.begin() + 1,
+                    kReplanBehindSearchCalls.end());
+    EXPECT_EQ(calls, expected);
+    EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+    EXPECT_EQ(rig->rec.search.decision, SwitchDecision::kReplaced);
+    EXPECT_TRUE(rig->rec.search_valid);
+    EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff) << "no solve ran";
+    EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+    EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+    EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
+    EXPECT_EQ(rig->cycle.LastPlanId(), before.last_plan_id);
+  }
+  // Without a freeze window there is nothing to be before: the bound is not
+  // asked, and the pair is solved for.
+  PlannerParams params = FollowingSearchParams(0.5);
+  params.t_freeze = std::numeric_limits<double>::quiet_NaN();
+  ReplacingRig rig(params);
+  rig->segment->first_lead_ns = 20'000 * kMs;
+  const Calls calls = rig->Wake(kFollowWake);
+  EXPECT_EQ(rig->segment->earliest_calls, 0);
+  EXPECT_GE(IndexOf(calls, Call::kPlanFirst), 0);
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+}
+
+TEST(PlannerCycleReplacement, APairWhoseCatchInstantWouldBeFrozenAtItsEarliestStartIsNotSolvedFor) {
+  // The other question asked of the planner's bound before the first solve.
+  // The RT switches to a held pair at its first segment's node 0 and drops it
+  // there when the NEW catch instant is within T_freeze: a pair whose segment
+  // cannot start more than T_freeze before its own catch instant would be held
+  // by the RT until node 0 — nothing published meanwhile — and then dropped.
+  // It is not solved for; the followed plan's segment is replanned. (The
+  // followed plan's freeze is seconds away: that bound is far inside.)
+  for (const std::int64_t margin_ns : {std::int64_t{1}, std::int64_t{0}, -kMs}) {
+    SCOPED_TRACE(margin_ns);
+    ReplacingRig rig;
+    const std::int64_t asked_at = g_step_now + kMs;  // the wake's first clock read
+    const std::int64_t earliest = asked_at + kFakeFirstLeadNs;
+    ASSERT_LT(earliest, kFakeTc - kFreezeNs - 1000 * kMs);
+    // At its earliest start the new plan has T_freeze + `margin_ns` left.
+    rig->search->t_c_ns = earliest + kFreezeNs + margin_ns;
+    const Stored before(*rig.rig);
+    const Calls calls = rig->Wake(kFollowWake);
+    EXPECT_EQ(rig->segment->earliest_calls, 1);
+    EXPECT_EQ(rig->segment->earliest_now_ns, asked_at);
+    if (margin_ns > 0) {
+      EXPECT_EQ(calls, kReplacementPairCalls);
+      EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+      continue;
+    }
+    Calls expected{Call::kSearchPlan, Call::kClock};
+    expected.insert(expected.end(), kReplanBehindSearchCalls.begin() + 1,
+                    kReplanBehindSearchCalls.end());
+    EXPECT_EQ(calls, expected);
+    EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+    EXPECT_EQ(rig->rec.search.decision, SwitchDecision::kReplaced);
+    EXPECT_TRUE(rig->rec.search_valid);
+    EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff) << "no solve ran";
+    EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+    EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+    EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
+    EXPECT_EQ(rig->cycle.LastPlanId(), before.last_plan_id);
+  }
+}
+
+TEST(PlannerCycleReplacement, AWithheldFirstSegmentKeepsThePlanItsAccountAndReplans) {
+  ReplacingRig rig;
+  rig->segment->first_ok = false;
+  rig->segment->first_refusal = SegmentOutcome::kCatchError;
+
+  struct Ctx {
+    FakeRig* rig;
+  } ctx{rig.rig.get()};
+
+  rig->cycle.SetPostSearchHookForTesting(
+      [](void* user) noexcept {
+        PlannerRtState later = Following(Mode::kApproach, 1);
+        later.rt_iteration += 1;
+        static_cast<Ctx*>(user)->rig->boxes.rt.Store(later);
+      },
+      &ctx);
+  const Stored before(*rig.rig);
+  // The search, the bound, the first solve — withheld: no stamp is read for
+  // it — and then the replan of the followed plan.
+  Calls expected{Call::kSearchPlan, Call::kClock, Call::kPlanFirst};
+  expected.insert(expected.end(), kReplanBehindSearchCalls.begin() + 1,
+                  kReplanBehindSearchCalls.end());
+  EXPECT_EQ(rig->Wake(kFollowWake), expected);
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+  EXPECT_TRUE(rig->rec.search_valid);
+  EXPECT_FALSE(rig->rec.plan_valid);
+  EXPECT_EQ(rig->rec.search.decision, SwitchDecision::kReplaced);
+  // The withheld solve's account is kept beside the replan's.
+  EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kCatchError);
+  EXPECT_EQ(rig->rec.replacement.kind, SegmentKind::kFirst);
+  EXPECT_EQ(rig->rec.replacement.source_seq, kFakeSourceSeq);
+  EXPECT_TRUE(rig->rec.replacement.x0_from_segment);
+  EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+  EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+  // No plan went out, no id was used; the one store is the replan's segment.
+  EXPECT_EQ(rig->boxes.plan.sequence(), before.plan_stores);
+  EXPECT_EQ(rig->cycle.LastPlanId(), before.last_plan_id);
+  EXPECT_EQ(rig->boxes.plan.Load().plan_id, 1U);
+  EXPECT_EQ(rig->segment_box.Load().plan_id, 1U);
+  EXPECT_EQ(rig->segment_box.Load().segment_seq, before.last_segment_seq + 1);
+  // The first solve ran on the wake's report, the replan on the one read
+  // after the search.
+  const std::uint64_t wake_iteration = Following(Mode::kApproach, 1).rt_iteration;
+  EXPECT_EQ(rig->segment->first_rt_iteration, wake_iteration);
+  EXPECT_EQ(rig->segment->replan_rt_iteration, wake_iteration + 1);
+  // A wake that withholds neither: the account is empty again.
+  rig->segment->first_ok = true;
+  rig->cycle.SetPostSearchHookForTesting(nullptr, nullptr);
+  rig->boxes.rt.Store(Following(Mode::kApproach, 1));
+  static_cast<void>(rig->Wake(kFollowWake));
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+  EXPECT_EQ(rig->rec.replacement.outcome, SegmentOutcome::kOff);
+}
+
+TEST(PlannerCycleReplacement, AReplanIsDroppedAtItsRecheckWhenTheRtHoldsAReplacementByThen) {
+  // The RT can take a pair late — after the wait behind the pair has run out
+  // — so a wake that read "nothing held" can find a replacement held by the
+  // time its replan is solved. That replan is of the plan the RT is about to
+  // leave, and the RT takes nothing until it has switched or dropped the
+  // pair: it is not stored. Behind a search, and on the replan-alone wake.
+  struct Ctx {
+    FakeRig* rig;
+    bool held;
+  };
+
+  for (const std::int64_t wake_ns : {kFollowWake, kFakeTc - 300 * kMs}) {
+    const bool searches = wake_ns == kFollowWake;
+    for (const bool held : {true, false}) {
+      SCOPED_TRACE(std::string(searches ? "behind a search" : "the replan alone") +
+                   (held ? ", a replacement held by the re-check" : ", nothing held (control)"));
+      ReplacingRig rig;
+      rig->search->decision = SwitchDecision::kRefreshed;
+      Ctx ctx{rig.rig.get(), held};
+      rig->cycle.SetPostSegmentHookForTesting(
+          [](void* user) noexcept {
+            auto* x = static_cast<Ctx*>(user);
+            PlannerRtState s = Following(Mode::kApproach, 1);
+            s.rt_iteration += 1;
+            s.plan_pending = x->held;
+            s.plan_pending_id = 2;
+            s.plan_pending_t_c_ns = kFakeTc + 40 * kMs;
+            x->rig->boxes.rt.Store(s);
+          },
+          &ctx);
+      const Stored before(*rig.rig);
+      const Calls calls = rig->Wake(wake_ns);
+      Calls expected = searches ? Calls{Call::kSearchPlan} : Calls{};
+      const Calls solved{Call::kFollowedTrack, Call::kReplan, Call::kClock};
+      expected.insert(expected.end(), solved.begin(), solved.end());
+      EXPECT_EQ(rig->rec.outcome, searches ? CycleOutcome::kHeld : CycleOutcome::kIdle);
+      EXPECT_EQ(rig->rec.segment.kind, SegmentKind::kAdvance);
+      if (held) {
+        // Dropped before either question of the re-check is asked of the
+        // planner; nothing stored, nobody told.
+        EXPECT_EQ(calls, expected);
+        EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kSuperseded);
+        EXPECT_EQ(Stored(*rig.rig), before);
+      } else {
+        const Calls stored{Call::kSourceSeq, Call::kStartsInTime, Call::kSegmentNotePublished};
+        expected.insert(expected.end(), stored.begin(), stored.end());
+        EXPECT_EQ(calls, expected);
+        EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kPublished);
+        EXPECT_EQ(rig->segment_box.Load().segment_seq, before.last_segment_seq + 1);
+      }
+    }
+  }
+}
+
+TEST(PlannerCycleReplacement, WhileTheRtHoldsAReplacementAWakeRunsNothing) {
+  // The RT took the pair and holds it until its first segment starts: it takes
+  // nothing else until then, so neither a search nor a replan has anywhere to
+  // go — before t_stop_plan and after it.
+  for (const std::int64_t wake_ns : {kFollowWake, kFakeTc - 300 * kMs}) {
+    SCOPED_TRACE(wake_ns - kFakeTc);
+    ReplacingRig rig;
+    PlannerRtState held = Following(Mode::kApproach, 1);
+    held.plan_pending = true;
+    held.plan_pending_id = 7;
+    held.plan_pending_t_c_ns = kFakeTc + 40 * kMs;
+    held.segment_pending = true;
+    held.segment_pending_seq = 2;
+    rig->boxes.rt.Store(held);
+    const Stored before(*rig.rig);
+    EXPECT_EQ(rig->Wake(wake_ns), (Calls{}));
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeld);
+    EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kOff);
+    EXPECT_FALSE(rig->rec.search_valid);
+    EXPECT_EQ(Stored(*rig.rig), before);
+    // The same report without the held replacement is an ordinary wake again.
+    held.plan_pending = false;
+    rig->boxes.rt.Store(held);
+    const Calls calls = rig->Wake(wake_ns);
+    EXPECT_FALSE(calls.empty());
+    EXPECT_NE(Stored(*rig.rig), before);
+  }
+}
+
+TEST(PlannerCycleReplacement, RightAfterAReplacementPairNothingIsStoredUntilTheRtCanShowIt) {
+  // The segment box has one slot. Until the RT's report can show what it did
+  // with the pair, a replan of the plan it still follows would land on top of
+  // the replacement's first segment — and another replacement on top of this
+  // one.
+  ReplacingRig rig;
+  ASSERT_EQ(rig->Wake(kFollowWake), kReplacementPairCalls);
+  const std::int64_t stamp = rig->rec.publish_ns;
+  PlannerRtState s = Following(Mode::kApproach, 1);  // still on the old plan, nothing held
+  s.rt_state_ns = stamp + 3 * kFakeControlDtNs;
+  rig->boxes.rt.Store(s);
+  const Stored before(*rig.rig);
+  EXPECT_EQ(rig->Wake(kFollowWake), (Calls{Call::kControlDtNs}));
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kIdle);
+  EXPECT_EQ(rig->rec.segment.outcome, SegmentOutcome::kOff);
+  EXPECT_EQ(Stored(*rig.rig), before);
+  // The replan-alone wake (inside t_stop_plan) waits as well.
+  EXPECT_EQ(rig->Wake(kFakeTc - 300 * kMs), (Calls{Call::kControlDtNs}));
+  EXPECT_EQ(Stored(*rig.rig), before);
+  // A report that already follows the pair's plan has shown it: its segment is
+  // replanned at once, and nobody's period is asked.
+  PlannerRtState switched = Following(Mode::kApproach, 2);
+  switched.rt_state_ns = stamp + 1;
+  rig->boxes.rt.Store(switched);
+  rig->search->decision = SwitchDecision::kRefreshed;
+  EXPECT_EQ(rig->Wake(kFollowWake), kReplanBehindSearchCalls);
+  // One tick later than the three periods, still on the old plan with nothing
+  // held: the RT did not take the pair, and the wake is an ordinary one.
+  s.rt_state_ns = stamp + 3 * kFakeControlDtNs + 1;
+  rig->boxes.rt.Store(s);
+  const Calls calls = rig->Wake(kFollowWake);
+  ASSERT_GE(calls.size(), 2U);
+  EXPECT_EQ(calls[0], Call::kControlDtNs);
+  EXPECT_EQ(calls[1], Call::kSearchPlan);
+}
+
+TEST(PlannerCycleReplacement, AfterTheRtDropsAPairTheNextWakeMayReplaceAgainUnderANewId) {
+  ReplacingRig rig;
+  ASSERT_EQ(rig->Wake(kFollowWake), kReplacementPairCalls);
+  ASSERT_EQ(rig->rec.plan_id, 2U);
+  const std::int64_t stamp = rig->rec.publish_ns;
+  // The RT dropped the pair (its switch gate refused it, say): its report is
+  // the old plan again with nothing held, and postdates the pair.
+  PlannerRtState s = Following(Mode::kApproach, 1);
+  s.rt_state_ns = stamp + 3 * kFakeControlDtNs + 1;
+  rig->boxes.rt.Store(s);
+  Calls expected{Call::kControlDtNs};
+  expected.insert(expected.end(), kReplacementPairCalls.begin(), kReplacementPairCalls.end());
+  EXPECT_EQ(rig->Wake(kFollowWake), expected);
+  EXPECT_EQ(rig->rec.outcome, CycleOutcome::kPublished);
+  EXPECT_EQ(rig->rec.plan_id, 3U);
+  EXPECT_EQ(rig->rec.segment.segment_seq, 3U);
+  EXPECT_EQ(rig->boxes.plan.Load().plan_id, 3U);
+  EXPECT_EQ(rig->segment_box.Load().plan_id, 3U);
+  EXPECT_EQ(rig->segment->first_plan_id, 3U);
+}
+
+TEST(PlannerCycleReplacement, TheFirstFollowedCatchInstantStillStopsTheSearchAfterAReplacement) {
+  // t_stop_plan is measured back from the FIRST catch instant followed since
+  // the reset. The RT switching to a replacement with a later catch instant
+  // does not move it out.
+  ReplacingRig rig;
+  ASSERT_EQ(rig->Wake(kFollowWake), kReplacementPairCalls);
+  PlannerRtState switched = Following(Mode::kApproach, 2);
+  switched.plan_t_c_ns = kFakeTc + 1000 * kMs;
+  rig->boxes.rt.Store(switched);
+  // 0.3 s before the first followed instant: inside t_stop_plan (0.5 s),
+  // although 1.3 s before the replacement's.
+  const Calls calls = rig->Wake(kFakeTc - 300 * kMs);
+  EXPECT_EQ(IndexOf(calls, Call::kSearchPlan), -1);
+  EXPECT_GE(IndexOf(calls, Call::kReplan), 0);
+}
+
+TEST(PlannerCycleReplacement, TheSearchOfAFollowingWakeIsCappedByThePeriodLessTheReplanBudget) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto cap_of = [](double dt_expected_s, bool following) {
+    PlannerParams params = FollowingSearchParams(0.5);
+    params.dt_expected = dt_expected_s;
+    ReplacingRig rig(params);
+    if (!following) {
+      // The RT follows nothing (it did not take the first pair) and its report
+      // postdates that pair: an ordinary search wake.
+      PlannerRtState s = RtIn(Mode::kTracking);
+      s.rt_state_ns = rig.first_stamp + 3 * kFakeControlDtNs + 1;
+      rig->boxes.rt.Store(s);
+    }
+    rig->search->plan_budget_cap_ns = -1;
+    const Calls calls = rig->Wake(kFollowWake);
+    EXPECT_GE(IndexOf(calls, Call::kSearchPlan), 0);
+    // The replan budget is asked for on a following wake only.
+    EXPECT_EQ(rig->segment->replan_budget_calls > 0,
+              following && std::isfinite(dt_expected_s) && dt_expected_s > 0.0);
+    return rig->search->plan_budget_cap_ns;
+  };
+  // One prediction period less the installed planner's replan budget (7 ms).
+  EXPECT_EQ(cap_of(0.05, true), 50 * kMs - kFakeReplanBudgetNs);
+  EXPECT_EQ(cap_of(0.02, true), 20 * kMs - kFakeReplanBudgetNs);
+  EXPECT_EQ(cap_of(0.007 + 1e-9, true), 1);
+  // Nothing left, or nothing known: no cap (0), never a negative one.
+  EXPECT_EQ(cap_of(0.007, true), 0);
+  EXPECT_EQ(cap_of(0.005, true), 0);
+  EXPECT_EQ(cap_of(0.0, true), 0);
+  EXPECT_EQ(cap_of(-0.05, true), 0);
+  EXPECT_EQ(cap_of(nan, true), 0);
+  EXPECT_EQ(cap_of(std::numeric_limits<double>::infinity(), true), 0);
+  // A wake with no plan followed has no replan behind its search: no cap,
+  // whatever the period.
+  EXPECT_EQ(cap_of(0.05, false), 0);
+  EXPECT_EQ(cap_of(nan, false), 0);
+}
+
+TEST(PlannerCycleReplacement, AReplacementWakeAllocatesNothing) {
+  // The cycle's part of the three kinds of following wake a replacement adds:
+  // the pair, the withheld pair with its replan, and the wake the RT holds a
+  // replacement on. (What an implementation allocates is its own suite's.)
+  ReplacingRig rig;
+  std::size_t heap = 0;
+  std::uint64_t eigen = 0;
+  int pairs = 0;
+  int withheld = 0;
+  int held = 0;
+  bool overflow = false;
+  constexpr int kRounds = 30;
+  {
+    rtc::testing::ScopedAllocGate heap_gate;
+    rtc::testing::ScopedNoMalloc eigen_gate;
+    for (int i = 0; i < kRounds; ++i) {
+      // The RT follows the plan the cycle published last, its report well
+      // after that pair.
+      PlannerRtState s = Following(Mode::kApproach, rig->cycle.LastPlanId());
+      s.rt_state_ns = g_step_now + 4 * kFakeControlDtNs;
+      rig->boxes.rt.Store(s);
+      g_calls.Clear();
+      rig->segment->first_ok = true;
+      PlannerCycleRecord rec = rig->cycle.Run(NowReal{kFollowWake});
+      pairs += rec.outcome == CycleOutcome::kPublished && rec.plan_valid ? 1 : 0;
+      s.plan_id = rig->cycle.LastPlanId();
+      s.rt_state_ns = g_step_now + 4 * kFakeControlDtNs;
+      rig->boxes.rt.Store(s);
+      g_calls.Clear();
+      rig->segment->first_ok = false;
+      rec = rig->cycle.Run(NowReal{kFollowWake});
+      withheld += rec.outcome == CycleOutcome::kHeld &&
+                          rec.replacement.outcome != SegmentOutcome::kOff &&
+                          rec.segment.outcome == SegmentOutcome::kPublished
+                      ? 1
+                      : 0;
+      s.plan_pending = true;
+      rig->boxes.rt.Store(s);
+      g_calls.Clear();
+      rec = rig->cycle.Run(NowReal{kFollowWake});
+      held +=
+          rec.outcome == CycleOutcome::kHeld && rec.segment.outcome == SegmentOutcome::kOff ? 1 : 0;
+      overflow = overflow || g_calls.overflow;
+    }
+    heap = heap_gate.count();
+    eigen = eigen_gate.violations();
+  }
+  EXPECT_EQ(pairs, kRounds) << "the gated loop did not exercise the replacement pair";
+  EXPECT_EQ(withheld, kRounds) << "the gated loop did not exercise the withheld pair";
+  EXPECT_EQ(held, kRounds) << "the gated loop did not exercise the held wake";
+  EXPECT_FALSE(overflow);
+  EXPECT_EQ(heap, 0U);
+  EXPECT_EQ(eigen, 0U);
 }
 
 }  // namespace

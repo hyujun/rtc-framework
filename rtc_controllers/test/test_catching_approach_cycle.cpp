@@ -7,9 +7,13 @@
 // test_catching_mpc_segment_core_approach.cpp.
 //   pair        APairIsPublishedTogetherSegmentFirst, AWithheldSegmentWithholdsThePlan,
 //               ANewerSnapshotOfTheSameTrackStillPublishes, RightAfterAPairTheSearchWaits
-//   replans     OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport,
+//   replans     WhileFollowingTheSearchGoesOnAndEverySegmentStartsOnTheReport,
 //               AnotherTracksBallIsNotTheFollowedPlansTarget,
 //               WithoutAReportNothingIsReplanned
+//   replacement ApproachCycleReplacement.* — the search's other plan goes out
+//               as a pair beside the followed plan's segments; every following
+//               wake searches first, then pairs or replans (E1-F17 #743; on
+//               the settable clock)
 //   lifetime    ATrialResetWithdrawsTheSegment,
 //               WithoutASegmentBoxThePlanIsPublishedAlone
 //
@@ -27,6 +31,7 @@
 #include "rtc_base/types/types.hpp"
 #include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
+#include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
@@ -41,6 +46,7 @@
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -512,7 +518,7 @@ TEST(ApproachCycle, RightAfterAPairTheSearchWaits) {
 
 // ── Replans ──────────────────────────────────────────────────────────────────
 
-TEST(ApproachCycle, WhileFollowingTheSearchGoesOnUnpublishedAndEverySegmentStartsOnTheReport) {
+TEST(ApproachCycle, WhileFollowingTheSearchGoesOnAndEverySegmentStartsOnTheReport) {
   auto r = std::make_unique<Rig>();
   r->StartTrajectory();
   const PlannerCycleRecord first = r->Wake();
@@ -524,7 +530,7 @@ TEST(ApproachCycle, WhileFollowingTheSearchGoesOnUnpublishedAndEverySegmentStart
   int stop = 0;
   int searched = 0;
   int searched_after_freeze = 0;
-  int held_replacements = 0;
+  int replacements = 0;
   std::int32_t last_k = first.segment.k;
   std::uint64_t seq = 1;
   // Wake every ~15 ms through APPROACH, COMMITTED and DECEL to the end of the
@@ -542,19 +548,27 @@ TEST(ApproachCycle, WhileFollowingTheSearchGoesOnUnpublishedAndEverySegmentStart
     // The search stops where the plan freezes (t_stop_plan = T_freeze here):
     // a wake inside the freeze window is the replan alone.
     searched_after_freeze += ran && t_c - wake_ns <= r->rt.t_freeze_ns ? 1 : 0;
-    held_replacements += rec.outcome == CycleOutcome::kHeldReplaceUnsupported ? 1 : 0;
-    // Whatever the search found, the RT's plan is the one it took: nothing is
-    // stored over it, and its id never moves.
-    EXPECT_NE(rec.outcome, CycleOutcome::kPublished) << "a second plan while following";
-    EXPECT_EQ(r->boxes.plan.Load().t_c_ns, t_c);
-    EXPECT_EQ(r->boxes.plan.Load().plan_id, first.plan_id);
+    // A plan goes out while one is followed only as a REPLACEMENT: with its
+    // first segment, which the wake solved instead of replanning. (This RT
+    // stand-in takes none of them: it stays on the plan it took.)
+    const bool pair = rec.segment.outcome == SegmentOutcome::kPublished &&
+                      rec.segment.kind == SegmentKind::kFirst;
+    EXPECT_EQ(rec.outcome == CycleOutcome::kPublished, pair) << "a plan without its first segment";
+    replacements += pair ? 1 : 0;
     if (rec.segment.outcome != SegmentOutcome::kPublished) {
       continue;
     }
-    ++replans;
-    // Every published replan started on a segment the RT reported (path (i)).
+    // Every published segment — a replan, or a replacement's first — started
+    // on a segment the RT reported (path (i)).
     EXPECT_TRUE(rec.segment.x0_from_segment);
     EXPECT_NE(rec.segment.source_seq, 0U);
+    if (pair) {
+      // Another plan's grid: a new problem, and not a point of the followed
+      // plan's grid.
+      EXPECT_TRUE(rec.segment.cold_start);
+      continue;
+    }
+    ++replans;
     // A new grid point or core is a new problem; the same point is not.
     if (rec.segment.kind == SegmentKind::kSame) {
       ++same;
@@ -575,8 +589,8 @@ TEST(ApproachCycle, WhileFollowingTheSearchGoesOnUnpublishedAndEverySegmentStart
   EXPECT_GT(stop, 0);
   std::printf(
       "[ record ] replans %d: same %d, advance %d, stop %d; searches while following "
-      "%d (%d would have replaced the plan)\n",
-      replans, same, advance, stop, searched, held_replacements);
+      "%d (%d replaced the plan)\n",
+      replans, same, advance, stop, searched, replacements);
 }
 
 // The whole catch's time and prediction, in one place: the stop-line test
@@ -674,10 +688,14 @@ TEST(ApproachCycle, TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch) {
       }
       ASSERT_EQ(line_of.count(rec.segment.source_seq), 1U) << rec.segment.source_seq;
       if (!stop) {
-        // A catch-core segment: the line of THIS wake's ball at t_c — the
-        // trajectory in the box, evaluated here from what the rig stored.
+        // A catch-core segment: the line of THIS wake's ball at the catch
+        // instant of the plan the segment belongs to — the followed plan's for
+        // a replan, the new plan's for a replacement pair's first segment —
+        // the trajectory in the box, evaluated here from what the rig stored.
         const auto& in = mpc_segment_planner.ApproachCoreInput(-rec.segment.k);
-        const double dt = static_cast<double>(t_c - (r->traj_first_ns + 14 * 50 * kMs)) / 1e9;
+        const std::int64_t segment_t_c = r->boxes.segment.Load().t_c_ns;
+        const double dt =
+            static_cast<double>(segment_t_c - (r->traj_first_ns + 14 * 50 * kMs)) / 1e9;
         EXPECT_LT((in.p_c - (r->p_c + r->v_ball * dt)).norm(), 1e-9);
         EXPECT_LT((in.d_hat - r->v_ball.normalized()).norm(), 1e-9);
         newest_catch = Line{in.p_c, in.d_hat};
@@ -776,14 +794,16 @@ enum class RigHistory : std::uint8_t {
 };
 
 /// RunCatch's digests on the rig below: [RT takes every segment, RT keeps the
-/// first] × RigHistory. Retaken when the search began to run while a plan is
-/// followed (E1-F16 #742; the rig stops it at T_freeze): every wake of that
-/// stretch now records a search where it recorded none. That is the ONLY thing
-/// that moved them — with the search stopped at the first followed plan
-/// (`t_stop_plan` left unset) the same code gives the six numbers they
-/// replace, 0x74b66752c2b6a927, 0x47a6055faba0f13a, 0xf994bd4e88fc8518 /
+/// first] × RigHistory. Part of what they pin is the wake while a plan is
+/// followed (the rig runs its search until T_freeze): the search first, timed
+/// from the wake, then a replacement pair when the search chose another plan —
+/// RtStandIn takes none, so the catch publishes one after another — or the
+/// replan of the followed plan behind the search. That wake is the ONLY thing
+/// in the trace that a catch without it does not have: with the search stopped
+/// at the first followed plan (`t_stop_plan` left unset) the same code gives
+/// 0x74b66752c2b6a927, 0x47a6055faba0f13a, 0xf994bd4e88fc8518 /
 /// 0xb7132fe2c7363186, 0xb945046f48c1f383, 0x231a91137a556e3c, bit for bit
-/// (measured). Those were taken on the code BEFORE the search and the MPC
+/// (measured). Those six were taken on the code BEFORE the search and the MPC
 /// segment planner moved behind CatchSearch / SegmentPlanner (E1-F12 #738),
 /// when the cycle held both by value and a re-configure re-used the same two
 /// objects, so the chain back to that code is unbroken.
@@ -810,8 +830,8 @@ enum class RigHistory : std::uint8_t {
 ///    take the same commit's numbers on the recording host before concluding
 ///    anything, and replace them the same way if the environment is what moved.
 constexpr std::array<std::array<std::uint64_t, 3>, 2> kWholeCatchDigest{{
-    {{0x98d32eb27cf530f5ULL, 0x65c28c576069d158ULL, 0x849daff1596f26acULL}},
-    {{0x44e5a74f2f581dfcULL, 0xa3bab7d8edad0ec5ULL, 0x7f81e44215a9e1ecULL}},
+    {{0x91a20aca9ce5b403ULL, 0x82f9e0e20f1536a1ULL, 0x49cbf1109994a450ULL}},
+    {{0xe8ad81ae9e7b5646ULL, 0xd8064fbfa6a34ba8ULL, 0x550ccd6a187300c8ULL}},
 }};
 
 TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
@@ -845,8 +865,10 @@ TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
         r->Reconfigure();
       }
       const CatchTrace t = RunCatch(*r, time, rt_takes_replans);
-      // The trace went through every kind of wake the cycle has.
-      EXPECT_EQ(t.plans, 1);
+      // The trace went through every kind of wake the cycle has. (RtStandIn
+      // takes no replacement pair, so the cycle publishes another whenever the
+      // search replaces the plan.)
+      EXPECT_GE(t.plans, 1);
       EXPECT_GT(t.searches, 1) << "the search stopped as soon as the RT followed a plan";
       EXPECT_GT(t.monitor_wakes, 0);
       EXPECT_GT(t.decel_wakes, 0);
@@ -912,6 +934,327 @@ TEST(ApproachCycle, WithoutAReportNothingIsReplanned) {
     EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kNotFollowed) << Why(rec);
   }
   EXPECT_EQ(r->cycle.LastSegmentSeq(), seq);
+}
+
+// ── A followed plan is replaced (E1-F17 #743) ────────────────────────────────
+//
+// The real search and the real segment planner behind the cycle, on a pinned
+// clock (FakeTime): values are asserted, not budgets. In this rig the search's
+// lead window is 0.6 – 0.8 s, so the plan the RT follows leaves it a tenth of a
+// second after the first pair and the search chooses a later sample — another
+// plan. RtStandIn does not model a replacement (it follows the first plan and
+// ignores a segment of any other): to the cycle it is an RT that dropped every
+// pair, and the two reports it never gives are built here by hand.
+
+constexpr std::int64_t kPinnedStart = 1'727'000'000'000'000'000LL;
+
+// Whether a wake published a plan with its first segment.
+[[nodiscard]] bool PublishedPair(const PlannerCycleRecord& rec) {
+  return rec.outcome == CycleOutcome::kPublished && rec.plan_valid &&
+         rec.segment.outcome == SegmentOutcome::kPublished &&
+         rec.segment.kind == SegmentKind::kFirst;
+}
+
+// 15 ms later, with a newer snapshot of the same prediction: the next wake.
+PlannerCycleRecord NextWake(Rig& r, FakeTime& time, std::uint64_t& seq) {
+  time.Advance(15 * kMs);
+  r.StoreTrajectory(++seq);
+  return r.Wake();
+}
+
+// What the cycle has stored so far.
+struct StoreCounts {
+  std::uint64_t plans{0};
+  std::uint64_t segments{0};
+
+  explicit StoreCounts(const Rig& r)
+      : plans(r.boxes.plan.sequence()), segments(r.boxes.segment.sequence()) {}
+
+  friend bool operator==(const StoreCounts&, const StoreCounts&) = default;
+};
+
+TEST(ApproachCycleReplacement, TheSearchsOtherPlanGoesOutAsAPairBesideTheFollowedPlansSegments) {
+  FakeTime time(kPinnedStart);
+  auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/true, /*w_perp=*/0.0,
+                                 /*fake_clock=*/true);
+  const rtc::catching::MpcSegmentPlanner& planner = *r->mpc_segment_planner;
+  r->StartTrajectory();
+  const PlannerCycleRecord first = r->Wake();
+  ASSERT_TRUE(PublishedPair(first)) << Why(first);
+  const PlanSnapshot plan1 = r->boxes.plan.Load();
+
+  // Wake until the search replaces the plan the RT follows.
+  OrderProbe probe;
+  probe.boxes = &r->boxes;
+  probe.expected_plan_id = first.plan_id + 1;
+  r->cycle.SetPairStoreHookForTesting(&ProbeOrder, &probe);
+  std::uint64_t seq = 1;
+  PlannerCycleRecord rec{};
+  int wakes = 0;
+  do {
+    rec = NextWake(*r, time, seq);
+    ++wakes;
+  } while (wakes < 20 && !PublishedPair(rec));
+  r->cycle.SetPairStoreHookForTesting(nullptr, nullptr);
+  ASSERT_TRUE(PublishedPair(rec)) << "no replacement in " << wakes << " wakes: " << Why(rec);
+  const std::int64_t now = Now();
+  const PlannerRtState report = r->boxes.rt.Load();  // what the wake started from
+  ASSERT_TRUE(report.plan_active);
+  ASSERT_EQ(report.plan_id, plan1.plan_id);
+  ASSERT_EQ(static_cast<Mode>(report.mode), Mode::kApproach);
+
+  // The search ran first and its verdict was another plan.
+  EXPECT_GT(rec.search.n_ik, 0);
+  EXPECT_EQ(rec.search.decision, rtc::catching::SwitchDecision::kReplaced);
+  EXPECT_TRUE(rec.search_valid);
+  EXPECT_EQ(rec.replacement.outcome, SegmentOutcome::kOff);
+  // A pair: a new plan id, one stamp, the segment stored first.
+  const PlanSnapshot plan2 = r->boxes.plan.Load();
+  const SegmentSnapshot seg2 = r->boxes.segment.Load();
+  ASSERT_TRUE(plan2.valid);
+  ASSERT_TRUE(seg2.valid);
+  EXPECT_EQ(rec.plan_id, plan1.plan_id + 1);
+  EXPECT_EQ(plan2.plan_id, rec.plan_id);
+  EXPECT_NE(plan2.t_c_ns, plan1.t_c_ns);
+  EXPECT_EQ(seg2.plan_id, plan2.plan_id);
+  EXPECT_EQ(seg2.t_c_ns, plan2.t_c_ns);
+  EXPECT_EQ(seg2.segment_seq, rec.segment.segment_seq);
+  EXPECT_EQ(seg2.publish_ns, plan2.publish_ns);
+  EXPECT_EQ(seg2.publish_ns, rec.publish_ns);
+  EXPECT_EQ(rec.publish_ns, now);
+  EXPECT_EQ(probe.calls, 1);
+  EXPECT_TRUE(probe.segment_already_there);
+  EXPECT_TRUE(probe.plan_not_yet_there);
+  // On the NEW plan's grid, before the followed plan freezes, and readable.
+  EXPECT_GT(seg2.n_pre, 0);
+  EXPECT_EQ(seg2.t0_ns, plan2.t_c_ns - seg2.n_pre * seg2.dt_pre_ns);
+  EXPECT_LT(seg2.t0_ns, plan1.t_c_ns - r->rt.t_freeze_ns);
+  EXPECT_GT(plan2.t_c_ns - rec.publish_ns, r->rt.t_freeze_ns);
+  EXPECT_TRUE(planner.StartsInTime(rec.publish_ns, seg2.t0_ns));
+  EXPECT_TRUE(rtc::catching::ValidateSegmentNodes(seg2));
+  // Its first segment starts on the segment the RT reported for node 0 — the
+  // arm is moving along the followed plan — and says which.
+  EXPECT_TRUE(rec.segment.x0_from_segment);
+  ASSERT_NE(rec.segment.source_seq, 0U);
+  EXPECT_EQ(rec.segment.source_seq, planner.SourceSeq(report, seg2.t0_ns));
+  auto reported = std::make_unique<rtc::catching::ReportedSegments>();
+  planner.Reported(report, *reported);
+  const SegmentSnapshot* const source = rtc::catching::SourceSegmentAt(*reported, seg2.t0_ns);
+  ASSERT_NE(source, nullptr);
+  EXPECT_EQ(source->segment_seq, rec.segment.source_seq);
+  EXPECT_EQ(source->plan_id, plan1.plan_id);
+  std::array<double, rtc::catching::kMaxSegmentNv> q{};
+  std::array<double, rtc::catching::kMaxSegmentNv> qd{};
+  std::array<double, rtc::catching::kMaxSegmentNv> qdd{};
+  ASSERT_TRUE(rtc::catching::NodeTrajectoryFollower::SampleJoints(*source, seg2.t0_ns, q, qd, qdd));
+  if (!rec.segment.x0_clamped) {
+    for (int j = 0; j < r->nv; ++j) {
+      const auto u = static_cast<std::size_t>(j);
+      EXPECT_NEAR(seg2.q[u], q[u], 1e-9) << j;
+      EXPECT_NEAR(seg2.qd[u], qd[u], 1e-6) << j;
+    }
+  }
+
+  // The followed plan's segments are still the planner's: the RT's report of
+  // the old plan finds its source and its track as before the pair.
+  std::uint64_t track = 0;
+  EXPECT_TRUE(planner.FollowedTrack(report, track));
+  EXPECT_EQ(track, kTrack);
+  EXPECT_EQ(planner.SourceSeq(report, seg2.t0_ns), rec.segment.source_seq);
+  // And the report of an RT that HOLDS the pair names both plans' segments.
+  PlannerRtState held = report;
+  held.plan_pending = true;
+  held.plan_pending_id = plan2.plan_id;
+  held.plan_pending_t_c_ns = plan2.t_c_ns;
+  held.segment_pending = true;
+  held.segment_pending_seq = seg2.segment_seq;
+  EXPECT_EQ(planner.SourceSeq(held, seg2.t0_ns), seg2.segment_seq);
+  planner.Reported(held, *reported);
+  ASSERT_TRUE(reported->has_pending);
+  EXPECT_EQ(reported->pending.plan_id, plan2.plan_id);
+  if (report.segment_active) {
+    ASSERT_TRUE(reported->has_following);
+    EXPECT_EQ(reported->following.plan_id, plan1.plan_id);
+  }
+
+  // Right after the pair nothing is stored: the RT's report (still the old
+  // plan, nothing held) cannot show yet what it did with it.
+  {
+    const StoreCounts before(*r);
+    const PlannerCycleRecord quiet = r->Wake();  // the same instant: the report is the stamp's
+    EXPECT_EQ(quiet.outcome, CycleOutcome::kIdle) << Why(quiet);
+    EXPECT_EQ(quiet.search.n_ik, 0);
+    EXPECT_EQ(quiet.segment.outcome, SegmentOutcome::kOff);
+    EXPECT_EQ(StoreCounts(*r), before);
+  }
+  // The RT holds the pair until its node 0: a wake runs neither the search nor
+  // a replan.
+  {
+    time.Advance(15 * kMs);
+    r->StoreTrajectory(++seq);
+    held.rt_state_ns = Now();
+    held.rt_iteration = static_cast<std::uint64_t>(Now() / kH);
+    r->boxes.rt.Store(held);
+    const StoreCounts before(*r);
+    const PlannerCycleRecord quiet = r->cycle.Run(rtc::catching::NowReal{Now()});
+    EXPECT_EQ(quiet.outcome, CycleOutcome::kHeld) << Why(quiet);
+    EXPECT_EQ(quiet.search.n_ik, 0);
+    EXPECT_FALSE(quiet.search_valid);
+    EXPECT_EQ(quiet.segment.outcome, SegmentOutcome::kOff);
+    EXPECT_EQ(StoreCounts(*r), before);
+  }
+  // The RT dropped the pair: its report is the old plan again with nothing
+  // held (what RtStandIn reports), and the search may replace it again — under
+  // a new id.
+  wakes = 0;
+  do {
+    rec = NextWake(*r, time, seq);
+    ++wakes;
+  } while (wakes < 10 && !PublishedPair(rec));
+  ASSERT_TRUE(PublishedPair(rec)) << "no second replacement in " << wakes << " wakes: " << Why(rec);
+  EXPECT_EQ(rec.plan_id, plan2.plan_id + 1);
+  EXPECT_EQ(r->boxes.plan.Load().plan_id, plan2.plan_id + 1);
+  EXPECT_EQ(r->boxes.segment.Load().plan_id, plan2.plan_id + 1);
+  EXPECT_TRUE(rec.segment.x0_from_segment);
+}
+
+// What the cycle's two hooks saw of one wake: the search's end, and each
+// publishable segment solve's end.
+struct WakeOrder {
+  int searches{0};
+  int solves_before_the_search{0};
+  int solves_after_the_search{0};
+};
+
+// What the following wakes of one APPROACH came to.
+struct FollowingWakes {
+  int searched{0};
+  int pairs{0};
+  int dropped{0};  // at the pair's re-check
+  int replans_behind_a_search{0};
+  int held_by_the_freeze{0};  // of those: a replacement too late to start
+  int withheld{0};            // of those: a replacement whose first solve was withheld
+};
+
+// Run the rig's catch from its first pair to the followed plan's freeze, a
+// wake every 15 ms, and hold EVERY wake that searched to the rule: it ends in
+// exactly one of a pair (published, or dropped at its re-check) or the replan
+// of the followed plan, and whichever solve it ran came AFTER the search. A
+// replacement is held without a solve exactly when no first segment could
+// start before the followed plan freezes.
+FollowingWakes RunFollowingApproach(Rig& r, FakeTime& time) {
+  FollowingWakes n;
+  const rtc::catching::MpcSegmentPlanner& planner = *r.mpc_segment_planner;
+  r.StartTrajectory();
+  const PlannerCycleRecord first = r.Wake();
+  EXPECT_TRUE(PublishedPair(first)) << Why(first);
+  if (!PublishedPair(first)) {
+    return n;
+  }
+  const std::int64_t t_c = r.boxes.plan.Load().t_c_ns;
+  const std::int64_t followed_freeze = t_c - r.rt.t_freeze_ns;
+  WakeOrder order;
+  r.cycle.SetPostSearchHookForTesting(
+      [](void* user) noexcept { ++static_cast<WakeOrder*>(user)->searches; }, &order);
+  r.cycle.SetPostSegmentHookForTesting(
+      [](void* user) noexcept {
+        auto* o = static_cast<WakeOrder*>(user);
+        ++(o->searches > 0 ? o->solves_after_the_search : o->solves_before_the_search);
+      },
+      &order);
+  std::uint64_t seq = 1;
+  std::uint32_t last_plan_id = first.plan_id;
+  while (Now() < followed_freeze) {
+    order = WakeOrder{};
+    const PlannerCycleRecord rec = NextWake(r, time, seq);
+    const std::int64_t now = Now();
+    if (static_cast<Mode>(rec.mode) != Mode::kApproach || order.searches == 0) {
+      continue;
+    }
+    ++n.searched;
+    SCOPED_TRACE("wake " + std::to_string((now - kPinnedStart) / kMs) + " ms: " + Why(rec));
+    EXPECT_EQ(order.searches, 1);
+    EXPECT_EQ(order.solves_before_the_search, 0) << "a segment was solved before the search";
+    EXPECT_LE(order.solves_after_the_search, 1);
+    const bool replace = rec.search_valid && rec.search.publish &&
+                         rec.search.decision == rtc::catching::SwitchDecision::kReplaced;
+    if (rec.outcome == CycleOutcome::kPublished) {
+      ++n.pairs;
+      EXPECT_TRUE(replace);
+      EXPECT_TRUE(PublishedPair(rec));
+      EXPECT_EQ(rec.plan_id, last_plan_id + 1);
+      last_plan_id = rec.plan_id;
+      EXPECT_EQ(rec.replacement.outcome, SegmentOutcome::kOff);
+      EXPECT_EQ(r.boxes.segment.Load().plan_id, rec.plan_id);
+      continue;
+    }
+    if (rec.outcome == CycleOutcome::kSuperseded) {
+      ++n.dropped;
+      EXPECT_TRUE(replace);
+      EXPECT_EQ(rec.segment.outcome, SegmentOutcome::kSuperseded);
+      EXPECT_EQ(rec.segment.kind, SegmentKind::kFirst);
+      continue;
+    }
+    // Nothing of another plan went out: the followed plan's segment was
+    // replanned (the replan may itself be withheld — it ran).
+    EXPECT_EQ(rec.outcome, CycleOutcome::kHeld);
+    EXPECT_EQ(r.boxes.plan.Load().plan_id, last_plan_id);
+    EXPECT_NE(rec.segment.kind, SegmentKind::kFirst);
+    EXPECT_NE(rec.segment.outcome, SegmentOutcome::kOff);
+    ++n.replans_behind_a_search;
+    if (!replace) {
+      EXPECT_EQ(rec.replacement.outcome, SegmentOutcome::kOff);
+      continue;
+    }
+    // The search chose another plan and no pair came of it: the first solve
+    // withheld it (its account is kept), or — and only then is there no
+    // account — no first segment could start before the followed plan freezes.
+    const bool too_late = !(planner.EarliestFirstStartNs(now) < followed_freeze);
+    EXPECT_EQ(rec.replacement.outcome == SegmentOutcome::kOff, too_late);
+    n.held_by_the_freeze += too_late ? 1 : 0;
+    n.withheld += too_late ? 0 : 1;
+    if (!too_late) {
+      EXPECT_EQ(rec.replacement.kind, SegmentKind::kFirst);
+    }
+  }
+  r.cycle.SetPostSearchHookForTesting(nullptr, nullptr);
+  r.cycle.SetPostSegmentHookForTesting(nullptr, nullptr);
+  std::printf(
+      "[ record ] following wakes that searched %d: %d pairs, %d dropped at the re-check, %d "
+      "replans behind the search (%d of them a replacement too late to start, %d a withheld "
+      "first solve)\n",
+      n.searched, n.pairs, n.dropped, n.replans_behind_a_search, n.held_by_the_freeze, n.withheld);
+  return n;
+}
+
+TEST(ApproachCycleReplacement, AFollowingWakeSearchesFirstThenPairsOrReplans) {
+  FakeTime time(kPinnedStart);
+  auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/true, /*w_perp=*/0.0,
+                                 /*fake_clock=*/true);
+  const FollowingWakes n = RunFollowingApproach(*r, time);
+  EXPECT_GT(n.searched, 0);
+  EXPECT_GT(n.pairs, 0) << "the catch never replaced its plan: the pair path was not run";
+  EXPECT_GT(n.replans_behind_a_search, n.held_by_the_freeze + n.withheld)
+      << "no wake whose search kept the plan: the plain replan behind a search was not run";
+}
+
+TEST(ApproachCycleReplacement, AReplacementThatCouldNotStartBeforeTheFreezeIsNotSolvedFor) {
+  // The same catch with a first-solve budget of 0.3 s: a first segment starts
+  // 0.354 s after a wake at the earliest, so from 0.146 s into the catch no
+  // replacement could start before the followed plan freezes (0.5 s) — while
+  // the search goes on replacing the plan for a while longer. Those wakes run
+  // no first solve and replan the followed plan's segment.
+  FakeTime time(kPinnedStart);
+  auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/true, /*w_perp=*/0.0,
+                                 /*fake_clock=*/true);
+  r->params.mpc_segment.budget_first_s = 0.3;
+  r->Reconfigure();
+  ASSERT_EQ(r->mpc_segment_planner->EarliestFirstStartNs(kPinnedStart),
+            kPinnedStart + kTArm + 300 * kMs + 2 * kH);
+  const FollowingWakes n = RunFollowingApproach(*r, time);
+  EXPECT_GT(n.searched, 0);
+  EXPECT_GT(n.held_by_the_freeze, 0)
+      << "no replacement fell between the first-solve lead and the freeze";
 }
 
 // ── Lifetime ─────────────────────────────────────────────────────────────────

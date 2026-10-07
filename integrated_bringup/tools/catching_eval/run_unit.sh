@@ -17,6 +17,8 @@
 # (ALLOW_DIRTY=1 overrides), unless the CLIK form mirror says `dynamic`
 # (EXPECT_CLIK), the mode mirror says EXPECT_MODE, and every `key=value` of
 # EXPECT_KV (';'-separated, mirror names) reads back from the controller.
+# E1-F17 addition: the docking planner's two budgets are in the mirror, so a plan line can
+# check an overlay that moves one (EXPECT_KV).
 # E1-F16 addition: the search-mode mirror says EXPECT_SEARCH (default grid) (search_mirror), and
 # so does the startup `search mode:` line (mode_log); EXPECT_MODE may be closed_form, mpc or
 # mpc_docking.
@@ -161,6 +163,7 @@ for P in joint_cmd.lag.T_arm joint_cmd.lag.lead_enable planner.freeze.T_freeze \
          joint_cmd.accel_constraint planner.segment.mode planner.search.mode \
          planner.segment.mpc.switch_margin \
          planner.segment.mpc_docking.approach.n_pre_max planner.segment.mpc_docking.stop.n_nodes \
+         planner.segment.mpc_docking.budget.first_s planner.segment.mpc_docking.budget.replan_s \
          planner.segment.mpc.eta_v planner.search.grid.reference.omega \
          planner.search.grid.reference.a_max planner.search.grid.reference.v_max; do
   echo "$P: $(ros2 param get $CN $P 2>&1)" >> "$OUT/mirror.txt"
