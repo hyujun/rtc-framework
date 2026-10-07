@@ -455,6 +455,92 @@ TEST(CatchingParams, AValueOfAnUnselectedFunctionIsNotJudged) {
   }
 }
 
+// The parser follows the same rule as the validator: a key of a function that
+// does not run cannot fail the parse, so a value that is not even a number — a
+// typo in a fragment left over from another selection — leaves that function's
+// block at its defaults instead of refusing the configure. The same value
+// under the selection that runs it is refused (the control). A block that DOES
+// read is still taken where its function does not run: its values stay
+// visible to whoever compares two functions' keys.
+TEST(CatchingParams, AMalformedKeyOfAnUnselectedFunctionDoesNotFailTheParse) {
+  struct Case {
+    const char* what;
+    std::vector<std::string> path;  // under the catching root
+    const char* search;             // the selection under which the key is read ...
+    const char* segment;
+    const char* other_search;  // ... and one under which it is not
+    const char* other_segment;
+  };
+
+  const Case cases[] = {
+      {"reference.omega", {"reference", "omega"}, "grid", "closed_form", "grid", "mpc"},
+      {"supervisor.decel.a_dec",
+       {"supervisor", "decel", "a_dec"},
+       "grid",
+       "closed_form",
+       "grid",
+       "mpc_docking"},
+      {"planner.search.grid.gamma.eta_v",
+       {"planner", "search", "grid", "gamma", "eta_v"},
+       "grid",
+       "mpc",
+       "nlp",
+       "mpc"},
+      {"planner.search.grid.reference.a_max",
+       {"planner", "search", "grid", "reference", "a_max"},
+       "grid",
+       "mpc",
+       "nlp",
+       "mpc_docking"},
+      {"planner.segment.mpc.eta_v",
+       {"planner", "segment", "mpc", "eta_v"},
+       "grid",
+       "mpc",
+       "grid",
+       "mpc_docking"},
+      {"planner.segment.mpc.switch_margin",
+       {"planner", "segment", "mpc", "switch_margin"},
+       "grid",
+       "mpc",
+       "grid",
+       "closed_form"},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.what);
+    YAML::Node root = ValidRoot();
+    YAML::Node parent = root;
+    for (std::size_t i = 0; i + 1 < c.path.size(); ++i) {
+      parent.reset(parent[c.path[i]]);
+    }
+    parent[c.path.back()] = "not-a-number";
+    root["planner"]["search"]["mode"] = c.search;
+    root["planner"]["segment"]["mode"] = c.segment;
+    EXPECT_THROW(static_cast<void>(ParseCatchingParams(root)), std::exception);
+    root["planner"]["search"]["mode"] = c.other_search;
+    root["planner"]["segment"]["mode"] = c.other_segment;
+    EXPECT_NO_THROW(static_cast<void>(ParseCatchingParams(root)));
+  }
+  // A zero switch margin is a range the PARSER refuses under mpc. Under
+  // another planner the mpc block is left at its defaults — all of it, the
+  // well-formed eta_v beside the bad margin too: a block is one function's.
+  YAML::Node root = ValidRoot();
+  root["planner"]["segment"]["mpc"]["switch_margin"] = 0.0;
+  root["planner"]["segment"]["mpc"]["eta_v"] = 0.7;
+  root["planner"]["segment"]["mode"] = "mpc";
+  EXPECT_THROW(static_cast<void>(ParseCatchingParams(root)), std::exception);
+  root["planner"]["segment"]["mode"] = "mpc_docking";
+  const rtc::catching::CatchingParams defaults;
+  const auto parsed = ParseCatchingParams(root);
+  EXPECT_DOUBLE_EQ(parsed.planner_segment_mpc_switch_margin,
+                   defaults.planner_segment_mpc_switch_margin);
+  EXPECT_GT(parsed.planner_segment_mpc_switch_margin, 0.0);
+  EXPECT_EQ(parsed.planner_segment_mpc_eta_v.tbd, defaults.planner_segment_mpc_eta_v.tbd);
+  // ... and a well-formed block of a function that does not run is still read.
+  root["planner"]["segment"]["mpc"]["switch_margin"] = 1.5;
+  EXPECT_DOUBLE_EQ(ParseCatchingParams(root).planner_segment_mpc_eta_v.value, 0.7);
+  EXPECT_DOUBLE_EQ(ParseCatchingParams(root).planner_segment_mpc_switch_margin, 1.5);
+}
+
 TEST(CatchingParams, TheGridSearchsKeysAreRequiredOnlyUnderGrid) {
   YAML::Node root = ValidRoot();
   root["planner"]["segment"]["mode"] = "mpc";
@@ -530,13 +616,17 @@ TEST(CatchingParams, ACloseLeadIsHeldToItsOwnRange) {
 }
 
 TEST(CatchingParams, SegmentSwitchMarginMustBePositive) {
+  // Under the planner whose key it is (E1-F16: a key of a function that does
+  // not run cannot fail the parse — AMalformedKeyOfAnUnselectedFunction… below).
   for (const char* bad : {"0.0", "-0.5", ".nan", ".inf"}) {
     YAML::Node root = ValidRoot();
+    root["planner"]["segment"]["mode"] = "mpc";
     root["planner"]["segment"]["mpc"]["switch_margin"] = YAML::Load(bad);
     ExpectRejectMentioning(root, "planner.segment.mpc.switch_margin");
   }
   // The message quotes the value as written: a tiny negative is not "0.000000".
   YAML::Node root = ValidRoot();
+  root["planner"]["segment"]["mode"] = "mpc";
   root["planner"]["segment"]["mpc"]["switch_margin"] = YAML::Load("-1e-7");
   ExpectRejectMentioning(root, "-1e-7");
 }

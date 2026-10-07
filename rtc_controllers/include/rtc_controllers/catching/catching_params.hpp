@@ -25,7 +25,11 @@
 // `reference.*` and `supervisor.decel.a_dec` are the closed_form law's and are
 // judged only under `planner.segment.mode: closed_form`; the
 // `planner.search.grid.*` keys only under `planner.search.mode: grid`. A key of
-// a function the configuration did not select is neither required nor judged.
+// a function the configuration did not select is neither required nor judged —
+// by the parser too: such a function's keys are read as one block, taken when
+// all of it reads (the values stay visible to whoever compares two functions)
+// and left at their defaults when any of it does not, where under the
+// selection that runs the function the same key refuses the parse.
 // `planner.search.grid.ik.*`, `planner.search.grid.hand.d_eff/r_cap`, catch frame (D-17), and the
 // D-16 joint-accel box are out of scope: none of them appear in G0-C or the §6 cross-constraint
 // table, and their owning steps (S2.3a, S2.5) have not landed. See the .cpp for the YAML keys this

@@ -328,38 +328,11 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
   }
   CatchingParams out;
 
-  const YAML::Node reference = ReadSection(node, "reference");
-  out.reference_omega = ReadTbdDouble(reference, "omega", out.reference_omega);
-  out.reference_zeta = ReadTbdDouble(reference, "zeta", out.reference_zeta);
-  out.reference_v_max = ReadTbdDouble(reference, "v_max", out.reference_v_max);
-  out.reference_a_max = ReadTbdDouble(reference, "a_max", out.reference_a_max);
-  out.reference_provisional = ReadOptional(reference, "provisional", true);
-
+  // The two selectors first: a function that does not run has no say in
+  // whether this profile parses (E1-F16).
   const YAML::Node planner = ReadSection(node, "planner");
   const YAML::Node search = ReadSection(planner, "search");
-  const YAML::Node grid = ReadSection(search, "grid");
-  const YAML::Node gamma = ReadSection(grid, "gamma");
-  out.planner_search_grid_gamma_eta_v =
-      ReadTbdDouble(gamma, "eta_v", out.planner_search_grid_gamma_eta_v);
-  const YAML::Node grid_reference = ReadSection(grid, "reference");
-  out.planner_search_grid_reference_omega =
-      ReadTbdDouble(grid_reference, "omega", out.planner_search_grid_reference_omega);
-  out.planner_search_grid_reference_zeta =
-      ReadTbdDouble(grid_reference, "zeta", out.planner_search_grid_reference_zeta);
-  out.planner_search_grid_reference_v_max =
-      ReadTbdDouble(grid_reference, "v_max", out.planner_search_grid_reference_v_max);
-  out.planner_search_grid_reference_a_max =
-      ReadTbdDouble(grid_reference, "a_max", out.planner_search_grid_reference_a_max);
-  const YAML::Node grid_stop = ReadSection(grid, "stop");
-  out.planner_search_grid_stop_a_dec =
-      ReadTbdDouble(grid_stop, "a_dec", out.planner_search_grid_stop_a_dec);
-
-  const YAML::Node catchability = ReadSection(grid, "catchability");
-  const YAML::Node manip_min = ReadSection(catchability, "manipulability_min");
-  out.planner_catchability_manip_min_arm5row =
-      ReadTbdDouble(manip_min, "arm_5row", out.planner_catchability_manip_min_arm5row);
-  out.planner_catchability_manip_min_provisional = ReadOptional(manip_min, "provisional", true);
-
+  const YAML::Node segment = ReadSection(planner, "segment");
   {
     const std::string mode = ReadOptional<std::string>(search, "mode", "grid");
     if (mode == "grid") {
@@ -370,9 +343,7 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
       Reject("'planner.search.mode' must be grid or nlp, got '", mode, "'");
     }
   }
-
   {
-    const YAML::Node segment = ReadSection(planner, "segment");
     const std::string mode = ReadOptional<std::string>(segment, "mode", "closed_form");
     if (mode == "closed_form") {
       out.planner_segment_mode = CatchingSegmentMode::kClosedForm;
@@ -383,20 +354,83 @@ CatchingParams ParseCatchingParams(const YAML::Node& node) {
     } else {
       Reject("'planner.segment.mode' must be closed_form, mpc or mpc_docking, got '", mode, "'");
     }
+  }
+  // The keys of ONE function, read as a block. Selected: a key that does not
+  // read is refused, as every key is. Not selected: the block is taken when
+  // all of it reads — its values stay visible to whoever compares functions
+  // (the search's copies against the law's keys) — and left at its defaults
+  // when any of it does not. A fragment that is wrong, or left over from
+  // another selection, cannot fail the configure of a controller that never
+  // runs it. (The validator applies the same rule to ranges and TBDs.)
+  const auto read_function = [&out](bool selected, const auto& read) {
+    if (selected) {
+      read(out);
+      return;
+    }
+    CatchingParams trial = out;
+    try {
+      read(trial);
+    } catch (const std::invalid_argument&) {
+      return;
+    }
+    out = std::move(trial);
+  };
+  const bool closed_form = out.planner_segment_mode == CatchingSegmentMode::kClosedForm;
+  const bool grid_search = out.planner_search_mode == CatchingSearchMode::kGrid;
+  const bool mpc_planner = out.planner_segment_mode == CatchingSegmentMode::kMpc;
+
+  // The closed_form law (catching/planner_closed_form.yaml).
+  read_function(closed_form, [&node](CatchingParams& o) {
+    const YAML::Node reference = ReadSection(node, "reference");
+    o.reference_omega = ReadTbdDouble(reference, "omega", o.reference_omega);
+    o.reference_zeta = ReadTbdDouble(reference, "zeta", o.reference_zeta);
+    o.reference_v_max = ReadTbdDouble(reference, "v_max", o.reference_v_max);
+    o.reference_a_max = ReadTbdDouble(reference, "a_max", o.reference_a_max);
+    o.reference_provisional = ReadOptional(reference, "provisional", true);
+    const YAML::Node decel = ReadSection(ReadSection(node, "supervisor"), "decel");
+    o.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", o.supervisor_decel_a_dec);
+  });
+
+  // The grid search (catching/search_grid.yaml).
+  read_function(grid_search, [&search](CatchingParams& o) {
+    const YAML::Node grid = ReadSection(search, "grid");
+    const YAML::Node gamma = ReadSection(grid, "gamma");
+    o.planner_search_grid_gamma_eta_v =
+        ReadTbdDouble(gamma, "eta_v", o.planner_search_grid_gamma_eta_v);
+    const YAML::Node grid_reference = ReadSection(grid, "reference");
+    o.planner_search_grid_reference_omega =
+        ReadTbdDouble(grid_reference, "omega", o.planner_search_grid_reference_omega);
+    o.planner_search_grid_reference_zeta =
+        ReadTbdDouble(grid_reference, "zeta", o.planner_search_grid_reference_zeta);
+    o.planner_search_grid_reference_v_max =
+        ReadTbdDouble(grid_reference, "v_max", o.planner_search_grid_reference_v_max);
+    o.planner_search_grid_reference_a_max =
+        ReadTbdDouble(grid_reference, "a_max", o.planner_search_grid_reference_a_max);
+    const YAML::Node grid_stop = ReadSection(grid, "stop");
+    o.planner_search_grid_stop_a_dec =
+        ReadTbdDouble(grid_stop, "a_dec", o.planner_search_grid_stop_a_dec);
+
+    const YAML::Node catchability = ReadSection(grid, "catchability");
+    const YAML::Node manip_min = ReadSection(catchability, "manipulability_min");
+    o.planner_catchability_manip_min_arm5row =
+        ReadTbdDouble(manip_min, "arm_5row", o.planner_catchability_manip_min_arm5row);
+    o.planner_catchability_manip_min_provisional = ReadOptional(manip_min, "provisional", true);
+  });
+
+  // The mpc segment planner (catching/segment_mpc.yaml).
+  read_function(mpc_planner, [&segment](CatchingParams& o) {
     const YAML::Node mpc = ReadSection(segment, "mpc");
-    out.planner_segment_mpc_switch_margin =
-        ReadOptional(mpc, "switch_margin", out.planner_segment_mpc_switch_margin);
-    if (!(std::isfinite(out.planner_segment_mpc_switch_margin) &&
-          out.planner_segment_mpc_switch_margin > 0.0)) {
+    o.planner_segment_mpc_switch_margin =
+        ReadOptional(mpc, "switch_margin", o.planner_segment_mpc_switch_margin);
+    if (!(std::isfinite(o.planner_segment_mpc_switch_margin) &&
+          o.planner_segment_mpc_switch_margin > 0.0)) {
       Reject("'planner.segment.mpc.switch_margin' must be a positive number, got ",
              params_detail::Spelling(mpc["switch_margin"]));
     }
-    out.planner_segment_mpc_eta_v = ReadTbdDouble(mpc, "eta_v", out.planner_segment_mpc_eta_v);
-  }
+    o.planner_segment_mpc_eta_v = ReadTbdDouble(mpc, "eta_v", o.planner_segment_mpc_eta_v);
+  });
 
   const YAML::Node supervisor = ReadSection(node, "supervisor");
-  const YAML::Node decel = ReadSection(supervisor, "decel");
-  out.supervisor_decel_a_dec = ReadTbdDouble(decel, "a_dec", out.supervisor_decel_a_dec);
 
   const YAML::Node io = ReadSection(node, "io");
   out.io_n_min = ReadPositiveCount(io, "n_min");
