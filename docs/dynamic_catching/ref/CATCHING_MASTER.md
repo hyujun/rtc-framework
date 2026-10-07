@@ -19,7 +19,7 @@
 
 범위 밖: 카메라 처리와 공 상태 추정·예측(vision 노드 소관), PTP 설정 절차(인프라 문서 소관), 그리고 **이미 workspace에 있는 기능 전부**(§1.2).
 
-**planner 가 둘이다 `[확정]`.** `closed_form` 과 `mpc` 는 같은 입력 (추정기의 공 미래 궤적 + 공분산) 을 받아 같은 자리의 출력 (CLIK 입력 — task pose · twist feedforward · 접근축, null space 자세 목표) 을 내는 두 planner 다. 선택은 `planner.segment.mode` 이고 **출하 기본값은 `mpc`** 다. 포구 후보 탐색 ($p_c$ · $t_c$ · 접근축 · 순위), 추정기, supervisor FSM, 손 시퀀서, CLIK, `ABORT_SAFE`, E-STOP 은 공통이다 (§2, §4). 이 문서와 L 문서들은 절마다 **공통 / closed_form 전용 / mpc 전용** 을 밝힌다.
+**planner 가 셋이다 `[확정]`.** `closed_form` · `mpc` · `mpc_docking` 은 같은 입력 (추정기의 공 미래 궤적 + 공분산) 을 받아 같은 자리의 출력 (CLIK 입력 — task pose · twist feedforward · 접근축, null space 자세 목표) 을 내는 planner 다 (`mpc_docking` 은 E1-F16 에서 꽂았고 sim 전용, 아래 "공통 / closed_form 전용 / mpc 전용" 의 `mpc` 칸은 `mpc` 계열 둘이다). 선택은 `planner.segment.mode` (`closed_form` \| `mpc` \| `mpc_docking`) 이고 **출하 기본값은 `mpc`** 다 — 탐색은 `planner.search.mode` (`grid` \| `nlp`, 출하 `grid`) 가 따로 고른다 (조합 다섯, L3 §4.1 · §6). 포구 후보 탐색 ($p_c$ · $t_c$ · 접근축 · 순위), 추정기, supervisor FSM, 손 시퀀서, CLIK, `ABORT_SAFE`, E-STOP 은 공통이다 (§2, §4). 이 문서와 L 문서들은 절마다 **공통 / closed_form 전용 / mpc 전용** 을 밝힌다.
 
 ### 1.1 상세 구현 착수 조건 `[확정]`
 
@@ -138,7 +138,7 @@ flowchart TB
 | APPROACH – CLOSING 기준 | | L4 soft-catch DS 가 매 tick 생성 (γ profile 은 `PlanSnapshot`) | MPC 구간이 계획 (계획기 스레드) → 관절 노드 → RT 가 노드를 보간해 따르고 FK 로 손 pose 를 얻는다. **RT 는 soft-catch DS 를 돌리지 않는다** (DS 는 탐색의 후보 순위 rollout 에만 남는다) |
 | 포구 후 정지 (DECEL) | | TCP 직선 등감속 (L7 §4.3, 가상 감속 대상) | MPC 구간의 꼬리 (관절 공간) |
 | RT 의 공 샘플 | 지평 · stale 감독 (L7 §4.2) | 샘플 $(p,v,a)$ 를 L4 추종 대상으로 넘긴다 | 구간은 샘플을 읽지 않는다 (L2 §5.2) |
-| 구간 · plan 교체 | | $e_d$ 점프 교체 (L3 §4.7) | 구간 교체 gate (`planner.segment.mpc.switch_margin`) — 탐색은 구간을 따르는 동안 건너뛴다 |
+| 구간 · plan 교체 | | $e_d$ 점프 교체 (L3 §4.7) | 구간 교체 gate (`planner.segment.mpc.switch_margin`) — 탐색은 구간을 따르는 동안에도 돌지만 plan 의 교체는 게시하지 않는다 (RT 가 교체 쌍을 받지 않는다, E1-F17) |
 | CLIK 입력 | 손 pose · twist ff · 접근축 $a_d$ | 자세 목표는 대기 자세 | 자세 목표 $q_{ref}+\dot q_{ref}/K_n$ |
 | `ABORT_SAFE` | 원인과 무관하게 항상 관절공간 정지 (`RunJointSpaceAbort`) | | |
 
@@ -279,7 +279,7 @@ catching:
   core: {...}         # L0
   io: {...}           # L1
   prediction: {...}   # L2
-  planner: {...}      # L3 — 탐색 planner.search.grid (catchability 포함), 구간 선택 planner.segment.mode, mpc 의 planner.segment.mpc
+  planner: {...}      # L3 — 탐색 planner.search.grid · planner.search.nlp (catchability 포함), 선택 planner.search.mode · planner.segment.mode, 구간 planner.segment.mpc · planner.segment.mpc_docking
   reference: {...}    # L4 (closed_form 의 soft-catch 기준; 탐색의 rollout 은 자기 복사본 planner.search.grid.reference 를 읽는다)
   joint_cmd: {...}    # L5 (확장 CLIK 옵션, 가속 행)
   supervisor: {...}   # L7 (감속 법칙 supervisor.decel.a_dec; planner 선택은 planner.segment.mode)
@@ -288,7 +288,7 @@ catching:
 
 모든 키는 layer 문서 §6 표에 `이름 / 타입 / 단위 / 범위 / 뜻` 으로 정의한다 (값은 YAML). 관절 위치·속도·토크 한계는 로봇 config 의 `devices.<group>.joint_limits`(URDF 와 교집합)를 쓰고 포구 YAML 에 복제하지 않는다.
 
-**키는 기능이 갖는다 `[확정]`.** 한 기능이 쓰는 설계값은 전부 그 기능의 조각에 두고, 두 기능이 같은 수를 읽으면 각자 key 를 갖는다 — 탐색의 `planner.search.grid.reference.{v_max,omega,zeta,a_max}` · `stop.a_dec` 는 closed_form 법칙의 `reference.*` · `supervisor.decel.a_dec` 의 복사본이고, mpc 구간 계획기는 `planner.segment.mpc.{eta_v,v_eps}` 를 갖는다. 한 기능 안에서 이름이 둘이던 같은 값은 단일 키다: `io.n_min`, `supervisor.decel.a_dec` (L7 §6). `derate_step`·ramp 는 D-8 로 v1 에서 쓰이지 않으며 재도입 시 단일 키로 다시 정한다.
+**키는 기능이 갖는다 `[확정]`.** 한 기능이 쓰는 설계값은 전부 그 기능의 조각에 두고, 두 기능이 같은 수를 읽으면 각자 key 를 갖는다 — 탐색의 `planner.search.grid.reference.{v_max,omega,zeta,a_max}` · `stop.a_dec` 는 closed_form 법칙의 `reference.*` · `supervisor.decel.a_dec` 의 복사본이고, mpc 구간 계획기는 `planner.segment.mpc.{eta_v,v_eps}` 를 갖는다. **요구는 선택을 따른다** — 선택된 기능의 키만 읽고 요구한다 (L3 §6). 한 기능 안에서 이름이 둘이던 같은 값은 단일 키다: `io.n_min`, `supervisor.decel.a_dec` (L7 §6). `derate_step`·ramp 는 D-8 로 v1 에서 쓰이지 않으며 재도입 시 단일 키로 다시 정한다.
 
 **새 키.**
 
@@ -303,11 +303,12 @@ catching:
 | 키 A | 키 B | 관계 |
 |---|---|---|
 | L3 `ComputeGammaWindow` 의 TCP 속도 | `planner.search.grid.reference.v_max` | $= \eta_v\cdot$ `planner.search.grid.reference.v_max`, $0<\eta_v\le1$ `[확정 D-9]` (`planner.search.grid.gamma.eta_v`) |
-| 탐색의 `planner.search.grid.reference.{v_max,omega,zeta,a_max}` · `stop.a_dec` | `reference.{v_max,omega,zeta,a_max}` · `supervisor.decel.a_dec` | 같은 값 — 원본의 검증 규칙을 따르고, 어긋나면 `closed_form` 은 park (`kSearchCopyDiffers`), `mpc` 는 WARN (L3 §6) |
+| 탐색의 `planner.search.grid.reference.{v_max,omega,zeta,a_max}` · `stop.a_dec` | `reference.{v_max,omega,zeta,a_max}` · `supervisor.decel.a_dec` | 같은 값 — 원본의 검증 규칙을 따르고, 어긋나면 `closed_form` 은 park (`kSearchCopyDiffers`), 구간 계획기 (`mpc` · `mpc_docking`) 는 WARN (L3 §6) |
 | `planner.search.grid.gamma.eta_v` | `planner.segment.mpc.eta_v` | 어긋나면 `mpc` 에서 WARN (L3 §6) |
 | `supervisor.decel.a_dec` | `reference.a_max` | $a_{dec}\le a_{\max}$ (L7 §4.3; 탐색의 복사본도 같은 규칙) |
 | 선행 보상량 (`NowLead` 의 $T_{arm}$) | `joint_cmd.lag.T_arm` × `lead_enable` | 같은 값 (L2 §4.4) |
-| `planner.freeze.T_freeze` | `robot.hand.T_close_e2e`, `joint_cmd.lag.T_arm`, $h$ | $T_{freeze}\ge T_{close,e2e}+T_{arm}+h$ (L3 §4.11) |
+| `planner.freeze.T_freeze` | `robot.hand.T_close_lead` (없으면 `T_close_e2e`), `joint_cmd.lag.T_arm`, $h$ | $T_{freeze}\ge T_{close,lead}+T_{arm}+h$ (L3 §4.11) |
+| `planner.freeze.t_stop_plan` | `planner.freeze.T_freeze` | $t_{stop\,plan}\ge T_{freeze}$ — 아니면 park (L3 §5.3) |
 | `robot.hand.q_close[i]` | `robot.hand.q_pre[i]` | caging 관절에서 $\vert$차$\vert>$ `rho_eps` (L6 §4.2) |
 | 축 정렬 오차 `AxisAlignError` 의 `sin_eps` | `AxisAlignJacobian` 의 `sin_eps` | 같은 값 (L4 §4.5) — YAML 키가 아니라 함수 인자다 |
 | ζ, ω, $h$ | `ControllerState::dt` | 이산 안정 범위 (L4 §4.7, L0 §5.3) |

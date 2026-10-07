@@ -182,7 +182,7 @@ GUI 로 뜬 figure 의 **subplot 을 우클릭**하면 x/y 범위를 숫자로 �
 | `compliance_diag.csv` | compliance_diag (ComplianceDiagLog — §7 task-admittance 진단: 소비된 wrench / source verdict / FSM·α / x̃·ν_c / 파라미터 스냅샷. 컬럼 지문은 `x_tilde_`. **통계 전용, figure 없음** — envelope·freshness·bias 숫자가 산출물이라 `grasp_diag` 와 같은 판단) |
 | `momentum_observer.csv` | momentum_observer (MomentumObserverLog — 일반화 운동량 관측기 잔차 `r_<joint>`·‖r‖∞·게이트, Layer 2A payload wrench/질량, Layer 2B 관성 회귀. `momentum_observer.png` + (2A/2B 가 구성된 run 에서만) `momentum_payload.png` + 통계) |
 | `catching_diag.csv` | catching_diag (CatchingDiagLog — 동적 포구 tick 레코드: 슈퍼바이저 mode/reason, 입력 스냅샷 token·나이·지평, plan, L4 기준(실현 가속도와 포화 전 요구값 둘 다), CLIK status/solve_us/conflict, q_c vs q. 컬럼 지문은 `track_err_rad` + `ref_gamma`. `catching_diag.png` (E-STOP·fault latch 구간 음영) + 통계 — **모든 tick 이 한 행**이라 tick 간극은 드롭된 행을 뜻한다. 패널은 로그에 **그릴 것이 있을 때만** 생긴다: 위치 (soft-catch 기준 `ref_x`, plan 의 `p_c`, 그리고 `mode: mpc` 에서 따르는 구간의 목표 `segment_p_d` — 일점쇄선 `seg_*`) · 가속 (soft-catch 기준이 돈 로그만) · 추종 오차와 solve time · 구간 feedforward `segment_v_ff` · **segment lane** (`segment_event` 를 이름으로, 거부는 맨 위 줄 — 매 tick 나는 `repeat` 은 뺀다 — 전환 게이트의 $\rho$ 는 오른쪽 축) · **명령 kinematics** (`q_cmd_*` 를 기록된 시간축으로 미분한 관절 최대 속도 · 가속 · jerk, 5 행 box 평활, log 축 — 바닥 1e-3 아래는 그리지 않는다: 멈춘 명령은 반올림 잡음으로 미분된다) · 모드. `segment_*` 열이 없는 로그와 `closed_form` 로그 (열이 전부 0) 는 segment 패널 없이 그대로 그려진다. 열 이름이 `decel_*` 인 옛 recording 은 별칭 표 한 벌 (`rtc_tools/utils/catching_keys.py`) 로 새 이름으로 읽고, 옛 이름과 새 이름이 섞인 파일은 거부한다. 통계: `mode: mpc` 로그는 구간을 따른 tick 을 "법칙이 돈 tick" 으로 세고 (그 전에는 `ref_valid` 가 0 이라 "the law never ran" 이었다), segment 블록 — 따른 tick · 구간 수 · 사건과 거부의 이름별 수 · 전환 $\rho$ p50/p95/max — 을 낸다) |
-| `planner_events.csv` | planner_events (계획기 스레드의 non-idle wake 당 한 행 — 후보 funnel `n_in_window`/`n_ik`/`n_pass`, judgement-reject 히스토그램, 선택 후보의 rank-gate 실패 비트마스크(§4.8 rollout gate 포함), 스위칭 `decision`, `recv_to_publish_ms` (publish 된 행만). 컬럼 지문은 `n_in_window` + `rank_error_budget`. 시간축은 `wake_ns` 기준 첫 행 이후 경과초(이 채널에 `t_relative_s`/`t_wall_ns` 가 없음). `planner_events.png` (search/IK/rollout 시간·latency·funnel·reject 히스토그램·outcome/decision 이벤트·rank-gate 실패 6단) + 통계. **segment 계획기가 돈 세션** 에는 패널이 최대 셋 더 붙는다: `segment_outcome` (풀이의 종류 `segment_kind` 로 색) · `segment_solve_us` 와 QP 반복 수 · 포구 노드 (`segment_catch_pos_err` mm · `segment_catch_axis_err` deg · `segment_catch_v_rel` m/s · `segment_catch_gamma`, 첫 풀이의 `segment_x0_speed`). 열이 없는 로그와 계획기가 꺼진 세션 (`decel_*` 이름의 옛 recording 은 별칭 표로 읽는다)은 6단 그대로다. 통계: 종류별 건수 · 게시 수 · solve p50/p99/max, `segment_outcome` 분포, 게시된 구간 사이의 간격, 그리고 `search_valid` 대 `plan_valid` (탐색이 plan 을 냈는데 게시하지 않은 wake 의 수 — `mode: mpc` 는 plan 을 첫 구간과 함께만 낸다). 이름 열 `segment_outcome` · `segment_core_reason` · `segment_kind` 는 문자열로 읽는다) |
+| `planner_events.csv` | planner_events (계획기 스레드의 non-idle wake 당 한 행 — 후보 funnel `n_in_window`/`n_ik`/`n_pass`, judgement-reject 히스토그램, 선택 후보의 rank-gate 실패 비트마스크(§4.8 rollout gate 포함), 스위칭 `decision`, wake 의 `outcome` (`idle` · `no_input` · `published` · `superseded` · `held` · `held_replace_unsupported` — 마지막은 구간 계획기 아래에서 RT 가 plan 을 따르는 동안 탐색이 교체를 판정했으나 게시하지 못한 wake, plotter 의 `OUTCOME_ORDER` 가 같은 순서로 센다), `recv_to_publish_ms` (publish 된 행만). 컬럼 지문은 `n_in_window` + `rank_error_budget`. 시간축은 `wake_ns` 기준 첫 행 이후 경과초(이 채널에 `t_relative_s`/`t_wall_ns` 가 없음). `planner_events.png` (search/IK/rollout 시간·latency·funnel·reject 히스토그램·outcome/decision 이벤트·rank-gate 실패 6단) + 통계. **segment 계획기가 돈 세션** 에는 패널이 최대 셋 더 붙는다: `segment_outcome` (풀이의 종류 `segment_kind` 로 색) · `segment_solve_us` 와 QP 반복 수 · 포구 노드 (`segment_catch_pos_err` mm · `segment_catch_axis_err` deg · `segment_catch_v_rel` m/s · `segment_catch_gamma`, 첫 풀이의 `segment_x0_speed`). 열이 없는 로그와 계획기가 꺼진 세션 (`decel_*` 이름의 옛 recording 은 별칭 표로 읽는다)은 6단 그대로다. 통계: 종류별 건수 · 게시 수 · solve p50/p99/max, `segment_outcome` 분포, 게시된 구간 사이의 간격, 그리고 `search_valid` 대 `plan_valid` (탐색이 plan 을 냈는데 게시하지 않은 wake 의 수 — 구간 계획기는 plan 을 첫 구간과 함께만 내고, 채택 뒤 탐색이 낸 plan 은 `held` · `held_replace_unsupported` 로 기록만 한다). 이름 열 `segment_outcome` · `segment_core_reason` · `segment_kind` 는 문자열로 읽는다) |
 
 > WBC `<dev>_state.csv` 는 파일명만으로 generic state_log 와 구분 불가 (둘 다 `_state`)
 > → `accel_*` 컬럼 fingerprint 로 컬럼 fallback 단계에서 wbc_log 로 분류된다. wbc_log
@@ -312,10 +312,10 @@ ros2 run rtc_tools analyze_hand_close <session>/controllers/demo_catching_contro
 - ρ 는 **최소**다. 한 손가락만 늦어도 손 전체가 못 감싼 것이고 평균은 그것을 지운다. caging 집합은 프로파일이
   정한다 — p1b 출하 자세는 닫힐 때 index DIP 가 오히려 펴지므로 그 관절을 넣으면 진행으로 오독한다
 - p99 는 **순서통계량**이다. 성공 시행이 100 미만이면 p99 는 곧 최댓값이고 도구가 그렇게 말한다
-- **산포와 폐쇄가 끝나는 시각**: 축마다 표본 표준편차 (n − 1) 와 `mean − T_close_e2e` 를 낸다. 시퀀서가 $t_c-T_{close,e2e}$ 에 닫으므로 그 차이가 폐쇄가 $t_c$ 뒤 어디에 끝나는가 — 폐쇄 창을 쓰는 계획기의 $\delta_0$ 다 (`T_close_e2e` 가 같은 분포의 p99 라 작은 음수다). `T_close_e2e` 는 sidecar 의 `T_close_e2e_at_run` (그 run 의 컨트롤러가 읽은 값) 이고 없으면 "계산할 수 없음" 으로 낸다. tick 하나의 양자화 크기 `dt / sqrt(12)` 는 표준편차 **옆에** 적고 더하지 않는다 — 두 축 모두 CSV 행에서 읽으므로 표준편차에 이미 들어 있을 수 있다 (MPC 계획 E1-F15)
+- **산포와 폐쇄가 끝나는 시각**: 축마다 표본 표준편차 (n − 1) 와 `mean − T_close_lead` 를 낸다. 시퀀서가 $t_c-T_{close,lead}$ 에 닫으므로 그 차이가 폐쇄가 $t_c$ 뒤 어디에 끝나는가 — 폐쇄 창을 쓰는 계획기의 $\delta_0$ 다. `T_close_lead` 는 sidecar 의 `T_close_lead_at_run` (그 run 의 컨트롤러가 읽은 값 — `hand_close_trials` 가 `hand.T_close_lead` 미러에서 적는다) 이고, lead 를 따로 갖기 전의 컨트롤러가 만든 sidecar 는 `T_close_e2e_at_run` 으로 대신하며 "falling back" 이라고 찍는다. 둘 다 없으면 "계산할 수 없음" 으로 낸다. `T_close_e2e` 는 잰 폐쇄 시간이고 명령 시각을 정하지 않는다 (L6 §4.3). tick 하나의 양자화 크기 `dt / sqrt(12)` 는 표준편차 **옆에** 적고 더하지 않는다 — 두 축 모두 CSV 행에서 읽으므로 표준편차에 이미 들어 있을 수 있다 (MPC 계획 E1-F15)
 - 테스트 `test/test_hand_close.py`: 1차 응답의 해석해 t = −τ·ln(1−η) 복원, ρ 의 min 거동, mask 제외, 역방향
   관절 부호, 드롭 행 탐지, 순서통계량, `other` 자세가 시행을 열지 않음, 추정 dt 의 tick 축 불신, 표준편차와
-  `mean − T_close_e2e` (sidecar 에 값이 없을 때의 표시 포함)
+  `mean − T_close_lead` (lead 가 없는 옛 sidecar 의 `T_close_e2e` 대체 · 값이 없을 때의 표시 포함)
 
 ### `vision_lane.py` · `vision_lane_probe.py` · `camera_relay.py` — 예측 lane 실측 (dynamic_catching S3.4)
 
@@ -824,7 +824,7 @@ ros2 run rtc_tools catch_speed_budget \
   --velocity-source model --eta-v 0.9 --eta-tau 0.8 \
   --rotor-inertia '0.1 0.1 0.1 0.1 0.1 0.1' --rotor-inertia-source '<mjcf>:<line> armature' \
   --arm-base-frame <base_frame> --max-reach-m 1.1 --floor-world-z-m 0.1 \
-  --detection-s 0.10 --latency-s 0.14 --close-total-s 0.2815 --arm-delay-s 0.05 --time-margin-s 0.02 \
+  --detection-s 0.10 --latency-s 0.14 --close-total-s 0.279 --arm-delay-s 0.05 --time-margin-s 0.02 \
   --relative-speed-m-s '0.34 1.0'
 ```
 
@@ -885,8 +885,8 @@ ros2 run rtc_tools catch_gate_map \
   --controller-config <config>/<robot>/controllers/demo_catching_controller.yaml \
   --overlay <config>/<robot>/sim.yaml --eta-v 0.9 --eta-tau 0.8 \
   --rotor-inertia '0.1 0.1 0.1 0.1 0.1 0.1' --rotor-inertia-source '<mjcf>:<line> armature' \
-  --v-max-m-s derived --d-eff-m 0.095 --d-eff-source 'planner.search.grid.hand.d_eff' \
-  --close-total-s 0.2815 --gamma-margin-m-s 0.1 \
+  --v-max-m-s derived --d-eff-m 0.279 --d-eff-source 'planner.search.grid.hand.d_eff' \
+  --close-total-s 0.279 --gamma-margin-m-s 0.1 \
   --a-dec-m-s2 10.0 --a-dec-source 'provisional' \
   --detection-s 0.10 --latency-s 0.14 --arm-delay-s 0.05 --time-margin-s 0.03 \
   --arm-base-frame base --max-reach-m 1.1 --floor-world-z-m 0.1
