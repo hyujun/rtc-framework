@@ -231,8 +231,9 @@ struct SearchStats {
   bool publish{true};
   /// monitorOnly (§4.6): σ_ℓ at the committed t_c from the newest covariance.
   double sigma_l{std::numeric_limits<double>::quiet_NaN()};
-  /// The NLP search's own account (E1-F14). Not a column of the planner CSV
-  /// and not part of the trace digest of the fields above.
+  /// The NLP search's own account (E1-F14). Written to the planner CSV as the
+  /// `nlp_*` columns by the integration package; not part of the trace digest
+  /// of the fields above.
   NlpSearchStats nlp{};
 };
 

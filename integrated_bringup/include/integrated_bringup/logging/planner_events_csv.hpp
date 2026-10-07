@@ -36,9 +36,12 @@
 // when it chose none, `off` on a wake no NLP search ran), the candidate funnel,
 // how many candidates each check removed (`nlp_rej_*`), and the chosen
 // candidate's cost split — `nlp_j_reference` is J⋆, `nlp_phi` what it was
-// chosen on. `nlp_solve_us_max` is a CUT instant, not a solve time, on a wake
-// with `nlp_rej_deadline` > 0. The grid search's funnel stays in the columns
-// before them.
+// chosen on. On a wake with `nlp_rej_deadline` > 0, `nlp_solve_us_max` may be
+// the instant a candidate's solve was cut at rather than the time a solve
+// took: that reason covers a solve the core cut, one that ended past its
+// deadline, and a valid one the wake finished too late for — the wake's row
+// cannot tell which the slowest was. The grid search's funnel stays in the
+// columns before them.
 //
 // The columns from `segment_qp_solves` on are the mpc_docking core's account of
 // a solve that reached an iterate (NaN — 0 for a count — for every other
@@ -54,7 +57,9 @@
 // `replace_step` says where a wake's attempt to replace the followed plan
 // ended (ReplaceStepName; `none` on a wake that attempted none), and the
 // `replacement_*` columns are the first solve of a replacement that was
-// withheld — the wake's `segment_*` columns are then the replan's.
+// withheld — the wake's `segment_*` columns are then the replan's. Only its
+// outcome, core reason, iterations and time are written: the docking block of
+// that solve is not (a second copy of those columns for a rare row).
 //
 // Readers select columns by NAME: the set has grown and shrunk, and a log
 // from before a change lacks the newer names.
@@ -204,6 +209,16 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
     }
     os << ',';
   };
+  // An integer the wake did not compute is nan as well; one it did is written
+  // as an integer (through `num` it would be rounded to six digits).
+  const auto whole = [&os](bool have, std::int64_t v) {
+    if (have) {
+      os << v;
+    } else {
+      os << "nan";
+    }
+    os << ',';
+  };
   // ── The NLP search's account ──
   const rtc::catching::NlpSearchStats& n = s.nlp;
   // The chosen candidate's fields mean something only on a wake that chose one.
@@ -213,10 +228,10 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   for (const rtc::catching::NlpReject why : kNlpRejectColumns) {
     os << n.rejects[static_cast<std::size_t>(why)] << ',';
   }
-  num(chose, static_cast<double>(n.chosen_index));
-  num(chose, n.chosen_n_pre);
-  num(chose, n.chosen_iterations);
-  num(chose, n.chosen_source_seq);
+  whole(chose, n.chosen_index);
+  whole(chose, n.chosen_n_pre);
+  whole(chose, n.chosen_iterations);
+  whole(chose, n.chosen_source_seq);
   os << (chose && n.chosen_x0_clamped ? 1 : 0) << ',';
   num(chose, n.chosen_lead_s);
   num(chose, n.chosen_wait_s);
@@ -226,16 +241,16 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   num(chose, n.chosen_j_time);
   num(chose, n.chosen_j_switch);
   os << (n.follow_anchor_set ? 1 : 0) << ',';
-  num(n.follow_anchor_set, static_cast<double>(n.follow_anchor_index));
-  num(chose && n.follow_anchor_set, n.chosen_cells_from_anchor);
-  num(chose && n.follow_anchor_set, static_cast<double>(n.chosen_ns_from_first));
+  whole(n.follow_anchor_set, n.follow_anchor_index);
+  whole(chose && n.follow_anchor_set, n.chosen_cells_from_anchor);
+  whole(chose && n.follow_anchor_set, n.chosen_ns_from_first);
   os << (chose && n.chosen_at_window_edge ? 1 : 0) << ',' << n.n_continuous_run << ','
      << n.n_continuous << ',' << n.n_fallback << ',' << (chose && n.chosen_continuous ? 1 : 0)
      << ',';
-  num(chose, static_cast<double>(n.chosen_delta_ns));
+  whole(chose, n.chosen_delta_ns);
   num(chose, n.chosen_sigma_c_cell);
-  num(n.ran, static_cast<double>(n.screen_ns / 1000));
-  num(n.ran, static_cast<double>(n.solve_ns_max / 1000));
+  whole(n.ran, n.screen_ns / 1000);
+  whole(n.ran, n.solve_ns_max / 1000);
   num(n.ran, n.cmd_gap_q);
   num(n.ran, n.cmd_gap_qd);
   // ── The mpc_docking core's account of the solve ──

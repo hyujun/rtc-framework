@@ -474,13 +474,28 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   rec.search.nlp.chosen_j_reference = 5.5;
   rec.search.nlp.chosen_n_pre = 3;
   rec.search.nlp.chosen_lead_s = 0.25;
+  // Integers are written exactly, not through the six digits of a double.
+  rec.search.nlp.chosen_index = 3305956301;
+  rec.search.nlp.chosen_delta_ns = -3456789;
+  rec.search.nlp.screen_ns = 1'234'567'000;
   row = row_of(rec);
+  EXPECT_EQ(row["nlp_index"], "3305956301");
+  EXPECT_EQ(row["nlp_delta_ns"], "-3456789");
+  EXPECT_EQ(row["nlp_screen_us"], "1234567");
   EXPECT_EQ(row["nlp_reason"], "none");
   EXPECT_EQ(row["nlp_phi"], "7");
   EXPECT_EQ(row["nlp_j_reference"], "5.5");
   EXPECT_EQ(row["nlp_n_pre"], "3");
   EXPECT_EQ(row["nlp_lead_s"], "0.25");
   EXPECT_EQ(row["nlp_cells_from_anchor"], "nan") << "the RT follows no plan: no anchor";
+  rec.search.nlp.follow_anchor_set = true;
+  rec.search.nlp.follow_anchor_index = 3305956299;
+  rec.search.nlp.chosen_cells_from_anchor = 2;
+  rec.search.nlp.chosen_ns_from_first = 123456789;
+  row = row_of(rec);
+  EXPECT_EQ(row["nlp_follow_anchor_index"], "3305956299");
+  EXPECT_EQ(row["nlp_cells_from_anchor"], "2");
+  EXPECT_EQ(row["nlp_ns_from_first"], "123456789");
 
   // A docking solve that ended infeasible, and a replacement that was withheld.
   auto& d = rec.segment.docking;

@@ -87,7 +87,8 @@ def test_a_cut_solve_is_counted_and_never_given_a_solve_time(tmp_path, capsys):
     assert "== u1 (DONE)" in text
     assert "replacement attempts ended: too_late_followed 1" in text
     cut_line = next(line for line in text.splitlines() if " deadline " in line)
-    assert "35.05" in cut_line and ">=" in cut_line
+    # A count and the earliest cut instant — no distribution of cut times.
+    assert cut_line.split()[-5:] == ["0", "-", "2", "35.05", "-"]
     written = json.loads((tmp_path / "out.json").read_text())
     assert written[0]["unit"] == "u1"
     assert written[0]["planner"]["solves"][0]["time_ms"]["p50"] == [35.05, True]

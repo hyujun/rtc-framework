@@ -321,6 +321,27 @@ def _draw_segment_solve(ax, df, t):
                 linewidths=0.9,
                 label=f"{name}: cut at deadline (≥)",
             )
+    # The first solve of a replacement that was withheld is in its own columns
+    # (the wake's segment_* are the replan's): drawn as diamonds, hollow when cut.
+    other = planner_solves.replacement_solved_rows(df)
+    if other.any():
+        other_ms = df["replacement_solve_us"].astype(float).to_numpy() / 1e3
+        other_cut = planner_solves.replacement_cut_at_deadline(df)
+        for sel, hollow, label in (
+            (other & ~other_cut, False, "withheld replacement: first"),
+            (other & other_cut, True, "withheld replacement: cut at deadline (≥)"),
+        ):
+            if sel.any():
+                ax.scatter(
+                    np.asarray(t)[sel],
+                    other_ms[sel],
+                    s=22,
+                    facecolors="none" if hollow else "C5",
+                    edgecolors="C5",
+                    marker="D",
+                    linewidths=0.9,
+                    label=label,
+                )
     ax.set_ylabel("segment solve (ms)")
     ax.grid(True, alpha=0.3)
     if "segment_iterations" in df.columns:
@@ -531,8 +552,10 @@ def _draw_nlp_reason(ax, df, t):
 def _draw_nlp_chosen(ax, df, t):
     """The chosen candidate's cost — Φ (what it was chosen on) and J⋆ (the
     solve's cost up to the catch) — and, on a twin, the wake's slowest
-    candidate solve. A wake that cut a candidate at its deadline is drawn as a
-    hollow triangle: that time is a cut instant (module docstring)."""
+    candidate solve. A wake that rejected a candidate for the deadline is drawn
+    as a hollow triangle: that reason covers a solve the core cut, so the
+    value may be a cut instant rather than a solve time — the wake's row
+    cannot tell (`planner_solves`)."""
 
     def col(name, scale=1.0):
         if name not in df.columns:
@@ -558,7 +581,7 @@ def _draw_nlp_chosen(ax, df, t):
             edgecolors="0.3",
             marker="^",
             linewidths=0.9,
-            label="a candidate cut at deadline (≥)",
+            label="wake with a deadline-rejected candidate (may be a cut instant)",
         )
     ax_r.set_ylabel("slowest candidate solve (ms)")
     _legend(ax, ax_r, ncol=2)
@@ -798,17 +821,8 @@ def _print_segment_statistics(df):
                 times = planner_solves.summarise_times(
                     us[solved].to_numpy() / 1e3, cut_all[solved]
                 )
-                done = times["done"]
-                if done is not None:
-                    line += (
-                        f" | solve [ms] (n={times['n_done']}): p50 {done['p50']:.2f}  "
-                        f"p99 {done['p99']:.2f}  max {done['max']:.2f}"
-                    )
-                if times["n_cut"]:
-                    line += (
-                        f" | cut at the deadline: {times['n_cut']} "
-                        f"(>= {times['cut_min_ms']:.2f} ms, not a solve time)"
-                    )
+                if times["n"]:
+                    line += " | " + planner_solves.format_time_summary(times)
             print(line)
         if outcome is not None:
             active = outcome[kind != "none"]
@@ -864,19 +878,10 @@ def _print_solve_account(df):
             )
         times = nlp.get("solve_ms_max")
         if times is not None and times["n"]:
-            done = times["done"]
-            line = "NLP slowest candidate solve per wake [ms]:"
-            if done is not None:
-                line += (
-                    f" (n={times['n_done']}) p50 {done['p50']:.2f}  p99 {done['p99']:.2f}  "
-                    f"max {done['max']:.2f}"
-                )
-            if times["n_cut"]:
-                line += (
-                    f" | wakes that cut a candidate at its deadline: {times['n_cut']} "
-                    f"(>= {times['cut_min_ms']:.2f} ms, not a solve time)"
-                )
-            print(line)
+            print(
+                "NLP slowest candidate solve per wake [ms]: "
+                + planner_solves.format_nlp_solve_time(times)
+            )
     replaced = planner_solves.replace_summary(df)
     if replaced:
         print("Replacement attempts ended: " + ", ".join(f"{k}×{v}" for k, v in replaced.items()))

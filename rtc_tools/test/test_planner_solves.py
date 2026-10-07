@@ -185,14 +185,91 @@ class TestSolveGroups:
         )
         lines = ps.format_solve_groups(ps.solve_groups(df))
         cut_line = next(line for line in lines if " deadline " in line)
-        # 0 solves ended, no distribution; the quantiles over both carry '>='.
-        assert " - " in cut_line and ">=37" not in cut_line
-        assert ">=35.05" in cut_line or ">=39.00" in cut_line
-        assert "35.05" in cut_line  # the earliest cut instant
+        # 0 solves ended: no distribution, a count and the earliest cut instant.
+        assert cut_line.split()[-5:] == ["0", "-", "2", "35.05", "-"]
         assert any("lower bound" in line for line in lines)
         done_line = next(line for line in lines if " converged " in line)
-        assert ">=" not in done_line and "9.00/9.00/9.00" in done_line
+        assert "9.00/9.00/9.00" in done_line and done_line.split()[-3:-1] == ["0", "-"]
         assert ps.format_solve_groups([]) == ["  (no solve recorded)"]
+
+
+class TestWithheldReplacement:
+    """A wake whose replacement was withheld records two solves: the replan in
+    segment_*, the replacement's first solve in replacement_*."""
+
+    def _frame(self):
+        base = {"replacement_core_reason": "none", "replacement_solve_us": 0}
+        return _frame(
+            [
+                (
+                    "advance",
+                    "published",
+                    "converged",
+                    4_000,
+                    {
+                        "replacement_outcome": "budget",
+                        "replacement_core_reason": "deadline",
+                        "replacement_iterations": 9,
+                        "replacement_solve_us": 35_050,
+                    },
+                ),
+                (
+                    "advance",
+                    "published",
+                    "converged",
+                    5_000,
+                    {
+                        "replacement_outcome": "catch_error",
+                        "replacement_core_reason": "none",
+                        "replacement_iterations": 20,
+                        "replacement_solve_us": 9_000,
+                    },
+                ),
+                ("first", "budget", "deadline", 36_000, {**base, "replacement_outcome": "off"}),
+            ]
+        )
+
+    def test_both_solves_are_in_the_table(self):
+        table = ps.solve_table(self._frame())
+        assert len(table) == 5
+        withheld = table[table["kind"] == ps.WITHHELD_REPLACEMENT_KIND]
+        assert withheld["ms"].tolist() == [35.05, 9.0]
+        assert withheld["cut"].tolist() == [True, False]
+        assert withheld["iterations"].tolist() == [9, 20]
+        # The log has no docking account of a withheld replacement.
+        assert withheld["qp_solves"].isna().all()
+
+    def test_it_is_grouped_and_counted_as_cut(self):
+        groups = ps.solve_groups(self._frame())
+        by = {(g["kind"], g["outcome"], g["core_reason"]): g for g in groups}
+        cut = by[(ps.WITHHELD_REPLACEMENT_KIND, "budget", "deadline")]
+        assert cut["time_ms"]["n_cut"] == 1 and cut["time_ms"]["done"] is None
+        assert by[(ps.WITHHELD_REPLACEMENT_KIND, "catch_error", "none")]["time_ms"]["n_cut"] == 0
+        assert by[("advance", "published", "converged")]["n"] == 2
+        text = "\n".join(ps.format_solve_groups(groups))
+        assert "the first solve of a replacement that was withheld" in text
+
+    def test_first_solves_cut_counts_the_wakes_own_and_the_replacements(self):
+        # Row 0: a cut replacement behind a replan that ended. Row 2: the wake's
+        # own first solve was cut. The replans themselves are not first solves.
+        assert ps.first_solves_cut(self._frame()).tolist() == [1, 0, 1]
+
+    def test_a_log_without_the_columns_has_none(self):
+        df = _frame([("first", "budget", "deadline", 35_050)])
+        assert not ps.replacement_solved_rows(df).any()
+        assert len(ps.solve_table(df)) == 1
+        assert ps.first_solves_cut(df).tolist() == [1]
+
+
+def test_a_mixed_set_prints_both_kinds_and_the_bound():
+    mixed = ps.summarise_times([20.0, 22.0, 35.05, 35.2, 35.4], [False, False, True, True, True])
+    text = ps.format_time_summary(mixed)
+    assert "solve [ms] (n=2): p50 20.00  p99 22.00  max 22.00" in text
+    assert "cut at the deadline: 3 (>= 35.05 ms, not a solve time)" in text
+    assert "over both (n=5): p50 >=35.05  p99 >=35.40" in text
+    # One kind alone: no "over both".
+    assert "over both" not in ps.format_time_summary(ps.summarise_times([1.0], [False]))
+    assert "over both" not in ps.format_time_summary(ps.summarise_times([35.1], [True]))
 
 
 class TestNlpSummary:
@@ -219,13 +296,18 @@ class TestNlpSummary:
         assert s["funnel"]["nlp_n_lattice"] == pytest.approx(52 / 3)
         assert s["rejects"] == {"speed_window": 37, "deadline": 2, "hard_row": 2}
 
-    def test_a_wake_that_cut_a_candidate_has_a_cut_time(self):
+    def test_a_wake_with_a_deadline_reject_is_kept_apart_and_not_called_cut(self):
         times = ps.nlp_summary(self._nlp())["solve_ms_max"]
         # The wake that solved nothing (0) is not a solve; of the two that did,
-        # one cut a candidate.
+        # one rejected a candidate for the deadline — which the core may have
+        # cut, or which may have ended late: the row cannot tell.
         assert (times["n"], times["n_done"], times["n_cut"]) == (2, 1, 1)
         assert times["done"]["max"] == 9.0
         assert times["cut_min_ms"] == 12.0
+        text = ps.format_nlp_solve_time(times)
+        assert "no deadline reject (n=1): p50 9.00" in text
+        assert "wakes with a deadline-rejected candidate: 1 (>= 12.00 ms" in text
+        assert "may be a cut instant" in text and "not a solve time" not in text
 
     def test_none_without_the_columns_or_without_a_wake(self):
         assert ps.nlp_summary(pd.DataFrame({"wake_ns": [1]})) is None

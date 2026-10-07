@@ -137,6 +137,29 @@ class TestVerdict:
         )
         assert (v["replace_attempts"], v["replace_published"]) == (2, 1)
 
+    def test_a_cut_first_solve_of_a_withheld_replacement_is_counted(self):
+        followed = {"search_valid": 1, "plan_valid": 1}
+        withheld = {
+            "outcome": "held",
+            "search_valid": 1,
+            "segment_kind": "advance",
+            "segment_outcome": "published",
+            "segment_core_reason": "converged",
+            "segment_solve_us": 4_000,
+            "replace_step": "withheld",
+            "replacement_core_reason": "deadline",
+            "replacement_solve_us": 35_050,
+        }
+        base = {
+            "replace_step": "none",
+            "replacement_core_reason": "none",
+            "replacement_solve_us": 0,
+        }
+        v = _verdict([{**base, **followed}, {**base, **withheld}])
+        assert v["plan_verdict"] == "published"
+        assert v["first_solve_cut"] == 1
+        assert (v["replace_attempts"], v["replace_published"]) == (1, 0)
+
     def test_an_older_log_gives_what_its_columns_allow(self):
         # Before search_valid and the segment columns: a published valid plan
         # is the only "found" there is, and nothing can be said about solves.

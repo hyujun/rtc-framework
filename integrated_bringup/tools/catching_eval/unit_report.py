@@ -36,9 +36,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from rtc_tools.analysis import planner_solves as ps
+from rtc_tools.analysis import catching_trials as ct, planner_solves as ps
 from rtc_tools.plotting.plotters.catching import SEGMENT_EVENT_NAMES
-from rtc_tools.utils.catching_keys import read_csv_normalized
 
 CTRL = "demo_catching_controller"
 # Modes in which the RT tick runs the segment law (catching_diag.csv mode_name).
@@ -46,10 +45,11 @@ LAW_MODES = ("approach", "committed", "closing", "decel", "hold")
 
 
 def _read(path: Path, usecols=None) -> pd.DataFrame | None:
-    for candidate in (path, path.with_name(path.name + ".gz")):
-        if candidate.is_file():
-            return read_csv_normalized(pd.read_csv, candidate, usecols=usecols, low_memory=False)
-    return None
+    """The CSV (or its ``.gz``) as catching_trials reads one — old column names
+    renamed — or None when the unit has no such file."""
+    if ct._exists(path) is None:
+        return None
+    return ct._read_csv(path, usecols=usecols)
 
 
 def throws(trial_results) -> dict:
@@ -171,19 +171,9 @@ def format_report(r: dict) -> list[str]:
             lines.append(f"nlp candidates removed, by reason: {_counts(nlp['rejects'])}")
             times = nlp.get("solve_ms_max")
             if times and times["n"]:
-                done = times["done"]
-                text = "nlp slowest candidate solve per wake [ms]:"
-                if done is not None:
-                    text += (
-                        f" ended n={times['n_done']} p50 {done['p50']:.2f} p99 {done['p99']:.2f} "
-                        f"max {done['max']:.2f}"
-                    )
-                if times["n_cut"]:
-                    text += (
-                        f" | wakes that cut a candidate: {times['n_cut']} "
-                        f"(>= {times['cut_min_ms']:.2f} ms)"
-                    )
-                lines.append(text)
+                lines.append(
+                    "nlp slowest candidate solve per wake [ms]: " + ps.format_nlp_solve_time(times)
+                )
     if "lane_events" in r:
         lines.append(f"RT segment lane events: {_counts(r['lane_events'])}")
     tick = r.get("rt_tick_us")

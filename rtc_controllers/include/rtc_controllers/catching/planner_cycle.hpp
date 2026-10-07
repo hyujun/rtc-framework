@@ -143,18 +143,23 @@ enum class CycleOutcome : std::uint8_t {
 
 /// Where a wake's attempt to REPLACE the plan the RT follows ended (header:
 /// "WHILE A PLAN IS FOLLOWED"). The search's verdict alone (`search.decision`
-/// kReplaced) does not say it: the pair may never be solved for, be withheld
-/// with its first segment, or be dropped at its re-check — and the first of
-/// those leaves no other trace in the record. A log writes the NAME.
+/// kReplaced) does not say it: the cycle may not ask for the pair's first
+/// segment at all, the segment planner may withhold it, or the pair may be
+/// dropped at its re-check — and the first of those leaves no other trace in
+/// the record. A log writes the NAME.
 enum class ReplaceStep : std::uint8_t {
   kNone = 0,  ///< no replacement was attempted on this wake
-  /// Not solved for: no first segment could start before the followed plan
-  /// freezes.
+  /// The cycle did not ask for a first segment: none could start before the
+  /// followed plan freezes.
   kTooLateFollowed,
-  /// Not solved for: the earliest start of a first segment is within T_freeze
-  /// of the NEW plan's catch instant.
+  /// The cycle did not ask for one: the earliest start of a first segment is
+  /// within T_freeze of the NEW plan's catch instant.
   kTooLateNew,
-  kWithheld,    ///< solved for, and its first segment was withheld (`replacement`)
+  /// Its first segment was withheld: the segment planner returned no
+  /// publishable segment — a solve that failed or ran out of budget, or a
+  /// refusal before any solve (`replacement.outcome` says which; its solve
+  /// time is 0 when nothing was solved).
+  kWithheld,
   kSuperseded,  ///< solved, and the pair's re-check dropped it
   kPublished,   ///< the replacement pair was stored
 };

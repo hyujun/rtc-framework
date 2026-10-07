@@ -2676,6 +2676,10 @@ def analyse_session(
         contacts = load_contacts(contact_lane_path, robot_links)
     planner_wakes = _planner_cycle_times(ctl, lane)
     verdict_events = _planner_verdict_events(ctl) if planner_wakes is not None else None
+    if verdict_events is not None and len(verdict_events) != len(planner_wakes.wake_s):
+        # Two reads of one file: the rows are the same rows only while the
+        # counts agree (a session still being written would not).
+        verdict_events = None
     wakes_t_rel = None
     if planner_wakes is not None and lane.aligned:
         # One map for the whole session: steady → sim (lane rows) − c.
@@ -3914,6 +3918,8 @@ VERDICT_COLUMNS = (
     "segment_core_reason",
     "segment_solve_us",
     "replace_step",
+    "replacement_core_reason",
+    "replacement_solve_us",
 )
 
 PLAN_VERDICT_PUBLISHED = "published"
@@ -3975,9 +3981,10 @@ def plan_verdict_window(
       wake that searched. Empty for ``published`` and ``no_search``. Two
       reductions of one list, and neither is "the" reason: early wakes of a
       throw fail on the prediction, late ones on the time left.
-    - ``first_solve_cut``: first-segment solves the core cut at its deadline
-      (:func:`rtc_tools.analysis.planner_solves.cut_at_deadline`); absent on a
-      log without the columns.
+    - ``first_solve_cut``: first-segment solves the core cut at its deadline —
+      the wake's own and a withheld replacement's
+      (:func:`rtc_tools.analysis.planner_solves.first_solves_cut`); absent on
+      a log without the columns.
     - ``replace_attempts`` / ``replace_published``: wakes that tried to replace
       the followed plan, and those whose pair was stored; absent on a log
       without ``replace_step``.
@@ -3987,11 +3994,13 @@ def plan_verdict_window(
     outcome = ev["outcome"].astype(str).to_numpy()
     searched = ~np.isin(outcome, ("idle", "no_input"))
     published = np.asarray(plan_valid[sel], float) > 0.5
-    found = searched.copy()
-    if "search_valid" in ev.columns:
-        found = searched & (ev["search_valid"].to_numpy(float) > 0.5)
-    else:
-        found = published
+    # A log from before `search_valid`: a published valid plan is the only
+    # "found" it can say.
+    found = (
+        searched & (ev["search_valid"].to_numpy(float) > 0.5)
+        if "search_valid" in ev.columns
+        else published
+    )
     if published.any():
         verdict, pick = PLAN_VERDICT_PUBLISHED, None
     elif found.any():
@@ -4011,8 +4020,7 @@ def plan_verdict_window(
         out["plan_reject"] = next(r for r in reversed(reasons) if counts[r] == best)
         out["plan_reject_last"] = reasons[-1]
     if {"segment_kind", "segment_core_reason", "segment_solve_us"} <= set(ev.columns):
-        cut = planner_solves.cut_at_deadline(ev)
-        out["first_solve_cut"] = int((cut & (ev["segment_kind"].astype(str) == "first")).sum())
+        out["first_solve_cut"] = int(planner_solves.first_solves_cut(ev).sum())
     if "replace_step" in ev.columns:
         step = ev["replace_step"].astype(str).to_numpy()
         out["replace_attempts"] = int((step != "none").sum())

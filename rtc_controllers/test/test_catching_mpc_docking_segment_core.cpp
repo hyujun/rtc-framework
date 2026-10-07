@@ -1698,6 +1698,10 @@ TEST(MpcDockingSegmentCore, NonFiniteRowValuesAreNotReportedFeasible) {
   const bool returned = core.Solve(in, out);
   EXPECT_FALSE(out.feasible) << Describe(out);
   EXPECT_FALSE(out.converged);
+  // … nor as rows with room: a maximum over the faces would drop a NaN face
+  // and report the room of the others.
+  EXPECT_FALSE(out.lateral_margin > 0.0) << out.lateral_margin;
+  EXPECT_FALSE(out.timing_margin > 0.0) << out.timing_margin;
   if (returned) {
     EXPECT_TRUE(out.reason == MpcDockingReason::kSolutionNonFinite ||
                 out.reason == MpcDockingReason::kInfeasible ||

@@ -1414,8 +1414,11 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
       }
       double lateral = 0.0;
       // The same maximum without the floor at 0: how far inside the tightest
-      // face is, for the result's lateral_margin.
+      // face is, for the result's lateral_margin. std::max drops a NaN operand
+      // (the note at `seen` above), so a face whose value is not finite is
+      // remembered apart: the margin is then not a number either.
       double lateral_signed = -kInf;
+      bool lateral_finite = true;
       for (int i = 0; i < p.n_faces; ++i) {
         const auto fi = static_cast<std::size_t>(i);
         DockingLateralChanceRow(kin_, rel, sigma_p_, p.face_a[fi], kappa_face_[fi], p.c_min,
@@ -1426,10 +1429,12 @@ bool MpcDockingSegmentCore::EvaluateTrajectory(bool with_jacobians, Evaluation& 
         const double excess = seen(lateral_[fi].value) - p.face_b[fi];
         lateral = std::max(lateral, excess);
         lateral_signed = std::max(lateral_signed, excess);
+        lateral_finite = lateral_finite && std::isfinite(excess);
       }
       add(DockingRowGroup::kLateral, Positive(lateral));
       if (p.n_faces > 0) {
-        ev.lateral_margin = -lateral_signed;
+        ev.lateral_margin =
+            lateral_finite ? -lateral_signed : std::numeric_limits<double>::quiet_NaN();
       }
       if (timing_on_) {
         DockingTimingRow(kin_, rel, sigma_p_, k_timing_, p.eps_sigma, timing_, grad);
