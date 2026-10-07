@@ -683,8 +683,9 @@ TEST(SegmentRingNoPayload, TheSamePolicyHoldsForAPayloadThatIsEmpty) {
   static_cast<void>(ring.PayloadOf(ring.Find(9)));
   EXPECT_TRUE(ring.IsOf(Rt(1)));
   EXPECT_EQ(ring.SourceSeq(Rt(1), 0), 1U);
+  // Another plan's segment: the followed plan's segments stay beside it.
   ring.Push(Seg(1, 0, kPlan + 1), NoSegmentPayload{});
-  EXPECT_EQ(ring.Find(2), nullptr);
+  EXPECT_NE(ring.Find(2), nullptr);
 }
 
 }  // namespace

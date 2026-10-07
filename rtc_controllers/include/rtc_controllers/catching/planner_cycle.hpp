@@ -112,10 +112,6 @@ enum class CycleOutcome : std::uint8_t {
   kPublished,   ///< a PlanSnapshot (valid or "no plan") was stored
   kSuperseded,  ///< the trajectory or the trial moved during compute — dropped
   kHeld,        ///< the switching rule kept the RT's current plan (§4.7, G)
-  /// The RT follows a plan on a segment planner's segments and the search chose
-  /// ANOTHER one (SwitchDecision::kReplaced). Not published: the RT takes no
-  /// replacement pair. The search's record says what it would have switched to.
-  kHeldReplaceUnsupported,
 };
 
 [[nodiscard]] constexpr const char* CycleOutcomeName(CycleOutcome o) noexcept {
@@ -130,8 +126,6 @@ enum class CycleOutcome : std::uint8_t {
       return "superseded";
     case CycleOutcome::kHeld:
       return "held";
-    case CycleOutcome::kHeldReplaceUnsupported:
-      return "held_replace_unsupported";
   }
   return "unknown";
 }

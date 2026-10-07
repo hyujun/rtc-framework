@@ -1779,7 +1779,7 @@ TEST(MpcDockingPlannerCycle, TheSearchsSolutionGoesOutAsThePairsSegmentBitForBit
   EXPECT_EQ(seg.t0_ns, solution->seg.t0_ns);
 }
 
-TEST(MpcDockingPlannerCycle, WhileThePairIsFollowedTheWakeReplansThenSearchesFromTheSegment) {
+TEST(MpcDockingPlannerCycle, WhileThePairIsFollowedTheWakeSearchesFromTheSegmentThenReplans) {
   auto s = std::make_unique<CycleScene>();
   ASSERT_NO_FATAL_FAILURE(s->Setup());
   rtc::catching::PlannerCycleRecord first;
@@ -1792,11 +1792,11 @@ TEST(MpcDockingPlannerCycle, WhileThePairIsFollowedTheWakeReplansThenSearchesFro
   ASSERT_GT(plan.t_c_ns - now, 100 * kMs) << "precondition: outside t_stop_plan";
   s->rt.Store(s->FollowingPair(now));
   const rtc::catching::PlannerCycleRecord rec = s->Wake(now);
-  // The segment first: a replan from the followed segment was solved (and, on
+  // Behind the search a replan from the followed segment was solved (and, on
   // this throw, published) …
   EXPECT_NE(rec.segment.outcome, SegmentOutcome::kOff) << Describe(rec.segment);
   EXPECT_EQ(rec.segment.source_seq, followed.segment_seq) << Describe(rec.segment);
-  // … then the search ran, on candidates whose arm motion starts ON the
+  // … and the search ran, on candidates whose arm motion starts ON the
   // followed segment: node 0 of each solved one is that segment evaluated at
   // the candidate's own start instant, bit for bit (unless the box moved it).
   ASSERT_TRUE(rec.search.nlp.ran);
@@ -1823,9 +1823,9 @@ TEST(MpcDockingPlannerCycle, WhileThePairIsFollowedTheWakeReplansThenSearchesFro
     ++checked;
   }
   EXPECT_GT(checked, 0) << "no solved candidate started inside the box";
-  // Recorded, not published: the RT's plan is the one it took.
-  EXPECT_TRUE(rec.outcome == rtc::catching::CycleOutcome::kHeld ||
-              rec.outcome == rtc::catching::CycleOutcome::kHeldReplaceUnsupported)
+  // On this throw the search does not choose another plan: nothing of one is
+  // published, and the RT's plan is the one it took.
+  EXPECT_EQ(rec.outcome, rtc::catching::CycleOutcome::kHeld)
       << rtc::catching::CycleOutcomeName(rec.outcome);
   EXPECT_EQ(s->plan.sequence(), plan_stores);
   EXPECT_EQ(s->plan.Load().plan_id, plan.plan_id);

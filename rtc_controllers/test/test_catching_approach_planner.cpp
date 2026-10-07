@@ -1141,14 +1141,15 @@ TEST(ApproachPlanner, TheReportedSegmentsAreCopiesOfThePublishedOnes) {
   EXPECT_FALSE(reported->has_following);
   EXPECT_EQ(rtc::catching::SourceSegmentAt(*reported, t0_second - 1), nullptr);
 
-  // Copies: the ring is emptied by another plan's segment, and what was
-  // handed out still reads as it did.
+  // Another plan's segment is stored: the followed plan's segments stay in the
+  // ring beside it — the report still names its source — and what was handed
+  // out, being copies, still reads as it did.
   ask(both);
   SegmentSnapshot other = r.out;
   other.plan_id = 8;
   other.segment_seq = seq2 + 1;
   r.planner.NotePublished(other);
-  EXPECT_EQ(r.planner.SourceSeq(both, t0_second), 0U);
+  EXPECT_EQ(r.planner.SourceSeq(both, t0_second), seq2);
   EXPECT_EQ(digest(reported->pending), second);
   EXPECT_EQ(digest(reported->following), first);
 }
