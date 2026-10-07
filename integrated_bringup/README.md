@@ -1078,7 +1078,7 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
 |---|---|
 | `rig_config.py` | 로봇 profile (이 패키지 `config/` 아래의 디렉토리 이름) 하나에서 rig 의 입력을 읽는다: 손 자세 · η · caging mask · `T_close_e2e`, catch frame, 대기 자세 (`rtc_tools` 의 `catching_trials.load_profile` 로), 그리고 sim 의 parameter 묶음 · 군 · 공. **로봇의 이름이나 관절 표는 이 디렉토리에 없다.** mujoco 없이 돈다 |
 | `rig.py` | MuJoCo rig. **sim 이 MJCF 위에 덮는 것을 전부 적용한다** — solver (`rtc_mujoco_sim` 의 `solver_param.yaml` 다음에 profile 의 YAML, scene 파일이 적은 option 은 그대로), servo 게인, 중력 보상, substep, 공 (종류별 상수 · 반발에서 구한 감쇠비 · `solimp` · priority · `condim` · 충돌 비트). 공의 상수는 C++ 에만 있어 `rig_config.py` 에 사본을 두고 테스트가 C++ 과 대조한다 |
-| `run_ident.py <profile> <stage>` | 단계별 실행: `selfcheck` · `map-coarse` · `map-fine` · `lateral` · `vperp` · `static` · `verify` · `accel` (`all` 은 이 순서로 전부). 단계마다 `$DATA/<profile>/` 에 저장하고, 끊겨도 이미 있는 것은 다시 날리지 않는다 |
+| `run_ident.py <profile> <stage>` | 단계별 실행: `selfcheck` · `map-coarse` · `map-fine` · `lateral` · `vperp` · `static` · `verify` · `accel` (`all` 은 이 순서로 전부). 단계마다 `$DATA/<profile>/` 에 저장하고, 끊겨도 이미 있는 것은 다시 날리지 않는다. `--box w040` 은 상자마다 날리는 단계 (`lateral` · `vperp` · `verify` · `accel`) 를 그 상자로 좁힌다 |
 | `report.py <profile>` | 저장된 판정에서 값을 계산해 (`rtc_tools.analysis.catching_capture_set`) 보고서를 낸다. simulator 를 쓰지 않으므로 원자료에서 언제든 다시 계산된다. **절차와 격자는 이 파일의 머리와 상수가 갖는다** |
 
 ```bash
@@ -1095,6 +1095,7 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
 - **폐쇄 시각** $\delta^O$ = (명령 tick + `T_close_e2e`) − (공 중심이 무접촉으로 catch frame 의 원점 평면에 닿을 시각). 손 시퀀서가 $t_c-T_{close,e2e}$ 에 닫으므로 이것이 시퀀서가 정하는 양이다. 코어의 창은 $s_{ent}$ 통과 기준이라 `report.py` 가 옮긴다 ($\delta=\delta^O+s_{ent}/c$)
 - **sim 과 다른 것** (일부러): 비행 중 중력이 없다 (직선 접근), 손이 서 있고 공이 상대속도를 전부 갖는다 (손이 등속일 때만 같다), 폐쇄 명령은 제어 tick 의 계단이다 (컨트롤러 · 추정기가 없다)
 - **`accel` 단계는 값을 식별하지 않는다** — 손이 등속이 아닐 때 (공의 상대 가속도 = 중력 − 손의 가속도) 식별된 집합이 얼마나 남는지를 본다. `verify` 의 300 조건을 공이 catch frame 에서 가속하는 채로 다시 날리고 (`report.py` 의 `ACCEL_CASES` — 접근축을 따라 손 쪽으로, 그리고 대기 자세에 서 있는 손이 보는 중력 방향으로), 조건별로 직선 비행과 견준다. 공은 $s_{ent}$ 평면까지 직선 비행 그대로이고 (계획기의 포구 노드가 넘겨주는 상태다) 폐쇄 명령 tick 도 같다. 가속도는 직선이 그 평면을 지나는 순간부터 걸린다 — 달라지는 것은 그 평면 뒤의 운동뿐이다
+- **lateral 집합도 유지율로 판정한다.** 가운데 조건의 첫 시행을 격자의 모든 셀에서 한 번 날려, 유지된 셀과 그 둘레 2 셀 (`LATERAL_RINGS`) 을 후보로 삼는다. 후보마다 다섯 조건 × 8 회 (`LATERAL_TRIALS`) 를 **건너뛰지 않고** 날리고, 가운데 조건이 가장 자주 유지되는 셀 (같으면 40 회 유지율이 높은 셀) 을 기준 셀로 둔다 — 셀의 40 회 유지율이 기준 셀보다 5 %p (`LATERAL_DROP`) 넘게 낮지 않으면 집합에 든다. "다섯 조건의 모든 시행이 유지" 는 시행 수를 늘릴수록 집합이 줄어드는 규칙이다 (시행 하나의 판정이 집합 안에서도 확실하지 않다). 후보가 끝까지 날려지지 않은 store (끊긴 실행, 앞 규칙의 store) 는 판정하지 않고 그렇게 보고한다. 첫 시행이 유지된 셀에서 2 셀 넘게 떨어진 셀은 날리지 않으므로 집합에 들 수 없다
 - **옆 속도 (`vperp`) 는 lateral 집합의 중심을 겨누고 유지율로 판정한다.** 고리 0 은 옆 속도가 없는 기준이고, 고리는 그 유지율보다 5 %p (`VPERP_DROP`) 넘게 낮지 않으면 통과한다 — 통과가 이어지는 마지막 고리까지가 $v_{\perp,\max}$ 다. 시행 하나의 판정은 집합 안에서도 확실하지 않아 "고리의 160 회가 전부 유지" 는 옆 속도와 무관하게 통과하기 어렵고, catch frame 의 원점이 lateral 집합 안이라는 보장도 없다
 - 손보다 먼저 다른 물체에 닿은 시행은 `stray` 에 그 body 를 적고 보고서가 센다
 - 값은 전부 **provisional** 이다 — sim 의 손 흡수 · 반발은 실기 값이 아니다 (`docs/dynamic_catching/ref/L6_hand.md` §4.5)

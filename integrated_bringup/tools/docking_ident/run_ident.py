@@ -15,7 +15,8 @@ thread per worker, and no build running beside it::
 
 Stages, in order: ``selfcheck``, ``map-coarse``, ``map-fine``, ``lateral``,
 ``vperp``, ``static``, ``verify``, ``accel`` (``all`` runs them in that order).
-Then ``report.py <profile>`` prints the result.
+``--box w040`` keeps the stages that fly per box to that one. Then
+``report.py <profile>`` prints the result.
 """
 
 from __future__ import annotations
@@ -235,36 +236,56 @@ def stage_map_fine(profile: str, directory: Path, pool) -> None:
     fly_all(pool, store, specs, "map-fine")
 
 
+# The boxes the per-box stages fly (``--box``); None: every box of the map.
+_ONLY_BOXES: tuple[str, ...] | None = None
+
+
 def _boxes(directory: Path) -> tuple[rp.FineMap, dict[str, cs.Box]]:
     fine = rp.FineMap(rp.Store(directory / "map_fine.json"))
     boxes = rp.distinct_boxes(fine.boxes())
     if not boxes:
         raise SystemExit("the fine map has no box of any requested width")
+    if _ONLY_BOXES is not None:
+        unknown = sorted(set(_ONLY_BOXES) - set(boxes))
+        if unknown:
+            raise SystemExit(f"--box {unknown}: the fine map's boxes are {sorted(boxes)}")
+        boxes = {tag: box for tag, box in boxes.items() if tag in _ONLY_BOXES}
     return fine, boxes
+
+
+def _lateral_spec(fine: rp.FineMap, box: cs.Box, q: int, i: int, j: int, k: int) -> dict:
+    """Fly-in ``k`` of condition ``q`` at lateral cell ``(i, j)``."""
+    xs = rp.lattice(rp.LATERAL)
+    half = 0.5 * rp.LATERAL[1]
+    rng = np.random.default_rng([rp.SEED, _STREAM["lateral"], q, i, j, k])
+    c, delta_o = _in_cell(rng, *fine.cell(box, rp.CONDITIONS[q]))
+    rho = (xs[i] + rng.uniform(-half, half), xs[j] + rng.uniform(-half, half))
+    return _spec(f"q{q}_x{i}_y{j}_k{k}", rho, c, delta_o)
 
 
 def stage_lateral(profile: str, directory: Path, pool) -> None:
     fine, boxes = _boxes(directory)
-    xs = rp.lattice(rp.LATERAL)
-    half = 0.5 * rp.LATERAL[1]
+    n = rp.LATERAL[2]
     for tag, box in boxes.items():
         store = rp.Store(directory / f"lateral_{tag}.json")
-        alive = np.ones((xs.size, xs.size), dtype=bool)
+        # The first pass: one fly-in of the centre condition at every cell.
+        first = [_lateral_spec(fine, box, 0, i, j, 0) for i in range(n) for j in range(n)]
+        fly_all(pool, store, first, f"lateral {tag} first pass")
+        cells = list(zip(*np.nonzero(rp.lateral_candidates(store)), strict=True))
+        print(f"  lateral {tag}: {len(cells)} candidate cells", flush=True)
+        # Every candidate under every condition, none skipped for having failed.
         for q, which in enumerate(rp.CONDITIONS):
-            a, b = fine.cell(box, which)
-            # One pass per fly-in: a cell that has failed is not flown again.
-            for k in range(rp.TRIALS):
-                specs = []
-                for i, j in zip(*np.nonzero(alive), strict=True):
-                    rng = np.random.default_rng([rp.SEED, _STREAM["lateral"], q, i, j, k])
-                    c, delta_o = _in_cell(rng, a, b)
-                    rho = (xs[i] + rng.uniform(-half, half), xs[j] + rng.uniform(-half, half))
-                    specs.append(_spec(f"q{q}_x{i}_y{j}_k{k}", rho, c, delta_o))
-                fly_all(pool, store, specs, f"lateral {tag} {which} #{k}")
-                for spec in specs:
-                    _, i, j, _ = (int(part[1:]) for part in spec["id"].split("_"))
-                    alive[i, j] &= bool(store.items[spec["id"]]["held"])
-        print(f"  lateral {tag}: {int(alive.sum())} cells held under all conditions")
+            specs = [
+                _lateral_spec(fine, box, q, int(i), int(j), k)
+                for i, j in cells
+                for k in range(rp.LATERAL_TRIALS)
+            ]
+            fly_all(pool, store, specs, f"lateral {tag} {which}")
+        verdict = rp.lateral_verdict(store)
+        print(
+            f"  lateral {tag}: {int(verdict.held.sum())} cells in the set, reference "
+            f"{verdict.reference} at {verdict.reference_rate:.3f}"
+        )
 
 
 def stage_vperp(profile: str, directory: Path, pool) -> None:
@@ -391,7 +412,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("profile", help="a robot profile under the bring-up's config/")
     parser.add_argument("stage", choices=(*STAGES, "all"))
     parser.add_argument("--workers", type=int, default=6, help="processes, each with its own rig")
+    parser.add_argument(
+        "--box",
+        action="append",
+        metavar="TAG",
+        help="fly the per-box stages (lateral, vperp, verify, accel) for this box only, "
+        "e.g. w040; may be repeated (default: every box of the fine map)",
+    )
     args = parser.parse_args(argv)
+    global _ONLY_BOXES
+    _ONLY_BOXES = tuple(args.box) if args.box else None
     if os.environ.get("OMP_NUM_THREADS") != "1":
         raise SystemExit("set OMP_NUM_THREADS=1: every worker would start a thread pool")
     directory = rp.data_dir(args.profile)

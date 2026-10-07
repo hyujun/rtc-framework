@@ -16,8 +16,19 @@ THE PROTOCOL (fixed before any flight; the lattices are the constants below).
 3. Boxes — for each requested closure-window width, the box of held cells at
    least that wide that reaches the highest closing speed.
 4. ``lateral`` — per box, at its four corner cells and its centre cell: which
-   lateral cells hold (the ball arriving straight). A cell counts only if it
-   holds for all five.
+   lateral cells hold (the ball arriving straight). One fly-in of the centre
+   condition is flown at every cell of the lateral lattice first; the cells
+   where it held, and the cells within two cells of one, are the CANDIDATES.
+   Each candidate is then flown EIGHT times under each of the five conditions
+   — forty fly-ins, none skipped. The reference cell is the one the centre
+   condition holds most often at (among equals, the one whose forty hold most
+   often), and a candidate is in the lateral set when its forty hold as often
+   as the reference cell's forty to within 5 points of rate. (A fly-in's
+   verdict is not certain even inside the set — the same reason the speed
+   rings below are compared by rate — so "all of a cell's fly-ins hold"
+   shrinks the set with the number of fly-ins, not with the hand. A cell that
+   holds only beyond two cells from every cell the first pass found is not
+   flown and is not in the set.)
    ``vperp`` — the same five conditions, the ball aimed at the CENTRE OF THAT
    LATERAL SET (its inscribed circle) with a lateral speed: ring 0 has none,
    the rings after it 0.05 m/s apart. A ring passes when it holds as often as
@@ -46,6 +57,7 @@ import json
 import math
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -54,7 +66,7 @@ from rtc_tools.analysis import catching_capture_set as cs
 
 # ── The protocol's lattices ───────────────────────────────────────────────────
 SEED = 741
-TRIALS = 4  # fly-ins per cell
+TRIALS = 4  # fly-ins per cell (map-fine) and per condition x direction (vperp)
 RHO_JITTER = 0.0025  # [m] lateral spread of a cell's fly-ins (map, vperp)
 COARSE_C = (0.25, 0.25, 20)  # first, step, count [m/s]: 0.25 … 5.0
 COARSE_D = (-0.30, 0.01, 61)  # [s]: −0.30 … +0.30
@@ -63,6 +75,9 @@ FINE_DD = 0.004  # [s]   cells [0.004 b, 0.004 (b + 1)]
 FINE_A_MIN = 2  # no cell below c = 0.2 m/s
 MIN_WIDTHS = (0.020, 0.040, 0.080)  # [s] closure-window widths a box is asked for
 LATERAL = (-0.06, 0.005, 25)  # [m]: −60 … +60 mm, both axes
+LATERAL_TRIALS = 8  # fly-ins per candidate cell and condition
+LATERAL_RINGS = 2  # cells around a cell the first pass held that are candidates too
+LATERAL_DROP = 0.05  # a cell is in the set within this of the reference cell's hold rate
 VPERP = (0.05, 0.05, 20)  # [m/s]: rings 0.05 … 1.0
 VPERP_DIRECTIONS = 8
 VPERP_DROP = 0.05  # a ring passes within this of the zero-speed ring's hold rate
@@ -208,17 +223,86 @@ def distinct_boxes(boxes: dict[float, cs.Box | None]) -> dict[str, cs.Box]:
     return out
 
 
-def lateral_held(store: Store) -> tuple[np.ndarray, np.ndarray]:
-    """``(held, counts_centre)`` over the lateral lattice: held by all four
-    fly-ins of ALL five conditions; and how many of the centre condition's
-    fly-ins held before the first that did not (a cell is not flown again once
-    it has failed)."""
+@dataclass(frozen=True)
+class LateralVerdict:
+    """The lateral stage's store, judged. Arrays are over the lateral lattice."""
+
+    held: np.ndarray  # bool: in the lateral set
+    candidates: np.ndarray  # bool: flown under every condition
+    counts: np.ndarray  # fly-ins that held, all conditions together
+    flown: np.ndarray  # fly-ins flown, all conditions together
+    reference: tuple[int, int] | None  # the cell the others are compared with
+    reference_counts: tuple[int, ...]  # its fly-ins that held, per condition
+    missing: int  # candidate fly-ins the store does not have yet
+
+    @property
+    def complete(self) -> bool:
+        return self.missing == 0
+
+    @property
+    def reference_rate(self) -> float:
+        full = LATERAL_TRIALS * len(CONDITIONS)
+        return sum(self.reference_counts) / full if self.reference is not None else math.nan
+
+
+def lateral_counts(store: Store) -> tuple[np.ndarray, np.ndarray]:
+    """``(held, flown)`` per condition and lateral cell."""
     n = LATERAL[2]
-    passed = np.zeros((len(CONDITIONS), n, n), dtype=int)
+    held = np.zeros((len(CONDITIONS), n, n), dtype=int)
+    flown = np.zeros_like(held)
     for key, result in store.items.items():
         q, i, j, _ = (int(part[1:]) for part in key.split("_"))
-        passed[q, i, j] += bool(result["held"])
-    return (passed == TRIALS).all(axis=0), passed[0]
+        flown[q, i, j] += 1
+        held[q, i, j] += bool(result["held"])
+    return held, flown
+
+
+def lateral_candidates(store: Store, rings: int = LATERAL_RINGS) -> np.ndarray:
+    """The cells the stage flies under every condition: where the first pass
+    (fly-in 0 of the centre condition, flown at every cell) held, and the
+    cells within ``rings`` cells of one, diagonals included."""
+    n = LATERAL[2]
+    first = np.zeros((n, n), dtype=bool)
+    for i in range(n):
+        for j in range(n):
+            result = store.items.get(f"q0_x{i}_y{j}_k0")
+            first[i, j] = result is not None and bool(result["held"])
+    out = np.zeros_like(first)
+    for i, j in zip(*np.nonzero(first), strict=True):
+        out[max(0, i - rings) : i + rings + 1, max(0, j - rings) : j + rings + 1] = True
+    return out
+
+
+def lateral_verdict(store: Store) -> LateralVerdict:
+    """The lateral set by hold rate (step 4 of the protocol).
+
+    A candidate cell is in the set when its fly-ins — all conditions together
+    — hold as often as the reference cell's, to within ``LATERAL_DROP``. The
+    reference cell is the candidate the centre condition holds most often at;
+    among equals, the one whose fly-ins hold most often altogether (which of
+    several such cells it is does not change the rate compared with). A cell
+    none of whose fly-ins held is never in the set. Until every candidate has
+    all its fly-ins nothing is: an interrupted stage has no verdict.
+    """
+    held, flown = lateral_counts(store)
+    candidates = lateral_candidates(store)
+    counts, total = held.sum(axis=0), flown.sum(axis=0)
+    full = LATERAL_TRIALS * len(CONDITIONS)
+    missing = int((LATERAL_TRIALS - flown[:, candidates]).clip(min=0).sum())
+    n = LATERAL[2]
+    missing += sum(f"q0_x{i}_y{j}_k0" not in store.items for i in range(n) for j in range(n))
+    empty = LateralVerdict(np.zeros_like(candidates), candidates, counts, total, None, (), missing)
+    if missing or not candidates.any():
+        return empty
+    cells = [(int(i), int(j)) for i, j in zip(*np.nonzero(candidates), strict=True)]
+    ri, rj = max(cells, key=lambda c: (held[0][c], counts[c], -c[0], -c[1]))
+    if counts[ri, rj] == 0:
+        return empty
+    in_set = candidates & (counts > 0)
+    in_set &= counts >= counts[ri, rj] - LATERAL_DROP * full - 1e-9
+    return LateralVerdict(
+        in_set, candidates, counts, total, (ri, rj), tuple(int(v) for v in held[:, ri, rj]), 0
+    )
 
 
 def vperp_counts(store: Store) -> tuple[np.ndarray, np.ndarray]:
@@ -273,9 +357,12 @@ def identify(directory: Path, tag: str, box: cs.Box, fine: FineMap) -> dict:
     if not lateral_path.is_file():
         return out
     xs = lattice(LATERAL)
-    held, counts = lateral_held(Store(lateral_path))
+    verdict = lateral_verdict(Store(lateral_path))
+    out["lateral"] = verdict
+    if not verdict.complete:
+        return out  # an interrupted stage, or a store flown under another rule
+    held = verdict.held
     out["lateral_held"] = held
-    out["lateral_counts"] = counts
     polygon = cs.capture_polygon(xs, xs, held)
     out["polygon"] = polygon
     circle = cs.inscribed_circle(xs, xs, held)
@@ -386,14 +473,26 @@ def render_map(fine: FineMap, max_rows: int = 400) -> str:
     return "\n".join(lines[: max_rows + 1])
 
 
-def render_lateral(counts: np.ndarray, held: np.ndarray) -> str:
-    """y down the page (high first), x across: '#' held under all conditions,
-    else the centre condition's count before the first failure."""
+def render_lateral(verdict: LateralVerdict) -> str:
+    """y down the page (high first), x across: '#' in the lateral set, '@' the
+    reference cell; a candidate that is not in the set shows the tenth its
+    hold rate falls in (9: 90 % or more), a cell that was not a candidate '·'."""
     xs = lattice(LATERAL)
+    full = LATERAL_TRIALS * len(CONDITIONS)
+
+    def mark(i: int, j: int) -> str:
+        if (i, j) == verdict.reference:
+            return "@"
+        if verdict.held[i, j]:
+            return "#"
+        if not verdict.candidates[i, j]:
+            return "·"
+        return str(min(9, int(verdict.counts[i, j]) * 10 // full))
+
     lines = [f"x from {_mm(xs[0])} to {_mm(xs[-1])} mm, {LATERAL[1] * 1e3:.0f} mm a cell"]
     for j in range(len(xs) - 1, -1, -1):
-        row = "".join("#" if held[i, j] else str(counts[i, j]) for i in range(len(xs)))
-        if row.strip("0"):
+        row = "".join(mark(i, j) for i in range(len(xs)))
+        if row.strip("·"):
             lines.append(f"{xs[j] * 1e3:+6.1f} {row}")
     return "\n".join(lines)
 
@@ -466,21 +565,45 @@ def render_box(ident: dict, fine: FineMap) -> list[str]:
         f"δ^O {_ms(box.delta_o_lo)} … {_ms(box.delta_o_hi)} ms",
         "",
     ]
-    if "polygon" not in ident:
+    if "lateral" not in ident:
         return out + ["(lateral 을 아직 돌리지 않았다)", ""]
+    verdict: LateralVerdict = ident["lateral"]
+    full = LATERAL_TRIALS * len(CONDITIONS)
+    if not verdict.complete:
+        return out + [
+            f"(lateral 이 유지율 규칙으로 끝까지 날려지지 않았다 — 후보 "
+            f"{int(verdict.candidates.sum())} 셀에 시행 {verdict.missing} 회가 없다)",
+            "",
+        ]
     polygon = ident["polygon"]
-    held = ident["lateral_held"]
+    held = verdict.held
+    xs = lattice(LATERAL)
+    out.append(
+        f"- lateral: 후보 {int(verdict.candidates.sum())} 셀 (가운데 조건의 첫 시행이 유지된 셀과 "
+        f"그 둘레 {LATERAL_RINGS} 셀), 셀마다 {len(CONDITIONS)} 조건 × {LATERAL_TRIALS} 회"
+    )
+    if verdict.reference is not None:
+        ri, rj = verdict.reference
+        out.append(
+            f"- 기준 셀 ({_mm(xs[ri])}, {_mm(xs[rj])}) mm: 유지율 "
+            f"{sum(verdict.reference_counts)}/{full} = {verdict.reference_rate:.3f} (조건별 "
+            + ", ".join(
+                f"{name} {n}/{LATERAL_TRIALS}"
+                for name, n in zip(CONDITIONS, verdict.reference_counts, strict=True)
+            )
+            + f"). 유지율이 이보다 {LATERAL_DROP * 100:.0f} %p 넘게 낮지 않은 셀이 집합이다"
+        )
     out += [
-        f"- lateral: 유지된 셀 {int(held.sum())} 개 ({held.sum() * LATERAL[1] ** 2 * 1e4:.1f} cm²)",
+        f"- 집합: {int(held.sum())} 셀 ({held.sum() * LATERAL[1] ** 2 * 1e4:.1f} cm²)",
         "",
         "```text",
-        render_lateral(ident["lateral_counts"], held),
+        render_lateral(verdict),
         "```",
         "",
     ]
     if polygon is None:
         return out + [
-            "**다섯 조건 모두에서 유지된 lateral 셀이 없다 — $\\mathcal C_\\perp$ 가 빈다.**",
+            "**유지되는 lateral 셀이 없다 — $\\mathcal C_\\perp$ 가 빈다.**",
             "",
         ]
     (cx, cy), radius = ident["circle"]

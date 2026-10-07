@@ -251,19 +251,112 @@ def test_two_widths_asking_for_one_box_measure_it_once():
     assert rp.distinct_boxes({0.02: None, 0.04: None}) == {}
 
 
-def test_a_lateral_cell_must_hold_under_every_condition(tmp_path):
-    items = {}
-    for q in range(len(rp.CONDITIONS)):
-        for i, j in ((12, 12), (13, 12)):
-            for k in range(rp.TRIALS):
-                items[f"q{q}_x{i}_y{j}_k{k}"] = _result(True)
-    items["q3_x13_y12_k1"] = _result(False)
-    items["q0_x14_y12_k0"] = _result(True)
-    items["q0_x14_y12_k1"] = _result(False)  # failed in the centre condition: not flown again
-    held, centre = rp.lateral_held(_store(tmp_path / "lateral_w020.json", items))
-    assert held[12, 12] and not held[13, 12] and not held[14, 12]
-    assert held.sum() == 1
-    assert centre[13, 12] == rp.TRIALS and centre[14, 12] == 1
+def _plant_lateral(first: set[tuple[int, int]], lost: dict | None = None) -> dict:
+    """A lateral store flown to the end: the first pass at every cell (held at
+    ``first``), then every candidate under every condition. A fly-in holds
+    where the first pass did, except the first ``lost[(q, i, j)]`` fly-ins
+    after fly-in 0 of that condition and cell."""
+    lost = lost or {}
+    n = rp.LATERAL[2]
+    items = {f"q0_x{i}_y{j}_k0": _result((i, j) in first) for i in range(n) for j in range(n)}
+    candidates = np.zeros((n, n), dtype=bool)
+    for i, j in first:
+        r = rp.LATERAL_RINGS
+        candidates[max(0, i - r) : i + r + 1, max(0, j - r) : j + r + 1] = True
+    for i, j in zip(*np.nonzero(candidates), strict=True):
+        for q in range(len(rp.CONDITIONS)):
+            for k in range(rp.LATERAL_TRIALS):
+                held = (i, j) in first and not 1 <= k <= lost.get((q, int(i), int(j)), 0)
+                items[f"q{q}_x{i}_y{j}_k{k}"] = _result(bool(held))
+    return items
+
+
+def test_the_lateral_candidates_are_the_first_pass_and_two_cells_around_it(tmp_path):
+    store = _store(tmp_path / "lateral_w020.json", _plant_lateral({(12, 12), (0, 24)}))
+    candidates = rp.lateral_candidates(store)
+    # 5 x 5 around the cell in the middle; 3 x 3 of the corner's 5 x 5 is on the lattice.
+    assert candidates.sum() == 25 + 9
+    assert candidates[10:15, 10:15].all() and candidates[0:3, 22:25].all()
+    assert not candidates[9, 12] and not candidates[3, 24]
+    # A fly-in other than the first pass's does not make a candidate.
+    other = {"q0_x5_y5_k1": _result(True), "q1_x5_y5_k0": _result(True)}
+    assert not rp.lateral_candidates(_store(tmp_path / "other.json", other)).any()
+
+
+def test_a_lateral_cell_is_judged_by_its_hold_rate_against_the_reference_cell(tmp_path):
+    full = rp.LATERAL_TRIALS * len(rp.CONDITIONS)
+    assert (full, rp.LATERAL_DROP) == (40, 0.05)
+    first = {(12, 12), (13, 12), (14, 12), (15, 12)}
+    lost = {
+        (3, 13, 12): 2,  # 38 of 40: two below the reference, within 5 points
+        (1, 14, 12): 3,  # 37 of 40: beyond them
+        (0, 15, 12): 1,  # 36 of 40, and one of them in the centre condition
+        (2, 15, 12): 3,
+    }
+    verdict = rp.lateral_verdict(
+        _store(tmp_path / "lateral_w020.json", _plant_lateral(first, lost))
+    )
+    assert verdict.complete and verdict.reference == (12, 12)
+    assert verdict.reference_counts == (8, 8, 8, 8, 8) and verdict.reference_rate == 1.0
+    assert verdict.counts[12, 12] == 40 and verdict.counts[13, 12] == 38
+    assert verdict.counts[14, 12] == 37 and verdict.counts[15, 12] == 36
+    assert verdict.held[12, 12] and verdict.held[13, 12]
+    assert not verdict.held[14, 12] and not verdict.held[15, 12]
+    assert verdict.held.sum() == 2
+    # "Every fly-in of every condition holds" would keep the one cell only.
+    assert int((verdict.counts == full).sum()) == 1
+    # A candidate around the four that never held is flown, and is not in the set.
+    assert verdict.candidates[10, 10] and verdict.flown[10, 10] == full
+    assert verdict.counts[10, 10] == 0 and not verdict.held[10, 10]
+
+
+def test_the_reference_cell_is_where_the_centre_condition_holds_most(tmp_path):
+    # (12, 12) loses one centre fly-in; (13, 12) loses three elsewhere but none there.
+    lost = {(0, 12, 12): 1, (4, 13, 12): 3}
+    store = _store(tmp_path / "lateral_w020.json", _plant_lateral({(12, 12), (13, 12)}, lost))
+    verdict = rp.lateral_verdict(store)
+    assert verdict.reference == (13, 12) and verdict.reference_rate == pytest.approx(37 / 40)
+    assert verdict.reference_counts == (8, 8, 8, 8, 5)
+    # The other cell holds more often than the reference: it is in the set.
+    assert verdict.held[12, 12] and verdict.held[13, 12] and verdict.held.sum() == 2
+    # Among cells the centre condition holds equally at, the higher rate is the reference.
+    lost = {(4, 13, 12): 3, (4, 12, 12): 1}
+    store = _store(tmp_path / "again.json", _plant_lateral({(12, 12), (13, 12)}, lost))
+    assert rp.lateral_verdict(store).reference == (12, 12)
+
+
+def test_an_interrupted_lateral_stage_has_no_verdict(tmp_path):
+    items = _plant_lateral({(12, 12)})
+    whole = rp.lateral_verdict(_store(tmp_path / "whole.json", items))
+    assert whole.complete and whole.held.sum() == 1
+    del items["q4_x11_y11_k7"]  # a candidate's last fly-in
+    cut = rp.lateral_verdict(_store(tmp_path / "cut.json", items))
+    assert not cut.complete and cut.missing == 1 and not cut.held.any()
+    items = _plant_lateral({(12, 12)})
+    del items["q0_x0_y0_k0"]  # the first pass did not reach a cell
+    assert rp.lateral_verdict(_store(tmp_path / "first.json", items)).missing == 1
+    # A store of the rule before this one (four fly-ins, stopped at the first failure).
+    old = {
+        f"q{q}_x{i}_y{j}_k{k}": _result(True)
+        for q in range(len(rp.CONDITIONS))
+        for i in range(rp.LATERAL[2])
+        for j in range(rp.LATERAL[2])
+        for k in range(4)
+    }
+    verdict = rp.lateral_verdict(_store(tmp_path / "old.json", old))
+    assert not verdict.complete and not verdict.held.any()
+
+
+def test_a_hand_that_holds_nowhere_has_no_lateral_set(tmp_path):
+    items = {key: _result(False) for key in _plant_lateral({(12, 12)})}
+    verdict = rp.lateral_verdict(_store(tmp_path / "lateral_w020.json", items))
+    assert verdict.complete and verdict.reference is None and not verdict.held.any()
+    # Held by the first pass and never again: one in forty is a rate, not a set of
+    # cells that never held around it.
+    items = _plant_lateral({(12, 12)}, {(q, 12, 12): 7 for q in range(len(rp.CONDITIONS))})
+    verdict = rp.lateral_verdict(_store(tmp_path / "once.json", items))
+    assert verdict.reference == (12, 12) and verdict.counts[12, 12] == 5
+    assert verdict.held.sum() == 1
 
 
 def _plant_rings(failures: dict[int, int], rings: int = 4) -> dict:
@@ -305,10 +398,7 @@ def test_the_speed_rings_are_aimed_at_the_centre_of_the_lateral_set(tmp_path):
     assert rp.vperp_aim(rp.identify(tmp_path, "w020", box, fine)) == pytest.approx((0.0, 0.0))
     # The set moved 15 mm along +x and 10 mm along −y: so does the aim.
     path = tmp_path / "lateral_w020.json"
-    moved = {}
-    for key, value in json.loads(path.read_text()).items():
-        q, i, j, k = key.split("_")
-        moved[f"{q}_x{int(i[1:]) + 3}_y{int(j[1:]) - 2}_{k}"] = value
+    moved = _plant_lateral({(i + 3, j - 2) for i in range(10, 15) for j in range(10, 15)})
     path.write_text(json.dumps(moved))
     assert rp.vperp_aim(rp.identify(tmp_path, "w020", box, fine)) == pytest.approx((0.015, -0.010))
     # No lateral set, no aim (the stage is skipped).
@@ -326,12 +416,7 @@ def _plant_identification(directory: Path) -> rp.cs.Box:
             for k in range(rp.TRIALS):
                 fine[f"a{a}_b{b}_k{k}"] = _result(True, s_first=0.004)
     _store(directory / "map_fine.json", fine)
-    lateral = {}
-    for q in range(len(rp.CONDITIONS)):
-        for i in range(10, 15):
-            for j in range(10, 15):
-                for k in range(rp.TRIALS):
-                    lateral[f"q{q}_x{i}_y{j}_k{k}"] = _result(True)
+    lateral = _plant_lateral({(i, j) for i in range(10, 15) for j in range(10, 15)})
     _store(directory / "lateral_w020.json", lateral)
     # The zero-speed ring and the rings at 0.05 and 0.10 m/s hold; 0.15 loses 9
     # of 160, one more than 5 points of rate allow.
@@ -446,6 +531,8 @@ def test_the_report_states_what_was_planted(tmp_path, monkeypatch):
     text = (tmp_path / "some_robot" / "report.md").read_text()
     assert "| 20 ms | 0.5 – 0.8 | +0 … +20 | 20 | 15 |" in text
     assert "| 40 ms | 없음 |" in text
+    assert "- lateral: 후보 81 셀" in text and "- 집합: 25 셀 (6.2 cm²)" in text
+    assert "유지율 40/40 = 1.000" in text and "5 %p" in text
     assert "무접촉 일관성: 성립" in text and "= 1.0 mm" in text
     assert "= 0.125 m/s" in text
     assert "| 0.00 | 160 | 160 | 1.000 |" in text and "| 기준 |" in text
@@ -464,13 +551,68 @@ def test_the_report_states_what_was_planted(tmp_path, monkeypatch):
         rp.data_dir("some_robot")
 
 
-def test_an_empty_lateral_set_is_reported_as_empty(tmp_path, monkeypatch):
+class _DiscPool:
+    """Stands in for the worker pool: a fly-in holds within 11 mm of the axis."""
+
+    def __init__(self) -> None:
+        self.flown: list[str] = []
+
+    def imap_unordered(self, _, specs, chunksize=1):
+        for spec in specs:
+            self.flown.append(spec["id"])
+            held = float(np.hypot(*spec["rho"])) < 0.011
+            flown = {k: spec[k] for k in ("rho", "c", "delta_o", "nu", "s_pass")}
+            yield spec["id"], {**_result(held), **flown}
+
+
+def test_the_lateral_stage_flies_every_candidate_forty_times(tmp_path, monkeypatch, capsys):
+    _plant_identification(tmp_path)
+    (tmp_path / "lateral_w020.json").unlink()
+    pool = _DiscPool()
+    ri.stage_lateral("some_robot", tmp_path, pool)
+    store = rp.Store(tmp_path / "lateral_w020.json")
+    n = rp.LATERAL[2]
+    candidates = rp.lateral_candidates(store)
+    full = rp.LATERAL_TRIALS * len(rp.CONDITIONS)
+    # The first pass at every cell, then what is left of forty at each candidate
+    # — also at those whose first fly-in, or any other, did not hold.
+    assert pool.flown[: n * n] == [f"q0_x{i}_y{j}_k0" for i in range(n) for j in range(n)]
+    assert len(pool.flown) == len(set(pool.flown)) == n * n + int(candidates.sum()) * (full - 1)
+    verdict = rp.lateral_verdict(store)
+    assert verdict.complete and (verdict.flown[candidates] == full).all()
+    assert (verdict.flown[~candidates] == 1).all()
+    assert 0 < verdict.held.sum() < candidates.sum()
+    assert (verdict.counts[candidates & ~verdict.held] < full).all()
+    # A fly-in's conditions follow from its id alone: the stage run again flies nothing.
+    again = _DiscPool()
+    ri.stage_lateral("some_robot", tmp_path, again)
+    assert again.flown == []
+    capsys.readouterr()
+    # --box keeps the per-box stages to the boxes named; a box the map lacks is refused.
+    monkeypatch.setattr(ri, "_ONLY_BOXES", ("w020",))
+    assert list(ri._boxes(tmp_path)[1]) == ["w020"]
+    monkeypatch.setattr(ri, "_ONLY_BOXES", ("w040",))
+    with pytest.raises(SystemExit, match="w040"):
+        ri._boxes(tmp_path)
+
+
+def test_a_lateral_store_of_another_rule_is_reported_as_not_flown(tmp_path, monkeypatch):
     _plant_identification(tmp_path / "some_robot")
     path = tmp_path / "some_robot" / "lateral_w020.json"
     items = json.loads(path.read_text())
-    for key in items:
-        if key.startswith("q4_"):
-            items[key] = _result(False)  # nothing holds under the last condition
+    path.write_text(json.dumps({k: v for k, v in items.items() if int(k.split("_k")[1]) < 4}))
+    monkeypatch.setenv("DATA", str(tmp_path))
+    assert rp.main(["some_robot"]) == 0
+    text = (tmp_path / "some_robot" / "report.md").read_text()
+    assert "끝까지 날려지지 않았다" in text and "무접촉 일관성" not in text
+
+
+def test_an_empty_lateral_set_is_reported_as_empty(tmp_path, monkeypatch):
+    _plant_identification(tmp_path / "some_robot")
+    path = tmp_path / "some_robot" / "lateral_w020.json"
+    # Nothing holds at all. (One condition that never holds lowers every cell's
+    # rate alike, the reference cell's too: the report shows that rate.)
+    items = {key: _result(False) for key in json.loads(path.read_text())}
     path.write_text(json.dumps(items))
     monkeypatch.setenv("DATA", str(tmp_path))
     assert rp.main(["some_robot"]) == 0
