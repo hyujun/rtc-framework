@@ -49,7 +49,10 @@
 // one for, so a plan the search would switch to is held
 // (kHeldReplaceUnsupported) and one it would refresh is held as any other
 // (kHeld). The replan comes first so that the followed segment is never later
-// for the search's sake. The search stops when the first catch instant the RT
+// for the search's sake, and the search is timed from where it starts — the
+// cycle's clock after the replan, not the wake instant. Such a wake is never
+// "superseded": that outcome counts plans dropped at the publish re-check, and
+// this wake publishes nothing. The search stops when the first catch instant the RT
 // followed since the last reset is within `planner.freeze.t_stop_plan`, and at
 // COMMITTED whichever comes first; from then on a wake is the replan alone.
 //

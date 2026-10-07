@@ -1161,13 +1161,17 @@ TEST(PlannerCycleFollowing, TheWakeReplansFirstThenSearchesAndPublishesNeitherPl
     const std::uint64_t plan_stores = rig->boxes.plan.sequence();
     // 10 s before the followed catch instant: far outside t_stop_plan.
     const Calls calls = rig->Wake(kFakeTc - 10'000 * kMs);
-    // The segment first, then the search — and the search's wake instant is
-    // the wake's.
+    // The segment first, then the search — and the search's instant is read
+    // on the cycle's clock AFTER the replan, not the wake's: a candidate's lead
+    // and the age of the RT's report are measured from where the search starts.
     const int replan = IndexOf(calls, Call::kReplan);
     const int search = IndexOf(calls, Call::kSearchPlan);
     ASSERT_GE(replan, 0);
     ASSERT_GT(search, replan);
-    EXPECT_EQ(rig->search->plan_now_ns, kFakeTc - 10'000 * kMs);
+    const std::int64_t wake_ns = kFakeTc - 10'000 * kMs;
+    EXPECT_GT(rig->search->plan_now_ns, wake_ns);
+    EXPECT_GT(rig->search->plan_now_ns, kStepBase);  // a reading of the stepping clock
+    EXPECT_LE(rig->search->plan_now_ns, g_step_now);
     // The search was handed the segments the RT reports — the ones a
     // candidate's arm motion has to start on.
     EXPECT_TRUE(rig->search->arm_has_following);
@@ -1254,7 +1258,10 @@ TEST(PlannerCycleFollowing, EveryExitOfAFollowingWakeHasReplannedFirst) {
     EXPECT_EQ(rig->rec.outcome, CycleOutcome::kNoInput);
     EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
   }
-  // The trajectory moved during the search: superseded, nothing stored.
+  // The trajectory moved during the search. A wake that publishes would be
+  // superseded; this one publishes nothing whatever the trajectory did, so its
+  // record stands — the search's verdict is not lost, and "superseded" keeps
+  // counting plans that were dropped for a newer prediction (MD-29).
   {
     auto rig = std::make_unique<FakeRig>();
     rig->cycle.Configure(FollowingSearchParams(0.5));
@@ -1273,9 +1280,24 @@ TEST(PlannerCycleFollowing, EveryExitOfAFollowingWakeHasReplannedFirst) {
     const int replan = IndexOf(calls, Call::kReplan);
     ASSERT_GE(replan, 0);
     EXPECT_GT(IndexOf(calls, Call::kSearchPlan), replan);
-    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kSuperseded);
+    EXPECT_EQ(rig->rec.outcome, CycleOutcome::kHeldReplaceUnsupported);
+    EXPECT_EQ(rig->rec.search.decision, rtc::catching::SwitchDecision::kReplaced);
     EXPECT_EQ(rig->boxes.plan.sequence(), 0U);
+    EXPECT_EQ(IndexOf(calls, Call::kPlanFirst), -1);
   }
+}
+
+// A wake in which the RT follows NO plan is timed from the wake, as before:
+// only the following wake's search starts after another solve.
+TEST(PlannerCycleFollowing, ASearchWithNoPlanFollowedIsStillTimedFromTheWake) {
+  auto rig = std::make_unique<FakeRig>();
+  rig->cycle.Configure(FollowingSearchParams(0.5));
+  rig->boxes.rt.Store(RtIn(Mode::kTracking));
+  rig->boxes.traj.Store(Traj(3));
+  rig->boxes.cov.Store(Cov(3));
+  const std::int64_t wake_ns = kFakeTc - 10'000 * kMs;
+  static_cast<void>(rig->Wake(wake_ns));
+  EXPECT_EQ(rig->search->plan_now_ns, wake_ns);
 }
 
 TEST(PlannerParams, TheSearchStopsWhereThePlanFreezesUnlessTheProfileSaysEarlier) {

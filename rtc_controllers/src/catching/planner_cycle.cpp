@@ -305,10 +305,27 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
     reported_.has_pending = false;
     reported_.has_following = false;
   }
-  PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, reported_, wake, rec.search);
+  // A following wake's search starts after the segment's replan, and its
+  // clock says so: leads, the report's age and the instants a candidate may
+  // start at are measured from where the search begins, not from the wake.
+  const NowReal search_now = following ? NowReal{clock_()} : wake;
+  PlanSnapshot plan = PlanOnce(traj_, cov_, rec.cov_matched, rt, reported_, search_now, rec.search);
   rec.search_valid = plan.valid;
   if (post_search_hook_ != nullptr) {
     post_search_hook_(post_search_context_);
+  }
+  // The RT follows a plan on segments and takes no second one: what the search
+  // would publish is held, and the record says which kind it was — another
+  // plan (the search's own verdict, not a comparison of instants: a grid search
+  // moves its candidates with every snapshot), or the followed one again.
+  // Before the provenance re-check: that re-check is for what is about to be
+  // PUBLISHED, and "superseded" counts plans that were dropped for it (MD-29).
+  if (following) {
+    rec.outcome =
+        plan.valid && rec.search.publish && rec.search.decision == SwitchDecision::kReplaced
+            ? CycleOutcome::kHeldReplaceUnsupported
+            : CycleOutcome::kHeld;
+    return rec;
   }
 
   // ── 4. Provenance re-check before publishing (L3 §5.2, planner side) ─────
@@ -328,16 +345,6 @@ PlannerCycleRecord PlannerCycle::Run(NowReal wake) noexcept {
   // freeze G): publishing nothing IS the decision.
   if (!rec.search.publish) {
     rec.outcome = CycleOutcome::kHeld;
-    return rec;
-  }
-  // The RT follows a plan on segments and takes no second one: what the search
-  // would publish is held, and the record says which kind it was — another
-  // plan (the search's own verdict, not a comparison of instants: a grid search
-  // moves its candidates with every snapshot), or the followed one again.
-  if (following) {
-    rec.outcome = plan.valid && rec.search.decision == SwitchDecision::kReplaced
-                      ? CycleOutcome::kHeldReplaceUnsupported
-                      : CycleOutcome::kHeld;
     return rec;
   }
   // A plan and its first segment go together (MPC E1-F08, MD-56). "No plan"
