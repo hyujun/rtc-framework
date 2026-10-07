@@ -236,6 +236,9 @@ struct Rig {
       params.wait_pose[static_cast<std::size_t>(j)] = rt.wait_pose[static_cast<std::size_t>(j)];
     }
     params.t_freeze = 0.2;
+    // As a profile without the key gives it: the search goes on while a plan
+    // is followed, until the plan freezes.
+    params.t_stop_plan = params.t_freeze;
     params.slice_t_lead_min = 0.6;
     params.slice_t_max = 0.8;
     params.n_settle = 0;
@@ -509,7 +512,7 @@ TEST(ApproachCycle, RightAfterAPairTheSearchWaits) {
 
 // ── Replans ──────────────────────────────────────────────────────────────────
 
-TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport) {
+TEST(ApproachCycle, WhileFollowingTheSearchGoesOnUnpublishedAndEverySegmentStartsOnTheReport) {
   auto r = std::make_unique<Rig>();
   r->StartTrajectory();
   const PlannerCycleRecord first = r->Wake();
@@ -520,6 +523,8 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
   int advance = 0;
   int stop = 0;
   int searched = 0;
+  int searched_after_freeze = 0;
+  int held_replacements = 0;
   std::int32_t last_k = first.segment.k;
   std::uint64_t seq = 1;
   // Wake every ~15 ms through APPROACH, COMMITTED and DECEL to the end of the
@@ -530,9 +535,19 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
       r->StoreTrajectory(seq + 1);
     }
     ++seq;
+    const std::int64_t wake_ns = Now();
     const PlannerCycleRecord rec = r->Wake();
-    searched += rec.search.n_ik > 0 ? 1 : 0;
+    const bool ran = rec.search.n_ik > 0;
+    searched += ran ? 1 : 0;
+    // The search stops where the plan freezes (t_stop_plan = T_freeze here):
+    // a wake inside the freeze window is the replan alone.
+    searched_after_freeze += ran && t_c - wake_ns <= r->rt.t_freeze_ns ? 1 : 0;
+    held_replacements += rec.outcome == CycleOutcome::kHeldReplaceUnsupported ? 1 : 0;
+    // Whatever the search found, the RT's plan is the one it took: nothing is
+    // stored over it, and its id never moves.
     EXPECT_NE(rec.outcome, CycleOutcome::kPublished) << "a second plan while following";
+    EXPECT_EQ(r->boxes.plan.Load().t_c_ns, t_c);
+    EXPECT_EQ(r->boxes.plan.Load().plan_id, first.plan_id);
     if (rec.segment.outcome != SegmentOutcome::kPublished) {
       continue;
     }
@@ -552,13 +567,16 @@ TEST(ApproachCycle, OnceFollowingTheSearchStopsAndEverySegmentStartsOnTheReport)
     EXPECT_GE(rec.segment.k, last_k) << "the grid point never moves back";
     last_k = rec.segment.k;
   }
-  EXPECT_EQ(searched, 0) << "the search ran while the RT followed a plan";
+  EXPECT_GT(searched, 0) << "the search stopped as soon as the RT followed a plan";
+  EXPECT_EQ(searched_after_freeze, 0) << "the search ran inside the freeze window";
   EXPECT_GT(replans, 0);
   EXPECT_GT(same, 0);
   EXPECT_GT(advance, 0);
   EXPECT_GT(stop, 0);
-  std::printf("[ record ] replans %d: same %d, advance %d, stop %d\n", replans, same, advance,
-              stop);
+  std::printf(
+      "[ record ] replans %d: same %d, advance %d, stop %d; searches while following "
+      "%d (%d would have replaced the plan)\n",
+      replans, same, advance, stop, searched, held_replacements);
 }
 
 // The whole catch's time and prediction, in one place: the stop-line test
@@ -758,9 +776,17 @@ enum class RigHistory : std::uint8_t {
 };
 
 /// RunCatch's digests on the rig below: [RT takes every segment, RT keeps the
-/// first] × RigHistory. Taken on the code BEFORE the search and the MPC segment
-/// planner moved behind CatchSearch / SegmentPlanner (E1-F12 #738), when the
-/// cycle held both by value and a re-configure re-used the same two objects.
+/// first] × RigHistory. Retaken when the search began to run while a plan is
+/// followed (E1-F16 #742; the rig stops it at T_freeze): every wake of that
+/// stretch now records a search where it recorded none. That is the ONLY thing
+/// that moved them — with the search stopped at the first followed plan
+/// (`t_stop_plan` left unset) the same code gives the six numbers they
+/// replace, 0x74b66752c2b6a927, 0x47a6055faba0f13a, 0xf994bd4e88fc8518 /
+/// 0xb7132fe2c7363186, 0xb945046f48c1f383, 0x231a91137a556e3c, bit for bit
+/// (measured). Those were taken on the code BEFORE the search and the MPC
+/// segment planner moved behind CatchSearch / SegmentPlanner (E1-F12 #738),
+/// when the cycle held both by value and a re-configure re-used the same two
+/// objects, so the chain back to that code is unbroken.
 /// The two re-configured columns are the cycle-level half of "building NEW
 /// objects on a re-configure changes nothing" — the last one without a trial
 /// reset in between. They are NOT what shows that Configure alone clears what
@@ -784,8 +810,8 @@ enum class RigHistory : std::uint8_t {
 ///    take the same commit's numbers on the recording host before concluding
 ///    anything, and replace them the same way if the environment is what moved.
 constexpr std::array<std::array<std::uint64_t, 3>, 2> kWholeCatchDigest{{
-    {{0x74b66752c2b6a927ULL, 0x47a6055faba0f13aULL, 0xf994bd4e88fc8518ULL}},
-    {{0xb7132fe2c7363186ULL, 0xb945046f48c1f383ULL, 0x231a91137a556e3cULL}},
+    {{0x98d32eb27cf530f5ULL, 0x65c28c576069d158ULL, 0x849daff1596f26acULL}},
+    {{0x44e5a74f2f581dfcULL, 0xa3bab7d8edad0ec5ULL, 0x7f81e44215a9e1ecULL}},
 }};
 
 TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
@@ -821,7 +847,7 @@ TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
       const CatchTrace t = RunCatch(*r, time, rt_takes_replans);
       // The trace went through every kind of wake the cycle has.
       EXPECT_EQ(t.plans, 1);
-      EXPECT_EQ(t.searches, 1) << "the search ran while the RT followed a plan";
+      EXPECT_GT(t.searches, 1) << "the search stopped as soon as the RT followed a plan";
       EXPECT_GT(t.monitor_wakes, 0);
       EXPECT_GT(t.decel_wakes, 0);
       EXPECT_GT(t.segments, 3);
