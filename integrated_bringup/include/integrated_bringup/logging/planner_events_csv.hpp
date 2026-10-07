@@ -31,6 +31,31 @@
 // A wake whose segment step only waited (off, up to date, past the replan
 // window) does not earn a row on its own.
 //
+// The `nlp_*` columns are the NLP search's own account of the wake (E1-F18):
+// its reason (`nlp_reason` — the reason of the candidate that got farthest
+// when it chose none, `off` on a wake no NLP search ran), the candidate funnel,
+// how many candidates each check removed (`nlp_rej_*`), and the chosen
+// candidate's cost split — `nlp_j_reference` is J⋆, `nlp_phi` what it was
+// chosen on. `nlp_solve_us_max` is a CUT instant, not a solve time, on a wake
+// with `nlp_rej_deadline` > 0. The grid search's funnel stays in the columns
+// before them.
+//
+// The columns from `segment_qp_solves` on are the mpc_docking core's account of
+// a solve that reached an iterate (NaN — 0 for a count — for every other
+// planner, and for a solve the core refused outright): QP counts, where the
+// time went, the last QP's stationarity, the violation of each row group at
+// the returned iterate (`segment_viol_*`, the group's unit, 0 = holds) and the
+// QP's elastic per group, the group the core named when it ended infeasible,
+// and the catch node — closing speed, σ_s [m], σ_t [s], and the SIGNED room of
+// the lateral rows and of the timing row [m] (`segment_chance_*`: negative is
+// the violation). `segment_solve_us` of a row whose `segment_core_reason` is
+// `deadline` is the instant the core was cut at, not the time the solve takes.
+//
+// `replace_step` says where a wake's attempt to replace the followed plan
+// ended (ReplaceStepName; `none` on a wake that attempted none), and the
+// `replacement_*` columns are the first solve of a replacement that was
+// withheld — the wake's `segment_*` columns are then the replan's.
+//
 // Readers select columns by NAME: the set has grown and shrunk, and a log
 // from before a change lacks the newer names.
 //
@@ -40,7 +65,10 @@
 
 #include "rtc_controllers/catching/grid_catch_search.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
+#include "rtc_controllers/catching/search_stats.hpp"
+#include "rtc_controllers/catching/segment_planner.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <ostream>
@@ -63,8 +91,54 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "scaled,"
         "segment_ref_scale,segment_ref_shortfall,segment_x0_speed,segment_catch_pos_err,"
         "segment_catch_axis_err,segment_catch_gamma,segment_catch_v_rel,segment_slack_v,"
-        "segment_speed_ratio_max,segment_w_p_fallback,segment_w_delta_scale,segment_source_seq\n";
+        "segment_speed_ratio_max,segment_w_p_fallback,segment_w_delta_scale,segment_source_seq,"
+        "nlp_ran,nlp_reason,nlp_n_lattice,nlp_n_screened,nlp_n_solved,nlp_n_valid,"
+        "nlp_rej_follow_window,nlp_rej_lead_short,nlp_rej_ball_invalid,nlp_rej_workspace,"
+        "nlp_rej_covariance,nlp_rej_no_source,nlp_rej_ik,nlp_rej_manipulability,nlp_rej_reach,"
+        "nlp_rej_speed_window,nlp_rej_not_ranked,nlp_rej_deadline,nlp_rej_solver_rejected,"
+        "nlp_rej_hard_row,nlp_rej_chance,nlp_rej_unconverged,"
+        "nlp_index,nlp_n_pre,nlp_iterations,nlp_source_seq,nlp_x0_clamped,nlp_lead_s,nlp_wait_s,"
+        "nlp_phi,nlp_j_reference,nlp_j_stop,nlp_j_time,nlp_j_switch,"
+        "nlp_follow_anchor_set,nlp_follow_anchor_index,nlp_cells_from_anchor,nlp_ns_from_first,"
+        "nlp_at_window_edge,"
+        "nlp_n_continuous_run,nlp_n_continuous,nlp_n_fallback,nlp_continuous,nlp_delta_ns,"
+        "nlp_sigma_c_cell,"
+        "nlp_screen_us,nlp_solve_us_max,nlp_cmd_gap_q,nlp_cmd_gap_qd,"
+        "segment_qp_solves,segment_qp_iterations,segment_backtracks,segment_mu_updates,"
+        "segment_start_us,segment_linearize_us,segment_assemble_us,segment_qp_us,segment_merit_us,"
+        "segment_kkt_residual,segment_grad_norm,segment_complementarity,segment_infeasible_group,"
+        "segment_viol_torque,segment_viol_gap,segment_viol_entrance,segment_viol_lateral,"
+        "segment_viol_timing,segment_viol_velocity_set,segment_viol_impact,segment_viol_box,"
+        "segment_viol_terminal,"
+        "segment_elastic_torque,segment_elastic_gap,segment_elastic_entrance,"
+        "segment_elastic_lateral,segment_elastic_timing,segment_elastic_velocity_set,"
+        "segment_elastic_impact,"
+        "segment_c_catch,segment_c_guarded,segment_sigma_s,segment_sigma_t,"
+        "segment_chance_lateral,segment_chance_timing,segment_cost_reference,segment_cost_stop,"
+        "replace_step,replacement_outcome,replacement_core_reason,replacement_iterations,"
+        "replacement_solve_us\n";
 }
+
+/// The `nlp_rej_*` columns, in the header's order: every reason a CANDIDATE can
+/// carry (search_stats.hpp — NlpReject between kNone and the wake-only ones).
+inline constexpr std::array<rtc::catching::NlpReject, 16> kNlpRejectColumns{
+    rtc::catching::NlpReject::kFollowWindow,
+    rtc::catching::NlpReject::kLeadShort,
+    rtc::catching::NlpReject::kBallInvalid,
+    rtc::catching::NlpReject::kWorkspace,
+    rtc::catching::NlpReject::kCovariance,
+    rtc::catching::NlpReject::kNoSource,
+    rtc::catching::NlpReject::kIk,
+    rtc::catching::NlpReject::kManipulability,
+    rtc::catching::NlpReject::kReach,
+    rtc::catching::NlpReject::kSpeedWindow,
+    rtc::catching::NlpReject::kNotRanked,
+    rtc::catching::NlpReject::kDeadline,
+    rtc::catching::NlpReject::kSolverRejected,
+    rtc::catching::NlpReject::kHardRow,
+    rtc::catching::NlpReject::kChance,
+    rtc::catching::NlpReject::kUnconverged,
+};
 
 /// Whether the segment step did something worth a row on its own.
 [[nodiscard]] inline bool SegmentStepWorthRecording(rtc::catching::SegmentOutcome o) noexcept {
@@ -120,7 +194,81 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
      << (d.ref_scaled ? 1 : 0) << ',' << d.ref_scale << ',' << d.ref_shortfall << ',' << d.x0_speed
      << ',' << d.catch_pos_err << ',' << d.catch_axis_err << ',' << d.catch_gamma << ','
      << d.catch_v_rel << ',' << d.slack_v << ',' << d.speed_ratio_max << ','
-     << (d.w_p_fallback ? 1 : 0) << ',' << d.w_delta_scale << ',' << d.source_seq << '\n';
+     << (d.w_p_fallback ? 1 : 0) << ',' << d.w_delta_scale << ',' << d.source_seq << ',';
+  // A value the wake did not compute is NaN (file header).
+  const auto num = [&os](bool have, double v) {
+    if (have) {
+      os << v;
+    } else {
+      os << "nan";
+    }
+    os << ',';
+  };
+  // ── The NLP search's account ──
+  const rtc::catching::NlpSearchStats& n = s.nlp;
+  // The chosen candidate's fields mean something only on a wake that chose one.
+  const bool chose = n.ran && n.reason == rtc::catching::NlpReject::kNone;
+  os << (n.ran ? 1 : 0) << ',' << (n.ran ? rtc::catching::NlpRejectName(n.reason) : "off") << ','
+     << n.n_lattice << ',' << n.n_screened << ',' << n.n_solved << ',' << n.n_valid << ',';
+  for (const rtc::catching::NlpReject why : kNlpRejectColumns) {
+    os << n.rejects[static_cast<std::size_t>(why)] << ',';
+  }
+  num(chose, static_cast<double>(n.chosen_index));
+  num(chose, n.chosen_n_pre);
+  num(chose, n.chosen_iterations);
+  num(chose, n.chosen_source_seq);
+  os << (chose && n.chosen_x0_clamped ? 1 : 0) << ',';
+  num(chose, n.chosen_lead_s);
+  num(chose, n.chosen_wait_s);
+  num(chose, n.chosen_phi);
+  num(chose, n.chosen_j_reference);
+  num(chose, n.chosen_j_stop);
+  num(chose, n.chosen_j_time);
+  num(chose, n.chosen_j_switch);
+  os << (n.follow_anchor_set ? 1 : 0) << ',';
+  num(n.follow_anchor_set, static_cast<double>(n.follow_anchor_index));
+  num(chose && n.follow_anchor_set, n.chosen_cells_from_anchor);
+  num(chose && n.follow_anchor_set, static_cast<double>(n.chosen_ns_from_first));
+  os << (chose && n.chosen_at_window_edge ? 1 : 0) << ',' << n.n_continuous_run << ','
+     << n.n_continuous << ',' << n.n_fallback << ',' << (chose && n.chosen_continuous ? 1 : 0)
+     << ',';
+  num(chose, static_cast<double>(n.chosen_delta_ns));
+  num(chose, n.chosen_sigma_c_cell);
+  num(n.ran, static_cast<double>(n.screen_ns / 1000));
+  num(n.ran, static_cast<double>(n.solve_ns_max / 1000));
+  num(n.ran, n.cmd_gap_q);
+  num(n.ran, n.cmd_gap_qd);
+  // ── The mpc_docking core's account of the solve ──
+  const rtc::catching::DockingSolveStats& k = d.docking;
+  os << k.qp_solves << ',' << k.qp_iterations << ',' << k.backtracks << ',' << k.mu_updates << ',';
+  num(k.ran, k.start_us);
+  num(k.ran, k.linearize_us);
+  num(k.ran, k.assemble_us);
+  num(k.ran, k.qp_us);
+  num(k.ran, k.merit_us);
+  num(k.ran, k.kkt_residual);
+  num(k.ran, k.grad_norm);
+  num(k.ran, k.complementarity);
+  os << k.infeasible_group_name << ',';
+  for (const double v : k.violation) {
+    num(k.ran, v);
+  }
+  for (const double v : k.elastic) {
+    num(k.ran, v);
+  }
+  num(k.ran, k.c_catch);
+  os << (k.c_guarded ? 1 : 0) << ',';
+  num(k.ran, k.sigma_s);
+  num(k.ran, k.sigma_t);
+  num(k.ran, k.lateral_margin);
+  num(k.ran, k.timing_margin);
+  num(k.ran, k.cost_reference);
+  num(k.ran, k.cost_stop);
+  // ── A replacement, and the first solve of one that was withheld ──
+  const auto& w = r.replacement;
+  os << rtc::catching::ReplaceStepName(r.replace_step) << ','
+     << rtc::catching::SegmentOutcomeName(w.outcome) << ',' << w.core_reason_name << ','
+     << w.iterations << ',' << w.solve_ns / 1000 << '\n';
 }
 
 }  // namespace integrated_bringup

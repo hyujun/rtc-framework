@@ -393,6 +393,157 @@ TEST(PlannerEventsCsv, ASegmentStepEarnsARowOnlyWhenItDidSomething) {
       << row.str();
 }
 
+// E1-F18: the NLP search's block, the docking core's block and the replacement
+// columns, read back by NAME — the way every reader selects them.
+TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
+  const auto split = [](std::string s) {
+    while (!s.empty() && s.back() == '\n') {
+      s.pop_back();
+    }
+    std::vector<std::string> out;
+    std::istringstream in(s);
+    for (std::string cell; std::getline(in, cell, ',');) {
+      out.push_back(cell);
+    }
+    return out;
+  };
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  const std::vector<std::string> names = split(header.str());
+  EXPECT_EQ(names.back(), "replacement_solve_us");
+  // No name twice: a reader that selects by name would take one of them.
+  EXPECT_EQ(std::set<std::string>(names.begin(), names.end()).size(), names.size());
+  const auto row_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, rec);
+    const std::vector<std::string> cells = split(row.str());
+    EXPECT_EQ(cells.size(), names.size());
+    std::map<std::string, std::string> out;
+    for (std::size_t i = 0; i < std::min(cells.size(), names.size()); ++i) {
+      out[names[i]] = cells[i];
+    }
+    return out;
+  };
+
+  // A record nothing filled: no NLP search ran, no docking solve, no replacement.
+  rtc::catching::PlannerCycleRecord rec{};
+  auto row = row_of(rec);
+  EXPECT_EQ(row["nlp_ran"], "0");
+  EXPECT_EQ(row["nlp_reason"], "off") << "not `none`: that is a wake that chose a plan";
+  EXPECT_EQ(row["nlp_n_lattice"], "0");
+  EXPECT_EQ(row["nlp_phi"], "nan");
+  EXPECT_EQ(row["nlp_solve_us_max"], "nan");
+  EXPECT_EQ(row["segment_qp_solves"], "0");
+  EXPECT_EQ(row["segment_qp_us"], "nan");
+  EXPECT_EQ(row["segment_viol_torque"], "nan");
+  EXPECT_EQ(row["segment_viol_terminal"], "nan");
+  EXPECT_EQ(row["segment_elastic_impact"], "nan");
+  EXPECT_EQ(row["segment_infeasible_group"], "none");
+  EXPECT_EQ(row["segment_chance_lateral"], "nan");
+  EXPECT_EQ(row["replace_step"], "none");
+  EXPECT_EQ(row["replacement_outcome"], "off");
+  EXPECT_EQ(row["replacement_core_reason"], "none");
+
+  // An NLP wake that chose nothing: the reason and the counts are written, the
+  // chosen candidate's fields are not numbers.
+  rec.search.nlp.ran = true;
+  rec.search.nlp.reason = rtc::catching::NlpReject::kSpeedWindow;
+  rec.search.nlp.n_lattice = 18;
+  rec.search.nlp.n_screened = 3;
+  rec.search.nlp.rejects[static_cast<std::size_t>(rtc::catching::NlpReject::kSpeedWindow)] = 15;
+  rec.search.nlp.rejects[static_cast<std::size_t>(rtc::catching::NlpReject::kUnconverged)] = 2;
+  rec.search.nlp.chosen_phi = 7.0;  // stale: not a chosen candidate's
+  rec.search.nlp.screen_ns = 1'500'000;
+  rec.search.nlp.solve_ns_max = 12'000'000;
+  row = row_of(rec);
+  EXPECT_EQ(row["nlp_ran"], "1");
+  EXPECT_EQ(row["nlp_reason"], "speed_window");
+  EXPECT_EQ(row["nlp_n_lattice"], "18");
+  EXPECT_EQ(row["nlp_n_screened"], "3");
+  EXPECT_EQ(row["nlp_rej_speed_window"], "15");
+  EXPECT_EQ(row["nlp_rej_unconverged"], "2");
+  EXPECT_EQ(row["nlp_rej_follow_window"], "0");
+  EXPECT_EQ(row["nlp_phi"], "nan");
+  EXPECT_EQ(row["nlp_screen_us"], "1500");
+  EXPECT_EQ(row["nlp_solve_us_max"], "12000");
+  // … and one that chose a plan.
+  rec.search.nlp.reason = rtc::catching::NlpReject::kNone;
+  rec.search.nlp.chosen_phi = 7.0;
+  rec.search.nlp.chosen_j_reference = 5.5;
+  rec.search.nlp.chosen_n_pre = 3;
+  rec.search.nlp.chosen_lead_s = 0.25;
+  row = row_of(rec);
+  EXPECT_EQ(row["nlp_reason"], "none");
+  EXPECT_EQ(row["nlp_phi"], "7");
+  EXPECT_EQ(row["nlp_j_reference"], "5.5");
+  EXPECT_EQ(row["nlp_n_pre"], "3");
+  EXPECT_EQ(row["nlp_lead_s"], "0.25");
+  EXPECT_EQ(row["nlp_cells_from_anchor"], "nan") << "the RT follows no plan: no anchor";
+
+  // A docking solve that ended infeasible, and a replacement that was withheld.
+  auto& d = rec.segment.docking;
+  d.ran = true;
+  d.qp_solves = 20;
+  d.qp_iterations = 400;
+  d.qp_us = 9500.0;
+  d.kkt_residual = 0.5;
+  d.infeasible_group_name = "lateral";
+  d.violation[3] = 0.02;  // lateral
+  d.violation[8] = 0.25;  // terminal: the last group
+  d.elastic[6] = 0.125;   // impact: the last elastic group
+  d.c_catch = 0.75;
+  d.c_guarded = true;
+  d.sigma_s = 0.03;
+  d.sigma_t = 0.04;
+  d.lateral_margin = -0.02;
+  d.timing_margin = std::numeric_limits<double>::quiet_NaN();
+  rec.replace_step = rtc::catching::ReplaceStep::kWithheld;
+  rec.replacement.outcome = rtc::catching::SegmentOutcome::kBudget;
+  rec.replacement.core_reason_name = "deadline";
+  rec.replacement.iterations = 9;
+  rec.replacement.solve_ns = 35'050'000;
+  row = row_of(rec);
+  EXPECT_EQ(row["segment_qp_solves"], "20");
+  EXPECT_EQ(row["segment_qp_iterations"], "400");
+  EXPECT_EQ(row["segment_qp_us"], "9500");
+  EXPECT_EQ(row["segment_kkt_residual"], "0.5");
+  EXPECT_EQ(row["segment_infeasible_group"], "lateral");
+  EXPECT_EQ(row["segment_viol_lateral"], "0.02");
+  EXPECT_EQ(row["segment_viol_torque"], "0");
+  EXPECT_EQ(row["segment_viol_terminal"], "0.25");
+  EXPECT_EQ(row["segment_elastic_impact"], "0.125");
+  EXPECT_EQ(row["segment_c_catch"], "0.75");
+  EXPECT_EQ(row["segment_c_guarded"], "1");
+  EXPECT_EQ(row["segment_sigma_s"], "0.03");
+  EXPECT_EQ(row["segment_sigma_t"], "0.04");
+  EXPECT_EQ(row["segment_chance_lateral"], "-0.02");
+  EXPECT_EQ(row["segment_chance_timing"], "nan") << "a row the problem lacks";
+  EXPECT_EQ(row["replace_step"], "withheld");
+  EXPECT_EQ(row["replacement_outcome"], "budget");
+  EXPECT_EQ(row["replacement_core_reason"], "deadline");
+  EXPECT_EQ(row["replacement_iterations"], "9");
+  EXPECT_EQ(row["replacement_solve_us"], "35050");
+
+  // The header names the row groups in the docking core's order: the record's
+  // arrays are indexed by it.
+  const auto at = [&](const std::string& name) {
+    return std::find(names.begin(), names.end(), name) - names.begin();
+  };
+  for (int g = 0; g < rtc::catching::kNumDockingRowGroups; ++g) {
+    const auto group = static_cast<rtc::catching::DockingRowGroup>(g);
+    const std::string name = rtc::catching::DockingRowGroupName(group);
+    EXPECT_EQ(at("segment_viol_" + name), at("segment_viol_torque") + g) << name;
+    if (g < rtc::catching::kNumDockingElasticGroups) {
+      EXPECT_EQ(at("segment_elastic_" + name), at("segment_elastic_torque") + g) << name;
+    }
+  }
+  // … and the nlp_rej_* columns by NlpRejectName.
+  for (std::size_t i = 0; i < integrated_bringup::kNlpRejectColumns.size(); ++i) {
+    const std::string name = rtc::catching::NlpRejectName(integrated_bringup::kNlpRejectColumns[i]);
+    EXPECT_EQ(at("nlp_rej_" + name), at("nlp_rej_follow_window") + static_cast<long>(i)) << name;
+  }
+}
+
 // ── The lane ────────────────────────────────────────────────────────────────
 
 class CatchingPlanLaneTest : public ::testing::Test {
