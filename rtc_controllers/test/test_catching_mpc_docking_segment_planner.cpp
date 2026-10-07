@@ -704,6 +704,11 @@ TEST(MpcDockingPlannerFirstSolved, RefusesWhatItCannotStartFromWithTheNamedOutco
     rt.qd_cmd[3] = rest_tol;
     auto at = RunFirst(planner, rt, s->plan, s->Ball(), nullptr, kNow);
     EXPECT_NE(at->rec.outcome, SegmentOutcome::kNotAtRest) << Describe(at->rec);
+    // A speed that is not a number is not "at rest" (a max would drop it).
+    rt = s->rt;
+    rt.qd_cmd[1] = std::numeric_limits<double>::quiet_NaN();
+    r = refused("a NaN commanded speed", rt, s->plan, s->Ball(), SegmentOutcome::kNotAtRest);
+    EXPECT_TRUE(std::isnan(r->rec.x0_speed));
   }
   // No ball.
   refused("empty view", s->rt, s->plan, BallPrediction{}, SegmentOutcome::kNoBall);
@@ -731,9 +736,6 @@ TEST(MpcDockingPlannerFirstSolved, RefusesWhatItCannotStartFromWithTheNamedOutco
     rt.valid = false;
     refused("rt invalid", rt, s->plan, s->Ball(), SegmentOutcome::kNoState);
     rt = s->rt;
-    rt.cmd_seeded = false;
-    refused("command not seeded", rt, s->plan, s->Ball(), SegmentOutcome::kNoState);
-    rt = s->rt;
     rt.nv = 5;
     refused("another joint count", rt, s->plan, s->Ball(), SegmentOutcome::kNoState);
     PlanSnapshot plan = s->plan;
@@ -757,6 +759,31 @@ TEST(MpcDockingPlannerFirstSolved, RefusesWhatItCannotStartFromWithTheNamedOutco
     auto exact = RunFirst(planner, s->rt, plan, s->Ball(), nullptr, kNow);
     EXPECT_NE(exact->rec.outcome, SegmentOutcome::kTooLate) << Describe(exact->rec);
   }
+}
+
+// Before it takes a plan the RT has seeded no command: it reports the measured
+// pose at zero velocity, which is where it seeds the command when it takes the
+// pair. A first segment has to be planned from that report — a planner that
+// asked for a seeded command would never publish the first pair, and the RT
+// would never have a plan to seed on.
+TEST(MpcDockingPlannerFirstSolved, AFirstSegmentIsPlannedBeforeTheRtSeededItsCommand) {
+  auto seeded = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(seeded->Setup());
+  auto base = RunFirst(*seeded->planner, seeded->rt, seeded->plan, seeded->Ball(), nullptr, kNow);
+  ASSERT_TRUE(base->ok) << Describe(base->rec);
+
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  PlannerRtState rt = s->rt;
+  rt.cmd_seeded = false;
+  auto r = RunFirst(*s->planner, rt, s->plan, s->Ball(), nullptr, kNow);
+  ASSERT_TRUE(r->ok) << Describe(r->rec);
+  // The same report but for the flag: the same segment, bit for bit.
+  ASSERT_EQ(r->out.n_nodes, base->out.n_nodes);
+  EXPECT_EQ(r->out.t0_ns, base->out.t0_ns);
+  EXPECT_EQ(r->out.q, base->out.q);
+  EXPECT_EQ(r->out.qd, base->out.qd);
+  EXPECT_EQ(r->out.qdd, base->out.qdd);
 }
 
 TEST(MpcDockingPlannerFirstSolved, ASolveThatTakesLongerThanItsBudgetIsWithheldAsBudget) {
@@ -987,6 +1014,10 @@ TEST(MpcDockingPlannerReplan, RefusesWhatItCannotStartFromWithTheNamedOutcome) {
     report = rt;
     report.valid = false;
     refused("report invalid", report, f.scene->Ball(), SegmentOutcome::kNoState);
+    // A replan starts on the command the RT runs: it has to be seeded.
+    report = rt;
+    report.cmd_seeded = false;
+    refused("command not seeded", report, f.scene->Ball(), SegmentOutcome::kNoState);
     report = rt;
     report.rt_state_ns = now - kMpcDockingMaxRtStateAgeNs - kMs;
     refused("stale report", report, f.scene->Ball(), SegmentOutcome::kStaleState);

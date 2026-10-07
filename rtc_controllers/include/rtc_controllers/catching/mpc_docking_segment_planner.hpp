@@ -187,7 +187,9 @@ class MpcDockingSegmentPlanner final : public SegmentPlanner {
 
  private:
   [[nodiscard]] bool WarmUp(const MpcDockingSegmentPlannerModel& model, std::string& why);
-  [[nodiscard]] bool CheckState(const PlannerRtState& rt, std::int64_t start,
+  // `need_command`: the RT's command must be seeded (a replan starts on it; a
+  // first segment starts where the RT will seed it).
+  [[nodiscard]] bool CheckState(const PlannerRtState& rt, std::int64_t start, bool need_command,
                                 SegmentRecord& rec) const noexcept;
   // The instant of node k of a segment that starts at `t0_ns` with `n_pre`
   // pre-catch intervals.

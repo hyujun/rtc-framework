@@ -283,8 +283,8 @@ std::uint32_t MpcDockingSegmentPlanner::SourceSeq(const PlannerRtState& rt,
 }
 
 bool MpcDockingSegmentPlanner::CheckState(const PlannerRtState& rt, std::int64_t start,
-                                          SegmentRecord& rec) const noexcept {
-  if (!rt.valid || !rt.cmd_seeded || rt.nv != nv_) {
+                                          bool need_command, SegmentRecord& rec) const noexcept {
+  if (!rt.valid || (need_command && !rt.cmd_seeded) || rt.nv != nv_) {
     rec.outcome = SegmentOutcome::kNoState;
     return false;
   }
@@ -433,7 +433,11 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   }
   rec.kind = SegmentKind::kFirst;
   const std::int64_t start = clock_();
-  if (!CheckState(rt, start, rec)) {
+  // Before a plan the RT has no command yet (cmd_seeded false): it reports
+  // the MEASURED pose with zero velocity, which is where it seeds the command
+  // when it takes the plan — the same x₀ either way. Requiring a seeded
+  // command here would withhold every first pair.
+  if (!CheckState(rt, start, /*need_command=*/false, rec)) {
     return false;
   }
   if (!plan.valid || plan.t_c_ns <= 0 || plan.nv != nv_) {
@@ -445,12 +449,16 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
     return false;
   }
   // The arm rests on its command: a first solve starts from (q_cmd, 0, 0).
+  // A NaN is not "at rest": std::max would drop it.
   double speed = 0.0;
+  bool speed_finite = true;
   for (int d = 0; d < nv_; ++d) {
-    speed = std::max(speed, std::fabs(rt.qd_cmd[U(d)]));
+    const double v = rt.qd_cmd[U(d)];
+    speed_finite = speed_finite && std::isfinite(v);
+    speed = std::max(speed, std::fabs(v));
   }
-  rec.x0_speed = speed;
-  if (!(speed <= params_.rest_tol)) {
+  rec.x0_speed = speed_finite ? speed : std::numeric_limits<double>::quiet_NaN();
+  if (!(speed_finite && speed <= params_.rest_tol)) {
     rec.outcome = SegmentOutcome::kNotAtRest;
     return false;
   }
@@ -576,7 +584,7 @@ bool MpcDockingSegmentPlanner::Replan(const PlannerRtState& rt, const BallPredic
     return false;
   }
   const std::int64_t start = clock_();
-  if (!CheckState(rt, start, rec)) {
+  if (!CheckState(rt, start, /*need_command=*/true, rec)) {
     return false;
   }
   if (!rt.plan_active || rt.plan_t_c_ns <= 0) {
