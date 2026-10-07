@@ -181,7 +181,7 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 
 전이 규칙 (한 tick 에 최대 한 번 — 이번 tick 에 들어간 phase 는 아직 명령되지 않았으므로 판정하지 않는다):
 - `Open → Preshape`: 팔이 `wait_pose` 에 도착했다는 L7 지시 (`Ready`) 에서 — **시각 조건이 아니다**. `Ready()` 는 아직 닫히지 않은 commit 을 취소한다
-- `Preshape → Close`: `Commit(t_c)` 가 무장된 뒤 `now_real ≥ t_cmd-h/2` (`HandCommandDueRounded`, §4.3), **COMMITTED 에서만**. commit 은 시행당 한 번 (동결된 $t_c$ 는 하나). 무장된 $t_{cmd}$ 는 `Retime(t_x)` 가 $t_x-T_{close,lead}$ 로 옮긴다 (§4.3 "commit 뒤의 지령 시각") — commit 뒤 · 폐쇄 지령 전에만 듣고, 이미 지난 시각도 받는다 (다음 `Update` 가 지령한다 — 컨트롤러는 같은 tick 에 `Update` 를 부른다)
+- `Preshape → Close`: `Commit(t_c)` 가 무장된 뒤 `now_real ≥ t_cmd-h/2` (`HandCommandDueRounded`, §4.3). **무장은 COMMITTED 진입에서만** 이고, 무장된 폐쇄는 그 뒤의 `ABORT_SAFE` 에서도 $t_{cmd}$ 가 되면 지령된다 (아래 `Abort`) — `RETREAT` 진입이 아직 지령되지 않은 폐쇄를 푼다 (L7 §4.8). commit 은 시행당 한 번 (동결된 $t_c$ 는 하나). 무장된 $t_{cmd}$ 는 `Retime(t_x)` 가 $t_x-T_{close,lead}$ 로 옮긴다 (§4.3 "commit 뒤의 지령 시각") — commit 뒤 · 폐쇄 지령 전에만 듣고, 이미 지난 시각도 받는다 (다음 `Update` 가 지령한다 — 컨트롤러는 같은 tick 에 `Update` 를 부른다)
 - `Close → Hold`: $\rho\ge\eta$ 또는 `T_close_timeout` 경과 (타임아웃이면 플래그). 유지 목표는 `hold.mode` 에 따른다 (§4.4)
 - `Hold → Release`: L7 지시 (시각은 L7 §4.8 "RETREAT 순서" — 판정과 무관하게 팔이 대기 자세에 도착한 뒤. RETREAT 복귀 중에는 손을 열지 않는다)
 - `Release` 목표는 **`q_pre`** 다 (`q_open` 은 homing 전용) — `at_target` (`q_tol`, `qd_tol`) 이면 `Preshape` 로 복귀해 다음 시행의 ARMED 준비를 마친다. 도달을 기다리는 쪽은 L7 이다: `RETREAT` 의 release 뒤 `T_release_timeout` 안에 도달하지 못하면 L7 이 `HAND_TIMEOUT` 으로 `IDLE` 에 가고 disarm 한다 (시퀀서 자체는 시계를 추가로 갖지 않는다)
