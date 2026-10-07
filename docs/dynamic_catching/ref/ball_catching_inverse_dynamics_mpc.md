@@ -1,6 +1,6 @@
 # Arm–Hand Ball Catching을 위한 Inverse-Dynamics MPC 수학적 구성 (개정판 v3)
 
-> **구현 상태.** §0 – §16 은 설계 자료이고 고치지 않는다 — 원래 설계와 구현을 견주어 볼 수 있게 그대로 둔다. 구현한 내용은 문서 끝의 §17 에 원래 절과 대응시켜 적는다 (17.$n$ 이 §$n$ 의 구현). 지금 §17 은 mpc_docking 의 수치 코어 (§10 의 inner 문제, E1-F13 [#739](https://github.com/hyujun/rtc-framework/issues/739)) 와 NLP search 의 탐색 코어 (§11, E1-F14 [#740](https://github.com/hyujun/rtc-framework/issues/740) — 17.11 · 17.12) 를 적는다. 계획기의 한 주기가 그 탐색과 구간 계획기 (`MpcDockingSegmentPlanner`) 를 부르는 것은 E1-F16 [#742](https://github.com/hyujun/rtc-framework/issues/742) 이고 17.12 가 적는다. RT 쪽 (교체 쌍의 수용 등) 은 아직 구현하지 않았다 (E1-F17 – F21, epic [#621](https://github.com/hyujun/rtc-framework/issues/621)).
+> **구현 상태.** §0 – §16 은 설계 자료이고 고치지 않는다 — 원래 설계와 구현을 견주어 볼 수 있게 그대로 둔다. 구현한 내용은 문서 끝의 §17 에 원래 절과 대응시켜 적는다 (17.$n$ 이 §$n$ 의 구현). 지금 §17 은 mpc_docking 의 수치 코어 (§10 의 inner 문제, E1-F13 [#739](https://github.com/hyujun/rtc-framework/issues/739)) 와 NLP search 의 탐색 코어 (§11, E1-F14 [#740](https://github.com/hyujun/rtc-framework/issues/740) — 17.11 · 17.12) 를 적는다. 계획기의 한 주기가 그 탐색과 구간 계획기 (`MpcDockingSegmentPlanner`) 를 부르는 것은 E1-F16 [#742](https://github.com/hyujun/rtc-framework/issues/742) 이고 17.12 가 적는다. RT 쪽 (구간의 추종 · 교체 쌍의 수용 · 폐쇄 지령의 재시각) 은 E1-F17 [#743](https://github.com/hyujun/rtc-framework/issues/743) 이고 17.16 이 적는다. 로그 · 튜닝 · 비교 평가는 아직이다 (E1-F18 – F21, epic [#621](https://github.com/hyujun/rtc-framework/issues/621)).
 
 작성일: 2026-10-02 (v1) · 개정: 2026-10-02 (v2, v3)
 
