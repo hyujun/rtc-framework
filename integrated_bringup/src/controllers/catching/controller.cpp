@@ -1489,6 +1489,48 @@ void DemoCatchingController::DropSegments() noexcept {
   segment_pair_ok_ = false;
 }
 
+void DemoCatchingController::RetimeClose(const ControllerState& state) noexcept {
+  if (!segment_current_valid_ || !law_snapshot_.valid) {
+    return;
+  }
+  rtc::catching::PlaneCrossingParams params{};
+  // One pre-catch interval either side of the committed catch instant: a
+  // crossing further away is not the one this segment was planned to meet.
+  params.window_ns =
+      segment_current_.n_pre > 0 ? segment_current_.dt_pre_ns : segment_current_.dt_ns;
+  // A quarter of a tick: the sequencer rounds the command to the nearest one.
+  params.tol_ns = static_cast<std::int64_t>(std::llround(state.dt * 1e9)) / 4;
+  params.max_iterations = kCloseRetimeMaxIterations;
+  int hint = 0;
+  const auto gap = [this, &hint](std::int64_t t_ns, double& g) noexcept {
+    // The hand: the segment the arm will be on at t — the pending one from its
+    // node 0 on, else the followed one (the planner's own rule, MD-58).
+    const rtc::catching::SegmentSnapshot* seg = rtc::catching::SourceSegmentAt(
+        segment_pending_valid_ ? &segment_pending_ : nullptr, &segment_current_, t_ns);
+    if (!segment_follower_.Sample(*seg, t_ns, retime_sample_)) {
+      return false;
+    }
+    // The ball: the committed track, inside its prediction only.
+    const rtc::catching::SampleEval ball =
+        rtc::catching::SampleAt(law_snapshot_, rtc::catching::NowLead{t_ns}, hint);
+    if (!ball.valid || ball.extrapolated) {
+      return false;
+    }
+    g = rtc::catching::PlaneGap(retime_sample_.placement.rotation(),
+                                retime_sample_.placement.translation(), ball.p, close_plane_s_);
+    return true;
+  };
+  const rtc::catching::PlaneCrossing crossing =
+      rtc::catching::SolvePlaneCrossing(gap, committed_t_c_ns_, params);
+  if (!crossing.valid) {
+    return;
+  }
+  committed_t_cmd_ns_ = rtc::catching::detail::SatSub(crossing.t_ns, t_close_lead_ns_);
+  if (hand_seq_enabled_) {
+    static_cast<void>(hand_seq_.Retime(rtc::catching::BallTime{crossing.t_ns}));
+  }
+}
+
 void DemoCatchingController::DropPendingSegment() noexcept {
   segment_pending_ = rtc::catching::SegmentSnapshot{};
   segment_pending_valid_ = false;
@@ -1838,6 +1880,16 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
   }
   if (stale_long) {
     return {Reason::kBallStaleLong, true};
+  }
+  // The close instant follows the prediction until the close is commanded:
+  // re-solved on the ticks whose inputs changed — a new snapshot of the
+  // committed track, or a segment switch. After the law (the switch is this
+  // tick's) and before the edge below reads the instant.
+  if (!closing && rtc::catching::FollowsSegments(segment_mode_) &&
+      !(hand_seq_enabled_ && hand_seq_.CloseIssued()) &&
+      (law_snapshot_new_ ||
+       tick_record_.segment_event == CatchingDiagLogPod::SegmentEvent::kSwitched)) {
+    RetimeClose(state);
   }
   // COMMITTED → CLOSING once the close command has gone out (R-CLOSE). The
   // sequencer owns that instant; a hand-step profile has no sequencer and
@@ -3416,6 +3468,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
   tick_now_lead_ = rtc::catching::MakeNowLead(tick_now_, t_arm_ns_);
   law_horizon_extrap_ = false;
   law_stepped_cmd_ = false;
+  law_snapshot_new_ = false;
   const rtc::catching::NowReal now = tick_now_;
   traj_view_ = rtc::catching::ReadTraj(snapshot, now, tick_now_lead_, t_stale_ns_,
                                        ActivationGeneration(), consumed_);
@@ -3435,6 +3488,7 @@ ControllerOutput DemoCatchingController::Compute(const ControllerState& state) n
     const std::uint64_t followed = frozen ? committed_generation_ : plan_.token.generation;
     if (plan_active_ && snapshot.valid && snapshot.token.generation == followed) {
       law_snapshot_ = snapshot;
+      law_snapshot_new_ = true;
     }
   }
 

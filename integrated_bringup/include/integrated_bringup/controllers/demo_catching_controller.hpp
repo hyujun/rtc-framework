@@ -115,6 +115,7 @@
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
 #include "rtc_controllers/catching/nlp_catch_search.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
+#include "rtc_controllers/catching/plane_crossing.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
@@ -276,6 +277,10 @@ inline constexpr int kDemoCatchingMaxHandDof = static_cast<int>(rtc::catching::k
 /// runs ahead of the switch, so the wait is at most `budget.replan_s` + 3
 /// control periods — configure requires this bound above that.
 inline constexpr std::int64_t kSegmentAdmissionMaxAgeNs = 50'000'000;
+/// Secant steps a re-timing of the hand's close may take on one tick
+/// (RetimeClose): each is one evaluation of the followed segment's FK and of
+/// the ball's prediction.
+inline constexpr int kCloseRetimeMaxIterations = 8;
 
 class DemoCatchingControllerResetProbe;  // test_catching_reset_probe.cpp (G8-A2)
 
@@ -449,6 +454,13 @@ class DemoCatchingController final : public RTControllerInterface {
   }
 
   [[nodiscard]] bool HasPendingSegmentForTesting() const noexcept { return segment_pending_valid_; }
+
+  /// The instant the hand's close is armed for, as the RT holds it (0 before
+  /// COMMITTED): t_c less the close lead at the freeze, then re-timed until the
+  /// close is commanded (RetimeClose).
+  [[nodiscard]] std::int64_t GetCommittedCloseInstantNsForTesting() const noexcept {
+    return committed_t_cmd_ns_;
+  }
 
   /// Whether a replacement plan waits for its first segment's node 0.
   [[nodiscard]] bool HasPendingPlanForTesting() const noexcept { return plan_next_valid_; }
@@ -1108,6 +1120,16 @@ class DemoCatchingController final : public RTControllerInterface {
 
   /// Empty the pending slot, and with it a replacement plan that waited on it.
   void DropPendingSegment() noexcept;
+  /// COMMITTED under a segment planner, before the close is commanded: solve
+  /// again for the instant the ball crosses the close plane of the catch frame
+  /// — the hand on the segments the RT holds, the ball on the committed
+  /// track's newest prediction — and move the close to that instant less the
+  /// close lead (the sequencer's armed instant and `committed_t_cmd_ns_`
+  /// together). A solve that fails, or lands more than one pre-catch interval
+  /// from the committed catch instant, leaves both where they were. The DECEL
+  /// edge stays on the committed catch instant: the segment's grid is anchored
+  /// there.
+  void RetimeClose(const ControllerState& state) noexcept;
   /// The TRACKING → APPROACH edge's second half under mpc: the segment the
   /// lane judged this tick becomes the pending one. Only after AdoptPlan, and
   /// only when `segment_pair_ok_`.
@@ -1655,6 +1677,12 @@ class DemoCatchingController final : public RTControllerInterface {
   /// The close lead as run (ResolvedCloseLead): what the close command leads
   /// the plan's catch instant by — committed_t_cmd_ns_ = t_c − this.
   std::int64_t t_close_lead_ns_{0};
+  /// The plane of the catch frame the close lead is counted back from, as an
+  /// offset along the frame's z axis [m]: where the catch instant of the
+  /// planner whose segments the arm follows puts the ball — the frame's origin
+  /// (0) under mpc, the entrance plane (`robot.hand.docking.s_ent`) under
+  /// mpc_docking. Read by RetimeClose only.
+  double close_plane_s_{0.0};
   /// RETREAT's wait for the hand at q_pre (D-S8-6); 0 = no timeout.
   std::int64_t t_release_timeout_ns_{0};
   /// Motion deadlines (#537 S9b, D-S9-D1): a stop (ABORT_SAFE ramp, RETREAT
@@ -1794,6 +1822,7 @@ class DemoCatchingController final : public RTControllerInterface {
   //   segment_pair_ok_, plan_next_, plan_next_valid_
   //                                              R, T (DropSegments; also on ABORT_SAFE / RETREAT entry, HOLD drops the pending one, and COMMITTED a waiting replacement with its segment)
   //   segment_in_, segment_refusal_, segment_sample_   exempt: written on the tick that reads them (the tick record's segment_judged says whether the lane ran)
+  //   retime_sample_, law_snapshot_new_          exempt: written on the tick that reads them (RetimeClose's scratch; the flag is rewritten every tick)
   //   sat_streak_, law_horizon_extrap_           R, T
   //   outcome_, outcome_source_                  T (Aborted when an E-STOP ends an attempt);
   //                                              exempt from R: it reports the LAST attempt
@@ -1975,6 +2004,13 @@ class DemoCatchingController final : public RTControllerInterface {
   bool segment_pair_ok_{false};
   /// This tick's sample of a segment (the switch's and the law's).
   rtc::catching::SegmentNodeSample segment_sample_{};
+  /// The re-timing's own sample of a segment (RetimeClose evaluates the hand
+  /// at instants that are not this tick's), so the law's sample is not
+  /// disturbed.
+  rtc::catching::SegmentNodeSample retime_sample_{};
+  /// This tick took a new snapshot of the followed track into
+  /// `law_snapshot_`. Written every tick before it is read.
+  bool law_snapshot_new_{false};
   // RT-OWNED END
 
   // ── Controller-owned topics (`topics:` block) ────────────────────────────

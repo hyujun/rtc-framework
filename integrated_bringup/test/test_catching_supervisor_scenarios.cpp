@@ -37,6 +37,7 @@
 #include "rtc_controllers/catching/joint_stop.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
+#include "rtc_controllers/catching/traj_sampler.hpp"
 #include "rtc_controllers/catching/transition_table.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "ur5e_p1b_test_fixture.hpp"
@@ -377,6 +378,16 @@ class SupervisorScenarioTest : public ::testing::Test {
     spec.n = 8;
     spec.sequence = seq_++;
     spec.generation = generation_;
+    if (ball_line_) {
+      // A ball on a straight line, as the origin stamp the message will carry
+      // puts it: the position at the (estimated) origin instant.
+      spec.n = static_cast<std::uint32_t>(cloud_n_);
+      const double since = static_cast<double>(Now() - stamp_age_ns_ - ball_line_->t_ref_ns) * 1e-9;
+      for (std::size_t i = 0; i < 3; ++i) {
+        spec.p0[i] = ball_line_->p_ref[i] + ball_line_->vel[i] * since;
+        spec.vel[i] = ball_line_->vel[i];
+      }
+    }
     auto msg = integrated_bringup::testing::MakeCloud(spec);
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     const std::int64_t wall =
@@ -388,6 +399,15 @@ class SupervisorScenarioTest : public ::testing::Test {
       executor_->spin_some(2ms);
     }
     last_pub_ns_ = Now();
+    // What the controller took from it: the snapshot's origin on the steady
+    // axis is the receive instant less the origin delay it measured (D-2), so
+    // a test can rebuild the very trajectory the RT samples.
+    const auto ingress = ctrl_->GetIngressSnapshot();
+    if (ball_line_ && ingress.accept_count > accepted_clouds_) {
+      clouds_.push_back(CloudRec{spec.p0, spec.vel, Now() - ingress.diag.origin_delay_ns,
+                                 static_cast<int>(spec.n)});
+    }
+    accepted_clouds_ = ingress.accept_count;
   }
 
   // ── Fingertips ────────────────────────────────────────────────────────────
@@ -549,6 +569,7 @@ class SupervisorScenarioTest : public ::testing::Test {
       }
       d.efforts[j] = holding ? hand_stall_->effort : 0.0;
     }
+    cloud_at_tick_.push_back(static_cast<int>(clouds_.size()) - 1);
     log_.push_back(rec);
     if (real_clock_) {
       std::this_thread::sleep_for(std::chrono::duration<double>(kDt));
@@ -896,6 +917,32 @@ class SupervisorScenarioTest : public ::testing::Test {
   /// How old the origin stamp is on receipt. Past the cloud's 0.35 s window
   /// every sample is behind the tick while the message is still fresh.
   std::int64_t stamp_age_ns_{5 * kMsNs};
+
+  /// A ball on a straight line instead of the default diagonal: where it is
+  /// at `t_ref_ns` (steady axis) and its constant velocity. Unset: the
+  /// fixture's cloud. `cloud_n_` samples of 50 ms are published.
+  struct BallLine {
+    std::array<double, 3> p_ref{};
+    std::int64_t t_ref_ns{0};
+    std::array<double, 3> vel{};
+  };
+
+  std::optional<BallLine> ball_line_;
+  int cloud_n_{20};
+
+  /// One accepted message of a ball line: its first point's position and the
+  /// velocity as sent, its origin on the steady axis as the controller
+  /// measured it (point i is at origin + (i + 1)·50 ms), and its point count.
+  struct CloudRec {
+    std::array<double, 3> p0{};
+    std::array<double, 3> vel{};
+    std::int64_t origin_ns{0};
+    int n{0};
+  };
+
+  std::vector<CloudRec> clouds_;
+  std::vector<int> cloud_at_tick_;  // per tick: the newest entry of clouds_ after it published
+  std::uint64_t accepted_clouds_{0};
 
   // Plant.
   bool servo_hand_{true};
@@ -1318,6 +1365,130 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
 
   static constexpr std::int64_t kFreezeNs = 360 * kMsNs;  // the fixture's T_freeze
 
+  // ── The ball and the hand, independently of the controller ────────────────
+  // (M2, E1-F17) What the close is timed to is the instant the ball crosses a
+  // plane of the catch frame. These evaluate that from the hand-built segment
+  // (the sampler's joints and the fixture's own FK) and the cloud the
+  // controller accepted — never from the controller's solve.
+
+  /// The catch frame's pose on the hand-built segment at `t_ns`.
+  bool HandAt(const SegmentSnapshot& seg, std::int64_t t_ns, Eigen::Matrix3d& R,
+              Eigen::Vector3d& p) const {
+    std::array<double, rtc::catching::kMaxSegmentNv> q{};
+    std::array<double, rtc::catching::kMaxSegmentNv> qd{};
+    std::array<double, rtc::catching::kMaxSegmentNv> qdd{};
+    if (!rtc::catching::NodeTrajectoryFollower::SampleJoints(seg, t_ns, q, qd, qdd)) {
+      return false;
+    }
+    std::array<double, 64> wide{};
+    std::copy(q.begin(), q.begin() + kUr5eArmDof, wide.begin());
+    const pinocchio::SE3 pose = oracle_->PoseAt(arm_names_, wide, kUr5eArmDof);
+    R = pose.rotation();
+    p = pose.translation();
+    return true;
+  }
+
+  /// The ball of a received cloud at `t_ns`; false outside its samples.
+  static bool BallAt(const CloudRec& c, std::int64_t t_ns, Eigen::Vector3d& p) {
+    rtc::catching::TrajectorySnapshot tr{};
+    tr.valid = true;
+    tr.n = c.n;
+    for (int i = 0; i < c.n; ++i) {
+      auto& s = tr.s[static_cast<std::size_t>(i)];
+      const double t = static_cast<double>(i + 1) * 0.05;
+      s.t_ns = c.origin_ns + static_cast<std::int64_t>(i + 1) * 50 * kMsNs;
+      for (std::size_t k = 0; k < 3; ++k) {
+        s.p[k] = c.p0[k] + c.vel[k] * t;
+        s.v[k] = c.vel[k];
+        s.a[k] = k == 2 ? -9.81 : 0.0;  // what the cloud fixture writes
+      }
+    }
+    const rtc::catching::SampleEval e = rtc::catching::SampleAt(tr, rtc::catching::NowLead{t_ns});
+    if (!e.valid || e.extrapolated) {
+      return false;
+    }
+    p = e.p;
+    return true;
+  }
+
+  /// g(t) = e3' R' (p_ball − p_hand) − s_plane; false where either is unknown.
+  bool Gap(const SegmentSnapshot& seg, const CloudRec& c, double s_plane, std::int64_t t_ns,
+           double& g) const {
+    Eigen::Matrix3d R;
+    Eigen::Vector3d p_h;
+    Eigen::Vector3d p_b;
+    if (!HandAt(seg, t_ns, R, p_h) || !BallAt(c, t_ns, p_b)) {
+      return false;
+    }
+    g = (R.transpose() * (p_b - p_h)).z() - s_plane;
+    return true;
+  }
+
+  /// The root of g nearest `center_ns` within ± `half_ns`: a 0.1 ms scan for
+  /// the sign changes, bisection to 1 ns on the nearest. nullopt when none.
+  std::optional<std::int64_t> CrossingNear(const SegmentSnapshot& seg, const CloudRec& c,
+                                           double s_plane, std::int64_t center_ns,
+                                           std::int64_t half_ns) const {
+    constexpr std::int64_t kScanNs = 100'000;
+    std::optional<std::pair<std::int64_t, std::int64_t>> best;
+    double g_prev = 0.0;
+    bool have_prev = false;
+    for (std::int64_t t = center_ns - half_ns; t <= center_ns + half_ns; t += kScanNs) {
+      double g = 0.0;
+      if (!Gap(seg, c, s_plane, t, g)) {
+        have_prev = false;
+        continue;
+      }
+      if (have_prev && ((g_prev < 0.0) != (g < 0.0))) {
+        const std::int64_t mid = t - kScanNs / 2;
+        if (!best ||
+            std::abs(mid - center_ns) < std::abs((best->first + best->second) / 2 - center_ns)) {
+          best = std::make_pair(t - kScanNs, t);
+        }
+      }
+      g_prev = g;
+      have_prev = true;
+    }
+    if (!best) {
+      return std::nullopt;
+    }
+    std::int64_t lo = best->first;
+    std::int64_t hi = best->second;
+    double g_lo = 0.0;
+    if (!Gap(seg, c, s_plane, lo, g_lo)) {
+      return std::nullopt;
+    }
+    while (hi - lo > 1) {
+      const std::int64_t mid = lo + (hi - lo) / 2;
+      double g = 0.0;
+      if (!Gap(seg, c, s_plane, mid, g)) {
+        return std::nullopt;
+      }
+      if ((g < 0.0) == (g_lo < 0.0)) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
+  }
+
+  /// A ball that is `speed` m/s down the catch frame's z axis and on the
+  /// plane s = 0 of the hand (as the segment puts it) at `t_cross_ns`.
+  BallLine CrossingBall(std::int64_t t_cross_ns, double speed) const {
+    Eigen::Matrix3d R;
+    Eigen::Vector3d p;
+    EXPECT_TRUE(HandAt(first_seg_, t_cross_ns, R, p));
+    const Eigen::Vector3d v = -speed * R.col(2);
+    BallLine b;
+    b.t_ref_ns = t_cross_ns;
+    for (std::size_t k = 0; k < 3; ++k) {
+      b.p_ref[k] = p[static_cast<long>(k)];
+      b.vel[k] = v[static_cast<long>(k)];
+    }
+    return b;
+  }
+
   /// The tick the pair was last written before (the adoption tick, when it
   /// was taken), and the segment written.
   int pair_tick_{-1};
@@ -1332,6 +1503,128 @@ class MpcScenarioTest : public SegmentScenarioBase,
  protected:
   void BringUpMpc(const std::function<void(YAML::Node&)>& extra = nullptr) {
     BringUpSegmentMode(GetParam(), extra);
+  }
+
+  // ── M2: the close follows the prediction until it is commanded ────────────
+
+  /// What a trial of RunCloseTrial asks: the ball's crossing of the close
+  /// plane (relative to the committed t_c) up to a switch, the crossing after
+  /// it and when (relative to t_c) the new prediction arrives, and the
+  /// crossing of one more switch made after the close has gone out.
+  struct CloseTrialSpec {
+    std::int64_t cross_ns{0};
+    std::optional<std::int64_t> switch_cross_ns;
+    std::int64_t switch_at_ns{-340 * kMsNs};
+    std::optional<std::int64_t> after_close_cross_ns;
+    int cloud_n{20};
+    double speed{1.0};
+  };
+
+  struct CloseTrial {
+    std::int64_t t_c{0};
+    std::int64_t lead_ns{0};
+    double s_plane{0.0};
+    int close_tick{-1};
+    int switch_tick{-1};
+    std::int64_t instant_at_close{0};  // the controller's, on the close tick
+    std::int64_t close_before_ns{0};   // the close tick's start
+    std::int64_t decel_before_ns{0};
+    std::vector<std::pair<std::int64_t, std::int64_t>> instants;  // (now − t_c, instant − t_c)
+    std::vector<int> phases;                                      // the hand's phase sequence
+    std::optional<std::int64_t> root_ns;        // independent, on the cloud of the close tick
+    std::optional<std::int64_t> root_other_ns;  // … on the other planner's plane
+    SegmentSnapshot seg{};
+  };
+
+  /// The entrance plane of the shipped docking design [m].
+  static double ShippedSEnt() {
+    return YAML::LoadFile(ament_index_cpp::get_package_share_directory("integrated_bringup") +
+                          "/config/ur5e_p1b/controllers/demo_catching_controller.yaml")
+        ["demo_catching_controller"]["catching"]["robot"]["hand"]["docking"]["s_ent"]
+            .as<double>();
+  }
+
+  /// A fresh controller on the profile, its pair taken, then `spec`'s balls
+  /// published by hand (the 30 ms cadence of the fixture, the new prediction
+  /// at its instant) through to RETREAT. The previous trial's state is
+  /// dropped first, as ClosedFormIsTheDefault does.
+  void RunCloseTrial(const CloseTrialSpec& spec, CloseTrial& out) {
+    if (!log_.empty()) {
+      TearDown();
+      log_.clear();
+      seq_ = 1;
+      last_pub_ns_ = 0;
+      pair_tick_ = -1;
+      clouds_.clear();
+      cloud_at_tick_.clear();
+      accepted_clouds_ = 0;
+      ball_line_.reset();
+      pre_tick_ = nullptr;
+      publishing_ = true;
+      SetUp();
+    }
+    ASSERT_NO_FATAL_FAILURE(BringUpMpc());
+    ASSERT_NO_FATAL_FAILURE(TakeThePair());
+    out = CloseTrial{};
+    out.seg = first_seg_;
+    const std::int64_t t_c = first_seg_.t_c_ns;
+    out.t_c = t_c;
+    out.lead_ns =
+        std::llround(node_->get_parameter("hand.T_close_lead_from_t_c").as_double() * 1e9);
+    out.s_plane = std::string(GetParam()) == "mpc_docking" ? ShippedSEnt() : 0.0;
+    cloud_n_ = spec.cloud_n;
+    ball_line_ = CrossingBall(t_c + spec.cross_ns, spec.speed);
+    publishing_ = false;  // the hook below is the publisher
+    bool switched = false;
+    bool altered = false;
+    int ticks_after_close = 0;
+    pre_tick_ = [&] {
+      const std::int64_t rel = Now() - t_c;
+      if (!switched && spec.switch_cross_ns && rel >= spec.switch_at_ns) {
+        ball_line_ = CrossingBall(t_c + *spec.switch_cross_ns, spec.speed);
+        out.switch_tick = static_cast<int>(log_.size());
+        switched = true;
+        PublishNow();
+      } else if (spec.after_close_cross_ns && !altered && ticks_after_close >= 3) {
+        ball_line_ = CrossingBall(t_c + *spec.after_close_cross_ns, spec.speed);
+        altered = true;
+        PublishNow();
+      } else if (Now() - last_pub_ns_ >= 30 * kMsNs) {
+        PublishNow();
+      }
+    };
+    for (int t = 0; t < 2500 && ctrl_->GetMode() != Mode::kRetreat; ++t) {
+      Tick();
+      const TickRec& r = log_.back();
+      if (r.mode == Mode::kCommitted || r.mode == Mode::kClosing) {
+        out.instants.emplace_back(r.before_ns - t_c,
+                                  ctrl_->GetCommittedCloseInstantNsForTesting() - t_c);
+      }
+      if (r.hand_active && r.phase == HandPhase::kClose) {
+        if (out.close_tick < 0) {
+          out.close_tick = static_cast<int>(log_.size()) - 1;
+          out.instant_at_close = ctrl_->GetCommittedCloseInstantNsForTesting();
+          out.close_before_ns = r.before_ns;
+        } else {
+          ++ticks_after_close;
+        }
+      }
+      if (r.hand_active && (out.phases.empty() || out.phases.back() != static_cast<int>(r.phase))) {
+        out.phases.push_back(static_cast<int>(r.phase));
+      }
+    }
+    pre_tick_ = nullptr;
+    ASSERT_EQ(ctrl_->GetMode(), Mode::kRetreat) << Transitions();
+    ASSERT_GE(out.close_tick, 0) << Transitions();
+    ASSERT_NO_FATAL_FAILURE(ExpectDecelAtTc());
+    out.decel_before_ns = log_[static_cast<std::size_t>(Entry(Mode::kDecel))].before_ns - t_c;
+    // The independent crossing, on the newest message the close tick had.
+    const int cloud = cloud_at_tick_[static_cast<std::size_t>(out.close_tick)];
+    ASSERT_GE(cloud, 0) << "the controller accepted no ball line";
+    const CloudRec& c = clouds_[static_cast<std::size_t>(cloud)];
+    const double other_s = out.s_plane == 0.0 ? ShippedSEnt() : 0.0;
+    out.root_ns = CrossingNear(out.seg, c, out.s_plane, t_c, 100 * kMsNs);
+    out.root_other_ns = CrossingNear(out.seg, c, other_s, t_c, 100 * kMsNs);
   }
 };
 
@@ -2195,6 +2488,198 @@ TEST_P(MpcScenarioTest, AWaitingReplacementGoesWithThePlanWhenTheBallGoesStale) 
   EXPECT_FALSE(ctrl_->HasPendingSegmentForTesting());
   EXPECT_FALSE(ctrl_->IsFollowingSegmentForTesting());
   EXPECT_FALSE(ctrl_->GetPlannerRtState().plan_pending);
+}
+
+// ── M2 (E1-F17): the close is re-timed to the ball's crossing of the close ──
+// plane until it is commanded. The ball is a straight line down the catch
+// frame's z axis at 1 m/s that crosses the plane s = 0 of the hand (as the
+// hand-built segment moves it) at a chosen instant; the expected crossing is
+// found here by a scan and a bisection on the sampler's joints, the
+// fixture's FK and the message the controller accepted — never by the
+// controller's solve. Under mpc_docking the plane is the entrance plane
+// (robot.hand.docking.s_ent), and the lead is the one the controller runs.
+
+namespace m2 {
+constexpr std::int64_t kTolNs = kHNs / 4 + 1000;  // the solver's tolerance + the scan's 1 us
+}
+
+TEST_P(MpcScenarioTest, TheCloseFollowsALaterPrediction) {
+  for (const std::int64_t delta : {10 * kMsNs, 15 * kMsNs, 20 * kMsNs}) {
+    SCOPED_TRACE("delta " + std::to_string(delta / kMsNs) + " ms");
+    CloseTrial ctrl_run;
+    CloseTrial run;
+    CloseTrialSpec spec;
+    ASSERT_NO_FATAL_FAILURE(RunCloseTrial(spec, ctrl_run));
+    spec.switch_cross_ns = delta;
+    ASSERT_NO_FATAL_FAILURE(RunCloseTrial(spec, run));
+    ASSERT_TRUE(ctrl_run.root_ns && run.root_ns && run.root_other_ns)
+        << "the independent crossing was not found";
+    // The instant is the crossing less the close lead the controller runs.
+    EXPECT_NEAR(static_cast<double>(ctrl_run.instant_at_close),
+                static_cast<double>(*ctrl_run.root_ns - ctrl_run.lead_ns),
+                static_cast<double>(m2::kTolNs))
+        << "control";
+    EXPECT_NEAR(static_cast<double>(run.instant_at_close),
+                static_cast<double>(*run.root_ns - run.lead_ns), static_cast<double>(m2::kTolNs));
+    // The close goes out within h/2 of the instant.
+    for (const CloseTrial* r : {&ctrl_run, &run}) {
+      EXPECT_LE(std::abs(r->close_before_ns - r->instant_at_close), kHNs / 2)
+          << "close tick " << (r->close_before_ns - r->t_c) / 1000 << " us, instant "
+          << (r->instant_at_close - r->t_c) / 1000 << " us (from t_c)";
+    }
+    // It moved by what the prediction moved (the received messages' own
+    // crossings, not the asked instants — the receive latency is part of the
+    // origin the controller measures).
+    const std::int64_t moved_root = (*run.root_ns - run.t_c) - (*ctrl_run.root_ns - ctrl_run.t_c);
+    const std::int64_t moved_instant =
+        (run.instant_at_close - run.t_c) - (ctrl_run.instant_at_close - ctrl_run.t_c);
+    const std::int64_t moved_tick =
+        (run.close_before_ns - run.t_c) - (ctrl_run.close_before_ns - ctrl_run.t_c);
+    EXPECT_LE(std::abs(moved_instant - moved_root), kHNs / 2);
+    EXPECT_LE(std::abs(moved_tick - moved_root), kHNs) << "two ticks' rounding";
+    EXPECT_LE(std::abs(moved_root - delta), 3 * kMsNs) << "the prediction moved by what was asked";
+    std::printf(
+        "[ MEASURED ] %s delta %lld us asked, crossing moved %lld us, instant moved %lld us, "
+        "close tick moved %lld us; crossing %lld us after t_c, lead %lld us, plane %.4f m\n",
+        GetParam(), static_cast<long long>(delta / 1000), static_cast<long long>(moved_root / 1000),
+        static_cast<long long>(moved_instant / 1000), static_cast<long long>(moved_tick / 1000),
+        static_cast<long long>((*run.root_ns - run.t_c) / 1000),
+        static_cast<long long>(run.lead_ns / 1000), run.s_plane);
+    // The sequence of the hand and the DECEL tick do not move.
+    EXPECT_EQ(run.phases, ctrl_run.phases);
+    EXPECT_EQ(run.decel_before_ns, ctrl_run.decel_before_ns);
+    // The plane matters: the other planner's plane would put the instant
+    // elsewhere by more than a tick (s_ent over the closing speed).
+    const std::int64_t other = *run.root_other_ns - run.lead_ns;
+    EXPECT_GT(std::abs(run.instant_at_close - other), kHNs) << "the plane made no difference";
+    const double shift_s = std::abs(static_cast<double>(*run.root_ns - *run.root_other_ns)) * 1e-9;
+    EXPECT_NEAR(shift_s, ShippedSEnt() / 1.0, 0.5 * ShippedSEnt())
+        << "the two planes' crossings are one s_ent over the closing speed apart";
+  }
+}
+
+TEST_P(MpcScenarioTest, TheCloseFollowsAnEarlierPrediction) {
+  CloseTrial ctrl_run;
+  CloseTrialSpec spec;
+  ASSERT_NO_FATAL_FAILURE(RunCloseTrial(spec, ctrl_run));
+  // Earlier, the new instant still ahead of the tick it is learned on.
+  {
+    SCOPED_TRACE("earlier by 10 ms, learned early in COMMITTED");
+    CloseTrial run;
+    spec.switch_cross_ns = -10 * kMsNs;
+    ASSERT_NO_FATAL_FAILURE(RunCloseTrial(spec, run));
+    ASSERT_TRUE(run.root_ns && ctrl_run.root_ns);
+    EXPECT_NEAR(static_cast<double>(run.instant_at_close),
+                static_cast<double>(*run.root_ns - run.lead_ns), static_cast<double>(m2::kTolNs));
+    EXPECT_LE(std::abs(run.close_before_ns - run.instant_at_close), kHNs / 2);
+    EXPECT_LT(run.instant_at_close, run.t_c + ctrl_run.instant_at_close - ctrl_run.t_c);
+    EXPECT_EQ(run.phases, ctrl_run.phases);
+    EXPECT_EQ(run.decel_before_ns, ctrl_run.decel_before_ns);
+    std::printf("[ MEASURED ] %s earlier: asked -10000 us, instant moved %lld us\n", GetParam(),
+                static_cast<long long>(((run.instant_at_close - run.t_c) -
+                                        (ctrl_run.instant_at_close - ctrl_run.t_c)) /
+                                       1000));
+  }
+  // Earlier than the tick it is learned on: the instant is already past (the
+  // old one is still ahead), so the close goes out on that tick or the next.
+  {
+    SCOPED_TRACE("earlier by 20 ms, learned 5 ms before the old instant");
+    CloseTrial run;
+    CloseTrialSpec late;
+    late.switch_cross_ns = -20 * kMsNs;
+    // 5 ms before the instant the unchanged ball would have closed at.
+    late.switch_at_ns = (ctrl_run.instant_at_close - ctrl_run.t_c) - 5 * kMsNs;
+    ASSERT_NO_FATAL_FAILURE(RunCloseTrial(late, run));
+    ASSERT_TRUE(run.root_ns);
+    ASSERT_GE(run.switch_tick, 0);
+    EXPECT_NEAR(static_cast<double>(run.instant_at_close),
+                static_cast<double>(*run.root_ns - run.lead_ns), static_cast<double>(m2::kTolNs));
+    const std::int64_t learned = log_[static_cast<std::size_t>(run.switch_tick)].before_ns;
+    EXPECT_LT(run.instant_at_close, learned) << "the new instant was not already past";
+    EXPECT_GE(run.close_tick, run.switch_tick);
+    EXPECT_LE(run.close_tick, run.switch_tick + 1)
+        << "the close did not go out on the tick the prediction came or the next";
+    EXPECT_EQ(run.phases, ctrl_run.phases);
+    EXPECT_EQ(run.decel_before_ns, ctrl_run.decel_before_ns);
+    std::printf(
+        "[ MEASURED ] %s past instant: learned at %lld us from t_c, instant %lld us, close "
+        "tick %d (learned on %d)\n",
+        GetParam(), static_cast<long long>((learned - run.t_c) / 1000),
+        static_cast<long long>((run.instant_at_close - run.t_c) / 1000), run.close_tick,
+        run.switch_tick);
+  }
+}
+
+TEST_P(MpcScenarioTest, AfterTheCloseIsCommandedThePredictionIsIgnored) {
+  CloseTrial ctrl_run;
+  CloseTrialSpec spec;
+  spec.switch_cross_ns = 10 * kMsNs;
+  ASSERT_NO_FATAL_FAILURE(RunCloseTrial(spec, ctrl_run));
+  CloseTrial run;
+  spec.after_close_cross_ns = 60 * kMsNs;  // a ball that would move the instant a lot
+  ASSERT_NO_FATAL_FAILURE(RunCloseTrial(spec, run));
+  // From the close tick on, the instant is the one the close went out on, and
+  // the hand and the DECEL edge are the unchanged run's.
+  bool after = false;
+  int n_after = 0;
+  for (const auto& [rel_now, rel_instant] : run.instants) {
+    after = after || run.t_c + rel_now >= run.close_before_ns;
+    if (after) {
+      EXPECT_EQ(run.t_c + rel_instant, run.instant_at_close)
+          << "moved at " << rel_now / 1000 << " us";
+      ++n_after;
+    }
+  }
+  EXPECT_GT(n_after, 3);
+  // (The two runs' messages differ by the receive latency, tens of µs.)
+  EXPECT_NEAR(static_cast<double>(run.instant_at_close - run.t_c),
+              static_cast<double>(ctrl_run.instant_at_close - ctrl_run.t_c), 200'000.0);
+  EXPECT_EQ(run.close_before_ns - run.t_c, ctrl_run.close_before_ns - ctrl_run.t_c);
+  EXPECT_EQ(run.phases, ctrl_run.phases);
+  EXPECT_EQ(run.decel_before_ns, ctrl_run.decel_before_ns);
+}
+
+TEST_P(MpcScenarioTest, ACrossingOutsideTheWindowOrThePredictionLeavesTheInstantAtTcLessTheLead) {
+  CloseTrial ctrl_run;
+  CloseTrialSpec spec;
+  ASSERT_NO_FATAL_FAILURE(RunCloseTrial(spec, ctrl_run));
+  // (a) a crossing 150 ms after t_c: outside ± one pre-catch interval (100 ms).
+  {
+    SCOPED_TRACE("crossing 150 ms after t_c");
+    CloseTrial run;
+    CloseTrialSpec far;
+    far.cross_ns = 150 * kMsNs;
+    ASSERT_NO_FATAL_FAILURE(RunCloseTrial(far, run));
+    ASSERT_FALSE(run.instants.empty());
+    for (const auto& [rel_now, rel_instant] : run.instants) {
+      ASSERT_EQ(rel_instant, -run.lead_ns) << "moved at " << rel_now / 1000 << " us";
+    }
+    // The close goes out at t_c less the lead, as without M2.
+    EXPECT_LE(std::abs(run.close_before_ns - (run.t_c - run.lead_ns)), kHNs / 2);
+  }
+  // (b) a ball the prediction does not cover at its crossing: the shortest
+  // accepted cloud (7 samples, 0.35 s) reaches t_c + 20 ms only from
+  // t_c − 0.325 s on — until then the instant stays, and then it moves.
+  {
+    SCOPED_TRACE("crossing 20 ms after t_c, seen through a 0.35 s window");
+    CloseTrial run;
+    CloseTrialSpec short_cloud;
+    short_cloud.cross_ns = 20 * kMsNs;
+    short_cloud.cloud_n = 7;
+    ASSERT_NO_FATAL_FAILURE(RunCloseTrial(short_cloud, run));
+    int uncovered = 0;
+    for (const auto& [rel_now, rel_instant] : run.instants) {
+      if (rel_now <= -338 * kMsNs) {
+        ASSERT_EQ(rel_instant, -run.lead_ns) << "moved at " << rel_now / 1000 << " us";
+        ++uncovered;
+      }
+    }
+    EXPECT_GT(uncovered, 3);
+    ASSERT_TRUE(run.root_ns);
+    EXPECT_NEAR(static_cast<double>(run.instant_at_close),
+                static_cast<double>(*run.root_ns - run.lead_ns), static_cast<double>(m2::kTolNs));
+    EXPECT_NE(run.instant_at_close - run.t_c, -run.lead_ns) << "never covered: nothing to show";
+  }
 }
 
 // ── E-STOP and reset (MD-35, E-8) ───────────────────────────────────────────
