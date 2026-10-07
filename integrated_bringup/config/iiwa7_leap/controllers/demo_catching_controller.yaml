@@ -242,20 +242,12 @@ demo_catching_controller:
         # is 14 – 66 ms after it), where the old rule (close 0.1037 before it)
         # had it complete 6 ms BEFORE the arrival — 20 ms outside the window.
         # Read by the hand sequencer, the plan's t_cmd, the freeze-window bound
-        # and the grid search's commit gate. The sequencer subtracts a lead
-        # from a plan's catch instant t_c, and what t_c is in the arm's motion
-        # is decided by the planner whose SEGMENTS the arm follows: closed_form
-        # and mpc put the catch-frame origin on the ball at t_c (whichever
-        # search made the plan), so under them this value runs as written.
-        # The mpc_docking planner puts t_c at the ball's crossing of the
-        # entrance plane (docking.s_ent before the origin), so under it the
-        # controller runs this value LESS s_ent over the reference closing
-        # speed — 0.0577 - 0.053 / 1.65 = 0.0256 s (mirrored as
-        # hand.T_close_lead_from_t_c). The docking cores of either docking
-        # function are given that same entrance-axis lead: their closure
-        # completes T_close_e2e - 0.0256 = 72.4 ms after the crossing (delta_0,
-        # mid-window). Absent, the key is T_close_e2e (and the configure log
-        # says so). Provisional (sim).
+        # and the grid search's commit gate. Whose catch instant the lead is
+        # subtracted from, and the one conversion the controller makes under
+        # the mpc_docking segment planner (mirror hand.T_close_lead_from_t_c),
+        # are L6 §4.3's; this hand's converted lead and the docking cores'
+        # delta_0 are in L6 §4.6. Absent, the key is T_close_e2e (and the
+        # configure log says so). Provisional (sim).
         T_close_lead: 0.0577
 
         # ── The docking capture set (E1-F15 #741, re-measured in E1-F16 #742) ──

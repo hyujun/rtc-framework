@@ -318,3 +318,9 @@ C++ 빌드·테스트 CI (`ros2-advanced-ci`) 가 제거되어, 그 게이트 jo
   과 같은 fallback), fixture 는 *무엇을 단언하는가*(sibling 과의 범위 분할, CallbackReturn 을 쌍으로
   단언), **pass 선택 규칙 자체는 AP-PROC-9 한 곳**. 유도가 아니라 포인터만 남기면 다음에 그 규칙이
   바뀔 때 고칠 곳이 하나다
+- **세 번째 실측 — 규칙이 바뀌는 날 사본 수만큼 고친다**: 손의 폐쇄 lead 를 어느 축의 값으로
+  실행하는가 (`mpc_docking` 아래의 환산) 가 [L6_hand.md](../dynamic_catching/ref/L6_hand.md) §4.3 외에 L3_planner.md §4.11 · integrated_bringup README ·
+  두 로봇 YAML 주석에 산문으로, YAML 에는 환산한 수치까지 다섯 번 적혀 있었다. 리뷰가 규칙을 바꾸자
+  (환산은 `mpc_docking` 아래에서만) 다섯 곳을 전부 고쳐야 했고, 다 고쳤는지는 grep 으로만 알 수
+  있었다 (#742). 접은 뒤: 규칙과 식은 L6_hand.md §4.3, 환산한 수치는 L6_hand.md §4.6 의 측정 표 한 곳, 나머지는
+  자기 축 (L3 는 $t_{cmd}$ 식, README 는 키와 미러, YAML 은 그 손의 창) 만 적고 가리킨다
