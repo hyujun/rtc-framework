@@ -83,7 +83,7 @@ class HandProfile:
     # `T_close_e2e_at_run`): the MEASURED closure time. NaN when the sidecar
     # does not say.
     t_close_e2e: float = math.nan
-    # `hand.T_close_lead` as loaded for the run (sidecar `T_close_lead_at_run`):
+    # `hand.T_close_lead_from_t_c` as run (sidecar `T_close_lead_at_run`):
     # what the hand sequencer subtracts from the catch instant to time the close
     # command. NaN when the sidecar does not say (a controller built before the
     # lead was split from T_close_e2e, where the two were one value).

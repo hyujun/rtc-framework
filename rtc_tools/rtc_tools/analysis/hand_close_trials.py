@@ -73,10 +73,14 @@ class HandStepRunner(Node):
             "hand.eta_close",
             "hand.rho_eps",
             "hand.T_close_e2e",
-            # Absent on a controller built before the lead was split from
-            # T_close_e2e: get_parameters answers NOT_SET for an undeclared
-            # name, which reads back as None. Optional; every other name is not.
-            "hand.T_close_lead",
+            # The lead AS RUN — what the sequencer subtracts from a plan's
+            # catch instant, which under mpc_docking is shorter than the
+            # profile's `hand.T_close_lead` by the flight from the hand's
+            # entrance plane. Absent on a controller built before the lead was
+            # split from T_close_e2e: get_parameters answers NOT_SET for an
+            # undeclared name, which reads back as None. Optional; every other
+            # name is not.
+            "hand.T_close_lead_from_t_c",
             "diagnostic.hand_step",
             # The RT tick period, mirrored by the controller from its own
             # control_rate. The analyser scales its tick axis and sizes its
@@ -109,8 +113,8 @@ class HandStepRunner(Node):
             "hand_step_enabled": bool(values["diagnostic.hand_step"]),
             "dt": float(values["control.dt"]),
         }
-        if values["hand.T_close_lead"] is not None:
-            profile["T_close_lead_at_run"] = float(values["hand.T_close_lead"])
+        if values["hand.T_close_lead_from_t_c"] is not None:
+            profile["T_close_lead_at_run"] = float(values["hand.T_close_lead_from_t_c"])
         if not profile["hand_step_enabled"]:
             raise SystemExit(
                 "the controller reports diagnostic.hand_step = false, so it will refuse "
