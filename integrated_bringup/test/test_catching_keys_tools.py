@@ -113,3 +113,45 @@ def test_run_unit_records_and_checks_only_the_new_mirror_names():
         # the only place an old name may appear is the plan-refusal `case` that names it
         assert text.count(old) <= 1, old
     assert os.path.isfile(TOOLS / "catching_eval" / "run_unit.sh")
+
+
+def _overlay_catching(path):
+    doc = yaml.safe_load(path.read_text())
+    return doc["integrated_rt_controller"]["ros__parameters"][CONTROLLER]["catching"]
+
+
+def test_mk_overlay_states_the_search_mode_only_when_given(tmp_path):
+    plain = tmp_path / "plain.yaml"
+    mk_overlay.main([str(plain), "p1b", "mpc"])
+    assert "mode" not in _overlay_catching(plain)["planner"].get("search", {})
+
+    docking = tmp_path / "docking.yaml"
+    mk_overlay.main([str(docking), "leap", "mpc_docking", "nlp"])
+    planner = _overlay_catching(docking)["planner"]
+    assert planner["segment"]["mode"] == "mpc_docking"
+    assert planner["search"]["mode"] == "nlp"
+    assert "planner.search.mode" in docking.read_text().splitlines()[0]
+
+    grid = tmp_path / "grid.yaml"
+    mk_overlay.main([str(grid), "p1b", "closed_form", "grid"])
+    assert _overlay_catching(grid)["planner"]["search"]["mode"] == "grid"
+
+
+def test_mk_overlay_refuses_nlp_with_closed_form_and_unknown_values(tmp_path):
+    out = tmp_path / "o.yaml"
+    with pytest.raises(
+        SystemExit, match=r"search\.mode.*segment\.mode|segment\.mode.*search\.mode"
+    ):
+        mk_overlay.main([str(out), "p1b", "closed_form", "nlp"])
+    assert not out.exists()
+    with pytest.raises(SystemExit):
+        mk_overlay.main([str(out), "p1b", "mpc", "annealing"])
+    with pytest.raises(SystemExit):
+        mk_overlay.main([str(out), "p1b", "docking"])
+    assert not out.exists()
+
+
+def test_run_unit_mirrors_and_checks_the_search_mode():
+    text = (TOOLS / "catching_eval" / "run_unit.sh").read_text()
+    assert text.count("planner.search.mode") >= 2  # recorded in the mirror list, and checked
+    assert "EXPECT_SEARCH:-grid" in text and "search_mirror" in text

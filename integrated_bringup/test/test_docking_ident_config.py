@@ -569,6 +569,8 @@ def test_the_report_states_what_was_planted(tmp_path, monkeypatch):
     # long before the ball crosses s_ent. The stores' axis has 250 ms in it, and
     # the window is 0 + 1 mm / 0.5 m/s … 20 ms + 1 mm / 0.8 m/s = 2 … 21.25 ms.
     assert "폐쇄 명령에서 $s_{ent}$ 통과까지: 228.8 … 248.0 ms, 가운데 238.38 ms" in text
+    # The box itself the same way: delta_o 0 … 20 ms before the origin.
+    assert "폐쇄 명령에서 원점 도착까지: 230.0 … 250.0 ms, 가운데 240.00 ms" in text
     assert f"| 접근축 5 | (+0.00, +0.00, -5.00) | {rp.VERIFY_N} | {rp.VERIFY_N - 3} |" in text
     assert "| 3 | 1 |" in text
     assert f"| 접근축 9.81 | (+0.10, +0.00, -5.00) | {rp.VERIFY_N} | {rp.VERIFY_N - 1} |" in text

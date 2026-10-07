@@ -331,3 +331,49 @@ def test_the_segment_mode_script_exits_on_the_verdict(tmp_path):
     assert subprocess.run([*run, "closed_form"], capture_output=True).returncode == 1
     assert subprocess.run([*run, "mpc", str(tmp_path / "missing.log")]).returncode == 2
     assert subprocess.run([*run[:2], str(tmp_path / "missing.log"), "mpc"]).returncode == 1
+
+
+_DOCKING_LINE = (
+    "[INFO] [1.0] [demo_catching_controller]: segment mode: mpc_docking — the docking planner"
+)
+_GRID_LINE = "[INFO] [1.0] [demo_catching_controller]: search mode: grid — enumerates the grid"
+_NLP_LINE = "[INFO] [1.0] [demo_catching_controller]: search mode: nlp — solves the NLP"
+
+
+def test_the_segment_mode_check_knows_mpc_docking_and_not_as_mpc():
+    log = _OTHER + "\n" + _DOCKING_LINE + "\n"
+    assert csm.check(log, "mpc_docking") is None
+    # `mpc_docking` must not read as `mpc` (the regex alternation order)
+    assert csm.logged_modes(log) == {"mpc_docking"}
+    assert csm.check(log, "mpc") is not None
+    assert csm.check(_OTHER + "\n" + _MPC_LINE + "\n", "mpc_docking") is not None
+
+
+@pytest.mark.parametrize(
+    ("expected", "log", "passes"),
+    [
+        ("grid", _GRID_LINE + "\n", True),
+        ("nlp", _NLP_LINE + "\n", True),
+        ("grid", _NLP_LINE + "\n", False),
+        ("nlp", _GRID_LINE + "\n", False),
+        ("grid", _OTHER + "\n", False),  # a controller that never configured is silent
+        ("grid", _GRID_LINE + "\n" + _NLP_LINE + "\n", False),
+    ],
+)
+def test_the_search_mode_check_needs_the_expected_line_present(expected, log, passes):
+    assert (csm.check_search(log, expected) is None) is passes
+
+
+def test_the_search_mode_check_refuses_an_unknown_expected_mode():
+    assert "not one of" in csm.check_search(_GRID_LINE, "annealing")
+
+
+def test_the_segment_mode_script_checks_the_search_line_with_the_flag(tmp_path):
+    log = tmp_path / "launch.log"
+    log.write_text("\n".join([_OTHER, _DOCKING_LINE, _NLP_LINE]) + "\n")
+    run = [sys.executable, str(Path(csm.__file__)), str(log), "mpc_docking"]
+    assert subprocess.run(run, capture_output=True).returncode == 0  # CLI unchanged
+    assert subprocess.run([*run, "--search", "nlp"], capture_output=True).returncode == 0
+    refused = subprocess.run([*run, "--search", "grid"], capture_output=True, text=True)
+    assert refused.returncode == 1 and "no 'search mode: grid' line" in refused.stderr
+    assert subprocess.run([*run, "--bogus", "nlp"], capture_output=True).returncode == 2

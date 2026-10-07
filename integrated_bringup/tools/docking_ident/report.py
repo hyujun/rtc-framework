@@ -680,6 +680,15 @@ def render_box(ident: dict, fine: FineMap, t_axis: float | None = None) -> list[
                 f"{(t_axis - lo) * 1e3:.1f} ms, 가운데 {(t_axis - 0.5 * (lo + hi)) * 1e3:.2f} ms "
                 f"($\\delta$ 는 명령 + {t_axis * 1e3:.1f} ms 를 폐쇄 완료로 본 축이다)"
             )
+            # And to the ball's arrival at the origin — what a planner whose
+            # catch instant is that arrival subtracts the lead from. The box
+            # itself, on the same terms.
+            o_lo, o_hi = box.delta_o_lo, box.delta_o_hi
+            out.append(
+                f"- 폐쇄 명령에서 원점 도착까지: {(t_axis - o_hi) * 1e3:.1f} … "
+                f"{(t_axis - o_lo) * 1e3:.1f} ms, 가운데 "
+                f"{(t_axis - 0.5 * (o_lo + o_hi)) * 1e3:.2f} ms"
+            )
     if "corridor" in ident:
         corridor = ident["corridor"]
         limited = " (스캔 끝에 닿음)" if corridor.scan_limited else ""

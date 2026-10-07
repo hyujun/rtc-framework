@@ -20,6 +20,7 @@ import pytest
 
 from integrated_bringup.demo_gui.ball_launch import FEED_STALE_AFTER_S
 from integrated_bringup.demo_gui.catching import (
+    CATCHING_SEARCH_MODE_PARAM,
     CATCHING_SEGMENT_MODE_PARAM,
     HAND_PHASE_NAMES,
     MODE_NAMES,
@@ -32,6 +33,7 @@ from integrated_bringup.demo_gui.catching import (
     mode_name,
     outcome_name,
     reason_name,
+    search_mode_query_due,
     segment_mode_query_due,
 )
 
@@ -761,3 +763,112 @@ def test_the_catching_panels_are_built_on_the_catching_tab():
     for builder in ("_build_ball_panel", "_build_hand_step_panel", "_build_catching_panel"):
         assert f"self.{builder}(catching_tab)" in source
         assert f"self.{builder}(control_tab)" not in source
+
+
+# ── Search mode line (`planner.search.mode`) and the third segment mode ───────
+
+
+def test_unknown_search_mode_is_said_after_the_segment_mode_line():
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=0.0)
+    lines = status.lines(0.0)
+    assert lines[1].startswith("segment mode:")
+    assert lines[2] == f"search mode: unknown ({CATCHING_SEARCH_MODE_PARAM} not read)"
+
+
+@pytest.mark.parametrize("law", ["mpc", "closed_form", "mpc_docking"])
+@pytest.mark.parametrize("search", ["grid", "nlp"])
+def test_known_segment_and_search_modes_are_shown_by_name(law, search):
+    status = CatchingStatus()
+    status.update(make_msg(), now_s=0.0)
+    status.segment_mode = law
+    status.search_mode = search
+    lines = status.lines(0.0)
+    assert lines[1] == f"segment mode: {law}"
+    assert lines[2] == f"search mode: {search}"
+
+
+def test_the_never_received_state_has_no_search_mode_line():
+    assert "search mode" not in text(CatchingStatus())
+
+
+def test_a_restart_clears_the_cached_search_mode_with_the_segment_mode():
+    status = CatchingStatus()
+    status.update(make_msg(tick=500), now_s=0.0)
+    status.segment_mode, status.search_mode = "mpc", "nlp"
+    status.update(make_msg(tick=3), now_s=0.1)
+    assert status.segment_mode is None and status.search_mode is None
+    status.segment_mode, status.search_mode = "mpc", "nlp"
+    status.update(make_msg(tick=9000), now_s=FEED_STALE_AFTER_S * 2 + 0.2)
+    assert status.segment_mode is None and status.search_mode is None
+
+
+def test_search_mode_query_due_has_its_own_cache_but_the_same_throttle():
+    status = CatchingStatus()
+    assert search_mode_query_due(status, 10.0, None, False) is False  # no feed yet
+    status.update(make_msg(), now_s=10.0)
+    status.segment_mode = "mpc"  # the other cache does not silence this read
+    assert search_mode_query_due(status, 10.0, None, False) is True
+    assert search_mode_query_due(status, 10.0, None, True) is False
+    assert search_mode_query_due(status, 11.0, 10.0, False) is False
+    assert search_mode_query_due(status, 10.0 + SEGMENT_MODE_QUERY_PERIOD_S, 10.0, False) is True
+    assert search_mode_query_due(status, 10.0 + SEGMENT_MODE_REPLY_TIMEOUT_S, 10.0, True) is True
+    status.search_mode = "grid"
+    assert search_mode_query_due(status, 99.0, None, False) is False
+
+
+def _search_state(ready: bool):
+    state = _segment_state(ready)
+    state._search_mode_last_query_s = None
+    state._search_mode_in_flight = False
+    state._apply_catching_search_mode = lambda value: None
+    return state
+
+
+def test_the_search_mode_read_asks_for_its_own_parameter_once():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _search_state(ready=True)
+    DemoControllerGUI._query_catching_search_mode(state)
+    assert state._client.calls == [[CATCHING_SEARCH_MODE_PARAM]]
+    assert state._search_mode_in_flight is True
+    state._search_mode_last_query_s = None
+    DemoControllerGUI._query_catching_search_mode(state)
+    assert len(state._client.calls) == 1
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_an_empty_search_mode_is_not_cached_and_frees_the_slot(value):
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _search_state(ready=True)
+    state._search_mode_in_flight = True
+    DemoControllerGUI._apply_catching_search_mode(state, value)
+    assert state._catching.search_mode is None
+    assert state._search_mode_in_flight is False
+    assert state.refreshes == 0
+
+
+def test_applying_a_search_mode_caches_it_and_refreshes_the_panel():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    state = _search_state(ready=True)
+    state._search_mode_in_flight = True
+    DemoControllerGUI._apply_catching_search_mode(state, "nlp")
+    assert state._catching.search_mode == "nlp"
+    assert state._search_mode_in_flight is False
+    assert state.refreshes == 1
+
+
+def test_the_search_done_callback_only_hands_the_value_to_the_tk_thread():
+    from integrated_bringup.demo_gui.app import DemoControllerGUI
+
+    future = _FakeFuture(SimpleNamespace(values=[SimpleNamespace(string_value="nlp")]))
+    state = _search_state(ready=True)
+    state._client.get_parameters = lambda _names: future
+    DemoControllerGUI._query_catching_search_mode(state)
+    (callback,) = future.callbacks
+    callback(future)
+    assert state.root.after_calls == [(0, state._apply_catching_search_mode, "nlp")]
+    assert state._catching.search_mode is None
+    assert state.refreshes == 0

@@ -107,30 +107,62 @@ REFERENCE_RELEASE_POS = (1.0, 0.0, 0.2)
 REFERENCE_RELEASE_VEL = (-2.375, 0.0, 4.11362)
 
 # The controller's read-only mirror of what it loaded (lifecycle.cpp
-# DeclareProfileParameters). All must exist: a controller that parked at
-# configure declares none of them, and a run against it is not a trial.
-MIRROR_PARAMETERS = (
+# DeclareProfileParameters). A controller that parked at configure declares none
+# of them, and a run against it is not a trial.
+#
+# WHICH NAMES EXIST FOLLOWS THE SELECTION (E1-F16): the controller mirrors only
+# the functions it runs, so a mirror the grid search or the closed_form law owns
+# is absent — not parked — under another search or segment mode. The two
+# selectors are mirrored under every selection and say which set to expect.
+MIRROR_SELECTORS = ("planner.search.mode", "planner.segment.mode")
+MIRROR_COMMON = (
     "planner.wait_pose",
     "planner.freeze.T_freeze",
     "joint_cmd.lag.T_arm",
     "joint_cmd.lag.lead_enable",
     "control.dt",
-    # The arm-budget layers (S8-G, #537): the reference's ω / a_max / v_max, the
-    # planner's speed margin and the D-16 box its reach time judges with. An
-    # overlay moves them, so run_meta.json must carry what the controller ran.
-    "reference.omega",
-    "reference.a_max",
-    "reference.v_max",
-    "planner.search.grid.gamma.eta_v",
-    "planner.search.grid.time.margin",
     "robot.arm.qdd_max",
     # The prediction grid the controller expects (E0-F04, #647): the vision
     # profile sets the grid, and a sweep over it must record what the
     # controller was told to expect.
     "prediction.dt_expected",
     "io.n_min",
-    "planner.search.grid.slice.dt",
 )
+# The arm-budget layers (S8-G, #537): the reference's ω / a_max / v_max, the
+# grid search's speed margin, the D-16 box its reach time judges with and its
+# slice. An overlay moves them, so run_meta.json must carry what the controller
+# ran — under the selection that runs them.
+MIRROR_OF_SEARCH = {
+    "grid": (
+        "planner.search.grid.gamma.eta_v",
+        "planner.search.grid.time.margin",
+        "planner.search.grid.slice.dt",
+    ),
+    "nlp": (),
+}
+MIRROR_OF_SEGMENT = {
+    "closed_form": ("reference.omega", "reference.a_max", "reference.v_max"),
+    "mpc": (),
+    "mpc_docking": (),
+}
+# Every name some selection declares (what is asked before the selection is known).
+MIRROR_PARAMETERS = (
+    MIRROR_SELECTORS
+    + MIRROR_COMMON
+    + tuple(name for names in MIRROR_OF_SEGMENT.values() for name in names)
+    + tuple(name for names in MIRROR_OF_SEARCH.values() for name in names)
+)
+
+
+def mirror_names(search, segment) -> tuple[str, ...]:
+    """The mirror a controller running ``search`` with ``segment`` declares.
+
+    An unknown (or unread) selector gives every name: the caller then reports
+    the selectors themselves as missing instead of guessing a set.
+    """
+    if search not in MIRROR_OF_SEARCH or segment not in MIRROR_OF_SEGMENT:
+        return MIRROR_PARAMETERS
+    return MIRROR_SELECTORS + MIRROR_COMMON + MIRROR_OF_SEARCH[search] + MIRROR_OF_SEGMENT[segment]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -637,7 +669,8 @@ def apply_mirror(profile: ArmProfile, mirror: dict) -> ArmProfile:
     not fit the arm: aligning to anything else would refuse every trial of an
     overlay run, or accept a start pose the controller does not wait at.
     """
-    missing = [name for name in MIRROR_PARAMETERS if mirror.get(name) is None]
+    required = mirror_names(mirror.get(MIRROR_SELECTORS[0]), mirror.get(MIRROR_SELECTORS[1]))
+    missing = [name for name in required if mirror.get(name) is None]
     if missing:
         raise ValueError(
             f"{CATCHING} does not expose {missing} — not configured, or parked at configure "
@@ -687,6 +720,8 @@ def _parameter_value(value):
         return value.integer_value
     if value.type == ParameterType.PARAMETER_BOOL:
         return value.bool_value
+    if value.type == ParameterType.PARAMETER_STRING:
+        return value.string_value
     return None
 
 
@@ -1033,7 +1068,12 @@ def _make_driver(profile: ArmProfile, args):
             return res is not None and all(r.successful for r in res.results)
 
         def read_mirror(self) -> dict:
-            """The controller's read-only mirror (``MIRROR_PARAMETERS``); None = absent."""
+            """The controller's read-only mirror; None = absent.
+
+            The two selectors first, then the names that selection declares
+            (``mirror_names``) — a name of a function that does not run is not
+            asked for, so it is not in the result at all.
+            """
 
             def ask(names):
                 req = GetParameters.Request()
@@ -1043,7 +1083,9 @@ def _make_driver(profile: ArmProfile, args):
                     raise RuntimeError(f"/{CATCHING}/{CATCHING}/get_parameters did not answer")
                 return [(v.type, _parameter_value(v)) for v in res.values]
 
-            return mirror_from_replies(MIRROR_PARAMETERS, ask)
+            selection = mirror_from_replies(MIRROR_SELECTORS, ask)
+            names = mirror_names(*(selection[name] for name in MIRROR_SELECTORS))
+            return mirror_from_replies(names, ask)
 
         def wait_for_services(self, timeout_s: float = 10.0) -> None:
             for client, name in (
