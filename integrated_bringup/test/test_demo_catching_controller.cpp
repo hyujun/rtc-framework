@@ -32,6 +32,7 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "rtc_controller_manager/controller_config_loader.hpp"
 #include "rtc_controllers/catching/catch_pose_ik.hpp"
 #include "rtc_controllers/catching/catch_pose_ik_params.hpp"
 #include "rtc_controllers/catching/catching_params.hpp"
@@ -49,8 +50,10 @@
 
 #include <gtest/gtest.h>
 #include <rcutils/logging.h>
+#include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -59,6 +62,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -2294,6 +2298,469 @@ TEST(DemoCatchingWaitPose, TheYamlSourceIsTheDefaultAndNeverAdopts) {
   EXPECT_EQ(rig.ctrl.GetWaitPoseRefusedCount(), 0U);
   ASSERT_EQ(rig.ctrl.on_deactivate(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
   ASSERT_EQ(rig.ctrl.on_cleanup(rig.prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// ── E1-F16: one search and one segment planner per configuration ────────────
+//
+// The shipped profile with its two selectors set and some fragments LEFT OUT of
+// its include list: the controller file and the fragments are copied to a
+// scratch directory, the copy's `include:` and the two `mode` keys rewritten,
+// and the result read back through the CM's own loader — so what the
+// controller is handed is the tree a profile without those files composes to,
+// not a tree with keys deleted after the fact.
+
+constexpr const char* kFragmentGrid = "search_grid.yaml";
+constexpr const char* kFragmentNlp = "search_nlp.yaml";
+constexpr const char* kFragmentClosedForm = "planner_closed_form.yaml";
+constexpr const char* kFragmentMpc = "segment_mpc.yaml";
+constexpr const char* kFragmentDocking = "segment_mpc_docking.yaml";
+constexpr std::array<const char*, 5> kFragments{kFragmentGrid, kFragmentNlp, kFragmentClosedForm,
+                                                kFragmentMpc, kFragmentDocking};
+
+struct Selection {
+  const char* search;
+  const char* segment;
+  // The fragments this selection's two functions read.
+  std::vector<const char*> own;
+};
+
+// The five combinations that run (nlp with closed_form does not).
+std::vector<Selection> RunnableSelections() {
+  return {
+      {"grid", "closed_form", {kFragmentGrid, kFragmentClosedForm}},
+      {"grid", "mpc", {kFragmentGrid, kFragmentMpc}},
+      {"grid", "mpc_docking", {kFragmentGrid, kFragmentDocking}},
+      {"nlp", "mpc", {kFragmentNlp, kFragmentMpc}},
+      {"nlp", "mpc_docking", {kFragmentNlp, kFragmentDocking}},
+  };
+}
+
+YAML::Node ShippedWithSelection(const std::string& profile, const std::string& search,
+                                const std::string& segment,
+                                const std::vector<const char*>& dropped) {
+  namespace fs = std::filesystem;
+  static std::atomic<int> serial{0};
+  const fs::path src = fs::path(RTC_DEMO_SHARED_CONFIG_DIR) / profile / "controllers";
+  const fs::path dst =
+      fs::temp_directory_path() / ("rtc_catching_selection_" + std::to_string(::getpid()) + "_" +
+                                   std::to_string(serial.fetch_add(1)));
+  fs::remove_all(dst);
+  fs::create_directories(dst / "catching");
+  YAML::Node main = YAML::LoadFile((src / "demo_catching_controller.yaml").string());
+  YAML::Node kept(YAML::NodeType::Sequence);
+  for (const auto& entry : main["include"]) {
+    const std::string rel = entry.as<std::string>();
+    const std::string name = fs::path(rel).filename().string();
+    const bool drop =
+        std::any_of(dropped.begin(), dropped.end(), [&name](const char* d) { return name == d; });
+    if (!drop) {
+      kept.push_back(rel);
+      fs::copy_file(src / rel, dst / rel);
+    }
+  }
+  main["include"] = kept;
+  YAML::Node planner = main["demo_catching_controller"]["catching"]["planner"];
+  planner["search"]["mode"] = search;
+  planner["segment"]["mode"] = segment;
+  planner["enabled"] = true;
+  main["demo_catching_controller"]["diagnostic"]["oracle_plan"]["enabled"] = false;
+  {
+    std::ofstream out(dst / "demo_catching_controller.yaml");
+    out << YAML::Dump(main);
+  }
+  YAML::Node node = rtc::LoadControllerConfig((dst / "demo_catching_controller.yaml").string(),
+                                              "demo_catching_controller");
+  fs::remove_all(dst);
+  return node;
+}
+
+// Every fragment but `own`.
+std::vector<const char*> AllBut(const std::vector<const char*>& own) {
+  std::vector<const char*> out;
+  for (const char* f : kFragments) {
+    if (std::find(own.begin(), own.end(), f) == own.end()) {
+      out.push_back(f);
+    }
+  }
+  return out;
+}
+
+/// Every ERROR and WARN that reaches the log while it lives (process-global
+/// handler, restored on destruction): what a parked configure SAID.
+class ConfigureLog {
+ public:
+  ConfigureLog() : previous_(rcutils_logging_get_output_handler()) {
+    {
+      const std::lock_guard<std::mutex> lock(Mutex());
+      Lines().clear();
+    }
+    rcutils_logging_set_output_handler(&ConfigureLog::Handler);
+  }
+
+  ~ConfigureLog() { rcutils_logging_set_output_handler(previous_); }
+
+  ConfigureLog(const ConfigureLog&) = delete;
+  ConfigureLog& operator=(const ConfigureLog&) = delete;
+
+  [[nodiscard]] static bool Said(const std::string& needle) {
+    const std::lock_guard<std::mutex> lock(Mutex());
+    return std::any_of(Lines().begin(), Lines().end(), [&needle](const std::string& line) {
+      return line.find(needle) != std::string::npos;
+    });
+  }
+
+  [[nodiscard]] static std::string All() {
+    const std::lock_guard<std::mutex> lock(Mutex());
+    std::string out;
+    for (const auto& line : Lines()) {
+      out += line + "\n";
+    }
+    return out;
+  }
+
+ private:
+  static void Handler(const rcutils_log_location_t* /*location*/, int severity,
+                      const char* /*name*/, rcutils_time_point_value_t /*timestamp*/,
+                      const char* format, va_list* args) {
+    if (severity < RCUTILS_LOG_SEVERITY_WARN) {
+      return;
+    }
+    // Value-initialised: on an encoding failure vsnprintf need not terminate.
+    char buffer[2048]{};
+    va_list copy;
+    va_copy(copy, *args);
+    std::vsnprintf(buffer, sizeof(buffer), format, copy);
+    va_end(copy);
+    const std::lock_guard<std::mutex> lock(Mutex());
+    Lines().emplace_back(buffer);
+  }
+
+  static std::vector<std::string>& Lines() {
+    static std::vector<std::string> lines;
+    return lines;
+  }
+
+  static std::mutex& Mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  rcutils_logging_output_handler_t previous_;
+};
+
+TEST_P(ShippedCatchingProfile, EachSelectionConfiguresOnItsOwnFragmentsAlone) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  using rtc::catching::CatchingSearchMode;
+  using rtc::catching::CatchingSegmentMode;
+  int n = 0;
+  for (const Selection& sel : RunnableSelections()) {
+    SCOPED_TRACE(std::string(sel.search) + " x " + sel.segment);
+    // Only the selected functions' fragments are in the profile.
+    YAML::Node node = ShippedWithSelection(profile, sel.search, sel.segment, AllBut(sel.own));
+    auto configs = ShippedSimConfigs(profile, node);
+    ASSERT_EQ(configs.size(), 2U);
+    auto node_handle =
+        NodeWithProfile("catching_selection_" + profile + "_" + std::to_string(n++), "mpc_on");
+    DemoCatchingController ctrl{""};
+    BringUpShipped(ctrl, profile, configs);
+    const rclcpp_lifecycle::State prev;
+    const ConfigureLog log;
+    ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    ASSERT_FALSE(ctrl.IsSimOnlyDisabled())
+        << "parked although every fragment the selection reads is there:\n"
+        << ConfigureLog::All();
+    // Exactly the selected search and segment planner were built.
+    const bool grid = std::string(sel.search) == "grid";
+    const std::string segment = sel.segment;
+    EXPECT_EQ(ctrl.GetSearchMode(), grid ? CatchingSearchMode::kGrid : CatchingSearchMode::kNlp);
+    EXPECT_STREQ(rtc::catching::SegmentModeName(ctrl.GetSegmentMode()), sel.segment);
+    EXPECT_EQ(ctrl.GetGridCatchSearchForTesting() != nullptr, grid);
+    EXPECT_EQ(ctrl.GetNlpCatchSearchForTesting() != nullptr, !grid);
+    EXPECT_EQ(ctrl.GetMpcSegmentPlannerForTesting() != nullptr, segment == "mpc");
+    EXPECT_EQ(ctrl.GetMpcDockingSegmentPlannerForTesting() != nullptr, segment == "mpc_docking");
+    EXPECT_TRUE(ctrl.IsGridCatchSearchConfigured()) << "a search is installed";
+    EXPECT_EQ(ctrl.IsSegmentPlannerConfigured(), segment != "closed_form");
+    // The mirrors say what runs, and only that.
+    EXPECT_EQ(node_handle->get_parameter("planner.search.mode").as_string(), sel.search);
+    EXPECT_EQ(node_handle->get_parameter("planner.segment.mode").as_string(), sel.segment);
+    EXPECT_EQ(node_handle->has_parameter("reference.a_max"), segment == "closed_form");
+    EXPECT_EQ(node_handle->has_parameter("planner.search.grid.slice.dt"), grid);
+    EXPECT_EQ(node_handle->has_parameter("planner.search.nlp.cand_dt"), !grid);
+    EXPECT_EQ(node_handle->has_parameter("planner.segment.mpc.horizon.n_nodes"), segment == "mpc");
+    EXPECT_EQ(node_handle->has_parameter("planner.segment.mpc_docking.approach.n_pre_max"),
+              segment == "mpc_docking");
+    // A mode that follows segments runs with no `reference.*` at all: the arm
+    // path is wired, and the configuration activates.
+    ASSERT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    ASSERT_EQ(ctrl.on_deactivate(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+}
+
+TEST_P(ShippedCatchingProfile, ASelectionWithoutItsOwnFragmentParksAndNamesTheMissingKeys) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  // The prefix of the keys each fragment owns: what the configure log has to
+  // name when the fragment is not there.
+  const std::map<std::string, std::string> owned{
+      {kFragmentGrid, "planner.search.grid."},
+      {kFragmentNlp, "planner.search.nlp."},
+      {kFragmentClosedForm, "reference."},
+      {kFragmentMpc, "planner.segment.mpc."},
+      {kFragmentDocking, "planner.segment.mpc_docking."},
+  };
+  int n = 0;
+  for (const Selection& sel : RunnableSelections()) {
+    for (const char* missing : sel.own) {
+      SCOPED_TRACE(std::string(sel.search) + " x " + sel.segment + " without " + missing);
+      YAML::Node node = ShippedWithSelection(profile, sel.search, sel.segment, {missing});
+      auto configs = ShippedSimConfigs(profile, node);
+      ASSERT_EQ(configs.size(), 2U);
+      auto node_handle =
+          NodeWithProfile("catching_missing_" + profile + "_" + std::to_string(n++), "mpc_on");
+      DemoCatchingController ctrl{""};
+      BringUpShipped(ctrl, profile, configs);
+      const rclcpp_lifecycle::State prev;
+      const ConfigureLog log;
+      // Parked, never refused: the robot comes up, this controller does not
+      // activate, and the log says which key.
+      ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+                DemoCatchingController::CallbackReturn::SUCCESS)
+          << ConfigureLog::All();
+      EXPECT_TRUE(ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+      EXPECT_TRUE(ConfigureLog::Said(owned.at(missing))) << ConfigureLog::All();
+      EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+      ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+    }
+  }
+}
+
+TEST_P(ShippedCatchingProfile, AWrongValueOfAnUnselectedFunctionDoesNotBreakTheConfigure) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+
+  struct Case {
+    const char* search;
+    const char* segment;
+    // A value outside its range, in a function the selection does not run …
+    std::vector<std::string> path;
+    const char* value;
+    // … and the selection under which that same value IS read.
+    const char* reads_search;
+    const char* reads_segment;
+  };
+
+  const std::vector<Case> cases{
+      {"grid",
+       "closed_form",
+       {"planner", "segment", "mpc", "horizon", "n_nodes"},
+       "999",
+       "grid",
+       "mpc"},
+      {"grid",
+       "mpc",
+       {"planner", "segment", "mpc_docking", "approach", "n_pre_max"},
+       "999",
+       "grid",
+       "mpc_docking"},
+      {"nlp", "mpc", {"planner", "search", "grid", "slice", "dt"}, "9.0", "grid", "mpc"},
+      {"grid", "mpc", {"planner", "search", "nlp", "cand_dt"}, "9.0", "nlp", "mpc"},
+  };
+  const auto configure = [&profile](const char* search, const char* segment, const Case& c,
+                                    const std::string& name) {
+    YAML::Node node = ShippedWithSelection(profile, search, segment, {});
+    YAML::Node leaf = node["catching"];
+    for (const std::string& key : c.path) {
+      leaf.reset(leaf[key]);
+    }
+    leaf = c.value;
+    auto configs = ShippedSimConfigs(profile, node);
+    auto node_handle = NodeWithProfile(name, "mpc_on");
+    DemoCatchingController ctrl{""};
+    BringUpShipped(ctrl, profile, configs);
+    const rclcpp_lifecycle::State prev;
+    struct Verdict {
+      DemoCatchingController::CallbackReturn result;
+      bool parked;
+    };
+    const auto result = ctrl.on_configure(prev, node_handle, node);
+    const Verdict v{result, ctrl.IsSimOnlyDisabled()};
+    static_cast<void>(ctrl.on_cleanup(prev));
+    return v;
+  };
+  int n = 0;
+  for (const Case& c : cases) {
+    SCOPED_TRACE(std::string(c.search) + " x " + c.segment + ": " + c.path.back() + " = " +
+                 c.value);
+    const std::string tag = profile + "_" + std::to_string(n++);
+    // Where the function does not run the value is not this configure's.
+    const auto unselected = configure(c.search, c.segment, c, "catching_wrong_unselected_" + tag);
+    EXPECT_EQ(unselected.result, DemoCatchingController::CallbackReturn::SUCCESS);
+    EXPECT_FALSE(unselected.parked);
+    // Positive control: where it does run, the same value refuses the configure.
+    const auto selected =
+        configure(c.reads_search, c.reads_segment, c, "catching_wrong_selected_" + tag);
+    EXPECT_EQ(selected.result, DemoCatchingController::CallbackReturn::FAILURE);
+  }
+}
+
+TEST_P(ShippedCatchingProfile, TheNlpSearchWithTheClosedFormLawParksNamingBothKeys) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithSelection(profile, "nlp", "closed_form", {});
+  auto configs = ShippedSimConfigs(profile, node);
+  auto node_handle = NodeWithProfile("catching_combination_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, configs);
+  const rclcpp_lifecycle::State prev;
+  const ConfigureLog log;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
+  EXPECT_EQ(ctrl.GetParkReason(),
+            integrated_bringup::CatchingParkReason::kSearchSegmentCombination);
+  EXPECT_TRUE(ConfigureLog::Said("catching.planner.search.mode: nlp")) << ConfigureLog::All();
+  EXPECT_TRUE(ConfigureLog::Said("catching.planner.segment.mode: closed_form"));
+  EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_P(ShippedCatchingProfile, TheCloseLeadReachesEveryReaderAndTheClosureTimeItsOwn) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  // A lead well apart from the closure time, so that each reader shows which
+  // of the two it took.
+  constexpr double kLead = 0.02;
+  YAML::Node node = ShippedWithSelection(profile, "grid", "mpc", {});
+  const double e2e = node["catching"]["robot"]["hand"]["T_close_e2e"].as<double>();
+  ASSERT_GT(e2e, 2.0 * kLead) << "precondition: the two values are apart";
+  node["catching"]["robot"]["hand"]["T_close_lead"] = kLead;
+  auto configs = ShippedSimConfigs(profile, node);
+  auto node_handle = NodeWithProfile("catching_lead_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, configs);
+  const rclcpp_lifecycle::State prev;
+  const ConfigureLog log;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_FALSE(ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+  // The search: the lead times the close command and the commit gate; the
+  // closure time (+ h/2) is what the closing hand absorbs (the gamma window).
+  const auto& grid = ctrl.GetGridCatchSearchConstantsForTesting();
+  EXPECT_DOUBLE_EQ(grid.t_close_lead, kLead);
+  EXPECT_DOUBLE_EQ(grid.t_close_total, e2e + 0.5 / kShippedControlRateHz);
+  // The mirrors: both, each under its own name.
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("hand.T_close_lead").as_double(), kLead);
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("hand.T_close_e2e").as_double(), e2e);
+  // The profile gives the key: nothing is said about a missing one.
+  EXPECT_FALSE(ConfigureLog::Said("robot.hand.T_close_lead is not set"));
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_P(ShippedCatchingProfile, UnderADockingSelectionTheLeadIsTakenFromTheEntranceCrossing) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  // The nlp search and the mpc_docking planner put a plan's catch instant at
+  // the ball's crossing of the entrance plane, s_ent before the catch point:
+  // the sequencer's lead from THAT instant is shorter by the flight between
+  // the two, and the closure then completes delta_0 after the crossing.
+  int n = 0;
+  for (const Selection& sel : RunnableSelections()) {
+    SCOPED_TRACE(std::string(sel.search) + " x " + sel.segment);
+    YAML::Node node = ShippedWithSelection(profile, sel.search, sel.segment, {});
+    const YAML::Node hand = node["catching"]["robot"]["hand"];
+    const double lead = hand["T_close_lead"].as<double>();
+    const double e2e = hand["T_close_e2e"].as<double>();
+    const double s_ent = hand["docking"]["s_ent"].as<double>();
+    const std::string segment = sel.segment;
+    const bool entrance = std::string(sel.search) == "nlp" || segment == "mpc_docking";
+    const YAML::Node planner = node["catching"]["planner"];
+    const YAML::Node core = segment == "mpc_docking" ? planner["segment"]["mpc_docking"]["core"]
+                                                     : planner["search"]["nlp"]["core"];
+    const double c_ref = -core["catch"]["nu_ref"][2].as<double>();
+    ASSERT_GT(c_ref, 0.0);
+    const double from_t_c = entrance ? lead - s_ent / c_ref : lead;
+    auto configs = ShippedSimConfigs(profile, node);
+    auto node_handle =
+        NodeWithProfile("catching_lead_axis_" + profile + "_" + std::to_string(n++), "mpc_on");
+    DemoCatchingController ctrl{""};
+    BringUpShipped(ctrl, profile, configs);
+    const rclcpp_lifecycle::State prev;
+    const ConfigureLog log;
+    ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+    ASSERT_FALSE(ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+    EXPECT_DOUBLE_EQ(node_handle->get_parameter("hand.T_close_lead").as_double(), lead);
+    EXPECT_NEAR(node_handle->get_parameter("hand.T_close_lead_from_t_c").as_double(), from_t_c,
+                1e-12);
+    if (entrance) {
+      // The docking core's nominal closure instant, inside the hand's window.
+      const double delta_0 = node_handle->get_parameter("hand.docking.closure.delta_0").as_double();
+      EXPECT_NEAR(delta_0, e2e - from_t_c, 1e-12);
+      EXPECT_GT(delta_0, hand["docking"]["closure"]["delta_lo"].as<double>());
+      EXPECT_LT(delta_0, hand["docking"]["closure"]["delta_hi"].as<double>());
+    }
+    if (std::string(sel.search) == "grid") {
+      EXPECT_NEAR(ctrl.GetGridCatchSearchConstantsForTesting().t_close_lead, from_t_c, 1e-12);
+    }
+    ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+}
+
+TEST_P(ShippedCatchingProfile, AProfileWithoutACloseLeadClosesTheClosureTimeEarlyAndSaysSo) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  YAML::Node node = ShippedWithSelection(profile, "grid", "mpc", {});
+  const double e2e = node["catching"]["robot"]["hand"]["T_close_e2e"].as<double>();
+  node["catching"]["robot"]["hand"].remove("T_close_lead");
+  auto configs = ShippedSimConfigs(profile, node);
+  auto node_handle = NodeWithProfile("catching_no_lead_" + profile, "mpc_on");
+  DemoCatchingController ctrl{""};
+  BringUpShipped(ctrl, profile, configs);
+  const rclcpp_lifecycle::State prev;
+  const ConfigureLog log;
+  ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+            DemoCatchingController::CallbackReturn::SUCCESS);
+  ASSERT_FALSE(ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+  EXPECT_DOUBLE_EQ(ctrl.GetGridCatchSearchConstantsForTesting().t_close_lead, e2e);
+  EXPECT_DOUBLE_EQ(node_handle->get_parameter("hand.T_close_lead").as_double(), e2e);
+  EXPECT_TRUE(ConfigureLog::Said("robot.hand.T_close_lead is not set")) << ConfigureLog::All();
+  ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+TEST_P(ShippedCatchingProfile, TheSearchMayStopBeforeThePlanFreezesNeverAfter) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  const auto parked_with = [&profile](double t_stop_plan, const std::string& name) {
+    YAML::Node node = ShippedWithSelection(profile, "grid", "mpc", {});
+    const double t_freeze = node["catching"]["planner"]["freeze"]["T_freeze"].as<double>();
+    node["catching"]["planner"]["freeze"]["t_stop_plan"] = t_freeze + t_stop_plan;
+    auto configs = ShippedSimConfigs(profile, node);
+    auto node_handle = NodeWithProfile(name, "mpc_on");
+    DemoCatchingController ctrl{""};
+    BringUpShipped(ctrl, profile, configs);
+    const rclcpp_lifecycle::State prev;
+    EXPECT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS);
+    const bool parked = ctrl.IsSimOnlyDisabled();
+    if (parked) {
+      EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kPlannerUnset);
+    } else {
+      EXPECT_DOUBLE_EQ(ctrl.GetPlannerParams().t_stop_plan, t_freeze + t_stop_plan);
+    }
+    static_cast<void>(ctrl.on_cleanup(prev));
+    return parked;
+  };
+  const ConfigureLog log;
+  EXPECT_FALSE(parked_with(0.0, "catching_stop_at_" + profile));
+  EXPECT_FALSE(parked_with(0.2, "catching_stop_before_" + profile));
+  EXPECT_TRUE(parked_with(-0.05, "catching_stop_after_" + profile));
+  EXPECT_TRUE(ConfigureLog::Said("planner.freeze.t_stop_plan")) << ConfigureLog::All();
+  EXPECT_TRUE(ConfigureLog::Said("planner.freeze.T_freeze"));
 }
 
 INSTANTIATE_TEST_SUITE_P(BothCatchingRobots, ShippedCatchingProfile,

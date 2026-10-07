@@ -85,6 +85,10 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   // in on_configure, which is the hook that can refuse.
   const YAML::Node catching = cfg["catching"];
   catching_section_present_ = static_cast<bool>(catching);
+  // Kept for on_configure: the docking maps (`robot.hand.docking`, the nlp
+  // search's, the mpc_docking planner's) are read there, once the arm's width
+  // is known. A copy — the node handed in is the caller's.
+  catching_node_ = catching_section_present_ ? YAML::Clone(catching) : YAML::Node();
   if (catching_section_present_) {
     params_ = rtc::catching::ParseCatchingParams(catching);
   }
@@ -248,11 +252,26 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   // ── planner.* thread keys (S6-A) ────────────────────────────────────────
   // Parsed here, like the rest of the tree, so a malformed key refuses the
   // configure through LoadConfig's own try/catch rather than defaulting.
-  planner_params_ = catching_section_present_ ? rtc::catching::ParsePlannerParams(catching)
-                                              : rtc::catching::PlannerParams{};
-  catch_pose_ik_config_ = catching_section_present_
-                              ? rtc::catching::ParseCatchPoseIkParams(catching)
-                              : rtc::catching::CatchPoseIkConfig{};
+  //
+  // Only the maps of the functions this configuration selects are opened
+  // (E1-F16): `planner.search.grid.*` under the grid search,
+  // `planner.segment.mpc.*` under the mpc segment planner. A function that does
+  // not run has no say in whether the configure succeeds.
+  rtc::catching::PlannerKeySelection planner_keys;
+  planner_keys.search_grid =
+      params_.planner_search_mode == rtc::catching::CatchingSearchMode::kGrid;
+  planner_keys.segment_mpc =
+      params_.planner_segment_mode == rtc::catching::CatchingSegmentMode::kMpc;
+  planner_params_ = catching_section_present_
+                        ? rtc::catching::ParsePlannerParams(catching, planner_keys)
+                        : rtc::catching::PlannerParams{};
+  // The catch-pose IK's keys are the selected search's own: the same
+  // sub-schema (`ik.*`, `catchability.*`) under `planner.search.<mode>`.
+  catch_pose_ik_config_ =
+      catching_section_present_
+          ? rtc::catching::ParseCatchPoseIkParams(
+                catching, nullptr, rtc::catching::SearchModeName(params_.planner_search_mode))
+          : rtc::catching::CatchPoseIkConfig{};
 
   // ── logs: (Phase C) ─────────────────────────────────────────────────────
   parsed_log_entries_.clear();
@@ -565,7 +584,9 @@ void DemoCatchingController::SeedArmCommand(const ControllerState& state) noexce
 }
 
 bool DemoCatchingController::PrepareLawTick(const ControllerState& state) noexcept {
-  if (!clik_enabled_ || !reference_.has_value() || catch_frame_idx_ < 0 || !arm_readable_) {
+  // Not the reference: that is the closed_form laws' own, and a mode that
+  // follows segments has none. The laws that step it check for it themselves.
+  if (!clik_enabled_ || catch_frame_idx_ < 0 || !arm_readable_) {
     return false;  // nothing to run; the hold latch keeps the arm still
   }
   // ── The evaluation state (D-6) ───────────────────────────────────────────
@@ -596,8 +617,8 @@ rtc::catching::Reason DemoCatchingController::RunTrackingTick(
     const ControllerState& state, const rtc::catching::TrajectorySnapshot& snapshot) noexcept {
   using rtc::catching::Mode;
   using rtc::catching::Reason;
-  if (!PrepareLawTick(state)) {
-    return Reason::kNone;
+  if (!reference_.has_value() || !PrepareLawTick(state)) {
+    return Reason::kNone;  // nothing to run; the hold latch keeps the arm still
   }
 
   // The reference generator starts AT the current catch-frame pose, so the
@@ -909,7 +930,7 @@ void DemoCatchingController::StorePlannerRtState(const ControllerState& state,
   // Both are dropped with the plan they belong to (DropSegments), and a
   // pending one the switch gate refused is gone from the slot — so "valid" is
   // the whole predicate, and what was dropped is no longer reported.
-  const bool mpc = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
+  const bool mpc = rtc::catching::FollowsSegments(segment_mode_);
   s.segment_active = mpc && segment_current_valid_;
   s.segment_seq = s.segment_active ? segment_current_.segment_seq : 0U;
   s.segment_pending = mpc && segment_pending_valid_;
@@ -1010,7 +1031,7 @@ void DemoCatchingController::OnModeEntered(rtc::catching::Mode prev) noexcept {
       // and none of it is taken.
       trial_committed_ = true;
       committed_t_c_ns_ = plan_.t_c_ns;
-      committed_t_cmd_ns_ = rtc::catching::detail::SatSub(plan_.t_c_ns, t_close_e2e_ns_);
+      committed_t_cmd_ns_ = rtc::catching::detail::SatSub(plan_.t_c_ns, t_close_lead_ns_);
       committed_generation_ = plan_.token.generation;
       if (hand_seq_enabled_) {
         static_cast<void>(hand_seq_.Commit(rtc::catching::BallTime{plan_.t_c_ns}));
@@ -1383,8 +1404,8 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateRetreat()
 rtc::catching::Reason DemoCatchingController::RunDecelLawTick(
     const ControllerState& state) noexcept {
   using rtc::catching::Reason;
-  if (!PrepareLawTick(state)) {
-    return Reason::kNone;
+  if (!reference_.has_value() || !PrepareLawTick(state)) {
+    return Reason::kNone;  // nothing to run; the hold latch keeps the arm still
   }
   // τ on the lead axis from the entry instant (L0 §4.5). Floored at 0: the
   // entry tick evaluates τ = 0 exactly, and a later tick whose clock read
@@ -1414,6 +1435,11 @@ rtc::catching::Reason DemoCatchingController::RunDecelLawTick(
 }
 
 rtc::catching::Reason DemoCatchingController::EnterDecel(const ControllerState& state) noexcept {
+  if (!reference_.has_value()) {
+    // No reference to take the entry state from: the same "nothing to run" the
+    // law tick below answers, before anything here reads it.
+    return rtc::catching::Reason::kNone;
+  }
   // L7 §4.3 / R-DECEL-ENTRY. The entry state is the reference's CURRENT state
   // — the previous tick's step output, i.e. the reference for THIS tick — and
   // t_s is this tick's lead instant, so the τ = 0 step taken below sees
@@ -1472,7 +1498,7 @@ void DemoCatchingController::AdoptFirstSegment() noexcept {
 void DemoCatchingController::RunSegmentLane() noexcept {
   using rtc::catching::Mode;
   using Event = CatchingDiagLogPod::SegmentEvent;
-  if (segment_mode_ != rtc::catching::CatchingSegmentMode::kMpc) {
+  if (!rtc::catching::FollowsSegments(segment_mode_)) {
     return;
   }
   segment_pair_ok_ = false;
@@ -1696,7 +1722,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
       rtc::catching::DecelDue(tick_now_lead_, rtc::catching::BallTime{committed_t_c_ns_})) {
     // MD-44: the configured law, and only it — under mpc there is no
     // closed-form entry to fall back to.
-    const Reason law = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
+    const Reason law = rtc::catching::FollowsSegments(segment_mode_)
                            ? RunSegmentTick(state, /*entry=*/true, /*ball=*/nullptr)
                            : EnterDecel(state);
     NoteLawVerdict(law);
@@ -1720,7 +1746,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateCommitted
   // R-ORDER: the law runs whatever the ball lane says. Under mpc it is the
   // segment the arm has followed since APPROACH (MD-45); the ball is sampled
   // for the same supervision either way.
-  const Reason law = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
+  const Reason law = rtc::catching::FollowsSegments(segment_mode_)
                          ? RunSegmentTick(state, /*entry=*/false, &law_snapshot_)
                          : RunTrackingTick(state, law_snapshot_);
   NoteLawVerdict(law);
@@ -1766,7 +1792,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateDecelOrHo
   using rtc::catching::Mode;
   using rtc::catching::Outcome;
   using rtc::catching::Reason;
-  const Reason law = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
+  const Reason law = rtc::catching::FollowsSegments(segment_mode_)
                          ? RunSegmentTick(state, /*entry=*/false, /*ball=*/nullptr)
                          : RunDecelLawTick(state);
   NoteLawVerdict(law);
@@ -1969,7 +1995,7 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
     // one would put the arm in a mode with no law. The lane judged the pair on
     // this tick (`segment_pair_ok_`); until it passes, the answer is the same
     // "no plan" a refused plan gets.
-    const bool mpc = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
+    const bool mpc = rtc::catching::FollowsSegments(segment_mode_);
     if (PlanAdoptableThisTick() && (!mpc || segment_pair_ok_)) {
       // The plan in the box passed every admission check this tick (L3 §5.2
       // (a)-(g)) — the planner's, or the oracle's stand-in (A-S5-8), through
@@ -2001,17 +2027,18 @@ DemoCatchingController::ReasonDecision DemoCatchingController::EvaluateReason(
   }
 
   if (mode_ == Mode::kApproach) {
-    const bool mpc = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
+    const bool mpc = rtc::catching::FollowsSegments(segment_mode_);
     // A replacement plan (§4.7, S6-B). The planner already applied the
     // switching rule; the RT adds its own freeze check (decision G) so a late
     // publish cannot move a catch point the supervisor is about to commit to.
     // Re-targeted in place — no Reset — so the reference state is continuous;
     // the new plan's γ ramp starts from the γ the reference is at.
     //
-    // Not under mpc (MD-57): the segments the arm follows belong to the plan
-    // it took, the planner does not search while that plan is followed, and a
-    // plan that arrives anyway has no segment of its own — taking it would
-    // turn every followed and pending segment into a plan mismatch.
+    // Not under a segment planner: the segments the arm follows belong to the
+    // plan it took. The planner goes on searching while that plan is followed
+    // but publishes no replacement (held_replace_unsupported), and a plan that
+    // arrives anyway has no segment of its own — taking it would turn every
+    // followed and pending segment into a plan mismatch.
     if (!mpc && plan_active_ && plan_refusal_ == rtc::catching::PlanRefusal::kNone &&
         plan_in_.plan_id != plan_.plan_id) {
       const std::int64_t to_tc = plan_.t_c_ns - tick_now_.ns;

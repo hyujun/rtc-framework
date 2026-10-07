@@ -4,6 +4,7 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/logging/session_dir.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_base/types/types.hpp"  // rtc::SteadyNowNs
 #include "rtc_controllers/catching/catch_pose_ik_batch.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
@@ -69,7 +70,7 @@ namespace {
     case R::kReleaseTimeoutNotAboveE2e:
       return "T_release_timeout must exceed T_close_e2e";
     case R::kFreezeShorterThanClose:
-      return "T_freeze is shorter than T_close_e2e + T_arm + one tick — the close command would "
+      return "T_freeze is shorter than T_close_lead + T_arm + one tick — the close command would "
              "be due before the commit";
   }
   return "unknown";
@@ -237,7 +238,16 @@ void DemoCatchingController::DeclareProfileParameters() {
   declare("hand.caging_mask", caging, "L6 §4.2 caging joint set C");
   declare("hand.eta_close", hand.eta_close.value, "L6 §4.2 closure threshold eta");
   declare("hand.rho_eps", hand.rho_eps, "L6 §4.2 caging gap floor [rad]");
-  declare("hand.T_close_e2e", hand.T_close_e2e.value, "L6 §4.2 end-to-end closure time [s]");
+  declare("hand.T_close_e2e", hand.T_close_e2e.value,
+          "L6 §4.2 end-to-end closure time [s] — measured; bounds the timeouts");
+  // What the sequencer subtracts from t_c, as run: the profile's own key, or
+  // the closure time when the profile gives none (E1-F16).
+  declare("hand.T_close_lead", hand.CloseLead().value,
+          "how long before the ball reaches the catch point the hand is told to close [s] "
+          "(robot.hand.T_close_lead; T_close_e2e when the key is absent)");
+  declare("hand.T_close_lead_from_t_c", ResolvedCloseLead(),
+          "the same lead as the sequencer runs it, from a plan's catch instant [s]: shorter by "
+          "s_ent / closing speed when t_c is the entrance crossing (nlp search, mpc_docking)");
   // What RETREAT actually waits (S8-C): usually DERIVED from the poses, η and
   // q_tol, so the YAML alone does not show it.
   declare("hand.T_release_timeout", hand.T_release_timeout.value,
@@ -272,6 +282,9 @@ void DemoCatchingController::DeclareProfileParameters() {
           "L3 §6 where the wait pose comes from: 'yaml' (planner.wait_pose) or 'current' (the "
           "arm's pose on each activation's first readable tick, S8-I)");
   declare("planner.freeze.T_freeze", planner_params_.t_freeze, "L3 §4.11 commit lead [s]");
+  declare("planner.freeze.t_stop_plan", planner_params_.t_stop_plan,
+          "while a plan is followed on segments, the search runs until the catch instant is "
+          "this close [s] (T_freeze when the key is absent)");
   // T_arm is mirrored whether or not the lead is on: the freeze-window check
   // reads it either way (C-25), so a lead-off run with T_arm 0.2 is a
   // different configuration from one with T_arm 0.
@@ -287,29 +300,45 @@ void DemoCatchingController::DeclareProfileParameters() {
   // therefore mirrored as the value the setup substituted for it (the
   // reference's struct default, the planner's η_v default), through the same
   // resolvers SetupArmCommand / SetupGridCatchSearch use.
-  declare("reference.omega", params_.reference_omega.value,
-          "L4 §6 reference natural frequency ω [rad/s]");
-  declare("reference.a_max", ResolvedReferenceParams().a_max,
-          "L4 §6 reference acceleration limit [m/s²] as run (struct default when TBD)");
-  declare("reference.v_max", ResolvedReferenceParams().v_max,
-          "L4 §6 reference TCP speed limit [m/s] as run (struct default when TBD)");
-  declare("planner.search.grid.gamma.eta_v", ResolvedSearchGridEtaV(),
-          "L3 §4.5 speed margin η_v on v_max and the joint ratings (D-9) as the search runs it");
+  //
+  // A mirror says what THIS controller runs, so only the selected functions
+  // have one (E1-F16): `reference.*` is the closed_form law's,
+  // `planner.search.grid.*` the grid search's, `planner.segment.mpc.*` the mpc
+  // segment planner's. A function that does not run would mirror its struct
+  // defaults — a number nothing ran, under a name that says it did. A reader
+  // finds the name not set and falls back to the files.
+  const bool closed_form = !rtc::catching::FollowsSegments(segment_mode_);
+  const bool grid = search_mode_ == rtc::catching::CatchingSearchMode::kGrid;
+  const bool mpc = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc;
+  if (closed_form) {
+    declare("reference.omega", params_.reference_omega.value,
+            "L4 §6 reference natural frequency ω [rad/s]");
+    declare("reference.a_max", ResolvedReferenceParams().a_max,
+            "L4 §6 reference acceleration limit [m/s²] as run (struct default when TBD)");
+    declare("reference.v_max", ResolvedReferenceParams().v_max,
+            "L4 §6 reference TCP speed limit [m/s] as run (struct default when TBD)");
+  }
+  if (grid) {
+    declare("planner.search.grid.gamma.eta_v", ResolvedSearchGridEtaV(),
+            "L3 §4.5 speed margin η_v on v_max and the joint ratings (D-9) as the search runs it");
+  }
   // The search's own copies of the reference it rolls a candidate out on: an
   // overlay can move them apart from `reference.*` (a warning under mpc), and
   // an analysis of the search must read what the SEARCH ran.
   const auto as_run = [nan](const rtc::catching::TbdDouble& v) { return v.tbd ? nan : v.value; };
-  declare("planner.search.grid.reference.omega",
-          as_run(params_.planner_search_grid_reference_omega),
-          "L3 §4.8 natural frequency ω of the reference the search rolls out [rad/s] (NaN = TBD)");
-  declare("planner.search.grid.reference.a_max",
-          as_run(params_.planner_search_grid_reference_a_max),
-          "L3 §4.8 acceleration limit of the reference the search rolls out [m/s²] (NaN = TBD)");
-  declare("planner.search.grid.reference.v_max",
-          as_run(params_.planner_search_grid_reference_v_max),
-          "L3 §4.5 TCP speed limit the search's gamma window uses [m/s] (NaN = TBD)");
-  declare("planner.search.grid.time.margin", planner_params_.time_margin,
-          "L3 §4.3 reach-time margin T_margin [s] the planner's gate uses");
+  if (grid) {
+    declare(
+        "planner.search.grid.reference.omega", as_run(params_.planner_search_grid_reference_omega),
+        "L3 §4.8 natural frequency ω of the reference the search rolls out [rad/s] (NaN = TBD)");
+    declare("planner.search.grid.reference.a_max",
+            as_run(params_.planner_search_grid_reference_a_max),
+            "L3 §4.8 acceleration limit of the reference the search rolls out [m/s²] (NaN = TBD)");
+    declare("planner.search.grid.reference.v_max",
+            as_run(params_.planner_search_grid_reference_v_max),
+            "L3 §4.5 TCP speed limit the search's gamma window uses [m/s] (NaN = TBD)");
+    declare("planner.search.grid.time.margin", planner_params_.time_margin,
+            "L3 §4.3 reach-time margin T_margin [s] the planner's gate uses");
+  }
   declare("robot.arm.qdd_max", arm_qdd_max_,
           "acceleration box the planner's reach time judges with [rad/s²], arm joint "
           "order (empty = no box loaded)");
@@ -323,123 +352,132 @@ void DemoCatchingController::DeclareProfileParameters() {
           "expected vision prediction spacing [s] (NaN = TBD); the decode's spacing floor");
   declare("io.n_min", static_cast<std::int64_t>(ResolvedTrajNMin()),
           "fewest prediction points a message may carry, as run (the decode's default when TBD)");
-  declare("planner.search.grid.slice.dt", planner_params_.slice_dt,
-          "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
+  if (grid) {
+    declare("planner.search.grid.slice.dt", planner_params_.slice_dt,
+            "L3 §4 candidate spacing [s]; the vision grid is thinned to it");
+  }
   // The two the E1-F10 tuning moves per arm (MD-72, MD-74): an
   // overlay one level short would otherwise run the shipped value under the
   // candidate's name. One launch configures once, which is what a unit driver
   // reads; like every mirror here they keep the FIRST configure's value.
-  declare("planner.search.grid.slice.t_lead_min", planner_params_.LeadMin(),
-          "L3 §4 smallest candidate lead t_c - t_plan [s] as run (planner.freeze.T_freeze when "
-          "the key is absent). As of the FIRST configure of this node — read_only mirrors "
-          "cannot follow a re-configure");
+  if (grid) {
+    declare("planner.search.grid.slice.t_lead_min", planner_params_.LeadMin(),
+            "L3 §4 smallest candidate lead t_c - t_plan [s] as run (planner.freeze.T_freeze when "
+            "the key is absent). As of the FIRST configure of this node — read_only mirrors "
+            "cannot follow a re-configure");
+  }
   declare("joint_cmd.accel_constraint",
           std::string(rtc::catching::AccelConstraintName(params_.joint_cmd_accel_constraint)),
           "L5 §4.3 CLIK acceleration constraint form the profile selects (decision K) — the parsed "
           "key, also when the CLIK refused it and the arm is held. As of the FIRST configure of "
           "this node — read_only mirrors cannot follow a re-configure");
-  // The segment MPC as run (MPC E1-F03): an off-process analysis must read the
-  // horizon, window and thresholds this controller used, not the file.
-  const auto& mpc_segment = planner_params_.mpc_segment;
-  declare("planner.segment.mpc.horizon.n_nodes", static_cast<std::int64_t>(mpc_segment.n_nodes),
-          "MPC segment planner nodes N_s; N_s * dt_s is the stopping time (MD-21)");
-  declare("planner.segment.mpc.horizon.dt_s", mpc_segment.dt_s,
-          "MPC segment planner node spacing dt_s [s]");
-  declare("planner.segment.mpc.horizon.blocks",
-          std::vector<std::int64_t>(mpc_segment.blocks.begin(),
-                                    mpc_segment.blocks.begin() + mpc_segment.n_blocks),
-          "MPC segment planner move-blocking pattern of the stop part (sum = n_nodes)");
-  declare("planner.segment.mpc.m_q", mpc_segment.m_q,
-          "MPC segment planner position margin inside the limits [rad]");
-  declare("planner.segment.mpc.replan.k_max", static_cast<std::int64_t>(mpc_segment.k_max),
-          "MPC segment planner post-catch replans at grid points k <= k_max (MD-31)");
-  declare("planner.segment.mpc.eta_tau", mpc_segment.eta_tau,
-          "MPC segment planner torque row fraction of tau_max");
-  declare("planner.segment.mpc.publish.slack_max", mpc_segment.slack_max,
-          "MPC segment planner publish threshold on the torque slack, nodes 1..N (MD-33)");
-  declare("planner.segment.mpc.publish.slack_terminal_max", mpc_segment.slack_terminal_max,
-          "MPC segment planner publish threshold on the terminal (static) torque slack (MD-33)");
-  // The APPROACH–stop keys (MPC E1-F08): all provisional.
-  declare("planner.segment.mpc.approach.n_pre_max",
-          static_cast<std::int64_t>(mpc_segment.n_pre_max),
-          "MPC segment planner pre-catch intervals before t_c, at most (MD-54); 0 = no MPC segment "
-          "planner "
-          "(mode mpc parks, MD-70)");
-  declare("planner.segment.mpc.approach.dt_pre_s", mpc_segment.dt_pre_s,
-          "MPC segment planner pre-catch node spacing [s] (MD-54)");
-  declare("planner.segment.mpc.approach.rest_tol", mpc_segment.rest_tol,
-          "MPC segment planner first solve: largest |q_dot_cmd| read as at rest [rad/s]");
-  declare("planner.segment.mpc.budget.first_s", mpc_segment.budget_first_s,
-          "MPC segment planner first-segment solve budget and lead [s] (MD-56)");
-  declare("planner.segment.mpc.budget.replan_s", mpc_segment.budget_replan_s,
-          "MPC segment planner replan solve budget and lead [s] (MD-56)");
-  declare("planner.segment.mpc.replan.same_point", mpc_segment.replan_same_point,
-          "MPC segment planner re-solves a pre-catch grid point with the newer prediction (MD-58)");
-  declare("planner.segment.mpc.publish.catch_pos_err_max", mpc_segment.catch_pos_err_max,
-          "MPC segment planner publish threshold on the catch-node position error [m] (MD-62)");
-  declare("planner.segment.mpc.catch.w_axis", mpc_segment.w_axis,
-          "MPC segment planner approach-axis weight");
-  declare("planner.segment.mpc.catch.w_v_par", mpc_segment.w_v_par,
-          "MPC segment planner relative-velocity weight along the ball's travel");
-  declare("planner.segment.mpc.catch.w_v_perp", mpc_segment.w_v_perp,
-          "MPC segment planner relative-velocity weight across the ball's travel");
-  declare("planner.segment.mpc.catch.gamma_ref", mpc_segment.gamma_ref,
-          "MPC segment planner velocity target fraction of the ball's velocity (MD-53)");
-  declare("planner.segment.mpc.catch.kappa", mpc_segment.kappa,
-          "MPC segment planner position weight gain: W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 "
-          "(MD-63)");
-  declare("planner.segment.mpc.catch.sigma_floor", mpc_segment.sigma_floor,
-          "MPC segment planner position weight tracking-error floor [m]");
-  declare("planner.segment.mpc.catch.w_max", mpc_segment.w_max,
-          "MPC segment planner position weight eigenvalue cap [1/m^2]");
-  declare("planner.segment.mpc.catch.w_const", mpc_segment.w_const,
-          "MPC segment planner position weight without a usable covariance [1/m^2]");
-  declare("planner.segment.mpc.catch.sigma_ref", mpc_segment.sigma_ref,
-          "MPC segment planner w_delta schedule reference, compared with tr Sigma_p [m]");
-  declare("planner.segment.mpc.catch.rho_v", mpc_segment.rho_v,
-          "MPC segment planner relative-velocity slack penalty at the catch node; 0 = no slack "
-          "row. The "
-          "slack is recorded (planner_events segment_slack_v), never a publish gate");
-  declare(
-      "planner.segment.mpc.catch.v_rel_allow", mpc_segment.v_rel_allow,
-      "MPC segment planner per-axis relative velocity the hand absorbs [m/s]; read when rho_v > 0");
-  // The core's own design values (YAML keys), as run. jerk_weight is the profile's
-  // list in arm joint order; empty = the core's all-ones.
-  declare("planner.segment.mpc.cost.jerk_weight", mpc_segment.jerk_weight,
-          "MPC segment planner jerk weight R_j per arm joint (arm order); empty = all 1");
-  declare("planner.segment.mpc.cost.u_scale", mpc_segment.u_scale,
-          "MPC segment planner jerk scale [rad/s^3]; the jerk cost is (u/u_scale)^2");
-  declare("planner.segment.mpc.cost.w_delta", mpc_segment.w_delta,
-          "MPC segment planner pull toward the reference [1/rad^2]");
-  declare("planner.segment.mpc.cost.rho_tau", mpc_segment.rho_tau,
-          "MPC segment planner torque slack penalty; 0 = torque rows off (the publish slack "
-          "condition is "
-          "then vacuous)");
-  declare("planner.segment.mpc.cost.w_perp", mpc_segment.w_perp,
-          "MPC segment planner stop-path weight [1/m^2]: distance of the catch frame, from the "
-          "catch on, "
-          "from the line through the ball's predicted catch position along its travel; 0 = off, at "
-          "most 1e4");
-  declare("planner.segment.mpc.catch.axis_theta_max", mpc_segment.axis_theta_max,
-          "MPC segment planner largest axis error of the reference the approach-axis term "
-          "linearises at "
-          "[rad]");
-  declare("planner.segment.mpc.linearization.delta_tr", mpc_segment.delta_tr,
-          "MPC segment planner trust-region half-width around the reference [rad]");
-  declare("planner.segment.mpc.linearization.reference_rest_tol", mpc_segment.reference_rest_tol,
-          "MPC segment planner bound on the supplied reference's terminal speed and acceleration");
-  declare("planner.segment.mpc.linearization.ref_speed_fraction", mpc_segment.ref_speed_fraction,
-          "MPC segment planner first-solve reference speed as a fraction of eta_v * qdot_max");
-  declare("planner.segment.mpc.solver.max_iter",
-          static_cast<std::int64_t>(mpc_segment.solver_max_iter),
-          "MPC segment planner ProxQP outer iteration cap");
-  declare("planner.segment.mpc.solver.max_iter_in",
-          static_cast<std::int64_t>(mpc_segment.solver_max_iter_in),
-          "MPC segment planner ProxQP inner iteration cap per outer step");
-  declare("planner.segment.mpc.solver.eps_abs", mpc_segment.solver_eps_abs,
-          "MPC segment planner ProxQP absolute tolerance");
-  declare("planner.segment.mpc.solver.eps_rel", mpc_segment.solver_eps_rel,
-          "MPC segment planner ProxQP relative tolerance");
+  if (mpc) {
+    // The segment MPC as run (MPC E1-F03): an off-process analysis must read the
+    // horizon, window and thresholds this controller used, not the file.
+    const auto& mpc_segment = planner_params_.mpc_segment;
+    declare("planner.segment.mpc.horizon.n_nodes", static_cast<std::int64_t>(mpc_segment.n_nodes),
+            "MPC segment planner nodes N_s; N_s * dt_s is the stopping time (MD-21)");
+    declare("planner.segment.mpc.horizon.dt_s", mpc_segment.dt_s,
+            "MPC segment planner node spacing dt_s [s]");
+    declare("planner.segment.mpc.horizon.blocks",
+            std::vector<std::int64_t>(mpc_segment.blocks.begin(),
+                                      mpc_segment.blocks.begin() + mpc_segment.n_blocks),
+            "MPC segment planner move-blocking pattern of the stop part (sum = n_nodes)");
+    declare("planner.segment.mpc.m_q", mpc_segment.m_q,
+            "MPC segment planner position margin inside the limits [rad]");
+    declare("planner.segment.mpc.replan.k_max", static_cast<std::int64_t>(mpc_segment.k_max),
+            "MPC segment planner post-catch replans at grid points k <= k_max (MD-31)");
+    declare("planner.segment.mpc.eta_tau", mpc_segment.eta_tau,
+            "MPC segment planner torque row fraction of tau_max");
+    declare("planner.segment.mpc.publish.slack_max", mpc_segment.slack_max,
+            "MPC segment planner publish threshold on the torque slack, nodes 1..N (MD-33)");
+    declare("planner.segment.mpc.publish.slack_terminal_max", mpc_segment.slack_terminal_max,
+            "MPC segment planner publish threshold on the terminal (static) torque slack (MD-33)");
+    // The APPROACH–stop keys (MPC E1-F08): all provisional.
+    declare(
+        "planner.segment.mpc.approach.n_pre_max", static_cast<std::int64_t>(mpc_segment.n_pre_max),
+        "MPC segment planner pre-catch intervals before t_c, at most (MD-54); 0 = no MPC segment "
+        "planner "
+        "(mode mpc parks, MD-70)");
+    declare("planner.segment.mpc.approach.dt_pre_s", mpc_segment.dt_pre_s,
+            "MPC segment planner pre-catch node spacing [s] (MD-54)");
+    declare("planner.segment.mpc.approach.rest_tol", mpc_segment.rest_tol,
+            "MPC segment planner first solve: largest |q_dot_cmd| read as at rest [rad/s]");
+    declare("planner.segment.mpc.budget.first_s", mpc_segment.budget_first_s,
+            "MPC segment planner first-segment solve budget and lead [s] (MD-56)");
+    declare("planner.segment.mpc.budget.replan_s", mpc_segment.budget_replan_s,
+            "MPC segment planner replan solve budget and lead [s] (MD-56)");
+    declare(
+        "planner.segment.mpc.replan.same_point", mpc_segment.replan_same_point,
+        "MPC segment planner re-solves a pre-catch grid point with the newer prediction (MD-58)");
+    declare("planner.segment.mpc.publish.catch_pos_err_max", mpc_segment.catch_pos_err_max,
+            "MPC segment planner publish threshold on the catch-node position error [m] (MD-62)");
+    declare("planner.segment.mpc.catch.w_axis", mpc_segment.w_axis,
+            "MPC segment planner approach-axis weight");
+    declare("planner.segment.mpc.catch.w_v_par", mpc_segment.w_v_par,
+            "MPC segment planner relative-velocity weight along the ball's travel");
+    declare("planner.segment.mpc.catch.w_v_perp", mpc_segment.w_v_perp,
+            "MPC segment planner relative-velocity weight across the ball's travel");
+    declare("planner.segment.mpc.catch.gamma_ref", mpc_segment.gamma_ref,
+            "MPC segment planner velocity target fraction of the ball's velocity (MD-53)");
+    declare("planner.segment.mpc.catch.kappa", mpc_segment.kappa,
+            "MPC segment planner position weight gain: W_p = kappa (Sigma_p + sigma_floor^2 I)^-1 "
+            "(MD-63)");
+    declare("planner.segment.mpc.catch.sigma_floor", mpc_segment.sigma_floor,
+            "MPC segment planner position weight tracking-error floor [m]");
+    declare("planner.segment.mpc.catch.w_max", mpc_segment.w_max,
+            "MPC segment planner position weight eigenvalue cap [1/m^2]");
+    declare("planner.segment.mpc.catch.w_const", mpc_segment.w_const,
+            "MPC segment planner position weight without a usable covariance [1/m^2]");
+    declare("planner.segment.mpc.catch.sigma_ref", mpc_segment.sigma_ref,
+            "MPC segment planner w_delta schedule reference, compared with tr Sigma_p [m]");
+    declare("planner.segment.mpc.catch.rho_v", mpc_segment.rho_v,
+            "MPC segment planner relative-velocity slack penalty at the catch node; 0 = no slack "
+            "row. The "
+            "slack is recorded (planner_events segment_slack_v), never a publish gate");
+    declare("planner.segment.mpc.catch.v_rel_allow", mpc_segment.v_rel_allow,
+            "MPC segment planner per-axis relative velocity the hand absorbs [m/s]; read when "
+            "rho_v > 0");
+    // The core's own design values (YAML keys), as run. jerk_weight is the profile's
+    // list in arm joint order; empty = the core's all-ones.
+    declare("planner.segment.mpc.cost.jerk_weight", mpc_segment.jerk_weight,
+            "MPC segment planner jerk weight R_j per arm joint (arm order); empty = all 1");
+    declare("planner.segment.mpc.cost.u_scale", mpc_segment.u_scale,
+            "MPC segment planner jerk scale [rad/s^3]; the jerk cost is (u/u_scale)^2");
+    declare("planner.segment.mpc.cost.w_delta", mpc_segment.w_delta,
+            "MPC segment planner pull toward the reference [1/rad^2]");
+    declare("planner.segment.mpc.cost.rho_tau", mpc_segment.rho_tau,
+            "MPC segment planner torque slack penalty; 0 = torque rows off (the publish slack "
+            "condition is "
+            "then vacuous)");
+    declare(
+        "planner.segment.mpc.cost.w_perp", mpc_segment.w_perp,
+        "MPC segment planner stop-path weight [1/m^2]: distance of the catch frame, from the "
+        "catch on, "
+        "from the line through the ball's predicted catch position along its travel; 0 = off, at "
+        "most 1e4");
+    declare("planner.segment.mpc.catch.axis_theta_max", mpc_segment.axis_theta_max,
+            "MPC segment planner largest axis error of the reference the approach-axis term "
+            "linearises at "
+            "[rad]");
+    declare("planner.segment.mpc.linearization.delta_tr", mpc_segment.delta_tr,
+            "MPC segment planner trust-region half-width around the reference [rad]");
+    declare(
+        "planner.segment.mpc.linearization.reference_rest_tol", mpc_segment.reference_rest_tol,
+        "MPC segment planner bound on the supplied reference's terminal speed and acceleration");
+    declare("planner.segment.mpc.linearization.ref_speed_fraction", mpc_segment.ref_speed_fraction,
+            "MPC segment planner first-solve reference speed as a fraction of eta_v * qdot_max");
+    declare("planner.segment.mpc.solver.max_iter",
+            static_cast<std::int64_t>(mpc_segment.solver_max_iter),
+            "MPC segment planner ProxQP outer iteration cap");
+    declare("planner.segment.mpc.solver.max_iter_in",
+            static_cast<std::int64_t>(mpc_segment.solver_max_iter_in),
+            "MPC segment planner ProxQP inner iteration cap per outer step");
+    declare("planner.segment.mpc.solver.eps_abs", mpc_segment.solver_eps_abs,
+            "MPC segment planner ProxQP absolute tolerance");
+    declare("planner.segment.mpc.solver.eps_rel", mpc_segment.solver_eps_rel,
+            "MPC segment planner ProxQP relative tolerance");
+  }
   // #537 S9b (D-S9-D1): what the controller escalates on, as run — an overlay
   // can move either, and a FAULT is read against the value in force.
   declare("supervisor.deadline.stop_s", params_.supervisor_deadline_stop_s.value,
@@ -449,19 +487,84 @@ void DemoCatchingController::DeclareProfileParameters() {
   // The segment mode (MPC MD-44): one per configuration, never mixed. Like every
   // mirror here, read_only — it keeps the FIRST configure's value.
   declare(
-      "planner.segment.mode",
-      std::string(segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc ? "mpc"
-                                                                            : "closed_form"),
-      "MPC MD-44: what the arm follows — closed_form (v1: the RT's own reference) or mpc (the "
-      "MPC segment planner's segments). "
+      "planner.segment.mode", std::string(rtc::catching::SegmentModeName(segment_mode_)),
+      "MPC MD-44: what the arm follows — closed_form (v1: the RT's own reference), or the "
+      "segments of a segment planner: mpc, mpc_docking. "
       "As of the FIRST configure of this node — read_only mirrors cannot follow a re-configure");
-  declare("planner.segment.mpc.eta_v", ResolvedSegmentMpcEtaV(),
-          "speed margin η_v of the mpc segment planner's velocity box and of the RT's "
-          "segment-switch gate headroom (D-9, MD-39) as run. As of the FIRST configure of this "
-          "node — read_only mirrors cannot follow a re-configure");
-  declare("planner.segment.mpc.switch_margin", segment_switch_margin_,
-          "MPC MD-39: rho_max of the segment switch gate (mode mpc). As of the FIRST "
+  // Which search plans (E1-F16): one per configuration, like the segment mode.
+  declare("planner.search.mode", std::string(rtc::catching::SearchModeName(search_mode_)),
+          "which search turns a predicted ball into a catch plan: grid or nlp. As of the FIRST "
           "configure of this node — read_only mirrors cannot follow a re-configure");
+  // The docking functions as run (E1-F16), each only when it runs. The hand's
+  // identified values are mirrored with them: an overlay can move any, and
+  // `delta_0` is derived here, in no file at all.
+  const bool nlp = search_mode_ == rtc::catching::CatchingSearchMode::kNlp;
+  const bool docking = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking;
+  if (nlp) {
+    const auto& n = nlp_search_params_;
+    declare("planner.search.nlp.cand_dt", n.cand_dt, "nlp search: candidate lattice spacing [s]");
+    declare("planner.search.nlp.t_lead_min", n.t_lead_min,
+            "nlp search: smallest candidate lead t_c - t_0 [s]");
+    declare("planner.search.nlp.t_max", n.t_max, "nlp search: largest candidate lead [s]");
+    declare("planner.search.nlp.n_pre.min", static_cast<std::int64_t>(n.n_pre_min),
+            "nlp search: fewest pre-catch intervals of a candidate");
+    declare("planner.search.nlp.n_pre.max", static_cast<std::int64_t>(n.n_pre_max),
+            "nlp search: most pre-catch intervals of a candidate (one core per count)");
+    declare("planner.search.nlp.dt_pre_s", n.dt_pre, "nlp search: pre-catch node spacing [s]");
+    declare("planner.search.nlp.budget.budget_s", n.budget_s,
+            "nlp search: one wake's whole budget [s]");
+    declare("planner.search.nlp.budget.solve_s", n.solve_budget_s,
+            "nlp search: one candidate's share of the budget [s]");
+    declare("planner.search.nlp.budget.max_solves", static_cast<std::int64_t>(n.max_solves),
+            "nlp search: most solves one wake runs");
+    declare("planner.search.nlp.continuous_tc", n.continuous_tc,
+            "nlp search: re-solve a candidate with the catch instant free inside its cell");
+  }
+  if (docking) {
+    const auto& d = mpc_docking_params_;
+    declare("planner.segment.mpc_docking.approach.n_pre_max",
+            static_cast<std::int64_t>(d.n_pre_max),
+            "mpc_docking planner: most pre-catch intervals (one core per count)");
+    declare("planner.segment.mpc_docking.approach.dt_pre_s", d.dt_pre_s,
+            "mpc_docking planner: pre-catch node spacing [s]");
+    declare("planner.segment.mpc_docking.stop.n_nodes", static_cast<std::int64_t>(d.n_stop),
+            "mpc_docking planner: stop intervals after the catch node");
+    declare("planner.segment.mpc_docking.stop.dt_s", d.dt_stop_s,
+            "mpc_docking planner: stop node spacing [s]");
+    declare("planner.segment.mpc_docking.budget.first_s", d.budget_first_s,
+            "mpc_docking planner: a first segment's budget [s]");
+    declare("planner.segment.mpc_docking.budget.replan_s", d.budget_replan_s,
+            "mpc_docking planner: a replan's budget [s]");
+    declare("planner.segment.mpc_docking.eta_v", d.eta_v,
+            "speed margin of the docking cores' velocity box and of the RT's segment-switch "
+            "gate headroom, as run");
+    declare("planner.segment.mpc_docking.switch_margin", segment_switch_margin_,
+            "rho_max of the segment switch gate (mode mpc_docking)");
+  }
+  if (nlp || docking) {
+    const auto& h = hand_docking_;
+    declare("hand.docking.s_ent", h.s_ent, "entrance plane offset s_ent [m] (identified)");
+    declare("hand.docking.speed.c_min", h.c_min, "smallest closing speed held [m/s]");
+    declare("hand.docking.speed.c_cap_max", h.c_cap_max, "largest closing speed held [m/s]");
+    declare("hand.docking.speed.v_perp_max", h.v_perp_max, "largest lateral speed held [m/s]");
+    declare("hand.docking.closure.delta_lo", h.delta_lo,
+            "closure window after the entrance crossing, lower end [s]");
+    declare("hand.docking.closure.delta_hi", h.delta_hi,
+            "closure window after the entrance crossing, upper end [s]");
+    declare("hand.docking.closure.sigma_tau", h.sigma_tau, "closure latency jitter [s]");
+    declare("hand.docking.closure.delta_0", hand.T_close_e2e.value - ResolvedCloseLead(),
+            "nominal closure instant after the entrance crossing [s] — derived: T_close_e2e - "
+            "(T_close_lead - s_ent / closing speed)");
+  }
+  if (mpc) {
+    declare("planner.segment.mpc.eta_v", ResolvedSegmentMpcEtaV(),
+            "speed margin η_v of the mpc segment planner's velocity box and of the RT's "
+            "segment-switch gate headroom (D-9, MD-39) as run. As of the FIRST configure of this "
+            "node — read_only mirrors cannot follow a re-configure");
+    declare("planner.segment.mpc.switch_margin", segment_switch_margin_,
+            "MPC MD-39: rho_max of the segment switch gate (mode mpc). As of the FIRST "
+            "configure of this node — read_only mirrors cannot follow a re-configure");
+  }
 }
 
 void DemoCatchingController::DeclareArmParameter() {
@@ -824,12 +927,18 @@ void DemoCatchingController::SetupArmCommand() {
   q_eval_ = Eigen::VectorXd::Zero(model.nq);
   v_eval_ = Eigen::VectorXd::Zero(nv);
 
-  const rtc::catching::SoftCatchTranslation::Params ref_params = ResolvedReferenceParams();
-  reference_.emplace(ref_params);
-  if (!reference_->ParamsValid()) {
-    RCLCPP_ERROR(logger_, "reference parameters rejected (omega/zeta/a_max/v_max)");
-    reference_.reset();
-    return;
+  // The L4 reference is the closed_form law's (E1-F16): a mode that follows
+  // segments runs no reference, reads none of `reference.*`, and builds none —
+  // the laws that step it check for it themselves.
+  reference_.reset();
+  if (!rtc::catching::FollowsSegments(params_.planner_segment_mode)) {
+    const rtc::catching::SoftCatchTranslation::Params ref_params = ResolvedReferenceParams();
+    reference_.emplace(ref_params);
+    if (!reference_->ParamsValid()) {
+      RCLCPP_ERROR(logger_, "reference parameters rejected (omega/zeta/a_max/v_max)");
+      reference_.reset();
+      return;
+    }
   }
 
   clik_enabled_ = true;
@@ -1111,6 +1220,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // configuration: the planner's setup below builds the MPC segment cores only
     // for it, and the tick never changes it.
     segment_mode_ = params_.planner_segment_mode;
+    search_mode_ = params_.planner_search_mode;
     segment_switch_margin_ = params_.planner_segment_mpc_switch_margin;
     // Written by SetupMpcSegmentPlanner only when this configure builds it.
     grid_catch_search_constants_ = {};
@@ -1207,14 +1317,50 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                    "controller will refuse to activate; the robot still comes up.");
       return CallbackReturn::SUCCESS;
     }
+    // A search and a segment mode that cannot run together (E1-F16): the nlp
+    // search's plan is the catch node of a joint trajectory, and the closed_form
+    // law follows a γ ramp that search does not make. A profile mistake: park,
+    // name both keys, keep the robot up.
+    if (!rtc::catching::SearchSegmentCombinationAllowed(search_mode_, segment_mode_)) {
+      sim_only_disabled_ = true;
+      park_reason_ = CatchingParkReason::kSearchSegmentCombination;
+      RCLCPP_ERROR(logger_,
+                   "DISABLED: 'catching.planner.search.mode: %s' cannot run with "
+                   "'catching.planner.segment.mode: %s' — the nlp search plans for a segment "
+                   "planner (mpc, mpc_docking); under closed_form select the grid search. This "
+                   "controller will refuse to activate; the robot still comes up.",
+                   rtc::catching::SearchModeName(search_mode_),
+                   rtc::catching::SegmentModeName(segment_mode_));
+      return CallbackReturn::SUCCESS;
+    }
+    // The docking keys (E1-F16): the hand's identified capture set, and the
+    // maps of the nlp search and the mpc_docking planner when one is selected.
+    // A malformed key throws (the catch below refuses the configure, as for
+    // every other parser); a profile on which a selected docking function
+    // cannot run is a profile mistake — park, name the key, keep the robot up.
+    ParseDockingConfig();
+    if (planner_params_.enabled) {
+      if (const char* why = DockingConfigInvalid(); why != nullptr) {
+        sim_only_disabled_ = true;
+        park_reason_ = CatchingParkReason::kMpcDockingInvalid;
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: planner.search.mode %s with planner.segment.mode %s cannot run "
+                     "on this profile — %s. This controller will refuse to activate; the robot "
+                     "still comes up.",
+                     rtc::catching::SearchModeName(search_mode_),
+                     rtc::catching::SegmentModeName(segment_mode_), why);
+        return CallbackReturn::SUCCESS;
+      }
+    }
     // The search rolls a candidate out on its own copies of the closed_form
     // law's five values (planner.search.grid.reference.*, stop.a_dec). Under
     // closed_form the arm follows that law, so a copy that differs makes the
     // search rank candidates by a motion the arm will not make: park, name the
     // pair, keep the robot up. Under mpc the arm follows the mpc segment
     // planner's segments and the two are different functions' values — said
-    // once, then run. Only with the planner on: nothing else reads the copies.
-    if (planner_params_.enabled) {
+    // once, then run. Only with the planner on and the grid search selected:
+    // nothing else reads the copies.
+    if (planner_params_.enabled && search_mode_ == rtc::catching::CatchingSearchMode::kGrid) {
       const bool closed_form = segment_mode_ == rtc::catching::CatchingSegmentMode::kClosedForm;
       std::array<rtc::catching::CatchingKeyCopy, 5> differ{};
       const std::size_t n_differ = rtc::catching::SearchCopiesThatDiffer(params_, differ);
@@ -1241,7 +1387,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       }
       // The two speed margins: the search judges a candidate's reach with its
       // own η_v, the mpc segment planner boxes the joint speeds with its own.
-      if (!closed_form && ResolvedSearchGridEtaV() != ResolvedSegmentMpcEtaV()) {
+      if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc &&
+          ResolvedSearchGridEtaV() != ResolvedSegmentMpcEtaV()) {
         RCLCPP_WARN(logger_,
                     "'catching.planner.segment.mpc.eta_v' (%g) differs from "
                     "'catching.planner.search.grid.gamma.eta_v' (%g): the search admits "
@@ -1380,6 +1527,21 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       TearDownConfiguredResources();
       return CallbackReturn::FAILURE;
     }
+    // A docking function that refused what it was configured with — the
+    // search its parameters, a core its grid or the hand's values at Init. The
+    // same park as an unset docking value: the text carries the core's reason.
+    if (!docking_refusal_.empty()) {
+      sim_only_disabled_ = true;
+      park_reason_ = CatchingParkReason::kMpcDockingInvalid;
+      RCLCPP_ERROR(logger_,
+                   "DISABLED: planner.search.mode %s with planner.segment.mode %s cannot run on "
+                   "this profile — %s. This controller will refuse to activate; the robot still "
+                   "comes up.",
+                   rtc::catching::SearchModeName(search_mode_),
+                   rtc::catching::SegmentModeName(segment_mode_), docking_refusal_.c_str());
+      TearDownConfiguredResources();
+      return CallbackReturn::SUCCESS;
+    }
     SetupSegmentFollower();
 
     // The S7 supervisor's values (commit instant, wait pose, stop box, hand
@@ -1403,22 +1565,23 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // APPROACH to the end of the stop, so a missing prerequisite would leave
     // every trial without one. Parked like any other profile mistake: the
     // robot comes up, this controller does not activate.
-    if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc) {
+    if (rtc::catching::FollowsSegments(segment_mode_)) {
       if (const char* why = SegmentModeUnmet(); why != nullptr) {
         sim_only_disabled_ = true;
         park_reason_ = CatchingParkReason::kSegmentModeUnmet;
         RCLCPP_ERROR(logger_,
-                     "DISABLED: planner.segment.mode is mpc but %s. This controller will refuse "
+                     "DISABLED: planner.segment.mode is %s but %s. This controller will refuse "
                      "to activate; the robot still comes up.",
-                     why);
+                     rtc::catching::SegmentModeName(segment_mode_), why);
         TearDownConfiguredResources();
         return CallbackReturn::SUCCESS;
       }
       if (oracle_enabled_) {
         RCLCPP_WARN(logger_,
-                    "planner.segment.mode is mpc under the oracle plan profile: no planner "
+                    "planner.segment.mode is %s under the oracle plan profile: no planner "
                     "publishes a stop segment here, so every DECEL aborts unless a test writes "
-                    "the segment box");
+                    "the segment box",
+                    rtc::catching::SegmentModeName(segment_mode_));
       }
     }
     // #537 pre-S10 R3 (Q4): the box the search and every joint-space ramp run
@@ -1488,6 +1651,11 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_activate(
                      ? "the profile sets a removed or renamed key, or a removed value"
                  : park_reason_ == CatchingParkReason::kSearchCopyDiffers
                      ? "the search's copy of a closed_form value differs from it"
+                 : park_reason_ == CatchingParkReason::kSearchSegmentCombination
+                     ? "planner.search.mode and planner.segment.mode cannot run together"
+                 : park_reason_ == CatchingParkReason::kMpcDockingInvalid
+                     ? "a selected docking function (nlp search, mpc_docking planner) cannot run "
+                       "on this profile"
                      : "a consumed value is provisional or TBD");
     return CallbackReturn::FAILURE;
   }
@@ -1649,14 +1817,23 @@ const char* DemoCatchingController::PlannerDecisionMissing() const noexcept {
   if (!std::isfinite(p.t_freeze)) {
     return "planner.freeze.T_freeze";
   }
-  if (!p.catch_box.set) {
-    return "planner.search.grid.workspace.catch_box";
+  // The search may stop before the plan freezes, never after: past T_freeze the
+  // RT takes no plan, and a search still running there would only be late.
+  if (std::isfinite(p.t_stop_plan) && p.t_stop_plan < p.t_freeze) {
+    return "planner.freeze.t_stop_plan (it is below planner.freeze.T_freeze — the search "
+           "stops no later than the plan freezes)";
   }
-  if (!std::isfinite(p.d_eff)) {
-    return "planner.search.grid.hand.d_eff";
-  }
-  if (!std::isfinite(p.r_cap)) {
-    return "planner.search.grid.hand.r_cap";
+  // The grid search's decisions, when it is the search that runs.
+  if (search_mode_ == rtc::catching::CatchingSearchMode::kGrid) {
+    if (!p.catch_box.set) {
+      return "planner.search.grid.workspace.catch_box";
+    }
+    if (!std::isfinite(p.d_eff)) {
+      return "planner.search.grid.hand.d_eff";
+    }
+    if (!std::isfinite(p.r_cap)) {
+      return "planner.search.grid.hand.r_cap";
+    }
   }
   return nullptr;
 }
@@ -1689,6 +1866,10 @@ void DemoCatchingController::SetupSupervisor() {
   };
   t_hold_ns_ = to_ns(params_.hand.T_hold);
   t_close_e2e_ns_ = to_ns(params_.hand.T_close_e2e);
+  // As run: from the plan's catch instant (ResolvedCloseLead).
+  const double close_lead_s = ResolvedCloseLead();
+  t_close_lead_ns_ =
+      std::isfinite(close_lead_s) ? static_cast<std::int64_t>(std::llround(close_lead_s * 1e9)) : 0;
   t_release_timeout_ns_ = to_ns(params_.hand.T_release_timeout);
   stop_deadline_ns_ = to_ns(params_.supervisor_deadline_stop_s);
   return_deadline_ns_ = to_ns(params_.supervisor_deadline_return_s);
@@ -1697,8 +1878,14 @@ void DemoCatchingController::SetupSupervisor() {
   // The sequencer owns the hand unless the S4 step rig does (never both).
   hand_seq_enabled_ = false;
   if (!hand_step_enabled_ && params_.hand.dof == hand_dof_) {
-    hand_seq_enabled_ =
-        hand_seq_.Configure(rtc::catching::HandSequencerConfig::FromProfile(params_.hand));
+    rtc::catching::HandSequencerConfig seq =
+        rtc::catching::HandSequencerConfig::FromProfile(params_.hand);
+    // The lead as run from the plan's catch instant (ResolvedCloseLead); an
+    // unresolved one stays the invalid value FromProfile gave it.
+    if (seq.t_close_lead_ns >= 0 && t_close_lead_ns_ >= 0 && std::isfinite(close_lead_s)) {
+      seq.t_close_lead_ns = t_close_lead_ns_;
+    }
+    hand_seq_enabled_ = hand_seq_.Configure(seq);
   }
   // The contact lane (S7.3). The stride is the hand device's own sensor
   // layout — the runtime SSoT (hand_sensor_layout.hpp) — or the 7-value union
@@ -1747,13 +1934,23 @@ void DemoCatchingController::SetupSupervisor() {
     }
   }
   trials_enabled_ = clik_enabled_ && SupervisorValueMissing() == nullptr;
+  // The lead is its own key (E1-F16). A profile without it closes its hand the
+  // measured closure time before the catch — said, because for a hand that
+  // holds only when it closes after the ball is in, that is the wrong instant.
+  if (hand_seq_enabled_ && !params_.hand.T_close_lead_given) {
+    RCLCPP_WARN(logger_,
+                "robot.hand.T_close_lead is not set: the hand is told to close T_close_e2e "
+                "(%.4f s) before the catch instant. Set the key to the profile's design lead.",
+                static_cast<double>(t_close_e2e_ns_) * 1e-9);
+  }
   if (trials_enabled_) {
     RCLCPP_INFO(logger_,
                 "supervisor: trials enabled — commit at t_c − %.3f s, wait pose (%d joints, tol "
-                "%.3f rad), hand %s, T_hold %.3f s, T_release_timeout %.3f s%s, motion deadlines "
-                "stop %.3f s / return %.3f s%s",
+                "%.3f rad), hand %s, close at t_c − %.4f s, T_hold %.3f s, T_release_timeout "
+                "%.3f s%s, motion deadlines stop %.3f s / return %.3f s%s",
                 static_cast<double>(plan_freeze_ns_) * 1e-9, planner_params_.wait_pose_n, pose_tol_,
                 hand_seq_enabled_ ? "sequenced" : "on the step rig",
+                static_cast<double>(t_close_lead_ns_) * 1e-9,
                 static_cast<double>(t_hold_ns_) * 1e-9,
                 static_cast<double>(t_release_timeout_ns_) * 1e-9,
                 params_.hand.T_release_timeout_derived ? " (derived)" : "",
@@ -1774,7 +1971,7 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
   rtc::catching::CheckFreezeCoversClose(freeze, params_, planner_params_.t_freeze,
                                         1.0 / GetDefaultDt());
   if (freeze.failure_count > 0) {
-    return "planner.freeze.T_freeze (shorter than T_close_e2e + T_arm + one tick)";
+    return "planner.freeze.T_freeze (shorter than T_close_lead + T_arm + one tick)";
   }
   if (planner_params_.wait_pose_n != arm_dof_) {
     return "planner.wait_pose";
@@ -1791,7 +1988,9 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
       return "planner.wait_pose (outside the margined position box)";
     }
   }
-  if (!(decel_a_dec_ > 0.0)) {
+  // The closed_form stop's rate: a mode that follows segments stops on its
+  // last one and reads no a_dec.
+  if (!rtc::catching::FollowsSegments(segment_mode_) && !(decel_a_dec_ > 0.0)) {
     return "supervisor.decel.a_dec";
   }
   // D-S9-D1: a trial whose stop or return has no deadline can hang in either
@@ -1808,6 +2007,9 @@ const char* DemoCatchingController::SupervisorValueMissing() const noexcept {
   }
   if (!hand_step_enabled_ && params_.hand.T_close_e2e.tbd) {
     return "robot.hand.T_close_e2e";
+  }
+  if (!hand_step_enabled_ && params_.hand.CloseLead().tbd) {
+    return "robot.hand.T_close_lead";
   }
   // Above T_close_e2e as well as positive: the validator's own line for this
   // key is only a warning here (the key is exempt from the consumed gate with
@@ -1841,6 +2043,11 @@ bool DemoCatchingController::SetupPlanner() {
   // Dropped on every configure (the thread is joined above): a re-configure
   // with the planner or the segment MPC off must not report the previous one.
   planner_cycle_.ClearSegmentPlanner();
+  planner_cycle_.ClearSearch();
+  grid_search_ = nullptr;
+  nlp_search_ = nullptr;
+  mpc_segment_planner_ = nullptr;
+  mpc_docking_planner_ = nullptr;
   if (!planner_params_.enabled) {
     return true;
   }
@@ -1866,23 +2073,47 @@ bool DemoCatchingController::SetupPlanner() {
     }
     planner_wake_fd_.store(fd, std::memory_order_release);
   }
-  // ── The search's model (S6-B, R-3) ────────────────────────────────────────
-  planner_cycle_.ClearSearch();
+  // ── The search and the segment planner (S6-B, R-3; E1-F16) ────────────────
+  // One search and at most one segment planner per configuration, each built
+  // here and handed to the cycle configured.
   planner_handle_.reset();
   if (!builder_) {
-    RCLCPP_WARN(logger_,
-                "planner: no system model — the thread runs, but its search is the stub "
-                "(it publishes \"no plan\")%s",
-                segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc
-                    ? " and the MPC segment planner does not run"
-                    : "");
-  } else if (!SetupGridCatchSearch()) {
-    return false;
+    RCLCPP_WARN(
+        logger_,
+        "planner: no system model — the thread runs, but its search is the stub "
+        "(it publishes \"no plan\")%s",
+        rtc::catching::FollowsSegments(segment_mode_) ? " and no segment planner runs" : "");
+  } else {
+    PlannerArm arm;
+    if (!ResolvePlannerArm(arm)) {
+      return false;
+    }
+    const bool grid = search_mode_ == rtc::catching::CatchingSearchMode::kGrid;
+    if (!(grid ? SetupGridCatchSearch(arm) : SetupNlpCatchSearch(arm))) {
+      return false;
+    }
+    // MD-44: a segment planner exists only for a configuration that follows
+    // its segments. Without a pre-catch grid there is no MPC segment planner to
+    // build (MD-70) — a profile mistake SegmentModeUnmet parks on, not a
+    // configure failure. Nor is one built behind a search that refused.
+    if (docking_refusal_.empty()) {
+      if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc &&
+          planner_params_.mpc_segment.n_pre_max > 0 && !SetupMpcSegmentPlanner(arm)) {
+        return false;
+      }
+      if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking &&
+          !SetupMpcDockingSegmentPlanner(arm)) {
+        return false;
+      }
+    }
   }
   RCLCPP_INFO(logger_,
               "planner enabled: wake timeout %.3f s, budget %.3f s, wait pose %s — the thread "
               "spawns on the `mpc` layout role (mpc_main) at activation%s",
-              planner_params_.wake_timeout_s, planner_params_.budget_s,
+              planner_params_.wake_timeout_s,
+              search_mode_ == rtc::catching::CatchingSearchMode::kGrid
+                  ? planner_params_.budget_s
+                  : nlp_search_params_.budget_s,
               planner_params_.wait_pose_n > 0 ? "set" : "absent",
               layout_profile_drops_mpc_ ? ", which this launch's profile will REFUSE" : "");
   return true;
@@ -1942,29 +2173,36 @@ bool DemoCatchingController::ResolveCatchSubModel(
   return true;
 }
 
-bool DemoCatchingController::SetupGridCatchSearch() {
-  const std::string& name = planner_params_.sub_model;
-  std::shared_ptr<const pinocchio::Model> model;
-  rtc::catching::GridCatchSearchModel pm;
-  pinocchio::FrameIndex frame = 0;
-  if (!ResolveCatchSubModel("planner", model, frame, pm.device_of_model)) {
+bool DemoCatchingController::ResolvePlannerArm(PlannerArm& arm) {
+  if (!ResolveCatchSubModel("planner", arm.model, arm.frame, arm.device_of_model)) {
     return false;
   }
+  arm.nv = arm.model->nv;
+  const auto& vmax = device_max_velocity_[static_cast<std::size_t>(kCatchingArmDeviceIdx)];
+  for (int q = 0; q < arm.nv; ++q) {
+    const auto u = static_cast<std::size_t>(q);
+    const auto d = static_cast<std::size_t>(arm.device_of_model[u]);
+    arm.qdot_max[u] = d < vmax.size() ? vmax[d] : 0.0;
+    arm.qddot_max[u] = d < arm_qdd_max_.size() ? arm_qdd_max_[d] : 0.0;
+  }
+  arm.accel_box = static_cast<int>(arm_qdd_max_.size()) == arm_dof_;
   // No SetJointOrder on this handle: CatchPoseIk refuses a reordered one (its
   // Jacobian columns and box rows are model order). The model↔device mapping
   // is carried explicitly instead.
-  planner_handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model);
+  planner_handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(arm.model);
+  return true;
+}
+
+bool DemoCatchingController::SetupGridCatchSearch(const PlannerArm& arm) {
+  const std::string& name = planner_params_.sub_model;
+  rtc::catching::GridCatchSearchModel pm;
+  pm.device_of_model = arm.device_of_model;
   pm.handle = planner_handle_.get();
-  pm.catch_frame = frame;
-  pm.nv = model->nv;
-  const auto& vmax = device_max_velocity_[static_cast<std::size_t>(kCatchingArmDeviceIdx)];
-  for (int q = 0; q < pm.nv; ++q) {
-    const auto u = static_cast<std::size_t>(q);
-    const auto d = static_cast<std::size_t>(pm.device_of_model[u]);
-    pm.qdot_max[u] = d < vmax.size() ? vmax[d] : 0.0;
-    pm.qddot_max[u] = d < arm_qdd_max_.size() ? arm_qdd_max_[d] : 0.0;
-  }
-  pm.accel_box = static_cast<int>(arm_qdd_max_.size()) == arm_dof_;
+  pm.catch_frame = arm.frame;
+  pm.nv = arm.nv;
+  pm.qdot_max = arm.qdot_max;
+  pm.qddot_max = arm.qddot_max;
+  pm.accel_box = arm.accel_box;
 
   // Profile constants outside planner.* — NaN where the profile says TBD, so
   // the gate that needs one fails instead of using a guess.
@@ -1979,9 +2217,12 @@ bool DemoCatchingController::SetupGridCatchSearch() {
   pc.v_max = val(params_.planner_search_grid_reference_v_max);
   pc.a_dec = val(params_.planner_search_grid_stop_a_dec);
   pc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
-  pc.t_close_e2e = val(params_.hand.T_close_e2e);
-  // T_close,tot = T_close,e2e + h/2 (L3 §4.5): the tick quantisation budget.
-  pc.t_close_total = pc.t_close_e2e + 0.5 * GetDefaultDt();
+  // Two values of the hand (E1-F16): the LEAD times the close command (the
+  // plan's t_cmd, the commit gate); the MEASURED closure time, with the tick
+  // quantisation budget h/2, is what the closing hand absorbs (T_close,tot,
+  // L3 §4.5: the γ window).
+  pc.t_close_lead = ResolvedCloseLead();
+  pc.t_close_total = val(params_.hand.T_close_e2e) + 0.5 * GetDefaultDt();
   pc.ball_mass = val(params_.ball.mass);
   // The L4 reference the rollout replays (§4.8): the search's ω, ζ and a_max,
   // and the control period as the confirmation step.
@@ -1989,27 +2230,336 @@ bool DemoCatchingController::SetupGridCatchSearch() {
   pc.ref_zeta = val(params_.planner_search_grid_reference_zeta);
   pc.ref_a_max = val(params_.planner_search_grid_reference_a_max);
   pc.control_dt = GetDefaultDt();
+  // Under a segment planner there is no L4 reference for a switch to step:
+  // the search decides a switch by ΔJ alone.
+  pc.follows_segments = rtc::catching::FollowsSegments(segment_mode_);
 
   grid_catch_search_constants_ = pc;
-  if (!planner_cycle_.ConfigureGridCatchSearch(pm, pc, catch_pose_ik_config_.options)) {
+  // Built here and handed over configured: the cycle knows the search through
+  // its interface only, and gives it its own clock when it installs it.
+  auto search = rtc::catching::MakeGridCatchSearch(
+      pm, pc, planner_params_, catch_pose_ik_config_.options, &rtc::SteadyNowNs);
+  if (search == nullptr) {
     RCLCPP_ERROR(logger_,
                  "planner: the search refused its model (nv %d, wait pose %d entries — "
                  "planner.wait_pose must give one per arm joint)",
                  pm.nv, planner_params_.wait_pose_n);
     return false;
   }
-  // MD-44: the MPC segment cores exist only for a configuration that follows them.
-  // Without a pre-catch grid there is no MPC segment planner to build (MD-70) — a
-  // profile mistake SegmentModeUnmet parks on, not a configure failure.
-  if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpc &&
-      planner_params_.mpc_segment.n_pre_max > 0 && !SetupMpcSegmentPlanner(model, pm)) {
-    return false;
-  }
+  grid_search_ = search.get();
+  planner_cycle_.InstallSearch(std::move(search));
+  RCLCPP_INFO(logger_,
+              "search mode: grid — one candidate per vision sample, a closed-form gamma "
+              "profile per candidate (planner.search.grid.*)");
   RCLCPP_INFO(logger_,
               "planner search ready: sub-model '%s' (nv %d), catch frame '%s', accel box %s, "
               "T_freeze %.3f s, max_ik %d",
               name.c_str(), pm.nv, catch_frame_name_.c_str(), pm.accel_box ? "on" : "OFF",
               planner_params_.t_freeze, planner_params_.max_ik);
+  return true;
+}
+
+double DemoCatchingController::ResolvedCloseLead() const {
+  const rtc::catching::TbdDouble lead = params_.hand.CloseLead();
+  if (lead.tbd) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  // `robot.hand.T_close_lead` is the hand's: how long before the ball reaches
+  // the catch point (the catch-frame origin) the close has to be commanded.
+  // What the sequencer subtracts it from is a plan's catch instant t_c, and
+  // t_c is not that arrival under every selection: the nlp search and the
+  // mpc_docking planner put t_c at the ball's crossing of the ENTRANCE plane,
+  // s_ent before the origin along the approach axis. Under either, the lead
+  // from t_c is shorter by that flight at the reference closing speed.
+  const bool nlp = search_mode_ == rtc::catching::CatchingSearchMode::kNlp;
+  const bool docking = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking;
+  if (!nlp && !docking) {
+    return lead.value;
+  }
+  // The planner whose segments the arm executes speaks for the closing speed.
+  const double c = -(docking ? mpc_docking_params_.core : nlp_search_params_.core).nu_ref.z();
+  if (!std::isfinite(hand_docking_.s_ent) || !std::isfinite(c) || !(c > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();  // DockingConfigInvalid names it
+  }
+  return lead.value - hand_docking_.s_ent / c;
+}
+
+double DemoCatchingController::ResolvedSegmentEtaV() const {
+  return segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking
+             ? mpc_docking_params_.eta_v
+             : ResolvedSegmentMpcEtaV();
+}
+
+void DemoCatchingController::ParseDockingConfig() {
+  hand_docking_ = rtc::catching::HandDockingParams{};
+  nlp_search_params_ = rtc::catching::NlpCatchSearchParams{};
+  mpc_docking_params_ = rtc::catching::MpcDockingSegmentPlannerParams{};
+  docking_refusal_.clear();
+  if (!catching_section_present_) {
+    return;
+  }
+  // The hand's identified capture set is a property of the hand, read under
+  // every selection; the two functions' maps only when they run.
+  hand_docking_ = rtc::catching::ParseHandDockingParams(catching_node_);
+  if (search_mode_ == rtc::catching::CatchingSearchMode::kNlp) {
+    nlp_search_params_ = rtc::catching::ParseNlpSearchParams(catching_node_, arm_dof_);
+  }
+  if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking) {
+    mpc_docking_params_ = rtc::catching::ParseMpcDockingSegmentParams(catching_node_, arm_dof_);
+    // The RT's switch gate reads the margin of the planner whose segments it
+    // follows.
+    segment_switch_margin_ = mpc_docking_params_.switch_margin;
+  }
+}
+
+const char* DemoCatchingController::DockingConfigInvalid() {
+  const bool nlp = search_mode_ == rtc::catching::CatchingSearchMode::kNlp;
+  const bool docking = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking;
+  if (!nlp && !docking) {
+    return nullptr;  // no docking function runs: none of this is consumed
+  }
+  const auto refuse = [this](std::string why) {
+    docking_refusal_ = std::move(why);
+    return docking_refusal_.c_str();
+  };
+  // The hand's identified values (E1-F15): nobody may guess one.
+  if (const char* unset = hand_docking_.FirstUnset(); unset != nullptr) {
+    return refuse(std::string("'catching.") + unset +
+                  "' is unset or TBD (the hand's identified capture set)");
+  }
+  if (params_.hand.T_close_e2e.tbd || params_.hand.CloseLead().tbd) {
+    return refuse(
+        "'catching.robot.hand.T_close_e2e' or 'T_close_lead' is unset or TBD (the "
+        "nominal closure instant is their difference)");
+  }
+  if (params_.ball.mass.tbd) {
+    return refuse("'catching.core.ball.mass' is unset or TBD (the impact rows)");
+  }
+  // A selected function's own decisions first: without its map every value
+  // below is a code default, and a refusal that names one of those (the lead
+  // against a default closing speed) would hide that the map is missing.
+  if (nlp && !nlp_search_params_.catch_box.set) {
+    return refuse("'catching.planner.search.nlp.catch_box' is unset or TBD");
+  }
+  if (docking && mpc_docking_params_.n_pre_max < 1) {
+    return refuse(
+        "'catching.planner.segment.mpc_docking.approach.n_pre_max' is unset (the "
+        "planner's pre-catch grid — its map is not in this profile?)");
+  }
+  if (!(ResolvedCloseLead() >= 0.0)) {
+    return refuse(
+        "'catching.robot.hand.T_close_lead' is shorter than the ball's flight from the "
+        "entrance plane to the catch point (robot.hand.docking.s_ent over the "
+        "reference closing speed, core.catch.nu_ref): the close would be due after "
+        "the catch instant");
+  }
+  if (nlp && docking) {
+    // The planner republishes the search's solution after re-evaluating it on
+    // its own core: the two grids have to be one.
+    if (const char* differ =
+            rtc::catching::DockingGridMismatch(nlp_search_params_, mpc_docking_params_);
+        differ != nullptr) {
+      return refuse(differ);
+    }
+    if (nlp_search_params_.continuous_tc) {
+      return refuse(
+          "'catching.planner.search.nlp.continuous_tc' is true: a solution whose catch "
+          "interval has its own length is off the mpc_docking planner's grid, so no "
+          "plan of it could be published");
+    }
+  }
+  // The reference closing speed lives in a function's `core:` map, the band
+  // it has to lie in under the hand's: the two are checked here, where both
+  // are known.
+  const auto speed_outside = [this](const rtc::catching::MpcDockingSegmentCoreParams& core) {
+    const double c = -core.nu_ref.z();
+    return !(c >= hand_docking_.c_min && c <= hand_docking_.c_cap_max);
+  };
+  if (nlp && speed_outside(nlp_search_params_.core)) {
+    return refuse("'catching.planner.search.nlp.core.catch.nu_ref' closes at " +
+                  std::to_string(-nlp_search_params_.core.nu_ref.z()) +
+                  " m/s, outside 'catching.robot.hand.docking.speed' [c_min, c_cap_max] = [" +
+                  std::to_string(hand_docking_.c_min) + ", " +
+                  std::to_string(hand_docking_.c_cap_max) + "]");
+  }
+  if (docking && speed_outside(mpc_docking_params_.core)) {
+    return refuse("'catching.planner.segment.mpc_docking.core.catch.nu_ref' closes at " +
+                  std::to_string(-mpc_docking_params_.core.nu_ref.z()) +
+                  " m/s, outside 'catching.robot.hand.docking.speed' [c_min, c_cap_max] = [" +
+                  std::to_string(hand_docking_.c_min) + ", " +
+                  std::to_string(hand_docking_.c_cap_max) + "]");
+  }
+  return nullptr;
+}
+
+bool DemoCatchingController::BuildDockingLimits(const PlannerArm& arm, double eta_v,
+                                                const char* who,
+                                                rtc::catching::MpcDockingSegmentCoreLimits& out) {
+  const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+  const std::vector<double>* torque = nullptr;
+  if (arm_cfg != nullptr && arm_cfg->joint_limits.has_value()) {
+    torque = &arm_cfg->joint_limits->max_torque;
+  }
+  if (torque == nullptr || static_cast<int>(torque->size()) < arm.nv) {
+    RCLCPP_ERROR(logger_,
+                 "%s: the arm device has no joint_limits.max_torque for its %d joints — the "
+                 "docking core's torque rows need them",
+                 who, arm.nv);
+    return false;
+  }
+  const Eigen::Index n = arm.nv;
+  out = rtc::catching::MpcDockingSegmentCoreLimits{};
+  out.q_min.resize(n);
+  out.q_max.resize(n);
+  out.qd_max.resize(n);
+  out.tau_max.resize(n);
+  out.tau_lo.resize(n);
+  out.tau_hi.resize(n);
+  out.armature = Eigen::VectorXd::Zero(n);
+  if (arm.accel_box) {
+    out.qdd_max.resize(n);
+  }
+  // A segment has to be executable by the CLIK that follows it (MD-42): the
+  // position box is the URDF's AND the CLIK's margined device box, and the
+  // torque box is the CLIK's own — its margin under the dynamic form, the
+  // ratings under the kinematic form, which has no torque box to exceed.
+  const bool clik_box = static_cast<int>(arm_q_min_margined_.size()) == arm_dof_ &&
+                        static_cast<int>(arm_q_max_margined_.size()) == arm_dof_;
+  const bool dynamic =
+      params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kDynamic;
+  const double eta_tau =
+      dynamic && !params_.joint_cmd_eta_tau.tbd ? params_.joint_cmd_eta_tau.value : 1.0;
+  for (int m = 0; m < arm.nv; ++m) {
+    const auto u = static_cast<std::size_t>(m);
+    const auto d = static_cast<std::size_t>(arm.device_of_model[u]);
+    double q_min = arm.model->lowerPositionLimit[m];
+    double q_max = arm.model->upperPositionLimit[m];
+    if (clik_box) {
+      q_min = std::max(q_min, arm_q_min_margined_[d]);
+      q_max = std::min(q_max, arm_q_max_margined_[d]);
+    }
+    out.q_min[m] = q_min;
+    out.q_max[m] = q_max;
+    out.qd_max[m] = eta_v * arm.qdot_max[u];
+    if (arm.accel_box) {
+      out.qdd_max[m] = arm.qddot_max[u];
+    }
+    out.tau_max[m] = (*torque)[d];
+    out.tau_lo[m] = -eta_tau * (*torque)[d];
+    out.tau_hi[m] = eta_tau * (*torque)[d];
+  }
+  return true;
+}
+
+bool DemoCatchingController::SetupNlpCatchSearch(const PlannerArm& arm) {
+  if (arm.nv > rtc::catching::kMaxSegmentNv) {
+    RCLCPP_ERROR(logger_,
+                 "planner.search.nlp: the arm has %d joints but a segment carries at most %d "
+                 "(kMaxSegmentNv) — select the grid search or raise the capacity",
+                 arm.nv, rtc::catching::kMaxSegmentNv);
+    return false;
+  }
+  const auto val = [](const rtc::catching::TbdDouble& v) {
+    return v.tbd ? std::numeric_limits<double>::quiet_NaN() : v.value;
+  };
+  rtc::catching::NlpCatchSearchModel nm;
+  nm.arm = arm.model;
+  nm.handle = planner_handle_.get();
+  nm.catch_frame = arm.frame;
+  nm.nv = arm.nv;
+  nm.device_of_model = arm.device_of_model;
+  rtc::catching::NlpCatchSearchConstants nc;
+  nc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
+  nc.control_dt = GetDefaultDt();
+  nc.t_close_lead = ResolvedCloseLead();
+  rtc::catching::NlpCatchSearchParams np = nlp_search_params_;
+  np.wait_pose = planner_params_.wait_pose;
+  np.wait_pose_n = planner_params_.wait_pose_n;
+  // The cores' velocity box carries the margin of the planner whose segments
+  // the arm follows: a solution has to leave that planner's — and the RT
+  // switch gate's — headroom.
+  if (!BuildDockingLimits(arm, ResolvedSegmentEtaV(), "planner.search.nlp", np.limits)) {
+    return false;
+  }
+  rtc::catching::ApplyHandDocking(hand_docking_, val(params_.hand.T_close_e2e), ResolvedCloseLead(),
+                                  val(params_.ball.mass), np.core);
+  // The nominal posture of the posture cost: the wait pose, model order.
+  np.core.q_nom.resize(arm.nv);
+  for (int m = 0; m < arm.nv; ++m) {
+    const auto d = static_cast<std::size_t>(arm.device_of_model[static_cast<std::size_t>(m)]);
+    np.core.q_nom[m] = planner_params_.wait_pose[d];
+  }
+  std::string error;
+  auto search = std::make_unique<rtc::catching::NlpCatchSearch>();
+  if (!search->Configure(nm, nc, np, catch_pose_ik_config_.options, &rtc::SteadyNowNs, &error)) {
+    // The search's own parameters, or a core at Init: a profile it cannot run
+    // on, not a broken configure. on_configure parks on the text.
+    docking_refusal_ = "planner.search.nlp: " + error;
+    return true;
+  }
+  nlp_search_ = search.get();
+  planner_cycle_.InstallSearch(std::move(search));
+  RCLCPP_INFO(logger_,
+              "search mode: nlp — the docking problem solved per candidate catch instant "
+              "(planner.search.nlp.*): candidates every %.3f s over %.2f-%.2f s, %d-%d pre-catch "
+              "intervals of %.3f s, budget %.3f s (%.3f s a solve, at most %d). Sim only until "
+              "the QP solver's allocations are off the planner thread (#654)",
+              np.cand_dt, np.t_lead_min, np.t_max, np.n_pre_min, np.n_pre_max, np.dt_pre,
+              np.budget_s, np.solve_budget_s, np.max_solves);
+  return true;
+}
+
+bool DemoCatchingController::SetupMpcDockingSegmentPlanner(const PlannerArm& arm) {
+  if (arm.nv > rtc::catching::kMaxSegmentNv) {
+    RCLCPP_ERROR(logger_,
+                 "planner.segment.mpc_docking: the arm has %d joints but a segment carries at "
+                 "most %d (kMaxSegmentNv) — set planner.segment.mode: closed_form or raise the "
+                 "capacity",
+                 arm.nv, rtc::catching::kMaxSegmentNv);
+    return false;
+  }
+  const auto val = [](const rtc::catching::TbdDouble& v) {
+    return v.tbd ? std::numeric_limits<double>::quiet_NaN() : v.value;
+  };
+  rtc::catching::MpcDockingSegmentPlannerModel dm;
+  dm.arm = arm.model;
+  dm.catch_frame = arm.frame;
+  dm.nv = arm.nv;
+  dm.device_of_model = arm.device_of_model;
+  dm.qd_rating = arm.qdot_max;
+  dm.warm_pose = planner_params_.wait_pose;
+  if (!BuildDockingLimits(arm, mpc_docking_params_.eta_v, "planner.segment.mpc_docking",
+                          dm.limits)) {
+    return false;
+  }
+  rtc::catching::MpcDockingSegmentPlannerConstants dc;
+  dc.t_arm_s = static_cast<double>(t_arm_ns_) * 1e-9;
+  dc.control_dt = GetDefaultDt();
+  rtc::catching::MpcDockingSegmentPlannerParams dp = mpc_docking_params_;
+  rtc::catching::ApplyHandDocking(hand_docking_, val(params_.hand.T_close_e2e), ResolvedCloseLead(),
+                                  val(params_.ball.mass), dp.core);
+  dp.core.q_nom.resize(arm.nv);
+  for (int m = 0; m < arm.nv; ++m) {
+    const auto d = static_cast<std::size_t>(arm.device_of_model[static_cast<std::size_t>(m)]);
+    dp.core.q_nom[m] = planner_params_.wait_pose[d];
+  }
+  std::string error;
+  auto planner = rtc::catching::MakeMpcDockingSegmentPlanner(dm, dc, dp, &rtc::SteadyNowNs, &error);
+  if (planner == nullptr) {
+    docking_refusal_ = "planner.segment.mpc_docking: " + error;
+    return true;
+  }
+  const std::int64_t warmup_max_ns = planner->WarmUpMaxNs();
+  mpc_docking_planner_ = planner.get();
+  planner_cycle_.InstallSegmentPlanner(std::move(planner));
+  RCLCPP_INFO(logger_,
+              "mpc_docking segment planner ready: up to %d x %.3f s before t_c, stop part %d x "
+              "%.3f s in %d blocks, budgets first %.3f s / replan %.3f s, same-point re-solve "
+              "%s, nothing published after the catch; slowest warm-up solve %.1f ms. Sim only "
+              "until the QP solver's allocations are off the planner thread (#654)",
+              dp.n_pre_max, dp.dt_pre_s, dp.n_stop, dp.dt_stop_s, dp.n_stop_blocks,
+              dp.budget_first_s, dp.budget_replan_s, dp.replan_same_point ? "on" : "off",
+              static_cast<double>(warmup_max_ns) * 1e-6);
   return true;
 }
 
@@ -2026,9 +2576,8 @@ const char* DemoCatchingController::MpcSegmentConfigInvalid() const noexcept {
   return nullptr;
 }
 
-bool DemoCatchingController::SetupMpcSegmentPlanner(
-    const std::shared_ptr<const pinocchio::Model>& model,
-    const rtc::catching::GridCatchSearchModel& pm) {
+bool DemoCatchingController::SetupMpcSegmentPlanner(const PlannerArm& pm) {
+  const std::shared_ptr<const pinocchio::Model>& model = pm.model;
   if (pm.nv > rtc::catching::kMaxSegmentNv) {
     RCLCPP_ERROR(logger_,
                  "planner.segment.mpc: the arm has %d joints but a segment carries at most "
@@ -2050,7 +2599,7 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
   }
   rtc::catching::MpcSegmentPlannerModel dm;
   dm.arm = model;
-  dm.catch_frame = pm.catch_frame;
+  dm.catch_frame = pm.frame;
   dm.nv = pm.nv;
   dm.device_of_model = pm.device_of_model;
   // MD-42: the stop must be executable by the CLIK, so its position box is
@@ -2081,10 +2630,14 @@ bool DemoCatchingController::SetupMpcSegmentPlanner(
   dc.v_eps = planner_params_.mpc_segment.v_eps;
   mpc_segment_planner_constants_ = dc;
   std::string error;
-  if (!planner_cycle_.ConfigureMpcSegmentPlanner(dm, dc, &error)) {
+  auto planner = rtc::catching::MakeMpcSegmentPlanner(dm, dc, planner_params_.mpc_segment,
+                                                      &rtc::SteadyNowNs, &error);
+  if (planner == nullptr) {
     RCLCPP_ERROR(logger_, "planner.segment.mpc: %s", error.c_str());
     return false;
   }
+  mpc_segment_planner_ = planner.get();
+  planner_cycle_.InstallSegmentPlanner(std::move(planner));
   const auto& d = planner_params_.mpc_segment;
   RCLCPP_INFO(
       logger_,
@@ -2112,10 +2665,10 @@ void DemoCatchingController::SetupSegmentFollower() {
   // the previous sampler, and SegmentModeUnmet reads Initialized().
   segment_follower_ = rtc::catching::NodeTrajectoryFollower{};
   segment_qd_max_.fill(0.0);
-  segment_eta_v_ = ResolvedSegmentMpcEtaV();
+  segment_eta_v_ = ResolvedSegmentEtaV();
   segment_k_p_ = params_.joint_cmd_k_p.tbd ? 0.0 : params_.joint_cmd_k_p.value;
   segment_k_n_ = params_.joint_cmd_k_posture.tbd ? 0.0 : params_.joint_cmd_k_posture.value;
-  if (segment_mode_ != rtc::catching::CatchingSegmentMode::kMpc) {
+  if (!rtc::catching::FollowsSegments(segment_mode_)) {
     // Said for closed_form too. A driver that expects closed_form looks for
     // this line: the absence of the mpc line proves nothing, since a configure
     // that never got here is just as silent.
@@ -2130,7 +2683,8 @@ void DemoCatchingController::SetupSegmentFollower() {
   std::shared_ptr<const pinocchio::Model> model;
   pinocchio::FrameIndex frame = 0;
   std::array<int, rtc::catching::kMaxPlanNv> device_of_model{};
-  if (!ResolveCatchSubModel("planner.segment.mode mpc", model, frame, device_of_model)) {
+  const char* const mode_name = rtc::catching::SegmentModeName(segment_mode_);
+  if (!ResolveCatchSubModel("planner.segment.mode", model, frame, device_of_model)) {
     return;
   }
   if (model->nv > rtc::catching::kMaxSegmentNv ||
@@ -2138,9 +2692,9 @@ void DemoCatchingController::SetupSegmentFollower() {
           model, frame,
           std::span<const int>(device_of_model.data(), static_cast<std::size_t>(model->nv)))) {
     RCLCPP_ERROR(logger_,
-                 "planner.segment.mode mpc: the segment sampler refused the sub-model "
+                 "planner.segment.mode %s: the segment sampler refused the sub-model "
                  "(nv %d, capacity %d)",
-                 model->nv, rtc::catching::kMaxSegmentNv);
+                 mode_name, model->nv, rtc::catching::kMaxSegmentNv);
     segment_follower_ = rtc::catching::NodeTrajectoryFollower{};
     return;
   }
@@ -2148,6 +2702,17 @@ void DemoCatchingController::SetupSegmentFollower() {
   for (int d = 0; d < arm_dof_ && d < rtc::catching::kMaxSegmentNv; ++d) {
     const auto u = static_cast<std::size_t>(d);
     segment_qd_max_[u] = u < vmax.size() ? vmax[u] : 0.0;
+  }
+  // One line per mode, each starting with the mode's own name: a driver that
+  // expects a mode looks for exactly its line.
+  if (segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking) {
+    RCLCPP_INFO(logger_,
+                "segment mode: mpc_docking — takes a plan with its first segment and follows "
+                "the docking planner's segments from APPROACH to the end of the stop (no "
+                "soft-catch reference, no closed-form fallback); switch margin %.2f, admission "
+                "age <= %.3f s",
+                segment_switch_margin_, static_cast<double>(kSegmentAdmissionMaxAgeNs) * 1e-9);
+    return;
   }
   RCLCPP_INFO(logger_,
               "segment mode: mpc — takes a plan with its first segment and follows the MPC's "
@@ -2167,9 +2732,12 @@ const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
   if (!(segment_k_n_ > 0.0)) {
     return "joint_cmd.K_n is not above 0 (the posture feedforward divides by it, MD-36)";
   }
+  const bool docking = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking;
   if (!(segment_eta_v_ < 1.0)) {
-    return "planner.segment.mpc.eta_v is not below 1 (the switch gate's headroom is (1 - eta_v) "
-           "q_dot_max, MD-39)";
+    return docking ? "planner.segment.mpc_docking.eta_v is not below 1 (the switch gate's "
+                     "headroom is (1 - eta_v) q_dot_max, MD-39)"
+                   : "planner.segment.mpc.eta_v is not below 1 (the switch gate's headroom is "
+                     "(1 - eta_v) q_dot_max, MD-39)";
   }
   for (int i = 0; i < arm_dof_; ++i) {
     const double v = segment_qd_max_[static_cast<std::size_t>(i)];
@@ -2191,22 +2759,27 @@ const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
   // published only together with one that starts before t_c. Without a
   // pre-catch grid no MPC segment planner is built — no trial would ever start. The
   // oracle profile has no planner: its test writes the box.
-  if (!oracle_enabled_ && planner_params_.enabled && !(planner_params_.mpc_segment.n_pre_max > 0)) {
+  if (!docking && !oracle_enabled_ && planner_params_.enabled &&
+      !(planner_params_.mpc_segment.n_pre_max > 0)) {
     return "planner.segment.mpc.approach.n_pre_max is 0 (the RT takes a plan only with a segment "
            "that starts before t_c, MD-45)";
   }
   if (!oracle_enabled_ && !(planner_params_.enabled && planner_cycle_.SegmentPlannerConfigured())) {
-    return "no MPC segment planner runs (planner.enabled is false, or no model the cores accept)";
+    return "no segment planner runs (planner.enabled is false, or no model the cores accept)";
   }
   // MD-37: a segment for the next grid point waits in the box while the
   // pending slot holds the one before it — at most the replan lead and three
   // ticks (kSegmentAdmissionMaxAgeNs). An age bound below that would refuse
   // those segments.
-  const double min_age_s = planner_params_.mpc_segment.budget_replan_s + 3.0 * GetDefaultDt();
+  const double replan_s =
+      docking ? mpc_docking_params_.budget_replan_s : planner_params_.mpc_segment.budget_replan_s;
+  const double min_age_s = replan_s + 3.0 * GetDefaultDt();
   if (planner_params_.enabled &&
       !(static_cast<double>(kSegmentAdmissionMaxAgeNs) * 1e-9 > min_age_s)) {
-    return "planner.segment.mpc.budget.replan_s + 3 control periods is not below the segment "
-           "admission age bound";
+    return docking ? "planner.segment.mpc_docking.budget.replan_s + 3 control periods is not "
+                     "below the segment admission age bound"
+                   : "planner.segment.mpc.budget.replan_s + 3 control periods is not below the "
+                     "segment admission age bound";
   }
   return nullptr;
 }

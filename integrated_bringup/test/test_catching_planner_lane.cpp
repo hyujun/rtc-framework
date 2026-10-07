@@ -1411,8 +1411,7 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
   ASSERT_TRUE(approached) << "no plan was adopted; last planner record: outcome "
                           << rtc::catching::CycleOutcomeName(planner.outcome) << ", decel "
                           << rtc::catching::SegmentOutcomeName(planner.segment.outcome) << " / "
-                          << rtc::catching::MpcSegmentCoreReasonName(planner.segment.core_reason)
-                          << "; RT segment refusal "
+                          << planner.segment.core_reason_name << "; RT segment refusal "
                           << static_cast<int>(end_record.segment_refusal);
   EXPECT_TRUE(pair_taken);
   ASSERT_EQ(last, Mode::kHold) << "the trial did not reach HOLD: mode " << static_cast<int>(last)
@@ -1422,9 +1421,7 @@ TEST_F(CatchingPlanLaneTest, OnTheRealClockTheRtTakesThePairAndFollowsThePlanner
                                << end_record.segment_rho << " (joint "
                                << end_record.segment_gate_joint << "), last segment step "
                                << rtc::catching::SegmentOutcomeName(planner.segment.outcome)
-                               << " / "
-                               << rtc::catching::MpcSegmentCoreReasonName(
-                                      planner.segment.core_reason);
+                               << " / " << planner.segment.core_reason_name;
   // Followed from APPROACH to the stop — DECEL is the same chain going on.
   // (Where node 0 falls — APPROACH or just past the freeze — is the throw's
   // lead; before it the command is held with the segment reported pending.)
