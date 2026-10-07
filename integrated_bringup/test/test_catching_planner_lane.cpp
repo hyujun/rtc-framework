@@ -388,7 +388,9 @@ TEST(PlannerEventsCsv, ASegmentStepEarnsARowOnlyWhenItDidSomething) {
   EXPECT_EQ(columns(header.str()), columns(row.str()));
   EXPECT_NE(row.str().find(",published,"), std::string::npos) << row.str();
   // A default record's kind is written by name, its uncomputed values as nan.
-  EXPECT_NE(row.str().find(",none,0,0,0,0,nan,nan,nan,nan,nan,nan,nan,nan,nan,0,nan,0\n"),
+  // (The row goes on after `segment_source_seq` — E1-F18 appended columns; the
+  // test below reads those by name.)
+  EXPECT_NE(row.str().find(",none,0,0,0,0,nan,nan,nan,nan,nan,nan,nan,nan,nan,0,nan,0,"),
             std::string::npos)
       << row.str();
 }

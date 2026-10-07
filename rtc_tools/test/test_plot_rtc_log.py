@@ -3614,6 +3614,108 @@ _PLANNER_EVENTS_COLUMNS = [
     "segment_w_p_fallback",
     "segment_w_delta_scale",
     "segment_source_seq",
+    # E1-F18 (#744): the NLP search's block, the docking core's block, the
+    # replacement columns — appended, read by name.
+    "nlp_ran",
+    "nlp_reason",
+    "nlp_n_lattice",
+    "nlp_n_screened",
+    "nlp_n_solved",
+    "nlp_n_valid",
+    "nlp_rej_follow_window",
+    "nlp_rej_lead_short",
+    "nlp_rej_ball_invalid",
+    "nlp_rej_workspace",
+    "nlp_rej_covariance",
+    "nlp_rej_no_source",
+    "nlp_rej_ik",
+    "nlp_rej_manipulability",
+    "nlp_rej_reach",
+    "nlp_rej_speed_window",
+    "nlp_rej_not_ranked",
+    "nlp_rej_deadline",
+    "nlp_rej_solver_rejected",
+    "nlp_rej_hard_row",
+    "nlp_rej_chance",
+    "nlp_rej_unconverged",
+    "nlp_index",
+    "nlp_n_pre",
+    "nlp_iterations",
+    "nlp_source_seq",
+    "nlp_x0_clamped",
+    "nlp_lead_s",
+    "nlp_wait_s",
+    "nlp_phi",
+    "nlp_j_reference",
+    "nlp_j_stop",
+    "nlp_j_time",
+    "nlp_j_switch",
+    "nlp_follow_anchor_set",
+    "nlp_follow_anchor_index",
+    "nlp_cells_from_anchor",
+    "nlp_ns_from_first",
+    "nlp_at_window_edge",
+    "nlp_n_continuous_run",
+    "nlp_n_continuous",
+    "nlp_n_fallback",
+    "nlp_continuous",
+    "nlp_delta_ns",
+    "nlp_sigma_c_cell",
+    "nlp_screen_us",
+    "nlp_solve_us_max",
+    "nlp_cmd_gap_q",
+    "nlp_cmd_gap_qd",
+    "segment_qp_solves",
+    "segment_qp_iterations",
+    "segment_backtracks",
+    "segment_mu_updates",
+    "segment_start_us",
+    "segment_linearize_us",
+    "segment_assemble_us",
+    "segment_qp_us",
+    "segment_merit_us",
+    "segment_kkt_residual",
+    "segment_grad_norm",
+    "segment_complementarity",
+    "segment_infeasible_group",
+    "segment_viol_torque",
+    "segment_viol_gap",
+    "segment_viol_entrance",
+    "segment_viol_lateral",
+    "segment_viol_timing",
+    "segment_viol_velocity_set",
+    "segment_viol_impact",
+    "segment_viol_box",
+    "segment_viol_terminal",
+    "segment_elastic_torque",
+    "segment_elastic_gap",
+    "segment_elastic_entrance",
+    "segment_elastic_lateral",
+    "segment_elastic_timing",
+    "segment_elastic_velocity_set",
+    "segment_elastic_impact",
+    "segment_c_catch",
+    "segment_c_guarded",
+    "segment_sigma_s",
+    "segment_sigma_t",
+    "segment_chance_lateral",
+    "segment_chance_timing",
+    "segment_cost_reference",
+    "segment_cost_stop",
+    "replace_step",
+    "replacement_outcome",
+    "replacement_core_reason",
+    "replacement_iterations",
+    "replacement_solve_us",
+]
+
+# What a recording from before E1-F18 has: the header up to `segment_source_seq`.
+# The fixtures below build THAT frame — they are the tests of the older
+# recording, and of a session whose search and planner fill none of the newer
+# columns. The newer columns have their own tests
+# (test_planner_events_docking_nlp.py).
+_PLANNER_EVENTS_COLUMNS_BEFORE_E1_F18 = _PLANNER_EVENTS_COLUMNS[
+    : _PLANNER_EVENTS_COLUMNS.index("segment_source_seq") + 1
 ]
 
 # RankGateBit order (rtc_controllers/catching/grid_catch_search.hpp) — bit
@@ -3629,7 +3731,7 @@ _PLANNER_EVENTS_RANK_BITS = [
 
 
 def _planner_events_columns():
-    return list(_PLANNER_EVENTS_COLUMNS)
+    return list(_PLANNER_EVENTS_COLUMNS_BEFORE_E1_F18)
 
 
 # SegmentRecord fields whose default is NaN (mpc_segment_planner.hpp): a wake whose
