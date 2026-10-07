@@ -4,6 +4,7 @@
 
 - **planner 는 둘이다**: `closed_form` 과 `mpc` (`planner.segment.mode` 가 고른다. 출하 값은 두 로봇 모두 `mpc`). **탐색 (`GridCatchSearch`) 은 두 planner 공통**이고, 둘은 탐색 뒤에 구간 층 (`MpcSegmentPlanner`) 이 붙느냐로 갈린다 (§4.1). 각 절의 머리에 적용 범위 — **공통 / closed_form 전용 / mpc 전용** — 를 적는다
 - `mpc` 의 구간 계획 (APPROACH–정지 MPC) 의 수학은 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) 가 갖는다. 이 문서는 탐색이 낸 후보가 거기서 어떻게 쓰이는지만 가리킨다 (§4.1)
+- 탐색의 수식을 L4 · L7 의 `closed_form` 법칙과 한 문제의 순서로 이어 적은 통합본은 [grid_search_closed_form_formulation.md](grid_search_closed_form_formulation.md) 다. 결정 · YAML 키의 범위 · 게이트는 이 문서가 그대로 SSoT 다
 - 코드: 탐색 코어 (순수 수치, ROS 의존 없음) 는 `rtc_controllers/{include,src}/…/catching/` (namespace `rtc::catching`), 계획기 스레드의 소유와 YAML 은 `integrated_bringup` 의 `controllers/catching/`. 한 wake (`PlannerCycle`) 는 탐색과 구간 계획기를 추상 interface `CatchSearch` · `SegmentPlanner` 로만 부른다 (§4.1)
 
 ---

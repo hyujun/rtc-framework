@@ -177,7 +177,7 @@ $$e=x_s-p_v(0)=0,\qquad \dot e=\dot x_s-v_v(0)=0$$
 
 `DECEL` · `HOLD` 의 감속 대상 추종은 기준 포화를 세지 않는다 (§4.2 `REF_SATURATED`) — 정지 중의 포화는 정지가 길어지는 것이지 실패한 포구가 아니다. 기준 생성기가 그 tick 에 기준을 내지 못하는 것 (무효) 은 포화가 아니다: 그 tick 에는 팔 명령이 쓰이지 않으므로 정지가 명령되지 않는 것이고, 감속 대상의 무효와 같이 `PARAMS_TBD` → `ABORT_SAFE` (관절공간 정지, §4.1) 다. 대상이 정지 ($\tau\ge\tau_s$) 하면 `HOLD` 이고, `HOLD` 는 정지한 대상 ($p_v$ 고정) 을 계속 추종한다.
 
-감속 대상 계산은 ROS 비의존 순수 조각이다 (`EvaluateDecelTarget`, `decel_target.hpp`).
+감속 대상 계산은 ROS 비의존 순수 조각이다 (`EvaluateDecelTarget`, `decel_target.hpp`). 이 법칙을 탐색 (L3) · soft-catch DS (L4) 와 한 문제의 순서로 이어 적은 수식 통합본은 [grid_search_closed_form_formulation.md](grid_search_closed_form_formulation.md) §3.6 이다.
 
 ### 4.3a MPC 구간 추종 — `APPROACH` 부터 정지까지 (`planner.segment.mode: mpc`) `[MPC E1-F04 · E1-F09]`
 
