@@ -1100,20 +1100,25 @@ class DemoCatchingController final : public RTControllerInterface {
   /// together or not at all (E1-F09). APPROACH through DECEL: against the
   /// followed plan, admitting a segment into the pending slot — when it is
   /// empty, or when the newer segment starts at the pending one's node 0 (the
-  /// same grid point solved again, MD-58). In APPROACH a segment of ANOTHER
-  /// plan is judged once more against the plan this tick loaded: when that
-  /// plan is admissible too they are a replacement pair, which waits in the
-  /// slot (`plan_next_`) until its node 0 — one replacement at a time, and
-  /// behind a waiting segment of the followed plan that starts no later.
+  /// same grid point solved again, MD-58). In APPROACH, once a segment is
+  /// followed, a segment of ANOTHER plan is judged once more against the plan
+  /// this tick loaded: when that plan is admissible too they are a
+  /// replacement pair, which waits in the slot (`plan_next_`) until its node 0
+  /// — one replacement at a time, and behind a waiting segment of the followed
+  /// plan that starts no later.
   void RunSegmentLane() noexcept;
 
   /// Whether this tick may take the plan it loaded as a REPLACEMENT of the one
   /// it follows: APPROACH only, JudgePlan passed (its own freeze check is on
   /// the new catch instant), another plan than the followed one, none waiting,
-  /// and the followed plan still outside the freeze window.
+  /// the followed plan still outside the freeze window — and a segment
+  /// followed. A replacement starts on the segment the arm follows (the
+  /// planner solves it from there), and one that is refused at its switch
+  /// leaves the arm on that segment; before the first segment's node 0 there
+  /// is none to start on or to fall back to.
   [[nodiscard]] bool ReplacementAdoptableThisTick() const noexcept {
     return mode_ == rtc::catching::Mode::kApproach && plan_active_ && !plan_next_valid_ &&
-           plan_refusal_ == rtc::catching::PlanRefusal::kNone &&
+           segment_current_valid_ && plan_refusal_ == rtc::catching::PlanRefusal::kNone &&
            plan_in_.plan_id != plan_.plan_id &&
            (plan_freeze_ns_ <= 0 || plan_.t_c_ns - tick_now_.ns > plan_freeze_ns_);
   }
