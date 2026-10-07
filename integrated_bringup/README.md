@@ -1094,6 +1094,7 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
 - **폐쇄 시각** $\delta^O$ = (명령 tick + `T_close_e2e`) − (공 중심이 무접촉으로 catch frame 의 원점 평면에 닿을 시각). 손 시퀀서가 $t_c-T_{close,e2e}$ 에 닫으므로 이것이 시퀀서가 정하는 양이다. 코어의 창은 $s_{ent}$ 통과 기준이라 `report.py` 가 옮긴다 ($\delta=\delta^O+s_{ent}/c$)
 - **sim 과 다른 것** (일부러): 비행 중 중력이 없다 (직선 접근), 손이 서 있고 공이 상대속도를 전부 갖는다 (손이 등속일 때만 같다), 폐쇄 명령은 제어 tick 의 계단이다 (컨트롤러 · 추정기가 없다)
 - **`accel` 단계는 값을 식별하지 않는다** — 손이 등속이 아닐 때 (공의 상대 가속도 = 중력 − 손의 가속도) 식별된 집합이 얼마나 남는지를 본다. `verify` 의 300 조건을 공이 catch frame 에서 가속하는 채로 다시 날리고 (`report.py` 의 `ACCEL_CASES` — 접근축을 따라 손 쪽으로, 그리고 대기 자세에 서 있는 손이 보는 중력 방향으로), 조건별로 직선 비행과 견준다. 공은 $s_{ent}$ 평면까지 직선 비행 그대로이고 (계획기의 포구 노드가 넘겨주는 상태다) 폐쇄 명령 tick 도 같다. 가속도는 직선이 그 평면을 지나는 순간부터 걸린다 — 달라지는 것은 그 평면 뒤의 운동뿐이다
+- **옆 속도 (`vperp`) 는 lateral 집합의 중심을 겨누고 유지율로 판정한다.** 고리 0 은 옆 속도가 없는 기준이고, 고리는 그 유지율보다 5 %p (`VPERP_DROP`) 넘게 낮지 않으면 통과한다 — 통과가 이어지는 마지막 고리까지가 $v_{\perp,\max}$ 다. 시행 하나의 판정은 집합 안에서도 확실하지 않아 "고리의 160 회가 전부 유지" 는 옆 속도와 무관하게 통과하기 어렵고, catch frame 의 원점이 lateral 집합 안이라는 보장도 없다
 - 손보다 먼저 다른 물체에 닿은 시행은 `stray` 에 그 body 를 적고 보고서가 센다
 - 값은 전부 **provisional** 이다 — sim 의 손 흡수 · 반발은 실기 값이 아니다 (`docs/dynamic_catching/ref/L6_hand.md` §4.5)
 - 테스트: `test/test_docking_ident_config.py` (colcon 에서 돈다 — 두 출하 profile 의 입력, 공 상수의 C++ 대조, 심은 자료에서의 `report.py`), `test/test_docking_ident_rig.py` (**mujoco 가 필요해 colcon 에서는 skip** — rig 를 고쳤으면 `.venv/bin/python -m pytest` 로 돌린다. 손으로 계산되는 합성 손에서 frame · 도착 시각 · 명령 시각 · 직선 · 가속하는 비행 · 판정을 본다)

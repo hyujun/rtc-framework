@@ -462,6 +462,35 @@ def largest_held_radius(magnitudes: Sequence[float], held: np.ndarray) -> float:
     return 0.0 if count == 0 else float(magnitudes[count - 1] + half)
 
 
+def rings_within_drop(held: Sequence[int], flown: Sequence[int], drop: float) -> np.ndarray:
+    """Which rings hold as often as the reference ring, to within ``drop``.
+
+    ``held[k]`` of the ``flown[k]`` fly-ins of ring ``k`` held; ring 0 is the
+    reference (the same conditions without what the rings vary). Ring ``k``
+    passes when ``held[k] / flown[k] >= held[0] / flown[0] − drop``. A ring
+    that was not flown does not pass, and without a reference none does.
+
+    The verdict of one fly-in is not certain even where the capture holds, so
+    "every fly-in of a ring held" fails on the rate the reference itself has;
+    this compares a ring with that rate instead.
+    """
+    held = np.asarray(held, dtype=float)
+    flown = np.asarray(flown, dtype=float)
+    if held.shape != flown.shape or held.ndim != 1:
+        raise ValueError("held and flown must be 1-D and of one length")
+    if not 0.0 <= drop < 1.0:
+        raise ValueError("drop must be in [0, 1)")
+    if np.any(held > flown) or np.any(held < 0.0):
+        raise ValueError("held must be between 0 and flown")
+    passed = np.zeros(held.size, dtype=bool)
+    if held.size == 0 or flown[0] == 0.0:
+        return passed
+    done = flown > 0.0
+    rate = np.divide(held, flown, out=np.zeros_like(held), where=done)
+    passed[done] = rate[done] >= rate[0] - drop - 1e-12
+    return passed
+
+
 # ══ Static contact field → entrance plane, corridor ═══════════════════════════
 
 

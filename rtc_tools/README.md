@@ -583,6 +583,7 @@ ros2 run rtc_tools catching_grid_sweep --arm L-50 units/L-50_* --arm L-25 units/
 - **폐쇄 시각의 축이 둘이다.** 유지 여부는 공이 **원점**에 닿는 시각 기준 ($\delta^O$) 으로 정해지고, 코어의 창은 $s=s_{ent}$ **통과** 기준 ($\delta=\delta^O+s_{ent}/c$) 이다. 코어는 허용하는 모든 속도에 창 하나를 쓰므로 상자에서 얻는 창은 $s_{ent}(1/c_{lo}-1/c_{hi})$ 만큼 좁다 (`entrance_window`). **빈 창도 그대로 돌려준다.** `entrance_rows` 는 $c_{hi}$ 를 두고 $c_{lo}$ 를 올린 부분 구간마다의 창을 낸다 — 부분 구간은 유지가 측정된 상자의 부분집합이다
 - **lateral 다각형** (`inscribed_circle` · `capture_polygon`): 유지된 셀 (정사각형) 안의 가장 큰 격자점 중심 원에서 시작해, 방향이 고정된 8 면을 한 칸씩 밀어 넓힌 볼록 다각형. 단위 법선 · 공 중심 좌표 (코어의 `face_a` · `face_b`). 재지 않은 곳은 유지가 아니다
 - **통과 평면** (`Occupancy` · `approach_table` · `ApproachTable.entrance`): preshape 손의 정적 접촉 격자에서, lateral 집합의 모든 점을 지나는 모든 기울기의 직선이 그 위로 무접촉인 가장 낮은 높이. 위에서부터 내리며 처음 막히는 높이에서 멈춘다. 격자 사이의 위치는 둘러싼 열 가운데 하나라도 닿으면 닿는 것이고, lateral 격자를 벗어난 직선은 닿은 것으로 세되 따로 표시한다 (`scan_limited`). `corridor_fit` 은 같은 격자에서 축 둘레의 무접촉 원뿔 (`r_ent` · `tan_theta`) 을 낸다
+- **옆 속도의 상한** (`rings_within_drop` · `largest_held_radius`): 속도 고리의 유지율을 옆 속도가 없는 기준 고리의 유지율과 견준다 — 허용한 폭보다 더 낮지 않으면 통과이고, 통과가 이어지는 마지막 고리의 바깥 가장자리가 상한이다. 시행 하나의 판정이 집합 안에서도 확실하지 않아 "고리의 시행 전부가 유지" 로는 기준 고리 자신도 통과하지 못한다
 - **검증**: `sample_capture_set` (식별한 집합에서 균등 추출) 과 `clopper_pearson_lower` (유지율의 단측 정확 하한 — 300 / 300 이면 95 % 에서 0.990)
 - 테스트 `test/test_catching_capture_set.py`: 답을 읽어낼 수 있는 도형 (셀의 직사각형, 손바닥 옆의 벽, 원뿔, 떠 있는 기둥) 과, 규칙이 길어 읽어낼 수 없는 곳은 느리게 다시 쓴 기준 구현과의 일치
 

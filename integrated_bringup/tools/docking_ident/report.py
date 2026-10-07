@@ -15,10 +15,16 @@ THE PROTOCOL (fixed before any flight; the lattices are the constants below).
    the lateral point within 2.5 mm). A cell is held when all four are.
 3. Boxes — for each requested closure-window width, the box of held cells at
    least that wide that reaches the highest closing speed.
-4. ``lateral`` and ``vperp`` — per box, at its four corner cells and its
-   centre cell: which lateral cells hold (the ball arriving straight), and up
-   to which lateral speed a ball aimed at the catch point holds. A cell or a
-   speed ring counts only if it holds for all five.
+4. ``lateral`` — per box, at its four corner cells and its centre cell: which
+   lateral cells hold (the ball arriving straight). A cell counts only if it
+   holds for all five.
+   ``vperp`` — the same five conditions, the ball aimed at the CENTRE OF THAT
+   LATERAL SET (its inscribed circle) with a lateral speed: ring 0 has none,
+   the rings after it 0.05 m/s apart. A ring passes when it holds as often as
+   ring 0 to within 5 points of rate, and the lateral speed limit is the last
+   ring up to which every ring passes. (A fly-in's verdict is not certain even
+   inside the set, so "every fly-in of a ring holds" cannot be met by a ring
+   of 160; and the catch point itself need not be in the lateral set.)
 5. ``static`` — where the ball touches the OPEN hand: the entrance plane and
    the corridor are read from that field for the box's lateral set and tilts.
 6. ``verify`` — 300 conditions drawn from the identified set, flown once each.
@@ -59,6 +65,8 @@ MIN_WIDTHS = (0.020, 0.040, 0.080)  # [s] closure-window widths a box is asked f
 LATERAL = (-0.06, 0.005, 25)  # [m]: −60 … +60 mm, both axes
 VPERP = (0.05, 0.05, 20)  # [m/s]: rings 0.05 … 1.0
 VPERP_DIRECTIONS = 8
+VPERP_DROP = 0.05  # a ring passes within this of the zero-speed ring's hold rate
+VPERP_PATIENCE = 2  # rings in a row that do not pass, after which none is flown
 FIELD_XY = (-0.15, 0.005, 61)  # [m]: −150 … +150 mm, both axes
 FIELD_S = (-0.010, 0.001, 261)  # [m]: −10 … +250 mm
 TAN_STEP = 0.1
@@ -213,13 +221,30 @@ def lateral_held(store: Store) -> tuple[np.ndarray, np.ndarray]:
     return (passed == TRIALS).all(axis=0), passed[0]
 
 
-def vperp_held(store: Store) -> np.ndarray:
-    """``held[ring, direction, condition]`` of the lateral-speed stage."""
-    passed = np.zeros((VPERP[2], VPERP_DIRECTIONS, len(CONDITIONS)), dtype=int)
+def vperp_counts(store: Store) -> tuple[np.ndarray, np.ndarray]:
+    """``(held, flown)`` per ring of the lateral-speed stage. Ring 0 has no
+    lateral speed; ring r >= 1 is the (r − 1)th magnitude of ``VPERP``."""
+    held = np.zeros(VPERP[2] + 1, dtype=int)
+    flown = np.zeros_like(held)
     for key, result in store.items.items():
-        q, m, d, _ = (int(part[1:]) for part in key.split("_"))
-        passed[m, d, q] += bool(result["held"])
-    return passed == TRIALS
+        ring = key.split("_")[1]
+        if not ring.startswith("r"):
+            raise SystemExit(
+                f"{store.path}: flown before the rings were compared by rate (key {key}) — "
+                "move it away and fly vperp again"
+            )
+        flown[int(ring[1:])] += 1
+        held[int(ring[1:])] += bool(result["held"])
+    return held, flown
+
+
+def vperp_aim(ident: dict) -> tuple[float, float] | None:
+    """The lateral point the speed rings are aimed at: the centre of the box's
+    lateral set, or None when that set is empty."""
+    if ident.get("polygon") is None:
+        return None
+    centre = ident["circle"][0]
+    return float(centre[0]), float(centre[1])
 
 
 def load_field(path: Path) -> tuple[cs.Occupancy, np.ndarray]:
@@ -261,9 +286,10 @@ def identify(directory: Path, tag: str, box: cs.Box, fine: FineMap) -> dict:
     vperp_path = directory / f"vperp_{tag}.json"
     if not vperp_path.is_file():
         return out
-    rings = vperp_held(Store(vperp_path))
-    out["vperp_rings"] = rings
-    v_perp_max = cs.largest_held_radius(lattice(VPERP), rings)
+    ring_held, ring_flown = vperp_counts(Store(vperp_path))
+    passed = cs.rings_within_drop(ring_held, ring_flown, VPERP_DROP)
+    out["vperp_held"], out["vperp_flown"], out["vperp_pass"] = ring_held, ring_flown, passed
+    v_perp_max = cs.largest_held_radius(lattice(VPERP), passed[1:])
     out["v_perp_max"] = v_perp_max
 
     field_path = directory / "static.npz"
@@ -461,12 +487,27 @@ def render_box(ident: dict, fine: FineMap) -> list[str]:
     out.append("")
     if "v_perp_max" not in ident:
         return out + ["(vperp 를 아직 돌리지 않았다)", ""]
-    rings = ident["vperp_rings"]
-    flown = int(rings.any(axis=(1, 2)).sum())
-    out.append(
+    aim = vperp_aim(ident)
+    out += [
         f"- $v_{{\\perp,\\max}}$ = {ident['v_perp_max']:.3f} m/s "
-        f"(고리 {flown} 개까지 전부 유지; 접근의 기울기 $\\tan$ ≤ {ident.get('tan_max', math.nan):.2f})"
-    )
+        f"(접근의 기울기 $\\tan$ ≤ {ident.get('tan_max', math.nan):.2f}). lateral 집합의 중심 "
+        f"({_mm(aim[0])}, {_mm(aim[1])}) mm 를 겨눈 옆 속도 고리 — 옆 속도 0 의 유지율보다 "
+        f"{VPERP_DROP * 100:.0f} %p 넘게 낮지 않으면 통과:",
+        "",
+        "| 옆 속도 [m/s] | 시행 | 유지 | 유지율 | 95 % 하한 | 통과 |",
+        "|---|---|---|---|---|---|",
+    ]
+    speeds = [0.0, *lattice(VPERP)]
+    for r, flown in enumerate(ident["vperp_flown"]):
+        if flown == 0:
+            continue
+        held_n = int(ident["vperp_held"][r])
+        out.append(
+            f"| {speeds[r]:.2f} | {flown} | {held_n} | {held_n / flown:.3f} | "
+            f"{cs.clopper_pearson_lower(held_n, int(flown), CONFIDENCE):.3f} | "
+            f"{'기준' if r == 0 else ('예' if ident['vperp_pass'][r] else '아니오')} |"
+        )
+    out.append("")
     if "entrance" not in ident:
         return out + ["", "(static 을 아직 돌리지 않았다)", ""]
     whole = ident["entrance"]

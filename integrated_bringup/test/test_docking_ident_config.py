@@ -241,17 +241,54 @@ def test_a_lateral_cell_must_hold_under_every_condition(tmp_path):
     assert centre[13, 12] == rp.TRIALS and centre[14, 12] == 1
 
 
-def test_a_speed_ring_must_hold_in_every_direction_and_condition(tmp_path):
+def _plant_rings(failures: dict[int, int], rings: int = 4) -> dict:
+    """Speed rings 0 … ``rings`` − 1 (ring 0: no lateral speed), all held but
+    for ``failures[ring]`` fly-ins."""
     items = {}
-    for m in range(3):
+    for r in range(rings):
+        left = failures.get(r, 0)
         for q in range(len(rp.CONDITIONS)):
             for d in range(rp.VPERP_DIRECTIONS):
                 for k in range(rp.TRIALS):
-                    items[f"q{q}_m{m}_d{d}_k{k}"] = _result(True)
-    items["q2_m2_d5_k0"] = _result(False)
-    rings = rp.vperp_held(_store(tmp_path / "vperp_w020.json", items))
-    assert rings[:2].all() and not rings[2, 5, 2] and not rings[3:].any()
-    assert rp.cs.largest_held_radius(rp.lattice(rp.VPERP), rings) == pytest.approx(0.125)
+                    items[f"q{q}_r{r}_d{d}_k{k}"] = _result(left <= 0)
+                    left -= 1
+    return items
+
+
+def test_a_speed_ring_is_judged_by_its_hold_rate_against_the_zero_speed_ring(tmp_path):
+    ring = len(rp.CONDITIONS) * rp.VPERP_DIRECTIONS * rp.TRIALS
+    assert ring == 160
+    # The reference loses 8 (0.95). Within 5 points: 0.90 = 16 lost. Ring 1 loses
+    # 16 and passes, ring 2 loses 17 and does not, ring 3 holds everything.
+    store = _store(tmp_path / "vperp_w020.json", _plant_rings({0: 8, 1: 16, 2: 17}))
+    held, flown = rp.vperp_counts(store)
+    assert flown[:4].tolist() == [ring] * 4 and not flown[4:].any()
+    assert held[:4].tolist() == [ring - 8, ring - 16, ring - 17, ring]
+    passed = rp.cs.rings_within_drop(held, flown, rp.VPERP_DROP)
+    assert passed[:4].tolist() == [True, True, False, True]
+    # Ring 1 is 0.05 m/s: the limit is its outer edge, and ring 3 does not count.
+    assert rp.cs.largest_held_radius(rp.lattice(rp.VPERP), passed[1:]) == pytest.approx(0.075)
+    # A store flown under the earlier rule is refused, not read as these rings.
+    old = _store(tmp_path / "old.json", {"q0_m0_d0_k0": _result(True)})
+    with pytest.raises(SystemExit, match="fly vperp again"):
+        rp.vperp_counts(old)
+
+
+def test_the_speed_rings_are_aimed_at_the_centre_of_the_lateral_set(tmp_path):
+    box = _plant_identification(tmp_path)
+    fine = rp.FineMap(rp.Store(tmp_path / "map_fine.json"))
+    assert rp.vperp_aim(rp.identify(tmp_path, "w020", box, fine)) == pytest.approx((0.0, 0.0))
+    # The set moved 15 mm along +x and 10 mm along −y: so does the aim.
+    path = tmp_path / "lateral_w020.json"
+    moved = {}
+    for key, value in json.loads(path.read_text()).items():
+        q, i, j, k = key.split("_")
+        moved[f"{q}_x{int(i[1:]) + 3}_y{int(j[1:]) - 2}_{k}"] = value
+    path.write_text(json.dumps(moved))
+    assert rp.vperp_aim(rp.identify(tmp_path, "w020", box, fine)) == pytest.approx((0.015, -0.010))
+    # No lateral set, no aim (the stage is skipped).
+    path.write_text(json.dumps({key: _result(False) for key in moved}))
+    assert rp.vperp_aim(rp.identify(tmp_path, "w020", box, fine)) is None
 
 
 def _plant_identification(directory: Path) -> rp.cs.Box:
@@ -271,14 +308,9 @@ def _plant_identification(directory: Path) -> rp.cs.Box:
                 for k in range(rp.TRIALS):
                     lateral[f"q{q}_x{i}_y{j}_k{k}"] = _result(True)
     _store(directory / "lateral_w020.json", lateral)
-    vperp = {}
-    for m in range(2):
-        for q in range(len(rp.CONDITIONS)):
-            for d in range(rp.VPERP_DIRECTIONS):
-                for k in range(rp.TRIALS):
-                    vperp[f"q{q}_m{m}_d{d}_k{k}"] = _result(True)
-    vperp["q0_m2_d0_k0"] = _result(False)
-    _store(directory / "vperp_w020.json", vperp)
+    # The zero-speed ring and the rings at 0.05 and 0.10 m/s hold; 0.15 loses 9
+    # of 160, one more than 5 points of rate allow.
+    _store(directory / "vperp_w020.json", _plant_rings({3: 9}))
     xs, ss = rp.lattice(rp.FIELD_XY), rp.lattice(rp.FIELD_S)
     gx, gy, gs = np.meshgrid(xs, xs, ss, indexing="ij")
     # The palm at and below s = 0, and a rim 30 mm high beyond 40 mm from the axis.
@@ -307,7 +339,8 @@ def test_one_box_is_identified_all_the_way(tmp_path):
     )
     for face in (0, 2, 4, 6):
         assert 0.0115 < polygon.offsets[face] <= 0.0125 + 1e-9
-    assert ident["v_perp_max"] == pytest.approx(0.125)  # rings 0.05 and 0.10 held
+    assert ident["v_perp_max"] == pytest.approx(0.125)  # rings 0.05 and 0.10 pass
+    assert ident["vperp_pass"][:4].tolist() == [True, True, True, False]
     assert ident["tan_max"] == pytest.approx(0.125 / 0.5)
 
     # Tilt 0.25 rounds up to 0.3. From the set's corner (12.5 mm out, 17.7 mm
@@ -390,6 +423,8 @@ def test_the_report_states_what_was_planted(tmp_path, monkeypatch):
     assert "| 40 ms | 없음 |" in text
     assert "무접촉 일관성: 성립" in text and "= 1.0 mm" in text
     assert "= 0.125 m/s" in text
+    assert "| 0.00 | 160 | 160 | 1.000 |" in text and "| 기준 |" in text
+    assert "| 0.15 | 160 | 151 | 0.944 |" in text and "| 아니오 |" in text
     assert f"{rp.VERIFY_N} 조건 가운데 유지 {rp.VERIFY_N - 1}" in text
     assert "상대 가속도" not in text
     _plant_accel(tmp_path / "some_robot")

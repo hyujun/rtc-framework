@@ -230,29 +230,45 @@ def stage_lateral(profile: str, directory: Path, pool) -> None:
 
 def stage_vperp(profile: str, directory: Path, pool) -> None:
     fine, boxes = _boxes(directory)
-    rings = rp.lattice(rp.VPERP)
+    speeds = [0.0, *rp.lattice(rp.VPERP)]  # ring 0: no lateral speed, the reference
     half = 0.5 * rp.VPERP[1]
     sector = math.pi / rp.VPERP_DIRECTIONS
     for tag, box in boxes.items():
+        aim = rp.vperp_aim(rp.identify(directory, tag, box, fine))
+        if aim is None:
+            print(f"  vperp {tag}: skipped — the lateral set is empty or not flown")
+            continue
         store = rp.Store(directory / f"vperp_{tag}.json")
         cells = [fine.cell(box, which) for which in rp.CONDITIONS]
-        for m, ring in enumerate(rings):
+        for r, ring in enumerate(speeds):
             specs = []
             for q, (a, b) in enumerate(cells):
                 for d in range(rp.VPERP_DIRECTIONS):
                     for k in range(rp.TRIALS):
-                        rng = np.random.default_rng([rp.SEED, _STREAM["vperp"], q, m, d, k])
+                        rng = np.random.default_rng([rp.SEED, _STREAM["vperp"], q, r, d, k])
                         c, delta_o = _in_cell(rng, a, b)
-                        speed = ring + rng.uniform(-half, half)
+                        speed = ring + rng.uniform(-half, half) if r else 0.0
                         angle = 2.0 * sector * d + rng.uniform(-sector, sector)
                         nu = (speed * math.cos(angle), speed * math.sin(angle))
-                        key = f"q{q}_m{m}_d{d}_k{k}"
-                        specs.append(_spec(key, _in_disc(rng, rp.RHO_JITTER), c, delta_o, nu))
+                        jitter = _in_disc(rng, rp.RHO_JITTER)
+                        rho = (aim[0] + jitter[0], aim[1] + jitter[1])
+                        specs.append(_spec(f"q{q}_r{r}_d{d}_k{k}", rho, c, delta_o, nu))
             fly_all(pool, store, specs, f"vperp {tag} ring {ring:.2f}")
-            # Rings are flown outward and stop at the first that fails anywhere.
-            if not all(store.items[s["id"]]["held"] for s in specs):
+            # Outward, until the rings stop passing for good.
+            passed = cs.rings_within_drop(*rp.vperp_counts(store), rp.VPERP_DROP)
+            if r >= rp.VPERP_PATIENCE and not passed[r - rp.VPERP_PATIENCE + 1 : r + 1].any():
                 break
-        print(f"  vperp {tag}: v_perp_max {cs.largest_held_radius(rings, rp.vperp_held(store))}")
+        held, flown = rp.vperp_counts(store)
+        limit = cs.largest_held_radius(
+            rp.lattice(rp.VPERP), cs.rings_within_drop(held, flown, rp.VPERP_DROP)[1:]
+        )
+        print(f"  vperp {tag}: aimed at {aim}, v_perp_max {limit}")
+        print(
+            "    "
+            + "  ".join(
+                f"{s:.2f}:{h}/{n}" for s, h, n in zip(speeds, held, flown, strict=True) if n
+            )
+        )
 
 
 def stage_static(profile: str, directory: Path, pool) -> None:

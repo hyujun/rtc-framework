@@ -324,6 +324,47 @@ def test_largest_held_radius_stops_at_the_first_cell_with_a_failure():
         cs.largest_held_radius(mags, np.ones((4, 8), dtype=bool))
 
 
+def test_a_ring_is_compared_with_the_rate_of_the_reference_ring():
+    # The reference holds 150 of 160 (0.9375). Within 5 points of rate: 0.8875,
+    # which is exactly 142 of 160.
+    held = [150, 160, 142, 141, 150, 0]
+    flown = [160, 160, 160, 160, 160, 0]
+    passed = cs.rings_within_drop(held, flown, 0.05)
+    assert passed.tolist() == [True, True, True, False, True, False]  # the last was not flown
+    # No allowance: only what holds at least as often as the reference.
+    assert cs.rings_within_drop(held, flown, 0.0).tolist() == [
+        True,
+        True,
+        False,
+        False,
+        True,
+        False,
+    ]
+    # Rings of another size are compared by rate, not by count.
+    assert cs.rings_within_drop([150, 71, 70], [160, 80, 80], 0.05).tolist() == [True, True, False]
+    # A perfect reference leaves the allowance and nothing more.
+    assert cs.rings_within_drop([160, 152, 151], [160, 160, 160], 0.05).tolist() == [
+        True,
+        True,
+        False,
+    ]
+    # Without a flown reference nothing passes.
+    assert not cs.rings_within_drop([0, 160], [0, 160], 0.05).any()
+    assert cs.rings_within_drop([], [], 0.05).size == 0
+    for bad in (([1, 2], [3], 0.05), ([4], [3], 0.05), ([1], [3], 1.0), ([1], [3], -0.1)):
+        with pytest.raises(ValueError):
+            cs.rings_within_drop(*bad)
+
+
+def test_the_speed_limit_is_the_last_ring_before_one_falls_below_the_reference():
+    # Rings at 0.05 … 0.25 after the zero-speed reference: the third falls
+    # short, and the one beyond it that passes again does not count.
+    passed = cs.rings_within_drop([150, 150, 148, 120, 150, 90], [160] * 6, 0.05)
+    assert cs.largest_held_radius([0.05, 0.10, 0.15, 0.20, 0.25], passed[1:]) == pytest.approx(
+        0.125
+    )
+
+
 # ── Static contact field ──────────────────────────────────────────────────────
 
 OX = np.arange(-8, 9) * STEP  # −40 … +40 mm
