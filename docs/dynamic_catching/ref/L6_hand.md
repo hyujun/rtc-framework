@@ -191,5 +191,5 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 
 - TBD-HAND-01, TBD-HAND-04 의 투척 보정 (sim 보정은 하지 않고 실기에서만 한다 — §4.5 step 2), `index_mcp_aa_joint` 위치 한계 불일치 (TBD-HAND-05 — YAML 과 URDF · MJCF ctrlrange 가 다르다 — 유효 한계는 교집합), 손 프로파일 값 (provisional)
 - **p1b 의 폐쇄 속도** — $T_{close,e2e}$ 가 **최소 비행시간에 그대로 들어간다.** 폐쇄 병목은 가장 먼 거리를 가는 관절 (엄지 `thumb_cmc_fe`) 의 이동량이므로 자세를 다시 찾을 때 $T_{close}$ 를 목적함수에 넣는다. p1b $d_{eff}$ 의 포켓 깊이 쪽 값은 스캔 상한에 걸린 하한값이다
-- **접촉 스캔 · fly-in · 자세 탐색 도구는 저장소에 없다** (작업용으로만 있었다). 자세나 공을 바꾸거나 `g1_p1b` 의 손을 식별하려면 다시 필요하다 — `rtc_tools` 편입이 후속 항목이다
+- **자세 탐색 도구는 저장소에 없다** (작업용으로만 있었다). 시각 발동 fly-in 과 열린 손의 접촉 스캔은 `integrated_bringup/tools/docking_ident` 에 있다 (`mpc_docking` 의 입력 식별용 — 로봇 profile 이름만 받는다). 자세를 다시 찾거나 `g1_p1b` 의 손을 식별하려면 탐색 쪽이 다시 필요하다 — 편입이 후속 항목이다
 - TBD-HAND-03 지문 잡음 (실기 σ) — 부호 · frame 은 닫혀 있다 (접촉 판정은 바이어스를 뺀 크기 $\Vert F-b\Vert$ 만 쓴다). sim 지문 lane 은 잡음이 0 이라 `NOT_EVALUATED(sim 무잡음)` 이고 값은 실기에서 잰다

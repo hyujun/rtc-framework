@@ -78,7 +78,8 @@
 | E1-F12 | [#738](https://github.com/hyujun/rtc-framework/issues/738) | 포구 탐색 · 구간 계획기의 추상 interface (`CatchSearch` · `SegmentPlanner`) |
 | E1-F13 | [#739](https://github.com/hyujun/rtc-framework/issues/739) | mpc_docking 수치 코어 `MpcDockingSegmentCore` — 상대상태 · corridor · 확률 제약 · 토크 판정의 NLP (ProxQP 위 SQP). 구현한 식은 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) §17 |
 | E1-F14 | [#740](https://github.com/hyujun/rtc-framework/issues/740) | NLP search 코어 `NlpCatchSearch` — 후보마다 `MpcDockingSegmentCore` 로 팔 궤적을 풀어 포구 후보를 고른다 (채택 전 · 채택 뒤, 탐색 ↔ 구간 계획기의 자리). 스위치 둘은 기본이 꺼짐이다: 후보의 셀 안에서 포구 시각을 푸는 것 (`continuous_tc`), 채택 뒤의 탐색 창 (`follow_window`). 부르는 것은 테스트뿐이다 — cycle 은 E1-F16. 구현한 식은 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) §17.11 · §17.12 |
-| E1-F15 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
+| E1-F15 | [#741](https://github.com/hyujun/rtc-framework/issues/741) | mpc_docking 의 입력 식별 (sim) — 통과 평면 · lateral 집합 · 속도 집합 · 폐쇄 창을 재는 도구 (`integrated_bringup/tools/docking_ident`, 산술은 `rtc_tools` 의 `catching_capture_set.py`) 와 `ur5e_p1b` · `iiwa7_leap` 의 값. **값은 YAML 이 아니라 이슈의 결과 코멘트에 있다** (산정식 · 시행 수와 함께) — YAML 에 넣는 것은 E1-F16 |
+| E1-F16 – F21, E2-F04 이후, E3 | — | 아직 구현하지 않은 feature — [MPC_DUALARM_PLAN.md](MPC_DUALARM_PLAN.md) |
 
 ## 4. `MD-n` — MPC · dual-arm 확장의 결정
 
