@@ -68,10 +68,10 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F17 | [#743](https://github.com/hyujun/rtc-framework/issues/743) | RT 계약 · supervisor — mpc_docking 구간의 추종, APPROACH 중에 plan 과 구간을 함께 바꾸는 경로 (`mpc` · `mpc_docking`). E1-F16 이 미룬 것을 받는다: RT 의 교체 쌍 수용 (그때까지 탐색의 교체는 `held_replace_unsupported` 로 기록만 한다), 2-plan ring, 움직이는 팔에서 시작하는 첫 구간 (`PlanFirst`), `grid` 탐색이 RT 의 구간 (`arm`) 을 읽는 것, 탐색 → 구간 순서 (지금은 구간 → 탐색), closure 지령 시각의 갱신 (M2) | E1-F16 (끝) | **다음** |
+| E1-F17 | [#743](https://github.com/hyujun/rtc-framework/issues/743) | RT 계약 · supervisor — mpc_docking 구간의 추종, APPROACH 중에 plan 과 구간을 함께 바꾸는 경로 (`mpc` · `mpc_docking`). E1-F16 이 미룬 것을 받는다: RT 의 교체 쌍 수용 (그때까지 탐색의 교체는 `held_replace_unsupported` 로 기록만 한다), 2-plan ring, 움직이는 팔에서 시작하는 첫 구간 (`PlanFirst`), `grid` 탐색이 RT 의 구간 (`arm`) 을 읽는 것, 탐색 → 구간 순서 (지금은 구간 → 탐색) 와 그 wake 의 예산 (`nlp` 는 재계획 + 탐색의 예산 합이 예측 주기를 넘는다 — ref §17.12), closure 지령 시각의 갱신 (M2). RT 의 구간 lane 은 이미 술어 `FollowsSegments` 로 `mpc_docking` 을 받지만, RT 가 그 구간을 따르는 것을 본 테스트도 sim 기록도 없다 — 출하값으로는 sim 에서 `mpc_docking` 의 쌍이 게시되지 않는다 (E1-F19 행). sim 50 발을 어떤 값으로 잴지는 Sprint Contract 가 정한다 | E1-F16 (끝) | **다음** |
 | E1-F18 | [#744](https://github.com/hyujun/rtc-framework/issues/744) | 로그 · plot_rtc_log · demo_controller_gui | E1-F17 | 대기 |
 | E1-F21 | [#747](https://github.com/hyujun/rtc-framework/issues/747) | 포구 가능 판정 지도 — 탐색이 어떤 공을 받는다고 판정하는가 (발사 위치 · 거리 · 비행시간 · 종단 속도). 오프라인 지도와 sim 의 판정 대 결과, 기술 통계로 보고한다 | E1-F16 (끝), sim 쪽은 E1-F17 · F18 | 대기 |
-| E1-F19 | [#745](https://github.com/hyujun/rtc-framework/issues/745) | 튜닝 (판정 전, 판정과 다른 seed) | E1-F18 · F21 | 대기 |
+| E1-F19 | [#745](https://github.com/hyujun/rtc-framework/issues/745) | 튜닝 (판정 전, 판정과 다른 seed). E1-F16 에서 넘어온 것: 출하값 (sim 식별, provisional) 으로는 두 docking 기능이 sim 에서 포구까지 가지 못한다 — `nlp` 는 plan 을 내지 못하고 `mpc_docking` 의 첫 구간은 예산 안에 풀리지 않는다. 그래서 `Replan` · nlp solve 의 시간 분포도 아직 없다. 수치와 원자료의 자리는 [#745 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6034273846) | E1-F18 · F21 | 대기 |
 | E1-F20 | [#746](https://github.com/hyujun/rtc-framework/issues/746) | 비교 평가 — search 둘 (`grid` · `nlp`), planner 셋 (`closed_form` · `mpc` · `mpc_docking`) | E1-F19 | 대기 |
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
@@ -140,7 +140,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | `feat/g1-catch-controller` | E3-F05 | supervisor · 손 시퀀서 통합. E-STOP 경로를 건드리면 E-8 |
 | `feat/g1-catch-tooling-eval` | E3-F06, E3-F07 | 로그 · plot · GUI 와 평가. 평가가 새 로그 컬럼을 쓴다. **나누는 조건**: 평가 결과가 설계 결정을 바꾸면 결과 기록을 `docs/` 브랜치로 분리한다 |
 
-**순서 — E1.** 위 표의 순서대로다: planner 통합 → RT → tooling → 판정 지도 → 튜닝 → 평가. E2 의 브랜치는 E1 의 브랜치와 병행할 수 있다 (패키지가 다르다).
+**순서 — E1.** 위 표의 순서대로다: RT → tooling → 판정 지도 → 튜닝 → 평가. E2 의 브랜치는 E1 의 브랜치와 병행할 수 있다 (패키지가 다르다).
 
 **순서 — E2 · E3.** (1) `feat/tsid-clik-multiframe` → (2) `feat/demo-dualarm-controller` → `feat/g1-dualarm-tooling` → (3) E3 의 다섯 브랜치 (E2 와 E1-F07 뒤, MD-47). 병행은 서로 다른 패키지를 고치는 브랜치끼리만 한다.
 
@@ -148,12 +148,11 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | Feature | 사유 | 효력 |
 |---|---|---|
-| E1-F16 | solver 의 heap 할당 (RT-1 → E-1) — 계획기 스레드는 FIFO 일 수 있고 ProxQP 의 할당은 수용된 예외가 아니다 (#654). E1-F13 의 코어는 "실기의 FIFO 계획기 스레드에서는 #654 뒤에 돌린다" 로 컨펌됐고 (#739) E1-F14 의 탐색도 그 조건으로 들어갔다 (#740) — 같은 solver 를 부르는 feature 는 그 조건을 이어받는다 | Critical — 그 조건을 벗어나려면 착수 전 `[CONCERN]` 과 컨펌 |
+| E1-F17 – F20 | solver 의 heap 할당 (RT-1 → E-1) — 계획기 스레드는 FIFO 일 수 있고 ProxQP 의 할당은 수용된 예외가 아니다 (#654). 두 docking 기능 (`nlp` · `mpc_docking`) 은 "실기의 FIFO 계획기 스레드에서는 #654 뒤에 돌린다" 는 조건으로 들어왔고 (#739 · #740 · #742), 실기 configuration 이 그 가운데 하나를 고르면 configure 가 park 한다 (E1-F16) | Critical — 그 조건을 벗어나거나 그 park 를 풀려면 착수 전 `[CONCERN]` 과 컨펌 |
 | E1-F17 | APPROACH 중의 plan 교체가 RT 의 채택 법칙을 바꾼다. E-STOP · reset 경로 (구간의 폐기) 를 건드리면 E-8 | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
 | E3-F05 | E-STOP 경로를 건드리면 E-8 | Critical |
 | 실기 (HW) | `mpc` 의 정지 구간과 작업셀 경계 (RT 가 `catch_box` 를 검사하지 않는다), `mpc` 구간의 샘플 시각을 바꾸는 RT 법칙 변경 — 둘 다 E-8 (#613) | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
 | E2-F04 | `rtc_tsid` public API 변경, 기존 소비자 둘 | code review, 기능 동등성이 성공 기준 |
-| E1-F16 | lifecycle 의 configure 경로 | security review 권고 |
 | E3-F03 | 신규 수치 코어 (100+ 줄) | code review |
 | E2-F05 | 신규 controller | Sprint Contract = spec |
 
