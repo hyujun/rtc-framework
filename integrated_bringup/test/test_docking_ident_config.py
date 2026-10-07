@@ -115,6 +115,15 @@ def test_a_store_flown_at_other_conditions_is_refused(tmp_path):
     assert "v001" not in store.items
 
 
+def test_stores_flown_against_another_closure_time_are_not_added_to(tmp_path):
+    ri.check_closure_axis(tmp_path, 0.1)  # nothing flown yet: nothing to mix
+    (tmp_path / "selfcheck.json").write_text(json.dumps({"t_close_e2e": 0.1037}))
+    assert rp.closure_axis(tmp_path) == 0.1037
+    ri.check_closure_axis(tmp_path, 0.1037)
+    with pytest.raises(SystemExit, match="another axis"):
+        ri.check_closure_axis(tmp_path, 0.098)
+
+
 # ── The copy of the simulator's ball ──────────────────────────────────────────
 
 
@@ -534,14 +543,32 @@ def test_the_report_states_what_was_planted(tmp_path, monkeypatch):
     assert "- lateral: 후보 81 셀" in text and "- 집합: 25 셀 (6.2 cm²)" in text
     assert "유지율 40/40 = 1.000" in text and "5 %p" in text
     assert "무접촉 일관성: 성립" in text and "= 1.0 mm" in text
+    assert "폐쇄 명령에서" not in text  # no selfcheck: the axis constant is not known
     assert "= 0.125 m/s" in text
     assert "| 0.00 | 160 | 160 | 1.000 |" in text and "| 기준 |" in text
     assert "| 0.15 | 160 | 151 | 0.944 |" in text and "| 아니오 |" in text
     assert f"{rp.VERIFY_N} 조건 가운데 유지 {rp.VERIFY_N - 1}" in text
     assert "상대 가속도" not in text
     _plant_accel(tmp_path / "some_robot")
+    check = {
+        "repeatable": True,
+        "restitution": 0.73,
+        "applied": {"ball": {"restitution_target": 0.75}},
+        "empty_close_s": 0.248,
+        "t_close_e2e": 0.250,
+        "settle_s": 1.0,
+        "hand_error": 0.0,
+        "axis_contact": None,
+        "collision_agrees": 400,
+        "collision_checked": 400,
+    }
+    (tmp_path / "some_robot" / "selfcheck.json").write_text(json.dumps(check))
     assert rp.main(["some_robot"]) == 0
     text = (tmp_path / "some_robot" / "report.md").read_text()
+    # The window again as what the sequencer has to do: command the closure this
+    # long before the ball crosses s_ent. The stores' axis has 250 ms in it, and
+    # the window is 0 + 1 mm / 0.5 m/s … 20 ms + 1 mm / 0.8 m/s = 2 … 21.25 ms.
+    assert "폐쇄 명령에서 $s_{ent}$ 통과까지: 228.8 … 248.0 ms, 가운데 238.38 ms" in text
     assert f"| 접근축 5 | (+0.00, +0.00, -5.00) | {rp.VERIFY_N} | {rp.VERIFY_N - 3} |" in text
     assert "| 3 | 1 |" in text
     assert f"| 접근축 9.81 | (+0.10, +0.00, -5.00) | {rp.VERIFY_N} | {rp.VERIFY_N - 1} |" in text

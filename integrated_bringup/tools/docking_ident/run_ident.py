@@ -395,6 +395,24 @@ def stage_accel(profile: str, directory: Path, pool) -> None:
             print(f"  accel {tag} [{label}]: {held} of {len(again)} held")
 
 
+def check_closure_axis(directory: Path, t_close_e2e: float) -> None:
+    """Refuse to add to stores whose ``delta_o`` is on another axis.
+
+    A fly-in commands the closure ``T_close_e2e − delta_o`` before the ball
+    reaches the origin plane, so a result's ``delta_o`` means something only
+    beside the ``T_close_e2e`` it was flown with — and a result does not record
+    that. The self-check does: a profile whose value has moved since then would
+    fly the same ids, at the same ``delta_o``, at other instants.
+    """
+    flown = rp.closure_axis(directory)
+    if flown is not None and abs(flown - t_close_e2e) > 1e-12:
+        raise SystemExit(
+            f"{directory}: its stores were flown with delta_o measured against T_close_e2e = "
+            f"{flown} s, and the profile now gives {t_close_e2e} s — a fly-in added now would be "
+            "on another axis. Fly the protocol into an empty directory, from selfcheck on"
+        )
+
+
 _RUN = {
     "selfcheck": stage_selfcheck,
     "map-coarse": stage_map_coarse,
@@ -427,6 +445,8 @@ def main(argv: list[str] | None = None) -> int:
     directory = rp.data_dir(args.profile)
     directory.mkdir(parents=True, exist_ok=True)
     stages = STAGES if args.stage == "all" else (args.stage,)
+    if stages[0] != "selfcheck":
+        check_closure_axis(directory, rig_config.load_rig_config(args.profile).t_close_e2e)
     context = multiprocessing.get_context("spawn")
     with context.Pool(args.workers, initializer=_worker_init, initargs=(args.profile,)) as pool:
         for stage in stages:

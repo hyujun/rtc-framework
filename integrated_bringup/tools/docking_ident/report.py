@@ -554,11 +554,23 @@ def render(profile: str, directory: Path) -> str:
         )
     out.append("")
     for tag, box in distinct_boxes(boxes).items():
-        out += render_box(identify(directory, tag, box, fine), fine)
+        out += render_box(identify(directory, tag, box, fine), fine, closure_axis(directory))
     return "\n".join(out)
 
 
-def render_box(ident: dict, fine: FineMap) -> list[str]:
+def closure_axis(directory: Path) -> float | None:
+    """The closure time the stores' ``delta_o`` is measured against [s]: the
+    profile's ``T_close_e2e`` when the rig was checked (selfcheck). A fly-in
+    commands the closure that long, less ``delta_o``, before the ball reaches
+    the origin plane — so the axis has this constant in it, and stores flown
+    against two values of it do not belong together. None without a selfcheck."""
+    path = directory / "selfcheck.json"
+    if not path.is_file():
+        return None
+    return float(json.loads(path.read_text())["t_close_e2e"])
+
+
+def render_box(ident: dict, fine: FineMap, t_axis: float | None = None) -> list[str]:
     box: cs.Box = ident["box"]
     out = [
         f"#### 상자 `{ident['tag']}` — c {box.c_lo:.1f} – {box.c_hi:.1f} m/s, "
@@ -660,6 +672,14 @@ def render_box(ident: dict, fine: FineMap) -> list[str]:
             f"- **무접촉 일관성: 성립**, $s_{{ent}}$ = {_mm(whole.s_ent)} mm{limited}",
             f"- 상자 전체의 $\\delta$ 창: {verdict}",
         ]
+        if t_axis is not None and hi > lo:
+            # The same window without the axis constant: how long before the
+            # ball crosses s_ent the closure has to be commanded.
+            out.append(
+                f"- 폐쇄 명령에서 $s_{{ent}}$ 통과까지: {(t_axis - hi) * 1e3:.1f} … "
+                f"{(t_axis - lo) * 1e3:.1f} ms, 가운데 {(t_axis - 0.5 * (lo + hi)) * 1e3:.2f} ms "
+                f"($\\delta$ 는 명령 + {t_axis * 1e3:.1f} ms 를 폐쇄 완료로 본 축이다)"
+            )
     if "corridor" in ident:
         corridor = ident["corridor"]
         limited = " (스캔 끝에 닿음)" if corridor.scan_limited else ""
