@@ -101,6 +101,12 @@
 #        leaving a failing result, or finishes fewer packages than asked is
 #        reported as UNVERIFIED and blocks (exit 2), so a killed/partial run
 #        cannot masquerade as "0 failures".
+#        A skip is not in that exit code. A result file this run wrote in which
+#        EVERY case was skipped (a test module whose dependency only the venv
+#        has -- colcon runs pytest under /usr/bin/python3, see
+#        agent_docs/testing-debug.md) is named after the PASS line as a NOTE:
+#        the package is green, but that file graded nothing, and the agent is
+#        the one who runs it by hand (skipped_result_files). Report only.
 #   3. Stale install/ detection (rename-aware)
 #        - any deleted launch/*.py or config/**/*.yaml whose basename still
 #          resolves under install/ — warns about stray artefacts that
@@ -2163,6 +2169,31 @@ fresh_test_failures() {
   done
 }
 
+# The result files under "$@" (bases as above) that this run wrote and in which
+# every case was SKIPPED: "tests" > 0 and "skipped" >= "tests" on the file's
+# first <testsuite(s)> tag (pytest's xunit; a gtest file carries no such
+# "skipped" and is never listed). Such a file passes `colcon test` while
+# grading nothing -- the test module skips itself when its dependency is not
+# in the interpreter colcon runs pytest with. Report only, like the failures
+# above: the verdict stays the exit code. The "written by this run" test is the
+# same one, for the same reason.
+skipped_result_files() {
+  local base file tag tests skipped
+  for base in "$@"; do
+    [ -d "$WORKSPACE/$base" ] || continue
+    while IFS= read -r file; do
+      [ "$TEST_MARKER" -nt "$file" ] && continue
+      tag=$(grep -m1 -oE '<testsuites? [^>]*' "$file" 2>/dev/null) || continue
+      tests=$(printf '%s' "$tag" | sed -n 's/.* tests="\([0-9][0-9]*\)".*/\1/p')
+      skipped=$(printf '%s' "$tag" | sed -n 's/.* skipped="\([0-9][0-9]*\)".*/\1/p')
+      [ -n "$tests" ] && [ -n "$skipped" ] || continue
+      [ "$tests" -gt 0 ] && [ "$skipped" -ge "$tests" ] || continue
+      printf '      %s (%s cases, every one skipped)\n' "${file#"$WORKSPACE"/}" "$tests"
+    done < <(find "$WORKSPACE/$base" -name '*.xml' -type f 2>/dev/null | sort)
+  done
+}
+SKIPPED_WHOLE=""
+
 # Last lines of a failed build, indented for the report. Backslashes are doubled
 # because the report is emitted with `echo -e`, which would otherwise eat the
 # "\n" inside a compiler-quoted string literal and mangle the very line the
@@ -2559,6 +2590,8 @@ elif [ -n "$PROC3" ]; then
       fi
     elif [ "$TEST_STATUS" = green ]; then
       remember_tested_verdict "PROC-3" "$PROC3_KEY"
+      SKIPPED_NOTE=$(skipped_result_files build)
+      [ -z "$SKIPPED_NOTE" ] || SKIPPED_WHOLE="${SKIPPED_WHOLE}${SKIPPED_NOTE}"$'\n'
     fi
     report_unverified_tests "PROC-3 broad test" "" "$FULL_TEST_BOUND_S" RTC_VERIFY_FULL_TEST_BOUND_S
     rm -f "$TEST_LOG" "$TEST_MARKER"
@@ -2643,6 +2676,9 @@ else
         else
           TEST_STATUS=noresult
         fi
+      elif [ "$TEST_STATUS" = green ]; then
+        SKIPPED_NOTE=$(skipped_result_files "build/${pkg}")
+        [ -z "$SKIPPED_NOTE" ] || SKIPPED_WHOLE="${SKIPPED_WHOLE}${SKIPPED_NOTE}"$'\n'
       fi
       rm -f "$TEST_LOG" "$TEST_MARKER"
     fi
@@ -2908,5 +2944,9 @@ log_timing "$([ -n "$TREE_MOVED" ] && echo pass-tree-moved || echo pass)" "$BUIL
 # By hand there is no caller to read the exit code off a status line.
 if [ -n "$RUN_MODE" ]; then
   echo "verify-changes --run: PASS (${SECONDS}s) -- built and tested [${BUILT_PKGS# }], verdict reused for [${REUSED_PKGS# }]." >&2
+  if [ -n "$SKIPPED_WHOLE" ]; then
+    echo "verify-changes --run: NOTE -- result files in which every case was SKIPPED (green, but they graded nothing: a dependency only the venv has; run them by hand with the venv -- agent_docs/testing-debug.md):" >&2
+    printf '%s' "$SKIPPED_WHOLE" >&2
+  fi
 fi
 exit 0
