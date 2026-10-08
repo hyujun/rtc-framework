@@ -30,6 +30,7 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/dualarm_diag_log_pod.hpp"
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/inference_diag_log_pod.hpp"
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
@@ -203,6 +204,16 @@ struct LogRegistrationContext {
   // per-tip force columns, so a stored CSV decodes without that run's YAML.
   bool inference_diag_enabled{false};
   std::vector<std::string> inference_diag_tip_names{};
+
+  // DualArmDiagLog — the per-tick record of the dual-arm controller. Single
+  // fixed instance (kDualArmDiagLogInstance), gated by the only controller that
+  // fills it. The task names and the body joint names NAME and COUNT the
+  // per-task / per-joint column blocks, so a stored CSV decodes without that
+  // run's YAML. Empty lists are tolerated — the header then emits no such
+  // columns at all, which is visible rather than mislabelled.
+  bool dualarm_diag_enabled{false};
+  std::vector<std::string> dualarm_diag_task_names{};
+  std::vector<std::string> dualarm_diag_joint_names{};
 };
 
 // ⚠ Two separate hazards, two separate fixes — keep both (#428).
@@ -296,6 +307,8 @@ struct RegisteredLogHandles {
   rtc::LogHandle<integrated_bringup::InferenceDiagLogPod> inference_diag;
   // Single fixed instance (kCatchingDiagLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::CatchingDiagLogPod> catching_diag;
+  // Single fixed instance (kDualArmDiagLogInstance), same reason.
+  rtc::LogHandle<integrated_bringup::DualArmDiagLogPod> dualarm_diag;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -590,12 +603,34 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.catching_diag = std::move(handle);
+    } else if (entry.msg_type == kDualArmDiagLogMsgType) {
+      if (!ctx.dualarm_diag_enabled || entry.instance != kDualArmDiagLogInstance) {
+        continue;
+      }
+      const auto task_names = ctx.dualarm_diag_task_names;
+      const auto joint_names = ctx.dualarm_diag_joint_names;
+      // One derivation, both writers (#440).
+      const auto cols = integrated_bringup::DualArmDiagLogColumnsFor(task_names, joint_names);
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::DualArmDiagLogPod>(
+          entry.instance,
+          [task_names, joint_names, cols](std::ostream& os) {
+            integrated_bringup::WriteDualArmDiagLogHeader(os, task_names, joint_names, cols);
+          },
+          [cols](std::ostream& os, const integrated_bringup::DualArmDiagLogPod& pod) {
+            integrated_bringup::WriteDualArmDiagLogRow(os, pod, cols);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open dualarm_diag CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.dualarm_diag = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
     // PullEstimatorLog, TaskDiagLog, GraspDiagLog, MomentumObserverLog,
-    // ComplianceDiagLog, InferenceDiagLog, CatchingDiagLog}; reaching here is a YAML parser
-    // bug. Silently ignore.
+    // ComplianceDiagLog, InferenceDiagLog, CatchingDiagLog, DualArmDiagLog}; reaching here
+    // is a YAML parser bug. Silently ignore.
   }
 
   return result;

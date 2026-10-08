@@ -6,6 +6,7 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/dualarm_diag_log_pod.hpp"
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/inference_diag_log_pod.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
@@ -1158,4 +1159,71 @@ TEST(InferenceDiagLogPod, EveryHoldReasonHasItsOwnName) {
                 static_cast<integrated_bringup::InferenceHoldReason>(
                     integrated_bringup::kNumInferenceHoldReasons)),
             "unknown");
+}
+
+// ── DualArmDiagLogPod ───────────────────────────────────────────────────────
+
+TEST(DualArmDiagLogPod, IsTriviallyCopyable) {
+  EXPECT_TRUE(std::is_trivially_copyable_v<integrated_bringup::DualArmDiagLogPod>);
+}
+
+TEST(DualArmDiagLogPod, HeaderColumnsMatchRowAndNameTheTasksAndJoints) {
+  using integrated_bringup::DualArmDiagLogPod;
+  const std::vector<std::string> tasks = {"right_hand", "left_hand"};
+  const std::vector<std::string> joints = {"j_a", "j_b", "j_c"};
+  const auto cols = integrated_bringup::DualArmDiagLogColumnsFor(tasks, joints);
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteDualArmDiagLogHeader(hdr_os, tasks, joints, cols);
+  const std::string hdr = hdr_os.str();
+
+  DualArmDiagLogPod pod{};
+  pod.num_tasks = 2;
+  pod.num_joints = 3;
+  pod.tasks[1].err_lin = 0.004;
+  pod.q_cmd[2] = 1.25;
+  std::ostringstream row_os;
+  integrated_bringup::WriteDualArmDiagLogRow(row_os, pod, cols);
+  const std::string row = row_os.str();
+
+  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  // The declared width is the one both writers produce.
+  EXPECT_EQ(static_cast<std::size_t>(CountCommas(hdr)) + 1,
+            integrated_bringup::DualArmDiagLogColumnCount(cols));
+  EXPECT_EQ(hdr.rfind("t_relative_s,tick,", 0), 0U);
+  for (const char* column :
+       {"right_hand_err_lin", "left_hand_err_ang", "left_hand_ref_qw", "right_hand_cmd_z",
+        "left_hand_meas_valid", "right_hand_reject_unknown_frame", "left_hand_drop_near_pi",
+        "q_cmd_j_c", "brake_static_infeasible", "track_err"}) {
+    EXPECT_NE(hdr.find(column), std::string::npos) << column;
+  }
+  // The last column is the last joint's command.
+  EXPECT_EQ(row.substr(row.rfind(',') + 1), "1.25");
+}
+
+TEST(DualArmDiagLogPod, RowWidthFollowsTheConfiguredNamesNotThePod) {
+  using integrated_bringup::DualArmDiagLogPod;
+  const std::vector<std::string> tasks = {"only"};
+  const std::vector<std::string> joints = {"j_a", "j_b"};
+  const auto cols = integrated_bringup::DualArmDiagLogColumnsFor(tasks, joints);
+  std::ostringstream hdr_os;
+  integrated_bringup::WriteDualArmDiagLogHeader(hdr_os, tasks, joints, cols);
+
+  // A pod that claims more tasks and joints than the header has columns for
+  // (and one that claims none) still writes the header's width.
+  for (const std::uint8_t claimed : {std::uint8_t{0}, std::uint8_t{4}}) {
+    DualArmDiagLogPod pod{};
+    pod.num_tasks = claimed;
+    pod.num_joints = static_cast<std::uint8_t>(claimed * 8);
+    std::ostringstream row_os;
+    integrated_bringup::WriteDualArmDiagLogRow(row_os, pod, cols);
+    EXPECT_EQ(CountCommas(hdr_os.str()), CountCommas(row_os.str()))
+        << "claimed " << static_cast<int>(claimed);
+  }
+
+  // More names than the pod's capacity: both writers stop at the capacity.
+  const std::vector<std::string> many_tasks(DualArmDiagLogPod::kMaxTasks + 2, "t");
+  const std::vector<std::string> many_joints(DualArmDiagLogPod::kMaxJoints + 5, "j");
+  const auto capped = integrated_bringup::DualArmDiagLogColumnsFor(many_tasks, many_joints);
+  EXPECT_EQ(capped.tasks, DualArmDiagLogPod::kMaxTasks);
+  EXPECT_EQ(capped.joints, DualArmDiagLogPod::kMaxJoints);
 }
