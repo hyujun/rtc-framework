@@ -60,6 +60,13 @@ struct DualArmTestAccess {
   static void AdvanceReference(DemoDualArmController& c, std::size_t k, double dt) {
     c.AdvanceReference(k, dt);
   }
+
+  /// Models the interleaving in which a tick reads the E-STOP flag AFTER
+  /// TriggerEstop() raised it but reads the epoch BEFORE TriggerEstop() moved
+  /// it: the flag is up and the epoch says nothing happened.
+  static void MarkEstopEpochServiced(DemoDualArmController& c) {
+    c.serviced_estop_epoch_ = c.estop_epoch_.load(std::memory_order_acquire);
+  }
 };
 
 }  // namespace integrated_bringup
@@ -159,6 +166,7 @@ struct Knobs {
   std::vector<std::string> target_frames = {"world", "pelvis", "torso_link"};
   bool with_hand = true;
   bool with_logs = false;
+  bool log_entry_without_instance = false;  ///< a `logs` entry on_configure refuses
 };
 
 inline std::string JoinQuoted(const std::vector<std::string>& names) {
@@ -211,6 +219,9 @@ inline std::string Yaml(const Knobs& k = {}) {
      << "      - {topic: \"transforms\", role: \"robot_transforms\"}\n";
   if (k.with_hand) {
     os << "  hand:\n    subscribe:\n      - {topic: \"hand/joint_goal\", role: \"target\"}\n";
+  }
+  if (k.log_entry_without_instance) {
+    os << "logs:\n  - {msg_type: rtc_msgs/DeviceStateLog}\n";
   }
   if (k.with_logs) {
     os << "logs:\n  - {msg_type: rtc_msgs/DeviceStateLog, instance: body_state}\n"

@@ -61,8 +61,11 @@ struct DualArmDiagLogPod {
   /// Why the RT tick dropped a task goal the ingress had accepted.
   enum class GoalDrop : std::uint8_t {
     kStale = 0,  ///< sent before this activation
-    kNearPi,     ///< rotation from the current reference too close to π
-    kHeld,       ///< arrived while the fault latch was up
+    /// The tick could not build a reference from it: a rotation from the
+    /// current reference too close to π, a pose or duration that is not
+    /// finite, or a frame slot the runtime does not carry.
+    kUnusable,
+    kHeld,  ///< arrived while the fault latch was up
     kCount,
   };
 
@@ -170,7 +173,7 @@ inline void WriteDualArmDiagLogHeader(std::ostream& os, const std::vector<std::s
     os << ',' << n << "_meas_valid," << n << "_meas_x," << n << "_meas_y," << n << "_meas_z," << n
        << "_meas_qw," << n << "_meas_qx," << n << "_meas_qy," << n << "_meas_qz";
     os << ',' << n << "_goals_accepted," << n << "_reject_goal_type," << n << "_reject_non_finite,"
-       << n << "_reject_unknown_frame," << n << "_drop_stale," << n << "_drop_near_pi," << n
+       << n << "_reject_unknown_frame," << n << "_drop_stale," << n << "_drop_unusable," << n
        << "_drop_held";
   }
   for (std::size_t i = 0; i < cols.joints; ++i) {

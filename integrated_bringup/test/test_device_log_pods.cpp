@@ -1192,7 +1192,7 @@ TEST(DualArmDiagLogPod, HeaderColumnsMatchRowAndNameTheTasksAndJoints) {
   EXPECT_EQ(hdr.rfind("t_relative_s,tick,", 0), 0U);
   for (const char* column :
        {"right_hand_err_lin", "left_hand_err_ang", "left_hand_ref_qw", "right_hand_cmd_z",
-        "left_hand_meas_valid", "right_hand_reject_unknown_frame", "left_hand_drop_near_pi",
+        "left_hand_meas_valid", "right_hand_reject_unknown_frame", "left_hand_drop_unusable",
         "q_cmd_j_c", "brake_static_infeasible", "track_err"}) {
     EXPECT_NE(hdr.find(column), std::string::npos) << column;
   }

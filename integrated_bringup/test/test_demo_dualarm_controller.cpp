@@ -626,7 +626,7 @@ TEST(DualArmGoalFrames, AGoalHalfATurnAwayIsRefused) {
   ASSERT_EQ(h.ctrl->DeliverTaskGoal(kRight, TaskGoalMsg(flipped)), TaskGoalReject::kNone);
   h.Run(20);
   const auto& pod = h.ctrl->LastTick();
-  EXPECT_EQ(pod.tasks[kRight].drop_counts[static_cast<std::size_t>(GoalDrop::kNearPi)], 1U);
+  EXPECT_EQ(pod.tasks[kRight].drop_counts[static_cast<std::size_t>(GoalDrop::kUnusable)], 1U);
   EXPECT_EQ(pod.tasks[kRight].goal_sequence, 0U);
   EXPECT_LE(MaxAbsDiff(h.Command(), kBodyQ), 1e-9);
 
@@ -637,6 +637,44 @@ TEST(DualArmGoalFrames, AGoalHalfATurnAwayIsRefused) {
   ASSERT_EQ(h.ctrl->DeliverTaskGoal(kRight, TaskGoalMsg(quarter)), TaskGoalReject::kNone);
   h.Run(20);
   EXPECT_EQ(h.ctrl->LastTick().tasks[kRight].goal_sequence, 2U);
+}
+
+TEST(DualArmGoalFrames, AFinitePoseTooFarToPlanIsRefused) {
+  // Every component is finite, so the ingress takes it — but its distance
+  // overflows, and a trajectory of infinite duration has NaN coefficients.
+  Harness h;
+  (void)h.Tick();
+  pinocchio::SE3 far = FramePose(kBodyQ, kHandQ, kRoot, kRightFrame);
+  far.translation()[0] = 1e200;
+  ASSERT_EQ(h.ctrl->DeliverTaskGoal(kRight, TaskGoalMsg(far)), TaskGoalReject::kNone);
+  for (int i = 0; i < 20; ++i) {
+    (void)h.Tick();
+    EXPECT_TRUE(h.ctrl->LastTick().converged) << "tick " << i;
+  }
+  const auto& pod = h.ctrl->LastTick();
+  EXPECT_EQ(pod.tasks[kRight].drop_counts[static_cast<std::size_t>(GoalDrop::kUnusable)], 1U);
+  EXPECT_EQ(pod.tasks[kRight].goal_sequence, 0U);
+  EXPECT_TRUE(std::isfinite(pod.tasks[kRight].ref_pos[0]));
+  EXPECT_LE(MaxAbsDiff(h.Command(), kBodyQ), 1e-9);
+}
+
+TEST(DualArmGoalFrames, AGoalFromBeforeARebuildIsNotApplied) {
+  // The ingress outlives a runtime rebuild; the goal in it names a frame slot
+  // of the runtime it was sent to. No activation here, so the generation gate
+  // does not help: the rebuild itself has to leave the old goal behind.
+  auto ctrl = BringUp();
+  const pinocchio::SE3 goal =
+      FramePose(kBodyQ, kHandQ, "world", kRoot)
+          .act(Shifted(FramePose(kBodyQ, kHandQ, kRoot, kRightFrame), {0.05, 0.0, 0.0}));
+  ASSERT_EQ(ctrl->DeliverTaskGoal(kRight, TaskGoalMsg(goal, "torso_link")), TaskGoalReject::kNone);
+  Knobs fewer_frames;
+  fewer_frames.target_frames = {"world"};  // slot 2 no longer exists
+  ctrl->LoadConfig(YAML::Load(Yaml(fewer_frames)));
+  ASSERT_TRUE(ctrl->ConfigError().empty()) << ctrl->ConfigError();
+  Harness h(std::move(ctrl));
+  h.Run(50);
+  EXPECT_EQ(h.ctrl->LastTick().tasks[kRight].goal_sequence, 0U);
+  EXPECT_LE(MaxAbsDiff(h.Command(), kBodyQ), 1e-9) << "a goal from the previous runtime moved it";
 }
 
 // ── Feed-forward axes ───────────────────────────────────────────────────────
@@ -715,6 +753,55 @@ TEST(DualArmGroupLanes, TheHandFollowsItsJointGoalAndIsLockedInTheSolve) {
   h.Run(600);
   EXPECT_NEAR(h.hand_q[0], 1.5, 1e-9);
   EXPECT_NEAR(h.hand_q[1], 0.0, 1e-9);
+}
+
+TEST(DualArmGroupLanes, AHandGoalBehindTheMotionDoesNotOvershoot) {
+  Harness h;
+  (void)h.Tick();
+  (void)h.Tick();
+  h.ctrl->SetDeviceTarget(1, std::vector<double>{1.5, 1.5, 1.5, 1.5});  // the upper limit
+  for (int i = 0; i < 2000 && h.hand_q[0] < 1.2; ++i) {
+    (void)h.Tick();
+  }
+  ASSERT_GE(h.hand_q[0], 1.2) << "the hand has to be on its way for this to judge";
+  // A new goal just behind where the hand is, while it is moving fast. It is
+  // applied on the next tick, after that tick's step of the old trajectory.
+  const double goal = h.hand_q[0] - 0.05;
+  h.ctrl->SetDeviceTarget(1, std::vector<double>{goal, 0.3, 0.1, 0.4});
+  const double before = h.hand_q[0];
+  (void)h.Tick();
+  const double at_restart = h.hand_q[0];
+  ASSERT_GT(at_restart, before) << "the hand was not moving when the goal arrived";
+  double peak = at_restart;
+  for (int i = 0; i < 400; ++i) {
+    (void)h.Tick();
+    peak = std::max(peak, h.hand_q[0]);
+    for (const double q : h.hand_q) {
+      EXPECT_GE(q, 0.0);
+      EXPECT_LE(q, 1.5);
+    }
+  }
+  // It restarts from rest: it never travels on past where it was restarted.
+  EXPECT_LE(peak, at_restart + 1e-12);
+  EXPECT_NEAR(h.hand_q[0], goal, 1e-9);
+}
+
+TEST(DualArmGroupLanes, APostureGoalBeforeAPendingSeedIsCountedNotLost) {
+  Harness h;
+  h.Run(5);
+  // A stop has ended, but the body has not reported since: the seed is pending.
+  h.ctrl->TriggerEstop();
+  (void)h.Tick();
+  h.ctrl->ClearEstop();
+  h.body_valid = false;
+  std::vector<double> posture = kBodyQ;
+  posture[6] += 0.3;
+  h.ctrl->SetDeviceTarget(0, posture);
+  (void)h.Tick();
+  EXPECT_EQ(h.ctrl->GroupGoalRejectCount(), 1U);
+  h.body_valid = true;
+  h.Run(200);
+  EXPECT_LE(MaxAbsDiff(h.Command(), kBodyQ), 1e-9) << "the posture goal was applied after the seed";
 }
 
 TEST(DualArmGroupLanes, AGoalSentWhileInactiveIsDroppedAtActivation) {
@@ -865,6 +952,21 @@ TEST(DualArmFault, AnEstopClearDoesNotReleaseItAndTheResetWorksDuringAnEstop) {
   EXPECT_TRUE(h.ctrl->LastTick().converged);
 }
 
+TEST(DualArmFault, TheHandIsHeldUnderTheLatchToo) {
+  Harness h;
+  h.Run(10);
+  h.ctrl->SetDeviceTarget(1, std::vector<double>{1.2, 1.2, 1.2, 1.2});
+  h.Run(20);
+  ASSERT_GT(h.hand_q[0], kHandQ[0] + 1e-3) << "the hand has to be moving";
+  ASSERT_LT(h.hand_q[0], 1.19);
+  PoisonReference(h, kRight);
+  h.Run(5);
+  ASSERT_TRUE(h.ctrl->HasLatchedFault());
+  const std::vector<double> held = h.hand_q;
+  h.Run(200);
+  EXPECT_EQ(MaxAbsDiff(h.hand_q, held), 0.0) << "the hand kept moving under a latched fault";
+}
+
 TEST(DualArmFault, AJointThatCannotBeHeldIsReportedByTheSolveNotFailed) {
   // A joint whose torque limit is below its gravity load does not make the
   // solve fail: letting the joint accelerate keeps the torque row. What says
@@ -1000,6 +1102,28 @@ TEST(DualArmEstop, ATriggerAndClearBetweenTwoTicksStillReseeds) {
   EXPECT_EQ(h.ctrl->LastTick().tasks[kRight].goal_sequence, 0U);
 }
 
+TEST(DualArmEstop, TheFlagAloneStopsTheSolve) {
+  // TriggerEstop() raises the flag and then moves the epoch, from another
+  // thread. A tick can land between the two: it reads the flag up and an
+  // epoch that has not moved, so nothing has asked for a re-seed yet. The
+  // flag by itself has to stop the solve on that tick.
+  Harness h;
+  (void)h.Tick();
+  const pinocchio::SE3 goal =
+      Shifted(FramePose(kBodyQ, kHandQ, kRoot, kRightFrame), {0.08, 0.0, 0.0});
+  ASSERT_EQ(h.ctrl->DeliverTaskGoal(kRight, TaskGoalMsg(goal)), TaskGoalReject::kNone);
+  h.Run(100);
+  ASSERT_TRUE(h.ctrl->LastTick().tasks[kRight].traj_active);
+  const std::vector<double> at_stop = h.Command();
+
+  h.ctrl->TriggerEstop();
+  DualArmTestAccess::MarkEstopEpochServiced(*h.ctrl);
+  (void)h.Tick();
+  EXPECT_TRUE(h.ctrl->LastTick().estop);
+  EXPECT_FALSE(h.ctrl->LastTick().clik_ran) << "the solve ran on a tick that saw the E-STOP flag";
+  EXPECT_EQ(MaxAbsDiff(h.Command(), at_stop), 0.0);
+}
+
 // ── Unreadable devices ──────────────────────────────────────────────────────
 
 TEST(DualArmReadability, AnUnreadableBodyFreezesTheSolveAndSilencesTheGroup) {
@@ -1036,6 +1160,53 @@ TEST(DualArmReadability, AnUnreadableBodyFreezesTheSolveAndSilencesTheGroup) {
   EXPECT_LT(MaxAbsDiff(h.Command(), before), 5e-3);
   h.Run(1500);
   EXPECT_LE(PositionGap(FramePose(h.Command(), kHandQ, kRoot, kRightFrame), goal), 2e-3);
+}
+
+TEST(DualArmReadability, ANonFiniteMeasurementIsNotSeededFromNorCommanded) {
+  // The readability gate judges width and freshness, not values.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  {
+    Harness h;
+    h.body_offset[4] = nan;  // from the first tick on
+    for (int i = 0; i < 10; ++i) {
+      (void)h.Tick();
+      EXPECT_FALSE(h.ctrl->LastTick().reseeded) << "seeded from a NaN measurement";
+      EXPECT_EQ(h.out.devices[0].num_channels, 0);
+      ExpectOutputAccepted(h);
+    }
+    h.body_offset[4] = 0.0;
+    (void)h.Tick();
+    EXPECT_TRUE(h.ctrl->LastTick().reseeded);
+    EXPECT_LE(MaxAbsDiff(h.Command(), kBodyQ), 1e-15);
+  }
+  // After a stop, with the measurement gone non-finite: the stop's own hold
+  // must not put it on the wire, and the release must not seed from it.
+  Harness h;
+  h.Run(10);
+  const std::vector<double> before = h.Command();
+  h.ctrl->TriggerEstop();
+  h.servo = false;
+  h.body_offset[2] = nan;
+  for (int i = 0; i < 5; ++i) {
+    (void)h.Tick();
+    EXPECT_EQ(h.out.devices[0].num_channels, 0);
+    ExpectOutputAccepted(h);
+  }
+  h.ctrl->ClearEstop();
+  for (int i = 0; i < 5; ++i) {
+    (void)h.Tick();
+    EXPECT_FALSE(h.ctrl->LastTick().reseeded);
+    EXPECT_EQ(h.out.devices[0].num_channels, 0);
+    ExpectOutputAccepted(h);
+  }
+  for (const double q : h.Command()) {
+    EXPECT_TRUE(std::isfinite(q));
+  }
+  h.body_offset[2] = 0.0;
+  h.servo = true;
+  (void)h.Tick();
+  EXPECT_TRUE(h.ctrl->LastTick().reseeded);
+  EXPECT_LE(MaxAbsDiff(h.Command(), before), 1e-9);
 }
 
 TEST(DualArmReadability, AnUnreadableHandSilencesTheHandOnly) {
@@ -1216,6 +1387,17 @@ TEST_F(DualArmLifecycle, ConfiguresItsTopicsAndRefusesAnUnresolvedFrame) {
     Knobs knobs;
     knobs.left_frame = "no_such_frame";
     EXPECT_EQ(Configure(*ctrl, node, knobs), Ret::FAILURE);
+  }
+  {
+    // A configure that fails AFTER it created its subscriptions leaves none
+    // behind for the next attempt to duplicate.
+    auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("dualarm_half");
+    auto ctrl = Make();
+    Knobs knobs;
+    knobs.log_entry_without_instance = true;
+    EXPECT_EQ(Configure(*ctrl, node, knobs), Ret::FAILURE);
+    EXPECT_TRUE(DualArmTestAccess::Topics(*ctrl).task_goal_subs.empty());
+    EXPECT_EQ(DualArmTestAccess::Topics(*ctrl).num_tf_slots, 0);
   }
   auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("dualarm_ok");
   auto ctrl = Make();

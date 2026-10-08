@@ -97,6 +97,13 @@ DualArmConfig ParseDualArmConfig(const YAML::Node& cfg) {
   }
   DualArmConfig out;
 
+  // Position commands only. A key rather than an assumption: a config that
+  // asks for torque must be told, not silently run as position.
+  if (const std::string command_type = RequireString(cfg, "command_type", "");
+      command_type != "position") {
+    Fail("'command_type' is '" + command_type + "' — this controller commands positions only");
+  }
+
   const YAML::Node clik = Require(cfg, "clik", "");
   out.damping_sq = RequireDouble(clik, "damping_sq", "clik.");
   RequireRange(out.damping_sq > 0.0, "clik.damping_sq", "> 0");
@@ -548,6 +555,9 @@ std::string DemoDualArmController::SetupFrames() {
     }
     task.frame_fid = model.getFrameId(task_cfg.frame);
     task.base_fid = model.getFrameId(task_cfg.base_frame);
+    // Whatever the ingress holds predates this runtime (its frame slot may not
+    // exist any more): it is already "seen".
+    task.seen_sequence = ingress_[k].box.Load().sequence;
     task.weight = task_cfg.weight;
     task.fb_lin_max = task_cfg.fb_lin_max;
     task.fb_ang_max = task_cfg.fb_ang_max;

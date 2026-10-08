@@ -296,6 +296,8 @@ class DemoDualArmController final : public rtc::RTControllerInterface {
   [[nodiscard]] rcl_interfaces::msg::SetParametersResult OnParametersSet(
       const std::vector<rclcpp::Parameter>& params) noexcept;
   void ResetLogState() noexcept;
+  /// Undo what on_configure created (also after it failed half-way).
+  void TearDownConfigured() noexcept;
   /// Largest task / posture gain the discrete loop takes without overshoot:
   /// K·h ≤ 1.
   [[nodiscard]] double GainUpperBound() const noexcept;

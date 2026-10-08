@@ -82,7 +82,7 @@ CallbackReturn DemoDualArmController::on_configure(const rclcpp_lifecycle::State
     };
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
-      ResetLogState();
+      TearDownConfigured();
       return CallbackReturn::FAILURE;
     }
     if (auto it = reg.handles.state.find(body_key); it != reg.handles.state.end()) {
@@ -108,15 +108,29 @@ CallbackReturn DemoDualArmController::on_configure(const rclcpp_lifecycle::State
     param_callback_handle_ = node_->add_on_set_parameters_callback(
         [this](const std::vector<rclcpp::Parameter>& params) { return OnParametersSet(params); });
   } catch (const std::exception& e) {
-    ResetLogState();
+    TearDownConfigured();
     RCLCPP_ERROR(logger_, "DemoDualArmController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;
   } catch (...) {
-    ResetLogState();
+    TearDownConfigured();
     RCLCPP_ERROR(logger_, "DemoDualArmController on_configure failed: unknown");
     return CallbackReturn::FAILURE;
   }
   return CallbackReturn::SUCCESS;
+}
+
+void DemoDualArmController::TearDownConfigured() noexcept {
+  // What on_configure created, in the order that is safe to undo it: the
+  // drain timer first (it runs on the executor and reads the log channels),
+  // then the subscriptions and publishers, then the channels themselves. A
+  // configure that fails half-way goes through here too — it may already have
+  // created the timer, and a retry must not find the previous attempt's
+  // subscriptions still attached.
+  log_drain_timer_.reset();
+  log_drain_cb_group_.reset();
+  param_callback_handle_.reset();
+  ResetOwnedTopics(owned_topics_);
+  ResetLogState();
 }
 
 void DemoDualArmController::ResetLogState() noexcept {
@@ -150,11 +164,7 @@ CallbackReturn DemoDualArmController::on_deactivate(const rclcpp_lifecycle::Stat
 }
 
 CallbackReturn DemoDualArmController::on_cleanup(const rclcpp_lifecycle::State& prev) noexcept {
-  ResetOwnedTopics(owned_topics_);
-  log_drain_timer_.reset();
-  log_drain_cb_group_.reset();
-  ResetLogState();
-  param_callback_handle_.reset();
+  TearDownConfigured();
   return RTControllerInterface::on_cleanup(prev);
 }
 

@@ -48,6 +48,18 @@ constexpr double kQuinticPeakRatio = 15.0 / 8.0;
 /// the path — not just the result — would be decided by rounding.
 constexpr double kNearPiMargin = 0.15;
 
+/// True when the first `n` positions are finite. The readability gate judges
+/// width and freshness, not values, and a non-finite measurement that became
+/// the command seed would stay in the command until the next seed.
+[[nodiscard]] bool PositionsFinite(const rtc::DeviceState& dev, int n) noexcept {
+  for (int i = 0; i < n; ++i) {
+    if (!std::isfinite(dev.positions[static_cast<std::size_t>(i)])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void StorePose(const pinocchio::SE3& pose, std::array<double, 3>& position,
                std::array<double, 4>& quaternion) noexcept {
   const Eigen::Vector3d& t = pose.translation();
@@ -108,6 +120,11 @@ void DemoDualArmController::ServiceRequests() noexcept {
     serviced_estop_epoch_ = estop_epoch;
     need_reseed_ = true;
     hand_seeded_ = false;
+    // The flag was read before this epoch. A trigger that landed between the
+    // two reads moved the epoch after the tick had read the flag down, and
+    // the tick would re-seed and solve once more; read the flag again so the
+    // tick that sees the edge also sees what the edge left.
+    estop_active_ = estop_requested_.load(std::memory_order_acquire);
   }
 }
 
@@ -183,7 +200,7 @@ void DemoDualArmController::ConsumeTaskGoals(bool apply) noexcept {
     } else if (!apply) {
       ++task.drops[static_cast<std::size_t>(GoalDrop::kHeld)];
     } else if (!ApplyTaskGoal(k, goal)) {
-      ++task.drops[static_cast<std::size_t>(GoalDrop::kNearPi)];
+      ++task.drops[static_cast<std::size_t>(GoalDrop::kUnusable)];
     }
   }
 }
@@ -200,7 +217,15 @@ bool DemoDualArmController::ApplyTaskGoal(std::size_t k, const TaskGoal& goal) n
   // afterwards carries the goal with it.
   pinocchio::SE3 in_base = in_goal_frame;
   if (goal.frame_slot >= 0) {
+    // A slot this runtime does not carry (a goal that outlived a rebuild):
+    // refused, never used as an index.
+    if (static_cast<std::size_t>(goal.frame_slot) >= target_frame_names_.size()) {
+      return false;
+    }
     const int ref_idx = target_frame_idx_[static_cast<std::size_t>(goal.frame_slot)];
+    if (ref_idx < 0) {
+      return false;
+    }
     if (ref_idx != task.base_idx) {
       const auto& frames = combined_cache_->cache().registered_frames;
       const pinocchio::SE3 base_from_ref =
@@ -225,6 +250,12 @@ bool DemoDualArmController::ApplyTaskGoal(std::size_t k, const TaskGoal& goal) n
   const double duration = std::max({kMinDuration, distance / v_lin, angle / v_ang,
                                     kQuinticPeakRatio * distance / cfg_.linear_speed_max,
                                     kQuinticPeakRatio * angle / cfg_.angular_speed_max});
+  // Every component of a goal is finite at the ingress, but a finite pose far
+  // enough away overflows the distance, and an infinite duration turns the
+  // polynomial's coefficients into NaN.
+  if (!std::isfinite(duration) || !in_base.translation().allFinite()) {
+    return false;
+  }
   task.traj.initialize(start, pinocchio::Motion::Zero(), in_base, pinocchio::Motion::Zero(),
                        duration);
   task.traj_time = 0.0;
@@ -283,8 +314,9 @@ void DemoDualArmController::RunClikTick(const ControllerState& state, double dt)
     frame_task.placement_des = task.ref_pose;
     frame_task.twist_ff = &task.twist_ff;
     // Bounded where they are used: [0, 1/dt]. A non-finite gain passes through
-    // std::clamp unchanged and the solve refuses the call, which is the
-    // outcome it should have.
+    // std::clamp unchanged and the call fails — a task gain is refused before
+    // the solve, a posture gain makes the solve's result non-finite — which is
+    // the outcome it should have.
     const double k_lin = std::clamp(gains_tick_.task_gain_linear[k], 0.0, k_max);
     const double k_ang = std::clamp(gains_tick_.task_gain_angular[k], 0.0, k_max);
     frame_task.gain << k_lin, k_lin, k_lin, k_ang, k_ang, k_ang;
@@ -335,6 +367,13 @@ void DemoDualArmController::RunClikTick(const ControllerState& state, double dt)
     for (int i = 0; i < body_dof_; ++i) {
       qd_cmd_[static_cast<std::size_t>(i)] = 0.0;
     }
+    // A call refused BEFORE the solve leaves the core's own previous velocity
+    // and anchor as they were; its failure branch (a solve that was reached)
+    // clears them. Clear them here too, so the two kinds of failure leave the
+    // core in the one state the zero command velocity above describes.
+    if (!clik_.LastSolve().reached_solve) {
+      clik_.ResetAnchor();
+    }
     ++qp_fail_streak_;
     if (qp_fail_streak_ >= cfg_.max_qp_fail_ticks) {
       LatchFault(DualArmDiagLogPod::FaultCause::kQpFailStreak);
@@ -347,10 +386,15 @@ void DemoDualArmController::RunClikTick(const ControllerState& state, double dt)
   double track_err = 0.0;
   for (int i = 0; i < body_dof_; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    track_err = std::max(track_err, std::abs(dev.positions[ui] - q_cmd_[ui]));
+    const double gap = std::abs(dev.positions[ui] - q_cmd_[ui]);
+    // Not std::max: it returns its first argument when the second is NaN,
+    // which would report a non-finite gap as no gap.
+    if (!(gap <= track_err)) {
+      track_err = gap;
+    }
   }
   tick_.track_err = track_err;
-  if (cfg_.track_err_max > 0.0 && track_err > cfg_.track_err_max) {
+  if (cfg_.track_err_max > 0.0 && !(track_err <= cfg_.track_err_max)) {
     LatchFault(DualArmDiagLogPod::FaultCause::kTrackError);
   }
 }
@@ -361,8 +405,11 @@ void DemoDualArmController::RunHandLane(const ControllerState& state, double dt)
   if (hand_dof_ <= 0 || state.num_devices <= kDualArmHandDeviceIdx) {
     return;
   }
-  if (estop_active_ || !hand_readable_) {
-    return;  // frozen; the seed is retaken after a stop (ServiceRequests)
+  if (estop_active_ || !hand_readable_ || fault_latched_.load(std::memory_order_relaxed)) {
+    // Frozen. After a stop or a fault reset the seed is retaken
+    // (ServiceRequests); under a latched fault the last command is held, the
+    // hand's as well as the body's.
+    return;
   }
   const auto& dev = state.devices[kDualArmHandDeviceIdx];
   if (!hand_seeded_) {
@@ -389,7 +436,8 @@ void DemoDualArmController::RunHandLane(const ControllerState& state, double dt)
   }
   const auto traj = hand_traj_.compute(hand_traj_time_);
   for (int i = 0; i < hand_dof_; ++i) {
-    hand_cmd_[static_cast<std::size_t>(i)] = traj.positions[static_cast<std::size_t>(i)];
+    const auto ui = static_cast<std::size_t>(i);
+    hand_cmd_[ui] = std::clamp(traj.positions[ui], hand_q_min_[ui], hand_q_max_[ui]);
   }
 }
 
@@ -397,7 +445,9 @@ void DemoDualArmController::ApplyPendingTarget(int device_idx, std::span<const d
                                                bool /*is_task*/) noexcept {
   if (device_idx == kDualArmBodyDeviceIdx) {
     // The body group's joint goal is the posture target.
-    if (!seeded_ || static_cast<int>(values.size()) != body_dof_) {
+    // Also while a re-seed is pending: the seed would overwrite the target, so
+    // the goal is counted as refused rather than accepted and lost.
+    if (!seeded_ || need_reseed_ || static_cast<int>(values.size()) != body_dof_) {
       group_goal_rejects_.fetch_add(1, std::memory_order_relaxed);
       return;
     }
@@ -413,16 +463,14 @@ void DemoDualArmController::ApplyPendingTarget(int device_idx, std::span<const d
     group_goal_rejects_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  // The hand: a quintic from where its command is now. A goal that arrives
-  // mid-motion keeps the current velocity, so the command stays smooth.
+  // The hand: a quintic from where its command is now, at rest — the same
+  // rule the task references follow. Carrying the current velocity into a
+  // trajectory whose duration is sized from the distance alone would overshoot
+  // a goal that lies behind the motion.
   using HandTrajectory = rtc::trajectory::JointSpaceTrajectory<kDualArmMaxHandDof>;
   HandTrajectory::State start{};
-  if (hand_traj_active_) {
-    start = hand_traj_.compute(hand_traj_time_);
-  } else {
-    for (int i = 0; i < hand_dof_; ++i) {
-      start.positions[static_cast<std::size_t>(i)] = hand_cmd_[static_cast<std::size_t>(i)];
-    }
+  for (int i = 0; i < hand_dof_; ++i) {
+    start.positions[static_cast<std::size_t>(i)] = hand_cmd_[static_cast<std::size_t>(i)];
   }
   HandTrajectory::State goal{};
   double max_distance = 0.0;
@@ -656,9 +704,11 @@ ControllerOutput DemoDualArmController::Compute(const ControllerState& state) no
   // act on two different answers.
   estop_active_ = estop_requested_.load(std::memory_order_acquire);
   body_readable_ = clik_ready_ && state.num_devices > kDualArmBodyDeviceIdx &&
-                   rtc::IsDeviceReadable(state.devices[kDualArmBodyDeviceIdx], body_dof_);
+                   rtc::IsDeviceReadable(state.devices[kDualArmBodyDeviceIdx], body_dof_) &&
+                   PositionsFinite(state.devices[kDualArmBodyDeviceIdx], body_dof_);
   hand_readable_ = clik_ready_ && hand_dof_ > 0 && state.num_devices > kDualArmHandDeviceIdx &&
-                   rtc::IsDeviceReadable(state.devices[kDualArmHandDeviceIdx], hand_dof_);
+                   rtc::IsDeviceReadable(state.devices[kDualArmHandDeviceIdx], hand_dof_) &&
+                   PositionsFinite(state.devices[kDualArmHandDeviceIdx], hand_dof_);
   gains_tick_ = gains_lock_.Load();
 
   ServiceRequests();
