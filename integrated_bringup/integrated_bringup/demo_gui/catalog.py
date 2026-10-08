@@ -23,6 +23,7 @@ for marshalling onto the Tk thread (typically via ``root.after(0, …)``).
 from __future__ import annotations
 
 import contextlib
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -165,6 +166,7 @@ class ControllerCatalog:
         self._timer = None  # populated in start()
         self._entries: tuple[ControllerEntry, ...] = ()
         self._ever_succeeded: bool = False
+        self._last_response_s: float | None = None  # monotonic
         self._inflight: bool = False  # guard against overlapping calls
 
     # ----------------------------------------------------------------
@@ -214,6 +216,18 @@ class ControllerCatalog:
         """
         return not self._ever_succeeded
 
+    def response_age_s(self) -> float | None:
+        """Seconds since the last successful response, ``None`` before the first.
+
+        ``latest()`` deliberately keeps the last roster through a service
+        hiccup, which is right for the radio list and wrong for anything read
+        as live state (a fault latch, a counter): a caller showing those asks
+        how old they are.
+        """
+        if self._last_response_s is None:
+            return None
+        return time.monotonic() - self._last_response_s
+
     def display_label(self, config_key: str) -> str:
         """Human-friendly label for ``config_key``.
 
@@ -255,6 +269,7 @@ class ControllerCatalog:
 
         self._entries = build_entries(resp.controllers, self._schema_keys, self._label_overrides)
         self._ever_succeeded = True
+        self._last_response_s = time.monotonic()
 
         if self._on_update is not None:
             try:

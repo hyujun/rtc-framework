@@ -347,6 +347,17 @@ class RobotProfile:
     #
     # Empty for profiles whose controllers all have a gain panel.
     extra_switchable_controllers: tuple[str, ...] = ()
+    # Token the preset and GUI-settings files are named after
+    # (hand_presets_<token>.json). Empty means the hand group, which is what
+    # those files have always been keyed by: a preset is first of all a hand
+    # pose. A profile sets it when another profile already uses the same hand
+    # with a different body — a preset also stores a robot target and a
+    # controller name, and neither means anything on the other robot.
+    preset_scope: str = ""
+
+    def preset_token(self) -> str:
+        """Name token of this profile's preset / settings files."""
+        return self.preset_scope or self.hand_group
 
     def switchable_controllers(self, gain_schema_keys: tuple[str, ...]) -> tuple[str, ...]:
         """Config keys the GUI offers as controller radios, in display order.
@@ -438,6 +449,9 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # Its gain rows carry the task and posture-group names of the YAML, so
         # they are built from it at start rather than written into GAIN_DEFS.
         extra_switchable_controllers=("demo_dualarm_controller",),
+        # Same hand group as ur5e_p1b, another body and another controller set:
+        # its presets must not be read as that robot's, nor the reverse.
+        preset_scope="g1_p1b",
     ),
 }
 

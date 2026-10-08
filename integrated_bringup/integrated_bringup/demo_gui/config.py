@@ -11,7 +11,8 @@ fallback). The remaining constants here are GUI-only, robot-agnostic.
 
 Public surface (imported by app.py):
 - TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
-- DUAL_TARGET_SPACE, NO_EXTERNAL_COMMAND_CONTROLLERS, target_panel_states
+- DUAL_TARGET_SPACE, NO_EXTERNAL_COMMAND_CONTROLLERS,
+  NO_GRASP_COMMAND_CONTROLLERS, target_panel_states
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
 - GRASP_MODE_PARAM, GRASP_MODE_UNKNOWN, GRASP_MODE_OWNERS, GRASP_MODES,
   grasp_command_enabled, grasp_mode_fg
@@ -112,6 +113,14 @@ NO_EXTERNAL_COMMAND_CONTROLLERS = frozenset(
         "demo_catching_controller",
     }
 )
+
+
+# Controllers that take joint goals for the hand but serve no ~/grasp_command:
+# the hand is driven through Hand Motor Target and there is no grasp FSM behind
+# the Grasp tab's buttons. Unlike NO_EXTERNAL_COMMAND_CONTROLLERS they do accept
+# targets, so they cannot ride that set — it would switch the target panels off
+# with the buttons.
+NO_GRASP_COMMAND_CONTROLLERS = frozenset({"demo_dualarm_controller"})
 
 
 def target_panel_states(ctrl_idx: str) -> tuple[bool, bool]:
@@ -220,6 +229,10 @@ def grasp_command_enabled(ctrl: str, mode: str) -> tuple[bool, str]:
     """
     if ctrl in NO_EXTERNAL_COMMAND_CONTROLLERS:
         return False, "정책이 손을 구동 — 외부 Grasp/Release 경로 없음"
+    if ctrl in NO_GRASP_COMMAND_CONTROLLERS:
+        # Same reason as above for the same outcome: a click would reach no
+        # service, and "own grasp FSM" below would be a false statement.
+        return False, "Grasp/Release 경로 없음 — 손은 Control 탭의 Hand Motor Target 으로"
     if ctrl not in GRASP_MODE_OWNERS:
         # WBC (or any future controller with its own grasp path) — no parameter
         # to consult, and the mode does not gate its srv.

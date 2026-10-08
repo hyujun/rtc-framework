@@ -21,7 +21,7 @@ import pytest
 from ament_index_python.packages import get_package_share_directory
 
 from integrated_bringup.demo_gui import config as gui_config, dualarm
-from integrated_bringup.demo_gui.catalog import build_entries
+from integrated_bringup.demo_gui.catalog import ControllerCatalog, build_entries
 from integrated_bringup.demo_gui.discovery import ROBOT_PROFILES
 from integrated_bringup.demo_gui.dualarm import (
     DUALARM_CONFIG_KEY,
@@ -412,6 +412,32 @@ def test_session_resolution_order(tmp_path):
     assert (path, how) == (str(root / "261008_1015"), "newest session")
 
 
+def test_the_search_prefers_the_newest_session_that_has_the_log(tmp_path):
+    """Any tool that starts a session makes a newer directory. Following it
+    would blank the readout of a controller that is still logging into the
+    older one."""
+    root = tmp_path / "logging_data"
+    older, newer = root / "261008_1015", root / "261008_1100"
+    for session in (root / "261008_0900", older, newer):
+        session.mkdir(parents=True)
+    log = older / "controllers" / DUALARM_CONFIG_KEY
+    log.mkdir(parents=True)
+    (log / "dualarm_diag.csv").write_text("tick\n")
+
+    assert resolve_session_dir(None, None, str(root), "dualarm_diag") == (
+        str(older),
+        "newest session with this log",
+    )
+    # No session has it yet: the newest directory, so the readout can name the
+    # file it is waiting for.
+    assert resolve_session_dir(None, None, str(root), "other_log") == (
+        str(newer),
+        "newest session",
+    )
+    # An explicit choice is never second-guessed.
+    assert resolve_session_dir(str(newer), None, str(root), "dualarm_diag")[0] == str(newer)
+
+
 def test_no_session_is_said_not_guessed(tmp_path):
     path, how = resolve_session_dir(None, None, str(tmp_path / "missing"))
     assert path is None and "no session" in how
@@ -698,6 +724,44 @@ def test_the_controller_row_comes_from_list_controllers():
     field = _status(cm=faulted)["cm"]
     assert "FAULT LATCHED" in field.text and field.level == LEVEL_BAD
     assert "reject 1 / drop 2" in field.text
+
+
+def test_an_old_controller_manager_reply_is_withheld():
+    """The catalog keeps its last roster through a service outage. Read as live
+    state, that is a fault latch and an 'active' that may no longer be true."""
+    active = CmView("active", True, False, 0, 0)
+    fresh = build_status(TASKS, None, 1000.0, active, "x", cm_age_s=4.0)["cm"]
+    assert fresh.text.startswith("active") and fresh.level == LEVEL_OK
+    old = build_status(TASKS, None, 1000.0, active, "x", cm_age_s=dualarm.CM_STALE_AFTER_S + 1)
+    assert "has not answered" in old["cm"].text and "active" not in old["cm"].text
+    assert old["cm"].level == LEVEL_IDLE
+
+
+def test_the_catalog_reports_how_old_its_last_reply_is():
+    class _Node:
+        def create_client(self, *_args):
+            return object()
+
+    class _Future:
+        def result(self):
+            return type("Resp", (), {"controllers": []})()
+
+    catalog = ControllerCatalog(_Node(), ())
+    assert catalog.response_age_s() is None
+    catalog._on_response(_Future())
+    assert 0.0 <= catalog.response_age_s() < 1.0
+
+
+def test_the_grasp_tab_does_not_offer_a_service_the_controller_lacks():
+    """It is selectable and takes hand joint goals, but serves no grasp_command.
+    Left on the default branch the tab reads 'own grasp FSM' with live buttons
+    that reach nothing."""
+    enabled, text = gui_config.grasp_command_enabled(DUALARM_CONFIG_KEY, "")
+    assert enabled is False and "Hand Motor Target" in text
+    # ...while its target panels stay on, which is why it has its own set.
+    assert DUALARM_CONFIG_KEY not in gui_config.NO_EXTERNAL_COMMAND_CONTROLLERS
+    assert gui_config.target_panel_states(DUALARM_CONFIG_KEY) == (True, False)
+    assert gui_config.grasp_mode_fg(DUALARM_CONFIG_KEY, "") == gui_config.GRASP_MODE_FG_BLOCKED
 
 
 def test_catalog_entries_carry_the_fault_latch_and_mailbox_counters():

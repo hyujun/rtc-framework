@@ -261,6 +261,7 @@ class DemoControllerGUI(Node):
         self._dualarm_tail = DiagTail()
         self._dualarm_session_arg = session_dir
         self._dualarm_status_due_s = 0.0  # monotonic; next read of the log tail
+        self._dualarm_was_active = False  # Tk thread: was it active last frame?
         self._prev_dualarm: dict[str, str] = {}
         if self._dualarm_spec is not None:
             for task in self._dualarm_spec.tasks:
@@ -512,11 +513,11 @@ class DemoControllerGUI(Node):
         # Hand presets (loaded from JSON). Path + defaults are hand-scoped so a
         # 10-DoF roster saved for one hand can't be loaded against a 16-DoF hand
         # (issue #137 finding 3).
-        self._preset_path = _resolve_preset_path(self._profile.hand_group)
+        self._preset_path = _resolve_preset_path(self._profile.preset_token())
         self._presets = self._load_presets()
         self._toggle_settings_path = os.path.join(
             os.path.dirname(self._preset_path),
-            f"demo_gui_settings_{self._profile.hand_group}.json",
+            f"demo_gui_settings_{self._profile.preset_token()}.json",
         )
         self._toggle_settings = load_toggle_settings(self._toggle_settings_path)
         toggle = self._toggle_settings["preset_toggle"]
@@ -572,6 +573,11 @@ class DemoControllerGUI(Node):
         if not name or name == self._active_ctrl:
             return
         self._active_ctrl = name
+        # The multi-frame controller's measured poses belong to the activation
+        # that broadcast them. Dropped here rather than left to age out: a
+        # switch away and back inside that age would offer the pose from before
+        # the switch as the current one.
+        self._dualarm_poses.clear()
         # Force a rewire for the new controller even when its groups happen to
         # match the previous ones. _active_groups may still return the fallback
         # until the catalog learns this controller's claimed_groups, at which
@@ -2399,6 +2405,14 @@ class DemoControllerGUI(Node):
         if spec is None:
             return
         active = self._active_ctrl == DUALARM_CONFIG_KEY
+        if active and not self._dualarm_was_active:
+            # A goal left in the entries was stated against where the hands were
+            # in an earlier activation. Stepped and sent now it would be a move
+            # back there, not a step from here — so every activation starts
+            # from the measured pose again, as the arm panel does per rewire.
+            for name in self._dualarm_goal_widgets:
+                self._on_dualarm_frame_change(name)
+        self._dualarm_was_active = active
         for task in spec.tasks:
             w = self._dualarm_goal_widgets[task.name]
             pose = self._dualarm_pose(task)
@@ -2417,17 +2431,23 @@ class DemoControllerGUI(Node):
                 f"{task.name}/send", w["send_btn"], state="normal" if active else "disabled"
             )
             if not active:
-                note = "Switch to this controller (Control tab) to send a goal."
-            elif pose is None:
-                note = "No measured pose of this frame has arrived yet."
-            elif not can_copy:
-                note = (
-                    f"The measured pose is known in '{pose.parent}' only. A goal stated in "
-                    f"'{selected}' has to be typed — nothing here converts between the two."
-                )
+                notes = ["Switch to this controller (Control tab) to send a goal."]
             else:
-                notes = (frame_note(task, selected), euler_note(pose.rpy[1]))
-                note = "\n".join(n for n in notes if n)
+                # What the chosen frame means, whether a measured pose can seed
+                # it, and what the goal's own pitch does to the step buttons —
+                # three independent facts, each said when it holds.
+                notes = [frame_note(task, selected)]
+                if pose is None:
+                    notes.append("No measured pose of this frame has arrived yet.")
+                elif not can_copy:
+                    notes.append(
+                        f"The measured pose is known in '{pose.parent}' only. A goal stated "
+                        f"in '{selected}' has to be typed — nothing here converts between "
+                        "the two."
+                    )
+                with contextlib.suppress(ValueError):
+                    notes.append(euler_note(math.radians(float(w["entries"][4].get()))))
+            note = "\n".join(n for n in notes if n)
             self._dualarm_set(f"{task.name}/note", w["note"], text=note)
 
             # Seed an untouched goal from the measured pose, once it exists in
@@ -2458,7 +2478,10 @@ class DemoControllerGUI(Node):
         from rtc_tools.utils.session_dir import get_session_dir, resolve_logging_root
 
         session, how = resolve_session_dir(
-            self._dualarm_session_arg, get_session_dir(), resolve_logging_root()
+            self._dualarm_session_arg,
+            get_session_dir(),
+            resolve_logging_root(),
+            spec.diag_instance,
         )
         sample = None
         if session is None:
@@ -2470,7 +2493,12 @@ class DemoControllerGUI(Node):
             sample = self._dualarm_tail.read(path)
             source = f"{path}  ({how})" if sample else f"no row in {path} yet  ({how})"
         fields = build_status(
-            [t.name for t in spec.tasks], sample, time.time(), self._dualarm_cm_view(), source
+            [t.name for t in spec.tasks],
+            sample,
+            time.time(),
+            self._dualarm_cm_view(),
+            source,
+            self._catalog.response_age_s(),
         )
         for key in status_keys(t.name for t in spec.tasks):
             field = fields[key]
@@ -4439,7 +4467,7 @@ class DemoControllerGUI(Node):
                 if in_grasp_tab:
                     # Grasp-tab groups intentionally have no applied
                     # mirror; empty slot keeps list alignment for
-                    # `_update_applied_display`.
+                    # `_show_applied_gains`.
                     applied_labels.append([])
                     continue
 
@@ -4506,12 +4534,16 @@ class DemoControllerGUI(Node):
         self._applied_label_widgets = panel["applied_labels"]
         self._active_gains_ctrl = ctrl_idx
 
-    def _update_applied_display(self):
-        for widgets, applied_labels, is_bool in zip(
-            self._gain_entries, self._applied_label_widgets, self._gain_is_bool, strict=False
+    def _show_applied_gains(self, ctrl: str, rows: list[list]) -> None:
+        """Write ``rows`` (one list of raw entry values per gain row, as they
+        were when Apply was clicked) into ``ctrl``'s "Currently Applied" mirror."""
+        panel = self._gains_panels.get(ctrl)
+        if panel is None:
+            return
+        for values, applied_labels, is_bool in zip(
+            rows, panel["applied_labels"], panel["is_bool"], strict=False
         ):
-            for w, lbl in zip(widgets, applied_labels, strict=False):
-                raw = w.get()
+            for raw, lbl in zip(values, applied_labels, strict=False):
                 if is_bool:
                     val = int(raw)
                     lbl.config(text="ON" if val else "OFF", fg="#a6e3a1" if val else "#f38ba8")
@@ -4706,8 +4738,14 @@ class DemoControllerGUI(Node):
             ):
                 name_lbl.config(text=text)
         else:
-            for i, name_lbl in enumerate(self._status_labels_names):
-                name_lbl.config(text=f"{_task_status_names[i]}:")
+            # zip, not an index per label: an arm with more than six joints has
+            # more labels than there are task axes, and indexing raised here —
+            # after the switch request had gone out, and before the hand
+            # target below was seeded.
+            for name_lbl, task_name in zip(
+                self._status_labels_names, _task_status_names, strict=False
+            ):
+                name_lbl.config(text=f"{task_name}:")
 
         # Hand target: initialize from current positions
         self._set_hand_target_entries(self.current_hand_positions)
@@ -4884,6 +4922,10 @@ class DemoControllerGUI(Node):
             self.get_logger().error(f"parameter services for /{ctrl} unavailable")
             return
 
+        # What the entries hold at the click, per row. The mirror is written
+        # from this once the set is accepted — not from the entries as they are
+        # by then, and into THIS controller's panel whichever one is on screen.
+        sent_rows = [[w.get() for w in widgets] for widgets in self._gain_entries]
         future = client.set_parameters_atomically(params)
         ctrl_label = self._catalog.display_label(ctrl)
 
@@ -4897,17 +4939,12 @@ class DemoControllerGUI(Node):
                 self.get_logger().info(f"Applied {len(params)} gains for {ctrl_label}")
                 # Only now: the set is atomic, so a refusal applied NOTHING, and
                 # a mirror updated at the click would show the refused values
-                # under "Currently Applied". Skipped if the operator has moved
-                # to another controller's panel meanwhile.
-                self.root.after(0, _mirror_applied)
+                # under "Currently Applied".
+                self.root.after(0, self._show_applied_gains, ctrl, sent_rows)
             else:
                 self.get_logger().error(
                     f"set_parameters_atomically rejected: {resp.result.reason}"
                 )
-
-        def _mirror_applied():
-            if self.selected_ctrl.get() == ctrl:
-                self._update_applied_display()
 
         future.add_done_callback(_on_set_done)
 

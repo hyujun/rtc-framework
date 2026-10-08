@@ -318,6 +318,21 @@ def test_g1_p1b_profile_frames_and_groups():
     assert g1.extra_switchable_controllers == ("demo_dualarm_controller",)
 
 
+def test_preset_files_are_not_shared_between_different_robots():
+    """A preset stores a robot target and a controller name beside the hand
+    pose. Two profiles with the same hand on different bodies would otherwise
+    read each other's file: a 6-joint target against 17 joints, and a switch
+    request for a controller the other bringup never instantiated."""
+    tokens = {key: profile.preset_token() for key, profile in ROBOT_PROFILES.items()}
+    assert len(set(tokens.values())) == len(tokens), tokens
+    # The three older profiles keep the file names they have always had.
+    assert {k: tokens[k] for k in ("ur5e_p1a", "ur5e_p1b", "iiwa7_leap")} == {
+        "ur5e_p1a": "p1a",
+        "ur5e_p1b": "p1b",
+        "iiwa7_leap": "leap",
+    }
+
+
 @pytest.mark.parametrize("key", ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap"])
 def test_a_serial_arm_is_one_unlabelled_group(key):
     """What keeps those three profiles' screens as they were: one group, no

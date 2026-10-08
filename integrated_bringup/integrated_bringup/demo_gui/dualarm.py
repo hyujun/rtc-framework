@@ -356,9 +356,10 @@ class MeasuredPose:
 class MeasuredPoses:
     """Latest measured pose per TF child frame.
 
-    Written from the rclpy executor thread (``observe``, ``clear``) and read
-    from the Tk thread (``get``). Each write stores or rebinds one immutable
-    value, so a reader never sees half a pose.
+    Written from the rclpy executor thread (``observe``; ``clear`` when the
+    active controller changes) and read from the Tk thread (``get``). Each
+    write stores or rebinds one immutable value, so a reader never sees half a
+    pose.
     """
 
     # A pose older than this is not "current" — the controller broadcasts every
@@ -401,31 +402,34 @@ def diag_csv_path(session_dir: str, instance: str) -> str:
 
 
 def resolve_session_dir(
-    explicit: str | None, env_session: str | None, logging_root: str
+    explicit: str | None, env_session: str | None, logging_root: str, instance: str = ""
 ) -> tuple[str | None, str]:
     """The session directory the running controller logs into, and how it was
-    found: ``--session``, then ``$RTC_SESSION_DIR``, then the newest session
-    under the logging root.
+    found: ``--session``, then ``$RTC_SESSION_DIR``, then a search of the
+    logging root.
 
-    The last one is a guess that is re-made on every poll: a GUI started before
-    the bringup finds the new session as soon as it exists.
+    The search takes the newest session that HAS this controller's log
+    (``instance``), not simply the newest directory: any tool that starts a
+    session creates a newer one, and following it would blank the readout of a
+    controller that is still running. With no such session it falls back to the
+    newest directory, so the readout can say which file it is waiting for. It
+    is re-made on every poll — a GUI started before the bringup finds the new
+    session as soon as its log exists.
     """
     if explicit:
         return explicit, "--session"
     if env_session:
         return env_session, "$RTC_SESSION_DIR"
-    from rtc_tools.utils.session_dir import is_session_dir_name
+    from rtc_tools.utils.session_dir import list_session_dirs
 
-    try:
-        names = sorted(
-            d
-            for d in os.listdir(logging_root)
-            if is_session_dir_name(d) and os.path.isdir(os.path.join(logging_root, d))
-        )
-    except OSError:
-        names = []
+    names = list_session_dirs(logging_root)
     if not names:
         return None, f"no session under {logging_root}"
+    if instance:
+        for name in reversed(names):
+            session = os.path.join(logging_root, name)
+            if os.path.isfile(diag_csv_path(session, instance)):
+                return session, "newest session with this log"
     return os.path.join(logging_root, names[-1]), "newest session"
 
 
@@ -587,7 +591,17 @@ def _counter_sum(values: Mapping[str, str], prefix: str) -> tuple[int, list[str]
     return total, nonzero
 
 
-def _cm_field(cm: CmView | None) -> StatusField:
+# /rtc_cm/list_controllers is polled every 5 s. Three missed polls is a
+# controller manager that is not answering, and its last answer is not its state.
+CM_STALE_AFTER_S = 15.0
+
+
+def _cm_field(cm: CmView | None, cm_age_s: float | None) -> StatusField:
+    if cm_age_s is not None and cm_age_s > CM_STALE_AFTER_S:
+        return StatusField(
+            f"/rtc_cm/list_controllers has not answered for {cm_age_s:.0f} s — withheld",
+            LEVEL_IDLE,
+        )
     if cm is None:
         return StatusField("/rtc_cm/list_controllers has not reported it", LEVEL_IDLE)
     parts = [cm.state]
@@ -704,18 +718,20 @@ def build_status(
     now_wall_s: float,
     cm: CmView | None,
     source: str,
+    cm_age_s: float | None = None,
 ) -> dict[str, StatusField]:
     """Every status row, keyed as ``status_keys(task_names)``.
 
     ``source`` is the log's path when ``sample`` is given and the reason there
     is none otherwise. A sample whose file has stopped growing is treated as no
     sample for everything but the ``log`` row: the last row of a controller
-    that is no longer running is not its state.
+    that is no longer running is not its state. ``cm_age_s`` is how long ago
+    ``cm`` was reported; an old one is withheld the same way.
     """
     fields: dict[str, StatusField] = {
         key: StatusField(PLACEHOLDER) for key in status_keys(task_names)
     }
-    fields["cm"] = _cm_field(cm)
+    fields["cm"] = _cm_field(cm, cm_age_s)
     if sample is None:
         fields["log"] = StatusField(source, LEVEL_IDLE)
         return fields
