@@ -1085,11 +1085,13 @@ class DemoCatchingController final : public RTControllerInterface {
       bool count_saturation) noexcept;
   /// CLIK toward `target` with `q_posture` as the posture row's goal, then the
   /// command it writes and TRACK_ERR — what every CLIK tick does after it has
-  /// its target, whichever law produced it.
+  /// its target, whichever law produced it. `qd_posture_ff` ([nv], optional)
+  /// is the posture row's velocity feed-forward: the segment's q̇_ref on an
+  /// mpc tick, none on a closed_form one.
   [[nodiscard]] rtc::catching::Reason SolveClikAndCommand(
       const ControllerState& state,
       const rtc::tsid::ClikReferenceGenerator::PositionAxisTarget& target,
-      const Eigen::VectorXd& q_posture) noexcept;
+      const Eigen::VectorXd& q_posture, const Eigen::VectorXd* qd_posture_ff = nullptr) noexcept;
   /// The DECEL/HOLD law tick: the virtual target at τ = now_lead − t_s.
   [[nodiscard]] rtc::catching::Reason RunDecelLawTick(const ControllerState& state) noexcept;
   /// Freeze the reference state as DECEL's entry and take the τ = 0 step.
@@ -1564,7 +1566,8 @@ class DemoCatchingController final : public RTControllerInterface {
   /// η_v and K_p as the gate reads them (the planner's and the CLIK's).
   double segment_eta_v_{0.9};
   double segment_k_p_{0.0};
-  /// K_n of the posture row (> 0 under mpc, MD-34): the feedforward's divisor.
+  /// K_n of the posture row, as the mpc gate reads it: > 0 under mpc (MD-34),
+  /// or the row has nothing pulling the null space back to the segment's q_ref.
   double segment_k_n_{1.0};
   /// The RT's segment sampler on the catch sub-model (owns its Data).
   rtc::catching::NodeTrajectoryFollower segment_follower_;
@@ -1602,8 +1605,12 @@ class DemoCatchingController final : public RTControllerInterface {
   std::array<double, rtc::catching::kMaxPlanNv> mpc_segment_planner_q_min_{};
   std::array<double, rtc::catching::kMaxPlanNv> mpc_segment_planner_q_max_{};
   /// [nq] posture goal of an mpc tick: q_posture_ with the arm entries set to
-  /// q_ref + q̇_ref / K_n (MD-36). A work buffer, sized at configure.
+  /// the segment's q_ref. A work buffer, sized at configure.
   Eigen::VectorXd q_posture_segment_;
+  /// [nv] posture velocity feed-forward of an mpc tick: the segment's q̇_ref on
+  /// the arm entries, 0 on the hand's, which no tick writes (MD-36). A work
+  /// buffer like the one above — rewritten on every tick that reads it.
+  Eigen::VectorXd qd_posture_segment_;
 
   // ── RT-owned command state ───────────────────────────────────────────────
   /// The commanded arm configuration and its velocity, in DEVICE order. These

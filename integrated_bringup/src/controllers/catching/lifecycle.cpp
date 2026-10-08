@@ -928,6 +928,7 @@ void DemoCatchingController::SetupArmCommand() {
 
   q_posture_ = Eigen::VectorXd::Zero(model.nq);
   q_posture_segment_ = Eigen::VectorXd::Zero(model.nq);
+  qd_posture_segment_ = Eigen::VectorXd::Zero(nv);
   q_eval_ = Eigen::VectorXd::Zero(model.nq);
   v_eval_ = Eigen::VectorXd::Zero(nv);
 
@@ -2792,7 +2793,8 @@ const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
            "at most kMaxSegmentNv arm joints)";
   }
   if (!(segment_k_n_ > 0.0)) {
-    return "joint_cmd.K_n is not above 0 (the posture feedforward divides by it, MD-36)";
+    return "joint_cmd.K_n is not above 0 (the posture row then has no pull back to the segment's "
+           "q_ref and the null space drifts, MD-34)";
   }
   const bool docking = segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking;
   if (!(segment_eta_v_ < 1.0)) {

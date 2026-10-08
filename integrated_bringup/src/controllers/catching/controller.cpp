@@ -739,10 +739,10 @@ rtc::catching::Reason DemoCatchingController::StepReferenceAndSolve(
 rtc::catching::Reason DemoCatchingController::SolveClikAndCommand(
     const ControllerState& state,
     const rtc::tsid::ClikReferenceGenerator::PositionAxisTarget& target,
-    const Eigen::VectorXd& q_posture) noexcept {
+    const Eigen::VectorXd& q_posture, const Eigen::VectorXd* qd_posture_ff) noexcept {
   using rtc::catching::Reason;
   const bool ok = clik_.Compute(combined_cache_.cache(), catch_frame_idx_, base_frame_idx_, target,
-                                q_posture, state.dt, /*reseed_anchor=*/false);
+                                q_posture, state.dt, /*reseed_anchor=*/false, qd_posture_ff);
   const auto& solve = clik_.LastSolve();
   RecordClikSolve(solve);
   if (!ok) {
@@ -1806,18 +1806,24 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
   target.axis = segment_sample_.placement.rotation().col(2);
   target.linear_velocity_ff = segment_sample_.twist.head<3>();
   target.angular_velocity_ff = segment_sample_.twist.tail<3>();
-  // The posture row's feedforward by the caller's equivalent form: K_n (q' −
-  // q) with q' = q_ref + q̇_ref / K_n is K_n (q_ref − q) + q̇_ref. The hand
-  // entries keep the trial's posture (the hand is velocity-locked).
+  // The posture row follows the segment's joint trajectory, K_n (q_ref − q) +
+  // q̇_ref: q_ref as its goal and q̇_ref as the CLIK's posture feed-forward
+  // (MD-36). The hand entries keep the trial's posture and a zero
+  // feed-forward (the hand is velocity-locked); only the arm's are written.
   q_posture_segment_ = q_posture_;
   for (int i = 0; i < arm_dof_; ++i) {
+    const auto u = static_cast<std::size_t>(i);
     const int pq = combined_cache_.ext_to_pin_q(i);
     if (pq >= 0 && pq < q_posture_segment_.size()) {
-      const auto u = static_cast<std::size_t>(i);
-      q_posture_segment_[pq] = segment_sample_.q[u] + segment_sample_.qd[u] / segment_k_n_;
+      q_posture_segment_[pq] = segment_sample_.q[u];
+    }
+    const int pv = combined_cache_.ext_to_pin_v(i);
+    if (pv >= 0 && pv < qd_posture_segment_.size()) {
+      qd_posture_segment_[pv] = segment_sample_.qd[u];
     }
   }
-  if (!q_posture_segment_.allFinite() || !target.position.allFinite()) {
+  if (!q_posture_segment_.allFinite() || !qd_posture_segment_.allFinite() ||
+      !target.position.allFinite()) {
     return fail(Event::kSampleFailed);
   }
   tick_record_.segment_following = true;
@@ -1828,7 +1834,7 @@ rtc::catching::Reason DemoCatchingController::RunSegmentTick(
     tick_record_.segment_p_d[static_cast<std::size_t>(a)] = target.position[a];
     tick_record_.segment_v_ff[static_cast<std::size_t>(a)] = target.linear_velocity_ff[a];
   }
-  const Reason law = SolveClikAndCommand(state, target, q_posture_segment_);
+  const Reason law = SolveClikAndCommand(state, target, q_posture_segment_, &qd_posture_segment_);
   // Past node N the sample holds the rest state: the stop has ended.
   decel_stopped_ = segment_sample_.held;
   return law;
