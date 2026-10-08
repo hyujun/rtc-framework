@@ -57,13 +57,18 @@ demo_catching_controller:
           # 37 ms (median) and its plan met the next vision period: the cycle
           # dropped it as superseded in 34 of 78 and 58 of 97 such wakes,
           # against 3 of 18 and 7 of 23 of the wakes that solved one — 5 to 10
-          # throws of 50 without a plan. One solve at 0.018 s still lost that
-          # solve to the deadline in 40 of 254 wakes; at 0.028 s, 1 of 52 and
-          # 2 of 54 (a candidate's solve: 12 - 16 ms median, 27 - 29 ms p99),
-          # and a plan in 50 of 50 throws on both seeds thrown.
+          # throws of 50 without a plan. One solve at 0.018 s still lost a
+          # first plan's solve to the deadline in 17 of 65 wakes; at 0.024 s,
+          # 2 of 52 (a candidate's solve: 14.6 ms median, 25.4 ms p99), and a
+          # plan in 50 of 50 throws.
+          # solve_s has a CEILING no check enforces: while a plan is followed
+          # a wake's budget is prediction.dt_expected - the segment planner's
+          # budget.replan_s (0.05 - 0.025 = 0.025 s), and a share above it
+          # fits no solve there — 0.028 s ran 0 solves while following
+          # (0.024 s: 192 of 216 wakes).
           budget:
             budget_s: 0.040
-            solve_s: 0.028
+            solve_s: 0.024
             start_lead_s: 0.004
             max_solves: 1
           # ── Outer cost and the rank proxy ───────────────────────────────────
@@ -134,15 +139,23 @@ demo_catching_controller:
               # node; in sim that leaves the lateral set empty (its nearest
               # face is 2.3 mm from rho_ref) and every first solve ended at
               # the deadline. Off, 178 of 280 first solves converged.
+              # Off also means the catch node's covariance is not CHECKED: a
+              # wake whose covariance is not valid yet is no longer refused
+              # (kCovarianceInvalid) and is planned on the mean.
               chance: false
               face_eps: 0.0125
               speed_faces: 8
               eps_nu: 0.01
               eps_sigma: 1.0e-4
             timing:
-              # Off with the chance rows (E1-F19): one switch was not tried
-              # without the other.
-              row: false
+              # Read only with capture.chance on: the closure-timing row is
+              # one of the chance rows, so with chance off it is not built
+              # whatever this says. NOTE for whoever turns chance back on:
+              # robot.hand.docking.closure (delta_lo / delta_hi) is on the
+              # entrance axis of the IDENTIFIED closing speed (0.55 m/s),
+              # while delta_0 follows core.catch.nu_ref (2.0 m/s) — the window
+              # sits ~9 ms late for that speed (s_ent / c: 12.7 against 3.5 ms).
+              row: true
               eps_t: 0.05
             stop:
               w_perp: 0.0
