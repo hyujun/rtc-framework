@@ -1260,6 +1260,10 @@ def _make_driver(profile: ArmProfile, args):
                     # old path is reused (S8-E smoke). The analyser still
                     # resolves the absolute paths of older records.
                     "truth_csv": os.path.basename(truth_csv),
+                    # The supervisor's `outcome` field as last published — a
+                    # LABEL, not this throw's verdict: it stays what the
+                    # previous cycle set when this throw starts no cycle.
+                    # Success is catching_trials' truth_success (E1-F19).
                     "final_outcome": (
                         OUTCOME_NAMES[self.outcome] if self.outcome is not None else None
                     ),

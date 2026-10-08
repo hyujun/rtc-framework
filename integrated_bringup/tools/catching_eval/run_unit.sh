@@ -24,6 +24,9 @@
 # mpc_docking.
 # E1-F19 addition: ENABLE_VIEWER=1 opens the MuJoCo viewer (default 0 — a unit is headless); the
 # unit's conditions.txt says which (viewer: on | off), because a viewer shares the host with the sim.
+# E1-F19 addition: the mirrors EXPECT_KV names are read too, whatever they are — the fixed list
+# below is what every unit records, not the only thing a plan may check (a hand.docking.* check
+# once failed on the name alone, with the value right: two units lost before a throw).
 # The overlay turns the APPROACH-stop MPC on in CLOSED LOOP: the planner stores
 # every segment, the RT takes a plan with its first segment and follows the
 # segments from APPROACH to the end of the stop (mode mpc, #662).
@@ -171,6 +174,12 @@ for P in joint_cmd.lag.T_arm joint_cmd.lag.lead_enable planner.freeze.T_freeze \
          planner.segment.mpc.eta_v planner.search.grid.reference.omega \
          planner.search.grid.reference.a_max planner.search.grid.reference.v_max; do
   echo "$P: $(ros2 param get $CN $P 2>&1)" >> "$OUT/mirror.txt"
+done
+IFS=';' read -ra KVS <<< "${EXPECT_KV:-}"
+for kv in "${KVS[@]}"; do
+  [ -z "$kv" ] && continue
+  K=${kv%%=*}
+  grep -q "^$K: " "$OUT/mirror.txt" || echo "$K: $(ros2 param get $CN $K 2>&1)" >> "$OUT/mirror.txt"
 done
 echo "ball_type: $(ros2 param get /mujoco_simulator projectile_ball.ball_type 2>&1)" >> "$OUT/mirror.txt"
 why=""

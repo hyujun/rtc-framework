@@ -7,7 +7,10 @@ A unit is one ``run_unit.sh`` output directory. Per unit, as it was recorded —
 nothing is judged here:
 
   * throws — how many, how many reached HOLD, how many entered ABORT_SAFE
-    (``trials/trial_results.json``: the modes each throw's ``mode_log`` names)
+    (``trials/trial_results.json``: the modes each throw's ``mode_log`` names),
+    and the count per ``final_outcome`` — the supervisor's LABEL as last
+    published, not a verdict: a throw that starts no cycle keeps the previous
+    cycle's label (E1-F19). Success is ``catching_trials``' ``truth_success``.
   * the planner's wakes by cycle outcome, and where replacement attempts ended
     (``planner_events.csv`` ``outcome`` / ``replace_step``)
   * segment solves by kind × outcome × core reason × infeasible row group:
@@ -54,7 +57,8 @@ def _read(path: Path, usecols=None) -> pd.DataFrame | None:
 
 def throws(trial_results) -> dict:
     """Counts over ``trial_results.json`` (a list, or ``{"trials": [...]}``): the
-    throws whose ``mode_log`` names HOLD / ABORT_SAFE, and the recorded outcomes."""
+    throws whose ``mode_log`` names HOLD / ABORT_SAFE, and the recorded labels
+    (``final_outcome`` — the supervisor's, stale on a throw with no cycle)."""
     trials = trial_results["trials"] if isinstance(trial_results, dict) else trial_results
     hold = abort = 0
     outcomes: Counter = Counter()
@@ -146,7 +150,7 @@ def format_report(r: dict) -> list[str]:
     if t:
         lines.append(
             f"throws: {t['n']} | reached HOLD {t['hold']} | entered ABORT_SAFE {t['abort_safe']} "
-            f"| outcomes: {_counts(t['outcomes'])}"
+            f"| final_outcome labels (not verdicts): {_counts(t['outcomes'])}"
         )
     p = r.get("planner")
     if p:
