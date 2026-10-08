@@ -1,7 +1,8 @@
 # Shared demo parameters — g1_p1b (Unitree G1 upper body + proto_1b right hand)
 #
 # Read by every demo controller of this profile; today that is
-# demo_joint_controller only. The file is deliberately small: the hand-only
+# demo_joint_controller (demo_dualarm_controller reads none of it: it has its
+# own file). The file is deliberately small: the hand-only
 # facts of ur5e_p1b (finger map, release gate, virtual TCP) are carried over
 # because the hand is the same; its grasp postures, force-PI gains and pull
 # estimator were tuned for that arm's tasks and are NOT — keys left out here

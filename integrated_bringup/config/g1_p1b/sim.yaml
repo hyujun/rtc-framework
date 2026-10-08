@@ -7,9 +7,10 @@
 /**:
   ros__parameters:
     # ── Initial controller ────────────────────────────────────────────────────
-    # The only controller this profile ships a config for. The arm-chain
-    # controllers (task / wbc / compliance) assume one serial arm and are not
-    # instantiated here.
+    # This profile ships a config for two controllers, demo_joint_controller
+    # (the default) and demo_dualarm_controller (switch to it at runtime or set
+    # initial_controller). The arm-chain controllers (task / wbc / compliance)
+    # assume one serial arm and are not instantiated here.
     initial_controller: "demo_joint_controller"
 
     # ── Initialization timeout ────────────────────────────────────────────────
@@ -26,7 +27,7 @@
     # ── Device backends (MuJoCo bridge) ───────────────────────────────────────
     # Two robot groups in the sim, one per device, and the sim waits for a
     # command from BOTH every step — so both must be claimed by the active
-    # controller, which demo_joint_controller does.
+    # controller, which demo_joint_controller and demo_dualarm_controller do.
     devices:
       g1:
         backend:

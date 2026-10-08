@@ -31,6 +31,7 @@ integrated_bringup/
 │   │   ├── demo_inference_controller.hpp <- 학습 정책(ONNX) 바인딩. 코어는 `rtc_controllers/inference/{policy_io,reach_gate}.hpp`. link pose (cache / closed-chain FK, `policy_frame` 기준) · 관절 규약 · reach gate · object pose(TFMessage) 레인을 스스로 소유한다 — object 는 device lane 이 아니라 프레임워크 freshness 게이트가 안 걸리므로 `object_pose.timeout_sec` 이 그 책임을 진다
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
 │   │   ├── demo_catching_controller.hpp <- dynamic_catching S5.1 골격: 팔 hold + 손 무성형 계단 + P-1 최소 E-STOP 계약 (훅은 요청만, reset writer 는 RT tick) + 무장 파라미터 `catching.enable`. 실기 config (claim 한 device 가 전부 `mujoco_native` 임을 증명 못 함) 에서 소비 키에 provisional·TBD 가 있으면 DISABLED 로 configure 되고 활성화를 거부한다 (L0 §5.3)
+│   │   ├── demo_dualarm_controller.hpp <- 두 손 frame 과제 + 자세를 QP 하나로 푸는 tree 군 바인딩 `DemoDualArmController` (E2-F05). 코어는 `rtc_tsid` 의 다중 frame CLIK. 헤더 주석이 동작 계약, 설계는 §DemoDualArmController
 │   │   ├── catching/planner_thread.hpp <- 포구 계획기 스레드 `CatchingPlannerThread` (dynamic_catching S6-A): `PeriodicRtThread` 형제, eventfd `poll` 대기 + `planner.wake_timeout_s` 상한, 본체는 `rtc_controllers` 의 `PlannerCycle::Run`. `mpc` layout role 로 기동 (스레드 이름 `mpc_main`, E-7 결정 J)
 │   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
@@ -55,6 +56,7 @@ integrated_bringup/
 │       ├── device_sensor_log_pod.hpp
 │       ├── device_wbc_log_pod.hpp      <- WBC state superset: a_opt 가속도 + SE3 traj(arm)/fingertip force(hand), role-aware writer
 │       ├── wbc_diag_log_pod.hpp        <- per-tick TSID/QP 진단 (solve time / λ / 수렴 / grasp), 단일 wbc_diag.csv
+│       ├── dualarm_diag_log_pod.hpp    <- DemoDualArm per-tick 진단 — 행동 (`hold`·fault)·풀이 진단·과제별 ref/cmd/meas pose·목표 거부 계수, 단일 dualarm_diag.csv
 │       ├── pull_estimator_log_pod.hpp  <- in-plane pull-force estimate — pre-filter+filtered force + plane/basis + contact·touch·opposing mask + tick, 단일 pull_estimator.csv (3 데모 컨트롤러 공용)
 │       ├── task_diag_log_pod.hpp       <- §6.5 특이점 진단 — sigma_min/lambda_sq + 적용 σ₀·λ_max + valid/ik_ok, 단일 task_diag.csv (DemoTask 전용)
 │       ├── compliance_diag_log_pod.hpp <- §7 task-admittance 진단 — 소비된 wrench + source id/quality/invalid_reason + FSM/α + x̃·ν_c + K_p·K_d·Λ_d·§7.5 bound 스냅샷, 단일 compliance_diag.csv (DemoCompliance 전용)
@@ -66,6 +68,7 @@ integrated_bringup/
 │   │   ├── controller_registration.cpp <- 데모 컨트롤러 등록 (RTC_REGISTER_CONTROLLER)
 │   │   ├── joint/                      <- DemoJointController (controller/compute/lifecycle/parameters)
 │   │   ├── task/                       <- DemoTaskController (controller/compute/lifecycle/parameters)
+│   │   ├── dualarm/                    <- DemoDualArmController (controller/compute/lifecycle/parameters)
 │   │   └── wbc/                        <- DemoWbcController (controller/compute/lifecycle/parameters/phase) + grasp_phase_manager.cpp + force_reference_updater.cpp
 │   ├── backends/                       <- DeviceBackend 구현체 (RTC_REGISTER_DEVICE_BACKEND, --whole-archive 등록)
 │   │   ├── mujoco_native_backend.cpp
@@ -73,6 +76,7 @@ integrated_bringup/
 │   │   └── udp_hand_native_backend.cpp
 │   └── support/                        <- demo_shared_config / owned_topics 구현
 ├── config/
+│   ├── g1_p1b/controllers/demo_dualarm_controller.yaml <- DemoDualArm 의 config (`g1_p1b` 만 싣는다): `clik.*` (과제 · 자세군 · 박스 · 토크 행) · 궤적 속도 · fault · 토픽 · CSV lane. 키는 전부 필수
 │   ├── ur5e_p1a/_base.yaml                 <- mode-agnostic SSoT (URDF + 모델 토폴로지 + device roster/limits + control_rate/logging)
 │   ├── ur5e_p1a/robot.yaml                 <- 실제 로봇 delta (backend/토픽 + E-STOP + init 타이밍, _base 위에 overlay)
 │   ├── ur5e_p1a/sim.yaml                   <- 시뮬레이션 delta (MuJoCo backend + sim-sync + 완화된 E-STOP, _base 위에 overlay)
@@ -353,6 +357,7 @@ demo_task_controller:
 | `momentum_observer_log` (CSV, 3 데모 컨트롤러 공용) | 컨트롤러 (`ControllerLogSet`) | per-tick `momentum_observer.csv` (`msg_type: integrated_bringup/MomentumObserverLog`, instance 고정 `momentum_observer`) — 일반화 운동량 관측기 잔차 (Layer 1b) + Layer 2A payload/Layer 2B inertial 추정. 컬럼 그룹: `t_relative_s,tick`, `r_<joint>`/`residual_inf_norm`/`valid`/`invalid_reason`/`ticks_since_seed` (잔차 — arm 디바이스 joint order), `payload_*` (Layer 2A wrench/mass/sigma_min/lambda_sq/fit_error/valid/reason), `inertial_*` (Layer 2B m̂·ĉ/ĉ/sigma_min/fit_error/rank/valid/reason) — 컬럼별 정확한 의미·단위·enum 값은 [momentum_observer_log_pod.hpp](include/integrated_bringup/logging/momentum_observer_log_pod.hpp) 필드 주석이 SSoT. 행은 **매 tick** 남으며 held·E-STOP tick 은 gap 이 아니라 `valid=0` 행 + 직전 잔차 **동결** 값이다 (`pull_estimator.csv`·`grasp_diag.csv` 와 같은 규약, PROC-7) — `tick` 의 gap 은 SPSC ring drop 만을 뜻하고, 파일 자체의 부재는 `momentum_observer` 블록이 없거나 disabled 라는 뜻이다. 같은 행이 `payload_estimate` 토픽 (`rtc_msgs/PayloadEstimate`) 도 채운다 — POD 는 tick 당 한 번 만들어져 두 lane 에 전달된다. `rtc_tools` 플로터가 자동 감지한다 — `ros2 run rtc_tools plot_rtc_log <session>/controllers/<key>/momentum_observer.csv` 가 `momentum_observer.png` 를 내고, Layer 2A/2B 가 실제로 구성된 run 에서만 `momentum_payload.png` 도 낸다. `--stats` 의 ‖r‖∞ 통계는 `valid=1` 행만 쓴다 |
 | `compliance_diag_log` (CSV, DemoCompliance 전용) | `DemoComplianceController` (`ControllerLogSet`) | per-tick `compliance_diag.csv` (`msg_type: integrated_bringup/ComplianceDiagLog`, instance 고정 `compliance_diag`) — §7 task-admittance 진단. 컬럼은 소비된 wrench (`wrench_f*`/`wrench_t*`, post-conditioning LWA), 소스 축 (`wrench_source`·`quality_low`·`invalid_reason`), 파이프라인 상태 (`wrench_age`/`fade`/`stale`/`in_contact`/`bias_*`/`rejected_samples`), 법칙 상태 (`fsm_state`·`alpha`·`x_tilde_*`·`nu_c_*`·`task_origin_*`·`disp_limited`/`vel_limited`/`adm_finite`), 그리고 매 tick 파라미터 스냅샷 (`kp_*`/`kd_*`/`md_*`/`max_disp_*`). **모든 값은 사용 지점(`ComputeControl`)에서 staging 된다** — 렌치는 `ComputeSecondary` 에서 발행되고 다음 tick 의 `ComputeControl` 에서 소비되므로 (D-A14), push tail 에서 멤버를 읽으면 한 행에 *이번* tick 의 `invalid_reason` 과 *직전* tick 의 wrench 가 섞인다. 파라미터를 매 tick 싣는 이유는 `task_diag` 의 `sigma0`/`lambda_max` 와 같다 — **평평한 x̃ 가 "수렴" 인지 "§7.5 박스에 pin" 인지**를 그 run 의 YAML 없이 가르려면 bound 가 같은 줄에 있어야 하고, `disp_limited` 가 그 판정을 직접 말한다. 등록 게이트는 `external_wrench.source` 블록 존재이며 (D-A12: 기본값 없는 필수 키라 configure 한 컨트롤러는 반드시 하나를 갖는다), 법칙이 안 돈 tick (E-STOP · arm 미판독 · reorder 무효) 은 gap 이 아니라 **`valid=0` 행 + 값 0** 이다 (동결 아님 — 느리게 변하는 추정치는 동결되면 살아있는 것처럼 읽힌다, `grasp_diag` per-finger 와 같은 규약). 배선 안 된 fault 3개 (`command_divergence`·`saturation_persist`·`posture_authority_lost`) 는 **컬럼을 만들지 않는다** — 영원히 0 인 컬럼은 "안 일어남" 으로 읽힌다. Path A — POD-only, rtc_msgs `.msg` 무변경. `rtc_tools` 플로터가 `x_tilde_` 컬럼 지문으로 자동 감지하며, `--stats` 없이도 envelope (`|x_tilde|` peak 대 bound 비율) · freshness · bias 재무장 횟수를 숫자로 출력한다 (그림은 없다 — `grasp_diag` 와 같은 판단: 숫자가 산출물) |
 | `inference_diag_log` (CSV, DemoInference 전용) | `DemoInferenceController` (`ControllerLogSet`) | per-tick `inference_diag.csv` (`msg_type: integrated_bringup/InferenceDiagLog`, instance 고정 `inference_diag`) — 이 컨트롤러는 **모든 실패가 hold 로 수렴**하므로 (입력 unreadable · `Run()` false · 비유한 출력 · closed-chain held · 물체 stale) 바깥에서 보면 정상 동작과 구분되지 않는다. 그래서 매 tick `held` 와 **사유 코드** (`hold_code`/`hold_reason` — `InferenceHoldReason`, 조기 반환 지점마다 1개) 를 남기고, 그 옆에 정책이 실제로 본 것을 함께 둔다: `policy_step`·`inference_count` (주기가 decimation 대로인지), `reach_phase`·`tip_distance`·`reach_hold` (게이트), `object_valid`·`object_age_s`·`object_x..z` (**policy_frame 기준** — 프레임이 어긋나면 여기서 부호로 드러난다), `closed_held`·`closed_held_ticks`·`closed_singular`·`closure_error` (폐쇄 체인 사영), `arm_lag_max` (정책 목표와 측정 관절각의 최대 차 — sim 서보의 구조적 지연이 여기 실린다), `force_<tip>` (reach gate 가 읽는 손끝별 힘). 같은 `logs:` 블록이 arm/hand `<device>_state.csv` 도 연다 (형제 컨트롤러와 같은 스키마). 파일 부재 = `logs:` 에 그 채널이 없다는 뜻 |
+| `dualarm_diag_log` (CSV, DemoDualArm 전용) | `DemoDualArmController` (`ControllerLogSet`) | per-tick `dualarm_diag.csv` (`msg_type: integrated_bringup/DualArmDiagLog`, instance 고정 `dualarm_diag`) — 열 묶음과 pose 의 뜻은 §DemoDualArmController "로그와 TF 판독" |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
 
@@ -668,6 +673,98 @@ ros2 service call /demo_wbc_controller/grasp_command \
 
 **E-STOP:** `estop.arm_safe_position` (YAML 필수 키, 기본 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad — 길이는 `arm_dof` 와 일치해야 한다)로 이동, 핸드는 현재 위치 유지, contact 비활성화
 
+### DemoDualArmController
+
+두 손 frame 과제와 자세 과제를 **QP 하나**로 푸는 바인딩입니다 (E2-F05, #637). 첫 device group 이 tree (몸통 + 양팔) 인 로봇에서 돌고, 코어는 `rtc_tsid` 의 다중 frame `ClikReferenceGenerator` 입니다. 정식화는 [mpc_multiframe_clik_formulation.md](../docs/dynamic_catching/ref/mpc_multiframe_clik_formulation.md) §2 이고, 식마다 구현 · 테스트 · 다른 점은 그 문서 §11 의 표가 갖습니다 — 여기에는 운용 표면만 적습니다. 동작 계약은 [헤더 주석](include/integrated_bringup/controllers/demo_dualarm_controller.hpp) 입니다.
+
+- **`g1_p1b` 만 YAML 을 싣습니다.** `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 라 다른 profile 에서는 인스턴스화되지 않습니다. `initial_controller` 는 그대로 `demo_joint_controller` 이고, 이 컨트롤러는 `/rtc_cm/switch_controller` 나 `initial_controller:=demo_dualarm_controller` 로 고릅니다 (§`g1_p1b`).
+- **군 `g1` (waist 3 + 팔 7 × 2) 은 QP 가 position 명령으로 내고, 군 `p1b` (손) 는 관절 공간 quintic** 으로 따라갑니다. 손 관절은 QP 변수에는 있되 속도 box 1e-9 로 잠깁니다.
+- **과제 둘**: `right_hand` (`catch_frame`, base `pelvis`) 와 `left_hand` (`left_rubber_hand`, base `torso_link`). 왼손 과제는 몸통 기준이라 waist 열이 0 입니다. 자세군 셋 (`waist` · `left_arm` · `right_arm`) 이 나머지를 붙듭니다.
+
+#### 설정 (`config/g1_p1b/controllers/demo_dualarm_controller.yaml`)
+
+**모든 키가 필수**입니다 — 이 파일을 본 적 없는 로봇에 맞는 기본값이 없습니다. 값은 전부 첫 실행 전에 정한 출발값이고 튜닝하지 않았습니다.
+
+| 키 | 단위 | 범위 · 뜻 | runtime |
+|---|---|---|---|
+| `clik.damping_sq` · `clik.w_smooth` | – | QP 감쇠 $\mu^2$ (> 0) · 직전 속도와의 평활 가중 (>= 0) | YAML 전용 |
+| `clik.qp.max_iter` | – | ProxQP 반복, 정수 [1, 1000] | YAML 전용 |
+| `clik.accel_constraint` | – | `dynamic` 만 받습니다 (상대 과제는 kinematic 가속 행과 못 씁니다) | YAML 전용 |
+| `clik.eta_tau` | – | 토크 행이 쓰는 `max_torque` 의 비율, (0, 1.2]. 코어에는 `tau_max` 의 곱으로 넘깁니다 | YAML 전용 |
+| `clik.limit_margin` | rad | 몸통 군 위치 box 를 device 한계에서 좁히는 폭 (>= 0). 범위가 뒤집히면 configure 거부. 손은 한계 그대로 | YAML 전용 |
+| `clik.joint_velocity_max` | rad/s | device 정격 위의 상한 (> 0). 속도 box = 둘 중 작은 값 | YAML 전용 |
+| `clik.brake.{enabled,margin}` | – | 토크에서 얻은 감속도로 한계 앞 속도를 묶습니다. margin (0, 1] | YAML 전용 |
+| `clik.target_frames` | – | 목표가 **표현될** 수 있는 frame 이름 (<= 8). 아래 "목표의 frame" | YAML 전용 |
+| `clik.tasks[]` `name` | – | 과제 이름 = 토픽 토큰 `[A-Za-z][A-Za-z0-9_]*`. <= 4 개 | YAML 전용 |
+| `…` `frame` · `base_frame` · `kind` | – | 움직이는 frame · 목표 / 오차 / 행을 잴 frame (다른 frame 이어야 하고 둘 다 이름이 있어야 합니다) · `se3` 만 | YAML 전용 |
+| `…` `gain_linear` · `gain_angular` | 1/s | [0, 1/dt]. 넘으면 configure 거부 | `tasks.<name>.gain_linear` · `.gain_angular` |
+| `…` `weight` · `fb_lin_max` · `fb_ang_max` | – · m/s · rad/s | 스칼라 가중 (> 0) · 되먹임 상한 (>= 0, 0 = 끔) | YAML 전용 |
+| `clik.posture_groups[]` | – | `name` (파라미터 토큰) · `joints` (몸통 군의 관절, 군끼리 서로소) · `weight` (>= 0). <= 8 개 | YAML 전용 |
+| `…` `gain` | 1/s | [0, 1/dt] | `posture.<group>.gain` |
+| `trajectory.{linear,angular,hand}_speed` | m/s · rad/s | 목표까지의 quintic 평균 속도 (> 0) | 같은 이름 |
+| `trajectory.*_speed_max` | m/s · rad/s | quintic 정점 속도의 상한 (평균의 15/8 배가 이 값 안에 들 때까지 늘립니다) | read-only |
+| `fault.max_qp_fail_ticks` | tick | 연속 풀이 실패가 이만큼이면 fault latch (정수 >= 1) | YAML 전용 |
+| `fault.track_err_max` | rad | max \|q_meas − q_cmd\| 가 넘으면 같은 latch. 0 = 끔 (출하값 — 아직 잰 값이 없습니다) | YAML 전용 |
+
+#### 토픽
+
+노드 namespace 는 `/demo_dualarm_controller/` 입니다.
+
+| 토픽 | 내용 |
+|---|---|
+| `right_hand/task_goal` · `left_hand/task_goal` | `rtc_msgs/RobotTarget`, `goal_type: task`, `task_target` = [x y z roll pitch yaw] (m · rad, ZYX). 과제마다 하나 (`<name>/task_goal`). `header.frame_id` 가 목표가 표현된 frame |
+| `g1/joint_goal` | 17 관절 **전부** = 자세 목표 |
+| `p1b/joint_goal` | 10 관절 **전부** = 손의 quintic 목표 (device 한계로 자릅니다) |
+| `transforms` | `tf2_msgs/TFMessage`, 부모 `pelvis`, **측정** pose: `base_adapter_actual` · `l_<finger>_tip_bracket_actual` 넷 · `catch_frame_actual` · `left_rubber_hand_actual`. 같은 결합 모델의 두 번째 `pinocchio::Data` 를 측정 관절 상태에서 갱신해 구합니다. 명령 pose 는 CSV 에만 있습니다 |
+
+새 메시지 · 상태 토픽 · 스레드는 없습니다. 과제 목표는 노드의 기본 callback group (non-RT) 구독이고 depth 1 입니다.
+
+**목표의 frame.** `header.frame_id` 는 목표를 **적은** frame 입니다. 비우면 그 과제의 base frame, `clik.target_frames` 의 이름 (`world` · `pelvis` · `torso_link`) 이면 목표를 적용하는 tick 에 base frame 으로 **한 번** 바꾸고 (`T_base,des = T_base,ref(q_c) · T_ref,des`), 그 뒤로는 base 에 고정된 pose 입니다 — base 가 움직이면 목표가 따라갑니다. 목록에 없는 이름은 base frame 으로 읽지 않고 거부하며 셉니다. 모델에서 `world` 와 `pelvis` 는 **다른 frame** 입니다 (`pelvis` 가 `world` 위 0.79186375 m, 축은 같음) — 오른손 과제의 base 가 `pelvis` 인 이유이고, 같은 물리 목표도 두 frame 에서는 z 가 다른 숫자입니다.
+
+**거부 · 버림** (전부 `dualarm_diag.csv` 의 계수로 남습니다): `goal_type` 이 `task` 가 아니거나 6 값이 유한하지 않거나 frame 이름이 모르는 것이면 ingress 가 거부합니다. 현재 기준 pose 에서 π − 0.15 rad 를 넘게 도는 목표는 적용 tick 에 버립니다 (log6 궤적이 불연속). 비활성 중에 보낸 목표는 활성화 때, 풀이를 못 도는 tick (E-STOP · fault · 판독 불가 · 시드 전) 에 온 목표는 그 tick 에 버립니다 — 나중에 뒤늦게 움직이지 않도록 매 tick 소비합니다. `g1/joint_goal` 로 온 task 목표나 군의 관절을 다 싣지 않은 관절 목표도 거부하고 `group_goal_rejects` 로 셉니다.
+
+#### 풀이를 안 도는 tick
+
+- **E-STOP**: 풀이도 궤적도 돌지 않고 두 군이 **측정 위치**를 명령합니다 (선로에는 CM 이 자기 hold 를 대신 냅니다). 해제 tick 에 측정값에서 명령을 다시 시드하고 모든 목표를 "프레임이 지금 있는 자리" 로 되돌립니다 — 이어서 가지 않습니다.
+- **풀이 실패**: 직전 명령을 유지합니다 (그 tick 의 $\dot q_c$ = 0). `fault.max_qp_fail_ticks` 번 연속이면 controller-local **fault latch** — 마지막 명령을 유지하고 목표를 거부하며, **`/rtc_cm/reset_fault` 로만** 풀립니다 (`ros2 service call /rtc_cm/reset_fault rtc_msgs/srv/ResetFault "{controller_name: demo_dualarm_controller}"`). E-STOP 해제나 비활성 → 활성으로는 풀리지 않고, E-STOP 중에도 reset 할 수 있습니다. 풀이가 호출 자체를 거부한 tick (입력이 유한하지 않음 등) 도 실패로 셉니다.
+- **판독 불가**: `g1` 을 못 읽으면 풀이와 기준을 멈추고 `g1` 만 침묵시킵니다. `p1b` 를 못 읽으면 손만 침묵하고 (손 궤적은 멈춥니다) 풀이는 계속 돕니다. 첫 판독 가능 tick 에 시드합니다.
+- 토크 한계가 중력 부하보다 낮은 관절은 **풀이를 실패시키지 않습니다** — 그 관절이 처지는 채로 풀리고, `brake_static_infeasible` 의 bit 가 알립니다.
+
+#### Runtime 파라미터
+
+노드 FQN 은 `/demo_dualarm_controller/demo_dualarm_controller` 입니다. `tasks.<name>.gain_linear` · `.gain_angular` 와 `posture.<group>.gain` 은 [0, 1/dt] 밖이면 **거부**합니다 (값을 잘라 받아도 원하던 값이 아닙니다). `trajectory.linear_speed` · `angular_speed` · `hand_speed` 는 나눗수라 1e-6 에서 **하한**합니다. 어느 쪽이든 유한하지 않은 값은 거부하고, 요청 안의 하나라도 걸리면 전부 적용하지 않습니다. `trajectory.*_max` 는 read-only 입니다.
+
+```bash
+ros2 param set /demo_dualarm_controller/demo_dualarm_controller tasks.right_hand.gain_linear 20.0
+```
+
+#### 로그와 TF 판독
+
+`<session>/controllers/demo_dualarm_controller/{g1_state,p1b_state,dualarm_diag}.csv` — 앞 둘은 기존 `DeviceStateLog`, `dualarm_diag.csv` (`integrated_bringup/DualArmDiagLog`) 는 **매 tick 한 행**입니다. 풀이를 안 돈 tick 도 행을 쓰고 (`clik_ran = 0`, 계산 안 한 칸은 0) 그래서 파일의 구멍은 떨어진 행뿐입니다.
+
+| 열 묶음 | 열 |
+|---|---|
+| 행동 | `t_relative_s` · `tick` · `hold` (0 풀이 돎, 1 E-STOP, 2 fault, 3 몸통 판독 불가, 4 시드 전, 5 모델 없음) · `clik_ran` · `estop` · `fault_latched` · `fault_cause` (0 없음, 1 연속 실패, 2 추종 오차) · `body_readable` · `hand_readable` · `reseeded` |
+| 풀이 (안 돈 tick 은 0) | `reached_solve` · `converged` · `rejected_input` · `non_finite` · `command_mismatch` · `accel_rows_violated` · `brake_box_empty` · `status` · `iterations` · `solve_time_us` · `accel_rows` · `accel_rows_binding` · `fb_saturated` (bit 2k = 과제 k 병진, 2k+1 = 회전) · `rot_near_pi` (bit k) · `brake_active` · `brake_static_infeasible` (bit = 모델 속도 index) |
+| 감시 | `qp_fail_streak` · `track_err` (max \|q_meas − q_cmd\|, 몸통 관절) · `group_goal_rejects` |
+| 과제마다 `<task>_` | `valid` · `traj_active` · `goal_sequence` (0 = 시작 자세 유지) · `err_lin` · `err_ang` · `ref_{x,y,z,qw,qx,qy,qz}` · `cmd_*` · `meas_valid` · `meas_*` · `goals_accepted` · `reject_goal_type` · `reject_non_finite` · `reject_unknown_frame` · `drop_stale` · `drop_near_pi` · `drop_held` |
+| 몸통 관절 | `q_cmd_<joint>` (device 순서) |
+
+세 pose 는 모두 **그 과제의 base frame** 입니다. `ref` = 이 tick 에 풀이가 받은 기준 $T^d(t)$, `cmd` = 풀이가 평가된 **명령 상태** (직전 tick 이 남긴 명령) 의 frame, `meas` = 이 tick 의 **측정** 관절 상태의 frame. `err_*` 는 `ref` 대 `cmd` — 풀이가 되먹임한 오차 그대로이고 **서보 지연은 들어 있지 않습니다**. 지연은 `cmd` 대 `meas` 를 시간을 밀어 맞대어 봅니다. 거부 · 버림 계수 (`reject_*` · `drop_*`) 는 누적입니다.
+
+#### formulation 과 다르게 한 곳
+
+식별 대조는 formulation §11 의 표가 갖고, 여기에는 운용에서 보이는 것만 적습니다.
+
+- QP 변수는 **27** 입니다 (몸통 17 + 손 10). 손은 속도 box 로 잠겨 있고 $M, h$ 에는 손의 실제 자세가 들어갑니다.
+- 오른손의 base 는 `world` 가 아니라 `pelvis` 입니다 (축이 같아 행은 같고 목표 숫자만 z 로 0.79 m 다릅니다).
+- MPC 관절 기준이 없어 기준은 **task-space quintic** 이고, 자세 기준 속도 feedforward $\dot q_{ref}$ 도 없습니다 (자세 목표는 정지한 값).
+- $\eta_\tau$ 는 `tau_max` 의 곱으로 넘기므로 YAML 범위가 (0, 1.2] 입니다.
+- supervisor (`REF_SATURATED`) 와 충돌 damper 는 없습니다. 토크 행 · 상한 · 제동 한계의 발동은 로그에 남습니다.
+- 가중 1.0 / 1.0 (과제), 1e-3 / 1e-4 (자세) 는 출발값이지 튜닝한 값이 아닙니다.
+
+E-STOP 은 sim 에서 걸 수단이 (trigger 서비스가) 없어 gtest 로만 확인합니다 ([docs/testing.md](../docs/testing.md)).
+
 ---
 
 ## 로깅 (Logging)
@@ -728,6 +825,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 | `integrated_bringup.demo_compliance_controller` | `DemoComplianceController` (task-space admittance 바인딩, 500 Hz 핫패스) |
 | `integrated_bringup.demo_wbc_controller` | `DemoWbcController` (WBC + MPC 데모 컨트롤러, 500 Hz 핫패스) |
 | `integrated_bringup.demo_catching_controller` | `DemoCatchingController` (dynamic_catching S5, 500 Hz 핫패스) |
+| `integrated_bringup.demo_dualarm_controller` | `DemoDualArmController` (두 손 frame 과제 QP 바인딩, 핫패스) |
 | `integrated_bringup.demo_shared_config` | `demo_shared_config` YAML 로더 (init-time, non-RT) |
 
 ### THROTTLE 주기 표준
@@ -949,11 +1047,30 @@ sim 전용 profile 입니다 (`robot.yaml` · 실기 launch 없음). 다른 prof
 | device group | **둘** — `g1` (waist 3 + 왼팔 7 + 오른팔 7 = 17 관절, 이 순서) 과 `p1b` (손 10 관절). 손이 둘이 되면 셋이 됩니다 (지금은 없음) |
 | 모델 선언 | `g1` 은 사슬이 아니라 가지가 둘인 **tree** 라 `urdf.tree_models.g1` (`pelvis` → [`left_rubber_hand`, `base_adapter`]) 로 선언합니다. `urdf.sub_models` 는 없습니다 |
 | 팔 끝 | 손이 붙는 link `base_adapter` — `tree_models.p1b` 의 `root_link` 에서 읽습니다. `right_wrist_yaw_link` 와는 고정 변환만큼 다릅니다 (p = [0.0415, −0.003, 0], rpy = [90°, 0, 90°]) |
-| 컨트롤러 | `demo_joint_controller` 하나. 팔을 사슬 하나로 전제하는 `demo_task` · `demo_wbc` · `demo_compliance` 는 YAML 을 싣지 않아 인스턴스화되지 않습니다 |
+| 컨트롤러 | `demo_joint_controller` (기본 활성) 와 `demo_dualarm_controller` **둘**. 팔을 사슬 하나로 전제하는 `demo_task` · `demo_wbc` · `demo_compliance` 는 YAML 을 싣지 않아 인스턴스화되지 않습니다 |
 | 모델 출처 | URDF · MJCF 는 `hand_description` 패키지 (`robots/unitree_g1_p1b/`). 이 저장소는 그 모델을 load 만 합니다 |
 | sim 서보 | MJCF 의 waist · 팔 actuator 가 `<motor>` (토크 모터) 라 `use_yaml_servo_gains: true` 가 **필수**입니다. 게인은 kd/kp = 0.05 s, kp 는 관절별 임계 감쇠 하한 이상 (`config/g1_p1b/mujoco_simulator.yaml` 주석) |
-| 토픽 | 목표 `/demo_joint_controller/{g1,p1b}/joint_goal` (`rtc_msgs/RobotTarget`), TF `/demo_joint_controller/transforms` (부모 `pelvis`, 자식 `base_adapter_actual` · `l_<finger>_tip_bracket_actual` · `virtual_tcp_actual`) |
-| 로그 | `<session>/controllers/demo_joint_controller/{g1_state,p1b_state,p1b_sensor}.csv` — `g1_state` 는 17 관절 전부 |
+| 토픽 (`demo_joint_controller`) | 목표 `/demo_joint_controller/{g1,p1b}/joint_goal` (`rtc_msgs/RobotTarget`), TF `/demo_joint_controller/transforms` (부모 `pelvis`, 자식 `base_adapter_actual` · `l_<finger>_tip_bracket_actual` · `virtual_tcp_actual`) |
+| 로그 (`demo_joint_controller`) | `<session>/controllers/demo_joint_controller/{g1_state,p1b_state,p1b_sensor}.csv` — `g1_state` 는 17 관절 전부 |
+
+**`demo_dualarm_controller` 로 바꾸기** (설계 · 키 · 로그: §DemoDualArmController). 기동 때 고르려면 `initial_controller:=demo_dualarm_controller`, 실행 중에는 switch 합니다. 목표는 토픽마다 한 번씩 보냅니다 — 아래 숫자는 형식 예시이므로 `task_target` 은 `/demo_dualarm_controller/transforms` 의 현재 pose 에서 조금 옮긴 값으로 바꿉니다 (회전이 현재와 π 가까이 다르면 버려집니다).
+
+```bash
+ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
+  "{activate_controllers: ['demo_dualarm_controller'], deactivate_controllers: ['demo_joint_controller'], strictness: 1, timeout: {sec: 3}}"
+
+# 오른손 — frame_id 를 비우면 이 과제의 base frame (pelvis), world · pelvis · torso_link 면 그 frame 에서 적은 값
+ros2 topic pub --once /demo_dualarm_controller/right_hand/task_goal rtc_msgs/RobotTarget \
+  "{header: {frame_id: pelvis}, goal_type: task, task_target: [0.30, -0.25, 0.10, 0.0, 0.0, 0.0]}"
+# 왼손 — 비우면 torso_link 기준
+ros2 topic pub --once /demo_dualarm_controller/left_hand/task_goal rtc_msgs/RobotTarget \
+  "{goal_type: task, task_target: [0.25, 0.20, -0.10, 0.0, 0.0, 0.0]}"
+# 자세 목표 (g1 17 관절 전부) · 손 목표 (p1b 10 관절 전부)
+ros2 topic pub --once /demo_dualarm_controller/g1/joint_goal rtc_msgs/RobotTarget \
+  "{goal_type: joint, joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
+ros2 topic pub --once /demo_dualarm_controller/p1b/joint_goal rtc_msgs/RobotTarget \
+  "{goal_type: joint, joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
+```
 
 이 launch 는 `mpc_engine` 인자를 받지 않습니다 — 그 인자가 고르는 것은 `demo_wbc_controller` 의 MPC 엔진이고 이 profile 에는 그 컨트롤러의 config 가 없습니다. `enable_mpc` 는 받되 여기서는 **CPU layout profile 만** 고릅니다 (컨트롤러 파라미터로 가지 않습니다). 기본값이 `false` 입니다 (다른 sim launch 는 `""`) — MPC · 계획기 thread 를 띄울 컨트롤러가 없는데 그 코어를 shield 하지 않기 위해서이고, 그런 컨트롤러가 이 profile 에 생기면 그 feature 에서 기본값을 다시 정합니다. demo GUI (`--robot`) 와 `plot_rtc_log` 의 `g1_p1b` 지원은 아직 없습니다.
 
@@ -1170,7 +1287,7 @@ GUI 시작 시:
 
 필터가 **catalog 가 아니라 프로파일**에서 오는 것이 핵심입니다: CM 은 등록된 컨트롤러를 로봇과 무관하게 인스턴스화하고, 로봇마다 다른 것은 *어느 컨트롤러가 config YAML 을 갖는가* 이며, 그래서 그 사실은 `discovery.py` 의 프로파일에 있습니다. `demo_inference_controller` 는 `config/ur5e_p1b/controllers/` 에만 YAML 이 있으므로 **`--robot ur5e_p1b` 에서만** 라디오에 뜹니다 (`test_robot_profiles.py` 가 설치된 config 트리와 양방향 대조).
 
-**예외 하나 — `/rtc_cm/list_controllers` 응답이 세 프로파일에서 동일하지는 않습니다.** `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 로 등록된 컨트롤러 (`demo_joint_controller` 를 뺀 전부 — `demo_task` · `demo_wbc` · `demo_compliance` · `demo_inference` · `demo_catching`) 는 그 프로파일에 YAML 이 없으면 **인스턴스화되지 않고**, 따라서 목록에도 없습니다. 기본값으로 돌 수 없는 컨트롤러이기 때문입니다. 이유는 둘입니다: 정책 파일 경로도 IO 스키마도 없이 기본값으로 도는 정책 컨트롤러는 의미가 없고 (`demo_inference` · `demo_catching`), 팔을 **사슬 하나** (`urdf.sub_models`) 로 전제하는 컨트롤러는 첫 device group 이 tree 인 로봇 (`g1_p1b`) 에서 모델을 만들지 못합니다 (`demo_task` · `demo_wbc` · `demo_compliance`). 그렇다고 bring-up 을 거부하면 그 로봇의 **나머지 컨트롤러까지** 못 뜹니다 (실제로 `ur5e_p1a`·`iiwa7_leap` 이 `demo_inference` 때문에 그 상태였습니다). `demo_joint_controller` 만 종전대로 YAML 이 없으면 내장 기본값으로 돕니다. 게이트는 `test_registered_controllers_have_shipped_config.cpp`.
+**예외 하나 — `/rtc_cm/list_controllers` 응답이 세 프로파일에서 동일하지는 않습니다.** `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 로 등록된 컨트롤러 (`demo_joint_controller` 를 뺀 전부 — `demo_task` · `demo_wbc` · `demo_compliance` · `demo_inference` · `demo_catching` · `demo_dualarm`) 는 그 프로파일에 YAML 이 없으면 **인스턴스화되지 않고**, 따라서 목록에도 없습니다. 기본값으로 돌 수 없는 컨트롤러이기 때문입니다. 이유는 셋입니다: 정책 파일 경로도 IO 스키마도 없이 기본값으로 도는 정책 컨트롤러는 의미가 없고 (`demo_inference` · `demo_catching`), 과제 frame · 자세군의 관절 이름이 로봇마다 달라 기본값이 있을 수 없고 (`demo_dualarm` — 지금은 `g1_p1b` 만 싣습니다), 팔을 **사슬 하나** (`urdf.sub_models`) 로 전제하는 컨트롤러는 첫 device group 이 tree 인 로봇 (`g1_p1b`) 에서 모델을 만들지 못합니다 (`demo_task` · `demo_wbc` · `demo_compliance`). 그렇다고 bring-up 을 거부하면 그 로봇의 **나머지 컨트롤러까지** 못 뜹니다 (실제로 `ur5e_p1a`·`iiwa7_leap` 이 `demo_inference` 때문에 그 상태였습니다). `demo_joint_controller` 만 종전대로 YAML 이 없으면 내장 기본값으로 돕니다. 게이트는 `test_registered_controllers_have_shipped_config.cpp`.
 
 preset combo 는 라디오 집합에서 **목표를 받지 않는 컨트롤러를 뺀** 것입니다 — preset 은 robot target 을 저장하는데, `joint_goal` 을 구독하지 않는 컨트롤러 앞으로 저장된 preset 은 재생할 곳이 없습니다.
 
