@@ -8,7 +8,9 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Core>
 
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace rtc::tsid {
@@ -109,6 +111,28 @@ namespace rtc::tsid {
 // drop the solver's warm start. M carries no rotor inertia (a URDF has none):
 // the margin eta_tau < 1 is what covers it.
 //
+// Several frames in one solve (the MultiFrameInput overload, E2-F04). The cost
+// above with a SUM of task terms — one per FrameTask, each an SE3 task (6
+// rows) or a position + approach-axis task (3 + 2 rows) with its own gain,
+// weight and feed-forward — and the posture term over Config::posture_groups
+// instead of the fixed arm / hand pair:
+//   min_v  Σ_k w_k·‖J_k·v − r_k‖² + Σ_g w_g·‖S_g·v − v_post,g‖² + μ²·‖v‖²
+//   v_post,g = K_g·(q_des − q) + q̇_ff      (q̇_ff optional, on every group)
+// The box, the acceleration constraint, the anchoring and the failure branch
+// are the single-task ones. A task with base_frame_idx ≥ 0 is RELATIVE: its
+// rows are the motion of the frame with respect to the base frame, in the
+// base frame's axes,
+//   J_rel,ang = R_bᵀ·(J_t,ang − J_b,ang)
+//   J_rel,lin = R_bᵀ·(J_t,lin − J_b,lin + [p_t − p_b]ₓ·J_b,ang)
+// (J_t / J_b the two frames' LOCAL_WORLD_ALIGNED Jacobians, R_b / p_b the
+// base frame's pose), so the error — taken in the base frame — and the rows
+// share their axes, and a joint upstream of both frames gets a zero column:
+// it cannot be asked to serve that task. With one universe-base task the call
+// reproduces the matching single-task overload bit for bit. That is NOT so
+// for a registered base: the SE3 overload pairs its base-aligned error with
+// the world-aligned Jacobian (exact only while the base frame's axes are the
+// world's), where this overload uses J_rel.
+//
 // All allocations happen in Init(); Compute() is RT-safe and noexcept.
 // ────────────────────────────────────────────────
 class ClikReferenceGenerator {
@@ -200,6 +224,34 @@ class ClikReferenceGenerator {
     // refused rather than silently unused.
     Eigen::VectorXd tau_max;
     double eta_tau{0.0};
+    // ── The multi-frame call (MultiFrameInput). Unset, every field below
+    //    leaves the two single-task overloads as they were. ──
+    // Most tasks one call may carry, 1..16. Sizes the per-task workspace and,
+    // for kKinematic, the row block (6 rows per task).
+    int max_frame_tasks{1};
+    // Accept FrameTask::base_frame_idx >= 0, i.e. relative tasks (file
+    // header). Off → such a task is refused at the call. Not available with
+    // kKinematic — the rows' drift would need the base frame's terms too —
+    // so Init() throws on the pair.
+    bool relative_tasks{false};
+    // Velocity indices the task rows of the multi-frame call may use; every
+    // other column is zero. Empty → arm_v_idx, which is what the single-task
+    // overloads always use. Range-checked, no duplicates. kDynamic bounds the
+    // torque on arm_v_idx only: a task column outside it moves a joint whose
+    // torque this solve does not bound.
+    std::vector<int> task_v_idx;
+
+    // Posture groups: disjoint velocity index sets, each with a weight (finite
+    // and >= 0) and a gain of its own (SetPostureGroupGain). Empty → the two
+    // groups {arm_v_idx, w_arm} and {hand_v_idx, w_hand}, in that order. When
+    // set, w_arm / w_hand are not read, and SetPostureGains(ka, kh) addresses
+    // groups 0 and 1. The groups serve every Compute() overload.
+    struct PostureGroup {
+      std::vector<int> v_idx;
+      double weight{0.0};
+    };
+
+    std::vector<PostureGroup> posture_groups;
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -214,9 +266,26 @@ class ClikReferenceGenerator {
   // Gains (RT-safe setters; the controller forwards its SeqLock'd gains).
   void SetTaskGain(const Eigen::Matrix<double, 6, 1>& kx) noexcept { kx_ = kx; }
 
+  /// Gains of posture groups 0 and 1 — the arm and the hand unless
+  /// Config::posture_groups says otherwise. A group that does not exist is
+  /// skipped.
   void SetPostureGains(double ka, double kh) noexcept {
-    ka_ = ka;
-    kh_ = kh;
+    if (!posture_.empty()) {
+      posture_[0].gain = ka;
+    }
+    if (posture_.size() > 1) {
+      posture_[1].gain = kh;
+    }
+  }
+
+  /// Gain K_g [1/s] of posture group `g` (Config::posture_groups order).
+  /// Returns false, changing nothing, when there is no such group.
+  [[nodiscard]] bool SetPostureGroupGain(int g, double k) noexcept {
+    if (g < 0 || static_cast<std::size_t>(g) >= posture_.size()) {
+      return false;
+    }
+    posture_[static_cast<std::size_t>(g)].gain = k;
+    return true;
   }
 
   /// Approach-axis gain K_a [1/s] of the position + axis overload (the
@@ -269,9 +338,90 @@ class ClikReferenceGenerator {
   // the same posture, damping, smoothing and boxes as the SE3 overload.
   // Fails before the solve on a non-finite target or an axis that is not
   // unit (AxisAlignError invalid); LastAxisRegion() reports the branch.
+  // qd_posture_ff (optional, [nv]): posture velocity feed-forward, added to
+  // every posture group's reference — v_post = K·(q_des − q) + q̇_ff — so a
+  // posture that MOVES (a planned joint trajectory) is tracked without the
+  // lag a pure position reference leaves. nullptr → the law above, bit for
+  // bit. A wrong size or a non-finite entry fails the call before the solve.
   [[nodiscard]] bool Compute(const PinocchioCache& cache, int frame_idx, int base_frame_idx,
                              const PositionAxisTarget& target, const Eigen::VectorXd& q_posture_des,
-                             double dt, bool reseed_anchor = true) noexcept;
+                             double dt, bool reseed_anchor = true,
+                             const Eigen::VectorXd* qd_posture_ff = nullptr) noexcept;
+
+  /// Which rows a FrameTask contributes.
+  enum class TaskKind : std::uint8_t { kSe3, kPositionAxis };
+
+  /// One frame task of the multi-frame Compute() (file header). The fields of
+  /// the kind that is not selected are not read.
+  struct FrameTask {
+    TaskKind kind{TaskKind::kSe3};
+    /// Index into cache.registered_frames of the frame the task moves.
+    int frame_idx{-1};
+    /// −1 → universe: the target is in the world and the rows are the
+    /// frame's LOCAL_WORLD_ALIGNED ones. >= 0 → a RELATIVE task (needs
+    /// Config::relative_tasks): target, feed-forward and rows are all in that
+    /// registered frame. A base equal to frame_idx is refused.
+    int base_frame_idx{-1};
+    /// kSe3: desired frame pose in the base frame.
+    pinocchio::SE3 placement_des{pinocchio::SE3::Identity()};
+    /// kSe3, optional: the time derivative of placement_des — origin velocity
+    /// and angular velocity [linear; angular] in the base frame's axes (the
+    /// axes of the pose error), NOT a spatial or body twist. nullptr → none.
+    const Eigen::Matrix<double, 6, 1>* twist_ff{nullptr};
+    /// kPositionAxis: target in the base frame (its two feed-forwards too).
+    PositionAxisTarget target;
+    /// Task gain K [1/s]: kSe3 reads all six [linear; angular], kPositionAxis
+    /// the linear three.
+    Eigen::Matrix<double, 6, 1> gain{Eigen::Matrix<double, 6, 1>::Zero()};
+    /// kPositionAxis: approach-axis gain K_a [1/s].
+    double gain_axis{0.0};
+    /// Weight of the task's rows (kSe3: all six; kPositionAxis: the three
+    /// position rows). Finite and > 0.
+    double weight{1.0};
+    /// kPositionAxis: weight of the two approach-axis rows. Finite and > 0.
+    double weight_axis{0.5};
+    /// Cap on the feedback part of the reference, per block: ‖K_p ⊙ e_p‖ ≤
+    /// fb_lin_max [m/s] and ‖K_o ⊙ e_o‖ (kPositionAxis: ‖K_a·e_a‖) ≤
+    /// fb_ang_max [rad/s]. A block over its cap is scaled back onto it, which
+    /// keeps its direction; the two blocks scale separately, so the 6D
+    /// direction can change. 0 → off (the reference is K ⊙ e). The
+    /// feed-forward is added AFTER the cap: the reference may exceed it by
+    /// the feed-forward. A caller that expects rotation errors near π sets
+    /// fb_ang_max — the rotation error's direction is discontinuous there
+    /// (SolveDiagnostics::rot_near_pi), and the cap bounds what that flip
+    /// can command.
+    double fb_lin_max{0.0};
+    double fb_ang_max{0.0};
+  };
+
+  /// Input of the multi-frame Compute().
+  struct MultiFrameInput {
+    /// 1 .. Config::max_frame_tasks tasks. Task 0 is the one TcpErrorNorm(),
+    /// Manipulability() and — when it is a position + axis task —
+    /// LastAxisRegion() / PositionErrorNorm() / AxisErrorAngle() report.
+    std::span<const FrameTask> tasks;
+    /// Desired posture [nq]; each posture group reads its own entries.
+    const Eigen::VectorXd* q_posture_des{nullptr};
+    /// Optional posture velocity feed-forward [nv] (see the axis overload).
+    const Eigen::VectorXd* qd_posture_ff{nullptr};
+    double dt{0.0};
+    bool reseed_anchor{true};
+  };
+
+  // Several frame tasks in one solve (file header). Anchoring, the box, the
+  // acceleration constraint and the failure branch are the single-task ones.
+  // Refused BEFORE the solve, outputs untouched and
+  // LastSolve().rejected_input set: a task count outside
+  // [1, Config::max_frame_tasks]; a frame index out of range; a relative task
+  // without Config::relative_tasks or with base == frame; a gain, weight or
+  // feedback cap that is non-finite (weights must be > 0, caps >= 0); a
+  // missing or mis-sized posture vector; a non-finite feed-forward
+  // (twist_ff, the axis target's, qd_posture_ff) or axis-task position; an
+  // approach axis that is not unit; dt not > 0.
+  // A non-finite kSe3 placement_des is NOT refused there: like the SE3
+  // overload it reaches the solve and takes the failure branch (q_ref =
+  // cache.q, v_ref = 0, re-anchor), which is the safe output.
+  [[nodiscard]] bool Compute(const PinocchioCache& cache, const MultiFrameInput& in) noexcept;
 
   /// Axis-alignment branch of the last position + axis Compute().
   [[nodiscard]] rtc::math::se3::AxisAlignRegion LastAxisRegion() const noexcept {
@@ -315,6 +465,16 @@ class ClikReferenceGenerator {
     int accel_rows{0};
     int accel_rows_binding{0};
     bool accel_rows_violated{false};
+    /// The multi-frame Compute() only — the single-task overloads leave these
+    /// at their defaults.
+    int tasks{0};                ///< tasks of the call (0 when it was refused)
+    bool rejected_input{false};  ///< refused before the solve by an input check
+    /// Feedback cap active: bit 2k = task k's linear block, bit 2k + 1 its
+    /// angular / approach-axis block.
+    std::uint32_t fb_saturated{0};
+    /// Bit k = task k's rotation (kSe3) or approach-axis (kPositionAxis)
+    /// error is within 0.05 rad of π, where its direction is discontinuous.
+    std::uint32_t rot_near_pi{0};
   };
 
   [[nodiscard]] const SolveDiagnostics& LastSolve() const noexcept { return last_solve_; }
@@ -342,8 +502,8 @@ class ClikReferenceGenerator {
                                        double dt) const noexcept;
   // evaluate_at_command: cache.q on the arm equals the previous QRef().
   [[nodiscard]] bool CommandStateMatches(const PinocchioCache& cache) const noexcept;
-  void ComputePostureReferences(const PinocchioCache& cache,
-                                const Eigen::VectorXd& q_posture_des) noexcept;
+  void ComputePostureReferences(const PinocchioCache& cache, const Eigen::VectorXd& q_posture_des,
+                                const Eigen::VectorXd* qd_posture_ff) noexcept;
   // H/g must already hold the task terms.
   void AddPostureAndDamping() noexcept;
   void AssembleBox(const Eigen::VectorXd& q, double dt) noexcept;
@@ -353,6 +513,30 @@ class ClikReferenceGenerator {
   [[nodiscard]] bool AssembleAccelRows(const PinocchioCache& cache,
                                        const PinocchioCache::RegisteredFrame& rf, double dt,
                                        bool axis_rows) noexcept;
+  // The same for the multi-frame call: kKinematic stacks each task's rows.
+  [[nodiscard]] bool AssembleAccelRows(const PinocchioCache& cache,
+                                       std::span<const FrameTask> tasks, double dt) noexcept;
+  // Pieces the two AssembleAccelRows share. The kKinematic writers put one
+  // task's rows at `row0` of the accel block and return how many they wrote.
+  [[nodiscard]] bool WriteDynamicRows(const PinocchioCache& cache, double inv_dt) noexcept;
+  int WriteSe3AccelRows(int row0, const Eigen::MatrixXd& j6,
+                        const PinocchioCache::RegisteredFrame& rf, const Eigen::VectorXd& v_c,
+                        double inv_dt) noexcept;
+  int WriteAxisAccelRows(int row0, const Eigen::MatrixXd& j_pos, const Eigen::MatrixXd& j_axis,
+                         const PinocchioCache::RegisteredFrame& rf, const Eigen::VectorXd& v_c,
+                         double inv_dt) noexcept;
+  void WriteTaskAccelBounds(int row0, int rows, const Eigen::Matrix<double, 6, 1>& drift,
+                            const Eigen::VectorXd& v_c) noexcept;
+  // Leaves rows [rows, n_accel_rows_max_) inert, scales the assembled ones to
+  // unit norm and reports whether they are finite.
+  [[nodiscard]] bool FinishAccelRows(int rows) noexcept;
+  // Input checks of the multi-frame call that need no kinematics.
+  [[nodiscard]] bool MultiFrameInputHolds(const PinocchioCache& cache,
+                                          const MultiFrameInput& in) const noexcept;
+  // Error, reference and Jacobian rows of task k into task_rows_[k]. Returns
+  // false on an approach axis that is not unit.
+  [[nodiscard]] bool BuildTaskRows(const PinocchioCache& cache, const FrameTask& task,
+                                   int k) noexcept;
   // Post-solve: every accel row holds at v (within tolerance); counts binding.
   [[nodiscard]] bool AccelRowsHold(const Eigen::VectorXd& v) noexcept;
   // The failure outputs: q_ref = cache.q, v_ref = 0, re-anchor, v_prev = 0,
@@ -363,9 +547,10 @@ class ClikReferenceGenerator {
 
   int nv_{0};
   int n_arm_{0};
-  int n_hand_{0};
   std::vector<int> arm_v_idx_;
-  std::vector<int> hand_v_idx_;
+  std::vector<int> task_v_idx_;  // columns of the multi-frame task rows
+  int max_frame_tasks_{1};
+  bool relative_tasks_{false};
   double damping_sq_{1e-4};
   double v_limit_{1.5};
   Eigen::VectorXd v_limit_per_joint_;  // [nv] or empty (scalar v_limit_)
@@ -387,8 +572,6 @@ class ClikReferenceGenerator {
   Eigen::MatrixXd j_pos_;   // [3 × nv] position rows, arm columns
   Eigen::MatrixXd j_axis_;  // [2 × nv] approach-axis rows, arm columns
   double w_task_{1.0};
-  double w_arm_{1e-2};
-  double w_hand_{1e-2};
   Eigen::VectorXd q_min_;         // [nv] or empty (position box disabled)
   Eigen::VectorXd q_max_;         // [nv] or empty
   double anchor_drift_max_{0.0};  // carry-forward anti-windup clamp [rad], ≤0 → off
@@ -400,10 +583,18 @@ class ClikReferenceGenerator {
   // CommandStateMatches). Survives failed calls; cleared by Init / ResetAnchor.
   bool command_check_armed_{false};
 
-  // Gains (L1 task / L2 arm posture / L3 hand posture)
+  // Task gain of the single-task overloads (L1).
   Eigen::Matrix<double, 6, 1> kx_{Eigen::Matrix<double, 6, 1>::Zero()};
-  double ka_{0.0};
-  double kh_{0.0};
+
+  // Posture groups (L2 / L3: the arm and the hand unless configured).
+  struct PostureGroupState {
+    std::vector<int> v_idx;
+    double weight{0.0};
+    double gain{0.0};
+    Eigen::VectorXd v_post;  // [v_idx.size()] posture velocity reference
+  };
+
+  std::vector<PostureGroupState> posture_;
 
   // Last-Compute diagnostics
   SolveDiagnostics last_solve_;
@@ -420,14 +611,28 @@ class ClikReferenceGenerator {
 
   // Pre-allocated workspace
   Eigen::MatrixXd j_task_;              // [6 × nv] arm columns of rf.J (hand cols 0)
-  Eigen::VectorXd v_post_arm_;          // [n_arm] L2 arm posture velocity
-  Eigen::VectorXd v_post_hand_;         // [n_hand] L3 hand posture velocity
   Eigen::Matrix<double, 6, 1> e_x_;     // SE(3) error
   Eigen::Matrix<double, 6, 1> r_task_;  // Kx ⊙ e_x (L1 task-velocity reference)
   // Manipulability-only 6×6 (diag continuity; J♯ no longer used for the solve).
   Eigen::MatrixXd j_arm_;           // [6 × n_arm] gathered arm columns
   Eigen::Matrix<double, 6, 6> m6_;  // J_a·J_aᵀ + μ²·I
   Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt6_;
+
+  // Per-task workspace of the multi-frame call. The matrices keep the shapes
+  // and types the single-task overloads use (6 × nv / 3 × nv / 2 × nv,
+  // dynamic), so one task accumulates into H and g through the very same
+  // Eigen product path and the result is bit-identical to theirs.
+  struct TaskRows {
+    Eigen::MatrixXd j6;             // [6 × nv] kSe3 rows
+    Eigen::MatrixXd j_pos;          // [3 × nv] kPositionAxis position rows
+    Eigen::MatrixXd j_axis;         // [2 × nv] kPositionAxis axis rows
+    Eigen::Matrix<double, 6, 1> e;  // kSe3 pose error
+    Eigen::Matrix<double, 6, 1> r;  // kSe3 reference
+    Eigen::Vector3d r_pos;          // kPositionAxis position reference
+    Eigen::Vector3d w_ref_local;    // kPositionAxis axis reference (head<2> used)
+  };
+
+  std::vector<TaskRows> task_rows_;  // [max_frame_tasks]
 };
 
 }  // namespace rtc::tsid
