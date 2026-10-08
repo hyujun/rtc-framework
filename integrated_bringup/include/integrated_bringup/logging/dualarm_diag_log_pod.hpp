@@ -5,9 +5,13 @@
 // solve, or held and why), the solve's own diagnostics, and per task frame the
 // pose error, the reference, the commanded pose and the measured pose.
 //
-// One row per tick, EVERY tick — a held tick (E-STOP, latched fault, unreadable
-// device) still writes its row with `clik_ran = 0` and the fields it did not
-// compute at zero, so a gap in the file means a dropped row and nothing else.
+// One row per tick this controller RUNS, every such tick — a held tick (E-STOP,
+// latched fault, unreadable device) still writes its row with `clik_ran = 0`
+// and the fields it did not compute at zero. `tick` is the controller manager's
+// loop counter, which keeps counting while another controller is the active
+// one, so a gap in it is either rows the logger dropped or a stretch this
+// controller was not running. The two are told apart by what follows the gap:
+// a controller that comes back re-seeds (`reseeded`, or a `kNotSeeded` hold).
 //
 // Three poses per task, all in the task's base frame:
 //   ref  — the reference T^d(t) the solve was given this tick;

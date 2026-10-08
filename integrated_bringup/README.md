@@ -113,7 +113,8 @@ integrated_bringup/
 │       ├── app.py                      <- DemoControllerGUI Tk 클래스 + main()
 │       ├── catalog.py                  <- /rtc_cm/list_controllers 동적 enumerator
 │       ├── config.py                   <- gain 스키마, 위젯 레이아웃, 캘리브레이션 표
-│       └── discovery.py                <- RobotShape (런타임 DOF/finger 추론)
+│       ├── discovery.py                <- RobotShape · RobotProfile (`--robot` 이 고르는 관절 · frame · 컨트롤러 집합)
+│       └── dualarm.py                  <- 다중 frame 컨트롤러의 gain 행 · 과제 목표 · 상태 판독 (§demo_controller_gui)
 ├── scripts/
 │   ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI 진입점 (얇은 shim)
 │   ├── catching_sim_trials.py          <- 포구 sim 투척 드라이버 진입점 (얇은 shim)
@@ -1074,7 +1075,7 @@ ros2 topic pub --once /demo_dualarm_controller/p1b/joint_goal rtc_msgs/RobotTarg
   "{goal_type: joint, joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
 ```
 
-이 launch 는 `mpc_engine` 인자를 받지 않습니다 — 그 인자가 고르는 것은 `demo_wbc_controller` 의 MPC 엔진이고 이 profile 에는 그 컨트롤러의 config 가 없습니다. `enable_mpc` 는 받되 여기서는 **CPU layout profile 만** 고릅니다 (컨트롤러 파라미터로 가지 않습니다). 기본값이 `false` 입니다 (다른 sim launch 는 `""`) — MPC · 계획기 thread 를 띄울 컨트롤러가 없는데 그 코어를 shield 하지 않기 위해서이고, 그런 컨트롤러가 이 profile 에 생기면 그 feature 에서 기본값을 다시 정합니다. 세션 로그는 `plot_rtc_log` 가 읽습니다 — `g1_state.csv` · `p1b_state.csv` 는 state log 로, `dualarm_diag.csv` 는 전용 figure 로 (`rtc_tools/README.md` 의 파일 이름 표). demo GUI (`--robot`) 의 `g1_p1b` 지원은 아직 없습니다.
+이 launch 는 `mpc_engine` 인자를 받지 않습니다 — 그 인자가 고르는 것은 `demo_wbc_controller` 의 MPC 엔진이고 이 profile 에는 그 컨트롤러의 config 가 없습니다. `enable_mpc` 는 받되 여기서는 **CPU layout profile 만** 고릅니다 (컨트롤러 파라미터로 가지 않습니다). 기본값이 `false` 입니다 (다른 sim launch 는 `""`) — MPC · 계획기 thread 를 띄울 컨트롤러가 없는데 그 코어를 shield 하지 않기 위해서이고, 그런 컨트롤러가 이 profile 에 생기면 그 feature 에서 기본값을 다시 정합니다. 세션 로그는 `plot_rtc_log` 가 읽습니다 — `g1_state.csv` · `p1b_state.csv` 는 state log 로, `dualarm_diag.csv` 는 전용 figure 로 (`rtc_tools/README.md` 의 파일 이름 표). GUI 는 `ros2 run integrated_bringup demo_controller_gui --robot g1_p1b` 입니다 (§demo_controller_gui 의 "다중 frame 컨트롤러").
 
 ### Catching sim trials — 한 투척 = 한 S7 순환
 
@@ -1251,17 +1252,22 @@ EXPECT_KV='prediction.dt_expected=<dt 열>;io.n_min=<n_min 열>;planner.search.g
 ros2 run integrated_bringup demo_controller_gui                      # 기본 ur5e_p1a
 ros2 run integrated_bringup demo_controller_gui --robot ur5e_p1b     # ur5e + proto_1b hand
 ros2 run integrated_bringup demo_controller_gui --robot iiwa7_leap   # iiwa7 + LEAP
+ros2 run integrated_bringup demo_controller_gui --robot g1_p1b       # G1 상체 + proto_1b 오른손
 ros2 run integrated_bringup demo_controller_gui --p1b                # 별칭 (= --robot ur5e_p1b)
 ros2 run integrated_bringup demo_controller_gui --iiwa               # 별칭 (= --robot iiwa7_leap)
+ros2 run integrated_bringup demo_controller_gui --g1                 # 별칭 (= --robot g1_p1b)
 ```
 
 `--robot <key>` 는 arm/hand joint 스키마(이름·DoF·finger group)와 TCP tf frame 을
 선택합니다. `key` 는 `config/<key>/` bringup 디렉토리명과 동일 (`ur5e_p1a` |
-`ur5e_p1b` | `iiwa7_leap`); `--ur5e` / `--p1b` / `--iiwa` 별칭도 동일 dest 로 매핑됩니다. 잘못된 key 는
+`ur5e_p1b` | `iiwa7_leap` | `g1_p1b`); `--ur5e` / `--p1b` / `--iiwa` / `--g1` 별칭도 동일 dest 로 매핑됩니다. 잘못된 key 는
 즉시 에러 후 종료합니다. 프로파일 정의는 `demo_gui/discovery.py` 의
 `ROBOT_PROFILES` 레지스트리 — 새 로봇은 여기에 한 항목 추가. 실행 후 컨트롤러가
 publish 하는 joint span 과 프로파일이 어긋나면 `/rosout` 에 one-shot WARN 이
 나오며, 맞는 `--robot` 값으로 재실행하면 사라집니다.
+
+`--session <dir>` 은 다중 frame 컨트롤러의 상태 판독이 따라갈 세션 디렉토리를
+지정합니다 (아래 "다중 frame 컨트롤러"). 그 컨트롤러가 없는 profile 에서는 쓰이지 않습니다.
 
 #### 모듈 구조
 
@@ -1271,7 +1277,8 @@ GUI 는 `integrated_bringup/integrated_bringup/demo_gui/` 패키지로 구성됩
 |---|---|
 | `demo_gui/app.py` | `DemoControllerGUI` Tk 클래스 + main() — 위젯 빌드 / refresh / ROS callback / 핸들러 |
 | `demo_gui/config.py` | gain 스키마 (`GAIN_DEFS`, `GAIN_PARAM_DISPATCH`), 위젯 레이아웃, FSM phase 라벨 표, 캘리브레이션 항목 — robot-agnostic GUI 표 |
-| `demo_gui/discovery.py` | `RobotShape` (arm/hand DoF·finger group) + `RobotProfile` / `ROBOT_PROFILES` — `--robot` 가 선택하는 정적 로봇 프로파일 (joint 스키마 + TCP frame + 그 bringup 이 전환 가능한 컨트롤러 집합) |
+| `demo_gui/discovery.py` | `RobotShape` (arm/hand DoF·finger group·**joint group**) + `RobotProfile` / `ROBOT_PROFILES` — `--robot` 가 선택하는 정적 로봇 프로파일 (joint 스키마 + TCP frame + 그 bringup 이 전환 가능한 컨트롤러 집합). `arm_joint_groups` 는 첫 device group 의 화면 배치입니다: 직렬 팔은 이름 없는 묶음 하나 (`q1..qN` 한 열), tree 인 군은 limb 마다 한 열 |
+| `demo_gui/dualarm.py` | 다중 frame CLIK 컨트롤러 (`demo_dualarm_controller`) 의 순수 로직 — 컨트롤러 YAML 에서 읽은 spec (과제 · 목표 frame · 자세군), 그 이름이 들어가는 gain 행, 과제 목표의 단위 변환과 frame 선택, 측정 pose 의 copy 게이트, per-tick CSV 꼬리로 만드는 상태 줄. Tk·rclpy 비의존 (`test/test_demo_gui_dualarm.py`) |
 | `demo_gui/catalog.py` | `ControllerCatalog` — `/rtc_cm/list_controllers` 비동기 폴러 (5 s 주기). 라디오 버튼 / preset combo / 라벨이 모두 이 catalog 결과에서 옴. |
 | `demo_gui/pull.py` | Pull Force Estimate 패널의 상태기계 — `PullSnapshot` (immutable) / `PullPeakHold` / `badge_state` / `build_render`. Tk·rclpy 비의존이라 `test/test_demo_gui_pull.py` 가 디스플레이 없이 검증. |
 | `demo_gui/task_frame.py` | `TaskFrameSelector` — active controller 가 **실제로 제어 중인** task frame 선택. `virtual_tcp_actual` 을 한 번이라도 관측하면 즉시 latch, 없이 fallback (`RobotProfile.tcp_child`) 만 `settle_msgs` 건이면 fallback latch. 컨트롤러 이름 하드코딩 없이 **availability** 로만 판정하며, settle window 는 closed-chain hand FK walk-in 동안 tool0 만 발행되는 창을 넘기기 위한 것이다. Tk·rclpy 비의존 (`test/test_demo_gui_task_frame.py`). |
@@ -1313,6 +1320,9 @@ preset combo 는 라디오 집합에서 **목표를 받지 않는 컨트롤러�
 | `demo_wbc_controller` | TSID Weights | `se3_weight`, `force_weight`, `posture_weight` | — |
 | `demo_wbc_controller` | Grasp Detection | (joint 와 동일 — layer-d 에서 추가, capability-aware) | — |
 | `demo_wbc_controller` | MPC | `mpc_enable` (bool), `riccati_gain_scale` | — |
+| `demo_dualarm_controller` | Task `<task>` gain (과제마다) | `tasks.<task>.gain_linear`, `tasks.<task>.gain_angular` | — |
+| `demo_dualarm_controller` | Posture gain | `posture.<group>.gain` (자세군마다) | — |
+| `demo_dualarm_controller` | Trajectory speed | `trajectory.linear_speed`, `trajectory.angular_speed`, `trajectory.hand_speed` | `trajectory.linear_speed_max`, `trajectory.angular_speed_max`, `trajectory.hand_speed_max` |
 
 WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/ur5e_p1a/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.
 
@@ -1372,6 +1382,20 @@ fresh tick 안에서 slip 이 validity 를 앞서는 것은 estimator 가 `slip_
 `plane_normal` 만 진단 그룹에 있는 것은 `PullEstimate.msg` 계약 때문입니다 — tick 이 normal 은 가졌는데 basis 는 없을 수 있으므로 (평면은 멀쩡한데 required tip 이 빠진 경우) `valid` 로 게이팅하면 wire 가 유효하다고 말하는 값을 숨기게 됩니다. 반대로 `basis_x` 는 무효 tick 에서 항상 0 이라 `valid` 게이트가 맞습니다. `basis` 는 축 이름이 아니라 **규칙**(`reference`/`carry`/`seed`)을 표시합니다 — `force_inplane[0]` 이 설정된 reference 방향 성분인 것은 `BASIS_REFERENCE` 일 때뿐이기 때문입니다 (P-11). mask 는 LSB-first (`#.#.` = contact 0·2) 로 estimator 의 tip role 순서를 따릅니다. 슬롯 수는 GUI 의 fingertip roster (`FINGERTIP_NAMES`, 4) 이고 mask 는 uint8 · estimator 의 tip 목록 크기이므로 — 현재 모든 로봇 config 에서 둘 다 4 로 일치 — 그 밖의 비트는 조용히 버리지 않고 말미 `+` 로 표시합니다 (`#...+`).
 
 **Peak-hold.** wire 는 `control_rate` (수백 Hz), 패널은 5 Hz 이므로 렌더 시점의 최신 스냅샷만 보면 순간적인 slip spike 를 놓칠 수 있습니다. 프레임 사이 도착한 모든 스냅샷을 `PullPeakHold` 에 접어 넣고 렌더가 프레임마다 소비·클리어하므로, `friction_utilization` 은 그 프레임의 최댓값, `slip_risk` 는 OR 로 표시됩니다 — spike 는 한 프레임 보였다 사라집니다. 메시지가 하나도 안 온 프레임(`samples == 0`)은 스냅샷을 그대로 두어 마지막 값을 지우지 않습니다. 이 accumulator 는 executor 스레드와 Tk 스레드가 함께 쓰는 mutable 상태라 `threading.Lock` 으로 감쌉니다 — 구현 근거는 [demo_gui/pull.py](integrated_bringup/demo_gui/pull.py) `PullPeakHold`.
+
+#### 다중 frame 컨트롤러 (`demo_dualarm_controller`, `--robot g1_p1b`)
+
+이 컨트롤러는 그 YAML 을 싣는 profile 에서만 GUI 에 나타납니다. GUI 가 뜰 때 `config/<robot>/controllers/demo_dualarm_controller.yaml` 을 읽어 과제 · 목표 frame · 자세군을 얻고, 화면의 세 부분을 거기서 만듭니다 — 과제 이름이나 개수는 GUI 코드에 없습니다.
+
+- **Gains 패널** (Control 탭): 위 표의 행이 YAML 의 과제 · 자세군마다 하나씩 생깁니다 (`config.register_scalar_gain_schema`). `Load Gain` · `Apply Gains` 는 다른 컨트롤러와 같습니다. gain 이 [0, 1/dt] 밖이면 컨트롤러가 그 Apply **전체**를 거부하고 (`set_parameters_atomically`) 사유는 GUI 로그에 남습니다. `Currently Applied` 는 컨트롤러가 set 을 받아들인 뒤에만 바뀝니다 (모든 컨트롤러 공통 — 거부된 값이 적용된 것처럼 남지 않습니다).
+- **Dual Arm 탭 — 과제 목표**: 과제마다 패널 하나. `Goal stated in` 에서 목표를 적을 frame (그 과제의 base frame + `clik.target_frames`) 을 고르고, 여섯 값 (m · deg, ZYX) 을 적어 `Send goal` 로 **한 번** 보냅니다 (`<task>/task_goal`). 컨트롤러가 활성일 때만 보냅니다.
+  - `Measured` 열은 컨트롤러 TF 의 측정 pose 이고, 그 pose 가 표현된 frame (transforms 의 부모) 이 열 제목에 나옵니다. **목표 frame 이 그 frame 과 같을 때만** 목표 칸이 측정 pose 로 채워지고 `Copy measured → goal` 이 켜집니다. 다른 frame 을 고르면 칸을 비우고 버튼을 끕니다 — 두 frame 사이의 변환은 어느 토픽에도 없고, GUI 는 추측하지 않습니다. 그 frame 의 목표는 직접 적습니다 (`dualarm_diag.csv` 의 `<task>_ref_*` 가 그 과제의 base frame 기준 값입니다).
+  - 과제의 base frame 이 아닌 frame 으로 적은 목표는 컨트롤러가 **적용하는 tick 에 한 번** base frame 으로 바꿔 그 값을 붙듭니다. 그 뒤 base frame 이 움직이면 (예: 다른 과제가 몸통을 돌리면) 적은 frame 에서 본 pose 는 목표와 달라집니다 — 패널이 이 경우를 한 줄로 알립니다.
+  - pitch 가 ±90° 의 5° 안이면 패널에 한 줄이 뜹니다: ZYX 에서 roll 과 yaw 가 거의 같은 축을 돌아 step 버튼 둘이 같은 동작을 합니다. 목표 형식은 컨트롤러의 것이라 GUI 에서 바꾸지 않습니다.
+- **Dual Arm 탭 — 풀이 상태**: 이 컨트롤러는 상태 토픽이 없어, `Controller` 줄은 `/rtc_cm/list_controllers` (활성 여부 · fault latch · mailbox 계수, 5 s 주기) 에서, 나머지는 **세션의 `dualarm_diag.csv` 마지막 행** (2 Hz) 에서 읽습니다: tick 이 풀었는지 · hold 사유, 수렴 · 반복 · 풀이 시간, 한계 발동, fault 원인과 연속 실패, 과제별 오차 · 진행 중인 목표 번호 · 받은 / 거부한 / 버린 목표 수.
+  - 세션은 `--session` → `$RTC_SESSION_DIR` → logging root 의 가장 새 세션 순으로 찾습니다. 마지막은 매번 다시 찾으므로 GUI 를 bringup 보다 먼저 띄워도 됩니다.
+  - **GUI 가 컨트롤러와 같은 머신에서 그 세션 디렉토리를 읽을 수 있어야 합니다.** 파일이 없으면 사유를, 1 s 넘게 자라지 않으면 "not running, values withheld" 를 적고 값은 비웁니다 — 멈춘 컨트롤러의 마지막 행을 현재 상태처럼 두지 않습니다.
+- **자세 · 손 목표**는 Control 탭 그대로입니다: `Joint Target` 이 첫 군의 관절 전부 (limb 마다 한 열), `Hand Motor Target` 이 손 관절 전부를 싣고 `Send Command` 가 둘을 보냅니다. Control 탭의 `Task Target` 은 이 컨트롤러에서 꺼져 있습니다 (군 토픽의 task 목표는 컨트롤러가 거부합니다).
 
 **Rewire 리셋.** `_rewire_owned_topics` 는 핸들을 재생성하기 전에 `_reset_controller_sourced_state()` 로 컨트롤러 소유 상태를 버립니다 (P-10). 남겨두면 이전 컨트롤러의 값이 새 컨트롤러의 라이브 데이터처럼 화면에 남습니다 (새 컨트롤러가 estimator 를 안 쓰면 그 자리를 덮어쓸 값 자체가 오지 않습니다). peak-hold 도 함께 리셋되며 (spike 는 그것을 만든 source 소유), phase 라벨 표를 고르는 `_wbc_active` 도 초기화됩니다 (stale `True` 는 다음 컨트롤러의 phase 를 잘못된 enum 으로 디코딩).
 

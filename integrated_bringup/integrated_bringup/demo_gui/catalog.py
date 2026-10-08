@@ -56,6 +56,12 @@ class ControllerEntry:
     # identity key for anything else in the GUI — it is kept because
     # /rtc_cm/reset_fault matches ``controller_name`` against it (S9a).
     controller_name: str = ""
+    # The controller-local fault latch and the two target-mailbox counters, as
+    # the CM reads them off the controller. For a controller with no state topic
+    # this response is the only place the latch is observable from outside.
+    has_latched_fault: bool = False
+    target_reject_count: int = 0
+    target_drop_count: int = 0
 
 
 def build_entries(
@@ -94,6 +100,13 @@ def build_entries(
                 claimed_groups=tuple(cs.claimed_groups),
                 has_gain_schema=(config_key in schema),
                 controller_name=cs.name,
+                # Read with a default: these are diagnostics on top of the
+                # identity fields above, and this function is fed duck-typed
+                # states that carry only the latter. Absent means "not
+                # reported", which is what the defaults say.
+                has_latched_fault=bool(getattr(cs, "has_latched_fault", False)),
+                target_reject_count=int(getattr(cs, "target_reject_count", 0)),
+                target_drop_count=int(getattr(cs, "target_drop_count", 0)),
             )
         )
     return tuple(entries)

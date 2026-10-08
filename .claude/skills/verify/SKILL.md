@@ -36,6 +36,9 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
 DISPLAY=:1 ros2 run integrated_bringup demo_controller_gui # 창 제목 "Demo Controller GUI"
 ```
 
+- `--robot <config 디렉토리 이름>` 으로 profile 을 고른다 (기본 `ur5e_p1a`). `g1_p1b` 는 Dual Arm 탭이 더 뜬다 — 과제 목표는 `demo_dualarm_controller` 가 활성일 때만 나가고, 상태 줄은 세션의 `dualarm_diag.csv` 꼬리에서 읽으므로 **GUI 를 sim 과 같은 머신에서** 띄운다 (다른 세션을 보게 하려면 `--session <dir>`).
+- 위젯을 실제로 눌러 보는 자동 확인: 같은 프로세스에서 `DemoControllerGUI(robot=...)` 를 만들고 `rclpy.spin` 을 스레드로 돌린 뒤, `gui.root.after(0, fn)` 으로 Tk 스레드에서 `Button.invoke()` · entry 편집을 한다 (버튼은 위젯 트리를 돌며 `cget("text")` 로 찾는다). 결과는 GUI 밖에서 읽는다 (`ros2 param get`, 세션 CSV).
+- 창만 찍기: `PIL.ImageGrab.grab(bbox=(rootx, rooty, rootx+w, rooty+h), xdisplay=":1")` — 찍기 전에 `root.lift()` + `-topmost`. 탭 아래쪽은 스크롤 canvas 를 `yview_moveto(1.0)` 한 뒤 한 번 더 찍는다.
 - 스크린샷: `xdotool`/`scrot` 미설치 — `xwininfo -root -tree` 로 window id 찾고 `xwd -id <id> -silent -out x.xwd` 후 XWD 헤더 수동 파싱으로 PNG 변환 (PIL 은 xwd 직접 못 읽음; 100-byte big-endian 헤더 + ncolors×12 skip, 32bpp BGRX).
 - GUI 는 latched `active_controller_name` 기준으로 owned 토픽에 rewire — 활성 컨트롤러가 50 Hz 로 계속 발행하므로 fake 데이터 주입 시엔 (1) 실제 컨트롤러를 다른 것으로 전환해 대상 publisher 를 lifecycle-gate 시키고 (2) `active_controller_name` 에 그 이름을 fake 발행(transient_local) 후 (3) 침묵 토픽에 `ros2 topic pub`. 복원은 실제 switch 2회 (CM 이 latched name 재발행).
 

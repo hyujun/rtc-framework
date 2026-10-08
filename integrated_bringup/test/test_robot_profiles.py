@@ -7,12 +7,15 @@ default_ur5e_p1b and the RobotProfile.for_robot registry that backs the GUI's
 
 import os
 
+import pytest
+import yaml
 from ament_index_python.packages import get_package_share_directory
 
 from integrated_bringup.demo_gui.discovery import (
     ROBOT_PROFILES,
     RobotProfile,
     RobotShape,
+    short_joint_labels,
 )
 
 
@@ -264,3 +267,91 @@ def test_extras_are_only_offered_where_the_bringup_ships_their_yaml():
         k for k in ROBOT_PROFILES if "demo_inference_controller" in _shipped_controller_keys(k)
     }
     assert offered == ships == {"ur5e_p1b"}
+
+
+# ── Joint groups (a primary device group laid out as several limbs) ─────────
+
+
+def _base_joint_state_names(profile: str, group: str) -> tuple[str, ...]:
+    """A device group's ``joint_state_names`` from the installed _base.yaml —
+    the roster the controller manager republishes on /rtc_cm/<group>/joint_states."""
+    share = get_package_share_directory("integrated_bringup")
+    with open(os.path.join(share, "config", profile, "_base.yaml")) as f:
+        doc = yaml.safe_load(f)
+    return tuple(doc["/**"]["ros__parameters"]["devices"][group]["joint_state_names"])
+
+
+def test_g1_p1b_shape_matches_the_wire_rosters():
+    """Both rosters are name-reordered on receipt and name-tagged on publish, so
+    a profile that drifts from the YAML reads zeros and commands the wrong
+    joint without any error."""
+    profile = RobotProfile.for_robot("g1_p1b")
+    shape = profile.shape
+    assert (shape.arm_dof, shape.hand_dof) == (17, 10)
+    assert shape.arm_joint_names == _base_joint_state_names("g1_p1b", profile.arm_group)
+    assert shape.hand_motor_names == _base_joint_state_names("g1_p1b", profile.hand_group)
+    # Same hand as ur5e_p1b, so the same finger columns.
+    assert shape.hand_finger_groups == RobotShape.default_ur5e_p1b().hand_finger_groups
+
+
+def test_g1_p1b_joint_groups_are_the_three_limbs_in_wire_order():
+    shape = RobotShape.default_g1_p1b()
+    assert [(label, len(joints)) for label, joints in shape.arm_joint_groups] == [
+        ("Waist", 3),
+        ("Left arm", 7),
+        ("Right arm", 7),
+    ]
+    flat = tuple(j for _, joints in shape.arm_joint_groups for j in joints)
+    assert flat == shape.arm_joint_names
+
+
+def test_g1_p1b_profile_frames_and_groups():
+    g1 = RobotProfile.for_robot("g1_p1b")
+    assert g1.fallback_groups() == ("g1", "p1b")
+    assert (g1.tcp_parent, g1.tcp_child) == ("pelvis", "base_adapter_actual")
+    assert g1.extra_switchable_controllers == ("demo_dualarm_controller",)
+
+
+@pytest.mark.parametrize("key", ["ur5e_p1a", "ur5e_p1b", "iiwa7_leap"])
+def test_a_serial_arm_is_one_unlabelled_group(key):
+    """What keeps those three profiles' screens as they were: one group, no
+    label, the whole arm in it."""
+    shape = RobotProfile.for_robot(key).shape
+    assert shape.arm_joint_groups == (("", shape.arm_joint_names),)
+
+
+def test_joint_groups_that_do_not_spell_out_the_wire_order_are_refused():
+    """The widgets are built group by group and read back as one flat list. A
+    group layout in another order would publish each value under its
+    neighbour's joint name."""
+    base = RobotShape.default_ur5e_assm()
+    names = base.arm_joint_names
+    for groups in (
+        (("A", names[:3]), ("B", names[4:])),  # one joint missing
+        (("A", names[3:]), ("B", names[:3])),  # reordered
+        (("A", names), ("B", names[:1])),  # one joint twice
+    ):
+        with pytest.raises(ValueError, match="arm_joint_groups"):
+            RobotShape(
+                arm_joint_names=names,
+                hand_motor_names=base.hand_motor_names,
+                hand_finger_groups=base.hand_finger_groups,
+                arm_joint_groups=groups,
+            )
+
+
+def test_short_joint_labels_drop_the_shared_words_and_the_suffix():
+    shape = RobotShape.default_g1_p1b()
+    waist, left, right = (joints for _, joints in shape.arm_joint_groups)
+    assert short_joint_labels(waist) == ("yaw", "roll", "pitch")
+    assert short_joint_labels(left) == short_joint_labels(right)
+    assert short_joint_labels(left)[:4] == (
+        "shoulder_pitch",
+        "shoulder_roll",
+        "shoulder_yaw",
+        "elbow",
+    )
+    # Never shortened to nothing, and names without the pattern pass through.
+    assert short_joint_labels(("wrist_joint",)) == ("wrist",)
+    assert short_joint_labels(("arm_joint", "arm_roll_joint")) == ("arm", "arm_roll")
+    assert short_joint_labels(("A1", "A2")) == ("A1", "A2")
