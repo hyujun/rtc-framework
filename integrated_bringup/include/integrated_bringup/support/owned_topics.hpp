@@ -16,6 +16,7 @@
 #include "integrated_bringup/logging/catching_diag_log_pod.hpp"
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include <rtc_base/threading/publish_buffer.hpp>
+#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_controller_interface/rt_controller_interface.hpp>
 #include <rtc_controllers/grasp/grasp_state.hpp>
 #include <rtc_msgs/msg/catching_state.hpp>
@@ -31,11 +32,118 @@
 #include <tf2_msgs/msg/tf_message.hpp>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace integrated_bringup {
+
+// ── Per-task goal ingress ────────────────────────────────────────────────────
+//
+// The `topics:` lane gives a device group ONE RobotTarget subscription, and its
+// task payload is one pose. A controller that moves several frames of one
+// group needs a goal per frame, so it owns one subscription per task here:
+// `<task name>/task_goal`, the same `rtc_msgs/RobotTarget` (goal_type "task",
+// [x y z roll pitch yaw], ZYX).
+//
+// DeliverTargetMessage is not reused: it routes by device group, so it carries
+// neither which task a goal is for nor the frame the goal is expressed in, and
+// its validation and reject counter are private to the base. This ingress does
+// its own, and the three differ on purpose:
+//   - a joint goal on a task topic is refused (the group's own topic takes it);
+//   - `header.frame_id` is READ. Empty means "the task's base frame"; any other
+//     name has to be one the controller registered, and comes out as an index
+//     into that list. An unknown name is refused, never read as the base frame —
+//     a pose taken in the wrong frame is finite, smooth and wrong;
+//   - every refusal is counted by reason, so a log can say why a goal did not
+//     land.
+//
+// Hand-over to the RT tick is a SeqLock per task (single writer: the
+// controller node's default callback group, one thread). The payload carries a
+// sequence number — the tick applies a goal once — and the activation
+// generation the writer observed, so a goal sent while the controller was
+// Inactive is dropped by the tick instead of moving the robot on activation.
+
+/// One accepted task goal as the RT tick reads it.
+struct TaskGoal {
+  /// [x, y, z, roll, pitch, yaw] (m, rad; ZYX) in the frame `frame_slot` names.
+  std::array<double, rtc::kTaskSpaceDim> pose{};
+  /// Index into the frame-name list the subscription was created with, or −1
+  /// for "the task's own base frame" (an empty header.frame_id).
+  int frame_slot{-1};
+  /// 0 until the first goal; then 1, 2, … per accepted goal of this task.
+  std::uint32_t sequence{0};
+  /// RTControllerInterface::ActivationGeneration() when the goal arrived.
+  std::uint32_t generation{0};
+};
+
+static_assert(std::is_trivially_copyable_v<TaskGoal>, "TaskGoal travels through a SeqLock");
+
+/// Why a task goal was refused. kCount is the array size, not a reason.
+enum class TaskGoalReject : std::uint8_t {
+  kNone = 0,
+  kGoalType,      ///< goal_type is not "task"
+  kNonFinite,     ///< a pose component is NaN / Inf
+  kUnknownFrame,  ///< header.frame_id is not a registered target frame
+  kCount,
+};
+
+/// Static string for a reason (non-RT log lines; never allocates).
+[[nodiscard]] const char* TaskGoalRejectName(TaskGoalReject reason) noexcept;
+
+/// What one task's subscription writes and the controller reads. Owned by the
+/// controller at a stable address — the subscription callback keeps a pointer.
+struct TaskGoalIngress {
+  rtc::SeqLock<TaskGoal> box{};
+  std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(TaskGoalReject::kCount)>
+      reject_counts{};
+  std::atomic<std::uint64_t> accepted{0};
+  /// Writer-side only (the callback group's one thread).
+  std::uint32_t next_sequence{0};
+
+  [[nodiscard]] std::uint64_t RejectCount(TaskGoalReject reason) const noexcept {
+    return reject_counts[static_cast<std::size_t>(reason)].load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] std::uint64_t TotalRejects() const noexcept {
+    std::uint64_t total = 0;
+    for (const auto& c : reject_counts) {
+      total += c.load(std::memory_order_relaxed);
+    }
+    return total;
+  }
+};
+
+/// Validate one message (no ROS, no allocation). On kNone `out.pose` and
+/// `out.frame_slot` are filled; sequence and generation are the caller's.
+[[nodiscard]] TaskGoalReject ParseTaskGoal(const rtc_msgs::msg::RobotTarget& msg,
+                                           std::span<const std::string> frame_names,
+                                           TaskGoal& out) noexcept;
+
+/// The subscription callback's whole body: ParseTaskGoal, then either stamp
+/// (sequence, `generation`) and Store, or count the refusal. Returns the
+/// verdict so the caller can log it. Exposed so a test can drive the ingress
+/// without a node.
+[[nodiscard]] TaskGoalReject DeliverTaskGoal(const rtc_msgs::msg::RobotTarget& msg,
+                                             std::span<const std::string> frame_names,
+                                             std::uint32_t generation,
+                                             TaskGoalIngress& ingress) noexcept;
+
+/// True for `[A-Za-z][A-Za-z0-9_]*`: a name that can be one token of a topic
+/// (and of a parameter name). One definition for the config parser and the
+/// subscription helper, which both have to refuse the same names.
+[[nodiscard]] bool IsTopicToken(std::string_view name) noexcept;
+
+/// One task to subscribe for: the topic is `<name>/task_goal`.
+struct TaskGoalSubscriptionRequest {
+  std::string name;
+  TaskGoalIngress* ingress{nullptr};
+};
 
 // Up to two device groups per demo (ur5e, hand). Expand if/when a demo
 // introduces a third group.
@@ -71,6 +179,11 @@ struct ControllerTopicHandles {
   // Target subscriptions — one per device group (ur5e, hand).
   std::array<rclcpp::Subscription<rtc_msgs::msg::RobotTarget>::SharedPtr, kMaxOwnedGroups>
       target_subs{};
+
+  // Per-task goal subscriptions (CreateTaskGoalSubscriptions) — one per task of
+  // a controller that moves several frames of one group. Empty for every
+  // controller that takes its task goal through `target_subs`.
+  std::vector<rclcpp::Subscription<rtc_msgs::msg::RobotTarget>::SharedPtr> task_goal_subs{};
 
   // Grasp + ToF publishers — at most one per demo (hand group). Created by
   // the controller via SetupGraspStatePublisher / SetupToFSnapshotPublisher
@@ -118,6 +231,17 @@ struct ControllerTopicHandles {
 // ctrl.DeliverTargetMessage(group_name, group_idx, msg). Throws on
 // allocation failure — callers must wrap in try/catch.
 void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles);
+
+// Create one `<name>/task_goal` subscription per request on the controller's
+// LifecycleNode — default callback group (non-RT), QoS depth 1 — and keep them
+// in `handles.task_goal_subs` (ResetOwnedTopics releases them). Each callback
+// runs DeliverTaskGoal against the request's ingress with `frame_names` (copied
+// — the names a goal's header.frame_id may carry) and a throttled warning per
+// refusal. Throws when the controller has no node, a request has no ingress, or
+// a name is not a valid topic token; callers wrap in try/catch.
+void CreateTaskGoalSubscriptions(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                                 std::span<const TaskGoalSubscriptionRequest> requests,
+                                 const std::vector<std::string>& frame_names);
 
 // Activate / deactivate all LifecyclePublishers held by `handles`. Must be
 // called from the matching lifecycle hook so publish() never hits an

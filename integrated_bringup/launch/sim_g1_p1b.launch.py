@@ -29,10 +29,11 @@ Nodes launched:
   2. integrated_rt_controller  — 500Hz controller (CV-based wakeup in sim mode)
 
 Two device groups: `g1` (waist 3 + left arm 7 + right arm 7) and `p1b` (hand
-10). The only controller this profile ships a config for is
-demo_joint_controller. `enable_mpc` selects the CPU layout and nothing else
-here, and defaults to false, unlike the other sim launches: the MPC-on layout
-would shield cores for a thread nothing on this profile starts.
+10). This profile ships a config for two controllers, demo_joint_controller
+(the default) and demo_dualarm_controller. `enable_mpc` selects the CPU layout
+and nothing else here, and defaults to false, unlike the other sim launches:
+the MPC-on layout would shield cores for a thread nothing on this profile
+starts.
 
 The robot model (URDF + MJCF) comes from the `hand_description` package, which
 must be built in the workspace.
@@ -168,7 +169,7 @@ def launch_setup(context, *args, **kwargs):
     # min(launch, node) (#402).
     ctrl_overrides["max_log_sessions"] = session.max_sessions
     # `enable_mpc` picks the CPU layout profile. It reaches no controller
-    # parameter on this profile: the one controller it ships has no MPC thread.
+    # parameter on this profile: neither controller it ships has an MPC thread.
     enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
     # One mapping for both consumers: the cset shield and the controller's
     # activation gate must agree on which profile is in force (#350).
@@ -474,8 +475,8 @@ def generate_launch_description():
         default_value="",
         description=(
             "Override initial controller name. "
-            "Empty = use value from config/g1_p1b/sim.yaml (demo_joint_controller, "
-            "the only controller this profile ships a config for)."
+            "Empty = use value from config/g1_p1b/sim.yaml (demo_joint_controller; "
+            "the profile also ships demo_dualarm_controller)."
         ),
     )
 

@@ -1,0 +1,148 @@
+# DemoDualArmController — g1_p1b (Unitree G1 upper body + proto_1b right hand)
+#
+# Both hands and the posture in ONE QP: the right hand is steered with respect
+# to the pelvis, the left hand with respect to the torso, and three posture
+# groups hold the rest. The primary group `g1` is the whole upper body (waist
+# 3 + left arm 7 + right arm 7); the hand group `p1b` is commanded in joint
+# space and is locked inside the QP.
+#
+# Formulation: docs/dynamic_catching/ref/mpc_multiframe_clik_formulation.md §2.
+# Every value below is a starting point that was fixed before the first run,
+# not a tuned one. Every key is required — there is no default.
+demo_dualarm_controller:
+  command_type: "position"
+
+  clik:
+    # The solve is always evaluated at the COMMAND state (its own previous
+    # command on the g1 joints); that is not a key.
+    damping_sq: 1.0e-4        # QP damping μ² (> 0)
+    w_smooth: 1.0e-3          # weight on ‖v − v_prev‖² (>= 0)
+    qp:
+      max_iter: 20            # ProxQP outer iterations, [1, 1000]
+
+    # Joint torque rows |M·v̇ + h| <= eta_tau · max_torque on all 17 g1 joints.
+    # `dynamic` is the only form accepted (the tasks are relative to a frame).
+    accel_constraint: dynamic
+    # Fraction of devices.g1.joint_limits.max_torque the rows may use, (0, 1.2].
+    # M carries no rotor inertia; the margin below 1 is what covers it.
+    eta_tau: 0.8
+
+    # rad — the g1 position box is the device limits pulled in by this much.
+    # A margin that leaves a joint no range refuses the configure.
+    limit_margin: 0.05
+    # rad/s — caps the device rating (22–37 rad/s) in the velocity box.
+    joint_velocity_max: 3.14
+    # Braking-distance velocity bound near the position limits.
+    brake:
+      enabled: true
+      margin: 0.9             # fraction of the available deceleration, (0, 1]
+
+    # Frames a task goal may be EXPRESSED in (header.frame_id of
+    # <task>/task_goal). A goal in another frame than its task's base frame is
+    # converted into the base frame once, on the tick it is applied. An empty
+    # frame_id means the task's base frame; a name not listed here is refused.
+    target_frames: ["world", "pelvis", "torso_link"]
+
+    # One SE3 task (6 rows) per frame. `base_frame` is the frame the target,
+    # the error and the rows are taken in; it is always a named frame.
+    tasks:
+      - name: right_hand            # goal topic: right_hand/task_goal
+        frame: catch_frame          # urdf.extra_frames (provisional placement)
+        base_frame: pelvis          # axes = world's; origin 0.79 m above it
+        kind: se3
+        gain_linear: 10.0           # 1/s, [0, 1/dt]
+        gain_angular: 5.0           # 1/s, [0, 1/dt]
+        weight: 1.0                 # > 0
+        fb_lin_max: 0.25            # m/s, cap on the feedback part (0 = off)
+        fb_ang_max: 1.0             # rad/s
+      - name: left_hand             # goal topic: left_hand/task_goal
+        frame: left_rubber_hand
+        base_frame: torso_link      # relative task: the waist columns are zero
+        kind: se3
+        gain_linear: 10.0
+        gain_angular: 5.0
+        weight: 1.0
+        fb_lin_max: 0.25
+        fb_ang_max: 1.0
+
+    # Disjoint sets of g1 joints, each with a weight (>= 0) and a gain [1/s].
+    # The target is the pose at activation, then whatever g1/joint_goal sends.
+    posture_groups:
+      - name: waist
+        joints: ["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"]
+        weight: 1.0e-3
+        gain: 1.0
+      - name: left_arm
+        joints:
+          - "left_shoulder_pitch_joint"
+          - "left_shoulder_roll_joint"
+          - "left_shoulder_yaw_joint"
+          - "left_elbow_joint"
+          - "left_wrist_roll_joint"
+          - "left_wrist_pitch_joint"
+          - "left_wrist_yaw_joint"
+        weight: 1.0e-4
+        gain: 1.0
+      - name: right_arm
+        joints:
+          - "right_shoulder_pitch_joint"
+          - "right_shoulder_roll_joint"
+          - "right_shoulder_yaw_joint"
+          - "right_elbow_joint"
+          - "right_wrist_roll_joint"
+          - "right_wrist_pitch_joint"
+          - "right_wrist_yaw_joint"
+        weight: 1.0e-4
+        gain: 1.0
+
+  # ── Reference trajectories ────────────────────────────────────────────────
+  # A task goal is reached along a quintic: duration = distance / speed, then
+  # extended until the peak (15/8 × mean) is within the *_max below.
+  trajectory:
+    linear_speed: 0.1         # m/s, > 0
+    angular_speed: 0.5        # rad/s, > 0
+    linear_speed_max: 0.5     # m/s (read-only at runtime)
+    angular_speed_max: 1.0    # rad/s (read-only at runtime)
+    hand_speed: 3.14          # rad/s, > 0 — the p1b joint trajectory
+    hand_speed_max: 6.28      # rad/s (read-only at runtime)
+
+  # ── Controller-local fault latch ──────────────────────────────────────────
+  fault:
+    # Consecutive failed solves before the latch (hold, refuse goals; cleared
+    # only by /rtc_cm/reset_fault). >= 1.
+    max_qp_fail_ticks: 5
+    # rad — max |q_meas − q_cmd| over the g1 joints that raises the latch.
+    # 0 = off: no value has been measured on this robot yet.
+    track_err_max: 0.0
+
+  # ── Topics ────────────────────────────────────────────────────────────────
+  # Both groups are claimed: the sim waits for a command from every robot
+  # group each step. Task goals are NOT listed here — the controller creates
+  # one <task>/task_goal subscription per entry of clik.tasks.
+  topics:
+    g1:
+      subscribe:
+        # A joint goal for all 17 joints: the posture target.
+        - topic: "g1/joint_goal"
+          role: "target"
+      publish:
+        # One TF publisher. Measured poses, parent `pelvis`:
+        #   base_adapter_actual           — the hand mount
+        #   l_<finger>_tip_bracket_actual — the four fingertips
+        #   catch_frame_actual, left_rubber_hand_actual — the task frames
+        - topic: "transforms"
+          role: "robot_transforms"
+    p1b:
+      subscribe:
+        # A joint goal for all 10 joints: the hand follows it along a quintic.
+        - topic: "p1b/joint_goal"
+          role: "target"
+
+  # ── Controller-owned CSV logs ─────────────────────────────────────────────
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: g1_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p1b_state
+    - msg_type: integrated_bringup/DualArmDiagLog
+      instance: dualarm_diag

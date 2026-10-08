@@ -32,7 +32,7 @@ markdown 이 수식 안의 문자를 먼저 해석하므로 (GitHub 기준), 수
 |---|---|---|
 | 구현됨 | 단일 팔 구성의 MPC (`mpc` planner — ur5e_p1b · iiwa7_leap). jerk 입력 모델과 move blocking, 포구 노드의 위치 · 접근축 · 상대속도 항, 일관성 항, 정지 경로 항, 토크 행과 그 slack, 위치 · 속도 한계, 종단 정지, trust region, 상대속도 slack, 관절 노드 게시와 RT 의 닫힌식 평가 · FK. 정지 경로 항과 상대속도 slack 은 출하 YAML 에서 꺼져 있다 | §1.1, §1.2 와 §1.3 의 단일 팔 부분, §1.5, §1.6 |
 | 구현됨 | 지금의 CLIK — frame 과제 하나 (포구 컨트롤러는 catch frame 의 위치 3 행과 접근축 2 행), 팔 · 손 자세 과제, 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행 (`dynamic`). 자세 과제의 속도 feedforward 는 CLIK 의 자세 feedforward 입력으로 넣는다 (§1.5) | §2.3, §2.1 · §2.2 의 단일 frame 극한 (§4 항목 4) |
-| 구현됨 (`rtc_tsid` 의 QP — 포구 컨트롤러는 아직 단일 frame 호출을 쓴다) | 다중 frame CLIK — frame 과제 목록, 몸통 기준 (상대) 과제, 전체 관절의 자세 과제 $\dot q_n$, 되먹임 상한, 제동 거리 한계. 구현이 §2 의 식과 다른 곳은 §10 | §2, §10 |
+| 구현됨 (`rtc_tsid` 의 QP 와 그것을 부르는 바인딩 `demo_dualarm_controller` (§11) — 포구 컨트롤러는 아직 단일 frame 호출을 쓴다) | 다중 frame CLIK — frame 과제 목록, 몸통 기준 (상대) 과제, 전체 관절의 자세 과제 $\dot q_n$, 되먹임 상한, 제동 거리 한계. 구현이 §2 의 식과 다른 곳은 §10 | §2, §10 |
 | 아직 구현하지 않음 | §1.3 의 dual-arm · waist 전용 항 — waist 억제, 왼팔 자세 유지, 각운동량 항, 관절군별 $E$. 후보마다 QP 를 푸는 바깥 루프 | §1.1, §1.3, §1.4 |
 | 아직 구현하지 않음 | 충돌 — 자기충돌 행과 공–왼팔 행, 노드 사이 여유, CLIK 의 충돌 damper | §0.3, §1.2, §1.3, §2.2 |
 | 아직 구현하지 않음 | 포구 구간 $\mathcal K_c$ 를 여러 노드로 두는 것과 그 위의 경로 이탈 항 $w_{path}$ | §1.3 |
@@ -632,7 +632,7 @@ horizon 은 0.75 s 와 1.0 s 둘을 시험한다. horizon 을 나누는 이유�
 
 ## 2. 다중 frame CLIK (RT tick)
 
-이 절은 다중 frame 으로 확장한 CLIK 의 정식화다. QP 는 `ClikReferenceGenerator` (`rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp`) 의 다중 frame 호출로 구현돼 있고, 구현이 이 절의 식과 다른 곳은 §10 에 있다. 그것을 부르는 컨트롤러는 아직 없다 — 포구 컨트롤러는 frame 과제가 하나인 호출로 catch frame 의 위치 3 행과 접근축 2 행을 과제로 쓰고 (L5 §4.2), 팔 · 손 자세 과제와 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행을 둔다. §2.3 의 오차 동역학과 이산 tick 의 조건은 지금의 CLIK 에도 성립한다.
+이 절은 다중 frame 으로 확장한 CLIK 의 정식화다. QP 는 `ClikReferenceGenerator` (`rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp`) 의 다중 frame 호출로 구현돼 있고, 구현이 이 절의 식과 다른 곳은 §10 에 있다. 그것을 부르는 컨트롤러는 `demo_dualarm_controller` (E2-F05, §11) 다. MPC 없이 두 손 목표를 받는 바인딩이며, 포구 컨트롤러는 frame 과제가 하나인 호출로 catch frame 의 위치 3 행과 접근축 2 행을 과제로 쓰고 (L5 §4.2), 팔 · 손 자세 과제와 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행을 둔다. §2.3 의 오차 동역학과 이산 tick 의 조건은 지금의 CLIK 에도 성립한다.
 
 ### 2.1 오차 정의
 
@@ -1323,7 +1323,7 @@ $$
 
 ## 10. 다중 frame CLIK 의 구현 (E2-F04)
 
-§2 의 QP 를 `rtc_tsid` 의 `ClikReferenceGenerator` 에 구현한 것과, 구현이 §2 의 식과 다른 곳이다. 호출 형태 · 옵션 · 진단의 서술은 `rtc_tsid/README.md` 와 `clik_reference.hpp` 의 머리 주석이 갖는다. 이 QP 를 부르는 컨트롤러 (G1 구성의 바인딩) 는 아직 없다.
+§2 의 QP 를 `rtc_tsid` 의 `ClikReferenceGenerator` 에 구현한 것과, 구현이 §2 의 식과 다른 곳이다. 호출 형태 · 옵션 · 진단의 서술은 `rtc_tsid/README.md` 와 `clik_reference.hpp` 의 머리 주석이 갖는다. 이 QP 를 부르는 컨트롤러는 `demo_dualarm_controller` 다 (§11).
 
 ### 10.1 §2 와의 대응
 
@@ -1393,3 +1393,41 @@ $$
 | 충돌 damper (§2.2) | 구현하지 않았다. 거리 코어가 선행이다 |
 | 과제 가속 행 (`kinematic`) 과 상대 과제 | 함께 쓸 수 없다 (configure 에서 거부). 상대 과제의 가속 drift 에는 base frame 의 항이 더 든다. world 과제 여러 개의 가속 행은 과제별로 쌓인다 |
 | 엄격한 계층 (HQP) | 가중 최소제곱 그대로다 (§2.2) |
+
+## 11. 바인딩이 구현한 것 — `demo_dualarm_controller` (E2-F05)
+
+§2 의 QP 는 §10 의 코어가 조립하므로, 이 표의 "구현" 은 바인딩 (`integrated_bringup`) 이 코어에 무엇을 넘기고 코어를 부르지 않는 tick 에 무엇을 하는가다. 동작 · 설정 · 로그의 서술은 `integrated_bringup/README.md` 의 `DemoDualArmController` 절이 갖는다. 파일은 모두 `integrated_bringup/src/controllers/dualarm/` 아래이고, 테스트 이름은 `test/test_demo_dualarm_controller.cpp` 의 `Suite.Case` 다. 값 (가중, 게인, $\eta_\tau$) 은 출발값이고 튜닝하지 않았으며, sim 측정값은 #637 의 측정 · 검증 기록이 갖는다.
+
+| 참고 문서 | 식 · 내용 | 구현 | 확인하는 테스트 | 다르게 한 곳과 이유 |
+|---|---|---|---|---|
+| §0.1 | $q=(q_w,q_L,q_R)$, $n=17$. 손을 기준 자세로 잠근 축소 모델 | `controller.cpp` `SetupModel` (결합 모델 cache, 관절 수 · 이름 검사), `SetupClik` (손 관절의 속도 box 를 `kLockedJointVelocity` 1e-9 로) | `DualArmGroupLanes.TheHandFollowsItsJointGoalAndIsLockedInTheSolve`, `DualArmConfigTest.TheRuntimeRefusesWhatTheModelOrDevicesCannotGive` | **다르다.** $M,h$ 에 손의 실제 자세가 들어가고 QP 변수는 27 (= 17 + 손 10) 이다. 다른 데모 컨트롤러와 같은 cache 배선을 쓰기 위해서다 |
+| §0.1 | frame: $T$ = `torso_link`, $C_L$ = `left_rubber_hand`, $C_R$ = `catch_frame` | `controller.cpp` `SetupFrames` — 과제 frame · base frame · 목표 frame 을 cache 에 등록하고, 하나라도 풀리지 않으면 이유를 돌려 `on_configure` 를 거부한다 (`provisional` 은 경고만) | `DualArmConfigTest.TheRuntimeRefusesWhatTheModelOrDevicesCannotGive`, `DualArmLifecycle.ConfiguresItsTopicsAndRefusesAnUnresolvedFrame` | 같다 |
+| §2.1 | 오차를 명령값 $q_c$ 에서 평가 | `compute.cpp` `UpdateEvalCache` (cache 의 군 0 은 자기 $q_c$ · $\dot q_c$, 군 1 은 측정값), `controller.cpp` `SetupClik` (`evaluate_at_command`). 로그의 과제별 오차는 `compute.cpp` `RunClikTick` 이 코어와 같은 `ComputeTaskPoseError` 로 같은 cache 에서 구한다 | `DualArmDiagnostics.TheErrorOfTaskZeroIsTheCoresInEitherTaskOrder`, `DualArmTransforms.AreTheMeasuredPosesNotTheCommandedOnes` | 같다. 코어가 내는 오차는 과제 0 의 것뿐이라 나머지는 바인딩이 같은 식으로 계산한다 (과제 0 은 코어의 `TcpErrorNorm()` 과 같은 값으로 고정) |
+| §2.1 | $e_R$ — 오른손, world 기준 | `RunClikTick` 이 `FrameTask::base_frame_idx` 에 `pelvis` 의 등록 index 를 넘긴다 (코어의 상대 과제 경로) | `DualArmGoalFrames.TheSameGoalInWorldAndInTheBaseFrameCommandTheSameMotion` | **다르다.** base 가 `pelvis` 다. 축이 world 와 같아 행은 같고 ($R_b=I$, $J_b=0$) 목표의 숫자만 z 로 0.79 m 다르다 |
+| §2.1 | $e_L$ — 왼손, 몸통 기준 | 같은 경로, base `torso_link` | `DualArmCoupling.ATorsoRelativeLeftHandDoesNotMoveTheTrunk` (waist 명령의 변화 $\le10^{-9}$ rad, pelvis 기준으로 두면 $\ge10^{-3}$ rad) | 같다 |
+| §2.1 | $V^d_i=V^{ff} _ i+K_ie_i$ | `RunClikTick`: `FrameTask::gain` = $(K_p,K_p,K_p,K_o,K_o,K_o)$ 를 $[0,1/h]$ 로 자른다. runtime 파라미터는 `parameters.cpp` `OnParametersSet` 이 같은 범위 밖을 거부하고, YAML 의 상한은 `SetupClik` 이 거부한다 | `DualArmGains.AreBoundedWhereTheTickUsesThem`, `DualArmConfigTest.TheRuntimeRefusesWhatTheModelOrDevicesCannotGive`, `DualArmLifecycle.ConfiguresItsTopicsAndRefusesAnUnresolvedFrame` | 같다 |
+| §2.1 | $V^{ff}$ 와 $T^d$ 는 관절 기준에서 FK 로 | `compute.cpp` `ApplyTaskGoal` (quintic task-space 궤적 `TaskSpaceTrajectory` 를 현재 기준 pose 에서 목표까지, 시작 속도 0), `AdvanceReference` ($V^{ff}=(R^dv_{local},R^d\omega_{local})$ — 궤적의 속도는 body twist 다) | `DualArmFeedForward.TheReferenceTwistAloneCarriesTheFrame` (게인 0 에서 궤적만으로 따라간다), `DualArmGoalFrames.AGoalHalfATurnAwayIsRefused` | **다르다.** 이 컨트롤러에는 관절 기준 (MPC) 이 없다. 기준은 외부의 정지 pose 로 가는 quintic 이다. 현재 기준에서 $\pi-0.15$ rad 를 넘는 회전의 목표는 log6 궤적이 불연속이라 버리고 세다. 궤적 시간은 기준 원점이 지나는 나선의 길이 (log6 의 병진 성분) 로 정한다 — 직선 거리로 정하면 큰 회전에서 정점 속도가 상한을 넘는다 (`DualArmReference.ThePeakSpeedCapHoldsOnAScrewPath`). FK 경로는 E3-F05 |
+| (D1 조건) | — (참고 문서에 없음) | `ApplyTaskGoal`: 목표의 `header.frame_id` 가 base frame 과 다르면 $T_{base,des}=T_{base,ref}(q_c)\,T_{ref,des}$ 로 한 번만 변환한다. frame 이름 → index 검증은 `support/owned_topics.cpp` | `DualArmGoalFrames.TheSameGoalInWorldAndInTheBaseFrameCommandTheSameMotion`, `DualArmGoalFrames.AGoalInAMovingFrameIsConvertedOnceWhenItIsApplied`, `DualArmGoalFrames.AnUnknownFrameIsRefusedAndCounted`, `TaskGoalIngressTest.ValidatesAndStamps` | 사용자 결정으로 더한 것. 변환은 목표를 적용하는 tick 에 한 번이다 (이후 base 가 움직이면 목표가 따라간다) |
+| §2.1 | $\mathrm{sat}(K_ie_i,v_{fb,\max})$ | `RunClikTick` 이 과제의 `fb_lin_max` · `fb_ang_max` 를 코어에 넘기고, 발동 bit 는 로그의 `fb_saturated` | `DualArmCoupling.ATorsoRelativeLeftHandDoesNotMoveTheTrunk` 가 그 bit 가 0 임을 전제로 단언한다. 상한 자체의 동작은 코어 (E2-F04) 의 테스트다 | 같다 |
+| §2.1 | $\pi$ 근처에서 직전 tick 의 축 유지 | 구현하지 않는다 (코어에 없다, §10.4). 로그의 `rot_near_pi` bit 만 싣는다 | — | 코어의 선택 그대로 |
+| §2.2 | 두 frame 과제의 가중 제곱합 | 과제 둘, 스칼라 가중 (§10.1): 오른손 1.0, 왼손 1.0 | `DualArmTwoHands.BothGoalsOnOneTickReachTheWeightedLeastSquaresPoint` (WLS 정상점 oracle 과 $\le10^{-6}$ rad), `DualArmTwoHands.WithNoPostureGainBothGoalsAreReached` | 같다 |
+| §2.2 | $\Vert v-\dot q_n\Vert^2 _ {W_n}$, $\dot q_n=\dot q_{ref}+K_q(q_{ref}-q_c)$ | `SetupClik` 의 자세군 셋 (waist 1e-3, 왼팔 · 오른팔 1e-4, 군마다 $K_q$ 1.0 이고 runtime 파라미터). 목표 $q_{des}$ 는 `Reseed` 가 정한 활성화 때의 측정값, 이후 `ApplyPendingTarget` 이 받는 군의 `joint_goal` | `DualArmGroupLanes.AJointGoalHasToNameTheWholeGroupAndATaskGoalIsRefused`, `DualArmStandstill.NoGoalNoMotion` | **다르다.** $\dot q_{ref}$ 를 넘기지 않는다 (`qd_posture_ff` 없음) — 자세 기준은 움직이는 궤적이 아니라 정지한 목표다. 군별 가중은 §10.1 의 형태다 |
+| §2.2 | $w_s\Vert v-v_{prev}\Vert^2$, 감쇠 $\mu^2\Vert v\Vert^2$ (§10.1) | `SetupClik` 이 `w_smooth` 1e-3, `damping_sq` 1e-4 를 코어에 넘긴다 | `DualArmConfigTest.ParsesTheRigAndRefusesWhatItCannotRun` (범위 검사만) | 같다 |
+| §2.2 | $q_{\min}\le q_c+hv\le q_{\max}$ | `SetupClik`: device `joint_limits` 의 위치 한계에서 `limit_margin` 0.05 rad 를 뺀 box (팔에만 — 손은 한계 그대로). 여유가 범위를 뒤집으면 `on_configure` 가 거부한다. `Reseed` 는 측정값이 이 box 밖이면 풀이를 시작하지 않는다 (한 tick 거리 이하는 경계에서 시작, 그보다 크면 fault latch) | `DualArmConfigTest.TheRuntimeRefusesWhatTheModelOrDevicesCannotGive`, `DualArmFixture.CanTellTheCasesApart` (시작 자세가 한계 띠 밖), `DualArmSeed.*` (띠 안에서 시작) | 식은 같다 (여유는 바인딩의 값이다). **다르다:** §2.2 는 $q_c$ 가 box 안에서 시작한다고 둔다. 측정값에서 시드하는 바인딩에서는 그렇지 않을 수 있고, 코어는 box 밖의 관절을 속도 상한으로 되돌리므로 바인딩이 그 시작을 막는다 |
+| §2.2 | $\vert v\vert\le\dot q_{\max}$ | `SetupClik`: device `max_velocity` 와 `joint_velocity_max` 3.14 rad/s 중 작은 값. 손은 1e-9 | — (값은 `DualArmConfigTest.ParsesTheRigAndRefusesWhatItCannotRun` 의 범위 검사뿐) | 스칼라 상한을 더했다 — 정격만으로는 box 가 걸리지 않는다 |
+| §2.2 | $\Vert M\frac{v-v_{prev}}{h}+h\Vert\le\eta_\tau\tau_{\max}$ (`dynamic`, 전체 $M,h$) | `SetupClik`: `kDynamic`, 토크 행은 몸통 군의 모든 관절, $\tau_{\max}$ 는 device `max_torque`. 코어에는 `tau_max` = $\eta_\tau\cdot\tau_{\max}$ 와 `eta_tau` = 1 을 넘긴다 | `DualArmFault.AJointThatCannotBeHeldIsReportedByTheSolveNotFailed` (한계가 중력 부하보다 작아도 풀이는 실패하지 않고 `brake_static_infeasible` 이 알린다), `DualArmConfigTest.ParsesTheRigAndRefusesWhatItCannotRun` ($\eta_\tau\in(0,1.2]$) | 곱은 같고 넘기는 형태만 다르다 — 코어가 1 을 넘는 값을 받지 않는다. YAML 의 $\eta_\tau$ 범위가 $(0,1.2]$ 인 이유다 |
+| §2.2 | $q_c\leftarrow\mathrm{Integrate}(q_c,hv^\ast)$, device slot 에 position | `RunClikTick` 이 성공한 tick 에 `QRef()` · `VRef()` 의 몸통 성분을 $q_c$ · $\dot q_c$ 로 받고, `WriteBodyCommand` 가 낸다. 실패한 tick 은 $q_c$ 를 유지하고 $\dot q_c=0$ | `DualArmFault.FiveFailedSolvesLatchAndOnlyTheResetServiceReleases`, `DualArmStandstill.NoGoalNoMotion` | 같다 |
+| §2.2 | 가중 우선순위 $W_R\gg W_L\gg W_n$ | YAML: 1.0 / 1.0 / 1e-3 · 1e-4 | `DualArmTwoHands.BothGoalsOnOneTickReachTheWeightedLeastSquaresPoint` | **다르다.** 출발값이고 튜닝하지 않았다. 두 과제는 열을 공유하지 않아 $W_R\gg W_L$ 은 결과에 무관하다 |
+| §2.2 · §10.3 | 제동 거리 한계 | `SetupClik`: `brake_from_torque` 켬, `brake_margin` 0.9. 발동한 관절의 bit 와 정적으로 못 버티는 관절의 bit 는 로그의 `brake_active` · `brake_static_infeasible` | `DualArmStandstill.NoGoalNoMotion` (정지의 전제로 `brake_static_infeasible` = 0), `DualArmFault.AJointThatCannotBeHeldIsReportedByTheSolveNotFailed` | 같다 |
+| §2.2 | 충돌 damper · 엄격한 계층 (HQP) | 구현하지 않는다 | — | 충돌은 E3-F03 뒤, HQP 는 가중 최소제곱 그대로 |
+| §2.3 | 제약이 활성이면 `REF_SATURATED` 감시가 잡는다 | 감시는 없다. 토크 행 · 상한 · 제동 한계의 발동을 로그에 싣는다 | — | **다르다.** supervisor 가 없는 컨트롤러다 (E3-F05) |
+| §2.3 | $W_n\to0$ 전제 (자세항이 과제를 끌지 않는다) | 구현은 $K_q\gt0$ 이라 정상점에 과제 오차가 남는다 | `DualArmTwoHands.BothGoalsOnOneTickReachTheWeightedLeastSquaresPoint` (같은 입력의 WLS 정상점과 비교), `DualArmTwoHands.WithNoPostureGainBothGoalsAreReached` ($K_q=0$ 에서만 $10^{-4}$ m · $10^{-3}$ rad 절대 오차) | **다르다.** 이 가중에서의 정칙화 비 $\lambda/\sigma_{\min}^2$ 는 계산하지 않았다. 남는 오차의 크기는 #637 의 sim 측정이 갖는다 |
+| §2.3 | 이산 tick $0\lt Kh\lt2$ | `GainUpperBound` ($1/h$) 를 YAML · runtime 파라미터 · tick 에서 각각 건다 | `DualArmGains.AreBoundedWhereTheTickUsesThem` | 진동 없는 조건 $Kh\le1$ 을 쓴다 |
+| §3 | MPC ↔ CLIK 계약 | 해당 없음 — MPC 가 없다 | — | E3-F04 · F05 |
+| §4 항목 1 | 과제 행 12, 영공간 5 | 과제 행 12, 변수 27 (손 10 잠금) — 움직이는 자유도 17 | `DualArmGroupLanes.TheHandFollowsItsJointGoalAndIsLockedInTheSolve` | 위 §0.1 행과 같다 |
+| §4 항목 5 | 정지 | 목표 없이 명령이 움직이지 않는다. 활성화 · E-STOP 해제 · fault reset 은 `Reseed` 로 측정값에서 다시 시작한다 | `DualArmStandstill.NoGoalNoMotion` (1000 tick, $\le10^{-9}$ rad), `DualArmStandstill.ReactivationSeedsFromTheMeasurementAgain`, `DualArmEstop.TheCommandFreezesAndIsReseededFromTheMeasurementOnRelease` | — |
+| §4 항목 6 | 결합 부호 | 몸통 기준 왼손 과제는 waist 열이 0 이다 | `DualArmCoupling.ATorsoRelativeLeftHandDoesNotMoveTheTrunk` | — |
+| §4 항목 4 · 8 | 단일 frame 극한, 일치 | 코어 수준에서 끝났다 (E2-F04). 항목 8 은 자세 feedforward $\dot q_{ref}$ 가 있어야 성립해 이 컨트롤러에서는 판정하지 않는다 | — | E3-F04 · F05 |
+| §10.2 | 상대 Jacobian | 코어. 바인딩은 base frame 의 등록 index 만 넘긴다 | `DualArmCoupling.ATorsoRelativeLeftHandDoesNotMoveTheTrunk` | 같다 |
+
+**코어를 부르지 않는 tick** 은 §2 에 대응이 없다. 바인딩이 정한 것: E-STOP 은 풀이도 궤적도 돌리지 않고 측정 위치를 명령하며 해제 tick 에 재시드한다 (`DualArmEstop.*`). 풀이 실패는 직전 명령을 유지하고 `fault.max_qp_fail_ticks` 번 연속이면 controller-local fault 를 건다 (`DualArmFault.*`). 읽을 수 없는 몸통 장치는 풀이와 기준을 멈추고 그 군을 침묵시킨다. 읽을 수 없는 손 장치는 손만 침묵시키고, 풀이의 $M,h$ 에 들어가는 손 자세는 마지막으로 읽힌 값에 멈춘다 (`DualArmReadability.*`). RT 할당은 `test_demo_dualarm_alloc` 이 판정한다 (`docs/testing.md`).

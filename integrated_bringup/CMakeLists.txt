@@ -87,6 +87,10 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/catching/traj_input.cpp
   src/controllers/catching/lifecycle.cpp
   src/controllers/catching/planner_thread.cpp
+  src/controllers/dualarm/controller.cpp
+  src/controllers/dualarm/compute.cpp
+  src/controllers/dualarm/lifecycle.cpp
+  src/controllers/dualarm/parameters.cpp
   src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
@@ -1233,6 +1237,66 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # DemoDualArmController (#637): several task frames of one device group in
+  # one QP. Runs on a synthetic fixture owned by this repository —
+  # rtc_urdf_bridge/test/urdf/dual_arm_trunk_hand.urdf (a trunk with two arms
+  # as one group, a hand on one of them), reached through the never-installed
+  # test_urdf_path.hpp. The lifecycle case runs on_configure on a real
+  # LifecycleNode, hence the domain.
+  ament_add_gtest(test_demo_dualarm_controller
+    test/test_demo_dualarm_controller.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52)
+  target_include_directories(test_demo_dualarm_controller PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_link_libraries(test_demo_dualarm_controller
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_dualarm_controller
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # DemoDualArmController's allocation gate (RT-1). Own binary: it defines the
+  # global operator new (alloc_gate.hpp) AND the C malloc family (rtc_base's
+  # malloc_gate.hpp) — each is one TU per executable. No node, so no domain.
+  ament_add_gtest(test_demo_dualarm_alloc test/test_demo_dualarm_alloc.cpp
+    TIMEOUT 120)
+  target_include_directories(test_demo_dualarm_alloc PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  rtc_base_add_test_includes(test_demo_dualarm_alloc)
+  target_link_libraries(test_demo_dualarm_alloc
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_dualarm_alloc
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_urdf_bridge
+    rtc_controllers
+    rtc_controller_interface
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+  # alloc_gate.hpp pairs new→malloc with delete→free, which makes GCC
+  # false-positive -Wmismatched-new-delete program-wide (alloc_gate.hpp item 2).
+  target_compile_options(test_demo_dualarm_alloc PRIVATE -Wno-mismatched-new-delete)
+
   # Hand fingertip FK wiring (#685): the device's joint order on the serial
   # hand handle and the constant arm tip → hand root mount, as
   # support/hand_fk_wiring resolves them (synthetic fixture, reached through the
@@ -1724,6 +1788,7 @@ if(BUILD_TESTING)
     test_momentum_observer_embedding
     test_joint_tf_slot_frames
     test_joint_tree_primary_group
+    test_demo_dualarm_controller
     test_hand_fk_wiring
     test_arm_tip_resolution
     test_mujoco_native_backend

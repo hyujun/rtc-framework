@@ -16,7 +16,8 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false
 
 - 백그라운드 실행 시 로그를 파일로 tee. 기동 완료 신호: `DemoWbcController timing:` 주기 로그 (기본 활성 = demo_wbc_controller).
 - 종료: `pkill -INT -f "sim_ur5e_p1a.launch"` (SIGINT — 세션 CSV flush 보장).
-- `g1_p1b` (G1 상체 + proto_1b 오른손): `ros2 launch integrated_bringup sim_g1_p1b.launch.py enable_viewer:=false use_cpu_affinity:=false`. 컨트롤러는 `demo_joint_controller` 하나, 군은 `g1` (17) · `p1b` (10). 기동 완료 신호는 `RtControllerNode reached Active state`. 목표는 `/demo_joint_controller/{g1,p1b}/joint_goal` (`rtc_msgs/RobotTarget`, **한 번만** 보낸다), TF 는 `/demo_joint_controller/transforms` (부모 `pelvis`). `/g1/joint_states` 는 BEST_EFFORT 다 — 구독은 sensor-data QoS 로.
+- `g1_p1b` (G1 상체 + proto_1b 오른손): `ros2 launch integrated_bringup sim_g1_p1b.launch.py enable_viewer:=false use_cpu_affinity:=false`. 컨트롤러는 `demo_joint_controller` (기본 활성) · `demo_dualarm_controller` 둘, 군은 `g1` (17) · `p1b` (10). 기동 완료 신호는 `RtControllerNode reached Active state`. 목표는 `/demo_joint_controller/{g1,p1b}/joint_goal` (`rtc_msgs/RobotTarget`, **한 번만** 보낸다), TF 는 `/demo_joint_controller/transforms` (부모 `pelvis`). `/g1/joint_states` 는 BEST_EFFORT 다 — 구독은 sensor-data QoS 로.
+- `demo_dualarm_controller` (`g1_p1b` 전용, 설계 [README](../../../integrated_bringup/README.md#demodualarmcontroller)): 위 switch 형태로 `demo_joint_controller` 와 맞바꾼다. 목표 `/demo_dualarm_controller/{right_hand,left_hand}/task_goal` (`goal_type: task`, `task_target`, `header.frame_id` = `world`·`pelvis`·`torso_link` 또는 빈 값 = 과제의 base frame) · `g1/joint_goal` (17 전부) · `p1b/joint_goal` (10 전부) 를 `ros2 topic pub --once` 로 **한 번만** 보낸다. 판독: TF `/demo_dualarm_controller/transforms` (**측정** pose, 부모 `pelvis`) 와 `controllers/demo_dualarm_controller/dualarm_diag.csv` 의 `clik_ran` · `converged` · `<task>_err_lin` · `fault_latched`. fault 가 걸렸으면 `ros2 service call /rtc_cm/reset_fault rtc_msgs/srv/ResetFault "{controller_name: demo_dualarm_controller}"`. sim 에는 E-STOP trigger 가 없어 E-STOP 은 gtest 로만 본다.
 
 ## Controller switch
 
@@ -25,7 +26,7 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
   "{activate_controllers: [demo_task_controller], deactivate_controllers: [demo_wbc_controller], strictness: 1, timeout: {sec: 1}}"
 ```
 
-- 이름: `demo_joint_controller` / `demo_task_controller` / `demo_wbc_controller` / `demo_compliance_controller` / `demo_inference_controller`.
+- 이름: `demo_joint_controller` / `demo_task_controller` / `demo_wbc_controller` / `demo_compliance_controller` / `demo_inference_controller` / `demo_dualarm_controller` (g1_p1b 만).
 - **Pure deactivate 불가** (single-active D-A1) — 항상 교체 대상을 activate 에 지정.
 - 토픽: joint/task → `/<ctrl>/p1a/grasp_state`, wbc → `/<ctrl>/p1a/wbc_state`. 활성 컨트롤러는 `/rtc_cm/active_controller_name` (latched).
 
@@ -58,6 +59,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
 
 - 세션 루트: `~/ros2_ws/rtc_ws/logging_data/<YYMMDD_HHMM>/` (`rtc_tools.utils.session_dir.resolve_logging_root`).
 - 컨트롤러 CSV: `controllers/<ctrl>/<instance>.csv` — Compute() 활성 중에만 append (activity-gated).
+- **세션 폴더 이름은 분 단위다.** 같은 분 안에 sim 을 다시 띄우면 두 번째 실행이 **같은 폴더의 CSV 에 이어 쓴다** (header 는 다시 쓰지 않으므로 `tick` 이 되돌아가는 행이 경계다). unit 마다 sim 을 새로 띄우는 드라이버는 `logging_data/$(date +%y%m%d_%H%M)` 이 없어질 때까지 기다린 뒤 띄운다.
 - Plot: `ros2 run rtc_tools plot_rtc_log <csv> --no-show` — `--save-dir` 미지정 시 그 CSV 를 담고 있는 세션의 `plots/` 에 저장하므로 (Agg 강제) 세션 밖으로 빼고 싶을 때만 `--save-dir <dir>`.
 
 ## Gotchas

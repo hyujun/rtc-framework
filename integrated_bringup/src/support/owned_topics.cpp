@@ -3,9 +3,12 @@
 #include <rtc_base/tracing/trace_scope.hpp>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <rclcpp/logging.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -132,6 +135,121 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
       }
     }
     ++group_idx;
+  }
+}
+
+// ── Per-task goal ingress ───────────────────────────────────────────────
+
+const char* TaskGoalRejectName(TaskGoalReject reason) noexcept {
+  switch (reason) {
+    case TaskGoalReject::kNone:
+      return "accepted";
+    case TaskGoalReject::kGoalType:
+      return "goal_type is not \"task\"";
+    case TaskGoalReject::kNonFinite:
+      return "a pose component is not finite";
+    case TaskGoalReject::kUnknownFrame:
+      return "header.frame_id is not a registered target frame";
+    case TaskGoalReject::kCount:
+      break;
+  }
+  return "unknown";
+}
+
+bool IsTopicToken(std::string_view name) noexcept {
+  return !name.empty() && std::isalpha(static_cast<unsigned char>(name[0])) != 0 &&
+         std::all_of(name.begin(), name.end(), [](char c) {
+           return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+         });
+}
+
+TaskGoalReject ParseTaskGoal(const rtc_msgs::msg::RobotTarget& msg,
+                             std::span<const std::string> frame_names, TaskGoal& out) noexcept {
+  if (msg.goal_type != "task") {
+    return TaskGoalReject::kGoalType;
+  }
+  for (const double v : msg.task_target) {
+    if (!std::isfinite(v)) {
+      return TaskGoalReject::kNonFinite;
+    }
+  }
+  int slot = -1;  // an empty frame_id: the task's own base frame
+  if (!msg.header.frame_id.empty()) {
+    for (std::size_t i = 0; i < frame_names.size(); ++i) {
+      if (frame_names[i] == msg.header.frame_id) {
+        slot = static_cast<int>(i);
+        break;
+      }
+    }
+    if (slot < 0) {
+      return TaskGoalReject::kUnknownFrame;
+    }
+  }
+  for (std::size_t i = 0; i < out.pose.size(); ++i) {
+    out.pose[i] = msg.task_target[i];
+  }
+  out.frame_slot = slot;
+  return TaskGoalReject::kNone;
+}
+
+TaskGoalReject DeliverTaskGoal(const rtc_msgs::msg::RobotTarget& msg,
+                               std::span<const std::string> frame_names, std::uint32_t generation,
+                               TaskGoalIngress& ingress) noexcept {
+  TaskGoal goal;
+  const TaskGoalReject verdict = ParseTaskGoal(msg, frame_names, goal);
+  if (verdict != TaskGoalReject::kNone) {
+    ingress.reject_counts[static_cast<std::size_t>(verdict)].fetch_add(1,
+                                                                       std::memory_order_relaxed);
+    return verdict;
+  }
+  // 0 is "no goal yet", so the counter skips it on wrap-around.
+  ++ingress.next_sequence;
+  if (ingress.next_sequence == 0) {
+    ingress.next_sequence = 1;
+  }
+  goal.sequence = ingress.next_sequence;
+  goal.generation = generation;
+  ingress.box.Store(goal);
+  ingress.accepted.fetch_add(1, std::memory_order_relaxed);
+  return verdict;
+}
+
+void CreateTaskGoalSubscriptions(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                                 std::span<const TaskGoalSubscriptionRequest> requests,
+                                 const std::vector<std::string>& frame_names) {
+  auto node = ctrl.get_lifecycle_node();
+  if (!node) {
+    throw std::runtime_error(
+        "CreateTaskGoalSubscriptions: controller has no LifecycleNode (on_configure not yet "
+        "called?)");
+  }
+  for (const auto& request : requests) {
+    if (request.ingress == nullptr) {
+      throw std::runtime_error("CreateTaskGoalSubscriptions: task '" + request.name +
+                               "' has no ingress");
+    }
+    // A task name becomes a topic token. Checked here rather than left to
+    // rclcpp, whose own error does not say which config key produced the name.
+    if (!IsTopicToken(request.name)) {
+      throw std::runtime_error("CreateTaskGoalSubscriptions: task name '" + request.name +
+                               "' is not a valid topic token ([A-Za-z][A-Za-z0-9_]*)");
+    }
+    TaskGoalIngress* ingress = request.ingress;
+    const std::string task_name = request.name;
+    // No SubscriptionOptions: the default callback group, i.e. the non-RT
+    // executor — the same lane the group target subscriptions use.
+    handles.task_goal_subs.push_back(node->create_subscription<rtc_msgs::msg::RobotTarget>(
+        request.name + "/task_goal", 1,
+        [&ctrl, node, ingress, frame_names, task_name](rtc_msgs::msg::RobotTarget::SharedPtr msg) {
+          const TaskGoalReject verdict =
+              DeliverTaskGoal(*msg, frame_names, ctrl.ActivationGeneration(), *ingress);
+          if (verdict != TaskGoalReject::kNone) {
+            RCLCPP_WARN_THROTTLE(node->get_logger(), *node->get_clock(), 2000,
+                                 "task goal for '%s' refused: %s (frame_id '%s')",
+                                 task_name.c_str(), TaskGoalRejectName(verdict),
+                                 msg->header.frame_id.c_str());
+          }
+        }));
   }
 }
 
@@ -503,6 +621,7 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
   for (auto& sub : handles.target_subs) {
     sub.reset();
   }
+  handles.task_goal_subs.clear();
   handles.grasp_pub.reset();
   handles.tof_pub.reset();
   handles.wbc_pub.reset();
