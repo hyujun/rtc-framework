@@ -1,10 +1,12 @@
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 
+#include "rtc_tsid/kinematics/relative_jacobian.hpp"
 #include "rtc_tsid/kinematics/se3_error.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 
@@ -249,11 +251,103 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   check_indices(config.arm_v_idx, "arm_v_idx");
   check_indices(config.hand_v_idx, "hand_v_idx");
 
+  // The multi-frame call. fb_saturated carries two bits per task in 32.
+  constexpr int kMaxFrameTasks = 16;
+  if (config.max_frame_tasks < 1 || config.max_frame_tasks > kMaxFrameTasks) {
+    throw std::runtime_error("ClikReferenceGenerator: max_frame_tasks must be in [1, " +
+                             std::to_string(kMaxFrameTasks) + "], got " +
+                             std::to_string(config.max_frame_tasks));
+  }
+  if (config.relative_tasks && config.accel_constraint == AccelConstraint::kKinematic) {
+    throw std::runtime_error(
+        "ClikReferenceGenerator: relative_tasks cannot be combined with accel_constraint "
+        "kinematic (the task acceleration rows are world-frame only)");
+  }
+  std::fill(seen.begin(), seen.end(), false);
+  check_indices(config.task_v_idx, "task_v_idx");
+  if (config.accel_constraint == AccelConstraint::kDynamic) {
+    // The torque rows are Σ_{j∈arm} M_ij·v̇_j + h_i: a task column outside the
+    // arm set would accelerate a joint whose coupling torque they leave out.
+    std::fill(seen.begin(), seen.end(), false);
+    for (const int i : config.arm_v_idx) {
+      seen[static_cast<size_t>(i)] = true;
+    }
+    for (const int i : config.task_v_idx) {
+      if (!seen[static_cast<size_t>(i)]) {
+        throw std::runtime_error(
+            "ClikReferenceGenerator: task_v_idx index " + std::to_string(i) +
+            " is not in arm_v_idx (accel_constraint dynamic bounds the torque over the arm "
+            "columns only)");
+      }
+    }
+  }
+  // Posture groups: disjoint across groups (a joint in two groups would get
+  // two competing posture references), each weight finite and >= 0 — the
+  // w_arm / w_hand gate above, for the same reason.
+  std::fill(seen.begin(), seen.end(), false);
+  for (const Config::PostureGroup& group : config.posture_groups) {
+    if (!std::isfinite(group.weight) || group.weight < 0.0) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: posture_groups weight must be finite and >= 0, got " +
+          std::to_string(group.weight));
+    }
+    check_indices(group.v_idx, "posture_groups");
+  }
+
+  // Braking-distance bound: its deceleration is the torque bound's, its
+  // distance the position box's, and its diagnostics are 64-bit joint masks.
+  if (config.brake_from_torque) {
+    if (config.accel_constraint != AccelConstraint::kDynamic) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: brake_from_torque needs accel_constraint dynamic");
+    }
+    if (config.q_min.size() != nv) {
+      throw std::runtime_error("ClikReferenceGenerator: brake_from_torque needs q_min / q_max");
+    }
+    if (nv > 64) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: brake_from_torque needs nv <= 64 (mask width), got " +
+          std::to_string(nv));
+    }
+    if (!std::isfinite(config.brake_margin) || !(config.brake_margin > 0.0) ||
+        config.brake_margin > 1.0) {
+      throw std::runtime_error("ClikReferenceGenerator: brake_margin must be in (0, 1], got " +
+                               std::to_string(config.brake_margin));
+    }
+  } else if (config.brake_margin != 1.0) {  // NaN lands here too
+    throw std::runtime_error(
+        "ClikReferenceGenerator: brake_margin is set but brake_from_torque is off");
+  }
+
   nv_ = nv;
   arm_v_idx_ = config.arm_v_idx;
-  hand_v_idx_ = config.hand_v_idx;
   n_arm_ = static_cast<int>(arm_v_idx_.size());
-  n_hand_ = static_cast<int>(hand_v_idx_.size());
+  brake_from_torque_ = config.brake_from_torque;
+  brake_margin_ = config.brake_margin;
+  task_v_idx_ = config.task_v_idx.empty() ? config.arm_v_idx : config.task_v_idx;
+  max_frame_tasks_ = config.max_frame_tasks;
+  relative_tasks_ = config.relative_tasks;
+  // A gain set before this Init(), or kept from an earlier one, stays with
+  // its group index — Init() never reset the posture gains (posture_ holds
+  // two groups from construction for the first case).
+  std::vector<PostureGroupState> groups;
+  const auto add_group = [&](const std::vector<int>& v_idx, double weight) {
+    PostureGroupState g;
+    g.v_idx = v_idx;
+    g.weight = weight;
+    g.gain = groups.size() < posture_.size() ? posture_[groups.size()].gain : 0.0;
+    g.v_post.setZero(static_cast<Eigen::Index>(v_idx.size()));
+    groups.push_back(std::move(g));
+  };
+  if (config.posture_groups.empty()) {
+    add_group(config.arm_v_idx, config.w_arm);
+    add_group(config.hand_v_idx, config.w_hand);
+  } else {
+    for (const Config::PostureGroup& group : config.posture_groups) {
+      add_group(group.v_idx, group.weight);
+    }
+  }
+  posture_ = std::move(groups);
   damping_sq_ = config.damping_sq;
   v_limit_ = config.v_limit;
   v_limit_per_joint_ = config.v_limit_per_joint;
@@ -272,7 +366,8 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
       n_accel_rows_max_ = 0;
       break;
     case AccelConstraint::kKinematic:
-      n_accel_rows_max_ = 6;  // the SE3 overload's rows; the axis overload uses 5
+      // 6 rows per task: an SE3 task's; a position + axis task uses 5.
+      n_accel_rows_max_ = 6 * config.max_frame_tasks;
       break;
     case AccelConstraint::kDynamic:
       n_accel_rows_max_ = static_cast<int>(config.arm_v_idx.size());
@@ -282,8 +377,6 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   evaluate_at_command_ = config.evaluate_at_command;
   w_axis_ = config.w_axis;
   w_task_ = config.w_task;
-  w_arm_ = config.w_arm;
-  w_hand_ = config.w_hand;
   q_min_ = config.q_min;
   q_max_ = config.q_max;
   anchor_drift_max_ = config.anchor_drift_max;
@@ -300,12 +393,21 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   j_task_.setZero(6, nv_);
   j_pos_.setZero(3, nv_);
   j_axis_.setZero(2, nv_);
-  v_post_arm_.setZero(n_arm_);
-  v_post_hand_.setZero(n_hand_);
   j_arm_.setZero(6, n_arm_);
   m6_.setZero();
   e_x_.setZero();
   r_task_.setZero();
+  task_rows_.clear();
+  task_rows_.resize(static_cast<size_t>(max_frame_tasks_));
+  for (TaskRows& rows : task_rows_) {
+    rows.j6.setZero(6, nv_);
+    rows.j_pos.setZero(3, nv_);
+    rows.j_axis.setZero(2, nv_);
+    rows.e.setZero();
+    rows.r.setZero();
+    rows.r_pos.setZero();
+    rows.w_ref_local.setZero();
+  }
 
   // Fixed-dim box QP: N variables, no equality, N inequality rows (C = Iₙ).
   // C is constant (per-joint velocity box) → set once here; only l/u/H/g change
@@ -374,7 +476,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
     j_arm_.col(c) = rf.J.col(vi);
   }
 
-  ComputePostureReferences(cache, q_posture_des);
+  ComputePostureReferences(cache, q_posture_des, nullptr);
 
   // ── H = w_task·JᵀJ + diag(w_arm@arm, w_hand@hand) + μ²·I ──
   auto H = qp_data_.H.topLeftCorner(N, N);
@@ -386,7 +488,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   AddPostureAndDamping();
 
   AssembleBox(cache.q, dt);
-  if (!AssembleAccelRows(cache, rf, dt, false)) {
+  if (!ApplyBrakeBound(cache, dt) || !AssembleAccelRows(cache, rf, dt, false)) {
     last_solve_.non_finite = true;  // a non-finite M, h, v or drift
     return Fail(cache);
   }
@@ -396,7 +498,8 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
 bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int frame_idx, int base_frame_idx,
                                      const PositionAxisTarget& target,
                                      const Eigen::VectorXd& q_posture_des, double dt,
-                                     bool reseed_anchor) noexcept {
+                                     bool reseed_anchor,
+                                     const Eigen::VectorXd* qd_posture_ff) noexcept {
   namespace se3 = rtc::math::se3;
   last_solve_ = SolveDiagnostics{};
   axis_region_ = se3::AxisAlignRegion::kInvalidInput;
@@ -405,6 +508,9 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int frame_idx,
   }
   if (!target.position.allFinite() || !target.linear_velocity_ff.allFinite() ||
       !target.angular_velocity_ff.allFinite()) {
+    return false;
+  }
+  if (qd_posture_ff != nullptr && (qd_posture_ff->size() != nv_ || !qd_posture_ff->allFinite())) {
     return false;
   }
   if (!CommandStateMatches(cache)) {
@@ -458,7 +564,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int frame_idx,
     j_arm_.col(c) = rf.J.col(vi);  // manipulability diagnostic
   }
 
-  ComputePostureReferences(cache, q_posture_des);
+  ComputePostureReferences(cache, q_posture_des, qd_posture_ff);
 
   auto H = qp_data_.H.topLeftCorner(N, N);
   auto g = qp_data_.g.head(N);
@@ -470,11 +576,288 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int frame_idx,
   AddPostureAndDamping();
 
   AssembleBox(cache.q, dt);
-  if (!AssembleAccelRows(cache, rf, dt, true)) {
+  if (!ApplyBrakeBound(cache, dt) || !AssembleAccelRows(cache, rf, dt, true)) {
     last_solve_.non_finite = true;  // a non-finite M, h, v or drift
     return Fail(cache);
   }
   return SolveAndIntegrate(cache, dt, reseed_anchor);
+}
+
+namespace {
+
+// Rotation / approach-axis error angles within this of π raise
+// SolveDiagnostics::rot_near_pi. Wider than one tick of rotation at the gains
+// in use (K_o·π·dt ≈ 0.03 rad at K_o = 5, dt = 2 ms), so a loop that is
+// chattering across the discontinuity is seen, not stepped over.
+constexpr double kNearPi = 5e-2;
+
+/// Scales `fb` back onto ‖fb‖ = cap when it is over. cap = 0 → off. Returns
+/// whether it scaled. A non-finite `fb` compares false and is left alone: it
+/// reaches the solve and fails there, as it does without a cap.
+[[nodiscard]] bool CapNorm(Eigen::Ref<Eigen::Vector3d> fb, double cap) noexcept {
+  if (!(cap > 0.0)) {
+    return false;
+  }
+  const double n2 = fb.squaredNorm();
+  if (!(n2 > cap * cap)) {
+    return false;
+  }
+  fb *= cap / std::sqrt(n2);  // √n2 > cap > 0: the factor is in (0, 1)
+  return true;
+}
+
+}  // namespace
+
+bool ClikReferenceGenerator::Compute(const PinocchioCache& cache,
+                                     const MultiFrameInput& in) noexcept {
+  last_solve_ = SolveDiagnostics{};
+  const bool axis_first = !in.tasks.empty() && in.tasks[0].kind == TaskKind::kPositionAxis;
+  if (axis_first) {
+    axis_region_ = rtc::math::se3::AxisAlignRegion::kInvalidInput;
+  }
+  if (!MultiFrameInputHolds(cache, in)) {
+    last_solve_.rejected_input = true;
+    return false;
+  }
+  if (!CommandStateMatches(cache)) {
+    last_solve_.command_mismatch = true;
+    return false;
+  }
+  const int n_tasks = static_cast<int>(in.tasks.size());
+  last_solve_.tasks = n_tasks;
+
+  TaskDiagnostics diag;
+  for (int k = 0; k < n_tasks; ++k) {
+    if (!BuildTaskRows(cache, in.tasks[static_cast<size_t>(k)], k, diag)) {
+      last_solve_.rejected_input = true;  // an approach axis that is not unit
+      last_solve_.tasks = 0;
+      return false;  // nothing of `diag` is kept: the call did not happen
+    }
+  }
+  // Every task built: the call goes to the solve, and these are its
+  // diagnostics whether the solve succeeds or not (as in the overloads above).
+  last_solve_.fb_saturated = diag.fb_saturated;
+  last_solve_.rot_near_pi = diag.rot_near_pi;
+  tcp_error_norm_ = diag.tcp_error_norm;
+  if (axis_first) {
+    axis_region_ = diag.axis_region;
+    position_error_norm_ = diag.position_error_norm;
+    axis_error_angle_ = diag.axis_error_angle;
+  }
+
+  // Manipulability diagnostic: task 0's frame, its world-aligned Jacobian on
+  // the arm columns — what the single-task overloads report.
+  const auto& rf0 = cache.registered_frames[static_cast<size_t>(in.tasks[0].frame_idx)];
+  for (int c = 0; c < n_arm_; ++c) {
+    const auto vi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
+    j_arm_.col(c) = rf0.J.col(vi);
+  }
+
+  ComputePostureReferences(cache, *in.q_posture_des, in.qd_posture_ff);
+
+  // ── H = Σ_k w_k·J_kᵀJ_k + posture + μ²·I,  g = −Σ_k w_k·J_kᵀr_k − posture ──
+  // The statements are the single-task overloads', operand types included:
+  // Eigen picks its product kernel from them (a scalar folded into a small
+  // product rounds differently from one applied to its result), and task 0
+  // ASSIGNS g as they do (0 − x and −x differ in the sign of a zero).
+  const int N = nv_;
+  auto H = qp_data_.H.topLeftCorner(N, N);
+  auto g = qp_data_.g.head(N);
+  H.setZero();
+  for (int k = 0; k < n_tasks; ++k) {
+    const FrameTask& task = in.tasks[static_cast<size_t>(k)];
+    const TaskRows& tr = task_rows_[static_cast<size_t>(k)];
+    if (task.kind == TaskKind::kSe3) {
+      H.noalias() += task.weight * tr.j6.transpose() * tr.j6;
+      if (k == 0) {
+        g.noalias() = -task.weight * (tr.j6.transpose() * tr.r);
+      } else {
+        g.noalias() -= task.weight * (tr.j6.transpose() * tr.r);
+      }
+    } else {
+      H.noalias() += task.weight * tr.j_pos.transpose() * tr.j_pos;
+      H.noalias() += task.weight_axis * tr.j_axis.transpose() * tr.j_axis;
+      if (k == 0) {
+        g.noalias() = -task.weight * (tr.j_pos.transpose() * tr.r_pos);
+      } else {
+        g.noalias() -= task.weight * (tr.j_pos.transpose() * tr.r_pos);
+      }
+      g.noalias() -= task.weight_axis * (tr.j_axis.transpose() * tr.w_ref_local.head<2>());
+    }
+  }
+  AddPostureAndDamping();
+
+  AssembleBox(cache.q, in.dt);
+  if (!ApplyBrakeBound(cache, in.dt) || !AssembleAccelRows(cache, in.tasks, in.dt)) {
+    last_solve_.non_finite = true;  // a non-finite M, h, v or drift
+    return Fail(cache);
+  }
+  return SolveAndIntegrate(cache, in.dt, in.reseed_anchor);
+}
+
+bool ClikReferenceGenerator::MultiFrameInputHolds(const PinocchioCache& cache,
+                                                  const MultiFrameInput& in) const noexcept {
+  const int n_registered = static_cast<int>(cache.registered_frames.size());
+  if (nv_ == 0 || in.tasks.empty() || in.tasks.size() > static_cast<size_t>(max_frame_tasks_)) {
+    return false;
+  }
+  if (cache.q.size() != nv_ || cache.v.size() != nv_ || in.q_posture_des == nullptr ||
+      in.q_posture_des->size() != nv_ || !(in.dt > 0.0)) {
+    return false;
+  }
+  if (in.qd_posture_ff != nullptr &&
+      (in.qd_posture_ff->size() != nv_ || !in.qd_posture_ff->allFinite())) {
+    return false;
+  }
+  for (const FrameTask& task : in.tasks) {
+    if (task.frame_idx < 0 || task.frame_idx >= n_registered ||
+        task.base_frame_idx >= n_registered) {
+      return false;
+    }
+    if (task.base_frame_idx >= 0 && (!relative_tasks_ || task.base_frame_idx == task.frame_idx)) {
+      return false;
+    }
+    // NaN fails `>` and isfinite; +inf fails isfinite.
+    if (!std::isfinite(task.weight) || !(task.weight > 0.0) || !task.gain.allFinite() ||
+        !std::isfinite(task.fb_lin_max) || task.fb_lin_max < 0.0 ||
+        !std::isfinite(task.fb_ang_max) || task.fb_ang_max < 0.0) {
+      return false;
+    }
+    switch (task.kind) {
+      case TaskKind::kSe3:
+        // placement_des is deliberately not checked (see the header).
+        if (task.twist_ff != nullptr && !task.twist_ff->allFinite()) {
+          return false;
+        }
+        break;
+      case TaskKind::kPositionAxis:
+        if (!std::isfinite(task.weight_axis) || !(task.weight_axis > 0.0) ||
+            !std::isfinite(task.gain_axis) || !task.target.position.allFinite() ||
+            !task.target.linear_velocity_ff.allFinite() ||
+            !task.target.angular_velocity_ff.allFinite()) {
+          return false;
+        }
+        break;
+      default:
+        return false;  // a value outside the enum
+    }
+  }
+  return true;
+}
+
+bool ClikReferenceGenerator::BuildTaskRows(const PinocchioCache& cache, const FrameTask& task,
+                                           int k, TaskDiagnostics& diag) noexcept {
+  namespace se3 = rtc::math::se3;
+  TaskRows& tr = task_rows_[static_cast<size_t>(k)];
+  const auto& rf = cache.registered_frames[static_cast<size_t>(task.frame_idx)];
+  const bool relative = task.base_frame_idx >= 0;
+  const PinocchioCache::RegisteredFrame* rb =
+      relative ? &cache.registered_frames[static_cast<size_t>(task.base_frame_idx)] : nullptr;
+  // The frame in its base: the frame itself for the universe.
+  const pinocchio::SE3 tip = relative ? rb->oMf.actInv(rf.oMf) : rf.oMf;
+  const auto lin_bit = std::uint32_t{1} << static_cast<unsigned>(2 * k);
+  const auto ang_bit = std::uint32_t{1} << static_cast<unsigned>(2 * k + 1);
+  const auto pi_bit = std::uint32_t{1} << static_cast<unsigned>(k);
+
+  // The universe case does NOT go through the relative Jacobian with R_b = I
+  // and J_b = 0: multiplying by the identity and subtracting zero are not
+  // bit-neutral (−0.0, 0·inf), and it has to match the single-task overloads.
+  if (task.kind == TaskKind::kSe3) {
+    // ComputeTaskPoseError = LWA BodyLog6 of the frame in its base: linear and
+    // angular parts in the base's axes, at the frame origin.
+    tr.e = ComputeTaskPoseError(tip, task.placement_des);
+    if (k == 0) {
+      diag.tcp_error_norm = tr.e.norm();
+    }
+    if (tr.e.tail<3>().norm() > std::numbers::pi - kNearPi) {
+      diag.rot_near_pi |= pi_bit;
+    }
+    tr.r = task.gain.cwiseProduct(tr.e);
+    if (CapNorm(tr.r.head<3>(), task.fb_lin_max)) {
+      diag.fb_saturated |= lin_bit;
+    }
+    if (CapNorm(tr.r.tail<3>(), task.fb_ang_max)) {
+      diag.fb_saturated |= ang_bit;
+    }
+    if (task.twist_ff != nullptr) {
+      tr.r += *task.twist_ff;
+    }
+
+    if (relative) {
+      FillRelativeFrameJacobian(rf, *rb, task_v_idx_, tr.j6);
+    } else {
+      tr.j6.setZero();
+      for (const int v : task_v_idx_) {
+        const auto vi = static_cast<Eigen::Index>(v);
+        tr.j6.col(vi) = rf.J.col(vi);
+      }
+    }
+    return true;
+  }
+
+  // ── Position + approach axis, everything in the base's axes ──
+  const Eigen::Vector3d p_des = task.target.position;
+  const Eigen::Vector3d a_des = task.target.axis;
+  const Eigen::Vector3d v_ff = task.target.linear_velocity_ff;
+  const Eigen::Vector3d w_ff = task.target.angular_velocity_ff;
+  const Eigen::Matrix3d& R_bc = tip.rotation();  // frame in base (world for the universe)
+  const Eigen::Vector3d z_c = R_bc.col(2);
+  const se3::AxisAlignErrorResult axis = se3::AxisAlignError(z_c, a_des);
+  if (!axis.IsValid()) {
+    return false;  // non-unit / non-finite axis target
+  }
+  const Eigen::Vector3d e_p = p_des - tip.translation();
+  const double e_p_norm = e_p.norm();
+  const double e_a_angle = axis.error.norm();
+  if (k == 0) {
+    diag.axis_region = axis.region;
+    diag.position_error_norm = e_p_norm;
+    diag.axis_error_angle = e_a_angle;
+    diag.tcp_error_norm = std::sqrt(e_p_norm * e_p_norm + e_a_angle * e_a_angle);
+  }
+  if (e_a_angle > std::numbers::pi - kNearPi) {
+    diag.rot_near_pi |= pi_bit;
+  }
+
+  // References. With a cap off, the expressions are the axis overload's own
+  // (one statement each), so a single universe task stays bit-identical.
+  if (task.fb_lin_max > 0.0) {
+    Eigen::Vector3d fb = task.gain.head<3>().cwiseProduct(e_p);
+    if (CapNorm(fb, task.fb_lin_max)) {
+      diag.fb_saturated |= lin_bit;
+    }
+    tr.r_pos = fb + v_ff;
+  } else {
+    tr.r_pos = task.gain.head<3>().cwiseProduct(e_p) + v_ff;
+  }
+  if (task.fb_ang_max > 0.0) {
+    Eigen::Vector3d fb = task.gain_axis * axis.error;
+    if (CapNorm(fb, task.fb_ang_max)) {
+      diag.fb_saturated |= ang_bit;
+    }
+    tr.w_ref_local = R_bc.transpose() * (fb + w_ff);
+  } else {
+    tr.w_ref_local = R_bc.transpose() * (task.gain_axis * axis.error + w_ff);
+  }
+
+  tr.j_pos.setZero();
+  tr.j_axis.setZero();
+  for (const int v : task_v_idx_) {
+    const auto vi = static_cast<Eigen::Index>(v);
+    if (!relative) {
+      tr.j_pos.col(vi) = rf.J.col(vi).head<3>();
+      const Eigen::Vector3d w_local = R_bc.transpose() * rf.J.col(vi).tail<3>();
+      tr.j_axis.col(vi) = w_local.head<2>();
+    } else {
+      Eigen::Vector3d lin;
+      Eigen::Vector3d ang;
+      RelativeFrameJacobianColumn(rf, *rb, vi, lin, ang);
+      tr.j_pos.col(vi) = lin;
+      const Eigen::Vector3d w_local = R_bc.transpose() * ang;
+      tr.j_axis.col(vi) = w_local.head<2>();
+    }
+  }
+  return true;
 }
 
 bool ClikReferenceGenerator::PreconditionsHold(const PinocchioCache& cache, int tcp_frame_idx,
@@ -510,42 +893,49 @@ bool ClikReferenceGenerator::CommandStateMatches(const PinocchioCache& cache) co
 }
 
 void ClikReferenceGenerator::ComputePostureReferences(
-    const PinocchioCache& cache, const Eigen::VectorXd& q_posture_des) noexcept {
-  // ── L2/L3 posture velocity references v_p = K·(q_des − q) ──
-  for (int c = 0; c < n_arm_; ++c) {
-    const auto qi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
-    v_post_arm_(c) = ka_ * (q_posture_des(qi) - cache.q(qi));
-  }
-  for (int c = 0; c < n_hand_; ++c) {
-    const auto qi = static_cast<Eigen::Index>(hand_v_idx_[static_cast<size_t>(c)]);
-    v_post_hand_(c) = kh_ * (q_posture_des(qi) - cache.q(qi));
+    const PinocchioCache& cache, const Eigen::VectorXd& q_posture_des,
+    const Eigen::VectorXd* qd_posture_ff) noexcept {
+  // ── L2/L3 posture velocity references v_p = K·(q_des − q) [+ q̇_ff] ──
+  // Two loops, not `+ (ff ? ff(i) : 0.0)`: without a feed-forward the value
+  // must be the plain product, bit for bit (x + 0.0 turns −0.0 into +0.0).
+  for (PostureGroupState& group : posture_) {
+    const auto n = static_cast<int>(group.v_idx.size());
+    if (qd_posture_ff == nullptr) {
+      for (int c = 0; c < n; ++c) {
+        const auto qi = static_cast<Eigen::Index>(group.v_idx[static_cast<size_t>(c)]);
+        group.v_post(c) = group.gain * (q_posture_des(qi) - cache.q(qi));
+      }
+    } else {
+      for (int c = 0; c < n; ++c) {
+        const auto qi = static_cast<Eigen::Index>(group.v_idx[static_cast<size_t>(c)]);
+        group.v_post(c) = group.gain * (q_posture_des(qi) - cache.q(qi)) + (*qd_posture_ff)(qi);
+      }
+    }
   }
 }
 
 void ClikReferenceGenerator::AddPostureAndDamping() noexcept {
-  // Adds the L2/L3 posture and μ² terms on top of the task terms the caller has
+  // Adds the posture and μ² terms on top of the task terms the caller has
   // already written into H and g — the same accumulation order the single-task
-  // path always had, so its output stays bit-identical.
+  // path always had (every group's weight, then μ², then every group's
+  // reference), so its output stays bit-identical.
   const int N = nv_;
   auto H = qp_data_.H.topLeftCorner(N, N);
   auto g = qp_data_.g.head(N);
-  for (int c = 0; c < n_arm_; ++c) {
-    const auto vi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
-    H(vi, vi) += w_arm_;
-  }
-  for (int c = 0; c < n_hand_; ++c) {
-    const auto vi = static_cast<Eigen::Index>(hand_v_idx_[static_cast<size_t>(c)]);
-    H(vi, vi) += w_hand_;
+  for (const PostureGroupState& group : posture_) {
+    for (const int v : group.v_idx) {
+      const auto vi = static_cast<Eigen::Index>(v);
+      H(vi, vi) += group.weight;
+    }
   }
   H.diagonal().array() += damping_sq_;
 
-  for (int c = 0; c < n_arm_; ++c) {
-    const auto vi = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
-    g(vi) -= w_arm_ * v_post_arm_(c);
-  }
-  for (int c = 0; c < n_hand_; ++c) {
-    const auto vi = static_cast<Eigen::Index>(hand_v_idx_[static_cast<size_t>(c)]);
-    g(vi) -= w_hand_ * v_post_hand_(c);
+  for (const PostureGroupState& group : posture_) {
+    const auto n = static_cast<int>(group.v_idx.size());
+    for (int c = 0; c < n; ++c) {
+      const auto vi = static_cast<Eigen::Index>(group.v_idx[static_cast<size_t>(c)]);
+      g(vi) -= group.weight * group.v_post(c);
+    }
   }
 
   // Smoothing (w_s/2)·‖v − v_prev‖²: skipped entirely when off so the legacy
@@ -615,6 +1005,96 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
   }
 }
 
+namespace {
+
+/// Largest speed toward a limit `d` away that a joint braking at `a` can
+/// still stop from, in discrete time: the positive root of v·dt + v²/(2·a) =
+/// d, written so that a small d does not cancel. 0 when there is no
+/// deceleration or no room.
+///
+/// Why v·dt and not the v·dt/2 of an exact ramp: with the velocity dropping
+/// a·dt per tick the joint travels dt·(v + (v − a·dt) + …) — v²/(2·a) + v·dt/2
+/// only when v is a whole number of a·dt steps, and up to a·dt²/8 more in
+/// between. On the v·dt/2 curve that shortfall arrives as a last tick whose
+/// one-tick position box sits below v − a·dt, i.e. an infeasible QP. v·dt
+/// covers every v, and the set it bounds is closed under a tick of braking
+/// together with that box: with d ≥ v·dt + v²/(2·a) and v' = max(0, v − a·dt),
+/// d' = d − v·dt ≥ v'·dt + v'²/(2·a) and v' ≤ d'/dt.
+[[nodiscard]] double BrakeSpeed(double a, double d, double dt) noexcept {
+  if (!(a > 0.0) || !(d > 0.0)) {
+    return 0.0;
+  }
+  const double a_dt = a * dt;
+  return 2.0 * a * d / (a_dt + std::sqrt(a_dt * a_dt + 2.0 * a * d));
+}
+
+}  // namespace
+
+bool ClikReferenceGenerator::ApplyBrakeBound(const PinocchioCache& cache, double dt) noexcept {
+  if (!brake_from_torque_) {
+    return true;
+  }
+  const int N = nv_;
+  if (cache.M.rows() != N || cache.M.cols() != N || cache.h.size() != N || cache.v.size() != N) {
+    return false;
+  }
+  // Slack on the one-tick reachable edge: the torque rows are judged with
+  // 1e-6 of tolerance (AccelRowsHold), and the box must not sit inside it.
+  constexpr double kReachSlack = 2e-6;
+  for (const int vi : arm_v_idx_) {
+    const auto i = static_cast<Eigen::Index>(vi);
+    const double m_ii = cache.M(i, i);
+    const double h_i = cache.h(i);
+    const double q_i = cache.q(i);
+    const double v_c = cache.v(i);
+    // Checked BEFORE any max / min / clamp below: those would turn a NaN into
+    // a quiet v = 0 bound, which reads as a deliberate stop (NUM-7).
+    if (!std::isfinite(m_ii) || !(m_ii > 1e-12) || !std::isfinite(h_i) || !std::isfinite(q_i) ||
+        !std::isfinite(v_c)) {
+      return false;
+    }
+    const double tau_b = tau_bound_(i);
+    const std::uint64_t bit = std::uint64_t{1} << static_cast<unsigned>(vi);
+    if (std::abs(h_i) > tau_b) {
+      last_solve_.brake_static_infeasible |= bit;
+    }
+    // Deceleration the torque bound leaves: τ = M·v̇ + h ∈ [−τ_b, τ_b] gives
+    // v̇ ≥ −(τ_b + h)/M against motion toward q_max and v̇ ≤ (τ_b − h)/M
+    // against motion toward q_min (diagonal M).
+    const double dec_up = (tau_b + h_i) / m_ii;
+    const double dec_dn = (tau_b - h_i) / m_ii;
+    const double lo_pre = qp_data_.l(i);
+    const double hi_pre = qp_data_.u(i);
+    const double hi_brk =
+        BrakeSpeed(brake_margin_ * std::max(0.0, dec_up), std::max(0.0, q_max_(i) - q_i), dt);
+    const double lo_brk =
+        -BrakeSpeed(brake_margin_ * std::max(0.0, dec_dn), std::max(0.0, q_i - q_min_(i)), dt);
+    // Never tighter than what one tick of the torque bound can reach from
+    // v_c — a joint already over its braking speed slows as fast as the rows
+    // allow instead of making the QP infeasible. No margin on this edge: it is
+    // the rows' own limit.
+    const double hi = std::min(hi_pre, std::max(hi_brk, v_c - dec_up * dt + kReachSlack));
+    const double lo = std::max(lo_pre, std::min(lo_brk, v_c + dec_dn * dt - kReachSlack));
+    if (lo > hi) {
+      // Only outside the position envelope: inside it lo_pre ≤ 0 ≤ hi_pre and
+      // lo_brk ≤ 0 ≤ hi_brk, so v = 0 is always admissible. [lo_pre, hi_pre]
+      // itself is non-empty by AssembleBox.
+      const double v = std::clamp(0.0, lo_pre, hi_pre);
+      qp_data_.l(i) = v;
+      qp_data_.u(i) = v;
+      last_solve_.brake_box_empty = true;
+      last_solve_.brake_active |= bit;
+      continue;
+    }
+    if (hi < hi_pre || lo > lo_pre) {
+      last_solve_.brake_active |= bit;
+    }
+    qp_data_.l(i) = lo;
+    qp_data_.u(i) = hi;
+  }
+  return true;
+}
+
 bool ClikReferenceGenerator::AssembleAccelRows(const PinocchioCache& cache,
                                                const PinocchioCache::RegisteredFrame& rf, double dt,
                                                bool axis_rows) noexcept {
@@ -622,74 +1102,131 @@ bool ClikReferenceGenerator::AssembleAccelRows(const PinocchioCache& cache,
   if (accel_constraint_ == AccelConstraint::kBox) {
     return true;  // the legacy QP: no rows, nothing touched
   }
+  const double inv_dt = 1.0 / dt;
+  if (accel_constraint_ == AccelConstraint::kDynamic) {
+    return WriteDynamicRows(cache, inv_dt) && FinishAccelRows(n_arm_);
+  }
+  if (cache.v.size() != nv_) {
+    return false;
+  }
+  const int rows = axis_rows ? WriteAxisAccelRows(0, j_pos_, j_axis_, rf, cache.v, inv_dt)
+                             : WriteSe3AccelRows(0, j_task_, rf, cache.v, inv_dt);
+  return FinishAccelRows(rows);
+}
+
+bool ClikReferenceGenerator::AssembleAccelRows(const PinocchioCache& cache,
+                                               std::span<const FrameTask> tasks,
+                                               double dt) noexcept {
+  n_accel_rows_ = 0;
+  if (accel_constraint_ == AccelConstraint::kBox) {
+    return true;
+  }
+  const double inv_dt = 1.0 / dt;
+  if (accel_constraint_ == AccelConstraint::kDynamic) {
+    return WriteDynamicRows(cache, inv_dt) && FinishAccelRows(n_arm_);
+  }
+  if (cache.v.size() != nv_) {
+    return false;
+  }
+  // Each task's rows in the axes its cost uses. A relative task never gets
+  // here (Init refuses kKinematic with relative_tasks), so every J is the
+  // frame's world-aligned one and rf.dJv is its drift.
+  int rows = 0;
+  for (size_t k = 0; k < tasks.size(); ++k) {
+    const auto& rf = cache.registered_frames[static_cast<size_t>(tasks[k].frame_idx)];
+    const TaskRows& tr = task_rows_[k];
+    rows += (tasks[k].kind == TaskKind::kSe3)
+                ? WriteSe3AccelRows(rows, tr.j6, rf, cache.v, inv_dt)
+                : WriteAxisAccelRows(rows, tr.j_pos, tr.j_axis, rf, cache.v, inv_dt);
+  }
+  return FinishAccelRows(rows);
+}
+
+bool ClikReferenceGenerator::WriteDynamicRows(const PinocchioCache& cache, double inv_dt) noexcept {
+  // τ_i = Σ_{j∈arm} M_ij·(v_j − v_c,j)/dt + h_i,  |τ_i| ≤ b_i = η·τ_max,i.
+  // The hand columns are left out: the hand is locked or commanded
+  // elsewhere, so (v_hand − v_c,hand)/dt is not its acceleration; its
+  // velocity still reaches the row through h(q, v_c).
+  const int N = nv_;
+  if (cache.M.rows() != N || cache.M.cols() != N || cache.h.size() != N || cache.v.size() != N) {
+    return false;
+  }
+  auto C = qp_data_.C.middleRows(N, n_accel_rows_max_);
+  auto l = qp_data_.l.segment(N, n_accel_rows_max_);
+  auto u = qp_data_.u.segment(N, n_accel_rows_max_);
+  for (int c = 0; c < n_arm_; ++c) {
+    const auto i = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
+    C.row(c).setZero();
+    double m_vc = 0.0;
+    for (const int vj : arm_v_idx_) {
+      const auto j = static_cast<Eigen::Index>(vj);
+      C(c, j) = cache.M(i, j) * inv_dt;
+      m_vc += cache.M(i, j) * cache.v(j);
+    }
+    const double shift = m_vc * inv_dt - cache.h(i);
+    l(c) = -tau_bound_(i) + shift;
+    u(c) = tau_bound_(i) + shift;
+  }
+  return true;
+}
+
+// ẍ = J·(v − v_c)/dt + J̇·v_c on the rows the cost tracks, in the axes the
+// cost uses: world-aligned for the SE3 rows and the position rows, the
+// frame's LOCAL x, y for the approach-axis rows (d/dt(Rᵀω) = Rᵀω̇, so the
+// local drift is Rᵀ times the world one). J has zero columns outside the
+// task's index set, so J·v_c is that set's part of v_c.
+int ClikReferenceGenerator::WriteSe3AccelRows(int row0, const Eigen::MatrixXd& j6,
+                                              const PinocchioCache::RegisteredFrame& rf,
+                                              const Eigen::VectorXd& v_c, double inv_dt) noexcept {
+  auto C = qp_data_.C.middleRows(nv_ + row0, 6);
+  C = j6 * inv_dt;
+  WriteTaskAccelBounds(row0, 6, rf.dJv, v_c);
+  return 6;
+}
+
+int ClikReferenceGenerator::WriteAxisAccelRows(int row0, const Eigen::MatrixXd& j_pos,
+                                               const Eigen::MatrixXd& j_axis,
+                                               const PinocchioCache::RegisteredFrame& rf,
+                                               const Eigen::VectorXd& v_c, double inv_dt) noexcept {
+  auto C = qp_data_.C.middleRows(nv_ + row0, 5);
+  C.topRows<3>() = j_pos * inv_dt;
+  C.bottomRows<2>() = j_axis * inv_dt;
+  Eigen::Matrix<double, 6, 1> drift;
+  drift.head<3>() = rf.dJv.head<3>();
+  const Eigen::Vector3d w_local = rf.oMf.rotation().transpose() * rf.dJv.tail<3>();
+  drift.segment<2>(3) = w_local.head<2>();
+  drift(5) = 0.0;
+  WriteTaskAccelBounds(row0, 5, drift, v_c);
+  return 5;
+}
+
+void ClikReferenceGenerator::WriteTaskAccelBounds(int row0, int rows,
+                                                  const Eigen::Matrix<double, 6, 1>& drift,
+                                                  const Eigen::VectorXd& v_c) noexcept {
+  for (int r = 0; r < rows; ++r) {
+    const Eigen::Index row = nv_ + row0 + r;
+    const double bound = (r < 3) ? task_a_lin_ : task_a_ang_;
+    const double shift = qp_data_.C.row(row).dot(v_c) - drift(r);
+    qp_data_.l(row) = -bound + shift;
+    qp_data_.u(row) = bound + shift;
+  }
+}
+
+bool ClikReferenceGenerator::FinishAccelRows(int rows) noexcept {
   const int N = nv_;
   const int R = n_accel_rows_max_;
-  const double inv_dt = 1.0 / dt;
   auto C = qp_data_.C.middleRows(N, R);
   auto l = qp_data_.l.segment(N, R);
   auto u = qp_data_.u.segment(N, R);
-
-  if (accel_constraint_ == AccelConstraint::kDynamic) {
-    // τ_i = Σ_{j∈arm} M_ij·(v_j − v_c,j)/dt + h_i,  |τ_i| ≤ b_i = η·τ_max,i.
-    // The hand columns are left out: the hand is locked or commanded
-    // elsewhere, so (v_hand − v_c,hand)/dt is not its acceleration; its
-    // velocity still reaches the row through h(q, v_c).
-    if (cache.M.rows() != N || cache.M.cols() != N || cache.h.size() != N || cache.v.size() != N) {
-      return false;
-    }
-    for (int c = 0; c < n_arm_; ++c) {
-      const auto i = static_cast<Eigen::Index>(arm_v_idx_[static_cast<size_t>(c)]);
-      C.row(c).setZero();
-      double m_vc = 0.0;
-      for (const int vj : arm_v_idx_) {
-        const auto j = static_cast<Eigen::Index>(vj);
-        C(c, j) = cache.M(i, j) * inv_dt;
-        m_vc += cache.M(i, j) * cache.v(j);
-      }
-      const double shift = m_vc * inv_dt - cache.h(i);
-      l(c) = -tau_bound_(i) + shift;
-      u(c) = tau_bound_(i) + shift;
-    }
-    n_accel_rows_ = n_arm_;
-  } else {
-    // ẍ = J·(v − v_c)/dt + J̇·v_c on the rows the cost tracks, in the axes the
-    // cost uses: world-aligned for the SE3 rows and the position rows, the
-    // frame's LOCAL x, y for the approach-axis rows (d/dt(Rᵀω) = Rᵀω̇, so the
-    // local drift is Rᵀ times the world one). J has zero hand columns, so
-    // J·v_c is the arm's part of v_c.
-    if (cache.v.size() != N) {
-      return false;
-    }
-    Eigen::Matrix<double, 6, 1> drift;
-    int rows = 6;
-    if (axis_rows) {
-      C.topRows<3>() = j_pos_ * inv_dt;
-      C.middleRows<2>(3) = j_axis_ * inv_dt;
-      drift.head<3>() = rf.dJv.head<3>();
-      const Eigen::Vector3d w_local = rf.oMf.rotation().transpose() * rf.dJv.tail<3>();
-      drift.segment<2>(3) = w_local.head<2>();
-      drift(5) = 0.0;
-      rows = 5;
-    } else {
-      C.topRows<6>() = j_task_ * inv_dt;
-      drift = rf.dJv;
-    }
-    for (int r = 0; r < rows; ++r) {
-      const double bound = (r < 3) ? task_a_lin_ : task_a_ang_;
-      const double shift = C.row(r).dot(cache.v) - drift(r);
-      l(r) = -bound + shift;
-      u(r) = bound + shift;
-    }
-    // A row the overload does not use stays inert (the other overload may
-    // have written it on an earlier call).
-    const double inf = std::numeric_limits<double>::infinity();
-    for (int r = rows; r < R; ++r) {
-      C.row(r).setZero();
-      l(r) = -inf;
-      u(r) = inf;
-    }
-    n_accel_rows_ = rows;
+  // A row this call does not use stays inert (an earlier call with more or
+  // other tasks may have written it).
+  const double inf = std::numeric_limits<double>::infinity();
+  for (int r = rows; r < R; ++r) {
+    C.row(r).setZero();
+    l(r) = -inf;
+    u(r) = inf;
   }
+  n_accel_rows_ = rows;
   // Unit-norm rows (file header). A zero row (a joint that moves nothing) is
   // left as is: its bounds already say whether 0 is admissible.
   for (int r = 0; r < n_accel_rows_; ++r) {

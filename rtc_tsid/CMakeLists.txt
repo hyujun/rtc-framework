@@ -113,8 +113,11 @@ if(BUILD_TESTING)
         "Path to panda.urdf used by rtc_tsid tests" FORCE)
   endif()
 
+  # URDF fixtures this package owns (test/tree_fixture.hpp).
+  set(RTC_TSID_TEST_URDF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test/urdf")
+
   # add_tsid_gtest(<target> [<stem>...]): one test binary linked to rtc_tsid and
-  # given the Panda path (test/panda_fixture.hpp). Without stems it builds
+  # given the Panda path (test/panda_fixture.hpp) and the fixture directory. Without stems it builds
   # test/<target>.cpp; with stems those files share the binary, so the suite
   # pays one process start and one link instead of one per file. A file that
   # replaces the global operator new (test/alloc_counter.hpp or an inline copy)
@@ -132,7 +135,9 @@ if(BUILD_TESTING)
     list(TRANSFORM _stems APPEND .cpp)
     ament_add_gtest(${name} ${_stems} TIMEOUT ${_timeout})
     target_link_libraries(${name} rtc_tsid)
-    target_compile_definitions(${name} PRIVATE RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
+    target_compile_definitions(${name} PRIVATE
+      RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}"
+      RTC_TSID_TEST_URDF_DIR="${RTC_TSID_TEST_URDF_DIR}")
   endfunction()
 
   # QP wrapper, WBC types, the fixed-dim QP refactor (Stage A-5a) and the
@@ -205,6 +210,33 @@ if(BUILD_TESTING)
   # dynamic_catching decision K (S6-C2): kinematic / dynamic acceleration rows,
   # judged against pinocchio's RNEA / classical acceleration on a fresh Data.
   add_tsid_gtest(test_clik_accel_constraint)
+
+  # E2-F04 (#636): the multi-frame Compute() overload. Replays the universe
+  # scenarios of the golden table through it (test/clik_golden_scenarios.hpp),
+  # and runs on three models: the Panda, the 17-DoF tree above, and the
+  # sibling rtc_urdf_bridge's serial 6-DoF fixture (source-tree path, test-only
+  # — the layout rtc_controllers' tests already rely on), whose 6 columns put
+  # the cost products on Eigen's coefficient-based kernel instead of GEMM.
+  set(_rtc_urdf_bridge_test_include "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  add_tsid_gtest(test_clik_multiframe)
+  target_include_directories(test_clik_multiframe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/test ${_rtc_urdf_bridge_test_include})
+
+  # RT-1 for the multi-frame Compute(): the C-level malloc gate, which sees
+  # allocations made inside librtc_tsid / libpinocchio / ProxQP — an
+  # operator-new counter does not (Eigen has its own allocator). The gate is
+  # rtc_base's never-installed test header (test_depend only; rtc_base does
+  # not depend on rtc_tsid, so no cycle). It defines malloc in the executable,
+  # hence a binary of its own.
+  find_package(rtc_base REQUIRED)
+  add_tsid_gtest(test_clik_multiframe_malloc)
+  rtc_base_add_test_includes(test_clik_multiframe_malloc)
+
+  # The two-frame CLIK against pink's recorded solutions of the same problems
+  # (test/golden/clik_pink_reference.inc; recorded by gen_pink_reference.py,
+  # which is NOT run by the build — pink is not a dependency).
+  add_tsid_gtest(test_clik_pink_reference)
+  target_include_directories(test_clik_pink_reference PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
 endif()
 
 ament_package()

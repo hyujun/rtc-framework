@@ -11,13 +11,13 @@
 // structured-vs-dense assembly oracle for the optimisation.
 //
 // The allocation gates: this binary links THREE sensors (CMakeLists note).
-// malloc_gate.hpp is the one that can see pinocchio's and ProxQP's own
+// rtc_base's malloc_gate.hpp is the one that can see pinocchio's and ProxQP's own
 // allocations; its positive control allocates inside pinocchio.
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
 #include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/catching/mpc_segment_core_torque.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 
 #include <Eigen/Core>

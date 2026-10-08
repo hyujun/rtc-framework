@@ -11,14 +11,11 @@
 // MovingState() asserts those three, and the transport case measures that the
 // formula WITHOUT the term is visibly wrong on this fixture.
 //
-// The C-level malloc gate is defined in this TU (one per binary). The MPC core
-// header is included for its position, not its contents: it pulls in
-// <malloc.h> (through ProxQP), whose noexcept declarations must be seen BEFORE
-// malloc_gate.hpp defines the replacements.
+// The C-level malloc gate (rtc_base's malloc_gate.hpp) is defined in this TU
+// (one per binary).
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/catching/mpc_docking_relative_state.hpp"
-#include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 
 #include <Eigen/Core>

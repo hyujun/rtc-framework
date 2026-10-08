@@ -66,12 +66,16 @@ rtc_tsid/
 │   │   ├── grasp_cache.hpp             -- LDLT-based G_pinv + GT_pinv + P_N + rank_G
 │   │   └── object_state_provider.hpp   -- ObjectStateProvider interface + IdentityObjectStateProvider stub
 │   ├── kinematics/
-│   │   └── clik_reference.hpp          -- ClikReferenceGenerator — velocity-level CLIK low-level reference
+│   │   ├── clik_reference.hpp          -- ClikReferenceGenerator — velocity-level CLIK low-level reference (단일 과제 오버로드 2 + 다중 frame 오버로드)
+│   │   ├── relative_jacobian.hpp       -- 상대 frame Jacobian (frame t 를 frame b 에서 본 운동, b 의 축) — header-only, 열 단위·할당 없음
+│   │   └── se3_error.hpp               -- 공유 SE(3) 과제 오차 (`ComputeTaskPoseError` · `ComputeTaskVelocityError`)
 │   └── solver/
 │       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼. `Init()` 1회 할당 후 `Solve()` 는 operator new · Eigen 할당 없음 (`test_catch_pose_ik` 가 두 게이트로 실측) — ProxQP 의 C 수준 할당은 남는다 (#654, 아래 절). `ResetWarmStart()` 는 다음 `Solve()` 를 x=y=z=0 에서 시작시킨다 — **연속 solve 가 서로 다른 문제일 때** (오프라인 sweep·후보 루프) warm start 는 답을 호출 순서에 의존하게 만든다. `EqualityDual()` · `InequalityDual()` 은 마지막 `Solve()` 의 multiplier 를 참조로 낸다 (복사 · 할당 없음, `converged` 일 때만 뜻이 있다) — 부호는 ProxQP 의 정류 조건 `H x + g + Aᵀy + Cᵀz = 0` 이라 상한이 활성인 행은 z > 0, 하한이면 z < 0 이다
 ├── src/                                -- 구현 파일
 ├── config/                             -- YAML 설정 파일
 ├── test/                               -- GTest 파일 (ament_add_gtest 등록 — CMakeLists.txt 참조)
+│   ├── urdf/tree_17dof.urdf            -- 합성 17-DoF tree (trunk 3 + 팔 7 × 2) — 다중 frame CLIK 스위트의 fixture (`tree_fixture.hpp`). 어떤 로봇의 모델도 아니다
+│   └── golden/                         -- 기록한 기준값: `clik_golden_data.inc` (CLIK 기본 경로), `clik_pink_reference.inc` + 그것을 만든 `gen_pink_reference.py`
 ├── CMakeLists.txt
 └── package.xml
 ```
@@ -181,7 +185,31 @@ Kinematics WBC (`ClikReferenceGenerator`) 와 dynamics WBC (`SE3Task`/`ObjectSE3
 | `Compute(…, PositionAxisTarget, …)` | 위치 3행 + LOCAL x·y 접근축 2행 (`rtc_math::se3::AxisAlignError`). 오차·Jacobian 모두 world 정렬, `Config::w_axis`·`SetAxisGain`, `LastAxisRegion()` |
 | `Config::accel_constraint` (dynamic_catching 결정 K) | 가속 제약 형태 하나: `kBox` (기본 — 위 `a_max`, 행 추가 없음·비트 일치) · `kKinematic` (추종 과제 행의 가속 `J·v̇ + J̇·v_c` ≤ `task_accel_max_linear`/`_angular`, J̇v = 등록 frame `dJv` — 영공간은 속도 box 만) · `kDynamic` (팔 인덱스 토크 `M_arm·v̇_arm + h` ≤ `eta_tau·tau_max`). `v_c` = `cache.v` 의 팔 성분 (h·J̇ 와 같은 상태). 뒤 둘은 box 아래 단위 norm 부등식 행이며 hard — box 와 함께 만족할 수 없으면 `Compute` 실패 (`LastSolve().accel_rows_violated` + `converged` false, 또는 비수렴). 행이 있으면 실패·`ResetAnchor()` 뒤 warm start 를 버린다. 다른 형태의 필드 (`eta_tau` 포함, 기본 0 = 미설정) 를 같이 주면 `Init` 거부. 진단 `accel_rows`·`accel_rows_binding`. M 에 회전자 관성은 없다 (URDF) — `eta_tau` 여유가 덮는다고 가정 |
 
-QP 는 box 를 ProxQP `eps_abs` (1e-6) 안에서만 지킨다. 기존 SE3 경로는 base 정렬 오차에 world 정렬 `rf.J` 를 곱하므로 base 가 world 에 대해 회전하면 어긋난다 (현 로봇 구성에서는 root 가 universe 정렬이라 드러나지 않음, golden 이 고정한 기존 동작). `QPSolverWrapper` 는 해가 비유한이면 ProxQP 가 SOLVED 를 내도 `converged = false` 로 보고하고 다음 solve 를 warm start 없이 시작한다 — 비유한 목표 한 tick 이 이후 solve 를 모두 막지 않게. 같은 메커니즘을 의도적으로 부를 수 있는 것이 `ResetWarmStart()` 다 (dynamic_catching D-26: 포구 후보마다 cold start 해야 오프라인 지도와 런타임 판정이 일치한다). `QPSolverConfig` 의 opt-in 셋은 기본값이 기존 동작이다: `update_preconditioner` 는 매 `Solve()` 에 Ruiz 전처리기를 다시 계산한다 (끄면 Init 의 자명한 자리표시 문제의 스케일이 계속 쓰여 반복이 늘고 거짓 PRIMAL_INFEASIBLE 이 날 수 있다). `dense_backend` 는 KKT 백엔드를 고정한다 (`Automatic` 은 제약이 변수보다 많으면 PrimalLDLT 를 고르고, 이것은 `solve()` 안에서 활성 집합이 바뀔 때마다 할당한다). `eps_primal_inf` 는 ProxQP 의 primal infeasibility 판정 임계다 (기본값은 ProxQP 의 1e-4). 그 판정은 근사 인증서를 받아들이므로 multiplier 가 빠르게 커지는 실행 가능한 QP (elastic 변수에 큰 선형 벌점) 도 `PRIMAL_INFEASIBLE` 로 보고한다 — 0 으로 두면 정확한 인증서만 남는다 (구성상 실행 가능한 QP 를 푸는 호출자용, dynamic_catching E1-F13). `update_preconditioner` 와 `dense_backend` 를 모두 켜도 ProxQP 는 `Solve()` 마다 C 수준 할당을 한다 — #654 (dynamic_catching MPC E1-F01 이 처음 잰 값).
+**다중 frame 호출 (E2-F04, #636).** `Compute(cache, MultiFrameInput)` 는 `FrameTask` 목록 (1 … `Config::max_frame_tasks`, 최대 16) 을 한 QP 로 푼다 — 과제마다 SE3 6 행 또는 위치 3 + 접근축 2 행, 자기 이득 · 가중 · feedforward 를 갖고, 비용은 과제 항의 합에 자세 · 감쇠 · 평활 항을 더한 것이다. box · 가속 제약 · anchor · 실패 분기는 단일 과제 오버로드와 같은 코드다. 기존 두 오버로드의 출력은 바뀌지 않았다 (`test_clik_golden`).
+
+| 항목 | 내용 |
+|---|---|
+| 상대 과제 (`FrameTask::base_frame_idx` ≥ 0, `Config::relative_tasks`) | 목표 · feedforward · 행이 모두 base frame 기준. 행은 `relative_jacobian.hpp` 의 `J_rel,ang = R_bᵀ(J_t,ang − J_b,ang)`, `J_rel,lin = R_bᵀ(J_t,lin − J_b,lin + [p_t − p_b]ₓ J_b,ang)` — base 축에서 본 frame 의 상대 운동이라 오차와 축이 맞고, 두 frame 의 공통 상류 관절은 열이 0 이다 (그 관절이 그 과제에 동원되지 않는다). `kKinematic` 과는 함께 쓸 수 없다 (`Init` 거부) |
+| 단일 과제 극한 | universe-base 과제 하나면 대응하는 단일 과제 오버로드와 **비트 일치** (누적 문장과 피연산자 타입을 그대로 둔다 — Eigen 이 곱의 kernel 을 거기서 고른다). registered base 는 일치하지 않는다: 아래의 기존 SE3 경로 축 불일치 (#779) 를 새 오버로드는 갖지 않는다 |
+| `Config::task_v_idx` | 과제 행이 쓰는 열 (나머지 0). 비면 `arm_v_idx` |
+| `Config::posture_groups` + `SetPostureGroupGain` | 자세 군 (서로소 index 집합, 군마다 가중 · 이득). 비면 `{arm_v_idx, w_arm}`, `{hand_v_idx, w_hand}` — `SetPostureGains(ka, kh)` 는 군 0 · 1. 모든 오버로드에 적용 |
+| 자세 속도 feedforward (`MultiFrameInput::qd_posture_ff`, 위치 + 축 오버로드의 `qd_posture_ff`) | `v_post = K (q_des − q) + q̇_ff`. 움직이는 자세 기준 (계획된 관절 궤적) 을 지연 없이 따른다. `nullptr` 이면 기존 식 그대로 |
+| 되먹임 상한 (`FrameTask::fb_lin_max` · `fb_ang_max`, 기본 0 = off) | `‖K_p e_p‖` · `‖K_o e_o‖` (축 과제는 `‖K_a e_a‖`) 를 블록별로 상한에 맞춰 줄인다 (블록 안의 방향 유지). feedforward 는 상한 **뒤에** 더한다. 발동은 `LastSolve().fb_saturated` (과제당 2 bit) |
+| 회전 오차 π 근처 | 오차의 방향이 불연속인 구간. 상태를 두지 않고 `LastSolve().rot_near_pi` (π 에서 0.05 rad 이내, 과제당 1 bit) 로만 알린다 — 그 구간을 기대하는 호출자는 `fb_ang_max` 를 켠다 |
+| `kKinematic` + 다중 과제 | 과제별 6 / 5 행을 이어 쌓는다 (`accel_rows` = 합) |
+| 입력 거부 (`LastSolve().rejected_input`) | 과제 수 · frame index · 불허된 상대 과제 · 비유한 이득 / 가중 / 상한 / feedforward · 단위가 아닌 축 · 크기가 틀린 자세 벡터 · `dt` — solve 전에 거부하고 출력은 그대로. **비유한 SE3 목표는 거부하지 않는다**: SE3 오버로드처럼 solve 까지 가서 실패 분기 (`q_ref = cache.q`, `v_ref = 0`) 를 탄다 |
+| 진단 (과제 0) | `TcpErrorNorm()` · `Manipulability()` (과제 0 frame 의 world 정렬 Jacobian, 팔 열) · 과제 0 이 축 과제면 `LastAxisRegion()` 등 |
+
+**제동 거리 한계 (`Config::brake_from_torque`, `kDynamic` 전용, 기본 off — 모든 오버로드).** 위치 box 는 한 tick 앞만 본다. 속도 한계로 달리던 관절은 위치 한계 직전 tick 에 토크 행이 허용하지 않는 감속을 요구받고 호출이 실패한다. 이 옵션은 팔 관절의 속도를 멈출 수 있는 값으로 묶는다: `0 ≤ v ≤ 2ad / (a·dt + √(a²dt² + 2ad))`, `d` = 위치 한계까지의 거리 (반대 방향은 대칭).
+
+- **감속도는 토크 한계에서 나온다** — `a = brake_margin · max(0, (η τ_max ± h_i) / M_ii)`. 따로 정하는 제동 상수가 없고, 감속할 토크가 없는 방향은 `v = 0` 이다.
+- **이산 tick 의 식이다.** 위 식은 `v·dt + v²/(2a) = d` 의 양의 근이다. 명령은 한 tick 동안 유지되고 속도는 tick 마다 `a·dt` 씩만 줄 수 있으므로, `v` 에서 멈출 때까지 가는 거리는 `dt·(v + (v − a·dt) + …)` 다 — `v` 가 `a·dt` 의 정수배면 `v²/(2a) + v·dt/2`, 그 사이에서는 `a·dt²/8` 까지 더 길다. `v·dt` 는 모든 `v` 에서 그것을 덮고, 한 tick 제동과 1-step 위치 box 를 함께 놓아도 닫혀 있다 (곡선 아래의 `(d, v)` 에서 `v' = max(0, v − a·dt)` 는 `d' = d − v·dt` 에서 다시 곡선 아래이고 `v' ≤ d'/dt`). 연속형 `√(2ad)` 도, 정수배에서만 맞는 `v·dt/2` 식도 마지막 tick 에서 위치 box 와 양립하지 않는다.
+- **토크 행보다 조이지 않는다.** 한계가 현재 속도에서 한 tick 에 도달할 수 있는 값보다 좁으면 그 값까지 넓힌다 (QP 를 실행 불가능하게 만들지 않는다).
+- **보장이 아니라 실행 가능성 휴리스틱이고, `brake_margin` < 1 로 쓴다.** `M_ii` 는 관성 결합을 무시하고 URDF 에는 회전자 관성이 없어 `a` 가 낙관적일 수 있다. 또 `a` 는 상태의 함수다 — 위의 닫힘은 `a` 가 상수일 때의 것이고, 운동 중에 `a` 가 줄면 (자세에 따라 중력 항이 바뀐다) `brake_margin = 1` 로 곡선 위를 달리던 관절은 다음 tick 의 곡선을 토크 행이 줄일 수 있는 것보다 많이 넘는다. hard 제약은 어느 경우에도 토크 행이다.
+- 비유한 `M` · `h` · `q` · `v` 는 `max` / `clamp` 가 조용한 정지로 세탁하기 전에 호출을 실패시킨다 (NUM-7). 진단: `brake_active` · `brake_static_infeasible` (`|h_i| > η τ_max,i` — 유지조차 못 하는 관절) · `brake_box_empty`.
+- 실측 (`test_clik_multiframe`, 17-DoF tree). 5 관절을 위치 한계 사이로 1000 tick 왕복: 끄면 실패 4 회, 켜면 0 회. 한 관절만 풀고 나머지를 잠근 접근 20 회 (결합이 도와주지 않는 경우): 끄면 한계 직전의 실패 132 회, 켜면 `brake_margin` 1.0 · 0.9 · 0.8 모두 0 회. 한계에서 0.15 – 0.2 rad 떨어진 가속 → 제동 전환 tick 의 실패가 `brake_margin` 1.0 에서 2 회, 0.9 에서 0 회, 0.8 에서 1 회 남는다 — 앞의 것은 위의 `a` 변동이고, 뒤의 것은 그 fixture 에서 토크 행이 자기 box 행과 평행해 ProxQP 가 실행 가능한 문제에 PRIMAL_INFEASIBLE 을 내는 것이다 (#654).
+
+QP 는 box 를 ProxQP `eps_abs` (1e-6) 안에서만 지킨다. 기존 SE3 경로는 base 정렬 오차에 world 정렬 `rf.J` 를 곱하므로 base 가 world 에 대해 회전하면 어긋난다 (golden 이 고정한 기존 동작 — #779; 다중 frame 오버로드의 상대 과제는 이 불일치가 없다). `QPSolverWrapper` 는 해가 비유한이면 ProxQP 가 SOLVED 를 내도 `converged = false` 로 보고하고 다음 solve 를 warm start 없이 시작한다 — 비유한 목표 한 tick 이 이후 solve 를 모두 막지 않게. 같은 메커니즘을 의도적으로 부를 수 있는 것이 `ResetWarmStart()` 다 (dynamic_catching D-26: 포구 후보마다 cold start 해야 오프라인 지도와 런타임 판정이 일치한다). `QPSolverConfig` 의 opt-in 셋은 기본값이 기존 동작이다: `update_preconditioner` 는 매 `Solve()` 에 Ruiz 전처리기를 다시 계산한다 (끄면 Init 의 자명한 자리표시 문제의 스케일이 계속 쓰여 반복이 늘고 거짓 PRIMAL_INFEASIBLE 이 날 수 있다). `dense_backend` 는 KKT 백엔드를 고정한다 (`Automatic` 은 제약이 변수보다 많으면 PrimalLDLT 를 고르고, 이것은 `solve()` 안에서 활성 집합이 바뀔 때마다 할당한다). `eps_primal_inf` 는 ProxQP 의 primal infeasibility 판정 임계다 (기본값은 ProxQP 의 1e-4). 그 판정은 근사 인증서를 받아들이므로 multiplier 가 빠르게 커지는 실행 가능한 QP (elastic 변수에 큰 선형 벌점) 도 `PRIMAL_INFEASIBLE` 로 보고한다 — 0 으로 두면 정확한 인증서만 남는다 (구성상 실행 가능한 QP 를 푸는 호출자용, dynamic_catching E1-F13). `update_preconditioner` 와 `dense_backend` 를 모두 켜도 ProxQP 는 `Solve()` 마다 C 수준 할당을 한다 — #654 (dynamic_catching MPC E1-F01 이 처음 잰 값).
 
 같은 게이트가 **인접 스칼라 3개**도 함께 검증합니다 (NUM-7, 같은 함수·같은 실패 의미론). `v_limit` 와 `anchor_drift_max` 는 "off" 위치가 `<= 0` 인 스위치인데 읽는 쪽이 `> 0.0` 술어라 (`vel_box = (v_limit_ > 0.0)`, `if (anchor_drift_max_ > 0.0)`) **비유한 값이 기능을 인가된 off sentinel 과 구별 불가하게 조용히 끕니다** — 속도 clamp 와 carry-forward anti-windup clamp 가 사라지는데도 `q_ref`/`v_ref` 는 유한해서 `Compute()` 의 `allFinite()` 출구 가드가 안 뜹니다. 그래서 가드는 `> 0` 이 아니라 `std::isfinite` 입니다 — **유한한** 비양수 (`0`, `-1`) 는 정당한 비활성화 요청이라 계속 통과하고, `±inf` 는 통과하지 않습니다 ("off" 에는 이미 인가된 인코딩이 있고, `-inf` 는 위치 박스가 거부한 unbounded 인코딩과 같습니다). `damping_sq`/`w_task`/`w_arm`/`w_hand` 는 가드가 **있었지만** 유한성 게이트가 아니었습니다 — `!(x > 0.0)` 은 NaN 은 막아도 `+inf` 를 통과시키고, `w_*` 의 `x < 0.0` 은 NaN 조차 통과시킵니다 (`!(x >= 0.0)` 로 고쳐도 `+inf` 가 남습니다) — 무한 posture 가중치는 H 대각에 얹혀 soft-priority 계약 (`w_task ≫ w_arm,w_hand ≫ damping_sq`) 자체를 무의미하게 만들므로 **유한성 + 부호 두 검사가 모두** 필요합니다.
 
@@ -307,6 +335,7 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 | `yaml-cpp` | YAML 설정 파싱 (iterator 함정: `it->first/second` 는 prvalue Node — `const auto& x = it->second` 는 dangling. `YAML::Node x = it->second` 로 복사할 것. `LoadPhasePresets` 참고) |
 | `ament_cmake` | 빌드 시스템 |
 | `ament_cmake_gtest` | 테스트 (test_depend) |
+| `rtc_base` | test 전용 헤더 `rtc_base/testing/malloc_gate.hpp` (test_depend — 설치되지 않는 소스 트리 경로, `test_clik_multiframe_malloc`). 런타임 의존은 없다 |
 
 ---
 
@@ -352,6 +381,9 @@ colcon test-result --verbose
 | `test_phase3_integration` | Phase 3 모듈 통합 (WQP/HQP + SE3 + CoM + preset 전환) |
 | `test_clik_golden` | CLIK 기본 경로 golden-vector (4 시나리오 2520 값, Release 비트 일치·sanitizer 상대 1e-12) + 기록 입력의 분기 도달 검사 |
 | `test_clik_options` | S2.2b 옵션: 진단, `max_iter`, 관절별 속도 한계, 가속 box·`bound_conflict`·`ResetAnchor` (랜덤 1e4 tick), 평활, twist feedforward, 명령값 평가 모드, 위치 + 접근축 오버로드 (G5-A 수렴, 반평행 출발, base 변환, 할당 0) |
+| `test_clik_multiframe` | 다중 frame 오버로드 (E2-F04): golden 표의 universe 시나리오 2 개를 새 오버로드로 재생해 SE3 오버로드와 비트 일치 (입력은 `clik_golden_scenarios.hpp` 하나) · 단일 과제가 두 단일 과제 오버로드와 비트 일치 (9-DoF · 6-DoF, 옵션 4 종, 폐루프 100 tick) · 상대 Jacobian 대 상대 pose 의 유한차분 (새 `pinocchio::Data`) · 2 과제 solve 대 닫힌식 가중 최소제곱의 정류 잔차 · formulation §4 항목 8 (`v* = q̇_ref`) · tree 17 토크 행 대 RNEA · 과제별 가속 행 · 되먹임 상한 · 제동 한계 (켬 / 끔 대조) · 입력 거부 26 종의 출력 불변 |
+| `test_clik_multiframe_malloc` | 다중 frame `Compute()` 의 RT-1: `rtc_base` 의 C malloc gate 로 **solve 직전까지 할당 0** (가속 행에서 실패하는 호출 — 입력 검사 · 상대 Jacobian · 비용 · box · 제동 · 행 조립 · 실패 분기를 지난다). 전체 호출의 C 할당 (ProxQP 안) 은 test property 로 기록만 한다 (#654) |
+| `test_clik_pink_reference` | 2-frame CLIK 대 pink (독립 공개 QP IK) 의 기록된 해 — world 과제 + 상대 과제 + 자세 + 위치 ∩ 속도 한계, 9-DoF 팔과 17-DoF tree 24 문제. 두 층: pink 그대로 (Jlog6 포함, 1 mm / 1 mrad 오차, 허용 `1e-5 + 2e-3‖v‖`) · Jlog6 를 뺀 pink (0.2 m / 0.5 rad, 허용 1e-5). 기준값은 `golden/gen_pink_reference.py` 가 만든다 (빌드가 돌리지 않는다 — 절차 · 두 정식화의 대응 · 버전은 그 docstring). pink 가 없는 host 에서도 건너뛰지 않는다 |
 | `test_clik_reference` | CLIK reference: TCP 수렴, nullspace 무간섭, hand decoupling, singularity bound, RT alloc 0, 위치 박스 검증 (NUM-7 — NaN/±inf/역전 거부, 등호 통과), 인접 스칼라 유한성 (`v_limit`·`anchor_drift_max`·`w_arm`/`w_hand` — 비유한 거부, 인가된 off 값 통과) |
 
 ---

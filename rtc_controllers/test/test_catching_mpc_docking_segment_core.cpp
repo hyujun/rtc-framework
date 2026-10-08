@@ -6,14 +6,13 @@
 // the returned solution is re-evaluated outside the core, by a route that
 // shares no code with it.
 //
-// The C-level malloc gate is defined in this TU (one per binary); the core
-// header comes first because it pulls in <malloc.h> (through ProxQP), whose
-// noexcept declarations must be seen before the gate defines the replacements.
+// The C-level malloc gate (rtc_base's malloc_gate.hpp) is defined in this TU
+// (one per binary).
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 #include "rtc_controllers/catching/node_follower.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 

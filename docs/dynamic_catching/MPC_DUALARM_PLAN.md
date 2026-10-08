@@ -158,8 +158,8 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | ID | 무엇을 정했나 | feature |
 |---|---|---|
 | MD-2 | QP 다중 frame CLIK 컨트롤러는 새 config key `demo_dualarm_controller` 로 추가한다. 기존 `demo_task_controller` (DLS) 와 그 소비 로봇은 건드리지 않는다 | E2-F05 |
-| MD-14 | CLIK 에 제동 거리 기반 속도 한계 (opt-in), 충돌 damper (선택), 오차 되먹임 상한을 둔다. 앞의 둘은 기본 꺼짐이다 (기존 로봇의 golden 회귀를 지키기 위해) | E2-F04 |
-| MD-36 | 자세 과제의 속도 feedforward 는 자세 목표를 $q_{ref}+\dot q_{ref}/K_n$ 으로 넘겨 얻는다 (`rtc_tsid` 불변). 다중 frame CLIK 의 API 는 E2-F04 가 정한다 | E2-F04 |
+| MD-14 | CLIK 에 제동 거리 기반 속도 한계 (opt-in), 충돌 damper (선택), 오차 되먹임 상한을 둔다. 셋 다 기본 꺼짐이다 (기존 로봇의 golden 회귀를 지키기 위해). 제동 한계의 감속도는 상수가 아니라 `dynamic` 토크 한계에서 얻는다. 충돌 damper 는 E3-F03 의 거리 코어 뒤다 | E2-F04 |
+| MD-36 | 자세 과제의 속도 feedforward 는 CLIK 의 자세 feedforward 입력 (`qd_posture_ff`) 으로 넘긴다. E2-F04 가 그 입력을 더하면서 자세 목표를 $q_{ref}+\dot q_{ref}/K_n$ 으로 옮기던 등가식을 대체했다 | E2-F04 |
 | MD-86 | `sim_g1_p1b` 의 `enable_mpc` 는 CPU layout 만 고른다. G1 의 포구 컨트롤러가 오면 그 기본값을 그 feature 에서 다시 정한다 | E2-F05 · E3-F05 |
 | MD-12 | 각운동량 항은 유지한다 — 목적은 왼팔의 운동 생성과 floating base 확장이고, 효과는 포구 성공률이 아니라 각운동량 변화율의 크기로 판정한다 | E3-F02 |
 | MD-13 | 토크는 1차까지 선형화하고 토크 · 자기충돌 행에는 slack 을 둔다. 위치 · 속도 한계, 종단 등식, trust region, 공–왼팔 행은 hard 다. 동역학은 손을 기준 자세로 잠근 축소 모델로 계산한다 | E3-F02 · F03 |

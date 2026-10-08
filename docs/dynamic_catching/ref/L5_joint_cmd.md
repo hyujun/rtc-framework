@@ -70,11 +70,11 @@ $$J_a=S\,R_{WC}^\top J_\omega^{LWA}(q_c)\in\mathbb R^{2\times n_v},\qquad r_a=S\
 
 $e_a=\theta\hat u$ 는 회전벡터 오차다 (L4 §4.5, `rtc_math` se3 의 `AxisAlignError`). $e_a\perp z_C$ 이므로 $R_{WC}^\top e_a$ 의 $z$ 성분이 0 이고 $S$ 가 정보를 버리지 않는다. 무효 · 반평행 데드밴드 분기는 `LastAxisRegion()` 으로 호출자에게 노출된다. 입력이 비유한이거나 축이 단위가 아니면 solve 전에 실패한다.
 
-위치 + 접근축 경로는 오차 · Jacobian 을 모두 world 정렬 (LWA) 로 쓰고 base frame 은 목표를 world 로 옮기는 데만 쓴다. SE3 경로는 base 정렬 오차와 world 정렬 `rf.J` 를 곱한다 (root 가 universe 정렬이면 같다).
+위치 + 접근축 경로는 오차 · Jacobian 을 모두 world 정렬 (LWA) 로 쓰고 base frame 은 목표를 world 로 옮기는 데만 쓴다. SE3 경로는 base 정렬 오차와 world 정렬 `rf.J` 를 곱한다 (base 의 축이 world 와 같을 때만 맞다 — #779). 다중 frame 호출 (§5.1) 의 base frame 은 뜻이 다르다: 과제를 그 frame 기준의 상대 과제로 만들고, 오차와 행이 모두 base 의 축이다.
 
 기존 SE3 포즈 오차 헬퍼 (`ComputeTaskPoseError`) 는 전체 SO(3) 오차라 roll 기준이 없는 이 과제에 쓰지 않는다. $J_a=f'(c)mm^\top+f(c)[a_d]_\times[z]_\times$ 를 $J_\omega^{W}$ 에 곱하는 동치 표현 (L4 §4.5) 은 $\theta\to\pi$ 에서 발산하므로 채택하지 않는다.
 
-**자세 (posture) 과제.** 6 축에서 5-DoF 과제를 풀면 1 자유도가 남는다. posture 는 두 군이다 — 팔 ($v_{post}=K_n(q_{des}-q)$ on arm indices) 과 손 (같은 형태, 손 인덱스). 손 posture 항이 존재하는 것은 CLIK 이 결합 모델 전체 $n_v$ 를 푸는 구조이기 때문이고, 손 device 명령은 L6 시퀀서가 쓰므로 CLIK 의 손 출력은 팔 명령에 쓰지 않는다. 컨트롤러는 손을 solve 안에서 잠근다 (속도 box 를 $10^{-9}$ — 손바닥에 달린 catch frame 의 Jacobian 에 손 관절이 들어오므로, 풀어 두면 QP 가 일어나지 않을 손 운동으로 과제를 만족시키고 팔이 그만큼 덜 간다).
+**자세 (posture) 과제.** 6 축에서 5-DoF 과제를 풀면 1 자유도가 남는다. posture 는 두 군이다 — 팔 ($v_{post}=K_n(q_{des}-q)$ on arm indices) 과 손 (같은 형태, 손 인덱스). 손 posture 항이 존재하는 것은 CLIK 이 결합 모델 전체 $n_v$ 를 푸는 구조이기 때문이고, 자세 기준에는 속도 feedforward 를 더할 수 있다 — $v_{post}=K_n(q_{des}-q)+\dot q_{ff}$ (`qd_posture_ff`, 없으면 앞 항만). `mpc` 의 추종 tick 이 구간의 $q_{ref}$ 를 $q_{des}$ 로, $\dot q_{ref}$ 를 $\dot q_{ff}$ 로 넘긴다 (MD-36, L7 §4.3a): 자세 행이 움직이는 관절 기준을 지연 없이 따른다. `closed_form` 은 feedforward 를 넘기지 않는다. 손 device 명령은 L6 시퀀서가 쓰므로 CLIK 의 손 출력은 팔 명령에 쓰지 않는다. 컨트롤러는 손을 solve 안에서 잠근다 (속도 box 를 $10^{-9}$ — 손바닥에 달린 catch frame 의 Jacobian 에 손 관절이 들어오므로, 풀어 두면 QP 가 일어나지 않을 손 운동으로 과제를 만족시키고 팔이 그만큼 덜 간다).
 
 ### 4.3 QP
 
@@ -102,6 +102,12 @@ $$\ell_i=\max\Big(-\dot q_{\max,i},\ \frac{q_{\min,i}+m_q-q_{c,i}}{\Delta t}\Big
 **출하는 `dynamic` 이다.** `ur5e_p1b` · `iiwa7_leap` 의 `demo_catching_controller.yaml` 은 두 로봇 모두 `accel_constraint: dynamic`, `eta_tau: 0.8` 이다. `robot.arm.qdd_max` 의 소비자는 CLIK 이 아니라 탐색의 도달 시간, QP 없는 정지 램프, homing 이다. 그 상수 가속 한계는 포구 자세에서 토크가 허락하는 가속보다 훨씬 보수적이라, CLIK 에 걸면 명령이 기준 (특히 `mpc` 의 구간) 보다 늦는다 — `dynamic` 은 자세 의존 $M,h$ 로 그 보수성을 실행층에서 없앤다. 계획기의 도달 시간 순위 항은 여전히 `qdd_max` box 층이다.
 
 행은 **단위 norm** 으로 스케일한다 — 가능 집합은 그대로이고, $M/\Delta t$ · $J/\Delta t$ 행이 box 행보다 $10^2$–$10^5$ 배 커서 ProxQP 가 가능한 문제에 PRIMAL_INFEASIBLE 을 내는 것을 막는다. 행이 있으면 실패한 solve 와 `ResetAnchor()` 뒤에 warm start 를 버린다 (한 번 실패한 dual 에서 시작하면 infeasible 이 이어진다). **행은 hard 다.** 속도 ∩ 위치 box 와 동시에 만족할 수 없으면 (예: 한계 근처에서 중력 토크를 못 버티는 경우) 관절별로 물러서는 해소 규칙이 없다 — 행이 관절을 결합하기 때문이다. 그때 호출은 **실패**하고 (`LastSolve().accel_rows_violated` + `converged` false — status 는 SOLVED 일 수 있다, 또는 수렴 실패 status) 아래 QP 비의존 abort 경로로 간다. 행을 깨는 명령을 돌려주지 않는다. 진단: `accel_rows` (조립한 행 수) · `accel_rows_binding` (해가 경계에 닿은 행 수). abort 경로의 감속은 형태와 무관하게 `qdd_max` box 를 쓴다.
+
+**제동 거리 한계 (`brake_from_torque`, `dynamic` 전용 · 기본 꺼짐 — 포구 YAML 에는 아직 키가 없다).** 위 box 의 위치 항은 한 tick 앞만 본다. 속도 한계로 달리던 관절은 위치 한계 직전 tick 에 한 tick 안의 정지를 요구받고, 그 감속은 토크 행이 허용하지 않아 solve 가 실패한다. 이 옵션은 팔 관절의 box 를 멈출 수 있는 속도로 더 좁힌다:
+
+$$0\le v_i\le\frac{2a_id_i}{a_i\Delta t+\sqrt{a_i^2\Delta t^2+2a_id_i}},\qquad a_i=m\max\Big(0,\ \frac{\eta_\tau\tau_{\max,i}+h_i}{M_{ii}}\Big),\quad d_i=q_{\max,i}-m_q-q_{c,i}$$
+
+($q_{\min}$ 쪽은 $h_i$ 의 부호와 $d_i$ 를 바꾼 대칭.) 감속도는 토크 한계가 지금 상태에서 남기는 값이라 따로 정하는 제동 상수가 없다. 식은 연속 시간의 $\sqrt{2ad}$ 가 아니라 이산 tick 의 것이다 ($v\Delta t+v^2/(2a)=d$ 의 양의 근) — 명령은 한 tick 동안 유지되고 속도는 tick 마다 $a\Delta t$ 씩만 줄어든다. 한계는 토크 행이 한 tick 에 도달할 수 있는 속도보다 좁아지지 않는다. **보장이 아니라 실행 가능성 장치**이고 `brake_margin` ($m\lt1$) 을 두고 쓴다: $M_{ii}$ 가 관성 결합과 회전자 관성을 빼고, $a_i$ 가 상태에 따라 변하므로 $m=1$ 은 그 변동을 받을 여유가 없다. hard 제약은 여전히 토크 행이다. 유도와 §2.2 의 상수 $a_{brk}$ 식과의 차이는 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) §10.3.
 
 **반복 상한과 상태 노출.** `max_iter` (기본 20, `joint_cmd.qp.max_iter`) 를 넘거나 수렴 실패하거나 비유한 결과가 나오면 `Compute` 는 false 를 돌려준다. solver status · 반복 수 · solve time 은 `LastSolve()` 로 노출된다.
 
@@ -159,16 +165,18 @@ MuJoCo 팔 actuator (`<general>` position-PD) 는 `servoj` 와 동특성이 다�
 
 ### 5.1 CLIK 구조 결정 (`rtc_tsid`)
 
-**행 선택형 확장 — formulation 클래스를 택하지 않는다.** `ClikReferenceGenerator` 한 클래스에 옵션을 더한다. `QPSolverWrapper` · se3 오차만 공유하는 formulation 클래스는 택하지 않는다. box 조립 · 위치 한계 collapse · anchor 적분 · 실패 처리를 두 벌로 유지해야 하고, 구현이 하나뿐이라 분리 이득이 없다 (P5, ARCH-3). `rtc_controllers` 의 DLS task-velocity 법칙 (`task_vel_core`, DemoTask · DemoCompliance) 도 후보가 아니다 — box 제약이 없고, 가속 제약 · 위치 한계를 QP 로 푸는 것이 이 확장의 목적이다. **이 결정은 CLIK 을 다중 frame 으로 일반화할 때 다시 연다.**
+**행 선택형 확장 — formulation 클래스를 택하지 않는다.** `ClikReferenceGenerator` 한 클래스에 옵션을 더한다. `QPSolverWrapper` · se3 오차만 공유하는 formulation 클래스는 택하지 않는다. box 조립 · 위치 한계 collapse · anchor 적분 · 실패 처리를 두 벌로 유지해야 하고, 구현이 하나뿐이라 분리 이득이 없다 (P5, ARCH-3). `rtc_controllers` 의 DLS task-velocity 법칙 (`task_vel_core`, DemoTask · DemoCompliance) 도 후보가 아니다 — box 제약이 없고, 가속 제약 · 위치 한계를 QP 로 푸는 것이 이 확장의 목적이다. **다중 frame 일반화 (E2-F04) 에서 이 결정을 다시 열었고 그대로 두었다** — 과제 목록을 받는 세 번째 `Compute` 오버로드를 같은 클래스에 더했다. box · 가속 행 · solve · anchor · 실패 분기를 그대로 공유하고, 과제 하나의 극한이 기존 오버로드와 비트 단위로 같다는 것이 게이트다 (구현이 여전히 하나다).
 
 | 항목 | 결정 |
 |---|---|
-| 과제 입력 | `Compute` 오버로드 둘: SE3 (6 행, `twist_ff` 포인터 선택) 와 `PositionAxisTarget` (base frame 의 위치 · 접근축 (단위) · 선속도 · 각속도 feedforward, 5 행). 한 호출에 frame 하나 |
+| 과제 입력 | `Compute` 오버로드 셋. 단일 과제 둘: SE3 (6 행, `twist_ff` 포인터 선택) 와 `PositionAxisTarget` (base frame 의 위치 · 접근축 (단위) · 선속도 · 각속도 feedforward, 5 행, 자세 속도 feedforward 선택) — 한 호출에 frame 하나. 다중 frame: `MultiFrameInput` 의 `FrameTask` 목록 (과제마다 종류 · frame · base · 이득 · 가중 · feedforward · 되먹임 상한), 자세 목표와 자세 속도 feedforward. 포구 컨트롤러는 `PositionAxisTarget` 오버로드를 쓴다 |
+| 상대 과제 | 다중 frame 호출에서 `base_frame_idx` ≥ 0 이면 행이 base 의 축에서 본 상대 Jacobian 이다 (`relative_jacobian.hpp`). 공통 상류 관절의 열이 0 이라 그 관절이 그 과제에 동원되지 않는다. `kinematic` 과는 함께 쓸 수 없다 |
+| 자세 군 | `Config::posture_groups` (서로소 관절 집합마다 가중 · 이득). 비면 팔 · 손 두 군이다 |
 | 공유 코드 | box 조립, 가속 행, solve, anchor 적분 · 실패 분기는 private helper 로 공유한다 (floating-point 누적 순서를 golden 이 비트 단위로 고정) |
 | 접근축 행 | $J_a=S\,R_{WC}^\top J_\omega^{LWA}$, $r_a=S\,R_{WC}^\top(K_a e_a+\omega_{ff})$, $e_a$ = `rtc::math::se3::AxisAlignError` |
-| 옵션 (전부 기본 off) | 관절별 속도 한계, 가속 제약 (`box` · `kinematic` · `dynamic` — 포구 컨트롤러는 뒤의 둘만 넘긴다), 평활 가중 $w_s$, `max_iter`, SE3 경로의 twist feedforward, 명령값 평가 모드 |
+| 옵션 (전부 기본 off) | 관절별 속도 한계, 가속 제약 (`box` · `kinematic` · `dynamic` — 포구 컨트롤러는 뒤의 둘만 넘긴다), 평활 가중 $w_s$, `max_iter`, SE3 경로의 twist feedforward, 명령값 평가 모드, 자세 속도 feedforward, 과제별 되먹임 상한 (다중 frame 호출), 제동 거리 한계 (`dynamic` 에서만, §4.3) |
 | 명령값 평가 모드 | CLIK 안에 cache 를 두지 않는다. 호출자가 $q_c$ 로 갱신한 cache 를 넘긴다 (§4.2). anchor 는 하나 (cache.q) 다 |
-| 진단 | `LastSolve()`: `reached_solve` · `converged` · `non_finite` · ProxQP status · 반복 수 · solve time · `command_mismatch` · `bound_conflict` + `conflict_mask` · `accel_rows` · `accel_rows_binding` · `accel_rows_violated` |
+| 진단 | `LastSolve()`: `reached_solve` · `converged` · `non_finite` · ProxQP status · 반복 수 · solve time · `command_mismatch` · `bound_conflict` + `conflict_mask` · `accel_rows` · `accel_rows_binding` · `accel_rows_violated`. 다중 frame 호출: `tasks` · `rejected_input` · `fb_saturated` · `rot_near_pi`. 제동 한계: `brake_active` · `brake_static_infeasible` · `brake_box_empty` |
 
 차원: 결정변수는 **결합 모델 전체 $n_v$**. CLIK 의 control model 은 actuated 축약 모델이 있으면 그것이고 없을 때만 tree/full 로 fallback 한다. 팔 열은 `Config::arm_v_idx`, 손 열은 `hand_v_idx` 로 고른다 (이 둘이 posture 의 두 군이다). 할당은 `Init` 에서만, `Compute` 는 noexcept · 할당 0. `Manipulability()` (팔 6×6 damped √det) 는 진단값이다.
 
@@ -190,7 +198,7 @@ MuJoCo 팔 actuator (`<general>` position-PD) 는 `servoj` 와 동특성이 다�
 **CLIK 이 받는 입력은 planner 가 정한다** (단계 2).
 
 - `closed_form` (`RunTrackingTick`): soft-catch DS 의 목표 상태 (공 샘플 $p,v,a$ at now_lead) 를 γ 프로파일과 함께 기준 생성기 (`reference_->Step`) 에 넣어 얻은 $x_{ref},\dot x_{ref}$ 가 위치 목표와 선속도 ff 다. 접근축은 계획의 고정축 $a_d$, 각속도 ff 는 없다 (고정 포구점의 접근축은 돌지 않는다 — 꾸며낸 $\omega_{ff}$ 는 목표가 돈다고 스스로 말하는 것이다). 자세 목표는 시행 시작 자세다.
-- `mpc` (`RunSegmentTick`): RT 는 soft-catch DS 를 돌리지 않는다. MPC 구간의 샘플러가 catch frame 의 pose · twist 를 낸다 — 위치 목표 = 샘플 pose 의 병진, 접근축 = 샘플 pose 회전의 $z$ 열, 선속도 ff = 샘플 twist 의 선속도 부분, 각속도 ff = twist 의 각속도 부분. 자세 목표는 팔 관절마다 $q_{ref}+\dot q_{ref}/K_n$ ($q_{ref},\dot q_{ref}$ 는 구간 샘플의 관절 위치 · 속도) 이고 손 성분은 시행 자세를 유지한다. $K_n(q'-q)$ 에 $q'=q_{ref}+\dot q_{ref}/K_n$ 을 넣으면 $K_n(q_{ref}-q)+\dot q_{ref}$ 가 되어 자세 행에 속도 feedforward 를 주는 등가 형태다 (CLIK 에 자세 속도 ff 입력이 따로 없다). 구간이 비어 있거나 샘플이 비유한이면 abort 경로다.
+- `mpc` (`RunSegmentTick`): RT 는 soft-catch DS 를 돌리지 않는다. MPC 구간의 샘플러가 catch frame 의 pose · twist 를 낸다 — 위치 목표 = 샘플 pose 의 병진, 접근축 = 샘플 pose 회전의 $z$ 열, 선속도 ff = 샘플 twist 의 선속도 부분, 각속도 ff = twist 의 각속도 부분. 자세 목표는 팔 관절마다 $q_{ref}$, 자세 행의 속도 feedforward 는 $\dot q_{ref}$ 다 ($q_{ref},\dot q_{ref}$ 는 구간 샘플의 관절 위치 · 속도 — CLIK 의 `qd_posture_ff`, §4.2). 손 성분은 시행 자세를 유지하고 feedforward 가 0 이다. 자세 행의 기준은 $K_n(q_{ref}-q)+\dot q_{ref}$ 다. 구간이 비어 있거나 샘플이 비유한이면 abort 경로다.
 
 catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으로 추가한 frame 이다 — 컨트롤러는 frame 이름만 참조하고 `RegisterFrame` 으로 index 를 얻는다. 파라미터는 `LoadConfig(YAML)` + `ParseXxxParams`, runtime gain 은 `declare_parameter` (L8).
 
@@ -209,7 +217,7 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 | `robot.arm.limit_margin` | rad | CLIK 에 넘기는 위치 box 를 좁히는 마진 $m_q$ (§4.3) |
 | `joint_cmd.K_p` | 1/s | 위치 행 게인 (CLIK 대역; L4 `k_axis` 보다 크게) |
 | `joint_cmd.K_a` | 1/s | 접근축 행 게인 $K_a$ |
-| `joint_cmd.K_n` | 1/s | posture 게인 (`SetPostureGains`, 팔 · 손 같은 값). `mpc` 의 자세 목표 $q_{ref}+\dot q_{ref}/K_n$ 에도 쓴다 |
+| `joint_cmd.K_n` | 1/s | posture 게인 (`SetPostureGains`, 팔 · 손 같은 값). `mpc` 에서는 0 보다 커야 한다 (MD-34) — 자세 행의 기준 $K_n(q_{ref}-q)+\dot q_{ref}$ 에서 $q_{ref}$ 로 당기는 항이 이것뿐이라, 0 이면 여유 자유도가 구간에서 표류한다 |
 | `joint_cmd.w_task`, `w_a`, `w_arm` | – | 가중 $w_{task}$, $w_a$, $w_{arm}$ (= $w_{hand}$). 순서 $w_{task}\gg w_{arm}\gg\mu^2$ |
 | `joint_cmd.damping_sq` | – | $\mu^2$ |
 | `joint_cmd.w_smooth` | – | 평활 항 $w_s$ |

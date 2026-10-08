@@ -590,7 +590,7 @@ if(BUILD_TESTING)
   # whose Eigen/C allocations neither the operator-new gate nor rtc_base's Eigen
   # tripwire can see (testing-debug.md §RT-1). So the RT gate here is THREE
   # sensors: operator new (${rtc_controllers_test_include}/alloc_gate.hpp),
-  # the Eigen tripwire (${rtc_base_test_include}), and the C-level
+  # and from ${rtc_base_test_include} the Eigen tripwire and the C-level
   # malloc_gate.hpp, which defines malloc in this executable and so counts
   # allocations made inside the shared libraries too. Real arm URDFs come from
   # the sibling robot_descriptions tree by source path (test-only, like the

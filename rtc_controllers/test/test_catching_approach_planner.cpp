@@ -20,6 +20,7 @@
 // non-identity permutation of the model order, T_arm ≠ 0 (real ≠ lead axis),
 // instants are realistic absolute steady ns, and both a 6- and a 7-joint arm
 // run.
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/catching/ball_node_samples.hpp"
 #include "rtc_controllers/catching/catch_search.hpp"  // CatchSolution
 #include "rtc_controllers/catching/mpc_segment_planner.hpp"
@@ -30,7 +31,6 @@
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
-#include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"

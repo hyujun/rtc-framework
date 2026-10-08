@@ -1,0 +1,268 @@
+<?xml version="1.0"?>
+<!--
+  Synthetic fixed-base tree for the multi-frame CLIK suites: a 3-joint trunk
+  (yaw, roll, pitch) carrying two 7-joint arms. 17 revolute joints, nq == nv.
+  Not a model of any robot: lengths, masses and limits are round numbers
+  chosen so that no joint is degenerate at the zero configuration plus a
+  small bend, every link has a positive-definite inertia, and the effort
+  limits hold the tree statically with margin.
+-->
+<robot name="tree_17dof">
+  <link name="base"/>
+
+  <!-- Trunk -->
+  <link name="trunk_link_1">
+    <inertial>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <mass value="4.0"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="trunk_link_2">
+    <inertial>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <mass value="4.0"/>
+      <inertia ixx="0.03" ixy="0" ixz="0" iyy="0.03" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+  <link name="torso">
+    <inertial>
+      <origin xyz="0 0 0.2" rpy="0 0 0"/>
+      <mass value="12.0"/>
+      <inertia ixx="0.25" ixy="0" ixz="0" iyy="0.2" iyz="0" izz="0.12"/>
+    </inertial>
+  </link>
+  <joint name="trunk_yaw" type="revolute">
+    <parent link="base"/>
+    <child link="trunk_link_1"/>
+    <origin xyz="0 0 0.8" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5" upper="1.5" effort="200.0" velocity="2.0"/>
+  </joint>
+  <joint name="trunk_roll" type="revolute">
+    <parent link="trunk_link_1"/>
+    <child link="trunk_link_2"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.5" upper="0.5" effort="200.0" velocity="2.0"/>
+  </joint>
+  <joint name="trunk_pitch" type="revolute">
+    <parent link="trunk_link_2"/>
+    <child link="torso"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.6" upper="1.0" effort="200.0" velocity="2.0"/>
+  </joint>
+
+  <!-- Arm a -->
+  <link name="arm_a_link_1">
+    <inertial>
+      <origin xyz="0 0 -0.03" rpy="0 0 0"/>
+      <mass value="2.0"/>
+      <inertia ixx="0.006" ixy="0" ixz="0" iyy="0.006" iyz="0" izz="0.004"/>
+    </inertial>
+  </link>
+  <joint name="arm_a_1" type="revolute">
+    <parent link="torso"/>
+    <child link="arm_a_link_1"/>
+    <origin xyz="0 0.22 0.38" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.8" upper="2.8" effort="90.0" velocity="3.0"/>
+  </joint>
+  <link name="arm_a_link_2">
+    <inertial>
+      <origin xyz="0 0 -0.03" rpy="0 0 0"/>
+      <mass value="1.5"/>
+      <inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.003"/>
+    </inertial>
+  </link>
+  <joint name="arm_a_2" type="revolute">
+    <parent link="arm_a_link_1"/>
+    <child link="arm_a_link_2"/>
+    <origin xyz="0 0 -0.06" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.6" upper="1.6" effort="90.0" velocity="3.0"/>
+  </joint>
+  <link name="arm_a_link_3">
+    <inertial>
+      <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+      <mass value="2.0"/>
+      <inertia ixx="0.012" ixy="0" ixz="0" iyy="0.012" iyz="0" izz="0.003"/>
+    </inertial>
+  </link>
+  <joint name="arm_a_3" type="revolute">
+    <parent link="arm_a_link_2"/>
+    <child link="arm_a_link_3"/>
+    <origin xyz="0 0 -0.06" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.6" upper="2.6" effort="60.0" velocity="3.0"/>
+  </joint>
+  <link name="arm_a_link_4">
+    <inertial>
+      <origin xyz="0 0 -0.05" rpy="0 0 0"/>
+      <mass value="1.2"/>
+      <inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.002"/>
+    </inertial>
+  </link>
+  <joint name="arm_a_4" type="revolute">
+    <parent link="arm_a_link_3"/>
+    <child link="arm_a_link_4"/>
+    <origin xyz="0.02 0 -0.24" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.4" upper="0.1" effort="60.0" velocity="3.5"/>
+  </joint>
+  <link name="arm_a_link_5">
+    <inertial>
+      <origin xyz="0 0 -0.08" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="arm_a_5" type="revolute">
+    <parent link="arm_a_link_4"/>
+    <child link="arm_a_link_5"/>
+    <origin xyz="-0.02 0 -0.1" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.6" upper="2.6" effort="25.0" velocity="4.0"/>
+  </joint>
+  <link name="arm_a_link_6">
+    <inertial>
+      <origin xyz="0 0 -0.02" rpy="0 0 0"/>
+      <mass value="0.6"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="arm_a_6" type="revolute">
+    <parent link="arm_a_link_5"/>
+    <child link="arm_a_link_6"/>
+    <origin xyz="0 0 -0.16" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.5" upper="1.5" effort="25.0" velocity="4.0"/>
+  </joint>
+  <link name="arm_a_link_7">
+    <inertial>
+      <origin xyz="0 0 -0.04" rpy="0 0 0"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="arm_a_7" type="revolute">
+    <parent link="arm_a_link_6"/>
+    <child link="arm_a_link_7"/>
+    <origin xyz="0 0 -0.04" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.5" upper="1.5" effort="25.0" velocity="4.0"/>
+  </joint>
+  <link name="tip_a"/>
+  <joint name="tip_a_fixed" type="fixed">
+    <parent link="arm_a_link_7"/>
+    <child link="tip_a"/>
+    <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Arm b -->
+  <link name="arm_b_link_1">
+    <inertial>
+      <origin xyz="0 0 -0.03" rpy="0 0 0"/>
+      <mass value="2.0"/>
+      <inertia ixx="0.006" ixy="0" ixz="0" iyy="0.006" iyz="0" izz="0.004"/>
+    </inertial>
+  </link>
+  <joint name="arm_b_1" type="revolute">
+    <parent link="torso"/>
+    <child link="arm_b_link_1"/>
+    <origin xyz="0 -0.22 0.38" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.8" upper="2.8" effort="90.0" velocity="3.0"/>
+  </joint>
+  <link name="arm_b_link_2">
+    <inertial>
+      <origin xyz="0 0 -0.03" rpy="0 0 0"/>
+      <mass value="1.5"/>
+      <inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.003"/>
+    </inertial>
+  </link>
+  <joint name="arm_b_2" type="revolute">
+    <parent link="arm_b_link_1"/>
+    <child link="arm_b_link_2"/>
+    <origin xyz="0 0 -0.06" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.6" upper="1.6" effort="90.0" velocity="3.0"/>
+  </joint>
+  <link name="arm_b_link_3">
+    <inertial>
+      <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+      <mass value="2.0"/>
+      <inertia ixx="0.012" ixy="0" ixz="0" iyy="0.012" iyz="0" izz="0.003"/>
+    </inertial>
+  </link>
+  <joint name="arm_b_3" type="revolute">
+    <parent link="arm_b_link_2"/>
+    <child link="arm_b_link_3"/>
+    <origin xyz="0 0 -0.06" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.6" upper="2.6" effort="60.0" velocity="3.0"/>
+  </joint>
+  <link name="arm_b_link_4">
+    <inertial>
+      <origin xyz="0 0 -0.05" rpy="0 0 0"/>
+      <mass value="1.2"/>
+      <inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.002"/>
+    </inertial>
+  </link>
+  <joint name="arm_b_4" type="revolute">
+    <parent link="arm_b_link_3"/>
+    <child link="arm_b_link_4"/>
+    <origin xyz="0.02 0 -0.24" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.4" upper="0.1" effort="60.0" velocity="3.5"/>
+  </joint>
+  <link name="arm_b_link_5">
+    <inertial>
+      <origin xyz="0 0 -0.08" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="arm_b_5" type="revolute">
+    <parent link="arm_b_link_4"/>
+    <child link="arm_b_link_5"/>
+    <origin xyz="-0.02 0 -0.1" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.6" upper="2.6" effort="25.0" velocity="4.0"/>
+  </joint>
+  <link name="arm_b_link_6">
+    <inertial>
+      <origin xyz="0 0 -0.02" rpy="0 0 0"/>
+      <mass value="0.6"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="arm_b_6" type="revolute">
+    <parent link="arm_b_link_5"/>
+    <child link="arm_b_link_6"/>
+    <origin xyz="0 0 -0.16" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.5" upper="1.5" effort="25.0" velocity="4.0"/>
+  </joint>
+  <link name="arm_b_link_7">
+    <inertial>
+      <origin xyz="0 0 -0.04" rpy="0 0 0"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="arm_b_7" type="revolute">
+    <parent link="arm_b_link_6"/>
+    <child link="arm_b_link_7"/>
+    <origin xyz="0 0 -0.04" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.5" upper="1.5" effort="25.0" velocity="4.0"/>
+  </joint>
+  <link name="tip_b"/>
+  <joint name="tip_b_fixed" type="fixed">
+    <parent link="arm_b_link_7"/>
+    <child link="tip_b"/>
+    <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+  </joint>
+</robot>

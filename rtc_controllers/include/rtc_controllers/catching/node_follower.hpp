@@ -15,10 +15,10 @@
 // are the ones ClikReferenceGenerator's twist_ff and PositionAxisTarget use.
 //
 // WHAT THIS DOES NOT CLAIM (MD-30). With q_c = q_ref the CLIK's hand task is
-// satisfied by v* = q̇_ref, but the CLIK posture term is k_a(q_des − q) with
-// no velocity feedforward. The FK consistency above is what this sampler
-// guarantees; the RT caller feeds q̇_ref into the posture task by handing it
-// q_ref + q̇_ref / k_a as the goal (MD-36).
+// satisfied by v* = q̇_ref, and so is its posture term once it is given q̇_ref
+// as well. The FK consistency above is what this sampler guarantees; feeding
+// q_ref and q̇_ref to the CLIK's posture row (its goal and its velocity
+// feed-forward, MD-36) is the RT caller's.
 //
 // WIRING. The catching controller under `planner.segment.mode: mpc`:
 // Sample() on every tick that follows a segment — APPROACH through HOLD
