@@ -18,6 +18,7 @@ from integrated_bringup.catching_sim_trials import (
     _cycle_closed,
     alignment_error,
     load_arm_profile,
+    reset_fault_failure,
     reset_fault_name,
     trial_throws,
 )
@@ -101,3 +102,13 @@ def test_the_fault_reset_names_the_controller_not_its_config_key():
     assert reset_fault_name(listed[:1]) is None
     assert reset_fault_name([SimpleNamespace(name="", type="demo_catching_controller")]) is None
     assert reset_fault_name([]) is None
+
+
+def test_a_fault_reset_that_leaves_the_latch_up_is_named():
+    # ok is false only while the latch is still up, and an unanswered call is
+    # not a reset either: the driver stops on the CM's own words instead of
+    # running into the homing timeout with "not ARMED (mode FAULT)".
+    assert reset_fault_failure(SimpleNamespace(ok=True, message="cleared")) is None
+    refused = reset_fault_failure(SimpleNamespace(ok=False, message="re-latched: nan_inf"))
+    assert refused == "/rtc_cm/reset_fault refused: re-latched: nan_inf"
+    assert reset_fault_failure(None) == "/rtc_cm/reset_fault did not answer"

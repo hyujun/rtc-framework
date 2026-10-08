@@ -749,6 +749,20 @@ def reset_fault_name(controllers, config_key: str = CATCHING) -> str | None:
     return None
 
 
+def reset_fault_failure(reply) -> str | None:
+    """Why a /rtc_cm/reset_fault reply leaves the latch up, or None when it is down.
+
+    ``reply`` is None when the call was not answered. ``ok`` is false only
+    while the latch is still up (ResetFault.srv), and ``message`` says which
+    case it is — the cause a homing timeout would otherwise hide.
+    """
+    if reply is None:
+        return "/rtc_cm/reset_fault did not answer"
+    if not reply.ok:
+        return f"/rtc_cm/reset_fault refused: {reply.message}"
+    return None
+
+
 # ── host load watch (#601) ────────────────────────────────────────────────────
 
 HOST_WATCH_MODES = ("off", "warn", "abort")
@@ -1113,6 +1127,8 @@ def _make_driver(profile: ArmProfile, args):
                 (self.reset_ball_cli, "/sim/reset_ball"),
                 (self.param_cli, f"/{CATCHING}/{CATCHING}/set_parameters"),
                 (self.get_param_cli, f"/{CATCHING}/{CATCHING}/get_parameters"),
+                (self.list_controllers_cli, "/rtc_cm/list_controllers"),
+                (self.reset_fault_cli, "/rtc_cm/reset_fault"),
             ):
                 if not client.wait_for_service(timeout_sec=timeout_s):
                     raise RuntimeError(f"service {name} unavailable")
@@ -1124,7 +1140,11 @@ def _make_driver(profile: ArmProfile, args):
             self.spin_for(0.1)
             if self.mode_name() == "FAULT":
                 listed = self.call(self.list_controllers_cli, ListControllers.Request())
-                name = reset_fault_name(listed.controllers if listed is not None else ())
+                if listed is None:
+                    raise RuntimeError(
+                        "FAULT is latched and /rtc_cm/list_controllers did not answer"
+                    )
+                name = reset_fault_name(listed.controllers)
                 if name is None:
                     raise RuntimeError(
                         f"FAULT is latched and /rtc_cm/list_controllers does not list {CATCHING}"
@@ -1132,7 +1152,10 @@ def _make_driver(profile: ArmProfile, args):
                 req = ResetFault.Request()
                 req.controller_name = name
                 res = self.call(self.reset_fault_cli, req)
-                self.get_logger().warn(f"reset_fault before the trial -> {res}")
+                why = reset_fault_failure(res)
+                if why is not None:
+                    raise RuntimeError(f"FAULT is latched and {why}")
+                self.get_logger().warn(f"reset_fault before the trial -> {res.message}")
                 self.spin_for(0.2)
             start_q = list(self.q) if self.q else None
             if self.mode_name() != "ARMED":
