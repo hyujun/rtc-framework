@@ -231,6 +231,12 @@ if(BUILD_TESTING)
   find_package(rtc_base REQUIRED)
   add_tsid_gtest(test_clik_multiframe_malloc)
   rtc_base_add_test_includes(test_clik_multiframe_malloc)
+
+  # The two-frame CLIK against pink's recorded solutions of the same problems
+  # (test/golden/clik_pink_reference.inc; recorded by gen_pink_reference.py,
+  # which is NOT run by the build — pink is not a dependency).
+  add_tsid_gtest(test_clik_pink_reference)
+  target_include_directories(test_clik_pink_reference PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
 endif()
 
 ament_package()
