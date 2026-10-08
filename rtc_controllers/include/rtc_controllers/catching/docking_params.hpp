@@ -198,7 +198,8 @@ struct MpcDockingSegmentPlannerParams {
   /// `publish.slack_c_max` [m], ≥ 0: largest corridor slack a published segment
   /// may carry.
   double slack_c_max{0.0};
-  /// `publish.slack_v_max` [m/s], ≥ 0: largest speed-envelope slack.
+  /// `publish.slack_v_max` [m²/s²], ≥ 0: largest speed-envelope slack (the
+  /// envelope row bounds the closing speed squared).
   double slack_v_max{0.0};
   /// `core:`.
   MpcDockingSegmentCoreParams core;

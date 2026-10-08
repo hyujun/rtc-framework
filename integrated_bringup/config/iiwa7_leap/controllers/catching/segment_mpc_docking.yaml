@@ -52,7 +52,8 @@ demo_catching_controller:
             # Re-solve at a grid point the followed segment already starts at.
             same_point: true
           # The corridor and the speed envelope are soft in the problem: the
-          # largest slack a published segment may lean on [m], [m/s].
+          # largest slack a published segment may lean on — the corridor's in
+          # [m], the envelope's in the units of its row (c^2, [m^2/s^2]).
           publish:
             slack_c_max: 0.0
             slack_v_max: 0.0
