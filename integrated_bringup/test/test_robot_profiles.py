@@ -177,8 +177,14 @@ def test_for_robot_unknown_raises():
 
 
 def test_registry_keys_match_config_dirs():
-    # --robot keys mirror config/<key>/ bringup directory names
-    assert set(ROBOT_PROFILES) == {"ur5e_p1a", "ur5e_p1b", "iiwa7_leap"}
+    """--robot keys mirror the config/<key>/ bringup directory names, in both
+    directions: a profile with no bringup behind it, and a bringup the GUI has
+    no profile for. Read from the installed tree rather than listed here — a
+    list is a third copy, and the one that was here could only say which robots
+    existed when it was written."""
+    config = os.path.join(get_package_share_directory("integrated_bringup"), "config")
+    shipped = {d for d in os.listdir(config) if os.path.isdir(os.path.join(config, d))}
+    assert set(ROBOT_PROFILES) == shipped
 
 
 # issue #137 finding 2: the GUI's pre-catalog fallback groups must come from
