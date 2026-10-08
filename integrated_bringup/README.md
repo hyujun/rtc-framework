@@ -687,6 +687,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 
 | 키 | 단위 | 범위 · 뜻 | runtime |
 |---|---|---|---|
+| `command_type` | – | `position` 만 받습니다 (다른 값은 configure 거부) | YAML 전용 |
 | `clik.damping_sq` · `clik.w_smooth` | – | QP 감쇠 $\mu^2$ (> 0) · 직전 속도와의 평활 가중 (>= 0) | YAML 전용 |
 | `clik.qp.max_iter` | – | ProxQP 반복, 정수 [1, 1000] | YAML 전용 |
 | `clik.accel_constraint` | – | `dynamic` 만 받습니다 (상대 과제는 kinematic 가속 행과 못 씁니다) | YAML 전용 |
@@ -721,13 +722,13 @@ ros2 service call /demo_wbc_controller/grasp_command \
 
 **목표의 frame.** `header.frame_id` 는 목표를 **적은** frame 입니다. 비우면 그 과제의 base frame, `clik.target_frames` 의 이름 (`world` · `pelvis` · `torso_link`) 이면 목표를 적용하는 tick 에 base frame 으로 **한 번** 바꾸고 (`T_base,des = T_base,ref(q_c) · T_ref,des`), 그 뒤로는 base 에 고정된 pose 입니다 — base 가 움직이면 목표가 따라갑니다. 목록에 없는 이름은 base frame 으로 읽지 않고 거부하며 셉니다. 모델에서 `world` 와 `pelvis` 는 **다른 frame** 입니다 (`pelvis` 가 `world` 위 0.79186375 m, 축은 같음) — 오른손 과제의 base 가 `pelvis` 인 이유이고, 같은 물리 목표도 두 frame 에서는 z 가 다른 숫자입니다.
 
-**거부 · 버림** (전부 `dualarm_diag.csv` 의 계수로 남습니다): `goal_type` 이 `task` 가 아니거나 6 값이 유한하지 않거나 frame 이름이 모르는 것이면 ingress 가 거부합니다. 현재 기준 pose 에서 π − 0.15 rad 를 넘게 도는 목표는 적용 tick 에 버립니다 (log6 궤적이 불연속). 비활성 중에 보낸 목표는 활성화 때, 풀이를 못 도는 tick (E-STOP · fault · 판독 불가 · 시드 전) 에 온 목표는 그 tick 에 버립니다 — 나중에 뒤늦게 움직이지 않도록 매 tick 소비합니다. `g1/joint_goal` 로 온 task 목표나 군의 관절을 다 싣지 않은 관절 목표도 거부하고 `group_goal_rejects` 로 셉니다.
+**거부 · 버림** (전부 `dualarm_diag.csv` 의 계수로 남습니다): `goal_type` 이 `task` 가 아니거나 6 값이 유한하지 않거나 frame 이름이 모르는 것이면 ingress 가 거부합니다. 기준을 만들 수 없는 목표는 적용 tick 에 버립니다 (`<task>_drop_unusable`): 현재 기준 pose 에서 π − 0.15 rad 를 넘게 도는 것 (log6 궤적이 불연속), 거리가 overflow 해 궤적 시간이 유한하지 않은 것, 이 runtime 에 없는 frame slot. 비활성 중에 보낸 목표는 활성화 때, 풀이를 못 도는 tick (E-STOP · fault · 판독 불가 · 시드 전) 에 온 목표는 그 tick 에 버립니다 — 나중에 뒤늦게 움직이지 않도록 매 tick 소비합니다. `g1/joint_goal` 로 온 task 목표나 군의 관절을 다 싣지 않은 관절 목표도 거부하고 `group_goal_rejects` 로 셉니다.
 
 #### 풀이를 안 도는 tick
 
 - **E-STOP**: 풀이도 궤적도 돌지 않고 두 군이 **측정 위치**를 명령합니다 (선로에는 CM 이 자기 hold 를 대신 냅니다). 해제 tick 에 측정값에서 명령을 다시 시드하고 모든 목표를 "프레임이 지금 있는 자리" 로 되돌립니다 — 이어서 가지 않습니다.
-- **풀이 실패**: 직전 명령을 유지합니다 (그 tick 의 $\dot q_c$ = 0). `fault.max_qp_fail_ticks` 번 연속이면 controller-local **fault latch** — 마지막 명령을 유지하고 목표를 거부하며, **`/rtc_cm/reset_fault` 로만** 풀립니다 (`ros2 service call /rtc_cm/reset_fault rtc_msgs/srv/ResetFault "{controller_name: demo_dualarm_controller}"`). E-STOP 해제나 비활성 → 활성으로는 풀리지 않고, E-STOP 중에도 reset 할 수 있습니다. 풀이가 호출 자체를 거부한 tick (입력이 유한하지 않음 등) 도 실패로 셉니다.
-- **판독 불가**: `g1` 을 못 읽으면 풀이와 기준을 멈추고 `g1` 만 침묵시킵니다. `p1b` 를 못 읽으면 손만 침묵하고 (손 궤적은 멈춥니다) 풀이는 계속 돕니다. 첫 판독 가능 tick 에 시드합니다.
+- **풀이 실패**: 직전 명령을 유지합니다 (그 tick 의 $\dot q_c$ = 0). `fault.max_qp_fail_ticks` 번 연속이면 controller-local **fault latch** — 마지막 명령을 유지하고 (손 군도 궤적을 멈추고 유지합니다) 목표를 거부하며, **`/rtc_cm/reset_fault` 로만** 풀립니다 (`ros2 service call /rtc_cm/reset_fault rtc_msgs/srv/ResetFault "{controller_name: demo_dualarm_controller}"`). E-STOP 해제나 비활성 → 활성으로는 풀리지 않고, E-STOP 중에도 reset 할 수 있습니다. 풀이가 호출 자체를 거부한 tick (입력이 유한하지 않음 등) 도 실패로 셉니다.
+- **판독 불가**: `g1` 을 못 읽으면 풀이와 기준을 멈추고 `g1` 만 침묵시킵니다. `p1b` 를 못 읽으면 손만 침묵하고 (손 궤적은 멈춥니다) 풀이는 계속 돕니다. 첫 판독 가능 tick 에 시드합니다. 관절 위치에 유한하지 않은 값이 있는 군도 판독 불가로 봅니다 — 그 값에서 시드하거나 그 값을 명령으로 내지 않습니다.
 - 토크 한계가 중력 부하보다 낮은 관절은 **풀이를 실패시키지 않습니다** — 그 관절이 처지는 채로 풀리고, `brake_static_infeasible` 의 bit 가 알립니다.
 
 #### Runtime 파라미터
@@ -747,7 +748,7 @@ ros2 param set /demo_dualarm_controller/demo_dualarm_controller tasks.right_hand
 | 행동 | `t_relative_s` · `tick` · `hold` (0 풀이 돎, 1 E-STOP, 2 fault, 3 몸통 판독 불가, 4 시드 전, 5 모델 없음) · `clik_ran` · `estop` · `fault_latched` · `fault_cause` (0 없음, 1 연속 실패, 2 추종 오차) · `body_readable` · `hand_readable` · `reseeded` |
 | 풀이 (안 돈 tick 은 0) | `reached_solve` · `converged` · `rejected_input` · `non_finite` · `command_mismatch` · `accel_rows_violated` · `brake_box_empty` · `status` · `iterations` · `solve_time_us` · `accel_rows` · `accel_rows_binding` · `fb_saturated` (bit 2k = 과제 k 병진, 2k+1 = 회전) · `rot_near_pi` (bit k) · `brake_active` · `brake_static_infeasible` (bit = 모델 속도 index) |
 | 감시 | `qp_fail_streak` · `track_err` (max \|q_meas − q_cmd\|, 몸통 관절) · `group_goal_rejects` |
-| 과제마다 `<task>_` | `valid` · `traj_active` · `goal_sequence` (0 = 시작 자세 유지) · `err_lin` · `err_ang` · `ref_{x,y,z,qw,qx,qy,qz}` · `cmd_*` · `meas_valid` · `meas_*` · `goals_accepted` · `reject_goal_type` · `reject_non_finite` · `reject_unknown_frame` · `drop_stale` · `drop_near_pi` · `drop_held` |
+| 과제마다 `<task>_` | `valid` · `traj_active` · `goal_sequence` (0 = 시작 자세 유지) · `err_lin` · `err_ang` · `ref_{x,y,z,qw,qx,qy,qz}` · `cmd_*` · `meas_valid` · `meas_*` · `goals_accepted` · `reject_goal_type` · `reject_non_finite` · `reject_unknown_frame` · `drop_stale` · `drop_unusable` · `drop_held` |
 | 몸통 관절 | `q_cmd_<joint>` (device 순서) |
 
 세 pose 는 모두 **그 과제의 base frame** 입니다. `ref` = 이 tick 에 풀이가 받은 기준 $T^d(t)$, `cmd` = 풀이가 평가된 **명령 상태** (직전 tick 이 남긴 명령) 의 frame, `meas` = 이 tick 의 **측정** 관절 상태의 frame. `err_*` 는 `ref` 대 `cmd` — 풀이가 되먹임한 오차 그대로이고 **서보 지연은 들어 있지 않습니다**. 지연은 `cmd` 대 `meas` 를 시간을 밀어 맞대어 봅니다. 거부 · 버림 계수 (`reject_*` · `drop_*`) 는 누적입니다.
