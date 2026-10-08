@@ -59,6 +59,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py \
 
 - 세션 루트: `~/ros2_ws/rtc_ws/logging_data/<YYMMDD_HHMM>/` (`rtc_tools.utils.session_dir.resolve_logging_root`).
 - 컨트롤러 CSV: `controllers/<ctrl>/<instance>.csv` — Compute() 활성 중에만 append (activity-gated).
+- **세션 폴더 이름은 분 단위다.** 같은 분 안에 sim 을 다시 띄우면 두 번째 실행이 **같은 폴더의 CSV 에 이어 쓴다** (header 는 다시 쓰지 않으므로 `tick` 이 되돌아가는 행이 경계다). unit 마다 sim 을 새로 띄우는 드라이버는 `logging_data/$(date +%y%m%d_%H%M)` 이 없어질 때까지 기다린 뒤 띄운다.
 - Plot: `ros2 run rtc_tools plot_rtc_log <csv> --no-show` — `--save-dir` 미지정 시 그 CSV 를 담고 있는 세션의 `plots/` 에 저장하므로 (Agg 강제) 세션 밖으로 빼고 싶을 때만 `--save-dir <dir>`.
 
 ## Gotchas
