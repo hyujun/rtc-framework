@@ -278,9 +278,36 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
     check_indices(group.v_idx, "posture_groups");
   }
 
+  // Braking-distance bound: its deceleration is the torque bound's, its
+  // distance the position box's, and its diagnostics are 64-bit joint masks.
+  if (config.brake_from_torque) {
+    if (config.accel_constraint != AccelConstraint::kDynamic) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: brake_from_torque needs accel_constraint dynamic");
+    }
+    if (config.q_min.size() != nv) {
+      throw std::runtime_error("ClikReferenceGenerator: brake_from_torque needs q_min / q_max");
+    }
+    if (nv > 64) {
+      throw std::runtime_error(
+          "ClikReferenceGenerator: brake_from_torque needs nv <= 64 (mask width), got " +
+          std::to_string(nv));
+    }
+    if (!std::isfinite(config.brake_margin) || !(config.brake_margin > 0.0) ||
+        config.brake_margin > 1.0) {
+      throw std::runtime_error("ClikReferenceGenerator: brake_margin must be in (0, 1], got " +
+                               std::to_string(config.brake_margin));
+    }
+  } else if (config.brake_margin != 1.0) {  // NaN lands here too
+    throw std::runtime_error(
+        "ClikReferenceGenerator: brake_margin is set but brake_from_torque is off");
+  }
+
   nv_ = nv;
   arm_v_idx_ = config.arm_v_idx;
   n_arm_ = static_cast<int>(arm_v_idx_.size());
+  brake_from_torque_ = config.brake_from_torque;
+  brake_margin_ = config.brake_margin;
   task_v_idx_ = config.task_v_idx.empty() ? config.arm_v_idx : config.task_v_idx;
   max_frame_tasks_ = config.max_frame_tasks;
   relative_tasks_ = config.relative_tasks;
@@ -444,7 +471,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   AddPostureAndDamping();
 
   AssembleBox(cache.q, dt);
-  if (!AssembleAccelRows(cache, rf, dt, false)) {
+  if (!ApplyBrakeBound(cache, dt) || !AssembleAccelRows(cache, rf, dt, false)) {
     last_solve_.non_finite = true;  // a non-finite M, h, v or drift
     return Fail(cache);
   }
@@ -532,7 +559,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int frame_idx,
   AddPostureAndDamping();
 
   AssembleBox(cache.q, dt);
-  if (!AssembleAccelRows(cache, rf, dt, true)) {
+  if (!ApplyBrakeBound(cache, dt) || !AssembleAccelRows(cache, rf, dt, true)) {
     last_solve_.non_finite = true;  // a non-finite M, h, v or drift
     return Fail(cache);
   }
@@ -633,7 +660,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache,
   AddPostureAndDamping();
 
   AssembleBox(cache.q, in.dt);
-  if (!AssembleAccelRows(cache, in.tasks, in.dt)) {
+  if (!ApplyBrakeBound(cache, in.dt) || !AssembleAccelRows(cache, in.tasks, in.dt)) {
     last_solve_.non_finite = true;  // a non-finite M, h, v or drift
     return Fail(cache);
   }
@@ -951,6 +978,87 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
     l(i) = lo;
     u(i) = hi;
   }
+}
+
+namespace {
+
+/// Largest speed toward a limit `d` away from which a joint that brakes at
+/// `a` still stops in time when the command is held for one tick before the
+/// braking starts: the positive root of v² + a·dt·v = 2·a·d, written so that
+/// a small d does not cancel. 0 when there is no deceleration or no room.
+[[nodiscard]] double BrakeSpeed(double a, double d, double dt) noexcept {
+  if (!(a > 0.0) || !(d > 0.0)) {
+    return 0.0;
+  }
+  const double a_dt = a * dt;
+  return 4.0 * a * d / (a_dt + std::sqrt(a_dt * a_dt + 8.0 * a * d));
+}
+
+}  // namespace
+
+bool ClikReferenceGenerator::ApplyBrakeBound(const PinocchioCache& cache, double dt) noexcept {
+  if (!brake_from_torque_) {
+    return true;
+  }
+  const int N = nv_;
+  if (cache.M.rows() != N || cache.M.cols() != N || cache.h.size() != N || cache.v.size() != N) {
+    return false;
+  }
+  // Slack on the one-tick reachable edge: the torque rows are judged with
+  // 1e-6 of tolerance (AccelRowsHold), and the box must not sit inside it.
+  constexpr double kReachSlack = 2e-6;
+  for (const int vi : arm_v_idx_) {
+    const auto i = static_cast<Eigen::Index>(vi);
+    const double m_ii = cache.M(i, i);
+    const double h_i = cache.h(i);
+    const double q_i = cache.q(i);
+    const double v_c = cache.v(i);
+    // Checked BEFORE any max / min / clamp below: those would turn a NaN into
+    // a quiet v = 0 bound, which reads as a deliberate stop (NUM-7).
+    if (!std::isfinite(m_ii) || !(m_ii > 1e-12) || !std::isfinite(h_i) || !std::isfinite(q_i) ||
+        !std::isfinite(v_c)) {
+      return false;
+    }
+    const double tau_b = tau_bound_(i);
+    const std::uint64_t bit = std::uint64_t{1} << static_cast<unsigned>(vi);
+    if (std::abs(h_i) > tau_b) {
+      last_solve_.brake_static_infeasible |= bit;
+    }
+    // Deceleration the torque bound leaves: τ = M·v̇ + h ∈ [−τ_b, τ_b] gives
+    // v̇ ≥ −(τ_b + h)/M against motion toward q_max and v̇ ≤ (τ_b − h)/M
+    // against motion toward q_min (diagonal M).
+    const double dec_up = (tau_b + h_i) / m_ii;
+    const double dec_dn = (tau_b - h_i) / m_ii;
+    const double lo_pre = qp_data_.l(i);
+    const double hi_pre = qp_data_.u(i);
+    const double hi_brk =
+        BrakeSpeed(brake_margin_ * std::max(0.0, dec_up), std::max(0.0, q_max_(i) - q_i), dt);
+    const double lo_brk =
+        -BrakeSpeed(brake_margin_ * std::max(0.0, dec_dn), std::max(0.0, q_i - q_min_(i)), dt);
+    // Never tighter than what one tick of the torque bound can reach from
+    // v_c — a joint already over its braking speed slows as fast as the rows
+    // allow instead of making the QP infeasible. No margin on this edge: it is
+    // the rows' own limit.
+    const double hi = std::min(hi_pre, std::max(hi_brk, v_c - dec_up * dt + kReachSlack));
+    const double lo = std::max(lo_pre, std::min(lo_brk, v_c + dec_dn * dt - kReachSlack));
+    if (lo > hi) {
+      // Only outside the position envelope: inside it lo_pre ≤ 0 ≤ hi_pre and
+      // lo_brk ≤ 0 ≤ hi_brk, so v = 0 is always admissible. [lo_pre, hi_pre]
+      // itself is non-empty by AssembleBox.
+      const double v = std::clamp(0.0, lo_pre, hi_pre);
+      qp_data_.l(i) = v;
+      qp_data_.u(i) = v;
+      last_solve_.brake_box_empty = true;
+      last_solve_.brake_active |= bit;
+      continue;
+    }
+    if (hi < hi_pre || lo > lo_pre) {
+      last_solve_.brake_active |= bit;
+    }
+    qp_data_.l(i) = lo;
+    qp_data_.u(i) = hi;
+  }
+  return true;
 }
 
 bool ClikReferenceGenerator::AssembleAccelRows(const PinocchioCache& cache,

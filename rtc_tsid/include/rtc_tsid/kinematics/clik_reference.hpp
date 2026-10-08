@@ -111,6 +111,25 @@ namespace rtc::tsid {
 // drop the solver's warm start. M carries no rotor inertia (a URDF has none):
 // the margin eta_tau < 1 is what covers it.
 //
+// Braking-distance velocity bound (Config::brake_from_torque, kDynamic only,
+// default off). The position box looks one tick ahead: a joint may run at its
+// velocity limit until the tick before its position limit, where stopping
+// needs a deceleration the torque rows do not have — and the call fails. The
+// bound keeps each arm joint at a speed it can still stop from,
+//   0 ≤ v_i ≤ 4·a·d / (a·dt + √(a²·dt² + 8·a·d)),   d = q_max,i − q_i
+// (mirrored toward q_min), the positive root of v² + a·dt·v = 2·a·d — the
+// zero-order-hold form: a command v travels v·dt before the first braking
+// tick, which the continuous √(2·a·d) ignores and so cannot be held by the
+// torque rows on the next tick. The deceleration is what the torque bound
+// leaves at the current state, joint by joint,
+//   a = brake_margin·max(0, (η·τ_max,i ± h_i) / M_ii)
+// (+ against motion toward q_max, − toward q_min; 0 → that direction is held
+// at v = 0). The bound never asks for more than the rows allow in one tick:
+// it is widened to v_c,i ∓ (η·τ_max,i ± h_i)/M_ii·dt when it would. It is a
+// feasibility heuristic, not a guarantee — M_ii ignores inertial coupling and
+// the URDF carries no rotor inertia, so `a` can be optimistic; the torque rows
+// stay the hard constraint and brake_margin < 1 is the knob.
+//
 // Several frames in one solve (the MultiFrameInput overload, E2-F04). The cost
 // above with a SUM of task terms — one per FrameTask, each an SE3 task (6
 // rows) or a position + approach-axis task (3 + 2 rows) with its own gain,
@@ -252,6 +271,14 @@ class ClikReferenceGenerator {
     };
 
     std::vector<PostureGroup> posture_groups;
+    // Braking-distance velocity bound on the arm joints (file header). Needs
+    // accel_constraint kDynamic (the deceleration comes from tau_max / eta_tau),
+    // a position box and nv <= 64 (the diagnostic masks) — Init() throws
+    // otherwise. Serves every Compute() overload.
+    bool brake_from_torque{false};
+    // Fraction of the available deceleration the bound plans with, in (0, 1].
+    // 1 (unset) when brake_from_torque is off.
+    double brake_margin{1.0};
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -475,6 +502,15 @@ class ClikReferenceGenerator {
     /// Bit k = task k's rotation (kSe3) or approach-axis (kPositionAxis)
     /// error is within 0.05 rad of π, where its direction is discontinuous.
     std::uint32_t rot_near_pi{0};
+    /// Config::brake_from_torque (any overload). Bit i = velocity index i.
+    /// brake_active: the braking bound narrowed the joint's box this call.
+    /// brake_static_infeasible: |h_i| > η·τ_max,i — the joint cannot even be
+    /// held, whatever the bound says (a sizing fault, not a braking one).
+    std::uint64_t brake_active{0};
+    std::uint64_t brake_static_infeasible{0};
+    /// The bound left a joint no admissible velocity (only outside the
+    /// position envelope); it was given v = 0 clamped into its box.
+    bool brake_box_empty{false};
   };
 
   [[nodiscard]] const SolveDiagnostics& LastSolve() const noexcept { return last_solve_; }
@@ -507,6 +543,10 @@ class ClikReferenceGenerator {
   // H/g must already hold the task terms.
   void AddPostureAndDamping() noexcept;
   void AssembleBox(const Eigen::VectorXd& q, double dt) noexcept;
+  // Config::brake_from_torque: narrows the arm joints' box (already assembled)
+  // to the braking-distance bound. No-op when off. Returns false on a
+  // mis-sized or non-finite M, h, q or v — the caller fails the call.
+  [[nodiscard]] bool ApplyBrakeBound(const PinocchioCache& cache, double dt) noexcept;
   // kKinematic / kDynamic rows below the box (no-op for kBox). `axis_rows`
   // selects the position + axis overload's task rows (j_pos_ / j_axis_) over
   // the SE3 overload's (j_task_). Returns false on a non-finite row.
@@ -551,6 +591,8 @@ class ClikReferenceGenerator {
   std::vector<int> task_v_idx_;  // columns of the multi-frame task rows
   int max_frame_tasks_{1};
   bool relative_tasks_{false};
+  bool brake_from_torque_{false};
+  double brake_margin_{1.0};
   double damping_sq_{1e-4};
   double v_limit_{1.5};
   Eigen::VectorXd v_limit_per_joint_;  // [nv] or empty (scalar v_limit_)
