@@ -6,6 +6,7 @@
 
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/controllers/demo_compliance_controller.hpp"
+#include "integrated_bringup/controllers/demo_dualarm_controller.hpp"
 #include "integrated_bringup/controllers/demo_inference_controller.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
@@ -75,3 +76,11 @@ RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
 RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
     demo_catching_controller, "", "integrated_bringup",
     std::make_unique<integrated_bringup::DemoCatchingController>(urdf))
+
+// Several task frames of ONE device group in one QP (a trunk with two arms).
+// REQUIRING_CONFIG: its tasks, base frames and posture groups name the links
+// and joints of the robot it runs on, so it has no defaults — and a robot whose
+// primary group is a single arm ships no YAML for it and does not run it.
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
+    demo_dualarm_controller, "", "integrated_bringup",
+    std::make_unique<integrated_bringup::DemoDualArmController>(urdf))
