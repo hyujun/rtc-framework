@@ -26,7 +26,10 @@ from rtc_tools.plotting.columns import (
     ft_force_guarded_col as _ft_force_guarded_col,
     tof_col as _tof_col,
 )
-from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
+from rtc_tools.plotting.layout import (
+    auto_subplot_grid as _auto_subplot_grid,
+    hide_unused_axes as _hide_unused_axes,
+)
 
 
 def plot_device_sensors(df, save_dir=None):
@@ -421,8 +424,7 @@ def plot_sensor_barometer_combined(df, save_dir=None):
         ax.grid(True, alpha=0.3)
 
     # 빈 subplot 숨기기
-    for idx in range(num_ft, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, num_ft)
 
     plt.tight_layout()
     if save_dir:
@@ -478,8 +480,7 @@ def plot_sensor_tof_combined(df, save_dir=None):
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(num_ft, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, num_ft)
 
     plt.tight_layout()
     if save_dir:

@@ -12,7 +12,10 @@ import numpy as np
 import pandas as pd
 
 from rtc_tools.plotting.columns import detect_joint_columns as _detect_joint_columns
-from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
+from rtc_tools.plotting.layout import (
+    auto_subplot_grid as _auto_subplot_grid,
+    hide_unused_axes as _hide_unused_axes,
+)
 
 
 def plot_motor_positions(df, save_dir=None):
@@ -38,8 +41,7 @@ def plot_motor_positions(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(n, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, n)
 
     plt.tight_layout()
     if save_dir:
@@ -74,8 +76,7 @@ def plot_motor_velocities(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(n, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, n)
 
     plt.tight_layout()
     if save_dir:
@@ -110,8 +111,7 @@ def plot_motor_efforts(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(n, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, n)
 
     plt.tight_layout()
     if save_dir:

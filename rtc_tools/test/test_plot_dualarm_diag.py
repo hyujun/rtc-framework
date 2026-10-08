@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import re
 from pathlib import Path
 
 import matplotlib
@@ -24,6 +25,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 from rtc_tools.plotting.columns import (  # noqa: E402
@@ -369,11 +371,141 @@ class TestFigures:
         assert solve_time.isna().tolist() == [False] * 3 + [True] * 3 + [False] * 3
         err = dualarm_plots._masked(df, "tool_err_lin", dualarm_plots._task_valid(df, "tool"))
         assert err.isna().sum() == 3
-        assert dualarm_plots._runs(df["hold"].to_numpy() == 2) == [(3, 6)]
         # and the figures still render with a held stretch in the file
         out = tmp_path / "png"
         out.mkdir()
         assert "dualarm_diag_solver" in _render_all(df, out)
+
+    def test_a_refused_call_is_a_run_tick_without_solve_data(self, tmp_path, capsys):
+        """A call refused on its inputs has `clik_ran = 1` and never reached the
+        QP: its solve time, iterations and status are reset values, not a solve."""
+
+        def per_row(i):
+            if i in (2, 3):
+                return {
+                    "reached_solve": 0,
+                    "converged": 0,
+                    "rejected_input": 1,
+                    "solve_time_us": 0,
+                    "status": -1,
+                }
+            return {"solve_time_us": 20.0}
+
+        df = _synthetic(tmp_path, ["tool"], ["j1"], n=8, per_row=per_row)
+        assert dualarm_plots._ran(df).all()
+        assert list(dualarm_plots._solved(df)) == [True, True, False, False] + [True] * 4
+        print_dualarm_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "Ticks that ran the solve: 8/8" in out
+        assert "refused before the QP (no solve data): 2" in out
+        assert "p50=20.0 p99=20.0 max=20.0" in out  # the two zeros are not solves
+        assert "Converged: 75.00% of run ticks" in out  # but they are failures
+
+    def test_tracking_error_is_blank_on_held_ticks(self, tmp_path, monkeypatch):
+        """The tracking error is computed by the CLIK step. A held tick logs the
+        reset 0, which would read as perfect tracking while a fault is latched."""
+
+        def per_row(i):
+            if i >= 4:
+                return {"hold": 2, "clik_ran": 0, "fault_latched": 1, "track_err": 0.0}
+            return {"track_err": 0.3}
+
+        df = _synthetic(tmp_path, ["tool"], ["j1"], n=8, per_row=per_row)
+        lines = {}
+        real_savefig = plt.savefig
+
+        def spy(*args, **kwargs):
+            for ax in plt.gcf().get_axes():
+                if "track_err" in ax.get_ylabel():
+                    lines["track"] = ax.get_lines()[0].get_ydata()
+            return real_savefig(*args, **kwargs)
+
+        monkeypatch.setattr(plt, "savefig", spy)
+        dualarm_plots.plot_dualarm_diag_solver(df, str(tmp_path))
+        assert np.isnan(lines["track"]).tolist() == [False] * 4 + [True] * 4
+
+    def test_a_single_held_tick_is_shaded_one_tick_wide(self):
+        """A band from a run's first row to its last has no width when the run
+        is one row — the legend then names a hold nobody can see."""
+        _, ax = plt.subplots()
+        t = np.arange(10) * 0.002
+        where = np.zeros(10, dtype=bool)
+        where[4] = True
+        dualarm_plots._shade(ax, t, where, "red", 0.2)
+        (band,) = ax.collections
+        extents = band.get_paths()[0].get_extents()
+        assert extents.x0 == pytest.approx(t[4])
+        assert extents.width == pytest.approx(0.002)
+
+    def test_a_held_run_is_shaded_to_the_row_after_it(self):
+        _, ax = plt.subplots()
+        t = np.arange(10) * 0.002
+        where = np.zeros(10, dtype=bool)
+        where[3:6] = True
+        dualarm_plots._shade(ax, t, where, "red", 0.2)
+        extents = ax.collections[0].get_paths()[0].get_extents()
+        assert (extents.x0, extents.x1) == pytest.approx((t[3], t[6]))
+
+    def test_a_reseed_reset_is_not_a_new_goal(self, tmp_path):
+        """A re-seed puts the goal sequence back to 0 (hold where you are)."""
+        seq = [0, 0, 1, 1, 0, 0, 2, 2]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(seq),
+            per_row=lambda i: {"tool_goal_sequence": seq[i]},
+        )
+        assert dualarm_plots._new_goal_rows(df, "tool").tolist() == [2, 6]
+        df.loc[3, "tool_goal_sequence"] = float("nan")  # a cell that did not parse
+        assert dualarm_plots._new_goal_rows(df, "tool").tolist() == [2, 6]
+
+    def test_lines_break_at_a_tick_gap(self, tmp_path):
+        ticks = [0, 1, 2, 500, 501]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(ticks),
+            per_row=lambda i: {"tick": ticks[i], "t_relative_s": 0.002 * ticks[i]},
+        )
+        broken = dualarm_plots._with_line_breaks(df)
+        assert len(broken) == len(df) + 1
+        assert broken["solve_time_us"].isna().tolist() == [False] * 3 + [True] + [False] * 2
+        # the blank row is one tick after the row before the gap: the x axis
+        # stays sorted, and a band that row carries ends there, not mid-gap
+        assert broken["timestamp"].is_monotonic_increasing
+        assert broken["timestamp"].iloc[3] == pytest.approx(df["timestamp"].iloc[2] + 0.002)
+        # and nothing is copied when there is no gap
+        whole = _synthetic(tmp_path, ["tool"], ["j1"], name="whole_dualarm_diag.csv")
+        assert dualarm_plots._with_line_breaks(whole) is whole
+
+    def test_popcount(self, tmp_path):
+        masks = [0, 0b101, 0b111, 0b101]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(masks),
+            per_row=lambda i: {"brake_active": masks[i]},
+        )
+        assert dualarm_plots._popcount(df["brake_active"]).tolist() == [0, 2, 3, 2]
+
+    def test_a_file_cut_mid_row_still_plots(self, tmp_path, diag_csv, capsys):
+        """A session killed mid-write leaves a short last line; pandas fills the
+        missing cells with NaN. The statistics run before every figure, so a
+        crash there costs the whole plot."""
+        lines = diag_csv.read_text().splitlines()
+        lines[-1] = ",".join(lines[-1].split(",")[:20])
+        cut = tmp_path / "cut_dualarm_diag.csv"
+        cut.write_text("\n".join(lines) + "\n")
+        df = load_log_csv(str(cut), "dualarm_diag")
+        assert df.iloc[-1].isna().any()
+        print_dualarm_diag_statistics(df)
+        assert "goals_accepted=1" in capsys.readouterr().out  # the last value that parsed
+        out = tmp_path / "png"
+        out.mkdir()
+        assert _render_all(df, out) == sorted(ALL_FIGURES)
 
     def test_feedback_mask_bits_index_tasks_by_header_position(self, tmp_path):
         """Bit 2k = task k linear, 2k+1 = task k angular."""
@@ -409,10 +541,10 @@ class TestStatistics:
         print_dualarm_diag_statistics(load_log_csv(str(diag_csv), "dualarm_diag"))
         out = capsys.readouterr().out
         assert "Rows: 120" in out
-        assert "Dropped rows (tick gaps): 0" in out
+        assert "Tick gaps: none" in out
         assert "Ticks that ran the solve: 120/120" in out
         assert "Tasks (2): right_hand, left_hand" in out
-        assert "goal sequence reached 1" in out
+        assert "right_hand: valid on 120/120 ticks, 1 goal(s) taken up" in out
 
     def test_dropped_rows_are_counted_from_tick_gaps(self, tmp_path, capsys):
         # ticks 0 1 2 | 5 6 | 9 → 2 + 2 rows missing
@@ -421,7 +553,43 @@ class TestStatistics:
             tmp_path, ["tool"], ["j1"], n=len(ticks), per_row=lambda i: {"tick": ticks[i]}
         )
         print_dualarm_diag_statistics(df)
-        assert "Dropped rows (tick gaps): 4" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "Tick gaps: 2 (4 ticks)" in out
+        assert "DROPPED ROWS: 4 ticks in 2 gap(s) (largest 2)" in out
+        assert "controller not running" not in out
+
+    @pytest.mark.parametrize(
+        "back", [{"reseeded": 1}, {"hold": 4, "clik_ran": 0}], ids=["reseeded", "not_seeded"]
+    )
+    def test_a_gap_the_controller_was_away_for_is_not_dropped_rows(self, tmp_path, capsys, back):
+        """`tick` is the manager's counter and counts while another controller
+        is active. Coming back, the controller starts over; no row is missing."""
+        ticks = [0, 1, 2, 5003, 5004, 5005]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(ticks),
+            per_row=lambda i: {"tick": ticks[i], **(back if i == 3 else {})},
+        )
+        print_dualarm_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "controller not running: 1 gap(s), 5000 ticks" in out
+        assert "DROPPED ROWS" not in out
+
+    def test_both_kinds_of_gap_in_one_file(self, tmp_path, capsys):
+        ticks = [0, 1, 4, 5, 9000, 9001]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(ticks),
+            per_row=lambda i: {"tick": ticks[i], "reseeded": int(i == 4)},
+        )
+        print_dualarm_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "controller not running: 1 gap(s), 8994 ticks" in out
+        assert "DROPPED ROWS: 2 ticks in 1 gap(s)" in out
 
     def test_holds_and_fault_cause_are_named(self, tmp_path, capsys):
         def per_row(i):
@@ -496,3 +664,80 @@ class TestManyJointStateLog:
         visible = [ax.get_visible() for ax in captured["axes"]]
         assert len(visible) == 20
         assert visible == [True] * 17 + [False] * 3
+
+
+# ── The producer's header is the source — pin the copies here to it ──────────
+
+_LOGGING_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "integrated_bringup"
+    / "include"
+    / "integrated_bringup"
+    / "logging"
+)
+_POD_HEADER = _LOGGING_DIR / "dualarm_diag_log_pod.hpp"
+
+# C++ enumerator -> the label this package prints for it.
+_HOLD_LABELS = {
+    "kNone": "solved",
+    "kEstop": "E-STOP",
+    "kFault": "fault latch",
+    "kUnreadable": "body unreadable",
+    "kNotSeeded": "not seeded",
+    "kNoModel": "no model",
+}
+_FAULT_LABELS = {
+    "kNone": "none",
+    "kQpFailStreak": "QP fail streak",
+    "kTrackError": "tracking error",
+    "kSeedOutsideBox": "seed outside box",
+}
+
+
+def _pod_text():
+    if not _POD_HEADER.exists():  # pragma: no cover - rtc_tools shipped alone
+        pytest.skip(f"C++ header not present at {_POD_HEADER}")
+    return _POD_HEADER.read_text()
+
+
+def _enumerators(text, enum_name):
+    body = text.split(f"enum class {enum_name} ", 1)[1].split("{", 1)[1].split("};", 1)[0]
+    body = re.sub(r"//[^\n]*", "", body)
+    return [tok.split("=")[0].strip() for tok in body.split(",") if tok.strip()]
+
+
+class TestPinnedToTheProducer:
+    """The name tables, the synthetic header and the fingerprint claim are
+    hand-written copies. Checked against themselves they stay green when the
+    producer changes; the plotter would then shade and print the wrong cause."""
+
+    def test_hold_names_follow_the_enum(self):
+        cpp = _enumerators(_pod_text(), "Hold")
+        assert [_HOLD_LABELS[e] for e in cpp] == list(dualarm_plots.HOLD_NAMES)
+        assert cpp.index("kNotSeeded") == dualarm_plots.HOLD_NOT_SEEDED
+
+    def test_fault_cause_names_follow_the_enum(self):
+        cpp = _enumerators(_pod_text(), "FaultCause")
+        assert [_FAULT_LABELS[e] for e in cpp] == list(dualarm_plots.FAULT_CAUSE_NAMES)
+
+    def test_fixed_columns_follow_the_header_writer(self):
+        writer = _pod_text().split("inline void WriteDualArmDiagLogHeader(", 1)[1]
+        fixed = writer.split("for (", 1)[0]  # everything before the per-task loop
+        cols = "".join(re.findall(r'"([^"]*)"', fixed)).split(",")
+        assert cols == _FIXED
+
+    def test_synthetic_header_is_the_recorded_one(self, diag_csv):
+        """The recorded file was written by the C++ writer, so this pins the
+        per-task and per-joint blocks the regex above does not reach."""
+        recorded = peek_csv_header(str(diag_csv))
+        joints = [c[len("q_cmd_") :] for c in recorded if c.startswith("q_cmd_")]
+        assert _header(["right_hand", "left_hand"], joints) == recorded
+
+    def test_the_fingerprint_suffix_is_emitted_by_no_other_log(self):
+        """The column fallback rests on `_err_lin` belonging to this log alone."""
+        if not _LOGGING_DIR.is_dir():  # pragma: no cover - rtc_tools shipped alone
+            pytest.skip(f"C++ headers not present at {_LOGGING_DIR}")
+        emitters = sorted(
+            p.name for p in _LOGGING_DIR.glob("*.hpp") if "_err_lin" in p.read_text()
+        )
+        assert emitters == [_POD_HEADER.name]

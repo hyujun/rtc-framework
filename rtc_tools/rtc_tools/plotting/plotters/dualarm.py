@@ -1,14 +1,23 @@
 """Plotters for the multi-frame CLIK diagnostics log (`dualarm_diag.csv`).
 
-ONE ROW IS ONE TICK, AND EVERY TICK WRITES ONE. A tick that did not run the
-solve still writes its row with `clik_ran = 0` and the fields it did not compute
-at zero, so a gap in `tick` is a dropped row and nothing else. Two things
-follow, and every figure here honours both:
+ONE ROW IS ONE TICK, AND EVERY TICK THE CONTROLLER RUNS WRITES ONE. A tick that
+did not run the solve still writes its row with `clik_ran = 0` and the fields it
+did not compute at zero. Three things follow, and every figure and statistic
+here honours them:
 
-  - solve diagnostics are drawn on the ticks that ran the solve only. A zero
-    solve time on a held tick is "not computed", not "instant";
-  - a task's error and poses are drawn where `<task>_valid` is 1 only, and the
-    measured pose where `<task>_meas_valid` is 1.
+  - a value is used on the ticks that computed it only. A zero on a tick that
+    did not is "not computed", not "zero". There are three such sets: the ticks
+    that ran the CLIK step (`clik_ran`; the tracking error is computed there),
+    the ticks whose call reached the QP (`reached_solve` — a call refused on its
+    inputs has `clik_ran = 1` and no solve time, iteration count or status),
+    and per task the ticks with `<task>_valid` (the measured pose:
+    `<task>_meas_valid`);
+  - `tick` is the controller manager's loop counter, which keeps counting while
+    another controller is active. A gap in it is therefore either rows that
+    were dropped or a stretch this controller was not running. The statistics
+    separate the two by what follows the gap: a controller that comes back
+    re-seeds;
+  - lines are broken at a tick gap rather than drawn across it.
 
 THE COLUMN COUNT FOLLOWS THE RUN. Task names and joint names are part of the
 column names (`<task>_err_lin`, `q_cmd_<joint>`), and how many of each there are
@@ -33,6 +42,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 
@@ -42,10 +52,12 @@ from rtc_tools.plotting.columns import (
     task_counter_columns,
 )
 from rtc_tools.plotting.columns.views import GROUP_GOAL_REJECTS
-from rtc_tools.plotting.layout import auto_subplot_grid
+from rtc_tools.plotting.layout import auto_subplot_grid, hide_unused_axes
 
-# DualArmDiagLogPod::Hold wire values, in the enum's own order (the header
-# writer of that POD is the source). 0 is "the solve ran" and is never shaded.
+# DualArmDiagLogPod::Hold wire values, in the enum's own order. 0 is "the solve
+# ran" and is never shaded. This table and FAULT_CAUSE_NAMES are pinned to the
+# C++ enums by test_plot_dualarm_diag.py, which reads the POD header.
+HOLD_NOT_SEEDED = 4
 HOLD_NAMES = (
     "solved",
     "E-STOP",
@@ -90,38 +102,103 @@ def _name(table, code):
     return table[code] if 0 <= code < len(table) else f"code {code}"
 
 
+def _ints(series):
+    """An integer column as int64, a cell that did not parse counted as 0."""
+    return series.fillna(0).to_numpy().astype(np.int64)
+
+
+def _flag(df, col):
+    """Boolean array: `col` is 1. A missing column, or a NaN cell, is False."""
+    if col not in df.columns:
+        return np.zeros(len(df), dtype=bool)
+    return (df[col] == 1).to_numpy()
+
+
+def _ran(df):
+    """Ticks that ran the CLIK step (all of them if the file does not say)."""
+    return _flag(df, "clik_ran") if "clik_ran" in df.columns else np.ones(len(df), dtype=bool)
+
+
 def _solved(df):
-    """Boolean mask of the ticks that ran the solve (all of them if unmarked)."""
-    if "clik_ran" not in df.columns:
-        return np.ones(len(df), dtype=bool)
-    return (df["clik_ran"] == 1).to_numpy()
+    """Ticks whose call reached the QP — the ones with solve diagnostics.
+
+    A call refused on its inputs counts as a run tick (and as a failed solve)
+    but leaves solve time, iterations and status at their reset values.
+    """
+    return _ran(df) & _flag(df, "reached_solve") if "reached_solve" in df.columns else _ran(df)
 
 
-def _runs(mask):
-    """`[(start, stop), ...]` index ranges of the True runs of a boolean array."""
-    mask = np.asarray(mask, dtype=bool)
-    if not mask.any():
-        return []
-    edges = np.flatnonzero(np.diff(np.concatenate(([False], mask, [False])).astype(int)))
-    return list(zip(edges[::2], edges[1::2], strict=True))
+def _tick_gaps(df):
+    """Row indices `i` with ticks missing between row `i - 1` and row `i`, and
+    how many are missing at each. Empty without a usable `tick` column."""
+    if "tick" not in df.columns or len(df) < 2:
+        return np.array([], dtype=int), np.array([], dtype=np.int64)
+    tick = df["tick"].ffill().fillna(0).to_numpy().astype(np.int64)
+    missing = np.diff(tick) - 1
+    at = np.flatnonzero(missing > 0) + 1
+    return at, missing[at - 1]
+
+
+def _with_line_breaks(df):
+    """`df` with an all-NaN row inserted at every tick gap.
+
+    matplotlib breaks a line at NaN, so a stretch the file has no rows for is
+    left blank instead of being bridged by a straight segment that reads as
+    data. The inserted row is timed one typical tick after the row before the
+    gap, so a band that row carries (see `_shade`) ends there and not somewhere
+    inside the gap.
+    """
+    at, _ = _tick_gaps(df)
+    if len(at) == 0:
+        return df
+    t = df["timestamp"].to_numpy(dtype=float)
+    blanks = pd.DataFrame(np.nan, index=at - 0.5, columns=df.columns)
+    steps = np.diff(t)
+    tick_s = float(np.median(steps[steps > 0])) if (steps > 0).any() else 0.0
+    blanks["timestamp"] = np.minimum(t[at - 1] + tick_s, 0.5 * (t[at - 1] + t[at]))
+    return pd.concat([df, blanks]).sort_index(kind="stable").reset_index(drop=True)
+
+
+def _shade(ax, t, where, color, alpha):
+    """Paint the full height of `ax` over the rows where `where` is set.
+
+    A row's flag holds from its own time to the NEXT row's, so each run is
+    extended by the row that follows it. Without that a run of one row has no
+    width at all — `fill_between(where=...)` only fills between two set
+    samples, and so does an `axvspan` from a run's first row to its last — and
+    the legend would name a hold nobody can see. One `fill_between` over a
+    blended transform, so a long session costs one artist per axis, not one
+    per run. A run on the very last row has no next row and stays zero-width.
+    """
+    where = np.asarray(where, dtype=bool)
+    where = where | np.concatenate(([False], where[:-1]))
+    ax.fill_between(
+        t,
+        0,
+        1,
+        where=where,
+        transform=ax.get_xaxis_transform(),
+        color=color,
+        alpha=alpha,
+        linewidth=0,
+    )
 
 
 def _shade_holds(axes, df):
-    """Shade every held stretch on all `axes`, one colour per hold cause.
+    """Shade every held tick on all `axes`, one colour per hold cause.
 
     Returns the legend handles for the causes that occurred, so the caller can
     put the key on one axis instead of on each.
     """
     if "hold" not in df.columns:
         return []
-    t = df["timestamp"].to_numpy()
-    hold = df["hold"].fillna(0).to_numpy().astype(int)
+    t = df["timestamp"].to_numpy(dtype=float)
+    hold = _ints(df["hold"])
     handles = []
-    for code in sorted(set(hold) - {0}):
+    for code in sorted(set(hold.tolist()) - {0}):
         color = _HOLD_COLORS[code] if 0 < code < len(_HOLD_COLORS) else "#17becf"
-        for start, stop in _runs(hold == code):
-            for ax in axes:
-                ax.axvspan(t[start], t[stop - 1], color=color, alpha=0.15, linewidth=0)
+        for ax in axes:
+            _shade(ax, t, hold == code, color, 0.15)
         handles.append(Patch(color=color, alpha=0.3, label=f"hold: {_name(HOLD_NAMES, code)}"))
     return handles
 
@@ -149,14 +226,13 @@ def _count_axis(ax):
 
 def _bit(series, k):
     """Boolean array: bit `k` of an integer mask column is set."""
-    return ((series.fillna(0).to_numpy().astype(np.int64) >> k) & 1).astype(bool)
+    return ((_ints(series) >> k) & 1).astype(bool)
 
 
 def _popcount(series):
     """Number of set bits per row of an integer mask column."""
-    values = series.fillna(0).to_numpy().astype(np.int64)
-    counts = {v: int(v).bit_count() for v in np.unique(values)}
-    return np.array([counts[v] for v in values])
+    values, inverse = np.unique(_ints(series), return_inverse=True)
+    return np.array([int(v).bit_count() for v in values])[inverse]
 
 
 def _masked(df, col, mask):
@@ -165,7 +241,21 @@ def _masked(df, col, mask):
 
 
 def _task_valid(df, task):
-    return (df[f"{task}_valid"] == 1).to_numpy()
+    return _flag(df, f"{task}_valid")
+
+
+def _new_goal_rows(df, task):
+    """Row indices where `task` took a new goal.
+
+    The goal sequence also changes when a re-seed resets it to 0 (the task goes
+    back to holding the pose it is at). That is not a goal, so only a change TO
+    a non-zero sequence counts. A cell that did not parse keeps the last value.
+    """
+    col = f"{task}_goal_sequence"
+    if col not in df.columns:
+        return np.array([], dtype=int)
+    seq = df[col].ffill().fillna(0).to_numpy()
+    return np.flatnonzero((np.diff(seq) != 0) & (seq[1:] != 0)) + 1
 
 
 def _has_pose(df, task, kind):
@@ -178,9 +268,11 @@ def plot_dualarm_diag_solver(df, save_dir=None):
         print("  Skipping CLIK solver plot (solve_time_us not found)")
         return
 
+    df = _with_line_breaks(df)
     fig, axes = plt.subplots(4, 1, figsize=(14, 13), sharex=True)
     fig.suptitle("Multi-frame CLIK — Solver", fontsize=16, fontweight="bold")
     t = df["timestamp"]
+    ran = _ran(df)
     solved = _solved(df)
 
     axes[0].plot(t, _masked(df, "solve_time_us", solved), linewidth=1.0, color="C0")
@@ -202,8 +294,8 @@ def plot_dualarm_diag_solver(df, save_dir=None):
 
     rows = []
     if "converged" in df.columns:
-        rows.append(("not converged", solved & (df["converged"] == 0).to_numpy()))
-    rows += [(flag, (df[flag] == 1).to_numpy()) for flag in _FAILURE_FLAGS if flag in df.columns]
+        rows.append(("not converged", ran & ~_flag(df, "converged")))
+    rows += [(flag, _flag(df, flag)) for flag in _FAILURE_FLAGS if flag in df.columns]
     _raster(axes[2], t.to_numpy(), rows)
     axes[2].set_ylabel("abnormal ticks")
 
@@ -214,7 +306,7 @@ def plot_dualarm_diag_solver(df, save_dir=None):
     axes[3].grid(True, alpha=0.3)
     if "track_err" in df.columns:
         ax_track = axes[3].twinx()
-        ax_track.plot(t, df["track_err"], linewidth=1.0, color="C0", alpha=0.8)
+        ax_track.plot(t, _masked(df, "track_err", ran), linewidth=1.0, color="C0", alpha=0.8)
         ax_track.set_ylabel("track_err: max |q_meas − q_cmd| (rad)", color="C0")
     axes[3].set_xlabel("Time (s)")
 
@@ -231,6 +323,7 @@ def plot_dualarm_diag_task_error(df, save_dir=None):
         print("  Skipping CLIK task error plot (no <task>_err_lin columns)")
         return
 
+    df = _with_line_breaks(df)
     fig, axes = plt.subplots(
         len(tasks), 1, figsize=(14, 3.6 * len(tasks) + 1), sharex=True, squeeze=False
     )
@@ -241,7 +334,7 @@ def plot_dualarm_diag_task_error(df, save_dir=None):
     )
     axes = axes.flatten()
     t = df["timestamp"]
-    t_np = t.to_numpy()
+    t_np = t.to_numpy(dtype=float)
 
     for ax, task in zip(axes, tasks, strict=True):
         valid = _task_valid(df, task)
@@ -255,15 +348,9 @@ def plot_dualarm_diag_task_error(df, save_dir=None):
         )
         ax_ang.set_ylabel("‖rotation error‖ (rad)", color="C1")
 
-        traj_col = f"{task}_traj_active"
-        if traj_col in df.columns:
-            for start, stop in _runs((df[traj_col] == 1).to_numpy()):
-                ax.axvspan(t_np[start], t_np[stop - 1], color="0.5", alpha=0.12, linewidth=0)
-        seq_col = f"{task}_goal_sequence"
-        if seq_col in df.columns:
-            changed = np.flatnonzero(np.diff(df[seq_col].fillna(0).to_numpy()) != 0) + 1
-            for idx in changed:
-                ax.axvline(t_np[idx], color="0.3", linewidth=0.8, linestyle=":")
+        _shade(ax, t_np, _flag(df, f"{task}_traj_active"), "0.5", 0.12)
+        for idx in _new_goal_rows(df, task):
+            ax.axvline(t_np[idx], color="0.3", linewidth=0.8, linestyle=":")
     axes[-1].set_xlabel("Time (s)   —   grey band: reference moving, dotted line: new goal")
 
     handles = _shade_holds(axes, df)
@@ -280,9 +367,8 @@ def _cmd_meas_gap(df, task):
     rotation.
     """
     both = _task_valid(df, task)
-    meas_valid = f"{task}_meas_valid"
-    if meas_valid in df.columns:
-        both = both & (df[meas_valid] == 1).to_numpy()
+    if f"{task}_meas_valid" in df.columns:
+        both = both & _flag(df, f"{task}_meas_valid")
     cmd_p = df[[f"{task}_cmd_{a}" for a in _AXES]].to_numpy(dtype=float)
     meas_p = df[[f"{task}_meas_{a}" for a in _AXES]].to_numpy(dtype=float)
     cmd_q = df[[f"{task}_cmd_{a}" for a in _QUAT]].to_numpy(dtype=float)
@@ -304,6 +390,7 @@ def plot_dualarm_diag_task_pose(df, save_dir=None):
         print("  Skipping CLIK task pose plot (no <task>_{ref,cmd,meas}_* columns)")
         return
 
+    df = _with_line_breaks(df)
     fig, axes = plt.subplots(
         len(tasks), 4, figsize=(22, 3.6 * len(tasks) + 1), sharex=True, squeeze=False
     )
@@ -318,7 +405,7 @@ def plot_dualarm_diag_task_pose(df, save_dir=None):
         valid = _task_valid(df, task)
         meas_ok = valid
         if f"{task}_meas_valid" in df.columns:
-            meas_ok = (df[f"{task}_meas_valid"] == 1).to_numpy()
+            meas_ok = _flag(df, f"{task}_meas_valid")
         for ax, axis in zip(row[:3], _AXES, strict=True):
             ax.plot(t, _masked(df, f"{task}_ref_{axis}", valid), label="ref", linewidth=1.4)
             ax.plot(
@@ -358,6 +445,7 @@ def plot_dualarm_diag_task_pose(df, save_dir=None):
 def plot_dualarm_diag_limits(df, save_dir=None):
     """What bounded the solve: torque rows, feedback caps, braking bounds."""
     tasks = detect_task_prefixes(df)
+    df = _with_line_breaks(df)
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
     fig.suptitle("Multi-frame CLIK — Active Limits", fontsize=16, fontweight="bold")
     t = df["timestamp"]
@@ -423,6 +511,7 @@ def plot_dualarm_diag_goals(df, save_dir=None):
         print("  Skipping CLIK goal counter plot (no counter columns)")
         return
 
+    df = _with_line_breaks(df)
     fig, axes = plt.subplots(n_rows, 1, figsize=(14, 3.2 * n_rows + 1), sharex=True, squeeze=False)
     fig.suptitle("Multi-frame CLIK — Goal Counters (cumulative)", fontsize=16, fontweight="bold")
     axes = axes.flatten()
@@ -454,6 +543,7 @@ def plot_dualarm_diag_joint_cmd(df, save_dir=None):
         print("  Skipping CLIK joint command plot (q_cmd_* columns not found)")
         return
 
+    df = _with_line_breaks(df)
     nrows, ncols = auto_subplot_grid(len(cols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.2 * nrows), sharex=True)
     fig.suptitle("Multi-frame CLIK — Joint Command", fontsize=16, fontweight="bold")
@@ -465,8 +555,7 @@ def plot_dualarm_diag_joint_cmd(df, save_dir=None):
         ax.set_title(name, fontsize=9)
         ax.set_ylabel("q_cmd (rad)")
         ax.grid(True, alpha=0.3)
-    for idx in range(len(cols), len(axes)):
-        axes[idx].set_visible(False)
+    hide_unused_axes(axes, len(cols))
 
     _shade_holds(axes[: len(cols)], df)
     _finish(save_dir, "dualarm_diag_joint_cmd")
@@ -475,9 +564,51 @@ def plot_dualarm_diag_joint_cmd(df, save_dir=None):
 def _set_bits(series):
     """Sorted bit numbers set in any row of an integer mask column."""
     union = 0
-    for value in np.unique(series.fillna(0).to_numpy().astype(np.int64)):
+    for value in np.unique(_ints(series)):
         union |= int(value)
     return [k for k in range(union.bit_length()) if (union >> k) & 1]
+
+
+def _max_int(series):
+    """Largest value of an integer column, 0 if no cell parsed."""
+    return int(np.nan_to_num(series.max()))
+
+
+def _last_int(series):
+    """Last value of a cumulative counter that parsed (a file cut mid-row
+    leaves the cells of its last line empty), 0 if none did."""
+    parsed = series.dropna()
+    return int(parsed.iloc[-1]) if len(parsed) else 0
+
+
+def _print_tick_gaps(df):
+    """Report missing ticks, split by whether the controller was away.
+
+    After a gap the controller either carries on — rows were dropped — or
+    starts over: its first row back re-seeds, or holds as not yet seeded. The
+    second kind is a stretch it was not running, and no row is missing.
+    """
+    if "tick" not in df.columns:
+        return
+    at, missing = _tick_gaps(df)
+    if len(at) == 0:
+        print("Tick gaps: none — every tick has a row")
+        return
+    restarted = _flag(df, "reseeded")[at]
+    if "hold" in df.columns:
+        restarted = restarted | (_ints(df["hold"])[at] == HOLD_NOT_SEEDED)
+    away, lost = missing[restarted], missing[~restarted]
+    print(f"Tick gaps: {len(at)} ({int(missing.sum())} ticks)")
+    if len(away):
+        print(
+            f"  controller not running: {len(away)} gap(s), {int(away.sum())} ticks "
+            "(the row after each starts over — no row is missing)"
+        )
+    if len(lost):
+        print(
+            f"  DROPPED ROWS: {int(lost.sum())} ticks in {len(lost)} gap(s) "
+            f"(largest {int(lost.max())})"
+        )
 
 
 def print_dualarm_diag_statistics(df):
@@ -486,55 +617,52 @@ def print_dualarm_diag_statistics(df):
     n = len(df)
     t = df["timestamp"].to_numpy(dtype=float)
     duration = float(t[-1] - t[0]) if n > 1 else 0.0
-    rate = f"{(n - 1) / duration:.1f} Hz" if duration > 0 else "n/a"
-    print(f"Duration: {duration:.2f} s | Rows: {n} | Rate: {rate}")
+    print(f"Duration: {duration:.2f} s | Rows: {n}")
+    _print_tick_gaps(df)
 
-    if "tick" in df.columns and n > 1:
-        gaps = np.diff(df["tick"].to_numpy(dtype=np.int64))
-        dropped = int((gaps[gaps > 1] - 1).sum())
-        print(
-            f"Dropped rows (tick gaps): {dropped}"
-            + (" — every tick has a row" if not dropped else "")
-        )
-
+    ran = _ran(df)
     solved = _solved(df)
-    n_solved = int(solved.sum())
-    print(f"Ticks that ran the solve: {n_solved}/{n} ({100.0 * n_solved / n:.1f}%)")
+    n_ran, n_solved = int(ran.sum()), int(solved.sum())
+    print(f"Ticks that ran the solve: {n_ran}/{n} ({100.0 * n_ran / n:.1f}%)")
+    if n_ran != n_solved:
+        print(f"  refused before the QP (no solve data): {n_ran - n_solved}")
     if "hold" in df.columns:
-        counts = df["hold"].fillna(0).astype(int).value_counts().sort_index()
+        counts = pd.Series(_ints(df["hold"])).value_counts().sort_index()
         held = ", ".join(f"{_name(HOLD_NAMES, code)}: {c}" for code, c in counts.items() if code)
         print(f"Held ticks: {held if held else 'none'}")
     if "fault_latched" in df.columns:
-        print(f"Fault latched: {int((df['fault_latched'] == 1).sum())} ticks", end="")
-        causes = sorted(set(df.get("fault_cause", [0])) - {0})
+        causes = (
+            sorted(set(_ints(df["fault_cause"]).tolist()) - {0}) if "fault_cause" in df else []
+        )
+        cause = f" (cause: {', '.join(_name(FAULT_CAUSE_NAMES, c) for c in causes)})"
         print(
-            f" (cause: {', '.join(_name(FAULT_CAUSE_NAMES, c) for c in causes)})" if causes else ""
+            f"Fault latched: {int(_flag(df, 'fault_latched').sum())} ticks{cause if causes else ''}"
         )
     if "reseeded" in df.columns:
-        print(f"Re-seeds: {int((df['reseeded'] == 1).sum())}")
+        print(f"Re-seeds: {int(_flag(df, 'reseeded').sum())}")
 
     if n_solved and "solve_time_us" in df.columns:
-        s = df["solve_time_us"].to_numpy(dtype=float)[solved]
+        us = df["solve_time_us"].to_numpy(dtype=float)[solved]
         print(
-            f"Solve time (µs, solved ticks): p50={np.percentile(s, 50):.1f} "
-            f"p99={np.percentile(s, 99):.1f} max={s.max():.1f}"
+            f"Solve time (µs, ticks that reached the QP): p50={np.nanpercentile(us, 50):.1f} "
+            f"p99={np.nanpercentile(us, 99):.1f} max={np.nanmax(us):.1f}"
         )
-    if n_solved and "converged" in df.columns:
-        conv = df["converged"].to_numpy(dtype=float)[solved]
-        print(f"Converged: {100.0 * conv.mean():.2f}% of solved ticks")
+    if n_ran and "converged" in df.columns:
+        print(
+            f"Converged: {100.0 * (ran & _flag(df, 'converged')).sum() / n_ran:.2f}% of run ticks"
+        )
     if n_solved and "iterations" in df.columns:
         it = df["iterations"].to_numpy(dtype=float)[solved]
-        print(f"Iterations: mean={it.mean():.2f} max={int(it.max())}")
+        print(f"Iterations: mean={np.nanmean(it):.2f} max={int(np.nanmax(it))}")
     flagged = [
-        f"{flag}: {int((df[flag] == 1).sum())}"
-        for flag in _FAILURE_FLAGS
-        if flag in df.columns and (df[flag] == 1).any()
+        f"{flag}: {int(_flag(df, flag).sum())}" for flag in _FAILURE_FLAGS if _flag(df, flag).any()
     ]
     print(f"Abnormal ticks: {', '.join(flagged) if flagged else 'none'}")
     if "qp_fail_streak" in df.columns:
-        print(f"Longest QP fail streak: {int(df['qp_fail_streak'].max())} ticks")
-    if "track_err" in df.columns:
-        print(f"Tracking error max |q_meas − q_cmd|: {df['track_err'].max():.6f} rad")
+        print(f"Longest QP fail streak: {_max_int(df['qp_fail_streak'])} ticks")
+    if n_ran and "track_err" in df.columns:
+        track = df["track_err"].to_numpy(dtype=float)[ran]
+        print(f"Tracking error max |q_meas − q_cmd| (run ticks): {np.nanmax(track):.6f} rad")
     if "accel_rows_binding" in df.columns:
         print(
             f"Ticks with a binding acceleration row: {int((df['accel_rows_binding'] > 0).sum())}"
@@ -549,31 +677,26 @@ def print_dualarm_diag_statistics(df):
     for task in tasks:
         valid = _task_valid(df, task)
         n_valid = int(valid.sum())
-        print(f"  {task}: valid on {n_valid}/{n} ticks", end="")
-        seq_col = f"{task}_goal_sequence"
-        if seq_col in df.columns:
-            print(f", goal sequence reached {int(df[seq_col].max())}", end="")
-        print()
+        goals = len(_new_goal_rows(df, task))
+        print(f"  {task}: valid on {n_valid}/{n} ticks, {goals} goal(s) taken up")
         if n_valid:
             lin = df[f"{task}_err_lin"].to_numpy(dtype=float)[valid]
             ang = df[f"{task}_err_ang"].to_numpy(dtype=float)[valid]
             print(
-                f"    error (ref vs cmd): position rms={np.sqrt(np.mean(lin**2)):.6f} m "
-                f"max={lin.max():.6f} m | rotation rms={np.sqrt(np.mean(ang**2)):.6f} rad "
-                f"max={ang.max():.6f} rad"
+                f"    error (ref vs cmd): position rms={np.sqrt(np.nanmean(lin**2)):.6f} m "
+                f"max={np.nanmax(lin):.6f} m | rotation rms={np.sqrt(np.nanmean(ang**2)):.6f} rad "
+                f"max={np.nanmax(ang):.6f} rad"
             )
         if all(_has_pose(df, task, kind) for kind in ("cmd", "meas")):
             dist, angle = _cmd_meas_gap(df, task)
             if np.isfinite(dist).any():
                 print(
-                    f"    cmd vs meas (same tick, lag included): position max={np.nanmax(dist):.6f} m "
-                    f"| rotation max={np.nanmax(angle):.6f} rad"
+                    "    cmd vs meas (same tick, lag included): "
+                    f"position max={np.nanmax(dist):.6f} m | rotation max={np.nanmax(angle):.6f} rad"
                 )
         counters = task_counter_columns(df, task)
         if counters:
-            final = ", ".join(f"{c[len(task) + 1 :]}={int(df[c].iloc[-1])}" for c in counters)
+            final = ", ".join(f"{c[len(task) + 1 :]}={_last_int(df[c])}" for c in counters)
             print(f"    counters (final): {final}")
     if GROUP_GOAL_REJECTS in df.columns:
-        print(
-            f"Goals refused on a device-group lane (final): {int(df[GROUP_GOAL_REJECTS].iloc[-1])}"
-        )
+        print(f"Goals refused on a device-group lane (final): {_last_int(df[GROUP_GOAL_REJECTS])}")

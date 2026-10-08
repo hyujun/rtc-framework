@@ -15,7 +15,10 @@ from rtc_tools.plotting.columns import (
     detect_joint_columns as _detect_joint_columns,
     has_columns as _has_columns,
 )
-from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
+from rtc_tools.plotting.layout import (
+    auto_subplot_grid as _auto_subplot_grid,
+    hide_unused_axes as _hide_unused_axes,
+)
 
 # Task-space axis order emitted by the state_log writer: named columns
 # `task_pos_x/y/z/roll/pitch/yaw` (and `task_goal_*`). Index i maps to this
@@ -102,8 +105,7 @@ def plot_robot_positions(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(n_joints, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, n_joints)
 
     plt.tight_layout()
     if save_dir:
@@ -153,8 +155,7 @@ def plot_robot_velocities(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(n_joints, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, n_joints)
 
     plt.tight_layout()
     if save_dir:
@@ -217,8 +218,7 @@ def plot_robot_commands(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(n_joints, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, n_joints)
 
     plt.tight_layout()
     if save_dir:
@@ -256,8 +256,7 @@ def plot_robot_torques(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(n_joints, len(axes)):
-        axes[idx].set_visible(False)
+    _hide_unused_axes(axes, n_joints)
 
     plt.tight_layout()
     if save_dir:

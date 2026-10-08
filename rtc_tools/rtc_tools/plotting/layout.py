@@ -88,6 +88,16 @@ def auto_subplot_grid(n, max_cols=None):
     return (nrows, ncols)
 
 
+def hide_unused_axes(axes, n_used):
+    """Hide the cells of a flattened subplot grid past the first `n_used`.
+
+    `auto_subplot_grid` rounds up to a rectangle, so a count that does not fill
+    it leaves spare cells; left visible they are drawn as empty axes.
+    """
+    for ax in axes[n_used:]:
+        ax.set_visible(False)
+
+
 def save_or_show(fig, save_dir, filename):
     """Save fig to save_dir/filename or call plt.show(); always closes fig.
 

@@ -742,7 +742,7 @@ ros2 param set /demo_dualarm_controller/demo_dualarm_controller tasks.right_hand
 
 #### 로그와 TF 판독
 
-`<session>/controllers/demo_dualarm_controller/{g1_state,p1b_state,dualarm_diag}.csv` — 앞 둘은 기존 `DeviceStateLog`, `dualarm_diag.csv` (`integrated_bringup/DualArmDiagLog`) 는 **매 tick 한 행**입니다. 풀이를 안 돈 tick 도 행을 쓰고 (`clik_ran = 0`, 계산 안 한 칸은 0) 그래서 파일의 구멍은 떨어진 행뿐입니다.
+`<session>/controllers/demo_dualarm_controller/{g1_state,p1b_state,dualarm_diag}.csv` — 앞 둘은 기존 `DeviceStateLog`, `dualarm_diag.csv` (`integrated_bringup/DualArmDiagLog`) 는 **매 tick 한 행**입니다. 풀이를 안 돈 tick 도 행을 쓰고 (`clik_ran = 0`, 계산 안 한 칸은 0) 그래서 이 컨트롤러가 활성인 동안의 구멍은 떨어진 행뿐입니다. `tick` 은 CM 의 loop counter 라 다른 컨트롤러가 활성이던 구간도 `tick` 의 간극으로 남습니다 — 다시 활성화된 뒤의 첫 행은 시드한 행 (`reseeded` = 1) 이거나, 아직 읽을 수 없으면 시드 전 hold (`hold` = 4) 입니다.
 
 | 열 묶음 | 열 |
 |---|---|
