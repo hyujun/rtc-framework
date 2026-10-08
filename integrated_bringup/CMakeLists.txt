@@ -1739,6 +1739,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_hand_step test/test_demo_gui_hand_step.py)
   ament_add_pytest_test(test_demo_gui_catching test/test_demo_gui_catching.py)
   ament_add_pytest_test(test_demo_gui_latch_clear test/test_demo_gui_latch_clear.py)
+  ament_add_pytest_test(test_demo_gui_dualarm test/test_demo_gui_dualarm.py)
   # S7 G8-A2 (existence half): every RT-owned member of the catching
   # controller has a row in its header's reset table.
   ament_add_pytest_test(test_catching_reset_table test/test_catching_reset_table.py)

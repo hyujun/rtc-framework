@@ -39,6 +39,47 @@ _FINGER_PREFIX_ORDER: tuple[tuple[str, str], ...] = (
 )
 
 
+# proto_1b hand roster, shared by every profile that mounts that hand. The names
+# mirror the roster the controller republishes on /rtc_cm/p1b/joint_states
+# (config/<profile>/_base.yaml p1b ``joint_state_names``); the hand callback
+# reorders feedback by name, so an exact match is what keeps hand feedback from
+# silently reading zero. Finger groups are given explicitly (not inferred) so
+# the ``_joint``-suffixed names land in the intended column: 4/3/2/1 across
+# Thumb/Index/Middle/Ring.
+_P1B_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Thumb",
+        (
+            "thumb_cmc_aa_joint",
+            "thumb_cmc_fe_joint",
+            "thumb_mcp_joint",
+            "thumb_dip_fe_joint",
+        ),
+    ),
+    ("Index", ("index_mcp_aa_joint", "index_mcp_fe_joint", "index_dip_fe_joint")),
+    ("Middle", ("middle_mcp_fe_joint", "middle_dip_fe_joint")),
+    ("Ring", ("ring_mcp_fe_joint",)),
+)
+
+
+def short_joint_labels(joint_names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Row labels for one on-screen joint group: each name without the
+    ``_joint`` suffix and without the leading words the whole group shares.
+
+    ``left_shoulder_pitch_joint`` in a group whose names all start with
+    ``left_`` reads ``shoulder_pitch``. A name is never shortened to nothing —
+    a group of one keeps its full stem, and so does a group where one name is
+    exactly the shared prefix.
+    """
+    stems = [n[: -len("_joint")] if n.endswith("_joint") else n for n in joint_names]
+    words = [s.split("_") for s in stems]
+    shared = 0
+    if len(words) > 1:
+        while all(len(w) > shared + 1 for w in words) and len({w[shared] for w in words}) == 1:
+            shared += 1
+    return tuple("_".join(w[shared:]) for w in words)
+
+
 @dataclass(frozen=True)
 class RobotShape:
     """Runtime-discovered DoF + naming for the active robot/hand pair.
@@ -58,6 +99,14 @@ class RobotShape:
     # if hand_motor_names is non-empty; an "Other" bucket catches motors
     # whose name has no recognised finger prefix.
     hand_finger_groups: tuple[tuple[str, tuple[str, ...]], ...]
+    # [(group_label, (joint_name, ...)), ...] — how ``arm_joint_names`` is laid
+    # out on screen, one column per group. A serial arm is ONE group and leaves
+    # this empty (filled in below as a single unlabelled group). A primary
+    # device group that is a tree — several limbs off one trunk — names its
+    # limbs here so a long joint list reads as limbs instead of one tall
+    # column. Layout only: the wire order is ``arm_joint_names``, and the groups
+    # must spell out exactly that order.
+    arm_joint_groups: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     # Lookup tables built once. ``field(repr=False)`` keeps __repr__ readable.
     arm_name_to_idx: dict[str, int] = field(default_factory=dict, repr=False)
@@ -72,6 +121,16 @@ class RobotShape:
         object.__setattr__(
             self, "hand_name_to_idx", {n: i for i, n in enumerate(self.hand_motor_names)}
         )
+        if not self.arm_joint_groups:
+            object.__setattr__(self, "arm_joint_groups", (("", tuple(self.arm_joint_names)),))
+        flat = tuple(j for _, joints in self.arm_joint_groups for j in joints)
+        if flat != tuple(self.arm_joint_names):
+            # Widgets are appended group by group and read back as one flat
+            # list, so a group layout in another order would publish every
+            # value under its neighbour's joint name.
+            raise ValueError(
+                f"arm_joint_groups {flat} do not spell out arm_joint_names {self.arm_joint_names}"
+            )
 
     @property
     def arm_dof(self) -> int:
@@ -125,13 +184,8 @@ class RobotShape:
         Same arm as ``default_ur5e_assm`` but a different hand: the p1b motor
         names carry a ``_joint`` suffix (``thumb_cmc_aa_joint``) and split
         4/3/2/1 across Thumb/Index/Middle/Ring — unlike assm_v1's
-        suffix-less 3/3/3/1 layout. The names here mirror the roster the
-        controller republishes on ``/rtc_cm/p1b/joint_states``
-        (``config/ur5e_p1b/_base.yaml`` p1b ``joint_state_names``); the
-        hand-callback reorders feedback by name, so an exact match is what
-        keeps hand feedback from silently reading zero. Finger groups are
-        given explicitly (not inferred) so the ``_joint``-suffixed names land
-        in the intended tab and the layout stays stable.
+        suffix-less 3/3/3/1 layout. The roster is ``_P1B_HAND_GROUPS``
+        (``config/ur5e_p1b/_base.yaml`` p1b ``joint_state_names``).
         """
         arm = (
             "shoulder_pan_joint",
@@ -141,20 +195,7 @@ class RobotShape:
             "wrist_2_joint",
             "wrist_3_joint",
         )
-        hand_groups = (
-            (
-                "Thumb",
-                (
-                    "thumb_cmc_aa_joint",
-                    "thumb_cmc_fe_joint",
-                    "thumb_mcp_joint",
-                    "thumb_dip_fe_joint",
-                ),
-            ),
-            ("Index", ("index_mcp_aa_joint", "index_mcp_fe_joint", "index_dip_fe_joint")),
-            ("Middle", ("middle_mcp_fe_joint", "middle_dip_fe_joint")),
-            ("Ring", ("ring_mcp_fe_joint",)),
-        )
+        hand_groups = _P1B_HAND_GROUPS
         hand_flat = tuple(m for _, motors in hand_groups for m in motors)
         return cls(
             arm_joint_names=arm,
@@ -192,6 +233,55 @@ class RobotShape:
             arm_joint_names=arm,
             hand_motor_names=hand_flat,
             hand_finger_groups=hand_groups,
+        )
+
+    @classmethod
+    def default_g1_p1b(cls) -> RobotShape:
+        """Unitree G1 upper body (17 joints, fixed pelvis) + proto_1b hand on
+        the right wrist.
+
+        The primary device group ``g1`` is a tree, not a serial arm: waist (3),
+        left arm (7) and right arm (7) in that order — the roster the
+        controller republishes on ``/rtc_cm/g1/joint_states``
+        (``config/g1_p1b/_base.yaml`` g1 ``joint_state_names``). It rides the
+        ``arm_*`` fields because that is the GUI's name for "the first device
+        group"; ``arm_joint_groups`` is what makes it read as three limbs.
+
+        The hand is the same proto_1b as ``default_ur5e_p1b``.
+        """
+        joint_groups = (
+            ("Waist", ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint")),
+            (
+                "Left arm",
+                (
+                    "left_shoulder_pitch_joint",
+                    "left_shoulder_roll_joint",
+                    "left_shoulder_yaw_joint",
+                    "left_elbow_joint",
+                    "left_wrist_roll_joint",
+                    "left_wrist_pitch_joint",
+                    "left_wrist_yaw_joint",
+                ),
+            ),
+            (
+                "Right arm",
+                (
+                    "right_shoulder_pitch_joint",
+                    "right_shoulder_roll_joint",
+                    "right_shoulder_yaw_joint",
+                    "right_elbow_joint",
+                    "right_wrist_roll_joint",
+                    "right_wrist_pitch_joint",
+                    "right_wrist_yaw_joint",
+                ),
+            ),
+        )
+        hand_groups = _P1B_HAND_GROUPS
+        return cls(
+            arm_joint_names=tuple(j for _, joints in joint_groups for j in joints),
+            hand_motor_names=tuple(m for _, motors in hand_groups for m in motors),
+            hand_finger_groups=hand_groups,
+            arm_joint_groups=joint_groups,
         )
 
     @classmethod
@@ -243,8 +333,10 @@ class RobotProfile:
     # "iiwa7". Keeping it here (not hard-coded in app.py) is what stops
     # --robot ur5e_p1b / iiwa7_leap from falling back to ur5e_p1a topics.
     arm_group: str
-    # Controllers this profile's bringup can switch to that the GUI has NO gain
-    # schema for. The radio list is otherwise derived from GAIN_DEFS, which
+    # Controllers this profile's bringup can switch to that the GUI has no
+    # STATIC gain schema for: either none at all, or one that is built at start
+    # from that controller's own YAML (demo_gui.dualarm) and so exists only on
+    # the profiles that ship it. The radio list is otherwise derived from GAIN_DEFS, which
     # answers "is it tunable from here" — a question that used to coincide with
     # "can it be switched to" and no longer does.
     #
@@ -255,6 +347,17 @@ class RobotProfile:
     #
     # Empty for profiles whose controllers all have a gain panel.
     extra_switchable_controllers: tuple[str, ...] = ()
+    # Token the preset and GUI-settings files are named after
+    # (hand_presets_<token>.json). Empty means the hand group, which is what
+    # those files have always been keyed by: a preset is first of all a hand
+    # pose. A profile sets it when another profile already uses the same hand
+    # with a different body — a preset also stores a robot target and a
+    # controller name, and neither means anything on the other robot.
+    preset_scope: str = ""
+
+    def preset_token(self) -> str:
+        """Name token of this profile's preset / settings files."""
+        return self.preset_scope or self.hand_group
 
     def switchable_controllers(self, gain_schema_keys: tuple[str, ...]) -> tuple[str, ...]:
         """Config keys the GUI offers as controller radios, in display order.
@@ -332,6 +435,23 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         hand_group="leap",
         arm_group="iiwa7",
         extra_switchable_controllers=("demo_catching_controller",),
+    ),
+    "g1_p1b": RobotProfile(
+        shape=RobotShape.default_g1_p1b(),
+        # Every controller of this bringup broadcasts its measured frames with
+        # the pelvis as parent. The mount link of the hand is the end of the
+        # tree's right branch (config/g1_p1b/_base.yaml tree_models.g1), and
+        # the one frame both controllers broadcast.
+        tcp_parent="pelvis",
+        tcp_child="base_adapter_actual",
+        hand_group="p1b",
+        arm_group="g1",
+        # Its gain rows carry the task and posture-group names of the YAML, so
+        # they are built from it at start rather than written into GAIN_DEFS.
+        extra_switchable_controllers=("demo_dualarm_controller",),
+        # Same hand group as ur5e_p1b, another body and another controller set:
+        # its presets must not be read as that robot's, nor the reverse.
+        preset_scope="g1_p1b",
     ),
 }
 

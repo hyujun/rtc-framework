@@ -23,6 +23,7 @@ for marshalling onto the Tk thread (typically via ``root.after(0, …)``).
 from __future__ import annotations
 
 import contextlib
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -56,6 +57,12 @@ class ControllerEntry:
     # identity key for anything else in the GUI — it is kept because
     # /rtc_cm/reset_fault matches ``controller_name`` against it (S9a).
     controller_name: str = ""
+    # The controller-local fault latch and the two target-mailbox counters, as
+    # the CM reads them off the controller. For a controller with no state topic
+    # this response is the only place the latch is observable from outside.
+    has_latched_fault: bool = False
+    target_reject_count: int = 0
+    target_drop_count: int = 0
 
 
 def build_entries(
@@ -94,6 +101,13 @@ def build_entries(
                 claimed_groups=tuple(cs.claimed_groups),
                 has_gain_schema=(config_key in schema),
                 controller_name=cs.name,
+                # Read with a default: these are diagnostics on top of the
+                # identity fields above, and this function is fed duck-typed
+                # states that carry only the latter. Absent means "not
+                # reported", which is what the defaults say.
+                has_latched_fault=bool(getattr(cs, "has_latched_fault", False)),
+                target_reject_count=int(getattr(cs, "target_reject_count", 0)),
+                target_drop_count=int(getattr(cs, "target_drop_count", 0)),
             )
         )
     return tuple(entries)
@@ -152,6 +166,7 @@ class ControllerCatalog:
         self._timer = None  # populated in start()
         self._entries: tuple[ControllerEntry, ...] = ()
         self._ever_succeeded: bool = False
+        self._last_response_s: float | None = None  # monotonic
         self._inflight: bool = False  # guard against overlapping calls
 
     # ----------------------------------------------------------------
@@ -201,6 +216,18 @@ class ControllerCatalog:
         """
         return not self._ever_succeeded
 
+    def response_age_s(self) -> float | None:
+        """Seconds since the last successful response, ``None`` before the first.
+
+        ``latest()`` deliberately keeps the last roster through a service
+        hiccup, which is right for the radio list and wrong for anything read
+        as live state (a fault latch, a counter): a caller showing those asks
+        how old they are.
+        """
+        if self._last_response_s is None:
+            return None
+        return time.monotonic() - self._last_response_s
+
     def display_label(self, config_key: str) -> str:
         """Human-friendly label for ``config_key``.
 
@@ -242,6 +269,7 @@ class ControllerCatalog:
 
         self._entries = build_entries(resp.controllers, self._schema_keys, self._label_overrides)
         self._ever_succeeded = True
+        self._last_response_s = time.monotonic()
 
         if self._on_update is not None:
             try:

@@ -17,6 +17,7 @@ import os
 from rtc_tools.utils.session_dir import (
     get_session_dir,
     is_session_dir_name,
+    list_session_dirs,
     resolve_logging_root,
 )
 
@@ -39,14 +40,8 @@ def find_enclosing_session(path):
 
 def _latest_session(logging_root):
     """Return the newest ``YYMMDD_HHMM`` dir under ``logging_root``, or None."""
-    if not os.path.isdir(logging_root):
-        return None
-    candidates = sorted(
-        d
-        for d in os.listdir(logging_root)
-        if is_session_dir_name(d) and os.path.isdir(os.path.join(logging_root, d))
-    )
-    return os.path.join(logging_root, candidates[-1]) if candidates else None
+    names = list_session_dirs(logging_root)
+    return os.path.join(logging_root, names[-1]) if names else None
 
 
 def resolve_default_save_dir(csv_path=None):

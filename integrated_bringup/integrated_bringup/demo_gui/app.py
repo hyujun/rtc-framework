@@ -28,6 +28,10 @@ their own modules.
 - Live TCP pose      → tf2 lookup tcp_parent→tcp_child; the active
                        controller's <config_key>/transforms is fed into the
                        tf buffer by _transforms_cb (no /tf publisher exists)
+- Multi-frame CLIK   → on a profile that ships demo_dualarm_controller: gain
+                       rows built from its YAML, one <task>/task_goal publisher
+                       per task, and a status readout from the tail of its
+                       per-tick CSV log (demo_gui.dualarm)
 """
 
 import argparse
@@ -43,6 +47,7 @@ import tkinter as tk
 from tkinter import font as tkfont, messagebox, ttk
 
 import rclpy
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.parameter import Parameter, parameter_value_to_python
@@ -122,9 +127,45 @@ from .config import (
     grasp_command_enabled,
     grasp_mode_fg,
     preset_hand_targets,
+    register_scalar_gain_schema,
     target_panel_states,
 )
-from .discovery import RobotProfile, RobotShape
+from .discovery import RobotProfile, RobotShape, short_joint_labels
+from .dualarm import (
+    DUALARM_CONFIG_KEY,
+    GOAL_AXIS_LABELS,
+    LEVEL_BAD,
+    LEVEL_IDLE,
+    LEVEL_OK,
+    LEVEL_WARN,
+    STATUS_KEYS,
+    STATUS_LABELS,
+    TASK_STATUS_COLUMNS,
+    CmView,
+    DiagTail,
+    DualArmSpec,
+    MeasuredPose,
+    MeasuredPoses,
+    TaskSpec,
+    build_status,
+    copy_allowed,
+    diag_csv_path,
+    dualarm_config_path,
+    euler_note,
+    format_goal_entries,
+    frame_choices,
+    frame_note,
+    gain_group_layout,
+    gain_rows,
+    goal_frame_id,
+    goal_topic,
+    load_dualarm_spec,
+    measured_child_frame,
+    parse_goal_entries,
+    resolve_session_dir,
+    status_keys,
+    task_status_key,
+)
 from .hand_step import (
     CATCHING_CONFIG_KEY,
     PROFILE_PARAMETERS,
@@ -199,13 +240,37 @@ def _toggle_stage(method):
 
 
 class DemoControllerGUI(Node):
-    def __init__(self, robot: str = "ur5e_p1a"):
+    def __init__(self, robot: str = "ur5e_p1a", session_dir: str | None = None):
         super().__init__("demo_controller_gui")
 
         # --robot selects the static joint/frame profile (see discovery.py).
         # Raises ValueError on an unknown key — main() reports + exits rather
         # than sizing widgets for the wrong arm/hand.
         self._profile: RobotProfile = RobotProfile.for_robot(robot)
+
+        # Multi-frame CLIK controller (demo_gui.dualarm). None on a profile
+        # whose bringup ships no YAML for it: no tab, no publishers, no gain
+        # rows — the GUI is then exactly what it was without this controller.
+        # Read before the controller catalog is built, because its gain rows
+        # are what makes the catalog count it as tunable.
+        self._dualarm_spec: DualArmSpec | None = self._load_dualarm_spec(robot)
+        self._dualarm_goal_pubs: dict[str, rclpy.publisher.Publisher] = {}
+        # TF child frame -> the task whose measured pose it carries.
+        self._dualarm_children: dict[str, TaskSpec] = {}
+        self._dualarm_poses = MeasuredPoses()
+        self._dualarm_tail = DiagTail()
+        self._dualarm_session_arg = session_dir
+        self._dualarm_status_due_s = 0.0  # monotonic; next read of the log tail
+        self._dualarm_was_active = False  # Tk thread: was it active last frame?
+        self._prev_dualarm: dict[str, str] = {}
+        if self._dualarm_spec is not None:
+            for task in self._dualarm_spec.tasks:
+                # Created once and kept: a goal is sent ONCE, and a publisher
+                # made at the click would publish before discovery matched it.
+                self._dualarm_goal_pubs[task.name] = self.create_publisher(
+                    RobotTarget, goal_topic(task.name), 1
+                )
+                self._dualarm_children[measured_child_frame(task)] = task
 
         # Phase 4: target / grasp_state / wbc_state / tof are owned by the
         # active controller (/<config_key>/...). We defer creating them until
@@ -448,11 +513,11 @@ class DemoControllerGUI(Node):
         # Hand presets (loaded from JSON). Path + defaults are hand-scoped so a
         # 10-DoF roster saved for one hand can't be loaded against a 16-DoF hand
         # (issue #137 finding 3).
-        self._preset_path = _resolve_preset_path(self._profile.hand_group)
+        self._preset_path = _resolve_preset_path(self._profile.preset_token())
         self._presets = self._load_presets()
         self._toggle_settings_path = os.path.join(
             os.path.dirname(self._preset_path),
-            f"demo_gui_settings_{self._profile.hand_group}.json",
+            f"demo_gui_settings_{self._profile.preset_token()}.json",
         )
         self._toggle_settings = load_toggle_settings(self._toggle_settings_path)
         toggle = self._toggle_settings["preset_toggle"]
@@ -508,6 +573,11 @@ class DemoControllerGUI(Node):
         if not name or name == self._active_ctrl:
             return
         self._active_ctrl = name
+        # The multi-frame controller's measured poses belong to the activation
+        # that broadcast them. Dropped here rather than left to age out: a
+        # switch away and back inside that age would offer the pose from before
+        # the switch as the current one.
+        self._dualarm_poses.clear()
         # Force a rewire for the new controller even when its groups happen to
         # match the previous ones. _active_groups may still return the fallback
         # until the catalog learns this controller's claimed_groups, at which
@@ -694,6 +764,27 @@ class DemoControllerGUI(Node):
         self._task_frame.observe(tf.child_frame_id for tf in msg.transforms)
         for tf in msg.transforms:
             self._tf_buffer.set_transform(tf, "demo_gui")
+        # The multi-frame controller's task frames ride the same message. They
+        # are kept apart from the tf buffer on purpose: the goal panel needs to
+        # know which frame a pose is EXPRESSED in (it only lets a pose be copied
+        # into a goal stated in that frame), and that is the header of the
+        # message, not something to look up afterwards.
+        if self._dualarm_children and self._active_ctrl == DUALARM_CONFIG_KEY:
+            now_s = time.monotonic()
+            for tf in msg.transforms:
+                if tf.child_frame_id not in self._dualarm_children:
+                    continue
+                t = tf.transform.translation
+                r = tf.transform.rotation
+                self._dualarm_poses.observe(
+                    tf.child_frame_id,
+                    MeasuredPose(
+                        parent=tf.header.frame_id,
+                        xyz=(t.x, t.y, t.z),
+                        rpy=_quat_to_rpy(r.w, r.x, r.y, r.z),
+                        stamp_s=now_s,
+                    ),
+                )
 
     def _arm_joint_cb(self, msg: JointState):
         """Phase 4: /rtc_cm/<arm_group>/joint_states 구독 콜백 (replaces _gui_pos_cb).
@@ -1140,6 +1231,7 @@ class DemoControllerGUI(Node):
         self._query_catching_search_mode()
         self._query_catching_budget("segment")
         self._query_catching_budget("search")
+        self._refresh_dualarm_panel()
         self.root.after(200, self._schedule_refresh)
 
     def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
@@ -1370,7 +1462,10 @@ class DemoControllerGUI(Node):
     def _run_gui(self):
         self.root = tk.Tk()
         self.root.title("Demo Controller GUI")
-        self.root.geometry("1000x900")
+        # One joint column fits the historical width; a shape that lays its
+        # joints out as several limbs needs room for each beside the task panel.
+        joint_groups = self._shape.arm_joint_groups
+        self.root.geometry("1000x900" if len(joint_groups) == 1 else "1320x900")
         self.root.resizable(True, True)
         self.root.configure(bg="#1e1e2e")
         self.root.bind_class(self._toggle_bindtag, "<KeyPress>", self._on_toggle_key_press)
@@ -1535,6 +1630,11 @@ class DemoControllerGUI(Node):
         control_tab = tk.Frame(notebook, bg="#1e1e2e")
         notebook.add(control_tab, text="  Control  ")
 
+        if self._dualarm_spec is not None:
+            dualarm_tab = tk.Frame(notebook, bg="#1e1e2e")
+            notebook.add(dualarm_tab, text="  Dual Arm  ")
+            self._build_dualarm_tab(dualarm_tab)
+
         catching_tab = tk.Frame(notebook, bg="#1e1e2e")
         notebook.add(catching_tab, text="  Catching  ")
 
@@ -1648,62 +1748,79 @@ class DemoControllerGUI(Node):
 
         tk.Label(
             left_target_frame, text="Joint Target", bg="#1e1e2e", fg="#89b4fa", font=hdr_font
-        ).grid(row=0, column=0, columnspan=3, pady=(0, 1))
-        for col, txt in enumerate(["Axis", "Target", "Step (±)"]):
-            w = 10 if col != 2 else 6
-            tk.Label(
-                left_target_frame,
-                text=txt,
-                bg="#1e1e2e",
-                fg="#89b4fa",
-                font=hdr_font,
-                width=w,
-                anchor="center",
-            ).grid(row=1, column=col, padx=2, pady=(0, 2))
+        ).grid(row=0, column=0, columnspan=len(joint_groups), pady=(0, 1))
 
-        _joint_axis_labels = [
-            "q1 (deg)",
-            "q2 (deg)",
-            "q3 (deg)",
-            "q4 (deg)",
-            "q5 (deg)",
-            "q6 (deg)",
-        ]
         self._joint_target_entries: list[ttk.Entry] = []
         self._joint_step_entries: list[ttk.Entry] = []
         self._joint_step_btns: list[list] = []
 
-        for i in range(self._shape.arm_dof):
-            label = _joint_axis_labels[i] if i < len(_joint_axis_labels) else f"q{i + 1} (deg)"
-            tk.Label(
-                left_target_frame,
-                text=label,
-                bg="#1e1e2e",
-                fg="#cdd6f4",
-                width=10,
-                anchor="e",
-            ).grid(row=i + 2, column=0, padx=2, pady=1)
+        # One column per joint group (RobotShape.arm_joint_groups). A serial arm
+        # is a single unlabelled group and gets the q1..qN column it always had;
+        # a tree gets one labelled column per limb, its rows named after the
+        # joints. The entries are appended group by group, which is the flat
+        # arm_joint_names order every reader of these lists assumes.
+        for g_idx, (group_label, joints) in enumerate(joint_groups):
+            group_frame = tk.Frame(left_target_frame, bg="#1e1e2e")
+            group_frame.grid(row=1, column=g_idx, padx=(0, 6) if group_label else 0, sticky="n")
+            first_row = 0
+            if group_label:
+                tk.Label(
+                    group_frame, text=group_label, bg="#1e1e2e", fg="#f9e2af", font=hdr_font
+                ).grid(row=0, column=0, columnspan=3, pady=(0, 1))
+                first_row = 1
+                # The unit moves to the column header: a joint name is already
+                # as wide as three limbs side by side can afford.
+                row_labels = list(short_joint_labels(joints))
+                label_width = max(len(text) for text in row_labels)
+                headers = ["Axis", "Target (deg)", "Step (±)"]
+            else:
+                row_labels = [f"q{i + 1} (deg)" for i in range(len(joints))]
+                label_width = 10
+                headers = ["Axis", "Target", "Step (±)"]
+            for col, txt in enumerate(headers):
+                w = label_width if col == 0 else 10 if col == 1 else 6
+                tk.Label(
+                    group_frame,
+                    text=txt,
+                    bg="#1e1e2e",
+                    fg="#89b4fa",
+                    font=hdr_font,
+                    width=w,
+                    anchor="center",
+                ).grid(row=first_row, column=col, padx=2, pady=(0, 2))
 
-            ent = ttk.Entry(left_target_frame, width=12, justify="center")
-            ent.insert(0, "0.0000")
-            ent.grid(row=i + 2, column=1, padx=2, pady=1)
-            self._joint_target_entries.append(ent)
+            for row_idx, label in enumerate(row_labels):
+                i = len(self._joint_target_entries)
+                grid_row = first_row + 1 + row_idx
+                tk.Label(
+                    group_frame,
+                    text=label,
+                    bg="#1e1e2e",
+                    fg="#cdd6f4",
+                    width=label_width,
+                    anchor="e",
+                ).grid(row=grid_row, column=0, padx=2, pady=1)
 
-            bf = tk.Frame(left_target_frame, bg="#1e1e2e")
-            bf.grid(row=i + 2, column=2, padx=1, pady=1)
-            btn_m = ttk.Button(
-                bf, text="-", width=2, command=lambda idx=i: self._add_joint_step(idx, -1)
-            )
-            btn_m.pack(side="left", padx=1)
-            step_ent = ttk.Entry(bf, width=5, justify="center")
-            step_ent.insert(0, "1.0")
-            step_ent.pack(side="left", padx=1)
-            btn_p = ttk.Button(
-                bf, text="+", width=2, command=lambda idx=i: self._add_joint_step(idx, 1)
-            )
-            btn_p.pack(side="left", padx=1)
-            self._joint_step_entries.append(step_ent)
-            self._joint_step_btns.append([btn_m, btn_p])
+                ent = ttk.Entry(group_frame, width=12 if not group_label else 9, justify="center")
+                ent.insert(0, "0.0000")
+                ent.grid(row=grid_row, column=1, padx=2, pady=1)
+                self._joint_target_entries.append(ent)
+
+                bf = tk.Frame(group_frame, bg="#1e1e2e")
+                bf.grid(row=grid_row, column=2, padx=1, pady=1)
+                btn_m = ttk.Button(
+                    bf, text="-", width=2, command=lambda idx=i: self._add_joint_step(idx, -1)
+                )
+                btn_m.pack(side="left", padx=1)
+                step_ent = ttk.Entry(bf, width=5, justify="center")
+                step_ent.insert(0, "1.0")
+                step_ent.pack(side="left", padx=1)
+                btn_p = ttk.Button(
+                    bf, text="+", width=2, command=lambda idx=i: self._add_joint_step(idx, 1)
+                )
+                btn_p.pack(side="left", padx=1)
+                self._joint_step_entries.append(step_ent)
+                self._joint_step_btns.append([btn_m, btn_p])
 
         # Vertical separator
         ttk.Separator(top_target_row, orient="vertical").pack(side="left", fill="y", padx=6)
@@ -1831,41 +1948,75 @@ class DemoControllerGUI(Node):
         status_frame.columnconfigure(1, weight=1)
         status_frame.columnconfigure(2, weight=1)
 
-        # Col 0: Arm Joint Positions (always q1..q6)
+        # Col 0: Arm Joint Positions. A shape with several joint groups takes
+        # the whole first row instead (one sub-column per group) and pushes the
+        # end-effector and hand columns to a second row — three wide blocks do
+        # not fit side by side.
+        grouped = len(joint_groups) > 1
         joint_frame = ttk.LabelFrame(status_frame, text="Arm Joint Positions", padding=4)
-        joint_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
+        if grouped:
+            joint_frame.grid(row=0, column=0, columnspan=3, sticky="nsew", pady=(0, 2))
+        else:
+            joint_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
+        feedback_row = 1 if grouped else 0
 
         self._status_labels_names: list[tk.Label] = []
         self._status_labels_values: list[tk.Label] = []
+        # The joint-space text of each name label. _on_switch_controller writes
+        # these back, so a named limb keeps its joint names across a switch.
+        self._status_joint_label_texts: list[str] = []
 
-        for i in range(self._shape.arm_dof):
-            name_lbl = tk.Label(
-                joint_frame,
-                text=f"J{i + 1}:",
-                bg="#1e1e2e",
-                fg="#cdd6f4",
-                width=8,
-                anchor="e",
-                font=("Segoe UI", 9, "bold"),
-            )
-            name_lbl.grid(row=i, column=0, padx=(4, 2), pady=1)
-            self._status_labels_names.append(name_lbl)
+        for g_idx, (group_label, joints) in enumerate(joint_groups):
+            if group_label:
+                group_frame = tk.Frame(joint_frame, bg="#1e1e2e")
+                group_frame.grid(row=0, column=g_idx, padx=4, sticky="n")
+                tk.Label(
+                    group_frame,
+                    text=group_label,
+                    bg="#1e1e2e",
+                    fg="#f9e2af",
+                    font=("Segoe UI", 9, "bold"),
+                ).grid(row=0, column=0, columnspan=2)
+                first_row = 1
+                row_labels = [f"{name}:" for name in short_joint_labels(joints)]
+                label_width = max(len(text) for text in row_labels)
+            else:
+                group_frame = joint_frame
+                first_row = 0
+                row_labels = [f"J{i + 1}:" for i in range(len(joints))]
+                label_width = 8
+            for row_idx, label in enumerate(row_labels):
+                name_lbl = tk.Label(
+                    group_frame,
+                    text=label,
+                    bg="#1e1e2e",
+                    fg="#cdd6f4",
+                    width=label_width,
+                    anchor="e",
+                    font=("Segoe UI", 9, "bold"),
+                )
+                name_lbl.grid(row=first_row + row_idx, column=0, padx=(4, 2), pady=1)
+                self._status_labels_names.append(name_lbl)
+                self._status_joint_label_texts.append(label)
 
-            val_lbl = tk.Label(
-                joint_frame,
-                text="0.0000 rad  (0.00°)",
-                bg="#313244",
-                fg="#a6e3a1",
-                width=22,
-                anchor="center",
-                font=("Courier New", 9, "bold"),
-            )
-            val_lbl.grid(row=i, column=1, padx=3, pady=1)
-            self._status_labels_values.append(val_lbl)
+                val_lbl = tk.Label(
+                    group_frame,
+                    text="0.0000 rad  (0.00°)",
+                    bg="#313244",
+                    fg="#a6e3a1",
+                    width=22,
+                    anchor="center",
+                    font=("Courier New", 9, "bold"),
+                )
+                val_lbl.grid(row=first_row + row_idx, column=1, padx=3, pady=1)
+                self._status_labels_values.append(val_lbl)
 
         # Col 1: End-Effector Pose (always task-space)
         ee_frame = ttk.LabelFrame(status_frame, text="End-Effector Pose", padding=4)
-        ee_frame.grid(row=0, column=1, sticky="nsew", padx=2)
+        if grouped:
+            ee_frame.grid(row=feedback_row, column=0, sticky="nsew", padx=(0, 2))
+        else:
+            ee_frame.grid(row=0, column=1, sticky="nsew", padx=2)
 
         _task_state_row_labels = ["X (m)", "Y (m)", "Z (m)", "Roll", "Pitch", "Yaw"]
         self._task_state_labels_values: list[tk.Label] = []
@@ -1895,7 +2046,12 @@ class DemoControllerGUI(Node):
 
         # Col 2: Hand Motor Positions (one sub-column per finger group)
         hand_status_frame = ttk.LabelFrame(status_frame, text="Hand Motor Positions", padding=4)
-        hand_status_frame.grid(row=0, column=2, sticky="nsew", padx=(2, 0))
+        if grouped:
+            hand_status_frame.grid(
+                row=feedback_row, column=1, columnspan=2, sticky="nsew", padx=(2, 0)
+            )
+        else:
+            hand_status_frame.grid(row=0, column=2, sticky="nsew", padx=(2, 0))
 
         self._hand_state_labels_values: list[tk.Label] = []
 
@@ -1975,6 +2131,457 @@ class DemoControllerGUI(Node):
         self._gui_ready.set()
         self._schedule_refresh()
         self.root.mainloop()
+
+    # ---- Multi-frame CLIK controller (demo_gui.dualarm) -----------------------
+
+    # Status level -> text colour (the same four the other readouts use).
+    _DUALARM_LEVEL_FG = {
+        LEVEL_OK: "#a6e3a1",
+        LEVEL_WARN: "#f9e2af",
+        LEVEL_BAD: "#f38ba8",
+        LEVEL_IDLE: "#9399b2",
+    }
+
+    def _load_dualarm_spec(self, robot: str) -> DualArmSpec | None:
+        """Read the multi-frame controller's YAML for ``robot`` and register its
+        gain rows. ``None`` when the bringup ships no such YAML, and also when
+        the file is there but unusable — the controller refuses to configure
+        from that file too, so there is nothing to drive."""
+        try:
+            share = get_package_share_directory("integrated_bringup")
+        except PackageNotFoundError:
+            return None
+        try:
+            spec = load_dualarm_spec(dualarm_config_path(share, robot))
+        except ValueError as exc:
+            self.get_logger().error(f"{DUALARM_CONFIG_KEY} panel disabled — {exc}")
+            return None
+        if spec is None:
+            return None
+        try:
+            register_scalar_gain_schema(
+                DUALARM_CONFIG_KEY, gain_rows(spec), gain_group_layout(spec)
+            )
+        except ValueError as exc:
+            # A second GUI node in one process: the rows are already there.
+            self.get_logger().warn(f"{DUALARM_CONFIG_KEY} gain rows not registered — {exc}")
+        return spec
+
+    def _build_dualarm_tab(self, parent: tk.Frame) -> None:
+        """Status readout + one goal panel per configured task."""
+        spec = self._dualarm_spec
+        mono = ("Courier New", 9, "bold")
+        idle_fg = self._DUALARM_LEVEL_FG[LEVEL_IDLE]
+
+        # ── Status ──
+        status = ttk.LabelFrame(
+            parent, text="Solve status — from the controller's per-tick log", padding=4
+        )
+        status.pack(fill="x", padx=8, pady=2)
+        self._dualarm_status_labels: dict[str, tk.Label] = {}
+        for row, key in enumerate(STATUS_KEYS):
+            # The controller row comes from /rtc_cm/list_controllers, which the
+            # catalog polls: it can trail the log rows by one poll.
+            name = STATUS_LABELS[key] + (" (5 s poll)" if key == "cm" else "")
+            tk.Label(
+                status,
+                text=f"{name}:",
+                bg="#1e1e2e",
+                fg="#cdd6f4",
+                anchor="e",
+                width=20,
+                font=("Segoe UI", 9, "bold"),
+            ).grid(row=row, column=0, padx=(4, 2), pady=1, sticky="e")
+            value = tk.Label(
+                status, text=PLACEHOLDER, bg="#1e1e2e", fg=idle_fg, anchor="w", font=mono
+            )
+            value.grid(row=row, column=1, padx=3, pady=1, sticky="w")
+            self._dualarm_status_labels[key] = value
+
+        table = tk.Frame(status, bg="#1e1e2e")
+        table.grid(row=len(STATUS_KEYS), column=0, columnspan=2, sticky="w", pady=(6, 0))
+        column_titles = {
+            "error": "Error (reference − command)",
+            "goal": "Goal in force",
+            "counters": "Goals since configure",
+        }
+        for col, title in enumerate(["Task", *(column_titles[c] for c in TASK_STATUS_COLUMNS)]):
+            tk.Label(
+                table,
+                text=title,
+                bg="#1e1e2e",
+                fg="#89b4fa",
+                anchor="w",
+                font=("Segoe UI", 9, "bold"),
+            ).grid(row=0, column=col, padx=(4, 12), sticky="w")
+        for row, task in enumerate(spec.tasks, start=1):
+            tk.Label(
+                table,
+                text=task.name,
+                bg="#1e1e2e",
+                fg="#f9e2af",
+                anchor="w",
+                font=("Segoe UI", 9, "bold"),
+            ).grid(row=row, column=0, padx=(4, 12), pady=1, sticky="w")
+            for col, column in enumerate(TASK_STATUS_COLUMNS, start=1):
+                value = tk.Label(
+                    table, text=PLACEHOLDER, bg="#1e1e2e", fg=idle_fg, anchor="w", font=mono
+                )
+                value.grid(row=row, column=col, padx=(4, 12), pady=1, sticky="w")
+                self._dualarm_status_labels[task_status_key(task.name, column)] = value
+
+        # ── Goals ──
+        goals = ttk.LabelFrame(
+            parent, text="Task goals — each is sent ONCE to <task>/task_goal", padding=4
+        )
+        goals.pack(fill="x", padx=8, pady=2)
+        hdr_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        self._dualarm_goal_widgets: dict[str, dict] = {}
+        for col, task in enumerate(spec.tasks):
+            box = ttk.LabelFrame(
+                goals,
+                text=f"{task.name} — {task.frame}, steered in {task.base_frame}",
+                padding=4,
+            )
+            box.grid(row=0, column=col, padx=4, sticky="n")
+
+            frame_row = tk.Frame(box, bg="#1e1e2e")
+            frame_row.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 3))
+            tk.Label(frame_row, text="Goal stated in:", bg="#1e1e2e", fg="#cdd6f4").pack(
+                side="left", padx=(0, 4)
+            )
+            choices = frame_choices(spec, task)
+            combo = ttk.Combobox(frame_row, values=list(choices), width=14, state="readonly")
+            # Start in the frame the measured pose arrives in when a goal may be
+            # stated there: that is the one frame "copy the current pose" works in.
+            parent_frame = self._profile.tcp_parent
+            combo.set(parent_frame if parent_frame in choices else choices[0])
+            combo.pack(side="left")
+            combo.bind(
+                "<<ComboboxSelected>>",
+                lambda _event, name=task.name: self._on_dualarm_frame_change(name),
+            )
+
+            current_header = tk.Label(
+                box, text="Measured", bg="#1e1e2e", fg="#89b4fa", font=hdr_font, anchor="center"
+            )
+            for c, title in enumerate(["Axis", "Goal", "Step (±)"]):
+                tk.Label(
+                    box, text=title, bg="#1e1e2e", fg="#89b4fa", font=hdr_font, anchor="center"
+                ).grid(row=1, column=c, padx=2, pady=(0, 2))
+            current_header.grid(row=1, column=3, padx=2, pady=(0, 2))
+
+            entries: list[ttk.Entry] = []
+            steps: list[ttk.Entry] = []
+            currents: list[tk.Label] = []
+            for i, axis in enumerate(GOAL_AXIS_LABELS):
+                tk.Label(box, text=axis, bg="#1e1e2e", fg="#cdd6f4", width=10, anchor="e").grid(
+                    row=i + 2, column=0, padx=2, pady=1
+                )
+                # Empty until seeded from a measured pose or typed: an entry
+                # that started at 0 would be a goal at the frame's origin, one
+                # click away.
+                ent = ttk.Entry(box, width=12, justify="center")
+                ent.grid(row=i + 2, column=1, padx=2, pady=1)
+                entries.append(ent)
+
+                bf = tk.Frame(box, bg="#1e1e2e")
+                bf.grid(row=i + 2, column=2, padx=1, pady=1)
+                ttk.Button(
+                    bf,
+                    text="-",
+                    width=2,
+                    command=lambda name=task.name, idx=i: self._add_dualarm_step(name, idx, -1),
+                ).pack(side="left", padx=1)
+                step_ent = ttk.Entry(bf, width=5, justify="center")
+                step_ent.insert(0, "0.01" if i < 3 else "1.0")
+                step_ent.pack(side="left", padx=1)
+                ttk.Button(
+                    bf,
+                    text="+",
+                    width=2,
+                    command=lambda name=task.name, idx=i: self._add_dualarm_step(name, idx, 1),
+                ).pack(side="left", padx=1)
+                steps.append(step_ent)
+
+                cur = tk.Label(
+                    box,
+                    text=PLACEHOLDER,
+                    bg="#313244",
+                    fg="#cba6f7",
+                    width=12,
+                    anchor="center",
+                    font=mono,
+                )
+                cur.grid(row=i + 2, column=3, padx=3, pady=1)
+                currents.append(cur)
+
+            btn_row = tk.Frame(box, bg="#1e1e2e")
+            btn_row.grid(row=8, column=0, columnspan=4, pady=(4, 2))
+            copy_btn = ttk.Button(
+                btn_row,
+                text="Copy measured → goal",
+                command=lambda name=task.name: self._copy_dualarm_current(name),
+            )
+            copy_btn.pack(side="left", padx=4)
+            send_btn = ttk.Button(
+                btn_row,
+                text="Send goal",
+                style="Send.TButton",
+                command=lambda t=task: self._send_dualarm_goal(t),
+            )
+            send_btn.pack(side="left", padx=4)
+
+            note = tk.Label(
+                box,
+                text="",
+                bg="#1e1e2e",
+                fg="#f9e2af",
+                font=("Segoe UI", 8),
+                wraplength=430,
+                justify="left",
+                anchor="w",
+            )
+            note.grid(row=9, column=0, columnspan=4, sticky="w")
+            result = tk.Label(
+                box,
+                text="",
+                bg="#1e1e2e",
+                fg=idle_fg,
+                font=("Segoe UI", 8, "italic"),
+                wraplength=430,
+                justify="left",
+                anchor="w",
+            )
+            result.grid(row=10, column=0, columnspan=4, sticky="w")
+
+            self._dualarm_goal_widgets[task.name] = {
+                "frame": combo,
+                "entries": entries,
+                "steps": steps,
+                "currents": currents,
+                "current_header": current_header,
+                "copy_btn": copy_btn,
+                "send_btn": send_btn,
+                "note": note,
+                "result": result,
+            }
+
+        tk.Label(
+            parent,
+            text=(
+                "Posture and hand goals go through the Control tab: Joint Target carries every "
+                "joint of the first device group, Hand Motor Target every hand joint, and Send "
+                "Command publishes both."
+            ),
+            bg="#1e1e2e",
+            fg="#9399b2",
+            font=("Segoe UI", 8),
+            wraplength=900,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(2, 4))
+
+    def _dualarm_set(self, key: str, widget, **config) -> None:
+        """Dirty-checked ``widget.config`` for the panel's 5 Hz refresh."""
+        cache = "\x00".join(f"{k}={v}" for k, v in sorted(config.items()))
+        if self._prev_dualarm.get(key) == cache:
+            return
+        self._prev_dualarm[key] = cache
+        widget.config(**config)
+
+    def _dualarm_pose(self, task: TaskSpec) -> MeasuredPose | None:
+        """The task frame's measured pose, while this controller is the one
+        broadcasting. A pose received before a switch away is not current."""
+        if self._active_ctrl != DUALARM_CONFIG_KEY:
+            return None
+        return self._dualarm_poses.get(measured_child_frame(task), time.monotonic())
+
+    def _refresh_dualarm_panel(self) -> None:
+        """Tk thread, every refresh frame: measured poses and button gates. The
+        log tail is read at 2 Hz — it is a file read on the Tk thread, and the
+        solve's state does not need to be redrawn faster than it can be read."""
+        spec = self._dualarm_spec
+        if spec is None:
+            return
+        active = self._active_ctrl == DUALARM_CONFIG_KEY
+        if active and not self._dualarm_was_active:
+            # A goal left in the entries was stated against where the hands were
+            # in an earlier activation. Stepped and sent now it would be a move
+            # back there, not a step from here — so every activation starts
+            # from the measured pose again, as the arm panel does per rewire.
+            for name in self._dualarm_goal_widgets:
+                self._on_dualarm_frame_change(name)
+        self._dualarm_was_active = active
+        for task in spec.tasks:
+            w = self._dualarm_goal_widgets[task.name]
+            pose = self._dualarm_pose(task)
+            selected = w["frame"].get()
+            texts = format_goal_entries(pose.xyz, pose.rpy) if pose else [PLACEHOLDER] * 6
+            for i, (label, text) in enumerate(zip(w["currents"], texts, strict=True)):
+                self._dualarm_set(f"{task.name}/cur/{i}", label, text=text)
+            header = f"Measured, in {pose.parent}" if pose else "Measured"
+            self._dualarm_set(f"{task.name}/cur_hdr", w["current_header"], text=header)
+
+            can_copy = copy_allowed(selected, pose)
+            self._dualarm_set(
+                f"{task.name}/copy", w["copy_btn"], state="normal" if can_copy else "disabled"
+            )
+            self._dualarm_set(
+                f"{task.name}/send", w["send_btn"], state="normal" if active else "disabled"
+            )
+            if not active:
+                notes = ["Switch to this controller (Control tab) to send a goal."]
+            else:
+                # What the chosen frame means, whether a measured pose can seed
+                # it, and what the goal's own pitch does to the step buttons —
+                # three independent facts, each said when it holds.
+                notes = [frame_note(task, selected)]
+                if pose is None:
+                    notes.append("No measured pose of this frame has arrived yet.")
+                elif not can_copy:
+                    notes.append(
+                        f"The measured pose is known in '{pose.parent}' only. A goal stated "
+                        f"in '{selected}' has to be typed — nothing here converts between "
+                        "the two."
+                    )
+                with contextlib.suppress(ValueError):
+                    notes.append(euler_note(math.radians(float(w["entries"][4].get()))))
+            note = "\n".join(n for n in notes if n)
+            self._dualarm_set(f"{task.name}/note", w["note"], text=note)
+
+            # Seed an untouched goal from the measured pose, once it exists in
+            # the selected frame — the same "start from where it is" the task
+            # panel does. Never over text the operator has put there.
+            if can_copy and all(not e.get().strip() for e in w["entries"]):
+                self._set_dualarm_goal_entries(task.name, pose)
+
+        now_s = time.monotonic()
+        if now_s >= self._dualarm_status_due_s:
+            self._dualarm_status_due_s = now_s + 0.5
+            self._render_dualarm_status()
+
+    def _dualarm_cm_view(self) -> CmView | None:
+        for entry in self._catalog.latest():
+            if entry.config_key == DUALARM_CONFIG_KEY:
+                return CmView(
+                    state=entry.state,
+                    is_active=entry.is_active,
+                    has_latched_fault=entry.has_latched_fault,
+                    target_reject_count=entry.target_reject_count,
+                    target_drop_count=entry.target_drop_count,
+                )
+        return None
+
+    def _render_dualarm_status(self) -> None:
+        spec = self._dualarm_spec
+        from rtc_tools.utils.session_dir import get_session_dir, resolve_logging_root
+
+        session, how = resolve_session_dir(
+            self._dualarm_session_arg,
+            get_session_dir(),
+            resolve_logging_root(),
+            spec.diag_instance,
+        )
+        sample = None
+        if session is None:
+            source = how
+        elif not spec.diag_instance:
+            source = "this configuration does not write the per-tick log"
+        else:
+            path = diag_csv_path(session, spec.diag_instance)
+            sample = self._dualarm_tail.read(path)
+            source = f"{path}  ({how})" if sample else f"no row in {path} yet  ({how})"
+        fields = build_status(
+            [t.name for t in spec.tasks],
+            sample,
+            time.time(),
+            self._dualarm_cm_view(),
+            source,
+            self._catalog.response_age_s(),
+        )
+        for key in status_keys(t.name for t in spec.tasks):
+            field = fields[key]
+            self._dualarm_set(
+                f"status/{key}",
+                self._dualarm_status_labels[key],
+                text=field.text,
+                fg=self._DUALARM_LEVEL_FG[field.level],
+            )
+
+    def _set_dualarm_goal_entries(self, task_name: str, pose: MeasuredPose) -> None:
+        entries = self._dualarm_goal_widgets[task_name]["entries"]
+        for ent, text in zip(entries, format_goal_entries(pose.xyz, pose.rpy), strict=True):
+            ent.delete(0, tk.END)
+            ent.insert(0, text)
+
+    def _set_dualarm_result(self, task_name: str, text: str, level: str) -> None:
+        self._dualarm_goal_widgets[task_name]["result"].config(
+            text=text, fg=self._DUALARM_LEVEL_FG[level]
+        )
+
+    def _on_dualarm_frame_change(self, task_name: str) -> None:
+        """The numbers in the entries were stated in the frame just left. Clear
+        them rather than let them be sent under the new frame's name; the
+        refresh re-seeds them if the measured pose is known in the new one."""
+        for ent in self._dualarm_goal_widgets[task_name]["entries"]:
+            ent.delete(0, tk.END)
+
+    def _copy_dualarm_current(self, task_name: str) -> None:
+        task = next(t for t in self._dualarm_spec.tasks if t.name == task_name)
+        pose = self._dualarm_pose(task)
+        selected = self._dualarm_goal_widgets[task_name]["frame"].get()
+        if copy_allowed(selected, pose):
+            self._set_dualarm_goal_entries(task_name, pose)
+
+    def _add_dualarm_step(self, task_name: str, idx: int, sign: int) -> None:
+        w = self._dualarm_goal_widgets[task_name]
+        try:
+            step = float(w["steps"][idx].get())
+            value = float(w["entries"][idx].get()) + sign * step
+        except ValueError:
+            self._set_dualarm_result(
+                task_name, "step ignored — the goal or the step is not a number", LEVEL_WARN
+            )
+            return
+        w["entries"][idx].delete(0, tk.END)
+        w["entries"][idx].insert(0, f"{value:.4f}")
+
+    def _send_dualarm_goal(self, task: TaskSpec) -> None:
+        """Publish one task goal. Once: the controller starts a new trajectory
+        from wherever the reference is on every goal it accepts."""
+        w = self._dualarm_goal_widgets[task.name]
+        if self._active_ctrl != DUALARM_CONFIG_KEY:
+            self._set_dualarm_result(
+                task.name, "not sent — this controller is not the active one", LEVEL_WARN
+            )
+            return
+        try:
+            target = parse_goal_entries([e.get() for e in w["entries"]])
+        except ValueError as exc:
+            self._set_dualarm_result(task.name, f"not sent — {exc}", LEVEL_BAD)
+            return
+        pub = self._dualarm_goal_pubs[task.name]
+        if pub.get_subscription_count() == 0:
+            self._set_dualarm_result(
+                task.name, f"not sent — nothing subscribes to {goal_topic(task.name)}", LEVEL_BAD
+            )
+            return
+        selected = w["frame"].get()
+        msg = RobotTarget()
+        msg.header.frame_id = goal_frame_id(task, selected)
+        msg.goal_type = "task"
+        msg.task_target = target
+        pub.publish(msg)
+        self._set_dualarm_result(
+            task.name,
+            f"sent at {time.strftime('%H:%M:%S')}, stated in '{selected}' — whether it was "
+            "accepted shows in this task's goal counters above",
+            LEVEL_OK,
+        )
+        self.get_logger().info(
+            f"Sent task goal '{task.name}' in '{selected}': {[f'{v:.4f}' for v in target]}"
+        )
 
     # ---- Grasp tab builder -----------------------------------------------------
 
@@ -3860,7 +4467,7 @@ class DemoControllerGUI(Node):
                 if in_grasp_tab:
                     # Grasp-tab groups intentionally have no applied
                     # mirror; empty slot keeps list alignment for
-                    # `_update_applied_display`.
+                    # `_show_applied_gains`.
                     applied_labels.append([])
                     continue
 
@@ -3927,12 +4534,16 @@ class DemoControllerGUI(Node):
         self._applied_label_widgets = panel["applied_labels"]
         self._active_gains_ctrl = ctrl_idx
 
-    def _update_applied_display(self):
-        for widgets, applied_labels, is_bool in zip(
-            self._gain_entries, self._applied_label_widgets, self._gain_is_bool, strict=False
+    def _show_applied_gains(self, ctrl: str, rows: list[list]) -> None:
+        """Write ``rows`` (one list of raw entry values per gain row, as they
+        were when Apply was clicked) into ``ctrl``'s "Currently Applied" mirror."""
+        panel = self._gains_panels.get(ctrl)
+        if panel is None:
+            return
+        for values, applied_labels, is_bool in zip(
+            rows, panel["applied_labels"], panel["is_bool"], strict=False
         ):
-            for w, lbl in zip(widgets, applied_labels, strict=False):
-                raw = w.get()
+            for raw, lbl in zip(values, applied_labels, strict=False):
                 if is_bool:
                     val = int(raw)
                     lbl.config(text="ON" if val else "OFF", fg="#a6e3a1" if val else "#f38ba8")
@@ -4122,11 +4733,19 @@ class DemoControllerGUI(Node):
         # Status readout naming follows the primary space (joint for dual/WBC).
         _task_status_names = ["X (m)", "Y (m)", "Z (m)", "Roll", "Pitch", "Yaw"]
         if JOINT_SPACE.get(idx, True):
-            for i, name_lbl in enumerate(self._status_labels_names):
-                name_lbl.config(text=f"J{i + 1}:")
+            for name_lbl, text in zip(
+                self._status_labels_names, self._status_joint_label_texts, strict=True
+            ):
+                name_lbl.config(text=text)
         else:
-            for i, name_lbl in enumerate(self._status_labels_names):
-                name_lbl.config(text=f"{_task_status_names[i]}:")
+            # zip, not an index per label: an arm with more than six joints has
+            # more labels than there are task axes, and indexing raised here —
+            # after the switch request had gone out, and before the hand
+            # target below was seeded.
+            for name_lbl, task_name in zip(
+                self._status_labels_names, _task_status_names, strict=False
+            ):
+                name_lbl.config(text=f"{task_name}:")
 
         # Hand target: initialize from current positions
         self._set_hand_target_entries(self.current_hand_positions)
@@ -4303,6 +4922,10 @@ class DemoControllerGUI(Node):
             self.get_logger().error(f"parameter services for /{ctrl} unavailable")
             return
 
+        # What the entries hold at the click, per row. The mirror is written
+        # from this once the set is accepted — not from the entries as they are
+        # by then, and into THIS controller's panel whichever one is on screen.
+        sent_rows = [[w.get() for w in widgets] for widgets in self._gain_entries]
         future = client.set_parameters_atomically(params)
         ctrl_label = self._catalog.display_label(ctrl)
 
@@ -4314,14 +4937,16 @@ class DemoControllerGUI(Node):
                 return
             if resp.result.successful:
                 self.get_logger().info(f"Applied {len(params)} gains for {ctrl_label}")
+                # Only now: the set is atomic, so a refusal applied NOTHING, and
+                # a mirror updated at the click would show the refused values
+                # under "Currently Applied".
+                self.root.after(0, self._show_applied_gains, ctrl, sent_rows)
             else:
                 self.get_logger().error(
                     f"set_parameters_atomically rejected: {resp.result.reason}"
                 )
 
         future.add_done_callback(_on_set_done)
-
-        self.root.after(0, self._update_applied_display)
 
     def _send_grasp_command(self, cmd: int):
         """Send a one-shot Force-PI grasp command via the active controller's
@@ -4852,20 +5477,30 @@ class DemoControllerGUI(Node):
         rclpy.try_shutdown()
 
 
-def _parse_robot_arg(argv):
-    """Extract the ``--robot`` value from ``argv`` (ROS args already removed).
+def _parse_args(argv):
+    """Parse the GUI's own flags from ``argv`` (ROS args already removed).
 
-    Accepts ``--robot <key>`` plus convenience aliases ``--ur5e`` / ``--p1b`` /
-    ``--iiwa`` that map onto the canonical ``config/<key>/`` names. Unknown keys are not
-    rejected here — ``RobotProfile.for_robot`` validates and raises so the
-    error surfaces in one place.
+    ``--robot <key>`` plus convenience aliases ``--ur5e`` / ``--p1b`` /
+    ``--iiwa`` / ``--g1`` that map onto the canonical ``config/<key>/`` names.
+    Unknown keys are not rejected here — ``RobotProfile.for_robot`` validates
+    and raises so the error surfaces in one place.
+
+    ``--session <dir>`` names the session directory whose controller logs the
+    multi-frame controller's status readout follows. Without it the GUI uses
+    ``$RTC_SESSION_DIR`` and then the newest session under the logging root.
     """
     parser = argparse.ArgumentParser(prog="demo_controller_gui")
     parser.add_argument(
         "--robot",
         default="ur5e_p1a",
         help="robot profile selecting arm/hand joint schema + TCP frames "
-        "(ur5e_p1a | ur5e_p1b | iiwa7_leap)",
+        "(ur5e_p1a | ur5e_p1b | iiwa7_leap | g1_p1b)",
+    )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="session directory to read the multi-frame controller's per-tick log from "
+        "(default: $RTC_SESSION_DIR, then the newest session)",
     )
     parser.add_argument(
         "--ur5e",
@@ -4888,7 +5523,19 @@ def _parse_robot_arg(argv):
         const="iiwa7_leap",
         help="alias for --robot iiwa7_leap",
     )
-    return parser.parse_args(argv).robot
+    parser.add_argument(
+        "--g1",
+        dest="robot",
+        action="store_const",
+        const="g1_p1b",
+        help="alias for --robot g1_p1b",
+    )
+    return parser.parse_args(argv)
+
+
+def _parse_robot_arg(argv):
+    """The ``--robot`` value of ``argv`` (see ``_parse_args``)."""
+    return _parse_args(argv).robot
 
 
 def main(args=None):
@@ -4896,9 +5543,9 @@ def main(args=None):
     # ROS strips its own args inside rclpy.init; remove_ros_args drops them
     # (and argv[0]) so argparse sees only the GUI's own flags.
     raw = sys.argv if args is None else args
-    robot = _parse_robot_arg(remove_ros_args(raw)[1:])
+    cli = _parse_args(remove_ros_args(raw)[1:])
     try:
-        node = DemoControllerGUI(robot=robot)
+        node = DemoControllerGUI(robot=cli.robot, session_dir=cli.session)
     except ValueError as exc:
         print(f"demo_controller_gui: {exc}", file=sys.stderr)
         rclpy.try_shutdown()

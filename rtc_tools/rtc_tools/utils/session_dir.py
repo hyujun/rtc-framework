@@ -96,15 +96,27 @@ def create_session_dir(logging_root: str | None = None) -> str:
     return session
 
 
+def list_session_dirs(logging_root: str) -> list[str]:
+    """``logging_root`` 아래 세션 디렉토리 **이름** 을 오래된 것부터 정렬해 반환.
+
+    이름이 ``YYMMDD_HHMM`` 이라 사전순이 곧 시간순이다. 루트가 없거나 읽을 수
+    없으면 빈 list. 세션 폴더를 훑는 곳 (정리 · 최신 세션 탐색) 은 이 함수를
+    쓴다 — "무엇이 세션인가" 의 판정이 한 곳에 있어야 함께 바뀐다.
+    """
+    try:
+        names = os.listdir(logging_root)
+    except OSError:
+        return []
+    return sorted(
+        d for d in names if is_session_dir_name(d) and os.path.isdir(os.path.join(logging_root, d))
+    )
+
+
 def cleanup_old_sessions(logging_root: str, max_sessions: int) -> None:
     """YYMMDD_HHMM 패턴 세션 폴더를 ``max_sessions`` 개 이하로 유지."""
-    if max_sessions <= 0 or not os.path.isdir(logging_root):
+    if max_sessions <= 0:
         return
-    dirs = sorted(
-        d
-        for d in os.listdir(logging_root)
-        if os.path.isdir(os.path.join(logging_root, d)) and is_session_dir_name(d)
-    )
+    dirs = list_session_dirs(logging_root)
     while len(dirs) > max_sessions:
         oldest = os.path.join(logging_root, dirs.pop(0))
         shutil.rmtree(oldest, ignore_errors=True)

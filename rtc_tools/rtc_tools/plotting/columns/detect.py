@@ -71,6 +71,48 @@ def detect_joint_columns(df, prefix, count=None):
     return result
 
 
+# Per-task column block of the multi-frame CLIK diagnostics log: every task
+# writes `<task>_valid`, `<task>_err_lin`, `<task>_err_ang`, … under its own
+# name. The task names are whatever that run configured, so they are read back
+# out of the header rather than known here.
+_TASK_MARKER_SUFFIX = "_err_lin"
+_TASK_REQUIRED_SUFFIXES = ("_err_ang", "_valid")
+
+
+def detect_task_prefixes(df):
+    """Task names of a per-task column block, in header (= configuration) order.
+
+    A name `<task>` qualifies when `<task>_err_lin`, `<task>_err_ang` and
+    `<task>_valid` are all present. Three columns rather than one, so a lone
+    column that merely ends in `_err_lin` does not conjure a task whose other
+    series would then be missing. Returns ``[]`` when there is none.
+
+    The order matters to the callers: the solve's per-task bit masks index
+    tasks by their position in this list.
+    """
+    cols = set(df.columns)
+    tasks = []
+    for col in df.columns:
+        if not col.endswith(_TASK_MARKER_SUFFIX):
+            continue
+        task = col[: -len(_TASK_MARKER_SUFFIX)]
+        if task and all(f"{task}{suffix}" in cols for suffix in _TASK_REQUIRED_SUFFIXES):
+            tasks.append(task)
+    return tasks
+
+
+def task_counter_columns(df, task):
+    """Cumulative goal counters of `task`: accepted, then every reject / drop.
+
+    Matched by prefix (`<task>_reject_*`, `<task>_drop_*`) so a reason the
+    producer adds later shows up without a change here.
+    """
+    accepted = f"{task}_goals_accepted"
+    counters = [accepted] if accepted in df.columns else []
+    counters += [c for c in df.columns if c.startswith((f"{task}_reject_", f"{task}_drop_"))]
+    return counters
+
+
 def has_columns(df, prefix, count):
     """Check if df has columns like '{prefix}0' .. '{prefix}{count-1}'.
     Also supports named columns.

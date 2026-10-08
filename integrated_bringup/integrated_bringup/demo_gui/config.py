@@ -11,13 +11,15 @@ fallback). The remaining constants here are GUI-only, robot-agnostic.
 
 Public surface (imported by app.py):
 - TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
-- DUAL_TARGET_SPACE, NO_EXTERNAL_COMMAND_CONTROLLERS, target_panel_states
+- DUAL_TARGET_SPACE, NO_EXTERNAL_COMMAND_CONTROLLERS,
+  NO_GRASP_COMMAND_CONTROLLERS, target_panel_states
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
 - GRASP_MODE_PARAM, GRASP_MODE_UNKNOWN, GRASP_MODE_OWNERS, GRASP_MODES,
   grasp_command_enabled, grasp_mode_fg
 - _DEFAULT_PRESETS, default_presets_for, preset_hand_targets, _resolve_preset_path
 - GAIN_DEFS, GAIN_ROW_NAMES, GAIN_PARAM_DISPATCH,
   GAIN_GROUP_LAYOUT, GAIN_GROUP_PARENT_GRASP, GROUP_SCALARS_PER_ROW
+- register_scalar_gain_schema (a schema built at start from a controller's YAML)
 - HAND_TAUFF_GROUP, HAND_TAUFF_SOURCE_PARAM, HAND_TAUFF_SOURCES
 - SENSOR_CALIBRATIONS, _CALIB_STATE_NAMES, _CALIB_STATE_COLORS
 - value-builders: _set_double, _set_double_array, _set_bool, _set_int,
@@ -111,6 +113,14 @@ NO_EXTERNAL_COMMAND_CONTROLLERS = frozenset(
         "demo_catching_controller",
     }
 )
+
+
+# Controllers that take joint goals for the hand but serve no ~/grasp_command:
+# the hand is driven through Hand Motor Target and there is no grasp FSM behind
+# the Grasp tab's buttons. Unlike NO_EXTERNAL_COMMAND_CONTROLLERS they do accept
+# targets, so they cannot ride that set — it would switch the target panels off
+# with the buttons.
+NO_GRASP_COMMAND_CONTROLLERS = frozenset({"demo_dualarm_controller"})
 
 
 def target_panel_states(ctrl_idx: str) -> tuple[bool, bool]:
@@ -219,6 +229,10 @@ def grasp_command_enabled(ctrl: str, mode: str) -> tuple[bool, str]:
     """
     if ctrl in NO_EXTERNAL_COMMAND_CONTROLLERS:
         return False, "정책이 손을 구동 — 외부 Grasp/Release 경로 없음"
+    if ctrl in NO_GRASP_COMMAND_CONTROLLERS:
+        # Same reason as above for the same outcome: a click would reach no
+        # service, and "own grasp FSM" below would be a false statement.
+        return False, "Grasp/Release 경로 없음 — 손은 Control 탭의 Hand Motor Target 으로"
     if ctrl not in GRASP_MODE_OWNERS:
         # WBC (or any future controller with its own grasp path) — no parameter
         # to consult, and the mode does not gate its srv.
@@ -624,6 +638,41 @@ GROUP_SCALARS_PER_ROW = {
     # on a single row.
     HAND_TAUFF_GROUP: 5,
 }
+
+
+def register_scalar_gain_schema(ctrl: str, rows, layout: list[list[str]]) -> None:
+    """Add a gain schema that is only known once a controller's YAML is read.
+
+    The tables above are written out by hand because each of those controllers
+    declares the same parameters on every robot. A controller whose parameter
+    names carry names from its own configuration (one gain per configured task,
+    say) cannot be written out here: the rows differ per robot, and a literal
+    copy would put one robot's names in a table every profile reads. The GUI
+    builds such rows at start for the profile it was launched with and adds
+    them through this function, after which the Gains panel, Load Gain and
+    Apply Gains treat the controller like any other.
+
+    ``rows`` are scalar double parameters: objects with ``label`` (unique within
+    the controller), ``param`` (declared ROS parameter name), ``default``,
+    ``read_only`` and ``group`` — ``demo_gui.dualarm.GainRow``.
+
+    The tables are process-wide and a GUI process serves one robot, so the
+    schema lasts for the process. A key that already has a schema is refused: a
+    built schema silently replacing a written one would retarget Apply Gains at
+    different parameters under the same panel.
+    """
+    if ctrl in GAIN_DEFS or ctrl in GAIN_PARAM_DISPATCH:
+        raise ValueError(f"'{ctrl}' already has a gain schema")
+    labels = [row.label for row in rows]
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"'{ctrl}' gain rows repeat a label: {labels}")
+    GAIN_DEFS[ctrl] = [(row.label, 1, [row.default], False, row.group) for row in rows]
+    GAIN_PARAM_DISPATCH[ctrl] = {
+        row.label: (row.param, _read_only if row.read_only else _set_double) for row in rows
+    }
+    GAIN_ROW_NAMES[ctrl] = {}
+    GAIN_GROUP_LAYOUT[ctrl] = [list(row) for row in layout]
+
 
 # Sensor calibration entries displayed in the Control tab.
 # Add a new dict here to expose a new sensor's calibration to the GUI;

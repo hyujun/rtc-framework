@@ -1,0 +1,743 @@
+"""plot_rtc_log on the multi-frame CLIK diagnostics log and a many-joint state log.
+
+Two sources of columns, on purpose:
+
+  - a RECORDED header. ``data/g1_dualarm_review_pairs`` is 120 consecutive rows
+    (20 before the first goal, 100 after) cut from a g1_p1b sim session of
+    demo_dualarm_controller — two tasks, 17 body joints. Rows were cut, never
+    thinned or edited: a thinned file has tick gaps, and a tick gap is what this
+    log uses to say a row was dropped. This is the header the column fallback
+    used to classify as a WBC device log. Stored gzipped (the repo ignores
+    `*.csv`) and unpacked per test under the file names the session had.
+  - SYNTHETIC headers with other task and joint counts, because the point of the
+    pipeline is that it reads both off the header.
+"""
+
+from __future__ import annotations
+
+import csv
+import gzip
+import re
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
+
+from rtc_tools.plotting.columns import (  # noqa: E402
+    detect_joint_columns,
+    detect_task_prefixes,
+    has_goal_counter_activity,
+    invalidate_column_cache,
+    task_counter_columns,
+)
+from rtc_tools.plotting.io import detect_log_type  # noqa: E402
+from rtc_tools.plotting.io.csv_loader import load_log_csv  # noqa: E402
+from rtc_tools.plotting.io.log_type import (  # noqa: E402
+    detect_log_type_by_columns,
+    peek_csv_header,
+)
+from rtc_tools.plotting.pipelines.registry import PIPELINES, STATS_PRINTERS  # noqa: E402
+from rtc_tools.plotting.plotters import (  # noqa: E402
+    dualarm as dualarm_plots,  # noqa: E402
+    plot_robot_positions,
+    print_dualarm_diag_statistics,
+)
+
+FIXTURE = (
+    Path(__file__).parent
+    / "data"
+    / "g1_dualarm_review_pairs"
+    / "controllers"
+    / "demo_dualarm_controller"
+)
+
+
+def _unpack(tmp_path, stem):
+    """`<stem>.csv` of the recorded session, unpacked under a session-shaped path."""
+    out_dir = tmp_path / "session" / "controllers" / "demo_dualarm_controller"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{stem}.csv"
+    out.write_bytes(gzip.decompress((FIXTURE / f"{stem}.csv.gz").read_bytes()))
+    return out
+
+
+@pytest.fixture
+def diag_csv(tmp_path):
+    return _unpack(tmp_path, "dualarm_diag")
+
+
+@pytest.fixture
+def state_csv(tmp_path):
+    return _unpack(tmp_path, "g1_state")
+
+
+ALL_FIGURES = [entry.name for entry in PIPELINES["dualarm_diag"]]
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    invalidate_column_cache()
+    yield
+    invalidate_column_cache()
+    plt.close("all")
+
+
+# ── Synthetic header (column order of the POD's header writer) ───────────────
+
+_FIXED = [
+    "t_relative_s",
+    "tick",
+    "hold",
+    "clik_ran",
+    "estop",
+    "fault_latched",
+    "fault_cause",
+    "body_readable",
+    "hand_readable",
+    "reseeded",
+    "reached_solve",
+    "converged",
+    "rejected_input",
+    "non_finite",
+    "command_mismatch",
+    "accel_rows_violated",
+    "brake_box_empty",
+    "status",
+    "iterations",
+    "solve_time_us",
+    "accel_rows",
+    "accel_rows_binding",
+    "fb_saturated",
+    "rot_near_pi",
+    "brake_active",
+    "brake_static_infeasible",
+    "qp_fail_streak",
+    "track_err",
+    "group_goal_rejects",
+]
+_POSE = ("x", "y", "z", "qw", "qx", "qy", "qz")
+_COUNTERS = (
+    "goals_accepted",
+    "reject_goal_type",
+    "reject_non_finite",
+    "reject_unknown_frame",
+    "drop_stale",
+    "drop_unusable",
+    "drop_held",
+)
+
+
+def _task_columns(task):
+    cols = [f"{task}_{f}" for f in ("valid", "traj_active", "goal_sequence", "err_lin", "err_ang")]
+    cols += [f"{task}_ref_{a}" for a in _POSE]
+    cols += [f"{task}_cmd_{a}" for a in _POSE]
+    cols += [f"{task}_meas_valid"]
+    cols += [f"{task}_meas_{a}" for a in _POSE]
+    cols += [f"{task}_{c}" for c in _COUNTERS]
+    return cols
+
+
+def _header(tasks, joints):
+    cols = list(_FIXED)
+    for task in tasks:
+        cols += _task_columns(task)
+    cols += [f"q_cmd_{j}" for j in joints]
+    return cols
+
+
+def _row(header, i, overrides):
+    """One solved tick: identity quaternions, small errors, everything else 0."""
+    row = []
+    for col in header:
+        if col in overrides:
+            value = overrides[col]
+        elif col == "t_relative_s":
+            value = 0.002 * i
+        elif col == "tick":
+            value = i
+        elif col in (
+            "clik_ran",
+            "converged",
+            "reached_solve",
+            "body_readable",
+            "hand_readable",
+        ) or col.endswith(("_valid",)):
+            value = 1
+        elif col.endswith("_qw"):
+            value = 1.0
+        elif col == "solve_time_us":
+            value = 12.5 + i
+        elif col.endswith("_err_lin"):
+            value = 1e-4 * (i + 1)
+        elif col.startswith("q_cmd_"):
+            value = 0.01 * i
+        else:
+            value = 0
+        row.append(value)
+    return row
+
+
+def _write(path, header, rows):
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+
+def _synthetic(tmp_path, tasks, joints, n=8, per_row=None, name="dualarm_diag.csv"):
+    header = _header(tasks, joints)
+    rows = [_row(header, i, (per_row or (lambda _i: {}))(i)) for i in range(n)]
+    path = tmp_path / name
+    _write(path, header, rows)
+    return load_log_csv(str(path), "dualarm_diag")
+
+
+def _render_all(df, out_dir):
+    for entry in PIPELINES["dualarm_diag"]:
+        if entry.available(df):
+            entry.fn(df, str(out_dir))
+    return sorted(p.stem for p in Path(out_dir).glob("*.png"))
+
+
+# ── Detection ────────────────────────────────────────────────────────────────
+
+
+class TestDetection:
+    def test_filename(self):
+        assert detect_log_type("/s/controllers/some_controller/dualarm_diag.csv") == "dualarm_diag"
+
+    def test_recorded_file_in_its_session_path(self, diag_csv):
+        assert detect_log_type(str(diag_csv)) == "dualarm_diag"
+
+    def test_filename_with_prefix(self):
+        assert detect_log_type("/tmp/run3_dualarm_diag.csv") == "dualarm_diag"
+
+    def test_recorded_header_by_columns(self, diag_csv):
+        """The recorded header carries `accel_rows*`, which the `accel_` branch
+        of the fallback claims for the WBC device log. Classified as that, the
+        file plotted two meaningless figures and exited 0."""
+        header = peek_csv_header(str(diag_csv))
+        assert any(c.startswith("accel_") for c in header)  # the collision is real
+        assert detect_log_type_by_columns(header) == "dualarm_diag"
+
+    def test_renamed_copy_reaches_the_column_fallback(self, tmp_path, diag_csv):
+        """What plot_rtc_log.main does with a file whose name says nothing."""
+        copy = tmp_path / "copy_of_run.csv"
+        copy.write_text(diag_csv.read_text())
+        assert detect_log_type(str(copy)) == "unknown"
+        assert detect_log_type_by_columns(peek_csv_header(str(copy))) == "dualarm_diag"
+
+    @pytest.mark.parametrize(
+        ("tasks", "joints"),
+        [
+            (["tool"], ["j1", "j2"]),
+            (["a", "b", "c"], [f"q{i}" for i in range(9)]),
+            (["one", "two", "three", "four"], []),
+        ],
+    )
+    def test_any_task_and_joint_count_by_columns(self, tasks, joints):
+        assert detect_log_type_by_columns(_header(tasks, joints)) == "dualarm_diag"
+
+    def test_one_marker_alone_is_not_enough(self):
+        """Two columns, so a single rename is a detection failure and not a
+        near-miss into another pipeline."""
+        header = _header(["tool"], ["j1"])
+        without_marker = [c for c in header if c != "clik_ran"]
+        without_task = [c for c in header if not c.endswith("_err_lin")]
+        assert detect_log_type_by_columns(without_marker) != "dualarm_diag"
+        assert detect_log_type_by_columns(without_task) != "dualarm_diag"
+
+    def test_other_logs_keep_their_type(self, state_csv):
+        """The new branch sits above the WBC and state-log ones; it must not
+        take their files."""
+        assert detect_log_type_by_columns(["t_relative_s", "accel_a1", "actual_pos_a1"]) == (
+            "wbc_log"
+        )
+        assert detect_log_type_by_columns(peek_csv_header(str(state_csv))) == "state_log"
+        # catching_diag also has `clik_ran`; it has no `_err_lin`.
+        assert detect_log_type_by_columns(["clik_ran", "track_err_rad", "ref_gamma"]) == (
+            "catching_diag"
+        )
+
+
+# ── Columns that follow the run ──────────────────────────────────────────────
+
+
+class TestColumnsFollowTheRun:
+    def test_recorded_tasks_and_joints(self, diag_csv):
+        df = load_log_csv(str(diag_csv), "dualarm_diag")
+        assert detect_task_prefixes(df) == ["right_hand", "left_hand"]
+        cols, names = detect_joint_columns(df, "q_cmd_")
+        assert len(cols) == 17
+        assert names[0] == "waist_yaw_joint" and names[-1] == "right_wrist_yaw_joint"
+
+    def test_task_order_is_header_order(self, tmp_path):
+        df = _synthetic(tmp_path, ["zeta", "alpha", "mid"], ["j1"])
+        assert detect_task_prefixes(df) == ["zeta", "alpha", "mid"]
+
+    def test_task_name_with_underscores(self, tmp_path):
+        df = _synthetic(tmp_path, ["left_tool_tip"], ["j1"])
+        assert detect_task_prefixes(df) == ["left_tool_tip"]
+
+    def test_lone_err_lin_column_is_not_a_task(self, tmp_path):
+        df = _synthetic(tmp_path, ["tool"], ["j1"])
+        df["stray_err_lin"] = 0.0
+        assert detect_task_prefixes(df) == ["tool"]
+
+    def test_counters_are_found_by_prefix(self, tmp_path):
+        """A reason the producer names differently is still a counter."""
+        df = _synthetic(tmp_path, ["tool"], ["j1"])
+        df = df.rename(columns={"tool_drop_unusable": "tool_drop_some_new_reason"})
+        counters = task_counter_columns(df, "tool")
+        assert counters[0] == "tool_goals_accepted"
+        assert "tool_drop_some_new_reason" in counters
+        assert len(counters) == len(_COUNTERS)
+
+
+# ── Figures ──────────────────────────────────────────────────────────────────
+
+
+class TestFigures:
+    def test_recorded_session_renders_every_figure(self, tmp_path, diag_csv):
+        df = load_log_csv(str(diag_csv), "dualarm_diag")
+        assert _render_all(df, tmp_path) == sorted(ALL_FIGURES)
+
+    @pytest.mark.parametrize(
+        ("tasks", "joints"),
+        [(["tool"], ["j1", "j2"]), (["a", "b", "c"], [f"q{i}" for i in range(9)])],
+    )
+    def test_task_figures_grow_a_row_per_task(self, tmp_path, monkeypatch, tasks, joints):
+        df = _synthetic(tmp_path, tasks, joints)
+        shapes = {}
+        real_subplots = plt.subplots
+
+        def spy(nrows=1, ncols=1, **kwargs):
+            shapes["last"] = (nrows, ncols)
+            return real_subplots(nrows, ncols, **kwargs)
+
+        monkeypatch.setattr(dualarm_plots.plt, "subplots", spy)
+        dualarm_plots.plot_dualarm_diag_task_error(df, str(tmp_path))
+        assert shapes["last"] == (len(tasks), 1)
+        dualarm_plots.plot_dualarm_diag_task_pose(df, str(tmp_path))
+        assert shapes["last"] == (len(tasks), 4)
+
+    def test_no_joint_columns_skips_only_the_joint_figure(self, tmp_path, capsys):
+        df = _synthetic(tmp_path, ["tool"], [])
+        out = tmp_path / "png"
+        out.mkdir()
+        rendered = _render_all(df, out)
+        assert "dualarm_diag_joint_cmd" not in rendered
+        assert "dualarm_diag_task_error" in rendered
+        assert "Skipping CLIK joint command plot" in capsys.readouterr().out
+
+    def test_goal_figure_is_gated_on_counter_activity(self, tmp_path):
+        quiet = _synthetic(tmp_path, ["tool"], ["j1"], name="quiet_dualarm_diag.csv")
+        assert has_goal_counter_activity(quiet) is False
+        busy = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            per_row=lambda i: {"tool_reject_unknown_frame": int(i >= 4)},
+            name="busy_dualarm_diag.csv",
+        )
+        assert has_goal_counter_activity(busy) is True
+        lane = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            per_row=lambda i: {"group_goal_rejects": int(i >= 4)},
+            name="lane_dualarm_diag.csv",
+        )
+        assert has_goal_counter_activity(lane) is True
+
+    def test_held_ticks_are_not_drawn_as_solve_data(self, tmp_path):
+        """A held tick writes zeros for what it did not compute. Those zeros
+        must not reach the solve-time line or a task's error line."""
+
+        def per_row(i):
+            if 3 <= i < 6:
+                return {"hold": 2, "clik_ran": 0, "solve_time_us": 0, "tool_valid": 0}
+            return {}
+
+        df = _synthetic(tmp_path, ["tool"], ["j1"], n=9, per_row=per_row)
+        solved = dualarm_plots._solved(df)
+        assert list(solved) == [True] * 3 + [False] * 3 + [True] * 3
+        solve_time = dualarm_plots._masked(df, "solve_time_us", solved)
+        assert solve_time.isna().tolist() == [False] * 3 + [True] * 3 + [False] * 3
+        err = dualarm_plots._masked(df, "tool_err_lin", dualarm_plots._task_valid(df, "tool"))
+        assert err.isna().sum() == 3
+        # and the figures still render with a held stretch in the file
+        out = tmp_path / "png"
+        out.mkdir()
+        assert "dualarm_diag_solver" in _render_all(df, out)
+
+    def test_a_refused_call_is_a_run_tick_without_solve_data(self, tmp_path, capsys):
+        """A call refused on its inputs has `clik_ran = 1` and never reached the
+        QP: its solve time, iterations and status are reset values, not a solve."""
+
+        def per_row(i):
+            if i in (2, 3):
+                return {
+                    "reached_solve": 0,
+                    "converged": 0,
+                    "rejected_input": 1,
+                    "solve_time_us": 0,
+                    "status": -1,
+                }
+            return {"solve_time_us": 20.0}
+
+        df = _synthetic(tmp_path, ["tool"], ["j1"], n=8, per_row=per_row)
+        assert dualarm_plots._ran(df).all()
+        assert list(dualarm_plots._solved(df)) == [True, True, False, False] + [True] * 4
+        print_dualarm_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "Ticks that ran the solve: 8/8" in out
+        assert "refused before the QP (no solve data): 2" in out
+        assert "p50=20.0 p99=20.0 max=20.0" in out  # the two zeros are not solves
+        assert "Converged: 75.00% of run ticks" in out  # but they are failures
+
+    def test_tracking_error_is_blank_on_held_ticks(self, tmp_path, monkeypatch):
+        """The tracking error is computed by the CLIK step. A held tick logs the
+        reset 0, which would read as perfect tracking while a fault is latched."""
+
+        def per_row(i):
+            if i >= 4:
+                return {"hold": 2, "clik_ran": 0, "fault_latched": 1, "track_err": 0.0}
+            return {"track_err": 0.3}
+
+        df = _synthetic(tmp_path, ["tool"], ["j1"], n=8, per_row=per_row)
+        lines = {}
+        real_savefig = plt.savefig
+
+        def spy(*args, **kwargs):
+            for ax in plt.gcf().get_axes():
+                if "track_err" in ax.get_ylabel():
+                    lines["track"] = ax.get_lines()[0].get_ydata()
+            return real_savefig(*args, **kwargs)
+
+        monkeypatch.setattr(plt, "savefig", spy)
+        dualarm_plots.plot_dualarm_diag_solver(df, str(tmp_path))
+        assert np.isnan(lines["track"]).tolist() == [False] * 4 + [True] * 4
+
+    def test_a_single_held_tick_is_shaded_one_tick_wide(self):
+        """A band from a run's first row to its last has no width when the run
+        is one row — the legend then names a hold nobody can see."""
+        _, ax = plt.subplots()
+        t = np.arange(10) * 0.002
+        where = np.zeros(10, dtype=bool)
+        where[4] = True
+        dualarm_plots._shade(ax, t, where, "red", 0.2)
+        (band,) = ax.collections
+        extents = band.get_paths()[0].get_extents()
+        assert extents.x0 == pytest.approx(t[4])
+        assert extents.width == pytest.approx(0.002)
+
+    def test_a_held_run_is_shaded_to_the_row_after_it(self):
+        _, ax = plt.subplots()
+        t = np.arange(10) * 0.002
+        where = np.zeros(10, dtype=bool)
+        where[3:6] = True
+        dualarm_plots._shade(ax, t, where, "red", 0.2)
+        extents = ax.collections[0].get_paths()[0].get_extents()
+        assert (extents.x0, extents.x1) == pytest.approx((t[3], t[6]))
+
+    def test_a_reseed_reset_is_not_a_new_goal(self, tmp_path):
+        """A re-seed puts the goal sequence back to 0 (hold where you are)."""
+        seq = [0, 0, 1, 1, 0, 0, 2, 2]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(seq),
+            per_row=lambda i: {"tool_goal_sequence": seq[i]},
+        )
+        assert dualarm_plots._new_goal_rows(df, "tool").tolist() == [2, 6]
+        df.loc[3, "tool_goal_sequence"] = float("nan")  # a cell that did not parse
+        assert dualarm_plots._new_goal_rows(df, "tool").tolist() == [2, 6]
+
+    def test_lines_break_at_a_tick_gap(self, tmp_path):
+        ticks = [0, 1, 2, 500, 501]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(ticks),
+            per_row=lambda i: {"tick": ticks[i], "t_relative_s": 0.002 * ticks[i]},
+        )
+        broken = dualarm_plots._with_line_breaks(df)
+        assert len(broken) == len(df) + 1
+        assert broken["solve_time_us"].isna().tolist() == [False] * 3 + [True] + [False] * 2
+        # the blank row is one tick after the row before the gap: the x axis
+        # stays sorted, and a band that row carries ends there, not mid-gap
+        assert broken["timestamp"].is_monotonic_increasing
+        assert broken["timestamp"].iloc[3] == pytest.approx(df["timestamp"].iloc[2] + 0.002)
+        # and nothing is copied when there is no gap
+        whole = _synthetic(tmp_path, ["tool"], ["j1"], name="whole_dualarm_diag.csv")
+        assert dualarm_plots._with_line_breaks(whole) is whole
+
+    def test_popcount(self, tmp_path):
+        masks = [0, 0b101, 0b111, 0b101]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(masks),
+            per_row=lambda i: {"brake_active": masks[i]},
+        )
+        assert dualarm_plots._popcount(df["brake_active"]).tolist() == [0, 2, 3, 2]
+
+    def test_a_file_cut_mid_row_still_plots(self, tmp_path, diag_csv, capsys):
+        """A session killed mid-write leaves a short last line; pandas fills the
+        missing cells with NaN. The statistics run before every figure, so a
+        crash there costs the whole plot."""
+        lines = diag_csv.read_text().splitlines()
+        lines[-1] = ",".join(lines[-1].split(",")[:20])
+        cut = tmp_path / "cut_dualarm_diag.csv"
+        cut.write_text("\n".join(lines) + "\n")
+        df = load_log_csv(str(cut), "dualarm_diag")
+        assert df.iloc[-1].isna().any()
+        print_dualarm_diag_statistics(df)
+        assert "goals_accepted=1" in capsys.readouterr().out  # the last value that parsed
+        out = tmp_path / "png"
+        out.mkdir()
+        assert _render_all(df, out) == sorted(ALL_FIGURES)
+
+    def test_feedback_mask_bits_index_tasks_by_header_position(self, tmp_path):
+        """Bit 2k = task k linear, 2k+1 = task k angular."""
+        df = _synthetic(tmp_path, ["a", "b"], ["j1"], per_row=lambda _i: {"fb_saturated": 0b1000})
+        assert not dualarm_plots._bit(df["fb_saturated"], 0).any()  # a linear
+        assert not dualarm_plots._bit(df["fb_saturated"], 2).any()  # b linear
+        assert dualarm_plots._bit(df["fb_saturated"], 3).all()  # b angular
+
+    def test_cmd_meas_gap_is_geodesic_and_blank_where_not_computed(self, tmp_path):
+        def per_row(i):
+            row = {"tool_meas_x": 0.003, "tool_meas_y": 0.004}  # 5 mm from cmd at 0
+            if i == 0:  # −q is the same rotation as q
+                row.update({"tool_meas_qw": -1.0})
+            if i == 1:
+                row.update({"tool_meas_valid": 0})
+            return row
+
+        df = _synthetic(tmp_path, ["tool"], ["j1"], n=4, per_row=per_row)
+        dist, angle = dualarm_plots._cmd_meas_gap(df, "tool")
+        assert dist[0] == pytest.approx(0.005)
+        assert angle[0] == pytest.approx(0.0, abs=1e-9)
+        assert dist[1] != dist[1] and angle[1] != angle[1]  # NaN: meas not valid
+
+
+# ── Statistics ───────────────────────────────────────────────────────────────
+
+
+class TestStatistics:
+    def test_registry_runs_the_printer(self):
+        assert [e.name for e in STATS_PRINTERS["dualarm_diag"]] == ["print_dualarm_diag_stats"]
+
+    def test_recorded_session(self, capsys, diag_csv):
+        print_dualarm_diag_statistics(load_log_csv(str(diag_csv), "dualarm_diag"))
+        out = capsys.readouterr().out
+        assert "Rows: 120" in out
+        assert "Tick gaps: none" in out
+        assert "Ticks that ran the solve: 120/120" in out
+        assert "Tasks (2): right_hand, left_hand" in out
+        assert "right_hand: valid on 120/120 ticks, 1 goal(s) taken up" in out
+
+    def test_dropped_rows_are_counted_from_tick_gaps(self, tmp_path, capsys):
+        # ticks 0 1 2 | 5 6 | 9 → 2 + 2 rows missing
+        ticks = [0, 1, 2, 5, 6, 9]
+        df = _synthetic(
+            tmp_path, ["tool"], ["j1"], n=len(ticks), per_row=lambda i: {"tick": ticks[i]}
+        )
+        print_dualarm_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "Tick gaps: 2 (4 ticks)" in out
+        assert "DROPPED ROWS: 4 ticks in 2 gap(s) (largest 2)" in out
+        assert "controller not running" not in out
+
+    @pytest.mark.parametrize(
+        "back", [{"reseeded": 1}, {"hold": 4, "clik_ran": 0}], ids=["reseeded", "not_seeded"]
+    )
+    def test_a_gap_the_controller_was_away_for_is_not_dropped_rows(self, tmp_path, capsys, back):
+        """`tick` is the manager's counter and counts while another controller
+        is active. Coming back, the controller starts over; no row is missing."""
+        ticks = [0, 1, 2, 5003, 5004, 5005]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(ticks),
+            per_row=lambda i: {"tick": ticks[i], **(back if i == 3 else {})},
+        )
+        print_dualarm_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "controller not running: 1 gap(s), 5000 ticks" in out
+        assert "DROPPED ROWS" not in out
+
+    def test_both_kinds_of_gap_in_one_file(self, tmp_path, capsys):
+        ticks = [0, 1, 4, 5, 9000, 9001]
+        df = _synthetic(
+            tmp_path,
+            ["tool"],
+            ["j1"],
+            n=len(ticks),
+            per_row=lambda i: {"tick": ticks[i], "reseeded": int(i == 4)},
+        )
+        print_dualarm_diag_statistics(df)
+        out = capsys.readouterr().out
+        assert "controller not running: 1 gap(s), 8994 ticks" in out
+        assert "DROPPED ROWS: 2 ticks in 1 gap(s)" in out
+
+    def test_holds_and_fault_cause_are_named(self, tmp_path, capsys):
+        def per_row(i):
+            if i >= 5:
+                return {"hold": 2, "clik_ran": 0, "fault_latched": 1, "fault_cause": 3}
+            return {}
+
+        print_dualarm_diag_statistics(_synthetic(tmp_path, ["tool"], ["j1"], n=8, per_row=per_row))
+        out = capsys.readouterr().out
+        assert "Ticks that ran the solve: 5/8" in out
+        assert "fault latch: 3" in out
+        assert "seed outside box" in out
+
+    def test_unknown_codes_print_as_numbers(self, tmp_path, capsys):
+        """A code this file has no name for is reported, not dropped or crashed on."""
+        print_dualarm_diag_statistics(
+            _synthetic(
+                tmp_path,
+                ["tool"],
+                ["j1"],
+                per_row=lambda _i: {"hold": 9, "clik_ran": 0},
+            )
+        )
+        assert "code 9: 8" in capsys.readouterr().out
+
+    def test_solve_time_ignores_held_ticks(self, tmp_path, capsys):
+        def per_row(i):
+            if i < 4:
+                return {"hold": 1, "clik_ran": 0, "solve_time_us": 0}
+            return {"solve_time_us": 20.0}
+
+        print_dualarm_diag_statistics(_synthetic(tmp_path, ["tool"], ["j1"], n=8, per_row=per_row))
+        assert "p50=20.0 p99=20.0 max=20.0" in capsys.readouterr().out
+
+    def test_brake_mask_bits_are_listed(self, tmp_path, capsys):
+        print_dualarm_diag_statistics(
+            _synthetic(
+                tmp_path,
+                ["tool"],
+                ["j1"],
+                per_row=lambda i: {"brake_active": 0b101 if i == 2 else 0},
+            )
+        )
+        out = capsys.readouterr().out
+        assert "brake_active — model velocity indices ever set: [0, 2]" in out
+        assert "brake_static_infeasible — model velocity indices ever set: none" in out
+
+
+# ── Many-joint state log (second device group of the same session) ───────────
+
+
+class TestManyJointStateLog:
+    def test_recorded_state_log_detects_and_loads(self, state_csv):
+        assert detect_log_type(str(state_csv)) == "unknown"  # the stem says nothing
+        df = load_log_csv(str(state_csv), "state_log")
+        cols, _ = detect_joint_columns(df, "actual_pos_")
+        assert len(cols) == 17
+
+    def test_unused_grid_cells_are_hidden(self, tmp_path, monkeypatch, state_csv):
+        """17 joints land on a 4 x 5 grid; the three spare cells used to stay
+        on the figure as empty axes."""
+        df = load_log_csv(str(state_csv), "state_log")
+        captured = {}
+        real_savefig = plt.savefig
+
+        def spy(*args, **kwargs):
+            captured["axes"] = plt.gcf().get_axes()
+            return real_savefig(*args, **kwargs)
+
+        monkeypatch.setattr(plt, "savefig", spy)
+        plot_robot_positions(df, str(tmp_path))
+        visible = [ax.get_visible() for ax in captured["axes"]]
+        assert len(visible) == 20
+        assert visible == [True] * 17 + [False] * 3
+
+
+# ── The producer's header is the source — pin the copies here to it ──────────
+
+_LOGGING_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "integrated_bringup"
+    / "include"
+    / "integrated_bringup"
+    / "logging"
+)
+_POD_HEADER = _LOGGING_DIR / "dualarm_diag_log_pod.hpp"
+
+# C++ enumerator -> the label this package prints for it.
+_HOLD_LABELS = {
+    "kNone": "solved",
+    "kEstop": "E-STOP",
+    "kFault": "fault latch",
+    "kUnreadable": "body unreadable",
+    "kNotSeeded": "not seeded",
+    "kNoModel": "no model",
+}
+_FAULT_LABELS = {
+    "kNone": "none",
+    "kQpFailStreak": "QP fail streak",
+    "kTrackError": "tracking error",
+    "kSeedOutsideBox": "seed outside box",
+}
+
+
+def _pod_text():
+    if not _POD_HEADER.exists():  # pragma: no cover - rtc_tools shipped alone
+        pytest.skip(f"C++ header not present at {_POD_HEADER}")
+    return _POD_HEADER.read_text()
+
+
+def _enumerators(text, enum_name):
+    body = text.split(f"enum class {enum_name} ", 1)[1].split("{", 1)[1].split("};", 1)[0]
+    body = re.sub(r"//[^\n]*", "", body)
+    return [tok.split("=")[0].strip() for tok in body.split(",") if tok.strip()]
+
+
+class TestPinnedToTheProducer:
+    """The name tables, the synthetic header and the fingerprint claim are
+    hand-written copies. Checked against themselves they stay green when the
+    producer changes; the plotter would then shade and print the wrong cause."""
+
+    def test_hold_names_follow_the_enum(self):
+        cpp = _enumerators(_pod_text(), "Hold")
+        assert [_HOLD_LABELS[e] for e in cpp] == list(dualarm_plots.HOLD_NAMES)
+        assert cpp.index("kNotSeeded") == dualarm_plots.HOLD_NOT_SEEDED
+
+    def test_fault_cause_names_follow_the_enum(self):
+        cpp = _enumerators(_pod_text(), "FaultCause")
+        assert [_FAULT_LABELS[e] for e in cpp] == list(dualarm_plots.FAULT_CAUSE_NAMES)
+
+    def test_fixed_columns_follow_the_header_writer(self):
+        writer = _pod_text().split("inline void WriteDualArmDiagLogHeader(", 1)[1]
+        fixed = writer.split("for (", 1)[0]  # everything before the per-task loop
+        cols = "".join(re.findall(r'"([^"]*)"', fixed)).split(",")
+        assert cols == _FIXED
+
+    def test_synthetic_header_is_the_recorded_one(self, diag_csv):
+        """The recorded file was written by the C++ writer, so this pins the
+        per-task and per-joint blocks the regex above does not reach."""
+        recorded = peek_csv_header(str(diag_csv))
+        joints = [c[len("q_cmd_") :] for c in recorded if c.startswith("q_cmd_")]
+        assert _header(["right_hand", "left_hand"], joints) == recorded
+
+    def test_the_fingerprint_suffix_is_emitted_by_no_other_log(self):
+        """The column fallback rests on `_err_lin` belonging to this log alone."""
+        if not _LOGGING_DIR.is_dir():  # pragma: no cover - rtc_tools shipped alone
+            pytest.skip(f"C++ headers not present at {_LOGGING_DIR}")
+        emitters = sorted(
+            p.name for p in _LOGGING_DIR.glob("*.hpp") if "_err_lin" in p.read_text()
+        )
+        assert emitters == [_POD_HEADER.name]
