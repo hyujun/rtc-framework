@@ -1165,7 +1165,7 @@ ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dis
 | `BALL_SIM_WS` | `run_unit.sh` · `make_conditions.py` | 추정기 (`ball_perception`) 의 colcon workspace. **없으면 거부한다.** 출하 profile 을 그 install 에서 읽는다 |
 | `PLAN` | `run_all.sh` | plan 파일. **없으면 거부한다** |
 | `PROFILE` | `run_unit.sh` | 추정기의 profile. 기본은 `BALL_SIM_WS` 의 출하 catching profile |
-| `EXPECT_MODE` (`closed_form` \| `mpc` \| `mpc_docking`) · `EXPECT_SEARCH` (`grid` \| `nlp`, 기본 `grid`) · `EXPECT_KV` · `EXPECT_CLIK` · `EXPECT_TARM` · `EXPECT_COMMIT` · `EXPECT_BALL` · `EXPECT_NPRE` · `EXPECT_DTPRE` | `run_unit.sh` | 미러에서 읽어 대조할 값. 하나라도 다르면 `FAIL:overlay …` 로 거부한다. `EXPECT_KV` 는 `미러 이름=값` 을 `;` 로 이은 것이다 |
+| `EXPECT_MODE` (`closed_form` \| `mpc` \| `mpc_docking`) · `EXPECT_SEARCH` (`grid` \| `nlp`, 기본 `grid`) · `EXPECT_KV` · `EXPECT_CLIK` · `EXPECT_TARM` · `EXPECT_COMMIT` · `EXPECT_BALL` · `EXPECT_NPRE` · `EXPECT_DTPRE` | `run_unit.sh` | 미러에서 읽어 대조할 값. 하나라도 다르면 `FAIL:overlay …` 로 거부한다. `EXPECT_KV` 는 `미러 이름=값` 을 `;` 로 이은 것이다 — 이름은 컨트롤러의 어느 미러든 된다 (적힌 키는 unit 이 따로 읽어 `mirror.txt` 에 남긴다) |
 | `ARM` · `HOST_WATCH` · `EVAL_DOMAIN` | `run_unit.sh` | 시행 기록의 arm 라벨 (기본 `mpc`), `--host-watch` (기본 `abort`), `ROS_DOMAIN_ID` (기본 88) |
 | `ENABLE_VIEWER` | `run_unit.sh` | `1` 이면 MuJoCo viewer 를 띄운다 (기본 `0` — unit 은 headless 다). `conditions.txt` 의 `viewer:` 줄이 `on` · `off` 를 적는다. viewer 는 sim 과 호스트를 나눠 쓰므로, 켠 unit 의 수치를 headless unit 과 나란히 놓을 때는 `rtf_flight` · tick overrun 을 같이 본다 |
 | `ONLY` · `MAX_TRY` · `IDLE_GRACE` · `IDLE_MAX_S` | `run_all.sh` | 이름이 이 접두어로 시작하는 unit 만, 재시도 횟수, unit 사이의 대기 |
