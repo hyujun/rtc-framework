@@ -11,8 +11,8 @@
 # its design values from here alone.
 #
 # PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the core's chance rows
-# (off) and core.catch.nu_ref, as in the mpc_docking planner's core; the other
-# values are starting values, not tuned. The QP solver allocates inside a solve
+# (off) and core.catch.nu_ref, as in the mpc_docking planner's core, and the
+# budget (one solve a wake); the other values are starting values, not tuned. The QP solver allocates inside a solve
 # (#654), so this search must not run on a SCHED_FIFO planner thread on
 # hardware until that is closed.
 demo_catching_controller:
@@ -51,14 +51,21 @@ demo_catching_controller:
             blocks: [1, 1, 2, 3]
           # ── Budget ──────────────────────────────────────────────────────────
           # One wake's whole budget, one candidate's share, the margin between
-          # the budget's end and node 0, and the most solves a wake runs. A cold
-          # solve on these grids took 8 – 20 ms and a warm one 6 – 7 ms on the
-          # shipped sub-models (E1-F14, #740): two solves a wake.
+          # the budget's end and node 0, and the most solves a wake runs.
+          # ONE solve a wake, with a share that fits it (E1-F19, #745). With
+          # two (solve_s 0.018, max_solves 2) a wake that solved both took 32 -
+          # 37 ms (median) and its plan met the next vision period: the cycle
+          # dropped it as superseded in 34 of 78 and 58 of 97 such wakes,
+          # against 3 of 18 and 7 of 23 of the wakes that solved one — 5 to 10
+          # throws of 50 without a plan. One solve at 0.018 s still lost that
+          # solve to the deadline in 40 of 254 wakes; at 0.028 s, 1 of 52 and
+          # 2 of 54 (a candidate's solve: 12 - 16 ms median, 27 - 29 ms p99),
+          # and a plan in 50 of 50 throws on both seeds thrown.
           budget:
             budget_s: 0.040
-            solve_s: 0.018
+            solve_s: 0.028
             start_lead_s: 0.004
-            max_solves: 2
+            max_solves: 1
           # ── Outer cost and the rank proxy ───────────────────────────────────
           cost:
             w_time: 0.0
