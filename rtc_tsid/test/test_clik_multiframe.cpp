@@ -28,8 +28,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -50,6 +48,7 @@
 
 #include "alloc_counter.hpp"
 #include "clik_golden_scenarios.hpp"
+#include "clik_test_util.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "rtc_tsid/kinematics/relative_jacobian.hpp"
 #include "rtc_tsid/kinematics/se3_error.hpp"
@@ -64,39 +63,13 @@ using Mode = Clik::AccelConstraint;
 using Vec6 = Eigen::Matrix<double, 6, 1>;
 using Mat6X = Eigen::Matrix<double, 6, Eigen::Dynamic>;
 
-[[nodiscard]] std::uint64_t Bits(double x) {
-  std::uint64_t b = 0;
-  std::memcpy(&b, &x, sizeof(b));
-  return b;
-}
-
-/// A double as a test property: std::to_string keeps six decimals, which
-/// prints every residual here as 0.000000.
-[[nodiscard]] std::string Sci(double x) {
-  std::array<char, 32> buf{};
-  std::snprintf(buf.data(), buf.size(), "%.3e", x);
-  return buf.data();
-}
-
-[[nodiscard]] ::testing::AssertionResult BitEqual(const Eigen::VectorXd& a,
-                                                  const Eigen::VectorXd& b) {
-  if (a.size() != b.size()) {
-    return ::testing::AssertionFailure() << "sizes " << a.size() << " vs " << b.size();
-  }
-  for (Eigen::Index i = 0; i < a.size(); ++i) {
-    if (Bits(a(i)) != Bits(b(i))) {
-      return ::testing::AssertionFailure()
-             << "index " << i << ": " << std::hexfloat << a(i) << " vs " << b(i);
-    }
-  }
-  return ::testing::AssertionSuccess();
-}
+using test::BitEqual;
+using test::Bits;
+using test::Sci;
 
 [[nodiscard]] PinocchioCache MakeCache(const std::shared_ptr<const pinocchio::Model>& model) {
   PinocchioCache cache;
-  ContactManagerConfig contact_cfg;
-  contact_cfg.max_contacts = 0;
-  cache.Init(model, rtc::tsid::ContactFrameIds(contact_cfg));
+  test::InitContactFreeCache(cache, model);
   return cache;
 }
 
@@ -209,7 +182,7 @@ constexpr const char* kVariantNames[kVariants] = {"plain", "boxes_smooth_accel_b
     case 1:
       cfg.q_min = m.model->lowerPositionLimit;
       cfg.q_max = m.model->upperPositionLimit;
-      cfg.v_limit_per_joint = m.model->velocityLimit;
+      cfg.v_limit_per_joint = m.model->upperVelocityLimit;
       cfg.w_smooth = 1e-3;
       cfg.anchor_drift_max = 0.05;
       cfg.a_max = Eigen::VectorXd::Constant(nv, 20.0);
@@ -227,7 +200,7 @@ constexpr const char* kVariantNames[kVariants] = {"plain", "boxes_smooth_accel_b
       cfg.q_max = m.model->upperPositionLimit;
       cfg.evaluate_at_command = true;
       cfg.accel_constraint = Mode::kDynamic;
-      cfg.tau_max = m.model->effortLimit;
+      cfg.tau_max = m.model->upperEffortLimit;
       cfg.eta_tau = 0.8;
       break;
   }
@@ -453,7 +426,7 @@ class ClikTreeTest : public ::testing::Test {
     Clik::Config cfg = BaseConfig();
     cfg.q_min = model_->lowerPositionLimit;
     cfg.q_max = model_->upperPositionLimit;
-    cfg.v_limit_per_joint = model_->velocityLimit;
+    cfg.v_limit_per_joint = model_->upperVelocityLimit;
     cfg.evaluate_at_command = true;
     return cfg;
   }
@@ -754,6 +727,42 @@ TEST_F(ClikTreeTest, TwoTasksSolveTheClosedFormWeightedLeastSquares) {
   EXPECT_GT(worst_if_world_aligned, 1e-2) << "premise: the oracle tells the two apart";
 }
 
+TEST_F(ClikTreeTest, PostureGainsSetBeforeInitAreKept) {
+  // Init() never reset the posture gains, and a caller may set them first.
+  Clik before;
+  before.SetPostureGains(0.7, 1.9);
+  EXPECT_FALSE(before.SetPostureGroupGain(2, 1.0)) << "only groups 0 and 1 exist before Init";
+  Clik after;
+  Clik::Config cfg;
+  cfg.arm_v_idx = arm_b_;
+  cfg.hand_v_idx = arm_a_;  // the second default group
+  cfg.damping_sq = 1e-6;
+  cfg.v_limit = 0.0;
+  before.Init(kNv, cfg);
+  after.Init(kNv, cfg);
+  after.SetPostureGains(0.7, 1.9);
+
+  const Eigen::VectorXd q = StateNear(2, 0.2);
+  const Eigen::VectorXd q_posture = StateNear(7, 0.2);
+  cache_.Update(q, Eigen::VectorXd::Zero(kNv));
+  Clik::FrameTask task = WorldTask(q, Eigen::Vector3d(0.02, 0.0, 0.01), 0.0);
+  const Clik::MultiFrameInput in =
+      Input(std::span<const Clik::FrameTask>(&task, 1), q_posture, kDt);
+  ASSERT_TRUE(before.Compute(cache_, in));
+  ASSERT_TRUE(after.Compute(cache_, in));
+  EXPECT_TRUE(BitEqual(before.VRef(), after.VRef()));
+  double other_arm_speed = 0.0;
+  for (const int i : arm_a_) {
+    other_arm_speed = std::max(other_arm_speed, std::abs(before.VRef()(i)));
+  }
+  EXPECT_GT(other_arm_speed, 1e-2) << "premise: the second group's gain is doing something";
+
+  // And a re-Init keeps them too.
+  before.Init(kNv, cfg);
+  ASSERT_TRUE(before.Compute(cache_, in));
+  EXPECT_TRUE(BitEqual(before.VRef(), after.VRef()));
+}
+
 TEST_F(ClikTreeTest, ConsistentReferencesReturnTheReferenceVelocity) {
   // formulation §4 item 8: at q_c = q_ref, with each task's target the frame's
   // own pose at q_ref, its feed-forward the frame's velocity under q̇_ref, and
@@ -823,7 +832,7 @@ TEST_F(ClikTreeTest, DynamicRowsKeepEveryJointsOracleTorqueInsideTheBound) {
     t[1].gain = Vec6::Constant(40.0);
     return t;
   }();
-  const Eigen::VectorXd bound = kEta * model_->effortLimit;
+  const Eigen::VectorXd bound = kEta * model_->upperEffortLimit;
 
   const auto worst_ratio = [&](const Clik::Config& cfg, int ticks, int& failed, int& rows) {
     Clik gen;
@@ -861,7 +870,7 @@ TEST_F(ClikTreeTest, DynamicRowsKeepEveryJointsOracleTorqueInsideTheBound) {
 
   Clik::Config cfg = BoxedConfig();
   cfg.accel_constraint = Mode::kDynamic;
-  cfg.tau_max = model_->effortLimit;
+  cfg.tau_max = model_->upperEffortLimit;
   cfg.eta_tau = kEta;
   const double worst = worst_ratio(cfg, 200, failed, rows);
   EXPECT_EQ(failed, 0);
@@ -1067,7 +1076,7 @@ class ClikBrakeTest : public ClikTreeTest {
     cfg.relative_tasks = false;
     cfg.max_frame_tasks = 1;
     cfg.accel_constraint = Mode::kDynamic;
-    cfg.tau_max = model_->effortLimit;
+    cfg.tau_max = model_->upperEffortLimit;
     cfg.eta_tau = kEta;
     cfg.brake_from_torque = brake;
     cfg.brake_margin = margin;
@@ -1083,7 +1092,7 @@ class ClikBrakeTest : public ClikTreeTest {
     const std::array<int, 5> driven = {trunk_[0], arm_a_[0], arm_a_[1], arm_a_[3], arm_b_[0]};
     const Eigen::VectorXd& q_min = model_->lowerPositionLimit;
     const Eigen::VectorXd& q_max = model_->upperPositionLimit;
-    const Eigen::VectorXd bound = kEta * model_->effortLimit;
+    const Eigen::VectorXd bound = kEta * model_->upperEffortLimit;
 
     // A light task that asks for nothing: tip_b stays where it is.
     Clik::FrameTask hold;
@@ -1166,6 +1175,110 @@ TEST_F(ClikBrakeTest, BrakingBoundKeepsTheTorqueRowsFeasibleAtThePositionLimits)
   const LimitRunResult cautious = RunBetweenLimits(DynamicConfig(true, 0.5), kTicks);
   EXPECT_EQ(cautious.failed, 0);
   EXPECT_GE(cautious.ticks_braking, on.ticks_braking);
+}
+
+TEST_F(ClikBrakeTest, BrakingBoundKeepsTheLastTicksFeasibleForAJointThatBrakesAlone) {
+  // One joint in the solve, every other one locked: nothing absorbs a reaction,
+  // so M_ii is the joint's whole inertia and the deceleration the bound plans
+  // with is exactly what the torque row grants. This is where a bound that
+  // under-counts the discrete stopping distance shows — the run of five joints
+  // above has twelve free ones around them, which makes M_ii pessimistic and
+  // hides it (that run passes with v·dt/2 in place of v·dt; this one then fails
+  // in the last tick of nearly every approach). Twenty approaches, each
+  // arriving at the limit at a different phase of the a·dt velocity steps.
+  //
+  // What is asserted is the bound's own claim: no failed call in the stretch
+  // before the limit. A call can still fail further out, at the tick the joint
+  // goes from accelerating to braking, for two reasons that are not that
+  // claim, and those are recorded:
+  //   - the deceleration is a function of the state. When it drops along the
+  //     motion (gravity changing with q), a joint riding the bound is above
+  //     the next tick's curve by more than the torque row can take off. Only
+  //     brake_margin < 1 leaves room for that;
+  //   - this fixture's torque row is parallel to the joint's own box row, and
+  //     ProxQP reports PRIMAL_INFEASIBLE when the two edges on one side come
+  //     within ~0.02 rad/s of each other on a problem that is feasible by
+  //     0.3 rad/s (seen with the bound off too, at the velocity limit — which
+  //     is why that limit is put out of reach here). A solver verdict (#654).
+  constexpr double kNearLimit = 0.05;  // rad: the last ~25 ticks of an approach
+  const int joint = arm_a_[0];
+  const Eigen::VectorXd& q_min = model_->lowerPositionLimit;
+  const Eigen::VectorXd& q_max = model_->upperPositionLimit;
+  const auto config = [&](bool brake, double margin) {
+    Clik::Config cfg;
+    cfg.arm_v_idx = {joint};
+    cfg.damping_sq = 1e-6;
+    cfg.q_min = q_min;
+    cfg.q_max = q_max;
+    cfg.v_limit_per_joint = Eigen::VectorXd::Constant(kNv, 1e-9);  // locked
+    cfg.v_limit_per_joint(joint) = 50.0;                           // out of reach, see above
+    cfg.evaluate_at_command = true;
+    Clik::Config::PostureGroup group;
+    group.v_idx.push_back(joint);
+    group.weight = 1.0;
+    cfg.posture_groups.push_back(group);
+    cfg.accel_constraint = Mode::kDynamic;
+    cfg.tau_max = model_->upperEffortLimit;
+    cfg.eta_tau = kEta;
+    cfg.brake_from_torque = brake;
+    cfg.brake_margin = margin;
+    return cfg;
+  };
+
+  struct Result {
+    int failed_near_limit{0};
+    int failed_elsewhere{0};
+    int arrived{0};
+    int ticks_braking{0};
+  };
+
+  const auto run = [&](bool brake, double margin) {
+    Result out;
+    for (int approach = 0; approach < 20; ++approach) {
+      const bool up = approach < 10;
+      Clik gen;
+      gen.Init(kNv, config(brake, margin));
+      EXPECT_TRUE(gen.SetPostureGroupGain(0, 20.0));
+      Clik::FrameTask hold;  // asks for nothing: its columns are this joint's, which it lacks
+      hold.kind = Clik::TaskKind::kSe3;
+      hold.frame_idx = tip_b_;
+      hold.weight = 1e-3;
+      Eigen::VectorXd q = q_home_;
+      const double start = 0.3 + 0.0137 * (approach % 10);
+      q(joint) = up ? q_max(joint) - start : q_min(joint) + start;
+      Eigen::VectorXd q_posture = q_home_;
+      q_posture(joint) = up ? q_max(joint) + 0.5 : q_min(joint) - 0.5;
+      Eigen::VectorXd v = Eigen::VectorXd::Zero(kNv);
+      const auto gap = [&] { return up ? q_max(joint) - q(joint) : q(joint) - q_min(joint); };
+      for (int k = 0; k < 150; ++k) {
+        cache_.Update(q, v);
+        hold.placement_des = cache_.registered_frames[static_cast<size_t>(tip_b_)].oMf;
+        if (!gen.Compute(cache_,
+                         Input(std::span<const Clik::FrameTask>(&hold, 1), q_posture, kDt))) {
+          ++(gap() < kNearLimit ? out.failed_near_limit : out.failed_elsewhere);
+        }
+        out.ticks_braking += gen.LastSolve().brake_active != 0 ? 1 : 0;
+        q = gen.QRef();
+        v = gen.VRef();
+      }
+      out.arrived += gap() < 1e-3 ? 1 : 0;
+    }
+    return out;
+  };
+
+  const Result off = run(false, 1.0);
+  EXPECT_GT(off.failed_near_limit, 20) << "premise: the one-tick position box breaks at the limit";
+  RecordProperty("alone_off_failed_near_limit", off.failed_near_limit);
+  for (const double margin : {1.0, 0.9, 0.8}) {
+    const Result on = run(true, margin);
+    const std::string tag = "alone_margin_" + std::to_string(static_cast<int>(100 * margin));
+    RecordProperty(tag + "_failed_near_limit", on.failed_near_limit);
+    RecordProperty(tag + "_failed_elsewhere", on.failed_elsewhere);
+    EXPECT_EQ(on.failed_near_limit, 0) << "margin " << margin;
+    EXPECT_EQ(on.arrived, 20) << "margin " << margin << ": every approach ends at its limit";
+    EXPECT_GT(on.ticks_braking, 0) << "margin " << margin;
+    EXPECT_LE(on.failed_elsewhere, 2) << "margin " << margin << ": see the note above";
+  }
 }
 
 TEST_F(ClikBrakeTest, BrakingBoundLeavesTheSolveAloneAwayFromTheLimits) {
@@ -1281,6 +1394,24 @@ TEST_F(ClikTreeTest, InitRejectsInconsistentMultiFrameConfig) {
   cfg.task_v_idx = {0, 1, 1};
   EXPECT_TRUE(throws(cfg)) << "task_v_idx duplicate";
 
+  // kDynamic bounds the torque over the arm columns: a task column outside
+  // them would move a joint the rows do not account for.
+  cfg = BoxedConfig();
+  cfg.arm_v_idx = arm_a_;
+  cfg.accel_constraint = Mode::kDynamic;
+  cfg.tau_max = model_->upperEffortLimit;
+  cfg.eta_tau = 0.8;
+  EXPECT_FALSE(throws(cfg)) << "premise: task columns default to the arm's";
+  cfg.task_v_idx = {arm_a_[0], trunk_[0]};
+  EXPECT_TRUE(throws(cfg)) << "a task column outside the torque rows";
+  cfg.task_v_idx = {arm_a_[0], arm_a_[3]};
+  EXPECT_FALSE(throws(cfg));
+  cfg.accel_constraint = Mode::kBox;
+  cfg.tau_max.resize(0);
+  cfg.eta_tau = 0.0;
+  cfg.task_v_idx = {arm_a_[0], trunk_[0]};
+  EXPECT_FALSE(throws(cfg)) << "no torque rows, no restriction";
+
   cfg = BaseConfig();
   cfg.posture_groups[1].v_idx.push_back(trunk_[0]);
   EXPECT_TRUE(throws(cfg)) << "a joint in two posture groups";
@@ -1300,12 +1431,19 @@ TEST_F(ClikTreeTest, RefusedInputLeavesTheOutputsUntouched) {
   cache_.Update(q, Eigen::VectorXd::Zero(kNv));
   Clik gen;
   gen.Init(kNv, BaseConfig());
-  const std::array<Clik::FrameTask, 2> good = {WorldTask(q, Eigen::Vector3d(0.05, 0.0, 0.0), 0.1),
-                                               TorsoTask(q, Eigen::Vector3d(0.0, 0.05, 0.0), 0.1)};
+  const std::array<Clik::FrameTask, 2> good = [&] {
+    std::array<Clik::FrameTask, 2> t = {WorldTask(q, Eigen::Vector3d(0.05, 0.0, 0.0), 0.1),
+                                        TorsoTask(q, Eigen::Vector3d(0.0, 0.05, 0.0), 0.1)};
+    t[0].fb_lin_max = 0.1;  // 6 · 0.05 m/s of feedback: capped, so task 0 reports it
+    return t;
+  }();
   ASSERT_TRUE(gen.Compute(cache_, Input(good, q, kDt)));
   const Eigen::VectorXd q_ref = gen.QRef();
   const Eigen::VectorXd v_ref = gen.VRef();
+  const double error_norm = gen.TcpErrorNorm();
   ASSERT_GT(v_ref.norm(), 1e-3);
+  ASSERT_NE(gen.LastSolve().fb_saturated, 0U) << "premise: task 0's cap is active";
+  ASSERT_GT(error_norm, 1e-3);
 
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const double inf = std::numeric_limits<double>::infinity();
@@ -1324,6 +1462,11 @@ TEST_F(ClikTreeTest, RefusedInputLeavesTheOutputsUntouched) {
     EXPECT_EQ(gen.LastSolve().tasks, 0) << what;
     EXPECT_TRUE(BitEqual(gen.QRef(), q_ref)) << what;
     EXPECT_TRUE(BitEqual(gen.VRef(), v_ref)) << what;
+    // A refused call did not happen: it reports nothing of its own — not even
+    // what the tasks before the offending one would have reported.
+    EXPECT_EQ(gen.LastSolve().fb_saturated, 0U) << what;
+    EXPECT_EQ(gen.LastSolve().rot_near_pi, 0U) << what;
+    EXPECT_EQ(Bits(gen.TcpErrorNorm()), Bits(error_norm)) << what;
     ++cases;
   };
   const auto with = [&](const char* what, int k, const auto& edit) {
@@ -1429,7 +1572,7 @@ TEST_F(ClikTreeTest, ComputeCallsNoOperatorNew) {
   // test_clik_multiframe_malloc.cpp counts those.
   Clik::Config cfg = BoxedConfig();
   cfg.accel_constraint = Mode::kDynamic;
-  cfg.tau_max = model_->effortLimit;
+  cfg.tau_max = model_->upperEffortLimit;
   cfg.eta_tau = 0.8;
   cfg.w_smooth = 1e-3;
   Clik gen;

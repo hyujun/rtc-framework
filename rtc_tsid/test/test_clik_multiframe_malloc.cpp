@@ -40,6 +40,7 @@
 #pragma GCC diagnostic pop
 
 #include "alloc_counter.hpp"
+#include "clik_test_util.hpp"
 #include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "tree_fixture.hpp"
@@ -59,9 +60,7 @@ class ClikMultiFrameMallocTest : public ::testing::Test {
   void SetUp() override {
     model_ = test::LoadTreeModel();
     ASSERT_EQ(model_->nv, kNv);
-    ContactManagerConfig contact_cfg;
-    contact_cfg.max_contacts = 0;
-    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
+    test::InitContactFreeCache(cache_, model_);
     tip_a_ = cache_.RegisterFrame("tip_a", model_->getFrameId("tip_a"));
     tip_b_ = cache_.RegisterFrame("tip_b", model_->getFrameId("tip_b"));
     torso_ = cache_.RegisterFrame("torso", model_->getFrameId("torso"));
@@ -83,7 +82,7 @@ class ClikMultiFrameMallocTest : public ::testing::Test {
     cfg.damping_sq = 1e-6;
     cfg.q_min = model_->lowerPositionLimit;
     cfg.q_max = model_->upperPositionLimit;
-    cfg.v_limit_per_joint = model_->velocityLimit;
+    cfg.v_limit_per_joint = model_->upperVelocityLimit;
     cfg.w_smooth = 1e-3;
     cfg.evaluate_at_command = true;
     cfg.max_frame_tasks = 2;
@@ -95,7 +94,7 @@ class ClikMultiFrameMallocTest : public ::testing::Test {
     Clik::Config cfg = BaseConfig();
     cfg.relative_tasks = true;
     cfg.accel_constraint = Mode::kDynamic;
-    cfg.tau_max = model_->effortLimit;
+    cfg.tau_max = model_->upperEffortLimit;
     cfg.eta_tau = 0.8;
     cfg.brake_from_torque = true;
     return cfg;

@@ -19,6 +19,7 @@
 ///   tier 2  pink with the factor removed, at 0.2 m / 0.5 rad: the same
 ///           problem, compared at the solvers' own accuracy.
 
+#include "clik_test_util.hpp"
 #include "panda_fixture.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "tree_fixture.hpp"
@@ -28,7 +29,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +38,7 @@ namespace {
 
 using Clik = ClikReferenceGenerator;
 using Vec6 = Eigen::Matrix<double, 6, 1>;
+using test::Sci;
 
 struct PinkCase {
   int problem;  // 0 = the 9-DoF arm, 1 = the 17-DoF tree
@@ -75,12 +76,6 @@ struct Problem {
   return pose;
 }
 
-[[nodiscard]] std::string Sci(double x) {
-  std::array<char, 32> buf{};
-  std::snprintf(buf.data(), buf.size(), "%.3e", x);
-  return buf.data();
-}
-
 /// The CLIK's velocity for one recorded case. `rel_as_world` hands the
 /// relative task's target to a world task instead — the wrong problem, for
 /// the control below.
@@ -90,9 +85,7 @@ struct Problem {
   EXPECT_EQ(nv, c.nv);
 
   PinocchioCache cache;
-  ContactManagerConfig contact_cfg;
-  contact_cfg.max_contacts = 0;
-  cache.Init(problem.model, rtc::tsid::ContactFrameIds(contact_cfg));
+  test::InitContactFreeCache(cache, problem.model);
   const int world_frame =
       cache.RegisterFrame(problem.world_frame, problem.model->getFrameId(problem.world_frame));
   const int rel_frame =
@@ -108,7 +101,7 @@ struct Problem {
   cfg.damping_sq = kPinkDamping;
   cfg.q_min = problem.model->lowerPositionLimit;
   cfg.q_max = problem.model->upperPositionLimit;
-  cfg.v_limit_per_joint = problem.model->velocityLimit;
+  cfg.v_limit_per_joint = problem.model->upperVelocityLimit;
   cfg.max_frame_tasks = 2;
   cfg.relative_tasks = true;
   Clik gen;

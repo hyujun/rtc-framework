@@ -105,9 +105,9 @@ $$\ell_i=\max\Big(-\dot q_{\max,i},\ \frac{q_{\min,i}+m_q-q_{c,i}}{\Delta t}\Big
 
 **제동 거리 한계 (`brake_from_torque`, `dynamic` 전용 · 기본 꺼짐 — 포구 YAML 에는 아직 키가 없다).** 위 box 의 위치 항은 한 tick 앞만 본다. 속도 한계로 달리던 관절은 위치 한계 직전 tick 에 한 tick 안의 정지를 요구받고, 그 감속은 토크 행이 허용하지 않아 solve 가 실패한다. 이 옵션은 팔 관절의 box 를 멈출 수 있는 속도로 더 좁힌다:
 
-$$0\le v_i\le\frac{4a_id_i}{a_i\Delta t+\sqrt{a_i^2\Delta t^2+8a_id_i}},\qquad a_i=m\max\Big(0,\ \frac{\eta_\tau\tau_{\max,i}+h_i}{M_{ii}}\Big),\quad d_i=q_{\max,i}-m_q-q_{c,i}$$
+$$0\le v_i\le\frac{2a_id_i}{a_i\Delta t+\sqrt{a_i^2\Delta t^2+2a_id_i}},\qquad a_i=m\max\Big(0,\ \frac{\eta_\tau\tau_{\max,i}+h_i}{M_{ii}}\Big),\quad d_i=q_{\max,i}-m_q-q_{c,i}$$
 
-($q_{\min}$ 쪽은 $h_i$ 의 부호와 $d_i$ 를 바꾼 대칭.) 감속도는 토크 한계가 지금 상태에서 남기는 값이라 따로 정하는 제동 상수가 없다. 식은 연속 시간의 $\sqrt{2ad}$ 가 아니라 이산 tick 의 것이다 — 명령은 제동이 시작되기 전에 한 tick 을 간다 ($v\Delta t+v^2/(2a)\le d$ 의 등식의 근). 한계는 토크 행이 한 tick 에 도달할 수 있는 속도보다 좁아지지 않는다. $M_{ii}$ 가 관성 결합과 회전자 관성을 빼므로 **보장이 아니라 실행 가능성 장치**다 — hard 제약은 여전히 토크 행이고, 여유는 `brake_margin` ($m\lt1$) 으로 준다. 유도와 §2.2 의 상수 $a_{brk}$ 식과의 차이는 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) §10.3.
+($q_{\min}$ 쪽은 $h_i$ 의 부호와 $d_i$ 를 바꾼 대칭.) 감속도는 토크 한계가 지금 상태에서 남기는 값이라 따로 정하는 제동 상수가 없다. 식은 연속 시간의 $\sqrt{2ad}$ 가 아니라 이산 tick 의 것이다 ($v\Delta t+v^2/(2a)=d$ 의 양의 근) — 명령은 한 tick 동안 유지되고 속도는 tick 마다 $a\Delta t$ 씩만 줄어든다. 한계는 토크 행이 한 tick 에 도달할 수 있는 속도보다 좁아지지 않는다. **보장이 아니라 실행 가능성 장치**이고 `brake_margin` ($m\lt1$) 을 두고 쓴다: $M_{ii}$ 가 관성 결합과 회전자 관성을 빼고, $a_i$ 가 상태에 따라 변하므로 $m=1$ 은 그 변동을 받을 여유가 없다. hard 제약은 여전히 토크 행이다. 유도와 §2.2 의 상수 $a_{brk}$ 식과의 차이는 [mpc_multiframe_clik_formulation.md](mpc_multiframe_clik_formulation.md) §10.3.
 
 **반복 상한과 상태 노출.** `max_iter` (기본 20, `joint_cmd.qp.max_iter`) 를 넘거나 수렴 실패하거나 비유한 결과가 나오면 `Compute` 는 false 를 돌려준다. solver status · 반복 수 · solve time 은 `LastSolve()` 로 노출된다.
 

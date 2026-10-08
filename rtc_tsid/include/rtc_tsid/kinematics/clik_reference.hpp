@@ -116,19 +116,29 @@ namespace rtc::tsid {
 // velocity limit until the tick before its position limit, where stopping
 // needs a deceleration the torque rows do not have — and the call fails. The
 // bound keeps each arm joint at a speed it can still stop from,
-//   0 ≤ v_i ≤ 4·a·d / (a·dt + √(a²·dt² + 8·a·d)),   d = q_max,i − q_i
-// (mirrored toward q_min), the positive root of v² + a·dt·v = 2·a·d — the
-// zero-order-hold form: a command v travels v·dt before the first braking
-// tick, which the continuous √(2·a·d) ignores and so cannot be held by the
-// torque rows on the next tick. The deceleration is what the torque bound
-// leaves at the current state, joint by joint,
+//   0 ≤ v_i ≤ 2·a·d / (a·dt + √(a²·dt² + 2·a·d)),   d = q_max,i − q_i
+// (mirrored toward q_min), the positive root of v·dt + v²/(2·a) = d. This is
+// the discrete-time distance, not the continuous v²/(2·a): a command is held
+// for a tick and the velocity drops by at most a·dt per tick, so from v the
+// joint still travels dt·(v + (v − a·dt) + …), which is v²/(2·a) + v·dt/2 when
+// v is a multiple of a·dt and up to a·dt²/8 more in between. v·dt + v²/(2·a)
+// covers every v, and it is closed under one tick of braking TOGETHER WITH the
+// one-tick position box: from (d, v) under it, v' = max(0, v − a·dt) is under
+// it again at d' = d − v·dt, and v' ≤ d'/dt. The deceleration is what the
+// torque bound leaves at the current state, joint by joint,
 //   a = brake_margin·max(0, (η·τ_max,i ± h_i) / M_ii)
 // (+ against motion toward q_max, − toward q_min; 0 → that direction is held
 // at v = 0). The bound never asks for more than the rows allow in one tick:
 // it is widened to v_c,i ∓ (η·τ_max,i ± h_i)/M_ii·dt when it would. It is a
-// feasibility heuristic, not a guarantee — M_ii ignores inertial coupling and
-// the URDF carries no rotor inertia, so `a` can be optimistic; the torque rows
-// stay the hard constraint and brake_margin < 1 is the knob.
+// feasibility heuristic, not a guarantee, and brake_margin < 1 is the knob:
+//   - M_ii ignores inertial coupling and the URDF carries no rotor inertia, so
+//     `a` can be optimistic;
+//   - `a` is a function of the state. The closure above holds for a constant
+//     a; when a drops along the motion (gravity changing with q), a joint
+//     riding the bound at brake_margin = 1 can be above the next tick's curve
+//     by more than the rows can take off, and that call fails — well before
+//     the limit, at the tick it turns from accelerating to braking.
+// The torque rows stay the hard constraint either way.
 //
 // Several frames in one solve (the MultiFrameInput overload, E2-F04). The cost
 // above with a SUM of task terms — one per FrameTask, each an SE3 task (6
@@ -246,7 +256,9 @@ class ClikReferenceGenerator {
     // ── The multi-frame call (MultiFrameInput). Unset, every field below
     //    leaves the two single-task overloads as they were. ──
     // Most tasks one call may carry, 1..16. Sizes the per-task workspace and,
-    // for kKinematic, the row block (6 rows per task).
+    // for kKinematic, the row block: 6 rows per task, which stay in EVERY
+    // solve (inert when a call sends fewer tasks — the QP's dimensions are
+    // fixed at Init). Size it to the tasks actually sent, not to the maximum.
     int max_frame_tasks{1};
     // Accept FrameTask::base_frame_idx >= 0, i.e. relative tasks (file
     // header). Off → such a task is refused at the call. Not available with
@@ -255,16 +267,20 @@ class ClikReferenceGenerator {
     bool relative_tasks{false};
     // Velocity indices the task rows of the multi-frame call may use; every
     // other column is zero. Empty → arm_v_idx, which is what the single-task
-    // overloads always use. Range-checked, no duplicates. kDynamic bounds the
-    // torque on arm_v_idx only: a task column outside it moves a joint whose
-    // torque this solve does not bound.
+    // overloads always use. Range-checked, no duplicates. With kDynamic it
+    // must be a subset of arm_v_idx (Init() throws): the torque rows are M·v̇
+    // over the arm columns, and a task moving a joint outside them would add a
+    // coupling torque the rows do not see.
     std::vector<int> task_v_idx;
 
     // Posture groups: disjoint velocity index sets, each with a weight (finite
     // and >= 0) and a gain of its own (SetPostureGroupGain). Empty → the two
     // groups {arm_v_idx, w_arm} and {hand_v_idx, w_hand}, in that order. When
     // set, w_arm / w_hand are not read, and SetPostureGains(ka, kh) addresses
-    // groups 0 and 1. The groups serve every Compute() overload.
+    // groups 0 and 1. The groups serve every Compute() overload. With kDynamic
+    // a group's joint outside arm_v_idx is not in the torque rows either: it is
+    // expected to be locked through its velocity box, as a hand commanded
+    // elsewhere is.
     struct PostureGroup {
       std::vector<int> v_idx;
       double weight{0.0};
@@ -277,7 +293,9 @@ class ClikReferenceGenerator {
     // otherwise. Serves every Compute() overload.
     bool brake_from_torque{false};
     // Fraction of the available deceleration the bound plans with, in (0, 1].
-    // 1 (unset) when brake_from_torque is off.
+    // 1 plans with all of it and leaves no room for the deceleration changing
+    // along the motion (file header) — a caller turning the bound on should
+    // set it below 1. Must be 1 (unset) when brake_from_torque is off.
     double brake_margin{1.0};
   };
 
@@ -295,7 +313,7 @@ class ClikReferenceGenerator {
 
   /// Gains of posture groups 0 and 1 — the arm and the hand unless
   /// Config::posture_groups says otherwise. A group that does not exist is
-  /// skipped.
+  /// skipped. May be called before Init(): Init() keeps each group's gain.
   void SetPostureGains(double ka, double kh) noexcept {
     if (!posture_.empty()) {
       posture_[0].gain = ka;
@@ -306,7 +324,8 @@ class ClikReferenceGenerator {
   }
 
   /// Gain K_g [1/s] of posture group `g` (Config::posture_groups order).
-  /// Returns false, changing nothing, when there is no such group.
+  /// Returns false, changing nothing, when there is no such group — before
+  /// Init() only groups 0 and 1 exist.
   [[nodiscard]] bool SetPostureGroupGain(int g, double k) noexcept {
     if (g < 0 || static_cast<std::size_t>(g) >= posture_.size()) {
       return false;
@@ -437,7 +456,8 @@ class ClikReferenceGenerator {
 
   // Several frame tasks in one solve (file header). Anchoring, the box, the
   // acceleration constraint and the failure branch are the single-task ones.
-  // Refused BEFORE the solve, outputs untouched and
+  // Refused BEFORE the solve, with the outputs and the error / axis
+  // diagnostics of the previous call untouched and
   // LastSolve().rejected_input set: a task count outside
   // [1, Config::max_frame_tasks]; a frame index out of range; a relative task
   // without Config::relative_tasks or with base == frame; a gain, weight or
@@ -573,10 +593,24 @@ class ClikReferenceGenerator {
   // Input checks of the multi-frame call that need no kinematics.
   [[nodiscard]] bool MultiFrameInputHolds(const PinocchioCache& cache,
                                           const MultiFrameInput& in) const noexcept;
-  // Error, reference and Jacobian rows of task k into task_rows_[k]. Returns
-  // false on an approach axis that is not unit.
-  [[nodiscard]] bool BuildTaskRows(const PinocchioCache& cache, const FrameTask& task,
-                                   int k) noexcept;
+
+  // What the tasks of one multi-frame call report. Collected on the side and
+  // committed only once every task has built: a call refused at task k must
+  // not leave the diagnostics of tasks 0..k−1 behind.
+  struct TaskDiagnostics {
+    std::uint32_t fb_saturated{0};
+    std::uint32_t rot_near_pi{0};
+    double tcp_error_norm{0.0};
+    double position_error_norm{0.0};
+    double axis_error_angle{0.0};
+    rtc::math::se3::AxisAlignRegion axis_region{rtc::math::se3::AxisAlignRegion::kInvalidInput};
+  };
+
+  // Error, reference and Jacobian rows of task k into task_rows_[k], its
+  // diagnostics into `diag`. Returns false on an approach axis that is not
+  // unit.
+  [[nodiscard]] bool BuildTaskRows(const PinocchioCache& cache, const FrameTask& task, int k,
+                                   TaskDiagnostics& diag) noexcept;
   // Post-solve: every accel row holds at v (within tolerance); counts binding.
   [[nodiscard]] bool AccelRowsHold(const Eigen::VectorXd& v) noexcept;
   // The failure outputs: q_ref = cache.q, v_ref = 0, re-anchor, v_prev = 0,
@@ -636,7 +670,9 @@ class ClikReferenceGenerator {
     Eigen::VectorXd v_post;  // [v_idx.size()] posture velocity reference
   };
 
-  std::vector<PostureGroupState> posture_;
+  // Two groups from construction, so that a gain set before Init() has
+  // somewhere to live (the arm and the hand, as the old scalar pair did).
+  std::vector<PostureGroupState> posture_ = std::vector<PostureGroupState>(2);
 
   // Last-Compute diagnostics
   SolveDiagnostics last_solve_;

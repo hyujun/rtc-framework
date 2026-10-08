@@ -265,6 +265,22 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   }
   std::fill(seen.begin(), seen.end(), false);
   check_indices(config.task_v_idx, "task_v_idx");
+  if (config.accel_constraint == AccelConstraint::kDynamic) {
+    // The torque rows are Σ_{j∈arm} M_ij·v̇_j + h_i: a task column outside the
+    // arm set would accelerate a joint whose coupling torque they leave out.
+    std::fill(seen.begin(), seen.end(), false);
+    for (const int i : config.arm_v_idx) {
+      seen[static_cast<size_t>(i)] = true;
+    }
+    for (const int i : config.task_v_idx) {
+      if (!seen[static_cast<size_t>(i)]) {
+        throw std::runtime_error(
+            "ClikReferenceGenerator: task_v_idx index " + std::to_string(i) +
+            " is not in arm_v_idx (accel_constraint dynamic bounds the torque over the arm "
+            "columns only)");
+      }
+    }
+  }
   // Posture groups: disjoint across groups (a joint in two groups would get
   // two competing posture references), each weight finite and >= 0 — the
   // w_arm / w_hand gate above, for the same reason.
@@ -312,7 +328,8 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   max_frame_tasks_ = config.max_frame_tasks;
   relative_tasks_ = config.relative_tasks;
   // A gain set before this Init(), or kept from an earlier one, stays with
-  // its group index — Init() never reset the posture gains.
+  // its group index — Init() never reset the posture gains (posture_ holds
+  // two groups from construction for the first case).
   std::vector<PostureGroupState> groups;
   const auto add_group = [&](const std::vector<int>& v_idx, double weight) {
     PostureGroupState g;
@@ -609,12 +626,23 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache,
   const int n_tasks = static_cast<int>(in.tasks.size());
   last_solve_.tasks = n_tasks;
 
+  TaskDiagnostics diag;
   for (int k = 0; k < n_tasks; ++k) {
-    if (!BuildTaskRows(cache, in.tasks[static_cast<size_t>(k)], k)) {
+    if (!BuildTaskRows(cache, in.tasks[static_cast<size_t>(k)], k, diag)) {
       last_solve_.rejected_input = true;  // an approach axis that is not unit
       last_solve_.tasks = 0;
-      return false;
+      return false;  // nothing of `diag` is kept: the call did not happen
     }
+  }
+  // Every task built: the call goes to the solve, and these are its
+  // diagnostics whether the solve succeeds or not (as in the overloads above).
+  last_solve_.fb_saturated = diag.fb_saturated;
+  last_solve_.rot_near_pi = diag.rot_near_pi;
+  tcp_error_norm_ = diag.tcp_error_norm;
+  if (axis_first) {
+    axis_region_ = diag.axis_region;
+    position_error_norm_ = diag.position_error_norm;
+    axis_error_angle_ = diag.axis_error_angle;
   }
 
   // Manipulability diagnostic: task 0's frame, its world-aligned Jacobian on
@@ -718,7 +746,7 @@ bool ClikReferenceGenerator::MultiFrameInputHolds(const PinocchioCache& cache,
 }
 
 bool ClikReferenceGenerator::BuildTaskRows(const PinocchioCache& cache, const FrameTask& task,
-                                           int k) noexcept {
+                                           int k, TaskDiagnostics& diag) noexcept {
   namespace se3 = rtc::math::se3;
   TaskRows& tr = task_rows_[static_cast<size_t>(k)];
   const auto& rf = cache.registered_frames[static_cast<size_t>(task.frame_idx)];
@@ -739,17 +767,17 @@ bool ClikReferenceGenerator::BuildTaskRows(const PinocchioCache& cache, const Fr
     // angular parts in the base's axes, at the frame origin.
     tr.e = ComputeTaskPoseError(tip, task.placement_des);
     if (k == 0) {
-      tcp_error_norm_ = tr.e.norm();
+      diag.tcp_error_norm = tr.e.norm();
     }
     if (tr.e.tail<3>().norm() > std::numbers::pi - kNearPi) {
-      last_solve_.rot_near_pi |= pi_bit;
+      diag.rot_near_pi |= pi_bit;
     }
     tr.r = task.gain.cwiseProduct(tr.e);
     if (CapNorm(tr.r.head<3>(), task.fb_lin_max)) {
-      last_solve_.fb_saturated |= lin_bit;
+      diag.fb_saturated |= lin_bit;
     }
     if (CapNorm(tr.r.tail<3>(), task.fb_ang_max)) {
-      last_solve_.fb_saturated |= ang_bit;
+      diag.fb_saturated |= ang_bit;
     }
     if (task.twist_ff != nullptr) {
       tr.r += *task.twist_ff;
@@ -775,9 +803,6 @@ bool ClikReferenceGenerator::BuildTaskRows(const PinocchioCache& cache, const Fr
   const Eigen::Matrix3d& R_bc = tip.rotation();  // frame in base (world for the universe)
   const Eigen::Vector3d z_c = R_bc.col(2);
   const se3::AxisAlignErrorResult axis = se3::AxisAlignError(z_c, a_des);
-  if (k == 0) {
-    axis_region_ = axis.region;
-  }
   if (!axis.IsValid()) {
     return false;  // non-unit / non-finite axis target
   }
@@ -785,13 +810,13 @@ bool ClikReferenceGenerator::BuildTaskRows(const PinocchioCache& cache, const Fr
   const double e_p_norm = e_p.norm();
   const double e_a_angle = axis.error.norm();
   if (k == 0) {
-    position_error_norm_ = e_p_norm;
-    axis_error_angle_ = e_a_angle;
-    tcp_error_norm_ = std::sqrt(position_error_norm_ * position_error_norm_ +
-                                axis_error_angle_ * axis_error_angle_);
+    diag.axis_region = axis.region;
+    diag.position_error_norm = e_p_norm;
+    diag.axis_error_angle = e_a_angle;
+    diag.tcp_error_norm = std::sqrt(e_p_norm * e_p_norm + e_a_angle * e_a_angle);
   }
   if (e_a_angle > std::numbers::pi - kNearPi) {
-    last_solve_.rot_near_pi |= pi_bit;
+    diag.rot_near_pi |= pi_bit;
   }
 
   // References. With a cap off, the expressions are the axis overload's own
@@ -799,7 +824,7 @@ bool ClikReferenceGenerator::BuildTaskRows(const PinocchioCache& cache, const Fr
   if (task.fb_lin_max > 0.0) {
     Eigen::Vector3d fb = task.gain.head<3>().cwiseProduct(e_p);
     if (CapNorm(fb, task.fb_lin_max)) {
-      last_solve_.fb_saturated |= lin_bit;
+      diag.fb_saturated |= lin_bit;
     }
     tr.r_pos = fb + v_ff;
   } else {
@@ -808,7 +833,7 @@ bool ClikReferenceGenerator::BuildTaskRows(const PinocchioCache& cache, const Fr
   if (task.fb_ang_max > 0.0) {
     Eigen::Vector3d fb = task.gain_axis * axis.error;
     if (CapNorm(fb, task.fb_ang_max)) {
-      last_solve_.fb_saturated |= ang_bit;
+      diag.fb_saturated |= ang_bit;
     }
     tr.w_ref_local = R_bc.transpose() * (fb + w_ff);
   } else {
@@ -982,16 +1007,25 @@ void ClikReferenceGenerator::AssembleBox(const Eigen::VectorXd& q, double dt) no
 
 namespace {
 
-/// Largest speed toward a limit `d` away from which a joint that brakes at
-/// `a` still stops in time when the command is held for one tick before the
-/// braking starts: the positive root of v² + a·dt·v = 2·a·d, written so that
-/// a small d does not cancel. 0 when there is no deceleration or no room.
+/// Largest speed toward a limit `d` away that a joint braking at `a` can
+/// still stop from, in discrete time: the positive root of v·dt + v²/(2·a) =
+/// d, written so that a small d does not cancel. 0 when there is no
+/// deceleration or no room.
+///
+/// Why v·dt and not the v·dt/2 of an exact ramp: with the velocity dropping
+/// a·dt per tick the joint travels dt·(v + (v − a·dt) + …) — v²/(2·a) + v·dt/2
+/// only when v is a whole number of a·dt steps, and up to a·dt²/8 more in
+/// between. On the v·dt/2 curve that shortfall arrives as a last tick whose
+/// one-tick position box sits below v − a·dt, i.e. an infeasible QP. v·dt
+/// covers every v, and the set it bounds is closed under a tick of braking
+/// together with that box: with d ≥ v·dt + v²/(2·a) and v' = max(0, v − a·dt),
+/// d' = d − v·dt ≥ v'·dt + v'²/(2·a) and v' ≤ d'/dt.
 [[nodiscard]] double BrakeSpeed(double a, double d, double dt) noexcept {
   if (!(a > 0.0) || !(d > 0.0)) {
     return 0.0;
   }
   const double a_dt = a * dt;
-  return 4.0 * a * d / (a_dt + std::sqrt(a_dt * a_dt + 8.0 * a * d));
+  return 2.0 * a * d / (a_dt + std::sqrt(a_dt * a_dt + 2.0 * a * d));
 }
 
 }  // namespace
