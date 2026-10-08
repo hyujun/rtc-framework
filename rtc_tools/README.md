@@ -1259,6 +1259,7 @@ plots = get_session_subdir('plots')  # 환경변수 읽기 전용, None 반환 �
 | `resolve_logging_root()` | 3단 체인으로 `logging_data` 루트 경로 결정 |
 | `create_session_dir(root=None)` | `YYMMDD_HHMM` 세션과 6개 서브디렉토리 생성 |
 | `cleanup_old_sessions(root, max)` | `YYMMDD_HHMM` 패턴 세션만 대상으로 개수 제한 |
+| `list_session_dirs(root)` | 세션 디렉토리 이름을 오래된 것부터 (정리 · 최신 세션 탐색이 함께 쓴다) |
 | `generate_run_id()` | 이번 launch 의 런 ID (`YYMMDDHHMMSS`). launch 가 `RTC_RUN_ID` 로 전파하고 C++ `rtc::ResolveRunId()` 가 소비 |
 | `get_session_dir()` | `RTC_SESSION_DIR` 읽기 (없으면 `None`) |
 | `get_or_create_session_dir()` | env 우선, 없으면 새 세션 생성 |

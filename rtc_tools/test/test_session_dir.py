@@ -18,6 +18,7 @@ from rtc_tools.utils.session_dir import (
     create_session_dir,
     get_or_create_session_dir,
     get_session_dir,
+    list_session_dirs,
     resolve_logging_root,
 )
 
@@ -182,6 +183,24 @@ def test_cleanup_old_sessions_keeps_only_max(tmp_path):
 
     remaining = sorted(p.name for p in root.iterdir())
     assert remaining == ["260104_1200", "260105_1300", "not_a_session"]
+
+
+def test_list_session_dirs_is_sessions_only_oldest_first(tmp_path):
+    root = tmp_path / "logging_data"
+    root.mkdir()
+    for name in ("260103_1100", "260101_0900", "260102_1000", "not_a_session", "stats"):
+        (root / name).mkdir()
+    # 이름은 세션인데 디렉토리가 아닌 것 — 세션이 아니다
+    (root / "260109_0000").write_text("")
+
+    assert list_session_dirs(str(root)) == ["260101_0900", "260102_1000", "260103_1100"]
+
+
+def test_list_session_dirs_is_empty_without_a_root(tmp_path):
+    assert list_session_dirs(str(tmp_path / "does_not_exist")) == []
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("")
+    assert list_session_dirs(str(not_a_dir)) == []
 
 
 def test_cleanup_old_sessions_no_op_on_missing_root(tmp_path):
