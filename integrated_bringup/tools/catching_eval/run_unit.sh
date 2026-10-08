@@ -22,6 +22,8 @@
 # E1-F16 addition: the search-mode mirror says EXPECT_SEARCH (default grid) (search_mirror), and
 # so does the startup `search mode:` line (mode_log); EXPECT_MODE may be closed_form, mpc or
 # mpc_docking.
+# E1-F19 addition: ENABLE_VIEWER=1 opens the MuJoCo viewer (default 0 — a unit is headless); the
+# unit's conditions.txt says which (viewer: on | off), because a viewer shares the host with the sim.
 # The overlay turns the APPROACH-stop MPC on in CLOSED LOOP: the planner stores
 # every segment, the RT takes a plan with its first segment and follows the
 # segments from APPROACH to the end of the stop (mode mpc, #662).
@@ -33,6 +35,7 @@
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
+VIEWER=false; [ "${ENABLE_VIEWER:-0}" == "1" ] && VIEWER=true
 OUT=$(realpath -ms "$OUT")
 mkdir -p "$OUT"; rm -f "$OUT/status"
 [ -n "$DATA" ] || { echo "FAIL:DATA is not set (the data directory of this evaluation)" | tee "$OUT/status" >&2; exit 1; }
@@ -126,12 +129,13 @@ trap on_signal INT TERM HUP
   echo "loadavg_start: $(cut -d' ' -f1-3 /proc/loadavg)"
   echo "ros_domain_id: $ROS_DOMAIN_ID"
   echo "expect_mode: ${EXPECT_MODE:-mpc}"; echo "expect_kv: ${EXPECT_KV:-}"
+  echo "viewer: $([ "$VIEWER" == "true" ] && echo on || echo off)"
 } > "$OUT/conditions.txt"
 if [ "${ALLOW_DIRTY:-0}" != "1" ] && [ -n "$(git -C "$REPO" status --porcelain)" ]; then
   echo "FAIL:dirty tree" > "$OUT/status"; exit 1
 fi
 
-setsid ros2 launch integrated_bringup $LAUNCH enable_viewer:=false use_cpu_affinity:=false \
+setsid ros2 launch integrated_bringup $LAUNCH enable_viewer:=$VIEWER use_cpu_affinity:=false \
   enable_mpc:=true sim_lanes:=true sim_overlay:=$OV max_log_sessions:=60 > "$OUT/launch.log" 2>&1 &
 LPG=$!
 ok=0
