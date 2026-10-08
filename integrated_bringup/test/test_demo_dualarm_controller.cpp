@@ -1350,6 +1350,240 @@ TEST(DualArmTransforms, AreTheMeasuredPosesNotTheCommandedOnes) {
   }
 }
 
+// ── Review follow-ups: the seed, the hand's readings, the silenced rows ─────
+
+constexpr std::size_t kLeftElbow = 6;      // device range [-0.3, 2.6]
+constexpr double kLeftElbowBoxMax = 2.55;  // ... less the rig's 0.05 margin
+constexpr double kSeedSlack = 3.14 * kDt;  // one tick at the joint's speed limit
+
+TEST(DualArmSeed, AMeasurementInsideTheLimitMarginLatchesInsteadOfSolving) {
+  // Another controller may park a joint between the solve's box and the device
+  // limit. Seeding the solve there starts it outside its own box: the box
+  // collapses onto a full-speed step back, from rest.
+  for (const double past : {0.03, 2.0 * kSeedSlack}) {
+    Harness h;
+    h.body_q[kLeftElbow] = kLeftElbowBoxMax + past;
+    const std::vector<double> start = h.body_q;
+    for (int i = 0; i < 20; ++i) {
+      (void)h.Tick();
+      const auto& pod = h.ctrl->LastTick();
+      EXPECT_FALSE(pod.clik_ran) << "the solve ran from outside its box, tick " << i;
+      EXPECT_TRUE(h.ctrl->HasLatchedFault());
+      EXPECT_EQ(pod.fault_cause, DualArmDiagLogPod::FaultCause::kSeedOutsideBox);
+      EXPECT_EQ(pod.hold, Hold::kFault);
+      EXPECT_EQ(MaxAbsDiff(h.Command(), start), 0.0) << "held anywhere but where the robot is";
+      EXPECT_EQ(h.out.devices[0].num_channels, kBodyDof);
+      ExpectOutputAccepted(h);
+    }
+    // The reset with the joint still there: the cause has not gone away.
+    h.ctrl->ResetFault();
+    (void)h.Tick();
+    EXPECT_TRUE(h.ctrl->HasLatchedFault());
+    EXPECT_EQ(MaxAbsDiff(h.Command(), start), 0.0);
+
+    // Something else moved the joint inside; then the reset.
+    h.body_q[kLeftElbow] = kLeftElbowBoxMax - 0.05;
+    const std::vector<double> inside = h.body_q;
+    h.ctrl->ResetFault();
+    (void)h.Tick();
+    EXPECT_FALSE(h.ctrl->HasLatchedFault());
+    EXPECT_TRUE(h.ctrl->LastTick().reseeded);
+    EXPECT_TRUE(h.ctrl->LastTick().converged);
+    EXPECT_LE(MaxAbsDiff(h.Command(), inside), 1e-9);
+  }
+}
+
+TEST(DualArmSeed, AMeasurementJustPastTheBoxStartsOnItsEdge) {
+  // A joint the solve left ON its box edge is measured a servo error past it.
+  // Within what one tick could have commanded, the seed is the edge — not a
+  // fault, and not a start outside the box.
+  for (const double past : {1e-4, 0.5 * kSeedSlack}) {
+    Harness h;
+    h.body_q[kLeftElbow] = kLeftElbowBoxMax + past;
+    std::vector<double> want = h.body_q;
+    want[kLeftElbow] = kLeftElbowBoxMax;
+    for (int i = 0; i < 100; ++i) {
+      (void)h.Tick();
+      const auto& pod = h.ctrl->LastTick();
+      EXPECT_TRUE(pod.clik_ran) << "tick " << i;
+      EXPECT_TRUE(pod.converged) << "past " << past << " tick " << i;
+      EXPECT_FALSE(pod.accel_rows_violated) << "tick " << i;
+      EXPECT_LE(MaxAbsDiff(h.Command(), want), 1e-9) << "past " << past << " tick " << i;
+      ExpectOutputAccepted(h);
+    }
+    EXPECT_FALSE(h.ctrl->HasLatchedFault());
+  }
+}
+
+TEST(DualArmReadability, ANonFiniteHandReadingDoesNotReachTheBodySolve) {
+  // The hand's joints are in the model the solve evaluates. A non-finite hand
+  // reading has to stop at the hand: silenced there, and the body solve keeps
+  // running on the hand's last finite configuration.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const bool in_velocity : {false, true}) {
+    Harness h;
+    (void)h.Tick();
+    const pinocchio::SE3 goal =
+        Shifted(FramePose(kBodyQ, kHandQ, kRoot, kRightFrame), {0.05, 0.0, 0.0});
+    ASSERT_EQ(h.ctrl->DeliverTaskGoal(kRight, TaskGoalMsg(goal)), TaskGoalReject::kNone);
+    h.Run(20);
+    (in_velocity ? h.hand_qd : h.hand_q)[1] = nan;
+    for (int i = 0; i < 30; ++i) {
+      (void)h.Tick();
+      const auto& pod = h.ctrl->LastTick();
+      EXPECT_FALSE(pod.hand_readable);
+      EXPECT_TRUE(pod.clik_ran) << "in_velocity=" << in_velocity << " tick " << i;
+      EXPECT_TRUE(pod.converged) << "in_velocity=" << in_velocity << " tick " << i;
+      EXPECT_EQ(h.out.devices[1].num_channels, 0) << "a NaN hand reading was commanded from";
+      EXPECT_EQ(h.out.devices[0].num_channels, kBodyDof);
+      for (const double q : h.Command()) {
+        EXPECT_TRUE(std::isfinite(q));
+      }
+      // The body's own measured poses are still published, and finite.
+      const std::size_t slot = kTips.size() + kRight;
+      ASSERT_TRUE(h.out.task_link_pose_valid[slot]);
+      EXPECT_TRUE(std::isfinite(h.out.task_link_poses[slot].position[0]));
+      EXPECT_FALSE(h.out.task_link_pose_valid[0]) << "a fingertip pose from a NaN hand";
+      ExpectOutputAccepted(h);
+    }
+    EXPECT_FALSE(h.ctrl->HasLatchedFault()) << "the hand's reading latched the body";
+    EXPECT_TRUE(h.ctrl->LastTick().tasks[kRight].traj_active) << "the motion has to be under way";
+
+    (in_velocity ? h.hand_qd : h.hand_q)[1] = in_velocity ? 0.0 : kHandQ[1];
+    (void)h.Tick();
+    EXPECT_TRUE(h.ctrl->LastTick().hand_readable);
+    EXPECT_EQ(h.out.devices[1].num_channels, kHandDof);
+  }
+}
+
+TEST(DualArmFault, AnEdgeUnderTheLatchKeepsTheHandCommanded) {
+  // An activation or an E-STOP edge retakes the seed. Under a latched fault
+  // the body is re-seeded and held; the hand has to be as well — not silenced
+  // until the reset.
+  for (const bool by_estop : {false, true}) {
+    Harness h;
+    h.Run(10);
+    PoisonReference(h, kRight);
+    h.Run(5);
+    ASSERT_TRUE(h.ctrl->HasLatchedFault());
+    if (by_estop) {
+      h.ctrl->TriggerEstop();
+      (void)h.Tick();
+      h.ctrl->ClearEstop();
+    } else {
+      ASSERT_EQ(h.ctrl->on_activate(rclcpp_lifecycle::State()),
+                rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+    }
+    for (int i = 0; i < 10; ++i) {
+      (void)h.Tick();
+      ASSERT_TRUE(h.ctrl->HasLatchedFault());
+      EXPECT_EQ(h.out.devices[0].num_channels, kBodyDof);
+      EXPECT_EQ(h.out.devices[1].num_channels, kHandDof)
+          << "by_estop=" << by_estop << ": the hand was silenced under the latch, tick " << i;
+      ExpectOutputAccepted(h);
+    }
+    EXPECT_LE(MaxAbsDiff(h.hand_q, kHandQ), 1e-12);
+    // ... held, not driven: a hand goal under the latch is still refused.
+    h.ctrl->SetDeviceTarget(1, std::vector<double>{1.2, 1.2, 1.2, 1.2});
+    h.Run(50);
+    EXPECT_LE(MaxAbsDiff(h.hand_q, kHandQ), 1e-12);
+  }
+}
+
+TEST(DualArmFault, AResetRequestedBeforeAnActivationIsNotCarriedIntoIt) {
+  Harness h;
+  h.Run(10);
+  PoisonReference(h, kRight);
+  h.Run(5);
+  ASSERT_TRUE(h.ctrl->HasLatchedFault());
+  // A request no tick consumed, then a new activation: nobody asked THIS
+  // activation to release the latch.
+  h.ctrl->ResetFault();
+  ASSERT_EQ(h.ctrl->on_activate(rclcpp_lifecycle::State()),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  h.Run(5);
+  EXPECT_TRUE(h.ctrl->HasLatchedFault()) << "a reset from before the activation released the latch";
+  EXPECT_FALSE(h.ctrl->LastTick().clik_ran);
+
+  // The control: a request made in this activation is taken on the next tick.
+  h.ctrl->ResetFault();
+  (void)h.Tick();
+  EXPECT_FALSE(h.ctrl->HasLatchedFault());
+  EXPECT_TRUE(h.ctrl->LastTick().converged);
+}
+
+TEST(DualArmReadability, TheGoalColumnsOfASilencedRowStillSayWhatWasAskedFor) {
+  // The device-state log reads the goal columns over the DEVICE's width, also
+  // on a tick whose command was withheld; left unwritten they read "goal = 0".
+  Harness h;
+  h.Run(5);
+  std::vector<double> posture = kBodyQ;
+  posture[kLeftElbow] += 0.1;
+  const std::vector<double> hand_goal = {0.8, 0.1, 0.6, 0.9};
+  h.ctrl->SetDeviceTarget(0, posture);
+  h.ctrl->SetDeviceTarget(1, hand_goal);
+  h.Run(3);
+  h.body_valid = false;
+  h.hand_valid = false;
+  for (int i = 0; i < 5; ++i) {
+    (void)h.Tick();
+    ASSERT_EQ(h.out.devices[0].num_channels, 0);
+    ASSERT_EQ(h.out.devices[1].num_channels, 0);
+    for (int j = 0; j < kBodyDof; ++j) {
+      EXPECT_DOUBLE_EQ(h.out.devices[0].goal_positions[static_cast<std::size_t>(j)],
+                       posture[static_cast<std::size_t>(j)])
+          << "body joint " << j;
+    }
+    for (int j = 0; j < kHandDof; ++j) {
+      EXPECT_DOUBLE_EQ(h.out.devices[1].goal_positions[static_cast<std::size_t>(j)],
+                       hand_goal[static_cast<std::size_t>(j)])
+          << "hand joint " << j;
+    }
+  }
+}
+
+TEST(DualArmReference, ThePeakSpeedCapHoldsOnAScrewPath) {
+  // The trajectory interpolates along the screw from the reference to the
+  // goal, and with a large rotation the origin's path is longer than the
+  // straight line between the two. The cap is on the speed along the path.
+  Harness h;
+  (void)h.Tick();
+  auto gains = h.ctrl->GetGains();
+  gains.linear_speed = 100.0;  // so that the caps, not the speeds, set the duration
+  gains.angular_speed = 100.0;
+  h.ctrl->SetGains(gains);
+  (void)h.Tick();
+
+  auto& task = DualArmTestAccess::Tasks(*h.ctrl)[kRight];
+  const pinocchio::SE3 start = task.ref_pose;
+  const pinocchio::SE3 step(Eigen::AngleAxisd(2.8, Eigen::Vector3d::UnitZ()).toRotationMatrix(),
+                            Eigen::Vector3d(2.0, 0.0, 0.0));
+  const pinocchio::SE3 goal_pose = start.act(step);
+  TaskGoal goal;
+  goal.pose = TaskGoalMsg(goal_pose).task_target;
+  goal.sequence = 1;
+  ASSERT_TRUE(DualArmTestAccess::ApplyTaskGoal(*h.ctrl, kRight, goal));
+
+  double peak_lin = 0.0;
+  double peak_ang = 0.0;
+  pinocchio::SE3 prev = task.ref_pose;
+  for (int i = 0; i < 100000 && task.traj_active; ++i) {
+    DualArmTestAccess::AdvanceReference(*h.ctrl, kRight, kDt);
+    peak_lin = std::max(peak_lin, PositionGap(prev, task.ref_pose) / kDt);
+    peak_ang = std::max(peak_ang, RotationGap(prev, task.ref_pose) / kDt);
+    // The feed-forward the solve is handed is the same motion.
+    EXPECT_LE(task.twist_ff.head<3>().norm(), 0.5 * (1.0 + 1e-9));
+    prev = task.ref_pose;
+  }
+  ASSERT_FALSE(task.traj_active);
+  EXPECT_LE(PositionGap(task.ref_pose, goal_pose), 1e-9);
+  RecordProperty("screw_peak_linear_speed", Sci(peak_lin));
+  RecordProperty("screw_peak_angular_speed", Sci(peak_ang));
+  EXPECT_LE(peak_lin, 0.5 * (1.0 + 1e-3)) << "linear_speed_max is 0.5 m/s in the rig";
+  EXPECT_GE(peak_lin, 0.5 * 0.98) << "the cap is the binding term here, so it is reached";
+  EXPECT_LE(peak_ang, 1.0 * (1.0 + 1e-3));
+}
+
 // ── Lifecycle on a real node ────────────────────────────────────────────────
 
 class DualArmLifecycle : public ::testing::Test {
@@ -1449,7 +1683,16 @@ TEST_F(DualArmLifecycle, ConfiguresItsTopicsAndRefusesAnUnresolvedFrame) {
 
   // A cleanup → configure cycle comes up again (fresh cache, fresh slots).
   EXPECT_EQ(ctrl->on_cleanup(rclcpp_lifecycle::State()), Ret::SUCCESS);
+  // While cleaned up nothing checks a set: the value is judged at the next
+  // configure, and the node must not go on showing what was refused.
+  EXPECT_TRUE(
+      node->set_parameter(rclcpp::Parameter("tasks.right_hand.gain_linear", 9999.0)).successful);
   EXPECT_EQ(Configure(*ctrl, node, {}), Ret::SUCCESS);
+  EXPECT_DOUBLE_EQ(ctrl->GetGains().task_gain_linear[kRight], 10.0);
+  EXPECT_DOUBLE_EQ(node->get_parameter("tasks.right_hand.gain_linear").as_double(), 10.0);
+  // A value that passed its check stays across the cycle, as in the other
+  // controllers of this package.
+  EXPECT_DOUBLE_EQ(ctrl->GetGains().posture_gain[0], 0.5);
   EXPECT_EQ(DualArmTestAccess::Topics(*ctrl).task_goal_subs.size(), 2U);
   EXPECT_EQ(static_cast<std::size_t>(DualArmTestAccess::Topics(*ctrl).num_tf_slots), want.size());
 }

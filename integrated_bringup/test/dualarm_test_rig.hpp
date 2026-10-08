@@ -304,6 +304,8 @@ struct Harness {
   std::unique_ptr<DemoDualArmController> ctrl;
   std::vector<double> body_q = kBodyQ;  ///< what the servo is at (the next measurement)
   std::vector<double> hand_q = kHandQ;
+  /// The hand's reported joint velocities (the plant model has none of its own).
+  std::vector<double> hand_qd = std::vector<double>(static_cast<std::size_t>(kHandDof), 0.0);
   /// Added to the body measurement (NOT to the plant): what makes "the
   /// measurement" and "the last command" different numbers.
   std::vector<double> body_offset = std::vector<double>(static_cast<std::size_t>(kBodyDof), 0.0);
@@ -336,6 +338,7 @@ struct Harness {
     dev1.num_channels = kHandDof;
     for (std::size_t i = 0; i < hand_q.size(); ++i) {
       dev1.positions[i] = hand_q[i];
+      dev1.velocities[i] = hand_qd[i];
     }
   }
 

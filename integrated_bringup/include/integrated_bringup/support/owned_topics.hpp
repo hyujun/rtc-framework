@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -128,9 +129,15 @@ struct TaskGoalIngress {
 /// (sequence, `generation`) and Store, or count the refusal. Returns the
 /// verdict so the caller can log it. Exposed so a test can drive the ingress
 /// without a node.
-TaskGoalReject DeliverTaskGoal(const rtc_msgs::msg::RobotTarget& msg,
-                               std::span<const std::string> frame_names, std::uint32_t generation,
-                               TaskGoalIngress& ingress) noexcept;
+[[nodiscard]] TaskGoalReject DeliverTaskGoal(const rtc_msgs::msg::RobotTarget& msg,
+                                             std::span<const std::string> frame_names,
+                                             std::uint32_t generation,
+                                             TaskGoalIngress& ingress) noexcept;
+
+/// True for `[A-Za-z][A-Za-z0-9_]*`: a name that can be one token of a topic
+/// (and of a parameter name). One definition for the config parser and the
+/// subscription helper, which both have to refuse the same names.
+[[nodiscard]] bool IsTopicToken(std::string_view name) noexcept;
 
 /// One task to subscribe for: the topic is `<name>/task_goal`.
 struct TaskGoalSubscriptionRequest {

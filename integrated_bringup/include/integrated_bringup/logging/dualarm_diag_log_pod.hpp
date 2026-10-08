@@ -56,6 +56,9 @@ struct DualArmDiagLogPod {
     kNone = 0,
     kQpFailStreak,  ///< `fault.max_qp_fail_ticks` consecutive failed solves
     kTrackError,    ///< max |q_meas − q_cmd| over `fault.track_err_max`
+    /// A seed found a body joint outside the solve's position box by more than
+    /// one tick at its speed limit: the solve is not started from there.
+    kSeedOutsideBox,
   };
 
   /// Why the RT tick dropped a task goal the ingress had accepted.

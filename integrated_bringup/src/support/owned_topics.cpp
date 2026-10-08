@@ -156,6 +156,13 @@ const char* TaskGoalRejectName(TaskGoalReject reason) noexcept {
   return "unknown";
 }
 
+bool IsTopicToken(std::string_view name) noexcept {
+  return !name.empty() && std::isalpha(static_cast<unsigned char>(name[0])) != 0 &&
+         std::all_of(name.begin(), name.end(), [](char c) {
+           return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+         });
+}
+
 TaskGoalReject ParseTaskGoal(const rtc_msgs::msg::RobotTarget& msg,
                              std::span<const std::string> frame_names, TaskGoal& out) noexcept {
   if (msg.goal_type != "task") {
@@ -223,12 +230,7 @@ void CreateTaskGoalSubscriptions(rtc::RTControllerInterface& ctrl, ControllerTop
     }
     // A task name becomes a topic token. Checked here rather than left to
     // rclcpp, whose own error does not say which config key produced the name.
-    const bool token_ok = !request.name.empty() &&
-                          (std::isalpha(static_cast<unsigned char>(request.name[0])) != 0) &&
-                          std::all_of(request.name.begin(), request.name.end(), [](char c) {
-                            return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-                          });
-    if (!token_ok) {
+    if (!IsTopicToken(request.name)) {
       throw std::runtime_error("CreateTaskGoalSubscriptions: task name '" + request.name +
                                "' is not a valid topic token ([A-Za-z][A-Za-z0-9_]*)");
     }

@@ -144,6 +144,12 @@ void DemoDualArmController::ResetLogState() noexcept {
 }
 
 CallbackReturn DemoDualArmController::on_activate(const rclcpp_lifecycle::State& prev) noexcept {
+  // A fault reset no tick consumed dies here: carried across, the first tick
+  // of this activation would release a latch nobody re-authorised in it.
+  // Stored before the generation moves, so the tick that sees the activation
+  // also sees this.
+  fault_reset_floor_.store(fault_reset_epoch_.load(std::memory_order_acquire),
+                           std::memory_order_release);
   // The base first: it bumps the activation generation, which is what makes
   // the first tick re-seed its command from the measurement and drop every
   // goal that was sent while the controller was Inactive.

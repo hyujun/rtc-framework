@@ -45,7 +45,12 @@
 //     them in a row raise a controller-local fault latch, which holds the last
 //     command, refuses goals and leaves only through /rtc_cm/reset_fault;
 //   - an unreadable body device freezes the solve and the references and
-//     silences the group; an unreadable hand device silences the hand only.
+//     silences the group; an unreadable hand device silences the hand only —
+//     the solve goes on, evaluated at the hand's last finite configuration;
+//   - a seed that finds a body joint outside the solve's position box (the
+//     device range less `clik.limit_margin`) by more than one tick at that
+//     joint's speed limit raises the fault latch instead of starting the solve
+//     there. Within that distance the command starts on the box edge.
 
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/dualarm_diag_log_pod.hpp"
@@ -101,6 +106,10 @@ inline constexpr std::size_t kDualArmMaxTasks = DualArmDiagLogPod::kMaxTasks;
 inline constexpr std::size_t kDualArmMaxPostureGroups = 8;
 inline constexpr std::size_t kDualArmMaxTargetFrames = 8;
 inline constexpr std::size_t kDualArmMaxFingertips = 4;
+/// Floor of a trajectory speed (NUM-4): a speed divides a distance. One value
+/// for the three places that apply it — the YAML, the parameter callback and
+/// the tick, which is not reached through the other two alone.
+inline constexpr double kDualArmMinSpeed = 1e-6;
 
 /// The controller's YAML, parsed and range-checked. Pure data: nothing here
 /// has met a model or a device yet.
@@ -233,7 +242,8 @@ class DemoDualArmController final : public rtc::RTControllerInterface {
 
   /// What the `<task>/task_goal` subscription does with a message — the same
   /// body, callable without a node. Returns the ingress verdict.
-  TaskGoalReject DeliverTaskGoal(std::size_t task, const rtc_msgs::msg::RobotTarget& msg) noexcept;
+  [[nodiscard]] TaskGoalReject DeliverTaskGoal(std::size_t task,
+                                               const rtc_msgs::msg::RobotTarget& msg) noexcept;
 
   [[nodiscard]] std::uint32_t GroupGoalRejectCount() const noexcept {
     return group_goal_rejects_.load(std::memory_order_relaxed);
@@ -304,7 +314,8 @@ class DemoDualArmController final : public rtc::RTControllerInterface {
 
   // ── RT tick steps ────────────────────────────────────────────────────────
   void ServiceRequests() noexcept;
-  void Reseed(const rtc::ControllerState& state) noexcept;
+  void UpdateMeasuredState() noexcept;
+  void Reseed(const rtc::ControllerState& state, double dt) noexcept;
   void UpdateEvalCache() noexcept;
   void ConsumeTaskGoals(bool apply) noexcept;
   [[nodiscard]] bool ApplyTaskGoal(std::size_t k, const TaskGoal& goal) noexcept;
@@ -340,11 +351,17 @@ class DemoDualArmController final : public rtc::RTControllerInterface {
   std::array<TaskRt, kDualArmMaxTasks> tasks_{};
   std::vector<std::string> target_frame_names_;
   std::array<int, kDualArmMaxTargetFrames> target_frame_idx_{};
+  /// [nq] / [nv] the measured state as this controller reads it: a group that
+  /// is not readable this tick keeps its last readable positions (and reads
+  /// as at rest), so a non-finite reading never reaches the model.
+  Eigen::VectorXd q_meas_;
+  Eigen::VectorXd v_meas_;
   Eigen::VectorXd q_eval_;         ///< [nq] the state the solve is evaluated at
   Eigen::VectorXd v_eval_;         ///< [nv]
   Eigen::VectorXd q_posture_des_;  ///< [nq] posture target
   std::array<double, kDualArmMaxBodyDof> body_q_min_{};  ///< margined box, device order
   std::array<double, kDualArmMaxBodyDof> body_q_max_{};
+  std::array<double, kDualArmMaxBodyDof> body_v_max_{};  ///< [rad/s] the solve's velocity box
   std::array<double, kDualArmMaxHandDof> hand_q_min_{};  ///< device limits
   std::array<double, kDualArmMaxHandDof> hand_q_max_{};
   std::vector<std::string> body_joint_names_;
@@ -402,6 +419,9 @@ class DemoDualArmController final : public rtc::RTControllerInterface {
   std::atomic<bool> estop_requested_{false};
   std::atomic<std::uint32_t> estop_epoch_{0};
   std::atomic<std::uint32_t> fault_reset_epoch_{0};
+  /// The reset epoch as on_activate found it: requests up to it were made
+  /// before this activation and are not carried into it.
+  std::atomic<std::uint32_t> fault_reset_floor_{0};
   std::atomic<bool> fault_latched_{false};
   std::atomic<std::uint32_t> group_goal_rejects_{0};
 

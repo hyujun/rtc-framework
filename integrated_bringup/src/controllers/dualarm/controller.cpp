@@ -13,7 +13,6 @@
 #include <rclcpp/logging.hpp>
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <exception>
 #include <set>
@@ -30,8 +29,6 @@ constexpr const char* kKey = "demo_dualarm_controller";
 /// variables of the solve (the task frames may hang off them) that this
 /// controller does not command through it.
 constexpr double kLockedJointVelocity = 1e-9;
-/// Floor of a trajectory speed (NUM-4): a speed is a divisor.
-constexpr double kMinSpeed = 1e-6;
 
 [[noreturn]] void Fail(const std::string& what) {
   throw std::runtime_error(std::string(kKey) + ": " + what);
@@ -72,13 +69,6 @@ std::string RequireString(const YAML::Node& parent, const char* key, const std::
     Fail("'" + where + key + "' is not a string");
   }
   return value;
-}
-
-bool IsTopicToken(const std::string& name) {
-  return !name.empty() && std::isalpha(static_cast<unsigned char>(name[0])) != 0 &&
-         std::all_of(name.begin(), name.end(), [](char c) {
-           return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-         });
 }
 
 void RequireRange(bool ok, const std::string& key, const char* rule) {
@@ -264,7 +254,7 @@ DualArmConfig ParseDualArmConfig(const YAML::Node& cfg) {
     const auto speed = [&traj](const char* key) {
       const double value = RequireDouble(traj, key, "trajectory.");
       RequireRange(value > 0.0, std::string("trajectory.") + key, "> 0");
-      return std::max(kMinSpeed, value);
+      return std::max(kDualArmMinSpeed, value);
     };
     out.linear_speed = speed("linear_speed");
     out.angular_speed = speed("angular_speed");
@@ -494,6 +484,8 @@ std::string DemoDualArmController::SetupModel() {
     return "control model has " + std::to_string(model.nv) + " joints, the device groups drive " +
            std::to_string(full_dof_);
   }
+  q_meas_ = Eigen::VectorXd::Zero(model.nq);
+  v_meas_ = Eigen::VectorXd::Zero(model.nv);
   q_eval_ = Eigen::VectorXd::Zero(model.nq);
   v_eval_ = Eigen::VectorXd::Zero(model.nv);
   q_posture_des_ = Eigen::VectorXd::Zero(model.nq);
@@ -688,6 +680,7 @@ std::string DemoDualArmController::SetupClik() {
         cfg.tau_max[pv] = cfg_.eta_tau * tau;
         body_q_min_[i] = lo;
         body_q_max_[i] = hi;
+        body_v_max_[i] = cfg.v_limit_per_joint[pv];
       } else {
         // No margin on the hand: its joints rest ON a limit, and a margin
         // would put the resting pose outside the box on every tick.
@@ -846,6 +839,8 @@ TaskGoalReject DemoDualArmController::DeliverTaskGoal(
 // true); none of these reads it.
 
 void DemoDualArmController::TriggerEstop() noexcept {
+  // The flag FIRST: the flag alone stops the solve, so no tick that could have
+  // seen the request runs one.
   estop_requested_.store(true, std::memory_order_release);
   // The epoch moves on the trigger as well as on the clear: a trigger → clear
   // pair landing between two ticks leaves the flag false, and without the
@@ -854,8 +849,13 @@ void DemoDualArmController::TriggerEstop() noexcept {
 }
 
 void DemoDualArmController::ClearEstop() noexcept {
-  estop_requested_.store(false, std::memory_order_release);
+  // The epoch FIRST, the reverse of TriggerEstop. A tick that lands between
+  // the two stores then reads "still stopped, and an edge is pending" and
+  // re-seeds once, on the tick that reads the flag down. With the flag first
+  // it would re-seed on that tick, take a goal, and re-seed again on the next
+  // one when the epoch arrived — dropping the goal with no counter moved.
   estop_epoch_.fetch_add(1, std::memory_order_release);
+  estop_requested_.store(false, std::memory_order_release);
   // fault_latched_ is NOT cleared here: a global clear must not release a
   // controller fault.
 }

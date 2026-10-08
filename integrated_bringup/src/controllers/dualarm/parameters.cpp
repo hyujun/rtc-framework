@@ -30,8 +30,6 @@ namespace integrated_bringup {
 
 namespace {
 
-constexpr double kMinSpeed = 1e-6;
-
 std::string TaskParam(const std::string& task, const char* field) {
   return "tasks." + task + "." + field;
 }
@@ -62,21 +60,47 @@ void DemoDualArmController::DeclareParameters() {
     }
     return node_->get_parameter(name).as_double();
   };
-  const auto gain_or_seed = [this, k_max](const std::string& name, double value, double seed) {
+  // A refused value is also written back, so that the node does not go on
+  // showing a number the controller is not running. (The set callback is not
+  // registered yet: nothing judges this write but rclcpp.)
+  const auto write_back = [this](const std::string& name, double seed) {
+    if (!node_->set_parameter(rclcpp::Parameter(name, seed)).successful) {
+      RCLCPP_WARN(logger_, "parameter '%s' could not be set back to the configured %g",
+                  name.c_str(), seed);
+    }
+  };
+  const auto gain_or_seed = [this, k_max, &write_back](const std::string& name, double value,
+                                                       double seed) {
     if (std::isfinite(value) && value >= 0.0 && value <= k_max) {
       return value;
     }
     RCLCPP_WARN(logger_, "parameter '%s' = %g is outside [0, %g]; keeping the configured %g",
                 name.c_str(), value, k_max, seed);
+    write_back(name, seed);
     return seed;
   };
-  const auto speed_or_seed = [this](const std::string& name, double value, double seed) {
+  const auto speed_or_seed = [this, &write_back](const std::string& name, double value,
+                                                 double seed) {
     if (std::isfinite(value)) {
-      return std::max(kMinSpeed, value);
+      return std::max(kDualArmMinSpeed, value);
     }
     RCLCPP_WARN(logger_, "parameter '%s' is not finite; keeping the configured %g", name.c_str(),
                 seed);
+    write_back(name, seed);
     return seed;
+  };
+  // A read-only parameter cannot be re-declared or set, so on a re-configure
+  // it keeps what the first configure declared. Say so when the configuration
+  // has moved: the tick runs the configured value, not the one the node shows.
+  const auto declare_cap = [this, &declare](const std::string& name, double configured,
+                                            const std::string& description) {
+    const double shown = declare(name, configured, description, /*read_only=*/true);
+    if (shown != configured) {
+      RCLCPP_WARN(logger_,
+                  "read-only parameter '%s' shows %g from an earlier configure; the controller "
+                  "runs the configured %g",
+                  name.c_str(), shown, configured);
+    }
   };
 
   for (std::size_t k = 0; k < cfg_.tasks.size(); ++k) {
@@ -110,15 +134,12 @@ void DemoDualArmController::DeclareParameters() {
       declare("trajectory.hand_speed", gains.hand_speed, "Hand joint trajectory speed [rad/s]"),
       cfg_.hand_speed);
 
-  (void)declare("trajectory.linear_speed_max", cfg_.linear_speed_max,
-                "Peak translation speed a task trajectory may reach [m/s] (read-only)",
-                /*read_only=*/true);
-  (void)declare("trajectory.angular_speed_max", cfg_.angular_speed_max,
-                "Peak rotation speed a task trajectory may reach [rad/s] (read-only)",
-                /*read_only=*/true);
-  (void)declare("trajectory.hand_speed_max", cfg_.hand_speed_max,
-                "Peak joint speed a hand trajectory may reach [rad/s] (read-only)",
-                /*read_only=*/true);
+  declare_cap("trajectory.linear_speed_max", cfg_.linear_speed_max,
+              "Peak translation speed a task trajectory may reach [m/s] (read-only)");
+  declare_cap("trajectory.angular_speed_max", cfg_.angular_speed_max,
+              "Peak rotation speed a task trajectory may reach [rad/s] (read-only)");
+  declare_cap("trajectory.hand_speed_max", cfg_.hand_speed_max,
+              "Peak joint speed a hand trajectory may reach [rad/s] (read-only)");
 
   gains_lock_.Store(gains);
 }
@@ -176,7 +197,7 @@ rcl_interfaces::msg::SetParametersResult DemoDualArmController::OnParametersSet(
         }
         *gain = value;
       } else {
-        *speed = std::max(kMinSpeed, value);
+        *speed = std::max(kDualArmMinSpeed, value);
       }
       dirty = true;
     }

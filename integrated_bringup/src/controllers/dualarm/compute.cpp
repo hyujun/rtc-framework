@@ -6,6 +6,7 @@
 
 #include "integrated_bringup/controllers/demo_dualarm_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "integrated_bringup/support/bringup_logging.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_math/se3/so3.hpp"
 #include "rtc_tsid/kinematics/se3_error.hpp"
@@ -18,7 +19,10 @@
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/math/rpy.hpp>
+#include <pinocchio/spatial/explog.hpp>
 #pragma GCC diagnostic pop
+
+#include <rclcpp/logging.hpp>
 
 #include <Eigen/Geometry>
 
@@ -35,9 +39,6 @@ using rtc::ControllerState;
 using Hold = DualArmDiagLogPod::Hold;
 using GoalDrop = DualArmDiagLogPod::GoalDrop;
 
-/// Floor of a trajectory speed at the point of use (NUM-4): a speed divides a
-/// distance, and the parameter path is not the only writer of the gains.
-constexpr double kMinSpeed = 1e-6;
 /// Shortest trajectory: a goal on top of the current reference still gets a
 /// well-conditioned polynomial.
 constexpr double kMinDuration = 0.01;
@@ -48,12 +49,17 @@ constexpr double kQuinticPeakRatio = 15.0 / 8.0;
 /// the path — not just the result — would be decided by rounding.
 constexpr double kNearPiMargin = 0.15;
 
-/// True when the first `n` positions are finite. The readability gate judges
-/// width and freshness, not values, and a non-finite measurement that became
-/// the command seed would stay in the command until the next seed.
-[[nodiscard]] bool PositionsFinite(const rtc::DeviceState& dev, int n) noexcept {
+/// True when the first `n` positions — and, where this controller reads them,
+/// velocities — are finite. The readability gate judges width and freshness,
+/// not values: a non-finite position that became the command seed would stay
+/// in the command until the next seed, and a non-finite entry of the state the
+/// model is evaluated at makes every row of the solve non-finite.
+[[nodiscard]] bool ReadingFinite(const rtc::DeviceState& dev, int n,
+                                 bool with_velocities) noexcept {
   for (int i = 0; i < n; ++i) {
-    if (!std::isfinite(dev.positions[static_cast<std::size_t>(i)])) {
+    const auto ui = static_cast<std::size_t>(i);
+    if (!std::isfinite(dev.positions[ui]) ||
+        (with_velocities && !std::isfinite(dev.velocities[ui]))) {
       return false;
     }
   }
@@ -96,7 +102,10 @@ void DemoDualArmController::ServiceRequests() noexcept {
     need_reseed_ = true;
     hand_seeded_ = false;
     // The fault latch is NOT dropped: a deactivate / activate cycle is not the
-    // reset service, and must not pass for one.
+    // reset service, and must not pass for one. Neither is a reset request
+    // from before the activation — it was made to a controller that was not
+    // ticking, and the manager has told its caller it is not queued.
+    serviced_fault_reset_epoch_ = fault_reset_floor_.load(std::memory_order_acquire);
   }
 
   // The fault reset, BEFORE the E-STOP edge below: the manager's reset service
@@ -130,13 +139,39 @@ void DemoDualArmController::ServiceRequests() noexcept {
 
 // ── Seeding and the evaluation state ────────────────────────────────────────
 
+void DemoDualArmController::UpdateMeasuredState() noexcept {
+  // The shared cache takes every value a device reports, finite or not. What
+  // the kinematics and the solve read is this copy, which a group only writes
+  // on a tick it is readable on: an unreadable group keeps its last readable
+  // configuration and reads as at rest. (Before its first reading that is the
+  // zero configuration — finite, and the hand is locked in the solve.)
+  const Eigen::VectorXd& q = combined_cache_->q();
+  const Eigen::VectorXd& v = combined_cache_->v();
+  if (body_readable_) {
+    for (int i = 0; i < body_dof_; ++i) {
+      const int pq = combined_cache_->ext_to_pin_q(i);
+      q_meas_[pq] = q[pq];
+    }
+  }
+  for (int j = 0; j < hand_dof_; ++j) {
+    const int pq = combined_cache_->ext_to_pin_q(body_dof_ + j);
+    const int pv = combined_cache_->ext_to_pin_v(body_dof_ + j);
+    if (hand_readable_) {
+      q_meas_[pq] = q[pq];
+      v_meas_[pv] = v[pv];
+    } else {
+      v_meas_[pv] = 0.0;
+    }
+  }
+}
+
 void DemoDualArmController::UpdateEvalCache() noexcept {
   // The solve is configured to evaluate at the COMMAND state: the cache it
   // reads carries this controller's own command on the body joints. The hand
   // entries stay measured — the hand is commanded in joint space, and the
   // solve does not check them.
-  q_eval_ = combined_cache_->q();
-  v_eval_ = combined_cache_->v();
+  q_eval_ = q_meas_;
+  v_eval_ = v_meas_;
   for (int i = 0; i < body_dof_; ++i) {
     const auto ui = static_cast<std::size_t>(i);
     q_eval_[combined_cache_->ext_to_pin_q(i)] = q_cmd_[ui];
@@ -145,11 +180,32 @@ void DemoDualArmController::UpdateEvalCache() noexcept {
   combined_cache_->cache().Update(q_eval_, v_eval_);
 }
 
-void DemoDualArmController::Reseed(const ControllerState& state) noexcept {
+void DemoDualArmController::Reseed(const ControllerState& state, double dt) noexcept {
   const auto& dev = state.devices[kDualArmBodyDeviceIdx];
+  // The solve is evaluated at this command, inside a position box narrower
+  // than the device range (clik.limit_margin). A joint that something else
+  // left in that band would start the solve outside its own box, which the
+  // core answers by collapsing the joint's velocity box onto a full-speed
+  // return — from rest, in one tick. So the seed is judged first:
+  //   - past the box by no more than one tick at the joint's speed limit (a
+  //     joint the solve itself left on the edge, read a servo error beyond
+  //     it): the command starts ON the edge, a change no larger than the solve
+  //     may command in a tick;
+  //   - further: no solve from here. The command holds the measurement and the
+  //     fault latch says why; the joint has to be moved inside by other means.
+  int outside = -1;
+  for (int i = 0; i < body_dof_ && outside < 0; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double slack = body_v_max_[ui] * dt;
+    if (!(dev.positions[ui] >= body_q_min_[ui] - slack &&
+          dev.positions[ui] <= body_q_max_[ui] + slack)) {
+      outside = i;
+    }
+  }
   for (int i = 0; i < body_dof_; ++i) {
     const auto ui = static_cast<std::size_t>(i);
-    q_cmd_[ui] = dev.positions[ui];
+    q_cmd_[ui] = outside < 0 ? std::clamp(dev.positions[ui], body_q_min_[ui], body_q_max_[ui])
+                             : dev.positions[ui];
     qd_cmd_[ui] = 0.0;
   }
   // The anchor and the previous velocity go with the command: a carried-over
@@ -178,6 +234,17 @@ void DemoDualArmController::Reseed(const ControllerState& state) noexcept {
   seeded_ = true;
   need_reseed_ = false;
   reseeded_this_tick_ = true;
+
+  if (outside >= 0) {
+    const auto ui = static_cast<std::size_t>(outside);
+    LatchFault(DualArmDiagLogPod::FaultCause::kSeedOutsideBox);
+    // One line per latch, not per tick: this branch is only reached by a seed.
+    RCLCPP_ERROR_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
+                          "[dualarm] body joint %d is at %.4f rad, outside the solve's box "
+                          "[%.4f, %.4f] — not solving from there (move it inside, then "
+                          "/rtc_cm/reset_fault)",
+                          outside, dev.positions[ui], body_q_min_[ui], body_q_max_[ui]);
+  }
 }
 
 // ── Goals and references ────────────────────────────────────────────────────
@@ -244,16 +311,24 @@ bool DemoDualArmController::ApplyTaskGoal(std::size_t k, const TaskGoal& goal) n
   if (!(angle <= std::numbers::pi - kNearPiMargin)) {
     return false;  // also a non-finite angle
   }
-  const double distance = (in_base.translation() - start.translation()).norm();
-  const double v_lin = std::max(kMinSpeed, gains_tick_.linear_speed);
-  const double v_ang = std::max(kMinSpeed, gains_tick_.angular_speed);
+  // The length of the path the reference's origin travels. The trajectory
+  // interpolates along the screw from start to goal, so that is the linear
+  // part of log6 — up to (θ/2)/sin(θ/2) times the straight-line distance, and
+  // what both the speed and its cap have to be measured on.
+  const double distance = pinocchio::log6(start.actInv(in_base)).linear().norm();
+  // Every component of a goal is finite at the ingress, but a finite pose far
+  // enough away overflows here. Checked before std::max, which would drop a
+  // NaN operand and return a finite duration.
+  if (!std::isfinite(distance) || !in_base.translation().allFinite()) {
+    return false;
+  }
+  const double v_lin = std::max(kDualArmMinSpeed, gains_tick_.linear_speed);
+  const double v_ang = std::max(kDualArmMinSpeed, gains_tick_.angular_speed);
   const double duration = std::max({kMinDuration, distance / v_lin, angle / v_ang,
                                     kQuinticPeakRatio * distance / cfg_.linear_speed_max,
                                     kQuinticPeakRatio * angle / cfg_.angular_speed_max});
-  // Every component of a goal is finite at the ingress, but a finite pose far
-  // enough away overflows the distance, and an infinite duration turns the
-  // polynomial's coefficients into NaN.
-  if (!std::isfinite(duration) || !in_base.translation().allFinite()) {
+  // An infinite duration turns the polynomial's coefficients into NaN.
+  if (!std::isfinite(duration)) {
     return false;
   }
   task.traj.initialize(start, pinocchio::Motion::Zero(), in_base, pinocchio::Motion::Zero(),
@@ -405,13 +480,14 @@ void DemoDualArmController::RunHandLane(const ControllerState& state, double dt)
   if (hand_dof_ <= 0 || state.num_devices <= kDualArmHandDeviceIdx) {
     return;
   }
-  if (estop_active_ || !hand_readable_ || fault_latched_.load(std::memory_order_relaxed)) {
-    // Frozen. After a stop or a fault reset the seed is retaken
-    // (ServiceRequests); under a latched fault the last command is held, the
-    // hand's as well as the body's.
+  if (estop_active_ || !hand_readable_) {
+    // Frozen. After a stop the seed is retaken (ServiceRequests).
     return;
   }
   const auto& dev = state.devices[kDualArmHandDeviceIdx];
+  // The seed comes BEFORE the fault check, as the body's does: an activation
+  // or an E-STOP edge under a latched fault asks for a new seed, and a hand
+  // left unseeded until the reset would be silenced, not held.
   if (!hand_seeded_) {
     for (int i = 0; i < hand_dof_; ++i) {
       const auto ui = static_cast<std::size_t>(i);
@@ -423,7 +499,9 @@ void DemoDualArmController::RunHandLane(const ControllerState& state, double dt)
     hand_seeded_ = true;
     return;
   }
-  if (!hand_traj_active_) {
+  if (!hand_traj_active_ || fault_latched_.load(std::memory_order_relaxed)) {
+    // Nothing under way, or a latched fault: the last command is held, the
+    // hand's as well as the body's.
     return;
   }
   hand_traj_time_ += dt;
@@ -480,7 +558,7 @@ void DemoDualArmController::ApplyPendingTarget(int device_idx, std::span<const d
     goal.positions[ui] = hand_goal_[ui];
     max_distance = std::max(max_distance, std::abs(hand_goal_[ui] - start.positions[ui]));
   }
-  const double speed = std::max(kMinSpeed, gains_tick_.hand_speed);
+  const double speed = std::max(kDualArmMinSpeed, gains_tick_.hand_speed);
   const double duration = std::max(
       {kMinDuration, max_distance / speed, kQuinticPeakRatio * max_distance / cfg_.hand_speed_max});
   hand_traj_.initialize(start, goal, duration);
@@ -505,7 +583,7 @@ void DemoDualArmController::UpdateMeasuredKinematics(const ControllerState& stat
   // names, so it has to be what the robot did, not what it was told.
   const pinocchio::Model& model = *combined_cache_->model();
   pinocchio::Data& data = *meas_data_;
-  pinocchio::forwardKinematics(model, data, combined_cache_->q());
+  pinocchio::forwardKinematics(model, data, q_meas_);
   const pinocchio::SE3 world_from_root = pinocchio::updateFramePlacement(model, data, root_fid_);
 
   pinocchio::SE3 root_from_tip = pinocchio::SE3::Identity();
@@ -568,6 +646,14 @@ void DemoDualArmController::WriteBodyCommand(const ControllerState& state,
   const auto& dev = state.devices[kDualArmBodyDeviceIdx];
   auto& out = output.devices[kDualArmBodyDeviceIdx];
   out.goal_type = rtc::GoalType::kJoint;
+  // The goal survives the gate below: the log reads this lane over the
+  // DEVICE's width also on a tick whose command is withheld, and a posture
+  // target the operator set does not stop being the target then.
+  for (int i = 0; i < body_dof_; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    out.goal_positions[ui] =
+        seeded_ ? q_posture_des_[combined_cache_->ext_to_pin_q(i)] : dev.positions[ui];
+  }
   // Nothing honest to command: an unreadable device, or no command seeded yet.
   // Zero-length is "no update"; a full-width command would be a real one.
   if (!body_readable_ || (!estop_active_ && !seeded_)) {
@@ -586,8 +672,6 @@ void DemoDualArmController::WriteBodyCommand(const ControllerState& state,
     out.target_positions[ui] = out.commands[ui];
     out.trajectory_positions[ui] = out.commands[ui];
     out.trajectory_velocities[ui] = (estop_active_ || !clik_ran_this_tick_) ? 0.0 : qd_cmd_[ui];
-    out.goal_positions[ui] =
-        seeded_ ? q_posture_des_[combined_cache_->ext_to_pin_q(i)] : dev.positions[ui];
   }
   // Wire channels past the model's joints follow their own measurement.
   rtc::FillCommandTail(std::span<double>(out.commands), body_dof_, width,
@@ -602,6 +686,12 @@ void DemoDualArmController::WriteHandCommand(const ControllerState& state,
   const auto& dev = state.devices[kDualArmHandDeviceIdx];
   auto& out = output.devices[kDualArmHandDeviceIdx];
   out.goal_type = rtc::GoalType::kJoint;
+  // As on the body: the goal is written whether or not a command is.
+  const bool has_goal = hand_seeded_ && !estop_active_;
+  for (int i = 0; i < hand_dof_; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    out.goal_positions[ui] = has_goal ? hand_goal_[ui] : dev.positions[ui];
+  }
   if (!hand_readable_ || (!estop_active_ && !hand_seeded_)) {
     rtc::SilenceDeviceOutput(out);
     rtc::HoldTelemetryAtMeasured(out, dev.num_channels, std::span<const double>(dev.positions));
@@ -614,7 +704,6 @@ void DemoDualArmController::WriteHandCommand(const ControllerState& state,
     out.commands[ui] = estop_active_ ? dev.positions[ui] : hand_cmd_[ui];
     out.target_positions[ui] = out.commands[ui];
     out.trajectory_positions[ui] = out.commands[ui];
-    out.goal_positions[ui] = estop_active_ ? dev.positions[ui] : hand_goal_[ui];
   }
   rtc::FillCommandTail(std::span<double>(out.commands), hand_dof_, width,
                        rtc::CommandType::kPosition, std::span<const double>(dev.positions));
@@ -705,23 +794,27 @@ ControllerOutput DemoDualArmController::Compute(const ControllerState& state) no
   estop_active_ = estop_requested_.load(std::memory_order_acquire);
   body_readable_ = clik_ready_ && state.num_devices > kDualArmBodyDeviceIdx &&
                    rtc::IsDeviceReadable(state.devices[kDualArmBodyDeviceIdx], body_dof_) &&
-                   PositionsFinite(state.devices[kDualArmBodyDeviceIdx], body_dof_);
+                   ReadingFinite(state.devices[kDualArmBodyDeviceIdx], body_dof_,
+                                 /*with_velocities=*/false);
   hand_readable_ = clik_ready_ && hand_dof_ > 0 && state.num_devices > kDualArmHandDeviceIdx &&
                    rtc::IsDeviceReadable(state.devices[kDualArmHandDeviceIdx], hand_dof_) &&
-                   PositionsFinite(state.devices[kDualArmHandDeviceIdx], hand_dof_);
+                   ReadingFinite(state.devices[kDualArmHandDeviceIdx], hand_dof_,
+                                 /*with_velocities=*/true);
   gains_tick_ = gains_lock_.Load();
 
   ServiceRequests();
   if (clik_ready_) {
     // The measured state, once per tick (a no-op for a group that did not
     // report): the measured kinematics below read it, and the evaluation
-    // state takes its hand entries from it.
+    // state takes its hand entries from it — both through the copy that only
+    // a readable group writes.
     combined_cache_->ExtractFullState(state, body_dof_, hand_dof_);
+    UpdateMeasuredState();
     // The seed is retaken from the measurement as soon as there is one and no
     // stop is in force — also under a latched fault, whose held command would
     // otherwise still be the one from before a stop.
     if (need_reseed_ && !estop_active_ && body_readable_) {
-      Reseed(state);
+      Reseed(state, dt);
     }
   }
   const bool fault = fault_latched_.load(std::memory_order_relaxed);
