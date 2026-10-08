@@ -32,6 +32,7 @@
 // THE CLOCK steps on every read, and a call's FIRST read is the instant the
 // test names (SetClockAt): a solve's start, its age check and its lead are
 // then exact numbers, and the budget tests make the step large.
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controllers/catching/catch_pose_ik.hpp"
 #include "rtc_controllers/catching/catch_search.hpp"
@@ -43,7 +44,6 @@
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
-#include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
 
 #include <Eigen/Core>

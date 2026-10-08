@@ -31,6 +31,7 @@
 // THE CLOCK steps on every read. A wake's timing — how many solves fit, which
 // solve passes its deadline — is then a function of how many times the clock
 // was read, not of the host, and can be set by the step.
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/catching/catch_pose_ik.hpp"
 #include "rtc_controllers/catching/nlp_catch_screening.hpp"
 #include "rtc_controllers/catching/nlp_catch_search.hpp"
@@ -39,7 +40,6 @@
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/testing/catch_arm_fixture.hpp"
 #include "rtc_controllers/testing/grid_catch_search_fixture.hpp"
-#include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_docking_fixture.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 

@@ -57,11 +57,12 @@ rtc_base/
 
 rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 └── testing/
+    ├── malloc_gate.hpp            <- ScopedMallocGate: C malloc 계열 계수 (라이브러리 안 포함)
     ├── no_malloc_scope.hpp        <- ScopedNoMalloc: RT 경로 zero-allocation 게이트 (Eigen)
     └── wait_until.hpp             <- WaitUntil: sleep-poll 조건 대기 (형제 패키지 공용)
 ```
 
-> `test/include/` 아래 두 헤더는 **test 전용**이며 런타임 install 트리에 실리지 않는다
+> `test/include/` 아래 헤더는 **test 전용**이며 런타임 install 트리에 실리지 않는다
 > (`install(DIRECTORY include/ ...)` 만 돈다 — ament 의 symlink install 은
 > `install(PATTERN EXCLUDE)` 를 무시하므로 `include/` 에 두면 그대로 배포된다).
 > 형제 패키지는 소스 트리 경로 `../rtc_base/test/include` 로 소비한다.
@@ -70,6 +71,11 @@ rtc_base/test/include/rtc_base/   <- 설치되지 않음 (test 전용 surface)
 >   할당(RT-1)을 위반으로 기록한다. Eigen 은 rtc_base 의 **test_depend** 일 뿐 런타임
 >   라이브러리는 Eigen-free 로 유지된다. 사용 계약(모든 Eigen include 보다 먼저 include,
 >   Release/-DNDEBUG 에서도 fail-closed, 동일 TU 한정)은 헤더 상단 주석이 SSoT.
+> - `testing/malloc_gate.hpp` — 실행 파일이 `malloc` 계열을 **정의**해 glibc `__libc_*` 로
+>   넘기며 센다. 동적 링커가 실행 파일의 정의를 먼저 잡으므로 공유 라이브러리 (Pinocchio,
+>   QP solver) 안의 C 할당까지 보인다 — `no_malloc_scope.hpp` 와 `operator new` 카운터가 못
+>   보는 범위다. 계약 (바이너리당 TU 하나, glibc 전용, positive control 은 라이브러리 안의
+>   할당으로) 은 헤더 상단 주석이 SSoT. ASan 과 함께 쓸 수 없다 (docs/testing.md).
 > - `testing/wait_until.hpp` — 술어가 참이 될 때까지 sleep 하며 폴링한다 (기본 1 ms 간격,
 >   2 s 상한; 둘 다 인자로 조정 가능). 고정 sleep 을 동기화 수단으로 쓰는 flakiness 를
 >   대체한다. **오직 sleep 만 한다** — executor 를 돌리지 않으며, spin 이 필요한 대기는

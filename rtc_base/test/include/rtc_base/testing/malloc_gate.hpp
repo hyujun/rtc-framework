@@ -1,35 +1,37 @@
 // ── C-level heap-allocation gate (test-only) ──────────────────────────────────
-// alloc_gate.hpp counts global `operator new`; rtc_base's no_malloc_scope.hpp
-// trips on Eigen's allocator, but ONLY for Eigen code inlined into the TU that
-// defines the scope. Neither sees a C `malloc` made inside a library that was
-// compiled elsewhere — pinocchio's shared object (explicit template
-// instantiations), rtc_tsid's ProxQP wrapper, or this package's own static
-// library TUs (agent_docs/testing-debug.md §RT-1). A core whose RT path calls
-// into those libraries therefore needs THIS gate for an "allocates nothing"
-// claim to mean anything.
+// A global `operator new` counter sees only C++ allocations;
+// no_malloc_scope.hpp trips on Eigen's allocator, but ONLY for Eigen code
+// inlined into the TU that defines the scope. Neither sees a C `malloc` made
+// inside a library that was compiled elsewhere — a shared object with explicit
+// template instantiations (pinocchio), a QP solver wrapped in another package,
+// or the package's own static library TUs (agent_docs/testing-debug.md §RT-1).
+// A core whose RT path calls into those libraries therefore needs THIS gate for
+// an "allocates nothing" claim to mean anything.
 //
 // How: the test executable DEFINES malloc/free/calloc/realloc and the aligned
 // family. The dynamic linker resolves every shared object's malloc reference to
 // the first definition in the lookup scope, and the executable comes first — so
-// allocations inside libpinocchio / librtc_tsid / libstdc++ land here too. Each
-// replacement forwards to glibc's `__libc_*` entry point and counts while a
-// ScopedMallocGate is alive on the calling thread.
+// allocations inside libpinocchio, a sibling package's library or libstdc++
+// land here too. Each replacement forwards to glibc's `__libc_*` entry point
+// and counts while a ScopedMallocGate is alive on the calling thread.
 //
 // CONTRACT — read before use:
 //
 //  1. Include this header in EXACTLY ONE translation unit per test binary (it
 //     defines non-inline C functions; a second TU is a multiple-definition link
-//     error). Same rule as alloc_gate.hpp, and the two may share that TU.
+//     error). An operator-new gate follows the same rule, and the two may share
+//     that TU.
 //  2. glibc only: forwards to `__libc_malloc` & co. (exported by glibc ≥ 2.2.5).
 //     Covers malloc, calloc, realloc, memalign, aligned_alloc, posix_memalign,
 //     valloc and pvalloc — every public allocation entry point of glibc.
 //     Other C libraries are not supported and fail to link, not silently.
 //  3. Arm with ScopedMallocGate (RAII), never a bare flag — an ASSERT_* inside
-//     the measured region returns from the test (see alloc_gate.hpp item 3).
+//     the measured region returns from the test and would leave a bare flag
+//     armed.
 //  4. PROVE THE GATE FIRES before trusting a zero: the positive control must be
 //     an allocation made INSIDE a library (e.g. constructing pinocchio::Data),
-//     not one in the test TU, or it proves only what alloc_gate.hpp already
-//     proves.
+//     not one in the test TU, or it proves only what an operator-new counter
+//     already proves.
 //
 // `free` is not counted: releasing memory on the RT path is also an RT-1
 // violation, but every free pairs with a counted allocation in the same
@@ -37,10 +39,16 @@
 // report to one number.
 #pragma once
 
+// glibc declares the malloc family `noexcept` (__THROW), and so does GCC's
+// <mm_malloc.h>, which the SIMD headers pull in. The replacements below carry
+// the same specifier, so a declaration seen before OR after this header agrees
+// with them — the header does not depend on its include position.
+#include <malloc.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <cstddef>
+#include <cstdlib>
 
 extern "C" {
 void* __libc_malloc(std::size_t size);
@@ -101,50 +109,50 @@ class ScopedMallocGate {
 
 extern "C" {
 
-void* malloc(std::size_t size) {
+void* malloc(std::size_t size) noexcept {
   ::rtc::testing::detail::MallocGateNote();
   return __libc_malloc(size);
 }
 
-void free(void* ptr) {
+void free(void* ptr) noexcept {
   __libc_free(ptr);
 }
 
-void* calloc(std::size_t nmemb, std::size_t size) {
+void* calloc(std::size_t nmemb, std::size_t size) noexcept {
   ::rtc::testing::detail::MallocGateNote();
   return __libc_calloc(nmemb, size);
 }
 
-void* realloc(void* ptr, std::size_t size) {
+void* realloc(void* ptr, std::size_t size) noexcept {
   ::rtc::testing::detail::MallocGateNote();
   return __libc_realloc(ptr, size);
 }
 
-void* memalign(std::size_t alignment, std::size_t size) {
+void* memalign(std::size_t alignment, std::size_t size) noexcept {
   ::rtc::testing::detail::MallocGateNote();
   return __libc_memalign(alignment, size);
 }
 
-void* aligned_alloc(std::size_t alignment, std::size_t size) {
+void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
   ::rtc::testing::detail::MallocGateNote();
   return __libc_memalign(alignment, size);
 }
 
 // glibc routes valloc/pvalloc through its internal _mid_memalign, not the
 // interposable memalign, so they need their own entry points.
-void* valloc(std::size_t size) {
+void* valloc(std::size_t size) noexcept {
   ::rtc::testing::detail::MallocGateNote();
   return __libc_memalign(static_cast<std::size_t>(::sysconf(_SC_PAGESIZE)), size);
 }
 
-void* pvalloc(std::size_t size) {
+void* pvalloc(std::size_t size) noexcept {
   ::rtc::testing::detail::MallocGateNote();
   const auto page = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
   const std::size_t rounded = (size + page - 1) / page * page;
   return __libc_memalign(page, rounded);
 }
 
-int posix_memalign(void** out, std::size_t alignment, std::size_t size) {
+int posix_memalign(void** out, std::size_t alignment, std::size_t size) noexcept {
   ::rtc::testing::detail::MallocGateNote();
   // posix_memalign's contract: alignment is a power of two multiple of
   // sizeof(void*), EINVAL otherwise.

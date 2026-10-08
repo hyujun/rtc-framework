@@ -819,7 +819,7 @@ rtc::joint::ComputeJointPdCommand(gains_view, inputs, dt, nq, nc0, cmd_type, pre
 - `noexcept`, 무상태 (header-only), 컨테이너·Eigen 동적 타입 없음 — 스크래치가 필요한 곳은 max-size 고정 타입 (`Matrix<double,Dyn,Dyn,0,6,6>`)
 - Eigen: `noalias()` 사용, 고정 크기 행렬(3x3, 6x6) 스택 할당
 - 각 코어 스위트의 `IsAllocationFree` 가 두 센서로 이것을 고정한다 — `operator new` 카운터(`rtc_controllers/testing/alloc_gate.hpp`)와 Eigen 자체 할당 tripwire(`rtc_base/testing/no_malloc_scope.hpp`). Eigen 은 `std::malloc` 을 직접 부르므로 전자만으로는 안 보인다
-- 라이브러리 (Pinocchio `.so` · `rtc_tsid` 의 ProxQP) 를 부르는 코어는 세 번째 센서 `test/include/rtc_controllers/testing/malloc_gate.hpp` (`ScopedMallocGate`) 를 더한다 — 실행 파일이 `malloc` 계열을 정의해 `__libc_*` 로 넘기며 세므로, 두 센서가 못 보는 라이브러리 안의 C 할당까지 본다 (`test_catching_mpc_segment_core`)
+- 라이브러리 (Pinocchio `.so` · `rtc_tsid` 의 ProxQP) 를 부르는 코어는 세 번째 센서 `rtc_base/testing/malloc_gate.hpp` (`ScopedMallocGate`, `rtc_base` 의 test 전용 헤더) 를 더한다 — 실행 파일이 `malloc` 계열을 정의해 `__libc_*` 로 넘기며 세므로, 두 센서가 못 보는 라이브러리 안의 C 할당까지 본다 (`test_catching_mpc_segment_core`)
 
 **바인딩이 지켜야 하는 것** (여기 없고, base 와 integration 계층이 소유):
 - **SeqLock + SPSC marshal:** target 슬롯은 `rtc::SeqLock<TargetSlot>` 이 publish 하고 **RT 스레드 (Compute)** 가 유일한 writer다. Off-RT `SetDeviceTarget` 콜백은 `rtc::SpscQueue<PendingTarget, 4>` 에 lock-free push (newest-drop) 만 한다. 이 글루는 `RTControllerInterface` 가 소유하므로 (`PushPendingTarget` / `DrainPendingTargets` / `ApplyPendingTarget`) 바인딩이 복제하지 않는다. SE3 는 `is_trivially_copyable=false` (Eigen false-negative) 이므로 POD wrapper 로 마샬링한다

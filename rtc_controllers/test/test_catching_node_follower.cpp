@@ -16,6 +16,7 @@
 // Fixtures break the representation symmetries a mapping bug would hide in:
 // the device order is a non-identity permutation of the model order, and the
 // payload's instants are realistic absolute steady ns (~1.7e18), not 0.
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
 #include "rtc_controllers/catching/mpc_segment_core.hpp"  // kMaxSegmentNodes seen through the core too
@@ -23,7 +24,6 @@
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/planner_trace_digest.hpp"
 #include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"

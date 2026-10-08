@@ -5,13 +5,13 @@
 // plus the regression that the new code leaves the old problem alone.
 //
 // The allocation gates: like the E1-F01 suite, this binary links THREE sensors
-// (CMakeLists note); malloc_gate.hpp is the one that sees pinocchio's and
-// ProxQP's own allocations.
+// (CMakeLists note); rtc_base's malloc_gate.hpp is the one that sees
+// pinocchio's and ProxQP's own allocations.
+#include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/catching/jerk_segment.hpp"
 #include "rtc_controllers/catching/mpc_segment_core.hpp"
 #include "rtc_controllers/catching/mpc_segment_core_catch.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
-#include "rtc_controllers/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/mpc_segment_core_fixture.hpp"
 #include "rtc_math/se3/axis_align.hpp"
 
