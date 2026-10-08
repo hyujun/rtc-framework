@@ -56,9 +56,11 @@ class TaskSpaceTrajectory {
     // goal_velocity_local is in goal_pose frame. Its representation in start_pose frame:
     pinocchio::Motion delta_vf = T_start_goal.act(goal_velocity_local);
 
-    Eigen::VectorXd p_goal = delta_X.toVector();
-    Eigen::VectorXd v_start = delta_v0.toVector();
-    Eigen::VectorXd v_goal = delta_vf.toVector();
+    // Fixed-size: initialize() runs on the RT tick that applies a new goal, so
+    // these must not reach the heap (RT-1).
+    const Eigen::Matrix<double, 6, 1> p_goal = delta_X.toVector();
+    const Eigen::Matrix<double, 6, 1> v_start = delta_v0.toVector();
+    const Eigen::Matrix<double, 6, 1> v_goal = delta_vf.toVector();
 
     for (std::size_t i = 0; i < 6; ++i) {
       polynomials_[i].compute_coefficients(0.0, v_start[static_cast<Eigen::Index>(i)], 0.0,
