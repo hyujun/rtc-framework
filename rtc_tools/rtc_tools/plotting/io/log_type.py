@@ -60,6 +60,11 @@ def detect_log_type(filepath):
         # instance stem, written only by the catching controller's planner
         # thread (drained by the 1 Hz aux timer).
         return "planner_events"
+    elif stem == "dualarm_diag" or stem.endswith("dualarm_diag"):
+        # Per-tick multi-frame CLIK record: what the tick did (solved, or held
+        # and why), the solve's diagnostics, and per task frame the error and
+        # the reference / commanded / measured pose. Fixed instance stem.
+        return "dualarm_diag"
     elif stem.endswith("state_log"):
         return "state_log"
     elif stem.endswith("sensor_log"):
@@ -141,6 +146,19 @@ def detect_log_type_by_columns(columns):
     # than necessity, same as catching_diag above.
     if "n_in_window" in cols and "rank_error_budget" in cols:
         return "planner_events"
+    # Multi-frame CLIK diagnostics: per-tick dualarm_diag.csv. MUST precede the
+    # wbc_log branch below — this file carries `accel_rows*` (the solve's
+    # acceleration-row counts), and that branch keys on the bare `accel_`
+    # prefix, so a renamed copy reaching the fallback was plotted as a WBC
+    # device log (exit 0, two meaningless figures). `clik_ran` + one
+    # `<task>_err_lin` is the discriminating pair. `clik_ran` alone is not
+    # enough (catching_diag carries it too, and is matched above); the
+    # `_err_lin` suffix is emitted by no other POD. Two are required so one
+    # renamed column is a detection failure rather than a near-miss into
+    # another pipeline. The producer refuses to configure with no task, so
+    # every such file has at least one `_err_lin` column.
+    if "clik_ran" in cols and any(c.endswith("_err_lin") for c in cols):
+        return "dualarm_diag"
     # WBC device state: superset of state_log with TSID a_opt acceleration.
     # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the
     # WBC arm/hand state CSVs from the generic state_log before that branch.

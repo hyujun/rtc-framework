@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from rtc_tools.plotting import plotters, zoom_dialog
 from rtc_tools.plotting.columns import (
     has_force_only_fingertips,
+    has_goal_counter_activity,
     has_motor,
     has_payload_estimate,
     has_task_goal,
@@ -109,6 +110,9 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     ],
     "planner_events": [
         PlotEntry("print_planner_events_stats", plotters.print_planner_events_statistics),
+    ],
+    "dualarm_diag": [
+        PlotEntry("print_dualarm_diag_stats", plotters.print_dualarm_diag_statistics),
     ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
@@ -237,6 +241,21 @@ PIPELINES: dict[str, list[PlotEntry]] = {
     ],
     "planner_events": [
         PlotEntry("planner_events", plotters.plot_planner_events),
+    ],
+    # Every figure sizes itself from the header: a row per task, a panel per
+    # joint. The goal-counter figure is gated on CONTENT — the counters are in
+    # every file and are all flat zero in a run nobody sent a goal to.
+    "dualarm_diag": [
+        PlotEntry("dualarm_diag_solver", plotters.plot_dualarm_diag_solver),
+        PlotEntry("dualarm_diag_task_error", plotters.plot_dualarm_diag_task_error),
+        PlotEntry("dualarm_diag_task_pose", plotters.plot_dualarm_diag_task_pose),
+        PlotEntry("dualarm_diag_limits", plotters.plot_dualarm_diag_limits),
+        PlotEntry(
+            "dualarm_diag_goals",
+            plotters.plot_dualarm_diag_goals,
+            available=has_goal_counter_activity,
+        ),
+        PlotEntry("dualarm_diag_joint_cmd", plotters.plot_dualarm_diag_joint_cmd),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

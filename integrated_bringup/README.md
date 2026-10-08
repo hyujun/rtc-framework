@@ -752,7 +752,7 @@ ros2 param set /demo_dualarm_controller/demo_dualarm_controller tasks.right_hand
 | 과제마다 `<task>_` | `valid` · `traj_active` · `goal_sequence` (0 = 시작 자세 유지) · `err_lin` · `err_ang` · `ref_{x,y,z,qw,qx,qy,qz}` · `cmd_*` · `meas_valid` · `meas_*` · `goals_accepted` · `reject_goal_type` · `reject_non_finite` · `reject_unknown_frame` · `drop_stale` · `drop_unusable` · `drop_held` |
 | 몸통 관절 | `q_cmd_<joint>` (device 순서) |
 
-세 pose 는 모두 **그 과제의 base frame** 입니다. `ref` = 이 tick 에 풀이가 받은 기준 $T^d(t)$, `cmd` = 풀이가 평가된 **명령 상태** (직전 tick 이 남긴 명령) 의 frame, `meas` = 이 tick 의 **측정** 관절 상태의 frame. `err_*` 는 `ref` 대 `cmd` — 풀이가 되먹임한 오차 그대로이고 **서보 지연은 들어 있지 않습니다**. 지연은 `cmd` 대 `meas` 를 시간을 밀어 맞대어 봅니다. 거부 · 버림 계수 (`reject_*` · `drop_*`) 는 누적입니다.
+세 pose 는 모두 **그 과제의 base frame** 입니다. `ref` = 이 tick 에 풀이가 받은 기준 $T^d(t)$, `cmd` = 풀이가 평가된 **명령 상태** (직전 tick 이 남긴 명령) 의 frame, `meas` = 이 tick 의 **측정** 관절 상태의 frame. `err_*` 는 `ref` 대 `cmd` — 풀이가 되먹임한 오차 그대로이고 **서보 지연은 들어 있지 않습니다**. 지연은 `cmd` 대 `meas` 를 시간을 밀어 맞대어 봅니다. 거부 · 버림 계수 (`reject_*` · `drop_*`) 는 누적입니다. 그림과 통계는 `ros2 run rtc_tools plot_rtc_log <그 CSV>` (`--stats` 로 통계만) — 과제 · 관절은 열 이름에서 읽으므로 그 run 의 YAML 이 필요 없습니다.
 
 #### formulation 과 다르게 한 곳
 
@@ -1074,7 +1074,7 @@ ros2 topic pub --once /demo_dualarm_controller/p1b/joint_goal rtc_msgs/RobotTarg
   "{goal_type: joint, joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
 ```
 
-이 launch 는 `mpc_engine` 인자를 받지 않습니다 — 그 인자가 고르는 것은 `demo_wbc_controller` 의 MPC 엔진이고 이 profile 에는 그 컨트롤러의 config 가 없습니다. `enable_mpc` 는 받되 여기서는 **CPU layout profile 만** 고릅니다 (컨트롤러 파라미터로 가지 않습니다). 기본값이 `false` 입니다 (다른 sim launch 는 `""`) — MPC · 계획기 thread 를 띄울 컨트롤러가 없는데 그 코어를 shield 하지 않기 위해서이고, 그런 컨트롤러가 이 profile 에 생기면 그 feature 에서 기본값을 다시 정합니다. demo GUI (`--robot`) 와 `plot_rtc_log` 의 `g1_p1b` 지원은 아직 없습니다.
+이 launch 는 `mpc_engine` 인자를 받지 않습니다 — 그 인자가 고르는 것은 `demo_wbc_controller` 의 MPC 엔진이고 이 profile 에는 그 컨트롤러의 config 가 없습니다. `enable_mpc` 는 받되 여기서는 **CPU layout profile 만** 고릅니다 (컨트롤러 파라미터로 가지 않습니다). 기본값이 `false` 입니다 (다른 sim launch 는 `""`) — MPC · 계획기 thread 를 띄울 컨트롤러가 없는데 그 코어를 shield 하지 않기 위해서이고, 그런 컨트롤러가 이 profile 에 생기면 그 feature 에서 기본값을 다시 정합니다. 세션 로그는 `plot_rtc_log` 가 읽습니다 — `g1_state.csv` · `p1b_state.csv` 는 state log 로, `dualarm_diag.csv` 는 전용 figure 로 (`rtc_tools/README.md` 의 파일 이름 표). demo GUI (`--robot`) 의 `g1_p1b` 지원은 아직 없습니다.
 
 ### Catching sim trials — 한 투척 = 한 S7 순환
 

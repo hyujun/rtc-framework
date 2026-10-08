@@ -21,6 +21,15 @@ from .device import (
     plot_device_velocities,
     print_device_statistics,
 )
+from .dualarm import (
+    plot_dualarm_diag_goals,
+    plot_dualarm_diag_joint_cmd,
+    plot_dualarm_diag_limits,
+    plot_dualarm_diag_solver,
+    plot_dualarm_diag_task_error,
+    plot_dualarm_diag_task_pose,
+    print_dualarm_diag_statistics,
+)
 from .grasp import (
     plot_grasp_diag,
     print_grasp_diag_statistics,
@@ -103,6 +112,14 @@ __all__ = [
     # planner-events per-non-idle-wake search record (S6-B)
     "plot_planner_events",
     "print_planner_events_statistics",
+    # multi-frame CLIK per-tick diagnostics
+    "plot_dualarm_diag_goals",
+    "plot_dualarm_diag_joint_cmd",
+    "plot_dualarm_diag_limits",
+    "plot_dualarm_diag_solver",
+    "plot_dualarm_diag_task_error",
+    "plot_dualarm_diag_task_pose",
+    "print_dualarm_diag_statistics",
     # task-admittance diagnostics (#469 S4)
     "print_compliance_diag_statistics",
     # grasp diagnostics

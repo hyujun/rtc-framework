@@ -12,8 +12,10 @@ Predicates take `df` and return `bool`. Cheap to call repeatedly
 from .detect import (
     detect_fingertip_labels,
     detect_fingertip_labels_raw,
+    detect_task_prefixes,
     has_columns,
     has_motor_columns,
+    task_counter_columns,
 )
 
 
@@ -167,3 +169,21 @@ def has_inertial_estimate(df):
     inertial series are dropped from the payload figure rather than drawn flat.
     """
     return _estimator_was_configured(df, "inertial_reason")
+
+
+# ── Multi-frame CLIK diagnostics predicates ────────────────────────────────
+
+GROUP_GOAL_REJECTS = "group_goal_rejects"
+
+
+def has_goal_counter_activity(df):
+    """A goal counter of the multi-frame CLIK log moved during this run.
+
+    Content gate, like the estimator predicates above: the counters are always
+    in the file, and in a run nobody sent a goal to every one of them is a flat
+    zero line. Cumulative counters, so the maximum is the test.
+    """
+    counters = [c for task in detect_task_prefixes(df) for c in task_counter_columns(df, task)]
+    if GROUP_GOAL_REJECTS in df.columns:
+        counters.append(GROUP_GOAL_REJECTS)
+    return any(df[c].max() > 0 for c in counters)

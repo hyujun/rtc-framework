@@ -102,6 +102,9 @@ def plot_robot_positions(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
+    for idx in range(n_joints, len(axes)):
+        axes[idx].set_visible(False)
+
     plt.tight_layout()
     if save_dir:
         path = Path(save_dir) / "robot_positions.png"
@@ -149,6 +152,9 @@ def plot_robot_velocities(df, save_dir=None):
         ax.set_title(f"Joint {i}: {display_names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
+
+    for idx in range(n_joints, len(axes)):
+        axes[idx].set_visible(False)
 
     plt.tight_layout()
     if save_dir:
@@ -211,6 +217,9 @@ def plot_robot_commands(df, save_dir=None):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
+    for idx in range(n_joints, len(axes)):
+        axes[idx].set_visible(False)
+
     plt.tight_layout()
     if save_dir:
         path = Path(save_dir) / "robot_commands.png"
@@ -246,6 +255,9 @@ def plot_robot_torques(df, save_dir=None):
         ax.set_title(f"Joint {i}: {display_names[i]}")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
+
+    for idx in range(n_joints, len(axes)):
+        axes[idx].set_visible(False)
 
     plt.tight_layout()
     if save_dir:
