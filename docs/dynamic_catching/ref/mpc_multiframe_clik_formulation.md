@@ -1,6 +1,6 @@
 # Waist 포함 dual-arm manipulator의 오른손 단일 포구 — MPC 계획기와 다중 frame CLIK의 수학적 정리
 
-- 이 문서는 현재 구현의 MPC planner 와 CLIK 의 수학적 정식화를 표현한다. 구현된 것 (단일 팔 구성) 과 아직 구현하지 않은 설계 (dual-arm · waist 항, 충돌, 다중 frame CLIK) 가 함께 있다 — 구분은 §0 "구현 범위" 에 있다.
+- 이 문서는 현재 구현의 MPC planner 와 CLIK 의 수학적 정식화를 표현한다. 구현된 것 (단일 팔 구성의 MPC, 다중 frame CLIK 의 QP) 과 아직 구현하지 않은 설계 (dual-arm · waist 항, 충돌) 가 함께 있다 — 구분은 §0 "구현 범위" 에 있다.
 - 대상: `rtc-framework` dynamic_catching 확장 설계 (waist + dual-arm, 오른손 한 손 파지 물체). 단일 팔 로봇은 같은 문제에서 dual-arm · waist 항을 뺀 것을 푼다 (§1.6)
 - 전제: estimator (ball_perception PointCloud2) 와 CLIK 입력 형식 (pose + twist feedforward) 은 고정이다. G1 구성의 CLIK 은 다중 frame 확장형이다 (§2).
 - 상태 표기: `[가정]` 기구·구성 가정, `[확인 필요]` 코드 대조 전 항목, `[선택]` 옵션.
@@ -31,10 +31,10 @@ markdown 이 수식 안의 문자를 먼저 해석하므로 (GitHub 기준), 수
 | 상태 | 내용 | 절 |
 |---|---|---|
 | 구현됨 | 단일 팔 구성의 MPC (`mpc` planner — ur5e_p1b · iiwa7_leap). jerk 입력 모델과 move blocking, 포구 노드의 위치 · 접근축 · 상대속도 항, 일관성 항, 정지 경로 항, 토크 행과 그 slack, 위치 · 속도 한계, 종단 정지, trust region, 상대속도 slack, 관절 노드 게시와 RT 의 닫힌식 평가 · FK. 정지 경로 항과 상대속도 slack 은 출하 YAML 에서 꺼져 있다 | §1.1, §1.2 와 §1.3 의 단일 팔 부분, §1.5, §1.6 |
-| 구현됨 | 지금의 CLIK — frame 과제 하나 (포구 컨트롤러는 catch frame 의 위치 3 행과 접근축 2 행), 팔 · 손 자세 과제, 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행 (`dynamic`). 자세 과제의 속도 feedforward 는 자세 목표를 옮겨 넣는다 (§1.5) | §2.3, §2.1 · §2.2 의 단일 frame 극한 (§4 항목 4) |
+| 구현됨 | 지금의 CLIK — frame 과제 하나 (포구 컨트롤러는 catch frame 의 위치 3 행과 접근축 2 행), 팔 · 손 자세 과제, 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행 (`dynamic`). 자세 과제의 속도 feedforward 는 CLIK 의 자세 feedforward 입력으로 넣는다 (§1.5) | §2.3, §2.1 · §2.2 의 단일 frame 극한 (§4 항목 4) |
+| 구현됨 (`rtc_tsid` 의 QP — 포구 컨트롤러는 아직 단일 frame 호출을 쓴다) | 다중 frame CLIK — frame 과제 목록, 몸통 기준 (상대) 과제, 전체 관절의 자세 과제 $\dot q_n$, 되먹임 상한, 제동 거리 한계. 구현이 §2 의 식과 다른 곳은 §10 | §2, §10 |
 | 아직 구현하지 않음 | §1.3 의 dual-arm · waist 전용 항 — waist 억제, 왼팔 자세 유지, 각운동량 항, 관절군별 $E$. 후보마다 QP 를 푸는 바깥 루프 | §1.1, §1.3, §1.4 |
 | 아직 구현하지 않음 | 충돌 — 자기충돌 행과 공–왼팔 행, 노드 사이 여유, CLIK 의 충돌 damper | §0.3, §1.2, §1.3, §2.2 |
-| 아직 구현하지 않음 | 다중 frame CLIK — 두 번째 frame 과제, 전체 관절의 자세 과제 $\dot q_n$, 되먹임 상한, 제동 거리 한계 | §2 |
 | 아직 구현하지 않음 | 포구 구간 $\mathcal K_c$ 를 여러 노드로 두는 것과 그 위의 경로 이탈 항 $w_{path}$ | §1.3 |
 | 검토안 — 이 문서의 MPC 에는 구현하지 않음 | 포구 시각 $t_c$ 를 결정변수로 두는 것. 단일 팔의 NLP 탐색 경로에는 구현돼 있다 (§9 의 "구현 상태") | §9 |
 
@@ -402,7 +402,7 @@ $$
 
 - $t_{cmd}$ 는 $t_c$ 에서 나온다 (§1.6). 노드 시각은 격자가 정하고 RT 는 구간마다 $\Delta_k$ 로 평가한다 — 단일 팔 구성에서 $\Delta_k$ 는 포구 전 $\Delta_a$, 포구 뒤 $\Delta_s$ 다.
 - CLIK 입력 형식 (pose + twist feedforward) 은 그대로다.
-- 손의 목표와 자세 기준이 같은 $q_{ref}$ 에서 나오므로 서로 정확히 일치한다. 제약이 비활성이고 $q_c=q_{ref}$ 이면 $v^\ast=\dot q_{ref}$ 가 세 과제의 잔차를 모두 0 으로 만든다 — 단 자세 과제가 $\dot q_{ref}$ 를 feedforward 로 받을 때만이다. `ClikReferenceGenerator` 의 자세 과제는 위치 오차 항 $k_a(q_{des}-q)$ 뿐이라, RT 는 자세 목표를 $q_{ref}+\dot q_{ref}/k_a$ 로 넘겨 feedforward 를 같은 QP 로 넣는다 (MD-36). 그래도 여유 자유도 방향은 자세 행만 붙잡고 평활 항이 끌어, 따르는 중의 관절 오차는 손의 목표 오차보다 크다.
+- 손의 목표와 자세 기준이 같은 $q_{ref}$ 에서 나오므로 서로 정확히 일치한다. 제약이 비활성이고 $q_c=q_{ref}$ 이면 $v^\ast=\dot q_{ref}$ 가 세 과제의 잔차를 모두 0 으로 만든다 — 단 자세 과제가 $\dot q_{ref}$ 를 feedforward 로 받을 때만이다. RT 는 자세 목표로 $q_{ref}$ 를, 자세 과제의 속도 feedforward 로 $\dot q_{ref}$ 를 넘긴다 (`ClikReferenceGenerator` 의 `qd_posture_ff`, MD-36) — 자세 행의 기준이 $k_a(q_{ref}-q)+\dot q_{ref}$ 다. 그래도 여유 자유도 방향은 자세 행만 붙잡고 평활 항이 끌어, 따르는 중의 관절 오차는 손의 목표 오차보다 크다.
 - 회전벡터 보간이 없으므로 각속도와 회전벡터 미분의 구분, world 축과 body 축의 변환이 필요 없다. pose 를 보간하면 이 구분이 필요하다 [Sola2018] [Zefran1998].
 - $V^{ff}$ 는 Jacobian 없이 속도를 포함한 FK 로 얻을 수 있다.
 - RT 는 tick 마다 $q_{ref}$ 에서 FK 를 한 번 더 한다 (CLIK 은 $q_c$ 에서 이미 한다). 속도 FK 한 번이고 할당이 없다.
@@ -632,7 +632,7 @@ horizon 은 0.75 s 와 1.0 s 둘을 시험한다. horizon 을 나누는 이유�
 
 ## 2. 다중 frame CLIK (RT tick)
 
-이 절은 다중 frame 으로 확장한 CLIK 의 정식화이고 아직 구현하지 않았다. 지금의 CLIK 은 frame 과제가 하나인 `ClikReferenceGenerator` (`rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp`) 다 — 포구 컨트롤러는 catch frame 의 위치 3 행과 접근축 2 행을 과제로 쓰고 (L5 §4.2), 팔 · 손 자세 과제와 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행을 둔다. §2.3 의 오차 동역학과 이산 tick 의 조건은 지금의 CLIK 에도 성립한다.
+이 절은 다중 frame 으로 확장한 CLIK 의 정식화다. QP 는 `ClikReferenceGenerator` (`rtc_tsid/include/rtc_tsid/kinematics/clik_reference.hpp`) 의 다중 frame 호출로 구현돼 있고, 구현이 이 절의 식과 다른 곳은 §10 에 있다. 그것을 부르는 컨트롤러는 아직 없다 — 포구 컨트롤러는 frame 과제가 하나인 호출로 catch frame 의 위치 3 행과 접근축 2 행을 과제로 쓰고 (L5 §4.2), 팔 · 손 자세 과제와 평활 항, 위치 ∩ 속도 box, 팔 관절의 토크 행을 둔다. §2.3 의 오차 동역학과 이산 tick 의 조건은 지금의 CLIK 에도 성립한다.
 
 ### 2.1 오차 정의
 
@@ -656,7 +656,7 @@ V^d_i=V^{ff} _ i+K_i e_i,\qquad e_i=(e_{p,i},e_{o,i}),\quad
 K_i=\mathrm{diag}(K_{p,i}I_3,\enspace K_{o,i}I_3)\enspace[\mathrm{s^{-1}}].
 $$
 
-되먹임 항은 크기를 제한한다 (아직 구현하지 않았다).
+되먹임 항은 크기를 제한한다 (구현은 §10.1 — 기본 꺼짐).
 
 $$
 V^d_i=V^{ff} _ i+\mathrm{sat}\big(K_ie_i,\enspace v_{fb,\max}\big).
@@ -664,7 +664,7 @@ $$
 
 - $\mathrm{sat}$ 는 위치 블록과 자세 블록 각각의 norm 을 상한으로 줄인다. 방향은 유지한다.
 - 상한에 걸린 tick 은 진단으로 남긴다. 상한이 걸린 동안 §2.3 의 오차 동역학은 성립하지 않는다.
-- $\Vert e_o\Vert$ 가 $\pi$ 근처면 $\mathrm{Log}$ 의 축이 불연속이다. 이 경우 직전 tick 의 축을 유지하고 진단을 남긴다. MPC 궤적을 따르는 동안에는 생기지 않아야 하는 상태다.
+- $\Vert e_o\Vert$ 가 $\pi$ 근처면 $\mathrm{Log}$ 의 축이 불연속이다. 이 경우 직전 tick 의 축을 유지하고 진단을 남긴다. MPC 궤적을 따르는 동안에는 생기지 않아야 하는 상태다. (구현은 진단만 남기고 축을 유지하지 않는다 — §10.4.)
 
 왼손도 $V^{ff} _ L\ne0$이다. 두 손의 $T^d$ 와 $V^{ff}$ 는 RT 가 관절 기준에서 FK 로 만든 값이다 (§1.5).
 
@@ -698,9 +698,9 @@ $$
 - 엄격한 계층이 필요하면 HQP로 바꾸되 [Kanoun2011] [Escande2014], 기존 `ClikReferenceGenerator`는 가중 최소제곱 형태다.
 - 위치 · 속도 · 가속 한계를 tick 마다 따로 걸면 서로 양립하지 않을 수 있다 [DelPrete2018] [Faroni2018]. 아래 "제동 거리 한계" 가 그 대응이다.
 - waist 를 움직이면서 두 번째 손을 몸통 기준으로 두는 G1 용 속도 수준 QP IK 의 공개 구현은 찾지 못했다. 같은 구조의 공개 구현 pink (§8) 를 golden 회귀의 수치 기준으로 쓴다.
-- 지금의 `ClikReferenceGenerator` 는 두 번째 frame 과제와 자세 과제의 속도 기준 $\dot q_n$ 을 받지 않는다 (자세 과제는 위치 오차 항뿐이다, §1.5). 이 QP 는 `rtc_tsid` 의 일반화 범위이고 게이트는 §4 항목 4 의 골든 회귀다.
+- 이 QP 는 `ClikReferenceGenerator` 의 다중 frame 호출이다 (§10). 게이트는 §4 항목 4 의 골든 회귀 (frame 과제 하나의 극한이 기존 호출과 비트 일치), 항목 8, 그리고 위의 pink 기준이다.
 
-**제동 거리 한계** (opt-in — 아직 구현하지 않았다). 위치 box $q_{\min}\le q_c+hv\le q_{\max}$ 는 한 tick 앞만 본다. 한계 가까이에서 빠르게 움직이면 가속 · 토크 한계 안에서 멈출 수 없어 QP 가 실행 불가능해진다. 멈출 수 있는 속도로 묶는다 [DelPrete2018] [Flacco2015].
+**제동 거리 한계** (opt-in — 구현은 아래 식과 다르다, §10.3). 위치 box $q_{\min}\le q_c+hv\le q_{\max}$ 는 한 tick 앞만 본다. 한계 가까이에서 빠르게 움직이면 가속 · 토크 한계 안에서 멈출 수 없어 QP 가 실행 불가능해진다. 멈출 수 있는 속도로 묶는다 [DelPrete2018] [Flacco2015].
 
 $$
 -\sqrt{2a_{brk}(q_c-q_{\min})}\le v\le\sqrt{2a_{brk}(q_{\max}-q_c)} .
@@ -1318,3 +1318,71 @@ $$
 | [Malyuta2022] | 시간 신축과 그 볼록 상하한. 시각 변수의 초기값이 반복 수를 크게 바꾼다. SCP 는 trust region 방법이다 | "균일 신축" 의 표준형. $\delta_t$ 의 근거 | 본문 |
 | [Khadiv2020] | 걸음 시각을 지수 치환으로 선형화해 QP 안에서 최적화한다 | 폐기한 대안 "변수 치환" | 본문 (해당 절) |
 | — | 사건에서의 상대속도가 작을 때 시각 방향의 곡률이 사라지는 것, 시각 변수 전용의 정규화 · 스케일을 다룬 문헌은 찾지 못했다. 포구 · 타격 MPC 에서 사건 시각을 SQP-RTI 나 QP 의 변수로 둔 사례도 찾지 못했다 | §9.5 "조건" 과 포구 구간 신축은 이 문서의 유도다 | 자체 |
+
+---
+
+## 10. 다중 frame CLIK 의 구현 (E2-F04)
+
+§2 의 QP 를 `rtc_tsid` 의 `ClikReferenceGenerator` 에 구현한 것과, 구현이 §2 의 식과 다른 곳이다. 호출 형태 · 옵션 · 진단의 서술은 `rtc_tsid/README.md` 와 `clik_reference.hpp` 의 머리 주석이 갖는다. 이 QP 를 부르는 컨트롤러 (G1 구성의 바인딩) 는 아직 없다.
+
+### 10.1 §2 와의 대응
+
+| §2 의 항목 | 구현 |
+|---|---|
+| frame 과제 둘 (§2.2) | 과제 목록 — 과제마다 6 행 (pose) 또는 위치 3 행 + 접근축 2 행, 자기 $K_i$ · 가중 · $V^{ff} _ i$. 가중은 과제마다 스칼라다 ($W_i=w_iI$; 위치 + 접근축 과제는 위치 행과 축 행에 하나씩) |
+| 몸통 기준 과제 (§2.1 의 왼손) | 과제의 base frame 을 지정하면 목표 · $V^{ff}$ · 행이 모두 그 frame 의 축이다. 행은 §10.2 의 상대 Jacobian |
+| 전체 관절의 자세 과제 $\dot q_n$ | 자세 군 (서로소 관절 집합, 군마다 $W_n$ 의 스칼라와 $K_q$) 과 자세 속도 feedforward: $\dot q_n=\dot q_{ff}+K_q(q_{des}-q_c)$ |
+| 되먹임 상한 (§2.1) | 과제마다 위치 블록 · 자세 블록의 상한. 블록의 norm 이 상한을 넘으면 그 블록을 상한까지 줄인다 (블록 안의 방향 유지). $V^{ff}$ 는 상한 뒤에 더한다. 기본 꺼짐 |
+| 제동 거리 한계 (§2.2) | §10.3 — 상수 $a_{brk}$ 가 아니라 토크 한계에서 얻은 감속도, 그리고 이산 tick 의 식 |
+| `dynamic` 토크 제약의 전체 $M,h$ (§2.2) | 토크 행의 관절 집합을 전체 관절로 주면 행이 $n$ 개다 (합성 17 관절 tree 에서 RNEA 와 대조) |
+| §4 항목 4 (단일 frame 극한) | world 과제 하나면 기존 호출과 출력이 비트 단위로 같다 (golden 표의 world 기준 시나리오 포함) |
+| §4 항목 8 (일치) | 두 과제 (world · 몸통 기준) 와 자세 feedforward 로 $v^\ast=\dot q_{ref}$ — 아래 "감쇠" 만큼의 차이 안에서 |
+| pink 기준 (§2.2) | world 과제 + 상대 과제 + 자세 + 위치 ∩ 속도 한계의 같은 문제를 pink 로 풀어 기록한 해와 대조한다. pink 의 과제 Jacobian 은 오차의 정확한 미분 ($\mathrm{Jlog}_6$ 포함) 이고 이 CLIK 은 1차라, 작은 오차에서는 pink 그대로와, 큰 오차에서는 $\mathrm{Jlog}_6$ 를 뺀 pink 와 비교한다 |
+
+**감쇠.** 구현의 비용에는 §2.2 에 없는 $\mu^2\Vert v\Vert^2$ 가 있다 ($H$ 의 양정치를 자세 가중 없이도 보장한다). 그래서 §4 항목 8 의 해는 $\dot q_{ref}$ 에서 자세 방향으로 $\mu^2/(w_n+\mu^2)$ 비율만큼 0 쪽으로 당겨진다.
+
+### 10.2 상대 Jacobian
+
+frame $t$ 를 frame $b$ 에서 본 운동을 $b$ 의 축으로 적는다. $J_t$, $J_b$ 는 두 frame 의 world 정렬 (LWA) Jacobian, $R_b$, $p_b$ 는 $b$ 의 world 자세 · 원점, $p_t$ 는 $t$ 의 world 원점이다.
+
+$$
+J_{rel}^{\omega}=R_b^\top\big(J_t^{\omega}-J_b^{\omega}\big),\qquad
+J_{rel}^{v}=R_b^\top\big(J_t^{v}-J_b^{v}+[p_t-p_b] _ \times J_b^{\omega}\big).
+$$
+
+- 둘째 식은 $\tfrac{d}{dt}\big(R_b^\top(p_t-p_b)\big)=R_b^\top\big(v_t-v_b-\omega_b\times(p_t-p_b)\big)$ 에서 온다 — $b$ 에 고정된 관찰자가 본 $t$ 원점의 속도다.
+- 오차 (§2.1 의 $e_L$) 를 $b$ 기준 pose 에서 재면 그 성분은 $b$ 의 축이다. 행도 $b$ 의 축이므로 둘이 맞는다. 기존의 pose 호출은 base 축의 오차에 world 축의 $J_t$ 를 곱하고, 이것은 $b$ 의 축이 world 와 같을 때만 맞는다 — 그 호출은 바꾸지 않았다.
+- 두 frame 의 공통 상류 관절은 둘을 함께 움직이므로 그 열이 0 이다 (§3 의 "waist 열 0", §4 항목 6). 수치로는 반올림 수준 ($10^{-12}$ 미만) 이다.
+
+### 10.3 제동 거리 한계 — 토크에서 얻은 감속도, 이산 tick 의 식
+
+§2.2 의 식 $v\le\sqrt{2a_{brk}(q_{\max}-q_c)}$ 와 두 곳이 다르다.
+
+**감속도.** 상수 $a_{brk}$ 를 두지 않는다. `dynamic` 토크 한계가 지금 상태에서 관절 $i$ 에 남기는 감속도를 쓴다 ($M_{ii}$ 는 질량 행렬의 대각, $m\in(0,1]$ 은 여유):
+
+$$
+a_i^{+}=m\max\Big(0,\enspace\frac{\eta_\tau\tau_{\max,i}+h_i}{M_{ii}}\Big),\qquad
+a_i^{-}=m\max\Big(0,\enspace\frac{\eta_\tau\tau_{\max,i}-h_i}{M_{ii}}\Big).
+$$
+
+$a_i^{+}$ 는 $q_{\max}$ 쪽 운동을, $a_i^{-}$ 는 $q_{\min}$ 쪽 운동을 멈추는 감속도다. 0 이면 그 방향의 속도 상한이 0 이다. 그래서 이 한계는 `dynamic` 에서만 켤 수 있다.
+
+**이산 tick.** 명령 $v$ 는 제동이 시작되기 전에 한 tick ($hv$) 을 간다. 남은 거리 $d$ 안에 멈추려면 $hv+v^2/(2a)\le d$ 여야 하고, 한계는 그 등식의 양의 근이다.
+
+$$
+v\le\frac{4ad}{ah+\sqrt{a^2h^2+8ad}},\qquad d=q_{\max}-q_c\enspace(\text{반대 방향은 }d=q_c-q_{\min}).
+$$
+
+- 연속 시간의 $\sqrt{2ad}$ 는 그 한 tick 을 빼먹는다. 그 곡선 위의 속도 $v$ 에서 $a$ 로 감속한 다음 tick 의 속도 $v-ah$ 는 그 tick 의 한계를 넘는다 — $(v-ah)^2=2a(d-hv)+a^2h^2$ 로, 제곱에서 $a^2h^2$ 만큼이다. 그래서 그 한계는 토크 행과 함께 만족할 수 없다.
+- 한계가 현재 속도에서 한 tick 에 도달할 수 있는 값 ($\dot q_{c,i}\mp(\eta_\tau\tau_{\max,i}\pm h_i)h/M_{ii}$) 보다 좁으면 그 값까지 넓힌다. 이미 제동 속도를 넘은 관절은 토크 행이 허용하는 만큼 줄이고, QP 는 실행 가능하게 남는다.
+- **보장이 아니다.** $M_{ii}$ 는 관성 결합을 무시하고, URDF 에 회전자 관성이 없어 $a$ 가 실제보다 클 수 있다. hard 제약은 토크 행이고 이 한계는 그 행이 실행 불가능해지는 상황을 줄이는 장치다. 여유는 $m\lt1$ 로 준다.
+- 기본 꺼짐이고, 끄면 box 는 §2.2 의 1-step box 그대로다. 포구 컨트롤러의 YAML 에는 아직 이 키가 없다.
+
+### 10.4 구현하지 않은 것
+
+| 항목 | 상태 |
+|---|---|
+| $\pi$ 근처에서 직전 tick 의 축 유지 (§2.1) | 구현하지 않았다. 상태를 두지 않고 진단만 남긴다 (회전 오차 또는 접근축 오차가 $\pi$ 에서 0.05 rad 이내). 그 구간을 기대하는 호출자는 자세 블록의 되먹임 상한을 켠다 — 축이 뒤집혀도 명령의 크기가 묶인다 |
+| 충돌 damper (§2.2) | 구현하지 않았다. 거리 코어가 선행이다 |
+| 과제 가속 행 (`kinematic`) 과 상대 과제 | 함께 쓸 수 없다 (configure 에서 거부). 상대 과제의 가속 drift 에는 base frame 의 항이 더 든다. world 과제 여러 개의 가속 행은 과제별로 쌓인다 |
+| 엄격한 계층 (HQP) | 가중 최소제곱 그대로다 (§2.2) |
