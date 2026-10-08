@@ -10,9 +10,11 @@
 # parks). Every key here is under planner.search.nlp, and the nlp search reads
 # its design values from here alone.
 #
-# PROVISIONAL, SIM ONLY. The values below are starting values, not tuned
-# (E1-F19). The QP solver allocates inside a solve (#654), so this search must
-# not run on a SCHED_FIFO planner thread on hardware until that is closed.
+# PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the core's chance rows
+# (off) and core.catch.nu_ref, as in the mpc_docking planner's core, and the
+# budget (one solve a wake); the other values are starting values, not tuned. The QP solver allocates inside a solve
+# (#654), so this search must not run on a SCHED_FIFO planner thread on
+# hardware until that is closed.
 demo_catching_controller:
   catching:
     planner:
@@ -49,14 +51,26 @@ demo_catching_controller:
             blocks: [1, 1, 2, 3]
           # ── Budget ──────────────────────────────────────────────────────────
           # One wake's whole budget, one candidate's share, the margin between
-          # the budget's end and node 0, and the most solves a wake runs. A cold
-          # solve on these grids took 8 – 20 ms and a warm one 6 – 7 ms on the
-          # shipped sub-models (E1-F14, #740): two solves a wake.
+          # the budget's end and node 0, and the most solves a wake runs.
+          # ONE solve a wake, with a share that fits it (E1-F19, #745). With
+          # two (solve_s 0.018, max_solves 2) a wake that solved both took 32 -
+          # 37 ms (median) and its plan met the next vision period: the cycle
+          # dropped it as superseded in 34 of 78 and 58 of 97 such wakes,
+          # against 3 of 18 and 7 of 23 of the wakes that solved one — 5 to 10
+          # throws of 50 without a plan. One solve at 0.018 s still lost a
+          # first plan's solve to the deadline in 17 of 65 wakes; at 0.024 s,
+          # 2 of 52 (a candidate's solve: 14.6 ms median, 25.4 ms p99), and a
+          # plan in 50 of 50 throws.
+          # solve_s has a CEILING no check enforces: while a plan is followed
+          # a wake's budget is prediction.dt_expected - the segment planner's
+          # budget.replan_s (0.05 - 0.025 = 0.025 s), and a share above it
+          # fits no solve there — 0.028 s ran 0 solves while following
+          # (0.024 s: 192 of 216 wakes).
           budget:
             budget_s: 0.040
-            solve_s: 0.018
+            solve_s: 0.024
             start_lead_s: 0.004
-            max_solves: 2
+            max_solves: 1
           # ── Outer cost and the rank proxy ───────────────────────────────────
           cost:
             w_time: 0.0
@@ -104,10 +118,11 @@ demo_catching_controller:
               q_v: [1.0, 1.0, 1.0]
               sigma_T: 0.1
               # Reference relative velocity at the catch node, catch frame
-              # [m/s]: straight down the approach axis at the middle of the
-              # hand's closing-speed band (robot.hand.docking.speed, c
-              # 0.5 – 0.6 m/s). on_configure parks when it leaves the band.
-              nu_ref: [0.0, 0.0, -0.55]
+              # [m/s]: straight down the approach axis, inside the hand's
+              # closing-speed band (robot.hand.docking.speed — where the 2.0
+              # m/s comes from, E1-F19). on_configure parks when it leaves
+              # the band.
+              nu_ref: [0.0, 0.0, -2.0]
               q_rho_f: [1.0e+3, 1.0e+3]
               q_nu_f: [5.0, 5.0, 5.0]
               w_impact: 0.0
@@ -119,14 +134,27 @@ demo_catching_controller:
               lambda1_v: 1.0
               lambda2_v: 0.0
             capture:
-              # Chance rows on: the lateral, speed and timing rows are
-              # tightened by the ball's covariance at the catch node.
-              chance: true
+              # Chance rows OFF (E1-F19, #745). `true` tightens the lateral,
+              # speed and timing rows by the ball's covariance at the catch
+              # node; in sim that leaves the lateral set empty (its nearest
+              # face is 2.3 mm from rho_ref) and every first solve ended at
+              # the deadline. Off, 178 of 280 first solves converged.
+              # Off also means the catch node's covariance is not CHECKED: a
+              # wake whose covariance is not valid yet is no longer refused
+              # (kCovarianceInvalid) and is planned on the mean.
+              chance: false
               face_eps: 0.0125
               speed_faces: 8
               eps_nu: 0.01
               eps_sigma: 1.0e-4
             timing:
+              # Read only with capture.chance on: the closure-timing row is
+              # one of the chance rows, so with chance off it is not built
+              # whatever this says. NOTE for whoever turns chance back on:
+              # robot.hand.docking.closure (delta_lo / delta_hi) is on the
+              # entrance axis of the IDENTIFIED closing speed (0.55 m/s),
+              # while delta_0 follows core.catch.nu_ref (2.0 m/s) — the window
+              # sits ~9 ms late for that speed (s_ent / c: 12.7 against 3.5 ms).
               row: true
               eps_t: 0.05
             stop:

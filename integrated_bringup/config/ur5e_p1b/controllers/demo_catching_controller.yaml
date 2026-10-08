@@ -285,10 +285,21 @@ demo_catching_controller:
           # c_ent_max and a_brake are the approach envelope's design values,
           # not identified: the closing speed allowed at the entrance (the
           # band's top) and the relative braking the envelope assumes.
+          # c_cap_max / c_ent_max are NOT the identified band's top (0.6, #742):
+          # E1-F19 (#745) widened them in sim. At 0.5 - 0.6 the planner
+          # publishes, the arm follows and the hand holds 3 of 50 — at t_c the
+          # hand is ~30 mm ahead of the plan along the approach axis, which at
+          # 0.55 m/s is ~60 ms against a closure due ~10 ms after t_c. Held of
+          # 50 at a reference closing speed of 0.55 / 1.0 / 1.5 / 2.0 / 2.5
+          # m/s: 3 / 5 / 15 / 27 / 20 (seed 801), and 29 at 2.0 on seed 821
+          # (grid x mpc the same day: 23, 32). The top is where grid x mpc
+          # holds in sim (1.0 - 2.1 m/s at the entrance). The identification
+          # flew nothing there: hold rate, closure window and lateral set at
+          # these speeds are not measured.
           speed:
             c_min: 0.5
-            c_cap_max: 0.6
-            c_ent_max: 0.6
+            c_cap_max: 2.1
+            c_ent_max: 2.1
             v_perp_max: 0.125
             a_brake: 5.0
           # When the closure has to be complete, measured from the entrance
