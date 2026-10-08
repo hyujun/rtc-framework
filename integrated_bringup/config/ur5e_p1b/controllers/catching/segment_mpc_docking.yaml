@@ -10,9 +10,11 @@
 # under planner.segment.mpc_docking, and the planner reads its design values
 # from here alone.
 #
-# PROVISIONAL, SIM ONLY. The values below are starting values, not tuned
-# (E1-F19). The QP solver allocates inside a solve (#654), so this planner must
-# not run on a SCHED_FIFO planner thread on hardware until that is closed.
+# PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the chance rows (off),
+# publish.slack_v_max and core.catch.nu_ref; the other values are starting
+# values, not tuned. The QP solver allocates inside a solve (#654), so this
+# planner must not run on a SCHED_FIFO planner thread on hardware until that
+# is closed.
 demo_catching_controller:
   catching:
     planner:
@@ -52,10 +54,15 @@ demo_catching_controller:
             # Re-solve at a grid point the followed segment already starts at.
             same_point: true
           # The corridor and the speed envelope are soft in the problem: the
-          # largest slack a published segment may lean on [m], [m/s].
+          # largest slack a published segment may lean on — the corridor's in
+          # [m], the envelope's in the units of its row (c^2, [m^2/s^2]).
+          # slack_v_max (E1-F19, #745): at 0 every converged first solve was
+          # withheld (envelope slack 0.11 - 8.05 with the band at 0.5 - 0.6);
+          # at the shipped band 113 of 352 published segments still lean on
+          # it (largest 2.3).
           publish:
             slack_c_max: 0.0
-            slack_v_max: 0.0
+            slack_v_max: 10.0
           # The docking core's tuning (MpcDockingSegmentCoreParams) — what is NOT
           # a property of the hand. The hand's identified values (the entrance
           # plane, the corridor, the lateral set, the speed band, the closure
@@ -78,10 +85,11 @@ demo_catching_controller:
               q_v: [1.0, 1.0, 1.0]
               sigma_T: 0.1
               # Reference relative velocity at the catch node, catch frame
-              # [m/s]: straight down the approach axis at the middle of the
-              # hand's closing-speed band (robot.hand.docking.speed, c
-              # 0.5 – 0.6 m/s). on_configure parks when it leaves the band.
-              nu_ref: [0.0, 0.0, -0.55]
+              # [m/s]: straight down the approach axis, inside the hand's
+              # closing-speed band (robot.hand.docking.speed — where the 2.0
+              # m/s comes from, E1-F19). on_configure parks when it leaves
+              # the band.
+              nu_ref: [0.0, 0.0, -2.0]
               q_rho_f: [1.0e+3, 1.0e+3]
               q_nu_f: [5.0, 5.0, 5.0]
               w_impact: 0.0
@@ -93,15 +101,20 @@ demo_catching_controller:
               lambda1_v: 1.0
               lambda2_v: 0.0
             capture:
-              # Chance rows on: the lateral, speed and timing rows are
-              # tightened by the ball's covariance at the catch node.
-              chance: true
+              # Chance rows OFF (E1-F19, #745). `true` tightens the lateral,
+              # speed and timing rows by the ball's covariance at the catch
+              # node; in sim that leaves the lateral set empty (its nearest
+              # face is 2.3 mm from rho_ref) and every first solve ended at
+              # the deadline. Off, 178 of 280 first solves converged.
+              chance: false
               face_eps: 0.0125
               speed_faces: 8
               eps_nu: 0.01
               eps_sigma: 1.0e-4
             timing:
-              row: true
+              # Off with the chance rows (E1-F19): one switch was not tried
+              # without the other.
+              row: false
               eps_t: 0.05
             stop:
               w_perp: 0.0

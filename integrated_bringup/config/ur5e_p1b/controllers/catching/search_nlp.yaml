@@ -10,9 +10,11 @@
 # parks). Every key here is under planner.search.nlp, and the nlp search reads
 # its design values from here alone.
 #
-# PROVISIONAL, SIM ONLY. The values below are starting values, not tuned
-# (E1-F19). The QP solver allocates inside a solve (#654), so this search must
-# not run on a SCHED_FIFO planner thread on hardware until that is closed.
+# PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the core's chance rows
+# (off) and core.catch.nu_ref, as in the mpc_docking planner's core; the other
+# values are starting values, not tuned. The QP solver allocates inside a solve
+# (#654), so this search must not run on a SCHED_FIFO planner thread on
+# hardware until that is closed.
 demo_catching_controller:
   catching:
     planner:
@@ -104,10 +106,11 @@ demo_catching_controller:
               q_v: [1.0, 1.0, 1.0]
               sigma_T: 0.1
               # Reference relative velocity at the catch node, catch frame
-              # [m/s]: straight down the approach axis at the middle of the
-              # hand's closing-speed band (robot.hand.docking.speed, c
-              # 0.5 – 0.6 m/s). on_configure parks when it leaves the band.
-              nu_ref: [0.0, 0.0, -0.55]
+              # [m/s]: straight down the approach axis, inside the hand's
+              # closing-speed band (robot.hand.docking.speed — where the 2.0
+              # m/s comes from, E1-F19). on_configure parks when it leaves
+              # the band.
+              nu_ref: [0.0, 0.0, -2.0]
               q_rho_f: [1.0e+3, 1.0e+3]
               q_nu_f: [5.0, 5.0, 5.0]
               w_impact: 0.0
@@ -119,15 +122,20 @@ demo_catching_controller:
               lambda1_v: 1.0
               lambda2_v: 0.0
             capture:
-              # Chance rows on: the lateral, speed and timing rows are
-              # tightened by the ball's covariance at the catch node.
-              chance: true
+              # Chance rows OFF (E1-F19, #745). `true` tightens the lateral,
+              # speed and timing rows by the ball's covariance at the catch
+              # node; in sim that leaves the lateral set empty (its nearest
+              # face is 2.3 mm from rho_ref) and every first solve ended at
+              # the deadline. Off, 178 of 280 first solves converged.
+              chance: false
               face_eps: 0.0125
               speed_faces: 8
               eps_nu: 0.01
               eps_sigma: 1.0e-4
             timing:
-              row: true
+              # Off with the chance rows (E1-F19): one switch was not tried
+              # without the other.
+              row: false
               eps_t: 0.05
             stop:
               w_perp: 0.0
