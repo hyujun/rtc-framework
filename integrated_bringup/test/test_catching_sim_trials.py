@@ -9,6 +9,7 @@ that picked the wrong device or roster cannot pass both.
 
 import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -17,6 +18,7 @@ from integrated_bringup.catching_sim_trials import (
     _cycle_closed,
     alignment_error,
     load_arm_profile,
+    reset_fault_name,
     trial_throws,
 )
 from rtc_tools.utils.controller_config import load_controller_config
@@ -82,3 +84,20 @@ def test_a_cycle_is_closed_by_a_re_arm_after_retreat_whatever_follows():
     assert _cycle_closed(["TRACKING", "APPROACH", "HOLD", "RETREAT", "ARMED", "TRACKING"])
     assert not _cycle_closed(["TRACKING", "APPROACH", "RETREAT"])
     assert not _cycle_closed(["ARMED", "TRACKING", "APPROACH"])
+
+
+def test_the_fault_reset_names_the_controller_not_its_config_key():
+    # Measured 2026-10-08 (E1-F19): the driver sent the config key, the CM
+    # answered "'demo_catching_controller' is not the active controller
+    # ('DemoCatchingController')", the latch stayed up and the unit ended at
+    # the next trial's homing.
+    listed = [
+        SimpleNamespace(name="DemoJointController", type="demo_joint_controller"),
+        SimpleNamespace(name="DemoCatchingController", type="demo_catching_controller"),
+    ]
+    assert reset_fault_name(listed) == "DemoCatchingController"
+    assert reset_fault_name(listed, "demo_joint_controller") == "DemoJointController"
+    # Not listed, or listed without a name: no name to send, and no guess.
+    assert reset_fault_name(listed[:1]) is None
+    assert reset_fault_name([SimpleNamespace(name="", type="demo_catching_controller")]) is None
+    assert reset_fault_name([]) is None

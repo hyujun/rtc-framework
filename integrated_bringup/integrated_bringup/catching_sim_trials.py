@@ -732,6 +732,23 @@ def _cycle_closed(modes: list[str]) -> bool:
     return "ARMED" in modes[modes.index("RETREAT") + 1 :]
 
 
+def reset_fault_name(controllers, config_key: str = CATCHING) -> str | None:
+    """``controller_name`` for /rtc_cm/reset_fault, off a /rtc_cm/list_controllers reply.
+
+    The CM compares the request against the active controller's ``Name()``
+    (``ControllerState.name``), not against its config key
+    (``ControllerState.type``): the two differ, and a request that names the
+    key is refused — the latch stays up and the next trial cannot arm. None
+    when the reply does not list the controller. ``demo_gui.latch_clear``
+    answers the same question from the GUI's catalog entries; this reads the
+    reply itself so that a headless driver does not import the GUI package.
+    """
+    for state in controllers:
+        if state.type == config_key and state.name:
+            return state.name
+    return None
+
+
 # ── host load watch (#601) ────────────────────────────────────────────────────
 
 HOST_WATCH_MODES = ("off", "warn", "abort")
@@ -957,7 +974,7 @@ def _make_driver(profile: ArmProfile, args):
     from std_srvs.srv import Trigger
 
     from rtc_msgs.msg import CatchingState
-    from rtc_msgs.srv import LaunchBall, ResetFault
+    from rtc_msgs.srv import LaunchBall, ListControllers, ResetFault
 
     class TrialDriver(Node):
         def __init__(self) -> None:
@@ -970,6 +987,9 @@ def _make_driver(profile: ArmProfile, args):
             self.launch_cli = self.create_client(LaunchBall, "/sim/launch_ball_at")
             self.reset_ball_cli = self.create_client(Trigger, "/sim/reset_ball")
             self.reset_fault_cli = self.create_client(ResetFault, "/rtc_cm/reset_fault")
+            self.list_controllers_cli = self.create_client(
+                ListControllers, "/rtc_cm/list_controllers"
+            )
             self.param_cli = self.create_client(
                 SetParameters, f"/{CATCHING}/{CATCHING}/set_parameters"
             )
@@ -1103,8 +1123,14 @@ def _make_driver(profile: ArmProfile, args):
             t0 = time.time()
             self.spin_for(0.1)
             if self.mode_name() == "FAULT":
+                listed = self.call(self.list_controllers_cli, ListControllers.Request())
+                name = reset_fault_name(listed.controllers if listed is not None else ())
+                if name is None:
+                    raise RuntimeError(
+                        f"FAULT is latched and /rtc_cm/list_controllers does not list {CATCHING}"
+                    )
                 req = ResetFault.Request()
-                req.controller_name = CATCHING
+                req.controller_name = name
                 res = self.call(self.reset_fault_cli, req)
                 self.get_logger().warn(f"reset_fault before the trial -> {res}")
                 self.spin_for(0.2)
