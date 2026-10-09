@@ -76,15 +76,9 @@ demo_catching_controller:
             w_late: 0.0
             w_gamma: 5.0
             penalty: 10.0
-          workspace:
-            # Decision I (2026-09-23), model world frame (= this robot's base): the box
-            # around the S3.5b fine grid's gate-open candidates — their p_c and their
-            # stopping points at both ends of the γ window, 967 candidates, recomputed
-            # 2026-09-23 with the shipped wait pose — plus 0.1 m. A JUDGEMENT gate:
-            # p_c and p_stop must both lie inside. Provisional.
-            catch_box:
-              min: [0.19, -0.30, 0.21]
-              max: [1.04, 0.31, 0.96]
+          # No catch box (MD-94, 2026-10-09): the search does not judge WHERE the
+          # catch point is — a point the IK reaches inside the joint limits is a
+          # candidate. `workspace` is a removed key: the controller parks on it.
           # ── Hand allowance (L3 §6 `planner.search.grid.hand.*`, TBD-HAND-04) ─────────────────
           # STALE COMMENT FIXED (docs correction, S7 commit 1): as of S6,
           # `ParsePlannerParams` DOES read both keys into `PlannerParams::d_eff` /

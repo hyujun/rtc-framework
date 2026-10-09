@@ -76,16 +76,9 @@ demo_catching_controller:
             w_late: 0.0
             w_gamma: 5.0
             penalty: 10.0
-          workspace:
-            # Decision I (2026-09-23), model world frame. This arm's S3.5b gate map is
-            # EMPTY (no gate-open candidate), so the box is the kinematically
-            # accepted catch points of a 2534-candidate map (2026-09-23, shipped wait
-            # pose) plus 0.1 m in x and z; that map sampled one azimuth, so the
-            # lateral extent is p1b's ±0.30 m (both arms are symmetric about base z,
-            # S3.5b). Provisional — a guess with a stated source, not a measurement.
-            catch_box:
-              min: [-0.96, -0.30, 0.00]
-              max: [1.05, 0.30, 1.10]
+          # No catch box (MD-94, 2026-10-09): the search does not judge WHERE the
+          # catch point is — a point the IK reaches inside the joint limits is a
+          # candidate. `workspace` is a removed key: the controller parks on it.
           # ── Pocket geometry (L3 §6 `planner.search.grid.hand.*`, TBD-HAND-04) ────────────────
           # STALE COMMENT FIXED (docs correction, S7 commit 1): as of S6,
           # `ParsePlannerParams` DOES read both keys into `PlannerParams::d_eff` /
