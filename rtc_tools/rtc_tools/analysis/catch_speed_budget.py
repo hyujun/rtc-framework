@@ -419,6 +419,15 @@ class ArmKinematics:
         self._pin.framesForwardKinematics(self.model, self.data, q)
         return np.array(self.data.oMf[self.frame_id].translation)
 
+    def joint_origins(self, q_arm: np.ndarray) -> np.ndarray:
+        """``(n, 3)`` origins of the arm joints in the model world at ``q_arm``, in
+        ``joint_names`` order."""
+        q, _ = self._full(np.asarray(q_arm, dtype=float))
+        self._pin.forwardKinematics(self.model, self.data, q)
+        return np.array(
+            [self.data.oMi[self.model.getJointId(name)].translation for name in self.joint_names]
+        )
+
     def frame_axis(self, q_arm: np.ndarray) -> np.ndarray:
         """The frame's +z (approach axis) in the model world."""
         q, _ = self._full(q_arm)

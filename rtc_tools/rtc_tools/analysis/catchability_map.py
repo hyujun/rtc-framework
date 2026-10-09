@@ -286,17 +286,23 @@ def drag_acceleration(velocity_w: np.ndarray, params: BallParams) -> np.ndarray:
 
     Quadratic in the speed, so ``|v|`` is recomputed here from whatever velocity
     it is handed; the RK4 substages must not share a precomputed speed.
+    ``velocity_w`` is one velocity or ``(n, 3)`` of them, one row each.
     """
     v = np.asarray(velocity_w, dtype=float)
-    speed = float(np.linalg.norm(v))
-    if not speed > MIN_AIRSPEED_M_S:
-        return np.zeros(3)
     # Written out rather than via ``params.drag_k_per_m`` so the grouping mirrors
     # the C++ force law; the two are numerically the same quantity.
     scale = (
         0.5 * params.air_density_kg_m3 * params.drag_coefficient * params.area_m2 / params.mass_kg
     )
-    return -(scale * speed) * v
+    if v.ndim == 1:
+        speed = float(np.linalg.norm(v))
+        if not speed > MIN_AIRSPEED_M_S:
+            return np.zeros(3)
+        return -(scale * speed) * v
+    speed = np.linalg.norm(v, axis=-1)
+    drag = -(scale * speed)[..., None] * v
+    drag[~(speed > MIN_AIRSPEED_M_S)] = 0.0
+    return drag
 
 
 def ball_acceleration(
@@ -304,7 +310,8 @@ def ball_acceleration(
     params: BallParams,
     gravity_w: Sequence[float] = GRAVITY_W_M_S2,
 ) -> np.ndarray:
-    """Gravity plus quadratic drag. Spin is assumed zero, so there is no Magnus term."""
+    """Gravity plus quadratic drag. Spin is assumed zero, so there is no Magnus term.
+    One velocity, or ``(n, 3)`` of them (:func:`drag_acceleration`)."""
     return np.asarray(gravity_w, dtype=float) + drag_acceleration(velocity_w, params)
 
 

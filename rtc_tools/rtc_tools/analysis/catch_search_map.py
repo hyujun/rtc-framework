@@ -17,6 +17,10 @@ this module owns is everything around it:
    written as a ``catching_throw_list/1`` file (``catching_throw_list``, the
    format both sides read and write through), which the sim trial driver
    throws in file order: the offline map and the sim judge the same launches.
+   A list entry may carry a ``screen`` label (``catch_throw_design`` writes
+   it: a necessary condition no search can pass). Such a throw is refused by
+   its label and handed to no search — unless ``--judge-screened`` asks for
+   the searches' own verdict on it, which is how the label is checked.
 2. **The wakes.** The prediction a wake is handed is the flight model itself:
    the shipped drag law, integrated by ``catchability_map.integrate_flight``.
    A wake stands every vision period from the detection delay after release,
@@ -47,6 +51,12 @@ this module owns is everything around it:
    and a sim table — search verdict × published or not × ``truth_success`` —
    from ``catching_trials`` output joined by ``throw_id``. Descriptive counts
    only; nothing here is a pass or a fail.
+6. **The shards.** The throws are cut into shards, each with its own wake file
+   and its own runs of the binary, on ``--jobs`` processes. A throw's verdict
+   depends on that throw alone, so the cut changes no verdict.
+7. **The provenance.** The summary says what its verdicts are the verdicts of:
+   the composed tree's hash, the files it was composed from, the checkout, the
+   binary, the binary's reach bound, the estimator profile's horizon.
 
 The map's axis values are defined without the search: a throw's flight time
 and terminal speed are those of the flight model at its closest approach to
@@ -83,15 +93,19 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import hashlib
 import heapq
 import json
 import math
+import multiprocessing
 import random
+import shutil
 import subprocess
 import sys
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -143,7 +157,7 @@ from rtc_tools.analysis.catching_trials import (
     most_frequent_reason,
     vision_frame_from_io,
 )
-from rtc_tools.analysis.derive_accel_limits import load_robot_params
+from rtc_tools.analysis.derive_accel_limits import _git_dirty, _git_head, load_robot_params
 
 SEARCH_EXECUTABLE = "catch_search_batch"
 SEARCH_KINDS = ("grid", "nlp")
@@ -170,6 +184,14 @@ RELEASE_NS = 1_000_000_000
 # A throw that was given no wake (the ball left flight before the first one):
 # refused, by a label that is not a search reason.
 REASON_NO_WAKE = "no_wake"
+
+# How worker processes are started: afresh, not forked — the parent holds the
+# threads of its numeric libraries, and a fork of a threaded process can hang.
+WORKER_CONTEXT = multiprocessing.get_context("spawn")
+
+# A throw-list entry's label saying no search can accept the throw, by a
+# condition its designer derived (``catch_throw_design``). "" or absent: none.
+SCREEN_KEY = "screen"
 
 SEGMENT_MODES = ("closed_form", "mpc", "mpc_docking")
 TBD_LITERAL = "TBD"
@@ -983,6 +1005,22 @@ def _box_complete(limits: DeviceLimits) -> bool:
     )
 
 
+def arm_lead_s(catching: Mapping) -> float:
+    """The lead a search runs the arm on (``t_arm_s`` of both bindings) [s].
+
+    ``DemoCatchingController::SetupTrajInput``: ``joint_cmd.lag.T_arm`` in
+    whole ns, and zero unless the lead axis is on and ``T_arm`` is resolved.
+    """
+    lead_enable = _written(catching, "joint_cmd.lag.lead_enable", "whether the lead axis is on")
+    if not isinstance(lead_enable, bool):
+        raise BindingError(f"catching.joint_cmd.lag.lead_enable = {lead_enable!r} must be a bool")
+    t_arm = _scalar(
+        _written(catching, "joint_cmd.lag.T_arm", "the arm lag the lead axis runs on"),
+        "joint_cmd.lag.T_arm",
+    )
+    return float(int(t_arm * 1e9)) * 1e-9 if lead_enable and not math.isnan(t_arm) else 0.0
+
+
 def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBinding:
     """What a controller configured with ``catching`` on ``robot`` hands the ``kind`` search.
 
@@ -1029,16 +1067,7 @@ def search_binding(catching: Mapping, robot: RobotFacts, kind: str) -> SearchBin
     control_dt = 1.0 / robot.control_rate_hz
     dt_source = ("1 / control_rate (robot config)", "RTControllerInterface::GetDefaultDt")
 
-    # SetupTrajInput: the lead is T_arm in whole ns, and zero unless the lead
-    # axis is on and T_arm is resolved.
-    lead_enable = _written(catching, "joint_cmd.lag.lead_enable", "whether the lead axis is on")
-    if not isinstance(lead_enable, bool):
-        raise BindingError(f"catching.joint_cmd.lag.lead_enable = {lead_enable!r} must be a bool")
-    t_arm = _scalar(
-        _written(catching, "joint_cmd.lag.T_arm", "the arm lag the lead axis runs on"),
-        "joint_cmd.lag.T_arm",
-    )
-    t_arm_s = float(int(t_arm * 1e9)) * 1e-9 if lead_enable and not math.isnan(t_arm) else 0.0
+    t_arm_s = arm_lead_s(catching)
     t_arm_source = (
         "joint_cmd.lag.T_arm in whole ns when joint_cmd.lag.lead_enable is true and T_arm is "
         "resolved, else 0",
@@ -1718,6 +1747,14 @@ def sim_search_class(plan_verdict: str) -> str | None:
     return None
 
 
+def sim_reason_layer(reason: str) -> str:
+    """Which layer a sim throw's ``plan_reject`` names: the text before its first ``:``
+    (``search``, ``segment``, ``cycle`` — ``catching_trials._wake_reject_reason``), or
+    ``other`` for a reason without one."""
+    layer, colon, _ = str(reason).partition(":")
+    return layer if colon and layer else "other"
+
+
 def _truth_cell(value) -> bool | None:
     if isinstance(value, bool | np.bool_):
         return bool(value)
@@ -1750,7 +1787,9 @@ def sim_table(
     from its CSV). A trial with an ``invalid_reason`` is a rig failure and is
     left out, as is one without a ``plan_verdict``; both are counted. The table
     has the three rows accepted · published / accepted · not published /
-    refused, each split by ``truth_success``. With ``verdicts`` (an offline
+    refused, each split by ``truth_success``; the not-published row is split
+    once more by the layer that kept the plan back (:func:`sim_reason_layer`:
+    the segment planner, the cycle, the search). With ``verdicts`` (an offline
     map's), every remaining trial that carries a ``throw_id`` is also compared
     by it: the sim's "accepted" against the offline "accepted".
     """
@@ -1758,6 +1797,7 @@ def sim_table(
     table = {c: {"truth_success": 0, "truth_fail": 0, "truth_unknown": 0} for c in SIM_CLASSES}
     counts = {"trials": len(sim_rows), "invalid": 0, "unjudged": 0, "without_throw_id": 0}
     not_published: Counter = Counter()
+    not_published_layers: dict[str, dict[str, int]] = {}
     refused: Counter = Counter()
     no_search = 0
     agree = {"both_accepted": 0, "both_refused": 0, "offline_only": [], "sim_only": []}
@@ -1779,6 +1819,10 @@ def sim_table(
         reason = str(row.get("plan_reject") or "")
         if cls == SIM_ACCEPTED_NOT_PUBLISHED:
             not_published[reason] += 1
+            layer = not_published_layers.setdefault(
+                sim_reason_layer(reason), dict.fromkeys(table[cls], 0)
+            )
+            layer[cell] += 1
         elif cls == SIM_REFUSED:
             refused[reason or verdict] += 1
             no_search += verdict == PLAN_VERDICT_NO_SEARCH
@@ -1789,6 +1833,7 @@ def sim_table(
             "plan_verdict": verdict,
             "sim_class": cls,
             "sim_reason": reason,
+            "sim_layer": sim_reason_layer(reason) if cls == SIM_ACCEPTED_NOT_PUBLISHED else "",
             "truth_success": truth,
         }
         if throw_id is None:
@@ -1816,6 +1861,7 @@ def sim_table(
         "table": table,
         "refused_without_a_search": int(no_search),
         "not_published_by_reason": _ranked(not_published),
+        "not_published_by_layer": dict(sorted(not_published_layers.items())),
         "refused_by_reason": _ranked(refused),
     }
     if offline is not None:
@@ -1887,14 +1933,21 @@ def _axis(text: str) -> list[float]:
     return [float(v) for v in text.replace(",", " ").split()]
 
 
-def map_summary(verdicts: Sequence[Mapping], rows: Sequence[Mapping], bins: int) -> dict:
+def map_summary(
+    verdicts: Sequence[Mapping],
+    rows: Sequence[Mapping],
+    bins: int,
+    discrete_axes: Sequence[str] = THROW_AXES,
+    binned_axes: Sequence[str] = FLIGHT_AXES,
+) -> dict:
     """One search's descriptive summary over its per-throw rows (``rows``: the verdicts
-    with each throw's axis values)."""
+    with each throw's axis values). ``discrete_axes`` are grouped by their values,
+    ``binned_axes`` into ``bins`` equal bins."""
     accepted = [r for r in rows if r["accepted"]]
     by_axis = {}
-    for axis in THROW_AXES:
+    for axis in discrete_axes:
         by_axis[axis] = acceptance_by_axis(rows, axis)
-    for axis in FLIGHT_AXES:
+    for axis in binned_axes:
         edges = axis_edges(rows, axis, bins)
         by_axis[axis] = acceptance_by_axis(rows, axis, edges) if edges else []
     return {
@@ -1911,8 +1964,11 @@ def map_summary(verdicts: Sequence[Mapping], rows: Sequence[Mapping], bins: int)
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+# ── The setup every tool of the map shares ────────────────────────────────────
+
+
+def add_setup_arguments(ap: argparse.ArgumentParser) -> None:
+    """The arguments :func:`load_setup` reads: the profile, its layers and the ball."""
     ap.add_argument(
         "--config-dir",
         type=Path,
@@ -1936,10 +1992,6 @@ def main(argv: list[str] | None = None) -> int:
         "(repeatable): a sim overlay, an evaluation overlay. Pass the files the run launched "
         "with, or the map describes another configuration",
     )
-    ap.add_argument("--search", nargs="+", choices=SEARCH_KINDS, required=True)
-    ap.add_argument("--out-dir", type=Path, required=True)
-    ap.add_argument("--judge", type=Path, help=f"path to {SEARCH_EXECUTABLE} (default: ament)")
-
     # ── the ball: the same arguments as the kinematic map, none defaulted ──
     ap.add_argument("--ball-config", type=Path, nargs="+", required=True)
     ap.add_argument("--drag-coefficient", type=float, required=True)
@@ -1947,60 +1999,34 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--air-density", type=float, required=True, dest="air_density_kg_m3")
     ap.add_argument("--air-density-source", required=True)
 
-    # ── the throws ──
-    ap.add_argument(
-        "--throws-file",
-        type=Path,
-        help=f"judge the throws of a {THROW_LIST_SCHEMA} file instead of designing a grid",
-    )
-    for axis in THROW_AXES:
-        ap.add_argument(f"--{_GRID_KEYWORD[axis].replace('_', '-')}", type=_axis, dest=axis)
-    ap.add_argument(
-        "--grid-origin",
-        choices=["arm_base", "wait_catch_point"],
-        default="arm_base",
-        help="the vertical axis distance, azimuth and aim deviation are measured about: the "
-        "arm base (the kinematic map's grid) or the catch point of the wait pose",
-    )
-    ap.add_argument("--sample", type=int, default=0, help="also a Latin-hypercube sample of N")
-    ap.add_argument("--sample-seed", type=int, help="its seed (required with --sample)")
 
-    # ── the wakes ──
-    ap.add_argument("--detection-delay-s", type=float, required=True, help="release → first wake")
-    ap.add_argument("--vision-period-s", type=float, required=True, help="wake → next wake")
-    ap.add_argument(
-        "--prediction-horizon-s",
-        type=float,
-        required=True,
-        help="how far a prediction reaches (the estimator profile's prediction.horizon_s)",
-    )
-    ap.add_argument(
-        "--prediction-dt-s",
-        type=float,
-        help="prediction spacing (default: the tree's prediction.dt_expected)",
-    )
-    ap.add_argument("--horizon-s", type=float, default=2.5, help="flight horizon after release")
-    ap.add_argument("--step-s", type=float, default=0.002, help="largest RK4 step")
-    ap.add_argument(
-        "--min-catch-height-m",
-        type=float,
-        default=0.0,
-        help="sim-world height below which the ball is no longer in flight",
-    )
+@dataclass(frozen=True, eq=False)
+class MapSetup:
+    """A profile composed for the map: the tree, the model, the frames and the ball."""
 
-    # ── joins and bins ──
-    ap.add_argument("--gate-map", type=Path, help="a catch_gate_map output dir to join against")
-    ap.add_argument(
-        "--sim-trials",
-        type=Path,
-        nargs="+",
-        help="catching_trials.csv file(s) of a sim run of the throw list",
-    )
-    ap.add_argument("--axis-bins", type=int, default=8, help="bins of the flight axes")
-    args = ap.parse_args(argv)
+    config_dir: Path
+    profile: object
+    layers: list[Path]
+    catching: Mapping
+    robot_params: Mapping
+    sub_model: str
+    catch_frame: str
+    wait_pose: list[float]
+    artifacts: object
+    facts: RobotFacts
+    base_frame: str
+    base_t_world: np.ndarray
+    fk: CatchFrameFk
+    catch_point_w: np.ndarray
+    ball: BallParams
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+
+def load_setup(args: argparse.Namespace, out_dir: Path, searches: Sequence[str]) -> MapSetup:
+    """Compose the profile ``args`` names and write its model config into ``out_dir``.
+
+    ``searches`` are the searches the caller will bind: the hand device's
+    limits are read only when ``nlp`` is one of them.
+    """
     config_dir = Path(args.config_dir)
     profile = load_profile(config_dir, args.controller)
     if profile.hand_device is None:
@@ -2042,7 +2068,7 @@ def main(argv: list[str] | None = None) -> int:
         facts = robot_facts(
             robot_params,
             profile.arm_device,
-            profile.hand_device if "nlp" in args.search else None,
+            profile.hand_device if "nlp" in searches else None,
             artifacts.urdf_text,
             sub_model,
         )
@@ -2072,15 +2098,520 @@ def main(argv: list[str] | None = None) -> int:
         air_density_kg_m3=args.air_density_kg_m3,
         air_density_source=args.air_density_source,
     )
+    return MapSetup(
+        config_dir=config_dir,
+        profile=profile,
+        layers=layers,
+        catching=catching,
+        robot_params=robot_params,
+        sub_model=sub_model,
+        catch_frame=catch_frame,
+        wait_pose=wait_pose,
+        artifacts=artifacts,
+        facts=facts,
+        base_frame=base_frame,
+        base_t_world=base_t_world,
+        fk=fk,
+        catch_point_w=catch_point_w,
+        ball=ball,
+    )
+
+
+def write_catching_tree(path: Path, catching: Mapping) -> None:
+    """The composed tree as the file the binary's ``--params`` reads."""
+    Path(path).write_text(yaml.safe_dump({"catching": catching}, sort_keys=False))
+
+
+REACH_BOUND_SCHEMA = "catch_reach_bound/1"
+
+
+def reach_bound(
+    judge: Path, *, model_config: Path, sub_model: str, catch_frame: str, params: Path
+) -> dict:
+    """The reach sphere both searches pre-filter on, as the binary reports it
+    (``--print-reach-bound``): ``centre`` (MODEL WORLD), ``radius`` (None when the
+    chain gives no bound), ``tolerance``, ``joints``, ``unbounded_by``."""
+    argv = [
+        str(judge),
+        "--model-config",
+        str(model_config),
+        "--sub-model",
+        sub_model,
+        "--catch-frame",
+        catch_frame,
+        "--params",
+        str(params),
+        "--print-reach-bound",
+    ]
+    done = subprocess.run(argv, capture_output=True, text=True, env=_child_env(), check=False)
+    lines = [line for line in done.stdout.splitlines() if line.strip()]
+    if done.returncode != 0 or not lines:
+        tail = "\n".join(done.stderr.splitlines()[-20:])
+        raise RuntimeError(
+            f"{Path(judge).name} --print-reach-bound exited {done.returncode} (an "
+            f"{SEARCH_EXECUTABLE} built before the flag existed refuses it)\nstderr:\n{tail}"
+        )
+    try:
+        bound = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        bound = None
+    if not isinstance(bound, dict) or bound.get("schema") != REACH_BOUND_SCHEMA:
+        raise RuntimeError(f"unexpected reach bound document: {lines[-1]}")
+    return bound
+
+
+# ── What a throw design's screens are measured against ────────────────────────
+
+
+def lead_floors(catching: Mapping) -> dict[str, dict]:
+    """The smallest lead each search asks of a candidate, from the composed tree.
+
+    - grid — ``GridCatchSearchParams::LeadMin``: ``planner.search.grid.slice.
+      t_lead_min``, or ``planner.freeze.T_freeze`` when that key is open. NaN
+      when both are open: that search then judges no candidate.
+    - nlp — a candidate's catch instant is at least ``t_lead_min`` after the
+      search's start node, which stands ``T_arm`` (the lead axis), the wake's
+      budget and the start lead after the wake (``NlpCatchSearch::Plan``,
+      ``t_0``): their sum. A term that is absent or ``TBD`` makes the
+      controller run a value compiled into it, which is not copied here: the
+      floor is then NaN and ``unknown`` says which key.
+
+    A search whose map is not in the tree has no entry.
+    """
+    out: dict[str, dict] = {}
+    if isinstance(_lookup(catching, "planner.search.grid"), Mapping):
+        own = _decision(catching, "planner.search.grid.slice.t_lead_min")
+        freeze = _decision(catching, "planner.freeze.T_freeze")
+        out["grid"] = {
+            "lead_s": freeze if math.isnan(own) else own,
+            "source": "planner.search.grid.slice.t_lead_min, or planner.freeze.T_freeze when "
+            "it is open",
+            "mirrors": "GridCatchSearchParams::LeadMin",
+        }
+    if isinstance(_lookup(catching, "planner.search.nlp"), Mapping):
+        need = "the nlp search's key"
+        entry: dict = {
+            "source": "planner.search.nlp.t_lead_min + t_arm_s (the binding's) + "
+            "planner.search.nlp.budget.budget_s + planner.search.nlp.budget.start_lead_s",
+            "mirrors": "NlpCatchSearch::Plan (t_0) and its candidate window",
+        }
+        try:
+            terms = {
+                path: _resolved(catching, path, need)
+                for path in (
+                    "planner.search.nlp.t_lead_min",
+                    "planner.search.nlp.budget.budget_s",
+                    "planner.search.nlp.budget.start_lead_s",
+                )
+            }
+            terms["t_arm_s"] = arm_lead_s(catching)
+            entry.update(lead_s=float(sum(terms.values())), terms=terms)
+        except BindingError as exc:
+            entry.update(lead_s=math.nan, unknown=str(exc))
+        out["nlp"] = entry
+    return out
+
+
+def common_lead_floor(floors: Mapping[str, Mapping]) -> float:
+    """The one lead floor a time screen may use for every search of ``floors``: the
+    smallest of them. NaN — no time screen — when a search's floor is ``unknown``
+    (it could be below the others) or no search has a finite one. A search whose
+    floor is NaN without being unknown judges no candidate and bounds nothing."""
+    if any("unknown" in floor for floor in floors.values()):
+        return math.nan
+    finite = [f["lead_s"] for f in floors.values() if math.isfinite(f["lead_s"])]
+    return min(finite) if finite else math.nan
+
+
+def screen_reach(catching: Mapping, bound: Mapping) -> dict:
+    """The sphere a reach screen tests a flight against, from the binary's reach bound.
+
+    Both searches refuse a target outside ``radius + tolerance`` of the bound's
+    centre. The grid search's target is the ball; the nlp search's stands the
+    entrance offset ``robot.hand.docking.s_ent`` from it, so a ball up to that
+    much farther out can still have a target inside. The screen's radius is
+    the bound's radius, the larger of the two searches' tolerances and that
+    offset, added: outside it no search has a target within reach.
+    """
+    radius = bound.get("radius")
+    tolerances = [float(bound["tolerance"])]
+    tolerances += [float(v) for v in (bound.get("tolerance_by_search") or {}).values()]
+    offset = 0.0
+    if isinstance(_lookup(catching, "planner.search.nlp"), Mapping):
+        s_ent = _decision(catching, "robot.hand.docking.s_ent")
+        offset = 0.0 if math.isnan(s_ent) else abs(s_ent)
+    tolerance = max(t for t in tolerances if math.isfinite(t))
+    return {
+        "bound_radius_m": radius,
+        "tolerance_m": tolerance,
+        "entrance_offset_m": offset,
+        "screen_radius_m": math.inf if radius is None else float(radius) + tolerance + offset,
+        "source": "catch_search_batch --print-reach-bound (ComputeReachBound, the larger of the "
+        "searches' ik.eps_pos) + |robot.hand.docking.s_ent| (the nlp target's offset)",
+    }
+
+
+def screen_basis(
+    list_meta: Mapping,
+    catching: Mapping,
+    bound: Mapping | None,
+    world_t_model: np.ndarray,
+    detection_delay_s: float,
+) -> dict | None:
+    """Whether a throw list's ``screen`` labels hold for THIS configuration.
+
+    A design labels a throw against a reach sphere, a lead floor and a detection
+    delay (its ``meta.design``). The labels are necessary conditions here too
+    when this configuration's sphere is no larger and at the same centre, its
+    lead floor no smaller and its first wake no earlier. None when the list
+    carries no such basis or the binary gave no bound: then nothing is checked.
+    ``differs`` lists what breaks the labels.
+    """
+    design = list_meta.get("design")
+    if not isinstance(design, Mapping) or bound is None:
+        return None
+    reach, lead = design.get("reach"), design.get("lead")
+    if not isinstance(reach, Mapping) or not isinstance(lead, Mapping):
+        return None
+
+    def number(value) -> float:
+        return math.nan if value is None else float(value)
+
+    here_reach = screen_reach(catching, bound)
+    here_centre = transform_point(np.array(bound["centre"], dtype=float), world_t_model)
+    try:
+        here_floor = common_lead_floor(lead_floors(catching))
+    except BindingError:
+        here_floor = math.nan
+    listed_radius = number(reach.get("screen_radius_m"))
+    listed_radius = math.inf if math.isnan(listed_radius) else listed_radius
+    listed_floor = number(lead.get("floor_s"))
+    listed_delay = number(lead.get("detection_delay_s"))
+    listed_centre = np.array(reach.get("centre_world_m") or [math.nan] * 3, dtype=float)
+    differs = []
+    if not here_reach["screen_radius_m"] <= listed_radius + 1e-12:
+        differs.append("the reach sphere is larger here")
+    if not np.allclose(here_centre, listed_centre, rtol=0.0, atol=1e-9):
+        differs.append("the reach sphere stands elsewhere here")
+    if math.isfinite(listed_floor) and not here_floor >= listed_floor - 1e-12:
+        differs.append("the lead floor is smaller (or unknown) here")
+    if not detection_delay_s >= listed_delay - 1e-12:
+        differs.append("the first wake is earlier here")
+    return {
+        "list": {
+            "screen_radius_m": listed_radius,
+            "centre_world_m": listed_centre.tolist(),
+            "lead_floor_s": listed_floor,
+            "detection_delay_s": listed_delay,
+        },
+        "here": {
+            "screen_radius_m": here_reach["screen_radius_m"],
+            "centre_world_m": here_centre.tolist(),
+            "lead_floor_s": here_floor,
+            "detection_delay_s": detection_delay_s,
+        },
+        "differs": differs,
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def repo_state() -> dict | None:
+    """The commit of the checkout this module is run from and whether tracked files of
+    it are changed; None when the module is not inside a git checkout (an install
+    that copied it)."""
+    here = Path(__file__).resolve().parent
+    dirty = _git_dirty(here)
+    if dirty is None:
+        return None
+    return {"commit": _git_head(here), "dirty": dirty}
+
+
+def estimator_record(profile_path: Path, prediction_horizon_s: float) -> dict:
+    """An estimator profile's prediction horizon next to the one the wakes were given."""
+    doc = json.loads(Path(profile_path).read_text())
+    horizon = (doc.get("prediction") or {}).get("horizon_s")
+    return {
+        "profile": str(Path(profile_path).resolve()),
+        "sha256": _sha256_file(profile_path),
+        "prediction_horizon_s": horizon,
+        "wake_prediction_horizon_s": prediction_horizon_s,
+        "agree": isinstance(horizon, int | float)
+        and abs(float(horizon) - prediction_horizon_s) < 1e-9,
+    }
+
+
+def provenance(
+    setup: MapSetup,
+    *,
+    judge: Path,
+    params_path: Path,
+    bound: Mapping | None,
+    estimator: Mapping | None,
+) -> dict:
+    """What a map's verdicts are the verdicts OF: the composed tree's hash, the files
+    it was composed from, the checkout, the binary, its reach bound, the estimator
+    profile the wakes were sized by."""
+    return {
+        "catching_tree_sha256": _sha256_file(params_path),
+        "layers": [
+            {"path": str(Path(p).resolve()), "sha256": _sha256_file(p)} for p in setup.layers
+        ],
+        "repo": repo_state(),
+        "judge": {"path": str(Path(judge).resolve()), "sha256": _sha256_file(judge)},
+        "reach_bound": dict(bound) if bound is not None else None,
+        "estimator": dict(estimator) if estimator is not None else None,
+    }
+
+
+# ── Shards: the wakes and the searches of part of the throws ──────────────────
+
+
+@dataclass(frozen=True, eq=False)
+class ShardJob:
+    """One shard's work: its throws, what their wakes are made from, what the binary is
+    run with, and where its files go."""
+
+    index: int
+    throws: list[dict]
+    ball: BallParams
+    timing: WakeTiming
+    model_t_world: np.ndarray
+    target_w: np.ndarray
+    horizon_s: float
+    judge: Path
+    model_config: Path
+    sub_model: str
+    catch_frame: str
+    params: Path
+    bindings: Mapping[str, Path]
+    wakes_path: Path
+    out_paths: Mapping[str, Path]
+
+
+def run_shard(job: ShardJob) -> dict:
+    """The wakes of a shard's throws, and each search's verdicts on them.
+
+    A throw's wakes and its verdict depend on that throw alone (the binary
+    resets the search before every throw), so the shards of a run can be made
+    in any number and any order. What comes back is reduced: one verdict per
+    throw, each accepted throw's plan row, the flight axes — not the wake rows,
+    which stay in the shard's CSV.
+    """
+    started = time.monotonic()
+    wakes: list[Wake] = []
+    flight_rows = {}
+    for throw in job.throws:
+        # One integration per throw gives both its wakes and its map axes;
+        # the integrator's step is --step-s (timing.max_step_s).
+        throw_wake_list, flight_rows[throw["throw_id"]] = throw_flight(
+            throw, job.ball, job.timing, job.model_t_world, job.target_w, horizon_s=job.horizon_s
+        )
+        wakes += throw_wake_list
+    job.wakes_path.parent.mkdir(parents=True, exist_ok=True)
+    job.wakes_path.write_text("\n".join(wake_csv_lines(wakes)) + "\n")
+    wakes_given = Counter(w.throw_id for w in wakes)
+    out = {
+        "index": job.index,
+        "flight_rows": flight_rows,
+        "wakes_given": dict(wakes_given),
+        "wakes": len(wakes),
+        "wakes_wall_s": time.monotonic() - started,
+        "searches": {},
+    }
+    del wakes
+    ids = [t["throw_id"] for t in job.throws]
+    for kind, binding in job.bindings.items():
+        run = run_search_batch(
+            job.judge,
+            kind,
+            model_config=job.model_config,
+            sub_model=job.sub_model,
+            catch_frame=job.catch_frame,
+            params=job.params,
+            binding=binding,
+            wakes=job.wakes_path,
+            out=job.out_paths[kind],
+        )
+        entry: dict = {"refusal": run.refusal, "wall_s": run.wall_s, "argv": run.argv}
+        if run.rows is not None:
+            verdicts = throw_verdicts(ids, run.rows, wakes_given)
+            wall_us: Counter = Counter()
+            if run.rows and "wall_us" in run.rows[0]:
+                for row in run.rows:
+                    wall_us[int(row["throw_id"])] += float(row["wall_us"])
+            for verdict in verdicts:
+                # The wall clock of the Plan calls the search ran on the throw.
+                verdict["search_wall_us"] = wall_us.get(verdict["throw_id"], math.nan)
+            entry.update(
+                verdicts=verdicts, plans=accepted_plans(run.rows), wake_rows=len(run.rows)
+            )
+        out["searches"][kind] = entry
+    return out
+
+
+def shard_throws(throws: Sequence[dict], size: int) -> list[list[dict]]:
+    """``throws`` cut into consecutive shards of at most ``size``; one shard for ``size`` 0."""
+    if size <= 0 or size >= len(throws):
+        return [list(throws)]
+    return [list(throws[i : i + size]) for i in range(0, len(throws), size)]
+
+
+def _concatenate_csv(parts: Sequence[Path], out: Path) -> None:
+    with Path(out).open("w") as handle:
+        for i, part in enumerate(parts):
+            with Path(part).open() as source:
+                header = source.readline()
+                if i == 0:
+                    handle.write(header)
+                shutil.copyfileobj(source, handle)
+
+
+def screened_verdict(throw_id: int, label: str) -> dict:
+    """The verdict of a throw no search was run on: refused, by its screen label."""
+    return {
+        "throw_id": int(throw_id),
+        "accepted": False,
+        "wakes_given": 0,
+        "wakes_run": 0,
+        "first_accept_wake": None,
+        "plan_after_release_s": math.nan,
+        "t_c_s": math.nan,
+        "lead_s": math.nan,
+        "reject_reason": label,
+        "wake_reasons": {},
+        "search_wall_us": math.nan,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    add_setup_arguments(ap)
+    ap.add_argument("--search", nargs="+", choices=SEARCH_KINDS, required=True)
+    ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--judge", type=Path, help=f"path to {SEARCH_EXECUTABLE} (default: ament)")
+
+    # ── the throws ──
+    ap.add_argument(
+        "--throws-file",
+        type=Path,
+        help=f"judge the throws of a {THROW_LIST_SCHEMA} file instead of designing a grid",
+    )
+    for axis in THROW_AXES:
+        ap.add_argument(f"--{_GRID_KEYWORD[axis].replace('_', '-')}", type=_axis, dest=axis)
+    ap.add_argument(
+        "--grid-origin",
+        choices=["arm_base", "wait_catch_point"],
+        default="arm_base",
+        help="the vertical axis distance, azimuth and aim deviation are measured about: the "
+        "arm base (the kinematic map's grid) or the catch point of the wait pose",
+    )
+    ap.add_argument("--sample", type=int, default=0, help="also a Latin-hypercube sample of N")
+    ap.add_argument("--sample-seed", type=int, help="its seed (required with --sample)")
+    ap.add_argument(
+        "--judge-screened",
+        action="store_true",
+        help=f"run the searches on the throws that carry a `{SCREEN_KEY}` label as well (a "
+        "throw design's necessary conditions, checked against the searches themselves); "
+        "without it such a throw is refused by its label and no search sees it",
+    )
+
+    # ── the wakes ──
+    ap.add_argument("--detection-delay-s", type=float, required=True, help="release → first wake")
+    ap.add_argument("--vision-period-s", type=float, required=True, help="wake → next wake")
+    ap.add_argument(
+        "--prediction-horizon-s",
+        type=float,
+        required=True,
+        help="how far a prediction reaches (the estimator profile's prediction.horizon_s)",
+    )
+    ap.add_argument(
+        "--estimator-profile",
+        type=Path,
+        help="the estimator's profile JSON: its prediction.horizon_s is recorded next to "
+        "--prediction-horizon-s, and a difference is reported",
+    )
+    ap.add_argument(
+        "--prediction-dt-s",
+        type=float,
+        help="prediction spacing (default: the tree's prediction.dt_expected)",
+    )
+    ap.add_argument("--horizon-s", type=float, default=2.5, help="flight horizon after release")
+    ap.add_argument("--step-s", type=float, default=0.002, help="largest RK4 step")
+    ap.add_argument(
+        "--min-catch-height-m",
+        type=float,
+        default=0.0,
+        help="sim-world height below which the ball is no longer in flight",
+    )
+
+    # ── how the work is cut ──
+    ap.add_argument("--jobs", type=int, default=1, help="shards run at once")
+    ap.add_argument(
+        "--shard-throws",
+        type=int,
+        default=0,
+        help="throws per shard (default: all of them in one with --jobs 1, else a quarter "
+        "of a job's share). The verdicts do not depend on it",
+    )
+    ap.add_argument(
+        "--keep-shards",
+        action="store_true",
+        help="keep shards/ (each shard's wake CSV and search CSV) after they are merged",
+    )
+
+    # ── joins and bins ──
+    ap.add_argument("--gate-map", type=Path, help="a catch_gate_map output dir to join against")
+    ap.add_argument(
+        "--sim-trials",
+        type=Path,
+        nargs="+",
+        help="catching_trials.csv file(s) of a sim run of the throw list",
+    )
+    ap.add_argument("--axis-bins", type=int, default=8, help="bins of the binned axes")
+    args = ap.parse_args(argv)
+    if args.jobs < 1 or args.shard_throws < 0:
+        raise SystemExit("--jobs must be >= 1 and --shard-throws >= 0")
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    setup = load_setup(args, out_dir, args.search)
+    catching, profile, facts, fk = setup.catching, setup.profile, setup.facts, setup.fk
+    sub_model, catch_frame, wait_pose = setup.sub_model, setup.catch_frame, setup.wait_pose
+    base_frame, base_t_world, catch_point_w = (
+        setup.base_frame,
+        setup.base_t_world,
+        setup.catch_point_w,
+    )
+    artifacts, ball, layers, config_dir = (
+        setup.artifacts,
+        setup.ball,
+        setup.layers,
+        setup.config_dir,
+    )
 
     # ── throws ──
     axes = {axis: getattr(args, axis) for axis in THROW_AXES}
+    discrete_axes, binned_axes = THROW_AXES, FLIGHT_AXES
+    unlaunchable: list[dict] = []
     if args.throws_file is not None:
         if any(v is not None for v in axes.values()) or args.sample:
             raise SystemExit("--throws-file replaces the grid axes and --sample")
         throws, list_meta = read_throw_list(args.throws_file)
-        design = {"throws_file": str(Path(args.throws_file).resolve()), "meta": list_meta}
+        design = {
+            "throws_file": str(Path(args.throws_file).resolve()),
+            "meta": {k: v for k, v in list_meta.items() if k != "unlaunchable"},
+        }
         sample: list[dict] = []
+        # A throw design names the axes its throws are summarised along and
+        # the throws it screened before any launch existed.
+        named = list_meta.get("axes")
+        if isinstance(named, Mapping):
+            discrete_axes = tuple(named.get("discrete") or ())
+            binned_axes = tuple(named.get("binned") or FLIGHT_AXES)
+        unlaunchable = [dict(entry) for entry in list_meta.get("unlaunchable") or []]
     else:
         missing = [f"--{_GRID_KEYWORD[a].replace('_', '-')}" for a, v in axes.items() if not v]
         if missing:
@@ -2111,9 +2642,15 @@ def main(argv: list[str] | None = None) -> int:
         }
         throws = [*throws, *sample]
     list_meta_out = {"tool": "rtc_tools.analysis.catch_search_map", "design": _jsonable(design)}
+    if args.throws_file is not None:
+        # The list read is the list written: what a later run reads off its meta
+        # (the summary axes, the throws without a launch, the screens' basis)
+        # stays where it was.
+        list_meta_out = {**list_meta, "judged_from": design["throws_file"]}
     write_throw_list(out_dir / "throw_list.json", throws, list_meta_out)
     if sample:
         write_throw_list(out_dir / "throw_list_sample.json", sample, list_meta_out)
+    judged = [t for t in throws if args.judge_screened or not t.get(SCREEN_KEY)]
 
     # ── wakes ──
     dt_pred = args.prediction_dt_s
@@ -2132,27 +2669,131 @@ def main(argv: list[str] | None = None) -> int:
         floor_world_z_m=args.min_catch_height_m,
         max_step_s=args.step_s,
     )
-    started = time.monotonic()
-    wakes: list[Wake] = []
-    flight_rows = {}
-    for throw in throws:
-        # One integration per throw gives both its wakes and its map axes;
-        # the integrator's step is --step-s (timing.max_step_s).
-        throw_wake_list, flight_rows[throw["throw_id"]] = throw_flight(
-            throw, ball, timing, fk.model_t_world, catch_point_w, horizon_s=args.horizon_s
-        )
-        wakes += throw_wake_list
-    wakes_path = out_dir / "wakes.csv"
-    wakes_path.write_text("\n".join(wake_csv_lines(wakes)) + "\n")
-    wakes_wall = time.monotonic() - started
-    wakes_given = Counter(w.throw_id for w in wakes)
 
     params_path = out_dir / "catching_tree.yaml"
-    params_path.write_text(yaml.safe_dump({"catching": catching}, sort_keys=False))
+    write_catching_tree(params_path, catching)
     judge = find_judge(args.judge, SEARCH_EXECUTABLE)
+    estimator = None
+    if args.estimator_profile is not None:
+        estimator = estimator_record(args.estimator_profile, args.prediction_horizon_s)
+        if not estimator["agree"]:
+            print(
+                f"NOTE: {args.estimator_profile} predicts {estimator['prediction_horizon_s']} s "
+                f"ahead, the wakes {args.prediction_horizon_s} s",
+                file=sys.stderr,
+            )
+    try:
+        bound = reach_bound(
+            judge,
+            model_config=artifacts.model_config_path,
+            sub_model=sub_model,
+            catch_frame=catch_frame,
+            params=params_path,
+        )
+    except RuntimeError as exc:
+        # A map does not need the bound; only its provenance records it.
+        bound = None
+        print(f"NOTE: no reach bound recorded — {exc}", file=sys.stderr)
+    basis = None
+    if args.throws_file is not None and any(t.get(SCREEN_KEY) for t in throws):
+        basis = screen_basis(list_meta, catching, bound, fk.world_t_model, args.detection_delay_s)
+        if basis is None:
+            print(
+                "NOTE: the list's screen labels come without the sphere and lead floor they "
+                "were derived against, so they are not checked against this configuration",
+                file=sys.stderr,
+            )
+        elif basis["differs"] and not args.judge_screened:
+            raise SystemExit(
+                "the list's screen labels do not hold for this configuration — "
+                f"{'; '.join(basis['differs'])} (list {basis['list']}, here {basis['here']}). "
+                "Design the throws for it, or pass --judge-screened so the searches judge them"
+            )
+
+    bindings: dict[str, SearchBinding] = {}
+    binding_paths: dict[str, Path] = {}
+    for kind in args.search:
+        try:
+            bindings[kind] = search_binding(catching, facts, kind)
+        except BindingError as exc:
+            raise SystemExit(f"binding ({kind}): {exc}") from exc
+        binding_paths[kind] = out_dir / f"binding_{kind}.yaml"
+        binding_paths[kind].write_text(bindings[kind].yaml_text())
+        (out_dir / f"binding_{kind}_sources.yaml").write_text(
+            yaml.safe_dump(bindings[kind].sources, sort_keys=False, allow_unicode=True, width=100)
+        )
+
+    # ── shards ──
+    size = args.shard_throws
+    if size == 0 and args.jobs > 1:
+        size = max(1, math.ceil(len(judged) / (4 * args.jobs)))
+    shards = shard_throws(judged, size)
+    single = len(shards) == 1
+    shard_root = out_dir / "shards"
+
+    def shard_dir(index: int) -> Path:
+        return out_dir if single else shard_root / f"{index:05d}"
+
+    jobs = [
+        ShardJob(
+            index=i,
+            throws=shard,
+            ball=ball,
+            timing=timing,
+            model_t_world=fk.model_t_world,
+            target_w=catch_point_w,
+            horizon_s=args.horizon_s,
+            judge=judge,
+            model_config=artifacts.model_config_path,
+            sub_model=sub_model,
+            catch_frame=catch_frame,
+            params=params_path,
+            bindings=binding_paths,
+            wakes_path=shard_dir(i) / "wakes.csv",
+            out_paths={kind: shard_dir(i) / f"search_{kind}.csv" for kind in args.search},
+        )
+        for i, shard in enumerate(shards)
+    ]
+    # Nothing of an earlier run in this directory is left beside the new files.
+    shutil.rmtree(shard_root, ignore_errors=True)
+    if not single:
+        (out_dir / "wakes.csv").unlink(missing_ok=True)
+    started = time.monotonic()
+    results: list[dict | None] = [None] * len(jobs)
+    if args.jobs == 1 or single:
+        for job in jobs:
+            results[job.index] = run_shard(job)
+    else:
+        with ProcessPoolExecutor(max_workers=args.jobs, mp_context=WORKER_CONTEXT) as pool:
+            pending = {pool.submit(run_shard, job): job.index for job in jobs}
+            for done, future in enumerate(as_completed(pending), start=1):
+                results[pending[future]] = future.result()
+                print(
+                    f"shard {done}/{len(jobs)} done, {time.monotonic() - started:.0f} s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    elapsed = time.monotonic() - started
+    flight_rows: dict[int, dict] = {}
+    wakes_total = 0
+    wakes_wall = 0.0
+    for result in results:
+        flight_rows.update(result["flight_rows"])
+        wakes_total += result["wakes"]
+        wakes_wall += result["wakes_wall_s"]
+    if not single:
+        for kind in args.search:
+            parts = [job.out_paths[kind] for job in jobs if job.out_paths[kind].is_file()]
+            if parts:
+                _concatenate_csv(parts, out_dir / f"search_{kind}.csv")
+        if not args.keep_shards:
+            shutil.rmtree(shard_root, ignore_errors=True)
 
     summary: dict = {
         "tool": "rtc_tools.analysis.catch_search_map",
+        "reading": "the verdict of this configuration's search, offline: the clock is stopped, "
+        "the covariance is zero and no park condition of a controller is applied — more "
+        "optimistic than a sim run of the same throws",
         "config_dir": str(config_dir.resolve()),
         "controller": profile.controller,
         "layers": [str(p) for p in layers],
@@ -2176,57 +2817,74 @@ def main(argv: list[str] | None = None) -> int:
             "sources": dict(ball.sources),
         },
         "design": design,
+        "provenance": provenance(
+            setup, judge=judge, params_path=params_path, bound=bound, estimator=estimator
+        ),
         "wake_timing": {**dataclasses.asdict(timing), "release_ns": RELEASE_NS},
-        "throws": len(throws),
-        "wakes": len(wakes),
+        "throws": len(throws) + len(unlaunchable),
+        "throws_judged": len(judged),
+        "throws_screened": {
+            "with_a_launch": sum(1 for t in throws if t.get(SCREEN_KEY)),
+            "without_a_launch": len(unlaunchable),
+            "judged": bool(args.judge_screened),
+            "basis": basis,
+        },
+        "wakes": wakes_total,
         "wakes_wall_s": wakes_wall,
+        "shards": {"count": len(jobs), "jobs": args.jobs, "elapsed_s": elapsed},
         "searches": {},
     }
 
     verdicts_by_kind: dict[str, list[dict]] = {}
     rows_by_kind: dict[str, list[dict]] = {}
     for kind in args.search:
-        try:
-            binding = search_binding(catching, facts, kind)
-        except BindingError as exc:
-            raise SystemExit(f"binding ({kind}): {exc}") from exc
-        binding_path = out_dir / f"binding_{kind}.yaml"
-        binding_path.write_text(binding.yaml_text())
-        (out_dir / f"binding_{kind}_sources.yaml").write_text(
-            yaml.safe_dump(binding.sources, sort_keys=False, allow_unicode=True, width=100)
-        )
-        run = run_search_batch(
-            judge,
-            kind,
-            model_config=artifacts.model_config_path,
-            sub_model=sub_model,
-            catch_frame=catch_frame,
-            params=params_path,
-            binding=binding_path,
-            wakes=wakes_path,
-            out=out_dir / f"search_{kind}.csv",
-        )
-        entry: dict = {"binding": binding.document, "wall_s": run.wall_s, "argv": run.argv}
+        parts = [result["searches"][kind] for result in results]
+        entry: dict = {
+            "binding": bindings[kind].document,
+            "wall_s": sum(part["wall_s"] for part in parts),
+            # One shard's command line; the others differ in --wakes and --out only.
+            "argv": parts[0]["argv"],
+            "argv_runs": len(parts),
+        }
         summary["searches"][kind] = entry
-        if run.rows is None:
-            entry["refused_configuration"] = run.refusal
-            print(f"{kind}: {run.refusal}", file=sys.stderr)
+        refusal = next((part["refusal"] for part in parts if part["refusal"] is not None), None)
+        if refusal is not None:
+            entry["refused_configuration"] = refusal
+            print(f"{kind}: {refusal}", file=sys.stderr)
             continue
-        verdicts = throw_verdicts([t["throw_id"] for t in throws], run.rows, wakes_given)
-        rows = [
-            {
-                **{k: v for k, v in throw.items() if k not in ("pos", "vel", "omega")},
-                **flight_rows[throw["throw_id"]],
-                **verdict,
-            }
-            for throw, verdict in zip(throws, verdicts, strict=True)
-        ]
+        judged_verdicts = {v["throw_id"]: v for part in parts for v in part["verdicts"]}
+        plans = {k: v for part in parts for k, v in part["plans"].items()}
+        verdicts, rows = [], []
+        for throw in throws:
+            throw_id = throw["throw_id"]
+            verdict = judged_verdicts.get(throw_id) or screened_verdict(
+                throw_id, throw[SCREEN_KEY]
+            )
+            verdicts.append(verdict)
+            rows.append(
+                {
+                    **{k: v for k, v in throw.items() if k not in ("pos", "vel", "omega")},
+                    **flight_rows.get(throw_id, {}),
+                    **verdict,
+                }
+            )
+        for entry_row in unlaunchable:
+            verdict = screened_verdict(entry_row["throw_id"], str(entry_row.get(SCREEN_KEY)))
+            verdicts.append(verdict)
+            rows.append({**entry_row, **verdict})
         _write_rows(out_dir / f"verdicts_{kind}.csv", rows)
         verdicts_by_kind[kind], rows_by_kind[kind] = verdicts, rows
-        entry.update(map_summary(verdicts, rows, args.axis_bins))
+        entry.update(map_summary(verdicts, rows, args.axis_bins, discrete_axes, binned_axes))
+        entry["wake_rows"] = sum(part["wake_rows"] for part in parts)
+        entry["search_wall_us"] = distribution(
+            v["search_wall_us"] for v in judged_verdicts.values()
+        )
+        entry["screened"] = {
+            "by_label": _ranked(Counter(str(r[SCREEN_KEY]) for r in rows if r.get(SCREEN_KEY))),
+            "accepted": sorted(r["throw_id"] for r in rows if r.get(SCREEN_KEY) and r["accepted"]),
+        }
         # FK of each accepted plan's posture against the plan's catch point:
         # the binary's joint order and frame, read back through this tool's.
-        plans = accepted_plans(run.rows)
         nv = len(facts.arm.joint_names)
         entry["fk_q_star_to_p_c_m"] = distribution(
             float(

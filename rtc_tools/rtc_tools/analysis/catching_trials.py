@@ -881,6 +881,10 @@ class CatchFrameFk:
             :3, :3
         ] @ rotation_model
 
+    def joint_origins(self, q: np.ndarray) -> np.ndarray:
+        """``(n, 3)`` origins of the arm joints in the MODEL WORLD at arm posture ``q``."""
+        return self._arm.joint_origins(q)
+
     def to_model(self, p_world: np.ndarray) -> np.ndarray:
         return transform_point(p_world, self.model_t_world)
 

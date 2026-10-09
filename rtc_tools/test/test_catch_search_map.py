@@ -1100,3 +1100,406 @@ def test_a_run_reads_the_rows_back_typed(tmp_path):
     assert run.refusal is None
     assert run.rows[0]["nlp_reason"] == "off" and math.isnan(run.rows[0]["t_c_ns"])
     assert run.rows[1]["t_c_ns"] == 1_900_000_000 and run.rows[1]["lead_s"] == 0.7
+
+
+# ── shards, screens, provenance ───────────────────────────────────────────────
+
+
+def test_shards_are_consecutive_and_one_shard_holds_everything():
+    throws = [{"throw_id": i} for i in range(7)]
+    assert m.shard_throws(throws, 0) == [throws]
+    assert m.shard_throws(throws, 7) == [throws] and m.shard_throws(throws, 9) == [throws]
+    cut = m.shard_throws(throws, 3)
+    assert [[t["throw_id"] for t in shard] for shard in cut] == [[0, 1, 2], [3, 4, 5], [6]]
+
+
+def test_a_screened_throw_is_refused_by_its_label_and_the_summary_takes_its_axes():
+    verdicts = [
+        {**_verdict(0, True), "wakes_given": 3, "wake_reasons": {}, "first_accept_wake": 1},
+        m.screened_verdict(1, "screen:time"),
+    ]
+    assert verdicts[1]["accepted"] is False and verdicts[1]["reject_reason"] == "screen:time"
+    assert verdicts[1]["wakes_given"] == 0 and math.isnan(verdicts[1]["search_wall_us"])
+    rows = [
+        {**verdicts[0], "pass_dx_m": 0.0, "lead_available_s": 0.9, "lead_s": 0.5, "t_c_s": 0.7},
+        {**verdicts[1], "pass_dx_m": 0.2, "lead_available_s": 0.3},
+    ]
+    got = m.map_summary(verdicts, rows, 2, ("pass_dx_m",), ("lead_available_s",))
+    assert got["accepted"] == 1 and got["reasons"]["throws"] == {"screen:time": 1}
+    assert set(got["acceptance_by_axis"]) == {"pass_dx_m", "lead_available_s"}
+    assert [g["rate"] for g in got["acceptance_by_axis"]["pass_dx_m"]] == [1.0, 0.0]
+    assert got["throws_without_a_wake"] == 1
+
+
+def test_the_sim_table_splits_the_unpublished_plans_by_the_layer_that_kept_them():
+    assert m.sim_reason_layer("segment:catch_error/x") == "segment"
+    assert m.sim_reason_layer("cycle:held") == "cycle"
+    assert m.sim_reason_layer("x") == "other" and m.sim_reason_layer("") == "other"
+    sim = [
+        {"idx": 0, "throw_id": "0", "plan_verdict": "withheld", "plan_reject": "segment:slack"},
+        {
+            "idx": 1,
+            "throw_id": "1",
+            "plan_verdict": "withheld",
+            "plan_reject": "segment:catch_error",
+            "truth_success": "False",
+        },
+        {"idx": 2, "throw_id": "2", "plan_verdict": "withheld", "plan_reject": "cycle:held"},
+        {"idx": 3, "throw_id": "3", "plan_verdict": "published", "truth_success": "True"},
+    ]
+    joined, got = m.sim_table(sim)
+    assert got["not_published_by_layer"] == {
+        "cycle": {"truth_success": 0, "truth_fail": 0, "truth_unknown": 1},
+        "segment": {"truth_success": 0, "truth_fail": 1, "truth_unknown": 1},
+    }
+    assert [row["sim_layer"] for row in joined] == ["segment", "segment", "cycle", ""]
+
+
+def test_the_reach_bound_is_the_binarys_last_stdout_line(tmp_path):
+    doc = (
+        '{"schema": "catch_reach_bound/1", "frame": "catch_frame", "sub_model": "arm", '
+        '"centre": [0, 0, 0.16], "radius": 1.1, "tolerance": 0.002, "joints": 6, '
+        '"unbounded_by": ""}'
+    )
+    files = {k: tmp_path / f"{k}.txt" for k in ("model", "params")}
+    binary = _fake_binary(tmp_path, f"echo 'model chatter'\necho '{doc}'\n")
+    bound = m.reach_bound(
+        binary,
+        model_config=files["model"],
+        sub_model="arm",
+        catch_frame="catch_frame",
+        params=files["params"],
+    )
+    assert bound["radius"] == 1.1 and bound["centre"] == [0, 0, 0.16]
+    old = _fake_binary(tmp_path, "echo 'catch_search_batch: unknown argument' >&2\nexit 2\n")
+    with pytest.raises(RuntimeError, match="unknown argument"):
+        m.reach_bound(
+            old,
+            model_config=files["model"],
+            sub_model="arm",
+            catch_frame="catch_frame",
+            params=files["params"],
+        )
+    other = _fake_binary(tmp_path, 'echo \'{"schema": "something/2"}\'\n')
+    with pytest.raises(RuntimeError, match="unexpected reach bound"):
+        m.reach_bound(
+            other,
+            model_config=files["model"],
+            sub_model="arm",
+            catch_frame="catch_frame",
+            params=files["params"],
+        )
+    garbage = _fake_binary(tmp_path, "echo 'not json'\n")
+    with pytest.raises(RuntimeError, match="unexpected reach bound"):
+        m.reach_bound(
+            garbage,
+            model_config=files["model"],
+            sub_model="arm",
+            catch_frame="catch_frame",
+            params=files["params"],
+        )
+
+
+def test_an_estimator_profile_is_recorded_next_to_the_wakes_horizon(tmp_path):
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"prediction": {"horizon_s": 1.0}}))
+    record = m.estimator_record(profile, 1.0)
+    assert record["agree"] and record["prediction_horizon_s"] == 1.0
+    assert len(record["sha256"]) == 64
+    assert not m.estimator_record(profile, 0.8)["agree"]
+    profile.write_text("{}")
+    assert not m.estimator_record(profile, 1.0)["agree"]
+
+
+SCREENED_ID = 1
+UNLAUNCHABLE = {"throw_id": 90, "screen": "screen:shoot_ascending", "pass_dx_m": 0.4}
+
+
+@pytest.fixture(scope="module")
+def screened_list(tmp_path_factory) -> Path:
+    """The shipped grid's throws as a list a throw design would write: one throw
+    carries a screen label, and the meta names one that has no launch."""
+    throws = m.grid_throws(SHIPPED_AXES, origin_xy_m=(0.0, 0.0))
+    for throw in throws:
+        throw["screen"] = "screen:time" if throw["throw_id"] == SCREENED_ID else ""
+    path = tmp_path_factory.mktemp("list") / "throws.json"
+    m.write_throw_list(
+        path,
+        throws,
+        {
+            "axes": {"discrete": ["release_height_m"], "binned": ["flight_time_s"]},
+            "unlaunchable": [UNLAUNCHABLE],
+        },
+    )
+    return path
+
+
+def _run_list(out: Path, throws: Path, *extra: str) -> dict:
+    config = _REPO / "integrated_bringup/config/ur5e_p1b"
+    argv = [
+        "--config-dir", str(config), "--search", "grid", "--out-dir", str(out),
+        "--throws-file", str(throws),
+        "--ball-config", str(config / "mujoco_simulator.yaml"),
+        "--drag-coefficient", "0.55", "--drag-coefficient-source", "test",
+        "--air-density", "1.204", "--air-density-source", "test",
+        "--detection-delay-s", "0.15", "--vision-period-s", "0.05",
+        "--prediction-horizon-s", "1.0", "--horizon-s", "2.0", *extra,
+    ]  # fmt: skip
+    assert m.main(argv) == 0
+    return json.loads((out / "search_map_summary.json").read_text())
+
+
+def _verdict_rows(out: Path) -> list[dict]:
+    with (out / "verdicts_grid.csv").open(newline="") as handle:
+        return [
+            {k: v for k, v in row.items() if k != "search_wall_us"}
+            for row in csv.DictReader(handle)
+        ]
+
+
+def _installed_or_skip():
+    pytest.importorskip("pinocchio")
+    if not (_REPO / "integrated_bringup/config/ur5e_p1b").is_dir():
+        pytest.skip("integrated_bringup config is not beside this checkout")
+    if _installed_search() is None:
+        pytest.skip(f"{m.SEARCH_EXECUTABLE} is not installed (build rtc_controllers)")
+
+
+def test_a_screened_throw_is_not_judged_unless_asked_and_every_throw_has_a_row(
+    screened_list, tmp_path
+):
+    _installed_or_skip()
+    summary = _run_list(tmp_path / "plain", screened_list)
+    rows = _verdict_rows(tmp_path / "plain")
+    assert [int(r["throw_id"]) for r in rows] == [0, 1, 2, 3, 90]
+    by_id = {int(r["throw_id"]): r for r in rows}
+    assert by_id[SCREENED_ID]["reject_reason"] == "screen:time"
+    assert by_id[SCREENED_ID]["wakes_given"] == "0"
+    assert by_id[90]["reject_reason"] == "screen:shoot_ascending"
+    assert by_id[90]["accepted"] == "False" and by_id[90]["pass_dx_m"] == "0.4"
+    assert summary["throws"] == 5 and summary["throws_judged"] == 3
+    assert summary["throws_screened"] == {
+        "with_a_launch": 1,
+        "without_a_launch": 1,
+        "judged": False,
+        "basis": None,  # the labels came without what they were derived against
+    }
+    grid = summary["searches"]["grid"]
+    assert grid["throws"] == 5
+    assert grid["screened"]["by_label"] == {"screen:shoot_ascending": 1, "screen:time": 1}
+    assert grid["screened"]["accepted"] == []
+    # the list's meta names the axes of the summary
+    assert set(grid["acceptance_by_axis"]) == {"release_height_m", "flight_time_s"}
+    # what the verdicts are the verdicts of
+    provenance = summary["provenance"]
+    assert len(provenance["catching_tree_sha256"]) == 64
+    assert provenance["reach_bound"]["schema"] == m.REACH_BOUND_SCHEMA
+    assert provenance["judge"]["sha256"] and provenance["layers"]
+    with (tmp_path / "plain" / "search_grid.csv").open(newline="") as handle:
+        searched = {int(r["throw_id"]) for r in csv.DictReader(handle)}
+    assert searched == {0, 2, 3}
+
+    judged = _run_list(tmp_path / "judged", screened_list, "--judge-screened")
+    assert judged["throws_judged"] == 4 and judged["throws_screened"]["judged"] is True
+    own = {int(r["throw_id"]): r for r in _verdict_rows(tmp_path / "judged")}
+    # the search's own verdict now, the label still on the row
+    assert own[SCREENED_ID]["screen"] == "screen:time"
+    assert own[SCREENED_ID]["reject_reason"] != "screen:time"
+    assert int(own[SCREENED_ID]["wakes_given"]) > 0
+    assert own[90]["reject_reason"] == "screen:shoot_ascending"
+    accepted = judged["searches"]["grid"]["screened"]["accepted"]
+    assert accepted == ([SCREENED_ID] if own[SCREENED_ID]["accepted"] == "True" else [])
+    # the unscreened throws are judged the same either way
+    for throw_id in (0, 2, 3):
+        assert own[throw_id] == by_id[throw_id]
+
+
+def test_the_verdicts_do_not_depend_on_how_the_throws_are_cut_into_shards(screened_list, tmp_path):
+    _installed_or_skip()
+    _run_list(tmp_path / "one", screened_list, "--judge-screened")
+    cut = _run_list(
+        tmp_path / "cut", screened_list, "--judge-screened", "--jobs", "2", "--shard-throws", "1"
+    )
+    assert cut["shards"]["count"] == 4 and cut["shards"]["jobs"] == 2
+    assert _verdict_rows(tmp_path / "cut") == _verdict_rows(tmp_path / "one")
+
+    def wake_rows(out: Path) -> list[str]:
+        # every cell but the last one, the wall clock of the Plan call
+        return [
+            line.rsplit(",", 1)[0] for line in (out / "search_grid.csv").read_text().splitlines()
+        ]
+
+    assert wake_rows(tmp_path / "cut") == wake_rows(tmp_path / "one")
+    assert not (tmp_path / "cut" / "shards").exists()
+    assert (tmp_path / "one" / "wakes.csv").is_file()
+    kept = _run_list(
+        tmp_path / "kept", screened_list, "--jobs", "2", "--shard-throws", "2", "--keep-shards"
+    )
+    assert kept["shards"]["count"] == 2
+    assert (tmp_path / "kept" / "shards" / "00001" / "wakes.csv").is_file()
+
+
+# ── what a throw design's screens are measured against ────────────────────────
+
+
+def _screen_tree() -> dict:
+    return {
+        "planner": {
+            "freeze": {"T_freeze": 0.36},
+            "search": {
+                "grid": {"slice": {"dt": 0.05}},
+                "nlp": {"t_lead_min": 0.40, "budget": {"budget_s": 0.040, "start_lead_s": 0.004}},
+            },
+        },
+        "joint_cmd": {"lag": {"lead_enable": True, "T_arm": 0.05}},
+        "robot": {"hand": {"docking": {"s_ent": 0.007}}},
+    }
+
+
+BOUND = {
+    "radius": 1.1,
+    "tolerance": 0.002,
+    "tolerance_by_search": {"grid": 0.002, "nlp": 0.003},
+    "centre": [0.0, 0.0, 0.16],
+}
+
+
+def test_the_lead_floor_of_each_search_is_read_from_the_tree():
+    floors = m.lead_floors(_screen_tree())
+    assert floors["grid"]["lead_s"] == 0.36
+    assert floors["nlp"]["lead_s"] == pytest.approx(0.40 + 0.05 + 0.040 + 0.004)
+    assert m.common_lead_floor(floors) == 0.36
+    tree = _screen_tree()
+    tree["planner"]["search"]["grid"]["slice"]["t_lead_min"] = 0.5
+    tree["joint_cmd"]["lag"]["lead_enable"] = False
+    floors = m.lead_floors(tree)
+    assert floors["grid"]["lead_s"] == 0.5
+    assert floors["nlp"]["lead_s"] == pytest.approx(0.444)
+    assert m.common_lead_floor(floors) == pytest.approx(0.444)
+
+
+def test_a_search_that_judges_nothing_sets_no_floor_and_an_unknown_one_sets_none_at_all():
+    # T_freeze open: the grid search keeps every candidate out; nlp alone bounds
+    tree = _screen_tree()
+    tree["planner"]["freeze"]["T_freeze"] = "TBD"
+    floors = m.lead_floors(tree)
+    assert math.isnan(floors["grid"]["lead_s"]) and "unknown" not in floors["grid"]
+    assert m.common_lead_floor(floors) == pytest.approx(0.494)
+    # a search whose map is absent has no entry
+    del tree["planner"]["search"]["nlp"]
+    floors = m.lead_floors(tree)
+    assert "nlp" not in floors and math.isnan(m.common_lead_floor(floors))
+    # a key the controller would fill with a built-in value: that search's floor
+    # is not known, so no floor may be used for both
+    for path, value in (
+        (("planner", "search", "nlp", "budget", "start_lead_s"), None),
+        (("planner", "search", "nlp", "t_lead_min"), "TBD"),
+    ):
+        tree = _screen_tree()
+        node = tree
+        for key in path[:-1]:
+            node = node[key]
+        if value is None:
+            del node[path[-1]]
+        else:
+            node[path[-1]] = value
+        floors = m.lead_floors(tree)
+        assert math.isnan(floors["nlp"]["lead_s"])
+        assert ".".join(path) in floors["nlp"]["unknown"]
+        assert floors["grid"]["lead_s"] == 0.36
+        assert math.isnan(m.common_lead_floor(floors))
+
+
+def test_the_screens_sphere_is_the_bound_the_larger_tolerance_and_the_entrance_offset():
+    reach = m.screen_reach(_screen_tree(), BOUND)
+    assert reach["tolerance_m"] == 0.003
+    assert reach["entrance_offset_m"] == 0.007
+    assert reach["screen_radius_m"] == pytest.approx(1.1 + 0.003 + 0.007)
+    tree = _screen_tree()
+    del tree["planner"]["search"]["nlp"]
+    assert m.screen_reach(tree, BOUND)["screen_radius_m"] == pytest.approx(1.103)
+    assert m.screen_reach(tree, {**BOUND, "radius": None})["screen_radius_m"] == math.inf
+    # a binary that reports the selected search's tolerance only
+    old = {k: v for k, v in BOUND.items() if k != "tolerance_by_search"}
+    assert m.screen_reach(tree, old)["screen_radius_m"] == pytest.approx(1.102)
+
+
+def test_a_lists_screens_hold_only_for_a_configuration_no_looser_than_its_own():
+    world_t_model = np.eye(4)
+    world_t_model[2, 3] = 0.7
+
+    def listed(**over) -> dict:
+        base = {"radius": 1.11, "floor": 0.36, "delay": 0.15, "centre": [0.0, 0.0, 0.86]}
+        base.update(over)
+        return {
+            "design": {
+                "reach": {
+                    "screen_radius_m": base["radius"],
+                    "centre_world_m": base["centre"],
+                },
+                "lead": {"floor_s": base["floor"], "detection_delay_s": base["delay"]},
+            }
+        }
+
+    def basis(meta, delay=0.15, tree=None):
+        return m.screen_basis(meta, tree or _screen_tree(), BOUND, world_t_model, delay)
+
+    same = basis(listed())
+    assert same["differs"] == [] and same["here"]["lead_floor_s"] == 0.36
+    assert same["here"]["centre_world_m"] == pytest.approx([0.0, 0.0, 0.86])
+    # looser on the list's side is still a necessary condition here
+    assert basis(listed(radius=1.2, floor=0.2, delay=0.1))["differs"] == []
+    assert basis(listed(radius=1.10))["differs"] == ["the reach sphere is larger here"]
+    assert basis(listed(centre=[0.1, 0.0, 0.86]))["differs"] == [
+        "the reach sphere stands elsewhere here"
+    ]
+    assert basis(listed(floor=0.4))["differs"] == ["the lead floor is smaller (or unknown) here"]
+    assert basis(listed(), delay=0.1)["differs"] == ["the first wake is earlier here"]
+    # a list that screened nothing by time needs no floor here
+    tree = _screen_tree()
+    tree["planner"]["search"]["nlp"]["t_lead_min"] = "TBD"
+    assert basis(listed(), tree=tree)["differs"] == ["the lead floor is smaller (or unknown) here"]
+    assert basis(listed(floor=None), tree=tree)["differs"] == []
+    # nothing to check against
+    assert basis({}) is None and basis({"design": {"axes": {}}}) is None
+    assert m.screen_basis(listed(), _screen_tree(), None, world_t_model, 0.15) is None
+
+
+def test_the_list_a_map_writes_reads_back_as_the_list_it_was_given(screened_list, tmp_path):
+    _installed_or_skip()
+    first = _run_list(tmp_path / "first", screened_list)
+    again = _run_list(tmp_path / "again", tmp_path / "first" / "throw_list.json")
+    assert again["throws"] == first["throws"] == 5
+    assert _verdict_rows(tmp_path / "again") == _verdict_rows(tmp_path / "first")
+    assert set(again["searches"]["grid"]["acceptance_by_axis"]) == {
+        "release_height_m",
+        "flight_time_s",
+    }
+    _, meta = m.read_throw_list(tmp_path / "first" / "throw_list.json")
+    assert meta["unlaunchable"] == [UNLAUNCHABLE]
+    assert meta["judged_from"] == str(screened_list.resolve())
+    # the labels came without their basis: recorded as unchecked
+    assert first["throws_screened"]["basis"] is None
+
+
+def test_screens_derived_for_another_configuration_are_refused_unless_the_searches_judge(
+    tmp_path,
+):
+    _installed_or_skip()
+    throws = m.grid_throws(SHIPPED_AXES, origin_xy_m=(0.0, 0.0))
+    for throw in throws:
+        throw["screen"] = "screen:time" if throw["throw_id"] == SCREENED_ID else ""
+    design = {
+        "reach": {"screen_radius_m": 5.0, "centre_world_m": [0.0, 0.0, 0.8625]},
+        "lead": {"floor_s": 0.36, "detection_delay_s": 0.5},
+    }
+    path = tmp_path / "throws.json"
+    m.write_throw_list(path, throws, {"design": design})
+    with pytest.raises(SystemExit, match="the first wake is earlier here"):
+        _run_list(tmp_path / "refused", path)
+    judged = _run_list(tmp_path / "judged", path, "--judge-screened")
+    assert judged["throws_screened"]["basis"]["differs"] == ["the first wake is earlier here"]
+    design["lead"]["detection_delay_s"] = 0.15
+    m.write_throw_list(path, throws, {"design": design})
+    held = _run_list(tmp_path / "held", path)
+    assert held["throws_screened"]["basis"]["differs"] == []
