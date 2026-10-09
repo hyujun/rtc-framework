@@ -701,6 +701,44 @@ TEST(CatchingRenamedKeys, EachOldPathIsFoundWithAnyValueAndTheNewLayoutIsClean) 
   }
 }
 
+// MD-94: the catch box is gone and nothing took its place. Each of its two
+// keys is found with any value — a box, `TBD`, an empty map — and a tree that
+// writes neither is clean.
+TEST(CatchingRemovedKeys, EachCatchBoxKeyIsFoundWithAnyValueAndATreeWithoutThemIsClean) {
+  using rtc::catching::FindRemovedCatchingKeys;
+  const YAML::Node clean = ValidRoot();
+  EXPECT_TRUE(FindRemovedCatchingKeys(clean).empty());
+  EXPECT_TRUE(FindRemovedCatchingKeys(YAML::Load("planner: {search: {grid: {hand: {d_eff: 0.2}}, "
+                                                 "nlp: {cand_dt: 0.05}}}"))
+                  .empty());
+  for (const char* key : rtc::catching::kRemovedCatchingKeys) {
+    for (const char* value : {"{min: [0, 0, 0], max: [1, 1, 1]}", "TBD", "{}", "~"}) {
+      SCOPED_TRACE(std::string(key) + " = " + value);
+      YAML::Node root = YAML::Clone(clean);
+      SetPath(root, key, YAML::Load(value));
+      const auto found = FindRemovedCatchingKeys(root);
+      ASSERT_EQ(found.size(), 1U);
+      EXPECT_STREQ(found[0], key);
+    }
+  }
+  const auto both = FindRemovedCatchingKeys(
+      YAML::Load("planner: {search: {grid: {workspace: {catch_box: TBD}}, nlp: {catch_box: 3}}}"));
+  ASSERT_EQ(both.size(), 2U);
+  // A tree broken on the way is not a key, and does not throw.
+  EXPECT_TRUE(FindRemovedCatchingKeys(YAML::Load("planner: {search: 3}")).empty());
+  EXPECT_TRUE(FindRemovedCatchingKeys(YAML::Load("3")).empty());
+}
+
+// The pre-#711 path of the box, `planner.workspace`, is reported as renamed —
+// and its note says the key it moved to is gone, so the operator deletes it
+// rather than moving it to a path that parks again.
+TEST(CatchingRemovedKeys, TheOldWorkspacePathSaysToDeleteNotToMove) {
+  const char* note = rtc::catching::RenamedCatchingKeyNote("planner.workspace");
+  ASSERT_NE(note, nullptr);
+  EXPECT_NE(std::string(note).find("removed"), std::string::npos) << note;
+  EXPECT_NE(std::string(note).find("delete"), std::string::npos) << note;
+}
+
 TEST(CatchingRenamedKeys, SupervisorDecelIsJudgedLeafByLeafAndABrokenTreeIsNotAKey) {
   using rtc::catching::FindRenamedCatchingKeys;
   // `supervisor.decel.a_dec` stays: the map it lives in is not an old key.

@@ -4,9 +4,10 @@
 // R-3), the shipped ur5e_p1b planner profile (parsed from the file that
 // ships, not restated), the shipped IK options and D-16 box. Each throw is a
 // ballistic prediction that passes through a catch point the arm CAN reach
-// (the catch frame of a configuration drawn around the wait pose and redrawn
-// until the point lies inside the shipped catch_box, the ball coming into the
-// palm), with the time to the catch point and the ball speed drawn at random.
+// (the catch frame of a configuration drawn around the wait pose, the ball
+// coming into the palm), with the time to the catch point and the ball speed
+// drawn at random. No box bounds the draw: the search judges no catch point by
+// where it is (MD-94).
 // The arm starts at rest at the shipped wait pose. Many of these throws are too
 // fast or too far for the reach and γ rank gates: that is on purpose, since the
 // timing must cover the candidates that get as far as IK and the rollout.
@@ -159,27 +160,20 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   auto traj = std::make_unique<TrajectorySnapshot>();
   auto cov = std::make_unique<CovarianceSnapshot>();
   for (int trial = 0; trial < kThrows; ++trial) {
-    // A reachable catch configuration whose catch frame lies inside the
-    // shipped catch_box: a throw the box refuses outright never reaches the
-    // search and would time nothing (the first draft of this test measured a
-    // 1 us median that way). Drawn around the wait pose, clamped to the limits.
+    // A reachable catch configuration: drawn around the wait pose, clamped to
+    // the limits.
     Eigen::VectorXd q(nv);
-    Eigen::Vector3d p_star = Eigen::Vector3d::Zero();
-    bool in_box = false;
-    for (int attempt = 0; attempt < 500 && !in_box; ++attempt) {
-      for (int j = 0; j < nv; ++j) {
-        const double seed = shipped.params.wait_pose[static_cast<std::size_t>(
-            pm.device_of_model[static_cast<std::size_t>(j)])];
-        const double lo = model->lowerPositionLimit[j];
-        const double hi = model->upperPositionLimit[j];
-        q[j] = std::clamp(seed + kQSpread * (2.0 * uni(rng) - 1.0), lo, hi);
-      }
-      handle->ComputeForwardKinematics(
-          std::span<const double>(q.data(), static_cast<std::size_t>(nv)));
-      p_star = handle->GetFramePosition(frame);
-      in_box = shipped.params.catch_box.Contains(p_star.x(), p_star.y(), p_star.z());
+    for (int j = 0; j < nv; ++j) {
+      const double seed =
+          shipped.params
+              .wait_pose[static_cast<std::size_t>(pm.device_of_model[static_cast<std::size_t>(j)])];
+      const double lo = model->lowerPositionLimit[j];
+      const double hi = model->upperPositionLimit[j];
+      q[j] = std::clamp(seed + kQSpread * (2.0 * uni(rng) - 1.0), lo, hi);
     }
-    ASSERT_TRUE(in_box) << "no catch configuration inside catch_box after 500 draws";
+    handle->ComputeForwardKinematics(
+        std::span<const double>(q.data(), static_cast<std::size_t>(nv)));
+    const Eigen::Vector3d p_star = handle->GetFramePosition(frame);
     const Eigen::Vector3d z = handle->GetFrameRotation(frame).col(2);
     const double speed = 2.0 + 4.0 * uni(rng);
     const Eigen::Vector3d v_c = -speed * z;   // into the palm
@@ -265,8 +259,7 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   RecordProperty("rej_input", static_cast<int>(rejects[1]));
   RecordProperty("rej_ik", static_cast<int>(rejects[2]));
   RecordProperty("rej_manipulability", static_cast<int>(rejects[3]));
-  RecordProperty("rej_workspace", static_cast<int>(rejects[4]));
-  RecordProperty("rej_not_evaluated", static_cast<int>(rejects[5]));
+  RecordProperty("rej_not_evaluated", static_cast<int>(rejects[4]));
   RecordProperty("rank_uncertainty", static_cast<int>(rank_fail[0]));
   RecordProperty("rank_reach", static_cast<int>(rank_fail[1]));
   RecordProperty("rank_gamma", static_cast<int>(rank_fail[2]));

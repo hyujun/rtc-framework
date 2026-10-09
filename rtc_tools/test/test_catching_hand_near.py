@@ -324,6 +324,21 @@ def _write_unit(
     return unit, events
 
 
+def test_the_workspace_reject_count_is_read_from_a_file_that_has_it_and_only_then(tmp_path):
+    """MD-94 (2026-10-09) took the catch box out of the search. A session
+    recorded before that carries ``rej_workspace`` and its count is read; one
+    recorded after has no such column, and no count is reported for it — a 0
+    would read as a gate that ran and refused nothing."""
+    old = tmp_path / "old.csv"
+    old.write_text("plan_valid,rank_reach,rank_gamma,rej_workspace,rej_ik\n1,0,0,4,1\n0,0,0,2,0\n")
+    new = tmp_path / "new.csv"
+    new.write_text("plan_valid,rank_reach,rank_gamma,rej_ik\n1,0,0,1\n0,0,0,0\n")
+    assert hn.planner_events_summary(old)["judge_rejects"]["rej_workspace"] == 6
+    summary = hn.planner_events_summary(new)["judge_rejects"]
+    assert "rej_workspace" not in summary
+    assert summary["rej_ik"] == 1
+
+
 def test_a_unit_round_trips_through_the_loader_and_the_cli(tmp_path):
     a = synthetic_trials(60, 7, arm="reach_first")
     b = synthetic_trials(60, 7, arm="shipped_score")

@@ -3556,7 +3556,6 @@ _PLANNER_EVENTS_COLUMNS = [
     "rej_input",
     "rej_ik",
     "rej_manipulability",
-    "rej_workspace",
     "rej_not_evaluated",
     "budget_hit",
     "search_us",
@@ -3625,7 +3624,6 @@ _PLANNER_EVENTS_COLUMNS = [
     "nlp_rej_follow_window",
     "nlp_rej_lead_short",
     "nlp_rej_ball_invalid",
-    "nlp_rej_workspace",
     "nlp_rej_covariance",
     "nlp_rej_no_source",
     "nlp_rej_ik",
@@ -3996,12 +3994,26 @@ class TestPlannerEventsStatistics:
 
         columns = _planner_events_columns()
         row = _planner_events_row(1, columns=columns)
-        idx = columns.index("rej_workspace")
+        idx = columns.index("rej_ik")
         row[idx] = 2
         df = pd.DataFrame([row], columns=columns)
         print_planner_events_statistics(df)
         out = capsys.readouterr().out
-        assert "rej_workspace×2" in out, out
+        assert "rej_ik×2" in out, out
+
+    def test_a_session_from_before_the_catch_box_was_removed_still_names_its_rejects(self, capsys):
+        """MD-94 (2026-10-09) took `rej_workspace` out of the writer; a file
+        recorded before that carries the column, and its counts are reported."""
+        from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
+
+        columns = _planner_events_columns()
+        assert "rej_workspace" not in columns
+        columns = [*columns, "rej_workspace"]
+        row = [*_planner_events_row(1, columns=columns[:-1]), 3]
+        df = pd.DataFrame([row], columns=columns)
+        print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        assert "rej_workspace×3" in out, out
 
     def test_zero_wakes_says_so_and_does_not_crash(self, capsys):
         from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
@@ -4441,6 +4453,8 @@ class TestPlannerEventsSegmentPlots(_SegmentPlotHelpers):
 
         full = _planner_events_columns()
         old = [c for c in full[: full.index("rollout_us_max") + 1] if c != "search_valid"]
+        # That schema still had the catch box's reject count (removed by MD-94).
+        old.insert(old.index("rej_manipulability") + 1, "rej_workspace")
         assert len(old) == 40
         df = self._frame(old)
         fig = self._fig(df, tmp_path, monkeypatch)

@@ -9,6 +9,7 @@
 // decision unset and named), a bad value → std::invalid_argument naming the
 // full key, the literal `TBD` → unset for a decision and refused for the rest,
 // and an unknown key next to it → refused by name.
+#include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/docking_params.hpp"
 
 #include <gtest/gtest.h>
@@ -217,7 +218,6 @@ std::vector<Entry<HandDockingParams>> HandTable() {
 std::vector<Entry<NlpCatchSearchParams>> NlpOwnTable() {
   using R = NlpCatchSearchParams;
   const std::string p = kNlpRoot;
-  const Kind d = Kind::kDecision;
   const Kind t = Kind::kTuning;
   return {
       {p + "cand_dt", "0.01", "0", t, [](const R& r) { return r.cand_dt; }, 0.01},
@@ -225,9 +225,6 @@ std::vector<Entry<NlpCatchSearchParams>> NlpOwnTable() {
       {p + "t_max", "0.8", "5", t, [](const R& r) { return r.t_max; }, 0.8},
       {p + "cand_capacity", "100", "0", t,
        [](const R& r) { return static_cast<double>(r.cand_capacity); }, 100.0},
-      {p + "catch_box", "{min: [0, -0.2, 0.1], max: [0.6, 0.2, 0.5]}",
-       "{min: [1, 0, 0], max: [0, 1, 1]}", d,
-       [](const R& r) { return r.catch_box.set ? r.catch_box.max[0] : kNaN; }, 0.6},
       {p + "n_pre.min", "3", "0", t, [](const R& r) { return static_cast<double>(r.n_pre_min); },
        3.0},
       {p + "n_pre.max", "5", "25", t, [](const R& r) { return static_cast<double>(r.n_pre_max); },
@@ -481,7 +478,7 @@ TEST(DockingParamsKeys, TheTablesAreNotEmptyAndTheirKeysAreDistinct) {
   const auto mpc = MpcTable();
   EXPECT_EQ(hand.size(), 20u);
   EXPECT_EQ(CoreTable().size(), 57u);
-  EXPECT_EQ(nlp.size(), 24u + CoreTable().size());
+  EXPECT_EQ(nlp.size(), 23u + CoreTable().size());
   EXPECT_EQ(mpc.size(), 13u + CoreTable().size());
   for (const auto& table : {AllGood(hand), AllGood(nlp), AllGood(mpc)}) {
     std::map<std::string, int> seen;
@@ -495,7 +492,6 @@ TEST(DockingParamsKeys, AbsentMapsGiveTheDefaults) {
   const YAML::Node empty = YAML::Load("{}");
   const NlpCatchSearchParams n = kParseNlp(empty);
   const NlpCatchSearchParams dn;
-  EXPECT_FALSE(n.catch_box.set);
   EXPECT_DOUBLE_EQ(n.cand_dt, dn.cand_dt);
   EXPECT_EQ(n.n_stop, dn.n_stop);
   EXPECT_EQ(n.n_stop_blocks, dn.n_stop_blocks);
@@ -567,12 +563,22 @@ TEST(DockingParamsKeys, TheNlpMapToleratesItsTwoForeignKeys) {
   EXPECT_DOUBLE_EQ(p.cand_dt, 0.01);
 }
 
-TEST(DockingParamsKeys, ACatchBoxWithAnUnknownKeyOrMissingEndIsRefused) {
-  for (const char* bad : {"{min: [0, 0, 0], max: [1, 1, 1], zz_unknown: 1}", "{min: [0, 0, 0]}",
-                          "{max: [0, 0, 0]}", "3", "{min: [0, 0], max: [1, 1, 1]}"}) {
-    const std::string y = std::string("{planner: {search: {nlp: {catch_box: ") + bad + "}}}}";
-    const std::string m = ThrownMessage([&] { static_cast<void>(kParseNlp(YAML::Load(y))); });
-    EXPECT_TRUE(Contains(m, "planner.search.nlp.catch_box")) << bad << " -> " << m;
+// MD-94: the search does not judge where the catch point is. The removed
+// `catch_box` is not read and does not make the parser throw, whatever is in
+// it — the binding parks on the key (kRemovedCatchingKeys), which keeps the
+// robot up where a throw here would fail the whole configure.
+TEST(DockingParamsKeys, TheRemovedCatchBoxIsNotReadAndIsReportedAsRemoved) {
+  const NlpCatchSearchParams defaults = kParseNlp(YAML::Load("{}"));
+  for (const char* box : {"{min: [0, -0.2, 0.1], max: [0.6, 0.2, 0.5]}", "TBD", "3",
+                          "{min: [1, 0, 0], max: [0, 1, 1]}", "{zz_unknown: 1}"}) {
+    const std::string y = std::string("{planner: {search: {nlp: {catch_box: ") + box + "}}}}";
+    const YAML::Node tree = YAML::Load(y);
+    NlpCatchSearchParams p;
+    ASSERT_NO_THROW(p = kParseNlp(tree)) << y;
+    EXPECT_DOUBLE_EQ(p.cand_dt, defaults.cand_dt) << y;
+    const auto removed = rtc::catching::FindRemovedCatchingKeys(tree);
+    ASSERT_EQ(removed.size(), 1U) << y;
+    EXPECT_STREQ(removed[0], "planner.search.nlp.catch_box") << y;
   }
 }
 
