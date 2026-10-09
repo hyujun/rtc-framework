@@ -4,7 +4,7 @@
 
 - 배치: 포구 컨트롤러는 `integrated_bringup` 의 `RTControllerInterface` 바인딩 **1개** (`DemoCatchingController`, `RTC_REGISTER_CONTROLLER` — `controller_registration.cpp`), 수치 코어는 `rtc_controllers` 의 `catching` 하위 디렉토리. sim 인프라는 `rtc_mujoco_sim` (robot-agnostic). **새 패키지를 만들지 않는다**
 - 컨트롤러 기반 클래스 · lifecycle · 로깅은 workspace 의 기존 구조를 따른다 ([modification-guide.md](../../../agent_docs/modification-guide.md) "Adding a New Controller"). 본 layer 는 L0–L7 을 그 구조에 **끼워 넣는다**
-- 로봇은 셋이다: `ur5e_p1b` (UR5e + proto_1b, 폐쇄 체인 손, sim + 실기), `iiwa7_leap` (iiwa7 + LEAP, sim), `g1_p1b` (Unitree G1 상체 + proto_1b 오른손, sim). **`g1_p1b` 는 포구 컨트롤러 config 가 없다** — `config/g1_p1b/controllers/` 에는 `demo_joint_controller.yaml`, `demo_shared.yaml` 뿐이다
+- 로봇은 셋이다: `ur5e_p1b` (UR5e + proto_1b, 폐쇄 체인 손, sim + 실기), `iiwa7_leap` (iiwa7 + LEAP, sim), `g1_p1b` (Unitree G1 상체 + proto_1b 오른손, sim). **`g1_p1b` 는 포구 컨트롤러 config 가 없다** — `config/g1_p1b/controllers/` 에는 `demo_joint_controller.yaml`, `demo_dualarm_controller.yaml` (포구 컨트롤러가 아니다 — 두 손 frame 을 목표로 받는 다중 frame CLIK), `demo_shared.yaml` 이 있다
 
 ---
 
@@ -231,6 +231,7 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 - **손 step 패널** (`hand_step.py`). 손 자세는 컨트롤러가 미러한 읽기 전용 파라미터 (`hand.q_pre` · `q_close` · `caging_mask` · `eta_close`) 에서 읽고 파일에 박지 않는다 (화면의 자세와 실행의 자세가 갈리지 않게). ρ 는 `rtc_tools.analysis.hand_close.rho` 를 import 해서 쓴다 — 화면 값과 오프라인 보고서 값이 갈리지 않게 사본을 두지 않는다.
 - **포구 패널** (`catching.py`). 모드 · 사유, 입력 lane, plan, 추종 오차 · CLIK 상태, 슈퍼바이저 결과, 손 위상, 접촉 센서와 freshness 를 보인다. 세 가지를 합치지 않는다. ① **관측된 무장** 을 머리에 두고 요청된 무장 (`catching.enable` 파라미터) 을 옆에 둔다 — tick 이 E-STOP · fault 에서 latch 를 스스로 내리므로 파라미터 set 의 성공은 무장의 증거가 아니다. ② **거부된 입력 lane 과 조용한 lane** 은 거부 카운터로만 구별되므로 0 이 아닌 카운터는 항상 보인다. ③ 컨트롤러가 그 tick 에 계산하지 않은 블록 (`*_valid` false, PROC-7 이 0 으로 지운다) 은 0 이 아니라 `--` 로 보인다. 팔 기준을 만드는 planner (`closed_form` | `mpc`) 는 `CatchingState` 가 동결이라 읽기 전용 파라미터 `planner.segment.mode` 로 읽고 `segment mode: <값>` 줄로 보인다 (configure 가 끝나기 전이거나 park 된 컨트롤러는 빈 문자열을 답한다). 탐색 (`planner.search.mode`) 도 같은 방식의 `search mode: <값>` 줄이다. 고른 구현에 예산 파라미터가 있으면 (`mpc` · `mpc_docking` 의 first · replan, `nlp` 의 wake · 풀이 예산과 풀이 수 상한) 한 번 읽어 그 줄에 ms 로 붙이고, sim 전용 구현 (`nlp` · `mpc_docking`) 은 그렇게 적는다. plan 을 첫 구간과 함께만 게시하는 planner (`mpc` · `mpc_docking`) 에서는 구간이 보류된 plan 이 게시되지 않아 화면에 아무 사유도 남지 않으므로, plan 이 없을 때 `planner_events.csv` 의 `segment_outcome` · `segment_core_reason` 을 가리키는 한 줄을 붙인다 — wake 마다의 계획기 상태는 GUI 에 싣지 않는다 (메시지가 동결이다). 연속 투척의 진행 카운트는 결과의 엣지를 GUI 가 센다 (새 필드 없음).
 - **헤더 공용 행.** "Clear E-STOP" (사유 조회 → 확인 뒤 해제의 2 단계) 과 "Reset fault" 는 포구 패널이 아니라 공용 위치에 있다 (절차는 L7 §4.1). 해제 요청이 latch 를 내렸으나 검증되지 않았다는 응답은 거부와 구별해 보인다.
+- **`g1_p1b` profile.** `demo_controller_gui --robot g1_p1b` 가 있다. 위 패널은 profile 과 무관하게 만들어지지만 그 profile 에는 포구 컨트롤러가 없어 포구 패널은 받은 것이 없는 상태로 남는다. 그 profile 의 Dual Arm 탭과 `plot_rtc_log` 의 `dualarm_diag` 는 `demo_dualarm_controller` 의 것이고 이 절의 계약 밖이다 — `integrated_bringup/README.md` §demo_controller_gui, `rtc_tools/README.md`. 그 컨트롤러는 상태 토픽이 없어 GUI 가 세션 CSV 의 꼬리를 읽는다; G1 포구 컨트롤러의 상태를 무엇으로 보일지는 아직 정하지 않았다 ([#645](https://github.com/hyujun/rtc-framework/issues/645)).
 
 **plot.** `plot_rtc_log` 는 CSV 의 종류를 파일명과 컬럼으로 판별한다 (`catching_diag` · `planner_events`); 스레드 timing CSV 는 공통 스키마라 기존 timing plotter 를 쓴다.
 
@@ -248,7 +249,7 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 - **한 투척.** reset 된 탐색에서 시작해 wake 를 순서대로 부르고, plan 을 낸 첫 wake 에서 멈춘다. plan 을 따르는 동안의 탐색 (교체 · follow window) 은 구간 계획기와 RT 가 있어야 하므로 재현하지 않는다. 투척의 판정은 그 투척의 wake 만으로 정해진다 — 앞에 어떤 투척이 돌았는가와 무관하다
 - **예측 snapshot.** 비행 모델 (§4.6 의 항력 법칙) 의 위치 · 속도 · 가속도를 추정기 profile 의 격자로 자른 것이다. wake 는 발사 뒤 검출 지연부터 비전 주기마다 하나이고, 둘 다 도구의 인자다
 - **탐색이 받는 로봇 값.** `planner.*` 의 키는 합성된 `catching:` 트리에서 런타임 파서가 읽는다. 컨트롤러가 configure 에서 묶는 값 (장치 정격, 여유가 적용된 관절 · 토크 한계, $\eta_v$ 가 적용된 속도 한계, 손의 폐쇄 시간과 선행) 은 트리의 키가 아니어서 python 이 설정에서 계산해 binding 파일로 넘긴다. 이 사본이 런타임과 어긋나면 지도가 조용히 틀린다 — 같은 투척의 sim 판정과의 일치율로 확인한다
-- **수용.** 투척의 wake 가운데 plan 을 낸 것이 하나라도 있으면 수용이다. sim 에서는 발사부터 포구 시각까지의 wake 가운데 탐색이 plan 을 낸 것이 있으면 수용이고, plan 의 게시는 그 다음 층이다 (L3 §5.3) — 둘을 따로 센다. 거부한 투척의 대표 사유는 가장 잦은 wake 사유다 (동률이면 나중 것)
+- **수용.** 투척의 wake 가운데 plan 을 낸 것이 하나라도 있으면 수용이다. sim 에서는 발사부터 포구 시각까지의 wake 가운데 탐색이 plan 을 낸 것이 있으면 수용이고, plan 의 게시는 그 다음 층이다 (L3 §5.3) — 둘을 따로 센다. 거부한 투척의 대표 사유는 가장 잦은 wake 사유다 (동률이면 나중 것) `grid` 에서는 순위 게이트 (L3 §4 의 D-27) 에 걸린 후보도 plan 이 되므로 수용은 그 게이트의 통과를 뜻하지 않는다 — plan 의 `rank_mask` 가 wake 의 행에 남는다
 - **축의 값.** 발사 위치 · 거리는 투척 설계의 값이다. 비행시간과 종단 속도는 비행 모델의 궤적이 대기 자세의 포구점에 가장 가까워지는 시각과 그때의 속력이다 — 탐색이 고른 $t_c$ 가 아니다 (거부한 투척에도 값이 있다)
 - **도구.** `ros2 run rtc_tools catch_search_map` (python — 투척 설계 · snapshot · binding · 집계) 이 `ros2 run rtc_controllers catch_search_batch` (C++ — 판정) 를 부른다. 같은 투척 목록을 sim 이 던진다 (`catching_sim_trials --throws-file`)
 - **통과점 투척 설계.** `ros2 run rtc_tools catch_throw_design design` 은 발사점 · 통과점 · 발사각의 격자에서 투척을 만든다 (L3 부록 C — 속력은 풀어서 얻는다). 투척의 `throw_id` 는 여섯 축의 곱에서의 순번이고, 격자의 부분집합과 그 사이를 메우는 세분화 (`select`) 가 같은 id 를 쓴다. 통과점의 격자는 투척을 만드는 데만 쓰이고 탐색에는 전달되지 않는다 — 탐색은 wake 만 본다. 투척마다 속력 · 정점과 통과면 사이의 여유 · 포구점 최근접의 시각 · 속력 · 하강각 · 손의 접근축과의 각 · 도달 구 안의 마지막 시각을 적는다
