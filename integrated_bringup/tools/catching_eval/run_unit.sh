@@ -35,6 +35,15 @@
 # Two workspaces (MD-17): the sim and controller come from this workspace, the
 # estimator from $BALL_SIM_WS (its shipped catching profile is the default
 # PROFILE). The session's raw logs are copied into the unit at the end.
+# #747 additions (both default off — the command line is then what it was):
+# THROWS_FILE=<catching_throw_list/1 JSON> throws that list in file order (--throws-file) instead of
+# `--dist s35b --n <n> --seed <seed>`; the n_throws argument is then ignored (pass any number) and
+# NT is the file's throw count (the timeout follows it; an unreadable file fails the unit). The
+# seed argument still seeds the estimator and the sim, it is not a driver argument. The path may be
+# relative to the caller's directory. END_ON_BALL_LOW=1 adds --end-on-ball-low (a throw whose cycle
+# never opened ends when the ball is below floor + margin, not at the 12 s cap), with
+# BALL_LOW_MARGIN_M / BALL_LOW_GRACE_S as --ball-low-margin-m / --ball-low-grace-s (the driver's
+# defaults when unset). conditions.txt records throws_file (+ sha256) and the end rule.
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
@@ -51,6 +60,11 @@ PROFILE=${PROFILE:-$BWS/install/ball_perception_sim/share/ball_perception_sim/co
 # overlay against its own directory): a relative path checked here would name
 # another file there.
 OV=$(realpath -ms "$OV"); DATA=$(realpath -ms "$DATA"); PROFILE=$(realpath -ms "$PROFILE")
+if [ -n "$THROWS_FILE" ]; then
+  THROWS_FILE=$(realpath -ms "$THROWS_FILE")
+  NT=$(/usr/bin/python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["throws"]))' "$THROWS_FILE" 2>/dev/null)
+  case $NT in '' | *[!0-9]* | 0) echo "FAIL:cannot read a throw count from THROWS_FILE $THROWS_FILE" > "$OUT/status"; exit 1 ;; esac
+fi
 case $SHORT in p1b) ROBOT=ur5e_p1b ;; leap) ROBOT=iiwa7_leap ;; esac
 case $ROBOT in
   ur5e_p1b)   LAUNCH=sim_ur5e_p1b.launch.py;   EXPECT_COMMIT=${EXPECT_COMMIT:-0.370}; STATE_RE='ur5e_state\|p1b_state' ;;
@@ -123,6 +137,8 @@ trap on_signal INT TERM HUP
 {
   echo "date_start: $(date -Is)"
   echo "robot: $ROBOT"; echo "condition: $COND"; echo "overlay: $OV"; echo "n: $NT"; echo "seed: $SEED"
+  [ -n "$THROWS_FILE" ] && { echo "throws_file: $THROWS_FILE"; echo "throws_file_sha256: $(sha256sum "$THROWS_FILE" | cut -d' ' -f1)"; }
+  [ "${END_ON_BALL_LOW:-0}" == "1" ] && echo "end_on_ball_low: 1 margin_m=${BALL_LOW_MARGIN_M:-default} grace_s=${BALL_LOW_GRACE_S:-default}"
   echo "rtc_framework_rev: $(git -C "$REPO" rev-parse --short HEAD)"
   echo "rtc_framework_dirty: $(git -C "$REPO" status --porcelain | wc -l)"
   echo "rtc_framework_dirty_files: $(git -C "$REPO" status --porcelain | tr '\n' ';')"
@@ -243,8 +259,16 @@ grep -q WRONG_PREFIX "$OUT/est.log" && { cleanup; echo "FAIL:ball_perception not
 [ $act -eq 1 ] || { cleanup; echo "FAIL:estimator not activated" > "$OUT/status"; exit 1; }
 sleep 2
 ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController "{activate_controllers: [demo_catching_controller], deactivate_controllers: [demo_joint_controller], strictness: 1, timeout: {sec: 3}}" > "$OUT/switch.log" 2>&1
+SERIES=(--dist s35b --n "$NT" --seed "$SEED")
+[ -n "$THROWS_FILE" ] && SERIES=(--throws-file "$THROWS_FILE")
+ENDRULE=()
+if [ "${END_ON_BALL_LOW:-0}" == "1" ]; then
+  ENDRULE=(--end-on-ball-low)
+  [ -n "$BALL_LOW_MARGIN_M" ] && ENDRULE+=(--ball-low-margin-m "$BALL_LOW_MARGIN_M")
+  [ -n "$BALL_LOW_GRACE_S" ] && ENDRULE+=(--ball-low-grace-s "$BALL_LOW_GRACE_S")
+fi
 timeout $((NT * 30 + 120)) ros2 run integrated_bringup catching_sim_trials "$OUT/trials" \
-  --profile $ROBOT --dist s35b --n $NT --seed $SEED --host-watch ${HOST_WATCH:-abort} --arm "$COND" > "$OUT/trials.log" 2>&1
+  --profile $ROBOT "${SERIES[@]}" --host-watch ${HOST_WATCH:-abort} --arm "$COND" "${ENDRULE[@]}" > "$OUT/trials.log" 2>&1
 rc=$?
 echo "loadavg_end: $(cut -d' ' -f1-3 /proc/loadavg)" >> "$OUT/conditions.txt"
 echo "date_end: $(date -Is)" >> "$OUT/conditions.txt"

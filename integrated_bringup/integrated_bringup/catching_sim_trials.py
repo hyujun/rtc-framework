@@ -21,6 +21,18 @@ Per trial:
    verdict is the ``outcome`` published on the RETREAT entry (L7 §4.4).
 4. Reset the ball.
 
+Ball-height end (``--end-on-ball-low``, opt-in, #747): a controller that never
+publishes a plan goes TRACKING → ARMED and never RETREATs, so such a throw ran
+the whole ``--record-s``. With the flag, a throw whose catch cycle never opened
+(no mode at or after APPROACH — ``OPENED_MODES``) ends once the ball's ground
+truth has fallen below ``--floor-z`` + ``--ball-low-margin-m`` (a downward
+crossing: a ball launched below that height is not a miss), after waiting
+``--ball-low-grace-s`` of SIM time for the controller's outcome (no outcome in
+the grace marks the throw ``outcome_missing``). An opened cycle ends only by
+its close or the cap. Decided by :func:`decide_throw_end`, on the ground-truth
+stamps (sim time) of samples after this throw's launch; wall clock serves the
+cap only. Without the flag nothing is read or written that was not before.
+
 This drives an already-running sim. It launches nothing: the sim, the ball
 estimator and the switch into the catching controller are the caller's
 (``integrated_bringup/README.md`` §Catching sim trials has the commands).
@@ -814,6 +826,102 @@ def _cycle_closed(modes: list[str]) -> bool:
     return "ARMED" in modes[modes.index("RETREAT") + 1 :]
 
 
+# A catch cycle is open once the FSM has reached APPROACH or any mode after it
+# (MODE_NAMES is CatchingState's mode order).
+OPENED_MODES = frozenset(MODE_NAMES[MODE_NAMES.index("APPROACH") :])
+# Keys a throw record gains with --end-on-ball-low (and only then).
+END_RULE_RECORD_KEYS = (
+    "end_reason",
+    "ball_low_threshold_m",
+    "ball_low_grace_s",
+    "ball_low_t_s",
+    "outcome_missing",
+    "last_ball_pos",
+)
+# --end-on-ball-low defaults.
+BALL_LOW_MARGIN_M = 0.20
+BALL_LOW_GRACE_S = 1.0
+
+
+@dataclasses.dataclass(frozen=True)
+class ThrowEnd:
+    """What :func:`decide_throw_end` says: ``reason`` None = keep recording.
+
+    ``ball_low_t_s`` is the sim stamp of the ball's crossing once the ball-low
+    rule has latched (feed it back on the next call); ``outcome_missing`` is
+    set only on a ``ball_low`` end that got no outcome inside the grace.
+    """
+
+    reason: str | None = None
+    ball_low_t_s: float | None = None
+    outcome_missing: bool = False
+
+
+def ball_crossing_s(
+    truth: Sequence[tuple[float, float]], threshold_m: float, after_stamp_s: float
+) -> float | None:
+    """Sim stamp of the first downward crossing of ``threshold_m`` by the ball.
+
+    ``truth`` is ``(stamp_s, z_m)`` in arrival order. Samples stamped at or
+    before ``after_stamp_s`` (the previous throw's, still in flight when this one
+    launched) are ignored, and the ball must have been seen at or above the
+    threshold first — a ball launched below it has not missed anything.
+    """
+    seen_above = False
+    for stamp, z in truth:
+        if stamp <= after_stamp_s:
+            continue
+        if z >= threshold_m:
+            seen_above = True
+        elif seen_above:
+            return stamp
+    return None
+
+
+def decide_throw_end(
+    modes: Sequence[str],
+    truth: Sequence[tuple[float, float]],
+    *,
+    threshold_m: float,
+    grace_s: float,
+    after_stamp_s: float,
+    wall_elapsed_s: float,
+    cap_s: float,
+    ball_low_t_s: float | None = None,
+) -> ThrowEnd:
+    """Whether a throw is over (``--end-on-ball-low``), in this order:
+
+    1. ``cycle_closed``: RETREAT, then ARMED / IDLE / FAULT (the existing end).
+    2. ``fault``: the controller is in FAULT without a RETREAT (the existing end).
+    3. ``ball_low`` latched (``ball_low_t_s`` given, or the ball crosses now while
+       no mode in ``OPENED_MODES`` was seen): ends at once when the outcome has
+       arrived (RETREAT seen — the outcome is published on that entry), else
+       when the truth stamps have run ``grace_s`` past the crossing, with
+       ``outcome_missing``. Nothing before the crossing is judged again after
+       the latch, so a cycle that opens inside the grace does not unlatch it.
+    4. ``cap``: ``wall_elapsed_s`` has reached ``cap_s``.
+
+    ``modes`` are the mode names in arrival order, ``truth`` as in
+    :func:`ball_crossing_s`. Pure: the driver holds the latch.
+    """
+    if "RETREAT" in modes and modes[-1] in ("ARMED", "IDLE", "FAULT"):
+        return ThrowEnd("cycle_closed", ball_low_t_s)
+    if modes and modes[-1] == "FAULT":
+        return ThrowEnd("fault", ball_low_t_s)
+    t_cross = ball_low_t_s
+    if t_cross is None and not OPENED_MODES.intersection(modes):
+        t_cross = ball_crossing_s(truth, threshold_m, after_stamp_s)
+    if t_cross is not None:
+        if "RETREAT" in modes:
+            return ThrowEnd("ball_low", t_cross)
+        latest = max((st for st, _ in truth if st > after_stamp_s), default=t_cross)
+        if latest - t_cross >= grace_s:
+            return ThrowEnd("ball_low", t_cross, outcome_missing=True)
+    if wall_elapsed_s >= cap_s:
+        return ThrowEnd("cap", t_cross)
+    return ThrowEnd(None, t_cross)
+
+
 def reset_fault_name(controllers, config_key: str = CATCHING) -> str | None:
     """``controller_name`` for /rtc_cm/reset_fault, off a /rtc_cm/list_controllers reply.
 
@@ -1020,7 +1128,20 @@ def run_meta_args(args) -> dict:
     ``seed`` is ``None`` for a ``--throws-file`` run, whose throws were drawn
     from no seed.
     """
-    return {k: v for k, v in vars(args).items() if k != "throw_list"}
+    drop = {"throw_list"}
+    if not args.end_on_ball_low:
+        # The ball-height end is opt-in: a run without it records what it did before.
+        drop |= {"end_on_ball_low", "ball_low_margin_m", "ball_low_grace_s"}
+    return {k: v for k, v in vars(args).items() if k not in drop}
+
+
+def end_reason_counts(results: Sequence[dict]) -> dict[str, int]:
+    """How many throws ended for each ``end_reason`` (a refused launch has none)."""
+    counts: dict[str, int] = {}
+    for r in results:
+        if r.get("end_reason") is not None:
+            counts[r["end_reason"]] = counts.get(r["end_reason"], 0) + 1
+    return counts
 
 
 def write_run_meta(out_dir: str, meta: dict, watch: HostWatch) -> None:
@@ -1118,6 +1239,7 @@ def _make_driver(profile: ArmProfile, args):
             self.retreat_outcome = None
             self.mode_log = []
             self.truth_rows = []
+            self.last_truth_stamp = None  # latest sim stamp seen, recording or not
             self.offsets = []
             self.tick_range = [None, None]
             self.recording = False
@@ -1144,10 +1266,11 @@ def _make_driver(profile: ArmProfile, args):
                 self.offsets.append(now - msg.t_relative_s)
 
         def _on_truth(self, msg) -> None:
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            self.last_truth_stamp = stamp
             if self.recording:
                 p = msg.pose.pose.position
                 v = msg.twist.twist.linear
-                stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
                 self.truth_rows.append((time.time(), stamp, p.x, p.y, p.z, v.x, v.y, v.z))
 
         def _on_joints(self, msg) -> None:
@@ -1283,6 +1406,7 @@ def _make_driver(profile: ArmProfile, args):
 
         def throw(self, idx: int, throw: dict) -> dict:
             """Step 5. Returns the trial record written to trial_results.json."""
+            ball_low_threshold = args.floor_z + args.ball_low_margin_m
             self.mode_log, self.truth_rows, self.offsets = [], [], []
             self.retreat_outcome = None
             self.tick_range = [None, None]
@@ -1306,13 +1430,41 @@ def _make_driver(profile: ArmProfile, args):
             # Until the cycle closes (RETREAT → ARMED), the controller gives up
             # (IDLE, FAULT), or the window runs out.
             end = time.time() + args.record_s
-            while time.time() < end:
-                rclpy.spin_once(self, timeout_sec=0.02)
-                names = [m[1] for m in self.mode_log]
-                if "RETREAT" in names and names[-1] in ("ARMED", "IDLE", "FAULT"):
-                    break
-                if names and names[-1] == "FAULT":
-                    break
+            if args.end_on_ball_low:
+                # Samples stamped up to the newest one seen when the launch was
+                # answered may be the previous throw's: they cannot end this one.
+                after = self.last_truth_stamp if self.last_truth_stamp is not None else -math.inf
+                latch = None
+                seen = None
+                while True:
+                    rclpy.spin_once(self, timeout_sec=0.02)
+                    # Judged again only on a new mode or truth sample, or at the cap:
+                    # most callbacks handled here are neither.
+                    now_seen = (len(self.mode_log), len(self.truth_rows))
+                    if now_seen == seen and time.time() - launch_wall_time < args.record_s:
+                        continue
+                    seen = now_seen
+                    done = decide_throw_end(
+                        [m[1] for m in self.mode_log],
+                        [(r[1], r[4]) for r in self.truth_rows],
+                        threshold_m=ball_low_threshold,
+                        grace_s=args.ball_low_grace_s,
+                        after_stamp_s=after,
+                        wall_elapsed_s=time.time() - launch_wall_time,
+                        cap_s=args.record_s,
+                        ball_low_t_s=latch,
+                    )
+                    latch = done.ball_low_t_s
+                    if done.reason:
+                        break
+            else:
+                while time.time() < end:
+                    rclpy.spin_once(self, timeout_sec=0.02)
+                    names = [m[1] for m in self.mode_log]
+                    if "RETREAT" in names and names[-1] in ("ARMED", "IDLE", "FAULT"):
+                        break
+                    if names and names[-1] == "FAULT":
+                        break
             self.spin_for(0.1)
             self.recording = False
 
@@ -1342,6 +1494,22 @@ def _make_driver(profile: ArmProfile, args):
                         throw["target_m"],
                         self.ball_params,
                     )
+                )
+            if args.end_on_ball_low:
+                last = self.truth_rows[-1] if self.truth_rows else None
+                record.update(
+                    {
+                        "end_reason": done.reason,
+                        "ball_low_threshold_m": ball_low_threshold,
+                        "ball_low_grace_s": args.ball_low_grace_s,
+                        # The crossing whether or not it ended the throw (an
+                        # opened cycle is not ended by it).
+                        "ball_low_t_s": ball_crossing_s(
+                            [(r[1], r[4]) for r in self.truth_rows], ball_low_threshold, after
+                        ),
+                        "outcome_missing": done.outcome_missing,
+                        "last_ball_pos": list(last[2:5]) if last else None,
+                    }
                 )
             record.update(
                 {
@@ -1468,6 +1636,27 @@ def parse_args(argv=None):
         "--record-s", type=float, default=12.0, help="longest window per throw (cycle end first)"
     )
     parser.add_argument(
+        "--end-on-ball-low",
+        action="store_true",
+        help=(
+            "end a throw whose catch cycle never opened (no mode at or after APPROACH) once the "
+            "ball's ground truth is below --floor-z + --ball-low-margin-m, instead of at "
+            "--record-s (#747); an opened cycle ends only by its close or --record-s"
+        ),
+    )
+    parser.add_argument(
+        "--ball-low-margin-m",
+        type=float,
+        default=BALL_LOW_MARGIN_M,
+        help="--end-on-ball-low: threshold height above --floor-z [m]",
+    )
+    parser.add_argument(
+        "--ball-low-grace-s",
+        type=float,
+        default=BALL_LOW_GRACE_S,
+        help="--end-on-ball-low: sim seconds past the crossing the controller's outcome is awaited",
+    )
+    parser.add_argument(
         "--host-watch",
         choices=HOST_WATCH_MODES,
         default="warn",
@@ -1490,6 +1679,8 @@ def parse_args(argv=None):
         help="window of sim time the real-time factor is taken over [s]",
     )
     args = parser.parse_args(argv)
+    if args.ball_low_margin_m < 0 or args.ball_low_grace_s < 0:
+        parser.error("--ball-low-margin-m and --ball-low-grace-s must not be negative")
     args.throw_list = None
     if args.throws_file is None:
         if args.dist is None:
@@ -1576,6 +1767,13 @@ def main(argv=None) -> int:
         }
         if args.throw_list is not None:
             meta["throws_file"] = args.throw_list.record()
+        if args.end_on_ball_low:
+            meta["end_rule"] = {
+                "threshold_m": args.floor_z + args.ball_low_margin_m,
+                "floor_z": args.floor_z,
+                "margin_m": args.ball_low_margin_m,
+                "grace_s": args.ball_low_grace_s,
+            }
         write_run_meta(args.out_dir, meta, watch)
         run_trials(node, throws, mirror, watch, results)
         verdicts: dict[str, int] = {}
@@ -1586,10 +1784,14 @@ def main(argv=None) -> int:
             f"{len(results)} trials, cycles closed "
             f"{sum(1 for r in results if r.get('cycle_closed'))}, verdicts {verdicts}"
         )
+        if args.end_on_ball_low:
+            node.get_logger().info(f"end reasons {end_reason_counts(results)}")
     finally:
         with open(os.path.join(args.out_dir, "trial_results.json"), "w") as f:
             json.dump(results, f, indent=2, default=str)
-        if meta is not None and watch.enabled:
+        if meta is not None and args.end_on_ball_low:
+            meta["end_reasons"] = end_reason_counts(results)  # caps apart from the rest
+        if meta is not None and (watch.enabled or args.end_on_ball_low):
             write_run_meta(args.out_dir, meta, watch)  # now with what the watch found
         node.destroy_node()
         rclpy.shutdown()
