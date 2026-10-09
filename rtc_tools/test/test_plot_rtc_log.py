@@ -3707,6 +3707,8 @@ _PLANNER_EVENTS_COLUMNS = [
     "replacement_core_reason",
     "replacement_iterations",
     "replacement_solve_us",
+    "cov_n",
+    "chosen_sigma_c",
 ]
 
 # What a recording from before E1-F18 has: the header up to `segment_source_seq`.

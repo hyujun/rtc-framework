@@ -5,8 +5,8 @@ What must hold for the S8-F series to be a measurement: the same
 (so a unit the host-load rule re-runs is the SAME unit), the grids cover every
 speed even when cut short, every accepted draw of the LHS box lies inside the
 box and clears the floor, the record carries the factors the analysis fits on
-and the target the truth check is made against — and none of it touches the
-default reference series or the s35b box.
+and the target the truth check is made against — and the three designs are
+the only ``--dist`` there is (#798: no frozen series beside them).
 """
 
 from __future__ import annotations
@@ -152,16 +152,12 @@ def test_build_throws_routes_hand_designs_and_needs_the_geometry(geometry):
         cst.hand_near_throws("hand_lhs", -1, 1, geometry)
 
 
-def test_the_default_series_and_the_s35b_box_are_untouched():
-    args = cst.parse_args(["out"])
-    assert args.dist == "reference"
-    assert cst.build_throws(args, "ur5e_p1b") == cst.trial_throws(
-        15, 10, 42, args.release_pos, args.release_vel
-    )
-    args = cst.parse_args(["out", "--dist", "s35b", "--n", "3", "--seed", "5"])
-    assert cst.build_throws(args, "ur5e_p1b") == cst.frozen_throws("s35b", "ur5e_p1b", 3, 5)
+def test_the_hand_designs_are_the_only_dist():
     assert set(cst.HAND_DESIGNS) == {"hand_cliff", "hand_lob", "hand_lhs"}
-    assert not set(cst.HAND_DESIGNS) & set(cst.FROZEN_DISTRIBUTIONS)
+    args = cst.parse_args(["out", "--dist", "hand_lhs", "--n", "3", "--seed", "5"])
+    assert args.dist == "hand_lhs" and args.n == 3 and args.seed == 5
+    with pytest.raises(SystemExit):
+        cst.parse_args(["out"])
 
 
 def test_the_geometry_record_names_every_source(geometry):

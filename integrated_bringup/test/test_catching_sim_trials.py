@@ -28,7 +28,6 @@ from integrated_bringup.catching_sim_trials import (
     reset_fault_failure,
     reset_fault_name,
     run_meta_args,
-    trial_throws,
 )
 from rtc_tools.analysis.catching_throw_list import THROW_RECORD_KEYS
 from rtc_tools.utils.controller_config import load_controller_config
@@ -72,20 +71,6 @@ def test_the_alignment_error_is_the_worst_joint_and_needs_matching_lengths():
     assert alignment_error([0.0, 0.3, -0.1], [0.0, -0.02, 0.01], [0.0, 0.0, 0.0]) == (0.3, 0.02)
     with pytest.raises(ValueError):
         alignment_error([0.0, 0.0], [0.0, 0.0], [0.0, 0.0, 0.0])
-
-
-def test_the_throw_series_is_reference_first_then_seeded_perturbations():
-    pos, vel = (1.0, 0.0, 0.2), (-2.375, 0.0, 4.11362)
-    throws = trial_throws(3, 4, 42, pos, vel)
-    assert [t["kind"] for t in throws] == ["reference"] * 3 + ["varied"] * 4
-    assert all(t["vel"] == vel for t in throws[:3])
-    for t in throws[3:]:
-        assert 0.9 <= t["mag_scale"] <= 1.1
-        assert -0.3 <= t["lateral_y"] <= 0.3
-        assert t["vel"][2] == pytest.approx(vel[2] * t["mag_scale"])
-    # Replayable: the same seed gives the same series; another seed does not.
-    assert trial_throws(3, 4, 42, pos, vel) == throws
-    assert trial_throws(3, 4, 7, pos, vel) != throws
 
 
 def test_a_cycle_is_closed_by_a_re_arm_after_retreat_whatever_follows():
@@ -238,18 +223,22 @@ def test_samples_of_the_previous_throw_cannot_end_this_one():
 
 
 def test_the_flags_are_off_by_default_and_a_run_without_them_records_nothing_new():
-    args = parse_args(["out"])
+    # a run names its throws (#798); the series is beside the point here
+    series = ["--dist", "hand_lhs"]
+    args = parse_args(["out", *series])
     assert args.end_on_ball_low is False
     assert (args.ball_low_margin_m, args.ball_low_grace_s) == (0.20, 1.0)
     # run_meta.json's args are what they were before the flag existed ...
     off = run_meta_args(args)
     assert not {"end_on_ball_low", "ball_low_margin_m", "ball_low_grace_s"} & off.keys()
     # ... and with the flag they carry it.
-    on = run_meta_args(parse_args(["out", "--end-on-ball-low", "--ball-low-grace-s", "2"]))
+    on = run_meta_args(
+        parse_args(["out", *series, "--end-on-ball-low", "--ball-low-grace-s", "2"])
+    )
     assert on["end_on_ball_low"] is True
     assert (on["ball_low_margin_m"], on["ball_low_grace_s"]) == (0.20, 2.0)
     with pytest.raises(SystemExit):
-        parse_args(["out", "--ball-low-grace-s", "-1"])
+        parse_args(["out", *series, "--ball-low-grace-s", "-1"])
 
 
 def test_the_new_record_keys_cannot_be_smuggled_in_by_a_throw_list():

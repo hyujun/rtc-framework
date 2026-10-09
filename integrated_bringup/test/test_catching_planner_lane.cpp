@@ -412,7 +412,8 @@ TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {
   std::ostringstream header;
   integrated_bringup::WritePlannerEventsHeader(header);
   const std::vector<std::string> names = split(header.str());
-  EXPECT_EQ(names.back(), "replacement_solve_us");
+  // #798 appended cov_n and chosen_sigma_c after the replacement columns.
+  EXPECT_EQ(names.back(), "chosen_sigma_c");
   // No name twice: a reader that selects by name would take one of them.
   EXPECT_EQ(std::set<std::string>(names.begin(), names.end()).size(), names.size());
   const auto row_of = [&](const rtc::catching::PlannerCycleRecord& rec) {

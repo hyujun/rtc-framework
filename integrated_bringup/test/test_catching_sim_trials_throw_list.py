@@ -2,8 +2,8 @@
 
 What must hold for an offline tool and the sim to throw the same launches: the
 writer's file reads back bit for bit and in order, the loader refuses what a
-trial record or the join key could not carry, and the file replaces ``--dist``
-without touching what ``--dist`` builds.
+trial record or the join key could not carry, and the file and ``--dist`` (a
+hand design) are exclusive.
 """
 
 from __future__ import annotations
@@ -170,10 +170,10 @@ def test_build_throws_returns_the_file_whatever_the_profile(tmp_path):
 
 def test_throws_file_and_dist_conflict(capsys):
     with pytest.raises(SystemExit):
-        cst.parse_args(["out", "--throws-file", "f.json", "--dist", "s35b"])
+        cst.parse_args(["out", "--throws-file", "f.json", "--dist", "hand_lhs"])
     assert "--throws-file" in capsys.readouterr().err
     with pytest.raises(SystemExit):
-        cst.parse_args(["out", "--throws-file", "f.json", "--dist", "reference"])
+        cst.parse_args(["out", "--throws-file", "f.json", "--dist", "hand_cliff"])
 
 
 def test_run_meta_record(tmp_path):
@@ -188,21 +188,6 @@ def test_run_meta_record(tmp_path):
     assert rec["sha256"] == hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
     assert rec["n_throws"] == 2
     assert rec["meta"] == {"source": "unit"}
-
-
-def test_dist_series_are_unchanged():
-    args = cst.parse_args(["out"])
-    assert args.dist == "reference"
-    assert args.throws_file is None
-    assert cst.build_throws(args, "ur5e_p1b") == cst.trial_throws(
-        args.n_ref, args.n_pert, args.seed, args.release_pos, args.release_vel
-    )
-    explicit = cst.parse_args(["out", "--dist", "reference", "--n-ref", "2", "--n-pert", "3"])
-    assert cst.build_throws(explicit, "ur5e_p1b") == cst.trial_throws(
-        2, 3, explicit.seed, explicit.release_pos, explicit.release_vel
-    )
-    args = cst.parse_args(["out", "--dist", "s35b", "--n", "4", "--seed", "9"])
-    assert cst.build_throws(args, "ur5e_p1b") == cst.frozen_throws("s35b", "ur5e_p1b", 4, 9)
 
 
 def test_the_format_is_rtc_tools_catching_throw_list(tmp_path):
@@ -265,6 +250,9 @@ def test_a_file_run_records_no_seed():
         json.dumps(meta_args)  # what run_meta.json is written from
         with pytest.raises(SystemExit):
             cst.parse_args(["out", "--throws-file", path, "--seed", "7"])
-    # a --dist run keeps its seed, given or default
-    assert cst.parse_args(["out"]).seed == cst.DEFAULT_SEED == 42
-    assert cst.run_meta_args(cst.parse_args(["out", "--dist", "s35b", "--seed", "9"]))["seed"] == 9
+    # a --dist (hand design) run keeps its seed, given or default
+    assert cst.parse_args(["out", "--dist", "hand_lhs"]).seed == cst.DEFAULT_SEED == 42
+    assert (
+        cst.run_meta_args(cst.parse_args(["out", "--dist", "hand_lhs", "--seed", "9"]))["seed"]
+        == 9
+    )
