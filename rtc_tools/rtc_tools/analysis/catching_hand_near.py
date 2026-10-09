@@ -348,7 +348,7 @@ def planner_events_summary(path: Path) -> dict:
     """Rank-gate bits of the PUBLISHED plans and the judgement rejects, over a whole session.
 
     ``rej_workspace`` is a column of sessions recorded before 2026-10-09
-    (MD-94), when the search still had a catch box: there it was the sensor
+    (L3 §4.9), when the search still had a catch box: there it was the sensor
     that an overlay's widened box took effect. It is counted for a file that
     has the column and left out for one that does not — a 0 would read as a
     gate that ran and refused nothing.

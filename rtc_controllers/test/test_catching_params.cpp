@@ -701,7 +701,7 @@ TEST(CatchingRenamedKeys, EachOldPathIsFoundWithAnyValueAndTheNewLayoutIsClean) 
   }
 }
 
-// MD-94: the catch box is gone and nothing took its place. Each of its two
+// L3 §4.9: the catch box is gone and nothing took its place. Each of its two
 // keys is found with any value — a box, `TBD`, an empty map — and a tree that
 // writes neither is clean.
 TEST(CatchingRemovedKeys, EachCatchBoxKeyIsFoundWithAnyValueAndATreeWithoutThemIsClean) {

@@ -1770,7 +1770,7 @@ TEST_P(ShippedCatchingProfile, TheSearchsCopiesAndTheMpcsEqualTheKeysTheyCopy) {
             rtc::catching::ParseCatchPoseIkParams(node["catching"]).options.v_eps)
       << profile;
   EXPECT_TRUE(rtc::catching::FindRenamedCatchingKeys(node["catching"]).empty()) << profile;
-  // Nor a key that was removed (the catch box, MD-94).
+  // Nor a key that was removed (the catch box, L3 §4.9).
   EXPECT_TRUE(rtc::catching::FindRemovedCatchingKeys(node["catching"]).empty()) << profile;
 }
 
@@ -2652,7 +2652,7 @@ TEST_P(ShippedCatchingProfile, TheLeadIsRunFromWhatTheFollowedSegmentsMakeOfTheC
 }
 
 // The nlp search's map has no decision key to be unset (the catch box was the
-// one, MD-94). An overlay that writes a leaf into a profile without the
+// one, L3 §4.9). An overlay that writes a leaf into a profile without the
 // search's fragment makes the map exist and little else: every other value
 // would be a code default nobody wrote. Parked, the missing core named.
 TEST_P(ShippedCatchingProfile, AnNlpMapWithoutItsCoreParksNamingIt) {

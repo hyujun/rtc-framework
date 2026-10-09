@@ -5840,7 +5840,7 @@ TEST_F(SafetyGateParkTest, EveryRemovedKeyAndValueIsNamedInOneConfigure) {
   ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
 }
 
-// MD-94: the catch box is gone — the searches do not judge where a catch
+// L3 §4.9: the catch box is gone — the searches do not judge where a catch
 // point is. An overlay that still writes one was tuned for that gate: parked
 // (never a configure failure, which would take every controller down), each
 // key named, whichever search runs.

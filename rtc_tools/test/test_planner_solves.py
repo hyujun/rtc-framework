@@ -328,7 +328,7 @@ class TestNlpSummary:
         assert "may be a cut instant" in text and "not a solve time" not in text
 
     def test_a_session_from_before_the_catch_box_was_removed_keeps_its_workspace_rejects(self):
-        # MD-94 (2026-10-09) took the catch box out of the search: `workspace`
+        # The search lost its catch box on 2026-10-09 (L3 §4.9): `workspace`
         # is no longer one of its reasons, and the files recorded before that
         # still carry the column and the wake reason.
         assert "workspace" not in ps.NLP_REJECT_REASONS

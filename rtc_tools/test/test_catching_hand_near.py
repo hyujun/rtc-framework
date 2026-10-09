@@ -325,7 +325,7 @@ def _write_unit(
 
 
 def test_the_workspace_reject_count_is_read_from_a_file_that_has_it_and_only_then(tmp_path):
-    """MD-94 (2026-10-09) took the catch box out of the search. A session
+    """The search lost its catch box on 2026-10-09 (L3 §4.9). A session
     recorded before that carries ``rej_workspace`` and its count is read; one
     recorded after has no such column, and no count is reported for it — a 0
     would read as a gate that ran and refused nothing."""

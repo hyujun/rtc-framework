@@ -2392,7 +2392,7 @@ const char* DemoCatchingController::DockingConfigInvalid() {
   // default closing speed) would hide that the map is missing — or nothing
   // would refuse, and the search would run on defaults no profile wrote. The
   // map has no decision key of its own to be unset (the catch box was the one,
-  // MD-94), so what is asked for is the map and the core design inside it:
+  // L3 §4.9), so what is asked for is the map and the core design inside it:
   // that catches a profile without the search's fragment, and an overlay that
   // wrote a leaf or two into the gap. It cannot tell a complete map from one
   // that has a `core:` and little else.

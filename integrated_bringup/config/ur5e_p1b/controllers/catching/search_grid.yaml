@@ -76,7 +76,7 @@ demo_catching_controller:
             w_late: 0.0
             w_gamma: 5.0
             penalty: 10.0
-          # No catch box (MD-94, 2026-10-09): the search does not judge WHERE the
+          # No catch box (L3 §4.9, 2026-10-09): the search does not judge WHERE the
           # catch point is — a point the IK reaches inside the joint limits is a
           # candidate. `workspace` is a removed key: the controller parks on it.
           # ── Hand allowance (L3 §6 `planner.search.grid.hand.*`, TBD-HAND-04) ─────────────────

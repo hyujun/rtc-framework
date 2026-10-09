@@ -220,7 +220,7 @@ inline constexpr std::array<RenamedCatchingKey, 18> kRenamedCatchingKeys{{
 [[nodiscard]] std::vector<RenamedCatchingKey> FindRenamedCatchingKeys(const YAML::Node& catching);
 
 /// Keys of the `catching:` tree that were removed with nothing in their place:
-/// the catch box (MPC plan MD-94). The searches used to remove every candidate
+/// the catch box (L3 §4.9). The searches used to remove every candidate
 /// whose catch point (or stopping point) lay outside it; they no longer judge
 /// where a catch point is, and the parsers do not read the keys. A tree that
 /// still writes one was tuned for a gate that is gone, so the binding parks on

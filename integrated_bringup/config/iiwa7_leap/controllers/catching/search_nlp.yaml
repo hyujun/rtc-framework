@@ -28,7 +28,7 @@ demo_catching_controller:
           t_lead_min: 0.25
           t_max: 0.90
           cand_capacity: 24
-          # No catch box (MD-94, 2026-10-09): the search does not judge where the
+          # No catch box (L3 §4.9, 2026-10-09): the search does not judge where the
           # catch point is. `catch_box` is a removed key: the controller parks on it.
           # ── The arm grid ────────────────────────────────────────────────────
           # A candidate's trajectory has n_pre intervals of dt_pre_s before the

@@ -236,7 +236,7 @@ struct CatchingDiagLogPod {
     kAdmitted = 1,       ///< a segment entered the pending slot
     kDeferred = 2,       ///< admissible, left in the box: the slot holds another grid point (MD-37)
     kWorkspace = 3,      ///< retired (MD-73): the RT judged the stop against a catch box that
-                         ///< no longer exists (MD-94). Never written; the number stays for
+                         ///< no longer exists (L3 §4.9). Never written; the number stays for
                          ///< the logs and tools that carry it
     kSwitched = 4,       ///< the pending segment became the followed one
     kGateRefused = 5,    ///< pending dropped: the continuity gate refused it (MD-39)

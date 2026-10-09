@@ -8,7 +8,7 @@
 // TWO KINDS OF GATE (decision C, D-27). JUDGEMENT gates remove a candidate —
 // they are about whether the arm can be put there at all: input finiteness,
 // IK convergence and manipulability (the IK's own catchability gate, D-18).
-// No gate judges WHERE the catch point is (MD-94): a point the IK reaches
+// No gate judges WHERE the catch point is (L3 §4.9): a point the IK reaches
 // inside the joint limits is a candidate wherever it lies.
 // RANK gates do not remove: uncertainty, reach time, γ window, commit lead and
 // the error budget each add `score.penalty` to the candidate's score when they

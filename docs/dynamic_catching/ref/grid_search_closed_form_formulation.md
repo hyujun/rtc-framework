@@ -90,7 +90,7 @@ $$
 
 게이트는 두 종류다.
 
-- **판정 게이트** — 후보를 **제거**한다: 입력 유한성 (NUM-7), IK 수렴, manipulability (D-18). 포구점이 **어디에** 있는지는 판정하지 않는다 (MPC 계획 MD-94 — §2.8).
+- **판정 게이트** — 후보를 **제거**한다: 입력 유한성 (NUM-7), IK 수렴, manipulability (D-18). 포구점이 **어디에** 있는지는 판정하지 않는다 (L3 §4.9 — §2.8).
 - **순위 게이트** — 제거하지 않고 실패마다 점수에 벌점 $w_{pen}$ 을 더한다: 불확실성 · 도달시간 · γ 창 · commit 선행 · 오차 예산 · rollout (비트마스크 `RankGateBit`).
 
 판정 통과 후보 가운데 점수 $J$ 최소를 고른다. 판정 통과 후보가 없을 때만 plan 없음이다.
@@ -292,7 +292,7 @@ $$
 
 이다 — §3.6 의 등감속 정지거리 $\Vert\dot x_s\Vert^2/(2a_{dec})$ 에 $\dot x_s\approx\gamma_fv_c$ (§3.7) 를 넣은 것이고, $a_{dec}$ 는 탐색의 복사본 `stop.a_dec` 다.
 
-**런타임 탐색은 이 점을 계산하지도 판정하지도 않는다 (MPC 계획 MD-94).** 2026-10-09 까지는 $p_c$ 와 $p_{stop}$ 이 상자 $\mathcal W_{catch}$ (`workspace.catch_box`) 안에 있어야 했고 밖이면 후보를 제거했다 (`kWorkspace`). 그 상자는 투척을 고르는 영역이지 plan 을 거부할 근거가 아니어서 판정 · 키 · 사유 값을 함께 지웠다. 지금 식을 쓰는 것은 오프라인 지도다 — `JudgeRankGates` 가 γ 창의 두 끝에서 $p_{stop}$ 을 내주고, 그 점이 도달 구 · 바닥 안인지는 지도의 python 이 자기 인자로 건다. $p_{stop}$ 의 IK 는 어디서도 검사하지 않는다. RT 도 구간이 어디서 정지하는지 판정하지 않는다 (MD-73).
+**런타임 탐색은 이 점을 계산하지도 판정하지도 않는다** — 포구점과 정지점의 위치를 보는 게이트가 없다 (이유는 L3 §4.9). 지금 식을 쓰는 것은 오프라인 지도다 — `JudgeRankGates` 가 γ 창의 두 끝에서 $p_{stop}$ 을 내주고, 그 점이 도달 구 · 바닥 안인지는 지도의 python 이 자기 인자로 건다. $p_{stop}$ 의 IK 는 어디서도 검사하지 않는다. RT 도 구간이 어디서 정지하는지 판정하지 않는다 (MD-73).
 
 모르는 값은 통과가 아니라는 규칙은 그대로다: $T_{lead,\min}$ 을 정할 수 없으면 (키도 $T_{freeze}$ 도 없음) §2.1 의 창이 모든 후보를 떨어뜨린다.
 
@@ -384,7 +384,7 @@ COMMITTED · CLOSING 의 wake 는 따르는 plan 의 $t_c$ 의 공분산 (가장
 
 ### 2.14 사유
 
-plan 이 없을 때의 사유는 **가장 많이 걸린 판정 게이트** 다 (`kInputNonFinite` · `kIkFailed` · `kManipulability`). `kStoppingDistance` 는 메시지에 남은 값이고 쓰는 탐색이 없다 (2026-10-09 전에는 작업공간 탈락이었다 — §2.8). 예산에 밀려 평가 못 한 후보는 예산이 실제로 잘랐을 때만 세고 (`kBudgetExceeded`), settle 중은 `kUncertainty`, 창 안에 후보가 없으면 `kHorizonShort` 다. 고른 후보의 순위 게이트 실패는 사유가 아니라 CSV 의 비트마스크다.
+plan 이 없을 때의 사유는 **가장 많이 걸린 판정 게이트** 다 (`kInputNonFinite` · `kIkFailed` · `kManipulability`). `kStoppingDistance` 는 메시지에 남은 값이고 쓰는 탐색이 없다 (L3 §4.9). 예산에 밀려 평가 못 한 후보는 예산이 실제로 잘랐을 때만 세고 (`kBudgetExceeded`), settle 중은 `kUncertainty`, 창 안에 후보가 없으면 `kHorizonShort` 다. 고른 후보의 순위 게이트 실패는 사유가 아니라 CSV 의 비트마스크다.
 
 ---
 

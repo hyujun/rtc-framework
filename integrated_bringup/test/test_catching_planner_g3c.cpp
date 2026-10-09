@@ -7,7 +7,7 @@
 // (the catch frame of a configuration drawn around the wait pose, the ball
 // coming into the palm), with the time to the catch point and the ball speed
 // drawn at random. No box bounds the draw: the search judges no catch point by
-// where it is (MD-94).
+// where it is (L3 §4.9).
 // The arm starts at rest at the shipped wait pose. Many of these throws are too
 // fast or too far for the reach and γ rank gates: that is on purpose, since the
 // timing must cover the candidates that get as far as IK and the rollout.
