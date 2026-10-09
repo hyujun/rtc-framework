@@ -1008,3 +1008,31 @@ def test_an_overlay_with_an_old_key_is_refused_and_a_dec_alone_is_fine(tmp_path)
         match=r"supervisor\.decel\.mode → catching\.planner\.segment\.mode",
     ):
         cd.composed_a_dec(node, cfg, CONTROLLER, [bad])
+
+
+def test_outcome_map_keys_list_trials_on_the_lists_sha256_and_throw_id():
+    """#798: a unit that threw a list has seed None on every trial; its trials key on
+    (the list's sha256, throw_id) and a trial with neither key is left out."""
+    sha = "ab" * 32
+
+    def trial(throw_id, ok, invalid="", sha=sha):
+        return {
+            "kind": "lhs",
+            "seed": None,
+            "sample_idx": None,
+            "throw_id": throw_id,
+            "throws_file_sha256": sha,
+            "invalid_reason": invalid,
+            "truth_success": ok,
+            "hold_no_abort": ok,
+        }
+
+    unit = {
+        "summary": {"unit": "u"},
+        "all_trials": [trial(40, True), trial(41, False), trial(42, True, invalid="lane_drop")]
+        + [trial(43, True, sha=None)],
+    }
+    assert cd.outcome_map([unit]) == {("list", sha, 40): True, ("list", sha, 41): False}
+    twice = {"summary": {"unit": "v"}, "all_trials": [trial(40, True), trial(40, False)]}
+    with pytest.raises(SystemExit, match="appears twice"):
+        cd.outcome_map([twice])

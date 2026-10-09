@@ -23,7 +23,8 @@ dirs per arm and judges the arm:
   δ_max; tick overrun; G8-C3 streak distribution; G7-B3 impulse correlation;
   gate-map whole / map-open subset when the rows carry ``map_open``;
 * with ≥ 2 arms, an exact McNemar test per arm pair over the trials that are
-  included and valid in BOTH, paired by ``(seed, idx)`` (D-S8-16 ④);
+  included and valid in BOTH, paired by throw (D-S8-16 ④): a throw-list trial
+  on (the list's sha256, ``throw_id``), a seeded-series trial on ``(seed, idx)``;
 * the D-3 S3.1b count (D-S8-16 ⑤): trials with a clock covariate over all
   arms against the ≥ 200 requirement; ``--extra-d3`` summaries (another
   population) are listed beside it, not added;
@@ -59,6 +60,8 @@ POOL_COLUMNS = (
     "unit_dir",
     "seed",
     "idx",
+    "throw_id",
+    "throws_file_sha256",
     "included",
     "beyond_target",
     "invalid_reason",
@@ -87,6 +90,7 @@ STRING_COLUMNS = frozenset(
         "stamp_anchor",
         "c2_join",
         "c2_tc_source",
+        "throws_file_sha256",
     }
 )
 # Per-trial columns copied into pool_trials.csv when present (G8-B, G8-C2, RTF).
@@ -148,6 +152,12 @@ def read_unit(ct_dir: Path) -> Unit:
     summary = json.loads(json_path.read_text())
     if "validity" not in summary:
         raise SystemExit(f"{json_path}: no validity block — re-run catching_trials")
+    # A unit that threw a list: the list's identity on every row (a CSV from
+    # before the column takes it from the summary; neither = a seeded series).
+    list_sha = (summary.get("throws_file") or {}).get("sha256")
+    for r in rows:
+        if r.get("throws_file_sha256") in (None, "") and list_sha:
+            r["throws_file_sha256"] = list_sha
     rows.sort(key=lambda r: r["idx"])
     return Unit(ct_dir, rows, summary)
 
@@ -257,11 +267,16 @@ def arm_summary(
 
 
 def _pair_key(row: Mapping) -> tuple | None:
+    """A throw-list trial: ("list", the list's sha256, throw_id). A seeded-series
+    trial: (seed, idx) as before #798. None: pairs with nothing."""
+    if row.get("throw_id") not in (None, "") and row.get("throws_file_sha256"):
+        return ("list", str(row["throws_file_sha256"]), int(row["throw_id"]))
     return None if row.get("seed") is None else (row["seed"], row["idx"])
 
 
 def check_unique_keys(label: str, units: Sequence[Unit]) -> None:
-    """A (seed, idx) twice in one arm is two units run with one seed — ambiguous."""
+    """A throw twice in one arm — (seed, idx), or a list's throw_id — is two
+    units run with one seed or one list — ambiguous."""
     seen: dict[tuple, Path] = {}
     for u in units:
         for r in u.rows:
@@ -270,14 +285,14 @@ def check_unique_keys(label: str, units: Sequence[Unit]) -> None:
                 continue
             if key in seen:
                 raise SystemExit(
-                    f"arm {label}: (seed, idx) {key} in both {seen[key]} and {u.ct_dir} — a "
+                    f"arm {label}: throw {key} in both {seen[key]} and {u.ct_dir} — a "
                     "re-run unit replaces its original (D-S8-16 ①), pass only one of them"
                 )
             seen[key] = u.ct_dir
 
 
 def mcnemar(label_a: str, a: Sequence[Mapping], label_b: str, b: Sequence[Mapping]) -> dict:
-    """Exact McNemar over the (seed, idx) pairs included and valid in both arms."""
+    """Exact McNemar over the throws (``_pair_key``) included and valid in both arms."""
     rows_a = {_pair_key(r): r for r in _valid(a) if _pair_key(r) is not None}
     rows_b = {_pair_key(r): r for r in _valid(b) if _pair_key(r) is not None}
     no_seed = sum(1 for r in [*_valid(a), *_valid(b)] if _pair_key(r) is None)
@@ -469,7 +484,7 @@ def report(summary: Mapping) -> str:
             f"{m['a_success_b_fail']} · {m['b']} only {m['a_fail_b_success']} · exact p "
             f"{m['p_exact_two_sided']:.4g}"
             + (
-                f" · {m['valid_rows_without_seed']} valid rows without a seed not paired"
+                f" · {m['valid_rows_without_seed']} valid rows without a pair key (seed or list) not paired"
                 if m["valid_rows_without_seed"]
                 else ""
             )

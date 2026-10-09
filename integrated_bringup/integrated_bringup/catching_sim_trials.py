@@ -46,15 +46,15 @@ parameters (``planner.wait_pose``, ``planner.freeze.T_freeze``,
 changes them without changing the installed YAML (S8-A). They are
 written to ``run_meta.json`` and to every trial record.
 
-Throw series (``--dist``):
+A run names its throws: ``--throws-file`` (the throw list — what every
+evaluation throws since #798) or ``--dist`` (a hand-near design). Neither is an
+argument error: the driver has no throws of its own. The frozen series of
+before #798 — ``reference`` (the S3.5b throw repeated, then perturbed) and
+``s35b`` (iid draws from a per-robot gate-map box) — were values of the old
+layout (the arm base at the floor) and are gone; a list file holds what they
+held, with its throws fixed and labelled (``integrated_bringup/config/<robot>/
+throw_sets/``).
 
-* ``reference`` (default, unchanged since S6-C): ``--n-ref`` S3.5b reference
-  throws then ``--n-pert`` seeded perturbations. A regression set — repeated
-  throws are not an iid sample, so not a success-rate input (D-S8-2).
-* ``s35b``: ``--n`` iid throws drawn with ``--seed`` from the profile's frozen
-  gate-map box (D-S8-2; ur5e_p1b's is the S3.5b 90 % box, iiwa7_leap's the
-  S8-D re-run's), built by ``rtc_tools.analysis.catchability_map`` so the
-  geometry is the one the gate map judged.
 * ``hand_cliff`` / ``hand_lob`` / ``hand_lhs`` (dynamic_catching S8-F): throws
   specified by their ARRIVAL state at the catch frame of the wait pose the
   running controller loaded (speed, flight time, lateral offset, incidence),
@@ -65,7 +65,7 @@ Throw series (``--dist``):
   the table floor refuses is redrawn, at most ``HAND_LHS_MAX_DRAWS_PER_THROW``
   times per accepted throw.
 
-* ``--throws-file PATH`` (instead of ``--dist``): the throws a
+* ``--throws-file PATH``: the throws a
   ``catching_throw_list/1`` JSON file lists, thrown in file order — an offline
   tool and the sim throw the same launches. The format is
   ``rtc_tools.analysis.catching_throw_list``'s (``load_throw_list`` /
@@ -126,9 +126,6 @@ MODE_NAMES = (
 )
 OUTCOME_NAMES = ("NONE", "CAPTURED", "MISSED", "UNDETERMINED", "ABORTED")
 
-# The S3.5b reference throw for ur5e_p1b (1.0 m out, 0.2 m up, 4.75 m/s at 60°).
-REFERENCE_RELEASE_POS = (1.0, 0.0, 0.2)
-REFERENCE_RELEASE_VEL = (-2.375, 0.0, 4.11362)
 # The RNG seed of a --dist series when --seed is not given.
 DEFAULT_SEED = 42
 
@@ -189,54 +186,6 @@ def mirror_names(search, segment) -> tuple[str, ...]:
     if search not in MIRROR_OF_SEARCH or segment not in MIRROR_OF_SEGMENT:
         return MIRROR_PARAMETERS
     return MIRROR_SELECTORS + MIRROR_COMMON + MIRROR_OF_SEARCH[search] + MIRROR_OF_SEGMENT[segment]
-
-
-@dataclasses.dataclass(frozen=True)
-class ThrowBox:
-    """A frozen throw distribution: uniform on each axis of the gate-map grid.
-
-    The axes are :func:`rtc_tools.analysis.catchability_map.generate_throw_grid`'s,
-    in the same frames (sim world; the base axis at ``base_xy_m``).
-    """
-
-    distance_m: tuple[float, float]
-    release_height_m: tuple[float, float]
-    aim_deviation_deg: tuple[float, float]
-    speed_m_s: tuple[float, float]
-    elevation_deg: tuple[float, float]
-    azimuth_deg: float = 0.0
-    base_xy_m: tuple[float, float] = (0.0, 0.0)
-
-
-# D-S8-2 (a): the frozen gate-map box of each profile. Per profile, because the
-# box is the gate map's verdict for that robot and wait pose.
-#   ur5e_p1b   — the S3.5b box that opened ≥ 90 % of its throws (S3.5b
-#                result — 163/180 on the torque layer).
-#   iiwa7_leap — the S8-D map re-run (D-S8-14/15, S8-D): of the
-#                boxes of ur5e_p1b's width, the one opening the most throws
-#                that ALSO rise clear of the robot parked at the wait pose —
-#                164/180 at a first plan of 0.215 s (115/180 at 0.24 s),
-#                wait pose = the shipped `planner.wait_pose`. The clearance
-#                condition is not in the gate map: steeper lobs (86-88°, 180/180
-#                on the map) rise straight into the waiting hand (S8-D smoke).
-FROZEN_DISTRIBUTIONS: dict[str, dict[str, ThrowBox]] = {
-    "s35b": {
-        "ur5e_p1b": ThrowBox(
-            distance_m=(0.9, 1.0),
-            release_height_m=(0.15, 0.25),
-            aim_deviation_deg=(-6.0, 6.0),
-            speed_m_s=(4.65, 4.85),
-            elevation_deg=(62.0, 64.0),
-        ),
-        "iiwa7_leap": ThrowBox(
-            distance_m=(0.95, 1.05),
-            release_height_m=(0.10, 0.20),
-            aim_deviation_deg=(-6.0, 6.0),
-            speed_m_s=(2.85, 3.05),
-            elevation_deg=(78.0, 80.0),
-        ),
-    },
-}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -332,87 +281,6 @@ def alignment_error(q, qd, target) -> tuple[float, float]:
     )
 
 
-def trial_throws(n_ref: int, n_pert: int, seed: int, pos, vel):
-    """The throw series: ``n_ref`` reference throws, then ``n_pert`` perturbed ones.
-
-    Perturbation (unchanged since the first S6-C run, so series stay
-    comparable): speed × U(0.9, 1.1), plus U(-0.3, 0.3) m/s lateral.
-    """
-    rng = random.Random(seed)
-    throws = [{"kind": "reference", "pos": tuple(pos), "vel": tuple(vel)} for _ in range(n_ref)]
-    for _ in range(n_pert):
-        scale = rng.uniform(0.9, 1.1)
-        lateral = rng.uniform(-0.3, 0.3)
-        vx, vy, vz = vel
-        throws.append(
-            {
-                "kind": "varied",
-                "pos": tuple(pos),
-                "vel": (vx * scale, vy * scale + lateral, vz * scale),
-                "mag_scale": scale,
-                "lateral_y": lateral,
-            }
-        )
-    return throws
-
-
-def frozen_throws(dist: str, profile: str, n: int, seed: int) -> list[dict]:
-    """``n`` iid throws from the profile's frozen distribution ``dist``.
-
-    Deterministic in ``seed`` (``random.Random``, one draw per axis per throw in
-    a fixed order), so a series is replayed from ``(dist, profile, n, seed)``
-    alone. Each throw carries its axis values, its spin (zero — the flight model
-    the gate map judged with has no Magnus term) and its provenance.
-    """
-    boxes = FROZEN_DISTRIBUTIONS.get(dist)
-    if boxes is None:
-        raise ValueError(f"unknown distribution {dist!r} (known: {sorted(FROZEN_DISTRIBUTIONS)})")
-    box = boxes.get(profile)
-    if box is None:
-        raise ValueError(
-            f"distribution {dist!r} has no box for profile {profile!r} "
-            f"(frozen for: {sorted(boxes)})"
-        )
-    if n < 0:
-        raise ValueError(f"n must be >= 0, got {n}")
-    # Imported here: the helpers above stay importable where rtc_tools is not.
-    from rtc_tools.analysis.catchability_map import generate_throw_grid, throw_to_launch_request
-
-    rng = random.Random(seed)
-    throws = []
-    for i in range(n):
-        axes = {
-            "distance_m": rng.uniform(*box.distance_m),
-            "release_height_m": rng.uniform(*box.release_height_m),
-            "aim_deviation_deg": rng.uniform(*box.aim_deviation_deg),
-            "speed_m_s": rng.uniform(*box.speed_m_s),
-            "elevation_deg": rng.uniform(*box.elevation_deg),
-        }
-        (throw,) = generate_throw_grid(
-            base_xy_m=box.base_xy_m,
-            distances_m=(axes["distance_m"],),
-            azimuths_deg=(box.azimuth_deg,),
-            release_heights_m=(axes["release_height_m"],),
-            aim_deviations_deg=(axes["aim_deviation_deg"],),
-            speeds_m_s=(axes["speed_m_s"],),
-            elevations_deg=(axes["elevation_deg"],),
-        )
-        req = throw_to_launch_request(throw)
-        throws.append(
-            {
-                "kind": dist,
-                "pos": tuple(req["position"][k] for k in "xyz"),
-                "vel": tuple(req["velocity"][k] for k in "xyz"),
-                "omega": tuple(req["angular_velocity"][k] for k in "xyz"),
-                "seed": seed,
-                "sample_idx": i,
-                "azimuth_deg": box.azimuth_deg,
-                **axes,
-            }
-        )
-    return throws
-
-
 # ── Hand-near throws (dynamic_catching S8-F, #537) ────────────────────────────
 #
 # A throw is specified by its ARRIVAL beside the waiting hand — speed v, flight
@@ -420,8 +288,8 @@ def frozen_throws(dist: str, profile: str, n: int, seed: int) -> list[dict]:
 # and `catchability_map.aim_at_hand` integrates the release backwards from it.
 # The hand's catch point and approach axis come from FK of the wait pose the
 # controller LOADED (the mirror), so an overlay that moves the wait pose moves
-# the throws with it. Designs are frozen here for the same reason the s35b box
-# is: a series is replayed from (dist, n, seed) alone.
+# the throws with it. Designs are frozen here so that a series is replayed from
+# (dist, n, seed) alone.
 
 
 @dataclasses.dataclass(frozen=True)
@@ -745,15 +613,16 @@ def build_throws(args, profile: str, geometry: HandGeometry | None = None) -> li
     """
     if getattr(args, "throws_file", None):
         return list(args.throw_list.throws)
-    if args.dist == "reference":
-        return trial_throws(args.n_ref, args.n_pert, args.seed, args.release_pos, args.release_vel)
     if args.dist in HAND_DESIGNS:
         if geometry is None:
             raise ValueError(
                 f"--dist {args.dist} needs the hand geometry (FK of the loaded wait pose)"
             )
         return hand_near_throws(args.dist, args.n, args.seed, geometry)
-    return frozen_throws(args.dist, profile, args.n, args.seed)
+    raise ValueError(
+        f"no throws named for profile {profile!r}: give --throws-file or --dist "
+        f"{'|'.join(sorted(HAND_DESIGNS))} (#798: the driver has no throw series of its own)"
+    )
 
 
 def apply_mirror(profile: ArmProfile, mirror: dict) -> ArmProfile:
@@ -1564,18 +1433,18 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--dist",
-        choices=("reference", *sorted(FROZEN_DISTRIBUTIONS), *sorted(HAND_DESIGNS)),
+        choices=sorted(HAND_DESIGNS),
         default=None,
         help=(
-            "throw series (default reference; not with --throws-file): the reference regression set, iid draws from a frozen box, or a "
-            "hand-near design aimed at the loaded wait pose (S8-F; a hand_* grid ignores --n)"
+            "a hand-near throw design aimed at the loaded wait pose (S8-F; a hand_* grid ignores "
+            "--n) — instead of --throws-file; one of the two is required"
         ),
     )
     parser.add_argument(
         "--throws-file",
         help=(
-            "throw list (catching_throw_list/1 JSON) thrown in file order, instead of a --dist "
-            "series; --limit still cuts it"
+            "throw list (catching_throw_list/1 JSON) thrown in file order — the throws of every "
+            "evaluation (integrated_bringup/config/<robot>/throw_sets/); --limit still cuts it"
         ),
     )
     parser.add_argument(
@@ -1615,16 +1484,12 @@ def parse_args(argv=None):
     parser.add_argument(
         "--urdf", help="hand-near: expanded URDF (default: the profile's urdf.package/path)"
     )
-    parser.add_argument("--n-ref", type=int, default=15, help="reference throws")
-    parser.add_argument("--n-pert", type=int, default=10, help="perturbed throws after them")
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help=f"perturbation / sampling RNG seed (default {DEFAULT_SEED}; not with --throws-file)",
+        help=f"sampling RNG seed of a --dist design (default {DEFAULT_SEED}; not with --throws-file)",
     )
-    parser.add_argument("--release-pos", type=float, nargs=3, default=REFERENCE_RELEASE_POS)
-    parser.add_argument("--release-vel", type=float, nargs=3, default=REFERENCE_RELEASE_VEL)
     parser.add_argument(
         "--tol-q", type=float, default=0.03, help="alignment check at ARMED, rad (pose_tol 0.02)"
     )
@@ -1684,7 +1549,10 @@ def parse_args(argv=None):
     args.throw_list = None
     if args.throws_file is None:
         if args.dist is None:
-            args.dist = "reference"
+            parser.error(
+                "name the throws: --throws-file <catching_throw_list/1 JSON> or --dist "
+                f"{{{','.join(sorted(HAND_DESIGNS))}}} (#798: no throw series is built in)"
+            )
         if args.seed is None:
             args.seed = DEFAULT_SEED
         return args

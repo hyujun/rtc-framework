@@ -153,6 +153,35 @@ inline constexpr std::size_t kNlpRejectCount = 20;
   return "unknown";
 }
 
+/// One candidate's solve, as the wake's record keeps it (#798 — E1-F19 part 2's
+/// instrument: what refused a candidate, group by group, and how long it took).
+/// The planner CSV writer unrolls these into `nlp_candidates.csv`, one row per
+/// solved candidate; the trivially-copyable record keeps the planner thread's
+/// path (SPSC → the controller's aux timer) unchanged.
+struct NlpCandidateStat {
+  std::int64_t index{0};               ///< lattice index
+  std::int64_t t_c_ns{0};              ///< catch instant
+  NlpReject reject{NlpReject::kNone};  ///< the verdict (kNone: valid)
+  std::uint8_t worst_group{0};         ///< DockingRowGroup with the largest violation
+  /// Bit g set when row group g's violation exceeds tol_violation — every
+  /// group that refused, not only the worst (what the verdict reads).
+  std::uint16_t violated_mask{0};
+  bool continuous_used{false};  ///< the candidate's solution is a continuous one
+  std::int32_t iterations{0};   ///< SQP iterations of the solve it uses
+  std::int32_t qp_solves{0};
+  std::int64_t solve_ns{0};  ///< the fixed-grid solve's wall time (the core cut it at a deadline)
+  double worst_violation{0.0};
+  double c_catch{0.0};  ///< closing speed at the catch node [m/s]
+  /// √λ_max of the ball's position covariance at the catch node, as the solve
+  /// was given it — raw: NaN when the node carried no valid covariance.
+  double sigma_c{std::numeric_limits<double>::quiet_NaN()};
+  double phi{0.0};  ///< Φ (meaningful when `reject` is kNone)
+};
+
+/// Most candidate records one wake keeps (≥ the bound on `max_solves`,
+/// nlp_catch_search.hpp's kNlpMaxSolves — checked there).
+inline constexpr int kNlpCandidateStatCount = 32;
+
 /// What a wake of the NLP search adds to SearchStats (E1-F14 #740). Left at
 /// its default by every other search (`ran` false).
 struct NlpSearchStats {
@@ -202,6 +231,9 @@ struct NlpSearchStats {
   /// for [rad], [rad/s]. NaN when the RT reports following none.
   double cmd_gap_q{std::numeric_limits<double>::quiet_NaN()};
   double cmd_gap_qd{std::numeric_limits<double>::quiet_NaN()};
+  // ── The candidates this wake solved (#798), in solve order ──
+  std::uint16_t n_cands{0};
+  std::array<NlpCandidateStat, kNlpCandidateStatCount> cands{};
 };
 
 /// One cycle's search diagnostics (L3 §8) — the planner CSV's body.
@@ -236,6 +268,13 @@ struct SearchStats {
   bool publish{true};
   /// monitorOnly (§4.6): σ_ℓ at the committed t_c from the newest covariance.
   double sigma_l{std::numeric_limits<double>::quiet_NaN()};
+  /// The covariance box the wake was given: its point count (0 = none).
+  std::int32_t cov_n{0};
+  /// √λ_max of the ball's position covariance at the chosen candidate's catch
+  /// node, raw (#798 — #800's finding: `sigma_l` is the monitor's column, so a
+  /// search wake never said whether its σ was NaN or large). NaN: no plan, or
+  /// the node carried no valid covariance.
+  double chosen_sigma_c{std::numeric_limits<double>::quiet_NaN()};
   /// The NLP search's own account (E1-F14). Written to the planner CSV as the
   /// `nlp_*` columns by the integration package; not part of the trace digest
   /// of the fields above.

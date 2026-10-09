@@ -1959,6 +1959,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// for the same reason as the timing ring.
   CatchingPlannerThread::EventQueue planner_events_{};
   std::ofstream planner_events_file_;
+  std::ofstream nlp_candidates_file_;  ///< the per-candidate rows of the same records (#798)
   /// `planner.search.grid.ik.*` / `planner.search.grid.catchability.*` — the same parser and keys
   /// the offline catchability map uses (S3.5a), so map and runtime solve alike.
   rtc::catching::CatchPoseIkConfig catch_pose_ik_config_{};

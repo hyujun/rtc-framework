@@ -1819,6 +1819,9 @@ void DemoCatchingController::TearDownConfiguredResources() noexcept {
   if (planner_events_file_.is_open()) {
     planner_events_file_.close();
   }
+  if (nlp_candidates_file_.is_open()) {
+    nlp_candidates_file_.close();
+  }
   log_set_.DrainAll();
   // Tear the timer down BEFORE Reset() so no drain callback runs against
   // channels that are being destroyed.
@@ -2941,6 +2944,12 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
       if (planner_events_file_.is_open() && fresh) {
         WritePlannerEventsHeader(planner_events_file_);
       }
+      const auto cands = dir / "nlp_candidates.csv";
+      const bool cands_fresh = !std::filesystem::exists(cands);
+      nlp_candidates_file_.open(cands, std::ios::app);
+      if (nlp_candidates_file_.is_open() && cands_fresh) {
+        WriteNlpCandidatesHeader(nlp_candidates_file_);
+      }
     } catch (const std::exception& e) {
       RCLCPP_WARN(logger_, "planner_events.csv disabled: %s", e.what());
     }
@@ -2961,9 +2970,15 @@ void DemoCatchingController::DrainPlannerTiming() noexcept {
     if (planner_events_file_.is_open()) {
       WritePlannerEventsRow(planner_events_file_, rec);
     }
+    if (nlp_candidates_file_.is_open()) {
+      WriteNlpCandidatesRows(nlp_candidates_file_, rec);
+    }
   }
   if (planner_events_file_.is_open()) {
     planner_events_file_.flush();
+  }
+  if (nlp_candidates_file_.is_open()) {
+    nlp_candidates_file_.flush();
   }
   planner_timing_.Drain(
       [this](const rtc::RtTickTimingSample& s) { planner_timing_logger_.Log(s); });

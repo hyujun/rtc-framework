@@ -453,3 +453,48 @@ def test_run_unit_asks_the_startup_check_and_no_longer_greps_for_refus():
     text = (Path(cst.__file__).parent / "run_unit.sh").read_text()
     assert 'check_startup.py" "$OUT/launch.log"' in text
     assert "bring_up_failed\\|refus" not in text
+
+
+# ── #798: units that threw a list pair on (the list's sha256, throw_id) ──────
+def _list_row(sha, throw_id, d4, invalid=""):
+    return {
+        "kind": "lhs",
+        "seed": None,
+        "sample_idx": None,
+        "throw_id": throw_id,
+        "throws_file_sha256": sha,
+        "invalid_reason": invalid,
+        "d4": d4,
+        "truth": d4,
+    }
+
+
+def test_list_units_pair_on_throw_id_and_a_seedless_row_does_not_crash():
+    sha = "ab" * 32
+    cf = [_list_row(sha, 40 + i, i < 3) for i in range(5)]
+    mpc = [_list_row(sha, 44 - i, i >= 3) for i in range(5)]  # the same ids, other order
+    mpc.append(_list_row("cd" * 32, 40, True))  # another list: pairs with nothing
+    mpc.append({**_list_row(None, 41, True), "seed": None})  # a row that lost its list
+    pr = sm.pair(cf, mpc)
+    assert pr["keys"] == 5 and pr["unpaired_cf"] == 0 and pr["unpaired_mpc"] == 1
+    assert pr["unkeyed"] == {"mpc": 1}
+    assert [k for k, _, _ in pr["valid"]] == [("list", sha, 40 + i) for i in range(5)]
+    # the two arms' rows met by id, not by position: cf holds ids 40–42, mpc 40–41
+    # (a join by position would read (T,F) (T,F) (T,F) (F,T) (F,T))
+    assert [(ra["d4"], rb["d4"]) for _, ra, rb in pr["valid"]] == [
+        (True, True),
+        (True, True),
+        (True, False),
+        (False, False),
+        (False, False),
+    ]
+    assert sm.seed_block(pr["valid"])["per_seed"].keys() == {"list:abababababab"}
+
+
+def test_a_dropped_list_pair_is_counted_against_its_list():
+    sha = "ab" * 32
+    cf = [_list_row(sha, i, True) for i in range(8)]
+    mpc = [_list_row(sha, i, True, invalid="lane_drop" if i < 6 else "") for i in range(8)]
+    pr = sm.pair(cf, mpc)
+    assert pr["dropped_n"] == 6 and pr["seed_drops"] == {"list:abababababab": 6}
+    assert pr["seeds_to_rerun"] == ["list:abababababab"]

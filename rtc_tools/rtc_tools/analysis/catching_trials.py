@@ -685,9 +685,10 @@ def load_profile(
 # its accepted candidates (at the map's one wait-pose ``seed_id`` —
 # ``catch_gate_map.py``'s ``accepted = [r for r in accepted if
 # int(r["seed_id"]) == seed_id]`` already narrows ``gate_map.csv`` to it)
-# has ``reason_torque == "none"``. A --dist box trial is drawn continuously
-# inside the grid's box (``catching_sim_trials.frozen_throws``), so it is
-# never exactly one grid throw — this module hands it the NEAREST one, in
+# has ``reason_torque == "none"``. A box trial of the frozen ``s35b`` series
+# (``catching_sim_trials`` before #798) was drawn continuously inside the
+# grid's box, so it is never exactly one grid throw — this module hands it the
+# NEAREST one, in
 # axis space normalised by each axis's own grid step, so an axis with a
 # coarser grid does not dominate the distance.
 
@@ -790,10 +791,10 @@ def load_gate_map(gate_map_dir: Path) -> GateMap:
 def trial_axis_values(record: Mapping) -> dict[str, float] | None:
     """The gate-map axis values a raw ``trial_results.json`` record carries.
 
-    Only a ``--dist`` box throw (``catching_sim_trials.frozen_throws``) writes
-    all of ``GATE_MAP_AXES`` onto its record; the ``reference``/``varied``
-    series (``trial_throws``) writes none of them — ``None``, not a guess, so
-    such a trial gets no gate-map verdict (:func:`gate_map_verdict`).
+    Only a frozen-box throw of before #798 (``s35b``) wrote all of
+    ``GATE_MAP_AXES`` onto its record; a throw-list or ``reference``/``varied``
+    record carries none of them — ``None``, not a guess, so such a trial gets
+    no gate-map verdict (:func:`gate_map_verdict`).
     """
     try:
         return {axis: float(record[axis]) for axis in GATE_MAP_AXES}
@@ -2665,6 +2666,9 @@ def analyse_session(
     # values (:func:`trial_axis_values`), the seed, the launch position and the
     # rig-failure fields (:func:`record_invalid_reason`) live only there.
     records_by_idx = {int(r["idx"]): r for r in doc["records"]}
+    # The list the run threw (run_meta.json's throws_file), the pairing key's
+    # other half beside throw_id (#798).
+    throws_file_sha256 = (doc["meta"].get("throws_file") or {}).get("sha256")
     bridge = load_plan_bridge(ctl)
     dump = cv.load_probe_dump(probe_dump_path) if probe_dump_path is not None else None
     samples = cv.load_eval_samples(eval_samples_path) if eval_samples_path is not None else None
@@ -2713,8 +2717,11 @@ def analyse_session(
         record = records_by_idx.get(trial.idx, {})
         row = {"idx": trial.idx, "kind": trial.kind, "supervisor": trial.outcome}
         if "throw_id" in record:
-            # A throw-list trial: the key an offline map of the same list joins on.
+            # A throw-list trial: the key an offline map of the same list joins
+            # on, and with the list's sha256 the key another unit of the same
+            # list pairs on (catching_throw_list.throw_key).
             row["throw_id"] = record["throw_id"]
+            row["throws_file_sha256"] = throws_file_sha256
         row["accepted"] = trial.accepted
         row["seed"] = record.get("seed")
         # D-S8-16 ①: rules 1–3 from the record; 3's "no diag rows" and the
@@ -4106,6 +4113,13 @@ def _median(rows: Sequence[Mapping], key: str) -> float:
     return float(np.median(values)) if values else math.nan
 
 
+def _throws_file_block(rows) -> dict | None:
+    shas = {r.get("throws_file_sha256") for r in rows} - {None, ""}
+    if len(shas) != 1:
+        return None
+    return {"sha256": next(iter(shas)), "n_throws": sum("throw_id" in r for r in rows)}
+
+
 def _summarise(
     rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source, gate_map=None
 ) -> dict:
@@ -4130,6 +4144,8 @@ def _summarise(
         "trials": len(rows),
         "accepted": len(run),
         "seeds": sorted({r["seed"] for r in rows if r.get("seed") is not None}),
+        # The throw list the unit threw (sha256 of the file), None for a seeded series.
+        "throws_file": _throws_file_block(rows),
         "validity": validity_block(rows, lane is not None),
         "supervisor_verdicts": verdicts,
         "servo_lag": [asdict(x) for x in lag],

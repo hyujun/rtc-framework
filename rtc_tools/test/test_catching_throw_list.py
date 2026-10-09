@@ -190,3 +190,25 @@ def test_one_read_gives_the_throws_and_the_files_identity(tmp_path):
         "meta": {"source": "unit"},
     }
     assert ctl.load_throw_list(path) == (listed.throws, listed.meta)
+
+
+# ── The pairing key (#798) ─────────────────────────────────────────────────
+def test_a_list_trial_pairs_on_the_lists_sha256_and_its_throw_id():
+    sha = "ab" * 32
+    row = {"throw_id": 7, "throws_file_sha256": sha, "kind": "lhs", "seed": None}
+    assert ctl.throw_key(row) == ("list", sha, 7)
+    # the CSV hands the id back as text: same key
+    assert ctl.throw_key({"throw_id": "7", "throws_file_sha256": sha}) == ("list", sha, 7)
+    # another file of the same launches is another population
+    assert ctl.throw_key({"throw_id": 7, "throws_file_sha256": "cd" * 32}) != ("list", sha, 7)
+    assert ctl.throw_group(("list", sha, 7)) == "list:abababababab"
+
+
+def test_a_seeded_series_keeps_its_key_and_a_trial_with_neither_has_none():
+    assert ctl.throw_key({"kind": "hand_lhs", "seed": 9, "sample_idx": 3}) == ("hand_lhs", 9, 3)
+    assert ctl.throw_key({"kind": "s35b", "seed": "9", "sample_idx": "3"}) == ("s35b", 9, 3)
+    assert ctl.throw_group(("s35b", 9, 3)) == 9
+    # a list trial of a unit whose list is unknown, a series without a seed
+    assert ctl.throw_key({"throw_id": 7, "throws_file_sha256": None, "seed": None}) is None
+    assert ctl.throw_key({"throw_id": 7, "seed": None, "sample_idx": None}) is None
+    assert ctl.throw_key({"kind": "reference", "seed": 42}) is None

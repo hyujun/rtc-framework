@@ -558,6 +558,7 @@ $T_{freeze}\ge T_{close,lead}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane
 - **방향 속력의 보수성** — 최소노름 해만 본다 (7 축에서 LP 와 더 벌어진다).
 - **$v_{dir,\max}$ 와 $w_5$ 의 상충** — $w_5$ 를 올린 자세가 $\hat d$ 로 빠른 자세는 아니다.
 - **직교 가정** — sim truth 에서 $\mathrm{Cov}(A,B)\lt0$ 이지만 (G3-H) 런타임 판정이 $\gamma$ 에 의존하지 않아 영향이 없다 (L3 §4.6).
+- **sim 에서의 순위 비트 1 · 16 · 32** (#800) — 비트 32 (rollout) 는 접근 단계가 $\omega^2\|x_0-p_c\|$ 를 요구해 모든 조합이 전 구간 검사에 실패하는 설계상 죽은 게이트다 (`gamma_rollout.hpp` 헤더). 비트 1 · 16 은 $\sigma$ 에 걸리는데, 본 sim 기록은 그 $\sigma$ 가 NaN (공분산 없음) 인지 큰지 가르지 못했다 — `sigma_l` 은 monitor 의 열이라 탐색 wake 에서는 NaN 이다. #798 부터 `planner_events.csv` 의 `chosen_sigma_c` (raw) 와 `cov_n` 이 그것을 적는다.
 
 ## 7. 기호 ↔ YAML 키 ↔ 코드
 

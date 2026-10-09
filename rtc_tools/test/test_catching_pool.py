@@ -284,3 +284,31 @@ def test_g8b_and_c2_are_recomputed_from_the_pooled_trial_columns(tmp_path):
     assert c2["n"] == 6 and c2["n_exact"] == 6
     assert c2["independence"] == "NOT_EVALUATED(n < 100)"
     assert "nees_h100ms_mean" in rows[0] and "c2_A_x" in rows[0]
+
+
+# ── #798: throw-list units pair on (the list's sha256, throw_id) ─────────────
+def test_mcnemar_pairs_list_units_on_throw_id_without_a_seed(tmp_path):
+    sha = "ab" * 32
+    a = [_row(i, None, success=i < 7, throw_id=40 + i, throws_file_sha256=sha) for i in range(10)]
+    # the same throws thrown in another order and another unit: idx differs, throw_id joins
+    b = [
+        _row(i, None, success=(49 - i) >= 47, throw_id=49 - i, throws_file_sha256=sha)
+        for i in range(10)
+    ]
+    b.append(_row(10, None, success=True, throw_id=99, throws_file_sha256="cd" * 32))  # other list
+    ua, ub = _unit(tmp_path / "a", a), _unit(tmp_path / "b", b)
+    assert cp._pair_key(cp.read_unit(ua).rows[0]) == ("list", sha, 40)
+    summary, _ = cp.pool({"A": [ua], "B": [ub]}, floor=0.1, n_valid_target=12, n_boot=50)
+    (m,) = summary["mcnemar"]
+    assert m["n_pairs"] == 10 and m["valid_rows_without_seed"] == 0
+    # joined by throw_id: a wins ids 40–46, b wins 47–49 (a join by idx would read 4 / 0)
+    assert (m["a_success_b_fail"], m["a_fail_b_success"]) == (7, 3)
+    assert (m["both_success"], m["both_fail"]) == (0, 0)
+
+
+def test_a_throw_id_twice_in_one_arm_of_one_list_is_refused(tmp_path):
+    sha = "ab" * 32
+    u1 = _unit(tmp_path / "u1", [_row(0, None, throw_id=5, throws_file_sha256=sha)])
+    u2 = _unit(tmp_path / "u2", [_row(0, None, throw_id=5, throws_file_sha256=sha)])
+    with pytest.raises(SystemExit, match="re-run unit"):
+        cp.pool({"a": [u1, u2]}, floor=0.1, n_boot=50)

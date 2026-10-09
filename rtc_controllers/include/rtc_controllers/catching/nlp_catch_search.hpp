@@ -181,6 +181,8 @@ namespace rtc::catching {
 
 /// Most solves one wake may run (the bound on `max_solves`).
 inline constexpr int kNlpMaxSolves = 32;
+static_assert(kNlpMaxSolves <= kNlpCandidateStatCount,
+              "every solved candidate of a wake has a record (search_stats.hpp)");
 /// Most lattice instants one wake may look at (the bound on `cand_capacity`).
 inline constexpr int kNlpMaxCandidates = 256;
 
@@ -390,6 +392,11 @@ class NlpCatchSearch final : public CatchSearch {
     MpcDockingReason core_reason{MpcDockingReason::kNone};
     DockingRowGroup worst_group{DockingRowGroup::kTorque};  ///< read on hard_row / chance
     double worst_violation{0.0};
+    /// Bit g set when row group g's violation exceeds tol_violation (#798).
+    std::uint16_t violated_mask{0};
+    /// √λ_max of the ball's position covariance at the catch node, as given to
+    /// the solve; NaN when that node had no valid covariance (#798).
+    double sigma_c{std::numeric_limits<double>::quiet_NaN()};
     bool solved{false};  ///< the core returned an iterate
     bool feasible{false};
     bool converged{false};
@@ -543,10 +550,13 @@ class NlpCatchSearch final : public CatchSearch {
                                         MpcDockingSegmentCoreInput& in) const noexcept;
   /// The verdict on an iterate a core returned, as a reason (kNone: valid).
   [[nodiscard]] NlpReject Verdict(const MpcDockingSegmentCoreResult& res, bool past_deadline,
-                                  double& worst, int& worst_group) const noexcept;
+                                  double& worst, int& worst_group,
+                                  std::uint16_t& violated_mask) const noexcept;
   /// The numbers of the solve a candidate stands on, from the core's result.
   static void RecordSolve(const MpcDockingSegmentCoreResult& res, double worst, int worst_group,
-                          CandidateRecord& c) noexcept;
+                          std::uint16_t violated_mask, CandidateRecord& c) noexcept;
+  /// The candidate's solve into the wake's record (#798): one entry per solved candidate.
+  static void RecordCandidate(const CandidateRecord& c, SearchStats& stats) noexcept;
   /// The solve with the catch instant free in the candidate's cell — or held
   /// at the followed plan's (`c.pinned`). `fixed` is this wake's fixed-grid
   /// solution of the candidate, or nullptr.
