@@ -879,6 +879,12 @@ class DemoCatchingAllocS7LeapTest : public ::testing::TestWithParam<const char*>
     yaml["catching"]["planner"]["enabled"] = false;
     yaml["catching"]["planner"]["segment"]["mode"] = segment_mode;
     yaml["catching"]["io"]["traj_topic"] = topic_;
+    // This test writes its ball in the MODEL frame (the catch frame's own FK),
+    // so the vision frame has to be that frame: the shipped base_T_world is the
+    // shipped SCENE's (the arm on a pedestal), and through it the ball this
+    // test aims at the hand would arrive that much lower and never cross the
+    // close plane.
+    yaml["catching"]["io"]["base_T_world"]["translation"] = std::vector<double>{0.0, 0.0, 0.0};
     yaml["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
         std::vector<double>{-3.0, -3.0, -3.0};
     yaml["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =

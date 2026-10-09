@@ -373,15 +373,23 @@ demo_catching_controller:
       # Vision world → MODEL world (L3 §4.2). The planner, its catch_box and
       # CLIK all work in the Pinocchio universe, whose root on this URDF is
       # `base_link` — 180° about z from `base`. Vision is measured against
-      # `base`, and base_T_world is the identity the sim measured (§11: same-q
-      # MuJoCo vs Pinocchio FK, 2026-09-20/21). The ingress composes the two
-      # and applies Rz(180°) to every prediction (S6-C: without it every
-      # candidate landed behind the arm). Real arm: base_T_world is the camera
-      # calibration (S10).
+      # `base`. The ingress composes the two and applies Rz(180°) to every
+      # prediction (S6-C: without it every candidate landed behind the arm).
+      #
+      # base_T_world is the SIM scene's: p_base = Rz(yaw) p_world + t. The
+      # shipped scene stands the arm on a 0.7 m pedestal (mujoco_simulator.yaml
+      # `model_path`, 2026-10-09 #747), so the base is 0.7 m above the world
+      # origin and t = -0.7 in z. With the base at the origin it was the
+      # identity (§11: same-q MuJoCo vs Pinocchio FK, 2026-09-20/21), and a
+      # scene that puts the base back there (scene.xml, scene_with_table.xml)
+      # needs the identity back, or every prediction is read 0.7 m low. The
+      # offline tools read THIS key (rtc_tools catching_trials), not an
+      # override in sim.yaml or an overlay. Real arm: the camera calibration
+      # (S10) — this value means nothing there.
       arm_base_frame: "base"
       base_T_world:
         yaw_deg: 0.0
-        translation: [0.0, 0.0, 0.0]
+        translation: [0.0, 0.0, -0.7]
       # = ceil(horizon_min / dt_expected) + 1 = ceil(0.51 / 0.05) + 1. The +1 is
       # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
       # cover 0.50 s and fall 10 ms SHORT of the window a commit decision
@@ -567,10 +575,16 @@ demo_catching_controller:
       # The longest the planner sleeps without a new trajectory (decision H,
       # 2026-09-23). It also re-plans on this cadence while vision is quiet.
       wake_timeout_s: 0.05
-      # IK seed and wait pose, ARM joint order [rad] (decision L, 2026-09-23):
-      # the S3.5b gate map's wait pose for this arm. PROVISIONAL. Consumed from S6-B (the IK seed); homing to it
-      # is S7.2.
-      wait_pose: [0.212, -1.376, 1.107, -1.978, -3.296, 0.121]
+      # IK seed and wait pose, ARM joint order [rad]. Chosen by the user in the
+      # pedestal scene's viewer (2026-10-09, #747): in deg [-0.02, -32.13,
+      # -128.82, -84.38, -90.83, -90.91] — the catch point 0.80 m above the
+      # base axis, the palm facing +x of `base` and tilted 25 deg up. It
+      # replaces the S3.5b gate map's pose [0.212, -1.376, 1.107, -1.978,
+      # -3.296, 0.121] (decision L, 2026-09-23), and everything that was
+      # derived FROM that pose is stale until re-derived: both catch boxes
+      # (catching/search_*.yaml) and the frozen throw box. PROVISIONAL.
+      # Consumed as the IK seed (S6-B) and homed to (S7.2).
+      wait_pose: [-0.000375, -0.560813, -2.248387, -1.472702, -1.585359, -1.586749]
       # Where the wait pose comes from (S8-I, #537 5850509543). `yaml` = the
       # list above. `current` = the arm's measured pose on the first readable
       # tick AT REST of each activation (a moving arm defers the decision; armed

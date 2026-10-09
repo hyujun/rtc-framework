@@ -81,15 +81,20 @@ demo_catching_controller:
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
       # Vision world → MODEL world (L3 §4.2). `link_0` is this URDF's model
-      # root and base_T_world is the identity the sim measured (§11), so the
-      # composed transform is the identity and the ingress leaves the
-      # prediction as is. Stated anyway: the frame is a per-robot fact, and a
-      # key the next robot has to think about. Real arm: the camera
-      # calibration (S10).
+      # root, so the composed transform is base_T_world itself:
+      # p_base = Rz(yaw) p_world + t. The shipped scene stands the arm on a
+      # 0.7 m pedestal (mujoco_simulator.yaml `model_path`, 2026-10-09 #747),
+      # so the base is 0.7 m above the world origin and t = -0.7 in z. With the
+      # base at the origin it was the identity the sim measured (§11), and a
+      # scene that puts the base back there (scene_right.xml,
+      # scene_right_with_object.xml) needs the identity back, or every
+      # prediction is read 0.7 m low. The offline tools read THIS key
+      # (rtc_tools catching_trials), not an override in sim.yaml or an overlay.
+      # Real arm: the camera calibration (S10).
       arm_base_frame: "link_0"
       base_T_world:
         yaw_deg: 0.0
-        translation: [0.0, 0.0, 0.0]
+        translation: [0.0, 0.0, -0.7]
       # = ceil(horizon_min / dt_expected) + 1 = ceil(0.51 / 0.05) + 1. The +1 is
       # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
       # cover 0.50 s and fall 10 ms SHORT of the window a commit decision
@@ -425,7 +430,15 @@ demo_catching_controller:
       # null-space moves q* each round). The former [0, 1.0, 0, -1.2, 0, 1.2,
       # 0] (S3.5a) opened 0. PROVISIONAL. Consumed as the IK seed (S6-B) and
       # homed to (S7.2).
-      wait_pose: [-0.7174, 1.5729, 1.7260, -0.9021, -0.2900, 1.2010, 2.1347]
+      #
+      # Replaced 2026-10-09 (#747): the pose below is the one the user chose in
+      # the pedestal scene's viewer — in deg [18.12, -40.05, -3.26, -94.90,
+      # -5.36, -65.08, -12.75], the catch point 1.08 m above the base axis,
+      # the palm facing +x and tilted 10 deg up. The gate-map pose above was
+      # [-0.7174, 1.5729, 1.7260, -0.9021, -0.2900, 1.2010, 2.1347]; everything
+      # derived FROM it is stale until re-derived: both catch boxes
+      # (catching/search_*.yaml) and the frozen throw box.
+      wait_pose: [0.316320, -0.698919, -0.056873, -1.656242, -0.093574, -1.135790, -0.222526]
       # `yaml` = the list above; `current` = the arm's switched-in pose on each
       # activation's first readable tick (S8-I — see the ur5e_p1b profile).
       wait_pose_source: yaml
@@ -506,7 +519,8 @@ demo_catching_controller:
       # the wait pose, which is checked too (IDLE, armed) and is the largest
       # motion this arm makes. Twice that peak, as for ur5e_p1b. The former 0.3
       # was a placeholder, and it did fire once — on a homing move blocked by
-      # the shipped scene's table objects, which is the fault it exists for.
+      # the table objects of the scene shipped then (scene_right_with_object.xml),
+      # which is the fault it exists for.
       # S10 sets the real-arm value.
       track_err_abort: 0.48
       # How long COMMITTED/CLOSING may run on a stale prediction past io.t_stale
