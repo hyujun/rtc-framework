@@ -1098,6 +1098,21 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 | `hand_cliff` · `hand_lob` · `hand_lhs` (S8-F) | **손 근처 투척** — 도착으로 지정한다: 떠 있는 컨트롤러의 `wait_pose` 를 FK 해 얻은 포구점 p_c·접근축 (catch frame +z) 을 기준으로, 도착 속력 v · 비행 시간 T · 접근축에 수직한 평면의 오프셋 (r, ψ) · 접근축 기준 입사각 α 를 정하고 `rtc_tools.analysis.catchability_map.aim_at_hand` 가 출하 항력 법칙으로 **역적분**해 릴리스를 낸다. `hand_cliff` = r 0 · T 0.65 · 정면, v {3.5, 4, 4.5, 5, 5.5, 6, 7} × 8 (속력 교차 순서, `--n` 무시) · `hand_lob` = 수평 아래 85° 급강하, v {2.5, 3, 3.5, 4} × 14 · `hand_lhs` = v [3.5, 7] · T [0.65, 0.8] · r [0, 0.2] · ψ [0, 360) · α [−10°, +15°] 의 Latin hypercube `--n` 발 (`--seed` 재현; 릴리스 공 표면이 `--floor-z` (기본 0.05, 작업 테이블 상판) 아래면 다시 뽑는다 — 받아들인 발당 `HAND_LHS_MAX_DRAWS_PER_THROW` 회를 넘기면 상자 자체가 이 기하에 안 맞는 것이라 이유를 적고 멈춘다) | 탐색 (dynamic_catching S8-F). 시행 기록에 인자·도출량 (Δz·d·v0·앙각·입사각)·목표점 `target_m` 과 **조준 검증** (`aim_error_m`: 첫 truth 표본에서 항력 법칙으로 적분한 비행이 목표점을 얼마나 비껴가는지 — truth 는 손에서 끊기므로 표본이 아니라 모델로 읽는다; `model_rms_m` 은 첫 접촉 전 truth 와 그 모델의 차) 이 남는다. 항력 상수는 C++ 프리셋이라 `--drag-coefficient`·`--air-density` (+ `-source` file:line) 로 주고 (기본 tennis; beanbag 은 0.5 · `projectile_ball.cpp:39`), `--arm` 은 unit 의 overlay 이름을 `run_meta.json` 에 남기는 라벨, `--limit` 은 계열의 앞 N 발만 (스모크). `run_meta.json` 의 `hand_geometry` 가 p_c·접근축·공 파라미터와 출처다. 탐색에 포구점의 위치 제한이 없으므로 (L3 §4.9) 출하 overlay 로 그대로 쓴다 — S8-F 때는 넓힌 `catch_box` 를 적은 arm (`s8f_reach_first` · `s8f_shipped_score` · `s8f_reach_first_beanbag`) 이 필요했고, 그 파일들은 git 이력에 있다 (지금은 그 키 때문에 컨트롤러가 park 한다) |
 | `s35b` (`ur5e_p1b`·`iiwa7_leap`) | 프로파일별 동결 상자에서 `--n` 번 균등 iid, `--seed` 로 재현. `ur5e_p1b` = S3.5b 90 % 상자 (거리 0.9–1.0 m · 릴리스 0.15–0.25 m · 방향 ±6° · 속력 4.65–4.85 m/s · 앙각 62–64°). `iiwa7_leap` = S8-D 지도 재실행 상자 (거리 0.95–1.05 m · 릴리스 0.10–0.20 m · 방향 ±6° · 속력 2.85–3.05 m/s · 앙각 78–80°; 지도 열림이면서 공이 상승 중 대기 자세 로봇에 닿지 않는 투척 164/180) | 동결 분포 (dynamic_catching S8, D-S8-2·D-S8-15). 발사 상태는 `rtc_tools.analysis.catchability_map` 의 격자 기하 그대로다. 표본의 축 값·seed·순번이 시행 기록에 남는다 |
 
+**투척 목록 파일 (`--throws-file PATH`).** `--dist` 대신 JSON 파일이 투척을 정한다 — 오프라인 도구와 sim 이 같은 투척을 쓴다. `--dist`·`--seed` 와 함께 주면 인자 오류이고, `--n` 은 쓰이지 않으며, `--limit` 은 파일의 앞 N 발만 던진다. 투척 순서는 파일 순서다. 손 근처 기하(FK)는 필요 없다. 형식의 검증·읽기·쓰기는 `rtc_tools.analysis.catching_throw_list` 하나다 — 오프라인 도구 (`catch_search_map`) 도 같은 모듈로 쓰므로 그 목록은 여기서 그대로 받는다. 이 드라이버의 `load_throw_list(path) -> (throws, meta)` · `write_throw_list(path, throws, meta)` 는 그 모듈의 함수다. 파일은 인자를 읽을 때 한 번 읽고 검증한다: 없거나 형식이 틀린 파일은 sim 에 닿기 전, `<out>` 에 아무것도 쓰기 전에 인자 오류 (종료 코드 2) 로 끝나고, 그 한 번 읽은 내용이 던질 투척과 `run_meta.json` 의 기록이 된다.
+
+```json
+{
+  "schema": "catching_throw_list/1",
+  "frame": "sim_world",
+  "meta": {"출처": "자유 형식, run_meta.json 에 그대로 남는다"},
+  "throws": [
+    {"throw_id": 0, "pos": [x, y, z], "vel": [vx, vy, vz], "omega": [wx, wy, wz], "kind": "map"}
+  ]
+}
+```
+
+`schema`·`frame` 은 위 값이어야 한다 (`pos`·`vel` 은 sim world 의 m, m/s). `throws` 는 비어 있지 않고, 각 항목은 정수 `throw_id` (파일 안에서 유일 — 오프라인 지도와 sim 결과를 잇는 키), 유한한 실수 3개의 `pos`·`vel` 을 가진다. `omega` (rad/s) 의 기본은 0, `kind` 의 기본은 `"list"` 다. 그 밖의 키는 그대로 `trial_results.json` 에 실리고, 드라이버가 시행 기록에 직접 쓰는 키 (`idx`·`outcome`·`seed` 등 — `THROW_RECORD_KEYS`) 는 거부한다. `run_meta.json` 의 `throws_file` 이 파일의 절대 경로·`sha256`·`n_throws`·`meta` 를 남긴다. 목록으로 던진 run 은 `run_meta.json` 의 `args.seed` 와 모든 시행 기록의 `seed` 가 `null` 이다 — 투척이 seed 에서 뽑히지 않았고, 출처는 `throws_file` 이다 (`--dist` run 은 지금처럼 쓴 seed, 기본 42 를 남긴다).
+
 **측정 lane (`sim_lanes:=true`).** sim 의 clock 위상 lane 과 공 접촉 truth lane 은 노드 파라미터라 기동 때만 읽힌다. `sim_lanes:=true` (`sim_ur5e_p1b`·`sim_iiwa7_leap`·`sim_g1_p1b`, 공용 `integrated_bringup.sim_lanes`) 는 둘을 켜고 `<session>/sim/{clock_lane,ball_contact_lane}.csv` 에 쓴다 — 시행의 lane 이 그 세션의 컨트롤러 CSV 옆에 남아 `catching_trials` (`rtc_tools`) 가 둘을 잇는다. 기본은 off (YAML 그대로).
 
 ```bash

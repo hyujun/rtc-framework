@@ -53,6 +53,18 @@ Throw series (``--dist``):
   the table floor refuses is redrawn, at most ``HAND_LHS_MAX_DRAWS_PER_THROW``
   times per accepted throw.
 
+* ``--throws-file PATH`` (instead of ``--dist``): the throws a
+  ``catching_throw_list/1`` JSON file lists, thrown in file order — an offline
+  tool and the sim throw the same launches. The format is
+  ``rtc_tools.analysis.catching_throw_list``'s (``load_throw_list`` /
+  ``write_throw_list`` here are that module's); ``--limit`` cuts the list like
+  any series, ``--n`` does not apply, and ``--dist`` / ``--seed`` are refused.
+  The file is read and validated once, in ``parse_args``: a file it refuses
+  ends the run with an argument error before the sim is touched or anything is
+  written. ``run_meta.json`` carries the file's path, sha256, throw count and
+  ``meta`` under ``throws_file``; ``args.seed`` there and ``seed`` in every
+  trial record are ``null``, because the throws were drawn from no seed.
+
 Host load (``--host-watch``, #601): a sim that runs slower than the wall (RTF < 1,
 another session's build or test on the same host) makes the ball's stamp fall
 behind the controller's steady clock, and the controller drops a healthy input
@@ -105,6 +117,8 @@ OUTCOME_NAMES = ("NONE", "CAPTURED", "MISSED", "UNDETERMINED", "ABORTED")
 # The S3.5b reference throw for ur5e_p1b (1.0 m out, 0.2 m up, 4.75 m/s at 60°).
 REFERENCE_RELEASE_POS = (1.0, 0.0, 0.2)
 REFERENCE_RELEASE_VEL = (-2.375, 0.0, 4.11362)
+# The RNG seed of a --dist series when --seed is not given.
+DEFAULT_SEED = 42
 
 # The controller's read-only mirror of what it loaded (lifecycle.cpp
 # DeclareProfileParameters). A controller that parked at configure declares none
@@ -649,8 +663,76 @@ def hand_near_throws(dist: str, n: int, seed: int, geometry: HandGeometry) -> li
     return throws
 
 
+# The throw-list format (``--throws-file``) is ``rtc_tools.analysis.catching_throw_list``'s:
+# the offline tools write through the same module, so a list they write is one
+# this driver throws. Imported inside each function, like every rtc_tools import
+# here: the helpers above stay importable where rtc_tools is not.
+_THROW_LIST_NAMES = (
+    "THROW_LIST_SCHEMA",
+    "THROW_LIST_FRAME",
+    "THROW_RECORD_KEYS",
+    "THROW_LIST_KNOWN_KEYS",
+)
+
+
+def __getattr__(name: str):
+    """The format's constants, read from ``catching_throw_list`` on first use."""
+    if name in _THROW_LIST_NAMES:
+        from rtc_tools.analysis import catching_throw_list
+
+        return getattr(catching_throw_list, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def parse_throw_list(doc, source: str) -> tuple[list[dict], dict]:
+    """``(throws, meta)`` of a decoded throw-list document (``catching_throw_list``)."""
+    from rtc_tools.analysis.catching_throw_list import parse_throw_list as parse
+
+    return parse(doc, source)
+
+
+def read_throw_list_file(path: str):
+    """One validated read of a throw-list file: ``catching_throw_list.ThrowListFile``
+    (throws, meta, absolute path, sha256 of its bytes)."""
+    from rtc_tools.analysis.catching_throw_list import read_throw_list_file as read
+
+    return read(path)
+
+
+def load_throw_list(path: str) -> tuple[list[dict], dict]:
+    """The throws of a ``catching_throw_list/1`` file, in file order, and its ``meta``.
+
+    Each throw is the dict the series builders return: ``kind`` (default
+    ``"list"``), ``pos`` / ``vel`` / ``omega`` as float 3-tuples (``omega``
+    defaults to zero) and ``throw_id``, plus every other key of the entry
+    untouched. Raises ``ValueError`` naming the file and the offending value.
+    """
+    from rtc_tools.analysis.catching_throw_list import load_throw_list as load
+
+    return load(path)
+
+
+def write_throw_list(path: str, throws: Sequence[dict], meta: dict | None = None) -> None:
+    """Write ``throws`` as a throw-list file that ``load_throw_list`` reads back equal
+    (``catching_throw_list.write_throw_list``: bit-exact floats, validated before writing)."""
+    from rtc_tools.analysis.catching_throw_list import write_throw_list as write
+
+    write(path, throws, meta)
+
+
+def throw_list_record(path: str) -> dict:
+    """What ``run_meta.json`` keeps of a throw-list file: path, sha256, throw count, ``meta``."""
+    return read_throw_list_file(path).record()
+
+
 def build_throws(args, profile: str, geometry: HandGeometry | None = None) -> list[dict]:
-    """The series ``--dist`` selects (module docstring)."""
+    """The series ``--throws-file`` or ``--dist`` selects (module docstring).
+
+    A ``--throws-file`` series is the file :func:`parse_args` already read and
+    validated (``args.throw_list``); the file is not opened again.
+    """
+    if getattr(args, "throws_file", None):
+        return list(args.throw_list.throws)
     if args.dist == "reference":
         return trial_throws(args.n_ref, args.n_pert, args.seed, args.release_pos, args.release_vel)
     if args.dist in HAND_DESIGNS:
@@ -931,6 +1013,16 @@ class HostWatch:
         }
 
 
+def run_meta_args(args) -> dict:
+    """The command line as ``run_meta.json`` records it under ``args``.
+
+    The parsed throw list is not an argument (its record is ``throws_file``);
+    ``seed`` is ``None`` for a ``--throws-file`` run, whose throws were drawn
+    from no seed.
+    """
+    return {k: v for k, v in vars(args).items() if k != "throw_list"}
+
+
 def write_run_meta(out_dir: str, meta: dict, watch: HostWatch) -> None:
     """``run_meta.json``; the ``host_watch`` key exists only with the watch on."""
     doc = dict(meta)
@@ -1204,6 +1296,7 @@ def _make_driver(profile: ArmProfile, args):
             launch_wall_time = time.time()
             record = {"idx": idx, **throw, "accepted": bool(res and res.accepted)}
             record["omega"] = omega
+            # None for a --throws-file run: its throws were drawn from no seed.
             record["seed"] = args.seed
             record["message"] = res.message if res else "no response"
             if not record["accepted"]:
@@ -1304,10 +1397,17 @@ def parse_args(argv=None):
     parser.add_argument(
         "--dist",
         choices=("reference", *sorted(FROZEN_DISTRIBUTIONS), *sorted(HAND_DESIGNS)),
-        default="reference",
+        default=None,
         help=(
-            "throw series: the reference regression set, iid draws from a frozen box, or a "
+            "throw series (default reference; not with --throws-file): the reference regression set, iid draws from a frozen box, or a "
             "hand-near design aimed at the loaded wait pose (S8-F; a hand_* grid ignores --n)"
+        ),
+    )
+    parser.add_argument(
+        "--throws-file",
+        help=(
+            "throw list (catching_throw_list/1 JSON) thrown in file order, instead of a --dist "
+            "series; --limit still cuts it"
         ),
     )
     parser.add_argument(
@@ -1349,7 +1449,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--n-ref", type=int, default=15, help="reference throws")
     parser.add_argument("--n-pert", type=int, default=10, help="perturbed throws after them")
-    parser.add_argument("--seed", type=int, default=42, help="perturbation / sampling RNG seed")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=f"perturbation / sampling RNG seed (default {DEFAULT_SEED}; not with --throws-file)",
+    )
     parser.add_argument("--release-pos", type=float, nargs=3, default=REFERENCE_RELEASE_POS)
     parser.add_argument("--release-vel", type=float, nargs=3, default=REFERENCE_RELEASE_VEL)
     parser.add_argument(
@@ -1384,7 +1489,27 @@ def parse_args(argv=None):
         default=HOST_WATCH_WINDOW_S,
         help="window of sim time the real-time factor is taken over [s]",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.throw_list = None
+    if args.throws_file is None:
+        if args.dist is None:
+            args.dist = "reference"
+        if args.seed is None:
+            args.seed = DEFAULT_SEED
+        return args
+    if args.dist is not None:
+        parser.error("--throws-file and --dist are exclusive: the file is the throw series")
+    if args.seed is not None:
+        parser.error(
+            "--throws-file and --seed are exclusive: the file's throws are drawn from no seed"
+        )
+    # Read and validated once, here: a file the sim would refuse ends the run
+    # before the sim is touched and before anything is written to out_dir.
+    try:
+        args.throw_list = read_throw_list_file(args.throws_file)
+    except (OSError, ValueError) as exc:
+        parser.error(f"--throws-file: {exc}")
+    return args
 
 
 def main(argv=None) -> int:
@@ -1442,13 +1567,15 @@ def main(argv=None) -> int:
                 f"axis {geometry.approach_axis} (elevation {geometry.axis_elevation_deg:.1f}°)"
             )
         meta = {
-            "args": dict(vars(args)),
+            "args": run_meta_args(args),
             "config_dir": config_dir,
             "controller_mirror": mirror,
             "n_throws": len(throws),
             "arm": args.arm,
             "hand_geometry": geometry.as_record() if geometry else None,
         }
+        if args.throw_list is not None:
+            meta["throws_file"] = args.throw_list.record()
         write_run_meta(args.out_dir, meta, watch)
         run_trials(node, throws, mirror, watch, results)
         verdicts: dict[str, int] = {}
