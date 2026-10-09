@@ -167,24 +167,6 @@ bool ReadBool(const YAML::Node& sec, const char* key, const std::string& path, b
   }
 }
 
-std::array<double, 3> Read3(const YAML::Node& v, const std::string& path) {
-  if (!v.IsSequence() || v.size() != 3) {
-    Reject(Key(path) + " must be three numbers, got " + Spelling(v));
-  }
-  std::array<double, 3> out{};
-  for (std::size_t i = 0; i < 3; ++i) {
-    try {
-      out[i] = v[i].as<double>();
-    } catch (const YAML::Exception&) {
-      Reject(Key(path) + "[" + std::to_string(i) + "] must be a number");
-    }
-    if (!std::isfinite(out[i])) {
-      Reject(Key(path) + "[" + std::to_string(i) + "] is not finite");
-    }
-  }
-  return out;
-}
-
 }  // namespace
 
 PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySelection& selection) {
@@ -374,22 +356,9 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
   out.score.penalty =
       ReadBounded(score, "penalty", "search.grid.score.penalty", out.score.penalty, 0.0, 1e9);
 
-  const YAML::Node workspace = Section(grid, "workspace", "search.grid.workspace");
-  if (const YAML::Node box = workspace["catch_box"];
-      box && !(box.IsScalar() && box.Scalar() == "TBD")) {
-    if (!box.IsMap() || !box["min"] || !box["max"]) {
-      Reject(Key("search.grid.workspace.catch_box") + " must be {min: [x, y, z], max: [x, y, z]}");
-    }
-    out.catch_box.min = Read3(box["min"], "search.grid.workspace.catch_box.min");
-    out.catch_box.max = Read3(box["max"], "search.grid.workspace.catch_box.max");
-    for (std::size_t a = 0; a < 3; ++a) {
-      if (out.catch_box.min[a] > out.catch_box.max[a]) {
-        Reject(Key("search.grid.workspace.catch_box") + " has min > max on axis " +
-               std::to_string(a));
-      }
-    }
-    out.catch_box.set = true;
-  }
+  // `search.grid.workspace` (the catch box, decision I) is not read: the
+  // search no longer judges where the catch point is (MD-94). A tree that
+  // still writes it is the binding's to park on (kRemovedCatchingKeys).
 
   // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────
   // `planner.segment.mode` and, under `mpc`, `switch_margin` and `eta_v` are

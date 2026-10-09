@@ -133,9 +133,6 @@ struct Rig {
     params.r_cap = 0.03;
     params.max_ik = 8;
     params.budget_s = 0.05;
-    params.catch_box.set = true;
-    params.catch_box.min = {-5.0, -5.0, -5.0};
-    params.catch_box.max = {5.0, 5.0, 5.0};
 
     ik.max_iter = 60;
     ik.manipulability_min = 0.0;
@@ -385,19 +382,38 @@ TEST(GridCatchSearchPlan, TheAdoptedWaitPoseIsReadInDeviceOrder) {
 
 TEST(GridCatchSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
   auto rig = std::make_unique<Rig>();
-  // A box nowhere near the trajectory: every p_c fails the workspace gate.
-  rig->params.catch_box.min = {100.0, 100.0, 100.0};
-  rig->params.catch_box.max = {101.0, 101.0, 101.0};
+  ASSERT_TRUE(rig->Configure());
+  // The same line 100 m off: no candidate's catch point is within the arm's
+  // reach, so the IK gate removes every one it runs on. (Until MD-94 this test
+  // used the catch box, a gate that no longer exists.)
+  auto traj = rig->Traj();
+  for (int k = 0; k < traj.n; ++k) {
+    traj.s[static_cast<std::size_t>(k)].p[0] += 100.0;
+  }
+  SearchStats stats;
+  const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                             kNoSegments, NowReal{kNow}, 0, stats);
+  EXPECT_FALSE(plan.valid);
+  EXPECT_EQ(plan.reason, PlanReason::kIkFailed);
+  EXPECT_EQ(stats.n_pass, 0);
+  ASSERT_GT(stats.n_ik, 0);
+  EXPECT_EQ(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kIk)], stats.n_ik);
+}
+
+TEST(GridCatchSearchPlan, NothingButTheInputRemovesACandidateBeforeTheIk) {
+  // MD-94: no gate judges WHERE a candidate's catch point is. Every candidate
+  // in the lead window with a finite, moving ball either reaches the IK or is
+  // left outside its budget — the two counts add up to the window.
+  auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
   const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
                                              kNoSegments, NowReal{kNow}, 0, stats);
-  EXPECT_FALSE(plan.valid);
-  EXPECT_EQ(plan.reason, PlanReason::kStoppingDistance);
-  EXPECT_EQ(stats.n_pass, 0);
-  EXPECT_EQ(stats.n_ik, 0) << "IK ran on candidates the cheap gate had already removed";
-  EXPECT_EQ(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kWorkspace)],
+  EXPECT_TRUE(plan.valid);
+  ASSERT_GT(stats.n_in_window, 0);
+  EXPECT_EQ(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kInput)], 0);
+  EXPECT_EQ(stats.n_ik + stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kNotEvaluated)],
             stats.n_in_window);
 }
 

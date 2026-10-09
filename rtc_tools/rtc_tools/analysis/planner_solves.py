@@ -75,7 +75,6 @@ NLP_REJECT_REASONS = (
     "follow_window",
     "lead_short",
     "ball_invalid",
-    "workspace",
     "covariance",
     "no_source",
     "ik",
@@ -89,6 +88,11 @@ NLP_REJECT_REASONS = (
     "chance",
     "unconverged",
 )
+
+#: Candidate reasons the search no longer has, still in the ``nlp_rej_*``
+#: columns and the ``nlp_reason`` of sessions recorded while it had them:
+#: ``workspace`` — the catch box, removed 2026-10-09 (MD-94).
+NLP_RETIRED_REJECT_REASONS = ("workspace",)
 
 #: ReplaceStepName, in enum order.
 REPLACE_STEPS = (
@@ -449,7 +453,7 @@ def nlp_summary(df: pd.DataFrame) -> dict | None:
         if name in sub.columns
     }
     rejects = {}
-    for reason in NLP_REJECT_REASONS:
+    for reason in (*NLP_REJECT_REASONS, *NLP_RETIRED_REJECT_REASONS):
         total = np.nansum(_numeric(sub, f"nlp_rej_{reason}"))
         if total > 0:
             rejects[reason] = int(total)

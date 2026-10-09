@@ -34,7 +34,7 @@
 //     A state outside the core's box is projected into it and marked.
 //  5. SCREENING, every candidate, in lattice order — each a NECESSARY
 //     condition, the first that fails is the candidate's reason:
-//     lead (S1) → the ball at every node of its grid → workspace → covariance
+//     lead (S1) → the ball at every node of its grid → covariance
 //     → a source segment → catch-pose IK and its catchability gate → joint
 //     reach (S4) → closing-speed window (S3).
 //  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose — the
@@ -78,11 +78,9 @@
 //     nearer than the minimum lead, not past the window, and — each side of
 //     the lattice instant, found on the prediction the plan reads — as far
 //     as the ball there passes what the screening asks of the ball alone
-//     (inside the prediction, moving, inside the catch box, a covariance
-//     with `chance`). Only the interval that ends at the catch node
-//     stretches: node 0, the start state and every pre-catch node are ①'s,
-//     so the candidate keeps its index, its grid and its place in the next
-//     wake's memory.
+//     (inside the prediction, moving, a covariance with `chance`). Only the interval that ends at
+//     the catch node stretches: node 0, the start state and every pre-catch node are ①'s, so the
+//     candidate keeps its index, its grid and its place in the next wake's memory.
 //   ② starts from the candidate's own continuous solution of the previous
 //   wake when there is one, else from ①'s solution at δt_c = 0. It is the
 //   candidate's solution when it is valid by ①'s own rule (in its share,
@@ -159,7 +157,6 @@
 #include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 #include "rtc_controllers/catching/nlp_catch_screening.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
-#include "rtc_controllers/catching/planner_params.hpp"  // CatchBox
 #include "rtc_controllers/catching/search_stats.hpp"
 #include "rtc_controllers/catching/time_types.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"
@@ -216,7 +213,6 @@ struct NlpCatchSearchParams {
   double t_lead_min{0.2};  ///< T_min: smallest t_c − t_0 [s]; ≥ n_pre_min·dt_pre
   double t_max{0.6};       ///< T_max: largest t_c − t_0 [s]; ≤ n_pre_max·dt_pre
   int cand_capacity{64};   ///< candidates a wake can hold; ≥ ⌊t_max/cand_dt⌋ + 1
-  CatchBox catch_box{};    ///< the catch point must lie inside (must be set)
   /// The IK seed, DEVICE order, `wait_pose_n` = nv entries — the wait pose,
   /// the same for every candidate and every wake (the RT's adopted wait pose
   /// replaces it when it reports one).
@@ -654,8 +650,6 @@ class NlpCatchSearch final : public CatchSearch {
       return PlanReason::kHorizonShort;
     case NlpReject::kBallInvalid:
       return PlanReason::kInputNonFinite;
-    case NlpReject::kWorkspace:
-      return PlanReason::kStoppingDistance;  // the workspace gate's code, as the grid search's
     case NlpReject::kCovariance:
     case NlpReject::kChance:
       return PlanReason::kUncertainty;

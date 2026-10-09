@@ -252,9 +252,6 @@ struct Rig {
     params.r_cap = 0.03;
     params.max_ik = 8;
     params.budget_s = 0.05;
-    params.catch_box.set = true;
-    params.catch_box.min = {-5.0, -5.0, -5.0};
-    params.catch_box.max = {5.0, 5.0, 5.0};
     auto& d = params.mpc_segment;
     d.n_nodes = 7;
     d.dt_s = 0.05;

@@ -370,8 +370,8 @@ demo_catching_controller:
       # robots. Compared on every message — a publisher that changes frame
       # keeps producing entirely plausible numbers in a different space.
       expected_frame: "world"
-      # Vision world → MODEL world (L3 §4.2). The planner, its catch_box and
-      # CLIK all work in the Pinocchio universe, whose root on this URDF is
+      # Vision world → MODEL world (L3 §4.2). The planner and the CLIK work
+      # in the Pinocchio universe, whose root on this URDF is
       # `base_link` — 180° about z from `base`. Vision is measured against
       # `base`. The ingress composes the two and applies Rz(180°) to every
       # prediction (S6-C: without it every candidate landed behind the arm).
@@ -596,9 +596,7 @@ demo_catching_controller:
       # margined joint box). An E-STOP or fault reset keeps the adopted pose.
       # The read-only mirror `planner.wait_pose` is the LIST, so with `current`
       # the trial runner (which aims at the mirror) refuses at its alignment
-      # gate — run experiments with `yaml` and an overlay. `workspace.catch_box`
-      # (catching/search_grid.yaml) does not follow the pose: an arbitrary pose needs a box that
-      # covers its surroundings (the S8-F overlays widen it).
+      # gate — run experiments with `yaml` and an overlay.
       wait_pose_source: yaml
       # The robot config's catch sub-model (R-3): arm root → catch frame parent.
       sub_model: "ur5e_catch"

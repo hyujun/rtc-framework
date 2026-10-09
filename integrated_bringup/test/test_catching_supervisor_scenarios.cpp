@@ -1147,10 +1147,6 @@ class SegmentScenarioBase : public SupervisorScenarioTest {
     }
     y["catching"]["planner"]["segment"]["mode"] = mode;
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
-    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
-        std::vector<double>{-2.0, -2.0, -2.0};
-    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
-        std::vector<double>{2.0, 2.0, 2.0};
     y["catching"]["joint_cmd"]["accel_constraint"] = "dynamic";
   }
 
@@ -1862,51 +1858,6 @@ TEST_P(MpcScenarioTest, APlanWithASegmentPredictedBeforeTheResetIsNotTaken) {
   ASSERT_NO_FATAL_FAILURE(BringUpMpc());
   WritePair([](SegmentSnapshot& s) { s.rt_state_ns = 1; });
   ASSERT_NO_FATAL_FAILURE(ExpectThePairRefused(SegmentRefusal::kBeforeReset));
-}
-
-// ── The RT does not judge where the stop ends (MD-73) ───────────────────────
-// catch_box is the planner search's: it judges the catch point and the stop
-// point of the plans it publishes. The RT takes a segment on JudgeSegment
-// and the switch gate alone. Under a catch box whose ceiling is below the hand
-// no node of any segment is inside it — the pair is taken and a replan is
-// followed all the same. (What these assert is the adoption itself: no event
-// code is left to count — a check brought back under any name fails them by
-// refusing the pair or the replan.)
-
-class MpcNoCatchBoxCheckTest : public MpcScenarioTest {
- protected:
-  void BringUpUnderABoxThatHoldsNoNode() {
-    ASSERT_NO_FATAL_FAILURE(BringUpMpc([this](YAML::Node& y) {
-      const double z = start_pose_.translation().z() - 0.2;
-      y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
-          std::vector<double>{2.0, 2.0, z};
-    }));
-  }
-};
-
-TEST_P(MpcNoCatchBoxCheckTest, APairWhoseStopLeavesTheCatchBoxIsTaken) {
-  ASSERT_NO_FATAL_FAILURE(BringUpUnderABoxThatHoldsNoNode());
-  ASSERT_NO_FATAL_FAILURE(FollowThePair());
-  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 1500)) << Transitions();
-  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
-}
-
-TEST_P(MpcNoCatchBoxCheckTest, AReplanWhoseStopLeavesTheCatchBoxIsFollowed) {
-  ASSERT_NO_FATAL_FAILURE(BringUpUnderABoxThatHoldsNoNode());
-  ASSERT_NO_FATAL_FAILURE(FollowThePair());
-  ASSERT_TRUE(TickUntilMode(Mode::kDecel, 1500)) << Transitions();
-  // The same trajectory from one stop node on: a post-catch replan.
-  SegmentSnapshot replan = integrated_bringup::testfx::ShiftSegment(first_seg_, kApproachNPre + 1);
-  Stamp(replan, 2);
-  ctrl_->SegmentBoxForTesting().Store(replan);
-  ASSERT_TRUE(TickUntilMode(Mode::kRetreat, 600)) << Transitions();
-  EXPECT_GT(CountTicks([](const TickRec& t) {
-              return t.body.segment_following && t.body.segment_seq == 2U;
-            }),
-            0)
-      << "the replan was not followed\n"
-      << Transitions();
-  EXPECT_EQ(log_[static_cast<std::size_t>(Entry(Mode::kRetreat))].outcome, Outcome::kCaptured);
 }
 
 // ── Nothing to follow is ABORT_SAFE, from APPROACH on (MD-44) ───────────────
@@ -4227,8 +4178,6 @@ TEST_P(StopEntryMpcTest, ALongStaleInCommitted) {
 
 INSTANTIATE_TEST_SUITE_P(SegmentPlanners, MpcScenarioTest, ::testing::Values("mpc", "mpc_docking"),
                          SegmentModeName);
-INSTANTIATE_TEST_SUITE_P(SegmentPlanners, MpcNoCatchBoxCheckTest,
-                         ::testing::Values("mpc", "mpc_docking"), SegmentModeName);
 INSTANTIATE_TEST_SUITE_P(SegmentPlanners, MpcEstopTest, ::testing::Values("mpc", "mpc_docking"),
                          SegmentModeName);
 INSTANTIATE_TEST_SUITE_P(SegmentPlanners, StopEntryMpcTest, ::testing::Values("mpc", "mpc_docking"),
@@ -5884,6 +5833,29 @@ TEST_F(SafetyGateParkTest, EveryRemovedKeyAndValueIsNamedInOneConfigure) {
   for (const char* needle :
        {"catching.robot.arm.accel_limits_path", "catching.robot.arm.accel_limits_group",
         "catching.joint_cmd.accel_constraint: box"}) {
+    EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {needle, "was removed"}).empty())
+        << needle;
+  }
+  EXPECT_EQ(ctrl_->on_activate(prev_), DemoCatchingController::CallbackReturn::FAILURE);
+  ASSERT_EQ(ctrl_->on_cleanup(prev_), DemoCatchingController::CallbackReturn::SUCCESS);
+}
+
+// MD-94: the catch box is gone — the searches do not judge where a catch
+// point is. An overlay that still writes one was tuned for that gate: parked
+// (never a configure failure, which would take every controller down), each
+// key named, whichever search runs.
+TEST_F(SafetyGateParkTest, TheRemovedCatchBoxKeysParkAndAreNamed) {
+  ASSERT_NO_FATAL_FAILURE(Configure(
+      [](YAML::Node& y) {
+        YAML::Node search = y["catching"]["planner"]["search"];
+        search["grid"]["workspace"]["catch_box"]["min"] = std::vector<double>{-2.0, -2.0, -2.0};
+        search["grid"]["workspace"]["catch_box"]["max"] = std::vector<double>{2.0, 2.0, 2.0};
+        search["nlp"]["catch_box"] = "TBD";
+      },
+      /*sim=*/true));
+  EXPECT_EQ(ctrl_->GetParkReason(), integrated_bringup::CatchingParkReason::kRemovedKey);
+  for (const char* needle :
+       {"catching.planner.search.grid.workspace", "catching.planner.search.nlp.catch_box"}) {
     EXPECT_FALSE(LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR, {needle, "was removed"}).empty())
         << needle;
   }

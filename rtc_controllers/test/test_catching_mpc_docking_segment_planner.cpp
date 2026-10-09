@@ -191,9 +191,6 @@ struct Rig {
     params.t_lead_min = 0.1;
     params.t_max = 0.4;
     params.cand_capacity = 16;
-    params.catch_box.set = true;
-    params.catch_box.min = {-5.0, -5.0, -5.0};
-    params.catch_box.max = {5.0, 5.0, 5.0};
     params.wait_pose_n = arm.nv;
     const std::array<double, 6> wait_dev = ToDevice(q_wait);
     std::copy(wait_dev.begin(), wait_dev.end(), params.wait_pose.begin());

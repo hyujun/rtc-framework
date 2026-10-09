@@ -1558,24 +1558,21 @@ TEST_P(ShippedCatchingProfile, ThePlannerAndTheOracleTogetherPark) {
 }
 
 TEST_P(ShippedCatchingProfile, AnUnsetPlannerDecisionParksInsteadOfGuessing) {
-  // S6-B: sub_model, T_freeze, catch_box, d_eff and r_cap are decisions with
-  // no default. Each one removed parks the controller and names the key; the
-  // robot still comes up. Positive control: the shipped file itself does not
+  // S6-B: sub_model, T_freeze, d_eff and r_cap are decisions with no default.
+  // Each one removed parks the controller and names the key; the robot still
+  // comes up. Positive control: the shipped file itself does not
   // park (RunsThePlannerThroughTheWholeLifecycle).
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
-  const std::vector<std::pair<const char*, const char*>> keys{{"sub_model", nullptr},
-                                                              {"freeze", "T_freeze"},
-                                                              {"workspace", "catch_box"},
-                                                              {"hand", "d_eff"},
-                                                              {"hand", "r_cap"}};
+  const std::vector<std::pair<const char*, const char*>> keys{
+      {"sub_model", nullptr}, {"freeze", "T_freeze"}, {"hand", "d_eff"}, {"hand", "r_cap"}};
   int n = 0;
   for (const auto& [section, key] : keys) {
     YAML::Node node = ShippedWithPlanner(profile, true, false);
     // The grid search's own sections sit under planner.search.grid. Chosen at
     // construction: assigning to an existing YAML::Node rebinds the node it
     // aliases (the tree's `planner` would become the grid map).
-    const bool grid = std::string(section) == "workspace" || std::string(section) == "hand";
+    const bool grid = std::string(section) == "hand";
     YAML::Node planner =
         grid ? node["catching"]["planner"]["search"]["grid"] : node["catching"]["planner"];
     ASSERT_TRUE(key == nullptr ? static_cast<bool>(planner[section])
@@ -1773,6 +1770,8 @@ TEST_P(ShippedCatchingProfile, TheSearchsCopiesAndTheMpcsEqualTheKeysTheyCopy) {
             rtc::catching::ParseCatchPoseIkParams(node["catching"]).options.v_eps)
       << profile;
   EXPECT_TRUE(rtc::catching::FindRenamedCatchingKeys(node["catching"]).empty()) << profile;
+  // Nor a key that was removed (the catch box, MD-94).
+  EXPECT_TRUE(rtc::catching::FindRemovedCatchingKeys(node["catching"]).empty()) << profile;
 }
 
 TEST_P(ShippedCatchingProfile, MirrorsTheVelocitySlackKeysItRunsWith) {
@@ -2648,6 +2647,37 @@ TEST_P(ShippedCatchingProfile, TheLeadIsRunFromWhatTheFollowedSegmentsMakeOfTheC
     if (!nlp) {
       EXPECT_NEAR(ctrl.GetGridCatchSearchConstantsForTesting().t_close_lead, as_run, 1e-12);
     }
+    ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
+  }
+}
+
+// The nlp search's map has no decision key to be unset (the catch box was the
+// one, MD-94). An overlay that writes a leaf into a profile without the
+// search's fragment makes the map exist and little else: every other value
+// would be a code default nobody wrote. Parked, the missing core named.
+TEST_P(ShippedCatchingProfile, AnNlpMapWithoutItsCoreParksNamingIt) {
+  const auto& [profile, expected_dof] = GetParam();
+  static_cast<void>(expected_dof);
+  int n = 0;
+  for (const char* segment : {"mpc", "mpc_docking"}) {
+    SCOPED_TRACE(segment);
+    YAML::Node node = ShippedWithSelection(profile, "nlp", segment, {kFragmentNlp});
+    node["catching"]["planner"]["search"]["nlp"]["budget"]["solve_s"] = 0.02;
+    auto configs = ShippedSimConfigs(profile, node);
+    auto node_handle =
+        NodeWithProfile("catching_nlp_no_core_" + profile + "_" + std::to_string(n++), "mpc_on");
+    DemoCatchingController ctrl{""};
+    BringUpShipped(ctrl, profile, configs);
+    const rclcpp_lifecycle::State prev;
+    const ConfigureLog log;
+    ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
+              DemoCatchingController::CallbackReturn::SUCCESS)
+        << ConfigureLog::All();
+    EXPECT_TRUE(ctrl.IsSimOnlyDisabled()) << ConfigureLog::All();
+    EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kMpcDockingInvalid);
+    EXPECT_TRUE(ConfigureLog::Said("'catching.planner.search.nlp.core' is not in this profile"))
+        << ConfigureLog::All();
+    EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
     ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   }
 }

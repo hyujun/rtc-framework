@@ -14,7 +14,7 @@
 
 | 상태 | 내용 | 절 |
 |---|---|---|
-| 구현됨 | vision 샘플 격자 위의 1 차원 시각 탐색 + 후보별 5 행 IK (제약 QP 과제 스텝 + 영공간 $\log w_5$ 상승) + 닫힌식 게이트 (도달시간 · γ 창 · 정지점 · 오차 예산) + soft-catch DS rollout 으로 $(\gamma_f, T_w)$ 선택 + 가중 점수 | §2 |
+| 구현됨 | vision 샘플 격자 위의 1 차원 시각 탐색 + 후보별 5 행 IK (제약 QP 과제 스텝 + 영공간 $\log w_5$ 상승) + 닫힌식 게이트 (도달시간 · γ 창 · 오차 예산) + soft-catch DS rollout 으로 $(\gamma_f, T_w)$ 선택 + 가중 점수 | §2 |
 | 구현됨 | 판정 게이트 / 순위 게이트의 분리 (D-27), IK 예산과 사전 점수 순서 (R-2), 교체 히스테리시스와 $u_{des}$ 계단 상한, 동결 | §2.2, §2.11 |
 | 구현됨 | `closed_form` 의 RT 법칙 — 오차 좌표 soft-catch DS (LTI, $\zeta=1$), 5 차 γ 램프, 반암시적 Euler, 방사형 포화, DECEL 의 등감속 가상 대상, HOLD | §3 |
 | 구현됨 | 모든 segment mode 가 공유하는 탐색 — `mpc` · `mpc_docking` 에서는 이 탐색의 plan 을 구간 계획기가 받고, RT 가 plan 을 따르는 동안에도 탐색은 돌지만 결과는 게시되지 않는다 (MD-46, §1.4) | §1.4, §4 |
@@ -85,12 +85,12 @@ $$
 [R1] 의 $(q^\ast, t_c)$ 동시 NLP 대신 **vision 격자 위의 1 차원 시각 탐색 + 후보별 IK** 다. 후보 $k$ 에 계산을 싼 것부터 적용한다.
 
 $$
-\underbrace{\text{입력 유한성}\to\text{작업공간}(p_c)\to\sigma_{\max}\to\text{사전 점수}} _ {\text{모든 후보}} \Longrightarrow \underbrace{\text{IK}\to w_5\to\dot q^u\to t_{\min}\to\gamma\text{ 창}\to\text{rollout}(\gamma_f,T_w)\to p_{stop}(\gamma_f)\to\sigma_{gap}(\gamma_f)\to J} _ {\text{사전 점수 상위 }\le N_{IK,\max}\text{ 개, 예산 안}}
+\underbrace{\text{입력 유한성}\to\sigma_{\max}\to\text{사전 점수}} _ {\text{모든 후보}} \Longrightarrow \underbrace{\text{IK}\to w_5\to\dot q^u\to t_{\min}\to\gamma\text{ 창}\to\text{rollout}(\gamma_f,T_w)\to\sigma_{gap}(\gamma_f)\to J} _ {\text{사전 점수 상위 }\le N_{IK,\max}\text{ 개, 예산 안}}
 $$
 
 게이트는 두 종류다.
 
-- **판정 게이트** — 후보를 **제거**한다: 입력 유한성 (NUM-7), IK 수렴, manipulability (D-18), $p_c\in\mathcal W_{catch}$ 와 $p_{stop}\in\mathcal W_{catch}$.
+- **판정 게이트** — 후보를 **제거**한다: 입력 유한성 (NUM-7), IK 수렴, manipulability (D-18). 포구점이 **어디에** 있는지는 판정하지 않는다 (MPC 계획 MD-94 — §2.8).
 - **순위 게이트** — 제거하지 않고 실패마다 점수에 벌점 $w_{pen}$ 을 더한다: 불확실성 · 도달시간 · γ 창 · commit 선행 · 오차 예산 · rollout (비트마스크 `RankGateBit`).
 
 판정 통과 후보 가운데 점수 $J$ 최소를 고른다. 판정 통과 후보가 없을 때만 plan 없음이다.
@@ -119,7 +119,6 @@ $T_{lead,0}$ = `slice.t_lead_min`, $T_{lead,1}$ = `slice.t_max`. 선행 $\ell_k=
 모든 $k\in\mathcal K$ 에서:
 
 - **입력 판정.** $\hat p_k$, $\hat v_k$ 가 유한하고 $\Vert\hat v_k\Vert\ge v_{eps}$ (`ik.v_eps`) 가 아니면 제거 (`kInput` — plan 사유로는 `kInputNonFinite` 이고 속력 하한 탈락도 여기 든다). clamp 로 덮지 않는다 (NUM-7).
-- **작업공간 판정.** $\hat p_k\notin\mathcal W_{catch}$ (`workspace.catch_box`, 모델 world 축정렬 상자, 경계 포함) 이면 제거 (`kWorkspace`).
 - **불확실성.** $\sigma_k=\sigma_{\max}(t_k)$ — 공분산이 token 불일치 · 비유한이면 모름 (NaN). 순위 게이트 실패 조건은 $\neg(\sigma_k\le\kappa_\sigma r_{cap})$ (모름 포함).
 - **사전 점수.**
 
@@ -283,15 +282,19 @@ $$
 
 `mpc` 에서도 이 rollout 이 후보의 순위와 $\gamma_f$ 를 매긴다 — 다만 그 법칙이 RT 에서 실행되지 않으므로 거기서는 실행의 예측이 아니라 순위의 기준이다.
 
-### 2.8 정지점 예약 (판정 게이트, `StoppingPoint`)
+### 2.8 정지점 (`StoppingPoint`) — 런타임은 판정하지 않는다
 
-rollout 이 고른 $\gamma_f$ 로
+포구 뒤 등감속 정지에 드는 거리의 닫힌식은
 
 $$
-p_{stop}=p_c+\frac{(\gamma_f\Vert v\Vert)^2}{2a_{dec}}\hat d,\qquad p_{stop}\in\mathcal W_{catch}
+p_{stop}=p_c+\frac{(\gamma_f\Vert v\Vert)^2}{2a_{dec}}\hat d
 $$
 
-가 아니면 제거 (`kWorkspace`). 정지점을 만들 수 없는 후보 — $a_{dec}$ 가 비양수 · 비유한 (TBD) 이면 전부 — 도 같은 제거다. 같은 식으로 상자가 없으면 §2.2 의 작업공간 판정이, $T_{lead,\min}$ 을 정할 수 없으면 (키도 $T_{freeze}$ 도 없음) §2.1 의 창이 모든 후보를 떨어뜨린다 — 모르는 값은 통과가 아니다. $a_{dec}$ 는 탐색의 복사본 `stop.a_dec` 다. $p_{stop}$ 의 IK 는 검사하지 않는다. 이것은 §3.6 의 등감속 정지거리 $\Vert\dot x_s\Vert^2/(2a_{dec})$ 에 $\dot x_s\approx\gamma_fv_c$ (§3.7) 를 넣은 것이다. RT 는 `catch_box` 를 검사하지 않는다 — 상자는 탐색의 것이다.
+이다 — §3.6 의 등감속 정지거리 $\Vert\dot x_s\Vert^2/(2a_{dec})$ 에 $\dot x_s\approx\gamma_fv_c$ (§3.7) 를 넣은 것이고, $a_{dec}$ 는 탐색의 복사본 `stop.a_dec` 다.
+
+**런타임 탐색은 이 점을 계산하지도 판정하지도 않는다 (MPC 계획 MD-94).** 2026-10-09 까지는 $p_c$ 와 $p_{stop}$ 이 상자 $\mathcal W_{catch}$ (`workspace.catch_box`) 안에 있어야 했고 밖이면 후보를 제거했다 (`kWorkspace`). 그 상자는 투척을 고르는 영역이지 plan 을 거부할 근거가 아니어서 판정 · 키 · 사유 값을 함께 지웠다. 지금 식을 쓰는 것은 오프라인 지도다 — `JudgeRankGates` 가 γ 창의 두 끝에서 $p_{stop}$ 을 내주고, 그 점이 도달 구 · 바닥 안인지는 지도의 python 이 자기 인자로 건다. $p_{stop}$ 의 IK 는 어디서도 검사하지 않는다. RT 도 구간이 어디서 정지하는지 판정하지 않는다 (MD-73).
+
+모르는 값은 통과가 아니라는 규칙은 그대로다: $T_{lead,\min}$ 을 정할 수 없으면 (키도 $T_{freeze}$ 도 없음) §2.1 의 창이 모든 후보를 떨어뜨린다.
 
 ### 2.9 순위 게이트와 오차 예산
 
@@ -381,7 +384,7 @@ COMMITTED · CLOSING 의 wake 는 따르는 plan 의 $t_c$ 의 공분산 (가장
 
 ### 2.14 사유
 
-plan 이 없을 때의 사유는 **가장 많이 걸린 판정 게이트** 다 (`kInputNonFinite` · `kIkFailed` · `kManipulability` · `kStoppingDistance` — $p_c$ 든 $p_{stop}$ 이든 작업공간 탈락). 예산에 밀려 평가 못 한 후보는 예산이 실제로 잘랐을 때만 세고 (`kBudgetExceeded`), settle 중은 `kUncertainty`, 창 안에 후보가 없으면 `kHorizonShort` 다. 고른 후보의 순위 게이트 실패는 사유가 아니라 CSV 의 비트마스크다.
+plan 이 없을 때의 사유는 **가장 많이 걸린 판정 게이트** 다 (`kInputNonFinite` · `kIkFailed` · `kManipulability`). `kStoppingDistance` 는 메시지에 남은 값이고 쓰는 탐색이 없다 (2026-10-09 전에는 작업공간 탈락이었다 — §2.8). 예산에 밀려 평가 못 한 후보는 예산이 실제로 잘랐을 때만 세고 (`kBudgetExceeded`), settle 중은 `kUncertainty`, 창 안에 후보가 없으면 `kHorizonShort` 다. 고른 후보의 순위 게이트 실패는 사유가 아니라 CSV 의 비트마스크다.
 
 ---
 
@@ -459,7 +462,7 @@ $$
 
 **전환 직후 오차는 정확히 0.** γ ≡ 1 에서 $e=x-p_v$, $\dot e=\dot x-v_v$ 이므로 $\tau=0$ 에서 $e=x_s-p_v(0)=0$, $\dot e=\dot x_s-v_v(0)=0$ 이고 $u_{des}=a_v$, 크기가 정확히 $a_{dec}$ 다. 그래서 $a_{dec}\le a_{\max}$ 가 층간 제약이다 (검증기). 연속인 것은 기준 상태 $(x, \dot x)$ 이고 오차는 DS 의 잔여 수렴 오차 $\epsilon_{conv}$ 만큼 점프한다. 기준 가속은 $\tau=0$ 과 $\tau_s$ 에서 불연속이다 (jerk 무한) — $a_{dec}$ 램프는 없다.
 
-**정지거리.** $\Vert\dot x_s\Vert^2/(2a_{dec})$ — §2.8 의 예약 $(\gamma_f\Vert v\Vert)^2/(2a_{dec})$ 와 같은 식이다 ($\dot x_s\approx\gamma_fv_c$, 아래).
+**정지거리.** $\Vert\dot x_s\Vert^2/(2a_{dec})$ — §2.8 의 정지점 $(\gamma_f\Vert v\Vert)^2/(2a_{dec})$ 와 같은 식이다 ($\dot x_s\approx\gamma_fv_c$, 아래).
 
 **포구 순간의 기준** (L4 §4.2). $e(t_c)=\dot e(t_c)=0$, $\xi^O(t_c)=0$ 이면 $\xi(t_c)=0$, $\dot\xi(t_c)=\gamma\dot\xi^O(t_c)$: 위치는 γ 와 무관하게 일치하고 기준 속도는 대상 속도의 γ 배, 상대속도는 $(1-\gamma)v_O(t_c)$ 다. $\gamma=0$ 은 정지 포구, $\gamma=1$ 은 완전 추종.
 
@@ -513,7 +516,7 @@ $T_{freeze}\ge T_{close,lead}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane
 
 - 출발: 기준 생성기의 상태 (돌고 있으면) — 교체가 거기서 이어진다는 §3.4 와 같다.
 - γ 램프: 게시한 $(\gamma_0, \gamma_f, t_0, t_1)$ 이 rollout 의 것과 같다. RT 는 교체 시 $\gamma_0$ 와 $t_0$ 를 채택 tick 의 값으로 덮지만 (§3.4), 그 차이는 계단 상한 (§2.11) 이 묶는다.
-- 정지: §2.8 의 $p_{stop}$ 은 $\dot x_s=\gamma_fv_c$ 를 가정한 §3.6 의 닫힌식이다. 실제 $\dot x_s$ 는 $t_c$ 의 기준 속도이고 $\epsilon_{conv}$ 만큼 다르다.
+- 정지: 탐색은 정지점을 판정하지 않는다 (§2.8). 지도가 쓰는 $p_{stop}$ 은 $\dot x_s=\gamma_fv_c$ 를 가정한 §3.6 의 닫힌식이고, 실제 $\dot x_s$ 는 $t_c$ 의 기준 속도라 $\epsilon_{conv}$ 만큼 다르다.
 - 도달시간 (§2.5) 은 관절별 시간최적 프로파일의 필요조건이고 실제 운동은 과제 공간 DS 다 — 충분성은 rollout.
 
 ### 4.3 `mpc` · `mpc_docking` 과의 차이
@@ -566,7 +569,6 @@ $T_{freeze}\ge T_{close,lead}+T_{arm}+h$ 를 검증기가 강제한다. 공 lane
 | $\kappa_\sigma$, $n_\sigma$, $\sigma_{trk}$, $\delta$ | `unc.kappa_sigma`, `budget.{n_sigma, sigma_trk, clock_err}` | `SigmaMax`, `CatchErrorSigma` |
 | $w_\sigma, w_t, w_q, w_{late}, w_\gamma, w_{pen}$ | `score.{w_sigma, w_t, w_q, w_late, w_gamma, penalty}` | §2.10 |
 | $N_{IK,\max}$, $T_{bud}$, `n_settle` | `planner.search.grid.{max_ik, budget_s, n_settle}` | §2.2 |
-| $\mathcal W_{catch}$ | `workspace.catch_box` | `CatchBox::Contains` |
 | $d_{eff}$, $r_{cap}$ | `hand.{d_eff, r_cap}` | §2.6, §2.9 |
 | $\epsilon_p$, $\alpha_{\max}$, $\rho$, $\sigma_0$, $\lambda_{\max}$, $\Delta_{\max}$, $\mu$, $K_n$, $k_w$, $N_{IK}$, $\epsilon_{grad}$, $v_{eps}$ | `ik.{eps_pos, alpha_max, rho, sigma0, lambda_max, dq_step_max, mu, k_null, k_manip, max_iter, manip_grad_tol, v_eps}` (중심차분 간격 `ik.fd_step`, QP 허용오차 · 반복 상한 `ik.{qp_eps_abs, qp_max_iter}`) | `CatchPoseIkOptions`, §2.3 |
 | 게이트 정의 · 하한 | `catchability.{definition, manipulability_min.*}` | §2.3.4 |

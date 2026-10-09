@@ -21,6 +21,7 @@
 #include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controllers/catching/catch_search.hpp"
+#include "rtc_controllers/catching/catching_params.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
@@ -279,7 +280,6 @@ planner:
       hand: {d_eff: 0.28, r_cap: 0.024, provisional: true}
       switch: {delta_J: 0.2, eta_jump: 0.4}
       score: {w_sigma: 2, w_t: 3, w_q: 0.5, w_late: 0.1, w_gamma: 4, penalty: 20}
-      workspace: {catch_box: {min: [0.1, -0.3, 0.2], max: [1.0, 0.3, 0.9]}}
 )"));
   EXPECT_EQ(p.sub_model, "arm_catch");
   EXPECT_EQ(p.max_ik, 5);
@@ -300,9 +300,6 @@ planner:
   EXPECT_DOUBLE_EQ(p.t_freeze, 0.36);
   EXPECT_DOUBLE_EQ(p.score.w_sigma, 2.0);
   EXPECT_DOUBLE_EQ(p.score.penalty, 20.0);
-  ASSERT_TRUE(p.catch_box.set);
-  EXPECT_TRUE(p.catch_box.Contains(0.5, 0.0, 0.5));
-  EXPECT_FALSE(p.catch_box.Contains(0.5, 0.31, 0.5));
   EXPECT_EQ(p.wait_pose_source, rtc::catching::PlannerParams::WaitPoseSource::kYaml)
       << "absent = the YAML pose";
 }
@@ -323,15 +320,14 @@ TEST(PlannerParams, TheWaitPoseSourceIsYamlOrCurrentAndNothingElse) {
 }
 
 TEST(PlannerParams, ADecisionLeftOutOrTbdIsUnsetNotDefaulted) {
-  // T_freeze, catch_box, d_eff/r_cap are decisions (L3 §6 TBD): absent or TBD
-  // must read as UNSET so the binding parks, never as a plausible number.
+  // T_freeze, d_eff/r_cap are decisions (L3 §6 TBD): absent or TBD must read
+  // as UNSET so the binding parks, never as a plausible number.
   for (const char* yaml : {"planner: {enabled: true}",
-                           "planner: {freeze: {T_freeze: TBD}, search: {grid: {workspace: "
-                           "{catch_box: TBD}, hand: {d_eff: TBD, r_cap: TBD}}}}"}) {
+                           "planner: {freeze: {T_freeze: TBD}, search: {grid: {hand: {d_eff: TBD, "
+                           "r_cap: TBD}}}}"}) {
     const auto p = ParsePlannerParams(YAML::Load(yaml));
     EXPECT_TRUE(std::isnan(p.t_freeze)) << yaml;
     EXPECT_TRUE(std::isnan(p.LeadMin())) << yaml << ": t_lead_min falls back to T_freeze";
-    EXPECT_FALSE(p.catch_box.set) << yaml;
     EXPECT_TRUE(std::isnan(p.d_eff)) << yaml;
     EXPECT_TRUE(std::isnan(p.r_cap)) << yaml;
     EXPECT_TRUE(p.sub_model.empty()) << yaml;
@@ -347,9 +343,6 @@ TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
            "planner: {search: {grid: {slice: {t_max: 2.0}}}}",
            "planner: {search: {grid: {slice: 3}}}",
            "planner: {freeze: {T_freeze: -0.1}}",
-           "planner: {search: {grid: {workspace: {catch_box: {min: [0, 0, 0]}}}}}",
-           "planner: {search: {grid: {workspace: {catch_box: {min: [1, 0, 0], max: [0, 1, 1]}}}}}",
-           "planner: {search: {grid: {workspace: {catch_box: {min: [0, 0], max: [1, 1, 1]}}}}}",
            "planner: {search: {grid: {score: {penalty: -1}}}}",
            "planner: {search: {grid: {switch: {eta_jump: 0}}}}",
            "planner: {search: {grid: {switch: {eta_jump: 1.5}}}}",
@@ -360,6 +353,27 @@ TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
        }) {
     EXPECT_THROW(static_cast<void>(ParsePlannerParams(YAML::Load(bad))), std::invalid_argument)
         << bad;
+  }
+}
+
+// MD-94: the search does not judge where the catch point is. The removed
+// `workspace` map is not read and does not make the parser throw, whatever is
+// in it — the binding parks on the key (kRemovedCatchingKeys), which keeps the
+// robot up where a throw here would fail the whole configure.
+TEST(PlannerParams, TheRemovedWorkspaceMapIsNotReadAndIsReportedAsRemoved) {
+  const rtc::catching::PlannerParams defaults = ParsePlannerParams(YAML::Load("planner: {}"));
+  for (const char* workspace :
+       {"{catch_box: {min: [0.1, -0.3, 0.2], max: [1.0, 0.3, 0.9]}}", "{catch_box: TBD}",
+        "{catch_box: {min: [1, 0, 0], max: [0, 1, 1]}}", "{}", "3"}) {
+    const std::string yaml =
+        std::string("planner: {search: {grid: {workspace: ") + workspace + "}}}";
+    const YAML::Node tree = YAML::Load(yaml);
+    rtc::catching::PlannerParams p;
+    ASSERT_NO_THROW(p = ParsePlannerParams(tree)) << yaml;
+    EXPECT_EQ(p.max_ik, defaults.max_ik) << yaml;
+    const auto removed = rtc::catching::FindRemovedCatchingKeys(tree);
+    ASSERT_EQ(removed.size(), 1U) << yaml;
+    EXPECT_STREQ(removed[0], "planner.search.grid.workspace") << yaml;
   }
 }
 

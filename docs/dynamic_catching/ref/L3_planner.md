@@ -31,7 +31,7 @@
 | G3-2 | RT → 계획기 상태 전달 경로(현재 $q_c,\dot q_c$, L4 기준 상태) | `rtc::SeqLock`. payload 는 trivially copyable POD (`std::array` 기반, Eigen 멤버 금지) — `PlannerRtState` (`planner_io.hpp`) |
 | G3-3 | 계획기 스레드 생성·우선순위 규약 | MPC 스레드와 같은 방식 (`rtc::PeriodicRtThread` 형제 subclass), thread layout 의 `mpc` role 을 쓴다 (§5.3) |
 | G3-4 | 손별 포켓 유효 깊이 $d_{eff}$, 포획 반경 $r_{cap}$ | `planner.search.grid.hand.d_eff` · `r_cap` (provisional, L6 §4.5). 투척 보정은 실기에서만 한다 (TBD-HAND-04) |
-| G3-5 | 포구 허용 작업공간, 감속 여유 공간 | `planner.search.grid.workspace.catch_box` (provisional, TBD-BALL-02) |
+| G3-5 | 포구 허용 작업공간, 감속 여유 공간 | 탐색은 포구점의 위치를 판정하지 않는다 (MD-94) — 관절 한계 안에서 IK 가 닿는 점은 어디든 후보다. 투척을 고르는 영역은 지도 도구의 입력이다. 실기의 작업셀 경계는 열려 있다 ([#613](https://github.com/hyujun/rtc-framework/issues/613)) |
 | G3-6 | vision 샘플 간격·지평·$N$ → 후보 격자 범위 | 후보는 vision 격자 그대로다 — 간격 `prediction.dt_expected`, 지평은 `planner.search.grid.slice.t_max` 가 상한 (TBD-VIS-04) |
 | G3-7 | **독립 IK/포즈 해석기가 있는지**와 그 API | 독립 IK 는 없다. 포구 자세 IK 는 `CatchPoseIk` (§4.2) 가 하고, `rtc::compliance::DifferentialIk` (σ_min 적응 λ, heap-free) 는 그 안에서 영공간 투영 $N$ 을 만드는 데만 쓴다 |
 
@@ -54,17 +54,17 @@
 
 후보 하나에 계산을 적용하는 순서 (런타임 `GridCatchSearch::Plan`, 연산량이 싼 것부터):
 
-$$\text{입력 · §4.9 작업공간}(p_c)\ \cdot\ \text{§4.4 불확실성}\to\text{§4.2 IK · manipulability (D-18)}\to\text{§4.3 도달시간}\to\text{§4.5 γ 창}\to\text{§4.8 rollout}\ (\gamma_f)\to\text{§4.9 정지점}(\gamma_f)\to\text{§4.6 오차 예산}(\gamma_f)$$
+$$\text{입력}\ \cdot\ \text{§4.4 불확실성}\to\text{§4.2 IK · manipulability (D-18)}\to\text{§4.3 도달시간}\to\text{§4.5 γ 창}\to\text{§4.8 rollout}\ (\gamma_f)\to\text{§4.6 오차 예산}(\gamma_f)$$
 
-rollout 이 정지점과 오차 예산보다 **먼저** 다 — 둘 다 rollout 이 고른 $\gamma_f$ 로 계산한다 (rollout 을 돌릴 수 없으면 $\gamma_f=0$). 오프라인 지도 (`JudgeGates`) 는 포구 자세가 이미 있는 후보에 도달시간 · γ 창 · 정지점 (γ 창의 두 끝에서) 만 계산하고, rollout 과 `catch_box` 는 보지 않는다.
+rollout 이 오차 예산보다 **먼저** 다 — 오차 예산은 rollout 이 고른 $\gamma_f$ 로 계산한다 (rollout 을 돌릴 수 없으면 $\gamma_f=0$). 오프라인 지도 (`JudgeGates`) 는 포구 자세가 이미 있는 후보에 도달시간 · γ 창 · 정지점 (γ 창의 두 끝에서, §4.9) 만 계산하고 rollout 은 보지 않는다. 정지점을 판정하는 것은 지도뿐이다 — 런타임 탐색은 계산하지 않는다 (MD-94).
 
 **구현하지 않은 항 — 충격량 게이트.** 설계의 순서는 끝에 충격량 게이트 (L7 §4.7) 를 둔다. 임계가 정해지지 않아 (TBD-IMP-01) 탐색에 이 게이트는 없고, `PlanReason::kImpulse` 는 쓰이지 않는다. 충격량 $\Delta p=m(1-\gamma_f)\Vert v\Vert$ 은 `PlanSnapshot::dp_impact` 로 **기록만** 한다.
 
 판정 게이트에서 탈락한 후보는 뒤 단계를 계산하지 않고 탈락 사유를 기록한다 (아래 "런타임 판정/순위 분리"). 통과한 후보 중 §4.10 규칙으로 하나를 고르고, `closed_form` 에서는 **§4.7 히스테리시스**로 현재 plan과 비교한다. 후보가 하나도 남지 않으면 plan 없음(포기)이며, 사유 코드를 함께 기록한다.
 
-**런타임 판정/순위 분리 (D-27).** 오프라인 지도는 자기가 계산하는 게이트를 **엄격한** 필터로 쓴다. 런타임 계획기 (`GridCatchSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) · `planner.search.grid.workspace.catch_box` 안의 $p_c$ 와 $p_{stop}$ — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가, 어디서 멈추는가의 문제). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.search.grid.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `grid_catch_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·작업공간·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.search.grid.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창·정지점은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태 — 구간을 따르는 중이면 그 구간 위의 상태, §4.3).
+**런타임 판정/순위 분리 (D-27).** 오프라인 지도는 자기가 계산하는 게이트를 **엄격한** 필터로 쓴다. 런타임 계획기 (`GridCatchSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가의 문제). 포구점이 **어디에** 있는가는 판정하지 않는다 (MD-94). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.search.grid.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `grid_catch_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.search.grid.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태 — 구간을 따르는 중이면 그 구간 위의 상태, §4.3).
 
-런타임의 한 사이클은 이 순서로 돈다: 창 안의 전 후보에 싼 항 → 사전 점수 상위 후보마다 IK (+ manipulability) → $\dot q^u$ 와 `JudgeRankGates` (도달시간 · γ 창) → rollout 이 $(\gamma_f,T_w)$ 를 고름 → 그 $\gamma_f$ 로 $p_{stop}$ 판정 → 오차 예산 → 점수.
+런타임의 한 사이클은 이 순서로 돈다: 창 안의 전 후보에 싼 항 → 사전 점수 상위 후보마다 IK (+ manipulability) → $\dot q^u$ 와 `JudgeRankGates` (도달시간 · γ 창) → rollout 이 $(\gamma_f,T_w)$ 를 고름 → 그 $\gamma_f$ 로 오차 예산 → 점수.
 
 **탐색 방식 `[확정 A-4]`.** [R1]은 $(q_c,t_c)$를 동시에 푸는 NLP를 썼다. 본 구현은 1차원 시간 탐색 + IK 다.
 
@@ -401,13 +401,13 @@ $$\omega^2(1-\gamma)\Vert\Delta p_c\Vert+\bigl(2\zeta\omega|\dot\gamma|+|\ddot\g
 
 ### 4.9 정지거리 예약
 
-**적용: 공통** (판정 게이트 — `catch_box`). `mpc` 에서 실제 정지는 MPC 구간이 만들지만, 탐색은 같은 닫힌 형태의 정지점으로 후보를 거른다. RT 는 `catch_box` 를 검사하지 않는다 — 상자는 탐색의 것이다.
+**적용: 오프라인 지도만.** 런타임 탐색은 정지점을 계산하지도 판정하지도 않는다 (MD-94) — 2026-10-09 까지는 포구점 $p_c$ 와 정지점 $p_{stop}$ 이 `catch_box` 라는 상자 안에 있어야 했고, 밖이면 후보를 제거했다. 그 상자는 투척을 고르는 데 쓰는 영역이지 탐색이 plan 을 거부할 근거가 아니어서 지웠다. `mpc` · `mpc_docking` 에서 실제 정지는 구간 계획기가 관절 한계 안에서 만들고, RT 도 구간이 어디서 정지하는지 판정하지 않는다 (MD-73).
 
-포구 후 감속(L7 §4.3)에 필요한 공간을 확보한다.
+포구 후 감속 (L7 §4.3) 에 드는 거리는 닫힌 형태로 남아 있고 지도가 쓴다.
 
-$$p_{stop}=p_c+\frac{(\gamma_f\Vert v\Vert)^2}{2a_{dec}}\hat v\ \in\ \mathcal W_{catch}$$
+$$p_{stop}=p_c+\frac{(\gamma_f\Vert v\Vert)^2}{2a_{dec}}\hat v$$
 
-$a_{dec}$ 는 탐색의 `planner.search.grid.stop.a_dec` 다 — L7 감속의 `supervisor.decel.a_dec` 의 복사본이고 `closed_form` 에서는 둘이 같아야 한다 (§6). 함수는 `StoppingPoint` 다. 런타임은 rollout 이 고른 $\gamma_f$ 에서, 오프라인 지도는 γ 창의 양 끝에서 평가한다. $p_{stop}$ 의 IK 는 검사하지 않는다.
+$a_{dec}$ 는 탐색의 `planner.search.grid.stop.a_dec` 다 — L7 감속의 `supervisor.decel.a_dec` 의 복사본이고 `closed_form` 에서는 둘이 같아야 한다 (§6). 함수는 `StoppingPoint` 다. 오프라인 지도가 γ 창의 양 끝에서 평가하고 (`JudgeRankGates` 가 두 점을 내준다), 그 점이 도달 구 · 바닥 안인지는 지도의 python 이 자기 인자로 건다 (`catch_gate_map`). $p_{stop}$ 의 IK 는 검사하지 않는다.
 
 ### 4.10 선택 규칙 `[권장]`
 
@@ -461,7 +461,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 - `q_star` 는 팔 **device 순서**다. 용량 `kMaxPlanNv` 는 **계획기 control 모델 nv** 를 담는 컴파일 타임 상수이고 configure 에서 nv ≤ `kMaxPlanNv` 를 검사한다. 궤적 점 용량 `kCap` 과는 다른 상수다
 - `w5` · `w6` 는 정의 (`planner.search.grid.catchability.definition`) 와 무관하게 **항상 함께** 기록한다 (D-18, C-3)
 - `sigma_l` 은 `sigma_c` 와 같은 값이다 (§4.6). `dp_impact` 는 예상 충격량 [kg m/s] 의 기록이다 (§4.1)
-- `reason` 은 plan 이 없을 때 가장 많이 걸린 판정 게이트다. 작업공간 탈락 ($p_c$ 든 $p_{stop}$ 이든) 은 `kStoppingDistance` 로, 예산에 밀려 평가 못 한 것은 `kBudgetExceeded` 로, settle 중은 `kUncertainty` 로, 창 안에 후보가 없으면 `kHorizonShort` 로 읽힌다 — 어느 쪽이 상자를 벗어났는지는 `planner_events.csv` 가 갖는다
+- `reason` 은 plan 이 없을 때 가장 많이 걸린 판정 게이트다. 예산에 밀려 평가 못 한 것은 `kBudgetExceeded` 로, settle 중은 `kUncertainty` 로, 창 안에 후보가 없으면 `kHorizonShort` 로 읽힌다. `kStoppingDistance` 는 동결된 메시지의 값으로 남아 있고 쓰는 탐색이 없다 — 2026-10-09 전의 세션에서는 `catch_box` 탈락이 이 값이었다 (MD-94)
 
 **RT 소비자의 fail-closed 판정 (D-21, D-22, D-23).** 매 tick `Load()` 를 무조건 한 번 하고(D-21), payload 안의 값만으로 판정한다 (`SeqLock::sequence()` 를 따로 읽지 않는다). 새 plan 판정은 `snapshot_sequence` 가 아니라 **`plan_id`** 로 한다 — `snapshot_sequence` 는 궤적의 것이라 같은 궤적에서 계산한 두 plan 을 가르지 못한다. `plan_id` 는 writer (계획기, 또는 테스트·sim 용 oracle) 의 단조 카운터이고, RT 는 (a) `valid` · (b) `activation_generation` 일치 · (c) `generation` 이 RT 가 마지막으로 받은 궤적의 트랙 epoch 과 일치 · (d) `plan_id` 가 이미 받은 값과 다름 · (e) 게시 나이 (`now − publish_ns`) 가 0 이상이고 `io.t_stale` 이하 · (f) `publish_ns` 가 RT 의 마지막 리셋 시각 이후 · (g) 아래 R-ADMIT — 를 모두 만족할 때만 받는다. (f) 는 E-STOP 처럼 activation generation 을 올리지 않는 리셋을 덮는다. 하나라도 실패하면 그 tick 은 새 payload 를 쓰지 않고 이전 유효 plan(또는 무효 상태)을 유지한다. **token 불일치·나이 초과를 위한 새 `Reason` 은 만들지 않는다** (값 하나가 enum·`kAllReasons`·문자열·`CatchingState.msg` 네 곳에 걸리고 msg 는 D-20 동결): TRACKING 에서는 `kNoCatchablePlan` 으로 읽는다 (거부 사유 자체는 `PlanRefusal` 로 관측된다). RT 는 plan box 에 쓰지 않는다 — writer 는 하나뿐이다 (계획기와 oracle 이 함께 켜진 설정은 park).
 
@@ -504,7 +504,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 **탐색 wake** (두 planner 공통, 마지막 단계만 다르다):
 
 1. 궤적 스냅샷 읽기 — 지금 activation 의 것이 아니면 끝 (`no_input`). 이어서 공분산 읽기: token 이 궤적과 다르면 한 번 더 읽고, 그래도 다르면 그 조합은 쓰지 않는다 (공분산 모름으로 계획)
-2. 탐색 (`GridCatchSearch::Plan`, §4.1 단일 진입 함수): 트랙 epoch 가 막 바뀌었으면 `n_settle` 동안 plan 없음 (§4.4) → vision 샘플 격자의 후보마다 창·작업공간 검사와 사전 점수 → IK 예산 안에서 §4.1 의 순서 → 점수 (§4.10). 예산 `budget_s` 가 다하면 남은 후보를 건너뛰고 지금까지의 최선을 쓴다. `closed_form` 에서 RT 가 plan 을 따르는 중이면 §4.7 이 게시 여부를 정한다
+2. 탐색 (`GridCatchSearch::Plan`, §4.1 단일 진입 함수): 트랙 epoch 가 막 바뀌었으면 `n_settle` 동안 plan 없음 (§4.4) → vision 샘플 격자의 후보마다 창 검사와 사전 점수 → IK 예산 안에서 §4.1 의 순서 → 점수 (§4.10). 예산 `budget_s` 가 다하면 남은 후보를 건너뛰고 지금까지의 최선을 쓴다. `closed_form` 에서 RT 가 plan 을 따르는 중이면 §4.7 이 게시 여부를 정한다
 3. 게시 직전 재확인: 궤적 token 이 그대로이고 리셋 epoch · activation 이 그대로여야 한다 — 아니면 버린다 (`superseded`). 교체 규칙이 보류를 정했으면 게시하지 않는다 (`held`). RT 가 구간 계획기의 구간을 따르는 중이면 이 단계와 다음 단계 대신 아래 "따르는 중의 탐색" 이 정한다
 4. 게시:
    - **`closed_form`**: `PlanSnapshot` 을 저장한다 — 유효한 plan 이든 "plan 없음" + 사유든
@@ -566,7 +566,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | `planner.search.grid.max_ik` | 한 cycle 의 IK 후보 수 (사전 점수 상위, R-2) | – | 탐색 |
 | `planner.provisional` | `planner` 블록 전체가 provisional — sim 경고, 실기 park. `planner` 의 provisional 플래그는 이것 하나다 (`planner.search.grid.hand.provisional` 같은 키는 없다) | – | 주 |
 | `planner.wait_pose` | IK seed 이자 대기 자세 (arm 관절 순서, 길이 = arm dof, 관절 한계 안) | rad | 주 |
-| `planner.wait_pose_source` | 대기 자세의 출처: `yaml` = 위 목록, `current` = 이 컨트롤러가 활성화된 뒤 **첫 팔 판독 가능 tick** 의 $q_{meas}$ (팔이 정지한 tick 에 채택). 채택 자세는 homing 목표 · `ARMED` 도착 판정 · 계획기 IK seed (`PlannerRtState.wait_pose`) 에 같이 쓰인다. 채택이 거부되면 `yaml` 값이 유지된다 — 계획기는 매 cycle YAML seed 에서 시작해 채택 자세를 덮으므로 앞선 activation 의 채택 자세를 이어받지 않는다. 채택 · 거부의 조건은 L7 §4.1. read-only 미러 `planner.wait_pose` 는 **YAML 값**이고, `workspace.catch_box` 는 자세를 따라가지 않는다 | – | 주 |
+| `planner.wait_pose_source` | 대기 자세의 출처: `yaml` = 위 목록, `current` = 이 컨트롤러가 활성화된 뒤 **첫 팔 판독 가능 tick** 의 $q_{meas}$ (팔이 정지한 tick 에 채택). 채택 자세는 homing 목표 · `ARMED` 도착 판정 · 계획기 IK seed (`PlannerRtState.wait_pose`) 에 같이 쓰인다. 채택이 거부되면 `yaml` 값이 유지된다 — 계획기는 매 cycle YAML seed 에서 시작해 채택 자세를 덮으므로 앞선 activation 의 채택 자세를 이어받지 않는다. 채택 · 거부의 조건은 L7 §4.1. read-only 미러 `planner.wait_pose` 는 **YAML 값**이다 | – | 주 |
 | `planner.search.grid.slice.dt` | 후보 간격 — vision 샘플 간격 (`prediction.dt_expected`) 의 정수배. 격자를 솎을 뿐 보간하지 않는다 | s | 탐색 |
 | `planner.search.grid.slice.t_lead_min` | 후보 창의 하한. 없으면 `planner.freeze.T_freeze` 다 (출하 YAML 은 적지 않는다) | s | 탐색 |
 | `planner.search.grid.slice.t_max` | 후보 창의 상한 — vision 지평에서 여유를 뺀 값 이하 | s | 탐색 |
@@ -588,7 +588,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | `planner.search.grid.budget.clock_err` | §4.6 $\delta$ — 인프라 실측 (실기 식별 전에는 0) | s | 탐색 |
 | `planner.search.grid.score.w_sigma`, `w_t`, `w_q`, `w_late`, `w_gamma` | §4.10 의 가중. `w_gamma`를 크게 잡으면 사전식 선택과 같아진다 | – | 탐색 |
 | `planner.search.grid.score.penalty` | 실패한 **순위** 게이트 하나당 점수에 더한다. 연속 항을 압도해야 한다 (§4.1) | – | 탐색 |
-| `planner.search.grid.workspace.catch_box` | 모델 world 축정렬 상자 `{min: [x,y,z], max: [x,y,z]}`. 판정 게이트 — $p_c$ 와 $p_{stop}$ 이 모두 안에 있어야 한다 (TBD-BALL-02). 결정값이라 없으면 park | m | 탐색 |
+| `planner.search.grid.workspace` | **없어진 키** (MD-94). 파서는 읽지 않고, 적혀 있으면 컨트롤러가 키 이름을 대며 park 한다 (`kRemovedKey` — 로봇은 뜬다). 옛 `catch_box` 를 적은 프로필 · overlay 가 상자가 걸린 줄 알고 도는 것을 막는다. `planner.search.nlp.catch_box` 도 같다 (`kRemovedCatchingKeys`) | — | 탐색 |
 | `planner.search.grid.hand.d_eff` | **시각 발동 fly-in 허용 상대속도 × $T_{close,tot}$** (§4.5, L6 §4.5). 포켓 깊이가 아니다. 결정값이라 비었거나 TBD 면 park | m | 탐색 |
 | `planner.search.grid.hand.r_cap` | 측면 허용량 (L6 §4.5). 공 중심 좌표계라 공 반지름이 이미 포함돼 있다. 불확실성 · 오차 예산이 쓴다 | m | 탐색 |
 | `planner.search.grid.ik.max_iter` | IK 반복 상한 $N_{IK}$ | – | 탐색 |
@@ -614,9 +614,9 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 | `robot.arm.qdd_max` | §4.3 의 관절 가속 box (arm 관절 순서). 탐색의 도달시간, QP 비의존 정지 램프, homing 램프가 읽는다 (CLIK 은 읽지 않는다). 여러 기능이 읽으므로 주 파일에 있다 | rad/s² | 주 |
 | `robot.arm.qdd_provisional` | 위 box 가 실기에 승인됐는가 — true 면 실기 구성 park. `qdd_max` 를 덮는 쪽이 함께 적는다 | – | 주 |
 | `planner.search.grid.reference.omega` · `zeta` · `v_max` · `a_max` | 탐색이 rollout (§4.8) 과 γ 창 (§4.5) 에서 읽는 기준 — `reference.*` (L4 §6) 의 복사본. 원본의 검증 규칙을 따르고 `closed_form` 에서 원본과 다르면 park | – | 탐색 |
-| `planner.search.grid.stop.a_dec` | §4.9 정지점의 감속 — `supervisor.decel.a_dec` 의 복사본. 같은 규칙 ($0<a_{dec}\le a_{\max}$) | m/s² | 탐색 |
+| `planner.search.grid.stop.a_dec` | §4.9 정지점의 감속 — `supervisor.decel.a_dec` 의 복사본. 같은 규칙 ($0<a_{dec}\le a_{\max}$). 런타임 탐색은 정지점을 판정하지 않으므로 (MD-94) 이 값으로 후보가 갈리지 않는다 — 지도와 같은 함수 (`JudgeRankGates`) 에 넘겨질 뿐이다 | m/s² | 탐색 |
 | `reference.omega` · `zeta` · `v_max` · `a_max` | L4 §6. `closed_form` 의 기준. 탐색은 읽지 않는다 (위 복사본) | – | CF |
-| `supervisor.decel.a_dec` | L7 §6 의 감속 법칙. 탐색의 정지점은 위 복사본을 읽는다 | m/s² | CF |
+| `supervisor.decel.a_dec` | L7 §6 의 감속 법칙. 지도의 정지점 (§4.9) 은 위 복사본을 읽는다 | m/s² | CF |
 | `planner.search.grid.switch.delta_J` | §4.7 규칙 1 의 $\Delta_J$ — `closed_form` 에서는 plan 의 재게시를, 구간 계획기에서는 교체 쌍의 게시를 정한다 (§5.3) | – | 탐색 |
 | `planner.search.grid.switch.eta_jump` | §4.7 규칙 2: 교체가 $u_{des}$ 에 넣는 계단 ≤ `eta_jump` × `reference.a_max` — **closed_form 전용** (구간 계획기에서는 보지 않는다, §4.7) | – | 탐색 |
 | `planner.search.grid.switch.samples` | §4.7 규칙 2 의 계단 상한을 평가하는 순간의 수 (2 ~ `kSwitchSamplesMax`) — **closed_form 전용** | – | 탐색 |
@@ -675,7 +675,7 @@ G3-D 의 "교체 빈도" 와 G3-E 의 "L4/L5 실행 시 포화" 는 `closed_form
 
 ## 10. 미확정 항목
 
-- TBD-HAND-01, TBD-HAND-04 (투척 보정 — 실기), TBD-BALL-02 (`planner.search.grid.workspace.catch_box`), TBD-VIS-04
+- TBD-HAND-01, TBD-HAND-04 (투척 보정 — 실기), TBD-VIS-04. TBD-BALL-02 (`catch_box` 의 값) 는 키와 함께 없어졌다 (MD-94)
 - provisional 로 남은 값: `planner.search.grid.ik.alpha_max`, `planner.freeze.T_freeze`, `planner.search.grid.catchability.manipulability_min`, `planner.search.grid.ik` 의 `sigma0` · `lambda_max` · `dq_step_max` · `k_manip` · `manip_grad_tol` · `mu` · `qp_eps_abs`, 점수 가중치, `robot.arm.qdd_max` (실기 envelope)
 - `planner.search.grid.budget.sigma_trk` · `clock_err` (실기 식별), 충격량 임계 (TBD-IMP-01, L7 §4.7)
 - 계획기 스레드의 스케줄러 정책 판정 (G3-J — 제어 PC)

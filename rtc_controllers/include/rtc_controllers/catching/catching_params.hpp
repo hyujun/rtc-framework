@@ -206,6 +206,10 @@ inline constexpr std::array<RenamedCatchingKey, 18> kRenamedCatchingKeys{{
     return "its v_eps was also the mpc segment planner's ball-speed floor, which is "
            "'catching.planner.segment.mpc.v_eps' now";
   }
+  if (old_path == "planner.workspace") {
+    return "and that key has since been removed, so delete it instead: the search does not "
+           "judge where the catch point is";
+  }
   return nullptr;
 }
 
@@ -214,6 +218,22 @@ inline constexpr std::array<RenamedCatchingKey, 18> kRenamedCatchingKeys{{
 /// written is a key somebody meant. Never throws; a node on the way that is
 /// not a map has no children.
 [[nodiscard]] std::vector<RenamedCatchingKey> FindRenamedCatchingKeys(const YAML::Node& catching);
+
+/// Keys of the `catching:` tree that were removed with nothing in their place:
+/// the catch box (MPC plan MD-94). The searches used to remove every candidate
+/// whose catch point (or stopping point) lay outside it; they no longer judge
+/// where a catch point is, and the parsers do not read the keys. A tree that
+/// still writes one was tuned for a gate that is gone, so the binding parks on
+/// it (FindRemovedCatchingKeys) instead of running as if the box were in force.
+/// Paths are dotted and relative to `catching:`.
+inline constexpr std::array<const char*, 2> kRemovedCatchingKeys{
+    "planner.search.grid.workspace",
+    "planner.search.nlp.catch_box",
+};
+
+/// The entries of kRemovedCatchingKeys present in `catching` — with any value,
+/// under the map of a search that runs or of one that does not. Never throws.
+[[nodiscard]] std::vector<const char*> FindRemovedCatchingKeys(const YAML::Node& catching);
 
 // A YAML scalar the schema may leave open as the literal string "TBD" (or an
 // unparseable/non-finite number, which L0 §5.3 treats the same way) until a

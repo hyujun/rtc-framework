@@ -190,9 +190,6 @@ struct Rig {
     params.t_lead_min = 0.1;
     params.t_max = 0.4;
     params.cand_capacity = 16;
-    params.catch_box.set = true;
-    params.catch_box.min = {-5.0, -5.0, -5.0};
-    params.catch_box.max = {5.0, 5.0, 5.0};
     params.wait_pose_n = arm.nv;
     const std::array<double, 6> wait_dev = ToDevice(q_wait);
     std::copy(wait_dev.begin(), wait_dev.end(), params.wait_pose.begin());
@@ -596,7 +593,7 @@ TEST(NlpCatchSearchScreening, TheIkVerdictIsCatchPoseIksOwn) {
   };
 
   for (const Case tc : {Case{"reachable", 0.8, 0.0, true, false, false},
-                        Case{"a fast ball leaves the workspace", 6.0, 0.0, true, true, false},
+                        Case{"a fast ball leaves the arm's reach", 6.0, 0.0, true, true, false},
                         Case{"catchability gate", 0.8, 1e6, false, false, true}}) {
     SCOPED_TRACE(tc.name);
     auto rig = std::make_unique<Rig>();
@@ -936,37 +933,24 @@ void ExpectTheChoiceIsTheExhaustiveArgMin(const Rig& rig, const Wake& w,
 
 TEST(NlpCatchSearchChoice, FromRestItIsTheExhaustiveSolvesArgMin) {
   auto rig = std::make_unique<Rig>();
-  // The catch box ends between the candidates at +400 and +440 ms.
   const Throw probe_ball = AxisThrow(*rig, 0.28);
-  int hint = 0;
-  const BallNodeSample at_420 =
-      SampleBallNode(probe_ball.traj, &probe_ball.cov, true, BallTime{kNow + 420 * kMs}, hint);
-  const BallNodeSample at_wait =
-      SampleBallNode(probe_ball.traj, &probe_ball.cov, true, BallTime{kNow + 280 * kMs}, hint);
-  // A box around the ball's line, cut by a plane across it at the +420 ms point.
-  for (int a = 0; a < 3; ++a) {
-    const auto u = static_cast<std::size_t>(a);
-    const double lo = std::min(at_wait.p[a], at_420.p[a]);
-    const double hi = std::max(at_wait.p[a], at_420.p[a]);
-    const bool toward_min = at_420.p[a] < at_wait.p[a];
-    rig->params.catch_box.min[u] = toward_min ? lo : lo - 1.0;
-    rig->params.catch_box.max[u] = toward_min ? hi + 1.0 : hi;
-  }
   std::string err;
   ASSERT_TRUE(rig->Configure(&err)) << err;
   const Wake w = RunWake(*rig, probe_ball, rig->RestingRt(kNow), NoSegments(), kNow);
-  // Three kinds of removal besides the valid ones.
+  // Two kinds of removal besides the valid ones.
   const std::set<NlpReject> reasons = Reasons(rig->search);
   EXPECT_TRUE(reasons.contains(NlpReject::kLeadShort)) << Table(rig->search, w.stats);
-  EXPECT_TRUE(reasons.contains(NlpReject::kWorkspace)) << Table(rig->search, w.stats);
   EXPECT_TRUE(reasons.contains(NlpReject::kReach)) << Table(rig->search, w.stats);
-  // The oracle knows no catch box: take the candidates the box removed out.
-  std::vector<OracleCandidate> oracle =
+  // No check judges where the catch point is (MD-94): every candidate with a
+  // long enough lead reached the catch-pose IK, however far along the ball's
+  // line its catch point lies.
+  for (const Candidate& c : rig->search.Candidates()) {
+    if (c.reject != NlpReject::kLeadShort) {
+      EXPECT_TRUE(c.ik_run) << c.index << Table(rig->search, w.stats);
+    }
+  }
+  const std::vector<OracleCandidate> oracle =
       Exhaustive(*rig, probe_ball, kNow, kNow, -1, RestStart(*rig));
-  std::erase_if(oracle, [&](const OracleCandidate& o) {
-    const Candidate* c = Find(rig->search, o.index);
-    return c != nullptr && c->reject == NlpReject::kWorkspace;
-  });
   ExpectTheChoiceIsTheExhaustiveArgMin(*rig, w, oracle);
   EXPECT_EQ(w.stats.decision, SwitchDecision::kNoCurrent);
   EXPECT_TRUE(w.stats.publish);
@@ -1657,7 +1641,6 @@ TEST(NlpCatchSearchReasons, ThePublishedReasonIsATableOverEveryValue) {
       {NlpReject::kFollowWindow, PlanReason::kHorizonShort},
       {NlpReject::kLeadShort, PlanReason::kHorizonShort},
       {NlpReject::kBallInvalid, PlanReason::kInputNonFinite},
-      {NlpReject::kWorkspace, PlanReason::kStoppingDistance},
       {NlpReject::kCovariance, PlanReason::kUncertainty},
       {NlpReject::kNoSource, PlanReason::kLimitsInvalid},
       {NlpReject::kIk, PlanReason::kIkFailed},
@@ -1750,18 +1733,6 @@ TEST(NlpCatchSearchReasons, EveryScreeningReasonComesFromAnInputThatPassedTheChe
     });
     ExpectNoPlan(rc, NlpReject::kBallInvalid);
     EXPECT_GT(rc.w.stats.n_in_window, 0);
-  }
-  {
-    SCOPED_TRACE("workspace: the catch box holds no point of the ball's line");
-    const ReasonCase rc(
-        [](Rig& r) {
-          r.params.catch_box.min = {40.0, 40.0, 40.0};
-          r.params.catch_box.max = {41.0, 41.0, 41.0};
-        },
-        kNoEdit);
-    ExpectNoPlan(rc, NlpReject::kWorkspace);
-    EXPECT_EQ(Count(rc.rig->search, NlpReject::kWorkspace), rc.w.stats.n_in_window);
-    EXPECT_EQ(rc.w.stats.n_ik, 0);
   }
   {
     SCOPED_TRACE("covariance: the covariance in the box is another snapshot's");
@@ -2833,7 +2804,6 @@ TEST(NlpCatchSearchConfigure, RefusesAGridThatDoesNotCoverTheCandidateWindow) {
   refuses([](Rig& r) { r.params.max_solves = 33; }, "max_solves");
   refuses([](Rig& r) { r.params.t_ref_s = 0.0; }, "non-finite or out of range");
   refuses([](Rig& r) { r.params.w_switch = -1.0; }, "non-finite or out of range");
-  refuses([](Rig& r) { r.params.catch_box.set = false; }, "catch_box");
   refuses([](Rig& r) { r.params.wait_pose_n = 5; }, "wait_pose");
   refuses([](Rig& r) { r.params.stop_block_sizes = {1, 1, 2, 2}; }, "do not add up");
   refuses([](Rig& r) { r.params.n_stop_blocks = 2; }, "at least 3 move blocks");
@@ -4301,11 +4271,12 @@ TEST(NlpCatchSearchContinuous, ThePinnedCellIsTheHalfOpenCellOfThePlansInstant) 
   }
 }
 
-// Whether the ball at catch instant `t_ns` is inside the rig's catch box.
-[[nodiscard]] bool InCatchBox(const Rig& rig, const Throw& ball, std::int64_t t_ns) {
+// Whether the prediction still holds the ball at `t_ns` (a mean that is not an
+// extrapolation past its last sample).
+[[nodiscard]] bool InPrediction(const Throw& ball, std::int64_t t_ns) {
   int hint = 0;
   const BallNodeSample at = SampleBallNode(ball.traj, nullptr, false, BallTime{t_ns}, hint);
-  return at.valid && rig.params.catch_box.Contains(at.p.x(), at.p.y(), at.p.z());
+  return at.valid && !at.after_horizon;
 }
 
 // The first candidate of the wake whose continuous solve was taken, more than
@@ -4319,21 +4290,32 @@ TEST(NlpCatchSearchContinuous, ThePinnedCellIsTheHalfOpenCellOfThePlansInstant) 
   return nullptr;
 }
 
-// A wall of the catch box across the ball's path at catch instant `t_wall_ns`,
-// on the axis the ball moves fastest along at `t_ns`.
-void PutWallAt(Rig& rig, const Throw& ball, std::int64_t t_ns, std::int64_t t_wall_ns) {
-  int hint = 0;
-  const BallNodeSample here = SampleBallNode(ball.traj, nullptr, false, BallTime{t_ns}, hint);
-  const BallNodeSample wall = SampleBallNode(ball.traj, nullptr, false, BallTime{t_wall_ns}, hint);
-  Eigen::Index axis = 0;
-  here.v.cwiseAbs().maxCoeff(&axis);
-  auto& side = here.v[axis] > 0.0 ? rig.params.catch_box.max : rig.params.catch_box.min;
-  side[static_cast<std::size_t>(axis)] = wall.p[axis];
+// The same line throw with a prediction that ends at `t_end_ns`: the samples
+// after that instant are dropped and the last one kept is the ball there.
+[[nodiscard]] Throw PredictionEndingAt(const Throw& ball, std::int64_t t_end_ns) {
+  Throw cut = ball;
+  int last = 0;
+  while (last + 1 < cut.traj.n && cut.traj.s[static_cast<std::size_t>(last + 1)].t_ns < t_end_ns) {
+    ++last;
+  }
+  const auto& from = cut.traj.s[static_cast<std::size_t>(last)];
+  auto& end = cut.traj.s[static_cast<std::size_t>(last + 1)];
+  end = from;
+  end.t_ns = t_end_ns;
+  const double dt = Sec(t_end_ns - from.t_ns);
+  for (std::size_t a = 0; a < 3; ++a) {
+    end.p[a] = from.p[a] + from.v[a] * dt;
+  }
+  cut.traj.n = last + 2;
+  cut.cov = rtc::testing::IsotropicCovariance(cut.traj, 0.002);
+  return cut;
 }
 
-// δt_c's box is the cell cut to where the catch point stays in the catch box,
-// and a catch instant that wants to go past the wall rests on it.
-TEST(NlpCatchSearchContinuous, TheCatchInstantStaysWhereTheCatchPointIsInsideTheCatchBox) {
+// δt_c's box is the cell cut to the instants whose ball the screening passes,
+// and a catch instant that wants to go past that end rests on it. The end here
+// is the prediction's own: it stops 4 ms after a lattice instant. (Until MD-94
+// the end this test used was a wall of the catch box, which no longer exists.)
+TEST(NlpCatchSearchContinuous, TheCatchInstantStaysInsideThePrediction) {
   auto probe = ContinuousRig();
   std::string err;
   ASSERT_TRUE(probe->Configure(&err)) << err;
@@ -4341,91 +4323,30 @@ TEST(NlpCatchSearchContinuous, TheCatchInstantStaysWhereTheCatchPointIsInsideThe
   const Wake free_wake = RunWake(*probe, ball, probe->RestingRt(kNow), NoSegments(), kNow);
   ASSERT_TRUE(free_wake.plan.valid);
   // A candidate whose catch instant went later than its lattice instant by
-  // more than 6 ms: the box will end 4 ms after that lattice instant.
+  // more than 6 ms: the prediction will end 4 ms after that lattice instant.
   const Candidate* target = MovedLater(probe->search, 6 * kMs);
   ASSERT_NE(target, nullptr) << Table(probe->search, free_wake.stats);
+  const Throw cut = PredictionEndingAt(ball, target->t_hat_ns + 4 * kMs);
   auto rig = ContinuousRig();
-  PutWallAt(*rig, ball, target->t_hat_ns, target->t_hat_ns + 4 * kMs);
   ASSERT_TRUE(rig->Configure(&err)) << err;
-  const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+  const Wake w = RunWake(*rig, cut, rig->RestingRt(kNow), NoSegments(), kNow);
   const Candidate* c = Find(rig->search, target->index);
   ASSERT_NE(c, nullptr);
+  ASSERT_EQ(c->t_hat_ns, target->t_hat_ns);
   ASSERT_TRUE(c->continuous_run) << Table(rig->search, w.stats);
-  // The box ends at the last instant the ball is inside the wall, not at the
-  // cell's end.
+  // The box ends at the last instant the prediction holds the ball, not at
+  // the cell's end.
   EXPECT_NEAR(static_cast<double>(c->delta_hi_ns), 4e6, 2.0);
-  EXPECT_TRUE(InCatchBox(*rig, ball, c->t_hat_ns + c->delta_hi_ns));
-  EXPECT_FALSE(InCatchBox(*rig, ball, c->t_hat_ns + c->delta_hi_ns + 1));
+  EXPECT_TRUE(InPrediction(cut, c->t_hat_ns + c->delta_hi_ns));
+  EXPECT_FALSE(InPrediction(cut, c->t_hat_ns + c->delta_hi_ns + 1));
   EXPECT_EQ(c->delta_lo_ns, -Ns(rig->params.cand_dt) / 2);
   // It wanted to go later, and the box held it — on a solution that is taken.
   ASSERT_TRUE(c->continuous_used) << NlpRejectName(c->continuous_reject)
                                   << Table(rig->search, w.stats);
   EXPECT_EQ(c->delta_ns, c->delta_hi_ns);
-  EXPECT_TRUE(InCatchBox(*rig, ball, c->t_c_ns));
-  // The candidates past the wall are refused by the workspace, as before.
-  EXPECT_GT(Count(rig->search, NlpReject::kWorkspace), 0) << Table(rig->search, w.stats);
-}
-
-// The box's end is found on the prediction the plan reads. Under an
-// acceleration toward the wall, a straight line through the lattice instant's
-// ball reaches the wall later than the ball does: an end taken from the line
-// is an instant whose catch point is outside the catch box.
-TEST(NlpCatchSearchContinuous, TheBoxEndsWhereThePredictedBallLeavesNotWhereAStraightLineDoes) {
-  auto probe = ContinuousRig();
-  std::string err;
-  ASSERT_TRUE(probe->Configure(&err)) << err;
-  // The line throw, speeding up along its travel at 2 m/s² about the instant
-  // it was built for.
-  Throw ball = BetweenLatticeThrow(*probe);
-  const Eigen::Vector3d acc = 2.0 * ball.v_hat;
-  for (int k = 0; k < ball.traj.n; ++k) {
-    auto& smp = ball.traj.s[static_cast<std::size_t>(k)];
-    const double tau = Sec(smp.t_ns - kNow) - 0.30;
-    for (std::size_t a = 0; a < 3; ++a) {
-      const double acc_a = acc[static_cast<Eigen::Index>(a)];
-      smp.p[a] += 0.5 * acc_a * tau * tau;
-      smp.v[a] += acc_a * tau;
-      smp.a[a] = acc_a;
-    }
-  }
-  const Wake free_wake = RunWake(*probe, ball, probe->RestingRt(kNow), NoSegments(), kNow);
-  const Candidate* target = nullptr;
-  for (const Candidate& c : probe->search.Candidates()) {
-    if (c.continuous_run && target == nullptr) {
-      target = &c;
-    }
-  }
-  ASSERT_NE(target, nullptr) << Table(probe->search, free_wake.stats);
-  auto rig = ContinuousRig();
-  PutWallAt(*rig, ball, target->t_hat_ns, target->t_hat_ns + 4 * kMs);
-  ASSERT_TRUE(rig->Configure(&err)) << err;
-  const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
-  const Candidate* c = Find(rig->search, target->index);
-  ASSERT_NE(c, nullptr);
-  ASSERT_TRUE(c->continuous_run) << Table(rig->search, w.stats);
-  // The premise: the line through the lattice instant's ball is still inside
-  // the wall well after the ball has left.
-  int hint = 0;
-  const BallNodeSample at_cell =
-      SampleBallNode(ball.traj, nullptr, false, BallTime{c->t_hat_ns}, hint);
-  const Eigen::Vector3d on_line = at_cell.p + at_cell.v * 0.00401;
-  ASSERT_TRUE(rig->params.catch_box.Contains(on_line.x(), on_line.y(), on_line.z()));
-  ASSERT_FALSE(InCatchBox(*rig, ball, c->t_hat_ns + 4 * kMs + 10'000));
-  // The end is the ball's.
-  EXPECT_NEAR(static_cast<double>(c->delta_hi_ns), 4e6, 2.0);
-  EXPECT_TRUE(InCatchBox(*rig, ball, c->t_hat_ns + c->delta_hi_ns));
-  EXPECT_FALSE(InCatchBox(*rig, ball, c->t_hat_ns + c->delta_hi_ns + 1));
-  // No solve is refused for a catch point the box's own end put outside.
-  for (const Candidate& other : rig->search.Candidates()) {
-    if (other.continuous_run) {
-      EXPECT_NE(other.continuous_reject, NlpReject::kWorkspace) << other.index;
-      EXPECT_TRUE(InCatchBox(*rig, ball, other.t_hat_ns + other.delta_hi_ns)) << other.index;
-      EXPECT_TRUE(InCatchBox(*rig, ball, other.t_hat_ns + other.delta_lo_ns)) << other.index;
-    }
-    if (other.continuous_used) {
-      EXPECT_TRUE(InCatchBox(*rig, ball, other.t_c_ns)) << other.index;
-    }
-  }
+  EXPECT_TRUE(InPrediction(cut, c->t_c_ns));
+  // The candidates past the end are refused for their ball.
+  EXPECT_GT(Count(rig->search, NlpReject::kBallInvalid), 0) << Table(rig->search, w.stats);
 }
 
 // δt_c's box leaves out the instants the lattice search would not take as a

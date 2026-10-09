@@ -6,9 +6,10 @@
 // `planner.search.grid.slice.dt`) whose lead lies in [slice.t_lead_min, slice.t_max].
 //
 // TWO KINDS OF GATE (decision C, D-27). JUDGEMENT gates remove a candidate —
-// they are about whether the arm can be put there at all and where it would
-// stop: input finiteness, IK convergence, manipulability (the IK's own
-// catchability gate, D-18), and the workspace box around p_c and p_stop.
+// they are about whether the arm can be put there at all: input finiteness,
+// IK convergence and manipulability (the IK's own catchability gate, D-18).
+// No gate judges WHERE the catch point is (MD-94): a point the IK reaches
+// inside the joint limits is a candidate wherever it lies.
 // RANK gates do not remove: uncertainty, reach time, γ window, commit lead and
 // the error budget each add `score.penalty` to the candidate's score when they
 // fail (decision D). Under D-27 the system attempts what it can reach and
@@ -16,10 +17,10 @@
 // successes); the offline map stays strict.
 //
 // ORDER (L3 §4.1, with the IK budget of R-2). The cheap terms — input,
-// workspace at p_c, uncertainty, lateness — are computed for every candidate
+// uncertainty, lateness — are computed for every candidate
 // and give a PRE-score; IK (≈2 ms each on the development PC) runs on the best
 // `planner.search.grid.max_ik` of those, in pre-score order, until `planner.search.grid.budget_s`
-// is spent. Rank gates, the stopping point and the full score follow each successful IK. The best
+// is spent. Rank gates and the full score follow each successful IK. The best
 // full score wins (§4.10).
 //
 // WHERE THE REACH STARTS (§4.3). The reach-time gate asks whether the arm gets

@@ -131,9 +131,6 @@ struct Rig {
     params.dt_stop = 0.05;
     params.n_stop_blocks = 4;
     params.stop_block_sizes = {1, 1, 2, 3};
-    params.catch_box.set = true;
-    params.catch_box.min = {-5.0, -5.0, -5.0};
-    params.catch_box.max = {5.0, 5.0, 5.0};
     params.wait_pose_n = nv;
     std::copy(home_device.begin(), home_device.begin() + nv, params.wait_pose.begin());
     // A budget that cuts nothing — nine shares of 0.2 s: the timings below are

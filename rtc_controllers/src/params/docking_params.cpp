@@ -743,6 +743,9 @@ NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv) {
   const std::string b = "planner.search.nlp";
   // `mode` is the sibling `planner.search.mode`'s and `ik` is the sub-map the
   // catch-pose parser reads: neither is this parser's, neither is an error.
+  // `catch_box` is the removed catch box (MD-94): not read, and not this
+  // parser's to refuse — the binding parks on it (kRemovedCatchingKeys), which
+  // keeps the robot up where a throw here would fail the whole configure.
   rd.CheckKeys(nlp, b,
                {"cand_dt", "t_lead_min", "t_max", "cand_capacity", "catch_box", "n_pre", "dt_pre_s",
                 "stop", "budget", "cost", "continuous_tc", "follow_window", "rest_tol",
@@ -757,23 +760,6 @@ NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv) {
               Quote(Join(b, "t_lead_min")) + " = " + Num(out.t_lead_min));
   }
   out.cand_capacity = rd.Int(nlp, "cand_capacity", b, out.cand_capacity, 1, kNlpMaxCandidates);
-
-  // The catch point's box is a DECISION, read the way `search.grid.workspace.catch_box` is.
-  if (const YAML::Node box = nlp["catch_box"]; box && !IsTbd(box)) {
-    const std::string pb = Join(b, "catch_box");
-    if (!box.IsMap() || !box["min"] || !box["max"]) {
-      rd.Reject(Quote(pb) + " must be {min: [x, y, z], max: [x, y, z]}");
-    }
-    rd.CheckKeys(box, pb, {"min", "max"});
-    static_cast<void>(rd.Array(box, "min", pb, AnyFinite(), out.catch_box.min));
-    static_cast<void>(rd.Array(box, "max", pb, AnyFinite(), out.catch_box.max));
-    for (std::size_t a = 0; a < 3; ++a) {
-      if (out.catch_box.min[a] > out.catch_box.max[a]) {
-        rd.Reject(Quote(pb) + " has min > max on axis " + std::to_string(a));
-      }
-    }
-    out.catch_box.set = true;
-  }
 
   // ── The arm grid ──
   const std::string pn = Join(b, "n_pre");

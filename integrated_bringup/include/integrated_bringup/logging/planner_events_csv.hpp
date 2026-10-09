@@ -83,7 +83,7 @@ namespace integrated_bringup {
 inline void WritePlannerEventsHeader(std::ostream& os) {
   os << "wake_ns,publish_ns,recv_to_publish_ms,outcome,mode,reset_seen,cov_matched,"
         "plan_id,plan_valid,search_valid,plan_reason,snapshot_sequence,track_generation,settling,"
-        "n_in_window,n_ik,n_pass,rej_input,rej_ik,rej_manipulability,rej_workspace,"
+        "n_in_window,n_ik,n_pass,rej_input,rej_ik,rej_manipulability,"
         "rej_not_evaluated,budget_hit,search_us,ik_us_max,rank_mask,rank_uncertainty,"
         "rank_reach,rank_gamma,rank_commit_lead,rank_error_budget,score,lead_s,gamma_f,"
         "decision,sigma_l,rank_rollout,t_w,rollout_window_only,n_rollouts,rollout_us_max,"
@@ -98,7 +98,7 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "segment_catch_axis_err,segment_catch_gamma,segment_catch_v_rel,segment_slack_v,"
         "segment_speed_ratio_max,segment_w_p_fallback,segment_w_delta_scale,segment_source_seq,"
         "nlp_ran,nlp_reason,nlp_n_lattice,nlp_n_screened,nlp_n_solved,nlp_n_valid,"
-        "nlp_rej_follow_window,nlp_rej_lead_short,nlp_rej_ball_invalid,nlp_rej_workspace,"
+        "nlp_rej_follow_window,nlp_rej_lead_short,nlp_rej_ball_invalid,"
         "nlp_rej_covariance,nlp_rej_no_source,nlp_rej_ik,nlp_rej_manipulability,nlp_rej_reach,"
         "nlp_rej_speed_window,nlp_rej_not_ranked,nlp_rej_deadline,nlp_rej_solver_rejected,"
         "nlp_rej_hard_row,nlp_rej_chance,nlp_rej_unconverged,"
@@ -126,22 +126,14 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
 
 /// The `nlp_rej_*` columns, in the header's order: every reason a CANDIDATE can
 /// carry (search_stats.hpp — NlpReject between kNone and the wake-only ones).
-inline constexpr std::array<rtc::catching::NlpReject, 16> kNlpRejectColumns{
-    rtc::catching::NlpReject::kFollowWindow,
-    rtc::catching::NlpReject::kLeadShort,
-    rtc::catching::NlpReject::kBallInvalid,
-    rtc::catching::NlpReject::kWorkspace,
-    rtc::catching::NlpReject::kCovariance,
-    rtc::catching::NlpReject::kNoSource,
-    rtc::catching::NlpReject::kIk,
-    rtc::catching::NlpReject::kManipulability,
-    rtc::catching::NlpReject::kReach,
-    rtc::catching::NlpReject::kSpeedWindow,
-    rtc::catching::NlpReject::kNotRanked,
-    rtc::catching::NlpReject::kDeadline,
-    rtc::catching::NlpReject::kSolverRejected,
-    rtc::catching::NlpReject::kHardRow,
-    rtc::catching::NlpReject::kChance,
+inline constexpr std::array<rtc::catching::NlpReject, 15> kNlpRejectColumns{
+    rtc::catching::NlpReject::kFollowWindow,   rtc::catching::NlpReject::kLeadShort,
+    rtc::catching::NlpReject::kBallInvalid,    rtc::catching::NlpReject::kCovariance,
+    rtc::catching::NlpReject::kNoSource,       rtc::catching::NlpReject::kIk,
+    rtc::catching::NlpReject::kManipulability, rtc::catching::NlpReject::kReach,
+    rtc::catching::NlpReject::kSpeedWindow,    rtc::catching::NlpReject::kNotRanked,
+    rtc::catching::NlpReject::kDeadline,       rtc::catching::NlpReject::kSolverRejected,
+    rtc::catching::NlpReject::kHardRow,        rtc::catching::NlpReject::kChance,
     rtc::catching::NlpReject::kUnconverged,
 };
 
@@ -176,14 +168,14 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
      << static_cast<int>(r.reason) << ',' << r.snapshot_sequence << ',' << r.track_generation << ','
      << (s.settling ? 1 : 0) << ',' << s.n_in_window << ',' << s.n_ik << ',' << s.n_pass << ','
      << rej(JudgeReject::kInput) << ',' << rej(JudgeReject::kIk) << ','
-     << rej(JudgeReject::kManipulability) << ',' << rej(JudgeReject::kWorkspace) << ','
-     << rej(JudgeReject::kNotEvaluated) << ',' << (s.budget_hit ? 1 : 0) << ','
-     << s.search_ns / 1000 << ',' << s.ik_ns_max / 1000 << ',' << s.chosen_rank_mask << ','
-     << bit(rtc::catching::kRankUncertainty) << ',' << bit(rtc::catching::kRankReach) << ','
-     << bit(rtc::catching::kRankGamma) << ',' << bit(rtc::catching::kRankCommitLead) << ','
-     << bit(rtc::catching::kRankErrorBudget) << ',' << s.chosen_score << ',' << s.chosen_lead_s
-     << ',' << s.chosen_gamma_f << ',' << rtc::catching::SwitchDecisionName(s.decision) << ','
-     << s.sigma_l << ',' << bit(rtc::catching::kRankRollout) << ',' << s.chosen_t_w << ','
+     << rej(JudgeReject::kManipulability) << ',' << rej(JudgeReject::kNotEvaluated) << ','
+     << (s.budget_hit ? 1 : 0) << ',' << s.search_ns / 1000 << ',' << s.ik_ns_max / 1000 << ','
+     << s.chosen_rank_mask << ',' << bit(rtc::catching::kRankUncertainty) << ','
+     << bit(rtc::catching::kRankReach) << ',' << bit(rtc::catching::kRankGamma) << ','
+     << bit(rtc::catching::kRankCommitLead) << ',' << bit(rtc::catching::kRankErrorBudget) << ','
+     << s.chosen_score << ',' << s.chosen_lead_s << ',' << s.chosen_gamma_f << ','
+     << rtc::catching::SwitchDecisionName(s.decision) << ',' << s.sigma_l << ','
+     << bit(rtc::catching::kRankRollout) << ',' << s.chosen_t_w << ','
      << (s.chosen_rollout_window_only ? 1 : 0) << ',' << s.n_rollouts << ','
      << s.rollout_ns_max / 1000 << ',' << s.chosen_g_min << ',' << s.chosen_g_max << ','
      << s.chosen_v_dir_max << ',' << s.chosen_max_catchable << ',';

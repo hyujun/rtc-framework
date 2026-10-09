@@ -14,7 +14,7 @@
 
 비범위:
 - 좌표 변환 조회를 RT에서 수행하는 것(금지 — RT 경로에 tf2 없음). `frame_id`→`world` 가 다르면 configure 에서 한 번 읽어 캐시한 정적 변환을 nrt 콜백에서 적용한다. sim 에서는 불필요 — `frame_id` = `world`; 실기 카메라 프로파일이 다른 frame 을 내면 그때 켠다.
-  - **`world` → 모델 world 는 별개이고 항상 필요하다 (L3 §4.2 의 frame 규약).** 계획기·catch_box·CLIK 은 pinocchio universe (URDF 모델 root) 좌표를 쓰는데, ur5e_p1b 의 root 는 `base_link` 라 `world` (= `base`) 와 z 둘레 180° 다르다. 이 변환이 없으면 후보가 팔 뒤로 간다. nrt 수신 시 한 번 $p,v,a$ 와 6×6 공분산 ($R_6\Sigma R_6^\top$, 정확히 0 인 회전 계수는 건너뛰어 NaN(모름) 이 섞이지 않게) 에 적용하고, 그 뒤의 모든 소비자는 모델 world 를 본다. 변환은 `model_world_T_world` = (모델에서 읽은 `io.arm_base_frame` 배치) · `io.base_T_world` — 지도 도구의 `--arm-base-frame`·`--world-yaw-deg`·`--world-translation-m` 과 같은 분해. 항등이면 적용하지 않는다 (iiwa7_leap)
+  - **`world` → 모델 world 는 별개이고 항상 필요하다 (L3 §4.2 의 frame 규약).** 계획기·CLIK 은 pinocchio universe (URDF 모델 root) 좌표를 쓰는데, ur5e_p1b 의 root 는 `base_link` 라 `world` (= `base`) 와 z 둘레 180° 다르다. 이 변환이 없으면 후보가 팔 뒤로 간다. nrt 수신 시 한 번 $p,v,a$ 와 6×6 공분산 ($R_6\Sigma R_6^\top$, 정확히 0 인 회전 계수는 건너뛰어 NaN(모름) 이 섞이지 않게) 에 적용하고, 그 뒤의 모든 소비자는 모델 world 를 본다. 변환은 `model_world_T_world` = (모델에서 읽은 `io.arm_base_frame` 배치) · `io.base_T_world` — 지도 도구의 `--arm-base-frame`·`--world-yaw-deg`·`--world-translation-m` 과 같은 분해. 항등이면 적용하지 않는다 (iiwa7_leap)
 - 궤적 예측·전파(vision 노드, 마스터 §5.2).
 - RT 원시형 구현 — `rtc::SeqLock`·`rtc::SpscQueue` 를 쓴다(G1-8).
 

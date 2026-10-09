@@ -27,10 +27,9 @@ enum class JudgeReject : std::uint8_t {
   kInput,           ///< non-finite p/v, or ‖v̂‖ below v_eps (NUM-7)
   kIk,              ///< IK did not converge / was refused
   kManipulability,  ///< the IK's catchability gate (D-18)
-  kWorkspace,       ///< p_c or p_stop outside `workspace.catch_box`
   kNotEvaluated,    ///< outside the IK budget (pre-filter or budget_s)
 };
-inline constexpr std::size_t kJudgeRejectCount = 6;
+inline constexpr std::size_t kJudgeRejectCount = 5;
 
 /// What the switching rule decided about the plan the RT is following.
 enum class SwitchDecision : std::uint8_t {
@@ -80,7 +79,6 @@ enum class NlpReject : std::uint8_t {
   kFollowWindow,
   kLeadShort,    ///< t_c − t_0 below the minimum lead (S1)
   kBallInvalid,  ///< the prediction cannot be sampled at one of its nodes, or is too slow
-  kWorkspace,    ///< the catch point is outside the catch box
   kCovariance,   ///< chance rows are on and the catch-node covariance is not usable
   /// No reported segment to start from at this candidate's node 0 — as a
   /// wake's reason: the RT follows a plan and reports no segment at all.
@@ -100,7 +98,7 @@ enum class NlpReject : std::uint8_t {
   kNotAtRest,    ///< the RT follows no plan and the arm's command is moving
   kRtInvalid,    ///< the RT's report cannot be planned from (width, age, NaN)
 };
-inline constexpr std::size_t kNlpRejectCount = 20;
+inline constexpr std::size_t kNlpRejectCount = 19;
 
 [[nodiscard]] constexpr const char* NlpRejectName(NlpReject r) noexcept {
   switch (r) {
@@ -112,8 +110,6 @@ inline constexpr std::size_t kNlpRejectCount = 20;
       return "lead_short";
     case NlpReject::kBallInvalid:
       return "ball_invalid";
-    case NlpReject::kWorkspace:
-      return "workspace";
     case NlpReject::kCovariance:
       return "covariance";
     case NlpReject::kNoSource:

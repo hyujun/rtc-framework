@@ -87,7 +87,6 @@ catching:
       grid:
         budget_s: 0.02
         hand: {d_eff: 0.28, r_cap: 0.024}
-        workspace: {catch_box: {min: [-2.0, -2.0, -2.0], max: [2.0, 2.0, 2.0]}}
         reference: {v_max: 2.0, omega: 10.0, zeta: 1.0, a_max: 15.0}
         # The search's own stop: no default, and an enabled planner parks on a
         # TBD in a key it reads. (This fixture sets no supervisor.decel.a_dec —

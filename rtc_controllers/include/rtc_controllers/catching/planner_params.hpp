@@ -25,8 +25,8 @@
 // every selection.
 //
 // TWO KINDS OF "MISSING". A key with a documented default (L3 §6) takes it when
-// absent. A key whose value is a DECISION (`freeze.T_freeze`,
-// `workspace.catch_box`, `sub_model`) has no default: absent or `TBD` is
+// absent. A key whose value is a DECISION (`freeze.T_freeze`, `sub_model`,
+// `search.grid.hand.*`) has no default: absent or `TBD` is
 // recorded as unset, and the binding parks the controller rather than guess —
 // the same rule as a consumed TBD elsewhere (L0 §5.3, A-S5-12). A present but
 // malformed value of either kind is refused (std::invalid_argument).
@@ -239,18 +239,6 @@ struct MpcSegmentPlannerParams {
                                        std::array<int, kMaxSegmentNodes>& blocks,
                                        int& n_blocks) noexcept;
 
-/// Axis-aligned box in the model world frame (decision I).
-struct CatchBox {
-  std::array<double, 3> min{};
-  std::array<double, 3> max{};
-  bool set{false};
-
-  [[nodiscard]] constexpr bool Contains(double x, double y, double z) const noexcept {
-    return set && x >= min[0] && x <= max[0] && y >= min[1] && y <= max[1] && z >= min[2] &&
-           z <= max[2];
-  }
-};
-
 struct ScoreWeights {
   double w_sigma{1.0};  ///< σ_max / r_cap
   double w_t{1.0};      ///< max t_min / (t_k − now − T_arm)
@@ -355,8 +343,6 @@ struct PlannerParams {
   double dt_expected{std::numeric_limits<double>::quiet_NaN()};
   /// `planner.search.grid.score.*` (§4.10 + decision D).
   ScoreWeights score{};
-  /// `planner.search.grid.workspace.catch_box` (decision I). `set` false = unset.
-  CatchBox catch_box{};
 
   // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────
   /// `planner.segment.mpc.*`. Absent = the defaults.
@@ -380,10 +366,11 @@ struct PlannerKeySelection {
 /// ParseCatchingParams takes). An absent `planner:` section yields the
 /// defaults, and so does a map `selection` leaves closed. Throws `std::invalid_argument` (and only
 /// that) on a present but malformed key: a non-map section, a non-bool flag, a number outside its
-/// L3 §6 range, a `wait_pose` that is empty / non-finite / longer than `kMaxPlanNv`, a `catch_box`
-/// whose min exceeds its max, a `segment.mpc` horizon whose blocks do not sum to n_nodes, a Δ_s or
-/// Δ_pre that is not whole ns, a k_max whose replan patterns would drop below three blocks, or an
-/// n_pre_max whose pre-catch nodes or blocks would not fit next to the stop's.
+/// L3 §6 range, a `wait_pose` that is empty / non-finite / longer than `kMaxPlanNv`, a
+/// `segment.mpc` horizon whose blocks do not sum to n_nodes, a Δ_s or Δ_pre that is not whole ns, a
+/// k_max whose replan patterns would drop below three blocks, or an n_pre_max whose pre-catch nodes
+/// or blocks would not fit next to the stop's. The removed `search.grid.workspace` (the catch box,
+/// MD-94) is not read and not refused here: the binding parks on it (kRemovedCatchingKeys).
 [[nodiscard]] PlannerParams ParsePlannerParams(const YAML::Node& catching,
                                                const PlannerKeySelection& selection = {});
 

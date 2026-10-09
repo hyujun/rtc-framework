@@ -327,6 +327,19 @@ class TestNlpSummary:
         assert "wakes with a deadline-rejected candidate: 1 (>= 12.00 ms" in text
         assert "may be a cut instant" in text and "not a solve time" not in text
 
+    def test_a_session_from_before_the_catch_box_was_removed_keeps_its_workspace_rejects(self):
+        # MD-94 (2026-10-09) took the catch box out of the search: `workspace`
+        # is no longer one of its reasons, and the files recorded before that
+        # still carry the column and the wake reason.
+        assert "workspace" not in ps.NLP_REJECT_REASONS
+        old = self._nlp().assign(nlp_rej_workspace=[18, 0, 4, 0])
+        old.loc[0, "nlp_reason"] = "workspace"
+        s = ps.nlp_summary(old)
+        assert s["rejects"]["workspace"] == 22
+        assert s["reasons"]["workspace"] == 1
+        # A file without the column says nothing about it.
+        assert "workspace" not in ps.nlp_summary(self._nlp())["rejects"]
+
     def test_none_without_the_columns_or_without_a_wake(self):
         assert ps.nlp_summary(pd.DataFrame({"wake_ns": [1]})) is None
         assert ps.nlp_summary(pd.DataFrame({"nlp_ran": [0, 0]})) is None

@@ -608,9 +608,6 @@ class CatchingPlanLaneTest : public ::testing::Test {
       pl["freeze"]["T_freeze"] = 0.36;
       pl["search"]["grid"]["hand"]["d_eff"] = 0.2815;
       pl["search"]["grid"]["hand"]["r_cap"] = 0.024;
-      pl["search"]["grid"]["workspace"]["catch_box"]["min"] =
-          std::vector<double>{0.19, -0.30, 0.21};
-      pl["search"]["grid"]["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
       pl["wake_timeout_s"] = 0.02;
       pl["search"]["grid"]["n_settle"] = 1;
       // Cleared like every other provisional flag in TrackingYaml: this
@@ -771,8 +768,6 @@ class CatchingPlanLaneTest : public ::testing::Test {
     pl["freeze"]["T_freeze"] = 0.36;
     pl["search"]["grid"]["hand"]["d_eff"] = 0.2815;
     pl["search"]["grid"]["hand"]["r_cap"] = 0.024;
-    pl["search"]["grid"]["workspace"]["catch_box"]["min"] = std::vector<double>{0.19, -0.30, 0.21};
-    pl["search"]["grid"]["workspace"]["catch_box"]["max"] = std::vector<double>{1.04, 0.31, 0.96};
     pl["provisional"] = false;
     if (planner) {
       ApproachGrid(yaml);
@@ -1190,25 +1185,6 @@ TEST_F(CatchingPlanLaneTest, EachMissingMpcDockingPrerequisiteParksAndNamesItsOw
               });
   expect_park("no planner and no oracle", false, "no segment planner runs",
               [](YAML::Node& y) { y["diagnostic"]["oracle_plan"]["enabled"] = false; });
-}
-
-TEST_F(CatchingPlanLaneTest, MpcItselfDoesNotNeedACatchBox) {
-  // MD-73: the RT does not judge where a stop ends, so catch_box is not one
-  // of mode mpc's prerequisites. The oracle profile runs no search and
-  // configures without it; with the planner on it is the SEARCH that asks.
-  using integrated_bringup::CatchingParkReason;
-  using Return = DemoCatchingController::CallbackReturn;
-  const auto no_box = [](YAML::Node& y) {
-    y["catching"]["planner"]["search"]["grid"]["workspace"].remove("catch_box");
-  };
-  const ConfigureVerdict oracle = ConfigureOnly(false, no_box);
-  ASSERT_EQ(oracle.ret, Return::SUCCESS);
-  EXPECT_FALSE(oracle.parked) << "reason " << static_cast<int>(oracle.reason);
-  EXPECT_EQ(ctrl_->GetSegmentMode(), rtc::catching::CatchingSegmentMode::kMpc);
-  const ConfigureVerdict searching = ConfigureOnly(true, no_box);
-  ASSERT_EQ(searching.ret, Return::SUCCESS);
-  EXPECT_TRUE(searching.parked);
-  EXPECT_EQ(searching.reason, CatchingParkReason::kPlannerUnset);
 }
 
 TEST_F(CatchingPlanLaneTest, AMalformedSegmentModeOrSwitchMarginFailsTheConfigure) {

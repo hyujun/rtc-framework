@@ -656,10 +656,6 @@ TEST_P(DemoCatchingAllocS7SegmentTest, TheMpcTicksFromThePairToTheHoldWithoutAll
     }
     y["catching"]["planner"]["segment"]["mode"] = segment_mode;
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
-    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
-        std::vector<double>{-2.0, -2.0, -2.0};
-    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
-        std::vector<double>{2.0, 2.0, 2.0};
   }));
   const auto stamp = [this](rtc::catching::SegmentSnapshot& seg, std::uint32_t seq) {
     seg.token.activation_generation = ctrl_->GetPlannerRtState().activation_generation;
@@ -797,10 +793,6 @@ TEST_P(DemoCatchingAllocS7SegmentTest,
     }
     y["catching"]["planner"]["segment"]["mode"] = segment_mode;
     y["catching"]["planner"]["sub_model"] = "ur5e_catch";
-    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
-        std::vector<double>{-2.0, -2.0, -2.0};
-    y["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
-        std::vector<double>{2.0, 2.0, 2.0};
   }));
   CatchFrameOracle oracle(*builder_);
   GatedRig rig;
@@ -885,10 +877,6 @@ class DemoCatchingAllocS7LeapTest : public ::testing::TestWithParam<const char*>
     // test aims at the hand would arrive that much lower and never cross the
     // close plane.
     yaml["catching"]["io"]["base_T_world"]["translation"] = std::vector<double>{0.0, 0.0, 0.0};
-    yaml["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["min"] =
-        std::vector<double>{-3.0, -3.0, -3.0};
-    yaml["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]["max"] =
-        std::vector<double>{3.0, 3.0, 3.0};
 
     ctrl_ = std::make_unique<DemoCatchingController>("");
     ctrl_->SetClockForTesting(&FakeSteadyClock::Now);
