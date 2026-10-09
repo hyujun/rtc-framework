@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -40,6 +41,8 @@ using rtc::catching::MakeSearchBatchSearch;
 using rtc::catching::NowReal;
 using rtc::catching::ParseSearchBatchBinding;
 using rtc::catching::ParseSearchWakeCsv;
+using rtc::catching::ReachBound;
+using rtc::catching::ReachBoundJson;
 using rtc::catching::ReportedSegments;
 using rtc::catching::RunSearchBatch;
 using rtc::catching::SearchBatchBinding;
@@ -314,6 +317,78 @@ TEST(CatchSearchBatch, TheCsvCarriesThePlanBitExactlyAndLeavesNoPlanEmpty) {
                            "gamma_f", "nlp_lead_s", "q_star0", "q_star5"}) {
     EXPECT_EQ(empty.at(name), "") << name;
   }
+}
+
+// ── 7. The wall time column; the reach bound report ──────────────────────────
+
+TEST(CatchSearchBatch, WallUsIsTheLastColumnAndEveryOtherColumnKeepsItsPlace) {
+  Rig rig;
+  const auto names = Split(SearchBatchCsvHeader(rig.arm.nv));
+  ASSERT_GT(names.size(), 2U);
+  EXPECT_EQ(names.back(), "wall_us");
+  EXPECT_EQ(names[names.size() - 2], "q_star" + std::to_string(rig.arm.nv - 1));
+  // The columns before `wall_us`, in their order.
+  const std::vector<std::string> head{"throw_id",     "wake",        "now_ns",
+                                      "search_valid", "plan_reason", "settling",
+                                      "n_in_window",  "n_ik",        "n_pass"};
+  for (std::size_t i = 0; i < head.size(); ++i) {
+    EXPECT_EQ(names[i], head[i]) << i;
+  }
+  EXPECT_EQ(names[names.size() - 1 - static_cast<std::size_t>(rig.arm.nv) - 1], "nlp_lead_s");
+
+  SearchBatchSearch search = rig.Build();
+  ASSERT_NE(search.search, nullptr) << search.error;
+  const auto rows =
+      RunSearchBatch(*search.search, search.q_rest, Concat({rig.Catchable(1), rig.OutOfReach(2)}));
+  ASSERT_FALSE(rows.empty());
+  for (const SearchBatchRow& row : rows) {
+    const auto cells = Cells(row, rig.arm.nv);
+    const double wall = std::strtod(cells.at("wall_us").c_str(), nullptr);
+    EXPECT_TRUE(std::isfinite(wall));
+    EXPECT_GE(wall, 0.0);
+    EXPECT_EQ(Split(SearchBatchCsvRow(row, rig.arm.nv)).back(), cells.at("wall_us"));
+  }
+}
+
+TEST(CatchSearchBatchReachBound, ABoundedBoundIsOneJsonLineAtRoundTripPrecision) {
+  ReachBound bound;
+  bound.centre = Eigen::Vector3d(0.1, -0.25, 0.5);
+  bound.radius = 1.0;
+  bound.joints = 6;
+  EXPECT_EQ(ReachBoundJson(bound, "catch_frame", "arm", {0.002, 0.002, 0.004}),
+            "{\"schema\": \"catch_reach_bound/1\", \"frame\": \"catch_frame\", "
+            "\"sub_model\": \"arm\", \"centre\": [0.10000000000000001, -0.25, 0.5], "
+            "\"radius\": 1, \"tolerance\": 0.002, "
+            "\"tolerance_by_search\": {\"grid\": 0.002, \"nlp\": 0.0040000000000000001}, "
+            "\"joints\": 6, \"unbounded_by\": \"\"}");
+}
+
+TEST(CatchSearchBatchReachBound, AnUnboundedBoundWritesANullRadius) {
+  ReachBound bound;  // radius is +inf by default
+  bound.joints = 3;
+  bound.unbounded_by = "slide";
+  const std::string json = ReachBoundJson(bound, "f", "m", {0.5, 0.5, 0.25});
+  EXPECT_EQ(json,
+            "{\"schema\": \"catch_reach_bound/1\", \"frame\": \"f\", \"sub_model\": \"m\", "
+            "\"centre\": [0, 0, 0], \"radius\": null, \"tolerance\": 0.5, "
+            "\"tolerance_by_search\": {\"grid\": 0.5, \"nlp\": 0.25}, \"joints\": 3, "
+            "\"unbounded_by\": \"slide\"}");
+  EXPECT_EQ(json.find('\n'), std::string::npos);
+}
+
+TEST(CatchSearchBatchReachBound, TheBoundAndToleranceAreTheOnesTheSearchesUse) {
+  Rig rig;
+  const ReachBound bound = rtc::catching::ComputeReachBound(*rig.arm.model, rig.arm.frame);
+  ASSERT_TRUE(bound.Bounded());
+  const rtc::catching::ReachTolerances tol = rtc::catching::SearchReachTolerances(rig.Tree());
+  EXPECT_GT(tol.grid, 0.0);
+  EXPECT_GT(tol.nlp, 0.0);
+  // The selected search's is one of the two.
+  EXPECT_TRUE(tol.selected == tol.grid || tol.selected == tol.nlp);
+  const std::string json = ReachBoundJson(bound, "catch_frame", "arm", tol);
+  char radius[40];
+  std::snprintf(radius, sizeof radius, "%.17g", bound.radius);
+  EXPECT_NE(json.find(std::string("\"radius\": ") + radius + ","), std::string::npos);
 }
 
 // ── 5. What a wake is handed ─────────────────────────────────────────────────
