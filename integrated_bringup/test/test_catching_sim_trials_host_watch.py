@@ -249,9 +249,9 @@ def test_the_real_process_table_holds_this_process_and_excludes_its_pytest():
 
 
 def test_the_cli_defaults_to_warn_with_the_analysers_window_and_threshold():
-    args = parse_args(["out"])
+    args = parse_args(["out", "--dist", "hand_lhs"])  # a run names its throws (#798)
     assert (args.host_watch, args.host_rtf_min, args.host_window) == ("warn", 0.95, 0.25)
-    assert parse_args(["out", "--host-watch", "abort"]).host_watch == "abort"
+    assert parse_args(["out", "--dist", "hand_lhs", "--host-watch", "abort"]).host_watch == "abort"
     assert set(HOST_WATCH_MODES) == {"off", "warn", "abort"}
     with pytest.raises(ValueError, match="not one of"):
         HostWatch(mode="loud")

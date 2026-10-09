@@ -80,6 +80,35 @@ THROW_RECORD_KEYS = frozenset(
 THROW_LIST_KNOWN_KEYS = frozenset({"throw_id", "pos", "vel", "omega", "kind"})
 
 
+def throw_key(row: Mapping) -> tuple | None:
+    """The identity a trial is paired on across units (#798).
+
+    A throw-list trial pairs on ``("list", <the file's sha256>, throw_id)``: the
+    list is the file's bytes, so two units that threw one file pair throw by
+    throw, and a list rewritten — even to the same launches — is another
+    population. A trial of a seeded series (the ``--dist`` runs of before #798)
+    keeps its key ``(kind, seed, sample_idx)``. ``None`` when neither is
+    complete: such a trial pairs with nothing and the caller counts it.
+
+    ``row`` is a trial row as ``catching_trials.csv`` / ``catching_decel``'s
+    trial table carry it: ``throw_id`` and ``throws_file_sha256`` for a list
+    trial, ``kind`` / ``seed`` / ``sample_idx`` for a seeded one.
+    """
+    throw_id, sha = row.get("throw_id"), row.get("throws_file_sha256")
+    if throw_id is not None and throw_id != "" and sha:
+        return ("list", str(sha), int(throw_id))
+    seed, sample = row.get("seed"), row.get("sample_idx")
+    if seed is None or seed == "" or sample is None or sample == "":
+        return None
+    return (str(row.get("kind", "")), int(seed), int(sample))
+
+
+def throw_group(key: tuple) -> str | int:
+    """What a key's throws are grouped by for a rerun: the seed of a seeded
+    series, ``list:<sha256 prefix>`` of a throw list."""
+    return f"list:{key[1][:12]}" if key[0] == "list" and isinstance(key[1], str) else key[1]
+
+
 def _list_vec3(value, where: str) -> tuple[float, float, float]:
     """``value`` as three finite floats, or ``ValueError`` naming ``where``."""
     if not isinstance(value, list | tuple) or len(value) != 3:

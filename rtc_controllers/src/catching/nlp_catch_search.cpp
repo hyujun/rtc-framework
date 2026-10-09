@@ -896,7 +896,9 @@ const NlpCatchSearch::Memory* NlpCatchSearch::UsableNeighbour(
 }
 
 void NlpCatchSearch::RecordSolve(const MpcDockingSegmentCoreResult& res, double worst,
-                                 int worst_group, CandidateRecord& c) noexcept {
+                                 int worst_group, std::uint16_t violated_mask,
+                                 CandidateRecord& c) noexcept {
+  c.violated_mask = violated_mask;
   c.feasible = res.feasible;
   c.converged = res.converged;
   c.iterations = res.iterations;
@@ -911,15 +913,18 @@ void NlpCatchSearch::RecordSolve(const MpcDockingSegmentCoreResult& res, double 
 }
 
 NlpReject NlpCatchSearch::Verdict(const MpcDockingSegmentCoreResult& res, bool past_deadline,
-                                  double& worst, int& worst_group) const noexcept {
+                                  double& worst, int& worst_group,
+                                  std::uint16_t& violated_mask) const noexcept {
   worst = 0.0;
   worst_group = 0;
+  violated_mask = 0;
   bool chance_violated = false;
   bool other_violated = false;
   for (int g = 0; g < kNumDockingRowGroups; ++g) {
     const double v = res.violation[U(g)];
     if (!(v <= params_.core.tol_violation)) {
       (IsChanceGroup(g) ? chance_violated : other_violated) = true;
+      violated_mask = static_cast<std::uint16_t>(violated_mask | (1U << static_cast<unsigned>(g)));
     }
     if (g == 0 || v > worst) {
       worst = v;
@@ -935,6 +940,27 @@ NlpReject NlpCatchSearch::Verdict(const MpcDockingSegmentCoreResult& res, bool p
     return chance_violated && !other_violated ? NlpReject::kChance : NlpReject::kHardRow;
   }
   return res.converged ? NlpReject::kNone : NlpReject::kUnconverged;
+}
+
+void NlpCatchSearch::RecordCandidate(const CandidateRecord& c, SearchStats& stats) noexcept {
+  NlpSearchStats& n = stats.nlp;
+  if (n.n_cands >= kNlpCandidateStatCount) {
+    return;  // cannot happen: max_solves ≤ kNlpMaxSolves ≤ kNlpCandidateStatCount
+  }
+  NlpCandidateStat& s = n.cands[U(n.n_cands++)];
+  s.index = c.index;
+  s.t_c_ns = c.t_c_ns;
+  s.reject = c.reject;
+  s.worst_group = static_cast<std::uint8_t>(c.worst_group);
+  s.violated_mask = c.violated_mask;
+  s.continuous_used = c.continuous_used;
+  s.iterations = c.iterations;
+  s.qp_solves = c.qp_solves;
+  s.solve_ns = c.solve_ns;
+  s.worst_violation = c.worst_violation;
+  s.c_catch = c.c_catch;
+  s.sigma_c = c.sigma_c;
+  s.phi = c.phi;
 }
 
 std::int64_t NlpCatchSearch::SolveDeadlineNs(std::int64_t start_ns) noexcept {
@@ -970,6 +996,7 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
     in.ball[U(k)] = SampleBallNode(traj, k == c.n_pre ? &cov : nullptr, cov_matched, t, hint);
   }
   const BallNodeSample& at_catch = in.ball[U(c.n_pre)];
+  c.sigma_c = SigmaMaxOf(at_catch);  // raw: NaN without a valid covariance there (#798)
   // The stop line: through the catch point, along the ball's travel.
   in.p_line = at_catch.p;
   in.d_line = at_catch.v.normalized();
@@ -1024,8 +1051,10 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
     // nodes as the previous candidate with this n_pre left them.
     double worst = 0.0;
     int worst_group = 0;
-    const NlpReject verdict = Verdict(res, end_ns > in.deadline_ns, worst, worst_group);
-    RecordSolve(res, worst, worst_group, c);
+    std::uint16_t violated_mask = 0;
+    const NlpReject verdict =
+        Verdict(res, end_ns > in.deadline_ns, worst, worst_group, violated_mask);
+    RecordSolve(res, worst, worst_group, violated_mask, c);
     // An iterate the SOLVER failed on — a QP that did not converge, an
     // evaluation that is not finite — says nothing about the rows, and the
     // next wake must not start from it (it would fail there again).
@@ -1088,6 +1117,9 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
     in.ball[U(k)] = SampleBallNode(traj, k == c.n_pre ? &cov : nullptr, cov_matched, t, hint);
   }
   const BallNodeSample& at_catch = in.ball[U(c.n_pre)];
+  // The record's σ is the covariance the solve was GIVEN (#798): a pinned
+  // candidate has no fixed-grid solve, so it is set here as well.
+  c.sigma_c = SigmaMaxOf(at_catch);
   in.p_line = at_catch.p;
   in.d_line = at_catch.v.normalized();
   in.catch_target_valid = true;
@@ -1201,6 +1233,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
   c.continuous_reason = res.reason;
   double worst = 0.0;
   int worst_group = 0;
+  std::uint16_t violated_mask = 0;
   NlpReject verdict = end_ns > in.deadline_ns ? NlpReject::kDeadline : NlpReject::kSolverRejected;
   if (ok) {
     c.continuous_iterations = res.iterations;
@@ -1212,7 +1245,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
       // The solver failed on this iterate: not a start for the next wake.
       out.forget = true;
     } else {
-      verdict = Verdict(res, end_ns > in.deadline_ns, worst, worst_group);
+      verdict = Verdict(res, end_ns > in.deadline_ns, worst, worst_group, violated_mask);
       Pack(rt, traj.token.generation, c, res, res.delta_ns, out.sol.seg);
       out.valid = true;
       out.sol.source_seq = c.source_seq;
@@ -1244,7 +1277,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
     c.core_reason = res.reason;
     c.solved = ok;
     if (ok) {
-      RecordSolve(res, worst, worst_group, c);
+      RecordSolve(res, worst, worst_group, violated_mask, c);
     }
     return;
   }
@@ -1263,7 +1296,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
   c.solve_ns = c.continuous_solve_ns;
   c.core_reason = res.reason;
   c.solved = true;
-  RecordSolve(res, worst, worst_group, c);
+  RecordSolve(res, worst, worst_group, violated_mask, c);
   // Φ at the catch instant it ended at, by the fixed-grid solve's functions.
   c.j_time = NlpTimeCost(params_.w_time, c.lead_s, params_.t_ref_s);
   c.j_switch =
@@ -1278,6 +1311,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
                                   std::int64_t budget_cap_ns, SearchStats& stats) noexcept {
   stats = SearchStats{};
   stats.nlp.ran = true;
+  stats.cov_n = cov.n;
   wake_budget_ns_ = budget_cap_ns > 0 ? std::min(budget_ns_, budget_cap_ns) : budget_ns_;
   solve_deadline_cap_ns_ = 0;
   solve_deadline_max_ns_ = 0;
@@ -1520,6 +1554,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
                       fresh_tc_[U(r)]);
     }
     ++stats.nlp.n_solved;
+    RecordCandidate(c, stats);
     stats.nlp.solve_ns_max = std::max({stats.nlp.solve_ns_max, c.solve_ns, c.continuous_solve_ns});
     if (c.continuous_run) {
       ++stats.nlp.n_continuous_run;
@@ -1630,6 +1665,7 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   const double sigma = SigmaMaxOf(ball);
   plan.sigma_c = std::isfinite(sigma) ? sigma : 0.0;
   plan.sigma_l = plan.sigma_c;
+  stats.chosen_sigma_c = sigma;  // raw (#798)
   plan.reason = PlanReason::kNone;
   plan.valid = true;
 

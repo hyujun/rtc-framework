@@ -80,6 +80,7 @@ integrated_bringup/
 │   ├── ur5e_p1a/_base.yaml                 <- mode-agnostic SSoT (URDF + 모델 토폴로지 + device roster/limits + control_rate/logging)
 │   ├── ur5e_p1a/robot.yaml                 <- 실제 로봇 delta (backend/토픽 + E-STOP + init 타이밍, _base 위에 overlay)
 │   ├── ur5e_p1a/sim.yaml                   <- 시뮬레이션 delta (MuJoCo backend + sim-sync + 완화된 E-STOP, _base 위에 overlay)
+│   ├── <robot>/throw_sets/                 <- 포구 평가의 투척 목록 (ur5e_p1b · iiwa7_leap): D1_regression_v0 (130 발) · D2_tuning_v0 (30 · 27 발) · candidate_box_v0 (180 발) — E1-F21 · #798, §Catching sim trials
 │   └── controllers/
 │       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi/pull_estimator/momentum_observer)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
@@ -1090,15 +1091,13 @@ S7.2 부터 포구 컨트롤러가 **스스로** 대기 자세로 간다. 무장
 
 관절 이름·상태 토픽은 출하 프로파일에서 읽는다 (`--profile`, 기본 `ur5e_p1b`). **대기 자세·`T_freeze`·`T_arm`·`lead_enable`·`control.dt`, 그리고 팔 예산 층 `reference.{omega, a_max, v_max}`·`planner.search.grid.gamma.eta_v`·`planner.search.grid.time.margin`·`robot.arm.qdd_max` (계획기가 도달시간을 재는 D-16 box; S8-G — TBD 잎은 컨트롤러가 실행한 기본값으로 나온다), 그리고 예측 격자 `prediction.dt_expected`·`io.n_min`·`planner.search.grid.slice.dt` (E0-F04 #647 — vision profile 의 격자를 따라야 하는 세 키, `n_min` 은 실행값) 는 떠 있는 컨트롤러의 read-only 미러 파라미터에서 읽는다** — 하나라도 없으면 러너는 시작하지 않는다 (S8-A) — `sim_overlay:=` 가 이 값들을 바꿔도 설치된 YAML 은 그대로이기 때문이다. 미러가 없으면 (컨트롤러가 configure 에서 park 됨 — 그 로그가 값을 댄다) 시작하지 않는다. 미러 값은 `<out>/run_meta.json` 과 시행 기록마다 `controller_mirror` 로 남는다.
 
-투척 계열은 `--dist` 가 고른다.
+투척은 run 이 이름한다 — **투척 목록 파일** (`--throws-file`, 평가의 모집단) 또는 **손 근처 설계** (`--dist hand_*`). 둘 다 없으면 인자 오류다 (#798 — 옛 배치의 동결 계열 `reference` · `s35b` 는 지웠다. 드라이버에 자기 투척은 없다).
 
 | `--dist` | 투척 | 용도 |
 |---|---|---|
-| `reference` (기본, S6-C 이후 불변) | 기준 투척 `--n-ref` 번 뒤에 섭동 투척 `--n-pert` 번 (속력 ×U(0.9, 1.1), 측방 U(−0.3, 0.3) m/s, `--seed`) | 회귀 세트. 같은 투척의 반복은 iid 표본이 아니므로 성공률 입력이 아니다 |
 | `hand_cliff` · `hand_lob` · `hand_lhs` (S8-F) | **손 근처 투척** — 도착으로 지정한다: 떠 있는 컨트롤러의 `wait_pose` 를 FK 해 얻은 포구점 p_c·접근축 (catch frame +z) 을 기준으로, 도착 속력 v · 비행 시간 T · 접근축에 수직한 평면의 오프셋 (r, ψ) · 접근축 기준 입사각 α 를 정하고 `rtc_tools.analysis.catchability_map.aim_at_hand` 가 출하 항력 법칙으로 **역적분**해 릴리스를 낸다. `hand_cliff` = r 0 · T 0.65 · 정면, v {3.5, 4, 4.5, 5, 5.5, 6, 7} × 8 (속력 교차 순서, `--n` 무시) · `hand_lob` = 수평 아래 85° 급강하, v {2.5, 3, 3.5, 4} × 14 · `hand_lhs` = v [3.5, 7] · T [0.65, 0.8] · r [0, 0.2] · ψ [0, 360) · α [−10°, +15°] 의 Latin hypercube `--n` 발 (`--seed` 재현; 릴리스 공 표면이 `--floor-z` (기본 0.05, 작업 테이블 상판) 아래면 다시 뽑는다 — 받아들인 발당 `HAND_LHS_MAX_DRAWS_PER_THROW` 회를 넘기면 상자 자체가 이 기하에 안 맞는 것이라 이유를 적고 멈춘다) | 탐색 (dynamic_catching S8-F). 시행 기록에 인자·도출량 (Δz·d·v0·앙각·입사각)·목표점 `target_m` 과 **조준 검증** (`aim_error_m`: 첫 truth 표본에서 항력 법칙으로 적분한 비행이 목표점을 얼마나 비껴가는지 — truth 는 손에서 끊기므로 표본이 아니라 모델로 읽는다; `model_rms_m` 은 첫 접촉 전 truth 와 그 모델의 차) 이 남는다. 항력 상수는 C++ 프리셋이라 `--drag-coefficient`·`--air-density` (+ `-source` file:line) 로 주고 (기본 tennis; beanbag 은 0.5 · `projectile_ball.cpp:39`), `--arm` 은 unit 의 overlay 이름을 `run_meta.json` 에 남기는 라벨, `--limit` 은 계열의 앞 N 발만 (스모크). `run_meta.json` 의 `hand_geometry` 가 p_c·접근축·공 파라미터와 출처다. 탐색에 포구점의 위치 제한이 없으므로 (L3 §4.9) 출하 overlay 로 그대로 쓴다 — S8-F 때는 넓힌 `catch_box` 를 적은 arm (`s8f_reach_first` · `s8f_shipped_score` · `s8f_reach_first_beanbag`) 이 필요했고, 그 파일들은 git 이력에 있다 (지금은 그 키 때문에 컨트롤러가 park 한다) |
-| `s35b` (`ur5e_p1b`·`iiwa7_leap`) | 프로파일별 동결 상자에서 `--n` 번 균등 iid, `--seed` 로 재현. `ur5e_p1b` = S3.5b 90 % 상자 (거리 0.9–1.0 m · 릴리스 0.15–0.25 m · 방향 ±6° · 속력 4.65–4.85 m/s · 앙각 62–64°). `iiwa7_leap` = S8-D 지도 재실행 상자 (거리 0.95–1.05 m · 릴리스 0.10–0.20 m · 방향 ±6° · 속력 2.85–3.05 m/s · 앙각 78–80°; 지도 열림이면서 공이 상승 중 대기 자세 로봇에 닿지 않는 투척 164/180) | 동결 분포 (dynamic_catching S8, D-S8-2·D-S8-15). 발사 상태는 `rtc_tools.analysis.catchability_map` 의 격자 기하 그대로다. 표본의 축 값·seed·순번이 시행 기록에 남는다 |
 
-**투척 목록 파일 (`--throws-file PATH`).** `--dist` 대신 JSON 파일이 투척을 정한다 — 오프라인 도구와 sim 이 같은 투척을 쓴다. `--dist`·`--seed` 와 함께 주면 인자 오류이고, `--n` 은 쓰이지 않으며, `--limit` 은 파일의 앞 N 발만 던진다. 투척 순서는 파일 순서다. 손 근처 기하(FK)는 필요 없다. 형식의 검증·읽기·쓰기는 `rtc_tools.analysis.catching_throw_list` 하나다 — 오프라인 도구 (`catch_search_map`) 도 같은 모듈로 쓰므로 그 목록은 여기서 그대로 받는다. 이 드라이버의 `load_throw_list(path) -> (throws, meta)` · `write_throw_list(path, throws, meta)` 는 그 모듈의 함수다. 파일은 인자를 읽을 때 한 번 읽고 검증한다: 없거나 형식이 틀린 파일은 sim 에 닿기 전, `<out>` 에 아무것도 쓰기 전에 인자 오류 (종료 코드 2) 로 끝나고, 그 한 번 읽은 내용이 던질 투척과 `run_meta.json` 의 기록이 된다.
+**투척 목록 파일 (`--throws-file PATH`).** JSON 파일이 투척을 정한다 — 오프라인 도구와 sim 이 같은 투척을 쓴다. 출하 세트는 `config/<robot>/throw_sets/` 다 (E1-F21 · #798): `D1_regression_v0.json` (회귀 130 발) · `D2_tuning_v0.json` (튜닝, p1b 30 · leap 27 발) · `candidate_box_v0.json` (후보 상자의 LHS 180 발 — p1b R 2.5 · leap R 1.5, #800 의 결정). 투척마다 두 탐색의 오프라인 라벨 (`offline_<search>_{verdict,reason,first_accept_wake,t_c_s,lead_s,search_wall_us}`) 이 실려 있고, 로봇의 세 세트는 투척을 공유하지 않는다 (`test_catching_throw_sets.py`). **두 unit 의 시행은 (목록 파일의 sha256, `throw_id`) 로 짝짓는다** (`rtc_tools.analysis.catching_throw_list.throw_key` — `summarize.py` · `catching_decel` · `catching_pool` 이 쓴다; `catching_trials.csv` 의 `throws_file_sha256` 열과 요약의 `throws_file`). 같은 launch 를 다시 쓴 파일은 sha 가 달라 다른 모집단이다 — 세트는 그대로 두고 버전을 올린다. `--dist`·`--seed` 와 함께 주면 인자 오류이고, `--n` 은 쓰이지 않으며, `--limit` 은 파일의 앞 N 발만 던진다. 투척 순서는 파일 순서다. 손 근처 기하(FK)는 필요 없다. 형식의 검증·읽기·쓰기는 `rtc_tools.analysis.catching_throw_list` 하나다 — 오프라인 도구 (`catch_search_map`) 도 같은 모듈로 쓰므로 그 목록은 여기서 그대로 받는다. 이 드라이버의 `load_throw_list(path) -> (throws, meta)` · `write_throw_list(path, throws, meta)` 는 그 모듈의 함수다. 파일은 인자를 읽을 때 한 번 읽고 검증한다: 없거나 형식이 틀린 파일은 sim 에 닿기 전, `<out>` 에 아무것도 쓰기 전에 인자 오류 (종료 코드 2) 로 끝나고, 그 한 번 읽은 내용이 던질 투척과 `run_meta.json` 의 기록이 된다.
 
 ```json
 {
@@ -1125,9 +1124,10 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false use_c
 ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
   "{activate_controllers: [demo_catching_controller], deactivate_controllers: [demo_joint_controller], strictness: 1, timeout: {sec: 3}}"
 # 4) 투척 — <out>/truth_trial_NN.csv (공 ground truth) + trial_results.json (모드 전이·판정·정렬 오차)
-ros2 run integrated_bringup catching_sim_trials <out> --n-ref 15 --n-pert 10
-#    동결 분포에서 25 번 (seed 로 재현)
-ros2 run integrated_bringup catching_sim_trials <out> --dist s35b --n 25 --seed 1
+ros2 run integrated_bringup catching_sim_trials <out> \
+  --throws-file $(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1b/throw_sets/candidate_box_v0.json
+#    같은 목록의 앞 25 발만
+ros2 run integrated_bringup catching_sim_trials <out> --throws-file <위 파일> --limit 25
 #    손 근처 투척 (S8-F): --arm 은 sim 을 띄운 overlay 의 이름을 run_meta.json 에 남기는 라벨이다
 ros2 run integrated_bringup catching_sim_trials <out> --dist hand_cliff --seed 901 --arm <overlay 이름>
 ros2 run integrated_bringup catching_sim_trials <out> --dist hand_lhs --n 150 --seed 911 --arm <overlay 이름>
@@ -1139,7 +1139,8 @@ ros2 launch integrated_bringup sim_iiwa7_leap.launch.py enable_viewer:=false use
 ros2 launch ball_perception_sim sim_estimator.launch.py \
   profile_path:=$(ros2 pkg prefix ball_perception_sim)/share/ball_perception_sim/config/sim_profile.catching.json \
   producer_revision:=<rtc-framework 커밋>
-ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dist s35b --n 50 --seed 503
+ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap \
+  --throws-file $(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/iiwa7_leap/throw_sets/candidate_box_v0.json
 ```
 
 **host 부하 감시 (`--host-watch`, #601).** sim 이 벽시계보다 느리게 돌면 (RTF < 1 — 같은 host 의 다른 세션 빌드·테스트 등) 공 stamp 가 컨트롤러의 steady 시계보다 뒤처져 정상 입력이 `BALL_STALE` 로 끊기고, 성공률이 포구가 아니라 host 를 잰다 (dynamic_catching D-S8-17). 러너는 투척마다 자기가 기록하는 truth 행에서 sim 속도를 읽는다 — stamp 구간 / 수신 구간, sim 시간 `--host-window` (기본 0.25 s) 창 중 가장 느린 값. `sim_lanes:=true` 는 필요 없다. 그 값이 `--host-rtf-min` (기본 0.95) 아래면 부하다 (`rtc_tools` `catching_trials` 의 `rtf_trial_min` 과 같은 창·임계).
@@ -1164,7 +1165,7 @@ ros2 run integrated_bringup catching_sim_trials <out> --profile iiwa7_leap --dis
 
 | 스크립트 | 하는 일 |
 |---|---|
-| `run_unit.sh <out> <p1b\|leap> <overlay.yaml> <n> <seed>` | unit 하나. sim 을 띄우고, 컨트롤러의 미러가 기대값과 같은지 확인하고 (기동 로그의 `segment mode: <값>` · `search mode: <값>` 줄도 대조한다 (`EXPECT_SEARCH`, 기본 `grid`) — `closed_form` arm 은 `segment mode: closed_form` 줄이 **있어야** 통과하고, 기동 줄은 `<out>/segment_startup.txt` 에 남는다), 추정기를 띄우고, `catching_sim_trials` (`--dist s35b --host-watch abort`) 를 돌린 뒤 세션 로그를 unit 으로 옮긴다. `<out>/status` 가 `DONE` 또는 `FAIL:<이유>` 다. tree 가 dirty 하면 거부한다 (`ALLOW_DIRTY=1` 로 푼다). INT · TERM · HUP 을 받으면 sim 과 추정기를 끝내고 `FAIL:signal` 을 적는다 (세션 로그는 다른 실패처럼 `<out>/session_failed` 로 옮긴다) |
+| `THROWS_FILE=<목록> run_unit.sh <out> <p1b\|leap> <overlay.yaml> <n (무시)> <seed>` | unit 하나 — 투척은 `THROWS_FILE` 의 목록이고 (`THROWS_LIMIT=N` 은 앞 N 발; 없으면 거부, #798), seed 는 추정기에만 간다 (sim 은 seed 를 받지 않는다). sim 을 띄우고, 컨트롤러의 미러가 기대값과 같은지 확인하고 (기동 로그의 `segment mode: <값>` · `search mode: <값>` 줄도 대조한다 (`EXPECT_SEARCH`, 기본 `grid`) — `closed_form` arm 은 `segment mode: closed_form` 줄이 **있어야** 통과하고, 기동 줄은 `<out>/segment_startup.txt` 에 남는다), 추정기를 띄우고, `catching_sim_trials` (`--throws-file <목록> [--limit N] --host-watch abort`) 를 돌린 뒤 세션 로그를 unit 으로 옮긴다. `<out>/status` 가 `DONE` 또는 `FAIL:<이유>` 다. tree 가 dirty 하면 거부한다 (`ALLOW_DIRTY=1` 로 푼다). INT · TERM · HUP 을 받으면 sim 과 추정기를 끝내고 `FAIL:signal` 을 적는다 (세션 로그는 다른 실패처럼 `<out>/session_failed` 로 옮긴다) |
 | `check_startup.py <launch.log>` | 컨트롤러가 올라왔는가 — `run_unit.sh` 의 기동 대기가 1 초마다 묻는다. 종료 코드 0 = `supervisor: trials enabled` 줄이 있다, 1 = bringup 이 실패했다 (`Config load failed` · `bring_up_failed` · `refus…` 가 **`[INFO]` 가 아닌 줄**에 있다 — 그 첫 줄이 unit 의 `startup_failure.txt` 에 남는다), 2 = 아직 둘 다 없다. level 을 보는 이유: 정상 기동도 `[INFO]` 로 "… is refused without the IK (too_far)" 를 찍는다 (도달 반경 줄, ready 줄보다 수십 ms 앞) — level 을 보지 않던 옛 대기는 그 사이에 폴링이 걸리면 투척 전에 `FAIL:startup` 을 냈다 (#747) |
 | `run_all.sh` | plan 의 unit 을 차례로 돌린다. 다시 띄우면 `DONE` 인 unit 은 건너뛴다. 실패한 unit 은 `<dir>.fail<N>` 로 치우고 같은 seed 로 `MAX_TRY` (기본 3) 번까지 다시 돌린다. `$DATA/STOP` 파일이 있으면 그 unit 뒤에 멈춘다. **`repo_scripts/scripts/with_verify_hold.sh` 로 띄운다** |
 | `analyse_unit.sh <ur5e_p1b\|iiwa7_leap> <unit>...` | 끝난 unit 에 `rtc_tools` 의 `catching_trials` 와 `tc_vector.py` 를 돌려 `<unit>/ct/` 에 쓴다. unit 을 모으는 중에는 돌리지 않는다 (host 부하) |

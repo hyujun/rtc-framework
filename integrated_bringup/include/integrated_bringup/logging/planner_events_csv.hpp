@@ -61,6 +61,25 @@
 // outcome, core reason, iterations and time are written: the docking block of
 // that solve is not (a second copy of those columns for a rare row).
 //
+// `cov_n` and `chosen_sigma_c` (#798, after the replacement columns) are the
+// wake's covariance box (its point count) and the raw √λ_max of the ball's
+// position covariance at the chosen candidate's catch node — NaN when no plan
+// was produced or the node had no valid covariance. `sigma_l` is the monitor's
+// column (a search wake leaves it NaN, #800): a search wake's σ is here.
+//
+// nlp_candidates.csv (same directory, #798 — E1-F19 part 2's instrument):
+// one row per candidate the NLP search SOLVED on a wake, drained from the same
+// record by the same timer. `wake_ns` and `snapshot_sequence` join it to the
+// wake's row here; `cand` is the solve order. `reject` is the candidate's
+// verdict (NlpRejectName), `worst_group` the row group of the largest
+// violation and `viol_<group>` one flag per group whose violation exceeded
+// tol_violation — every group that refused, which the verdict's worst group
+// does not say. `solve_us` is the wall time of the solve the candidate uses —
+// the fixed-grid one, or the continuous one when `continuous` is 1 (a
+// deadline cut it, as in planner_events); `sigma_c` is the raw σ at the catch
+// node as the solve was given it (NaN: no valid covariance there). Nothing in the record changes
+// shape per wake: the candidate rows are a fixed array in NlpSearchStats.
+//
 // Readers select columns by NAME: the set has grown and shrunk, and a log
 // from before a change lacks the newer names.
 //
@@ -69,10 +88,12 @@
 // of this file by joining them.
 
 #include "rtc_controllers/catching/grid_catch_search.hpp"
+#include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 #include "rtc_controllers/catching/planner_cycle.hpp"
 #include "rtc_controllers/catching/search_stats.hpp"
 #include "rtc_controllers/catching/segment_planner.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -122,7 +143,38 @@ inline void WritePlannerEventsHeader(std::ostream& os) {
         "segment_c_catch,segment_c_guarded,segment_sigma_s,segment_sigma_t,"
         "segment_chance_lateral,segment_chance_timing,segment_cost_reference,segment_cost_stop,"
         "replace_step,replacement_outcome,replacement_core_reason,replacement_iterations,"
-        "replacement_solve_us\n";
+        "replacement_solve_us,cov_n,chosen_sigma_c\n";
+}
+
+/// nlp_candidates.csv — one row per solved candidate of a wake (header note).
+inline void WriteNlpCandidatesHeader(std::ostream& os) {
+  os << "wake_ns,snapshot_sequence,cand,index,t_c_ns,reject,worst_group,worst_violation,";
+  for (int g = 0; g < rtc::catching::kNumDockingRowGroups; ++g) {
+    os << "viol_"
+       << rtc::catching::DockingRowGroupName(static_cast<rtc::catching::DockingRowGroup>(g)) << ',';
+  }
+  os << "continuous,iterations,qp_solves,solve_us,c_catch,sigma_c,phi\n";
+}
+
+inline void WriteNlpCandidatesRows(std::ostream& os, const rtc::catching::PlannerCycleRecord& r) {
+  const rtc::catching::NlpSearchStats& n = r.search.nlp;
+  if (!n.ran) {
+    return;
+  }
+  const int count = std::min<int>(n.n_cands, rtc::catching::kNlpCandidateStatCount);
+  for (int i = 0; i < count; ++i) {
+    const rtc::catching::NlpCandidateStat& c = n.cands[static_cast<std::size_t>(i)];
+    os << r.wake_ns << ',' << r.snapshot_sequence << ',' << i << ',' << c.index << ',' << c.t_c_ns
+       << ',' << rtc::catching::NlpRejectName(c.reject) << ','
+       << rtc::catching::DockingRowGroupName(
+              static_cast<rtc::catching::DockingRowGroup>(c.worst_group))
+       << ',' << c.worst_violation << ',';
+    for (int g = 0; g < rtc::catching::kNumDockingRowGroups; ++g) {
+      os << ((c.violated_mask >> static_cast<unsigned>(g)) & 1U) << ',';
+    }
+    os << (c.continuous_used ? 1 : 0) << ',' << c.iterations << ',' << c.qp_solves << ','
+       << c.solve_ns / 1000 << ',' << c.c_catch << ',' << c.sigma_c << ',' << c.phi << '\n';
+  }
 }
 
 /// The `nlp_rej_*` columns, in the header's order: every reason a CANDIDATE can
@@ -284,7 +336,8 @@ inline void WritePlannerEventsRow(std::ostream& os, const rtc::catching::Planner
   const auto& w = r.replacement;
   os << rtc::catching::ReplaceStepName(r.replace_step) << ','
      << rtc::catching::SegmentOutcomeName(w.outcome) << ',' << w.core_reason_name << ','
-     << w.iterations << ',' << w.solve_ns / 1000 << '\n';
+     << w.iterations << ',' << w.solve_ns / 1000 << ',' << s.cov_n << ',' << s.chosen_sigma_c
+     << '\n';
 }
 
 }  // namespace integrated_bringup

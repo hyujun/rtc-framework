@@ -31,6 +31,7 @@ from rtc_tools.analysis import (
     catching_decel as cd,
     catching_trials as ct,
 )
+from rtc_tools.analysis.catching_throw_list import throw_group, throw_key
 from rtc_tools.utils.catching_keys import (
     RENAMED_TRIALS_COLUMNS,
     RENAMED_TRIALS_SUMMARY_KEYS,
@@ -269,6 +270,8 @@ def trial_rows(u, cfg, fk):
             "kind": r["kind"],
             "seed": r["seed"],
             "sample_idx": r["sample_idx"],
+            "throw_id": r.get("throw_id"),
+            "throws_file_sha256": r.get("throws_file_sha256"),
             "invalid_reason": r["invalid_reason"] or "",
             "truth": bool(r["truth_success"]),
             "hold_no_abort": r["hold_no_abort"],
@@ -466,16 +469,25 @@ def unit_t_c(units):
 
 # ── pairing, test, verdict ───────────────────────────────────────────────────
 def pair(cf_rows, mpc_rows):
-    def keyed(rows):
+    """The two arms' trials joined by throw (``throw_key``: a list's sha256 and
+    throw_id, or kind · seed · sample_idx). A trial without a key (#798: a
+    list unit whose rows lack the list, a series without a seed) pairs with
+    nothing and is counted in ``unkeyed``."""
+    unkeyed = collections.Counter()
+
+    def keyed(rows, arm):
         out = {}
         for r in rows:
-            k = (r["kind"], int(r["seed"]), int(r["sample_idx"]))
+            k = throw_key(r)
+            if k is None:
+                unkeyed[arm] += 1
+                continue
             if k in out:
                 raise SystemExit(f"throw {k} twice in one arm")
             out[k] = r
         return out
 
-    a, b = keyed(cf_rows), keyed(mpc_rows)
+    a, b = keyed(cf_rows, "cf"), keyed(mpc_rows, "mpc")
     keys = sorted(set(a) & set(b))
     dropped = collections.Counter()
     valid, per_seed_drop = [], collections.Counter()
@@ -488,18 +500,22 @@ def pair(cf_rows, mpc_rows):
                 else ("cf_only" if ra["invalid_reason"] else "mpc_only")
             )
             dropped[(side, ra["invalid_reason"] or "-", rb["invalid_reason"] or "-")] += 1
-            per_seed_drop[k[1]] += 1
+            per_seed_drop[throw_group(k)] += 1
             continue
         valid.append((k, ra, rb))
     return {
         "keys": len(keys),
         "unpaired_cf": len(set(a) - set(b)),
         "unpaired_mpc": len(set(b) - set(a)),
+        "unkeyed": dict(unkeyed),
         "valid": valid,
         "dropped": {"/".join(k): v for k, v in dropped.items()},
         "dropped_n": sum(dropped.values()),
         "seed_drops": dict(per_seed_drop),
-        "seeds_to_rerun": sorted(s for s, n in per_seed_drop.items() if n >= DROP_SEED_RERUN),
+        # seeds (int) and lists ("list:…") can share one run: order by text
+        "seeds_to_rerun": sorted(
+            (s for s, n in per_seed_drop.items() if n >= DROP_SEED_RERUN), key=str
+        ),
     }
 
 
@@ -556,9 +572,9 @@ def test_block(tab):
 def seed_block(valid):
     by = collections.defaultdict(list)
     for k, ra, rb in valid:
-        by[k[1]].append((ra["d4"], rb["d4"]))
+        by[throw_group(k)].append((ra["d4"], rb["d4"]))
     out, terms = {}, []
-    for s, prs in sorted(by.items()):
+    for s, prs in sorted(by.items(), key=lambda kv: str(kv[0])):
         n = len(prs)
         xa = sum(a and not b for a, b in prs)
         xb = sum(b and not a for a, b in prs)
@@ -774,7 +790,7 @@ def main():
     print(f"items: {json.dumps(items, default=_json)}")
     print(
         f"pairs: thrown keys {pr['keys']} · valid {t['n']} · dropped {pr['dropped_n']} {pr['dropped']}"
-        f" · seeds to rerun {pr['seeds_to_rerun']}"
+        f" · unkeyed {pr['unkeyed']} · seeds (lists) to rerun {pr['seeds_to_rerun']}"
     )
     print(
         f"D4 table (both / mpc only / cf only / neither): {t['both']} / {t['mpc_only']} / "

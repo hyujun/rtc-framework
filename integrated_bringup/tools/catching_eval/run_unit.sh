@@ -1,7 +1,7 @@
 #!/bin/bash
 # Catching sim evaluation, one unit (first used for E1-F06, G-1, #632). One launch = one unit:
-#   DATA=<data dir> BALL_SIM_WS=<estimator workspace> \
-#     run_unit.sh <out_dir> <robot p1b|leap> <overlay.yaml> <n_throws> <seed>
+#   DATA=<data dir> BALL_SIM_WS=<estimator workspace> THROWS_FILE=<catching_throw_list/1 JSON> \
+#     run_unit.sh <out_dir> <robot p1b|leap> <overlay.yaml> <n_throws (ignored)> <seed>
 # Runs from the source tree of the workspace it measures: the repository is the
 # one this file is in, the colcon workspace the directory two levels above it
 # (RTC_WS names another), and a repository that is not under <workspace>/src is
@@ -35,15 +35,21 @@
 # Two workspaces (MD-17): the sim and controller come from this workspace, the
 # estimator from $BALL_SIM_WS (its shipped catching profile is the default
 # PROFILE). The session's raw logs are copied into the unit at the end.
-# #747 additions (both default off — the command line is then what it was):
-# THROWS_FILE=<catching_throw_list/1 JSON> throws that list in file order (--throws-file) instead of
-# `--dist s35b --n <n> --seed <seed>`; the n_throws argument is then ignored (pass any number) and
-# NT is the file's throw count (the timeout follows it; an unreadable file fails the unit). The
-# seed argument still seeds the estimator and the sim, it is not a driver argument. The path may be
-# relative to the caller's directory. END_ON_BALL_LOW=1 adds --end-on-ball-low (a throw whose cycle
+# #798: a unit throws a throw list — THROWS_FILE=<catching_throw_list/1 JSON> (the shipped sets are
+# integrated_bringup/config/<robot>/throw_sets/) in file order (--throws-file); the driver's frozen
+# series (`--dist s35b`) is gone, so a unit without THROWS_FILE is refused before anything is
+# launched. The n_throws argument is ignored (pass any number; kept for the plan-line format) and NT
+# is the file's throw count (the timeout follows it; an unreadable file fails the unit).
+# THROWS_LIMIT=<N> throws only the file's first N (--limit; NT follows). The path may be relative to
+# the caller's directory. The seed argument seeds the ESTIMATOR ONLY (simulator_seed of
+# sim_estimator.launch.py — its measurement noise); the MuJoCo sim takes no seed and the throws come
+# from the file, so two units of one list with two seeds differ in the estimator's noise alone
+# (#745 F5). conditions.txt records throws_file (+ sha256), throws_limit and the end rule.
+# #747 addition (default off — the command line is then what it was):
+# END_ON_BALL_LOW=1 adds --end-on-ball-low (a throw whose cycle
 # never opened ends when the ball is below floor + margin, not at the 12 s cap), with
 # BALL_LOW_MARGIN_M / BALL_LOW_GRACE_S as --ball-low-margin-m / --ball-low-grace-s (the driver's
-# defaults when unset). conditions.txt records throws_file (+ sha256) and the end rule.
+# defaults when unset).
 # #747 fix: whether the controller came up is check_startup.py's verdict. The loop used to stop on
 # any `refus` in the launch log, and a healthy controller logs "… is refused without the IK
 # (too_far)" at INFO just before its ready line: a poll between the two ended the unit as
@@ -64,10 +70,13 @@ PROFILE=${PROFILE:-$BWS/install/ball_perception_sim/share/ball_perception_sim/co
 # overlay against its own directory): a relative path checked here would name
 # another file there.
 OV=$(realpath -ms "$OV"); DATA=$(realpath -ms "$DATA"); PROFILE=$(realpath -ms "$PROFILE")
-if [ -n "$THROWS_FILE" ]; then
-  THROWS_FILE=$(realpath -ms "$THROWS_FILE")
-  NT=$(/usr/bin/python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["throws"]))' "$THROWS_FILE" 2>/dev/null)
-  case $NT in '' | *[!0-9]* | 0) echo "FAIL:cannot read a throw count from THROWS_FILE $THROWS_FILE" > "$OUT/status"; exit 1 ;; esac
+[ -n "$THROWS_FILE" ] || { echo "FAIL:THROWS_FILE is not set (#798: a unit throws a catching_throw_list/1 file — integrated_bringup/config/<robot>/throw_sets/)" | tee "$OUT/status" >&2; exit 1; }
+THROWS_FILE=$(realpath -ms "$THROWS_FILE")
+NT=$(/usr/bin/python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["throws"]))' "$THROWS_FILE" 2>/dev/null)
+case $NT in '' | *[!0-9]* | 0) echo "FAIL:cannot read a throw count from THROWS_FILE $THROWS_FILE" > "$OUT/status"; exit 1 ;; esac
+if [ -n "$THROWS_LIMIT" ]; then
+  case $THROWS_LIMIT in *[!0-9]* | 0 | '') echo "FAIL:THROWS_LIMIT must be a positive integer, got '$THROWS_LIMIT'" > "$OUT/status"; exit 1 ;; esac
+  [ "$THROWS_LIMIT" -lt "$NT" ] && NT=$THROWS_LIMIT
 fi
 case $SHORT in p1b) ROBOT=ur5e_p1b ;; leap) ROBOT=iiwa7_leap ;; esac
 case $ROBOT in
@@ -141,7 +150,8 @@ trap on_signal INT TERM HUP
 {
   echo "date_start: $(date -Is)"
   echo "robot: $ROBOT"; echo "condition: $COND"; echo "overlay: $OV"; echo "n: $NT"; echo "seed: $SEED"
-  [ -n "$THROWS_FILE" ] && { echo "throws_file: $THROWS_FILE"; echo "throws_file_sha256: $(sha256sum "$THROWS_FILE" | cut -d' ' -f1)"; }
+  echo "throws_file: $THROWS_FILE"; echo "throws_file_sha256: $(sha256sum "$THROWS_FILE" | cut -d' ' -f1)"
+  [ -n "$THROWS_LIMIT" ] && echo "throws_limit: $THROWS_LIMIT"
   [ "${END_ON_BALL_LOW:-0}" == "1" ] && echo "end_on_ball_low: 1 margin_m=${BALL_LOW_MARGIN_M:-default} grace_s=${BALL_LOW_GRACE_S:-default}"
   echo "rtc_framework_rev: $(git -C "$REPO" rev-parse --short HEAD)"
   echo "rtc_framework_dirty: $(git -C "$REPO" status --porcelain | wc -l)"
@@ -265,8 +275,8 @@ grep -q WRONG_PREFIX "$OUT/est.log" && { cleanup; echo "FAIL:ball_perception not
 [ $act -eq 1 ] || { cleanup; echo "FAIL:estimator not activated" > "$OUT/status"; exit 1; }
 sleep 2
 ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController "{activate_controllers: [demo_catching_controller], deactivate_controllers: [demo_joint_controller], strictness: 1, timeout: {sec: 3}}" > "$OUT/switch.log" 2>&1
-SERIES=(--dist s35b --n "$NT" --seed "$SEED")
-[ -n "$THROWS_FILE" ] && SERIES=(--throws-file "$THROWS_FILE")
+SERIES=(--throws-file "$THROWS_FILE")
+[ -n "$THROWS_LIMIT" ] && SERIES+=(--limit "$THROWS_LIMIT")
 ENDRULE=()
 if [ "${END_ON_BALL_LOW:-0}" == "1" ]; then
   ENDRULE=(--end-on-ball-low)
@@ -295,7 +305,7 @@ for f in "$SES"/controllers/demo_catching_controller/*.csv; do
 done
 for f in "$SES"/controllers/demo_catching_controller/*; do
   [ -e "$f" ] || continue
-  basename "$f" | grep -q "^\\(catching_diag\\|planner_events\\|$STATE_RE\\)\\.csv\$" || { echo "FAIL:contaminated foreign file" > "$OUT/status"; exit 1; }
+  basename "$f" | grep -q "^\\(catching_diag\\|planner_events\\|nlp_candidates\\|$STATE_RE\\)\\.csv\$" || { echo "FAIL:contaminated foreign file $(basename "$f")" > "$OUT/status"; exit 1; }
 done
 # Keep the raw session with the unit, then drop the original.
 mkdir -p "$OUT/session"

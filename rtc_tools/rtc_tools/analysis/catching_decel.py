@@ -52,8 +52,11 @@ Per trial, inside the window:
 Per unit and pooled: p50 / p95 / max of the per-trial values, all trials and
 split by truth success (``catching_trials.csv`` of the unit).
 
-``--a`` / ``--b`` name two sets of units that threw the SAME throws (same
-seeds): trials are paired by ``(kind, seed, sample_idx)`` and the 2×2 table of
+``--a`` / ``--b`` name two sets of units that threw the SAME throws (one
+throw list, or one seeded series): trials are paired by
+:func:`rtc_tools.analysis.catching_throw_list.throw_key` — a throw-list trial
+on (the list's sha256, ``throw_id``), a seeded one on ``(kind, seed,
+sample_idx)`` — and the 2×2 table of
 truth success is reported with the discordance rate ψ, its Wilson interval and
 the exact McNemar p. Each set has its own pooled block; the two are pooled
 TOGETHER only with ``--same-arm`` (two runs of one arm — two arms of a
@@ -91,6 +94,7 @@ import numpy as np
 
 from rtc_tools.analysis import catching_arm_budget as ab, catching_trials as ct
 from rtc_tools.analysis.catching_hand_near import _is_true as _truth_cell
+from rtc_tools.analysis.catching_throw_list import throw_key
 from rtc_tools.utils.catching_keys import reject_renamed_keys
 
 TOOL = "catching_decel"
@@ -565,6 +569,8 @@ def _trial_table(unit: Path, ct_dir: Path, extra: Sequence[str] = ()) -> list[di
         rows = list(csv.DictReader(f))
     _, info = ct.load_trials(unit / "trials")
     by_idx = {int(r["idx"]): r for r in info["records"]}
+    # The list the unit threw, if it threw one (run_meta.json's throws_file).
+    list_sha = (info["meta"].get("throws_file") or {}).get("sha256")
     out = []
     for r in rows:
         rec = by_idx.get(int(r["idx"]), {})
@@ -582,6 +588,8 @@ def _trial_table(unit: Path, ct_dir: Path, extra: Sequence[str] = ()) -> list[di
                 "kind": r.get("kind", ""),
                 "seed": rec.get("seed"),
                 "sample_idx": rec.get("sample_idx"),
+                "throw_id": rec.get("throw_id"),
+                "throws_file_sha256": list_sha,
                 "t_launch": num("t_launch"),
                 "t_end": num("t_end"),
                 "invalid_reason": r.get("invalid_reason", ""),
@@ -811,7 +819,11 @@ SUCCESS_DEFS = ("truth", "hold")
 
 
 def outcome_map(units: Sequence[dict], success: str = "truth") -> dict[tuple, bool]:
-    """``(kind, seed, sample_idx) → success`` over the valid trials of ``units``.
+    """``throw_key → success`` over the valid trials of ``units``.
+
+    The key is :func:`rtc_tools.analysis.catching_throw_list.throw_key`: the
+    list's sha256 and ``throw_id`` of a throw-list trial, ``(kind, seed,
+    sample_idx)`` of a seeded one. A trial with neither pairs with nothing.
 
     ``success``: ``truth`` is ``truth_success``; ``hold`` also asks the trial
     to reach the HOLD verdict without an ``ABORT_SAFE`` (:func:`hold_no_abort`).
@@ -821,9 +833,9 @@ def outcome_map(units: Sequence[dict], success: str = "truth") -> dict[tuple, bo
     out: dict[tuple, bool] = {}
     for u in units:
         for r in u["all_trials"]:
-            if r["invalid_reason"] or r["seed"] is None or r["sample_idx"] is None:
+            key = throw_key(r)
+            if r["invalid_reason"] or key is None:
                 continue
-            key = (r["kind"], int(r["seed"]), int(r["sample_idx"]))
             if key in out:
                 raise SystemExit(
                     f"{u['summary']['unit']}: throw {key} appears twice in one set — a set is "
@@ -920,7 +932,9 @@ def report(units: Sequence[dict], pooled: Mapping | None, pairs: Mapping | None)
             f"McNemar p {pairs['mcnemar_p']:.3g}"
         )
         if not pairs["n_pairs"]:
-            lines.append("  no throw is in both sets (seed, sample_idx): nothing to pair")
+            lines.append(
+                "  no throw is in both sets (list · throw_id, or seed · sample_idx): nothing to pair"
+            )
         w = pairs.get("wald")
         if w and pairs["n_pairs"]:
             lines.append(

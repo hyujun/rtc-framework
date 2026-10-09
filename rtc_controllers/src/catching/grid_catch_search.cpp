@@ -238,6 +238,7 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
                                    const ReportedSegments& arm, NowReal now,
                                    std::int64_t budget_cap_ns, SearchStats& stats) noexcept {
   stats = SearchStats{};
+  stats.cov_n = cov.n;
   const std::int64_t t_start = clock_ != nullptr ? clock_() : 0;
   PlanSnapshot plan{};
   plan.token = traj.token;
@@ -725,6 +726,8 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
   plan.score = best_score;
   plan.sigma_c = bc.sigma_known ? bc.sigma : 0.0;
   plan.sigma_l = plan.sigma_c;
+  // Raw, for the record (#798): NaN says the σ was unknown, not small.
+  stats.chosen_sigma_c = bc.sigma_known ? bc.sigma : std::numeric_limits<double>::quiet_NaN();
   plan.dp_impact = constants_.ball_mass * (1.0 - best_gamma) * speed;
   plan.valid = true;
   plan.reason = PlanReason::kNone;
