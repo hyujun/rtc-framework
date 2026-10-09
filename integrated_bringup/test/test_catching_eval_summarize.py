@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "catching_eval"))
 import check_segment_mode as csm  # noqa: E402
+import check_startup as cst  # noqa: E402
 import summarize as sm  # noqa: E402
 
 from rtc_tools.analysis import catching_trials as ct  # noqa: E402
@@ -377,3 +378,78 @@ def test_the_segment_mode_script_checks_the_search_line_with_the_flag(tmp_path):
     refused = subprocess.run([*run, "--search", "grid"], capture_output=True, text=True)
     assert refused.returncode == 1 and "no 'search mode: grid' line" in refused.stderr
     assert subprocess.run([*run, "--bogus", "nlp"], capture_output=True).returncode == 2
+
+
+# ── check_startup.py: has the controller come up, or has the bringup failed? ──
+
+_READY = (
+    "[integrated_rt_controller-2] [INFO] [1.0] [integrated_bringup.demo_catching_controller]: "
+    "supervisor: trials enabled — commit at t_c − 0.370 s"
+)
+# What a healthy controller logs while it configures, before the ready line (#793).
+_REACH_BOUND = (
+    "[integrated_rt_controller-2] [INFO] [1.0] [integrated_bringup.demo_catching_controller]: "
+    "search: reach bound 1.1169 m about [0.0000 0.0000 0.1625] (model world, 6 joints) — a "
+    "candidate whose IK target is farther than that plus the IK's position tolerance is refused "
+    "without the IK (too_far)"
+)
+_REFUSING = (
+    "[integrated_rt_controller-2] [ERROR] [1.0] [integrated_bringup.demo_catching_controller]: "
+    "refusing to configure: no `catching:` section."
+)
+_CONFIG_LOAD = (
+    "[integrated_rt_controller-2] [ERROR] [1.0] [integrated_rt_controller]: Config load failed "
+    "for 'demo_catching_controller' (pkg=integrated_bringup): bad YAML"
+)
+_WILL_REFUSE = (
+    "[integrated_rt_controller-2] [WARN] [1.0] [integrated_bringup.demo_catching_controller]: "
+    "DISABLED: … This controller will refuse to activate; the robot still comes up."
+)
+
+
+@pytest.mark.parametrize(
+    ("log", "state"),
+    [
+        ("", cst.WAITING),
+        (_OTHER + "\n", cst.WAITING),
+        # The race this check was written for: the poll sees the reach-bound line and
+        # not yet the ready line. The old pattern (`refus` anywhere) failed the unit here.
+        (_OTHER + "\n" + _REACH_BOUND + "\n", cst.WAITING),
+        (_REACH_BOUND + "\n" + _READY + "\n", cst.READY),
+        (_READY + "\n", cst.READY),
+        # positive controls: a failed bringup is still a failure
+        (_REACH_BOUND + "\n" + _REFUSING + "\n", cst.FAILED),
+        (_CONFIG_LOAD + "\n", cst.FAILED),
+        (_WILL_REFUSE + "\n", cst.FAILED),
+        # a line with no level at all (the launch's own output) counts
+        ("bring_up_failed: integrated_rt_controller\n", cst.FAILED),
+        # ready wins: the controller came up, whatever was logged on the way
+        (_WILL_REFUSE + "\n" + _READY + "\n", cst.READY),
+    ],
+)
+def test_the_startup_check_tells_a_failed_bringup_from_a_healthy_refusal_line(log, state):
+    assert cst.startup_state(log) == state
+
+
+def test_the_startup_check_names_the_failure_lines_only():
+    log = "\n".join([_OTHER, _REACH_BOUND, _REFUSING, _CONFIG_LOAD]) + "\n"
+    assert cst.failure_lines(log) == [_REFUSING, _CONFIG_LOAD]
+
+
+def test_the_startup_script_exits_on_the_state(tmp_path):
+    log = tmp_path / "launch.log"
+    run = [sys.executable, cst.__file__, str(log)]
+    assert subprocess.run(run, capture_output=True).returncode == 2  # no log yet
+    log.write_text(_REACH_BOUND + "\n")
+    assert subprocess.run(run, capture_output=True).returncode == 2
+    log.write_text(_REACH_BOUND + "\n" + _REFUSING + "\n")
+    failed = subprocess.run(run, capture_output=True, text=True)
+    assert failed.returncode == 1 and failed.stderr.strip() == _REFUSING
+    log.write_text(_REACH_BOUND + "\n" + _READY + "\n")
+    assert subprocess.run(run, capture_output=True).returncode == 0
+
+
+def test_run_unit_asks_the_startup_check_and_no_longer_greps_for_refus():
+    text = (Path(cst.__file__).parent / "run_unit.sh").read_text()
+    assert 'check_startup.py" "$OUT/launch.log"' in text
+    assert "bring_up_failed\\|refus" not in text

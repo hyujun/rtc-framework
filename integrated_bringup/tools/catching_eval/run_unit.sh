@@ -44,6 +44,10 @@
 # never opened ends when the ball is below floor + margin, not at the 12 s cap), with
 # BALL_LOW_MARGIN_M / BALL_LOW_GRACE_S as --ball-low-margin-m / --ball-low-grace-s (the driver's
 # defaults when unset). conditions.txt records throws_file (+ sha256) and the end rule.
+# #747 fix: whether the controller came up is check_startup.py's verdict. The loop used to stop on
+# any `refus` in the launch log, and a healthy controller logs "… is refused without the IK
+# (too_far)" at INFO just before its ready line: a poll between the two ended the unit as
+# FAIL:startup before a throw. A failed bringup's first failure line goes to startup_failure.txt.
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
@@ -159,8 +163,10 @@ setsid ros2 launch integrated_bringup $LAUNCH enable_viewer:=$VIEWER use_cpu_aff
 LPG=$!
 ok=0
 for i in $(seq 1 120); do
-  grep -q 'supervisor: trials enabled' "$OUT/launch.log" && { ok=1; break; }
-  grep -q 'Config load failed\|bring_up_failed\|refus' "$OUT/launch.log" && break
+  # check_startup.py: 0 ready, 1 failed (a failure line that is not an [INFO] line), 2 not yet.
+  line=$(python3 "$D/check_startup.py" "$OUT/launch.log" 2>&1 >/dev/null); rc=$?
+  [ $rc -eq 0 ] && { ok=1; break; }
+  [ $rc -eq 1 ] && { echo "$line" > "$OUT/startup_failure.txt"; break; }
   sleep 1
 done
 grep -o 'logging_data/[0-9_]*' "$OUT/launch.log" | head -1 > "$OUT/session.txt"
