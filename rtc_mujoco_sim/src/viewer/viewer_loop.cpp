@@ -63,7 +63,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
   // ── MuJoCo rendering structs ───────────────────────────────────────────────
   mjvCamera cam;
-  mjv_defaultCamera(&cam);
+  SetHomeCamera(cam, cfg_.viewer_camera);
   mjvOption opt;
   mjv_defaultOption(&opt);
   // Show perturbation force arrow (off by default in MuJoCo).  Arrow is drawn
@@ -79,14 +79,6 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
   mjv_makeScene(model_, &scn, 2000);
   mjr_makeContext(model_, &con, mjFONTSCALE_100);
-
-  constexpr double kDefaultCameraDistance = 2.5;
-  constexpr double kDefaultCameraAzimuth = 90.0;
-  constexpr double kDefaultCameraElevation = -20.0;
-  cam.type = mjCAMERA_FREE;
-  cam.distance = kDefaultCameraDistance;
-  cam.azimuth = kDefaultCameraAzimuth;
-  cam.elevation = kDefaultCameraElevation;
 
   // ── Visualisation-only mjData (only qpos is synced from physics thread) ────
   mjData* vis_data = mj_makeData(model_);
@@ -143,6 +135,7 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   vs.fig_profiler = &fig_profiler;
   vs.contact_wrench = &wrench_snapshot;
   vs.sim = this;
+  vs.home_camera = cfg_.viewer_camera;
   // Use body 1 (first non-world body) as default tracking target
   vs.track_body_id = (model_->nbody > 1) ? 1 : 0;
   mjv_defaultPerturb(&vs.pert);

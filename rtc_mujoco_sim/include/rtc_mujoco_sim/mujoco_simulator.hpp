@@ -597,6 +597,19 @@ class MuJoCoSimulator {
     int n_substeps{1};                 // substeps per control cycle (1 = legacy)
     double viewer_refresh_rate{60.0};  // viewer target refresh rate (Hz)
 
+    /// The free camera the viewer opens on and ESC returns to. A scene whose
+    /// robot does not stand at the world origin frames it here: the viewer
+    /// reads no `<statistic>` / `<visual><global>` of the MJCF. The defaults
+    /// are the view the viewer has always opened on.
+    struct ViewerCamera {
+      std::array<double, 3> lookat{0.0, 0.0, 0.0};  ///< [m], world
+      double distance{2.5};                         ///< [m] from `lookat`
+      double azimuth_deg{90.0};
+      double elevation_deg{-20.0};  ///< negative looks down
+    };
+
+    ViewerCamera viewer_camera{};
+
     // 글로벌 servo gain (그룹별 미지정 시 상속).
     // true 면 position / pd_feedforward 모드에서 actuator 를 affine PD 서보로
     // 만든다 (gainprm · biasprm 과 함께 biastype 도 affine — XML 이 `<motor>` 여도

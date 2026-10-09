@@ -30,6 +30,14 @@ mujoco_simulator:
     # ── Viewer ───────────────────────────────────────────────────────────────
     enable_viewer: true
     viewer_refresh_rate: 60.0  # Hz
+    # Free camera the viewer opens on and ESC returns to. The viewer reads no
+    # <statistic> / <visual><global> from the MJCF, so a scene whose robot is
+    # not at the world origin frames it here.
+    viewer_camera:
+      lookat: [0.0, 0.0, 0.0]   # m, world — the point the camera looks at
+      distance: 2.5             # m from lookat
+      azimuth_deg: 90.0         # 90 = the camera stands on -y, +x to its right
+      elevation_deg: -20.0      # negative looks down
 
     # ── Physics timestep ─────────────────────────────────────────────────────
     physics_timestep: 0.002  # seconds (control period)

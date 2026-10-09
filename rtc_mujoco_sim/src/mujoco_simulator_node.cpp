@@ -316,6 +316,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("physics_timestep", 0.0);
     declare_parameter("n_substeps", 1);
     declare_parameter("viewer_refresh_rate", 60.0);
+    declare_parameter("viewer_camera.lookat", std::vector<double>{0.0, 0.0, 0.0});
+    declare_parameter("viewer_camera.distance", 2.5);
+    declare_parameter("viewer_camera.azimuth_deg", 90.0);
+    declare_parameter("viewer_camera.elevation_deg", -20.0);
     declare_parameter("use_yaml_servo_gains", false);
     declare_parameter("servo_kp", std::vector<double>{500.0, 500.0, 500.0, 150.0, 150.0, 150.0});
     declare_parameter("servo_kd", std::vector<double>{400.0, 400.0, 400.0, 100.0, 100.0, 100.0});
@@ -402,6 +406,20 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     physics_timestep_ = get_parameter("physics_timestep").as_double();
     n_substeps_ = get_parameter("n_substeps").as_int();
     viewer_refresh_rate_ = get_parameter("viewer_refresh_rate").as_double();
+    viewer_camera_.lookat = LoadVec3Param("viewer_camera.lookat");
+    viewer_camera_.distance = get_parameter("viewer_camera.distance").as_double();
+    viewer_camera_.azimuth_deg = get_parameter("viewer_camera.azimuth_deg").as_double();
+    viewer_camera_.elevation_deg = get_parameter("viewer_camera.elevation_deg").as_double();
+    // A camera MuJoCo would render from nowhere is refused here, not clamped:
+    // the viewer would open on a blank window with nothing to say why.
+    if (!std::isfinite(viewer_camera_.lookat[0]) || !std::isfinite(viewer_camera_.lookat[1]) ||
+        !std::isfinite(viewer_camera_.lookat[2]) || !std::isfinite(viewer_camera_.azimuth_deg) ||
+        !(viewer_camera_.distance > 0.0) || !std::isfinite(viewer_camera_.distance) ||
+        !(viewer_camera_.elevation_deg >= -90.0 && viewer_camera_.elevation_deg <= 90.0)) {
+      throw std::runtime_error(
+          "viewer_camera: lookat and azimuth_deg must be finite, distance > 0 and "
+          "elevation_deg within [-90, 90]");
+    }
     use_yaml_servo_gains_ = get_parameter("use_yaml_servo_gains").as_bool();
     servo_kp_ = get_parameter("servo_kp").as_double_array();
     servo_kd_ = get_parameter("servo_kd").as_double_array();
@@ -809,6 +827,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         .physics_timestep = physics_timestep_,
         .n_substeps = static_cast<int>(n_substeps_),
         .viewer_refresh_rate = viewer_refresh_rate_,
+        .viewer_camera = viewer_camera_,
         .use_yaml_servo_gains = use_yaml_servo_gains_,
         .servo_kp = servo_kp_,
         .servo_kd = servo_kd_,
@@ -1664,6 +1683,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   double physics_timestep_{0.0};
   int64_t n_substeps_{1};
   double viewer_refresh_rate_{60.0};
+  urtc::MuJoCoSimulator::Config::ViewerCamera viewer_camera_{};
   bool use_yaml_servo_gains_{false};
   std::vector<double> servo_kp_;
   std::vector<double> servo_kd_;
