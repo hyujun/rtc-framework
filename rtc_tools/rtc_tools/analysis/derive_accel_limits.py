@@ -457,6 +457,22 @@ def _git_head(start: Path) -> str:
         return "unknown"
 
 
+def _git_dirty(start: Path) -> bool | None:
+    """Whether the checkout ``start`` is in has changes to tracked files; None when it is
+    not a git checkout."""
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=start,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return bool(status.strip())
+
+
 def build_report(
     spec: ArmSpec,
     der: Derivation,

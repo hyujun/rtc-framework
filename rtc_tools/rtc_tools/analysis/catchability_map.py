@@ -21,6 +21,10 @@ The parts that are pure functions of numbers:
 2. **Throw grid** — the candidate release states, parameterised so that each one
    maps one-to-one onto the ``LaunchBall`` request fields (world-frame position,
    linear velocity, angular velocity).
+   Instead of the grid, ``--throws-file`` takes a ``catching_throw_list/1`` file
+   (SIM WORLD, the ``world`` below): exactly its throws, each keeping its
+   ``throw_id`` as the ``throw_index`` of the output CSVs, which is the key
+   ``catch_gate_map --map-dir`` carries on. A throw with spin is refused (item 1).
 3. **Frame conversion** — world-frame points and vectors into the arm base
    frame, with the transform supplied by the caller.
 4. **Candidate sampling** — the catch instants taken out of one flight, filtered
@@ -90,6 +94,8 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+
+from rtc_tools.analysis.catching_throw_list import THROW_LIST_FRAME, read_throw_list_file
 
 # Reused, not forked (design-principles.md P5): the ROS 2 ``ros__parameters``
 # merge, the git-head stamp and the xacro expansion already exist in the
@@ -280,17 +286,23 @@ def drag_acceleration(velocity_w: np.ndarray, params: BallParams) -> np.ndarray:
 
     Quadratic in the speed, so ``|v|`` is recomputed here from whatever velocity
     it is handed; the RK4 substages must not share a precomputed speed.
+    ``velocity_w`` is one velocity or ``(n, 3)`` of them, one row each.
     """
     v = np.asarray(velocity_w, dtype=float)
-    speed = float(np.linalg.norm(v))
-    if not speed > MIN_AIRSPEED_M_S:
-        return np.zeros(3)
     # Written out rather than via ``params.drag_k_per_m`` so the grouping mirrors
     # the C++ force law; the two are numerically the same quantity.
     scale = (
         0.5 * params.air_density_kg_m3 * params.drag_coefficient * params.area_m2 / params.mass_kg
     )
-    return -(scale * speed) * v
+    if v.ndim == 1:
+        speed = float(np.linalg.norm(v))
+        if not speed > MIN_AIRSPEED_M_S:
+            return np.zeros(3)
+        return -(scale * speed) * v
+    speed = np.linalg.norm(v, axis=-1)
+    drag = -(scale * speed)[..., None] * v
+    drag[~(speed > MIN_AIRSPEED_M_S)] = 0.0
+    return drag
 
 
 def ball_acceleration(
@@ -298,7 +310,8 @@ def ball_acceleration(
     params: BallParams,
     gravity_w: Sequence[float] = GRAVITY_W_M_S2,
 ) -> np.ndarray:
-    """Gravity plus quadratic drag. Spin is assumed zero, so there is no Magnus term."""
+    """Gravity plus quadratic drag. Spin is assumed zero, so there is no Magnus term.
+    One velocity, or ``(n, 3)`` of them (:func:`drag_acceleration`)."""
     return np.asarray(gravity_w, dtype=float) + drag_acceleration(velocity_w, params)
 
 
@@ -383,6 +396,9 @@ class Throw:
     elevation_deg: float
     position_m: np.ndarray
     velocity_m_s: np.ndarray
+    # The throw's id in a throw list (``--throws-file``); None for a grid throw,
+    # whose id is its position in the grid.
+    throw_id: int | None = None
 
     @property
     def inward_horizontal(self) -> np.ndarray:
@@ -469,6 +485,104 @@ def generate_throw_grid(
                 velocity_m_s=velocity,
             )
         )
+    return throws
+
+
+def _wrap_deg(angle_deg: float) -> float:
+    """``angle_deg`` wrapped into (-180, 180]."""
+    wrapped = math.fmod(angle_deg + 180.0, 360.0)
+    if wrapped <= 0.0:
+        wrapped += 360.0
+    return wrapped - 180.0
+
+
+def derive_grid_axes(
+    position_m: Sequence[float], velocity_m_s: Sequence[float], base_xy_m: Sequence[float]
+) -> dict[str, float]:
+    """The six grid axes of a release state, about the base axis ``base_xy_m``.
+
+    The inverse of :func:`generate_throw_grid`'s geometry: distance and azimuth
+    of the release point about the base axis, its height, the horizontal
+    velocity's rotation away from "towards the base axis" (aim deviation), the
+    speed and the elevation above horizontal. A release point on the axis has
+    azimuth 0, a vertical velocity has aim deviation 0.
+    """
+    dx, dy = float(position_m[0] - base_xy_m[0]), float(position_m[1] - base_xy_m[1])
+    vx, vy, vz = (float(v) for v in velocity_m_s)
+    speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if not speed > 0.0:
+        raise ValueError("a throw with zero velocity has no elevation or aim")
+    distance = math.hypot(dx, dy)
+    azimuth = math.degrees(math.atan2(dy, dx)) if distance > 0.0 else 0.0
+    horizontal = math.hypot(vx, vy)
+    if horizontal > 0.0 and distance > 0.0:
+        aim = _wrap_deg(math.degrees(math.atan2(vy, vx)) - (azimuth + 180.0))
+    else:
+        aim = 0.0
+    return {
+        "distance_m": distance,
+        "azimuth_deg": azimuth,
+        "release_height_m": float(position_m[2]),
+        "aim_deviation_deg": aim,
+        "speed_m_s": speed,
+        "elevation_deg": math.degrees(math.asin(max(-1.0, min(1.0, vz / speed)))),
+    }
+
+
+GRID_AXIS_KEYS = (
+    "distance_m",
+    "azimuth_deg",
+    "release_height_m",
+    "aim_deviation_deg",
+    "speed_m_s",
+    "elevation_deg",
+)
+
+
+def throws_from_list(listed: Sequence[Mapping], *, base_xy_m: Sequence[float]) -> list[Throw]:
+    """:class:`Throw` s of the entries of a ``catching_throw_list/1`` file, in file order.
+
+    The list is in the SIM WORLD, the same ``world`` this module's grid and
+    ``base_t_world`` are in, so ``pos`` / ``vel`` are used as they stand — the
+    conversion to the model world is :func:`to_judge_candidates`' alone.
+    Each throw keeps its ``throw_id``.
+
+    The six grid axes of a throw are its entry's own values when the entry
+    carries all six (``catch_search_map`` writes them, and its join to a gate
+    map is by those values, so they are kept verbatim); an entry that carries
+    none gets them derived about ``base_xy_m`` (:func:`derive_grid_axes`); one
+    that carries only some is an error. This map has no spin term: a non-zero
+    ``omega`` is refused rather than dropped.
+    """
+    throws: list[Throw] = []
+    for entry in listed:
+        tid = int(entry["throw_id"])
+        if any(float(w) != 0.0 for w in entry["omega"]):
+            raise ValueError(
+                f"throw_id {tid}: omega {list(entry['omega'])} is not zero, and this map's "
+                "flight has no spin term (the simulator's Magnus force would bend the real "
+                "throw away from the predicted one)"
+            )
+        position = np.asarray(entry["pos"], dtype=float)
+        velocity = np.asarray(entry["vel"], dtype=float)
+        carried = [k for k in GRID_AXIS_KEYS if k in entry]
+        if not carried:
+            try:
+                axes = derive_grid_axes(position, velocity, base_xy_m)
+            except ValueError as exc:
+                raise ValueError(f"throw_id {tid}: {exc}") from exc
+        elif len(carried) == len(GRID_AXIS_KEYS):
+            try:
+                axes = {k: float(entry[k]) for k in GRID_AXIS_KEYS}
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"throw_id {tid}: a grid axis value is not a number") from exc
+        else:
+            missing = [k for k in GRID_AXIS_KEYS if k not in entry]
+            raise ValueError(
+                f"throw_id {tid} carries the grid axes {carried} but not {missing}: carry all "
+                "six or none"
+            )
+        throws.append(Throw(position_m=position, velocity_m_s=velocity, throw_id=tid, **axes))
     return throws
 
 
@@ -3126,8 +3240,13 @@ _JOINED_HEADER = (
 )
 
 
-def write_candidate_result_csv(path: Path, judged: Sequence[JudgedCandidate]) -> Path:
+def write_candidate_result_csv(
+    path: Path, judged: Sequence[JudgedCandidate], *, throw_ids: Sequence[int] | None = None
+) -> Path:
     """The per-candidate map: the throw it came from, the frames, and the verdict.
+
+    ``throw_ids`` names the throw at each position of the throw set (a throw
+    list's ids); ``throw_index`` is then written as that id, not the position.
 
     The ``q*`` columns stay EMPTY for a poseless row, exactly as the judge wrote
     them — this file is the map's record, and turning "no pose" into zeros here
@@ -3144,7 +3263,7 @@ def write_candidate_result_csv(path: Path, judged: Sequence[JudgedCandidate]) ->
             row = [
                 r.id,
                 r.seed_id,
-                c.throw_index,
+                c.throw_index if throw_ids is None else throw_ids[c.throw_index],
                 repr(float(c.time_s)),
                 repr(float(c.speed_m_s)),
                 *(repr(float(v)) for v in np.asarray(world_p, dtype=float).reshape(3)),
@@ -3196,6 +3315,9 @@ def write_throw_summary_csv(
 
     ``outcomes`` are ONE wait-pose seed's; ``seed_id`` is written on every row
     as ``wait_pose_seed_id`` so the file says which pose it is about.
+
+    ``throw_index`` is the throw's ``throw_id`` when it has one (a throw list's),
+    else its position.
     """
     by_index = {o.throw_index: o for o in outcomes}
     if len(by_index) != len(outcomes):
@@ -3248,7 +3370,7 @@ def write_throw_summary_csv(
                     pose[i] = repr(float(outcome.best_q[i]))
             writer.writerow(
                 [
-                    outcome.throw_index,
+                    outcome.throw_index if throw.throw_id is None else throw.throw_id,
                     "" if seed_id is None else int(seed_id),
                     throw.distance_m,
                     throw.azimuth_deg,
@@ -3290,6 +3412,18 @@ def write_reason_histogram_csv(path: Path, histogram: Mapping[str, int]) -> Path
 
 def _axis(text: str) -> list[float]:
     return [float(v) for v in text.replace(",", " ").split()]
+
+
+# The grid axis arguments and their defaults. The parser leaves them unset so that
+# a value given next to --throws-file is seen as a conflict, not as a default.
+_GRID_AXIS_DEFAULTS: dict[str, tuple[float, ...]] = {
+    "--distances-m": DEFAULT_DISTANCES_M,
+    "--azimuths-deg": DEFAULT_AZIMUTHS_DEG,
+    "--release-heights-m": DEFAULT_RELEASE_HEIGHTS_M,
+    "--aim-deviations-deg": DEFAULT_AIM_DEVIATIONS_DEG,
+    "--speeds-m-s": DEFAULT_SPEEDS_M_S,
+    "--elevations-deg": DEFAULT_ELEVATIONS_DEG,
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3373,13 +3507,27 @@ def main(argv: list[str] | None = None) -> int:
         help="translation t of base_T_world [m] (see --world-yaw-deg)",
     )
 
-    # ── grid axes ──
-    ap.add_argument("--distances-m", type=_axis, default=list(DEFAULT_DISTANCES_M))
-    ap.add_argument("--azimuths-deg", type=_axis, default=list(DEFAULT_AZIMUTHS_DEG))
-    ap.add_argument("--release-heights-m", type=_axis, default=list(DEFAULT_RELEASE_HEIGHTS_M))
-    ap.add_argument("--aim-deviations-deg", type=_axis, default=list(DEFAULT_AIM_DEVIATIONS_DEG))
-    ap.add_argument("--speeds-m-s", type=_axis, default=list(DEFAULT_SPEEDS_M_S))
-    ap.add_argument("--elevations-deg", type=_axis, default=list(DEFAULT_ELEVATIONS_DEG))
+    # ── the throws: a grid over six axes, or a throw list ──
+    ap.add_argument(
+        "--throws-file",
+        type=Path,
+        help="judge the throws of a catching_throw_list/1 file (SIM WORLD, e.g. catch_search_map's "
+        "throw_list.json) instead of a grid: exactly those throws, in file order, each keeping "
+        "its throw_id as the throw_index of candidates.csv / throw_summary.csv — the key "
+        "catch_gate_map carries on. Give the same --world-yaw-deg / --world-translation-m the "
+        "list was made against. A throw with a non-zero omega is refused (no spin term here). "
+        "The six grid axes of throw_summary.csv are the entry's own when it carries all six "
+        "(catch_search_map's lists do, and its --gate-map join is by those values), else derived "
+        "about the arm base. Conflicts with every grid axis argument below (an error, not "
+        "ignored)",
+    )
+    for flag, default in _GRID_AXIS_DEFAULTS.items():
+        ap.add_argument(
+            flag,
+            type=_axis,
+            default=None,
+            help=f"grid axis (default: {' '.join(f'{v:g}' for v in default)})",
+        )
 
     # ── flight and candidate sampling ──
     ap.add_argument("--horizon-s", type=float, default=2.5)
@@ -3438,6 +3586,58 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--no-plots", action="store_true")
     args = ap.parse_args(argv)
+
+    # The throw design, before anything is created or judged.
+    given_axes = [
+        f for f in _GRID_AXIS_DEFAULTS if getattr(args, f[2:].replace("-", "_")) is not None
+    ]
+    if args.throws_file is not None and given_axes:
+        raise SystemExit(
+            f"--throws-file replaces the throw grid; it conflicts with {' '.join(given_axes)}"
+        )
+    for flag, default in _GRID_AXIS_DEFAULTS.items():
+        dest = flag[2:].replace("-", "_")
+        if getattr(args, dest) is None:
+            setattr(args, dest, list(default))
+    base_t_world = make_transform(
+        rotation_z(math.radians(args.world_yaw_deg)), args.world_translation_m
+    )
+    world_t_base = invert_transform(base_t_world)
+    base_origin_w = world_t_base[:3, 3]
+    throws_file = None
+    if args.throws_file is not None:
+        try:
+            throws_file = read_throw_list_file(args.throws_file)
+            throws = throws_from_list(throws_file.throws, base_xy_m=base_origin_w[:2])
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"--throws-file: {exc}") from exc
+        carrying = sum(1 for t in throws_file.throws if all(k in t for k in GRID_AXIS_KEYS))
+        if carrying == len(throws_file.throws):
+            axes_source = "carried by the file's entries"
+        else:
+            axes_source = (
+                "derived about the arm base"
+                if carrying == 0
+                else f"carried by {carrying} of the file's entries, derived about the arm base "
+                "for the rest"
+            )
+            print(
+                f"NOTE: {args.throws_file} has entries without grid axes — they are {axes_source}; a "
+                "catch_search_map --gate-map join needs the list's own (catch_search_map's "
+                "throw_list.json carries them)",
+                file=sys.stderr,
+            )
+    else:
+        throws = generate_throw_grid(
+            base_xy_m=base_origin_w[:2],
+            distances_m=args.distances_m,
+            azimuths_deg=args.azimuths_deg,
+            release_heights_m=args.release_heights_m,
+            aim_deviations_deg=args.aim_deviations_deg,
+            speeds_m_s=args.speeds_m_s,
+            elevations_deg=args.elevations_deg,
+        )
+    throw_ids = None if throws_file is None else [t.throw_id for t in throws]
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -3502,23 +3702,9 @@ def main(argv: list[str] | None = None) -> int:
         air_density_source=args.air_density_source,
     )
 
-    base_t_world = make_transform(
-        rotation_z(math.radians(args.world_yaw_deg)), args.world_translation_m
-    )
-    world_t_base = invert_transform(base_t_world)
-    base_origin_w = world_t_base[:3, 3]
     model_world_t_base = frame_placement_in_model_world(artifacts.urdf_text, args.arm_base_frame)
     model_world_t_world = as_transform(model_world_t_base @ base_t_world)
 
-    throws = generate_throw_grid(
-        base_xy_m=base_origin_w[:2],
-        distances_m=args.distances_m,
-        azimuths_deg=args.azimuths_deg,
-        release_heights_m=args.release_heights_m,
-        aim_deviations_deg=args.aim_deviations_deg,
-        speeds_m_s=args.speeds_m_s,
-        elevations_deg=args.elevations_deg,
-    )
     reach = max_distance_filter(base_origin_w, args.max_reach_m)
     floor = float(args.min_catch_height_m)
 
@@ -3603,7 +3789,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             boundary = {"epsilon_m": float(args.epsilon_m), "accepted": 0, "on_boundary": 0}
 
-    write_candidate_result_csv(out_dir / "candidates.csv", judged)
+    write_candidate_result_csv(out_dir / "candidates.csv", judged, throw_ids=throw_ids)
     write_throw_summary_csv(
         out_dir / "throw_summary.csv", throws, outcomes, seed_id=headline_seed_id
     )
@@ -3615,6 +3801,21 @@ def main(argv: list[str] | None = None) -> int:
         grid=throws,
         integration={"step_s": args.step_s, "horizon_s": args.horizon_s},
         extra={
+            **(
+                {}
+                if throws_file is None
+                else {
+                    "throws_file": {
+                        **throws_file.record(),
+                        "frame": THROW_LIST_FRAME,
+                        "grid_axes": axes_source,
+                        "note": (
+                            "the grid was replaced by the file's throws; throw_index in "
+                            "candidates.csv / throw_summary.csv is the file's throw_id"
+                        ),
+                    }
+                }
+            ),
             "model": artifacts.provenance,
             "judge": {
                 "executable": str(judge),

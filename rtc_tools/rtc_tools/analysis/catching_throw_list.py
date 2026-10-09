@@ -67,6 +67,13 @@ THROW_RECORD_KEYS = frozenset(
         "host_rtf_min",
         "host_lag_max_ms",
         "host_busy",
+        # --end-on-ball-low (#747)
+        "end_reason",
+        "ball_low_threshold_m",
+        "ball_low_grace_s",
+        "ball_low_t_s",
+        "outcome_missing",
+        "last_ball_pos",
     }
 )
 # The keys a parsed throw always has, in this order; every other key follows.

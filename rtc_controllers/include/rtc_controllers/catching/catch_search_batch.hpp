@@ -34,6 +34,7 @@
 #include "rtc_controllers/catching/nlp_catch_search.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
+#include "rtc_controllers/catching/reach_bound.hpp"
 #include "rtc_controllers/catching/search_stats.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"
 #include "rtc_controllers/catching/trajectory.hpp"
@@ -48,6 +49,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rtc::catching {
@@ -96,6 +98,10 @@ struct SearchBatchRow {
   std::int64_t now_ns{0};
   PlanSnapshot plan{};
   SearchStats stats{};
+  /// Wall-clock duration of the `Plan` call alone [µs] (steady clock). Not the
+  /// search's own clock, which is StoppedClock: this is how long the machine
+  /// took, so unlike every other field it is NOT reproducible.
+  double wall_us{0.0};
 };
 
 /// The columns that carry a planner wake's record use the names the planner
@@ -104,7 +110,9 @@ struct SearchBatchRow {
 /// `nlp_rej_*`), so one reader reduces both. After them: the plan
 /// (`t_c_ns`, `lead_s` = t_c − now, `p_c_*`, `v_c_*`, `score`, `w5`, `w6`,
 /// `rank_mask`, `gamma_f`, `nlp_lead_s`) and `q_star<i>` for i = 0…nv−1 in
-/// DEVICE order. A wake without a plan leaves the plan columns empty.
+/// DEVICE order. A wake without a plan leaves the plan columns empty. The LAST
+/// column is `wall_us`, the wall-clock time of the `Plan` call [µs] — present
+/// on every row.
 [[nodiscard]] std::string SearchBatchCsvHeader(int nv);
 
 /// One result row, doubles at round-trip precision.
@@ -180,5 +188,33 @@ struct SearchBatchSearch {
     const std::shared_ptr<const pinocchio::Model>& arm, rtc_urdf_bridge::RtModelHandle& handle,
     pinocchio::FrameIndex catch_frame, const YAML::Node& catching,
     const SearchBatchBinding& binding);
+
+// ── The reach bound ──────────────────────────────────────────────────────────
+
+/// The `ik.eps_pos` [m] each search tests its reach pre-filter with, as
+/// `ParseCatchPoseIkParams` — the parse `MakeSearchBatchSearch` hands the
+/// search — reads it from that search's own map
+/// (`planner.search.<kind>.ik.eps_pos`). The two may differ in one tree.
+/// `selected` is that of the search the tree's `planner.search.mode` names.
+struct ReachTolerances {
+  double selected{0.0};
+  double grid{0.0};
+  double nlp{0.0};
+};
+
+/// @throws std::invalid_argument what the parsers throw
+[[nodiscard]] ReachTolerances SearchReachTolerances(const YAML::Node& catching);
+
+/// The reach bound as one JSON line (no newline), doubles at `%.17g`:
+/// `{"schema": "catch_reach_bound/1", "frame": ..., "sub_model": ...,
+/// "centre": [x, y, z], "radius": r, "tolerance": eps_pos,
+/// "tolerance_by_search": {"grid": ..., "nlp": ...}, "joints": n,
+/// "unbounded_by": ...}`. `centre` is in the model world [m]; `tolerance` is
+/// the selected search's. An unbounded chain (infinite radius) writes
+/// `"radius": null`, JSON having no infinity; a non-finite centre or
+/// tolerance is written as `null` for the same reason.
+[[nodiscard]] std::string ReachBoundJson(const ReachBound& bound, std::string_view frame,
+                                         std::string_view sub_model,
+                                         const ReachTolerances& tolerances);
 
 }  // namespace rtc::catching

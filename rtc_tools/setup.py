@@ -30,6 +30,7 @@ setup(
             "catch_speed_budget = rtc_tools.analysis.catch_speed_budget:main",
             "catch_gate_map = rtc_tools.analysis.catch_gate_map:main",
             "catch_search_map = rtc_tools.analysis.catch_search_map:main",
+            "catch_throw_design = rtc_tools.analysis.catch_throw_design:main",
             "analyze_clock_phase = rtc_tools.analysis.clock_phase:main",
             "run_clock_phase_trials = rtc_tools.analysis.clock_phase_trials:main",
             "analyze_hand_close = rtc_tools.analysis.hand_close:main",

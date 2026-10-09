@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <istream>
@@ -248,6 +249,7 @@ std::string SearchBatchCsvHeader(int nv) {
   for (int i = 0; i < nv; ++i) {
     out += ",q_star" + std::to_string(i);
   }
+  out += ",wall_us";
   return out;
 }
 
@@ -289,6 +291,7 @@ std::string SearchBatchCsvRow(const SearchBatchRow& row, int nv) {
   for (int i = 0; i < nv; ++i) {
     cell(Num(p.q_star[static_cast<std::size_t>(i)]));
   }
+  out += ',' + Num(row.wall_us);
   return out;
 }
 
@@ -316,8 +319,13 @@ std::vector<SearchBatchRow> RunSearchBatch(CatchSearch& search, std::span<const 
     row.throw_id = wake.throw_id;
     row.wake = wake.wake;
     row.now_ns = wake.now_ns;
+    // Offline tool: the wall clock around the call, never handed to the search.
+    const auto started = std::chrono::steady_clock::now();
     row.plan = search.Plan(in.traj, in.cov, /*cov_matched=*/true, in.rt, no_segments,
                            NowReal{wake.now_ns}, /*budget_cap_ns=*/0, row.stats);
+    row.wall_us =
+        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started)
+            .count();
     planned = row.plan.valid;
     out.push_back(row);
   }
@@ -512,6 +520,43 @@ SearchBatchSearch MakeSearchBatchSearch(const std::shared_ptr<const pinocchio::M
   }
   out.search = std::move(search);
   return out;
+}
+
+// ── The reach bound ──────────────────────────────────────────────────────────
+
+ReachTolerances SearchReachTolerances(const YAML::Node& catching) {
+  const auto of = [&](CatchingSearchMode mode) {
+    return ParseCatchPoseIkParams(catching, nullptr, SearchModeName(mode)).options.eps_pos;
+  };
+  ReachTolerances out;
+  out.grid = of(CatchingSearchMode::kGrid);
+  out.nlp = of(CatchingSearchMode::kNlp);
+  out.selected = of(ParseCatchingParams(catching).planner_search_mode);
+  return out;
+}
+
+std::string ReachBoundJson(const ReachBound& bound, std::string_view frame,
+                           std::string_view sub_model, const ReachTolerances& tolerances) {
+  const auto num = [](double v) { return std::isfinite(v) ? Num(v) : std::string("null"); };
+  // Names are quoted verbatim: frame and joint names are URDF identifiers.
+  const auto quote = [](std::string_view text) {
+    std::string out = "\"";
+    for (const char c : text) {
+      if (c == '"' || c == '\\') {
+        out += '\\';
+      }
+      out += c;
+    }
+    return out + '"';
+  };
+  return std::string("{\"schema\": \"catch_reach_bound/1\", \"frame\": ") + quote(frame) +
+         ", \"sub_model\": " + quote(sub_model) + ", \"centre\": [" + num(bound.centre.x()) + ", " +
+         num(bound.centre.y()) + ", " + num(bound.centre.z()) +
+         "], \"radius\": " + num(bound.radius) + ", \"tolerance\": " + num(tolerances.selected) +
+         ", \"tolerance_by_search\": {\"grid\": " + num(tolerances.grid) +
+         ", \"nlp\": " + num(tolerances.nlp) + "}" +
+         ", \"joints\": " + std::to_string(bound.joints) +
+         ", \"unbounded_by\": " + quote(bound.unbounded_by) + "}";
 }
 
 }  // namespace rtc::catching

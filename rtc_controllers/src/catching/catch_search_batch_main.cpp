@@ -54,7 +54,13 @@ The wakes of a throw run in order up to the first that returns a plan.
   --wakes PATH          wake CSV: throw_id,wake,now_ns,t_ns,p_{x,y,z},v_{x,y,z},
                         a_{x,y,z} — one row per predicted sample, MODEL WORLD
                         coordinates, instants in ns on one axis. '-' = stdin
-  --out PATH            output CSV (default: stdout)
+  --out PATH            output CSV (default: stdout); the last column, wall_us, is
+                        the wall-clock time of the Plan call [us]
+  --print-reach-bound   print the reach pre-filter's sphere (catch_reach_bound/1,
+                        one JSON line: centre in the model world, radius, each
+                        search's tolerance) and exit 0. Reads no
+                        wakes and builds no search: --binding and --wakes are
+                        not needed
   -h, --help            this text
 )";
 
@@ -71,6 +77,7 @@ struct Args {
   std::string binding;
   std::string wakes;
   std::string out;
+  bool print_reach_bound{false};
 };
 
 [[nodiscard]] Args ParseArgs(int argc, char** argv) {
@@ -98,6 +105,8 @@ struct Args {
       a.binding = value(i, f);
     } else if (f == "--wakes") {
       a.wakes = value(i, f);
+    } else if (f == "--print-reach-bound") {
+      a.print_reach_bound = true;
     } else if (f == "--out") {
       a.out = value(i, f);
     } else {
@@ -112,8 +121,10 @@ struct Args {
   require("--model-config", a.model_config);
   require("--sub-model", a.sub_model);
   require("--params", a.params);
-  require("--binding", a.binding);
-  require("--wakes", a.wakes);
+  if (!a.print_reach_bound) {
+    require("--binding", a.binding);
+    require("--wakes", a.wakes);
+  }
   return a;
 }
 
@@ -144,6 +155,16 @@ int main(int argc, char** argv) {
 
     const rtc::catching::CatchingTree tree =
         rtc::catching::ResolveCatchingTree(YAML::LoadFile(args.params), args.params);
+    if (args.print_reach_bound) {
+      // The sphere both searches build (`ComputeReachBound` at its default
+      // iterations on the same model and frame) and the tolerance they test it with.
+      const rtc::catching::ReachBound bound =
+          rtc::catching::ComputeReachBound(handle.GetModel(), frame);
+      std::cout << rtc::catching::ReachBoundJson(bound, args.catch_frame, args.sub_model,
+                                                 rtc::catching::SearchReachTolerances(tree.node))
+                << '\n';
+      return 0;
+    }
     const rtc::catching::SearchBatchBinding binding =
         rtc::catching::ParseSearchBatchBinding(YAML::LoadFile(args.binding), model->nv);
     rtc::catching::SearchBatchSearch built =
