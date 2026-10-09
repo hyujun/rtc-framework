@@ -68,7 +68,7 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F21 | [#747](https://github.com/hyujun/rtc-framework/issues/747) | 포구 가능 판정 지도 — 탐색이 어떤 공을 받는다고 판정하는가 (발사 위치 · 거리 · 비행시간 · 종단 속도). 오프라인 지도와 sim 의 판정 대 결과, 기술 통계로 보고한다. E1-F18 에서 넘어온 것: 투척마다의 판정은 `catching_trials` 의 `plan_verdict` · `plan_reject` / `plan_reject_last` 다 — 사유를 하나로 줄이는 방식 (가장 잦은 것 / 마지막 것) 은 여기서 고른다 ([#744 완료판](https://github.com/hyujun/rtc-framework/issues/744#issuecomment-6048348027) §6). E1-F19 의 1 부에서 넘어온 것: **배치가 바뀐다** — 팔의 base 를 z 로 약 0.7 m 올리고 `wait_pose` 를 새로 고른다 (사용자 결정, 2026-10-08). 지도는 그 배치에서 만들고, 지금 배치의 lead · 거절 사유는 [#747 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6062694467) | E1-F16 · F17 · F18 (끝) | **다음** |
+| E1-F21 | [#747](https://github.com/hyujun/rtc-framework/issues/747) | 포구 가능 판정 지도 — 탐색이 어떤 공을 받는다고 판정하는가 (발사 위치 · 거리 · 비행시간 · 종단 속도). 오프라인 지도와 sim 의 판정 대 결과, 기술 통계로 보고한다. E1-F18 에서 넘어온 것: 투척마다의 판정은 `catching_trials` 의 `plan_verdict` · `plan_reject` / `plan_reject_last` 다 — 사유를 하나로 줄이는 방식 (가장 잦은 것 / 마지막 것) 은 여기서 고른다 ([#744 완료판](https://github.com/hyujun/rtc-framework/issues/744#issuecomment-6048348027) §6). 지도는 새 배치에서 만든다 — 팔의 base 를 0.7 m 받침대 위로 올리고 `wait_pose` 를 새로 골랐다 ([#790](https://github.com/hyujun/rtc-framework/pull/790)). 그 배치에서 탐색의 `catch_box` 게이트를 없앴고 ([#791](https://github.com/hyujun/rtc-framework/issues/791), [#792](https://github.com/hyujun/rtc-framework/pull/792)), 그 상자가 겸하던 IK 앞의 사전 필터는 팔의 도달 반경으로 다시 넣는다 ([#793](https://github.com/hyujun/rtc-framework/issues/793)). **출하된 투척 (`s35b` · `reference` · K 키) 은 옛 배치의 것이라 새 배치에서 포구가 서지 않는다** — 투척 기준을 사용자가 다시 세우고, 지도의 측정은 #793 과 그 기준 뒤에 한다. 도구 (오프라인 판정기 · 요약 · 투척 목록 입력) 는 그와 무관하게 먼저 짓는다. 옛 배치의 lead · 거절 사유는 [#747 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6062694467), 새 배치의 첫 sim 은 [#791 의 결과 코멘트](https://github.com/hyujun/rtc-framework/issues/791#issuecomment-6074566680) | E1-F16 · F17 · F18 (끝) | **다음** — 선행 작업 둘 (#790 · #792) 이 들어갔고 feature 의 구현은 아직 없다 |
 | E1-F19 | [#745](https://github.com/hyujun/rtc-framework/issues/745) | 튜닝 (판정 전, 판정과 다른 seed). **1 부 — 값만으로 plan 이 서고 RT 가 따른다 — 는 `ur5e_p1b` 에 들어갔다** ([#787](https://github.com/hyujun/rtc-framework/pull/787), 2026-10-08): 손의 폐쇄 속력 band 의 위 끝 2.1 m/s 와 기준 폐쇄 속력 2.0 m/s (식별이 날린 상자 밖이다 — `docking.provisional` 은 그대로), 확률 행 끔, envelope 여유 한도 3.0, `nlp` 는 한 wake 에 후보 하나. 확인 seed 둘에서 `grid` × `mpc_docking` 은 plan 게시 · 추종 기준을 채웠고, `nlp` × `mpc_docking` 은 한 seed 에서 미충족 뒤 예산을 바꿔 다음 seed 에서 채웠다. 포구 수는 보고만 했다 (판정은 E1-F20). 최종값과 수치는 [#745 의 리뷰 뒤 수정 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6062488544). #743 에서 옮겨 온 "RT 가 `mpc_docking` 구간을 따른 sim 기록" 은 여기서 생겼다. 교체 쌍의 채택 · 전환은 여전히 sim 에서 실행되지 않았다 — plan 을 따르는 동안의 탐색이 교체를 한 번도 게시하지 못했다. **남은 것**: `iiwa7_leap` (기준 미충족인 채 멈췄고 출하값은 그대로다 — 새 배치에서 다시 본다), 새 배치에서의 p1b 재확인, 2 부 (E1-F21 의 지도 위의 조정 · 확인, 두 로봇의 풀이 시간 대 예산 표), 값으로 풀리지 않은 것 (포구 시각의 가속, 확률 행과 함께 꺼지는 공분산 유효성 검사, 폐쇄 창의 축, `nlp` 의 `solve_s` 에 걸린 검사되지 않는 상한) — [#745 의 머지 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6062693925). 앞선 feature 에서 넘어온 기록: [E1-F16 의 인계](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6034273846) · [E1-F17 의 인계](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6040514661) · [#744 완료판](https://github.com/hyujun/rtc-framework/issues/744#issuecomment-6048348027) §3 · [착수 분석](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6055889700) | E1-F18 (끝) · F21 | 1 부 끝 · 2 부 대기 |
 | E1-F20 | [#746](https://github.com/hyujun/rtc-framework/issues/746) | 비교 평가 — search 둘 (`grid` · `nlp`), planner 셋 (`closed_form` · `mpc` · `mpc_docking`). E1-F19 의 1 부에서 넘어온 것 (채택값, 쓴 seed 801 · 901 · 821 · 822, 판정의 설계에 닿는 것 — 같은 값 · 같은 seed 의 반복이 50 투척에 ±4 – 5 건 흔들린다): [#746 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/746#issuecomment-6062694993) | E1-F19 | 대기 |
 
@@ -125,7 +125,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/catching-search-verdict-map` | E1-F21 | 판정 지도의 도구와 측정. **나누는 조건**: `grid` 의 오프라인 지도를 먼저 만들면 브랜치를 나눈다 (그 선행인 E1-F12 는 끝났다) |
+| `feat/catching-search-verdict-map` | E1-F21 | 판정 지도의 도구와 측정. **나누는 조건**: `grid` 의 오프라인 지도를 먼저 만들면 브랜치를 나눈다 (그 선행인 E1-F12 는 끝났다). 측정은 #793 (도달 반경 사전 판정 — 자기 브랜치) 과 새 투척 기준 뒤라, 도구를 먼저 merge 하면 측정은 `main` 에서 같은 이름으로 다시 만든다 |
 | `feat/catching-docking-tune` | E1-F19 (2 부) | 튜닝. 판정과 한 PR 에 섞지 않는다. 1 부는 [#787](https://github.com/hyujun/rtc-framework/pull/787) 로 merge 됐다 — 2 부는 `main` 에서 같은 이름으로 다시 만든다 |
 | `docs/catching-docking-eval` | E1-F20 | 게이트 판정 |
 | `feat/catching-mpc-candidate-select` | E3-F01 | G1 구성의 후보 선택. interface 는 E1-F12 가 넣었다 |
@@ -144,7 +144,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 |---|---|---|
 | E1-F19 – F20 | solver 의 heap 할당 (RT-1 → E-1) — 계획기 스레드는 FIFO 일 수 있고 ProxQP 의 할당은 수용된 예외가 아니다 (#654). 두 docking 기능 (`nlp` · `mpc_docking`) 은 "실기의 FIFO 계획기 스레드에서는 #654 뒤에 돌린다" 는 조건으로 들어왔고 (#739 · #740 · #742), 실기 configuration 이 그 가운데 하나를 고르면 configure 가 park 한다 (E1-F16) | Critical — 그 조건을 벗어나거나 그 park 를 풀려면 착수 전 `[CONCERN]` 과 컨펌 |
 | E3-F05 | E-STOP 경로를 건드리면 E-8 | Critical |
-| 실기 (HW) | `mpc` 의 정지 구간과 작업셀 경계 (RT 도 탐색도 포구점 · 정지점의 위치를 판정하지 않는다 — MD-73 · MD-94), `mpc` 구간의 샘플 시각을 바꾸는 RT 법칙 변경 — 둘 다 E-8 (#613) | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
+| 실기 (HW) | `mpc` 의 정지 구간과 작업셀 경계 (RT 도 탐색도 포구점 · 정지점의 위치를 판정하지 않는다 — MD-73 · L3 §4.9), `mpc` 구간의 샘플 시각을 바꾸는 RT 법칙 변경 — 둘 다 E-8 (#613) | Critical — 착수 전 `[CONCERN]` 과 컨펌 |
 | E3-F03 | 신규 수치 코어 (100+ 줄) | code review |
 
 ## 4. 남은 feature 를 구속하는 결정
@@ -172,6 +172,11 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 - [#642](https://github.com/hyujun/rtc-framework/issues/642) — E3-F03: 충돌 제약 — capsule 모델 · 자기충돌 · 공–왼팔 거리
 - [#645](https://github.com/hyujun/rtc-framework/issues/645) — E3-F06: 로그 · plot_rtc_log · demo_controller_gui (dual arm 열)
 
+**E1-F21 의 측정 앞에 하는 일**
+
+- [#793](https://github.com/hyujun/rtc-framework/issues/793) — catching: IK 앞에서 팔의 도달 반경으로 후보를 거른다 — `catch_box` 가 겸하던 사전 필터 (#791 후속). 단독 브랜치. 착수 때 정할 것 (상한을 구하는 식 · 기준점 · 사유 값의 자리) 은 이슈에 있다
+- 새 투척 기준 — 사용자가 세운다. 그 뒤 `s35b` · `reference` · K 키 투척을 다시 유도하고 (출하 값 — 표로 승인), 지도 도구의 "포구점 영역" 인자를 정한다 (#747)
+
 **mpc planner · catching 의 남은 일**
 
 - [#710](https://github.com/hyujun/rtc-framework/issues/710) — iiwa7_leap: `mode: mpc` 가 포구 계획을 내지 못한다 — 첫 풀이의 기준 궤적
@@ -180,7 +185,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 - [#716](https://github.com/hyujun/rtc-framework/issues/716) — catching: formulation 의 포구 구간 다중 노드 (K_c) 와 그 위의 경로 이탈 항 `w_path` 가 구현에 없다
 - [#715](https://github.com/hyujun/rtc-framework/issues/715) — integrated_bringup: 세 군 (두 번째 손) 지원 — 보류
 
-**위 다섯의 순서 (권장).** 이 문서에서 다섯 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 (#710 · #713 · #716 은 E1-F20 뒤) 안에서 고른 순서이고, "착수 때 정할 것" 은 아직 열려 있다.
+**`mpc planner · catching 의 남은 일` 다섯의 순서 (권장).** 이 문서에서 다섯 이슈의 시기는 이 표 하나가 갖는다 — 다른 절은 여기를 가리키고 시기를 다시 적지 않는다. 묶지 않는다 — 이슈 하나가 브랜치 하나이다. 이슈에 정해진 시기 (#710 · #713 · #716 은 E1-F20 뒤) 안에서 고른 순서이고, "착수 때 정할 것" 은 아직 열려 있다.
 
 | 순서 | 이슈 | 착수 조건 | 브랜치 | 착수 때 정할 것 |
 |---|---|---|---|---|
