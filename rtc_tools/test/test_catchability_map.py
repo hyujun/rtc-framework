@@ -525,6 +525,28 @@ def _shipped_style_config(tmp_path: Path) -> Path:
     return path
 
 
+def test_model_config_names_its_files_absolutely_from_a_relative_out_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The loader resolves a relative `urdf_path` against the model config's own
+    directory: written relative to the caller's directory it named
+    <out_dir>/<out_dir>/model.urdf, and every judge refused the config."""
+    config = _shipped_style_config(tmp_path)
+    urdf = tmp_path / "tiny.urdf"
+    urdf.write_text(TINY_URDF)
+    monkeypatch.chdir(tmp_path)
+
+    artifacts = cm.write_model_config([config], Path("rel") / "out", urdf_override=urdf)
+    doc = yaml.safe_load(artifacts.model_config_path.read_text())
+
+    assert Path(doc["urdf_path"]).is_absolute()
+    assert Path(doc["urdf_path"]) == tmp_path / "rel" / "out" / "model.urdf"
+    assert artifacts.model_config_path.is_absolute() and artifacts.urdf_path.is_absolute()
+    # What the loader does with the value: joined onto the config's directory it is
+    # still the file that was written (an absolute path wins the join).
+    assert (artifacts.model_config_path.parent / doc["urdf_path"]).read_text() == TINY_URDF
+
+
 def test_model_config_translation_adds_a_sub_model_reaching_the_catch_frame(tmp_path: Path):
     config = _shipped_style_config(tmp_path)
     urdf = tmp_path / "tiny.urdf"

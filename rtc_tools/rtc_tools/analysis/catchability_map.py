@@ -1255,7 +1255,10 @@ def write_model_config(
         catch_sub_model = shipped_catch
 
     urdf_text, urdf_label = resolve_urdf_text(params, urdf_override)
-    out_dir = Path(out_dir)
+    # Absolute: `LoadModelConfig` resolves a relative `urdf_path` / `closure_yaml_path`
+    # against the model config's own directory, so a path relative to the caller's
+    # directory named a file that is not there (<out_dir>/<out_dir>/model.urdf).
+    out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     urdf_path = out_dir / "model.urdf"
     urdf_path.write_text(urdf_text)
