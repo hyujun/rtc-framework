@@ -77,6 +77,7 @@ NLP_REJECT_REASONS = (
     "ball_invalid",
     "covariance",
     "no_source",
+    "too_far",
     "ik",
     "manipulability",
     "reach",

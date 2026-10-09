@@ -1517,10 +1517,11 @@ $$
 2. 격자의 모든 노드에서 공을 읽을 수 있고 $\Vert\hat v_b(t_c)\Vert$ 가 하한 이상이다.
 3. 확률 제약을 쓰면 포구 노드의 공분산이 있다.
 4. 출발 상태를 얻을 수 있다 (17.12).
-5. (S4) 포구 자세의 IK 해 $q^c$ 가 있다. 목표는 capture frame 의 원점 $\hat p_b(t_c)+s_{\mathrm{ent}}\hat v$ ($\hat v=\hat v_b/\Vert\hat v_b\Vert$) 와 접근축 $e_3=-\hat v$ 이고, seed 는 대기 자세 — 후보 · 탐색 · 팔의 상태와 무관하게 같다. 해는 하나이고 IK 의 조작성 gate 를 같이 지난다.
-6. (S4) 관절마다
+5. 팔이 닿을 수 있다. 6 의 IK 목표 $\hat p_b(t_c)+s_{\mathrm{ent}}\hat v$ 가 기준점 $c_1$ 에서 $R+\varepsilon_{pos}$ 보다 멀면 IK 를 돌리지 않고 거른다 ($\varepsilon_{pos}$ 는 IK 의 위치 허용오차). $c_1$ 과 도달 반경 $R$ 은 팔 모델에서 Configure 때 한 번 구하고 (YAML 키 없음), 격자 탐색이 쓰는 것과 같은 값이다 — 식은 L3 부록 B.
+6. (S4) 포구 자세의 IK 해 $q^c$ 가 있다. 목표는 capture frame 의 원점 $\hat p_b(t_c)+s_{\mathrm{ent}}\hat v$ ($\hat v=\hat v_b/\Vert\hat v_b\Vert$) 와 접근축 $e_3=-\hat v$ 이고, seed 는 대기 자세 — 후보 · 탐색 · 팔의 상태와 무관하게 같다. 해는 하나이고 IK 의 조작성 gate 를 같이 지난다.
+7. (S4) 관절마다
 
-포구점의 위치를 보는 조건은 없다 (L3 §4.9).
+포구점이 놓일 영역을 보는 조건은 없다 — 5 의 반경은 팔의 운동학적 필요조건이지 투척을 고르는 상자가 아니다 (L3 §4.9).
 
 $$
 \vert q_j^c-q_{0,j}\vert\le v_{\max,j}T_m,\qquad \vert q_j^c-q_{0,j}-v_{0,j}T_m\vert\le\tfrac12a_{\max,j}T_m^2,\qquad T_m=n_{pre}\Delta_a .

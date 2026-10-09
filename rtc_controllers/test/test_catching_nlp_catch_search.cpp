@@ -610,9 +610,19 @@ TEST(NlpCatchSearchScreening, TheIkVerdictIsCatchPoseIksOwn) {
     int accepted = 0;
     int ik_fail = 0;
     int manip_fail = 0;
+    int too_far = 0;
     for (const OracleCandidate& o : oracle) {
       const Candidate* c = Find(rig->search, o.index);
       ASSERT_NE(c, nullptr) << o.index;
+      if (c->reject == NlpReject::kTooFar) {
+        // Beyond the arm's reach bound: the search did not run the IK — and
+        // the oracle, which runs it on every candidate, refused this one. The
+        // bound removes nothing the IK accepts.
+        ++too_far;
+        EXPECT_FALSE(c->ik_run) << o.index;
+        EXPECT_FALSE(o.ik_accepted) << o.index << Table(rig->search, w.stats);
+        continue;
+      }
       ASSERT_TRUE(c->ik_run) << o.index << Table(rig->search, w.stats);
       EXPECT_EQ(c->ik_reason, o.ik_reason) << o.index;
       if (o.ik_accepted) {
@@ -631,9 +641,12 @@ TEST(NlpCatchSearchScreening, TheIkVerdictIsCatchPoseIksOwn) {
       }
     }
     EXPECT_EQ(accepted > 0, tc.expect_accept) << Table(rig->search, w.stats);
-    EXPECT_EQ(ik_fail > 0, tc.expect_ik) << Table(rig->search, w.stats);
+    // A candidate the arm cannot be put at is refused by the IK or, when it
+    // is beyond the reach bound, before it.
+    EXPECT_EQ(ik_fail + too_far > 0, tc.expect_ik) << Table(rig->search, w.stats);
     EXPECT_EQ(manip_fail > 0, tc.expect_manip) << Table(rig->search, w.stats);
-    EXPECT_EQ(w.stats.n_ik, static_cast<std::uint16_t>(oracle.size()));
+    EXPECT_EQ(w.stats.n_ik, static_cast<std::uint16_t>(oracle.size() - too_far));
+    EXPECT_EQ(Count(rig->search, NlpReject::kTooFar), too_far);
   }
 }
 
@@ -1643,6 +1656,7 @@ TEST(NlpCatchSearchReasons, ThePublishedReasonIsATableOverEveryValue) {
       {NlpReject::kBallInvalid, PlanReason::kInputNonFinite},
       {NlpReject::kCovariance, PlanReason::kUncertainty},
       {NlpReject::kNoSource, PlanReason::kLimitsInvalid},
+      {NlpReject::kTooFar, PlanReason::kIkFailed},
       {NlpReject::kIk, PlanReason::kIkFailed},
       {NlpReject::kManipulability, PlanReason::kManipulability},
       {NlpReject::kReach, PlanReason::kReachTime},
@@ -1746,12 +1760,27 @@ TEST(NlpCatchSearchReasons, EveryScreeningReasonComesFromAnInputThatPassedTheChe
     EXPECT_EQ(exact.w.plan.sigma_c, 0.0);
   }
   {
-    SCOPED_TRACE("ik: the ball passes where the arm cannot put the frame");
+    SCOPED_TRACE("too_far: the ball passes beyond the arm's reach bound");
     const ReasonCase rc(kNoEdit, [](const Rig&, Throw& t) {
       for (auto& s : t.traj.s) {
         s.p[0] += 3.0;  // metres away from the arm
       }
     });
+    ExpectNoPlan(rc, NlpReject::kTooFar);
+    EXPECT_EQ(Count(rc.rig->search, NlpReject::kTooFar), rc.w.stats.n_in_window);
+    EXPECT_EQ(rc.w.stats.n_ik, 0);  // refused before the IK
+  }
+  {
+    SCOPED_TRACE("ik: within reach, and the IK cannot put the frame there");
+    // The ball passes 0.15 m beside the wait pose's catch point — well inside
+    // the reach bound — and one iteration cannot take the arm there: the IK
+    // runs on every candidate and refuses each.
+    const ReasonCase rc([](Rig& r) { r.ik.max_iter = 1; },
+                        [](const Rig&, Throw& t) {
+                          for (auto& s : t.traj.s) {
+                            s.p[1] += 0.15;
+                          }
+                        });
     ExpectNoPlan(rc, NlpReject::kIk);
     EXPECT_EQ(Count(rc.rig->search, NlpReject::kIk), rc.w.stats.n_in_window);
     EXPECT_EQ(rc.w.stats.n_ik, rc.w.stats.n_in_window);
@@ -2535,7 +2564,7 @@ TEST(NlpCatchSearchFollowing, TheDecisionComparesCatchInstantsToTheNanosecond) {
   EXPECT_FALSE(held.plan.valid);
   EXPECT_EQ(held.stats.decision, SwitchDecision::kHeldNoCandidate);
   EXPECT_FALSE(held.stats.publish);
-  EXPECT_EQ(held.stats.nlp.reason, NlpReject::kIk);
+  EXPECT_EQ(held.stats.nlp.reason, NlpReject::kTooFar);  // 3 m off: beyond the reach bound
   EXPECT_EQ(rig->search.Solution(), nullptr);
 }
 

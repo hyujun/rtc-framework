@@ -339,6 +339,20 @@ def test_the_workspace_reject_count_is_read_from_a_file_that_has_it_and_only_the
     assert summary["rej_ik"] == 1
 
 
+def test_the_reach_pre_filter_count_is_read_from_a_file_that_has_it_and_only_then(tmp_path):
+    """A session recorded by a search with the reach pre-filter carries
+    ``rej_too_far`` and its count is read; one recorded without it reports no
+    such count — a 0 would read as a filter that ran and refused nothing."""
+    with_filter = tmp_path / "new.csv"
+    with_filter.write_text(
+        "plan_valid,rank_reach,rank_gamma,rej_ik,rej_too_far\n1,0,0,1,3\n0,0,0,0,4\n"
+    )
+    without = tmp_path / "old.csv"
+    without.write_text("plan_valid,rank_reach,rank_gamma,rej_ik\n1,0,0,1\n0,0,0,0\n")
+    assert hn.planner_events_summary(with_filter)["judge_rejects"]["rej_too_far"] == 7
+    assert "rej_too_far" not in hn.planner_events_summary(without)["judge_rejects"]
+
+
 def test_a_unit_round_trips_through_the_loader_and_the_cli(tmp_path):
     a = synthetic_trials(60, 7, arm="reach_first")
     b = synthetic_trials(60, 7, arm="shipped_score")

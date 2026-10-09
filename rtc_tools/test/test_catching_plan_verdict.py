@@ -116,6 +116,29 @@ class TestVerdict:
             == "search:ik_failed"
         )
 
+    def test_a_grid_wake_refused_mostly_by_the_reach_pre_filter_reads_too_far(self):
+        # ik_failed folds the reach pre-filter's refusals in; the search reports
+        # the more frequent of its gates, and the wake is named the same way.
+        v = _verdict([{"plan_reason": 2, "rej_ik": 0, "rej_too_far": 5}])
+        assert v["plan_reject"] == "search:too_far"
+        v = _verdict([{"plan_reason": 2, "rej_ik": 3, "rej_too_far": 5}])
+        assert v["plan_reject"] == "search:too_far"
+        # The IK refused more — or as many — candidates: ik_failed.
+        v = _verdict([{"plan_reason": 2, "rej_ik": 6, "rej_too_far": 5}])
+        assert v["plan_reject"] == "search:ik_failed"
+        v = _verdict([{"plan_reason": 2, "rej_ik": 5, "rej_too_far": 5}])
+        assert v["plan_reject"] == "search:ik_failed"
+        # A session recorded before the column existed reads as it always did.
+        v = _verdict([{"plan_reason": 2, "rej_ik": 0}])
+        assert v["plan_reject"] == "search:ik_failed"
+        # Another plan reason is not touched by the column.
+        v = _verdict([{"plan_reason": 7, "rej_ik": 0, "rej_too_far": 5}])
+        assert v["plan_reject"] == "search:stopping_distance"
+
+    def test_the_nlp_too_far_reason_is_reported_as_is(self):
+        v = _verdict([{"plan_reason": 2, "nlp_reason": "too_far"}])
+        assert v["plan_reject"] == "search:too_far"
+
     def test_ties_go_to_the_later_reason(self):
         v = _verdict([{"plan_reason": 1}, {"plan_reason": 7}])
         assert v["plan_reject"] == "search:stopping_distance"

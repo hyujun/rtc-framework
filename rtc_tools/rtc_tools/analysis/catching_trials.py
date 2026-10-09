@@ -3954,7 +3954,12 @@ def _wake_reject_reason(row: Mapping) -> str:
     it found one and the cycle did not publish it for another reason (a newer
     trajectory, the switching rule); ``search:<reason>`` — the search found
     none: the NLP search's own reason where the log has it, else the
-    ``PlanReason`` of the "no plan" it published.
+    ``PlanReason`` of the "no plan" it published. The grid search folds the
+    reach pre-filter into ``ik_failed`` and reports the more frequent of its
+    judgement gates: such a wake reads ``search:too_far`` — the NLP search's
+    name for the same reason — when the pre-filter refused more candidates than
+    the IK did (``rej_too_far > rej_ik``). A session without the
+    ``rej_too_far`` column keeps ``search:ik_failed``.
     """
 
     def text(key):
@@ -3979,7 +3984,10 @@ def _wake_reject_reason(row: Mapping) -> str:
         return f"search:{nlp}"
     code = _num(row.get("plan_reason"))
     if outcome == "published" and np.isfinite(code) and 0 < int(code) < len(PLAN_REASON_NAMES):
-        return f"search:{PLAN_REASON_NAMES[int(code)]}"
+        name = PLAN_REASON_NAMES[int(code)]
+        if name == "ik_failed" and _num(row.get("rej_too_far")) > _num(row.get("rej_ik")):
+            return "search:too_far"
+        return f"search:{name}"
     return f"cycle:{outcome}" if outcome != "published" else "search:none"
 
 

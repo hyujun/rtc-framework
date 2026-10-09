@@ -20,6 +20,10 @@ namespace {
     case JudgeReject::kInput:
       return PlanReason::kInputNonFinite;
     case JudgeReject::kIk:
+    // The reach bound is the IK's answer known in advance: the frozen message
+    // has one reason for "no pose puts the arm there", and which of the two
+    // refused is in the planner CSV (rej_ik / rej_too_far).
+    case JudgeReject::kTooFar:
       return PlanReason::kIkFailed;
     case JudgeReject::kManipulability:
       return PlanReason::kManipulability;
@@ -106,6 +110,11 @@ bool GridCatchSearch::Configure(const GridCatchSearchModel& model,
   if (params.wait_pose_n != model.nv) {
     return false;
   }
+  // The reach bound reads the frame's chain off the model: a frame that is
+  // not the handle's model's is an unusable binding, not an exception.
+  if (model.catch_frame >= model.handle->GetModel().frames.size()) {
+    return false;
+  }
   // The parser's ranges, for a caller that builds PlannerParams by hand: the
   // switch bound divides by samples − 1, and a zero damping is no DLS.
   if (params.switch_samples < 2 || params.switch_samples > kSwitchSamplesMax ||
@@ -118,6 +127,7 @@ bool GridCatchSearch::Configure(const GridCatchSearchModel& model,
   ik_options_ = ik;
   clock_ = clock;
   ik_.Resize(model.nv);
+  reach_ = ComputeReachBound(model.handle->GetModel(), model.catch_frame);
   unit_speed_.Resize(model.nv);
   // The rollout's reference: the profile's ω and ζ, NO saturation (§4.8 —
   // the peaks are what is judged against η_a a_max / η_v v_max).
@@ -318,14 +328,21 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
     const double speed = v.norm();
     if (!p.allFinite() || !v.allFinite() || !std::isfinite(speed) || speed < ik_options_.v_eps) {
       c.reject = JudgeReject::kInput;
+    } else if (!WithinReach(reach_, p, ik_options_.eps_pos)) {
+      // No pose puts the catch frame within the IK's own tolerance of p: the
+      // IK would refuse it, and it takes no IK slot.
+      c.reject = JudgeReject::kTooFar;
     } else {
       c.reject = JudgeReject::kNotEvaluated;  // until IK runs on it
     }
-    c.sigma = cov_matched ? SigmaMax(cov, k) : std::numeric_limits<double>::quiet_NaN();
-    c.sigma_known = std::isfinite(c.sigma);
-    const bool unc_fail = !c.sigma_known || !(c.sigma <= kappa_rcap);
-    c.pre_score = (c.sigma_known && r_cap > 0.0 ? w.w_sigma * c.sigma / r_cap : 0.0) +
-                  w.w_late * (lead_max - lead) + (unc_fail ? w.penalty : 0.0);
+    // The cheap terms only order the candidates the IK may run on.
+    if (c.reject == JudgeReject::kNotEvaluated) {
+      c.sigma = cov_matched ? SigmaMax(cov, k) : std::numeric_limits<double>::quiet_NaN();
+      c.sigma_known = std::isfinite(c.sigma);
+      const bool unc_fail = !c.sigma_known || !(c.sigma <= kappa_rcap);
+      c.pre_score = (c.sigma_known && r_cap > 0.0 ? w.w_sigma * c.sigma / r_cap : 0.0) +
+                    w.w_late * (lead_max - lead) + (unc_fail ? w.penalty : 0.0);
+    }
     ++m;
   }
   if (m == 0) {

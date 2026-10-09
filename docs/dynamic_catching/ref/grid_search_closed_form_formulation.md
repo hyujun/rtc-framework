@@ -85,12 +85,12 @@ $$
 [R1] 의 $(q^\ast, t_c)$ 동시 NLP 대신 **vision 격자 위의 1 차원 시각 탐색 + 후보별 IK** 다. 후보 $k$ 에 계산을 싼 것부터 적용한다.
 
 $$
-\underbrace{\text{입력 유한성}\to\sigma_{\max}\to\text{사전 점수}} _ {\text{모든 후보}} \Longrightarrow \underbrace{\text{IK}\to w_5\to\dot q^u\to t_{\min}\to\gamma\text{ 창}\to\text{rollout}(\gamma_f,T_w)\to\sigma_{gap}(\gamma_f)\to J} _ {\text{사전 점수 상위 }\le N_{IK,\max}\text{ 개, 예산 안}}
+\underbrace{\text{입력 유한성}\to\text{도달 반경}\to\sigma_{\max}\to\text{사전 점수}} _ {\text{모든 후보}} \Longrightarrow \underbrace{\text{IK}\to w_5\to\dot q^u\to t_{\min}\to\gamma\text{ 창}\to\text{rollout}(\gamma_f,T_w)\to\sigma_{gap}(\gamma_f)\to J} _ {\text{사전 점수 상위 }\le N_{IK,\max}\text{ 개, 예산 안}}
 $$
 
 게이트는 두 종류다.
 
-- **판정 게이트** — 후보를 **제거**한다: 입력 유한성 (NUM-7), IK 수렴, manipulability (D-18). 포구점이 **어디에** 있는지는 판정하지 않는다 (L3 §4.9 — §2.8).
+- **판정 게이트** — 후보를 **제거**한다: 입력 유한성 (NUM-7), 도달 반경 ($\Vert p_c-c_1\Vert>R+\varepsilon_{pos}$ 이면 IK 를 돌리지 않는다 — 팔 모델에서 구한 필요조건, L3 부록 B), IK 수렴, manipulability (D-18). 도달 반경에 걸린 후보는 IK 의 자리 ($N_{IK,\max}$) 를 차지하지 않는다. 포구점이 **어디에** 있어야 하는지는 판정하지 않는다 (L3 §4.9 — §2.8).
 - **순위 게이트** — 제거하지 않고 실패마다 점수에 벌점 $w_{pen}$ 을 더한다: 불확실성 · 도달시간 · γ 창 · commit 선행 · 오차 예산 · rollout (비트마스크 `RankGateBit`).
 
 판정 통과 후보 가운데 점수 $J$ 최소를 고른다. 판정 통과 후보가 없을 때만 plan 없음이다.
@@ -384,7 +384,7 @@ COMMITTED · CLOSING 의 wake 는 따르는 plan 의 $t_c$ 의 공분산 (가장
 
 ### 2.14 사유
 
-plan 이 없을 때의 사유는 **가장 많이 걸린 판정 게이트** 다 (`kInputNonFinite` · `kIkFailed` · `kManipulability`). `kStoppingDistance` 는 메시지에 남은 값이고 쓰는 탐색이 없다 (L3 §4.9). 예산에 밀려 평가 못 한 후보는 예산이 실제로 잘랐을 때만 세고 (`kBudgetExceeded`), settle 중은 `kUncertainty`, 창 안에 후보가 없으면 `kHorizonShort` 다. 고른 후보의 순위 게이트 실패는 사유가 아니라 CSV 의 비트마스크다.
+plan 이 없을 때의 사유는 **가장 많이 걸린 판정 게이트** 다 (`kInputNonFinite` · `kIkFailed` · `kManipulability`). 도달 반경에 걸린 후보는 `kIkFailed` 로 센다 (동결된 메시지에 값이 따로 없다 — 계획기 CSV 의 `rej_too_far` 가 가른다). `kStoppingDistance` 는 메시지에 남은 값이고 쓰는 탐색이 없다 (L3 §4.9). 예산에 밀려 평가 못 한 후보는 예산이 실제로 잘랐을 때만 세고 (`kBudgetExceeded`), settle 중은 `kUncertainty`, 창 안에 후보가 없으면 `kHorizonShort` 다. 고른 후보의 순위 게이트 실패는 사유가 아니라 CSV 의 비트마스크다.
 
 ---
 

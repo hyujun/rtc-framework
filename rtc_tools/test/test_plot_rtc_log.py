@@ -3557,6 +3557,7 @@ _PLANNER_EVENTS_COLUMNS = [
     "rej_ik",
     "rej_manipulability",
     "rej_not_evaluated",
+    "rej_too_far",
     "budget_hit",
     "search_us",
     "ik_us_max",
@@ -3626,6 +3627,7 @@ _PLANNER_EVENTS_COLUMNS = [
     "nlp_rej_ball_invalid",
     "nlp_rej_covariance",
     "nlp_rej_no_source",
+    "nlp_rej_too_far",
     "nlp_rej_ik",
     "nlp_rej_manipulability",
     "nlp_rej_reach",
@@ -4000,6 +4002,24 @@ class TestPlannerEventsStatistics:
         print_planner_events_statistics(df)
         out = capsys.readouterr().out
         assert "rej_ik×2" in out, out
+
+    def test_reach_pre_filter_refusals_are_named_and_the_new_names_are_known(self, capsys):
+        from rtc_tools.analysis import planner_solves
+        from rtc_tools.plotting.plotters import planner_events as pe
+
+        assert "rej_too_far" in pe.REJECT_COLUMNS
+        assert "too_far" in planner_solves.NLP_REJECT_REASONS
+        assert "too_far" in pe.NLP_REASON_ORDER
+        columns = _planner_events_columns()
+        assert columns.index("rej_too_far") == columns.index("rej_not_evaluated") + 1
+        full = _PLANNER_EVENTS_COLUMNS
+        assert full.index("nlp_rej_too_far") == full.index("nlp_rej_no_source") + 1
+        row = _planner_events_row(1, columns=columns)
+        row[columns.index("rej_too_far")] = 4
+        df = pd.DataFrame([row], columns=columns)
+        pe.print_planner_events_statistics(df)
+        out = capsys.readouterr().out
+        assert "rej_too_far×4" in out, out
 
     def test_a_session_from_before_the_catch_box_was_removed_still_names_its_rejects(self, capsys):
         """The writer dropped `rej_workspace` on 2026-10-09 (L3 §4.9); a file
@@ -4452,7 +4472,11 @@ class TestPlannerEventsSegmentPlots(_SegmentPlotHelpers):
         from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
 
         full = _planner_events_columns()
-        old = [c for c in full[: full.index("rollout_us_max") + 1] if c != "search_valid"]
+        old = [
+            c
+            for c in full[: full.index("rollout_us_max") + 1]
+            if c not in ("search_valid", "rej_too_far")
+        ]
         # That schema still had the catch box's reject count (removed with that gate — L3 §4.9).
         old.insert(old.index("rej_manipulability") + 1, "rej_workspace")
         assert len(old) == 40

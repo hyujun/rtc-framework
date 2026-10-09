@@ -79,6 +79,9 @@ add_library(rtc_controllers STATIC
   # offline catchability map (S3.5a) links the same object the planner will, so
   # this deliberately stays a plain library unit rather than a controller.
   src/catching/catch_pose_ik.cpp
+  # The catch frame's reach bound, read off the model: the necessary condition
+  # both searches test before the catch-pose IK (L3 §4.1).
+  src/catching/reach_bound.cpp
   # dynamic_catching S3.5a: candidate/seed CSV I/O and the batch loop the
   # offline map's judge is built on. In the library, not the executable, so
   # the CSV contract (bit-exact columns) and the batch's order-independence
@@ -307,6 +310,14 @@ if(BUILD_TESTING)
   target_include_directories(test_catch_pose_ik PRIVATE
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_catch_pose_ik PRIVATE -Wno-mismatched-new-delete)
+
+  # The catch frame's reach bound (L3 §4.1): a bound at any number of
+  # iterations, tight on the revolute arms, infinite where it cannot be made.
+  ament_add_gtest(test_catching_reach_bound test/test_catching_reach_bound.cpp)
+  target_link_libraries(test_catching_reach_bound rtc_controllers)
+  target_include_directories(test_catching_reach_bound PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catching_reach_bound PRIVATE -Wno-mismatched-new-delete)
 
   ament_add_gtest(test_payload_estimator test/test_payload_estimator.cpp)
   target_link_libraries(test_payload_estimator rtc_controllers)

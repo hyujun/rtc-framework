@@ -35,8 +35,9 @@
 //  5. SCREENING, every candidate, in lattice order — each a NECESSARY
 //     condition, the first that fails is the candidate's reason:
 //     lead (S1) → the ball at every node of its grid → covariance
-//     → a source segment → catch-pose IK and its catchability gate → joint
-//     reach (S4) → closing-speed window (S3).
+//     → a source segment → the arm's reach bound on the IK's target
+//     (reach_bound.hpp — a target beyond it takes no IK) → catch-pose IK and
+//     its catchability gate → joint reach (S4) → closing-speed window (S3).
 //  6. RANK the survivors by J_time + J_switch + a proxy on the IK pose — the
 //     candidate of the followed plan's cell first, whatever its key (8) — and
 //     solve the best L, L = min(max_solves, ⌊(budget − screening)/solve_budget⌋).
@@ -157,6 +158,7 @@
 #include "rtc_controllers/catching/mpc_docking_segment_core.hpp"
 #include "rtc_controllers/catching/nlp_catch_screening.hpp"
 #include "rtc_controllers/catching/planner_io.hpp"
+#include "rtc_controllers/catching/reach_bound.hpp"
 #include "rtc_controllers/catching/search_stats.hpp"
 #include "rtc_controllers/catching/time_types.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"
@@ -294,6 +296,11 @@ class NlpCatchSearch final : public CatchSearch {
                                ClockFn clock, std::string* error = nullptr);
 
   [[nodiscard]] bool Configured() const noexcept { return configured_; }
+
+  /// The catch frame's reach bound, computed in Configure from the model. A
+  /// candidate whose IK target is farther than its radius plus the IK's
+  /// position tolerance from its centre is refused before the IK.
+  [[nodiscard]] const ReachBound& Reach() const noexcept { return reach_; }
 
   /// Replace the steady clock the budget and the solves' deadlines are read
   /// on (non-RT; the planner thread is not running). A null `clock` is
@@ -588,6 +595,7 @@ class NlpCatchSearch final : public CatchSearch {
   std::vector<MpcDockingSegmentCoreInput> inputs_tc_;
   std::vector<MpcDockingSegmentCoreResult> results_tc_;
   CatchPoseIk ik_;
+  ReachBound reach_{};
   // The cores' model (armature added) for the screening's own kinematics.
   pinocchio::Model arm_model_;
   pinocchio::Data arm_data_;
@@ -653,6 +661,7 @@ class NlpCatchSearch final : public CatchSearch {
     case NlpReject::kCovariance:
     case NlpReject::kChance:
       return PlanReason::kUncertainty;
+    case NlpReject::kTooFar:  // the IK's answer known in advance (reach_bound.hpp)
     case NlpReject::kIk:
       return PlanReason::kIkFailed;
     case NlpReject::kManipulability:

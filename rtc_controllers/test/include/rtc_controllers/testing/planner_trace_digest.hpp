@@ -86,7 +86,9 @@ inline void AddSearchStats(ValueDigest& h, const catching::SearchStats& s) noexc
   // catch box's (JudgeReject::kWorkspace, removed with that gate — L3 §4.9). No recorded catch
   // had a candidate that gate removed, so its count is the zero it always was
   // — and the constants stay a pin on what the search does.
-  static_assert(catching::kJudgeRejectCount == 5);
+  // The count added after them (JudgeReject::kTooFar, the reach bound) is not
+  // part of the digest either: the tests of the searches assert it directly.
+  static_assert(catching::kJudgeRejectCount == 6);
   for (std::size_t i = 0; i < 4; ++i) {
     h.Add(s.judge_rejects[i]);
   }

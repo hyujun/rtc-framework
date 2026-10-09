@@ -305,6 +305,11 @@ TEST(CatchSearchBatch, TheCsvCarriesThePlanBitExactlyAndLeavesNoPlanEmpty) {
   EXPECT_EQ(empty.at("search_valid"), "0");
   EXPECT_NE(empty.at("plan_reason"), "0");
   EXPECT_NE(empty.at("n_in_window"), "0");
+  // Ten metres off is past the arm's reach: the pre-filter refused every
+  // candidate and the IK ran on none (L3 §4.1).
+  EXPECT_EQ(empty.at("rej_too_far"), empty.at("n_in_window"));
+  EXPECT_EQ(empty.at("n_ik"), "0");
+  EXPECT_EQ(empty.at("rej_ik"), "0");
   for (const char* name : {"t_c_ns", "lead_s", "p_c_x", "v_c_z", "score", "w5", "w6", "rank_mask",
                            "gamma_f", "nlp_lead_s", "q_star0", "q_star5"}) {
     EXPECT_EQ(empty.at(name), "") << name;

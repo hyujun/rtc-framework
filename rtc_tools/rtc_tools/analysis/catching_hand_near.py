@@ -361,8 +361,10 @@ def planner_events_summary(path: Path) -> dict:
     rows = 0
     for row in rows_read:
         rows += 1
-        if "rej_workspace" in row:
-            rejects.setdefault("rej_workspace", 0)
+        # Gates a session's search did not have are left out, not reported as 0.
+        for optional in ("rej_too_far", "rej_workspace"):
+            if optional in row:
+                rejects.setdefault(optional, 0)
         for k in rejects:
             rejects[k] += _int0(row.get(k))
         if _is_true(row.get("plan_valid")):

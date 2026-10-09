@@ -896,6 +896,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// planner cannot run with.
   [[nodiscard]] bool SetupPlanner();
 
+  /// The search's reach bound, once, at configure time (non-RT): its radius
+  /// and centre, or which joint left the catch frame's chain without one.
+  void LogReachBound(const rtc::catching::ReachBound& reach) const;
+
   /// Build the search's model: a reorder-free handle on `planner.sub_model`,
   /// the catch frame, the model↔device joint map, velocity/acceleration
   /// limits and the profile constants. Non-RT; false (and logged) on a model

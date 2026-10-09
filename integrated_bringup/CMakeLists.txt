@@ -1576,6 +1576,31 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
 
+  # ── The reach bound on the shipped catch sub-models (L3 §4.1) ──────────────
+  # The searches refuse a target beyond the bound without the IK: on the models
+  # the planner is handed, no posture leaves the bound and a target it refuses
+  # is one the shipped IK refuses too (both searches' options).
+  ament_add_gtest(test_catching_reach_bound_shipped
+    test/test_catching_reach_bound_shipped.cpp TIMEOUT 300)
+  target_include_directories(test_catching_reach_bound_shipped PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_compile_definitions(test_catching_reach_bound_shipped PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+    RTC_TEST_ROBOT_DESCRIPTIONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots")
+  target_link_libraries(test_catching_reach_bound_shipped
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_catching_reach_bound_shipped
+    rclcpp
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_base
+    ament_index_cpp
+  )
+
   # ── dynamic_catching S6-A R-1: the planner shares the `mpc` layout role ────
   # DemoWbc's MPC thread and the catching planner in one process, switched in
   # CM's order (deactivate, activate): thread count by name, affinity against

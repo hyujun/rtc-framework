@@ -263,6 +263,18 @@ class TestCutSolvesAreDrawnAndCountedApart:
         plt.close(fig)
 
 
+def test_the_reach_pre_filter_reason_reaches_the_statistics(tmp_path, capsys):
+    columns = _header_columns()
+    rows = [
+        _nlp_wake(0, columns, reason="too_far", nlp_rej_too_far=18, nlp_solve_us_max=0),
+        _nlp_wake(1, columns, reason="none"),
+    ]
+    pe.print_planner_events_statistics(_load(tmp_path, rows, columns))
+    out = capsys.readouterr().out
+    assert "NLP search wakes: 2 | reason: too_far×1, none×1" in out
+    assert "NLP candidates removed, by reason: too_far×18" in out
+
+
 def test_replacement_steps_and_nlp_reasons_reach_the_statistics(tmp_path, capsys):
     columns = _header_columns()
     rows = [

@@ -260,6 +260,7 @@ TEST(PlannerG3C, OneThousandSyntheticThrowsStayInsideTheBudget) {
   RecordProperty("rej_ik", static_cast<int>(rejects[2]));
   RecordProperty("rej_manipulability", static_cast<int>(rejects[3]));
   RecordProperty("rej_not_evaluated", static_cast<int>(rejects[4]));
+  RecordProperty("rej_too_far", static_cast<int>(rejects[5]));
   RecordProperty("rank_uncertainty", static_cast<int>(rank_fail[0]));
   RecordProperty("rank_reach", static_cast<int>(rank_fail[1]));
   RecordProperty("rank_gamma", static_cast<int>(rank_fail[2]));
