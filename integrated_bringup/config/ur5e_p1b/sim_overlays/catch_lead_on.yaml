@@ -3,10 +3,13 @@
 #   ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_mpc:=true \
 #       sim_lanes:=true sim_overlay:=catch_lead_on
 #
-# This is the sim-runner's standard arm and the base of the other catching
-# overlays here (s8f_reach_first, catch_wait_pose_current). The S8-B ablation
-# arms (catch_lead_off, *_gamma0) and the S8-E beanbag arm were pruned once
-# their results were recorded (S8-B/S8-E, ID_INDEX.md §3); git history has them.
+# This is the sim-runner's standard arm, and the only catching overlay here.
+# The S8-B ablation arms (catch_lead_off, *_gamma0) and the S8-E beanbag arm
+# were pruned once their results were recorded (S8-B/S8-E, ID_INDEX.md §3). The
+# S8-F hand-near arm (s8f_reach_first) and the S8-I switched-in-pose arm
+# (catch_wait_pose_current) went on 2026-10-09 (#747): both carried a catch box
+# drawn around the wait pose and the floor of the scene they were measured in,
+# and the scene and the pose have changed. git history has them all.
 #
 # WHAT IT IS FOR. The shipped controller runs with `joint_cmd.lag.T_arm: 0`
 # because a real-arm actuation lag is an S10 measurement. The sim arm is not

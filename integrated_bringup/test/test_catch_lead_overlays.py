@@ -14,11 +14,11 @@ So every leaf an overlay writes must name a key the shipped
 ``demo_catching_controller.yaml`` already has, with the same YAML type, and the
 arm-to-arm differences are pinned so each overlay changes exactly what its
 header says. Shipped are the operational arms only (the experiment arms of
-S8-B/E/F/G/I were pruned once recorded, 2026-09-27): ur5e_p1b ``catch_lead_on``
-(the runner's standard arm), ``s8f_reach_first`` (hand-near throws) and
-``catch_wait_pose_current`` (the switched-in pose as the wait pose), iiwa7_leap
-``catch_lead_on``. The sim robot config's one controller override (the planner's
-envelope box, S8-G R2) is pinned here too.
+S8-B/E/F/G/I were pruned once recorded, 2026-09-27; the S8-F hand-near arm and
+the S8-I switched-in-pose arm on 2026-10-09, when the scene and the wait pose
+their catch box was drawn around changed): ``catch_lead_on`` of ur5e_p1b (the
+runner's standard arm) and of iiwa7_leap. The sim robot config's one controller
+override (the planner's envelope box, S8-G R2) is pinned here too.
 """
 
 from __future__ import annotations
@@ -42,21 +42,6 @@ LEAD_ON_LEAVES = {
     ("catching", "joint_cmd", "lag", "lead_enable"): True,
     ("catching", "planner", "freeze", "T_freeze"): 0.37,
 }
-# S8-F-1 (#537, 2026-09-26): catch_lead_on with the widened catch box and the
-# inverted score weights.
-REACH_FIRST = "s8f_reach_first"
-S8F_BOX = {
-    ("catching", "planner", "search", "grid", "workspace", "catch_box", "min"): [-1.1, -1.1, 0.15],
-    ("catching", "planner", "search", "grid", "workspace", "catch_box", "max"): [1.1, 1.1, 1.2],
-}
-S8F_SCORE = {
-    ("catching", "planner", "search", "grid", "score", "w_t"): 5.0,
-    ("catching", "planner", "search", "grid", "score", "w_gamma"): 1.0,
-}
-# S8-I (#537 5850509543): the reach-first arm with the wait pose taken from
-# the arm's switched-in pose.
-WAIT_POSE_CURRENT = "catch_wait_pose_current"
-WAIT_POSE_SOURCE = ("catching", "planner", "wait_pose_source")
 SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
 LEAP = "iiwa7_leap"
 # Where each profile keeps control_rate (the launch files read the same file).
@@ -135,7 +120,7 @@ def shipped() -> dict:
 
 @pytest.fixture(scope="module")
 def arms() -> dict[str, dict]:
-    return {name: _arm(name) for name in (LEAD_ON, REACH_FIRST, WAIT_POSE_CURRENT)}
+    return {name: _arm(name) for name in (LEAD_ON,)}
 
 
 @pytest.fixture(scope="module")
@@ -145,16 +130,12 @@ def leap_shipped() -> dict:
     )
 
 
-LEAP_SCENE = "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"
-
-
 @pytest.fixture(scope="module")
 def leap_arm() -> dict:
-    """The leap overlay also swaps the sim scene (its header says why); the
-    sim section may carry that and nothing else, the rest is the RT node's."""
+    """The leap overlay carries no simulator section: the scene is the shipped
+    one (its header says why), and a `model_path` here would silently replace it."""
     overlay = _load(os.path.join(CONFIG_ROOT, LEAP, "sim_overlays", LEAD_ON + ".yaml"))
-    sim = overlay.pop("mujoco_simulator")
-    assert sim == {"ros__parameters": {"model_path": LEAP_SCENE}}, sim
+    assert "mujoco_simulator" not in overlay, overlay["mujoco_simulator"]
     return _controller_tree(overlay)
 
 
@@ -165,8 +146,6 @@ def test_the_shipped_overlays_are_exactly_the_operational_arms():
     assert shipped_names == sorted(
         [
             LEAD_ON,
-            REACH_FIRST,
-            WAIT_POSE_CURRENT,
             "fingertip_grasp",
             "fingertip_grasp_free",
             "inference_pole",
@@ -176,9 +155,8 @@ def test_the_shipped_overlays_are_exactly_the_operational_arms():
     assert sorted(os.listdir(leap_dir)) == [LEAD_ON + ".yaml"]
 
 
-@pytest.mark.parametrize("name", (LEAD_ON, REACH_FIRST, WAIT_POSE_CURRENT))
-def test_every_leaf_is_a_shipped_key_of_the_same_type(name, arms, shipped):
-    assert _unread_leaves(arms[name], shipped) == []
+def test_every_leaf_is_a_shipped_key_of_the_same_type(arms, shipped):
+    assert _unread_leaves(arms[LEAD_ON], shipped) == []
 
 
 def test_the_check_catches_a_path_one_level_short(arms, shipped):
@@ -241,58 +219,8 @@ def _check_commit_window(catching: dict, ship: dict, profile: str) -> None:
     assert effective("io", "n_min") == math.ceil(horizon / dt - 1e-9) + 1
 
 
-@pytest.mark.parametrize("name", (LEAD_ON, REACH_FIRST, WAIT_POSE_CURRENT))
-def test_the_commit_window_is_derived_from_t_arm(name, arms, shipped):
-    _check_commit_window(arms[name]["catching"], shipped["catching"], "ur5e_p1b")
-
-
-# ── ur5e_p1b S8-F-1 (hand-near throws) ───────────────────────────────────────
-
-
-def test_s8f_reach_first_is_lead_on_plus_the_box_and_the_inverted_weights(arms, shipped):
-    """The arm differs from catch_lead_on ONLY by the widened box and the two
-    score weights — and the weights really are inverted relative to the shipped
-    ones, so the arm measures the priority and nothing else."""
-    base = _leaves(arms[LEAD_ON])
-    leaves = _leaves(arms[REACH_FIRST])
-    extra = {k: v for k, v in leaves.items() if k not in base}
-    assert extra == {**S8F_BOX, **S8F_SCORE}
-    assert {k: v for k, v in leaves.items() if k in base} == base
-    ship = shipped["catching"]["planner"]["search"]["grid"]["score"]
-    assert (ship["w_t"], ship["w_gamma"]) == (1.0, 5.0), "the shipped weights the arm inverts"
-    assert (
-        leaves[("catching", "planner", "search", "grid", "score", "w_t")],
-        leaves[("catching", "planner", "search", "grid", "score", "w_gamma")],
-    ) == (
-        ship["w_gamma"],
-        ship["w_t"],
-    )
-
-
-def test_s8f_box_contains_the_shipped_one_and_clears_the_table(shipped):
-    ship = shipped["catching"]["planner"]["search"]["grid"]["workspace"]["catch_box"]
-    lo = S8F_BOX[("catching", "planner", "search", "grid", "workspace", "catch_box", "min")]
-    hi = S8F_BOX[("catching", "planner", "search", "grid", "workspace", "catch_box", "max")]
-    assert all(a <= b for a, b in zip(lo, ship["min"], strict=True))
-    assert all(a >= b for a, b in zip(hi, ship["max"], strict=True))
-    # The stopping point may not be reserved below the work table (top z 0.05,
-    # mujoco_simulator.yaml) — the box floor sits above it.
-    assert lo[2] > 0.05
-
-
-# ── ur5e_p1b S8-I (the switched-in pose as the wait pose) ────────────────────
-
-
-def test_wait_pose_current_is_reach_first_plus_the_source_leaf(arms, shipped):
-    """ONE leaf on top of the reach-first arm: `wait_pose_source: current`. The
-    widened box is not optional (the shipped box is the hull around the SHIPPED
-    wait pose — another pose's surroundings are outside it), and the shipped
-    source must be `yaml` for the arm to change anything."""
-    base = _leaves(arms[REACH_FIRST])
-    leaves = _leaves(arms[WAIT_POSE_CURRENT])
-    assert {k: v for k, v in leaves.items() if k != WAIT_POSE_SOURCE} == base
-    assert leaves[WAIT_POSE_SOURCE] == "current"
-    assert shipped["catching"]["planner"]["wait_pose_source"] == "yaml"
+def test_the_commit_window_is_derived_from_t_arm(arms, shipped):
+    _check_commit_window(arms[LEAD_ON]["catching"], shipped["catching"], "ur5e_p1b")
 
 
 # ── ur5e_p1b sim.yaml (S8-G R2: the planner's envelope box) ──────────────────
