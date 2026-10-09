@@ -1173,7 +1173,8 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     // Every one is named, so one configure tells the operator all of it.
     const bool removed_box =
         params_.joint_cmd_accel_constraint == rtc::catching::CatchingAccelConstraint::kRemovedBox;
-    if (!removed_arm_box_keys_.empty() || removed_box || !renamed_keys_.empty()) {
+    if (!removed_arm_box_keys_.empty() || removed_box || !renamed_keys_.empty() ||
+        !removed_catch_box_keys_.empty()) {
       sim_only_disabled_ = true;
       park_reason_ = CatchingParkReason::kRemovedKey;
       // A key that moved (#711) is no longer read: without this the new key
@@ -1186,6 +1187,14 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
                      "DISABLED: 'catching.%s' was renamed — write it as 'catching.%s'%s. This "
                      "controller will refuse to activate; the robot still comes up.",
                      key.old_path, key.new_path, also.c_str());
+      }
+      for (const char* key : removed_catch_box_keys_) {
+        RCLCPP_ERROR(logger_,
+                     "DISABLED: 'catching.%s' was removed — delete the key: the search does not "
+                     "judge where the catch point is, so a catch box no longer keeps a plan from "
+                     "being made. This controller will refuse to activate; the robot still comes "
+                     "up.",
+                     key);
       }
       for (const std::string& key : removed_arm_box_keys_) {
         RCLCPP_ERROR(logger_,
@@ -1854,9 +1863,6 @@ const char* DemoCatchingController::PlannerDecisionMissing() const noexcept {
   }
   // The grid search's decisions, when it is the search that runs.
   if (search_mode_ == rtc::catching::CatchingSearchMode::kGrid) {
-    if (!p.catch_box.set) {
-      return "planner.search.grid.workspace.catch_box";
-    }
     if (!std::isfinite(p.d_eff)) {
       return "planner.search.grid.hand.d_eff";
     }
@@ -2381,11 +2387,29 @@ const char* DemoCatchingController::DockingConfigInvalid() {
   if (params_.ball.mass.tbd) {
     return refuse("'catching.core.ball.mass' is unset or TBD (the impact rows)");
   }
-  // A selected function's own decisions first: without its map every value
-  // below is a code default, and a refusal that names one of those (the lead
-  // against a default closing speed) would hide that the map is missing.
-  if (nlp && !nlp_search_params_.catch_box.set) {
-    return refuse("'catching.planner.search.nlp.catch_box' is unset or TBD");
+  // A selected function's own map first: without it every value below is a
+  // code default, and a refusal that names one of those (the lead against a
+  // default closing speed) would hide that the map is missing — or nothing
+  // would refuse, and the search would run on defaults no profile wrote. The
+  // map has no decision key of its own to be unset (the catch box was the one,
+  // MD-94), so what is asked for is the map and the core design inside it:
+  // that catches a profile without the search's fragment, and an overlay that
+  // wrote a leaf or two into the gap. It cannot tell a complete map from one
+  // that has a `core:` and little else.
+  if (nlp) {
+    // Const nodes throughout: a lookup must not create the key it asks about.
+    const YAML::Node& catching = catching_node_;
+    const YAML::Node planner = catching["planner"];
+    const YAML::Node search =
+        planner.IsDefined() && planner.IsMap() ? planner["search"] : YAML::Node();
+    const YAML::Node map = search.IsDefined() && search.IsMap() ? search["nlp"] : YAML::Node();
+    const bool has_map = map.IsDefined() && map.IsMap();
+    const YAML::Node core = has_map ? map["core"] : YAML::Node();
+    if (!has_map || !core.IsDefined() || !core.IsMap()) {
+      return refuse(
+          "'catching.planner.search.nlp.core' is not in this profile (the selected search's "
+          "map — is its file included?)");
+    }
   }
   if (docking && mpc_docking_params_.n_pre_max < 1) {
     return refuse(
@@ -2816,9 +2840,6 @@ const char* DemoCatchingController::SegmentModeUnmet() const noexcept {
   if (static_cast<int>(arm_q_min_margined_.size()) != arm_dof_) {
     return "the CLIK's position box is off (device position limits incomplete)";
   }
-  // planner.search.grid.workspace.catch_box is not one of these (MD-73): the RT does not
-  // judge where a stop ends. The search needs it, and says so itself
-  // (kPlannerUnset).
   // MD-45, MD-70: the arm follows a segment from APPROACH, and a plan is
   // published only together with one that starts before t_c. Without a
   // pre-catch grid no MPC segment planner is built — no trial would ever start. The

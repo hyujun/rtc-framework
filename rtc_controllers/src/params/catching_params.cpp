@@ -1173,6 +1173,16 @@ std::vector<RenamedCatchingKey> FindRenamedCatchingKeys(const YAML::Node& catchi
   return found;
 }
 
+std::vector<const char*> FindRemovedCatchingKeys(const YAML::Node& catching) {
+  std::vector<const char*> found;
+  for (const char* key : kRemovedCatchingKeys) {
+    if (HasPath(catching, key)) {
+      found.push_back(key);
+    }
+  }
+  return found;
+}
+
 std::size_t SearchCopiesThatDiffer(const CatchingParams& params,
                                    std::array<CatchingKeyCopy, 5>& out) noexcept {
   struct Pair {

@@ -9,8 +9,9 @@
 //
 // What this does NOT judge, and the python side must not pretend it does:
 //   - the γ rollout (§4.8) — no such function exists before S6.3;
-//   - membership of p_stop in the catch workspace — `planner.search.grid.workspace.catch_box`
-//     is still TBD, so p_stop is reported and the caller applies its own bound;
+//   - whether p_stop is somewhere the arm may stop — the runtime search has
+//     no such gate (MD-94), so p_stop is reported and the caller applies its
+//     own bound;
 //   - q̇ᵘ itself. It arrives as an input column (the map's python produces it);
 //     the runtime planner produces it with `UnitSpeedJointVelocity` (S6-B), the
 //     same DLS formula, and the gate verdict itself is one shared core —

@@ -115,8 +115,8 @@ struct TrajInputConfig {
   std::int64_t track_eval_offset_ns{0};
   double j_warn_m{-1.0};  // negative ⇒ no jump warning configured
   std::string expected_frame{"world"};
-  /// Vision world → MODEL world (the Pinocchio universe the planner, its
-  /// catch_box and CLIK all work in — L3 §4.2: on ur5e_p1b the model root is
+  /// Vision world → MODEL world (the Pinocchio universe the planner and the
+  /// CLIK work in — L3 §4.2: on ur5e_p1b the model root is
   /// `base_link`, a 180° turn about z from the sim world). Applied once per
   /// accepted message to p, v, a and the 6×6 [p; v] covariance, so everything
   /// downstream of the ingress is in model coordinates. `to_model` false ⇒ the

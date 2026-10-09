@@ -156,8 +156,9 @@ void ReadDockingCoreParams(const YAML::Node& core_map, const std::string& path, 
 ///        NlpCatchSearchParams, its `core:` sub-map into `.core`. Not read here
 ///        (the caller fills them): `wait_pose`, `wait_pose_n`, `limits`, and
 ///        the hand's values in `.core`. `planner.search.nlp` absent = the
-///        defaults, `catch_box` unset. The siblings `mode` and `ik` of the map
-///        are other parsers' and tolerated; any other unknown key is refused.
+///        defaults. The siblings `mode` and `ik` of the map are other parsers'
+///        and tolerated, as is the removed `catch_box` (MD-94 — the binding
+///        parks on it, kRemovedCatchingKeys); any other unknown key is refused.
 /// @throws std::invalid_argument as ReadDockingCoreParams, and for t_max ≤
 ///         t_lead_min, solve_s > budget_s, n_pre.max < n_pre.min, stop.blocks
 ///         that do not sum to stop.n_nodes, or n_pre.max + stop.n_nodes above

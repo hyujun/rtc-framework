@@ -202,8 +202,8 @@ enum class CatchingParkReason : std::uint8_t {
   /// plan box would have two writers (S6-A).
   kPlannerOracleConflict,
   /// The planner is enabled but a value it cannot guess is unset or TBD
-  /// (`planner.sub_model`, `freeze.T_freeze`, `workspace.catch_box`,
-  /// `hand.d_eff`, `hand.r_cap`) — S6-B.
+  /// (`planner.sub_model`, `freeze.T_freeze`, `hand.d_eff`, `hand.r_cap`) —
+  /// S6-B.
   kPlannerUnset,
   /// The tracking law is wired, so trials can run, but a value the S7
   /// supervisor needs for one is unset or wrong: `planner.freeze.T_freeze`
@@ -1503,6 +1503,10 @@ class DemoCatchingController final : public RTControllerInterface {
   /// path; empty when none. on_configure parks on them (kRemovedKey), naming
   /// the old and the new path.
   std::vector<rtc::catching::RenamedCatchingKey> renamed_keys_;
+  /// Every removed catch-box key (MD-94, kRemovedCatchingKeys) LoadConfig
+  /// found, as the ERROR quotes it after `catching.`; empty when none.
+  /// on_configure parks on them (kRemovedKey).
+  std::vector<const char*> removed_catch_box_keys_;
   std::vector<double> arm_qdd_max_;  // device order, the judged `robot.arm.qdd_max`
   /// The judged box's `provisional` flag. Meaningful only while `arm_qdd_max_`
   /// is not empty; rewritten by every ApplyArmAccelBox().

@@ -156,12 +156,17 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
   arm_qdd_provisional_cfg_ = true;
   removed_arm_box_keys_.clear();
   renamed_keys_.clear();
+  removed_catch_box_keys_.clear();
   if (catching_section_present_) {
     // The keys that moved (#711). The parsers below no longer read the old
     // paths, so an overlay that still writes one would be ignored and the new
     // key would run on its default under the overlay's name. on_configure
     // parks on every one found (kRemovedKey).
     renamed_keys_ = rtc::catching::FindRenamedCatchingKeys(catching);
+    // The catch box (MD-94): the searches no longer judge where a catch point
+    // is and no parser reads the keys. An overlay that still writes one was
+    // tuned for that gate — parked on, like the keys above.
+    removed_catch_box_keys_ = rtc::catching::FindRemovedCatchingKeys(catching);
     if (const YAML::Node frame = catching["catch_frame"]; frame) {
       catch_frame_name_ = frame.as<std::string>();
     }
@@ -1571,9 +1576,9 @@ void DemoCatchingController::RunSegmentLane() noexcept {
   segment_pair_ok_ = false;
   // TRACKING judges the box against the plan this tick could adopt; the modes
   // that follow a plan judge it against that plan. Where the segment's stop
-  // ends is not judged here (MD-73): catch_box is the planner search's, and
-  // the stop only has to respect the joint limits — the MPC's rows and the
-  // CLIK's boxes hold those.
+  // ends is not judged, here (MD-73) or in the search (MD-94): the stop only
+  // has to respect the joint limits — the MPC's rows and the CLIK's boxes hold
+  // those.
   const bool pairing = mode_ == Mode::kTracking;
   if (pairing ? !PlanAdoptableThisTick()
               : !(mode_ == Mode::kApproach || mode_ == Mode::kCommitted ||

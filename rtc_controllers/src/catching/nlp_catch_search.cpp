@@ -109,9 +109,6 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
       return fail("nlp search: wait_pose is not finite");
     }
   }
-  if (!p.catch_box.set) {
-    return fail("nlp search: catch_box is not set");
-  }
   if (!FinitePositive(p.cand_dt) || !FinitePositive(p.t_lead_min) || !FinitePositive(p.t_max) ||
       !FinitePositive(p.dt_pre) || !FinitePositive(p.dt_stop) || !FinitePositive(p.budget_s) ||
       !FinitePositive(p.solve_budget_s) || !FiniteNonNegative(p.start_lead_s) ||
@@ -745,9 +742,6 @@ NlpReject NlpCatchSearch::CatchBallVerdict(const BallNodeSample& ball) const noe
   if (!ball.valid || ball.after_horizon || !ball.p.allFinite() || !ball.v.allFinite() ||
       !ball.a.allFinite() || !(ball.v.norm() >= ik_options_.v_eps)) {
     return NlpReject::kBallInvalid;
-  }
-  if (!params_.catch_box.Contains(ball.p.x(), ball.p.y(), ball.p.z())) {
-    return NlpReject::kWorkspace;
   }
   if (params_.core.chance && !ball.cov_valid) {
     return NlpReject::kCovariance;

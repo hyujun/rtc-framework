@@ -23,11 +23,6 @@ namespace {
       return PlanReason::kIkFailed;
     case JudgeReject::kManipulability:
       return PlanReason::kManipulability;
-    case JudgeReject::kWorkspace:
-      // The W_catch gate (L3 §4.9 — p_c AND p_stop inside catch_box). The
-      // frozen message (D-20) has no separate workspace reason; which of the
-      // two left the box is in planner_events.csv (rej_workspace).
-      return PlanReason::kStoppingDistance;
     case JudgeReject::kNotEvaluated:
       return PlanReason::kBudgetExceeded;
     case JudgeReject::kNone:
@@ -323,8 +318,6 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
     const double speed = v.norm();
     if (!p.allFinite() || !v.allFinite() || !std::isfinite(speed) || speed < ik_options_.v_eps) {
       c.reject = JudgeReject::kInput;
-    } else if (!params_.catch_box.Contains(p.x(), p.y(), p.z())) {
-      c.reject = JudgeReject::kWorkspace;
     } else {
       c.reject = JudgeReject::kNotEvaluated;  // until IK runs on it
     }
@@ -531,14 +524,6 @@ PlanSnapshot GridCatchSearch::Plan(const TrajectorySnapshot& traj, const Covaria
       rollout_ok = rc.accepted;
       window_only = rc.window_only;
     }
-    // Judgement: where the arm stops after the catch must be in the box.
-    const StoppingReservation stop = StoppingPoint(p, v, gamma_f, constants_.a_dec);
-    if (!stop.valid ||
-        !params_.catch_box.Contains(stop.p_stop.x(), stop.p_stop.y(), stop.p_stop.z())) {
-      c.reject = JudgeReject::kWorkspace;
-      continue;
-    }
-
     // ── Rank gates (decision D) ─────────────────────────────────────────────
     std::uint16_t mask = 0;
     if (!c.sigma_known || !(c.sigma <= kappa_rcap)) {
