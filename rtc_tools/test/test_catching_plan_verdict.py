@@ -207,6 +207,46 @@ class TestVerdict:
         assert "first_solve_cut" not in v and "replace_attempts" not in v
 
 
+class TestVerdictWindowEnd:
+    def test_the_window_ends_at_the_first_impact(self):
+        assert ct.verdict_window_end(12.0, 1.06) == 1.06
+        # an impact after the record's end (truth outlives the mode log): the record's end
+        assert ct.verdict_window_end(2.4, 3.0) == 2.4
+
+    @pytest.mark.parametrize("impact", [float("nan"), float("inf")])
+    def test_a_throw_with_no_impact_on_record_keeps_the_whole_record(self, impact):
+        assert ct.verdict_window_end(2.4, impact) == 2.4
+
+    def test_wakes_after_the_impact_no_longer_outvote_the_flight(self):
+        # Three flight wakes refused on the IK, then a ball on the floor for the rest
+        # of a long record: every later wake says "uncertainty". Over the whole record
+        # that is the throw's most frequent reason; over the flight it is the IK.
+        rows = [{"plan_reason": 2}] * 3 + [{"plan_reason": 1}] * 20
+        t = np.concatenate([[0.1, 0.4, 0.7], 1.5 + 0.5 * np.arange(20)])
+        t_end, t_impact = 12.0, 1.06
+        whole = _verdict(rows, t=t, window=(0.0, t_end))
+        flight = _verdict(rows, t=t, window=(0.0, ct.verdict_window_end(t_end, t_impact)))
+        assert whole["plan_reject"] == "search:uncertainty"  # positive control: the old window
+        assert flight["plan_reject"] == "search:ik_failed"
+        assert flight["plan_reject_last"] == "search:ik_failed"
+        assert whole["plan_verdict"] == flight["plan_verdict"] == "no_plan"
+
+    def test_a_plan_found_only_after_the_impact_is_not_the_throws(self):
+        # A search that accepts a bounced ball does not make the throw an accepted one.
+        rows = [{"plan_reason": 2}] * 3 + [{"outcome": "held", "search_valid": 1}]
+        t = np.array([0.1, 0.4, 0.7, 1.6])
+        assert _verdict(rows, t=t, window=(0.0, 12.0))["plan_verdict"] == "withheld"
+        end = ct.verdict_window_end(12.0, 1.06)
+        assert _verdict(rows, t=t, window=(0.0, end))["plan_verdict"] == "no_plan"
+
+    def test_the_session_analysis_cuts_the_window_there(self):
+        # The call site, not only the function: analyse_session hands the verdict the
+        # flight's end. Read from the source so a revert of the one line is caught.
+        source = Path(ct.__file__).read_text()
+        call = source[source.index("plan_verdict_window(\n                        wakes_t") :]
+        assert "verdict_window_end(trial.t_end, t_impact)" in call[:400]
+
+
 def test_plan_reason_names_match_the_cpp_enum():
     hdr = (
         Path(__file__).resolve().parents[2]

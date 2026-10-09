@@ -2837,7 +2837,11 @@ def analyse_session(
             if verdict_events is not None:
                 row.update(
                     plan_verdict_window(
-                        wakes_t, planner_wakes[1], verdict_events, trial.t_launch, trial.t_end
+                        wakes_t,
+                        planner_wakes[1],
+                        verdict_events,
+                        trial.t_launch,
+                        verdict_window_end(trial.t_end, t_impact),
                     )
                 )
         row["ref_saturated_max_streak"] = max_streak(ctx.ref_valid & ctx.ref_saturated)
@@ -4014,14 +4018,34 @@ def most_frequent_reason(reasons: Sequence[str]) -> str:
     return next(r for r in reversed(judged) if counts[r] == best)
 
 
+def verdict_window_end(t_end: float, t_first_impact: float) -> float:
+    """Where a throw's verdict window ends: its first impact, or the end of the record.
+
+    A throw is judged over the wakes of its FLIGHT — launch to the first impact
+    (the floor, the robot, the hand: ``t_first_impact``). The record goes on after
+    that, for as long as the driver's end rule keeps it (12 s under the cap, about
+    a second after the ball is down under ``--end-on-ball-low``), and the planner
+    keeps waking on a ball that lies on the floor. Counting those wakes made the
+    most frequent reason a function of the record's length: the same refused throws
+    read ``search:uncertainty`` in a 12 s record and ``search:ik_failed`` in a 2.4 s
+    one (#747). It is also the window of the offline search map, which stops a
+    throw's wakes at the floor. A throw with no impact on record (no ground truth,
+    no contact lane, a ball still in the air at the end) keeps the whole record.
+    """
+    if not math.isfinite(t_first_impact):
+        return t_end
+    return min(t_end, t_first_impact)
+
+
 def plan_verdict_window(
     wake_t_relative_s: np.ndarray, plan_valid: np.ndarray, events, t_launch: float, t_end: float
 ) -> dict:
     """One throw's verdict — did the planner give the RT a plan — and why not.
 
-    Over the wakes of ``[t_launch, t_end]`` (the whole throw; ``events`` is
+    Over the wakes of ``[t_launch, t_end]`` (``events`` is
     :func:`_planner_verdict_events`, one row per wake on the same index as the two
-    arrays):
+    arrays). The session analysis passes the throw's flight —
+    :func:`verdict_window_end` — not the whole record:
 
     - ``plan_verdict``: ``published`` — a valid plan was stored on some wake;
       ``withheld`` — a search found one and none was stored (under a planner
