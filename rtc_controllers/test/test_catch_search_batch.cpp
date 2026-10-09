@@ -73,6 +73,12 @@ std::vector<std::string> Split(const std::string& line) {
   }
 }
 
+/// A result row without its last cell, `wall_us`: the one column that is the
+/// machine's timing and not the search's verdict, so two runs never agree on it.
+std::string WithoutWallUs(const std::string& row) {
+  return row.substr(0, row.rfind(','));
+}
+
 std::map<std::string, std::string> Cells(const SearchBatchRow& row, int nv) {
   const auto names = Split(SearchBatchCsvHeader(nv));
   const auto values = Split(SearchBatchCsvRow(row, nv));
@@ -227,7 +233,9 @@ TEST(CatchSearchBatch, ARowIsTheDirectPlanCallAndTheThrowStopsAtItsFirstPlan) {
     row.now_ns = wakes[i].now_ns;
     row.plan = direct.search->Plan(in.traj, in.cov, true, in.rt, none, NowReal{wakes[i].now_ns}, 0,
                                    row.stats);
-    EXPECT_EQ(SearchBatchCsvRow(row, rig.arm.nv), SearchBatchCsvRow(rows[i], rig.arm.nv)) << i;
+    EXPECT_EQ(WithoutWallUs(SearchBatchCsvRow(row, rig.arm.nv)),
+              WithoutWallUs(SearchBatchCsvRow(rows[i], rig.arm.nv)))
+        << i;
   }
 }
 
@@ -246,7 +254,7 @@ TEST(CatchSearchBatch, AThrowsRowsDoNotDependOnTheThrowsBeforeIt) {
   const auto by_throw = [&](const std::vector<SearchBatchWake>& wakes) {
     std::map<std::int64_t, std::vector<std::string>> out;
     for (const auto& row : RunSearchBatch(*search.search, search.q_rest, wakes)) {
-      out[row.throw_id].push_back(SearchBatchCsvRow(row, rig.arm.nv));
+      out[row.throw_id].push_back(WithoutWallUs(SearchBatchCsvRow(row, rig.arm.nv)));
     }
     return out;
   };
