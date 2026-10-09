@@ -384,8 +384,8 @@ TEST(GridCatchSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   // The same line 100 m off: no candidate's catch point is within the arm's
-  // reach, so the IK gate removes every one it runs on. (Until that gate was removed — L3 §4.9 —
-  // this test used the catch box, a gate that no longer exists.)
+  // reach, so the reach bound removes every one — before the IK, which does
+  // not run. The published reason is the IK's: no pose puts the arm there.
   auto traj = rig->Traj();
   for (int k = 0; k < traj.n; ++k) {
     traj.s[static_cast<std::size_t>(k)].p[0] += 100.0;
@@ -396,14 +396,34 @@ TEST(GridCatchSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
   EXPECT_FALSE(plan.valid);
   EXPECT_EQ(plan.reason, PlanReason::kIkFailed);
   EXPECT_EQ(stats.n_pass, 0);
+  ASSERT_GT(stats.n_in_window, 0);
+  EXPECT_EQ(stats.n_ik, 0);
+  EXPECT_EQ(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kTooFar)], stats.n_in_window);
+  EXPECT_EQ(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kIk)], 0);
+}
+
+TEST(GridCatchSearchPlan, TheIkGateRemovesEveryCandidateItRunsOnAndNamesItself) {
+  auto rig = std::make_unique<Rig>();
+  // One iteration is not enough to reach any catch pose from the wait pose:
+  // the IK runs on every candidate within reach and refuses each.
+  rig->ik.max_iter = 1;
+  ASSERT_TRUE(rig->Configure());
+  const auto traj = rig->Traj();
+  SearchStats stats;
+  const PlanSnapshot plan = rig->search.Plan(traj, Rig::Cov(traj, 0.002), true, rig->Rt(),
+                                             kNoSegments, NowReal{kNow}, 0, stats);
+  EXPECT_FALSE(plan.valid);
+  EXPECT_EQ(plan.reason, PlanReason::kIkFailed);
+  EXPECT_EQ(stats.n_pass, 0);
   ASSERT_GT(stats.n_ik, 0);
   EXPECT_EQ(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kIk)], stats.n_ik);
 }
 
-TEST(GridCatchSearchPlan, NothingButTheInputRemovesACandidateBeforeTheIk) {
+TEST(GridCatchSearchPlan, OnlyTheInputAndTheReachBoundRemoveACandidateBeforeTheIk) {
   // L3 §4.9: no gate judges WHERE a candidate's catch point is. Every candidate
-  // in the lead window with a finite, moving ball either reaches the IK or is
-  // left outside its budget — the two counts add up to the window.
+  // in the lead window with a finite, moving ball reaches the IK, is left
+  // outside its budget, or is farther from the arm than its kinematics can put
+  // the catch frame (L3 appendix B) — the three counts add up to the window.
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
@@ -413,8 +433,32 @@ TEST(GridCatchSearchPlan, NothingButTheInputRemovesACandidateBeforeTheIk) {
   EXPECT_TRUE(plan.valid);
   ASSERT_GT(stats.n_in_window, 0);
   EXPECT_EQ(stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kInput)], 0);
-  EXPECT_EQ(stats.n_ik + stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kNotEvaluated)],
+  const int too_far = stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kTooFar)];
+  EXPECT_EQ(stats.n_ik + stats.judge_rejects[static_cast<std::size_t>(JudgeReject::kNotEvaluated)] +
+                too_far,
             stats.n_in_window);
+  // The line leaves the arm's reach at both ends, and the count is exactly the
+  // candidates beyond the search's own bound: recomputed here from the samples
+  // of the lead window (vision spacing = slice spacing in this rig).
+  const rtc::catching::ReachBound& reach = rig->search.Reach();
+  ASSERT_TRUE(reach.Bounded());
+  int beyond = 0;
+  int in_window = 0;
+  for (int k = 0; k < traj.n; ++k) {
+    const auto& s = traj.s[static_cast<std::size_t>(k)];
+    const double lead = static_cast<double>(s.t_ns - kNow) * 1e-9;
+    if (!(lead >= rig->params.LeadMin()) || !(lead <= rig->params.slice_t_max)) {
+      continue;
+    }
+    ++in_window;
+    const Eigen::Vector3d p(s.p[0], s.p[1], s.p[2]);
+    if (!rtc::catching::WithinReach(reach, p, rig->ik.eps_pos)) {
+      ++beyond;
+    }
+  }
+  ASSERT_EQ(in_window, stats.n_in_window);
+  EXPECT_GT(too_far, 0);
+  EXPECT_EQ(too_far, beyond);
 }
 
 TEST(GridCatchSearchPlan, AFailedRankGatePenalisesButDoesNotRemove) {
@@ -996,6 +1040,10 @@ TEST(GridCatchSearchReview, OneSlowSolveDoesNotStopThePlannerForGood) {
 
 TEST(GridCatchSearchReview, AMovedPredictionOfTheFollowedCandidateIsRefreshed) {
   auto rig = std::make_unique<Rig>();
+  // One IK a wake: the followed candidate (always first) is the only one
+  // judged, so it IS the best — the case this rule is about, apart from which
+  // candidate would win a comparison.
+  rig->params.max_ik = 1;
   ASSERT_TRUE(rig->Configure());
   const auto traj = rig->Traj();
   SearchStats stats;
