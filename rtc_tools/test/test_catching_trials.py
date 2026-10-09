@@ -2842,3 +2842,27 @@ def test_a_diag_that_mixes_old_and_new_column_names_is_refused(tmp_path):
     frame.to_csv(pe, index=False)
     with pytest.raises(ck.MixedColumnNamesError, match="decel_kind.*segment_kind"):
         ct._read_csv(ctl / "planner_events.csv")
+
+
+def test_a_throw_list_trial_carries_its_throw_id_into_the_row(pilot, tmp_path):
+    """A trial thrown from a throw list keeps its ``throw_id`` (the key an offline map of
+    the same list joins on); a trial without one gets no such column."""
+    import json
+    import shutil
+
+    trials_dir = tmp_path / "trials"
+    shutil.copytree(FIXTURE / "trials", trials_dir)
+    records = json.loads((trials_dir / "trial_results.json").read_text())
+    for r in records:
+        if r["idx"] in (2, 5):
+            r["throw_id"] = 100 + r["idx"]
+    (trials_dir / "trial_results.json").write_text(json.dumps(records))
+    profile = ct.load_profile(FIXTURE / "config", session=FIXTURE / "session")
+    settings = ct.Settings(v_max=PILOT_V_MAX_M_S, n_boot=20)
+    result = ct.analyse_session(
+        FIXTURE / "session", trials_dir, profile, (FIXTURE / "robot.urdf").read_text(), settings
+    )
+    rows = {r["idx"]: r for r in result.rows}
+    assert rows[2]["throw_id"] == 102 and rows[5]["throw_id"] == 105
+    assert all("throw_id" not in r for idx, r in rows.items() if idx not in (2, 5))
+    assert all("throw_id" not in r for r in pilot.rows)

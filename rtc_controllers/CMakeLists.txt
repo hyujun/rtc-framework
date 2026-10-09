@@ -88,6 +88,11 @@ add_library(rtc_controllers STATIC
   # γ window, stopping point) over CSV. In the library for the same reason as
   # the file above — the CSV contract and the verdicts are gtest-reachable.
   src/catching/catch_gate_batch.cpp
+  # dynamic_catching L3 §4.1: the search itself (CatchSearch::Plan) over the
+  # wakes of a throw, from CSV. In the library for the same reason as the two
+  # files above — the CSV contract, the wake inputs and the binding are
+  # gtest-reachable.
+  src/catching/catch_search_batch.cpp
   # dynamic_catching S6: the planner thread's `planner.*` keys (sibling of the
   # two parsers above — this one describes how the thread runs, not what a
   # catch pose is) and one planner wake: inputs → PlanOnce → provenance
@@ -165,6 +170,13 @@ target_link_libraries(catch_pose_ik_batch rtc_controllers)
 add_executable(catch_gate_batch src/catching/catch_gate_batch_main.cpp)
 target_link_libraries(catch_gate_batch rtc_controllers)
 
+# ARCH-7-exempt: same category as above (an offline inspection tool) — the
+# catch search's verdict map. The model, the catching tree, the values a
+# controller binds at configure time and the prediction snapshots arrive by
+# argv; it calls CatchSearch::Plan as a planner wake does.
+add_executable(catch_search_batch src/catching/catch_search_batch_main.cpp)
+target_link_libraries(catch_search_batch rtc_controllers)
+
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS rtc_controllers
   EXPORT export_${PROJECT_NAME}
@@ -173,7 +185,7 @@ install(TARGETS rtc_controllers
   RUNTIME DESTINATION bin
 )
 
-install(TARGETS catch_pose_ik_batch catch_gate_batch
+install(TARGETS catch_pose_ik_batch catch_gate_batch catch_search_batch
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -766,6 +778,16 @@ if(BUILD_TESTING)
   # of the runtime gate functions, order independence, fail-closed settings.
   ament_add_gtest(test_catch_gate_batch test/test_catch_gate_batch.cpp)
   target_link_libraries(test_catch_gate_batch rtc_controllers)
+
+  # dynamic_catching L3 §4.1: search batch — a row is the direct Plan call's
+  # result, the verdict of a throw does not depend on the order of the throws,
+  # the CSV carries the doubles bit-exactly, the binding file is fail-closed.
+  # Drives the real 6R arm (the grid search's rig), hence the fixture dirs.
+  ament_add_gtest(test_catch_search_batch test/test_catch_search_batch.cpp)
+  target_link_libraries(test_catch_search_batch rtc_controllers)
+  target_include_directories(test_catch_search_batch PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_catch_search_batch PRIVATE -Wno-mismatched-new-delete)
 
   # dynamic_catching S6-A: planner data contract + one planner wake. The RT
   # admission rule (L3 §5.2 (a)-(f)), `planner.*` parsing, the cycle's

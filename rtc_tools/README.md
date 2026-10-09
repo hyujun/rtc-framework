@@ -31,6 +31,8 @@ rtc_tools/
 │   │   │                                   + C++ judge 배치 드라이버·집계·CLI (S3.5a)
 │   │   ├── catch_speed_budget.py        ← 수락 후보별 팔 속도·토크 한계 방향 가속 → γ 창 판정표 (S4.4)
 │   │   ├── catch_gate_map.py            ← kinematic 지도 위의 나머지 게이트 (도달시간·γ 창·정지점) → gate-catchable 지도 (S3.5b)
+│   │   ├── catch_search_map.py          ← 계획기 탐색 자체 (`catch_search_batch`) 의 투척별 수용 지도 · binding · gate/sim 대조 (L3 §4.1)
+│   │   ├── catching_throw_list.py       ← 투척 목록 파일 `catching_throw_list/1` 의 단일 형식 (검증·읽기·쓰기 — 지도와 sim 드라이버가 함께 쓴다)
 │   │   ├── vision_lane.py               ← ball_perception 예측 lane 디코더·요약 (D-4 / S3.4)
 │   │   ├── vision_lane_probe.py         ← 예측·카메라·truth·diagnostics 를 CSV 로 기록 (S3.4) · `--dump` 전 지평·공분산·innovation·nis (S8-A)
 │   │   ├── camera_relay.py              ← 카메라 lane 릴레이 + 드롭·지연 주입 (S3.4)
@@ -84,6 +86,7 @@ rtc_tools/
 | `ros2 run rtc_tools catchability_map` | `analysis.catchability_map` | catchability 지도 (grid → 비행 → C++ judge → 집계·플롯) |
 | `ros2 run rtc_tools catch_speed_budget` | `analysis.catch_speed_budget` | 지도의 수락 후보별 v_dir,max (LP·DLS)·토크 한계 방향 가속·stroke → γ 창이 열리는 투척 표 |
 | `ros2 run rtc_tools catch_gate_map` | `analysis.catch_gate_map` | kinematic 지도의 수락 후보를 `catch_gate_batch` (런타임 게이트 함수) 로 판정 + 토크 검사 도달시간 층 → 두 층의 gate-catchable 지도·탈락 사유·대기 자세 제안 |
+| `ros2 run rtc_tools catch_search_map` | `analysis.catch_search_map` | 투척 설계 → 비행 모델의 wake 열 → `catch_search_batch` (런타임 `CatchSearch::Plan`, grid · nlp) → 투척별 수용 · 사유 · 축별 수용률 · 두 탐색 불일치 · gate 지도 층별 대조 · sim 판정 × 결과 표 |
 | `ros2 run rtc_tools catching_trials` | `analysis.catching_trials` | `catching_sim_trials` 한 run (세션 CSV + trials dir + sim lane) → 시행별 표·요약 JSON (S8-A) |
 | `ros2 run rtc_tools catching_decel` | `analysis.catching_decel` | unit 들의 DECEL 정지 구간 지표 (시행별 표·요약 JSON) · `--a`/`--b` 로 같은 투척의 2×2 표·불일치율·paired 비열등 시행 수·Tango 비열등 검정과 정확 검정력 (MPC 계획 E0-F02 · E1-F06) |
 | `ros2 run rtc_tools catching_grid_sweep` | `analysis.catching_grid_sweep` | arm (격자 조건) 별 성공률·수신 메시지·예측 오차·계획기 시간 · `--ref` 대비와 `--pair` 의 paired 차이·McNemar·Holm (MPC 계획 E0-F04) |
@@ -345,7 +348,8 @@ ros2 run rtc_tools analyze_vision_lane <prefix>
 
 `integrated_bringup` 의 `catching_sim_trials` 한 run 이 남긴 세 가지 — 컨트롤러 세션 CSV, 러너의 trials
 dir (`trial_results.json` + `run_meta.json` + 시행별 truth CSV), `sim_lanes:=true` 로 켠 clock·접촉 lane —
-를 시행당 한 행으로 잇는다.
+를 시행당 한 행으로 잇는다. 투척 목록 (`--throws-file`) 으로 던진 시행의 행은 그 투척의 `throw_id` 를 갖는다
+(`catch_search_map --sim-trials` 가 오프라인 지도와 잇는 키).
 
 ```bash
 ros2 run rtc_tools catching_trials <session> <trials_dir> --config-dir <install>/share/integrated_bringup/config/ur5e_p1b \
@@ -381,7 +385,7 @@ ros2 run rtc_tools catching_trials <session> <trials_dir> --config-dir <install>
 - `ref_saturated` 시행별 max streak (G8-C3) — 최상위 `ref_saturated_max_streak` (전체 max) 는 그대로 두고, 게이트가 삭제됐으므로 (D-S8-16) `ref_saturated_streak` 에 빈도 분포만 기록: streak > 0 시행 수, p50/p95/p99/max, 폭 10 tick 히스토그램 (`0`·`1-10`·`11-20`…)
 - **G7-B3 충격량 상관** (`g7b3`): 첫 손–공 접촉 episode 의 예측 Δp = m·v_rel (`contact_mv_rel_ns`) 대 측정 ∫F dt (`contact_impulse_ns`) — OLS 기울기·절편 + 시행 부트스트랩 95 % CI (`--n-boot`·`--seed`), Spearman ρ (p 값) 를 충격량·최대 접촉력 (`contact_peak_force_n`) 각각에 대해. 통과 임계는 정의되지 않았으므로 보고만 하고, n < 50 이면 `NOT_EVALUATED(n < 50)`. 토크는 `NOT_EVALUATED(sim clamp)`
 - **G3-D (i) plan validity 비율** (#537 S8-D, `--clock-lane` 필요): `planner_events.csv` 의 각 행 (`wake_ns`, `plan_valid`) 을 시행의 `[발사, 첫 COMMITTED tick]` (커밋 못 하면 `[발사, 시행 끝]`) 창에 넣어 `planner_cycles`(창 안 행 수)·`plan_valid_cycles`·`plan_valid_ratio`(0 행이면 NaN)·`plan_valid_at_commit`(커밋 시점 또는 그 이전 마지막 행의 `plan_valid`, 커밋 안 하면 NaN) 을 낸다. `plan_valid_ratio` 는 창 안의 **모든** 행이 분모다. `mode: mpc` 에서는 두 번 낮게 읽힌다 — plan 을 첫 구간과 함께만 게시하고 (MD-62), plan 을 따르기 시작하면 탐색 없이 구간만 다시 푸는 wake 도 행을 낸다. 그래서 E1-F05 의 열이 있는 로그에서는 세 질문을 따로 낸다: **탐색** — `search_cycles` (탐색이 돈 wake: `outcome` 이 `idle` · `no_input` 이 아닌 행) · `search_valid_cycles` · `search_valid_ratio` (= 찾음 / 돎, 두 planner 에서 같은 양) 이고 `plan_valid_at_commit` 도 마지막 **탐색** wake 에서 읽는다; **쌍** — `pair_attempt_cycles` (첫 구간을 시도한 wake: `segment_kind` `first`) · `pair_published_ratio` (= 게시 / 시도). 첫 구간을 시도한 적이 없으면 (`closed_form`) `pair_published_ratio` 는 NaN 이다 — 전환 규칙이 보류한 plan 은 쌍의 보류가 아니다. 열이 없는 로그에는 이 키들이 없고 기존 넷은 종전 정의 그대로다. **시간축**: `wake_ns` 는 steady clock (`rtc::SteadyNowNs`, `std::chrono::steady_clock`) 인데, `use_sim_time_sync: true` 인 sim 프로파일의 `t_relative_s` 는 iteration × dt 라 steady/wall 시계와 고정 오프셋이 없다 (`rt_controller_node_rt_loop.cpp:457-459`) — 그래서 clock lane 이 시행마다 짝지은 발사에서 얻은 **그 시행의 오프셋** `ClockLane.trial_offsets[idx]` (발사 시점의 `steady_s − t_relative_s`) 로 `t_relative = wake_ns·1e-9 − trial_offsets[idx]` 로 옮긴다 (`_planner_cycle_times`). 세션 중앙값 `steady_offset` 은 쓰지 않는다 — RTF < 1 이면 오프셋이 세션에 걸쳐 드리프트해 뒤쪽 시행의 창이 밀린다. lane 이 짝짓지 못한 시행은 G3-D 필드가 없다 (D-3 clock covariate 와 같은 규칙). lane 이 없으면 (`--clock-lane` 미지정) G3-D 필드는 전부 비어 있고 요약에 `g3d` 키가 없다. 요약 `g3d`: `n_trials_with_cycles`(≥1 cycle 시행 수)·`plan_valid_ratio_p50_p05_p95`·`approach_plan_switches_distribution`(값별 개수, 기존 `approach_plan_switches` 옆)
-- **투척마다의 판정과 거부 사유** (`plan_verdict_window`, E1-F18 — G3-D 와 같은 입력, 창은 `[발사, 시행 끝]`): `plan_verdict` 는 `published` (유효한 plan 이 한 번이라도 게시됐다) · `withheld` (탐색은 plan 을 찾았으나 게시되지 않았다 — 쌍으로 게시하는 planner 에서 첫 구간이 보류된 것) · `no_plan` (탐색이 한 번도 찾지 못했다) · `no_search` (탐색한 wake 가 없다). plan 을 내지 못한 투척은 wake 마다의 사유를 둘로 줄여 함께 낸다 — `plan_reject` (가장 잦은 것, 동률이면 나중 것) 와 `plan_reject_last` (마지막 wake 의 것). 어느 쪽이 "그" 사유인지는 이 도구가 고르지 않는다 (투척의 앞쪽 wake 는 예측에서, 뒤쪽은 남은 시간에서 걸린다). 사유의 형태는 `search:<이름>` (탐색이 못 찾음 — 로그에 `nlp_reason` 이 있으면 그 이름, 없으면 게시된 "no plan" 의 `PlanReason`), `segment:<outcome>[/<코어 사유>]` (찾았으나 첫 구간이 보류), `cycle:<outcome>[/<decision>]` (찾았으나 주기가 게시하지 않음) 이다. `first_solve_cut` 은 코어가 기한에 끊은 첫 구간 풀이의 수, `replace_attempts` · `replace_published` 는 교체를 시도한 wake 와 게시된 쌍의 수다 (`replace_step` 열이 있는 로그만). 요약 JSON 의 `plan_verdict` 는 이 열들의 분포다. 옛 로그에서는 그 로그에 있는 열로 낼 수 있는 것만 낸다
+- **투척마다의 판정과 거부 사유** (`plan_verdict_window`, E1-F18 — G3-D 와 같은 입력, 창은 `[발사, 시행 끝]`): `plan_verdict` 는 `published` (유효한 plan 이 한 번이라도 게시됐다) · `withheld` (탐색은 plan 을 찾았으나 게시되지 않았다 — 쌍으로 게시하는 planner 에서 첫 구간이 보류된 것) · `no_plan` (탐색이 한 번도 찾지 못했다) · `no_search` (탐색한 wake 가 없다). plan 을 내지 못한 투척은 wake 마다의 사유를 둘로 줄여 함께 낸다 — `plan_reject` (가장 잦은 것, 동률이면 나중 것 — `most_frequent_reason`, `catch_search_map` 의 오프라인 대표 사유와 같은 함수) 와 `plan_reject_last` (마지막 wake 의 것). 어느 쪽이 "그" 사유인지는 이 도구가 고르지 않는다 (투척의 앞쪽 wake 는 예측에서, 뒤쪽은 남은 시간에서 걸린다). 사유의 형태는 `search:<이름>` (탐색이 못 찾음 — 로그에 `nlp_reason` 이 있으면 그 이름, 없으면 게시된 "no plan" 의 `PlanReason`), `segment:<outcome>[/<코어 사유>]` (찾았으나 첫 구간이 보류), `cycle:<outcome>[/<decision>]` (찾았으나 주기가 게시하지 않음) 이다. `first_solve_cut` 은 코어가 기한에 끊은 첫 구간 풀이의 수, `replace_attempts` · `replace_published` 는 교체를 시도한 wake 와 게시된 쌍의 수다 (`replace_step` 열이 있는 로그만). 요약 JSON 의 `plan_verdict` 는 이 열들의 분포다. 옛 로그에서는 그 로그에 있는 열로 낼 수 있는 것만 낸다
 - **`--gate-map DIR` (선택, S8-D)**: `catch_gate_map` 출력 dir — `gate_map_summary.yaml` (`map_dir`: 원본 `catchability_map` dir — `catch_gate_map` 이 절대경로로 적는다, `seed_id`) · `gate_map.csv` (`reason_torque`) · `<map_dir>/throw_summary.csv` (grid 축 값) 를 읽어 `--dist` box 시행 (`distance_m`/`azimuth_deg`/`release_height_m`/`aim_deviation_deg`/`speed_m_s`/`elevation_deg` 을 갖는 것 — reference/varied 시행은 축이 없어 검정 `None`) 마다 가장 가까운 grid 투척을 찾는다 (각 축을 그 축 grid 간격의 중앙값으로 정규화한 유클리드 거리 — 단일 값 축은 정규화에서 제외; 동률은 `throw_index` 가 작은 쪽). 시행별 `map_open`(`seed_id` 에서 `reason_torque=="none"` 후보가 하나라도 있는 grid 투척인지)·`map_throw_index`·`map_distance`. 요약 `gate_map`: `map_dir`·`seed_id`·`verdicted`/`open`/`open_fraction`, 그리고 (hold radius 가 있을 때) `truth_whole`/`truth_open` — 검정받은 (`map_open` 이 `None` 이 아닌) 시행 전체와 그중 `map_open` 부분집합 각각의 truth 성공 수/n/Wilson 95 % (hold radius 없으면 `"NOT_EVALUATED(no hold radius)"`)
 - 라이브러리 함수: `wilson_interval`·S0.9 검정력/필요 n, A⊥B 백색화 교차공분산 (시행 클러스터 부트스트랩, G8-C2), NEES 요약 (raw·centered·coverage, 양측, G8-B) — 둘 다 합성 데이터 positive control 로 테스트. CLI 는 아직 부르지 않는다 (probe 덤프가 있는 세션부터)
 - **로봇 상수 없음** (ARCH-1): catch frame 은 `_base.yaml` (없으면 sim 전용 프로파일의 `sim.yaml`) `urdf.extra_frames`, sim world ↔ model world 는 `catching.io.arm_base_frame`·`base_T_world` 로 `frame_placement_in_model_world` (컨트롤러와 같은 합성), 관절은 diag 의 `q_cmd_*` 열, device·로그 이름은 컨트롤러 `topics`/`logs`, dt 는 러너가 기록한 미러 `control.dt`
@@ -921,6 +925,76 @@ ros2 run rtc_tools catch_gate_map \
   `catch_gate_batch` 를 부르는** CLI end-to-end — 상수 하나가 자기 게이트만 뒤집는지, 가속 box 가 box
   층만 구속하는지, seed 합집합 거부, FK 불일치 거부, judge 에 넘기는 `J_p q̇ᵘ` 가 요청값 v̂ 이 아니라
   달성값인지 (큰 damping 에서), 속도 0 인 수락 행 거부. 변이 18 종 전부 검출
+
+### `catch_search_map.py` — 탐색의 수용 지도 (dynamic_catching L3 §4.1)
+
+투척마다 계획기가 볼 wake 열을 만들어 `rtc_controllers` 의 `catch_search_batch` (런타임 `CatchSearch::Plan`
+— grid · nlp) 에 넘기고, 그 판정을 투척별로 줄인다. **판정은 python 이 하지 않는다**. python 이 맡는 것:
+
+- **투척**: gate 지도와 같은 여섯 발사 축의 격자 (`throw_id` = `catchability_map` 의 `throw_index`, `--grid-origin arm_base`
+  일 때) · 같은 상자의 Latin hypercube 표본 (`--sample N --sample-seed S`) · 또는 `--throws-file` 로 읽은 목록.
+  돌린 투척은 `throw_list.json` (`catching_throw_list/1`, sim world — `catching_sim_trials --throws-file` 이 그대로
+  던진다), 표본만은 `throw_list_sample.json`. 형식의 검증·읽기·쓰기는 `analysis.catching_throw_list` 하나이고 sim
+  드라이버도 같은 모듈로 읽으므로, 지도가 쓴 목록은 드라이버가 받는다 (시행 기록이 직접 쓰는 키 `THROW_RECORD_KEYS`
+  를 가진 항목·문자열이 아닌 `kind` 는 쓸 때 이미 거부된다)
+- **wake** (정의 5): 예측은 비행 모델 자체다 (`integrate_flight` 의 출하 항력 RK4, 가속도는 같은 힘 법칙).
+  투척마다 비행을 **한 번** 적분한다 (`throw_flight`): 비행은 바닥 위 wake 들의 예측 표본 시각만 지나므로 표본은
+  그 시각들 위의 `flight_states` 와 비트 단위로 같고, wake 의 바닥 판정은 그 비행에서 가지를 쳐 읽어 표본을 바꾸지
+  않으며, 아래 축 값은 같은 비행의 적분기 상태 전부 (간격 ≤ `--step-s`) 에서 읽는다.
+  wake 는 발사 뒤 `--detection-delay-s` 부터 `--vision-period-s` 마다, 공이 바닥 (`--min-catch-height-m`, sim world)
+  위·`--horizon-s` 안에 있는 동안. 각 wake 의 snapshot 은 wake 뒤 `k·dt` (k = 1 … `--prediction-horizon-s` / dt) 의
+  상태다 — dt 의 기본은 트리의 `prediction.dt_expected`. 시각은 모든 투척이 같은 발사 시각에 놓인 정수 ns,
+  좌표는 model world (`catching.io.base_T_world` 와 URDF 의 `arm_base_frame` 합성)
+- **binding** (정의 8): 컨트롤러가 configure 에서 묶어 탐색에 넘기는 값을 합성 트리 (컨트롤러 YAML + `_base.yaml`·`sim.yaml`
+  + `--overlay`) 와 로봇 config (장치 한계 = YAML ∩ URDF, CM 의 병합 규칙) 에서 만든다. 팔 관절의 URDF 한계를 CM 이
+  다른 관절의 항목에서 읽게 되는 경우 (다자유도·연속 관절, 또는 그 뒤의 관절) 는 거부한다. 손은 nlp 만 읽고 (CLIK
+  위치 상자가 완결인지 — `BuildClikBoxes`), CM 이 읽는 그대로 (관절 목록 순번의 한계 항목) 읽는다. grid 는 손을
+  읽지 않는다 — 값마다 출처 (키 · 식) 와
+  따라 한 컨트롤러 함수, 있으면 그 값을 실행 중에 담는 read-only 미러 파라미터를 `binding_<search>_sources.yaml` 에
+  적는다. 컨트롤러가 **내장 상수**로 돌 키 (없거나 `TBD` 인 `planner.search.grid.gamma.eta_v` 등) 는 그 키 이름으로
+  거부한다 — 사본을 두지 않는다. 키가 없을 때 컨트롤러도 TBD 로 두는 값은 `.nan` 이다
+- **줄임** (정의 1·2·6·7): 투척별 수용 (어느 wake 든 plan) · 첫 수용 wake · 그 t_c · lead, 거부한 투척의 대표 사유 —
+  sim 의 `plan_reject` 와 **같은 함수** (`catching_trials.most_frequent_reason` ∘ `_wake_reject_reason`, 동률은 나중 것)
+  — 와 줄이지 않은 wake × 사유 수. 축 값 `flight_time_s` · `terminal_speed_m_s` · `closest_distance_m` 은 비행이
+  `planner.wait_pose` 의 포구점에 가장 가까워지는 순간의 값이다 (탐색과 무관)
+- **요약** (기술 통계만): 축별 수용률 · 사유 분포 (투척 / wake) · grid 와 nlp 가 갈리는 투척 · `--gate-map` 의
+  `catch_gate_map` 출력과 같은 축 값의 투척끼리 층별 (gate 열림·닫힘·후보 없음 × 수용·거부, 어긋난 칸의 사유) ·
+  `--sim-trials` 의 `catching_trials.csv` 와 `throw_id` 로 이은 sim 표 (수용·게시 = `published` / 수용·미게시 =
+  `withheld` / 거부 = `no_plan`·`no_search`, × `truth_success`, 무효 시행 제외) 와 오프라인 일치율
+
+어느 탐색을 돌릴지는 `--search` 가 정한다 (트리의 `planner.search.mode` 가 아니다). 그 탐색의 맵
+(`planner.search.<search>`) 이 합성 트리에 없으면 binding 이 거부한다. `planner.segment.mode` 는 lead · nlp 한계의
+속도 여유 · `follows_segments` 를 정한다. 오프라인에 없는 층: 벽시계 거부, 공분산, plan 을 따르는 중의 탐색,
+컨트롤러의 park 조건 — sim 에서 본다.
+
+```bash
+ros2 run rtc_tools catch_search_map \
+  --config-dir <config>/<robot> --search grid nlp --out-dir <out> \
+  --ball-config <config>/<robot>/mujoco_simulator.yaml \
+  --drag-coefficient 0.55 --drag-coefficient-source 'rtc_mujoco_sim/src/projectile_ball.cpp:30' \
+  --air-density 1.204 --air-density-source 'rtc_mujoco_sim/include/rtc_mujoco_sim/projectile_ball.hpp:98' \
+  --distances-m '3.5 4.0' --azimuths-deg '-10 0 10' --release-heights-m 1.8 --aim-deviations-deg 0 \
+  --speeds-m-s '6.0 6.5' --elevations-deg '40 46' --grid-origin wait_catch_point \
+  --detection-delay-s 0.15 --vision-period-s 0.0333333 --prediction-horizon-s 1.0 \
+  [--overlay <file>] [--sample 50 --sample-seed <seed>] [--gate-map <dir>] [--sim-trials <csv>]
+```
+
+출력: `throw_list.json` · `wakes.csv` · `catching_tree.yaml` (batch 에 준 합성 트리) · `model_config.yaml` ·
+`binding_<search>.yaml` · `binding_<search>_sources.yaml` · `search_<search>.csv` (batch 출력 그대로) ·
+`verdicts_<search>.csv` (투척별) · `gate_join_<search>.csv` · `sim_join_<search>.csv` · `search_map_summary.json`.
+탐색이 설정을 거부하면 (batch 종료 코드 3) 그 문장을 요약의 `refused_configuration` 에 적고 지도는 없다.
+
+- 테스트 `test/test_catch_search_map.py`: 격자 id = `generate_throw_grid` 순서, LHS 의 층마다 한 표본 · seed 재현,
+  목록 왕복과 거부, 지도의 목록 함수가 `catching_throw_list` 의 것인지 · 지도가 쓴 격자·표본 목록이 드라이버 규칙을
+  통과하는지, 비행 상태 = 적분기 상태 · 가속도 = 항력 식 (독립 계산), 격자 밖 시각, wake 시각 · 점 수 · model world
+  변환 · 바닥 앞 마지막 wake, 한 번의 적분 = 표본 시각 위 `flight_states` (비트 단위) · wake 판정 = 그 앞 표본과 wake
+  위 `flight_states` · 축 값 = 그 비행의 적분기 상태 위 최근접 (따로 부른 `flight_axes` 는 `integrate_flight` 그대로),
+  binding 의 식 전부 (TBD → NaN, ns 절단, `mpc_docking` 입구 lead, 여유 상자 · 중점 · 손 상자 미완, 토크 여유, 키
+  이름 거부, 연속 관절을 가진 손 — grid 는 손을 읽지 않고 nlp 는 CM 이 읽는 값으로 상자를 세운다), 줄임 · 동률 · wake 없음 ·
+  두 탐색 불일치 · gate 층별 대조 · sim 표, 설치된 `catch_search_batch` 로 출하 프로파일 4 투척 (구조만 — 없으면 skip)
+- 테스트 `test/test_catching_throw_list.py`: 목록 형식 자체 — 비트 단위 왕복 · 순서 · 키 순서, 기본값, 머리 · 항목
+  거부마다 출처와 값을 말하는지, `THROW_RECORD_KEYS` 의 키 하나하나 거부, 비유한 JSON 토큰 · JSON 아님 · 없는 파일,
+  쓰기 전 거부 (파일이 생기지 않음), 한 번 읽기의 sha256 · 절대 경로 · `record()`
 
 
 ### `urdf_to_mjcf.py` — URDF/XACRO → MJCF 변환

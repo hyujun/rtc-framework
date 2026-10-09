@@ -589,6 +589,27 @@ def robot_config_params(config_dir: Path) -> dict:
     )
 
 
+def vision_frame_from_io(io: Mapping, source: str) -> tuple[str, np.ndarray]:
+    """``(arm_base_frame, base_T_world 4×4)`` of a ``catching.io`` tree.
+
+    ``p_base = Rz(yaw_deg) p_world + translation``. Both keys are required: the
+    sim-world → model-world composition is never guessed. ``source`` names the
+    tree in the refusal.
+    """
+    try:
+        base_frame = str(io["arm_base_frame"])
+        btw = io["base_T_world"]
+        base_t_world = make_transform(
+            rotation_z(math.radians(float(btw["yaw_deg"]))), [float(x) for x in btw["translation"]]
+        )
+    except KeyError as exc:
+        raise SystemExit(
+            f"{source}: catching.io lacks {exc.args[0]} — the sim-world → model-world "
+            "composition cannot be read, and guessing it flips the frame silently"
+        ) from exc
+    return base_frame, base_t_world
+
+
 def load_profile(
     config_dir: Path,
     controller: str | None = None,
@@ -631,18 +652,7 @@ def load_profile(
             device_logs[group] = match[0]
         elif i < len(dev_logs):
             device_logs[group] = dev_logs[i]
-    io = node["catching"].get("io") or {}
-    try:
-        base_frame = str(io["arm_base_frame"])
-        btw = io["base_T_world"]
-        base_t_world = make_transform(
-            rotation_z(math.radians(float(btw["yaw_deg"]))), [float(x) for x in btw["translation"]]
-        )
-    except KeyError as exc:
-        raise SystemExit(
-            f"{name}: catching.io lacks {exc.args[0]} — the sim-world → model-world "
-            "composition cannot be read, and guessing it flips the frame silently"
-        ) from exc
+    base_frame, base_t_world = vision_frame_from_io(node["catching"].get("io") or {}, name)
     params = robot_config_params(config_dir)
     frame = extra_frame_from_params(params, catch_frame)
     ball = (node["catching"].get("core") or {}).get("ball") or {}
@@ -2698,6 +2708,9 @@ def analyse_session(
     for trial in trials:
         record = records_by_idx.get(trial.idx, {})
         row = {"idx": trial.idx, "kind": trial.kind, "supervisor": trial.outcome}
+        if "throw_id" in record:
+            # A throw-list trial: the key an offline map of the same list joins on.
+            row["throw_id"] = record["throw_id"]
         row["accepted"] = trial.accepted
         row["seed"] = record.get("seed")
         # D-S8-16 ①: rules 1–3 from the record; 3's "no diag rows" and the
@@ -3928,6 +3941,11 @@ PLAN_VERDICT_NO_PLAN = "no_plan"
 PLAN_VERDICT_NO_SEARCH = "no_search"
 
 
+#: The wake reason of a wake that judged no candidate (the settle rule): it is
+#: not a verdict on the throw and does not take part in the representative-reason vote (most_frequent_reason).
+REASON_SETTLING = "search:settling"
+
+
 def _wake_reject_reason(row: Mapping) -> str:
     """Why ONE searching wake left the RT without a newly published plan.
 
@@ -3951,6 +3969,11 @@ def _wake_reject_reason(row: Mapping) -> str:
             return f"segment:{seg}" + (f"/{core}" if core not in ("", "none") else "")
         decision = text("decision")
         return f"cycle:{outcome}" + (f"/{decision}" if outcome == "held" and decision else "")
+    # The settle rule (grid, L3 §4.4) refuses the first wakes of a new track
+    # before any candidate exists and reports the uncertainty reason for it;
+    # read as its own reason so that it is not counted as the candidates'.
+    if _num(row.get("settling")) > 0.5:
+        return REASON_SETTLING
     nlp = text("nlp_reason")
     if nlp not in ("", "off", "none"):
         return f"search:{nlp}"
@@ -3958,6 +3981,25 @@ def _wake_reject_reason(row: Mapping) -> str:
     if outcome == "published" and np.isfinite(code) and 0 < int(code) < len(PLAN_REASON_NAMES):
         return f"search:{PLAN_REASON_NAMES[int(code)]}"
     return f"cycle:{outcome}" if outcome != "published" else "search:none"
+
+
+def most_frequent_reason(reasons: Sequence[str]) -> str:
+    """One throw's representative reason: the most frequent of its wakes' reasons.
+
+    Ties go to the reason seen last; "" for no wake. Settling wakes
+    (:data:`REASON_SETTLING`) are left out of the vote — they judged nothing —
+    unless every wake was one. The one reduction of a throw's wake reasons — a
+    sim throw's ``plan_reject`` and an offline search map's refused throw are
+    both this function of their :func:`_wake_reject_reason` list.
+    """
+    judged = [r for r in reasons if r != REASON_SETTLING] or list(reasons)
+    counts: dict[str, int] = {}
+    for reason in judged:
+        counts[reason] = counts.get(reason, 0) + 1
+    if not counts:
+        return ""
+    best = max(counts.values())
+    return next(r for r in reversed(judged) if counts[r] == best)
 
 
 def plan_verdict_window(
@@ -4012,12 +4054,7 @@ def plan_verdict_window(
     out = {"plan_verdict": verdict, "plan_reject": "", "plan_reject_last": ""}
     if pick is not None:
         reasons = [_wake_reject_reason(r) for r in ev.loc[pick].to_dict("records")]
-        counts: dict[str, int] = {}
-        for reason in reasons:
-            counts[reason] = counts.get(reason, 0) + 1
-        best = max(counts.values())
-        # Ties go to the reason seen last.
-        out["plan_reject"] = next(r for r in reversed(reasons) if counts[r] == best)
+        out["plan_reject"] = most_frequent_reason(reasons)
         out["plan_reject_last"] = reasons[-1]
     if {"segment_kind", "segment_core_reason", "segment_solve_us"} <= set(ev.columns):
         out["first_solve_cut"] = int(planner_solves.first_solves_cut(ev).sum())
