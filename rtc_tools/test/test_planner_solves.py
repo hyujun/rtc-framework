@@ -378,6 +378,7 @@ def test_the_name_tables_match_the_cpp_headers():
     rejects = [n for n in rejects if n != "unknown"]
     # none, the candidate reasons, then the three wake-only ones.
     assert tuple(rejects[1:-3]) == ps.NLP_REJECT_REASONS
+    assert ps.NLP_REJECT_REASONS.index("too_far") == ps.NLP_REJECT_REASONS.index("no_source") + 1
     steps = names(cycle.read_text(), "ReplaceStepName(ReplaceStep s) noexcept {")
     assert tuple(s for s in steps if s != "unknown") == ps.REPLACE_STEPS
     header = csv.read_text()

@@ -28,8 +28,11 @@ enum class JudgeReject : std::uint8_t {
   kIk,              ///< IK did not converge / was refused
   kManipulability,  ///< the IK's catchability gate (D-18)
   kNotEvaluated,    ///< outside the IK budget (pre-filter or budget_s)
+  /// Farther from the arm than its kinematics can put the catch frame
+  /// (reach_bound.hpp) — refused without running the IK.
+  kTooFar,
 };
-inline constexpr std::size_t kJudgeRejectCount = 5;
+inline constexpr std::size_t kJudgeRejectCount = 6;
 
 /// What the switching rule decided about the plan the RT is following.
 enum class SwitchDecision : std::uint8_t {
@@ -83,6 +86,10 @@ enum class NlpReject : std::uint8_t {
   /// No reported segment to start from at this candidate's node 0 — as a
   /// wake's reason: the RT follows a plan and reports no segment at all.
   kNoSource,
+  /// The IK's target is farther from the arm than its kinematics can put the
+  /// catch frame (reach_bound.hpp) — the last check before the IK, which is
+  /// not run.
+  kTooFar,
   kIk,              ///< the catch-pose IK did not converge or was refused
   kManipulability,  ///< the IK's catchability gate
   kReach,           ///< the catch pose cannot be reached in the time (S4)
@@ -98,7 +105,7 @@ enum class NlpReject : std::uint8_t {
   kNotAtRest,    ///< the RT follows no plan and the arm's command is moving
   kRtInvalid,    ///< the RT's report cannot be planned from (width, age, NaN)
 };
-inline constexpr std::size_t kNlpRejectCount = 19;
+inline constexpr std::size_t kNlpRejectCount = 20;
 
 [[nodiscard]] constexpr const char* NlpRejectName(NlpReject r) noexcept {
   switch (r) {
@@ -114,6 +121,8 @@ inline constexpr std::size_t kNlpRejectCount = 19;
       return "covariance";
     case NlpReject::kNoSource:
       return "no_source";
+    case NlpReject::kTooFar:
+      return "too_far";
     case NlpReject::kIk:
       return "ik";
     case NlpReject::kManipulability:

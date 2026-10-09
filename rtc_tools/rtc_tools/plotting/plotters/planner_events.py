@@ -136,6 +136,7 @@ REJECT_COLUMNS = (
     "rej_ik",
     "rej_manipulability",
     "rej_not_evaluated",
+    "rej_too_far",
     "rej_workspace",
 )
 

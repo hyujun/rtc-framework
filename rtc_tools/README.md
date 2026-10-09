@@ -449,7 +449,7 @@ ros2 run rtc_tools catching_hand_near \
 - **LHS arm** (`hand_lhs`): 설계 인자 [1, v, r, r², T − 0.7, α, v·r, sin ψ, cos ψ] 의 로지스틱 GLM (numpy IRLS, 기울기에 1e-4 ridge — 절벽은 완전 분리라 ridge 없이 발산) 을 commit · catch | commit · 전체 성공 셋에 적합하고, r ∈ {0, 0.05, 0.1, 0.15, 0.2} 에서 **설계 중심 (T 0.7 · 정면 · ψ 평균)** 의 v50(r) 과 두 단계 곱 P(plan)·P(catch | plan) = 0.5 의 v50 (이분법) 을 부트스트랩 CI 와 함께 `v50_map.csv` 로. (r 구간 × v 구간) pooled Wilson (`wilson_cells.csv`) 이 모델 없는 검산. 도달량은 자유도가 아니라 도출량이므로 (Δz·입사각은 (v, T, α) 의 함수) GLM 에 넣지 않는다
 - **v_rel**: commit 된 시행의 **측정** 접촉 상대속도 (`contact_v_rel`) 하나에 대한 로지스틱 → v_rel50 — L6 §4.5 fly-in 허용량의 폐루프 대응값
 - **A/B** (`--ab A B`): 두 arm 라벨 (`run_meta.json` 의 `arm`) 을 `(kind, seed, sample_idx)` 로 짝지어 (설계마다 `sample_idx` 가 0 부터라 `kind` 없이는 같은 seed 의 cliff 와 lhs 가 겹친다) catch 와 commit 각각 McNemar 정확 검정 (`catching_pool` 과 같은 `binomtest`); 짝 없는 시행 수를 따로 적는다
-- **planner_events**: 게시된 plan 중 `rank_reach`·`rank_gamma` 순위 gate 에 걸린 비율과 판정 거부 수 (`rej_ik` 등). `rej_workspace` 는 탐색에 `catch_box` 가 있던 2026-10-09 전의 세션에만 있는 열이고 (L3 §4.9), 그 뒤의 세션에서는 0 으로 읽힌다
+- **planner_events**: 게시된 plan 중 `rank_reach`·`rank_gamma` 순위 gate 에 걸린 비율과 판정 거부 수 (`rej_ik` · `rej_too_far` 등 — `rej_too_far` 는 도달 반경 밖이라 IK 없이 거른 후보 수이고, 이 열이 없는 옛 세션도 읽힌다). `rej_workspace` 는 탐색에 `catch_box` 가 있던 2026-10-09 전의 세션에만 있는 열이고 (L3 §4.9), 그 뒤의 세션에서는 0 으로 읽힌다
 - 합성 positive control (`test/test_catching_hand_near.py`, 10 케이스): 심은 로지스틱 법칙 (plan v50 6.0 → 5.0, catch 4.5 → 3.5 at r 0 → 0.2) 에서 600 발을 뽑아 v50 을 ±0.2 m/s 로 복원, 30 % 뒤집으면 벗어남 (negative control), Wilson 93/200 = [0.397, 0.534], 완전 분리 절벽에서 IRLS 생존, McNemar 짝짓기 (무효·짝 없는 시행 제외), 러너·`catching_trials` 형식으로 쓴 unit 의 round trip + CLI, hand 가 아닌 unit 거부
 
 ### `catching_arm_budget.py` — 팔 예산 네 층의 귀속 (dynamic_catching S8-G)

@@ -7,17 +7,20 @@
 //
 // TWO KINDS OF GATE (decision C, D-27). JUDGEMENT gates remove a candidate —
 // they are about whether the arm can be put there at all: input finiteness,
-// IK convergence and manipulability (the IK's own catchability gate, D-18).
-// No gate judges WHERE the catch point is (L3 §4.9): a point the IK reaches
-// inside the joint limits is a candidate wherever it lies.
+// the arm's reach bound (reach_bound.hpp — a necessary condition read off the
+// model, tested before the IK so that the IK is not spent on a point no pose
+// reaches), IK convergence and manipulability (the IK's own catchability gate,
+// D-18). No gate judges WHERE the catch point is (L3 §4.9): a point the IK
+// reaches inside the joint limits is a candidate wherever it lies, and the
+// reach bound removes none of those.
 // RANK gates do not remove: uncertainty, reach time, γ window, commit lead and
 // the error budget each add `score.penalty` to the candidate's score when they
 // fail (decision D). Under D-27 the system attempts what it can reach and
 // reports how often the attempt was doomed (S8 separates attempts from
 // successes); the offline map stays strict.
 //
-// ORDER (L3 §4.1, with the IK budget of R-2). The cheap terms — input,
-// uncertainty, lateness — are computed for every candidate
+// ORDER (L3 §4.1, with the IK budget of R-2). The cheap terms — input, reach
+// bound, uncertainty, lateness — are computed for every candidate
 // and give a PRE-score; IK (≈2 ms each on the development PC) runs on the best
 // `planner.search.grid.max_ik` of those, in pre-score order, until `planner.search.grid.budget_s`
 // is spent. Rank gates and the full score follow each successful IK. The best
@@ -54,6 +57,7 @@
 #include "rtc_controllers/catching/planner_io.hpp"
 #include "rtc_controllers/catching/planner_params.hpp"
 #include "rtc_controllers/catching/rank_gates.hpp"
+#include "rtc_controllers/catching/reach_bound.hpp"
 #include "rtc_controllers/catching/search_stats.hpp"
 #include "rtc_controllers/catching/time_types.hpp"
 #include "rtc_controllers/catching/traj_ingress.hpp"
@@ -205,6 +209,11 @@ class GridCatchSearch final : public CatchSearch {
   /// σ_max = √λ_max(Σ_pp) of sample k, or NaN when unknown (L3 §4.4).
   [[nodiscard]] static double SigmaMax(const CovarianceSnapshot& cov, int k) noexcept;
 
+  /// The catch frame's reach bound, computed in Configure from the model. A
+  /// candidate whose catch point is farther than its radius plus the IK's
+  /// position tolerance from its centre is refused before the IK.
+  [[nodiscard]] const ReachBound& Reach() const noexcept { return reach_; }
+
   /// The IK seed in force after the last `Plan` call, model order (tests).
   [[nodiscard]] const Eigen::VectorXd& IkSeedForTesting() const noexcept { return seed_; }
 
@@ -239,6 +248,7 @@ class GridCatchSearch final : public CatchSearch {
   ClockFn clock_{nullptr};
 
   CatchPoseIk ik_;
+  ReachBound reach_{};
   UnitSpeedSolver unit_speed_;
   /// The unsaturated reference the rollout runs (constructed in Configure).
   std::optional<SoftCatchTranslation> rollout_ds_;

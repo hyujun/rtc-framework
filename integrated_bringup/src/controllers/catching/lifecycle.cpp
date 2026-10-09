@@ -2294,6 +2294,7 @@ bool DemoCatchingController::SetupGridCatchSearch(const PlannerArm& arm) {
     return false;
   }
   grid_search_ = search.get();
+  LogReachBound(search->Reach());
   planner_cycle_.InstallSearch(std::move(search));
   RCLCPP_INFO(logger_,
               "search mode: grid — one candidate per vision sample, a closed-form gamma "
@@ -2304,6 +2305,21 @@ bool DemoCatchingController::SetupGridCatchSearch(const PlannerArm& arm) {
               name.c_str(), pm.nv, catch_frame_name_.c_str(), pm.accel_box ? "on" : "OFF",
               planner_params_.t_freeze, planner_params_.max_ik);
   return true;
+}
+
+void DemoCatchingController::LogReachBound(const rtc::catching::ReachBound& reach) const {
+  if (!reach.Bounded()) {
+    RCLCPP_WARN(logger_,
+                "search: no reach bound — joint '%s' on the catch frame's chain is neither "
+                "revolute nor a prismatic joint with limits; every candidate goes to the IK",
+                reach.unbounded_by.c_str());
+    return;
+  }
+  RCLCPP_INFO(logger_,
+              "search: reach bound %.4f m about [%.4f %.4f %.4f] (model world, %d joints) — a "
+              "candidate whose IK target is farther than that plus the IK's position tolerance "
+              "is refused without the IK (too_far)",
+              reach.radius, reach.centre.x(), reach.centre.y(), reach.centre.z(), reach.joints);
 }
 
 double DemoCatchingController::ResolvedCloseLead() const {
@@ -2585,6 +2601,7 @@ bool DemoCatchingController::SetupNlpCatchSearch(const PlannerArm& arm) {
     return true;
   }
   nlp_search_ = search.get();
+  LogReachBound(search->Reach());
   planner_cycle_.InstallSearch(std::move(search));
   RCLCPP_INFO(logger_,
               "search mode: nlp — the docking problem solved per candidate catch instant "

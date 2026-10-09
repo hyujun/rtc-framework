@@ -100,6 +100,9 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
     }
     seen[U(d)] = true;
   }
+  if (model.catch_frame >= model.handle->GetModel().frames.size()) {
+    return fail("nlp search: the catch frame is not a frame of the handle's model");
+  }
   const NlpCatchSearchParams& p = params;
   if (p.wait_pose_n != nv) {
     return fail("nlp search: wait_pose must have one entry per arm joint");
@@ -284,6 +287,7 @@ bool NlpCatchSearch::Configure(const NlpCatchSearchModel& model,
   v_zero_ = Eigen::VectorXd::Zero(nv);
 
   ik_.Resize(nv);
+  reach_ = ComputeReachBound(model.handle->GetModel(), model.catch_frame);
   seed_yaml_ = Eigen::VectorXd::Zero(nv);
   for (int m = 0; m < nv; ++m) {
     seed_yaml_[m] = p.wait_pose[U(model.device_of_model[U(m)])];
@@ -636,6 +640,12 @@ void NlpCatchSearch::Screen(const TrajectorySnapshot& traj, const CovarianceSnap
   // of the ball (the ball is s_ent along +e₃ = −v̂ of it), +z against the ball.
   const Eigen::Vector3d v_hat = at_catch.v / speed;
   const Eigen::Vector3d target = at_catch.p + params_.core.s_ent * v_hat;
+  // No pose puts the catch frame within the IK's own tolerance of the target:
+  // the IK would refuse it, and is not run.
+  if (!WithinReach(reach_, target, ik_options_.eps_pos)) {
+    c.reject = NlpReject::kTooFar;
+    return;
+  }
   if (solver_hook_ != nullptr) {
     solver_hook_(true, solver_user_);
   }
