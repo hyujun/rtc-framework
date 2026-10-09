@@ -129,7 +129,7 @@ FUNNEL_COLUMNS = ("n_in_window", "n_ik", "n_pass")
 
 # JudgeReject order (rtc_controllers/catching/search_stats.hpp), then the one
 # column the search no longer writes: `rej_workspace` — the catch box, removed
-# 2026-10-09 (MD-94). Sessions recorded before that carry it, and every reader
+# 2026-10-09 (L3 §4.9). Sessions recorded before that carry it, and every reader
 # below takes the columns a file has.
 REJECT_COLUMNS = (
     "rej_input",

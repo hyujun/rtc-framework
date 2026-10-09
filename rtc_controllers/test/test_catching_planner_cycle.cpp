@@ -356,7 +356,7 @@ TEST(PlannerParams, AMalformedSearchKeyIsRefused) {
   }
 }
 
-// MD-94: the search does not judge where the catch point is. The removed
+// L3 §4.9: the search does not judge where the catch point is. The removed
 // `workspace` map is not read and does not make the parser throw, whatever is
 // in it — the binding parks on the key (kRemovedCatchingKeys), which keeps the
 // robot up where a throw here would fail the whole configure.

@@ -941,7 +941,7 @@ TEST(NlpCatchSearchChoice, FromRestItIsTheExhaustiveSolvesArgMin) {
   const std::set<NlpReject> reasons = Reasons(rig->search);
   EXPECT_TRUE(reasons.contains(NlpReject::kLeadShort)) << Table(rig->search, w.stats);
   EXPECT_TRUE(reasons.contains(NlpReject::kReach)) << Table(rig->search, w.stats);
-  // No check judges where the catch point is (MD-94): every candidate with a
+  // No check judges where the catch point is (L3 §4.9): every candidate with a
   // long enough lead reached the catch-pose IK, however far along the ball's
   // line its catch point lies.
   for (const Candidate& c : rig->search.Candidates()) {
@@ -4313,8 +4313,8 @@ TEST(NlpCatchSearchContinuous, ThePinnedCellIsTheHalfOpenCellOfThePlansInstant) 
 
 // δt_c's box is the cell cut to the instants whose ball the screening passes,
 // and a catch instant that wants to go past that end rests on it. The end here
-// is the prediction's own: it stops 4 ms after a lattice instant. (Until MD-94
-// the end this test used was a wall of the catch box, which no longer exists.)
+// is the prediction's own: it stops 4 ms after a lattice instant. (Until that gate was removed, L3
+// §4.9, the end this test used was a wall of the catch box, which no longer exists.)
 TEST(NlpCatchSearchContinuous, TheCatchInstantStaysInsideThePrediction) {
   auto probe = ContinuousRig();
   std::string err;

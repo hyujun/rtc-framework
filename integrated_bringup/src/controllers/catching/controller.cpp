@@ -163,7 +163,7 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
     // key would run on its default under the overlay's name. on_configure
     // parks on every one found (kRemovedKey).
     renamed_keys_ = rtc::catching::FindRenamedCatchingKeys(catching);
-    // The catch box (MD-94): the searches no longer judge where a catch point
+    // The catch box (L3 §4.9): the searches no longer judge where a catch point
     // is and no parser reads the keys. An overlay that still writes one was
     // tuned for that gate — parked on, like the keys above.
     removed_catch_box_keys_ = rtc::catching::FindRemovedCatchingKeys(catching);
@@ -1576,7 +1576,7 @@ void DemoCatchingController::RunSegmentLane() noexcept {
   segment_pair_ok_ = false;
   // TRACKING judges the box against the plan this tick could adopt; the modes
   // that follow a plan judge it against that plan. Where the segment's stop
-  // ends is not judged, here (MD-73) or in the search (MD-94): the stop only
+  // ends is not judged, here (MD-73) or in the search (L3 §4.9): the stop only
   // has to respect the joint limits — the MPC's rows and the CLIK's boxes hold
   // those.
   const bool pairing = mode_ == Mode::kTracking;

@@ -1182,7 +1182,7 @@ $$
 
 $w_t$ 항은 §1.3 의 다른 2차 항과 같은 관례로 읽는다. 구현에서 이 항은 바깥 루프의 전환 비용 $J_{switch}$ 그 자체다 — $w_t=w_{sw}/T_{ref}^2$ 이고 $t_c^{prev}$ 는 RT 가 따르는 plan 의 $t_c$ (없으면 탐색이 직전에 고른 $t_c$, 그것도 없으면 항이 없다). $c_1=w_T/T_{ref}$ 는 시간 비용 $J_{time}$ 의 기울기다. 코어는 두 항의 값을 궤적의 비용과 따로 낸다.
 
-모든 노드 상태 $x_k$ 는 §9.3 의 $\Phi_k(\bar\delta) x_0+(\Gamma(\bar\delta) E) _ k\tilde{\mathbf u}+s_k(\delta t_c-\bar\delta)$ 이고, 포구 노드와 그 뒤의 공 예측 · 접근축 목표 · $q^{prev}$ 는 §9.3 의 1차식이다. 포구점의 위치를 제한하는 box 는 없다 — 2026-10-09 까지는 탐색의 `catch_box` 가 $\mathcal W_c$ 로 이 문제의 제약이었고, 탐색이 포구점의 위치를 판정하지 않게 되면서 지웠다 (MPC 계획 MD-94).
+모든 노드 상태 $x_k$ 는 §9.3 의 $\Phi_k(\bar\delta) x_0+(\Gamma(\bar\delta) E) _ k\tilde{\mathbf u}+s_k(\delta t_c-\bar\delta)$ 이고, 포구 노드와 그 뒤의 공 예측 · 접근축 목표 · $q^{prev}$ 는 §9.3 의 1차식이다. 포구점의 위치를 제한하는 box 는 없다 (L3 §4.9).
 
 | 항 | 역할 | 비고 |
 |---|---|---|

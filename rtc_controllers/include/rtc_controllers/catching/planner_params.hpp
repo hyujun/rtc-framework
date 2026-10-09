@@ -370,7 +370,7 @@ struct PlannerKeySelection {
 /// `segment.mpc` horizon whose blocks do not sum to n_nodes, a Δ_s or Δ_pre that is not whole ns, a
 /// k_max whose replan patterns would drop below three blocks, or an n_pre_max whose pre-catch nodes
 /// or blocks would not fit next to the stop's. The removed `search.grid.workspace` (the catch box,
-/// MD-94) is not read and not refused here: the binding parks on it (kRemovedCatchingKeys).
+/// L3 §4.9) is not read and not refused here: the binding parks on it (kRemovedCatchingKeys).
 [[nodiscard]] PlannerParams ParsePlannerParams(const YAML::Node& catching,
                                                const PlannerKeySelection& selection = {});
 

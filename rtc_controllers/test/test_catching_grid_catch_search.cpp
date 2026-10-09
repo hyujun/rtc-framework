@@ -384,8 +384,8 @@ TEST(GridCatchSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
   auto rig = std::make_unique<Rig>();
   ASSERT_TRUE(rig->Configure());
   // The same line 100 m off: no candidate's catch point is within the arm's
-  // reach, so the IK gate removes every one it runs on. (Until MD-94 this test
-  // used the catch box, a gate that no longer exists.)
+  // reach, so the IK gate removes every one it runs on. (Until that gate was removed — L3 §4.9 —
+  // this test used the catch box, a gate that no longer exists.)
   auto traj = rig->Traj();
   for (int k = 0; k < traj.n; ++k) {
     traj.s[static_cast<std::size_t>(k)].p[0] += 100.0;
@@ -401,7 +401,7 @@ TEST(GridCatchSearchPlan, AJudgementGateRemovesEveryCandidateAndNamesItself) {
 }
 
 TEST(GridCatchSearchPlan, NothingButTheInputRemovesACandidateBeforeTheIk) {
-  // MD-94: no gate judges WHERE a candidate's catch point is. Every candidate
+  // L3 §4.9: no gate judges WHERE a candidate's catch point is. Every candidate
   // in the lead window with a finite, moving ball either reaches the IK or is
   // left outside its budget — the two counts add up to the window.
   auto rig = std::make_unique<Rig>();

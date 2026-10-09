@@ -1503,7 +1503,7 @@ class DemoCatchingController final : public RTControllerInterface {
   /// path; empty when none. on_configure parks on them (kRemovedKey), naming
   /// the old and the new path.
   std::vector<rtc::catching::RenamedCatchingKey> renamed_keys_;
-  /// Every removed catch-box key (MD-94, kRemovedCatchingKeys) LoadConfig
+  /// Every removed catch-box key (L3 §4.9, kRemovedCatchingKeys) LoadConfig
   /// found, as the ERROR quotes it after `catching.`; empty when none.
   /// on_configure parks on them (kRemovedKey).
   std::vector<const char*> removed_catch_box_keys_;

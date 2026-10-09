@@ -743,7 +743,7 @@ NlpCatchSearchParams ParseNlpSearchParams(const YAML::Node& catching, int nv) {
   const std::string b = "planner.search.nlp";
   // `mode` is the sibling `planner.search.mode`'s and `ik` is the sub-map the
   // catch-pose parser reads: neither is this parser's, neither is an error.
-  // `catch_box` is the removed catch box (MD-94): not read, and not this
+  // `catch_box` is the removed catch box (L3 §4.9): not read, and not this
   // parser's to refuse — the binding parks on it (kRemovedCatchingKeys), which
   // keeps the robot up where a throw here would fail the whole configure.
   rd.CheckKeys(nlp, b,

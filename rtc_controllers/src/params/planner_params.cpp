@@ -357,7 +357,7 @@ PlannerParams ParsePlannerParams(const YAML::Node& catching, const PlannerKeySel
       ReadBounded(score, "penalty", "search.grid.score.penalty", out.score.penalty, 0.0, 1e9);
 
   // `search.grid.workspace` (the catch box, decision I) is not read: the
-  // search no longer judges where the catch point is (MD-94). A tree that
+  // search no longer judges where the catch point is (L3 §4.9). A tree that
   // still writes it is the binding's to park on (kRemovedCatchingKeys).
 
   // ── Segment MPC (MPC E1-F03) ─────────────────────────────────────────────────

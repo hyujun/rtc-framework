@@ -4002,7 +4002,7 @@ class TestPlannerEventsStatistics:
         assert "rej_ik×2" in out, out
 
     def test_a_session_from_before_the_catch_box_was_removed_still_names_its_rejects(self, capsys):
-        """MD-94 (2026-10-09) took `rej_workspace` out of the writer; a file
+        """The writer dropped `rej_workspace` on 2026-10-09 (L3 §4.9); a file
         recorded before that carries the column, and its counts are reported."""
         from rtc_tools.plotting.plotters.planner_events import print_planner_events_statistics
 
@@ -4453,7 +4453,7 @@ class TestPlannerEventsSegmentPlots(_SegmentPlotHelpers):
 
         full = _planner_events_columns()
         old = [c for c in full[: full.index("rollout_us_max") + 1] if c != "search_valid"]
-        # That schema still had the catch box's reject count (removed by MD-94).
+        # That schema still had the catch box's reject count (removed with that gate — L3 §4.9).
         old.insert(old.index("rej_manipulability") + 1, "rej_workspace")
         assert len(old) == 40
         df = self._frame(old)
