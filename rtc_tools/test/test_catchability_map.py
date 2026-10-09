@@ -28,6 +28,10 @@ import pytest
 import yaml
 
 from rtc_tools.analysis import catchability_map as cm
+from rtc_tools.analysis.catch_gate_map import LAYERS, REASON_NONE
+from rtc_tools.analysis.catch_search_map import gate_map_join, gate_throw_verdicts
+from rtc_tools.analysis.catching_throw_list import write_throw_list
+from rtc_tools.analysis.catching_trials import load_throw_grid_axes
 
 # The shipped tennis preset, with the file:line each value lives at. Mirrored
 # here on purpose: the point of the test is that the module makes the caller
@@ -1772,6 +1776,241 @@ def test_cli_refuses_an_alpha_max_flag_that_contradicts_the_params_file(tmp_path
     with pytest.raises(SystemExit, match="two sources of truth"):
         _run_cli(tmp_path, judge, params, "--alpha-max-rad", "0.26")
     assert _judge_calls(judge) == 0, "the contradiction must not cost a sweep to find"
+
+
+# ── --throws-file: a throw list instead of the grid ───────────────────────────
+
+_LIST_AXES = {
+    "distances_m": [4.0],
+    "azimuths_deg": [-30.0, 30.0, 60.0],
+    "release_heights_m": [1.2],
+    "aim_deviations_deg": [0.0, 80.0],
+    "speeds_m_s": [7.0],
+    "elevations_deg": [20.0],
+}
+# Not 0..n-1: the ids are carried, not re-enumerated.
+_LIST_IDS = [1000, 7, 42, 5, 99, 3]
+
+
+def _throws_cli_argv(tmp_path: Path, judge: Path, params: Path, out_dir: Path) -> list[str]:
+    """The arguments of ``_run_cli`` that are not about the throw design."""
+    config = _shipped_style_config(tmp_path)
+    urdf = tmp_path / "tiny.urdf"
+    urdf.write_text(TINY_URDF)
+    ball = tmp_path / "ball.yaml"
+    ball.write_text(
+        yaml.safe_dump(
+            {
+                "sim": {
+                    "ros__parameters": {
+                        "projectile_ball": {"radius_m": RADIUS_M, "mass_kg": MASS_KG}
+                    }
+                }
+            }
+        )
+    )
+    return [
+        *("--robot-config", str(config), "--ball-config", str(ball), "--out-dir", str(out_dir)),
+        *("--urdf", str(urdf), "--arm-base-frame", "mount", "--judge", str(judge)),
+        *("--params", str(params)),
+        *("--drag-coefficient", str(CD_TENNIS), "--drag-coefficient-source", CD_SOURCE),
+        *("--air-density", str(RHO_AIR), "--air-density-source", RHO_SOURCE),
+        *("--window-s", "0.3", "0.9", "--min-flight-time-s", "0.3", "--max-reach-m", "2.0"),
+        *("--seed", "1.0 0.0", "--seed", "-1.0 0.0", "--shard-size", "4", "--no-plots"),
+    ]
+
+
+def _list_entries(*, carry_axes: bool) -> list[dict]:
+    grid = cm.generate_throw_grid(base_xy_m=(0.0, 0.0), **_LIST_AXES)
+    entries = []
+    for tid, throw in zip(_LIST_IDS, grid, strict=True):
+        entry = {
+            "throw_id": tid,
+            "kind": "grid",
+            "pos": tuple(float(v) for v in throw.position_m),
+            "vel": tuple(float(v) for v in throw.velocity_m_s),
+            "omega": (0.0, 0.0, 0.0),
+        }
+        if carry_axes:
+            entry.update({k: float(getattr(throw, k)) for k in cm.GRID_AXIS_KEYS})
+        entries.append(entry)
+    return entries
+
+
+def _read_csv(path: Path) -> list[dict]:
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _throws_file_args(tmp_path: Path, entries: list[dict], name: str = "list.json") -> list[str]:
+    path = tmp_path / name
+    write_throw_list(path, entries, {"made_by": "test"})
+    return ["--throws-file", str(path)]
+
+
+def _grid_cli_args() -> list[str]:
+    return [
+        *("--azimuths-deg", "-30 30 60", "--aim-deviations-deg", "0 80"),
+        *("--distances-m", "4", "--release-heights-m", "1.2", "--speeds-m-s", "7"),
+        *("--elevations-deg", "20"),
+    ]
+
+
+@pytest.fixture
+def stand_in(tmp_path: Path):
+    pytest.importorskip("pinocchio")
+    judge = _fake_judge(tmp_path)
+    params = tmp_path / "params.yaml"
+    params.write_text(
+        "catching:\n  planner:\n    search:\n      grid:\n        ik:\n          alpha_max: 0.35\nfake_reach: 10.0\n"
+    )
+    return judge, params
+
+
+@pytest.mark.parametrize("carry_axes", [False, True])
+def test_a_throws_file_gives_the_grids_candidates_under_the_files_ids(
+    tmp_path: Path, stand_in, carry_axes: bool
+):
+    judge, params = stand_in
+    grid_dir = tmp_path / "map_grid"
+    base = _throws_cli_argv(tmp_path, judge, params, grid_dir)
+    assert cm.main([*base, *_grid_cli_args()]) == 0
+    list_dir = tmp_path / "map_list"
+    base = _throws_cli_argv(tmp_path, judge, params, list_dir)
+    entries = _list_entries(carry_axes=carry_axes)
+    assert cm.main([*base, *_throws_file_args(tmp_path, entries)]) == 0
+
+    grid_ids = dict(enumerate(_LIST_IDS))
+    grid_rows = _read_csv(grid_dir / "candidates.csv")
+    list_rows = _read_csv(list_dir / "candidates.csv")
+    assert grid_rows, "the stand-in must have judged something"
+    assert len(grid_rows) == len(list_rows)
+    for g, lst in zip(grid_rows, list_rows, strict=True):
+        assert int(lst["throw_index"]) == grid_ids[int(g["throw_index"])]
+        assert {**g, "throw_index": ""} == {**lst, "throw_index": ""}
+
+    grid_sum = _read_csv(grid_dir / "throw_summary.csv")
+    list_sum = _read_csv(list_dir / "throw_summary.csv")
+    assert [int(r["throw_index"]) for r in list_sum] == _LIST_IDS
+    for g, lst in zip(grid_sum, list_sum, strict=True):
+        for key in g:
+            if key == "throw_index":
+                continue
+            if key in cm.GRID_AXIS_KEYS and not carry_axes:
+                # Derived, not carried: the inverse of the generator, to rounding.
+                assert float(lst[key]) == pytest.approx(float(g[key]), abs=1e-9)
+            else:
+                assert lst[key] == g[key], key
+
+    # The loaders the gate chain reads the map with accept it, ids and all.
+    axes = load_throw_grid_axes(list_dir / "throw_summary.csv")
+    assert sorted(axes) == sorted(_LIST_IDS)
+    assert {int(r["throw_index"]) for r in list_rows} <= set(axes)
+
+    # Provenance: the file's identity.
+    prov = yaml.safe_load((list_dir / "provenance.yaml").read_text())["provenance"]
+    path = tmp_path / "list.json"
+    assert prov["throws_file"]["path"] == str(path)
+    assert prov["throws_file"]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert prov["throws_file"]["n_throws"] == len(_LIST_IDS)
+    assert prov["throws_file"]["meta"] == {"made_by": "test"}
+    assert (
+        "throws_file"
+        not in yaml.safe_load((grid_dir / "provenance.yaml").read_text())["provenance"]
+    )
+
+
+def test_a_throws_file_map_joins_a_search_map_by_the_files_axes(tmp_path: Path, stand_in):
+    judge, params = stand_in
+    out_dir = tmp_path / "map_list"
+    base = _throws_cli_argv(tmp_path, judge, params, out_dir)
+    entries = _list_entries(carry_axes=True)
+    assert cm.main([*base, *_throws_file_args(tmp_path, entries)]) == 0
+
+    # What catch_gate_map writes per candidate (throw_index, seed_id, reason_<layer>),
+    # for the candidates of the map; the search map's rows are the file's entries.
+    candidates = _read_csv(out_dir / "candidates.csv")
+    gate_rows = [
+        {
+            "throw_index": r["throw_index"],
+            "seed_id": r["seed_id"],
+            **{f"reason_{layer}": REASON_NONE for layer in LAYERS},
+        }
+        for r in candidates
+        if r["accepted"] == "1"
+    ]
+    assert gate_rows
+    gate_throws = gate_throw_verdicts(
+        load_throw_grid_axes(out_dir / "throw_summary.csv"), gate_rows, seed_id=0
+    )
+    search_rows = [
+        {**{k: v for k, v in e.items() if k not in ("pos", "vel", "omega")}}
+        | {"accepted": True, "reject_reason": "none"}
+        for e in entries
+    ]
+    joined, summary = gate_map_join(search_rows, gate_throws)
+    assert summary["matched"] == len(entries)
+    assert {j["throw_id"] for j in joined} == set(_LIST_IDS)
+    # The gate map's throw_index IS the search map's throw_id.
+    assert all(j["gate_throw_index"] == j["throw_id"] for j in joined)
+
+
+def test_a_throws_file_conflicts_with_a_grid_axis_argument(tmp_path: Path, stand_in):
+    judge, params = stand_in
+    out_dir = tmp_path / "map_list"
+    base = _throws_cli_argv(tmp_path, judge, params, out_dir)
+    files = _throws_file_args(tmp_path, _list_entries(carry_axes=False))
+    with pytest.raises(SystemExit, match=r"--throws-file.*conflicts with --speeds-m-s"):
+        cm.main([*base, *files, "--speeds-m-s", "7"])
+    assert not out_dir.exists(), "refused before anything was created"
+    assert _judge_calls(judge) == 0
+
+
+def test_a_throws_file_with_spin_is_refused_not_thrown_without_it(tmp_path: Path, stand_in):
+    judge, params = stand_in
+    entries = _list_entries(carry_axes=False)
+    entries[2]["omega"] = (0.0, 0.0, 50.0)
+    base = _throws_cli_argv(tmp_path, judge, params, tmp_path / "map_list")
+    with pytest.raises(SystemExit, match=r"throw_id 42.*omega.*no spin term"):
+        cm.main([*base, *_throws_file_args(tmp_path, entries)])
+    assert _judge_calls(judge) == 0
+
+
+def test_a_malformed_throws_file_surfaces_the_formats_error(tmp_path: Path, stand_in):
+    judge, params = stand_in
+    base = _throws_cli_argv(tmp_path, judge, params, tmp_path / "map_list")
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"schema": "catching_throw_list/1", "frame": "base", "throws": []}))
+    with pytest.raises(SystemExit, match=r"--throws-file: .*bad\.json.*frame must be"):
+        cm.main([*base, "--throws-file", str(bad)])
+    missing = tmp_path / "absent.json"
+    with pytest.raises(SystemExit, match=r"--throws-file: .*absent\.json"):
+        cm.main([*base, "--throws-file", str(missing)])
+    assert _judge_calls(judge) == 0
+
+
+def test_throws_from_list_refuses_some_but_not_all_grid_axes():
+    entry = _list_entries(carry_axes=True)[0]
+    del entry["elevation_deg"]
+    with pytest.raises(ValueError, match=r"throw_id 1000 carries .* but not \['elevation_deg'\]"):
+        cm.throws_from_list([entry], base_xy_m=(0.0, 0.0))
+
+
+def test_derived_axes_invert_the_grid_geometry_off_the_origin():
+    base = (0.7, -0.3)
+    grid = cm.generate_throw_grid(
+        base_xy_m=base,
+        distances_m=[1.5, 3.0],
+        azimuths_deg=[-170.0, 0.0, 135.0],
+        release_heights_m=[0.9],
+        aim_deviations_deg=[-25.0, 0.0, 40.0],
+        speeds_m_s=[6.0],
+        elevations_deg=[-5.0, 30.0],
+    )
+    for throw in grid:
+        derived = cm.derive_grid_axes(throw.position_m, throw.velocity_m_s, base)
+        for key in cm.GRID_AXIS_KEYS:
+            assert derived[key] == pytest.approx(getattr(throw, key), abs=1e-9), key
 
 
 # ── The real judge (skipped cleanly when it is not built) ─────────────────────
