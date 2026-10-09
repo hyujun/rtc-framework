@@ -47,6 +47,19 @@ class TestVerdict:
         assert v["plan_verdict"] == "published"
         assert v["plan_reject"] == "" and v["plan_reject_last"] == ""
 
+    def test_a_settling_wake_is_its_own_reason_not_the_candidates(self):
+        # The settle rule publishes "no plan" with the uncertainty reason before
+        # any candidate exists; the column tells it apart.
+        v = _verdict([{"plan_reason": 1, "settling": 1}, {"plan_reason": 2}, {"plan_reason": 2}])
+        assert v["plan_verdict"] == "no_plan"
+        assert v["plan_reject"] == "search:ik_failed"
+        # Settling wakes do not vote: three of them do not outweigh one judged wake.
+        v = _verdict([{"plan_reason": 1, "settling": 1}] * 3 + [{"plan_reason": 2}])
+        assert v["plan_reject"] == "search:ik_failed"
+        assert v["plan_reject_last"] == "search:ik_failed"
+        v = _verdict([{"plan_reason": 1, "settling": 1}, {"plan_reason": 1, "settling": 1}])
+        assert v["plan_reject"] == "search:settling"
+
     def test_withheld_names_the_first_segment_that_did_not_go_out(self):
         cut = {
             "outcome": "held",
