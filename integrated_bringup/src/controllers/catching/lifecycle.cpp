@@ -2944,14 +2944,23 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
       if (planner_events_file_.is_open() && fresh) {
         WritePlannerEventsHeader(planner_events_file_);
       }
-      const auto cands = dir / "nlp_candidates.csv";
-      const bool cands_fresh = !std::filesystem::exists(cands);
-      nlp_candidates_file_.open(cands, std::ios::app);
-      if (nlp_candidates_file_.is_open() && cands_fresh) {
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(logger_, "planner_events.csv disabled: %s", e.what());
+    }
+  }
+  if (!nlp_candidates_file_.is_open()) {
+    try {
+      const auto dir = rtc::ResolveSessionDir() / "controllers" / kCatchingLogKey;
+      std::error_code ec;
+      std::filesystem::create_directories(dir, ec);
+      const auto path = dir / "nlp_candidates.csv";
+      const bool fresh = !std::filesystem::exists(path);
+      nlp_candidates_file_.open(path, std::ios::app);
+      if (nlp_candidates_file_.is_open() && fresh) {
         WriteNlpCandidatesHeader(nlp_candidates_file_);
       }
     } catch (const std::exception& e) {
-      RCLCPP_WARN(logger_, "planner_events.csv disabled: %s", e.what());
+      RCLCPP_WARN(logger_, "nlp_candidates.csv disabled: %s", e.what());
     }
   }
   if (node_ && !planner_timing_timer_) {

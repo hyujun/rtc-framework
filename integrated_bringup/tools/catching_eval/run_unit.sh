@@ -305,7 +305,7 @@ for f in "$SES"/controllers/demo_catching_controller/*.csv; do
 done
 for f in "$SES"/controllers/demo_catching_controller/*; do
   [ -e "$f" ] || continue
-  basename "$f" | grep -q "^\\(catching_diag\\|planner_events\\|$STATE_RE\\)\\.csv\$" || { echo "FAIL:contaminated foreign file" > "$OUT/status"; exit 1; }
+  basename "$f" | grep -q "^\\(catching_diag\\|planner_events\\|nlp_candidates\\|$STATE_RE\\)\\.csv\$" || { echo "FAIL:contaminated foreign file $(basename "$f")" > "$OUT/status"; exit 1; }
 done
 # Keep the raw session with the unit, then drop the original.
 mkdir -p "$OUT/session"

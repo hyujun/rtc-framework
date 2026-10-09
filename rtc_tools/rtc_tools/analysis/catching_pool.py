@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rtc_tools.analysis import catching_trials as ct, catching_vision as cv
+from rtc_tools.analysis.catching_throw_list import throw_key
 
 TRIALS_CSV = "catching_trials.csv"
 SUMMARY_JSON = "catching_trials_summary.json"
@@ -267,10 +268,12 @@ def arm_summary(
 
 
 def _pair_key(row: Mapping) -> tuple | None:
-    """A throw-list trial: ("list", the list's sha256, throw_id). A seeded-series
-    trial: (seed, idx) as before #798. None: pairs with nothing."""
-    if row.get("throw_id") not in (None, "") and row.get("throws_file_sha256"):
-        return ("list", str(row["throws_file_sha256"]), int(row["throw_id"]))
+    """A throw-list trial: ``throw_key``'s ("list", the list's sha256, throw_id).
+    A seeded-series trial: (seed, idx) as before #798 — this tool's own key, not
+    ``throw_key``'s (kind, seed, sample_idx). None: pairs with nothing."""
+    key = throw_key(row)
+    if key is not None and key[0] == "list":
+        return key
     return None if row.get("seed") is None else (row["seed"], row["idx"])
 
 

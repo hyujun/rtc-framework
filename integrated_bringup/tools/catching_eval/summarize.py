@@ -512,7 +512,10 @@ def pair(cf_rows, mpc_rows):
         "dropped": {"/".join(k): v for k, v in dropped.items()},
         "dropped_n": sum(dropped.values()),
         "seed_drops": dict(per_seed_drop),
-        "seeds_to_rerun": sorted(s for s, n in per_seed_drop.items() if n >= DROP_SEED_RERUN),
+        # seeds (int) and lists ("list:…") can share one run: order by text
+        "seeds_to_rerun": sorted(
+            (s for s, n in per_seed_drop.items() if n >= DROP_SEED_RERUN), key=str
+        ),
     }
 
 
@@ -571,7 +574,7 @@ def seed_block(valid):
     for k, ra, rb in valid:
         by[throw_group(k)].append((ra["d4"], rb["d4"]))
     out, terms = {}, []
-    for s, prs in sorted(by.items()):
+    for s, prs in sorted(by.items(), key=lambda kv: str(kv[0])):
         n = len(prs)
         xa = sum(a and not b for a, b in prs)
         xb = sum(b and not a for a, b in prs)

@@ -4117,7 +4117,9 @@ def _throws_file_block(rows) -> dict | None:
     shas = {r.get("throws_file_sha256") for r in rows} - {None, ""}
     if len(shas) != 1:
         return None
-    return {"sha256": next(iter(shas)), "n_throws": sum("throw_id" in r for r in rows)}
+    # n_thrown: the rows that carry a throw_id — not the file's count (run_meta's
+    # throws_file.n_throws), which --limit may have cut.
+    return {"sha256": next(iter(shas)), "n_thrown": sum("throw_id" in r for r in rows)}
 
 
 def _summarise(

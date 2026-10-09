@@ -74,10 +74,11 @@
 // verdict (NlpRejectName), `worst_group` the row group of the largest
 // violation and `viol_<group>` one flag per group whose violation exceeded
 // tol_violation — every group that refused, which the verdict's worst group
-// does not say. `solve_us` is the fixed-grid solve's wall time (a deadline cut
-// it, as in planner_events), `sigma_c` the raw σ at the candidate's catch
-// node (NaN: no valid covariance there). Nothing in the record changes shape
-// per wake: the candidate rows are a fixed array in NlpSearchStats.
+// does not say. `solve_us` is the wall time of the solve the candidate uses —
+// the fixed-grid one, or the continuous one when `continuous` is 1 (a
+// deadline cut it, as in planner_events); `sigma_c` is the raw σ at the catch
+// node as the solve was given it (NaN: no valid covariance there). Nothing in the record changes
+// shape per wake: the candidate rows are a fixed array in NlpSearchStats.
 //
 // Readers select columns by NAME: the set has grown and shrunk, and a log
 // from before a change lacks the newer names.

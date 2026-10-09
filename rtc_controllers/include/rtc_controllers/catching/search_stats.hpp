@@ -169,7 +169,9 @@ struct NlpCandidateStat {
   bool continuous_used{false};  ///< the candidate's solution is a continuous one
   std::int32_t iterations{0};   ///< SQP iterations of the solve it uses
   std::int32_t qp_solves{0};
-  std::int64_t solve_ns{0};  ///< the fixed-grid solve's wall time (the core cut it at a deadline)
+  /// Wall time of the solve the candidate USES — the fixed-grid one, or the
+  /// continuous one when `continuous_used` (a deadline cut it there).
+  std::int64_t solve_ns{0};
   double worst_violation{0.0};
   double c_catch{0.0};  ///< closing speed at the catch node [m/s]
   /// √λ_max of the ball's position covariance at the catch node, as the solve
@@ -179,7 +181,10 @@ struct NlpCandidateStat {
 };
 
 /// Most candidate records one wake keeps (≥ the bound on `max_solves`,
-/// nlp_catch_search.hpp's kNlpMaxSolves — checked there).
+/// nlp_catch_search.hpp's kNlpMaxSolves — checked there). The array is ~2.3 KB
+/// of the record, zeroed and copied once per wake on the planner thread and
+/// held 512 times in the controller's event queue (~1.2 MB): the price of a
+/// fixed-shape record on the existing path, paid once per wake, not per row.
 inline constexpr int kNlpCandidateStatCount = 32;
 
 /// What a wake of the NLP search adds to SearchStats (E1-F14 #740). Left at

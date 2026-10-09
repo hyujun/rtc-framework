@@ -1117,6 +1117,9 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
     in.ball[U(k)] = SampleBallNode(traj, k == c.n_pre ? &cov : nullptr, cov_matched, t, hint);
   }
   const BallNodeSample& at_catch = in.ball[U(c.n_pre)];
+  // The record's σ is the covariance the solve was GIVEN (#798): a pinned
+  // candidate has no fixed-grid solve, so it is set here as well.
+  c.sigma_c = SigmaMaxOf(at_catch);
   in.p_line = at_catch.p;
   in.d_line = at_catch.v.normalized();
   in.catch_target_valid = true;
