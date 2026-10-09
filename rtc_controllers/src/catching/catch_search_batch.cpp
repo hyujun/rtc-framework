@@ -34,12 +34,13 @@ constexpr std::uint64_t kTrack = 1;
 
 // The judgement reasons a candidate can carry, in the order of the `rej_*`
 // columns. A reason added to JudgeReject has to be given a column here.
-static_assert(kJudgeRejectCount == 5);
-constexpr std::array<std::pair<JudgeReject, const char*>, 4> kJudgeColumns{{
+static_assert(kJudgeRejectCount == 6);
+constexpr std::array<std::pair<JudgeReject, const char*>, 5> kJudgeColumns{{
     {JudgeReject::kInput, "rej_input"},
     {JudgeReject::kIk, "rej_ik"},
     {JudgeReject::kManipulability, "rej_manipulability"},
     {JudgeReject::kNotEvaluated, "rej_not_evaluated"},
+    {JudgeReject::kTooFar, "rej_too_far"},
 }};
 
 // The NLP search's candidate reasons: NlpReject between kNone and the reasons
