@@ -34,16 +34,11 @@
 # measured with this overlay predicts the real arm's lead gain (S10 identifies
 # T_arm).
 
-mujoco_simulator:
-  ros__parameters:
-    # Bare robot-on-a-floor scene (no table, no objects). The shipped
-    # scene_right_with_object.xml puts a table and two objects at x 0.45-0.95 m,
-    # directly under this profile's wait pose and catch points; the S8-D smoke
-    # measured the rate-limited homing move dipping the fingers onto the apple
-    # and the table top (palm z 0.15 m), blocking A2 until track_err_abort
-    # disarmed. The gate map that chose the throws and the wait pose models a
-    # floor only (min catch height 0.1 m), so this is the scene it judged.
-    model_path: "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"
+# NO SCENE HERE. This overlay used to swap the scene for a bare one, because the
+# shipped scene then had a table and two objects under the wait pose (the S8-D
+# smoke measured the homing move dipping the fingers onto them). The shipped
+# scene is now the pedestal scene, which has neither (../mujoco_simulator.yaml),
+# and a `model_path` left here would put the arm back on the floor.
 
 integrated_rt_controller:
   ros__parameters:

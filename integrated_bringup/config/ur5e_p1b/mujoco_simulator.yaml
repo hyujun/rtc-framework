@@ -10,11 +10,15 @@
 mujoco_simulator:
   ros__parameters:
     # ── Model ────────────────────────────────────────────────────────────────
-    # scene_with_table.xml = scene.xml + a 0.5x0.5 m work table (top at z=0.05)
-    # under the palm-down startup pose's hand column. Point this back at
-    # scene.xml for the bare robot-on-a-floor scene; the object_pool spawn
-    # height below assumes the table.
-    model_path: "package://hand_description/robots/ur5e_p1b/mjcf/scene_with_table.xml"
+    # scene_pedestal.xml = the same robot on a 0.7 m pedestal: the arm base at
+    # world z = 0.7, the floor at z = 0, no table (2026-10-09, #747). The
+    # siblings in that directory keep the base at the world origin:
+    #   scene_with_table.xml — scene.xml + a 0.5x0.5 m work table (top at
+    #                          z=0.05) under the palm-down startup pose's hand
+    #                          column; the object_pool spawn height below
+    #                          assumes THAT table
+    #   scene.xml            — the bare robot-on-a-floor scene
+    model_path: "package://hand_description/robots/ur5e_p1b/mjcf/scene_pedestal.xml"
 
     # ── Sync timeout ─────────────────────────────────────────────────────────
     # Max time to wait for a controller command per step (ms).
@@ -26,6 +30,14 @@ mujoco_simulator:
     # ── Viewer ───────────────────────────────────────────────────────────────
     enable_viewer: true
     viewer_refresh_rate: 60.0  # Hz — viewer target refresh rate (affects both viz buffer and render loop)
+    # The arm stands on a 0.7 m pedestal: look at its middle (not the world
+    # origin at the pedestal's foot), from farther back and higher than the
+    # viewer's default (lookat origin, 2.5 m, -20 deg).
+    viewer_camera:
+      lookat: [0.0, 0.0, 0.9]
+      distance: 3.2
+      azimuth_deg: 90.0
+      elevation_deg: -25.0
 
     # ── Physics Timestep ──────────────────────────────────────────────────────
     physics_timestep: 0.002 # seconds — control period (constant)

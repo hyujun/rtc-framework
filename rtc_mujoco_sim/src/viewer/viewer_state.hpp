@@ -20,6 +20,19 @@ namespace rtc {
 // Camera mode for TAB cycling
 enum class CameraMode { kFree, kTracking, kFixed };
 
+/// Put `cam` on the free-camera view `home` (the YAML `viewer_camera`).
+inline void SetHomeCamera(mjvCamera& cam,
+                          const MuJoCoSimulator::Config::ViewerCamera& home) noexcept {
+  mjv_defaultCamera(&cam);
+  cam.type = mjCAMERA_FREE;
+  cam.lookat[0] = home.lookat[0];
+  cam.lookat[1] = home.lookat[1];
+  cam.lookat[2] = home.lookat[2];
+  cam.distance = home.distance;
+  cam.azimuth = home.azimuth_deg;
+  cam.elevation = home.elevation_deg;
+}
+
 // ── ViewerState ───────────────────────────────────────────────────────────────
 // All GLFW callbacks access this struct via glfwGetWindowUserPointer().
 struct ViewerState {
@@ -70,6 +83,9 @@ struct ViewerState {
   // Null (or empty) until the first snapshot arrives, and for the whole run
   // when no group enabled the lane.
   const std::vector<ContactWrenchVizSample>* contact_wrench{nullptr};
+
+  // ── Home view: what the viewer opens on and ESC returns to ────────────────
+  MuJoCoSimulator::Config::ViewerCamera home_camera{};
 
   // ── Camera mode ────────────────────────────────────────────────────────────
   CameraMode cam_mode{CameraMode::kFree};

@@ -510,6 +510,10 @@ mujoco_simulator:
 | `model_path` | string | `""` | MJCF 모델 경로 (필수). 빈 값이면 노드 configure 시 `runtime_error`. robot-specific bringup이 `package://<pkg>/path/to/scene.xml` 형태로 전달. |
 | `enable_viewer` | bool | `true` | GLFW 3D 뷰어 활성화 |
 | `viewer_refresh_rate` | double | `60.0` | 뷰어 목표 refresh rate (Hz) |
+| `viewer_camera.lookat` | double[3] | `[0, 0, 0]` | 뷰어가 열릴 때 (그리고 ESC 로 돌아갈 때) 의 free camera 가 바라보는 점 (m, world). 뷰어는 MJCF 의 `<statistic>` · `<visual><global>` 을 읽지 않으므로, 로봇이 world 원점에 서 있지 않은 씬은 여기서 맞춘다. 3 원소가 아니거나 유한하지 않으면 노드 생성이 실패한다 |
+| `viewer_camera.distance` | double | `2.5` | `lookat` 에서 카메라까지의 거리 (m, > 0) |
+| `viewer_camera.azimuth_deg` | double | `90.0` | 방위각. 90 이면 카메라가 −y 쪽에 서서 +x 를 오른쪽에 둔다 |
+| `viewer_camera.elevation_deg` | double | `-20.0` | 고각 ([−90, 90]). 음수가 내려다보는 방향 |
 | `sync_timeout_ms` | double | `50.0` | 모든 robot 그룹 command 대기 타임아웃 (ms). 넘기면 도착한 group 의 command 만 적용하고 step 한다 — 한 group 이 명령을 안 보내는 동안 sim 은 step 마다 이만큼 멈춘다 |
 | `max_rtf` | double | `0.0` | 최대 실시간 비율 (0.0 = 무제한) |
 | `control_rate` | double | `500.0` | 런치 파일에서 전달. lock-step 은 step 하나가 controller tick 하나이므로 `physics_timestep == 1/control_rate` 를 요구한다 (다르면 기동 FATAL — #566 이전에는 physics 가 더 빠른 쪽을 허용해 `dt` 적분이 sim 시간과 어긋났다) |

@@ -1694,6 +1694,10 @@ if(BUILD_TESTING)
   # Shipped initial_qpos: length/type (always) + MJCF keyframe agreement (skips
   # without the mujoco pip module, which CI installs and /usr/bin/python3 lacks).
   ament_add_pytest_test(test_shipped_initial_qpos test/test_shipped_initial_qpos.py)
+  # Shipped catching.io.base_T_world vs where the shipped scene puts the arm
+  # base: float types (always) + the compiled scene's base position (skips
+  # without the mujoco pip module, like the keyframe lane above).
+  ament_add_pytest_test(test_shipped_base_T_world test/test_shipped_base_T_world.py)
   # Shipped mujoco_simulator.yaml keys vs the node's declare_parameter list. An
   # undeclared key is read as its compiled default with no error anywhere, so
   # this is the cheap stand-in for the runtime launch that would otherwise be

@@ -285,7 +285,7 @@
 | D-S8-9 | γ0 arm 은 `gamma.grid: [0.0]` + `planner.search.grid.hand.d_eff: 10.0` 이다 (실험 arm 이며 출하값이 아니다) | — / — |
 | D-S8-10 | CLOSING 기록이 한 tick 늦는 것은 문서 기록만이다 | — / L7 §4.1 (R-CLOSE) |
 | D-S8-11 | 공 arm 은 `beanbag` preset 그대로 쓴다 (`tennis_soft` 는 없다) | — / — |
-| D-S8-12 | 손 근처 투척은 S8-F 탐색이고 게이트 밖이다 | `IB/config/ur5e_p1b/sim_overlays/s8f_reach_first.yaml` / — |
+| D-S8-12 | 손 근처 투척은 S8-F 탐색이고 게이트 밖이다 | `IB/integrated_bringup/catching_sim_trials.py` 의 `hand_*` 투척 (overlay `s8f_reach_first` 는 2026-10-09 에 정리 — git 이력) / — |
 | D-S8-13 | sim 팔 플랜트는 τ 0.05 s 로 서보 게인을 정하고 `joint_cmd.lag.{T_arm, lead_enable}` + `T_freeze` overlay 로 돈다 (sim 플랜트는 선택이다) | `IB/config/ur5e_p1b/controllers/demo_catching_controller.yaml`, `life`, `IB/test/test_catching_tracking.cpp` / L5 §4.5 |
 | D-S8-14 | leap 묶음: 팔 서보 τ 0.05, 지도 라운드 최다 열림 자세가 출하 `planner.wait_pose`, overlay `catch_lead_on` | `IB/config/iiwa7_leap/sim_overlays/catch_lead_on.yaml`, `IB/config/iiwa7_leap/controllers/demo_catching_controller.yaml` / — |
 | D-S8-15 | leap 상자는 p1b 폭 상자 중 열림 비율 최대이고, 유효성 조건은 상승 구간에 대기 자세 로봇과 2 cm 이상 떨어진 투척이다 | `IB/integrated_bringup/catching_sim_trials.py` (iiwa7_leap 상자 주석) / — |

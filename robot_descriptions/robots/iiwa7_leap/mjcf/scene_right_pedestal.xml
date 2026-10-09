@@ -1,0 +1,66 @@
+<!-- iiwa7 + right LEAP hand on a 0.7 m pedestal: the arm base at world z = 0.7,
+     the floor at z = 0. No table, no objects.
+
+     A SIBLING of scene_right.xml, not an edit of it: scene_right.xml and
+     iiwa7_with_leap_right.xml stay as they are (other scenes and the
+     model-pair gate read them with the base at the world origin), and this
+     file only places the same robot higher. Which one a bringup gets is a
+     model_path choice (integrated_bringup/config/iiwa7_leap/mujoco_simulator.yaml).
+
+     WHY <attach> AND NOT <include>. The base body sits directly under the
+     robot file's own worldbody, so an <include> can only paste it at the world
+     origin — moving it would take a second copy of the robot file. An <attach>
+     takes the `link_0` subtree of that file, with the defaults, assets,
+     contact excludes, actuators and sensors it refers to, and hangs it on a
+     frame of this scene. The empty prefix keeps every name as it is.
+
+     WHAT <attach> DOES NOT CARRY: the robot file's <option integrator>. It is
+     not restated here on purpose — rtc_mujoco_sim applies the YAML solver
+     block to every option this TOP-LEVEL file leaves unset (the sibling scenes
+     get theirs the same way — the robot file's header says so). The robot
+     file's keyframe `home` IS carried, and is this scene's first keyframe.
+
+     Checked against scene_right.xml on MuJoCo 3.7.0 (2026-10-09): same joints,
+     actuators, sensors, contact excludes and keyframe in the same order with
+     the same parameters, and every robot body 0.7 m higher at the same joint
+     angles.
+
+     THE PEDESTAL is a cylinder of radius 0.13 m (link_0's footprint is about
+     0.21 x 0.19 m) standing on the floor up to the base plane. It collides: an
+     arm or a ball that reaches under the base plane meets it. link_0 is fixed
+     to the world, and MuJoCo does not generate contacts between two fixed
+     bodies, so the pedestal never pushes on the robot it carries. -->
+<mujoco model="iiwa7_with_leap_right scene + pedestal">
+  <!-- What a stock MuJoCo viewer opens on: the middle of the arm from 3.2 m
+       (1.5 x extent) and 25 deg above. The rtc_mujoco_sim viewer does not read
+       these — the profile's `viewer_camera` (mujoco_simulator.yaml) states the
+       same view for it. -->
+  <statistic center="0 0 0.9" extent="2.13"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="90" elevation="-25"/>
+  </visual>
+
+  <asset>
+    <model name="iiwa7_with_leap_right" file="iiwa7_with_leap_right.xml"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="pedestal" rgba="0.45 0.47 0.50 1" specular="0.3" shininess="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2.2" dir="0 0 -1" directional="true"/>
+    <!-- group="2" on both world geoms, stated: a visible bucket (the viewer
+         hides group 3, where the robot keeps its collision geoms). -->
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" group="2"/>
+    <geom name="pedestal" type="cylinder" size="0.13 0.35" pos="0 0 0.35" material="pedestal"
+      contype="1" conaffinity="1" group="2"/>
+    <frame name="pedestal_top" pos="0 0 0.7">
+      <attach model="iiwa7_with_leap_right" body="link_0" prefix=""/>
+    </frame>
+  </worldbody>
+</mujoco>

@@ -332,11 +332,7 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
 
     case GLFW_KEY_ESCAPE:
       s->cam_mode = CameraMode::kFree;
-      s->cam->type = mjCAMERA_FREE;
-      mjv_defaultCamera(s->cam);
-      s->cam->distance = 2.5;
-      s->cam->azimuth = 90.0;
-      s->cam->elevation = -20.0;
+      SetHomeCamera(*s->cam, s->home_camera);
       break;
 
     default:
