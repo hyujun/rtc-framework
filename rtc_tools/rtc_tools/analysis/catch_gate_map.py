@@ -21,8 +21,9 @@ python owns is everything those functions take as input and leave as output:
   T_close,tot + T_arm + T_margin of L3 §4.11 is applied here;
 - q̇ᵘ, the damped least-squares unit-speed joint velocity behind v_dir,max. It has
   no runtime producer before S6.2, so it is computed here and handed over;
-- whether p_stop is inside the workspace. ``planner.search.grid.workspace.catch_box`` is TBD,
-  so the bound is the reach sphere and the floor — the ones the kinematic map used;
+- whether p_stop is inside the workspace. The runtime search has no such gate (its catch
+  box was removed, 2026-10-09), so the bound is this map's own: the reach sphere and the
+  floor — the ones the kinematic map used;
 - a second, PROVISIONAL reach layer (D-16 revision, L3 §4.3). The shipped
   acceleration limit is one constant box from a worst-sign sufficient condition.
   This layer instead asks whether THIS move fits the torque limits: all joints
@@ -290,7 +291,10 @@ def stop_inside_workspace(
     reach_m: float,
     floor_world_z_m: float,
 ) -> bool:
-    """Reach sphere and floor — the stand-in for the TBD ``planner.search.grid.workspace.catch_box``.
+    """Reach sphere and floor — this map's own bound on where the arm may stop.
+
+    The runtime search judges neither the catch point nor the stopping point by
+    position (its catch box was removed, 2026-10-09).
 
     Model world and world differ by a yaw and a translation only, so heights
     transfer by difference.

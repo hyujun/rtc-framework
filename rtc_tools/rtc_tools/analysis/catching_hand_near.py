@@ -347,19 +347,22 @@ def load_unit(unit_dir: Path, planner_events: Path | None = None, *, ct_dir: str
 def planner_events_summary(path: Path) -> dict:
     """Rank-gate bits of the PUBLISHED plans and the judgement rejects, over a whole session.
 
-    ``rej_workspace`` is the sensor that the widened catch box took effect: a
-    session whose box was the shipped one rejects hand-near candidates there.
+    ``rej_workspace`` is a column of sessions recorded before 2026-10-09
+    (MD-94), when the search still had a catch box: there it was the sensor
+    that an overlay's widened box took effect. It is counted for a file that
+    has the column and left out for one that does not — a 0 would read as a
+    gate that ran and refused nothing.
     """
     path = Path(path)
     rows_read = _read_csv_rows(path)
     published = 0
     reach = gamma = 0
-    rejects = dict.fromkeys(
-        ("rej_input", "rej_ik", "rej_manipulability", "rej_workspace", "rej_not_evaluated"), 0
-    )
+    rejects = dict.fromkeys(("rej_input", "rej_ik", "rej_manipulability", "rej_not_evaluated"), 0)
     rows = 0
     for row in rows_read:
         rows += 1
+        if "rej_workspace" in row:
+            rejects.setdefault("rej_workspace", 0)
         for k in rejects:
             rejects[k] += _int0(row.get(k))
         if _is_true(row.get("plan_valid")):

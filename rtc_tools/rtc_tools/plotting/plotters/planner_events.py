@@ -127,13 +127,16 @@ _SEGMENT_KIND_COLOURS = {
 # Candidate funnel, in the order candidates are narrowed (S6-B decision E).
 FUNNEL_COLUMNS = ("n_in_window", "n_ik", "n_pass")
 
-# JudgeReject order (rtc_controllers/catching/search_stats.hpp).
+# JudgeReject order (rtc_controllers/catching/search_stats.hpp), then the one
+# column the search no longer writes: `rej_workspace` — the catch box, removed
+# 2026-10-09 (MD-94). Sessions recorded before that carry it, and every reader
+# below takes the columns a file has.
 REJECT_COLUMNS = (
     "rej_input",
     "rej_ik",
     "rej_manipulability",
-    "rej_workspace",
     "rej_not_evaluated",
+    "rej_workspace",
 )
 
 # RankGateBit order (rtc_controllers/catching/grid_catch_search.hpp). A `1`
@@ -152,13 +155,15 @@ RANK_COLUMNS = (
 
 # NlpRejectName order (rtc_controllers/catching/search_stats.hpp) as a WAKE's
 # reason: `none` (it chose a plan), the candidate reasons, then the three that
-# are no candidate's.
+# are no candidate's — and, for sessions recorded while the search had them,
+# the retired ones.
 NLP_REASON_ORDER = (
     "none",
     *planner_solves.NLP_REJECT_REASONS,
     "no_candidate",
     "not_at_rest",
     "rt_invalid",
+    *planner_solves.NLP_RETIRED_REJECT_REASONS,
     "unknown",
 )
 
