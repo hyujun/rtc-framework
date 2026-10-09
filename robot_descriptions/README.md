@@ -104,7 +104,7 @@ robot_descriptions/
     │   │   └── iiwa7_with_leap_right.urdf.xacro   # iiwa7 + leap_hand_right
     │   ├── mjcf/                                  # urdf_to_mjcf 변환 산출
     │   │   ├── iiwa7_with_leap_{left,right}.xml   # 로봇 본체 MJCF
-    │   │   └── scene_{left,right}.xml             # 씬 (floor + light + skybox, right 는 scene_right(_with_object).xml 2종)
+    │   │   └── scene_{left,right}.xml             # 씬 (floor + light + skybox, right 는 scene_right(_with_object|_pedestal).xml 3종 — _pedestal 은 팔 base 를 0.7 m 받침대 위에 올린다)
     │   └── meshes/{visual,collision}/             # iiwa7/leap_hand mesh hardlink
     │
     ├── schunk_hand/                       # Schunk SVH 5-finger hand (mjcf 없음)

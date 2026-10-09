@@ -34,7 +34,18 @@
 
 mujoco_simulator:
   ros__parameters:
-    # The shipped scene is kept: the table is what anchors the 100 kg pedestal.
+    # The work-table scene this overlay's object position is measured on (the
+    # table top at z = 0.05, the arm base at the world origin). It used to be
+    # the shipped scene; since 2026-10-09 that is the pedestal scene (#747).
+    model_path: "package://hand_description/robots/ur5e_p1b/mjcf/scene_with_table.xml"
+    # The view of a robot standing on the floor (the viewer's default): the
+    # profile's own viewer_camera frames the pedestal scene.
+    viewer_camera:
+      lookat: [0.0, 0.0, 0.0]
+      distance: 2.5
+      azimuth_deg: 90.0
+      elevation_deg: -20.0
+    # The table of that scene is what anchors the 100 kg pedestal.
     object_pool:
       # This repo's own objects (robot_descriptions/objects), not object_sim.
       directory: "package://robot_descriptions/objects"

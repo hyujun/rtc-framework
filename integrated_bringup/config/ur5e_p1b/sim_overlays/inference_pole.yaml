@@ -20,6 +20,13 @@ mujoco_simulator:
     # the pole 0.05 m above every position the policy was trained at, and the
     # training scene had no table to collide with.
     model_path: "package://hand_description/robots/ur5e_p1b/mjcf/scene.xml"
+    # The view of a robot standing on the floor (the viewer's default): the
+    # profile's own viewer_camera frames the pedestal scene.
+    viewer_camera:
+      lookat: [0.0, 0.0, 0.0]
+      distance: 2.5
+      azimuth_deg: 90.0
+      elevation_deg: -20.0
 
     object_pool:
       # This repo's own objects (robot_descriptions/objects), not object_sim.
