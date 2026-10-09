@@ -62,7 +62,7 @@ rollout 이 오차 예산보다 **먼저** 다 — 오차 예산은 rollout 이 
 
 판정 게이트에서 탈락한 후보는 뒤 단계를 계산하지 않고 탈락 사유를 기록한다 (아래 "런타임 판정/순위 분리"). 통과한 후보 중 §4.10 규칙으로 하나를 고르고, `closed_form` 에서는 **§4.7 히스테리시스**로 현재 plan과 비교한다. 후보가 하나도 남지 않으면 plan 없음(포기)이며, 사유 코드를 함께 기록한다.
 
-**런타임 판정/순위 분리 (D-27).** 오프라인 지도는 자기가 계산하는 게이트를 **엄격한** 필터로 쓴다. 런타임 계획기 (`GridCatchSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · IK 수렴 · manipulability (D-18, IK 안의 게이트) — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가의 문제). 포구점이 **어디에** 있는가는 판정하지 않는다 (§4.9). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.search.grid.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `grid_catch_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.search.grid.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태 — 구간을 따르는 중이면 그 구간 위의 상태, §4.3).
+**런타임 판정/순위 분리 (D-27).** 오프라인 지도는 자기가 계산하는 게이트를 **엄격한** 필터로 쓴다. 런타임 계획기 (`GridCatchSearch`) 는 둘로 나눈다. **판정 게이트** — 입력 유한성 (NUM-7) · **도달 반경** (팔 모델에서 Configure 때 구한 필요조건 — IK 목표가 기준점에서 $R+\varepsilon_{pos}$ 보다 멀면 IK 를 돌리지 않고 거른다, 사유 `too_far`, YAML 키 없음, 식은 부록 B) · IK 수렴 · manipulability (D-18, IK 안의 게이트) — 는 후보를 **제거**한다 (팔을 거기 둘 수 있는가의 문제). 도달 반경은 팔의 운동학적 필요조건이지 포구점이 **어디에** 있어야 하는가의 판정이 아니다 — 그것은 판정하지 않는다 (§4.9). **순위 게이트** — 불확실성 (§4.4) · 도달시간 (§4.3) · γ 창 (§4.5) · commit 선행 (§4.11) · 오차 예산 (§4.6) · rollout (§4.8) — 는 제거하지 않고 실패마다 `planner.search.grid.score.penalty` 를 점수에 더한다 (비트마스크 `RankGateBit`, `grid_catch_search.hpp`). 판정 통과 후보가 0 일 때만 plan 없음이고 `PlanSnapshot::reason` = 가장 많이 걸린 판정 게이트, 선택 후보의 순위 게이트 실패는 계획기 CSV 의 비트마스크로 남는다. **IK 예산 (R-2)**: 싼 항 (입력·불확실성·늦음) 으로 전 후보의 사전 점수를 먼저 매기고 IK 는 상위 `planner.search.grid.max_ik` 개에만, `budget_s` 가 남는 동안 돈다 (다음 후보의 비용을 최근 값으로 추정해 IK 전에 확인한다. 첫 후보는 항상 돈다). 도달시간·γ 창은 지도와 **같은 함수** (`JudgeRankGates`, `rank_gates.hpp`) 이고, 출발 상태만 다르다 (지도: 대기 자세 정지 / 런타임: 현재 명령 상태 — 구간을 따르는 중이면 그 구간 위의 상태, §4.3).
 
 런타임의 한 사이클은 이 순서로 돈다: 창 안의 전 후보에 싼 항 → 사전 점수 상위 후보마다 IK (+ manipulability) → $\dot q^u$ 와 `JudgeRankGates` (도달시간 · γ 창) → rollout 이 $(\gamma_f,T_w)$ 를 고름 → 그 $\gamma_f$ 로 오차 예산 → 점수.
 
@@ -461,7 +461,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 - `q_star` 는 팔 **device 순서**다. 용량 `kMaxPlanNv` 는 **계획기 control 모델 nv** 를 담는 컴파일 타임 상수이고 configure 에서 nv ≤ `kMaxPlanNv` 를 검사한다. 궤적 점 용량 `kCap` 과는 다른 상수다
 - `w5` · `w6` 는 정의 (`planner.search.grid.catchability.definition`) 와 무관하게 **항상 함께** 기록한다 (D-18, C-3)
 - `sigma_l` 은 `sigma_c` 와 같은 값이다 (§4.6). `dp_impact` 는 예상 충격량 [kg m/s] 의 기록이다 (§4.1)
-- `reason` 은 plan 이 없을 때 가장 많이 걸린 판정 게이트다. 예산에 밀려 평가 못 한 것은 `kBudgetExceeded` 로, settle 중은 `kUncertainty` 로, 창 안에 후보가 없으면 `kHorizonShort` 로 읽힌다. `kStoppingDistance` 는 동결된 메시지의 값으로 남아 있고 쓰는 탐색이 없다 — 2026-10-09 전의 세션에서는 `catch_box` 탈락이 이 값이었다 (§4.9)
+- `reason` 은 plan 이 없을 때 가장 많이 걸린 판정 게이트다. 도달 반경에 걸린 후보 (`too_far`) 는 동결된 `PlanReason` 에 새 값이 없어 `kIkFailed` 로 접힌다 (팔을 거기 둘 수 없다는 같은 뜻 — 계획기 CSV 의 `rej_too_far` 가 IK 의 거부와 가른다). 예산에 밀려 평가 못 한 것은 `kBudgetExceeded` 로, settle 중은 `kUncertainty` 로, 창 안에 후보가 없으면 `kHorizonShort` 로 읽힌다. `kStoppingDistance` 는 동결된 메시지의 값으로 남아 있고 쓰는 탐색이 없다 — 2026-10-09 전의 세션에서는 `catch_box` 탈락이 이 값이었다 (§4.9)
 
 **RT 소비자의 fail-closed 판정 (D-21, D-22, D-23).** 매 tick `Load()` 를 무조건 한 번 하고(D-21), payload 안의 값만으로 판정한다 (`SeqLock::sequence()` 를 따로 읽지 않는다). 새 plan 판정은 `snapshot_sequence` 가 아니라 **`plan_id`** 로 한다 — `snapshot_sequence` 는 궤적의 것이라 같은 궤적에서 계산한 두 plan 을 가르지 못한다. `plan_id` 는 writer (계획기, 또는 테스트·sim 용 oracle) 의 단조 카운터이고, RT 는 (a) `valid` · (b) `activation_generation` 일치 · (c) `generation` 이 RT 가 마지막으로 받은 궤적의 트랙 epoch 과 일치 · (d) `plan_id` 가 이미 받은 값과 다름 · (e) 게시 나이 (`now − publish_ns`) 가 0 이상이고 `io.t_stale` 이하 · (f) `publish_ns` 가 RT 의 마지막 리셋 시각 이후 · (g) 아래 R-ADMIT — 를 모두 만족할 때만 받는다. (f) 는 E-STOP 처럼 activation generation 을 올리지 않는 리셋을 덮는다. 하나라도 실패하면 그 tick 은 새 payload 를 쓰지 않고 이전 유효 plan(또는 무효 상태)을 유지한다. **token 불일치·나이 초과를 위한 새 `Reason` 은 만들지 않는다** (값 하나가 enum·`kAllReasons`·문자열·`CatchingState.msg` 네 곳에 걸리고 msg 는 D-20 동결): TRACKING 에서는 `kNoCatchablePlan` 으로 읽는다 (거부 사유 자체는 `PlanRefusal` 로 관측된다). RT 는 plan box 에 쓰지 않는다 — writer 는 하나뿐이다 (계획기와 oracle 이 함께 켜진 설정은 park).
 
@@ -644,7 +644,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 
 ## 8. 디버깅 방법
 
-- 계획마다 기록 (`planner_events.csv`): 후보 수, 게이트별 탈락 수(히스토그램), 선택 후보의 $(t_c,\gamma_f,T_w)$ 와 γ 창 ($\gamma_{\min}$ · $\gamma_{\max}$ · $v_{dir,\max}$ · $\Vert v\Vert_{\max}$), 순위 게이트 비트마스크, 실행시간, 교체 여부와 사유. 구간 계획기 (`mpc` · `mpc_docking`) 는 구간 풀이의 결과를 `segment_*` 열에 더한다. `nlp` 탐색은 자기 기록을 `nlp_*` 열에 낸다 — wake 의 사유 (plan 을 못 냈으면 가장 멀리 간 후보의 사유), 후보 수 (격자 · screening 통과 · 푼 것 · 유효), 검사별로 탈락한 후보 수, 고른 후보의 비용 ($J^\star$ · $\Phi$). `mpc_docking` 은 iterate 가 있는 풀이마다 코어의 기록을 더한다 — QP 의 수와 반복, 단계별 시간, KKT 잔차, 행 그룹별 위반과 불능으로 끝났을 때의 그룹, 포구 노드의 $c_N$ · $\sigma_s$ · $\sigma_t$ 와 lateral · timing 행의 부호 있는 여유 (음수가 위반). 교체를 시도한 wake 는 그 시도가 어디서 끝났는지를 `replace_step` 에 남긴다 (주기가 첫 구간을 청하지 않음 둘 · 구간 계획기의 보류 · re-check 탈락 · 게시).
+- 계획마다 기록 (`planner_events.csv`): 후보 수, 게이트별 탈락 수(히스토그램 — `rej_*`, 도달 반경은 `rej_too_far`), 선택 후보의 $(t_c,\gamma_f,T_w)$ 와 γ 창 ($\gamma_{\min}$ · $\gamma_{\max}$ · $v_{dir,\max}$ · $\Vert v\Vert_{\max}$), 순위 게이트 비트마스크, 실행시간, 교체 여부와 사유. 구간 계획기 (`mpc` · `mpc_docking`) 는 구간 풀이의 결과를 `segment_*` 열에 더한다. `nlp` 탐색은 자기 기록을 `nlp_*` 열에 낸다 — wake 의 사유 (plan 을 못 냈으면 가장 멀리 간 후보의 사유), 후보 수 (격자 · screening 통과 · 푼 것 · 유효), 검사별로 탈락한 후보 수 (`nlp_rej_*` — 도달 반경 `nlp_rej_too_far` 포함), 고른 후보의 비용 ($J^\star$ · $\Phi$). `mpc_docking` 은 iterate 가 있는 풀이마다 코어의 기록을 더한다 — QP 의 수와 반복, 단계별 시간, KKT 잔차, 행 그룹별 위반과 불능으로 끝났을 때의 그룹, 포구 노드의 $c_N$ · $\sigma_s$ · $\sigma_t$ 와 lateral · timing 행의 부호 있는 여유 (음수가 위반). 교체를 시도한 wake 는 그 시도가 어디서 끝났는지를 `replace_step` 에 남긴다 (주기가 첫 구간을 청하지 않음 둘 · 구간 계획기의 보류 · re-check 탈락 · 게시).
 - **기한에 끊긴 풀이의 시간은 풀이 시간이 아니다.** 코어가 기한에 끊은 풀이 (`segment_core_reason` 이 `deadline`) 의 `segment_solve_us` 는 끊긴 시각이고, 풀이에 걸리는 시간은 그 이상이라는 것만 안다. outcome `budget` 은 끊겼다는 뜻이 아니다 — 기한이 없는 코어 (`mpc`) 나 다른 사유로 끝난 풀이가 예산을 넘긴 것도 `budget` 이고 그 시간은 끝까지 푼 시간이다. 도구 (`rtc_tools.analysis.planner_solves`) 는 둘을 나눠 센다.
 - "항상 탈락": 게이트별 탈락 히스토그램에서 첫 번째 병목을 찾는다. γ 창이 원인이면 $d_{eff}$, $T_{close}$, $v_{dir,\max}$ 값을 먼저 의심한다.
 - 포구점이 자주 바뀐다 (`closed_form`): `delta_J`, 점프 한계, 예측 품질(L2 `lastJump`)을 확인한다.
@@ -685,3 +685,22 @@ G3-D 의 "교체 빈도" 와 G3-E 의 "L4/L5 실행 시 포화" 는 `closed_form
 ## 부록 A. [R1]식 SQP (`iiwa7_leap` 확장용, 선택)
 
 채택하지 않았다 — 탐색은 1차원 시간 탐색 + IK (§4.1) 이고, $(q,t)$ 를 함께 푸는 SQP 는 구현에 없다.
+
+## 부록 B. 도달 반경
+
+**적용: 공통** (두 탐색). IK 가 받는 후보를 하나도 지우지 않는 필요조건이고, IK 앞에서 본다 (§4.1). 함수는 `reach_bound.hpp` 의 `ComputeReachBound` · `WithinReach` 다.
+
+포구 frame 의 사슬 (모델 root 에서 포구 frame 의 부모 관절까지) 의 관절을 $1,\dots,n$ 이라 하자. 회전 관절 $i$ 의 축 위의 점 $c_i=o_i+s_id_i$ 는 그 관절의 앞 link 와 뒤 link **양쪽에** 고정돼 있다 ($o_i$ 는 관절의 원점, $d_i$ 는 축, 둘 다 앞 관절의 frame 에서). 그래서 이웃한 두 점 사이의 거리는 관절값과 무관한 모델의 상수이고, 삼각부등식으로 모든 관절값 $q$ 에서
+
+$$\Vert p_{frame}(q)-c_1\Vert\ \le\ R(s)=\sum_{i=1}^{n-1}\Vert c_{i+1}-c_i\Vert+\Vert f-c_n\Vert$$
+
+이다 ($f$ 는 마지막 관절의 frame 에서 본 포구 frame 의 원점). **어느 $s$ 든 유효한 상한이다.** 그 가운데 가장 조인 값
+
+$$R=\min_s R(s)$$
+
+을 쓴다 — $R(s)$ 는 $s$ 의 볼록 함수 (norm 의 합) 이고 가중 최소제곱 반복으로 푼다. 반복은 $s=0$ (관절 원점) 에서 시작해 값을 내리기만 하므로 덜 수렴해도 상한이라는 성질은 깨지지 않는다. 기준점은 그때의 $c_1$ — 첫 관절 축 위의 점 — 이고 모델 world 에 고정돼 있다.
+
+- 직동 관절은 두 link 양쪽에 고정된 점이 없다. 그 관절의 원점을 점으로 쓰고 ($s_i=0$) 행정 $\max(\vert q_{lo}\vert,\vert q_{hi}\vert)$ 를 $R$ 에 더한다
+- 사슬에 그 밖의 관절 형이 있거나 직동 관절에 한계가 없으면 상한을 만들지 않는다 ($R=\infty$) — 모든 후보가 IK 로 간다
+- 판정: $\Vert p_{target}-c_1\Vert>R+\varepsilon_{pos}$ 이면 `too_far`. $\varepsilon_{pos}$ (`planner.search.<mode>.ik.eps_pos`) 는 IK 가 위치 오차를 그 안에서 수용하기 때문에 더한다. $p_{target}$ 은 IK 가 실제로 받는 점이다 — grid 는 $p_c$, nlp 는 $\hat p_b+s_{ent}\hat v$
+- 관절 한계와 접근축은 보지 않는다. 그래서 반경 안의 점이 닿는다는 뜻은 아니다 — 그 판정은 IK 가 한다
