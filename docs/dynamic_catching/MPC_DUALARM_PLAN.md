@@ -1,6 +1,6 @@
 # MPC · dual-arm catching 과 실기 단계 — 계획
 
-- 상태: **E0 완료 · E1 진행 중 (단일 팔 MPC 의 E1-F01 – F11, 계획기 interface 의 E1-F12, mpc_docking 수치 코어의 E1-F13, NLP search 코어의 E1-F14, mpc_docking 입력 식별의 E1-F15, 계획기 스레드 통합의 E1-F16, RT 계약 · supervisor 의 E1-F17, 로그 · plot · GUI 의 E1-F18 은 끝났고 NLP search · mpc_docking 의 E1-F19 – F21 이 남았다 — E1-F19 는 1 부 (`ur5e_p1b` 의 값) 만 들어갔고 E1-F21 이 다음) · E2 완료 (G1 bring-up 의 E2-F01 – F03, 다중 frame CLIK 의 E2-F04, 그 바인딩 `demo_dualarm_controller` 의 E2-F05, 그 GUI · plot 의 E2-F06 – F07 — 게이트 충족, §3)** · E3 · 실기 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태는 §3 의 표가 갖는다 (§2 "상태는 한 곳에만")
+- 상태: **E0 완료 · E1 진행 중 (E1-F01 – F18 과 판정 지도의 E1-F21 은 끝났고, 튜닝의 E1-F19 — 1 부 (`ur5e_p1b` 의 값) 만 들어갔다 — 와 비교 평가의 E1-F20 이 남았다) · E2 완료 (E2-F01 – F07 — 게이트 충족, §3)** · E3 · 실기 대기. 이 줄은 epic 의 상태만 적는다 — feature 의 상태는 §3 의 표가, 끝난 feature 의 이름은 [ID_INDEX.md](ID_INDEX.md) §3 이 갖는다 (§2 "상태는 한 곳에만")
 - 범위: 단일 팔 MPC (ur5e_p1b · iiwa7_leap, APPROACH–정지 — 끝났다) 와 그 위의 NLP search · mpc_docking (E1 의 남은 feature) · G1 + proto_1b bring-up 과 QP 다중 frame CLIK (E2) → 같은 MPC 에 dual arm · waist 항 추가 (E3, g1_p1b) → 실기 단계 (`ur5e_p1b`)
 
 **이 문서는 구현이 끝나면 지우는 파일이다.** 상태 · 순서 · 남은 일의 범위 · 아직 정하지 않은 것 · 관리 규칙만 갖고, 영구히 보관할 정보는 갖지 않는다. 영구 정보의 자리:
@@ -19,13 +19,13 @@
 |---|---|---|
 | E0 | feature 가 모두 끝남 | 기반 정비 |
 | **E1** | **필수** | 단일 팔 MPC (ur5e_p1b · iiwa7_leap 의 팔 기준을 APPROACH 부터 정지까지 MPC 로) 는 끝났다. 남은 것은 단일 arm-hand 의 두 모듈 — 포구 후보를 NLP 로 고르는 탐색 (`nlp`) 과 inner-loop NMPC planner (`mpc_docking`) — 과 기존 탐색 · planner 와의 비교다 |
-| **E2** | **필수** | g1_p1b 의 `demo_joint_controller` · `demo_dualarm_controller` |
-| E3 | 필수 (E2 뒤) | 같은 MPC 에 dual arm · waist 항 추가 — g1_p1b |
+| E2 | feature 가 모두 끝남 | g1_p1b 의 `demo_joint_controller` · `demo_dualarm_controller` 와 그 GUI · plot |
+| **E3** | **필수** (선행 E2 는 끝났다) | 같은 MPC 에 dual arm · waist 항 추가 — g1_p1b |
 | 실기 (HW) | 필수 · sim 전용이 아니다 | 실기 단계 — 1차 목표 로봇은 `ur5e_p1b` ([#613](https://github.com/hyujun/rtc-framework/issues/613)) |
 
-- **E1 의 남은 feature 를 먼저 한다 (E1-F21 부터).** E2 는 E1 의 선행이 아니었고 끝났다 (E2-F01 – F07). E3 의 착수 조건인 E2 (g1_p1b 준비) 와 E1-F07 (코어) 은 둘 다 끝났다 — E3 의 브랜치가 E1 의 남은 브랜치와 병행할 수 있는지는 고치는 패키지로 정한다 (§3 의 병행 규칙).
+- **E1 의 남은 feature 를 먼저 한다 (E1-F19 의 2 부 → E1-F20).** E1-F20 은 평가 도구가 투척 목록을 짝짓게 된 뒤에 한다 ([#798](https://github.com/hyujun/rtc-framework/issues/798), §5). E2 는 E1 의 선행이 아니었고 끝났다 (E2-F01 – F07). E3 의 착수 조건인 E2 (g1_p1b 준비) 와 E1-F07 (코어) 은 둘 다 끝났다 — E3 의 브랜치가 E1 의 남은 브랜치와 병행할 수 있는지는 고치는 패키지로 정한다 (§3 의 병행 규칙).
 - **설계 (MD-46 · MD-47).** MPC 는 waist + dual arm (G1) 용으로 설계한다 (formulation §1.3). 단일 팔은 같은 MPC 에서 dual arm · waist 전용 항과 제약만 뺀 구성이었고, g1_p1b 는 같은 코어에 그 항을 더한다 (E3). closed_form 과 mpc 는 입력 (추정기의 공 미래 궤적) 과 출력 (CLIK 입력) 이 같은 두 planner 이고 추정기 · supervisor · 손 시퀀서 · CLIK · `ABORT_SAFE` · E-STOP 은 공통이다.
-- **E1 의 남은 feature.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 는 코어 · 계획기 배선 (E1-F16) 과 RT 쪽 (E1-F17) 까지 들어왔다 — 남은 것은 로그 · 판정 지도 · 튜닝 · 평가다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 구현한 것은 그 문서의 §17 에 적는다). 수치 코어는 하나이고 이미 있다 (`MpcDockingSegmentCore`, E1-F13): `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 탐색 코어도 있고 (`NlpCatchSearch`, E1-F14) 계획기의 한 주기가 부른다 (E1-F16). 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 payload, 출하 기본값 (선택 키의 값) 은 바꾸지 않는다. **탐색은 RT 가 plan 을 채택한 뒤에도 돈다** — 처음 채택한 plan 의 $t_c$ 에서 `t_stop_plan` 앞까지, 공을 잡기 직전까지만이고 모든 조합에서다 (사용자 결정, §4). 그래서 출하 조합 `grid` × `mpc` 의 동작도 바뀐다: 채택 뒤의 wake 는 탐색을 먼저 돌리고, 탐색이 다른 plan 을 고르면 그 plan 과 첫 구간을 쌍으로 게시해 RT 가 APPROACH 중에 둘을 함께 바꾸며 (아니면 구간을 재계획한다), 손의 폐쇄 지령 시각은 commit 뒤에도 지령 전까지 다시 맞춰진다 (E1-F16 · F17 — L3 §5.3, L7 §4.3a, L6 §4.3). 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다. 새 구현의 이름은 값 + interface 의 순서다 — 구간 계획기는 `<값>SegmentPlanner` · `<값>SegmentCore` (`MpcSegmentPlanner` · `MpcSegmentCore` 와 같다), 탐색은 `<값>CatchSearch` (`GridCatchSearch` 와 같다). `Decel*` 이름을 새로 쓰지 않는다 (MD-48).
+- **E1 의 남은 feature.** 탐색 하나 (`nlp`) 와 planner 하나 (`mpc_docking`) 는 코어 · 계획기 배선 (E1-F16) 과 RT 쪽 (E1-F17) 까지 들어왔다 — 로그 (E1-F18) 와 판정 지도 (E1-F21) 도 끝났고 남은 것은 튜닝 · 평가다. 설계 자료는 [ref/ball_catching_inverse_dynamics_mpc.md](ref/ball_catching_inverse_dynamics_mpc.md) 다 (§10 이 planner, §11 이 탐색 — 구현한 것은 그 문서의 §17 에 적는다). 수치 코어는 하나이고 이미 있다 (`MpcDockingSegmentCore`, E1-F13): `mpc_docking` 은 그 코어로 구간을 풀고 `nlp` 는 같은 코어로 후보를 평가한다. 탐색 코어도 있고 (`NlpCatchSearch`, E1-F14) 계획기의 한 주기가 부른다 (E1-F16). 둘 다 계획기 스레드 안에서 돌고, 위의 공통부와 계획기 → RT 계약의 payload, 출하 기본값 (선택 키의 값) 은 바꾸지 않는다. **탐색은 RT 가 plan 을 채택한 뒤에도 돈다** — 처음 채택한 plan 의 $t_c$ 에서 `t_stop_plan` 앞까지, 공을 잡기 직전까지만이고 모든 조합에서다 (사용자 결정, §4). 그래서 출하 조합 `grid` × `mpc` 의 동작도 바뀐다: 채택 뒤의 wake 는 탐색을 먼저 돌리고, 탐색이 다른 plan 을 고르면 그 plan 과 첫 구간을 쌍으로 게시해 RT 가 APPROACH 중에 둘을 함께 바꾸며 (아니면 구간을 재계획한다), 손의 폐쇄 지령 시각은 commit 뒤에도 지령 전까지 다시 맞춰진다 (E1-F16 · F17 — L3 §5.3, L7 §4.3a, L6 §4.3). 코드는 로봇을 모르게 쓰고 시험은 `ur5e_p1b` · `iiwa7_leap` 둘에서 한다. 새 구현의 이름은 값 + interface 의 순서다 — 구간 계획기는 `<값>SegmentPlanner` · `<값>SegmentCore` (`MpcSegmentPlanner` · `MpcSegmentCore` 와 같다), 탐색은 `<값>CatchSearch` (`GridCatchSearch` 와 같다). `Decel*` 이름을 새로 쓰지 않는다 (MD-48).
 - 실기와 E2 · E3 의 선후는 이 문서가 정하지 않았다 (§5).
 
 ### 게이트 G-1 — 단일 팔 mpc planner 가 closed_form planner 와 비슷한 성능을 내는가
@@ -60,7 +60,7 @@
 
 ## 3. Epic · Feature
 
-**끝난 것.** E0 (기반 정비), E1 의 단일 팔 MPC (E1-F01 – F11), 계획기 interface (E1-F12), mpc_docking 수치 코어 (E1-F13), NLP search 코어 (E1-F14), mpc_docking 의 입력 식별 (E1-F15), 계획기 스레드 통합 (E1-F16), RT 계약 · supervisor (E1-F17), 로그 · plot · GUI (E1-F18) 는 끝났다 — feature 와 이슈는 [ID_INDEX.md](ID_INDEX.md) §3. E2-F01 – F03 (G1 자산 · config · launch · `demo_joint_controller` 의 G1 구동) 과 E2-F04 (`rtc_tsid` 의 다중 frame CLIK), E2-F05 (그 바인딩 `demo_dualarm_controller`), E2-F06 · F07 (그 GUI 와 plot) 도 끝났다 — 같은 곳. E2 에 남은 feature 는 없다. `Decel*` 이름의 rename (MD-48, [#711](https://github.com/hyujun/rtc-framework/issues/711)) 도 끝났다 — #761 · #762.
+**끝난 것.** E0 (기반 정비), E1 의 단일 팔 MPC (E1-F01 – F11), 계획기 interface (E1-F12), mpc_docking 수치 코어 (E1-F13), NLP search 코어 (E1-F14), mpc_docking 의 입력 식별 (E1-F15), 계획기 스레드 통합 (E1-F16), RT 계약 · supervisor (E1-F17), 로그 · plot · GUI (E1-F18), 포구 가능 판정 지도 (E1-F21) 는 끝났다 — feature 와 이슈는 [ID_INDEX.md](ID_INDEX.md) §3. E2-F01 – F03 (G1 자산 · config · launch · `demo_joint_controller` 의 G1 구동) 과 E2-F04 (`rtc_tsid` 의 다중 frame CLIK), E2-F05 (그 바인딩 `demo_dualarm_controller`), E2-F06 · F07 (그 GUI 와 plot) 도 끝났다 — 같은 곳. E2 에 남은 feature 는 없다. `Decel*` 이름의 rename (MD-48, [#711](https://github.com/hyujun/rtc-framework/issues/711)) 도 끝났다 — #761 · #762.
 
 ### E1. 단일 팔 — NLP search · mpc_docking — [#621](https://github.com/hyujun/rtc-framework/issues/621) · 필수
 
@@ -68,9 +68,8 @@ sim 전용. 게이트: 새 탐색 · planner 를 기존 것과 같은 투척으�
 
 | Feature | 이슈 | 내용 | 선행 | 상태 |
 |---|---|---|---|---|
-| E1-F21 | [#747](https://github.com/hyujun/rtc-framework/issues/747) | 포구 가능 판정 지도 — 탐색이 어떤 공을 받는다고 판정하는가 (발사 위치 · 거리 · 비행시간 · 종단 속도). 오프라인 지도와 sim 의 판정 대 결과, 기술 통계로 보고한다. E1-F18 에서 넘어온 것: 투척마다의 판정은 `catching_trials` 의 `plan_verdict` · `plan_reject` / `plan_reject_last` 다 — 사유를 하나로 줄이는 방식 (가장 잦은 것 / 마지막 것) 은 여기서 고른다 ([#744 완료판](https://github.com/hyujun/rtc-framework/issues/744#issuecomment-6048348027) §6). 지도는 새 배치에서 만든다 — 팔의 base 를 0.7 m 받침대 위로 올리고 `wait_pose` 를 새로 골랐다 ([#790](https://github.com/hyujun/rtc-framework/pull/790)). 그 배치에서 탐색의 `catch_box` 게이트를 없앴고 ([#791](https://github.com/hyujun/rtc-framework/issues/791), [#792](https://github.com/hyujun/rtc-framework/pull/792)), 그 상자가 겸하던 IK 앞의 사전 필터는 팔의 도달 반경으로 다시 넣었다 ([#793](https://github.com/hyujun/rtc-framework/issues/793) — L3 §4.1 · 부록 B, sim 의 전후 비교는 [#793 의 결과 코멘트](https://github.com/hyujun/rtc-framework/issues/793#issuecomment-6077665735)). **출하된 투척 (`s35b` · `reference` · K 키) 은 옛 배치의 것이라 새 배치에서 포구가 서지 않는다** — 투척 기준을 사용자가 다시 세우고 (초안과 정할 것은 [#747 의 코멘트](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6075388596)), 지도의 측정은 그 기준 뒤에 한다. 도구 — 오프라인 판정기 `catch_search_batch`, 지도 `catch_search_map`, `catching_sim_trials` 의 투척 목록 입력 — 는 들어갔다 (L8 §12). 옛 배치의 lead · 거절 사유는 [#747 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6062694467), 새 배치의 첫 sim 은 [#791 의 결과 코멘트](https://github.com/hyujun/rtc-framework/issues/791#issuecomment-6074566680) | E1-F16 · F17 · F18 (끝) | **측정이 끝났다** (2026-10-09) — 닫는 것은 사용자의 지시를 기다린다. 통과점 설계 F 128,304 발 × 두 로봇, C 4,500 발의 오프라인 지도 (수용률 `ur5e_p1b` grid 74.5 % · nlp 20.9 %, `iiwa7_leap` 71.3 % · 6.9 % — [2 단계](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6080315436)), 경계 세분화 ([3a](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6080818613)), sim 의 판정 × 결과와 테스트세트 v0 ([3b](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6081730741)). 기존 gate 지도는 C 전체에서 열린 투척이 0 이다 — 지금의 탐색과 다른 것을 판정한다. 측정에서 나온 도구의 결함 셋 (상대경로 `--out-dir`, `run_unit.sh` 의 기동 판정, 투척의 판정 창 = 발사 – 첫 충돌) 을 고쳤다. E1-F20 의 모집단은 로봇별 D-1 세트 + 후보 상자 목록으로 정했다 ([결정](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6082801792)). 출하 투척 (`s35b` · `reference`) 은 다시 유도하지 않고 투척 목록으로 바꾼다 — [#798](https://github.com/hyujun/rtc-framework/issues/798) |
-| E1-F19 | [#745](https://github.com/hyujun/rtc-framework/issues/745) | 튜닝 (판정 전, 판정과 다른 seed). **1 부 — 값만으로 plan 이 서고 RT 가 따른다 — 는 `ur5e_p1b` 에 들어갔다** ([#787](https://github.com/hyujun/rtc-framework/pull/787), 2026-10-08): 손의 폐쇄 속력 band 의 위 끝 2.1 m/s 와 기준 폐쇄 속력 2.0 m/s (식별이 날린 상자 밖이다 — `docking.provisional` 은 그대로), 확률 행 끔, envelope 여유 한도 3.0, `nlp` 는 한 wake 에 후보 하나. 확인 seed 둘에서 `grid` × `mpc_docking` 은 plan 게시 · 추종 기준을 채웠고, `nlp` × `mpc_docking` 은 한 seed 에서 미충족 뒤 예산을 바꿔 다음 seed 에서 채웠다. 포구 수는 보고만 했다 (판정은 E1-F20). 최종값과 수치는 [#745 의 리뷰 뒤 수정 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6062488544). #743 에서 옮겨 온 "RT 가 `mpc_docking` 구간을 따른 sim 기록" 은 여기서 생겼다. 교체 쌍의 채택 · 전환은 여전히 sim 에서 실행되지 않았다 — plan 을 따르는 동안의 탐색이 교체를 한 번도 게시하지 못했다. **남은 것**: `iiwa7_leap` (기준 미충족인 채 멈췄고 출하값은 그대로다 — 새 배치에서 다시 본다), 새 배치에서의 p1b 재확인, 2 부 (E1-F21 의 지도 위의 조정 · 확인, 두 로봇의 풀이 시간 대 예산 표), 값으로 풀리지 않은 것 (포구 시각의 가속, 확률 행과 함께 꺼지는 공분산 유효성 검사, 폐쇄 창의 축, `nlp` 의 `solve_s` 에 걸린 검사되지 않는 상한) — [#745 의 머지 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6062693925). 앞선 feature 에서 넘어온 기록: [E1-F16 의 인계](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6034273846) · [E1-F17 의 인계](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6040514661) · [#744 완료판](https://github.com/hyujun/rtc-framework/issues/744#issuecomment-6048348027) §3 · [착수 분석](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6055889700) | E1-F18 (끝) · F21 | 1 부 끝 · 2 부 대기 |
-| E1-F20 | [#746](https://github.com/hyujun/rtc-framework/issues/746) | 비교 평가 — search 둘 (`grid` · `nlp`), planner 셋 (`closed_form` · `mpc` · `mpc_docking`). E1-F19 의 1 부에서 넘어온 것 (채택값, 쓴 seed 801 · 901 · 821 · 822, 판정의 설계에 닿는 것 — 같은 값 · 같은 seed 의 반복이 50 투척에 ±4 – 5 건 흔들린다): [#746 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/746#issuecomment-6062694993) | E1-F19 | 대기 |
+| E1-F19 | [#745](https://github.com/hyujun/rtc-framework/issues/745) | 튜닝 (판정 전, 판정과 다른 seed). **1 부 — 값만으로 plan 이 서고 RT 가 따른다 — 는 `ur5e_p1b` 에 들어갔다** ([#787](https://github.com/hyujun/rtc-framework/pull/787), 2026-10-08): 손의 폐쇄 속력 band 의 위 끝 2.1 m/s 와 기준 폐쇄 속력 2.0 m/s (식별이 날린 상자 밖이다 — `docking.provisional` 은 그대로), 확률 행 끔, envelope 여유 한도 3.0, `nlp` 는 한 wake 에 후보 하나. 확인 seed 둘에서 `grid` × `mpc_docking` 은 plan 게시 · 추종 기준을 채웠고, `nlp` × `mpc_docking` 은 한 seed 에서 미충족 뒤 예산을 바꿔 다음 seed 에서 채웠다. 포구 수는 보고만 했다 (판정은 E1-F20). 최종값과 수치는 [#745 의 리뷰 뒤 수정 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6062488544). #743 에서 옮겨 온 "RT 가 `mpc_docking` 구간을 따른 sim 기록" 은 여기서 생겼다. 교체 쌍의 채택 · 전환은 여전히 sim 에서 실행되지 않았다 — plan 을 따르는 동안의 탐색이 교체를 한 번도 게시하지 못했다. **남은 것**: `iiwa7_leap` (기준 미충족인 채 멈췄고 출하값은 그대로다 — 새 배치의 sim 에서 `nlp` × `mpc_docking` 은 202 발을 모두 거부했다), 새 배치에서의 p1b 재확인, 2 부 (E1-F21 의 지도 위의 조정 · 확인 — 그 지도에서 `grid` × `mpc` 는 탐색이 받은 투척의 거의 전부가 구간 계획기에서 게시되지 않았다, 두 로봇의 풀이 시간 대 예산 표), 값으로 풀리지 않은 것 (포구 시각의 가속, 확률 행과 함께 꺼지는 공분산 유효성 검사, 폐쇄 창의 축, `nlp` 의 `solve_s` 에 걸린 검사되지 않는 상한) — [#745 의 머지 코멘트](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6062693925). 앞선 feature 에서 넘어온 기록: [E1-F16 의 인계](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6034273846) · [E1-F17 의 인계](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6040514661) · [#744 완료판](https://github.com/hyujun/rtc-framework/issues/744#issuecomment-6048348027) §3 · [착수 분석](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6055889700) · [E1-F21 의 인계](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6082987252) (D-2 튜닝 세트, 새 배치의 첫 sim, unit 을 던질 때) | E1-F18 (끝) · F21 (끝) | 1 부 끝 · **2 부 다음** — 투척은 목록으로 던진다 (#798 뒤를 권장, §5) |
+| E1-F20 | [#746](https://github.com/hyujun/rtc-framework/issues/746) | 비교 평가 — search 둘 (`grid` · `nlp`), planner 셋 (`closed_form` · `mpc` · `mpc_docking`). E1-F19 의 1 부에서 넘어온 것 (채택값, 쓴 seed 801 · 901 · 821 · 822, 판정의 설계에 닿는 것 — 같은 값 · 같은 seed 의 반복이 50 투척에 ±4 – 5 건 흔들린다): [#746 의 인계 코멘트](https://github.com/hyujun/rtc-framework/issues/746#issuecomment-6062694993). 투척 모집단은 E1-F21 의 결과로 정했다 — 로봇별 D-1 세트 (130 발) + 후보 상자 목록 (180 발), [모집단과 시행 전에 알아 둘 것](https://github.com/hyujun/rtc-framework/issues/746#issuecomment-6082876755) | E1-F19 · #798 | 대기 |
 
 ### E2. G1 + proto_1b bring-up — [#622](https://github.com/hyujun/rtc-framework/issues/622) · 필수
 
@@ -125,7 +124,6 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 | 브랜치 | feature | 묶은 이유 · 나누는 조건 |
 |---|---|---|
-| `feat/catching-search-verdict-map` | E1-F21 | 판정 지도의 도구와 측정. **나누는 조건**: `grid` 의 오프라인 지도를 먼저 만들면 브랜치를 나눈다 (그 선행인 E1-F12 는 끝났다). 도구는 merge 됐다 — 측정은 새 투척 기준 뒤에 `main` 에서 같은 이름으로 다시 만든다 |
 | `feat/catching-docking-tune` | E1-F19 (2 부) | 튜닝. 판정과 한 PR 에 섞지 않는다. 1 부는 [#787](https://github.com/hyujun/rtc-framework/pull/787) 로 merge 됐다 — 2 부는 `main` 에서 같은 이름으로 다시 만든다 |
 | `docs/catching-docking-eval` | E1-F20 | 게이트 판정 |
 | `feat/catching-mpc-candidate-select` | E3-F01 | G1 구성의 후보 선택. interface 는 E1-F12 가 넣었다 |
@@ -134,7 +132,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 | `feat/g1-catch-controller` | E3-F05 | supervisor · 손 시퀀서 통합. E-STOP 경로를 건드리면 E-8 |
 | `feat/g1-catch-tooling-eval` | E3-F06, E3-F07 | 로그 · plot · GUI 와 평가. 평가가 새 로그 컬럼을 쓴다. **나누는 조건**: 평가 결과가 설계 결정을 바꾸면 결과 기록을 `docs/` 브랜치로 분리한다 |
 
-**순서 — E1.** 위 표의 순서대로다: tooling → 판정 지도 → 튜닝 → 평가. E2 의 브랜치는 모두 merge 됐다.
+**순서 — E1.** 위 표의 순서대로다: 튜닝 → 평가. E2 의 브랜치는 모두 merge 됐다.
 
 **순서 — E3.** E3 의 다섯 브랜치 (착수 조건인 E2 와 E1-F07 은 끝났다, MD-47). 병행은 서로 다른 패키지를 고치는 브랜치끼리만 한다.
 
@@ -149,7 +147,7 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 ## 4. 남은 feature 를 구속하는 결정
 
-아직 구현하지 않은 feature 를 구속하는 `MD-n` 이다. 나머지 `MD-n` 은 [ID_INDEX.md](ID_INDEX.md) §4. E1-F19 – F21 을 구속하는 결정 (solver · 조합 · 선택 키 · 식의 형태 · 1 차 범위 · 판정 방식) 은 `MD-n` 이 아니다 — 각 feature 이슈의 범위에 적혀 있고 선택지와 이유는 [#621 의 결정 코멘트](https://github.com/hyujun/rtc-framework/issues/621#issuecomment-5974865100) 에 있다. 그 가운데 **D5-2 ("바깥 루프는 RT 가 plan 을 채택할 때까지만") 는 뒤집혔다**: 탐색은 채택 뒤에도 돈다 — 처음 채택한 plan 의 $t_c$ 에서 `t_stop_plan` 앞까지, 모든 조합 (`grid` × `mpc` 포함) 에서. 채택 뒤의 탐색은 E1-F16 이, 교체의 게시와 RT 의 교체 쌍 채택은 E1-F17 이 구현했다 (L3 §5.3 · L7 §4.3a). 무엇을 어느 feature 가 맡는지는 [#740 의 확정 코멘트](https://github.com/hyujun/rtc-framework/issues/740#issuecomment-6009380305) (N10 – N12) 와 #742 · #743 의 본문에 있다.
+아직 구현하지 않은 feature 를 구속하는 `MD-n` 이다. 나머지 `MD-n` 은 [ID_INDEX.md](ID_INDEX.md) §4. E1-F19 · F20 을 구속하는 결정 (solver · 조합 · 선택 키 · 식의 형태 · 1 차 범위 · 판정 방식) 은 `MD-n` 이 아니다 — 각 feature 이슈의 범위에 적혀 있고 선택지와 이유는 [#621 의 결정 코멘트](https://github.com/hyujun/rtc-framework/issues/621#issuecomment-5974865100) 에 있다. 그 가운데 **D5-2 ("바깥 루프는 RT 가 plan 을 채택할 때까지만") 는 뒤집혔다**: 탐색은 채택 뒤에도 돈다 — 처음 채택한 plan 의 $t_c$ 에서 `t_stop_plan` 앞까지, 모든 조합 (`grid` × `mpc` 포함) 에서. 채택 뒤의 탐색은 E1-F16 이, 교체의 게시와 RT 의 교체 쌍 채택은 E1-F17 이 구현했다 (L3 §5.3 · L7 §4.3a). 무엇을 어느 feature 가 맡는지는 [#740 의 확정 코멘트](https://github.com/hyujun/rtc-framework/issues/740#issuecomment-6009380305) (N10 – N12) 와 #742 · #743 의 본문에 있다.
 
 | ID | 무엇을 정했나 | feature |
 |---|---|---|
@@ -167,14 +165,15 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 
 **남은 feature 의 결정**
 
-- [#746](https://github.com/hyujun/rtc-framework/issues/746) — E1-F20: 비교 평가 — 투척 모집단은 정했다: 로봇별 D-1 세트 (130 발, G-1 의 상자 밖) + 후보 상자 목록 (180 발) ([#747 의 결정](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6082801792)). 목록으로 던진 unit 을 평가 도구가 짝짓게 하는 일이 먼저다 ([#798](https://github.com/hyujun/rtc-framework/issues/798))
+- [#746](https://github.com/hyujun/rtc-framework/issues/746) — E1-F20: 비교 평가 — search 비교의 투척 모집단은 정했다 (§3 의 그 행). planner 셋 비교의 상자는 아직이다: 이슈의 안은 G-1 과 같은 상자 (`s35b`) 인데 새 배치에서 서지 않고 #798 이 지운다 — 후보 상자 목록이 대신하는지는 시행 전 고정 때 정한다
 - [#640](https://github.com/hyujun/rtc-framework/issues/640) — E3-F01: G1 구성의 MPC 포구 후보 선택 (바깥 루프)
 - [#642](https://github.com/hyujun/rtc-framework/issues/642) — E3-F03: 충돌 제약 — capsule 모델 · 자기충돌 · 공–왼팔 거리
-- [#645](https://github.com/hyujun/rtc-framework/issues/645) — E3-F06: 로그 · plot_rtc_log · demo_controller_gui (dual arm 열)
+- [#645](https://github.com/hyujun/rtc-framework/issues/645) — E3-F06: 로그 · plot_rtc_log · demo_controller_gui (dual arm 열) — G1 포구 컨트롤러의 상태를 GUI 에 무엇으로 보일지 (E2-F06 은 상태 토픽 없이 세션 CSV 의 꼬리를 읽었다 — GUI 가 컨트롤러와 같은 머신에 있어야 한다. `rtc_msgs/CatchingState` 에 열을 더하면 E-3)
 
-**E1-F21 의 측정 뒤에 남은 일**
+**E1-F21 에서 넘어온 일**
 
-- 출하 투척 `s35b` · `reference` 를 지우고 투척 목록 (후보 상자 · D-1 · D-2) 으로 바꾼다. 평가 도구의 짝짓기 키는 `throw_id`. K 키의 공 spawn 은 표로 승인받는다 ([#798](https://github.com/hyujun/rtc-framework/issues/798))
+- [#798](https://github.com/hyujun/rtc-framework/issues/798) — 출하 투척 `s35b` · `reference` 는 옛 배치의 값이라 새 배치에서 포구가 서지 않는다. 지우고 투척 목록 (후보 상자 · D-1 · D-2) 으로 바꾼다. 평가 도구의 짝짓기 키는 `throw_id` — 목록으로 던진 unit 은 지금 `summarize.py` 에서 죽는다. 세트 파일의 자리 · 후보 상자의 자리 · K 키의 공 spawn 은 그 이슈에서 정한다. 단독 브랜치다. E1-F20 의 선행이고, E1-F19 의 2 부도 목록으로 던지므로 그 앞에 하기를 권장한다
+- 확인하지 않은 채 남긴 것 셋은 주인이 없다 — 기존 gate 지도 (`catch_gate_map`) 가 탐색이 받은 투척을 전부 닫는 이유, `nlp` 의 오프라인 수용이 sim 에서 서지 않는 이유, `grid` 의 교체 규칙이 plan 을 유지하는 동작 ([#747 의 완료 코멘트](https://github.com/hyujun/rtc-framework/issues/747#issuecomment-6082986826)). 필요하면 이슈로 만든다
 
 **mpc planner · catching 의 남은 일**
 
@@ -199,4 +198,4 @@ sim 전용. 게이트: G1 sim 에서 두 컨트롤러가 GUI 로 구동되고 fo
 - **#755 의 "msg 는 두고 전이 행만 지운다" 는 그대로는 되지 않는다.** 전이표는 어느 행에도 쓰이지 않는 사유를 거부하고 (`transition_table.hpp` 끝의 `static_assert`), 사유의 값은 `rtc_msgs` 의 상수와 번호가 같아야 한다. `rtc_msgs` 를 고치지 않는 형태는 발화하는 한 줄만 지우고 사유와 행을 두는 것이다.
 - **#716 에서 정하지 않은 것.** formulation §1.6 은 단일 팔의 포구 구간이 한 노드인 것을 손 폐쇄 명령 시각 ($t_c-T_{close}$ — 폐쇄가 $t_c$ 에 끝난다) 의 귀결로 적는다. 여러 노드로 두려면 세 planner 가 함께 쓰는 그 규칙이 바뀐다.
 
-**이 문서가 정하지 않은 것.** 실기 epic 과 E2 · E3 의 선후 (실기는 `ur5e_p1b` 이고 E2 · E3 는 G1 sim 이라 서로의 선행이 아니다). 실기 planner 는 단계 E 앞에서 정한다 (§3).
+**이 문서가 정하지 않은 것.** 실기 epic 과 E3 의 선후 (실기는 `ur5e_p1b` 이고 E3 는 G1 sim 이라 서로의 선행이 아니다). 실기 planner 는 단계 E 앞에서 정한다 (§3).
