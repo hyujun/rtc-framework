@@ -146,7 +146,9 @@ def test_a_docking_fragment_says_it_is_provisional_and_sim_only(robot, fragment)
         head.append(line)
     text = "\n".join(head)
     assert "PROVISIONAL" in text and "SIM ONLY" in text, f"{robot}/{fragment}"
-    assert "#654" in text, f"{robot}/{fragment}: the hardware condition is not named"
+    assert "robot.hand.docking.provisional" in text, (
+        f"{robot}/{fragment}: the hardware condition is not named"
+    )
 
 
 @pytest.mark.parametrize("robot", ROBOTS)

@@ -188,7 +188,7 @@ tick 마다 한 행의 기록은 `CatchingDiagLogPod` 이다 (`integrated_bringu
 
 | 게이트 | 기준 | 태그 |
 |---|---|---|
-| G8-A | 전체 시행에서 RT 위반 0 (할당, 틱 초과 기준은 RTC 규약). 계획기 스레드가 RT 와 다른 코어에 있는지 확인. **개발 PC (PREEMPT_RT 아님) 의 RT · CPU 격리 결과는 smoke 로만 보고, 판정은 제어 PC 에서** 한다 | `[SIM-ANY]` |
+| G8-A | 전체 시행에서 RT 위반 0 (할당, 틱 초과 기준은 RTC 규약 — solver 안의 할당은 횟수를 기록하되 위반으로 세지 않는다, #654). 계획기 스레드가 RT 와 다른 코어에 있는지 확인. **개발 PC (PREEMPT_RT 아님) 의 RT · CPU 격리 결과는 smoke 로만 보고, 판정은 제어 PC 에서** 한다 | `[SIM-ANY]` |
 | G8-A2 | **연속 2 회 투척** 과 **abort 직후 재투척** 시나리오에서 L7 §4.8 재무장 리셋 목록이 전부 동작 (옛 plan 재사용 0, 복귀 위치가 `wait_pose`, 첫 solve 의 $\dot q_{prev}$ 가 0) | `[SIM-ANY]` |
 | G8-H | early-return 분기마다 그 tick 의 body 가 실렸는지 보는 실패 경로 테스트 (PROC-7, `EstopTickPublishesThisTicksBody*` 선례). 분기: E-STOP · stale 입력 · generation 불일치 · 지평 부족 · plan 없음 · `ABORT_SAFE` · 손 단계 조기 반환 · `HAND_TIMEOUT` · 손 관절 캡처 | `[SIM-ANY]` |
 | G8-B | ball_perception 예측의 NEES 평균이 [R8] 구간 안 (지평별, NaN 공분산 제외, §4.4). **판정식**: `sim_estimator.launch.py record:=true` 의 capture 를 `sim_capture_evaluate` 로 평가하고, 표본을 발사 창으로 시행에 묶은 시행별 · 지평별 평균 NEES 의 시행 부트스트랩 95 % CI 의 **상한 ≤ 3 ∧ coverage_95 ≥ 0.95** 이면 PASS (위치 차원 3). 막는 것은 과소 추정이다 — sim 공의 실제 항력 오차는 profile 이 실제 공을 위해 둔 불확실성보다 훨씬 작아 보수 쪽 (NEES < 3) 은 예상값이다; 과대 쪽은 commit 시점 예측 오차로 본다 (임계 미정, 기록). 부호 있는 편향은 보고 (추정기가 중력만 모델하므로 긴 지평 편향은 예상값). NaN 공분산 > 10 % 인 지평 bin 은 `NOT_EVALUATED`. 캡처는 평가 unit 에서 필수 | `[SIM-ANY]` |

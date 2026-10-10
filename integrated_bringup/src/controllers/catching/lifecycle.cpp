@@ -1366,14 +1366,14 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
         return CallbackReturn::SUCCESS;
       }
     }
-    // SIM ONLY (#654). Both docking functions solve with a QP solver that
-    // allocates inside a solve, on the planner thread — which runs SCHED_FIFO
-    // beside a real arm. And the hand's capture set is a sim identification
-    // until it is measured on the hand (robot.hand.docking.provisional), like
-    // every other provisional block (L0 §5.3). Either parks a real-arm
-    // configuration that selects one of the two — when #654 closes, what is
-    // left of this condition is `hand_docking_.provisional`, not nothing.
-    if (planner_params_.enabled && real_arm_config_ &&
+    // SIM ONLY WHILE THE HAND'S CAPTURE SET IS PROVISIONAL. `robot.hand.docking`
+    // is a sim identification until it is measured on the hand
+    // (robot.hand.docking.provisional), like every other provisional block
+    // (L0 §5.3). Only the two docking functions read it, so it parks a real-arm
+    // configuration that selects one of the two and no other. Their QP solver
+    // allocating inside a solve, on the planner thread, is not a condition
+    // here: that is a recorded RT-1 violation (invariants.md, #654).
+    if (planner_params_.enabled && real_arm_config_ && hand_docking_.provisional &&
         (search_mode_ == rtc::catching::CatchingSearchMode::kNlp ||
          segment_mode_ == rtc::catching::CatchingSegmentMode::kMpcDocking)) {
       sim_only_disabled_ = true;
@@ -1381,13 +1381,10 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
       RCLCPP_ERROR(logger_,
                    "DISABLED: real-arm configuration with planner.search.mode %s and "
                    "planner.segment.mode %s — the nlp search and the mpc_docking planner are sim "
-                   "only until their QP solver's allocations are off the planner thread (#654)%s. "
-                   "Nothing was commanded.",
+                   "only while `robot.hand.docking.provisional` is true (the hand's capture set "
+                   "is a sim identification). Nothing was commanded.",
                    rtc::catching::SearchModeName(search_mode_),
-                   rtc::catching::SegmentModeName(segment_mode_),
-                   hand_docking_.provisional
-                       ? ", and `robot.hand.docking.provisional` is true (a sim identification)"
-                       : "");
+                   rtc::catching::SegmentModeName(segment_mode_));
       return CallbackReturn::SUCCESS;
     }
     // The search rolls a candidate out on its own copies of the closed_form
@@ -2609,8 +2606,8 @@ bool DemoCatchingController::SetupNlpCatchSearch(const PlannerArm& arm) {
   RCLCPP_INFO(logger_,
               "search mode: nlp — the docking problem solved per candidate catch instant "
               "(planner.search.nlp.*): candidates every %.3f s over %.2f-%.2f s, %d-%d pre-catch "
-              "intervals of %.3f s, budget %.3f s (%.3f s a solve, at most %d). Sim only until "
-              "the QP solver's allocations are off the planner thread (#654)",
+              "intervals of %.3f s, budget %.3f s (%.3f s a solve, at most %d). Its QP solver "
+              "allocates inside a solve (a recorded RT-1 violation, #654)",
               np.cand_dt, np.t_lead_min, np.t_max, np.n_pre_min, np.n_pre_max, np.dt_pre,
               np.budget_s, np.solve_budget_s, np.max_solves);
   return true;
@@ -2662,8 +2659,8 @@ bool DemoCatchingController::SetupMpcDockingSegmentPlanner(const PlannerArm& arm
   RCLCPP_INFO(logger_,
               "mpc_docking segment planner ready: up to %d x %.3f s before t_c, stop part %d x "
               "%.3f s in %d blocks, budgets first %.3f s / replan %.3f s, same-point re-solve "
-              "%s, nothing published after the catch; slowest warm-up solve %.1f ms. Sim only "
-              "until the QP solver's allocations are off the planner thread (#654)",
+              "%s, nothing published after the catch; slowest warm-up solve %.1f ms. Its QP "
+              "solver allocates inside a solve (a recorded RT-1 violation, #654)",
               dp.n_pre_max, dp.dt_pre_s, dp.n_stop, dp.dt_stop_s, dp.n_stop_blocks,
               dp.budget_first_s, dp.budget_replan_s, dp.replan_same_point ? "on" : "off",
               static_cast<double>(warmup_max_ns) * 1e-6);

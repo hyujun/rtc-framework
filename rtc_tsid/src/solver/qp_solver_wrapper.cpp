@@ -13,7 +13,9 @@ void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
   max_n_ineq_ = max_n_ineq;
 
   // ProxSuite dense QP 객체 — max dimension으로 1회만 할당.
-  // 이후 Solve() 는 update() 만 호출하여 RT path 에서 heap free/alloc 을 발생시키지 않는다.
+  // 이후 Solve() 는 update() 만 호출하므로 wrapper 자신은 RT path 에서 할당하지 않는다.
+  // ProxQP 는 update()/solve() 안에서 C 수준 할당을 한다 — 기록된 RT-1 위반이다
+  // (agent_docs/invariants.md §RT Path, #654).
   qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
       max_n_vars, max_n_eq, max_n_ineq, false, proxsuite::proxqp::HessianType::Dense,
       config_.dense_backend);

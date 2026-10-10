@@ -196,8 +196,8 @@
 //    iterate, whatever `reason` says.
 //  • Heap: this core allocates nothing in Solve() — pinned stage by stage with
 //    a C-level malloc gate (SetStageHook). ProxQP does allocate inside its own
-//    update()/solve() (#654), which is why this core must not yet run on a
-//    SCHED_FIFO planner thread on hardware: that waits for #654.
+//    update()/solve(): a recorded RT-1 violation, counted and not asserted
+//    (agent_docs/invariants.md §RT Path, #654).
 //  • One core per grid: the dimensions are fixed at Init (the solver's are).
 //    Only n_pre ≥ 1 is solved here; a replan after the catch is the stop
 //    problem MpcSegmentCore already solves.

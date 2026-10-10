@@ -89,6 +89,7 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
    - **호출자 몫 0** — 정책 tick 의 operator new 수 == `Run()` 의 operator new 수
    - **RT 조건 실측** — 정책 step tick 의 compute p99/max 가 tick 예산 안 (SCHED_FIFO). 제어 PC 실측이 실기 투입의 gate 다
 3. **MPC thread 의 cross-mode swap** (`HandlerMPCThread::Solve` 의 `MPCFactory::Create`) — **수용이 아니다**. RT-1·RT-2 위반으로 기록돼 있고 해소는 별도 작업이다.
+4. **외부 수치 라이브러리 안의 할당** (ProxQP · Pinocchio 등, #654) — 수용이며, 기록만 하고 0 을 단언하지 않는다. 범위는 경로가 아니라 **그 라이브러리가 자기 구현 안에서 하는 할당**이다 (스레드 무관 — 우리 TU 의 Eigen 식은 아니다). 호출 전후의 우리 코드는 RT-1 그대로이며, 지금 C 할당 0 을 단언하는 게이트를 이 항목으로 풀지 않는다 (E-6).
 
 #### 위반 탐지 패턴
 

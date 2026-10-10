@@ -2727,12 +2727,15 @@ void ClearProvisionalBut(YAML::Node node, const std::string& keep, const std::st
   }
 }
 
-// #654: the docking functions' QP solver allocates inside a solve, on the
-// planner thread, and the hand's capture set is a sim identification. A
-// real-arm configuration that selects either function is parked for THAT —
-// with every other provisional flag cleared, so that this gate is what parks
-// it (the control: the same cleared profile with neither function runs).
-TEST_P(ShippedCatchingProfile, OnARealArmADockingFunctionParksWhateverElseIsCleared) {
+// The hand's capture set is a sim identification while
+// `robot.hand.docking.provisional` is true, and only the two docking functions
+// read it. A real-arm configuration that selects either function is parked for
+// THAT flag — with every other provisional flag cleared, so that this gate is
+// what parks it. Two controls: the same cleared profile with neither function,
+// and the same selection with that flag cleared too, which this gate lets
+// through — the QP solver's allocations inside a solve are a recorded RT-1
+// violation (invariants.md, #654), not a park condition.
+TEST_P(ShippedCatchingProfile, OnARealArmADockingFunctionParksWhileTheCaptureSetIsProvisional) {
   const auto& [profile, expected_dof] = GetParam();
   static_cast<void>(expected_dof);
 
@@ -2740,14 +2743,19 @@ TEST_P(ShippedCatchingProfile, OnARealArmADockingFunctionParksWhateverElseIsClea
     const char* search;
     const char* segment;
     bool docking_function;
+    bool capture_set_provisional;
   };
 
   int n = 0;
-  for (const Case& c : {Case{"grid", "mpc", false}, Case{"nlp", "mpc", true},
-                        Case{"grid", "mpc_docking", true}, Case{"nlp", "mpc_docking", true}}) {
-    SCOPED_TRACE(std::string(c.search) + " x " + c.segment);
+  for (const Case& c :
+       {Case{"grid", "mpc", false, true}, Case{"nlp", "mpc", true, true},
+        Case{"grid", "mpc_docking", true, true}, Case{"nlp", "mpc_docking", true, true},
+        Case{"nlp", "mpc_docking", true, false}}) {
+    SCOPED_TRACE(std::string(c.search) + " x " + c.segment +
+                 (c.capture_set_provisional ? " (provisional)" : " (cleared)"));
     YAML::Node node = ShippedWithSelection(profile, c.search, c.segment, {});
-    ClearProvisionalBut(node["catching"], "robot.hand.docking.provisional");
+    ClearProvisionalBut(node["catching"],
+                        c.capture_set_provisional ? "robot.hand.docking.provisional" : "");
     auto configs = ShippedSimConfigs(profile, node);
     for (auto& [name, cfg] : configs) {
       static_cast<void>(name);
@@ -2762,19 +2770,25 @@ TEST_P(ShippedCatchingProfile, OnARealArmADockingFunctionParksWhateverElseIsClea
     ASSERT_EQ(ctrl.on_configure(prev, node_handle, node),
               DemoCatchingController::CallbackReturn::SUCCESS);
     ASSERT_TRUE(ctrl.IsRealArmConfig());
-    if (c.docking_function) {
+    if (c.docking_function && c.capture_set_provisional) {
       EXPECT_TRUE(ctrl.IsSimOnlyDisabled());
       EXPECT_EQ(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kMpcDockingInvalid)
           << ConfigureLog::All();
-      EXPECT_TRUE(ConfigureLog::Said("#654")) << ConfigureLog::All();
-      EXPECT_TRUE(ConfigureLog::Said("robot.hand.docking.provisional")) << ConfigureLog::All();
+      EXPECT_TRUE(ConfigureLog::Said("sim only while `robot.hand.docking.provisional` is true"))
+          << ConfigureLog::All();
       EXPECT_EQ(ctrl.on_activate(prev), DemoCatchingController::CallbackReturn::FAILURE);
     } else {
-      // The control. Whatever this profile is parked for, it is not a docking
-      // function: none runs.
+      // The controls. Whatever this profile is parked for, it is not this
+      // gate: no docking function runs, or the capture set is cleared.
       EXPECT_NE(ctrl.GetParkReason(), integrated_bringup::CatchingParkReason::kMpcDockingInvalid)
           << ConfigureLog::All();
-      EXPECT_FALSE(ConfigureLog::Said("#654")) << ConfigureLog::All();
+      EXPECT_FALSE(ConfigureLog::Said("sim only while")) << ConfigureLog::All();
+      if (c.docking_function) {
+        // Both docking functions, every flag cleared: nothing else parks it.
+        EXPECT_FALSE(ctrl.IsSimOnlyDisabled())
+            << "park reason " << static_cast<int>(ctrl.GetParkReason()) << "\n"
+            << ConfigureLog::All();
+      }
     }
     ASSERT_EQ(ctrl.on_cleanup(prev), DemoCatchingController::CallbackReturn::SUCCESS);
   }

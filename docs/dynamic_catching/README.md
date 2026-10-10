@@ -37,7 +37,7 @@ vision 이 예측한 공의 궤적을 받아 팔과 손으로 공을 잡는 컨�
 - 구현과 다르게 적힌 곳은 지금 구현으로 고쳐 쓴다. **수학이 달라지는 수정은 사용자의 승인을 받고 한다.** 그 밖에는 될 수 있으면 고치지 않는다
 - **설계 자료는 예외다 — 고쳐 쓰지 않는다 (사용자 결정).** 구현보다 먼저 쓴 설계 문서 (지금은 `ball_catching_inverse_dynamics_mpc.md`) 는 원래 설계와 구현을 견주어 볼 수 있게 설계 절을 그대로 두고, 구현한 내용을 문서 끝의 새 절에 원래 절과 대응시켜 적는다. 그 절에는 최종 구현만 적는다 — 달라진 경위는 feature 이슈의 구현 대조표가 갖는다
 - 절 번호는 바꾸지 않는다. 코드 주석이 `L3 §6`, `formulation §1.3` 식으로 인용한다. 새 절은 문서 끝에 더한다
-- 선택 키는 둘이다: 탐색 `planner.search.mode` (`grid` 기본 · 출하 \| `nlp`) 와 구간 `planner.segment.mode` (`closed_form` \| `mpc` 출하 \| `mpc_docking`). 조합은 다섯이고 (`nlp` × `closed_form` 은 park) 출하는 `grid` × `mpc` 다 — `mpc` 에서는 APPROACH 부터 정지까지 팔 기준을 MPC 구간이 만든다. `nlp` 와 `mpc_docking` 은 sim 에서 고를 수 있고 (E1-F16, 실기의 FIFO 계획기 스레드에서는 ProxQP 의 할당 #654 뒤) 입력은 `robot.hand.docking` 이다. 계획기의 한 주기는 탐색과 구간 계획기를 추상 interface (`CatchSearch` · `SegmentPlanner`, E1-F12, [L3 §4.1](ref/L3_planner.md)) 로만 안다
+- 선택 키는 둘이다: 탐색 `planner.search.mode` (`grid` 기본 · 출하 \| `nlp`) 와 구간 `planner.segment.mode` (`closed_form` \| `mpc` 출하 \| `mpc_docking`). 조합은 다섯이고 (`nlp` × `closed_form` 은 park) 출하는 `grid` × `mpc` 다 — `mpc` 에서는 APPROACH 부터 정지까지 팔 기준을 MPC 구간이 만든다. `nlp` 와 `mpc_docking` 은 sim 에서 고를 수 있고 (E1-F16; 실기 구성은 `robot.hand.docking.provisional` 이 참인 동안 park 한다) 입력은 `robot.hand.docking` 이다. 계획기의 한 주기는 탐색과 구간 계획기를 추상 interface (`CatchSearch` · `SegmentPlanner`, E1-F12, [L3 §4.1](ref/L3_planner.md)) 로만 안다
 
 ## 입력 계약
 

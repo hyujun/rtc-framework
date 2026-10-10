@@ -13,8 +13,10 @@
 # PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the core's chance rows
 # (off) and the SQP's tol_kkt and mu_max, as in the mpc_docking planner's core,
 # the candidate window, the arm grid and the budget (one solve a wake); the
-# other values are starting values, not tuned. The QP solver allocates inside a solve (#654), so this search must
-# not run on a SCHED_FIFO planner thread on hardware until that is closed.
+# other values are starting values, not tuned. A real-arm configuration that
+# selects this search parks while robot.hand.docking.provisional (the main
+# file) is true. The QP solver allocates inside a solve: a recorded RT-1
+# violation (#654), not a condition.
 demo_catching_controller:
   catching:
     planner:
