@@ -35,6 +35,12 @@
 # Two workspaces (MD-17): the sim and controller come from this workspace, the
 # estimator from $BALL_SIM_WS (its shipped catching profile is the default
 # PROFILE). The session's raw logs are copied into the unit at the end.
+# E1-F19 part 2 addition: EXPECT_NSTOP and EXPECT_DTSTOP are the docking planner's stop.n_nodes and stop.dt_s
+# the mirror must show. Their defaults are this robot's SHIPPED ones, read from its segment_mpc_docking.yaml in
+# the source tree. A tuning overlay may move the stop grid, as it may the approach grid (EXPECT_NPRE,
+# EXPECT_DTPRE) — it then states BOTH (an overlay that sets the count alone changes the length of the stop, and
+# the unit that named only the count is refused: stop_dt). EXPECT_DTSTOP is compared as a number. stop.blocks is
+# not mirrored and not checked.
 # #798: a unit throws a throw list — THROWS_FILE=<catching_throw_list/1 JSON> (the shipped sets are
 # integrated_bringup/config/<robot>/throw_sets/) in file order (--throws-file); the driver's frozen
 # series (`--dist s35b`) is gone, so a unit without THROWS_FILE is refused before anything is
@@ -202,6 +208,7 @@ for P in joint_cmd.lag.T_arm joint_cmd.lag.lead_enable planner.freeze.T_freeze \
          joint_cmd.accel_constraint planner.segment.mode planner.search.mode \
          planner.segment.mpc.switch_margin \
          planner.segment.mpc_docking.approach.n_pre_max planner.segment.mpc_docking.stop.n_nodes \
+         planner.segment.mpc_docking.stop.dt_s \
          planner.segment.mpc_docking.budget.first_s planner.segment.mpc_docking.budget.replan_s \
          planner.segment.mpc.eta_v planner.search.grid.reference.omega \
          planner.search.grid.reference.a_max planner.search.grid.reference.v_max; do
@@ -251,7 +258,13 @@ grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not
 fi
 if [ "${EXPECT_MODE:-mpc}" == "mpc_docking" ]; then
 grep -q "planner.segment.mpc_docking.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-9}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
-grep -q 'planner.segment.mpc_docking.stop.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
+read -r SHIP_NSTOP SHIP_DTSTOP < <(python3 -c 'import sys, yaml
+s = yaml.safe_load(open(sys.argv[1]))["demo_catching_controller"]["catching"]["planner"]["segment"]["mpc_docking"]["stop"]
+print(s["n_nodes"], s["dt_s"])' "$REPO/integrated_bringup/config/$ROBOT/controllers/catching/segment_mpc_docking.yaml" 2>/dev/null)
+[ -n "${EXPECT_NSTOP:-$SHIP_NSTOP}" ] && [ -n "${EXPECT_DTSTOP:-$SHIP_DTSTOP}" ] || why="$why shipped_stop_unread"
+grep -q "planner.segment.mpc_docking.stop.n_nodes: Integer value is: ${EXPECT_NSTOP:-$SHIP_NSTOP}\$" "$OUT/mirror.txt" || why="$why n_nodes"
+DTSTOP=$(sed -n 's/^planner.segment.mpc_docking.stop.dt_s: Double value is: //p' "$OUT/mirror.txt")
+awk -v a="$DTSTOP" -v b="${EXPECT_DTSTOP:-$SHIP_DTSTOP}" 'BEGIN { exit !(a != "" && b != "" && a - b < 1e-9 && b - a < 1e-9) }' || why="$why stop_dt"
 grep -q "mpc_docking segment planner ready: up to ${EXPECT_NPRE:-9} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
 grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not_e1f09_binary"
 fi

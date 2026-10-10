@@ -10,8 +10,10 @@
 # parks). Every key here is under planner.search.nlp, and the nlp search reads
 # its design values from here alone.
 #
-# PROVISIONAL, SIM ONLY. The values below are starting values, not tuned
-# (E1-F19). The QP solver allocates inside a solve (#654), so this search must
+# PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the core's chance rows
+# (off) and the SQP's tol_kkt and mu_max, as in the mpc_docking planner's core,
+# the candidate window, the arm grid and the budget (one solve a wake); the
+# other values are starting values, not tuned. The QP solver allocates inside a solve (#654), so this search must
 # not run on a SCHED_FIFO planner thread on hardware until that is closed.
 demo_catching_controller:
   catching:
@@ -23,10 +25,11 @@ demo_catching_controller:
           cand_dt: 0.05
           # Smallest and largest t_c - t_0 [s]. The smallest has to leave room
           # for the commit: a pair is published only while t_c is more than
-          # planner.freeze.T_freeze (0.19 s) away. The largest is what
-          # n_pre.max pre-catch intervals reach.
+          # planner.freeze.T_freeze (0.19 s) away. The largest must be within
+          # what n_pre.max pre-catch intervals reach (5 x 0.1 s): 0.44 s is
+          # the window this arm's units were tuned on (E1-F19, #745).
           t_lead_min: 0.25
-          t_max: 0.90
+          t_max: 0.44
           cand_capacity: 24
           # No catch box (L3 §4.9, 2026-10-09): the search does not judge where the
           # catch point is. `catch_box` is a removed key: the controller parks on it.
@@ -35,25 +38,34 @@ demo_catching_controller:
           # catch node (one core per count) and the stop part after it. Under
           # planner.segment.mode mpc_docking this grid has to be that planner's
           # (planner.segment.mpc_docking.approach / .stop): it republishes the
-          # search's solution — a difference parks.
+          # search's solution. dt_pre_s and the stop part must be equal and
+          # n_pre.max no more than approach.n_pre_max — else it parks.
           n_pre:
             min: 2
-            max: 9
+            max: 5
           dt_pre_s: 0.1
+          # The stop part is the mpc_docking planner's (4 x 0.0875 s, E1-F19
+          # part 2, #745): the reason and the numbers are with
+          # planner.segment.mpc_docking.stop.
           stop:
-            n_nodes: 7
-            dt_s: 0.05
-            blocks: [1, 1, 2, 3]
+            n_nodes: 4
+            dt_s: 0.0875
+            blocks: [1, 1, 2]
           # ── Budget ──────────────────────────────────────────────────────────
           # One wake's whole budget, one candidate's share, the margin between
-          # the budget's end and node 0, and the most solves a wake runs. A cold
-          # solve on these grids took 8 – 20 ms and a warm one 6 – 7 ms on the
-          # shipped sub-models (E1-F14, #740): two solves a wake.
+          # the budget's end and node 0, and the most solves a wake runs.
+          # ONE solve a wake with a share that fits it (E1-F19 part 2, #745),
+          # as on the other shipped arm: on the D-2 tuning set the share of
+          # candidate solves that ended at the deadline was 28 of 57 with two
+          # solves of 0.018 s and 19 of 54 with one of 0.024 s (a unit each;
+          # 31 of 80 over the two confirmation units). solve_s has the ceiling
+          # the other arm's file describes: prediction.dt_expected - the
+          # segment planner's budget.replan_s = 0.025 s.
           budget:
             budget_s: 0.040
-            solve_s: 0.018
+            solve_s: 0.024
             start_lead_s: 0.004
-            max_solves: 2
+            max_solves: 1
           # ── Outer cost and the rank proxy ───────────────────────────────────
           cost:
             w_time: 0.0
@@ -86,7 +98,8 @@ demo_catching_controller:
           # and reach every core from there; the grid is this map's own keys
           # above. A per-joint weight is one number for every joint.
           # Starting values: the weights the core's own suites solve with
-          # (E1-F13); tuning them on the shipped arms is E1-F19.
+          # (E1-F13). E1-F19 (#745) did not tune them — it set the switches,
+          # the grid and the keys noted where they stand.
           core:
             u_scale: 1.0e+3
             cost:
@@ -116,15 +129,16 @@ demo_catching_controller:
               lambda1_v: 1.0
               lambda2_v: 0.0
             capture:
-              # Chance rows on: the lateral, speed and timing rows are
-              # tightened by the ball's covariance at the catch node.
-              chance: true
+              # Chance rows OFF, as in the mpc_docking planner's core (E1-F19,
+              # #745) — the reason is there.
+              chance: false
               face_eps: 0.0125
               speed_faces: 8
               eps_nu: 0.01
               eps_sigma: 1.0e-4
             timing:
-              row: true
+              # Not built with capture.chance off, whatever this says.
+              row: false
               eps_t: 0.05
             stop:
               w_perp: 0.0
@@ -134,7 +148,11 @@ demo_catching_controller:
             sqp:
               max_iterations: 50
               tol_violation: 1.0e-6
-              tol_kkt: 1.0e-4
+              # tol_kkt, mu_init and mu_max: the mpc_docking planner's core's
+              # (E1-F19 part 2, #745) — the reason and the numbers are there.
+              tol_kkt: 1.0e-2
+              mu_init: 1.0e+2
+              mu_max: 1.0e+2
             solver:
               eps_abs: 1.0e-7
               eps_rel: 1.0e-9

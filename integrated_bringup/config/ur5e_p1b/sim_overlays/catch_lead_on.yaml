@@ -21,13 +21,22 @@
 #
 # WHAT T_arm 0.05 CHANGES. T_arm is not only the lead: the validator derives
 # the commit window from it, so T_freeze moves with it.
-#   T_freeze 0.37 = T_close_lead 0.2805 + h/2 0.001 + T_arm 0.05 + margin
-#                   0.03 = 0.3615, rounded up (L3 §4.11 lower bound). The
-#                   shipped 0.36 was derived with T_arm 0 and falls short of
-#                   that bound — the validator would still pass it
-#                   (CheckFreezeCoversClose asks only T_close_lead + T_arm + h
-#                   = 0.3325), so this is the design bound, not a configure
-#                   requirement.
+#   T_freeze 0.37 was T_close_lead 0.2805 + h/2 0.001 + T_arm 0.05 + margin
+#                   0.03 = 0.3615, rounded up (L3 §4.11 lower bound). With
+#                   the lead at 0.302 (E1-F19 part 2, #745) that bound is
+#                   0.383 and 0.37 is 13 ms under it: of the 0.03 margin 17 ms
+#                   are left. Kept (decided with the lead): the commit instant
+#                   of every arm does not move, the validator's own bound
+#                   (CheckFreezeCoversClose: T_close_lead + T_arm + h = 0.354)
+#                   holds, and no unit showed a close command later than
+#                   2.3 ms. The design bound is not a configure requirement.
+#                   What does move: the grid search's commit-lead RANK gate
+#                   (kRankCommitLead) uses the same sum, so a candidate
+#                   0.370 – 0.383 s ahead — inside the window, whose lower
+#                   end is T_freeze — now carries that penalty bit. With
+#                   the lead at 0.2805 the sum was under the window and
+#                   the bit never set. A penalty, not a refusal: it
+#                   reaches the ranking of every grid arm.
 #                   Startup log: "commit at t_c − 0.370 s".
 #   io.horizon_min 0.51 / io.n_min 12 are already the shipped values: they were
 #                   derived with T_arm 0.05 (see the shipped file's comments).

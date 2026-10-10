@@ -11,8 +11,9 @@
 # its design values from here alone.
 #
 # PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the core's chance rows
-# (off) and core.catch.nu_ref, as in the mpc_docking planner's core, and the
-# budget (one solve a wake); the other values are starting values, not tuned. The QP solver allocates inside a solve
+# (off), core.catch.nu_ref and the SQP's tol_kkt and mu_max, as in the
+# mpc_docking planner's core, the stop grid, and the budget (one solve a wake);
+# the other values are starting values, not tuned. The QP solver allocates inside a solve
 # (#654), so this search must not run on a SCHED_FIFO planner thread on
 # hardware until that is closed.
 demo_catching_controller:
@@ -37,15 +38,19 @@ demo_catching_controller:
           # catch node (one core per count) and the stop part after it. Under
           # planner.segment.mode mpc_docking this grid has to be that planner's
           # (planner.segment.mpc_docking.approach / .stop): it republishes the
-          # search's solution — a difference parks.
+          # search's solution. dt_pre_s and the stop part must be equal and
+          # n_pre.max no more than approach.n_pre_max — else it parks.
           n_pre:
             min: 4
             max: 9
           dt_pre_s: 0.1
+          # The stop part is the mpc_docking planner's (4 x 0.0875 s, E1-F19
+          # part 2, #745): the reason and the numbers are with
+          # planner.segment.mpc_docking.stop.
           stop:
-            n_nodes: 7
-            dt_s: 0.05
-            blocks: [1, 1, 2, 3]
+            n_nodes: 4
+            dt_s: 0.0875
+            blocks: [1, 1, 2]
           # ── Budget ──────────────────────────────────────────────────────────
           # One wake's whole budget, one candidate's share, the margin between
           # the budget's end and node 0, and the most solves a wake runs.
@@ -63,6 +68,11 @@ demo_catching_controller:
           # budget.replan_s (0.05 - 0.025 = 0.025 s), and a share above it
           # fits no solve there — 0.028 s ran 0 solves while following
           # (0.024 s: 192 of 216 wakes).
+          # On the D-2 tuning set (E1-F19 part 2, the stop grid and the SQP
+          # values below) 180 of 257 candidate solves still ended at the
+          # deadline: with no deadline a solve the search accepts needs 18.1 ms
+          # (median) and one it refuses 20 ms, at the share. A share of 0.030 s
+          # accepted two more throws of 13 in one unit and none in the next.
           budget:
             budget_s: 0.040
             solve_s: 0.024
@@ -100,7 +110,8 @@ demo_catching_controller:
           # and reach every core from there; the grid is this map's own keys
           # above. A per-joint weight is one number for every joint.
           # Starting values: the weights the core's own suites solve with
-          # (E1-F13); tuning them on the shipped arms is E1-F19.
+          # (E1-F13). E1-F19 (#745) did not tune them — it set the switches,
+          # the grid and the keys noted where they stand.
           core:
             u_scale: 1.0e+3
             cost:
@@ -148,10 +159,9 @@ demo_catching_controller:
               # Read only with capture.chance on: the closure-timing row is
               # one of the chance rows, so with chance off it is not built
               # whatever this says. NOTE for whoever turns chance back on:
-              # robot.hand.docking.closure (delta_lo / delta_hi) is on the
-              # entrance axis of the IDENTIFIED closing speed (0.55 m/s),
-              # while delta_0 follows core.catch.nu_ref (2.0 m/s) — the window
-              # sits ~9 ms late for that speed (s_ent / c: 12.7 against 3.5 ms).
+              # robot.hand.docking.closure (delta_lo / delta_hi) is from the
+              # fly-ins at core.catch.nu_ref's speed (E1-F19 part 2, #802),
+              # where the hand's window is 8 ms wide.
               row: true
               eps_t: 0.05
             stop:
@@ -162,7 +172,11 @@ demo_catching_controller:
             sqp:
               max_iterations: 50
               tol_violation: 1.0e-6
-              tol_kkt: 1.0e-4
+              # tol_kkt, mu_init and mu_max: the mpc_docking planner's core's
+              # (E1-F19 part 2, #745) — the reason and the numbers are there.
+              tol_kkt: 1.0e-2
+              mu_init: 1.0e+2
+              mu_max: 1.0e+2
             solver:
               eps_abs: 1.0e-7
               eps_rel: 1.0e-9
