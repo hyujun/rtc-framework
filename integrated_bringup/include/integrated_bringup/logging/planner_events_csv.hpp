@@ -55,13 +55,18 @@
 // `deadline` is the instant the core was cut at, not the time the solve takes.
 // `segment_cut_site` names the QP that solve was kept from starting
 // (MpcDockingCutSiteName: `init_qp`, `iteration`, `cold_retry`,
-// `penalty_reset`, `penalty_probe`; `none` when the core did not cut it) — the
-// one column of this block written for a solve without an iterate too: cut
-// before its initialisation QP, a solve has none. `segment_start_from_memory`
-// is 1 on a first solve the planner started from the iterate the previous
-// wake's solve of the same plan ended on (0: from the search's catch pose,
-// and every other solve) — two populations of first solves, by time and by
-// iteration count.
+// `penalty_reset`, `penalty_probe`; `none` when the core did not cut it), and
+// `segment_start_from_memory` is 1 on a first solve the planner handed the
+// iterate the previous wake's solve of the same plan ended on (0: the
+// search's catch pose, and every other solve; the core still runs its
+// initialisation QP toward that iterate when the start state has moved —
+// `segment_qp_solves` − `segment_iterations` says so). These two are written
+// for a solve without an iterate too: cut before its initialisation QP
+// (`init_qp`) a solve has none, and the rest of the block is NaN (0 for a
+// count). The last-QP columns (`segment_kkt_residual`, `segment_grad_norm`,
+// `segment_complementarity`, `segment_elastic_*`) are NaN on a row with
+// `segment_iterations` 0 — an evaluation, or a solve cut before its first
+// iteration's QP: no QP's step was judged.
 //
 // `replace_step` says where a wake's attempt to replace the followed plan
 // ended (ReplaceStepName; `none` on a wake that attempted none), and the

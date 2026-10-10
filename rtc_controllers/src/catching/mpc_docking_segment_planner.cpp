@@ -52,13 +52,22 @@ void RecordSolve(const MpcDockingSegmentCoreResult& r, DockingSolveStats& s) noe
   s.assemble_us = r.assemble_us;
   s.qp_us = r.qp_us;
   s.merit_us = r.merit_us;
-  s.kkt_residual = r.kkt_residual;
-  s.grad_norm = r.grad_norm;
-  s.complementarity = r.complementarity;
+  // The last QP's numbers exist only where a QP's step was judged: an
+  // evaluation, and a solve cut before its first iteration's QP, have none —
+  // NaN in the record, not the core's 0 (which a reader would take for a
+  // stationary point).
+  const bool judged = r.iterations > 0;
+  const double none = std::numeric_limits<double>::quiet_NaN();
+  s.kkt_residual = judged ? r.kkt_residual : none;
+  s.grad_norm = judged ? r.grad_norm : none;
+  s.complementarity = judged ? r.complementarity : none;
   s.infeasible_group_name =
       r.reason == MpcDockingReason::kInfeasible ? DockingRowGroupName(r.infeasible_group) : "none";
   s.violation = r.violation;
   s.elastic = r.elastic;
+  if (!judged) {
+    s.elastic.fill(none);
+  }
   s.c_catch = r.c_catch;
   s.c_guarded = r.c_guarded;
   s.sigma_s = r.sigma_s;
@@ -698,7 +707,7 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   const bool ok = RunCore(/*evaluate=*/false, core, in, res);
   const std::int64_t end = clock_();
   rec.outcome = Judge(res, ok, ok && res.converged, n_pre, start, end, first_ns_, t_eff, rec);
-  RememberFirst(rt, plan, t_eff, n_pre, rec.x0_clamped, ok, res);
+  RememberFirst(rt, plan, t_eff, n_pre, rec, ok, res);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }
@@ -712,14 +721,15 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
 }
 
 void MpcDockingSegmentPlanner::RememberFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
-                                             std::int64_t t_eff, int n_pre, bool x0_clamped,
-                                             bool ok,
+                                             std::int64_t t_eff, int n_pre,
+                                             const SegmentRecord& rec, bool ok,
                                              const MpcDockingSegmentCoreResult& res) noexcept {
   if (!ok) {
-    // No iterate. Cut before its initialisation QP the solve says nothing of
-    // where it started, and what was remembered stays; refused for anything
-    // else, a start that came from the memory is not handed in again.
-    if (res.reason != MpcDockingReason::kDeadline) {
+    // No iterate, so nothing new to remember. A solve that was handed the
+    // memory and refused for anything but its deadline is not handed it
+    // again; cut before its initialisation QP it says nothing of its start,
+    // and a refused solve that started elsewhere says nothing of the memory.
+    if (rec.start_from_memory && res.reason != MpcDockingReason::kDeadline) {
       first_memory_.valid = false;
     }
     return;
@@ -734,7 +744,7 @@ void MpcDockingSegmentPlanner::RememberFirst(const PlannerRtState& rt, const Pla
     first_memory_.valid = false;
     return;
   }
-  Pack(rt, plan.token.generation, plan.plan_id, plan.t_c_ns, t_eff, n_pre, x0_clamped, res,
+  Pack(rt, plan.token.generation, plan.plan_id, plan.t_c_ns, t_eff, n_pre, rec.x0_clamped, res,
        first_memory_);
 }
 

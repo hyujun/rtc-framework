@@ -1612,7 +1612,9 @@ TEST(NlpCatchSearchValidity, ACutCandidateNamesTheQpItsSolveDidNotStart) {
       }
       if (c.core_reason == MpcDockingReason::kDeadline) {
         ++cut;
-        EXPECT_EQ(c.cut_site, MpcDockingCutSite::kIteration) << c.index;
+        // Past its initialisation QP (it has an iterate), before a later QP.
+        EXPECT_NE(c.cut_site, MpcDockingCutSite::kNone) << c.index;
+        EXPECT_NE(c.cut_site, MpcDockingCutSite::kInitQp) << c.index;
         EXPECT_TRUE(c.solved);
       } else {
         ++whole;

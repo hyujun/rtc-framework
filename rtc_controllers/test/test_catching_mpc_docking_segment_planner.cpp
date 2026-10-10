@@ -869,9 +869,13 @@ TEST(MpcDockingPlannerFirstSolved, TheRecordNamesTheQpTheDeadlineKeptFromStartin
   auto adopted = RunFirst(planner, s->rt, s->plan, s->Ball(), &s->solution, kNow);
   ASSERT_TRUE(adopted->ok) << Describe(adopted->rec);
   EXPECT_STREQ(adopted->rec.docking.cut_site_name, "none");
+  // An evaluation judges no QP's step.
+  EXPECT_TRUE(adopted->rec.docking.ran);
+  EXPECT_TRUE(std::isnan(adopted->rec.docking.kkt_residual));
   auto whole = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow);
   ASSERT_TRUE(whole->ok) << Describe(whole->rec);
   EXPECT_STREQ(whole->rec.docking.cut_site_name, "none");
+  EXPECT_TRUE(std::isfinite(whole->rec.docking.kkt_residual));
   // One clock step past the 35 ms budget: the deadline has passed before the
   // initialisation QP.
   planner.ResetTrial();
@@ -1982,6 +1986,15 @@ TEST(MpcDockingPlannerFirstMemory, ItEndsWithThePlansPublicationTheTrialAndASolv
   TrajectorySnapshot brief = s->ball.traj;
   brief.n = 3;  // 100 ms of it
   const BallPrediction short_ball{&brief, &s->ball.cov, true};
+  // (A refused solve that did NOT start from it — another catch instant —
+  // says nothing of it either.)
+  PlanSnapshot elsewhere = s->plan;
+  elsewhere.t_c_ns += 1;
+  auto unrelated = RunFirst(planner, s->rt, elsewhere, short_ball, nullptr, kNow);
+  EXPECT_FALSE(unrelated->ok);
+  EXPECT_FALSE(unrelated->rec.start_from_memory);
+  EXPECT_STREQ(unrelated->rec.core_reason_name, "ball_invalid") << Describe(unrelated->rec);
+  EXPECT_NE(planner.FirstMemoryForTesting(), nullptr);
   auto refused = RunFirst(planner, s->rt, s->plan, short_ball, nullptr, kNow);
   EXPECT_FALSE(refused->ok);
   EXPECT_TRUE(refused->rec.start_from_memory);
@@ -1999,6 +2012,16 @@ TEST(MpcDockingPlannerFirstMemory, ItEndsWithThePlansPublicationTheTrialAndASolv
   EXPECT_EQ(cut_at_once->rec.outcome, SegmentOutcome::kBudget) << Describe(cut_at_once->rec);
   EXPECT_TRUE(cut_at_once->rec.start_from_memory);
   EXPECT_EQ(cut_at_once->rec.iterations, 0);
+  // An iterate, and no QP's step judged: the last-QP numbers are not numbers.
+  EXPECT_TRUE(cut_at_once->rec.docking.ran);
+  EXPECT_EQ(cut_at_once->rec.docking.qp_solves, 0);
+  EXPECT_TRUE(std::isnan(cut_at_once->rec.docking.kkt_residual));
+  EXPECT_TRUE(std::isnan(cut_at_once->rec.docking.grad_norm));
+  EXPECT_TRUE(std::isnan(cut_at_once->rec.docking.complementarity));
+  for (const double e : cut_at_once->rec.docking.elastic) {
+    EXPECT_TRUE(std::isnan(e));
+  }
+  EXPECT_TRUE(std::isfinite(cut_at_once->rec.docking.cost_reference));
   const std::unique_ptr<SegmentSnapshot> after = Remembered(planner);
   ASSERT_NE(after, nullptr);
   // To rounding: the core rebuilds a start from its block jerk.
