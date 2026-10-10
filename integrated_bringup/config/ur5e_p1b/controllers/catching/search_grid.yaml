@@ -107,6 +107,13 @@ demo_catching_controller:
           # robot is empty for every wait pose; everything that opens stands on the
           # fly-in figure. Valid only under that same time-triggered closure rule,
           # and measured with the hand frame at constant velocity — provisional.
+          # THAT RULE IS NO LONGER THE SHIPPED ONE (E1-F19 part 2, #745): the close
+          # is now commanded T_close_lead 0.302 before t_c, 24 ms more than the
+          # closure time, and under it the hand holds 0.75 – 0.94 of the fly-ins
+          # up to 1.45 m/s and 0.4 – 0.6 around 2.0 m/s (L6 §4.6). The same
+          # product at those speeds is 0.335 m (1.2 m/s, the last speed two
+          # cells in a row hold at 0.75) and 0.558 m (2.0 m/s). 0.279 is kept:
+          # this search's values were not part of that tuning.
           #
           # MEASURED, S4.5 (2026-09-21), with the searched postures (`robot.hand`, the main file) and the
           # shipped 67 mm ball: ball PLACED on the preshape palm on a 5 mm lateral

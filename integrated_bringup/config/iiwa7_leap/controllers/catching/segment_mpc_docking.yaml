@@ -31,8 +31,9 @@ demo_catching_controller:
           # A segment has up to n_pre_max intervals of dt_pre_s before the catch
           # node (one core per count) and the stop part after it; every segment
           # runs to the end of the stop. Under planner.search.mode nlp this
-          # grid has to be the search's (planner.search.nlp.n_pre / .dt_pre_s /
-          # .stop) — a difference parks.
+          # grid has to be the search's: dt_pre_s and the stop part equal,
+          # planner.search.nlp.n_pre.max no more than n_pre_max (it is 5 there:
+          # the search's window is shorter) — else it parks.
           approach:
             n_pre_max: 9
             dt_pre_s: 0.1
@@ -65,8 +66,13 @@ demo_catching_controller:
           # largest slack a published segment may lean on — the corridor's in
           # [m], the envelope's in the units of its row (c^2, [m^2/s^2]).
           # slack_c_max (E1-F19, #745): at 0 a converged solve that leans on the
-          # corridor by a few millimetres is withheld; 0.06 m is the value the
-          # part-1 units of this arm published with. slack_v_max stays 0: the
+          # corridor at all is withheld; 0.06 m is the value the part-1 units of
+          # this arm published with. It is 2.7 times the corridor's entrance
+          # radius (robot.hand.docking.corridor.r_ent 22.1 mm), so the corridor
+          # gate is as good as open — and every segment the part-2 units of
+          # this robot published (20, in 6 units) leaned on the corridor by
+          # nothing, so what the allowance lets through has not been looked
+          # at. slack_v_max stays 0: the
           # envelope slacks of the segments withheld on the D-2 tuning set run
           # from 0.3 to 8 m^2/s^2 (most past the 2.5 m/s the hand was flown
           # to), and 1.5 published no more in a unit.
@@ -148,6 +154,13 @@ demo_catching_controller:
               # The QP solver's own tolerances (solver.*) and the other
               # penalty keys were swept on the other shipped arm only, where
               # they moved neither time.
+              # Under planner.search.mode grid there is no offline map: one
+              # same-seed unit a robot with the code default 1e6 instead
+              # published as many throws (0 and 0 of 27) and converged as
+              # often (0 and 0 first solves), and cut more of them at the
+              # deadline (33 to 38 %).
+              # mu_max may not be under mu_init: an overlay that raises
+              # mu_init has to raise it too (the core refuses the pair).
               tol_kkt: 1.0e-2
               mu_max: 1.0e+2
             solver:

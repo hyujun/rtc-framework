@@ -33,8 +33,8 @@ demo_catching_controller:
           # A segment has up to n_pre_max intervals of dt_pre_s before the catch
           # node (one core per count) and the stop part after it; every segment
           # runs to the end of the stop. Under planner.search.mode nlp this
-          # grid has to be the search's (planner.search.nlp.n_pre / .dt_pre_s /
-          # .stop) — a difference parks.
+          # grid has to be the search's: dt_pre_s and the stop part equal,
+          # planner.search.nlp.n_pre.max no more than n_pre_max — else it parks.
           approach:
             n_pre_max: 9
             dt_pre_s: 0.1
@@ -151,6 +151,13 @@ demo_catching_controller:
               # The accepted throws did not change. The QP solver's own
               # tolerances and iteration cap (solver.*) and the other penalty
               # keys moved neither time.
+              # Under planner.search.mode grid there is no offline map: one
+              # same-seed unit a robot with the code default 1e6 instead
+              # published as many throws (1 and 1 of 30) and converged as
+              # often (7 and 6 first solves), and cut more of them at the
+              # deadline (64 to 84 %).
+              # mu_max may not be under mu_init: an overlay that raises
+              # mu_init has to raise it too (the core refuses the pair).
               tol_kkt: 1.0e-2
               mu_max: 1.0e+2
             solver:

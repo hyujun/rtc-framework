@@ -121,7 +121,7 @@ $T_{close}$ 를 최소화하려면 폐쇄 자세로의 계단 position 명령 + 
 
 $$d_{eff}=v_{rel}\,T_{close,tot}$$
 
-  $v_{rel}$ 은 시각 발동 (아래 step 1 의 규칙) 으로 날려 넣은 공이 유지되는 상대속도 허용량의 실측이다. 유효 조건은 런타임 손 발동이 같은 **시각 발동** ($t_{cmd}=t_c-T_{close,lead}$, §4.3) 이라는 것이다. $d_{eff}$ 는 $T_{close,tot}$ 를 잰 폐쇄 시간으로 곱하므로 $T_{close,e2e}$ 가 바뀌면 같은 $v_{rel}$ 로 다시 유도한다. 포켓의 기하 깊이는 접촉 물리량으로 MASTER TBD-HAND-04 에 따로 남는다. 값은 `catching/search_grid.yaml` 의 `planner.search.grid.hand.d_eff` · `r_cap` 이다 (주석에 산정식이 있다). 두 값은 **YAML 의 `planner.search.grid.hand.*` 이지 `robot.hand.*` 가 아니다.**
+  $v_{rel}$ 은 시각 발동 (아래 step 1 의 규칙) 으로 날려 넣은 공이 유지되는 상대속도 허용량의 실측이다. 유효 조건은 런타임 손 발동이 같은 **시각 발동** ($t_{cmd}=t_c-T_{close,lead}$, §4.3) 이라는 것이다 — `ur5e_p1b` 의 1.0 m/s 는 lead 가 폐쇄 시간과 같던 때의 측정이고 출하 lead 는 그보다 24 ms 길다 (§4.6). $d_{eff}$ 는 $T_{close,tot}$ 를 잰 폐쇄 시간으로 곱하므로 $T_{close,e2e}$ 가 바뀌면 같은 $v_{rel}$ 로 다시 유도한다. 포켓의 기하 깊이는 접촉 물리량으로 MASTER TBD-HAND-04 에 따로 남는다. 값은 `catching/search_grid.yaml` 의 `planner.search.grid.hand.d_eff` · `r_cap` 이다 (주석에 산정식이 있다). 두 값은 **YAML 의 `planner.search.grid.hand.*` 이지 `robot.hand.*` 가 아니다.**
 
 산정 절차:
 
@@ -155,7 +155,7 @@ $$d_{eff}=v_{rel}\,T_{close,tot}$$
 | `closure.delta_lo` / `delta_hi` | −24.6 / −16.6 ms (재측정, 아래) | +47.43 / +97.48 ms |
 | 검증 (집합에서 뽑은 300 조건) | 277 유지, 95 % 하한 0.893 | 284 유지, 하한 0.920 |
 | 접근축 가속 (5 · 9.81 m/s² · 대기 자세의 중력) | 300 / 300 / 300 | 287 / 275 / 289 (유지율 0.932 / 0.886 / 0.940) |
-| `planner.search.grid.hand.d_eff` (1.0 m/s × $T_{close,tot}$) | 0.279 m | 0.099 m |
+| `planner.search.grid.hand.d_eff` (1.0 m/s × $T_{close,tot}$) | 0.279 m — 출하 lead 로 다시 잰 속력대에서 같은 곱은 0.335 m (1.2 m/s) · 0.558 m (2.0 m/s) 이고, 값은 옮기지 않았다 | 0.099 m |
 
 - **`ur5e_p1b` 의 출하 대역은 상자 `w040` 이 식별한 대역이 아니다 (E1-F19, [#745](https://github.com/hyujun/rtc-framework/issues/745#issuecomment-6060501608)).** `c_cap_max` · `c_ent_max` 는 2.1 m/s, 코어의 기준 폐쇄 속력 `core.catch.nu_ref` 는 2.0 m/s 다. 식별한 대역 (0.5 – 0.6 m/s) 에서는 plan 이 서고 팔이 따라가도 50 투척에 3 건을 잡는다 — 포구 시각에 손이 접근축으로 계획보다 약 30 mm 앞서 있고 0.55 m/s 에서는 그것이 약 60 ms 다. sim 의 `grid` × `mpc` 가 잡는 속력대 (입구에서 1.0 – 2.1 m/s) 로 넓히면 2.0 m/s 에서 27 · 29 건 (seed 801 · 821) 을 잡는다. lateral 집합 · 속도 집합 · 검증 300 은 `w040` (0.55 m/s) 의 값 그대로다.
 - **그 속력대의 폐쇄 창은 따로 재었다 (2026-10-10, [#802](https://github.com/hyujun/rtc-framework/issues/802)).** 접근 속력 1.0 – 2.5 m/s 를 0.1 m/s × 4 ms 셀로, 셀당 16 회 날렸다 (원점 축: 폐쇄 완료 − 공 중심의 원점 도달, $\delta_o$). 아래는 `ur5e_p1b` 의 속력 셀마다 유지가 가장 많은 8 ms (인접 두 셀, 32 회) 다.

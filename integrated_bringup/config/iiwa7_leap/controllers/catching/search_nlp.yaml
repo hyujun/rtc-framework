@@ -38,7 +38,8 @@ demo_catching_controller:
           # catch node (one core per count) and the stop part after it. Under
           # planner.segment.mode mpc_docking this grid has to be that planner's
           # (planner.segment.mpc_docking.approach / .stop): it republishes the
-          # search's solution — a difference parks.
+          # search's solution. dt_pre_s and the stop part must be equal and
+          # n_pre.max no more than approach.n_pre_max — else it parks.
           n_pre:
             min: 2
             max: 5
