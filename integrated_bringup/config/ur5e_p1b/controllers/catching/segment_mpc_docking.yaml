@@ -129,10 +129,10 @@ demo_catching_controller:
               # Read only with capture.chance on: the closure-timing row is
               # one of the chance rows, so with chance off it is not built
               # whatever this says. NOTE for whoever turns chance back on:
-              # robot.hand.docking.closure (delta_lo / delta_hi) is on the
-              # entrance axis of the IDENTIFIED closing speed (0.55 m/s),
-              # while delta_0 follows core.catch.nu_ref (2.0 m/s) — the window
-              # sits ~9 ms late for that speed (s_ent / c: 12.7 against 3.5 ms).
+              # robot.hand.docking.closure (delta_lo / delta_hi) is from the
+              # fly-ins around core.catch.nu_ref's speed (E1-F19 part 2,
+              # #802), where the hand's window is 8 – 12 ms wide, and its
+              # early edge is 3.4 ms early (the main file says why).
               row: true
               eps_t: 0.05
             stop:

@@ -207,6 +207,10 @@ def _check_commit_window(catching: dict, ship: dict, profile: str) -> None:
 
     base = _load(os.path.join(CONFIG_ROOT, profile, RATE_FILE[profile]))
     h = 1.0 / base["/**"]["ros__parameters"]["control_rate"]
+    # The closure-time form of the bound. The shipped comments derive the design
+    # bound from robot.hand.T_close_lead, which is longer on ur5e_p1b (0.302):
+    # T_freeze 0.37 and io.horizon_min 0.51 are 13 ms under that one, by decision
+    # (#745) — it is not what this checks.
     t_close_tot = ship["robot"]["hand"]["T_close_e2e"] + h / 2
     t_arm = effective("joint_cmd", "lag", "T_arm")
     margin = effective("planner", "search", "grid", "time", "margin")

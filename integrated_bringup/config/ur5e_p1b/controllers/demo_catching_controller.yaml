@@ -216,12 +216,22 @@ demo_catching_controller:
         # was 0.2805 — the p99 above — while it did both.)
         T_close_e2e: 0.278
         # HOW LONG BEFORE THE BALL REACHES THE CATCH POINT THE HAND IS TOLD TO
-        # CLOSE — a design value, set from where the hand holds (E1-F15/E1-F16
-        # docking identification, box w040): the closure held when it was
-        # commanded 260.5 – 300.5 ms before the ball centre reached the
-        # catch-frame origin, and this is the middle of that window. (That it
-        # equals the old T_close_e2e is this hand's window, not a rule: it
-        # holds when it has just closed as the ball arrives.)
+        # CLOSE — a design value, set from where the hand holds, MEASURED AT
+        # THE SPEEDS THE ARM CATCHES AT (E1-F19 part 2, #802): flown in at
+        # 1.0 – 2.5 m/s, 16 fly-ins a cell of 0.1 m/s x 4 ms, the 8 ms the
+        # closure held best in was "complete 28 – 20 ms BEFORE the ball centre
+        # reaches the catch-frame origin" in every speed cell from 1.15 to
+        # 2.45 m/s but one (1.95: 24 – 16 ms). The lead is the closure time
+        # and the middle of that window: 0.278 + 0.024. (It was 0.2805 — the
+        # middle of the window identified at 0.55 m/s, a closure complete
+        # 2.5 ms before the ball, outside the window above.) The window's
+        # place does not move with the speed; how often the hand holds in it
+        # does — of 32 fly-ins 0.75 – 0.94 up to 1.45 m/s, 0.66 – 0.78 to
+        # 1.75, 0.59 at 1.85 and 2.05 (0.41 at 1.95), about 0.4 above (L6
+        # §4.6).
+        # In the catching sim the new lead made no difference that three
+        # same-seed pairs could show (#745): the plans published there miss
+        # by position at the catch instant, not by the closing instant.
         # Read by the hand sequencer, the plan's t_cmd, the freeze-window bound
         # and the grid search's commit gate. Whose catch instant the lead is
         # subtracted from, and the one conversion the controller makes under
@@ -229,7 +239,7 @@ demo_catching_controller:
         # are L6 §4.3's; this hand's converted lead and the docking cores'
         # delta_0 are in L6 §4.6. Absent, the key is T_close_e2e (and the
         # configure log says so). Provisional (sim).
-        T_close_lead: 0.2805
+        T_close_lead: 0.302
 
         # ── The docking capture set (E1-F15 #741, re-measured in E1-F16 #742) ──
         # What the nlp search and the mpc_docking segment planner need to know
@@ -293,9 +303,13 @@ demo_catching_controller:
           # 50 at a reference closing speed of 0.55 / 1.0 / 1.5 / 2.0 / 2.5
           # m/s: 3 / 5 / 15 / 27 / 20 (seed 801), and 29 at 2.0 on seed 821
           # (grid x mpc the same day: 23, 32). The top is where grid x mpc
-          # holds in sim (1.0 - 2.1 m/s at the entrance). The identification
-          # flew nothing there: hold rate, closure window and lateral set at
-          # these speeds are not measured.
+          # holds in sim (1.0 - 2.1 m/s at the entrance). The hand was flown
+          # there since (E1-F19 part 2, #802): the closure window keeps its
+          # place (T_close_lead above), and in its best 8 ms the hand holds
+          # 0.59 at 1.85 and 2.05 m/s against 0.75 – 0.94 up to 1.45. By that
+          # measurement's own rule (a run of two 4 ms cells that each hold
+          # 0.75) the band's top would be 1.2 m/s; these keys stay where the
+          # planner publishes.
           speed:
             c_min: 0.5
             c_cap_max: 2.1
@@ -304,14 +318,25 @@ demo_catching_controller:
             a_brake: 5.0
           # When the closure has to be complete, measured from the entrance
           # crossing [s]: the window, on the axis where the closure completes
-          # T_close_e2e after its command (the identification's own axis,
-          # which had 280.5 ms in it, moved by 280.5 - 278.0 ms). The nominal
-          # instant is NOT a key: it is T_close_e2e - T_close_lead. sigma_tau
-          # is the closure time's sample std (0 in sim; a tick's quantisation,
-          # 0.58 ms, is not added).
+          # T_close_e2e after its command. From the fly-ins around the cores'
+          # reference speed (E1-F19 part 2, #802; cells of 0.1 m/s x 4 ms that
+          # held in at least half of 16): counted from the ORIGIN the closure
+          # has to be complete 28 – 20 ms before the ball centre arrives in
+          # the 2.0 – 2.1 m/s cell and 28 – 16 ms before in the 1.8 – 1.9 one.
+          # The entrance crossing is s_ent / c = 3.4 – 3.8 ms earlier, so on
+          # this key's axis those windows are -24.6 … -16.6 and -24.2 … -12.2
+          # ms. The keys hold -28 / -16 ms, the figure the values were
+          # approved with (#745): its early edge is the origin-axis one, 3.4
+          # ms before the measured window — settle it before the timing row
+          # is turned on. (It was -8.5 / +29.2 ms, the window at 0.55 m/s.)
+          # The nominal instant is NOT a key: it is T_close_e2e - the lead
+          # from the entrance crossing (-20.5 ms at 2.0 m/s — inside either).
+          # sigma_tau is the closure time's sample std (0 in sim; a tick's
+          # quantisation, 0.58 ms, is not added). Read by the cores' timing
+          # row only, which is off with the chance rows.
           closure:
-            delta_lo: -0.00850
-            delta_hi: 0.02917
+            delta_lo: -0.028
+            delta_hi: -0.016
             sigma_tau: 0.0
           # The impact model: where on the hand the ball first lands (catch
           # frame [m] — the first contact of a ball coming down the approach
@@ -409,8 +434,10 @@ demo_catching_controller:
       # R1 (the commit condition), set when the close lead was the closure time
       # 0.2805: T_close,tot 0.2815 + T_arm 0.05 + margin 0.03 + L 0.14 = 0.5015,
       # rounded UP to 10 ms. Rounding down would admit a prediction that misses
-      # R1 by 1.5 ms. (The lead is robot.hand.T_close_lead now — the same
-      # 0.2805 for this hand.)
+      # R1 by 1.5 ms. The lead is robot.hand.T_close_lead now, and at its
+      # 0.302 (E1-F19 part 2) the same sum is 0.523: this value is 13 ms under
+      # it. Not moved — no check ties the two, and the sim estimator's
+      # predictions carry 1.0 s.
       horizon_min: 0.51
       track:
         # How far past the later origin two consecutive predictions are
@@ -471,8 +498,9 @@ demo_catching_controller:
         # NOT lag-free — ../mujoco_simulator.yaml runs its servo at kd/kp =
         # 0.05 s (#537 D-S8-13) — and the sim runs with the lead on only
         # through the sim_overlays/catch_lead_* files (T_arm 0.05, T_freeze
-        # 0.37, the L3 §4.11 bound T_close_lead + h/2 + T_arm + margin for
-        # T_arm 0.05).
+        # 0.37 — the L3 §4.11 bound T_close_lead + h/2 + T_arm + margin for
+        # T_arm 0.05 when the lead was 0.2805; 13 ms under it at 0.302, see
+        # that file).
         #
         # `provisional` is about the REAL arm's T_arm (#537 pre-S10 R3): sim
         # warns, a real arm parks until S10 identifies it — whatever the value
@@ -602,9 +630,10 @@ demo_catching_controller:
       sub_model: "ur5e_catch"
       freeze:
         # Decision G (2026-09-23): the L3 §4.11 lower bound — the close lead
-        # robot.hand.T_close_lead 0.2805 + h/2 0.001 + T_arm (0, sim) + margin
-        # 0.03 = 0.31, rounded up with room. Provisional. Read by the search, by
-        # every segment mode and by the RT (the commit instant).
+        # robot.hand.T_close_lead + h/2 0.001 + T_arm (0, sim) + margin 0.03,
+        # rounded up with room. With the lead at 0.302 (E1-F19 part 2) the
+        # bound is 0.333. Provisional. Read by the search, by every segment
+        # mode and by the RT (the commit instant).
         T_freeze: 0.36
         # While a plan is followed on a segment planner's segments the search
         # still runs, until the catch instant is this close [s]: not set, so it
