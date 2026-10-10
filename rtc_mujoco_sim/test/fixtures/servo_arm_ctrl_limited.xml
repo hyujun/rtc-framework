@@ -1,0 +1,47 @@
+<mujoco model="servo_arm_ctrl_limited_test">
+  <!-- Three hinges, one per kind of actuator whose ctrlrange means something
+       different once the group is switched to torque mode:
+
+         a_pos  <position>  ctrlrange is a POSITION target range   (+-1.0 rad)
+         a_vel  <velocity>  ctrlrange is a VELOCITY target range   (+-2.0 rad/s)
+         a_mot  <motor>     ctrlrange is a TORQUE limit            (+-0.5 N m)
+
+       In torque mode ctrl is the torque on all three. The first two ranges are
+       then not torque limits and must not clamp it; the third is one and must.
+       The numbers are pairwise different so a clamp that landed on the wrong
+       actuator shows up as the wrong value, not as a pass.
+
+       a_vel also has a forcerange, wider than anything its ctrlrange lets
+       through as a servo (kv * 2.0 = 20 < 30): the force clamp has to survive
+       torque mode, and a position-mode step can still tell a clamped target
+       from an unclamped one. No joint range: nothing but the actuators limits
+       these joints. -->
+  <compiler angle="radian"/>
+  <option timestep="0.002" solver="Newton" iterations="20"/>
+
+  <worldbody>
+    <body name="link1" pos="0 0 0.5">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <inertial pos="0.1 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.03" rgba="0.8 0.2 0.2 1"/>
+
+      <body name="link2" pos="0.2 0 0">
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <inertial pos="0.1 0 0" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.025" rgba="0.2 0.8 0.2 1"/>
+
+        <body name="link3" pos="0.2 0 0">
+          <joint name="j3" type="hinge" axis="0 1 0"/>
+          <inertial pos="0.05 0 0" mass="0.2" diaginertia="0.002 0.002 0.002"/>
+          <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.02" rgba="0.2 0.2 0.8 1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="a_pos" joint="j1" kp="100" ctrlrange="-1.0 1.0"/>
+    <velocity name="a_vel" joint="j2" kv="10" ctrlrange="-2.0 2.0" forcerange="-30 30"/>
+    <motor name="a_mot" joint="j3" ctrlrange="-0.5 0.5"/>
+  </actuator>
+</mujoco>

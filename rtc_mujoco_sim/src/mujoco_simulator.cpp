@@ -961,6 +961,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
     p.biasprm1 = static_cast<double>(model_->actuator_biasprm[i * mjNBIAS + 1]);
     p.biasprm2 = static_cast<double>(model_->actuator_biasprm[i * mjNBIAS + 2]);
     p.biastype = model_->actuator_biastype[i];
+    p.ctrllimited = model_->actuator_ctrllimited[i] != 0;
   }
 
   // ── Discover all XML joints ─────────────────────────────────────────────

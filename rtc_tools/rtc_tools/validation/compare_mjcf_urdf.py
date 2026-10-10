@@ -4,7 +4,9 @@
 Parses both model files and reports differences in:
   - Link mass
   - Link inertia (principal moments via eigenvalue decomposition; MJCF
-    `diaginertia` or `fullinertia`)
+    `diaginertia` or `fullinertia`), then the tensor itself in the world
+    frame at zero configuration — which is what sees the principal axes
+  - Link centre of mass (world frame at zero configuration)
   - Joint position limits (range; sign-swapped for anti-parallel axes)
   - Joint effort / force limits (what the joint's actuators can apply, clamped
     by the joint's own `actuatorfrcrange`)
@@ -12,6 +14,9 @@ Parses both model files and reports differences in:
   - Joint axis lines (world-frame FK; a revolute origin may slide along its
     own axis without changing the physics, so only the perpendicular offset
     counts as a mismatch — see _axis_line_offset)
+
+`--tolerance` is an absolute bound, and for a link's mass and inertia a
+relative one as well — the tighter applies (see _scaled_tolerance).
 
 Robot-agnostic — link/joint name sets are auto-detected from the two files
 unless explicitly overridden via CLI flags.
@@ -107,6 +112,10 @@ class InertialParams:
     origin_rpy: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
     # Inertial frame rotation — MJCF quat (w, x, y, z); identity = [1,0,0,0]
     origin_quat: list = field(default_factory=lambda: [1.0, 0.0, 0.0, 0.0])
+    # MJCF only: the tensor about the COM in the body frame, whichever way the
+    # file spells it (see _mjcf_inertia_tensor).  None on a URDF link, whose
+    # tensor is diag / off-diag in the rpy frame.
+    body_tensor: list | None = None
 
 
 @dataclass
@@ -968,6 +977,24 @@ def _axis_line_offset(
     return along, perp, math.sqrt(sum(v * v for v in perp))
 
 
+def _mjcf_inertia_tensor(inertial: ET.Element, compiler: _MjcfCompiler) -> list[list[float]]:
+    """Inertia about the COM in the body frame, from an ``<inertial>``.
+
+    ``fullinertia`` already is that tensor.  ``diaginertia`` states it in the
+    inertial frame, whose orientation takes the same attributes as a body's
+    (``quat``, ``axisangle``, ``euler``, ``xyaxes``, ``zaxis``) and is read the
+    same way.  MuJoCo rejects ``fullinertia`` together with an orientation, so
+    the two never combine.
+    """
+    full_str = inertial.get("fullinertia")
+    if full_str:
+        ixx, iyy, izz, ixy, ixz, iyz = _parse_floats(full_str)[0:6]
+        return [[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]]
+    d = _parse_floats(inertial.get("diaginertia", "0 0 0"))
+    principal = [[d[0], 0.0, 0.0], [0.0, d[1], 0.0], [0.0, 0.0, d[2]]]
+    return _rotate_tensor_33(_mjcf_body_rotation(inertial, compiler), principal)
+
+
 def parse_mjcf(
     path: Path,
     link_names: set[str],
@@ -1015,6 +1042,7 @@ def parse_mjcf(
         quat = inertial.get("quat")
         if quat:
             params.origin_quat = _parse_floats(quat)
+        params.body_tensor = _mjcf_inertia_tensor(inertial, compiler)
         links[name] = params
 
     # ── Parse joints ──
@@ -1149,6 +1177,20 @@ def _close(a: float, b: float, tol: float) -> bool:
     return math.isclose(a, b, abs_tol=tol)
 
 
+def _scaled_tolerance(tolerance: float, scale: float) -> float:
+    """Bound on ``|a - b|`` for a mass or an inertia of size ``scale``.
+
+    ``tolerance`` is read both as an absolute bound and as a relative one, and
+    the tighter of the two applies: absolute at ``scale >= 1``, relative below.
+    An absolute bound alone is larger than the quantity itself on a small link
+    — every principal moment of a fingertip is under 1e-4 kg·m² — so such a
+    link passed with any value (#692).  A scale of 0 gives 0: two exact zeros
+    agree, and anything else against a zero does not.  The sign of ``scale`` is
+    dropped — whether a negative mass is a model at all is not decided here.
+    """
+    return min(tolerance, tolerance * abs(scale))
+
+
 def _fmt(val: float) -> str:
     if abs(val) < 1e-10:
         return "0"
@@ -1182,6 +1224,10 @@ def _urdf_principal_moments(params: "InertialParams") -> list[float]:
 
 
 # ── Fused links (MJCF folded a fixed-joint child into its parent) ────────────
+
+
+# (row, column) of ixx iyy izz ixy ixz iyz — the order both formats spell them in.
+_TENSOR_ORDER = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
 
 def _urdf_inertia_tensor(params: "InertialParams") -> list[list[float]]:
@@ -1785,7 +1831,13 @@ def compare(
             same-name pair, so a partial map cannot silently narrow the
             comparison (#411).
         joint_names: Joint names to compare (assumed identical in both files).
-        tolerance: Numerical tolerance.
+        tolerance: Numerical tolerance.  An absolute bound (m, rad, N·m) for
+            joint ranges, effort limits, axes, positions and the link COM.  A
+            link's mass and principal moments are held to
+            ``min(tolerance, tolerance * size)`` — relative below 1 kg and
+            1 kg·m², where an absolute bound exceeds the quantity itself
+            (:func:`_scaled_tolerance`).  The total-mass check of the
+            structural section keeps its own rule.
         robot_label: Optional human label printed in the header.
         align: Optional ``(R, p)`` mapping MJCF world coordinates into the URDF
             world frame, from :func:`_resolve_alignment`.  ``None`` assumes the
@@ -1823,7 +1875,7 @@ def compare(
     print(f"  {label}Model Comparison: MJCF vs URDF")
     print(f"  MJCF: {mjcf_path}")
     print(f"  URDF: {urdf_path}")
-    print(f"  Tolerance: {tolerance}")
+    print(f"  Tolerance: {tolerance}  (link mass / inertia: also relative, the tighter applies)")
     if align is not None:
         print("  Base alignment: declared (MJCF world FK lifted into URDF world frame)")
     print("=" * 78)
@@ -1935,7 +1987,9 @@ def compare(
         print(f"  [{label}]")
 
         # Mass
-        if not _close(mjcf_ip.mass, urdf_ip.mass, tolerance):
+        # "not within", rather than "beyond": a NaN is beyond nothing.
+        mass_tol = _scaled_tolerance(tolerance, max(mjcf_ip.mass, urdf_ip.mass))
+        if not abs(mjcf_ip.mass - urdf_ip.mass) <= mass_tol:
             print(
                 f"    MASS MISMATCH:  MJCF={_fmt(mjcf_ip.mass)}  URDF={_fmt(urdf_ip.mass)}"
                 f"  (delta={_fmt(abs(mjcf_ip.mass - urdf_ip.mass))})"
@@ -1946,14 +2000,14 @@ def compare(
 
         # Centre of mass, in the URDF world frame at zero configuration.
         #
-        # Nothing else here observes it: principal moments are taken about the
-        # COM, so translating it leaves them unchanged, and total mass is blind
+        # Nothing else here observes it: the inertia is taken about the COM, so
+        # translating it leaves the tensor unchanged, and total mass is blind
         # to where the mass sits.  A link whose COM slid while its mass and
         # inertia stayed put used to pass silently (#416).
         mjcf_frame = mjcf_link_frames.get(mjcf_name)
         urdf_frame = urdf_link_frames.get(urdf_name)
         if mjcf_frame is None or urdf_frame is None:
-            print("    [WARN] COM not compared: link frame missing on one side")
+            print("    [WARN] COM and inertia tensor not compared: link frame missing on one side")
             warnings += 1
         else:
             r_m, p_m = mjcf_frame
@@ -1973,19 +2027,25 @@ def compare(
                 )
                 mismatches += 1
 
-        # Inertia comparison via principal moments
+        # Inertia, in two steps: the principal moments, then the tensor.
         #
         # URDF stores the full inertia tensor in the (possibly rotated)
         # inertial frame.  MJCF normalises this to the principal-axis frame:
         # ``diaginertia`` holds the eigenvalues sorted descending, and an
         # optional ``quat`` encodes the rotation from body frame to that
         # principal frame.  Comparing raw Ixx/Iyy/Izz fails when either side
-        # is rotated; comparing sorted eigenvalues is rotation-invariant.
+        # is rotated; comparing sorted eigenvalues is rotation-invariant, and
+        # it names which moment is off.  It is also blind to the axes, which
+        # the tensor comparison below is not.
         u_eigs = _urdf_principal_moments(urdf_ip)
         m_eigs = sorted((float(v) for v in mjcf_ip.diag_inertia), reverse=True)
 
+        # One bound per link, scaled by its largest moment.  The three moments
+        # of a tensor are known to the same absolute precision, so scaling each
+        # by itself would over-tighten the smallest axis of a slender link.
+        eig_tol = _scaled_tolerance(tolerance, max(*m_eigs, *u_eigs))
         eig_pairs = list(zip(m_eigs, u_eigs, strict=False))
-        eig_match = all(_close(m, u, tolerance) for m, u in eig_pairs)
+        eig_match = all(abs(m - u) <= eig_tol for m, u in eig_pairs)
 
         if eig_match:
             print(
@@ -2000,29 +2060,61 @@ def compare(
             )
             for i, lbl in enumerate(("λ1", "λ2", "λ3")):
                 d = abs(m_eigs[i] - u_eigs[i])
-                if d > tolerance:
+                if d > eig_tol:
                     print(f"      {lbl} delta={_fmt(d)}")
             mismatches += 1
 
+        # The tensor itself, in the URDF world frame at zero configuration.
+        #
+        # Equal moments about different axes are different bodies (#816): a
+        # diaginertia with its quat missing, or a product of inertia with the
+        # wrong sign, has the right eigenvalues.  The comparison runs in the
+        # world frame for the reason the COM's does — the two files need not
+        # agree on the link frame, so neither tensor means anything in the
+        # other's.  Skipped when the moments already disagree: that is one
+        # defect, and the line above has named it.
+        if eig_match and mjcf_frame is not None and urdf_frame is not None:
+            tensor_m = _rotate_tensor_33(
+                _mat_mul_33(r_com_align, mjcf_frame[0]), mjcf_ip.body_tensor
+            )
+            tensor_u = _rotate_tensor_33(
+                _mat_mul_33(urdf_frame[0], _rpy_to_rot3(*urdf_ip.origin_rpy)),
+                _urdf_inertia_tensor(urdf_ip),
+            )
+            delta = max(abs(tensor_m[i][j] - tensor_u[i][j]) for i in range(3) for j in range(3))
+            if delta <= eig_tol:
+                print("    inertia tensor (world): OK")
+            else:
+                print(
+                    "    INERTIA TENSOR MISMATCH (world):"
+                    " principal moments agree, their axes do not"
+                )
+                for side, t in (("MJCF", tensor_m), ("URDF", tensor_u)):
+                    print(
+                        f"      {side} [ixx iyy izz ixy ixz iyz]="
+                        f"[{', '.join(_fmt(t[i][j]) for i, j in _TENSOR_ORDER)}]"
+                    )
+                print(f"      max delta={_fmt(delta)}")
+                mismatches += 1
+
         # Informational notes (non-error): off-diagonal magnitude / frame rotation
+        compared_via = (
+            "compared via principal moments and the world-frame tensor."
+            if mjcf_frame is not None and urdf_frame is not None
+            else "compared via principal moments only."
+        )
         off_diag_mag = math.sqrt(sum(x * x for x in urdf_ip.off_diag_inertia))
         if off_diag_mag > tolerance:
             print(
                 f"    [NOTE] URDF has non-zero off-diagonal inertia "
-                f"(|off-diag|={_fmt(off_diag_mag)}); compared via principal moments."
+                f"(|off-diag|={_fmt(off_diag_mag)}); {compared_via}"
             )
         if urdf_ip.origin_rpy != [0.0, 0.0, 0.0]:
             rpy_str = " ".join(_fmt(v) for v in urdf_ip.origin_rpy)
-            print(
-                f"    [NOTE] URDF inertial frame rotated rpy=[{rpy_str}]; "
-                "compared via principal moments."
-            )
+            print(f"    [NOTE] URDF inertial frame rotated rpy=[{rpy_str}]; {compared_via}")
         if mjcf_ip.origin_quat != [1.0, 0.0, 0.0, 0.0]:
             quat_str = " ".join(_fmt(v) for v in mjcf_ip.origin_quat)
-            print(
-                f"    [NOTE] MJCF inertial frame rotated quat=[{quat_str}]; "
-                "compared via principal moments."
-            )
+            print(f"    [NOTE] MJCF inertial frame rotated quat=[{quat_str}]; {compared_via}")
 
         # Physical plausibility: compare URDF-declared inertia trace to the
         # estimate from collision-shape mass distribution.  Both quantities
@@ -2644,7 +2736,10 @@ def main():
         "--tolerance",
         type=float,
         default=1e-4,
-        help="Numerical tolerance for comparison (default: 1e-4).",
+        help="Numerical tolerance for comparison (default: 1e-4). Absolute "
+        "for ranges, efforts, axes, positions and COMs; for a link's mass and "
+        "principal moments it is also relative, and the tighter bound applies "
+        "(below 1 kg / 1 kg m^2 that is the relative one).",
     )
     args = parser.parse_args()
 

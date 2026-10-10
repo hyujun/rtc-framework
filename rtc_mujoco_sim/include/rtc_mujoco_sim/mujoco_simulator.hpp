@@ -1321,12 +1321,17 @@ class MuJoCoSimulator {
   // alone leaves force = kp * ctrl — a constant torque, not a servo. The lane
   // that installs gains sets mjBIAS_AFFINE; the torque lane and the
   // back-to-XML lane put this value back.
+  //
+  // ctrllimited is saved for the opposite switch: on an actuator the XML wrote
+  // as a servo, ctrlrange bounds the servo's TARGET, and the torque lane has to
+  // lift that clamp — there ctrl is the torque. Every other lane puts it back.
   struct ActuatorParams {
     double gainprm0{0.0};
     double biasprm0{0.0};
     double biasprm1{0.0};
     double biasprm2{0.0};
     int biastype{0};
+    bool ctrllimited{false};
   };
 
   std::vector<ActuatorParams> orig_actuator_params_;

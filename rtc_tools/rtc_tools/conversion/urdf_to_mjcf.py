@@ -546,6 +546,12 @@ def _add_actuators(
 ) -> int:
     """Add ``<actuator>`` entries for active (non-passive) joints only.
 
+    Each entry is a ``<general>`` with no gain, which MuJoCo compiles to a
+    torque motor: its ctrl is the joint torque.  The URDF effort limit goes on
+    ``forcerange``.  No ``ctrlrange`` is written — on a torque motor it bounds
+    the torque, and the joint's position range is not a torque (#693).  A
+    joint whose URDF effort is 0 gets no bound from this function.
+
     Returns:
         Number of actuators added.
     """
@@ -571,8 +577,6 @@ def _add_actuators(
             "name": act_name,
             "joint": name,
         }
-        if info.lower_limit != 0.0 or info.upper_limit != 0.0:
-            attrib["ctrlrange"] = f"{info.lower_limit:.5g} {info.upper_limit:.5g}"
         if info.effort_limit > 0:
             attrib["forcerange"] = f"{-info.effort_limit:.5g} {info.effort_limit:.5g}"
 

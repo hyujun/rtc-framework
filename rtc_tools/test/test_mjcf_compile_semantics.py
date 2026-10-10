@@ -972,6 +972,62 @@ def test_mujoco_compiles_the_expected_orientation(name):
     )
 
 
+# ── The inertial frame takes the same attributes (#816) ─────────────────────
+#
+# The moments differ pairwise, so a rotation read wrong — or not read — gives
+# another tensor.  The tensor, not the quaternion, is what is compared: MuJoCo
+# is free to reorder the principal axes it stores.
+
+INERTIAL_MOMENTS = (0.3, 0.2, 0.1)
+
+
+def _tensor_about(rotation, moments) -> list[list[float]]:
+    """``R · diag(moments) · Rᵀ``."""
+    return [
+        [sum(rotation[i][k] * moments[k] * rotation[j][k] for k in range(3)) for j in range(3)]
+        for i in range(3)
+    ]
+
+
+def _inertial_oriented_mjcf(orientation: Orientation) -> str:
+    return _mjcf(
+        compiler=orientation.compiler,
+        inertial=(
+            f'<inertial pos="0 0 0" mass="1" diaginertia="0.3 0.2 0.1" {orientation.attribute}/>'
+        ),
+    )
+
+
+def _compiled_body_tensor(mujoco, model, body_id: int) -> list[list[float]]:
+    """Inertia about the COM in the body frame, from the compiled model."""
+    import numpy as np  # noqa: PLC0415 — wherever mujoco imports, numpy does
+
+    rotation = np.zeros(9)
+    mujoco.mju_quat2Mat(rotation, model.body_iquat[body_id])
+    return _tensor_about(rotation.reshape(3, 3), model.body_inertia[body_id])
+
+
+@pytest.mark.parametrize("name", ORIENTATION_IDS)
+def test_tool_orients_the_inertial_as_mujoco_compiles(name, tmp_path):
+    orientation = ORIENTATIONS[name]
+    mjcf = _write(tmp_path, "m.xml", _inertial_oriented_mjcf(orientation))
+    links, _ = parse_mjcf(mjcf, {"b"}, {"j"})
+    assert _flat(links["b"].body_tensor) == pytest.approx(
+        _flat(_tensor_about(orientation.rotation, INERTIAL_MOMENTS)), abs=1e-9
+    )
+
+
+@pytest.mark.parametrize("name", ORIENTATION_IDS)
+def test_mujoco_compiles_the_expected_inertial_orientation(name):
+    mujoco = pytest.importorskip("mujoco")
+    orientation = ORIENTATIONS[name]
+    model = mujoco.MjModel.from_xml_string(_inertial_oriented_mjcf(orientation))
+    bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "b")
+    assert _flat(_compiled_body_tensor(mujoco, model, bid)) == pytest.approx(
+        _flat(_tensor_about(orientation.rotation, INERTIAL_MOMENTS)), abs=1e-9
+    )
+
+
 def test_tool_places_the_bodies_of_every_worldbody(tmp_path):
     """Bodies and sites go through their own walk of the tree, so the joint
     case above does not cover them."""
@@ -1155,6 +1211,8 @@ def test_the_mjcf_class_option_is_gone(tmp_path, capsys, monkeypatch):
 FULLINERTIA = "0.5 0.4 0.3 0.05 -0.03 0.02"
 #: Eigenvalues of that tensor, descending.
 FULLINERTIA_MOMENTS = (0.5225715114, 0.3890349006, 0.2883935880)
+#: The same six numbers as a matrix.
+FULLINERTIA_TENSOR = ((0.5, 0.05, -0.03), (0.05, 0.4, 0.02), (-0.03, 0.02, 0.3))
 MJCF_FULLINERTIA = _mjcf(inertial=f'<inertial pos="0 0 0" mass="1" fullinertia="{FULLINERTIA}"/>')
 URDF_SAME_TENSOR = 'ixx="0.5" iyy="0.4" izz="0.3" ixy="0.05" ixz="-0.03" iyz="0.02"'
 
@@ -1171,6 +1229,20 @@ class TestFullInertia:
         bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "b")
         compiled = sorted((float(v) for v in model.body_inertia[bid]), reverse=True)
         assert compiled == pytest.approx(FULLINERTIA_MOMENTS, abs=1e-9)
+
+    def test_tool_reads_the_tensor_in_the_body_frame(self, tmp_path):
+        links, _ = parse_mjcf(_write(tmp_path, "m.xml", MJCF_FULLINERTIA), {"b"}, {"j"})
+        assert _flat(links["b"].body_tensor) == pytest.approx(_flat(FULLINERTIA_TENSOR), abs=1e-12)
+
+    def test_mujoco_compiles_the_same_tensor(self):
+        """To 1e-6 only: MuJoCo diagonalises a fullinertia iteratively and
+        stores the result, which comes back about 2e-6 (relative) off."""
+        mujoco = pytest.importorskip("mujoco")
+        model = mujoco.MjModel.from_xml_string(MJCF_FULLINERTIA)
+        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "b")
+        assert _flat(_compiled_body_tensor(mujoco, model, bid)) == pytest.approx(
+            _flat(FULLINERTIA_TENSOR), abs=1e-6
+        )
 
     def test_the_same_tensor_on_both_sides_matches(self, tmp_path, capsys):
         pytest.importorskip("numpy")
@@ -1296,4 +1368,56 @@ def test_shipped_mjcf_reads_as_compiled(path, quantity):
     assert not differing, (
         f"{path}: {quantity} differs from the compiled model on "
         f"{len(differing)} of {compared} joint(s)\n  " + "\n  ".join(differing)
+    )
+
+
+def _text_inertial_body_names(path: Path) -> set[str]:
+    """Named bodies that state an ``<inertial>`` in this file's own text."""
+    root = ET.parse(path).getroot()
+    return {
+        body.get("name")
+        for body in root.iter("body")
+        if body.get("name") and body.find("inertial") is not None
+    }
+
+
+#: A file whose bodies take their inertia from geoms has nothing to read here.
+SHIPPED_MJCF_WITH_INERTIALS = [p for p in SHIPPED_MJCF if _text_inertial_body_names(p)]
+
+
+def test_shipped_mjcf_files_with_inertials_were_found():
+    assert SHIPPED_MJCF_WITH_INERTIALS, f"no MJCF with an <inertial> under {SHIPPED_ROOT}"
+
+
+@pytest.mark.parametrize(
+    "path",
+    SHIPPED_MJCF_WITH_INERTIALS,
+    ids=[str(p.relative_to(SHIPPED_ROOT)) for p in SHIPPED_MJCF_WITH_INERTIALS],
+)
+def test_shipped_mjcf_inertia_tensor_reads_as_compiled(path):
+    """The tensor the tool takes into the world frame is the one MuJoCo
+    simulates (#816) — for every body, in whichever way the file spells it."""
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(str(path))
+    links, _ = parse_mjcf(path, _text_inertial_body_names(path), set())
+
+    compared = 0
+    differing = []
+    for name, params in links.items():
+        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+        if bid < 0:
+            continue
+        compared += 1
+        compiled = _flat(_compiled_body_tensor(mujoco, model, bid))
+        tool = _flat(params.body_tensor)
+        # Relative 1e-5: a fullinertia comes back from MuJoCo's own
+        # diagonalisation about 2e-6 off (see TestFullInertia).
+        bound = 1e-5 * max(abs(v) for v in compiled)
+        if any(abs(t - c) > bound for t, c in zip(tool, compiled, strict=True)):
+            differing.append(f"{name}: tool={tool} compiled={compiled}")
+
+    assert compared, f"{path}: no body of the text is in the compiled model"
+    assert not differing, (
+        f"{path}: inertia tensor differs from the compiled model on "
+        f"{len(differing)} of {compared} body(ies)\n  " + "\n  ".join(differing)
     )
