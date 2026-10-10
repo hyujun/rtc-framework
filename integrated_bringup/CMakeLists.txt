@@ -1784,6 +1784,11 @@ if(BUILD_TESTING)
   # unit's report on a planted unit — a solve cut at the core's deadline is
   # counted, never given a solve time.
   ament_add_pytest_test(test_catching_eval_unit_report test/test_catching_eval_unit_report.py)
+  # tools/catching_eval (same: read from the source tree): the record of N
+  # arms (#746) — a unit's arm read off its mirror, the arms joined inside one
+  # repetition and described without a verdict, run_all.sh's plan columns and
+  # its rig-failure-only retry, mk_overlay.py's ball.
+  ament_add_pytest_test(test_catching_eval_record test/test_catching_eval_record.py)
   # The eval tools and the trial runner load a catching profile or a recorded
   # mirror: an old key is refused, an old mirror name is read through the alias
   # table (#711).
