@@ -455,6 +455,22 @@ def test_run_unit_asks_the_startup_check_and_no_longer_greps_for_refus():
     assert "bring_up_failed\\|refus" not in text
 
 
+def test_a_unit_that_asks_for_the_probe_dump_gets_it_flushed_and_handed_on():
+    """PROBE_DUMP=1 (#807): the probe runs in its own group, is stopped BEFORE the
+    estimator and the sim (it writes its CSVs on SIGINT), a unit without the dump
+    fails, and the analysis hands the dump to catching_trials."""
+    tools = Path(cst.__file__).parent
+    text = (tools / "run_unit.sh").read_text()
+    assert 'vision_lane_probe "$OUT/probe/lane" --dump' in text
+    cleanup = text[text.index("cleanup() {") : text.index("keep_failed_session() {")]
+    assert cleanup.index('stop_group "$PPG"') < cleanup.index('stop_group "$EPG"')
+    assert 'echo "FAIL:no probe dump" > "$OUT/status"' in text
+    assert 'echo "probe_dump: ' in text
+    vector = (tools / "tc_vector.py").read_text()
+    assert 'unit / "probe" / "lane_prediction_dump.csv"' in vector
+    assert '"--probe-dump", str(dump)' in vector
+
+
 # ── #798: units that threw a list pair on (the list's sha256, throw_id) ──────
 def _list_row(sha, throw_id, d4, invalid=""):
     return {

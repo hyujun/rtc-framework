@@ -60,6 +60,12 @@
 # any `refus` in the launch log, and a healthy controller logs "… is refused without the IK
 # (too_far)" at INFO just before its ready line: a poll between the two ended the unit as
 # FAIL:startup before a throw. A failed bringup's first failure line goes to startup_failure.txt.
+# #807 addition (default off — the unit is then what it was): PROBE_DUMP=1 runs
+# `vision_lane_probe --dump` beside the unit, from the estimator's activation to the end, into
+# <out_dir>/probe/ (lane_prediction_dump.csv: every horizon point of every prediction message, which
+# analyse_unit.sh hands to catching_trials as --probe-dump). conditions.txt says which (probe_dump:
+# on | off) — the probe is one more process on the host. A unit that asked for the dump and has none
+# fails (FAIL:no probe dump): its analysis would silently be the one without it.
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
@@ -119,6 +125,7 @@ stop_group() {  # stop_group <pgid> <seconds to wait before KILL>
   echo "killed group $1 after $2 s" >> "$OUT/cleanup.log"
 }
 cleanup() {
+  stop_group "$PPG" 10  # first: the probe flushes its CSVs on SIGINT
   stop_group "$EPG" 20
   stop_group "$LPG" 20
   sleep 2
@@ -169,6 +176,7 @@ trap on_signal INT TERM HUP
   echo "ros_domain_id: $ROS_DOMAIN_ID"
   echo "expect_mode: ${EXPECT_MODE:-mpc}"; echo "expect_kv: ${EXPECT_KV:-}"
   echo "viewer: $([ "$VIEWER" == "true" ] && echo on || echo off)"
+  echo "probe_dump: $([ "${PROBE_DUMP:-0}" == "1" ] && echo on || echo off)"
 } > "$OUT/conditions.txt"
 if [ "${ALLOW_DIRTY:-0}" != "1" ] && [ -n "$(git -C "$REPO" status --porcelain)" ]; then
   echo "FAIL:dirty tree" > "$OUT/status"; exit 1
@@ -286,6 +294,11 @@ act=0
 for i in $(seq 1 15); do grep -q 'activated epoch' "$OUT/est.log" && { act=1; break; }; sleep 1; done
 grep -q WRONG_PREFIX "$OUT/est.log" && { cleanup; echo "FAIL:ball_perception not from BALL_SIM_WS" > "$OUT/status"; exit 1; }
 [ $act -eq 1 ] || { cleanup; echo "FAIL:estimator not activated" > "$OUT/status"; exit 1; }
+if [ "${PROBE_DUMP:-0}" == "1" ]; then
+  mkdir -p "$OUT/probe"
+  setsid ros2 run rtc_tools vision_lane_probe "$OUT/probe/lane" --dump > "$OUT/probe/probe.log" 2>&1 &
+  PPG=$!
+fi
 sleep 2
 ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController "{activate_controllers: [demo_catching_controller], deactivate_controllers: [demo_joint_controller], strictness: 1, timeout: {sec: 3}}" > "$OUT/switch.log" 2>&1
 SERIES=(--throws-file "$THROWS_FILE")
@@ -304,6 +317,9 @@ echo "date_end: $(date -Is)" >> "$OUT/conditions.txt"
 cleanup
 if [ $rc -eq 3 ]; then echo "FAIL:host_busy" > "$OUT/status"; exit 1; fi
 if [ $rc -ne 0 ]; then echo "FAIL:trials rc=$rc" > "$OUT/status"; exit 1; fi
+if [ "${PROBE_DUMP:-0}" == "1" ] && [ "$(wc -l < "$OUT/probe/lane_prediction_dump.csv" 2>/dev/null || echo 0)" -lt 2 ]; then
+  echo "FAIL:no probe dump" > "$OUT/status"; exit 1
+fi
 # An empty session.txt (no `logging_data/<digits>` in the launch log) would make
 # the session the workspace root: the copy below would take the whole workspace.
 SREL=$(cat "$OUT/session.txt" 2>/dev/null)

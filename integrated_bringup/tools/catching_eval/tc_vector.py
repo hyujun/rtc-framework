@@ -117,6 +117,10 @@ if __name__ == "__main__":
             "--out",
             ct_out,
         ]
+        # A unit run with PROBE_DUMP=1 (run_unit.sh) has the predictions its planner read.
+        dump = unit / "probe" / "lane_prediction_dump.csv"
+        if dump.is_file():
+            sys.argv += ["--probe-dump", str(dump)]
         import contextlib
         import io
 
