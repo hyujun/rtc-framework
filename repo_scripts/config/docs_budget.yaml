@@ -28,7 +28,7 @@ agent_docs/controllers.md: 15615
 agent_docs/conventions.md: 9591
 agent_docs/design-principles.md: 15387
 agent_docs/handoff.md: 5045
-agent_docs/invariants.md: 36815
+agent_docs/invariants.md: 37259  # raised from 36815: RT-1 known violation 4 — allocations inside external numeric libraries are recorded, not asserted (#654, user decision 2026-10-10)
 agent_docs/modification-guide.md: 15254
 agent_docs/testing-debug.md: 14140
 
