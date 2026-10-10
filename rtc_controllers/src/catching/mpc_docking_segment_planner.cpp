@@ -25,9 +25,6 @@ namespace {
 // cores were given for the same key, which is what lets one planner evaluate
 // the other's solution on an identical grid.
 constexpr double kNsPerSec = 1e9;
-// A warm-up solve may take this many first-solve budgets: enough for its first
-// iterations, bounded whatever the problem turns out to be.
-constexpr std::int64_t kWarmUpBudgets = 4;
 
 [[nodiscard]] constexpr std::size_t U(int i) noexcept {
   return static_cast<std::size_t>(i);
@@ -259,7 +256,10 @@ bool MpcDockingSegmentPlanner::WarmUp(const MpcDockingSegmentPlannerModel& model
     in.p_line = p_b;
     in.d_line = -e3;
     const std::int64_t start = clock_();
-    in.deadline_ns = start + kWarmUpBudgets * first_ns_;
+    // No deadline: the core starts no QP past one, and a warm-up the clock
+    // cut before its first QP would refuse the configuration for the host's
+    // load. The core's iteration caps bound the solve.
+    in.deadline_ns = 0;
     WarmUpProbe probe;
     core.SetStageHook(&WarmUpStageHook, &probe);
     static_cast<void>(core.Solve(in, results_[slot]));
@@ -267,7 +267,6 @@ bool MpcDockingSegmentPlanner::WarmUp(const MpcDockingSegmentPlannerModel& model
     const std::int64_t took = clock_() - start;
     warmup_max_ns_ = std::max(warmup_max_ns_, took);
     warmup_total_ns_ += took;
-    in.deadline_ns = 0;
     if (!probe.reached_qp) {
       why = std::string("mpc_docking planner: the warm-up solve of the core for n_pre = ") +
             std::to_string(kc) +
@@ -402,8 +401,12 @@ SegmentOutcome MpcDockingSegmentPlanner::Judge(const MpcDockingSegmentCoreResult
   rec.solve_ns = end - start;
   SetCoreReason(rec, r.reason);
   if (!ok) {
-    // Refused before any iterate: the result's nodes are another solve's.
-    return end - start > budget_ns ? SegmentOutcome::kBudget : SegmentOutcome::kSolveFailed;
+    // Refused before any iterate: the result's nodes are another solve's. A
+    // deadline that had passed before the initialisation QP is the budget's,
+    // by the core's own word — its test of the instant (≥) is not this one.
+    return r.reason == MpcDockingReason::kDeadline || end - start > budget_ns
+               ? SegmentOutcome::kBudget
+               : SegmentOutcome::kSolveFailed;
   }
   rec.iterations = r.iterations;
   rec.qp_status = r.qp_status;

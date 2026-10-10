@@ -128,6 +128,24 @@ const char* MpcDockingReasonName(MpcDockingReason reason) noexcept {
   return "unknown";
 }
 
+const char* MpcDockingCutSiteName(MpcDockingCutSite site) noexcept {
+  switch (site) {
+    case MpcDockingCutSite::kNone:
+      return "none";
+    case MpcDockingCutSite::kInitQp:
+      return "init_qp";
+    case MpcDockingCutSite::kIteration:
+      return "iteration";
+    case MpcDockingCutSite::kColdRetry:
+      return "cold_retry";
+    case MpcDockingCutSite::kPenaltyReset:
+      return "penalty_reset";
+    case MpcDockingCutSite::kPenaltyProbe:
+      return "penalty_probe";
+  }
+  return "unknown";
+}
+
 const char* DockingRowGroupName(DockingRowGroup group) noexcept {
   switch (group) {
     case DockingRowGroup::kTorque:
@@ -2056,6 +2074,16 @@ MpcDockingReason MpcDockingSegmentCore::RunQp(MpcDockingSegmentCoreResult& out) 
   ++out.qp_solves;
   out.qp_iterations += res->iterations;
   if (!res->converged && solver_warm_) {
+    if (PastDeadline()) {
+      // The cold run would start past the deadline; the warm one's time and
+      // status are this call's record, as on the failure path below.
+      out.qp_us += MicrosSince(t0);
+      out.qp_status = res->status;
+      solver_.ResetWarmStart();
+      solver_warm_ = false;
+      out.cut_site = MpcDockingCutSite::kColdRetry;
+      return MpcDockingReason::kDeadline;
+    }
     // Iterates left by the previous linearisation can make ProxQP call a
     // feasible QP infeasible; one more run from zero settles it.
     solver_.ResetWarmStart();
@@ -2536,6 +2564,7 @@ void MpcDockingSegmentCore::ResetRecord(MpcDockingSegmentCoreResult& out) noexce
   out.catch_time_gradient = 0.0;
   out.catch_time_settled = false;
   out.mu_resets = 0;
+  out.cut_site = MpcDockingCutSite::kNone;
 }
 
 bool MpcDockingSegmentCore::Evaluate(const MpcDockingSegmentCoreInput& in,
@@ -2573,6 +2602,7 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     return false;
   };
   const MpcDockingSegmentCoreParams& p = params_;
+  deadline_ns_ = clock_ != nullptr && in.deadline_ns > 0 ? in.deadline_ns : 0;
 
   // ── Start point ──
   {
@@ -2591,6 +2621,10 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     }
     StageEnd(MpcDockingStage::kStart);
     if (need_init) {
+      if (PastDeadline()) {
+        out.cut_site = MpcDockingCutSite::kInitQp;
+        return reject(MpcDockingReason::kDeadline);
+      }
       const MpcDockingReason init_why = RunInitQp(in, out);
       if (init_why != MpcDockingReason::kNone) {
         return reject(init_why);
@@ -2608,8 +2642,10 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
   MpcDockingReason reason = MpcDockingReason::kIterationLimit;
   int stall_from = 0;  // first iteration whose violation the stall test may read
   for (int it = 0; it < p.max_iterations; ++it) {
-    if (it > 0 && clock_ != nullptr && in.deadline_ns > 0 && clock_() >= in.deadline_ns) {
+    // Before the first iteration too: the point returned is then the start.
+    if (PastDeadline()) {
       reason = MpcDockingReason::kDeadline;
+      out.cut_site = MpcDockingCutSite::kIteration;
       break;
     }
     {
@@ -2638,16 +2674,22 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       out.assemble_us += MicrosSince(t0);
     }
     MpcDockingReason qp_why = RunQp(out);
-    if (qp_why != MpcDockingReason::kNone && qp_why != MpcDockingReason::kSolutionNonFinite) {
+    if (qp_why != MpcDockingReason::kNone && qp_why != MpcDockingReason::kSolutionNonFinite &&
+        qp_why != MpcDockingReason::kDeadline) {
       // A penalty raised by an earlier probe can be what the solver chokes on
       // at this linearisation: fall back to the initial penalties once.
       if (PenaltiesRaised()) {
-        StageBegin(MpcDockingStage::kPostQp);
-        ResetPenalties();
-        SetPenaltyGradient();
-        StageEnd(MpcDockingStage::kPostQp);
-        ++out.mu_resets;
-        qp_why = RunQp(out);
+        if (PastDeadline()) {
+          qp_why = MpcDockingReason::kDeadline;
+          out.cut_site = MpcDockingCutSite::kPenaltyReset;
+        } else {
+          StageBegin(MpcDockingStage::kPostQp);
+          ResetPenalties();
+          SetPenaltyGradient();
+          StageEnd(MpcDockingStage::kPostQp);
+          ++out.mu_resets;
+          qp_why = RunQp(out);
+        }
       }
     }
     if (qp_why != MpcDockingReason::kNone) {
@@ -2661,6 +2703,10 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
     // probe: it is kept only if the elastic total falls by min_gain, and
     // undone otherwise — raising μ on rows that cannot be met buys nothing
     // and ruins the conditioning of every QP after it.
+    // A probe the deadline cuts — before its QP, or before that QP's cold run
+    // — is undone like one that bought nothing, and ends the solve at the
+    // iterate this iteration linearised at: its step is not judged.
+    bool cut = false;
     for (;;) {
       StageBegin(MpcDockingStage::kPostQp);
       double before = 0.0;
@@ -2675,7 +2721,14 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
       if (!grew) {
         break;
       }
-      const MpcDockingReason probe = RunQp(out);
+      // After the growth, not before it: RestorePenalties() undoes what THIS
+      // GrowPenalties() kept.
+      const bool late = PastDeadline();
+      if (late) {
+        out.cut_site = MpcDockingCutSite::kPenaltyProbe;
+      }
+      const MpcDockingReason probe = late ? MpcDockingReason::kDeadline : RunQp(out);
+      cut = probe == MpcDockingReason::kDeadline;
       StageBegin(MpcDockingStage::kPostQp);
       bool keep = probe == MpcDockingReason::kNone;
       if (keep) {
@@ -2709,6 +2762,10 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
         break;
       }
       ++out.mu_updates;
+    }
+    if (cut) {
+      reason = MpcDockingReason::kDeadline;
+      break;
     }
     StageBegin(MpcDockingStage::kPostQp);
     PostQp(out);
@@ -2884,6 +2941,11 @@ bool MpcDockingSegmentCore::Solve(const MpcDockingSegmentCoreInput& in,
   if ((!final_ev.ok || !at) && reason != MpcDockingReason::kQpFailed) {
     reason = MpcDockingReason::kSolutionNonFinite;
     settled = false;
+  }
+  if (reason != MpcDockingReason::kDeadline) {
+    // The site belongs to the reason: a cut solve whose returned point does
+    // not evaluate ends on that, not on the deadline.
+    out.cut_site = MpcDockingCutSite::kNone;
   }
   Finish(final_ev, reason, out);
   out.catch_time_settled = settled && out.feasible;

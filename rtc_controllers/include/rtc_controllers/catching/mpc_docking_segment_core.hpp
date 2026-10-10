@@ -100,10 +100,22 @@
 //    small δ ends kIterationLimit or kDeadline.
 //  • max_iterations = 1 is one real-time iteration: a full step, no line
 //    search. It reports `converged` only when the point it STARTED from
-//    already meets the test (it then takes no step).
-//  • The deadline is read between iterations (a QP in progress is bounded only
-//    by the solver's own iteration cap). Past it, the last ACCEPTED iterate is
-//    returned with its violations and KKT residual.
+//    already meets the test (it then takes no step). Called past its deadline
+//    it takes no step either (next note).
+//  • The deadline is read before every QP: the initialisation QP, each
+//    iteration's (the first included), the cold run after a warm-started QP
+//    that did not converge, the run at the initial penalties after a failed
+//    QP, and each penalty probe. Past it no QP is started and the solve ends
+//    kDeadline; `cut_site` says before which. A QP in progress is not
+//    interrupted — it is bounded only by the solver's own iteration caps, so
+//    a solve overruns its deadline by at most one QP (plus the evaluations
+//    around it). What comes back: before the initialisation QP there is no
+//    iterate (Solve returns false); before the first iteration's QP it is
+//    the START point, with `iterations` 0 and the per-QP numbers
+//    (kkt_residual, grad_norm, complementarity, elastic, step_capped) at 0 —
+//    not computed, which is not the same as small; otherwise the last
+//    ACCEPTED iterate with the numbers of the last QP whose step was judged.
+//    A probe cut short leaves the penalties as they were before it.
 //
 // ── The catch instant as a variable (catch_time_variable, E1-F14 #740) ────────
 // A search that keeps one candidate per lattice cell wants the best catch
@@ -191,7 +203,9 @@
 //    and every other field of the result reset, so that nothing of an earlier
 //    solve stands next to this call's `reason` — only when it rejects the call
 //    before any iterate exists (not initialised, bad sizes or values, x_0
-//    outside the box, unusable ball input, no linear-feasible start).
+//    outside the box, unusable ball input, no linear-feasible start, or a
+//    deadline that passed before the initialisation QP — kDeadline is then
+//    the reason of a call that returned false).
 //    Otherwise it returns true and the result holds the last accepted
 //    iterate, whatever `reason` says.
 //  • Heap: this core allocates nothing in Solve() — pinned stage by stage with
@@ -273,6 +287,8 @@ enum class MpcDockingReason : std::uint8_t {
   // ── Solve ended with an iterate ──
   kConverged,  ///< KKT conditions met at a feasible point
   kIterationLimit,
+  /// Past the deadline before a QP (`cut_site`). The one reason on both sides
+  /// of this line: before the initialisation QP there is no iterate.
   kDeadline,
   kInfeasible,        ///< stationary (or no descent) with a hard row still violated
   kLineSearchFailed,  ///< no acceptable step, hard rows hold
@@ -282,8 +298,20 @@ enum class MpcDockingReason : std::uint8_t {
   kSolutionNonFinite,
 };
 
+/// The QP a solve that ended kDeadline did not start (header note). kNone on
+/// every other reason.
+enum class MpcDockingCutSite : std::uint8_t {
+  kNone = 0,
+  kInitQp,        ///< the initialisation QP — no iterate
+  kIteration,     ///< an iteration's QP (before its linearisation)
+  kColdRetry,     ///< the cold run after a warm-started QP that did not converge
+  kPenaltyReset,  ///< the run at the initial penalties after a failed QP
+  kPenaltyProbe,  ///< a QP at grown penalties
+};
+
 /// @brief Stable name for logs and test messages.
 [[nodiscard]] const char* MpcDockingReasonName(MpcDockingReason reason) noexcept;
+[[nodiscard]] const char* MpcDockingCutSiteName(MpcDockingCutSite site) noexcept;
 [[nodiscard]] const char* DockingRowGroupName(DockingRowGroup group) noexcept;
 
 /// @brief Whether a penalty growth step is kept (RT-safe). The rule Solve()
@@ -494,7 +522,8 @@ struct MpcDockingSegmentCoreInput {
   /// p_line along the unit d_line.
   Eigen::Vector3d p_line{Eigen::Vector3d::Zero()};
   Eigen::Vector3d d_line{Eigen::Vector3d::UnitX()};
-  /// Absolute instant on the core's clock [ns]; ≤ 0 = no deadline.
+  /// Absolute instant on the core's clock [ns]; ≤ 0 = no deadline (the clock
+  /// is then not read). Read before every QP (header note).
   std::int64_t deadline_ns{0};
 
   // ── Read only by a core with catch_time_variable ──
@@ -547,7 +576,9 @@ struct MpcDockingSegmentCoreResult {
   std::array<double, kMaxMpcNodes> slack_c{};
   std::array<double, kMaxMpcNodes> slack_v{};
   /// ‖g + Cᵀλ + Aᵀy‖∞ on the jerk variables, last QP — without the trust
-  /// region's own multipliers, which are not the problem's.
+  /// region's own multipliers, which are not the problem's. This and the
+  /// other per-QP numbers (grad_norm, complementarity, elastic, step_capped)
+  /// are 0 when `iterations` is 0: no QP's step was judged.
   double kkt_residual{0.0};
   double grad_norm{0.0};        ///< ‖∇J‖∞ on the jerk variables, same point
   double complementarity{0.0};  ///< max |λ_i · gap_i| of the last QP
@@ -603,6 +634,7 @@ struct MpcDockingSegmentCoreResult {
   double start_us{0.0}, linearize_us{0.0}, assemble_us{0.0}, qp_us{0.0}, merit_us{0.0};
   double total_us{0.0};
   MpcDockingReason reason{MpcDockingReason::kNotInitialized};
+  MpcDockingCutSite cut_site{MpcDockingCutSite::kNone};        ///< read on kDeadline
   DockingRowGroup infeasible_group{DockingRowGroup::kTorque};  ///< read on kInfeasible
   bool feasible{false};
   bool converged{false};
@@ -652,7 +684,8 @@ class MpcDockingSegmentCore {
 
   /// @brief Solve from input (RT-safe apart from the QP solver — header note).
   /// @return false when the call was rejected before any iterate existed
-  ///         (`out`'s trajectory untouched); true otherwise — read
+  ///         (`out`'s trajectory untouched; a deadline already passed before
+  ///         the initialisation QP is one such case); true otherwise — read
   ///         out.feasible, out.converged and out.reason.
   [[nodiscard]] bool Solve(const MpcDockingSegmentCoreInput& in,
                            MpcDockingSegmentCoreResult& out) noexcept;
@@ -820,6 +853,13 @@ class MpcDockingSegmentCore {
   void ElasticByGroup(std::array<double, kNumDockingElasticGroups>& max_out,
                       std::array<double, kNumDockingElasticGroups>& sum_out) const noexcept;
   [[nodiscard]] MpcDockingReason RunQp(MpcDockingSegmentCoreResult& out) noexcept;
+
+  /// Whether this Solve's deadline has passed. Reads the clock only when the
+  /// call has a deadline and the core a clock.
+  [[nodiscard]] bool PastDeadline() const noexcept {
+    return deadline_ns_ > 0 && clock_() >= deadline_ns_;
+  }
+
   [[nodiscard]] bool GrowPenalties() noexcept;
   void RestorePenalties() noexcept;
   void PostQp(MpcDockingSegmentCoreResult& out) noexcept;
@@ -831,6 +871,7 @@ class MpcDockingSegmentCore {
   bool initialized_{false};
   MpcDockingSegmentCoreParams params_;
   ClockFn clock_{nullptr};
+  std::int64_t deadline_ns_{0};  // this Solve's deadline; 0 = none, or no clock
   StageHook stage_hook_{nullptr};
   void* stage_user_{nullptr};
 

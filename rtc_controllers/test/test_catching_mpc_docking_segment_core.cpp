@@ -1021,6 +1021,366 @@ TEST(MpcDockingSegmentCore, DeadlineReturnsTheLastAcceptedIterate) {
   EXPECT_TRUE(out.converged);
 }
 
+// ── The deadline before every QP ─────────────────────────────────────────────
+// A clock that stands at 0 until its `g_trip_at`-th read (counted from 0) and
+// past the deadline from that read on. The core reads its clock only where it
+// is about to start a QP, so one solve per read of an undisturbed solve passes
+// the deadline once before each QP that solve runs.
+std::atomic<int> g_trip_at{-1};
+constexpr std::int64_t kTripDeadlineNs = 500;
+constexpr double kUntouched = 7.0;  // what a result's nodes hold before a call
+
+std::int64_t TripClock() noexcept {
+  const int read = g_clock_reads.fetch_add(1);
+  const int at = g_trip_at.load();
+  return at >= 0 && read >= at ? 2 * kTripDeadlineNs : 0;
+}
+
+struct CutSolve {
+  int trip{0};
+  bool returned{false};
+  MpcDockingSegmentCoreResult out;
+};
+
+// `in` solved with the deadline ahead for good (`whole`), then once per clock
+// read of that solve (every `stride`-th) with the deadline passing AT that
+// read.
+std::vector<CutSolve> SolveCutAtEveryRead(MpcDockingSegmentCore& core,
+                                          MpcDockingSegmentCoreInput in,
+                                          MpcDockingSegmentCoreResult& whole, int stride = 1) {
+  core.SetClock(&TripClock);
+  in.deadline_ns = kTripDeadlineNs;
+  g_trip_at = -1;
+  g_clock_reads = 0;
+  core.ResizeResult(whole);
+  EXPECT_TRUE(core.Solve(in, whole));
+  const int reads = g_clock_reads.load();
+  std::vector<CutSolve> cuts(static_cast<std::size_t>((reads + stride - 1) / stride));
+  for (int k = 0; k < reads; k += stride) {
+    CutSolve& c = cuts[static_cast<std::size_t>(k / stride)];
+    c.trip = k;
+    core.ResizeResult(c.out);
+    c.out.q.setConstant(kUntouched);
+    g_trip_at = k;
+    g_clock_reads = 0;
+    c.returned = core.Solve(in, c.out);
+    // The read that saw the deadline pass is the solve's last: nothing is
+    // started after it, so nothing asks the clock again.
+    EXPECT_EQ(g_clock_reads.load(), k + 1) << "read " << k;
+  }
+  g_trip_at = -1;
+  return cuts;
+}
+
+// What every cut solve owes, wherever it was cut. Returns the sites seen.
+std::set<rtc::catching::MpcDockingCutSite> ExpectCutContract(
+    const MpcDockingSegmentCoreParams& p, const MpcDockingSegmentCoreResult& whole,
+    const std::vector<CutSolve>& cuts) {
+  using rtc::catching::MpcDockingCutSite;
+  std::set<MpcDockingCutSite> seen;
+  int iterations_before = 0;
+  const CutSolve* same_iteration = nullptr;
+  for (const CutSolve& c : cuts) {
+    const std::string where = "read " + std::to_string(c.trip) + ": " +
+                              rtc::catching::MpcDockingCutSiteName(c.out.cut_site) + " " +
+                              Describe(c.out);
+    EXPECT_EQ(c.out.reason, MpcDockingReason::kDeadline) << where;
+    EXPECT_NE(c.out.cut_site, MpcDockingCutSite::kNone) << where;
+    EXPECT_FALSE(c.out.converged) << where;
+    seen.insert(c.out.cut_site);
+    if (c.out.cut_site == MpcDockingCutSite::kInitQp) {
+      // No iterate: the call is refused, and the result's nodes are not its.
+      EXPECT_FALSE(c.returned) << where;
+      EXPECT_EQ(c.out.qp_solves, 0) << where;
+      EXPECT_FALSE(c.out.init_qp_used) << where;
+      EXPECT_TRUE((c.out.q.array() == kUntouched).all()) << where;
+      continue;
+    }
+    EXPECT_TRUE(c.returned) << where;
+    EXPECT_TRUE(c.out.q.allFinite()) << where;
+    // A later cut has done at least what an earlier one had, never more than
+    // the whole solve.
+    EXPECT_GE(c.out.iterations, iterations_before) << where;
+    EXPECT_LE(c.out.iterations, whole.iterations) << where;
+    EXPECT_LE(c.out.qp_solves, whole.qp_solves) << where;
+    if (c.out.iterations == 0) {
+      // The start point: no QP's step was judged, and the per-QP numbers say
+      // so by being 0 — not by being small.
+      EXPECT_EQ(c.out.kkt_residual, 0.0) << where;
+      EXPECT_EQ(c.out.grad_norm, 0.0) << where;
+      EXPECT_EQ(c.out.complementarity, 0.0) << where;
+      EXPECT_FALSE(c.out.step_capped) << where;
+      for (const double e : c.out.elastic) {
+        EXPECT_EQ(e, 0.0) << where;
+      }
+    }
+    // The iterate moves only where a step is accepted: every cut inside one
+    // iteration — before its QP, its cold run, its fallback or a probe —
+    // returns the same nodes.
+    if (same_iteration != nullptr && same_iteration->out.iterations == c.out.iterations) {
+      EXPECT_EQ(c.out.q, same_iteration->out.q) << where;
+      EXPECT_EQ(c.out.delta_ns, same_iteration->out.delta_ns) << where;
+    } else {
+      same_iteration = &c;
+    }
+    iterations_before = c.out.iterations;
+    // Every group's penalty is the initial one times the growth steps KEPT: a
+    // probe that was cut is undone like one that bought nothing.
+    if (c.out.mu_resets == 0) {
+      const double factor =
+          std::min(std::pow(p.mu_growth, c.out.mu_updates), p.mu_max / p.mu_init[0]);
+      for (std::size_t g = 0; g < c.out.mu.size(); ++g) {
+        EXPECT_DOUBLE_EQ(c.out.mu[g], p.mu_init[g] * factor) << where << " group " << g;
+      }
+    }
+  }
+  return seen;
+}
+
+TEST(MpcDockingSegmentCore, PastItsDeadlineNoQpIsStartedWhereverTheSolveStands) {
+  using rtc::catching::MpcDockingCutSite;
+  dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  // A small penalty first, so that the solve grows it: probes are QPs too.
+  rig.params.mu_init.fill(1e-2);
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &TripClock),
+            MpcDockingReason::kNone);
+  std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  MpcDockingSegmentCoreInput in = cases[0].in;
+  dk::PerturbTarget(in, 1);
+
+  // The reference: the same solve with no deadline at all.
+  MpcDockingSegmentCoreResult free;
+  core.ResizeResult(free);
+  g_clock_reads = 0;
+  ASSERT_TRUE(core.Solve(in, free));
+  ASSERT_EQ(g_clock_reads.load(), 0);
+  ASSERT_TRUE(free.converged) << Describe(free);
+  ASSERT_TRUE(free.init_qp_used);
+  ASSERT_GT(free.mu_updates, 0) << "no penalty probe ran: the test does not reach that site";
+  ASSERT_GT(free.iterations, 3);
+
+  MpcDockingSegmentCoreResult whole;
+  const std::vector<CutSolve> cuts = SolveCutAtEveryRead(core, in, whole);
+  // A deadline that never passes changes nothing.
+  EXPECT_EQ(whole.q, free.q);
+  EXPECT_EQ(whole.iterations, free.iterations);
+  EXPECT_EQ(whole.qp_solves, free.qp_solves);
+  EXPECT_EQ(whole.reason, free.reason);
+  EXPECT_EQ(whole.cut_site, MpcDockingCutSite::kNone);
+  // One read before the initialisation QP, one before each iteration's QP and
+  // one before each probe (kept or not) — and none anywhere else.
+  ASSERT_GE(cuts.size(), static_cast<std::size_t>(1 + whole.iterations + whole.mu_updates));
+  const std::set<MpcDockingCutSite> seen = ExpectCutContract(rig.params, whole, cuts);
+  EXPECT_EQ(seen.count(MpcDockingCutSite::kInitQp), 1U);
+  EXPECT_EQ(seen.count(MpcDockingCutSite::kIteration), 1U);
+  EXPECT_EQ(seen.count(MpcDockingCutSite::kPenaltyProbe), 1U);
+  EXPECT_EQ(cuts[0].out.cut_site, MpcDockingCutSite::kInitQp);
+  // Past the initialisation QP and before the first iteration's: the start
+  // point comes back, and it is the initialisation QP's — the linear rows
+  // hold on it.
+  ASSERT_EQ(cuts[1].out.cut_site, MpcDockingCutSite::kIteration);
+  EXPECT_EQ(cuts[1].out.iterations, 0);
+  EXPECT_TRUE(cuts[1].out.init_qp_used);
+  EXPECT_EQ(cuts[1].out.qp_solves, 1);
+  EXPECT_LE(cuts[1].out.violation[G(DockingRowGroup::kBox)], kViolationTol);
+  EXPECT_LE(cuts[1].out.violation[G(DockingRowGroup::kTerminal)], kTerminalRestTol);
+
+  // Each returned iterate is described by its own numbers, and after m ≥ 2
+  // iterations it is the iterate of a core limited to m.
+  std::set<int> compared;
+  for (const CutSolve& c : cuts) {
+    if (!c.returned) {
+      continue;
+    }
+    ExpectResultDescribesItsTrajectory(core, in, c.out);
+    const int m = c.out.iterations;
+    if (m < 2 || m > 4 || !compared.insert(m).second) {
+      continue;
+    }
+    dk::Rig limited_rig = rig;
+    limited_rig.params.max_iterations = m;
+    MpcDockingSegmentCore limited;
+    ASSERT_EQ(limited.Init(limited_rig.model, limited_rig.arm.frame, limited_rig.params,
+                           limited_rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult out;
+    limited.ResizeResult(out);
+    MpcDockingSegmentCoreInput unbounded = in;
+    unbounded.deadline_ns = 0;
+    ASSERT_TRUE(limited.Solve(unbounded, out));
+    ASSERT_EQ(out.reason, MpcDockingReason::kIterationLimit) << m;
+    EXPECT_EQ(c.out.q, out.q) << "after " << m << " iterations";
+  }
+  EXPECT_GE(compared.size(), 2U);
+  core.SetClock(&NoClock);
+}
+
+// A start taken as given has no initialisation QP to be cut before: past its
+// deadline the solve hands the start back, evaluated.
+TEST(MpcDockingSegmentCore, AStartTakenAsGivenComesBackWhenTheDeadlineHasPassed) {
+  using rtc::catching::MpcDockingCutSite;
+  const dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &TripClock),
+            MpcDockingReason::kNone);
+  std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  MpcDockingSegmentCoreInput in = cases[0].in;
+  dk::PerturbTarget(in, 1);
+  MpcDockingSegmentCoreResult solved;
+  core.ResizeResult(solved);
+  ASSERT_TRUE(core.Solve(in, solved));
+  ASSERT_TRUE(solved.converged);
+  // A few iterations short of the solution, so that there is work left.
+  dk::Rig short_rig = rig;
+  short_rig.params.max_iterations = 2;
+  MpcDockingSegmentCore limited;
+  ASSERT_EQ(limited.Init(short_rig.model, short_rig.arm.frame, short_rig.params, short_rig.limits,
+                         &NoClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreResult part;
+  limited.ResizeResult(part);
+  ASSERT_TRUE(limited.Solve(in, part));
+  ASSERT_FALSE(part.converged);
+
+  MpcDockingSegmentCoreInput again = in;
+  again.initial_valid = true;
+  again.q_init = part.q;
+  again.qd_init = part.qd;
+  again.qdd_init = part.qdd;
+  MpcDockingSegmentCoreResult eval;
+  core.ResizeResult(eval);
+  ASSERT_TRUE(core.Evaluate(again, eval));
+
+  again.deadline_ns = kTripDeadlineNs;
+  g_trip_at = 0;
+  g_clock_reads = 0;
+  MpcDockingSegmentCoreResult out;
+  core.ResizeResult(out);
+  ASSERT_TRUE(core.Solve(again, out));
+  g_trip_at = -1;
+  EXPECT_EQ(g_clock_reads.load(), 1);
+  EXPECT_EQ(out.reason, MpcDockingReason::kDeadline);
+  EXPECT_EQ(out.cut_site, MpcDockingCutSite::kIteration);
+  EXPECT_FALSE(out.init_qp_used);
+  EXPECT_EQ(out.qp_solves, 0);
+  EXPECT_EQ(out.iterations, 0);
+  EXPECT_EQ(out.kkt_residual, 0.0);
+  EXPECT_FALSE(out.converged);
+  // The start, as the evaluation of the same input reports it.
+  EXPECT_EQ(out.q, eval.q);
+  EXPECT_EQ(out.qd, eval.qd);
+  EXPECT_EQ(out.cost.total, eval.cost.total);
+  EXPECT_EQ(out.violation, eval.violation);
+  EXPECT_EQ(out.feasible, eval.feasible);
+  // … with the deadline ahead, the same call goes on from there.
+  g_clock_reads = 0;
+  ASSERT_TRUE(core.Solve(again, out));
+  EXPECT_TRUE(out.converged) << Describe(out);
+  EXPECT_GT(out.iterations, 0);
+  EXPECT_EQ(out.cut_site, MpcDockingCutSite::kNone);
+  core.SetClock(&NoClock);
+}
+
+// One real-time iteration called past its deadline takes no step either.
+TEST(MpcDockingSegmentCore, ASingleIterationPastItsDeadlineTakesNoStep) {
+  using rtc::catching::MpcDockingCutSite;
+  dk::Rig rig = dk::MakeRig(fx::RealArm7());
+  rig.params.max_iterations = 1;
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &TripClock),
+            MpcDockingReason::kNone);
+  std::vector<Case> cases = FeasibleCases(rig, core, 1);
+  ASSERT_EQ(cases.size(), 1U);
+  MpcDockingSegmentCoreInput in = cases[0].in;
+  dk::PerturbTarget(in, 9);
+  MpcDockingSegmentCoreResult whole;
+  const std::vector<CutSolve> cuts = SolveCutAtEveryRead(core, in, whole);
+  ASSERT_EQ(whole.reason, MpcDockingReason::kIterationLimit);
+  ASSERT_EQ(whole.iterations, 1);
+  // Two reads: before the initialisation QP and before the one iteration's.
+  ASSERT_EQ(cuts.size(), 2U);
+  EXPECT_FALSE(cuts[0].returned);
+  EXPECT_EQ(cuts[0].out.cut_site, MpcDockingCutSite::kInitQp);
+  ASSERT_TRUE(cuts[1].returned);
+  EXPECT_EQ(cuts[1].out.reason, MpcDockingReason::kDeadline);
+  EXPECT_EQ(cuts[1].out.cut_site, MpcDockingCutSite::kIteration);
+  EXPECT_EQ(cuts[1].out.iterations, 0);
+  // The full step was not taken: the start is not where the whole call ended.
+  EXPECT_GT((cuts[1].out.q - whole.q).cwiseAbs().maxCoeff(), 1e-6);
+  ExpectResultDescribesItsTrajectory(core, in, cuts[1].out);
+  core.SetClock(&NoClock);
+}
+
+// The two QPs a solve runs only after one FAILED — the cold run after a
+// warm-started QP, and the run at the initial penalties — are not started past
+// the deadline either. A QP fails here the way
+// DefaultInfeasibilityThresholdMisreportsAFeasibleQp makes one fail: ProxQP's
+// own primal-infeasibility test under a trust region, at a threshold loose
+// enough to fire after a penalty has grown.
+TEST(MpcDockingSegmentCore, PastItsDeadlineAFailedQpIsNotRunAgain) {
+  using rtc::catching::MpcDockingCutSite;
+  constexpr int kQpSolved = 0;  // proxsuite::proxqp::QPSolverOutput
+  for (const fx::ArmModel& arm : {fx::RealArm6(), fx::RealArm7()}) {
+    dk::Rig rig = dk::MakeRig(arm);
+    rig.params.delta_tr = 0.05;
+    rig.params.solver.eps_primal_inf = 1e-2;
+    rig.params.mu_init.fill(1e-2);
+    MpcDockingSegmentCore core;
+    ASSERT_EQ(core.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &TripClock),
+              MpcDockingReason::kNone);
+    // The first throw whose solve falls back to the initial penalties: a QP
+    // of it failed warm, failed cold, and failed with the penalties raised.
+    MpcDockingSegmentCoreInput in;
+    MpcDockingSegmentCoreResult free;
+    core.ResizeResult(free);
+    bool found = false;
+    for (Case& c : FeasibleCases(rig, core, 8)) {
+      dk::PerturbTarget(c.in, c.seed);
+      if (core.Solve(c.in, free) && free.mu_resets > 0 && free.converged) {
+        in = c.in;
+        found = true;
+        break;
+      }
+    }
+    ASSERT_TRUE(found) << arm.name << ": no solve fell back to the initial penalties";
+    MpcDockingSegmentCoreResult whole;
+    const std::vector<CutSolve> cuts = SolveCutAtEveryRead(core, in, whole);
+    EXPECT_EQ(whole.q, free.q) << arm.name;
+    const std::set<MpcDockingCutSite> seen = ExpectCutContract(rig.params, whole, cuts);
+    int cold = 0;
+    int fallback = 0;
+    for (const CutSolve& cut : cuts) {
+      const std::string where = arm.name + " read " + std::to_string(cut.trip) + Describe(cut.out);
+      if (cut.out.cut_site == MpcDockingCutSite::kColdRetry) {
+        ++cold;
+        // The record is the warm run's, which did not converge.
+        EXPECT_NE(cut.out.qp_status, kQpSolved) << where;
+        EXPECT_GT(cut.out.qp_us, 0.0) << where;
+      }
+      if (cut.out.cut_site == MpcDockingCutSite::kPenaltyReset) {
+        ++fallback;
+        // The fallback did not run: the penalties are still the raised ones,
+        // and the QP that failed under them was run cold as well.
+        EXPECT_EQ(cut.out.mu_resets, 0) << where;
+        EXPECT_GT(cut.out.mu[0], rig.params.mu_init[0]) << where;
+        EXPECT_NE(cut.out.qp_status, kQpSolved) << where;
+      }
+      if (cut.returned) {
+        ExpectResultDescribesItsTrajectory(core, in, cut.out);
+      }
+    }
+    EXPECT_EQ(seen.count(MpcDockingCutSite::kColdRetry), 1U) << arm.name;
+    EXPECT_EQ(seen.count(MpcDockingCutSite::kPenaltyReset), 1U) << arm.name;
+    // One of each per fallback of the undisturbed solve, at least.
+    EXPECT_GE(cold, whole.mu_resets) << arm.name;
+    EXPECT_EQ(fallback, whole.mu_resets) << arm.name;
+    core.SetClock(&NoClock);
+  }
+}
+
 TEST(MpcDockingSegmentCore, IterationLimitReturnsAnIterateThatIsNotConverged) {
   dk::Rig rig = dk::MakeRig(fx::RealArm6());
   rig.params.max_iterations = 2;
@@ -2828,6 +3188,49 @@ TEST(MpcDockingSegmentCoreCatchTime, ThePenaltiesOfEveryGroupRiseAndFallBackToge
   EXPECT_GT(resets, 0)
       << "no solve fell back to the initial penalties — the test does not reach it";
   ::testing::Test::RecordProperty("mu_resets", resets);
+}
+
+// With the catch instant a variable the same sites cut the same way: the two
+// groups that core adds keep their penalties with the others, and what comes
+// back is a point the solve stood at.
+TEST(MpcDockingSegmentCoreCatchTime, PastItsDeadlineNoQpIsStartedEither) {
+  using rtc::catching::MpcDockingCutSite;
+  dk::Rig fixed_rig = dk::MakeRig(fx::RealArm6());
+  fixed_rig.params.mu_init.fill(1e-2);
+  fixed_rig.params.mu_init_post_box = 3e-2;
+  fixed_rig.params.mu_init_terminal = 5e-2;
+  const std::unique_ptr<TcCase> c = MakeTcCase(fixed_rig, 1, 7 * kTcMs + 311, 20 * kTcMs);
+  MpcDockingSegmentCore core;
+  ASSERT_EQ(core.Init(c->rig.model, c->rig.arm.frame, c->rig.params, c->rig.limits, &TripClock),
+            MpcDockingReason::kNone);
+  MpcDockingSegmentCoreInput in = c->in;
+  dk::PerturbTarget(in, c->seed);
+  MpcDockingSegmentCoreResult whole;
+  // Every fifth read: a solve of this core is long.
+  const std::vector<CutSolve> cuts = SolveCutAtEveryRead(core, in, whole, 5);
+  ASSERT_GT(whole.catch_time_steps, 0) << DescribeTc(whole);
+  ASSERT_GE(cuts.size(), 3U);
+  const std::set<MpcDockingCutSite> seen = ExpectCutContract(c->rig.params, whole, cuts);
+  EXPECT_EQ(seen.count(MpcDockingCutSite::kInitQp), 1U);
+  EXPECT_EQ(seen.count(MpcDockingCutSite::kIteration), 1U);
+  for (const CutSolve& cut : cuts) {
+    if (!cut.returned) {
+      continue;
+    }
+    const std::string where = "read " + std::to_string(cut.trip) + DescribeTc(cut.out);
+    EXPECT_GE(cut.out.delta_ns, in.delta_lo_ns) << where;
+    EXPECT_LE(cut.out.delta_ns, in.delta_hi_ns) << where;
+    if (cut.out.mu_resets == 0) {
+      const double factor = cut.out.mu[0] / c->rig.params.mu_init[0];
+      EXPECT_DOUBLE_EQ(cut.out.mu_post_box / c->rig.params.mu_init_post_box, factor) << where;
+      EXPECT_DOUBLE_EQ(cut.out.mu_terminal / c->rig.params.mu_init_terminal, factor) << where;
+    }
+    // A point reported as solved at its instant is feasible there.
+    if (cut.out.catch_time_settled) {
+      EXPECT_TRUE(cut.out.feasible) << where;
+    }
+  }
+  core.SetClock(&NoClock);
 }
 
 // The core's own code allocates nothing with the catch instant a variable

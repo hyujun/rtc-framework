@@ -58,10 +58,12 @@
 //     dropped, so its next solve starts elsewhere.
 //  8. VALID is: solved inside its share, every hard row within tolerance,
 //     converged — and still readable from its node 0. The core reads its
-//     deadline between iterations only, so solves overrun their shares and a
-//     wake can end past its budget; a candidate whose node 0 lies less than
-//     that overrun after t_0 is refused (`deadline`) like one that ran past
-//     its own share. Φ = J⋆ + J_time + J_switch with J⋆ the solve's cost UP TO
+//     deadline before each QP and interrupts none (a solve past it may have
+//     no iterate at all: the candidate is then refused `deadline` and what
+//     was remembered for it stays), so solves overrun their shares by up to
+//     one QP and a wake can end past its budget; a candidate whose node 0
+//     lies less than that overrun after t_0 is refused (`deadline`) like one
+//     that ran past its own share. Φ = J⋆ + J_time + J_switch with J⋆ the solve's cost UP TO
 //     THE CATCH NODE (the stop part's terms are recorded, not chosen on). The
 //     smallest Φ wins, the smaller index on a tie.
 //  9. THE PLAN is that candidate; Solution() is its arm trajectory in the form

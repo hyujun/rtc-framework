@@ -17,9 +17,6 @@ namespace {
 // ns → s by DIVISION: the quotient is correctly rounded, so 50'000'000 ns is
 // exactly the literal 0.05 a caller wrote. A product with 1e-9 is one ulp off.
 constexpr double kNsPerSec = 1e9;
-// A warm-up solve may take this many shares of the solve budget: enough for
-// its first iterations, bounded whatever the problem turns out to be.
-constexpr std::int64_t kWarmUpShares = 4;
 
 [[nodiscard]] bool FiniteNonNegative(double x) noexcept {
   return std::isfinite(x) && x >= 0.0;
@@ -362,7 +359,10 @@ bool NlpCatchSearch::WarmUp(std::string* error) {
     in.q_catch_target = q;
     in.p_line = p_b;
     in.d_line = -e3;
-    in.deadline_ns = clock_() + kWarmUpShares * solve_budget_ns_;
+    // No deadline: the core starts no QP past one, and a warm-up the clock
+    // cut before its first QP would refuse the configuration for the host's
+    // load. The core's iteration caps bound the solve.
+    in.deadline_ns = 0;
     WarmUpProbe probe;
     core.SetStageHook(&WarmUpStageHook, &probe);
     static_cast<void>(core.Solve(in, results_[slot]));
@@ -372,7 +372,6 @@ bool NlpCatchSearch::WarmUp(std::string* error) {
                   std::to_string(core.CatchNode()) +
                   " ended before its QP: " + MpcDockingReasonName(results_[slot].reason));
     }
-    in.deadline_ns = 0;
   }
   // The twins: the same problem, with the ball as a prediction — a line of
   // samples either side of the catch instant.
@@ -418,7 +417,7 @@ bool NlpCatchSearch::WarmUp(std::string* error) {
     in.time_c1 = 0.0;
     in.time_c2 = 0.0;
     in.delta_ref_ns = 0;
-    in.deadline_ns = clock_() + kWarmUpShares * solve_budget_ns_;
+    in.deadline_ns = 0;  // as above
     WarmUpProbe probe;
     core.SetStageHook(&WarmUpStageHook, &probe);
     static_cast<void>(core.Solve(in, results_tc_[slot]));
@@ -430,7 +429,6 @@ bool NlpCatchSearch::WarmUp(std::string* error) {
                   std::to_string(core.CatchNode()) +
                   " ended before its QP: " + MpcDockingReasonName(results_tc_[slot].reason));
     }
-    in.deadline_ns = 0;
   }
   return true;
 }
@@ -1076,7 +1074,11 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
       c.phi = c.j_reference + c.j_time + c.j_switch;
     }
   } else {
-    c.reject = end_ns > in.deadline_ns ? NlpReject::kDeadline : NlpReject::kSolverRejected;
+    // No iterate. Past its deadline before the initialisation QP is the
+    // deadline's, by the core's own word (its test of the instant is ≥).
+    c.reject = res.reason == MpcDockingReason::kDeadline || end_ns > in.deadline_ns
+                   ? NlpReject::kDeadline
+                   : NlpReject::kSolverRejected;
   }
 }
 
@@ -1234,7 +1236,9 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
   double worst = 0.0;
   int worst_group = 0;
   std::uint16_t violated_mask = 0;
-  NlpReject verdict = end_ns > in.deadline_ns ? NlpReject::kDeadline : NlpReject::kSolverRejected;
+  NlpReject verdict = res.reason == MpcDockingReason::kDeadline || end_ns > in.deadline_ns
+                          ? NlpReject::kDeadline
+                          : NlpReject::kSolverRejected;
   if (ok) {
     c.continuous_iterations = res.iterations;
     c.continuous_moves = res.catch_time_steps;
@@ -1569,9 +1573,9 @@ PlanSnapshot NlpCatchSearch::Plan(const TrajectorySnapshot& traj, const Covarian
   // ── What the wake overran its budget by ───────────────────────────────────
   // t_0 stands budget_s (and the start lead) after `now`, and a candidate's
   // node 0 `wait_ns` after t_0. The solves overrun their shares (the core
-  // reads its deadline between iterations only), so the wake can end past its
-  // budget: a candidate whose node 0 is nearer than that overrun can no longer
-  // be read from its node 0 by the RT. Read once, after the last solve — so
+  // reads its deadline before each QP and interrupts none), so the wake can
+  // end past its budget: a candidate whose node 0 is nearer than that overrun
+  // can no longer be read from its node 0 by the RT. Read once, after the last solve — so
   // it is the same whatever order the solves ran in.
   const std::int64_t late_ns = clock_() - t_start - wake_budget_ns_;
   for (int r = 0; late_ns > 0 && r < n_solve; ++r) {
