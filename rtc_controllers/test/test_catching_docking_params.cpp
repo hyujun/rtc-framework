@@ -357,6 +357,8 @@ std::vector<Entry<MpcDockingSegmentCoreParams>> CoreTable() {
       {"solver.eps_rel", "0.00000001", "-1", t, [](const R& r) { return r.solver.eps_rel; }, 1e-8},
       {"solver.max_iter", "200", "0", t,
        [](const R& r) { return static_cast<double>(r.solver.max_iter); }, 200.0},
+      {"solver.max_iter_in", "50", "0", t,
+       [](const R& r) { return static_cast<double>(r.solver.max_iter_in); }, 50.0},
   };
 }
 

@@ -859,6 +859,41 @@ TEST(MpcDockingPlannerFirstSolved, EverySolveThatReachedAnIterateLeavesTheCoresA
   EXPECT_FALSE(none->rec.docking.ran);
 }
 
+// Before which QP the core's deadline cut a solve is in the record for every
+// docking solve — the one cut before its initialisation QP included, which
+// has no iterate and so nothing else in the block.
+TEST(MpcDockingPlannerFirstSolved, TheRecordNamesTheQpTheDeadlineKeptFromStarting) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  MpcDockingSegmentPlanner& planner = *s->planner;
+  auto adopted = RunFirst(planner, s->rt, s->plan, s->Ball(), &s->solution, kNow);
+  ASSERT_TRUE(adopted->ok) << Describe(adopted->rec);
+  EXPECT_STREQ(adopted->rec.docking.cut_site_name, "none");
+  auto whole = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow);
+  ASSERT_TRUE(whole->ok) << Describe(whole->rec);
+  EXPECT_STREQ(whole->rec.docking.cut_site_name, "none");
+  // One clock step past the 35 ms budget: the deadline has passed before the
+  // initialisation QP.
+  planner.ResetTrial();
+  auto at_once = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow, 40 * kMs);
+  EXPECT_EQ(at_once->rec.outcome, SegmentOutcome::kBudget) << Describe(at_once->rec);
+  EXPECT_STREQ(at_once->rec.core_reason_name, "deadline");
+  EXPECT_FALSE(at_once->rec.docking.ran);
+  EXPECT_STREQ(at_once->rec.docking.cut_site_name, "init_qp");
+  EXPECT_EQ(at_once->rec.docking.qp_solves, 0);
+  // … and after two iterations.
+  auto cut = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow, 10 * kMs);
+  EXPECT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
+  EXPECT_TRUE(cut->rec.docking.ran);
+  EXPECT_STREQ(cut->rec.docking.cut_site_name, "iteration");
+  // A call that solved nothing names none.
+  PlannerRtState stale = s->rt;
+  stale.valid = false;
+  EXPECT_STREQ(
+      RunFirst(planner, stale, s->plan, s->Ball(), nullptr, kNow)->rec.docking.cut_site_name,
+      "none");
+}
+
 TEST(MpcDockingPlannerFirstSolved, AnUnconfiguredPlannerPlansNothingAndSaysOff) {
   auto s = std::make_unique<Scene>();
   ASSERT_NO_FATAL_FAILURE(s->Setup());

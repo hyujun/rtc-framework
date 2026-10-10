@@ -408,6 +408,7 @@ SegmentOutcome MpcDockingSegmentPlanner::Judge(const MpcDockingSegmentCoreResult
                                                SegmentRecord& rec) const noexcept {
   rec.solve_ns = end - start;
   SetCoreReason(rec, r.reason);
+  rec.docking.cut_site_name = MpcDockingCutSiteName(r.cut_site);
   if (!ok) {
     // Refused before any iterate: the result's nodes are another solve's. A
     // deadline that had passed before the initialisation QP is the budget's,

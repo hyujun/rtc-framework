@@ -1579,6 +1579,84 @@ TEST(NlpCatchSearchValidity, ACandidateTheRtCanNoLongerReadFromItsStartIsNotVali
   }
 }
 
+// A candidate the core cut says before WHICH QP — in its record and in the
+// wake's row of it — and one cut before its initialisation QP has a row all
+// the same, without an iterate.
+TEST(NlpCatchSearchValidity, ACutCandidateNamesTheQpItsSolveDidNotStart) {
+  using rtc::catching::MpcDockingCutSite;
+  const auto rows_agree = [](const NlpCatchSearch& search, const Wake& w) {
+    ASSERT_GT(w.stats.nlp.n_cands, 0);
+    for (int i = 0; i < w.stats.nlp.n_cands; ++i) {
+      const rtc::catching::NlpCandidateStat& row = w.stats.nlp.cands[static_cast<std::size_t>(i)];
+      const Candidate* c = Find(search, row.index);
+      ASSERT_NE(c, nullptr);
+      EXPECT_EQ(row.cut_site, static_cast<std::uint8_t>(c->cut_site)) << row.index;
+      EXPECT_EQ(row.iterations, c->iterations) << row.index;
+    }
+  };
+  // Shares that end inside a cold solve (ASolvePastItsShareIsNotAValidCandidate).
+  {
+    auto rig = std::make_unique<Rig>();
+    rig->params.solve_budget_s = 0.0006;
+    std::string err;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    const Throw ball = AxisThrow(*rig, 0.28);
+    SetClockStep(100'000);
+    const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+    int cut = 0;
+    int whole = 0;
+    for (const Candidate& c : rig->search.Candidates()) {
+      if (c.rank < 0) {
+        EXPECT_EQ(c.cut_site, MpcDockingCutSite::kNone) << c.index << ": never solved";
+        continue;
+      }
+      if (c.core_reason == MpcDockingReason::kDeadline) {
+        ++cut;
+        EXPECT_EQ(c.cut_site, MpcDockingCutSite::kIteration) << c.index;
+        EXPECT_TRUE(c.solved);
+      } else {
+        ++whole;
+        EXPECT_EQ(c.cut_site, MpcDockingCutSite::kNone) << c.index;
+      }
+    }
+    EXPECT_GT(cut, 0) << Table(rig->search, w.stats);
+    EXPECT_GT(whole, 0) << Table(rig->search, w.stats);
+    ASSERT_NO_FATAL_FAILURE(rows_agree(rig->search, w));
+  }
+  // The wake's first solve loses more than its share before its first QP
+  // (ACandidateTheRtCanNoLongerReadFromItsStartIsNotValid).
+  {
+    auto rig = std::make_unique<Rig>();
+    std::string err;
+    ASSERT_TRUE(rig->Configure(&err)) << err;
+    ClockJump jump{Ns(rig->params.budget_s) + 30 * kMs, false};
+    rig->search.SetCoreStageHookForTesting(&JumpInTheFirstSolve, &jump);
+    const Throw ball = AxisThrow(*rig, 0.28);
+    const Wake w = RunWake(*rig, ball, rig->RestingRt(kNow), NoSegments(), kNow);
+    ASSERT_TRUE(jump.done);
+    const Candidate* first = nullptr;
+    for (const Candidate& c : rig->search.Candidates()) {
+      if (c.rank == 0) {
+        first = &c;
+      } else if (c.rank > 0) {
+        EXPECT_EQ(c.cut_site, MpcDockingCutSite::kNone) << c.index;
+      }
+    }
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(first->reject, NlpReject::kDeadline) << Table(rig->search, w.stats);
+    EXPECT_EQ(first->core_reason, MpcDockingReason::kDeadline);
+    EXPECT_EQ(first->cut_site, MpcDockingCutSite::kInitQp);
+    EXPECT_FALSE(first->solved);
+    EXPECT_EQ(first->iterations, 0);
+    EXPECT_EQ(first->qp_solves, 0);
+    ASSERT_NO_FATAL_FAILURE(rows_agree(rig->search, w));
+    // Its row is the first of the wake's (solve order).
+    EXPECT_EQ(w.stats.nlp.cands[0].index, first->index);
+    EXPECT_EQ(w.stats.nlp.cands[0].cut_site, static_cast<std::uint8_t>(MpcDockingCutSite::kInitQp));
+    EXPECT_EQ(w.stats.nlp.cands[0].qp_solves, 0);
+  }
+}
+
 TEST(NlpCatchSearchValidity, AChanceRowViolationIsNotChosenThoughItsCostIsTheLowest) {
   // The covariance is wide (laterally) at the two samples around the best
   // candidate's catch instant and narrow everywhere else: that candidate's

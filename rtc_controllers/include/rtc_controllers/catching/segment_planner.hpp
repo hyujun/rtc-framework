@@ -166,10 +166,17 @@ inline constexpr std::size_t kSegmentDockingElasticGroups = 7;
 
 /// What a solve of the mpc_docking planner adds to SegmentRecord: why the solve
 /// ended where it did and where its time went. Left at its default by every
-/// other planner (`ran` false), and by a docking solve the core refused before
-/// any iterate existed. Not part of the trace digest of the fields below.
+/// other planner (`ran` false), and — `cut_site_name` apart — by a docking
+/// solve the core refused before any iterate existed. Not part of the trace
+/// digest of the fields below.
 struct DockingSolveStats {
   bool ran{false};  ///< a docking solve (or evaluation) that reached an iterate filled this
+  /// The QP the core's deadline kept the solve from starting, as the core
+  /// spells it (static storage, never null); "none" for every other ending.
+  /// Written for EVERY docking solve: the deadline can pass before the
+  /// initialisation QP ("init_qp"), and that solve has no iterate (`ran`
+  /// false).
+  const char* cut_site_name{"none"};
   std::int32_t qp_solves{0};      ///< QPs solved, penalty re-solves and cold retries included
   std::int32_t qp_iterations{0};  ///< the QP solver's iterations, summed
   std::int32_t backtracks{0};     ///< step halvings, summed over iterations
@@ -225,7 +232,8 @@ struct SegmentRecord {
   /// re-evaluated by the planner and published as it is — nothing was solved.
   bool from_search{false};
   /// First solve: it started from the iterate the previous wake's solve of
-  /// the same plan ended on, not from the search's catch pose. Not logged.
+  /// the same plan ended on, not from the search's catch pose (the CSV's
+  /// segment_start_from_memory).
   bool start_from_memory{false};
   bool cold_retry{false};  ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};

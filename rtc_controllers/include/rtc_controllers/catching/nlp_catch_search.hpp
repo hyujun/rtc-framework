@@ -392,6 +392,9 @@ class NlpCatchSearch final : public CatchSearch {
     Start start{Start::kNone};
     std::int64_t start_index{0};  ///< the candidate whose memory started it
     MpcDockingReason core_reason{MpcDockingReason::kNone};
+    /// The QP the core's deadline kept that solve from starting (kNone: the
+    /// core did not cut it).
+    MpcDockingCutSite cut_site{MpcDockingCutSite::kNone};
     DockingRowGroup worst_group{DockingRowGroup::kTorque};  ///< read on hard_row / chance
     double worst_violation{0.0};
     /// Bit g set when row group g's violation exceeds tol_violation (#798).

@@ -189,6 +189,34 @@ class TestSolveGroups:
         assert group["qp_solves_p50"] is None and group["qp_iterations_per_qp_p50"] is None
         assert ps.format_solve_groups([group])[1].split()[6] == "-"
 
+    def test_a_docking_solve_cut_before_its_first_qp_has_solved_none(self):
+        # The block is filled (the stage times are numbers): the solve started
+        # from a trajectory it was handed and the deadline had passed before
+        # the first QP. Its 0 is a count.
+        df = _frame(
+            [
+                (
+                    "first",
+                    "budget",
+                    "deadline",
+                    36_000,
+                    {
+                        "segment_iterations": 0,
+                        "segment_qp_solves": 0,
+                        "segment_qp_iterations": 0,
+                        "segment_start_us": 120.0,
+                        "segment_qp_us": 0.0,
+                    },
+                )
+            ]
+        )
+        table = ps.solve_table(df)
+        assert table["qp_solves"].tolist() == [0.0]
+        assert table["qp_iterations"].tolist() == [0.0]
+        group = ps.solve_groups(df)[0]
+        assert group["qp_solves_p50"] == 0
+        assert group["qp_iterations_per_qp_p50"] is None
+
     def test_no_solve_no_group(self):
         assert ps.solve_groups(_frame([("none", "off", "none", 0)])) == []
         assert ps.solve_groups(pd.DataFrame({"wake_ns": [1]})) == []

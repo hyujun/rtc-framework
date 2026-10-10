@@ -478,6 +478,8 @@ struct MpcDockingSegmentCoreParams {
   /// and regularly from μ ≈ 1e4. The INITIALISATION QP does not take that
   /// setting: it is the one QP that can be infeasible, and it always runs with
   /// QPSolverConfig's default threshold.
+  /// max_iter and max_iter_in (QPSolverConfig's default) are the only bound on
+  /// how long ONE QP runs: the deadline is read before a QP, not inside it.
   tsid::QPSolverConfig solver{.eps_abs = 1e-7,
                               .eps_rel = 1e-9,
                               .max_iter = 400,

@@ -211,9 +211,13 @@ def solve_table(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
     # The writer leaves a COUNT at 0 on a row whose planner did not fill the
-    # docking block; a docking solve that reached an iterate has solved a QP.
-    # 0 QPs is "not recorded", not a number of QPs.
-    unrecorded = ~(table["qp_solves"].to_numpy(float) > 0)
+    # docking block: there 0 QPs is "not recorded", not a number of QPs. Where
+    # the block was filled (its stage times are numbers) 0 is a count — a
+    # solve that started from a trajectory it was handed and was cut at its
+    # deadline before the first QP returns that start (segment_cut_site).
+    unrecorded = ~(table["qp_solves"].to_numpy(float) > 0) & ~np.isfinite(
+        table["start_us"].to_numpy(float)
+    )
     table.loc[unrecorded, ["qp_solves", "qp_iterations"]] = np.nan
     other = replacement_solved_rows(df)
     if not other.any():

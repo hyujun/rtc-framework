@@ -395,6 +395,95 @@ TEST(PlannerEventsCsv, ASegmentStepEarnsARowOnlyWhenItDidSomething) {
       << row.str();
 }
 
+// #803: before which QP the docking core's deadline cut a solve — a name in
+// the wake's row and in each candidate's.
+TEST(PlannerEventsCsv, TheCutSiteIsWrittenByNameForTheSegmentAndForEachCandidate) {
+  using rtc::catching::MpcDockingCutSite;
+  const auto split = [](const std::string& line) {
+    std::vector<std::string> out;
+    std::istringstream in(line);
+    for (std::string cell; std::getline(in, cell, ',');) {
+      out.push_back(cell);
+    }
+    return out;
+  };
+  const auto lines = [](const std::string& text) {
+    std::vector<std::string> out;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+      out.push_back(line);
+    }
+    return out;
+  };
+  std::ostringstream header;
+  integrated_bringup::WritePlannerEventsHeader(header);
+  const std::vector<std::string> names = split(lines(header.str()).at(0));
+  const auto at = std::find(names.begin(), names.end(), "segment_cut_site");
+  ASSERT_NE(at, names.end());
+  const auto column = static_cast<std::size_t>(at - names.begin());
+  const auto cut_site_of = [&](const rtc::catching::PlannerCycleRecord& rec) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, rec);
+    const std::vector<std::string> cells = split(lines(row.str()).at(0));
+    EXPECT_EQ(cells.size(), names.size());
+    return column < cells.size() ? cells[column] : std::string("<short row>");
+  };
+  rtc::catching::PlannerCycleRecord rec{};
+  EXPECT_EQ(cut_site_of(rec), "none");
+  // Cut before its initialisation QP a solve has no iterate (`ran` false): the
+  // name is written all the same.
+  rec.segment.docking.cut_site_name =
+      rtc::catching::MpcDockingCutSiteName(MpcDockingCutSite::kInitQp);
+  EXPECT_EQ(cut_site_of(rec), "init_qp");
+  rec.segment.docking.ran = true;
+  rec.segment.docking.cut_site_name =
+      rtc::catching::MpcDockingCutSiteName(MpcDockingCutSite::kPenaltyProbe);
+  EXPECT_EQ(cut_site_of(rec), "penalty_probe");
+  // Beside it: whether a first solve started from the planner's memory.
+  const auto memory_at = std::find(names.begin(), names.end(), "segment_start_from_memory");
+  ASSERT_NE(memory_at, names.end());
+  const auto memory_column = static_cast<std::size_t>(memory_at - names.begin());
+  const auto from_memory_of = [&](const rtc::catching::PlannerCycleRecord& record) {
+    std::ostringstream row;
+    integrated_bringup::WritePlannerEventsRow(row, record);
+    const std::vector<std::string> cells = split(lines(row.str()).at(0));
+    return memory_column < cells.size() ? cells[memory_column] : std::string("<short row>");
+  };
+  EXPECT_EQ(from_memory_of(rec), "0");
+  rec.segment.start_from_memory = true;
+  EXPECT_EQ(from_memory_of(rec), "1");
+
+  // nlp_candidates.csv: one row per candidate, the name last.
+  std::ostringstream cand_header;
+  integrated_bringup::WriteNlpCandidatesHeader(cand_header);
+  const std::vector<std::string> cand_names = split(lines(cand_header.str()).at(0));
+  EXPECT_EQ(cand_names.back(), "cut_site");
+  EXPECT_EQ(std::set<std::string>(cand_names.begin(), cand_names.end()).size(), cand_names.size());
+  rec.search.nlp.ran = true;
+  rec.search.nlp.n_cands = 3;
+  rec.search.nlp.cands[0].cut_site = static_cast<std::uint8_t>(MpcDockingCutSite::kColdRetry);
+  rec.search.nlp.cands[1].cut_site = static_cast<std::uint8_t>(MpcDockingCutSite::kInitQp);
+  std::ostringstream cand_rows;
+  integrated_bringup::WriteNlpCandidatesRows(cand_rows, rec);
+  const std::vector<std::string> rows = lines(cand_rows.str());
+  ASSERT_EQ(rows.size(), 3U);
+  const std::array<const char*, 3> want{"cold_retry", "init_qp", "none"};
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    const std::vector<std::string> cells = split(rows[i]);
+    ASSERT_EQ(cells.size(), cand_names.size()) << rows[i];
+    EXPECT_EQ(cells.back(), want[i]) << rows[i];
+  }
+  // The names are the core's own, one per site.
+  std::set<std::string> distinct;
+  for (const MpcDockingCutSite site :
+       {MpcDockingCutSite::kNone, MpcDockingCutSite::kInitQp, MpcDockingCutSite::kIteration,
+        MpcDockingCutSite::kColdRetry, MpcDockingCutSite::kPenaltyReset,
+        MpcDockingCutSite::kPenaltyProbe}) {
+    distinct.insert(rtc::catching::MpcDockingCutSiteName(site));
+  }
+  EXPECT_EQ(distinct.size(), 6U);
+}
+
 // E1-F18: the NLP search's block, the docking core's block and the replacement
 // columns, read back by NAME — the way every reader selects them.
 TEST(PlannerEventsCsv, TheNlpDockingAndReplacementColumnsCarryTheRecordByName) {

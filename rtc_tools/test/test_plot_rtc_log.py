@@ -3669,6 +3669,8 @@ _PLANNER_EVENTS_COLUMNS = [
     "segment_qp_iterations",
     "segment_backtracks",
     "segment_mu_updates",
+    "segment_cut_site",
+    "segment_start_from_memory",
     "segment_start_us",
     "segment_linearize_us",
     "segment_assemble_us",

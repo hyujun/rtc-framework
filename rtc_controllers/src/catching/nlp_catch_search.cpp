@@ -944,6 +944,7 @@ void NlpCatchSearch::RecordCandidate(const CandidateRecord& c, SearchStats& stat
   s.worst_group = static_cast<std::uint8_t>(c.worst_group);
   s.violated_mask = c.violated_mask;
   s.continuous_used = c.continuous_used;
+  s.cut_site = static_cast<std::uint8_t>(c.cut_site);
   s.iterations = c.iterations;
   s.qp_solves = c.qp_solves;
   s.solve_ns = c.solve_ns;
@@ -1032,6 +1033,7 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
   }
   c.solve_ns = end_ns - start_ns;
   c.core_reason = res.reason;
+  c.cut_site = res.cut_site;
   c.solved = ok;
   out.valid = false;
   out.forget = false;
@@ -1271,6 +1273,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
     c.start_index = start_index;
     c.solve_ns = c.continuous_solve_ns;
     c.core_reason = res.reason;
+    c.cut_site = res.cut_site;
     c.solved = ok;
     if (ok) {
       RecordSolve(res, worst, worst_group, violated_mask, c);
@@ -1291,6 +1294,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
   c.start_index = start_index;
   c.solve_ns = c.continuous_solve_ns;
   c.core_reason = res.reason;
+  c.cut_site = res.cut_site;
   c.solved = true;
   RecordSolve(res, worst, worst_group, violated_mask, c);
   // Φ at the catch instant it ended at, by the fixed-grid solve's functions.
