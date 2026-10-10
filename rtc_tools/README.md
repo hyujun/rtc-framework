@@ -1220,6 +1220,14 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 
 **link 의 질량 · 주모멘트는 크기에 맞춘 허용오차로 비교한다** (#692). 판정은 `|Δ| ≤ min(tolerance, tolerance × 크기)` 다 — 크기는 질량이면 두 값 중 큰 쪽, 관성이면 그 link 의 가장 큰 주모멘트 (세 주모멘트에 같은 한계) 다. 1 kg · 1 kg·m² 이상에서는 절대 한계가, 그 아래에서는 상대 한계가 걸린다. 절대 한계만으로는 작은 link 를 볼 수 없다: 손가락 link 는 주모멘트 셋이 전부 `1e-4` kg·m² 보다 작아 값이 몇 배 틀려도 `OK` 였고, 수 g 짜리 link 의 질량은 몇 % 가 가려졌다. 양쪽이 정확히 0 이면 통과하고 한쪽만 0 이면 불일치다. `--tolerance 0.01` 은 그래서 "절대 0.01" 이자 "질량 · 관성 1 %" 다. COM · 관절 범위 · effort · 축 · 위치는 절대 한계 그대로고, 구조 비교의 전체 질량은 자기 규칙 (`max(tolerance, 1e-4 × 전체 질량)`) 을 쓴다.
 
+**관성은 두 번 비교한다 — 주모멘트, 그다음 텐서** (#816). 주모멘트는 회전에 불변이라 어느 모멘트가 틀렸는지 짚어 주지만 **주축이 어디를 향하는지는 보지 못한다**: `quat` 가 빠진 `diaginertia`, 부호가 뒤집힌 관성곱은 고유값이 같다. 그래서 주모멘트가 맞은 link 는 텐서 자체를 zero configuration 의 world frame 에서 성분별로 다시 비교한다 (한계는 주모멘트와 같은 값). 틀리면 `INERTIA TENSOR MISMATCH (world): principal moments agree, their axes do not` 과 양쪽 텐서를 찍는다.
+
+- world frame 인 이유는 COM 과 같다 — 두 파일의 link frame 이 달라도 된다. body frame 이 돌아가 있고 inertial 이 그만큼 되돌려져 있으면 같은 물체다.
+- 주모멘트 둘이 같은 link 는 그 평면 안에서 주축을 어디에 두든 같은 텐서이고, 불일치가 아니다. `fullinertia` 와 `diaginertia` + 자세는 표기만 다르다.
+- 주모멘트가 이미 틀린 link 는 텐서를 다시 세지 않는다 (불일치 한 건).
+- link frame 을 구하지 못한 link 는 COM 과 함께 `[WARN] COM and inertia tensor not compared` 한 줄로 빠진다.
+- **MuJoCo 로 변환한 MJCF 가 여기서 걸릴 수 있다**: MuJoCo 의 URDF 로더는 `<inertial><origin rpy>` 를 읽지 않는다 (3.7.0 에서 확인). rpy 가 있는 URDF 를 변환하면 주모멘트는 같고 주축이 다른 MJCF 가 나온다 — 그것이 이 줄이 잡는 불일치다.
+
 **링크 COM 은 world frame 에서 비교한다.** 로컬 프레임 COM 은 비교 대상이 아니다 — MJCF 는 body 원점을 visual mesh 기준, URDF 는 DH 기준으로 두므로 같은 물리적 COM 이 두 프레임에서 다르게 읽힌다 (ur5e `forearm_link` 실측 0.242 m 차이, 전부 규약). zero configuration 기준 world 로 올리면 그 차이가 사라진다 (같은 3쌍 실측: 최대 5e-7). 관절을 축 *직선* 으로 비교하는 것과 같은 이유다. `--align-frames` 는 COM 비교에도 적용된다. 이 검사가 없으면 **질량과 주모멘트가 그대로인 채 COM 만 옮겨진 발산이 조용히 통과**한다 — 주모멘트는 COM 기준 회전불변량이라 평행이동에 반응하지 않는다.
 
 **`--tip-frames <MJCF_FRAME> <URDF_FRAME>`** — tool 프레임을 직접 비교한다. 관절 비교가 축 *직선* 기준이라 **마지막 관절 이후의 오프셋(DH `d6`)을 원리적으로 못 본다** — 그 오프셋은 마지막 관절 자신의 축과 평행하고, 링크 COM 도 움직이지 않는다(실측 확인). ur5e 는 `--tip-frames attachment_site tool0`. MJCF 쪽은 body 또는 **site** 이름을 받는다.
@@ -1237,7 +1245,7 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 - **clamp 는 교집합이 아니다.** 두 범위가 겹치면 결과가 같지만, 겹치지 않으면 MuJoCo 는 뒤에 거는 범위의 가까운 끝 한 값을 남긴다 — `forcerange="5 9"` + `ctrlrange="-2 3"` 은 `[5, 5]`, `actuatorfrcrange="-4 -1"` + `forcerange="1 5"` 는 `[-1, -1]` 이다.
 - **actuator 가 없는 관절은 class 의 `<general forcerange>` 를 한계로 읽지 않는다.** MuJoCo 에서 그 값은 actuator 의 기본값이고, actuator 가 없으면 아무 데도 걸리지 않는다. URDF 에 effort 가 있으면 `MJCF=0` 으로 불일치가 난다 — sim 이 그 관절을 구동할 수 없다는 뜻이다.
 - **비대칭 힘 범위** (`-30 50`) 는 `EFFORT MISMATCH:  MJCF=[-30, 50] (asymmetric)  URDF=…` 로 보고한다. URDF 의 effort 는 양방향에 같은 한계라 어느 한쪽 값이 맞아도 같은 모델이 아니다.
-- **body 자세**: `quat` · `euler` (`<compiler eulerseq>`, 소문자 intrinsic · 대문자 extrinsic) · `axisangle` · `xyaxes` · `zaxis`.
+- **body 자세**: `quat` · `euler` (`<compiler eulerseq>`, 소문자 intrinsic · 대문자 extrinsic) · `axisangle` · `xyaxes` · `zaxis`. `<inertial>` 의 자세도 같은 속성을 같은 방식으로 읽는다.
 
 `--mjcf-class` 옵션은 없어졌다 — default tree 를 tree 로 읽으면 고를 "root class" 가 없다.
 
@@ -1246,7 +1254,7 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 - **`<include>` 를 따라가지 않는다.** include 로만 들어오는 관절 · body 는 텍스트에 없으므로 관절 · link 별 비교 대상이 아니다. **root 파일에 적힌 관절은 비교하되 틀린 값으로 읽을 수 있다** — include 된 파일의 `<compiler>` · `<default>` · `<actuator>` 도 그 관절이 컴파일되는 값을 정하는데 도구는 그것을 읽지 않는다. include 안의 `<compiler angle="radian"/>` 을 못 보면 range 를 degree 로 읽고, include 안의 actuator 를 못 보면 토크 한계가 0 이다 (거짓 불일치). 반대로 include 가 한계를 끄면 꺼진 한계를 읽어 거짓 OK 가 난다. root 파일에 `<include>` 가 있으면 `[WARN] MJCF <include> is not followed (…)` 를 찍는다 (warning 으로 센다). 구조 비교 (컴파일한 모델) 는 include 를 포함한 전체를 본다.
 - **`joint` 전달이 아닌 actuator 를 읽지 않는다** (`jointinparent` · tendon · site · slider-crank · body). 그런 actuator 가 구동하는 관절의 토크 한계는 그것을 뺀 값으로 읽힌다 — tendon motor 와 joint motor 가 같이 있으면 joint motor 만의 값이 `OK` 로 찍히고, `jointinparent` 만 있으면 `0` 으로 읽혀 거짓 `EFFORT MISMATCH` 가 난다. 파일에 있으면 ``[WARN] MJCF actuators with no `joint` transmission are not read (…)`` 가 그 actuator 를 나열한다 (warning 으로 센다). 어느 관절이 해당하는지는 가리지 않는다 — tendon · site 가 어느 관절에 힘을 싣는지는 컴파일한 모델의 성질이다.
 - `<frame>` 의 pose (frame 의 `childclass` 는 읽는다 — frame 아래 body 의 관절은 world FK 없이 `[WARN] FK unavailable` 로 떨어진다) · ball / free 관절의 `range` · dynamics 가 있는 actuator 의 `ctrlrange`.
-- **관성은 `<inertial>` 에 적힌 값이다.** `<compiler>` 의 `inertiafromgeom` · `settotalmass` · `boundmass` / `boundinertia` · `balanceinertia` 는 컴파일할 때 관성을 다시 쓰는데 도구는 적용하지 않는다 — link 별 질량 · 주모멘트는 텍스트의 값으로 찍힌다 (전체 질량은 구조 비교가 컴파일한 모델에서 본다). `<inertial>` 없이 geom 에서 관성을 얻는 body 는 읽을 것이 없어 link 별 비교에서 빠진다.
+- **관성은 `<inertial>` 에 적힌 값이다.** `<compiler>` 의 `inertiafromgeom` · `settotalmass` · `boundmass` / `boundinertia` · `balanceinertia` 는 컴파일할 때 관성을 다시 쓰는데 도구는 적용하지 않는다 — link 별 질량 · 주모멘트 · 텐서는 텍스트의 값으로 비교한다 (전체 질량은 구조 비교가 컴파일한 모델에서 본다). `<inertial>` 없이 geom 에서 관성을 얻는 body 는 읽을 것이 없어 link 별 비교에서 빠진다.
 - **`<default><site>` 의 pose 를 site 에 적용하지 않는다.** `--tip-frames` 의 MJCF 쪽이 site 면 그 site 자신의 `pos` · 자세 속성만 읽는다.
 - **`<option><flag clampctrl="disable"/>` · `<flag actuation="disable"/>` 를 읽지 않는다.** 앞의 것은 `ctrlrange` 를 걸지 않게 하고 (한계 없음), 뒤의 것은 actuator 를 전부 끈다 (토크 0). 도구는 둘 다 한계를 그대로 읽는다.
 - **한쪽만 걸린 한계** (`forcerange="-3 inf"`) 는 한계 없음 (`0`) 으로 읽는다 — 양 끝이 유한해야 한계다.
@@ -1261,7 +1269,7 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 | Link mass | `<inertial mass>` | `<mass value>` |
 | Link COM (**world frame**) | `<inertial pos>` + body FK | `<inertial><origin xyz>` + link FK |
 | 관성 (주모멘트) | `diaginertia`, 또는 `fullinertia` 의 고유값 | `ixx … iyz` 의 고유값 |
-| Inertial frame rotation | quaternion | rpy (회전 시 `[NOTE]`) |
+| 관성 텐서 (**world frame**) | `fullinertia`, 또는 `diaginertia` 를 inertial 의 자세로 돌린 것 + body FK | `ixx … iyz` 를 `<inertial><origin rpy>` 로 돌린 것 + link FK |
 | Joint position limits | 걸려 있는 `range` (hinge 는 radian 으로) | `<limit lower/upper>` |
 | Joint effort limits | 위 "관절 토크 한계" | `<limit effort>` |
 | Joint axis (world frame) | `axis` (FK 변환) | `<axis xyz>` (FK 변환), 평행성 검사 (anti-parallel 허용) |

@@ -1161,6 +1161,192 @@ class TestWorldComComparison:
         assert "COM MISMATCH" not in capsys.readouterr().out
 
 
+# The shoulder inertial of MJCF_TEMPLATE, and the same tensor spelled other ways.
+SHOULDER_INERTIAL = (
+    '<inertial mass="3.7" pos="0 0 0" diaginertia="0.0112 0.0092 0.00666"\n'
+    '                  quat="0.92387953 0 0 0.38268343"/>'
+)
+
+
+def _shoulder_inertial(attrs: str) -> str:
+    assert SHOULDER_INERTIAL in MJCF_TEMPLATE
+    return MJCF_TEMPLATE.replace(SHOULDER_INERTIAL, f'<inertial mass="3.7" pos="0 0 0" {attrs}/>')
+
+
+class TestInertiaTensorComparison:
+    """Principal moments say how much, not about which axes (#816).
+
+    The moments of ``shoulder_link`` are [0.0112, 0.0092, 0.00666] on both
+    sides throughout; what varies is where the MJCF points them.  Every
+    assertion reads the per-link report, which runs without mujoco.
+    """
+
+    def _run(self, tmp_path, capsys, *, mjcf_text=MJCF_TEMPLATE, urdf_text=URDF_TEMPLATE):
+        mjcf = tmp_path / "t.xml"
+        mjcf.write_text(mjcf_text)
+        urdf = tmp_path / "t.urdf"
+        urdf.write_text(urdf_text)
+        n = compare(mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE)
+        return n, capsys.readouterr().out
+
+    def test_matching_tensors_are_reported_ok(self, tmp_path, capsys):
+        _, out = self._run(tmp_path, capsys)
+        assert out.count("inertia tensor (world): OK") == 2
+        assert "INERTIA TENSOR MISMATCH" not in out
+
+    def test_axes_left_on_the_body_axes_are_caught(self, tmp_path, capsys):
+        """The moments are right and nothing says where they point — the URDF's
+        are turned 45° about z."""
+        mjcf_text = _shoulder_inertial('diaginertia="0.0112 0.0092 0.00666"')
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "INERTIA TENSOR MISMATCH (world)" in out
+        assert "INERTIA MISMATCH" not in out
+        assert "principal moments: [0.0112, 0.0092, 0.00666]  OK" in out
+        assert n >= 1
+
+    def test_axes_turned_the_wrong_way_are_caught(self, tmp_path, capsys):
+        mjcf_text = _shoulder_inertial(
+            'diaginertia="0.0112 0.0092 0.00666" quat="0.92387953 0 0 -0.38268343"'
+        )
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "INERTIA TENSOR MISMATCH (world)" in out
+        assert n >= 1
+
+    @pytest.mark.parametrize(
+        "attrs",
+        [
+            'diaginertia="0.0112 0.0092 0.00666" euler="0 0 0.785398163"',
+            'diaginertia="0.0112 0.0092 0.00666" axisangle="0 0 1 0.785398163"',
+            'diaginertia="0.0112 0.0092 0.00666" xyaxes="1 1 0 -1 1 0"',
+            # The same axes, listed in another order.
+            'diaginertia="0.0092 0.0112 0.00666" quat="0.92387953 0 0 -0.38268343"',
+            'fullinertia="0.0102 0.0102 0.00666 0.001 0 0"',
+        ],
+    )
+    def test_the_same_tensor_spelled_differently_matches(self, tmp_path, capsys, attrs):
+        _, out = self._run(tmp_path, capsys, mjcf_text=_shoulder_inertial(attrs))
+        assert out.count("inertia tensor (world): OK") == 2
+        assert "MISMATCH" not in out.split("JOINT")[0]
+
+    def test_inertial_euler_follows_the_compiler_angle(self, tmp_path, capsys):
+        mjcf_text = _shoulder_inertial('diaginertia="0.0112 0.0092 0.00666" euler="0 0 45"')
+        mjcf_text = mjcf_text.replace('<compiler angle="radian"/>', '<compiler angle="degree"/>')
+        _, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert out.count("inertia tensor (world): OK") == 2
+
+    def test_fullinertia_with_a_flipped_product_is_caught(self, tmp_path, capsys):
+        """ixy = -0.001 has the eigenvalues of ixy = +0.001."""
+        mjcf_text = _shoulder_inertial('fullinertia="0.0102 0.0102 0.00666 -0.001 0 0"')
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "INERTIA TENSOR MISMATCH (world)" in out
+        assert "INERTIA MISMATCH" not in out
+        assert n >= 1
+
+    def test_axes_within_equal_moments_are_free(self, tmp_path, capsys):
+        """The base has Ixx = Iyy, so a turn about z is the same tensor."""
+        mjcf_text = MJCF_TEMPLATE.replace(
+            'diaginertia="0.00443 0.00443 0.0072"',
+            'diaginertia="0.00443 0.00443 0.0072" quat="0.96592583 0 0 0.25881905"',
+        )
+        assert mjcf_text != MJCF_TEMPLATE
+        _, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert out.count("inertia tensor (world): OK") == 2
+
+    def test_urdf_inertial_rpy_is_part_of_the_tensor(self, tmp_path, capsys):
+        diagonal = (
+            '<origin xyz="0 0 0" rpy="0 0 {yaw}"/>\n'
+            '      <inertia ixx="0.0112" iyy="0.0092" izz="0.00666"\n'
+            '               ixy="0" ixz="0" iyz="0"/>'
+        )
+        original = (
+            '<origin xyz="0 0 0" rpy="0 0 0"/>\n'
+            '      <inertia ixx="0.0102" iyy="0.0102" izz="0.00666"\n'
+            '               ixy="0.001" ixz="0" iyz="0"/>'
+        )
+        assert original in URDF_TEMPLATE
+
+        urdf_text = URDF_TEMPLATE.replace(original, diagonal.format(yaw="0.785398163"))
+        _, out = self._run(tmp_path, capsys, urdf_text=urdf_text)
+        assert out.count("inertia tensor (world): OK") == 2
+
+        urdf_text = URDF_TEMPLATE.replace(original, diagonal.format(yaw="-0.785398163"))
+        n, out = self._run(tmp_path, capsys, urdf_text=urdf_text)
+        assert "INERTIA TENSOR MISMATCH (world)" in out
+        assert n >= 1
+
+    def test_the_tensor_is_compared_in_the_world_not_the_body_frame(self, tmp_path, capsys):
+        """A body frame turned 90° about z with the inertial turned back by the
+        same amount is the same body.  Read in the body frame it is not."""
+        turned_body = MJCF_TEMPLATE.replace(
+            '<body name="shoulder_link" pos="0 0 0.1625">',
+            '<body name="shoulder_link" pos="0 0 0.1625" quat="0.70710678 0 0 0.70710678">',
+        )
+        assert turned_body != MJCF_TEMPLATE
+
+        compensated = turned_body.replace(
+            'quat="0.92387953 0 0 0.38268343"', 'quat="0.92387953 0 0 -0.38268343"'
+        )
+        _, out = self._run(tmp_path, capsys, mjcf_text=compensated)
+        assert out.count("inertia tensor (world): OK") == 2
+
+        n, out = self._run(tmp_path, capsys, mjcf_text=turned_body)
+        assert "INERTIA TENSOR MISMATCH (world)" in out
+        assert n >= 1
+
+    def test_wrong_moments_are_reported_once(self, tmp_path, capsys):
+        """A tensor with other moments is another tensor — one line says so."""
+        mjcf_text = _shoulder_inertial(
+            'diaginertia="0.0224 0.0184 0.01332" quat="0.92387953 0 0 0.38268343"'
+        )
+        _, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "INERTIA MISMATCH (principal moments)" in out
+        assert "INERTIA TENSOR MISMATCH" not in out
+        assert out.count("inertia tensor (world): OK") == 1
+
+    def test_a_link_without_a_world_frame_gets_one_warning(self, tmp_path, capsys):
+        """A body under a <frame> has no world pose here.  Its COM and its
+        tensor are both left out, and that is said once — the warning count is
+        what the real-pair gate pins per model."""
+        mjcf_text = MJCF_TEMPLATE.replace(
+            '<body name="shoulder_link" pos="0 0 0.1625">',
+            '<frame><body name="shoulder_link" pos="0 0 0.1625">',
+        ).replace("</body>\n    </body>", "</body></frame>\n    </body>")
+        assert mjcf_text.count("frame>") == 2
+
+        _, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        shoulder = out.split("[shoulder_link]")[1].split("--- Joint")[0]
+        assert shoulder.count("[WARN]") == 1
+        assert "[WARN] COM and inertia tensor not compared" in shoulder
+        assert "inertia tensor (world)" not in shoulder
+        assert "principal moments: [0.0112, 0.0092, 0.00666]  OK" in shoulder
+        assert "compared via principal moments only." in shoulder
+
+    def test_alignment_is_applied_to_the_tensor(self, tmp_path, capsys):
+        """Under the Rz(pi) base of the align fixture a product of inertia
+        about x-z changes sign unless the common frame is declared."""
+        mjcf = tmp_path / "a.xml"
+        mjcf.write_text(
+            MJCF_ALIGN.replace(
+                'diaginertia="0.02 0.02 0.02"', 'fullinertia="0.02 0.02 0.02 0 0.004 0"'
+            )
+        )
+        urdf = tmp_path / "a.urdf"
+        urdf.write_text(
+            URDF_ALIGN.replace(
+                'ixx="0.02" iyy="0.02" izz="0.02" ixy="0" ixz="0"',
+                'ixx="0.02" iyy="0.02" izz="0.02" ixy="0" ixz="0.004"',
+            )
+        )
+        compare(mjcf, urdf, link_map=ALIGN_LINK_MAP, joint_names=["j1"])
+        assert "INERTIA TENSOR MISMATCH (world)" in capsys.readouterr().out
+
+        align = _resolve_alignment(mjcf, urdf, "base", "base_link")
+        compare(mjcf, urdf, link_map=ALIGN_LINK_MAP, joint_names=["j1"], align=align)
+        out = capsys.readouterr().out
+        assert "INERTIA TENSOR MISMATCH" not in out
+        assert out.count("inertia tensor (world): OK") == 2
+
+
 class TestDetectJointTypes:
     def test_revolute_when_both_agree(self, tmp_path):
         mjcf = tmp_path / "test.xml"
@@ -1982,6 +2168,18 @@ class TestCompareWithFusedLinks:
         )
         n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
         assert "INERTIA MISMATCH" in out
+        assert n >= 1
+
+    def test_wrong_fused_axes_are_still_caught(self, tmp_path, capsys):
+        """The fused moments, with the slender axis laid along y instead of z."""
+        mjcf_text = MJCF_FUSE.replace(
+            'diaginertia="0.0526666667 0.0526666667 0.0015"',
+            'diaginertia="0.0526666667 0.0526666667 0.0015" quat="0.70710678 0.70710678 0 0"',
+        )
+        assert mjcf_text != MJCF_FUSE
+        n, out = self._run(tmp_path, capsys, mjcf_text=mjcf_text)
+        assert "INERTIA TENSOR MISMATCH (world)" in out
+        assert "INERTIA MISMATCH" not in out
         assert n >= 1
 
     def test_wrong_fused_com_is_still_caught(self, tmp_path, capsys):
