@@ -5,10 +5,11 @@
 않는다 — #392 (a) 가 발견한 것이 정확히 그 공백이었다 (센서를 자동 실행하는
 곳이 저장소에 0곳). 이 파일이 그 공백을 메운다.
 
-**로컬에서는 skip 된다.** colcon 이 pytest 를 `/usr/bin/python3` 로 돌리는데
+**colcon 에서는 skip 된다.** colcon 이 pytest 를 `/usr/bin/python3` 로 돌리는데
 (colcon 자체의 shebang) 거기엔 mujoco 가 없고, 이 저장소는 mujoco 를 `.venv`
-에 둔다. CI 는 `pip install ... mujoco` 를 하므로 실제로 실행된다. skip 은
-조용한 통과가 아니라 pytest 리포트에 남는다. 로컬에서 직접 돌리려면::
+에 둔다. CI 에는 빌드·테스트 job 이 없으므로 (`docs-validate` 뿐) 이 게이트를
+대신 돌려 주는 곳도 없다 — 아래 명령을 직접 돌릴 때만 실행된다. skip 은
+조용한 통과가 아니라 pytest 리포트에 남는다::
 
     ( cd <rtc_ws> && source <repo>/repo_scripts/scripts/setup_env.sh \
       && cd <repo> \

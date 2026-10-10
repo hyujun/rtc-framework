@@ -13,6 +13,9 @@ Parses both model files and reports differences in:
     own axis without changing the physics, so only the perpendicular offset
     counts as a mismatch — see _axis_line_offset)
 
+`--tolerance` is an absolute bound, and for a link's mass and inertia a
+relative one as well — the tighter applies (see _scaled_tolerance).
+
 Robot-agnostic — link/joint name sets are auto-detected from the two files
 unless explicitly overridden via CLI flags.
 
@@ -1149,6 +1152,20 @@ def _close(a: float, b: float, tol: float) -> bool:
     return math.isclose(a, b, abs_tol=tol)
 
 
+def _scaled_tolerance(tolerance: float, scale: float) -> float:
+    """Bound on ``|a - b|`` for a mass or an inertia of size ``scale``.
+
+    ``tolerance`` is read both as an absolute bound and as a relative one, and
+    the tighter of the two applies: absolute at ``scale >= 1``, relative below.
+    An absolute bound alone is larger than the quantity itself on a small link
+    — every principal moment of a fingertip is under 1e-4 kg·m² — so such a
+    link passed with any value (#692).  A scale of 0 gives 0: two exact zeros
+    agree, and anything else against a zero does not.  The sign of ``scale`` is
+    dropped — whether a negative mass is a model at all is not decided here.
+    """
+    return min(tolerance, tolerance * abs(scale))
+
+
 def _fmt(val: float) -> str:
     if abs(val) < 1e-10:
         return "0"
@@ -1785,7 +1802,13 @@ def compare(
             same-name pair, so a partial map cannot silently narrow the
             comparison (#411).
         joint_names: Joint names to compare (assumed identical in both files).
-        tolerance: Numerical tolerance.
+        tolerance: Numerical tolerance.  An absolute bound (m, rad, N·m) for
+            joint ranges, effort limits, axes, positions and the link COM.  A
+            link's mass and principal moments are held to
+            ``min(tolerance, tolerance * size)`` — relative below 1 kg and
+            1 kg·m², where an absolute bound exceeds the quantity itself
+            (:func:`_scaled_tolerance`).  The total-mass check of the
+            structural section keeps its own rule.
         robot_label: Optional human label printed in the header.
         align: Optional ``(R, p)`` mapping MJCF world coordinates into the URDF
             world frame, from :func:`_resolve_alignment`.  ``None`` assumes the
@@ -1823,7 +1846,7 @@ def compare(
     print(f"  {label}Model Comparison: MJCF vs URDF")
     print(f"  MJCF: {mjcf_path}")
     print(f"  URDF: {urdf_path}")
-    print(f"  Tolerance: {tolerance}")
+    print(f"  Tolerance: {tolerance}  (link mass / inertia: also relative, the tighter applies)")
     if align is not None:
         print("  Base alignment: declared (MJCF world FK lifted into URDF world frame)")
     print("=" * 78)
@@ -1935,7 +1958,9 @@ def compare(
         print(f"  [{label}]")
 
         # Mass
-        if not _close(mjcf_ip.mass, urdf_ip.mass, tolerance):
+        # "not within", rather than "beyond": a NaN is beyond nothing.
+        mass_tol = _scaled_tolerance(tolerance, max(mjcf_ip.mass, urdf_ip.mass))
+        if not abs(mjcf_ip.mass - urdf_ip.mass) <= mass_tol:
             print(
                 f"    MASS MISMATCH:  MJCF={_fmt(mjcf_ip.mass)}  URDF={_fmt(urdf_ip.mass)}"
                 f"  (delta={_fmt(abs(mjcf_ip.mass - urdf_ip.mass))})"
@@ -1984,8 +2009,12 @@ def compare(
         u_eigs = _urdf_principal_moments(urdf_ip)
         m_eigs = sorted((float(v) for v in mjcf_ip.diag_inertia), reverse=True)
 
+        # One bound per link, scaled by its largest moment.  The three moments
+        # of a tensor are known to the same absolute precision, so scaling each
+        # by itself would over-tighten the smallest axis of a slender link.
+        eig_tol = _scaled_tolerance(tolerance, max(*m_eigs, *u_eigs))
         eig_pairs = list(zip(m_eigs, u_eigs, strict=False))
-        eig_match = all(_close(m, u, tolerance) for m, u in eig_pairs)
+        eig_match = all(abs(m - u) <= eig_tol for m, u in eig_pairs)
 
         if eig_match:
             print(
@@ -2000,7 +2029,7 @@ def compare(
             )
             for i, lbl in enumerate(("λ1", "λ2", "λ3")):
                 d = abs(m_eigs[i] - u_eigs[i])
-                if d > tolerance:
+                if d > eig_tol:
                     print(f"      {lbl} delta={_fmt(d)}")
             mismatches += 1
 
@@ -2644,7 +2673,10 @@ def main():
         "--tolerance",
         type=float,
         default=1e-4,
-        help="Numerical tolerance for comparison (default: 1e-4).",
+        help="Numerical tolerance for comparison (default: 1e-4). Absolute "
+        "for ranges, efforts, axes, positions and COMs; for a link's mass and "
+        "principal moments it is also relative, and the tighter bound applies "
+        "(below 1 kg / 1 kg m^2 that is the relative one).",
     )
     args = parser.parse_args()
 

@@ -34,6 +34,7 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     _resolve_alignment,
     _resolve_link_map,
     _rpy_to_rot3,
+    _scaled_tolerance,
     _urdf_link_world_frames,
     _validate_fuse,
     _vec_close_3,
@@ -549,6 +550,169 @@ class TestCompare:
         assert "shoulder_link" in captured.out
         assert "mass=3.7 kg lost" in captured.out
         assert mismatches >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Mass / inertia tolerance scales with the quantity (#692)
+#
+# An absolute 1e-4 is larger than every principal moment of a fingertip link
+# and a few percent of its mass, so such a link passed whatever its values.
+# ═══════════════════════════════════════════════════════════════════════════
+
+URDF_SMALL = """\
+<robot name="small">
+  <link name="base_link">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <link name="tip_link">
+    <inertial>
+      <mass value="{mass}"/>
+      <origin xyz="0 0 0.01" rpy="0 0 0"/>
+      <inertia ixx="{ixx}" iyy="{iyy}" izz="{izz}" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+  <joint name="tip_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="tip_link"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1" upper="1" effort="2" velocity="1"/>
+  </joint>
+</robot>
+"""
+
+MJCF_SMALL = """\
+<mujoco model="small">
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="base_link">
+      <inertial mass="1.0" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+      <body name="tip_link" pos="0 0 0.05">
+        <joint name="tip_joint" axis="0 1 0" range="-1 1"/>
+        <inertial mass="{mass}" pos="0 0 0.01" diaginertia="{ixx} {iyy} {izz}"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="tip_joint" forcerange="-2 2"/>
+  </actuator>
+</mujoco>
+"""
+
+SMALL_LINK = {"mass": 0.005, "ixx": 2e-7, "iyy": 2e-7, "izz": 1e-7}
+
+
+class TestScaledTolerance:
+    @pytest.mark.parametrize(
+        "tolerance, scale, expected",
+        [
+            (1e-4, 4.0, 1e-4),  # at or above 1 the bound is the absolute one
+            (1e-4, 1.0, 1e-4),
+            (1e-4, 0.005, 5e-7),  # below 1 it is relative
+            (1e-4, 2e-7, 2e-11),
+            (0.01, 0.005, 5e-5),  # --tolerance sets both terms
+            (1e-4, 0.0, 0.0),
+            (1e-4, -0.005, 5e-7),  # a size has no sign, valid or not
+        ],
+    )
+    def test_bound(self, tolerance, scale, expected):
+        assert _scaled_tolerance(tolerance, scale) == pytest.approx(expected, rel=1e-12)
+
+
+class TestSmallLinkTolerance:
+    """Every assertion reads the per-link report, which needs no mujoco — a
+    return of 0 would not tell a match from a skipped structural section."""
+
+    def _run(self, tmp_path, capsys, *, mjcf=None, urdf=None, tolerance=1e-4):
+        mjcf_file = tmp_path / "s.xml"
+        mjcf_file.write_text(MJCF_SMALL.format(**{**SMALL_LINK, **(mjcf or {})}))
+        urdf_file = tmp_path / "s.urdf"
+        urdf_file.write_text(URDF_SMALL.format(**{**SMALL_LINK, **(urdf or {})}))
+        n = compare(
+            mjcf_file, urdf_file, link_map={}, joint_names=["tip_joint"], tolerance=tolerance
+        )
+        return n, capsys.readouterr().out
+
+    def test_matching_small_link_passes(self, tmp_path, capsys):
+        _, out = self._run(tmp_path, capsys)
+        assert "MASS MISMATCH" not in out
+        assert "INERTIA MISMATCH" not in out
+        assert out.count("principal moments:") == 2
+
+    def test_doubled_inertia_of_a_small_link_is_caught(self, tmp_path, capsys):
+        """Every delta here is below 1e-4 — the absolute bound saw nothing."""
+        n, out = self._run(tmp_path, capsys, mjcf={"ixx": 4e-7, "iyy": 4e-7, "izz": 2e-7})
+        assert "INERTIA MISMATCH" in out
+        assert "MASS MISMATCH" not in out
+        assert n >= 1
+
+    def test_one_wrong_moment_of_a_small_link_is_caught(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys, mjcf={"izz": 1.5e-7})
+        assert "INERTIA MISMATCH" in out
+        assert n >= 1
+
+    def test_mass_of_a_light_link_off_by_two_percent_is_caught(self, tmp_path, capsys):
+        """5 g against 5.09 g: a delta of 9e-5 kg, under the absolute bound."""
+        n, out = self._run(tmp_path, capsys, mjcf={"mass": 0.00509})
+        assert "MASS MISMATCH" in out
+        assert "INERTIA MISMATCH" not in out
+        assert n >= 1
+
+    def test_rounding_of_a_small_link_passes(self, tmp_path, capsys):
+        """A few parts in 1e5 is what a model exported with six significant
+        digits carries; it is inside the relative bound."""
+        _, out = self._run(
+            tmp_path,
+            capsys,
+            mjcf={"mass": 0.0050002, "ixx": 2.00008e-7, "iyy": 2.00008e-7, "izz": 1.00004e-7},
+        )
+        assert "MASS MISMATCH" not in out
+        assert "INERTIA MISMATCH" not in out
+
+    def test_tolerance_option_loosens_the_relative_bound(self, tmp_path, capsys):
+        half_percent = {"mass": 0.005025, "ixx": 2.01e-7, "iyy": 2.01e-7, "izz": 1.005e-7}
+        _, out = self._run(tmp_path, capsys, mjcf=half_percent, tolerance=0.01)
+        assert "MASS MISMATCH" not in out
+        assert "INERTIA MISMATCH" not in out
+
+        _, out = self._run(tmp_path, capsys, mjcf=half_percent)
+        assert "MASS MISMATCH" in out
+        assert "INERTIA MISMATCH" in out
+
+    def test_zero_inertia_on_both_sides_passes(self, tmp_path, capsys):
+        zero = {"ixx": 0.0, "iyy": 0.0, "izz": 0.0}
+        _, out = self._run(tmp_path, capsys, mjcf=zero, urdf=zero)
+        assert "INERTIA MISMATCH" not in out
+
+    def test_zero_inertia_on_one_side_is_caught(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys, mjcf={"ixx": 0.0, "iyy": 0.0, "izz": 0.0})
+        assert "INERTIA MISMATCH" in out
+        assert n >= 1
+
+    def test_nan_mass_is_a_mismatch(self, tmp_path, capsys):
+        """``nan > bound`` is False: a comparison written as "too far apart"
+        lets a NaN through as OK."""
+        n, out = self._run(tmp_path, capsys, urdf={"mass": "nan"})
+        assert "MASS MISMATCH" in out
+        assert n >= 1
+
+    def test_nan_inertia_is_a_mismatch(self, tmp_path, capsys):
+        n, out = self._run(tmp_path, capsys, mjcf={"ixx": "nan"})
+        assert "INERTIA MISMATCH" in out
+        assert n >= 1
+
+    def test_heavy_link_keeps_the_absolute_bound(self, tmp_path, capsys):
+        """Above 1 kg the bound does not grow with the mass: 4 kg against
+        4.00005 kg passes, 4.0002 kg does not."""
+        _, out = self._run(tmp_path, capsys, mjcf={"mass": 4.00005}, urdf={"mass": 4.0})
+        assert "MASS MISMATCH" not in out
+
+        _, out = self._run(tmp_path, capsys, mjcf={"mass": 4.0002}, urdf={"mass": 4.0})
+        assert "MASS MISMATCH" in out
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1181,7 +1181,7 @@ ros2 run rtc_tools compare_mjcf_urdf --robot-pkg robot_descriptions --robot-name
 ros2 run rtc_tools compare_mjcf_urdf --robot-pkg robot_descriptions --robot-name ur5e \
     --joints shoulder_pan_joint shoulder_lift_joint
 
-# tolerance 조정 (기본: 1e-4)
+# tolerance 조정 (기본: 1e-4) — 절대 한계이자 link 질량 · 관성의 상대 한계 (아래 "크기에 맞춘 허용오차")
 ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 
 # 두 파일의 world frame 이 다를 때 공통 기준 프레임 선언 (아래 참조)
@@ -1217,6 +1217,8 @@ fuse:                                    # MJCF body ← 접혀 들어간 URDF �
 flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 mapping 인지**로 두 형식을 구분하므로 `links` · `fuse` 라는 이름의 링크를 가진 로봇도 안전하다.
 
 선언된 자식은 비교 **전에 합성**된다: 질량 합, 질량가중 COM, 평행축 정리로 옮긴 관성 텐서 합. 합성은 URDF world frame (zero configuration) 에서 수행한 뒤 부모 링크 프레임으로 되돌리므로 fixed joint 의 `rpy` 와 임의 깊이의 체인이 추가 코드 없이 처리된다. **선언이 검사를 무력화하지 않는다** — 합성된 질량·COM·주모멘트가 전부 그대로 비교되고, 자식으로 향하는 경로에 fixed 가 아닌 관절이 하나라도 있으면 선언 자체가 mismatch 다 (그게 없으면 "접었다고 선언" 이 임의의 발산을 지우는 수단이 된다). 합성 body 에 대해서는 collision-geometry plausibility 추정이 부모 링크의 형상만 보므로 검사를 돌리지 않고 그 사실을 `[NOTE]` 로 알린다.
+
+**link 의 질량 · 주모멘트는 크기에 맞춘 허용오차로 비교한다** (#692). 판정은 `|Δ| ≤ min(tolerance, tolerance × 크기)` 다 — 크기는 질량이면 두 값 중 큰 쪽, 관성이면 그 link 의 가장 큰 주모멘트 (세 주모멘트에 같은 한계) 다. 1 kg · 1 kg·m² 이상에서는 절대 한계가, 그 아래에서는 상대 한계가 걸린다. 절대 한계만으로는 작은 link 를 볼 수 없다: 손가락 link 는 주모멘트 셋이 전부 `1e-4` kg·m² 보다 작아 값이 몇 배 틀려도 `OK` 였고, 수 g 짜리 link 의 질량은 몇 % 가 가려졌다. 양쪽이 정확히 0 이면 통과하고 한쪽만 0 이면 불일치다. `--tolerance 0.01` 은 그래서 "절대 0.01" 이자 "질량 · 관성 1 %" 다. COM · 관절 범위 · effort · 축 · 위치는 절대 한계 그대로고, 구조 비교의 전체 질량은 자기 규칙 (`max(tolerance, 1e-4 × 전체 질량)`) 을 쓴다.
 
 **링크 COM 은 world frame 에서 비교한다.** 로컬 프레임 COM 은 비교 대상이 아니다 — MJCF 는 body 원점을 visual mesh 기준, URDF 는 DH 기준으로 두므로 같은 물리적 COM 이 두 프레임에서 다르게 읽힌다 (ur5e `forearm_link` 실측 0.242 m 차이, 전부 규약). zero configuration 기준 world 로 올리면 그 차이가 사라진다 (같은 3쌍 실측: 최대 5e-7). 관절을 축 *직선* 으로 비교하는 것과 같은 이유다. `--align-frames` 는 COM 비교에도 적용된다. 이 검사가 없으면 **질량과 주모멘트가 그대로인 채 COM 만 옮겨진 발산이 조용히 통과**한다 — 주모멘트는 COM 기준 회전불변량이라 평행이동에 반응하지 않는다.
 
