@@ -12,8 +12,10 @@
 #
 # PROVISIONAL, SIM ONLY. E1-F19 (#745) set, in sim, the chance rows (off),
 # publish.slack_c_max, the stop grid and the SQP's tol_kkt and mu_max; the
-# other values are starting values, not tuned. The QP solver allocates inside a solve (#654), so this planner must
-# not run on a SCHED_FIFO planner thread on hardware until that is closed.
+# other values are starting values, not tuned. A real-arm configuration that
+# selects this planner parks while robot.hand.docking.provisional (the main
+# file) is true. The QP solver allocates inside a solve: a recorded RT-1
+# violation (#654), not a condition.
 demo_catching_controller:
   catching:
     planner:
