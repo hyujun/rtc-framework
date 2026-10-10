@@ -224,6 +224,9 @@ struct SegmentRecord {
   /// First solve: the segment is the search's own solution (CatchSolution),
   /// re-evaluated by the planner and published as it is — nothing was solved.
   bool from_search{false};
+  /// First solve: it started from the iterate the previous wake's solve of
+  /// the same plan ended on, not from the search's catch pose. Not logged.
+  bool start_from_memory{false};
   bool cold_retry{false};  ///< a stop core's reference was refused, re-solved without it
   std::int32_t iterations{0};
   std::int32_t qp_status{-1};

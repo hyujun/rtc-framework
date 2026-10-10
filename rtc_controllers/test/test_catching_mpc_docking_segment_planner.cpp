@@ -1722,6 +1722,314 @@ TEST(MpcDockingPlannerAllocation, AReplacementsFirstSegmentAllocatesNothingOutsi
   EXPECT_GT(log.stages, 0);
 }
 
+// ── 5b. The first solve's memory ─────────────────────────────────────────────
+//
+// A first solve that is withheld leaves its iterate for the next wake's first
+// solve of the same plan. The solve these tests withhold is one the core cuts
+// after two iterations: a 10 ms clock step against the 35 ms budget
+// (EverySolveThatReachedAnIterateLeavesTheCoresAccount).
+
+constexpr std::int64_t kCutStepNs = 10 * kMs;
+
+// What the planner remembers, copied (the planner's own changes with a call).
+[[nodiscard]] std::unique_ptr<SegmentSnapshot> Remembered(const MpcDockingSegmentPlanner& planner) {
+  const SegmentSnapshot* mem = planner.FirstMemoryForTesting();
+  return mem != nullptr ? std::make_unique<SegmentSnapshot>(*mem) : nullptr;
+}
+
+// The start trajectory the core for `n_pre` was last handed is `mem` from the
+// node `n_pre` leaves it at (device → model order), to the bit — and node 0
+// is the start state the core was handed, whatever `mem` had there.
+void ExpectStartFromMemory(const MpcDockingSegmentPlanner& planner, int n_pre,
+                           const SegmentSnapshot& mem) {
+  const MpcDockingSegmentCoreInput* in = planner.LastInputForTesting(n_pre);
+  ASSERT_NE(in, nullptr);
+  ASSERT_TRUE(in->initial_valid);
+  const int shift = mem.n_pre - n_pre;
+  ASSERT_GE(shift, 0);
+  const int n_total = n_pre + (mem.n_nodes - mem.n_pre);
+  for (int k = 1; k <= n_total; ++k) {
+    for (std::size_t m = 0; m < 6; ++m) {
+      const auto e = static_cast<std::size_t>((k + shift) * kMaxSegmentNv + kDeviceOfModel[m]);
+      const auto row = static_cast<Eigen::Index>(m);
+      EXPECT_TRUE(BitsEqual(in->q_init(row, k), mem.q[e])) << "q, node " << k << " joint " << m;
+      EXPECT_TRUE(BitsEqual(in->qd_init(row, k), mem.qd[e])) << "q̇, node " << k << " joint " << m;
+      EXPECT_TRUE(BitsEqual(in->qdd_init(row, k), mem.qdd[e])) << "q̈, node " << k << " joint " << m;
+    }
+  }
+  for (Eigen::Index m = 0; m < 6; ++m) {
+    EXPECT_TRUE(BitsEqual(in->q_init(m, 0), in->q0[m])) << m;
+    EXPECT_TRUE(BitsEqual(in->qd_init(m, 0), in->qd0[m])) << m;
+    EXPECT_TRUE(BitsEqual(in->qdd_init(m, 0), in->qdd0[m])) << m;
+  }
+}
+
+TEST(MpcDockingPlannerFirstMemory, TheNextWakeStartsFromTheIterateTheWithheldSolveEndedOn) {
+  // The reference: the same first solve run to its end on a planner that
+  // remembers nothing.
+  auto ref = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(ref->Setup());
+  auto whole = RunFirst(*ref->planner, ref->rt, ref->plan, ref->Ball(), nullptr, kNow);
+  ASSERT_TRUE(whole->ok) << Describe(whole->rec);
+  EXPECT_FALSE(whole->rec.start_from_memory);
+  ASSERT_GT(whole->rec.iterations, 2);
+
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  MpcDockingSegmentPlanner& planner = *s->planner;
+  ASSERT_EQ(planner.FirstMemoryForTesting(), nullptr) << "the warm-up solves leave nothing";
+  auto cut = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow, kCutStepNs);
+  ASSERT_FALSE(cut->ok);
+  ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
+  ASSERT_EQ(cut->rec.iterations, 2);
+  EXPECT_FALSE(cut->rec.start_from_memory);
+  const int n_pre = -cut->rec.k;
+  // What is remembered is that iterate, packed as a segment of the plan.
+  const std::unique_ptr<SegmentSnapshot> mem = Remembered(planner);
+  ASSERT_NE(mem, nullptr);
+  EXPECT_EQ(mem->plan_id, s->plan.plan_id);
+  EXPECT_EQ(mem->t_c_ns, s->plan.t_c_ns);
+  EXPECT_EQ(mem->token.generation, s->plan.token.generation);
+  EXPECT_EQ(mem->token.activation_generation, s->rt.activation_generation);
+  EXPECT_EQ(mem->n_pre, n_pre);
+  EXPECT_EQ(mem->n_nodes, n_pre + s->rig.params.n_stop);
+  const rtc::catching::MpcDockingSegmentCoreResult* res = planner.LastResult(n_pre);
+  ASSERT_NE(res, nullptr);
+  for (int k = 0; k <= mem->n_nodes; ++k) {
+    for (std::size_t m = 0; m < 6; ++m) {
+      const auto e = static_cast<std::size_t>(k * kMaxSegmentNv + kDeviceOfModel[m]);
+      ASSERT_TRUE(BitsEqual(mem->q[e], res->q(static_cast<Eigen::Index>(m), k))) << k << " " << m;
+    }
+  }
+
+  // The next wake, on the same report and plan: from there, with no
+  // initialisation QP (the arm has not moved, so the start holds every linear
+  // row as it stands), to the solution the uninterrupted solve reached.
+  auto next = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow);
+  EXPECT_TRUE(next->rec.start_from_memory);
+  ASSERT_NO_FATAL_FAILURE(ExpectStartFromMemory(planner, n_pre, *mem));
+  EXPECT_FALSE(planner.LastResult(n_pre)->init_qp_used);
+  ASSERT_TRUE(next->ok) << Describe(next->rec);
+  EXPECT_LT(next->rec.iterations, whole->rec.iterations);
+  EXPECT_EQ(next->out.n_pre, whole->out.n_pre);
+  double apart = 0.0;
+  for (std::size_t i = 0; i < next->out.q.size(); ++i) {
+    apart = std::max(apart, std::fabs(next->out.q[i] - whole->out.q[i]));
+  }
+  EXPECT_LT(apart, 1e-5) << "another solution than the uninterrupted solve's";
+  // Not published, it is still what a further wake would start from: the
+  // cycle may drop a pair at its re-check.
+  ASSERT_NE(planner.FirstMemoryForTesting(), nullptr);
+  auto again = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow);
+  EXPECT_TRUE(again->rec.start_from_memory);
+  ASSERT_TRUE(again->ok) << Describe(again->rec);
+  EXPECT_LE(again->rec.iterations, 2) << "from a solution there is nothing left to do";
+}
+
+TEST(MpcDockingPlannerFirstMemory, ALaterWakeDropsTheNodesThatHavePassed) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  MpcDockingSegmentPlanner& planner = *s->planner;
+  auto cut = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow, kCutStepNs);
+  ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
+  const int n_pre = -cut->rec.k;
+  ASSERT_GE(n_pre, 2);
+  const std::unique_ptr<SegmentSnapshot> mem = Remembered(planner);
+  ASSERT_NE(mem, nullptr);
+  // One pre-catch interval later the budget reaches one grid point fewer: the
+  // same catch, the same nodes from the second on.
+  const std::int64_t later = kNow + kDtPreNs;
+  auto next = RunFirst(planner, s->rig.RestingRt(later), s->plan, s->Ball(), nullptr, later);
+  ASSERT_EQ(next->rec.k, -(n_pre - 1)) << Describe(next->rec);
+  EXPECT_TRUE(next->rec.start_from_memory);
+  ASSERT_NO_FATAL_FAILURE(ExpectStartFromMemory(planner, n_pre - 1, *mem));
+  EXPECT_TRUE(next->rec.docking.ran) << Describe(next->rec);
+
+  // A wake that reaches MORE grid points than the memory has cannot start
+  // from it: the nodes before its first are not there.
+  planner.ResetTrial();
+  cut = RunFirst(planner, s->rig.RestingRt(later), s->plan, s->Ball(), nullptr, later, kCutStepNs);
+  ASSERT_EQ(cut->rec.k, -(n_pre - 1)) << Describe(cut->rec);
+  ASSERT_NE(planner.FirstMemoryForTesting(), nullptr) << Describe(cut->rec);
+  auto earlier = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow);
+  ASSERT_EQ(earlier->rec.k, -n_pre);
+  EXPECT_FALSE(earlier->rec.start_from_memory);
+  EXPECT_FALSE(planner.LastInputForTesting(n_pre)->initial_valid);
+}
+
+TEST(MpcDockingPlannerFirstMemory, AnotherPlanCatchInstantTrackOrActivationStartsFromTheCatchPose) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  MpcDockingSegmentPlanner& planner = *s->planner;
+
+  struct Other {
+    const char* what;
+    PlannerRtState rt;
+    PlanSnapshot plan;
+  };
+
+  std::vector<Other> others;
+  others.push_back({"another plan id", s->rt, s->plan});
+  others.back().plan.plan_id += 1;
+  // One nanosecond is another grid: the nodes are not the remembered ones'.
+  others.push_back({"another catch instant", s->rt, s->plan});
+  others.back().plan.t_c_ns += 1;
+  others.push_back({"another track", s->rt, s->plan});
+  others.back().plan.token.generation += 1;
+  others.push_back({"another activation", s->rt, s->plan});
+  others.back().rt.activation_generation += 1;
+  for (const Other& o : others) {
+    SCOPED_TRACE(o.what);
+    planner.ResetTrial();
+    auto cut = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow, kCutStepNs);
+    ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
+    ASSERT_NE(planner.FirstMemoryForTesting(), nullptr);
+    auto r = RunFirst(planner, o.rt, o.plan, s->Ball(), nullptr, kNow);
+    ASSERT_TRUE(r->rec.docking.ran) << Describe(r->rec);
+    EXPECT_FALSE(r->rec.start_from_memory);
+    EXPECT_FALSE(planner.LastInputForTesting(-r->rec.k)->initial_valid);
+    EXPECT_TRUE(planner.LastResult(-r->rec.k)->init_qp_used);
+    // … and the control: the very plan the memory is of does start from it.
+    planner.ResetTrial();
+    cut = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow, kCutStepNs);
+    ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget);
+    EXPECT_TRUE(RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow)->rec.start_from_memory);
+  }
+}
+
+TEST(MpcDockingPlannerFirstMemory, ItEndsWithThePlansPublicationTheTrialAndASolveThatLeftNothing) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  MpcDockingSegmentPlanner& planner = *s->planner;
+  const auto remember = [&] {
+    planner.ResetTrial();
+    auto cut = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow, kCutStepNs);
+    EXPECT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
+    EXPECT_NE(planner.FirstMemoryForTesting(), nullptr);
+  };
+  const auto starts_cold = [&] {
+    auto r = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow);
+    return !r->rec.start_from_memory && !planner.LastInputForTesting(-r->rec.k)->initial_valid;
+  };
+
+  // A segment of ANOTHER plan published — the followed plan's, while its
+  // replacement is being solved for — leaves it.
+  remember();
+  SegmentSnapshot other{};
+  other.valid = true;
+  other.plan_id = s->plan.plan_id + 5;
+  planner.NotePublished(other);
+  EXPECT_NE(planner.FirstMemoryForTesting(), nullptr);
+  // The plan's own publication ends it: what follows are replans.
+  other.plan_id = s->plan.plan_id;
+  planner.NotePublished(other);
+  EXPECT_EQ(planner.FirstMemoryForTesting(), nullptr);
+  planner.ResetTrial();  // the segment stored above is not a real one
+  EXPECT_TRUE(starts_cold());
+
+  remember();
+  planner.ResetTrial();
+  EXPECT_EQ(planner.FirstMemoryForTesting(), nullptr);
+  EXPECT_TRUE(starts_cold());
+
+  // A call the planner refuses before its core runs says nothing of the
+  // memory …
+  remember();
+  PlannerRtState stale = s->rt;
+  stale.valid = false;
+  EXPECT_FALSE(RunFirst(planner, stale, s->plan, s->Ball(), nullptr, kNow)->ok);
+  EXPECT_NE(planner.FirstMemoryForTesting(), nullptr);
+  // … one the CORE refuses for anything but its deadline ends it: here a
+  // prediction that stops before the catch.
+  TrajectorySnapshot brief = s->ball.traj;
+  brief.n = 3;  // 100 ms of it
+  const BallPrediction short_ball{&brief, &s->ball.cov, true};
+  auto refused = RunFirst(planner, s->rt, s->plan, short_ball, nullptr, kNow);
+  EXPECT_FALSE(refused->ok);
+  EXPECT_TRUE(refused->rec.start_from_memory);
+  EXPECT_STREQ(refused->rec.core_reason_name, "ball_invalid") << Describe(refused->rec);
+  EXPECT_FALSE(refused->rec.docking.ran);
+  EXPECT_EQ(planner.FirstMemoryForTesting(), nullptr);
+  EXPECT_TRUE(starts_cold());
+
+  // A solve cut again keeps what it stood at: started from the memory, cut
+  // before its first QP, the same iterate is still the next wake's start.
+  remember();
+  const std::unique_ptr<SegmentSnapshot> before = Remembered(planner);
+  ASSERT_NE(before, nullptr);
+  auto cut_at_once = RunFirst(planner, s->rt, s->plan, s->Ball(), nullptr, kNow, 40 * kMs);
+  EXPECT_EQ(cut_at_once->rec.outcome, SegmentOutcome::kBudget) << Describe(cut_at_once->rec);
+  EXPECT_TRUE(cut_at_once->rec.start_from_memory);
+  EXPECT_EQ(cut_at_once->rec.iterations, 0);
+  const std::unique_ptr<SegmentSnapshot> after = Remembered(planner);
+  ASSERT_NE(after, nullptr);
+  // To rounding: the core rebuilds a start from its block jerk.
+  double moved = 0.0;
+  for (std::size_t i = 0; i < after->q.size(); ++i) {
+    moved = std::max(
+        {moved, std::fabs(after->q[i] - before->q[i]), std::fabs(after->qd[i] - before->qd[i])});
+  }
+  EXPECT_LT(moved, 1e-12);
+  RecordProperty("memory_restart_max_abs_change", std::to_string(moved));
+  std::printf("[ record ] a memory start handed back: max |change| %.3e\n", moved);
+}
+
+TEST(MpcDockingPlannerFirstMemory, AReplacementsFirstSolveIsRememberedBesideTheFollowedPlan) {
+  Replaced x;
+  ASSERT_NO_FATAL_FAILURE(x.Setup());
+  MpcDockingSegmentPlanner& planner = *x.f.scene->planner;
+  const PlannerRtState rt = x.Rt();
+  // The followed plan's own first solve was published (Followed::Setup).
+  ASSERT_EQ(planner.FirstMemoryForTesting(), nullptr);
+  auto cut = RunFirst(planner, rt, x.plan, x.Ball(), nullptr, x.now, kCutStepNs);
+  ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
+  ASSERT_TRUE(cut->rec.docking.ran) << Describe(cut->rec);
+  ASSERT_EQ(cut->rec.k, -x.n1);
+  const std::unique_ptr<SegmentSnapshot> mem = Remembered(planner);
+  ASSERT_NE(mem, nullptr);
+  EXPECT_EQ(mem->plan_id, x.plan.plan_id);
+  // A replan of the followed plan goes out meanwhile: another plan's segment.
+  SegmentSnapshot replanned = x.f.first;
+  replanned.segment_seq = 2;
+  planner.NotePublished(replanned);
+  ASSERT_NE(planner.FirstMemoryForTesting(), nullptr);
+  // The next wake's replacement solve: from the memory, on the reported
+  // segment at node 0.
+  auto next = RunFirst(planner, rt, x.plan, x.Ball(), nullptr, x.now);
+  EXPECT_TRUE(next->rec.start_from_memory) << Describe(next->rec);
+  EXPECT_TRUE(next->rec.x0_from_segment);
+  ASSERT_NO_FATAL_FAILURE(ExpectStartFromMemory(planner, x.n1, *mem));
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectStartOnSegment(planner, x.n1, x.f.first, x.t0, next->rec.x0_clamped));
+}
+
+TEST(MpcDockingPlannerFirstMemory, AFirstSolveFromItAllocatesNothingOutsideTheQpSolver) {
+  auto s = std::make_unique<Scene>();
+  ASSERT_NO_FATAL_FAILURE(s->Setup());
+  MpcDockingSegmentPlanner& planner = *s->planner;
+  GateLog log;
+  planner.SetSolverHookForTesting(&SolverHook, &log);
+  planner.SetCoreStageHookForTesting(&StageHook, &log);
+  auto cut = std::make_unique<Result>();
+  auto next = std::make_unique<Result>();
+  const BallPrediction ball = s->Ball();
+  std::size_t counted = 0;
+  // Remembering it and starting from it, both under the gate.
+  SetClockAt(kNow, kCutStepNs);
+  counted += Gated(
+      [&] { cut->ok = planner.PlanFirst(s->rt, s->plan, ball, nullptr, cut->out, cut->rec); });
+  ASSERT_EQ(rtc::testing::detail::MallocGateDepth(), 0) << "the hooks are not balanced";
+  SetClockAt(kNow);
+  counted += Gated(
+      [&] { next->ok = planner.PlanFirst(s->rt, s->plan, ball, nullptr, next->out, next->rec); });
+  ASSERT_EQ(rtc::testing::detail::MallocGateDepth(), 0) << "the hooks are not balanced";
+  ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
+  ASSERT_TRUE(next->rec.start_from_memory) << Describe(next->rec);
+  ASSERT_TRUE(next->ok) << Describe(next->rec);
+  EXPECT_EQ(counted, 0U) << "a first solve allocated while remembering or starting from memory";
+  EXPECT_GE(log.solver_calls, 2);
+}
+
 // ── 6. In the cycle, behind the nlp search ───────────────────────────────────
 //
 // The real search and the real planner behind PlannerCycle's two interfaces,

@@ -103,6 +103,7 @@ bool MpcDockingSegmentPlanner::Configure(const MpcDockingSegmentPlannerModel& mo
   inputs_.clear();
   results_.clear();
   ring_.Clear();
+  first_memory_ = SegmentSnapshot{};
   const auto fail = [error](std::string why) {
     if (error != nullptr) {
       *error = std::move(why);
@@ -311,10 +312,17 @@ const MpcDockingSegmentCoreInput* MpcDockingSegmentPlanner::LastInputForTesting(
 
 void MpcDockingSegmentPlanner::ResetTrial() noexcept {
   ring_.Clear();
+  first_memory_.valid = false;
 }
 
 void MpcDockingSegmentPlanner::NotePublished(const SegmentSnapshot& p) noexcept {
   ring_.Push(p, NoSegmentPayload{});
+  // The plan whose first solve was remembered is out: its later segments are
+  // replans. (A segment of ANOTHER plan — the followed one's, while its
+  // replacement is still being solved for — leaves the memory alone.)
+  if (first_memory_.valid && p.plan_id == first_memory_.plan_id) {
+    first_memory_.valid = false;
+  }
 }
 
 bool MpcDockingSegmentPlanner::FollowedTrack(const PlannerRtState& rt,
@@ -665,11 +673,31 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   }
   in.initial_valid = false;
   in.catch_target_valid = true;
+  // The previous wake's solve of this same first segment, when it left an
+  // iterate: the same activation, track, plan id and catch instant, on a grid
+  // this one continues (header note).
+  if (first_memory_.valid &&
+      first_memory_.token.activation_generation == rt.activation_generation &&
+      first_memory_.token.generation == plan.token.generation &&
+      first_memory_.plan_id == plan.plan_id && first_memory_.t_c_ns == t_c &&
+      DockingSolutionCoversGrid(first_memory_, nv_, n_pre, params_.n_stop)) {
+    StartFromDockingSolution(first_memory_, n_pre, params_.n_stop,
+                             std::span<const int>(device_of_model_.data(), U(nv_)), in);
+    // Node 0 is the start state, whatever the remembered trajectory had there.
+    for (int m = 0; m < nv_; ++m) {
+      in.q_init(m, 0) = in.q0[m];
+      in.qd_init(m, 0) = in.qd0[m];
+      in.qdd_init(m, 0) = in.qdd0[m];
+    }
+    in.initial_valid = true;
+    rec.start_from_memory = true;
+  }
   SetBall(ball, t_eff, n_pre, in);
   in.deadline_ns = start + first_ns_;
   const bool ok = RunCore(/*evaluate=*/false, core, in, res);
   const std::int64_t end = clock_();
   rec.outcome = Judge(res, ok, ok && res.converged, n_pre, start, end, first_ns_, t_eff, rec);
+  RememberFirst(rt, plan, t_eff, n_pre, rec.x0_clamped, ok, res);
   if (rec.outcome != SegmentOutcome::kReady) {
     return false;
   }
@@ -680,6 +708,33 @@ bool MpcDockingSegmentPlanner::PlanFirst(const PlannerRtState& rt, const PlanSna
   }
   NoteFirst(rt);
   return true;
+}
+
+void MpcDockingSegmentPlanner::RememberFirst(const PlannerRtState& rt, const PlanSnapshot& plan,
+                                             std::int64_t t_eff, int n_pre, bool x0_clamped,
+                                             bool ok,
+                                             const MpcDockingSegmentCoreResult& res) noexcept {
+  if (!ok) {
+    // No iterate. Cut before its initialisation QP the solve says nothing of
+    // where it started, and what was remembered stays; refused for anything
+    // else, a start that came from the memory is not handed in again.
+    if (res.reason != MpcDockingReason::kDeadline) {
+      first_memory_.valid = false;
+    }
+    return;
+  }
+  // An iterate the SOLVER failed on says nothing about the rows, and the next
+  // wake would fail there again (the search's rule). The finiteness test is
+  // its own: a remembered NaN would be refused by every later solve's input
+  // check, wake after wake.
+  if (res.reason == MpcDockingReason::kQpFailed ||
+      res.reason == MpcDockingReason::kSolutionNonFinite || !res.q.allFinite() ||
+      !res.qd.allFinite() || !res.qdd.allFinite()) {
+    first_memory_.valid = false;
+    return;
+  }
+  Pack(rt, plan.token.generation, plan.plan_id, plan.t_c_ns, t_eff, n_pre, x0_clamped, res,
+       first_memory_);
 }
 
 bool MpcDockingSegmentPlanner::StartsOnTheReport(const PlannerRtState& rt,

@@ -234,6 +234,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <vector>
 
 namespace rtc::catching {
@@ -1024,5 +1025,49 @@ class MpcDockingSegmentCore {
   Eigen::VectorXd work_n_, zero_n_, ones_n_;
   Eigen::MatrixXd j6_;
 };
+
+// ── A start from an earlier solve of the same catch ──────────────────────────
+// The grids of one catch instant share their nodes: a grid with fewer
+// pre-catch intervals is the same instants from a later node 0 on. So what an
+// earlier solve of that catch ended on, with the nodes that have passed
+// dropped, is a start trajectory on the grid of a later one — the rule the
+// search starts a candidate by that it solved a wake before, and the segment
+// planner the first segment of a plan it withheld. One statement of it, for
+// both.
+
+/// @brief Whether `earlier`, the packed solution of a solve catching at the
+///        same instant, covers a grid of `n_pre` pre-catch and `n_stop` stop
+///        intervals (RT-safe).
+///
+/// The catch instant itself is the caller's to compare: what counts as "the
+/// same" differs (a lattice instant, a plan's, an instant inside a cell).
+[[nodiscard]] inline bool DockingSolutionCoversGrid(const SegmentSnapshot& earlier, int nv,
+                                                    int n_pre, int n_stop) noexcept {
+  return earlier.nv == nv && earlier.n_pre >= n_pre && earlier.n_nodes - earlier.n_pre == n_stop;
+}
+
+/// @brief `in`'s start trajectory — nodes 0..n_pre + n_stop, model order —
+///        from `earlier` (device order) with the nodes that have passed
+///        dropped (RT-safe).
+/// @pre DockingSolutionCoversGrid(earlier, device_of_model.size(), n_pre,
+///      n_stop), and `in` sized by the core of that grid (ResizeInput).
+/// @param device_of_model `device_of_model[m]` = device index of model joint m
+/// @note Node 0 is the earlier solve's node there, not the start state: the
+///       caller writes x_0 over it and sets `initial_valid`.
+inline void StartFromDockingSolution(const SegmentSnapshot& earlier, int n_pre, int n_stop,
+                                     std::span<const int> device_of_model,
+                                     MpcDockingSegmentCoreInput& in) noexcept {
+  const int n_total = n_pre + n_stop;
+  const int shift = earlier.n_pre - n_pre;
+  for (int k = 0; k <= n_total; ++k) {
+    for (std::size_t m = 0; m < device_of_model.size(); ++m) {
+      const auto e = static_cast<std::size_t>((k + shift) * kMaxSegmentNv + device_of_model[m]);
+      const auto row = static_cast<Eigen::Index>(m);
+      in.q_init(row, k) = earlier.q[e];
+      in.qd_init(row, k) = earlier.qd[e];
+      in.qdd_init(row, k) = earlier.qdd[e];
+    }
+  }
+}
 
 }  // namespace rtc::catching

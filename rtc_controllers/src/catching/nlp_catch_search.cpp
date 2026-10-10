@@ -827,16 +827,8 @@ void NlpCatchSearch::Pack(const PlannerRtState& rt, std::uint64_t track_generati
 // same instants.
 void NlpCatchSearch::StartFromOwn(const SegmentSnapshot& mine, const CandidateRecord& c,
                                   MpcDockingSegmentCoreInput& in) const noexcept {
-  const int n_total = c.n_pre + params_.n_stop;
-  const int shift = mine.n_pre - c.n_pre;
-  for (int k = 0; k <= n_total; ++k) {
-    for (int m = 0; m < nv_; ++m) {
-      const std::size_t e = U((k + shift) * kMaxSegmentNv + model_.device_of_model[U(m)]);
-      in.q_init(m, k) = mine.q[e];
-      in.qd_init(m, k) = mine.qd[e];
-      in.qdd_init(m, k) = mine.qdd[e];
-    }
-  }
+  StartFromDockingSolution(mine, c.n_pre, params_.n_stop,
+                           std::span<const int>(model_.device_of_model.data(), U(nv_)), in);
 }
 
 // A new candidate: the nearest remembered solution as a function of absolute
@@ -1006,8 +998,8 @@ void NlpCatchSearch::Solve(const TrajectorySnapshot& traj, const CovarianceSnaps
   // The start point, from the previous wakes' memory only.
   const Memory* own = Remembered(c.index);
   if (const SegmentSnapshot* mine = own != nullptr ? &own->sol.seg : nullptr;
-      mine != nullptr && mine->t_c_ns == c.t_c_ns && mine->nv == nv_ && mine->n_pre >= c.n_pre &&
-      mine->n_nodes - mine->n_pre == params_.n_stop) {
+      mine != nullptr && mine->t_c_ns == c.t_c_ns &&
+      DockingSolutionCoversGrid(*mine, nv_, c.n_pre, params_.n_stop)) {
     StartFromOwn(*mine, c, in);
     in.initial_valid = true;
     c.start = Start::kSameCandidate;
@@ -1166,7 +1158,7 @@ void NlpCatchSearch::SolveContinuous(const TrajectorySnapshot& traj, const Covar
 
   // ── The start point ──
   const auto usable = [this, &c](const SegmentSnapshot& seg) noexcept {
-    return seg.nv == nv_ && seg.n_pre >= c.n_pre && seg.n_nodes - seg.n_pre == params_.n_stop;
+    return DockingSolutionCoversGrid(seg, nv_, c.n_pre, params_.n_stop);
   };
   const SegmentSnapshot* const own_tc = RememberedContinuous(c.index);
   Start start = Start::kIkTarget;
