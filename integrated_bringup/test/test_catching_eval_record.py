@@ -270,10 +270,10 @@ def test_the_plan_block_counts_verdicts_over_valid_throws_and_catches_under_each
     }  # fmt: skip
     p = sm.arm_plan([u])
     assert p["valid"] == 4
-    assert p["verdict"] == {"published": 2, "withheld": 1, "no_plan": 1}
+    assert p["plan_verdict"] == {"published": 2, "withheld": 1, "no_plan": 1}
     assert p["reject_most_frequent"] == {"segment:catch_error": 1, "search:too_far": 1}
     assert p["search_accepted"] == 3 and p["throws_with_a_first_solve_cut"] == 1
-    assert p["caught_by_verdict"] == {"published": 1, "withheld": 0, "no_plan": 0}
+    assert p["caught_by_plan_verdict"] == {"published": 1, "withheld": 0, "no_plan": 0}
     assert "reject_last" not in p  # a column the tool did not write is left out
 
 
@@ -392,8 +392,114 @@ def test_the_nlp_searchs_wakes_are_counted_with_their_budget():
     assert nlp["budget"] == {"wake_s": 0.04, "solve_s": 0.024, "max_solves": 1.0}
     assert nlp["wakes_with_a_deadline_reject_share"] == 0.5
     # a unit recorded before the budget was mirrored says None, not a number
-    old = sm.arm_solves([_solve_unit(events, **_BUDGETS)], C)["nlp"]
+    before = _solve_unit(events, **_BUDGETS)
+    old = sm.arm_solves([before], C)["nlp"]
     assert old["budget"] == {"wake_s": None, "solve_s": None, "max_solves": None}
+    # … and beside a unit that did record it, the arm has the recorded value: the
+    # finished unit cannot be mirrored again, so it must not stop the record
+    after = _solve_unit(events, **_BUDGETS, **nlp_budget)
+    assert sm.arm_solves([before, after], C)["nlp"]["budget"]["solve_s"] == 0.024
+    other = _solve_unit(
+        events, **_BUDGETS, **{**nlp_budget, "planner.search.nlp.budget.solve_s": 0.018}
+    )
+    with pytest.raises(SystemExit, match=r"nlp\.budget\.solve_s differs"):
+        sm.arm_solves([before, after, other], C)
+    # a segment budget is in every unit's mirror: one that lacks it is not waved through
+    lacking = _solve_unit(
+        events, **{k: v for k, v in _BUDGETS.items() if "docking.budget.first" not in k}
+    )
+    with pytest.raises(SystemExit, match="differs across the units of one arm"):
+        sm.arm_solves([after, lacking], C)
+
+
+def _arm_block(arm, units, rows):
+    """What ``arm_record`` assembles for one arm, from planted units: the blocks that
+    read a real session (FK, limits of a state log, the RT tick) are left out of it."""
+    loaded = [units[k] for k in sorted(units)]
+    arm_rows = [r for u in loaded for r in rows[u["name"]]]
+    return {
+        "search": arm.search,
+        "segment": arm.segment,
+        "ball": arm.ball,
+        "units": {f"seed {k[0]} · {sm.list_tag(k[1])}": units[k]["name"] for k in sorted(units)},
+        "rates": {
+            "all": sm.rates(arm_rows),
+            "by_list": {sm.list_tag(SHA1): sm.rates(arm_rows)},
+            "by_unit": {u["name"]: sm.rates(rows[u["name"]]) for u in loaded},
+        },
+        "plan": sm.arm_plan(loaded),
+        "catch_frame": sm.arm_catch_frame(loaded),
+        "solves": sm.arm_solves(loaded, arm),
+        "limits": sm.limits_block(arm_rows),
+        "failure_modes": sm.failure_modes(arm_rows),
+        "repeat": sm.repeat_record(units, rows),
+    }
+
+
+def test_a_record_prints_and_dumps_and_carries_no_verdict(tmp_path):
+    import json
+
+    def unit(name, caught):
+        frame = _ct(
+            [
+                {"invalid_reason": "", "plan_verdict": "published", "plan_reject": "",
+                 "ent_x_mm": -5.0, "ent_y_mm": 1.0, "ent_lateral_margin_mm": 1.0,
+                 "truth_success": i in caught}
+                for i in range(6)
+            ]
+        )  # fmt: skip
+        events = [_event("first", "published", "converged", 9_000)]
+        return {"name": name, "ct": frame, "summ": {"catch_frame": {"rho_ref_mm": [-5.0, -5.0]}},
+                **_solve_unit(events, **_BUDGETS)}  # fmt: skip
+
+    def arm_units(tag, caught_by_seed):
+        units = {
+            (seed, SHA1): unit(f"{tag}_{seed}", caught) for seed, caught in caught_by_seed.items()
+        }
+        rows = {
+            u["name"]: [_row(SHA1, i, i in caught_by_seed[seed]) for i in range(6)]
+            for (seed, _), u in units.items()
+        }
+        return units, rows
+
+    ub, rb = arm_units("b", {"3011": {0, 1}, "3012": {1}})
+    uc, rc = arm_units("c", {"3011": {1, 2, 3}})  # one repetition only
+    rows = {**rb, **rc}
+    res = {
+        "record": "planted",
+        "robot": "ur5e_p1b",
+        "arms": {sm.arm_label(B): _arm_block(B, ub, rows), sm.arm_label(C): _arm_block(C, uc, rows)},
+        "pairs": {
+            "b | c": {"a": sm.arm_label(B), "b": sm.arm_label(C), "differs_in": "planner",
+                      **sm.pair_record(ub, uc, rows)}
+        },
+        "mode_log_mismatch": [],
+        "regression": "unknown",
+    }  # fmt: skip
+    text = "\n".join(sm.format_record(res))
+    # b caught throws 0 and 1, c caught 1, 2 and 3: one both, one b-arm only, two c-arm only
+    assert "truth: n 6 · both 1 · a only 1 · b only 2 · neither 2" in text
+    assert "thrown by one arm only a 0 b 0" in text
+    assert "strata of one arm only: a ['seed 3012 · list:abababababab'] · b []" in text
+    assert "repeat list:abababababab · seed 3011 (a) vs 3012 (b):" in text
+    assert "arm grid×mpc·tennis: 2 units · thrown 12 · valid 12" in text
+    assert "segment first: 2 solves" in text and "budget 200.0 ms" in text
+    assert "— reference)" in text
+    dumped = json.loads(json.dumps(res, default=sm._json))
+    assert dumped["pairs"]["b | c"]["pooled"]["truth"]["b_only"] == 2
+
+    # nothing in a record is a verdict: no key says pass / fail / noninferior anywhere
+    def keys(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield str(k)
+                yield from keys(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from keys(v)
+
+    assert not {"pass", "fail", "verdict", "noninferior", "reject"} & set(keys(dumped))
+    assert dumped["arms"]["grid×mpc·tennis"]["solves"]["search"]["p99_within_budget"] is True
 
 
 # ── the two modes of the command line ────────────────────────────────────────
@@ -402,9 +508,22 @@ def test_the_record_and_the_verdict_do_not_mix_on_one_command_line(tmp_path):
     both = subprocess.run([*run, "--unit", "u1", "--cf", "u2"], capture_output=True, text=True)
     assert both.returncode == 2 and "takes no --cf" in both.stderr
     half = subprocess.run([*run, "--cf", "u1", "--mpc", "u2"], capture_output=True, text=True)
-    assert half.returncode == 2 and "--overlay-cf --overlay-mpc" in half.stderr
-    stray = subprocess.run([*run, "--all-pairs"], capture_output=True, text=True)
-    assert stray.returncode == 2 and "--unit" in stray.stderr
+    assert half.returncode == 2 and "(missing: --overlay-cf --overlay-mpc)" in half.stderr
+    # --all-pairs belongs to the record: with every flag of the verdict present it is
+    # still refused, and nothing is named missing
+    verdict = [
+        *run,
+        "--cf",
+        "u1",
+        "--mpc",
+        "u2",
+        "--overlay-cf",
+        "a.yaml",
+        "--overlay-mpc",
+        "b.yaml",
+    ]
+    stray = subprocess.run([*verdict, "--all-pairs"], capture_output=True, text=True)
+    assert stray.returncode == 2 and "(missing: -)" in stray.stderr
 
 
 def test_units_of_one_arm_seed_and_list_twice_are_refused(tmp_path):

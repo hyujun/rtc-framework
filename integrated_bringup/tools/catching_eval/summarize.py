@@ -998,7 +998,7 @@ def arm_plan(units):
         return {str(k): int(n) for k, n in v[v != ""].value_counts().items()}
 
     for name, col in (
-        ("verdict", "plan_verdict"),
+        ("plan_verdict", "plan_verdict"),
         ("reject_most_frequent", "plan_reject"),
         ("reject_last", "plan_reject_last"),
     ):
@@ -1014,7 +1014,9 @@ def arm_plan(units):
         )
     if "plan_verdict" in c:
         verdict, truth = c["plan_verdict"].fillna("").astype(str), _truth(c)
-        out["caught_by_verdict"] = {k: int((truth & (verdict == k)).sum()) for k in out["verdict"]}
+        out["caught_by_plan_verdict"] = {
+            k: int((truth & (verdict == k)).sum()) for k in out["plan_verdict"]
+        }
     return out
 
 
@@ -1058,10 +1060,16 @@ def arm_catch_frame(units):
     return out
 
 
-def _mirror_number(units, key):
+def _mirror_number(units, key, recorded_later=False):
     """A numeric mirror the arm's units agree on; None when no unit has it (the
-    parameter of another planner); refused when they differ."""
+    parameter of another planner); refused when they differ. ``recorded_later`` is for
+    a mirror ``run_unit.sh`` began to record at some revision: a unit from before it
+    says nothing, and the units that do say it have to agree."""
     values = {mirror_value(u["mirror"], key) for u in units}
+    if recorded_later:
+        values.discard(None)
+        if not values:
+            return None
     if len(values) != 1:
         raise SystemExit(f"{key} differs across the units of one arm: {sorted(map(str, values))}")
     return values.pop()
@@ -1075,11 +1083,11 @@ def arm_solves(units, arm):
     is in no distribution here — and the p99 over both with the flag that says when it is
     only a lower bound. The NLP search's wakes are ``planner_solves.nlp_summary``."""
     base = solve_block(units, False)
-    out = {
-        k: base[k]
-        for k in ("search", "held", "outcomes", "wakes_over_33ms", "wake_ms_max")
-        if k in base
-    }
+    out = {k: base[k] for k in ("held", "outcomes", "wakes_over_33ms", "wake_ms_max") if k in base}
+    # The verdict's block says "pass"; a record states the same comparison as a fact.
+    search = dict(base["search"])
+    search["p99_within_budget"] = search.pop("pass")
+    out["search"] = search
     pe = pd.concat([u["pe"] for u in units], ignore_index=True)
     solves = ps.solve_table(pe)
     keys = SEGMENT_BUDGET_KEYS.get(arm.segment, {})
@@ -1101,7 +1109,10 @@ def arm_solves(units, arm):
     out["segment"] = segment
     nlp = ps.nlp_summary(pe)
     if nlp is not None:
-        nlp["budget"] = {name: _mirror_number(units, key) for name, key in NLP_BUDGET_KEYS.items()}
+        nlp["budget"] = {
+            name: _mirror_number(units, key, recorded_later=True)
+            for name, key in NLP_BUDGET_KEYS.items()
+        }
         times = nlp.get("solve_ms_max")
         if times and times["n"]:
             nlp["wakes_with_a_deadline_reject_share"] = times["n_cut"] / times["n"]
@@ -1312,8 +1323,9 @@ def format_record(res):
         for tag, v in p["by_stratum"].items():
             pr = v["pairs"]
             lines.append(
-                f"  {tag} ({' | '.join(v['units'])}): thrown keys {pr['keys']} · dropped {pr['dropped_n']} "
-                f"{pr['dropped']} · unkeyed {pr['unkeyed']} · to rerun {pr['seeds_to_rerun']}"
+                f"  {tag} ({' | '.join(v['units'])}): thrown keys {pr['keys']} · thrown by one arm only "
+                f"a {pr['unpaired_a']} b {pr['unpaired_b']} · dropped {pr['dropped_n']} {pr['dropped']} · "
+                f"unkeyed {pr['unkeyed']} · six or more dropped (the rerun rule) {pr['seeds_to_rerun']}"
             )
             lines += [_fmt_table(f, v[f]) for f in ("truth", "d4")]
     lines.append(
