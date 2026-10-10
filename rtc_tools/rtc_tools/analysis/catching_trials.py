@@ -2646,6 +2646,7 @@ LAST_SEGMENT_KEYS = (
     "last_seg_viol_group",
     "last_seg_wake_join",
     "last_seg_snapshot_seq",
+    "last_seg_snapshot_gen",
     "last_seg_pred_age_ms",
 )
 
@@ -2685,8 +2686,9 @@ def last_segment_columns(
       envelope's slack the published solution leaned on;
     - ``last_seg_elastic_max`` / ``_viol_max`` and their ``_group`` — the largest
       elastic and the largest violation of a hard row, by row group;
-    - ``last_seg_wake_join`` / ``_snapshot_seq`` — the vision snapshot the wake
-      read (:func:`wake_snapshot`);
+    - ``last_seg_wake_join`` / ``_snapshot_seq`` / ``_snapshot_gen`` — the
+      vision snapshot the wake read (:func:`wake_snapshot`) and its track
+      generation: the key of a probe dump (:func:`wake_prediction_shares`);
     - ``last_seg_pred_age_ms`` — how long before the wake the controller had
       received that snapshot (the tick's ``input_age_s`` carried to the wake).
       The estimator's own latency is not in it, and a wake the tick trails
@@ -2741,6 +2743,8 @@ def last_segment_columns(
             rec["last_seg_snapshot_seq"] = float(events.snapshot_seq[i])
         return rec
     rec["last_seg_snapshot_seq"] = float(ctx.input_seq[k])
+    if ctx.input_gen is not None:
+        rec["last_seg_snapshot_gen"] = float(ctx.input_gen[k])
     if ctx.input_age is not None and ctx.input_age[k] >= 0.0:
         rec["last_seg_pred_age_ms"] = float((ctx.input_age[k] + wake_t - ctx.t[k]) * 1e3)
     return rec
@@ -3389,6 +3393,11 @@ def analyse_session(
             row.update(cv.nees_by_trial(samples, lo_ns, (t_hi + trial.stamp_offset) * 1e9))
         if dump is not None:
             row.update(c2_for_trial(ctx, trial, row, truth, t_impact, dump, bridge, lane, seq, fk))
+            row.update(
+                wake_prediction_shares(
+                    ctx, truth, row, trial.stamp_offset, dump, docking, t_impact
+                )
+            )
         row["hand_persist_met"] = hand_persist_met(
             row.get("hand_blocked_s_judge", math.nan), dt, t_persist_s
         )
@@ -4590,6 +4599,102 @@ def _throws_file_block(rows) -> dict | None:
     return {"sha256": next(iter(shas)), "n_thrown": sum("throw_id" in r for r in rows)}
 
 
+# ── The prediction and the plan of that wake (#807, needs the probe dump) ─────
+
+WAKE_PREDICTION_KEYS = (
+    *(f"{term}_wake_{axis}_mm" for term in ("pred", "plan") for axis in "xys"),
+    "pred_wake_lat_mm",
+    "plan_wake_lateral_margin_mm",
+    "pred_wake_v_perp_m_s",
+    "pred_wake_v_s_m_s",
+    "pred_wake_horizon_ms",
+    "pred_wake_join",
+)
+PRED_WAKE_EXACT = "exact"
+PRED_WAKE_MISSING = "missing"
+
+
+def _direction_to_model(fk, v_world: np.ndarray) -> np.ndarray:
+    """A sim-world direction in the model world (``to_model`` is affine)."""
+    return fk.to_model(np.asarray(v_world, dtype=float)) - fk.to_model(np.zeros(3))
+
+
+def wake_prediction_shares(
+    ctx: TrialContext,
+    truth: Truth | None,
+    row: Mapping,
+    stamp_offset: float,
+    dump,
+    docking: HandDocking | None,
+    t_impact: float = math.inf,
+) -> dict:
+    """The ``ref`` share of :func:`catch_frame_shares` split in two, with the
+    prediction the last segment's wake read (``vision_lane_probe --dump``):
+
+        p_true(t_c) − ref(kl) = [p_true(t_c) − p̂_wake(t_c)]     pred — the estimator's
+                              + [p̂_wake(t_c) − ref(kl)]         plan — the solve's
+
+    in the measured catch frame at ``t_c``, as ``pred_wake_{x,y,s}_mm`` and
+    ``plan_wake_{x,y,s}_mm`` (raw coordinates, like ``cf_ref_*``, whose sum they
+    are). ``p̂_wake`` is the snapshot of ``last_seg_snapshot_seq`` /
+    ``_snapshot_gen`` evaluated at ``t_c`` on the ball's stamp axis
+    (``t_c + stamp_offset``, the axis the truth is read on).
+
+    - ``pred_wake_lat_mm`` — the lateral length of the prediction's share (it
+      is an error, whatever the plan aimed at);
+    - ``plan_wake_lateral_margin_mm`` — the lateral set's margin of the ball AS
+      THE SOLVE SAW IT, against the reference the arm was given. A docking solve
+      holds the ball inside the set at ``s = s_ent``: ``plan_wake_s_mm`` there
+      and this margin above zero is the join's own check;
+    - ``pred_wake_v_perp_m_s`` / ``pred_wake_v_s_m_s`` — the prediction's
+      velocity error at ``t_c`` across and along the approach axis
+      (``v_true − v̂``; the lateral one as a length);
+    - ``pred_wake_horizon_ms`` — ``t_c`` − the snapshot's origin stamp: how far
+      ahead the estimator was asked to see;
+    - ``pred_wake_join`` — ``exact`` (the snapshot is in the dump), ``missing``
+      (the wake's key is known and the probe never received it), "" (no key:
+      ``last_seg_wake_join`` says why).
+    """
+    rec: dict = dict.fromkeys(WAKE_PREDICTION_KEYS, math.nan)
+    rec["pred_wake_join"] = ""
+    t_c = _num(row.get("t_c"))
+    seq, gen = _num(row.get("last_seg_snapshot_seq")), _num(row.get("last_seg_snapshot_gen"))
+    if truth is None or not all(math.isfinite(v) for v in (t_c, seq, gen, stamp_offset)):
+        return rec
+    key = (int(seq), int(gen))
+    if key not in dump.points:
+        rec["pred_wake_join"] = PRED_WAKE_MISSING
+        return rec
+    rec["pred_wake_join"] = PRED_WAKE_EXACT
+    t_c_ns = (t_c + stamp_offset) * 1e9
+    p_hat_w, v_hat_w = cv.state_hat_at(dump, key, t_c_ns)
+    origin = dump.origin_ns.get(key)
+    if origin is not None:
+        rec["pred_wake_horizon_ms"] = (t_c_ns - origin) * 1e-6
+    if not np.all(np.isfinite(p_hat_w)):
+        return rec  # t_c is past the snapshot's horizon
+    t_lead = _num(row.get("t_lead_s"))
+    kl, kc = lead_tick(ctx, t_c, t_lead if math.isfinite(t_lead) else 0.0)
+    rot = ctx.rot_meas(kc)
+    p_w, v_w, _, _ = truth.free_flight([t_c], t_impact)
+    pred = rot.T @ (ctx.fk.to_model(p_w[0]) - ctx.fk.to_model(p_hat_w))
+    for axis, value in zip("xys", pred, strict=True):
+        rec[f"pred_wake_{axis}_mm"] = float(value * 1e3)
+    rec["pred_wake_lat_mm"] = float(np.linalg.norm(pred[:2]) * 1e3)
+    v_err = rot.T @ _direction_to_model(ctx.fk, v_w[0] - v_hat_w)
+    rec["pred_wake_v_perp_m_s"] = float(np.linalg.norm(v_err[:2]))
+    rec["pred_wake_v_s_m_s"] = float(v_err[2])
+    ref, _ = reference_at_lead(ctx, kl)
+    if ref is None:
+        return rec
+    plan = rot.T @ (ctx.fk.to_model(p_hat_w) - ref)
+    for axis, value in zip("xys", plan, strict=True):
+        rec[f"plan_wake_{axis}_mm"] = float(value * 1e3)
+    if docking is not None:
+        rec["plan_wake_lateral_margin_mm"] = docking.lateral_margin(plan[:2]) * 1e3
+    return rec
+
+
 #: Fewer committed trials than this and the catch-frame block gives no medians.
 CATCH_FRAME_MIN_N = 10
 CATCH_FRAME_MEDIAN_KEYS = (
@@ -4599,6 +4704,14 @@ CATCH_FRAME_MEDIAN_KEYS = (
     "ent_lateral_margin_mm",
     "last_seg_wake_to_tc_ms",
     "last_seg_pred_age_ms",
+)
+# ...and with a probe dump (:func:`wake_prediction_shares`).
+WAKE_PREDICTION_MEDIAN_KEYS = (
+    "pred_wake_lat_mm",
+    "pred_wake_s_mm",
+    "plan_wake_s_mm",
+    "plan_wake_lateral_margin_mm",
+    "pred_wake_horizon_ms",
 )
 
 
@@ -4628,8 +4741,13 @@ def catch_frame_summary(rows: Sequence[Mapping], docking: HandDocking | None) ->
     out["last_seg_wake_join"] = _counts(
         [r for r in done if r.get("last_seg_wake_join")], "last_seg_wake_join"
     )
+    keys = CATCH_FRAME_MEDIAN_KEYS
+    joined = [r for r in done if r.get("pred_wake_join")]
+    if joined:
+        out["pred_wake_join"] = _counts(joined, "pred_wake_join")
+        keys = (*keys, *WAKE_PREDICTION_MEDIAN_KEYS)
     out["medians"] = (
-        {k: _median(done, k) for k in CATCH_FRAME_MEDIAN_KEYS}
+        {k: _median(done, k) for k in keys}
         if len(done) >= CATCH_FRAME_MIN_N
         else f"NOT_EVALUATED(n < {CATCH_FRAME_MIN_N})"
     )

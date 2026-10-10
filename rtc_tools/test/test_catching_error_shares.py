@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from rtc_tools.analysis import catching_trials as ct
+from rtc_tools.analysis import catching_trials as ct, catching_vision as cv
 
 DT = 0.002
 
@@ -393,6 +393,7 @@ def test_the_last_segments_wake_is_the_row_that_published_it_in_this_trial():
     # The wake's snapshot is the one its ticks read: received 4 ms before the
     # tick at 0.500, so 5 ms before the wake.
     assert (rec["last_seg_wake_join"], rec["last_seg_snapshot_seq"]) == ("exact", 40.0)
+    assert rec["last_seg_snapshot_gen"] == 1.0
     assert rec["last_seg_pred_age_ms"] == pytest.approx(5.0, abs=1e-6)
 
 
@@ -515,6 +516,168 @@ def test_the_summary_counts_the_set_and_holds_its_medians_below_ten():
     bare = ct.catch_frame_summary(_summary_rows(10), None)
     assert "s_ent_mm" not in bare and bare["n"] == 10
     assert ct.catch_frame_summary([{"cf_tot_s_mm": math.nan}], DOCKING) is None
+
+
+# ── The prediction and the plan of the last segment's wake ───────────────────
+
+PRED = np.array([0.006, -0.004, 0.010])  # the prediction's miss at T_X, catch frame [m]
+V_ERR = np.array([0.03, -0.04, 0.2])  # ...and its velocity's [m/s]
+STAMP_OFFSET = 1234.5  # ball stamp axis − t_relative_s
+KEY = (40, 1)
+
+
+def _dump(key=KEY):
+    """One snapshot, taken 0.3 s before ``T_X``, whose ball is ``PRED`` short of
+    the true one at ``T_X`` and ``V_ERR`` slower (both in the catch frame)."""
+    t_rel = 0.5 + np.arange(0.0, 0.5, 0.05)
+    velocity = V_BALL - ROT @ V_ERR
+    position = P_CATCH - ROT @ PRED + np.outer(t_rel - T_X, velocity)
+    t_int = np.round((t_rel + STAMP_OFFSET) * 1e9).astype(np.int64)
+    arr = np.column_stack(
+        [
+            t_int.astype(float),
+            position,
+            np.tile(velocity, (len(t_rel), 1)),
+            np.zeros((len(t_rel), 3)),
+        ]
+    )
+    return cv.ProbeDump(
+        points={key: (arr, t_int)},
+        recv_ns=np.array([0], dtype=np.int64),
+        recv_keys=[key],
+        frame_id="world",
+        sub="reliable",
+        origin_ns={key: int(t_int[0])},
+    )
+
+
+def _wake_row(**over):
+    row = {
+        "t_c": T_X,
+        "t_lead_s": 0.0,
+        "last_seg_snapshot_seq": 40.0,
+        "last_seg_snapshot_gen": 1.0,
+    }
+    return {**row, **over}
+
+
+def _wake(name, rec):
+    return np.array([rec[f"{name}_wake_{axis}_mm"] for axis in "xys"])
+
+
+def test_the_reference_share_splits_into_the_prediction_and_the_plan():
+    ctx, truth = _static_ctx(), _line_truth()
+    rec = ct.wake_prediction_shares(ctx, truth, _wake_row(), STAMP_OFFSET, _dump(), DOCKING)
+    assert set(rec) == set(ct.WAKE_PREDICTION_KEYS)
+    assert rec["pred_wake_join"] == "exact"
+    assert _wake("pred", rec) == pytest.approx(PRED * 1e3, abs=1e-3)
+    assert rec["pred_wake_lat_mm"] == pytest.approx(np.hypot(6.0, 4.0), abs=1e-3)
+    # The solve saw the ball PRED away from where it was: (−11, −1, −3) mm in the
+    # reference's frame, 1 mm outside the −x face of the set.
+    assert _wake("plan", rec) == pytest.approx((BALL_IN_REF - PRED) * 1e3, abs=1e-3)
+    assert rec["plan_wake_lateral_margin_mm"] == pytest.approx(-1.0, abs=1e-3)
+    # The two are the `ref` share of the catch-frame decomposition, no more.
+    whole = ct.catch_frame_shares(ctx, truth, T_X, 0.0, DOCKING, 0.12)
+    assert _wake("pred", rec) + _wake("plan", rec) == pytest.approx(_terms(whole, "ref"), abs=1e-3)
+    assert rec["pred_wake_v_perp_m_s"] == pytest.approx(0.05, abs=1e-6)
+    assert rec["pred_wake_v_s_m_s"] == pytest.approx(0.2, abs=1e-6)
+    assert rec["pred_wake_horizon_ms"] == pytest.approx(300.0, abs=1e-3)
+
+
+def test_the_prediction_is_read_on_the_stamp_axis():
+    """Positive control: 20 ms off the stamp offset, the snapshot is evaluated
+    20 ms of ball travel away and the prediction's share is not the injected one."""
+    off = ct.wake_prediction_shares(
+        _static_ctx(), _line_truth(), _wake_row(), STAMP_OFFSET + 0.02, _dump(), DOCKING
+    )
+    assert off["pred_wake_join"] == "exact"
+    assert abs(off["pred_wake_s_mm"] - PRED[2] * 1e3) > 20.0
+
+
+def test_a_wake_whose_snapshot_the_probe_missed_says_so():
+    ctx, truth = _static_ctx(), _line_truth()
+    text = ("pred_wake_join",)
+    missing = ct.wake_prediction_shares(
+        ctx, truth, _wake_row(), STAMP_OFFSET, _dump((41, 1)), None
+    )
+    assert missing["pred_wake_join"] == "missing"
+    assert all(math.isnan(v) for k, v in missing.items() if k not in text)
+    # No key at all (the wake was not joined): nothing, and no claim either way.
+    for row in (_wake_row(last_seg_snapshot_seq=math.nan), _wake_row(t_c=math.nan), {}):
+        rec = ct.wake_prediction_shares(ctx, truth, row, STAMP_OFFSET, _dump(), DOCKING)
+        assert rec["pred_wake_join"] == ""
+        assert all(math.isnan(v) for k, v in rec.items() if k not in text)
+    assert (
+        ct.wake_prediction_shares(ctx, None, _wake_row(), STAMP_OFFSET, _dump(), DOCKING)[
+            "pred_wake_join"
+        ]
+        == ""
+    )
+
+
+def test_a_catch_past_the_snapshots_horizon_has_the_horizon_and_no_shares():
+    late = _wake_row(t_c=T_X + 0.3)  # the snapshot ends 0.15 s after T_X
+    rec = ct.wake_prediction_shares(
+        _static_ctx(), _line_truth(), late, STAMP_OFFSET, _dump(), None
+    )
+    assert rec["pred_wake_join"] == "exact"
+    assert rec["pred_wake_horizon_ms"] == pytest.approx(600.0, abs=1e-3)
+    assert math.isnan(rec["pred_wake_s_mm"]) and math.isnan(rec["plan_wake_s_mm"])
+
+
+def test_without_a_reference_the_prediction_share_is_still_there():
+    ctx = _static_ctx()
+    ctx.segment_following = np.zeros(len(ctx.t), bool)
+    rec = ct.wake_prediction_shares(
+        ctx, _line_truth(), _wake_row(), STAMP_OFFSET, _dump(), DOCKING
+    )
+    assert _wake("pred", rec) == pytest.approx(PRED * 1e3, abs=1e-3)
+    assert math.isnan(rec["plan_wake_s_mm"]) and math.isnan(rec["plan_wake_lateral_margin_mm"])
+
+
+def test_the_dump_keeps_each_snapshots_origin_and_gives_its_velocity(tmp_path):
+    pd = pytest.importorskip("pandas")
+    rows = [
+        {
+            "recv_ns": 10 + i,
+            "sub": "reliable",
+            "stamp_ns": 2_000_000_000,
+            "frame_id": "world",
+            "snapshot_sequence": 7,
+            "generation": 3,
+            "horizon_ns": 50_000_000 * (i + 1),  # the first sample is NOT at the origin
+            "x": 1.0 - 0.1 * i,
+            "y": 0.0,
+            "z": 0.5,
+            "vx": -2.0,
+            "vy": 0.0,
+            "vz": 0.4 - 9.81 * 0.05 * i,
+            "ax": 0.0,
+            "ay": 0.0,
+            "az": -9.81,
+        }
+        for i in range(4)
+    ]
+    path = tmp_path / "lane_prediction_dump.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
+    dump = cv.load_probe_dump(path)
+    assert dump.origin_ns == {(7, 3): 2_000_000_000}
+    # 10 ms past the second sample: its velocity carried by its acceleration.
+    p, v = cv.state_hat_at(dump, (7, 3), 2_000_000_000 + 110_000_000)
+    assert v == pytest.approx([-2.0, 0.0, 0.4 - 9.81 * 0.05 - 9.81 * 0.01])
+    assert p == pytest.approx(cv.p_hat_at(dump, (7, 3), 2_000_000_000 + 110_000_000))
+    assert np.isnan(cv.state_hat_at(dump, (7, 9), 2.1e9)[1]).all()
+
+
+def test_the_summary_adds_the_wakes_prediction_when_rows_carry_it():
+    rows = _summary_rows(10)
+    assert "pred_wake_join" not in ct.catch_frame_summary(rows, DOCKING)
+    for i, row in enumerate(rows):
+        row.update(pred_wake_join="exact" if i else "missing", pred_wake_lat_mm=float(i))
+    block = ct.catch_frame_summary(rows, DOCKING)
+    assert block["pred_wake_join"] == {"exact": 9, "missing": 1}
+    assert block["medians"]["pred_wake_lat_mm"] == pytest.approx(4.5)
+    assert set(ct.WAKE_PREDICTION_MEDIAN_KEYS) <= set(block["medians"])
 
 
 # ── End to end on the pilot session ──────────────────────────────────────────
