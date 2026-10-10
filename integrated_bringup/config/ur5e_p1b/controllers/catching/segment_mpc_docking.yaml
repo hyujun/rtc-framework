@@ -150,8 +150,9 @@ demo_catching_controller:
               # ran them: on the D-2 tuning set with no deadline their median
               # went from 57 to 20 ms, an accepted solve's from 20.6 to 18.1 ms.
               # The accepted throws did not change. The QP solver's own
-              # tolerances and iteration cap (solver.*) and the other penalty
-              # keys moved neither time.
+              # tolerances and iteration cap (solver.eps_abs, eps_rel and
+              # max_iter — max_iter_warm, below, is a later key and another
+              # matter) and the other penalty keys moved neither time.
               # Under planner.search.mode grid there is no offline map: one
               # same-seed unit a robot with the code default 1e6 instead
               # published as many throws (1 and 1 of 30) and converged as
@@ -172,13 +173,15 @@ demo_catching_controller:
               max_iter: 400
               # The cap on max_iter for a QP the core starts from the iterates
               # of the QP before it; past it the core runs the QP again from
-              # zero, under max_iter (#803). Without a cap, on the D-2 tuning
-              # set (8 units: both robots, both searches) such a QP either
-              # converged within a few solver iterations — 97 % of 5 722
-              # within 10, 99 % within 30 — or ran to max_iter without
+              # zero, under max_iter (#803). Like max_iter it counts ProxQP's
+              # OUTER iterations; the logged segment_qp_iterations is the
+              # inner total and does not show it. Without a cap, on the D-2
+              # tuning set (8 units: both robots, both searches) such a QP
+              # either converged within a few outer iterations — 97 % of
+              # 5 722 within 10, 99 % within 30 — or ran to max_iter without
               # converging (99 of them, a median 0.2 s each). With the cap at
               # 10 (4 units) the longest QP took 33 ms, and the 126 re-runs
-              # from zero all converged, within 15 iterations and 17 ms.
+              # from zero all converged, within 15 outer iterations and 17 ms.
               # The cap is a measured trade, not a bound: on the test rigs,
               # under a 0.02 rad trust region, a re-run from zero took 155 ms
               # where the warm start would have converged in 14 ms.

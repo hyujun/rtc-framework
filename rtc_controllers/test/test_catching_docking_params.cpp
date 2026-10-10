@@ -1010,6 +1010,18 @@ TEST(DockingParamsCore, AnAbsentMapChangesNothing) {
   EXPECT_EQ(core.sigma_T, d.sigma_T);
 }
 
+// 0 is how an overlay switches a shipped cap off (it cannot delete a key):
+// the parser takes it, and the core reads it as no separate cap.
+TEST(DockingParamsCore, AWarmCapOfZeroIsAcceptedAndSwitchesItOff) {
+  MpcDockingSegmentCoreParams core;
+  core.solver_max_iter_warm = 10;
+  ReadDockingCoreParams(YAML::Load("{solver: {max_iter_warm: 0}}"), "x.core", 6, core);
+  EXPECT_EQ(core.solver_max_iter_warm, 0);
+  EXPECT_THROW(
+      ReadDockingCoreParams(YAML::Load("{solver: {max_iter_warm: -1}}"), "x.core", 6, core),
+      std::exception);
+}
+
 TEST(DockingParamsCore, AKeyAbsentKeepsWhatTheCallerHeld) {
   MpcDockingSegmentCoreParams core;
   core.u_scale = 321.0;

@@ -489,8 +489,9 @@ struct MpcDockingSegmentCoreParams {
                               .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT,
                               .eps_primal_inf = 0.0};
   /// The cap on solver.max_iter for a QP that starts WARM — from the iterates
-  /// of the QP before it in the same solve; ≥ 0, and 0 or a value of at least
-  /// solver.max_iter is no separate cap. A warm-started QP that has not
+  /// of the QP before it in the same solve; like max_iter it counts ProxQP's
+  /// OUTER iterations (qp_iterations sums the inner ones). ≥ 0, and 0 or a
+  /// value of at least solver.max_iter is no separate cap. A warm-started QP that has not
   /// converged by it is run again from zero under solver.max_iter, as one that
   /// ran to solver.max_iter always was (RunQp; the deadline is read between
   /// the two). The cold run is what the cap is NOT applied to: a QP that

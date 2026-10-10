@@ -1446,7 +1446,9 @@ TEST(MpcDockingSegmentCore, AWarmStartedQpThatMissesItsCapIsRunAgainFromZero) {
       ASSERT_GT(a.iterations, 1) << where << ": the solve needs a second QP for a warm start";
       ASSERT_TRUE(capped.Solve(cs.in, b)) << where;
       EXPECT_TRUE(b.converged) << where << Describe(b);
-      // QPs beyond one per iteration are re-runs (no penalty moved here).
+      // No penalty was raised and kept, or reset: the QPs beyond one per
+      // iteration are re-runs from zero and probes that were undone, and a
+      // probe is undone by either core alike.
       EXPECT_EQ(a.mu_updates + a.mu_resets, 0) << where;
       EXPECT_EQ(b.mu_updates + b.mu_resets, 0) << where;
       reruns_free += a.qp_solves - a.iterations;

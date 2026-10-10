@@ -2071,7 +2071,7 @@ void MpcDockingSegmentCore::ElasticByGroup(
 MpcDockingReason MpcDockingSegmentCore::RunQp(MpcDockingSegmentCoreResult& out) noexcept {
   const auto t0 = std::chrono::steady_clock::now();
   // A QP started from the previous QP's iterates mostly converges within a
-  // few solver iterations; the rest can run to the solver's cap without
+  // few of the solver's outer iterations; the rest can run to its cap without
   // converging where the same QP from zero converges in a handful. The warm
   // start is therefore given its own, lower cap (solver_max_iter_warm), and
   // a QP that misses it takes the path below like any warm-started QP that
