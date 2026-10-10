@@ -24,6 +24,13 @@ This module joins them into one row per trial:
   between the commit and the catch the column lies after the catch instant:
   ``tc_axis`` (:func:`tc_axis_columns`, #602) marks such a row ``shifted`` and
   the summary leaves it out of the t_c medians (``summary["tc_axis"]``).
+* **the t_c gap in the catch frame** (#807) — the same terms as vectors along
+  the approach axis and across it (:func:`catch_frame_shares`), the ball's
+  crossing of the hand's entrance plane against the capture set the profile
+  identifies (:class:`HandDocking`, :func:`entrance_crossing`), and the planner
+  wake that solved the segment the arm was on at ``t_c`` — how far ahead of the
+  catch it looked and which vision snapshot it read
+  (:func:`last_segment_columns`, :func:`wake_snapshot`).
 * **truth success** (G8-D, L8 §9) and the supervisor-vs-truth confusion
   matrix — see :func:`truth_success`.
 * **D-3 covariate** (L8 §4.5, D-S8-4 (c)) from the clock lane, reusing
@@ -882,6 +889,12 @@ class CatchFrameFk:
             :3, :3
         ] @ rotation_model
 
+    def placement(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(rotation 3×3, position) of the catch frame in the MODEL WORLD at arm
+        posture ``q`` — the frame the docking planner's ``s`` and ``rho`` are
+        coordinates of (:func:`catch_frame_shares`)."""
+        return self._arm.frame_placement(np.asarray(q, dtype=float))
+
     def joint_origins(self, q: np.ndarray) -> np.ndarray:
         """``(n, 3)`` origins of the arm joints in the MODEL WORLD at arm posture ``q``."""
         return self._arm.joint_origins(q)
@@ -943,6 +956,10 @@ HAND_WITNESS_COLUMNS = ("hand_stalled_n", "hand_effort_frac", "hand_blocked_s", 
 # The vision snapshot the tick read (L8 §5.2) — G8-C2's exact join key into
 # the probe dump. Optional: a diag recorded before the columns has none.
 DIAG_INPUT_COLUMNS = ("input_snapshot_sequence", "input_generation")
+# How long ago the controller RECEIVED that snapshot, at the tick [s] (the tick's
+# ``TrajView::age_ns``; -1e-9 with none) — the prediction age a planner wake is
+# given through :func:`wake_snapshot`. Optional like the key columns.
+DIAG_INPUT_AGE_COLUMN = "input_age_s"
 # The tick record's segment block (MPC E1-F04; columns since E1-F05, #631): what
 # the RT did with the MPC's segments. Optional, and each name on its own — a
 # diag recorded before the columns has none, and the E1-F09 measurement build
@@ -986,7 +1003,7 @@ def diag_columns(header: Sequence[str]) -> list[str]:
     joints = [c for c in header if c.startswith(("q_cmd_", "q_meas_"))]
     lead = [DIAG_LEAD_COLUMN] if DIAG_LEAD_COLUMN in header else []
     hand_witness = [c for c in HAND_WITNESS_COLUMNS if c in header]
-    inputs = [c for c in DIAG_INPUT_COLUMNS if c in header]
+    inputs = [c for c in (*DIAG_INPUT_COLUMNS, DIAG_INPUT_AGE_COLUMN) if c in header]
     segment = [c for c in DIAG_SEGMENT_COLUMNS if c in header]
     return list(DIAG_COLUMNS) + lead + hand_witness + inputs + segment + joints
 
@@ -2052,6 +2069,8 @@ class TrialContext:
     # The vision snapshot key per tick (DIAG_INPUT_COLUMNS), None when absent.
     input_seq: np.ndarray | None = None
     input_gen: np.ndarray | None = None
+    # How long ago that snapshot was received [s] (DIAG_INPUT_AGE_COLUMN).
+    input_age: np.ndarray | None = None
     # The segment block per tick (DIAG_SEGMENT_COLUMNS), each None when its column
     # is absent. ``segment_p_d`` is the followed segment's CLIK target, (n, 3).
     segment_judged: np.ndarray | None = None
@@ -2068,6 +2087,14 @@ class TrialContext:
 
     def fk_cmd(self, ticks) -> np.ndarray:
         return self._fk("cmd", self.q_cmd, ticks)
+
+    def rot_meas(self, k: int) -> np.ndarray:
+        """Rotation of the measured catch frame at tick ``k`` (model world)."""
+        k = int(k)
+        hit = self._cache.get(("rot", k))
+        if hit is None:
+            hit = self._cache[("rot", k)] = self.fk.placement(self.q_meas[k])[0]
+        return hit
 
     def _fk(self, key: str, q: np.ndarray, ticks) -> np.ndarray:
         ticks = np.atleast_1d(ticks)
@@ -2290,6 +2317,448 @@ def command_kinematics_at_tc(ctx: TrialContext, t_c: float, t_lead: float) -> di
     k_move += k_app
     rec["cmd_hold_s"] = float(t[k_move] - t[k_app])
     rec["cmd_move_s"] = float(t[kl] - t[k_move])
+    return rec
+
+
+# ── The t_c gap in the catch frame (#807) ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class HandDocking:
+    """The capture set a hand was identified with (``catching.robot.hand.docking``):
+    the entrance plane offset and the lateral set, in the BALL-CENTRE coordinates
+    of the catch frame — ``s`` along its +z (the approach axis; the ball travels
+    toward −z), ``rho`` on its x, y (``mpc_docking_relative_state.hpp``)."""
+
+    s_ent: float  # entrance plane offset [m]
+    rho_ref: np.ndarray  # (2,) the point of the lateral set a docking solve aims at [m]
+    faces_a: np.ndarray  # (n, 2) unit normals of the lateral set's faces
+    faces_b: np.ndarray  # (n,) their offsets [m]: a_i · rho <= b_i
+
+    def lateral_margin(self, rho) -> float:
+        """``min_i (b_i − a_i · rho)`` [m]: positive inside the lateral set, where
+        it is the distance to the nearest face."""
+        return float(np.min(self.faces_b - self.faces_a @ np.asarray(rho, dtype=float)))
+
+
+def hand_docking(profile: CatchingProfile) -> HandDocking | None:
+    """The profile's :class:`HandDocking`, or ``None`` when the hand has none —
+    the section is absent, or one of the values read here is not a number yet."""
+    doc = profile.hand_yaml.get("docking")
+    try:
+        lateral = doc["lateral"]
+        n = int(lateral["n_faces"])
+        out = HandDocking(
+            s_ent=float(doc["s_ent"]),
+            rho_ref=np.array([float(v) for v in lateral["rho_ref"]]),
+            faces_a=np.array([float(v) for v in lateral["faces_a"]]).reshape(n, 2),
+            faces_b=np.array([float(v) for v in lateral["faces_b"]]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    sizes_ok = out.rho_ref.shape == (2,) and out.faces_b.shape == (n,) and n > 0
+    values = (out.s_ent, *out.rho_ref, *out.faces_a.ravel(), *out.faces_b)
+    return out if sizes_ok and all(math.isfinite(v) for v in values) else None
+
+
+#: The terms of :func:`catch_frame_shares`, each as catch-frame x, y and s.
+CATCH_FRAME_TERMS = ("tot", "ref", "clik", "servo")
+CATCH_FRAME_KEYS = (
+    *(f"cf_{term}_{axis}_mm" for term in CATCH_FRAME_TERMS for axis in "xys"),
+    "cf_tot_lateral_margin_mm",
+    "cf_ref_lateral_margin_mm",
+    "ent_cross_ms",
+    "ent_x_mm",
+    "ent_y_mm",
+    "ent_lateral_margin_mm",
+    "ent_c_m_s",
+    "ent_v_perp_m_s",
+)
+# Rows on each side of the entrance crossing its rates are differenced over.
+ENTRANCE_RATE_ROWS = 5
+
+
+def entrance_crossing(
+    ctx: TrialContext,
+    truth: Truth,
+    t_c: float,
+    s_ent: float,
+    window_s: float,
+    t_impact: float = math.inf,
+) -> dict:
+    """Where and when the ball's centre crossed the MEASURED hand's entrance plane.
+
+    On every tick within ±``window_s`` of ``t_c`` the free-flight ball is put in
+    the measured catch frame, ``r = Rᵀ(p_ball − p_hand)``; the crossing is the
+    downward pass of ``s = r_z`` through ``s_ent`` nearest ``t_c``, interpolated
+    between the two ticks around it.
+
+    - ``ent_cross_ms`` — that instant − ``t_c``. Under a docking planner ``t_c``
+      IS the planned crossing, so this is the timing share of the gap;
+    - ``ent_x_mm`` / ``ent_y_mm`` — the lateral coordinates there;
+    - ``ent_c_m_s`` / ``ent_v_perp_m_s`` — closing speed and lateral speed of the
+      ball RELATIVE to the hand there (the frame's own motion included),
+      differenced over ±``ENTRANCE_RATE_ROWS`` ticks.
+
+    The ball is the free flight (:meth:`Truth.free_flight`): one that touched a
+    finger before the plane is carried on as if it had not, so the columns say
+    where the hand WAS relative to the throw, not what the contact did. All NaN
+    when the ball never passed the plane inside the window.
+    """
+    rec = dict.fromkeys(
+        ("ent_cross_ms", "ent_x_mm", "ent_y_mm", "ent_c_m_s", "ent_v_perp_m_s"), math.nan
+    )
+    win = np.nonzero((ctx.t >= t_c - window_s) & (ctx.t <= t_c + window_s))[0]
+    if win.size < 2:
+        return rec
+    t = ctx.t[win]
+    p_w, _, _, _ = truth.free_flight(t, t_impact)
+    offset = ctx.fk.to_model(p_w) - ctx.fk_meas(win)
+    rel = np.array([ctx.rot_meas(k).T @ offset[i] for i, k in enumerate(win)])
+    s = rel[:, 2]
+    with np.errstate(invalid="ignore"):
+        down = np.nonzero((s[:-1] > s_ent) & (s[1:] <= s_ent) & (np.diff(t) > 0.0))[0]
+    if not down.size:
+        return rec
+    i = int(down[np.argmin(np.abs(t[down] - t_c))])
+    frac = float((s[i] - s_ent) / (s[i] - s[i + 1]))
+    rho = rel[i, :2] + frac * (rel[i + 1, :2] - rel[i, :2])
+    rec["ent_cross_ms"] = float((t[i] + frac * (t[i + 1] - t[i]) - t_c) * 1e3)
+    rec["ent_x_mm"], rec["ent_y_mm"] = (float(v * 1e3) for v in rho)
+    lo, hi = max(0, i - ENTRANCE_RATE_ROWS), min(len(t) - 1, i + 1 + ENTRANCE_RATE_ROWS)
+    rate = (rel[hi] - rel[lo]) / (t[hi] - t[lo])
+    if np.all(np.isfinite(rate)):
+        rec["ent_c_m_s"] = float(-rate[2])
+        rec["ent_v_perp_m_s"] = float(np.linalg.norm(rate[:2]))
+    return rec
+
+
+def catch_frame_shares(
+    ctx: TrialContext,
+    truth: Truth | None,
+    t_c: float,
+    t_lead: float,
+    docking: HandDocking | None,
+    window_s: float,
+    t_impact: float = math.inf,
+) -> dict:
+    """The t_c gap of :func:`decompose_at_tc` as VECTORS in the catch frame.
+
+    A capture set is not a ball around the hand: it is a plane the ball must
+    cross (``s = s_ent``) inside a small lateral set, so a gap of 20 mm along
+    the approach axis and one of 20 mm across it are different failures. The
+    same identity as the norms', on the ball's side —
+
+        p_true(t_c) − FK(q_meas(t_c)) = [p_true(t_c) − ref(kl)]            ref
+                                      + [ref(kl) − FK(q_cmd(kl))]          clik
+                                      + [FK(q_cmd(kl)) − FK(q_meas(t_c))]  servo
+
+    — each term rotated into the MEASURED catch frame at ``t_c`` and written as
+    ``cf_<term>_{x,y,s}_mm``: x, y the lateral coordinates, s along the approach
+    axis. ``tot`` is the ball's centre in the hand, the sum of the other three.
+    They are raw coordinates: what a plan aimed at is not subtracted, because it
+    depends on the planner — a docking solve puts the ball at ``s = s_ent``
+    inside the lateral set (near ``rho_ref``), the others at the frame's origin.
+    ``ref`` is the plan's and the prediction's share together: splitting it
+    takes the prediction the solve read (``--probe-dump``).
+
+    With the hand's capture set (:class:`HandDocking`):
+
+    - ``cf_tot_lateral_margin_mm`` / ``cf_ref_lateral_margin_mm`` — the lateral
+      set's margin (:meth:`HandDocking.lateral_margin`, > 0 inside) of the ball
+      at ``t_c``, against the measured hand and against the reference;
+    - the ``ent_*`` columns of :func:`entrance_crossing`, and
+      ``ent_lateral_margin_mm`` there — whether the ball went through the set.
+
+    Everything is read at the ``t_c`` COLUMN, like the norms (#602): on a row
+    whose stamp-axis ``t_c`` is δ away (``tc_stamp_minus_tc_ms``, up to
+    ``--tc-shift-max-ms`` on a ``tc_axis: ok`` row) the approach-axis
+    coordinates carry the ball's travel in δ and ``ent_cross_ms`` carries δ
+    itself; the lateral ones hardly move (the ball travels along the approach
+    axis).
+
+    All NaN without a commit or a truth record; the set's columns NaN for a hand
+    without one.
+    """
+    rec = dict.fromkeys(CATCH_FRAME_KEYS, math.nan)
+    if truth is None or not math.isfinite(t_c):
+        return rec
+    kl, kc = lead_tick(ctx, t_c, t_lead if math.isfinite(t_lead) else 0.0)
+    rot = ctx.rot_meas(kc)
+    f_meas, f_cmd = ctx.fk_meas(kc)[0], ctx.fk_cmd(kl)[0]
+    p_w, _, _, _ = truth.free_flight([t_c], t_impact)
+    p_true = ctx.fk.to_model(p_w[0])
+    ref, _ = reference_at_lead(ctx, kl)
+    terms = {"tot": p_true - f_meas, "servo": f_cmd - f_meas}
+    if ref is not None:
+        terms.update(ref=p_true - ref, clik=ref - f_cmd)
+    in_frame = {name: rot.T @ e for name, e in terms.items()}
+    for name, e in in_frame.items():
+        for axis, value in zip("xys", e, strict=True):
+            rec[f"cf_{name}_{axis}_mm"] = float(value * 1e3)
+    if docking is None:
+        return rec
+    for name in ("tot", "ref"):
+        if name in in_frame and np.all(np.isfinite(in_frame[name])):
+            rec[f"cf_{name}_lateral_margin_mm"] = docking.lateral_margin(in_frame[name][:2]) * 1e3
+    rec.update(entrance_crossing(ctx, truth, t_c, docking.s_ent, window_s, t_impact))
+    if math.isfinite(rec["ent_x_mm"]):
+        rho = np.array([rec["ent_x_mm"], rec["ent_y_mm"]]) * 1e-3
+        rec["ent_lateral_margin_mm"] = docking.lateral_margin(rho) * 1e3
+    return rec
+
+
+# ── The wake that solved the segment the arm was on at t_c (#807) ─────────────
+
+
+class SegmentEvents(NamedTuple):
+    """The ``planner_events.csv`` columns :func:`last_segment_columns` reads, one
+    entry per row in the file's order (:func:`_planner_segment_events`)."""
+
+    seq: np.ndarray  # segment_seq
+    published: np.ndarray  # segment_outcome == "published"
+    kind: np.ndarray  # segment_kind (text)
+    k: np.ndarray  # segment_k: node 0's grid point (−n_pre under a docking planner)
+    solve_us: np.ndarray
+    slack_c: np.ndarray  # segment_slack_max
+    slack_v: np.ndarray  # segment_slack_v
+    elastic: np.ndarray  # (rows, len(DOCKING_ELASTIC_GROUPS)); NaN where the log has no column
+    viol: np.ndarray  # (rows, len(DOCKING_ROW_GROUPS))
+    snapshot_seq: np.ndarray  # snapshot_sequence: 0 on a wake that ran no search
+
+
+SEGMENT_EVENT_COLUMNS = (
+    "snapshot_sequence",
+    "segment_outcome",
+    "segment_kind",
+    "segment_seq",
+    "segment_k",
+    "segment_solve_us",
+    "segment_slack_max",
+    "segment_slack_v",
+    *(f"segment_elastic_{g}" for g in planner_solves.DOCKING_ELASTIC_GROUPS),
+    *(f"segment_viol_{g}" for g in planner_solves.DOCKING_ROW_GROUPS),
+)
+
+
+def _planner_segment_events(ctl: Path) -> SegmentEvents | None:
+    """``None`` without the file or on a log from before ``segment_seq``."""
+    path = _exists(ctl / PLANNER_EVENTS_CSV)
+    if path is None:
+        return None
+    header = _csv_header(path)
+    if "segment_seq" not in header or "segment_outcome" not in header:
+        return None
+    df = _read_csv(path, usecols=[c for c in SEGMENT_EVENT_COLUMNS if c in header])
+
+    def number(name):
+        return df[name].to_numpy(float) if name in df.columns else np.full(len(df), math.nan)
+
+    def text(name):
+        if name not in df.columns:
+            return np.full(len(df), "", dtype=object)
+        return df[name].fillna("").astype(str).to_numpy()
+
+    return SegmentEvents(
+        seq=number("segment_seq"),
+        published=text("segment_outcome") == "published",
+        kind=text("segment_kind"),
+        k=number("segment_k"),
+        solve_us=number("segment_solve_us"),
+        slack_c=number("segment_slack_max"),
+        slack_v=number("segment_slack_v"),
+        elastic=np.column_stack(
+            [number(f"segment_elastic_{g}") for g in planner_solves.DOCKING_ELASTIC_GROUPS]
+        ),
+        viol=np.column_stack(
+            [number(f"segment_viol_{g}") for g in planner_solves.DOCKING_ROW_GROUPS]
+        ),
+        snapshot_seq=number("snapshot_sequence"),
+    )
+
+
+WAKE_JOIN_PLANNER = "planner"
+WAKE_JOIN_EXACT = "exact"
+WAKE_JOIN_AMBIGUOUS = "ambiguous"
+WAKE_JOIN_CONFLICT = "conflict"
+WAKE_JOIN_NONE = "none"
+# How long after a wake instant a tick may first show the snapshot that wake
+# read [s]. The planner wakes on a snapshot's arrival and the RT tick reads the
+# same box at its own next tick, on a time axis the wake is mapped onto through
+# the clock lane: on 8 units (two robots, both searches, 15 000 wakes that
+# recorded their key) the first tick with the wake's snapshot came at most 4.3 ms
+# (p95) after the wake, and "the newest snapshot a tick had read by the wake +
+# 6 ms" named the wake's own in 99.8 % of them — 99.95 % where no snapshot
+# arrived inside the 6 ms, 99.6 % where one did (#807). Measured at a 2 ms tick;
+# the value is a time, not a tick count.
+WAKE_JOIN_TOLERANCE_S = 0.006
+
+
+def wake_snapshot(
+    ctx: TrialContext,
+    wake_t: float,
+    planner_seq: float,
+    tolerance_s: float = WAKE_JOIN_TOLERANCE_S,
+) -> tuple[int | None, str]:
+    """Which vision snapshot a planner wake read: ``(tick, join)``.
+
+    ``tick`` is a diag tick that read the same snapshot (its
+    ``input_snapshot_sequence`` / ``input_generation`` are the wake's key, its
+    ``input_age_s`` the age to count from), ``None`` when no tick is known to.
+
+    The planner's own record of the key (``snapshot_sequence``) is written only
+    by a wake that ran a search; a wake that only replanned leaves 0. The RT
+    tick reads the SAME box, so the wake's snapshot is the newest one a tick had
+    read by the wake instant + ``tolerance_s`` (:data:`WAKE_JOIN_TOLERANCE_S`):
+
+    - ``planner`` — the planner recorded a key, and a tick of that span carries
+      it;
+    - ``conflict`` — it recorded one and no tick of the span carries it (the
+      wake is off the diag's time axis, or the rows are another track's): no
+      tick;
+    - ``exact`` — no record, and the span's ticks read one snapshot;
+    - ``ambiguous`` — no record, and a snapshot arrived inside the span: the
+      NEWER one is returned (the wake read the older one if it was not woken
+      by that arrival);
+    - ``none`` — the diag has no key columns, the wake is outside its rows, or
+      the tick there had no snapshot.
+
+    What a tick read is what the box held: a wake that solved WITHOUT the ball
+    (the box held another track's trajectory) is given that snapshot all the
+    same — nothing in the two logs tells such a wake apart.
+    """
+    if ctx.input_seq is None or not math.isfinite(wake_t) or wake_t > ctx.t[-1]:
+        return None, WAKE_JOIN_NONE
+    ka = int(np.searchsorted(ctx.t, wake_t, side="right")) - 1
+    if ka < 0:
+        return None, WAKE_JOIN_NONE
+    ke = int(np.searchsorted(ctx.t, wake_t + tolerance_s, side="right")) - 1
+    span = ctx.input_seq[ka : ke + 1]
+    if planner_seq > 0:
+        hit = np.nonzero(span == planner_seq)[0]
+        return (ka + int(hit[0]), WAKE_JOIN_PLANNER) if hit.size else (None, WAKE_JOIN_CONFLICT)
+    if not span[-1] > 0:
+        return None, WAKE_JOIN_NONE
+    if span[0] == span[-1]:
+        return ka, WAKE_JOIN_EXACT
+    return ka + int(np.nonzero(span == span[-1])[0][0]), WAKE_JOIN_AMBIGUOUS
+
+
+LAST_SEGMENT_KEYS = (
+    "last_seg_seq",
+    "last_seg_kind",
+    "last_seg_k",
+    "last_seg_wake_to_tc_ms",
+    "last_seg_solve_ms",
+    "last_seg_slack_c",
+    "last_seg_slack_v",
+    "last_seg_elastic_max",
+    "last_seg_elastic_group",
+    "last_seg_viol_max",
+    "last_seg_viol_group",
+    "last_seg_wake_join",
+    "last_seg_snapshot_seq",
+    "last_seg_snapshot_gen",
+    "last_seg_pred_age_ms",
+)
+
+
+def _largest(values: np.ndarray, names: Sequence[str]) -> tuple[float, str]:
+    """``(max, its name)`` over the finite entries — no name for a max of 0 —
+    and ``(NaN, "")`` with none."""
+    finite = np.isfinite(values)
+    if not finite.any():
+        return math.nan, ""
+    i = int(np.argmax(np.where(finite, values, -np.inf)))
+    return float(values[i]), names[i] if values[i] > 0.0 else ""
+
+
+def last_segment_columns(
+    ctx: TrialContext,
+    t_c: float,
+    t_lead: float,
+    wakes_t: np.ndarray | None,
+    events: SegmentEvents | None,
+) -> dict:
+    """The planner wake that solved the segment the command was on at ``t_c``.
+
+    The arm reaches the catch on the LAST segment the RT switched to, and what
+    that solve knew of the ball is as old as its wake. The segment is the one
+    followed at the lead tick (``segment_seq`` there, the tick whose reference
+    the t_c decomposition reads); its wake is the ``planner_events.csv`` row that
+    published that ``segment_seq`` inside this trial, before ``t_c``.
+
+    - ``last_seg_seq`` / ``_kind`` / ``_k`` — which segment, ``first`` or a
+      replan (``same`` / ``advance``), and its node 0's grid point;
+    - ``last_seg_wake_to_tc_ms`` — ``t_c`` − the wake: how far ahead of the
+      catch the solve looked;
+    - ``last_seg_solve_ms`` — the solve's time (a few tens of µs for a first
+      segment the search handed in solved);
+    - ``last_seg_slack_c`` / ``_slack_v`` — the corridor's and the closing
+      envelope's slack the published solution leaned on;
+    - ``last_seg_elastic_max`` / ``_viol_max`` and their ``_group`` — the largest
+      elastic and the largest violation of a hard row, by row group;
+    - ``last_seg_wake_join`` / ``_snapshot_seq`` / ``_snapshot_gen`` — the
+      vision snapshot the wake read (:func:`wake_snapshot`) and its track
+      generation: the key of a probe dump (:func:`wake_prediction_shares`);
+    - ``last_seg_pred_age_ms`` — how long before the wake the controller had
+      received that snapshot (the tick's ``input_age_s`` carried to the wake).
+      The estimator's own latency is not in it, and a wake the tick trails
+      (:data:`WAKE_JOIN_TOLERANCE_S`) reads a few ms below zero.
+
+    NaN / "" without a commit, when the lead tick followed no segment, on a log
+    without the columns, or with no clock lane to put the wakes on the diag's
+    axis.
+    """
+    rec: dict = dict.fromkeys(LAST_SEGMENT_KEYS, math.nan)
+    for key in ("last_seg_kind", "last_seg_elastic_group", "last_seg_viol_group"):
+        rec[key] = ""
+    rec["last_seg_wake_join"] = ""
+    if (
+        events is None
+        or wakes_t is None
+        or not math.isfinite(t_c)
+        or ctx.segment_seq is None
+        or ctx.segment_following is None
+    ):
+        return rec
+    kl, _ = lead_tick(ctx, t_c, t_lead if math.isfinite(t_lead) else 0.0)
+    if not ctx.segment_following[kl]:
+        return rec
+    seq = int(ctx.segment_seq[kl])
+    with np.errstate(invalid="ignore"):
+        rows = np.nonzero(
+            events.published & (events.seq == seq) & (wakes_t >= ctx.t[0]) & (wakes_t <= t_c)
+        )[0]
+    if not rows.size:
+        return rec
+    i = int(rows[-1])
+    wake_t = float(wakes_t[i])
+    rec.update(
+        last_seg_seq=seq,
+        last_seg_kind=str(events.kind[i]),
+        last_seg_k=float(events.k[i]),
+        last_seg_wake_to_tc_ms=(t_c - wake_t) * 1e3,
+        last_seg_solve_ms=float(events.solve_us[i]) * 1e-3,
+        last_seg_slack_c=float(events.slack_c[i]),
+        last_seg_slack_v=float(events.slack_v[i]),
+    )
+    rec["last_seg_elastic_max"], rec["last_seg_elastic_group"] = _largest(
+        events.elastic[i], planner_solves.DOCKING_ELASTIC_GROUPS
+    )
+    rec["last_seg_viol_max"], rec["last_seg_viol_group"] = _largest(
+        events.viol[i], planner_solves.DOCKING_ROW_GROUPS
+    )
+    k, rec["last_seg_wake_join"] = wake_snapshot(ctx, wake_t, _num(events.snapshot_seq[i]))
+    if k is None:
+        if rec["last_seg_wake_join"] == WAKE_JOIN_CONFLICT:
+            rec["last_seg_snapshot_seq"] = float(events.snapshot_seq[i])
+        return rec
+    rec["last_seg_snapshot_seq"] = float(ctx.input_seq[k])
+    if ctx.input_gen is not None:
+        rec["last_seg_snapshot_gen"] = float(ctx.input_gen[k])
+    if ctx.input_age is not None and ctx.input_age[k] >= 0.0:
+        rec["last_seg_pred_age_ms"] = float((ctx.input_age[k] + wake_t - ctx.t[k]) * 1e3)
     return rec
 
 
@@ -2694,6 +3163,9 @@ def analyse_session(
         contacts = load_contacts(contact_lane_path, robot_links)
     planner_wakes = _planner_cycle_times(ctl, lane)
     verdict_events = _planner_verdict_events(ctl) if planner_wakes is not None else None
+    segment_events = _planner_segment_events(ctl) if planner_wakes is not None else None
+    if segment_events is not None and len(segment_events.seq) != len(planner_wakes.wake_s):
+        segment_events = None  # the rule of verdict_events below
     if verdict_events is not None and len(verdict_events) != len(planner_wakes.wake_s):
         # Two reads of one file: the rows are the same rows only while the
         # counts agree (a session still being written would not).
@@ -2710,6 +3182,7 @@ def analyse_session(
     hold_radius = settings.hold_radius_m
     if hold_radius is None:
         hold_radius = profile.ball_diameter_m
+    docking = hand_docking(profile)
 
     rows, hand_window_rows = [], []
     lag_t, lag_cmd, lag_meas, lag_moving, lag_cluster = [], [], [], [], []
@@ -2779,6 +3252,9 @@ def analyse_session(
             input_gen=w["input_generation"].to_numpy(float)
             if "input_generation" in w.columns
             else None,
+            input_age=w[DIAG_INPUT_AGE_COLUMN].to_numpy(float)
+            if DIAG_INPUT_AGE_COLUMN in w.columns
+            else None,
             **_segment_arrays(w),
         )
         lag_t.append(ctx.t)
@@ -2822,6 +3298,13 @@ def analyse_session(
             )
         )
         row.update(segment_lane_metrics(ctx))
+        t_c_row, t_lead_row = row.get("t_c", math.nan), _num(row.get("t_lead_s", math.nan))
+        row.update(
+            catch_frame_shares(
+                ctx, truth, t_c_row, t_lead_row, docking, settings.arrival_window_s, t_impact
+            )
+        )
+        wakes_t = None
         if planner_wakes is not None and trial.idx in lane.trial_offsets:
             wakes_t = (
                 wakes_t_rel
@@ -2851,6 +3334,7 @@ def analyse_session(
                         verdict_window_end(trial.t_end, t_impact),
                     )
                 )
+        row.update(last_segment_columns(ctx, t_c_row, t_lead_row, wakes_t, segment_events))
         row["ref_saturated_max_streak"] = max_streak(ctx.ref_valid & ctx.ref_saturated)
 
         def fk_world(ticks, ctx=ctx):
@@ -2921,6 +3405,11 @@ def analyse_session(
             row.update(cv.nees_by_trial(samples, lo_ns, (t_hi + trial.stamp_offset) * 1e9))
         if dump is not None:
             row.update(c2_for_trial(ctx, trial, row, truth, t_impact, dump, bridge, lane, seq, fk))
+            row.update(
+                wake_prediction_shares(
+                    ctx, truth, row, trial.stamp_offset, dump, docking, t_impact
+                )
+            )
         row["hand_persist_met"] = hand_persist_met(
             row.get("hand_blocked_s_judge", math.nan), dt, t_persist_s
         )
@@ -4122,6 +4611,180 @@ def _throws_file_block(rows) -> dict | None:
     return {"sha256": next(iter(shas)), "n_thrown": sum("throw_id" in r for r in rows)}
 
 
+# ── The prediction and the plan of that wake (#807, needs the probe dump) ─────
+
+WAKE_PREDICTION_KEYS = (
+    *(f"{term}_wake_{axis}_mm" for term in ("pred", "plan") for axis in "xys"),
+    "pred_wake_lat_mm",
+    "plan_wake_lateral_margin_mm",
+    "pred_wake_v_perp_m_s",
+    "pred_wake_v_s_m_s",
+    "pred_wake_horizon_ms",
+    "pred_wake_join",
+)
+PRED_WAKE_EXACT = "exact"
+PRED_WAKE_MISSING = "missing"
+
+
+def _direction_to_model(fk, v_world: np.ndarray) -> np.ndarray:
+    """A sim-world direction in the model world (``to_model`` is affine)."""
+    return fk.to_model(np.asarray(v_world, dtype=float)) - fk.to_model(np.zeros(3))
+
+
+def wake_prediction_shares(
+    ctx: TrialContext,
+    truth: Truth | None,
+    row: Mapping,
+    stamp_offset: float,
+    dump,
+    docking: HandDocking | None,
+    t_impact: float = math.inf,
+) -> dict:
+    """The ``ref`` share of :func:`catch_frame_shares` split in two, with the
+    prediction the last segment's wake read (``vision_lane_probe --dump``):
+
+        p_true(t_c) − ref(kl) = [p_true(t_c) − p̂_wake(t_c)]     pred — the estimator's
+                              + [p̂_wake(t_c) − ref(kl)]         plan — the solve's
+
+    in the measured catch frame at ``t_c``, as ``pred_wake_{x,y,s}_mm`` and
+    ``plan_wake_{x,y,s}_mm`` (raw coordinates, like ``cf_ref_*``, whose sum they
+    are). ``p̂_wake`` is the snapshot of ``last_seg_snapshot_seq`` /
+    ``_snapshot_gen`` evaluated at ``t_c`` on the ball's stamp axis
+    (``t_c + stamp_offset``, the axis the truth is read on).
+
+    - ``pred_wake_lat_mm`` — the lateral length of the prediction's share (it
+      is an error, whatever the plan aimed at);
+    - ``plan_wake_lateral_margin_mm`` — the lateral set's margin of the ball AS
+      THE SOLVE SAW IT, against the reference the arm was given. A docking solve
+      holds the ball inside the set at ``s = s_ent``: ``plan_wake_s_mm`` there
+      and this margin above zero is the join's own check;
+    - ``pred_wake_v_perp_m_s`` / ``pred_wake_v_s_m_s`` — the prediction's
+      velocity error at ``t_c`` across and along the approach axis
+      (``v_true − v̂``; the lateral one as a length);
+    - ``pred_wake_horizon_ms`` — ``t_c`` − the snapshot's origin stamp: how far
+      ahead the estimator was asked to see;
+    - ``pred_wake_join`` — ``exact`` (the snapshot is in the dump), ``missing``
+      (the wake's key is known and the probe never received it), "" (no key:
+      ``last_seg_wake_join`` says why).
+    """
+    rec: dict = dict.fromkeys(WAKE_PREDICTION_KEYS, math.nan)
+    rec["pred_wake_join"] = ""
+    t_c = _num(row.get("t_c"))
+    seq, gen = _num(row.get("last_seg_snapshot_seq")), _num(row.get("last_seg_snapshot_gen"))
+    if truth is None or not all(math.isfinite(v) for v in (t_c, seq, gen, stamp_offset)):
+        return rec
+    key = (int(seq), int(gen))
+    if key not in dump.points:
+        rec["pred_wake_join"] = PRED_WAKE_MISSING
+        return rec
+    rec["pred_wake_join"] = PRED_WAKE_EXACT
+    t_c_ns = (t_c + stamp_offset) * 1e9
+    p_hat_w, v_hat_w = cv.state_hat_at(dump, key, t_c_ns)
+    origin = dump.origin_ns.get(key)
+    if origin is not None:
+        rec["pred_wake_horizon_ms"] = (t_c_ns - origin) * 1e-6
+    if not np.all(np.isfinite(p_hat_w)):
+        return rec  # t_c is past the snapshot's horizon
+    t_lead = _num(row.get("t_lead_s"))
+    kl, kc = lead_tick(ctx, t_c, t_lead if math.isfinite(t_lead) else 0.0)
+    rot = ctx.rot_meas(kc)
+    p_w, v_w, _, _ = truth.free_flight([t_c], t_impact)
+    pred = rot.T @ (ctx.fk.to_model(p_w[0]) - ctx.fk.to_model(p_hat_w))
+    for axis, value in zip("xys", pred, strict=True):
+        rec[f"pred_wake_{axis}_mm"] = float(value * 1e3)
+    rec["pred_wake_lat_mm"] = float(np.linalg.norm(pred[:2]) * 1e3)
+    v_err = rot.T @ _direction_to_model(ctx.fk, v_w[0] - v_hat_w)
+    rec["pred_wake_v_perp_m_s"] = float(np.linalg.norm(v_err[:2]))
+    rec["pred_wake_v_s_m_s"] = float(v_err[2])
+    ref, _ = reference_at_lead(ctx, kl)
+    if ref is None:
+        return rec
+    plan = rot.T @ (ctx.fk.to_model(p_hat_w) - ref)
+    for axis, value in zip("xys", plan, strict=True):
+        rec[f"plan_wake_{axis}_mm"] = float(value * 1e3)
+    if docking is not None:
+        rec["plan_wake_lateral_margin_mm"] = docking.lateral_margin(plan[:2]) * 1e3
+    return rec
+
+
+#: Fewer committed trials than this and the catch-frame block gives no medians.
+CATCH_FRAME_MIN_N = 10
+CATCH_FRAME_MEDIAN_KEYS = (
+    "cf_tot_s_mm",
+    "cf_ref_s_mm",
+    "ent_cross_ms",
+    "ent_lateral_margin_mm",
+    "last_seg_wake_to_tc_ms",
+    "last_seg_pred_age_ms",
+)
+# ...and with a probe dump (:func:`wake_prediction_shares`).
+WAKE_PREDICTION_MEDIAN_KEYS = (
+    "pred_wake_lat_mm",
+    "pred_wake_s_mm",
+    "plan_wake_s_mm",
+    "plan_wake_lateral_margin_mm",
+    "pred_wake_horizon_ms",
+)
+
+
+def catch_frame_summary(rows: Sequence[Mapping], docking: HandDocking | None) -> dict | None:
+    """The ``catch_frame`` block over ``rows`` (valid trials on the t_c axis):
+    the hand's capture set as it was read, how many of the committed trials had
+    the ball inside the lateral set — at ``t_c`` and where it crossed the
+    entrance plane — and how the last segment's wake was joined to its snapshot.
+    ``None`` when no row has the columns (no commit, or no truth)."""
+    done = [r for r in rows if math.isfinite(_num(r.get("cf_tot_s_mm")))]
+    if not done:
+        return None
+
+    def inside(key):
+        return sum(1 for r in done if _num(r.get(key)) > 0.0)
+
+    out: dict = {"n": len(done)}
+    if docking is not None:
+        out.update(
+            s_ent_mm=docking.s_ent * 1e3,
+            rho_ref_mm=[float(v * 1e3) for v in docking.rho_ref],
+            lateral_faces=len(docking.faces_b),
+            in_lateral_at_tc=inside("cf_tot_lateral_margin_mm"),
+            crossed_entrance=sum(1 for r in done if math.isfinite(_num(r.get("ent_cross_ms")))),
+            in_lateral_at_entrance=inside("ent_lateral_margin_mm"),
+        )
+    out["last_seg_wake_join"] = _counts(
+        [r for r in done if r.get("last_seg_wake_join")], "last_seg_wake_join"
+    )
+    keys = CATCH_FRAME_MEDIAN_KEYS
+    joined = [r for r in done if r.get("pred_wake_join")]
+    if joined:
+        out["pred_wake_join"] = _counts(joined, "pred_wake_join")
+        keys = (*keys, *WAKE_PREDICTION_MEDIAN_KEYS)
+    out["medians"] = (
+        {k: _median(done, k) for k in keys}
+        if len(done) >= CATCH_FRAME_MIN_N
+        else f"NOT_EVALUATED(n < {CATCH_FRAME_MIN_N})"
+    )
+    return out
+
+
+def catch_frame_line(cf: Mapping) -> str:
+    text = f"catch frame: n {cf['n']}"
+    if "s_ent_mm" in cf:
+        text += (
+            f" · s_ent {cf['s_ent_mm']:.1f} mm · in the lateral set at t_c {cf['in_lateral_at_tc']}"
+            f" · crossed the entrance {cf['crossed_entrance']}, inside the set there "
+            f"{cf['in_lateral_at_entrance']}"
+        )
+    med = cf["medians"]
+    if isinstance(med, str):
+        return f"{text} · medians {med}"
+    return (
+        f"{text} · median s tot/ref {_fmt(med['cf_tot_s_mm'], '.1f')}/"
+        f"{_fmt(med['cf_ref_s_mm'], '.1f')} mm · crossing − t_c "
+        f"{_fmt(med['ent_cross_ms'], '.1f')} ms · last segment's wake "
+        f"{_fmt(med['last_seg_wake_to_tc_ms'], '.0f')} ms before t_c"
+    )
+
+
 def _summarise(
     rows, lag, settings, lane, hold_radius, profile, joints, dt, dt_source, gate_map=None
 ) -> dict:
@@ -4295,6 +4958,9 @@ def _summarise(
             "rho_replan_max_p50_p95_max": _p50_p95_max(lane_rows, "segment_rho_replan_max"),
             "wait_node0_ms_p50_p95_max": _p50_p95_max(lane_rows, "segment_wait_node0_ms"),
         }
+    catch_frame = catch_frame_summary(on_axis, hand_docking(profile))
+    if catch_frame is not None:
+        summary["catch_frame"] = catch_frame
     if gate_map is not None:
         summary["gate_map"] = {
             "map_dir": str(gate_map.map_dir),
@@ -4566,6 +5232,8 @@ def report(result: SessionResult) -> str:
             f"{dl['rho_first_p50_p95_max']} · replan max {dl['rho_replan_max_p50_p95_max']} "
             f"(p50/p95/max), node-0 wait {dl['wait_node0_ms_p50_p95_max']} ms"
         )
+    if "catch_frame" in s:
+        lines.append(catch_frame_line(s["catch_frame"]))
     lines.append(tc_axis_line(s["tc_axis"]))
     lines.append(
         f"planned γ_f {s['gamma_f_planned_range']} · first plan {med['first_plan_s']:.3f} s · "

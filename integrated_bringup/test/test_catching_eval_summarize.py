@@ -455,6 +455,41 @@ def test_run_unit_asks_the_startup_check_and_no_longer_greps_for_refus():
     assert "bring_up_failed\\|refus" not in text
 
 
+def test_a_unit_that_asks_for_the_probe_dump_gets_it_flushed_and_handed_on():
+    """PROBE_DUMP=1 (#807): the probe runs in its own group, is stopped BEFORE the
+    estimator and the sim (it writes its CSVs on SIGINT), a unit without the dump
+    fails, and the analysis hands the dump to catching_trials."""
+    tools = Path(cst.__file__).parent
+    text = (tools / "run_unit.sh").read_text()
+    assert 'vision_lane_probe "$OUT/probe/lane" --dump' in text
+    cleanup = text[text.index("cleanup() {") : text.index("keep_failed_session() {")]
+    assert cleanup.index('stop_group "$PPG"') < cleanup.index('stop_group "$EPG"')
+    # A probe that died at its start, or that had to be killed, fails the unit too.
+    for why in ("probe not running", "probe killed", "no probe dump"):
+        assert f'echo "FAIL:{why}" > "$OUT/status"' in text
+    assert text.index('echo "FAIL:probe not running"') < text.index("catching_sim_trials")
+    assert 'echo "probe_dump: ' in text
+    vector = (tools / "tc_vector.py").read_text()
+    assert 'unit / "probe" / "lane_prediction_dump.csv"' in vector
+    assert '"--probe-dump", str(dump)' in vector
+
+
+def test_a_conditions_n_min_is_counted_from_that_robots_own_horizon():
+    """make_conditions.py once counted ``io.n_min`` from one constant for both
+    robots; a robot whose shipped ``io.horizon_min`` is longer then got overlays
+    one sample short of its controller's own check (``ceil(horizon_min / dt) + 1``)."""
+    import make_conditions as mc
+
+    assert not hasattr(mc, "HORIZON_MIN_S")
+    # 25 ms grid: 0.51 s needs 22 samples, 0.53 s needs 23.
+    assert mc.n_min_for(0.51, 0.025, 40) == 22
+    assert mc.n_min_for(0.53, 0.025, 40) == 23
+    assert mc.n_min_for(0.53, 0.05, 20) == 12
+    with pytest.raises(SystemExit, match="n_min 30 <= points 24"):
+        mc.n_min_for(0.53, 0.01875, 24)
+    assert mc.grid(1.0, 40) == 0.025
+
+
 # ── #798: units that threw a list pair on (the list's sha256, throw_id) ──────
 def _list_row(sha, throw_id, d4, invalid=""):
     return {

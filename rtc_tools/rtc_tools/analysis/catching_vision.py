@@ -37,7 +37,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -239,6 +239,9 @@ class ProbeDump:
     recv_keys: list  # the (sequence, generation) received at each recv_ns
     frame_id: str
     sub: str
+    # (sequence, generation) → the snapshot's origin stamp [ns]: the instant its
+    # horizon is counted from.
+    origin_ns: dict = field(default_factory=dict)
 
 
 def load_probe_dump(path: Path) -> ProbeDump:
@@ -271,6 +274,7 @@ def load_probe_dump(path: Path) -> ProbeDump:
     if len(frames) > 1:
         raise SystemExit(f"{path}: predictions in several frames {sorted(frames)}")
     points = {}
+    origin_ns = {}
     first_recv = []
     for (seq, gen), g in df.groupby(["snapshot_sequence", "generation"], sort=False):
         g = g.sort_values("horizon_ns")
@@ -281,6 +285,7 @@ def load_probe_dump(path: Path) -> ProbeDump:
         )
         key = (int(seq), int(gen))
         points[key] = (arr, t)
+        origin_ns[key] = int(g["stamp_ns"].iloc[0])
         first_recv.append((int(g["recv_ns"].min()), key))
     first_recv.sort()
     return ProbeDump(
@@ -289,27 +294,35 @@ def load_probe_dump(path: Path) -> ProbeDump:
         recv_keys=[k for _, k in first_recv],
         frame_id=next(iter(frames)) if frames else "",
         sub=sub,
+        origin_ns=origin_ns,
     )
 
 
-def p_hat_at(dump: ProbeDump, key, t_ns: float) -> np.ndarray:
-    """A snapshot's predicted position at stamp ``t_ns`` (NaN when outside it).
+def state_hat_at(dump: ProbeDump, key, t_ns: float) -> tuple[np.ndarray, np.ndarray]:
+    """A snapshot's predicted position and velocity at stamp ``t_ns`` (NaN when
+    outside it).
 
     From the nearest horizon point with its own velocity and acceleration
-    (``p + v·dt + ½·a·dt²``, |dt| ≤ half the point spacing) — linear
-    interpolation between 50 ms points would err by g·dt²/8 ≈ 3 mm.
+    (``p + v·dt + ½·a·dt²`` and ``v + a·dt``, |dt| ≤ half the point spacing) —
+    linear interpolation between 50 ms points would err by g·dt²/8 ≈ 3 mm.
     """
+    nan = np.full(3, math.nan)
     entry = dump.points.get(key)
     if entry is None or not np.isfinite(t_ns):
-        return np.full(3, math.nan)
+        return nan, nan
     arr, t_int = entry
     spacing = float(np.median(np.diff(t_int))) if len(t_int) >= 2 else 0.0
     i = int(np.argmin(np.abs(t_int - t_ns)))
     dt = (t_ns - t_int[i]) * 1e-9
     if abs(dt) * 1e9 > max(spacing / 2.0, 1.0) + 1.0:
-        return np.full(3, math.nan)
+        return nan, nan
     p, v, a = arr[i, 1:4], arr[i, 4:7], arr[i, 7:10]
-    return p + v * dt + 0.5 * a * dt * dt
+    return p + v * dt + 0.5 * a * dt * dt, v + a * dt
+
+
+def p_hat_at(dump: ProbeDump, key, t_ns: float) -> np.ndarray:
+    """The position of :func:`state_hat_at`."""
+    return state_hat_at(dump, key, t_ns)[0]
 
 
 def plan_point_stamp(dump: ProbeDump, key, p_c_world: np.ndarray) -> tuple[float, float]:

@@ -40,7 +40,7 @@ LEAD_ON = "catch_lead_on"
 LEAD_ON_LEAVES = {
     ("catching", "joint_cmd", "lag", "T_arm"): 0.05,
     ("catching", "joint_cmd", "lag", "lead_enable"): True,
-    ("catching", "planner", "freeze", "T_freeze"): 0.37,
+    ("catching", "planner", "freeze", "T_freeze"): 0.39,
 }
 SIM_CONFIG = os.path.join(CONFIG_DIR, "mujoco_simulator.yaml")
 LEAP = "iiwa7_leap"
@@ -187,9 +187,13 @@ def test_lead_on_writes_the_lead_and_its_commit_window_only(arms):
 def _check_commit_window(catching: dict, ship: dict, profile: str) -> None:
     """The window keys follow T_arm the way the shipped file derives its own
     (see its ``io.horizon_min`` / ``planner.freeze.T_freeze`` comments):
-    T_close,tot = T_close_e2e + h/2, T_freeze >= T_close,tot + T_arm + margin,
-    horizon_min >= that + L, n_min = ceil(horizon_min / dt_expected) + 1. A key
-    the overlay does not write is the shipped one, and must hold too."""
+    T_close,tot = T_close + h/2, T_freeze >= T_close,tot + T_arm + margin,
+    horizon_min >= that + L, n_min = ceil(horizon_min / dt_expected) + 1. Both
+    bounds hold for T_close taken as the closure time (T_close_e2e) and as the
+    close lead (robot.hand.T_close_lead) — the lead is the one the design bound
+    and the grid search's commit-lead rank gate are written in, and either can
+    be the longer. A key the overlay does not write is the shipped one, and
+    must hold too."""
 
     def effective(*path):
         node = catching
@@ -207,17 +211,20 @@ def _check_commit_window(catching: dict, ship: dict, profile: str) -> None:
 
     base = _load(os.path.join(CONFIG_ROOT, profile, RATE_FILE[profile]))
     h = 1.0 / base["/**"]["ros__parameters"]["control_rate"]
-    # The closure-time form of the bound. The shipped comments derive the design
-    # bound from robot.hand.T_close_lead, which is longer on ur5e_p1b (0.302):
-    # T_freeze 0.37 and io.horizon_min 0.51 are 13 ms under that one, by decision
-    # (#745) — it is not what this checks.
-    t_close_tot = ship["robot"]["hand"]["T_close_e2e"] + h / 2
+    hand = ship["robot"]["hand"]
+    t_close_tot = hand["T_close_e2e"] + h / 2
     t_arm = effective("joint_cmd", "lag", "T_arm")
     margin = effective("planner", "search", "grid", "time", "margin")
-    assert effective("planner", "freeze", "T_freeze") >= t_close_tot + t_arm + margin
+    t_freeze = effective("planner", "freeze", "T_freeze")
+    assert t_freeze >= t_close_tot + t_arm + margin
     # L is the shipped comment's 0.14 (io.horizon_min: "... + L 0.14").
     horizon = effective("io", "horizon_min")
     assert horizon >= t_close_tot + t_arm + margin + 0.14 - 1e-9
+    # The same two in the close lead, which is what the shipped comments derive
+    # the values from. Absent, the lead is the closure time (catching_params).
+    t_lead_tot = hand.get("T_close_lead", hand["T_close_e2e"]) + h / 2
+    assert t_freeze >= t_lead_tot + t_arm + margin - 1e-9
+    assert horizon >= t_lead_tot + t_arm + margin + 0.14 - 1e-9
     # The 1e-9 absorbs a quotient landing a hair above an integer in binary.
     dt = effective("prediction", "dt_expected")
     assert effective("io", "n_min") == math.ceil(horizon / dt - 1e-9) + 1

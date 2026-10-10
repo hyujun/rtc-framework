@@ -412,9 +412,9 @@ demo_catching_controller:
       base_T_world:
         yaw_deg: 0.0
         translation: [0.0, 0.0, -0.7]
-      # = ceil(horizon_min / dt_expected) + 1 = ceil(0.51 / 0.05) + 1. The +1 is
+      # = ceil(horizon_min / dt_expected) + 1 = ceil(0.53 / 0.05) + 1. The +1 is
       # not a margin: n samples spaced dt apart span (n-1)*dt, so 11 points
-      # cover 0.50 s and fall 10 ms SHORT of the window a commit decision
+      # cover 0.50 s and fall 30 ms SHORT of the window a commit decision
       # needs — every minimal message would then trip the horizon warning
       # (found by /code-review, 2026-09-22; S3.6's arithmetic dropped the term).
       n_min: 12
@@ -428,14 +428,13 @@ demo_catching_controller:
       # and this one, which on hardware is a PTP/NTP question (TBD-NET-01, S10
       # confirms it). The sim value is the `sim.io` override below.
       future_tol: 0.001
-      # R1 (the commit condition), set when the close lead was the closure time
-      # 0.2805: T_close,tot 0.2815 + T_arm 0.05 + margin 0.03 + L 0.14 = 0.5015,
-      # rounded UP to 10 ms. Rounding down would admit a prediction that misses
-      # R1 by 1.5 ms. The lead is robot.hand.T_close_lead now, and at its
-      # 0.302 (E1-F19 part 2) the same sum is 0.523: this value is 13 ms under
-      # it. Not moved — no check ties the two, and the sim estimator's
-      # predictions carry 1.0 s.
-      horizon_min: 0.51
+      # R1 (the commit condition): T_close,tot 0.303 (robot.hand.T_close_lead
+      # 0.302 + h/2 0.001) + T_arm 0.05 + margin 0.03 + L 0.14 = 0.523, rounded
+      # UP to 10 ms. Rounding down would admit a prediction that misses R1 by
+      # 3 ms. Nothing at configure ties this value to the lead: it moves by
+      # hand when T_close_lead does. A shorter prediction is diagnosed, not
+      # refused, and the sim estimator's predictions carry 1.0 s.
+      horizon_min: 0.53
       track:
         # How far past the later origin two consecutive predictions are
         # compared (L1 §4.4). Inside both windows, so neither is extrapolated.
@@ -495,9 +494,8 @@ demo_catching_controller:
         # NOT lag-free — ../mujoco_simulator.yaml runs its servo at kd/kp =
         # 0.05 s (#537 D-S8-13) — and the sim runs with the lead on only
         # through the sim_overlays/catch_lead_* files (T_arm 0.05, T_freeze
-        # 0.37 — the L3 §4.11 bound T_close_lead + h/2 + T_arm + margin for
-        # T_arm 0.05 when the lead was 0.2805; 13 ms under it at 0.302, see
-        # that file).
+        # 0.39 — the L3 §4.11 bound T_close_lead + h/2 + T_arm + margin for
+        # T_arm 0.05, see that file).
         #
         # `provisional` is about the REAL arm's T_arm (#537 pre-S10 R3): sim
         # warns, a real arm parks until S10 identifies it — whatever the value

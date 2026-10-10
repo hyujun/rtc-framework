@@ -557,7 +557,7 @@ horizon 은 0.75 s 와 1.0 s 둘을 시험한다. horizon 을 나누는 이유�
 | 점 수의 상한 | 40 | rtc-framework 의 컴파일 상수 `kCap` |
 | horizon 과 step | horizon 이 step 의 정확한 배수 (ns 단위 정수) | ball_perception `prediction.cpp` |
 | 점 수와 `max_points` | horizon / step ≤ `max_points` | 같은 곳. profile 의 값이며 조건마다 바꾼다 |
-| 지평 요구 | 첫 점에서 마지막 점까지의 길이가 `io.horizon_min` (0.51 s) 이상. 못 미치면 메시지를 거부하지 않고 진단으로 남긴다 | rtc-framework `traj_ingress.hpp` (`HorizonShort`) |
+| 지평 요구 | 첫 점에서 마지막 점까지의 길이가 `io.horizon_min` (`ur5e_p1b` 0.53 s · `iiwa7_leap` 0.51 s) 이상. 못 미치면 메시지를 거부하지 않고 진단으로 남긴다 | rtc-framework `traj_ingress.hpp` (`HorizonShort`) |
 | 점 수의 하한 | $\lceil$ `io.horizon_min` $/\Delta_v\rceil+1$ | `io.n_min` 의 산식 |
 
 예측점은 기준 시각에서 $\Delta_v$ 떨어진 곳부터 시작하므로, 첫 점에서 마지막 점까지의 길이는 horizon 이 아니라 horizon $-\Delta_v$ 다.
