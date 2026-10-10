@@ -94,7 +94,7 @@ integrated_bringup/
 │       │   ├── planner_closed_form.yaml <- closed_form 법칙: `reference.*` · `supervisor.decel.a_dec` (탐색은 읽지 않고 자기 복사본을 읽는다)
 │       │   ├── search_nlp.yaml         <- `nlp` 탐색: `planner.search.nlp.*` (E1-F16 — 격자 · 예산 · 비용 · `core.*`; 조각에 적지 않은 키 `core.solver.max_iter_in` — QP 의 안쪽 반복 상한, 없으면 100 — 은 `segment_mpc_docking.yaml` 의 `core.*` 에서도 같다)
 │       │   ├── segment_mpc.yaml        <- mpc 구간 계획기: `planner.segment.mpc.*` (`switch_margin` · `eta_v` · `v_eps` 포함)
-│       │   └── segment_mpc_docking.yaml <- mpc_docking 구간 계획기: `planner.segment.mpc_docking.*` (E1-F16 — `approach.n_pre_max` 결정값 · 격자 · 예산 · 게시 slack 상한 · `core.*`)
+│       │   └── segment_mpc_docking.yaml <- mpc_docking 구간 계획기: `planner.segment.mpc_docking.*` (E1-F16 — `approach.n_pre_max` 결정값 · 격자 · 예산 · 게시 slack 상한 · `core.*`; `core.solver.max_iter_warm` — 코어가 warm start 한 QP 에만 거는 반복 상한, 넘으면 0 에서 다시 푼다 — 의 값과 근거는 이 조각의 주석에 있고 `search_nlp.yaml` 의 `core.*` 가 같은 값을 쓴다)
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs
 │           ├── phase_config.yaml       <- GraspPhaseManager 5-phase 설정
 │           ├── contact_light.yaml      <- rtc_mpc ContactLightOCP factory config
