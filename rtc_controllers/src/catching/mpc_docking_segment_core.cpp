@@ -325,7 +325,7 @@ MpcDockingReason MpcDockingSegmentCore::Init(const pinocchio::Model& arm,
       !FinitePositive(p.init_pinv_damping) || !FinitePositive(p.solver.eps_abs) ||
       !rtc::IsFiniteNonNegative(p.solver.eps_rel) ||
       !rtc::IsFiniteNonNegative(p.solver.eps_primal_inf) || p.solver.max_iter < 1 ||
-      p.solver.max_iter_in < 1) {
+      p.solver.max_iter_in < 1 || p.solver_max_iter_warm < 0) {
     return MpcDockingReason::kParamsInvalid;
   }
   for (const double mu : p.mu_init) {
@@ -2070,7 +2070,22 @@ void MpcDockingSegmentCore::ElasticByGroup(
 
 MpcDockingReason MpcDockingSegmentCore::RunQp(MpcDockingSegmentCoreResult& out) noexcept {
   const auto t0 = std::chrono::steady_clock::now();
+  // A QP started from the previous QP's iterates mostly converges within a
+  // few solver iterations; the rest can run to the solver's cap without
+  // converging where the same QP from zero converges in a handful. The warm
+  // start is therefore given its own, lower cap (solver_max_iter_warm), and
+  // a QP that misses it takes the path below like any warm-started QP that
+  // did not converge. (What that buys is measured, not guaranteed — the
+  // value and its numbers are with the key in the shipped YAML.)
+  const int warm_cap = params_.solver_max_iter_warm;
+  const bool short_warm = solver_warm_ && warm_cap > 0 && warm_cap < params_.solver.max_iter;
+  if (short_warm) {
+    solver_.SetMaxIter(warm_cap);
+  }
   const tsid::SolveResult* res = &solver_.Solve(qp_);
+  if (short_warm) {
+    solver_.SetMaxIter(params_.solver.max_iter);
+  }
   ++out.qp_solves;
   out.qp_iterations += res->iterations;
   if (!res->converged && solver_warm_) {

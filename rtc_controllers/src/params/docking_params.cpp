@@ -705,7 +705,8 @@ void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, in
       rd.Number(init, "pinv_damping", pi, core.init_pinv_damping, NonNegative());
 
   const std::string pv = Join(path, "solver");
-  const YAML::Node solver = sub("solver", {"eps_abs", "eps_rel", "max_iter", "max_iter_in"});
+  const YAML::Node solver =
+      sub("solver", {"eps_abs", "eps_rel", "max_iter", "max_iter_in", "max_iter_warm"});
   core.solver.eps_abs = rd.Number(solver, "eps_abs", pv, core.solver.eps_abs, Positive());
   core.solver.eps_rel = rd.Number(solver, "eps_rel", pv, core.solver.eps_rel, NonNegative());
   core.solver.max_iter = rd.Int(solver, "max_iter", pv, core.solver.max_iter, 1, 1000000);
@@ -713,6 +714,11 @@ void ReadCore(const Reader& rd, const YAML::Node& m, const std::string& path, in
   // it bounds how long a single QP can run, which the core's deadline does
   // not (it is read before a QP, never inside one).
   core.solver.max_iter_in = rd.Int(solver, "max_iter_in", pv, core.solver.max_iter_in, 1, 1000000);
+  // The cap on max_iter for a QP the core starts from the previous QP's
+  // iterates. Absent or 0: none — such a QP runs to max_iter like any other
+  // (0 is how an overlay switches a shipped cap off; it cannot delete a key).
+  core.solver_max_iter_warm =
+      rd.Int(solver, "max_iter_warm", pv, core.solver_max_iter_warm, 0, 1000000);
 }
 
 }  // namespace

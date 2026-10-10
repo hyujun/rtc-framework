@@ -359,6 +359,8 @@ std::vector<Entry<MpcDockingSegmentCoreParams>> CoreTable() {
        [](const R& r) { return static_cast<double>(r.solver.max_iter); }, 200.0},
       {"solver.max_iter_in", "50", "0", t,
        [](const R& r) { return static_cast<double>(r.solver.max_iter_in); }, 50.0},
+      {"solver.max_iter_warm", "30", "-1", t,
+       [](const R& r) { return static_cast<double>(r.solver_max_iter_warm); }, 30.0},
   };
 }
 

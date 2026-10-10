@@ -107,9 +107,10 @@
 //    that did not converge, the run at the initial penalties after a failed
 //    QP, and each penalty probe. Past it no QP is started and the solve ends
 //    kDeadline; `cut_site` says before which. A QP in progress is not
-//    interrupted — it is bounded only by the solver's own iteration caps, so
-//    a solve overruns its deadline by at most one QP (plus the evaluations
-//    around it). What comes back: before the initialisation QP there is no
+//    interrupted — it is bounded only by the solver's own iteration caps
+//    (solver.max_iter and max_iter_in; solver_max_iter_warm for a QP started
+//    warm), so a solve overruns its deadline by at most one QP (plus the
+//    evaluations around it). What comes back: before the initialisation QP there is no
 //    iterate (Solve returns false); before the first iteration's QP it is
 //    the START point, with `iterations` 0 and the per-QP numbers
 //    (kkt_residual, grad_norm, complementarity, elastic, step_capped) at 0 —
@@ -478,14 +479,23 @@ struct MpcDockingSegmentCoreParams {
   /// and regularly from μ ≈ 1e4. The INITIALISATION QP does not take that
   /// setting: it is the one QP that can be infeasible, and it always runs with
   /// QPSolverConfig's default threshold.
-  /// max_iter and max_iter_in (QPSolverConfig's default) are the only bound on
-  /// how long ONE QP runs: the deadline is read before a QP, not inside it.
+  /// max_iter and max_iter_in (QPSolverConfig's default) bound how long ONE
+  /// QP runs — with solver_max_iter_warm below, nothing else does: the
+  /// deadline is read before a QP, not inside it.
   tsid::QPSolverConfig solver{.eps_abs = 1e-7,
                               .eps_rel = 1e-9,
                               .max_iter = 400,
                               .update_preconditioner = true,
                               .dense_backend = proxsuite::proxqp::DenseBackend::PrimalDualLDLT,
                               .eps_primal_inf = 0.0};
+  /// The cap on solver.max_iter for a QP that starts WARM — from the iterates
+  /// of the QP before it in the same solve; ≥ 0, and 0 or a value of at least
+  /// solver.max_iter is no separate cap. A warm-started QP that has not
+  /// converged by it is run again from zero under solver.max_iter, as one that
+  /// ran to solver.max_iter always was (RunQp; the deadline is read between
+  /// the two). The cold run is what the cap is NOT applied to: a QP that
+  /// fails cold is a failed QP.
+  int solver_max_iter_warm{0};
 };
 
 /// Joint limits in pinocchio velocity order (n each).

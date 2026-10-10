@@ -1403,6 +1403,69 @@ TEST(MpcDockingSegmentCore, PastItsDeadlineAFailedQpIsNotRunAgain) {
   }
 }
 
+// ── The cap on a warm-started QP (solver_max_iter_warm) ──────────────────────
+// Every QP of a solve after its first starts from the iterates of the QP
+// before it. Under a cap of ONE solver iteration such a start does not
+// converge on a QP whose linearisation has moved, so the QP is run again from
+// zero under the solver's own cap — and the solve ends where the uncapped one
+// does, having solved more QPs on the way.
+TEST(MpcDockingSegmentCore, AWarmStartedQpThatMissesItsCapIsRunAgainFromZero) {
+  for (const dk::Rig& base : Rigs()) {
+    dk::Rig rig = base;
+    MpcDockingSegmentCore free;
+    ASSERT_EQ(free.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    rig.params.solver_max_iter_warm = 1;
+    MpcDockingSegmentCore capped;
+    ASSERT_EQ(capped.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    // At the solver's own cap, and above it, there is no separate cap.
+    rig.params.solver_max_iter_warm = rig.params.solver.max_iter;
+    MpcDockingSegmentCore at_cap;
+    ASSERT_EQ(at_cap.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    rig.params.solver_max_iter_warm = rig.params.solver.max_iter + 1;
+    MpcDockingSegmentCore above_cap;
+    ASSERT_EQ(above_cap.Init(rig.model, rig.arm.frame, rig.params, rig.limits, &NoClock),
+              MpcDockingReason::kNone);
+    MpcDockingSegmentCoreResult a;
+    MpcDockingSegmentCoreResult b;
+    MpcDockingSegmentCoreResult c;
+    free.ResizeResult(a);
+    capped.ResizeResult(b);
+    at_cap.ResizeResult(c);
+    std::vector<Case> cases = FeasibleCases(base, free, 3);
+    ASSERT_EQ(cases.size(), 3U);
+    int reruns_free = 0;
+    int reruns_capped = 0;
+    for (Case& cs : cases) {
+      dk::PerturbTarget(cs.in, cs.seed);
+      const std::string where = base.arm.name + " seed " + std::to_string(cs.seed);
+      ASSERT_TRUE(free.Solve(cs.in, a)) << where;
+      ASSERT_TRUE(a.converged) << where << Describe(a);
+      ASSERT_GT(a.iterations, 1) << where << ": the solve needs a second QP for a warm start";
+      ASSERT_TRUE(capped.Solve(cs.in, b)) << where;
+      EXPECT_TRUE(b.converged) << where << Describe(b);
+      // QPs beyond one per iteration are re-runs (no penalty moved here).
+      EXPECT_EQ(a.mu_updates + a.mu_resets, 0) << where;
+      EXPECT_EQ(b.mu_updates + b.mu_resets, 0) << where;
+      reruns_free += a.qp_solves - a.iterations;
+      reruns_capped += b.qp_solves - b.iterations;
+      // Two paths to the same solution, each stopped by the core's own test.
+      EXPECT_LT((b.q - a.q).cwiseAbs().maxCoeff(), 1e-4) << where;
+      for (MpcDockingSegmentCore* core : {&at_cap, &above_cap}) {
+        ASSERT_TRUE(core->Solve(cs.in, c)) << where;
+        EXPECT_EQ(c.q, a.q) << where;
+        EXPECT_EQ(c.qp_solves, a.qp_solves) << where;
+        EXPECT_EQ(c.qp_iterations, a.qp_iterations) << where;
+      }
+    }
+    // A warm start may already be the next QP's solution; over the cases it
+    // is not, and each miss is one more QP.
+    EXPECT_GT(reruns_capped, reruns_free) << base.arm.name;
+  }
+}
+
 TEST(MpcDockingSegmentCore, IterationLimitReturnsAnIterateThatIsNotConverged) {
   dk::Rig rig = dk::MakeRig(fx::RealArm6());
   rig.params.max_iterations = 2;
@@ -1731,6 +1794,8 @@ TEST(MpcDockingSegmentCore, InitRejectsWhatItCannotSolve) {
     return init(rig);
   };
   EXPECT_EQ(with([](dk::Rig& r) { r.params.n_pre = 0; }), MpcDockingReason::kParamsInvalid);
+  EXPECT_EQ(with([](dk::Rig& r) { r.params.solver_max_iter_warm = -1; }),
+            MpcDockingReason::kParamsInvalid);
   EXPECT_EQ(with([](dk::Rig& r) { r.params.dt_pre = 0.0; }), MpcDockingReason::kParamsInvalid);
   EXPECT_EQ(with([](dk::Rig& r) { r.params.block_sizes[0] = 2; }), MpcDockingReason::kParamsInvalid)
       << "block sizes must sum to N";
