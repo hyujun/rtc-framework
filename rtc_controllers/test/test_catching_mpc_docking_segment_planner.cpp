@@ -835,8 +835,11 @@ TEST(MpcDockingPlannerFirstSolved, EverySolveThatReachedAnIterateLeavesTheCoresA
   // 35 ms budget: the core reads the clock before its initialisation QP and
   // before each iteration's QP, and the fourth of those reads is 40 ms after
   // the call's own): the core hands back its last accepted iterate, and its
-  // account with it.
+  // account with it. The solve above was not published, so the planner would
+  // start this one from its solution (MpcDockingPlannerFirstMemory) and it
+  // would have nothing left to be cut at: a new trial forgets it.
   ASSERT_GT(fast->rec.iterations, 2);
+  s->planner->ResetTrial();
   auto cut = RunFirst(*s->planner, s->rt, s->plan, s->Ball(), nullptr, kNow, 10 * kMs);
   ASSERT_FALSE(cut->ok);
   ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
