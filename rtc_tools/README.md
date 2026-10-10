@@ -1124,6 +1124,13 @@ ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/ur5e --scene --validate
 | 8 | scene.xml 생성 (`--scene` 옵션) |
 | 9 | MJCF/URDF 검증 (`--validate` 옵션) |
 
+**생성하는 actuator** (#693): active 관절마다 gain 없는 `<general>` 하나다. MuJoCo 는 그것을 토크 motor 로 컴파일한다 — ctrl 이 곧 관절 토크 (prismatic 은 힘) 다.
+
+- URDF 의 `effort` 는 `forcerange="-effort effort"` 로 간다. `effort="0"` 인 관절은 `forcerange` 가 없고 토크가 묶이지 않는다.
+- `ctrlrange` 는 쓰지 않는다. 토크 motor 의 `ctrlrange` 는 토크를 묶는데, 관절의 위치 범위는 토크가 아니다 — 위치 범위는 관절의 `range` 에 그대로 있다.
+- 이 MJCF 를 위치 서보로 돌릴 때 (`rtc_mujoco_sim` 의 `use_yaml_servo_gains`) 위치 목표는 actuator 에서 잘리지 않는다. 목표를 관절 범위 안에 두는 것은 컨트롤러의 몫이다.
+- 이 변경 전에 만든 변환 결과는 `ctrlrange` 에 위치 범위가 들어 있어 `--validate` 가 `EFFORT MISMATCH` (`MJCF=2.9671  URDF=200` 꼴) 를 낸다 — 다시 변환한다. `robot_descriptions` 의 MJCF 는 다시 만들지 않았다: 그쪽 actuator 는 affine bias 를 가진 위치 서보라 `ctrlrange` 가 위치 목표의 범위다.
+
 **디렉토리 규약:**
 ```
 robot_dir/
@@ -1244,8 +1251,6 @@ flat form (`base: base_link_inertia`) 은 그대로 동작한다 — **값이 ma
 - **"한계 없음" 과 "한계 0" 을 구별하지 못한다** — 둘 다 `0` 이다.
 - `<default>` 안의 `<position>` · `<velocity>` · `<damper>` 같은 shortcut 은 "순수 gain 이 아니다" 로만 기록한다. 그 default 를 `<general biastype="none">` 이 물려받으면 MuJoCo 는 gain = `kp` 인 순수 gain 으로 컴파일하는데 도구는 gain 1 로 읽는다. 반대로 `<general biastype="affine">` 에 `biasprm` 이 전부 0 이면 MuJoCo 가 내는 힘은 순수 gain 과 같은데 도구는 "순수 gain 이 아니다" 로 읽어 `ctrlrange` 를 토크 한계로 치지 않는다.
 - **MuJoCo 가 거부하는 파일도 그대로 읽는다.** 정의되지 않은 class, `autolimits="false"` 에서 `limited` 없는 range, 자세 속성 둘 같은 파일은 컴파일되지 않는데 텍스트 판독은 값을 찍는다. 그 사실은 구조 비교의 `[MISMATCH] MJCF failed to compile under MuJoCo` 만 알리고, 구조 비교는 `mujoco` 가 있어야 돈다 — 없으면 (`UNVERIFIED`) 아무 말도 없다.
-
-**`urdf_to_mjcf` 의 새 변환 결과는 `--validate` 에서 `EFFORT MISMATCH` 를 낸다** (#693). 변환기는 관절의 위치 범위를 gain 없는 `<general>` 의 `ctrlrange` 로 쓰는데, MuJoCo 는 그것을 위치 범위 크기의 토크 한계로 컴파일한다 (`MJCF=2.9671  URDF=200` 꼴). 도구가 맞게 읽은 것이다 — `robot_descriptions` 의 MJCF 는 actuator 에 affine bias 가 있어 (위치 서보) `ctrlrange` 가 토크 한계가 아니고, 해당하지 않는다.
 
 **비교 항목:**
 

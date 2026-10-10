@@ -169,6 +169,44 @@ URDF_MIXED = """\
 """
 
 
+# Position ranges chosen so none of them coincides with the effort limit: one
+# asymmetric and far below it, one a few centimetres of travel, one wider than
+# its effort, and a joint that states no effort at all (#693).
+URDF_TORQUE_LIMITS = """\
+<robot name="test">
+  <link name="l0"><inertial><mass value="1"/>
+    <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial></link>
+  <link name="l1"><inertial><mass value="1"/>
+    <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial></link>
+  <link name="l2"><inertial><mass value="1"/>
+    <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial></link>
+  <link name="l3"><inertial><mass value="1"/>
+    <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial></link>
+  <link name="l4"><inertial><mass value="1"/>
+    <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial></link>
+  <joint name="narrow_joint" type="revolute">
+    <parent link="l0"/><child link="l1"/>
+    <origin xyz="0 0 0.2"/><axis xyz="0 1 0"/>
+    <limit lower="0.2" upper="0.9" effort="12" velocity="2"/>
+  </joint>
+  <joint name="slide_joint" type="prismatic">
+    <parent link="l1"/><child link="l2"/>
+    <origin xyz="0 0 0.2"/><axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.04" effort="70" velocity="0.2"/>
+  </joint>
+  <joint name="weak_joint" type="revolute">
+    <parent link="l2"/><child link="l3"/>
+    <origin xyz="0 0 0.2"/><axis xyz="0 1 0"/>
+    <limit lower="-3" upper="3" effort="0.95" velocity="2"/>
+  </joint>
+  <joint name="no_effort_joint" type="revolute">
+    <parent link="l3"/><child link="l4"/>
+    <origin xyz="0 0 0.2"/><axis xyz="0 1 0"/>
+    <limit lower="-1" upper="1" effort="0" velocity="2"/>
+  </joint>
+</robot>
+"""
+
 # ════════════════════════════════════════════════════════════════════════════
 # Joint Classification Tests
 # ════════════════════════════════════════════════════════════════════════════
@@ -385,6 +423,34 @@ class TestAddActuators:
                 assert g.get("forcerange") == "-150 150"
             elif g.get("joint") == "joint2":
                 assert g.get("forcerange") == "-28 28"
+
+    def test_actuator_has_no_ctrl_range(self):
+        """The generated ``<general>`` has no gain, so it is a torque motor and
+        its ctrl is the torque.  The joint's position range on ``ctrlrange``
+        would clamp that torque to the range (#693)."""
+        root = self._make_root()
+        c = classify_joints(URDF_TORQUE_LIMITS)
+        n = _add_actuators(root, c)
+
+        generals = root.find("actuator").findall("general")
+        assert n == 4
+        assert len(generals) == 4
+        for g in generals:
+            assert g.get("ctrlrange") is None, g.get("joint")
+
+    def test_force_range_is_the_effort_whatever_the_position_range(self):
+        root = self._make_root()
+        c = classify_joints(URDF_TORQUE_LIMITS)
+        _add_actuators(root, c)
+
+        force_range = {g.get("joint"): g.get("forcerange") for g in root.find("actuator")}
+        assert force_range == {
+            "narrow_joint": "-12 12",
+            "slide_joint": "-70 70",
+            "weak_joint": "-0.95 0.95",
+            # A URDF effort of 0 states no limit, and the actuator gets none.
+            "no_effort_joint": None,
+        }
 
     def test_no_actuator_for_mimic(self):
         root = self._make_root()
@@ -827,3 +893,62 @@ class TestResolveMeshPaths:
         assert len(meshes) == 2
         for m in meshes:
             assert Path(m.get("filename")).is_absolute()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Converted Model — measured torque limits (#693)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestConvertedTorqueLimits:
+    """What the converter's actuators bound once MuJoCo has compiled them.
+
+    The attribute tests in ``TestAddActuators`` pin what is written; these pin
+    what it means, by saturating the control and reading the joint torque.
+    """
+
+    @staticmethod
+    def _convert(tmp_path) -> Path:
+        urdf = tmp_path / "robot.urdf"
+        urdf.write_text(URDF_TORQUE_LIMITS)
+        from rtc_tools.conversion.urdf_to_mjcf import convert_urdf_to_mjcf
+
+        return convert_urdf_to_mjcf(urdf, tmp_path / "robot.xml", meshdir=tmp_path)
+
+    @staticmethod
+    def _saturated_torque(mujoco, mjcf: Path) -> dict[str, tuple[float, float]]:
+        model = mujoco.MjModel.from_xml_path(str(mjcf))
+        data = mujoco.MjData(model)
+        torque: dict[str, list[float]] = {}
+        for ctrl in (-1e9, 1e9):
+            data.ctrl[:] = ctrl
+            mujoco.mj_forward(model, data)
+            for act in range(model.nu):
+                joint = model.actuator_trnid[act, 0]
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint)
+                torque.setdefault(name, []).append(
+                    float(data.qfrc_actuator[model.jnt_dofadr[joint]])
+                )
+        return {name: (lo, hi) for name, (lo, hi) in torque.items()}
+
+    def test_torque_limit_is_the_urdf_effort(self, tmp_path):
+        mujoco = pytest.importorskip("mujoco")
+        torque = self._saturated_torque(mujoco, self._convert(tmp_path))
+
+        assert torque["narrow_joint"] == pytest.approx((-12.0, 12.0))
+        assert torque["slide_joint"] == pytest.approx((-70.0, 70.0))
+        assert torque["weak_joint"] == pytest.approx((-0.95, 0.95))
+
+    def test_joint_without_effort_is_unbounded(self, tmp_path):
+        mujoco = pytest.importorskip("mujoco")
+        torque = self._saturated_torque(mujoco, self._convert(tmp_path))
+
+        assert torque["no_effort_joint"] == pytest.approx((-1e9, 1e9))
+
+    def test_conversion_validates_against_its_urdf(self, tmp_path):
+        pytest.importorskip("mujoco")
+        from rtc_tools.validation.compare_mjcf_urdf import compare_mjcf_urdf
+
+        mjcf = self._convert(tmp_path)
+
+        assert compare_mjcf_urdf(str(mjcf), str(tmp_path / "robot.urdf")) == 0
