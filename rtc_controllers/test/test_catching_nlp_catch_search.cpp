@@ -1287,11 +1287,13 @@ TEST(NlpCatchSearchOrder, PermutingTheSolvesChangesNothing) {
   };
 
   // 1 µs per read against a 4 ms share: no solve nears it. 100 µs per read
-  // against a 0.4 ms share: a solve that needs more than four iterations runs
-  // past it, one that restarts from its own solution does not — and the wake's
-  // whole budget (40 ms) still holds every solve after the screening's reads.
+  // against a 0.6 ms share: a cold solve that needs more than four iterations
+  // runs past it (one read before its initialisation QP, one before each
+  // iteration's QP), one that restarts from its own solution does not — and
+  // the wake's whole budget (40 ms) still holds every solve after the
+  // screening's reads.
   for (const Clock clock : {Clock{"no solve is cut", 1000, 0.004, false},
-                            Clock{"some solves pass their deadline", 100'000, 0.0004, true}}) {
+                            Clock{"some solves pass their deadline", 100'000, 0.0006, true}}) {
     SCOPED_TRACE(clock.name);
     const OrderRun base = TwoWakes({}, clock.step_ns, clock.solve_budget_s);
     const int n = base.solved;
@@ -1401,13 +1403,17 @@ TEST(NlpCatchSearchOrder, ANewTracksFirstWakeIsAFreshSearchsFirstWake) {
 // ── 4. Validity ──────────────────────────────────────────────────────────────
 
 TEST(NlpCatchSearchValidity, ASolvePastItsShareIsNotAValidCandidate) {
-  // The same wake on two clocks, with a share of 0.4 ms per solve. At 1 µs a
+  // The same wake on two clocks, with a share of 0.6 ms per solve. At 1 µs a
   // read no solve nears it and the cold solves are valid; at 100 µs a read
   // every solve of more than four iterations runs past its own share and is
   // refused for that alone — the wake's whole budget still holds them all.
+  // (A cold solve reads the clock before its initialisation QP and before
+  // each iteration's QP: its fifth iteration would start on the sixth read,
+  // 0.6 ms after the solve began.)
+  constexpr std::int64_t kShareNs = 600'000;
   const auto build = [] {
     auto rig = std::make_unique<Rig>();
-    rig->params.solve_budget_s = 0.0004;
+    rig->params.solve_budget_s = static_cast<double>(kShareNs) / 1e9;
     return rig;
   };
   auto fast_rig = build();
@@ -1429,14 +1435,16 @@ TEST(NlpCatchSearchValidity, ASolvePastItsShareIsNotAValidCandidate) {
     if (f.reject != NlpReject::kNone) {
       continue;
     }
-    // More than four iterations is more than four reads of a 100 µs clock
-    // against a 0.4 ms share.
+    // More than four iterations is a sixth read of a 100 µs clock before the
+    // fifth one's QP, against a 0.6 ms share.
     if (f.iterations > 4) {
       ++cut;
       EXPECT_EQ(s->reject, NlpReject::kDeadline) << f.index << Table(slow_rig->search, ws.stats);
       EXPECT_EQ(s->core_reason, MpcDockingReason::kDeadline);
-      EXPECT_GE(s->solve_ns, 400'000);
+      EXPECT_GE(s->solve_ns, kShareNs);
       EXPECT_TRUE(s->solved);
+      // Cut before the fifth iteration's QP: four were done.
+      EXPECT_EQ(s->iterations, 4);
     } else {
       EXPECT_EQ(s->reject, NlpReject::kNone) << f.index << Table(slow_rig->search, ws.stats);
       EXPECT_TRUE(BitsEqual(s->phi, f.phi));
@@ -1450,8 +1458,8 @@ TEST(NlpCatchSearchValidity, ASolvePastItsShareIsNotAValidCandidate) {
   if (fast_best->iterations > 4) {
     EXPECT_NE(ws.stats.nlp.chosen_index, wf.stats.nlp.chosen_index);
   }
-  EXPECT_GT(ws.stats.nlp.solve_ns_max, 400'000);
-  EXPECT_LE(wf.stats.nlp.solve_ns_max, 400'000);
+  EXPECT_GT(ws.stats.nlp.solve_ns_max, kShareNs);
+  EXPECT_LE(wf.stats.nlp.solve_ns_max, kShareNs);
 }
 
 // Advances the clock once, inside the first solve a wake runs.
@@ -1470,9 +1478,10 @@ void JumpInTheFirstSolve(MpcDockingStage stage, bool begin, void* user) noexcept
 
 TEST(NlpCatchSearchValidity, ACandidateTheRtCanNoLongerReadFromItsStartIsNotValid) {
   // t_0 stands the wake's budget after `now`, and a candidate's node 0 its
-  // `wait` after t_0. The first solve of the wake takes `jump` — far over its
-  // share, as a QP in progress can (the core reads its deadline between
-  // iterations only) — so the wake ends `jump − budget` LATE. Every other
+  // `wait` after t_0. The first solve of the wake loses `jump` before its
+  // first QP — far over its share, as a thread that was not scheduled can
+  // (the core then starts no QP, and the candidate ends without an iterate)
+  // — so the wake ends `jump − budget` LATE. Every other
   // solve is inside its own share and is exactly the solve of an undisturbed
   // wake; but a segment whose node 0 has less wait than the wake is late by
   // reaches the RT after the instant it starts at.
@@ -3313,9 +3322,12 @@ struct PinnedSearch {
   const std::array<Step, 3> three{{{0, 1000}, {41 * kMs, 1000}, {82 * kMs, 1000}}};
   run("axis", no_edit, axis, three);
   run("off_axis", no_edit, off_axis, three);
-  // Solves that run past their shares, and are refused for it.
+  // Solves that run past their shares, and are refused for it. (0.6 ms: the
+  // share that cuts a cold solve of this clock after its fourth iteration —
+  // the core reads the clock before the initialisation QP and before each
+  // iteration's QP.)
   const std::array<Step, 2> slow{{{0, 1000}, {41 * kMs, 100'000}}};
-  run("past_the_share", [](Rig& rig) { rig.params.solve_budget_s = 0.0004; }, axis, slow);
+  run("past_the_share", [](Rig& rig) { rig.params.solve_budget_s = 0.0006; }, axis, slow);
   // A budget that holds fewer solves than passed the screening.
   const std::array<Step, 2> cut{{{0, 200'000}, {41 * kMs, 200'000}}};
   run("budget_cut", [](Rig& rig) { rig.params.solve_budget_s = 0.01; }, off_axis, cut);

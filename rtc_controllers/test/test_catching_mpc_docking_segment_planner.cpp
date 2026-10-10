@@ -831,12 +831,17 @@ TEST(MpcDockingPlannerFirstSolved, EverySolveThatReachedAnIterateLeavesTheCoresA
   EXPECT_TRUE(std::isfinite(fast->rec.slack_max));
   EXPECT_TRUE(std::isfinite(fast->rec.slack_v));
 
-  // Cut at the deadline (a 40 ms clock step against the 35 ms budget): the
-  // core hands back its last accepted iterate, and its account with it.
-  auto cut = RunFirst(*s->planner, s->rt, s->plan, s->Ball(), nullptr, kNow, 40 * kMs);
+  // Cut at the deadline after two iterations (a 10 ms clock step against the
+  // 35 ms budget: the core reads the clock before its initialisation QP and
+  // before each iteration's QP, and the fourth of those reads is 40 ms after
+  // the call's own): the core hands back its last accepted iterate, and its
+  // account with it.
+  ASSERT_GT(fast->rec.iterations, 2);
+  auto cut = RunFirst(*s->planner, s->rt, s->plan, s->Ball(), nullptr, kNow, 10 * kMs);
   ASSERT_FALSE(cut->ok);
   ASSERT_EQ(cut->rec.outcome, SegmentOutcome::kBudget) << Describe(cut->rec);
   EXPECT_STREQ(cut->rec.core_reason_name, "deadline");
+  EXPECT_EQ(cut->rec.iterations, 2);
   EXPECT_TRUE(cut->rec.docking.ran);
   EXPECT_GT(cut->rec.docking.qp_solves, 0);
   EXPECT_TRUE(std::isfinite(cut->rec.slack_max)) << "recorded for a solve that was not published";

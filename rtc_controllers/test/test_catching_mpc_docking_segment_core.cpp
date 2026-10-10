@@ -936,6 +936,18 @@ std::int64_t FakeClock() noexcept {
   return g_fake_now.load();
 }
 
+// The instants a solve is cut by in the tests below: FakeClock stands before
+// the deadline until the first iteration's step has been judged, and past it
+// from then on — the deadline passes DURING the first iteration.
+constexpr std::int64_t kFakeDeadlineNs = 500;
+constexpr std::int64_t kFakePastNs = 1000;
+
+void PassTheDeadlineAfterTheFirstStep(MpcDockingStage stage, bool begin, void* /*user*/) noexcept {
+  if (!begin && stage == MpcDockingStage::kMerit) {
+    g_fake_now = kFakePastNs;
+  }
+}
+
 // Whatever the reason, the numbers in the result belong to the trajectory in
 // the result: evaluating that trajectory again reproduces them.
 void ExpectResultDescribesItsTrajectory(MpcDockingSegmentCore& core,
@@ -981,11 +993,17 @@ TEST(MpcDockingSegmentCore, DeadlineReturnsTheLastAcceptedIterate) {
   ASSERT_GT(full_iterations, 2);
   EXPECT_EQ(g_clock_reads.load(), 0) << "no deadline, no clock read";
 
-  // A deadline already behind the clock: the check sits BETWEEN iterations, so
-  // exactly one iteration runs and its accepted step is what comes back.
-  in.deadline_ns = 500;
+  // The deadline passes while the first iteration runs: the check before the
+  // second iteration's QP sees it, so exactly one iteration runs and its
+  // accepted step is what comes back. (A deadline already behind the clock
+  // when the call is made starts no QP at all — the tests after this one.)
+  in.deadline_ns = kFakeDeadlineNs;
+  g_fake_now = 0;
+  core.SetStageHook(&PassTheDeadlineAfterTheFirstStep, nullptr);
   ASSERT_TRUE(core.Solve(in, out));
+  core.SetStageHook(nullptr, nullptr);
   EXPECT_EQ(out.reason, MpcDockingReason::kDeadline);
+  EXPECT_EQ(out.cut_site, rtc::catching::MpcDockingCutSite::kIteration);
   EXPECT_FALSE(out.converged);
   EXPECT_EQ(out.iterations, 1);
   EXPECT_GT(out.kkt_residual, 0.0);
@@ -1003,12 +1021,16 @@ TEST(MpcDockingSegmentCore, DeadlineReturnsTheLastAcceptedIterate) {
             MpcDockingReason::kNone);
   MpcDockingSegmentCoreResult out2;
   limited.ResizeResult(out2);
-  in.deadline_ns = 500;
+  in.deadline_ns = kFakeDeadlineNs;
+  g_fake_now = 0;
+  limited.SetStageHook(&PassTheDeadlineAfterTheFirstStep, nullptr);
   ASSERT_TRUE(limited.Solve(in, out2));
+  limited.SetStageHook(nullptr, nullptr);
   EXPECT_EQ(out2.reason, MpcDockingReason::kDeadline);
   EXPECT_EQ(out2.q, after_one);
 
   // A deadline ahead of the clock changes nothing.
+  g_fake_now = kFakePastNs;
   in.deadline_ns = 5000;
   ASSERT_TRUE(core.Solve(in, out));
   EXPECT_TRUE(out.converged);
@@ -1016,7 +1038,7 @@ TEST(MpcDockingSegmentCore, DeadlineReturnsTheLastAcceptedIterate) {
 
   // No clock at all: the deadline is ignored.
   core.SetClock(nullptr);
-  in.deadline_ns = 500;
+  in.deadline_ns = kFakeDeadlineNs;
   ASSERT_TRUE(core.Solve(in, out));
   EXPECT_TRUE(out.converged);
 }
@@ -3497,9 +3519,12 @@ std::vector<PinnedSolve> PinnedSolves() {
           if (!first_case(base, core, 1, in)) {
             return;
           }
-          g_fake_now = 1000;
-          in.deadline_ns = 500;
+          // Cut after one iteration: the deadline passes during the first.
+          g_fake_now = 0;
+          in.deadline_ns = kFakeDeadlineNs;
+          core.SetStageHook(&PassTheDeadlineAfterTheFirstStep, nullptr);
           solve(core, in, out, h, rec);
+          core.SetStageHook(nullptr, nullptr);
         });
     {
       // Every optional row and term, under a trust region small enough to cap
