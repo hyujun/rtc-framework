@@ -2470,6 +2470,13 @@ def catch_frame_shares(
     - the ``ent_*`` columns of :func:`entrance_crossing`, and
       ``ent_lateral_margin_mm`` there — whether the ball went through the set.
 
+    Everything is read at the ``t_c`` COLUMN, like the norms (#602): on a row
+    whose stamp-axis ``t_c`` is δ away (``tc_stamp_minus_tc_ms``, up to
+    ``--tc-shift-max-ms`` on a ``tc_axis: ok`` row) the approach-axis
+    coordinates carry the ball's travel in δ and ``ent_cross_ms`` carries δ
+    itself; the lateral ones hardly move (the ball travels along the approach
+    axis).
+
     All NaN without a commit or a truth record; the set's columns NaN for a hand
     without one.
     """
@@ -2582,7 +2589,8 @@ WAKE_JOIN_NONE = "none"
 # recorded their key) the first tick with the wake's snapshot came at most 4.3 ms
 # (p95) after the wake, and "the newest snapshot a tick had read by the wake +
 # 6 ms" named the wake's own in 99.8 % of them — 99.95 % where no snapshot
-# arrived inside the 6 ms, 99.6 % where one did (#807).
+# arrived inside the 6 ms, 99.6 % where one did (#807). Measured at a 2 ms tick;
+# the value is a time, not a tick count.
 WAKE_JOIN_TOLERANCE_S = 0.006
 
 
@@ -2614,6 +2622,10 @@ def wake_snapshot(
       by that arrival);
     - ``none`` — the diag has no key columns, the wake is outside its rows, or
       the tick there had no snapshot.
+
+    What a tick read is what the box held: a wake that solved WITHOUT the ball
+    (the box held another track's trajectory) is given that snapshot all the
+    same — nothing in the two logs tells such a wake apart.
     """
     if ctx.input_seq is None or not math.isfinite(wake_t) or wake_t > ctx.t[-1]:
         return None, WAKE_JOIN_NONE

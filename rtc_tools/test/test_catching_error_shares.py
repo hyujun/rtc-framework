@@ -96,6 +96,30 @@ class _FrameFk:
         return np.asarray(p, dtype=float)
 
 
+class _WorldFk(_FrameFk):
+    """The same, in a MODEL world that is not the sim world the truth and the
+    probe dump are in: ``p_model = Rz(90°) p_world + (0.2, −0.1, 0.7)``."""
+
+    world_to_model = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    offset = np.array([0.2, -0.1, 0.7])
+
+    def to_model(self, p):
+        return np.asarray(p, dtype=float) @ self.world_to_model.T + self.offset
+
+
+class _RollingFk(_FrameFk):
+    """A frame that rolls about its own approach axis: the fourth "joint" is the
+    roll angle, so the lateral axes turn from tick to tick and +z does not."""
+
+    def __call__(self, q):
+        return np.asarray(q, dtype=float)[..., :3]
+
+    def placement(self, q):
+        c, s = math.cos(q[3]), math.sin(q[3])
+        roll = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        return self.rotation @ roll, np.asarray(q[:3], dtype=float)
+
+
 V_BALL = np.array([-2.0, 0.3, -0.4])
 P_CATCH = np.array([0.6, 0.1, 0.4])  # the ball at the instant it is meant to cross
 T_X = 0.8
@@ -209,6 +233,52 @@ def test_without_a_commit_a_truth_or_a_set_the_columns_are_nan():
     bare = ct.catch_frame_shares(ctx, _line_truth(), T_X, 0.0, DOCKING, 0.12)
     assert math.isnan(bare["cf_ref_s_mm"]) and math.isnan(bare["cf_clik_x_mm"])
     assert math.isfinite(bare["cf_servo_s_mm"]) and math.isfinite(bare["cf_tot_s_mm"])
+
+
+def _in_model_world(ctx):
+    """``ctx`` with its hand, command and reference moved into ``_WorldFk``'s
+    model world, the frame turned with them; the truth stays in the sim world."""
+    fk = _WorldFk(_WorldFk.world_to_model @ ROT)
+    ctx.fk = fk
+    ctx.q_cmd, ctx.q_meas = fk.to_model(ctx.q_cmd), fk.to_model(ctx.q_meas)
+    ctx.segment_p_d = fk.to_model(ctx.segment_p_d)
+    return ctx
+
+
+def test_the_truth_is_brought_into_the_model_world_before_the_frame():
+    """The controller's side is in the model world, the truth in the sim world:
+    the injected catch-frame offsets come back only through ``to_model``."""
+    rec = ct.catch_frame_shares(
+        _in_model_world(_static_ctx()), _line_truth(), T_X, 0.0, DOCKING, 0.12
+    )
+    assert _terms(rec, "ref") == pytest.approx(BALL_IN_REF * 1e3, abs=1e-6)
+    assert _terms(rec, "tot") == pytest.approx((BALL_IN_REF + CLIK + SERVO) * 1e3, abs=1e-6)
+    # Positive control: the same hand read against a truth left in the sim world.
+    ctx = _in_model_world(_static_ctx())
+    ctx.fk.to_model = lambda p: np.asarray(p, dtype=float)
+    assert (
+        np.linalg.norm(
+            _terms(ct.catch_frame_shares(ctx, _line_truth(), T_X, 0.0, DOCKING, 0.12), "tot")
+        )
+        > 500.0
+    )
+
+
+def test_the_frame_is_the_measured_one_at_each_tick():
+    # The hand rolls at 2 rad/s about its approach axis and is 0.3 rad round at T_X.
+    ctx = _crossing_ctx()
+    roll = 0.3 + 2.0 * (ctx.t - T_X)
+    ctx.q_cmd = ctx.q_meas = np.column_stack([ctx.q_meas, roll])
+    ctx.fk = _RollingFk(ROT)
+    rec = ct.catch_frame_shares(ctx, _line_truth(), T_X, 0.0, DOCKING, 0.12)
+    # +z has not moved: the ball crosses when it did, at (3, −4) mm of the UNROLLED frame.
+    c, s = math.cos(0.3), math.sin(0.3)
+    turned = (3.0 * c - 4.0 * s, -3.0 * s - 4.0 * c)
+    assert rec["ent_cross_ms"] == pytest.approx(0.0, abs=1e-6)
+    assert (rec["ent_x_mm"], rec["ent_y_mm"]) == pytest.approx(turned, abs=1e-3)
+    assert (rec["cf_tot_x_mm"], rec["cf_tot_y_mm"]) == pytest.approx(turned, abs=1e-6)
+    # The lateral speed of a ball on the axis' side of a rolling hand: ω × ρ.
+    assert rec["ent_v_perp_m_s"] == pytest.approx(2.0 * 0.005, abs=1e-4)
 
 
 # ── The crossing of the entrance plane ───────────────────────────────────────
@@ -594,6 +664,18 @@ def test_the_prediction_is_read_on_the_stamp_axis():
     assert abs(off["pred_wake_s_mm"] - PRED[2] * 1e3) > 20.0
 
 
+def test_the_prediction_too_is_brought_into_the_model_world():
+    ctx = _in_model_world(_static_ctx())
+    rec = ct.wake_prediction_shares(
+        ctx, _line_truth(), _wake_row(), STAMP_OFFSET, _dump(), DOCKING
+    )
+    assert _wake("pred", rec) == pytest.approx(PRED * 1e3, abs=1e-3)
+    assert _wake("plan", rec) == pytest.approx((BALL_IN_REF - PRED) * 1e3, abs=1e-3)
+    # A velocity is a direction: it takes the model world's rotation, not its origin.
+    assert rec["pred_wake_v_perp_m_s"] == pytest.approx(0.05, abs=1e-6)
+    assert rec["pred_wake_v_s_m_s"] == pytest.approx(0.2, abs=1e-6)
+
+
 def test_a_wake_whose_snapshot_the_probe_missed_says_so():
     ctx, truth = _static_ctx(), _line_truth()
     text = ("pred_wake_join",)
@@ -716,3 +798,79 @@ def test_the_pilot_session_carries_the_columns_through_the_real_frame():
     block = result.summary["catch_frame"]
     assert block["n"] == 25 and "s_ent_mm" not in block
     assert math.isfinite(block["medians"]["cf_tot_s_mm"])
+
+
+def test_a_session_with_segments_and_a_capture_set_is_wired_through(tmp_path):
+    """The pilot session with what a docking unit records planted on it: every
+    tick follows segment 7 (its target the soft-catch reference) and read
+    snapshot (40, 1), every planner wake published segment 7, and the hand has a
+    capture set. The columns must come out of ``analyse_session`` — on the
+    trial's own wakes, on the diag's time axis."""
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pinocchio")
+    import shutil
+
+    session = tmp_path / "session"
+    shutil.copytree(FIXTURE / "session", session)
+    ctl = session / "controllers" / "demo_catching_controller"
+    diag = pd.read_csv(ctl / "catching_diag.csv.gz")
+    n = len(diag)
+    diag = diag.assign(
+        segment_following=1,
+        segment_seq=7,
+        segment_p_d_x=diag["ref_x_x"],
+        segment_p_d_y=diag["ref_x_y"],
+        segment_p_d_z=diag["ref_x_z"],
+        input_snapshot_sequence=40,
+        input_generation=1,
+        input_age_s=np.full(n, 0.004),
+    )
+    diag.to_csv(ctl / "catching_diag.csv.gz", index=False)
+    events = pd.read_csv(ctl / "planner_events.csv.gz")
+    events = events.assign(
+        snapshot_sequence=0,
+        segment_outcome="published",
+        segment_kind="same",
+        segment_seq=7,
+        segment_k=-2,
+        segment_solve_us=5000.0,
+        segment_slack_max=0.0,
+    )
+    events.to_csv(ctl / "planner_events.csv.gz", index=False)
+    profile = ct.load_profile(FIXTURE / "config", session=session)
+    profile.hand_yaml = {"docking": _docking_yaml()}
+    result = ct.analyse_session(
+        session,
+        FIXTURE / "trials",
+        profile,
+        (FIXTURE / "robot.urdf").read_text(),
+        ct.Settings(n_boot=20),
+        session / "sim" / "clock_lane.csv.gz",
+        session / "sim" / "ball_contact_lane.csv.gz",
+    )
+    committed = [r for r in result.rows if math.isfinite(r.get("t_c", math.nan))]
+    assert len(committed) == 25
+    wake_period_ms = float(np.median(np.diff(events["wake_ns"].to_numpy(float)))) * 1e-6
+    for row in committed:
+        assert (row["ref_source"], row["last_seg_seq"], row["last_seg_kind"]) == (
+            "segment",
+            7,
+            "same",
+        )
+        # Every wake published it, so the one the arm was on is the last before
+        # t_c: closer to it than a few wake periods, and never after it.
+        assert 0.0 <= row["last_seg_wake_to_tc_ms"] < 5.0 * wake_period_ms
+        assert row["last_seg_solve_ms"] == pytest.approx(5.0)
+        assert (row["last_seg_wake_join"], row["last_seg_snapshot_seq"]) == ("exact", 40.0)
+        assert row["last_seg_snapshot_gen"] == 1.0
+        assert 4.0 <= row["last_seg_pred_age_ms"] < 4.0 + 1e3 * result.summary["dt_s"] + 1e-6
+        # The planted target is the soft-catch reference: the same gap as the golden's.
+        assert np.linalg.norm(_terms(row, "ref")) == pytest.approx(row["ref_vs_true_mm"], abs=1e-6)
+        assert math.isfinite(row["cf_tot_lateral_margin_mm"])
+    block = result.summary["catch_frame"]
+    assert (block["n"], block["s_ent_mm"]) == (25, 7.0)
+    assert block["last_seg_wake_join"] == {"exact": 25}
+    crossed = [r for r in committed if math.isfinite(r["ent_cross_ms"])]
+    assert block["crossed_entrance"] == len(crossed)
+    assert all(math.isfinite(r["ent_lateral_margin_mm"]) for r in crossed)
+    assert math.isfinite(block["medians"]["last_seg_wake_to_tc_ms"])
