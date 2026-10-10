@@ -564,11 +564,20 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
     // bias (force = kp * ctrl - kp * q - kd * qdot); on a `<motor>` — biastype
     // none — MuJoCo skips biasprm, so the same three writes would leave
     // force = kp * ctrl. The other two lanes restore what the XML compiled to.
+    //
+    // The ctrl clamp moves with the mode as well. On an actuator the XML wrote
+    // as a servo, ctrlrange bounds the servo's target — a position, a velocity.
+    // In torque mode ctrl is the torque, and the same numbers would cap it at
+    // the size of the joint's range, silently. The torque lane lifts that
+    // clamp; forcerange and the joint's actuatorfrcrange still bound the
+    // torque. A motor's ctrlrange was a torque limit to begin with and stays.
     int motor_passthrough = 0;
     int motor_servo_mismatch = 0;
     for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       const int act = g->actuator_indices[i];
       const auto& p = orig_actuator_params_[static_cast<std::size_t>(act)];
+      const bool lift_ctrl_clamp = torque && p.biastype != mjBIAS_NONE;
+      model_->actuator_ctrllimited[act] = static_cast<mjtByte>(p.ctrllimited && !lift_ctrl_clamp);
       if (torque) {
         model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(1.0);
         model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
@@ -589,8 +598,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
         // (the joint settles at ctrl / gear) and a ctrlrange clamps it.
         // (actuator_gear is nu x 6; entry 0 is a joint transmission's gear.)
         if (p.biastype == mjBIAS_NONE &&
-            (model_->actuator_gear[act * 6] != static_cast<mjtNum>(1.0) ||
-             model_->actuator_ctrllimited[act] != 0)) {
+            (model_->actuator_gear[act * 6] != static_cast<mjtNum>(1.0) || p.ctrllimited)) {
           ++motor_servo_mismatch;
         }
       } else {

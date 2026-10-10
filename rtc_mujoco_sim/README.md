@@ -347,6 +347,8 @@ ros2 service call /sim/set_external_wrench rtc_msgs/srv/SetExternalWrench "{clea
 | `"torque"` | Direct Torque | OFF (실 로봇처럼 controller 가 중력 보상 책임) | ON (불변) |
 | `"pd_feedforward"` | PD servo + feedforward torque | OFF (feedforward 가 중력 포함) | ON (불변) |
 
+> **torque 모드의 토크 한계 (#815)**: torque 모드에서는 그룹의 actuator 가 전부 `force = ctrl` 이 됩니다. XML 이 서보 (`<position>` · `<velocity>` — bias 를 가진 actuator) 로 쓴 actuator 의 `ctrlrange` 는 서보 **목표** 의 범위 (rad · rad/s) 이지 토크 한계가 아니므로, torque 모드에 있는 동안 그 clamp 를 끄고 모드를 나오면 XML 값으로 되돌립니다. 토크를 묶는 것은 actuator 의 `forcerange` 와 관절의 `actuatorfrcrange` 입니다 — 둘 다 없는 서보 actuator 는 torque 모드에서 한계가 없습니다. `<motor>` 의 `ctrlrange` 는 원래 토크 한계라 그대로 걸립니다. 다루지 않는 것: `<damper>`, 내부 dynamics 가 있는 actuator, `gear` ≠ 1 인 서보.
+
 Position servo 모드에서는 MuJoCo 의 per-body `body_gravcomp` 가 그룹의 link body 들에 대해 1.0 으로 설정되어 중력이 내부적으로 상쇄됩니다. 전역 `opt.gravity` 는 항상 원래 값으로 유지되므로, 같은 씬 안의 free body (들어올릴 객체 등) 는 정상적으로 떨어집니다 — lift / manipulation 시뮬레이션과 양립.
 
 > **`JointState.effort` 의 정의 (모드 무관)**: `qfrc_actuator + qfrc_applied + qfrc_gravcomp` — 즉 **그 관절에 작용하는 일반화력 전부**이며 단위는 관절 토크 [N·m] 입니다. `DeviceState::effort` lane 계약 (`rtc_base` `types.hpp`: "torques for robot arm") 이 실기·sim 양쪽에 동일하게 걸리고, 실기는 command mode 와 무관하게 관절 토크를 보고하므로 sim 도 모드에 따라 의미가 달라지면 안 됩니다. `gravcomp` 항이 빠지면 position 모드의 effort 는 "중력이 이미 상쇄된 뒤 PD 가 추가로 낸 토크" 가 되어 조용히 다른 물리량이 됩니다. gravcomp 가 OFF 인 `torque` / `pd_feedforward` 에서는 MuJoCo 가 `qfrc_gravcomp` 를 **0 으로 기입**하므로 (미기입이 아니다 — `mj_passive` 는 `ngravcomp == 0` early-out 전에 배열을 0 으로 덮는다) 이 합산은 모드 분기 없이 안전합니다. `qfrc_passive` 를 통째로 더하지 않는 이유는 거기에 spring / damper / fluid 가 섞여 있어서입니다 (iiwa7 은 관절 damping 1.0–3.0 → `qvel=0.5` 에서 1.5 N·m) — 그건 모델의 마찰이고 관측기의 residual 에 남습니다.
@@ -1262,6 +1264,7 @@ GTest 스위트 (`test/` 디렉토리, 표는 파일 이름). 최신 케이스 �
 | `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증, position 모드 effort 가 중력항을 포함 / torque 모드는 불변 (`scene_with_object.xml`) |
 | `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
 | `test_motor_servo_gains` | `<motor>` actuator 위의 위치 서보 — YAML · 런타임 게인이 0 이 아닌 목표를 유지, torque 모드에서 bias 타입 원복, 게인이 없으면 명령이 토크로 직결 (`motor_arm.xml`), gear · ctrlrange 가 있는 motor 에 게인을 설치하면 경고 (`motor_arm_geared.xml`) |
+| `test_torque_mode_ctrl_range` | torque 모드의 ctrl clamp — `<position>` · `<velocity>` actuator 는 `ctrlrange` 를 넘는 토크가 그대로 걸리고 `forcerange` 는 계속 묶음, `<motor>` 의 `ctrlrange` 는 유지, 모드를 나오면 (XML lane · 게인 lane) 목표가 다시 잘림, 재진입 (`servo_arm_ctrl_limited.xml`) |
 | `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
 | `test_contact_wrench_site_frame` | `ContactWrenchConfig::reference_frame` — `body` / `site` 모드가 site 회전만큼 다른 벡터를 내는지 고정 |
 | `test_contact_wrench_viz` | 뷰어 화살표 스냅샷이 **토픽과 같은 벡터**인지 — 발행된 link-frame force 를 reference frame 회전으로 world 로 되돌린 것과 componentwise 일치, 화살표 시작점 = reference site, `visualize:false` 시 스냅샷 자체가 빔 (negative control) |

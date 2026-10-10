@@ -278,6 +278,16 @@ if(mujoco_FOUND)
         MOTOR_ARM_GEARED_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/motor_arm_geared.xml")
     endif()
 
+    # Torque mode on actuators the XML wrote as servos: needs `<position>` and
+    # `<velocity>` actuators WITH a ctrlrange next to a ctrl-limited `<motor>`,
+    # so the same switch has a clamp to lift and a clamp to keep.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_torque_mode_ctrl_range.cpp")
+      ament_add_gtest(test_torque_mode_ctrl_range test/test_torque_mode_ctrl_range.cpp)
+      target_link_libraries(test_torque_mode_ctrl_range mujoco_simulator_lib)
+      target_compile_definitions(test_torque_mode_ctrl_range PRIVATE
+        SERVO_ARM_CTRL_LIMITED_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/servo_arm_ctrl_limited.xml")
+    endif()
+
     # Object pool against a compiled model: needs a scene with a floor and a
     # keyframe, plus a directory of candidate objects.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_object_pool.cpp")
