@@ -318,25 +318,22 @@ demo_catching_controller:
             a_brake: 5.0
           # When the closure has to be complete, measured from the entrance
           # crossing [s]: the window, on the axis where the closure completes
-          # T_close_e2e after its command. From the fly-ins around the cores'
-          # reference speed (E1-F19 part 2, #802; cells of 0.1 m/s x 4 ms that
-          # held in at least half of 16): counted from the ORIGIN the closure
-          # has to be complete 28 – 20 ms before the ball centre arrives in
-          # the 2.0 – 2.1 m/s cell and 28 – 16 ms before in the 1.8 – 1.9 one.
-          # The entrance crossing is s_ent / c = 3.4 – 3.8 ms earlier, so on
-          # this key's axis those windows are -24.6 … -16.6 and -24.2 … -12.2
-          # ms. The keys hold -28 / -16 ms, the figure the values were
-          # approved with (#745): its early edge is the origin-axis one, 3.4
-          # ms before the measured window — settle it before the timing row
-          # is turned on. (It was -8.5 / +29.2 ms, the window at 0.55 m/s.)
-          # The nominal instant is NOT a key: it is T_close_e2e - the lead
-          # from the entrance crossing (-20.5 ms at 2.0 m/s — inside either).
+          # T_close_e2e after its command. From the fly-ins at the cores'
+          # reference speed (E1-F19 part 2, #802; the 2.0 – 2.1 m/s cells of
+          # 4 ms that held in at least half of 16): counted from the ORIGIN
+          # the closure has to be complete 28 – 20 ms before the ball centre
+          # arrives, and the entrance crossing is s_ent / c = 3.4 ms earlier
+          # — on this key's axis -24.6 … -16.6 ms. (The 1.8 – 1.9 m/s cells
+          # give -24.2 … -12.2 ms; the 1.9 – 2.0 ones only 4 ms. It was -8.5
+          # / +29.2 ms, the window at 0.55 m/s.) The nominal instant is NOT a
+          # key: it is T_close_e2e - the lead from the entrance crossing,
+          # -20.5 ms at 2.0 m/s — the middle of the window.
           # sigma_tau is the closure time's sample std (0 in sim; a tick's
           # quantisation, 0.58 ms, is not added). Read by the cores' timing
           # row only, which is off with the chance rows.
           closure:
-            delta_lo: -0.028
-            delta_hi: -0.016
+            delta_lo: -0.0246
+            delta_hi: -0.0166
             sigma_tau: 0.0
           # The impact model: where on the hand the ball first lands (catch
           # frame [m] — the first contact of a ball coming down the approach
