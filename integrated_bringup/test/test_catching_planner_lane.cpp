@@ -636,8 +636,8 @@ class CatchingPlanLaneTest : public ::testing::Test {
   }
 
   /// The fixture's devices as the sim runs them (backend mujoco_native): the
-  /// SIM axis, the only one a docking function runs on (#654 parks it on a
-  /// real arm).
+  /// SIM axis, the only one a docking function runs on as shipped (a real
+  /// arm parks it while robot.hand.docking.provisional is true).
   static std::map<std::string, rtc::DeviceNameConfig> SimAxisConfigs() {
     auto configs = integrated_bringup::testfx::MakeUr5eP1bDeviceConfigs();
     for (auto& entry : configs) {
@@ -1557,7 +1557,8 @@ void CatchingPlanLaneTest::RealClockPairCase(bool docking) {
   Eigen::Vector3d vel = -1.5 * z;
   Eigen::Vector3d p0 = target - 0.5 * vel;
   if (docking) {
-    // The docking planner runs on the sim axis only (#654).
+    // The docking planner runs on the sim axis only as shipped
+    // (robot.hand.docking.provisional).
     sim_axis_ = true;
     // mpc_docking: the ball the HAND'S capture set holds — a closing speed in
     // the identified band (robot.hand.docking.speed, c 0.5 - 0.6 m/s; 1.5 m/s

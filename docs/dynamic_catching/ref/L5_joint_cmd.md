@@ -252,7 +252,7 @@ catch frame 은 모델 빌더가 YAML 선언 (`config/<robot>/_base.yaml`) 으�
 | G5-A2 | 옵션 전부 off 에서 기존 CLIK 출력 bit-identical, 기존 테스트 assertion 무수정 green | `[SIM-ANY]` |
 | G5-B | 무작위 기준 1e4 틱에서 속도 · 가속 한계 위반 0, 위치 한계 위반은 `limit_margin` 이내. "위반 0" 은 ProxQP `eps_abs` 안을 뜻한다 | `[SIM-ANY]` |
 | G5-B2 | 경계 충돌 유도 시나리오 (CLIK 의 `box` 형태): `bound_conflict` 발생, $\vert\dot q^\ast-\dot q_{prev}\vert\le\ddot q_{\max}\Delta t$ 유지. CLIK 단독으로 판정한다 — 포구 컨트롤러는 그 형태를 넘기지 않으므로 L7 전이는 판정 대상이 아니다 (§4.3) | `[SIM-ANY]` |
-| G5-C | RT: page fault 0, 할당 0, QP 차원 고정, solve time 분위수 < 예산. `control_rate` 500 Hz 의 tick 2000 µs 기준 **p99 ≤ 400 µs (20 %) · 최대 ≤ 1500 µs (75 %)** — 평균이 아니라 꼬리로 건다 (L8 §5). 제어 PC 판정은 G8-A | `[SIM-ANY]` |
+| G5-C | RT: page fault 0, 할당 0 (solver 밖 — ProxQP 안의 할당은 횟수를 기록하되 위반으로 세지 않는다, #654), QP 차원 고정, solve time 분위수 < 예산. `control_rate` 500 Hz 의 tick 2000 µs 기준 **p99 ≤ 400 µs (20 %) · 최대 ≤ 1500 µs (75 %)** — 평균이 아니라 꼬리로 건다 (L8 §5). 제어 PC 판정은 G8-A | `[SIM-ANY]` |
 | G5-C2 | backend 왕복: `ControllerOutput.devices[0].commands` 와 backend 가 쓴 명령 slot 이 전 틱에서 일치 (backend clamp 미발동) | `[SIM-P1B]` / `[HW-P1B]` |
 | G5-C3 | `max_iter` 설정값 준수, 초과 시 status 노출 + 관절공간 abort 경로 (가속 한계 준수), L7 `QP_FAILED` 전이. RT tick 에 try/catch 없음, `Compute` noexcept | `[SIM-ANY]` |
 | G5-C4 | 재무장 · E-STOP 해제 reseed 후 첫 solve 가 $\dot q_{prev}=0$ 에서 시작 (직전 시행의 속도가 평활 항에 남지 않는다), 자동 재개 없음, `ClearEstop` 후에도 latched fault 유지 | `[SIM-ANY]` |

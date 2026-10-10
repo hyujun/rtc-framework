@@ -114,7 +114,7 @@
 | MD-18 | sim 추정기 profile (`ball_perception.sim_profile`) 은 ball_perception 저장소가 소유하고 rtc-framework 에 로봇별 사본이 없다 (MD-20 이 실행). 컨트롤러 YAML 의 예측 격자 키와의 정합은 자동 검사가 없다. | `IB/config/ur5e_p1b/controllers/demo_catching_controller.yaml` · `iiwa7_leap/…` (profile 주석) / f §0 |
 | MD-20 | MD-18 의 실행 — profile 은 ball_perception 의 `sim_profile.catching.json` 이고 `ball_sim_ws` 는 pull 만 한다. | MD-18 과 같다 / — |
 | MD-21 | segment MPC 의 지평 $N_s\Delta_s$ 는 정지 시간 그 자체다 (비용에 시간 항이 없어 해가 지평 전체를 쓴다). | `cfg` `horizon`, `IB/src/controllers/catching/lifecycle.cpp` (`horizon.n_nodes` 파라미터) / f §1.6 |
-| MD-22 | 코어 경로 (선형화 · FK · condensing · 결과 기록) 의 Solve 할당은 0 이고 ProxQP 가 `Solve` 안에서 하는 C 할당은 알려진 한계 (#654) 다. | `RCI/mpc_segment_core.hpp` (할당 주석), `RC/test/test_catching_mpc_segment_core_approach.cpp` / — |
+| MD-22 | 코어 경로 (선형화 · FK · condensing · 결과 기록) 의 Solve 할당은 0 이고 ProxQP 가 `Solve` 안에서 하는 C 할당은 기록된 RT-1 위반 (#654) 이다. | `RCI/mpc_segment_core.hpp` (할당 주석), `RC/test/test_catching_mpc_segment_core_approach.cpp` / — |
 | MD-23 | 계획기의 구간 경로도 ProxQP 밖의 할당 0 을 단언하고 ProxQP 할당 횟수는 기록만 한다. | `RCI/mpc_segment_planner.hpp` (할당 주석), `RC/test/test_catching_approach_planner.cpp` / — |
 | MD-24 | 출하 지평은 정지 시간 0.35 s 로 맞춘다 (격자는 MD-54 가 바꿈 — 정지 7 노드 × 0.05 s, 블록 {1,1,2,3}). 계획기의 $\dot q_{\max}$ 는 팔 device 의 `max_velocity` 다. | `cfg` `horizon`, `RCI/mpc_segment_planner.hpp` / f §1.6 |
 | MD-25 | armature 는 제어에 쓰지 않는다 — 계획기는 코어에 0 벡터를 넘기고 코어의 `MpcSegmentCoreLimits::armature` 입력은 남는다. | `RCS/catching/mpc_segment_planner.cpp` (armature 0), `RCI/mpc_segment_planner.hpp` / f §1.1 |

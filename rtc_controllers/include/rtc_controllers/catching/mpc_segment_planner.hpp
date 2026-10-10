@@ -105,7 +105,7 @@
 //    configure.
 //  • PlanFirst() / Replan() are noexcept, log nothing, throw nothing, and
 //    allocate nothing outside ProxQP (MD-22 / MD-23 — ProxQP's own mallocs
-//    are #654).
+//    are a recorded RT-1 violation, #654).
 //  • Joint order: the RT speaks DEVICE order (PlannerRtState, the payload);
 //    the cores speak the model's pinocchio velocity order. The mapping is
 //    `device_of_model`, as for the search.

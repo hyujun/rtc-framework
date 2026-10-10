@@ -559,7 +559,7 @@ $\gamma_f$ 를 사전식 (lexicographic) 1순위로 두지 않는 이유: $\gamm
 |---|---|---|---|
 | `planner.enabled` | 계획기 스레드를 띄운다. `diagnostic.oracle_plan.enabled` 와 동시 true 면 park — plan box 의 writer 는 하나다 | – | 주 |
 | `planner.segment.mode` | 팔이 APPROACH 부터 정지 끝까지 따르는 것 (`closed_form` \| `mpc` \| `mpc_docking`, 코드 기본 `closed_form`, 출하 `mpc`). `closed_form` 은 segment planner 가 아니다 — RT tick 이 기준을 직접 만든다. 읽기 전용 mirror 가 같은 이름으로 있다 | – | 주 |
-| `planner.search.mode` | 탐색 (`grid` \| `nlp`, 코드 기본 · 출하 `grid`). `nlp` × `closed_form` 은 park (`kSearchSegmentCombination`, 로그가 두 키를 적는다). `nlp` 와 `mpc_docking` 은 `robot.hand.docking` 을 요구하고 (없으면 `kMpcDockingInvalid`) sim 전용이다 (#654) — 실기 configuration 이 둘 중 하나를 고르면 park 한다 (`kMpcDockingInvalid`) | – | 주 |
+| `planner.search.mode` | 탐색 (`grid` \| `nlp`, 코드 기본 · 출하 `grid`). `nlp` × `closed_form` 은 park (`kSearchSegmentCombination`, 로그가 두 키를 적는다). `nlp` 와 `mpc_docking` 은 `robot.hand.docking` 을 요구하고 (없으면 `kMpcDockingInvalid`) `robot.hand.docking.provisional` 이 참인 동안 sim 전용이다 — 그때 실기 configuration 이 둘 중 하나를 고르면 park 한다 (`kMpcDockingInvalid`) | – | 주 |
 | `planner.wake_timeout_s` | 새 궤적이 없어도 깨어나는 상한. 스레드의 주기이기도 하다 | s | 주 |
 | `planner.search.grid.budget_s` | 한 사이클의 탐색 계산 예산 (§4.1 R-2). 구간 계획기 아래에서 RT 가 plan 을 따르는 wake 에는 상한이 더 걸린다 (§5.3) | s | 탐색 |
 | `planner.sub_model` | 계획기 모델 (R-3): 로봇 config `urdf.sub_models` 의 이름 — arm root → catch frame 부모. 오프라인 지도도 같은 항목을 이름으로 쓴다 (G3-I). 결정값이라 비었으면 park | – | 주 |

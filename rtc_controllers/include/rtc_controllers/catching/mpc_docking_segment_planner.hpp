@@ -67,8 +67,8 @@
 //    each (a core's first solve is the slow one).
 //  • PlanFirst / Replan and the queries are RT-safe apart from the QP solver:
 //    this planner allocates nothing in them; ProxQP allocates inside its own
-//    update()/solve() (#654). For that reason this planner must not yet run on
-//    a SCHED_FIFO planner thread on hardware — sim only until #654.
+//    update()/solve() — a recorded RT-1 violation, counted and not asserted
+//    (agent_docs/invariants.md §RT Path, #654).
 //  • Joint order: the RT speaks DEVICE order (PlannerRtState, the payload);
 //    the cores speak the model's pinocchio velocity order. The mapping is
 //    `device_of_model`, as for the search.

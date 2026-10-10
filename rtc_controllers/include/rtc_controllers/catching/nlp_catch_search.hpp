@@ -141,8 +141,8 @@
 //  • Plan, Monitor, NotePublished, ResetTrial are noexcept and allocate
 //    nothing of their own — pinned with a C-level malloc gate over a whole
 //    Plan. The QP solvers inside the IK and the cores DO allocate in their
-//    own update()/solve() (#654): on hardware this search must not run on a
-//    SCHED_FIFO planner thread until that is closed.
+//    own update()/solve(): a recorded RT-1 violation, counted and not
+//    asserted (agent_docs/invariants.md §RT Path, #654).
 //  • `now` is the axis of every instant here (the lattice, t_0, the RT
 //    state's age). The clock handed to Configure measures DURATIONS only — the
 //    budget and the solves' deadlines — so a test can step it.

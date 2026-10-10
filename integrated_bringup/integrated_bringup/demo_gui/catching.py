@@ -229,9 +229,10 @@ _SEARCH_BUDGET_PARAMS = {
     ),
 }
 
-# Implementations that exist only in simulation (issue #654: a hardware
-# configuration selecting one is parked at configure). Stated from the mode name
-# so the operator sees it without a query that could fail.
+# Implementations that run only in simulation as shipped (a hardware
+# configuration selecting one is parked at configure while
+# robot.hand.docking.provisional is true). Stated from the mode name so the
+# operator sees it without a query that could fail.
 _SIM_ONLY_MODES = frozenset({"nlp", "mpc_docking"})
 
 # Segment modes whose planner publishes a plan only together with its first

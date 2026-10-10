@@ -120,9 +120,10 @@
 //    cannot be told apart from it, so it is pinned by the operator-new gate
 //    only. ProxQP does allocate:
 //    its public update() copies the vector arguments and solve() allocates a
-//    few times per call (~7–18 C mallocs per Solve at n = 7). That is a KNOWN
-//    RT-1 gap shared with every QPSolverWrapper user, accepted for E1-F01 and
-//    tracked as #654 (MD-22 / MD-23) — not a property of this file.
+//    few times per call (~7–18 C mallocs per Solve at n = 7). That is a
+//    recorded RT-1 violation shared with every QPSolverWrapper user
+//    (agent_docs/invariants.md §RT Path, #654; MD-22 / MD-23) — not a property
+//    of this file.
 //  • The model is the arm in pinocchio velocity order (nq == nv, revolute /
 //    prismatic joints only). Mapping device order to that order is the
 //    caller's job (the same rule CatchPoseIk documents).
