@@ -481,7 +481,7 @@ TEST(DockingParamsKeys, TheTablesAreNotEmptyAndTheirKeysAreDistinct) {
   const auto nlp = NlpTable();
   const auto mpc = MpcTable();
   EXPECT_EQ(hand.size(), 20u);
-  EXPECT_EQ(CoreTable().size(), 58u);
+  EXPECT_EQ(CoreTable().size(), 59u);
   EXPECT_EQ(nlp.size(), 23u + CoreTable().size());
   EXPECT_EQ(mpc.size(), 13u + CoreTable().size());
   for (const auto& table : {AllGood(hand), AllGood(nlp), AllGood(mpc)}) {
