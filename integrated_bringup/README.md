@@ -252,8 +252,8 @@ S8-F 대조 `s8f_shipped_score`·beanbag, S8-G 격자 `s8g_*`, S8-I 자세 `s8i_
 새 실험 arm 도 repo 밖 (private 도구 디렉터리) 에서 경로로 씁니다.
 
 포구 컨트롤러 overlay 는 컨트롤러 섹션 (`integrated_rt_controller`) 을 씁니다. 출하된 것은 `catch_lead_on` 하나이고 러너의 표준 arm 입니다
-(sim 팔의 1차 지연 0.05 s 를 `joint_cmd.lag.T_arm` 으로 주고 `T_freeze` 를 0.37 로 올립니다 — 하한과의 관계는 그 파일 머리 주석). 컨트롤러 키는 경로가 한 단계만 어긋나도
-**경고 없이 무시되고 출하값으로 돌기 때문에**, 기동 로그의 `commit at t_c − 0.370 s` 로 적용을 확인합니다. sim 팔 지연 0.05 s 자체는 overlay 가 아니라
+(sim 팔의 1차 지연 0.05 s 를 `joint_cmd.lag.T_arm` 으로 주고 `T_freeze` 를 0.39 로 올립니다 — 하한과의 관계는 그 파일 머리 주석). 컨트롤러 키는 경로가 한 단계만 어긋나도
+**경고 없이 무시되고 출하값으로 돌기 때문에**, 기동 로그의 `commit at t_c − 0.390 s` 로 적용을 확인합니다. sim 팔 지연 0.05 s 자체는 overlay 가 아니라
 `config/ur5e_p1b/mujoco_simulator.yaml` 의 서보 게인 (`use_yaml_servo_gains: true`, kd/kp = 0.05 s) 이 정합니다 —
 MJCF 게인 그대로면 0.2 s 입니다. 근거는 `catch_lead_on.yaml` 헤더, 경로 고정은
 `test/test_catch_lead_overlays.py` 가 갖습니다.

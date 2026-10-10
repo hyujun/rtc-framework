@@ -86,7 +86,7 @@ if [ -n "$THROWS_LIMIT" ]; then
 fi
 case $SHORT in p1b) ROBOT=ur5e_p1b ;; leap) ROBOT=iiwa7_leap ;; esac
 case $ROBOT in
-  ur5e_p1b)   LAUNCH=sim_ur5e_p1b.launch.py;   EXPECT_COMMIT=${EXPECT_COMMIT:-0.370}; STATE_RE='ur5e_state\|p1b_state' ;;
+  ur5e_p1b)   LAUNCH=sim_ur5e_p1b.launch.py;   EXPECT_COMMIT=${EXPECT_COMMIT:-0.390}; STATE_RE='ur5e_state\|p1b_state' ;;
   iiwa7_leap) LAUNCH=sim_iiwa7_leap.launch.py; EXPECT_COMMIT=${EXPECT_COMMIT:-0.190}; STATE_RE='iiwa7_state\|leap_state' ;;
   *) echo "FAIL:unknown robot $ROBOT" > "$OUT/status"; exit 1 ;;
 esac
