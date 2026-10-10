@@ -35,6 +35,8 @@
 # Two workspaces (MD-17): the sim and controller come from this workspace, the
 # estimator from $BALL_SIM_WS (its shipped catching profile is the default
 # PROFILE). The session's raw logs are copied into the unit at the end.
+# E1-F19 part 2 addition: EXPECT_NSTOP (default 7) is the docking planner's stop.n_nodes the mirror must
+# show — a tuning overlay may move the stop grid, as it may the approach grid (EXPECT_NPRE, EXPECT_DTPRE).
 # #798: a unit throws a throw list — THROWS_FILE=<catching_throw_list/1 JSON> (the shipped sets are
 # integrated_bringup/config/<robot>/throw_sets/) in file order (--throws-file); the driver's frozen
 # series (`--dist s35b`) is gone, so a unit without THROWS_FILE is refused before anything is
@@ -251,7 +253,7 @@ grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not
 fi
 if [ "${EXPECT_MODE:-mpc}" == "mpc_docking" ]; then
 grep -q "planner.segment.mpc_docking.approach.n_pre_max: Integer value is: ${EXPECT_NPRE:-9}\$" "$OUT/mirror.txt" || why="$why n_pre_max"
-grep -q 'planner.segment.mpc_docking.stop.n_nodes: Integer value is: 7$' "$OUT/mirror.txt" || why="$why n_nodes"
+grep -q "planner.segment.mpc_docking.stop.n_nodes: Integer value is: ${EXPECT_NSTOP:-7}\$" "$OUT/mirror.txt" || why="$why n_nodes"
 grep -q "mpc_docking segment planner ready: up to ${EXPECT_NPRE:-9} x ${EXPECT_DTPRE:-0.100} s" "$OUT/launch.log" || why="$why approach_grid"
 grep -q 'takes a plan with its first segment' "$OUT/launch.log" || why="$why not_e1f09_binary"
 fi
