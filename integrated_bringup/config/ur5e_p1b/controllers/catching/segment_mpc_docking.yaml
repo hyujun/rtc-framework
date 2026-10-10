@@ -81,7 +81,8 @@ demo_catching_controller:
           # and reach every core from there; the grid is this map's own keys
           # above. A per-joint weight is one number for every joint.
           # Starting values: the weights the core's own suites solve with
-          # (E1-F13); tuning them on the shipped arms is E1-F19.
+          # (E1-F13). E1-F19 (#745) did not tune them — it set the switches,
+          # the grid and the keys noted where they stand.
           core:
             u_scale: 1.0e+3
             cost:
@@ -156,9 +157,14 @@ demo_catching_controller:
               # published as many throws (1 and 1 of 30) and converged as
               # often (7 and 6 first solves), and cut more of them at the
               # deadline (64 to 84 %).
-              # mu_max may not be under mu_init: an overlay that raises
-              # mu_init has to raise it too (the core refuses the pair).
+              # mu_init is written beside it (its value is the code
+              # default) so that "no probe" does not rest on a default:
+              # mu_max may not be under mu_init (the core refuses the
+              # pair), so an overlay that raises mu_init raises it too.
+              # (catch_time's two start penalties, read only with
+              # continuous_tc, are still the code's and checked the same.)
               tol_kkt: 1.0e-2
+              mu_init: 1.0e+2
               mu_max: 1.0e+2
             solver:
               eps_abs: 1.0e-7

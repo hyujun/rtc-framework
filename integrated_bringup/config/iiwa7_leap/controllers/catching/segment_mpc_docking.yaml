@@ -65,14 +65,15 @@ demo_catching_controller:
           # The corridor and the speed envelope are soft in the problem: the
           # largest slack a published segment may lean on — the corridor's in
           # [m], the envelope's in the units of its row (c^2, [m^2/s^2]).
-          # slack_c_max (E1-F19, #745): at 0 a converged solve that leans on the
-          # corridor at all is withheld; 0.06 m is the value the part-1 units of
-          # this arm published with. It is 2.7 times the corridor's entrance
-          # radius (robot.hand.docking.corridor.r_ent 22.1 mm), so the corridor
-          # gate is as good as open — and every segment the part-2 units of
-          # this robot published (20, in 6 units) leaned on the corridor by
-          # nothing, so what the allowance lets through has not been looked
-          # at. slack_v_max stays 0: the
+          # slack_c_max (E1-F19, #745): 0.06 m is the value the units of this
+          # arm ran with. It is 2.7 times the corridor's entrance radius
+          # (robot.hand.docking.corridor.r_ent 22.1 mm), so the corridor gate
+          # is as good as open. What it has let through is little: the 26
+          # segments those units published (7 units) leaned on the corridor by
+          # exactly nothing. At 0 a converged solve that leans on it by a few
+          # millimetres is withheld — in the one unit run at 0, a first solve
+          # leaning 6.4 mm and on nothing else. No value between the two was
+          # tried. slack_v_max stays 0: the
           # envelope slacks of the segments withheld on the D-2 tuning set run
           # from 0.3 to 8 m^2/s^2 (most past the 2.5 m/s the hand was flown
           # to), and 1.5 published no more in a unit.
@@ -86,7 +87,8 @@ demo_catching_controller:
           # and reach every core from there; the grid is this map's own keys
           # above. A per-joint weight is one number for every joint.
           # Starting values: the weights the core's own suites solve with
-          # (E1-F13); tuning them on the shipped arms is E1-F19.
+          # (E1-F13). E1-F19 (#745) did not tune them — it set the switches,
+          # the grid and the keys noted where they stand.
           core:
             u_scale: 1.0e+3
             cost:
@@ -159,9 +161,14 @@ demo_catching_controller:
               # published as many throws (0 and 0 of 27) and converged as
               # often (0 and 0 first solves), and cut more of them at the
               # deadline (33 to 38 %).
-              # mu_max may not be under mu_init: an overlay that raises
-              # mu_init has to raise it too (the core refuses the pair).
+              # mu_init is written beside it (its value is the code
+              # default) so that "no probe" does not rest on a default:
+              # mu_max may not be under mu_init (the core refuses the
+              # pair), so an overlay that raises mu_init raises it too.
+              # (catch_time's two start penalties, read only with
+              # continuous_tc, are still the code's and checked the same.)
               tol_kkt: 1.0e-2
+              mu_init: 1.0e+2
               mu_max: 1.0e+2
             solver:
               eps_abs: 1.0e-7
