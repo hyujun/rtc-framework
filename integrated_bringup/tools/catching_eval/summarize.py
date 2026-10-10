@@ -14,10 +14,33 @@ retries are read off ``<unit>.fail<N>`` beside each. Needs ``<unit>/ct``
 
 Statistics come from the repo (``rtc_tools.analysis.catching_decel``): the
 Tango test, its score interval, the Wald interval and the exact power.
+
+A RECORD of N arms (#746) — what each arm did on the same throws, nothing judged:
+
+    summarize.py --cfg <robot config dir> --unit <unit>... [--all-pairs] [--json out.json]
+
+An arm is search x segment x ball, read off each unit's ``mirror.txt``
+(``planner.search.mode`` · ``planner.segment.mode`` · ``ball_type``) and refused
+when the unit's ``conditions.txt`` was told to expect another
+(``expect_search`` · ``expect_mode`` · ``expect_ball``). A unit's overlay is the
+one its ``conditions.txt`` names. Units are joined throw by throw inside one
+repetition — the same estimator seed and the same throw list — so a list thrown
+under two seeds is two strata, tabled apart and pooled. Arms are tabled against
+each other when they differ in the planner with the ball the same, or in the
+ball with the planner the same (``--all-pairs``: every two). Per pair: the 2x2
+table of ``truth_success`` and of D4, each arm's rate with its Wilson interval,
+the paired difference with its score interval, McNemar's exact p, and the Tango
+row as a REFERENCE (the margin decides nothing here). Per arm: the rates, the
+plan verdicts and reject reasons, the entrance crossing (#807), the solves —
+ended ones as a distribution, the ones the core cut at its deadline as a count
+and a share (``rtc_tools.analysis.planner_solves``) — against the budget of
+that arm's own planner, the limits, and the same seed-to-seed table of one arm
+with itself (how much a repetition moves the numbers).
 """
 
 import argparse
 import collections
+import itertools
 import json
 import math
 import re
@@ -30,6 +53,7 @@ from rtc_tools.analysis import (
     catching_arm_budget as ab,
     catching_decel as cd,
     catching_trials as ct,
+    planner_solves as ps,
 )
 from rtc_tools.analysis.catching_throw_list import throw_group, throw_key
 from rtc_tools.utils.catching_keys import (
@@ -468,11 +492,12 @@ def unit_t_c(units):
 
 
 # ── pairing, test, verdict ───────────────────────────────────────────────────
-def pair(cf_rows, mpc_rows):
-    """The two arms' trials joined by throw (``throw_key``: a list's sha256 and
+def pair_rows(a_rows, b_rows, names=("a", "b")):
+    """Two arms' trials joined by throw (``throw_key``: a list's sha256 and
     throw_id, or kind · seed · sample_idx). A trial without a key (#798: a
     list unit whose rows lack the list, a series without a seed) pairs with
-    nothing and is counted in ``unkeyed``."""
+    nothing and is counted in ``unkeyed``. ``names`` label the two arms in the
+    counts (``unpaired_<name>``, the ``<name>_only`` side of a dropped pair)."""
     unkeyed = collections.Counter()
 
     def keyed(rows, arm):
@@ -487,7 +512,7 @@ def pair(cf_rows, mpc_rows):
             out[k] = r
         return out
 
-    a, b = keyed(cf_rows, "cf"), keyed(mpc_rows, "mpc")
+    a, b = keyed(a_rows, names[0]), keyed(b_rows, names[1])
     keys = sorted(set(a) & set(b))
     dropped = collections.Counter()
     valid, per_seed_drop = [], collections.Counter()
@@ -497,7 +522,7 @@ def pair(cf_rows, mpc_rows):
             side = (
                 "both"
                 if ra["invalid_reason"] and rb["invalid_reason"]
-                else ("cf_only" if ra["invalid_reason"] else "mpc_only")
+                else (f"{names[0]}_only" if ra["invalid_reason"] else f"{names[1]}_only")
             )
             dropped[(side, ra["invalid_reason"] or "-", rb["invalid_reason"] or "-")] += 1
             per_seed_drop[throw_group(k)] += 1
@@ -505,8 +530,8 @@ def pair(cf_rows, mpc_rows):
         valid.append((k, ra, rb))
     return {
         "keys": len(keys),
-        "unpaired_cf": len(set(a) - set(b)),
-        "unpaired_mpc": len(set(b) - set(a)),
+        f"unpaired_{names[0]}": len(set(a) - set(b)),
+        f"unpaired_{names[1]}": len(set(b) - set(a)),
         "unkeyed": dict(unkeyed),
         "valid": valid,
         "dropped": {"/".join(k): v for k, v in dropped.items()},
@@ -517,6 +542,11 @@ def pair(cf_rows, mpc_rows):
             (s for s, n in per_seed_drop.items() if n >= DROP_SEED_RERUN), key=str
         ),
     }
+
+
+def pair(cf_rows, mpc_rows):
+    """:func:`pair_rows` of the G-1 verdict's two arms."""
+    return pair_rows(cf_rows, mpc_rows, ("cf", "mpc"))
 
 
 def table(valid, field):
@@ -704,20 +734,648 @@ def refuse_shared_names(units):
     twice = sorted(n for n, c in names.items() if c > 1)
     if twice:
         raise SystemExit(
-            f"unit name twice across --cf and --mpc: {', '.join(twice)} (rows are kept by name)"
+            f"unit name twice across the units given: {', '.join(twice)} (rows are kept by name)"
         )
+
+
+# ── N arms, a record (#746) ──────────────────────────────────────────────────
+# What each arm did on the same throws. Nothing is judged: no arm is the control,
+# no margin decides, and the Tango row is printed as a reference beside the
+# descriptive numbers.
+Arm = collections.namedtuple("Arm", "search segment ball")
+# (field, the mirror that says it, what conditions.txt was told to expect)
+ARM_FIELDS = (
+    ("search", "planner.search.mode", "expect_search"),
+    ("segment", "planner.segment.mode", "expect_mode"),
+    ("ball", "ball_type", "expect_ball"),
+)
+# The budget of each segment planner, by its own mirror names [s].
+SEGMENT_BUDGET_KEYS = {
+    "mpc": {
+        "first": "planner.segment.mpc.budget.first_s",
+        "replan": "planner.segment.mpc.budget.replan_s",
+    },
+    "mpc_docking": {
+        "first": "planner.segment.mpc_docking.budget.first_s",
+        "replan": "planner.segment.mpc_docking.budget.replan_s",
+    },
+}
+NLP_BUDGET_KEYS = {
+    "wake_s": "planner.search.nlp.budget.budget_s",
+    "solve_s": "planner.search.nlp.budget.solve_s",
+    "max_solves": "planner.search.nlp.budget.max_solves",
+}
+# planner_solves' kinds, grouped as the budgets are: a withheld replacement's first
+# solve runs under the first-solve budget.
+SOLVE_KINDS = (
+    ("first", ("first",), "first"),
+    ("replan", REPLAN, "replan"),
+    ("repl_first", (ps.WITHHELD_REPLACEMENT_KIND,), "first"),
+)
+# #807: a ball that crosses the hand's entrance plane within this of rho_ref is caught.
+ENT_NEAR_MM = 10.0
+CATCH_FRAME_MEDIANS = (
+    "cf_tot_s_mm",
+    "cf_ref_s_mm",
+    "cf_clik_s_mm",
+    "cf_servo_s_mm",
+    "cf_tot_lateral_margin_mm",
+    "cf_ref_lateral_margin_mm",
+    "ent_cross_ms",
+    "ent_lat_mm",
+    "ent_lateral_margin_mm",
+    "ent_v_perp_m_s",
+    "last_seg_wake_to_tc_ms",
+    "last_seg_solve_ms",
+    "last_seg_pred_age_ms",
+)
+TANGO_NOTE = "reference row (b not worse than a by the margin) — not a verdict of this record"
+
+
+def mirror_text(mirror, key):
+    """A string mirror's value (``<key>: String value is: <value>``), or None."""
+    m = re.search(r"String value is: (\S+)$", mirror.get(key, ""))
+    return m.group(1) if m else None
+
+
+def arm_label(arm):
+    return f"{arm.search}×{arm.segment}·{arm.ball}"
+
+
+def arm_order(arm):
+    """Tennis first, then by search and segment name: A, B, C, C′ of #746 in that order."""
+    return (arm.ball != "tennis", arm.ball, arm.search, arm.segment)
+
+
+def list_tag(sha):
+    """A throw list's name in a record: its sha256 prefix (``series`` for a seeded run)."""
+    return f"list:{sha[:12]}" if sha else "series"
+
+
+def unit_identity(unit):
+    """A unit's arm, repetition and overlay, read off the unit (``mirror.txt`` and
+    ``conditions.txt``) — never off a flag or its directory name. Refused when a mirror
+    does not say the arm, when ``conditions.txt`` was told to expect another (a unit from
+    before #746 has no ``expect_search`` / ``expect_ball``: the mirror alone then says
+    it), or when it has no seed."""
+    unit = Path(unit)
+    cond, mirror = kv_file(unit / "conditions.txt"), kv_file(unit / "mirror.txt")
+    values = {}
+    for field, key, expect in ARM_FIELDS:
+        got = mirror_text(mirror, key)
+        if got is None:
+            raise SystemExit(
+                f"{unit}: mirror.txt has no {key} — the arm cannot be read off the unit"
+            )
+        told = cond.get(expect)
+        if told not in (None, "", got):
+            raise SystemExit(
+                f"{unit}: conditions.txt says {expect}: {told}, the mirror says {key}: {got}"
+            )
+        values[field] = got
+    if not cond.get("seed"):
+        raise SystemExit(f"{unit}: conditions.txt has no seed — the repetition is not known")
+    return {
+        "arm": Arm(**values),
+        "seed": cond["seed"],
+        "list": cond.get("throws_file_sha256", ""),
+        "overlay": cond.get("overlay", ""),
+        "robot": cond.get("robot", ""),
+    }
+
+
+def record_pairs(arms, all_pairs=False):
+    """Which arms are tabled against each other, and what the two differ in: the planner
+    (search or segment) with the ball the same, or the ball with the planner the same.
+    ``all_pairs`` adds the pairs that differ in both."""
+    out = []
+    for a, b in itertools.combinations(sorted(arms, key=arm_order), 2):
+        planner = (a.search, a.segment) != (b.search, b.segment)
+        ball = a.ball != b.ball
+        if all_pairs or planner != ball:
+            out.append(
+                (a, b, "planner+ball" if planner and ball else "planner" if planner else "ball")
+            )
+    return out
+
+
+def ab_table(valid, field):
+    """:func:`table` with the two arms called a and b."""
+    t = table(valid, field)
+    return {
+        "n": t["n"],
+        "both": t["both"],
+        "a_only": t["cf_only"],
+        "b_only": t["mpc_only"],
+        "neither": t["neither"],
+    }
+
+
+def describe(tab):
+    """A 2x2 table of paired throws as descriptive statistics: each arm's rate with its
+    Wilson interval, the paired difference b − a with its score interval, McNemar's exact
+    p, and the Tango row — a reference, at the margin the G-1 verdict used. An empty
+    table is returned as it is."""
+    n, xa, xb = tab["n"], tab["a_only"], tab["b_only"]
+    out = dict(tab)
+    if n == 0:
+        return out
+    ka, kb = tab["both"] + xa, tab["both"] + xb
+    t = cd.tango_noninferiority(xa, xb, n, MARGIN, alpha=ALPHA)
+    out.update(
+        k_a=ka,
+        k_b=kb,
+        p_a=ka / n,
+        p_b=kb / n,
+        wilson95_a=list(ct.wilson_interval(ka, n)),
+        wilson95_b=list(ct.wilson_interval(kb, n)),
+        diff=(xb - xa) / n,
+        score_ci95=cd.tango_score_ci(xa, xb, n),
+        mcnemar_exact_p=ct.mcnemar_exact(xa, xb),
+        tango_reference={
+            "margin": MARGIN,
+            "alpha": ALPHA,
+            "z": t["z"],
+            "p": t["p"],
+            "note": TANGO_NOTE,
+        },
+    )
+    return out
+
+
+def rates(rows):
+    """An arm's own rates over its valid throws (paired or not)."""
+    valid = [r for r in rows if not r["invalid_reason"]]
+    n = len(valid)
+    out = {"thrown": len(rows), "valid": n}
+    for field in ("truth", "d4"):
+        k = sum(1 for r in valid if r[field])
+        out[field] = {
+            "k": k,
+            "p": k / n if n else None,
+            "wilson95": list(ct.wilson_interval(k, n)) if n else None,
+        }
+    return out
+
+
+def pair_record(units_a, units_b, rows, names=("a", "b")):
+    """Two arms' units (``{(seed, list): unit}``) joined stratum by stratum — a stratum is
+    one repetition of one list — and tabled per stratum, per list and pooled. The pooled
+    and per-list tables count a throw once per repetition it was thrown in."""
+    strata = sorted(set(units_a) & set(units_b))
+    pooled, by_list, by_stratum = [], collections.defaultdict(list), {}
+    for key in strata:
+        ua, ub = units_a[key], units_b[key]
+        pr = pair_rows(rows[ua["name"]], rows[ub["name"]], names)
+        valid = pr.pop("valid")
+        by_stratum[f"seed {key[0]} · {list_tag(key[1])}"] = {
+            "units": [ua["name"], ub["name"]],
+            "pairs": pr,
+            **{f: describe(ab_table(valid, f)) for f in ("truth", "d4")},
+        }
+        pooled += valid
+        by_list[list_tag(key[1])] += valid
+    return {
+        "strata": len(strata),
+        "strata_only_a": [
+            f"seed {k[0]} · {list_tag(k[1])}" for k in sorted(set(units_a) - set(units_b))
+        ],
+        "strata_only_b": [
+            f"seed {k[0]} · {list_tag(k[1])}" for k in sorted(set(units_b) - set(units_a))
+        ],
+        "pooled": {f: describe(ab_table(pooled, f)) for f in ("truth", "d4")},
+        "by_list": {
+            tag: {f: describe(ab_table(v, f)) for f in ("truth", "d4")}
+            for tag, v in sorted(by_list.items())
+        },
+        "by_stratum": by_stratum,
+    }
+
+
+def repeat_record(units, rows):
+    """One arm against itself: its units of one list under two seeds, joined throw by
+    throw. How much a repetition (the estimator's noise alone) moves the outcome."""
+    by_list = collections.defaultdict(dict)
+    for (seed, sha), u in units.items():
+        by_list[sha][seed] = u
+    out = {}
+    for sha, seeds in sorted(by_list.items()):
+        for s1, s2 in itertools.combinations(sorted(seeds), 2):
+            pr = pair_rows(rows[seeds[s1]["name"]], rows[seeds[s2]["name"]])
+            valid = pr.pop("valid")
+            out[f"{list_tag(sha)} · seed {s1} (a) vs {s2} (b)"] = {
+                "pairs": pr,
+                **{f: describe(ab_table(valid, f)) for f in ("truth", "d4")},
+            }
+    return out
+
+
+def _valid_ct(units, extra=None):
+    """The arm's valid throws as ``catching_trials.csv`` rows, units stacked. ``extra`` adds
+    columns per unit (``extra(unit, frame) -> {name: values}``)."""
+    frames = []
+    for u in units:
+        c = u["ct"]
+        c = c[c["invalid_reason"].fillna("").eq("")]
+        frames.append(c.assign(**extra(u, c)) if extra else c)
+    return pd.concat(frames, ignore_index=True)
+
+
+def _truth(frame):
+    return frame["truth_success"].astype(str).str.lower().eq("true")
+
+
+def arm_plan(units):
+    """What the planner did with the arm's valid throws, as ``catching_trials`` counted it
+    per throw: the plan verdict (published · withheld · …), the reject reasons, the throws
+    the search accepted on some wake, the throws that lost a first solve to the deadline,
+    and the catches under each verdict. A column the tool did not write is left out."""
+    c = _valid_ct(units)
+    out = {"valid": int(len(c))}
+
+    def tally(col):
+        v = c[col].fillna("").astype(str)
+        return {str(k): int(n) for k, n in v[v != ""].value_counts().items()}
+
+    for name, col in (
+        ("plan_verdict", "plan_verdict"),
+        ("reject_most_frequent", "plan_reject"),
+        ("reject_last", "plan_reject_last"),
+    ):
+        if col in c:
+            out[name] = tally(col)
+    if "search_valid_cycles" in c:
+        out["search_accepted"] = int(
+            (pd.to_numeric(c["search_valid_cycles"], errors="coerce") > 0).sum()
+        )
+    if "first_solve_cut" in c:
+        out["throws_with_a_first_solve_cut"] = int(
+            (pd.to_numeric(c["first_solve_cut"], errors="coerce") > 0).sum()
+        )
+    if "plan_verdict" in c:
+        verdict, truth = c["plan_verdict"].fillna("").astype(str), _truth(c)
+        out["caught_by_plan_verdict"] = {
+            k: int((truth & (verdict == k)).sum()) for k in out["plan_verdict"]
+        }
+    return out
+
+
+def arm_catch_frame(units):
+    """Where the ball crossed the hand's entrance plane, on the arm's valid throws a plan
+    was published for (#807): how many crossed, how many within ``ENT_NEAR_MM`` of
+    ``rho_ref`` and how many of those were caught, how many inside the lateral set, and
+    the medians of the catch-frame shares and of the last segment's timing. None when the
+    units carry no entrance columns (a hand without a docking set, an older tool)."""
+
+    def lateral(u, c):
+        rho = (u["summ"].get("catch_frame") or {}).get("rho_ref_mm")
+        if rho is None or "ent_x_mm" not in c:
+            return {"ent_lat_mm": np.full(len(c), np.nan)}
+        x = pd.to_numeric(c["ent_x_mm"], errors="coerce").to_numpy(float)
+        y = pd.to_numeric(c["ent_y_mm"], errors="coerce").to_numpy(float)
+        return {"ent_lat_mm": np.hypot(x - rho[0], y - rho[1])}
+
+    c = _valid_ct(units, lateral)
+    if "plan_verdict" not in c or "ent_x_mm" not in c:
+        return None
+    c = c[c["plan_verdict"].astype(str) == ct.PLAN_VERDICT_PUBLISHED]
+    lat = c["ent_lat_mm"].to_numpy(float)
+    near, truth = lat <= ENT_NEAR_MM, _truth(c).to_numpy()
+    out = {
+        "published": int(len(c)),
+        "caught": int(truth.sum()),
+        "crossed_entrance": int(np.isfinite(lat).sum()),
+        "within_near_mm_of_rho_ref": int(near.sum()),
+        "caught_of_those": int((near & truth).sum()),
+        "near_mm": ENT_NEAR_MM,
+        "medians": {},
+    }
+    if "ent_lateral_margin_mm" in c:
+        out["inside_lateral_set"] = int(
+            (pd.to_numeric(c["ent_lateral_margin_mm"], errors="coerce") > 0).sum()
+        )
+    for k in CATCH_FRAME_MEDIANS:
+        if k in c:
+            out["medians"][k] = median(pd.to_numeric(c[k], errors="coerce"))
+    return out
+
+
+def _mirror_number(units, key, recorded_later=False):
+    """A numeric mirror the arm's units agree on; None when no unit has it (the
+    parameter of another planner); refused when they differ. ``recorded_later`` is for
+    a mirror ``run_unit.sh`` began to record at some revision: a unit from before it
+    says nothing, and the units that do say it have to agree."""
+    values = {mirror_value(u["mirror"], key) for u in units}
+    if recorded_later:
+        values.discard(None)
+        if not values:
+            return None
+    if len(values) != 1:
+        raise SystemExit(f"{key} differs across the units of one arm: {sorted(map(str, values))}")
+    return values.pop()
+
+
+def arm_solves(units, arm):
+    """The arm's solves against the budget of ITS planner. The grid search's time and the
+    wake counts are :func:`solve_block`'s. The segment solves come from ``planner_solves``:
+    per kind, the solves that ended as a distribution, the ones the core cut at its
+    deadline as a count and a share — a cut solve's time is the instant it was cut at and
+    is in no distribution here — and the p99 over both with the flag that says when it is
+    only a lower bound. The NLP search's wakes are ``planner_solves.nlp_summary``."""
+    base = solve_block(units, False)
+    out = {k: base[k] for k in ("held", "outcomes", "wakes_over_33ms", "wake_ms_max") if k in base}
+    # The verdict's block says "pass"; a record states the same comparison as a fact.
+    search = dict(base["search"])
+    search["p99_within_budget"] = search.pop("pass")
+    out["search"] = search
+    pe = pd.concat([u["pe"] for u in units], ignore_index=True)
+    solves = ps.solve_table(pe)
+    keys = SEGMENT_BUDGET_KEYS.get(arm.segment, {})
+    segment = {}
+    for name, kinds, budget in SOLVE_KINDS:
+        sel = solves[solves["kind"].isin(kinds)]
+        if sel.empty:
+            continue
+        blk = ps.summarise_times(sel["ms"].to_numpy(float), sel["cut"].to_numpy(bool))
+        blk["cut_share"] = blk["n_cut"] / blk["n"]
+        blk["outcomes"] = {str(k): int(v) for k, v in sel["outcome"].value_counts().items()}
+        budget_s = _mirror_number(units, keys[budget]) if budget in keys else None
+        blk["budget_ms"] = None if budget_s is None else budget_s * 1e3
+        done = blk["done"]
+        blk["done_p99_within_budget"] = (
+            None if done is None or blk["budget_ms"] is None else done["p99"] <= blk["budget_ms"]
+        )
+        segment[name] = blk
+    out["segment"] = segment
+    nlp = ps.nlp_summary(pe)
+    if nlp is not None:
+        nlp["budget"] = {
+            name: _mirror_number(units, key, recorded_later=True)
+            for name, key in NLP_BUDGET_KEYS.items()
+        }
+        times = nlp.get("solve_ms_max")
+        if times and times["n"]:
+            nlp["wakes_with_a_deadline_reject_share"] = times["n_cut"] / times["n"]
+        out["nlp"] = nlp
+    return out
+
+
+def arm_record(arm, units, rows):
+    """Everything the record says of one arm (``units``: ``{(seed, list): unit}``)."""
+    loaded = [units[k] for k in sorted(units)]
+    arm_rows = [r for u in loaded for r in rows[u["name"]]]
+    by_list = collections.defaultdict(list)
+    for (_, sha), u in sorted(units.items()):
+        by_list[list_tag(sha)] += rows[u["name"]]
+    return {
+        "search": arm.search,
+        "segment": arm.segment,
+        "ball": arm.ball,
+        "units": {f"seed {k[0]} · {list_tag(k[1])}": units[k]["name"] for k in sorted(units)},
+        "rates": {
+            "all": rates(arm_rows),
+            "by_list": {tag: rates(v) for tag, v in sorted(by_list.items())},
+            "by_unit": {u["name"]: rates(rows[u["name"]]) for u in loaded},
+        },
+        "plan": arm_plan(loaded),
+        "catch_frame": arm_catch_frame(loaded),
+        "solves": arm_solves(loaded, arm),
+        "limits": limits_block(arm_rows),
+        "hold_limits": hold_limits(arm_rows),
+        "failure_modes": failure_modes(arm_rows),
+        "peaks_approach_to_decel_end": peaks(arm_rows),
+        "decel_stop": cd.pool([u["dec"] for u in loaded])["decel"],
+        "t_c": unit_t_c(loaded),
+        "replan": replan_block(loaded),
+        "rt_tick": rt_tick_block(loaded, rows),
+        "repeat": repeat_record(units, rows),
+        "conditions": {
+            "retries": {u["name"]: u["retries"] for u in loaded},
+            "rtf_trial_min": min(
+                float(pd.to_numeric(u["ct"]["rtf_trial_min"], errors="coerce").min())
+                for u in loaded
+            ),
+            "loadavg_start": {u["name"]: u["cond"].get("loadavg_start") for u in loaded},
+            "overlay": sorted({u["cond"].get("overlay", "") for u in loaded}),
+            **{
+                k: sorted({u["cond"].get(k, "") for u in loaded})
+                for k in (
+                    "rtc_framework_rev",
+                    "rtc_framework_dirty",
+                    "ball_perception_rev",
+                    "profile_sha256",
+                    "planner_budget_s",
+                )
+            },
+        },
+    }
+
+
+def record(cfg, unit_dirs, all_pairs=False, regression="unknown"):
+    """The record of N arms as a dict (module docstring)."""
+    from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text
+
+    refuse_shared_names(unit_dirs)
+    ids = {Path(u).name: unit_identity(u) for u in unit_dirs}
+    robots = sorted({i["robot"] for i in ids.values()})
+    if len(robots) != 1:
+        raise SystemExit(f"a record is one robot's: the units say {robots}")
+    by_arm = collections.defaultdict(dict)
+    for u in unit_dirs:
+        i = ids[Path(u).name]
+        key = (i["seed"], i["list"])
+        if key in by_arm[i["arm"]]:
+            raise SystemExit(
+                f"{arm_label(i['arm'])}: two units of seed {key[0]} · {list_tag(key[1])} "
+                f"({by_arm[i['arm']][key]} and {Path(u).name}) — one unit per arm, seed and list"
+            )
+        by_arm[i["arm"]][key] = Path(u).name
+    for name, i in ids.items():
+        if not Path(i["overlay"]).is_file():
+            raise SystemExit(
+                f"{name}: the overlay its conditions.txt names is gone: {i['overlay']!r}"
+            )
+    loaded = {Path(u).name: load_unit(u, cfg, ids[Path(u).name]["overlay"]) for u in unit_dirs}
+    first = next(iter(loaded.values()))
+    profile = ct.load_profile(cfg, None, first["unit"] / "session")
+    urdf_text, _ = resolve_urdf_text(profile.robot_params, None)
+    fk = ct.CatchFrameFk(urdf_text, first["joints"], profile)
+    rows = {name: trial_rows(u, cfg, fk) for name, u in loaded.items()}
+    arms = sorted(by_arm, key=arm_order)
+    units = {arm: {key: loaded[name] for key, name in by_arm[arm].items()} for arm in arms}
+    mismatch = [
+        (r["unit"], r["idx"], r["hold_no_abort"], r["mode_log_ok"])
+        for unit_rows in rows.values()
+        for r in unit_rows
+        if not r["invalid_reason"]
+        and r["hold_no_abort"] is not None
+        and r["hold_no_abort"] != r["mode_log_ok"]
+    ]
+    return {
+        "record": "N arms on the same throws — nothing is judged (#746)",
+        "robot": robots[0],
+        "arms": {arm_label(arm): arm_record(arm, units[arm], rows) for arm in arms},
+        "pairs": {
+            f"{arm_label(a)} (a) | {arm_label(b)} (b)": {
+                "a": arm_label(a),
+                "b": arm_label(b),
+                "differs_in": what,
+                **pair_record(units[a], units[b], rows),
+            }
+            for a, b, what in record_pairs(arms, all_pairs)
+        },
+        "mode_log_mismatch": mismatch,
+        "regression": regression,
+    }
+
+
+def _fmt_ci(ci):
+    return "–" if ci is None else f"[{ci[0]:.3f}, {ci[1]:.3f}]"
+
+
+def _fmt_table(name, t):
+    """One described 2x2 table as a line."""
+    if t["n"] == 0:
+        return f"    {name}: no valid pair"
+    ref = t["tango_reference"]
+    return (
+        f"    {name}: n {t['n']} · both {t['both']} · a only {t['a_only']} · b only {t['b_only']} · "
+        f"neither {t['neither']} | a {t['k_a']}/{t['n']} = {t['p_a']:.3f} {_fmt_ci(t['wilson95_a'])} · "
+        f"b {t['k_b']}/{t['n']} = {t['p_b']:.3f} {_fmt_ci(t['wilson95_b'])} | b − a {t['diff']:+.4f} "
+        f"score [{t['score_ci95'][0]:+.4f}, {t['score_ci95'][1]:+.4f}] · McNemar p "
+        f"{t['mcnemar_exact_p']:.3g} · (Tango δ {ref['margin']:g}: Z {ref['z']:.3f} p {ref['p']:.3g} — reference)"
+    )
+
+
+def _fmt_rate(r, field):
+    v = r[field]
+    if not r["valid"]:
+        return f"{field} –"
+    return f"{field} {v['k']}/{r['valid']} = {v['p']:.3f} {_fmt_ci(v['wilson95'])}"
+
+
+def format_record(res):
+    """The record as text lines."""
+    lines = [f"{res['record']} — {res['robot']}, {len(res['arms'])} arms"]
+    for label, a in res["arms"].items():
+        r = a["rates"]["all"]
+        lines.append(
+            f"arm {label}: {len(a['units'])} units · thrown {r['thrown']} · valid {r['valid']}"
+        )
+        lines.append(f"  all: {_fmt_rate(r, 'truth')} · {_fmt_rate(r, 'd4')}")
+        for tag, v in a["rates"]["by_list"].items():
+            lines.append(
+                f"  {tag} (valid {v['valid']}): {_fmt_rate(v, 'truth')} · {_fmt_rate(v, 'd4')}"
+            )
+        for name, v in a["rates"]["by_unit"].items():
+            lines.append(
+                f"    {name} (valid {v['valid']}): {_fmt_rate(v, 'truth')} · {_fmt_rate(v, 'd4')}"
+            )
+        lines.append(f"  plan: {json.dumps(a['plan'], default=_json, ensure_ascii=False)}")
+        if a["catch_frame"] is not None:
+            lines.append(f"  entrance (#807): {json.dumps(a['catch_frame'], default=_json)}")
+        s = a["solves"]
+        lines.append(f"  search: {json.dumps(s['search'], default=_json)}")
+        for kind, blk in s["segment"].items():
+            done = blk["done"]
+            ended = (
+                "none ended"
+                if done is None
+                else f"ended {blk['n_done']}: p50 {done['p50']:.2f} p99 {done['p99']:.2f} max {done['max']:.2f} ms"
+            )
+            budget = "–" if blk["budget_ms"] is None else f"{blk['budget_ms']:.1f} ms"
+            lines.append(
+                f"  segment {kind}: {blk['n']} solves · {ended} · cut at the deadline {blk['n_cut']} "
+                f"({blk['cut_share']:.1%}) · budget {budget} · ended p99 within budget "
+                f"{blk['done_p99_within_budget']} · outcomes {blk['outcomes']}"
+            )
+        if "nlp" in s:
+            n = s["nlp"]
+            lines.append(
+                f"  nlp search: {n['wakes']} wakes · reasons {n.get('reasons')} · rejects {n['rejects']} "
+                f"· budget {n['budget']}"
+            )
+            times = n.get("solve_ms_max")
+            if times and times["n"]:
+                lines.append(
+                    "    slowest candidate solve per wake [ms]: " + ps.format_nlp_solve_time(times)
+                )
+        lim = {k: v for k, v in a["limits"].items() if k != "violating"}
+        lines.append(f"  limits (APPROACH → DECEL end): {json.dumps(lim, default=_json)}")
+        lines.append(f"  failure modes: {json.dumps(a['failure_modes'], default=_json)}")
+        for name, rep in a["repeat"].items():
+            lines.append(f"  repeat {name}:")
+            lines += [_fmt_table(f, rep[f]) for f in ("truth", "d4")]
+    for name, p in res["pairs"].items():
+        lines.append(f"pair {name} — differs in the {p['differs_in']}, {p['strata']} strata")
+        if p["strata_only_a"] or p["strata_only_b"]:
+            lines.append(
+                f"  strata of one arm only: a {p['strata_only_a']} · b {p['strata_only_b']}"
+            )
+        # One stratum is its own pool, and one list its own per-list table: said once.
+        if p["strata"] > 1:
+            lines.append("  pooled (a throw counts once per repetition):")
+            lines += [_fmt_table(f, p["pooled"][f]) for f in ("truth", "d4")]
+        if len(p["by_list"]) > 1:
+            for tag, v in p["by_list"].items():
+                lines.append(f"  {tag}:")
+                lines += [_fmt_table(f, v[f]) for f in ("truth", "d4")]
+        for tag, v in p["by_stratum"].items():
+            pr = v["pairs"]
+            lines.append(
+                f"  {tag} ({' | '.join(v['units'])}): thrown keys {pr['keys']} · thrown by one arm only "
+                f"a {pr['unpaired_a']} b {pr['unpaired_b']} · dropped {pr['dropped_n']} {pr['dropped']} · "
+                f"unkeyed {pr['unkeyed']} · six or more dropped (the rerun rule) {pr['seeds_to_rerun']}"
+            )
+            lines += [_fmt_table(f, v[f]) for f in ("truth", "d4")]
+    lines.append(
+        f"mode_log mismatches: {len(res['mode_log_mismatch'])} {res['mode_log_mismatch'][:5]}"
+    )
+    lines.append(f"regression: {res['regression']}")
+    return lines
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cfg", type=Path, required=True)
-    ap.add_argument("--overlay-cf", type=Path, required=True)
-    ap.add_argument("--overlay-mpc", type=Path, required=True)
-    ap.add_argument("--cf", nargs="+", required=True)
-    ap.add_argument("--mpc", nargs="+", required=True)
+    ap.add_argument("--overlay-cf", type=Path)
+    ap.add_argument("--overlay-mpc", type=Path)
+    ap.add_argument("--cf", nargs="+")
+    ap.add_argument("--mpc", nargs="+")
+    ap.add_argument(
+        "--unit",
+        nargs="+",
+        help="a record of N arms (#746): the units of every arm; each unit says its own arm",
+    )
+    ap.add_argument(
+        "--all-pairs",
+        action="store_true",
+        help="with --unit: also table the arms that differ in the planner AND the ball",
+    )
     ap.add_argument("--regression", choices=("pass", "fail", "unknown"), default="unknown")
     ap.add_argument("--json", type=Path)
     a = ap.parse_args()
+    verdict_flags = {
+        "--overlay-cf": a.overlay_cf,
+        "--overlay-mpc": a.overlay_mpc,
+        "--cf": a.cf,
+        "--mpc": a.mpc,
+    }
+    if a.unit:
+        given = [k for k, v in verdict_flags.items() if v]
+        if given:
+            ap.error(f"--unit is the record of N arms: it takes no {' / '.join(given)}")
+        res = record(a.cfg, a.unit, a.all_pairs, a.regression)
+        if a.json:
+            a.json.write_text(json.dumps(res, indent=1, default=_json))
+        print("\n".join(format_record(res)))
+        return
+    missing = [k for k, v in verdict_flags.items() if not v]
+    if missing or a.all_pairs:
+        ap.error(
+            f"the G-1 verdict needs {' '.join(verdict_flags)} (missing: {' '.join(missing) or '-'}) "
+            "and no --all-pairs; a record of N arms is --unit"
+        )
     from rtc_tools.analysis.derive_accel_limits import resolve_urdf_text
 
     refuse_shared_names(a.cf + a.mpc)

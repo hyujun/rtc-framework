@@ -68,6 +68,10 @@
 # whole one: FAIL:probe not running (it died at its start — before a throw), FAIL:probe killed (it did not
 # end on SIGINT, so its last rows may be cut), FAIL:no probe dump. Its analysis would otherwise silently be
 # the one without the dump.
+# #746 addition: conditions.txt says the search and the ball the unit was told to expect
+# (expect_search, expect_ball) beside expect_mode — an arm is search x segment x ball, and
+# summarize.py --unit reads the arm off the mirror and refuses a unit whose conditions say
+# another. The NLP search's budget (planner.search.nlp.budget.*) joins the recorded mirrors.
 # Leaves <out_dir>/status = DONE | FAIL:<why>. Never set -u (setup_env.sh is sourced).
 OUT=$1; SHORT=$2; OV=$3; NT=$4; SEED=$5
 COND=${ARM:-mpc}
@@ -177,6 +181,7 @@ trap on_signal INT TERM HUP
   echo "loadavg_start: $(cut -d' ' -f1-3 /proc/loadavg)"
   echo "ros_domain_id: $ROS_DOMAIN_ID"
   echo "expect_mode: ${EXPECT_MODE:-mpc}"; echo "expect_kv: ${EXPECT_KV:-}"
+  echo "expect_search: ${EXPECT_SEARCH:-grid}"; echo "expect_ball: $EXPECT_BALL"
   echo "viewer: $([ "$VIEWER" == "true" ] && echo on || echo off)"
   echo "probe_dump: $([ "${PROBE_DUMP:-0}" == "1" ] && echo on || echo off)"
 } > "$OUT/conditions.txt"
@@ -220,6 +225,8 @@ for P in joint_cmd.lag.T_arm joint_cmd.lag.lead_enable planner.freeze.T_freeze \
          planner.segment.mpc_docking.approach.n_pre_max planner.segment.mpc_docking.stop.n_nodes \
          planner.segment.mpc_docking.stop.dt_s \
          planner.segment.mpc_docking.budget.first_s planner.segment.mpc_docking.budget.replan_s \
+         planner.search.nlp.budget.budget_s planner.search.nlp.budget.solve_s \
+         planner.search.nlp.budget.max_solves \
          planner.segment.mpc.eta_v planner.search.grid.reference.omega \
          planner.search.grid.reference.a_max planner.search.grid.reference.v_max; do
   echo "$P: $(ros2 param get $CN $P 2>&1)" >> "$OUT/mirror.txt"
